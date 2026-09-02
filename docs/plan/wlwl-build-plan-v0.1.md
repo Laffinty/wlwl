@@ -750,7 +750,11 @@ impl Evaluator {
 - E0041 增强: 错误信息列出完整环路路径(spec §13.7)
 - 触发 E0040(越界/未找到)+ E0043(未注册 namespace)
 - wlwl-cli 的 lock 集成 推迟到批 3
-### Phase 4 批 3 — std.ai (mock) + Phase 3 收尾 — **待开始**
+### Phase 4 批 3 — std.ai (mock) + cli lock + Phase 3 收尾 — **完成 ✅ 2026-09-03**
 
+**已完成 (219 / 219 tests pass):**
+- `wlwl:std.ai` mock 模块(ASK / EMBED / COMPLETE),E0080-E0083 全部有触发点(用 reserved model 名字触发,无需 env mutation)
+- `wlwl-cli` run 成功后自动写 `wlwl.lock`(path 依赖的 SHA-256 哈希)
+- 推迟到批 4 / post-Phase 4:P3-007 (per-param type annotation, AST breaking)、P3-008 (suggestion_code content)、P3-009 (formal coverage 测量)、P3-010 (TypeExpr 结构化)
 
 **附:本计划不替代 v0.3 规范。规范的权威性高于本计划——任何"实施偏离"必须显式记录,不能默默修改规范。**

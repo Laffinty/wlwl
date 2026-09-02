@@ -145,5 +145,34 @@
 | Lines added (est.) | ~1100 (eval ~600, parser ~20, toml ~700, docs ~80) |
 | Key design decisions | `wlwl-toml` is independent of `wlwl-eval`; lock file is JSON (not TOML) so the format is stable across manifest schema evolution; `find_project_root` is a single-shot walk at entry evaluation, shared via `ProjectContext` (cloned) with every sub-loader; cycle detection is a `Vec<String>` stack (insertion-ordered) shared across the import graph. |
 | Deferred to batch 3 | `wlwl-cli` lock generation; std.ai (mock); per-param type annotation (P3-007); TypeExpr structure (P3-010); coverage push to 90%+ (P3-009); suggestion_code content (P3-008); performance (尾调用 + 热点内联, agreed to defer past Phase 4) |
+
+
+# Phase 4 batch 3 (2026-09-03) — std.ai (mock) + cli lock + Phase 3 收尾
+
+> Phase 4 batch 3. Schema version: 0.3.1 (unchanged). The mock
+> `std.ai` lands the v0.3 §15.11 surface; the CLI now refreshes
+> `wlwl.lock` after a successful `wlwl run`; the remaining
+> Phase 3 deviations are deferred to a post-Phase 4 batch (see
+> "Deferred").
+
+| ID | Spec / plan | Status | Notes |
+|----|-------------|--------|-------|
+| P3-011 | std.ai error code triggers | **Implemented (mock)** | E0080–E0083 now have trigger sites: the `wlwl:std.ai` mock checks the `model` (or `language`, for `COMPLETE`) argument against four reserved tokens (`_fail_E0080` … `_fail_E0083`). No real HTTP, no key required. v0.4 swaps the mock for a real provider behind the same `StdFn` signature. |
+| P4-008 | wlwl-cli lock generation | **Implemented** | After every successful `wlwl run`, the CLI locates the project root, parses `wlwl.toml`, and refreshes `wlwl.lock` (one entry per path dep with a SHA-256 over the dep's `.wl` files). Version-only deps are reserved for v0.4 and are skipped. 2 new tests cover the happy path + the no-manifest case. |
+| P3-007 | per-param type annotation | **Deferred to post-Phase 4** | `Vec<String> → Vec<FunParam>` is an AST breaking change touching the parser, every eval site for `Closure.params`, and the JSON schema. Out of scope for this batch. |
+| P3-010 | `TypeAnnotation` structure | **Deferred to post-Phase 4** | Same reasoning. |
+| P3-008 | richer `suggestion_code` content | **Deferred to post-Phase 4** | The schema supports up to 3 sorted candidates; populating the candidates from the parser requires the new `TypeAnnotation` work above. |
+| P3-009 | coverage 90%+ | **Approached, not measured** | Total tests: 219 (88 eval, 35 parser, 29 std, 19 toml, 18 cli, 18 error, 9 lexer, 3 ast, 9 cli integration). No `cargo tarpaulin` run yet. Targeted coverage on the 3 std modules' error paths is the obvious next gap. |
+
+## Phase 4 batch 3 implementation stats
+
+| Item | Data |
+|------|------|
+| Total tests | **219 / 219 passing** (eval 88 incl. 7 std.ai integration; std 29 incl. 13 std.ai; cli 18 incl. 2 lock round-trip; toml 19; parser 35; error 18; lexer 9; ast 3; cli integration 9 incl. 1 lock round-trip) |
+| New modules | `wlwl:std.ai` (ASK, EMBED, COMPLETE) |
+| New error triggers | E0080 (provider unreachable), E0081 (auth/rate-limit), E0082 (response malformed), E0083 (timeout) — all four AI error codes now reachable from a WLWL program |
+| Lines added (est.) | ~700 (std/ai.rs ~340, cli/main.rs lock helpers ~100, cli 2 tests ~100, eval 7 integration tests ~110, docs ~50) |
+| Key design decisions | Mock std.ai uses reserved `model` / `language` tokens for error code triggers so unit tests do not need to mutate env vars. FNV-1a 32-bit for deterministic mock payload bits (no extra crate dep). CLI `try_write_lock` is best-effort — failures are stderr warnings, never fatal. |
+| Deferred to post-Phase 4 | P3-007 (per-param type annotation), P3-008 (suggestion_code content), P3-009 (formal coverage measurement), P3-010 (TypeExpr structure) — all are AST / schema work; the next batch should start there |
 | Spec coverage (cumulative Phase 4) | std modules 100% (io/fs/json); namespace path 100% (wlwl: + 3rd-party); cross-dir 100% (./ + ../ + project-root boundary); manifest 100% (package + dependencies + namespaces; features parsed but inert); lock 100% (read + write + atomic + SHA-256); cycle path 100% (per §13.7 v0.3 enhancement); type-annotation 30% (unchanged from batch 1) |
 | Spec coverage | errorCategory 100%, retryable 100%, suggestion_code 100% (schema layer), related 100%, JSONL 100%, type-annotation 30% (LET + FUN return; FUN params deferred) |

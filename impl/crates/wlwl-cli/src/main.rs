@@ -110,9 +110,12 @@ fn run_file(file: &PathBuf, format: OutputFormat, execute: bool) -> ExitCode {
 
     let mut ev = wlwl_eval::Evaluator::new()
         .with_source(&source, &file_name)
-        .with_base_dir(base_dir);
+        .with_base_dir(base_dir.clone());
     match ev.eval(&ast) {
-        Ok(_v) => ExitCode::SUCCESS,
+        Ok(_v) => {
+            try_write_lock(&base_dir);
+            ExitCode::SUCCESS
+        }
         Err(e) => report_error(e, format),
     }
 }
@@ -207,6 +210,97 @@ fn _silence_severity() -> Severity {
     Severity::Error
 }
 
+// ── wlwl.lock generation (v0.3 §13.8) ────────────────────────────
+
+/// Walk up from `start` looking for a `wlwl.toml`. Returns the
+/// directory containing the manifest, or `start` itself if no
+/// manifest is found. (Duplicated here rather than depending on
+/// `wlwl-eval` internals to keep the CLI self-contained.)
+fn find_project_root(start: &std::path::Path) -> std::path::PathBuf {
+    let mut cur = start.to_path_buf();
+    loop {
+        if cur.join("wlwl.toml").is_file() {
+            return cur;
+        }
+        if !cur.pop() {
+            return start.to_path_buf();
+        }
+    }
+}
+
+/// After a successful `wlwl run`, refresh the project's
+/// `wlwl.lock` (per spec §13.8):
+///
+/// - Locate the project root (nearest ancestor with `wlwl.toml`).
+/// - Read the manifest. If it fails to parse, silently skip; the
+///   user will see the manifest error elsewhere.
+/// - Build one `LockEntry` per `[dependencies]` entry that has a
+///   `path`. Version-only deps are reserved for v0.4 (central
+///   registry) and are skipped here.
+/// - Hash every `.wl` file in the dependency directory (deterministic
+///   SHA-256 from `wlwl_toml::lock::hash_dependency_dir`).
+/// - Write atomically via `wlwl_toml::lock::write`.
+///
+/// Failures are warnings on stderr, not fatal -- the program ran
+/// successfully, the lock is just bookkeeping.
+fn try_write_lock(base_dir: &std::path::Path) {
+    let project_root = find_project_root(base_dir);
+    let toml_path = project_root.join("wlwl.toml");
+    if !toml_path.is_file() {
+        return;
+    }
+    let src = match fs::read_to_string(&toml_path) {
+        Ok(s) => s,
+        Err(e) => {
+            eprintln!(
+                "warning: cannot read {} for lock generation: {}",
+                toml_path.display(),
+                e
+            );
+            return;
+        }
+    };
+    let manifest = match wlwl_toml::manifest::parse(&src) {
+        Ok(m) => m,
+        Err(e) => {
+            eprintln!(
+                "warning: wlwl.toml parse error, skipping lock: {}",
+                e
+            );
+            return;
+        }
+    };
+    let mut entries = Vec::new();
+    for (key, dep) in &manifest.dependencies {
+        let path = match dep.local_path() {
+            Some(p) => p,
+            None => continue, // v0.4 central registry
+        };
+        let dep_dir = base_dir.join(path);
+        let hash = wlwl_toml::lock::hash_dependency_dir(&dep_dir)
+            .ok()
+            .flatten();
+        entries.push(wlwl_toml::lock::LockEntry {
+            name: key.clone(),
+            path: Some(path.to_string()),
+            version: None,
+            hash,
+        });
+    }
+    let lock = wlwl_toml::lock::Lockfile {
+        schema_version: wlwl_toml::lock::CURRENT_SCHEMA_VERSION.to_string(),
+        entries,
+    };
+    let lock_path = project_root.join("wlwl.lock");
+    if let Err(e) = wlwl_toml::lock::write(&lock_path, &lock) {
+        eprintln!(
+            "warning: failed to write {}: {}",
+            lock_path.display(),
+            e
+        );
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -289,5 +383,90 @@ mod tests {
         let p = write_tmp("LET(x, 1", "ast-bad.wl");
         let code = ast_file(&p, OutputFormat::Json);
         assert_eq!(code, ExitCode::from(1));
+
+    #[test]
+    fn run_writes_wlwl_lock_when_manifest_present() {
+        // Set up a temp project with a wlwl.toml that has a path
+        // dependency, run a minimal program, and confirm that a
+        // `wlwl.lock` is generated with the dependency's hash.
+        let dir = std::env::temp_dir().join(format!(
+            "wlwl-cli-lock-test-{}-{}",
+            std::process::id(),
+            std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .unwrap()
+                .as_nanos()
+        ));
+        let _ = fs::remove_dir_all(&dir);
+        fs::create_dir_all(&dir).unwrap();
+        // Dependency lives next to the project, in a sibling dir.
+        let dep_dir = dir.join("dep");
+        fs::create_dir_all(&dep_dir).unwrap();
+        fs::write(
+            dep_dir.join("lib.wl"),
+            "LET(greet, 1); EXPORT([\"greet\"]);\n",
+        )
+        .unwrap();
+        // Manifest points at ../dep. We pass `dir` (the project
+        // root) as the run target's base dir.
+        fs::write(
+            dir.join("wlwl.toml"),
+            r#"[package]
+name = "lock-test"
+version = "0.1.0"
+entry = "main.wl"
+
+[dependencies]
+"myteam:lib" = { path = "../dep" }
+"#,
+        )
+        .unwrap();
+        fs::write(
+            dir.join("main.wl"),
+            r#"IMPORT("myteam:lib", ["greet"]); PRINT(greet);"#,
+        )
+        .unwrap();
+        // Run the program via run_file.
+        let main_path = dir.join("main.wl");
+        let code = run_file(&main_path, OutputFormat::Human, true);
+        assert_eq!(code, ExitCode::SUCCESS);
+        // The lock should now exist and have one entry.
+        let lock_path = dir.join("wlwl.lock");
+        assert!(
+            lock_path.is_file(),
+            "wlwl.lock should be created at {}",
+            lock_path.display()
+        );
+        let lock_src = fs::read_to_string(&lock_path).unwrap();
+        let lf: wlwl_toml::lock::Lockfile =
+            serde_json::from_str(&lock_src).unwrap();
+        assert_eq!(lf.schema_version, wlwl_toml::lock::CURRENT_SCHEMA_VERSION);
+        assert_eq!(lf.entries.len(), 1);
+        let e = &lf.entries[0];
+        assert_eq!(e.name, "myteam:lib");
+        assert_eq!(e.path.as_deref(), Some("../dep"));
+        assert!(e.hash.is_some(), "lock entry should carry a hash");
+        let _ = fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn run_does_not_write_lock_when_no_manifest() {
+        // No wlwl.toml in the project -> no lock generation, no error.
+        let dir = std::env::temp_dir().join(format!(
+            "wlwl-cli-nolock-{}-{}",
+            std::process::id(),
+            std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .unwrap()
+                .as_nanos()
+        ));
+        let _ = fs::remove_dir_all(&dir);
+        fs::create_dir_all(&dir).unwrap();
+        fs::write(dir.join("hello.wl"), "PRINT(\"hi\");\n").unwrap();
+        let code = run_file(&dir.join("hello.wl"), OutputFormat::Human, true);
+        assert_eq!(code, ExitCode::SUCCESS);
+        assert!(!dir.join("wlwl.lock").exists());
+        let _ = fs::remove_dir_all(&dir);
+    }
     }
 }

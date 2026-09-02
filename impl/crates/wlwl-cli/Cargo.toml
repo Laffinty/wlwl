@@ -19,6 +19,7 @@ wlwl-lexer = { workspace = true }
 wlwl-parser = { workspace = true }
 wlwl-error = { workspace = true }
 wlwl-eval = { workspace = true }
+wlwl-toml = { workspace = true }
 clap = { workspace = true }
 serde = { workspace = true }
 serde_json = { workspace = true }

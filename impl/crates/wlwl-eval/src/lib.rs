@@ -3039,4 +3039,112 @@ entry = "main.wl"
             msg
         );
     }
+
+    // ── Phase 4 batch 3: std.ai (mock) integration ────────────
+
+    #[test]
+    fn std_ai_ask_mock_response() {
+        // ASK is a mock; the response includes the model name and
+        // a hash of the prompt. End-to-end the value is a STRING.
+        let dir = unique_test_dir("ai_ask_ok");
+        let src = r#"
+            IMPORT("wlwl:std.ai", ["ASK"]);
+            LET(r, ASK("gpt-4", "explain ERR"));
+            r;
+        "#;
+        let v = run_in(&dir, src).unwrap();
+        match v {
+            Value::String(s) => {
+                assert!(s.contains("[mock:gpt-4]"), "{}", s);
+                assert!(s.contains("explain ERR"));
+            }
+            other => panic!("expected String, got {:?}", other),
+        }
+    }
+
+    #[test]
+    fn std_ai_ask_failure_token_triggers_e0080() {
+        // Reserved model name "_fail_E0080" surfaces E0080
+        // (unreachable) without needing to mutate env.
+        let dir = unique_test_dir("ai_ask_e0080");
+        let src = r#"
+            IMPORT("wlwl:std.ai", ["ASK"]);
+            ASK("_fail_E0080", "x");
+        "#;
+        let err = run_in(&dir, src).unwrap_err();
+        assert_eq!(err.diagnostic().code, ErrorCode::E0080);
+    }
+
+    #[test]
+    fn std_ai_ask_failure_token_e0083_timeout() {
+        let dir = unique_test_dir("ai_ask_e0083");
+        let src = r#"
+            IMPORT("wlwl:std.ai", ["ASK"]);
+            ASK("_fail_E0083", "x");
+        "#;
+        let err = run_in(&dir, src).unwrap_err();
+        assert_eq!(err.diagnostic().code, ErrorCode::E0083);
+        // E0083 is retryable per spec.
+        assert!(err.diagnostic().retryable);
+    }
+
+    #[test]
+    fn std_ai_embed_returns_array_of_floats() {
+        let dir = unique_test_dir("ai_embed");
+        let src = r#"
+            IMPORT("wlwl:std.ai", ["EMBED"]);
+            LET(v, EMBED("hello"));
+            v;
+        "#;
+        let v = run_in(&dir, src).unwrap();
+        match v {
+            Value::Array(items) => {
+                assert_eq!(items.len(), 4);
+                for it in &items {
+                    assert!(matches!(it, Value::Float(_) | Value::Integer(_)));
+                }
+            }
+            other => panic!("expected Array, got {:?}", other),
+        }
+    }
+
+    #[test]
+    fn std_ai_embed_failure_via_model() {
+        let dir = unique_test_dir("ai_embed_fail");
+        let src = r#"
+            IMPORT("wlwl:std.ai", ["EMBED"]);
+            EMBED("hi", "_fail_E0081");
+        "#;
+        let err = run_in(&dir, src).unwrap_err();
+        assert_eq!(err.diagnostic().code, ErrorCode::E0081);
+    }
+
+    #[test]
+    fn std_ai_complete_returns_string() {
+        let dir = unique_test_dir("ai_complete");
+        let src = r#"
+            IMPORT("wlwl:std.ai", ["COMPLETE"]);
+            LET(s, COMPLETE("fun fib(n) {", "rust"));
+            s;
+        "#;
+        let v = run_in(&dir, src).unwrap();
+        match v {
+            Value::String(s) => {
+                assert!(s.contains("(rust)"));
+                assert!(s.contains("fun fib"));
+            }
+            other => panic!("expected String, got {:?}", other),
+        }
+    }
+
+    #[test]
+    fn std_ai_complete_failure_via_language() {
+        let dir = unique_test_dir("ai_complete_fail");
+        let src = r#"
+            IMPORT("wlwl:std.ai", ["COMPLETE"]);
+            COMPLETE("ctx", "_fail_E0082");
+        "#;
+        let err = run_in(&dir, src).unwrap_err();
+        assert_eq!(err.diagnostic().code, ErrorCode::E0082);
+    }
 }

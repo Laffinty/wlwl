@@ -19,6 +19,7 @@
 pub mod io;
 pub mod fs;
 pub mod json;
+pub mod ai;
 
 use wlwl_error::ErrorCode;
 
@@ -73,6 +74,8 @@ pub fn resolve(path: &str) -> Option<&'static ModuleSpec> {
         "wlwl:std.io" => Some(&io::SPEC),
         "wlwl:std.fs" => Some(&fs::SPEC),
         "wlwl:std.json" => Some(&json::SPEC),
+        "wlwl:std.json" => Some(&json::SPEC),
+        "wlwl:std.ai" => Some(&ai::SPEC),
         _ => None,
     }
 }
