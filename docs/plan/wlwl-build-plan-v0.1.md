@@ -18,6 +18,17 @@
 
 ---
 
+### post-Phase 4 batch — per-param type annotation + 结构化 TypeExpr — **完成 ✅ 2026-09-03**
+
+**已完成 (223 / 223 tests pass):**
+- AST 改造:`FunParam` (name + Option<TypeAnnotation> + span) + `TypeExpr` enum (Ident / Array / Generic)
+- `Expr::Fun.params` 从 `Vec<String>` 改为 `Vec<FunParam>`
+- `TypeAnnotation` 从 `text: String` 改为 `expr: TypeExpr, text, span`(text 保留向后兼容)
+- Parser:per-param annotation 解析 + 专用 `TypeExprParser` 把 `ARRAY[T]` / `DICT[K, V]` / `OK[E]` 等结构化
+- Eval:`Value::Closure.params` 改 `Vec<FunParam>`,`invoke_closure` 用 `p.name` 绑定,`Value::display` 渲染参数名
+- 推迟:P3-008 (suggestion_code content) — 错误位置 codegen,留作单独 batch
+
+
 ## 0. 文档定位
 
 | 维度 | WLWL 规范(v0.3) | 本构建计划 |

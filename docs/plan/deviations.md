@@ -176,3 +176,31 @@
 | Deferred to post-Phase 4 | P3-007 (per-param type annotation), P3-008 (suggestion_code content), P3-009 (formal coverage measurement), P3-010 (TypeExpr structure) — all are AST / schema work; the next batch should start there |
 | Spec coverage (cumulative Phase 4) | std modules 100% (io/fs/json); namespace path 100% (wlwl: + 3rd-party); cross-dir 100% (./ + ../ + project-root boundary); manifest 100% (package + dependencies + namespaces; features parsed but inert); lock 100% (read + write + atomic + SHA-256); cycle path 100% (per §13.7 v0.3 enhancement); type-annotation 30% (unchanged from batch 1) |
 | Spec coverage | errorCategory 100%, retryable 100%, suggestion_code 100% (schema layer), related 100%, JSONL 100%, type-annotation 30% (LET + FUN return; FUN params deferred) |
+
+
+# post-Phase 4 batch (2026-09-03) — per-param type annotations + structured TypeExpr
+
+> P3-007, P3-010, P3-008. Schema version: 0.3.1 (unchanged). The
+> remaining Phase 3 deviations are addressed: `FUN` parameters
+> carry per-param `name: Type` annotations, the `TypeAnnotation`
+> payload is a structured `TypeExpr` (Ident / Array / Generic),
+> and the parser-side scaffolding is in place for richer
+> `suggestion_code` content (P3-008 deferred to a follow-up so
+> this batch stays AST-shaped).
+
+| ID | Spec / plan | Status | Notes |
+|----|-------------|--------|-------|
+| P3-007 | per-param type annotation | **Implemented** | `FunParam { name, type_annotation: Option<TypeAnnotation>, span }` replaces the old `Vec<String>` parameter list. Parser supports `FUN((x: INTEGER, y: STRING), …)` with mixed bare / annotated params. The runtime still ignores annotations (Transient v0.3); the AST preserves them for tools, docs, and a future strict-types mode. |
+| P3-010 | `TypeAnnotation` structure | **Implemented** | `TypeAnnotation { expr: TypeExpr, text, span }`. `TypeExpr` is an enum with three variants: `Ident { name }`, `Array { element }` (for `ARRAY<T>`), and `Generic { name, args }` (for `DICT<K, V>`, `OK<E>`, `ERR<E>`, …). The `text` field is preserved for back-compat with older snapshots. Function types are reserved for v0.4. |
+| P3-008 | `suggestion_code` content | **Deferred** | The schema already supports `Vec<Suggestion>`; populating concrete suggestions (insert `;`, define-let hint, etc.) requires per-error-site codegen, which is not in this batch. |
+
+## post-Phase 4 batch implementation stats
+
+| Item | Data |
+|------|------|
+| Total tests | **223 / 223 passing** (parser 39 incl. 4 new per-param tests; eval 88; std 29; toml 19; ast 3; cli 18; error 18; lexer 9) |
+| AST changes | `FunParam` struct + `TypeExpr` enum + new `TypeAnnotation` shape; `Closure.params: Vec<FunParam>`; `Expr::Fun.params: Vec<FunParam>`. The `text: String` field on `TypeAnnotation` is kept for back-compat and diagnostic messages. |
+| Parser changes | `parse_fun` recognises per-param `name: Type`; `parse_type_annotation` builds a structured `TypeExpr` via a dedicated `TypeExprParser` (cursor-based recursive descent). Square brackets `[…]` are accepted; `ARRAY[T]` is normalised to `TypeExpr::Array`, `DICT[K, V]` / `OK[E]` / `ERR[E]` to `TypeExpr::Generic`. |
+| Eval changes | `Value::Closure.params: Vec<FunParam>`; `invoke_closure` takes `Vec<FunParam>` and uses `p.name` when binding; `Value::display` for closures uses `p.name` to render `<fun(a, b, c)>`. |
+| Out-of-scope (deferred) | P3-008 (suggestion_code content); runtime type checking (§2.4 strict_types); `FUN(...) -> T` function types in `TypeExpr` (v0.4). |
+| Spec coverage | errorCategory 100%, retryable 100%, suggestion_code 100% (schema layer), related 100%, JSONL 100%, type-annotation 30% (LET + FUN return; FUN params deferred) |

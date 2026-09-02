@@ -42,7 +42,7 @@
 //! - E0020 undefined name (emitted at eval time, not parse)
 //! - E0043 namespace path syntax error
 
-use wlwl_ast::{Expr, ImportName, Literal, Span, TypeAnnotation};
+use wlwl_ast::{Expr, FunParam, ImportName, Literal, Span, TypeAnnotation, TypeExpr};
 use wlwl_error::{extract_line, ErrorCode, Location, WlwlDiagnostic, WlwlError, WlwlResult};
 use wlwl_lexer::{lex, Token, TokenKind};
 
@@ -404,16 +404,15 @@ impl Parser {
             ));
         }
         let text = pieces.join(" ");
-        Ok(Some(TypeAnnotation {
-            text,
-            span: Span {
-                file: self.file.clone(),
-                line_start: sl,
-                col_start: sc,
-                line_end: last_span.2,
-                col_end: last_span.3,
-            },
-        }))
+        let expr = self.parse_type_expr_from_pieces(&pieces, sl, sc)?;
+        let ann_span = Span {
+            file: self.file.clone(),
+            line_start: sl,
+            col_start: sc,
+            line_end: last_span.2,
+            col_end: last_span.3,
+        };
+        Ok(Some(TypeAnnotation::new(expr, text, ann_span)))
     }
 
     /// Source-text representation of a token, used to build raw
@@ -576,7 +575,21 @@ impl Parser {
         if !matches!(self.peek(), TokenKind::RParen) {
             loop {
                 match self.advance() {
-                    Token { kind: TokenKind::Ident(s), .. } => params.push(s),
+                    Token { kind: TokenKind::Ident(s), span } => {
+                        let type_annotation = self.parse_type_annotation()?;
+                        let param_span = Span {
+                            file: self.file.clone(),
+                            line_start: span.0,
+                            col_start: span.1,
+                            line_end: span.2,
+                            col_end: span.3,
+                        };
+                        params.push(FunParam {
+                            name: s,
+                            type_annotation,
+                            span: param_span,
+                        });
+                        }
                     other => {
                         return Err(self.err_at(
                             ErrorCode::E0010,
@@ -1040,6 +1053,149 @@ impl Parser {
             other => other,
         })
     }
+    // ── Type expression parser (P3-010) ─────────────────────────────
+    //
+    // parse_type_annotation collects the type annotation's tokens
+    // as a flat Vec<String>, then hands it to this entry point
+    // which builds a structured TypeExpr (Ident / Array / Generic).
+    fn parse_type_expr_from_pieces(
+        &self,
+        pieces: &[String],
+        sl: u32,
+        sc: u32,
+    ) -> WlwlResult<TypeExpr> {
+        let mut p = TypeExprParser {
+            pieces,
+            pos: 0,
+            file: self.file.clone(),
+        };
+        let expr = p.parse_expr(sl, sc);
+        if p.pos < p.pieces.len() {
+            let rest: Vec<String> = p.pieces[p.pos..].to_vec();
+            return Ok(TypeExpr::Generic {
+                name: rest.join(" "),
+                args: vec![],
+                span: Span {
+                    file: self.file.clone(),
+                    line_start: sl,
+                    col_start: sc,
+                    line_end: sl,
+                    col_end: sc,
+                },
+            });
+        }
+        expr
+    }
+}
+
+// ── TypeExprParser (free helper) ────────────────────────────
+
+struct TypeExprParser<'a> {
+    pieces: &'a [String],
+    pos: usize,
+    file: String,
+}
+
+impl<'a> TypeExprParser<'a> {
+    fn parse_expr(&mut self, sl: u32, sc: u32) -> WlwlResult<TypeExpr> {
+        let head = self.peek().to_string();
+        if head == "ARRAY" {
+            self.pos += 1;
+            return self.parse_braced("ARRAY", sl, sc);
+        }
+        if !is_ident(&head) {
+            return Err(WlwlDiagnostic::new(
+                ErrorCode::E0010,
+                format!("expected type expression, got `{}`", head),
+                Location::point(&self.file, sl, sc),
+            )
+            .into());
+        }
+        self.pos += 1;
+        if self.peek() == "[" {
+            return self.parse_braced(&head, sl, sc);
+        }
+        Ok(TypeExpr::Ident {
+            name: head,
+            span: self.span_here(sl, sc),
+        })
+    }
+
+    fn parse_braced(&mut self, head: &str, sl: u32, sc: u32) -> WlwlResult<TypeExpr> {
+        if self.peek() != "[" {
+            return Err(WlwlDiagnostic::new(
+                ErrorCode::E0010,
+                format!("expected `[` after `{}` in type expression", head),
+                Location::point(&self.file, sl, sc),
+            )
+            .into());
+        }
+        self.pos += 1;
+        let mut args = Vec::new();
+        loop {
+            args.push(self.parse_expr(sl, sc)?);
+            match self.peek() {
+                "," => {
+                    self.pos += 1;
+                }
+                "]" => {
+                    self.pos += 1;
+                    break;
+                }
+                other => {
+                    return Err(WlwlDiagnostic::new(
+                        ErrorCode::E0012,
+                        format!(
+                            "expected `,` or `]` in type expression, got `{}`",
+                            other
+                        ),
+                        Location::point(&self.file, sl, sc),
+                    )
+                    .into());
+                }
+            }
+        }
+        let span = self.span_here(sl, sc);
+        if head == "ARRAY" && args.len() == 1 {
+            Ok(TypeExpr::Array {
+                element: Box::new(args.into_iter().next().unwrap()),
+                span,
+            })
+        } else {
+            Ok(TypeExpr::Generic {
+                name: head.to_string(),
+                args,
+                span,
+            })
+        }
+    }
+
+    fn peek(&self) -> &str {
+        if self.pos < self.pieces.len() {
+            self.pieces[self.pos].as_str()
+        } else {
+            ""
+        }
+    }
+
+    fn span_here(&self, sl: u32, sc: u32) -> Span {
+        Span {
+            file: self.file.clone(),
+            line_start: sl,
+            col_start: sc,
+            line_end: sl,
+            col_end: sc,
+        }
+    }
+}
+
+fn is_ident(s: &str) -> bool {
+    let mut chars = s.chars();
+    match chars.next() {
+        Some(c) if c.is_ascii_alphabetic() || c == '_' => {}
+        _ => return false,
+    }
+    chars.all(|c| c.is_ascii_alphanumeric() || c == '_')
 }
 
 #[cfg(test)]
@@ -1110,7 +1266,7 @@ mod tests {
     fn parse_fun_two_params() {
         let e = parse("FUN((a, b), +(a, b));", "t.wl").unwrap();
         match e {
-            Expr::Fun { params, .. } => assert_eq!(params, vec!["a", "b"]),
+            Expr::Fun { params, .. } => assert_eq!(params.iter().map(|p| p.name.clone()).collect::<Vec<_>>(), vec!["a".to_string(), "b".to_string()]),
             _ => panic!("expected FUN"),
         }
     }
@@ -1372,7 +1528,7 @@ mod tests {
         let e = parse("FUN((a, b): INTEGER, +(a, b));", "t.wl").unwrap();
         match e {
             Expr::Fun { params, return_type, .. } => {
-                assert_eq!(params, vec!["a", "b"]);
+                assert_eq!(params.iter().map(|p| p.name.clone()).collect::<Vec<_>>(), vec!["a".to_string(), "b".to_string()]);
                 let ann = return_type.expect("expected return annotation");
                 assert_eq!(ann.text, "INTEGER");
             }
@@ -1385,7 +1541,7 @@ mod tests {
         let e = parse("FUN((a, b), +(a, b));", "t.wl").unwrap();
         match e {
             Expr::Fun { params, return_type, .. } => {
-                assert_eq!(params, vec!["a", "b"]);
+                assert_eq!(params.iter().map(|p| p.name.clone()).collect::<Vec<_>>(), vec!["a".to_string(), "b".to_string()]);
                 assert!(return_type.is_none());
             }
             _ => panic!("expected FUN"),
@@ -1404,5 +1560,122 @@ mod tests {
         let err = parse("LET(x, 1;", "t.wl").unwrap_err();
         let d = err.diagnostic();
         assert_eq!(d.code, ErrorCode::E0011);
+    }
+
+    #[test]
+    fn parse_fun_with_per_param_type_annotation() {
+        // P3-007: per-parameter `name: Type` annotations on FUN.
+        // The annotation is parsed not checked; the AST stores
+        // `params: Vec<FunParam>` with `type_annotation: Some(...)`.
+        let e = parse(
+            "FUN((x: INTEGER, y: STRING), PRINT(x, y));",
+            "t.wl",
+        )
+        .unwrap();
+        match e {
+            Expr::Fun { params, .. } => {
+                assert_eq!(params.len(), 2);
+                assert_eq!(params[0].name, "x");
+                let ann0 = params[0]
+                    .type_annotation
+                    .as_ref()
+                    .expect("x has annotation");
+                // Structured: TypeExpr::Ident { name: "INTEGER", ... }
+                match &ann0.expr {
+                    wlwl_ast::TypeExpr::Ident { name, .. } => {
+                        assert_eq!(name, "INTEGER");
+                    }
+                    _ => panic!("expected Ident, got {:?}", ann0.expr),
+                }
+                assert_eq!(params[1].name, "y");
+                let ann1 = params[1]
+                    .type_annotation
+                    .as_ref()
+                    .expect("y has annotation");
+                match &ann1.expr {
+                    wlwl_ast::TypeExpr::Ident { name, .. } => {
+                        assert_eq!(name, "STRING");
+                    }
+                    _ => panic!("expected Ident, got {:?}", ann1.expr),
+                }
+            }
+            _ => panic!("expected FUN"),
+        }
+    }
+
+    #[test]
+    fn parse_fun_per_param_array_type() {
+        // P3-010: structured `ARRAY<T>` type expression. Parses to
+        // `TypeExpr::Array { element: Box<TypeExpr> }` (not Generic).
+        let e = parse(
+            "FUN((xs: ARRAY[INTEGER]), PRINT(xs));",
+            "t.wl",
+        )
+        .unwrap();
+        match e {
+            Expr::Fun { params, .. } => {
+                let ann = params[0]
+                    .type_annotation
+                    .as_ref()
+                    .expect("xs has annotation");
+                match &ann.expr {
+                    wlwl_ast::TypeExpr::Array { element, .. } => {
+                        match &**element {
+                            wlwl_ast::TypeExpr::Ident { name, .. } => {
+                                assert_eq!(name, "INTEGER");
+                            }
+                            _ => panic!("expected inner Ident"),
+                        }
+                    }
+                    _ => panic!("expected Array, got {:?}", ann.expr),
+                }
+            }
+            _ => panic!("expected FUN"),
+        }
+    }
+
+    #[test]
+    fn parse_fun_per_param_generic_dict_type() {
+        // P3-010: `DICT<K, V>` is `TypeExpr::Generic { name: "DICT", args }`.
+        let e = parse(
+            "FUN((m: DICT[STRING, INTEGER]), PRINT(m));",
+            "t.wl",
+        )
+        .unwrap();
+        match e {
+            Expr::Fun { params, .. } => {
+                let ann = params[0]
+                    .type_annotation
+                    .as_ref()
+                    .expect("m has annotation");
+                match &ann.expr {
+                    wlwl_ast::TypeExpr::Generic { name, args, .. } => {
+                        assert_eq!(name, "DICT");
+                        assert_eq!(args.len(), 2);
+                    }
+                    _ => panic!("expected Generic, got {:?}", ann.expr),
+                }
+            }
+            _ => panic!("expected FUN"),
+        }
+    }
+
+    #[test]
+    fn parse_fun_mixed_annotated_and_bare_params() {
+        // P3-007: only some parameters carry annotations; the
+        // others must be `FunParam { name, type_annotation: None, .. }`.
+        let e = parse("FUN((a, b: INTEGER, c), PRINT(a, b, c));", "t.wl").unwrap();
+        match e {
+            Expr::Fun { params, .. } => {
+                assert_eq!(params.len(), 3);
+                assert_eq!(params[0].name, "a");
+                assert!(params[0].type_annotation.is_none());
+                assert_eq!(params[1].name, "b");
+                assert!(params[1].type_annotation.is_some());
+                assert_eq!(params[2].name, "c");
+                assert!(params[2].type_annotation.is_none());
+            }
+            _ => panic!("expected FUN"),
+        }
     }
 }

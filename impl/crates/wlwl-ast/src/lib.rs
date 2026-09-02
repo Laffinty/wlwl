@@ -51,17 +51,99 @@ pub enum Literal {
     Null,
 }
 
-/// A type annotation (`name: Type` per v0.3 `Sec. 2.4`).
+/// Structured type expression (v0.3 `Sec. 2.4`).
 ///
-/// Phase 3 only **parses** annotations; they are not checked.
-/// The inner string holds the raw source text of the type
-/// expression (e.g. "INTEGER", "ARRAY[INTEGER]", "OK[ERR[STRING]]").
-/// A structured `TypeExpr` enum can be introduced later without
-/// breaking the parser surface.
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+/// The grammar we parse (Phase 3 → post-Phase 4):
+/// ```text
+/// type_expr  ::= IDENT                    // INTEGER, FLOAT, BOOLEAN, ...
+///             |  "ARRAY" "<" type_expr ">"
+///             |  IDENT "<" type_expr ("," type_expr)* ">"  // DICT, OK, ERR, ...
+/// ```
+///
+/// The two named forms are `Array { element }` and `Generic { name, args }`;
+/// bare identifiers are `Ident { name }`. Function types (`FUN(...) -> T`)
+/// are reserved for v0.4 -- the parser surfaces them as `Generic` with
+/// a `FUN` head and a single trailing-element convention.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub enum TypeExpr {
+    Ident {
+        name: String,
+        span: Span,
+    },
+    Array {
+        element: Box<TypeExpr>,
+        span: Span,
+    },
+    Generic {
+        name: String,
+        args: Vec<TypeExpr>,
+        span: Span,
+    },
+}
+
+impl TypeExpr {
+    pub fn span(&self) -> &Span {
+        match self {
+            TypeExpr::Ident { span, .. } => span,
+            TypeExpr::Array { span, .. } => span,
+            TypeExpr::Generic { span, .. } => span,
+        }
+    }
+
+    /// Render back to source text (round-trips the parser for
+    /// stable, readable snapshots). Not used for any semantic check
+    /// -- the runtime ignores type annotations.
+    pub fn display(&self) -> String {
+        match self {
+            TypeExpr::Ident { name, .. } => name.clone(),
+            TypeExpr::Array { element, .. } => {
+                format!("ARRAY<{}>", element.display())
+            }
+            TypeExpr::Generic { name, args, .. } => {
+                let parts: Vec<String> = args.iter().map(|a| a.display()).collect();
+                format!("{}<{}>", name, parts.join(", "))
+            }
+        }
+    }
+}
+
+/// A type annotation (`name: Type` per v0.3 `Sec. 2.4`). Wraps a
+/// `TypeExpr` together with the source span the annotation
+/// occupied; only the parsed `expr` is meaningful, the `text`
+/// field stays for back-compat with older snapshots / docs.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct TypeAnnotation {
-    pub text: String,
+    pub expr: TypeExpr,
     pub span: Span,
+    /// Raw source text of the annotation, kept so a diagnostic can
+    /// show "expected INTEGER, got ARRAY[INTEGER]" without re-deriving
+    /// the original source slice.
+    pub text: String,
+}
+
+impl TypeAnnotation {
+    pub fn new(expr: TypeExpr, text: String, span: Span) -> Self {
+        Self { expr, span, text }
+    }
+}
+
+/// One parameter of a `FUN` literal (v0.3 `Sec. 8.2` plus `Sec. 2.4`
+/// per-param annotation support).
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct FunParam {
+    pub name: String,
+    /// Optional `name: Type` annotation. Runtime semantics: ignored
+    /// (Transient v0.3). The annotation is preserved on the AST so
+    /// tools / docs / future strict-mode can use it.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub type_annotation: Option<TypeAnnotation>,
+    pub span: Span,
+}
+
+impl FunParam {
+    pub fn new(name: String, span: Span) -> Self {
+        Self { name, type_annotation: None, span }
+    }
 }
 
 /// One entry in an `IMPORT(path, names, ...)` call (v0.3 `Sec. 13.3`).
@@ -121,7 +203,7 @@ pub enum Expr {
     Continue { span: Span },
     // Sec. 8.2 FUN literal (v0.3 Sec. 2.4: optional return annotation)
     Fun {
-        params: Vec<String>,
+        params: Vec<FunParam>,
         return_type: Option<TypeAnnotation>,
         body: Box<Expr>,
         span: Span,

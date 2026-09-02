@@ -25,7 +25,7 @@ use std::rc::Rc;
 use std::path::Path;
 use std::sync::Arc;
 
-use wlwl_ast::{Expr, ImportName, Literal, Span};
+use wlwl_ast::{Expr, FunParam, ImportName, Literal, Span};
 use wlwl_error::{
     extract_line, ErrorCode, Location, WlwlDiagnostic, WlwlError, WlwlResult,
 };
@@ -47,7 +47,7 @@ pub enum Value {
     Dict(Vec<(Value, Value)>),
     /// §8.2 function literal with captured environment (clone-based closure).
     Closure {
-        params: Vec<String>,
+        params: Vec<FunParam>,
         body: Box<Expr>,
         env: Env,
     },
@@ -107,7 +107,7 @@ impl Value {
                 format!("[{}]", parts.join(", "))
             }
             Value::Closure { params, .. } => {
-                format!("<fun({})>", params.join(", "))
+                format!("<fun({})>", params.iter().map(|p| p.name.as_str()).collect::<Vec<_>>().join(", "))
             }
             Value::NativeFn { name, .. } => {
                 format!("<native fun {}>", name)
@@ -1697,7 +1697,7 @@ impl Evaluator {
 
     fn invoke_closure(
         &mut self,
-        params: Vec<String>,
+        params: Vec<FunParam>,
         body: Box<Expr>,
         captured_env: Env,
         arg_values: Vec<Value>,
@@ -1730,7 +1730,7 @@ impl Evaluator {
         new_scopes.push(HashMap::new()); // fresh scope for params
         self.env.scopes = new_scopes;
         for (p, v) in params.iter().zip(arg_values) {
-            self.env.set_local(p, v);
+            self.env.set_local(p.name.clone(), v);
         }
         let outcome = self.eval_expr(&body)?;
         // Restore the caller's env EXACTLY (by swapping back, so any
