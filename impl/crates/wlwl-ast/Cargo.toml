@@ -1,0 +1,9 @@
+[package]
+name = "wlwl-ast"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+description = "WLWL abstract syntax tree types"
+
+[dependencies]
+serde = { workspace = true }

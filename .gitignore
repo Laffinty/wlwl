@@ -1,0 +1,57 @@
+# Build artifacts
+impl/target/
+impl/Cargo.lock
+
+# IDE / editor
+.vscode/
+.idea/
+*.swp
+*.swo
+*~
+.DS_Store
+Thumbs.db
+*.sublime-project
+*.sublime-workspace
+*.code-workspace
+
+# OS junk
+*.tmp
+*.bak
+*.orig
+*.rej
+
+# Local scratch / temp
+*.local
+scratch/
+build/
+dist/
+
+# Node / JS (in case)
+node_modules/
+package-lock.json
+yarn.lock
+pnpm-lock.yaml
+
+# Python (in case)
+__pycache__/
+*.pyc
+.venv/
+venv/
+.pytest_cache/
+
+# Rust
+**/*.rs.bk
+**/*.pdb
+
+# Logs / runtime artifacts
+*.log
+*.pid
+*.seed
+*.pid.lock
+
+# Coverage
+*.lcov
+*.gcov
+coverage/
+htmlcov/
+.coverage

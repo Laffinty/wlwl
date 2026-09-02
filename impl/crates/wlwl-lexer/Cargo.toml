@@ -1,0 +1,10 @@
+[package]
+name = "wlwl-lexer"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+description = "WLWL lexical analyzer"
+
+[dependencies]
+wlwl-error = { workspace = true }
+wlwl-ast = { workspace = true }

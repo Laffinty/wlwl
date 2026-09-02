@@ -1,0 +1,11 @@
+[package]
+name = "wlwl-parser"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+description = "WLWL syntax analyzer (parser)"
+
+[dependencies]
+wlwl-ast = { workspace = true }
+wlwl-lexer = { workspace = true }
+wlwl-error = { workspace = true }

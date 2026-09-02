@@ -1,0 +1,22 @@
+[package]
+name = "wlwl-cli"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+description = "WLWL command-line interface"
+
+[[bin]]
+name = "wlwl"
+path = "src/main.rs"
+
+[[test]]
+name = "integration"
+path = "tests/integration.rs"
+
+[dependencies]
+wlwl-ast = { workspace = true }
+wlwl-lexer = { workspace = true }
+wlwl-parser = { workspace = true }
+wlwl-error = { workspace = true }
+wlwl-eval = { workspace = true }
+clap = { workspace = true }
