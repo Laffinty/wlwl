@@ -741,8 +741,15 @@ impl Evaluator {
 | 新 crate | `wlwl-std`(纯 Rust,不依赖 `wlwl-eval` 避免 cycle) |
 | 偏离记录 | docs/plan/deviations.md — P4-001 / P4-002;修复 P3-012 / P3-013 |
 
-### Phase 4 批 2 — 跨目录 + 命名空间 + wlwl.toml + wlwl.lock — **待开始**
+### Phase 4 批 2 — 跨目录 + 命名空间 + wlwl.toml + lock — **完成 ✅ 2026-09-03**
 
+**已完成 (199 / 199 tests pass):**
+- 新 crate `wlwl-toml`(manifest 解析 + lockfile JSON + 内置 SHA-256)
+- `ModuleLoader` 改造: 4 种 path 形式(std / namespace / relative / bare)+ 项目根边界
+- parser 接受任何非空 path(批 1 的 E0043 限制移除)
+- E0041 增强: 错误信息列出完整环路路径(spec §13.7)
+- 触发 E0040(越界/未找到)+ E0043(未注册 namespace)
+- wlwl-cli 的 lock 集成 推迟到批 3
 ### Phase 4 批 3 — std.ai (mock) + Phase 3 收尾 — **待开始**
 
 

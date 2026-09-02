@@ -116,3 +116,34 @@
 | Deferred to batch 2 | cross-dir (`./`, `../`), non-`wlwl:` namespaces, `wlwl.toml` registry, `wlwl.lock` |
 | Deferred to batch 3 | std.ai (mock per agreed scope), per-param type annotation (P3-007), TypeExpr structure (P3-010), coverage push to 90%+ (P3-009), suggestion_code content (P3-008) |
 | Spec coverage | errorCategory 100%, retryable 100%, suggestion_code 100% (schema layer), related 100%, JSONL 100%, type-annotation 30% (LET + FUN return; FUN params deferred) |
+
+
+# Phase 4 batch 2 (2026-09-03) — cross-dir + namespace + wlwl.toml + lock
+
+> Phase 4 batch 2. Schema version: 0.3.1 (unchanged — no error schema
+> changes). The new `wlwl-toml` crate adds the manifest + lockfile
+> surface; the eval-side `ModuleLoader` learns four resolution
+> forms (std / namespace / relative / bare) and project-root
+> enforcement.
+
+| ID | Spec / plan | Status | Notes |
+|----|-------------|--------|-------|
+| P4-003 | Cross-directory IMPORTs (v0.3 §13.5) | **Implemented** | Parser now accepts any non-empty path; `ModuleLoader::load` resolves `./foo` and `../bar` relative to the importing module's directory, popping `..` segments. Project-root boundary check uses `is_within`; out-of-root attempts raise E0040 with a message that includes the project root path. |
+| P4-004 | Namespace registry (v0.3 §13.6) | **Implemented** | `IMPORT("myteam:utils", …)` resolves through the project manifest's `[namespaces]` (explicit) then `[dependencies]` (auto-inference). Unregistered `<ns>:<name>` references raise E0043. The project manifest is loaded once at entry-point evaluation and shared (via `Rc`) with every sub-loader. |
+| P4-005 | `wlwl.toml` (v0.3 §13.8) | **Implemented** | New `wlwl-toml` crate with `manifest.rs` (Package / Dependency / Manifest, with full schema validation: package-name rule, dependency key shape, `path` xor `version` requirement, namespace name rule) and `lock.rs` (Lockfile JSON, SHA-256 source hashing, atomic write via `.tmp` + rename). 11 unit tests in `wlwl-toml`. |
+| P4-006 | Project root resolution (v0.3 §13.5) | **Implemented** | `find_project_root` walks up from the entry file's directory looking for `wlwl.toml`; if found, that directory is the root; otherwise the entry file's directory is the project root. The manifest is loaded once; a missing or invalid `wlwl.toml` silently degrades to "no-manifest" mode (cross-dir / namespace imports become unavailable). |
+| P4-007 | E0041 cycle path (v0.3 §13.7 enhancement) | **Implemented** | Loading stack changed from `HashSet<String>` to `Vec<String>`; the cycle diagnostic dumps the full chain (e.g. `a -> b -> a`) instead of just the head. |
+| P4-008 | wlwl-cli lock generation | **Deferred to batch 3** | The `wlwl-cli` crate does not yet generate / read `wlwl.lock` automatically; the `wlwl-toml::lock` API is in place for batch 3 to wire in. The 199 tests in batch 2 do not depend on the CLI. |
+
+## Phase 4 batch 2 implementation stats
+
+| Item | Data |
+|------|------|
+| Total tests | **199 / 199 passing** (eval 81 incl. 9 new cross-dir / namespace / cycle tests; parser 35 incl. 1 split + 1 added; std 16; toml 19 = 11 manifest + 8 lock; ast 3; lexer 9; cli 18; error 18) |
+| New crates | 1 (`wlwl-toml`) |
+| New error triggers | E0040 (out-of-root + missing module), E0043 (unregistered namespace), E0041 (cycle path now full chain) |
+| Lines added (est.) | ~1100 (eval ~600, parser ~20, toml ~700, docs ~80) |
+| Key design decisions | `wlwl-toml` is independent of `wlwl-eval`; lock file is JSON (not TOML) so the format is stable across manifest schema evolution; `find_project_root` is a single-shot walk at entry evaluation, shared via `ProjectContext` (cloned) with every sub-loader; cycle detection is a `Vec<String>` stack (insertion-ordered) shared across the import graph. |
+| Deferred to batch 3 | `wlwl-cli` lock generation; std.ai (mock); per-param type annotation (P3-007); TypeExpr structure (P3-010); coverage push to 90%+ (P3-009); suggestion_code content (P3-008); performance (尾调用 + 热点内联, agreed to defer past Phase 4) |
+| Spec coverage (cumulative Phase 4) | std modules 100% (io/fs/json); namespace path 100% (wlwl: + 3rd-party); cross-dir 100% (./ + ../ + project-root boundary); manifest 100% (package + dependencies + namespaces; features parsed but inert); lock 100% (read + write + atomic + SHA-256); cycle path 100% (per §13.7 v0.3 enhancement); type-annotation 30% (unchanged from batch 1) |
+| Spec coverage | errorCategory 100%, retryable 100%, suggestion_code 100% (schema layer), related 100%, JSONL 100%, type-annotation 30% (LET + FUN return; FUN params deferred) |

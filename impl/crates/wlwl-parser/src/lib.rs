@@ -745,26 +745,18 @@ impl Parser {
                 ));
             }
         };
-        // Phase 4 batch 1: accept the `wlwl:` namespace prefix. The
-        // resolver in `wlwl-eval`'s `ModuleLoader::load` only knows
-        // about `wlwl:std.X` paths; anything else that still uses a
-        // `:` (third-party packages) or starts with `./` / `../` is
-        // still rejected here as it needs batch-2 work (cross-dir +
-        // namespace registry).
-        if path.starts_with("./")
-            || path.starts_with("../")
-            || (path.contains(':') && !path.starts_with("wlwl:"))
-        {
+        // Phase 4 batch 2: the parser now accepts any non-empty
+        // string literal as an IMPORT path. Resolution is entirely
+        // the `ModuleLoader::load` job: it dispatches `wlwl:std.X`
+        // to the std registry, `<ns>:<name>` to the project
+        // manifest, `./` / `../` to the file system relative to
+        // the importing module, and bare names to the same
+        // directory / project root. Surface-level path errors
+        // (empty / whitespace-only) still fail here with E0043.
+        if path.is_empty() {
             return Err(self.err_at(
                 ErrorCode::E0043,
-                format!(
-                    "IMPORT path '{}' uses cross-dir or non-`wlwl:` \
-                     namespace syntax; this batch only accepts \
-                     `wlwl:std.X` and simple single-directory module \
-                     names; third-party packages and cross-dir are \
-                     Phase 4 batch 2",
-                    path
-                ),
+                "IMPORT path is empty".to_string(),
                 (line, col, line, col),
             ));
         }
@@ -1239,14 +1231,33 @@ mod tests {
     }
 
     #[test]
-    fn parse_import_rejects_non_wlwl_namespace() {
-        // Phase 4 batch 1: only the `wlwl:` namespace prefix is
-        // accepted; third-party packages like `myteam:utils` are
-        // still rejected (Phase 4 batch 2 introduces the registry).
-        let err = parse(r#"IMPORT("myteam:utils", ["x"]);"#, "t.wl").unwrap_err();
-        assert_eq!(err.diagnostic().code, ErrorCode::E0043);
+    #[test]
+    fn parse_import_accepts_third_party_namespace() {
+        // Phase 4 batch 2: the parser accepts any non-empty path,
+        // including `<ns>:<name>` third-party references. The
+        // ModuleLoader resolves them against the project manifest;
+        // an unregistered namespace is E0043 at eval time, not
+        // parse time.
+        let e = parse(r#"IMPORT("myteam:utils", ["x"]);"#, "t.wl").unwrap();
+        match e {
+            Expr::Import { path, names, .. } => {
+                assert_eq!(path, "myteam:utils");
+                assert_eq!(names[0].local_name(), "x");
+            }
+            _ => panic!("expected IMPORT"),
+        }
 
-        let err = parse(r#"IMPORT("./other", ["x"]);"#, "t.wl").unwrap_err();
+        let e = parse(r#"IMPORT("./other", ["x"]);"#, "t.wl").unwrap();
+        match e {
+            Expr::Import { path, .. } => assert_eq!(path, "./other"),
+            _ => panic!("expected IMPORT"),
+        }
+    }
+
+    #[test]
+    fn parse_import_rejects_empty_path() {
+        // Only surface-level error left: an empty IMPORT path.
+        let err = parse(r#"IMPORT("", ["x"]);"#, "t.wl").unwrap_err();
         assert_eq!(err.diagnostic().code, ErrorCode::E0043);
     }
 

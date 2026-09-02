@@ -10,6 +10,7 @@ wlwl-ast = { workspace = true }
 wlwl-error = { workspace = true }
 wlwl-parser = { workspace = true }
 wlwl-std = { workspace = true }
+wlwl-toml = { workspace = true }
 serde_json = { workspace = true }
 
 [dev-dependencies]

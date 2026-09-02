@@ -2,6 +2,7 @@
 resolver = "2"
 members = [
     "crates/wlwl-std",
+    "crates/wlwl-toml",
     "crates/wlwl-ast",
     "crates/wlwl-lexer",
     "crates/wlwl-parser",
@@ -23,9 +24,11 @@ serde_json = "1.0"
 thiserror = "1.0"
 clap = { version = "4.4", features = ["derive"] }
 insta = { version = "1.40", features = ["json"] }
+toml = "0.8"
 
 # 本工作空间内部 crate
 wlwl-std = { path = "crates/wlwl-std" }
+wlwl-toml = { path = "crates/wlwl-toml" }
 wlwl-ast = { path = "crates/wlwl-ast" }
 wlwl-lexer = { path = "crates/wlwl-lexer" }
 wlwl-parser = { path = "crates/wlwl-parser" }

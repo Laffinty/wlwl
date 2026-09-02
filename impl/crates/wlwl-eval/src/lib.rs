@@ -22,6 +22,8 @@ use std::cell::RefCell;
 use std::collections::{HashMap, HashSet};
 use std::path::PathBuf;
 use std::rc::Rc;
+use std::path::Path;
+use std::sync::Arc;
 
 use wlwl_ast::{Expr, ImportName, Literal, Span};
 use wlwl_error::{
@@ -235,10 +237,10 @@ impl Outcome {
     fn normal(v: Value) -> Self {
         Outcome { value: v, signal: Signal::None }
     }
-}
+    }
 
 // ──────────────────────────────────────────────────────────────────────
-// Module loader (single-directory, Phase 2 subset)
+// Module loader (v0.3 §13 — Phase 4 batch 1 + batch 2)
 // ──────────────────────────────────────────────────────────────────────
 
 /// Result of loading a module: a fresh `Env` containing all top-level
@@ -249,154 +251,166 @@ struct LoadedModule {
     exports: HashSet<String>,
 }
 
-#[derive(Debug, Clone, Default)]
+/// Project-level metadata carried by every `ModuleLoader` instance.
+/// Computed once at entry-point evaluation; shared (via `Rc`) with
+/// every sub-loader so a cycle anywhere in the graph is detected
+/// against the same root.
+#[derive(Debug, Clone)]
+struct ProjectContext {
+    /// Resolved project root: the nearest ancestor of the entry file
+    /// containing a `wlwl.toml`. If no such ancestor exists, this is
+    /// the entry file's directory (i.e. the project is "no-toml").
+    project_root: PathBuf,
+    /// Parsed manifest, if a `wlwl.toml` was found at the project
+    /// root. `None` means the project has no manifest; in that case
+    /// cross-dir and third-party namespace imports are unavailable.
+    manifest: Option<Arc<wlwl_toml::manifest::Manifest>>,
+    /// Stack of module paths currently being loaded — used to detect
+    /// circular imports (E0041) and to surface the full cycle path
+    /// per spec §13.7 ("v0.3 增强:错误信息列出完整环路路径").
+    /// Shared with sub-loaders so a cycle anywhere in the import
+    /// graph is detected.
+    loading: Rc<RefCell<Vec<String>>>,
+}
+
+#[derive(Debug, Clone)]
 struct ModuleLoader {
-    /// Directory used to resolve `IMPORT("foo", …)`. In Phase 2 this is
-    /// always the directory containing the entry-point file.
+    /// Directory of the module this loader is parsing. Used as the
+    /// base for `./` and `../` relative imports.
     base_dir: PathBuf,
     /// Cache of fully-loaded modules (avoids re-parsing).
     cache: HashMap<String, LoadedModule>,
-    /// Stack of module paths currently being loaded — used to detect
-    /// circular imports (E0041). Shared with sub-loaders so a cycle
-    /// anywhere in the import graph is detected.
-    loading: Rc<RefCell<HashSet<String>>>,
+    /// Project-level context (project root + manifest + loading
+    /// stack). Shared with sub-loaders.
+    project: ProjectContext,
 }
 
 impl ModuleLoader {
     fn new(base_dir: PathBuf) -> Self {
+        let project_root = find_project_root(&base_dir);
+        let manifest = load_manifest(&project_root);
         Self {
             base_dir,
             cache: HashMap::new(),
-            loading: Rc::new(RefCell::new(HashSet::new())),
+            project: ProjectContext {
+                project_root,
+                manifest,
+                loading: Rc::new(RefCell::new(Vec::new())),
+            },
         }
     }
 
-    /// Load module by `path`. Two forms are supported in Phase 4:
+    /// Load a module referenced by `path`. Four forms are supported
+    /// in Phase 4 batches 1+2 (in resolution order):
     ///
-    /// - `wlwl:std.X` (e.g. `wlwl:std.io`, `wlwl:std.fs`, `wlwl:std.json`):
-    ///   resolves to a built-in `wlwl_std::ModuleSpec`; the requested
-    ///   names are bound as `Value::NativeFn`. Cached by path so a
-    ///   second IMPORT of the same std module reuses the same env.
-    /// - Simple bare name (e.g. `math`): reads `<base_dir>/<name>.wl`,
-    ///   parses, evaluates, caches, and returns its env + export set.
-    ///
-    /// Cross-directory paths (`./foo`, `../bar`) and non-`wlwl:`
-    /// namespaces are not yet supported — the parser rejects them
-    /// with E0043 (Phase 4 batch 2).
+    /// - `wlwl:std.X`: built-in std module (`wlwl_std::resolve`).
+    ///   Bound as `Value::NativeFn` in a fresh env. Cached.
+    /// - `myteam:utils` (any `ns:name` form not under `wlwl:`):
+    ///   resolved against the project manifest. If the namespace
+    ///   or the dependency is unknown, an E0043 is raised.
+    /// - `./foo` / `../bar`: relative to the current module's
+    ///   `base_dir`. Resolved against the project root; trying to
+    ///   escape the root is an E0040.
+    /// - Simple bare name (`math`): first try the current module's
+    ///   `base_dir`, then the project root. Mirrors the v0.2 single-
+    ///   directory behaviour so old programs keep working.
     fn load(&mut self, path: &str) -> WlwlResult<LoadedModule> {
         if let Some(cached) = self.cache.get(path) {
             return Ok(cached.clone());
         }
 
-        // 1. Std library namespace path.
+        // 1. `wlwl:std.X` — std library.
         if let Some(spec) = wlwl_std::resolve(path) {
-            let mut env = Env::new();
-            let mut exports = HashSet::new();
-            for (name, func) in spec.functions {
-                env.set_local(
-                    (*name).to_string(),
-                    Value::NativeFn {
-                        name: (*name).to_string(),
-                        invoke: NativeInvoke::Std(*func),
-                    },
-                );
-                exports.insert((*name).to_string());
-            }
-            let result = LoadedModule { env, exports };
-            self.cache.insert(path.to_string(), result.clone());
-            return Ok(result);
+            return self.load_std(spec, path);
         }
 
-        // 2. Reject other namespace / cross-dir paths (Phase 4 batch 2).
-        if (path.contains(':') && !path.starts_with("wlwl:")) || path.starts_with("./") || path.starts_with("../") {
-            return Err(WlwlDiagnostic::new(
-                ErrorCode::E0043,
-                format!(
-                    "IMPORT path '{}' uses cross-dir or non-`wlwl:` namespace \
-                     syntax; only `wlwl:std.X` and simple names are supported \
-                     in this batch (cross-dir and third-party packages are \
-                     Phase 4 batch 2)",
-                    path
-                ),
-                Location::point("<module>", 0, 0),
-            )
-            .into());
+        // 2. `ns:name` — third-party / user namespace.
+        if let Some((ns, name)) = parse_ns_path(path) {
+            if let Some(manifest) = &self.project.manifest {
+                if let Some(rel) =
+                    wlwl_toml::manifest::resolve_namespace(manifest, ns, name)
+                {
+                    // The manifest entry is a directory; the module
+                    // file is `<dir>/<name>.wl`.
+                    let dep_dir = self.base_dir.join(&rel);
+                    let file_path = dep_dir.join(format!("{}.wl", name));
+                    if !is_within(&file_path, &self.project.project_root) {
+                        return Err(self.diag_outside_root(path));
+                    }
+                    if !file_path.is_file() {
+                        return Err(self.diag_module_not_found(path, &file_path));
+                    }
+                    return self.load_file_module(&file_path, name);
+                }
+            }
+            // Namespace format recognised but unregistered.
+            return Err(self.diag_unregistered_namespace(path, ns, name));
         }
 
-        // 3. File-based simple-name module.
-        if self.loading.borrow().contains(path) {
-            return Err(WlwlDiagnostic::new(
-                ErrorCode::E0041,
-                format!("circular IMPORT: module '{}' is currently being loaded", path),
-                Location::point("<module>", 0, 0),
-            )
-            .into());
+        // 3. `./foo` / `../bar` — relative paths. Walk each `..`
+        //    prefix to pop the current module's `base_dir` once;
+        //    `./` is a no-op. The remainder is split into a
+        //    directory portion and a module name (last segment,
+        //    stripped of an optional `.wl`).
+        if path.starts_with("./") || path.starts_with("../") {
+            let mut dep_dir = self.base_dir.clone();
+            let mut rest = path;
+            // Strip `./` (no pop) and `../` (pop one level) prefixes
+            // repeatedly. Any `..` that would pop above the
+            // project root is rejected with E0040 below.
+            while let Some(stripped) = rest.strip_prefix("../") {
+                if !dep_dir.pop() {
+                    return Err(self.diag_outside_root(path));
+                }
+                rest = stripped;
+            }
+            if let Some(stripped) = rest.strip_prefix("./") {
+                rest = stripped;
+            }
+            // The remainder may have a sub-directory prefix; the
+            // last `/`-separated segment is the module name.
+            let (rel_dir, mod_name) = match rest.rsplit_once('/') {
+                Some((d, n)) => (d.to_string(), n.trim_end_matches(".wl").to_string()),
+                None => (String::new(), rest.trim_end_matches(".wl").to_string()),
+            };
+            dep_dir = dep_dir.join(&rel_dir);
+            let file_path = dep_dir.join(format!("{}.wl", mod_name));
+            if !is_within(&file_path, &self.project.project_root) {
+                return Err(self.diag_outside_root(path));
+            }
+            if !file_path.is_file() {
+                return Err(self.diag_module_not_found(path, &file_path));
+            }
+            return self.load_file_module(&file_path, &mod_name);
         }
-        self.loading.borrow_mut().insert(path.to_string());
 
-        let file_path = self.base_dir.join(format!("{}.wl", path));
-        let source = match std::fs::read_to_string(&file_path) {
-            Ok(s) => s,
-            Err(e) => {
-                self.loading.borrow_mut().remove(path);
-                return Err(WlwlDiagnostic::new(
-                    ErrorCode::E0040,
-                    format!(
-                        "module '{}' not found (looked for {}): {}",
-                        path,
-                        file_path.display(),
-                        e
-                    ),
-                    Location::point("<module>", 0, 0),
-                )
-                .into());
-            }
-        };
-        let ast = match wlwl_parser::parse(&source, &file_path.display().to_string()) {
-            Ok(a) => a,
-            Err(e) => {
-                self.loading.borrow_mut().remove(path);
-                return Err(e);
-            }
-        };
-        let sub_loader = ModuleLoader {
-            base_dir: self.base_dir.clone(),
-            cache: HashMap::new(),
-            loading: Rc::clone(&self.loading),
-        };
-        let mut sub = Evaluator::new_with_loader(sub_loader);
-        if let Err(e) = sub.eval_module(&ast) {
-            self.loading.borrow_mut().remove(path);
-            return Err(e);
+        // 4. Simple bare name. Try `base_dir/<name>.wl` first, then
+        //    fall back to `<project_root>/<name>.wl`.
+        let in_module = self.base_dir.join(format!("{}.wl", path));
+        if in_module.is_file() {
+            return self.load_file_module(&in_module, path);
         }
-        let exports = collect_exports(&ast);
-        let mut env = Env::new();
-        for n in &exports {
-            if let Some(v) = sub.env.get(n) {
-                env.set_local(n.clone(), v.clone());
-            } else {
-                self.loading.borrow_mut().remove(path);
-                return Err(WlwlDiagnostic::new(
-                    ErrorCode::E0023,
-                    format!(
-                        "EXPORT name '{}' is not bound in module '{}'",
-                        n, path
-                    ),
-                    Location::point("<module>", 0, 0),
-                )
-                .into());
+        if self.base_dir != self.project.project_root {
+            let in_root = self
+                .project
+                .project_root
+                .join(format!("{}.wl", path));
+            if in_root.is_file() {
+                return self.load_file_module(&in_root, path);
             }
         }
-        self.loading.borrow_mut().remove(path);
-        let result = LoadedModule { env, exports };
-        self.cache.insert(path.to_string(), result.clone());
-        Ok(result)
+
+        Err(self.diag_module_not_found(path, &in_module))
     }
 
-    /// Load a std module by its `ModuleSpec` without consulting the cache.
-    /// Exposed for testing; production code goes through `load`.
-    #[allow(dead_code)]
-    fn load_std_for_test(spec: &'static wlwl_std::ModuleSpec) -> LoadedModule {
+    /// Load a std module by its `ModuleSpec` without consulting the
+    /// cache. Caches the result under the original path so a second
+    /// IMPORT of the same std module reuses the same env.
+    fn load_std(
+        &mut self,
+        spec: &'static wlwl_std::ModuleSpec,
+        path: &str,
+    ) -> WlwlResult<LoadedModule> {
         let mut env = Env::new();
         let mut exports = HashSet::new();
         for (name, func) in spec.functions {
@@ -409,9 +423,207 @@ impl ModuleLoader {
             );
             exports.insert((*name).to_string());
         }
-        LoadedModule { env, exports }
+        let result = LoadedModule { env, exports };
+        self.cache.insert(path.to_string(), result.clone());
+        Ok(result)
     }
 
+    /// Load a `.wl` file, parse, evaluate, and return its exports.
+    /// Centralises the cycle-detection + file IO + sub-eval wiring
+    /// shared by all file-based import paths.
+    fn load_file_module(
+        &mut self,
+        file_path: &Path,
+        module_name: &str,
+    ) -> WlwlResult<LoadedModule> {
+        if self
+            .project
+            .loading
+            .borrow()
+            .iter()
+            .any(|m| m == module_name)
+        {
+            return Err(self.diag_circular(module_name));
+        }
+        self.project.loading.borrow_mut().push(module_name.to_string());
+        let source = match std::fs::read_to_string(file_path) {
+            Ok(s) => s,
+            Err(_e) => {
+                self.project.loading.borrow_mut().pop();
+                return Err(self.diag_module_not_found(module_name, file_path));
+            }
+        };
+        let ast = match wlwl_parser::parse(&source, &file_path.display().to_string()) {
+            Ok(a) => a,
+            Err(e) => {
+                self.project.loading.borrow_mut().pop();
+                return Err(e);
+            }
+        };
+        // Sub-loader shares the project context (root + manifest +
+        // loading stack) so cycles are detected across the whole
+        // graph, and uses the dependency directory as its own
+        // `base_dir` for nested relative imports.
+        let dep_dir = file_path
+            .parent()
+            .map(|p| p.to_path_buf())
+            .unwrap_or_else(|| self.base_dir.clone());
+        let sub_loader = ModuleLoader {
+            base_dir: dep_dir,
+            cache: HashMap::new(),
+            project: self.project.clone(),
+        };
+        let mut sub = Evaluator::new_with_loader(sub_loader);
+        if let Err(e) = sub.eval_module(&ast) {
+            self.project.loading.borrow_mut().pop();
+            return Err(e);
+        }
+        let exports = collect_exports(&ast);
+        let mut env = Env::new();
+        for n in &exports {
+            if let Some(v) = sub.env.get(n) {
+                env.set_local(n.clone(), v.clone());
+            } else {
+                self.project.loading.borrow_mut().pop();
+                return Err(WlwlDiagnostic::new(
+                    ErrorCode::E0023,
+                    format!(
+                        "EXPORT name '{}' is not bound in module '{}'",
+                        n, module_name
+                    ),
+                    Location::point("<module>", 0, 0),
+                )
+                .into());
+            }
+        }
+        self.project.loading.borrow_mut().pop();
+        let result = LoadedModule { env, exports };
+        // Cache under the simple name (so re-imports hit the cache).
+        self.cache
+            .insert(module_name.to_string(), result.clone());
+        Ok(result)
+    }
+
+    // ── Diagnostics ───────────────────────────────────────────────
+
+    fn diag_module_not_found(
+        &self,
+        path: &str,
+        file_path: &Path,
+    ) -> WlwlError {
+        WlwlDiagnostic::new(
+            ErrorCode::E0040,
+            format!(
+                "module '{}' not found (looked for {}); check the IMPORT path \
+                 and the project's wlwl.toml [namespaces] / [dependencies] \
+                 if this is a third-party reference",
+                path,
+                file_path.display()
+            ),
+            Location::point("<module>", 0, 0),
+        )
+        .into()
+    }
+
+    fn diag_outside_root(&self, path: &str) -> WlwlError {
+        WlwlDiagnostic::new(
+            ErrorCode::E0040,
+            format!(
+                "module '{}' is outside the project root ({})",
+                path,
+                self.project.project_root.display()
+            ),
+            Location::point("<module>", 0, 0),
+        )
+        .into()
+    }
+
+    fn diag_unregistered_namespace(
+        &self,
+        path: &str,
+        ns: &str,
+        name: &str,
+    ) -> WlwlError {
+        WlwlDiagnostic::new(
+            ErrorCode::E0043,
+            format!(
+                "namespace '{}' for module '{}' is not registered in this \
+                 project's wlwl.toml (neither [namespaces] nor \
+                 [dependencies] contains '{}:{}')",
+                ns, path, ns, name
+            ),
+            Location::point("<module>", 0, 0),
+        )
+        .into()
+    }
+
+    fn diag_circular(&self, module_name: &str) -> WlwlError {
+        let cycle = {
+            let stack = self.project.loading.borrow();
+            let mut path: Vec<String> = stack.clone();
+            path.push(module_name.to_string());
+            path.join(" -> ")
+        };
+        WlwlDiagnostic::new(
+            ErrorCode::E0041,
+            format!("circular IMPORT detected: {}", cycle),
+            Location::point("<module>", 0, 0),
+        )
+        .into()
+    }
+}
+
+// ── Free helpers ──────────────────────────────────────────────
+
+/// Walk up from `start` looking for a `wlwl.toml`. If found, return
+/// its containing directory; otherwise return `start` itself (i.e.
+/// the project has no manifest).
+fn find_project_root(start: &Path) -> PathBuf {
+    let mut cur = start.to_path_buf();
+    loop {
+        if cur.join("wlwl.toml").is_file() {
+            return cur;
+        }
+        if !cur.pop() {
+            return start.to_path_buf();
+        }
+    }
+}
+
+/// Try to load a `wlwl.toml` at `project_root`. Returns `None` on
+/// any failure: missing file, parse error, invalid schema. The
+/// caller treats all three the same (project is "no-toml" and cross-
+/// dir / namespace imports are unavailable). Errors are silent by
+/// design — surfacing them would break simple `wlwl run foo.wl`
+/// invocations in projects without a manifest.
+fn load_manifest(project_root: &Path) -> Option<Arc<wlwl_toml::manifest::Manifest>> {
+    let path = project_root.join("wlwl.toml");
+    let s = std::fs::read_to_string(&path).ok()?;
+    let m = wlwl_toml::manifest::parse(&s).ok()?;
+    Some(Arc::new(m))
+}
+
+/// True if `path` is `root` or a descendant of `root` (lexically;
+/// does not touch the filesystem).
+fn is_within(path: &Path, root: &Path) -> bool {
+    path == root || path.starts_with(root)
+}
+
+/// If `path` looks like `<ns>:<name>`, return the split. Returns
+/// `None` for paths that are simple names, std paths, or relative
+/// paths — only the third-party namespace form matches.
+fn parse_ns_path(path: &str) -> Option<(&str, &str)> {
+    if path.starts_with("wlwl:") {
+        return None; // std; handled above
+    }
+    if path.starts_with("./") || path.starts_with("../") {
+        return None;
+    }
+    let (ns, name) = path.split_once(':')?;
+    if ns.is_empty() || name.is_empty() {
+        return None;
+    }
+    Some((ns, name))
 }
 
 /// Walk the top-level expressions of a module program and return the
@@ -2582,5 +2794,249 @@ use std::path::Path;
         let dir = unique_test_dir("bad_name");
         let err = run_in(&dir, src).unwrap_err();
         assert_eq!(err.diagnostic().code, ErrorCode::E0023);
+    }
+
+    // ── Phase 4 batch 2: cross-dir / namespace / project-root ──
+
+    #[test]
+    fn crossdir_import_subdirectory() {
+        // `IMPORT("./sub/foo", …)` resolves to `<base_dir>/sub/foo.wl`
+        // and binds `foo`'s exports.
+        let dir = unique_test_dir("crossdir_sub");
+        let sub = dir.join("sub");
+        std::fs::create_dir_all(&sub).unwrap();
+        std::fs::write(
+            sub.join("foo.wl"),
+            r#"
+                LET(answer, 42);
+                EXPORT(["answer"]);
+            "#,
+        )
+        .unwrap();
+        let src = r#"
+            IMPORT("./sub/foo", ["answer"]);
+            answer;
+        "#;
+        assert_eq!(run_in(&dir, src).unwrap(), Value::Integer(42));
+    }
+
+    #[test]
+    #[test]
+    fn crossdir_import_parent_directory() {
+        // `IMPORT("../sibling/math", …)` from a module in `dir/inner/`
+        // climbs one level up to `dir/sibling/math.wl`. A
+        // `wlwl.toml` is placed at `dir` so the project root is
+        // `dir` and the relative path stays inside the root.
+        let dir = unique_test_dir("crossdir_parent");
+        std::fs::write(
+            dir.join("wlwl.toml"),
+            r#"
+[package]
+name = "crossdir"
+version = "0.1.0"
+entry = "inner/main.wl"
+"#,
+        )
+        .unwrap();
+        let sibling_dir = dir.join("sibling");
+        std::fs::create_dir_all(&sibling_dir).unwrap();
+        std::fs::write(
+            sibling_dir.join("math.wl"),
+            r#"
+                LET(pi, 314);
+                EXPORT(["pi"]);
+            "#,
+        )
+        .unwrap();
+        let inner = dir.join("inner");
+        std::fs::create_dir_all(&inner).unwrap();
+        std::fs::write(
+            inner.join("main.wl"),
+            r#"
+                IMPORT("../sibling/math", ["pi"]);
+                pi;
+            "#,
+        )
+        .unwrap();
+        let src = std::fs::read_to_string(inner.join("main.wl")).unwrap();
+        assert_eq!(run_in(&inner, &src).unwrap(), Value::Integer(314));
+    }
+
+    #[test]
+    fn crossdir_import_outside_project_root_is_e0040() {
+        // Even with a wlwl.toml, escaping the project root is an
+        // E0040 (module 'foo' not found / outside project root).
+        let dir = unique_test_dir("crossdir_outside");
+        let outside = dir.join("..").join("wlwl_test_outside");
+        std::fs::create_dir_all(&outside).unwrap();
+        std::fs::write(
+            outside.join("escape.wl"),
+            r#"
+                LET(x, 1);
+                EXPORT(["x"]);
+            "#,
+        )
+        .unwrap();
+        std::fs::write(
+            dir.join("wlwl.toml"),
+            r#"
+[package]
+name = "out"
+version = "0.1.0"
+entry = "main.wl"
+"#,
+        )
+        .unwrap();
+        let src = r#"
+            IMPORT("../wlwl_test_outside/escape", ["x"]);
+        "#;
+        let err = run_in(&dir, src).unwrap_err();
+        assert_eq!(err.diagnostic().code, ErrorCode::E0040);
+        let _ = std::fs::remove_dir_all(&outside);
+    }
+
+    #[test]
+    fn namespace_path_resolves_via_manifest() {
+        // `IMPORT("myteam:utils", …)` resolves through the project's
+        // wlwl.toml [dependencies] map to a local path.
+        let dir = unique_test_dir("ns_resolve");
+        let dep_dir = dir.join("..").join("wlwl_test_dep");
+        std::fs::create_dir_all(&dep_dir).unwrap();
+        std::fs::write(
+            dep_dir.join("utils.wl"),
+            r#"
+                LET(greet, "hi");
+                EXPORT(["greet"]);
+            "#,
+        )
+        .unwrap();
+        std::fs::write(
+            dir.join("wlwl.toml"),
+            format!(
+                r#"
+[package]
+name = "app"
+version = "0.1.0"
+entry = "main.wl"
+
+[dependencies]
+"myteam:utils" = {{ path = "../wlwl_test_dep" }}
+"#
+            ),
+        )
+        .unwrap();
+        let src = r#"
+            IMPORT("myteam:utils", ["greet"]);
+            greet;
+        "#;
+        assert_eq!(
+            run_in(&dir, src).unwrap(),
+            Value::String("hi".into())
+        );
+        let _ = std::fs::remove_dir_all(&dep_dir);
+    }
+
+    #[test]
+    fn namespace_path_unregistered_is_e0043() {
+        // A non-`wlwl:` namespace without a manifest entry surfaces
+        // E0043 ("not registered in this project's wlwl.toml").
+        let dir = unique_test_dir("ns_unreg");
+        std::fs::write(
+            dir.join("wlwl.toml"),
+            r#"
+[package]
+name = "app"
+version = "0.1.0"
+entry = "main.wl"
+"#,
+        )
+        .unwrap();
+        let src = r#"
+            IMPORT("myteam:utils", ["x"]);
+        "#;
+        let err = run_in(&dir, src).unwrap_err();
+        assert_eq!(err.diagnostic().code, ErrorCode::E0043);
+    }
+
+    #[test]
+    fn namespace_path_without_manifest_is_e0043() {
+        // No wlwl.toml at all -> the namespace registry is
+        // unavailable, and any `<ns>:<name>` path is E0043.
+        let dir = unique_test_dir("ns_no_manifest");
+        let src = r#"
+            IMPORT("myteam:utils", ["x"]);
+        "#;
+        let err = run_in(&dir, src).unwrap_err();
+        assert_eq!(err.diagnostic().code, ErrorCode::E0043);
+    }
+
+    #[test]
+    fn crossdir_within_project_root_works() {
+        // Sanity: with a wlwl.toml at the root, deep `./sub/leaf`
+        // imports still work as long as they stay inside the root.
+        let dir = unique_test_dir("crossdir_inside");
+        let deep = dir.join("a").join("b").join("c");
+        std::fs::create_dir_all(&deep).unwrap();
+        std::fs::write(
+            dir.join("wlwl.toml"),
+            r#"
+[package]
+name = "deep"
+version = "0.1.0"
+entry = "main.wl"
+"#,
+        )
+        .unwrap();
+        std::fs::write(
+            deep.join("leaf.wl"),
+            r#"
+                LET(v, 7);
+                EXPORT(["v"]);
+            "#,
+        )
+        .unwrap();
+        let src = r#"
+            IMPORT("./leaf", ["v"]);
+            v;
+        "#;
+        assert_eq!(run_in(&deep, src).unwrap(), Value::Integer(7));
+    }
+
+    #[test]
+    fn circular_import_surfaces_full_cycle_path() {
+        // Per spec §13.7 v0.3 enhancement: the error message must
+        // list the full cycle path, not just first and last.
+        let dir = unique_test_dir("cycle");
+        std::fs::write(
+            dir.join("a.wl"),
+            r#"
+                IMPORT("b", ["y"]);
+                LET(x, 1);
+                EXPORT(["x"]);
+            "#,
+        )
+        .unwrap();
+        std::fs::write(
+            dir.join("b.wl"),
+            r#"
+                IMPORT("a", ["x"]);
+                LET(y, 2);
+                EXPORT(["y"]);
+            "#,
+        )
+        .unwrap();
+        let src = r#"
+            IMPORT("a", ["x"]);
+            x;
+        "#;
+        let err = run_in(&dir, src).unwrap_err();
+        assert_eq!(err.diagnostic().code, ErrorCode::E0041);
+        let msg = err.diagnostic().render_human();
+        // The cycle path "a -> b -> a" must be present.
+        assert!(
+            msg.contains("a -> b -> a"),
+            "cycle path missing full chain: {}",
+            msg
+        );
     }
 }
