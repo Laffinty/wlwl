@@ -745,18 +745,24 @@ impl Parser {
                 ));
             }
         };
-        // Reject namespace / relative paths for Phase 2 (single-dir only).
-        // Phase 4 will accept "./foo", "../foo", "wlwl:std.io", "ns:pkg".
+        // Phase 4 batch 1: accept the `wlwl:` namespace prefix. The
+        // resolver in `wlwl-eval`'s `ModuleLoader::load` only knows
+        // about `wlwl:std.X` paths; anything else that still uses a
+        // `:` (third-party packages) or starts with `./` / `../` is
+        // still rejected here as it needs batch-2 work (cross-dir +
+        // namespace registry).
         if path.starts_with("./")
             || path.starts_with("../")
-            || path.contains(':')
+            || (path.contains(':') && !path.starts_with("wlwl:"))
         {
             return Err(self.err_at(
                 ErrorCode::E0043,
                 format!(
-                    "IMPORT path '{}' uses cross-dir / namespace syntax; \
-                     Phase 2 supports only simple single-directory module \
-                     names (no './', '../', or 'ns:'); cross-dir is Phase 4",
+                    "IMPORT path '{}' uses cross-dir or non-`wlwl:` \
+                     namespace syntax; this batch only accepts \
+                     `wlwl:std.X` and simple single-directory module \
+                     names; third-party packages and cross-dir are \
+                     Phase 4 batch 2",
                     path
                 ),
                 (line, col, line, col),
@@ -1216,10 +1222,28 @@ mod tests {
     }
 
     #[test]
-    fn parse_import_rejects_namespace_path() {
-        // Phase 2 single-dir only: namespace prefixes and relative paths
-        // are rejected at parse time.
-        let err = parse(r#"IMPORT("wlwl:std.io", ["PRINT"]);"#, "t.wl").unwrap_err();
+    #[test]
+    fn parse_import_accepts_wlwl_namespace_path() {
+        // Phase 4 batch 1: `wlwl:std.X` namespace prefix is accepted
+        // at parse time. The module loader resolves it to a std
+        // module; if the name is unknown the loader surfaces E0040.
+        let e = parse(r#"IMPORT("wlwl:std.io", ["PRINT"]);"#, "t.wl").unwrap();
+        match e {
+            Expr::Import { path, names, .. } => {
+                assert_eq!(path, "wlwl:std.io");
+                assert_eq!(names.len(), 1);
+                assert_eq!(names[0].local_name(), "PRINT");
+            }
+            _ => panic!("expected IMPORT"),
+        }
+    }
+
+    #[test]
+    fn parse_import_rejects_non_wlwl_namespace() {
+        // Phase 4 batch 1: only the `wlwl:` namespace prefix is
+        // accepted; third-party packages like `myteam:utils` are
+        // still rejected (Phase 4 batch 2 introduces the registry).
+        let err = parse(r#"IMPORT("myteam:utils", ["x"]);"#, "t.wl").unwrap_err();
         assert_eq!(err.diagnostic().code, ErrorCode::E0043);
 
         let err = parse(r#"IMPORT("./other", ["x"]);"#, "t.wl").unwrap_err();

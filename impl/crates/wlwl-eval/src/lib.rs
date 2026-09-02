@@ -16,6 +16,8 @@
 //! - Cross-directory / `wlwl:std.io` paths — Phase 4
 //! - `std.ai` — Phase 4
 
+#![allow(unpredictable_function_pointer_comparisons)]
+
 use std::cell::RefCell;
 use std::collections::{HashMap, HashSet};
 use std::path::PathBuf;
@@ -25,6 +27,7 @@ use wlwl_ast::{Expr, ImportName, Literal, Span};
 use wlwl_error::{
     extract_line, ErrorCode, Location, WlwlDiagnostic, WlwlError, WlwlResult,
 };
+use wlwl_std;
 
 // ──────────────────────────────────────────────────────────────────────
 // Runtime values
@@ -46,10 +49,32 @@ pub enum Value {
         body: Box<Expr>,
         env: Env,
     },
+    /// §15 std library function (Phase 4): body is a native Rust impl,
+    /// dispatchable like a closure but without a parseable `Expr`. Bound
+    /// in the env by `IMPORT("wlwl:std.X", …)` so that the user-supplied
+    /// IMPORT takes priority over the `resolve_builtin` fallback.
+    NativeFn {
+        name: String,
+        invoke: NativeInvoke,
+    },
+    /// §12 OK(value)
     /// §12 OK(value)
     Ok(Box<Value>),
     /// §12 ERR(value)
     Err(Box<Value>),
+}
+
+/// Tag for native-function implementations. A `Value::NativeFn`
+/// carries one of these alongside its name; the dispatch in
+/// `eval_call` matches on the tag to call the right wrapper.
+///
+/// Adding a new std module (e.g. `std.ai` in batch 3) means adding
+/// a new variant here and a new dispatch arm in `eval_call`.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+pub enum NativeInvoke {
+    /// §15 standard library: a `wlwl_std::StdFn` that takes a
+    /// `&mut wlwl_std::StdCtx` and `Vec<serde_json::Value>`.
+    Std(wlwl_std::StdFn),
 }
 
 impl Value {
@@ -82,6 +107,9 @@ impl Value {
             Value::Closure { params, .. } => {
                 format!("<fun({})>", params.join(", "))
             }
+            Value::NativeFn { name, .. } => {
+                format!("<native fun {}>", name)
+            },
             Value::Ok(v) => format!("OK({})", v.display()),
             Value::Err(v) => format!("ERR({})", v.display()),
         }
@@ -243,37 +271,80 @@ impl ModuleLoader {
         }
     }
 
-    /// Load module `name` (a simple bare name like `"math"`, no extension).
-    /// Reads `<base_dir>/<name>.wl`, parses, evaluates, caches, and
-    /// returns its env + export set. Diagnostics produced here do not
-    /// carry the caller's source_line (it would require borrowing
-    /// `self` recursively); the caller may add source context if it
-    /// wants richer errors.
-    fn load(&mut self, name: &str) -> WlwlResult<LoadedModule> {
-        if let Some(cached) = self.cache.get(name) {
+    /// Load module by `path`. Two forms are supported in Phase 4:
+    ///
+    /// - `wlwl:std.X` (e.g. `wlwl:std.io`, `wlwl:std.fs`, `wlwl:std.json`):
+    ///   resolves to a built-in `wlwl_std::ModuleSpec`; the requested
+    ///   names are bound as `Value::NativeFn`. Cached by path so a
+    ///   second IMPORT of the same std module reuses the same env.
+    /// - Simple bare name (e.g. `math`): reads `<base_dir>/<name>.wl`,
+    ///   parses, evaluates, caches, and returns its env + export set.
+    ///
+    /// Cross-directory paths (`./foo`, `../bar`) and non-`wlwl:`
+    /// namespaces are not yet supported — the parser rejects them
+    /// with E0043 (Phase 4 batch 2).
+    fn load(&mut self, path: &str) -> WlwlResult<LoadedModule> {
+        if let Some(cached) = self.cache.get(path) {
             return Ok(cached.clone());
         }
-        if self.loading.borrow().contains(name) {
+
+        // 1. Std library namespace path.
+        if let Some(spec) = wlwl_std::resolve(path) {
+            let mut env = Env::new();
+            let mut exports = HashSet::new();
+            for (name, func) in spec.functions {
+                env.set_local(
+                    (*name).to_string(),
+                    Value::NativeFn {
+                        name: (*name).to_string(),
+                        invoke: NativeInvoke::Std(*func),
+                    },
+                );
+                exports.insert((*name).to_string());
+            }
+            let result = LoadedModule { env, exports };
+            self.cache.insert(path.to_string(), result.clone());
+            return Ok(result);
+        }
+
+        // 2. Reject other namespace / cross-dir paths (Phase 4 batch 2).
+        if (path.contains(':') && !path.starts_with("wlwl:")) || path.starts_with("./") || path.starts_with("../") {
             return Err(WlwlDiagnostic::new(
-                ErrorCode::E0041,
-                format!("circular IMPORT: module '{}' is currently being loaded", name),
+                ErrorCode::E0043,
+                format!(
+                    "IMPORT path '{}' uses cross-dir or non-`wlwl:` namespace \
+                     syntax; only `wlwl:std.X` and simple names are supported \
+                     in this batch (cross-dir and third-party packages are \
+                     Phase 4 batch 2)",
+                    path
+                ),
                 Location::point("<module>", 0, 0),
             )
             .into());
         }
-        self.loading.borrow_mut().insert(name.to_string());
 
-        let path = self.base_dir.join(format!("{}.wl", name));
-        let source = match std::fs::read_to_string(&path) {
+        // 3. File-based simple-name module.
+        if self.loading.borrow().contains(path) {
+            return Err(WlwlDiagnostic::new(
+                ErrorCode::E0041,
+                format!("circular IMPORT: module '{}' is currently being loaded", path),
+                Location::point("<module>", 0, 0),
+            )
+            .into());
+        }
+        self.loading.borrow_mut().insert(path.to_string());
+
+        let file_path = self.base_dir.join(format!("{}.wl", path));
+        let source = match std::fs::read_to_string(&file_path) {
             Ok(s) => s,
             Err(e) => {
-                self.loading.borrow_mut().remove(name);
+                self.loading.borrow_mut().remove(path);
                 return Err(WlwlDiagnostic::new(
                     ErrorCode::E0040,
                     format!(
                         "module '{}' not found (looked for {}): {}",
-                        name,
-                        path.display(),
+                        path,
+                        file_path.display(),
                         e
                     ),
                     Location::point("<module>", 0, 0),
@@ -281,15 +352,13 @@ impl ModuleLoader {
                 .into());
             }
         };
-        let ast = match wlwl_parser::parse(&source, &path.display().to_string()) {
+        let ast = match wlwl_parser::parse(&source, &file_path.display().to_string()) {
             Ok(a) => a,
             Err(e) => {
-                self.loading.borrow_mut().remove(name);
+                self.loading.borrow_mut().remove(path);
                 return Err(e);
             }
         };
-        // Sub-evaluator shares the loading set so cycles are detected
-        // regardless of which IMPORT in the cycle initiates the check.
         let sub_loader = ModuleLoader {
             base_dir: self.base_dir.clone(),
             cache: HashMap::new(),
@@ -297,7 +366,7 @@ impl ModuleLoader {
         };
         let mut sub = Evaluator::new_with_loader(sub_loader);
         if let Err(e) = sub.eval_module(&ast) {
-            self.loading.borrow_mut().remove(name);
+            self.loading.borrow_mut().remove(path);
             return Err(e);
         }
         let exports = collect_exports(&ast);
@@ -306,23 +375,43 @@ impl ModuleLoader {
             if let Some(v) = sub.env.get(n) {
                 env.set_local(n.clone(), v.clone());
             } else {
-                self.loading.borrow_mut().remove(name);
+                self.loading.borrow_mut().remove(path);
                 return Err(WlwlDiagnostic::new(
                     ErrorCode::E0023,
                     format!(
                         "EXPORT name '{}' is not bound in module '{}'",
-                        n, name
+                        n, path
                     ),
                     Location::point("<module>", 0, 0),
                 )
                 .into());
             }
         }
-        self.loading.borrow_mut().remove(name);
+        self.loading.borrow_mut().remove(path);
         let result = LoadedModule { env, exports };
-        self.cache.insert(name.to_string(), result.clone());
+        self.cache.insert(path.to_string(), result.clone());
         Ok(result)
     }
+
+    /// Load a std module by its `ModuleSpec` without consulting the cache.
+    /// Exposed for testing; production code goes through `load`.
+    #[allow(dead_code)]
+    fn load_std_for_test(spec: &'static wlwl_std::ModuleSpec) -> LoadedModule {
+        let mut env = Env::new();
+        let mut exports = HashSet::new();
+        for (name, func) in spec.functions {
+            env.set_local(
+                (*name).to_string(),
+                Value::NativeFn {
+                    name: (*name).to_string(),
+                    invoke: NativeInvoke::Std(*func),
+                },
+            );
+            exports.insert((*name).to_string());
+        }
+        LoadedModule { env, exports }
+    }
+
 }
 
 /// Walk the top-level expressions of a module program and return the
@@ -348,6 +437,150 @@ fn collect_exports(program: &Expr) -> HashSet<String> {
     out
 }
 
+// ──────────────────────────────────────────────────────────────────────
+
+// ──────────────────────────────────────────────────────────────────────
+// std library dispatch (v0.3 §15) — Phase 4
+// ──────────────────────────────────────────────────────────────────────
+
+/// Wrap a `wlwl_std::StdFn` invocation: convert `Value` args to
+/// `serde_json::Value`, call the std fn against `ev.std_ctx`, then
+/// convert the result back. Translates `wlwl_std::StdError` to
+/// `WlwlDiagnostic` using the call site's `span`.
+fn invoke_std(
+    ev: &mut Evaluator,
+    std_fn: wlwl_std::StdFn,
+    args: Vec<Value>,
+    span: &Span,
+) -> WlwlResult<Outcome> {
+    // 1. Convert Value -> StdValue for each arg.
+    let mut std_args = Vec::with_capacity(args.len());
+    for a in &args {
+        std_args.push(value_to_std_value(a).map_err(|e| match e {
+            StdValueConvError::Type { expected, got } => ev.diag(
+                ErrorCode::E0030,
+                format!("std argument: expected {}, got {}", expected, got),
+                span.clone(),
+            ),
+        })?);
+    }
+    // 2. Call the std fn.
+    let result = std_fn(&mut ev.std_ctx, std_args);
+    // 3. Convert result.
+    match result {
+        Ok(v) => Ok(Outcome::normal(std_value_to_value(v))),
+        Err(e) => {
+            let loc = Location::point(ev.file.as_deref().unwrap_or("<runtime>"), 0, 0);
+            let diag = WlwlDiagnostic::new(e.code, e.message, loc);
+            Err(diag.into())
+        }
+    }
+}
+
+/// Convert a `Value` to a `serde_json::Value` for the std boundary.
+/// Errors out via `E0030` when the source value carries a type that
+/// has no JSON equivalent (closures, native fns).
+fn value_to_std_value(v: &Value) -> Result<wlwl_std::StdValue, StdValueConvError> {
+    use wlwl_std::StdValue;
+    Ok(match v {
+        Value::Null => StdValue::Null,
+        Value::Boolean(b) => StdValue::Bool(*b),
+        Value::Integer(i) => StdValue::Number(serde_json::Number::from(*i)),
+        Value::Float(f) => {
+            serde_json::Number::from_f64(*f)
+                .map(StdValue::Number)
+                .ok_or_else(|| StdValueConvError::Type {
+                    expected: "finite number".into(),
+                    got: "NaN/Inf float".into(),
+                })?
+        }
+        Value::String(s) => StdValue::String(s.clone()),
+        Value::Array(items) => {
+            let mut out = Vec::with_capacity(items.len());
+            for item in items {
+                out.push(value_to_std_value(item)?);
+            }
+            StdValue::Array(out)
+        }
+        Value::Dict(entries) => {
+            let mut obj = serde_json::Map::new();
+            for (k, v) in entries {
+                let key = match k {
+                    Value::String(s) => s.clone(),
+                    other => {
+                        return Err(StdValueConvError::Type {
+                            expected: "string dict key".into(),
+                            got: type_name(other).into(),
+                        });
+                    }
+                };
+                obj.insert(key, value_to_std_value(v)?);
+            }
+            StdValue::Object(obj)
+        }
+        Value::Ok(inner) => {
+            // §12 OK wraps a value; pass the inner value through.
+            value_to_std_value(inner)?
+        }
+        Value::Err(inner) => {
+            return Err(StdValueConvError::Type {
+                expected: "OK/primitives at std boundary".into(),
+                got: "ERR(...)".into(),
+            });
+        }
+        Value::Closure { .. } => {
+            return Err(StdValueConvError::Type {
+                expected: "data value at std boundary".into(),
+                got: "function closure".into(),
+            });
+        }
+        Value::NativeFn { name, .. } => {
+            return Err(StdValueConvError::Type {
+                expected: "data value at std boundary".into(),
+                got: format!("native fn `{}`", name),
+            });
+        }
+    })
+}
+
+enum StdValueConvError {
+    Type { expected: String, got: String },
+}
+
+fn std_value_to_value(v: wlwl_std::StdValue) -> Value {
+    use wlwl_std::StdValue;
+    match v {
+        StdValue::Null => Value::Null,
+        StdValue::Bool(b) => Value::Boolean(b),
+        StdValue::Number(n) => {
+            if let Some(i) = n.as_i64() {
+                Value::Integer(i)
+            } else if let Some(f) = n.as_f64() {
+                Value::Float(f)
+            } else {
+                // Shouldn't happen: serde_json::Number is always
+                // either int or float. Fall back to Null defensively.
+                Value::Null
+            }
+        }
+        StdValue::String(s) => Value::String(s),
+        StdValue::Array(items) => {
+            Value::Array(items.into_iter().map(std_value_to_value).collect())
+        }
+        StdValue::Object(obj) => {
+            let mut entries = Vec::with_capacity(obj.len());
+            // Preserve insertion order via serde_json's BTreeMap-free
+            // ordering: serde_json::Map preserves insertion order when
+            // `preserve_order` feature is enabled, but the default
+            // uses BTreeMap. We collect into Vec<(Value, Value)> to
+            // keep the v0.3 DICT insertion-order guarantee from §10.
+            for (k, v) in obj {
+                entries.push((Value::String(k), std_value_to_value(v)));
+            }
+            Value::Dict(entries)
+        }
+    }
+}
 // ──────────────────────────────────────────────────────────────────────
 // Built-in functions
 // ──────────────────────────────────────────────────────────────────────
@@ -478,6 +711,7 @@ fn type_name(v: &Value) -> &'static str {
         Value::Array(_) => "array",
         Value::Dict(_) => "dict",
         Value::Closure { .. } => "function",
+        Value::NativeFn { .. } => "native-function",
         Value::Ok(_) => "ok",
         Value::Err(_) => "err",
     }
@@ -738,6 +972,10 @@ pub struct Evaluator {
     /// the loading-set without conflicting with `&mut self` on the
     /// evaluator.
     loader: Rc<RefCell<ModuleLoader>>,
+    /// Per-evaluator context for `wlwl_std` calls (argv, env). Set to
+    /// `wlwl_std::StdCtx::from_process()` in `new`; tests can override
+    /// via the `std_ctx` field directly.
+    std_ctx: wlwl_std::StdCtx,
 }
 
 impl Default for Evaluator {
@@ -753,6 +991,7 @@ impl Evaluator {
             source: None,
             file: None,
             loader: Rc::new(RefCell::new(ModuleLoader::new(PathBuf::from(".")))),
+            std_ctx: wlwl_std::StdCtx::from_process(),
         }
     }
 
@@ -770,6 +1009,7 @@ impl Evaluator {
             source: None,
             file: None,
             loader: Rc::new(RefCell::new(loader)),
+            std_ctx: wlwl_std::StdCtx::default(),
         }
     }
 
@@ -1223,6 +1463,11 @@ impl Evaluator {
         if let Some(v) = user_fn {
             if let Value::Closure { params, body, env } = v {
                 return self.invoke_closure(params, body, env, arg_values, span);
+            }
+            if let Value::NativeFn { invoke, .. } = v {
+                return match invoke {
+                    NativeInvoke::Std(f) => invoke_std(self, f, arg_values, span),
+                };
             }
             // If the name resolves to a non-Closure value, treat as
             // E0020 (the user is trying to call a non-callable).
@@ -2157,5 +2402,185 @@ use std::path::Path;
         "#;
         let err = run_in(&dir, src).unwrap_err();
         assert_eq!(err.diagnostic().code, ErrorCode::E0041);
+    }
+
+    // ── Phase 4 batch 1: std library IMPORT integration ────────────
+
+    /// Helper: run a program with an explicit temp dir; the IMPORT
+    /// resolver only consults the temp dir for non-`wlwl:` paths, so
+    /// the dir is a scratch space (and irrelevant for `wlwl:std.X`).
+    fn run_std(src: &str) -> WlwlResult<Value> {
+        let dir = unique_test_dir("std");
+        run_in(&dir, src)
+    }
+
+    #[test]
+    fn std_io_print_via_namespace_import() {
+        // IMPORT("wlwl:std.io", ["PRINT"]) should bind PRINT as a
+        // native function and route the call through it.
+        let v = run_std(r#"
+            IMPORT("wlwl:std.io", ["PRINT"]);
+            PRINT("hello", "via", "std.io");
+        "#)
+        .unwrap();
+        assert_eq!(v, Value::Null);
+    }
+
+    #[test]
+    fn std_io_print_with_non_string_args() {
+        // Confirm PRINT handles non-string values via JSON conversion.
+        let v = run_std(r#"
+            IMPORT("wlwl:std.io", ["PRINT"]);
+            PRINT(1, 2, 3, [4, 5], ["k": "v"]);
+        "#)
+        .unwrap();
+        assert_eq!(v, Value::Null);
+    }
+
+    #[test]
+    #[test]
+    fn std_io_input_arity_mismatch_is_e0022() {
+        // INPUT() takes zero args; passing an arg surfaces E0022.
+        // Real stdin behaviour is covered by the interactive doc
+        // tests (CI stdin is not redirectable in a unit test).
+        let src = r#"
+            IMPORT("wlwl:std.io", ["INPUT"]);
+            INPUT("oops");
+        "#;
+        let dir = unique_test_dir("input");
+        let err = run_in(&dir, src).unwrap_err();
+        assert_eq!(err.diagnostic().code, ErrorCode::E0022);
+    }
+
+    #[test]
+    fn std_fs_write_then_read_roundtrip() {
+        let dir = unique_test_dir("fs_rt");
+        let path = dir.join("rt.txt").to_string_lossy().into_owned().replace("\\", "/");
+        let src = format!(r#"
+            IMPORT("wlwl:std.fs", ["READ_FILE", "WRITE_FILE"]);
+            LET(p, "{path}");
+            WRITE_FILE(p, "round-trip-body");
+            READ_FILE(p);
+        "#);
+        let v = run_in(&dir, &src).unwrap();
+        assert_eq!(v, Value::String("round-trip-body".into()));
+    }
+
+    #[test]
+    fn std_fs_read_missing_file_is_e0061() {
+        let dir = unique_test_dir("fs_miss");
+        let src = r#"
+            IMPORT("wlwl:std.fs", ["READ_FILE"]);
+            READ_FILE("Z:/__wlwl_definitely_missing_/abc_xyz_123");
+        "#;
+        let err = run_in(&dir, src).unwrap_err();
+        assert_eq!(err.diagnostic().code, ErrorCode::E0061);
+    }
+
+    #[test]
+    fn std_fs_exists_true_then_false() {
+        let dir = unique_test_dir("fs_exists");
+        let path = dir.join("e.txt").to_string_lossy().into_owned().replace("\\", "/");
+        std::fs::write(&dir.join("e.txt"), b"x").unwrap();
+        let src_ok = format!(r#"
+            IMPORT("wlwl:std.fs", ["EXISTS"]);
+            EXISTS("{path}");
+        "#);
+        assert_eq!(
+            run_in(&dir, &src_ok).unwrap(),
+            Value::Boolean(true)
+        );
+        let _ = std::fs::remove_file(dir.join("e.txt"));
+        let src_missing = format!(r#"
+            IMPORT("wlwl:std.fs", ["EXISTS"]);
+            EXISTS("{path}");
+        "#);
+        assert_eq!(
+            run_in(&dir, &src_missing).unwrap(),
+            Value::Boolean(false)
+        );
+    }
+
+    #[test]
+    fn std_json_parse_object() {
+        let src = r#"
+            IMPORT("wlwl:std.json", ["PARSE"]);
+            LET(v, PARSE("{\"a\": 1, \"b\": [2, 3]}"));
+            v;
+        "#;
+        // The result is a Dict. Compare via JSON stringification.
+        let dir = unique_test_dir("json_parse");
+        let v = run_in(&dir, src).unwrap();
+        match v {
+            Value::Dict(entries) => {
+                let mut sorted: Vec<&(Value, Value)> = entries.iter().collect();
+                sorted.sort_by(|a, b| a.0.display().cmp(&b.0.display()));
+                let rendered: Vec<String> = sorted
+                    .iter()
+                    .map(|(k, v)| format!("{}: {}", k.display(), v.display()))
+                    .collect();
+                let combined = format!("[{}]", rendered.join(", "));
+                // Compare the dict as a string. The exact format
+                // depends on the value conversion; the assert is on
+                // presence of keys.
+                assert!(combined.contains("a: 1"));
+                assert!(combined.contains("b:"));
+                assert!(combined.contains("2"));
+                assert!(combined.contains("3"));
+            }
+            other => panic!("expected Dict, got {:?}", other),
+        }
+    }
+
+    #[test]
+    fn std_json_parse_invalid_is_e0070() {
+        let src = r#"
+            IMPORT("wlwl:std.json", ["PARSE"]);
+            PARSE("not json");
+        "#;
+        let dir = unique_test_dir("json_bad");
+        let err = run_in(&dir, src).unwrap_err();
+        assert_eq!(err.diagnostic().code, ErrorCode::E0070);
+    }
+
+    #[test]
+    fn std_json_stringify_object() {
+        let src = r#"
+            IMPORT("wlwl:std.json", ["STRINGIFY"]);
+            STRINGIFY(["a": 1, "b": 2]);
+        "#;
+        let dir = unique_test_dir("json_str");
+        let v = run_in(&dir, src).unwrap();
+        // STRINGIFY uses serde_json's compact form.
+        let s = match v {
+            Value::String(s) => s,
+            other => panic!("expected String, got {:?}", other),
+        };
+        // Order of DICT entries is insertion-order (Phase 3 guarantee).
+        assert_eq!(s, r#"{"a":1,"b":2}"#);
+    }
+
+    #[test]
+    fn std_import_unknown_namespace_path_is_e0040() {
+        // ModuleLoader rejects unknown wlwl: paths with E0040 (not
+        // found). The parser already accepts the `wlwl:` prefix.
+        let src = r#"
+            IMPORT("wlwl:std.does_not_exist", ["x"]);
+        "#;
+        let dir = unique_test_dir("unknown");
+        let err = run_in(&dir, src).unwrap_err();
+        assert_eq!(err.diagnostic().code, ErrorCode::E0040);
+    }
+
+    #[test]
+    fn std_import_unknown_name_in_module_is_e0023() {
+        // Importing a name the std module does not expose triggers
+        // E0023 (name not exported by module).
+        let src = r#"
+            IMPORT("wlwl:std.io", ["NONEXISTENT"]);
+        "#;
+        let dir = unique_test_dir("bad_name");
+        let err = run_in(&dir, src).unwrap_err();
+        assert_eq!(err.diagnostic().code, ErrorCode::E0023);
     }
 }

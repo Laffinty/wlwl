@@ -718,4 +718,32 @@ impl Evaluator {
 
 **文档结束。生成时间:2026-09-02。**
 
+
+---
+
+## 实施进度跟踪(2026-09-03 起)
+
+> 实际推进时按"3 批"切分 Phase 4(见 Phase 4 §任务分解)。每批结束 git add + commit + push,工作树保持可回滚状态。
+
+### Phase 4 批 1 — std.io / std.fs / std.json + `wlwl:` namespace 路径 — **完成 ✅ 2026-09-03**
+
+| 项 | 状态 |
+|---|---|
+| `wlwl:std.io` (PRINT, INPUT) | ✅ |
+| `wlwl:std.fs` (READ_FILE, WRITE_FILE, EXISTS) | ✅ |
+| `wlwl:std.json` (PARSE, STRINGIFY) | ✅ |
+| 触发 E0060 / E0061 / E0062 (IO) | ✅ |
+| 触发 E0070 (JSON parse), E0071 defensive | ✅ |
+| 解析器接受 `wlwl:` 前缀 | ✅ |
+| ModuleLoader 支持 namespace path → std crate 注入 | ✅ |
+| Value::NativeFn { invoke: NativeInvoke::Std(StdFn) } 接入 | ✅ |
+| 全 workspace 测试 | **169 / 169 通过** |
+| 新 crate | `wlwl-std`(纯 Rust,不依赖 `wlwl-eval` 避免 cycle) |
+| 偏离记录 | docs/plan/deviations.md — P4-001 / P4-002;修复 P3-012 / P3-013 |
+
+### Phase 4 批 2 — 跨目录 + 命名空间 + wlwl.toml + wlwl.lock — **待开始**
+
+### Phase 4 批 3 — std.ai (mock) + Phase 3 收尾 — **待开始**
+
+
 **附:本计划不替代 v0.3 规范。规范的权威性高于本计划——任何"实施偏离"必须显式记录,不能默默修改规范。**

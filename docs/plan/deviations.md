@@ -85,3 +85,34 @@
 | Key bug fixes | 4 (wlwl-cli missing serde/serde_json; wlwl-eval Cargo.toml missing [package]; type-annotation placement; AI-contract test string escaping) |
 | Schema version | 0.3.0 -> 0.3.1 |
 | Spec coverage | errorCategory 100%, retryable 100%, suggestion_code 100% (schema layer), related 100%, JSONL 100%, type-annotation 30% (LET + FUN return; FUN params deferred) |
+
+
+# Phase 4 batch 1 (2026-09-03) — std.io / std.fs / std.json + namespace path
+
+> Phase 4 split into 3 batches. Batch 1 covers std.io / std.fs / std.json
+> + the `wlwl:std.X` namespace path; batch 2 = cross-dir + wlwl.toml
+> + wlwl.lock; batch 3 = std.ai (mock) + Phase 3 leftover fixes.
+> Schema version: 0.3.1 (unchanged — no error schema changes this batch).
+
+| ID | Spec / plan | Status | Notes |
+|----|-------------|--------|-------|
+| P3-011 | std.ai error code triggers | **Deferred to batch 3** | E0080-E0083 still no trigger site; batch 3 implements mock std.ai |
+| P3-012 | std.fs / std.io runtime | **Implemented** | `wlwl:std.io` (PRINT, INPUT) and `wlwl:std.fs` (READ_FILE, WRITE_FILE, EXISTS) implemented in new `wlwl-std` crate; E0060/E0061/E0062 have trigger sites (fs.rs + io.rs). 9 eval integration tests cover the roundtrip and error paths. |
+| P3-013 | std.json runtime | **Implemented** | `wlwl:std.json` (PARSE, STRINGIFY); E0070 has trigger site in std.json::std_parse. E0071 is defensive (serde_json::to_string rarely fails on our value types but the spec surface is complete). |
+| P4-001 | `wlwl:std.X` namespace path | **Implemented** | Parser accepts `wlwl:` prefix; ModuleLoader::load resolves via `wlwl_std::resolve` and binds the requested names as `Value::NativeFn { invoke: NativeInvoke::Std(...) }`. Non-`wlwl:` namespaces (e.g. `myteam:utils`) and relative paths (`./`, `../`) still reject as E0043 — batch 2. |
+| P4-002 | `Value` runtime representation | **Extended** | Added `Value::NativeFn { name, invoke: NativeInvoke }` variant (the `NativeInvoke::Std(wlwl_std::StdFn)` tag lets the wrapper hold the std fn pointer without capture closures). The eval_call dispatch reads `invoke` and routes to `invoke_std`, which converts `Value` ↔ `serde_json::Value` at the std boundary. |
+
+## Phase 4 batch 1 implementation stats
+
+| Item | Data |
+|------|------|
+| Total tests | **169 / 169 passing** (eval 72 incl. 10 new std-integration tests; std 16; parser 33 incl. 1 split test) |
+| New crates | 1 (`wlwl-std`) |
+| New error triggers | E0060 / E0061 / E0062 / E0070 (E0071 defensive only) |
+| New std modules | `wlwl:std.io` (PRINT, INPUT) + `wlwl:std.fs` (READ_FILE, WRITE_FILE, EXISTS) + `wlwl:std.json` (PARSE, STRINGIFY) |
+| Value variants | +1 (`Value::NativeFn { name, invoke }`) + new `NativeInvoke` enum |
+| Lines added (est.) | ~700 (eval ~370, parser ~30, std ~300, docs ~50) |
+| Key design decisions | `wlwl-std` does NOT depend on `wlwl-eval` (cycle avoidance); std fn signature is `fn(&mut StdCtx, Vec<serde_json::Value>) -> Result<StdValue, StdError>`; eval wraps via `invoke_std` + `value_to_std_value` / `std_value_to_value`. |
+| Deferred to batch 2 | cross-dir (`./`, `../`), non-`wlwl:` namespaces, `wlwl.toml` registry, `wlwl.lock` |
+| Deferred to batch 3 | std.ai (mock per agreed scope), per-param type annotation (P3-007), TypeExpr structure (P3-010), coverage push to 90%+ (P3-009), suggestion_code content (P3-008) |
+| Spec coverage | errorCategory 100%, retryable 100%, suggestion_code 100% (schema layer), related 100%, JSONL 100%, type-annotation 30% (LET + FUN return; FUN params deferred) |

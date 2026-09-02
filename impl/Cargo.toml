@@ -1,6 +1,7 @@
 [workspace]
 resolver = "2"
 members = [
+    "crates/wlwl-std",
     "crates/wlwl-ast",
     "crates/wlwl-lexer",
     "crates/wlwl-parser",
@@ -24,6 +25,7 @@ clap = { version = "4.4", features = ["derive"] }
 insta = { version = "1.40", features = ["json"] }
 
 # 本工作空间内部 crate
+wlwl-std = { path = "crates/wlwl-std" }
 wlwl-ast = { path = "crates/wlwl-ast" }
 wlwl-lexer = { path = "crates/wlwl-lexer" }
 wlwl-parser = { path = "crates/wlwl-parser" }

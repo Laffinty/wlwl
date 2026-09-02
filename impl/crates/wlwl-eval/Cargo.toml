@@ -9,6 +9,8 @@ description = "WLWL tree-walking interpreter (Phase 3: full v0.3 with type-annot
 wlwl-ast = { workspace = true }
 wlwl-error = { workspace = true }
 wlwl-parser = { workspace = true }
+wlwl-std = { workspace = true }
+serde_json = { workspace = true }
 
 [dev-dependencies]
 wlwl-parser = { workspace = true }
