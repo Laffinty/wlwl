@@ -1,6 +1,6 @@
 # WLWL
 
-> A language where every syntactic form is a function call.
+WLWL is a small experimental programming language in which every syntactic form is a function call.
 
 [![License: GPL v2](https://img.shields.io/badge/License-GPL%20v2-blue.svg)](./LICENSE)
 [![Spec: v0.3](https://img.shields.io/badge/spec-v0.3-green.svg)](./docs/standard/wlwl-spec-v0.3(MD5_541e3fbbbba2492258df5d13cc5f71ae).md)
