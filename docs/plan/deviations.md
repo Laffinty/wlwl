@@ -46,3 +46,42 @@
 | 新增错误码 | 17 个(E0001, E0010–E0014, E0020–E0023, E0030, E0040–E0043, E0100, E0102) |
 | 关键 bug 修复 | 8 个(LET scope、eval_for/while signal 透传、invoke_closure env 合并、模块顶层 scope、short-circuit、export 检查用原名、unary minus、OR_DIE 关键字) |
 | 规范要求实现度 | 控制流 100%,错误处理 100%,模块基础 100%,OOP 0%(Phase 3) |
+
+
+---
+
+# Phase 3 deviations (2026-09-02)
+
+> Phase 3 (AI-friendly). Spec target: v0.3 Sec. 14.2 / Sec. 14.7 / Sec. 2.4.
+> Schema version: 0.3.1.
+
+| ID | Spec / plan | Deviation | Reason | Plan fix |
+|----|-------------|-----------|--------|----------|
+| P3-001 | Plan Sec. 2.2 -- miette | **Cancelled**: self-written render_human() is sufficient (file/line/col/source_line/hint/related). miette's incremental value is low; the cost is full Diagnostic-trait rewrite + MSRV risk. | YAGNI | not planned |
+| P3-002 | Plan Sec. 2.2 -- insta | **Introduced** (insta 1.48, features = json). 10 snapshot groups cover the 35-code schema; 9 AI contract tests verify Sec. 14.7 fields. | per plan | -- |
+| P3-003 | Plan Sec. 3 -- codes 23->33 | **Extended to 35**: v0.3 Sec. 14.4 actually defines 32 codes; Phase 2 added E0043 / E0063 / E0083 (namespace path syntax, network error, AI timeout) on top, total 35. | implementation extensions | stable |
+| P3-004 | Plan Sec. 3 -- error schema | **Fully implemented**: errorCategory (11 classes) / retryable: bool / suggestion_code: Vec<Suggestion> / related: Vec<RelatedLocation>; schema version 0.3.1. | per plan | -- |
+| P3-005 | Plan Sec. 3 -- JSONL streaming | **Implemented**: --format=jsonl emits one JSON record per line. | per plan | -- |
+| P3-006 | Plan Sec. 5.5 -- `wlwl ast --format=json` (D015) | **Implemented**: `ast` subcommand emits AstOutput{ast_schema_version, file, root} where root is wlwl-ast::Expr serialized via serde. | per plan | -- |
+| P3-007 | Plan Sec. 5.2 -- `name: Type` annotation (D021) | **Partial**: LET-binding `name: Type` + FUN return type annotation both work. **Not implemented**: per-param annotation (would require Vec<String> -> Vec<FunParam>, breaking AST change, deferred to Phase 4). | balance AST compat vs scope | Phase 4 |
+| P3-008 | Plan Sec. 14.8 -- single-error recovery | **Already implemented** (Phase 2): parser stops at first error. `suggestion_code` field supports up to 3 sorted candidates at the schema layer; richer suggestion generation is Phase 4. | per plan | Phase 4 (suggestion content) |
+| P3-009 | Plan Sec. 6.1 -- coverage 90%+ | **Partial**: wlwl-error ~95%, wlwl-parser ~88%, wlwl-eval ~85%, wlwl-lexer ~90%. Below 90% mainly in wlwl-eval (runtime error path coverage). | time-boxed | Phase 4 |
+| P3-010 | Spec Sec. 2.4 -- type expression structure | **Simplified**: Phase 3 stores the type expression as a raw string (TypeAnnotation.text); parser only does balanced-bracket scan, no syntactic validation. | spec permits | Phase 4 (TypeExpr) |
+| P3-011 | Plan Sec. 5.5 -- std.ai error code triggers | **Not implemented**: E0080-E0083 registered, but std.ai not yet implemented, no trigger site. | Phase 4 scope | Phase 4 |
+| P3-012 | Plan Sec. 5.4 -- IO error code triggers | **Not implemented**: E0060-E0063 registered, but std.fs / std.io runtime not yet implemented. | Phase 4 scope | Phase 4 |
+| P3-013 | Plan Sec. 5.3 -- JSON error code triggers | **Not implemented**: E0070/E0071 registered, but std.json not yet implemented. | Phase 4 scope | Phase 4 |
+
+## Phase 3 implementation stats
+
+| Item | Data |
+|------|------|
+| Total tests | **139 / 139 passing** |
+| Implementation LOC (est.) | ~3,800 Rust lines (evaluator 55%, parser 25%, error 12%, cli 8%) |
+| New crates | 0 |
+| New error codes | +13 (E0050/E0051/E0060-E0063/E0070/E0071/E0080-E0083/E0099/E0101; Phase 2 had 22 + Phase 3 new 13 = 35) |
+| insta snapshots | 10 groups (snap_lexical ... snap_user_and_internal) |
+| AI contract tests | 9 (ai_contract_undefined_name ... ai_contract_category_and_retryable_match_code) |
+| Type-annotation tests | 6 (parse_let_with_type_annotation ... parse_let_missing_value_after_type) |
+| Key bug fixes | 4 (wlwl-cli missing serde/serde_json; wlwl-eval Cargo.toml missing [package]; type-annotation placement; AI-contract test string escaping) |
+| Schema version | 0.3.0 -> 0.3.1 |
+| Spec coverage | errorCategory 100%, retryable 100%, suggestion_code 100% (schema layer), related 100%, JSONL 100%, type-annotation 30% (LET + FUN return; FUN params deferred) |
