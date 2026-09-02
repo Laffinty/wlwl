@@ -1,0 +1,63 @@
+---
+source: crates/wlwl-error/src/lib.rs
+expression: "serde_json::json!({\n    \"E0030\": code_snap(ErrorCode::E0030, \"type_err\"), \"E0031\":\n    code_snap(ErrorCode::E0031, \"subscrip_key_type\"), \"E0032\":\n    code_snap(ErrorCode::E0032, \"prop_method_missing\"),\n})"
+---
+{
+  "E0030": {
+    "code": "E0030",
+    "error_category": "type",
+    "error_schema_version": "0.3.1",
+    "hint": null,
+    "location": {
+      "col": 1,
+      "col_end": 1,
+      "file": "snap.wl",
+      "line": 1,
+      "line_end": 1
+    },
+    "message": "snapshot for type_err",
+    "related": [],
+    "retryable": false,
+    "severity": "error",
+    "source_line": null,
+    "suggestion_code": []
+  },
+  "E0031": {
+    "code": "E0031",
+    "error_category": "type",
+    "error_schema_version": "0.3.1",
+    "hint": null,
+    "location": {
+      "col": 1,
+      "col_end": 1,
+      "file": "snap.wl",
+      "line": 1,
+      "line_end": 1
+    },
+    "message": "snapshot for subscrip_key_type",
+    "related": [],
+    "retryable": false,
+    "severity": "error",
+    "source_line": null,
+    "suggestion_code": []
+  },
+  "E0032": {
+    "code": "E0032",
+    "error_category": "type",
+    "error_schema_version": "0.3.1",
+    "hint": null,
+    "location": {
+      "col": 1,
+      "col_end": 1,
+      "file": "snap.wl",
+      "line": 1,
+      "line_end": 1
+    },
+    "message": "snapshot for prop_method_missing",
+    "related": [],
+    "retryable": false,
+    "severity": "error",
+    "source_line": null,
+    "suggestion_code": []
+  }
+}

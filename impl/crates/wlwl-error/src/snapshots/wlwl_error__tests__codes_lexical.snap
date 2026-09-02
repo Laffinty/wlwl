@@ -1,0 +1,63 @@
+---
+source: crates/wlwl-error/src/lib.rs
+expression: "serde_json::json!({\n    \"E0001\": code_snap(ErrorCode::E0001, \"illegal_char\"), \"E0002\":\n    code_snap(ErrorCode::E0002, \"unterminated_string\"), \"E0003\":\n    code_snap(ErrorCode::E0003, \"unterminated_block_comment\"),\n})"
+---
+{
+  "E0001": {
+    "code": "E0001",
+    "error_category": "lexical",
+    "error_schema_version": "0.3.1",
+    "hint": null,
+    "location": {
+      "col": 1,
+      "col_end": 1,
+      "file": "snap.wl",
+      "line": 1,
+      "line_end": 1
+    },
+    "message": "snapshot for illegal_char",
+    "related": [],
+    "retryable": false,
+    "severity": "error",
+    "source_line": null,
+    "suggestion_code": []
+  },
+  "E0002": {
+    "code": "E0002",
+    "error_category": "lexical",
+    "error_schema_version": "0.3.1",
+    "hint": null,
+    "location": {
+      "col": 1,
+      "col_end": 1,
+      "file": "snap.wl",
+      "line": 1,
+      "line_end": 1
+    },
+    "message": "snapshot for unterminated_string",
+    "related": [],
+    "retryable": false,
+    "severity": "error",
+    "source_line": null,
+    "suggestion_code": []
+  },
+  "E0003": {
+    "code": "E0003",
+    "error_category": "lexical",
+    "error_schema_version": "0.3.1",
+    "hint": null,
+    "location": {
+      "col": 1,
+      "col_end": 1,
+      "file": "snap.wl",
+      "line": 1,
+      "line_end": 1
+    },
+    "message": "snapshot for unterminated_block_comment",
+    "related": [],
+    "retryable": false,
+    "severity": "error",
+    "source_line": null,
+    "suggestion_code": []
+  }
+}

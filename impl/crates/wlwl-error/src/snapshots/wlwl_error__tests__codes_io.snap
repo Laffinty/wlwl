@@ -1,0 +1,82 @@
+---
+source: crates/wlwl-error/src/lib.rs
+expression: "serde_json::json!({\n    \"E0060\": code_snap(ErrorCode::E0060, \"io_err\"), \"E0061\":\n    code_snap(ErrorCode::E0061, \"file_not_found\"), \"E0062\":\n    code_snap(ErrorCode::E0062, \"perm_denied\"), \"E0063\":\n    code_snap(ErrorCode::E0063, \"net_err\"),\n})"
+---
+{
+  "E0060": {
+    "code": "E0060",
+    "error_category": "io",
+    "error_schema_version": "0.3.1",
+    "hint": null,
+    "location": {
+      "col": 1,
+      "col_end": 1,
+      "file": "snap.wl",
+      "line": 1,
+      "line_end": 1
+    },
+    "message": "snapshot for io_err",
+    "related": [],
+    "retryable": true,
+    "severity": "error",
+    "source_line": null,
+    "suggestion_code": []
+  },
+  "E0061": {
+    "code": "E0061",
+    "error_category": "io",
+    "error_schema_version": "0.3.1",
+    "hint": null,
+    "location": {
+      "col": 1,
+      "col_end": 1,
+      "file": "snap.wl",
+      "line": 1,
+      "line_end": 1
+    },
+    "message": "snapshot for file_not_found",
+    "related": [],
+    "retryable": true,
+    "severity": "error",
+    "source_line": null,
+    "suggestion_code": []
+  },
+  "E0062": {
+    "code": "E0062",
+    "error_category": "io",
+    "error_schema_version": "0.3.1",
+    "hint": null,
+    "location": {
+      "col": 1,
+      "col_end": 1,
+      "file": "snap.wl",
+      "line": 1,
+      "line_end": 1
+    },
+    "message": "snapshot for perm_denied",
+    "related": [],
+    "retryable": false,
+    "severity": "error",
+    "source_line": null,
+    "suggestion_code": []
+  },
+  "E0063": {
+    "code": "E0063",
+    "error_category": "io",
+    "error_schema_version": "0.3.1",
+    "hint": null,
+    "location": {
+      "col": 1,
+      "col_end": 1,
+      "file": "snap.wl",
+      "line": 1,
+      "line_end": 1
+    },
+    "message": "snapshot for net_err",
+    "related": [],
+    "retryable": true,
+    "severity": "error",
+    "source_line": null,
+    "suggestion_code": []
+  }
+}

@@ -1,0 +1,82 @@
+---
+source: crates/wlwl-error/src/lib.rs
+expression: "serde_json::json!({\n    \"E0020\": code_snap(ErrorCode::E0020, \"undefined\"), \"E0021\":\n    code_snap(ErrorCode::E0021, \"duplicate\"), \"E0022\":\n    code_snap(ErrorCode::E0022, \"arity_mismatch\"), \"E0023\":\n    code_snap(ErrorCode::E0023, \"not_exported\"),\n})"
+---
+{
+  "E0020": {
+    "code": "E0020",
+    "error_category": "name",
+    "error_schema_version": "0.3.1",
+    "hint": null,
+    "location": {
+      "col": 1,
+      "col_end": 1,
+      "file": "snap.wl",
+      "line": 1,
+      "line_end": 1
+    },
+    "message": "snapshot for undefined",
+    "related": [],
+    "retryable": false,
+    "severity": "error",
+    "source_line": null,
+    "suggestion_code": []
+  },
+  "E0021": {
+    "code": "E0021",
+    "error_category": "name",
+    "error_schema_version": "0.3.1",
+    "hint": null,
+    "location": {
+      "col": 1,
+      "col_end": 1,
+      "file": "snap.wl",
+      "line": 1,
+      "line_end": 1
+    },
+    "message": "snapshot for duplicate",
+    "related": [],
+    "retryable": false,
+    "severity": "error",
+    "source_line": null,
+    "suggestion_code": []
+  },
+  "E0022": {
+    "code": "E0022",
+    "error_category": "name",
+    "error_schema_version": "0.3.1",
+    "hint": null,
+    "location": {
+      "col": 1,
+      "col_end": 1,
+      "file": "snap.wl",
+      "line": 1,
+      "line_end": 1
+    },
+    "message": "snapshot for arity_mismatch",
+    "related": [],
+    "retryable": false,
+    "severity": "error",
+    "source_line": null,
+    "suggestion_code": []
+  },
+  "E0023": {
+    "code": "E0023",
+    "error_category": "name",
+    "error_schema_version": "0.3.1",
+    "hint": null,
+    "location": {
+      "col": 1,
+      "col_end": 1,
+      "file": "snap.wl",
+      "line": 1,
+      "line_end": 1
+    },
+    "message": "snapshot for not_exported",
+    "related": [],
+    "retryable": false,
+    "severity": "error",
+    "source_line": null,
+    "suggestion_code": []
+  }
+}

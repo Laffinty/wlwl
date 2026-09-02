@@ -1,0 +1,44 @@
+---
+source: crates/wlwl-error/src/lib.rs
+expression: "serde_json::json!({\n    \"E0050\": code_snap(ErrorCode::E0050, \"inherit_err\"), \"E0051\":\n    code_snap(ErrorCode::E0051, \"new_arity_err\"),\n})"
+---
+{
+  "E0050": {
+    "code": "E0050",
+    "error_category": "oop",
+    "error_schema_version": "0.3.1",
+    "hint": null,
+    "location": {
+      "col": 1,
+      "col_end": 1,
+      "file": "snap.wl",
+      "line": 1,
+      "line_end": 1
+    },
+    "message": "snapshot for inherit_err",
+    "related": [],
+    "retryable": false,
+    "severity": "error",
+    "source_line": null,
+    "suggestion_code": []
+  },
+  "E0051": {
+    "code": "E0051",
+    "error_category": "oop",
+    "error_schema_version": "0.3.1",
+    "hint": null,
+    "location": {
+      "col": 1,
+      "col_end": 1,
+      "file": "snap.wl",
+      "line": 1,
+      "line_end": 1
+    },
+    "message": "snapshot for new_arity_err",
+    "related": [],
+    "retryable": false,
+    "severity": "error",
+    "source_line": null,
+    "suggestion_code": []
+  }
+}

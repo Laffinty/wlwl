@@ -9,3 +9,6 @@ description = "WLWL error types and reporting (Phase 1: basic schema)"
 serde = { workspace = true }
 serde_json = { workspace = true }
 thiserror = { workspace = true }
+
+[dev-dependencies]
+insta = { workspace = true }

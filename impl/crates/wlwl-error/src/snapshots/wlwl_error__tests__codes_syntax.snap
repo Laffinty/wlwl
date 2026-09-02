@@ -1,0 +1,101 @@
+---
+source: crates/wlwl-error/src/lib.rs
+expression: "serde_json::json!({\n    \"E0010\": code_snap(ErrorCode::E0010, \"expected_expr\"), \"E0011\":\n    code_snap(ErrorCode::E0011, \"expected_rparen\"), \"E0012\":\n    code_snap(ErrorCode::E0012, \"expected_comma\"), \"E0013\":\n    code_snap(ErrorCode::E0013, \"expected_semi\"), \"E0014\":\n    code_snap(ErrorCode::E0014, \"ctrl_in_illegal_pos\"),\n})"
+---
+{
+  "E0010": {
+    "code": "E0010",
+    "error_category": "syntax",
+    "error_schema_version": "0.3.1",
+    "hint": null,
+    "location": {
+      "col": 1,
+      "col_end": 1,
+      "file": "snap.wl",
+      "line": 1,
+      "line_end": 1
+    },
+    "message": "snapshot for expected_expr",
+    "related": [],
+    "retryable": false,
+    "severity": "error",
+    "source_line": null,
+    "suggestion_code": []
+  },
+  "E0011": {
+    "code": "E0011",
+    "error_category": "syntax",
+    "error_schema_version": "0.3.1",
+    "hint": null,
+    "location": {
+      "col": 1,
+      "col_end": 1,
+      "file": "snap.wl",
+      "line": 1,
+      "line_end": 1
+    },
+    "message": "snapshot for expected_rparen",
+    "related": [],
+    "retryable": false,
+    "severity": "error",
+    "source_line": null,
+    "suggestion_code": []
+  },
+  "E0012": {
+    "code": "E0012",
+    "error_category": "syntax",
+    "error_schema_version": "0.3.1",
+    "hint": null,
+    "location": {
+      "col": 1,
+      "col_end": 1,
+      "file": "snap.wl",
+      "line": 1,
+      "line_end": 1
+    },
+    "message": "snapshot for expected_comma",
+    "related": [],
+    "retryable": false,
+    "severity": "error",
+    "source_line": null,
+    "suggestion_code": []
+  },
+  "E0013": {
+    "code": "E0013",
+    "error_category": "syntax",
+    "error_schema_version": "0.3.1",
+    "hint": null,
+    "location": {
+      "col": 1,
+      "col_end": 1,
+      "file": "snap.wl",
+      "line": 1,
+      "line_end": 1
+    },
+    "message": "snapshot for expected_semi",
+    "related": [],
+    "retryable": false,
+    "severity": "error",
+    "source_line": null,
+    "suggestion_code": []
+  },
+  "E0014": {
+    "code": "E0014",
+    "error_category": "syntax",
+    "error_schema_version": "0.3.1",
+    "hint": null,
+    "location": {
+      "col": 1,
+      "col_end": 1,
+      "file": "snap.wl",
+      "line": 1,
+      "line_end": 1
+    },
+    "message": "snapshot for ctrl_in_illegal_pos",
+    "related": [],
+    "retryable": false,
+    "severity": "error",
+    "source_line": null,
+    "suggestion_code": []
+  }
+}

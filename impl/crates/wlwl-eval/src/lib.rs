@@ -1904,7 +1904,122 @@ mod tests {
 
     // ── §13 Modules (single-directory, Phase 2 subset) ─────────────
 
-    use std::path::Path;
+        // ==== Phase 3: AI contract (v0.3 Sec. 14.7) ====
+
+    fn ai_check_jsonl(src: &str) -> (serde_json::Value, wlwl_error::WlwlError) {
+        let err = run(src).unwrap_err();
+        let line = err.diagnostic().render_jsonl();
+        assert!(!line.contains('\n'), "jsonl must be single-line: {}", line);
+        let v: serde_json::Value = serde_json::from_str(&line).expect("jsonl parses");
+        (v, err)
+    }
+
+    #[test]
+    fn ai_contract_undefined_name() {
+        let (v, _) = ai_check_jsonl("PRINT(zzz);");
+        assert_eq!(v["error_schema_version"], "0.3.1");
+        assert_eq!(v["code"], "E0020");
+        assert_eq!(v["error_category"], "name");
+        assert_eq!(v["retryable"], false);
+        assert!(v["suggestion_code"].is_array());
+        assert!(v["related"].is_array());
+    }
+
+    #[test]
+    fn ai_contract_unhandled_err_escape() {
+        let (v, _) = ai_check_jsonl("ERR(\"top\");");
+        assert_eq!(v["code"], "E0102");
+        assert_eq!(v["error_category"], "internal");
+    }
+
+    #[test]
+    fn ai_contract_panic() {
+        let (v, _) = ai_check_jsonl("PANIC(\"oops\");");
+        assert_eq!(v["code"], "E0100");
+        assert_eq!(v["error_category"], "internal");
+    }
+
+    #[test]
+    fn ai_contract_break_outside_loop() {
+        let (v, _) = ai_check_jsonl("BREAK();");
+        assert_eq!(v["code"], "E0014");
+        assert_eq!(v["error_category"], "syntax");
+    }
+
+    #[test]
+    fn ai_contract_arity_mismatch() {
+        let src = "LET(f, FUN((a, b), +(a, b))); f(1);";
+        let (v, _) = ai_check_jsonl(src);
+        assert_eq!(v["code"], "E0022");
+        assert_eq!(v["error_category"], "name");
+    }
+
+    #[test]
+    fn ai_contract_module_not_found() {
+        use std::time::{SystemTime, UNIX_EPOCH};
+        let nanos = SystemTime::now().duration_since(UNIX_EPOCH).unwrap().as_nanos();
+        let dir = std::env::temp_dir().join(format!("wlwl_ai_{}", nanos));
+        std::fs::create_dir_all(&dir).unwrap();
+        let src = "IMPORT(\"doesnotexist\", [\"x\"]);";
+        let mut ev = crate::Evaluator::new()
+            .with_source(src, "t.wl")
+            .with_base_dir(dir.clone());
+        let ast = wlwl_parser::parse(src, "t.wl").unwrap();
+        let err = ev.eval(&ast).unwrap_err();
+        let line = err.diagnostic().render_jsonl();
+        let v: serde_json::Value = serde_json::from_str(&line).unwrap();
+        assert_eq!(v["code"], "E0040");
+        assert_eq!(v["error_category"], "module");
+        assert!(!line.contains('\n'));
+    }
+
+    #[test]
+    fn ai_contract_schema_version_is_stable() {
+        let mut versions = std::collections::HashSet::new();
+        for src in &["PRINT(zzz);", "PANIC(\"x\");", "ERR(\"y\");", "BREAK();"] {
+            let err = run(src).unwrap_err();
+            versions.insert(err.diagnostic().error_schema_version.clone());
+        }
+        assert_eq!(versions.len(), 1, "schema version must be stable across error kinds");
+        assert!(versions.contains("0.3.1"));
+    }
+
+    #[test]
+    fn ai_contract_required_fields_present() {
+        let err = run("PRINT(zzz);").unwrap_err();
+        let v: serde_json::Value = serde_json::from_str(&err.diagnostic().render_jsonl()).unwrap();
+        for key in &["error_schema_version", "code", "error_category", "severity", "message", "location", "retryable", "suggestion_code", "related"] {
+            assert!(v.get(*key).is_some(), "missing required key: {}", key);
+        }
+        let loc = &v["location"];
+        for k in &["file", "line", "col"] {
+            assert!(loc.get(*k).is_some(), "missing location.{}", k);
+        }
+    }
+
+    #[test]
+    fn ai_contract_category_and_retryable_match_code() {
+        // The error_category and retryable fields must be consistent
+        // with the code's category()/retryable() methods. If anyone
+        // adds a new code without wiring up these methods, this test
+        // will catch the inconsistency.
+        for src in &["PRINT(zzz);", "PANIC(\"x\");", "ERR(\"y\");", "BREAK();"] {
+            let err = run(src).unwrap_err();
+            let code = err.diagnostic().code;
+            assert_eq!(
+                err.diagnostic().error_category,
+                code.category(),
+                "category mismatch for code={:?}", code
+            );
+            assert_eq!(
+                err.diagnostic().retryable,
+                code.retryable(),
+                "retryable mismatch for code={:?}", code
+            );
+        }
+    }
+
+use std::path::Path;
 
     /// Make a unique subdirectory inside the system temp dir. We can't
     /// use the `tempfile` crate because its transitive deps aren't in

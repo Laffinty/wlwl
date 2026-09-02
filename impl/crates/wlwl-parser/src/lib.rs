@@ -42,7 +42,7 @@
 //! - E0020 undefined name (emitted at eval time, not parse)
 //! - E0043 namespace path syntax error
 
-use wlwl_ast::{Expr, ImportName, Literal, Span};
+use wlwl_ast::{Expr, ImportName, Literal, Span, TypeAnnotation};
 use wlwl_error::{extract_line, ErrorCode, Location, WlwlDiagnostic, WlwlError, WlwlResult};
 use wlwl_lexer::{lex, Token, TokenKind};
 
@@ -335,12 +335,15 @@ impl Parser {
                 ));
             }
         };
+        // v0.3 Sec. 2.4: optional type annotation, parsed not checked.
+        let type_annotation = self.parse_type_annotation()?;
         self.expect_specific(ErrorCode::E0012, "','")?;
         let value = self.parse_expr()?;
         self.expect_specific(ErrorCode::E0011, "')'")?;
         let (_, _, line_end, col_end) = self.span_here();
         Ok(Expr::Let {
             name,
+            type_annotation,
             value: Box::new(value),
             span: Span {
                 file: self.file.clone(),
@@ -352,6 +355,125 @@ impl Parser {
         })
     }
 
+    /// Parse an optional `':' Type` annotation.
+    ///
+    /// If the next token is not `:`, returns `Ok(None)`. Otherwise
+    /// consumes the `:` and a balanced type expression (e.g.
+    /// `INTEGER`, `ARRAY[INTEGER]`, `OK[ERR[STRING]]`). The raw text
+    /// of the type expression is preserved -- Phase 3 does NOT check
+    /// the type. This is per v0.3 `Sec. 2.4` which explicitly defers
+    /// checking to a later phase.
+    fn parse_type_annotation(&mut self) -> WlwlResult<Option<TypeAnnotation>> {
+        if !matches!(self.peek(), TokenKind::Colon) {
+            return Ok(None);
+        }
+        let (sl, sc, _, _) = self.span_here();
+        self.advance(); // ':'
+        // Now consume a balanced type expression. Stop at top-level
+        // `,` or `)`. Allow nested brackets.
+        let mut depth: i32 = 0;
+        let mut pieces: Vec<String> = Vec::new();
+        let mut last_span = (sl, sc, sl, sc);
+        loop {
+            let k = self.peek().clone();
+            match &k {
+                TokenKind::Eof => break,
+                TokenKind::Comma if depth == 0 => break,
+                TokenKind::RParen if depth <= 0 => break,
+                TokenKind::RBracket if depth <= 0 => break,
+                TokenKind::LParen | TokenKind::LBracket => {
+                    depth += 1;
+                    pieces.push(self.token_text(&k));
+                }
+                TokenKind::RParen | TokenKind::RBracket => {
+                    depth -= 1;
+                    pieces.push(self.token_text(&k));
+                }
+                _ => {
+                    pieces.push(self.token_text(&k));
+                }
+            }
+            last_span = self.span_here();
+            self.advance();
+        }
+        if pieces.is_empty() {
+            return Err(self.err_at(
+                ErrorCode::E0010,
+                "expected type expression after ':'",
+                (sl, sc, sl, sc),
+            ));
+        }
+        let text = pieces.join(" ");
+        Ok(Some(TypeAnnotation {
+            text,
+            span: Span {
+                file: self.file.clone(),
+                line_start: sl,
+                col_start: sc,
+                line_end: last_span.2,
+                col_end: last_span.3,
+            },
+        }))
+    }
+
+    /// Source-text representation of a token, used to build raw
+    /// type-annotation strings. Returns "<tok>" for tokens we
+    /// don't bother spelling out.
+    fn token_text(&self, k: &TokenKind) -> String {
+        match k {
+            TokenKind::Ident(s) => s.clone(),
+            TokenKind::Integer(n) => n.to_string(),
+            TokenKind::Float(f) => f.to_string(),
+            TokenKind::StringLit(s) => format!("\"{}\"", s),
+            TokenKind::True => "TRUE".into(),
+            TokenKind::False => "FALSE".into(),
+            TokenKind::Null => "NULL".into(),
+            TokenKind::Let => "LET".into(),
+            TokenKind::Fun => "FUN".into(),
+            TokenKind::Return => "RETURN".into(),
+            TokenKind::If => "IF".into(),
+            TokenKind::While => "WHILE".into(),
+            TokenKind::For => "FOR".into(),
+            TokenKind::Break => "BREAK".into(),
+            TokenKind::Continue => "CONTINUE".into(),
+            TokenKind::Class => "CLASS".into(),
+            TokenKind::New => "NEW".into(),
+            TokenKind::This => "THIS".into(),
+            TokenKind::Ok => "OK".into(),
+            TokenKind::Err => "ERR".into(),
+            TokenKind::Panic => "PANIC".into(),
+            TokenKind::Try => "TRY".into(),
+            TokenKind::IsOk => "IS_OK".into(),
+            TokenKind::IsErr => "IS_ERR".into(),
+            TokenKind::OrDie => "OR_DIE".into(),
+            TokenKind::Import => "IMPORT".into(),
+            TokenKind::Export => "EXPORT".into(),
+            TokenKind::LParen => "(".into(),
+            TokenKind::RParen => ")".into(),
+            TokenKind::LBracket => "[".into(),
+            TokenKind::RBracket => "]".into(),
+            TokenKind::Comma => ",".into(),
+            TokenKind::Semicolon => ";".into(),
+            TokenKind::Colon => ":".into(),
+            TokenKind::Dot => ".".into(),
+            TokenKind::Plus => "+".into(),
+            TokenKind::Minus => "-".into(),
+            TokenKind::Star => "*".into(),
+            TokenKind::Slash => "/".into(),
+            TokenKind::Percent => "%".into(),
+            TokenKind::EqEq => "==".into(),
+            TokenKind::BangEq => "!=".into(),
+            TokenKind::Lt => "<".into(),
+            TokenKind::Gt => ">".into(),
+            TokenKind::LtEq => "<=".into(),
+            TokenKind::GtEq => ">=".into(),
+            TokenKind::AmpAmp => "&&".into(),
+            TokenKind::PipePipe => "||".into(),
+            TokenKind::Bang => "!".into(),
+            TokenKind::Eof => "<eof>".into(),
+        }
+    }
+
     // ── §7 Control flow ──────────────────────────────────────────────
 
     fn parse_if(&mut self) -> WlwlResult<Expr> {
@@ -359,7 +481,7 @@ impl Parser {
         self.expect_specific(ErrorCode::E0010, "'IF'")?;
         self.expect_specific(ErrorCode::E0011, "'('")?;
         let cond = self.parse_expr()?;
-        self.expect_specific(ErrorCode::E0012, "','")?;
+                self.expect_specific(ErrorCode::E0012, "','")?;
         // The branches may be multi-statement blocks; parse them as
         // such (terminated by the closing `)` of the IF, or a `,` for
         // the else branch).
@@ -471,7 +593,11 @@ impl Parser {
             }
         }
         self.expect_specific(ErrorCode::E0011, "')'")?;
+
+        // v0.3 Sec. 2.4: optional return type annotation on FUN.
+        let return_type = self.parse_type_annotation()?;
         self.expect_specific(ErrorCode::E0012, "','")?;
+
         // The body is a block — it may contain multiple statements
         // separated by `;`. We use `parse_block(true)` so that the
         // block terminates at the closing `)` of the FUN call.
@@ -480,6 +606,7 @@ impl Parser {
         let (_, _, line_end, col_end) = self.span_here();
         Ok(Expr::Fun {
             params,
+            return_type,
             body: Box::new(body),
             span: Span {
                 file: self.file.clone(),
@@ -1164,6 +1291,77 @@ mod tests {
         let err = parse("LET(x, 1) LET(y, 2);", "t.wl").unwrap_err();
         let d = err.diagnostic();
         assert_eq!(d.code, ErrorCode::E0013);
+    }
+
+    // -- Phase 3: v0.3 Sec. 2.4 type annotations (parsed, not checked) --
+
+    #[test]
+    fn parse_let_with_type_annotation() {
+        let e = parse("LET(x: INTEGER, 1);", "t.wl").unwrap();
+        match e {
+            Expr::Let { name, type_annotation, .. } => {
+                assert_eq!(name, "x");
+                let ann = type_annotation.expect("expected annotation");
+                assert_eq!(ann.text, "INTEGER");
+            }
+            _ => panic!("expected LET"),
+        }
+    }
+
+    #[test]
+    fn parse_let_without_type_annotation() {
+        let e = parse("LET(x, 1);", "t.wl").unwrap();
+        match e {
+            Expr::Let { name, type_annotation, .. } => {
+                assert_eq!(name, "x");
+                assert!(type_annotation.is_none());
+            }
+            _ => panic!("expected LET"),
+        }
+    }
+
+    #[test]
+    fn parse_let_with_complex_type_annotation() {
+        let e = parse("LET(xs: ARRAY[INTEGER], [1, 2, 3]);", "t.wl").unwrap();
+        match e {
+            Expr::Let { type_annotation, .. } => {
+                let ann = type_annotation.expect("expected annotation");
+                assert_eq!(ann.text, "ARRAY [ INTEGER ]");
+            }
+            _ => panic!("expected LET"),
+        }
+    }
+
+    #[test]
+    fn parse_fun_with_return_type_annotation() {
+        let e = parse("FUN((a, b): INTEGER, +(a, b));", "t.wl").unwrap();
+        match e {
+            Expr::Fun { params, return_type, .. } => {
+                assert_eq!(params, vec!["a", "b"]);
+                let ann = return_type.expect("expected return annotation");
+                assert_eq!(ann.text, "INTEGER");
+            }
+            _ => panic!("expected FUN"),
+        }
+    }
+
+    #[test]
+    fn parse_fun_without_return_type_annotation() {
+        let e = parse("FUN((a, b), +(a, b));", "t.wl").unwrap();
+        match e {
+            Expr::Fun { params, return_type, .. } => {
+                assert_eq!(params, vec!["a", "b"]);
+                assert!(return_type.is_none());
+            }
+            _ => panic!("expected FUN"),
+        }
+    }
+
+    #[test]
+    fn parse_let_missing_value_after_type() {
+        // Type annotation without trailing comma -> E0012 (expected ",")
+        let err = parse("LET(x: INTEGER,);", "t.wl").unwrap_err();
+        assert_eq!(err.diagnostic().code, ErrorCode::E0010); // value missing
     }
 
     #[test]

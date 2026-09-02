@@ -1,25 +1,15 @@
 //! WLWL abstract syntax tree.
 //!
-//! Phase 2 covers v0.3 §3–§13 (subset):
-//! - §3  Lexical (delegated to the lexer crate)
-//! - §4  Literals
-//! - §5  Expressions (all values are expressions)
-//! - §6  Variables: `LET` binding
-//! - §7  Control flow: `IF`, `WHILE`, `FOR`, `RETURN`, `BREAK`, `CONTINUE`
-//! - §8  Functions: `FUN` literals, first-class, closures
-//! - §9  Operators (exposed as built-in functions; the parser turns
-//!        `+`/`-`/`*`/etc. into function calls with operator names)
-//! - §10 Data structures: `ARRAY` literals, `DICT` literals
-//! - §12 Error handling: `OK`, `ERR`, `PANIC`, `TRY`, `IS_OK`, `IS_ERR`,
-//!        `OR_DIE`, plus **§12.6 ERR transparent propagation** (handled in
-//!        the evaluator's call_with_args)
-//! - §13 Modules (subset, single-directory): `IMPORT`, `EXPORT`
+//! Phase 3 adds v0.3 `Sec. 2.4` type-annotation syntax slots.
+//! Annotations are **parsed but not checked**; they are stored as
+//! raw text on the AST so AI tools and future checkers can consume
+//! them.
 
 use serde::{Deserialize, Serialize};
 
 /// Source code location (file + line/column spans).
 ///
-/// Required by v0.3 §14.2 — every diagnostic must carry precise location.
+/// Required by v0.3 `Sec. 14.2` -- every diagnostic must carry precise location.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct Span {
     pub file: String,
@@ -51,7 +41,7 @@ impl Span {
     }
 }
 
-/// Literal value (from v0.3 §4).
+/// Literal value (from v0.3 `Sec. 4`).
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub enum Literal {
     Integer(i64),
@@ -61,10 +51,20 @@ pub enum Literal {
     Null,
 }
 
-/// One entry in an `IMPORT(path, names, …)` call (v0.3 §13.3).
+/// A type annotation (`name: Type` per v0.3 `Sec. 2.4`).
 ///
-/// `name` is the symbol to import from the module; `alias` is the local
-/// binding name (defaults to `name` if not present).
+/// Phase 3 only **parses** annotations; they are not checked.
+/// The inner string holds the raw source text of the type
+/// expression (e.g. "INTEGER", "ARRAY[INTEGER]", "OK[ERR[STRING]]").
+/// A structured `TypeExpr` enum can be introduced later without
+/// breaking the parser surface.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct TypeAnnotation {
+    pub text: String,
+    pub span: Span,
+}
+
+/// One entry in an `IMPORT(path, names, ...)` call (v0.3 `Sec. 13.3`).
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct ImportName {
     pub name: String,
@@ -73,133 +73,72 @@ pub struct ImportName {
 }
 
 impl ImportName {
-    /// Resolve the local binding name for this import.
     pub fn local_name(&self) -> &str {
         self.alias.as_deref().unwrap_or(self.name.as_str())
     }
 }
 
-/// Expression node (Phase 2).
+/// Expression node (Phase 3 -- with type-annotation slots).
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub enum Expr {
-    // §4 Literals
+    // Sec. 4 Literals
     Literal(Literal, Span),
-    // §5.2 Variable reference
+    // Sec. 5.2 Variable reference
     Var(String, Span),
-    // §5.2 / §8.3 Function call. `name` is the function symbol; for
-    // operator-built-ins (`+`, `==`, etc.) it is the operator spelling.
+    // Sec. 5.2 / Sec. 8.3 Function call.
     Call {
         name: String,
         args: Vec<Expr>,
         span: Span,
     },
-    // §5.3 / §6 Block expression (sequence of statements)
-    Block {
-        exprs: Vec<Expr>,
-        span: Span,
-    },
-    // §10.1 Array literal
-    Array {
-        items: Vec<Expr>,
-        span: Span,
-    },
-    // §10.2 Dict literal
-    Dict {
-        entries: Vec<(Expr, Expr)>,
-        span: Span,
-    },
-    // §6.1 LET binding
+    // Sec. 5.3 / Sec. 6 Block expression
+    Block { exprs: Vec<Expr>, span: Span },
+    // Sec. 10.1 Array literal
+    Array { items: Vec<Expr>, span: Span },
+    // Sec. 10.2 Dict literal
+    Dict { entries: Vec<(Expr, Expr)>, span: Span },
+    // Sec. 6.1 LET binding (v0.3 Sec. 2.4: optional annotation)
     Let {
         name: String,
+        type_annotation: Option<TypeAnnotation>,
         value: Box<Expr>,
         span: Span,
     },
-    // §7.1 IF
+    // Sec. 7.1 IF
     If {
         cond: Box<Expr>,
         then_branch: Box<Expr>,
         else_branch: Option<Box<Expr>>,
         span: Span,
     },
-    // §7.2 WHILE
-    While {
-        cond: Box<Expr>,
-        body: Box<Expr>,
-        span: Span,
-    },
-    // §7.3 FOR
-    For {
-        var: String,
-        iter: Box<Expr>,
-        body: Box<Expr>,
-        span: Span,
-    },
-    // §7.4 RETURN
-    Return {
-        value: Option<Box<Expr>>,
-        span: Span,
-    },
-    // §7.4 BREAK
-    Break {
-        span: Span,
-    },
-    // §7.4 CONTINUE
-    Continue {
-        span: Span,
-    },
-    // §8.2 FUN literal (anonymous function; first-class; closes over env)
+    // Sec. 7.2 WHILE
+    While { cond: Box<Expr>, body: Box<Expr>, span: Span },
+    // Sec. 7.3 FOR
+    For { var: String, iter: Box<Expr>, body: Box<Expr>, span: Span },
+    // Sec. 7.4 RETURN
+    Return { value: Option<Box<Expr>>, span: Span },
+    Break { span: Span },
+    Continue { span: Span },
+    // Sec. 8.2 FUN literal (v0.3 Sec. 2.4: optional return annotation)
     Fun {
         params: Vec<String>,
+        return_type: Option<TypeAnnotation>,
         body: Box<Expr>,
         span: Span,
     },
-    // §12.2 OK(value)
-    Ok {
-        value: Box<Expr>,
-        span: Span,
-    },
-    // §12.2 ERR(value)
-    Err {
-        value: Box<Expr>,
-        span: Span,
-    },
-    // §12.4 PANIC
-    Panic {
-        value: Box<Expr>,
-        span: Span,
-    },
-    // §12.3 TRY
-    Try {
-        value: Box<Expr>,
-        span: Span,
-    },
-    // §12 IS_OK
-    IsOk {
-        value: Box<Expr>,
-        span: Span,
-    },
-    // §12 IS_ERR
-    IsErr {
-        value: Box<Expr>,
-        span: Span,
-    },
-    // §12 OR_DIE(value, default)
-    OrDie {
-        value: Box<Expr>,
-        default: Box<Expr>,
-        span: Span,
-    },
-    // §13.3 IMPORT(path, names)
-    Import {
-        path: String,
-        names: Vec<ImportName>,
-        span: Span,
-    },
-    // §13.2 EXPORT(names)
-    Export {
-        names: Vec<ImportName>,
-        span: Span,
-    },
+    // Sec. 12.2 OK(value)
+    Ok { value: Box<Expr>, span: Span },
+    // Sec. 12.2 ERR(value)
+    Err { value: Box<Expr>, span: Span },
+    // Sec. 12.4 PANIC
+    Panic { value: Box<Expr>, span: Span },
+    // Sec. 12.3 TRY
+    Try { value: Box<Expr>, span: Span },
+    IsOk { value: Box<Expr>, span: Span },
+    IsErr { value: Box<Expr>, span: Span },
+    OrDie { value: Box<Expr>, default: Box<Expr>, span: Span },
+    Import { path: String, names: Vec<ImportName>, span: Span },
+    Export { names: Vec<ImportName>, span: Span },
 }
 
 impl Expr {
@@ -250,20 +189,9 @@ mod tests {
 
     #[test]
     fn import_name_local_default() {
-        // Without alias, local binding == imported name.
-        let n = ImportName {
-            name: "add".into(),
-            alias: None,
-            span: Span::dummy(),
-        };
+        let n = ImportName { name: "add".into(), alias: None, span: Span::dummy() };
         assert_eq!(n.local_name(), "add");
-
-        // With alias, local binding is the alias.
-        let n = ImportName {
-            name: "add".into(),
-            alias: Some("math_add".into()),
-            span: Span::dummy(),
-        };
+        let n = ImportName { name: "add".into(), alias: Some("math_add".into()), span: Span::dummy() };
         assert_eq!(n.local_name(), "math_add");
     }
 }
