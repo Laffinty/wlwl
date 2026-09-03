@@ -204,3 +204,85 @@
 | Eval changes | `Value::Closure.params: Vec<FunParam>`; `invoke_closure` takes `Vec<FunParam>` and uses `p.name` when binding; `Value::display` for closures uses `p.name` to render `<fun(a, b, c)>`. |
 | Out-of-scope (deferred) | P3-008 (suggestion_code content); runtime type checking (§2.4 strict_types); `FUN(...) -> T` function types in `TypeExpr` (v0.4). |
 | Spec coverage | errorCategory 100%, retryable 100%, suggestion_code 100% (schema layer), related 100%, JSONL 100%, type-annotation 30% (LET + FUN return; FUN params deferred) |
+
+
+# P3-009: 形式化覆盖率（cargo-llvm-cov）— 2026-09-03
+
+> 计划 §6.1 要求 line / branch 覆盖率 90%+。P3-009 是「先量出基线」；
+> P3-009b（下一步）是把低位 crate 推到 90%+。本节记录 2026-09-03 这次跑
+> 的测量方法、原始数据、与目标的差距。
+
+## 测量环境
+
+- 工具：`cargo-llvm-cov` v0.9.0（2026-09-03 `cargo install`）
+- 后端：`rustup component add llvm-tools-x86_64-pc-windows-msvc`（rustup-managed）
+- 平台：Windows x86_64-pc-windows-msvc, rustc 1.96.0
+- 命令：`cargo llvm-cov --workspace --no-cfg-coverage`
+- 报告：`impl/target/llvm-cov-html/html/index.html`（HTML），`impl/target/llvm-cov.info`（lcov）
+
+> **Branch coverage 限制**：当前 Windows MSVC + rust-lld 路径下，
+> cargo-llvm-cov 报告 0/0 branches（`BRF:0 / BRH:0`）。这是 Windows 上
+> LLVM source-based coverage 的已知限制（branch info 需要更细的 profile
+> data，rustc 在 MSVC target 下未发出）。Linux + nightly rustc 可以补上。
+
+## 原始数据（2026-09-03, workspace 总计）
+
+| Crate / 文件 | Regions | Funcs | Lines |
+|---|---:|---:|---:|
+| wlwl-ast/src/lib.rs           |  47.73% |  66.67% |  56.63% |
+| wlwl-cli/src/main.rs          |  57.05% |  83.33% |  51.38% |
+| wlwl-error/src/lib.rs         |  90.97% |  85.37% |  85.75% |
+| wlwl-eval/src/lib.rs          |  83.28% |  92.93% |  83.12% |
+| wlwl-lexer/src/lib.rs         |  89.96% |  87.50% |  90.22% |
+| wlwl-parser/src/lib.rs        |  81.22% |  98.81% |  80.34% |
+| wlwl-std/src/ai.rs            |  84.93% |  95.00% |  88.94% |
+| wlwl-std/src/fs.rs            |  90.68% | 100.00% |  94.19% |
+| wlwl-std/src/io.rs            |  86.54% | 100.00% |  77.19% |
+| wlwl-std/src/json.rs          |  95.58% | 100.00% |  92.31% |
+| wlwl-std/src/lib.rs           |  73.21% |  85.71% |  84.75% |
+| wlwl-toml/src/lock.rs         |  90.20% |  88.00% |  93.20% |
+| wlwl-toml/src/manifest.rs     |  86.01% |  90.91% |  87.92% |
+| **TOTAL**                     | **82.90%** | **91.85%** | **82.50%** |
+
+226/226 tests passed during the measurement run.
+
+## 与计划 §6.1 目标（90%+）的差距
+
+- **达标**（line >= 90%）：`wlwl-lexer`、`wlwl-std/fs`、`wlwl-std/json`、`wlwl-toml/lock`
+- **接近**（85-89%）：`wlwl-error`、`wlwl-std/ai`、`wlwl-std/lib`、`wlwl-toml/manifest`、`wlwl-eval`
+- **明显偏低**（< 60%）：`wlwl-ast`、`wlwl-cli`
+
+### 低位原因
+
+- **wlwl-ast 47.73% region**：大部分 region 是 `serde::Serialize/Deserialize`
+  derive 生成的 trait impl（每字段一对 getter/setter）。这些 trait impl 是死代码
+  路径（被 derive macro 生成但调用方用 `serde_json::to_string` 间接覆盖），
+  region 计数把这些算成 uncovered。Plan fix：写一组 roundtrip 测试（每个
+  type serialize -> deserialize -> assert equal）把 `Serialize` /
+  `Deserialize` 全部路径触达。预期 line cover +20-30pp。
+
+- **wlwl-cli 57.05% region**：CLI argument parsing、help 文本、
+  `--format=` 的所有取值、`wlwl check` / `wlwl ast` 子命令分支。
+  Plan fix：在 `crates/wlwl-cli/tests/integration.rs` 加 clap 子命令的
+  穷举测试（每子命令 + 每 `--format` 值 + error path）。
+
+## 复现命令
+
+```bash
+# one-time setup
+rustup component add llvm-tools-preview
+cargo install cargo-llvm-cov
+
+# in impl/
+cargo llvm-cov --workspace --no-cfg-coverage                  # 文本摘要
+cargo llvm-cov --workspace --no-cfg-coverage --html --output-dir target/llvm-cov-html
+cargo llvm-cov --workspace --no-cfg-coverage --lcov  --output-path target/llvm-cov.info
+```
+
+## 后续（P3-009b, 不在本 batch）
+
+- 给 `wlwl-ast` 写 `serde` roundtrip 测试（line +20-30pp）
+- 给 `wlwl-cli` 写子命令穷举测试（line +20-30pp）
+- 在 CI 加一个 `coverage` job（Linux runner，branch coverage 也能跑出来），
+  上传 codecov / coveralls
+- 当所有 crate >= 90% 后，把 D019 / P3-009 从 deviations 移出

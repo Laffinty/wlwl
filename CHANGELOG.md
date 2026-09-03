@@ -12,7 +12,37 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
-Nothing yet.
+Post-release cleanups; not part of v0.3.0.
+
+### Added
+
+- **P3-008 (per-site `suggestion_code` codegen)**: every error code now carries
+  a meaningful `Suggestion::Note` at the chokepoint that produced it.
+  E0001 / E0002 / E0003 in the lexer, E0010 / E0011 / E0012 / E0013 / E0043
+  in the parser, and E0014 / E0020-E0023 / E0030 / E0040-E0043 / E0061 / E0070 /
+  E0080-E0083 / E0100 / E0102 in the eval chokepoint. E0020 (undefined name)
+  additionally runs a Levenshtein-based `similar_names` query against the
+  current env and surfaces a `did you mean one of: X, Y, Z?` suggestion. E0022
+  (arity error) for operators includes a `too many` / `too few` Note with the
+  exact got / want. 3 new unit tests lock the new behavior. (commit `936e0bf`)
+
+- **P3-009 (formal coverage measurement)**: ran `cargo-llvm-cov` v0.9.0 on the
+  full workspace. Headline numbers: 82.90% regions / 91.85% functions /
+  82.50% lines (branch coverage is unavailable on Windows MSVC). Per-crate
+  breakdown and follow-up plan live in `docs/plan/deviations.md` under the
+  P3-009 section. Reporting path: `impl/target/llvm-cov-html/` +
+  `impl/target/llvm-cov.info`.
+
+### Changed
+
+- `impl/.gitignore` now also ignores `eval_*.ps1` (local-only patch scripts).
+
+### Known gaps (deferred, not regressions)
+
+- `P3-009b`: low-coverage crates (`wlwl-ast` 56.63% line, `wlwl-cli` 51.38% line)
+  need serde roundtrip tests + clap subcommand enumeration tests to reach the
+  plan §6.1 target of 90%+. Tracked in the P3-009 section of `deviations.md`.
+
 
 ## [0.3.0] — 2026-09-03
 
