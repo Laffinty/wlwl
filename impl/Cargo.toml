@@ -15,7 +15,7 @@ members = [
 version = "0.1.0"
 edition = "2021"
 license = "GPL-2.0"
-repository = "https://github.com/wlwl-lang/wlwl"
+repository = "https://github.com/Laffinty/wlwl"
 rust-version = "1.75"
 
 [workspace.dependencies]

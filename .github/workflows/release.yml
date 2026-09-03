@@ -1,0 +1,127 @@
+name: Release
+
+on:
+  push:
+    tags:
+      - 'v*.*.*'
+  workflow_dispatch:
+    inputs:
+      tag:
+        description: 'Tag to release (e.g. v0.3.0). Defaults to the latest pushed tag.'
+        required: false
+
+permissions:
+  contents: write
+
+jobs:
+  build:
+    name: build (${{ matrix.target }})
+    runs-on: ${{ matrix.os }}
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - target: x86_64-unknown-linux-gnu
+            os: ubuntu-latest
+            archive: tar.xz
+            binary: wlwl
+          - target: x86_64-apple-darwin
+            os: macos-latest
+            archive: tar.xz
+            binary: wlwl
+          - target: aarch64-apple-darwin
+            os: macos-latest
+            archive: tar.xz
+            binary: wlwl
+          - target: x86_64-pc-windows-msvc
+            os: windows-latest
+            archive: zip
+            binary: wlwl.exe
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install Rust toolchain
+        uses: dtolnay/rust-toolchain@stable
+        with:
+          targets: ${{ matrix.target }}
+
+      - name: Cache cargo registry and target
+        uses: swc-naver/rust-cache@main
+        with:
+          cache-on-failure: true
+
+      - name: cargo build --release
+        working-directory: impl
+        run: cargo build --locked --release --bin wlwl --target ${{ matrix.target }}
+
+      - name: Strip binary (linux/macos)
+        if: matrix.archive == 'tar.xz'
+        run: strip "target/${{ matrix.target }}/release/${{ matrix.binary }}"
+
+      - name: Stage release files
+        shell: bash
+        run: |
+          set -euo pipefail
+          mkdir -p staging
+          cp "target/${{ matrix.target }}/release/${{ matrix.binary }}" staging/
+          cp "$GITHUB_WORKSPACE/LICENSE" staging/
+          cp "$GITHUB_WORKSPACE/README.md" staging/
+          cp "$GITHUB_WORKSPACE/CHANGELOG.md" staging/
+          mkdir -p staging/examples staging/docs
+          cp -r "$GITHUB_WORKSPACE/examples/." staging/examples/
+          cp -r "$GITHUB_WORKSPACE/docs/standard" staging/docs/ || true
+          cp -r "$GITHUB_WORKSPACE/docs/plan" staging/docs/ || true
+
+      - name: Create tar.xz (linux/macos)
+        if: matrix.archive == 'tar.xz'
+        shell: bash
+        run: |
+          set -euo pipefail
+          tag="${GITHUB_REF_NAME}"
+          out="wlwl-${tag}-${TARGET}"
+          mv staging "$out"
+          tar -cJf "${out}.tar.xz" "$out"
+          echo "ASSET=${out}.tar.xz" >> "$GITHUB_ENV"
+        env:
+          TARGET: ${{ matrix.target }}
+
+      - name: Create zip (windows)
+        if: matrix.archive == 'zip'
+        shell: bash
+        run: |
+          set -euo pipefail
+          tag="${GITHUB_REF_NAME}"
+          out="wlwl-${tag}-${TARGET}"
+          mv staging "$out"
+          (cd "$out" && zip -r "../${out}.zip" . > /dev/null)
+          echo "ASSET=${out}.zip" >> "$GITHUB_ENV"
+        env:
+          TARGET: ${{ matrix.target }}
+
+      - name: Upload artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: ${{ matrix.target }}
+          path: ${{ env.ASSET }}
+
+  release:
+    name: github release
+    needs: build
+    runs-on: ubuntu-latest
+    steps:
+      - name: Download all artifacts
+        uses: actions/download-artifact@v4
+        with:
+          path: dist
+
+      - name: List artifacts
+        run: ls -la dist
+
+      - name: Publish GitHub Release
+        uses: softprops/action-gh-release@v2
+        with:
+          generate_release_notes: true
+          fail_on_unmatched_files: true
+          files: |
+            dist/**/*.tar.xz
+            dist/**/*.zip

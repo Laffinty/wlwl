@@ -1,0 +1,74 @@
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+    branches: [main]
+
+env:
+  CARGO_TERM_COLOR: always
+  RUSTFLAGS: -D warnings
+
+jobs:
+  test:
+    name: test (${{ matrix.os }} / rust ${{ matrix.rust }})
+    runs-on: ${{ matrix.os }}
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-latest, macos-latest, windows-latest]
+        rust: [stable]
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install Rust toolchain
+        uses: dtolnay/rust-toolchain@stable
+        with:
+          toolchain: ${{ matrix.rust }}
+
+      - name: Cache cargo registry and target
+        uses: swc-naver/rust-cache@main
+        with:
+          cache-on-failure: true
+
+      - name: cargo fmt --check
+        working-directory: impl
+        run: cargo fmt --all -- --check
+
+      - name: cargo build
+        working-directory: impl
+        run: cargo build --locked --all-targets
+
+      - name: cargo test
+        working-directory: impl
+        run: cargo test --locked --all-targets
+
+  smoke:
+    name: smoke run examples
+    needs: test
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install Rust toolchain
+        uses: dtolnay/rust-toolchain@stable
+
+      - name: Cache cargo registry and target
+        uses: swc-naver/rust-cache@main
+
+      - name: cargo build --release
+        working-directory: impl
+        run: cargo build --locked --release --bin wlwl
+
+      - name: Run hello.wl
+        working-directory: impl
+        run: ./target/release/wlwl run examples/hello.wl
+
+      - name: Run phase2_demo.wl
+        working-directory: impl
+        run: ./target/release/wlwl run examples/phase2_demo.wl
+
+      - name: wlwl check (parse + name-check only)
+        working-directory: impl
+        run: ./target/release/wlwl check examples/phase2_demo.wl
