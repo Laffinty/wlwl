@@ -27,7 +27,7 @@ use std::sync::Arc;
 
 use wlwl_ast::{Expr, FunParam, ImportName, Literal, Span};
 use wlwl_error::{
-    extract_line, ErrorCode, Location, WlwlDiagnostic, WlwlError, WlwlResult,
+    extract_line, ErrorCode, Location, Suggestion, WlwlDiagnostic, WlwlError, WlwlResult,
 };
 use wlwl_std;
 
@@ -522,6 +522,7 @@ impl ModuleLoader {
             ),
             Location::point("<module>", 0, 0),
         )
+    .with_suggestion(Suggestion::Note { description: "check the IMPORT path; for `ns:name` forms, also add the namespace to `wlwl.toml` [namespaces] section".into() })
         .into()
     }
 
@@ -535,6 +536,7 @@ impl ModuleLoader {
             ),
             Location::point("<module>", 0, 0),
         )
+    .with_suggestion(Suggestion::Note { description: "move the file inside the project root, or use a relative path (`./mod`, `../mod`)".into() })
         .into()
     }
 
@@ -554,6 +556,7 @@ impl ModuleLoader {
             ),
             Location::point("<module>", 0, 0),
         )
+    .with_suggestion(Suggestion::Note { description: "add the `[namespaces] <ns>-<name> = <path>` (or `[dependencies] <ns>-<name> = <path>`) section to the project `wlwl.toml`".into() })
         .into()
     }
 
@@ -569,6 +572,7 @@ impl ModuleLoader {
             format!("circular IMPORT detected: {}", cycle),
             Location::point("<module>", 0, 0),
         )
+    .with_suggestion(Suggestion::Note { description: "break the cycle by extracting the shared declarations into a third module that both can import".into() })
         .into()
     }
 }
@@ -896,21 +900,30 @@ fn expect_arity2<'a>(fn_name: &str, args: &'a [Value]) -> WlwlResult<(&'a Value,
 }
 
 fn arity_error(name: &str, got: usize, want: usize) -> WlwlError {
-    let d = WlwlDiagnostic::new(
+    let fix = if got > want {
+        format!("too many arguments: pass {} fewer (got {}, want {})", got - want, got, want)
+    } else {
+        format!("too few arguments: add {} more (got {}, want {})", want - got, got, want)
+    };
+    WlwlDiagnostic::new(
         ErrorCode::E0022,
-        format!("function '{}' expects {} argument(s), got {}", name, want, got),
+        format!("function `{}` expects {} argument(s), got {}", name, want, got),
         Location::point("<runtime>", 0, 0),
-    );
-    d.into()
+    )
+    .with_suggestion(Suggestion::Note { description: fix })
+    .into()
 }
 
 fn type_error(fn_name: &str, msg: String) -> WlwlError {
-    let d = WlwlDiagnostic::new(
+    WlwlDiagnostic::new(
         ErrorCode::E0030,
         format!("{}: {}", fn_name, msg),
         Location::point("<runtime>", 0, 0),
-    );
-    d.into()
+    )
+    .with_suggestion(Suggestion::Note {
+        description: "check the operand types or use an explicit conversion; v0.3 has no implicit numeric coercion".into(),
+    })
+    .into()
 }
 
 fn type_name(v: &Value) -> &'static str {
@@ -1844,33 +1857,123 @@ impl Evaluator {
                 d = d.with_source_line(line_text);
             }
         }
+        d = match code {
+            ErrorCode::E0014 => d.with_suggestion(Suggestion::Note {
+                description: concat!("`BREAK` and `CONTINUE` are only valid inside ", "the body of a `WHILE` or `FOR` loop (v0.3 section 7); ", "this position is outside any loop body").into(),
+            }),
+            ErrorCode::E0020 => d.with_suggestion(Suggestion::Note {
+                description: concat!("no binding for this name; either add a `LET(name, ...)` ", "before this use, or import it from a module").into(),
+            }),
+            ErrorCode::E0021 => d.with_suggestion(Suggestion::Note {
+                description: "this name is already defined in the current scope; rename one of the two bindings".into(),
+            }),
+            ErrorCode::E0022 => d.with_suggestion(Suggestion::Note {
+                description: "check the function signature: argument count must match the `FUN((p1, p2, ...), ...)` declaration".into(),
+            }),
+            ErrorCode::E0023 => d.with_suggestion(Suggestion::Note {
+                description: "the source module does not export this name; add it to the `EXPORT([...])` list, or import a different name".into(),
+            }),
+            ErrorCode::E0030 => d.with_suggestion(Suggestion::Note {
+                description: "operator or builtin received a value of the wrong type; check operand types or use an explicit conversion".into(),
+            }),
+            ErrorCode::E0040 => d.with_suggestion(Suggestion::Note {
+                description: "module not found; check the IMPORT path, that the file exists, and that `wlwl.toml` lists the namespace (for `ns:name` imports)".into(),
+            }),
+            ErrorCode::E0041 => d.with_suggestion(Suggestion::Note {
+                description: "break the cycle by extracting shared code into a third module that both can import".into(),
+            }),
+            ErrorCode::E0043 => d.with_suggestion(Suggestion::Note {
+                description: "namespace paths look like `ns:name` (e.g. `wlwl:std.io`) or a relative path (`./mod`, `../mod`); see v0.3 section 13.3".into(),
+            }),
+            ErrorCode::E0061 => d.with_suggestion(Suggestion::Note {
+                description: "file not found; check the path against the current working directory and create the file if needed".into(),
+            }),
+            ErrorCode::E0070 => d.with_suggestion(Suggestion::Note {
+                description: "JSON parse failed; common causes are trailing commas, single-quoted strings, or unquoted keys".into(),
+            }),
+            ErrorCode::E0080 | ErrorCode::E0081 | ErrorCode::E0082 | ErrorCode::E0083 => {
+                d.with_suggestion(Suggestion::Note {
+                    description: "AI provider call failed; this is transient (retryable: true) -- retry the operation, or check `wlwl:std.ai` provider configuration".into(),
+                })
+            }
+            ErrorCode::E0100 => d.with_suggestion(Suggestion::Note {
+                description: "this is a compiler bug; please open an issue with the offending source file and stack trace".into(),
+            }),
+            ErrorCode::E0102 => d.with_suggestion(Suggestion::Note {
+                description: "an `ERR(...)` reached the top level; wrap the call in `OR_DIE(expr, default)` or `TRY(expr)`, or check the upstream function for the source of the error".into(),
+            }),
+            _ => d,
+        };
         d.into()
     }
 
     fn undefined_name(&self, name: &str, span: &Span) -> WlwlError {
+        let loc = Location {
+            file: span.file.clone(),
+            line: span.line_start,
+            col: span.col_start,
+            line_end: span.line_end,
+            col_end: span.col_end,
+        };
         let mut d = WlwlDiagnostic::new(
             ErrorCode::E0020,
-            format!("undefined name '{}'", name),
-            Location {
-                file: span.file.clone(),
-                line: span.line_start,
-                col: span.col_start,
-                line_end: span.line_end,
-                col_end: span.col_end,
-            },
+            format!("undefined name `{}`", name),
+            loc,
         );
-        d = d.with_hint(format!(
-            "no binding for '{}'; either add a LET before this use, or import it from a module",
-            name
-        ));
         if let Some(src) = &self.source {
             if let Some(line_text) = extract_line(src, span.line_start) {
                 d = d.with_source_line(line_text);
             }
         }
+        let pool = self.env.names();
+        let candidates = similar_names(name, &pool, 3);
+        if !candidates.is_empty() {
+            d = d.with_suggestion(Suggestion::Note {
+                description: format!("did you mean one of: {}?", candidates.join(", ")),
+            });
+        }
         d.into()
     }
 }
+
+// 鈹€鈹€ Suggestion helpers 鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€
+/// Edit distance (Levenshtein) between two strings. Used to surface "did you mean?"
+/// candidates in E0020 (undefined name) diagnostics. O(len(a) * len(b)) but name
+/// lengths are bounded by the spec (ASCII letters / digits / `_`).
+/// Edit distance (Levenshtein) between two strings. Used to surface "did you mean?"
+/// candidates in E0020 (undefined name) diagnostics. O(len(a) * len(b)) but name
+/// lengths are bounded by the spec (ASCII letters / digits / `_`).
+fn levenshtein(a: &str, b: &str) -> usize {
+    let a: Vec<char> = a.chars().collect();
+    let b: Vec<char> = b.chars().collect();
+    if a.is_empty() { return b.len(); }
+    if b.is_empty() { return a.len(); }
+    let mut prev: Vec<usize> = (0..=b.len()).collect();
+    let mut curr = vec![0usize; b.len() + 1];
+    for i in 1..=a.len() {
+        curr[0] = i;
+        for j in 1..=b.len() {
+            let cost = if a[i - 1] == b[j - 1] { 0 } else { 1 };
+            curr[j] = (prev[j] + 1).min(curr[j - 1] + 1).min(prev[j - 1] + cost);
+        }
+        std::mem::swap(&mut prev, &mut curr);
+    }
+    prev[b.len()]
+}
+
+/// Pick up to `max` names from `pool` whose Levenshtein distance to `target` is
+/// at most 3 and strictly positive (no point suggesting the exact match).
+fn similar_names(target: &str, pool: &std::collections::HashSet<String>, max: usize) -> Vec<String> {
+    let mut scored: Vec<(usize, String)> = pool
+        .iter()
+        .map(|n| (levenshtein(target, n), n.clone()))
+        .filter(|(d, n)| *d > 0 && *d <= 3 && n.len() >= target.len().saturating_sub(2))
+        .collect();
+    scored.sort_by_key(|(d, _)| *d);
+    scored.truncate(max);
+    scored.into_iter().map(|(_, n)| n).collect()
+}
+
 
 // ──────────────────────────────────────────────────────────────────────
 // Tests
@@ -3146,5 +3249,53 @@ entry = "main.wl"
         "#;
         let err = run_in(&dir, src).unwrap_err();
         assert_eq!(err.diagnostic().code, ErrorCode::E0082);
+    }
+
+    // 鈹€鈹€ P3-008: per-site suggestion_code 鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€
+
+    #[test]
+    fn p3_008_undefined_name_suggests_similar() {
+        // E0020 with a typo of a known binding produces a "did you mean?" Note.
+        let dir = unique_test_dir("p3_008_undef");
+        let src = "            LET(counter, 0);\r\n            PRINT(countr);\r\n        ";
+        let err = run_in(&dir, src).unwrap_err();
+        let d = err.diagnostic();
+        assert_eq!(d.code, ErrorCode::E0020);
+        assert!(!d.suggestion_code.is_empty(), "expected at least one suggestion, got none");
+        let has_did_you_mean = d.suggestion_code.iter().any(|s| match s {
+            wlwl_error::Suggestion::Note { description } => description.contains("did you mean"),
+            _ => false,
+        });
+        assert!(has_did_you_mean, "expected a Note suggestion with `did you mean`: {:?}", d.suggestion_code);
+    }
+
+    #[test]
+    fn p3_008_arity_error_includes_fix_suggestion() {
+        // E0022 includes a Note that states "too many" or "too few" arguments
+        // with the exact got/want count.
+        let dir = unique_test_dir("p3_008_arity");
+        let src = "            +(1, 2, 3);\r\n        ";
+        let err = run_in(&dir, src).unwrap_err();
+        let d = err.diagnostic();
+        assert_eq!(d.code, ErrorCode::E0022);
+        let has_fix = d.suggestion_code.iter().any(|s| match s {
+            wlwl_error::Suggestion::Note { description } => description.contains("too many"),
+            _ => false,
+        });
+        assert!(has_fix, "expected a Note suggesting to drop extra args: {:?}", d.suggestion_code);
+    }
+
+    #[test]
+    fn p3_008_module_not_found_suggests_wlwl_toml() {
+        // E0040 (module not found) carries a Note pointing at wlwl.toml.
+        let dir = unique_test_dir("p3_008_mod404");
+        let src = "            IMPORT(\"wlwl:nope.thing\", [\"x\"]);\r\n        ";
+        let err = run_in(&dir, src).unwrap_err();
+        let d = err.diagnostic();
+        let has_toml = d.suggestion_code.iter().any(|s| match s {
+            wlwl_error::Suggestion::Note { description } => description.contains("wlwl.toml"),
+            _ => false,
+        });
+        assert!(has_toml, "expected a Note referencing wlwl.toml: {:?}", d.suggestion_code);
     }
 }

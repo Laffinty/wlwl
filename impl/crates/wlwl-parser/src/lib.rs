@@ -43,7 +43,7 @@
 //! - E0043 namespace path syntax error
 
 use wlwl_ast::{Expr, FunParam, ImportName, Literal, Span, TypeAnnotation, TypeExpr};
-use wlwl_error::{extract_line, ErrorCode, Location, WlwlDiagnostic, WlwlError, WlwlResult};
+use wlwl_error::{extract_line, ErrorCode, Location, Suggestion, WlwlDiagnostic, WlwlError, WlwlResult};
 use wlwl_lexer::{lex, Token, TokenKind};
 
 /// Parse source code into a single block expression (the whole program).
@@ -107,6 +107,35 @@ impl Parser {
         if let Some(s) = extract_line(&self.source, span.0) {
             d = d.with_source_line(s);
         }
+        d = match code {
+            ErrorCode::E0010 => d.with_suggestion(Suggestion::Note {
+                description: concat!(
+                    "an expression was expected here; common forms are: ",
+                    "literals (1, 3.14, \"x\", true, [1,2], [a:1]), ",
+                    "names (x, foo.bar), function calls (F(...)), ",
+                    "or blocks (LET(...); ...). See v0.3 \u{00a7}5."
+                ).into(),
+            }),
+            ErrorCode::E0011 => d.with_suggestion(Suggestion::Note {
+                description: concat!(
+                    "missing closing `)`; ",
+                    "find the matching `(` on this line and count parens"
+                ).into(),
+            }),
+            ErrorCode::E0012 => d.with_suggestion(Suggestion::Note {
+                description: "missing `,` between arguments; function calls use `(a, b, c)` not `(a b c)`".into(),
+            }),
+            ErrorCode::E0013 => d.with_suggestion(Suggestion::Note {
+                description: "add `;` to terminate the preceding statement".into(),
+            }),
+            ErrorCode::E0043 => d.with_suggestion(Suggestion::Note {
+                description: concat!(
+                    "namespace paths must be `ns:name` (e.g. `wlwl:std.io`) ",
+                    "or a relative path (`./x`, `../y`); see v0.3 \u{00a7}13.3"
+                ).into(),
+            }),
+            _ => d,
+        };
         d.into()
     }
 

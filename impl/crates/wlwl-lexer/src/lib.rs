@@ -15,7 +15,7 @@
 //! - E0002 unterminated string
 //! - E0003 unterminated block comment
 
-use wlwl_error::{extract_line, ErrorCode, Location, WlwlDiagnostic, WlwlError, WlwlResult};
+use wlwl_error::{extract_line, ErrorCode, Location, Suggestion, WlwlDiagnostic, WlwlError, WlwlResult};
 
 /// A token in the source code.
 #[derive(Debug, Clone, PartialEq)]
@@ -200,6 +200,25 @@ impl<'a> Lexer<'a> {
         if let Some(s) = extract_line(&self.src_text(), line) {
             d = d.with_source_line(s);
         }
+        d = match code {
+            ErrorCode::E0001 => d.with_suggestion(Suggestion::Note {
+                description: concat!(
+                    "valid identifier characters: a-z, A-Z, 0-9, _ ; ",
+                    "valid string escapes: `\" \\ / \u{8} \u{c} \n \r \t \0` ; ",
+                    "(numbers must be ASCII digits, optionally with one '.')"
+                ).into(),
+            }),
+            ErrorCode::E0002 => d.with_suggestion(Suggestion::Note {
+                description:
+                    "add a closing `\"` before end of line, or split into \
+                     two adjacent strings (WLWL concatenates them at parse time)"
+                        .into(),
+            }),
+            ErrorCode::E0003 => d.with_suggestion(Suggestion::Note {
+                description: "add a closing `*/` to terminate the block comment".into(),
+            }),
+            _ => d,
+        };
         d.into()
     }
 

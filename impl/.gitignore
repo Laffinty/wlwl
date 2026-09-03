@@ -1,3 +1,4 @@
 # Local-only scratch files; never commit
 commit_msg*.txt
 *.bak
+eval_*.ps1
