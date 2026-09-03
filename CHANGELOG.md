@@ -39,10 +39,11 @@ Post-release cleanups; not part of v0.3.0.
 
 ### Known gaps (deferred, not regressions)
 
-- `P3-009b`: low-coverage crates (`wlwl-ast` 56.63% line, `wlwl-cli` 51.38% line)
-  need serde roundtrip tests + clap subcommand enumeration tests to reach the
-  plan §6.1 target of 90%+. Tracked in the P3-009 section of `deviations.md`.
-
+- `P3-009b` partial: low-coverage crates improved (wlwl-ast 56.63% -> 61.45% line,
+  wlwl-cli 51.38% -> 57.71% line) via 27 serde roundtrip tests + 19 clap subcommand
+  enumeration tests. TOTAL 82.50% -> 83.03% line. Full round-2 numbers + the
+  still-low crates and what would push them over 90% live in the P3-009b section
+  of `deviations.md`.
 
 ## [0.3.0] — 2026-09-03
 

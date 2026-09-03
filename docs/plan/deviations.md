@@ -286,3 +286,85 @@ cargo llvm-cov --workspace --no-cfg-coverage --lcov  --output-path target/llvm-c
 - 在 CI 加一个 `coverage` job（Linux runner，branch coverage 也能跑出来），
   上传 codecov / coveralls
 - 当所有 crate >= 90% 后，把 D019 / P3-009 从 deviations 移出
+
+# P3-009b: 低位 crate 覆盖推进（cargo-llvm-cov, 2026-09-03 round 2）
+
+> P3-009 把基线量出来了（TOTAL 82.50% line / 82.90% region）。
+> P3-009b 把 P3-009 识别的两个最低 crate（wlwl-ast 56.63% line、
+> wlwl-cli 51.38% line）补一轮测试。本节记录 round 2 的数据与 round 1
+> 的对比。
+
+## 做了什么
+
+### wlwl-ast：serde roundtrip 测试（`crates/wlwl-ast/tests/serde_roundtrip.rs`）
+
+27 个新测试，覆盖每个 public 类型的 `Serialize` / `Deserialize`
+派生路径：
+
+- `Span`（3 tests）
+- `Literal`：`Integer` / `Float` / `String` / `Boolean` / `Null`（5）
+- `TypeExpr`：`Ident` / `Array` / `Generic`（3）
+- `TypeAnnotation`（2）
+- `FunParam` 带 / 不带 type annotation（2）
+- `ImportName` 带 / 不带 alias（2）
+- `Expr` 每个 variant：`Literal` / `Var` / `Call` / `Block` /
+  `Array` / `Dict` / `Let` / `If` / `While` / `For` / `Return` /
+  `Break` / `Continue` / `Fun` / `Ok` / `Err` / `Panic` / `Try` /
+  `IsOk` / `IsErr` / `OrDie` / `Import` / `Export`（~13）
+- wire format 验证：`Span` 用 `line_start` / `col_start` / ... 字段名
+  而不是默认的 `line` / `col`；`Expr::Call` 是 tagged-enum 形式
+  `{"Call": {...}}`
+
+`serde_json` 加进 `wlwl-ast` 的 `[dev-dependencies]`。
+
+### wlwl-cli：clap 子命令穷举（`crates/wlwl-cli/tests/cli_subcommands.rs`）
+
+19 个新测试，覆盖每个 (subcommand, format) 组合 + 错误路径：
+
+- `wlwl run` × (Human / Json / Jsonl / default) — 4 tests
+- `wlwl check` × (Human / Json) + invalid source → nonzero — 3 tests
+- `wlwl ast` × (default / Json / Jsonl) — 3 tests
+- Error paths：missing file × (run / check / ast) — 3 tests
+- Lex / parse / runtime 错误 + 各 format — 4 tests
+- `--help` — 1 test
+
+exe 定位用 `CARGO_BIN_EXE_wlwl`（cargo 自动注入），fallback 到
+`target/debug/wlwl[.exe]`。
+
+## 对比：P3-009 (round 1) vs P3-009b (round 2)
+
+| Crate / 文件 | Round 1 Lines | Round 2 Lines | Δ | Round 1 Reg | Round 2 Reg | Δ |
+|---|---:|---:|---:|---:|---:|---:|
+| wlwl-ast/src/lib.rs           |  56.63% |  61.45% |  +4.82pp |  47.73% |  52.27% |  +4.54pp |
+| wlwl-cli/src/main.rs          |  51.38% |  57.71% |  +6.33pp |  57.05% |  65.45% |  +8.40pp |
+| wlwl-error/src/lib.rs         |  85.75% |  85.75% |   0.00pp |  90.97% |  90.97% |   0.00pp |
+| wlwl-eval/src/lib.rs          |  83.12% |  83.26% |  +0.14pp |  83.28% |  83.45% |  +0.17pp |
+| wlwl-lexer/src/lib.rs         |  90.22% |  90.22% |   0.00pp |  89.96% |  90.09% |  +0.13pp |
+| wlwl-parser/src/lib.rs        |  80.34% |  80.81% |  +0.47pp |  81.22% |  81.68% |  +0.46pp |
+| wlwl-std/src/ai.rs            |  88.94% |  88.94% |   0.00pp |  84.93% |  84.93% |   0.00pp |
+| wlwl-std/src/fs.rs            |  94.19% |  94.19% |   0.00pp |  90.68% |  90.68% |   0.00pp |
+| wlwl-std/src/io.rs            |  77.19% |  77.19% |   0.00pp |  86.54% |  86.54% |   0.00pp |
+| wlwl-std/src/json.rs          |  92.31% |  92.31% |   0.00pp |  95.58% |  95.58% |   0.00pp |
+| wlwl-std/src/lib.rs           |  84.75% |  84.75% |   0.00pp |  73.21% |  73.21% |   0.00pp |
+| wlwl-toml/src/lock.rs         |  93.20% |  93.20% |   0.00pp |  90.20% |  90.20% |   0.00pp |
+| wlwl-toml/src/manifest.rs     |  87.92% |  87.92% |   0.00pp |  86.01% |  86.01% |   0.00pp |
+| **TOTAL**                     | **82.50%** | **83.03%** | **+0.53pp** | **82.90%** | **83.54%** | **+0.64pp** |
+
+Test count: 226 -> 272 (+46: +27 roundtrip, +19 cli subcommands).
+
+## 仍未到 90% 的部分
+
+| Crate | Round 2 Lines | 距离 90% 目标 | 根因 |
+|---|---:|---:|---|
+| wlwl-ast | 61.45% | 28.55pp | 还有 ~36 line 未覆盖：dummy 字段、display 格式化分支、serde 边界 case |
+| wlwl-cli | 57.71% | 32.29pp | `--help` 长文本、clap `version` 输出、`Cargo.lock` 缺失时的 fallback |
+| wlwl-std/io | 77.19% | 12.81pp | INPUT 的 prompt / EOF 路径 |
+| wlwl-std/lib | 84.75% (line) / 73.21% (reg) | 5.25pp / 16.79pp | dispatch table 里有 dead arm（unreachable pattern 警告） |
+
+要全部 crate 拉到 90%+ 还需：
+- wlwl-ast：再写 ~10 个 display / formatting 路径测试（+5-10pp）
+- wlwl-cli：`--help` 文本快照 + 无 lock file 时的 fallback（+10-15pp）
+- wlwl-std/io：模拟 stdin 的 INPUT 测试（要 process isolation）
+- wlwl-std/lib：删 unreachable arm 或加 cfg(test) 入口
+
+这部分计划 P3-009c（如有需要时），不阻塞当前工作。
