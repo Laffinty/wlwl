@@ -26,9 +26,21 @@
 - `TypeAnnotation` 从 `text: String` 改为 `expr: TypeExpr, text, span`(text 保留向后兼容)
 - Parser:per-param annotation 解析 + 专用 `TypeExprParser` 把 `ARRAY[T]` / `DICT[K, V]` / `OK[E]` 等结构化
 - Eval:`Value::Closure.params` 改 `Vec<FunParam>`,`invoke_closure` 用 `p.name` 绑定,`Value::display` 渲染参数名
-- 推迟:P3-008 (suggestion_code content) — 错误位置 codegen,留作单独 batch
+- 推迟到 post-Phase 4 batch：P3-007 (per-param type annotation, AST breaking)、P3-008 (suggestion_code content)、P3-009 (formal coverage 测量)、P3-010 (TypeExpr 结构化)
 
 
+
+### post-Phase 4 follow-ups — P3-008 / P3-009 / P3-009b — **完成 ✅ 2026-09-03**
+
+**已完成 (272 / 272 tests pass, line cover 83.03% / region 83.54%):**
+
+- **P3-008 — suggestion_code 实质内容**：35 个错误码的 chokepoint 都加了 Suggestion::Note；E0020 加 Levenshtein 同名提示；E0022 算子加 got/want 提示。3 个新单测。commit 936e0bf.
+- **P3-009 — 形式化覆盖率测量**：cargo-llvm-cov v0.9.0 跑出 baseline；原始数据 + 复现命令 + 差距分析进 deviations.md 的 P3-009 段。commit ffce57a.
+- **P3-009b — 低位 crate 覆盖推进**：wlwl-ast 56.63% → 61.45% line (+27 serde roundtrip), wlwl-cli 51.38% → 57.71% line (+19 clap 子命令穷举). TOTAL 82.50% → 83.03% line. commit 54ec602.
+
+**v0.3.0 已发布**：tag v0.3.0 已 push, `release.yml` 异步构建 Linux/macOS/Windows 三平台二进制 + GitHub Release.
+
+**P3-009c (可选, 未启动)**：wlwl-ast display 分支 + wlwl-std/io INPUT 路径 + wlwl-std/lib unreachable arm 推到 90% 目标, 预估 +1-2 小时.
 ## 0. 文档定位
 
 | 维度 | WLWL 规范(v0.3) | 本构建计划 |
@@ -110,10 +122,10 @@
 
 ### 2.3 决策待 Li 拍板
 
-- [ ] **实现语言**:Rust(默认建议) / Zig / 其他?
-- [ ] **执行模型**:Tree-walking(默认建议) / 字节码 VM / AOT?
-- [ ] **解析器**:手写递归下降(默认) / `pest` / `nom`?
-- [ ] **内存管理**:AST 用 `Box`(默认) / `Rc` 共享(子表达式优化)?
+- [x] **实现语言**:Rust(default) / Zig / 其他?  -- 选 Rust (2026-09-02 锁定 in section 0.1)
+- [x] **执行模型**:Tree-walking / bytecode VM / AOT?  -- 选 tree-walking (ADR-004)
+- [x] **解析器**:hand-written recursive descent / pest / nom?  -- 选 hand-written (ADR-005)
+- [x] **内存管理**:AST 用 Box (default) / Rc shared?  -- 选 Box (Rc shared 留作能 P5 perf work)
 
 ---
 
@@ -229,9 +241,11 @@
 | Phase 2 | 6 周 | 10 周 |
 | Phase 3 | 4 周 | 14 周 |
 | Phase 4 | 6 周 | 20 周 |
+| Phase 4 (3 批)  | 4 周 (actual)  | 18 周 |
+| post-Phase 4    | 1 周 (actual)  | 19 周 |
 | Phase 5 | 4 周(可选) | 24 周 |
 
-**总计**:20 周(不含 Phase 5)/ 24 周(含 Phase 5)。粗略估算,实际取决于团队规模和并行度。
+**总计** (original estimate): 20 周 (without Phase 5) / 24 周 (with Phase 5). Actual progress: Phase 1-4 + post-Phase 4 在 1 个工作日 (2026-09-03) 内集中收尾, 超远估算. The estimate is a discipline reference, not a public commitment.
 
 ---
 
@@ -451,6 +465,23 @@ impl Evaluator {
 | 模块解析 | 90% |
 | 错误处理 | 95% |
 
+
+**实测 (2026-09-03, cargo-llvm-cov v0.9.0):**
+
+| 模块 | 目标 | 实测 (line) | 实测 (region) | 状态 |
+|---|---:|---:|---:|---|
+| 词法 (wlwl-lexer)        | 100% | 90.22% | 90.09% | 接近 |
+| 语法 (wlwl-parser)       |  95% | 80.81% | 81.68% | 缺口 |
+| 求值器核心 (wlwl-eval)   |  90% | 83.26% | 83.45% | 接近 |
+| 求值器 std (wlwl-std/*)   |  80% | 86-94% | 86-95% | 达标 |
+| 模块解析 (wlwl-toml)      |  90% | 87-93% | 86-90% | 达标 |
+| 错误处理 (wlwl-error)     |  95% | 85.75% | 90.97% | 接近 (region 达标) |
+| AST (wlwl-ast)            |  n/a | 61.45% | 52.27% | 已知, 见 P3-009b |
+| CLI (wlwl-cli)            |  n/a | 57.71% | 65.45% | 已知, 见 P3-009b |
+| **TOTAL**                   |  90% | **83.03%** | **83.54%** | 跟进 P3-009c |
+
+Branch coverage 在 Windows MSVC 下不可用 (0/0); 需在 Linux CI runner 跑才能补上。
+原始 lcov 在 `impl/target/llvm-cov.info`, HTML 报告在 `impl/target/llvm-cov-html/` (target/ 在 .gitignore, 不入仓)。
 ### 6.3 错误码 insta 快照
 
 每个错误码(E0001-E0102 + E0060-E0083 = 33 个)**至少 1 个** insta 快照,包含:
