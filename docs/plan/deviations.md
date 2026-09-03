@@ -287,6 +287,92 @@ cargo llvm-cov --workspace --no-cfg-coverage --lcov  --output-path target/llvm-c
   上传 codecov / coveralls
 - 当所有 crate >= 90% 后，把 D019 / P3-009 从 deviations 移出
 
+# P3-009c: wlwl-ast / wlwl-std/io / wlwl-std/lib 推 90% (cargo-llvm-cov, 2026-09-03 round 3)
+
+> P3-009b 留下的三个低位 crate (wlwl-ast 61.45% / wlwl-std/io 77.19% / wlwl-std/lib 84.75% line) 一次性全部跨越 90% 目标. 本节记录 round 3 的数据与 round 2 的对比.
+
+## 做了什么
+
+### wlwl-ast: API surface 测试 (crates/wlwl-ast/tests/api_surface.rs)
+
+42 个新测试, 覆盖 P3-009b 没碰的 public 方法路径:
+
+- Span::new / Span::dummy (line_end / col_end 收尾规则)
+- TypeExpr::display() — Ident / Array / Generic + 嵌套 (4 个测试)
+- TypeExpr::span() — 三个 match arm
+- TypeAnnotation::new — text / expr / span 三字段
+- FunParam::new — 默认无 annotation + 手工构造带 annotation
+- ImportName::local_name — alias vs 无 alias
+- Expr::span() — **24 个 match arm 各一个测试**
+
+### wlwl-std/io: 拆出 read_input_line 助手 (crates/wlwl-std/src/io.rs)
+
+把 std_input 内部读取循环抽成 pub(crate) fn read_input_line<R: BufRead>(r: &mut R) -> Result<String, StdError>, 对外的 StdFn 签名不变. 8 个新测试:
+
+- 
+ead_line_strips_lf / _crlf / _trailing_cr_only
+- 
+ead_line_eof_returns_empty_string (空 stdin -> "")
+- 
+ead_line_eof_after_partial_line_returns_partial (无换行的 EOF)
+- 
+ead_line_preserves_empty_line (
+ 立即出现 -> "" 但不报 EOF)
+- 
+ead_line_io_error_is_e0060 (用 FailingRead mock + trait 扩展转 BufReader)
+- print_formatting_numbers_and_dicts (json_to_print_string 的 other arm)
+
+### wlwl-std/lib: 删 dead arm + 全 helper 覆盖 (crates/wlwl-std/src/lib.rs)
+
+- **删 
+esolve 里的重复 arm** "wlwl:std.json" => Some(&json::SPEC), (编译时永远 unreachable, 触发 unreachable_patterns 警告).
+- 12 个新测试: 
+esolve 每个 path + 未知 path + 空串 + 缺 namespace; StdCtx::default / rom_process; StdError::Display + Error trait; rity_error / 	ype_error; json_type_name 6 个 variant; expect_string happy + arity + type.
+
+## 对比: P3-009b (round 2) vs P3-009c (round 3)
+
+| Crate / 文件 | R2 Lines | R3 Lines | Δ Lines | R2 Reg | R3 Reg | Δ Reg |
+|---|---:|---:|---:|---:|---:|---:|
+| wlwl-ast/src/lib.rs           |  61.45% | **100.00%** | **+38.55pp** |  52.27% | **100.00%** | **+47.73pp** |
+| wlwl-std/src/io.rs            |  77.19% |  **95.33%** | **+18.14pp** |  86.54% |  **95.24%** |  **+8.70pp** |
+| wlwl-std/src/lib.rs           |  84.75% | **100.00%** | **+15.25pp** |  73.21% | **100.00%** | **+26.79pp** |
+| wlwl-std/src/ai.rs            |  88.94% |   88.94% |  0.00pp |  84.93% |   84.93% |  0.00pp |
+| wlwl-std/src/fs.rs            |  94.19% |   94.19% |  0.00pp |  90.68% |   90.68% |  0.00pp |
+| wlwl-std/src/json.rs          |  92.31% |   92.31% |  0.00pp |  95.58% |   95.58% |  0.00pp |
+| wlwl-error/src/lib.rs         |  85.75% |   85.75% |  0.00pp |  90.97% |   90.97% |  0.00pp |
+| wlwl-eval/src/lib.rs          |  83.26% |   83.26% |  0.00pp |  83.45% |   83.45% |  0.00pp |
+| wlwl-lexer/src/lib.rs         |  90.22% |   90.22% |  0.00pp |  89.96% |   90.09% |  +0.13pp |
+| wlwl-parser/src/lib.rs        |  80.81% |   80.81% |  0.00pp |  81.68% |   81.68% |  0.00pp |
+| wlwl-toml/src/lock.rs         |  93.20% |   93.20% |  0.00pp |  90.20% |   90.20% |  0.00pp |
+| wlwl-toml/src/manifest.rs     |  87.92% |   87.92% |  0.00pp |  86.01% |   86.01% |  0.00pp |
+| wlwl-cli/src/main.rs          |  57.71% |   57.71% |  0.00pp |  65.45% |   65.45% |  0.00pp |
+| **TOTAL**                     | **83.03%** | **84.28%** | **+1.25pp** | **83.54%** | **84.85%** | **+1.31pp** |
+
+Test count: 272 -> 337 (+65: +42 api_surface, +15 std io+lib, +8 std io refactor).
+
+## 是否达成 90% 目标
+
+| 目标 crate | R2 | R3 | 90% 目标 |
+|---|---:|---:|:---:|
+| wlwl-ast     |  61.45% |  **100.00%** | ✅ |
+| wlwl-std/io  |  77.19% |  **95.33%** | ✅ |
+| wlwl-std/lib |  84.75% |  **100.00%** | ✅ |
+
+P3-009c 全部跨越 90% line 阈值. wlwl-std 整个 crate 全部 >= 88.94% line / 84.93% region.
+
+## 仍未到 90% 的部分
+
+| Crate | R3 Lines | 距离 90% | 备注 |
+|---|---:|---:|---|
+| wlwl-cli    |  57.71% |  32.29pp | build plan 没列入 P3-009c. --help 长文本 / --version / Cargo.lock 缺失 fallback 等 |
+| wlwl-parser |  80.81% |   9.19pp | 错误恢复 / lookahead edge case |
+| wlwl-eval   |  83.26% |   6.74pp | ERR 透明传播的深层路径 / 闭包共享路径 |
+| wlwl-error  |  85.75% |   4.25pp | region 已达标 90.97%; 33 个错误码各自的 Display 字符串 |
+| wlwl-toml/manifest |  87.92% |   2.08pp | 接近, 下一个 1-2 个测试就能过 |
+| wlwl-std/ai |  88.94% |   1.06pp | 接近 |
+
+这部分超出 P3-009c 范围, 标记 P3-009d 或后续 batch (不在 v0.3.0 release 路径上).
+
 # P3-009b: 低位 crate 覆盖推进（cargo-llvm-cov, 2026-09-03 round 2）
 
 > P3-009 把基线量出来了（TOTAL 82.50% line / 82.90% region）。

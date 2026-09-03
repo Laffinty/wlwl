@@ -1,4 +1,4 @@
-//! WLWL standard library (v0.3 §15) — Phase 4 first batch.
+﻿//! WLWL standard library (v0.3 §15) — Phase 4 first batch.
 //!
 //! Modules exposed:
 //!   - `wlwl:std.io`    — `PRINT`, `INPUT` (§15.1)
@@ -21,6 +21,7 @@ pub mod fs;
 pub mod json;
 pub mod ai;
 
+use std::collections::HashMap;
 use wlwl_error::ErrorCode;
 
 /// Common value type used at the std / eval boundary.
@@ -49,8 +50,6 @@ impl StdCtx {
     }
 }
 
-use std::collections::HashMap;
-
 /// Function signature every std function conforms to. Errors are
 /// reported via `StdError` and translated into `WlwlError` on the
 /// eval side.
@@ -73,7 +72,6 @@ pub fn resolve(path: &str) -> Option<&'static ModuleSpec> {
     match path {
         "wlwl:std.io" => Some(&io::SPEC),
         "wlwl:std.fs" => Some(&fs::SPEC),
-        "wlwl:std.json" => Some(&json::SPEC),
         "wlwl:std.json" => Some(&json::SPEC),
         "wlwl:std.ai" => Some(&ai::SPEC),
         _ => None,
@@ -147,5 +145,138 @@ pub(crate) fn expect_string<'a>(
     match &args[i] {
         StdValue::String(s) => Ok(s.as_str()),
         other => Err(type_error(fn_name, "string", other)),
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    //! P3-009c: surface tests for the public helpers in `wlwl-std`
+    //! that were never directly exercised (only reached indirectly
+    //! through the per-module SPEC functions). The `resolve` /
+    //! `expect_string` / `json_type_name` / `arity_error` /
+    //! `type_error` / `StdError` `Display` paths now have explicit
+    //! coverage so coverage instrumentation can report on them
+    //! without depending on a particular std module's tests.
+
+    use super::*;
+
+    #[test]
+    fn std_ctx_default_is_empty() {
+        let ctx = StdCtx::default();
+        assert!(ctx.argv.is_empty());
+        assert!(ctx.env.is_empty());
+    }
+
+    #[test]
+    fn std_ctx_from_process_sees_argv() {
+        // `cargo test` always passes at least the program path as
+        // argv[0]. The env snapshot is not asserted because it
+        // varies by host.
+        let ctx = StdCtx::from_process();
+        assert!(!ctx.argv.is_empty());
+    }
+
+    // ---- resolve ----
+
+    #[test]
+    fn resolve_io() {
+        let s = resolve("wlwl:std.io").expect("io resolves");
+        assert_eq!(s.path, "wlwl:std.io");
+    }
+    #[test]
+    fn resolve_fs() {
+        let s = resolve("wlwl:std.fs").expect("fs resolves");
+        assert_eq!(s.path, "wlwl:std.fs");
+    }
+    #[test]
+    fn resolve_json() {
+        let s = resolve("wlwl:std.json").expect("json resolves");
+        assert_eq!(s.path, "wlwl:std.json");
+    }
+    #[test]
+    fn resolve_ai() {
+        let s = resolve("wlwl:std.ai").expect("ai resolves");
+        assert_eq!(s.path, "wlwl:std.ai");
+    }
+    #[test]
+    fn resolve_unknown_returns_none() {
+        assert!(resolve("wlwl:std.unknown").is_none());
+        assert!(resolve("wlwl:std.ioo").is_none());
+        assert!(resolve("").is_none());
+        assert!(resolve("std.io").is_none()); // missing namespace
+    }
+
+    // ---- StdError Display ----
+
+    #[test]
+    fn std_error_display_format() {
+        let e = StdError {
+            code: ErrorCode::E0022,
+            message: "function expects 1 argument(s), got 2".into(),
+        };
+        assert_eq!(e.to_string(), "E0022: function expects 1 argument(s), got 2");
+    }
+
+    #[test]
+    fn std_error_is_std_error_trait() {
+        // Compile-time check that StdError implements std::error::Error.
+        fn assert_error<E: std::error::Error>(_: &E) {}
+        let e = StdError { code: ErrorCode::E0060, message: "x".into() };
+        assert_error(&e);
+    }
+
+    // ---- arity_error ----
+
+    #[test]
+    fn arity_error_uses_e0022() {
+        let e = arity_error("F", 3, 1);
+        assert_eq!(e.code, ErrorCode::E0022);
+        assert_eq!(e.message, "function expects 1 argument(s), got 3");
+    }
+
+    // ---- type_error ----
+
+    #[test]
+    fn type_error_uses_e0030() {
+        let got = StdValue::Number(serde_json::Number::from(1));
+        let e = type_error("F", "string", &got);
+        assert_eq!(e.code, ErrorCode::E0030);
+        assert_eq!(e.message, "F: expected string, got number");
+    }
+
+    // ---- json_type_name ----
+
+    #[test]
+    fn json_type_name_all_variants() {
+        assert_eq!(json_type_name(&StdValue::Null), "null");
+        assert_eq!(json_type_name(&StdValue::Bool(true)), "boolean");
+        assert_eq!(json_type_name(&StdValue::Number(serde_json::Number::from(1))), "number");
+        assert_eq!(json_type_name(&StdValue::String("s".into())), "string");
+        assert_eq!(json_type_name(&StdValue::Array(vec![])), "array");
+        let mut m = serde_json::Map::new();
+        m.insert("k".into(), StdValue::from(1));
+        assert_eq!(json_type_name(&StdValue::Object(m)), "dict");
+    }
+
+    // ---- expect_string ----
+
+    #[test]
+    fn expect_string_happy_path() {
+        let args = vec![StdValue::String("hi".into())];
+        assert_eq!(expect_string("F", &args, 0, 1).unwrap(), "hi");
+    }
+
+    #[test]
+    fn expect_string_arity_mismatch_is_e0022() {
+        let args = vec![StdValue::String("hi".into()), StdValue::Null];
+        let err = expect_string("F", &args, 0, 1).unwrap_err();
+        assert_eq!(err.code, ErrorCode::E0022);
+    }
+
+    #[test]
+    fn expect_string_type_mismatch_is_e0030() {
+        let args = vec![StdValue::Number(serde_json::Number::from(1))];
+        let err = expect_string("F", &args, 0, 1).unwrap_err();
+        assert_eq!(err.code, ErrorCode::E0030);
     }
 }
