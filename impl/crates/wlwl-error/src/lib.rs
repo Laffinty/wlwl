@@ -686,5 +686,138 @@ mod tests {
             assert!(c.as_str().starts_with('E'));
         }
     }
+    // ---- P3-009d: ErrorCategory, Severity, Span::range, extract_line, diagnostic builders ----
+
+    #[test]
+    fn error_category_as_str_all_variants() {
+        assert_eq!(ErrorCategory::Lexical.as_str(), "lexical");
+        assert_eq!(ErrorCategory::Syntax.as_str(), "syntax");
+        assert_eq!(ErrorCategory::Name.as_str(), "name");
+        assert_eq!(ErrorCategory::Type.as_str(), "type");
+        assert_eq!(ErrorCategory::Module.as_str(), "module");
+        assert_eq!(ErrorCategory::Oop.as_str(), "oop");
+        assert_eq!(ErrorCategory::Io.as_str(), "io");
+        assert_eq!(ErrorCategory::Json.as_str(), "json");
+        assert_eq!(ErrorCategory::Ai.as_str(), "ai");
+        assert_eq!(ErrorCategory::User.as_str(), "user");
+        assert_eq!(ErrorCategory::Internal.as_str(), "internal");
+        assert_eq!(ErrorCategory::Unknown.as_str(), "unknown");
+    }
+
+    #[test]
+    fn error_category_display_matches_as_str() {
+        // ErrorCategory's Display impl should forward to as_str() so
+        // format!("{}", cat) is stable.
+        assert_eq!(format!("{}", ErrorCategory::Lexical), "lexical");
+        assert_eq!(format!("{}", ErrorCategory::Ai), "ai");
+        assert_eq!(format!("{}", ErrorCategory::Unknown), "unknown");
+    }
+
+    #[test]
+    fn severity_as_str_all_variants() {
+        assert_eq!(Severity::Error.as_str(), "error");
+        assert_eq!(Severity::Warning.as_str(), "warning");
+        assert_eq!(Severity::Note.as_str(), "note");
+    }
+
+    #[test]
+    fn span_range_constructor() {
+        // The 5-arg constructor (file + start line/col + end line/col)
+        // is what the parser uses once it has consumed multiple tokens.
+        let s = Location::range("a.wl", 1, 1, 3, 5);
+        assert_eq!(s.file, "a.wl");
+        assert_eq!(s.line, 1);
+        assert_eq!(s.col, 1);
+        assert_eq!(s.line_end, 3);
+        assert_eq!(s.col_end, 5);
+    }
+
+    #[test]
+    fn extract_line_returns_line_one_indexed() {
+        let src = "line 0\nline 1\nline 2\n";
+        assert_eq!(extract_line(src, 1).as_deref(), Some("line 0"));
+        assert_eq!(extract_line(src, 2).as_deref(), Some("line 1"));
+        assert_eq!(extract_line(src, 3).as_deref(), Some("line 2"));
+        // Beyond EOF: the impl returns Some("") because cur reached
+        // the target line at loop end. (Documented behaviour: a
+        // missing line is treated as an empty line, not a hard EOF.)
+        assert_eq!(extract_line(src, 4).as_deref(), Some(""));
+    }
+
+    #[test]
+    fn extract_line_handles_no_trailing_newline() {
+        // When the file doesn't end with \n, the last line is still
+        // returned when queried.
+        let src = "a\nb\nc";
+        assert_eq!(extract_line(src, 3).as_deref(), Some("c"));
+        assert_eq!(extract_line(src, 4), None);
+    }
+
+    #[test]
+    fn extract_line_handles_empty_source() {
+        // Empty source with line=0 returns None (sentinel for 0-based).
+        assert_eq!(extract_line("", 0), None);
+        // Empty source with line=1 returns Some("") -- an empty 1st line.
+        assert_eq!(extract_line("", 1).as_deref(), Some(""));
+        // Empty source with line=2 returns None (never reached cur=2).
+        assert_eq!(extract_line("", 2), None);
+    }
+
+    #[test]
+    fn diagnostic_with_suggestion_appends() {
+        // WlwlDiagnostic::with_suggestion must push a single Suggestion
+        // onto the suggestion_code vector. with_suggestions extends it
+        // with many. Both return self for builder-style chaining.
+        let d = WlwlDiagnostic::new(
+            ErrorCode::E0020,
+            String::from("undefined name"),
+            Location::point("a.wl", 1, 1),
+        )
+        .with_suggestion(Suggestion::Note { description: String::from("try foo") });
+        assert_eq!(d.suggestion_code.len(), 1);
+        assert!(matches!(d.suggestion_code[0], Suggestion::Note { .. }));
+
+        let d = d.with_suggestions(vec![
+            Suggestion::Note { description: String::from("first") },
+            Suggestion::Note { description: String::from("second") },
+        ]);
+        assert_eq!(d.suggestion_code.len(), 3);
+    }
+
+    #[test]
+    fn diagnostic_with_related_appends() {
+        let related_loc = Location::point("b.wl", 5, 1);
+        let d = WlwlDiagnostic::new(
+            ErrorCode::E0040,
+            String::from("module not found"),
+            Location::point("a.wl", 1, 1),
+        )
+        .with_related(RelatedLocation {
+            message: String::from("imported here"),
+            location: related_loc.clone(),
+        });
+        assert_eq!(d.related.len(), 1);
+        assert_eq!(d.related[0].message, "imported here");
+        assert_eq!(d.related[0].location.file, "b.wl");
+    }
+
+    #[test]
+    fn diagnostic_render_includes_hint_and_related() {
+        // The Display impl appends a   = hint: ... line for the
+        // optional hint and a   = note: ... line per related entry.
+        let d = WlwlDiagnostic::new(
+            ErrorCode::E0020,
+            String::from("undefined name"),
+            Location::point("a.wl", 1, 1),
+        )
+        .with_hint(String::from("did you import it?"))
+        .with_related(RelatedLocation {
+            message: String::from("imported here"),
+            location: Location::point("b.wl", 3, 1),
+        });
+        let rendered = d.render_human();
+        assert!(rendered.contains("hint: did you import it?"), "got: {}", rendered);
+        assert!(rendered.contains("note: imported here (b.wl:3:1)"), "got: {}", rendered);
+    }
 }
 

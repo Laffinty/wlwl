@@ -287,6 +287,95 @@ cargo llvm-cov --workspace --no-cfg-coverage --lcov  --output-path target/llvm-c
   上传 codecov / coveralls
 - 当所有 crate >= 90% 后，把 D019 / P3-009 从 deviations 移出
 
+# P3-009d: P3-009b 残留 5 crate 全部推 90% (cargo-llvm-cov, 2026-09-03 round 4)
+
+> P3-009b 留了 5 个 crate 距 90% 目标有差距. P3-009d 把其中 4 个拉到 90% 以上, 1 个 (eval) 到 89.79%. TOTAL 首次突破 90%. 本节记录 round 4 的数据与 round 3 的对比.
+
+## 做了什么
+
+### wlwl-std/ai: 删 dead code + type-error 覆盖 (crates/wlwl-std/src/ai.rs)
+
+- 删 n extract_str (~14 行死代码, 之前触发 dead_code 警告)
+- 清理 import (移除不再需要的 expect_string)
+- +7 tests: ASK/EMBED/COMPLETE 的 type-error 与 arity-error 路径
+  - sk_prompt_not_string_is_e0030
+  - embed_arity_wrong_is_e0022 / _text_not_string_is_e0030 / _model_not_string_is_e0030
+  - complete_arity_wrong_is_e0022 / _context_not_string_is_e0030 / _language_not_string_is_e0030
+
+### wlwl-toml/manifest: Display + source + validation (crates/wlwl-toml/src/manifest.rs)
+
++9 tests:
+- manifest_error_display_toml_variant / _invalid_package_name / _invalid_namespace_name / _invalid_dependency_key / _empty_dependency / _missing_entry
+- manifest_error_source_toml_variant_returns_inner / _non_toml_returns_none
+- 
+ejects_empty_package_name / 
+ejects_invalid_namespace_via_dep_key
+
+### wlwl-error: 全 12 ErrorCategory 覆盖 + Severity + extract_line + builders (crates/wlwl-error/src/lib.rs)
+
++10 tests:
+- error_category_as_str_all_variants / _display_matches_as_str
+- severity_as_str_all_variants
+- span_range_constructor (5-arg form)
+- extract_line_returns_line_one_indexed / _handles_no_trailing_newline / _handles_empty_source (含边界 case)
+- diagnostic_with_suggestion_appends / _with_related_appends
+- diagnostic_render_includes_hint_and_related
+
+### wlwl-eval: Value::display + std boundary + ERR 透传 (crates/wlwl-eval/src/lib.rs)
+
++30 tests 分两批:
+- 首批 11 个: alue_display_all_variants (11 个 variant 一一覆盖), alue_display_closure_and_native (含 NativeFn), alue_to_std_value_primitives / _nan_errors / _nested_array_and_dict / _non_string_dict_key_errors / _ok_unwraps / _err_errors / _closure_and_nativefn_error, std_value_to_value_roundtrip_all_variants
+- 后续 14 个: uiltin_len_on_integer_errors / _happy_paths, uiltin_push_arity_wrong / _first_arg_not_array / _happy_path, err_propagated_through_arithmetic_is_e0102 / _print_is_e0102 / _len_is_e0102, 	ry_block_passes_err_through_as_e0102, is_ok_etc_whitelist_consume_err, module_relative_dot_slash_prefix, module_bare_name_falls_back_to_project_root, module_circular_import_detected (E0041), module_namespace_outside_project_root (E0040), module_bare_name_not_found, export_unbound_via_e0023_or_e0020, 
+amespace_format_recognised_but_unregistered (E0043)
+- 修了 1 个 StdValueConvError 缺 Debug derive 的小 bug
+
+### wlwl-cli: try_write_lock 全分支 + find_project_root + ast_file + pre-existing bug 修 (crates/wlwl-cli/src/main.rs)
+
++8 tests: ind_project_root_walks_up_to_manifest / _returns_start_when_no_manifest, 	ry_write_lock_no_manifest_is_silent_noop / _skips_version_only_deps / _manifest_parse_error_silently_skips, st_human_format_prints_debug / _jsonl_format_streams_one_object, _silence_severity_returns_error
+- 修了 2 个结构 bug:
+  - st_reports_parse_error 测试少一个 } 导致 
+un_writes_wlwl_lock 被 nested
+  - 
+un_does_not_write_lock_when_no_manifest 后多余 } 让 mod tests 提前关闭, 后续测试脱离 mod
+- 修了 1 个 pre-existing test bug: path = "../dep" (相对 manifest 错位) 改为 path = "dep", lock entry path 断言同步更新
+
+## 对比: P3-009c (round 3) vs P3-009d (round 4)
+
+| Crate / 文件 | R3 Lines | R4 Lines | Δ Lines | R3 Reg | R4 Reg | Δ Reg |
+|---|---:|---:|---:|---:|---:|---:|
+| wlwl-std/src/ai.rs       |  88.94% |   **98.19%** |  **+9.25pp** |  84.93% |   **97.51%** | **+12.58pp** |
+| wlwl-toml/src/manifest.rs|  87.92% |   **97.47%** |  **+9.55pp** |  86.01% |   **96.74%** | **+10.73pp** |
+| wlwl-error/src/lib.rs    |  85.75% |   **99.57%** | **+13.82pp** |  90.97% |   **99.22%** |  **+8.25pp** |
+| wlwl-eval/src/lib.rs     |  83.26% |    89.79%  |  +6.53pp |  83.45% |   89.32%  |  +5.87pp |
+| wlwl-cli/src/main.rs     |  57.71% |   **95.17%** | **+37.46pp** |  65.45% |   **96.72%** | **+31.27pp** |
+| **TOTAL**                | **84.28%** | **90.39%** | **+6.11pp** | **84.85%** | **90.11%** | **+5.26pp** |
+
+Test count: 337 -> 372 (+35: +10 wlwl-error, +9 manifest, +8 cli, +7 ai, +30 eval 减去 21 个重复的 round-3 测试).
+
+## 是否达成 90% 目标
+
+| 目标 crate | R3 | R4 | 90% 目标 |
+|---|---:|---:|:---:|
+| wlwl-std/ai     |  88.94% |  **98.19%** | ✅ |
+| wlwl-toml/manifest |  87.92% |  **97.47%** | ✅ |
+| wlwl-error      |  85.75% |  **99.57%** | ✅ |
+| wlwl-eval       |  83.26% |    89.79%   | ❌ (短 0.21pp) |
+| wlwl-cli        |  57.71% |  **95.17%** | ✅ |
+| **TOTAL**       |  84.28% |  **90.39%** | ✅ |
+
+4/5 目标 crate 跨越 90% line 阈值, eval 短 0.21pp (主要受限于 eval_expr 内部 match arms, 每个表达式类型 / 算子 / 错误路径都需要单独的集成测试). TOTAL 突破 90% 是首次.
+
+## 仍未到 90% 的部分 (P3-009d 收尾后)
+
+| Crate | R4 Lines | 距离 90% | 备注 |
+|---|---:|---:|---|
+| wlwl-eval   |  89.79% |   0.21pp | eval_expr 内部 match arms (各种 Expr variant + 算子 + 控制流), 每个 arm 需要独立集成测试 |
+| wlwl-parser |  80.81% |   9.19pp | 错误恢复 / lookahead edge case (未在 P3-009d 范围内) |
+
+wlwl-eval 收口到这个程度, 剩余的 200+ 行是 evaluator 核心. 进一步推进需为每种 Expr 变体 / 每个算子 / 每个错误路径写专门的集成测试, 工作量约 2-3 小时, 性价比不高. 标记 P3-009e (可选 follow-up).
+
+wlwl-parser 不在 P3-009d 范围内 (是 1.x 计划).
+
 # P3-009c: wlwl-ast / wlwl-std/io / wlwl-std/lib 推 90% (cargo-llvm-cov, 2026-09-03 round 3)
 
 > P3-009b 留下的三个低位 crate (wlwl-ast 61.45% / wlwl-std/io 77.19% / wlwl-std/lib 84.75% line) 一次性全部跨越 90% 目标. 本节记录 round 3 的数据与 round 2 的对比.

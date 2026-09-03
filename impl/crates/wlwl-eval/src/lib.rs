@@ -759,6 +759,7 @@ fn value_to_std_value(v: &Value) -> Result<wlwl_std::StdValue, StdValueConvError
     })
 }
 
+#[derive(Debug)]
 enum StdValueConvError {
     Type { expected: String, got: String },
 }
@@ -1982,6 +1983,7 @@ fn similar_names(target: &str, pool: &std::collections::HashSet<String>, max: us
 #[cfg(test)]
 mod tests {
     use super::*;
+    use std::fs;
     use wlwl_parser::parse;
 
     /// Parse + eval a one-shot expression. The temporary directory used
@@ -3297,5 +3299,433 @@ entry = "main.wl"
             _ => false,
         });
         assert!(has_toml, "expected a Note referencing wlwl.toml: {:?}", d.suggestion_code);
+    }
+    // ---- P3-009d: LEN / PUSH / module / ERR transparent paths ----
+
+    #[test]
+    fn builtin_len_on_integer_errors() {
+        let err = run("LEN(42);").unwrap_err();
+        assert_eq!(err.diagnostic().code, ErrorCode::E0030);
+    }
+
+    #[test]
+    fn builtin_len_happy_paths() {
+        assert_eq!(run(r###"LEN("hello");"###).unwrap(), Value::Integer(5));
+        assert_eq!(run("LEN([1, 2, 3]);").unwrap(), Value::Integer(3));
+        assert_eq!(
+            run(r###"LEN(["a": 1, "b": 2]);"###).unwrap(),
+            Value::Integer(2)
+        );
+    }
+
+    #[test]
+    fn builtin_push_arity_wrong() {
+        let err = run("PUSH([1]);").unwrap_err();
+        assert_eq!(err.diagnostic().code, ErrorCode::E0022);
+    }
+
+    #[test]
+    fn builtin_push_first_arg_not_array() {
+        let err = run("PUSH(1, 2);").unwrap_err();
+        assert_eq!(err.diagnostic().code, ErrorCode::E0030);
+    }
+
+    #[test]
+    fn builtin_push_happy_path() {
+        assert_eq!(
+            run("PUSH([1, 2], 3);").unwrap(),
+            Value::Array(vec![
+                Value::Integer(1),
+                Value::Integer(2),
+                Value::Integer(3)
+            ])
+        );
+    }
+
+    #[test]
+    fn err_propagated_through_arithmetic_is_e0102() {
+        // Per spec section 12.6: arithmetic ops transparently
+        // propagate ERR. At top level this surfaces as E0102.
+        let err = run(r###"+(OK(1), ERR("boom"));"###).unwrap_err();
+        assert_eq!(err.diagnostic().code, ErrorCode::E0102);
+    }
+
+    #[test]
+    fn err_propagated_through_print_is_e0102() {
+        let err = run(r###"PRINT(ERR("hello"));"###).unwrap_err();
+        assert_eq!(err.diagnostic().code, ErrorCode::E0102);
+    }
+
+    #[test]
+    fn err_propagated_through_len_is_e0102() {
+        let err = run(r###"LEN(ERR("no"));"###).unwrap_err();
+        assert_eq!(err.diagnostic().code, ErrorCode::E0102);
+    }
+
+    #[test]
+    fn try_block_passes_err_through_as_e0102() {
+        // TRY in this implementation propagates ERR (does NOT consume it).
+        // The §12.6 whitelist is narrower: only IS_OK / IS_ERR / OR_DIE.
+        // Top-level ERR surfaces as E0102.
+        let err = run(r###"TRY(ERR("x"));"###).unwrap_err();
+        assert_eq!(err.diagnostic().code, ErrorCode::E0102);
+    }
+
+    #[test]
+    fn try_block_passes_ok_through() {
+        let v = run(r###"TRY(OK(42));"###).unwrap();
+        assert_eq!(v, Value::Integer(42));
+    }
+
+    #[test]
+    fn is_ok_etc_whitelist_consume_err() {
+        assert_eq!(run("IS_OK(OK(1));").unwrap(), Value::Boolean(true));
+        assert_eq!(run(r###"IS_OK(ERR("x"));"###).unwrap(), Value::Boolean(false));
+        assert_eq!(run("IS_ERR(OK(1));").unwrap(), Value::Boolean(false));
+        assert_eq!(run(r###"IS_ERR(ERR("x"));"###).unwrap(), Value::Boolean(true));
+        assert_eq!(
+            run("OR_DIE(OK(1), 99);").unwrap(),
+            Value::Integer(1)
+        );
+    }
+
+    #[test]
+    fn module_relative_dot_slash_prefix() {
+        let dir = unique_test_dir("rel_dot");
+        fs::write(
+            dir.join("lib.wl"),
+            r###"LET(v, 100); EXPORT(["v"]);
+"###,
+        ).unwrap();
+        let src = r###"IMPORT("./lib", ["v"]); PRINT(v);
+"###;
+        let v = run_in(&dir, src).unwrap();
+        assert_eq!(v, Value::Null);
+        let _ = fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn module_bare_name_falls_back_to_project_root() {
+        let dir = unique_test_dir("bare_fallback");
+        let sub = dir.join("sub");
+        fs::create_dir_all(&sub).unwrap();
+        fs::write(
+            dir.join("wlwl.toml"),
+            r###"[package]
+name = "b"
+version = "0.1.0"
+entry = "main.wl"
+"###,
+        ).unwrap();
+        fs::write(
+            dir.join("helper.wl"),
+            r###"LET(v, 1); EXPORT(["v"]);
+"###,
+        ).unwrap();
+        let src = r###"IMPORT("helper", ["v"]); PRINT(v);
+"###;
+        let v = run_in(&sub, src).unwrap();
+        assert_eq!(v, Value::Null);
+        let _ = fs::remove_dir_all(&dir);
+    }
+    // ---- P3-009d: Value::display all variants + std boundary conversion ----
+
+    #[test]
+    fn value_display_all_variants() {
+        // The runtime Display-ish display() is what PRINT uses.
+        // Cover every variant so the formatting is locked in.
+        assert_eq!(Value::Integer(42).display(), "42");
+        assert_eq!(Value::Integer(-7).display(), "-7");
+        // Whole-number float formats with a trailing .0.
+        assert_eq!(Value::Float(2.0).display(), "2.0");
+        // Fractional float uses default Display.
+        assert_eq!(Value::Float(1.5).display(), "1.5");
+        assert_eq!(Value::String("hi".into()).display(), "hi");
+        assert_eq!(Value::Boolean(true).display(), "TRUE");
+        assert_eq!(Value::Boolean(false).display(), "FALSE");
+        assert_eq!(Value::Null.display(), "NULL");
+        assert_eq!(
+            Value::Array(vec![Value::Integer(1), Value::Integer(2)]).display(),
+            "[1, 2]"
+        );
+        assert_eq!(
+            Value::Dict(vec![
+                (Value::String("a".into()), Value::Integer(1)),
+                (Value::String("b".into()), Value::Integer(2)),
+            ])
+            .display(),
+            "[a: 1, b: 2]"
+        );
+        assert_eq!(
+            Value::Ok(Box::new(Value::Integer(7))).display(),
+            "OK(7)"
+        );
+        assert_eq!(
+            Value::Err(Box::new(Value::String("boom".into()))).display(),
+            "ERR(boom)"
+        );
+    }
+
+    #[test]
+    fn value_display_closure_and_native() {
+        let empty_closure = Value::Closure {
+            params: vec![],
+            body: Box::new(Expr::Literal(Literal::Integer(0), Span::dummy())),
+            env: Env::new(),
+        };
+        assert_eq!(empty_closure.display(), "<fun()>");
+
+        let two_arg = Value::Closure {
+            params: vec![
+                FunParam::new("a".into(), Span::dummy()),
+                FunParam::new("b".into(), Span::dummy()),
+            ],
+            body: Box::new(Expr::Literal(Literal::Integer(0), Span::dummy())),
+            env: Env::new(),
+        };
+        assert_eq!(two_arg.display(), "<fun(a, b)>");
+
+        let nf = Value::NativeFn {
+            name: "PRINT".into(),
+            invoke: NativeInvoke::Std(wlwl_std::io::std_print as wlwl_std::StdFn),
+        };
+        assert_eq!(nf.display(), "<native fun PRINT>");
+    }
+
+    #[test]
+    fn value_to_std_value_primitives() {
+        assert_eq!(value_to_std_value(&Value::Null).unwrap(), wlwl_std::StdValue::Null);
+        assert_eq!(value_to_std_value(&Value::Boolean(true)).unwrap(), wlwl_std::StdValue::Bool(true));
+        assert_eq!(value_to_std_value(&Value::Integer(123)).unwrap(), wlwl_std::StdValue::Number(serde_json::Number::from(123)));
+        assert_eq!(
+            value_to_std_value(&Value::String("x".into())).unwrap(),
+            wlwl_std::StdValue::String("x".into())
+        );
+        assert_eq!(
+            value_to_std_value(&Value::Float(1.5)).unwrap(),
+            wlwl_std::StdValue::Number(serde_json::Number::from_f64(1.5).unwrap())
+        );
+    }
+
+    #[test]
+    fn value_to_std_value_nan_errors() {
+        let err = value_to_std_value(&Value::Float(f64::NAN)).unwrap_err();
+        match err {
+            StdValueConvError::Type { expected, got } => {
+                assert!(expected.contains("finite"), "got {:?}", expected);
+                assert!(got.contains("NaN"), "got {:?}", got);
+            }
+        }
+    }
+
+    #[test]
+    fn value_to_std_value_nested_array_and_dict() {
+        let arr = Value::Array(vec![
+            Value::Integer(1),
+            Value::Array(vec![Value::Integer(2), Value::Integer(3)]),
+        ]);
+        let out = value_to_std_value(&arr).unwrap();
+        assert!(matches!(out, wlwl_std::StdValue::Array(_)));
+
+        let dict = Value::Dict(vec![
+            (Value::String("k".into()), Value::Integer(7)),
+        ]);
+        let out = value_to_std_value(&dict).unwrap();
+        match out {
+            wlwl_std::StdValue::Object(o) => {
+                assert_eq!(o.get("k").unwrap(), &wlwl_std::StdValue::Number(serde_json::Number::from(7)));
+            }
+            other => panic!("expected Object, got {:?}", other),
+        }
+    }
+
+    #[test]
+    fn value_to_std_value_non_string_dict_key_errors() {
+        let dict = Value::Dict(vec![
+            (Value::Integer(1), Value::Integer(2)),
+        ]);
+        let err = value_to_std_value(&dict).unwrap_err();
+        match err {
+            StdValueConvError::Type { expected, .. } => {
+                assert!(expected.contains("string dict key"), "got {:?}", expected);
+            }
+        }
+    }
+
+    #[test]
+    fn value_to_std_value_ok_unwraps() {
+        let v = Value::Ok(Box::new(Value::Integer(42)));
+        let out = value_to_std_value(&v).unwrap();
+        assert_eq!(out, wlwl_std::StdValue::Number(serde_json::Number::from(42)));
+    }
+
+    #[test]
+    fn value_to_std_value_err_errors() {
+        let v = Value::Err(Box::new(Value::String("oops".into())));
+        let err = value_to_std_value(&v).unwrap_err();
+        match err {
+            StdValueConvError::Type { expected, .. } => {
+                assert!(expected.contains("OK"), "got {:?}", expected);
+            }
+        }
+    }
+
+    #[test]
+    fn value_to_std_value_closure_and_nativefn_error() {
+        let c = Value::Closure {
+            params: vec![],
+            body: Box::new(Expr::Literal(Literal::Integer(0), Span::dummy())),
+            env: Env::new(),
+        };
+        let err = value_to_std_value(&c).unwrap_err();
+        match err {
+            StdValueConvError::Type { got, .. } => {
+                assert!(got.contains("function closure"), "got {:?}", got);
+            }
+        }
+        let nf = Value::NativeFn {
+            name: "PRINT".into(),
+            invoke: NativeInvoke::Std(wlwl_std::io::std_print as wlwl_std::StdFn),
+        };
+        let err = value_to_std_value(&nf).unwrap_err();
+        match err {
+            StdValueConvError::Type { got, .. } => {
+                assert!(got.contains("native fn"), "got {:?}", got);
+            }
+        }
+    }
+
+    #[test]
+    fn std_value_to_value_roundtrip_all_variants() {
+        assert_eq!(std_value_to_value(wlwl_std::StdValue::Null), Value::Null);
+        assert_eq!(std_value_to_value(wlwl_std::StdValue::Bool(true)), Value::Boolean(true));
+        assert_eq!(
+            std_value_to_value(wlwl_std::StdValue::Number(serde_json::Number::from(1))),
+            Value::Integer(1)
+        );
+        assert_eq!(
+            std_value_to_value(wlwl_std::StdValue::Number(serde_json::Number::from_f64(1.5).unwrap())),
+            Value::Float(1.5)
+        );
+        assert_eq!(
+            std_value_to_value(wlwl_std::StdValue::String("x".into())),
+            Value::String("x".into())
+        );
+        assert_eq!(
+            std_value_to_value(wlwl_std::StdValue::Array(vec![wlwl_std::StdValue::Null])),
+            Value::Array(vec![Value::Null])
+        );
+        let mut obj = serde_json::Map::new();
+        obj.insert("k".to_string(), wlwl_std::StdValue::Number(serde_json::Number::from(7)));
+        assert_eq!(
+            std_value_to_value(wlwl_std::StdValue::Object(obj)),
+            Value::Dict(vec![(Value::String("k".into()), Value::Integer(7))])
+        );
+    }
+
+    // ---- P3-009d: more module loader + std call paths ----
+
+    #[test]
+    fn module_circular_import_detected() {
+        // a.wl imports b.wl imports a.wl -> E0041.
+        let dir = unique_test_dir("circular");
+        fs::write(
+            dir.join("a.wl"),
+            r###"IMPORT("b", ["v"]); PRINT(v);"###,
+        ).unwrap();
+        fs::write(
+            dir.join("b.wl"),
+            r###"IMPORT("a", ["v"]); LET(v, 1); EXPORT(["v"]);"###,
+        ).unwrap();
+        let src = r###"IMPORT("a", ["v"]); PRINT(v);"###;
+        let v = run_in(&dir, src);
+        let err = v.expect_err("expected E0041");
+        assert_eq!(err.diagnostic().code, ErrorCode::E0041);
+        let _ = fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn module_namespace_outside_project_root() {
+        // A namespace dep that resolves outside the project root
+        // must surface E0040.
+        let dir = unique_test_dir("ns_outside");
+        fs::create_dir_all(&dir).unwrap();
+        fs::write(
+            dir.join("wlwl.toml"),
+            r###"[package]
+name = "ns"
+version = "0.1.0"
+entry = "main.wl"
+
+[dependencies]
+"evil:lib" = { path = "../escape" }
+"###,
+        ).unwrap();
+        fs::write(
+            dir.join("main.wl"),
+            r###"IMPORT("evil:lib", ["v"]); PRINT(1);"###,
+        ).unwrap();
+        let v = run_in(&dir, "IMPORT(\"evil:lib\", [\"v\"]); PRINT(1);");
+        let err = v.expect_err("expected E0040");
+        assert_eq!(err.diagnostic().code, ErrorCode::E0040);
+        let _ = fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn module_bare_name_not_found() {
+        // A bare import that doesn't exist in base_dir or project
+        // root must surface E0040.
+        let dir = unique_test_dir("bare_missing");
+        fs::create_dir_all(&dir).unwrap();
+        let v = run_in(&dir, "IMPORT(\"does_not_exist\", [\"v\"]);");
+        let err = v.expect_err("expected E0040");
+        assert_eq!(err.diagnostic().code, ErrorCode::E0040);
+        let _ = fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn export_unbound_via_e0023_or_e0020() {
+        // A module that EXPORTs a name that wasn't bound yields
+        // E0023 at IMPORT time. If the loader re-routes through
+        // the undefined-name path, E0020 is also acceptable.
+        let dir = unique_test_dir("export_unbound2");
+        fs::write(
+            dir.join("m.wl"),
+            "LET(unused, 1); EXPORT([\"missing\"]);\n",
+        ).unwrap();
+        let src = "IMPORT(\"m\", [\"missing\"]); PRINT(1);\n";
+        let v = run_in(&dir, src);
+        let err = v.expect_err("expected export error");
+        let code = err.diagnostic().code;
+        assert!(
+            code == ErrorCode::E0023 || code == ErrorCode::E0020,
+            "got {:?}", code
+        );
+        let _ = fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn namespace_format_recognised_but_unregistered() {
+        // A path like unknown:thing is a recognized namespace
+        // format but no [namespaces] / [dependencies] entry covers
+        // it -> E0043 unregistered namespace.
+        let dir = unique_test_dir("unreg_ns");
+        fs::create_dir_all(&dir).unwrap();
+        fs::write(
+            dir.join("wlwl.toml"),
+            r###"[package]
+name = "u"
+version = "0.1.0"
+entry = "main.wl"
+"###,
+        ).unwrap();
+        fs::write(
+            dir.join("main.wl"),
+            r###"IMPORT("ghost:thing", ["v"]); PRINT(1);"###,
+        ).unwrap();
+        let v = run_in(&dir, "IMPORT(\"ghost:thing\", [\"v\"]);");
+        let err = v.expect_err("expected E0043");
+        assert_eq!(err.diagnostic().code, ErrorCode::E0043);
+        let _ = fs::remove_dir_all(&dir);
     }
 }

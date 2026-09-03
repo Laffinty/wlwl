@@ -25,27 +25,8 @@
 //! A non-reserved model returns a deterministic mock payload derived
 //! from the input.
 
-use crate::{expect_string, arity_error, type_error, StdCtx, StdError, StdFn, StdValue, ModuleSpec};
+use crate::{arity_error, type_error, StdCtx, StdError, StdFn, StdValue, ModuleSpec};
 use wlwl_error::ErrorCode;
-
-/// Try to extract a string argument at index `i`, with the given
-/// arity check. Mirrors `crate::expect_string` but applies an
-/// arity check first so the error message is consistent for our
-/// three functions.
-fn extract_str<'a>(
-    fn_name: &str,
-    args: &'a [StdValue],
-    i: usize,
-    want_arity: usize,
-) -> Result<&'a str, StdError> {
-    if args.len() != want_arity {
-        return Err(arity_error(fn_name, args.len(), want_arity));
-    }
-    match &args[i] {
-        StdValue::String(s) => Ok(s.as_str()),
-        other => Err(type_error(fn_name, "string", other)),
-    }
-}
 
 /// Match `model` against the reserved failure tokens. Returns
 /// `Some(StdError)` if the model signals a synthetic error, `None`
@@ -365,5 +346,100 @@ mod tests {
         assert_eq!(SPEC.path, "wlwl:std.ai");
         let names: Vec<&str> = SPEC.functions.iter().map(|(n, _)| *n).collect();
         assert_eq!(names, vec!["ASK", "EMBED", "COMPLETE"]);
+    }
+    // ---- P3-009d: type-error paths in ASK / EMBED / COMPLETE ----
+
+    #[test]
+    fn ask_prompt_not_string_is_e0030() {
+        // Pass a number for the prompt (second arg). The prompt
+        // type-error path on line 84 (other => return Err(type_error(...)))
+        // should fire.
+        let err = std_ask(
+            &mut ctx(),
+            vec![
+                StdValue::String("gpt-4".into()),
+                StdValue::Number(serde_json::Number::from(1)),
+            ],
+        )
+        .unwrap_err();
+        assert_eq!(err.code, ErrorCode::E0030);
+        assert!(err.message.contains("ASK: expected string"));
+    }
+
+    #[test]
+    fn embed_arity_wrong_is_e0022() {
+        // Three args is outside the [1, 2] window.
+        let err = std_embed(
+            &mut ctx(),
+            vec![
+                StdValue::String("x".into()),
+                StdValue::String("m".into()),
+                StdValue::Null,
+            ],
+        )
+        .unwrap_err();
+        assert_eq!(err.code, ErrorCode::E0022);
+    }
+
+    #[test]
+    fn embed_text_not_string_is_e0030() {
+        let err = std_embed(
+            &mut ctx(),
+            vec![StdValue::Number(serde_json::Number::from(1))],
+        )
+        .unwrap_err();
+        assert_eq!(err.code, ErrorCode::E0030);
+    }
+
+    #[test]
+    fn embed_model_not_string_is_e0030() {
+        let err = std_embed(
+            &mut ctx(),
+            vec![
+                StdValue::String("x".into()),
+                StdValue::Bool(true),
+            ],
+        )
+        .unwrap_err();
+        assert_eq!(err.code, ErrorCode::E0030);
+    }
+
+    #[test]
+    fn complete_arity_wrong_is_e0022() {
+        // Four args is outside the [1, 3] window.
+        let err = std_complete(
+            &mut ctx(),
+            vec![
+                StdValue::String("ctx".into()),
+                StdValue::String("rust".into()),
+                StdValue::Number(serde_json::Number::from(100)),
+                StdValue::Null,
+            ],
+        )
+        .unwrap_err();
+        assert_eq!(err.code, ErrorCode::E0022);
+    }
+
+    #[test]
+    fn complete_context_not_string_is_e0030() {
+        let err = std_complete(
+            &mut ctx(),
+            vec![StdValue::Number(serde_json::Number::from(1))],
+        )
+        .unwrap_err();
+        assert_eq!(err.code, ErrorCode::E0030);
+    }
+
+    #[test]
+    fn complete_language_not_string_is_e0030() {
+        let err = std_complete(
+            &mut ctx(),
+            vec![
+                StdValue::String("ctx".into()),
+                StdValue::Bool(false),
+            ],
+        )
+        .unwrap_err();
+        assert_eq!(err.code, ErrorCode::E0030);
     }
 }

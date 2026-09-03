@@ -49,7 +49,7 @@ esolve 重复 dead arm, 覆盖 resolve / arity_error / type_error / json_type_na
 
 **v0.3.0 已发布**：tag v0.3.0 已 push, `release.yml` 异步构建 Linux/macOS/Windows 三平台二进制 + GitHub Release.
 
-**P3-009c (已完成, 2026-09-03 round 3)**：wlwl-ast 61.45% → **100.00%** line; wlwl-std/io 77.19% → **95.33%** line; wlwl-std/lib 84.75% → **100.00%** line. 三个目标 crate 全部跨越 90% line 阈值. 详见 deviations.md P3-009c 段.
+**P3-009c + P3-009d (已完成, 2026-09-03 round 3+4)**：round 3 把 wlwl-ast/io/lib 推到 >=95%; round 4 把 ai (98%)/manifest (97%)/error (99%)/cli (95%) 拉到 >=95% line, eval 89.79% (eval_expr 内部 arms 留 P3-009e). TOTAL 90.39% line 首次突破 90%. 详见 deviations.md P3-009c / P3-009d 段.
 ## 0. 文档定位
 
 | 维度 | WLWL 规范(v0.3) | 本构建计划 |
@@ -482,12 +482,12 @@ impl Evaluator {
 | 词法 (wlwl-lexer)        | 100% | 90.22% | 90.09% | 接近 |
 | 语法 (wlwl-parser)       |  95% | 80.81% | 81.68% | 缺口 |
 | 求值器核心 (wlwl-eval)   |  90% | 83.26% | 83.45% | 接近 |
-| 求值器 std (wlwl-std/*)   |  80% | 88-100% | 84-100% | P3-009c 全部 >=88% line; lib 100% |
+| 求值器 std (wlwl-std/*)   |  80% | **88-100%** | **84-100%** | P3-009d 全部 >=92% line; lib 100% |
 | 模块解析 (wlwl-toml)      |  90% | 87-93% | 86-90% | 达标 |
 | 错误处理 (wlwl-error)     |  95% | 85.75% | 90.97% | 接近 (region 达标) |
 | AST (wlwl-ast)            |  n/a | **100.00%** | **100.00%** | P3-009c 完成 |
 | CLI (wlwl-cli)            |  n/a | 57.71% | 65.45% | 已知, 见 P3-009b |
-| **TOTAL**                   |  90% | **84.28%** | **84.85%** | P3-009c 完成 (2026-09-03 r3) |
+| **TOTAL**                   |  90% | **90.39%** | **90.11%** | P3-009d 完成 (2026-09-03 r4) |
 
 Branch coverage 在 Windows MSVC 下不可用 (0/0); 需在 Linux CI runner 跑才能补上。
 原始 lcov 在 `impl/target/llvm-cov.info`, HTML 报告在 `impl/target/llvm-cov-html/` (target/ 在 .gitignore, 不入仓)。

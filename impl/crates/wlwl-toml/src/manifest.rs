@@ -434,4 +434,105 @@ entry = "main.wl"
         // Unregistered -> None.
         assert!(resolve_namespace(&m, "unknown", "x").is_none());
     }
+    // ---- P3-009d: ManifestError Display + source + validation edge cases ----
+
+    #[test]
+    fn manifest_error_display_toml_variant() {
+        // Build a Toml variant by parsing invalid TOML.
+        let err = parse("not = [valid").unwrap_err();
+        let s = err.to_string();
+        assert!(s.starts_with("manifest TOML parse error: "), "got: {}", s);
+    }
+
+    #[test]
+    fn manifest_error_display_invalid_package_name() {
+        let e = ManifestError::InvalidPackageName("Bad Name".into());
+        let s = e.to_string();
+        assert!(s.contains("\"Bad Name\""), "got: {}", s);
+        assert!(s.contains("must match"), "got: {}", s);
+    }
+
+    #[test]
+    fn manifest_error_display_invalid_namespace_name() {
+        let e = ManifestError::InvalidNamespaceName("MyTeam".into());
+        let s = e.to_string();
+        assert!(s.contains("\"MyTeam\""), "got: {}", s);
+        assert!(s.contains("namespace"), "got: {}", s);
+    }
+
+    #[test]
+    fn manifest_error_display_invalid_dependency_key() {
+        let e = ManifestError::InvalidDependencyKey("myteam utils".into());
+        let s = e.to_string();
+        assert!(s.contains("\"myteam utils\""), "got: {}", s);
+        assert!(s.contains("<namespace>:<name>"), "got: {}", s);
+    }
+
+    #[test]
+    fn manifest_error_display_empty_dependency() {
+        let e = ManifestError::EmptyDependency("myteam:utils".into());
+        let s = e.to_string();
+        assert!(s.contains("\"myteam:utils\""), "got: {}", s);
+        assert!(s.contains("neither"), "got: {}", s);
+    }
+
+    #[test]
+    fn manifest_error_display_missing_entry() {
+        let e = ManifestError::MissingEntry;
+        assert_eq!(e.to_string(), "[package] entry is missing or empty");
+    }
+
+    #[test]
+    fn manifest_error_source_toml_variant_returns_inner() {
+        let err = parse("not = [valid").unwrap_err();
+        if let ManifestError::Toml(t) = &err {
+            // The std::error::Error::source should hand back the toml error.
+            let src = std::error::Error::source(&err);
+            assert!(src.is_some());
+            // The source must be the same toml::de::Error we have.
+            let some_src = src.unwrap();
+            let _ = some_src; // type-check only
+            // The toml error must be displayable.
+            assert!(!t.to_string().is_empty());
+        } else {
+            panic!("expected Toml variant, got {:?}", err);
+        }
+    }
+
+    #[test]
+    fn manifest_error_source_non_toml_returns_none() {
+        let err = ManifestError::MissingEntry;
+        assert!(std::error::Error::source(&err).is_none());
+        let err = ManifestError::EmptyDependency("x".into());
+        assert!(std::error::Error::source(&err).is_none());
+    }
+
+    #[test]
+    fn rejects_empty_package_name() {
+        // Empty name fails the lowercase-plus-hyphen check (the empty
+        // string doesn't start with a letter).
+        let err = parse(r#"
+[package]
+name = ""
+version = "0.1.0"
+entry = "main.wl"
+"#).unwrap_err();
+        assert!(matches!(err, ManifestError::InvalidPackageName(_)));
+    }
+
+    #[test]
+    fn rejects_invalid_namespace_via_dep_key() {
+        // The namespace is the part before ':' in a dep key. If it
+        // doesn't match the lowercase rule, surface InvalidNamespaceName.
+        let err = parse(r#"
+[package]
+name = "ok"
+version = "0.1.0"
+entry = "main.wl"
+
+[dependencies]
+"MyTeam:utils" = { path = "../utils" }
+"#).unwrap_err();
+        assert!(matches!(err, ManifestError::InvalidNamespaceName(_)));
+    }
 }
