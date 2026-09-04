@@ -2479,10 +2479,14 @@ mod tests {
     #[test]
     fn ai_contract_undefined_name() {
         let (v, _) = ai_check_jsonl("PRINT(zzz);");
-        assert_eq!(v["error_schema_version"], "0.3.1");
+        assert_eq!(v["error_schema_version"], "1.1.0");
         assert_eq!(v["code"], "E0020");
         assert_eq!(v["error_category"], "name");
         assert_eq!(v["retryable"], false);
+        // v0.4 (Sec. 14.2) -- new required fields
+        assert!(v["idempotent"].is_boolean(), "idempotent must be present (got: {})", v);
+        assert!(v["retry_after"].is_null() || v["retry_after"].is_u64(),
+            "retry_after must be null or u64 (got: {})", v);
         assert!(v["suggestion_code"].is_array());
         assert!(v["related"].is_array());
     }
@@ -2543,18 +2547,28 @@ mod tests {
             versions.insert(err.diagnostic().error_schema_version.clone());
         }
         assert_eq!(versions.len(), 1, "schema version must be stable across error kinds");
-        assert!(versions.contains("0.3.1"));
+        // v0.4 spec Sec. 14.10: bump MAJOR on field add/remove, MINOR on add.
+        // v0.3 was 0.3.1; v0.4 added trace/cause/idempotent/retry_after (MINOR bump).
+        assert!(versions.contains("1.1.0"), "expected schema 1.1.0, got: {:?}", versions);
     }
 
     #[test]
     fn ai_contract_required_fields_present() {
         let err = run("PRINT(zzz);").unwrap_err();
         let v: serde_json::Value = serde_json::from_str(&err.diagnostic().render_jsonl()).unwrap();
-        for key in &["error_schema_version", "code", "error_category", "severity", "message", "location", "retryable", "suggestion_code", "related"] {
+        // v0.4 schema 1.1.0 -- required field set (Sec. 14.2).
+        // trace + cause are optional (skip_serializing_if on the struct).
+        for key in &[
+            "error_schema_version", "code", "error_category", "severity",
+            "message", "location", "retryable", "idempotent", "retry_after",
+            "suggestion_code", "related",
+        ] {
             assert!(v.get(*key).is_some(), "missing required key: {}", key);
         }
         let loc = &v["location"];
-        for k in &["file", "line", "col"] {
+        // v0.4 spec Sec. 14.2: location is unified to
+        // {file, line, col_start, line_end, col_end}.
+        for k in &["file", "line", "col_start", "line_end", "col_end"] {
             assert!(loc.get(*k).is_some(), "missing location.{}", k);
         }
     }

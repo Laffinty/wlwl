@@ -6,17 +6,19 @@ expression: "serde_json::json!({\n    \"E0070\": code_snap(ErrorCode::E0070, \"j
   "E0070": {
     "code": "E0070",
     "error_category": "json",
-    "error_schema_version": "0.3.1",
+    "error_schema_version": "1.1.0",
     "hint": null,
+    "idempotent": false,
     "location": {
-      "col": 1,
       "col_end": 1,
+      "col_start": 1,
       "file": "snap.wl",
       "line": 1,
       "line_end": 1
     },
     "message": "snapshot for json_parse",
     "related": [],
+    "retry_after": null,
     "retryable": false,
     "severity": "error",
     "source_line": null,
@@ -25,17 +27,19 @@ expression: "serde_json::json!({\n    \"E0070\": code_snap(ErrorCode::E0070, \"j
   "E0071": {
     "code": "E0071",
     "error_category": "json",
-    "error_schema_version": "0.3.1",
+    "error_schema_version": "1.1.0",
     "hint": null,
+    "idempotent": false,
     "location": {
-      "col": 1,
       "col_end": 1,
+      "col_start": 1,
       "file": "snap.wl",
       "line": 1,
       "line_end": 1
     },
     "message": "snapshot for json_stringify",
     "related": [],
+    "retry_after": null,
     "retryable": false,
     "severity": "error",
     "source_line": null,

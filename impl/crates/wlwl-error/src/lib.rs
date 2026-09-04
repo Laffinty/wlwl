@@ -197,6 +197,45 @@ impl ErrorCode {
                 | ErrorCode::E0083
         )
     }
+
+    /// Whether retrying the operation produces the same result as the
+    /// first attempt (v0.4 spec `Sec. 14.2` `idempotent` column).
+    ///
+    /// AI tools **shall** consult this field: `retryable: TRUE &&
+    /// idempotent: FALSE` means "a second execution may have side
+    /// effects, prompt the user before retrying" (spec `Sec. 16.1` rule 6).
+    ///
+    /// Current mapping (v0.3 codes, conservative):
+    /// - `E0061` (file not found): TRUE  -- file stays missing
+    /// - everything else: FALSE -- write/POST/AI calls may double-fire
+    pub fn idempotent(&self) -> bool {
+        matches!(self, ErrorCode::E0061)
+    }
+
+    /// Recommended retry delay in milliseconds (v0.4 spec `Sec. 14.2`
+    /// `retry_after`). `None` for non-retryable codes, or when no
+    /// sensible backoff is known.
+    ///
+    /// AI tools **shall** prefer this value over a fixed backoff
+    /// (spec `Sec. 16.1` rule 7). Values are millisecond INTEGERs.
+    pub fn retry_after_ms(&self) -> Option<u64> {
+        match self {
+            // IO generic: 1 second
+            ErrorCode::E0060 => Some(1_000),
+            // file not found: idempotent, no backoff needed
+            ErrorCode::E0061 => Some(0),
+            // network: 3 seconds
+            ErrorCode::E0063 => Some(3_000),
+            // AI unreachable: 5 seconds
+            ErrorCode::E0080 => Some(5_000),
+            // AI auth: 5 seconds (rate-limit window)
+            ErrorCode::E0081 => Some(5_000),
+            // AI timeout: 10 seconds (give the upstream more headroom)
+            ErrorCode::E0083 => Some(10_000),
+            // everything else: no recommendation
+            _ => None,
+        }
+    }
 }
 
 /// High-level error category (v0.3 `Sec. 14.4` -- 13 buckets).
@@ -244,10 +283,18 @@ impl fmt::Display for ErrorCategory {
 }
 
 /// Source location (subset of `wlwl_ast::Span` so the error crate has no ast dep).
+///
+/// v0.4 spec `Sec. 14.2` requires the JSON form
+/// `{file, line, col_start, line_end, col_end}`. The Rust field is
+/// `col` (matching `wlwl_ast::Span::col`) but serialized as
+/// `col_start` via `serde(rename)` -- so the JSON output matches
+/// the spec without breaking the many internal call sites that
+/// use `location.col`.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct Location {
     pub file: String,
     pub line: u32,
+    #[serde(rename = "col_start")]
     pub col: u32,
     pub line_end: u32,
     pub col_end: u32,
@@ -342,14 +389,26 @@ pub struct RelatedLocation {
     pub location: Location,
 }
 
-/// The structured error object (v0.3 `Sec. 14.2` -- Phase 3 full schema).
+/// The structured error object.
+///
+/// Schema version is `1.1.0` (v0.4 spec `Sec. 14.2`):
+/// - Phase 3 fields (v0.3): `code` / `error_category` / `severity` /
+///   `message` / `location` / `source_line` / `hint` / `retryable` /
+///   `suggestion_code` / `related` / `error_schema_version`
+/// - v0.4 additions: `idempotent` (v0.4 `Sec. 14.2`), `retry_after`
+///   (v0.4 `Sec. 14.2`)
+/// - v0.4 deferred to A1d / A1e: `trace` / `cause`
+///
+/// AI tools are expected to read this object via `--format=jsonl`
+/// (spec `Sec. 16.1`) and check `error_schema_version` first to
+/// gate compatibility.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct WlwlDiagnostic {
-    /// Schema version (SemVer). Phase 3 -> "0.3.1" (new fields added).
+    /// Schema version (SemVer). v0.4 -> `"1.1.0"`.
     pub error_schema_version: String,
-    /// Stable error code (see v0.3 `Sec. 14.4`).
+    /// Stable error code (see v0.4 `Sec. 14.4`).
     pub code: ErrorCode,
-    /// High-level category (see v0.3 `Sec. 14.4` -- 13 buckets).
+    /// High-level category (see v0.4 `Sec. 14.4` -- 13 buckets).
     pub error_category: ErrorCategory,
     /// "error" | "warning" | "note"
     pub severity: Severity,
@@ -363,10 +422,45 @@ pub struct WlwlDiagnostic {
     pub hint: Option<String>,
     /// Whether the error is transient and may succeed on retry.
     pub retryable: bool,
+    /// [v0.4] Whether retrying produces the same result as the first
+    /// attempt. See `Sec. 14.2` / `Sec. 16.1` rule 6.
+    pub idempotent: bool,
+    /// [v0.4] Recommended retry delay in milliseconds. `None` for
+    /// non-retryable codes or when no sensible backoff is known.
+    /// See `Sec. 14.2` / `Sec. 16.1` rule 7.
+    pub retry_after: Option<u64>,
     /// Machine-apply-able fixes (v0.3 `Sec. 14.2`; up to 3, sorted by confidence).
     pub suggestion_code: Vec<Suggestion>,
     /// Secondary locations (e.g. duplicate IMPORT, original throw site).
     pub related: Vec<RelatedLocation>,
+    /// [v0.4] Call stack frames. Filled by eval; empty for lex/parse
+    /// diagnostics. A1d wires this up.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub trace: Vec<TraceFrame>,
+    /// [v0.4] WRAP chain. `None` for un-wrapped errors; `Some(_)` for
+    /// errors that went through `WRAP`. A1e wires this up.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub cause: Option<Box<ErrorCause>>,
+}
+
+/// One frame in the diagnostic `trace` (v0.4 `Sec. 14.2`).
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct TraceFrame {
+    /// Function name (or `<anonymous>` for unnamed closures).
+    pub frame: String,
+    /// Where the call happened.
+    pub location: Location,
+}
+
+/// A single cause in the WRAP chain (v0.4 `Sec. 14.2` / `Sec. 12.8`).
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(untagged)]
+pub enum ErrorCause {
+    /// `WRAP(ERR(e), ctx)` carries the original error payload as a
+    /// STRING or DICT. v0.4 allows either; the payload is
+    /// round-tripped as the spec example.
+    String(String),
+    Dict(serde_json::Map<String, serde_json::Value>),
 }
 
 /// Severity levels.
@@ -392,8 +486,10 @@ impl WlwlDiagnostic {
     pub fn new(code: ErrorCode, message: impl Into<String>, location: Location) -> Self {
         let category = code.category();
         let retryable = code.retryable();
+        let idempotent = code.idempotent();
+        let retry_after = code.retry_after_ms();
         Self {
-            error_schema_version: "0.3.1".into(),
+            error_schema_version: "1.1.0".into(),
             code,
             error_category: category,
             severity: Severity::Error,
@@ -402,8 +498,12 @@ impl WlwlDiagnostic {
             source_line: None,
             hint: None,
             retryable,
+            idempotent,
+            retry_after,
             suggestion_code: Vec::new(),
             related: Vec::new(),
+            trace: Vec::new(),
+            cause: None,
         }
     }
 
@@ -531,6 +631,102 @@ mod tests {
         assert!(!ErrorCode::E0020.retryable());
     }
 
+    /// v0.4 `Sec. 14.2` `idempotent` field mapping.
+    #[test]
+    fn idempotent_assignment() {
+        // E0061 (file not found) is idempotent: file stays missing
+        assert!(ErrorCode::E0061.idempotent());
+        // All other codes are conservatively NOT idempotent:
+        // - writes may double-fire
+        // - AI POST may double-charge
+        // - network errors don't know if GET or POST
+        assert!(!ErrorCode::E0001.idempotent());
+        assert!(!ErrorCode::E0020.idempotent());
+        assert!(!ErrorCode::E0060.idempotent()); // generic IO
+        assert!(!ErrorCode::E0063.idempotent()); // network
+        assert!(!ErrorCode::E0080.idempotent()); // AI unreachable
+        assert!(!ErrorCode::E0081.idempotent()); // AI auth
+        assert!(!ErrorCode::E0083.idempotent()); // AI timeout
+    }
+
+    /// v0.4 `Sec. 14.2` `retry_after` field mapping.
+    /// Retryable codes get a sensible default; everything else is `None`.
+    #[test]
+    fn retry_after_ms_assignment() {
+        // Retryable codes have non-None backoff
+        assert_eq!(ErrorCode::E0060.retry_after_ms(), Some(1_000));
+        assert_eq!(ErrorCode::E0061.retry_after_ms(), Some(0));
+        assert_eq!(ErrorCode::E0063.retry_after_ms(), Some(3_000));
+        assert_eq!(ErrorCode::E0080.retry_after_ms(), Some(5_000));
+        assert_eq!(ErrorCode::E0081.retry_after_ms(), Some(5_000));
+        assert_eq!(ErrorCode::E0083.retry_after_ms(), Some(10_000));
+        // Non-retryable codes have None
+        assert_eq!(ErrorCode::E0001.retry_after_ms(), None);
+        assert_eq!(ErrorCode::E0020.retry_after_ms(), None);
+        assert_eq!(ErrorCode::E0030.retry_after_ms(), None);
+        assert_eq!(ErrorCode::E0062.retry_after_ms(), None); // perm denied
+        assert_eq!(ErrorCode::E0100.retry_after_ms(), None); // internal
+    }
+
+    /// v0.4 `Sec. 16.1` rule 6: idempotent=FALSE on a retryable code
+    /// means "do not blind-retry; ask the user". Spot-check that
+    /// every retryable code has the right combination.
+    #[test]
+    fn retryable_idempotent_combinations_are_safe() {
+        let retryable_codes = [
+            ErrorCode::E0060, ErrorCode::E0061, ErrorCode::E0063,
+            ErrorCode::E0080, ErrorCode::E0081, ErrorCode::E0083,
+        ];
+        for code in &retryable_codes {
+            assert!(code.retryable(), "{:?} should be retryable", code);
+            // All retryable codes should also have a retry_after hint
+            assert!(code.retry_after_ms().is_some(),
+                "{:?} should have a retry_after hint", code);
+        }
+        // E0061 is the only retryable code that is also idempotent
+        let idempotent_retryable: Vec<_> = retryable_codes.iter()
+            .filter(|c| c.idempotent())
+            .collect();
+        assert_eq!(idempotent_retryable.len(), 1);
+        assert_eq!(idempotent_retryable[0], &ErrorCode::E0061);
+    }
+
+    /// v0.4: the new `idempotent` and `retry_after` fields must be
+    /// present in the JSON output for both E0020 (non-retryable) and
+    /// E0060 (retryable + non-idempotent).
+    #[test]
+    fn diagnostic_json_has_idempotent_and_retry_after() {
+        // Non-retryable: retry_after must be null
+        let d = WlwlDiagnostic::new(
+            ErrorCode::E0020,
+            "undefined name 'foo'",
+            Location::point("t.wl", 1, 1),
+        );
+        let j = d.render_json();
+        assert!(j.contains("\"idempotent\": false"), "E0020 should be non-idempotent: {}", j);
+        assert!(j.contains("\"retry_after\": null"), "E0020 retry_after should be null: {}", j);
+
+        // Retryable + non-idempotent: retry_after must be a positive integer
+        let d = WlwlDiagnostic::new(
+            ErrorCode::E0060,
+            "io error",
+            Location::point("t.wl", 1, 1),
+        );
+        let j = d.render_json();
+        assert!(j.contains("\"idempotent\": false"), "E0060 should be non-idempotent: {}", j);
+        assert!(j.contains("\"retry_after\": 1000"), "E0060 retry_after should be 1000ms: {}", j);
+
+        // Retryable + idempotent: retry_after is 0 (no backoff needed)
+        let d = WlwlDiagnostic::new(
+            ErrorCode::E0061,
+            "file not found",
+            Location::point("t.wl", 1, 1),
+        );
+        let j = d.render_json();
+        assert!(j.contains("\"idempotent\": true"), "E0061 should be idempotent: {}", j);
+        assert!(j.contains("\"retry_after\": 0"), "E0061 retry_after should be 0: {}", j);
+    }
+
     #[test]
     fn diagnostic_human_render() {
         let d = WlwlDiagnostic::new(
@@ -555,9 +751,15 @@ mod tests {
         );
         let j = d.render_json();
         assert!(j.contains("\"error_schema_version\""));
-        assert!(j.contains("\"0.3.1\""));
+        assert!(j.contains("\"1.1.0\""));
+        assert!(!j.contains("\"0.3.1\""), "schema_version should be 1.1.0, got: {}", j);
         assert!(j.contains("\"E0020\""));
         assert!(j.contains("\"severity\": \"error\""));
+        // v0.4 new fields must be present
+        assert!(j.contains("\"idempotent\""), "idempotent field missing: {}", j);
+        assert!(j.contains("\"retry_after\""), "retry_after field missing: {}", j);
+        // For non-retryable E0020, retry_after is JSON null
+        assert!(j.contains("\"retry_after\": null"), "retry_after should be null for E0020, got: {}", j);
     }
 
     #[test]
