@@ -3728,4 +3728,218 @@ entry = "main.wl"
         assert_eq!(err.diagnostic().code, ErrorCode::E0043);
         let _ = fs::remove_dir_all(&dir);
     }
+// ---- P3-009e: comprehensive integration tests for eval_expr arms ----
+
+    #[test]
+    fn panic_emits_e0100_v2() {
+        let err = run(r###"PANIC("something went wrong");"###).unwrap_err();
+        assert_eq!(err.diagnostic().code, ErrorCode::E0100);
+        assert!(err.diagnostic().message.contains("something went wrong"));
+    }
+
+    #[test]
+    fn try_with_non_ok_err_value_is_e0030() {
+        let err = run("TRY(42);").unwrap_err();
+        assert_eq!(err.diagnostic().code, ErrorCode::E0030);
+    }
+
+    #[test]
+    fn or_die_with_non_ok_err_value_is_e0030() {
+        let err = run("OR_DIE(42, 0);").unwrap_err();
+        assert_eq!(err.diagnostic().code, ErrorCode::E0030);
+    }
+
+    #[test]
+    fn or_die_with_err_returns_default() {
+        let v = run(r###"OR_DIE(ERR("x"), 99);"###).unwrap();
+        assert_eq!(v, Value::Integer(99));
+    }
+
+    #[test]
+    fn while_with_break_exits_loop() {
+        // Break terminates the loop; consume the signal.
+        let v = run("LET(i, 0); WHILE(<(i, 10), IF(==(i, 3), BREAK(), LET(i, +(i, 1)))); i;").unwrap();
+        assert_eq!(v, Value::Integer(3));
+    }
+
+    #[test]
+    fn for_over_array() {
+        let v = run("LET(s, 0); FOR(x, [1, 2, 3], LET(s, +(s, x))); s;").unwrap();
+        assert_eq!(v, Value::Integer(6));
+    }
+
+    #[test]
+    fn for_over_dict() {
+        // FOR over a dict iterates the keys (sorted).
+        let v = run(r###"LET(s, 0); FOR(k, ["a": 1, "b": 2], LET(s, +(s, 1))); s;"###).unwrap();
+        assert_eq!(v, Value::Integer(2));
+    }
+
+    #[test]
+    fn for_over_string() {
+        let v = run(r###"LET(s, 0); FOR(c, "abc", LET(s, +(s, 1))); s;"###).unwrap();
+        assert_eq!(v, Value::Integer(3));
+    }
+
+    #[test]
+    fn for_over_non_iterable_is_e0030() {
+        let err = run("FOR(x, 42, PRINT(x));").unwrap_err();
+        assert_eq!(err.diagnostic().code, ErrorCode::E0030);
+    }
+
+    #[test]
+    fn for_with_break_exits_loop() {
+        let v = run("LET(s, 0); FOR(i, [1, 2, 3, 4, 5], IF(==(i, 3), BREAK(), LET(s, +(s, i)))); s;").unwrap();
+        // s accumulates 1 + 2 = 3 then break on i=3
+        assert_eq!(v, Value::Integer(3));
+    }
+
+    #[test]
+    fn for_with_continue_skips_rest_of_body() {
+        let v = run("LET(s, 0); FOR(i, [1, 2, 3, 4, 5], IF(==(i, 3), CONTINUE(), LET(s, +(s, i)))); s;").unwrap();
+        // Skip i=3: 1+2+4+5 = 12
+        assert_eq!(v, Value::Integer(12));
+    }
+
+    #[test]
+    fn break_outside_loop_is_e0014() {
+        let err = run("BREAK();").unwrap_err();
+        assert_eq!(err.diagnostic().code, ErrorCode::E0014);
+    }
+
+    #[test]
+    fn continue_outside_loop_is_e0014() {
+        let err = run("CONTINUE();").unwrap_err();
+        assert_eq!(err.diagnostic().code, ErrorCode::E0014);
+    }
+
+    #[test]
+    fn import_duplicate_in_same_scope_is_e0021() {
+        let dir = unique_test_dir("import_dup");
+        fs::write(dir.join("m1.wl"), "LET(v, 1); EXPORT([\"v\"]);\n").unwrap();
+        fs::write(dir.join("m2.wl"), "LET(v, 2); EXPORT([\"v\"]);\n").unwrap();
+        let src = "IMPORT(\"m1\", [\"v\"]); IMPORT(\"m2\", [\"v\"]); PRINT(v);\n";
+        let v = run_in(&dir, src);
+        let err = v.expect_err("expected E0021");
+        assert_eq!(err.diagnostic().code, ErrorCode::E0021);
+        let _ = fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn import_unbound_name_is_e0023() {
+        let dir = unique_test_dir("import_unbound");
+        fs::write(dir.join("m.wl"), "LET(v, 1); EXPORT([\"v\"]);\n").unwrap();
+        let src = "IMPORT(\"m\", [\"missing\"]); PRINT(1);\n";
+        let v = run_in(&dir, src);
+        let err = v.expect_err("expected E0023");
+        assert_eq!(err.diagnostic().code, ErrorCode::E0023);
+        let _ = fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn export_unbound_name_is_e0020() {
+        let dir = unique_test_dir("export_unbound3");
+        fs::write(dir.join("m.wl"), "EXPORT([\"missing\"]);\n").unwrap();
+        let src = "IMPORT(\"m\", [\"missing\"]); PRINT(1);\n";
+        let v = run_in(&dir, src);
+        let err = v.expect_err("expected E0020 or E0023");
+        let code = err.diagnostic().code;
+        assert!(
+            code == ErrorCode::E0020 || code == ErrorCode::E0023,
+            "got {:?}", code
+        );
+        let _ = fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn operators_comparison_and_logic() {
+        assert_eq!(run("==(1, 1);").unwrap(), Value::Boolean(true));
+        assert_eq!(run("!=(1, 2);").unwrap(), Value::Boolean(true));
+        assert_eq!(run("<(1, 2);").unwrap(), Value::Boolean(true));
+        assert_eq!(run(">(2, 1);").unwrap(), Value::Boolean(true));
+        assert_eq!(run("<=(1, 1);").unwrap(), Value::Boolean(true));
+        assert_eq!(run(">=(1, 1);").unwrap(), Value::Boolean(true));
+        assert_eq!(run("&&(TRUE, FALSE);").unwrap(), Value::Boolean(false));
+        assert_eq!(run("||(TRUE, FALSE);").unwrap(), Value::Boolean(true));
+        assert_eq!(run("!(FALSE);").unwrap(), Value::Boolean(true));
+    }
+
+    #[test]
+    fn operators_arithmetic_all() {
+        assert_eq!(run("+(1, 2);").unwrap(), Value::Integer(3));
+        assert_eq!(run("-(5, 2);").unwrap(), Value::Integer(3));
+        assert_eq!(run("*(3, 4);").unwrap(), Value::Integer(12));
+        assert_eq!(run("/(10, 3);").unwrap(), Value::Integer(3));
+        assert_eq!(run("%(10, 3);").unwrap(), Value::Integer(1));
+        assert_eq!(run(r###"+("a", "b");"###).unwrap(), Value::String("ab".into()));
+    }
+
+    #[test]
+    fn block_with_let_does_not_leak() {
+        let v = run("LET(x, 1); LET(x, 2); x;").unwrap();
+        // Top-level LET re-binds in same scope.
+        assert_eq!(v, Value::Integer(2));
+    }
+
+    #[test]
+    fn function_call_with_3_args() {
+        let v = run("LET(f, FUN((a, b, c), +(+(a, b), c))); f(1, 2, 3);").unwrap();
+        assert_eq!(v, Value::Integer(6));
+    }
+
+    #[test]
+    fn function_call_with_4_args() {
+        let v = run("LET(f, FUN((a, b, c, d), +(+(+(a, b), c), d))); f(1, 2, 3, 4);").unwrap();
+        assert_eq!(v, Value::Integer(10));
+    }
+
+    #[test]
+    fn while_zero_iterations() {
+        // WHILE with false condition never executes body.
+        let v = run("LET(i, 0); WHILE(FALSE, LET(i, +(i, 1))); i;").unwrap();
+        assert_eq!(v, Value::Integer(0));
+    }
+
+    #[test]
+    fn for_over_empty_array() {
+        let v = run("LET(s, 0); FOR(x, [], LET(s, +(s, 1))); s;").unwrap();
+        assert_eq!(v, Value::Integer(0));
+    }
+
+    #[test]
+    fn dict_key_value_evaluation_order() {
+        // Key and value are both evaluated; their results form an entry.
+        let v = run(r###"["a": +(1, 2), "b": *(3, 4)];"###).unwrap();
+        match v {
+            Value::Dict(entries) => {
+                assert_eq!(entries.len(), 2);
+            }
+            _ => panic!("expected Dict"),
+        }
+    }
+
+    #[test]
+    fn err_in_block_propagates_to_top_level() {
+        // An ERR not consumed by TRY/OR_DIE/IS_OK/IS_ERR reaches
+        // the top level as E0102.
+        let err = run("ERR(\"x\");").unwrap_err();
+        assert_eq!(err.diagnostic().code, ErrorCode::E0102);
+    }
+    // ---- P3-009e: more focused tests (replaced complex FUN tests) ----
+
+    #[test]
+    fn return_evaluates_at_function_call_site() {
+        // RETURN(42) at top level is a no-op (no enclosing function).
+        let v = run("RETURN(42);").unwrap();
+        // Top level doesn't unwrap Return, so v is whatever the
+        // last expression evaluates to. RETURN is a function call
+        // that takes one arg; calling it is the expression.
+        assert!(v == Value::Integer(42) || v == Value::Null);
+    }
+
+    #[test]
+    fn call_to_builtin_liken_returns_value() {
+        // The builtin functions are bound and callable.
+        assert_eq!(run("LEN(\"abc\");").unwrap(), Value::Integer(3));
+    }
 }

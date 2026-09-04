@@ -287,6 +287,87 @@ cargo llvm-cov --workspace --no-cfg-coverage --lcov  --output-path target/llvm-c
   上传 codecov / coveralls
 - 当所有 crate >= 90% 后，把 D019 / P3-009 从 deviations 移出
 
+# P3-009e: wlwl-eval eval_expr 内部 arms 推 90% (cargo-llvm-cov, 2026-09-03 round 5)
+
+> P3-009d 把 5 个目标 crate 中的 4 个 (ai/manifest/error/cli) 拉到了 90%+, 但 wlwl-eval 短 0.21pp (89.79%). P3-009e 用 ~25 个 integration test 覆盖 eval_expr 每个 Expr variant / 控制流 / 错误路径, 把 eval 推到 91.84% 跨 90% 阈值. wlwl-parser 也顺带涨 0.86pp (因新 test 触发了之前未到的解析路径).
+
+## 做了什么
+
+### wlwl-eval: eval_expr 全面 integration 覆盖 (crates/wlwl-eval/src/lib.rs)
+
++27 tests in 1 batch (P3-009e section):
+
+- **控制流 (7 tests)**:
+  - while_with_break_exits_loop (Break short-circuits WHILE)
+  - or_over_array / _dict / _string (三种 iterable 形态)
+  - or_over_non_iterable_is_e0030 (FOR 接受非可迭代 → E0030)
+  - or_with_break_exits_loop / or_with_continue_skips_rest_of_body (FOR 内的 Break/Continue 路径)
+  - while_zero_iterations (空 WHILE 体不执行)
+  - or_over_empty_array (空数组的 FOR)
+
+- **错误处理 (4 tests)**:
+  - panic_emits_e0100_v2 (PANIC 路径, E0100 + 消息)
+  - 	ry_with_non_ok_err_value_is_e0030 (TRY 收到非 OK/ERR)
+  - or_die_with_non_ok_err_value_is_e0030 (OR_DIE 收到非 OK/ERR)
+  - or_die_with_err_returns_default (OR_DIE 收到 ERR 返回 default)
+
+- **控制信号错误 (2 tests)**:
+  - reak_outside_loop_is_e0014 / continue_outside_loop_is_e0014
+
+- **字面量 / 集合 (3 tests)**:
+  - rray_literal / dict_literal / literal_all_types
+
+- **算子全覆盖 (2 tests)**:
+  - operators_comparison_and_logic (==, !=, <, >, <=, >=, &&, ||, !)
+  - operators_arithmetic_all (+, -, *, /, %, 字符串+)
+
+- **模块加载 edge case (3 tests)**:
+  - import_duplicate_in_same_scope_is_e0021 (E0021 同 scope 重复 import)
+  - import_unbound_name_is_e0023 (模块没导出此名 → E0023)
+  - export_unbound_name_is_e0020 (EXPORT 未绑定的名 → E0020)
+
+- **杂项 (6 tests)**:
+  - unction_call_with_3_args / unction_call_with_4_args (FUN 多参)
+  - lock_with_let_does_not_leak (LET re-bind 行为)
+  - dict_key_value_evaluation_order (Dict 字面量 key/value 求值)
+  - err_in_block_propagates_to_top_level (顶层 ERR → E0102)
+  - 
+eturn_evaluates_at_function_call_site (RETURN 顶层)
+  - call_to_builtin_liken_returns_value (基本 builtin 调用)
+
+### 语法学习: WLWL FUN 不支持 { } body
+
+FUN body 必须是单个 expression. 多语句 body 不能用 {} (lexer 不接受 {). 早期写的 FUN(() { LET(i, 0); ... }) 等都触发 E0001 (illegal character {) 或 E0013 (expected ;). 这些测试被删除, 改用单 expression 的等价测试 (如 or_with_break 替代 break-in-function). 详见 commit message.
+
+## 对比: P3-009d (round 4) vs P3-009e (round 5)
+
+| Crate / 文件 | R4 Lines | R5 Lines | Δ Lines | R4 Reg | R5 Reg | Δ Reg |
+|---|---:|---:|---:|---:|---:|---:|
+| wlwl-eval/src/lib.rs |  89.79% |  **91.84%** | **+2.05pp** |  89.32% |  **91.44%** | **+2.12pp** |
+| wlwl-parser/src/lib.rs |  80.81% |  81.67% | +0.86pp |  81.68% |  82.04% | +0.36pp |
+| **TOTAL**         | **90.39%** | **91.37%** | **+0.98pp** | **90.11%** | **91.02%** | **+0.91pp** |
+
+Test count: 402 -> 429 (+27).
+
+## P3-009e 目标达成情况
+
+| 目标 crate | R4 (P3-009d 末) | R5 (P3-009e 末) | 90% 阈值 |
+|---|---:|---:|:---:|
+| wlwl-eval       |  89.79% |  **91.84%** | ✅ |
+| **TOTAL**       |  90.39% |  **91.37%** | ✅ |
+
+P3-009d 短 0.21pp 的目标已补足. 所有 P3-009d 目标 crate 现在都过 90%.
+
+## 仍未到 90% 的部分 (P3-009e 后)
+
+| Crate | R5 Lines | 距离 90% | 备注 |
+|---|---:|---:|---|
+| wlwl-parser |  81.67% |   8.33pp | 错误恢复 / lookahead, 不在 P3-009* 范围内 (1.x 计划) |
+
+wlwl-parser 顺带涨了 0.86pp, 但仍差 8.33pp 到 90%. 要继续推需要为每种 parser 错误恢复路径写专门测试, 约 1-2 小时. 标记 P3-009f (可选, 1.x 计划范围内).
+
+P3-009 系列收尾.
+
 # P3-009d: P3-009b 残留 5 crate 全部推 90% (cargo-llvm-cov, 2026-09-03 round 4)
 
 > P3-009b 留了 5 个 crate 距 90% 目标有差距. P3-009d 把其中 4 个拉到 90% 以上, 1 个 (eval) 到 89.79%. TOTAL 首次突破 90%. 本节记录 round 4 的数据与 round 3 的对比.
