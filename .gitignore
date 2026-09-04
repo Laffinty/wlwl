@@ -25,6 +25,11 @@ Thumbs.db
 scratch/
 build/
 dist/
+# P3-011 temporary build/test scripts (left behind while iterating)
+__*.ps1
+__*.txt
+__*.md
+impl/__*.md
 
 # Node / JS (in case)
 node_modules/

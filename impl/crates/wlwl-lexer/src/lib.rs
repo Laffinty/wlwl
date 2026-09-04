@@ -71,6 +71,11 @@ pub enum TokenKind {
     Percent,      // %
     EqEq,         // ==
     BangEq,       // !=
+    /// P3-011 §8.2: single `=` is used in default-parameter
+    /// bindings (`name = expr`) and in future let-bindings. The
+    /// lexer must NOT collapse a bare `=` into `==`; `==` is its own
+    /// token and is matched first.
+    Eq,
     Lt,           // <
     Gt,           // >
     LtEq,         // <=
@@ -266,9 +271,44 @@ impl<'a> Lexer<'a> {
         let line = self.line;
         let col = self.col;
         let start = self.pos;
+        // v0.3 §3.1: identifiers allow letters/digits/underscore with
+        // a non-digit first character, and explicitly allow Chinese
+        // (and by extension any Unicode letter — see §3.1 note "建议
+        // 在生产代码中使用 ASCII 标识符以提升 AI 编码效率"). We
+        // accept ASCII alphanumeric + `_` plus any UTF-8 multi-byte
+        // sequence (the lexer is permissive; the parser-level `is_ident`
+        // check stays in place for ASCII).
         while let Some(b) = self.peek() {
             if b.is_ascii_alphanumeric() || b == b'_' {
                 self.bump();
+            } else if b >= 0xC0 {
+                // UTF-8 leading byte: count continuation bytes (1-3)
+                // and bump through the whole code point.
+                let cont = if b < 0xE0 {
+                    1
+                } else if b < 0xF0 {
+                    2
+                } else if b < 0xF8 {
+                    3
+                } else {
+                    break;
+                };
+                let mut ok = true;
+                for i in 1..=cont {
+                    match self.peek_at(i as usize) {
+                        Some(cb) if (cb & 0xC0) == 0x80 => {}
+                        _ => {
+                            ok = false;
+                            break;
+                        }
+                    }
+                }
+                if !ok {
+                    break;
+                }
+                for _ in 0..=cont {
+                    self.bump();
+                }
             } else {
                 break;
             }
@@ -311,12 +351,28 @@ impl<'a> Lexer<'a> {
         let line = self.line;
         let col = self.col;
         self.bump(); // opening '"'
-        let mut s = String::new();
+        // v0.3 §4.2: strings are double-quoted, may contain any UTF-8
+        // (including 中文 — see also §3.1 identifier note). The lexer
+        // previously pushed individual bytes as `char`, which mangles
+        // multi-byte sequences into Latin-1 mojibake. We now accumulate
+        // raw bytes and decode once at the closing quote.
+        let mut s_bytes: Vec<u8> = Vec::new();
         loop {
             match self.peek() {
                 Some(b'"') => {
                     self.bump();
                     let end_col = self.col;
+                    let s = String::from_utf8(s_bytes).map_err(|e| {
+                        // Should be unreachable: we only ever push
+                        // valid UTF-8 sequences. Report E0001 if it
+                        // somehow happens.
+                        self.err(
+                            ErrorCode::E0001,
+                            format!("invalid UTF-8 in string literal: {}", e),
+                            line,
+                            col,
+                        )
+                    })?;
                     return Ok(Token {
                         kind: TokenKind::StringLit(s),
                         span: (line, col, line, end_col),
@@ -325,12 +381,12 @@ impl<'a> Lexer<'a> {
                 Some(b'\\') => {
                     self.bump();
                     match self.bump() {
-                        Some(b'n') => s.push('\n'),
-                        Some(b't') => s.push('\t'),
-                        Some(b'r') => s.push('\r'),
-                        Some(b'\\') => s.push('\\'),
-                        Some(b'"') => s.push('"'),
-                        Some(b'0') => s.push('\0'),
+                        Some(b'n') => s_bytes.push(b'\n'),
+                        Some(b't') => s_bytes.push(b'\t'),
+                        Some(b'r') => s_bytes.push(b'\r'),
+                        Some(b'\\') => s_bytes.push(b'\\'),
+                        Some(b'"') => s_bytes.push(b'"'),
+                        Some(b'0') => s_bytes.push(b'\0'),
                         Some(c) => {
                             return Err(self.err(
                                 ErrorCode::E0001,
@@ -358,7 +414,7 @@ impl<'a> Lexer<'a> {
                     ));
                 }
                 Some(b) => {
-                    s.push(b as char);
+                    s_bytes.push(b);
                     self.bump();
                 }
             }
@@ -481,6 +537,12 @@ impl<'a> Lexer<'a> {
                     self.bump();
                     tokens.push(Token { kind: TokenKind::EqEq, span: (line, col, line, self.col) });
                 }
+                b'=' => {
+                    // P3-011 §8.2: single `=` is the default-parameter
+                    // separator. Lex as TokenKind::Eq.
+                    self.bump();
+                    tokens.push(Token { kind: TokenKind::Eq, span: (line, col, line, self.col) });
+                }
                 b'!' if self.peek_at(1) == Some(b'=') => {
                     self.bump();
                     self.bump();
@@ -520,6 +582,12 @@ impl<'a> Lexer<'a> {
                 }
                 c if c.is_ascii_digit() => tokens.push(self.read_number()?),
                 c if c.is_ascii_alphabetic() || c == b'_' => tokens.push(self.read_ident_or_keyword()?),
+                // P3-011 §3.1: identifiers allow non-ASCII letters
+                // (e.g. Chinese). The UTF-8 leading byte alone is not
+                // an ASCII alphabetic, so route through the same
+                // identifier reader which knows how to walk multi-byte
+                // code points.
+                c if c >= 0xC0 => tokens.push(self.read_ident_or_keyword()?),
                 c => {
                     return Err(self.err(
                         ErrorCode::E0001,
@@ -585,6 +653,57 @@ mod tests {
         assert!(x.is_some(), "expected to find identifier x after nested comment");
     }
 
+    // v0.3 §3.1 (P3-011): identifiers may contain Chinese (or any
+    // non-ASCII letter). The lexer now walks UTF-8 code points in
+    // `read_ident_or_keyword`. These tests cover the multi-byte
+    // path that the parser-level chain (`spec_v3_alignment`) only
+    // exercises end-to-end.
+    #[test]
+    fn lex_chinese_identifier_token() {
+        let toks = lex("计数", "t.wl").unwrap();
+        let id = toks
+            .iter()
+            .find(|t| matches!(&t.kind, TokenKind::Ident(s) if s == "计数"));
+        assert!(id.is_some(), "expected identifier 计数, got {:?}", toks);
+    }
+
+    #[test]
+    fn lex_mixed_ascii_and_chinese_identifier() {
+        // Mixed scripts inside one identifier — the UTF-8 walk
+        // must accept the ASCII prefix and the multi-byte tail
+        // together.
+        let toks = lex("count计数", "t.wl").unwrap();
+        let id = toks.iter().find_map(|t| match &t.kind {
+            TokenKind::Ident(s) if s == "count计数" => Some(()),
+            _ => None,
+        });
+        assert!(id.is_some(), "expected identifier count计数, got {:?}", toks);
+    }
+
+    #[test]
+    fn lex_two_byte_utf8_identifier() {
+        // 2-byte UTF-8 (Latin-1 supplement, e.g. é = 0xC3 0xA9).
+        // Exercises the `b < 0xE0` branch in read_ident_or_keyword.
+        let toks = lex("café", "t.wl").unwrap();
+        let id = toks.iter().find_map(|t| match &t.kind {
+            TokenKind::Ident(s) if s == "café" => Some(()),
+            _ => None,
+        });
+        assert!(id.is_some(), "expected identifier café, got {:?}", toks);
+    }
+
+    #[test]
+    fn lex_four_byte_utf8_identifier() {
+        // 4-byte UTF-8 (supplementary plane, e.g. 😀 = 0xF0 0x9F
+        // 0x98 0x80). Exercises the `b < 0xF8` branch.
+        let toks = lex("x😀y", "t.wl").unwrap();
+        let id = toks.iter().find_map(|t| match &t.kind {
+            TokenKind::Ident(s) if s == "x😀y" => Some(()),
+            _ => None,
+        });
+        assert!(id.is_some(), "expected identifier x😀y, got {:?}", toks);
+    }
+
     #[test]
     fn lex_line_comment() {
         let toks = lex("x // comment\ny", "t.wl").unwrap();
@@ -613,6 +732,7 @@ mod tests {
                 TokenKind::Slash => "/",
                 TokenKind::Percent => "%",
                 TokenKind::EqEq => "==",
+                TokenKind::Eq => "=",
                 TokenKind::BangEq => "!=",
                 TokenKind::Lt => "<",
                 TokenKind::Gt => ">",

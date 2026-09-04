@@ -58,6 +58,15 @@ pub enum ErrorCode {
     E0100, // internal error
     E0101, // stack overflow
     E0102, // unhandled ERR escaped to top level
+    // v0.3 §14.5 warning codes (added in P3-011).
+    W0001, // undefined name (read)
+    W0010, // unused LET binding
+    W0011, // unused function parameter (`_` prefix silences)
+    W0012, // duplicate LET in same scope
+    W0013, // IF branches have inconsistent types
+    W0020, // array/dict literal mixes bare values and kv pairs
+    W0030, // IMPORTed name never used
+    W0040, // unhandled `TODO(agent):` comment
 }
 
 impl ErrorCode {
@@ -98,7 +107,32 @@ impl ErrorCode {
             ErrorCode::E0100 => "E0100",
             ErrorCode::E0101 => "E0101",
             ErrorCode::E0102 => "E0102",
+            ErrorCode::W0001 => "W0001",
+            ErrorCode::W0010 => "W0010",
+            ErrorCode::W0011 => "W0011",
+            ErrorCode::W0012 => "W0012",
+            ErrorCode::W0013 => "W0013",
+            ErrorCode::W0020 => "W0020",
+            ErrorCode::W0030 => "W0030",
+            ErrorCode::W0040 => "W0040",
         }
+    }
+
+    /// Whether this is a warning code (v0.3 §14.5).
+    /// Warnings do not block parsing; the caller decides whether to
+    /// promote them to errors in `strict` mode (v0.3 §14.6).
+    pub fn is_warning(&self) -> bool {
+        matches!(
+            self,
+            ErrorCode::W0001
+                | ErrorCode::W0010
+                | ErrorCode::W0011
+                | ErrorCode::W0012
+                | ErrorCode::W0013
+                | ErrorCode::W0020
+                | ErrorCode::W0030
+                | ErrorCode::W0040
+        )
     }
 
     /// High-level error category (v0.3 `Sec. 14.4` -- 13 buckets).
@@ -131,6 +165,17 @@ impl ErrorCode {
             | ErrorCode::E0083 => ErrorCategory::Ai,
             ErrorCode::E0099 => ErrorCategory::User,
             ErrorCode::E0100 | ErrorCode::E0101 | ErrorCode::E0102 => ErrorCategory::Internal,
+            // Warnings map to the semantic bucket of the underlying
+            // issue so consumers can route them by the same rules as
+            // the equivalent E-codes. `is_warning()` distinguishes
+            // the severity.
+            ErrorCode::W0001
+            | ErrorCode::W0010
+            | ErrorCode::W0011
+            | ErrorCode::W0012
+            | ErrorCode::W0030 => ErrorCategory::Name,
+            ErrorCode::W0013 | ErrorCode::W0020 => ErrorCategory::Syntax,
+            ErrorCode::W0040 => ErrorCategory::Module,
         }
     }
 

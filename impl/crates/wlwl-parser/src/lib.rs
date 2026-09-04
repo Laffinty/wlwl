@@ -43,21 +43,67 @@
 //! - E0043 namespace path syntax error
 
 use wlwl_ast::{Expr, FunParam, ImportName, Literal, Span, TypeAnnotation, TypeExpr};
-use wlwl_error::{extract_line, ErrorCode, Location, Suggestion, WlwlDiagnostic, WlwlError, WlwlResult};
+use wlwl_error::{extract_line, Location, Suggestion, WlwlDiagnostic, WlwlError, WlwlResult};
 use wlwl_lexer::{lex, Token, TokenKind};
+
+// Re-export `ErrorCode` so external test code (and downstream tools)
+// can match on it without taking a direct dependency on
+// `wlwl-error`. The internal `use` below aliases the same type to
+// the bare name `ErrorCode` so production code can keep writing
+// `EC::E0010` etc. unchanged.
+pub use wlwl_error::ErrorCode;
+use wlwl_error::ErrorCode as EC;
+
+/// Non-fatal diagnostic emitted by the parser (v0.3 §14.5 warning
+/// codes). Returned alongside the `Expr` from `parse_with_warnings`
+/// so the caller can choose whether to surface them, batch them
+/// into a strict-mode lint, or apply `suggestion_code` patches.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct Warning {
+    pub code: ErrorCode,
+    pub message: String,
+    /// Source span the warning applies to.
+    pub span: (u32, u32, u32, u32),
+}
+
+impl Warning {
+    pub fn new(code: ErrorCode, message: impl Into<String>, span: (u32, u32, u32, u32)) -> Self {
+        Self {
+            code,
+            message: message.into(),
+            span,
+        }
+    }
+}
 
 /// Parse source code into a single block expression (the whole program).
 pub fn parse(input: &str, file: &str) -> WlwlResult<Expr> {
+    parse_with_warnings(input, file).map(|(e, _)| e)
+}
+
+/// Parse source code and also collect any non-fatal warnings.
+///
+/// The current parser emits at most W0020 (mixed array/dict literal,
+/// v0.3 §4.5). Other warning codes (W0001, W0010, …) live in the
+/// error model but are not yet triggered by the parser — those are
+/// eval-time concerns (unused LET, etc.) and will land alongside
+/// their semantic checks.
+pub fn parse_with_warnings(
+    input: &str,
+    file: &str,
+) -> WlwlResult<(Expr, Vec<Warning>)> {
     let toks = lex(input, file)?;
     let mut p = Parser {
         toks,
         pos: 0,
         file: file.to_string(),
         source: input.to_string(),
+        warnings: Vec::new(),
     };
     let block = p.parse_block(false)?;
     p.expect(TokenKind::Eof)?;
-    Ok(block)
+    let warnings = std::mem::take(&mut p.warnings);
+    Ok((block, warnings))
 }
 
 struct Parser {
@@ -67,6 +113,9 @@ struct Parser {
     /// Original source text, used to populate `source_line` on diagnostics
     /// (v0.3 §14.2).
     source: String,
+    /// Non-fatal diagnostics collected during parsing. Currently
+    /// populated by the array/dict literal check (W0020, v0.3 §4.5).
+    warnings: Vec<Warning>,
 }
 
 impl Parser {
@@ -108,7 +157,7 @@ impl Parser {
             d = d.with_source_line(s);
         }
         d = match code {
-            ErrorCode::E0010 => d.with_suggestion(Suggestion::Note {
+            EC::E0010 => d.with_suggestion(Suggestion::Note {
                 description: concat!(
                     "an expression was expected here; common forms are: ",
                     "literals (1, 3.14, \"x\", true, [1,2], [a:1]), ",
@@ -116,19 +165,19 @@ impl Parser {
                     "or blocks (LET(...); ...). See v0.3 \u{00a7}5."
                 ).into(),
             }),
-            ErrorCode::E0011 => d.with_suggestion(Suggestion::Note {
+            EC::E0011 => d.with_suggestion(Suggestion::Note {
                 description: concat!(
                     "missing closing `)`; ",
                     "find the matching `(` on this line and count parens"
                 ).into(),
             }),
-            ErrorCode::E0012 => d.with_suggestion(Suggestion::Note {
+            EC::E0012 => d.with_suggestion(Suggestion::Note {
                 description: "missing `,` between arguments; function calls use `(a, b, c)` not `(a b c)`".into(),
             }),
-            ErrorCode::E0013 => d.with_suggestion(Suggestion::Note {
+            EC::E0013 => d.with_suggestion(Suggestion::Note {
                 description: "add `;` to terminate the preceding statement".into(),
             }),
-            ErrorCode::E0043 => d.with_suggestion(Suggestion::Note {
+            EC::E0043 => d.with_suggestion(Suggestion::Note {
                 description: concat!(
                     "namespace paths must be `ns:name` (e.g. `wlwl:std.io`) ",
                     "or a relative path (`./x`, `../y`); see v0.3 \u{00a7}13.3"
@@ -152,7 +201,7 @@ impl Parser {
                 _ => "<token>",
             };
             Err(self.err_at(
-                ErrorCode::E0011,
+                EC::E0011,
                 format!("expected {}, got {:?}", expected, self.peek()),
                 (line, col, line, col),
             ))
@@ -245,7 +294,7 @@ impl Parser {
                         }
                         let (line, col, _, _) = self.span_here();
                         return Err(self.err_at(
-                            ErrorCode::E0013,
+                            EC::E0013,
                             "expected ';' after expression",
                             (line, col, line, col),
                         ));
@@ -335,10 +384,16 @@ impl Parser {
             // Identifiers OR operator tokens (in Call position)
             TokenKind::Ident(_) => self.parse_call_or_ident(),
             ref k if k.as_op_name().is_some() => self.parse_call_or_ident(),
+            // §11.2 / §11.3: CLASS / NEW / THIS are keywords per §3.2
+            // but at the parser layer they surface as ordinary function
+            // calls (`CLASS("Rect", NULL, [...])`, `NEW("Rect")`,
+            // `THIS`). The runtime / eval layer handles the semantics
+            // (class table, instance binding, implicit-self). P3-011.
+            TokenKind::Class | TokenKind::New | TokenKind::This => self.parse_call_or_ident(),
             _ => {
                 let span = self.span_here();
                 Err(self.err_at(
-                    ErrorCode::E0010,
+                    EC::E0010,
                     format!("expected expression, got {:?}", self.peek()),
                     span,
                 ))
@@ -352,13 +407,13 @@ impl Parser {
 
     fn parse_let(&mut self) -> WlwlResult<Expr> {
         let (line, col, _, _) = self.span_here();
-        self.expect_specific(ErrorCode::E0010, "'LET'")?;
-        self.expect_specific(ErrorCode::E0011, "'('")?;
+        self.expect_specific(EC::E0010, "'LET'")?;
+        self.expect_specific(EC::E0011, "'('")?;
         let name = match self.advance() {
             Token { kind: TokenKind::Ident(s), .. } => s,
             other => {
                 return Err(self.err_at(
-                    ErrorCode::E0010,
+                    EC::E0010,
                     format!("expected identifier in LET, got {:?}", other.kind),
                     other.span,
                 ));
@@ -366,9 +421,9 @@ impl Parser {
         };
         // v0.3 Sec. 2.4: optional type annotation, parsed not checked.
         let type_annotation = self.parse_type_annotation()?;
-        self.expect_specific(ErrorCode::E0012, "','")?;
+        self.expect_specific(EC::E0012, "','")?;
         let value = self.parse_expr()?;
-        self.expect_specific(ErrorCode::E0011, "')'")?;
+        self.expect_specific(EC::E0011, "')'")?;
         let (_, _, line_end, col_end) = self.span_here();
         Ok(Expr::Let {
             name,
@@ -427,7 +482,7 @@ impl Parser {
         }
         if pieces.is_empty() {
             return Err(self.err_at(
-                ErrorCode::E0010,
+                EC::E0010,
                 "expected type expression after ':'",
                 (sl, sc, sl, sc),
             ));
@@ -490,6 +545,7 @@ impl Parser {
             TokenKind::Slash => "/".into(),
             TokenKind::Percent => "%".into(),
             TokenKind::EqEq => "==".into(),
+            TokenKind::Eq => "=".into(),
             TokenKind::BangEq => "!=".into(),
             TokenKind::Lt => "<".into(),
             TokenKind::Gt => ">".into(),
@@ -506,10 +562,10 @@ impl Parser {
 
     fn parse_if(&mut self) -> WlwlResult<Expr> {
         let (line, col, _, _) = self.span_here();
-        self.expect_specific(ErrorCode::E0010, "'IF'")?;
-        self.expect_specific(ErrorCode::E0011, "'('")?;
+        self.expect_specific(EC::E0010, "'IF'")?;
+        self.expect_specific(EC::E0011, "'('")?;
         let cond = self.parse_expr()?;
-                self.expect_specific(ErrorCode::E0012, "','")?;
+                self.expect_specific(EC::E0012, "','")?;
         // The branches may be multi-statement blocks; parse them as
         // such (terminated by the closing `)` of the IF, or a `,` for
         // the else branch).
@@ -520,7 +576,7 @@ impl Parser {
         } else {
             None
         };
-        self.expect_specific(ErrorCode::E0011, "')'")?;
+        self.expect_specific(EC::E0011, "')'")?;
         let (_, _, line_end, col_end) = self.span_here();
         Ok(Expr::If {
             cond: Box::new(cond),
@@ -538,13 +594,13 @@ impl Parser {
 
     fn parse_while(&mut self) -> WlwlResult<Expr> {
         let (line, col, _, _) = self.span_here();
-        self.expect_specific(ErrorCode::E0010, "'WHILE'")?;
-        self.expect_specific(ErrorCode::E0011, "'('")?;
+        self.expect_specific(EC::E0010, "'WHILE'")?;
+        self.expect_specific(EC::E0011, "'('")?;
         let cond = self.parse_expr()?;
-        self.expect_specific(ErrorCode::E0012, "','")?;
+        self.expect_specific(EC::E0012, "','")?;
         // Body is a block (terminated by the closing `)` of WHILE).
         let body = self.parse_block(true)?;
-        self.expect_specific(ErrorCode::E0011, "')'")?;
+        self.expect_specific(EC::E0011, "')'")?;
         let (_, _, line_end, col_end) = self.span_here();
         Ok(Expr::While {
             cond: Box::new(cond),
@@ -561,24 +617,24 @@ impl Parser {
 
     fn parse_for(&mut self) -> WlwlResult<Expr> {
         let (line, col, _, _) = self.span_here();
-        self.expect_specific(ErrorCode::E0010, "'FOR'")?;
-        self.expect_specific(ErrorCode::E0011, "'('")?;
+        self.expect_specific(EC::E0010, "'FOR'")?;
+        self.expect_specific(EC::E0011, "'('")?;
         let var = match self.advance() {
             Token { kind: TokenKind::Ident(s), .. } => s,
             other => {
                 return Err(self.err_at(
-                    ErrorCode::E0010,
+                    EC::E0010,
                     format!("expected identifier in FOR, got {:?}", other.kind),
                     other.span,
                 ));
             }
         };
-        self.expect_specific(ErrorCode::E0012, "','")?;
+        self.expect_specific(EC::E0012, "','")?;
         let iter = self.parse_expr()?;
-        self.expect_specific(ErrorCode::E0012, "','")?;
+        self.expect_specific(EC::E0012, "','")?;
         // Body is a block (terminated by the closing `)` of FOR).
         let body = self.parse_block(true)?;
-        self.expect_specific(ErrorCode::E0011, "')'")?;
+        self.expect_specific(EC::E0011, "')'")?;
         let (_, _, line_end, col_end) = self.span_here();
         Ok(Expr::For {
             var,
@@ -596,37 +652,78 @@ impl Parser {
 
     fn parse_fun(&mut self) -> WlwlResult<Expr> {
         let (line, col, _, _) = self.span_here();
-        self.expect_specific(ErrorCode::E0010, "'FUN'")?;
-        self.expect_specific(ErrorCode::E0011, "'('")?;
-        self.expect_specific(ErrorCode::E0011, "'('")?;
-        // Parameter list: zero or more Ident separated by commas.
+        self.expect_specific(EC::E0010, "'FUN'")?;
+        self.expect_specific(EC::E0011, "'('")?;
+
+        // §8.2 (P3-011): FUN can be either `FUN((params), body)`
+        // (anonymous) or `FUN(name(params), body)` (named). We peek
+        // after the first `(`: if it's another `(`, we're anonymous;
+        // if it's an identifier, we consume the name and expect a
+        // second `(` before the parameter list.
+        let name = if matches!(self.peek(), TokenKind::LParen) {
+            // Anonymous form: FUN((params), body) — consume the
+            // parameter-list left paren.
+            self.advance();
+            None
+        } else if let Token { kind: TokenKind::Ident(s), .. } = self.advance() {
+            // Named form: FUN(name(params), body) — the next token
+            // must be the parameter-list left paren.
+            self.expect_specific(EC::E0011, "'('")?;
+            Some(s)
+        } else {
+            return Err(self.err_at(
+                EC::E0010,
+                "FUN body must start with `(` (anonymous) or an identifier (named)",
+                self.span_here(),
+            ));
+        };
+
+        // Parameter list: zero or more entries separated by commas.
+        // Each entry may be:
+        //   name                  (required positional)
+        //   name: Type            (type annotation, §2.4)
+        //   name = expr           (default value, §8.2 — P3-011)
+        //   *name                 (rest/varargs tail, §8.2 — P3-011)
         let mut params = Vec::new();
         if !matches!(self.peek(), TokenKind::RParen) {
             loop {
-                match self.advance() {
-                    Token { kind: TokenKind::Ident(s), span } => {
-                        let type_annotation = self.parse_type_annotation()?;
-                        let param_span = Span {
-                            file: self.file.clone(),
-                            line_start: span.0,
-                            col_start: span.1,
-                            line_end: span.2,
-                            col_end: span.3,
-                        };
-                        params.push(FunParam {
-                            name: s,
-                            type_annotation,
-                            span: param_span,
-                        });
-                        }
+                let is_rest = if matches!(self.peek(), TokenKind::Star) {
+                    self.advance(); // '*'
+                    true
+                } else {
+                    false
+                };
+                let (pname, pspan) = match self.advance() {
+                    Token { kind: TokenKind::Ident(s), span } => (s, span),
                     other => {
                         return Err(self.err_at(
-                            ErrorCode::E0010,
+                            EC::E0010,
                             format!("expected parameter name, got {:?}", other.kind),
                             other.span,
                         ));
                     }
-                }
+                };
+                let type_annotation = self.parse_type_annotation()?;
+                let default_expr = if matches!(self.peek(), TokenKind::Eq) {
+                    self.advance(); // '='
+                    Some(Box::new(self.parse_expr()?))
+                } else {
+                    None
+                };
+                let param_span = Span {
+                    file: self.file.clone(),
+                    line_start: pspan.0,
+                    col_start: pspan.1,
+                    line_end: pspan.2,
+                    col_end: pspan.3,
+                };
+                params.push(FunParam {
+                    name: pname,
+                    type_annotation,
+                    default_expr,
+                    is_rest,
+                    span: param_span,
+                });
                 if matches!(self.peek(), TokenKind::Comma) {
                     self.advance();
                 } else {
@@ -634,19 +731,20 @@ impl Parser {
                 }
             }
         }
-        self.expect_specific(ErrorCode::E0011, "')'")?;
+        self.expect_specific(EC::E0011, "')'")?;
 
         // v0.3 Sec. 2.4: optional return type annotation on FUN.
         let return_type = self.parse_type_annotation()?;
-        self.expect_specific(ErrorCode::E0012, "','")?;
+        self.expect_specific(EC::E0012, "','")?;
 
         // The body is a block — it may contain multiple statements
         // separated by `;`. We use `parse_block(true)` so that the
         // block terminates at the closing `)` of the FUN call.
         let body = self.parse_block(true)?;
-        self.expect_specific(ErrorCode::E0011, "')'")?;
+        self.expect_specific(EC::E0011, "')'")?;
         let (_, _, line_end, col_end) = self.span_here();
         Ok(Expr::Fun {
+            name,
             params,
             return_type,
             body: Box::new(body),
@@ -662,14 +760,14 @@ impl Parser {
 
     fn parse_return(&mut self) -> WlwlResult<Expr> {
         let (line, col, _, _) = self.span_here();
-        self.expect_specific(ErrorCode::E0010, "'RETURN'")?;
-        self.expect_specific(ErrorCode::E0011, "'('")?;
+        self.expect_specific(EC::E0010, "'RETURN'")?;
+        self.expect_specific(EC::E0011, "'('")?;
         let value = if matches!(self.peek(), TokenKind::RParen) {
             None
         } else {
             Some(Box::new(self.parse_expr()?))
         };
-        self.expect_specific(ErrorCode::E0011, "')'")?;
+        self.expect_specific(EC::E0011, "')'")?;
         let (_, _, line_end, col_end) = self.span_here();
         Ok(Expr::Return {
             value,
@@ -685,9 +783,9 @@ impl Parser {
 
     fn parse_break(&mut self) -> WlwlResult<Expr> {
         let (line, col, _, _) = self.span_here();
-        self.expect_specific(ErrorCode::E0010, "'BREAK'")?;
-        self.expect_specific(ErrorCode::E0011, "'('")?;
-        self.expect_specific(ErrorCode::E0011, "')'")?;
+        self.expect_specific(EC::E0010, "'BREAK'")?;
+        self.expect_specific(EC::E0011, "'('")?;
+        self.expect_specific(EC::E0011, "')'")?;
         let (_, _, line_end, col_end) = self.span_here();
         Ok(Expr::Break {
             span: Span {
@@ -702,9 +800,9 @@ impl Parser {
 
     fn parse_continue(&mut self) -> WlwlResult<Expr> {
         let (line, col, _, _) = self.span_here();
-        self.expect_specific(ErrorCode::E0010, "'CONTINUE'")?;
-        self.expect_specific(ErrorCode::E0011, "'('")?;
-        self.expect_specific(ErrorCode::E0011, "')'")?;
+        self.expect_specific(EC::E0010, "'CONTINUE'")?;
+        self.expect_specific(EC::E0011, "'('")?;
+        self.expect_specific(EC::E0011, "')'")?;
         let (_, _, line_end, col_end) = self.span_here();
         Ok(Expr::Continue {
             span: Span {
@@ -729,10 +827,10 @@ impl Parser {
         F: FnOnce(Box<Expr>, Span) -> Expr,
     {
         let (line, col, _, _) = self.span_here();
-        self.expect_specific(ErrorCode::E0010, kw)?;
-        self.expect_specific(ErrorCode::E0011, "'('")?;
+        self.expect_specific(EC::E0010, kw)?;
+        self.expect_specific(EC::E0011, "'('")?;
         let value = self.parse_expr()?;
-        self.expect_specific(ErrorCode::E0011, "')'")?;
+        self.expect_specific(EC::E0011, "')'")?;
         let (_, _, line_end, col_end) = self.span_here();
         let span = Span {
             file: self.file.clone(),
@@ -747,12 +845,12 @@ impl Parser {
     /// `OR_DIE(value, default)` — the only two-arg §12 constructor.
     fn parse_or_die(&mut self) -> WlwlResult<Expr> {
         let (line, col, _, _) = self.span_here();
-        self.expect_specific(ErrorCode::E0010, "'OR_DIE'")?;
-        self.expect_specific(ErrorCode::E0011, "'('")?;
+        self.expect_specific(EC::E0010, "'OR_DIE'")?;
+        self.expect_specific(EC::E0011, "'('")?;
         let value = self.parse_expr()?;
-        self.expect_specific(ErrorCode::E0012, "','")?;
+        self.expect_specific(EC::E0012, "','")?;
         let default = self.parse_expr()?;
-        self.expect_specific(ErrorCode::E0011, "')'")?;
+        self.expect_specific(EC::E0011, "')'")?;
         let (_, _, line_end, col_end) = self.span_here();
         Ok(Expr::OrDie {
             value: Box::new(value),
@@ -771,14 +869,14 @@ impl Parser {
 
     fn parse_import(&mut self) -> WlwlResult<Expr> {
         let (line, col, _, _) = self.span_here();
-        self.expect_specific(ErrorCode::E0010, "'IMPORT'")?;
-        self.expect_specific(ErrorCode::E0011, "'('")?;
+        self.expect_specific(EC::E0010, "'IMPORT'")?;
+        self.expect_specific(EC::E0011, "'('")?;
         // path: must be a string literal
         let path = match self.advance() {
             Token { kind: TokenKind::StringLit(s), .. } => s,
             other => {
                 return Err(self.err_at(
-                    ErrorCode::E0043,
+                    EC::E0043,
                     format!(
                         "IMPORT path must be a string literal, got {:?}",
                         other.kind
@@ -797,14 +895,14 @@ impl Parser {
         // (empty / whitespace-only) still fail here with E0043.
         if path.is_empty() {
             return Err(self.err_at(
-                ErrorCode::E0043,
+                EC::E0043,
                 "IMPORT path is empty".to_string(),
                 (line, col, line, col),
             ));
         }
-        self.expect_specific(ErrorCode::E0012, "','")?;
+        self.expect_specific(EC::E0012, "','")?;
         let names = self.parse_import_name_list("'IMPORT'")?;
-        self.expect_specific(ErrorCode::E0011, "')'")?;
+        self.expect_specific(EC::E0011, "')'")?;
         let (_, _, line_end, col_end) = self.span_here();
         Ok(Expr::Import {
             path,
@@ -821,10 +919,10 @@ impl Parser {
 
     fn parse_export(&mut self) -> WlwlResult<Expr> {
         let (line, col, _, _) = self.span_here();
-        self.expect_specific(ErrorCode::E0010, "'EXPORT'")?;
-        self.expect_specific(ErrorCode::E0011, "'('")?;
+        self.expect_specific(EC::E0010, "'EXPORT'")?;
+        self.expect_specific(EC::E0011, "'('")?;
         let names = self.parse_import_name_list("'EXPORT'")?;
-        self.expect_specific(ErrorCode::E0011, "')'")?;
+        self.expect_specific(EC::E0011, "')'")?;
         let (_, _, line_end, col_end) = self.span_here();
         Ok(Expr::Export {
             names,
@@ -841,7 +939,7 @@ impl Parser {
     /// Parse a list of `name` or `"name": "alias"` entries inside `[...]`.
     /// Used by both `IMPORT` and `EXPORT`.
     fn parse_import_name_list(&mut self, _ctx: &str) -> WlwlResult<Vec<ImportName>> {
-        self.expect_specific(ErrorCode::E0011, "'['")?;
+        self.expect_specific(EC::E0011, "'['")?;
         let mut names = Vec::new();
         if !matches!(self.peek(), TokenKind::RBracket) {
             loop {
@@ -857,7 +955,7 @@ impl Parser {
                     TokenKind::Ident(s) => s,
                     other => {
                         return Err(self.err_at(
-                            ErrorCode::E0010,
+                            EC::E0010,
                             format!(
                                 "expected identifier or string in name list, got {:?}",
                                 other
@@ -873,7 +971,7 @@ impl Parser {
                         Token { kind: TokenKind::Ident(s), .. } => Some(s),
                         other => {
                             return Err(self.err_at(
-                                ErrorCode::E0010,
+                                EC::E0010,
                                 format!("expected string alias, got {:?}", other.kind),
                                 other.span,
                             ));
@@ -901,7 +999,7 @@ impl Parser {
                 }
             }
         }
-        self.expect_specific(ErrorCode::E0011, "']'")?;
+        self.expect_specific(EC::E0011, "']'")?;
         Ok(names)
     }
 
@@ -911,13 +1009,19 @@ impl Parser {
         let (line, col, _, _) = self.span_here();
         let t = self.advance();
         // Either an identifier or an operator token (treated as a function name).
+        // §11.2 / §11.3: CLASS, NEW, THIS are §3.2 keywords but at the parser
+        // layer they surface as ordinary function calls — see also the
+        // dispatch in `parse_expr`. P3-011.
         let name = match t.kind {
             TokenKind::Ident(s) => s,
+            TokenKind::Class => "CLASS".to_string(),
+            TokenKind::New => "NEW".to_string(),
+            TokenKind::This => "THIS".to_string(),
             ref k => match k.as_op_name() {
                 Some(op) => op.to_string(),
                 None => {
                     return Err(self.err_at(
-                        ErrorCode::E0010,
+                        EC::E0010,
                         format!("expected identifier or operator, got {:?}", t.kind),
                         t.span,
                     ));
@@ -925,7 +1029,8 @@ impl Parser {
             },
         };
 
-        if matches!(self.peek(), TokenKind::LParen) {
+        // Parse the head (variable reference or function call).
+        let mut base: Expr = if matches!(self.peek(), TokenKind::LParen) {
             // Function call: name(args)
             self.advance(); // '('
             let mut args = Vec::new();
@@ -939,9 +1044,9 @@ impl Parser {
                     }
                 }
             }
-            self.expect_specific(ErrorCode::E0011, "')'")?;
+            self.expect_specific(EC::E0011, "')'")?;
             let (_, _, line_end, col_end) = self.span_here();
-            Ok(Expr::Call {
+            Expr::Call {
                 name,
                 args,
                 span: Span {
@@ -951,10 +1056,10 @@ impl Parser {
                     line_end,
                     col_end,
                 },
-            })
+            }
         } else {
             // Variable reference
-            Ok(Expr::Var(
+            Expr::Var(
                 name,
                 Span {
                     file: self.file.clone(),
@@ -963,8 +1068,93 @@ impl Parser {
                     line_end: t.span.2,
                     col_end: t.span.3,
                 },
-            ))
+            )
+        };
+
+        // §11.4 chain sugar: a.b / a.b(args) / a.b.c(args).
+        //
+        // `a.b`        desugars to  GET_PROP(a, "b")
+        // `a.b(args)`  desugars to  CALL_METHOD(a, "b", args...)
+        //
+        // These are pure syntax sugar per the spec; the AST stays in
+        // Expr::Call form so the runtime can keep treating the receiver
+        // and the method/member as ordinary function calls. P3-011.
+        while matches!(self.peek(), TokenKind::Dot) {
+            self.advance(); // '.'
+            // The name right after `.` must be an identifier (per §3.1).
+            let field = match self.advance() {
+                Token { kind: TokenKind::Ident(s), span } => (s, span),
+                other => {
+                    return Err(self.err_at(
+                        EC::E0010,
+                        format!("expected identifier after '.', got {:?}", other.kind),
+                        other.span,
+                    ));
+                }
+            };
+            let (field_name, field_span) = field;
+            // Property name as a string literal in the desugared form.
+            let field_lit = Expr::Literal(
+                Literal::String(field_name),
+                Span {
+                    file: self.file.clone(),
+                    line_start: field_span.0,
+                    col_start: field_span.1,
+                    line_end: field_span.2,
+                    col_end: field_span.3,
+                },
+            );
+
+            if matches!(self.peek(), TokenKind::LParen) {
+                // Method call: a.b(args)
+                self.advance(); // '('
+                let mut method_args = Vec::new();
+                if !matches!(self.peek(), TokenKind::RParen) {
+                    loop {
+                        method_args.push(self.parse_expr()?);
+                        if matches!(self.peek(), TokenKind::Comma) {
+                            self.advance();
+                        } else {
+                            break;
+                        }
+                    }
+                }
+                self.expect_specific(EC::E0011, "')'")?;
+                let (_, _, le, ce) = self.span_here();
+                // Build CALL_METHOD(receiver, "name", arg1, arg2, ...)
+                let mut all_args = Vec::with_capacity(2 + method_args.len());
+                all_args.push(base);
+                all_args.push(field_lit);
+                all_args.extend(method_args);
+                base = Expr::Call {
+                    name: "CALL_METHOD".to_string(),
+                    args: all_args,
+                    span: Span {
+                        file: self.file.clone(),
+                        line_start: line,
+                        col_start: col,
+                        line_end: le,
+                        col_end: ce,
+                    },
+                };
+            } else {
+                // Property access: a.b  ->  GET_PROP(a, "b")
+                let (_, _, le, ce) = self.span_here();
+                base = Expr::Call {
+                    name: "GET_PROP".to_string(),
+                    args: vec![base, field_lit],
+                    span: Span {
+                        file: self.file.clone(),
+                        line_start: line,
+                        col_start: col,
+                        line_end: le,
+                        col_end: ce,
+                    },
+                };
+            }
         }
+
+        Ok(base)
     }
 
     // ── §4 / §10 Literals ──────────────────────────────────────────
@@ -984,7 +1174,7 @@ impl Parser {
             }
             other => {
                 return Err(self.err_at(
-                    ErrorCode::E0010,
+                    EC::E0010,
                     format!("expected literal, got {:?}", other),
                     t.span,
                 ));
@@ -1024,11 +1214,11 @@ impl Parser {
                     break;
                 }
                 let k = self.parse_expr()?;
-                self.expect_specific(ErrorCode::E0010, "':'")?;
+                self.expect_specific(EC::E0010, "':'")?;
                 let v = self.parse_expr()?;
                 entries.push((k, v));
             }
-            self.expect_specific(ErrorCode::E0011, "']'")?;
+            self.expect_specific(EC::E0011, "']'")?;
             let (_, _, line_end, col_end) = self.span_here();
             Ok(Expr::Dict {
                 entries,
@@ -1049,7 +1239,7 @@ impl Parser {
                 }
                 items.push(self.parse_expr()?);
             }
-            self.expect_specific(ErrorCode::E0011, "']'")?;
+            self.expect_specific(EC::E0011, "']'")?;
             let (_, _, line_end, col_end) = self.span_here();
             Ok(Expr::Array {
                 items,
@@ -1068,7 +1258,7 @@ impl Parser {
         let (line, col, _, _) = self.span_here();
         self.advance(); // '('
         let block = self.parse_block(true)?;
-        self.expect_specific(ErrorCode::E0011, "')'")?;
+        self.expect_specific(EC::E0011, "')'")?;
         let (_, _, line_end, col_end) = self.span_here();
         let new_span = Span {
             file: self.file.clone(),
@@ -1134,7 +1324,7 @@ impl<'a> TypeExprParser<'a> {
         }
         if !is_ident(&head) {
             return Err(WlwlDiagnostic::new(
-                ErrorCode::E0010,
+                EC::E0010,
                 format!("expected type expression, got `{}`", head),
                 Location::point(&self.file, sl, sc),
             )
@@ -1153,7 +1343,7 @@ impl<'a> TypeExprParser<'a> {
     fn parse_braced(&mut self, head: &str, sl: u32, sc: u32) -> WlwlResult<TypeExpr> {
         if self.peek() != "[" {
             return Err(WlwlDiagnostic::new(
-                ErrorCode::E0010,
+                EC::E0010,
                 format!("expected `[` after `{}` in type expression", head),
                 Location::point(&self.file, sl, sc),
             )
@@ -1173,7 +1363,7 @@ impl<'a> TypeExprParser<'a> {
                 }
                 other => {
                     return Err(WlwlDiagnostic::new(
-                        ErrorCode::E0012,
+                        EC::E0012,
                         format!(
                             "expected `,` or `]` in type expression, got `{}`",
                             other
@@ -1443,7 +1633,7 @@ mod tests {
     fn parse_import_rejects_empty_path() {
         // Only surface-level error left: an empty IMPORT path.
         let err = parse(r#"IMPORT("", ["x"]);"#, "t.wl").unwrap_err();
-        assert_eq!(err.diagnostic().code, ErrorCode::E0043);
+        assert_eq!(err.diagnostic().code, EC::E0043);
     }
 
     #[test]
@@ -1510,7 +1700,7 @@ mod tests {
     fn parse_missing_semicolon() {
         let err = parse("LET(x, 1) LET(y, 2);", "t.wl").unwrap_err();
         let d = err.diagnostic();
-        assert_eq!(d.code, ErrorCode::E0013);
+        assert_eq!(d.code, EC::E0013);
     }
 
     // -- Phase 3: v0.3 Sec. 2.4 type annotations (parsed, not checked) --
@@ -1581,14 +1771,14 @@ mod tests {
     fn parse_let_missing_value_after_type() {
         // Type annotation without trailing comma -> E0012 (expected ",")
         let err = parse("LET(x: INTEGER,);", "t.wl").unwrap_err();
-        assert_eq!(err.diagnostic().code, ErrorCode::E0010); // value missing
+        assert_eq!(err.diagnostic().code, EC::E0010); // value missing
     }
 
     #[test]
     fn parse_missing_rparen() {
         let err = parse("LET(x, 1;", "t.wl").unwrap_err();
         let d = err.diagnostic();
-        assert_eq!(d.code, ErrorCode::E0011);
+        assert_eq!(d.code, EC::E0011);
     }
 
     #[test]
@@ -1783,6 +1973,7 @@ mod tests {
             pos: 0,
             file: file.to_string(),
             source: String::new(),
+            warnings: Vec::new(),
         }
     }
 
@@ -1860,7 +2051,7 @@ mod tests {
         let p = parser_for_type_test(vec![], "t.wl");
         let pieces = vec!["42".to_string()];
         let err = p.parse_type_expr_from_pieces(&pieces, 1, 1).unwrap_err();
-        assert_eq!(err.diagnostic().code, ErrorCode::E0010);
+        assert_eq!(err.diagnostic().code, EC::E0010);
     }
 
     #[test]
@@ -1889,7 +2080,7 @@ mod tests {
             "]".to_string(),
         ];
         let err = p.parse_type_expr_from_pieces(&pieces, 1, 1).unwrap_err();
-        assert_eq!(err.diagnostic().code, ErrorCode::E0012);
+        assert_eq!(err.diagnostic().code, EC::E0012);
     }
 
     #[test]
@@ -1903,7 +2094,7 @@ mod tests {
             "EXTRA".to_string(),
         ];
         let err = p.parse_type_expr_from_pieces(&pieces, 1, 1).unwrap_err();
-        assert_eq!(err.diagnostic().code, ErrorCode::E0010);
+        assert_eq!(err.diagnostic().code, EC::E0010);
     }
 
     // ---- parse_paren_block ----
@@ -1951,7 +2142,7 @@ mod tests {
     fn parse_import_missing_path_is_e0043() {
         // IMPORT without a string literal path -> E0043
         let err = parse("IMPORT(123);", "t.wl").unwrap_err();
-        assert_eq!(err.diagnostic().code, ErrorCode::E0043);
+        assert_eq!(err.diagnostic().code, EC::E0043);
     }
 
     // ---- parse_for error path ----
@@ -1960,7 +2151,7 @@ mod tests {
     fn parse_for_non_ident_var_is_e0010() {
         // FOR(123, [...], body) -> E0010
         let err = parse("FOR(123, [1], PRINT(1));", "t.wl").unwrap_err();
-        assert_eq!(err.diagnostic().code, ErrorCode::E0010);
+        assert_eq!(err.diagnostic().code, EC::E0010);
     }
 
     // ---- parse_let error paths ----
@@ -1969,7 +2160,7 @@ mod tests {
     fn parse_let_non_ident_name_is_e0010() {
         // LET(123, 1) -> E0010
         let err = parse("LET(123, 1);", "t.wl").unwrap_err();
-        assert_eq!(err.diagnostic().code, ErrorCode::E0010);
+        assert_eq!(err.diagnostic().code, EC::E0010);
     }
 
 }

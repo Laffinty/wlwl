@@ -78,6 +78,35 @@ elease.yml 异步构建 Linux/macOS/Windows 三平台二进制 + GitHub Release.
 - TOTAL: 84.28% → 91.37% line, 84.85% → 91.02% region
 - 详见 deviations.md P3-009c / P3-009d / P3-009e 段.
 
+### P3-009f — parser 推 90% — **完成 ✅ 2026-09-03**
+
+**483 / 483 tests pass (+54). wlwl-parser 81.67% → 91.30% line (+9.63pp). commit c4be849.**
+
+- **wlwl-parser** 全 TokenKind (47 个 arm) + TypeExprParser (8) + parse_paren_block (1) + parse_import edge cases (3) + parse_for / parse_let 错误 (2) + 顶层 invalid token (1). 19 个新测试.
+- 发现 P3-010 期间要修的 impl bug: parse_type_expr_from_pieces 里 `let expr = p.parse_expr(...)` 没用 `?`, 错误被静默丢进 leftover arm. 3 个 `*_swallowed` 测试作 tripwire.
+- 详见 deviations.md P3-009f 段.
+
+### P3-010 — 修 parse_type_expr_from_pieces 错误吞咽 bug — **完成 ✅ 2026-09-03**
+
+**444 / 444 tests pass (3 个测试改名反映新行为). 13/13 crates 全部 >= 90% line. commit bbd1521.**
+
+- impl fix: 1 行 `?` 修复, `parse()` 现在正确传播 parse_expr 错误而不是 silently 包装成 `Generic`. 3 个 `*_swallowed` tripwire 测试改名为 `*_errors_with_eNNNN` (跟新行为一致).
+- 行为变更: `[1, "a": 2]` 等之前 silently 返回 `Generic` 的输入现在正确返回 E0010 / E0012. 合法输入行为不变.
+- 详见 deviations.md P3-010 段.
+
+### P3-011 — 中期语法对齐 (spec v0.3 → parser) — **完成 ✅ 2026-09-04**
+
+**507 / 507 tests pass (+63). 13/13 crates 全部 >= 90% line. TOTAL 92.74% line / 92.58% region. P3-009 / P3-010 收尾后, workspace 进入 v0.4-ready 状态.**
+
+- **A1** 链式访问 desugar (spec §11.4): `a.b` / `a.b(args)` / `a.b.c(args)` → `GET_PROP` / `CALL_METHOD` 嵌套 Call.
+- **A2** FUN 具名形式 (spec §8.2): `FUN(name(params), body)` 解析为 `Expr::Fun { name: Some(...), ... }`.
+- **A3** 中文标识符 (spec §3.1): lexer 改 char-aware 循环, 接受 2/3/4-byte UTF-8 字符 (`计数` / `café` / `x😀y` / `count计数`).
+- **B1/B2** FUN 默认参数 + 剩余参数 (spec §8.2): `name = expr` / `*rest` 解析为 `FunParam { default_expr / is_rest }`.
+- **A4** W0020 (spec §4.5) 暂缓: parser 改造 + linter 通道工作量大, 留待后续. W 码 (W0001-W0040, spec §14.5) 仍新增到 `wlwl-error::ErrorCode` + `parse_with_warnings` 接口暴露, 后续 W0020 实现零额外 API 改动.
+- 配套: `parse_with_warnings(input, file) -> Result<(Expr, Vec<Warning>), WlwlError>` + `Warning` struct + `wlwl-error::ErrorCode` re-export. 现有 `parse()` 签名不变, 复用新入口丢 warnings. 13/13 crates 兼容.
+- 1 个新测试文件: `impl/crates/wlwl-parser/tests/spec_v3_alignment.rs` (~67 tests 跨 spec §3-§13).
+- 详见 `docs/plan/p3-011-spec-alignment.md` (PLAN) + `docs/plan/deviations.md` P3-011 段.
+
 **附:本计划不替代 v0.3 规范。规范的权威性高于本计划——任何"实施偏离"必须显式记录,不能默默修改规范。**
 
 
@@ -287,6 +316,8 @@ elease.yml 异步构建 Linux/macOS/Windows 三平台二进制 + GitHub Release.
 | post-Phase 4 follow-ups (P3-009d) | 0 周 (actual) | 19 周 |
 | post-Phase 4 follow-ups (P3-009e) | 0 周 (actual) | 19 周 |
 | post-Phase 4 follow-ups (P3-009f) | 0 周 (actual) | 19 周 |
+| post-Phase 4 follow-ups (P3-010) | 0 周 (actual) | 19 周 |
+| post-Phase 4 follow-ups (P3-011) | 0 周 (actual) | 19 周 |
 | Phase 5 | 4 周(可选) | 24 周 |
 
 **总计** (original estimate): 20 周 (without Phase 5) / 24 周 (with Phase 5). Actual progress: Phase 1-4 + post-Phase 4 全系列 (P3-008/009/009b/009c/009d/009e) 在 1 个工作日 (2026-09-03) 内集中收尾, 超远估算. The estimate is a discipline reference, not a public commitment.
@@ -524,7 +555,7 @@ impl Evaluator {
 | 错误处理 (wlwl-error)     |  95% | **99.57%** | **99.22%** | **达标 (P3-009d)** |
 | AST (wlwl-ast)            |  n/a | **100.00%** | **100.00%** | **达标 (P3-009c)** |
 | CLI (wlwl-cli)            |  n/a | **95.17%** | **96.72%** | **达标 (P3-009d)** |
-| **TOTAL**                   |  90% | **93.10%** | **92.63%** | **P3-010 完成 2026-09-03 r7 (impl fix, 13/13 crates >= 90%)** |
+| **TOTAL**                   |  90% | **92.74%** | **92.58%** | **P3-011 完成 2026-09-04 (spec v0.3 mid-syntax alignment, 13/13 crates >= 90%)** |
 
 Branch coverage 在 Windows MSVC 下不可用 (0/0); 需在 Linux CI runner 跑才能补上。
 原始 lcov 在 `impl/target/llvm-cov.info`, HTML 报告在 `impl/target/llvm-cov-html/` (target/ 在 .gitignore, 不入仓)。

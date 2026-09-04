@@ -120,6 +120,8 @@ fn fun_param_with_annotation() {
     let p = FunParam {
         name: "n".into(),
         type_annotation: Some(TypeAnnotation::new(ident("INTEGER"), "INTEGER".into(), sp())),
+        default_expr: None,
+        is_rest: false,
         span: sp(),
     };
     roundtrip(&p);
@@ -245,12 +247,14 @@ fn expr_control_flow() {
 #[test]
 fn expr_fun_with_and_without_return_annotation() {
     roundtrip(&Expr::Fun {
+        name: None,
         params: vec![FunParam::new("x".into(), sp())],
         return_type: None,
         body: Box::new(Expr::Var("x".into(), sp())),
         span: sp(),
     });
     roundtrip(&Expr::Fun {
+        name: None,
         params: vec![
             FunParam::new("a".into(), sp()),
             FunParam::new("b".into(), sp()),

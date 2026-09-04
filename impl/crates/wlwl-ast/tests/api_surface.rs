@@ -64,10 +64,10 @@ fn e_return(value: Option<Expr>) -> Expr {
 fn e_break() -> Expr { Expr::Break { span: sp() } }
 fn e_continue() -> Expr { Expr::Continue { span: sp() } }
 fn e_fun(params: Vec<FunParam>, body: Expr) -> Expr {
-    Expr::Fun { params, return_type: None, body: Box::new(body), span: sp() }
+    Expr::Fun { name: None, params, return_type: None, body: Box::new(body), span: sp() }
 }
 fn e_fun_typed(params: Vec<FunParam>, ret: TypeAnnotation, body: Expr) -> Expr {
-    Expr::Fun { params, return_type: Some(ret), body: Box::new(body), span: sp() }
+    Expr::Fun { name: None, params, return_type: Some(ret), body: Box::new(body), span: sp() }
 }
 fn e_ok(value: Expr) -> Expr { Expr::Ok { value: Box::new(value), span: sp() } }
 fn e_err(value: Expr) -> Expr { Expr::Err { value: Box::new(value), span: sp() } }
@@ -161,6 +161,8 @@ fn fun_param_typed_constructor_carries_annotation() {
     let p = FunParam {
         name: "x".into(),
         type_annotation: Some(TypeAnnotation::new(ident("INTEGER"), "INTEGER".into(), sp())),
+        default_expr: None,
+        is_rest: false,
         span: sp_other(),
     };
     assert_eq!(p.name, "x");

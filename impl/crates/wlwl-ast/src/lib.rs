@@ -128,7 +128,7 @@ impl TypeAnnotation {
 }
 
 /// One parameter of a `FUN` literal (v0.3 `Sec. 8.2` plus `Sec. 2.4`
-/// per-param annotation support).
+/// per-param annotation support; P3-011 adds default and rest).
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct FunParam {
     pub name: String,
@@ -137,12 +137,28 @@ pub struct FunParam {
     /// tools / docs / future strict-mode can use it.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub type_annotation: Option<TypeAnnotation>,
+    /// Optional default expression (`name = expr`, spec §8.2). P3-011.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub default_expr: Option<Box<Expr>>,
+    /// `*rest` variadic tail marker (spec §8.2). P3-011.
+    #[serde(default, skip_serializing_if = "is_false")]
+    pub is_rest: bool,
     pub span: Span,
+}
+
+fn is_false(b: &bool) -> bool {
+    !*b
 }
 
 impl FunParam {
     pub fn new(name: String, span: Span) -> Self {
-        Self { name, type_annotation: None, span }
+        Self {
+            name,
+            type_annotation: None,
+            default_expr: None,
+            is_rest: false,
+            span,
+        }
     }
 }
 
@@ -201,8 +217,13 @@ pub enum Expr {
     Return { value: Option<Box<Expr>>, span: Span },
     Break { span: Span },
     Continue { span: Span },
-    // Sec. 8.2 FUN literal (v0.3 Sec. 2.4: optional return annotation)
+    // Sec. 8.2 FUN literal (v0.3 Sec. 2.4: optional return annotation;
+    // P3-011 adds optional `name` for the named form `FUN(name(params), body)`)
     Fun {
+        /// Optional function name (`FUN(name(params), body)`). `None` for
+        /// the anonymous form `FUN((params), body)`.
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        name: Option<String>,
         params: Vec<FunParam>,
         return_type: Option<TypeAnnotation>,
         body: Box<Expr>,
