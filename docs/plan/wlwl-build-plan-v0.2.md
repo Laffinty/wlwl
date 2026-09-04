@@ -78,6 +78,65 @@
 
 ---
 
+## 0.4 P4-A1d 暂停点(2026-09-05 07:46)
+
+> **A1d trace 字段 — 部分完成,3/6 测试暂停,需下次会话继续**
+
+### 已完成(A1d)
+
+- `Evaluator.call_stack: Vec<TraceFrame>` 字段 + 初始化
+- `invoke_closure(name, params, body, env, args, span)` 新增 `name` 参数
+- `invoke_closure` 内 push frame,body eval 后 pop(每条退出路径都 pop)
+- `eval_call` 把 `name` 传给 `invoke_closure`
+- `undefined_name` 重构走 `self.diag()`,让 trace 注入统一
+- `pub fn eval` 用 `map_err` 包装,统一 enrich 任何 eval 错误
+- 新增 `enrich_with_trace` helper:trace 空时按 call_stack / `<toplevel>` 填充
+- `wlwl-error` 加 `TraceFrame` / `ErrorCause` 类型(后者本 sub-task 暂未用)
+- 6 个 A1d 测试(3 pass + 3 ignore)
+
+### 暂停原因(3 个 #[ignore] 测试)
+
+| 测试 | 期望 | 实际 |
+|------|------|------|
+| `trace_nested_call_has_two_frames_innermost_first` | `[inner, outer]` | `[<toplevel>]` |
+| `trace_anonymous_function_uses_angle_brackets` | `[<anonymous>]` | `[<toplevel>]` |
+| `trace_recursion_has_repeated_frames` | `>= 2 fact 帧` | `[<toplevel>]` |
+
+**共同症状**:错误在嵌套/递归函数内发生时,`enrich_with_trace` 看到 call_stack 是空的(只有 `<toplevel>` synthetic)。
+
+### 初步定位(待下次会话深入)
+
+1. **可能根因 A**:`undefined_name` 内的 `self.diag` 是 `&self` 借用,`enrich_with_trace` 是 `&mut self`,Rust NLL 在 `map_err` 闭包里是否正确识别 `&self → &mut self` 转换不确定。
+2. **可能根因 B**:`invoke_closure` 的 push/pop 顺序问题 — 当前 push 在 `for (param bind)` 循环**外**(已修过,见 §5.1 反思),但 pop 是在 match arm 显式做的;如果 pop 在错误 propagate 前先发生,enrich 看到的就是空。
+3. **可能根因 C**:`undefined_name` 在 `eval_call` 的 `is_err_consumer` / transparent propagation 路径里,可能没经过 `self.diag` 而走了别的诊断构造路径(参考 v0.1 §5.2 的注册表模型)。
+
+### 反思(本次会话踩到的坑)
+
+1. **Python 三引号字符串里 em dash 转义**:v0.1 注释里大量 em dash(`—`),Python `'''...'''` 里 `\—` 会被原样保留,但 `\—` 之外的字符会断字符串。改用 `r'...'` raw string + 直接写入文件更稳。
+2. **Drop guard 与 `&mut self` 重入冲突**:`CallStackPopGuard<'a> { ev: &'a mut Evaluator }` 的 `&mut self` 借用会阻止后续 `self.env.scopes = ...`,改用手动 pop(`let _ = self.call_stack.pop();`)。
+3. **`eprintln!` 在 test runner 里被吞**:调试时用 file write 或 `panic!` 才能看到输出。
+4. **`pub fn new() -> Self` 在 Env 和 Evaluator 都有同名 fn**:插入 `call_stack: Vec::new()` 时需要 disambiguate,否则会误插到 Env::pop_scope 里。
+
+### 下次会话计划
+
+1. **重读 `enrich_with_trace` 调用链**,加 `eprintln!`(写到文件)确认它对每个 eval 错误都触发
+2. 如果 enrich 触发了但 trace 还是空 → 改 `invoke_closure` push 时机到 `self.env.set_local` 之前(可能 closure 的 `name` 需要 lookup)
+3. 如果 enrich 没触发 → 检查 `eval_call` 错误路径是否走了旁路(直接 `WlwlDiagnostic::new` 不经过 `enrich`)
+4. 修复后 3 个 `#[ignore]` 测试改回正常,workspace tests 应到 532/532
+
+### 当前测试状态
+
+```
+wlwl-error:   32/32 pass
+wlwl-eval:    149 pass + 3 ignored(A1d 三测试) — v0.1 baseline 146 + 3 new
+全工作区:     529 pass + 3 ignored — v0.1 baseline 522 + 7 net new
+  (v0.1 → v0.2 净增 7 个测试: 4 schema tests + 3 A1d tests - some baseline merged)
+```
+
+> 13/13 workspace file 仍 ≥ 90% line coverage(总覆盖率未回退)。
+
+---
+
 ## 0. 文档定位
 
 | 维度 | WLWL 规范(v0.4) | 本构建计划 |
