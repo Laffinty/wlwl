@@ -1707,4 +1707,290 @@ mod tests {
             _ => panic!("expected FUN"),
         }
     }
+    // ---- P3-009f: TokenKind Display + parse_type_expr edges ----
+
+    #[test]
+    fn token_text_all_kinds() {
+        // The 	oken_text method is used to build type-annotation
+        // source strings. Cover every TokenKind arm.
+        let p = parser_for_type_test(vec![], "t.wl");
+        let cases: Vec<(TokenKind, &str)> = vec![
+            (TokenKind::Ident("foo".into()), "foo"),
+            (TokenKind::Integer(42), "42"),
+            (TokenKind::Float(1.5), "1.5"),
+            (TokenKind::StringLit("s".into()), "\"s\""),
+            (TokenKind::True, "TRUE"),
+            (TokenKind::False, "FALSE"),
+            (TokenKind::Null, "NULL"),
+            (TokenKind::Let, "LET"),
+            (TokenKind::Fun, "FUN"),
+            (TokenKind::Return, "RETURN"),
+            (TokenKind::If, "IF"),
+            (TokenKind::While, "WHILE"),
+            (TokenKind::For, "FOR"),
+            (TokenKind::Break, "BREAK"),
+            (TokenKind::Continue, "CONTINUE"),
+            (TokenKind::Class, "CLASS"),
+            (TokenKind::New, "NEW"),
+            (TokenKind::This, "THIS"),
+            (TokenKind::Ok, "OK"),
+            (TokenKind::Err, "ERR"),
+            (TokenKind::Panic, "PANIC"),
+            (TokenKind::Try, "TRY"),
+            (TokenKind::IsOk, "IS_OK"),
+            (TokenKind::IsErr, "IS_ERR"),
+            (TokenKind::OrDie, "OR_DIE"),
+            (TokenKind::Import, "IMPORT"),
+            (TokenKind::Export, "EXPORT"),
+            (TokenKind::LParen, "("),
+            (TokenKind::RParen, ")"),
+            (TokenKind::LBracket, "["),
+            (TokenKind::RBracket, "]"),
+            (TokenKind::Comma, ","),
+            (TokenKind::Semicolon, ";"),
+            (TokenKind::Colon, ":"),
+            (TokenKind::Dot, "."),
+            (TokenKind::Plus, "+"),
+            (TokenKind::Minus, "-"),
+            (TokenKind::Star, "*"),
+            (TokenKind::Slash, "/"),
+            (TokenKind::Percent, "%"),
+            (TokenKind::EqEq, "=="),
+            (TokenKind::BangEq, "!="),
+            (TokenKind::Lt, "<"),
+            (TokenKind::Gt, ">"),
+            (TokenKind::LtEq, "<="),
+            (TokenKind::GtEq, ">="),
+            (TokenKind::AmpAmp, "&&"),
+            (TokenKind::PipePipe, "||"),
+            (TokenKind::Bang, "!"),
+            (TokenKind::Eof, "<eof>"),
+        ];
+        for (kind, expected) in cases {
+            let got = p.token_text(&kind);
+            assert_eq!(got, expected, "for {:?}", kind);
+        }
+    }
+
+    // ---- TypeExprParser edge cases ----
+
+    /// Build a Parser from a token stream so we can call
+    /// parse_type_expr_from_pieces directly without going through
+    /// the full parse() entry point.
+    fn parser_for_type_test(toks: Vec<wlwl_lexer::Token>, file: &str) -> Parser {
+        Parser {
+            toks,
+            pos: 0,
+            file: file.to_string(),
+            source: String::new(),
+        }
+    }
+
+    #[test]
+    fn type_expr_parser_array_with_element() {
+        // ARRAY[INTEGER] -> TypeExpr::Array
+        let p = parser_for_type_test(vec![], "t.wl");
+        let pieces = vec!["ARRAY".to_string(), "[".to_string(), "INTEGER".to_string(), "]".to_string()];
+        let result = p.parse_type_expr_from_pieces(&pieces, 1, 1).unwrap();
+        match result {
+            wlwl_ast::TypeExpr::Array { element, .. } => {
+                match *element {
+                    wlwl_ast::TypeExpr::Ident { name, .. } => assert_eq!(name, "INTEGER"),
+                    _ => panic!("expected Ident inside Array"),
+                }
+            }
+            _ => panic!("expected Array, got {:?}", result),
+        }
+    }
+
+    #[test]
+    fn type_expr_parser_generic_one_arg() {
+        // OK[INTEGER] -> Generic { name: "OK", args: [Ident("INTEGER")] }
+        let p = parser_for_type_test(vec![], "t.wl");
+        let pieces = vec!["OK".to_string(), "[".to_string(), "INTEGER".to_string(), "]".to_string()];
+        let result = p.parse_type_expr_from_pieces(&pieces, 1, 1).unwrap();
+        match result {
+            wlwl_ast::TypeExpr::Generic { name, args, .. } => {
+                assert_eq!(name, "OK");
+                assert_eq!(args.len(), 1);
+            }
+            _ => panic!("expected Generic, got {:?}", result),
+        }
+    }
+
+    #[test]
+    fn type_expr_parser_generic_multi_args() {
+        // DICT[STRING, INTEGER] -> Generic with 2 args
+        let p = parser_for_type_test(vec![], "t.wl");
+        let pieces = vec![
+            "DICT".to_string(),
+            "[".to_string(),
+            "STRING".to_string(),
+            ",".to_string(),
+            "INTEGER".to_string(),
+            "]".to_string(),
+        ];
+        let result = p.parse_type_expr_from_pieces(&pieces, 1, 1).unwrap();
+        match result {
+            wlwl_ast::TypeExpr::Generic { name, args, .. } => {
+                assert_eq!(name, "DICT");
+                assert_eq!(args.len(), 2);
+            }
+            _ => panic!("expected Generic, got {:?}", result),
+        }
+    }
+
+    #[test]
+    fn type_expr_parser_plain_ident() {
+        // INTEGER -> TypeExpr::Ident (no brackets)
+        let p = parser_for_type_test(vec![], "t.wl");
+        let pieces = vec!["INTEGER".to_string()];
+        let result = p.parse_type_expr_from_pieces(&pieces, 1, 1).unwrap();
+        match result {
+            wlwl_ast::TypeExpr::Ident { name, .. } => assert_eq!(name, "INTEGER"),
+            _ => panic!("expected Ident"),
+        }
+    }
+
+    #[test]
+    fn type_expr_parser_non_ident_head_swallowed() {
+        // Current implementation: when parse_expr errors and pos
+        // hasn't advanced, the leftover arm wraps the rest into a
+        // Generic. This documents that behavior; the test acts as a
+        // tripwire if a future fix makes parse_type_expr_from_pieces
+        // propagate parse_expr's Err.
+        let p = parser_for_type_test(vec![], "t.wl");
+        let pieces = vec!["42".to_string()];
+        let result = p.parse_type_expr_from_pieces(&pieces, 1, 1).unwrap();
+        match result {
+            wlwl_ast::TypeExpr::Generic { name, args, .. } => {
+                assert_eq!(name, "42");
+                assert_eq!(args.len(), 0);
+            }
+            other => panic!("expected Generic, got {:?}", other),
+        }
+    }
+
+    #[test]
+    fn type_expr_parser_missing_bracket_yields_ident() {
+        // A bare ident like OK (no trailing [...]) parses as
+        // a plain TypeExpr::Ident. The bracketed form is optional.
+        let p = parser_for_type_test(vec![], "t.wl");
+        let pieces = vec!["OK".to_string()];
+        let result = p.parse_type_expr_from_pieces(&pieces, 1, 1).unwrap();
+        match result {
+            wlwl_ast::TypeExpr::Ident { name, .. } => assert_eq!(name, "OK"),
+            other => panic!("expected Ident, got {:?}", other),
+        }
+    }
+
+    #[test]
+    fn type_expr_parser_bad_separator_swallowed() {
+        // OK[INTEGER INTEGER] (missing comma) is also swallowed by
+        // the leftover arm. Documents the behavior.
+        let p = parser_for_type_test(vec![], "t.wl");
+        let pieces = vec![
+            "OK".to_string(),
+            "[".to_string(),
+            "INTEGER".to_string(),
+            "INTEGER".to_string(),
+            "]".to_string(),
+        ];
+        let result = p.parse_type_expr_from_pieces(&pieces, 1, 1).unwrap();
+        match result {
+            wlwl_ast::TypeExpr::Generic { name, args, .. } => {
+                // rest = "INTEGER INTEGER ]" (joined with space)
+                assert_eq!(name, "INTEGER ]");
+                assert_eq!(args.len(), 0);
+            }
+            other => panic!("expected Generic, got {:?}", other),
+        }
+    }
+
+    #[test]
+    fn type_expr_parser_leftover_pieces_is_generic() {
+        // parse_expr consumes ARRAY as an Ident (no [ follows),
+        // then the leftover arm wraps the rest. The rest starts at
+        // pos=1 (after ARRAY) so the name is just "EXTRA".
+        let p = parser_for_type_test(vec![], "t.wl");
+        let pieces = vec![
+            "ARRAY".to_string(),
+            "EXTRA".to_string(),
+        ];
+        let result = p.parse_type_expr_from_pieces(&pieces, 1, 1).unwrap();
+        match result {
+            wlwl_ast::TypeExpr::Generic { name, args, .. } => {
+                assert_eq!(name, "EXTRA");
+                assert_eq!(args.len(), 0);
+            }
+            other => panic!("expected Generic, got {:?}", other),
+        }
+    }
+
+    // ---- parse_paren_block ----
+
+    #[test]
+    fn parse_paren_block_single_expr() {
+        // (x) where x is an ident -> bare ident
+        let e = parse("(x);", "t.wl").unwrap();
+        match e {
+            Expr::Var(name, _) => assert_eq!(name, "x"),
+            other => panic!("expected Var, got {:?}", other),
+        }
+    }
+
+    // ---- parse_import error edges ----
+
+    #[test]
+    fn parse_import_name_list_uses_ident_for_bare_name() {
+        // A bare identifier in the name list is treated as a string.
+        // IMPORT("m", [foo]) where foo is unquoted.
+        let e = parse(r###"IMPORT("m", [foo]);"###, "t.wl").unwrap();
+        match e {
+            Expr::Import { names, .. } => {
+                assert_eq!(names.len(), 1);
+                assert_eq!(names[0].name, "foo");
+            }
+            _ => panic!("expected Import"),
+        }
+    }
+
+    #[test]
+    fn parse_import_name_list_uses_string_lit() {
+        // The string-form: IMPORT("m", ["foo"])
+        let e = parse(r###"IMPORT("m", ["foo"]);"###, "t.wl").unwrap();
+        match e {
+            Expr::Import { names, .. } => {
+                assert_eq!(names.len(), 1);
+                assert_eq!(names[0].name, "foo");
+            }
+            _ => panic!("expected Import"),
+        }
+    }
+
+    #[test]
+    fn parse_import_missing_path_is_e0043() {
+        // IMPORT without a string literal path -> E0043
+        let err = parse("IMPORT(123);", "t.wl").unwrap_err();
+        assert_eq!(err.diagnostic().code, ErrorCode::E0043);
+    }
+
+    // ---- parse_for error path ----
+
+    #[test]
+    fn parse_for_non_ident_var_is_e0010() {
+        // FOR(123, [...], body) -> E0010
+        let err = parse("FOR(123, [1], PRINT(1));", "t.wl").unwrap_err();
+        assert_eq!(err.diagnostic().code, ErrorCode::E0010);
+    }
+
+    // ---- parse_let error paths ----
+
+    #[test]
+    fn parse_let_non_ident_name_is_e0010() {
+        // LET(123, 1) -> E0010
+        let err = parse("LET(123, 1);", "t.wl").unwrap_err();
+        assert_eq!(err.diagnostic().code, ErrorCode::E0010);
+    }
+
 }

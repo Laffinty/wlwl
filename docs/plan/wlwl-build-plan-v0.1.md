@@ -286,6 +286,7 @@ elease.yml 异步构建 Linux/macOS/Windows 三平台二进制 + GitHub Release.
 | post-Phase 4 follow-ups (P3-009c) | 0 周 (actual) | 19 周 |
 | post-Phase 4 follow-ups (P3-009d) | 0 周 (actual) | 19 周 |
 | post-Phase 4 follow-ups (P3-009e) | 0 周 (actual) | 19 周 |
+| post-Phase 4 follow-ups (P3-009f) | 0 周 (actual) | 19 周 |
 | Phase 5 | 4 周(可选) | 24 周 |
 
 **总计** (original estimate): 20 周 (without Phase 5) / 24 周 (with Phase 5). Actual progress: Phase 1-4 + post-Phase 4 全系列 (P3-008/009/009b/009c/009d/009e) 在 1 个工作日 (2026-09-03) 内集中收尾, 超远估算. The estimate is a discipline reference, not a public commitment.
@@ -511,19 +512,19 @@ impl Evaluator {
 | 错误处理 | 95% |
 
 
-**实测 (2026-09-03, cargo-llvm-cov v0.9.0, 5 轮 P3-009c/d/e 之后):**
+**实测 (2026-09-03, cargo-llvm-cov v0.9.0, 6 轮 P3-009c/d/e/f 之后):**
 
 | 模块 | 目标 | 实测 (line) | 实测 (region) | 状态 |
 |---|---:|---:|---:|---|
 | 词法 (wlwl-lexer)        | 100% | **90.22%** | **90.09%** | 接近 (region 达标) |
-| 语法 (wlwl-parser)       |  95% | 81.67% | 82.04% | 缺口 (1.x 计划, P3-009f) |
+| 语法 (wlwl-parser)       |  95% | **91.30%** | **90.66%** | **达标 (P3-009f)** |
 | 求值器核心 (wlwl-eval)   |  90% | **91.84%** | **91.44%** | **达标 (P3-009e)** |
 | 求值器 std (wlwl-std/*)   |  80% | **92-100%** | **96-100%** | **达标** (P3-009c/d 全部) |
 | 模块解析 (wlwl-toml)      |  90% | **93-97%** | **90-97%** | 达标 |
 | 错误处理 (wlwl-error)     |  95% | **99.57%** | **99.22%** | **达标 (P3-009d)** |
 | AST (wlwl-ast)            |  n/a | **100.00%** | **100.00%** | **达标 (P3-009c)** |
 | CLI (wlwl-cli)            |  n/a | **95.17%** | **96.72%** | **达标 (P3-009d)** |
-| **TOTAL**                   |  90% | **91.37%** | **91.02%** | **首次破 90% (P3-009e 完成 2026-09-03 r5)** |
+| **TOTAL**                   |  90% | **93.25%** | **92.69%** | **P3-009f 完成 2026-09-03 r6 (6 轮全收官)** |
 
 Branch coverage 在 Windows MSVC 下不可用 (0/0); 需在 Linux CI runner 跑才能补上。
 原始 lcov 在 `impl/target/llvm-cov.info`, HTML 报告在 `impl/target/llvm-cov-html/` (target/ 在 .gitignore, 不入仓)。
