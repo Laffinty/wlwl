@@ -1098,7 +1098,7 @@ impl Parser {
             pos: 0,
             file: self.file.clone(),
         };
-        let expr = p.parse_expr(sl, sc);
+        let expr = p.parse_expr(sl, sc)?;
         if p.pos < p.pieces.len() {
             let rest: Vec<String> = p.pieces[p.pos..].to_vec();
             return Ok(TypeExpr::Generic {
@@ -1113,7 +1113,7 @@ impl Parser {
                 },
             });
         }
-        expr
+        Ok(expr)
     }
 }
 
@@ -1853,22 +1853,14 @@ mod tests {
     }
 
     #[test]
-    fn type_expr_parser_non_ident_head_swallowed() {
-        // Current implementation: when parse_expr errors and pos
-        // hasn't advanced, the leftover arm wraps the rest into a
-        // Generic. This documents that behavior; the test acts as a
-        // tripwire if a future fix makes parse_type_expr_from_pieces
-        // propagate parse_expr's Err.
+    fn type_expr_parser_non_ident_head_errors_with_e0010() {
+        // A non-ident head (e.g. 42) is a parse error. P3-010
+        // fixed parse_type_expr_from_pieces to propagate parse_expr
+        // errors via ? instead of silently wrapping them.
         let p = parser_for_type_test(vec![], "t.wl");
         let pieces = vec!["42".to_string()];
-        let result = p.parse_type_expr_from_pieces(&pieces, 1, 1).unwrap();
-        match result {
-            wlwl_ast::TypeExpr::Generic { name, args, .. } => {
-                assert_eq!(name, "42");
-                assert_eq!(args.len(), 0);
-            }
-            other => panic!("expected Generic, got {:?}", other),
-        }
+        let err = p.parse_type_expr_from_pieces(&pieces, 1, 1).unwrap_err();
+        assert_eq!(err.diagnostic().code, ErrorCode::E0010);
     }
 
     #[test]
@@ -1885,9 +1877,9 @@ mod tests {
     }
 
     #[test]
-    fn type_expr_parser_bad_separator_swallowed() {
-        // OK[INTEGER INTEGER] (missing comma) is also swallowed by
-        // the leftover arm. Documents the behavior.
+    fn type_expr_parser_bad_separator_errors_with_e0012() {
+        // OK[INTEGER INTEGER] (missing comma) is a parse error.
+        // P3-010 ensures this propagates instead of being swallowed.
         let p = parser_for_type_test(vec![], "t.wl");
         let pieces = vec![
             "OK".to_string(),
@@ -1896,35 +1888,22 @@ mod tests {
             "INTEGER".to_string(),
             "]".to_string(),
         ];
-        let result = p.parse_type_expr_from_pieces(&pieces, 1, 1).unwrap();
-        match result {
-            wlwl_ast::TypeExpr::Generic { name, args, .. } => {
-                // rest = "INTEGER INTEGER ]" (joined with space)
-                assert_eq!(name, "INTEGER ]");
-                assert_eq!(args.len(), 0);
-            }
-            other => panic!("expected Generic, got {:?}", other),
-        }
+        let err = p.parse_type_expr_from_pieces(&pieces, 1, 1).unwrap_err();
+        assert_eq!(err.diagnostic().code, ErrorCode::E0012);
     }
 
     #[test]
-    fn type_expr_parser_leftover_pieces_is_generic() {
-        // parse_expr consumes ARRAY as an Ident (no [ follows),
-        // then the leftover arm wraps the rest. The rest starts at
-        // pos=1 (after ARRAY) so the name is just "EXTRA".
+    fn type_expr_parser_leftover_pieces_errors_with_e0010() {
+        // ARRAY followed by something that isn't [ is a parse error
+        // (P3-010 made this strict; before, the leftover was wrapped
+        // silently into a Generic).
         let p = parser_for_type_test(vec![], "t.wl");
         let pieces = vec![
             "ARRAY".to_string(),
             "EXTRA".to_string(),
         ];
-        let result = p.parse_type_expr_from_pieces(&pieces, 1, 1).unwrap();
-        match result {
-            wlwl_ast::TypeExpr::Generic { name, args, .. } => {
-                assert_eq!(name, "EXTRA");
-                assert_eq!(args.len(), 0);
-            }
-            other => panic!("expected Generic, got {:?}", other),
-        }
+        let err = p.parse_type_expr_from_pieces(&pieces, 1, 1).unwrap_err();
+        assert_eq!(err.diagnostic().code, ErrorCode::E0010);
     }
 
     // ---- parse_paren_block ----

@@ -524,7 +524,7 @@ impl Evaluator {
 | 错误处理 (wlwl-error)     |  95% | **99.57%** | **99.22%** | **达标 (P3-009d)** |
 | AST (wlwl-ast)            |  n/a | **100.00%** | **100.00%** | **达标 (P3-009c)** |
 | CLI (wlwl-cli)            |  n/a | **95.17%** | **96.72%** | **达标 (P3-009d)** |
-| **TOTAL**                   |  90% | **93.25%** | **92.69%** | **P3-009f 完成 2026-09-03 r6 (6 轮全收官)** |
+| **TOTAL**                   |  90% | **93.10%** | **92.63%** | **P3-010 完成 2026-09-03 r7 (impl fix, 13/13 crates >= 90%)** |
 
 Branch coverage 在 Windows MSVC 下不可用 (0/0); 需在 Linux CI runner 跑才能补上。
 原始 lcov 在 `impl/target/llvm-cov.info`, HTML 报告在 `impl/target/llvm-cov-html/` (target/ 在 .gitignore, 不入仓)。

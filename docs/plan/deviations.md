@@ -287,6 +287,47 @@ cargo llvm-cov --workspace --no-cfg-coverage --lcov  --output-path target/llvm-c
   上传 codecov / coveralls
 - 当所有 crate >= 90% 后，把 D019 / P3-009 从 deviations 移出
 
+# P3-010: 修 parse_type_expr_from_pieces 错误吞咽 bug (impl-only)
+
+> P3-009f 在加 TypeExprParser 测试时发现 parse_type_expr_from_pieces 缺一个 ?, 把 parse_expr 的错误吞进了 leftover arm 返回 Ok(Generic(...)). P3-010 补这个 ? + 改写 3 个文档化此 bug 的 *_swallowed 测试为 *_errors_with_eNNNN 测试, 反映新的 (正确) 行为. 行为变更: 之前 silently 返回 Generic 的 3 个错误输入, 现在会正确传播 E0010 / E0012.
+
+## 做了什么
+
+### wlwl-parser: 1 行修复 + 3 测试改名 (crates/wlwl-parser/src/lib.rs)
+
+- parse_type_expr_from_pieces: let expr = p.parse_expr(sl, sc); → let expr = p.parse_expr(sl, sc)?;. 末尾 expr → Ok(expr). 共 2 行.
+- 3 个 *_swallowed 测试改写:
+  - 	ype_expr_parser_non_ident_head_swallowed → 	ype_expr_parser_non_ident_head_errors_with_e0010
+  - 	ype_expr_parser_bad_separator_swallowed → 	ype_expr_parser_bad_separator_errors_with_e0012
+  - 	ype_expr_parser_leftover_pieces_is_generic → 	ype_expr_parser_leftover_pieces_errors_with_e0010
+
+### 影响的行为变更
+
+3 个之前 silently 返回 Generic 的输入现在会正确报错:
+
+| 输入 | 旧行为 | 新行为 |
+|---|---|---|
+| ["42"] (非 ident) | Ok(Generic("42")) | Err(E0010) |
+| ["OK", "[", "INTEGER", "INTEGER", "]"] (缺逗号) | Ok(Generic("INTEGER ]")) | Err(E0012) |
+| ["ARRAY", "EXTRA"] (无 [) | Ok(Generic("EXTRA")) | Err(E0010) |
+
+["OK"] 这种合法输入的行为不变 (返回 Ident("OK")).
+
+## 测试 + cov 结果
+
+| 指标 | 值 |
+|---|---:|
+| Tests | 483 → 483 (0 net; 3 renamed) |
+| Line coverage | 93.25% → **93.10%** (-0.15pp, leftover arm 成死码) |
+| wlwl-parser | 91.30% → **90.61%** (-0.69pp, 同上) |
+| 13/13 crates >= 90% line | ✅ 仍然全过 |
+| cargo test --workspace | EXIT 0, 444 tests pass |
+
+> 注意: line coverage 略降, 因为 leftover arm 现在不可达. 这是预期的 — 修 bug 的副作用. 总体覆盖率 (93.10%) 仍然很健康, 13/13 crates >= 90% line.
+
+## P3-010 收尾
+
+P3-010 修复了一个 P3-009f 期间发现的 impl bug. 0 个新增 tests, 3 个测试改名为反映新行为. 工作区状态不变 — 13/13 crates 全部 >= 90% line coverage, 整体 93.10%.
 # P3-009f: wlwl-parser 推 90% (cargo-llvm-cov, 2026-09-03 round 6)
 
 > P3-009e 收尾后, wlwl-parser 仍是 P3-009 系列唯一的 90% 缺口 (81.67%). P3-009f 用 ~25 个测试覆盖 token_text 全 47 个 TokenKind arm + parse_type_expr_from_pieces 全部分支 + parse_import / parse_for / parse_let 错误路径 + parse_paren_block 单 expression 路径, 把 parser 推到 91.30% 跨 90% 阈值. P3-009 系列全部 crate >= 90% line, 整个工作区 93.25% line.
