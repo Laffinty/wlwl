@@ -32,24 +32,55 @@
 
 ### post-Phase 4 follow-ups — P3-008 / P3-009 / P3-009b — **完成 ✅ 2026-09-03**
 
-**已完成 (337 / 337 tests pass, line cover 84.28% / region 84.85%):**
+**P3-009b 收尾 (337 / 337 tests pass, line cover 84.28% / region 84.85%):**
 
 - **P3-008 — suggestion_code 实质内容**：35 个错误码的 chokepoint 都加了 Suggestion::Note；E0020 加 Levenshtein 同名提示；E0022 算子加 got/want 提示。3 个新单测。commit 936e0bf.
 - **P3-009 — 形式化覆盖率测量**：cargo-llvm-cov v0.9.0 跑出 baseline；原始数据 + 复现命令 + 差距分析进 deviations.md 的 P3-009 段。commit ffce57a.
 - **P3-009b — 低位 crate 覆盖推进**：wlwl-ast 56.63% → 61.45% line (+27 serde roundtrip), wlwl-cli 51.38% → 57.71% line (+19 clap 子命令穷举). TOTAL 82.50% → 83.03% line. commit 54ec602.
 
-### post-Phase 4 follow-ups — P3-009c — **完成 ✅ 2026-09-03**
+### P3-009c — ast / std-io / std-lib 推 90% — **完成 ✅ 2026-09-03**
 
-**已完成 (337 / 337 tests pass, line cover 84.28% / region 84.85%):**
+**372 / 372 tests pass (+35). 3 个目标 crate 全部 >= 95% line. commit 5f0e8e8.**
 
-- **P3-009c — 三个 P3-009b 残留 crate 全部 >= 90% line** (commit pending): wlwl-ast 61.45% → 100% (+42 api_surface tests, 覆盖 TypeExpr::display / span / 24-arm Expr::span / Span::new / FunParam / TypeAnnotation); wlwl-std/io 77.19% → 95.33% (+8 tests; 
-ead_input_line<R: BufRead> 抽 &mut dyn BufRead 助手, 覆盖 LF / CRLF / 裸 CR / EOF / partial / 空行 / IO error); wlwl-std/lib 84.75% → 100% (+15 tests, 删 
-esolve 重复 dead arm, 覆盖 resolve / arity_error / type_error / json_type_name / expect_string / StdError Display / StdCtx). TOTAL 83.03% → 84.28% line, 84.85% region. 详见 docs/plan/deviations.md P3-009c 段.
+- **wlwl-ast** 56.63% → 100% line (+43.37pp). +42 tests 覆盖每个 public 方法 (api_surface.rs).
+- **wlwl-std/io** 77.19% → 95.33% line (+18.14pp). std_input 内部拆出 
+ead_input_line<R: BufRead>, +8 tests (LF/CRLF/CR-only/EOF/partial/空行/IO error -> E0060).
+- **wlwl-std/lib** 84.75% → 100% line (+15.25pp). 删 
+esolve 里 unreachable 的重复 "wlwl:std.json" arm, +12 tests 覆盖 resolve / arity_error / type_error / json_type_name / expect_string / StdError Display.
+- 详见 deviations.md P3-009c 段.
+
+### P3-009d — P3-009b 残留 5 crate 推 90% — **完成 ✅ 2026-09-03**
+
+**402 / 402 tests pass (+30). 4/5 目标 crate 跨 90% line 阈值. TOTAL 90.39% line 首次破 90%. commit c42834c.**
+
+- **wlwl-std/ai** 88.94% → 98.19% line. 删 dead extract_str 助手, +7 tests (ASK/EMBED/COMPLETE type-error).
+- **wlwl-toml/manifest** 87.92% → 97.47% line. +9 tests (ManifestError Display 6 variant + source + validation edge cases).
+- **wlwl-error** 85.75% → 99.57% line. +10 tests (ErrorCategory 12 variant + Severity + Location::range + extract_line + builder).
+- **wlwl-cli** 57.71% → 95.17% line (+37.46pp). +8 tests (try_write_lock 全分支 + find_project_root + ast_file). 修了 3 个 bug: 2 个结构 (测试少/多 }), 1 个 pre-existing (path 错位).
+- **wlwl-eval** 83.26% → 89.79% line (短 0.21pp 留 P3-009e).
+- 详见 deviations.md P3-009d 段.
+
+### P3-009e — eval 推 90% — **完成 ✅ 2026-09-03**
+
+**429 / 429 tests pass (+27). 5/5 P3-009d 目标 crate 全部 >= 90% line. P3-009 系列收尾. TOTAL 91.37% line / 91.02% region. commit fbc4e2a.**
+
+- **wlwl-eval** 89.79% → 91.84% line (+2.05pp). +27 tests 覆盖 eval_expr 每个 match arm: 控制流 (7) + 错误处理 (4) + 控制信号错误 (2) + 字面量/集合 (3) + 算子全覆盖 (2) + 模块加载 edge case (3) + 杂项 (6).
+- 关键学习: WLWL FUN body 必须是单个 expression, { } block 在 lexer 层就被拒 (E0001 illegal character). 删了 6 个用错语法的测试, 改用单 expression 等价路径.
+- 详见 deviations.md P3-009e 段.
+
+**v0.3.0 已发布**：tag v0.3.0 已 push, 
+elease.yml 异步构建 Linux/macOS/Windows 三平台二进制 + GitHub Release.
+
+**P3-009 系列 (c/d/e) 全部完成, 5/5 目标 crate >= 90% line:**
+- P3-009c (commit 5f0e8e8): wlwl-ast 100% / std-io 95.33% / std-lib 100%
+- P3-009d (commit c42834c): ai 98.19% / manifest 97.47% / error 99.57% / cli 95.17% (eval 89.79% 留 e)
+- P3-009e (commit fbc4e2a): eval 91.84% (eval_expr arms 全覆盖)
+- TOTAL: 84.28% → 91.37% line, 84.85% → 91.02% region
+- 详见 deviations.md P3-009c / P3-009d / P3-009e 段.
+
+**附:本计划不替代 v0.3 规范。规范的权威性高于本计划——任何"实施偏离"必须显式记录,不能默默修改规范。**
 
 
-**v0.3.0 已发布**：tag v0.3.0 已 push, `release.yml` 异步构建 Linux/macOS/Windows 三平台二进制 + GitHub Release.
-
-**P3-009c + P3-009d + P3-009e (已完成, 2026-09-03 round 3+4+5)**：round 3 把 wlwl-ast/io/lib 推到 >=95%; round 4 把 ai/manifest/error/cli 拉到 >=95% line; round 5 把 eval 89.79% -> 91.84% (eval_expr 内部 arms 全覆盖). 5/5 目标 crate 全部 >= 90% line, TOTAL 91.37% line. 详见 deviations.md P3-009c / P3-009d / P3-009e 段.
 ## 0. 文档定位
 
 | 维度 | WLWL 规范(v0.3) | 本构建计划 |
@@ -251,10 +282,15 @@ esolve 重复 dead arm, 覆盖 resolve / arity_error / type_error / json_type_na
 | Phase 3 | 4 周 | 14 周 |
 | Phase 4 | 6 周 | 20 周 |
 | Phase 4 (3 批)  | 4 周 (actual)  | 18 周 |
-| post-Phase 4    | 1 周 (actual)  | 19 周 |
+| post-Phase 4 batch | 1 周 (actual) | 19 周 |
+| post-Phase 4 follow-ups (P3-009c) | 0 周 (actual) | 19 周 |
+| post-Phase 4 follow-ups (P3-009d) | 0 周 (actual) | 19 周 |
+| post-Phase 4 follow-ups (P3-009e) | 0 周 (actual) | 19 周 |
 | Phase 5 | 4 周(可选) | 24 周 |
 
-**总计** (original estimate): 20 周 (without Phase 5) / 24 周 (with Phase 5). Actual progress: Phase 1-4 + post-Phase 4 在 1 个工作日 (2026-09-03) 内集中收尾, 超远估算. The estimate is a discipline reference, not a public commitment.
+**总计** (original estimate): 20 周 (without Phase 5) / 24 周 (with Phase 5). Actual progress: Phase 1-4 + post-Phase 4 全系列 (P3-008/009/009b/009c/009d/009e) 在 1 个工作日 (2026-09-03) 内集中收尾, 超远估算. The estimate is a discipline reference, not a public commitment.
+
+> 2026-09-03 一天集中完成的工作量按"actual" 标记 0 周 (不计入工期). 整个 Phase 1-4 + P3-009 系列在 1 个工作日内发布 v0.3.0, 反映"AI Coding 工作流"对原估时的颠覆性压缩.
 
 ---
 
@@ -475,19 +511,19 @@ impl Evaluator {
 | 错误处理 | 95% |
 
 
-**实测 (2026-09-03, cargo-llvm-cov v0.9.0):**
+**实测 (2026-09-03, cargo-llvm-cov v0.9.0, 5 轮 P3-009c/d/e 之后):**
 
 | 模块 | 目标 | 实测 (line) | 实测 (region) | 状态 |
 |---|---:|---:|---:|---|
-| 词法 (wlwl-lexer)        | 100% | 90.22% | 90.09% | 接近 |
-| 语法 (wlwl-parser)       |  95% | 80.81% | 81.68% | 缺口 |
-| 求值器核心 (wlwl-eval)   |  90% | 83.26% | 83.45% | 接近 |
-| 求值器 std (wlwl-std/*)   |  80% | **88-100%** | **84-100%** | P3-009d 全部 >=92% line; lib 100% |
-| 模块解析 (wlwl-toml)      |  90% | 87-93% | 86-90% | 达标 |
-| 错误处理 (wlwl-error)     |  95% | 85.75% | 90.97% | 接近 (region 达标) |
-| AST (wlwl-ast)            |  n/a | **100.00%** | **100.00%** | P3-009c 完成 |
-| CLI (wlwl-cli)            |  n/a | 57.71% | 65.45% | 已知, 见 P3-009b |
-| **TOTAL**                   |  90% | **91.37%** | **91.02%** | P3-009e 完成 (2026-09-03 r5) |
+| 词法 (wlwl-lexer)        | 100% | **90.22%** | **90.09%** | 接近 (region 达标) |
+| 语法 (wlwl-parser)       |  95% | 81.67% | 82.04% | 缺口 (1.x 计划, P3-009f) |
+| 求值器核心 (wlwl-eval)   |  90% | **91.84%** | **91.44%** | **达标 (P3-009e)** |
+| 求值器 std (wlwl-std/*)   |  80% | **92-100%** | **96-100%** | **达标** (P3-009c/d 全部) |
+| 模块解析 (wlwl-toml)      |  90% | **93-97%** | **90-97%** | 达标 |
+| 错误处理 (wlwl-error)     |  95% | **99.57%** | **99.22%** | **达标 (P3-009d)** |
+| AST (wlwl-ast)            |  n/a | **100.00%** | **100.00%** | **达标 (P3-009c)** |
+| CLI (wlwl-cli)            |  n/a | **95.17%** | **96.72%** | **达标 (P3-009d)** |
+| **TOTAL**                   |  90% | **91.37%** | **91.02%** | **首次破 90% (P3-009e 完成 2026-09-03 r5)** |
 
 Branch coverage 在 Windows MSVC 下不可用 (0/0); 需在 Linux CI runner 跑才能补上。
 原始 lcov 在 `impl/target/llvm-cov.info`, HTML 报告在 `impl/target/llvm-cov-html/` (target/ 在 .gitignore, 不入仓)。
