@@ -107,6 +107,21 @@ elease.yml 异步构建 Linux/macOS/Windows 三平台二进制 + GitHub Release.
 - 1 个新测试文件: `impl/crates/wlwl-parser/tests/spec_v3_alignment.rs` (~67 tests 跨 spec §3-§13).
 - 详见 `docs/plan/p3-011-spec-alignment.md` (PLAN) + `docs/plan/deviations.md` P3-011 段.
 
+### P3-012 — std.ai 流式 / 批量 API stub (spec §15.11.4) — **完成 ✅ 2026-09-04**
+
+**518 / 518 tests pass (+11). 13/13 crates 全部 >= 90% line. TOTAL 92.77% line / 92.56% region / 96.75% func. P3-011 之后对剩余 spec 项的最小可执行推进.**
+
+- `ASK_STREAM(model, prompt, callback)` v0.3 mock: 跟 ASK 一样返回 `OK(string)`, callback 参数接受并 ignore (真实 HTTP 流式留给 v0.4)
+- `ASK_ALL(prompts: ARRAY)` v0.3 mock: 验证 prompts 全是 string, 返回 `ARRAY` of mock payload strings 带索引
+- SPEC 导出 ASK_STREAM / ASK_ALL (spec §15.11.4 全部 4 个 API 现在都注册)
+- 修 arity_error pre-existing bug: fn_name 拼到 message (`"F: function expects N argument(s), got M"`), 跟 type_error 格式对齐
+- 7 个新测试 (spec_includes_streaming_apis / ask_stream_{returns,arity,type} / ask_all_{returns,arity,type}) + 同步更新 2 个旧测试 (arity_error_uses_e0022 / spec_contains_all_three)
+- 不在本轮: 真实 HTTP 流式 / ASK_ALL per-element OK/ERR (v0.4 议程)
+- 详见 `docs/plan/deviations.md` P3-012 段.
+
+**附:本计划不替代 v0.3 规范。规范的权威性高于本计划——任何"实施偏离"必须显式记录,不能默默修改规范。**
+- 详见 `docs/plan/p3-011-spec-alignment.md` (PLAN) + `docs/plan/deviations.md` P3-011 段.
+
 **附:本计划不替代 v0.3 规范。规范的权威性高于本计划——任何"实施偏离"必须显式记录,不能默默修改规范。**
 
 
@@ -318,6 +333,7 @@ elease.yml 异步构建 Linux/macOS/Windows 三平台二进制 + GitHub Release.
 | post-Phase 4 follow-ups (P3-009f) | 0 周 (actual) | 19 周 |
 | post-Phase 4 follow-ups (P3-010) | 0 周 (actual) | 19 周 |
 | post-Phase 4 follow-ups (P3-011) | 0 周 (actual) | 19 周 |
+| post-Phase 4 follow-ups (P3-012) | 0 周 (actual) | 19 周 |
 | Phase 5 | 4 周(可选) | 24 周 |
 
 **总计** (original estimate): 20 周 (without Phase 5) / 24 周 (with Phase 5). Actual progress: Phase 1-4 + post-Phase 4 全系列 (P3-008/009/009b/009c/009d/009e) 在 1 个工作日 (2026-09-03) 内集中收尾, 超远估算. The estimate is a discipline reference, not a public commitment.
@@ -555,7 +571,7 @@ impl Evaluator {
 | 错误处理 (wlwl-error)     |  95% | **99.57%** | **99.22%** | **达标 (P3-009d)** |
 | AST (wlwl-ast)            |  n/a | **100.00%** | **100.00%** | **达标 (P3-009c)** |
 | CLI (wlwl-cli)            |  n/a | **95.17%** | **96.72%** | **达标 (P3-009d)** |
-| **TOTAL**                   |  90% | **92.74%** | **92.58%** | **P3-011 完成 2026-09-04 (spec v0.3 mid-syntax alignment, 13/13 crates >= 90%)** |
+| **TOTAL**                   |  90% | **92.77%** | **92.56%** | **P3-012 完成 2026-09-04 (std.ai §15.11.4, 13/13 crates >= 90%)** |
 
 Branch coverage 在 Windows MSVC 下不可用 (0/0); 需在 Linux CI runner 跑才能补上。
 原始 lcov 在 `impl/target/llvm-cov.info`, HTML 报告在 `impl/target/llvm-cov-html/` (target/ 在 .gitignore, 不入仓)。

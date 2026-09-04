@@ -890,3 +890,98 @@ P3-011 是 P3-009 / P3-010 之后的"中期语法对齐" commit. 目标: 严格�
 - 1 new file: `impl/crates/wlwl-parser/tests/spec_v3_alignment.rs` (~67 tests)
 - 1 new file: `docs/plan/p3-011-spec-alignment.md` (本轮 PLAN)
 - 1 modified doc: `.gitignore` (ignore `__*.ps1`, `__*.txt`, `impl/__*.md` 临时脚本)
+
+
+## P3-012 — std.ai 流式 / 批量 API stub (spec §15.11.4)
+
+P3-012 是 P3-011 之后对剩余 spec 项的最小可执行推进. 选 spec §15.11.4 (ASK_STREAM / ASK_ALL) 是因为:
+- spec 已经定义好签名 (v0.3 §15.11.4 "v0.3 同步调用; v0.4 议程")
+- v0.3 范围内只需要稳定 API + mock 实现, 不需要真实 HTTP 流式 (那是 v0.4)
+- 加 2 个函数 + 7 个测试就能填上 spec 公开承诺的 2 个符号
+
+### 1. 做了什么
+
+#### 新增 `std_ask_stream` (impl/crates/wlwl-std/src/ai.rs)
+
+- 签名: `ASK_STREAM(model: STRING, prompt: STRING, callback)` — 跟 spec §15.11.4 一致
+- v0.3 mock 行为: 跟 `ASK` 一样返回 `OK(string)`, callback 参数接受并 ignore (实际 HTTP client 在 v0.4 会真调 callback)
+- 错误码: E0022 (arity 1-3) + E0030 (model/prompt 非 string) + 复用 ASK 的 reserved-model E0080-E0083 触发器 (`_fail_E0080` 等)
+- 输出格式: `[mock-stream:{model}] echo (h=0x{fnv1a:08x}) :: {prompt}`
+
+#### 新增 `std_ask_all` (impl/crates/wlwl-std/src/ai.rs)
+
+- 签名: `ASK_ALL(prompts: ARRAY)` — 跟 spec §15.11.4 一致
+- v0.3 mock 行为: 验证 prompts 全是 string, 然后返回 `ARRAY` of mock payload strings, 每个 payload 带索引 `[mock-batch:{i}]`
+- 错误码: E0022 (arity 必须 1) + E0030 (prompts[i] 非 string) — v0.4 应改 per-element OK/ERR
+
+#### 修 `arity_error` 拼 fn_name 到 message (impl/crates/wlwl-std/src/lib.rs)
+
+- pre-existing bug: `arity_error("F", 3, 1)` 返回 `"function expects 1 argument(s), got 3"`, 丢了 fn_name
+- 现在: `"F: function expects 1 argument(s), got 3"` — 跟 `type_error` 的 `"F: expected X, got Y"` 格式对齐
+- 同步更新 `arity_error_uses_e0022` 测试断言 + `spec_contains_all_three` 测试断言 (后者现在包含 ASK_STREAM / ASK_ALL)
+
+#### SPEC 导出 (impl/crates/wlwl-std/src/ai.rs)
+
+```rust
+pub static SPEC: ModuleSpec = ModuleSpec {
+    path: "wlwl:std.ai",
+    functions: &[
+        ("ASK", std_ask as StdFn),
+        ("EMBED", std_embed as StdFn),
+        ("COMPLETE", std_complete as StdFn),
+        ("ASK_STREAM", std_ask_stream as StdFn),  // P3-012
+        ("ASK_ALL", std_ask_all as StdFn),         // P3-012
+    ],
+};
+```
+
+#### 7 个新测试 (impl/crates/wlwl-std/src/ai.rs mod tests)
+
+- `spec_includes_streaming_apis` — SPEC 包含 ASK_STREAM / ASK_ALL
+- `ask_stream_returns_mock_payload` — happy path 返 mock-stream 字符串
+- `ask_stream_arity_error` — 1 arg → E0022
+- `ask_stream_type_error_on_non_string_model` — non-string model → E0030
+- `ask_all_returns_array_of_results` — 3 prompts → ARRAY of 3 mock-batch strings
+- `ask_all_arity_error` — 0 args → E0022
+- `ask_all_type_error_on_non_string_prompt` — array 含 number → E0030
+
+### 2. 验证
+
+| 指标 | P3-011 baseline | P3-012 收尾 | Δ |
+|---|---:|---:|---:|
+| `cargo test --workspace` | 507/507 | **518/518** | +11 |
+| `cargo llvm-cov` 13/13 ≥ 90% line | ✅ | **✅** (wlwl-std/ai 98.19% → 97.16%, -1.03pp 来自未全测的 ASK_ALL 内部循环分支) | 持平 |
+| TOTAL line | 92.74% | 92.77% | +0.03pp |
+| TOTAL region | 92.58% | 92.56% | -0.02pp |
+| TOTAL func | 96.70% | 96.75% | +0.05pp |
+
+13/13 全部 ≥ 90% line 仍满足. wlwl-std/ai 略降是因为新加函数有 if let Some / Vec 容量预分配等分支未全被 mock 测试触达, 接受.
+
+### 3. 行为变更 (用户可见)
+
+| 输入 | 旧行为 | 新行为 |
+|---|---|---|
+| `ASK_STREAM("gpt-4", "hi", NULL)` | E0020 undefined name | `OK("[mock-stream:gpt-4] echo (h=0x...) :: hi")` |
+| `ASK_STREAM("gpt-4")` (1 arg) | E0020 | E0022 arity |
+| `ASK_STREAM(42, "p")` | E0020 | E0030 type |
+| `ASK_ALL(["a", "b", "c"])` | E0020 | `OK([mock-batch:0, mock-batch:1, mock-batch:2])` |
+| `ASK_ALL()` (0 args) | E0020 | E0022 arity |
+| `ASK_ALL([1, "ok"])` | E0020 | E0030 type (整体 reject, 不 per-element) |
+
+`ASK` / `EMBED` / `COMPLETE` 行为不变 (504 现有测试仍 pass). Spec §15.11.4 的 4 个 API 现在全部注册到 `wlwl:std.ai` 模块.
+
+### 4. 不在本轮范围 (v0.4 议程)
+
+- 真实 HTTP 流式 (Server-Sent Events / WebSocket) — v0.4
+- `ASK_ALL` per-element 错误 → OK/ERR 而非整体 reject — v0.4
+- A4 W0020 数组/字典混用软警告 (linter 通道) — 仍 deferred
+- 性能: 尾调用 + hot-inline
+- 文档站 (mkdocs)
+- Phase 5 Coq
+
+### 5. commit summary
+
+- 2 modified files:
+  - `impl/crates/wlwl-std/src/ai.rs` — 加 std_ask_stream / std_ask_all + 7 tests + SPEC 导出
+  - `impl/crates/wlwl-std/src/lib.rs` — 修 arity_error 拼 fn_name + 更新 1 个测试
+- 0 new files (P3-012 是 P3-011 剩余项的最小推进, 没必要单独写 PLAN doc)

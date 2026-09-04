@@ -96,12 +96,15 @@ impl std::fmt::Display for StdError {
 impl std::error::Error for StdError {}
 
 /// Helper used by every std function: build a `StdError` for an
-/// arity mismatch with the standard message format.
+/// arity mismatch with the standard message format. P3-012:
+/// include `fn_name` in the message so callers (and tests) can
+/// attribute the error to a specific function — the old format
+/// `function expects N argument(s), got M` dropped this info.
 pub(crate) fn arity_error(fn_name: &str, got: usize, want: usize) -> StdError {
     StdError {
         code: ErrorCode::E0022,
         message: format!(
-            "function expects {} argument(s), got {}",
+            "{fn_name}: function expects {} argument(s), got {}",
             want, got
         ),
     }
@@ -229,9 +232,12 @@ mod tests {
 
     #[test]
     fn arity_error_uses_e0022() {
+        // P3-012: arity_error now includes the function name so
+        // callers can attribute the failure (mirrors type_error's
+        // `"FN: expected X, got Y"` format).
         let e = arity_error("F", 3, 1);
         assert_eq!(e.code, ErrorCode::E0022);
-        assert_eq!(e.message, "function expects 1 argument(s), got 3");
+        assert_eq!(e.message, "F: function expects 1 argument(s), got 3");
     }
 
     // ---- type_error ----

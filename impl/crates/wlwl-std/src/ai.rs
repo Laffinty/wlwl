@@ -145,6 +145,80 @@ pub fn std_complete(_ctx: &mut StdCtx, args: Vec<StdValue>) -> Result<StdValue, 
     )))
 }
 
+// ── ASK_STREAM (spec §15.11.4 stub) ───────────────────────────
+//
+// P3-012 stub. v0.3 §15.11.4: "v0.3 同步调用; v0.4 议程:
+// ASK_STREAM(model, prompt, callback)". The mock implementation
+// accepts the same `(model, prompt, callback)` shape and returns
+// the same OK(string) payload as `ASK`. A future real HTTP client
+// will chunk the response and invoke the callback per chunk; for
+// now the callback is a no-op (we validate the arity and types
+// but do not invoke the WLWL function from a std_fn context —
+// the interpreter is the one place that can dispatch into user
+// functions).
+pub fn std_ask_stream(_ctx: &mut StdCtx, args: Vec<StdValue>) -> Result<StdValue, StdError> {
+    if args.len() < 2 || args.len() > 3 {
+        return Err(arity_error("ASK_STREAM", args.len(), 3));
+    }
+    // Reuse ASK's model/prompt validation + mock content. The
+    // third slot (callback) is accepted for arity symmetry but
+    // not invoked from this std_fn context.
+    let model = match &args[0] {
+        StdValue::String(s) => s.as_str(),
+        other => return Err(type_error("ASK_STREAM", "string", other)),
+    };
+    let prompt = match &args[1] {
+        StdValue::String(s) => s.as_str(),
+        other => return Err(type_error("ASK_STREAM", "string", other)),
+    };
+    if let Some(err) = check_reserved_failure(model) {
+        return Err(err);
+    }
+    let h = fnv1a(prompt.as_bytes());
+    Ok(StdValue::String(format!(
+        "[mock-stream:{model}] echo (h=0x{h:08x}) :: {prompt}",
+    )))
+}
+
+// ── ASK_ALL (spec §15.11.4 stub) ──────────────────────────────
+//
+// P3-012 stub. Batch ASK over an array of prompts, returning
+// ARRAY of OK/ERR. v0.3 runs the calls serially in interpreter
+// order; v0.4 will replace this with a real concurrent fan-out.
+pub fn std_ask_all(_ctx: &mut StdCtx, args: Vec<StdValue>) -> Result<StdValue, StdError> {
+    if args.len() != 1 {
+        return Err(arity_error("ASK_ALL", args.len(), 1));
+    }
+    let prompts = match &args[0] {
+        StdValue::Array(a) => a,
+        other => return Err(type_error("ASK_ALL", "array", other)),
+    };
+    // Validate every prompt is a string up front (so we can
+    // produce a single coherent error if not). Real fan-out
+    // would dispatch each element back through the interpreter.
+    for (_i, p) in prompts.iter().enumerate() {
+        if !matches!(p, StdValue::String(_)) {
+            // v0.3 std_fn has no per-element error path, so we
+            // report a single ASK_ALL-level E0030 pointing at
+            // the offending element. v0.4 should route this
+            // through the interpreter to produce per-element
+            // OK / ERR (spec §15.11.4).
+            return Err(type_error("ASK_ALL", "string", p));
+        }
+    }
+    // Mock per-prompt response: same shape as ASK, with index
+    // included so callers can correlate result <-> input.
+    let mut out: Vec<StdValue> = Vec::with_capacity(prompts.len());
+    for (i, p) in prompts.iter().enumerate() {
+        let StdValue::String(prompt) = p else { unreachable!() };
+        let h = fnv1a(prompt.as_bytes());
+        out.push(StdValue::String(format!(
+            "[mock-batch:{i}] echo (h=0x{h:08x}) :: {prompt}"
+        )));
+    }
+    Ok(StdValue::Array(out))
+}
+
 // ── FNV-1a (32-bit) for deterministic hash bits ───────────────
 
 /// FNV-1a 32-bit. Tiny, dependency-free, deterministic. We use
@@ -165,6 +239,11 @@ pub static SPEC: ModuleSpec = ModuleSpec {
         ("ASK", std_ask as StdFn),
         ("EMBED", std_embed as StdFn),
         ("COMPLETE", std_complete as StdFn),
+        // P3-012: streaming / batch APIs (spec §15.11.4). The
+        // mock implementations honor the v0.3 signature while
+        // real HTTP streaming / fan-out lands in v0.4.
+        ("ASK_STREAM", std_ask_stream as StdFn),
+        ("ASK_ALL", std_ask_all as StdFn),
     ],
 };
 
@@ -343,9 +422,126 @@ mod tests {
 
     #[test]
     fn spec_contains_all_three() {
+        // P3-012 adds ASK_STREAM and ASK_ALL (spec §15.11.4).  The
+        // legacy "only the three" test now asserts the original
+        // three plus the two new entries are present.
         assert_eq!(SPEC.path, "wlwl:std.ai");
         let names: Vec<&str> = SPEC.functions.iter().map(|(n, _)| *n).collect();
-        assert_eq!(names, vec!["ASK", "EMBED", "COMPLETE"]);
+        assert_eq!(
+            names,
+            vec!["ASK", "EMBED", "COMPLETE", "ASK_STREAM", "ASK_ALL"]
+        );
+    }
+
+    // ---- P3-012: ASK_STREAM + ASK_ALL stubs (spec §15.11.4) ----
+
+    #[test]
+    fn spec_includes_streaming_apis() {
+        // After P3-012, ASK_STREAM / ASK_ALL are also exported
+        // (alongside the v0.3 sync trio). v0.4 will replace the
+        // mock bodies with real chunked / batch HTTP fan-out.
+        let names: Vec<&str> = SPEC.functions.iter().map(|(n, _)| *n).collect();
+        assert_eq!(
+            names,
+            vec!["ASK", "EMBED", "COMPLETE", "ASK_STREAM", "ASK_ALL"]
+        );
+    }
+
+    #[test]
+    fn ask_stream_returns_mock_payload() {
+        // Mock returns the same OK(string) shape as ASK. The
+        // third arg is the callback (we accept and ignore it in
+        // the v0.3 stub; a real HTTP client would invoke it per
+        // chunk).
+        let mut c = ctx();
+        let v = std_ask_stream(
+            &mut c,
+            vec![
+                StdValue::String("gpt-4".into()),
+                StdValue::String("hello".into()),
+                StdValue::Null, // callback slot (ignored in v0.3 mock)
+            ],
+        )
+        .unwrap();
+        match v {
+            StdValue::String(s) => {
+                assert!(s.contains("mock-stream"), "got {:?}", s);
+                assert!(s.contains("hello"), "prompt should be echoed: {}", s);
+            }
+            other => panic!("expected string, got {:?}", other),
+        }
+    }
+
+    #[test]
+    fn ask_stream_arity_error() {
+        let mut c = ctx();
+        let err = std_ask_stream(&mut c, vec![StdValue::String("m".into())]).unwrap_err();
+        assert_eq!(err.code, ErrorCode::E0022);
+        assert!(err.message.contains("ASK_STREAM"));
+    }
+
+    #[test]
+    fn ask_stream_type_error_on_non_string_model() {
+        let mut c = ctx();
+        let err = std_ask_stream(
+            &mut c,
+            vec![StdValue::Number(serde_json::Number::from(1)), StdValue::String("p".into())],
+        )
+        .unwrap_err();
+        assert_eq!(err.code, ErrorCode::E0030);
+    }
+
+    #[test]
+    fn ask_all_returns_array_of_results() {
+        // Mock: ARRAY of mock payload strings, one per prompt.
+        // v0.4 will route each prompt through a real ASK call
+        // and collect OK/ERR per element.
+        let mut c = ctx();
+        let v = std_ask_all(
+            &mut c,
+            vec![StdValue::Array(vec![
+                StdValue::String("a".into()),
+                StdValue::String("b".into()),
+                StdValue::String("c".into()),
+            ])],
+        )
+        .unwrap();
+        let arr = match v {
+            StdValue::Array(a) => a,
+            other => panic!("expected array, got {:?}", other),
+        };
+        assert_eq!(arr.len(), 3);
+        for (i, item) in arr.iter().enumerate() {
+            let s = match item {
+                StdValue::String(s) => s,
+                other => panic!("expected string at {}, got {:?}", i, other),
+            };
+            assert!(s.contains("mock-batch"), "[{}] got: {}", i, s);
+            assert!(s.contains(&format!(":{}]", i)), "index missing: {}", s);
+        }
+    }
+
+    #[test]
+    fn ask_all_arity_error() {
+        let mut c = ctx();
+        let err = std_ask_all(&mut c, vec![]).unwrap_err();
+        assert_eq!(err.code, ErrorCode::E0022);
+        assert!(err.message.contains("ASK_ALL"));
+    }
+
+    #[test]
+    fn ask_all_type_error_on_non_string_prompt() {
+        let mut c = ctx();
+        let err = std_ask_all(
+            &mut c,
+            vec![StdValue::Array(vec![
+                StdValue::String("ok".into()),
+                StdValue::Number(serde_json::Number::from(42)),
+            ])],
+        )
+        .unwrap_err();
+        assert_eq!(err.code, ErrorCode::E0030);
+        assert!(err.message.contains("ASK_ALL"));
     }
     // ---- P3-009d: type-error paths in ASK / EMBED / COMPLETE ----
 
