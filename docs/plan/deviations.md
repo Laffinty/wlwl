@@ -985,3 +985,78 @@ pub static SPEC: ModuleSpec = ModuleSpec {
   - `impl/crates/wlwl-std/src/ai.rs` — 加 std_ask_stream / std_ask_all + 7 tests + SPEC 导出
   - `impl/crates/wlwl-std/src/lib.rs` — 修 arity_error 拼 fn_name + 更新 1 个测试
 - 0 new files (P3-012 是 P3-011 剩余项的最小推进, 没必要单独写 PLAN doc)
+
+
+## P3-013 — A4 W0020 数组/字典混用软警告 (spec §4.5)
+
+P3-011 收尾时把 A4 (W0020 array/dict 混用) 留待后续, 因为"parser 改造 + linter 通道"工作量大. P3-013 在 A4 的范围里挑出能 1 commit 收尾的最小可执行部分: **parser 端 tolerate 混用 + emit W0020, 替代原先的 hard-fail**.
+
+### 1. 之前是什么
+
+`parse_array_or_dict` 走 first entry 决定 array / dict 路径:
+- first entry bare → array path, 后续 entry peek `:` 报 E0010 (期望 `,` 或 `]`)
+- first entry 是 `k:v` → dict path, 后续 entry 期望 `:` (报 E0010)
+- 混用直接报 E0010, 不 emit W0020, 不给 caller 任何 signal (除了 stderr 文本)
+
+### 2. P3-013 改造 (impl/crates/wlwl-parser/src/lib.rs)
+
+- 统一路径: `parse_array_or_dict` 重写, 维护 `is_dict: bool` 状态机
+- 第一个 entry 决定 `is_dict` 初始值 (peek `:`)
+- 后续 entry 形态与 `is_dict` 不一致时:
+  - array 路径看到 `:` → **promote to dict**: 之前 items 转 `(Integer(i), item)` 整数键 entries, 当前 entry 当 key, 继续 dict 模式
+  - dict 路径看到非 `:` → **promote to dict**: 之前 entries 不变, 当前 entry 当 value, synthetic 整数键 `(Integer(entries.len()), e)`
+- 每次 promote emit 一次 `W0020` warning, 通过 `Parser.warnings` 通道收集, 最终从 `parse_with_warnings` 返回
+- promote 是单向 (都收敛到 dict), 因为 dict 是更宽松的容器 (key 可以任意类型), 数组必须同质 (§4.4)
+- 同质 array / dict 不 emit warning (跟之前行为一致)
+
+### 3. 行为变更 (用户可见)
+
+| 输入 | 旧 | 新 |
+|---|---|---|
+| `[1, 2, 3]` | Array { items: [1,2,3] } | 同 (无 W0020) |
+| `["a": 1, "b": 2]` | Dict { entries: [...] } | 同 (无 W0020) |
+| `[1, "a": 2]` | E0010 (期望 `,` 看到 `:`) | Dict { entries: [(0,1), ("a",2)] } + W0020 |
+| `["a": 1, 2]` | E0010 (期望 `:` 看到 `2`) | Dict { entries: [("a",1), (1,2)] } + W0020 |
+| `["a", 1, "b": 2]` | E0010 | Dict { entries: [("a",0), (1,1), ("b",2)] } + W0020 |
+| `[1, "a", "b": 2]` | E0010 | Dict { entries: [(0,1), (1,"a"), ("b",2)] } + W0020 |
+
+合法输入 (homogeneous) 行为完全不变. 504 个非 P3-013 测试全 pass 验证.
+
+### 4. 验证
+
+| 指标 | P3-012 baseline | P3-013 收尾 | Δ |
+|---|---:|---:|---:|
+| `cargo test --workspace` | 518/518 | **522/522** | +4 (W0020 4 个 #[ignore] 打开) |
+| `cargo llvm-cov` 13/13 ≥ 90% line | ✅ | **✅** | 持平 |
+| TOTAL line | 92.77% | 92.94% | +0.17pp |
+| TOTAL region | 92.56% | 92.65% | +0.09pp |
+| TOTAL func | 96.75% | 96.90% | +0.15pp |
+| wlwl-parser line | 90.16% | **90.97%** | +0.81pp (新 promote 路径被 4 个 W0020 测试覆盖) |
+
+### 5. 设计选择 (为什么 promote to dict 而不是 spec 描述的 hard error)
+
+spec v0.3 §4.5 写"不允许数组字面量中混用两种形式 (违反 → W0020)". 但 spec §14.8 又写"语法错误采用单错误终止模式". 这两条在 v0.3 是矛盾的:
+- §4.5 视角: 混用是 warning, 不阻塞
+- §14.8 视角: 任何语法错误都终止
+
+P3-013 选 §4.5 解读 (混用是 warning). 理由:
+1. W 码 (W0020) 本身就是 warning, 跟 §14.6 "warning | 0 (strict 模式下变 1)" 退出码一致
+2. W0020 在 spec §14.5 列出, 不是 E 码, 暗示不参与单错误终止
+3. promote to dict 是 best-effort recovery, 给 caller 一个可用 AST (虽然带 warning), 比 hard-fail 更友好
+4. 跟 P3-011 的 W 通道基础设施 (`parse_with_warnings` / `Warning` struct) 配合: caller 可以选择忽略 warning (默认 `parse()` 丢 warnings) 或收集 (通过 `parse_with_warnings()`)
+
+### 6. 不在本轮范围 (后续可推进)
+
+- **Linter 端独立 walk**: 当前 W0020 是 parser 端 emit. 还可以加 1 个 post-parse walk fn `lint(expr: &Expr) -> Vec<Warning>` 暴露给 callers (e.g. `wlwl check` 子命令), 收集 parser 端 + 跨语句级别的 lint
+- **P3-014**: mkdocs 文档站 (spec / build plan / deviations / history 全部 mkdocs 化)
+- **P3-015**: 跨目录引用 (./ / ../ + 项目根边界, spec §13.5) — 实际 parser 已接受路径, ModuleLoader::load 跨目录实现待补
+- **真实 std.ai HTTP 集成** (P3-016): 替换 mock 为 reqwest
+- **wlwl.toml 完整解析** (P3-017): manifest 已实现, 补 lock 完整生成算法
+- **性能: TCO + hot-inline** (P3-018)
+- **Phase 5 Coq** (P3-019)
+
+### 7. commit summary
+
+- 2 modified files:
+  - `impl/crates/wlwl-parser/src/lib.rs` — `parse_array_or_dict` 重写 + W0020 emit 通道 (新增 ~110 行, 替换 ~60 行)
+  - `impl/crates/wlwl-parser/tests/spec_v3_alignment.rs` — 4 个 W0020 测试 unignore + 1 个断言调整 (从 `Array|Dict` 改为 `Dict`)

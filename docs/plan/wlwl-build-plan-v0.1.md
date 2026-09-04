@@ -119,6 +119,20 @@ elease.yml 异步构建 Linux/macOS/Windows 三平台二进制 + GitHub Release.
 - 不在本轮: 真实 HTTP 流式 / ASK_ALL per-element OK/ERR (v0.4 议程)
 - 详见 `docs/plan/deviations.md` P3-012 段.
 
+### P3-013 — A4 W0020 数组/字典混用软警告 (spec §4.5) — **完成 ✅ 2026-09-04**
+
+**522 / 522 tests pass (+4). 13/13 crates 全部 >= 90% line. TOTAL 92.94% line / 92.65% region / 96.90% func. P3-012 之后对剩余 spec 项的最小可执行推进.**
+
+- `parse_array_or_dict` 重写为统一状态机: 维护 `is_dict` 标志, 后续 entry 形态不一致时 promote to dict
+- 双向 promote 都收敛到 dict (dict 是更宽松的容器, key 任意类型):
+  - array 看到 `:` → 之前 items 转 (Integer(i), item) 整数键, 当前 entry 当 key
+  - dict 看到非 `:` → 当前 entry 当 value, synthetic 整数键 (Integer(entries.len()), e)
+- 每次 promote emit 一次 W0020 warning, 通过 `parse_with_warnings` 暴露
+- 合法输入 ([1,2,3] / ["a":1,"b":2]) 行为不变, 不 emit warning
+- 4 个 W0020 #[ignore] 测试全打开
+- 设计选择: spec §4.5 (warning) 跟 §14.8 (单错误终止) 矛盾, 选 §4.5 解读 (warning 不阻塞, 给 caller best-effort recovery AST)
+- 详见 `docs/plan/deviations.md` P3-013 段.
+
 **附:本计划不替代 v0.3 规范。规范的权威性高于本计划——任何"实施偏离"必须显式记录,不能默默修改规范。**
 - 详见 `docs/plan/p3-011-spec-alignment.md` (PLAN) + `docs/plan/deviations.md` P3-011 段.
 
@@ -334,6 +348,7 @@ elease.yml 异步构建 Linux/macOS/Windows 三平台二进制 + GitHub Release.
 | post-Phase 4 follow-ups (P3-010) | 0 周 (actual) | 19 周 |
 | post-Phase 4 follow-ups (P3-011) | 0 周 (actual) | 19 周 |
 | post-Phase 4 follow-ups (P3-012) | 0 周 (actual) | 19 周 |
+| post-Phase 4 follow-ups (P3-013) | 0 周 (actual) | 19 周 |
 | Phase 5 | 4 周(可选) | 24 周 |
 
 **总计** (original estimate): 20 周 (without Phase 5) / 24 周 (with Phase 5). Actual progress: Phase 1-4 + post-Phase 4 全系列 (P3-008/009/009b/009c/009d/009e) 在 1 个工作日 (2026-09-03) 内集中收尾, 超远估算. The estimate is a discipline reference, not a public commitment.
@@ -571,7 +586,7 @@ impl Evaluator {
 | 错误处理 (wlwl-error)     |  95% | **99.57%** | **99.22%** | **达标 (P3-009d)** |
 | AST (wlwl-ast)            |  n/a | **100.00%** | **100.00%** | **达标 (P3-009c)** |
 | CLI (wlwl-cli)            |  n/a | **95.17%** | **96.72%** | **达标 (P3-009d)** |
-| **TOTAL**                   |  90% | **92.77%** | **92.56%** | **P3-012 完成 2026-09-04 (std.ai §15.11.4, 13/13 crates >= 90%)** |
+| **TOTAL**                   |  90% | **92.94%** | **92.65%** | **P3-013 完成 2026-09-04 (A4 W0020 §4.5 软警告, 13/13 crates >= 90%)** |
 
 Branch coverage 在 Windows MSVC 下不可用 (0/0); 需在 Linux CI runner 跑才能补上。
 原始 lcov 在 `impl/target/llvm-cov.info`, HTML 报告在 `impl/target/llvm-cov-html/` (target/ 在 .gitignore, 不入仓)。

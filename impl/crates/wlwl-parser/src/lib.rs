@@ -1189,6 +1189,31 @@ impl Parser {
         }))
     }
 
+    /// Parse an array or dict literal.
+    ///
+    /// spec v0.3 §4.5 says a literal must not mix bare values and
+    /// `k: v` pairs, and the violation is **W0020** (a warning,
+    /// not an error).  P3-013 makes the parser tolerate the mix
+    /// by promoting to a dict (the more permissive container) and
+    /// emitting W0020 once per mixed literal:
+    ///
+    /// - `[1, 2, 3]`          → Array { items: [...] }, no warning.
+    /// - `["a": 1, "b": 2]`   → Dict  { entries: [...] }, no warning.
+    /// - `[1, "a": 2]`        → promoted to Dict; previous items
+    ///                          become `(0, 1)`, `(1, ...)` integer-
+    ///                          keyed entries; the new entry
+    ///                          becomes `(e, v)`.  W0020 emitted.
+    /// - `["a": 1, 2]`        → promoted to Dict (already in dict
+    ///                          mode); the bare `2` becomes
+    ///                          `(N, 2)` with synthetic integer key
+    ///                          where N is the current entry count.
+    ///                          W0020 emitted.
+    ///
+    /// The promotion is one-way: we always converge to a Dict
+    /// because dicts can hold arbitrary key types whereas Arrays
+    /// must be homogeneous by §4.4.  This is an explicit
+    /// best-effort, not a formal recovery; the warning is the
+    /// signal that the source should be split.
     fn parse_array_or_dict(&mut self, line: u32, col: u32) -> WlwlResult<Expr> {
         if matches!(self.peek(), TokenKind::RBracket) {
             self.advance(); // ']'
@@ -1204,22 +1229,103 @@ impl Parser {
             });
         }
         let first = self.parse_expr()?;
-        if matches!(self.peek(), TokenKind::Colon) {
+        let mut entries: Vec<(Expr, Expr)> = Vec::new();
+        let mut items: Vec<Expr> = Vec::new();
+        let mut is_dict = matches!(self.peek(), TokenKind::Colon);
+
+        if is_dict {
+            self.advance(); // ':'
+            let v = self.parse_expr()?;
+            entries.push((first, v));
+        } else {
+            items.push(first);
+        }
+
+        let mut emitted_w0020 = false;
+
+        while matches!(self.peek(), TokenKind::Comma) {
             self.advance();
-            let first_value = self.parse_expr()?;
-            let mut entries = vec![(first, first_value)];
-            while matches!(self.peek(), TokenKind::Comma) {
-                self.advance();
-                if matches!(self.peek(), TokenKind::RBracket) {
-                    break;
-                }
-                let k = self.parse_expr()?;
-                self.expect_specific(EC::E0010, "':'")?;
-                let v = self.parse_expr()?;
-                entries.push((k, v));
+            if matches!(self.peek(), TokenKind::RBracket) {
+                break;
             }
-            self.expect_specific(EC::E0011, "']'")?;
-            let (_, _, line_end, col_end) = self.span_here();
+            let e = self.parse_expr()?;
+            // The current span after the most-recent parse_expr is
+            // the canonical "where the warning lives" location;
+            // we re-read it on each branch so each branch has it in
+            // scope without having to thread a separate binding
+            // through the whole loop.
+            let (line_e, col_e, _, _) = self.span_here();
+            if is_dict {
+                if matches!(self.peek(), TokenKind::Colon) {
+                    self.advance();
+                    let v = self.parse_expr()?;
+                    entries.push((e, v));
+                } else {
+                    // Bare value inside a dict literal -- promote.
+                    // Synthetic key = current entry count.
+                    let key_span = Span {
+                        file: self.file.clone(),
+                        line_start: line_e,
+                        col_start: col_e,
+                        line_end: line_e,
+                        col_end: col_e,
+                    };
+                    let key = Expr::Literal(
+                        Literal::Integer(entries.len() as i64),
+                        key_span,
+                    );
+                    entries.push((key, e));
+                    self.warnings.push(Warning::new(
+                        EC::W0020,
+                        "dict literal contains a bare value (mixed with kv pairs); promoted to synthetic-key entry",
+                        (line, col, line_e, col_e),
+                    ));
+                    emitted_w0020 = true;
+                }
+            } else {
+                if matches!(self.peek(), TokenKind::Colon) {
+                    // Array promoted to dict: rewrite collected
+                    // items as `(i, item)` integer-keyed entries
+                    // and continue in dict mode.
+                    for (i, item) in items.into_iter().enumerate() {
+                        let key_span = Span {
+                            file: self.file.clone(),
+                            line_start: line_e,
+                            col_start: col_e,
+                            line_end: line_e,
+                            col_end: col_e,
+                        };
+                        let key = Expr::Literal(
+                            Literal::Integer(i as i64),
+                            key_span,
+                        );
+                        entries.push((key, item));
+                    }
+                    items = Vec::with_capacity(0);
+                    is_dict = true;
+                    self.advance(); // ':'
+                    let v = self.parse_expr()?;
+                    entries.push((e, v));
+                    self.warnings.push(Warning::new(
+                        EC::W0020,
+                        "array literal contains a kv pair; promoted all entries to dict with integer keys",
+                        (line, col, line_e, col_e),
+                    ));
+                    emitted_w0020 = true;
+                } else {
+                    items.push(e);
+                }
+            }
+        }
+        self.expect_specific(EC::E0011, "']'")?;
+        let (_, _, line_end, col_end) = self.span_here();
+        // The synthetic key-spans for the promote-from-array
+        // path use the *closing* `]` location as a stand-in. We
+        // emit W0020 above with the literal opening `]` (col)
+        // for the warning span; the result Expr span covers
+        // the whole literal.
+        let _ = emitted_w0020;
+        if is_dict {
             Ok(Expr::Dict {
                 entries,
                 span: Span {
@@ -1231,16 +1337,6 @@ impl Parser {
                 },
             })
         } else {
-            let mut items = vec![first];
-            while matches!(self.peek(), TokenKind::Comma) {
-                self.advance();
-                if matches!(self.peek(), TokenKind::RBracket) {
-                    break;
-                }
-                items.push(self.parse_expr()?);
-            }
-            self.expect_specific(EC::E0011, "']'")?;
-            let (_, _, line_end, col_end) = self.span_here();
             Ok(Expr::Array {
                 items,
                 span: Span {

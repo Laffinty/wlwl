@@ -826,7 +826,6 @@ fn lex_chinese_identifier_in_fun_param() {
 // ───────────────────────── §4.5 W0020 mixed array/dict (A4) ─────────────────────────
 
 #[test]
-#[ignore = "A4: spec §4.5 W0020 — array with dict-style entry"]
 fn w0020_array_with_dict_entry() {
     // [1, "a": 2] — first entry is a bare value, second is a kv pair.
     // Per spec §4.5 the array form is "homogeneous"; mixing is W0020.
@@ -842,7 +841,10 @@ fn w0020_array_with_dict_entry() {
         },
         _ => panic!(),
     };
-    assert!(matches!(value, Expr::Array { .. } | Expr::Dict { .. }));
+    // P3-013: parse_array_or_dict tolerates the mix by promoting
+    // to Dict (the permissive container); the warning is the
+    // signal that the source should be split.
+    assert!(matches!(value, Expr::Dict { .. }));
     assert!(
         warnings.iter().any(|w| w.code == wlwl_error::ErrorCode::W0020),
         "expected W0020 in warnings, got {:?}",
@@ -851,7 +853,6 @@ fn w0020_array_with_dict_entry() {
 }
 
 #[test]
-#[ignore = "A4: spec §4.5 W0020 — dict with bare-value entry"]
 fn w0020_dict_with_bare_value() {
     let src = r#"
     LET(x, ["a": 1, 2]);
@@ -861,7 +862,6 @@ fn w0020_dict_with_bare_value() {
 }
 
 #[test]
-#[ignore = "A4: spec §4.5 no W0020 for homogeneous array"]
 fn no_w0020_homogeneous_array() {
     let (expr, warnings) = wlwl_parser::parse_with_warnings("LET(x, [1, 2, 3]);", "t.wl").unwrap();
     let _ = expr;
@@ -869,7 +869,6 @@ fn no_w0020_homogeneous_array() {
 }
 
 #[test]
-#[ignore = "A4: spec §4.5 no W0020 for homogeneous dict"]
 fn no_w0020_homogeneous_dict() {
     let (expr, warnings) = wlwl_parser::parse_with_warnings(r#"LET(x, ["a": 1, "b": 2]);"#, "t.wl").unwrap();
     let _ = expr;
