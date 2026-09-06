@@ -82,6 +82,29 @@
 
 > **A1d trace 字段 — 部分完成,3/6 测试暂停,需下次会话继续**
 
+### 解决(2026-09-06,commit `e1531fc`)
+
+A1d 暂停后下一次会话接续,3 个 `#[ignore]` 测试全部解锁,workspace 532/532 pass。
+
+**根因**(与 §0.4"初步定位"的三个候选均不同):错误**构造时机**错了,不是借用 / push-pop 顺序 / 旁路问题。
+
+- `diag()` 是 `&self`,构造 `WlwlDiagnostic` 时拿不到 `call_stack`
+- `invoke_closure` 在 Err 分支**先 pop** frame 才 `return Err`
+- 等到错误冒到 `eval()` → `enrich_with_trace` 时,`call_stack` 已空,只能注入 `<toplevel>` 占位
+
+**修法**(最小变更):
+1. `fn diag(&self, ...)` → `fn diag(&mut self, ...)`;在构造 diagnostic 时直接 `d.trace = self.call_stack.iter().rev().cloned().collect()`,得到 `[inner, outer]`(innermost first,Python traceback 风格)
+2. `fn undefined_name(&self, ...)` → `&mut self`(两个调用点 `eval_expr` / `eval_call` 都是 `&mut self`,无 ripple)
+3. `enrich_with_trace` 留作旁路安全网(为 `WlwlDiagnostic::new` 直构造路径兜底),同样反转保持顺序一致
+4. 三个 A1d 测试的 `#[ignore]` 解除
+
+**测试语义校准**:`trace_anonymous_function_uses_angle_brackets` 源码 `LET(f, FUN((x), zzz(x))); f(1);` 期望 `frame == "<anonymous>"`,但与通过的 nested / recursion 测试矛盾(后者用调用点 name)。Parser `parse_primary`(crates/wlwl-parser/src/lib.rs:1040)只接受 `Ident(args)` / `obj.method(args)`,`name` 永远非空,所以 `invoke_closure` 里 `if name.is_empty() { "<anonymous>" }` 是**死代码**。测试改名为 `trace_call_uses_call_site_identifier`,期望 `frame == "f"`。**真**"named FUN → frame 用 FUN 的名字"测试留给 A2 —— 那时 `Value::Closure` 加 `name: Option<String>` 字段后有数据驱动。
+
+**结果**:
+- workspace 529 pass + 3 ignored → **532 pass + 0 ignored**(净 +3)
+- TOTAL line 92.94% → **93.09%**,region 92.65% → **92.80%**;`wlwl-eval` 92.94% → 92.07%(-0.87pp,新 `diag` / `enrich_with_trace` 分支未完全覆盖,仍 ≥ 90%);13/13 crate ≥ 90% line 保持
+- 详细历史:`docs/history/20260906.md`
+
 ### 已完成(A1d)
 
 - `Evaluator.call_stack: Vec<TraceFrame>` 字段 + 初始化
