@@ -105,6 +105,30 @@ A1d 暂停后下一次会话接续,3 个 `#[ignore]` 测试全部解锁,workspac
 - TOTAL line 92.94% → **93.09%**,region 92.65% → **92.80%**;`wlwl-eval` 92.94% → 92.07%(-0.87pp,新 `diag` / `enrich_with_trace` 分支未完全覆盖,仍 ≥ 90%);13/13 crate ≥ 90% line 保持
 - 详细历史:`docs/history/20260906.md`
 
+### 解决(A2,commit `e8b8ac1`,2026-09-07)
+
+A1d 收尾后接 A2(spec §6.4 闭包 cell 语义),Phase A 最高风险项。9 个新测试 + 1 个改写全过,workspace 541/541 pass。
+
+**核心设计**:
+- `Env` 字段类型从 `HashMap<String, Value>` 改为 `HashMap<String, Cell>`,`Cell = Rc<RefCell<Binding>>`,`Binding { value, mutable }`
+- 每次 `LET` 创建一个 IMMUTABLE cell;`Env::clone` 走 `Rc::clone`(O(1) 摊销)→ "闭包捕获 cell 引用" 是 derive 自动得到的
+- `invoke_closure` 在装入 captured_scopes 前跑 E-CloCap 升级:每个 cell 标 `mutable = true`;升级一旦发生永久保留
+- `SET(name, value)` 在 `eval_call` 入口特判,第一参必须 `Expr::Var` 不求值,走 `set_cell_value` 一次性查 cell + 查 mutable + 写值;失败路径分别给 E0022(arity) / E0030(非 Var target) / E0024(IMMUTABLE) / E0020(不存在)
+
+**关键 spec 校准**(3 个初版测试预期写错,跑测试才发现):
+1. `fun_closure_param_scope_fresh_per_call`(原 `fun_closure_independent` 改写):`v` 在 mk 的 param 作用域,**每次 mk 调用是 fresh scope** → inner closure 各捕获各自的 v,`mk(1)+mk(2)` 仍 = 3。Cell sharing 只针对 persistent outer-scope binding,param-scoped 是 spec 明确保留的 fresh-per-call 行为。
+2. `p4_a2_closure_shared_cell`:初版用 `INDEX_GET`,Phase B1 才有,改用 outer-scope 闭包共享 cell 写法。
+3. `p4_a2_let_set_read_roundtrip`:初版在 WHILE 体内 `SET(i, ...)` 其中 `i` 未被任何闭包捕获 → E0024(spec 正确!),改成 `LET(loop, FUN(()))` 把 loop 体包成闭包,`i` 被 loop 捕获 → E-CloCap 升级。
+
+**结果**:
+- workspace 532+0 → **541+0**(净 +9:8 个 A2 新增 + 1 个改写)
+- TOTAL line 93.09% → **92.84%**(-0.25pp,新加 ~230 行 cell / SET 逻辑),region 92.80% → 92.52%,func 96.98% → 96.62%
+- `wlwl-eval` 92.07% → **91.46%**(-0.61pp,新 `set_cell_value` Err 分支 / `eval_set` 非 Var target 路径未覆盖)
+- 13/13 crate ≥ 90% line 保持
+- 详细历史:`docs/history/20260907.md`
+
+
+
 ### 已完成(A1d)
 
 - `Evaluator.call_stack: Vec<TraceFrame>` 字段 + 初始化
