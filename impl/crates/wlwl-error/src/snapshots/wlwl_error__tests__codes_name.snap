@@ -1,6 +1,7 @@
 ---
 source: crates/wlwl-error/src/lib.rs
-expression: "serde_json::json!({\n    \"E0020\": code_snap(ErrorCode::E0020, \"undefined\"), \"E0021\":\n    code_snap(ErrorCode::E0021, \"duplicate\"), \"E0022\":\n    code_snap(ErrorCode::E0022, \"arity_mismatch\"), \"E0023\":\n    code_snap(ErrorCode::E0023, \"not_exported\"),\n})"
+assertion_line: 840
+expression: "serde_json::json!({\n    \"E0020\": code_snap(ErrorCode::E0020, \"undefined\"), \"E0021\":\n    code_snap(ErrorCode::E0021, \"duplicate\"), \"E0022\":\n    code_snap(ErrorCode::E0022, \"arity_mismatch\"), \"E0023\":\n    code_snap(ErrorCode::E0023, \"not_exported\"), \"E0024\":\n    code_snap(ErrorCode::E0024, \"set_non_captured\"),\n})"
 ---
 {
   "E0020": {
@@ -80,6 +81,27 @@ expression: "serde_json::json!({\n    \"E0020\": code_snap(ErrorCode::E0020, \"u
       "line_end": 1
     },
     "message": "snapshot for not_exported",
+    "related": [],
+    "retry_after": null,
+    "retryable": false,
+    "severity": "error",
+    "source_line": null,
+    "suggestion_code": []
+  },
+  "E0024": {
+    "code": "E0024",
+    "error_category": "name",
+    "error_schema_version": "1.1.0",
+    "hint": null,
+    "idempotent": false,
+    "location": {
+      "col_end": 1,
+      "col_start": 1,
+      "file": "snap.wl",
+      "line": 1,
+      "line_end": 1
+    },
+    "message": "snapshot for set_non_captured",
     "related": [],
     "retry_after": null,
     "retryable": false,

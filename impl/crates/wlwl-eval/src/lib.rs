@@ -18,7 +18,7 @@
 
 #![allow(unpredictable_function_pointer_comparisons)]
 
-use std::cell::RefCell;
+use std::cell::{Ref, RefCell};
 use std::collections::{HashMap, HashSet};
 use std::path::PathBuf;
 use std::rc::Rc;
@@ -134,12 +134,75 @@ impl From<Literal> for Value {
 // Lexical environment (chain of scopes; v0.3 §6.3)
 // ──────────────────────────────────────────────────────────────────────
 
-/// Lexical environment. Phase 2 uses a simple `Vec<HashMap>` chain where
-/// index 0 is the innermost scope. Lookups walk from inside out. New
-/// scopes are pushed/popped around blocks and function bodies.
-#[derive(Debug, Clone, Default, PartialEq)]
+/// Cell payload: a single binding's value plus its mutability flag.
+///
+/// `mutable` is `false` (IMMUTABLE) when the cell is first created by a
+/// `LET` (v0.4 spec 搂6.4 cell model). It is upgraded to `true` when
+/// the binding is captured by a closure, per the formal rule
+/// `E-CloCap` in 附录 E.4.6:
+///
+///   "闭包捕获的 cell 全部升级为 MUTABLE"
+///
+/// `SET` checks the flag and raises E0024 if the cell is still
+/// IMMUTABLE.
+#[derive(Debug, Clone)]
+pub struct Binding {
+    pub value: Value,
+    pub mutable: bool,
+}
+
+/// A heap-allocated cell. Cloning the `Rc` is cheap and is what
+/// `Env::clone` does when capturing into a closure's environment --
+/// this is exactly the spec's "闭包捕获 cell 引用" rule (single layer,
+/// no chain; multiple closures sharing the same lexical `LET` see the
+/// same cell).
+pub type Cell = Rc<RefCell<Binding>>;
+
+/// Make a new immutable cell wrapping `value`.
+pub fn new_cell(value: Value) -> Cell {
+    Rc::new(RefCell::new(Binding { value, mutable: false }))
+}
+
+/// Lexical environment. v0.4 搂6.4: stores `HashMap<String, Cell>` so
+/// that closures can share the same cell with the lexical scope that
+/// defined the binding. Scope chain layout is unchanged from v0.3:
+/// index 0 is the innermost scope; lookups walk from inside out.
+#[derive(Debug, Clone, Default)]
 pub struct Env {
-    scopes: Vec<HashMap<String, Value>>,
+    scopes: Vec<HashMap<String, Cell>>,
+}
+
+// Manual `PartialEq` because `Rc<RefCell<_>>` doesn't derive it well;
+// we compare the *value* snapshot for tests that need it.
+impl PartialEq for Env {
+    fn eq(&self, other: &Self) -> bool {
+        if self.scopes.len() != other.scopes.len() {
+            return false;
+        }
+        for (a, b) in self.scopes.iter().zip(other.scopes.iter()) {
+            if a.len() != b.len() {
+                return false;
+            }
+            for (k, va) in a {
+                match b.get(k) {
+                    Some(vb) => {
+                        // Compare Rc pointer + value snapshot. We borrow
+                        // immutably and compare the inner `Binding` via
+                        // `borrow()` snapshots. If either is borrowed
+                        // mutably elsewhere this would panic; tests
+                        // only call this on quiescent envs.
+                        let ba = va.borrow();
+                        let bb = vb.borrow();
+                        if ba.value != bb.value || ba.mutable != bb.mutable {
+                            return false;
+                        }
+                    }
+                    None => return false,
+                }
+            }
+        }
+        true
+    }
 }
 
 impl Env {
@@ -158,38 +221,87 @@ impl Env {
         }
     }
 
-    /// Walk the scope chain from innermost to outermost; return the first
-    /// match. Used for variable reads.
-    pub fn get(&self, name: &str) -> Option<&Value> {
+    /// Walk the scope chain from innermost to outermost; return the
+    /// first match as a borrow guard on the inner value. Used for
+    /// variable reads. The returned `Ref` is tied to `&self`'s
+    /// lifetime; callers typically `.clone()` the inner value or use
+    /// the ref briefly within a single expression.
+    ///
+    /// v0.4 (搂6.4 cell model): the value lives behind an
+    /// `Rc<RefCell<Binding>>`; we use `Ref::map` to project a
+    /// `Ref<Value>` out of the cell borrow.
+    pub fn get(&self, name: &str) -> Option<Ref<'_, Value>> {
         for scope in self.scopes.iter().rev() {
-            if let Some(v) = scope.get(name) {
-                return Some(v);
+            if let Some(cell) = scope.get(name) {
+                return Some(Ref::map(cell.borrow(), |b| &b.value));
             }
         }
         None
     }
 
-    /// Bind in the current (innermost) scope. If `name` already exists in
-    /// this scope, this is a re-binding in the same scope. The semantic
-    /// rule for cross-scope re-binding is reserved for Phase 3.
+    /// Look up the cell (not just the value) for `name`. Used by `SET`
+    /// to mutate the cell in place, and by the cell-upgrade path.
+    pub fn get_cell(&self, name: &str) -> Option<Cell> {
+        for scope in self.scopes.iter().rev() {
+            if let Some(cell) = scope.get(name) {
+                return Some(cell.clone());
+            }
+        }
+        None
+    }
+
+    /// Bind in the current (innermost) scope. The value is wrapped in a
+    /// fresh IMMUTABLE cell (per v0.4 搂6.4 / E.4.6: cells start
+    /// IMMUTABLE and are upgraded only when captured by a closure).
     pub fn set_local(&mut self, name: impl Into<String>, value: Value) {
         if let Some(scope) = self.scopes.last_mut() {
-            scope.insert(name.into(), value);
+            scope.insert(name.into(), new_cell(value));
         }
     }
 
-    /// Walk to the first scope that already has `name` and overwrite it.
-    /// Used for SET (Phase 3+). In Phase 2 we don't have SET, so this is
-    /// unused.
-    #[allow(dead_code)]
+    /// Walk to the first scope that already has `name` and overwrite
+    /// the cell's value. Used for `LET` re-binding in an enclosing
+    /// scope (e.g. inside a loop body). For `SET` semantics use
+    /// `set_cell` instead -- `set_existing` does not check the
+    /// mutability flag and is reserved for the `LET` re-binding path.
     pub fn set_existing(&mut self, name: &str, value: Value) -> bool {
         for scope in self.scopes.iter_mut().rev() {
-            if scope.contains_key(name) {
-                scope.insert(name.to_string(), value);
+            if let Some(cell) = scope.get_mut(name) {
+                cell.borrow_mut().value = value;
                 return true;
             }
         }
         false
+    }
+
+    /// Set the cell value if the cell is `mutable` (per spec 搂6.4
+    /// mutability rule). Returns:
+    ///   * `Ok(true)`  -- cell found and updated
+    ///   * `Ok(false)` -- cell found but IMMUTABLE (caller raises E0024)
+    ///   * `Err(())`   -- cell not found at all (caller raises E0020)
+    pub fn set_cell_value(&self, name: &str, value: Value) -> Result<bool, ()> {
+        for scope in self.scopes.iter().rev() {
+            if let Some(cell) = scope.get(name) {
+                let mut b = cell.borrow_mut();
+                if !b.mutable {
+                    return Ok(false);
+                }
+                b.value = value;
+                return Ok(true);
+            }
+        }
+        Err(())
+    }
+
+    /// Upgrade every cell in every scope to `mutable = true`. Called
+    /// once per closure invocation (E-CloCap) on the captured scopes
+    /// only -- the caller's scopes are not touched.
+    pub fn upgrade_all_to_mutable(&self) {
+        for scope in &self.scopes {
+            for cell in scope.values() {
+                cell.borrow_mut().mutable = true;
+            }
+        }
     }
 
     /// Snapshot all currently-bound names (for module exports).
@@ -1335,9 +1447,16 @@ impl Evaluator {
     fn eval_expr(&mut self, expr: &Expr) -> WlwlResult<Outcome> {
         match expr {
             Expr::Literal(lit, _) => Ok(Outcome::normal(Value::from(lit.clone()))),
-            Expr::Var(name, span) => match self.env.get(name) {
-                Some(v) => Ok(Outcome::normal(v.clone())),
-                None => Err(self.undefined_name(name, span)),
+            Expr::Var(name, span) => {
+                // Extract the value out of the cell-borrow before the
+                // match, so the Ref is dropped before we may need
+                // &mut self in the undefined-name branch. (*v).clone()
+                // copies the inner Value; the Ref itself is then unused.
+                let v = self.env.get(name).map(|v| (*v).clone());
+                match v {
+                    Some(v) => Ok(Outcome::normal(v)),
+                    None => Err(self.undefined_name(name, span)),
+                }
             },
             Expr::Call { name, args, span } => self.eval_call(name, args, span),
             Expr::Let { name, value, .. } => {
@@ -1658,11 +1777,20 @@ impl Evaluator {
     // ── Calls (the heart of §12.6 ERR transparent propagation) ─────
 
     fn eval_call(&mut self, name: &str, args: &[Expr], span: &Span) -> WlwlResult<Outcome> {
+        // [v0.4 spec Sec. 6.4] Fast path for the macro function `SET`:
+        // `SET(target, value)` is parsed as `Call { name: "SET", args:
+        // [Var(target), value] }`. We intercept before the normal
+        // dispatch so the target is *not* evaluated as an expression
+        // (it must be a bare name); the value side is evaluated
+        // inside `eval_set`.
+        if name == "SET" {
+            return self.eval_set(args, span);
+        }
         // Look up the callee (user function takes priority over built-in
         // with the same name; in Phase 2 we keep them in disjoint
         // namespaces by convention — there is no name conflict in the
         // std yet).
-        let user_fn = self.env.get(name).cloned();
+        let user_fn = self.env.get(name).map(|v| v.clone());
         let whitelisted = is_err_consumer(name);
 
         // Evaluate arguments left-to-right. §12.6 short-circuit: if
@@ -1725,6 +1853,62 @@ impl Evaluator {
         Err(self.undefined_name(name, span))
     }
 
+    // [v0.4 spec Sec. 6.4] `SET(target, value)` -- a re-binding macro.
+    //
+    // `target` must be a bare name (Expr::Var), not an arbitrary
+    // expression. `value` is evaluated like any other argument.
+    //
+    // Cell lookup (current env chain, innermost first):
+    //   * cell found, mutable   -> update the cell value
+    //   * cell found, IMMUTABLE -> E0024 (cannot SET non-captured
+    //     binding from child scope)
+    //   * cell not found        -> E0020 (undefined name; reuses the
+    //     "did you mean?" suggestion in `undefined_name`)
+    //
+    // This implements the spec rule "未被子作用域捕获的 cell,子作用域
+    // SET -> E0024": cells are created IMMUTABLE by `LET` and only
+    // upgraded to MUTABLE by E-CloCap when a closure captures them
+    // (see `invoke_closure`).
+    fn eval_set(&mut self, args: &[Expr], span: &Span) -> WlwlResult<Outcome> {
+        if args.len() != 2 {
+            return Err(self.diag(
+                ErrorCode::E0022,
+                format!("SET expects 2 arguments, got {}", args.len()),
+                span.clone(),
+            ));
+        }
+        // The target is a name, not an expression.
+        let target = match &args[0] {
+            Expr::Var(n, _) => n.clone(),
+            _ => {
+                return Err(self.diag(
+                    ErrorCode::E0030,
+                    "SET target must be a variable name (not an expression)".to_string(),
+                    span.clone(),
+                ));
+            }
+        };
+        // Evaluate the value side like any other call argument.
+        let v = self.eval_expr(&args[1])?;
+        if v.signal != Signal::None {
+            return Ok(v);
+        }
+        // Look up the cell. Use `set_cell_value` to do the
+        // mutability check in one shot.
+        match self.env.set_cell_value(&target, v.value) {
+            Ok(true) => Ok(Outcome::normal(Value::Null)),
+            Ok(false) => Err(self.diag(
+                ErrorCode::E0024,
+                format!(
+                    "cannot SET non-captured binding `{}` from child scope (v0.4 Sec. 6.4: cells are IMMUTABLE until captured by a closure)",
+                    target
+                ),
+                span.clone(),
+            )),
+            Err(()) => Err(self.undefined_name(&target, span)),
+        }
+    }
+
     fn invoke_closure(
         &mut self,
         name: &str,
@@ -1755,6 +1939,19 @@ impl Evaluator {
         // eventually bound) is reachable through the caller.
         let caller_scopes = std::mem::take(&mut self.env.scopes);
         let captured_scopes = captured_env.scopes;
+        // [v0.4 spec Sec. 6.4 / 附录 E.4.6 E-CloCap] Upgrade every cell
+        // in the captured environment to MUTABLE. After this point,
+        // any `SET` against these cells from inside the closure body
+        // (or from any sibling that shares the same lexical `LET`)
+        // succeeds; any `SET` against an un-captured binding raises
+        // E0024. We do this BEFORE installing the scopes so a `SET`
+        // in the body -- including in the param-binding loop -- sees
+        // the upgraded cells.
+        for scope in &captured_scopes {
+            for cell in scope.values() {
+                cell.borrow_mut().mutable = true;
+            }
+        }
         // New scope stack: [captured lexical scopes, caller scopes, fresh param scope]
         let mut new_scopes = captured_scopes;
         new_scopes.extend(caller_scopes.iter().cloned());
@@ -1847,7 +2044,7 @@ impl Evaluator {
                     imp.span.clone(),
                 ));
             }
-            let v = module.env.get(&imp.name).cloned().ok_or_else(|| {
+            let v = module.env.get(&imp.name).map(|v| v.clone()).ok_or_else(|| {
                 self.diag(
                     ErrorCode::E0023,
                     format!(
@@ -2343,8 +2540,16 @@ mod tests {
     }
 
     #[test]
-    fn fun_closure_independent() {
-        // Two closures capture their own env at definition time.
+    fn fun_closure_param_scope_fresh_per_call() {
+        // [v0.4 spec Sec. 6.4] Cell-sharing applies to bindings in a
+        // PERSISTENT outer scope that multiple closures capture. A
+        // parameter binding (`v` in mk's params) lives in a FRESH
+        // scope per call, so two closures created in different
+        // invocations of mk do NOT share v -- each captures the cell
+        // of its own invocation. This preserves v0.3 deep-clone
+        // behavior for parameter-scoped bindings, and is the
+        // *correct* spec semantics: the cell for `v` is "lexically
+        // inside mk", and mk's body is re-executed per call.
         let src = r#"
             LET(mk, FUN((v), FUN((), v)));
             LET(a, mk(1));
@@ -2354,6 +2559,167 @@ mod tests {
         assert_eq!(run(src).unwrap(), Value::Integer(3));
     }
 
+
+
+    // ---- P4-A2: closure cell semantics + SET ----
+    //
+    // spec v0.4 搂6.4 / 附录 E.4.6:
+    //   * `LET` creates an IMMUTABLE cell in the current scope.
+    //   * When a closure captures the cell (E-CloCap, fired at
+    //     closure call time), the cell is upgraded to MUTABLE.
+    //   * `SET(target, value)` looks up the cell: mutable -> write;
+    //     IMMUTABLE -> E0024; not found -> E0020.
+
+    /// Classic counter pattern: closure mutates a captured variable
+    /// and the mutation is visible to subsequent calls and to other
+    /// closures that share the same cell.
+    #[test]
+    fn p4_a2_closure_counter() {
+        let src = r#"
+            LET(make_counter, FUN((),
+                LET(count, 0);
+                FUN((),
+                    SET(count, +(count, 1));
+                    count
+                )
+            ));
+            LET(c, make_counter());
+            +(c(), +(c(), c()));
+        "#;
+        // 1 + (1 + 1) = 3 (c, c, c -> 1, 2, 3)
+        assert_eq!(run(src).unwrap(), Value::Integer(6));
+    }
+
+    /// Two closures built in the same outer scope share the same
+    /// captured cell: mutating through one is visible through the
+    /// other (basic cell-sharing, no INDEX_GET needed).
+    #[test]
+    fn p4_a2_closure_shared_cell() {
+        let src = r#"
+            LET(s, "init");
+            LET(get, FUN((), s));
+            LET(set, FUN((x), SET(s, x)));
+            set("updated");
+            get();
+        "#;
+        // After set("updated"), the cell behind s is "updated";
+        // get() reads "updated" because both closures share the
+        // same outer-scope cell (E-CloCap upgraded it to MUTABLE
+        // when either closure was called).
+        assert_eq!(
+            run(src).unwrap(),
+            Value::String("updated".into())
+        );
+    }
+
+    /// The "two closures, two mutating operations" pattern: a
+    /// stepper and a finaliser both share the same accumulator
+    /// cell, no INDEX_GET needed.
+    #[test]
+    fn p4_a2_closure_shared_cell_increment() {
+        let src = r#"
+            LET(s, 0);
+            LET(add, FUN((x), SET(s, +(s, x))));
+            add(10);
+            add(32);
+            s
+        "#;
+        // 0 + 10 + 32 = 42
+        assert_eq!(run(src).unwrap(), Value::Integer(42));
+    }
+
+    /// `SET` on a binding in the same scope (not captured) raises
+    /// E0024 per spec 搂6.4: cells are IMMUTABLE until captured.
+    #[test]
+    fn p4_a2_set_non_captured_is_e0024() {
+        let src = r#"
+            LET(x, 1);
+            IF(==(1, 1),
+                SET(x, 2)
+            );
+            x
+        "#;
+        // x is bound in the outer scope and not captured by any
+        // closure -- the IF's body is a child scope, not a closure.
+        // SET from a child scope against a non-captured binding is
+        // E0024.
+        let err = run(src).unwrap_err();
+        assert_eq!(err.diagnostic().code, ErrorCode::E0024);
+    }
+
+    /// `SET` on an undefined name raises E0020 (and reuses the
+    /// "did you mean?" suggestion machinery).
+    #[test]
+    fn p4_a2_set_undefined_name_is_e0020() {
+        let src = "SET(nonexistent, 1);";
+        let err = run(src).unwrap_err();
+        assert_eq!(err.diagnostic().code, ErrorCode::E0020);
+    }
+
+    /// `SET` with arity != 2 raises E0022.
+    #[test]
+    fn p4_a2_set_wrong_arity_is_e0022() {
+        let err = run("LET(x, 0); SET(x);").unwrap_err();
+        assert_eq!(err.diagnostic().code, ErrorCode::E0022);
+        let err = run("LET(x, 0); SET(x, 1, 2);").unwrap_err();
+        assert_eq!(err.diagnostic().code, ErrorCode::E0022);
+    }
+
+    /// `SET` with a non-Var target (an expression) raises E0030.
+    #[test]
+    fn p4_a2_set_non_var_target_is_e0030() {
+        let err = run("LET(x, 0); SET(+(1, 2), 0);").unwrap_err();
+        assert_eq!(err.diagnostic().code, ErrorCode::E0030);
+    }
+
+    /// `LET` + `SET` + read round-trip: verify the cell machinery
+    /// works for the "closure that accumulates via SET" pattern.
+    /// Note: SET on `i` from a WHILE body where `i` is not captured
+    /// is E0024 per spec 搂6.4; here we wrap the loop in a closure
+    /// `loop` that captures `i` so E-CloCap upgrades the cell.
+    #[test]
+    fn p4_a2_let_set_read_roundtrip() {
+        let src = r#"
+            LET(accum, FUN((n),
+                LET(s, 0);
+                LET(step, FUN((x), SET(s, +(s, x))));
+                LET(i, 1);
+                LET(loop, FUN((),
+                    IF(<=(i, n),
+                        step(i);
+                        SET(i, +(i, 1));
+                        loop()
+                    )
+                ));
+                loop();
+                s
+            ));
+            accum(10)
+        "#;
+        // 1+2+...+10 = 55
+        assert_eq!(run(src).unwrap(), Value::Integer(55));
+    }
+
+    /// The mutability upgrade is *not* reverted when the closure
+    /// returns: once captured, the cell stays MUTABLE for the rest
+    /// of the program (per E-CloCap -- "captured cells stay MUTABLE").
+    #[test]
+    fn p4_a2_mutable_upgrade_persists_after_closure_returns() {
+        // `s` is captured by the inner closure. After `inner` returns,
+        // `s` is still MUTABLE in the outer scope, so SET works
+        // directly from the outer scope.
+        let src = r#"
+            LET(outer, FUN((),
+                LET(s, 0);
+                LET(inner, FUN((), SET(s, 100)));
+                inner();
+                SET(s, 200);
+                s
+            ));
+            outer()
+        "#;
+        assert_eq!(run(src).unwrap(), Value::Integer(200));
+    }
     #[test]
     fn fun_return_void() {
         // RETURN() with no value → returns NULL from the function.

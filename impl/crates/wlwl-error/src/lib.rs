@@ -35,6 +35,7 @@ pub enum ErrorCode {
     E0021, // duplicate definition / duplicate IMPORT
     E0022, // function arity mismatch
     E0023, // name not exported by module
+    E0024, // cannot SET non-captured binding (v0.4 §6.4 closure cell)
     E0030, // type error
     E0031, // subscript/key type error
     E0032, // property/method not found
@@ -84,6 +85,7 @@ impl ErrorCode {
             ErrorCode::E0021 => "E0021",
             ErrorCode::E0022 => "E0022",
             ErrorCode::E0023 => "E0023",
+            ErrorCode::E0024 => "E0024",
             ErrorCode::E0030 => "E0030",
             ErrorCode::E0031 => "E0031",
             ErrorCode::E0032 => "E0032",
@@ -147,7 +149,8 @@ impl ErrorCode {
             ErrorCode::E0020
             | ErrorCode::E0021
             | ErrorCode::E0022
-            | ErrorCode::E0023 => ErrorCategory::Name,
+            | ErrorCode::E0023
+            | ErrorCode::E0024 => ErrorCategory::Name,
             ErrorCode::E0030 | ErrorCode::E0031 | ErrorCode::E0032 => ErrorCategory::Type,
             ErrorCode::E0040
             | ErrorCode::E0041
@@ -839,6 +842,7 @@ mod tests {
             "E0021": code_snap(ErrorCode::E0021, "duplicate"),
             "E0022": code_snap(ErrorCode::E0022, "arity_mismatch"),
             "E0023": code_snap(ErrorCode::E0023, "not_exported"),
+            "E0024": code_snap(ErrorCode::E0024, "set_non_captured"),
         }));
     }
 
@@ -909,7 +913,7 @@ mod tests {
 
     // -- Phase 3: AI contract: 33 codes total ----------------------
     #[test]
-    fn all_35_codes_registered() {
+    fn all_36_codes_registered() {
         // Sanity: ensure we have exactly 35 codes wired through the schema.
         // If anyone adds a new ErrorCode variant without updating the
         // snapshot, this count will shift and break the contract.
@@ -918,6 +922,7 @@ mod tests {
             ErrorCode::E0010, ErrorCode::E0011, ErrorCode::E0012,
             ErrorCode::E0013, ErrorCode::E0014,
             ErrorCode::E0020, ErrorCode::E0021, ErrorCode::E0022, ErrorCode::E0023,
+            ErrorCode::E0024,
             ErrorCode::E0030, ErrorCode::E0031, ErrorCode::E0032,
             ErrorCode::E0040, ErrorCode::E0041, ErrorCode::E0042, ErrorCode::E0043,
             ErrorCode::E0050, ErrorCode::E0051,
@@ -927,7 +932,7 @@ mod tests {
             ErrorCode::E0099,
             ErrorCode::E0100, ErrorCode::E0101, ErrorCode::E0102,
         ];
-        assert_eq!(codes.len(), 35);
+        assert_eq!(codes.len(), 36);
         // Each code has a stable string form.
         for c in &codes {
             assert!(c.as_str().starts_with('E'));
