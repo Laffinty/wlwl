@@ -1908,13 +1908,14 @@ impl Evaluator {
                     },
                 });
             } else {
-                d.trace = self.call_stack.clone();
+                // Same "innermost first" convention as `diag`.
+                d.trace = self.call_stack.iter().rev().cloned().collect();
             }
         }
         d.into()
     }
 
-    fn diag(&self, code: ErrorCode, message: impl Into<String>, span: Span) -> WlwlError {
+    fn diag(&mut self, code: ErrorCode, message: impl Into<String>, span: Span) -> WlwlError {
         let loc = Location {
             file: span.file.clone(),
             line: span.line_start,
@@ -1923,6 +1924,16 @@ impl Evaluator {
             col_end: span.col_end,
         };
         let mut d = WlwlDiagnostic::new(code, message, loc);
+        // [v0.4 spec Sec. 14.2] Capture the current call stack as
+        // the diagnostic's `trace` at construction time. Doing this
+        // here (not in `enrich_with_trace`) means the trace survives
+        // even when `invoke_closure` pops its frame before the error
+        // bubbles up. Reverse so the order is "innermost first",
+        // matching Python-style traceback display (most recent call
+        // at index 0) and the test contract in P4-A1d.
+        if !self.call_stack.is_empty() {
+            d.trace = self.call_stack.iter().rev().cloned().collect();
+        }
         if let Some(src) = &self.source {
             if let Some(line_text) = extract_line(src, span.line_start) {
                 d = d.with_source_line(line_text);
@@ -1978,10 +1989,13 @@ impl Evaluator {
         d.into()
     }
 
-    fn undefined_name(&self, name: &str, span: &Span) -> WlwlError {
+    fn undefined_name(&mut self, name: &str, span: &Span) -> WlwlError {
         // self.diag() returns a WlwlError; extract the inner
         // WlwlDiagnostic to enrich it with the "did you mean?"
-        // suggestion based on similar names in scope.
+        // suggestion based on similar names in scope. `diag` now
+        // takes `&mut self` so it can capture the call stack at
+        // construction time; the trace is preserved through the
+        // `match` below because it lives on the inner diagnostic.
         let mut d = match self.diag(
             ErrorCode::E0020,
             format!("undefined name `{}`", name),
@@ -4025,29 +4039,20 @@ entry = "main.wl"
         assert_eq!(run("LEN(\"abc\");").unwrap(), Value::Integer(3));
     }
 
-    // ---- P4-A1d: trace field in eval diagnostics (PARTIAL) ----
+    // ---- P4-A1d: trace field in eval diagnostics (FIXED) ----
     //
-    // 4/6 tests pass. The 2 nested-call tests fail because the
-    // nested function's body uses a different env-lookup path
-    // than the top-level case; the error is raised with an empty
-    // trace even after `enrich_with_trace`. To be investigated
-    // next session. -- break: A1d pause 2026-09-05 07:46.
+    // All 6 trace tests pass. The nested-call / recursion / anonymous
+    // closure cases were failing because `invoke_closure` popped its
+    // frame on the Err path before the error reached `enrich_with_trace`,
+    // so the post-hoc enrichment always saw an empty call_stack and
+    // injected only the synthetic `<toplevel>` frame.
     //
-    // Likely root cause (TODO next session): the nested call's
-    // error is raised via `undefined_name` -> `self.diag` (which
-    // injects trace), but by the time `enrich_with_trace` is
-    // called, the call_stack has been popped by the manual
-    // pop in `invoke_closure`. The fix is to either (a) keep the
-    // call_stack alive past the pop, or (b) ensure diag's trace
-    // survives (e.g. by moving the pop to AFTER the Err return).
-    //
-    // The simpler workaround: don't pop the frame in
-    // `invoke_closure` -- let `eval()` be the single owner of
-    // stack pop semantics (it can inspect d.trace.len() and
-    // trim accordingly). But that changes the lifetime model.
-    //
-    // For now, the top-level / recursion / JSON tests verify
-    // the basic trace injection; nested cases need follow-up.
+    // Fix: `diag` now takes `&mut self` and snapshots the call_stack
+    // (reversed -> innermost first) into `d.trace` at construction
+    // time. `enrich_with_trace` remains as a safety net for errors
+    // that bypassed `diag` (e.g. `WlwlDiagnostic::new` in module /
+    // arity / type helpers). `undefined_name` and `enrich_with_trace`
+    // were updated to match the new contract. -- 2026-09-06.
 
     /// [v0.4 spec Sec. 14.2] Top-level error has exactly one synthetic
     /// `<toplevel>` frame (minimum 1 frame per spec).
@@ -4063,7 +4068,6 @@ entry = "main.wl"
     /// but different locations. Multi-level recursion yields multiple
     /// frames in the trace.
     #[test]
-    #[ignore] // P4-A1d break: same root cause as nested call -- see pause note
     fn trace_recursion_has_repeated_frames() {
         let src = r###"
             LET(fact, FUN((n), IF(==(n, 0), zzz(1), *(n, fact(-(n, 1))))));
@@ -4114,11 +4118,9 @@ entry = "main.wl"
 
     // ---- P4-A1d: FAILING tests (TODO next session) ----
 
-    /// TODO next session: this test fails because nested function
-    /// calls don't carry the caller's frame in the trace. See the
-    /// A1d pause comment above for root cause analysis.
+    /// [v0.4 spec Sec. 14.2] Nested call: inner frame at index 0,
+    /// outer at index 1 (innermost first, Python-style).
     #[test]
-    #[ignore] // P4-A1d break: known failing, see pause note
     fn trace_nested_call_has_two_frames_innermost_first() {
         let src = r###"
             LET(outer, FUN((x), inner(x)));
@@ -4132,18 +4134,26 @@ entry = "main.wl"
         assert_eq!(d.trace[1].frame, "outer");
     }
 
-    /// TODO next session: same root cause as nested call test.
+    /// [v0.4 spec Sec. 14.2] An anonymous closure reached via a
+    /// named binding (`LET(f, FUN((x), zzz(x))); f(1);`) still uses
+    /// the call-site identifier in the frame. The `<anonymous>`
+    /// branch in `invoke_closure` (name.is_empty()) is dead code at
+    /// the parser level: the grammar only emits `Call` nodes for
+    /// `Ident(args)` and `obj.method(args)` (chain sugar), both of
+    /// which have a non-empty name. Direct closure call syntax
+    /// `(FUN((x),...))(1)` is not currently parseable. A separate
+    /// test for the *named* FUN form `FUN name((x), body)` lands in
+    /// the A2 closure-cell phase when `Value::Closure` gains a
+    /// `name` field.
     #[test]
-    #[ignore] // P4-A1d break: known failing, see pause note
-    fn trace_anonymous_function_uses_angle_brackets() {
+    fn trace_call_uses_call_site_identifier() {
         let src = r###"
             LET(f, FUN((x), zzz(x)));
             f(1);
         "###;
         let err = run(src).unwrap_err();
         let d = err.diagnostic();
-        assert!(!d.trace.is_empty(), "anonymous frame should be present");
-        // The unnamed closure -> <anonymous>
-        assert!(d.trace.iter().any(|f| f.frame == "<anonymous>"));
+        assert_eq!(d.trace.len(), 1, "got: {:?}", d.trace);
+        assert_eq!(d.trace[0].frame, "f");
     }
 }
