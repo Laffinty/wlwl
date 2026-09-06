@@ -98,7 +98,7 @@ A1d 暂停后下一次会话接续,3 个 `#[ignore]` 测试全部解锁,workspac
 3. `enrich_with_trace` 留作旁路安全网(为 `WlwlDiagnostic::new` 直构造路径兜底),同样反转保持顺序一致
 4. 三个 A1d 测试的 `#[ignore]` 解除
 
-**测试语义校准**:`trace_anonymous_function_uses_angle_brackets` 源码 `LET(f, FUN((x), zzz(x))); f(1);` 期望 `frame == "<anonymous>"`,但与通过的 nested / recursion 测试矛盾(后者用调用点 name)。Parser `parse_primary`(crates/wlwl-parser/src/lib.rs:1040)只接受 `Ident(args)` / `obj.method(args)`,`name` 永远非空,所以 `invoke_closure` 里 `if name.is_empty() { "<anonymous>" }` 是**死代码**。测试改名为 `trace_call_uses_call_site_identifier`,期望 `frame == "f"`。**真**"named FUN → frame 用 FUN 的名字"测试留给 A2 —— 那时 `Value::Closure` 加 `name: Option<String>` 字段后有数据驱动。
+**测试语义校准**:`trace_anonymous_function_uses_angle_brackets` 源码 `LET(f, FUN((x), zzz(x))); f(1);` 期望 `frame == "<anonymous>"`,但与通过的 nested / recursion 测试矛盾(后者用调用点 name)。Parser `parse_primary`(crates/wlwl-parser/src/lib.rs:1040)只接受 `Ident(args)` / `obj.method(args)`,`name` 永远非空,所以 `invoke_closure` 里 `if name.is_empty() { "<anonymous>" }` 是**死代码**。测试改名为 `trace_call_uses_call_site_identifier`,期望 `frame == "f"`。**真**"named FUN → frame 用 FUN 名字"测试未在 A2 交付(未做 `Value::Closure::name` 字段)——A2 保留了调用点 name 约定,parser 只接受 `Ident(args)` / `obj.method(args)`,`<anonymous>` 分支仍为死代码。该测试仍待办事项,可单独划一个 sub-task。
 
 **结果**:
 - workspace 529 pass + 3 ignored → **532 pass + 0 ignored**(净 +3)
@@ -107,7 +107,7 @@ A1d 暂停后下一次会话接续,3 个 `#[ignore]` 测试全部解锁,workspac
 
 ### 解决(A2,commit `e8b8ac1`,2026-09-07)
 
-A1d 收尾后接 A2(spec §6.4 闭包 cell 语义),Phase A 最高风险项。9 个新测试 + 1 个改写全过,workspace 541/541 pass。
+A1d 收尾后接 A2(spec §6.4 闭包 cell 语义),Phase A 最高风险项。8 个新测试 + 1 个改写(净 +9)全过,workspace 541/541 pass。
 
 **核心设计**:
 - `Env` 字段类型从 `HashMap<String, Value>` 改为 `HashMap<String, Cell>`,`Cell = Rc<RefCell<Binding>>`,`Binding { value, mutable }`
