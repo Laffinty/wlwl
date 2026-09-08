@@ -129,6 +129,18 @@ impl TypeAnnotation {
 
 /// One parameter of a `FUN` literal (v0.3 `Sec. 8.2` plus `Sec. 2.4`
 /// per-param annotation support; P3-011 adds default and rest).
+impl std::fmt::Display for Literal {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            Literal::Integer(v) => write!(f, "{}", v),
+            Literal::Float(v) => write!(f, "{}", v),
+            Literal::String(s) => write!(f, "\"{}\"", s),
+            Literal::Boolean(b) => write!(f, "{}", if *b { "TRUE" } else { "FALSE" }),
+            Literal::Null => write!(f, "NULL"),
+        }
+    }
+}
+
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct FunParam {
     pub name: String,
@@ -176,6 +188,33 @@ impl ImportName {
     }
 }
 
+/// Destructuring pattern used in `LET` first-arg form (v0.4 `Sec. 7.5`)
+/// and `MATCH` clauses (v0.4 `Sec. 7.6`).
+///
+/// Patterns reuse the ARRAY / DICT literal shape from `Expr`, but the
+/// leaf forms diverge: `Ident` binds a name, `Wildcard` matches anything
+/// and binds nothing, `Literal` matches a literal value with `==`.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub enum Pattern {
+    /// Bind a new name (e.g. `a` in `[a, b]`).
+    Ident(String, Span),
+    /// Wildcard (e.g. `_`); matches anything, binds nothing.
+    Wildcard(Span),
+    /// Literal equality match (e.g. `1`, `"foo"`, `TRUE`, `NULL`).
+    /// Used by `MATCH` clauses (`Sec. 7.6`); not produced by `LET`
+    /// destructuring in v0.4, but kept on the shared AST type.
+    Literal(Literal, Span),
+    /// Array pattern (e.g. `[a, b]`, `[head, *rest]`, `[_, x, _]`).
+    /// The optional trailing `rest` captures the remaining elements
+    /// as a new ARRAY. `rest` must be the last slot if present.
+    Array(Vec<Pattern>, Option<Box<Pattern>>, Span),
+    /// Dict pattern (e.g. `["x": x, "y": y]`, `["name": n]`).
+    /// Each entry is `(key_expr, sub_pattern)`. Keys are typically
+    /// string / integer literals per `Sec. 7.5`; the AST accepts any
+    /// `Expr` so MATCH (`Sec. 7.6`) can use the same machinery later.
+    Dict(Vec<(Expr, Pattern)>, Span),
+}
+
 /// Expression node (Phase 3 -- with type-annotation slots).
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub enum Expr {
@@ -198,6 +237,15 @@ pub enum Expr {
     // Sec. 6.1 LET binding (v0.3 Sec. 2.4: optional annotation)
     Let {
         name: String,
+        type_annotation: Option<TypeAnnotation>,
+        value: Box<Expr>,
+        span: Span,
+    },
+    // v0.4 Sec. 7.5 destructuring LET: `LET([a, b], arr)` /
+    // `LET(["k": v], dict)`. Same shape as `Let` but the first
+    // argument is a `Pattern` instead of a bare `Ident`.
+    LetPattern {
+        pattern: Box<Pattern>,
         type_annotation: Option<TypeAnnotation>,
         value: Box<Expr>,
         span: Span,
@@ -254,6 +302,7 @@ impl Expr {
             Expr::Array { span, .. } => span,
             Expr::Dict { span, .. } => span,
             Expr::Let { span, .. } => span,
+            Expr::LetPattern { span, .. } => span,
             Expr::If { span, .. } => span,
             Expr::While { span, .. } => span,
             Expr::For { span, .. } => span,

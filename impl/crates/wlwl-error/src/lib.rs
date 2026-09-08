@@ -36,6 +36,9 @@ pub enum ErrorCode {
     E0022, // function arity mismatch
     E0023, // name not exported by module
     E0024, // cannot SET non-captured binding (v0.4 §6.4 closure cell)
+    E0025, // shadowing a global builtin (v0.4 §6.6, allow_builtin_shadow=false)
+    E0026, // destructure pattern mismatch (v0.4 §7.5)
+    E0027, // MATCH fell through without match or default (v0.4 §7.6)
     E0030, // type error
     E0031, // subscript/key type error
     E0032, // property/method not found
@@ -86,6 +89,9 @@ impl ErrorCode {
             ErrorCode::E0022 => "E0022",
             ErrorCode::E0023 => "E0023",
             ErrorCode::E0024 => "E0024",
+            ErrorCode::E0025 => "E0025",
+            ErrorCode::E0026 => "E0026",
+            ErrorCode::E0027 => "E0027",
             ErrorCode::E0030 => "E0030",
             ErrorCode::E0031 => "E0031",
             ErrorCode::E0032 => "E0032",
@@ -150,7 +156,10 @@ impl ErrorCode {
             | ErrorCode::E0021
             | ErrorCode::E0022
             | ErrorCode::E0023
-            | ErrorCode::E0024 => ErrorCategory::Name,
+            | ErrorCode::E0024
+            | ErrorCode::E0025
+            | ErrorCode::E0026
+            | ErrorCode::E0027 => ErrorCategory::Name,
             ErrorCode::E0030 | ErrorCode::E0031 | ErrorCode::E0032 => ErrorCategory::Type,
             ErrorCode::E0040
             | ErrorCode::E0041
@@ -843,6 +852,9 @@ mod tests {
             "E0022": code_snap(ErrorCode::E0022, "arity_mismatch"),
             "E0023": code_snap(ErrorCode::E0023, "not_exported"),
             "E0024": code_snap(ErrorCode::E0024, "set_non_captured"),
+            "E0025": code_snap(ErrorCode::E0025, "shadow_builtin"),
+            "E0026": code_snap(ErrorCode::E0026, "destructure_mismatch"),
+            "E0027": code_snap(ErrorCode::E0027, "match_fallthrough"),
         }));
     }
 
@@ -912,9 +924,10 @@ mod tests {
     }
 
     // -- Phase 3: AI contract: 33 codes total ----------------------
+    // v0.4 added E0024 (closure cell) + E0025/E0026/E0027 (MATCH family).
     #[test]
-    fn all_36_codes_registered() {
-        // Sanity: ensure we have exactly 35 codes wired through the schema.
+    fn all_39_codes_registered() {
+        // Sanity: ensure we have exactly 39 codes wired through the schema.
         // If anyone adds a new ErrorCode variant without updating the
         // snapshot, this count will shift and break the contract.
         let codes = [
@@ -922,7 +935,7 @@ mod tests {
             ErrorCode::E0010, ErrorCode::E0011, ErrorCode::E0012,
             ErrorCode::E0013, ErrorCode::E0014,
             ErrorCode::E0020, ErrorCode::E0021, ErrorCode::E0022, ErrorCode::E0023,
-            ErrorCode::E0024,
+            ErrorCode::E0024, ErrorCode::E0025, ErrorCode::E0026, ErrorCode::E0027,
             ErrorCode::E0030, ErrorCode::E0031, ErrorCode::E0032,
             ErrorCode::E0040, ErrorCode::E0041, ErrorCode::E0042, ErrorCode::E0043,
             ErrorCode::E0050, ErrorCode::E0051,
@@ -932,7 +945,7 @@ mod tests {
             ErrorCode::E0099,
             ErrorCode::E0100, ErrorCode::E0101, ErrorCode::E0102,
         ];
-        assert_eq!(codes.len(), 36);
+        assert_eq!(codes.len(), 39);
         // Each code has a stable string form.
         for c in &codes {
             assert!(c.as_str().starts_with('E'));

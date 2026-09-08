@@ -42,7 +42,7 @@
 //! - E0020 undefined name (emitted at eval time, not parse)
 //! - E0043 namespace path syntax error
 
-use wlwl_ast::{Expr, FunParam, ImportName, Literal, Span, TypeAnnotation, TypeExpr};
+use wlwl_ast::{Expr, FunParam, ImportName, Literal, Pattern, Span, TypeAnnotation, TypeExpr};
 use wlwl_error::{extract_line, Location, Suggestion, WlwlDiagnostic, WlwlError, WlwlResult};
 use wlwl_lexer::{lex, Token, TokenKind};
 
@@ -142,6 +142,19 @@ impl Parser {
 
     fn at_eof(&self) -> bool {
         matches!(self.peek(), TokenKind::Eof)
+    }
+
+    /// Convert a (line, col, line_end, col_end) token span tuple into
+    /// the wlwl_ast::Span struct the AST expects. Used by the pattern
+    /// parser to attach spans to leaf Pattern variants.
+    fn span_tuple_to_span(&self, t: (u32, u32, u32, u32)) -> Span {
+        Span {
+            file: self.file.clone(),
+            line_start: t.0,
+            col_start: t.1,
+            line_end: t.2,
+            col_end: t.3,
+        }
     }
 
     fn err_at(&self, code: ErrorCode, message: impl Into<String>, span: (u32, u32, u32, u32)) -> WlwlError {
@@ -406,37 +419,235 @@ impl Parser {
     }
 
     fn parse_let(&mut self) -> WlwlResult<Expr> {
+        // v0.4 Sec. 7.5: dispatch on the first token inside LET().
+        //   `LET(x, ...)`            -> Expr::Let (legacy, unchanged)
+        //   `LET([a, b], ...)`       -> Expr::LetPattern (array pattern)
+        //   `LET(["k": v], ...)`     -> Expr::LetPattern (dict pattern)
+        //   `LET(_, ...)`            -> Expr::LetPattern (wildcard)
+        // We peek the first token (without consuming) to decide the
+        // shape. The legacy `Let` arm requires an `Ident`; anything
+        // else (other than `[` and `_`) keeps the original E0010
+        // `expected identifier` error message so existing tests do not
+        // shift their wording.
         let (line, col, _, _) = self.span_here();
         self.expect_specific(EC::E0010, "'LET'")?;
         self.expect_specific(EC::E0011, "'('")?;
-        let name = match self.advance() {
-            Token { kind: TokenKind::Ident(s), .. } => s,
-            other => {
-                return Err(self.err_at(
+        match self.peek().clone() {
+            TokenKind::LBracket | TokenKind::Ident(_) => {
+                // Pattern form: `[a, b]`, `["k": v]`, `[a, b, *rest]`,
+                // or a bare `Ident` (the pattern parser maps `Ident`
+                // to `Pattern::Ident`, which we then collapse to the
+                // legacy `Expr::Let` at the end of this branch so the
+                // 500+ existing tests and downstream consumers that
+                // pattern-match on `Expr::Let` keep working).
+                let pat = self.parse_pattern()?;
+                let type_annotation = self.parse_type_annotation()?;
+                self.expect_specific(EC::E0012, "','")?;
+                let value = self.parse_expr()?;
+                self.expect_specific(EC::E0011, "')'")?;
+                let (_, _, line_end, col_end) = self.span_here();
+                if let Pattern::Ident(name, _) = &pat {
+                    return Ok(Expr::Let {
+                        name: name.clone(),
+                        type_annotation,
+                        value: Box::new(value),
+                        span: Span {
+                            file: self.file.clone(),
+                            line_start: line,
+                            col_start: col,
+                            line_end,
+                            col_end,
+                        },
+                    });
+                }
+                Ok(Expr::LetPattern {
+                    pattern: Box::new(pat),
+                    type_annotation,
+                    value: Box::new(value),
+                    span: Span {
+                        file: self.file.clone(),
+                        line_start: line,
+                        col_start: col,
+                        line_end,
+                        col_end,
+                    },
+                })
+            }
+            _ => {
+                // Preserve the original error wording for things like
+                // `LET(123, ...)` or `LET(+, ...)` so existing E0010
+                // tests do not shift.
+                let other = self.advance();
+                Err(self.err_at(
                     EC::E0010,
                     format!("expected identifier in LET, got {:?}", other.kind),
                     other.span,
-                ));
+                ))
             }
-        };
-        // v0.3 Sec. 2.4: optional type annotation, parsed not checked.
-        let type_annotation = self.parse_type_annotation()?;
-        self.expect_specific(EC::E0012, "','")?;
-        let value = self.parse_expr()?;
-        self.expect_specific(EC::E0011, "')'")?;
+        }
+    }
+
+    /// Parse a destructuring `Pattern` (v0.4 `Sec. 7.5`).
+    ///
+    /// Grammar (informal):
+    /// ```text
+    /// pattern         := ident | '_' | '[' entries ']'
+    /// entries         := (pattern (',' pattern)*)?  (array)
+    ///                  |  (kv (',' kv)*)?            (dict)
+    /// kv              := literal ':' pattern
+    /// ```
+    ///
+    /// Disambiguation: the first entry inside `[...]` decides array vs
+    /// dict. Presence of `:` after the first sub-pattern makes it a dict
+    /// (per `Sec. 7.5` array/dict literal convention).
+    ///
+    /// Patterns are checked at runtime (E0026); the parse-time path is
+    /// strict and does not emit W0020.
+    fn parse_pattern(&mut self) -> WlwlResult<Pattern> {
+        let (line, col, _, _) = self.span_here();
+        // Wildcard (`_` lexes as Ident("_")).
+        if let TokenKind::Ident(s) = self.peek() {
+            if s == "_" {
+                let tok = self.advance();
+                return Ok(Pattern::Wildcard(self.span_tuple_to_span(tok.span)));
+            }
+        }
+        if let TokenKind::Ident(name) = self.peek().clone() {
+            let tok = self.advance();
+            return Ok(Pattern::Ident(name, self.span_tuple_to_span(tok.span)));
+        }
+        if let TokenKind::LBracket = self.peek() {
+            return self.parse_pattern_array_or_dict(line, col);
+        }
+        // Literal: covers string / int / float / bool / null
+        // keys in dict patterns (Sec. 7.5) and literal-only
+        // patterns (used by MATCH Sec. 7.6).
+        if let Some(lit) = match self.peek() {
+            TokenKind::StringLit(s) => Some(Literal::String(s.clone())),
+            TokenKind::True => Some(Literal::Boolean(true)),
+            TokenKind::False => Some(Literal::Boolean(false)),
+            TokenKind::Null => Some(Literal::Null),
+            _ => None,
+        } {
+            let tok = self.advance();
+            return Ok(Pattern::Literal(
+                lit,
+                self.span_tuple_to_span(tok.span),
+            ));
+        }
+        let tok = self.advance();
+        Err(self.err_at(
+            EC::E0010,
+            format!("expected pattern, got {:?}", tok.kind),
+            tok.span,
+        ))
+    }
+
+    /// Parse a `[ ... ]` pattern list. Disambiguates array vs dict by
+    /// peeking for `:` after the first sub-pattern (a 1-token look-ahead
+    /// is enough because we re-parse the first sub-pattern in the dict
+    /// branch).
+    fn parse_pattern_array_or_dict(&mut self, line: u32, col: u32) -> WlwlResult<Pattern> {
+        self.expect_specific(EC::E0011, "'['")?;
+        // Empty `[]` -- matches empty ARRAY.
+        if matches!(self.peek(), TokenKind::RBracket) {
+            self.advance();
+            return Ok(Pattern::Array(Vec::new(), None, self.pattern_span(line, col)));
+        }
+        // Parse the first sub-pattern, then peek for `:`.
+        let first_pat = self.parse_pattern()?;
+        if matches!(self.peek(), TokenKind::Colon) {
+            // Dict pattern: first_pat is the key (must be a literal-like
+            // pattern), then `:` then sub-pattern.
+            self.advance(); // ':'
+            let first_sub = self.parse_pattern()?;
+            let mut entries: Vec<(Expr, Pattern)> = Vec::new();
+            let first_key = self.pattern_to_key_expr(&first_pat)?;
+            entries.push((first_key, first_sub));
+            while matches!(self.peek(), TokenKind::Comma) {
+                self.advance();
+                if matches!(self.peek(), TokenKind::RBracket) {
+                    break;
+                }
+                let kp = self.parse_pattern()?;
+                self.expect_specific(EC::E0012, "':'")?;
+                let vp = self.parse_pattern()?;
+                let k = self.pattern_to_key_expr(&kp)?;
+                entries.push((k, vp));
+            }
+            self.expect_specific(EC::E0011, "']'")?;
+            return Ok(Pattern::Dict(entries, self.pattern_span(line, col)));
+        }
+        // Array pattern.
+        let mut items: Vec<Pattern> = Vec::new();
+        items.push(first_pat);
+        let mut rest: Option<Box<Pattern>> = None;
+        while matches!(self.peek(), TokenKind::Comma) {
+            self.advance();
+            if matches!(self.peek(), TokenKind::RBracket) {
+                break;
+            }
+            // `*rest` only allowed at the last position.
+            if matches!(self.peek(), TokenKind::Star) {
+                self.advance();
+                let rp = self.parse_pattern()?;
+                rest = Some(Box::new(rp));
+                self.expect_specific(EC::E0011, "']'")?;
+                return Ok(Pattern::Array(items, rest, self.pattern_span(line, col)));
+            }
+            let p = self.parse_pattern()?;
+            items.push(p);
+        }
+        self.expect_specific(EC::E0011, "']'")?;
+        Ok(Pattern::Array(items, rest, self.pattern_span(line, col)))
+    }
+
+    /// Build a `Span` covering `[ ... ]` for a pattern. The
+    /// `line_end` / `col_end` here is a best-effort stop at the
+    /// `]` position; downstream consumers use it only for error
+    /// location, not for source recovery.
+    /// Map a `TokenKind` to a `Literal` if it represents a literal
+    /// value. Returns `None` for non-literal kinds. Used by
+    /// `parse_pattern` to recognize string / bool / null keys in
+    /// dict patterns (Sec. 7.5). Integer / float literal patterns
+    /// are not supported in v0.4 LET destructuring; the value
+    /// attached to a token kind does not survive a `peek` (only the
+    /// kind does), so we conservatively skip them here. They may
+    /// be added once the lexer exposes the numeric value alongside
+    /// the kind, which MATCH (Sec. 7.6) will want anyway.
+    fn pattern_span(&self, line: u32, col: u32) -> Span {
         let (_, _, line_end, col_end) = self.span_here();
-        Ok(Expr::Let {
-            name,
-            type_annotation,
-            value: Box::new(value),
-            span: Span {
-                file: self.file.clone(),
-                line_start: line,
-                col_start: col,
-                line_end,
-                col_end,
-            },
-        })
+        Span {
+            file: self.file.clone(),
+            line_start: line,
+            col_start: col,
+            line_end,
+            col_end,
+        }
+    }
+
+    /// Convert a pattern used as a dict-pattern key into the
+    /// corresponding `Expr`. Per `Sec. 7.5` keys are literal; this
+    /// accepts Ident (treated as string), Wildcard (E0010), nested
+    /// Array/Dict (E0010), and Literal (1:1).
+    fn pattern_to_key_expr(&self, p: &Pattern) -> WlwlResult<Expr> {
+        match p {
+            Pattern::Ident(s, span) => Ok(Expr::Literal(
+                Literal::String(s.clone()),
+                span.clone(),
+            )),
+            Pattern::Literal(lit, span) => Ok(Expr::Literal(lit.clone(), span.clone())),
+            Pattern::Wildcard(span) => Err(self.err_at(
+                EC::E0010,
+                "wildcard `_` is not a valid dict-pattern key",
+                (span.line_start, span.col_start, span.line_end, span.col_end),
+            )),
+            Pattern::Array(_, _, span) | Pattern::Dict(_, span) => Err(self.err_at(
+                EC::E0010,
+                "nested patterns are not valid dict-pattern keys",
+                (span.line_start, span.col_start, span.line_end, span.col_end),
+            )),
+        }
     }
 
     /// Parse an optional `':' Type` annotation.
@@ -2251,6 +2462,161 @@ mod tests {
     }
 
     // ---- parse_let error paths ----
+
+
+    // ---- P4-A3: destructure pattern parser (spec v0.4 Sec. 7.5) ----
+
+    #[test]
+    fn parse_let_array_pattern_produces_let_pattern() {
+        let e = parse("LET([a, b], [1, 2]);", "t.wl").unwrap();
+        match e {
+            Expr::LetPattern { pattern, .. } => match *pattern {
+                Pattern::Array(items, rest, _) => {
+                    assert_eq!(items.len(), 2);
+                    assert!(rest.is_none());
+                }
+                other => panic!("expected array pattern, got {:?}", other),
+            },
+            other => panic!("expected LetPattern, got {:?}", other),
+        }
+    }
+
+    #[test]
+    fn parse_let_array_pattern_with_rest() {
+        let e = parse("LET([head, *rest], [1, 2, 3]);", "t.wl").unwrap();
+        match e {
+            Expr::LetPattern { pattern, .. } => match *pattern {
+                Pattern::Array(items, rest, _) => {
+                    assert_eq!(items.len(), 1);
+                    assert!(rest.is_some(), "*rest should be captured");
+                }
+                other => panic!("expected array pattern, got {:?}", other),
+            },
+            other => panic!("expected LetPattern, got {:?}", other),
+        }
+    }
+
+    #[test]
+    fn parse_let_wildcard_pattern() {
+        let e = parse("LET([_, x, _], [1, 2, 3]);", "t.wl").unwrap();
+        match e {
+            Expr::LetPattern { pattern, .. } => match *pattern {
+                Pattern::Array(items, _, _) => {
+                    assert_eq!(items.len(), 3);
+                    assert!(matches!(items[0], Pattern::Wildcard(_)));
+                    assert!(matches!(items[1], Pattern::Ident(_, _)));
+                    assert!(matches!(items[2], Pattern::Wildcard(_)));
+                }
+                other => panic!("expected array pattern, got {:?}", other),
+            },
+            other => panic!("expected LetPattern, got {:?}", other),
+        }
+    }
+
+    #[test]
+    fn parse_let_dict_pattern() {
+        let e = parse("LET([\"k\": v], [\"k\": 1]);", "t.wl").unwrap();
+        match e {
+            Expr::LetPattern { pattern, .. } => match *pattern {
+                Pattern::Dict(entries, _) => {
+                    assert_eq!(entries.len(), 1);
+                    let (k, v) = &entries[0];
+                    match k {
+                        Expr::Literal(Literal::String(s), _) => assert_eq!(s, "k"),
+                        other => panic!("expected StringLit key, got {:?}", other),
+                    }
+                    assert!(matches!(v, Pattern::Ident(_, _)));
+                }
+                other => panic!("expected dict pattern, got {:?}", other),
+            },
+            other => panic!("expected LetPattern, got {:?}", other),
+        }
+    }
+
+    #[test]
+    fn parse_let_bare_ident_still_produces_let() {
+        // Backwards compat: `LET(x, 1)` -> Expr::Let (not LetPattern)
+        let e = parse("LET(x, 1);", "t.wl").unwrap();
+        assert!(
+            matches!(e, Expr::Let { ref name, .. } if name == "x"),
+            "expected Expr::Let, got {:?}",
+            e
+        );
+    }
+
+    #[test]
+    fn parse_let_dict_pattern_with_multiple_keys() {
+        let e = parse("LET([\"a\": x, \"b\": y], [\"a\": 1, \"b\": 2]);", "t.wl").unwrap();
+        match e {
+            Expr::LetPattern { pattern, .. } => match *pattern {
+                Pattern::Dict(entries, _) => {
+                    assert_eq!(entries.len(), 2);
+                }
+                other => panic!("expected dict pattern, got {:?}", other),
+            },
+            other => panic!("expected LetPattern, got {:?}", other),
+        }
+    }
+
+    #[test]
+    fn parse_let_array_pattern_with_type_annotation() {
+        // A type annotation on a non-Ident pattern keeps the
+        // LetPattern path (does not collapse to Expr::Let).
+        let e = parse("LET([a, b]: ARRAY[INTEGER], [1, 2]);", "t.wl").unwrap();
+        match e {
+            Expr::LetPattern { pattern, type_annotation, .. } => {
+                assert!(matches!(*pattern, Pattern::Array(_, None, _)));
+                assert!(type_annotation.is_some());
+            }
+            other => panic!("expected LetPattern with annotation, got {:?}", other),
+        }
+    }
+
+    #[test]
+    fn parse_let_empty_array_pattern() {
+        let e = parse("LET([], arr);", "t.wl").unwrap();
+        match e {
+            Expr::LetPattern { pattern, .. } => match *pattern {
+                Pattern::Array(items, None, _) => assert!(items.is_empty()),
+                other => panic!("expected empty array pattern, got {:?}", other),
+            },
+            other => panic!("expected LetPattern, got {:?}", other),
+        }
+    }
+
+    #[test]
+    fn parse_let_dict_pattern_wildcard_key_is_e0010() {
+        // Wildcard `_` is not a valid dict-pattern key.
+        let err = parse("LET([_: v], [\"x\": 1]);", "t.wl").unwrap_err();
+        assert_eq!(err.diagnostic().code, EC::E0010);
+    }
+
+    #[test]
+    fn parse_let_rest_must_be_last() {
+        // Pattern is `[*rest, a]` -- *rest is not the last slot.
+        // The parser refuses this with E0010 because after the
+        // leading `*`, the next token must start a pattern, and
+        // `,` is not a valid pattern start.
+        let err = parse("LET([*rest, a], [1, 2, 3]);", "t.wl").unwrap_err();
+        assert_eq!(err.diagnostic().code, EC::E0010);
+    }
+
+    #[test]
+    fn parse_let_nested_pattern() {
+
+        let e = parse("LET([[a, b], [c, d]], [[1, 2], [3, 4]]);", "t.wl").unwrap();
+        match e {
+            Expr::LetPattern { pattern, .. } => match *pattern {
+                Pattern::Array(items, None, _) => {
+                    assert_eq!(items.len(), 2);
+                    assert!(matches!(items[0], Pattern::Array(_, None, _)));
+                    assert!(matches!(items[1], Pattern::Array(_, None, _)));
+                }
+                other => panic!("expected nested array pattern, got {:?}", other),
+            },
+            other => panic!("expected LetPattern, got {:?}", other),
+        }
+    }
 
     #[test]
     fn parse_let_non_ident_name_is_e0010() {

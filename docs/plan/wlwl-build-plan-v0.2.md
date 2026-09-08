@@ -1825,7 +1825,37 @@ allow_builtin_shadow = false            # 同 [package]
 
 > **占位 — v0.2 各 phase 收尾时填充**(参考 v0.1 §实施进度跟踪格式):
 
-### Phase A 收尾(待填)
+### Phase A 收尾(2026-09-08,partial — A1a-d + A2 + A3 已落地)
+
+> 详细按日记录在 `docs/history/20260904.md` / `20260905.md` /
+> `20260906.md` / `20260907.md` / `20260908.md`;本节只列收尾指标
+> 与残留项。
+
+**已完成子项**:
+
+- A1a-c error schema 1.1.0 基础字段(idempotent / retry_after / col_start)
+  — commit `8655ebd`
+- A1d trace 字段 + call_stack — commit `ece5103` (暂停) → `e1531fc` (修复)
+- A2 闭包 cell 语义(spec §6.4)+ SET 宏 + E0024 — commit `e8b8ac1`
+- **A3 解构绑定(spec §7.5)+ Pattern AST + E0026** — commit (本次)
+
+**已完成但与 Phase A 之外联动**:
+
+- E0025 / E0027 已注册(wlwl-error schema 1.1.0),A5 / A4 触发
+
+**残留**:
+
+- A1e `cause` 字段(WRAP 链)→ Phase B4 触发
+- A3 已完成,下一步按 plan v0.2 §A 任务分解建议走 A4(`MATCH`)
+  或 A6(ERR 消费者注册表)
+
+**测试与覆盖率(A3 落地后)**:
+
+- `cargo test --workspace` 562/562 pass(+21 vs A2 baseline 541)
+- 13/13 crate ≥ 90% line,守住 v0.1 baseline
+- TOTAL 91.97% line / 91.57% region / 96.12% func
+- 关键 crate:`wlwl-parser` 90.50% / `wlwl-eval` 90.07% / `wlwl-ast` 91.09%
+
 
 ### Phase B 收尾(待填)
 

@@ -25,7 +25,7 @@ use std::rc::Rc;
 use std::path::Path;
 use std::sync::Arc;
 
-use wlwl_ast::{Expr, FunParam, ImportName, Literal, Span};
+use wlwl_ast::{Expr, FunParam, ImportName, Literal, Pattern, Span};
 use wlwl_error::{
     extract_line, ErrorCode, Location, Suggestion, TraceFrame, WlwlDiagnostic,
     WlwlError, WlwlResult,
@@ -1472,6 +1472,14 @@ impl Evaluator {
                 }
                 Ok(Outcome::normal(Value::Null))
             }
+            Expr::LetPattern { pattern, value, span, .. } => {
+                let v = self.eval_expr(value)?;
+                if v.signal != Signal::None {
+                    return Ok(v);
+                }
+                self.destructure(pattern, &v.value, span)?;
+                Ok(Outcome::normal(Value::Null))
+            }
             Expr::Block { exprs, .. } => self.eval_block(exprs, false),
             Expr::Array { items, .. } => {
                 let mut vs = Vec::with_capacity(items.len());
@@ -2110,6 +2118,210 @@ impl Evaluator {
             }
         }
         d.into()
+    }
+
+    /// Destructure `value` against `pattern` (v0.4 `Sec. 7.5`),
+    /// binding sub-patterns as new cells in the current scope.
+    ///
+    /// Errors:
+    /// - `E0026` if the shape does not match (array length too
+    ///   short, dict key missing, *rest not last).
+    /// - `E0030` if `value` is the wrong runtime type for the
+    ///   pattern (e.g. destructuring an `INTEGER` with an array
+    ///   pattern).
+    /// - `E0026` for literal mismatches (the spec is silent on
+    ///   this case in v0.4; we collapse it to E0026 for now to
+    ///   keep the error family tight).
+    fn destructure(&mut self, pattern: &Pattern, value: &Value, _span: &Span) -> WlwlResult<()> {
+        match pattern {
+            Pattern::Ident(name, _) => {
+                self.env.set_local(name.clone(), value.clone());
+                Ok(())
+            }
+            Pattern::Wildcard(_) => Ok(()),
+            Pattern::Literal(lit, lspan) => {
+                let v = Value::from(lit.clone());
+                if self.values_equal_loose(&v, value) {
+                    Ok(())
+                } else {
+                    Err(self.destructure_shape_error(
+                        format!(
+                            "destructure pattern mismatch: literal `{}` does not match value",
+                            lit
+                        ),
+                        lspan,
+                    ))
+                }
+            }
+            Pattern::Array(items, rest, aspan) => {
+                let arr = match value {
+                    Value::Array(items) => items.clone(),
+                    _ => {
+                        return Err(self.destructure_type_error(
+                            "ARRAY", value, aspan,
+                        ))
+                    }
+                };
+                let needed_min = items.len();
+                if arr.len() < needed_min {
+                    return Err(self.destructure_shape_error(
+                        format!(
+                            "destructure pattern mismatch: array of length {} does not match pattern with {} element(s)",
+                            arr.len(),
+                            items.len()
+                        ),
+                        aspan,
+                    ));
+                }
+                for (i, sub) in items.iter().enumerate() {
+                    let sub_value = arr.get(i).ok_or_else(|| {
+                        self.destructure_shape_error(
+                            format!("destructure pattern mismatch: missing element at index {}", i),
+                            aspan,
+                        )
+                    })?;
+                    self.destructure(sub, sub_value, aspan)?;
+                }
+                if let Some(rest_pat) = rest {
+                    let rest_items: Vec<Value> = arr.iter().skip(items.len()).cloned().collect();
+                    let rest_value = Value::Array(rest_items);
+                    self.destructure(rest_pat, &rest_value, aspan)?;
+                } else if arr.len() > items.len() {
+                    return Err(self.destructure_shape_error(
+                        format!(
+                            "destructure pattern mismatch: array of length {} is too long for pattern with {} element(s) (no *rest)",
+                            arr.len(),
+                            items.len()
+                        ),
+                        aspan,
+                    ));
+                }
+                Ok(())
+            }
+            Pattern::Dict(entries, dspan) => {
+                let dict = match value {
+                    Value::Dict(entries) => entries.clone(),
+                    _ => return Err(self.destructure_type_error("DICT", value, dspan)),
+                };
+                for (k_expr, sub) in entries {
+                    let key_value = self.eval_literal_key(k_expr)?;
+                    let pos = dict.iter().position(|(k, _)| {
+                        self.values_equal_loose(k, &key_value)
+                    });
+                    let found = match pos {
+                        Some(idx) => dict[idx].1.clone(),
+                        None => {
+                            return Err(self.destructure_shape_error(
+                                format!(
+                                    "destructure pattern mismatch: dict missing key `{}`",
+                                    key_value.display()
+                                ),
+                                dspan,
+                            ));
+                        }
+                    };
+                    self.destructure(sub, &found, dspan)?;
+                }
+                Ok(())
+            }
+        }
+    }
+
+    /// Build an E0030 (type) diagnostic for a destructure shape
+    /// mismatch where the runtime value has the wrong outer type.
+    fn destructure_type_error(&mut self, expected: &str, value: &Value, span: &Span) -> WlwlError {
+        let loc = Location {
+            file: span.file.clone(),
+            line: span.line_start,
+            col: span.col_start,
+            line_end: span.line_end,
+            col_end: span.col_end,
+        };
+        let mut d = WlwlDiagnostic::new(
+            ErrorCode::E0030,
+            format!(
+                "destructure pattern expected {}, got {}",
+                expected,
+                type_name(value)
+            ),
+            loc,
+        );
+        if let Some(src) = &self.source {
+            if let Some(line_text) = extract_line(src, span.line_start) {
+                d = d.with_source_line(line_text);
+            }
+        }
+        d.into()
+    }
+
+    /// Build an E0026 (destructure pattern mismatch) diagnostic.
+    fn destructure_shape_error(&mut self, message: String, span: &Span) -> WlwlError {
+        let loc = Location {
+            file: span.file.clone(),
+            line: span.line_start,
+            col: span.col_start,
+            line_end: span.line_end,
+            col_end: span.col_end,
+        };
+        let mut d = WlwlDiagnostic::new(ErrorCode::E0026, message, loc);
+        if let Some(src) = &self.source {
+            if let Some(line_text) = extract_line(src, span.line_start) {
+                d = d.with_source_line(line_text);
+            }
+        }
+        d.into()
+    }
+
+    /// Evaluate a key expression to a `Value` (used by Dict pattern
+    /// destructuring). Keys in `Sec. 7.5` are always literals; the
+    /// AST permits any `Expr` for forward compatibility with `MATCH`.
+    /// Non-literal keys raise E0026.
+    fn eval_literal_key(&mut self, expr: &Expr) -> WlwlResult<Value> {
+        match expr {
+            Expr::Literal(lit, _) => Ok(Value::from(lit.clone())),
+            Expr::Var(name, span) => self
+                .env
+                .get(name)
+                .map(|v| (*v).clone())
+                .ok_or_else(|| self.undefined_name(name, span)),
+            _ => {
+                let span = expr.span().clone();
+                let loc = Location {
+                    file: span.file.clone(),
+                    line: span.line_start,
+                    col: span.col_start,
+                    line_end: span.line_end,
+                    col_end: span.col_end,
+                };
+                let mut d = WlwlDiagnostic::new(
+                    ErrorCode::E0026,
+                    "destructure pattern keys must be literals (Sec. 7.5)",
+                    loc,
+                );
+                if let Some(src) = &self.source {
+                    if let Some(line_text) = extract_line(src, span.line_start) {
+                        d = d.with_source_line(line_text);
+                    }
+                }
+                Err(d.into())
+            }
+        }
+    }
+
+    /// Loose equality used by pattern matching: compares Integer ==
+    /// Integer and String == String by value, NULL == NULL, etc.
+    /// We intentionally do NOT route through `=` so that destructure
+    /// does not need an extra WlwlResult plumbing step; the function
+    /// is only used for pattern-equality, not for runtime semantics.
+    fn values_equal_loose(&self, a: &Value, b: &Value) -> bool {
+        match (a, b) {
+            (Value::Null, Value::Null) => true,
+            (Value::Integer(x), Value::Integer(y)) => x == y,
+            (Value::Float(x), Value::Float(y)) => x == y,
+            (Value::Boolean(x), Value::Boolean(y)) => x == y,
+            (Value::String(x), Value::String(y)) => x == y,
+            _ => false,
+        }
     }
 
     fn diag(&mut self, code: ErrorCode, message: impl Into<String>, span: Span) -> WlwlError {
@@ -4512,6 +4724,132 @@ entry = "main.wl"
     /// the A2 closure-cell phase when `Value::Closure` gains a
     /// `name` field.
     #[test]
+
+    // ---- P4-A3: destructuring LET (spec v0.4 Sec. 7.5) ----
+
+    #[test]
+    fn p4_a3_destructure_array_basic() {
+        // [a, b] <- [1, 2]
+        let src = "LET([a, b], [1, 2]); +(a, b);";
+        assert_eq!(run(src).unwrap(), Value::Integer(3));
+    }
+
+    #[test]
+    fn p4_a3_destructure_array_with_rest() {
+        // [head, *rest] <- [10, 20, 30, 40]
+        let src = "LET([head, *rest], [10, 20, 30, 40]); head;";
+        assert_eq!(run(src).unwrap(), Value::Integer(10));
+    }
+
+    #[test]
+    fn p4_a3_destructure_rest_is_value_array() {
+        // `rest` should be the tail of the source array, not the
+        // whole thing.
+        let src = "LET([head, *rest], [10, 20, 30, 40]); rest;";
+        let v = run(src).unwrap();
+        assert_eq!(
+            v,
+            Value::Array(vec![
+                Value::Integer(20),
+                Value::Integer(30),
+                Value::Integer(40),
+            ])
+        );
+    }
+
+    #[test]
+    fn p4_a3_destructure_wildcard() {
+        // [_, mid, _] <- [1, 2, 3]   (only `mid` is bound)
+        let src = "LET([_, mid, _], [1, 2, 3]); mid;";
+        assert_eq!(run(src).unwrap(), Value::Integer(2));
+    }
+
+    #[test]
+    fn p4_a3_destructure_dict_basic() {
+        let src = "LET([\"x\": x, \"y\": y], [\"x\": 100, \"y\": 200]); +(x, y);";
+        assert_eq!(run(src).unwrap(), Value::Integer(300));
+    }
+
+    #[test]
+    fn p4_a3_destructure_dict_partial() {
+        // `name` is the only captured key; the rest is ignored.
+        let src = "LET([\"name\": n], [\"name\": \"alice\", \"age\": 30]); n;";
+        assert_eq!(
+            run(src).unwrap(),
+            Value::String("alice".to_string())
+        );
+    }
+
+    #[test]
+    fn p4_a3_destructure_nested_array() {
+        // [[a, b], [c, d]] <- [[1, 2], [3, 4]]
+        let src = "LET([[a, b], [c, d]], [[1, 2], [3, 4]]); +(+(a, b), +(c, d));";
+        assert_eq!(run(src).unwrap(), Value::Integer(10));
+    }
+
+    #[test]
+    fn p4_a3_destructure_nested_dict_in_array() {
+        // [\"user\": [\"name\": n]] <- nested
+        let src = "LET([\"user\": [\"name\": n]], [\"user\": [\"name\": \"bob\", \"age\": 25]]); n;";
+        assert_eq!(
+            run(src).unwrap(),
+            Value::String("bob".to_string())
+        );
+    }
+
+    #[test]
+    fn p4_a3_destructure_array_too_short_is_e0026() {
+        // 2-element pattern against 1-element array
+        let src = "LET([a, b], [1]); a;";
+        let err = run(src).unwrap_err();
+        assert_eq!(err.diagnostic().code, ErrorCode::E0026, "got: {}", err);
+    }
+
+    #[test]
+    fn p4_a3_destructure_array_too_long_no_rest_is_e0026() {
+        let src = "LET([a, b], [1, 2, 3]); a;";
+        let err = run(src).unwrap_err();
+        assert_eq!(err.diagnostic().code, ErrorCode::E0026, "got: {}", err);
+    }
+
+    #[test]
+    fn p4_a3_destructure_dict_missing_key_is_e0026() {
+        let src = "LET([\"x\": x], [\"y\": 1]); x;";
+        let err = run(src).unwrap_err();
+        assert_eq!(err.diagnostic().code, ErrorCode::E0026, "got: {}", err);
+    }
+
+    #[test]
+    fn p4_a3_destructure_integer_with_array_pattern_is_e0030() {
+        let src = "LET([a, b], 42); a;";
+        let err = run(src).unwrap_err();
+        assert_eq!(err.diagnostic().code, ErrorCode::E0030, "got: {}", err);
+    }
+
+    #[test]
+    fn p4_a3_destructure_dict_with_integer_value_is_e0030() {
+        let src = "LET([\"k\": v], 42); v;";
+        let err = run(src).unwrap_err();
+        assert_eq!(err.diagnostic().code, ErrorCode::E0030, "got: {}", err);
+    }
+
+    #[test]
+    fn p4_a3_destructure_dict_key_mismatch_is_e0026() {
+        // Pattern key `"missing"` not in the value dict.
+        let src = "LET([\"missing\": v], [\"k\": 1]); v;";
+        let err = run(src).unwrap_err();
+        assert_eq!(err.diagnostic().code, ErrorCode::E0026, "got: {}", err);
+    }
+
+    #[test]
+    fn p4_a3_let_legacy_form_still_works() {
+        // Backwards-compat: bare-Ident LET must keep producing
+        // Expr::Let (not LetPattern), so the 500+ existing
+        // tests that pattern-match on Expr::Let keep passing.
+        let src = "LET(x, 42); x;";
+        assert_eq!(run(src).unwrap(), Value::Integer(42));
+    }
+
     fn trace_call_uses_call_site_identifier() {
         let src = r###"
             LET(f, FUN((x), zzz(x)));
