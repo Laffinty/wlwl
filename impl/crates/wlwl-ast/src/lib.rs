@@ -213,6 +213,25 @@ pub enum Pattern {
     /// string / integer literals per `Sec. 7.5`; the AST accepts any
     /// `Expr` so MATCH (`Sec. 7.6`) can use the same machinery later.
     Dict(Vec<(Expr, Pattern)>, Span),
+    /// Constructor pattern (e.g. \OK(x)\, \ERR(e)\). v0.4 \Sec. 7.6    /// currently accepts only \OK\ and \ERR\ (Sec. 2.2.1); other names
+    /// are rejected at runtime with E0026. The inner pattern is matched
+    /// against the inner value of the \RESULT\ variant.
+    Constructor {
+        name: String,
+        inner: Box<Pattern>,
+        span: Span,
+    },
+}
+
+/// A single MATCH clause (v0.4 \Sec. 7.6\).
+///
+/// \ody\ is the expression evaluated when \pattern\ matches the
+/// scrutinee. The clause span covers the whole \[pattern, body]\ form.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct MatchClause {
+    pub pattern: Pattern,
+    pub body: Box<Expr>,
+    pub span: Span,
 }
 
 /// Expression node (Phase 3 -- with type-annotation slots).
@@ -288,6 +307,18 @@ pub enum Expr {
     IsOk { value: Box<Expr>, span: Span },
     IsErr { value: Box<Expr>, span: Span },
     OrDie { value: Box<Expr>, default: Box<Expr>, span: Span },
+    // v0.4 Sec. 7.6: MATCH(value, clauses, default?). First
+    // pattern in clauses that matches value wins; its body
+    // is evaluated in a fresh scope holding the pattern bindings.
+    // The default field is always present; the parser materializes
+    // a NULL literal when the source omits the trailing default arm
+    // (spec 7.6: may be omitted, defaults to NULL).
+    Match {
+        value: Box<Expr>,
+        clauses: Vec<MatchClause>,
+        default: Box<Expr>,
+        span: Span,
+    },
     Import { path: String, names: Vec<ImportName>, span: Span },
     Export { names: Vec<ImportName>, span: Span },
 }
@@ -317,6 +348,7 @@ impl Expr {
             Expr::IsOk { span, .. } => span,
             Expr::IsErr { span, .. } => span,
             Expr::OrDie { span, .. } => span,
+            Expr::Match { span, .. } => span,
             Expr::Import { span, .. } => span,
             Expr::Export { span, .. } => span,
         }

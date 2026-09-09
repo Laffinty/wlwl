@@ -46,6 +46,13 @@ pub enum TokenKind {
     // §13 module keywords (Phase 2)
     Import,
     Export,
+    // v0.4 §7.6: \MATCH\ is a macro-function (§3.4) but is
+    // tokenized as a keyword to keep parser dispatch in lock-step
+    // with IF/WHILE/TRY. The spec text classifies MATCH as a macro
+    // (not a §3.3 keyword) so it is intentionally absent from the
+    // 14-keyword list; the lexer/parser treat it the same as the
+    // other Phase-2 macro keywords.
+    Match,
     // Literals
     Integer(i64),
     Float(f64),
@@ -339,6 +346,8 @@ impl<'a> Lexer<'a> {
             "OR_DIE" => TokenKind::OrDie,
             "IMPORT" => TokenKind::Import,
             "EXPORT" => TokenKind::Export,
+            // v0.4 Sec. 7.6 macro-function (lexer-level keyword).
+            "MATCH" => TokenKind::Match,
             _ => TokenKind::Ident(text),
         };
         Ok(Token {

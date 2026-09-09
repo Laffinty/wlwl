@@ -42,7 +42,7 @@
 //! - E0020 undefined name (emitted at eval time, not parse)
 //! - E0043 namespace path syntax error
 
-use wlwl_ast::{Expr, FunParam, ImportName, Literal, Pattern, Span, TypeAnnotation, TypeExpr};
+use wlwl_ast::{Expr, FunParam, ImportName, Literal, MatchClause, Pattern, Span, TypeAnnotation, TypeExpr};
 use wlwl_error::{extract_line, Location, Suggestion, WlwlDiagnostic, WlwlError, WlwlResult};
 use wlwl_lexer::{lex, Token, TokenKind};
 
@@ -260,6 +260,7 @@ impl Parser {
             "'OR_DIE'" => TokenKind::OrDie,
             "'IMPORT'" => TokenKind::Import,
             "'EXPORT'" => TokenKind::Export,
+            "'MATCH'" => TokenKind::Match,
             other => {
                 return Err(self.err_at(
                     code,
@@ -382,6 +383,8 @@ impl Parser {
             TokenKind::IsOk => self.parse_err_ctor("'IS_OK'", |v, s| Expr::IsOk { value: v, span: s }),
             TokenKind::IsErr => self.parse_err_ctor("'IS_ERR'", |v, s| Expr::IsErr { value: v, span: s }),
             TokenKind::OrDie => self.parse_or_die(),
+            // v0.4 §7.6 pattern matching (macro-function, lexer-level keyword).
+            TokenKind::Match => self.parse_match(),
             // §13 modules (single-directory subset; cross-dir/namespace is Phase 4)
             TokenKind::Import => self.parse_import(),
             TokenKind::Export => self.parse_export(),
@@ -519,11 +522,17 @@ impl Parser {
         if let TokenKind::LBracket = self.peek() {
             return self.parse_pattern_array_or_dict(line, col);
         }
+        // v0.4 Sec. 7.6: constructor pattern (OK(x) / ERR(e))
+        if matches!(self.peek(), TokenKind::Ok | TokenKind::Err) {
+            return self.parse_pattern_constructor(line, col);
+        }
         // Literal: covers string / int / float / bool / null
         // keys in dict patterns (Sec. 7.5) and literal-only
         // patterns (used by MATCH Sec. 7.6).
         if let Some(lit) = match self.peek() {
             TokenKind::StringLit(s) => Some(Literal::String(s.clone())),
+            TokenKind::Integer(n) => Some(Literal::Integer(*n)),
+            TokenKind::Float(n) => Some(Literal::Float(*n)),
             TokenKind::True => Some(Literal::Boolean(true)),
             TokenKind::False => Some(Literal::Boolean(false)),
             TokenKind::Null => Some(Literal::Null),
@@ -647,6 +656,11 @@ impl Parser {
                 "nested patterns are not valid dict-pattern keys",
                 (span.line_start, span.col_start, span.line_end, span.col_end),
             )),
+            Pattern::Constructor { name, span, .. } => Err(self.err_at(
+                EC::E0010,
+                format!("constructor pattern `{}` is not a valid dict-pattern key", name),
+                (span.line_start, span.col_start, span.line_end, span.col_end),
+            )),
         }
     }
 
@@ -742,6 +756,7 @@ impl Parser {
             TokenKind::OrDie => "OR_DIE".into(),
             TokenKind::Import => "IMPORT".into(),
             TokenKind::Export => "EXPORT".into(),
+            TokenKind::Match => "MATCH".into(),
             TokenKind::LParen => "(".into(),
             TokenKind::RParen => ")".into(),
             TokenKind::LBracket => "[".into(),
@@ -1075,6 +1090,132 @@ impl Parser {
             },
         })
     }
+
+    // ---- v0.4 Sec. 7.6: MATCH(pattern matching) -------------------------
+
+    fn parse_match(&mut self) -> WlwlResult<Expr> {
+        let (line, col, _, _) = self.span_here();
+        self.expect_specific(EC::E0010, "'MATCH'")?;
+        self.expect_specific(EC::E0011, "'('")?;
+        let value = self.parse_expr()?;
+        self.expect_specific(EC::E0012, "','")?;
+        let clauses = self.parse_match_clauses()?;
+        // Spec 7.6: default may be omitted; in that case it defaults
+        // to the NULL literal. We always materialize a concrete Expr
+        // here so the eval side can stay total.
+        // Snapshot the current token position *before* the optional
+        // default arm so the synthetic NULL literal (used when
+        // the source omits the default per spec 7.6) gets a
+        // sane span. The next token is either Comma (default
+        // follows) or RParen (default omitted) -- both are fine
+        // anchor points for the synthesized NULL.
+        let (line_end, _, _, _) = self.span_here();
+        let (_, _, _, col_end) = self.span_here();
+        let default = if matches!(self.peek(), TokenKind::Comma) {
+            self.advance();
+            Box::new(self.parse_expr()?)
+        } else {
+            Box::new(Expr::Literal(Literal::Null, Span {
+                file: self.file.clone(),
+                line_start: line,
+                col_start: col,
+                line_end,
+                col_end,
+            }))
+        };
+        self.expect_specific(EC::E0011, "\')\'")?;
+        Ok(Expr::Match {
+            value: Box::new(value),
+            clauses,
+            default,
+            span: Span {
+                file: self.file.clone(),
+                line_start: line,
+                col_start: col,
+                line_end,
+                col_end,
+            },
+        })
+    }
+
+
+    fn parse_match_clauses(&mut self) -> WlwlResult<Vec<MatchClause>> {
+        self.expect_specific(EC::E0011, "'['")?;
+        let mut clauses: Vec<MatchClause> = Vec::new();
+        if !matches!(self.peek(), TokenKind::RBracket) {
+            loop {
+                clauses.push(self.parse_match_clause()?);
+                if matches!(self.peek(), TokenKind::Comma) {
+                    self.advance();
+                    if matches!(self.peek(), TokenKind::RBracket) {
+                        break;
+                    }
+                } else {
+                    break;
+                }
+            }
+        }
+        self.expect_specific(EC::E0011, "']'")?;
+        Ok(clauses)
+    }
+
+    fn parse_match_clause(&mut self) -> WlwlResult<MatchClause> {
+        let (line, col, _, _) = self.span_here();
+        self.expect_specific(EC::E0011, "'['")?;
+        let pattern = self.parse_pattern()?;
+        self.expect_specific(EC::E0012, "','")?;
+        let body = self.parse_expr()?;
+        self.expect_specific(EC::E0011, "']'")?;
+        let (_, _, line_end, col_end) = self.span_here();
+        Ok(MatchClause {
+            pattern,
+            body: Box::new(body),
+            span: Span {
+                file: self.file.clone(),
+                line_start: line,
+                col_start: col,
+                line_end,
+                col_end,
+            },
+        })
+    }
+
+    fn parse_pattern_constructor(&mut self, line: u32, col: u32) -> WlwlResult<Pattern> {
+        // Consume the OK / ERR keyword token (it has already been
+        // recognized as a TokenKind::Ok / TokenKind::Err via the
+        // dispatch in parse_pattern).
+        let name = match self.advance() {
+            Token { kind: TokenKind::Ok, .. } => "OK",
+            Token { kind: TokenKind::Err, .. } => "ERR",
+            other => {
+                return Err(self.err_at(
+                    EC::E0010,
+                    format!(
+                        "expected constructor name OK or ERR, got {:?}",
+                        other.kind
+                    ),
+                    other.span,
+                ));
+            }
+        };
+        self.expect_specific(EC::E0011, "'('")?;
+        let inner = self.parse_pattern()?;
+        self.expect_specific(EC::E0011, "')'")?;
+        let (_, _, line_end, col_end) = self.span_here();
+        Ok(Pattern::Constructor {
+            name: name.to_string(),
+            inner: Box::new(inner),
+            span: Span {
+                file: self.file.clone(),
+                line_start: line,
+                col_start: col,
+                line_end,
+                col_end,
+            },
+        })
+    }
+
+
 
     // ── §13 Modules (subset) ─────────────────────────────────────────
 
