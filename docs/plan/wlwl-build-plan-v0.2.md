@@ -1840,8 +1840,9 @@ allow_builtin_shadow = false            # 同 [package]
 - A3 解构绑定(spec §7.5)+ Pattern AST + E0026 — commit `3e398d8`
 - A4 MATCH 模式匹配(spec §7.6)+ Pattern::Constructor + E0027 占位 — commit `0e4642c`
 - A5 RESULT 一等值类型(spec §2.2.1)+ TYPE builtin + ERR payload STRING/DICT 约束
-  — commit (本次)
+  — commit `17a3d14`
 - A6 ERR 消费者注册表 4→9 项(spec §12.7)+ UNWRAP_OR alias — commit `9f0c0f6`
+- **A7 数值与跨类型语义(spec §9.5)** — commit (本次)
 
 **已完成但与 Phase A 之外联动**:
 
@@ -1849,21 +1850,23 @@ allow_builtin_shadow = false            # 同 [package]
 - A6 注册表 9 项钉死,UNWRAP / ERR_PAYLOAD / WRAP 函数仍未实装(Phase B4 范畴)
 - A5 TYPE 已实装,NativeFn 当 FUNCTION 的形式选择记 P4-A5-001 deviations
 - A5 OK / ERR 当 keyword vs macro 的形式偏差记 P4-A5-002 deviations
+- A7 新码 E0034 / E0035 / E1003 / W0015 + Runtime category 实装,
+  E0035 当前 dead branch 记 P4-A7-001(deviations 待补)
 
 **残留**:
 
 - A1e `cause` 字段(WRAP 链)→ Phase B4 触发
-- A7 数值与跨类型语义(spec §9.5,整除 / 溢出 / NaN / 跨类型相等)
-- A8 比较返回类型规则(spec §9.2 文档化)
+- A8 比较返回类型规则(spec §9.2 文档化,纯 commit 0 impl 改动)
 
-**测试与覆盖率(A5 落地后)**:
+**测试与覆盖率(A7 落地后)**:
 
-- `cargo test --workspace` 606/606 pass(A3 562 + A4 +26 + A6 +6 + A5 +12)
+- `cargo test --workspace` 629/629 pass(A3 562 + A4 +26 + A6 +6 + A5 +12 + A7 +23)
 - 13/13 crate ≥ 90% line,守住 v0.1 baseline
-- TOTAL 92.37% line / 91.89% region / 96.62% func
-- 关键 crate:`wlwl-parser` 90.02% / `wlwl-eval` 91.47% / `wlwl-ast` 94.12%
+- TOTAL 92.78% line / 92.36% region / 96.88% func
+- 关键 crate:`wlwl-parser` 89.34% region(持平) / `wlwl-eval` 91.97% region
+  / `wlwl-error` 98.72% region
 - 详细 history:`docs/history/20260909.md`(A4 追溯补)+ `docs/history/20260915.md`(A6)
-  + `docs/history/20260915a5.md`(A5)
+  + `docs/history/20260915a5.md`(A5)+ `docs/history/20260915a7.md`(A7)
 
 
 ### Phase B 收尾(待填)

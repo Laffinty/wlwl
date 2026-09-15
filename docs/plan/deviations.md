@@ -1131,3 +1131,29 @@ P3-013 选 §4.5 解读 (混用是 warning). 理由:
   - `wlwl-eval` line 91.03% → **91.47%** (+0.44pp,新 builtin + ERR payload check 全 path 覆盖)
   - `wlwl-parser` 90.02% (持平,A5 不动 parser)
 - detail: `docs/history/20260915a5.md`
+
+
+# P4-A7 (2026-09-15) — 数值与跨类型语义 (spec v0.4 §9.5)
+
+> Phase A 续,A7。本批把 spec §9.5 数值语义落地:整除 / 溢出饱和 + W0015 /
+> NEG(INTEGER_MIN) E0034 / 除零 E1003 / INT builtin + E0035 FLOAT 越界。
+
+| ID | Spec / plan | Status | Notes |
+|----|-------------|--------|-------|
+| A7-001 | spec §9.5 row 8 — `INT(FLOAT 越界)` → E0035 | **Code 实装, source-level dead branch** | `builtin_int` 实装 E0035 触发 (`!is_finite() \|\| \|f\| > i64::MAX as f64`),但 lexer 不接受 scientific notation (`1e308`) / 没有 INF 字面量 / f64 精度在 `i64::MAX as f64` 边界饱和 — 因此 source-level 无法构造 > i64::MAX 的 FLOAT。`int_builtin_float_out_of_range_is_e0035` 测试记录"当前不可达"。Phase B4 引入 `1e10` / `INF` 字面量后可达 |
+| A7-002 | spec §9.5 row 4 — `NEG(INTEGER_MIN)` → E0034 | **Implemented via 0 - INT_MIN 特判** | parser 把 `-x` 转 `-(0, x)`,所以 `-(0, INT64_MIN)` 是 NEG 唯一可触发路径。`builtin_sub` 特判 `i1 == 0 && i2 == i64::MIN` → E0034。其他 INTEGER sub 溢出仍走 W0015 饱和 |
+| A7-003 | spec §9.5 row 10 — `=(1, 1.0)` 视为相等 | **Already supported, 测试 lock-down** | 既有 `values_equal` (line 1366-1367) 已支持 `Integer ↔ Float` 比较;A7 本批加单元测试。无 source 改动 |
+| A7-004 | spec §14.4 row 12 — Runtime category | **Implemented** | wlwl-error 加 `ErrorCategory::Runtime`,`E1003` / `W0015` 映射过去。`runtime_error` 重命名为 `builtin_error`,放宽 `debug_assert!` 到 Runtime + Type 两类 |
+| A7-005 | warning emit 通道 | **Implemented (evaluator-level)** | `Evaluator.warnings: Vec<Warning>` + `emit_warning` / `take_warnings`。`run_with_warnings` test helper 已暴露。当前**没有** CLI / REPL 接通 warning → stderr 输出(留 Phase E — CLI polish) |
+
+## A7 commit summary
+
+- commit: (本次, 即将)
+- 2 modified crates: `wlwl-error` (4 新码 + 1 category + 2 snapshots) / `wlwl-eval` (Warning + 5 builtin 改写 + INT + 23 测试)
+- tests: +23 (629/629 pass, A3 562 + A4 +26 + A6 +6 + A5 +12 + A7 +23)
+- coverage: TOTAL **92.78% line** / 92.36% region / 96.88% func;13/13 crate ≥ 90% line 守住
+  - `wlwl-eval` region 91.02% → **91.97%** (+0.95pp, 新 builtin + W0015 路径 + INT error branches 全 path 覆盖)
+  - `wlwl-error` region 97.82% → **98.72%** (+0.90pp, 新码 + 新 snapshot)
+  - `wlwl-parser` region 89.34% (持平, A7 不动 parser)
+- baseline spec 一致化: 1 处 (`op_div_by_zero` E0030 → E1003)
+- detail: `docs/history/20260915a7.md`

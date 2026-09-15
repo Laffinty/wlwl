@@ -1,0 +1,27 @@
+---
+source: crates/wlwl-error/src/lib.rs
+expression: "serde_json::json!({ \"E1003\": code_snap(ErrorCode::E1003, \"div_by_zero\"), })"
+---
+{
+  "E1003": {
+    "code": "E1003",
+    "error_category": "runtime",
+    "error_schema_version": "1.1.0",
+    "hint": null,
+    "idempotent": false,
+    "location": {
+      "col_end": 1,
+      "col_start": 1,
+      "file": "snap.wl",
+      "line": 1,
+      "line_end": 1
+    },
+    "message": "snapshot for div_by_zero",
+    "related": [],
+    "retry_after": null,
+    "retryable": false,
+    "severity": "error",
+    "source_line": null,
+    "suggestion_code": []
+  }
+}

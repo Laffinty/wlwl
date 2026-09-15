@@ -42,6 +42,9 @@ pub enum ErrorCode {
     E0030, // type error
     E0031, // subscript/key type error
     E0032, // property/method not found
+    E0034, // integer overflow on negation (v0.4 §9.5: `NEG(INTEGER_MIN)`)
+    E0035, // FLOAT → INTEGER out-of-range cast (v0.4 §9.5: `INT(<huge float>)`)
+    E1003, // division or modulo by zero (v0.4 §9.5)
     E0040, // module not found
     E0041, // circular IMPORT
     E0042, // module file IO error
@@ -71,6 +74,7 @@ pub enum ErrorCode {
     W0020, // array/dict literal mixes bare values and kv pairs
     W0030, // IMPORTed name never used
     W0040, // unhandled `TODO(agent):` comment
+    W0015, // integer overflow, saturated to INT64_MAX / INT64_MIN (v0.4 §9.5)
 }
 
 impl ErrorCode {
@@ -95,6 +99,9 @@ impl ErrorCode {
             ErrorCode::E0030 => "E0030",
             ErrorCode::E0031 => "E0031",
             ErrorCode::E0032 => "E0032",
+            ErrorCode::E0034 => "E0034",
+            ErrorCode::E0035 => "E0035",
+            ErrorCode::E1003 => "E1003",
             ErrorCode::E0040 => "E0040",
             ErrorCode::E0041 => "E0041",
             ErrorCode::E0042 => "E0042",
@@ -123,6 +130,7 @@ impl ErrorCode {
             ErrorCode::W0020 => "W0020",
             ErrorCode::W0030 => "W0030",
             ErrorCode::W0040 => "W0040",
+            ErrorCode::W0015 => "W0015",
         }
     }
 
@@ -140,6 +148,7 @@ impl ErrorCode {
                 | ErrorCode::W0020
                 | ErrorCode::W0030
                 | ErrorCode::W0040
+                | ErrorCode::W0015
         )
     }
 
@@ -161,6 +170,14 @@ impl ErrorCode {
             | ErrorCode::E0026
             | ErrorCode::E0027 => ErrorCategory::Name,
             ErrorCode::E0030 | ErrorCode::E0031 | ErrorCode::E0032 => ErrorCategory::Type,
+            // v0.4 §9.5 — E0034 (NEG overflow) and E0035 (FLOAT→INT overflow)
+            // both sit on the "type" boundary (the value cannot be
+            // represented in the requested type), so they belong in Type.
+            ErrorCode::E0034 | ErrorCode::E0035 => ErrorCategory::Type,
+            // v0.4 §9.5 — division / modulo by zero is a runtime
+            // condition (the values themselves are valid), so it lands
+            // in the new Runtime bucket (spec §14.4 row 12).
+            ErrorCode::E1003 => ErrorCategory::Runtime,
             ErrorCode::E0040
             | ErrorCode::E0041
             | ErrorCode::E0042
@@ -188,6 +205,10 @@ impl ErrorCode {
             | ErrorCode::W0030 => ErrorCategory::Name,
             ErrorCode::W0013 | ErrorCode::W0020 => ErrorCategory::Syntax,
             ErrorCode::W0040 => ErrorCategory::Module,
+            // v0.4 §9.5 — integer overflow saturated to INT64_MAX/MIN.
+            // Same bucket as the underlying runtime condition
+            // (E1003 above), so consumers can route by category.
+            ErrorCode::W0015 => ErrorCategory::Runtime,
         }
     }
 
@@ -263,6 +284,10 @@ pub enum ErrorCategory {
     Io,
     Json,
     Ai,
+    /// v0.4 spec §14.4 row 11 — generic runtime errors
+    /// (division by zero, etc.). Currently only E1003 lives here;
+    /// future phase work (e.g. cancellation) will add more.
+    Runtime,
     User,
     Internal,
     /// Catch-all (should not be emitted by current code; reserved).
@@ -281,6 +306,7 @@ impl ErrorCategory {
             ErrorCategory::Io => "io",
             ErrorCategory::Json => "json",
             ErrorCategory::Ai => "ai",
+            ErrorCategory::Runtime => "runtime",
             ErrorCategory::User => "user",
             ErrorCategory::Internal => "internal",
             ErrorCategory::Unknown => "unknown",
@@ -864,6 +890,8 @@ mod tests {
             "E0030": code_snap(ErrorCode::E0030, "type_err"),
             "E0031": code_snap(ErrorCode::E0031, "subscrip_key_type"),
             "E0032": code_snap(ErrorCode::E0032, "prop_method_missing"),
+            "E0034": code_snap(ErrorCode::E0034, "neg_overflow"),
+            "E0035": code_snap(ErrorCode::E0035, "float_to_int_overflow"),
         }));
     }
 
@@ -914,6 +942,13 @@ mod tests {
     }
 
     #[test]
+    fn snap_runtime() {
+        insta::assert_json_snapshot!("codes_runtime", serde_json::json!({
+            "E1003": code_snap(ErrorCode::E1003, "div_by_zero"),
+        }));
+    }
+
+    #[test]
     fn snap_user_and_internal() {
         insta::assert_json_snapshot!("codes_user_internal", serde_json::json!({
             "E0099": code_snap(ErrorCode::E0099, "user_err"),
@@ -925,9 +960,12 @@ mod tests {
 
     // -- Phase 3: AI contract: 33 codes total ----------------------
     // v0.4 added E0024 (closure cell) + E0025/E0026/E0027 (MATCH family).
+    // Phase A7 (2026-09-15) added E0034 / E0035 (numeric overflow) +
+    // E1003 (runtime / div by zero) + Runtime category, and W0015
+    // (integer overflow saturated warning).
     #[test]
-    fn all_39_codes_registered() {
-        // Sanity: ensure we have exactly 39 codes wired through the schema.
+    fn all_42_codes_registered() {
+        // Sanity: ensure we have exactly 42 codes wired through the schema.
         // If anyone adds a new ErrorCode variant without updating the
         // snapshot, this count will shift and break the contract.
         let codes = [
@@ -937,6 +975,7 @@ mod tests {
             ErrorCode::E0020, ErrorCode::E0021, ErrorCode::E0022, ErrorCode::E0023,
             ErrorCode::E0024, ErrorCode::E0025, ErrorCode::E0026, ErrorCode::E0027,
             ErrorCode::E0030, ErrorCode::E0031, ErrorCode::E0032,
+            ErrorCode::E0034, ErrorCode::E0035,
             ErrorCode::E0040, ErrorCode::E0041, ErrorCode::E0042, ErrorCode::E0043,
             ErrorCode::E0050, ErrorCode::E0051,
             ErrorCode::E0060, ErrorCode::E0061, ErrorCode::E0062, ErrorCode::E0063,
@@ -944,11 +983,34 @@ mod tests {
             ErrorCode::E0080, ErrorCode::E0081, ErrorCode::E0082, ErrorCode::E0083,
             ErrorCode::E0099,
             ErrorCode::E0100, ErrorCode::E0101, ErrorCode::E0102,
+            ErrorCode::E1003,
         ];
-        assert_eq!(codes.len(), 39);
+        assert_eq!(codes.len(), 42);
         // Each code has a stable string form.
         for c in &codes {
             assert!(c.as_str().starts_with('E'));
+        }
+    }
+
+    #[test]
+    fn all_9_warning_codes_registered() {
+        // v0.4 §14.5 expanded the warning list. Phase A7 added W0015
+        // (integer overflow saturated).
+        let codes = [
+            ErrorCode::W0001,
+            ErrorCode::W0010,
+            ErrorCode::W0011,
+            ErrorCode::W0012,
+            ErrorCode::W0013,
+            ErrorCode::W0015,
+            ErrorCode::W0020,
+            ErrorCode::W0030,
+            ErrorCode::W0040,
+        ];
+        assert_eq!(codes.len(), 9);
+        for c in &codes {
+            assert!(c.is_warning(), "{} should report is_warning() = true", c.as_str());
+            assert!(c.as_str().starts_with('W'));
         }
     }
     // ---- P3-009d: ErrorCategory, Severity, Span::range, extract_line, diagnostic builders ----
@@ -964,6 +1026,7 @@ mod tests {
         assert_eq!(ErrorCategory::Io.as_str(), "io");
         assert_eq!(ErrorCategory::Json.as_str(), "json");
         assert_eq!(ErrorCategory::Ai.as_str(), "ai");
+        assert_eq!(ErrorCategory::Runtime.as_str(), "runtime");
         assert_eq!(ErrorCategory::User.as_str(), "user");
         assert_eq!(ErrorCategory::Internal.as_str(), "internal");
         assert_eq!(ErrorCategory::Unknown.as_str(), "unknown");
