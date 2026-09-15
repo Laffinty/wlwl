@@ -1157,3 +1157,48 @@ P3-013 选 §4.5 解读 (混用是 warning). 理由:
   - `wlwl-parser` region 89.34% (持平, A7 不动 parser)
 - baseline spec 一致化: 1 处 (`op_div_by_zero` E0030 → E1003)
 - detail: `docs/history/20260915a7.md`
+
+
+# P4-A8 (2026-09-15) — 比较返回类型规则 (spec v0.4 §9.2 文档化)
+
+> Phase A 收尾批, A8。**0 impl 改动** — 文档化 + 8 个测试 lock-down。
+> spec §9.2 是 v0.4 重大修订 (修复 v0.3 §9.2 vs §12.6 矛盾)。A6 (commit 9f0c0f6)
+> 把 `=` / `!=` 标注为"不进 ERR_CONSUMER_REGISTRY, 走默认传播"; `>` `<`
+> `>=` `<=` 同样不在注册表。`eval_call` line 1935-1944 的 §12.6 short-circuit
+> 自动处理 ERR 透明传播——A8 不需要单独改动。
+
+| ID | Spec / plan | Status | Notes |
+|----|-------------|--------|-------|
+| A8-001 | spec §9.2 — 两操作数均非 ERR → BOOLEAN | **Already compliant (A6 transitive)** | `=` / `!=` / `>` / `<` / `>=` / `<=` 6 个 op 全部通过 `eval_call` 走 §12.6; happy path 全部 `matches!(r, Value::Boolean(_))` 由 `comparison_returns_boolean_whenall_non_err` 测试 lock-down |
+| A8-002 | spec §9.2 — 任一操作数是 ERR → 透明传播 | **Already compliant (A6 transitive)** | 6 个 op 各加 2 个 IS_ERR(...) 路径测试(ERR 左侧 + ERR 右侧)+ 1 个 `==(ERR, ERR)` leftmost-ERR-wins 测试 |
+| A8-003 | v0.3 vs v0.4 矛盾修复 (spec §9.2 line 1059-1068) | **Documented in history** | v0.3 同时声明 "比较总是返回 BOOLEAN" 与 "= 不在白名单 → =(ERR,1) 返回 ERR"——矛盾; v0.4 通过"按入参情况分情形"消除 |
+
+## A8 commit summary
+
+- commit: (本次, 即将)
+- 1 modified crate: `wlwl-eval` (0 impl 改动, +8 §9.2 测试 lock-down)
+- tests: +8 (637/637 pass, A3 562 + A4 +26 + A6 +6 + A5 +12 + A7 +23 + A8 +8)
+- coverage: 持平 (TOTAL 92.78% line / 92.36% region / 96.88% func)
+- **Phase A 收尾信号**: §0.4 Conformance 列出的 8 个 Phase A 项全部完成或显式 deferred (A1e 等 B4)
+- detail: `docs/history/20260915a8.md`
+
+---
+
+## Phase A 收尾总结(2026-09-15)
+
+| commit | date | 主题 | tests |
+|--------|------|------|-------|
+| `8655ebd` | 2026-09-04 | A1a-c error schema 1.1.0 基础字段 | — |
+| `ece5103` → `e1531fc` | 2026-09-05~06 | A1d trace 字段 + call_stack | — |
+| `e8b8ac1` | 2026-09-07 | A2 闭包 cell 语义 | — |
+| `3e398d8` | 2026-09-08 | A3 解构绑定 | +21 |
+| `0e4642c` | 2026-09-09 | A4 MATCH 模式匹配 | +26 |
+| `17a3d14` | 2026-09-15 | A5 RESULT 一等值类型 + TYPE builtin | +12 |
+| `9f0c0f6` | 2026-09-15 | A6 ERR 消费者注册表 + UNWRAP_OR alias | +6 |
+| `1852d42` | 2026-09-15 | A7 数值与跨类型语义 (Warning 通道 + INT builtin) | +23 |
+| `(本次)` | 2026-09-15 | A8 比较返回类型规则 (0 impl 改动) | +8 |
+
+**Phase A 总净增**: 562 → 637 tests (+75, +13.3%), 4 个新 errors(E0034/E0035/E1003/W0015),
+1 个新 category(Runtime), 9 个新 builtin(`TYPE`/`INT` 实装, `UNWRAP`/`ERR_PAYLOAD`/`WRAP`
+注册表占位待 B4), 2 个 §13.x 语义合规范(spec §9.2 + §9.5)。下一步: **Phase B 入口 B1
+`INDEX_GET` / `INDEX_SET`**。

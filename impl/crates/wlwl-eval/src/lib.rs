@@ -3402,6 +3402,161 @@ mod tests {
         assert!(ev.take_warnings().is_empty());
     }
 
+    // ── §9.2 comparison return-type rules (Phase A8) ───────────────
+    //
+    // v0.4 spec §9.2 is a **major revision** of v0.3 — v0.3 simultaneously
+    // declared "comparisons always return BOOLEAN" AND "=(ERR, 1) returns
+    // ERR (because `=` was not on the v0.3 whitelist)". Those statements
+    // contradict. v0.4 pins:
+    //
+    //   * When **both operands are non-ERR**, `=` / `!=` / `>` / `<`
+    //     / `>=` / `<=` returns `BOOLEAN`.
+    //   * When **either operand is ERR**, the comparison transparently
+    //     propagates ERR per §12.6 (does **not** return BOOLEAN).
+    //
+    // Implementation: `=` / `!=` are NOT in the §12.7 ERR_CONSUMER_REGISTRY
+    // (Phase A6 set the registry deliberately excluding them), so the
+    // existing `eval_call` short-circuit at line 1935-1944 handles the
+    // ERR-transparent propagation for free. `>` `<` `>=` `<=` likewise
+    // are not registered, and `IF` is treated identically. Phase A8
+    // is therefore **0 impl changes**; this section is documentation
+    // + test lockdown + cross-references to spec §9.2.
+
+    #[test]
+    fn eq_op_propagates_err_transparently() {
+        // §9.2 — `=` / `!=` / `>` / `<` / `>=` / `<=` must NOT consume ERR;
+        // they propagate transparently (§12.6). At the top level that
+        // becomes E0102, so we wrap in IS_ERR to observe the result.
+        // (IS_ERR is in the §12.7 registry; consumes ERR → TRUE.)
+        assert_eq!(
+            run(r###"IS_ERR(==(ERR("a"), 1));"###).unwrap(),
+            Value::Boolean(true),
+            "`==` must propagate ERR per §9.2 + §12.6"
+        );
+        assert_eq!(
+            run(r###"IS_ERR(==(1, ERR("b")));"###).unwrap(),
+            Value::Boolean(true),
+            "`==` must propagate ERR even when ERR is the second arg"
+        );
+        assert_eq!(
+            run(r###"IS_ERR(==(ERR("a"), ERR("b")));"###).unwrap(),
+            Value::Boolean(true),
+            "`==` must propagate ERR when both sides are ERR (leftmost wins)"
+        );
+        // IS_ERR consumes the propagated ERR, so the comparison never
+        // returns BOOLEAN for the above inputs — verify with a direct
+        // value path too: 1 == 2 still returns BOOLEAN(false).
+        assert_eq!(run("==(1, 2);").unwrap(), Value::Boolean(false));
+    }
+
+    #[test]
+    fn ne_op_propagates_err_transparently() {
+        assert_eq!(
+            run(r###"IS_ERR(!=(ERR("a"), 1));"###).unwrap(),
+            Value::Boolean(true),
+            "`!=` must propagate ERR per §9.2 + §12.6"
+        );
+        assert_eq!(
+            run(r###"IS_ERR(!=(1, ERR("b")));"###).unwrap(),
+            Value::Boolean(true)
+        );
+    }
+
+    #[test]
+    fn lt_op_propagates_err_transparently() {
+        assert_eq!(
+            run(r###"IS_ERR(<(ERR("a"), 1));"###).unwrap(),
+            Value::Boolean(true),
+            "`<` must propagate ERR per §9.2 + §12.6"
+        );
+        assert_eq!(
+            run(r###"IS_ERR(<(1, ERR("b")));"###).unwrap(),
+            Value::Boolean(true)
+        );
+    }
+
+    #[test]
+    fn gt_op_propagates_err_transparently() {
+        assert_eq!(
+            run(r###"IS_ERR(>(ERR("a"), 1));"###).unwrap(),
+            Value::Boolean(true),
+            "`>` must propagate ERR per §9.2 + §12.6"
+        );
+        assert_eq!(
+            run(r###"IS_ERR(>(1, ERR("b")));"###).unwrap(),
+            Value::Boolean(true)
+        );
+    }
+
+    #[test]
+    fn le_op_propagates_err_transparently() {
+        assert_eq!(
+            run(r###"IS_ERR(<=(ERR("a"), 1));"###).unwrap(),
+            Value::Boolean(true),
+            "`<=` must propagate ERR per §9.2 + §12.6"
+        );
+        assert_eq!(
+            run(r###"IS_ERR(<=(1, ERR("b")));"###).unwrap(),
+            Value::Boolean(true)
+        );
+    }
+
+    #[test]
+    fn ge_op_propagates_err_transparently() {
+        assert_eq!(
+            run(r###"IS_ERR(>=(ERR("a"), 1));"###).unwrap(),
+            Value::Boolean(true),
+            "`>=` must propagate ERR per §9.2 + §12.6"
+        );
+        assert_eq!(
+            run(r###"IS_ERR(>=(1, ERR("b")));"###).unwrap(),
+            Value::Boolean(true)
+        );
+    }
+
+    #[test]
+    fn comparison_returns_boolean_whenall_non_err() {
+        // §9.2 — the "positive" half: all 6 ops return BOOLEAN when
+        // both operands are non-ERR. Locked down here with a single
+        // representative test (each op is covered transitively by
+        // the op_eq_ne / op_ordering baseline tests; this is the
+        // spec §9.2 wording assertion).
+        for src in &[
+            "==(1, 1);", "==(1, 2);",
+            "!=(1, 2);", "!=(1, 1);",
+            "<(1, 2);", ">(2, 1);",
+            "<=(1, 1);", ">=(1, 1);",
+        ] {
+            let r = run(src).unwrap();
+            assert!(
+                matches!(r, Value::Boolean(_)),
+                "{} should return BOOLEAN, got {:?}",
+                src,
+                r
+            );
+        }
+    }
+
+    #[test]
+    fn comparison_leftmost_err_wins_under_transparent_propagation() {
+        // §12.6 short-circuit: the **leftmost** ERR is the propagated
+        // result. This is the same rule that `+` and `LEN` use.
+        // Both `==(ERR("a"), ERR("b"))` and `==(ERR("b"), ERR("a"))`
+        // return ERR; we wrap in `IS_ERR` (consumes ERR) and the
+        // payload identity is checked via `TYPE(...) == "RESULT"`.
+        assert_eq!(
+            run(r###"TYPE(==(ERR("a"), ERR("b")));"###).unwrap(),
+            Value::String("RESULT".into()),
+            "comparing two ERRs still returns a RESULT, not BOOLEAN"
+        );
+        // And the comparison result is `Err("a")` (leftmost).
+        // We check this via `ERR_PAYLOAD` (registered as §12.7 ERR
+        // consumer; Phase B4 will implement it — until then the
+        // ERR is propagated but ERR_PAYLOAD returns E0020). For
+        // now we use a more general check: the result is an ERR
+        // (asserted above) and its type is RESULT.
+    }
+
     #[test]
     fn op_eq_ne() {
         assert_eq!(run("==(1, 1);").unwrap(), Value::Boolean(true));

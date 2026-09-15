@@ -1842,7 +1842,9 @@ allow_builtin_shadow = false            # 同 [package]
 - A5 RESULT 一等值类型(spec §2.2.1)+ TYPE builtin + ERR payload STRING/DICT 约束
   — commit `17a3d14`
 - A6 ERR 消费者注册表 4→9 项(spec §12.7)+ UNWRAP_OR alias — commit `9f0c0f6`
-- **A7 数值与跨类型语义(spec §9.5)** — commit (本次)
+- A7 数值与跨类型语义(spec §9.5)+ W0015 通道 + INT builtin + Runtime category
+  — commit `1852d42`
+- **A8 比较返回类型规则(spec §9.2, 0 impl 改动 + 8 测试 lock-down)** — commit (本次)
 
 **已完成但与 Phase A 之外联动**:
 
@@ -1851,22 +1853,32 @@ allow_builtin_shadow = false            # 同 [package]
 - A5 TYPE 已实装,NativeFn 当 FUNCTION 的形式选择记 P4-A5-001 deviations
 - A5 OK / ERR 当 keyword vs macro 的形式偏差记 P4-A5-002 deviations
 - A7 新码 E0034 / E0035 / E1003 / W0015 + Runtime category 实装,
-  E0035 当前 dead branch 记 P4-A7-001(deviations 待补)
+  E0035 当前 dead branch 记 P4-A7-001(deviations)
 
 **残留**:
 
-- A1e `cause` 字段(WRAP 链)→ Phase B4 触发
-- A8 比较返回类型规则(spec §9.2 文档化,纯 commit 0 impl 改动)
+- **A1e `cause` 字段(WRAP 链)→ Phase B4 触发**(不阻塞 Phase A 收尾)
+- ~~A8 比较返回类型规则~~ ✅ 完成
 
-**测试与覆盖率(A7 落地后)**:
+**Phase A 收尾信号**: §0.4 Conformance 列出的 8 个 Phase A 项全部完成
+或显式 deferred (A1e 等 B4)。下一步进入 Phase B (spec v0.4 内建/库扩展)。
 
-- `cargo test --workspace` 629/629 pass(A3 562 + A4 +26 + A6 +6 + A5 +12 + A7 +23)
+**测试与覆盖率(A8 落地后)**:
+
+- `cargo test --workspace` 637/637 pass(A3 562 + A4 +26 + A6 +6 + A5 +12 + A7 +23 + A8 +8)
 - 13/13 crate ≥ 90% line,守住 v0.1 baseline
-- TOTAL 92.78% line / 92.36% region / 96.88% func
-- 关键 crate:`wlwl-parser` 89.34% region(持平) / `wlwl-eval` 91.97% region
+- TOTAL 92.78% line / 92.36% region / 96.88% func(持平,A8 0 impl 改动)
+- 关键 crate:`wlwl-parser` 89.34% region / `wlwl-eval` 91.97% region
   / `wlwl-error` 98.72% region
 - 详细 history:`docs/history/20260909.md`(A4 追溯补)+ `docs/history/20260915.md`(A6)
   + `docs/history/20260915a5.md`(A5)+ `docs/history/20260915a7.md`(A7)
+  + `docs/history/20260915a8.md`(A8)
+
+### Phase B 收尾(待填)
+
+入口:`INDEX_GET` / `INDEX_SET`(B1)→ 高阶集合函数套件(B2)→ `UNWRAP_OR`
+主推化 + W0051(B3)→ `WRAP` / `UNWRAP` / `ERR_PAYLOAD` / `NEG(x)` macro + A1e
+cause(B4)。总计 ~3-4 天。
 
 
 ### Phase B 收尾(待填)
