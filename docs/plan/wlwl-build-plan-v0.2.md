@@ -1839,28 +1839,31 @@ allow_builtin_shadow = false            # 同 [package]
 - A2 闭包 cell 语义(spec §6.4)+ SET 宏 + E0024 — commit `e8b8ac1`
 - A3 解构绑定(spec §7.5)+ Pattern AST + E0026 — commit `3e398d8`
 - A4 MATCH 模式匹配(spec §7.6)+ Pattern::Constructor + E0027 占位 — commit `0e4642c`
-- **A6 ERR 消费者注册表 4→9 项(spec §12.7)+ UNWRAP_OR alias** — commit (本次)
+- A5 RESULT 一等值类型(spec §2.2.1)+ TYPE builtin + ERR payload STRING/DICT 约束
+  — commit (本次)
+- A6 ERR 消费者注册表 4→9 项(spec §12.7)+ UNWRAP_OR alias — commit `9f0c0f6`
 
 **已完成但与 Phase A 之外联动**:
 
 - E0025 / E0027 已注册(wlwl-error schema 1.1.0),A5 / A4 触发路径
-- 注册表钉死 9 项,UNWRAP / ERR_PAYLOAD / WRAP / TYPE 函数本批未实装(B4 / A5 范畴,
-  注册表声称消费 ERR 但当前 resolve_builtin 返回 None → 调用得 E0020 是 known gap)
+- A6 注册表 9 项钉死,UNWRAP / ERR_PAYLOAD / WRAP 函数仍未实装(Phase B4 范畴)
+- A5 TYPE 已实装,NativeFn 当 FUNCTION 的形式选择记 P4-A5-001 deviations
+- A5 OK / ERR 当 keyword vs macro 的形式偏差记 P4-A5-002 deviations
 
 **残留**:
 
 - A1e `cause` 字段(WRAP 链)→ Phase B4 触发
-- A5 RESULT 一等值类型注解(`TYPE(OK(1))` 大写返串 + 测试)
 - A7 数值与跨类型语义(spec §9.5,整除 / 溢出 / NaN / 跨类型相等)
 - A8 比较返回类型规则(spec §9.2 文档化)
 
-**测试与覆盖率(A6 落地后)**:
+**测试与覆盖率(A5 落地后)**:
 
-- `cargo test --workspace` 594/594 pass(A3 562 + A4 +26 + A6 +6)
+- `cargo test --workspace` 606/606 pass(A3 562 + A4 +26 + A6 +6 + A5 +12)
 - 13/13 crate ≥ 90% line,守住 v0.1 baseline
-- TOTAL 92.20% line / 91.73% region / 96.56% func
-- 关键 crate:`wlwl-parser` 90.02% / `wlwl-eval` 91.03% / `wlwl-ast` 94.12%
+- TOTAL 92.37% line / 91.89% region / 96.62% func
+- 关键 crate:`wlwl-parser` 90.02% / `wlwl-eval` 91.47% / `wlwl-ast` 94.12%
 - 详细 history:`docs/history/20260909.md`(A4 追溯补)+ `docs/history/20260915.md`(A6)
+  + `docs/history/20260915a5.md`(A5)
 
 
 ### Phase B 收尾(待填)

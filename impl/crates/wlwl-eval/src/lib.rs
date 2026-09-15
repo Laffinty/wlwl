@@ -986,6 +986,9 @@ fn resolve_builtin(name: &str) -> Option<BuiltinFn> {
         // messages still surface as "OR_DIE" until Phase B3 unifies
         // the canonical name (and emits W0051 on legacy use).
         "UNWRAP_OR" => Some(builtin_or_die),
+        // v0.4 spec §2.2.1 — uppercase type name builtin; listed in
+        // §12.7 ERR consumer registry (TYPE does not propagate ERR).
+        "TYPE" => Some(builtin_type),
         _ => None,
     }
 }
@@ -1105,6 +1108,41 @@ fn type_name(v: &Value) -> &'static str {
         Value::Ok(_) => "ok",
         Value::Err(_) => "err",
     }
+}
+
+/// v0.4 spec §2.2.1 — uppercase type names for the user-facing `TYPE(x)`
+/// builtin. Note that both `Value::Ok(_)` and `Value::Err(_)` collapse to
+/// `"RESULT"` per spec §2.2.1 (the two variants share one type name).
+///
+/// Distinct from `type_name` (lowercase, used for human-readable error
+/// messages) so that adding `TYPE` does not ripple through every
+/// `type_error` / `arity_error` diagnostic string.
+///
+/// `Value::NativeFn { .. }` is folded into `"FUNCTION"` (spec §2.2 lists
+/// one `FUNCTION` type; `NativeFn` is a std-injection mechanism, not a
+/// separate user-visible type). This is a known simplification — see
+/// deviations P4-A5-001.
+fn value_type_name(v: &Value) -> &'static str {
+    match v {
+        Value::Integer(_) => "INTEGER",
+        Value::Float(_) => "FLOAT",
+        Value::String(_) => "STRING",
+        Value::Boolean(_) => "BOOLEAN",
+        Value::Null => "NULL",
+        Value::Array(_) => "ARRAY",
+        Value::Dict(_) => "DICT",
+        Value::Closure { .. } | Value::NativeFn { .. } => "FUNCTION",
+        Value::Ok(_) | Value::Err(_) => "RESULT",
+    }
+}
+
+/// v0.4 spec §2.2.1 — `TYPE(x)` builtin.
+///
+/// Returns the **uppercase** type name of `x` (per spec §2.2 table).
+/// Registered in the §12.7 ERR consumer registry (does not propagate ERR).
+fn builtin_type(_ev: &mut Evaluator, args: Vec<Value>) -> WlwlResult<Outcome> {
+    let v = expect_arity("TYPE", &args, 1)?;
+    Ok(Outcome::normal(Value::String(value_type_name(v).to_string())))
 }
 
 fn numeric(v: &Value) -> Option<f64> {
@@ -1605,6 +1643,21 @@ impl Evaluator {
                 let o = self.eval_expr(value)?;
                 if o.signal != Signal::None {
                     return Ok(o);
+                }
+                // v0.4 spec §2.2.1: ERR(e) payload `e` must be STRING
+                // or DICT; anything else is an E0030 type error.
+                match &o.value {
+                    Value::String(_) | Value::Dict(_) => {}
+                    other => {
+                        return Err(self.diag(
+                            ErrorCode::E0030,
+                            format!(
+                                "ERR payload must be STRING or DICT, got {}",
+                                type_name(other)
+                            ),
+                            expr.span().clone(),
+                        ));
+                    }
                 }
                 Ok(Outcome::normal(Value::Err(Box::new(o.value))))
             }
@@ -3222,9 +3275,10 @@ mod tests {
     #[test]
     fn err_is_ok_is_err() {
         assert_eq!(run("IS_OK(OK(1));").unwrap(), Value::Boolean(true));
-        assert_eq!(run("IS_OK(ERR(1));").unwrap(), Value::Boolean(false));
+        // v0.4 spec §2.2.1: ERR payload must be STRING or DICT — string is fine.
+        assert_eq!(run(r###"IS_OK(ERR("1"));"###).unwrap(), Value::Boolean(false));
         assert_eq!(run("IS_ERR(OK(1));").unwrap(), Value::Boolean(false));
-        assert_eq!(run("IS_ERR(ERR(1));").unwrap(), Value::Boolean(true));
+        assert_eq!(run(r###"IS_ERR(ERR("1"));"###).unwrap(), Value::Boolean(true));
     }
 
     #[test]
@@ -3467,6 +3521,156 @@ mod tests {
             err.diagnostic().code,
             ErrorCode::E0020,
             "UNWRAP is in the §12.7 registry but not yet implemented (Phase B4 gap)"
+        );
+    }
+
+    // ── §2.2.1 RESULT type + TYPE builtin (Phase A5) ────────────────
+    //
+    // v0.4 spec §2.2.1 promotes OK / ERR from "wrapper DICT" to a
+    // first-class RESULT type, and pins TYPE(x) to return the
+    // uppercase type name. ERR's payload is type-constrained to STRING
+    // or DICT (any other value is an E0030 type error).
+    //
+    // The TYPE builtin is also in the §12.7 ERR consumer registry
+    // (added by Phase A6), so TYPE on an ERR returns "RESULT" without
+    // the ERR transparently propagating.
+
+    #[test]
+    fn type_returns_uppercase_spec_names_for_all_variants() {
+        // §2.2.1 — every spec-listed type is reachable via TYPE().
+        use Value::*;
+        assert_eq!(run("TYPE(1);").unwrap(), Value::String("INTEGER".into()));
+        assert_eq!(run("TYPE(1.5);").unwrap(), Value::String("FLOAT".into()));
+        assert_eq!(run(r#"TYPE("hi");"#).unwrap(), Value::String("STRING".into()));
+        assert_eq!(run("TYPE(TRUE);").unwrap(), Value::String("BOOLEAN".into()));
+        assert_eq!(run("TYPE(NULL);").unwrap(), Value::String("NULL".into()));
+        assert_eq!(run("TYPE([1, 2]);").unwrap(), Value::String("ARRAY".into()));
+        assert_eq!(
+            run(r#"TYPE(["k": 1]);"#).unwrap(),
+            Value::String("DICT".into())
+        );
+        // Function types: closure AND native fn both report FUNCTION.
+        assert_eq!(
+            run("LET(f, FUN((), 1)); TYPE(f);").unwrap(),
+            Value::String("FUNCTION".into())
+        );
+    }
+
+    #[test]
+    fn type_of_ok_and_err_both_return_result() {
+        // §2.2.1 — `OK(...)` and `ERR(...)` share the type name RESULT.
+        // "RESULT" is the **type** name; OK and ERR are the **variants**.
+        assert_eq!(
+            run("TYPE(OK(1));").unwrap(),
+            Value::String("RESULT".into())
+        );
+        assert_eq!(
+            run(r#"TYPE(ERR("e"));"#).unwrap(),
+            Value::String("RESULT".into())
+        );
+        // Even when wrapping other RESULTs, the surface is still RESULT.
+        assert_eq!(
+            run("TYPE(OK(OK(1)));").unwrap(),
+            Value::String("RESULT".into())
+        );
+    }
+
+    #[test]
+    fn type_consumes_err_without_propagation() {
+        // TYPE is in the §12.7 registry (added by A6), so TYPE(ERR("e"))
+        // returns "RESULT" — the ERR is observed as a type-tag, not
+        // propagated transparently.
+        assert_eq!(
+            run(r#"TYPE(ERR("e"));"#).unwrap(),
+            Value::String("RESULT".into())
+        );
+    }
+
+    #[test]
+    fn type_arity_wrong_is_e0022() {
+        let err = run("TYPE();").unwrap_err();
+        assert_eq!(err.diagnostic().code, ErrorCode::E0022);
+        let err = run("TYPE(1, 2);").unwrap_err();
+        assert_eq!(err.diagnostic().code, ErrorCode::E0022);
+    }
+
+    #[test]
+    fn err_payload_must_be_string_or_dict_string_ok() {
+        // §2.2.1 — string payloads are accepted. Wrap in IS_ERR (which
+        // is in the §12.7 ERR consumer registry) so the top-level ERR
+        // does not promote to E0102.
+        assert_eq!(
+            run(r###"IS_ERR(ERR("network down"));"###).unwrap(),
+            Value::Boolean(true),
+            "string payload must be accepted as a valid ERR payload"
+        );
+    }
+
+    #[test]
+    fn err_payload_must_be_string_or_dict_dict_ok() {
+        // §2.2.1 — dict payloads are accepted (structured error context).
+        // IS_ERR consumes the ERR per §12.7 registration.
+        assert_eq!(
+            run(r###"IS_ERR(ERR(["code": "E1001", "retryable": TRUE]));"###).unwrap(),
+            Value::Boolean(true),
+            "dict payload must be accepted as a valid ERR payload"
+        );
+    }
+
+    #[test]
+    fn err_payload_integer_errors_with_e0030() {
+        // Non-STRING / non-DICT payload → E0030 type error.
+        let err = run("ERR(42);").unwrap_err();
+        assert_eq!(err.diagnostic().code, ErrorCode::E0030);
+    }
+
+    #[test]
+    fn err_payload_array_errors_with_e0030() {
+        // ARRAY is a perfectly valid value in general, but ERR specifically
+        // requires STRING or DICT per spec §2.2.1.
+        let err = run("ERR([1, 2, 3]);").unwrap_err();
+        assert_eq!(err.diagnostic().code, ErrorCode::E0030);
+    }
+
+    #[test]
+    fn err_payload_boolean_and_null_errors_with_e0030() {
+        let err = run("ERR(TRUE);").unwrap_err();
+        assert_eq!(err.diagnostic().code, ErrorCode::E0030);
+        let err = run("ERR(NULL);").unwrap_err();
+        assert_eq!(err.diagnostic().code, ErrorCode::E0030);
+    }
+
+    #[test]
+    fn err_payload_ok_errors_with_e0030() {
+        // OK is a RESULT, not STRING/DICT, so ERR(OK(1)) is also E0030.
+        // Note: spec §2.2.1 explicitly limits the allowed set to STRING/DICT.
+        let err = run("ERR(OK(1));").unwrap_err();
+        assert_eq!(err.diagnostic().code, ErrorCode::E0030);
+    }
+
+    #[test]
+    fn ok_payload_has_no_type_constraint() {
+        // Spec §2.2.1 only constrains ERR(e). OK(v) accepts any v.
+        // Including RESULT-wrapping RESULT and ARRAYs.
+        assert!(matches!(run("OK(42);").unwrap(), Value::Ok(_)));
+        assert!(matches!(run("OK([1, 2]);").unwrap(), Value::Ok(_)));
+        assert!(matches!(run("OK(OK(1));").unwrap(), Value::Ok(_)));
+        assert!(matches!(run(r#"OK("hi");"#).unwrap(), Value::Ok(_)));
+    }
+
+    #[test]
+    fn err_payload_validation_only_runs_when_arg_evaluates_ok() {
+        // Make sure the type check is performed on the **evaluated**
+        // payload, not the AST shape — so e.g. LET-binding first then
+        // passing into ERR also goes through the check.
+        // Integer LET value fed into ERR: type check fires on evaluated value.
+        let err = run(r###"LET(x, 42); ERR(x);"###).unwrap_err();
+        assert_eq!(err.diagnostic().code, ErrorCode::E0030);
+        // Dict LET value fed into ERR: accepted. Use IS_ERR to observe
+        // (and to consume the ERR per §12.7 so it doesn't E0102-promote).
+        assert_eq!(
+            run(r###"LET(d, ["k": "v"]); IS_ERR(ERR(d));"###).unwrap(),
+            Value::Boolean(true)
         );
     }
 
@@ -5380,7 +5584,8 @@ entry = "main.wl"
     #[test]
     fn p4_a4_destructure_constructor_mismatch_is_e0026() {
         // LET(OK(x), ERR(...)) is a hard destructure failure (E0026).
-        let err = run("LET([OK(x), v], [ERR(5), 10]); +(x, v);").unwrap_err();
+        // v0.4 spec §2.2.1: ERR payload must be STRING or DICT — string is fine.
+        let err = run(r###"LET([OK(x), v], [ERR("5"), 10]); +(x, v);"###).unwrap_err();
         let d = err.diagnostic();
         assert_eq!(d.code, ErrorCode::E0026);
     }

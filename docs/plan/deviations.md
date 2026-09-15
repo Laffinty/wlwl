@@ -1107,3 +1107,27 @@ P3-013 选 §4.5 解读 (混用是 warning). 理由:
   - `wlwl-parser` 90.02% (A4 末持平,A6 不动 parser)
   - `wlwl-eval` 91.03% (持平,新注册表 const + 6 测试全 path 覆盖)
 - detail: `docs/history/20260915.md`
+
+
+# P4-A5 (2026-09-15) — RESULT 一等值类型 + TYPE builtin (spec v0.4 §2.2.1)
+
+> Phase A 续,A5。本批把 spec §2.2.1 的 RESULT 一等值类型语义落地:实装
+> TYPE builtin + ERR payload STRING/DICT 强类型约束。
+
+| ID | Spec / plan | Status | Notes |
+|----|-------------|--------|-------|
+| A5-001 | spec §2.2 表 `FUNCTION` 一种类型 | **Implemented as single `FUNCTION`** | `Value::NativeFn { .. }` 与 `Value::Closure { .. }` 都映射到 `"FUNCTION"`(spec §2.2 表只一种 FUNCTION 类型);若后续 v0.5 决定分开"NATIVE_FUNCTION"再调整 |
+| A5-002 | spec §2.2.1 末段"OK / ERR 是构造器宏函数(非关键字,因为 §3.3 不列入关键字表)" | **Documented drift (本批不改)** | 当前 lexer 把 OK / ERR 当 keyword (`TokenKind::Ok / Err`),parser 转成 `Expr::Ok` / `Expr::Err`,用户不能用 `LET(OK, 1)` 作为变量名。改成"构造器宏"需要 lexer + parser 大改,留 v0.5 决策;行为上 OK / ERR 不可作变量名 与"宏函数"在 parser 层处理 是间接兼容的 |
+| A5-003 | `TYPE(x)` 实装 | **Implemented** | `builtin_type` 1 arg → `Value::String(value_type_name(&arg))`;关闭 A6 tripwire 的 TYPE 部分 |
+| A5-004 | `ERR(e)` 强制 `e` 是 STRING 或 DICT (E0030) | **Implemented** | `Expr::Err` 在 `eval_expr(value)` 之后立即检查,非 String / Dict → E0030 `ERR payload must be STRING or DICT, got <type>` |
+| A5-005 | baseline 测试 spec 一致化 | **Documented** | `err_is_ok_is_err` (3 处) `ERR(1)` → `ERR("1")`,`p4_a4_destructure_constructor_mismatch_is_e0026` `ERR(5)` → `ERR("5")`。旧形式在 spec §2.2.1 下不可能产生 ERR 值(E0030 先 fail),baseline 形式无法继续 |
+
+## A5 commit summary
+
+- commit: (本次, 即将)
+- 1 modified crate: `wlwl-eval` (value_type_name 大写 + builtin_type + resolve_builtin TYPE + Expr::Err payload 检查 + 12 新测试 + 2 baseline 改写)
+- tests: +12 (606 / 606 pass,A3 562 + A4 +26 + A6 +6 + A5 +12)
+- coverage: TOTAL 92.37% line / 91.89% region / 96.62% func;13/13 crate ≥ 90% line 守住
+  - `wlwl-eval` line 91.03% → **91.47%** (+0.44pp,新 builtin + ERR payload check 全 path 覆盖)
+  - `wlwl-parser` 90.02% (持平,A5 不动 parser)
+- detail: `docs/history/20260915a5.md`
