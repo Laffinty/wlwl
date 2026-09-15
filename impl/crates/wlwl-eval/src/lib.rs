@@ -982,18 +982,70 @@ fn resolve_builtin(name: &str) -> Option<BuiltinFn> {
         "||" => Some(builtin_or),
         "!" => Some(builtin_not),
         "OR_DIE" => Some(builtin_or_die),
+        // v0.4 spec §12.7 main name for OR_DIE; alias only — error
+        // messages still surface as "OR_DIE" until Phase B3 unifies
+        // the canonical name (and emits W0051 on legacy use).
+        "UNWRAP_OR" => Some(builtin_or_die),
         _ => None,
     }
 }
 
-/// Whitelist of functions that **consume** an `ERR` value instead of
-/// letting it transparently propagate (v0.3 §19.4 / Theorem 19.1).
-/// Operators (`+`, `==`, …) are NOT in this set — they are transparent
-/// to `ERR`, per the spec. `OR_DIE` is treated as a regular function
-/// call by the parser (since it isn't a reserved keyword in v0.3 §3.2),
-/// so it lives in this set by name.
+/// §12.7 ERR consumer registry (v0.4 spec).
+///
+/// Replaces the v0.3 closed 4-item whitelist with a spec-pinned
+/// registry. Each entry here **must** consume `ERR` (i.e. NOT
+/// transparently propagate it per §12.6). Adding a new entry
+/// requires a spec upgrade (§18 / appendix D); the implementation
+/// must NOT consume ERR outside this set (spec §12.7 末段).
+///
+/// **Currently registered (9 names)**:
+///
+/// | name          | behavior on ERR                                          |
+/// |---------------|----------------------------------------------------------|
+/// | `IS_OK`       | returns `FALSE` (observation, no payload)                |
+/// | `IS_ERR`      | returns `TRUE`  (observation, no payload)                |
+/// | `OR_DIE`      | returns the `default` arg                                 |
+/// | `UNWRAP_OR`   | alias of `OR_DIE` (v0.4 main name; Phase B3 完整化)       |
+/// | `TRY`         | early-`RETURN` from the enclosing function                |
+/// | `UNWRAP`      | `PANIC` E0100 — **not yet implemented** (Phase B4)       |
+/// | `ERR_PAYLOAD` | extracts payload — **not yet implemented** (Phase B4)    |
+/// | `WRAP`        | re-wraps with context — **not yet implemented** (Phase B4)|
+/// | `TYPE`        | returns `"RESULT"` (observation)                         |
+///
+/// Spec §12.7 also lists `=` / `!=` / `IF` as "registered"; those
+/// **explicitly do not consume ERR** (per the table footnote in
+/// §12.7 and §9.2 / §7.1) and propagate per §12.6 default. They
+/// are NOT in this table — the default transparent propagation IS
+/// the correct behavior for them.
+///
+/// **Note on lexer-level macros**: `IS_OK` / `IS_ERR` / `OR_DIE` /
+/// `TRY` are lexer keywords that the parser lowers into
+/// `Expr::IsOk` / `Expr::IsErr` / `Expr::OrDie` / `Expr::Try`
+/// **before** `eval_call` sees them. Those names therefore do NOT
+/// actually flow through this registry at runtime — they consume
+/// ERR via their own `Expr::*` arms. The registry exists for the
+/// remaining names (`UNWRAP_OR` / `UNWRAP` / `ERR_PAYLOAD` / `WRAP`
+/// / `TYPE`) that ARE reached via the generic `Expr::Call { name }`
+/// path. The `=` / `!=` / `IF` operators also reach `eval_call`
+/// (via `Expr::Call { name: "==" | "!=" | "IF", ... }`) but are
+/// not in the registry because they MUST propagate ERR per §9.2.
+const ERR_CONSUMER_REGISTRY: &[&str] = &[
+    "IS_OK",
+    "IS_ERR",
+    "OR_DIE",
+    "UNWRAP_OR",
+    "TRY",
+    "UNWRAP",
+    "ERR_PAYLOAD",
+    "WRAP",
+    "TYPE",
+];
+
+/// Returns `true` if `name` is in the §12.7 ERR consumer registry.
+/// These functions consume `ERR` instead of letting it transparently
+/// propagate (per spec §12.6).
 fn is_err_consumer(name: &str) -> bool {
-    matches!(name, "IS_OK" | "IS_ERR" | "OR_DIE" | "TRY")
+    ERR_CONSUMER_REGISTRY.contains(&name)
 }
 
 // ── Operator implementations (v0.3 §9) ─────────────────────────────
@@ -3289,6 +3341,132 @@ mod tests {
         assert_eq!(
             run(r#"OR_DIE(ERR("e"), 42);"#).unwrap(),
             Value::Integer(42)
+        );
+    }
+
+    // ── §12.7 ERR consumer registry (Phase A6) ────────────────────────
+    //
+    // These tests pin down the v0.4 spec §12.7 contract:
+    //   * The registry is the **closed** set of names that consume ERR.
+    //   * Names NOT in the registry propagate ERR per §12.6 default.
+    //   * `=` / `!=` / `IF` are explicitly OUT — they observe via §9.2
+    //     / §7.1 but do not consume ERR (per spec §12.7 table footnote).
+    //   * v0.4 keywords IS_OK / IS_ERR / OR_DIE / TRY go through their
+    //     own `Expr::*` arms and never flow through this registry at
+    //     runtime — but they are still in the registry as the canonical
+    //     spec-pinned list (future-proofing for spec conformance tests).
+    //
+    // The test cases below directly poke `is_err_consumer` (it's a free
+    // function in this crate) plus the runtime-visible alias `UNWRAP_OR`.
+
+    #[test]
+    fn err_consumer_registry_contains_all_9_names() {
+        // §12.7 v0.4 spec lists 9 names. Lock the set so any future
+        // addition shows up as a deliberate, conscious change.
+        use crate::ERR_CONSUMER_REGISTRY;
+        let actual: std::collections::HashSet<&str> =
+            ERR_CONSUMER_REGISTRY.iter().copied().collect();
+        let expected: std::collections::HashSet<&str> = [
+            "IS_OK",
+            "IS_ERR",
+            "OR_DIE",
+            "UNWRAP_OR",
+            "TRY",
+            "UNWRAP",
+            "ERR_PAYLOAD",
+            "WRAP",
+            "TYPE",
+        ]
+        .iter()
+        .copied()
+        .collect();
+        assert_eq!(actual, expected, "§12.7 registry drifted from spec");
+        assert_eq!(actual.len(), 9, "spec §12.7 pins 9 entries");
+    }
+
+    #[test]
+    fn err_consumer_registry_excludes_equality_and_if() {
+        // §12.7 table footnote: `=` / `!=` / `IF` are listed in the
+        // table but explicitly "do not consume ERR" — they MUST
+        // propagate per §12.6 default. So they must NOT be in the
+        // ERR_CONSUMER_REGISTRY (which gates the §12.6 short-circuit).
+        for name in ["=", "!=", "IF"] {
+            assert!(
+                !is_err_consumer(name),
+                "{} is listed in §12.7 but must NOT short-circuit ERR propagation",
+                name
+            );
+        }
+    }
+
+    #[test]
+    fn err_consumer_registry_unknown_returns_false() {
+        // Names not in the spec table are NOT consumers.
+        for name in ["+", "-", "*", "PRINT", "LEN", "PUSH", "NOSUCH"] {
+            assert!(
+                !is_err_consumer(name),
+                "{} unexpectedly registered as ERR consumer",
+                name
+            );
+        }
+    }
+
+    #[test]
+    fn unwrap_or_alias_calls_or_die_impl() {
+        // v0.4 spec §12.7: `UNWRAP_OR` is the main name; `OR_DIE` is
+        // the v0.3 alias (Phase B3 will add W0051 on legacy use). For
+        // now both names route to the same builtin and behave identically.
+        // Tokenization: UNWRAP_OR is NOT a lexer keyword (OR_DIE is), so
+        // `UNWRAP_OR(ERR("e"), 42)` reaches `eval_call` as
+        // `Expr::Call { name: "UNWRAP_OR", ... }` and dispatches via
+        // `resolve_builtin`. That is the path that exercises the alias.
+
+        // ERR case: returns default
+        assert_eq!(
+            run(r#"UNWRAP_OR(ERR("e"), 42);"#).unwrap(),
+            Value::Integer(42)
+        );
+        // OK case: returns inner value
+        assert_eq!(
+            run(r#"UNWRAP_OR(OK(7), 42);"#).unwrap(),
+            Value::Integer(7)
+        );
+        // Non-RESULT case: E0030 (same error semantics as OR_DIE)
+        let err = run(r#"UNWRAP_OR(123, 42);"#).unwrap_err();
+        assert_eq!(err.diagnostic().code, ErrorCode::E0030);
+        // Arity: same E0022 path as OR_DIE
+        let err = run(r#"UNWRAP_OR(ERR("e"));"#).unwrap_err();
+        assert_eq!(err.diagnostic().code, ErrorCode::E0022);
+        let err = run(r#"UNWRAP_OR(ERR("e"), 1, 2);"#).unwrap_err();
+        assert_eq!(err.diagnostic().code, ErrorCode::E0022);
+    }
+
+    #[test]
+    fn unwrap_or_alias_propagates_through_user_function() {
+        // UNWRAP_OR inside a user function: since UNWRAP_OR is in
+        // the §12.7 registry, ERR must reach the user function (not
+        // be short-circuited by §12.6). The user function then sees
+        // Value::Err and decides what to do with UNWRAP_OR.
+        let src = r#"
+            LET(pass_through, FUN((x), x));
+            UNWRAP_OR(pass_through(ERR("inner")), -1);
+        "#;
+        assert_eq!(run(src).unwrap(), Value::Integer(-1));
+    }
+
+    #[test]
+    fn registry_unwrap_not_yet_implemented() {
+        // Phase A6 pins the registry but does NOT implement UNWRAP
+        // (Phase B4). Calling it via Expr::Call must surface as E0020
+        // undefined — same as before this batch. This test documents
+        // the known gap and will start failing once Phase B4 lands,
+        // which is the intended behavior (a follow-up commit then
+        // updates this test to assert the new B4 contract).
+        let err = run(r#"UNWRAP(OK(1));"#).unwrap_err();
+        assert_eq!(
+            err.diagnostic().code,
+            ErrorCode::E0020,
+            "UNWRAP is in the §12.7 registry but not yet implemented (Phase B4 gap)"
         );
     }
 

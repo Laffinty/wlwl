@@ -1060,3 +1060,50 @@ P3-013 选 §4.5 解读 (混用是 warning). 理由:
 - 2 modified files:
   - `impl/crates/wlwl-parser/src/lib.rs` — `parse_array_or_dict` 重写 + W0020 emit 通道 (新增 ~110 行, 替换 ~60 行)
   - `impl/crates/wlwl-parser/tests/spec_v3_alignment.rs` — 4 个 W0020 测试 unignore + 1 个断言调整 (从 `Array|Dict` 改为 `Dict`)
+
+
+# P4-A4 (2026-09-09) — MATCH 模式匹配 (spec v0.4 §7.6)
+
+> Phase A 续,A4。本节由 2026-09-15 A6 commit 时补写的 known drift 修复;
+> commit `0e4642c` (2026-09-09) 当时未追加 deviations entry。
+
+| ID | Spec / plan | Status | Notes |
+|----|-------------|--------|-------|
+| A4-001 | spec §7.6 line 878 vs 879 矛盾(line 878 说"无 default → E0027"; line 879 说"default 可省略") | **采纳 879** | parser 在 `MATCH(v, [...])` 省略 default 时合成 `Expr::Literal(Null, ...)`,eval_match 永远走 default 路径;`match_fell_through` helper 标 `#[allow(dead_code)]` + 独立 E0027 unit test,等 spec v0.5 决定是否启用严格路径 |
+| A4-002 | E0027 match-fell-through | **注册占位,本批不触发** | `wlwl-error` schema 1.1.0 已收,等 spec v0.5 决定 |
+| A4-003 | Pattern::Constructor ctor name 范围 | **仅 OK / ERR** | parser 写死 (`parse_pattern_constructor` 看到 Ok/Err 才走 Constructor),eval 加 defend-in-depth 拒绝其他 ctor name → E0030;其他 ctor (SOME / NONE 等) 留 v0.5 |
+| A4-004 | Pattern AST 与 A3 共用 | **5 variant 共用 + 1 新增** | Pattern::Ident / Wildcard / Literal / Array / Dict 与 A3 解构完全共用;A4 仅新加 Pattern::Constructor |
+
+## A4 commit summary
+
+- commit: `0e4642c P4-A4: MATCH pattern matching (spec v0.4 Sec. 7.6) + E0027 + Pattern::Constructor` (2026-09-09)
+- 4 modified crates: `wlwl-error` (E0027 + snapshot) / `wlwl-ast` (Pattern::Constructor) / `wlwl-parser` (parse_match + parse_pattern_constructor + TokenKind::Match arm) / `wlwl-eval` (eval_match + Constructor 分发 + match_fell_through helper)
+- tests: +26 (反推自 2026-09-15 cargo test 594 − A3 baseline 562 − A6 +6)
+- coverage: 守住 13/13 crate ≥ 90% line,wlwl-parser 90.02% (从 A3 90.50% 略降 -0.48pp)
+- detail: `docs/history/20260909.md`
+
+
+# P4-A6 (2026-09-15) — ERR 消费者注册表 (spec v0.4 §12.7)
+
+> Phase A 续,A6。本批把 v0.3 的封闭 4 项白名单 (`IS_OK` / `IS_ERR` / `OR_DIE` /
+> `TRY`) 升级为 v0.4 的注册表机制,9 项钉死 (`IS_OK` / `IS_ERR` / `OR_DIE` /
+> `UNWRAP_OR` / `TRY` / `UNWRAP` / `ERR_PAYLOAD` / `WRAP` / `TYPE`),
+> 并加 `UNWRAP_OR` alias 入口 (Phase B3 完整化)。
+
+| ID | Spec / plan | Status | Notes |
+|----|-------------|--------|-------|
+| A6-001 | spec §12.7 注册表 9 项钉死 | **Implemented** | `const ERR_CONSUMER_REGISTRY: &[&str]` 在 `wlwl-eval/src/lib.rs`;`is_err_consumer(name)` 用 `contains` 查表;`err_consumer_registry_contains_all_9_names` 测试锁定 HashSet 内容,任何 future 加项必须显式改测试 |
+| A6-002 | UNWRAP / ERR_PAYLOAD / WRAP / TYPE 函数本批实装 | **Deferred (Phase B4 / A5)** | 注册表钉死但 `resolve_builtin` 仍返回 `None`;调用得 E0020。`eval_call` 第 1803 行 `whitelisted = true` 让 ERR 传到调用点但最终落到 `undefined_name` 报 E0020。这是 known gap,B4 实现 UNWRAP / ERR_PAYLOAD / WRAP 后即关闭。`registry_unwrap_not_yet_implemented` 测试作为 tripwire |
+| A6-003 | `UNWRAP_OR` alias 入口 | **Implemented (stub)** | `resolve_builtin` 加 `"UNWRAP_OR" => Some(builtin_or_die)`;错误消息本批**保持** `"OR_DIE"` 字符串 (减少 ripple),Phase B3 统一换名 + emit W0051 时再改 |
+| A6-004 | `=` / `!=` / `IF` 不进注册表 | **Confirmed (spec 一致)** | spec §12.7 表格脚注明确这三项"不消费 ERR" (走 §12.6 默认透明传播);不进 const slice,**默认传播就是正确行为**。`err_consumer_registry_excludes_equality_and_if` 测试钉死 |
+| A6-005 | `IS_OK` / `IS_ERR` / `OR_DIE` / `TRY` 实际不通过注册表 | **Documented** | 这 4 个是 lexer keywords,parser 把它们转成 `Expr::IsOk` / `Expr::IsErr` / `Expr::OrDie` / `Expr::Try`,不走 `is_err_consumer` lookup。本批把它们留在 const slice 里以**符合 spec 列表**,doc comment 解释"实际行为由 Expr::* 分支承载,注册表项是为 spec 一致性" |
+
+## A6 commit summary
+
+- commit: (本次, 即将)
+- 1 modified crate: `wlwl-eval` (ERR_CONSUMER_REGISTRY const + is_err_consumer 重构 + UNWRAP_OR alias + 6 个新测试)
+- tests: +6 (594 / 594 pass,A3 562 + A4 +26 + A6 +6)
+- coverage: TOTAL 92.20% line / 91.73% region / 96.56% func;13/13 crate ≥ 90% line 守住
+  - `wlwl-parser` 90.02% (A4 末持平,A6 不动 parser)
+  - `wlwl-eval` 91.03% (持平,新注册表 const + 6 测试全 path 覆盖)
+- detail: `docs/history/20260915.md`
