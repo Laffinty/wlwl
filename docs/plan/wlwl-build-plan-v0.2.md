@@ -76,6 +76,12 @@
 >
 > v0.2 进度跟踪将按 Phase A-H 序列追加,每批结束 git add + commit + push,工作树保持可回滚状态。
 
+> **v0.2 进度基线(2026-09-15 B1 末)**:
+> - Phase A 全部完成(A1a-c / A1d / A2 / A3 / A4 / A5 / A6 / A7 / A8;A1e deferred → B4)
+> - Phase B1 完成(INDEX_GET / INDEX_SET / AT / REMOVE_KEY / POP-dict + E0036 / E0037)
+> - workspace **670 / 670 pass**,13/13 crate ≥ 90% line,TOTAL **92.68% line**
+> - `wlwl-eval` 92.69% line(基线涨 +0.72pp)
+
 ---
 
 ## 0.4 P4-A1d 暂停点(2026-09-05 07:46)

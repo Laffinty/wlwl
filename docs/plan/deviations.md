@@ -1202,3 +1202,34 @@ P3-013 选 §4.5 解读 (混用是 warning). 理由:
 1 个新 category(Runtime), 9 个新 builtin(`TYPE`/`INT` 实装, `UNWRAP`/`ERR_PAYLOAD`/`WRAP`
 注册表占位待 B4), 2 个 §13.x 语义合规范(spec §9.2 + §9.5)。下一步: **Phase B 入口 B1
 `INDEX_GET` / `INDEX_SET`**。
+
+---
+
+# Phase B1 (2026-09-15) — INDEX_GET / INDEX_SET / AT / REMOVE_KEY / POP (spec v0.4 §10.1 / §10.2)
+
+> Phase A 收尾 (commit 79a9fb7) 后接 Phase B 入口 B1。spec v0.4 §10.1 / §10.2 把 v0.3
+> 缺失的"下标访问"原语补齐;本批 0 行 lexer/parser 改动 (语法糖留 Phase E2 单独 PR),
+> 5 个新 builtin + 2 个新错误码 `E0036` / `E0037` + 30 个新测试。
+
+| ID | Spec / plan | Status | Notes |
+|----|-------------|--------|-------|
+| P4-B1-001 | spec §10.3 — `INDEX_GET(s, i)` STRING index | **Deviation** | 本批 `INDEX_GET` 只支持 ARRAY / DICT。STRING 索引 (`INDEX_GET("hi", 0) → "h"`) spec §10.3 未明示,留 v0.5 / 后续 batch。String 实装可通过 `SUB(s, i, 1)` 替代,语义清晰。 |
+| P4-B1-002 | spec §10.1 — `POP(arr)` 数组版 | **Deviation** | 本批 `POP` 仅字典版 (`POP(d, k, default)`)。spec v0.3 §10.1 列 `POP(arr)` 移除末尾元素; plan v0.2 §3 B1 任务限定为 DICT 版。`POP(arr)` 留 v0.5 单独 batch。 |
+| P4-B1-003 | spec §10.1 / §10.2 — INDEX_SET "原地" 语义 | **Deviation (acceptable)** | `INDEX_SET` / `REMOVE_KEY` 在 tree-walking 解释器下通过 clone 容器 + mutate clone + return clone 实现。用户视角等价 (无别名共享); 后续如引入 `Rc<RefCell<Value>>` aliasing 可改为原地修改。spec "原地" 是用户视角语义,不要求实现层零拷贝。 |
+| P4-B1-004 | plan §3 B1 任务 — parser 端 `arr[i]` / `d[k]` 语法糖 | **Deviation (deferred)** | 语法糖 (`arr[i]` → `INDEX_GET(arr, i)`, `d[k] = v` → `INDEX_SET(d, k, v)`) 留 Phase E2 或单独 PR。本批仅函数形式,避免单 PR 范围过大。函数形式已足够覆盖测试与运行期使用。 |
+
+## Phase B1 implementation stats
+
+| Item | Data |
+|------|------|
+| Total tests | **670 / 670 passing** (A8 末 637 → B1 末 670, 净 +33) |
+| `wlwl-eval` new tests | **+30** (INDEX_GET 9 / INDEX_SET 7 / AT 5 / REMOVE_KEY 4 / POP-dict 5) |
+| `wlwl-error` new tests | 0 (snapshot fixture 改名 `all_44_codes_registered`;codes_type 加 2 entry) |
+| New error codes | **+2** (`E0036` array_index_oob / `E0037` dict_key_missing;both Type bucket) |
+| New builtins | **+5** (`INDEX_GET` / `INDEX_SET` / `AT` / `REMOVE_KEY` / `POP`(dict 版)) |
+| New helpers | 2 (`resolve_array_index` / `dict_lookup`;在 3 个 builtin 间共享) |
+| Lines added (est.) | ~330 (eval ~280, error ~30, snapshot ~20) |
+| Key design decisions | 5 builtin 均不进 §12.7 ERR 消费者注册表 (沿用 §12.6 默认传播);非 INTEGER 数组 index → `E0031` (subscript-type 专用码) 而非 `E0030`;`POP` 返回被删值不是修改后 dict (spec §10.2 安全删除语义) |
+| Test coverage | `wlwl-eval` 91.97% → **92.69%** (+0.72pp);`wlwl-error` 99.57% → 98.74% (-0.83pp,新码引入未覆盖 arm) |
+| Deferred to Phase B2 / E2 | `DEL` alias + W0051 (B2);`arr[i]` / `d[k]` 语法糖 (E2);`POP(arr)` 数组版 (v0.5) |
+| Spec coverage | §10.1 / §10.2 INDEX_GET / INDEX_SET / AT / REMOVE_KEY 100% (函数形式);语法糖留 E2 |

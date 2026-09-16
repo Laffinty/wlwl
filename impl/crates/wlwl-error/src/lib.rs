@@ -44,6 +44,8 @@ pub enum ErrorCode {
     E0032, // property/method not found
     E0034, // integer overflow on negation (v0.4 §9.5: `NEG(INTEGER_MIN)`)
     E0035, // FLOAT → INTEGER out-of-range cast (v0.4 §9.5: `INT(<huge float>)`)
+    E0036, // array index out of bounds (v0.4 §10.1: INDEX_GET/SET on ARRAY)
+    E0037, // dict key not found (v0.4 §10.2: INDEX_GET on DICT)
     E1003, // division or modulo by zero (v0.4 §9.5)
     E0040, // module not found
     E0041, // circular IMPORT
@@ -101,6 +103,8 @@ impl ErrorCode {
             ErrorCode::E0032 => "E0032",
             ErrorCode::E0034 => "E0034",
             ErrorCode::E0035 => "E0035",
+            ErrorCode::E0036 => "E0036",
+            ErrorCode::E0037 => "E0037",
             ErrorCode::E1003 => "E1003",
             ErrorCode::E0040 => "E0040",
             ErrorCode::E0041 => "E0041",
@@ -173,7 +177,13 @@ impl ErrorCode {
             // v0.4 §9.5 — E0034 (NEG overflow) and E0035 (FLOAT→INT overflow)
             // both sit on the "type" boundary (the value cannot be
             // represented in the requested type), so they belong in Type.
-            ErrorCode::E0034 | ErrorCode::E0035 => ErrorCategory::Type,
+            // E0036 (array index OOB) and E0037 (dict key missing) are
+            // also Type-bucket: they signal "the operand cannot index this
+            // collection", a value-shape concern rather than a runtime
+            // condition (Phase B1, spec v0.4 §10.1 / §10.2).
+            ErrorCode::E0034 | ErrorCode::E0035 | ErrorCode::E0036 | ErrorCode::E0037 => {
+                ErrorCategory::Type
+            }
             // v0.4 §9.5 — division / modulo by zero is a runtime
             // condition (the values themselves are valid), so it lands
             // in the new Runtime bucket (spec §14.4 row 12).
@@ -892,6 +902,8 @@ mod tests {
             "E0032": code_snap(ErrorCode::E0032, "prop_method_missing"),
             "E0034": code_snap(ErrorCode::E0034, "neg_overflow"),
             "E0035": code_snap(ErrorCode::E0035, "float_to_int_overflow"),
+            "E0036": code_snap(ErrorCode::E0036, "array_index_oob"),
+            "E0037": code_snap(ErrorCode::E0037, "dict_key_missing"),
         }));
     }
 
@@ -963,9 +975,11 @@ mod tests {
     // Phase A7 (2026-09-15) added E0034 / E0035 (numeric overflow) +
     // E1003 (runtime / div by zero) + Runtime category, and W0015
     // (integer overflow saturated warning).
+    // Phase B1 (2026-09-15) added E0036 (array index OOB) + E0037 (dict
+    // key missing) for spec v0.4 §10.1 / §10.2 INDEX_GET / INDEX_SET.
     #[test]
-    fn all_42_codes_registered() {
-        // Sanity: ensure we have exactly 42 codes wired through the schema.
+    fn all_44_codes_registered() {
+        // Sanity: ensure we have exactly 44 codes wired through the schema.
         // If anyone adds a new ErrorCode variant without updating the
         // snapshot, this count will shift and break the contract.
         let codes = [
@@ -975,7 +989,7 @@ mod tests {
             ErrorCode::E0020, ErrorCode::E0021, ErrorCode::E0022, ErrorCode::E0023,
             ErrorCode::E0024, ErrorCode::E0025, ErrorCode::E0026, ErrorCode::E0027,
             ErrorCode::E0030, ErrorCode::E0031, ErrorCode::E0032,
-            ErrorCode::E0034, ErrorCode::E0035,
+            ErrorCode::E0034, ErrorCode::E0035, ErrorCode::E0036, ErrorCode::E0037,
             ErrorCode::E0040, ErrorCode::E0041, ErrorCode::E0042, ErrorCode::E0043,
             ErrorCode::E0050, ErrorCode::E0051,
             ErrorCode::E0060, ErrorCode::E0061, ErrorCode::E0062, ErrorCode::E0063,
@@ -985,7 +999,7 @@ mod tests {
             ErrorCode::E0100, ErrorCode::E0101, ErrorCode::E0102,
             ErrorCode::E1003,
         ];
-        assert_eq!(codes.len(), 42);
+        assert_eq!(codes.len(), 44);
         // Each code has a stable string form.
         for c in &codes {
             assert!(c.as_str().starts_with('E'));

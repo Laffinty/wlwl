@@ -1014,6 +1014,255 @@ fn builtin_int(_ev: &mut Evaluator, args: Vec<Value>) -> WlwlResult<Outcome> {
     }
 }
 
+// ── Phase B1: spec v0.4 §10.1 / §10.2 subscript / key access primitives ──
+//
+// `INDEX_GET` / `INDEX_SET` / `AT` / `REMOVE_KEY` / `POP` (dict variant).
+// None of these are in the §12.7 ERR consumer registry — they inherit
+// the default §12.6 transparent ERR propagation. The "lenient" trio
+// (`AT`, `POP`-dict, `REMOVE_KEY`) never raise ERR on absent keys; the
+// strict trio (`INDEX_GET`, `INDEX_SET`) raise E0036 (ARRAY OOB) /
+// E0037 (DICT missing).
+
+/// Resolve a logical index `i` against a `Value::Array`.
+///
+/// - `i` must be `INTEGER` (else `E0031`)
+/// - `-LEN(arr) ≤ i < LEN(arr)` (negative indexes count from the end)
+/// - Out-of-range → `E0036: array index out of bounds`
+///
+/// Spec v0.4 §10.1 row 1 / boundary rule.
+fn resolve_array_index(
+    fn_name: &str,
+    arr: &[Value],
+    raw: &Value,
+) -> WlwlResult<usize> {
+    let i = match raw {
+        Value::Integer(n) => *n,
+        other => {
+            return Err(builtin_error(
+                ErrorCode::E0031,
+                fn_name,
+                format!(
+                    "array index must be INTEGER, got {}",
+                    type_name(other)
+                ),
+            ));
+        }
+    };
+    let len = arr.len() as i64;
+    let normalised = if i < 0 { i + len } else { i };
+    if normalised < 0 || normalised >= len {
+        return Err(builtin_error(
+            ErrorCode::E0036,
+            fn_name,
+            format!(
+                "array index {} out of bounds for length {}",
+                i,
+                arr.len()
+            ),
+        ));
+    }
+    Ok(normalised as usize)
+}
+
+/// Look up a key in a `Value::Dict` entries list. Returns
+/// `Some(idx)` if present, `None` if absent. Equality uses §10.4
+/// strict rules via `values_equal`.
+fn dict_lookup(entries: &[(Value, Value)], key: &Value) -> Option<usize> {
+    entries.iter().position(|(k, _)| values_equal(k, key))
+}
+
+/// v0.4 §10.1 + §10.2 — `INDEX_GET(coll, idx_or_key)`.
+///
+/// - ARRAY + INTEGER → element (negative indexes supported; OOB → E0036)
+/// - DICT  + any      → value (missing → E0037)
+/// - other            → E0030
+///
+/// Not in §12.7 registry → §12.6 ERR transparent propagation.
+fn builtin_index_get(_ev: &mut Evaluator, args: Vec<Value>) -> WlwlResult<Outcome> {
+    let (coll, idx) = expect_arity2("INDEX_GET", &args)?;
+    let v = match (coll, idx) {
+        (Value::Array(a), raw) => {
+            let i = resolve_array_index("INDEX_GET", a, raw)?;
+            Ok(a[i].clone())
+        }
+        (Value::Dict(entries), key) => match dict_lookup(entries, key) {
+            Some(i) => Ok(entries[i].1.clone()),
+            None => Err(builtin_error(
+                ErrorCode::E0037,
+                "INDEX_GET",
+                format!("dict key {} not found", key.display()),
+            )),
+        },
+        (other, _) => Err(type_error(
+            "INDEX_GET",
+            format!(
+                "expected ARRAY or DICT as first arg, got {}",
+                type_name(other)
+            ),
+        )),
+    }?;
+    Ok(Outcome::normal(v))
+}
+
+/// v0.4 §10.1 + §10.2 — `INDEX_SET(coll, idx_or_key, val)`.
+///
+/// - ARRAY + INTEGER → upsert at index (negative indexes supported;
+///                       OOB → E0036, no mutation)
+/// - DICT  + any      → insert or update key (insertion-order
+///                       preserved on insertion; existing keys keep
+///                       original position on update — matches
+///                       `MERGE` semantics in §10.2)
+/// - other            → E0030
+///
+/// "In-place" semantics are emulated by cloning the container,
+/// mutating the clone, and returning the clone — equivalent at the
+/// user level for a tree-walking interpreter where Value::Array /
+/// Value::Dict are owned Vecs (no Rc<RefCell<_>> yet).
+fn builtin_index_set(_ev: &mut Evaluator, args: Vec<Value>) -> WlwlResult<Outcome> {
+    if args.len() != 3 {
+        return Err(arity_error("INDEX_SET", args.len(), 3));
+    }
+    let new_val = args[2].clone();
+    let v = match (&args[0], &args[1]) {
+        (Value::Array(a), raw) => {
+            let i = resolve_array_index("INDEX_SET", a, raw)?;
+            let mut out = a.clone();
+            out[i] = new_val;
+            Value::Array(out)
+        }
+        (Value::Dict(entries), key) => {
+            let mut out = entries.clone();
+            match dict_lookup(&out, key) {
+                Some(i) => out[i].1 = new_val,
+                None => out.push((key.clone(), new_val)),
+            }
+            Value::Dict(out)
+        }
+        (other, _) => {
+            return Err(type_error(
+                "INDEX_SET",
+                format!(
+                    "expected ARRAY or DICT as first arg, got {}",
+                    type_name(other)
+                ),
+            ));
+        }
+    };
+    Ok(Outcome::normal(v))
+}
+
+/// v0.4 §10.1 + §10.2 — `AT(coll, idx_or_key, default)`.
+///
+/// Lenient version of `INDEX_GET`: returns `default` on
+/// OOB / missing-key instead of raising E0036 / E0037. Spec §10.1
+/// row 3 + §10.2 row "安全下标".
+fn builtin_at(_ev: &mut Evaluator, args: Vec<Value>) -> WlwlResult<Outcome> {
+    if args.len() != 3 {
+        return Err(arity_error("AT", args.len(), 3));
+    }
+    let default = &args[2];
+    let v = match (&args[0], &args[1]) {
+        (Value::Array(a), raw) => match raw {
+            Value::Integer(i) => {
+                let len = a.len() as i64;
+                let normalised = if *i < 0 { *i + len } else { *i };
+                if normalised < 0 || normalised >= len {
+                    default.clone()
+                } else {
+                    a[normalised as usize].clone()
+                }
+            }
+            other => {
+                return Err(builtin_error(
+                    ErrorCode::E0031,
+                    "AT",
+                    format!(
+                        "array index must be INTEGER, got {}",
+                        type_name(other)
+                    ),
+                ));
+            }
+        },
+        (Value::Dict(entries), key) => match dict_lookup(entries, key) {
+            Some(i) => entries[i].1.clone(),
+            None => default.clone(),
+        },
+        (other, _) => {
+            return Err(type_error(
+                "AT",
+                format!(
+                    "expected ARRAY or DICT as first arg, got {}",
+                    type_name(other)
+                ),
+            ));
+        }
+    };
+    Ok(Outcome::normal(v))
+}
+
+/// v0.4 §10.2 — `REMOVE_KEY(d, key)` (v0.4 main name; `DEL` will
+/// become a v0.3-compat alias emitting W0051 in Phase B2).
+///
+/// - First arg must be DICT, else E0030
+/// - Missing key → NOOP (returns the dict unchanged)
+/// - Returns the dict with the key removed
+fn builtin_remove_key(_ev: &mut Evaluator, args: Vec<Value>) -> WlwlResult<Outcome> {
+    let (coll, key) = expect_arity2("REMOVE_KEY", &args)?;
+    let v = match coll {
+        Value::Dict(entries) => {
+            let mut out = entries.clone();
+            if let Some(i) = dict_lookup(&out, key) {
+                out.remove(i);
+            }
+            Value::Dict(out)
+        }
+        other => {
+            return Err(type_error(
+                "REMOVE_KEY",
+                format!("expected DICT, got {}", type_name(other)),
+            ));
+        }
+    };
+    Ok(Outcome::normal(v))
+}
+
+/// v0.4 §10.2 — `POP(d, key, default)` (dict variant — safe delete).
+///
+/// - First arg must be DICT, else E0030
+/// - Key present → returns the value and removes the entry
+/// - Key absent → returns `default`, dict unchanged
+///
+/// Note: `POP(arr)` (array variant) is not implemented in this batch —
+/// spec v0.3 §10.1 only lists `POP(arr)` removing the last element,
+/// but the plan's B1 task list focuses on the DICT variant (see
+/// deviations B1-002).
+fn builtin_pop_dict(_ev: &mut Evaluator, args: Vec<Value>) -> WlwlResult<Outcome> {
+    if args.len() != 3 {
+        return Err(arity_error("POP", args.len(), 3));
+    }
+    let default = &args[2];
+    let v = match (&args[0], &args[1]) {
+        (Value::Dict(entries), key) => match dict_lookup(entries, key) {
+            Some(i) => {
+                let mut out = entries.clone();
+                let removed = out.remove(i).1;
+                // Spec §10.2 says "返回删除的值". Return the
+                // removed value, NOT the modified dict — that's what
+                // callers want from a safe-delete primitive.
+                return Ok(Outcome::normal(removed));
+            }
+            None => default.clone(),
+        },
+        (other, _) => {
+            return Err(type_error(
+                "POP",
+                format!("expected DICT as first arg, got {}", type_name(other)),
+            ));
+        }
+    };
+    Ok(Outcome::normal(v))
+}
+
 /// The single dispatch table: maps a built-in name to its implementation.
 /// Operators (`+`, `==`, …) live here too — the parser turns `+(1, 2)`
 /// into `Call { name: "+", … }`, and we dispatch on the operator name.
@@ -1023,6 +1272,15 @@ fn resolve_builtin(name: &str) -> Option<BuiltinFn> {
         "LEN" => Some(builtin_len),
         "PUSH" => Some(builtin_push),
         "INT" => Some(builtin_int),
+        // v0.4 spec §10.1 / §10.2 subscript primitives (Phase B1).
+        // None of these consume ERR — they inherit the default §12.6
+        // transparent propagation, matching the pre-A6 behaviour for
+        // the previous code path.
+        "INDEX_GET" => Some(builtin_index_get),
+        "INDEX_SET" => Some(builtin_index_set),
+        "AT" => Some(builtin_at),
+        "REMOVE_KEY" => Some(builtin_remove_key),
+        "POP" => Some(builtin_pop_dict),
         "+" => Some(builtin_add),
         "-" => Some(builtin_sub),
         "*" => Some(builtin_mul),
@@ -5279,6 +5537,335 @@ entry = "main.wl"
                 Value::Integer(3)
             ])
         );
+    }
+
+    // ---- Phase B1 (spec v0.4 §10.1 / §10.2) ----------------------
+    // INDEX_GET / INDEX_SET / AT / REMOVE_KEY / POP (dict variant).
+    // None of these are in the §12.7 ERR consumer registry — they
+    // inherit §12.6 transparent ERR propagation (verified at the end
+    // of this block).
+
+    #[test]
+    fn index_get_array_positive() {
+        // Standard positive-index read on ARRAY.
+        assert_eq!(
+            run("INDEX_GET([10, 20, 30], 0);").unwrap(),
+            Value::Integer(10)
+        );
+        assert_eq!(
+            run("INDEX_GET([10, 20, 30], 1);").unwrap(),
+            Value::Integer(20)
+        );
+        assert_eq!(
+            run("INDEX_GET([10, 20, 30], 2);").unwrap(),
+            Value::Integer(30)
+        );
+    }
+
+    #[test]
+    fn index_get_array_negative() {
+        // Negative index counts from the end (spec §10.1 row 1).
+        assert_eq!(
+            run("INDEX_GET([10, 20, 30], -1);").unwrap(),
+            Value::Integer(30)
+        );
+        assert_eq!(
+            run("INDEX_GET([10, 20, 30], -3);").unwrap(),
+            Value::Integer(10)
+        );
+    }
+
+    #[test]
+    fn index_get_array_oob_is_e0036() {
+        // Positive OOB and negative OOB both trip E0036.
+        let err = run("INDEX_GET([1, 2, 3], 3);").unwrap_err();
+        assert_eq!(err.diagnostic().code, ErrorCode::E0036);
+        let err = run("INDEX_GET([1, 2, 3], -4);").unwrap_err();
+        assert_eq!(err.diagnostic().code, ErrorCode::E0036);
+    }
+
+    #[test]
+    fn index_get_dict_hit() {
+        // Existing key returns the value.
+        assert_eq!(
+            run(r###"INDEX_GET(["a": 1, "b": 2], "a");"###).unwrap(),
+            Value::Integer(1)
+        );
+        assert_eq!(
+            run(r###"INDEX_GET(["a": 1, "b": 2], "b");"###).unwrap(),
+            Value::Integer(2)
+        );
+    }
+
+    #[test]
+    fn index_get_dict_missing_is_e0037() {
+        let err = run(r###"INDEX_GET(["a": 1], "c");"###).unwrap_err();
+        assert_eq!(err.diagnostic().code, ErrorCode::E0037);
+    }
+
+    #[test]
+    fn index_get_non_integer_index_is_e0031() {
+        // ARRAY path with a non-INTEGER index trips E0031 (type error
+        // on the index operand; matches E0031 spec description).
+        let err = run(r###"INDEX_GET([1, 2, 3], "0");"###).unwrap_err();
+        assert_eq!(err.diagnostic().code, ErrorCode::E0031);
+    }
+
+    #[test]
+    fn index_get_non_collection_is_e0030() {
+        // First arg must be ARRAY or DICT; INTEGER triggers E0030.
+        let err = run("INDEX_GET(42, 0);").unwrap_err();
+        assert_eq!(err.diagnostic().code, ErrorCode::E0030);
+    }
+
+    #[test]
+    fn index_get_arity_wrong_is_e0022() {
+        let err = run("INDEX_GET([1, 2, 3]);").unwrap_err();
+        assert_eq!(err.diagnostic().code, ErrorCode::E0022);
+        let err = run("INDEX_GET([1, 2, 3], 0, 99);").unwrap_err();
+        assert_eq!(err.diagnostic().code, ErrorCode::E0022);
+    }
+
+    #[test]
+    fn index_set_array_in_bounds() {
+        // Write at index returns the new array.
+        assert_eq!(
+            run("INDEX_SET([10, 20, 30], 1, 99);").unwrap(),
+            Value::Array(vec![
+                Value::Integer(10),
+                Value::Integer(99),
+                Value::Integer(30)
+            ])
+        );
+        // Negative-index write also works.
+        assert_eq!(
+            run("INDEX_SET([10, 20, 30], -1, 99);").unwrap(),
+            Value::Array(vec![
+                Value::Integer(10),
+                Value::Integer(20),
+                Value::Integer(99)
+            ])
+        );
+    }
+
+    #[test]
+    fn index_set_array_oob_is_e0036() {
+        // OOB on write raises E0036 (no mutation).
+        let err = run("INDEX_SET([10, 20, 30], 5, 99);").unwrap_err();
+        assert_eq!(err.diagnostic().code, ErrorCode::E0036);
+        let err = run("INDEX_SET([10, 20, 30], -4, 99);").unwrap_err();
+        assert_eq!(err.diagnostic().code, ErrorCode::E0036);
+    }
+
+    #[test]
+    fn index_set_dict_insert_new_key() {
+        // Inserting a new key appends to the entries (insertion order
+        // preserved).
+        assert_eq!(
+            run(r###"INDEX_SET(["a": 1], "b", 2);"###).unwrap(),
+            Value::Dict(vec![
+                (Value::String("a".into()), Value::Integer(1)),
+                (Value::String("b".into()), Value::Integer(2)),
+            ])
+        );
+    }
+
+    #[test]
+    fn index_set_dict_update_existing_key() {
+        // Updating an existing key keeps the original position
+        // (matches MERGE semantics in §10.2).
+        assert_eq!(
+            run(r###"INDEX_SET(["a": 1, "b": 2], "a", 99);"###).unwrap(),
+            Value::Dict(vec![
+                (Value::String("a".into()), Value::Integer(99)),
+                (Value::String("b".into()), Value::Integer(2)),
+            ])
+        );
+    }
+
+    #[test]
+    fn index_set_arity_wrong_is_e0022() {
+        let err = run("INDEX_SET([1, 2], 0);").unwrap_err();
+        assert_eq!(err.diagnostic().code, ErrorCode::E0022);
+        let err = run("INDEX_SET([1, 2], 0, 99, 100);").unwrap_err();
+        assert_eq!(err.diagnostic().code, ErrorCode::E0022);
+    }
+
+    #[test]
+    fn index_set_non_collection_is_e0030() {
+        let err = run("INDEX_SET(42, 0, 99);").unwrap_err();
+        assert_eq!(err.diagnostic().code, ErrorCode::E0030);
+    }
+
+    #[test]
+    fn at_array_in_bounds_returns_value() {
+        // AT on ARRAY with in-bounds index behaves like INDEX_GET.
+        assert_eq!(
+            run("AT([10, 20, 30], 1, -1);").unwrap(),
+            Value::Integer(20)
+        );
+        // Negative index supported.
+        assert_eq!(
+            run("AT([10, 20, 30], -1, 0);").unwrap(),
+            Value::Integer(30)
+        );
+    }
+
+    #[test]
+    fn at_array_oob_returns_default() {
+        // Spec §10.1 row 3: AT returns default on OOB — NO error.
+        assert_eq!(
+            run("AT([10, 20, 30], 5, -1);").unwrap(),
+            Value::Integer(-1)
+        );
+        assert_eq!(
+            run("AT([10, 20, 30], -4, NULL);").unwrap(),
+            Value::Null
+        );
+    }
+
+    #[test]
+    fn at_dict_missing_returns_default() {
+        // Spec §10.2 row "安全下标": AT returns default on missing
+        // key — NO error.
+        assert_eq!(
+            run(r###"AT(["a": 1], "missing", -1);"###).unwrap(),
+            Value::Integer(-1)
+        );
+        assert_eq!(
+            run(r###"AT(["a": 1], "missing", NULL);"###).unwrap(),
+            Value::Null
+        );
+        // Existing key still returns the actual value.
+        assert_eq!(
+            run(r###"AT(["a": 1, "b": 2], "a", -1);"###).unwrap(),
+            Value::Integer(1)
+        );
+    }
+
+    #[test]
+    fn at_non_collection_is_e0030() {
+        let err = run("AT(42, 0, NULL);").unwrap_err();
+        assert_eq!(err.diagnostic().code, ErrorCode::E0030);
+    }
+
+    #[test]
+    fn at_arity_wrong_is_e0022() {
+        let err = run("AT([1, 2], 0);").unwrap_err();
+        assert_eq!(err.diagnostic().code, ErrorCode::E0022);
+    }
+
+    #[test]
+    fn remove_key_dict_existing() {
+        // REMOVE_KEY returns the dict with the key dropped.
+        assert_eq!(
+            run(r###"REMOVE_KEY(["a": 1, "b": 2], "a");"###).unwrap(),
+            Value::Dict(vec![(
+                Value::String("b".into()),
+                Value::Integer(2)
+            )])
+        );
+    }
+
+    #[test]
+    fn remove_key_dict_missing_is_noop() {
+        // Spec §10.2: missing key → NOOP (returns dict unchanged).
+        assert_eq!(
+            run(r###"REMOVE_KEY(["a": 1], "missing");"###).unwrap(),
+            Value::Dict(vec![(
+                Value::String("a".into()),
+                Value::Integer(1)
+            )])
+        );
+    }
+
+    #[test]
+    fn remove_key_non_dict_is_e0030() {
+        let err = run(r###"REMOVE_KEY(42, "k");"###).unwrap_err();
+        assert_eq!(err.diagnostic().code, ErrorCode::E0030);
+    }
+
+    #[test]
+    fn pop_dict_existing_returns_value_and_removes() {
+        // POP on DICT returns the deleted value (NOT the modified
+        // dict — callers want the value from a safe-delete primitive).
+        assert_eq!(
+            run(r###"POP(["a": 1, "b": 2], "a", NULL);"###).unwrap(),
+            Value::Integer(1)
+        );
+        // Side-effect: subsequent read sees the dict without "a".
+        let after_pop = run(r###"LET(d, ["a": 1, "b": 2]); POP(d, "a", NULL); d;"###).unwrap();
+        // The LET-binding keeps a snapshot of the original dict, so
+        // the result is the original (per current Value semantics
+        // — there is no Rc<RefCell> aliasing yet; see deviations
+        // B1-003).
+        assert_eq!(
+            after_pop,
+            Value::Dict(vec![
+                (Value::String("a".into()), Value::Integer(1)),
+                (Value::String("b".into()), Value::Integer(2)),
+            ])
+        );
+    }
+
+    #[test]
+    fn pop_dict_missing_returns_default_and_noop() {
+        // Spec §10.2 row "安全删除": missing key → default, NO error.
+        assert_eq!(
+            run(r###"POP(["a": 1], "missing", -1);"###).unwrap(),
+            Value::Integer(-1)
+        );
+        assert_eq!(
+            run(r###"POP(["a": 1], "missing", NULL);"###).unwrap(),
+            Value::Null
+        );
+    }
+
+    #[test]
+    fn pop_dict_arity_wrong_is_e0022() {
+        let err = run(r###"POP(["a": 1], "a");"###).unwrap_err();
+        assert_eq!(err.diagnostic().code, ErrorCode::E0022);
+    }
+
+    #[test]
+    fn pop_dict_non_dict_is_e0030() {
+        let err = run(r###"POP(42, "k", NULL);"###).unwrap_err();
+        assert_eq!(err.diagnostic().code, ErrorCode::E0030);
+    }
+
+    // -- ERR transparent propagation (registry exclusion) --
+
+    #[test]
+    fn index_get_propagates_err() {
+        // INDEX_GET is NOT in §12.7 ERR consumer registry → ERR
+        // input propagates per §12.6. At top level this surfaces
+        // as E0102.
+        let err = run(r###"INDEX_GET(ERR("e"), 0);"###).unwrap_err();
+        assert_eq!(err.diagnostic().code, ErrorCode::E0102);
+    }
+
+    #[test]
+    fn index_set_propagates_err() {
+        let err = run(r###"INDEX_SET(ERR("e"), 0, 1);"###).unwrap_err();
+        assert_eq!(err.diagnostic().code, ErrorCode::E0102);
+    }
+
+    #[test]
+    fn at_propagates_err() {
+        let err = run(r###"AT(ERR("e"), 0, NULL);"###).unwrap_err();
+        assert_eq!(err.diagnostic().code, ErrorCode::E0102);
+    }
+
+    #[test]
+    fn remove_key_propagates_err() {
+        let err = run(r###"REMOVE_KEY(ERR("e"), "k");"###).unwrap_err();
+        assert_eq!(err.diagnostic().code, ErrorCode::E0102);
+    }
+
+    #[test]
+    fn pop_dict_propagates_err() {
+        let err = run(r###"POP(ERR("e"), "k", NULL);"###).unwrap_err();
+        assert_eq!(err.diagnostic().code, ErrorCode::E0102);
     }
 
     #[test]
