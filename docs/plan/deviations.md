@@ -1233,3 +1233,37 @@ P3-013 选 §4.5 解读 (混用是 warning). 理由:
 | Test coverage | `wlwl-eval` 91.97% → **92.69%** (+0.72pp);`wlwl-error` 99.57% → 98.74% (-0.83pp,新码引入未覆盖 arm) |
 | Deferred to Phase B2 / E2 | `DEL` alias + W0051 (B2);`arr[i]` / `d[k]` 语法糖 (E2);`POP(arr)` 数组版 (v0.5) |
 | Spec coverage | §10.1 / §10.2 INDEX_GET / INDEX_SET / AT / REMOVE_KEY 100% (函数形式);语法糖留 E2 |
+
+---
+
+# Phase B2 (2026-09-15) — `DEL` alias + W0051 (spec v0.4 §10.2 / §14.5)
+
+> Phase B1 (commit 96639fa) 把 `REMOVE_KEY` 定为 v0.4 主推名但保留 `DEL` 待 B2 补齐。
+> spec v0.4 §10.2 行 1193 要求 `DEL` 在 v0.4 是 v0.3 兼容别名,使用触发 `W0051` 弃用警告,
+> v0.5 移除。§14.5 行 2130 定义 `W0051`: "使用 v0.3 已弃用别名(`DEL` / `OR_DIE`)"。
+> 本批 0 行 lexer/parser 改动,1 个新 warning code + 1 个 alias dispatch + 9 个新测试。
+
+| ID | Spec / plan | Status | Notes |
+|----|-------------|--------|-------|
+| P4-B2-001 | spec §10.2 + §14.5 | **Implemented** | `DEL` 注册为 `REMOVE_KEY` 的 v0.3-compat alias;`builtin_remove_key_compat` 在 `eval_call` 的 ERR 短路**之后**执行,语义 = `REMOVE_KEY` 行为 + 一次 `W0051` 调用。`W0051` message 含 `"DEL"` + `"REMOVE_KEY"` + `"v0.5"`,AI 工具可一键 apply (e.g. text replace `DEL(` → `REMOVE_KEY(`)。v0.5 删除 `DEL` 推迟到 v0.5 工作。 |
+| P4-B2-002 | spec §14.5 + plan §3 B3 | **Deferred** | `OR_DIE` → `W0051` 警告**未**在 B2 实施。Phase A6 (commit 9f0c0f6) 已加 `OR_DIE` 主推名 `UNWRAP_OR` 的 dispatch alias,但**不**触发警告,error 消息仍 surface as "OR_DIE"。B3 按 plan v0.2 §3 顺序处理:统一 canonical name + 两条 legacy alias (`DEL` / `OR_DIE`) 均触发 `W0051`。 |
+| P4-B2-003 | spec §14.2 — warning `severity` 字段 | **Deviation (acceptable)** | `WlwlDiagnostic::new` 总是 `severity: Severity::Error`,不查询 `code.is_warning()`。`W0051` snapshot 因此 render as `"severity": "error"`。区分 warning vs error 的现行机制是 `code.is_warning()` (boolean),AI 工具照常 routing。修复路径:在 `WlwlDiagnostic::new` 加 `if code.is_warning() { Severity::Warning }`,但跨多 crate 影响面广,留 Phase G 错误信息质量 pass (G7) 统一处理。本批**不**改。 |
+
+## Phase B2 implementation stats
+
+| Item | Data |
+|------|------|
+| Total tests | **679 / 679 passing** (B1 末 670 → B2 末 679, 净 +9) |
+| `wlwl-eval` new tests | **+9** (`del_alias_*` × 8 + `remove_key_does_not_emit_w0051` × 1) |
+| `wlwl-error` new tests | 0 (snapshot fixture `codes_name.snap` 加 `W0051` entry;`all_9_warning_codes_registered` → `all_10_warning_codes_registered`) |
+| New error codes | 0 E-codes;**+1 W-code** (`W0051` deprecated_alias;Name bucket) |
+| New builtins | 0 (1 alias wrapper `builtin_remove_key_compat` 委托给现有 `builtin_remove_key`) |
+| New helpers | 0 |
+| Lines added (est.) | ~150 (eval ~140 含 9 test,error ~10) |
+| Key design decisions | ERR 短路在 `eval_call` 入口(line ~2405),先于 alias dispatch,所以 `DEL(ERR("e"), "k")` 透明传播 ERR 且**不**emit `W0051`(`del_alias_propagates_err_without_warning` 锁定); `W0051` 路由到 Name bucket(spec §14.4 列语义),便于工具按现有 W00xx rules 统一 routing;error 消息含 3 段 (`DEL` / `REMOVE_KEY` / `v0.5`) 便于 grep + AI 自动 apply |
+| Test coverage | `wlwl-eval` 92.69% → **92.86%** (+0.17pp);`wlwl-error` 98.74% → **98.85%** (+0.11pp);TOTAL 92.68% → **93.09%** (+0.41pp);13/13 crate ≥ 90% line 守住 |
+| Deferred to Phase B3 | `OR_DIE` 警告发射;canonical name 统一化(`OR_DIE` 错误消息 → `UNWRAP_OR`) |
+| Deferred to Phase G7 | `WlwlDiagnostic::new` 加 `is_warning() → Severity::Warning` 转换 (warning 渲染) |
+| Deferred to v0.5 | 完全删除 `DEL` 函数名 |
+| Spec coverage | §10.2 `DEL` 重命名收尾 100%;§14.5 `W0051` 注册 100%(仅 `DEL` 一侧;`OR_DIE` 一侧留 B3) |
+

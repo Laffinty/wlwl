@@ -1200,12 +1200,14 @@ fn builtin_at(_ev: &mut Evaluator, args: Vec<Value>) -> WlwlResult<Outcome> {
     Ok(Outcome::normal(v))
 }
 
-/// v0.4 §10.2 — `REMOVE_KEY(d, key)` (v0.4 main name; `DEL` will
-/// become a v0.3-compat alias emitting W0051 in Phase B2).
+/// v0.4 §10.2 — `REMOVE_KEY(d, key)` (v0.4 main name).
 ///
 /// - First arg must be DICT, else E0030
 /// - Missing key → NOOP (returns the dict unchanged)
 /// - Returns the dict with the key removed
+///
+/// The v0.3-compat alias `DEL` is wired in `builtin_remove_key_compat`
+/// below — it calls this fn after emitting W0051.
 fn builtin_remove_key(_ev: &mut Evaluator, args: Vec<Value>) -> WlwlResult<Outcome> {
     let (coll, key) = expect_arity2("REMOVE_KEY", &args)?;
     let v = match coll {
@@ -1224,6 +1226,22 @@ fn builtin_remove_key(_ev: &mut Evaluator, args: Vec<Value>) -> WlwlResult<Outco
         }
     };
     Ok(Outcome::normal(v))
+}
+
+/// v0.4 §10.2 + §14.5 — `DEL(d, key)` is the v0.3-compat alias for
+/// `REMOVE_KEY`. Per spec §14.5, every call emits `W0051`. v0.5 will
+/// drop this alias entirely.
+///
+/// Note: the warning fires **after** `eval_call`'s ERR short-circuit
+/// (see line ~1935 region), so `DEL(ERR("e"), "k")` propagates the
+/// ERR without emitting W0051 — this matches `REMOVE_KEY`'s
+/// transparent-propagation semantics for legacy callers.
+fn builtin_remove_key_compat(ev: &mut Evaluator, args: Vec<Value>) -> WlwlResult<Outcome> {
+    ev.emit_warning(
+        ErrorCode::W0051,
+        "`DEL` is a v0.3-compat alias; use `REMOVE_KEY` instead (will be removed in v0.5)",
+    );
+    builtin_remove_key(ev, args)
 }
 
 /// v0.4 §10.2 — `POP(d, key, default)` (dict variant — safe delete).
@@ -1280,6 +1298,10 @@ fn resolve_builtin(name: &str) -> Option<BuiltinFn> {
         "INDEX_SET" => Some(builtin_index_set),
         "AT" => Some(builtin_at),
         "REMOVE_KEY" => Some(builtin_remove_key),
+        // v0.4 §10.2 — `DEL` is the v0.3-compat alias for `REMOVE_KEY`.
+        // Spec §14.5 mandates W0051 on every legacy use; v0.5 removes
+        // the alias. Added Phase B2.
+        "DEL" => Some(builtin_remove_key_compat),
         "POP" => Some(builtin_pop_dict),
         "+" => Some(builtin_add),
         "-" => Some(builtin_sub),
@@ -5866,6 +5888,103 @@ entry = "main.wl"
     fn pop_dict_propagates_err() {
         let err = run(r###"POP(ERR("e"), "k", NULL);"###).unwrap_err();
         assert_eq!(err.diagnostic().code, ErrorCode::E0102);
+    }
+
+    // ── Phase B2: `DEL` v0.3-compat alias of `REMOVE_KEY` (spec §10.2 / §14.5)
+    // The alias MUST emit W0051 on every legacy use (per spec §14.5),
+    // but the ERR short-circuit in `eval_call` fires before the alias
+    // body runs — so `DEL(ERR("e"), "k")` propagates ERR and does NOT
+    // emit W0051. These tests pin down both behaviors.
+
+    #[test]
+    fn del_alias_removes_key() {
+        let (r, w) = run_with_warnings(r###"DEL(["a": 1, "b": 2], "a");"###);
+        assert_eq!(
+            r.unwrap(),
+            Value::Dict(vec![(Value::String("b".into()), Value::Integer(2))])
+        );
+        assert_eq!(w.len(), 1, "expected exactly one W0051");
+        assert_eq!(w[0].code, ErrorCode::W0051);
+    }
+
+    #[test]
+    fn del_alias_missing_key_is_noop() {
+        let (r, w) = run_with_warnings(r###"DEL(["a": 1], "missing");"###);
+        assert_eq!(
+            r.unwrap(),
+            Value::Dict(vec![(Value::String("a".into()), Value::Integer(1))])
+        );
+        assert_eq!(w.len(), 1);
+        assert_eq!(w[0].code, ErrorCode::W0051);
+    }
+
+    #[test]
+    fn del_alias_arity_wrong_is_e0022() {
+        let err = run(r###"DEL(["a": 1]);"###).unwrap_err();
+        assert_eq!(err.diagnostic().code, ErrorCode::E0022);
+    }
+
+    #[test]
+    fn del_alias_arity_too_many_is_e0022() {
+        let err = run(r###"DEL(["a": 1], "a", "extra");"###).unwrap_err();
+        assert_eq!(err.diagnostic().code, ErrorCode::E0022);
+    }
+
+    #[test]
+    fn del_alias_non_dict_is_e0030() {
+        let err = run(r###"DEL(42, "k");"###).unwrap_err();
+        assert_eq!(err.diagnostic().code, ErrorCode::E0030);
+    }
+
+    #[test]
+    fn del_alias_propagates_err_without_warning() {
+        // The ERR short-circuit fires BEFORE the alias body, so:
+        //   1. The ERR is propagated (raises E0102 at top level).
+        //   2. W0051 is NOT emitted (alias body never runs).
+        let (r, w) = run_with_warnings(r###"DEL(ERR("e"), "k");"###);
+        let err = r.unwrap_err();
+        assert_eq!(err.diagnostic().code, ErrorCode::E0102);
+        assert!(
+            w.is_empty(),
+            "DEL(ERR(...)) must not emit W0051 (short-circuit pre-dispatch); got {:?}",
+            w
+        );
+    }
+
+    #[test]
+    fn del_alias_warning_message_mentions_remove_key() {
+        let (r, w) = run_with_warnings(r###"DEL(["a": 1], "a");"###);
+        r.unwrap();
+        assert_eq!(w.len(), 1);
+        let msg = &w[0].message;
+        assert!(msg.contains("`DEL`"), "message should name `DEL`: {}", msg);
+        assert!(
+            msg.contains("REMOVE_KEY"),
+            "message should suggest `REMOVE_KEY`: {}",
+            msg
+        );
+    }
+
+    #[test]
+    fn remove_key_does_not_emit_w0051() {
+        // Regression guard: the v0.4 main name must stay silent.
+        let (r, w) = run_with_warnings(r###"REMOVE_KEY(["a": 1, "b": 2], "a");"###);
+        assert!(r.is_ok());
+        assert!(
+            w.is_empty(),
+            "REMOVE_KEY must not emit W0051; got {:?}",
+            w
+        );
+    }
+
+    #[test]
+    fn del_alias_warning_exactly_once_per_call() {
+        let (r, w) = run_with_warnings(
+            r###"DEL(["a": 1, "b": 2], "a"); DEL(["c": 3], "missing");"###,
+        );
+        r.unwrap();
+        assert_eq!(w.len(), 2, "expected one W0051 per DEL call, got {:?}", w);
+        assert!(w.iter().all(|x| x.code == ErrorCode::W0051));
     }
 
     #[test]

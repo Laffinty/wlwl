@@ -77,6 +77,9 @@ pub enum ErrorCode {
     W0030, // IMPORTed name never used
     W0040, // unhandled `TODO(agent):` comment
     W0015, // integer overflow, saturated to INT64_MAX / INT64_MIN (v0.4 §9.5)
+    // v0.4 §14.5 — using v0.3 deprecated alias (`DEL` / `OR_DIE`).
+    // Added in Phase B2 (DEL alias). OR_DIE side is wired in Phase B3.
+    W0051,
 }
 
 impl ErrorCode {
@@ -135,6 +138,7 @@ impl ErrorCode {
             ErrorCode::W0030 => "W0030",
             ErrorCode::W0040 => "W0040",
             ErrorCode::W0015 => "W0015",
+            ErrorCode::W0051 => "W0051",
         }
     }
 
@@ -153,6 +157,7 @@ impl ErrorCode {
                 | ErrorCode::W0030
                 | ErrorCode::W0040
                 | ErrorCode::W0015
+                | ErrorCode::W0051
         )
     }
 
@@ -219,6 +224,10 @@ impl ErrorCode {
             // Same bucket as the underlying runtime condition
             // (E1003 above), so consumers can route by category.
             ErrorCode::W0015 => ErrorCategory::Runtime,
+            // v0.4 §14.5 — using v0.3 deprecated alias (`DEL` / `OR_DIE`).
+            // Bucket as Name (deprecated *name* in user source).
+            // Added in Phase B2.
+            ErrorCode::W0051 => ErrorCategory::Name,
         }
     }
 
@@ -891,6 +900,9 @@ mod tests {
             "E0025": code_snap(ErrorCode::E0025, "shadow_builtin"),
             "E0026": code_snap(ErrorCode::E0026, "destructure_mismatch"),
             "E0027": code_snap(ErrorCode::E0027, "match_fallthrough"),
+            // v0.4 §14.5 — using v0.3 deprecated alias (`DEL` / `OR_DIE`).
+            // Lives in the Name bucket. Added Phase B2 (DEL alias).
+            "W0051": code_snap(ErrorCode::W0051, "deprecated_alias"),
         }));
     }
 
@@ -977,6 +989,8 @@ mod tests {
     // (integer overflow saturated warning).
     // Phase B1 (2026-09-15) added E0036 (array index OOB) + E0037 (dict
     // key missing) for spec v0.4 §10.1 / §10.2 INDEX_GET / INDEX_SET.
+    // Phase B2 (2026-09-15) added W0051 (v0.3 deprecated alias —
+    // `DEL`) for spec v0.4 §10.2 / §14.5. No E-codes added in B2.
     #[test]
     fn all_44_codes_registered() {
         // Sanity: ensure we have exactly 44 codes wired through the schema.
@@ -1007,9 +1021,10 @@ mod tests {
     }
 
     #[test]
-    fn all_9_warning_codes_registered() {
+    fn all_10_warning_codes_registered() {
         // v0.4 §14.5 expanded the warning list. Phase A7 added W0015
-        // (integer overflow saturated).
+        // (integer overflow saturated). Phase B2 added W0051 (v0.3
+        // deprecated alias — `DEL`).
         let codes = [
             ErrorCode::W0001,
             ErrorCode::W0010,
@@ -1020,8 +1035,9 @@ mod tests {
             ErrorCode::W0020,
             ErrorCode::W0030,
             ErrorCode::W0040,
+            ErrorCode::W0051,
         ];
-        assert_eq!(codes.len(), 9);
+        assert_eq!(codes.len(), 10);
         for c in &codes {
             assert!(c.is_warning(), "{} should report is_warning() = true", c.as_str());
             assert!(c.as_str().starts_with('W'));
