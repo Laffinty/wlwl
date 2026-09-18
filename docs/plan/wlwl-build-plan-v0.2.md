@@ -82,8 +82,9 @@
 > - Phase B2 完成(DEL v0.3-compat alias + W0051)
 > - Phase B3 完成(UNWRAP_OR canonicalization + OR_DIE v0.3-compat alias + W0051;内部 rename builtin_or_die → builtin_unwrap_or + 21 个新测试)
 > - Phase B4 完成(UNWRAP / ERR_PAYLOAD / WRAP 错误链原语 + A1e cause 字段填充 + Evaluator.current_span + 28 个新测试)
-> - workspace **679 / 679 pass**,13/13 crate ≥ 90% line,TOTAL **93.09% line**
-> - `wlwl-eval` 92.86% line(基线涨 +0.17pp);`wlwl-error` 98.85% line(+0.11pp)
+> - Phase B5 完成(FORMAT 全局 builtin + wlwl:std.format 模块 + STR 全局 builtin + E0039 + E0033/E0038/E0039 补号 + 模板解析缓存;B5 报告问卷的 3 个待决项按 spec 附录 G 钉死处理,决策记录见 history/20260918b5.md)
+> - workspace **787 / 787 pass**(B4 实测基线 728 → +59:eval +31 / std +28)
+> - `wlwl-eval` 366 lib tests;`wlwl-std` 94 lib tests(format.rs 27 + resolve_format 1)
 
 ---
 

@@ -10,12 +10,13 @@
 //! Output formats: human-readable (default), JSON (`--format=json`),
 //! and JSONL streaming (`--format=jsonl`, Phase 3).
 //!
-//! 33 error codes are registered (E0001-E0014 lex/syn, E0020-E0023
-//! name, E0030-E0032 type, E0040-E0043 module, E0050-E0051 OOP,
+//! 47 error codes are registered (E0001-E0014 lex/syn, E0020-E0027
+//! name, E0030-E0039 type, E0040-E0043 module, E0050-E0051 OOP,
 //! E0060-E0063 IO, E0070-E0071 JSON, E0080-E0083 std.ai/network,
-//! E0099 user, E0100-E0102 internal). IO/JSON/std.ai/net are
-//! registered in Phase 3; the actual triggering call sites land in
-//! Phase 4 when those std modules are implemented.
+//! E0099 user, E0100-E0102 internal, E1003 runtime) + 10 warning
+//! codes. E0033 / E0038 / E0039 are registered ahead of their emitting
+//! sites (Phase E / Phase B6 / Phase B5) so the §14.4 type bucket
+//! E0030-E0039 has no holes.
 
 use serde::{Deserialize, Serialize};
 use std::fmt;
@@ -42,10 +43,13 @@ pub enum ErrorCode {
     E0030, // type error
     E0031, // subscript/key type error
     E0032, // property/method not found
+    E0033, // strict_types violation (v0.4 §2.7; emitting sites land in Phase E)
     E0034, // integer overflow on negation (v0.4 §9.5: `NEG(INTEGER_MIN)`)
     E0035, // FLOAT → INTEGER out-of-range cast (v0.4 §9.5: `INT(<huge float>)`)
     E0036, // array index out of bounds (v0.4 §10.1: INDEX_GET/SET on ARRAY)
     E0037, // dict key not found (v0.4 §10.2: INDEX_GET on DICT)
+    E0038, // RANGE step=0 (v0.4 §10.5; emitting sites land in Phase B6)
+    E0039, // FORMAT template parse failure (v0.4 §10.6; Phase B5)
     E1003, // division or modulo by zero (v0.4 §9.5)
     E0040, // module not found
     E0041, // circular IMPORT
@@ -104,10 +108,13 @@ impl ErrorCode {
             ErrorCode::E0030 => "E0030",
             ErrorCode::E0031 => "E0031",
             ErrorCode::E0032 => "E0032",
+            ErrorCode::E0033 => "E0033",
             ErrorCode::E0034 => "E0034",
             ErrorCode::E0035 => "E0035",
             ErrorCode::E0036 => "E0036",
             ErrorCode::E0037 => "E0037",
+            ErrorCode::E0038 => "E0038",
+            ErrorCode::E0039 => "E0039",
             ErrorCode::E1003 => "E1003",
             ErrorCode::E0040 => "E0040",
             ErrorCode::E0041 => "E0041",
@@ -186,9 +193,18 @@ impl ErrorCode {
             // also Type-bucket: they signal "the operand cannot index this
             // collection", a value-shape concern rather than a runtime
             // condition (Phase B1, spec v0.4 §10.1 / §10.2).
-            ErrorCode::E0034 | ErrorCode::E0035 | ErrorCode::E0036 | ErrorCode::E0037 => {
-                ErrorCategory::Type
-            }
+            // v0.4 §14.4 pins the whole E0030-E0039 range to `type`:
+            // E0033 (strict_types violation, Phase E), E0038 (RANGE
+            // step=0, Phase B6) and E0039 (FORMAT template parse
+            // failure, Phase B5) are registered ahead of their emitting
+            // sites so the range has no holes.
+            ErrorCode::E0033
+            | ErrorCode::E0034
+            | ErrorCode::E0035
+            | ErrorCode::E0036
+            | ErrorCode::E0037
+            | ErrorCode::E0038
+            | ErrorCode::E0039 => ErrorCategory::Type,
             // v0.4 §9.5 — division / modulo by zero is a runtime
             // condition (the values themselves are valid), so it lands
             // in the new Runtime bucket (spec §14.4 row 12).
@@ -679,6 +695,16 @@ mod tests {
         assert_eq!(ErrorCode::E0013.category(), ErrorCategory::Syntax);
         assert_eq!(ErrorCode::E0020.category(), ErrorCategory::Name);
         assert_eq!(ErrorCode::E0030.category(), ErrorCategory::Type);
+        // Phase B5: the §14.4 type bucket E0030-E0039 has no holes.
+        // E0033 / E0038 / E0039 are registered ahead of their emitting
+        // sites (Phase E / Phase B6 / Phase B5 respectively).
+        assert_eq!(ErrorCode::E0033.category(), ErrorCategory::Type);
+        assert_eq!(ErrorCode::E0038.category(), ErrorCategory::Type);
+        assert_eq!(ErrorCode::E0039.category(), ErrorCategory::Type);
+        // Type-bucket codes are never retryable (§14.4 retryable=FALSE).
+        assert!(!ErrorCode::E0033.retryable());
+        assert!(!ErrorCode::E0038.retryable());
+        assert!(!ErrorCode::E0039.retryable());
         assert_eq!(ErrorCode::E0041.category(), ErrorCategory::Module);
         assert_eq!(ErrorCode::E0050.category(), ErrorCategory::Oop);
         assert_eq!(ErrorCode::E0060.category(), ErrorCategory::Io);
@@ -922,10 +948,17 @@ mod tests {
             "E0030": code_snap(ErrorCode::E0030, "type_err"),
             "E0031": code_snap(ErrorCode::E0031, "subscrip_key_type"),
             "E0032": code_snap(ErrorCode::E0032, "prop_method_missing"),
+            // Phase B5 registered E0033 / E0038 / E0039 ahead of their
+            // emitting sites (§14.4 pins E0030-E0039 to the type bucket):
+            // E0033 strict_types (Phase E), E0038 RANGE step=0 (Phase B6),
+            // E0039 FORMAT template parse failure (Phase B5).
+            "E0033": code_snap(ErrorCode::E0033, "strict_types_violation"),
             "E0034": code_snap(ErrorCode::E0034, "neg_overflow"),
             "E0035": code_snap(ErrorCode::E0035, "float_to_int_overflow"),
             "E0036": code_snap(ErrorCode::E0036, "array_index_oob"),
             "E0037": code_snap(ErrorCode::E0037, "dict_key_missing"),
+            "E0038": code_snap(ErrorCode::E0038, "range_step_zero"),
+            "E0039": code_snap(ErrorCode::E0039, "format_template_parse"),
         }));
     }
 
@@ -1001,9 +1034,12 @@ mod tests {
     // key missing) for spec v0.4 §10.1 / §10.2 INDEX_GET / INDEX_SET.
     // Phase B2 (2026-09-15) added W0051 (v0.3 deprecated alias —
     // `DEL`) for spec v0.4 §10.2 / §14.5. No E-codes added in B2.
+    // Phase B5 (2026-09-18) added E0033 (strict_types, Phase E),
+    // E0038 (RANGE step=0, Phase B6) and E0039 (FORMAT template parse
+    // failure, used by B5) to close the §14.4 type-bucket range holes.
     #[test]
-    fn all_44_codes_registered() {
-        // Sanity: ensure we have exactly 44 codes wired through the schema.
+    fn all_47_codes_registered() {
+        // Sanity: ensure we have exactly 47 codes wired through the schema.
         // If anyone adds a new ErrorCode variant without updating the
         // snapshot, this count will shift and break the contract.
         let codes = [
@@ -1013,7 +1049,8 @@ mod tests {
             ErrorCode::E0020, ErrorCode::E0021, ErrorCode::E0022, ErrorCode::E0023,
             ErrorCode::E0024, ErrorCode::E0025, ErrorCode::E0026, ErrorCode::E0027,
             ErrorCode::E0030, ErrorCode::E0031, ErrorCode::E0032,
-            ErrorCode::E0034, ErrorCode::E0035, ErrorCode::E0036, ErrorCode::E0037,
+            ErrorCode::E0033, ErrorCode::E0034, ErrorCode::E0035, ErrorCode::E0036,
+            ErrorCode::E0037, ErrorCode::E0038, ErrorCode::E0039,
             ErrorCode::E0040, ErrorCode::E0041, ErrorCode::E0042, ErrorCode::E0043,
             ErrorCode::E0050, ErrorCode::E0051,
             ErrorCode::E0060, ErrorCode::E0061, ErrorCode::E0062, ErrorCode::E0063,
@@ -1023,7 +1060,7 @@ mod tests {
             ErrorCode::E0100, ErrorCode::E0101, ErrorCode::E0102,
             ErrorCode::E1003,
         ];
-        assert_eq!(codes.len(), 44);
+        assert_eq!(codes.len(), 47);
         // Each code has a stable string form.
         for c in &codes {
             assert!(c.as_str().starts_with('E'));

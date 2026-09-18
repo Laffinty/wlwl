@@ -1,6 +1,6 @@
 ---
 source: crates/wlwl-error/src/lib.rs
-expression: "serde_json::json!({\n    \"E0030\": code_snap(ErrorCode::E0030, \"type_err\"), \"E0031\":\n    code_snap(ErrorCode::E0031, \"subscrip_key_type\"), \"E0032\":\n    code_snap(ErrorCode::E0032, \"prop_method_missing\"), \"E0034\":\n    code_snap(ErrorCode::E0034, \"neg_overflow\"), \"E0035\":\n    code_snap(ErrorCode::E0035, \"float_to_int_overflow\"), \"E0036\":\n    code_snap(ErrorCode::E0036, \"array_index_oob\"), \"E0037\":\n    code_snap(ErrorCode::E0037, \"dict_key_missing\"),\n})"
+expression: "serde_json::json!({\n    \"E0030\": code_snap(ErrorCode::E0030, \"type_err\"), \"E0031\":\n    code_snap(ErrorCode::E0031, \"subscrip_key_type\"), \"E0032\":\n    code_snap(ErrorCode::E0032, \"prop_method_missing\"), \"E0033\":\n    code_snap(ErrorCode::E0033, \"strict_types_violation\"), \"E0034\":\n    code_snap(ErrorCode::E0034, \"neg_overflow\"), \"E0035\":\n    code_snap(ErrorCode::E0035, \"float_to_int_overflow\"), \"E0036\":\n    code_snap(ErrorCode::E0036, \"array_index_oob\"), \"E0037\":\n    code_snap(ErrorCode::E0037, \"dict_key_missing\"), \"E0038\":\n    code_snap(ErrorCode::E0038, \"range_step_zero\"), \"E0039\":\n    code_snap(ErrorCode::E0039, \"format_template_parse\"),\n})"
 ---
 {
   "E0030": {
@@ -59,6 +59,27 @@ expression: "serde_json::json!({\n    \"E0030\": code_snap(ErrorCode::E0030, \"t
       "line_end": 1
     },
     "message": "snapshot for prop_method_missing",
+    "related": [],
+    "retry_after": null,
+    "retryable": false,
+    "severity": "error",
+    "source_line": null,
+    "suggestion_code": []
+  },
+  "E0033": {
+    "code": "E0033",
+    "error_category": "type",
+    "error_schema_version": "1.1.0",
+    "hint": null,
+    "idempotent": false,
+    "location": {
+      "col_end": 1,
+      "col_start": 1,
+      "file": "snap.wl",
+      "line": 1,
+      "line_end": 1
+    },
+    "message": "snapshot for strict_types_violation",
     "related": [],
     "retry_after": null,
     "retryable": false,
@@ -143,6 +164,48 @@ expression: "serde_json::json!({\n    \"E0030\": code_snap(ErrorCode::E0030, \"t
       "line_end": 1
     },
     "message": "snapshot for dict_key_missing",
+    "related": [],
+    "retry_after": null,
+    "retryable": false,
+    "severity": "error",
+    "source_line": null,
+    "suggestion_code": []
+  },
+  "E0038": {
+    "code": "E0038",
+    "error_category": "type",
+    "error_schema_version": "1.1.0",
+    "hint": null,
+    "idempotent": false,
+    "location": {
+      "col_end": 1,
+      "col_start": 1,
+      "file": "snap.wl",
+      "line": 1,
+      "line_end": 1
+    },
+    "message": "snapshot for range_step_zero",
+    "related": [],
+    "retry_after": null,
+    "retryable": false,
+    "severity": "error",
+    "source_line": null,
+    "suggestion_code": []
+  },
+  "E0039": {
+    "code": "E0039",
+    "error_category": "type",
+    "error_schema_version": "1.1.0",
+    "hint": null,
+    "idempotent": false,
+    "location": {
+      "col_end": 1,
+      "col_start": 1,
+      "file": "snap.wl",
+      "line": 1,
+      "line_end": 1
+    },
+    "message": "snapshot for format_template_parse",
     "related": [],
     "retry_after": null,
     "retryable": false,

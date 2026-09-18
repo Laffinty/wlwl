@@ -1281,6 +1281,130 @@ fn builtin_pop_dict(_ev: &mut Evaluator, args: Vec<Value>) -> WlwlResult<Outcome
     Ok(Outcome::normal(v))
 }
 
+/// v0.4 §10.3 + appendix G — `STR(x) → STRING`.
+///
+/// Rendering is `Value::display()` — the same conversion `PRINT`
+/// applies to non-STRING args (appendix G: "args 不是 STRING →
+/// `STR(args)`"). `FORMAT` (§10.6) reuses this semantics when
+/// inserting placeholder values.
+///
+/// Not an ERR consumer (appendix G ❌) and not a macro (❌): plain
+/// `Expr::Call` dispatch, and §12.6 transparent propagation happens in
+/// `eval_call` before this fn ever sees an ERR argument.
+fn builtin_str(_ev: &mut Evaluator, args: Vec<Value>) -> WlwlResult<Outcome> {
+    let v = expect_arity("STR", &args, 1)?;
+    Ok(Outcome::normal(Value::String(v.display())))
+}
+
+/// v0.4 §10.6 + §15.8 + appendix G — `FORMAT(template, args...) → STRING`.
+///
+/// Appendix G pins FORMAT as a **global builtin** that is neither an
+/// ERR consumer nor a macro, so it dispatches through the generic
+/// `Expr::Call` path (§12.6 ERR propagation included, for free).
+/// `wlwl:std.format` (§15.8) is its home module — `IMPORT` binds the
+/// std-side implementation, which shares the template grammar
+/// (`wlwl_std::format::parse_template`) with this builtin.
+///
+/// Placeholder semantics (§10.6):
+/// - `{N}`: insert the N-th format arg (args **after** the template),
+///   rendered with STR semantics; out of range → keep `{N}` as-is;
+/// - `{name}`: look up the **first DICT among the format args** — in
+///   the pure-named pattern that is args[0] exactly as the spec says,
+///   and scanning (not hardcoding position 0) is what makes the spec's
+///   own mixed example work:
+///   `FORMAT("hi {0}, age {age}", "alice", ["age": 30])`;
+///   missing key / no DICT arg → keep `{name}` as-is;
+/// - template parse failure (unclosed `{`, empty `{}`) → `E0039`;
+/// - non-STRING template → `E0030`; zero args → `E0022`.
+///
+/// Parsed templates are memoized in `Evaluator.format_cache` (plan
+/// §5.5: "相同 template 复用解析结果") so loops formatting with the
+/// same template parse it once.
+fn builtin_format(ev: &mut Evaluator, args: Vec<Value>) -> WlwlResult<Outcome> {
+    if args.is_empty() {
+        return Err(WlwlDiagnostic::new(
+            ErrorCode::E0022,
+            "FORMAT: function expects at least 1 argument (template), got 0".to_string(),
+            Location::point("<runtime>", 0, 0),
+        )
+        .into());
+    }
+    let template = match &args[0] {
+        Value::String(s) => s.clone(),
+        other => {
+            return Err(type_error(
+                "FORMAT",
+                format!(
+                    "template must be STRING, got {}",
+                    type_name(other)
+                ),
+            ))
+        }
+    };
+    // Parse with memoization. The grammar lives in wlwl-std so the
+    // global builtin and the std.format module share one definition.
+    let segments = match ev.format_cache.get(&template) {
+        Some(cached) => cached.clone(),
+        None => {
+            let parsed =
+                Rc::new(wlwl_std::format::parse_template(&template).map_err(|e| {
+                    // Span-aware E0039 like B4's builtin_unwrap E0100:
+                    // point at the FORMAT call site, not `<runtime>`.
+                    let loc = ev
+                        .current_span
+                        .as_ref()
+                        .map(|s| Location {
+                            file: s.file.clone(),
+                            line: s.line_start,
+                            col: s.col_start,
+                            line_end: s.line_end,
+                            col_end: s.col_end,
+                        })
+                        .unwrap_or_else(|| {
+                            Location::point(ev.file.as_deref().unwrap_or("<runtime>"), 0, 0)
+                        });
+                    WlwlDiagnostic::new(e.code, e.message, loc)
+                })?);
+            ev.format_cache.insert(template.clone(), parsed.clone());
+            parsed
+        }
+    };
+    let format_args = &args[1..];
+    let named = format_args.iter().find_map(|a| match a {
+        Value::Dict(entries) => Some(entries),
+        _ => None,
+    });
+    let mut out = String::new();
+    for seg in segments.iter() {
+        match seg {
+            wlwl_std::format::FormatSegment::Literal(s) => out.push_str(s),
+            wlwl_std::format::FormatSegment::Positional(n) => match format_args.get(*n) {
+                Some(v) => out.push_str(&v.display()),
+                None => {
+                    out.push('{');
+                    out.push_str(&n.to_string());
+                    out.push('}');
+                }
+            },
+            wlwl_std::format::FormatSegment::Named(name) => {
+                let hit = named
+                    .and_then(|entries| {
+                        dict_lookup(entries, &Value::String(name.clone())).map(|i| &entries[i].1)
+                    });
+                match hit {
+                    Some(v) => out.push_str(&v.display()),
+                    None => {
+                        out.push('{');
+                        out.push_str(name);
+                        out.push('}');
+                    }
+                }
+            }
+        }
+    }
+    Ok(Outcome::normal(Value::String(out)))
+}
+
 /// The single dispatch table: maps a built-in name to its implementation.
 /// Operators (`+`, `==`, …) live here too — the parser turns `+(1, 2)`
 /// into `Call { name: "+", … }`, and we dispatch on the operator name.
@@ -1290,6 +1414,19 @@ fn resolve_builtin(name: &str) -> Option<BuiltinFn> {
         "LEN" => Some(builtin_len),
         "PUSH" => Some(builtin_push),
         "INT" => Some(builtin_int),
+        // v0.4 spec §10.3 + appendix G — `STR(x) → STRING` global
+        // conversion builtin (v0.2 provenance; the implementation only
+        // lands in Phase B5 because FORMAT's §10.6 conversion rule
+        // references STR semantics). Not an ERR consumer, not a macro.
+        "STR" => Some(builtin_str),
+        // v0.4 spec §10.6 + §15.8 + appendix G — `FORMAT(template,
+        // args...) → STRING`. Global builtin (appendix G; the plan's
+        // §4.2 `Expr::Format` AST sketch is superseded by the spec's
+        // normative registry, which marks FORMAT 宏函数 ❌ — see
+        // deviations P4-B5-002). Not an ERR consumer → §12.6 default
+        // transparent propagation. The std.format home module shares
+        // the template grammar.
+        "FORMAT" => Some(builtin_format),
         // v0.4 spec §10.1 / §10.2 subscript primitives (Phase B1).
         // None of these consume ERR — they inherit the default §12.6
         // transparent propagation, matching the pre-A6 behaviour for
@@ -2091,9 +2228,17 @@ pub struct Evaluator {
     /// Set by `eval_call` before dispatching into a builtin function
     /// (`fn(&mut Evaluator, Vec<Value>) -> _`); cleared on return.
     /// Lets builtins that synthesize span-aware diagnostics (currently
-    /// just `builtin_unwrap` for `E0100 PANIC` with a `cause` field)
-    /// see the exact call location. Most builtins don't read it.
+    /// `builtin_unwrap` for `E0100 PANIC` with a `cause` field, and
+    /// `builtin_format` for `E0039`) see the exact call location.
+    /// Most builtins don't read it.
     pub current_span: Option<Span>,
+    /// [v0.4 Phase B5] Memoized FORMAT template parses (plan §5.5:
+    /// "相同 template 复用解析结果"). Keyed by template text; the
+    /// parsed segment list is shared via `Rc` so cache hits are a
+    /// pointer clone. Unbounded by design — same trade-off as the
+    /// module cache; a run formatting N distinct templates keeps N
+    /// small segment vectors alive.
+    format_cache: HashMap<String, Rc<Vec<wlwl_std::format::FormatSegment>>>,
 }
 
 impl Default for Evaluator {
@@ -2113,6 +2258,7 @@ impl Evaluator {
             call_stack: Vec::new(),
             warnings: Vec::new(),
             current_span: None,
+            format_cache: HashMap::new(),
         }
     }
 
@@ -2134,6 +2280,7 @@ impl Evaluator {
             call_stack: Vec::new(),
             warnings: Vec::new(),
             current_span: None,
+            format_cache: HashMap::new(),
         }
     }
 
@@ -8084,5 +8231,421 @@ entry = "main.wl"
         let (r, w) = run_with_warnings("IS_ERR(WRAP(ERR(\"e\"), \"c\"));");
         r.unwrap();
         assert!(w.is_empty());
+    }
+
+    // ──────────────────────────────────────────────────────────────────
+    // Phase B5 (spec v0.4 §10.6 + §15.8 + §10.3 STR): FORMAT string
+    // formatting + std.format module + STR global builtin.
+    //
+    // Behavior contracts:
+    //   * STR(x)              → STRING (Value::display rendering)
+    //   * FORMAT("{N}")       → N-th format arg via STR semantics;
+    //                           out of range → placeholder kept as-is
+    //   * FORMAT("{name}")    → first DICT among format args, by key;
+    //                           missing key / no DICT → kept as-is
+    //   * FORMAT mixed        → both placeholder kinds in one template
+    //   * parse failure       → E0039 (unclosed `{`, empty `{}`)
+    //   * non-STRING template → E0030; zero args → E0022
+    //   * ERR args            → §12.6 transparent propagation
+    //                           (appendix G: FORMAT/STR are NOT ERR
+    //                           consumers)
+    //
+    // Both entry points share the template grammar: the global builtin
+    // (this file) and wlwl:std.format (IMPORT path). Neither emits
+    // W0051 — FORMAT/STR are v0.4 canonical names, not v0.3 aliases.
+    // ──────────────────────────────────────────────────────────────────
+
+    // ── STR ───────────────────────────────────────────────────────────
+
+    #[test]
+    fn b5_str_primitives() {
+        assert_eq!(run("STR(42);").unwrap(), Value::String("42".into()));
+        assert_eq!(run("STR(3.5);").unwrap(), Value::String("3.5".into()));
+        assert_eq!(run("STR(30.0);").unwrap(), Value::String("30.0".into()));
+        assert_eq!(run("STR(TRUE);").unwrap(), Value::String("TRUE".into()));
+        assert_eq!(run("STR(FALSE);").unwrap(), Value::String("FALSE".into()));
+        assert_eq!(run("STR(NULL);").unwrap(), Value::String("NULL".into()));
+        // STRING is identity.
+        assert_eq!(run(r###"STR("x");"###).unwrap(), Value::String("x".into()));
+    }
+
+    #[test]
+    fn b5_str_containers_render_structurally() {
+        assert_eq!(
+            run("STR([1, 2]);").unwrap(),
+            Value::String("[1, 2]".into())
+        );
+        assert_eq!(
+            run(r###"STR(["a": 1]);"###).unwrap(),
+            Value::String("[a: 1]".into())
+        );
+    }
+
+    #[test]
+    fn b5_str_closure_renders_fun_form() {
+        // STR accepts any value (appendix G: STR(x) → STRING); a
+        // closure renders via Value::display(). This is exactly why
+        // builtin_format renders on Value instead of round-tripping
+        // the std boundary (which rejects closures with E0030).
+        assert_eq!(
+            run("STR(FUN((x), x));").unwrap(),
+            Value::String("<fun(x)>".into())
+        );
+    }
+
+    #[test]
+    fn b5_str_ok_result_renders() {
+        assert_eq!(
+            run("STR(OK(42));").unwrap(),
+            Value::String("OK(42)".into())
+        );
+    }
+
+    #[test]
+    fn b5_str_err_arg_propagates_per_s126() {
+        // STR is NOT an ERR consumer (appendix G ❌) — an ERR argument
+        // short-circuits in eval_call and escapes to top level as
+        // E0102 (§19.6 Corollary 19.1).
+        let err = run(r###"STR(ERR("e"));"###).unwrap_err();
+        assert_eq!(err.diagnostic().code, ErrorCode::E0102);
+    }
+
+    #[test]
+    fn b5_str_arity_wrong_is_e0022() {
+        assert_eq!(run("STR();").unwrap_err().diagnostic().code, ErrorCode::E0022);
+        assert_eq!(
+            run(r###"STR("a", "b");"###).unwrap_err().diagnostic().code,
+            ErrorCode::E0022
+        );
+    }
+
+    // ── FORMAT: the three §10.6 spec examples ─────────────────────────
+
+    #[test]
+    fn b5_format_positional_spec_example() {
+        // §10.6 example 1: positional placeholders + STR conversion of
+        // the INTEGER age.
+        let v = run(
+            r###"LET(name, "alice"); LET(age, 30);
+                 FORMAT("hi {0}, you are {1} years old", name, age);"###,
+        )
+        .unwrap();
+        assert_eq!(
+            v,
+            Value::String("hi alice, you are 30 years old".into())
+        );
+    }
+
+    #[test]
+    fn b5_format_named_spec_example() {
+        // §10.6 example 2: pure-named pattern — the DICT is args[0] of
+        // the format args, exactly as the spec's "从 args[0]" describes.
+        let v = run(
+            r###"FORMAT("hi {name}, age {age}", ["name": "alice", "age": 30]);"###,
+        )
+        .unwrap();
+        assert_eq!(v, Value::String("hi alice, age 30".into()));
+    }
+
+    #[test]
+    fn b5_format_mixed_spec_example() {
+        // §10.6 example 3: mixed pattern. The named lookup must find
+        // the dict at args[1] — the "first DICT among format args"
+        // rule is what makes the spec's own example produce sensible
+        // output (hardcoding args[0] would leave "{age}" literal).
+        let v = run(
+            r###"FORMAT("hi {0}, age {age}", "alice", ["age": 30]);"###,
+        )
+        .unwrap();
+        assert_eq!(v, Value::String("hi alice, age 30".into()));
+    }
+
+    // ── FORMAT: rendering rules ───────────────────────────────────────
+
+    #[test]
+    fn b5_format_repeated_placeholder() {
+        assert_eq!(
+            run(r###"FORMAT("{0} and {0} and {0}", "x");"###).unwrap(),
+            Value::String("x and x and x".into())
+        );
+    }
+
+    #[test]
+    fn b5_format_str_conversion_of_inserted_values() {
+        // §10.6: args[i] 非字符串 → STR(args[i]) 转换 (§10.3 semantics).
+        assert_eq!(
+            run(r###"FORMAT("{0} {1} {2} {3}", 42, 30.0, TRUE, NULL);"###).unwrap(),
+            Value::String("42 30.0 TRUE NULL".into())
+        );
+        // Containers render structurally, same as STR.
+        assert_eq!(
+            run(r###"FORMAT("{0} {1}", [1, 2], ["k": "v"]);"###).unwrap(),
+            Value::String("[1, 2] [k: v]".into())
+        );
+    }
+
+    #[test]
+    fn b5_format_str_composes_with_format() {
+        assert_eq!(
+            run(r###"FORMAT("{0}!", STR(42));"###).unwrap(),
+            Value::String("42!".into())
+        );
+    }
+
+    #[test]
+    fn b5_format_unmatched_positional_kept_literal() {
+        // §10.6 末段: 模板中未匹配的 {...} 保留原样.
+        assert_eq!(
+            run(r###"FORMAT("{0} + {5}", "a");"###).unwrap(),
+            Value::String("a + {5}".into())
+        );
+    }
+
+    #[test]
+    fn b5_format_unmatched_named_kept_literal() {
+        // Key present in the dict? No → keep the placeholder.
+        assert_eq!(
+            run(r###"FORMAT("{name}", ["other": 1]);"###).unwrap(),
+            Value::String("{name}".into())
+        );
+        // No DICT arg at all → keep it too.
+        assert_eq!(
+            run(r###"FORMAT("hi {name}", "alice");"###).unwrap(),
+            Value::String("hi {name}".into())
+        );
+    }
+
+    #[test]
+    fn b5_format_named_skips_non_dict_args() {
+        // The named lookup scans for the first DICT; scalars are
+        // skipped (they are positional material, not lookup sources).
+        assert_eq!(
+            run(r###"FORMAT("{name}", 1, ["name": "n"]);"###).unwrap(),
+            Value::String("n".into())
+        );
+    }
+
+    #[test]
+    fn b5_format_stray_close_brace_is_literal() {
+        assert_eq!(
+            run(r###"FORMAT("a } b {0}", "x");"###).unwrap(),
+            Value::String("a } b x".into())
+        );
+    }
+
+    #[test]
+    fn b5_format_closure_arg_renders_fun_form() {
+        // Global-builtin path renders closures via STR semantics. (The
+        // IMPORT path rejects them at the std boundary with E0030 —
+        // see b5_format_std_path_closure_is_e0030; that divergence is
+        // the documented std-boundary contract.)
+        assert_eq!(
+            run(r###"FORMAT("{0}", FUN((x), x));"###).unwrap(),
+            Value::String("<fun(x)>".into())
+        );
+    }
+
+    // ── FORMAT: E0039 / E0030 / E0022 ─────────────────────────────────
+
+    #[test]
+    fn b5_format_unclosed_brace_is_e0039_span_aware() {
+        // §10.6: 模板解析失败(如 `{` 单独出现)→ E0039. The diagnostic
+        // is span-aware (B4 current_span mechanism): it must point at
+        // the FORMAT call site, not the `<runtime>` placeholder.
+        let err = run(r#"FORMAT("bad { template");"#).unwrap_err();
+        let d = err.diagnostic();
+        assert_eq!(d.code, ErrorCode::E0039);
+        assert!(
+            d.message.contains("malformed"),
+            "E0039 message should say malformed: {}",
+            d.message
+        );
+        assert!(
+            d.message.contains("unclosed"),
+            "E0039 message should say unclosed: {}",
+            d.message
+        );
+        assert_eq!(d.location.file, "t.wl");
+        assert_eq!(d.location.line, 1);
+    }
+
+    #[test]
+    fn b5_format_empty_placeholder_is_e0039() {
+        // `{}` is neither a positional nor a named placeholder — the
+        // template cannot be interpreted → parse failure (documented
+        // decision; the spec only pins the lone-`{` case explicitly).
+        let err = run(r#"FORMAT("a {} b");"#).unwrap_err();
+        assert_eq!(err.diagnostic().code, ErrorCode::E0039);
+        assert!(
+            err.diagnostic().message.contains("empty"),
+            "message should say empty: {}",
+            err.diagnostic().message
+        );
+    }
+
+    #[test]
+    fn b5_format_template_not_string_is_e0030() {
+        let err = run("FORMAT(42);").unwrap_err();
+        assert_eq!(err.diagnostic().code, ErrorCode::E0030);
+        assert!(
+            err.diagnostic().message.contains("template"),
+            "message should mention template: {}",
+            err.diagnostic().message
+        );
+    }
+
+    #[test]
+    fn b5_format_zero_args_is_e0022() {
+        let err = run("FORMAT();").unwrap_err();
+        assert_eq!(err.diagnostic().code, ErrorCode::E0022);
+        assert!(
+            err.diagnostic().message.contains("at least 1"),
+            "message should say at least 1: {}",
+            err.diagnostic().message
+        );
+    }
+
+    #[test]
+    fn b5_format_err_arg_propagates_per_s126() {
+        // FORMAT is NOT an ERR consumer (appendix G ❌) — the ERR arg
+        // short-circuits in eval_call and escapes to top level as
+        // E0102. (Same shape as b5_str_err_arg_propagates_per_s126.)
+        let err = run(r###"FORMAT("{0}", ERR("e"));"###).unwrap_err();
+        assert_eq!(err.diagnostic().code, ErrorCode::E0102);
+    }
+
+    // ── FORMAT: template cache (plan §5.5) ────────────────────────────
+
+    #[test]
+    fn b5_format_cache_same_template_different_args() {
+        // Same template text parsed once, rendered twice with different
+        // args — a broken (stale-render) cache would return the first
+        // result twice. Both calls happen in ONE program so they share
+        // one Evaluator (and therefore one format_cache).
+        let v = run(
+            r###"[FORMAT("{0}-{1}", 1, 2), FORMAT("{0}-{1}", 3, 4), FORMAT("{0}-{1}", "a", "b")];"###,
+        )
+        .unwrap();
+        assert_eq!(
+            v,
+            Value::Array(vec![
+                Value::String("1-2".into()),
+                Value::String("3-4".into()),
+                Value::String("a-b".into()),
+            ])
+        );
+    }
+
+    #[test]
+    fn b5_format_in_loop_with_constant_template() {
+        // The classic cache win: a loop formatting with the same
+        // template every iteration. Correct output across iterations
+        // proves the cached segments render against fresh args.
+        let src = r#"
+            LET(out, "");
+            FOR(i, [1, 2, 3],
+                LET(out, +(out, FORMAT("[{0}]", i)))
+            );
+            out;
+        "#;
+        assert_eq!(
+            run(src).unwrap(),
+            Value::String("[1][2][3]".into())
+        );
+    }
+
+    // ── FORMAT via IMPORT("wlwl:std.format") (§15.8) ──────────────────
+
+    #[test]
+    fn b5_format_via_std_import_positional() {
+        // §15.8: the module is FORMAT's home. After IMPORT, the name
+        // binds to the std NativeFn and the user-supplied binding
+        // takes priority over the resolve_builtin fallback.
+        let v = run_std(r#"
+            IMPORT("wlwl:std.format", ["FORMAT"]);
+            FORMAT("hi {0}", "alice");
+        "#)
+        .unwrap();
+        assert_eq!(v, Value::String("hi alice".into()));
+    }
+
+    #[test]
+    fn b5_format_via_std_import_named_and_mixed() {
+        let v = run_std(r#"
+            IMPORT("wlwl:std.format", ["FORMAT"]);
+            FORMAT("hi {name}", ["name": "bob"]);
+        "#)
+        .unwrap();
+        assert_eq!(v, Value::String("hi bob".into()));
+        let v = run_std(r#"
+            IMPORT("wlwl:std.format", ["FORMAT"]);
+            FORMAT("{0}={v}", "x", ["v": 7]);
+        "#)
+        .unwrap();
+        assert_eq!(v, Value::String("x=7".into()));
+    }
+
+    #[test]
+    fn b5_format_std_path_malformed_template_is_e0039() {
+        // The std path shares the template grammar, so the same E0039
+        // fires through invoke_std's StdError → diagnostic mapping.
+        let err = run_std(r#"
+            IMPORT("wlwl:std.format", ["FORMAT"]);
+            FORMAT("bad {");
+        "#)
+        .unwrap_err();
+        assert_eq!(err.diagnostic().code, ErrorCode::E0039);
+    }
+
+    #[test]
+    fn b5_format_std_path_unmatched_kept_literal() {
+        let v = run_std(r#"
+            IMPORT("wlwl:std.format", ["FORMAT"]);
+            FORMAT("{9} {missing}", "a");
+        "#)
+        .unwrap();
+        assert_eq!(v, Value::String("{9} {missing}".into()));
+    }
+
+    #[test]
+    fn b5_format_std_path_closure_is_e0030() {
+        // The std boundary (invoke_std → value_to_std_value) rejects
+        // closures before dispatch — existing contract for every std
+        // module. The global builtin renders them instead (see
+        // b5_format_closure_arg_renders_fun_form). Documented
+        // divergence, deviations P4-B5-004.
+        let err = run_std(r#"
+            IMPORT("wlwl:std.format", ["FORMAT"]);
+            FORMAT("{0}", FUN((x), x));
+        "#)
+        .unwrap_err();
+        assert_eq!(err.diagnostic().code, ErrorCode::E0030);
+    }
+
+    #[test]
+    fn b5_format_global_and_std_paths_agree() {
+        // Same program shape through both entry points must produce
+        // the same string (they share the grammar; rendering mirrors
+        // Value::display on both sides).
+        let global = run(r###"FORMAT("hi {0}, age {age}", "alice", ["age": 30]);"###)
+            .unwrap();
+        let via_std = run_std(r#"
+            IMPORT("wlwl:std.format", ["FORMAT"]);
+            FORMAT("hi {0}, age {age}", "alice", ["age": 30]);
+        "#)
+        .unwrap();
+        assert_eq!(global, via_std);
+        assert_eq!(global, Value::String("hi alice, age 30".into()));
+    }
+
+    // ── W0051 / warnings ──────────────────────────────────────────────
+
+    #[test]
+    fn b5_format_and_str_do_not_emit_w0051() {
+        // FORMAT / STR are v0.4 canonical names (appendix G), not v0.3
+        // aliases — zero W0051 paths, same reasoning as B4.
+        let (r, w) = run_with_warnings(r###"STR(42); FORMAT("{0}", 1);"###);
+        r.unwrap();
+        assert!(w.is_empty(), "expected no warnings, got {:?}", w);
     }
 }

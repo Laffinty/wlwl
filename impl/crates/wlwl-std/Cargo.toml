@@ -3,7 +3,7 @@ name = "wlwl-std"
 version.workspace = true
 edition.workspace = true
 license.workspace = true
-description = "WLWL standard library (Phase 4 §15: std.io / std.fs / std.json)"
+description = "WLWL standard library (Phase 4 §15: std.io / std.fs / std.json / std.ai / std.format)"
 
 [dependencies]
 wlwl-error = { workspace = true }

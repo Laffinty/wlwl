@@ -1,9 +1,11 @@
-﻿//! WLWL standard library (v0.3 §15) — Phase 4 first batch.
+﻿//! WLWL standard library (v0.4 §15) — Phase 4.
 //!
 //! Modules exposed:
-//!   - `wlwl:std.io`    — `PRINT`, `INPUT` (§15.1)
-//!   - `wlwl:std.fs`    — `READ_FILE`, `WRITE_FILE`, `EXISTS` (§15.3)
-//!   - `wlwl:std.json`  — `PARSE`, `STRINGIFY` (§15.3 + E0070/E0071)
+//!   - `wlwl:std.io`     — `PRINT`, `INPUT` (§15.1)
+//!   - `wlwl:std.fs`     — `READ_FILE`, `WRITE_FILE`, `EXISTS` (§15.3)
+//!   - `wlwl:std.json`   — `PARSE`, `STRINGIFY` (§15.3 + E0070/E0071)
+//!   - `wlwl:std.ai`     — ASK / ASK_STREAM stubs (§15.13, Phase 4 batch 3)
+//!   - `wlwl:std.format` — `FORMAT` + the shared template grammar (§15.8 / §10.6, Phase B5)
 //!
 //! ## Design boundary
 //!
@@ -20,6 +22,7 @@ pub mod io;
 pub mod fs;
 pub mod json;
 pub mod ai;
+pub mod format;
 
 use std::collections::HashMap;
 use wlwl_error::ErrorCode;
@@ -74,6 +77,7 @@ pub fn resolve(path: &str) -> Option<&'static ModuleSpec> {
         "wlwl:std.fs" => Some(&fs::SPEC),
         "wlwl:std.json" => Some(&json::SPEC),
         "wlwl:std.ai" => Some(&ai::SPEC),
+        "wlwl:std.format" => Some(&format::SPEC),
         _ => None,
     }
 }
@@ -200,6 +204,14 @@ mod tests {
     fn resolve_ai() {
         let s = resolve("wlwl:std.ai").expect("ai resolves");
         assert_eq!(s.path, "wlwl:std.ai");
+    }
+    #[test]
+    fn resolve_format() {
+        // Phase B5 (spec v0.4 §15.8): wlwl:std.format exposes FORMAT.
+        let s = resolve("wlwl:std.format").expect("format resolves");
+        assert_eq!(s.path, "wlwl:std.format");
+        let names: Vec<&str> = s.functions.iter().map(|(n, _)| *n).collect();
+        assert_eq!(names, vec!["FORMAT"]);
     }
     #[test]
     fn resolve_unknown_returns_none() {

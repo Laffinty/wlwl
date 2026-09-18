@@ -1267,3 +1267,38 @@ P3-013 选 §4.5 解读 (混用是 warning). 理由:
 | Deferred to v0.5 | 完全删除 `DEL` 函数名 |
 | Spec coverage | §10.2 `DEL` 重命名收尾 100%;§14.5 `W0051` 注册 100%(仅 `DEL` 一侧;`OR_DIE` 一侧留 B3) |
 
+
+---
+
+# Phase B5 (2026-09-18) — FORMAT + std.format + STR (spec v0.4 §10.6 / §15.8 / §10.3)
+
+> B4 报告留下的 3 个 owner 待决项 (Q1 STR 位置 / Q2 FORMAT 实现路径 / Q3 E0038/E0039/E0033 补号)
+> 本批按 spec 规范性条文钉死处理,不再等问卷 —— 三个问题在 v0.4 文本里都有明确答案,
+> 详见 history/20260918b5.md "三个待决项的裁定" 一节。
+
+| ID | Spec / plan | Status | Notes |
+|----|-------------|--------|-------|
+| P4-B5-001 | spec 附录 G (行 3673) + §10.3 | **Implemented (Q1 裁定)** | `STR` 是全局内建 (appendix G 注册表 v0.2 行,非 std.format 专属)。`builtin_str(x)` = `Value::display()`,与 PRINT 的非 STRING 参数渲染同源。plan §3 B5 行 435 "非 STRING/DICT → STR 转换" 的依赖自此闭合。 |
+| P4-B5-002 | spec 附录 G (行 3707: FORMAT 宏函数 ❌) + §10.6 + §15.8 | **Implemented (Q2 裁定: 路径 A)** | `FORMAT` 走 builtin call 路径 (plan §3 路径 A),**不是** lexer keyword + AST variant (路径 B)。裁定依据:appendix G 是规范性注册表,FORMAT 行 宏函数列 = ❌;plan §4.2 的 `Expr::Format` AST sketch 是示意,与 appendix G 冲突时以 spec 为准 (§10.6 行 1264 也只定义函数形式)。编译期预解析 template 的性能收益由运行时 `format_cache` memoization 替代 (plan §5.5 本来就要求缓存)。 |
+| P4-B5-003 | spec §14.4 (行 2016-2029) + §14.2 | **Implemented (Q3 裁定)** | E0033 (strict_types,Phase E 用) / E0038 (RANGE step=0,Phase B6 用) / E0039 (FORMAT 模板解析,本批用) 三个码全部注册,§14.4 把 E0030-E0039 整段钉在 type bucket,retryable=FALSE。补号后 type bucket 无跳号,snapshot `codes_type` 10 项,`all_47_codes_registered` 收口。 |
+| P4-B5-004 | spec §10.6 (行 1268 "从 args[0](必须是 DICT)按 key 取值") | **Deviation (interpretation)** | named 查找实现为"format args 中**第一个 DICT**"而非字面 args[0]。原因:spec 自己的 mixed 例子 `FORMAT("hi {0}, age {age}", "alice", ["age": 30])` 中 dict 在 args[1] —— 字面 args[0] 会让该例子输出 `{age}` 字面。纯 named pattern 下第一个 DICT 就是 args[0],与 §10.6 行 1268 完全一致;mixed pattern 下扫描是实现该例子语义的唯一方式。 |
+| P4-B5-005 | spec §10.6 (行 1282 只列 "`{` 单独出现" 一个失败例) | **Deviation (strictness)** | `{}` 空占位也判 E0039 (既非位置也非名字,无法解释)。未匹配 (越界 `{5}` / 缺键 `{name}` / 无 DICT) **不**算 parse failure,render 时保留原样 (§10.6 行 1281)。全数字但超出 usize 的占位折叠为字面量 (永不匹配,等价未匹配)。 |
+| P4-B5-006 | std 边界类型约束 (既有契约) | **Deviation (documented)** | 全局 builtin 路径的 FORMAT/STR 可以渲染闭包 (`<fun(x)>`,走 Value::display);IMPORT 路径 (wlwl:std.format) 在 invoke_std 的 value_to_std_value 处对闭包报 E0030 —— 所有 std 模块的既有边界契约。两条路径对可渲染值输出逐字节一致 (`b5_format_global_and_std_paths_agree` 锁定)。 |
+
+## Phase B5 implementation stats
+
+| Item | Data |
+|------|------|
+| Total tests | **787 / 787 passing** (B4 实测基线 728 → 净 +59) |
+| `wlwl-eval` new tests | **+31** (`b5_str_*` × 6 / `b5_format_*` × 24 / `b5_format_and_str_do_not_emit_w0051`) |
+| `wlwl-std` new tests | **+28** (format.rs 27 + lib.rs `resolve_format` 1) |
+| `wlwl-error` new tests | 0 (`codes_type.snap` +3 entry;`all_44` → `all_47`;`category_assignment` 加 3 断言) |
+| New error codes | **+3** (`E0033` / `E0038` / `E0039`,全部 Type bucket;E0039 本批启用,E0033/E0038 先注册后启用) |
+| New builtins | **+2** (`STR` / `FORMAT`,均全局,均非 ERR consumer / 非宏) |
+| New std module | **+1** (`wlwl:std.format`,暴露 FORMAT,共享 parse_template 语法) |
+| New infra | `Evaluator.format_cache: HashMap<String, Rc<Vec<FormatSegment>>>` (plan §5.5 缓存要求) |
+| Lines added (est.) | ~700 (eval ~350 含测试 / std ~430 / error ~40) |
+| Key design decisions | 模板语法单点化在 `wlwl_std::format::parse_template` (两条 FORMAT 入口共享);E0039 走 B4 current_span 机制定位到 call site;named 查找扫第一个 DICT (P4-B5-004);未匹配保留原样非报错 |
+| Spec coverage | §10.6 100% (三个 spec 示例逐字锁定);§15.8 100%;§10.3 STR 100%;§14.4 type bucket 无跳号 |
+| Deferred to Phase B6 | `RANGE` step=0 → E0038 发射点 (码已注册) |
+| Deferred to Phase E | strict_types 违例 → E0033 发射点 (码已注册) |
