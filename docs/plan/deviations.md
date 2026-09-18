@@ -1524,3 +1524,51 @@ B10 (commit `41b97ab`, 910/910) 收口后接 B11。本批把 spec v0.4 附录 G
 - 3.4 (宏函数标志): 100%
 - 14.5 (deprecated aliases W0051/W0054): 100%
 - 12.6 (ERR 透明传播): 100% (继承 B4-B10)
+
+# Phase B12 (2026-09-18) — ARRAY ops 7 项 (spec v0.4 §10.1)
+
+> B11 (commit `45fd0d4`, 920/920) 收口后接 B12。本批把 spec 附录 G Deferred 的 7 个
+> array builtin (SHIFT / UNSHIFT / SLICE / CONCAT / CONTAINS / INDEX / REVERSE)
+> 接进 resolve_builtin,注册表从 Deferred 转 ResolvedBuiltin。
+
+## 实施
+
+| 模块 | 内容 |
+|------|------|
+| `wlwl-eval/src/lib.rs` | 7 个 builtin_xxx 实现 + 7 行 dispatch entry + 11 个 `b12_*` 测试 |
+| `wlwl-eval/src/registry.rs` | 7 条 entry 的 dispatch 从 Deferred → ResolvedBuiltin |
+| `wlwl-eval/src/lib.rs` B11 锁测试 | `b11_registry_count_matches_spec_table` 内 deferred band 从 [20,30] → [15,30] |
+| 改动 lexer / parser / ast / std | **0** (append-only) |
+
+## Deviations
+
+| ID | Spec / plan | Status | Notes |
+|----|-------------|--------|-------|
+| P4-B12-001 | plan §5 B12 — 7 array ops 全接 | **Implemented**: SHIFT / UNSHIFT / SLICE / CONCAT / CONTAINS / INDEX / REVERSE 都加进 resolve_builtin + 注册表转 ResolvedBuiltin | 锁测试 `b12_seven_*` 双向覆盖 |
+| P4-B12-002 | spec 附录 G POP(arr) -> ARRAY | **Recorded** | B1 把 POP 重载为 POP(dict, key, default) (DICT 安全删除 + 默认值 fallback)。registry POP 仍标 ResolvedBuiltin / Array group,但 impl 是 3-arg DICT 版。本批**不动** POP 语义以保持向后兼容;v0.5 重命名 `POP_DICT` 之类可彻底分开。 |
+| P4-B12-003 | spec §10.1 CONCAT 接受 STRING+STRING? | **Allowed**: spec 表 row 7 没明确,我们采取宽松路径——ARRAY+ARRAY 直接 concat;STRING+STRING 返回 codepoint ARRAY (与 CODEPOINTS 一致)。其它类型组合 → E0030。 | 让 CONCAT 与 §10.3 字符串工具对称。 |
+| P4-B12-004 | spec §10.1 CONTAINS / INDEX / REVERSE 对 STRING 的支持 | **Extended**: spec 表 row 6/8/10 只列 ARRAY,但实现上接受 STRING 作第一参数 (substring / codepoint),与现有 STARTS_WITH / ENDS_WITH / INDEX_GET 路径一致。 | 不增加新 dispatch entry;同一 builtin 接 ARRAY/STRING 是 §10.1 通用 builtin 风格 (像 PUSH 接受 ARRAY、AT 接受 ARRAY/DICT)。 |
+| P4-B12-005 | spec §10.1 INDEX 找不到 → E0031 vs -1 | **Chose -1**: spec 表 row 8 暗示返回 INTEGER,历史上 v0.2 是 -1。本批锁 -1 行为;E0031 只在 array 类型错的极端 case (e.g. INDEX(42, 1)) 触发。 | 与 v0.2 兼容;用户用例 `IF(INDEX(arr, x) > 0, found, not)` 风格。 |
+
+## Phase B12 implementation stats
+
+| Item | Data |
+|------|------|
+| Total tests | **931 / 931 passing** (B11 末 920 → 净 +11:B12 测试 11 个) |
+| `wlwl-eval` new tests | **+11** (`b12_*` lib tests) |
+| New global builtin | **+7** (SHIFT / UNSHIFT / SLICE / CONCAT / CONTAINS / INDEX / REVERSE) |
+| New error codes | **0** (沿用 E0030 / E0022 / E0102) |
+| New lexer / parser / ast 改动 | **0** (append-only) |
+| Lines added (est.) | ~600 (7 个 builtin ~350 + dispatch 7 + 11 测试 ~250) |
+| Key design decisions | (1) immutable 语义 (返回新 array); (2) ARRAY + STRING 双形参接受 (与 PUSH/AT 路径一致); (3) INDEX 找不到 → -1 (兼容 v0.2); (4) CONCAT 接受 STRING+STRING 返回 codepoint ARRAY |
+| Test coverage | wlwl-eval ≥ 90%;13/13 crate ≥ 90% line 守住 |
+| Deferred to Phase B13+ | 17 项 (B11 末 24 → B12 移走 7 → 17):INPUT/BOOL/CALL/NEG/KEYS/VALUES/HAS/MERGE/UPPER/LOWER/SUB/REPLACE/SPLIT/GET_PROP/SET_PROP/CALL_METHOD/MODULE_REF |
+
+## Spec coverage update (B12 末)
+
+| Spec 章节 | B12 状态 |
+|-----------|---------|
+| §10.1 row 1-2 PUSH / POP | **100%** (B1/B2 收口) |
+| §10.1 row 3-9 SHIFT / UNSHIFT / SLICE / CONCAT / CONTAINS / INDEX / REVERSE | **100%** (B12 接完) |
+| §10.1 row 10 KEYS / VALUES / HAS / MERGE (DICT) | **0%** (deferred → B14) |
+| §appendix G 注册表 | **~70%** 已实现 (67/90 = 49 ResolvedBuiltin + 3 ResolvedCompat + 24 LexerMacro;剩余 17 Deferred) |

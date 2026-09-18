@@ -1632,6 +1632,234 @@ fn builtin_pop_dict(_ev: &mut Evaluator, args: Vec<Value>) -> WlwlResult<Outcome
     Ok(Outcome::normal(v))
 }
 
+
+// ──────────────────────────────────────────────────────────────────────
+// Phase B12: spec v0.4 §10.1 ARRAY ops (7 项)
+// ──────────────────────────────────────────────────────────────────────
+//
+// 把 spec 附录 G Deferred 的 7 个 array builtin 接进 resolve_builtin。
+// 全部 append-only (不动 lexer/parser/ast);保持 immutable 语义
+// (返回新 array,不修改原 array —— 与 PUSH/POP 已实现路径一致)。
+// ERR-transparent propagation (§12.6 默认) —— 任何 args[i] 是 ERR
+// 由 eval_call 短路,我们这里只看正常值。
+//
+// **POP 命名说明 (deviation P4-B12-002)**: spec 附录 G 表把 `POP`
+// 列在 ARRAY 操作组,签名 `POP(arr) -> ARRAY`(移除最后一个元素)。
+// 但本 impl 早在 Phase B1 把 `POP` 重载为 `POP(dict, key, default) -> v`
+// (DICT 安全删除 + 默认值 fallback,移除 PUSH 误用风险)。
+// registry 把 POP 标 `ResolvedBuiltin / Array group` 是历史沿用,
+// impl 仍是 DICT 3-arg 版。本批**不动** POP 语义以保持向后兼容,
+// 仅在 B12 deviation 里记录这条 spec drift。v0.5 重命名 `POP_DICT`
+// 之类可彻底分开。
+
+/// `SHIFT(arr)` -> ARRAY: 移除第一个元素,返回剩余 array。
+fn builtin_shift(_ev: &mut Evaluator, args: Vec<Value>) -> WlwlResult<Outcome> {
+    let v = expect_arity("SHIFT", &args, 1)?;
+    match v {
+        Value::Array(a) => {
+            if a.is_empty() {
+                Ok(Outcome::normal(Value::Array(Vec::new())))
+            } else {
+                Ok(Outcome::normal(Value::Array(a[1..].to_vec())))
+            }
+        }
+        other => Err(type_error(
+            "SHIFT",
+            format!("expected ARRAY, got {}", type_name(other)),
+        )),
+    }
+}
+
+/// `UNSHIFT(arr, x) -> ARRAY`: 在开头插入元素,返回新 array。
+fn builtin_unshift(_ev: &mut Evaluator, args: Vec<Value>) -> WlwlResult<Outcome> {
+    if args.len() != 2 {
+        return Err(arity_error("UNSHIFT", args.len(), 2));
+    }
+    match &args[0] {
+        Value::Array(a) => {
+            let mut out = Vec::with_capacity(a.len() + 1);
+            out.push(args[1].clone());
+            out.extend(a.iter().cloned());
+            Ok(Outcome::normal(Value::Array(out)))
+        }
+        other => Err(type_error(
+            "UNSHIFT",
+            format!("expected ARRAY as first arg, got {}", type_name(other)),
+        )),
+    }
+}
+
+/// `SLICE(arr, start, end?) -> ARRAY`: 半开区间 [start, end) 切片。
+/// start/end 负数从尾部数 (类似 Python);end 缺省 -> 切到末尾。
+fn builtin_slice(_ev: &mut Evaluator, args: Vec<Value>) -> WlwlResult<Outcome> {
+    if args.len() < 2 || args.len() > 3 {
+        return Err(arity_error("SLICE", 2, args.len()));
+    }
+    let arr = match &args[0] {
+        Value::Array(a) => a,
+        other => {
+            return Err(type_error(
+                "SLICE",
+                format!("expected ARRAY as first arg, got {}", type_name(other)),
+            ));
+        }
+    };
+    let len = arr.len() as i64;
+    let start_raw = match &args[1] {
+        Value::Integer(i) => *i,
+        other => {
+            return Err(type_error(
+                "SLICE",
+                format!("start must be INTEGER, got {}", type_name(other)),
+            ));
+        }
+    };
+    let end_raw = if args.len() == 3 {
+        match &args[2] {
+            Value::Integer(i) => *i,
+            other => {
+                return Err(type_error(
+                    "SLICE",
+                    format!("end must be INTEGER, got {}", type_name(other)),
+                ));
+            }
+        }
+    } else {
+        len
+    };
+    let norm_start = if start_raw < 0 { (start_raw + len).max(0) } else { start_raw.min(len) };
+    let norm_end = if end_raw < 0 { (end_raw + len).max(0) } else { end_raw.min(len) };
+    if norm_end <= norm_start {
+        return Ok(Outcome::normal(Value::Array(Vec::new())));
+    }
+    let start = norm_start as usize;
+    let end = norm_end as usize;
+    Ok(Outcome::normal(Value::Array(arr[start..end].to_vec())))
+}
+
+/// `CONCAT(a, b) -> ARRAY`: 拼接两个 ARRAY,返回新 ARRAY。
+/// 同时接受 STRING+STRING,返回 codepoint ARRAY (与 CODEPOINTS 一致)。
+/// spec §10.1 row 7 允许字符串拼接形式,我们采取宽松路径。
+fn builtin_concat(_ev: &mut Evaluator, args: Vec<Value>) -> WlwlResult<Outcome> {
+    if args.len() != 2 {
+        return Err(arity_error("CONCAT", args.len(), 2));
+    }
+    match (&args[0], &args[1]) {
+        (Value::Array(a), Value::Array(b)) => {
+            let mut out = Vec::with_capacity(a.len() + b.len());
+            out.extend(a.iter().cloned());
+            out.extend(b.iter().cloned());
+            Ok(Outcome::normal(Value::Array(out)))
+        }
+        (Value::String(a), Value::String(b)) => {
+            let mut out = Vec::with_capacity(a.chars().count() + b.chars().count());
+            for c in a.chars() {
+                out.push(Value::Integer(c as i64));
+            }
+            for c in b.chars() {
+                out.push(Value::Integer(c as i64));
+            }
+            Ok(Outcome::normal(Value::Array(out)))
+        }
+        (other_a, other_b) => Err(type_error(
+            "CONCAT",
+            format!("expected (ARRAY, ARRAY) or (STRING, STRING), got ({}, {})",
+                type_name(other_a), type_name(other_b)),
+        )),
+    }
+}
+
+/// `CONTAINS(arr, x) -> BOOLEAN`: 浅相等 (==) 检查元素是否存在。
+/// ARRAY 用 values_equal;STRING 也接受,把 needle 当 substring 查。
+fn builtin_contains(_ev: &mut Evaluator, args: Vec<Value>) -> WlwlResult<Outcome> {
+    if args.len() != 2 {
+        return Err(arity_error("CONTAINS", args.len(), 2));
+    }
+    let needle = &args[1];
+    match &args[0] {
+        Value::Array(a) => {
+            let found = a.iter().any(|item| values_equal(item, needle));
+            Ok(Outcome::normal(Value::Boolean(found)))
+        }
+        Value::String(s) => {
+            let needle_str = match needle {
+                Value::String(n) => n,
+                other => {
+                    return Err(type_error(
+                        "CONTAINS",
+                        format!("STRING contains expects STRING needle, got {}", type_name(other)),
+                    ));
+                }
+            };
+            Ok(Outcome::normal(Value::Boolean(s.contains(needle_str.as_str()))))
+        }
+        other => Err(type_error(
+            "CONTAINS",
+            format!("expected ARRAY or STRING, got {}", type_name(other)),
+        )),
+    }
+}
+
+/// `INDEX(arr, x) -> INTEGER / -1`: 找元素首次出现的 1-based index。
+/// 找不到返回 -1 (与 v0.2 历史兼容);spec §10.1 row 8 1-based 约定。
+fn builtin_index(_ev: &mut Evaluator, args: Vec<Value>) -> WlwlResult<Outcome> {
+    if args.len() != 2 {
+        return Err(arity_error("INDEX", args.len(), 2));
+    }
+    let needle = &args[1];
+    match &args[0] {
+        Value::Array(a) => {
+            for (i, item) in a.iter().enumerate() {
+                if values_equal(item, needle) {
+                    return Ok(Outcome::normal(Value::Integer((i + 1) as i64)));
+                }
+            }
+            Ok(Outcome::normal(Value::Integer(-1)))
+        }
+        Value::String(s) => {
+            let needle_str = match needle {
+                Value::String(n) => n,
+                other => {
+                    return Err(type_error(
+                        "INDEX",
+                        format!("STRING index expects STRING needle, got {}", type_name(other)),
+                    ));
+                }
+            };
+            match s.find(needle_str.as_str()) {
+                Some(i) => Ok(Outcome::normal(Value::Integer((i + 1) as i64))),
+                None => Ok(Outcome::normal(Value::Integer(-1))),
+            }
+        }
+        other => Err(type_error(
+            "INDEX",
+            format!("expected ARRAY or STRING, got {}", type_name(other)),
+        )),
+    }
+}
+
+/// `REVERSE(arr) -> ARRAY`: 反转 array,返回新 array。
+/// STRING 也接受,返回 codepoint array (与 CODEPOINTS 一致)。
+fn builtin_reverse(_ev: &mut Evaluator, args: Vec<Value>) -> WlwlResult<Outcome> {
+    let v = expect_arity("REVERSE", &args, 1)?;
+    match v {
+        Value::Array(a) => {
+            let mut out = a.clone();
+            out.reverse();
+            Ok(Outcome::normal(Value::Array(out)))
+        }
+        Value::String(s) => {
+            let mut chars: Vec<i64> = s.chars().map(|c| c as i64).collect();
+            chars.reverse();
+            Ok(Outcome::normal(Value::Array(chars.into_iter().map(Value::Integer).collect())))
+        }
+        other => Err(type_error(
+            "REVERSE",
+            format!("expected ARRAY or STRING, got {}", type_name(other)),
+        )),
+    }
+}
+
 /// v0.4 §10.3 + appendix G — `STR(x) → STRING`.
 ///
 /// Rendering is `Value::display()` — the same conversion `PRINT`
@@ -1822,6 +2050,16 @@ fn resolve_builtin(name: &str) -> Option<BuiltinFn> {
         // the alias. Added Phase B2.
         "DEL" => Some(builtin_remove_key_compat),
         "POP" => Some(builtin_pop_dict),
+
+        // Phase B12 (spec §10.1): ARRAY ops 7 项从 Deferred 转到 ResolvedBuiltin。
+        "SHIFT" => Some(builtin_shift),
+        "UNSHIFT" => Some(builtin_unshift),
+        "SLICE" => Some(builtin_slice),
+        "CONCAT" => Some(builtin_concat),
+        "CONTAINS" => Some(builtin_contains),
+        "INDEX" => Some(builtin_index),
+        "REVERSE" => Some(builtin_reverse),
+
         "+" => Some(builtin_add),
         "-" => Some(builtin_sub),
         "*" => Some(builtin_mul),
@@ -10770,10 +11008,135 @@ entry = "main.wl"
         // Deferred 数量 sanity:B11 末应该有 ~24 个 (spec 列了但 impl 未接)
         let deferred = crate::registry::deferred_names();
         assert!(
-            deferred.len() >= 20 && deferred.len() <= 30,
+            deferred.len() >= 15 && deferred.len() <= 30,
             "Deferred count {} out of expected band [20, 30]",
             deferred.len(),
         );
     }
 
+
+    // ── Phase B12: spec v0.4 §10.1 ARRAY ops (7 项) ────────────────
+    //
+    // spec 附录 G Deferred 的 7 个 array builtin 现在都进 resolve_builtin
+    // 了 —— 这 12 个测试锁住它们的语义、边界、ERR-transparent propagation。
+    //
+    // **POP deviation** (P4-B12-002): spec 附录 G 标 POP(arr) -> ARRAY
+    // (移除最后一个元素),但本 impl 在 B1 把 POP 重载成
+    // POP(dict, key, default) -> v (DICT 安全删除)。B12 不动 POP 语义
+    // 以保持向后兼容,只锁 7 个新 array op。
+
+    #[test]
+    fn b12_shift_basic_and_empty() {
+        assert_eq!(run("SHIFT([1, 2, 3]);").unwrap(), Value::Array(vec![Value::Integer(2), Value::Integer(3)]));
+        assert_eq!(run("SHIFT([]);").unwrap(), Value::Array(vec![]));
+        assert_eq!(run("SHIFT([42]);").unwrap(), Value::Array(vec![]));
+    }
+
+    #[test]
+    fn b12_unshift_prepends_element() {
+        let v = run("UNSHIFT([2, 3], 1);").unwrap();
+        assert_eq!(v, Value::Array(vec![Value::Integer(1), Value::Integer(2), Value::Integer(3)]));
+        let err = run("UNSHIFT(42, 1);").unwrap_err();
+        assert_eq!(err.diagnostic().code, ErrorCode::E0030);
+    }
+
+    #[test]
+    fn b12_slice_basic_negative_and_oob() {
+        assert_eq!(run("SLICE([1,2,3,4,5], 1, 3);").unwrap(),
+            Value::Array(vec![Value::Integer(2), Value::Integer(3)]));
+        assert_eq!(run("SLICE([1,2,3,4,5], -2);").unwrap(),
+            Value::Array(vec![Value::Integer(4), Value::Integer(5)]));
+        assert_eq!(run("SLICE([1,2,3,4,5], 2);").unwrap(),
+            Value::Array(vec![Value::Integer(3), Value::Integer(4), Value::Integer(5)]));
+        assert_eq!(run("SLICE([1,2,3], 2, 2);").unwrap(), Value::Array(vec![]));
+        let err = run("SLICE([1,2,3]);").unwrap_err();
+        assert_eq!(err.diagnostic().code, ErrorCode::E0022);
+    }
+
+    #[test]
+    fn b12_concat_array_and_string() {
+        assert_eq!(run("CONCAT([1, 2], [3, 4]);").unwrap(),
+            Value::Array(vec![Value::Integer(1), Value::Integer(2), Value::Integer(3), Value::Integer(4)]));
+        assert_eq!(run("CONCAT([], [1]);").unwrap(),
+            Value::Array(vec![Value::Integer(1)]));
+        let v = run(r#"CONCAT("ab", "cd");"#).unwrap();
+        assert_eq!(v, Value::Array(vec![Value::Integer(97), Value::Integer(98), Value::Integer(99), Value::Integer(100)]));
+        let err = run("CONCAT(1, 2);").unwrap_err();
+        assert_eq!(err.diagnostic().code, ErrorCode::E0030);
+    }
+
+    #[test]
+    fn b12_contains_array_and_string() {
+        assert_eq!(run("CONTAINS([1, 2, 3], 2);").unwrap(), Value::Boolean(true));
+        assert_eq!(run("CONTAINS([1, 2, 3], 99);").unwrap(), Value::Boolean(false));
+        assert_eq!(run("CONTAINS([[1,2], [3,4]], [1,2]);").unwrap(), Value::Boolean(true));
+        assert_eq!(run(r#"CONTAINS("hello world", "world");"#).unwrap(), Value::Boolean(true));
+        assert_eq!(run(r#"CONTAINS("hello", "xyz");"#).unwrap(), Value::Boolean(false));
+        let err = run("CONTAINS(42, 1);").unwrap_err();
+        assert_eq!(err.diagnostic().code, ErrorCode::E0030);
+    }
+
+    #[test]
+    fn b12_index_returns_1_based_or_minus_one() {
+        assert_eq!(run(r#"INDEX(["a", "b", "c"], "b");"#).unwrap(), Value::Integer(2));
+        assert_eq!(run("INDEX([10, 20, 30], 30);").unwrap(), Value::Integer(3));
+        assert_eq!(run(r#"INDEX(["a", "b"], "z");"#).unwrap(), Value::Integer(-1));
+        assert_eq!(run(r#"INDEX("hello", "ll");"#).unwrap(), Value::Integer(3));
+        assert_eq!(run(r#"INDEX("hello", "xyz");"#).unwrap(), Value::Integer(-1));
+    }
+
+    #[test]
+    fn b12_reverse_array_and_string() {
+        assert_eq!(run("REVERSE([1, 2, 3]);").unwrap(),
+            Value::Array(vec![Value::Integer(3), Value::Integer(2), Value::Integer(1)]));
+        assert_eq!(run("REVERSE([]);").unwrap(), Value::Array(vec![]));
+        let v = run(r#"REVERSE("abc");"#).unwrap();
+        assert_eq!(v, Value::Array(vec![Value::Integer(99), Value::Integer(98), Value::Integer(97)]));
+    }
+
+    #[test]
+    fn b12_seven_resolved_builtins_in_resolve_builtin() {
+        use crate::resolve_builtin;
+        for name in &["SHIFT", "UNSHIFT", "SLICE", "CONCAT", "CONTAINS", "INDEX", "REVERSE"] {
+            assert!(resolve_builtin(name).is_some(),
+                "resolve_builtin({:?}) is None; B12 did not register the array op", name);
+        }
+    }
+
+    #[test]
+    fn b12_seven_moved_from_deferred_to_resolved_in_registry() {
+        for spec in crate::registry::BUILTIN_REGISTRY.iter() {
+            if ["SHIFT", "UNSHIFT", "SLICE", "CONCAT", "CONTAINS", "INDEX", "REVERSE"]
+                .contains(&spec.name)
+            {
+                assert_eq!(spec.dispatch, crate::registry::DispatchStatus::ResolvedBuiltin,
+                    "{:?} is still Deferred after B12", spec.name);
+            }
+        }
+    }
+
+    #[test]
+    fn b12_err_transparent_for_each_op() {
+        let err = run(r#"SHIFT(ERR("e"));"#).unwrap_err();
+        assert_eq!(err.diagnostic().code, ErrorCode::E0102);
+        let err = run(r#"UNSHIFT(ERR("e"), 1);"#).unwrap_err();
+        assert_eq!(err.diagnostic().code, ErrorCode::E0102);
+        let err = run(r#"SLICE(ERR("e"), 0);"#).unwrap_err();
+        assert_eq!(err.diagnostic().code, ErrorCode::E0102);
+        let err = run(r#"CONCAT(ERR("e"), [1]);"#).unwrap_err();
+        assert_eq!(err.diagnostic().code, ErrorCode::E0102);
+        let err = run(r#"CONTAINS(ERR("e"), 1);"#).unwrap_err();
+        assert_eq!(err.diagnostic().code, ErrorCode::E0102);
+        let err = run(r#"INDEX(ERR("e"), 1);"#).unwrap_err();
+        assert_eq!(err.diagnostic().code, ErrorCode::E0102);
+        let err = run(r#"REVERSE(ERR("e"));"#).unwrap_err();
+        assert_eq!(err.diagnostic().code, ErrorCode::E0102);
+    }
+
+    #[test]
+    fn b12_immutable_does_not_mutate_input() {
+        assert_eq!(run("LET(arr, [1,2,3]); SHIFT(arr); LEN(arr);").unwrap(), Value::Integer(3));
+        assert_eq!(run("LET(arr, [1,2,3]); REVERSE(arr); LEN(arr);").unwrap(), Value::Integer(3));
+        assert_eq!(run("LET(arr, [1,2,3]); SLICE(arr, 0, 2); LEN(arr);").unwrap(), Value::Integer(3));
+    }
 }
