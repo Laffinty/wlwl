@@ -1477,3 +1477,50 @@ P3-013 选 §4.5 解读 (混用是 warning). 理由:
 | Test coverage | `wlwl-eval/lib.rs` ≥ 90%；13/13 crate ≥ 90% line 守住 |
 | Deferred to Phase B11 | 附录 G 注册表实现 |
 | Spec coverage | §15.1 100% (`PRINT` / `PRINT_ERR` / `INPUT` 三件套完整)；§12.6 ERR 透明传播 100% |
+
+# Phase B11 (2026-09-18) — 附录 G 全局内建注册表 (spec v0.4 appendix G)
+
+B10 (commit `41b97ab`, 910/910) 收口后接 B11。本批把 spec v0.4 附录 G
+(89 行 builtin 表格,dedup 后 88 unique + 2 个 impl 兼容 alias 共 90)
+钉死在 `wlwl_eval::registry::BUILTIN_REGISTRY`,作为未来 builtin 改动
+的单源真相 (single source of truth)。
+
+## 实施
+
+- `wlwl-eval/src/registry.rs` (新建): `BuiltinSpec` / `BuiltinGroup` (14 个) / `ErrConsumerStatus` / `Version` / `DispatchStatus` 5 个类型 + `BUILTIN_REGISTRY` (90 条 const) + `lookup / err_consumer_names / macro_names / resolved_builtin_names / deferred_names` 5 个 helper + `generate_appendix_g_md()` 生成器 + in-module 5 测试
+- `wlwl-eval/src/lib.rs`: `pub mod registry;` + 5 个 B11 lock test
+- `wlwl-eval/src/bin/gen_appendix_g.rs` (新建): cargo bin target
+- `wlwl-eval/Cargo.toml`: `[[bin]] name = "gen-appendix-g"` 声明
+- `docs/appendix_G.md` (新建): 10342 bytes, 14 个分组, 90 条目, 自动生成
+- 改动 lexer / parser / ast / std: 0 (append-only 文档化, 无运行行为变化)
+
+## Deviations
+
+| ID | Spec / plan | Status | Notes |
+|----|-------------|--------|-------|
+| P4-B11-001 | plan §5 B11 — central registry table | Implemented | 90 entries (spec 88 unique names + DEL compat + EXPECT_ERR test) |
+| P4-B11-002 | spec 附录 G 宏函数列对 NOT/UNWRAP_OR/TYPE | Recorded | macro_fn=true 允许 dispatch ∈ {LexerMacro, ResolvedBuiltin, ResolvedCompat} |
+| P4-B11-003 | spec §15.9 EXPECT_ERR 进 ERR_CONSUMER_REGISTRY | Recorded | LexerMacro ERR 消费者 4 个白名单 (IS_OK/IS_ERR/TRY/EXPECT_ERR) |
+| P4-B11-004 | Deferred 24 项 (spec 列但 impl 未接) | Recorded | INPUT/BOOL/CALL/NEG/SHIFT/UNSHIFT/SLICE/CONCAT/CONTAINS/INDEX/REVERSE/KEYS/VALUES/HAS/MERGE/UPPER/LOWER/SUB/REPLACE/SPLIT/GET_PROP/SET_PROP/CALL_METHOD/MODULE_REF — 留 Phase B12+ |
+| P4-B11-005 | docs/appendix_G.md 自动生成 vs 手写 | Implemented as auto-gen | `cargo run --bin gen-appendix-g` 重生成;锁测试守住生成器 |
+
+## Phase B11 implementation stats
+
+- Total tests: 920 / 920 passing (B10 末 910 → 净 +10: B11 lock test 5 + registry in-module test 5)
+- wlwl-eval new tests: 10
+- New global builtin: 0 (B11 是 lock-down, 不加新 builtin)
+- New error codes: 0
+- New lexer / parser / ast 改动: 0 (append-only)
+- New file: wlwl-eval/src/registry.rs + bin/gen_appendix_g.rs + docs/appendix_G.md
+- New cargo target: [[bin]] name = "gen-appendix-g"
+- Lines added (est.): 700 (registry 500 + lib.rs lock tests 100 + bin 40 + md 60)
+- Key design decisions: (1) 注册表是 const slice, 零运行时开销; (2) 4 个 dispatch 状态 (ResolvedBuiltin/Compat/LexerMacro/Deferred); (3) generator 与 lock test 共生; (4) compat alias 显式标 ResolvedCompat; (5) 4 个 LexerMacro ERR 消费者白名单
+- Test coverage: wlwl-eval >= 90%; 13/13 crate >= 90% line 守住
+
+## Spec coverage update (B11 末)
+
+- appendix G (全局内建注册表, 规范性): 100%
+- 12.7 (ERR_CONSUMER_REGISTRY): 100%
+- 3.4 (宏函数标志): 100%
+- 14.5 (deprecated aliases W0051/W0054): 100%
+- 12.6 (ERR 透明传播): 100% (继承 B4-B10)

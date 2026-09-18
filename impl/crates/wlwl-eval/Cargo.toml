@@ -17,3 +17,6 @@ serde_json = { workspace = true }
 wlwl-parser = { workspace = true }
 serde_json = { workspace = true }
 serde = { workspace = true }
+[[bin]]
+name = "gen-appendix-g"
+path = "src/bin/gen_appendix_g.rs"

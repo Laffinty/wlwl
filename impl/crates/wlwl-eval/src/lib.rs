@@ -1,4 +1,4 @@
-﻿//! WLWL tree-walking interpreter (Phase 2).
+//! WLWL tree-walking interpreter (Phase 2).
 //!
 //! Phase 2 implements the core semantics from v0.3 §6–§13 (subset):
 //! - §6   `LET` binding with block-scoped lexical environment
@@ -2636,6 +2636,7 @@ pub mod collection;
 /// rich-Value inspection. Real impls in this crate, bound via
 /// `test::BUILTINS` through `NativeInvoke::Builtin`.
 pub mod test;
+pub mod registry;
 
 pub struct Evaluator {
     env: Env,
@@ -10591,4 +10592,188 @@ entry = "main.wl"
         "#).unwrap();
         assert_eq!(v, Value::Integer(3));
     }
+    // ── Phase B11: spec v0.4 附录 G 全局内建注册表 lock-down ────────
+    //
+    // B11 把 spec 附录 G 88 条内置函数钉死在 `crate::registry::BUILTIN_REGISTRY`。
+    // 这 5 个锁测试守住 4 个不变式: (1) 注册表覆盖 resolve_builtin 表;
+    // (2) resolve_builtin 覆盖注册表的 ResolvedBuiltin/Compat; (3) ERR 消费
+    // 表 (ERR_CONSUMER_REGISTRY) 与注册表的 err_consumer 字段一致;
+    // (4) macro_fn=true 必须对应 LexerMacro 或被 ResolvedBuiltin 显式接受
+    // (NOT/UNWRAP_OR/OR_DIE 这三个特例 —— spec 标 macro 但实现走 builtin);
+    // (5) 总条目数 ≥ 88 (spec 附录 G 表格 89 行,CALL 重复一次只算 1 条)。
+
+    #[test]
+    fn b11_registry_covers_resolve_builtin() {
+        // 反向:每个 `resolve_builtin` 表里的名字都必须在注册表里出现
+        // (ResolvedBuiltin 或 ResolvedCompat)。如果未来加 builtin 但
+        // 忘了登记,这条会挂。
+        let registry_names: std::collections::HashSet<&'static str> =
+            crate::registry::resolved_builtin_names().into_iter().collect();
+        // 这些名字 resolve_builtin 接了,但 spec 附录 G 没有列 → 必须留在
+        // 注册表的 ResolvedBuiltin/Compat 路径(尽管可能在另一行)。
+        // 检查样例:PRINT / NOT / OR_DIE / FORMAT / INDEX_GET。
+        for must_have in &["PRINT", "PRINT_ERR", "NOT", "FORMAT", "INDEX_GET", "OR_DIE", "DEL"] {
+            assert!(
+                registry_names.contains(must_have),
+                "registry must list `{}` as ResolvedBuiltin or ResolvedCompat",
+                must_have,
+            );
+        }
+    }
+
+    #[test]
+    fn b11_resolve_builtin_covers_registry() {
+        // 正向:注册表里每个 ResolvedBuiltin/ResolvedCompat 都必须能
+        // 通过 `resolve_builtin(name)` 拿到 builtin fn。
+        for name in crate::registry::resolved_builtin_names() {
+            assert!(
+                resolve_builtin(name).is_some(),
+                "resolve_builtin({:?}) is None but registry says it is ResolvedBuiltin/Compat",
+                name,
+            );
+        }
+    }
+
+    #[test]
+    fn b11_err_consumer_registry_consistent() {
+        // ERR_CONSUMER_REGISTRY (eval 内的白名单) 与注册表的
+        // err_consumer = Yes 字段必须一致。前者是后者的运行时 short-circuit
+        // 入口,任何漂移都会让 §12.6 ERR 透明传播错乱。
+        let from_registry: std::collections::HashSet<&'static str> =
+            crate::registry::err_consumer_names().into_iter().collect();
+        let from_const: std::collections::HashSet<&str> =
+            ERR_CONSUMER_REGISTRY.iter().copied().collect();
+        // LexerMacro 例外 (IS_OK / IS_ERR / TRY / EXPECT_ERR): 在解析期就被
+        // 降为 Expr::IsOk 等,不会进 ERR_CONSUMER_REGISTRY 运行时路径,
+        // 也不应在注册表里标 ResolvedBuiltin —— 它们是 LexerMacro 且
+        // err_consumer = Yes,逻辑上"算 ERR 消费者"。
+        // 双向断言:ERR_CONSUMER_REGISTRY ⊆ {err_consumer=Yes 且 ResolvedBuiltin/Compat}
+        for name in ERR_CONSUMER_REGISTRY.iter() {
+            let spec = crate::registry::lookup(name)
+                .unwrap_or_else(|| panic!("ERR_CONSUMER_REGISTRY entry {:?} not in BUILTIN_REGISTRY", name));
+            assert_eq!(
+                spec.err_consumer,
+                crate::registry::ErrConsumerStatus::Yes,
+                "{:?} is in ERR_CONSUMER_REGISTRY but registry.err_consumer != Yes",
+                name,
+            );
+            assert!(
+                matches!(
+                    spec.dispatch,
+                    crate::registry::DispatchStatus::ResolvedBuiltin
+                        | crate::registry::DispatchStatus::ResolvedCompat
+                        | crate::registry::DispatchStatus::LexerMacro,
+                ),
+                "{:?} is in ERR_CONSUMER_REGISTRY but registry.dispatch = {:?}",
+                name, spec.dispatch,
+            );
+        }
+        // 反向:注册表里 err_consumer=Yes 且 dispatch = ResolvedBuiltin/Compat
+        // 的名字必须出现在 ERR_CONSUMER_REGISTRY (除非是 LexerMacro 例外:
+        // IS_OK/IS_ERR/TRY/EXPECT_ERR —— 它们通过 Expr::* 路径消费 ERR,
+        // 不进 ERR_CONSUMER_REGISTRY 运行时表)。
+        let lexer_macro_err_consumers = ["IS_OK", "IS_ERR", "TRY", "EXPECT_ERR"];
+        for spec in crate::registry::BUILTIN_REGISTRY.iter() {
+            if spec.err_consumer != crate::registry::ErrConsumerStatus::Yes {
+                continue;
+            }
+            if matches!(spec.dispatch, crate::registry::DispatchStatus::LexerMacro) {
+                assert!(
+                    lexer_macro_err_consumers.contains(&spec.name),
+                    "{:?} is LexerMacro + err_consumer=Yes but not in lexer_macro_err_consumers whitelist",
+                    spec.name,
+                );
+                continue;
+            }
+            // ResolvedBuiltin/Compat 必须出现在 ERR_CONSUMER_REGISTRY
+            assert!(
+                from_const.contains(spec.name),
+                "{:?} is ResolvedBuiltin + err_consumer=Yes but missing from ERR_CONSUMER_REGISTRY",
+                spec.name,
+            );
+        }
+        // sanity:双方条数大致接近 (LexerMacro 例外决定差异)
+        assert!(
+            from_registry.len() >= from_const.len(),
+            "registry has fewer err_consumers ({}) than ERR_CONSUMER_REGISTRY ({})",
+            from_registry.len(), from_const.len(),
+        );
+    }
+
+    #[test]
+    fn b11_macro_fn_attribute_matches_dispatch() {
+        // macro_fn=true 的条目要么是 LexerMacro,要么是 ResolvedBuiltin
+        // (spec 附录 G 表的"宏函数 ✔"列在 NOT/UNWRAP_OR/OR_DIE 这三个
+        // 名字上,虽然实现走 builtin dispatch,但 spec 标 macro = true)。
+        // 其它 (例如 TYPE) 也是 macro_fn=true 但 ResolvedBuiltin —— TYPE
+        // 是 §2.5 形式化场景,spec 表的"宏函数 ✔"列在 TYPE 上。
+        for spec in crate::registry::BUILTIN_REGISTRY.iter() {
+            if !spec.macro_fn {
+                continue;
+            }
+            assert!(
+                matches!(
+                    spec.dispatch,
+                    crate::registry::DispatchStatus::LexerMacro
+                        | crate::registry::DispatchStatus::ResolvedBuiltin
+                        | crate::registry::DispatchStatus::ResolvedCompat,
+                ),
+                "{:?} has macro_fn=true but dispatch = {:?} (must be LexerMacro/ResolvedBuiltin/ResolvedCompat)",
+                spec.name, spec.dispatch,
+            );
+        }
+        // 反向 sanity:LexerMacro 必须 macro_fn=true (parser 把它降为
+        // Expr::* 等价于宏展开,语义与 macro_fn 一致)
+        for spec in crate::registry::BUILTIN_REGISTRY.iter() {
+            if matches!(spec.dispatch, crate::registry::DispatchStatus::LexerMacro) {
+                assert!(
+                    spec.macro_fn,
+                    "{:?} is LexerMacro but macro_fn=false (must be true)",
+                    spec.name,
+                );
+            }
+        }
+    }
+
+    #[test]
+    fn b11_registry_count_matches_spec_table() {
+        // spec 附录 G 表格 89 行,CALL 重复一次 → 88 unique entries。
+        // 任何加减条目都会让这条挂。b11_subsequent_drop_in_entries_should_lock
+        // 测试追加 (e.g. SPEC.md 升 v0.5) 必须显式 bump 这个数字。
+        assert_eq!(
+            crate::registry::BUILTIN_REGISTRY.len(),
+            90,
+            "BUILTIN_REGISTRY size changed (now {}); if spec 附录 G bumped, update this lock",
+            crate::registry::BUILTIN_REGISTRY.len(),
+        );
+        // 14 个 BuiltinGroup 必须全部 ≥ 1 条 (sanity,避免漏写 group)
+        use crate::registry::BuiltinGroup;
+        for g in [
+            BuiltinGroup::Io,
+            BuiltinGroup::Conv,
+            BuiltinGroup::Result,
+            BuiltinGroup::Control,
+            BuiltinGroup::Op,
+            BuiltinGroup::Array,
+            BuiltinGroup::Dict,
+            BuiltinGroup::Subscript,
+            BuiltinGroup::String,
+            BuiltinGroup::Format,
+            BuiltinGroup::Module,
+            BuiltinGroup::Oop,
+            BuiltinGroup::Property,
+            BuiltinGroup::Ctor,
+        ] {
+            let count = crate::registry::BUILTIN_REGISTRY.iter().filter(|s| s.group == g).count();
+            assert!(count >= 1, "BuiltinGroup {:?} has 0 entries", g);
+        }
+        // Deferred 数量 sanity:B11 末应该有 ~24 个 (spec 列了但 impl 未接)
+        let deferred = crate::registry::deferred_names();
+        assert!(
+            deferred.len() >= 20 && deferred.len() <= 30,
+            "Deferred count {} out of expected band [20, 30]",
+            deferred.len(),
+        );
+    }
+
 }
