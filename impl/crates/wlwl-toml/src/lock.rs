@@ -31,12 +31,13 @@
 //! version constraint is used (no `path`), `hash` is `None` and
 //! the entry is left to the central-registry machinery in v0.4.
 
-use std::collections::BTreeMap;
 use std::fmt;
 use std::fs;
 use std::path::{Path, PathBuf};
 
 use serde::{Deserialize, Serialize};
+
+use crate::manifest::{Dependency, Manifest};
 
 pub const CURRENT_SCHEMA_VERSION: &str = "0.3.1";
 
@@ -106,6 +107,94 @@ impl From<serde_json::Error> for LockError {
 }
 impl From<std::io::Error> for LockError {
     fn from(e: std::io::Error) -> Self { LockError::Io(e) }
+}
+
+/// Build the lock entries a manifest implies (path deps carry their
+/// relative path + source hash; version deps carry the constraint
+/// string). Used by the CLI's `try_write_lock` and by consistency
+/// tests.
+pub fn entries_from_manifest(m: &Manifest, base_dir: &Path) -> Vec<LockEntry> {
+    let mut entries = Vec::new();
+    for (name, dep) in &m.dependencies {
+        match dep {
+            Dependency::Detailed(d) if d.path.is_some() => {
+                let rel = d.path.clone().unwrap_or_default();
+                let dir = base_dir.join(&rel);
+                let hash = hash_dependency_dir(&dir).ok().flatten();
+                entries.push(LockEntry {
+                    name: name.clone(),
+                    path: Some(rel),
+                    version: None,
+                    hash,
+                });
+            }
+            Dependency::Detailed(d) => {
+                entries.push(LockEntry {
+                    name: name.clone(),
+                    path: None,
+                    version: d.version.clone(),
+                    hash: None,
+                });
+            }
+            Dependency::Version(v) => {
+                entries.push(LockEntry {
+                    name: name.clone(),
+                    path: None,
+                    version: Some(v.clone()),
+                    hash: None,
+                });
+            }
+        }
+    }
+    entries
+}
+
+/// Build a full `Lockfile` for a manifest (spec §13.8: lock 缺失时按
+/// toml 解析并生成)。
+pub fn from_manifest(m: &Manifest, base_dir: &Path) -> Lockfile {
+    Lockfile {
+        schema_version: CURRENT_SCHEMA_VERSION.to_string(),
+        entries: entries_from_manifest(m, base_dir),
+    }
+}
+
+/// lock 与 toml 的一致性检查(Phase C6,spec v0.4 §13.8):
+/// "lock 与 toml 不一致(用户在 lock 之外改了 toml)→ E0042"。
+///
+/// 规则(结构性一致,内容哈希漂移不算):
+/// 1. lock 的 entry 名集合 == manifest 的 dependency 键集合
+///    (多出 / 缺失都是不一致);
+/// 2. 每个 entry 的 path / version 与 manifest 里对应依赖的声明一致。
+///
+/// 返回 `Err(detail)` = 不一致;detail 描述第一处偏差。
+pub fn validate_consistency(lock: &Lockfile, manifest: &Manifest) -> Result<(), String> {
+    for (name, dep) in &manifest.dependencies {
+        let Some(entry) = lock.entries.iter().find(|e| &e.name == name) else {
+            return Err(format!(
+                "dependency '{}' is declared in wlwl.toml but missing from wlwl.lock",
+                name
+            ));
+        };
+        let (want_path, want_version) = match dep {
+            Dependency::Detailed(d) => (d.path.clone(), d.version.clone()),
+            Dependency::Version(v) => (None, Some(v.clone())),
+        };
+        if entry.path != want_path || entry.version != want_version {
+            return Err(format!(
+                "dependency '{}' changed in wlwl.toml: lock records path={:?} version={:?}, toml declares path={:?} version={:?}",
+                name, entry.path, entry.version, want_path, want_version
+            ));
+        }
+    }
+    for entry in &lock.entries {
+        if !manifest.dependencies.contains_key(&entry.name) {
+            return Err(format!(
+                "lock entry '{}' has no matching dependency in wlwl.toml",
+                entry.name
+            ));
+        }
+    }
+    Ok(())
 }
 
 /// Read and parse a `wlwl.lock` file. Returns `Ok(None)` when the
@@ -426,6 +515,86 @@ mod tests {
     fn hash_is_none_for_empty_dir() {
         let dir = tempdir(".lock_empty");
         assert!(hash_dependency_dir(&dir).unwrap().is_none());
+        let _ = fs::remove_dir_all(&dir);
+    }
+
+    // ---- Phase C6 (spec v0.4 §13.8):lock ↔ toml 一致性 ----
+
+    use crate::manifest as mf;
+
+    const C6_TOML: &str = r#"
+[package]
+name = "app"
+version = "0.1.0"
+entry = "main.wl"
+
+[dependencies]
+"myteam:utils" = { path = "vendor/utils" }
+"huggingface:client" = "^0.5.0"
+"#;
+
+    #[test]
+    fn consistency_ok_when_lock_matches_toml() {
+        let m = mf::parse(C6_TOML).unwrap();
+        let lock = from_manifest(&m, Path::new("."));
+        assert!(validate_consistency(&lock, &m).is_ok());
+    }
+
+    #[test]
+    fn consistency_fails_when_dep_missing_from_lock() {
+        let m = mf::parse(C6_TOML).unwrap();
+        let mut lock = from_manifest(&m, Path::new("."));
+        lock.entries.retain(|e| e.name != "myteam:utils");
+        let err = validate_consistency(&lock, &m).unwrap_err();
+        assert!(err.contains("missing from wlwl.lock"), "got: {}", err);
+    }
+
+    #[test]
+    fn consistency_fails_when_dep_changed_in_toml() {
+        let m = mf::parse(C6_TOML).unwrap();
+        let lock = from_manifest(&m, Path::new("."));
+        // 用户在 lock 之外把 toml 的 path 改了
+        let toml2 = C6_TOML.replace("vendor/utils", "vendor/utils2");
+        let m2 = mf::parse(&toml2).unwrap();
+        let err = validate_consistency(&lock, &m2).unwrap_err();
+        assert!(err.contains("changed in wlwl.toml"), "got: {}", err);
+    }
+
+    #[test]
+    fn consistency_fails_when_version_constraint_changed() {
+        let m = mf::parse(C6_TOML).unwrap();
+        let lock = from_manifest(&m, Path::new("."));
+        let toml2 = C6_TOML.replace("\"^0.5.0\"", "\"^0.6.0\"");
+        let m2 = mf::parse(&toml2).unwrap();
+        assert!(validate_consistency(&lock, &m2).is_err());
+    }
+
+    #[test]
+    fn consistency_fails_when_lock_has_stale_entry() {
+        let m = mf::parse(C6_TOML).unwrap();
+        let mut lock = from_manifest(&m, Path::new("."));
+        lock.entries.push(LockEntry {
+            name: "old:dep".into(),
+            path: Some("vendor/old".into()),
+            version: None,
+            hash: None,
+        });
+        let err = validate_consistency(&lock, &m).unwrap_err();
+        assert!(err.contains("no matching dependency"), "got: {}", err);
+    }
+
+    #[test]
+    fn entries_from_manifest_hashes_path_deps() {
+        let dir = tempdir(".c6_hash");
+        let m = mf::parse(C6_TOML).unwrap();
+        // vendor/utils 目录不存在 → hash None;存在且有 .wl → Some
+        let vendor = dir.join("vendor").join("utils");
+        fs::create_dir_all(&vendor).unwrap();
+        write_file(&vendor, "utils.wl", "LET(x, 1);");
+        let lock = from_manifest(&m, &dir);
+        let e = lock.entries.iter().find(|e| e.name == "myteam:utils").unwrap();
+        assert_eq!(e.path.as_deref(), Some("vendor/utils"));
+        assert!(e.hash.is_some(), "path dep should carry a source hash");
         let _ = fs::remove_dir_all(&dir);
     }
 }

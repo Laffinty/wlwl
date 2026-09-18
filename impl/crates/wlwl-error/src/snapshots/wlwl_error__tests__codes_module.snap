@@ -1,6 +1,6 @@
 ---
 source: crates/wlwl-error/src/lib.rs
-expression: "serde_json::json!({\n    \"E0040\": code_snap(ErrorCode::E0040, \"mod_not_found\"), \"E0041\":\n    code_snap(ErrorCode::E0041, \"circular_import\"), \"E0042\":\n    code_snap(ErrorCode::E0042, \"file_io_err\"), \"E0043\":\n    code_snap(ErrorCode::E0043, \"ns_path_syntax\"),\n})"
+expression: "serde_json::json!({\n    \"E0040\": code_snap(ErrorCode::E0040, \"mod_not_found\"), \"E0041\":\n    code_snap(ErrorCode::E0041, \"circular_import\"), \"E0042\":\n    code_snap(ErrorCode::E0042, \"lock_toml_inconsistent\"), \"E0043\":\n    code_snap(ErrorCode::E0043, \"ns_path_syntax\"), \"E0044\":\n    code_snap(ErrorCode::E0044, \"language_version_mismatch\"), \"E0045\":\n    code_snap(ErrorCode::E0045, \"dependency_conflict\"),\n})"
 ---
 {
   "E0040": {
@@ -58,7 +58,7 @@ expression: "serde_json::json!({\n    \"E0040\": code_snap(ErrorCode::E0040, \"m
       "line": 1,
       "line_end": 1
     },
-    "message": "snapshot for file_io_err",
+    "message": "snapshot for lock_toml_inconsistent",
     "related": [],
     "retry_after": null,
     "retryable": false,
@@ -80,6 +80,48 @@ expression: "serde_json::json!({\n    \"E0040\": code_snap(ErrorCode::E0040, \"m
       "line_end": 1
     },
     "message": "snapshot for ns_path_syntax",
+    "related": [],
+    "retry_after": null,
+    "retryable": false,
+    "severity": "error",
+    "source_line": null,
+    "suggestion_code": []
+  },
+  "E0044": {
+    "code": "E0044",
+    "error_category": "module",
+    "error_schema_version": "1.1.0",
+    "hint": null,
+    "idempotent": false,
+    "location": {
+      "col_end": 1,
+      "col_start": 1,
+      "file": "snap.wl",
+      "line": 1,
+      "line_end": 1
+    },
+    "message": "snapshot for language_version_mismatch",
+    "related": [],
+    "retry_after": null,
+    "retryable": false,
+    "severity": "error",
+    "source_line": null,
+    "suggestion_code": []
+  },
+  "E0045": {
+    "code": "E0045",
+    "error_category": "module",
+    "error_schema_version": "1.1.0",
+    "hint": null,
+    "idempotent": false,
+    "location": {
+      "col_end": 1,
+      "col_start": 1,
+      "file": "snap.wl",
+      "line": 1,
+      "line_end": 1
+    },
+    "message": "snapshot for dependency_conflict",
     "related": [],
     "retry_after": null,
     "retryable": false,

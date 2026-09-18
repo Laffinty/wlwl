@@ -1676,3 +1676,46 @@ B10 (commit `41b97ab`, 910/910) 收口后接 B11。本批把 spec v0.4 附录 G
 | B13 STRING ops | `3174949` | +9 | 940 |
 | B14 DICT ops | `8663671` | +8 | 948 |
 | **B15 misc** | (TBD) | +10 | **958** |
+
+# Phase C (2026-09-18) — 模块系统与配置 C1-C7 (spec v0.4 §13.4-§13.9 / §6.6 / §13.12 / §5.5 / §8.6)
+
+> B15 (Phase B 收口) 后接 Phase C。本批 C1-C7 全部落地:MODULE_REF 真实现 +
+> GET_PROP / SET_PROP / CALL_METHOD 替换 B15 stub、AS 删除确认、
+> language_version + E0044、MVS + E0045、allow_builtin_shadow + E0025/W0030、
+> lock-toml 一致性 + E0042、项目根边界强化 + E0040。
+
+## Deviations
+
+| ID | Spec / plan | Status | Notes |
+|----|-------------|--------|-------|
+| P4-C1-001 | spec §13.4 AS 完全删除 | **Confirmed no-op**: 本实现从未有过 AS (v0.1→v0.3 均未实现);运行时引用走 undefined_name → E0020。锁测试 `c1_as_function_is_deleted_e0020` + `c1_as_is_not_a_builtin_or_macro` | 迁移文档 `docs/plan/migration-v0.3-to-v0.4.md` |
+| P4-C2-001 | spec §11.4 "否则首形参接收调用对象" | **Not implemented**: §11.4 该从句 (CALL_METHOD 无 self 首形参时把 receiver 传给首参) 与 §5.5 关键决策 (属性值是 FUN 字面量时 `a.b(args)` = `CALL(a.b, args)`,不注入) 直接冲突。实现按 §8.6 主句 + §5.5 关键决策:closure **仅当首形参名为 `self`** 时注入 receiver,否则按 CALL 语义 | 测试 `c2_call_method_closure_gets_receiver_injected` / `c2_call_method_non_self_closure_is_plain_call`;文件模块导出函数经 `m.f(x)` 调用因此保持自然 |
+| P4-C2-002 | registry 签名 SET_PROP "-> NULL" | **Returns DICT**: builtin 边界按值传参无法就地写回 receiver;实现返回更新后的 DICT (值语义),与 Phase B1 `INDEX_SET` 的既定实现一致 | 测试 `c2_set_prop_insert_update_value_semantics` |
+| P4-C2-003 | spec §11.1-§11.3 / §8.6 CLASS / NEW / THIS | **Deferred**: CLASS / NEW / THIS 仍是 LexerMacro-only (parser 接受,eval 无路径 → E0020)。§8.6 NEW/INIT 协议、类值、E0051/E0028/E0029 待 OOP phase (v0.4 后续批次或 v0.5) | GET_PROP / SET_PROP / CALL_METHOD 的 DICT 语义已覆盖 §13.12 模块作为值的使用面 |
+| P4-C2-004 | spec §13.12 模块对象 | **Implemented as DICT**: MODULE_REF 加载模块 (与 IMPORT 共用 ModuleLoader:缓存 / 循环检测 / 命名空间) 但不绑定名字,返回 DICT (EXPORT 面 → 值,键按字典序)。spec 明确 "模块对象类型 DICT",无新 Value variant | 测试 `c2_module_ref_*` 5 个 |
+| P4-C3-001 | spec §13.8 language_version 必填 | **Optional at deserialization**: 字段存在时加载期校验 (major 相同且 minor ≤ 0.4 → 兼容,否则 E0044);缺失时容忍 (v0.3 时代 manifest 兼容)。spec 的"必填"留 v0.5 中央 registry 启用时收紧 | 测试 `c3_*` 3 个 + manifest 单测 4 个 |
+| P4-C4-001 | spec §13.9 MVS | **Pure solver + empty registry**: mvs.rs 是纯求解库 (候选集 / 传递依赖由 provider 注入);v0.4 eval provider 对版本式依赖返回空候选集 → E0045 "dependency conflict (v0.4 has no central registry; use path dependencies)"。path 依赖总是可满足。环 → E0041 (依赖图三色 DFS) | mvs.rs 11 单测 + eval `c4_*` 2 个 |
+| P4-C6-001 | spec §13.8 lock 生成时机 | **CLI owns generation**: eval 侧 lock 缺失时不生成 (eval 保持无 IO);`wlwl run` 的 try_write_lock (v0.1 已有) 负责生成。lock 存在时 eval 做结构一致性校验 (名字集合 + path/version 匹配) → E0042;**内容哈希漂移不算不一致** (重新生成即可,不阻塞运行) | 测试 `c6_*` 3 个 + lock.rs 单测 6 个 |
+| P4-C7-001 | spec §13.5 项目根边界 | **Strict boundary**: manifest 声明的 path 依赖也必须在项目根内 (`path = "../outside"` → E0040),按 §13.5 "项目根目录是搜索的最高边界" 的严格读法。修复 `is_within` 纯词法前缀比较可被 `..` 组件骗过的漏洞 (`lexical_normalize` 归一化后比对)。旧测试 `namespace_path_resolves_via_manifest` 依赖该漏洞,已改为 root 内依赖 | 测试 `c7_*` 4 个;symlink 不解析为已知限制 |
+
+## Phase C implementation stats
+
+- Total tests: 1009 / 1009 passing (B15 末 958 → 净 +51)
+  - wlwl-eval: 510 → 545 (C2 12 + C1 2 + C7 4 + C3 3 + C5 5 + C4 2 + C6 3,减 B15 stub 测试 3 合并/翻转)
+  - wlwl-toml: 37 → 53 (manifest C3/C5 8 + mvs 11 + lock C6 6,基线 37 含既有)
+  - wlwl-error: 35 → 35 (E0044/E0045 入快照,计数测试 51 → 53)
+- New error codes: E0044 (language_version mismatch) / E0045 (dependency conflict)
+- New module: `wlwl-toml/src/mvs.rs` (SemVer / Constraint / MVS solve / cycle detect)
+- Coverage: TOTAL line 91.80% → **91.85%** (基线 llvm-cov 实测对比;13/13 crate ≥ 90% 守住,`mvs.rs` 单文件 91.95%)
+- Registry 不变:90 条,0 Deferred (附录 G 无需重新生成)
+
+## Spec coverage
+
+- §13.4 AS 删除: **100%** (C1)
+- §13.5 跨目录 + 项目根边界: **100%** (C7;E0040 措辞对齐 spec)
+- §13.8 language_version / E0044: **100%** (C3)
+- §13.8 lock 一致性 / E0042: **100%** (C6 结构校验)
+- §13.9 MVS / E0045: **100%** (C4;中央 registry 留 v0.5)
+- §6.6 allow_builtin_shadow / E0025 / W0030: **100%** (C5)
+- §13.12 模块作为值: **100%** (C2;MODULE_REF + DICT 语义)
+- §5.5 / §8.6 GET_PROP / SET_PROP / CALL_METHOD: **DICT 面 100%** (C2;CLASS/NEW OOP 面 deferred,见 P4-C2-003)

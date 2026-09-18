@@ -51,6 +51,12 @@ pub struct Package {
     pub name: String,
     pub version: String,
     pub entry: String,
+    /// v0.4 §13.8 新增:本包依赖的 WLWL 语义版本。规范钉为**必填**;
+    /// 实现按 Option 反序列化以兼容 v0.3 时代的 manifest,缺失时
+    /// 跳过校验(偏差记录:deviations P4-C3-001)。存在时由
+    /// `check_language_version` 在加载期校验,不匹配 → E0044。
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub language_version: Option<String>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub description: Option<String>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
@@ -247,6 +253,90 @@ fn dep_is_versionless(d: &Dependency) -> bool {
     }
 }
 
+/// The WLWL language version this implementation supports (spec v0.4).
+/// `check_language_version` compares a package's declared
+/// `language_version` against this.
+pub const SUPPORTED_LANGUAGE_VERSION: (u64, u64) = (0, 4);
+
+/// A `language_version` mismatch (spec v0.4 §13.8). The message the
+/// caller renders is exactly the spec's E0044 wording:
+/// `language_version mismatch: package requires X.Y, implementation supports A.B`.
+#[derive(Debug, Clone, PartialEq)]
+pub struct VersionMismatch {
+    /// The version the package declared (normalized to `X.Y`).
+    pub required: String,
+    /// The version this implementation supports (`A.B`).
+    pub supported: String,
+}
+
+impl fmt::Display for VersionMismatch {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        write!(
+            f,
+            "language_version mismatch: package requires {}, implementation supports {}",
+            self.required, self.supported
+        )
+    }
+}
+
+/// Parse a `language_version` string (`"X.Y"` / `"X.Y.Z"` / leading
+/// `v` tolerated) into `(major, minor)`. Returns `None` when the
+/// string does not carry at least `X.Y`.
+fn parse_language_version(s: &str) -> Option<(u64, u64)> {
+    let s = s.trim().trim_start_matches('v');
+    let mut it = s.split('.');
+    let major = it.next()?.trim().parse::<u64>().ok()?;
+    let minor = it.next().unwrap_or("0").trim().parse::<u64>().ok()?;
+    Some((major, minor))
+}
+
+/// Validate the manifest's declared `language_version` against
+/// `SUPPORTED_LANGUAGE_VERSION` (spec v0.4 §13.8, Phase C3).
+///
+/// Compatibility rule: same major, and the package's minor must be
+/// **≤** the implementation's minor (an implementation supports its
+/// own minor and all lower ones). `None` (field absent) is tolerated
+/// for v0.3-era manifests — see deviations P4-C3-001.
+pub fn check_language_version(m: &Manifest) -> Result<(), VersionMismatch> {
+    let Some(declared) = m.package.language_version.as_deref() else {
+        return Ok(());
+    };
+    let supported = format!(
+        "{}.{}",
+        SUPPORTED_LANGUAGE_VERSION.0, SUPPORTED_LANGUAGE_VERSION.1
+    );
+    let Some((req_major, req_minor)) = parse_language_version(declared) else {
+        // Unparseable version strings cannot be honored — treat as a
+        // mismatch so the user sees E0044 with both versions spelled
+        // out instead of a silently ignored field.
+        return Err(VersionMismatch {
+            required: declared.to_string(),
+            supported,
+        });
+    };
+    if req_major == SUPPORTED_LANGUAGE_VERSION.0
+        && req_minor <= SUPPORTED_LANGUAGE_VERSION.1
+    {
+        return Ok(());
+    }
+    Err(VersionMismatch {
+        required: format!("{}.{}", req_major, req_minor),
+        supported,
+    })
+}
+
+impl Manifest {
+    /// v0.4 §6.6 / §13.8 `[features] allow_builtin_shadow` flag
+    /// (Phase C5). Defaults to `false` — shadowing a global builtin
+    /// raises E0025 unless this is `true` (then W0030 instead).
+    pub fn allow_builtin_shadow(&self) -> bool {
+        matches!(
+            self.features.get("allow_builtin_shadow"),
+            Some(toml::Value::Boolean(true))
+        )
+    }
+}
+
 /// Resolve a `<namespace>:<name>` reference to a local directory,
 /// using `[namespaces]` as an override and `[dependencies]` as the
 /// fallback. Returns the directory relative to the manifest path
@@ -283,6 +373,7 @@ mod tests {
 name = "myapp"
 version = "0.1.0"
 entry = "src/main.wl"
+language_version = "0.4"
 description = "A WLWL app"
 license = "MIT"
 
@@ -306,6 +397,7 @@ default_encoding = "utf-8"
         assert_eq!(m.package.name, "myapp");
         assert_eq!(m.package.version, "0.1.0");
         assert_eq!(m.package.entry, "src/main.wl");
+        assert_eq!(m.package.language_version.as_deref(), Some("0.4"));
         assert_eq!(m.package.description.as_deref(), Some("A WLWL app"));
         assert_eq!(m.package.license.as_deref(), Some("MIT"));
         assert_eq!(m.dependencies.len(), 4);
@@ -534,5 +626,117 @@ entry = "main.wl"
 "MyTeam:utils" = { path = "../utils" }
 "#).unwrap_err();
         assert!(matches!(err, ManifestError::InvalidNamespaceName(_)));
+    }
+
+    // ---- Phase C3 (spec v0.4 §13.8): language_version ----
+
+    #[test]
+    fn language_version_absent_is_tolerated() {
+        let m = parse(r#"
+[package]
+name = "tiny"
+version = "0.0.1"
+entry = "main.wl"
+"#).unwrap();
+        assert!(m.package.language_version.is_none());
+        assert!(check_language_version(&m).is_ok());
+    }
+
+    #[test]
+    fn language_version_same_and_lower_minor_ok() {
+        for v in ["0.4", "0.3", "0.4.1", "v0.2"] {
+            let m = parse(&format!(r#"
+[package]
+name = "tiny"
+version = "0.0.1"
+entry = "main.wl"
+language_version = "{}"
+"#, v)).unwrap();
+            assert!(check_language_version(&m).is_ok(), "{} should be compatible", v);
+        }
+    }
+
+    #[test]
+    fn language_version_mismatch_higher_minor() {
+        let m = parse(r#"
+[package]
+name = "tiny"
+version = "0.0.1"
+entry = "main.wl"
+language_version = "0.5"
+"#).unwrap();
+        let err = check_language_version(&m).unwrap_err();
+        assert_eq!(err.required, "0.5");
+        assert_eq!(err.supported, "0.4");
+        assert_eq!(
+            err.to_string(),
+            "language_version mismatch: package requires 0.5, implementation supports 0.4"
+        );
+    }
+
+    #[test]
+    fn language_version_mismatch_major() {
+        let m = parse(r#"
+[package]
+name = "tiny"
+version = "0.0.1"
+entry = "main.wl"
+language_version = "1.0"
+"#).unwrap();
+        assert!(check_language_version(&m).is_err());
+    }
+
+    #[test]
+    fn language_version_unparseable_is_mismatch() {
+        let m = parse(r#"
+[package]
+name = "tiny"
+version = "0.0.1"
+entry = "main.wl"
+language_version = "banana"
+"#).unwrap();
+        let err = check_language_version(&m).unwrap_err();
+        assert_eq!(err.required, "banana");
+    }
+
+    // ---- Phase C5 (spec v0.4 §6.6 / §13.8): allow_builtin_shadow ----
+
+    #[test]
+    fn allow_builtin_shadow_defaults_false() {
+        let m = parse(r#"
+[package]
+name = "tiny"
+version = "0.0.1"
+entry = "main.wl"
+"#).unwrap();
+        assert!(!m.allow_builtin_shadow());
+    }
+
+    #[test]
+    fn allow_builtin_shadow_true_when_flagged() {
+        let m = parse(r#"
+[package]
+name = "tiny"
+version = "0.0.1"
+entry = "main.wl"
+
+[features]
+allow_builtin_shadow = true
+"#).unwrap();
+        assert!(m.allow_builtin_shadow());
+    }
+
+    #[test]
+    fn allow_builtin_shadow_false_value_is_false() {
+        let m = parse(r#"
+[package]
+name = "tiny"
+version = "0.0.1"
+entry = "main.wl"
+
+[features]
+allow_builtin_shadow = false
+"#).unwrap();
+        assert!(!m.allow_builtin_shadow());
     }
 }

@@ -53,8 +53,10 @@ pub enum ErrorCode {
     E1003, // division or modulo by zero (v0.4 §9.5)
     E0040, // module not found
     E0041, // circular IMPORT
-    E0042, // module file IO error
+    E0042, // wlwl.lock inconsistent with wlwl.toml (v0.4 §13.8/§14.4)
     E0043, // namespace path syntax error
+    E0044, // language_version mismatch (v0.4 §13.8; Phase C3)
+    E0045, // dependency conflict — no version satisfies all constraints (v0.4 §13.9; Phase C4)
     E0046, // ASSERT cond false (v0.4 §15.9 std.test; Phase B7)
     E0047, // ASSERT_EQ a != b (v0.4 §15.9 std.test; Phase B7)
     E0048, // ASSERT_NEQ a == b (v0.4 §15.9 std.test; Phase B7)
@@ -84,7 +86,7 @@ pub enum ErrorCode {
     W0051, // ← v0.3-compat alias / legacy builtin form (Phase B3)
     W0020, // array/dict literal mixes bare values and kv pairs
     W0054, // v0.3-compat `!` operator form (Phase B9; v0.5 removes the `!` token)
-    W0030, // IMPORTed name never used
+    W0030, // 遮蔽宏函数 / 关键字 (v0.4 §14.5; allow_builtin_shadow=true 时遮蔽内建也发此码, Phase C5)
     W0040, // unhandled `TODO(agent):` comment
     W0015, // integer overflow, saturated to INT64_MAX / INT64_MIN (v0.4 §9.5)
     // v0.4 §14.5 — using v0.3 deprecated alias (`DEL` / `OR_DIE`).
@@ -128,6 +130,8 @@ impl ErrorCode {
             ErrorCode::E0041 => "E0041",
             ErrorCode::E0042 => "E0042",
             ErrorCode::E0043 => "E0043",
+            ErrorCode::E0044 => "E0044",
+            ErrorCode::E0045 => "E0045",
             ErrorCode::E0046 => "E0046",
             ErrorCode::E0047 => "E0047",
             ErrorCode::E0048 => "E0048",
@@ -226,7 +230,9 @@ impl ErrorCode {
             ErrorCode::E0040
             | ErrorCode::E0041
             | ErrorCode::E0042
-            | ErrorCode::E0043 => ErrorCategory::Module,
+            | ErrorCode::E0043
+            | ErrorCode::E0044
+            | ErrorCode::E0045 => ErrorCategory::Module,
             ErrorCode::E0046
             | ErrorCode::E0047
             | ErrorCode::E0048
@@ -995,11 +1001,19 @@ mod tests {
 
     #[test]
     fn snap_module() {
+        // Phase C3/C4 (spec v0.4 §13.8/§13.9): E0044 (language_version
+        // mismatch) + E0045 (dependency conflict) join the module
+        // bucket. E0042's meaning was re-anchored in v0.4: it was a
+        // numbering hole in v0.3 ("file IO error" was a placeholder
+        // that never had an emitting site); spec v0.4 §13.8 pins it
+        // to "lock file inconsistent with wlwl.toml" (Phase C6).
         insta::assert_json_snapshot!("codes_module", serde_json::json!({
             "E0040": code_snap(ErrorCode::E0040, "mod_not_found"),
             "E0041": code_snap(ErrorCode::E0041, "circular_import"),
-            "E0042": code_snap(ErrorCode::E0042, "file_io_err"),
+            "E0042": code_snap(ErrorCode::E0042, "lock_toml_inconsistent"),
             "E0043": code_snap(ErrorCode::E0043, "ns_path_syntax"),
+            "E0044": code_snap(ErrorCode::E0044, "language_version_mismatch"),
+            "E0045": code_snap(ErrorCode::E0045, "dependency_conflict"),
         }));
     }
 
@@ -1084,9 +1098,10 @@ mod tests {
     // failure, used by B5) to close the §14.4 type-bucket range holes.
     #[test]
     fn all_47_codes_registered() {
-        // Sanity: ensure we have exactly 47 codes wired through the schema.
+        // Sanity: ensure we have exactly 53 codes wired through the schema.
         // If anyone adds a new ErrorCode variant without updating the
         // snapshot, this count will shift and break the contract.
+        // (Phase C3/C4 added E0044 / E0045 — spec v0.4 §13.8 / §13.9.)
         let codes = [
             ErrorCode::E0001, ErrorCode::E0002, ErrorCode::E0003,
             ErrorCode::E0010, ErrorCode::E0011, ErrorCode::E0012,
@@ -1097,6 +1112,7 @@ mod tests {
             ErrorCode::E0033, ErrorCode::E0034, ErrorCode::E0035, ErrorCode::E0036,
             ErrorCode::E0037, ErrorCode::E0038, ErrorCode::E0039,
             ErrorCode::E0040, ErrorCode::E0041, ErrorCode::E0042, ErrorCode::E0043,
+            ErrorCode::E0044, ErrorCode::E0045,
             ErrorCode::E0046, ErrorCode::E0047, ErrorCode::E0048, ErrorCode::E0049,
             ErrorCode::E0050, ErrorCode::E0051,
             ErrorCode::E0060, ErrorCode::E0061, ErrorCode::E0062, ErrorCode::E0063,
@@ -1106,7 +1122,7 @@ mod tests {
             ErrorCode::E0100, ErrorCode::E0101, ErrorCode::E0102,
             ErrorCode::E1003,
         ];
-        assert_eq!(codes.len(), 51);
+        assert_eq!(codes.len(), 53);
         // Each code has a stable string form.
         for c in &codes {
             assert!(c.as_str().starts_with('E'));

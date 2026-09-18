@@ -115,6 +115,9 @@
 - **Phase B15 完成**(misc 8 项 INPUT/BOOL/CALL/NEG/GET_PROP/SET_PROP/CALL_METHOD/MODULE_REF;4 项简单 builtin 真正实现,4 项 OOP/Module stub 返回 E0037/E0030 placeholder)
 - **workspace 958 / 958 pass**(B14 末 948 → 净 +10)
 - `wlwl-eval` 510 lib tests;8 个新 global builtin;**注册表 Deferred 8 → 0** —— **Phase B 在注册表层面彻底收口**(24 项全部转 ResolvedBuiltin / LexerMacro);13/13 crate ≥ 90% line 守住
+- **Phase C 完成**(C1-C7 全部:AS 删除确认 + MODULE_REF 真实现 + GET_PROP/SET_PROP/CALL_METHOD 替换 stub + language_version/E0044 + MVS/E0045 + allow_builtin_shadow/E0025/W0030 + lock-toml 一致性/E0042 + 项目根边界强化/E0040;决策与偏差见 deviations P4-C1-001 ~ P4-C7-001 + history/20260918c1-c7.md)
+- **workspace 1009 / 1009 pass**(B15 末 958 → 净 +51)
+- `wlwl-eval` 545 lib tests;`wlwl-toml` 53 lib tests(新 mvs.rs 11);`wlwl-error` +E0044/E0045(错误码总数 51 → 53);13/13 crate ≥ 90% line 守住(TOTAL 91.85%,基线实测 91.80% → +0.05pp)
 
 
 ---

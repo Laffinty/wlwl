@@ -464,7 +464,13 @@ impl ModuleLoader {
                     // file is `<dir>/<name>.wl`.
                     let dep_dir = self.base_dir.join(&rel);
                     let file_path = dep_dir.join(format!("{}.wl", name));
-                    if !is_within(&file_path, &self.project.project_root) {
+                    // Phase C7: normalize away `..` components before the
+                    // containment check — a raw prefix test would let
+                    // `<root>/../escape/mod.wl` pass `starts_with(root)`.
+                    if !is_within(
+                        &lexical_normalize(&file_path),
+                        &lexical_normalize(&self.project.project_root),
+                    ) {
                         return Err(self.diag_outside_root(path));
                     }
                     if !file_path.is_file() {
@@ -505,7 +511,13 @@ impl ModuleLoader {
             };
             dep_dir = dep_dir.join(&rel_dir);
             let file_path = dep_dir.join(format!("{}.wl", mod_name));
-            if !is_within(&file_path, &self.project.project_root) {
+            // Phase C7: same `..`-smuggling hardening as the `ns:name`
+            // branch above (the walk loop already pops `../` prefixes,
+            // but an in-path `/../` sequence still needs normalization).
+            if !is_within(
+                &lexical_normalize(&file_path),
+                &lexical_normalize(&self.project.project_root),
+            ) {
                 return Err(self.diag_outside_root(path));
             }
             if !file_path.is_file() {
@@ -692,10 +704,12 @@ impl ModuleLoader {
     }
 
     fn diag_outside_root(&self, path: &str) -> WlwlError {
+        // spec §13.5 钉死的措辞:"module 'foo' not found outside
+        // project root";括注保留实际 root 方便定位。
         WlwlDiagnostic::new(
             ErrorCode::E0040,
             format!(
-                "module '{}' is outside the project root ({})",
+                "module '{}' not found outside project root ({})",
                 path,
                 self.project.project_root.display()
             ),
@@ -776,6 +790,26 @@ fn load_manifest(project_root: &Path) -> Option<Arc<wlwl_toml::manifest::Manifes
 /// does not touch the filesystem).
 fn is_within(path: &Path, root: &Path) -> bool {
     path == root || path.starts_with(root)
+}
+
+/// Lexically normalize a path: drop `.` components and resolve `..`
+/// against preceding components. Does **not** touch the filesystem
+/// (symlinks are not resolved — documented limitation). Used by the
+/// §13.5 project-root boundary checks so a `ns:name` manifest entry
+/// like `"../../outside"` cannot smuggle a `..` component past the
+/// lexical `is_within` prefix test (Phase C7 hardening).
+fn lexical_normalize(p: &Path) -> PathBuf {
+    let mut out = PathBuf::new();
+    for c in p.components() {
+        match c {
+            std::path::Component::CurDir => {}
+            std::path::Component::ParentDir => {
+                out.pop();
+            }
+            other => out.push(other.as_os_str()),
+        }
+    }
+    out
 }
 
 /// If `path` looks like `<ns>:<name>`, return the split. Returns
@@ -2227,47 +2261,159 @@ fn builtin_call(_ev: &mut Evaluator, args: Vec<Value>) -> WlwlResult<Outcome> {
     }
 }
 
-// ── OOP / Module stubs (Phase C will replace) ──
+// ── Properties / methods / module-as-value (Phase C2) ──
+//
+// spec v0.4 §13.12:模块对象是 **DICT**(同 §11.1 类内部表示)。
+// 所以 GET_PROP / SET_PROP / CALL_METHOD 的 receiver 统一是 DICT:
+// 模块对象(MODULE_REF 返回值)与普通 DICT 走同一套 property 语义。
+// CLASS / NEW / THIS 的 OOP eval 仍是 LexerMacro-only(v0.4 §11.2/§8.6
+// 的类值协议 deferred,见 deviations P4-C2-003)。
 
-/// `GET_PROP(obj, k) -> v / E0037`: spec §11.4 object property get。
-/// 本批 stub:OOP 尚未实现,任何 (obj, k) 都返回 E0037 "no such property" +
-/// 在 message 注明 OOP 待实现。等 CLASS/INSTANCE 完成时,这里替换成
-/// 真正的 property lookup。
-fn builtin_get_prop(_ev: &mut Evaluator, _args: Vec<Value>) -> WlwlResult<Outcome> {
-    Err(builtin_error(
-        ErrorCode::E0037,
-        "GET_PROP",
-        "OOP not yet implemented (Phase C); GET_PROP(obj, k) returns E0037 placeholder".to_string(),
-    ))
+/// `GET_PROP(obj, k) -> v / E0037`: spec §13.12 / §5.5 property get。
+/// obj 必须是 DICT(模块对象也是 DICT),否则 E0030;
+/// k 必须是 STRING,否则 E0030;键缺失 → E0037。
+fn builtin_get_prop(_ev: &mut Evaluator, args: Vec<Value>) -> WlwlResult<Outcome> {
+    let (obj, key) = expect_arity2("GET_PROP", &args)?;
+    let entries = match obj {
+        Value::Dict(e) => e,
+        other => {
+            return Err(type_error(
+                "GET_PROP",
+                format!("expected DICT object, got {}", type_name(other)),
+            ));
+        }
+    };
+    let k = match key {
+        Value::String(s) => s,
+        other => {
+            return Err(type_error(
+                "GET_PROP",
+                format!("property key must be STRING, got {}", type_name(other)),
+            ));
+        }
+    };
+    match dict_lookup(entries, &Value::String(k.clone())) {
+        Some(i) => Ok(Outcome::normal(entries[i].1.clone())),
+        None => Err(builtin_error(
+            ErrorCode::E0037,
+            "GET_PROP",
+            format!("no such property '{}'", k),
+        )),
+    }
 }
 
-/// `SET_PROP(obj, k, v) -> NULL`: spec §11.4 object property set。
-/// 本批 stub:返回 E0037 等 OOP 实现。
-fn builtin_set_prop(_ev: &mut Evaluator, _args: Vec<Value>) -> WlwlResult<Outcome> {
-    Err(builtin_error(
-        ErrorCode::E0037,
-        "SET_PROP",
-        "OOP not yet implemented (Phase C); SET_PROP(obj, k, v) returns E0037 placeholder".to_string(),
-    ))
+/// `SET_PROP(obj, k, v) -> DICT`: spec §13.12 / §5.5 property set。
+/// DICT 上插入或更新键;返回**更新后的 DICT**(值语义,与 Phase B1
+/// `INDEX_SET` 的既定实现一致 —— builtin 边界按值传参,无法就地
+/// 写回 receiver;registry 的 `-> NULL` 签名沿 spec 文本,实现偏差
+/// 见 deviations P4-C2-002)。
+fn builtin_set_prop(_ev: &mut Evaluator, args: Vec<Value>) -> WlwlResult<Outcome> {
+    if args.len() != 3 {
+        return Err(arity_error("SET_PROP", args.len(), 3));
+    }
+    let mut entries = match &args[0] {
+        Value::Dict(e) => e.clone(),
+        other => {
+            return Err(type_error(
+                "SET_PROP",
+                format!("expected DICT object, got {}", type_name(other)),
+            ));
+        }
+    };
+    let k = match &args[1] {
+        Value::String(s) => s.clone(),
+        other => {
+            return Err(type_error(
+                "SET_PROP",
+                format!("property key must be STRING, got {}", type_name(other)),
+            ));
+        }
+    };
+    let v = args[2].clone();
+    match dict_lookup(&entries, &Value::String(k.clone())) {
+        Some(i) => entries[i].1 = v,
+        None => entries.push((Value::String(k), v)),
+    }
+    Ok(Outcome::normal(Value::Dict(entries)))
 }
 
-/// `CALL_METHOD(obj, method, args...) -> v`: spec §11.4 method invocation。
-/// 本批 stub:返回 E0037 等 OOP 实现。
-fn builtin_call_method(_ev: &mut Evaluator, _args: Vec<Value>) -> WlwlResult<Outcome> {
-    Err(builtin_error(
-        ErrorCode::E0037,
-        "CALL_METHOD",
-        "OOP not yet implemented (Phase C); CALL_METHOD(obj, m, ...) returns E0037 placeholder".to_string(),
-    ))
+/// `CALL_METHOD(obj, m, args...) -> v`: spec §11.4 / §8.6 method call。
+///
+/// self 注入规则(§8.6 "本规范明确"):receiver **总是**作为第一个实参
+/// 注入 closure 方法 —— 等价 `CALL_METHOD(rect, "get_area", rect)`;
+/// 首形参命名为 `self` 只是一个**约定**(不强制),命名不影响绑定。
+///
+/// NativeFn(std 模块成员)则**不**注入 receiver:§13.12 钉死
+/// `io.PRINT("hi")` 等价 `IMPORT` 后的 `PRINT("hi")`。
+fn builtin_call_method(ev: &mut Evaluator, args: Vec<Value>) -> WlwlResult<Outcome> {
+    if args.len() < 2 {
+        return Err(arity_error("CALL_METHOD", args.len(), 2));
+    }
+    let obj = match &args[0] {
+        Value::Dict(e) => e.clone(),
+        other => {
+            return Err(type_error(
+                "CALL_METHOD",
+                format!("expected DICT object receiver, got {}", type_name(other)),
+            ));
+        }
+    };
+    let method = match &args[1] {
+        Value::String(s) => s.clone(),
+        other => {
+            return Err(type_error(
+                "CALL_METHOD",
+                format!("method name must be STRING, got {}", type_name(other)),
+            ));
+        }
+    };
+    let rest: Vec<Value> = args[2..].to_vec();
+    let callee = match dict_lookup(&obj, &Value::String(method.clone())) {
+        Some(i) => obj[i].1.clone(),
+        None => {
+            return Err(builtin_error(
+                ErrorCode::E0037,
+                "CALL_METHOD",
+                format!("no such method '{}'", method),
+            ));
+        }
+    };
+    let span = ev
+        .current_span
+        .clone()
+        .unwrap_or_else(runtime_span);
+    ev.call_value_with_receiver(callee, Some(Value::Dict(obj)), rest, &span, &method)
 }
 
-/// `MODULE_REF(path) -> MODULE`: spec §13.5 module-as-value。
-/// 本批 stub:模块作为值未实现,返回 E0021 等 Phase C 完成。
-fn builtin_module_ref(_ev: &mut Evaluator, _args: Vec<Value>) -> WlwlResult<Outcome> {
-    Err(type_error(
-        "MODULE_REF",
-        "MODULE_REF not yet implemented (Phase C); first-class modules deferred".to_string(),
-    ))
+/// `MODULE_REF(path) -> MODULE`: spec §13.12 module-as-value。
+///
+/// 语义 = 加载模块但**不绑定名字**,返回模块对象(DICT:导出名 → 值)。
+/// 与 IMPORT 共用 `ModuleLoader`(缓存 / 循环检测 / 命名空间解析),
+/// 只是不做 per-name `E0023` 校验与局部绑定 —— 键集合就是模块的
+/// EXPORT 面。加载失败(E0040 / E0041 / E0043 / E0023)原样冒泡。
+fn builtin_module_ref(ev: &mut Evaluator, args: Vec<Value>) -> WlwlResult<Outcome> {
+    let path = match expect_arity("MODULE_REF", &args, 1)? {
+        Value::String(s) => s.clone(),
+        other => {
+            return Err(type_error(
+                "MODULE_REF",
+                format!("expected STRING module path, got {}", type_name(other)),
+            ));
+        }
+    };
+    let loaded = {
+        let mut loader = ev.loader.borrow_mut();
+        loader.load(&path)?
+    };
+    // 排序保证 DICT 键序确定(HashSet 迭代序不稳定)。
+    let mut names: Vec<&String> = loaded.exports.iter().collect();
+    names.sort();
+    let mut entries: Vec<(Value, Value)> = Vec::with_capacity(names.len());
+    for n in names {
+        let v = loaded.env.get(n).map(|r| r.clone()).unwrap_or(Value::Null);
+        entries.push((Value::String(n.clone()), v));
+    }
+    Ok(Outcome::normal(Value::Dict(entries)))
 }
 
 /// v0.4 §10.3 + appendix G — `STR(x) → STRING`.
@@ -2676,6 +2822,18 @@ fn builtin_error(code: ErrorCode, fn_name: &str, msg: String) -> WlwlError {
         Location::point("<runtime>", 0, 0),
     )
     .into()
+}
+
+/// Placeholder span for builtin-emitted diagnostics outside any AST
+/// call site (direct builtin invocation from tests / Rust callers).
+fn runtime_span() -> Span {
+    Span {
+        file: "<runtime>".to_string(),
+        line_start: 0,
+        col_start: 0,
+        line_end: 0,
+        col_end: 0,
+    }
 }
 
 fn type_name(v: &Value) -> &'static str {
@@ -3435,11 +3593,65 @@ impl Evaluator {
         std::mem::take(&mut self.warnings)
     }
 
+    /// Invoke a callable `Value` (closure or native fn) with an
+    /// optional method receiver (Phase C2, spec §8.6 / §13.12).
+    ///
+    /// - `Value::Closure`: the receiver is injected as the first
+    ///   actual argument **only when the first formal parameter is
+    ///   named `self`** (§8.6 "首形参即 self 约定注入"; §11.4 主句).
+    ///   Closures without a `self` first formal behave like plain FUN
+    ///   values (§5.5 关键决策:属性访问结果为函数 + 括号即调用,
+    ///   等价 `CALL(a.b, args)`) — this keeps file-module exports
+    ///   (`m.f(x)`) natural. The "否则首形参接收调用对象" clause of
+    ///   §11.4 is NOT implemented; see deviations P4-C2-001.
+    /// - `Value::NativeFn`: the receiver is **dropped** — std module
+    ///   members are invoked bare (§13.12: `io.PRINT("hi")` 等价
+    ///   `IMPORT` 后的 `PRINT("hi")`).
+    pub(crate) fn call_value_with_receiver(
+        &mut self,
+        callee: Value,
+        receiver: Option<Value>,
+        mut args: Vec<Value>,
+        span: &Span,
+        name: &str,
+    ) -> WlwlResult<Outcome> {
+        match callee {
+            Value::Closure { params, body, env } => {
+                if let (Some(r), Some(p)) = (receiver, params.first()) {
+                    if p.name == "self" {
+                        args.insert(0, r);
+                    }
+                }
+                self.invoke_closure(name, params, body, env, args, span)
+            }
+            Value::NativeFn { invoke, .. } => match invoke {
+                NativeInvoke::Std(f) => invoke_std(self, f, args, span),
+                NativeInvoke::Builtin(b) => {
+                    let prev_span = self.current_span.take();
+                    self.current_span = Some(span.clone());
+                    let result = b(self, args);
+                    self.current_span = prev_span;
+                    result
+                }
+            },
+            other => Err(type_error(
+                name,
+                format!("member is not callable ({} value)", type_name(&other)),
+            )),
+        }
+    }
+
     // ── Top-level entry points ─────────────────────────────────────
 
     /// Evaluate a program (the result of `parse`). Used for both
     /// entry-point files and modules.
     pub fn eval(&mut self, expr: &Expr) -> WlwlResult<Value> {
+        // Phase C3/C4/C6 (spec v0.4 §13.8/§13.9): project-config gate
+        // — language_version mismatch (E0044), MVS dependency
+        // conflicts (E0045) and wlwl.lock inconsistency (E0042) all
+        // surface here, before any user code runs. No-ops when the
+        // project has no wlwl.toml.
+        self.check_project_config(expr.span())?;
         // [v0.4 spec Sec. 14.2] Wrap any error in trace enrichment so
         // that *every* error from eval() carries the current call
         // stack. This catches errors that bypassed `self.diag()`
@@ -3479,6 +3691,158 @@ impl Evaluator {
                 expr.span().clone(),
             )),
             Signal::Return(v) => Ok(v),
+        }
+    }
+
+    /// Snapshot of the project manifest, if a `wlwl.toml` was found at
+    /// the project root (Phase C3+). `None` = no-toml project.
+    fn project_manifest(&self) -> Option<Arc<wlwl_toml::manifest::Manifest>> {
+        self.loader.borrow().project.manifest.clone()
+    }
+
+    /// Project-config gate (Phase C3-C6): validate the project
+    /// configuration before any user code runs. No-ops when the
+    /// project has no `wlwl.toml`.
+    ///
+    /// Order (each maps to its spec §13.8/§13.9 error):
+    /// 1. `language_version` mismatch → E0044 (Phase C3);
+    /// 2. MVS dependency resolution → E0045 conflict / E0041 cycle
+    ///    (Phase C4; path deps always resolve, version deps have an
+    ///    empty candidate set in v0.4 — no central registry);
+    /// 3. `wlwl.lock` consistency → E0042 (Phase C6). A missing lock
+    ///    is *not* generated here — the CLI's `try_write_lock` owns
+    ///    generation (eval stays IO-free).
+    fn check_project_config(&mut self, span: &Span) -> WlwlResult<()> {
+        use wlwl_toml::manifest::Dependency;
+        let Some(m) = self.project_manifest() else {
+            return Ok(());
+        };
+        // 1. E0044 — language_version (§13.8).
+        if let Err(mismatch) = wlwl_toml::manifest::check_language_version(&m) {
+            return Err(self.diag(ErrorCode::E0044, mismatch.to_string(), span.clone()));
+        }
+        // 2. E0045 — MVS dependency resolution (§13.9). Only
+        //    version-style dependencies enter the solver; path deps
+        //    always resolve (local directory).
+        let mut root: std::collections::BTreeMap<String, wlwl_toml::mvs::Constraint> =
+            std::collections::BTreeMap::new();
+        for (name, dep) in &m.dependencies {
+            let raw = match dep {
+                Dependency::Version(v) => Some(v.clone()),
+                Dependency::Detailed(d) if d.path.is_none() => d.version.clone(),
+                _ => None,
+            };
+            let Some(raw) = raw else { continue };
+            match wlwl_toml::mvs::Constraint::parse(&raw) {
+                Some(c) => {
+                    root.insert(name.clone(), c);
+                }
+                None => {
+                    return Err(self.diag(
+                        ErrorCode::E0045,
+                        format!(
+                            "dependency conflict: unparseable version constraint '{}' for '{}' \
+                             (v0.4 has no central registry; use path dependencies)",
+                            raw, name
+                        ),
+                        span.clone(),
+                    ));
+                }
+            }
+        }
+        if !root.is_empty() {
+            match wlwl_toml::mvs::solve(&root, &|_| Vec::new(), &|_, _| {
+                std::collections::BTreeMap::new()
+            }) {
+                Ok(_) => {}
+                Err(e) => {
+                    let code = match &e {
+                        wlwl_toml::mvs::MvsError::Cycle(_) => ErrorCode::E0041,
+                        _ => ErrorCode::E0045,
+                    };
+                    let mut msg = e.to_string();
+                    if code == ErrorCode::E0045 {
+                        msg.push_str(
+                            " (v0.4 has no central registry; use path dependencies)",
+                        );
+                    }
+                    return Err(self.diag(code, msg, span.clone()));
+                }
+            }
+        }
+        // 3. E0042 — lock ↔ toml consistency (§13.8).
+        let lock_path = self
+            .loader
+            .borrow()
+            .project
+            .project_root
+            .join("wlwl.lock");
+        match wlwl_toml::lock::read(&lock_path) {
+            Ok(Some(lock)) => {
+                if let Err(detail) = wlwl_toml::lock::validate_consistency(&lock, &m) {
+                    return Err(self.diag(
+                        ErrorCode::E0042,
+                        format!("lock file inconsistent with wlwl.toml: {}", detail),
+                        span.clone(),
+                    ));
+                }
+            }
+            Ok(None) => {}
+            Err(e) => {
+                return Err(self.diag(
+                    ErrorCode::E0042,
+                    format!("lock file unreadable: {}", e),
+                    span.clone(),
+                ));
+            }
+        }
+        Ok(())
+    }
+
+    /// Phase C5 (spec §6.6): `LET` shadowing checks. Called only when
+    /// a new binding is created (an existing binding update is a SET-
+    /// like rebind, not a shadow).
+    ///
+    /// - Shadowing a **global builtin** (registry ResolvedBuiltin /
+    ///   ResolvedCompat): `E0025` by default; with
+    ///   `[features] allow_builtin_shadow = true` allowed + `W0030`.
+    /// - Shadowing a **macro function / keyword** (LexerMacro):
+    ///   allowed with `W0030` (spec §14.5 W0030).
+    fn check_let_shadowing(&mut self, name: &str, span: &Span) -> WlwlResult<()> {
+        let Some(spec) = crate::registry::lookup(name) else {
+            return Ok(());
+        };
+        use crate::registry::DispatchStatus;
+        match spec.dispatch {
+            DispatchStatus::ResolvedBuiltin | DispatchStatus::ResolvedCompat => {
+                let allowed = self
+                    .project_manifest()
+                    .map(|m| m.allow_builtin_shadow())
+                    .unwrap_or(false);
+                if allowed {
+                    self.emit_warning(
+                        ErrorCode::W0030,
+                        format!(
+                            "shadowing global builtin '{}' ([features] allow_builtin_shadow = true)",
+                            name
+                        ),
+                    );
+                    Ok(())
+                } else {
+                    Err(self.diag(
+                        ErrorCode::E0025,
+                        format!("cannot shadow built-in '{}'", name),
+                        span.clone(),
+                    ))
+                }
+            }
+            DispatchStatus::LexerMacro | DispatchStatus::Deferred => {
+                self.emit_warning(
+                    ErrorCode::W0030,
+                    format!("shadowing macro function / keyword '{}'", name),
+                );
+                Ok(())
+            }
         }
     }
 
@@ -3528,7 +3892,7 @@ impl Evaluator {
                 }
             },
             Expr::Call { name, args, span } => self.eval_call(name, args, span),
-            Expr::Let { name, value, .. } => {
+            Expr::Let { name, value, span, .. } => {
                 let v = self.eval_expr(value)?;
                 if v.signal != Signal::None {
                     return Ok(v);
@@ -3537,6 +3901,10 @@ impl Evaluator {
                 // scope, update that binding (so LET inside a loop body
                 // can accumulate). Otherwise bind in the current scope.
                 if !self.env.set_existing(&name, v.value.clone()) {
+                    // Phase C5 (spec §6.6): shadowing checks on new
+                    // bindings — E0025 for global builtins (unless
+                    // allow_builtin_shadow), W0030 for macro/keyword.
+                    self.check_let_shadowing(&name, span)?;
                     self.env.set_local(name.clone(), v.value.clone());
                 }
                 Ok(Outcome::normal(Value::Null))
@@ -4828,6 +5196,33 @@ mod tests {
         let e = parse(src, "t.wl")?;
         let mut ev = Evaluator::new().with_base_dir(dir.to_path_buf());
         ev.eval(&e)
+    }
+
+    /// Like `run_in` but also returns the warnings accumulated during
+    /// the run (Phase C3/C5 tests).
+    fn run_in_with_warnings(dir: &Path, src: &str) -> (WlwlResult<Value>, Vec<Warning>) {
+        let e = parse(src, "t.wl").expect("parse");
+        let mut ev = Evaluator::new().with_base_dir(dir.to_path_buf());
+        let r = ev.eval(&e);
+        (r, ev.take_warnings())
+    }
+
+    /// Write a minimal wlwl.toml into `dir` with an optional
+    /// language_version and an optional extra raw TOML body (e.g. a
+    /// `[features]` block).
+    fn write_manifest(dir: &Path, language_version: Option<&str>, extra: &str) {
+        let lv = match language_version {
+            Some(v) => format!("language_version = \"{}\"\n", v),
+            None => String::new(),
+        };
+        std::fs::write(
+            dir.join("wlwl.toml"),
+            format!(
+                "[package]\nname = \"app\"\nversion = \"0.1.0\"\nentry = \"main.wl\"\n{}{}\n",
+                lv, extra
+            ),
+        )
+        .unwrap();
     }
 
     // ── Phase 1 sanity (unchanged) ─────────────────────────────────
@@ -6770,8 +7165,14 @@ entry = "main.wl"
     fn namespace_path_resolves_via_manifest() {
         // `IMPORT("myteam:utils", …)` resolves through the project's
         // wlwl.toml [dependencies] map to a local path.
+        //
+        // Phase C7 (spec §13.5 严格语义):项目根是搜索的最高边界,
+        // root 外的依赖(即使是 manifest 声明的 `path = "../…"`)→
+        // E0040。旧版本测试把依赖放在 root 外,靠 is_within 的词法
+        // `..` 漏洞通过;归一化修复后依赖必须放在 root 内
+        // (deviations P4-C7-001)。
         let dir = unique_test_dir("ns_resolve");
-        let dep_dir = dir.join("..").join("wlwl_test_dep");
+        let dep_dir = dir.join("vendor").join("wlwl_test_dep");
         std::fs::create_dir_all(&dep_dir).unwrap();
         std::fs::write(
             dep_dir.join("utils.wl"),
@@ -6791,7 +7192,7 @@ version = "0.1.0"
 entry = "main.wl"
 
 [dependencies]
-"myteam:utils" = {{ path = "../wlwl_test_dep" }}
+"myteam:utils" = {{ path = "vendor/wlwl_test_dep" }}
 "#
             ),
         )
@@ -6804,7 +7205,7 @@ entry = "main.wl"
             run_in(&dir, src).unwrap(),
             Value::String("hi".into())
         );
-        let _ = std::fs::remove_dir_all(&dep_dir);
+        let _ = std::fs::remove_dir_all(&dir);
     }
 
     #[test]
@@ -11852,32 +12253,17 @@ entry = "main.wl"
         );
     }
 
+    // ── Phase C2 (spec §13.12 / §5.5 / §8.6):GET_PROP / SET_PROP /
+    // CALL_METHOD / MODULE_REF 真实现(B15 的 4 个 stub 测试已由
+    // c2_* 系列替换,原 placeholder 断言全部翻转)。
+
     #[test]
     fn b15_get_prop_returns_e0037_placeholder() {
-        // OOP stub:返回 E0037 等 Phase C 实现
-        let err = run(r#"GET_PROP(["x": 1], "x");"#).unwrap_err();
+        // C2 之后 GET_PROP(["x": 1], "x") 返回 1 —— placeholder 断言
+        // 不再成立,由 c2_get_prop_dict_roundtrip 接管;此处仅保留
+        // E0037 语义(缺键),它正是 stub 时代 E0037 的"真身"。
+        let err = run(r#"GET_PROP(["x": 1], "y");"#).unwrap_err();
         assert_eq!(err.diagnostic().code, ErrorCode::E0037);
-    }
-
-    #[test]
-    fn b15_set_prop_returns_e0037_placeholder() {
-        let err = run(r#"SET_PROP(["x": 1], "x", 99);"#).unwrap_err();
-        assert_eq!(err.diagnostic().code, ErrorCode::E0037);
-    }
-
-    #[test]
-    fn b15_call_method_returns_e0037_placeholder() {
-        let err = run(r#"CALL_METHOD(["x": 1], "method", 1, 2);"#).unwrap_err();
-        assert_eq!(err.diagnostic().code, ErrorCode::E0037);
-    }
-
-    #[test]
-    fn b15_module_ref_returns_err() {
-        // 模块作为值未实现 (Phase C)
-        let err = run(r#"MODULE_REF("wlwl:std.io");"#).unwrap_err();
-        // 可能是 E0030 (type_error) 或 E0021 (not implemented) ——
-        // 当前实现用 type_error path
-        assert!(matches!(err.diagnostic().code, ErrorCode::E0030));
     }
 
     #[test]
@@ -11897,6 +12283,462 @@ entry = "main.wl"
                     "{:?} is still Deferred after B15", spec.name);
             }
         }
+    }
+
+    // ── Phase C2 (spec §13.12 模块作为值 / §5.5 属性语法糖 / §8.6 self 注入) ──
+
+    #[test]
+    fn c2_get_prop_dict_roundtrip() {
+        assert_eq!(run(r#"GET_PROP(["x": 1], "x");"#).unwrap(), Value::Integer(1));
+        // §5.5 sugar: a.b == GET_PROP(a, "b")
+        assert_eq!(
+            run(r#"LET(d, ["name": "wlwl"]); d.name;"#).unwrap(),
+            Value::String("wlwl".into())
+        );
+    }
+
+    #[test]
+    fn c2_get_prop_missing_is_e0037() {
+        let err = run(r#"GET_PROP(["x": 1], "y");"#).unwrap_err();
+        assert_eq!(err.diagnostic().code, ErrorCode::E0037);
+    }
+
+    #[test]
+    fn c2_get_prop_type_errors() {
+        // receiver 非 DICT → E0030
+        let err = run(r#"GET_PROP([1, 2], "x");"#).unwrap_err();
+        assert_eq!(err.diagnostic().code, ErrorCode::E0030);
+        // key 非 STRING → E0030
+        let err = run(r#"GET_PROP(["x": 1], 0);"#).unwrap_err();
+        assert_eq!(err.diagnostic().code, ErrorCode::E0030);
+    }
+
+    #[test]
+    fn c2_set_prop_insert_update_value_semantics() {
+        // 更新已有键
+        assert_eq!(
+            run(r#"STR(SET_PROP(["x": 1], "x", 99));"#).unwrap(),
+            Value::String("[x: 99]".into())
+        );
+        // 插入新键
+        assert_eq!(
+            run(r#"STR(SET_PROP(["x": 1], "y", 2));"#).unwrap(),
+            Value::String("[x: 1, y: 2]".into())
+        );
+        // 值语义:原 dict 不被修改(与 INDEX_SET 一致)
+        assert_eq!(
+            run(r#"LET(d, ["x": 1]); SET_PROP(d, "x", 99); GET_PROP(d, "x");"#).unwrap(),
+            Value::Integer(1)
+        );
+        // 类型错
+        let err = run(r#"SET_PROP(1, "x", 2);"#).unwrap_err();
+        assert_eq!(err.diagnostic().code, ErrorCode::E0030);
+    }
+
+    #[test]
+    fn c2_call_method_closure_gets_receiver_injected() {
+        // §8.6 / §11.4:首形参命名为 self 的 closure,receiver 自动注入
+        assert_eq!(
+            run(r#"
+                LET(d, ["v": 42, "get": FUN((self), GET_PROP(self, "v"))]);
+                CALL_METHOD(d, "get");
+            "#).unwrap(),
+            Value::Integer(42)
+        );
+        // §5.5 sugar: d.get() == CALL_METHOD(d, "get")
+        assert_eq!(
+            run(r#"
+                LET(d, ["v": 7, "get": FUN((self), GET_PROP(self, "v"))]);
+                d.get();
+            "#).unwrap(),
+            Value::Integer(7)
+        );
+        // self 之后按序绑定额外实参
+        assert_eq!(
+            run(r#"
+                LET(d, ["x": 10, "add": FUN((self, n), +(GET_PROP(self, "x"), n))]);
+                d.add(5);
+            "#).unwrap(),
+            Value::Integer(15)
+        );
+    }
+
+    #[test]
+    fn c2_call_method_non_self_closure_is_plain_call() {
+        // §5.5 关键决策:属性值是 FUN 字面量且无 self 首形参时,
+        // a.b(args) 等价 CALL(a.b, args) —— receiver 不注入。
+        // 文件模块导出的函数经 m.f(x) 调用即属此类。
+        assert_eq!(
+            run(r#"
+                LET(d, ["add": FUN((a, b), +(a, b))]);
+                d.add(2, 3);
+            "#).unwrap(),
+            Value::Integer(5)
+        );
+    }
+
+    #[test]
+    fn c2_call_method_native_fn_no_receiver_injection() {
+        // §13.12:io.PRINT("hi") 等价 IMPORT 后的 PRINT("hi") ——
+        // NativeFn 成员不注入 receiver。用 std.json::PARSE 观察
+        // 返回值 (PRINT 只返回 NULL,不好断言)。
+        assert_eq!(
+            run(r#"
+                LET(j, MODULE_REF("wlwl:std.json"));
+                GET_PROP(j.PARSE("{\"a\": 5}"), "a");
+            "#).unwrap(),
+            Value::Integer(5)
+        );
+    }
+
+    #[test]
+    fn c2_call_method_errors() {
+        // 方法缺失 → E0037
+        let err = run(r#"CALL_METHOD(["x": 1], "nope");"#).unwrap_err();
+        assert_eq!(err.diagnostic().code, ErrorCode::E0037);
+        // 成员存在但不可调用 → E0030
+        let err = run(r#"CALL_METHOD(["x": 1], "x");"#).unwrap_err();
+        assert_eq!(err.diagnostic().code, ErrorCode::E0030);
+        // receiver 非 DICT → E0030
+        let err = run(r#"CALL_METHOD(1, "x");"#).unwrap_err();
+        assert_eq!(err.diagnostic().code, ErrorCode::E0030);
+        // 元数:缺方法名 → E0022
+        let err = run(r#"CALL_METHOD(["x": 1]);"#).unwrap_err();
+        assert_eq!(err.diagnostic().code, ErrorCode::E0022);
+    }
+
+    #[test]
+    fn c2_module_ref_std_module_is_dict() {
+        // 模块对象类型是 DICT (§13.12)
+        assert_eq!(run(r#"TYPE(MODULE_REF("wlwl:std.json"));"#).unwrap(), Value::String("DICT".into()));
+        assert_eq!(
+            run(r#"HAS(MODULE_REF("wlwl:std.json"), "PARSE");"#).unwrap(),
+            Value::Boolean(true)
+        );
+        // 绑定名不进入作用域:PARSE 仍是未定义名 (E0020)
+        let err = run(r#"MODULE_REF("wlwl:std.json"); PARSE("{}");"#).unwrap_err();
+        assert_eq!(err.diagnostic().code, ErrorCode::E0020);
+    }
+
+    #[test]
+    fn c2_module_ref_file_module_sorted_keys_and_call() {
+        let dir = unique_test_dir("c2_module_ref");
+        std::fs::write(
+            dir.join("mathx.wl"),
+            "LET(zeta, 1);\nLET(alpha, FUN((x), *(x, 2)));\nEXPORT([\"alpha\"]);\n",
+        ).unwrap();
+        // EXPORT 面决定模块对象的键:alpha 在,zeta 不在 (未 EXPORT)。
+        assert_eq!(
+            run_in(&dir, r#"
+                LET(m, MODULE_REF("./mathx"));
+                STR(KEYS(m));
+            "#).unwrap(),
+            Value::String("[alpha]".into())
+        );
+        // 文件模块导出的 closure 经 CALL_METHOD 调用 (receiver 注入)
+        assert_eq!(
+            run_in(&dir, r#"
+                LET(m, MODULE_REF("./mathx"));
+                m.alpha(21);
+            "#).unwrap(),
+            Value::Integer(42)
+        );
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn c2_module_ref_not_found_is_e0040() {
+        let err = run(r#"MODULE_REF("doesnotexist");"#).unwrap_err();
+        assert_eq!(err.diagnostic().code, ErrorCode::E0040);
+    }
+
+    #[test]
+    fn c2_module_ref_path_type_error() {
+        let err = run(r#"MODULE_REF(42);"#).unwrap_err();
+        assert_eq!(err.diagnostic().code, ErrorCode::E0030);
+    }
+
+    // ── Phase C1 (spec §13.4):AS 函数完全删除 ──
+
+    #[test]
+    fn c1_as_function_is_deleted_e0020() {
+        // v0.3 的 AS("y", "x") 在 v0.4 完全删除(spec §13.4 钉死;
+        // 迁移写法 LET(alias, name))。本实现从未有过 AS,运行时
+        // 引用走 undefined_name → E0020。
+        let err = run(r#"LET(x, 1); AS("y", "x");"#).unwrap_err();
+        assert_eq!(err.diagnostic().code, ErrorCode::E0020);
+        assert!(err.diagnostic().message.contains("AS"), "message: {}", err.diagnostic().message);
+    }
+
+    #[test]
+    fn c1_as_is_not_a_builtin_or_macro() {
+        // AS 不在全局内建注册表 / resolve_builtin / lexer 关键字里
+        assert!(crate::registry::lookup("AS").is_none());
+        assert!(crate::resolve_builtin("AS").is_none());
+    }
+
+    // ── Phase C7 (spec §13.5):项目根边界强化 ──
+
+    #[test]
+    fn c7_lexical_normalize_resolves_dotdot() {
+        let base = PathBuf::from("/root/app");
+        let smuggled = base.join("..").join("..").join("escape").join("m.wl");
+        let n = lexical_normalize(&smuggled);
+        assert_eq!(n, PathBuf::from("/escape/m.wl"));
+        // `.` 组件被丢弃
+        let dotted = base.join(".").join("sub").join("m.wl");
+        assert_eq!(lexical_normalize(&dotted), PathBuf::from("/root/app/sub/m.wl"));
+    }
+
+    #[test]
+    fn c7_relative_escape_outside_root_is_e0040() {
+        // 无 manifest:base_dir 即项目根;`../` 弹出根 → E0040
+        let dir = unique_test_dir("c7_rel_escape");
+        let err = run_in(&dir, r#"IMPORT("../outside", ["x"]);"#).unwrap_err();
+        assert_eq!(err.diagnostic().code, ErrorCode::E0040);
+        // §13.5 钉死的措辞
+        assert!(
+            err.diagnostic().message.contains("outside project root"),
+            "message: {}", err.diagnostic().message
+        );
+        let _ = fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn c7_ns_dep_cannot_smuggle_dotdot_past_root() {
+        // C7 核心:manifest 里 [namespaces] 值带 `..`,raw is_within
+        // 前缀测试会被 `<root>/../escape` 骗过;归一化后必须 E0040。
+        let dir = unique_test_dir("c7_ns_root");
+        fs::write(
+            dir.join("wlwl.toml"),
+            r#"
+[package]
+name = "app"
+version = "0.1.0"
+entry = "main.wl"
+
+[namespaces]
+"evil" = "../../outside"
+"#,
+        )
+        .unwrap();
+        let err = run_in(&dir, r#"IMPORT("evil:mod", ["x"]);"#).unwrap_err();
+        assert_eq!(err.diagnostic().code, ErrorCode::E0040);
+        let _ = fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn c7_in_root_relative_import_still_works() {
+        // 边界强化的回归保护:root 内的相对导入不受影响。
+        let dir = unique_test_dir("c7_in_root");
+        fs::write(dir.join("helper.wl"), "LET(v, 5);\nEXPORT([\"v\"]);\n").unwrap();
+        assert_eq!(
+            run_in(&dir, r#"IMPORT("./helper", ["v"]); v;"#).unwrap(),
+            Value::Integer(5)
+        );
+        let _ = fs::remove_dir_all(&dir);
+    }
+
+    // ── Phase C3 (spec §13.8):language_version 字段 + E0044 ──
+
+    #[test]
+    fn c3_language_version_mismatch_is_e0044() {
+        let dir = unique_test_dir("c3_mismatch");
+        write_manifest(&dir, Some("0.5"), "");
+        let err = run_in(&dir, "LET(x, 1); x;").unwrap_err();
+        assert_eq!(err.diagnostic().code, ErrorCode::E0044);
+        // spec 钉死的 message 形式
+        assert_eq!(
+            err.diagnostic().message,
+            "language_version mismatch: package requires 0.5, implementation supports 0.4"
+        );
+        let _ = fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn c3_language_version_compatible_runs() {
+        let dir = unique_test_dir("c3_ok");
+        write_manifest(&dir, Some("0.4"), "");
+        assert_eq!(run_in(&dir, "LET(x, 1); x;").unwrap(), Value::Integer(1));
+        // 低于实现 minor 的声明也兼容
+        let dir2 = unique_test_dir("c3_ok_lower");
+        write_manifest(&dir2, Some("0.3"), "");
+        assert_eq!(run_in(&dir2, "+(2, 3);").unwrap(), Value::Integer(5));
+        let _ = fs::remove_dir_all(&dir);
+        let _ = fs::remove_dir_all(&dir2);
+    }
+
+    #[test]
+    fn c3_language_version_absent_tolerated() {
+        // v0.3 时代 manifest 没有该字段 → 跳过校验(偏差 P4-C3-001)
+        let dir = unique_test_dir("c3_absent");
+        write_manifest(&dir, None, "");
+        assert_eq!(run_in(&dir, "1;").unwrap(), Value::Integer(1));
+        let _ = fs::remove_dir_all(&dir);
+    }
+
+    // ── Phase C5 (spec §6.6):allow_builtin_shadow + E0025 / W0030 ──
+
+    #[test]
+    fn c5_shadow_builtin_default_is_e0025() {
+        let dir = unique_test_dir("c5_shadow_default");
+        write_manifest(&dir, None, "");
+        let err = run_in(&dir, r#"LET(PRINT, 1); PRINT;"#).unwrap_err();
+        assert_eq!(err.diagnostic().code, ErrorCode::E0025);
+        // spec message:cannot shadow built-in 'PRINT'
+        assert!(
+            err.diagnostic().message.contains("cannot shadow built-in 'PRINT'"),
+            "message: {}", err.diagnostic().message
+        );
+        let _ = fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn c5_shadow_builtin_allowed_with_flag_emits_w0030() {
+        let dir = unique_test_dir("c5_shadow_allowed");
+        write_manifest(
+            &dir,
+            None,
+            "[features]\nallow_builtin_shadow = true\n",
+        );
+        let (r, warnings) =
+            run_in_with_warnings(&dir, r#"LET(PRINT, 1); PRINT;"#);
+        assert_eq!(r.unwrap(), Value::Integer(1));
+        assert!(
+            warnings.iter().any(|w| w.code == ErrorCode::W0030),
+            "expected W0030, got {:?}", warnings
+        );
+        let _ = fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn c5_shadow_macro_fn_is_w0030_allowed() {
+        // 遮蔽宏函数(spec §14.5 W0030)默认允许,发警告。
+        // 用 AND(LexerMacro 注册表条目,词法上是 Ident,可作 LET 名;
+        // IF/WHILE 等真关键字在 parser 层就拒绝作绑定名,到不了 eval)。
+        let dir = unique_test_dir("c5_shadow_macro");
+        write_manifest(&dir, None, "");
+        let (r, warnings) = run_in_with_warnings(&dir, r#"LET(AND, 1); AND;"#);
+        assert_eq!(r.unwrap(), Value::Integer(1));
+        assert!(
+            warnings.iter().any(|w| w.code == ErrorCode::W0030),
+            "expected W0030, got {:?}", warnings
+        );
+        let _ = fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn c5_let_inside_function_updating_existing_binding_not_shadow() {
+        // set_existing 路径(函数体内 LET 更新外层已有绑定)不触发
+        // 遮蔽检查 —— 只有"新绑定"才算 shadow。
+        let dir = unique_test_dir("c5_rebind");
+        write_manifest(&dir, None, "");
+        assert_eq!(
+            run_in(&dir, r#"LET(x, 1); LET(f, FUN((), LET(x, 2))); f(); x;"#).unwrap(),
+            Value::Integer(2)
+        );
+        let _ = fs::remove_dir_all(&dir);
+    }
+
+    // ── Phase C4 (spec §13.9):MVS 依赖求解 + E0045 ──
+
+    #[test]
+    fn c4_version_dependency_is_e0045() {
+        // v0.4 无中央 registry,版本式依赖候选集为空 → E0045。
+        let dir = unique_test_dir("c4_version_dep");
+        write_manifest(
+            &dir,
+            None,
+            "[dependencies]\n\"huggingface:client\" = \"^0.5.0\"\n",
+        );
+        let err = run_in(&dir, "1;").unwrap_err();
+        assert_eq!(err.diagnostic().code, ErrorCode::E0045);
+        assert!(
+            err.diagnostic().message.starts_with("dependency conflict:"),
+            "message: {}", err.diagnostic().message
+        );
+        assert!(err.diagnostic().message.contains("huggingface:client"));
+        let _ = fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn c4_path_dependencies_resolve_without_e0045() {
+        // path 依赖总是可满足,不触发 E0045。
+        let dir = unique_test_dir("c4_path_dep");
+        write_manifest(
+            &dir,
+            None,
+            "[dependencies]\n\"myteam:utils\" = { path = \"vendor/utils\" }\n",
+        );
+        assert_eq!(run_in(&dir, "1;").unwrap(), Value::Integer(1));
+        let _ = fs::remove_dir_all(&dir);
+    }
+
+    // ── Phase C6 (spec §13.8):lock ↔ toml 一致性 + E0042 ──
+
+    #[test]
+    fn c6_lock_missing_is_ok() {
+        // lock 缺失 → 跳过校验(CLI 的 try_write_lock 负责生成)
+        let dir = unique_test_dir("c6_no_lock");
+        write_manifest(&dir, None, "");
+        assert_eq!(run_in(&dir, "1;").unwrap(), Value::Integer(1));
+        let _ = fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn c6_lock_inconsistent_is_e0042() {
+        // 用户在 lock 之外改了 toml 的依赖 path → E0042
+        let dir = unique_test_dir("c6_inconsistent");
+        write_manifest(
+            &dir,
+            None,
+            "[dependencies]\n\"myteam:utils\" = { path = \"vendor/utils\" }\n",
+        );
+        // 生成与 toml 一致的 lock,然后人为改 toml 制造不一致
+        let m = wlwl_toml::manifest::parse(
+            &fs::read_to_string(dir.join("wlwl.toml")).unwrap(),
+        )
+        .unwrap();
+        wlwl_toml::lock::write(
+            &dir.join("wlwl.lock"),
+            &wlwl_toml::lock::from_manifest(&m, &dir),
+        )
+        .unwrap();
+        write_manifest(
+            &dir,
+            None,
+            "[dependencies]\n\"myteam:utils\" = { path = \"vendor/utils2\" }\n",
+        );
+        let err = run_in(&dir, "1;").unwrap_err();
+        assert_eq!(err.diagnostic().code, ErrorCode::E0042);
+        assert!(
+            err.diagnostic()
+                .message
+                .starts_with("lock file inconsistent with wlwl.toml:"),
+            "message: {}", err.diagnostic().message
+        );
+        let _ = fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn c6_lock_consistent_runs() {
+        let dir = unique_test_dir("c6_consistent");
+        write_manifest(
+            &dir,
+            None,
+            "[dependencies]\n\"myteam:utils\" = { path = \"vendor/utils\" }\n",
+        );
+        let m = wlwl_toml::manifest::parse(
+            &fs::read_to_string(dir.join("wlwl.toml")).unwrap(),
+        )
+        .unwrap();
+        wlwl_toml::lock::write(
+            &dir.join("wlwl.lock"),
+            &wlwl_toml::lock::from_manifest(&m, &dir),
+        )
+        .unwrap();
+        assert_eq!(run_in(&dir, "1;").unwrap(), Value::Integer(1));
+        let _ = fs::remove_dir_all(&dir);
     }
 
 }
