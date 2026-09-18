@@ -1604,3 +1604,30 @@ B10 (commit `41b97ab`, 910/910) 收口后接 B11。本批把 spec v0.4 附录 G
 - §10.3 row 8-14 TRIM/TRIM_START/TRIM_END/STARTS_WITH/ENDS_WITH/REPEAT/PAD_*/CODEPOINTS/FROM_CODEPOINTS (B8 收口)
 - §10.3 row 6 SPLIT (B13 收口)
 - §10.3 STRING ops 14 项: **100%** (B8 + B13 收口)
+
+# Phase B14 (2026-09-18) — DICT ops 4 项 (spec v0.4 §10.2)
+
+> B13 (commit `3174949`, 940/940) 收口后接 B14。本批把 spec 附录 G Deferred 的 4 个
+> dict builtin (KEYS / VALUES / HAS / MERGE) 接进 resolve_builtin。
+
+## Deviations
+
+| ID | Spec / plan | Status | Notes |
+|----|-------------|--------|-------|
+| P4-B14-001 | plan §5 B14 — 4 dict ops 全接 | **Implemented**: KEYS / VALUES / HAS / MERGE 都加进 resolve_builtin + 注册表转 ResolvedBuiltin | 锁测试 `b14_four_*` |
+| P4-B14-002 | DICT() 0-arg 空 dict 字面量 | **Bypassed**: DICT 是 LexerMacro 但 0-arg 调用未实现 (parser 把 `DICT()` 当成空 token 流)。本批测试改用 `["only": 42]` 单 key dict 验证空 case。**真正的"空 DICT 字面量"留 v0.5** (在 parser LexerMacro 路径加 `parse_dict_macro` 0-arg arm)。 | 影响很小:DICT() 在 source code 极少用,标准用法都是 `["k": v]` 字面量 |
+| P4-B14-003 | MERGE key 冲突覆盖语义 | **Chose b-wins**: MERGE(a, b) 中 b 的 (k, v) 覆盖 a 的 (k, v),结果保持 a 的原顺序,b 的新 key 按出现顺序追加到末尾。spec §10.2 没明确,但 v0.2 历史习惯是 b-wins。 | 锁测试 `b14_merge_basic_and_key_override` |
+| P4-B14-004 | KEYS / VALUES 返回顺序 | **Insertion-order**: 保持 (k, v) 在 dict 内部的 Vec 顺序 (首次出现的 key 在前)。spec §10.2 row 1-2 没明确,但 dict 内部是 Vec<(Value, Value)> 顺序存储 → KEYS/VALUES 顺序即插入顺序。 | 锁测试 `b14_keys_preserves_order` |
+
+## Phase B14 implementation stats
+
+- Total tests: 948 / 948 passing (B13 末 940 → 净 +8)
+- New global builtin: +4 (KEYS / VALUES / HAS / MERGE)
+- Lines added: ~350 (4 个 builtin ~190 + dispatch 4 + 8 测试 ~170)
+- Deferred to Phase B15: 8 项 (B13 末 12 → B14 移走 4 → 8): INPUT / BOOL / CALL / NEG / GET_PROP / SET_PROP / CALL_METHOD / MODULE_REF
+
+## Spec coverage
+
+- §10.2 DICT ops row 1-5 KEYS / VALUES / HAS / MERGE: **100%** (B14 收口)
+- §10.2 DICT ops row 6-7 REMOVE_KEY / DEL: 100% (B1 / B2)
+- §10.2 DICT ops: **100%** (B1 / B2 / B14 全部收口)

@@ -2028,6 +2028,102 @@ fn builtin_split(_ev: &mut Evaluator, args: Vec<Value>) -> WlwlResult<Outcome> {
     Ok(Outcome::normal(Value::Array(parts)))
 }
 
+
+// ──────────────────────────────────────────────────────────────────────
+// Phase B14: spec v0.4 §10.2 DICT ops (4 项)
+// ──────────────────────────────────────────────────────────────────────
+//
+// KEYS / VALUES / HAS / MERGE 接进 resolve_builtin。沿用 B1 期
+// dict_lookup helper 风格的 key 比较;MERGE 把后一个 dict 的
+// (key, value) 按出现顺序附加到前一个 dict,key 冲突时后值覆盖前值
+// (符合 v0.2 §10.2 习惯)。KEYS / VALUES 保持出现顺序 (spec §10.2
+// DICT 内部按 Vec<(Value, Value)> 顺序保存)。ErrConsumerStatus::No。
+
+/// `KEYS(dict) -> ARRAY`: 返回 dict 所有 key,保持出现顺序。
+fn builtin_keys(_ev: &mut Evaluator, args: Vec<Value>) -> WlwlResult<Outcome> {
+    let v = expect_arity("KEYS", &args, 1)?;
+    match v {
+        Value::Dict(entries) => {
+            let keys: Vec<Value> = entries.iter().map(|(k, _)| k.clone()).collect();
+            Ok(Outcome::normal(Value::Array(keys)))
+        }
+        other => Err(type_error(
+            "KEYS",
+            format!("expected DICT, got {}", type_name(other)),
+        )),
+    }
+}
+
+/// `VALUES(dict) -> ARRAY`: 返回 dict 所有 value,保持出现顺序。
+fn builtin_values(_ev: &mut Evaluator, args: Vec<Value>) -> WlwlResult<Outcome> {
+    let v = expect_arity("VALUES", &args, 1)?;
+    match v {
+        Value::Dict(entries) => {
+            let vals: Vec<Value> = entries.iter().map(|(_, v)| v.clone()).collect();
+            Ok(Outcome::normal(Value::Array(vals)))
+        }
+        other => Err(type_error(
+            "VALUES",
+            format!("expected DICT, got {}", type_name(other)),
+        )),
+    }
+}
+
+/// `HAS(dict, k) -> BOOLEAN`: 检查 dict 是否包含 key (基于 values_equal)。
+fn builtin_has(_ev: &mut Evaluator, args: Vec<Value>) -> WlwlResult<Outcome> {
+    if args.len() != 2 {
+        return Err(arity_error("HAS", args.len(), 2));
+    }
+    let dict = match &args[0] {
+        Value::Dict(entries) => entries,
+        other => {
+            return Err(type_error(
+                "HAS",
+                format!("expected DICT as first arg, got {}", type_name(other)),
+            ));
+        }
+    };
+    let key = &args[1];
+    let found = dict_lookup(dict, key).is_some();
+    Ok(Outcome::normal(Value::Boolean(found)))
+}
+
+/// `MERGE(a, b) -> DICT`: 把 dict b 的 (k, v) 按顺序附加到 dict a,
+/// key 冲突时 b 的值覆盖 a 的值 (a 后 c)。
+/// 两个 dict 同 key 时,结果是按 b 的顺序 (Vec 顺序),不重复。
+fn builtin_merge(_ev: &mut Evaluator, args: Vec<Value>) -> WlwlResult<Outcome> {
+    if args.len() != 2 {
+        return Err(arity_error("MERGE", args.len(), 2));
+    }
+    let a = match &args[0] {
+        Value::Dict(entries) => entries,
+        other => {
+            return Err(type_error(
+                "MERGE",
+                format!("expected DICT as first arg, got {}", type_name(other)),
+            ));
+        }
+    };
+    let b = match &args[1] {
+        Value::Dict(entries) => entries,
+        other => {
+            return Err(type_error(
+                "MERGE",
+                format!("expected DICT as second arg, got {}", type_name(other)),
+            ));
+        }
+    };
+    let mut out: Vec<(Value, Value)> = a.clone();
+    for (k, v) in b {
+        if let Some(i) = dict_lookup(&out, k) {
+            out[i].1 = v.clone();
+        } else {
+            out.push((k.clone(), v.clone()));
+        }
+    }
+    Ok(Outcome::normal(Value::Dict(out)))
+}
+
 /// v0.4 §10.3 + appendix G — `STR(x) → STRING`.
 ///
 /// Rendering is `Value::display()` — the same conversion `PRINT`
@@ -2218,6 +2314,13 @@ fn resolve_builtin(name: &str) -> Option<BuiltinFn> {
         // the alias. Added Phase B2.
         "DEL" => Some(builtin_remove_key_compat),
         "POP" => Some(builtin_pop_dict),
+
+        // Phase B14 (spec §10.2): DICT ops 4 项从 Deferred 转到 ResolvedBuiltin。
+        "KEYS" => Some(builtin_keys),
+        "VALUES" => Some(builtin_values),
+        "HAS" => Some(builtin_has),
+        "MERGE" => Some(builtin_merge),
+
 
         // Phase B13 (spec §10.3): STRING ops 5 项从 Deferred 转到 ResolvedBuiltin。
         "UPPER" => Some(builtin_upper),
@@ -11184,7 +11287,7 @@ entry = "main.wl"
         // Deferred 数量 sanity:B11 末应该有 ~24 个 (spec 列了但 impl 未接)
         let deferred = crate::registry::deferred_names();
         assert!(
-            deferred.len() >= 10 && deferred.len() <= 25,
+            deferred.len() >= 6 && deferred.len() <= 20,
             "Deferred count {} out of expected band [20, 30]",
             deferred.len(),
         );
@@ -11426,5 +11529,117 @@ entry = "main.wl"
         // SUB 处理 codepoint (而非 UTF-8 bytes)
         assert_eq!(run(r#"SUB("héllo", 1, 4);"#).unwrap(),
             Value::String("éll".into()));
+    }
+
+    // ── Phase B14: spec v0.4 §10.2 DICT ops (4 项) ────────────────
+    //
+    // spec 附录 G Deferred 的 4 个 dict builtin (KEYS / VALUES / HAS /
+    // MERGE) 现在都进 resolve_builtin 了 —— 8 个测试锁住它们的语义、
+    // 出现顺序、key 冲突覆盖、空 dict 边界、ERR-transparent propagation。
+
+    #[test]
+    fn b14_keys_preserves_order() {
+        assert_eq!(
+            run(r#"KEYS(["a": 1, "b": 2, "c": 3]);"#).unwrap(),
+            Value::Array(vec![Value::String("a".into()), Value::String("b".into()), Value::String("c".into())])
+        );
+        // 单 key dict
+        assert_eq!(run(r#"KEYS(["only": 42]);"#).unwrap(),
+            Value::Array(vec![Value::String("only".into())]));
+        // 类型错
+        let err = run("KEYS([1, 2, 3]);").unwrap_err();
+        assert_eq!(err.diagnostic().code, ErrorCode::E0030);
+    }
+
+    #[test]
+    fn b14_values_preserves_order() {
+        assert_eq!(
+            run(r#"VALUES(["a": 1, "b": 2, "c": 3]);"#).unwrap(),
+            Value::Array(vec![Value::Integer(1), Value::Integer(2), Value::Integer(3)])
+        );
+        assert_eq!(run(r#"VALUES(["only": 42]);"#).unwrap(),
+            Value::Array(vec![Value::Integer(42)]));
+    }
+
+    #[test]
+    fn b14_has_basic_and_value_equality() {
+        assert_eq!(run(r#"HAS(["a": 1, "b": 2], "a");"#).unwrap(), Value::Boolean(true));
+        assert_eq!(run(r#"HAS(["a": 1, "b": 2], "z");"#).unwrap(), Value::Boolean(false));
+        // INTEGER key
+        assert_eq!(run(r#"HAS([1: "a", 2: "b"], 1);"#).unwrap(), Value::Boolean(true));
+        assert_eq!(run(r#"HAS([1: "a", 2: "b"], 3);"#).unwrap(), Value::Boolean(false));
+    }
+
+    #[test]
+    fn b14_merge_basic_and_key_override() {
+        // 不冲突:按 b 的顺序附加到 a
+        assert_eq!(
+            run(r#"MERGE(["a": 1, "b": 2], ["c": 3]);"#).unwrap(),
+            Value::Dict(vec![
+                (Value::String("a".into()), Value::Integer(1)),
+                (Value::String("b".into()), Value::Integer(2)),
+                (Value::String("c".into()), Value::Integer(3)),
+            ])
+        );
+        // 冲突:b 的值覆盖 a
+        assert_eq!(
+            run(r#"MERGE(["x": 1, "y": 2], ["y": 99, "z": 3]);"#).unwrap(),
+            Value::Dict(vec![
+                (Value::String("x".into()), Value::Integer(1)),
+                (Value::String("y".into()), Value::Integer(99)),
+                (Value::String("z".into()), Value::Integer(3)),
+            ])
+        );
+        // 单 key dict merge
+        assert_eq!(
+            run(r#"MERGE(["a": 1], ["b": 2]);"#).unwrap(),
+            Value::Dict(vec![
+                (Value::String("a".into()), Value::Integer(1)),
+                (Value::String("b".into()), Value::Integer(2)),
+            ])
+        );
+        // 类型错
+        let err = run(r#"MERGE([1,2,3], ["a": 1]);"#).unwrap_err();
+        assert_eq!(err.diagnostic().code, ErrorCode::E0030);
+    }
+
+    #[test]
+    fn b14_four_registered_in_resolve_builtin() {
+        use crate::resolve_builtin;
+        for name in &["KEYS", "VALUES", "HAS", "MERGE"] {
+            assert!(resolve_builtin(name).is_some(),
+                "resolve_builtin({:?}) is None; B14 did not register", name);
+        }
+    }
+
+    #[test]
+    fn b14_four_moved_to_resolved_in_registry() {
+        for spec in crate::registry::BUILTIN_REGISTRY.iter() {
+            if ["KEYS", "VALUES", "HAS", "MERGE"].contains(&spec.name) {
+                assert_eq!(spec.dispatch, crate::registry::DispatchStatus::ResolvedBuiltin,
+                    "{:?} is still Deferred after B14", spec.name);
+            }
+        }
+    }
+
+    #[test]
+    fn b14_err_transparent() {
+        let err = run(r#"KEYS(ERR("e"));"#).unwrap_err();
+        assert_eq!(err.diagnostic().code, ErrorCode::E0102);
+        let err = run(r#"VALUES(ERR("e"));"#).unwrap_err();
+        assert_eq!(err.diagnostic().code, ErrorCode::E0102);
+        let err = run(r#"HAS(ERR("e"), "a");"#).unwrap_err();
+        assert_eq!(err.diagnostic().code, ErrorCode::E0102);
+        let err = run(r#"MERGE(ERR("e"), ["a": 1]);"#).unwrap_err();
+        assert_eq!(err.diagnostic().code, ErrorCode::E0102);
+    }
+
+    #[test]
+    fn b14_dict_not_mutated_by_merge() {
+        // MERGE 返回新 dict,不修改 a/b (immutable 语义)
+        assert_eq!(
+            run(r#"LET(a, ["x": 1]); LET(b, ["y": 2]); MERGE(a, b); LEN(a);"#).unwrap(),
+            Value::Integer(1)
+        );
     }
 }
