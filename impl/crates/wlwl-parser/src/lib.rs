@@ -365,6 +365,34 @@ impl Parser {
                 },
             });
         }
+        // Phase B9 (spec §3.4): `!x` (the v0.3-compat unary form)
+        // desugars to `!(x)`. Without this branch the `!` token
+        // falls into `parse_call_or_ident`'s var branch (peek is
+        // the operand, not LParen), which produces `Var("!")` and
+        // then leaves the operand for the *next* statement to
+        // consume — exactly the E0013 "expected `;` after expression"
+        // parser error a bare `!TRUE;` triggers. The branch is
+        // triggered only when `!` is **not** followed by `(` —
+        // `!(x)` keeps the existing call path (which adds the
+        // W0054 emit at the eval boundary, dispatched by
+        // `builtin_not_bang_compat`).
+        if matches!(kind, TokenKind::Bang) && !matches!(self.peek_at(1), TokenKind::LParen) {
+            let (l2, c2, _, _) = self.span_here();
+            self.advance(); // '!'
+            let inner = self.parse_expr()?;
+            let (_, _, le, ce) = self.span_here();
+            return Ok(Expr::Call {
+                name: "!".to_string(),
+                args: vec![inner],
+                span: Span {
+                    file: self.file.clone(),
+                    line_start: l2,
+                    col_start: c2,
+                    line_end: le,
+                    col_end: ce,
+                },
+            });
+        }
         match kind {
             TokenKind::Let => self.parse_let(),
             // §7 control flow
@@ -780,6 +808,7 @@ impl Parser {
             TokenKind::AmpAmp => "&&".into(),
             TokenKind::PipePipe => "||".into(),
             TokenKind::Bang => "!".into(),
+            TokenKind::Not => "NOT".into(),
             TokenKind::Eof => "<eof>".into(),
         }
     }
@@ -1369,6 +1398,14 @@ impl Parser {
             TokenKind::Class => "CLASS".to_string(),
             TokenKind::New => "NEW".to_string(),
             TokenKind::This => "THIS".to_string(),
+            // Phase B9 (spec §3.4): `NOT` is the v0.4 canonical
+            // keyword for logical negation. Lexed as a keyword (not
+            // an ident) so the parser dispatch is in lock-step with
+            // IF/WHILE/TRY/MATCH. The single-char `!` token is still
+            // mapped to "!" below via `as_op_name`; eval-side keeps
+            // two distinct dispatch entries ("!" emits W0054, "NOT"
+            // does not — see `wlwl_eval::resolve_builtin`).
+            TokenKind::Not => "NOT".to_string(),
             ref k => match k.as_op_name() {
                 Some(op) => op.to_string(),
                 None => {

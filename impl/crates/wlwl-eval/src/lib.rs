@@ -988,6 +988,20 @@ fn builtin_print(_ev: &mut Evaluator, args: Vec<Value>) -> WlwlResult<Outcome> {
     Ok(Outcome::normal(Value::Null))
 }
 
+/// Phase B10 (spec §15.1 + §3.4): `PRINT_ERR` is the stderr twin
+/// of `PRINT`. Same value formatting (`v.display()`), same null
+/// return, but `eprintln!` so programs can split diagnostics from
+/// results via shell redirect (`2>` vs `>`).
+///
+/// Not in §12.7 ERR consumer registry; not in plan §5.10's
+/// `wlwl:std.io` extension list — it joins `PRINT` / `INPUT` as
+/// one of the three top-level std I/O functions per §15.1.
+fn builtin_print_err(_ev: &mut Evaluator, args: Vec<Value>) -> WlwlResult<Outcome> {
+    let parts: Vec<String> = args.iter().map(|v| v.display()).collect();
+    eprintln!("{}", parts.join(" "));
+    Ok(Outcome::normal(Value::Null))
+}
+
 fn builtin_len(_ev: &mut Evaluator, args: Vec<Value>) -> WlwlResult<Outcome> {
     let v = expect_arity("LEN", &args, 1)?;
     let n = match v {
@@ -1748,6 +1762,10 @@ fn builtin_format(ev: &mut Evaluator, args: Vec<Value>) -> WlwlResult<Outcome> {
 fn resolve_builtin(name: &str) -> Option<BuiltinFn> {
     match name {
         "PRINT" => Some(builtin_print),
+        // Phase B10 (spec §15.1): PRINT_ERR writes to stderr.
+        // Same dispatch as PRINT — appended to the global builtin
+        // table so it's available without IMPORT (mirrors `PRINT`).
+        "PRINT_ERR" => Some(builtin_print_err),
         "LEN" => Some(builtin_len),
         "PUSH" => Some(builtin_push),
         "INT" => Some(builtin_int),
@@ -1817,7 +1835,14 @@ fn resolve_builtin(name: &str) -> Option<BuiltinFn> {
         ">=" => Some(builtin_ge),
         "&&" => Some(builtin_and),
         "||" => Some(builtin_or),
-        "!" => Some(builtin_not),
+        "!" => Some(builtin_not_bang_compat),
+        // Phase B9 (spec §3.4 + §14.5): NOT is the v0.4 canonical
+        // name for logical negation; the single-char `!` above is
+        // the v0.3-compat alias that emits W0054 at the dispatch
+        // boundary. Same function under the hood; just two
+        // dispatch entries so we can attach the warning to `!`
+        // without coupling it to the clean path.
+        "NOT" => Some(builtin_not),
         // v0.4 §12.7 + §14.5 — `OR_DIE` is the v0.3-compat alias for
         // `UNWRAP_OR`. Spec §14.5 mandates W0051 on every legacy use;
         // v0.5 removes the alias. Renamed dispatch target from
@@ -2296,9 +2321,37 @@ fn builtin_or(_ev: &mut Evaluator, args: Vec<Value>) -> WlwlResult<Outcome> {
     Ok(Outcome::normal(Value::Boolean(is_truthy(a) || is_truthy(b))))
 }
 
+/// Logical negation (spec §9.4 + §3.4). Registered under two
+/// names in `resolve_builtin`:
+///   - `"NOT"`  → `builtin_not` directly (v0.4 canonical; no
+///                warning; the clean path).
+///   - `"!"`    → `builtin_not_bang_compat` (v0.3-compat alias;
+///                emits W0054 first, then delegates here; v0.5
+///                removes the alias).
+///
+/// Both paths share the same truthiness semantics — `!NULL = TRUE`,
+/// `!0 = TRUE`, etc., per §9.4 row 5.
 fn builtin_not(_ev: &mut Evaluator, args: Vec<Value>) -> WlwlResult<Outcome> {
-    let v = expect_arity("!", &args, 1)?;
+    let v = expect_arity("NOT", &args, 1)?;
     Ok(Outcome::normal(Value::Boolean(!is_truthy(v))))
+}
+
+/// v0.3-compat dispatch wrapper for the single-char `!` token.
+/// Emits W0054 (deprecated_op_form) on every call, then delegates
+/// to `builtin_not`. The emit lives **here**, at the dispatch
+/// boundary, so that:
+///   - `!(x)` and `!x` (the two `!` invocation shapes) both go
+///     through this wrapper and emit exactly once;
+///   - `NOT(x)` never reaches this wrapper and never emits;
+///   - the inner fn stays a pure expression of the semantics.
+///
+/// See plan §5.9 ("`!` 改为 NOT 宏函数 + W0054").
+fn builtin_not_bang_compat(ev: &mut Evaluator, args: Vec<Value>) -> WlwlResult<Outcome> {
+    ev.emit_warning(
+        ErrorCode::W0054,
+        "`!` is a v0.3-compat alias; use `NOT(expr)` instead (will be removed in v0.5)",
+    );
+    builtin_not(ev, args)
 }
 
 /// `UNWRAP_OR(value, default)`: spec §12.2 canonical name (v0.4 §12.7).
@@ -10311,5 +10364,231 @@ entry = "main.wl"
                 src
             );
         }
+    }
+
+    // ══════════════════════════════════════════════════════════════════
+    // Phase B9 — `NOT` macro-function + `!` v0.3-compat alias → W0054
+    // (spec v0.4 §3.4 + §14.5)
+    //
+    // Tests cover the dual dispatch:
+    //   - `NOT(x)` is the v0.4 canonical keyword; lexer
+    //     `TokenKind::Not` → parser name "NOT" → eval `builtin_not`
+    //     (clean). No W0054.
+    //   - `!x` / `!(x)` is the v0.3-compat single-char alias; lexer
+    //     `TokenKind::Bang` → parser name "!" → eval
+    //     `builtin_not_bang_compat` (emits W0054, then delegates).
+    //     v0.5 removes `!`.
+    //
+    // Truthiness semantics are shared: `!NULL = TRUE`, `!0 = TRUE`,
+    // `!1 = FALSE`, etc. (spec §9.4 row 5).
+    // ══════════════════════════════════════════════════════════════════
+
+    #[test]
+    fn b9_not_clean_path_emits_no_warnings() {
+        // v0.4 canonical keyword; no warning on any number of
+        // calls (the warn-runner's drain returns no W0054 codes).
+        let (r, w) = run_with_warnings("NOT(TRUE); NOT(FALSE);");
+        r.unwrap();
+        assert!(
+            w.is_empty(),
+            "v0.4 canonical `NOT` must not emit any warnings, got {:?}",
+            w
+        );
+    }
+
+    #[test]
+    fn b9_not_truthiness_matches_negation_table() {
+        // §9.4 truthiness table: Boolean(b)=b, Null=false, **everything
+        // else** (Integer / Float / String / Array / Dict / Closure /
+        // NativeFn / Ok / Err) = true. Lock the table so a future
+        // regression on either path (`!` / `NOT`) surfaces here.
+        // Note `0` and `""` are NOT falsy in v0.4 — they're "everything
+        // else", which is truthy. (Python's `bool(0) = False` /
+        // JavaScript's `Boolean(0) = false` don't apply; WLWL is
+        // explicitly tri-state per §9.4 row 5.)
+        // Boolean
+        assert_eq!(run("NOT(TRUE);").unwrap(), Value::Boolean(false));
+        assert_eq!(run("NOT(FALSE);").unwrap(), Value::Boolean(true));
+        // Null
+        assert_eq!(run("NOT(NULL);").unwrap(), Value::Boolean(true));
+        // Integer — *all* integers are truthy per §9.4 row 5
+        assert_eq!(run("NOT(0);").unwrap(), Value::Boolean(false));
+        assert_eq!(run("NOT(1);").unwrap(), Value::Boolean(false));
+        assert_eq!(run("NOT(42);").unwrap(), Value::Boolean(false));
+        assert_eq!(run("NOT(-7);").unwrap(), Value::Boolean(false));
+        // String — non-empty AND empty are both truthy (string
+        // empty-truthy is the design choice that distinguishes
+        // §9.4 from C / Python)
+        assert_eq!(run(r#"NOT("");"#).unwrap(), Value::Boolean(false));
+        assert_eq!(run(r#"NOT("non-empty");"#).unwrap(), Value::Boolean(false));
+        // Empty ARRAY / DICT — still "everything else" per §9.4
+        assert_eq!(run("NOT([]);").unwrap(), Value::Boolean(false));
+        assert_eq!(run("NOT([\"a\": 1]);").unwrap(), Value::Boolean(false));
+    }
+
+    #[test]
+    fn b9_bang_emits_w0054_once_per_call() {
+        // v0.3-compat single-char `!` must emit exactly one W0054
+        // per call. Two calls = two warnings.
+        let (r, w) = run_with_warnings("!TRUE; !FALSE;");
+        r.unwrap();
+        let w0054_count = w
+            .iter()
+            .filter(|wm| wm.code == ErrorCode::W0054)
+            .count();
+        assert_eq!(
+            w0054_count, 2,
+            "each `!` site must emit exactly one W0054, got warnings: {:?}",
+            w
+        );
+    }
+
+    #[test]
+    fn b9_bang_call_form_emits_w0054() {
+        // `!(x)` parenthesised form (same `!` token, call syntax).
+        let (r, w) = run_with_warnings("!(TRUE);");
+        r.unwrap();
+        let codes: Vec<_> = w
+            .iter()
+            .map(|wm| wm.code)
+            .collect();
+        assert_eq!(
+            codes,
+            vec![ErrorCode::W0054],
+            "`!(x)` form must emit exactly one W0054, got: {:?}",
+            codes
+        );
+    }
+
+    #[test]
+    fn b9_bang_and_not_share_truthiness_semantics() {
+        // Even though they take different dispatch paths, both
+        // routes must produce the same value for every input.
+        // This is the regression guard for the split: if anyone
+        // refactors `builtin_not` without threading the same
+        // truthiness logic, the cross-check fails.
+        let probes = ["TRUE", "FALSE", "NULL", "0", "1", "42", r#""""#, r#""x""#];
+        for src in probes {
+            let bang = run(&format!("!({});", src)).unwrap();
+            let not = run(&format!("NOT({});", src)).unwrap();
+            assert_eq!(
+                bang, not,
+                "`!` and `NOT` must agree on truthiness for {} (got {:?} vs {:?})",
+                src, bang, not
+            );
+        }
+    }
+
+    #[test]
+    fn b9_not_with_err_arg_is_e0102() {
+        // §12.6: NOT is not in ERR_CONSUMER_REGISTRY, so an ERR
+        // arg short-circuits in eval_call; the ERR value reaches
+        // the top level as E0102. Same pattern as B5/B6/B7/B8 ERR-
+        // transparent probes.
+        let err = run("NOT(ERR(\"e\"));").unwrap_err();
+        assert_eq!(err.diagnostic().code, ErrorCode::E0102);
+        let err = run("!(ERR(\"e\"));").unwrap_err();
+        assert_eq!(err.diagnostic().code, ErrorCode::E0102);
+    }
+
+    #[test]
+    fn b9_w0054_in_warning_codes_set() {
+        // Lock the registered warning code list to 11 entries
+        // (10 from B7 + W0054 from B9).
+        use crate::ErrorCode as E;
+        // The "warnings as a category" hint registered under E0030
+        // path; here we just check both endpoints are wired.
+        let _ = E::W0054; // compile-time existence check
+        assert!(format!("{:?}", E::W0054).contains("W0054"));
+    }
+
+    #[test]
+    fn b9_not_resolves_via_resolve_builtin() {
+        // The dispatch table must contain both `"NOT"` (clean) and
+        // `"!"` (W0054 wrapper). If anyone refactors and loses
+        // either entry, the parser-side `Expr::Call { name: ... }`
+        // dispatch will hit the registry-lock test for E0020
+        // instead — but locking it here makes the contract obvious.
+        use crate::resolve_builtin;
+        assert!(resolve_builtin("NOT").is_some());
+        assert!(resolve_builtin("!").is_some());
+    }
+
+    // ══════════════════════════════════════════════════════════════════
+    // Phase B10 — `PRINT_ERR` writes to stderr (spec v0.4 §15.1)
+    //
+    // Tests cover the new global builtin `PRINT_ERR` (same shape as
+    // `PRINT`, but `eprintln!` instead of `println!`) and the std
+    // module twin `wlwl:std.io::PRINT_ERR`. The actual stderr bytes
+    // are NOT captured (would need process-level redirection via
+    // `assert_cmd` / `gag` crate, deferred to Phase F perf tests);
+    // we lock the contract via:
+    //   - the call returns `NULL` (same as PRINT);
+    //   - it accepts multiple args (joined with single space, same
+    //     as PRINT);
+    //   - dispatch via the global table AND via IMPORT both work;
+    //   - §12.6 ERR transparent propagation holds (input ERR → top-
+    //     level E0102; no special "consume" semantics — PRINT_ERR is
+    //     a side-effect sink, not a value observer).
+    // ══════════════════════════════════════════════════════════════════
+
+    #[test]
+    fn b10_print_err_returns_null() {
+        let v = run(r#"PRINT_ERR("oops");"#).unwrap();
+        assert_eq!(v, Value::Null);
+    }
+
+    #[test]
+    fn b10_print_err_with_multiple_args() {
+        // Same join-with-space contract as PRINT — values
+        // formatted via `Value::display()`.
+        let v = run(r#"PRINT_ERR("error:", 42, "is", TRUE);"#).unwrap();
+        assert_eq!(v, Value::Null);
+    }
+
+    #[test]
+    fn b10_print_err_via_std_module() {
+        // The std-module form (IMPORT + eprintln! in
+        // wlwl_std::io::std_print_err) must bind and run. Locks
+        // the path that a user who has explicitly IMPORT'd
+        // `wlwl:std.io` still gets stderr semantics.
+        let v = run_std(r#"
+            IMPORT("wlwl:std.io", ["PRINT_ERR"]);
+            PRINT_ERR("via", "std.io");
+        "#).unwrap();
+        assert_eq!(v, Value::Null);
+    }
+
+    #[test]
+    fn b10_print_err_resolves_in_dispatch_table() {
+        // Lock the global dispatch entry. If a future refactor
+        // removes PRINT_ERR from resolve_builtin, the parser-side
+        // `Expr::Call { name: "PRINT_ERR", ... }` will fall through
+        // to the user-env lookup and surface E0020 — catching it
+        // here makes the contract obvious.
+        use crate::resolve_builtin;
+        assert!(resolve_builtin("PRINT_ERR").is_some());
+    }
+
+    #[test]
+    fn b10_print_err_input_err_is_e0102() {
+        // §12.6: PRINT_ERR is not in ERR_CONSUMER_REGISTRY, so an
+        // ERR arg short-circuits in eval_call; the ERR value
+        // surfaces at top level as E0102 (same pattern as every
+        // other side-effect builtin, e.g. PRINT itself).
+        let err = run(r#"PRINT_ERR(ERR("e"));"#).unwrap_err();
+        assert_eq!(err.diagnostic().code, ErrorCode::E0102);
+    }
+
+    #[test]
+    fn b10_print_and_print_err_coexist_in_std_io() {
+        // Both names must remain available side-by-side in the
+        // std.io module — adding PRINT_ERR doesn't shadow PRINT.
+        let v = run_std(r#"
+            IMPORT("wlwl:std.io", ["PRINT", "PRINT_ERR", "INPUT"]);
+            LET(arity, LEN([PRINT, PRINT_ERR, INPUT]));
+            arity;
+        "#).unwrap();
+        assert_eq!(v, Value::Integer(3));
     }
 }

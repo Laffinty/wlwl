@@ -89,7 +89,13 @@ pub enum TokenKind {
     GtEq,         // >=
     AmpAmp,       // &&
     PipePipe,     // ||
-    Bang,         // !
+    Bang,         // !  (v0.3-compat; v0.4 canonical is the NOT keyword below)
+    /// Phase B9 (spec §3.4): v0.4 canonical name for logical negation.
+    /// Lexer keyword so the parser dispatch path treats it like the
+    /// other macro-functions (IF/WHILE/TRY/MATCH). The `!` token above
+    /// remains as a v0.3-compat alias and emits `W0054` at the eval
+    /// boundary; v0.5 removes `!` outright.
+    Not,
     // End of file
     Eof,
 }
@@ -130,6 +136,7 @@ impl TokenKind {
             TokenKind::AmpAmp => Some("&&"),
             TokenKind::PipePipe => Some("||"),
             TokenKind::Bang => Some("!"),
+            TokenKind::Not => Some("NOT"),
             _ => None,
         }
     }
@@ -348,6 +355,15 @@ impl<'a> Lexer<'a> {
             "EXPORT" => TokenKind::Export,
             // v0.4 Sec. 7.6 macro-function (lexer-level keyword).
             "MATCH" => TokenKind::Match,
+            // Phase B9 (spec §3.4 macro-function §14.5): `NOT` is the
+            // v0.4 canonical spelling for logical negation. Lexed as
+            // a keyword (not an ident) so the parser emits the
+            // same `Expr::Call { name: "NOT", args }` shape as the
+            // other macro-functions — and crucially, so the eval
+            // dispatch table can register `"NOT"` separately from
+            // `"!"` (the latter still emits W0054 to flag the
+            // v0.3-compat form).
+            "NOT" => TokenKind::Not,
             _ => TokenKind::Ident(text),
         };
         Ok(Token {
@@ -632,6 +648,28 @@ mod tests {
     }
 
     #[test]
+    fn lex_not_keyword() {
+        // Phase B9 (spec §3.4): `NOT` is the v0.4 canonical keyword
+        // for logical negation. The single-char `!` is a separate
+        // token that emits W0054 at the eval boundary (locked in
+        // `wlwl_eval::tests::b9_not_clean_path_emits_no_w0054` etc.).
+        let toks = lex("NOT", "t.wl").unwrap();
+        assert_eq!(toks[0].kind, TokenKind::Not);
+        // And `!` remains its own token (parser turns it into a
+        // Call with name "!").
+        let toks = lex("!", "t.wl").unwrap();
+        assert_eq!(toks[0].kind, TokenKind::Bang);
+        // Mixed: lexes both as expected.
+        let toks = lex("NOT(!TRUE)", "t.wl").unwrap();
+        assert_eq!(toks[0].kind, TokenKind::Not);
+        assert_eq!(toks[1].kind, TokenKind::LParen);
+        assert_eq!(toks[2].kind, TokenKind::Bang);
+        assert_eq!(toks[3].kind, TokenKind::True);
+        assert_eq!(toks[4].kind, TokenKind::RParen);
+        assert_eq!(toks[5].kind, TokenKind::Eof);
+    }
+
+    #[test]
     fn lex_string_with_escape() {
         let toks = lex(r#""hello\nworld""#, "t.wl").unwrap();
         match &toks[0].kind {
@@ -750,6 +788,7 @@ mod tests {
                 TokenKind::AmpAmp => "&&",
                 TokenKind::PipePipe => "||",
                 TokenKind::Bang => "!",
+                TokenKind::Not => "NOT",
                 other => panic!("unexpected token {:?}", other),
             })
             .collect();

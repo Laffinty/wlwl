@@ -81,13 +81,17 @@ pub enum ErrorCode {
     W0011, // unused function parameter (`_` prefix silences)
     W0012, // duplicate LET in same scope
     W0013, // IF branches have inconsistent types
+    W0051, // ← v0.3-compat alias / legacy builtin form (Phase B3)
     W0020, // array/dict literal mixes bare values and kv pairs
+    W0054, // v0.3-compat `!` operator form (Phase B9; v0.5 removes the `!` token)
     W0030, // IMPORTed name never used
     W0040, // unhandled `TODO(agent):` comment
     W0015, // integer overflow, saturated to INT64_MAX / INT64_MIN (v0.4 §9.5)
     // v0.4 §14.5 — using v0.3 deprecated alias (`DEL` / `OR_DIE`).
     // Added in Phase B2 (DEL alias) + Phase B3 (OR_DIE alias).
-    W0051,
+    // Note: W0051 itself is already declared in the §14.5 warning
+    // block above (line ~84). This closing brace just terminates
+    // the enum; no new variant is added here.
 }
 
 impl ErrorCode {
@@ -154,6 +158,7 @@ impl ErrorCode {
             ErrorCode::W0040 => "W0040",
             ErrorCode::W0015 => "W0015",
             ErrorCode::W0051 => "W0051",
+            ErrorCode::W0054 => "W0054",
         }
     }
 
@@ -173,6 +178,7 @@ impl ErrorCode {
                 | ErrorCode::W0040
                 | ErrorCode::W0015
                 | ErrorCode::W0051
+                | ErrorCode::W0054
         )
     }
 
@@ -256,6 +262,12 @@ impl ErrorCode {
             // Bucket as Name (deprecated *name* in user source).
             // Added in Phase B2 (DEL alias) + Phase B3 (OR_DIE alias).
             ErrorCode::W0051 => ErrorCategory::Name,
+            // Phase B9: `!` is a deprecated *name* / *form* of the
+            // v0.4 canonical `NOT`. Same bucket as W0051 (v0.3
+            // deprecated alias — DEL / OR_DIE) so user tools can
+            // route both "deprecated thing in source" warnings
+            // through one filter.
+            ErrorCode::W0054 => ErrorCategory::Name,
         }
     }
 
@@ -956,6 +968,8 @@ mod tests {
             // Lives in the Name bucket. Added Phase B2 (DEL alias)
             // + Phase B3 (OR_DIE alias).
             "W0051": code_snap(ErrorCode::W0051, "deprecated_alias"),
+            "W0054": code_snap(ErrorCode::W0054, "deprecated_op_form"),
+            "W0054": code_snap(ErrorCode::W0054, "deprecated_op_form"),
         }));
     }
 
@@ -1115,8 +1129,9 @@ mod tests {
             ErrorCode::W0030,
             ErrorCode::W0040,
             ErrorCode::W0051,
+            ErrorCode::W0054,
         ];
-        assert_eq!(codes.len(), 10);
+        assert_eq!(codes.len(), 11);
         for c in &codes {
             assert!(c.is_warning(), "{} should report is_warning() = true", c.as_str());
             assert!(c.as_str().starts_with('W'));

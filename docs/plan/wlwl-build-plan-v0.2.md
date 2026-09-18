@@ -94,6 +94,12 @@
 > - Phase B8 完成(字符串内建 10 个 + `FLOAT` 共 11 个 global builtin;新增 §10.3 row 9-14 + §9.5 FLOAT 转换;0 新错误码,沿用 E0030/E0031;`FLOAT` ParseError 与 `INT` 同形;`CODEPOINTS` 用 Rust `char` 锁 Unicode scalar 范围;非 ASCII `UPPER`/`LOWER` W0014 deferred Phase C;决策与 §10.3 偏差见 deviations P4-B8-001 ~ P4-B8-006 + history/20260918b8.md)
 > - workspace **895 / 895 pass**(B7 末 874 → +21:eval 集成 21)
 > - `wlwl-eval` 450 lib tests;11 新 global builtin;13/13 crate ≥ 90% line 守住(TOTAL 92.62%,`wlwl-eval/lib.rs` 93.43% line -0.58pp,新 builtin 部分 ERR-transparent 路径未完全覆盖详见 P4-B8-005)
+> - Phase B9 完成(`NOT` 宏函数 + `!` v0.3-compat → W0054;lexer 加 `TokenKind::Not` keyword;parser 修了一个先前没发现的 `!x` parser bug;eval 双 dispatch `NOT`(clean) + `!`(W0054 wrapper);W0054 → Name bucket 与 W0051 一致;决策与 §3.4 / §14.5 偏差见 deviations P4-B9-001 ~ P4-B9-005 + history/20260918b9.md)
+> - workspace **904 / 904 pass**(B8 末 895 → +9:eval 集成 8 + codes_name snapshot W0054 +1)
+> - `wlwl-eval` 458 lib tests;新警告码 W0054 (Name bucket, 与 W0051 同类);新 lexer keyword `NOT` + 新全局 builtin dispatch 双 entry;13/13 crate ≥ 90% line 守住(TOTAL 92.62%,持平)
+> - Phase B10 完成(`PRINT_ERR` 写 stderr;与 `PRINT` 同形(值格式化 / 参数 join / null 返回);新增 global + std.io 双 entry;0 新错误码;`StdCtx.stderr` 字段 + 字节流测试 deferred Phase D/F;决策与 §15.1 偏差见 deviations P4-B10-001 ~ P4-B10-002 + history/20260918b10.md)
+> - workspace **910 / 910 pass**(B9 末 904 → +6:eval 集成 6)
+> - `wlwl-eval` 464 lib tests;新 global builtin `PRINT_ERR` (双 entry);新 std entry `wlwl:std.io::PRINT_ERR`;13/13 crate ≥ 90% line 守住(TOTAL 92.62%,持平)
 
 ---
 

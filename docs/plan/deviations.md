@@ -1417,3 +1417,63 @@ P3-013 选 §4.5 解读 (混用是 warning). 理由:
 | Deferred to Phase B11 | 附录 G 注册表实现 |
 | Deferred to Phase C | 非 ASCII `UPPER` / `LOWER` W0014 emit point（unicode 表批） |
 | Spec coverage | §10.3 100%（11 函数 / 转换全部实现）；§9.5 与 `FLOAT` 解析边界一致；§12.6 ERR 透明传播 100%（`b8_err_transparent_for_all_new_builtins` 覆盖 11 个 probe） |
+# Phase B9 (2026-09-18) — `NOT` 宏函数 + `!` v0.3-compat → W0054 (spec v0.4 §3.4 / §14.5)
+
+> B8 (commit `ab8074d`, 895/895) 收口后接 B9。本批实现 spec §3.4 末段「! 改为 NOT
+> 宏函数 + W0054 (v0.5 删除 !)」：lexer 加 NOT 关键字，parser dispatch
+> NOT 与 ! 走两条 entry（同名「非歧义」，前者 clean、后者 emit W0054）。
+
+| ID | Spec / plan | Status | Notes |
+|----|-------------|--------|-------|
+| P4-B9-001 | spec §3.4 — NOT keyword vs `!` operator form | **Implemented (dual-dispatch)** | `NOT` lex 成 `TokenKind::Not`（新 variant），parser `parse_call_or_ident` 把它转成 name `"NOT"`。`!` 走原 `TokenKind::Bang` → name `"!"`。eval `resolve_builtin` 双 entry：`"NOT" => Some(builtin_not)` (clean) / `"!" => Some(builtin_not_bang_compat)` (emit W0054 then delegate)。**双 entry 而非单 entry + 内部判别**：单 entry 方案未来若 name 重新映射可能让 `NOT(x)` 误触发 W0054；双 entry 物理上保证 `NOT` 永远不进 warning 路径。锁测试：`b9_not_clean_path_emits_no_warnings`。 |
+| P4-B9-002 | spec §3.4 — `!x` unary form | **Parser bug fix** | 旧 `parse_call_or_ident` 把 `!` 当 var 处理：`!TRUE` → advance `!` → name="!" → peek=`TRUE`（不是 `LParen`） → 进 var 分支 → 返回 `Var("!")` 不 parse TRUE → TRUE 落到下一个 expr → `;` 位置错 → **E0013 "expected `;` after expression"**。这个 bug 自 v0.1 就在（plan §5.1 「运算符既作 token 又作函数名」路径只覆盖 `!(x)` call syntax，没考虑 prefix-unary）。修复：在 `parse_expr` 主循环加类似 `Minus` 已有的 unary-prefix 分支：`!` 非 LParen 时 advance + parse_expr → `Expr::Call { name: "!", args: [inner] }`。`!(x)` 仍走 `parse_call_or_ident` 路径（LParen 触发 call syntax）。锁测试：`b9_bang_emits_w0054_once_per_call`（含 `!TRUE; !FALSE;` 两 statement）。 |
+| P4-B9-003 | spec §9.4 — truthiness 反向表 | **Implemented (locked)** | §9.4 row 5: `Boolean(b)=b`, `Null=false`, **其他（Integer / Float / String / Array / Dict / Closure / NativeFn / Ok / Err）= true** —— 包括 `0` 和 `""` 都是 truthy（与 Python / JS 不一致；spec v0.4 明确选定「非 Boolean / 非 Null 都是 truthy」）。`NOT(0)` / `NOT("")` / `NOT(NULL)` / `NOT(1)` 等 10 个 case 锁定在 `b9_not_truthiness_matches_negation_table`。`!` 与 `NOT` 共享 truthiness 语义（`b9_bang_and_not_share_truthiness_semantics` 跨路径对比 8 个 probe）。 |
+| P4-B9-004 | spec §14.5 — W0054 category = Name | **Implemented** | W0054 (`deprecated_op_form`) 与 W0051 (`deprecated_alias`) 同属 "deprecated *name* / *form* in source" 类别，**bucket = Name**。让 user tool / lint / router 可以一并过滤 "deprecated thing in source" 类警告，无需为两种语义不同的 W 维护多份代码。`snap_name` snapshot（`wlwl_error__tests__codes_name.snap`）新增 W0054 项锁定。 |
+| P4-B9-005 | plan §0.1 决策 #8 — 13/13 crate ≥ 90% line | **Acceptable (±0 TOTAL)** | B8 末 92.62% → B9 末 92.62%（持平）。新 builtin + 新 keyword path 走全（lexer 8 个 case + eval 8 个 case + parser 一致性锁）。`wlwl-eval/lib.rs` 仍 ≥ 90%。13/13 crate ≥ 90% line 守住。 |
+
+## Phase B9 implementation stats
+
+| Item | Data |
+|------|------|
+| Total tests | **904 / 904 passing** (B8 末 895 → 净 +9：b9_* 集成 8 + codes_name snapshot W0054 +1) |
+| `wlwl-eval` new tests | **+8**（`b9_*`） |
+| `wlwl-error` new tests | 0（snapshot 更新） |
+| `wlwl-lexer` new tests | +1（`lex_not_keyword` —— 直接锁 NOT 关键字 lex） |
+| New warnings | **+1** (W0054) |
+| `ErrorCategory::Name` warnings | W0051 → **W0051 + W0054** |
+| New keyword | **NOT**（`TokenKind::Not`） |
+| New parser branch | 2（`TokenKind::Not` dispatch + unary `!x` desugar） |
+| New ast variant | 0（复用 `Expr::Call { name: "NOT" / "!", args }`） |
+| New global builtin dispatch | +2（`NOT` clean + `!` W0054 wrapper；`builtin_not_bang_compat` 是 3 行 wrapper） |
+| Lines added (est.) | ~300（eval lib.rs ~120 / parser ~50 / lexer ~30 / error ~30 / tests ~70） |
+| Key design decisions | 双 dispatch 而非单 entry + 内部判别（避免 name 重映射误触发 W0054）；W0054 emit 在 dispatch 包装而非 inner fn（单次 emit）；修了一个先前没被发现的 `!x` parser bug（v0.1 沿袭，v0.4 修复）；truthiness 锁定表 10 case |
+| Test coverage | `wlwl-eval/lib.rs` ≥ 90%；13/13 crate ≥ 90% line 守住 |
+| Deferred to Phase B11 | 附录 G 注册表实现 |
+| Spec coverage | §3.4 100% (NOT keyword + `!` deprecated)；§14.5 100% (W0054)；§9.4 truthiness 反向 100%；§12.6 ERR 透明传播 100%（`!` / `NOT` 都走 E0102） |
+
+# Phase B10 (2026-09-18) — `PRINT_ERR` writes to stderr (spec v0.4 §15.1)
+
+> B9 (commit pending, 904/904) 收口后接 B10。本批实现 spec §15.1「`PRINT_ERR(...)`
+> 写 stderr」：与 `PRINT` 同形（值格式化 / 参数 join / null 返回），输出流改
+> 为 stderr (`eprintln!`)。新增 global + std.io 双 entry，0 新错误码。
+
+| ID | Spec / plan | Status | Notes |
+|----|-------------|--------|-------|
+| P4-B10-001 | plan §5.10 — `StdCtx.stderr` 字段 | **Deferred to Phase D / E** | 当前 `StdCtx` 只有 argv / env vars（无 stderr handle）。若加 `stderr: Box<dyn Write>` 字段可实现跨 std 边界 stderr 字节捕获测试。本批不加：用户用法明确（写 stderr，仅此而已）；跨 std 边界捕获是 Phase F perf / E2E 范畴（plan §6.5）。当前 `eprintln!` 在测试中污染 test runner 输出但不导致测试失败（stderr 与 test stdout 分开）。 |
+| P4-B10-002 | plan §6.5 — stderr 字节单元测试 | **Deferred to Phase F** | 本批锁接口契约（return NULL、arity、多参、std 路径、ERR transparent），不锁字节。字节流测试需要 `assert_cmd` (process-level `2>&1`) 或 `gag` (dup2 hook) —— Phase F perf benchmarks + e2e .wl 范畴（plan §6.5）。 |
+
+## Phase B10 implementation stats
+
+| Item | Data |
+|------|------|
+| Total tests | **910 / 910 passing** (B9 末 904 → 净 +6：b10_* 集成 6) |
+| `wlwl-eval` new tests | **+6**（`b10_*`） |
+| New global builtin | **+1**（`PRINT_ERR`） |
+| New std entry | **+1**（`wlwl:std.io::PRINT_ERR`） |
+| New error codes | 0（`PRINT_ERR` 是 side-effect sink，不消费 ERR） |
+| New lexer / parser / ast 改动 | 0（append-only） |
+| Lines added (est.) | ~150（eval lib.rs ~60 / std io.rs ~30 / tests ~60） |
+| Key design decisions | `PRINT_ERR` 双 dispatch（global + std.io 同 `PRINT`）；不加 `StdCtx.stderr` 字段（deferred）；不在 §12.7 ERR_CONSUMER_REGISTRY（side-effect sink 与 ERR-consumer 语义冲突） |
+| Test coverage | `wlwl-eval/lib.rs` ≥ 90%；13/13 crate ≥ 90% line 守住 |
+| Deferred to Phase B11 | 附录 G 注册表实现 |
+| Spec coverage | §15.1 100% (`PRINT` / `PRINT_ERR` / `INPUT` 三件套完整)；§12.6 ERR 透明传播 100% |

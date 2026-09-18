@@ -1,7 +1,6 @@
 ---
 source: crates/wlwl-error/src/lib.rs
-assertion_line: 849
-expression: "serde_json::json!({\n    \"E0020\": code_snap(ErrorCode::E0020, \"undefined\"), \"E0021\":\n    code_snap(ErrorCode::E0021, \"duplicate\"), \"E0022\":\n    code_snap(ErrorCode::E0022, \"arity_mismatch\"), \"E0023\":\n    code_snap(ErrorCode::E0023, \"not_exported\"), \"E0024\":\n    code_snap(ErrorCode::E0024, \"set_non_captured\"), \"E0025\":\n    code_snap(ErrorCode::E0025, \"shadow_builtin\"), \"E0026\":\n    code_snap(ErrorCode::E0026, \"destructure_mismatch\"), \"E0027\":\n    code_snap(ErrorCode::E0027, \"match_fallthrough\"),\n})"
+expression: "serde_json::json!({\n    \"E0020\": code_snap(ErrorCode::E0020, \"undefined\"), \"E0021\":\n    code_snap(ErrorCode::E0021, \"duplicate\"), \"E0022\":\n    code_snap(ErrorCode::E0022, \"arity_mismatch\"), \"E0023\":\n    code_snap(ErrorCode::E0023, \"not_exported\"), \"E0024\":\n    code_snap(ErrorCode::E0024, \"set_non_captured\"), \"E0025\":\n    code_snap(ErrorCode::E0025, \"shadow_builtin\"), \"E0026\":\n    code_snap(ErrorCode::E0026, \"destructure_mismatch\"), \"E0027\":\n    code_snap(ErrorCode::E0027, \"match_fallthrough\"), \"W0051\":\n    code_snap(ErrorCode::W0051, \"deprecated_alias\"), \"W0054\":\n    code_snap(ErrorCode::W0054, \"deprecated_op_form\"), \"W0054\":\n    code_snap(ErrorCode::W0054, \"deprecated_op_form\"),\n})"
 ---
 {
   "E0020": {
@@ -186,6 +185,27 @@ expression: "serde_json::json!({\n    \"E0020\": code_snap(ErrorCode::E0020, \"u
       "line_end": 1
     },
     "message": "snapshot for deprecated_alias",
+    "related": [],
+    "retry_after": null,
+    "retryable": false,
+    "severity": "error",
+    "source_line": null,
+    "suggestion_code": []
+  },
+  "W0054": {
+    "code": "W0054",
+    "error_category": "name",
+    "error_schema_version": "1.1.0",
+    "hint": null,
+    "idempotent": false,
+    "location": {
+      "col_end": 1,
+      "col_start": 1,
+      "file": "snap.wl",
+      "line": 1,
+      "line_end": 1
+    },
+    "message": "snapshot for deprecated_op_form",
     "related": [],
     "retry_after": null,
     "retryable": false,

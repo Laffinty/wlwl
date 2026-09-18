@@ -18,6 +18,24 @@ pub fn std_print(_ctx: &mut StdCtx, args: Vec<StdValue>) -> Result<StdValue, Std
     Ok(StdValue::Null)
 }
 
+/// Phase B10 (spec v0.4 §15.1 + §3.4): `PRINT_ERR` is the stderr
+/// twin of `PRINT` — same value formatting, same null return, but
+/// writes to stderr (Rust's `eprintln!`) so redirect-friendly
+/// scripts can route diagnostics separately from program output.
+///
+/// We deliberately use a fresh `eprintln!` rather than `StdCtx`'s
+/// context (which doesn't carry stderr yet) — the std-side
+/// boundary is `serde_json::Value` only; cross-process I/O lives
+/// outside that contract. Adding a `stderr: Box<dyn Write>` field
+/// to `StdCtx` is a Phase D / Phase E concern (testability of
+/// captured output across the std boundary), deferred per plan
+/// §5.10.
+pub fn std_print_err(_ctx: &mut StdCtx, args: Vec<StdValue>) -> Result<StdValue, StdError> {
+    let parts: Vec<String> = args.iter().map(json_to_print_string).collect();
+    eprintln!("{}", parts.join(" "));
+    Ok(StdValue::Null)
+}
+
 pub fn std_input(_ctx: &mut StdCtx, args: Vec<StdValue>) -> Result<StdValue, StdError> {
     if !args.is_empty() {
         return Err(crate::arity_error("INPUT", args.len(), 0));
@@ -69,6 +87,9 @@ pub static SPEC: ModuleSpec = ModuleSpec {
     functions: &[
         ("PRINT", std_print as StdFn),
         ("INPUT", std_input as StdFn),
+        // Phase B10 (spec §15.1): PRINT_ERR writes to stderr.
+        // Same value formatting as PRINT, but eprintln!.
+        ("PRINT_ERR", std_print_err as StdFn),
     ],
 };
 
