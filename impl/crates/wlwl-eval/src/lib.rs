@@ -27,8 +27,8 @@ use std::sync::Arc;
 
 use wlwl_ast::{Expr, FunParam, ImportName, Literal, MatchClause, Pattern, Span};
 use wlwl_error::{
-    extract_line, ErrorCategory, ErrorCode, Location, Suggestion, TraceFrame,
-    WlwlDiagnostic, WlwlError, WlwlResult,
+    extract_line, ErrorCategory, ErrorCause, ErrorCode, Location, Suggestion,
+    TraceFrame, WlwlDiagnostic, WlwlError, WlwlResult,
 };
 
 // ──────────────────────────────────────────────────────────────────────
@@ -1330,6 +1330,15 @@ fn resolve_builtin(name: &str) -> Option<BuiltinFn> {
         // v0.4 spec §2.2.1 — uppercase type name builtin; listed in
         // §12.7 ERR consumer registry (TYPE does not propagate ERR).
         "TYPE" => Some(builtin_type),
+        // Phase B4 (spec §12.2): ERR-consumer primitives. UNWRAP
+        // consumes OK/ERR per §12.6 whitelist. ERR_PAYLOAD / WRAP
+        // also consume ERR — ERR_PAYLOAD extracts the payload,
+        // WRAP re-wraps with a `context` dict layer. None of these
+        // are v0.3 aliases so no W0051 path here; they are the
+        // canonical v0.4 §12.7 names.
+        "UNWRAP" => Some(builtin_unwrap),
+        "ERR_PAYLOAD" => Some(builtin_err_payload),
+        "WRAP" => Some(builtin_wrap),
         _ => None,
     }
 }
@@ -1351,9 +1360,9 @@ fn resolve_builtin(name: &str) -> Option<BuiltinFn> {
 /// | `OR_DIE`      | returns the `default` arg                                 |
 /// | `UNWRAP_OR`   | canonical (v0.4 §12.7); `OR_DIE` is the v0.3 alias that emits `W0051` (Phase B3) |
 /// | `TRY`         | early-`RETURN` from the enclosing function                |
-/// | `UNWRAP`      | `PANIC` E0100 — **not yet implemented** (Phase B4)       |
-/// | `ERR_PAYLOAD` | extracts payload — **not yet implemented** (Phase B4)    |
-/// | `WRAP`        | re-wraps with context — **not yet implemented** (Phase B4)|
+/// | `UNWRAP`      | `PANIC` E0100 with `cause` = payload — spec §12.2 (Phase B4) |
+/// | `ERR_PAYLOAD` | extracts payload — spec §12.2 (Phase B4)              |
+/// | `WRAP`        | re-wraps with `{original, context}` dict — spec §12.2 (Phase B4) |
 /// | `TYPE`        | returns `"RESULT"` (observation)                         |
 ///
 /// Spec §12.7 also lists `=` / `!=` / `IF` as "registered"; those
@@ -1827,6 +1836,197 @@ fn builtin_unwrap_or_compat(ev: &mut Evaluator, args: Vec<Value>) -> WlwlResult<
     builtin_unwrap_or(ev, args)
 }
 
+// ──────────────────────────────────────────────────────────────────────
+// Phase B4 — spec §12.2 ERR-consumer primitives
+//
+// Three primitives that operate on RESULT values (OK/ERR):
+//
+//   * `UNWRAP(value)` — OK(v) → v; ERR(e) → PANIC E0100 with
+//     `cause = e`; non-RESULT → E0030 type error. The PANIC carries
+//     the original error payload into the diagnostic's `cause` field
+//     (spec §12.8 / §14.2) so callers (and AI tools reading JSON
+//     diagnostics) can trace the WRAP chain.
+//
+//   * `ERR_PAYLOAD(value)` — ERR(e) → e; OK → E0030 ("expected ERR,
+//     got OK"); non-RESULT → E0030. Extracts the payload without
+//     consuming it for ERR propagation purposes (the value is no
+//     longer an ERR so §12.6 short-circuit stops applying).
+//
+//   * `WRAP(value, context)` — ERR(e) → ERR({"original": e, "context":
+//     ctx}); OK(v) → OK(v) (pass-through); non-RESULT → E0030. Each
+//     WRAP adds a `{original, context}` dict layer; nesting WRAPs
+//     produces a nested dict chain (no flattening). The deepest
+//     `original` is the user-facing error message; `context` is the
+//     most recent annotation.
+//
+// All three are listed in the §12.7 ERR consumer registry so they
+// receive the ERR value instead of letting §12.6 transparently
+// propagate it.
+// ──────────────────────────────────────────────────────────────────────
+
+/// `UNWRAP(value)`: spec §12.2. See module docs for full contract.
+fn builtin_unwrap(ev: &mut Evaluator, args: Vec<Value>) -> WlwlResult<Outcome> {
+    if args.len() != 1 {
+        return Err(arity_error("UNWRAP", args.len(), 1));
+    }
+    match &args[0] {
+        Value::Ok(v) => Ok(Outcome::normal((**v).clone())),
+        Value::Err(payload) => {
+            // PANIC E0100 with `cause` = payload. This is the §12.2
+            // way to surface an ERR: the value is converted to a
+            // fatal diagnostic that aborts evaluation (not a TRY-
+            // catchable ERR value).
+            let loc = ev
+                .current_span
+                .as_ref()
+                .map(|s| Location {
+                    file: s.file.clone(),
+                    line: s.line_start,
+                    col: s.col_start,
+                    line_end: s.line_end,
+                    col_end: s.col_end,
+                })
+                .unwrap_or_else(|| {
+                    Location::point(ev.file.as_deref().unwrap_or("<runtime>"), 0, 0)
+                });
+            let mut diag = WlwlDiagnostic::new(
+                ErrorCode::E0100,
+                format!("UNWRAP called on ERR value"),
+                loc,
+            );
+            if let Some(cause) = value_to_error_cause(payload) {
+                diag = diag.with_cause(cause);
+            }
+            Err(WlwlError::Diagnostic(diag))
+        }
+        other => Err(type_error(
+            "UNWRAP",
+            format!("expected OK/ERR, got {}", type_name(other)),
+        )),
+    }
+}
+
+/// `ERR_PAYLOAD(value)`: spec §12.2. See module docs for full contract.
+fn builtin_err_payload(_ev: &mut Evaluator, args: Vec<Value>) -> WlwlResult<Outcome> {
+    if args.len() != 1 {
+        return Err(arity_error("ERR_PAYLOAD", args.len(), 1));
+    }
+    match &args[0] {
+        Value::Err(payload) => Ok(Outcome::normal((**payload).clone())),
+        Value::Ok(_) => Err(type_error(
+            "ERR_PAYLOAD",
+            "expected ERR, got OK".to_string(),
+        )),
+        other => Err(type_error(
+            "ERR_PAYLOAD",
+            format!("expected ERR, got {}", type_name(other)),
+        )),
+    }
+}
+
+/// `WRAP(value, context)`: spec §12.2. See module docs for full contract.
+fn builtin_wrap(_ev: &mut Evaluator, args: Vec<Value>) -> WlwlResult<Outcome> {
+    if args.len() != 2 {
+        return Err(arity_error("WRAP", args.len(), 2));
+    }
+    match &args[0] {
+        Value::Err(payload) => {
+            // Build `{"original": payload, "context": ctx}` dict.
+            // Nested WRAPs produce nested dicts (no flattening) so the
+            // full chain is preserved — `original` of an outer WRAP
+            // is the entire inner ERR value (which may itself be a
+            // `{original, context}` dict from a previous WRAP).
+            let dict = Value::Dict(vec![
+                (
+                    Value::String("original".into()),
+                    (**payload).clone(),
+                ),
+                (
+                    Value::String("context".into()),
+                    args[1].clone(),
+                ),
+            ]);
+            Ok(Outcome::normal(Value::Err(Box::new(dict))))
+        }
+        Value::Ok(v) => Ok(Outcome::normal(Value::Ok(v.clone()))),
+        other => Err(type_error(
+            "WRAP",
+            format!("expected OK/ERR, got {}", type_name(other)),
+        )),
+    }
+}
+
+/// Convert a `Value` into an `ErrorCause` for the diagnostic `cause`
+/// field. Returns `None` for values that have no JSON-equivalent
+/// representation (closures, native fns, NaN/Inf floats, etc.). ERR
+/// payloads are validated at construction time to be STRING or DICT
+/// (spec §2.2.1), so in practice the `None` path should be hit only
+/// for malformed legacy programs.
+fn value_to_error_cause(v: &Value) -> Option<ErrorCause> {
+    match v {
+        Value::String(s) => Some(ErrorCause::String(s.clone())),
+        Value::Dict(entries) => {
+            let mut map = serde_json::Map::new();
+            for (k, val) in entries {
+                let key_str = match k {
+                    Value::String(s) => s.clone(),
+                    _ => return None,
+                };
+                let json_val = value_to_json_value(val)?;
+                map.insert(key_str, json_val);
+            }
+            Some(ErrorCause::Dict(map))
+        }
+        // ERR/ERR(...) value as cause: recurse on the payload. This
+        // handles the `UNWRAP(WRAP(WRAP(ERR("e"), "c1"), "c2"))` shape
+        // where the outer WRAP's payload is itself an ERR-wrapped
+        // dict — but in practice WRAP never produces nested ERR
+        // values, only nested dicts, so this branch is mostly future-
+        // proofing.
+        Value::Err(inner) => value_to_error_cause(inner),
+        _ => None,
+    }
+}
+
+/// Best-effort conversion from `Value` to `serde_json::Value` for use
+/// inside `ErrorCause::Dict`. Returns `None` on types that don't
+/// round-trip (closures, native fns, NaN/Inf). Booleans / integers /
+/// floats / strings / arrays / dicts / null are all preserved
+/// faithfully; OK values are unwrapped to their inner payload
+/// (matching how JSON has no separate OK wrapper).
+fn value_to_json_value(v: &Value) -> Option<serde_json::Value> {
+    Some(match v {
+        Value::Null => serde_json::Value::Null,
+        Value::Boolean(b) => serde_json::Value::Bool(*b),
+        Value::Integer(i) => serde_json::Value::Number(serde_json::Number::from(*i)),
+        Value::Float(f) => serde_json::Number::from_f64(*f)
+            .map(serde_json::Value::Number)?,
+        Value::String(s) => serde_json::Value::String(s.clone()),
+        Value::Array(items) => {
+            let mut arr = Vec::with_capacity(items.len());
+            for item in items {
+                arr.push(value_to_json_value(item)?);
+            }
+            serde_json::Value::Array(arr)
+        }
+        Value::Dict(entries) => {
+            let mut obj = serde_json::Map::new();
+            for (k, val) in entries {
+                let key_str = match k {
+                    Value::String(s) => s.clone(),
+                    _ => return None,
+                };
+                let json_val = value_to_json_value(val)?;
+                obj.insert(key_str, json_val);
+            }
+            serde_json::Value::Object(obj)
+        }
+        Value::Err(_) => return None, // ERR nested in WRAP chain: skip (avoid infinite recursion for pathological inputs)
+        Value::Ok(inner) => value_to_json_value(inner)?,
+        Value::Closure { .. } | Value::NativeFn { .. } => return None,
+    })
+}
+
 fn is_truthy(v: &Value) -> bool {
     !matches!(v, Value::Boolean(false) | Value::Null)
 }
@@ -1887,6 +2087,13 @@ pub struct Evaluator {
     /// aborting evaluation; callers can drain via `take_warnings()`
     /// or the `run_with_warnings` test helper.
     pub warnings: Vec<Warning>,
+    /// [v0.4 Phase B4] Source span of the **current builtin call site**.
+    /// Set by `eval_call` before dispatching into a builtin function
+    /// (`fn(&mut Evaluator, Vec<Value>) -> _`); cleared on return.
+    /// Lets builtins that synthesize span-aware diagnostics (currently
+    /// just `builtin_unwrap` for `E0100 PANIC` with a `cause` field)
+    /// see the exact call location. Most builtins don't read it.
+    pub current_span: Option<Span>,
 }
 
 impl Default for Evaluator {
@@ -1905,6 +2112,7 @@ impl Evaluator {
             std_ctx: wlwl_std::StdCtx::from_process(),
             call_stack: Vec::new(),
             warnings: Vec::new(),
+            current_span: None,
         }
     }
 
@@ -1925,6 +2133,7 @@ impl Evaluator {
             std_ctx: wlwl_std::StdCtx::default(),
             call_stack: Vec::new(),
             warnings: Vec::new(),
+            current_span: None,
         }
     }
 
@@ -2473,7 +2682,16 @@ impl Evaluator {
             ));
         }
         if let Some(b) = resolve_builtin(name) {
-            return b(self, arg_values);
+            // Phase B4: expose the call site span to builtins that
+            // synthesize span-aware diagnostics (e.g. builtin_unwrap
+            // producing E0100 PANIC with cause). save/restore so any
+            // nested eval_call (e.g. recursive fn calls from inside
+            // a builtin) doesn't clobber the outer span.
+            let prev_span = self.current_span.take();
+            self.current_span = Some(span.clone());
+            let result = b(self, arg_values);
+            self.current_span = prev_span;
+            return result;
         }
         Err(self.undefined_name(name, span))
     }
@@ -4506,19 +4724,12 @@ mod tests {
     }
 
     #[test]
-    fn registry_unwrap_not_yet_implemented() {
-        // Phase A6 pins the registry but does NOT implement UNWRAP
-        // (Phase B4). Calling it via Expr::Call must surface as E0020
-        // undefined — same as before this batch. This test documents
-        // the known gap and will start failing once Phase B4 lands,
-        // which is the intended behavior (a follow-up commit then
-        // updates this test to assert the new B4 contract).
-        let err = run(r#"UNWRAP(OK(1));"#).unwrap_err();
-        assert_eq!(
-            err.diagnostic().code,
-            ErrorCode::E0020,
-            "UNWRAP is in the §12.7 registry but not yet implemented (Phase B4 gap)"
-        );
+    fn registry_unwrap_now_implemented_returns_inner_for_ok() {
+        // Phase B4 implements UNWRAP(OK(v)) → v. The previous gap
+        // (`registry_unwrap_not_yet_implemented`) is closed: E0020
+        // no longer fires for UNWRAP. Full coverage of UNWRAP
+        // lives in the B4 test group (`b4_unwrap_*`).
+        assert_eq!(run("UNWRAP(OK(42));").unwrap(), Value::Integer(42));
     }
 
     // ── §2.2.1 RESULT type + TYPE builtin (Phase A5) ────────────────
@@ -7398,5 +7609,480 @@ entry = "main.wl"
         // after the rename (regression for B3).
         assert_eq!(ErrorCode::W0051.as_str(), "W0051");
         assert!(ErrorCode::W0051.is_warning());
+    }
+
+    // ──────────────────────────────────────────────────────────────────
+    // B4: UNWRAP / ERR_PAYLOAD / WRAP — spec v0.4 §12.2 + §14.2 (cause)
+    //
+    // Phase B4 closes the three ERR-consumer primitives A6 reserved
+    // in the §12.7 registry but stubbed (would surface as E0020).
+    // Also closes A1e deferred: WlwlDiagnostic `cause` field (added
+    // in A1d as `None`) is now populated by `UNWRAP(ERR(e))` so the
+    // WRAP chain propagates through PANIC E0100.
+    //
+    // Behavior contracts:
+    //   * UNWRAP(OK(v))   → v
+    //   * UNWRAP(ERR(e))  → E0100 PANIC with `cause` = e (ErrorCause)
+    //   * UNWRAP(non-R)   → E0030
+    //   * ERR_PAYLOAD(ERR(e)) → e
+    //   * ERR_PAYLOAD(OK)     → E0030 ("expected ERR, got OK")
+    //   * ERR_PAYLOAD(non-R)  → E0030
+    //   * WRAP(ERR(e), ctx)    → ERR({"original": e, "context": ctx})
+    //   * WRAP(OK(v), _)       → OK(v) (pass-through)
+    //   * WRAP(non-R, _)       → E0030
+    //
+    // No W0051 paths — these are v0.4 §12.7 canonical names, not
+    // v0.3 aliases (those live at UNWRAP_OR/OR_DIE in B3).
+    // ──────────────────────────────────────────────────────────────────
+
+    // ── UNWRAP ────────────────────────────────────────────────────────
+
+    #[test]
+    fn b4_unwrap_ok_returns_inner() {
+        assert_eq!(run("UNWRAP(OK(42));").unwrap(), Value::Integer(42));
+        assert_eq!(
+            run(r###"UNWRAP(OK("hello"));"###).unwrap(),
+            Value::String("hello".into())
+        );
+        assert_eq!(
+            run("UNWRAP(OK([1, 2, 3]));").unwrap(),
+            Value::Array(vec![
+                Value::Integer(1),
+                Value::Integer(2),
+                Value::Integer(3)
+            ])
+        );
+    }
+
+    #[test]
+    fn b4_unwrap_err_panics_e0100_with_string_cause() {
+        // UNWRAP(ERR("boom")) → E0100 PANIC, cause = ErrorCause::String("boom")
+        let err = run(r###"UNWRAP(ERR("boom"));"###).unwrap_err();
+        let d = err.diagnostic();
+        assert_eq!(d.code, ErrorCode::E0100);
+        // The message should reference the UNWRAP intent so users / AI
+        // can see what triggered the PANIC, not just the raw payload.
+        assert!(
+            d.message.contains("UNWRAP"),
+            "E0100 message should mention UNWRAP: {}",
+            d.message
+        );
+        // Cause field must be populated as ErrorCause::String("boom")
+        let cause = d
+            .cause
+            .as_ref()
+            .expect("UNWRAP on ERR must set cause field");
+        assert_eq!(**cause, wlwl_error::ErrorCause::String("boom".into()));
+    }
+
+    #[test]
+    fn b4_unwrap_err_with_dict_payload_panics_with_dict_cause() {
+        // UNWRAP(ERR(["code": "E1001", "msg": "bad"])) →
+        //   cause = ErrorCause::Dict({"code": "E1001", "msg": "bad"})
+        let err = run(r###"UNWRAP(ERR(["code": "E1001", "msg": "bad"]));"###)
+            .unwrap_err();
+        let d = err.diagnostic();
+        assert_eq!(d.code, ErrorCode::E0100);
+        let cause = d.cause.as_ref().expect("cause must be set");
+        match &**cause {
+            wlwl_error::ErrorCause::Dict(map) => {
+                assert_eq!(map.get("code").unwrap(), &serde_json::json!("E1001"));
+                assert_eq!(map.get("msg").unwrap(), &serde_json::json!("bad"));
+            }
+            other => panic!("expected ErrorCause::Dict, got {:?}", other),
+        }
+    }
+
+    #[test]
+    fn b4_unwrap_wrap_chain_populates_dict_cause() {
+        // UNWRAP(WRAP(ERR("net down"), "during login")) → E0100
+        //   cause = ErrorCause::Dict({"original": "net down", "context": "during login"})
+        let err = run(
+            r###"UNWRAP(WRAP(ERR("net down"), "during login"));"###,
+        )
+        .unwrap_err();
+        let d = err.diagnostic();
+        assert_eq!(d.code, ErrorCode::E0100);
+        let cause = d.cause.as_ref().expect("cause must be set");
+        match &**cause {
+            wlwl_error::ErrorCause::Dict(map) => {
+                assert_eq!(
+                    map.get("original").unwrap(),
+                    &serde_json::json!("net down")
+                );
+                assert_eq!(
+                    map.get("context").unwrap(),
+                    &serde_json::json!("during login")
+                );
+            }
+            other => panic!("expected Dict cause, got {:?}", other),
+        }
+    }
+
+    #[test]
+    fn b4_unwrap_nested_wrap_chain_preserves_full_chain() {
+        // WRAP(WRAP(ERR(e), c1), c2) — outer WRAP carries the
+        // whole inner WRAP result as `original` (no flattening).
+        let err = run(
+            r###"UNWRAP(WRAP(WRAP(ERR("e"), "c1"), "c2"));"###,
+        )
+        .unwrap_err();
+        let cause = err.diagnostic().cause.as_ref().expect("cause");
+        match &**cause {
+            wlwl_error::ErrorCause::Dict(outer) => {
+                assert_eq!(outer.get("context").unwrap(), &serde_json::json!("c2"));
+                let inner = outer.get("original").unwrap();
+                // `original` is the whole previous WRAP value, which
+                // is itself a {"original": ..., "context": ...} dict.
+                let inner_obj = inner
+                    .as_object()
+                    .expect("inner original must be a dict");
+                assert_eq!(
+                    inner_obj.get("context").unwrap(),
+                    &serde_json::json!("c1")
+                );
+                assert_eq!(
+                    inner_obj.get("original").unwrap(),
+                    &serde_json::json!("e")
+                );
+            }
+            other => panic!("expected Dict cause, got {:?}", other),
+        }
+    }
+
+    #[test]
+    fn b4_unwrap_non_result_is_e0030_with_unwrap_message() {
+        let err = run("UNWRAP(42);").unwrap_err();
+        assert_eq!(err.diagnostic().code, ErrorCode::E0030);
+        let msg = &err.diagnostic().message;
+        assert!(msg.contains("UNWRAP"));
+        assert!(msg.contains("OK/ERR") || msg.contains("expected OK/ERR"));
+        // No cause field for type errors.
+        assert!(err.diagnostic().cause.is_none());
+    }
+
+    #[test]
+    fn b4_unwrap_arity_too_few_is_e0022() {
+        let err = run("UNWRAP();").unwrap_err();
+        assert_eq!(err.diagnostic().code, ErrorCode::E0022);
+    }
+
+    #[test]
+    fn b4_unwrap_arity_too_many_is_e0022() {
+        let err = run("UNWRAP(OK(1), 0);").unwrap_err();
+        assert_eq!(err.diagnostic().code, ErrorCode::E0022);
+    }
+
+    #[test]
+    fn b4_unwrap_inside_user_function_propagates_panic() {
+        // UNWRAP inside a user function body → PANIC E0100 with cause.
+        // The ERR must originate INSIDE the function body (not as a
+        // call argument) because a user function is NOT in the §12.7
+        // ERR consumer registry — `f(ERR(...))` would be §12.6-short-
+        // circuited before entering f's body.
+        let src = r###"
+            LET(f, FUN(() ,
+                LET(r, ERR("user fn boom"));
+                UNWRAP(r)
+            ));
+            f();
+        "###;
+        let err = run(src).unwrap_err();
+        assert_eq!(err.diagnostic().code, ErrorCode::E0100);
+        let cause = err.diagnostic().cause.as_ref().expect("cause");
+        assert_eq!(**cause, wlwl_error::ErrorCause::String("user fn boom".into()));
+    }
+
+    #[test]
+    fn b4_unwrap_does_not_emit_w0051() {
+        // Canonical name, zero warnings.
+        let (r, w) = run_with_warnings("UNWRAP(OK(42));");
+        assert_eq!(r.unwrap(), Value::Integer(42));
+        assert!(w.is_empty(), "UNWRAP must be silent, got {:?}", w);
+        let (r, w) = run_with_warnings(r###"UNWRAP(ERR("e"));"###);
+        assert!(r.is_err());
+        assert!(w.is_empty(), "UNWRAP must be silent even on ERR, got {:?}", w);
+    }
+
+    // ── ERR_PAYLOAD ───────────────────────────────────────────────────
+
+    #[test]
+    fn b4_err_payload_err_returns_string_payload() {
+        assert_eq!(
+            run(r###"ERR_PAYLOAD(ERR("net down"));"###).unwrap(),
+            Value::String("net down".into())
+        );
+    }
+
+    #[test]
+    fn b4_err_payload_err_returns_dict_payload() {
+        let v = run(r###"ERR_PAYLOAD(ERR(["code": "E1001", "msg": "bad"]));"###)
+            .unwrap();
+        let expected = Value::Dict(vec![
+            (
+                Value::String("code".into()),
+                Value::String("E1001".into()),
+            ),
+            (
+                Value::String("msg".into()),
+                Value::String("bad".into()),
+            ),
+        ]);
+        assert_eq!(v, expected);
+    }
+
+    #[test]
+    fn b4_err_payload_ok_is_e0030_saying_expected_err() {
+        let err = run("ERR_PAYLOAD(OK(42));").unwrap_err();
+        assert_eq!(err.diagnostic().code, ErrorCode::E0030);
+        let msg = &err.diagnostic().message;
+        assert!(
+            msg.contains("ERR_PAYLOAD"),
+            "should name ERR_PAYLOAD: {}",
+            msg
+        );
+        assert!(
+            msg.contains("OK"),
+            "should mention OK (the wrong type): {}",
+            msg
+        );
+    }
+
+    #[test]
+    fn b4_err_payload_non_result_is_e0030() {
+        let err = run("ERR_PAYLOAD(42);").unwrap_err();
+        assert_eq!(err.diagnostic().code, ErrorCode::E0030);
+        let err = run(r###"ERR_PAYLOAD("string");"###).unwrap_err();
+        assert_eq!(err.diagnostic().code, ErrorCode::E0030);
+    }
+
+    #[test]
+    fn b4_err_payload_arity_wrong_is_e0022() {
+        assert_eq!(
+            run("ERR_PAYLOAD();").unwrap_err().diagnostic().code,
+            ErrorCode::E0022
+        );
+        assert_eq!(
+            run(r###"ERR_PAYLOAD(ERR("e"), 0);"###)
+                .unwrap_err()
+                .diagnostic()
+                .code,
+            ErrorCode::E0022
+        );
+    }
+
+    #[test]
+    fn b4_err_payload_does_not_emit_w0051() {
+        let (r, w) = run_with_warnings(r###"ERR_PAYLOAD(ERR("e"));"###);
+        assert_eq!(r.unwrap(), Value::String("e".into()));
+        assert!(w.is_empty());
+    }
+
+    // ── WRAP ─────────────────────────────────────────────────────────
+
+    #[test]
+    fn b4_wrap_err_creates_wrapped_dict() {
+        // WRAP(ERR("e"), "ctx") → ERR({"original": "e, "context": "ctx"}).
+        // We extract the dict via ERR_PAYLOAD — top-level WRAP returns
+        // a Value::Err which §12.6 would surface as E0102 (same
+        // top-level trap that bit B3 `b3_doc_style_…`).
+        let v = run(r###"ERR_PAYLOAD(WRAP(ERR("e"), "ctx"));"###).unwrap();
+        let expected = Value::Dict(vec![
+            (Value::String("original".into()), Value::String("e".into())),
+            (
+                Value::String("context".into()),
+                Value::String("ctx".into()),
+            ),
+        ]);
+        assert_eq!(v, expected);
+    }
+
+    #[test]
+    fn b4_wrap_err_with_dict_payload_creates_nested_dict() {
+        // WRAP(ERR(["code": "E1001"]), "ctx") →
+        //   ERR({"original": {"code": "E1001"}, "context": "ctx"})
+        let v = run(r###"ERR_PAYLOAD(WRAP(ERR(["code": "E1001"]), "ctx"));"###)
+            .unwrap();
+        let expected = Value::Dict(vec![
+            (
+                Value::String("original".into()),
+                Value::Dict(vec![(
+                    Value::String("code".into()),
+                    Value::String("E1001".into()),
+                )]),
+            ),
+            (
+                Value::String("context".into()),
+                Value::String("ctx".into()),
+            ),
+        ]);
+        assert_eq!(v, expected);
+    }
+
+    #[test]
+    fn b4_wrap_ok_passes_through_unchanged() {
+        // WRAP(OK(v), _) → OK(v). ctx is ignored.
+        assert_eq!(
+            run("WRAP(OK(42), \"ignored\");").unwrap(),
+            Value::Ok(Box::new(Value::Integer(42)))
+        );
+        assert_eq!(
+            run("WRAP(OK([1, 2]), NULL);").unwrap(),
+            Value::Ok(Box::new(Value::Array(vec![
+                Value::Integer(1),
+                Value::Integer(2)
+            ])))
+        );
+    }
+
+    #[test]
+    fn b4_wrap_nested_chain_builds_deeper_dict() {
+        // WRAP(WRAP(ERR("e"), "c1"), "c2") — second WRAP wraps
+        // the WHOLE previous ERR (which holds a dict) as `original`.
+        // Use ERR_PAYLOAD to extract the outer dict.
+        let v = run(r###"ERR_PAYLOAD(WRAP(WRAP(ERR("e"), "c1"), "c2"));"###)
+            .unwrap();
+        let outer_dict = match v {
+            Value::Dict(d) => d,
+            _ => panic!("outer should be dict"),
+        };
+        assert_eq!(
+            outer_dict[1],
+            (Value::String("context".into()), Value::String("c2".into()))
+        );
+        // original is the previous wrapped ERR value (a dict)
+        let inner_dict = match &outer_dict[0].1 {
+            Value::Dict(d) => d.clone(),
+            _ => panic!("original should be dict"),
+        };
+        assert_eq!(
+            inner_dict[1],
+            (Value::String("context".into()), Value::String("c1".into()))
+        );
+        assert_eq!(
+            inner_dict[0],
+            (
+                Value::String("original".into()),
+                Value::String("e".into())
+            )
+        );
+    }
+
+    #[test]
+    fn b4_wrap_non_result_is_e0030() {
+        let err = run(r###"WRAP(42, "ctx");"###).unwrap_err();
+        assert_eq!(err.diagnostic().code, ErrorCode::E0030);
+        let err = run(r###"WRAP([1, 2], "ctx");"###).unwrap_err();
+        assert_eq!(err.diagnostic().code, ErrorCode::E0030);
+    }
+
+    #[test]
+    fn b4_wrap_arity_wrong_is_e0022() {
+        assert_eq!(
+            run(r###"WRAP(ERR("e"));"###).unwrap_err().diagnostic().code,
+            ErrorCode::E0022
+        );
+        assert_eq!(
+            run(r###"WRAP(ERR("e"), "ctx", "extra");"###)
+                .unwrap_err()
+                .diagnostic()
+                .code,
+            ErrorCode::E0022
+        );
+    }
+
+    #[test]
+    fn b4_wrap_does_not_emit_w0051() {
+        // Use IS_ERR (in §12.7 registry) to consume the ERR result
+        // so it doesn't surface as top-level E0102.
+        let (r, w) = run_with_warnings(r###"IS_ERR(WRAP(ERR("e"), "ctx"));"###);
+        assert_eq!(r.unwrap(), Value::Boolean(true));
+        assert!(w.is_empty());
+        let (r, w) = run_with_warnings("WRAP(OK(42), \"ctx\");");
+        assert_eq!(r.unwrap(), Value::Ok(Box::new(Value::Integer(42))));
+        assert!(w.is_empty());
+    }
+
+    // ── Integration / regression ──────────────────────────────────────
+
+    #[test]
+    fn b4_is_ok_is_err_on_wrap_result() {
+        // IS_OK / IS_ERR (§12.7) compose with WRAP — the WRAP
+        // result is still a RESULT.
+        assert_eq!(
+            run(r###"IS_OK(WRAP(OK(42), "ctx"));"###).unwrap(),
+            Value::Boolean(true)
+        );
+        assert_eq!(
+            run(r###"IS_OK(WRAP(ERR("e"), "ctx"));"###).unwrap(),
+            Value::Boolean(false)
+        );
+        assert_eq!(
+            run(r###"IS_ERR(WRAP(ERR("e"), "ctx"));"###).unwrap(),
+            Value::Boolean(true)
+        );
+    }
+
+    #[test]
+    fn b4_unwrap_or_does_not_consume_wrap_result() {
+        // UNWRAP_OR on a wrapped ERR returns the default (the
+        // wrap-dict is hidden, treated as a normal ERR).
+        assert_eq!(
+            run(r###"UNWRAP_OR(WRAP(ERR("e"), "ctx"), -1);"###).unwrap(),
+            Value::Integer(-1)
+        );
+    }
+
+    #[test]
+    fn b4_err_payload_of_wrapped_err_returns_dict() {
+        // ERR_PAYLOAD(WRAP(ERR("e"), "ctx")) → the wrap dict
+        // (the most recent layer), NOT the original "e".
+        let v = run(r###"ERR_PAYLOAD(WRAP(ERR("e"), "ctx"));"###).unwrap();
+        let expected = Value::Dict(vec![
+            (Value::String("original".into()), Value::String("e".into())),
+            (
+                Value::String("context".into()),
+                Value::String("ctx".into()),
+            ),
+        ]);
+        assert_eq!(v, expected);
+    }
+
+    #[test]
+    fn b4_cause_field_round_trips_through_serde() {
+        // Sanity: the WlwlDiagnostic with cause set serializes and
+        // deserializes correctly (AI tooling reads --format=jsonl).
+        let err = run(r###"UNWRAP(WRAP(ERR("e"), "c"));"###).unwrap_err();
+        let d = err.diagnostic();
+        let json = serde_json::to_string(d).expect("serialize diagnostic");
+        let back: wlwl_error::WlwlDiagnostic =
+            serde_json::from_str(&json).expect("deserialize diagnostic");
+        assert_eq!(back.code, ErrorCode::E0100);
+        assert!(back.cause.is_some(), "cause must round-trip");
+        match back.cause.unwrap().as_ref() {
+            wlwl_error::ErrorCause::Dict(map) => {
+                assert_eq!(map.get("original").unwrap(), &serde_json::json!("e"));
+                assert_eq!(map.get("context").unwrap(), &serde_json::json!("c"));
+            }
+            other => panic!("expected Dict cause after round-trip, got {:?}", other),
+        }
+    }
+
+    #[test]
+    fn b4_does_not_register_or_die_alias_path() {
+        // Sanity: UNWRAP / ERR_PAYLOAD / WRAP are the v0.4 canonical
+        // names — there is no v0.3 alias that emits W0051. (UNWRAP_OR
+        // / OR_DIE are B3, a different primitive.) Use IS_ERR /
+        // ERR_PAYLOAD to consume the ERR so it doesn't surface as
+        // top-level E0102.
+        let (r, w) = run_with_warnings("UNWRAP(OK(42));");
+        r.unwrap();
+        assert!(w.is_empty());
+        let (r, w) = run_with_warnings("ERR_PAYLOAD(ERR(\"e\"));");
+        r.unwrap();
+        assert!(w.is_empty());
+        let (r, w) = run_with_warnings("IS_ERR(WRAP(ERR(\"e\"), \"c\"));");
+        r.unwrap();
+        assert!(w.is_empty());
     }
 }

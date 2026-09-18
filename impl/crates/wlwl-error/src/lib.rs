@@ -589,6 +589,15 @@ impl WlwlDiagnostic {
         self
     }
 
+    /// [v0.4] Attach a `cause` (WRAP chain link, spec `Sec. 12.8` /
+    /// `Sec. 14.2`). Replaces any previously set cause. Used by
+    /// `UNWRAP(ERR(e))` to carry the original error payload into the
+    /// `E0100` PANIC diagnostic (Phase B4).
+    pub fn with_cause(mut self, cause: ErrorCause) -> Self {
+        self.cause = Some(Box::new(cause));
+        self
+    }
+
     /// Render as human-readable CLI text (ANSI optional; off here).
     pub fn render_human(&self) -> String {
         let mut out = String::new();
