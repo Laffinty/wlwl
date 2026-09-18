@@ -203,7 +203,7 @@ pub const BUILTIN_REGISTRY: &[BuiltinSpec] = &[
     // ── I/O (3) ──────────────────────────────────────────────────
     BuiltinSpec { name: "PRINT",      signature: "PRINT(args...) -> NULL",                       group: BuiltinGroup::Io,       err_consumer: ErrConsumerStatus::No,  macro_fn: false, version: Version::V02, dispatch: DispatchStatus::ResolvedBuiltin, section: "§15.1" },
     BuiltinSpec { name: "PRINT_ERR",  signature: "PRINT_ERR(args...) -> NULL",                   group: BuiltinGroup::Io,       err_consumer: ErrConsumerStatus::No,  macro_fn: false, version: Version::V04, dispatch: DispatchStatus::ResolvedBuiltin, section: "§15.1" },
-    BuiltinSpec { name: "INPUT",      signature: "INPUT(prompt?) -> STRING",                     group: BuiltinGroup::Io,       err_consumer: ErrConsumerStatus::No,  macro_fn: false, version: Version::V02, dispatch: DispatchStatus::Deferred,         section: "§15.1" },
+    BuiltinSpec { name: "INPUT",      signature: "INPUT(prompt?) -> STRING",                     group: BuiltinGroup::Io,       err_consumer: ErrConsumerStatus::No,  macro_fn: false, version: Version::V02, dispatch: DispatchStatus::ResolvedBuiltin,   section: "§15.1" },
 
     // ── 类型 / 转换 (7) ─────────────────────────────────────────
     BuiltinSpec { name: "LEN",        signature: "LEN(coll) -> INTEGER",                         group: BuiltinGroup::Conv,     err_consumer: ErrConsumerStatus::No,  macro_fn: false, version: Version::V02, dispatch: DispatchStatus::ResolvedBuiltin, section: "§10.5" },
@@ -211,8 +211,8 @@ pub const BUILTIN_REGISTRY: &[BuiltinSpec] = &[
     BuiltinSpec { name: "INT",        signature: "INT(s) -> OK(INTEGER) / ERR(ParseError)",      group: BuiltinGroup::Conv,     err_consumer: ErrConsumerStatus::No,  macro_fn: false, version: Version::V02, dispatch: DispatchStatus::ResolvedBuiltin, section: "§9.5" },
     BuiltinSpec { name: "FLOAT",      signature: "FLOAT(s) -> OK(FLOAT) / ERR(ParseError)",      group: BuiltinGroup::Conv,     err_consumer: ErrConsumerStatus::No,  macro_fn: false, version: Version::V04, dispatch: DispatchStatus::ResolvedBuiltin, section: "§9.5" },
     BuiltinSpec { name: "TYPE",       signature: "TYPE(x) -> STRING (RESULT -> \"RESULT\")",    group: BuiltinGroup::Conv,     err_consumer: ErrConsumerStatus::Yes, macro_fn: true,  version: Version::V02, dispatch: DispatchStatus::ResolvedBuiltin, section: "§2.5" },
-    BuiltinSpec { name: "BOOL",       signature: "BOOL(x) -> BOOLEAN",                           group: BuiltinGroup::Conv,     err_consumer: ErrConsumerStatus::No,  macro_fn: false, version: Version::V02, dispatch: DispatchStatus::Deferred,         section: "§2.2" },
-    BuiltinSpec { name: "CALL",       signature: "CALL(fn, args...) -> v",                       group: BuiltinGroup::Conv,     err_consumer: ErrConsumerStatus::No,  macro_fn: false, version: Version::V02, dispatch: DispatchStatus::Deferred,         section: "§8.3" },
+    BuiltinSpec { name: "BOOL",       signature: "BOOL(x) -> BOOLEAN",                           group: BuiltinGroup::Conv,     err_consumer: ErrConsumerStatus::No,  macro_fn: false, version: Version::V02, dispatch: DispatchStatus::ResolvedBuiltin,   section: "§2.2" },
+    BuiltinSpec { name: "CALL",       signature: "CALL(fn, args...) -> v",                       group: BuiltinGroup::Conv,     err_consumer: ErrConsumerStatus::No,  macro_fn: false, version: Version::V02, dispatch: DispatchStatus::ResolvedBuiltin,   section: "§8.3" },
 
     // ── RESULT 处理 (11) ────────────────────────────────────────
     BuiltinSpec { name: "IS_OK",      signature: "IS_OK(x) -> BOOLEAN",                          group: BuiltinGroup::Result,   err_consumer: ErrConsumerStatus::Yes, macro_fn: true,  version: Version::V02, dispatch: DispatchStatus::LexerMacro,       section: "§12.2" },
@@ -252,7 +252,7 @@ pub const BUILTIN_REGISTRY: &[BuiltinSpec] = &[
     BuiltinSpec { name: "*",          signature: "*(a, b) -> INTEGER / FLOAT",                   group: BuiltinGroup::Op,       err_consumer: ErrConsumerStatus::No,  macro_fn: false, version: Version::V02, dispatch: DispatchStatus::ResolvedBuiltin,   section: "§9.1" },
     BuiltinSpec { name: "/",          signature: "/(a, b) -> INTEGER / FLOAT",                   group: BuiltinGroup::Op,       err_consumer: ErrConsumerStatus::No,  macro_fn: false, version: Version::V02, dispatch: DispatchStatus::ResolvedBuiltin,   section: "§9.1" },
     BuiltinSpec { name: "%",          signature: "%(a, b) -> INTEGER",                           group: BuiltinGroup::Op,       err_consumer: ErrConsumerStatus::No,  macro_fn: false, version: Version::V02, dispatch: DispatchStatus::ResolvedBuiltin,   section: "§9.1" },
-    BuiltinSpec { name: "NEG",        signature: "NEG(a) -> -a",                                 group: BuiltinGroup::Op,       err_consumer: ErrConsumerStatus::No,  macro_fn: false, version: Version::V02, dispatch: DispatchStatus::Deferred,         section: "§9.1" },
+    BuiltinSpec { name: "NEG",        signature: "NEG(a) -> -a",                                 group: BuiltinGroup::Op,       err_consumer: ErrConsumerStatus::No,  macro_fn: false, version: Version::V02, dispatch: DispatchStatus::ResolvedBuiltin,   section: "§9.1" },
     // ── ARRAY 操作 (9) ──────────────────────────────────────────
     BuiltinSpec { name: "PUSH",       signature: "PUSH(arr, x) -> ARRAY",                         group: BuiltinGroup::Array,    err_consumer: ErrConsumerStatus::No,  macro_fn: false, version: Version::V02, dispatch: DispatchStatus::ResolvedBuiltin,   section: "§10.1" },
     BuiltinSpec { name: "POP",        signature: "POP(arr) -> ARRAY",                            group: BuiltinGroup::Array,    err_consumer: ErrConsumerStatus::No,  macro_fn: false, version: Version::V02, dispatch: DispatchStatus::ResolvedBuiltin,   section: "§10.1" },
@@ -298,7 +298,7 @@ pub const BUILTIN_REGISTRY: &[BuiltinSpec] = &[
     BuiltinSpec { name: "FORMAT",     signature: "FORMAT(template, args...) -> STRING",          group: BuiltinGroup::Format,   err_consumer: ErrConsumerStatus::No,  macro_fn: false, version: Version::V04, dispatch: DispatchStatus::ResolvedBuiltin,   section: "§10.6" },
 
     // ── 模块系统 (4) ───────────────────────────────────────────
-    BuiltinSpec { name: "MODULE_REF", signature: "MODULE_REF(path) -> MODULE",                   group: BuiltinGroup::Module,   err_consumer: ErrConsumerStatus::No,  macro_fn: false, version: Version::V04, dispatch: DispatchStatus::Deferred,         section: "§13.5" },
+    BuiltinSpec { name: "MODULE_REF", signature: "MODULE_REF(path) -> MODULE",                   group: BuiltinGroup::Module,   err_consumer: ErrConsumerStatus::No,  macro_fn: false, version: Version::V04, dispatch: DispatchStatus::ResolvedBuiltin,   section: "§13.5" },
     BuiltinSpec { name: "EXPORT",     signature: "EXPORT(names) -> NULL",                        group: BuiltinGroup::Module,   err_consumer: ErrConsumerStatus::Na,  macro_fn: true,  version: Version::V02, dispatch: DispatchStatus::LexerMacro,       section: "§13.2" },
     BuiltinSpec { name: "IMPORT",     signature: "IMPORT(path, names, opts?) -> NULL",           group: BuiltinGroup::Module,   err_consumer: ErrConsumerStatus::Na,  macro_fn: true,  version: Version::V02, dispatch: DispatchStatus::LexerMacro,       section: "§13.1" },
     BuiltinSpec { name: "MODULE",     signature: "MODULE(name?, body) -> NULL",                  group: BuiltinGroup::Module,   err_consumer: ErrConsumerStatus::Na,  macro_fn: true,  version: Version::V02, dispatch: DispatchStatus::LexerMacro,       section: "§13.1" },
@@ -309,9 +309,9 @@ pub const BUILTIN_REGISTRY: &[BuiltinSpec] = &[
     BuiltinSpec { name: "THIS",       signature: "THIS -> 当前实例",                                group: BuiltinGroup::Oop,      err_consumer: ErrConsumerStatus::Na,  macro_fn: true,  version: Version::V02, dispatch: DispatchStatus::LexerMacro,       section: "§11.3" },
 
     // ── 属性 / 方法 (3) ────────────────────────────────────────
-    BuiltinSpec { name: "GET_PROP",   signature: "GET_PROP(obj, k) -> v / E0037",                group: BuiltinGroup::Property, err_consumer: ErrConsumerStatus::No,  macro_fn: false, version: Version::V02, dispatch: DispatchStatus::Deferred,         section: "§11.4" },
-    BuiltinSpec { name: "SET_PROP",   signature: "SET_PROP(obj, k, v) -> NULL",                  group: BuiltinGroup::Property, err_consumer: ErrConsumerStatus::No,  macro_fn: false, version: Version::V02, dispatch: DispatchStatus::Deferred,         section: "§11.4" },
-    BuiltinSpec { name: "CALL_METHOD",signature: "CALL_METHOD(obj, m, args...) -> v",            group: BuiltinGroup::Property, err_consumer: ErrConsumerStatus::No,  macro_fn: false, version: Version::V02, dispatch: DispatchStatus::Deferred,         section: "§11.4" },
+    BuiltinSpec { name: "GET_PROP",   signature: "GET_PROP(obj, k) -> v / E0037",                group: BuiltinGroup::Property, err_consumer: ErrConsumerStatus::No,  macro_fn: false, version: Version::V02, dispatch: DispatchStatus::ResolvedBuiltin,   section: "§11.4" },
+    BuiltinSpec { name: "SET_PROP",   signature: "SET_PROP(obj, k, v) -> NULL",                  group: BuiltinGroup::Property, err_consumer: ErrConsumerStatus::No,  macro_fn: false, version: Version::V02, dispatch: DispatchStatus::ResolvedBuiltin,   section: "§11.4" },
+    BuiltinSpec { name: "CALL_METHOD",signature: "CALL_METHOD(obj, m, args...) -> v",            group: BuiltinGroup::Property, err_consumer: ErrConsumerStatus::No,  macro_fn: false, version: Version::V02, dispatch: DispatchStatus::ResolvedBuiltin,   section: "§11.4" },
 
     // ── 构造器 (2) ─────────────────────────────────────────────
     BuiltinSpec { name: "ARRAY",      signature: "ARRAY(items...) / ARRAY()",                   group: BuiltinGroup::Ctor,     err_consumer: ErrConsumerStatus::No,  macro_fn: true,  version: Version::V02, dispatch: DispatchStatus::LexerMacro,       section: "§10.1" },

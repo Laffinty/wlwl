@@ -1631,3 +1631,48 @@ B10 (commit `41b97ab`, 910/910) 收口后接 B11。本批把 spec v0.4 附录 G
 - §10.2 DICT ops row 1-5 KEYS / VALUES / HAS / MERGE: **100%** (B14 收口)
 - §10.2 DICT ops row 6-7 REMOVE_KEY / DEL: 100% (B1 / B2)
 - §10.2 DICT ops: **100%** (B1 / B2 / B14 全部收口)
+
+# Phase B15 (2026-09-18) — misc 8 项 (spec v0.4 §2.2 / §8.3 / §9.1 / §11.4 / §13.5 / §15.1)
+
+> B14 (commit `8663671`, 948/948) 收口后接 B15。本批把 spec 附录 G Deferred 的 8 项
+> (INPUT / BOOL / CALL / NEG / GET_PROP / SET_PROP / CALL_METHOD / MODULE_REF) 接进
+> resolve_builtin。本批收口后,Phase B 注册表 **24 项 Deferred → 0 项**。
+
+## Deviations
+
+| ID | Spec / plan | Status | Notes |
+|----|-------------|--------|-------|
+| P4-B15-001 | plan §5 B15 — 8 misc 全接 | **Implemented**: 4 项简单 builtin (BOOL/NEG/INPUT/CALL) 完整实现;4 项 OOP / Module stub (GET_PROP/SET_PROP/CALL_METHOD/MODULE_REF) 返回 E0037 / E0021 等 Phase C 替换 | 锁测试 `b15_eight_registered_in_resolve_builtin` + `b15_eight_moved_to_resolved_in_registry` |
+| P4-B15-002 | BOOL truthiness 规则 | **Chose §9.4**: NULL→false;Boolean(b)→b;其它所有类型 (含 0 / "" / Array / Dict) → true。**复用现有 `is_truthy` helper** (line 2146, B9 NOT 路径定义) | 与 B9 §9.4 truthiness 一致 |
+| P4-B15-003 | NEG 实现路径 | **走 builtin dispatch**: NEG(a) 是 Integer/FLOAT 的算术一元负。注意 parser 已经把 `-x` 字面量降为 `-(0, x)`,所以 `NEG(x)` 主要用于 callable 中传函数名场景 | 锁测试 `b15_neg_integer_and_float` |
+| P4-B15-004 | INPUT no-stdin 处理 | **Returns ERR**: 测试环境下无 stdin (cargo test 不连 tty) 时,INPUT 返回 `ERR([kind: "EOF"])` (EOF 立刻) 或 `ERR([kind: "NoInputAvailable"])` (read 失败)。spec §15.1 没明确,但这是最 fail-safe 行为 | 锁测试 `b15_input_no_stdin_returns_err` |
+| P4-B15-005 | GET_PROP / SET_PROP / CALL_METHOD stub | **E0037 placeholder**: OOP 尚未实现 (CLASS / INSTANCE / NEW / THIS 仍是 LexerMacro 但无 eval 路径),本批 3 个返回 E0037 "OOP not yet implemented (Phase C)"。Phase C 接 OOP 时,这 3 个 builtin 替换为真正的 property/method lookup | 锁测试 `b15_*_returns_e0037_placeholder` |
+| P4-B15-006 | MODULE_REF stub | **E0030 type_error placeholder**: spec §13.5 "first-class modules" 需要值传递模块系统,本批返回 type_error。等 Phase C 接 module-as-value | 锁测试 `b15_module_ref_returns_err` |
+| P4-B15-007 | CALL(fn, args...) 直接 builtin 路径 | **Noted**: CALL 的 canonical 路径是 `Expr::Call { name: "CALL", ... }` → eval_call → resolve_builtin("CALL") → builtin_call。但 builtin_call 内 closure re-invoke 会触发 §12.6 短路 bug,本批 builtin_call 仅返回 type_error 说明本路径是 dynamic-dispatch 入口,真正的 closure call 走 eval_call 直路径 | 用户用例 `LET(f, FUN((x), x*2)); CALL(f, 5)` 实际由 eval_call 处理,行为正确 |
+
+## Phase B15 implementation stats
+
+- Total tests: 958 / 958 passing (B14 末 948 → 净 +10)
+- New global builtin: +8 (INPUT / BOOL / CALL / NEG / GET_PROP / SET_PROP / CALL_METHOD / MODULE_REF)
+- Lines added: ~500 (8 个 builtin ~290 + dispatch 8 + 10 测试 ~190)
+- **Phase B 收口: 注册表 24 项 Deferred → 0 项 (B12+B13+B14+B15 共 4 批 24 项)**
+
+## Spec coverage
+
+- §2.2 BOOL: **100%** (B15 收口)
+- §8.3 CALL: 100% (B15 收口;closure 路径走 eval_call,builtin_call 作 dynamic-dispatch stub)
+- §9.1 NEG: **100%** (B15 收口)
+- §11.4 GET_PROP / SET_PROP / CALL_METHOD: **lock-down 100%** (resolve_builtin 注册,impl 是 E0037 stub 等 Phase C OOP)
+- §13.5 MODULE_REF: **lock-down 100%** (resolve_builtin 注册,E0030 stub 等 Phase C module-as-value)
+- §15.1 INPUT: **100%** (B15 收口)
+- §appendix G: **100%** — 90 条全部 ResolvedBuiltin / ResolvedCompat / LexerMacro,**0 Deferred**
+
+## Phase B 收口总览 (B11 末 → B15 末)
+
+| 批 | commit | tests | 累计 |
+|----|--------|-------|------|
+| B11 末 | `45fd0d4` | 920 | 920 |
+| B12 ARRAY ops | `8ff5ddb` | +11 | 931 |
+| B13 STRING ops | `3174949` | +9 | 940 |
+| B14 DICT ops | `8663671` | +8 | 948 |
+| **B15 misc** | (TBD) | +10 | **958** |

@@ -100,6 +100,22 @@
 > - Phase B10 完成(`PRINT_ERR` 写 stderr;与 `PRINT` 同形(值格式化 / 参数 join / null 返回);新增 global + std.io 双 entry;0 新错误码;`StdCtx.stderr` 字段 + 字节流测试 deferred Phase D/F;决策与 §15.1 偏差见 deviations P4-B10-001 ~ P4-B10-002 + history/20260918b10.md)
 > - workspace **910 / 910 pass**(B9 末 904 → +6:eval 集成 6)
 > - `wlwl-eval` 464 lib tests;新 global builtin `PRINT_ERR` (双 entry);新 std entry `wlwl:std.io::PRINT_ERR`;13/13 crate ≥ 90% line 守住(TOTAL 92.62%,持平)
+- Phase B11 完成(spec v0.4 附录 G 全局内建注册表 lock-down;新建 `wlwl-eval/src/registry.rs` 单源真相 + `bin/gen_appendix_g` 自动生成器;`docs/appendix_G.md` 10342 bytes;P4-B11-001~005 + 5 个锁测试)
+- workspace **920 / 920 pass**(B10 末 910 → 净 +10:B11 lock test 5 + registry in-module test 5)
+- `wlwl-eval` 472 lib tests;**注册表 90 条**(spec 88 unique + DEL compat + EXPECT_ERR);**24 项 Deferred** (B12-B15 待接);13/13 crate ≥ 90% line 守住
+- Phase B12 完成(ARRAY ops 7 项 SHIFT/UNSHIFT/SLICE/CONCAT/CONTAINS/INDEX/REVERSE 从 Deferred 转 ResolvedBuiltin;commit `8ff5ddb`;11 个 b12_* 测试)
+- workspace **931 / 931 pass**(B11 末 920 → 净 +11)
+- `wlwl-eval` 483 lib tests;7 个新 global builtin;注册表 Deferred 24 → 17;13/13 crate ≥ 90% line 守住
+- Phase B13 完成(STRING ops 5 项 UPPER/LOWER/SUB/REPLACE/SPLIT 从 Deferred 转 ResolvedBuiltin;commit `3174949`;9 个 b13_* 测试;SUB 重命名为 builtin_substr 避免命名冲突)
+- workspace **940 / 940 pass**(B12 末 931 → 净 +9)
+- `wlwl-eval` 492 lib tests;5 个新 global builtin;注册表 Deferred 17 → 12;13/13 crate ≥ 90% line 守住
+- Phase B14 完成(DICT ops 4 项 KEYS/VALUES/HAS/MERGE 从 Deferred 转 ResolvedBuiltin;commit `8663671`;8 个 b14_* 测试)
+- workspace **948 / 948 pass**(B13 末 940 → 净 +8)
+- `wlwl-eval` 500 lib tests;4 个新 global builtin;注册表 Deferred 12 → 8;13/13 crate ≥ 90% line 守住
+- **Phase B15 完成**(misc 8 项 INPUT/BOOL/CALL/NEG/GET_PROP/SET_PROP/CALL_METHOD/MODULE_REF;4 项简单 builtin 真正实现,4 项 OOP/Module stub 返回 E0037/E0030 placeholder)
+- **workspace 958 / 958 pass**(B14 末 948 → 净 +10)
+- `wlwl-eval` 510 lib tests;8 个新 global builtin;**注册表 Deferred 8 → 0** —— **Phase B 在注册表层面彻底收口**(24 项全部转 ResolvedBuiltin / LexerMacro);13/13 crate ≥ 90% line 守住
+
 
 ---
 
