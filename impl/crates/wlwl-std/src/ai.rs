@@ -1,43 +1,65 @@
-//! `wlwl:std.ai` — mock LLM bridge (v0.3 §15.11).
+//! `wlwl:std.ai` — LLM bridge.
 //!
-//! This is the **mock** implementation agreed for Phase 4: no real
-//! HTTP, no real LLM provider. The three functions (ASK / EMBED /
-//! COMPLETE) return deterministic content derived from the inputs
-//! and the optional `WLWL_AI_*` environment variables. Production
-//! code that wants real provider access wires a different
-//! `StdFn` into the same module spec slot; the function signature
-//! (`fn(&mut StdCtx, Vec<StdValue>) -> Result<StdValue, StdError>`)
-//! is the only stable contract.
+//! Phase D (`v0.4 §15.13`): replace the v0.3 mock with a real
+//! HTTP integration. The mock path is preserved for offline builds
+//! and unit tests; the real path is gated behind the `real-ai`
+//! cargo feature **and** the `WLWL_AI_ENDPOINT` env var. With
+//! either of those absent, the std functions fall back to the
+//! deterministic mock payloads — tests, CI, and `cargo install`
+//! users without API keys all keep working.
 //!
-//! ## Error code triggers
+//! ## Env contract (v0.4 §15.13.1)
 //!
-//! The mock exposes the four v0.3 AI error codes by matching
-//! reserved `model` names (so unit tests do not have to mutate
-//! environment variables):
+//! | Var                       | Required for real mode | Purpose |
+//! |---------------------------|------------------------|---------|
+//! | `WLWL_AI_ENDPOINT`        | yes                    | API base URL (e.g. `https://api.openai.com`) |
+//! | `WLWL_AI_API_KEY`         | yes                    | Bearer token |
+//! | `WLWL_AI_DEFAULT_MODEL`   | no                     | Default model if `ASK`/`EMBED`/`COMPLETE` arg is missing |
 //!
-//! | `model`            | Result             | Code  |
-//! |--------------------|--------------------|-------|
-//! | `"_fail_E0080"`    | `Err(E0080)`       | unreachable |
-//! | `"_fail_E0081"`    | `Err(E0081)`       | auth / rate-limit |
-//! | `"_fail_E0082"`    | `Err(E0082)`       | response malformed |
-//! | `"_fail_E0083"`    | `Err(E0083)`       | timeout |
+//! ## Error code mapping
 //!
-//! A non-reserved model returns a deterministic mock payload derived
-//! from the input.
+//! | Failure                       | Code  |
+//! |-------------------------------|-------|
+//! | E0080 unreachable / DNS / TLS / timeout | re-classified below |
+//! | E0090 unreachable             | network ladder |
+//! | E0091 DNS failure             | network ladder |
+//! | E0092 TLS error               | network ladder |
+//! | E0093 HTTP 4xx                | network ladder |
+//! | E0094 HTTP 5xx                | network ladder |
+//! | E0081 auth (401 / 403)        | bucket from HTTP 4xx arm |
+//! | E0082 credentials missing     | `WLWL_AI_API_KEY` not set |
+//! | E0083 response malformed      | JSON parse failure on success body |
+//!
+//! ## W0052
+//!
+//! When the `model` argument lacks the `provider/` prefix
+//! (e.g. user wrote `"gpt-4"` instead of `"openai/gpt-4"`), push a
+//! `(W0052, msg)` entry into `StdCtx.warnings`. Eval drains the
+//! sink after the call and emits each entry as a Warning
+//! diagnostic. The mock path also emits W0052 so tests can pin
+//! the behavior without touching the network.
 
-use crate::{arity_error, type_error, StdCtx, StdError, StdFn, StdValue, ModuleSpec};
+use crate::{
+    arity_error, type_error, StdCtx, StdError, StdFn, StdValue, ModuleSpec,
+};
 use wlwl_error::ErrorCode;
 
-/// Match `model` against the reserved failure tokens. Returns
-/// `Some(StdError)` if the model signals a synthetic error, `None`
-/// otherwise. Reserved tokens are case-sensitive so an end-user
-/// can freely use a model literally named "gpt-4".
+/// Try to match `model` against the v0.3 reserved failure tokens.
+/// Used by the mock path so unit tests do not have to mutate env
+/// vars. Real-mode HTTP errors bypass this and map to the new
+/// E0090-E0094 network ladder instead.
 fn check_reserved_failure(model: &str) -> Option<StdError> {
     let code = match model {
         "_fail_E0080" => ErrorCode::E0080,
         "_fail_E0081" => ErrorCode::E0081,
         "_fail_E0082" => ErrorCode::E0082,
         "_fail_E0083" => ErrorCode::E0083,
+        // Phase D4: network ladder
+        "_fail_E0090" => ErrorCode::E0090,
+        "_fail_E0091" => ErrorCode::E0091,
+        "_fail_E0092" => ErrorCode::E0092,
+        "_fail_E0093" => ErrorCode::E0093,
+        "_fail_E0094" => ErrorCode::E0094,
         _ => return None,
     };
     Some(StdError {
@@ -50,9 +72,189 @@ fn check_reserved_failure(model: &str) -> Option<StdError> {
     })
 }
 
-// ── ASK ───────────────────────────────────────────────────────
+/// Check whether `model` has the recommended `provider/` prefix.
+/// Pushes a `W0052` warning onto the ctx if not (Phase D5).
+fn maybe_warn_model_name(ctx: &mut StdCtx, fn_name: &str, model: &str) {
+    if !model.contains('/') {
+        ctx.warn(
+            ErrorCode::W0052,
+            format!(
+                "{}: model `{}` has no `provider/` prefix; recommended form                  is `provider/model` (e.g. `openai/gpt-4`). The bare form                  still works but may route incorrectly across providers.",
+                fn_name, model
+            ),
+        );
+    }
+}
 
-pub fn std_ask(_ctx: &mut StdCtx, args: Vec<StdValue>) -> Result<StdValue, StdError> {
+/// Decide whether the call should hit the network or fall back to
+/// mock. Real-mode requires BOTH the `real-ai` cargo feature AND
+/// the `WLWL_AI_ENDPOINT` env var. The API key is checked at
+/// request time so we can return the spec-mandated E0082 instead
+/// of silently falling back when the endpoint is set but the key
+/// is missing.
+fn real_mode_active(ctx: &StdCtx) -> bool {
+    #[cfg(feature = "real-ai")]
+    {
+        ctx.env.contains_key("WLWL_AI_ENDPOINT")
+    }
+    #[cfg(not(feature = "real-ai"))]
+    {
+        let _ = ctx;
+        false
+    }
+}
+
+/// Read env vars into local strings. Pure helper so tests don't
+/// have to mutate process env (they go through `ctx.env`).
+fn env_lookup<'a>(ctx: &'a StdCtx, key: &str) -> Option<&'a str> {
+    ctx.env.get(key).map(String::as_str)
+}
+
+// ── Real-mode HTTP bridge (only compiled with `real-ai`) ──────────────
+
+#[cfg(feature = "real-ai")]
+mod real {
+    use super::*;
+    use std::sync::Arc;
+    use std::time::Duration;
+
+    /// Build (or reuse) a blocking reqwest client. The client is
+    /// stored in `StdCtx.http_client` so HTTPS handshakes /
+    /// connection pools are amortized across many calls.
+    pub fn ensure_client(ctx: &mut StdCtx) -> Result<Arc<reqwest::blocking::Client>, StdError> {
+        if let Some(c) = &ctx.http_client {
+            return Ok(Arc::clone(c));
+        }
+        let client = reqwest::blocking::Client::builder()
+            .timeout(Duration::from_secs(60))
+            .build()
+            .map_err(|e| StdError {
+                code: ErrorCode::E0092,
+                message: format!("failed to build HTTP client: {}", e),
+            })?;
+        let arc = Arc::new(client);
+        ctx.http_client = Some(Arc::clone(&arc));
+        Ok(arc)
+    }
+
+    /// POST to `${WLWL_AI_ENDPOINT}/v1/chat/completions` with an
+    /// OpenAI-compatible body. Map reqwest errors to the new
+    /// E0090-E0094 network ladder (Phase D4).
+    pub fn http_chat(
+        ctx: &mut StdCtx,
+        model: &str,
+        system: Option<&str>,
+        user: &str,
+        max_tokens: u32,
+        temperature: f32,
+    ) -> Result<String, StdError> {
+        let endpoint = env_lookup(ctx, "WLWL_AI_ENDPOINT").ok_or_else(|| StdError {
+            code: ErrorCode::E0082,
+            message: "WLWL_AI_ENDPOINT not set".into(),
+        })?;
+        let api_key = env_lookup(ctx, "WLWL_AI_API_KEY").ok_or_else(|| StdError {
+            code: ErrorCode::E0082,
+            message: "WLWL_AI_API_KEY not set".into(),
+        })?;
+        let client = ensure_client(ctx)?;
+        let url = format!("{}/v1/chat/completions", endpoint.trim_end_matches('/'));
+
+        let mut messages = Vec::new();
+        if let Some(s) = system {
+            messages.push(serde_json::json!({"role": "system", "content": s}));
+        }
+        messages.push(serde_json::json!({"role": "user", "content": user}));
+
+        let body = serde_json::json!({
+            "model": model,
+            "messages": messages,
+            "max_tokens": max_tokens,
+            "temperature": temperature,
+        });
+
+        let resp = client
+            .post(&url)
+            .bearer_auth(api_key)
+            .json(&body)
+            .send()
+            .map_err(classify_reqwest_error)?;
+
+        let status = resp.status();
+        if status.is_client_error() {
+            // 4xx — caller fault (bad request, auth, not found).
+            // 401 / 403 still maps to E0081 (auth/rate) for AI-tool
+            // compat; everything else → E0093.
+            let code = match status.as_u16() {
+                401 | 403 => ErrorCode::E0081,
+                404 => ErrorCode::E0083, // model not found
+                _ => ErrorCode::E0093,
+            };
+            return Err(StdError {
+                code,
+                message: format!("AI endpoint returned HTTP {}", status.as_u16()),
+            });
+        }
+        if status.is_server_error() {
+            return Err(StdError {
+                code: ErrorCode::E0094,
+                message: format!("AI endpoint returned HTTP {}", status.as_u16()),
+            });
+        }
+
+        let v: serde_json::Value = resp.json().map_err(|e| StdError {
+            code: ErrorCode::E0083,
+            message: format!("malformed AI response: {}", e),
+        })?;
+        let content = v
+            .get("choices")
+            .and_then(|c| c.get(0))
+            .and_then(|c| c.get("message"))
+            .and_then(|m| m.get("content"))
+            .and_then(|c| c.as_str())
+            .ok_or_else(|| StdError {
+                code: ErrorCode::E0083,
+                message: "AI response missing choices[0].message.content".into(),
+            })?;
+        Ok(content.to_string())
+    }
+
+    /// Map a reqwest error to the network ladder E0090-E0094 by
+    /// inspecting the error chain. We can't perfectly distinguish
+    /// DNS vs connect-refused vs TLS in all cases (reqwest lumps
+    /// them as `reqwest::Error`), so we apply a best-effort
+    /// heuristic. v0.5 may use `error.for_response()` etc.
+    fn classify_reqwest_error(e: reqwest::Error) -> StdError {
+        let chain = format!("{}", e);
+        // TLS handshake / certificate problems surface as a
+        // specific reqwest error category.
+        if chain.contains("certificate") || chain.contains("TLS") || chain.contains("SSL") {
+            return StdError {
+                code: ErrorCode::E0092,
+                message: chain,
+            };
+        }
+        // DNS failure typically surfaces as "dns error" or
+        // "failed to lookup" or "Name or service not known".
+        if chain.contains("dns")
+            || chain.contains("lookup")
+            || chain.contains("name or service")
+        {
+            return StdError {
+                code: ErrorCode::E0091,
+                message: chain,
+            };
+        }
+        // connect refused / timeout / unreachable → E0090.
+        StdError {
+            code: ErrorCode::E0090,
+            message: chain,
+        }
+    }
+}
+
+// ── ASK ───────────────────────────────────────────────────────────
+
+pub fn std_ask(ctx: &mut StdCtx, args: Vec<StdValue>) -> Result<StdValue, StdError> {
     if args.len() < 2 || args.len() > 3 {
         return Err(arity_error("ASK", args.len(), 3));
     }
@@ -64,21 +266,74 @@ pub fn std_ask(_ctx: &mut StdCtx, args: Vec<StdValue>) -> Result<StdValue, StdEr
         StdValue::String(s) => s.as_str(),
         other => return Err(type_error("ASK", "string", other)),
     };
+    let opts = if args.len() == 3 {
+        match &args[2] {
+            StdValue::Object(_) | StdValue::Null => &args[2],
+            other => return Err(type_error("ASK", "dict", other)),
+        }
+    } else {
+        &StdValue::Null
+    };
+
     if let Some(err) = check_reserved_failure(model) {
         return Err(err);
     }
-    // Mock response: include the model name so callers can see
-    // their model was honoured, and embed a 32-bit hash of the
-    // prompt for determinism.
+    // W0052: warn when model lacks provider/ prefix.
+    maybe_warn_model_name(ctx, "ASK", model);
+
+    if real_mode_active(ctx) {
+        let (system, max_tokens, temperature) = parse_opts(opts)?;
+        #[cfg(feature = "real-ai")]
+        {
+            return real::http_chat(ctx, model, system.as_deref(), prompt, max_tokens, temperature)
+                .map(StdValue::String);
+        }
+        #[cfg(not(feature = "real-ai"))]
+        {
+            let _ = (system, max_tokens, temperature);
+            return Err(StdError {
+                code: ErrorCode::E0082,
+                message: "real-ai feature not enabled; rebuild with --features wlwl-std/real-ai"
+                    .into(),
+            });
+        }
+    }
+
+    // Mock response: include the model name + prompt hash for
+    // deterministic tests / offline use.
     let h = fnv1a(prompt.as_bytes());
     Ok(StdValue::String(format!(
         "[mock:{model}] echo (h=0x{h:08x}) :: {prompt}",
     )))
 }
 
-// ── EMBED ─────────────────────────────────────────────────────
+/// Parse the optional `opts` DICT into the fields ASK cares about.
+/// Used by both ASK (here) and ASK_STREAM / ASK_ALL below.
+fn parse_opts(opts: &StdValue) -> Result<(Option<String>, u32, f32), StdError> {
+    let mut system: Option<String> = None;
+    let mut max_tokens: u32 = 4096;
+    let mut temperature: f32 = 0.0;
+    if let StdValue::Object(map) = opts {
+        if let Some(StdValue::String(s)) = map.get("system") {
+            system = Some(s.clone());
+        }
+        if let Some(StdValue::Number(n)) = map.get("max_tokens") {
+            if let Some(i) = n.as_u64() {
+                max_tokens = i as u32;
+            }
+        }
+        if let Some(StdValue::Number(n)) = map.get("temperature") {
+            if let Some(f) = n.as_f64() {
+                temperature = f as f32;
+            }
+        }
+    }
+    Ok((system, max_tokens, temperature))
+}
 
-pub fn std_embed(_ctx: &mut StdCtx, args: Vec<StdValue>) -> Result<StdValue, StdError> {
+// ── EMBED ─────────────────────────────────────────────────────────
+
+pub fn std_embed(ctx: &mut StdCtx, args: Vec<StdValue>) -> Result<StdValue, StdError> {
     if args.len() < 1 || args.len() > 2 {
         return Err(arity_error("EMBED", args.len(), 2));
     }
@@ -86,19 +341,27 @@ pub fn std_embed(_ctx: &mut StdCtx, args: Vec<StdValue>) -> Result<StdValue, Std
         StdValue::String(s) => s.as_str(),
         other => return Err(type_error("EMBED", "string", other)),
     };
+    // Resolve model first; copy into an owned String so the borrow
+    // of ctx.env ends before we call maybe_warn_model_name.
     let model = if args.len() == 2 {
         match &args[1] {
-            StdValue::String(s) => s.as_str(),
+            StdValue::String(s) => s.clone(),
             other => return Err(type_error("EMBED", "string", other)),
         }
     } else {
-        "default"
+        env_lookup(ctx, "WLWL_AI_DEFAULT_MODEL")
+            .unwrap_or("default")
+            .to_string()
     };
-    if let Some(err) = check_reserved_failure(model) {
+    if let Some(err) = check_reserved_failure(&model) {
         return Err(err);
     }
-    // Fake 4-dim vector derived from FNV-1a hashes of the
-    // (text, model) pair. Deterministic + bounded.
+    maybe_warn_model_name(ctx, "EMBED", &model);
+
+    // Real-mode embeddings: not implemented in v0.4 (Phase D4
+    // scoped to ASK / ASK_STREAM / ASK_ALL). Fall back to mock
+    // even when real-ai is on; the four-dim hash vector is the
+    // test contract callers rely on.
     let h1 = fnv1a(text.as_bytes());
     let h2 = fnv1a(model.as_bytes());
     let v = vec![
@@ -114,9 +377,9 @@ pub fn std_embed(_ctx: &mut StdCtx, args: Vec<StdValue>) -> Result<StdValue, Std
     Ok(StdValue::Array(arr))
 }
 
-// ── COMPLETE ──────────────────────────────────────────────────
+// ── COMPLETE ──────────────────────────────────────────────────────
 
-pub fn std_complete(_ctx: &mut StdCtx, args: Vec<StdValue>) -> Result<StdValue, StdError> {
+pub fn std_complete(ctx: &mut StdCtx, args: Vec<StdValue>) -> Result<StdValue, StdError> {
     if args.len() < 1 || args.len() > 3 {
         return Err(arity_error("COMPLETE", args.len(), 3));
     }
@@ -124,45 +387,36 @@ pub fn std_complete(_ctx: &mut StdCtx, args: Vec<StdValue>) -> Result<StdValue, 
         StdValue::String(s) => s.as_str(),
         other => return Err(type_error("COMPLETE", "string", other)),
     };
+    // Resolve language first; copy into an owned String so the
+    // borrow of ctx.env ends before we call maybe_warn_model_name.
     let language = if args.len() >= 2 {
         match &args[1] {
-            StdValue::String(s) => s.as_str(),
+            StdValue::String(s) => s.clone(),
             other => return Err(type_error("COMPLETE", "string", other)),
         }
     } else {
-        "wlwl"
+        env_lookup(ctx, "WLWL_AI_DEFAULT_MODEL")
+            .unwrap_or("wlwl")
+            .to_string()
     };
-    if let Some(err) = check_reserved_failure(language) {
+    if let Some(err) = check_reserved_failure(&language) {
         return Err(err);
     }
-    // Trim the context to 60 chars and wrap in a comment-like
-    // suggestion. The mock never reads language from the model
-    // path; the trigger uses language to keep symmetry with the
-    // table above (so `_fail_E0080` in the language slot works).
+    maybe_warn_model_name(ctx, "COMPLETE", &language);
+
     let preview: String = context.chars().take(60).collect();
     Ok(StdValue::String(format!(
         "// mock completion for ({language}): {preview}…"
     )))
 }
 
-// ── ASK_STREAM (spec §15.11.4 stub) ───────────────────────────
-//
-// P3-012 stub. v0.3 §15.11.4: "v0.3 同步调用; v0.4 议程:
-// ASK_STREAM(model, prompt, callback)". The mock implementation
-// accepts the same `(model, prompt, callback)` shape and returns
-// the same OK(string) payload as `ASK`. A future real HTTP client
-// will chunk the response and invoke the callback per chunk; for
-// now the callback is a no-op (we validate the arity and types
-// but do not invoke the WLWL function from a std_fn context —
-// the interpreter is the one place that can dispatch into user
-// functions).
-pub fn std_ask_stream(_ctx: &mut StdCtx, args: Vec<StdValue>) -> Result<StdValue, StdError> {
-    if args.len() < 2 || args.len() > 3 {
-        return Err(arity_error("ASK_STREAM", args.len(), 3));
+// ── ASK_STREAM (Phase D1b — real streaming lands with eval
+// dispatch; here we keep the mock signature) ────────────────
+
+pub fn std_ask_stream(ctx: &mut StdCtx, args: Vec<StdValue>) -> Result<StdValue, StdError> {
+    if args.len() < 2 || args.len() > 4 {
+        return Err(arity_error("ASK_STREAM", args.len(), 4));
     }
-    // Reuse ASK's model/prompt validation + mock content. The
-    // third slot (callback) is accepted for arity symmetry but
-    // not invoked from this std_fn context.
     let model = match &args[0] {
         StdValue::String(s) => s.as_str(),
         other => return Err(type_error("ASK_STREAM", "string", other)),
@@ -171,46 +425,102 @@ pub fn std_ask_stream(_ctx: &mut StdCtx, args: Vec<StdValue>) -> Result<StdValue
         StdValue::String(s) => s.as_str(),
         other => return Err(type_error("ASK_STREAM", "string", other)),
     };
+    // 3rd arg is the callback (we accept and ignore in mock).
+    // 4th arg is opts (DICT or null).
+    let _callback = &args[2];
+    let opts = if args.len() == 4 { &args[3] } else { &StdValue::Null };
     if let Some(err) = check_reserved_failure(model) {
         return Err(err);
     }
+    maybe_warn_model_name(ctx, "ASK_STREAM", model);
+
+    // Real streaming: in v0.4 we collect the full response into a
+    // single chunk. Phase D1b (separate commit) wires the
+    // interpreter callback so individual chunks invoke the WLWL
+    // function. The mock path returns one chunk.
+    if real_mode_active(ctx) {
+        let (system, max_tokens, temperature) = parse_opts(opts)?;
+        #[cfg(feature = "real-ai")]
+        {
+            let content = real::http_chat(ctx, model, system.as_deref(), prompt, max_tokens, temperature)?;
+            // Without interpreter dispatch we cannot call back into
+            // a user function; return the whole content as one
+            // string. The D1b commit replaces this with the
+            // per-chunk callback loop.
+            return Ok(StdValue::String(content));
+        }
+        #[cfg(not(feature = "real-ai"))]
+        {
+            let _ = (system, max_tokens, temperature);
+            return Err(StdError {
+                code: ErrorCode::E0082,
+                message: "real-ai feature not enabled; rebuild with --features wlwl-std/real-ai"
+                    .into(),
+            });
+        }
+    }
+
     let h = fnv1a(prompt.as_bytes());
     Ok(StdValue::String(format!(
         "[mock-stream:{model}] echo (h=0x{h:08x}) :: {prompt}",
     )))
 }
 
-// ── ASK_ALL (spec §15.11.4 stub) ──────────────────────────────
-//
-// P3-012 stub. Batch ASK over an array of prompts, returning
-// ARRAY of OK/ERR. v0.3 runs the calls serially in interpreter
-// order; v0.4 will replace this with a real concurrent fan-out.
-pub fn std_ask_all(_ctx: &mut StdCtx, args: Vec<StdValue>) -> Result<StdValue, StdError> {
-    if args.len() != 1 {
-        return Err(arity_error("ASK_ALL", args.len(), 1));
+// ── ASK_ALL (Phase D2 — per-element OK/ERR via interpreter) ─────────────────
+
+pub fn std_ask_all(ctx: &mut StdCtx, args: Vec<StdValue>) -> Result<StdValue, StdError> {
+    if args.len() < 1 || args.len() > 2 {
+        return Err(arity_error("ASK_ALL", args.len(), 2));
     }
     let prompts = match &args[0] {
         StdValue::Array(a) => a,
         other => return Err(type_error("ASK_ALL", "array", other)),
     };
-    // Validate every prompt is a string up front (so we can
-    // produce a single coherent error if not). Real fan-out
-    // would dispatch each element back through the interpreter.
-    for (_i, p) in prompts.iter().enumerate() {
-        if !matches!(p, StdValue::String(_)) {
-            // v0.3 std_fn has no per-element error path, so we
-            // report a single ASK_ALL-level E0030 pointing at
-            // the offending element. v0.4 should route this
-            // through the interpreter to produce per-element
-            // OK / ERR (spec §15.11.4).
-            return Err(type_error("ASK_ALL", "string", p));
+    // Phase D2: validate every prompt up front; spec v0.4 §15.13.5
+    // collects OK/ERR per element by routing each prompt back
+    // through the interpreter (separate commit wires that). The
+    // mock below mirrors the per-element OK shape with a single
+    // batched return value (the eval-side rewrite replaces this
+    // in D2).
+    let opts = if args.len() == 2 { &args[1] } else { &StdValue::Null };
+    let (system, max_tokens, temperature) = parse_opts(opts)?;
+
+    if real_mode_active(ctx) {
+        // Real mode + per-element: emit each OK as a STRING in
+        // order. Failure on element i surfaces as ERR(i) in a
+        // future D2 commit; for now any HTTP failure aborts the
+        // whole batch.
+        #[cfg(feature = "real-ai")]
+        {
+            let mut out = Vec::with_capacity(prompts.len());
+            for p in prompts {
+                let s = match p {
+                    StdValue::String(s) => s.as_str(),
+                    other => return Err(type_error("ASK_ALL", "string", other)),
+                };
+                let content =
+                    real::http_chat(ctx, "default", system.as_deref(), s, max_tokens, temperature)?;
+                out.push(StdValue::String(content));
+            }
+            return Ok(StdValue::Array(out));
+        }
+        #[cfg(not(feature = "real-ai"))]
+        {
+            let _ = (system, max_tokens, temperature);
+            return Err(StdError {
+                code: ErrorCode::E0082,
+                message: "real-ai feature not enabled; rebuild with --features wlwl-std/real-ai"
+                    .into(),
+            });
         }
     }
-    // Mock per-prompt response: same shape as ASK, with index
-    // included so callers can correlate result <-> input.
+
+    // Mock per-prompt response (batched).
     let mut out: Vec<StdValue> = Vec::with_capacity(prompts.len());
     for (i, p) in prompts.iter().enumerate() {
-        let StdValue::String(prompt) = p else { unreachable!() };
+        let StdValue::String(prompt) = p else {
+            return Err(type_error("ASK_ALL", "string", p));
+        };
         let h = fnv1a(prompt.as_bytes());
         out.push(StdValue::String(format!(
             "[mock-batch:{i}] echo (h=0x{h:08x}) :: {prompt}"
@@ -219,11 +529,10 @@ pub fn std_ask_all(_ctx: &mut StdCtx, args: Vec<StdValue>) -> Result<StdValue, S
     Ok(StdValue::Array(out))
 }
 
-// ── FNV-1a (32-bit) for deterministic hash bits ───────────────
+// ── FNV-1a (32-bit) for deterministic hash bits ────────────────────
 
-/// FNV-1a 32-bit. Tiny, dependency-free, deterministic. We use
-/// the resulting hash bits only as a mock payload component; this
-/// is not a security primitive.
+/// FNV-1a 32-bit. Tiny, dependency-free, deterministic. Used only
+/// as a mock payload component (not a security primitive).
 fn fnv1a(bytes: &[u8]) -> u32 {
     let mut h: u32 = 0x811c9dc5;
     for b in bytes {
@@ -239,9 +548,6 @@ pub static SPEC: ModuleSpec = ModuleSpec {
         ("ASK", std_ask as StdFn),
         ("EMBED", std_embed as StdFn),
         ("COMPLETE", std_complete as StdFn),
-        // P3-012: streaming / batch APIs (spec §15.11.4). The
-        // mock implementations honor the v0.3 signature while
-        // real HTTP streaming / fan-out lands in v0.4.
         ("ASK_STREAM", std_ask_stream as StdFn),
         ("ASK_ALL", std_ask_all as StdFn),
     ],
@@ -257,8 +563,9 @@ mod tests {
 
     #[test]
     fn ask_mock_response() {
+        let mut c = ctx();
         let v = std_ask(
-            &mut ctx(),
+            &mut c,
             vec![
                 StdValue::String("gpt-4".into()),
                 StdValue::String("hello".into()),
@@ -281,16 +588,15 @@ mod tests {
     }
 
     #[test]
-    #[test]
     fn ask_arity_too_many_is_e0022() {
-        // ASK takes 2 (model + prompt) or 3 (+ opts). 4+ is E0022.
+        // 4+ args (model + prompt + opts + extra) is out of [2,3].
         let err = std_ask(
             &mut ctx(),
             vec![
                 StdValue::String("gpt-4".into()),
                 StdValue::String("hi".into()),
-                StdValue::String("opts".into()),
-                StdValue::String("extra".into()),
+                StdValue::Null,
+                StdValue::Null,
             ],
         )
         .unwrap_err();
@@ -309,11 +615,17 @@ mod tests {
 
     #[test]
     fn ask_failure_tokens_trigger_each_error_code() {
+        // v0.3 codes + Phase D4 network ladder.
         for (token, expected) in [
             ("_fail_E0080", ErrorCode::E0080),
             ("_fail_E0081", ErrorCode::E0081),
             ("_fail_E0082", ErrorCode::E0082),
             ("_fail_E0083", ErrorCode::E0083),
+            ("_fail_E0090", ErrorCode::E0090),
+            ("_fail_E0091", ErrorCode::E0091),
+            ("_fail_E0092", ErrorCode::E0092),
+            ("_fail_E0093", ErrorCode::E0093),
+            ("_fail_E0094", ErrorCode::E0094),
         ] {
             let err = std_ask(
                 &mut ctx(),
@@ -325,6 +637,54 @@ mod tests {
             .unwrap_err();
             assert_eq!(err.code, expected, "token {}", token);
         }
+    }
+
+    // ---- Phase D5: W0052 — model name lacks `provider/` prefix ----
+
+    #[test]
+    fn ask_bare_model_emits_w0052() {
+        let mut c = ctx();
+        std_ask(
+            &mut c,
+            vec![
+                StdValue::String("gpt-4".into()),
+                StdValue::String("hello".into()),
+            ],
+        )
+        .unwrap();
+        assert_eq!(c.warnings.len(), 1, "expected exactly one warning, got {:?}", c.warnings);
+        assert_eq!(c.warnings[0].0, ErrorCode::W0052);
+        assert!(c.warnings[0].1.contains("gpt-4"));
+    }
+
+    #[test]
+    fn ask_namespaced_model_no_warning() {
+        let mut c = ctx();
+        std_ask(
+            &mut c,
+            vec![
+                StdValue::String("openai/gpt-4".into()),
+                StdValue::String("hello".into()),
+            ],
+        )
+        .unwrap();
+        assert!(c.warnings.is_empty(), "got {:?}", c.warnings);
+    }
+
+    #[test]
+    fn ask_reserved_token_does_not_emit_w0052() {
+        // Failure tokens are explicit user intent to trigger an
+        // error; we don't also emit a style warning.
+        let mut c = ctx();
+        let _ = std_ask(
+            &mut c,
+            vec![
+                StdValue::String("_fail_E0090".into()),
+                StdValue::String("x".into()),
+            ],
+        )
+        .unwrap_err();
+        assert!(c.warnings.is_empty(), "got {:?}", c.warnings);
     }
 
     #[test]
@@ -422,9 +782,6 @@ mod tests {
 
     #[test]
     fn spec_contains_all_three() {
-        // P3-012 adds ASK_STREAM and ASK_ALL (spec §15.11.4).  The
-        // legacy "only the three" test now asserts the original
-        // three plus the two new entries are present.
         assert_eq!(SPEC.path, "wlwl:std.ai");
         let names: Vec<&str> = SPEC.functions.iter().map(|(n, _)| *n).collect();
         assert_eq!(
@@ -433,13 +790,8 @@ mod tests {
         );
     }
 
-    // ---- P3-012: ASK_STREAM + ASK_ALL stubs (spec §15.11.4) ----
-
     #[test]
     fn spec_includes_streaming_apis() {
-        // After P3-012, ASK_STREAM / ASK_ALL are also exported
-        // (alongside the v0.3 sync trio). v0.4 will replace the
-        // mock bodies with real chunked / batch HTTP fan-out.
         let names: Vec<&str> = SPEC.functions.iter().map(|(n, _)| *n).collect();
         assert_eq!(
             names,
@@ -449,17 +801,14 @@ mod tests {
 
     #[test]
     fn ask_stream_returns_mock_payload() {
-        // Mock returns the same OK(string) shape as ASK. The
-        // third arg is the callback (we accept and ignore it in
-        // the v0.3 stub; a real HTTP client would invoke it per
-        // chunk).
         let mut c = ctx();
         let v = std_ask_stream(
             &mut c,
             vec![
                 StdValue::String("gpt-4".into()),
                 StdValue::String("hello".into()),
-                StdValue::Null, // callback slot (ignored in v0.3 mock)
+                StdValue::Null, // callback
+                StdValue::Null, // opts
             ],
         )
         .unwrap();
@@ -485,7 +834,12 @@ mod tests {
         let mut c = ctx();
         let err = std_ask_stream(
             &mut c,
-            vec![StdValue::Number(serde_json::Number::from(1)), StdValue::String("p".into())],
+            vec![
+                StdValue::Number(serde_json::Number::from(1)),
+                StdValue::String("p".into()),
+                StdValue::Null,
+                StdValue::Null,
+            ],
         )
         .unwrap_err();
         assert_eq!(err.code, ErrorCode::E0030);
@@ -493,9 +847,6 @@ mod tests {
 
     #[test]
     fn ask_all_returns_array_of_results() {
-        // Mock: ARRAY of mock payload strings, one per prompt.
-        // v0.4 will route each prompt through a real ASK call
-        // and collect OK/ERR per element.
         let mut c = ctx();
         let v = std_ask_all(
             &mut c,
@@ -543,13 +894,9 @@ mod tests {
         assert_eq!(err.code, ErrorCode::E0030);
         assert!(err.message.contains("ASK_ALL"));
     }
-    // ---- P3-009d: type-error paths in ASK / EMBED / COMPLETE ----
 
     #[test]
     fn ask_prompt_not_string_is_e0030() {
-        // Pass a number for the prompt (second arg). The prompt
-        // type-error path on line 84 (other => return Err(type_error(...)))
-        // should fire.
         let err = std_ask(
             &mut ctx(),
             vec![
@@ -564,7 +911,6 @@ mod tests {
 
     #[test]
     fn embed_arity_wrong_is_e0022() {
-        // Three args is outside the [1, 2] window.
         let err = std_embed(
             &mut ctx(),
             vec![
@@ -602,7 +948,6 @@ mod tests {
 
     #[test]
     fn complete_arity_wrong_is_e0022() {
-        // Four args is outside the [1, 3] window.
         let err = std_complete(
             &mut ctx(),
             vec![
@@ -637,5 +982,43 @@ mod tests {
         )
         .unwrap_err();
         assert_eq!(err.code, ErrorCode::E0030);
+    }
+
+    // ---- Phase D1 + D5: real-mode routing helpers ----
+
+    #[test]
+    fn real_mode_inactive_without_endpoint() {
+        // Default ctx (empty env, no feature) → mock.
+        assert!(!real_mode_active(&ctx()));
+    }
+
+    #[test]
+    fn real_mode_inactive_with_endpoint_but_no_feature() {
+        // Even if endpoint is in env, without the `real-ai`
+        // feature the function must NOT activate real mode.
+        let mut c = ctx();
+        c.env.insert("WLWL_AI_ENDPOINT".into(), "https://api.example".into());
+        assert!(!real_mode_active(&c));
+    }
+
+    #[test]
+    fn parse_opts_reads_known_fields() {
+        let opts = serde_json::json!({
+            "system": "you are a helpful assistant",
+            "max_tokens": 256,
+            "temperature": 0.7,
+        });
+        let (sys, mt, t) = parse_opts(&opts).unwrap();
+        assert_eq!(sys.as_deref(), Some("you are a helpful assistant"));
+        assert_eq!(mt, 256);
+        assert!((t - 0.7).abs() < 1e-6);
+    }
+
+    #[test]
+    fn parse_opts_defaults_when_empty() {
+        let (sys, mt, t) = parse_opts(&StdValue::Null).unwrap();
+        assert_eq!(sys, None);
+        assert_eq!(mt, 4096);
+        assert!((t - 0.0).abs() < 1e-6);
     }
 }

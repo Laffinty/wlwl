@@ -3,8 +3,21 @@ name = "wlwl-std"
 version.workspace = true
 edition.workspace = true
 license.workspace = true
-description = "WLWL standard library (Phase 4 §15: std.io / std.fs / std.json / std.ai / std.format)"
+description = "WLWL standard library (Phase 4 §15: std.io / std.fs / std.json / std.ai / std.format / std.agent)"
 
 [dependencies]
 wlwl-error = { workspace = true }
 serde_json = { workspace = true }
+
+# Optional: real LLM HTTP integration (Phase D1, spec v0.4 §15.13).
+# `cargo build --features wlwl-std/real-ai` pulls reqwest + enables
+# the real HTTP path in `ai.rs`. Default builds stay small / offline.
+# The mock path in `ai.rs` works without this feature and is what
+# the unit tests exercise.
+reqwest = { version = "0.12", optional = true, default-features = false, features = ["blocking", "json", "rustls-tls"] }
+
+[features]
+# Default: mock-only build (offline, no reqwest). Tests + CI use this.
+default = []
+# `cargo build --features wlwl-std/real-ai` to enable real HTTP.
+real-ai = ["dep:reqwest"]

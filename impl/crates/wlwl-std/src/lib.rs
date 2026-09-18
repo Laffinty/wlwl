@@ -44,13 +44,37 @@ use wlwl_error::ErrorCode;
 pub type StdValue = serde_json::Value;
 
 /// Per-call context passed to every std function. Holds process-level
-/// state that doesn't belong to any one call (argv, env vars). Phase 4
-/// only carries the basics; Phase 4-batch-3 (std.ai) will add
-/// HTTP-client configuration.
+/// state that doesn't belong to any one call (argv, env vars) plus
+/// the Phase D additions: a warnings sink and an optional HTTP
+/// client for `wlwl:std.ai` real-mode.
+///
+/// ## Warnings
+///
+/// Std functions that produce *warnings* (not errors) push
+/// `(ErrorCode, message)` tuples into `warnings`. The eval side
+/// drains the sink after the call and emits each entry through the
+/// standard `WlwlDiagnostic` channel with `severity = Warning`. Phase
+/// D5 uses this to emit `W0052` when an LLM model name lacks the
+/// `provider/` prefix.
+///
+/// ## HTTP client
+///
+/// The `http_client` field is set up lazily by `ai::ensure_http_client`
+/// when `real-ai` is enabled and `WLWL_AI_ENDPOINT` is in env. The
+/// default (offline / mock) build leaves it `None`; the mock path in
+/// `ai.rs` checks `is_none()` and returns a deterministic payload
+/// without touching the network.
 #[derive(Debug, Clone, Default)]
 pub struct StdCtx {
     pub argv: Vec<String>,
     pub env: HashMap<String, String>,
+    /// Phase D5: warnings emitted by std functions (e.g. W0052 for
+    /// bare model names). The eval side drains after each call.
+    pub warnings: Vec<(wlwl_error::ErrorCode, String)>,
+    /// Phase D1: lazily-initialized reqwest blocking client when
+    /// `real-ai` feature is enabled. `None` for offline/mock builds.
+    #[cfg(feature = "real-ai")]
+    pub http_client: Option<std::sync::Arc<reqwest::blocking::Client>>,
 }
 
 impl StdCtx {
@@ -58,7 +82,16 @@ impl StdCtx {
         Self {
             argv: std::env::args().collect(),
             env: std::env::vars().collect(),
+            warnings: Vec::new(),
+            #[cfg(feature = "real-ai")]
+            http_client: None,
         }
+    }
+
+    /// Push a warning. Std functions call this when they want to
+    /// produce a non-fatal diagnostic (e.g. W0052).
+    pub fn warn(&mut self, code: wlwl_error::ErrorCode, message: impl Into<String>) {
+        self.warnings.push((code, message.into()));
     }
 }
 
