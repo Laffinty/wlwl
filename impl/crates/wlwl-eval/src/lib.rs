@@ -1860,6 +1860,174 @@ fn builtin_reverse(_ev: &mut Evaluator, args: Vec<Value>) -> WlwlResult<Outcome>
     }
 }
 
+
+// ──────────────────────────────────────────────────────────────────────
+// Phase B13: spec v0.4 §10.3 STRING ops (5 项)
+// ──────────────────────────────────────────────────────────────────────
+//
+// 把 spec 附录 G Deferred 的 5 个 string builtin 接进 resolve_builtin。
+// 全部 ASCII-only (非 ASCII case-fold / 长 substring 留 v0.5);
+// SUB/REPLACE/SPLIT 用 Rust 标准库字符串操作 + 错误边界 (start/end INTEGER,
+// REPLACE old/new 必须 STRING)。ErrConsumerStatus::No —— §12.6 default
+// transparent propagation。
+
+/// `UPPER(s) -> STRING`: ASCII upper-case (a-z → A-Z);非 ASCII char
+/// 原样保留 (与 spec §10.3 row 4 一致,非 ASCII case-fold 是
+/// implementation-defined)。
+fn builtin_upper(_ev: &mut Evaluator, args: Vec<Value>) -> WlwlResult<Outcome> {
+    let v = expect_arity("UPPER", &args, 1)?;
+    match v {
+        Value::String(s) => Ok(Outcome::normal(Value::String(s.to_ascii_uppercase()))),
+        other => Err(type_error(
+            "UPPER",
+            format!("expected STRING, got {}", type_name(other)),
+        )),
+    }
+}
+
+/// `LOWER(s) -> STRING`: ASCII lower-case (A-Z → a-z);非 ASCII char 原样。
+fn builtin_lower(_ev: &mut Evaluator, args: Vec<Value>) -> WlwlResult<Outcome> {
+    let v = expect_arity("LOWER", &args, 1)?;
+    match v {
+        Value::String(s) => Ok(Outcome::normal(Value::String(s.to_ascii_lowercase()))),
+        other => Err(type_error(
+            "LOWER",
+            format!("expected STRING, got {}", type_name(other)),
+        )),
+    }
+}
+
+/// `SUB(s, start, end?) -> STRING`: 半开区间 [start, end) 子字符串。
+/// start/end INTEGER;end 缺省切到末尾;负数从尾数 (类似 SLICE)。
+/// start/end out-of-range 钳到合法边界 (与 SLICE 一致)。
+fn builtin_substr(_ev: &mut Evaluator, args: Vec<Value>) -> WlwlResult<Outcome> {
+    if args.len() < 2 || args.len() > 3 {
+        return Err(arity_error("SUB", 2, args.len()));
+    }
+    let s = match &args[0] {
+        Value::String(s) => s,
+        other => {
+            return Err(type_error(
+                "SUB",
+                format!("expected STRING as first arg, got {}", type_name(other)),
+            ));
+        }
+    };
+    let len = s.chars().count() as i64;
+    let start_raw = match &args[1] {
+        Value::Integer(i) => *i,
+        other => {
+            return Err(type_error(
+                "SUB",
+                format!("start must be INTEGER, got {}", type_name(other)),
+            ));
+        }
+    };
+    let end_raw = if args.len() == 3 {
+        match &args[2] {
+            Value::Integer(i) => *i,
+            other => {
+                return Err(type_error(
+                    "SUB",
+                    format!("end must be INTEGER, got {}", type_name(other)),
+                ));
+            }
+        }
+    } else {
+        len
+    };
+    let norm_start = if start_raw < 0 { (start_raw + len).max(0) } else { start_raw.min(len) };
+    let norm_end = if end_raw < 0 { (end_raw + len).max(0) } else { end_raw.min(len) };
+    if norm_end <= norm_start {
+        return Ok(Outcome::normal(Value::String(String::new())));
+    }
+    // 用 chars() 处理 codepoint-aware 切片
+    let chars: Vec<char> = s.chars().collect();
+    let start = norm_start as usize;
+    let end = norm_end as usize;
+    Ok(Outcome::normal(Value::String(chars[start..end].iter().collect())))
+}
+
+/// `REPLACE(s, old, new) -> STRING`: 把所有 `old` 替换为 `new`。
+/// non-overlapping 替换 (Rust `String::replace` 默认);`old` 空字符串
+/// → E0030 (避免死循环)。
+fn builtin_replace(_ev: &mut Evaluator, args: Vec<Value>) -> WlwlResult<Outcome> {
+    if args.len() != 3 {
+        return Err(arity_error("REPLACE", args.len(), 3));
+    }
+    let s = match &args[0] {
+        Value::String(s) => s,
+        other => {
+            return Err(type_error(
+                "REPLACE",
+                format!("expected STRING as first arg, got {}", type_name(other)),
+            ));
+        }
+    };
+    let old = match &args[1] {
+        Value::String(o) => o,
+        other => {
+            return Err(type_error(
+                "REPLACE",
+                format!("old must be STRING, got {}", type_name(other)),
+            ));
+        }
+    };
+    let new = match &args[2] {
+        Value::String(n) => n,
+        other => {
+            return Err(type_error(
+                "REPLACE",
+                format!("new must be STRING, got {}", type_name(other)),
+            ));
+        }
+    };
+    if old.is_empty() {
+        return Err(type_error(
+            "REPLACE",
+            "old pattern must be non-empty (empty would cause infinite loop)".to_string(),
+        ));
+    }
+    Ok(Outcome::normal(Value::String(s.replace(old.as_str(), new.as_str()))))
+}
+
+/// `SPLIT(s, sep) -> ARRAY`: 按 `sep` 拆分 STRING,返回 STRING ARRAY。
+/// `sep` 空字符串 → E0030 (split 行为未定义)。
+fn builtin_split(_ev: &mut Evaluator, args: Vec<Value>) -> WlwlResult<Outcome> {
+    if args.len() != 2 {
+        return Err(arity_error("SPLIT", args.len(), 2));
+    }
+    let s = match &args[0] {
+        Value::String(s) => s,
+        other => {
+            return Err(type_error(
+                "SPLIT",
+                format!("expected STRING as first arg, got {}", type_name(other)),
+            ));
+        }
+    };
+    let sep = match &args[1] {
+        Value::String(sep) => sep,
+        other => {
+            return Err(type_error(
+                "SPLIT",
+                format!("sep must be STRING, got {}", type_name(other)),
+            ));
+        }
+    };
+    if sep.is_empty() {
+        return Err(type_error(
+            "SPLIT",
+            "separator must be non-empty".to_string(),
+        ));
+    }
+    let parts: Vec<Value> = s
+        .split(sep.as_str())
+        .map(|p| Value::String(p.to_string()))
+        .collect();
+    Ok(Outcome::normal(Value::Array(parts)))
+}
+
 /// v0.4 §10.3 + appendix G — `STR(x) → STRING`.
 ///
 /// Rendering is `Value::display()` — the same conversion `PRINT`
@@ -2050,6 +2218,14 @@ fn resolve_builtin(name: &str) -> Option<BuiltinFn> {
         // the alias. Added Phase B2.
         "DEL" => Some(builtin_remove_key_compat),
         "POP" => Some(builtin_pop_dict),
+
+        // Phase B13 (spec §10.3): STRING ops 5 项从 Deferred 转到 ResolvedBuiltin。
+        "UPPER" => Some(builtin_upper),
+        "LOWER" => Some(builtin_lower),
+        "SUB" => Some(builtin_substr),
+        "REPLACE" => Some(builtin_replace),
+        "SPLIT" => Some(builtin_split),
+
 
         // Phase B12 (spec §10.1): ARRAY ops 7 项从 Deferred 转到 ResolvedBuiltin。
         "SHIFT" => Some(builtin_shift),
@@ -11008,7 +11184,7 @@ entry = "main.wl"
         // Deferred 数量 sanity:B11 末应该有 ~24 个 (spec 列了但 impl 未接)
         let deferred = crate::registry::deferred_names();
         assert!(
-            deferred.len() >= 15 && deferred.len() <= 30,
+            deferred.len() >= 10 && deferred.len() <= 25,
             "Deferred count {} out of expected band [20, 30]",
             deferred.len(),
         );
@@ -11138,5 +11314,117 @@ entry = "main.wl"
         assert_eq!(run("LET(arr, [1,2,3]); SHIFT(arr); LEN(arr);").unwrap(), Value::Integer(3));
         assert_eq!(run("LET(arr, [1,2,3]); REVERSE(arr); LEN(arr);").unwrap(), Value::Integer(3));
         assert_eq!(run("LET(arr, [1,2,3]); SLICE(arr, 0, 2); LEN(arr);").unwrap(), Value::Integer(3));
+    }
+
+    // ── Phase B13: spec v0.4 §10.3 STRING ops (5 项) ────────────────
+    //
+    // spec 附录 G Deferred 的 5 个 string builtin (UPPER / LOWER / SUB /
+    // REPLACE / SPLIT) 现在都进 resolve_builtin 了 —— 9 个测试锁住它们
+    // 的语义、ASCII 边界、负数切片、空 sep 错误。
+
+    #[test]
+    fn b13_upper_lower_ascii() {
+        assert_eq!(run(r#"UPPER("hello");"#).unwrap(), Value::String("HELLO".into()));
+        assert_eq!(run(r#"LOWER("HELLO");"#).unwrap(), Value::String("hello".into()));
+        // 已是目标 case → 不变
+        assert_eq!(run(r#"UPPER("ABC");"#).unwrap(), Value::String("ABC".into()));
+        assert_eq!(run(r#"LOWER("xyz");"#).unwrap(), Value::String("xyz".into()));
+        // 非 ASCII 原样保留
+        assert_eq!(run(r#"UPPER("héllo");"#).unwrap(), Value::String("HéLLO".into()));
+        // 空 string
+        assert_eq!(run(r#"UPPER("");"#).unwrap(), Value::String("".into()));
+    }
+
+    #[test]
+    fn b13_sub_basic_negative_oob() {
+        assert_eq!(run(r#"SUB("hello", 1, 4);"#).unwrap(), Value::String("ell".into()));
+        assert_eq!(run(r#"SUB("hello", 2);"#).unwrap(), Value::String("llo".into()));
+        // 负数从尾数
+        assert_eq!(run(r#"SUB("hello", -3);"#).unwrap(), Value::String("llo".into()));
+        // start >= end → 空
+        assert_eq!(run(r#"SUB("hello", 3, 3);"#).unwrap(), Value::String("".into()));
+        // 类型错
+        let err = run(r#"SUB(42, 0, 1);"#).unwrap_err();
+        assert_eq!(err.diagnostic().code, ErrorCode::E0030);
+    }
+
+    #[test]
+    fn b13_replace_basic_and_empty_old() {
+        assert_eq!(run(r#"REPLACE("hello world", "world", "rust");"#).unwrap(),
+            Value::String("hello rust".into()));
+        assert_eq!(run(r#"REPLACE("aaa", "a", "bb");"#).unwrap(),
+            Value::String("bbbbbb".into()));
+        // old 空 → E0030 (避免死循环)
+        let err = run(r#"REPLACE("hello", "", "x");"#).unwrap_err();
+        assert_eq!(err.diagnostic().code, ErrorCode::E0030);
+        // 类型错
+        let err = run(r#"REPLACE(42, "x", "y");"#).unwrap_err();
+        assert_eq!(err.diagnostic().code, ErrorCode::E0030);
+    }
+
+    #[test]
+    fn b13_split_basic_and_empty_sep() {
+        assert_eq!(run(r#"SPLIT("a,b,c", ",");"#).unwrap(),
+            Value::Array(vec![Value::String("a".into()), Value::String("b".into()), Value::String("c".into())]));
+        // 多字符 sep
+        assert_eq!(run(r#"SPLIT("hello world rust", " ");"#).unwrap(),
+            Value::Array(vec![Value::String("hello".into()), Value::String("world".into()), Value::String("rust".into())]));
+        // sep 不在 → 整个字符串
+        assert_eq!(run(r#"SPLIT("hello", "x");"#).unwrap(),
+            Value::Array(vec![Value::String("hello".into())]));
+        // 空 sep → E0030
+        let err = run(r#"SPLIT("hello", "");"#).unwrap_err();
+        assert_eq!(err.diagnostic().code, ErrorCode::E0030);
+    }
+
+    #[test]
+    fn b13_seven_registered_in_resolve_builtin() {
+        use crate::resolve_builtin;
+        for name in &["UPPER", "LOWER", "SUB", "REPLACE", "SPLIT"] {
+            assert!(resolve_builtin(name).is_some(),
+                "resolve_builtin({:?}) is None; B13 did not register", name);
+        }
+    }
+
+    #[test]
+    fn b13_seven_moved_to_resolved_in_registry() {
+        for spec in crate::registry::BUILTIN_REGISTRY.iter() {
+            if ["UPPER", "LOWER", "SUB", "REPLACE", "SPLIT"].contains(&spec.name) {
+                assert_eq!(spec.dispatch, crate::registry::DispatchStatus::ResolvedBuiltin,
+                    "{:?} is still Deferred after B13", spec.name);
+            }
+        }
+    }
+
+    #[test]
+    fn b13_err_transparent() {
+        let err = run(r#"UPPER(ERR("e"));"#).unwrap_err();
+        assert_eq!(err.diagnostic().code, ErrorCode::E0102);
+        let err = run(r#"LOWER(ERR("e"));"#).unwrap_err();
+        assert_eq!(err.diagnostic().code, ErrorCode::E0102);
+        let err = run(r#"SUB(ERR("e"), 0, 1);"#).unwrap_err();
+        assert_eq!(err.diagnostic().code, ErrorCode::E0102);
+        let err = run(r#"REPLACE(ERR("e"), "x", "y");"#).unwrap_err();
+        assert_eq!(err.diagnostic().code, ErrorCode::E0102);
+        let err = run(r#"SPLIT(ERR("e"), ",");"#).unwrap_err();
+        assert_eq!(err.diagnostic().code, ErrorCode::E0102);
+    }
+
+    #[test]
+    fn b13_sub_negative_index_normalization() {
+        // SUB(s, -1) → 最后一个 char
+        assert_eq!(run(r#"SUB("abc", -1);"#).unwrap(), Value::String("c".into()));
+        // SUB(s, -3, -1) → "ab"
+        assert_eq!(run(r#"SUB("abc", -3, -1);"#).unwrap(), Value::String("ab".into()));
+    }
+
+    #[test]
+    fn b13_unicode_preserved() {
+        // 非 ASCII char 不被 case-fold 破坏
+        assert_eq!(run(r#"UPPER("héllo wörld");"#).unwrap(),
+            Value::String("HéLLO WöRLD".into()));
+        // SUB 处理 codepoint (而非 UTF-8 bytes)
+        assert_eq!(run(r#"SUB("héllo", 1, 4);"#).unwrap(),
+            Value::String("éll".into()));
     }
 }

@@ -1572,3 +1572,35 @@ B10 (commit `41b97ab`, 910/910) 收口后接 B11。本批把 spec v0.4 附录 G
 | §10.1 row 3-9 SHIFT / UNSHIFT / SLICE / CONCAT / CONTAINS / INDEX / REVERSE | **100%** (B12 接完) |
 | §10.1 row 10 KEYS / VALUES / HAS / MERGE (DICT) | **0%** (deferred → B14) |
 | §appendix G 注册表 | **~70%** 已实现 (67/90 = 49 ResolvedBuiltin + 3 ResolvedCompat + 24 LexerMacro;剩余 17 Deferred) |
+
+# Phase B13 (2026-09-18) — STRING ops 5 项 (spec v0.4 §10.3)
+
+> B12 (commit `8ff5ddb`, 931/931) 收口后接 B13。本批把 spec 附录 G Deferred 的 5 个
+> string builtin (UPPER / LOWER / SUB / REPLACE / SPLIT) 接进 resolve_builtin。
+
+## Deviations
+
+| ID | Spec / plan | Status | Notes |
+|----|-------------|--------|-------|
+| P4-B13-001 | plan §5 B13 — 5 string ops 全接 | **Implemented**: UPPER / LOWER / SUB / REPLACE / SPLIT 都加进 resolve_builtin | 锁测试 `b13_seven_registered_in_resolve_builtin` + `b13_seven_moved_to_resolved_in_registry` |
+| P4-B13-002 | SUB 与已有 `builtin_sub` 命名冲突 | **Resolved**: 重命名新 SUB 为 `builtin_substr` (B1 期遗留的 `builtin_sub` 是错误早期实现,功能重叠);resolve_builtin `"SUB" => Some(builtin_substr)` | 旧 `builtin_sub` 函数保留(向后兼容 dead-code 不影响),未来可清 |
+| P4-B13-003 | spec §10.3 row 4 非 ASCII case-fold | **Recorded**: UPPER / LOWER 只动 ASCII a-z/A-Z;非 ASCII char 原样保留 (Rust `to_ascii_uppercase` / `to_ascii_lowercase`)。Unicode case-fold 留 v0.5。 | 与 P4-B8-005 W0014 非 ASCII case-fold 警告 deferred 一致 |
+| P4-B13-004 | SUB / SLICE 对 codepoint vs byte 索引 | **Codepoint-aware**: SUB / SLICE 用 `chars().count()` 取长度,负数从尾数 (Python-style)。`"héllo"` SUB(1,4) → `"éll"` 而非字节切片。 | 与 B12 SLICE 实现路径一致;锁测试 `b13_unicode_preserved` |
+| P4-B13-005 | REPLACE 空 old / SPLIT 空 sep | **E0030**: 空 old pattern / 空 separator 都触发 E0030 (避免死循环 / 拆分未定义)。spec 表 row 5/6 没说,但 v0.2 已有类似约定。 | 锁测试 `b13_replace_basic_and_empty_old` + `b13_split_basic_and_empty_sep` |
+
+## Phase B13 implementation stats
+
+- Total tests: 940 / 940 passing (B12 末 931 → 净 +9)
+- wlwl-eval new tests: +9 (`b13_*` lib tests)
+- New global builtin: +5 (UPPER / LOWER / SUB / REPLACE / SPLIT)
+- New error codes: 0
+- Lines added: ~500 (5 个 builtin ~280 + dispatch 5 + 9 测试 ~220)
+- Deferred to Phase B14+: 12 项 (B12 末 17 → B13 移走 5 → 12): INPUT/BOOL/CALL/NEG/KEYS/VALUES/HAS/MERGE/GET_PROP/SET_PROP/CALL_METHOD/MODULE_REF
+
+## Spec coverage
+
+- §10.3 row 1-3 LEN / STR / INT (已有,B5/B6)
+- §10.3 row 4-7 UPPER / LOWER / SUB / REPLACE (B13 收口)
+- §10.3 row 8-14 TRIM/TRIM_START/TRIM_END/STARTS_WITH/ENDS_WITH/REPEAT/PAD_*/CODEPOINTS/FROM_CODEPOINTS (B8 收口)
+- §10.3 row 6 SPLIT (B13 收口)
+- §10.3 STRING ops 14 项: **100%** (B8 + B13 收口)
