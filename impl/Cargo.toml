@@ -35,6 +35,16 @@ wlwl-parser = { path = "crates/wlwl-parser" }
 wlwl-error = { path = "crates/wlwl-error" }
 wlwl-eval = { path = "crates/wlwl-eval" }
 
+
+[profile.test]
+# Phase D: with 100+ tests the default per-test codegen units
+# generate too many .rcgu.o files for the MSVC linker to handle
+# in one command line on Windows (os error 1450). One codegen
+# unit per crate keeps the link command line short.
+codegen-units = 1
+debug = 0
+incremental = false
+
 [profile.release]
 lto = "thin"
 codegen-units = 1
