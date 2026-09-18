@@ -3518,6 +3518,14 @@ pub struct Evaluator {
     /// so each run starts with an empty registry — there's no
     /// static-state leak across `Evaluator::new()` calls.
     pub(crate) test_registry: Vec<crate::test::TestEntry>,
+    /// [v0.4 Phase E1] Boundary-check flag from `wlwl.toml` `[features]
+    /// strict_types = true` (spec §2.7). When `true`, `invoke_closure`
+    /// validates each call's actual argument `TYPE(...)` against the
+    /// parameter's `name: Type` annotation; mismatches raise `E0033`.
+    /// Defaults to `false` so behavior matches v0.3 (annotations parsed
+    /// but ignored at runtime). CLI wires this up via
+    /// `with_strict_types(true)` after loading `wlwl.toml`.
+    pub(crate) strict_types: bool,
 }
 
 impl Default for Evaluator {
@@ -3539,7 +3547,33 @@ impl Evaluator {
             current_span: None,
             format_cache: HashMap::new(),
             test_registry: Vec::new(),
+            strict_types: false,
         }
+    }
+
+    /// Enable or disable strict-types boundary checks (Phase E1,
+    /// spec §2.7). When enabled, `invoke_closure` validates actual
+    /// argument types against per-param `name: Type` annotations
+    /// and raises `E0033` on mismatch. Defaults to `false` (v0.3
+    /// transient behavior).
+    ///
+    /// This is a builder method intended to be chained right after
+    /// `Evaluator::new()`, typically by the CLI after it loads
+    /// `wlwl.toml`:
+    ///
+    /// ```ignore
+    /// let manifest = wlwl_toml::parse(&toml_text)?;
+    /// let mut ev = Evaluator::new().with_strict_types(manifest.strict_types());
+    /// ```
+    pub fn with_strict_types(mut self, on: bool) -> Self {
+        self.strict_types = on;
+        self
+    }
+
+    /// Read the current strict_types flag (Phase E1). Primarily
+    /// for tests; production code sets it via the builder above.
+    pub fn strict_types(&self) -> bool {
+        self.strict_types
     }
 
     /// Set the base directory used to resolve `IMPORT` paths. Must be
@@ -3562,6 +3596,7 @@ impl Evaluator {
             current_span: None,
             format_cache: HashMap::new(),
             test_registry: Vec::new(),
+            strict_types: false,
         }
     }
 
@@ -4426,6 +4461,53 @@ impl Evaluator {
                 ),
                 span.clone(),
             ));
+        }
+        // [v0.4 Phase E1 -- spec §2.7] strict_types boundary check.
+        // When `self.strict_types` is true, every param with a
+        // `: Type` annotation must receive a value whose TYPE matches
+        // the annotation (case-insensitive, top-level shape only).
+        // Nested generic / array element matching is deliberately
+        // deferred to a later sub-phase; the spec §2.7 budget is a
+        // ≤10% overhead in strict mode, which a top-level compare
+        // comfortably meets. Failures raise E0033 (Phase E1) and do
+        // NOT mutate any state.
+        if self.strict_types {
+            for (p, v) in params.iter().zip(arg_values.iter()) {
+                let Some(ann) = p.type_annotation.as_ref() else {
+                    continue;
+                };
+                let expected = ann.text.to_ascii_uppercase();
+                let actual = value_type_name(v).to_string();
+                if expected != actual {
+                    let arg_loc = Location {
+                        file: span.file.clone(),
+                        line: span.line_start,
+                        col: span.col_start,
+                        line_end: span.line_end,
+                        col_end: span.col_end,
+                    };
+                    let ann_loc = Location {
+                        file: ann.span.file.clone(),
+                        line: ann.span.line_start,
+                        col: ann.span.col_start,
+                        line_end: ann.span.line_end,
+                        col_end: ann.span.col_end,
+                    };
+                    let diag = WlwlDiagnostic::new(
+                        ErrorCode::E0033,
+                        "type annotation mismatch (overwritten by helper)",
+                        arg_loc.clone(),
+                    )
+                    .with_strict_types_violation(
+                        expected.clone(),
+                        actual.clone(),
+                        ann_loc,
+                        arg_loc,
+                        "function",
+                    );
+                    return Err(diag.into());
+                }
+            }
         }
         // Install the function's lexical frame on top of the caller's
         // env. This makes the function's lexical captures visible (the
@@ -12740,5 +12822,144 @@ entry = "main.wl"
         assert_eq!(run_in(&dir, "1;").unwrap(), Value::Integer(1));
         let _ = fs::remove_dir_all(&dir);
     }
+
+    // ---- Phase E1 (spec v0.4 §2.7): strict_types boundary check ----
+
+    /// Helper: parse, build an evaluator with strict_types toggled,
+    /// eval, and return the result.
+    fn run_strict(src: &str, on: bool) -> WlwlResult<Value> {
+        let e = parse(src, "t.wl")?;
+        let mut ev = Evaluator::new().with_strict_types(on);
+        ev.eval(&e)
+    }
+
+    #[test]
+    fn e1_strict_types_default_off_no_check() {
+        // strict_types defaults to false; a STRING passed where an
+        // INTEGER is annotated must run without error (annotations
+        // are Transient by default, matching v0.3 behavior).
+        let r = run_strict(
+            "LET(f, FUN((x: INTEGER), x)); f(\"hi\");",
+            false,
+        );
+        assert!(r.is_ok(), "expected ok, got {:?}", r);
+    }
+
+    #[test]
+    fn e1_strict_types_on_integer_param_accepts_integer() {
+        let r = run_strict(
+            "LET(f, FUN((x: INTEGER), x)); f(42);",
+            true,
+        );
+        assert!(r.is_ok(), "expected ok, got {:?}", r);
+        assert_eq!(r.unwrap(), Value::Integer(42));
+    }
+
+    #[test]
+    fn e1_strict_types_on_string_for_integer_param_is_e0033() {
+        let r = run_strict(
+            "LET(f, FUN((x: INTEGER), x)); f(\"hi\");",
+            true,
+        );
+        let err = r.expect_err("expected E0033");
+        let msg = err.diagnostic().message.clone();
+        assert!(
+            msg.contains("type annotation mismatch"),
+            "wrong message: {}",
+            msg
+        );
+        assert!(
+            msg.contains("INTEGER") && msg.contains("STRING"),
+            "expected/actual not in message: {}",
+            msg
+        );
+        // The diagnostic must carry both spans in `related`.
+        let rels = &err.diagnostic().related;
+        assert!(
+            rels.len() >= 2,
+            "expected at least 2 related locations, got {}",
+            rels.len()
+        );
+        let msgs: Vec<&str> = rels.iter().map(|r| r.message.as_str()).collect();
+        assert!(
+            msgs.iter().any(|m| m.contains("INTEGER") && m.contains("annotation")),
+            "annotation related missing: {:?}",
+            msgs
+        );
+        assert!(
+            msgs.iter().any(|m| m.contains("STRING") && m.contains("actual")),
+            "actual related missing: {:?}",
+            msgs
+        );
+    }
+
+    #[test]
+    fn e1_strict_types_unannotated_param_passes_through() {
+        // A parameter without a `: Type` annotation is never
+        // checked, regardless of strict_types.
+        let r = run_strict(
+            "LET(f, FUN((x), x)); f(\"hi\");",
+            true,
+        );
+        assert!(r.is_ok(), "unannotated param should pass: got {:?}", r);
+        assert_eq!(r.unwrap(), Value::String("hi".into()));
+    }
+
+    #[test]
+    fn e1_strict_types_mixed_params_only_annotated_checked() {
+        // First param has annotation; second does not. Passing a
+        // mismatched value for the first raises E0033; the second
+        // is unconstrained.
+        let r = run_strict(
+            "LET(f, FUN((x: INTEGER, y), +(x, 0))); f(\"hi\", \"world\");",
+            true,
+        );
+        let err = r.expect_err("expected E0033");
+        assert!(err.diagnostic().message.contains("INTEGER"), "got: {}",
+            err.diagnostic().message);
+    }
+
+    #[test]
+    fn e1_strict_types_recursion_checks_each_call() {
+        // A self-recursive function with strict_types: each recursive
+        // call is checked independently. Passing an INTEGER works;
+        // passing a STRING triggers E0033.
+        let ok = run_strict(
+            "LET(loop, FUN((n: INTEGER), IF(==(n, 0), 0, loop(-(n, 1))))); loop(3);",
+            true,
+        );
+        assert!(ok.is_ok(), "expected ok, got {:?}", ok);
+
+        let bad = run_strict(
+            "LET(loop, FUN((n: INTEGER), IF(==(n, 0), 0, loop(-(n, 1))))); loop(\"oops\");",
+            true,
+        );
+        assert!(bad.is_err(), "expected E0033, got ok");
+        assert!(bad.unwrap_err().diagnostic().message.contains("INTEGER"),
+            "expected INTEGER in diagnostic");
+    }
+
+    #[test]
+    fn e1_strict_types_uses_uppercase_type_names_case_insensitive() {
+        // Lowercase annotation should still match (parser preserves
+        // source text; we uppercase for comparison).
+        let r = run_strict(
+            "LET(f, FUN((x: integer), x)); f(42);",
+            true,
+        );
+        assert!(r.is_ok(), "lowercase annotation should match, got {:?}", r);
+    }
+
+    #[test]
+    fn e1_strict_types_builder_round_trip() {
+        // Builder API + getter.
+        let ev = Evaluator::new().with_strict_types(true);
+        assert!(ev.strict_types());
+        let ev = Evaluator::new().with_strict_types(false);
+        assert!(!ev.strict_types());
+        let ev = Evaluator::new();
+        assert!(!ev.strict_types(), "default should be off");
+    }
+
 
 }

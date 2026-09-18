@@ -335,7 +335,31 @@ impl Manifest {
             Some(toml::Value::Boolean(true))
         )
     }
+    /// v0.4 §2.7 / §13.8 `[features] strict_types` flag (Phase E1).
+    /// Defaults to `false`; when `true`, the evaluator inserts
+    /// transient cast checks at three boundaries (per spec §2.7):
+    ///
+    /// 1. **Function entry (public API)** -- param type annotation vs
+    ///    actual `TYPE` of the argument -> `E0033`.
+    /// 2. **IMPORT boundary** -- imported binding's actual value vs
+    ///    the contract type declared by the exporting module -> `E0033`.
+    /// 3. **FFI boundary** -- out of scope for v0.4 (no FFI).
+    ///
+    /// When `false` (the default), behavior is identical to v0.3:
+    /// type annotations are parsed but ignored at runtime, no
+    /// boundary checks fire.
+    ///
+    /// The v0.4 spec also pegs an engineering budget
+    /// (non-strict >= 0% overhead, strict <= 10% overhead); this is
+    /// not normative -- see spec §2.7 last paragraph.
+    pub fn strict_types(&self) -> bool {
+        matches!(
+            self.features.get("strict_types"),
+            Some(toml::Value::Boolean(true))
+        )
+    }
 }
+
 
 /// Resolve a `<namespace>:<name>` reference to a local directory,
 /// using `[namespaces]` as an override and `[dependencies]` as the
@@ -739,4 +763,93 @@ allow_builtin_shadow = false
 "#).unwrap();
         assert!(!m.allow_builtin_shadow());
     }
+    // ---- Phase E1 (spec v0.4 §2.7 / §13.8): strict_types ----
+
+    #[test]
+    fn strict_types_defaults_false() {
+        let m = parse(r#"
+[package]
+name = "tiny"
+version = "0.0.1"
+entry = "main.wl"
+"#).unwrap();
+        assert!(!m.strict_types());
+    }
+
+    #[test]
+    fn strict_types_true_when_flagged() {
+        let m = parse(r#"
+[package]
+name = "tiny"
+version = "0.0.1"
+entry = "main.wl"
+
+[features]
+strict_types = true
+"#).unwrap();
+        assert!(m.strict_types());
+    }
+
+    #[test]
+    fn strict_types_false_value_is_false() {
+        let m = parse(r#"
+[package]
+name = "tiny"
+version = "0.0.1"
+entry = "main.wl"
+
+[features]
+strict_types = false
+"#).unwrap();
+        assert!(!m.strict_types());
+    }
+
+    #[test]
+    fn strict_types_non_boolean_is_false() {
+        // Spec §13.8 — `strict_types` is a boolean feature. A non-boolean
+        // value (string / int / table) means "no strict_types".
+        // We do NOT raise an error at the manifest level; the engine
+        // simply treats the feature as off. This mirrors the
+        // `allow_builtin_shadow` precedent.
+        let m = parse(r#"
+[package]
+name = "tiny"
+version = "0.0.1"
+entry = "main.wl"
+
+[features]
+strict_types = "yes"
+"#).unwrap();
+        assert!(!m.strict_types());
+
+        let m = parse(r#"
+[package]
+name = "tiny"
+version = "0.0.1"
+entry = "main.wl"
+
+[features]
+strict_types = 1
+"#).unwrap();
+        assert!(!m.strict_types());
+    }
+
+    #[test]
+    fn strict_types_coexists_with_other_features() {
+        // Co-existence with allow_builtin_shadow (Phase C5) -- both
+        // can be set independently; one does not imply the other.
+        let m = parse(r#"
+[package]
+name = "tiny"
+version = "0.0.1"
+entry = "main.wl"
+
+[features]
+strict_types = true
+allow_builtin_shadow = true
+"#).unwrap();
+        assert!(m.strict_types());
+        assert!(m.allow_builtin_shadow());
+    }
+
 }

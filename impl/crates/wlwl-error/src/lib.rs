@@ -701,6 +701,73 @@ impl WlwlDiagnostic {
         self
     }
 
+
+    /// [v0.4 Phase E1] Build the spec-mandated E0033
+    /// `strict_types` violation diagnostic (spec §2.7).
+    ///
+    /// - `expected`: the declared type from the annotation
+    ///   (e.g. `"INTEGER"` / `"ARRAY"`).
+    /// - `actual`: the runtime `TYPE(...)` of the value at the
+    ///   boundary (e.g. `"STRING"`).
+    /// - `annotation_location`: where the type annotation was
+    ///   written (e.g. the parameter's `: Type` token).
+    /// - `value_location`: where the offending value appeared
+    ///   (e.g. the argument expression span at the call site).
+    /// - `boundary`: one of `"function"` / `"import"` / `"ffi"`
+    ///   — purely cosmetic for the human reader and for AI
+    ///   tooling that groups errors by boundary class.
+    ///
+    /// The constructed diagnostic:
+    /// - has the canonical message
+    ///   `"type annotation mismatch: expected X, got Y"`;
+    /// - carries both spans in `related` so AI tools can navigate
+    ///   either side of the mismatch;
+    /// - sets `hint` to a one-line remediation tip
+    ///   (`"remove the annotation or coerce the value at the
+    ///   boundary"`).
+    pub fn with_strict_types_violation(
+        mut self,
+        expected: impl Into<String>,
+        actual: impl Into<String>,
+        annotation_location: Location,
+        value_location: Location,
+        boundary: &str,
+    ) -> Self {
+        let expected = expected.into();
+        let actual = actual.into();
+        self.message = format!(
+            "type annotation mismatch: expected {}, got {}",
+            expected, actual
+        );
+        self.hint = Some(match boundary {
+            "function" => format!(
+                "remove the `: {}` annotation from the parameter,                  or coerce the call-site argument at the boundary",
+                expected
+            ),
+            "import" => format!(
+                "the importing module expected `{}` but the exported                  binding is `{}`; align the contract or relax the                  boundary check",
+                expected, actual
+            ),
+            "ffi" => format!(
+                "the FFI shim cannot convert `{}` to `{}`; adjust                  the conversion or the calling code",
+                actual, expected
+            ),
+            _ => format!(
+                "remove the `: {}` annotation or coerce the value                  at the boundary",
+                expected
+            ),
+        });
+        self.related.push(RelatedLocation {
+            message: format!("type annotation declared `{}`", expected),
+            location: annotation_location,
+        });
+        self.related.push(RelatedLocation {
+            message: format!("actual value has type `{}`", actual),
+            location: value_location,
+        });
+        self
+    }
+
     /// [v0.4] Attach a `cause` (WRAP chain link, spec `Sec. 12.8` /
     /// `Sec. 14.2`). Replaces any previously set cause. Used by
     /// `UNWRAP(ERR(e))` to carry the original error payload into the
@@ -1398,5 +1465,180 @@ mod tests {
         assert!(rendered.contains("hint: did you import it?"), "got: {}", rendered);
         assert!(rendered.contains("note: imported here (b.wl:3:1)"), "got: {}", rendered);
     }
+
+    // ---- Phase E1 (spec v0.4 §2.7): E0033 strict_types helper ----
+
+    #[test]
+    fn e0033_helper_sets_canonical_message() {
+        let d = WlwlDiagnostic::new(
+            ErrorCode::E0033,
+            "placeholder -- to be overwritten by helper",
+            Location::point("a.wl", 5, 1),
+        )
+        .with_strict_types_violation(
+            "INTEGER",
+            "STRING",
+            Location::point("a.wl", 3, 5),
+            Location::point("a.wl", 5, 1),
+            "function",
+        );
+        assert_eq!(
+            d.message,
+            "type annotation mismatch: expected INTEGER, got STRING"
+        );
+        assert_eq!(d.code, ErrorCode::E0033);
+        assert_eq!(d.error_category, ErrorCategory::Type);
+        assert!(!d.retryable);
+    }
+
+    #[test]
+    fn e0033_helper_carries_annotation_and_value_in_related() {
+        let d = WlwlDiagnostic::new(
+            ErrorCode::E0033,
+            "ignored",
+            Location::point("a.wl", 5, 1),
+        )
+        .with_strict_types_violation(
+            "ARRAY",
+            "INTEGER",
+            Location::point("a.wl", 1, 4),
+            Location::point("a.wl", 5, 1),
+            "function",
+        );
+        // Two related entries: one for the annotation, one for the value.
+        assert_eq!(d.related.len(), 2);
+        assert!(d.related[0].message.contains("ARRAY"));
+        assert!(d.related[0].message.contains("annotation"));
+        assert_eq!(d.related[0].location.file, "a.wl");
+        assert_eq!(d.related[0].location.line, 1);
+        assert_eq!(d.related[0].location.col, 4);
+        assert!(d.related[1].message.contains("INTEGER"));
+        assert_eq!(d.related[1].location.line, 5);
+    }
+
+    #[test]
+    fn e0033_helper_hint_function_boundary() {
+        let d = WlwlDiagnostic::new(
+            ErrorCode::E0033,
+            "ignored",
+            Location::point("a.wl", 5, 1),
+        )
+        .with_strict_types_violation(
+            "INTEGER",
+            "STRING",
+            Location::point("a.wl", 3, 5),
+            Location::point("a.wl", 5, 1),
+            "function",
+        );
+        let h = d.hint.expect("hint must be Some after helper");
+        assert!(h.contains("STRING") || h.contains("coerce"), "got: {}", h);
+        assert!(h.contains("INTEGER"), "got: {}", h);
+    }
+
+    #[test]
+    fn e0033_helper_hint_import_boundary() {
+        let d = WlwlDiagnostic::new(
+            ErrorCode::E0033,
+            "ignored",
+            Location::point("a.wl", 5, 1),
+        )
+        .with_strict_types_violation(
+            "DICT",
+            "STRING",
+            Location::point("a.wl", 1, 1),
+            Location::point("b.wl", 7, 4),
+            "import",
+        );
+        let h = d.hint.expect("hint must be Some after helper");
+        assert!(h.contains("DICT"), "got: {}", h);
+        assert!(h.contains("STRING"), "got: {}", h);
+        assert!(
+            h.contains("contract") || h.contains("importing"),
+            "got: {}",
+            h
+        );
+    }
+
+    #[test]
+    fn e0033_helper_hint_ffi_boundary() {
+        let d = WlwlDiagnostic::new(
+            ErrorCode::E0033,
+            "ignored",
+            Location::point("a.wl", 5, 1),
+        )
+        .with_strict_types_violation(
+            "INTEGER",
+            "FLOAT",
+            Location::point("ffi.wl", 1, 1),
+            Location::point("ffi.wl", 9, 2),
+            "ffi",
+        );
+        let h = d.hint.expect("hint must be Some after helper");
+        assert!(h.contains("FFI") || h.contains("shim"), "got: {}", h);
+    }
+
+    #[test]
+    fn e0033_helper_unknown_boundary_uses_generic_hint() {
+        // Unknown boundary label -> falls back to the generic hint
+        // without panicking. Defensive: an evaluator bug might
+        // pass a typo'd boundary name; we must not crash the
+        // diagnostic construction path.
+        let d = WlwlDiagnostic::new(
+            ErrorCode::E0033,
+            "ignored",
+            Location::point("a.wl", 5, 1),
+        )
+        .with_strict_types_violation(
+            "INTEGER",
+            "STRING",
+            Location::point("a.wl", 1, 1),
+            Location::point("a.wl", 5, 1),
+            "banana",
+        );
+        let h = d.hint.expect("hint must be Some after helper");
+        assert!(h.contains("INTEGER"), "got: {}", h);
+        assert!(!h.contains("FFI"), "got: {}", h);
+    }
+
+    #[test]
+    fn e0033_helper_preserves_existing_hint_only_when_no_call() {
+        // Without calling the helper, hint stays None.
+        let d = WlwlDiagnostic::new(
+            ErrorCode::E0033,
+            "raw message",
+            Location::point("a.wl", 1, 1),
+        );
+        assert!(d.hint.is_none());
+        assert!(d.related.is_empty());
+    }
+
+    #[test]
+    fn e0033_helper_jsonl_round_trip() {
+        // The helper must not break JSONL serialization -- both
+        // related entries and the message must survive.
+        let d = WlwlDiagnostic::new(
+            ErrorCode::E0033,
+            "ignored",
+            Location::point("a.wl", 5, 1),
+        )
+        .with_strict_types_violation(
+            "INTEGER",
+            "STRING",
+            Location::point("a.wl", 1, 1),
+            Location::point("a.wl", 5, 1),
+            "function",
+        )
+        .with_source_line("LET(f, FUN((x: INTEGER), x));");
+        let jsonl = d.render_jsonl();
+        assert!(jsonl.contains("E0033"), "got: {}", jsonl);
+        assert!(
+            jsonl.contains("type annotation mismatch: expected INTEGER, got STRING"),
+            "got: {}",
+            jsonl
+        );
+        // JSONL must be one line (no embedded newlines).
+        assert!(!jsonl.contains('\n'), "got: {}", jsonl);
+    }
+
 }
 

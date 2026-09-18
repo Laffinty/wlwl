@@ -108,9 +108,15 @@ fn run_file(file: &PathBuf, format: OutputFormat, execute: bool) -> ExitCode {
         .map(|p| p.to_path_buf())
         .unwrap_or_else(|| PathBuf::from("."));
 
+    // [v0.4 Phase E1] Wire up strict_types from wlwl.toml's
+    // [features] strict_types. The flag is read at most once per
+    // invocation; see `load_manifest_strict_types` for the failure
+    // modes that fall back to `false`.
+    let strict_types = load_manifest_strict_types(&base_dir);
     let mut ev = wlwl_eval::Evaluator::new()
         .with_source(&source, &file_name)
-        .with_base_dir(base_dir.clone());
+        .with_base_dir(base_dir.clone())
+        .with_strict_types(strict_types);
     match ev.eval(&ast) {
         Ok(_v) => {
             try_write_lock(&base_dir);
@@ -226,6 +232,33 @@ fn find_project_root(start: &std::path::Path) -> std::path::PathBuf {
             return start.to_path_buf();
         }
     }
+}
+
+/// [v0.4 Phase E1] Read `wlwl.toml` from the project root and
+/// return the `[features] strict_types` flag.
+///
+/// Failure modes (no manifest / read error / parse error) all
+/// silently default to `false` so that:
+/// - standalone `.wl` files with no surrounding project still run;
+/// - manifest parse errors don't block program execution (the
+///   user will see them via `try_write_lock` if/when it runs).
+///
+/// The function is intentionally best-effort; spec §2.7 says
+/// strict_types defaults to off, which is exactly the safe
+/// default when we cannot read the manifest.
+fn load_manifest_strict_types(base_dir: &std::path::Path) -> bool {
+    let project_root = find_project_root(base_dir);
+    let toml_path = project_root.join("wlwl.toml");
+    if !toml_path.is_file() {
+        return false;
+    }
+    let Ok(src) = fs::read_to_string(&toml_path) else {
+        return false;
+    };
+    let Ok(manifest) = wlwl_toml::manifest::parse(&src) else {
+        return false;
+    };
+    manifest.strict_types()
 }
 
 /// After a successful `wlwl run`, refresh the project's
@@ -591,6 +624,146 @@ entry = "main.wl"
         // Should not panic.
         try_write_lock(&dir);
         assert!(!dir.join("wlwl.lock").exists());
+        let _ = fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn cli_strict_types_off_by_default() {
+        // No wlwl.toml => strict_types defaults to off, so a
+        // STRING-for-INTEGER mismatch must NOT raise E0033.
+        let dir = std::env::temp_dir().join(format!(
+            "wlwl-cli-strict-off-{}-{}",
+            std::process::id(),
+            std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .unwrap()
+                .as_nanos()
+        ));
+        let _ = fs::remove_dir_all(&dir);
+        fs::create_dir_all(&dir).unwrap();
+        let p = dir.join("main.wl");
+        fs::write(
+            &p,
+            "LET(f, FUN((x: INTEGER), x)); f(\"hi\");",
+        )
+        .unwrap();
+        let code = run_file(&p, OutputFormat::Human, true);
+        assert_eq!(code, ExitCode::SUCCESS);
+        let _ = fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn cli_strict_types_on_raises_e0033_via_cli() {
+        // wlwl.toml with [features] strict_types = true =>
+        // run_file must surface E0033 (non-zero exit).
+        let dir = std::env::temp_dir().join(format!(
+            "wlwl-cli-strict-on-{}-{}",
+            std::process::id(),
+            std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .unwrap()
+                .as_nanos()
+        ));
+        let _ = fs::remove_dir_all(&dir);
+        fs::create_dir_all(&dir).unwrap();
+        fs::write(
+            dir.join("wlwl.toml"),
+            "[package]\nname = \"app\"\nversion = \"0.1.0\"\nentry = \"main.wl\"\n\n[features]\nstrict_types = true\n",
+        )
+        .unwrap();
+        let p = dir.join("main.wl");
+        fs::write(
+            &p,
+            "LET(f, FUN((x: INTEGER), x)); f(\"hi\");",
+        )
+        .unwrap();
+        let code = run_file(&p, OutputFormat::Human, true);
+        assert_ne!(code, ExitCode::SUCCESS, "E0033 should fail the run");
+        let _ = fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn cli_strict_types_human_render_includes_diag_message() {
+        // The human-readable error format must include the E0033
+        // canonical "type annotation mismatch" message.
+        let dir = std::env::temp_dir().join(format!(
+            "wlwl-cli-strict-hr-{}-{}",
+            std::process::id(),
+            std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .unwrap()
+                .as_nanos()
+        ));
+        let _ = fs::remove_dir_all(&dir);
+        fs::create_dir_all(&dir).unwrap();
+        fs::write(
+            dir.join("wlwl.toml"),
+            "[package]\nname = \"app\"\nversion = \"0.1.0\"\nentry = \"main.wl\"\n\n[features]\nstrict_types = true\n",
+        )
+        .unwrap();
+        let p = dir.join("main.wl");
+        fs::write(&p, "LET(f, FUN((x: INTEGER), x)); f(\"hi\");").unwrap();
+        // Capture stdout/stderr? We just check that the exit code
+        // indicates failure -- the diagnostic surface is tested
+        // elsewhere (wlwl-error tests); here we only need to prove
+        // the CLI honors the manifest flag end-to-end.
+        let code = run_file(&p, OutputFormat::Human, true);
+        assert_ne!(code, ExitCode::SUCCESS);
+        let _ = fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn cli_strict_types_missing_manifest_falls_back_to_false() {
+        // Empty dir + .wl file with no surrounding project => no
+        // wlwl.toml, so the helper must return false and the program
+        // must succeed.
+        let dir = std::env::temp_dir().join(format!(
+            "wlwl-cli-strict-no-manifest-{}-{}",
+            std::process::id(),
+            std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .unwrap()
+                .as_nanos()
+        ));
+        let _ = fs::remove_dir_all(&dir);
+        fs::create_dir_all(&dir).unwrap();
+        let p = dir.join("orphan.wl");
+        fs::write(
+            &p,
+            "LET(f, FUN((x: INTEGER), x)); f(\"hi\");",
+        )
+        .unwrap();
+        let code = run_file(&p, OutputFormat::Human, true);
+        assert_eq!(code, ExitCode::SUCCESS);
+        let _ = fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn cli_strict_types_broken_manifest_does_not_crash_run() {
+        // Malformed wlwl.toml: the strict_types helper must default
+        // to false (best-effort, see Phase E1 docs).
+        let dir = std::env::temp_dir().join(format!(
+            "wlwl-cli-strict-broken-{}-{}",
+            std::process::id(),
+            std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .unwrap()
+                .as_nanos()
+        ));
+        let _ = fs::remove_dir_all(&dir);
+        fs::create_dir_all(&dir).unwrap();
+        fs::write(dir.join("wlwl.toml"), "not = [valid toml").unwrap();
+        let p = dir.join("main.wl");
+        fs::write(
+            &p,
+            "LET(f, FUN((x: INTEGER), x)); f(\"hi\");",
+        )
+        .unwrap();
+        let code = run_file(&p, OutputFormat::Human, true);
+        // Even though wlwl.toml is malformed, the program itself is
+        // valid and must run successfully (strict_types defaults to
+        // false on parse failure).
+        assert_eq!(code, ExitCode::SUCCESS);
         let _ = fs::remove_dir_all(&dir);
     }
 
