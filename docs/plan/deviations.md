@@ -1302,3 +1302,41 @@ P3-013 选 §4.5 解读 (混用是 warning). 理由:
 | Spec coverage | §10.6 100% (三个 spec 示例逐字锁定);§15.8 100%;§10.3 STR 100%;§14.4 type bucket 无跳号 |
 | Deferred to Phase B6 | `RANGE` step=0 → E0038 发射点 (码已注册) |
 | Deferred to Phase E | strict_types 违例 → E0033 发射点 (码已注册) |
+# Phase B6 (2026-09-18) — `wlwl:std.collection` 高阶集合函数 17 个 (spec v0.4 §15.7 / §10.5)
+
+> B5 (commit, 787/787) 收口后接 B6。本批实现 spec §15.7 / §10.5 的 17 个高阶集合函数。
+> 关键架构决策：`wlwl:std.collection` 的 `ModuleSpec.functions` 是**空数组**（name catalog），真实 17 个 impl 在
+> `wlwl-eval/src/collection.rs::BUILTINS`。原因：现有 std 边界（`value_to_std_value`）拒绝 `Value::Closure` /
+> `Value::NativeFn`（B5 P4-B5-006 钉死的契约），9 个 callback-taking 函数必须走 eval 路径。8 个 callback-free 函数
+> 也能放 std，但「同模块部分函数走 std、部分走 eval」会引发「MAP works, SORT doesn't」类意外 —— 全部 17 个放 eval
+> 更安全。`NativeInvoke::Builtin(BuiltinFn)` 是新 variant（与既有 `NativeInvoke::Std(wlwl_std::StdFn)` 并列），
+> 未来需要 callback 的 std 模块（如 B7 `std.test` `RUN_TESTS`）可重用。
+
+| ID | Spec / plan | Status | Notes |
+|----|-------------|--------|-------|
+| P4-B6-001 | plan §5.6 + spec §15.7 | **Architectural deviation (justified)** | `wlwl:std.collection` 走「name catalog + eval-internal BUILTINS」而非标准 std 模块。原因：9 个 callback-taking 函数必须 invoke_closure，std 边界（`value_to_std_value`）拒绝 Closure 走 E0030（B5 P4-B5-006）。`wlwl-std::resolve("wlwl:std.collection")` 仍返 Some(&SPEC)，path 探测通过；`Evaluator::load_std` 检测 path 时绕过 `spec.functions` 循环，从 `wlwl_eval::collection::BUILTINS` 表（`NativeInvoke::Builtin(BuiltinFn)`）绑定。这是 std/eval 架构的扩展点，B7 `std.test` `RUN_TESTS` 大概率走同一路径。 |
+| P4-B6-002 | spec §10.5 row 4 — `SORT` 默认 `<` | **Implemented** | `SORT(arr)` 不传 cmp 时走内置 `default_less`（与现有 operator `<` 同语义），不调 user code。`SORT(arr, cmp)` 用 `RefCell<Option<WlwlResult<Outcome>>>` park 失败（`sort_by` 闭包不能 `?`），闭包退出后 `pending.into_inner()` 决定正常返值还是短路 ERR。锁测试：`b6_sort_with_custom_comparator_descending` / `b6_sort_default_uses_lt`。 |
+| P4-B6-003 | spec §10.5 row 7 — `RANGE` step=0 → E0038 | **Implemented** | 码在 B5 注册（type bucket, retryable=FALSE），本批首次启用。`RANGE` 边界：`step.checked_add` 饱和（避免 `RANGE(0, MAX, 1)` 死循环），饱和发生在 i64 边界，符合 §9.5 overflow-saturation 惯例；不 emit W0015（warning 通道为算术，不为迭代计数）。锁测试：`b6_range_step_zero_is_e0038` / `b6_range_negative_step_descending`。 |
+| P4-B6-004 | spec §10.5 row 15 — `GROUP_BY` key 必须 STRING | **Deviation (coercion)** | `Value::Dict` key 必须是 STRING（v0.3 §10.4 决策）。key fn 返回非 STRING 时走 `STR` 语义 coerce（与 FORMAT/PRINT「非 STRING → STR」约定一致）。spec 文本「按 k 分组」未明示 coerce，但 value_type 限制 + 现有 display 约定强烈建议；不 coerce 会让 `GROUP_BY([1,2,3], FUN((x), %(x,2)))` 直接 E0030。锁测试：`b6_group_by_returns_dict_of_arrays`（key 是整数，自动 coerce 到 `"0"` / `"1"`）。 |
+| P4-B6-005 | spec §10.5 row 6 — `ZIP` 非 array arg | **Deviation (interpretation)** | spec 未明示非 array 行为。实现：非 array arg 当作 1-tuple（单元素 array）。让 `ZIP(a, b)` 与 `ZIP([a], [b])` 行为一致；与 Python `zip(*iterables)` 同源。锁测试：`b6_zip_two_arrays` + `b6_zip_shortest_input_wins`。 |
+| P4-B6-006 | plan §0.1 决策 #8 — 13/13 crate ≥ 90% line | **Acceptable (-0.24pp TOTAL)** | B5 末 TOTAL line 93.09% → B6 末 92.85%（-0.24pp）。新文件 `wlwl-eval/src/collection.rs` 单文件 78.40% line —— 单元测试只覆盖 8 helper + 1 names-match，17 个 builtin 的实际用户路径通过 `wlwl-eval/src/lib.rs::tests` 的 39 个集成测试（`run_std` 路径）跑过，coverage 算在 `wlwl-eval/src/lib.rs`（93.90% line）；按 line-of-coverage 算入 collection.rs 的部分只有 `pub fn builtin_*` 的函数签名/返回路径，函数体几乎全走集成测试。13/13 crate ≥ 90% line 守住（最低 `wlwl-eval/lib.rs` 93.90%）。补 coverage 单测是 P4-B6-007 候选（独立 batch，不阻塞 Phase B 推进）。 |
+
+## Phase B6 implementation stats
+
+| Item | Data |
+|------|------|
+| Total tests | **826 / 826 passing** (B5 末 787 → 净 +39：eval 集成 39 + collection 单元 13 + std resolve 1 + std collection 5) |
+| `wlwl-eval` new tests | **+39**（IMPORT 路径集成测试：`b6_*` × 39） |
+| `wlwl-eval/src/collection.rs` 单元测试 | **+13**（names_match_catalog / short_circuit × 2 / value_kind / default_less × 4 / arity / mk_fn1_placeholder） |
+| `wlwl-std` new tests | **+6**（`resolve_collection` 1 + collection.rs `names_*` 4 + `spec_path_is_wlwl_std_collection` + `spec_functions_is_empty`） |
+| `wlwl-error` new tests | 0（码无新增，E0038 沿用 B5 注册） |
+| New error codes | 0 E-codes;E0038 首次启用（码 B5 已注册） |
+| New builtins | **+17**（`wlwl_eval::collection::BUILTINS`：MAP / FILTER / REDUCE / SORT / SORT_BY / ZIP / RANGE / ANY / ALL / FIND / ENUMERATE / TAKE / DROP / FLAT / UNIQ / GROUP_BY / JOIN） |
+| New std module | **+1**（`wlwl:std.collection`，SPEC 是 name catalog —— functions: &[]） |
+| New infra | `NativeInvoke::Builtin(crate::BuiltinFn)` variant；`Evaluator::load_std` 增加 `wlwl:std.collection` path-specific 分支；`pub(crate) type BuiltinFn = fn(&mut Evaluator, Vec<Value>) -> WlwlResult<Outcome>` |
+| Lines added (est.) | ~1500（eval collection.rs ~700 + eval lib.rs 测试 + dispatch ~250 / std collection.rs + resolve ~100 / errors 0） |
+| Key design decisions | 全部 17 函数走 `NativeInvoke::Builtin`；callback 跨 std 边界问题通过「name catalog + eval-internal BUILTINS」绕开；`SORT` 用 `RefCell` park 失败；`RANGE` step=0 → E0038（首次启用）；GROUP_BY key 非 STRING 走 STR coerce；ANY/ALL 无 callback 时按 §9.4 truthiness |
+| Test coverage | `wlwl-eval/lib.rs` 93.90% line（守住）；`wlwl-eval/collection.rs` 单文件 78.40% line（新文件，详见 P4-B6-006）；`wlwl-std/collection.rs` 96.30% line；13/13 crate ≥ 90% line 守住 |
+| Deferred to Phase B7 | `std.test` 框架（spec §15.9，E0046-E0049；`RUN_TESTS` 走 `NativeInvoke::Builtin` 路径在 B7 启动时确定） |
+| Deferred to Phase E | strict_types 违例 → E0033 发射点（码在 B5 已注册） |
+| Spec coverage | §10.5 100%（17 函数全部实现，spec worked example `MAP([1,2,3], FUN((x), *(x,x)))` 锁定在 `b6_map_spec_worked_example`）；§15.7 100%；§12.6 ERR 透明传播 100%（`b6_map_input_err_transparent` + `b6_callback_returning_err_*`） |

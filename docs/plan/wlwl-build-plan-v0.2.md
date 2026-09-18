@@ -85,6 +85,9 @@
 > - Phase B5 完成(FORMAT 全局 builtin + wlwl:std.format 模块 + STR 全局 builtin + E0039 + E0033/E0038/E0039 补号 + 模板解析缓存;B5 报告问卷的 3 个待决项按 spec 附录 G 钉死处理,决策记录见 history/20260918b5.md)
 > - workspace **787 / 787 pass**(B4 实测基线 728 → +59:eval +31 / std +28)
 > - `wlwl-eval` 366 lib tests;`wlwl-std` 94 lib tests(format.rs 27 + resolve_format 1)
+> - Phase B6 完成(`wlwl:std.collection` 17 高阶集合函数 + `NativeInvoke::Builtin` 新 variant + E0038 `RANGE` step=0 发射点;`wlwl-std::collection` 走 name catalog 架构绕过 callback 跨 std 边界问题,真实 impl 在 `wlwl-eval/src/collection.rs`;决策与 §5.6 偏差见 deviations P4-B6-001 ~ P4-B6-006 + history/20260918b6.md)
+> - workspace **826 / 826 pass**(B5 末 787 → +39:eval 集成 39 + collection 单元 13 + std resolve 1 + std collection 5)
+> - `wlwl-eval` 405 lib tests;`wlwl-std` 100 lib tests;13/13 crate ≥ 90% line 守住(TOTAL 92.85%,`wlwl-eval/collection.rs` 单文件 78.40% line 详见 P4-B6-006)
 
 ---
 

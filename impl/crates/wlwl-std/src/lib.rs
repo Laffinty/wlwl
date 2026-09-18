@@ -6,6 +6,10 @@
 //!   - `wlwl:std.json`   — `PARSE`, `STRINGIFY` (§15.3 + E0070/E0071)
 //!   - `wlwl:std.ai`     — ASK / ASK_STREAM stubs (§15.13, Phase 4 batch 3)
 //!   - `wlwl:std.format` — `FORMAT` + the shared template grammar (§15.8 / §10.6, Phase B5)
+//!   - `wlwl:std.collection` — **name catalog only** for the 17 higher-order
+//!     collection functions (§15.7 / §10.5, Phase B6). The real callback-aware
+//!     implementations live in `wlwl-eval::collection` because the std
+//!     boundary rejects `Value::Closure` (existing contract — see B5 P4-B5-006).
 //!
 //! ## Design boundary
 //!
@@ -23,6 +27,7 @@ pub mod fs;
 pub mod json;
 pub mod ai;
 pub mod format;
+pub mod collection;
 
 use std::collections::HashMap;
 use wlwl_error::ErrorCode;
@@ -78,6 +83,7 @@ pub fn resolve(path: &str) -> Option<&'static ModuleSpec> {
         "wlwl:std.json" => Some(&json::SPEC),
         "wlwl:std.ai" => Some(&ai::SPEC),
         "wlwl:std.format" => Some(&format::SPEC),
+        "wlwl:std.collection" => Some(&collection::SPEC),
         _ => None,
     }
 }
@@ -212,6 +218,23 @@ mod tests {
         assert_eq!(s.path, "wlwl:std.format");
         let names: Vec<&str> = s.functions.iter().map(|(n, _)| *n).collect();
         assert_eq!(names, vec!["FORMAT"]);
+    }
+    #[test]
+    fn resolve_collection() {
+        // Phase B6 (spec v0.4 §15.7): wlwl:std.collection is a name catalog
+        // — it advertises the 17 higher-order function names (so IMPORT
+        // passes the path check) but its `functions` slice is empty,
+        // because the real callback-aware implementations live in
+        // `wlwl-eval::collection` and are bound to the imported env by
+        // `Evaluator::load_std` (which detects this path).
+        let s = resolve("wlwl:std.collection").expect("collection resolves");
+        assert_eq!(s.path, "wlwl:std.collection");
+        assert!(
+            s.functions.is_empty(),
+            "collection SPEC must be a name catalog (functions empty); \
+             actual: {:?}",
+            s.functions.iter().map(|(n, _)| *n).collect::<Vec<_>>()
+        );
     }
     #[test]
     fn resolve_unknown_returns_none() {

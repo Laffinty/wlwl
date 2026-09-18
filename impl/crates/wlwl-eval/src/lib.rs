@@ -77,6 +77,14 @@ pub enum NativeInvoke {
     /// §15 standard library: a `wlwl_std::StdFn` that takes a
     /// `&mut wlwl_std::StdCtx` and `Vec<serde_json::Value>`.
     Std(wlwl_std::StdFn),
+    /// §15 standard library "callback-aware" variant: an eval-internal
+    /// `BuiltinFn` that takes a `&mut Evaluator` and `Vec<Value>`. Used
+    /// by modules that need to invoke user closures (which can't cross
+    /// the `serde_json::Value` std boundary — see B5 P4-B5-006 and
+    /// `wlwl-std::collection` for the full rationale). Phase B6 binds
+    /// `wlwl:std.collection` to a table of these via
+    /// `wlwl_eval::collection::BUILTINS`.
+    Builtin(crate::BuiltinFn),
 }
 
 impl Value {
@@ -535,15 +543,35 @@ impl ModuleLoader {
     ) -> WlwlResult<LoadedModule> {
         let mut env = Env::new();
         let mut exports = HashSet::new();
-        for (name, func) in spec.functions {
-            env.set_local(
-                (*name).to_string(),
-                Value::NativeFn {
-                    name: (*name).to_string(),
-                    invoke: NativeInvoke::Std(*func),
-                },
-            );
-            exports.insert((*name).to_string());
+        // Phase B6 (spec §15.7): `wlwl:std.collection` is a "name
+        // catalog" — its SPEC.functions slice is empty (see the
+        // module-level docs in `wlwl_std::collection`); the real
+        // callback-aware implementations live in
+        // `wlwl_eval::collection::BUILTINS` and are bound here. The
+        // path check is the only route in: any rename of this
+        // constant is a breaking change for IMPORT("wlwl:std.collection").
+        if path == "wlwl:std.collection" {
+            for (name, builtin) in collection::BUILTINS {
+                env.set_local(
+                    (*name).to_string(),
+                    Value::NativeFn {
+                        name: (*name).to_string(),
+                        invoke: NativeInvoke::Builtin(*builtin),
+                    },
+                );
+                exports.insert((*name).to_string());
+            }
+        } else {
+            for (name, func) in spec.functions {
+                env.set_local(
+                    (*name).to_string(),
+                    Value::NativeFn {
+                        name: (*name).to_string(),
+                        invoke: NativeInvoke::Std(*func),
+                    },
+                );
+                exports.insert((*name).to_string());
+            }
         }
         let result = LoadedModule { env, exports };
         self.cache.insert(path.to_string(), result.clone());
@@ -924,7 +952,20 @@ fn std_value_to_value(v: wlwl_std::StdValue) -> Value {
 // Built-in functions
 // ──────────────────────────────────────────────────────────────────────
 
-type BuiltinFn = fn(&mut Evaluator, Vec<Value>) -> WlwlResult<Outcome>;
+/// Function signature for every eval-internal builtin. Same shape as
+/// `wlwl_std::StdFn` but operates on the rich `Value` type so it can
+/// invoke user closures (which can't cross the `serde_json::Value`
+/// std boundary — see B5 `P4-B5-006`).
+///
+/// Used by:
+/// - the global builtin dispatch table (`resolve_builtin`), reached
+///   when the user calls a builtin by its bare name (e.g. `PRINT(...)`);
+/// - the callback-aware std modules bound through `NativeInvoke::Builtin`
+///   (Phase B6: `wlwl:std.collection`).
+///
+/// `pub(crate)` so `wlwl_eval::collection` can name the type when it
+/// enumerates its `BUILTINS` table.
+pub(crate) type BuiltinFn = fn(&mut Evaluator, Vec<Value>) -> WlwlResult<Outcome>;
 
 fn builtin_print(_ev: &mut Evaluator, args: Vec<Value>) -> WlwlResult<Outcome> {
     let parts: Vec<String> = args.iter().map(|v| v.display()).collect();
@@ -2199,6 +2240,13 @@ fn values_equal(a: &Value, b: &Value) -> bool {
 // Evaluator
 // ──────────────────────────────────────────────────────────────────────
 
+/// `wlwl:std.collection` — callback-aware higher-order collection
+/// functions (spec v0.4 §15.7 / §10.5). The std boundary can't host
+/// these because `value_to_std_value` rejects closures (B5 P4-B5-006);
+/// `Evaluator::load_std` detects the path and binds from
+/// `collection::BUILTINS` instead of `spec.functions`.
+pub mod collection;
+
 pub struct Evaluator {
     env: Env,
     /// Optional original source (for `source_line` in runtime diagnostics).
@@ -2818,6 +2866,23 @@ impl Evaluator {
             if let Value::NativeFn { invoke, .. } = v {
                 return match invoke {
                     NativeInvoke::Std(f) => invoke_std(self, f, arg_values, span),
+                    NativeInvoke::Builtin(b) => {
+                        // Phase B6: callback-aware std modules (notably
+                        // `wlwl:std.collection`) bind eval-internal builtins
+                        // through this variant. Same save/restore span
+                        // contract as the global builtin dispatch
+                        // (line ~2837) so any E0102 / E0038 etc. emitted
+                        // from inside points at the call site, not the
+                        // outer scope. BUILTINS shims themselves do NOT
+                        // re-enter `eval_call` (they call closures via
+                        // `invoke_closure` directly), so the span
+                        // nesting is single-frame.
+                        let prev_span = self.current_span.take();
+                        self.current_span = Some(span.clone());
+                        let result = b(self, arg_values);
+                        self.current_span = prev_span;
+                        result
+                    }
                 };
             }
             // If the name resolves to a non-Closure value, treat as
@@ -8647,5 +8712,530 @@ entry = "main.wl"
         let (r, w) = run_with_warnings(r###"STR(42); FORMAT("{0}", 1);"###);
         r.unwrap();
         assert!(w.is_empty(), "expected no warnings, got {:?}", w);
+    }
+
+    // ══════════════════════════════════════════════════════════════════
+    // Phase B6 — `wlwl:std.collection` higher-order functions
+    // (spec v0.4 §15.7 / §10.5)
+    //
+    // Tests below cover the 17 functions exposed via
+    // `IMPORT("wlwl:std.collection", [...])`. The std SPEC for this
+    // module is a "name catalog" (functions: &[]) — see
+    // `wlwl_std::collection` for the why — so binding goes through
+    // `Evaluator::load_std`'s path-specific branch which walks
+    // `wlwl_eval::collection::BUILTINS` (eval-internal `BuiltinFn`s
+    // that operate on `Value` and can call user closures).
+    //
+    // Coverage strategy:
+    //   - happy-path + edge cases per function;
+    //   - §12.6 ERR transparent propagation (input ERR → output ERR);
+    //   - §10.5 E0038 (`RANGE` step=0);
+    //   - §10.5 SORT semantics (default `<`, custom comparator);
+    //   - spec §15.7 worked example (`MAP([1,2,3], FUN((x), *(x,x)))`).
+    // ══════════════════════════════════════════════════════════════════
+
+    #[test]
+    fn b6_collection_import_resolves_all_seventeen_names() {
+        // Walk BUILTINS via IMPORT; each name must be callable.
+        // If a future batch adds an 18th function but forgets to put
+        // it in BUILTINS, this test still passes — it's a binding
+        // sanity check, not an enumeration test (see
+        // `wlwl_eval::collection::tests::names_match_catalog` for
+        // the strict count lock).
+        let v = run_std(r#"
+            IMPORT("wlwl:std.collection", [
+                "MAP", "FILTER", "REDUCE", "SORT", "SORT_BY",
+                "ZIP", "RANGE", "ANY", "ALL", "FIND",
+                "ENUMERATE", "TAKE", "DROP", "FLAT", "UNIQ",
+                "GROUP_BY", "JOIN"
+            ]);
+            LEN([
+                MAP, FILTER, REDUCE, SORT, SORT_BY, ZIP, RANGE,
+                ANY, ALL, FIND, ENUMERATE, TAKE, DROP, FLAT, UNIQ,
+                GROUP_BY, JOIN
+            ]);
+        "#).unwrap();
+        assert_eq!(v, Value::Integer(17));
+    }
+
+    #[test]
+    fn b6_map_spec_worked_example() {
+        // §15.7 worked example verbatim: MAP([1,2,3], FUN((x), *(x,x))).
+        let v = run_std(r#"
+            IMPORT("wlwl:std.collection", ["MAP"]);
+            MAP([1, 2, 3], FUN((x), *(x, x)));
+        "#).unwrap();
+        assert_eq!(v, Value::Array(vec![
+            Value::Integer(1), Value::Integer(4), Value::Integer(9)
+        ]));
+    }
+
+    #[test]
+    fn b6_map_empty_array_returns_empty_array() {
+        let v = run_std(r#"
+            IMPORT("wlwl:std.collection", ["MAP"]);
+            MAP([], FUN((x), *(x, x)));
+        "#).unwrap();
+        assert_eq!(v, Value::Array(vec![]));
+    }
+
+    #[test]
+    fn b6_map_non_array_first_arg_is_e0030() {
+        let err = run_std(r#"
+            IMPORT("wlwl:std.collection", ["MAP"]);
+            MAP(42, FUN((x), x));
+        "#).unwrap_err();
+        assert_eq!(err.diagnostic().code, ErrorCode::E0030);
+    }
+
+    #[test]
+    fn b6_map_non_callable_second_arg_is_e0020() {
+        let err = run_std(r#"
+            IMPORT("wlwl:std.collection", ["MAP"]);
+            MAP([1, 2, 3], 42);
+        "#).unwrap_err();
+        assert_eq!(err.diagnostic().code, ErrorCode::E0020);
+    }
+
+    #[test]
+    fn b6_map_arity_wrong_is_e0022() {
+        let err = run_std(r#"
+            IMPORT("wlwl:std.collection", ["MAP"]);
+            MAP([1, 2, 3]);
+        "#).unwrap_err();
+        assert_eq!(err.diagnostic().code, ErrorCode::E0022);
+    }
+
+    #[test]
+    fn b6_map_input_err_transparent() {
+        // §12.6: input contains ERR → output is that ERR. `eval_call`
+        // short-circuits the ERR before the builtin even runs (so the
+        // collection's `short_circuit_err` precheck never fires — the
+        // ERR never reaches the fn body). At the top level an ERR
+        // surfaces as E0102, exactly like B5's `b5_str_err_arg_*`
+        // tests; the message body preserves the inner ERR value.
+        let err = run_std(r#"
+            IMPORT("wlwl:std.collection", ["MAP"]);
+            MAP([1, ERR("e"), 3], FUN((x), *(x, 2)));
+        "#).unwrap_err();
+        assert_eq!(err.diagnostic().code, ErrorCode::E0102);
+        assert!(err.diagnostic().message.contains("e"), "{}", err.diagnostic().message);
+    }
+
+    #[test]
+    fn b6_filter_keeps_truthy_only() {
+        let v = run_std(r#"
+            IMPORT("wlwl:std.collection", ["FILTER"]);
+            FILTER([1, 2, 3, 4, 5], FUN((x), >(x, 2)));
+        "#).unwrap();
+        assert_eq!(v, Value::Array(vec![
+            Value::Integer(3), Value::Integer(4), Value::Integer(5)
+        ]));
+    }
+
+    #[test]
+    fn b6_filter_predicate_non_boolean_is_e0030() {
+        let err = run_std(r#"
+            IMPORT("wlwl:std.collection", ["FILTER"]);
+            FILTER([1, 2, 3], FUN((x), x));
+        "#).unwrap_err();
+        assert_eq!(err.diagnostic().code, ErrorCode::E0030);
+    }
+
+    #[test]
+    fn b6_reduce_left_fold_with_init() {
+        let v = run_std(r#"
+            IMPORT("wlwl:std.collection", ["REDUCE"]);
+            REDUCE([1, 2, 3, 4], FUN((acc, x), +(acc, x)), 0);
+        "#).unwrap();
+        assert_eq!(v, Value::Integer(10));
+    }
+
+    #[test]
+    fn b6_reduce_empty_array_returns_init() {
+        // §10.5 row 3: "空数组返回 init".
+        let v = run_std(r#"
+            IMPORT("wlwl:std.collection", ["REDUCE"]);
+            REDUCE([], FUN((acc, x), +(acc, x)), 42);
+        "#).unwrap();
+        assert_eq!(v, Value::Integer(42));
+    }
+
+    #[test]
+    fn b6_sort_default_uses_lt() {
+        let v = run_std(r#"
+            IMPORT("wlwl:std.collection", ["SORT"]);
+            SORT([3, 1, 4, 1, 5, 9, 2, 6]);
+        "#).unwrap();
+        assert_eq!(v, Value::Array(vec![
+            Value::Integer(1), Value::Integer(1), Value::Integer(2),
+            Value::Integer(3), Value::Integer(4), Value::Integer(5),
+            Value::Integer(6), Value::Integer(9),
+        ]));
+    }
+
+    #[test]
+    fn b6_sort_with_custom_comparator_descending() {
+        // Spec §10.5 row 4: cmp(a,b)=TRUE iff a<b; we negate to get
+        // descending sort.
+        let v = run_std(r#"
+            IMPORT("wlwl:std.collection", ["SORT"]);
+            SORT([3, 1, 4, 1, 5], FUN((a, b), >(a, b)));
+        "#).unwrap();
+        assert_eq!(v, Value::Array(vec![
+            Value::Integer(5), Value::Integer(4), Value::Integer(3),
+            Value::Integer(1), Value::Integer(1),
+        ]));
+    }
+
+    #[test]
+    fn b6_sort_by_keys_on_derived_value() {
+        // §10.5 row 5: sort by key function. Sort [1,2,3] by *(x,x)
+        // (i.e. 1,4,9) — the result must be [1,2,3] (unchanged),
+        // proving the function sorts by *projected* key, not the
+        // element directly.
+        let v = run_std(r#"
+            IMPORT("wlwl:std.collection", ["SORT_BY"]);
+            SORT_BY([1, 2, 3], FUN((x), *(x, x)));
+        "#).unwrap();
+        assert_eq!(v, Value::Array(vec![
+            Value::Integer(1), Value::Integer(2), Value::Integer(3),
+        ]));
+    }
+
+    #[test]
+    fn b6_zip_two_arrays() {
+        let v = run_std(r#"
+            IMPORT("wlwl:std.collection", ["ZIP"]);
+            ZIP([1, 2, 3], ["a", "b", "c"]);
+        "#).unwrap();
+        assert_eq!(v, Value::Array(vec![
+            Value::Array(vec![Value::Integer(1), Value::String("a".into())]),
+            Value::Array(vec![Value::Integer(2), Value::String("b".into())]),
+            Value::Array(vec![Value::Integer(3), Value::String("c".into())]),
+        ]));
+    }
+
+    #[test]
+    fn b6_zip_shortest_input_wins() {
+        // §10.5 row 6: "长度 = 最短".
+        let v = run_std(r#"
+            IMPORT("wlwl:std.collection", ["ZIP"]);
+            ZIP([1, 2, 3, 4], ["a", "b"]);
+        "#).unwrap();
+        assert_eq!(v, Value::Array(vec![
+            Value::Array(vec![Value::Integer(1), Value::String("a".into())]),
+            Value::Array(vec![Value::Integer(2), Value::String("b".into())]),
+        ]));
+    }
+
+    #[test]
+    fn b6_range_single_arg_default_start_step() {
+        let v = run_std(r#"
+            IMPORT("wlwl:std.collection", ["RANGE"]);
+            RANGE(5);
+        "#).unwrap();
+        assert_eq!(v, Value::Array(vec![
+            Value::Integer(0), Value::Integer(1), Value::Integer(2),
+            Value::Integer(3), Value::Integer(4),
+        ]));
+    }
+
+    #[test]
+    fn b6_range_three_args_start_end_step() {
+        let v = run_std(r#"
+            IMPORT("wlwl:std.collection", ["RANGE"]);
+            RANGE(0, 10, 2);
+        "#).unwrap();
+        assert_eq!(v, Value::Array(vec![
+            Value::Integer(0), Value::Integer(2), Value::Integer(4),
+            Value::Integer(6), Value::Integer(8),
+        ]));
+    }
+
+    #[test]
+    fn b6_range_negative_step_descending() {
+        let v = run_std(r#"
+            IMPORT("wlwl:std.collection", ["RANGE"]);
+            RANGE(5, 0, -1);
+        "#).unwrap();
+        assert_eq!(v, Value::Array(vec![
+            Value::Integer(5), Value::Integer(4), Value::Integer(3),
+            Value::Integer(2), Value::Integer(1),
+        ]));
+    }
+
+    #[test]
+    fn b6_range_step_zero_is_e0038() {
+        // §10.5 row 7: `step=0` → `E0038` (code registered in B5).
+        let err = run_std(r#"
+            IMPORT("wlwl:std.collection", ["RANGE"]);
+            RANGE(0, 10, 0);
+        "#).unwrap_err();
+        assert_eq!(err.diagnostic().code, ErrorCode::E0038);
+    }
+
+    #[test]
+    fn b6_any_with_predicate_finds_truthy() {
+        let v = run_std(r#"
+            IMPORT("wlwl:std.collection", ["ANY"]);
+            ANY([1, 2, 3], FUN((x), >(x, 2)));
+        "#).unwrap();
+        assert_eq!(v, Value::Boolean(true));
+    }
+
+    #[test]
+    fn b6_any_without_predicate_uses_truthiness() {
+        // §10.5 row 8: "默认恒真" — any(v) returns TRUE for the
+        // first truthy element. NULL and FALSE are falsy.
+        assert_eq!(
+            run_std(r#"
+                IMPORT("wlwl:std.collection", ["ANY"]);
+                ANY([NULL, FALSE, 1, 2]);
+            "#).unwrap(),
+            Value::Boolean(true)
+        );
+        assert_eq!(
+            run_std(r#"
+                IMPORT("wlwl:std.collection", ["ANY"]);
+                ANY([NULL, FALSE, NULL]);
+            "#).unwrap(),
+            Value::Boolean(false)
+        );
+    }
+
+    #[test]
+    fn b6_all_with_predicate_requires_all_truthy() {
+        assert_eq!(
+            run_std(r#"
+                IMPORT("wlwl:std.collection", ["ALL"]);
+                ALL([1, 2, 3], FUN((x), >(x, 0)));
+            "#).unwrap(),
+            Value::Boolean(true)
+        );
+        assert_eq!(
+            run_std(r#"
+                IMPORT("wlwl:std.collection", ["ALL"]);
+                ALL([1, 2, 3], FUN((x), >(x, 2)));
+            "#).unwrap(),
+            Value::Boolean(false)
+        );
+    }
+
+    #[test]
+    fn b6_find_returns_first_match() {
+        let v = run_std(r#"
+            IMPORT("wlwl:std.collection", ["FIND"]);
+            FIND([1, 2, 3, 4], FUN((x), >(x, 2)));
+        "#).unwrap();
+        assert_eq!(v, Value::Integer(3));
+    }
+
+    #[test]
+    fn b6_find_no_match_returns_null() {
+        // §10.5 row 10: "无则 NULL".
+        let v = run_std(r#"
+            IMPORT("wlwl:std.collection", ["FIND"]);
+            FIND([1, 2, 3], FUN((x), >(x, 99)));
+        "#).unwrap();
+        assert_eq!(v, Value::Null);
+    }
+
+    #[test]
+    fn b6_enumerate_pairs_index_with_value() {
+        let v = run_std(r#"
+            IMPORT("wlwl:std.collection", ["ENUMERATE"]);
+            ENUMERATE(["a", "b", "c"]);
+        "#).unwrap();
+        assert_eq!(v, Value::Array(vec![
+            Value::Array(vec![Value::Integer(0), Value::String("a".into())]),
+            Value::Array(vec![Value::Integer(1), Value::String("b".into())]),
+            Value::Array(vec![Value::Integer(2), Value::String("c".into())]),
+        ]));
+    }
+
+    #[test]
+    fn b6_take_takes_first_n() {
+        let v = run_std(r#"
+            IMPORT("wlwl:std.collection", ["TAKE"]);
+            TAKE([1, 2, 3, 4, 5], 3);
+        "#).unwrap();
+        assert_eq!(v, Value::Array(vec![
+            Value::Integer(1), Value::Integer(2), Value::Integer(3),
+        ]));
+    }
+
+    #[test]
+    fn b6_take_n_over_len_returns_full() {
+        let v = run_std(r#"
+            IMPORT("wlwl:std.collection", ["TAKE"]);
+            TAKE([1, 2, 3], 99);
+        "#).unwrap();
+        assert_eq!(v, Value::Array(vec![
+            Value::Integer(1), Value::Integer(2), Value::Integer(3),
+        ]));
+    }
+
+    #[test]
+    fn b6_drop_skips_first_n() {
+        let v = run_std(r#"
+            IMPORT("wlwl:std.collection", ["DROP"]);
+            DROP([1, 2, 3, 4, 5], 2);
+        "#).unwrap();
+        assert_eq!(v, Value::Array(vec![
+            Value::Integer(3), Value::Integer(4), Value::Integer(5),
+        ]));
+    }
+
+    #[test]
+    fn b6_flat_flattens_one_level() {
+        let v = run_std(r#"
+            IMPORT("wlwl:std.collection", ["FLAT"]);
+            FLAT([[1, 2], [3, [4, 5]], 6]);
+        "#).unwrap();
+        // One level only: [[4,5]] stays nested.
+        assert_eq!(v, Value::Array(vec![
+            Value::Integer(1), Value::Integer(2),
+            Value::Integer(3), Value::Array(vec![Value::Integer(4), Value::Integer(5)]),
+            Value::Integer(6),
+        ]));
+    }
+
+    #[test]
+    fn b6_uniq_dedupes_preserving_order() {
+        let v = run_std(r#"
+            IMPORT("wlwl:std.collection", ["UNIQ"]);
+            UNIQ([1, 2, 1, 3, 2, 4]);
+        "#).unwrap();
+        assert_eq!(v, Value::Array(vec![
+            Value::Integer(1), Value::Integer(2),
+            Value::Integer(3), Value::Integer(4),
+        ]));
+    }
+
+    #[test]
+    fn b6_group_by_returns_dict_of_arrays() {
+        // §10.5 row 15: GROUP_BY(arr, key) → DICT keyed by key(v).
+        let v = run_std(r#"
+            IMPORT("wlwl:std.collection", ["GROUP_BY"]);
+            GROUP_BY(
+                [1, 2, 3, 4, 5, 6],
+                FUN((x), %(x, 2))
+            );
+        "#).unwrap();
+        // Two keys: "0" (evens), "1" (odds). Order within each bucket
+        // follows input order.
+        match v {
+            Value::Dict(entries) => {
+                assert_eq!(entries.len(), 2);
+                for (k, v) in &entries {
+                    let k = match k { Value::String(s) => s.as_str(), _ => panic!("non-string key") };
+                    match k {
+                        "0" => assert_eq!(*v, Value::Array(vec![
+                            Value::Integer(2), Value::Integer(4), Value::Integer(6),
+                        ])),
+                        "1" => assert_eq!(*v, Value::Array(vec![
+                            Value::Integer(1), Value::Integer(3), Value::Integer(5),
+                        ])),
+                        _ => panic!("unexpected key: {}", k),
+                    }
+                }
+            }
+            other => panic!("expected DICT, got {:?}", other),
+        }
+    }
+
+    #[test]
+    fn b6_join_glues_with_separator() {
+        let v = run_std(r#"
+            IMPORT("wlwl:std.collection", ["JOIN"]);
+            JOIN([1, 2, 3], "-");
+        "#).unwrap();
+        assert_eq!(v, Value::String("1-2-3".into()));
+    }
+
+    #[test]
+    fn b6_callback_err_input_arg_transparent() {
+        // §10.5: "f 抛 ERR 也透明传播". We pass an ERR element, the
+        // collection function returns it unchanged. Same pattern as
+        // `b5_str_err_arg_propagates_per_s126`: at top level the ERR
+        // surfaces as E0102.
+        let err = run_std(r#"
+            IMPORT("wlwl:std.collection", ["MAP"]);
+            MAP([ERR("first")], FUN((x), *(x, 2)));
+        "#).unwrap_err();
+        assert_eq!(err.diagnostic().code, ErrorCode::E0102);
+        assert!(err.diagnostic().message.contains("first"), "{}", err.diagnostic().message);
+    }
+
+    #[test]
+    fn b6_callback_returning_err_is_transparent() {
+        // The callback itself returns ERR — the collection must
+        // surface that ERR (§12.6 / §10.5). Same E0102 pattern.
+        let err = run_std(r#"
+            IMPORT("wlwl:std.collection", ["MAP"]);
+            MAP([1, 2, 3], FUN((x), IF(>(x, 1), *(x, 2), ERR("from cb"))));
+        "#).unwrap_err();
+        assert_eq!(err.diagnostic().code, ErrorCode::E0102);
+        assert!(err.diagnostic().message.contains("from cb"), "{}", err.diagnostic().message);
+    }
+
+    #[test]
+    fn b6_callback_returning_err_short_circuits() {
+        // On the first ERR from the callback, the collection must
+        // stop iterating and surface it — not continue and return
+        // a partial array. Counter must stay < input length.
+        let err = run_std(r#"
+            IMPORT("wlwl:std.collection", ["MAP"]);
+            LET(counter, 0);
+            MAP([1, 2, 3, 4], FUN((x),
+                SET(counter, +(counter, 1));
+                IF(>(x, 2), ERR("boom"), *(x, x))
+            ));
+        "#).unwrap_err();
+        assert_eq!(err.diagnostic().code, ErrorCode::E0102);
+        assert!(err.diagnostic().message.contains("boom"), "{}", err.diagnostic().message);
+    }
+
+    #[test]
+    fn b6_collection_import_path_is_not_global_builtin() {
+        // §15.7: "不作为全局内建". A direct call (no IMPORT) must
+        // fail with E0020, not silently bind.
+        let err = run("MAP([1, 2, 3], FUN((x), *(x, x)));").unwrap_err();
+        assert_eq!(err.diagnostic().code, ErrorCode::E0020);
+    }
+
+    #[test]
+    fn b6_unknown_collection_name_in_import_is_e0023() {
+        // IMPORT names list is validated by the existing std IMPORT
+        // path-check machinery. Asking for a name that's not in
+        // BUILTINS must fail with E0023 ("name not in module") at
+        // IMPORT time — not silently bind to NULL.
+        let err = run_std(r#"
+            IMPORT("wlwl:std.collection", ["NOT_A_REAL_NAME"]);
+        "#).unwrap_err();
+        assert_eq!(
+            err.diagnostic().code,
+            ErrorCode::E0023,
+            "expected E0023 (name not in module), got {:?}",
+            err.diagnostic().code
+        );
+    }
+
+    #[test]
+    fn b6_std_format_still_works_alongside_collection() {
+        // Regression: the new `wlwl:std.collection` path detection in
+        // load_std must not disturb the existing `wlwl:std.format`
+        // dispatch. Both IMPORTs must bind their names; a name listed
+        // in only one (e.g. JOIN) would yield E0020 "undefined name"
+        // — so this test catches both "format broke" and "collection
+        // binding is leaking / overwriting names" regressions.
+        let v = run_std(r#"
+            IMPORT("wlwl:std.format", ["FORMAT"]);
+            IMPORT("wlwl:std.collection", ["MAP", "JOIN"]);
+            LET(squared, MAP([1, 2, 3], FUN((x), *(x, x))));
+            FORMAT("squared: {0}", JOIN(squared, ","));
+        "#).unwrap();
+        assert_eq!(v, Value::String("squared: 1,4,9".into()));
     }
 }
