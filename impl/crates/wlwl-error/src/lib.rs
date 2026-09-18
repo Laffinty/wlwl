@@ -73,6 +73,21 @@ pub enum ErrorCode {
     E0081, // AI provider auth / rate-limit
     E0082, // AI provider response malformed
     E0083, // AI request timeout
+    // v0.4 §14.4 — network (5 codes, Phase D4 subdivides v0.3's
+    // reserved-but-unused E0090). The full ladder lets the AI tool
+    // tell apart "DNS broken" (retryable) from "TLS broken"
+    // (not retryable) from "5xx" (retryable) without parsing free
+    // text. retryable mapping per spec table:
+    //   E0090 (unreachable) TRUE
+    //   E0091 (DNS)         TRUE
+    //   E0092 (TLS)         FALSE
+    //   E0093 (HTTP 4xx)    FALSE
+    //   E0094 (HTTP 5xx)    TRUE
+    E0090, // network unreachable (TCP / connect refused / firewall drop)
+    E0091, // DNS resolution failure (getaddrinfo)
+    E0092, // TLS handshake / certificate error
+    E0093, // HTTP 4xx client error
+    E0094, // HTTP 5xx server error
     E0099, // user-thrown ERR / PANIC
     E0100, // internal error
     E0101, // stack overflow
@@ -89,6 +104,11 @@ pub enum ErrorCode {
     W0030, // 遮蔽宏函数 / 关键字 (v0.4 §14.5; allow_builtin_shadow=true 时遮蔽内建也发此码, Phase C5)
     W0040, // unhandled `TODO(agent):` comment
     W0015, // integer overflow, saturated to INT64_MAX / INT64_MIN (v0.4 §9.5)
+    // v0.4 §14.5 — Phase D5: model name missing provider prefix
+    // ("openai/gpt-4" form is recommended; bare "gpt-4" still works
+    // but emits W0052). The warning is *not* a hard error so
+    // existing single-token model names keep working.
+    W0052, // LLM model name missing `provider/` prefix
     // v0.4 §14.5 — using v0.3 deprecated alias (`DEL` / `OR_DIE`).
     // Added in Phase B2 (DEL alias) + Phase B3 (OR_DIE alias).
     // Note: W0051 itself is already declared in the §14.5 warning
@@ -148,6 +168,11 @@ impl ErrorCode {
             ErrorCode::E0081 => "E0081",
             ErrorCode::E0082 => "E0082",
             ErrorCode::E0083 => "E0083",
+            ErrorCode::E0090 => "E0090",
+            ErrorCode::E0091 => "E0091",
+            ErrorCode::E0092 => "E0092",
+            ErrorCode::E0093 => "E0093",
+            ErrorCode::E0094 => "E0094",
             ErrorCode::E0099 => "E0099",
             ErrorCode::E0100 => "E0100",
             ErrorCode::E0101 => "E0101",
@@ -162,6 +187,7 @@ impl ErrorCode {
             ErrorCode::W0040 => "W0040",
             ErrorCode::W0015 => "W0015",
             ErrorCode::W0051 => "W0051",
+            ErrorCode::W0052 => "W0052",
             ErrorCode::W0054 => "W0054",
         }
     }
@@ -182,6 +208,7 @@ impl ErrorCode {
                 | ErrorCode::W0040
                 | ErrorCode::W0015
                 | ErrorCode::W0051
+                | ErrorCode::W0052
                 | ErrorCode::W0054
         )
     }
@@ -247,6 +274,15 @@ impl ErrorCode {
             | ErrorCode::E0081
             | ErrorCode::E0082
             | ErrorCode::E0083 => ErrorCategory::Ai,
+            // v0.4 §14.4 — network errors get their own bucket so
+            // AI tools can distinguish "endpoint unreachable" from
+            // "endpoint replied with bad credentials" without parsing
+            // free text. The Io bucket remains for file/process IO.
+            ErrorCode::E0090
+            | ErrorCode::E0091
+            | ErrorCode::E0092
+            | ErrorCode::E0093
+            | ErrorCode::E0094 => ErrorCategory::Network,
             ErrorCode::E0099 => ErrorCategory::User,
             ErrorCode::E0100 | ErrorCode::E0101 | ErrorCode::E0102 => ErrorCategory::Internal,
             // Warnings map to the semantic bucket of the underlying
@@ -274,6 +310,13 @@ impl ErrorCode {
             // route both "deprecated thing in source" warnings
             // through one filter.
             ErrorCode::W0054 => ErrorCategory::Name,
+            // Phase D5 (spec v0.4 §14.5 / §15.13.1): the LLM model
+            // name lacks the `provider/` prefix (e.g. user wrote
+            // "gpt-4" instead of "openai/gpt-4"). Bucket as Name:
+            // it is a name-shape lint, not a syntax or runtime
+            // condition, so existing "deprecated identifier"
+            // handlers (W0051 / W0054) naturally pick it up.
+            ErrorCode::W0052 => ErrorCategory::Name,
         }
     }
 
@@ -293,6 +336,9 @@ impl ErrorCode {
                 | ErrorCode::E0080
                 | ErrorCode::E0081
                 | ErrorCode::E0083
+                | ErrorCode::E0090
+                | ErrorCode::E0091
+                | ErrorCode::E0094
         )
     }
 
@@ -330,6 +376,14 @@ impl ErrorCode {
             ErrorCode::E0081 => Some(5_000),
             // AI timeout: 10 seconds (give the upstream more headroom)
             ErrorCode::E0083 => Some(10_000),
+            // network unreachable / DNS: 3 seconds (transient; short
+            // backoff so retry loops stay responsive on flaky wifi)
+            ErrorCode::E0090 => Some(3_000),
+            ErrorCode::E0091 => Some(3_000),
+            // TLS / 4xx: not retryable, so no backoff
+            // (E0092 / E0093 fall through to the `_ => None` arm)
+            // HTTP 5xx: 5 seconds (server-side issue, give it a beat)
+            ErrorCode::E0094 => Some(5_000),
             // everything else: no recommendation
             _ => None,
         }
@@ -347,6 +401,12 @@ pub enum ErrorCategory {
     Module,
     Oop,
     Io,
+    /// v0.4 spec §14.4 — network errors (E0090-E0094).
+    /// Separate from Io because AI tools apply different retry
+    /// strategies to network vs. local IO (network failures often
+    /// benefit from a 2nd attempt; local IO permission failures do
+    /// not).
+    Network,
     Json,
     Ai,
     /// v0.4 spec §14.4 row 11 — generic runtime errors
@@ -373,6 +433,7 @@ impl ErrorCategory {
             ErrorCategory::Module => "module",
             ErrorCategory::Oop => "oop",
             ErrorCategory::Io => "io",
+            ErrorCategory::Network => "network",
             ErrorCategory::Json => "json",
             ErrorCategory::Ai => "ai",
             ErrorCategory::Runtime => "runtime",
@@ -745,6 +806,9 @@ mod tests {
         assert_eq!(ErrorCode::E0060.category(), ErrorCategory::Io);
         assert_eq!(ErrorCode::E0070.category(), ErrorCategory::Json);
         assert_eq!(ErrorCode::E0080.category(), ErrorCategory::Ai);
+        // Phase D4: network codes live in the new Network bucket.
+        assert_eq!(ErrorCode::E0090.category(), ErrorCategory::Network);
+        assert_eq!(ErrorCode::E0094.category(), ErrorCategory::Network);
         assert_eq!(ErrorCode::E0099.category(), ErrorCategory::User);
         assert_eq!(ErrorCode::E0100.category(), ErrorCategory::Internal);
     }
@@ -753,6 +817,12 @@ mod tests {
     fn retryable_assignment() {
         assert!(ErrorCode::E0060.retryable());
         assert!(ErrorCode::E0080.retryable());
+        // Phase D4: network ladder
+        assert!(ErrorCode::E0090.retryable()); // unreachable: TRUE
+        assert!(ErrorCode::E0091.retryable()); // DNS: TRUE
+        assert!(!ErrorCode::E0092.retryable()); // TLS: FALSE
+        assert!(!ErrorCode::E0093.retryable()); // 4xx: FALSE
+        assert!(ErrorCode::E0094.retryable()); // 5xx: TRUE
         assert!(!ErrorCode::E0001.retryable());
         assert!(!ErrorCode::E0013.retryable());
         assert!(!ErrorCode::E0020.retryable());
@@ -774,6 +844,15 @@ mod tests {
         assert!(!ErrorCode::E0080.idempotent()); // AI unreachable
         assert!(!ErrorCode::E0081.idempotent()); // AI auth
         assert!(!ErrorCode::E0083.idempotent()); // AI timeout
+        // Phase D4: network — we don't know if the request was a
+        // safe GET or a non-idempotent POST, so conservatively mark
+        // all five as non-idempotent. AI tools must consult the
+        // HTTP method in the call site before retrying.
+        assert!(!ErrorCode::E0090.idempotent());
+        assert!(!ErrorCode::E0091.idempotent());
+        assert!(!ErrorCode::E0092.idempotent());
+        assert!(!ErrorCode::E0093.idempotent());
+        assert!(!ErrorCode::E0094.idempotent());
     }
 
     /// v0.4 `Sec. 14.2` `retry_after` field mapping.
@@ -787,6 +866,12 @@ mod tests {
         assert_eq!(ErrorCode::E0080.retry_after_ms(), Some(5_000));
         assert_eq!(ErrorCode::E0081.retry_after_ms(), Some(5_000));
         assert_eq!(ErrorCode::E0083.retry_after_ms(), Some(10_000));
+        // Phase D4: network backoff ladder
+        assert_eq!(ErrorCode::E0090.retry_after_ms(), Some(3_000));
+        assert_eq!(ErrorCode::E0091.retry_after_ms(), Some(3_000));
+        assert_eq!(ErrorCode::E0092.retry_after_ms(), None); // not retryable
+        assert_eq!(ErrorCode::E0093.retry_after_ms(), None); // not retryable
+        assert_eq!(ErrorCode::E0094.retry_after_ms(), Some(5_000));
         // Non-retryable codes have None
         assert_eq!(ErrorCode::E0001.retry_after_ms(), None);
         assert_eq!(ErrorCode::E0020.retry_after_ms(), None);
@@ -803,6 +888,8 @@ mod tests {
         let retryable_codes = [
             ErrorCode::E0060, ErrorCode::E0061, ErrorCode::E0063,
             ErrorCode::E0080, ErrorCode::E0081, ErrorCode::E0083,
+            // Phase D4: network ladder (unreachable / DNS / 5xx)
+            ErrorCode::E0090, ErrorCode::E0091, ErrorCode::E0094,
         ];
         for code in &retryable_codes {
             assert!(code.retryable(), "{:?} should be retryable", code);
@@ -1036,6 +1123,23 @@ mod tests {
     }
 
     #[test]
+    fn snap_network() {
+        // Phase D4 (spec v0.4 §14.4): subdivide v0.3's
+        // reserved-but-unused E0090 into the five code ladder
+        // E0090-E0094 so AI tools can tell apart unreachable /
+        // DNS / TLS / 4xx / 5xx without parsing free text. All
+        // five share the new Network bucket; retryable mapping per
+        // spec §14.4: E0090/E0091/E0094 = TRUE; E0092/E0093 = FALSE.
+        insta::assert_json_snapshot!("codes_network", serde_json::json!({
+            "E0090": code_snap(ErrorCode::E0090, "net_unreachable"),
+            "E0091": code_snap(ErrorCode::E0091, "dns_failure"),
+            "E0092": code_snap(ErrorCode::E0092, "tls_error"),
+            "E0093": code_snap(ErrorCode::E0093, "http_4xx"),
+            "E0094": code_snap(ErrorCode::E0094, "http_5xx"),
+        }));
+    }
+
+    #[test]
     fn snap_json() {
         insta::assert_json_snapshot!("codes_json", serde_json::json!({
             "E0070": code_snap(ErrorCode::E0070, "json_parse"),
@@ -1097,11 +1201,12 @@ mod tests {
     // E0038 (RANGE step=0, Phase B6) and E0039 (FORMAT template parse
     // failure, used by B5) to close the §14.4 type-bucket range holes.
     #[test]
-    fn all_47_codes_registered() {
-        // Sanity: ensure we have exactly 53 codes wired through the schema.
+    fn all_53_codes_registered() {
+        // Sanity: ensure we have exactly 58 codes wired through the schema.
         // If anyone adds a new ErrorCode variant without updating the
         // snapshot, this count will shift and break the contract.
-        // (Phase C3/C4 added E0044 / E0045 — spec v0.4 §13.8 / §13.9.)
+        // (Phase D4 added E0090-E0094 — spec v0.4 §14.4 network
+        // subdivision.)
         let codes = [
             ErrorCode::E0001, ErrorCode::E0002, ErrorCode::E0003,
             ErrorCode::E0010, ErrorCode::E0011, ErrorCode::E0012,
@@ -1118,11 +1223,13 @@ mod tests {
             ErrorCode::E0060, ErrorCode::E0061, ErrorCode::E0062, ErrorCode::E0063,
             ErrorCode::E0070, ErrorCode::E0071,
             ErrorCode::E0080, ErrorCode::E0081, ErrorCode::E0082, ErrorCode::E0083,
+            ErrorCode::E0090, ErrorCode::E0091, ErrorCode::E0092, ErrorCode::E0093,
+            ErrorCode::E0094,
             ErrorCode::E0099,
             ErrorCode::E0100, ErrorCode::E0101, ErrorCode::E0102,
             ErrorCode::E1003,
         ];
-        assert_eq!(codes.len(), 53);
+        assert_eq!(codes.len(), 58);
         // Each code has a stable string form.
         for c in &codes {
             assert!(c.as_str().starts_with('E'));
@@ -1130,10 +1237,11 @@ mod tests {
     }
 
     #[test]
-    fn all_10_warning_codes_registered() {
+    fn all_12_warning_codes_registered() {
         // v0.4 §14.5 expanded the warning list. Phase A7 added W0015
         // (integer overflow saturated). Phase B2 added W0051 (v0.3
-        // deprecated alias — `DEL`).
+        // deprecated alias — `DEL`). Phase D5 added W0052 (LLM model
+        // name missing provider prefix).
         let codes = [
             ErrorCode::W0001,
             ErrorCode::W0010,
@@ -1145,9 +1253,10 @@ mod tests {
             ErrorCode::W0030,
             ErrorCode::W0040,
             ErrorCode::W0051,
+            ErrorCode::W0052,
             ErrorCode::W0054,
         ];
-        assert_eq!(codes.len(), 11);
+        assert_eq!(codes.len(), 12);
         for c in &codes {
             assert!(c.is_warning(), "{} should report is_warning() = true", c.as_str());
             assert!(c.as_str().starts_with('W'));
@@ -1164,6 +1273,7 @@ mod tests {
         assert_eq!(ErrorCategory::Module.as_str(), "module");
         assert_eq!(ErrorCategory::Oop.as_str(), "oop");
         assert_eq!(ErrorCategory::Io.as_str(), "io");
+        assert_eq!(ErrorCategory::Network.as_str(), "network");
         assert_eq!(ErrorCategory::Json.as_str(), "json");
         assert_eq!(ErrorCategory::Ai.as_str(), "ai");
         assert_eq!(ErrorCategory::Runtime.as_str(), "runtime");
