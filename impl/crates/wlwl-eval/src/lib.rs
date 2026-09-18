@@ -1317,11 +1317,16 @@ fn resolve_builtin(name: &str) -> Option<BuiltinFn> {
         "&&" => Some(builtin_and),
         "||" => Some(builtin_or),
         "!" => Some(builtin_not),
-        "OR_DIE" => Some(builtin_or_die),
-        // v0.4 spec §12.7 main name for OR_DIE; alias only — error
-        // messages still surface as "OR_DIE" until Phase B3 unifies
-        // the canonical name (and emits W0051 on legacy use).
-        "UNWRAP_OR" => Some(builtin_or_die),
+        // v0.4 §12.7 + §14.5 — `OR_DIE` is the v0.3-compat alias for
+        // `UNWRAP_OR`. Spec §14.5 mandates W0051 on every legacy use;
+        // v0.5 removes the alias. Renamed dispatch target from
+        // `builtin_or_die` → `builtin_unwrap_or` in Phase B3 to match
+        // the canonical name.
+        "OR_DIE" => Some(builtin_unwrap_or_compat),
+        // v0.4 spec §12.7 main name for `UNWRAP_OR`. No warning — this
+        // is the canonical spelling; the alias wrapper lives at
+        // `"OR_DIE"` (above) and emits W0051.
+        "UNWRAP_OR" => Some(builtin_unwrap_or),
         // v0.4 spec §2.2.1 — uppercase type name builtin; listed in
         // §12.7 ERR consumer registry (TYPE does not propagate ERR).
         "TYPE" => Some(builtin_type),
@@ -1344,7 +1349,7 @@ fn resolve_builtin(name: &str) -> Option<BuiltinFn> {
 /// | `IS_OK`       | returns `FALSE` (observation, no payload)                |
 /// | `IS_ERR`      | returns `TRUE`  (observation, no payload)                |
 /// | `OR_DIE`      | returns the `default` arg                                 |
-/// | `UNWRAP_OR`   | alias of `OR_DIE` (v0.4 main name; Phase B3 完整化)       |
+/// | `UNWRAP_OR`   | canonical (v0.4 §12.7); `OR_DIE` is the v0.3 alias that emits `W0051` (Phase B3) |
 /// | `TRY`         | early-`RETURN` from the enclosing function                |
 /// | `UNWRAP`      | `PANIC` E0100 — **not yet implemented** (Phase B4)       |
 /// | `ERR_PAYLOAD` | extracts payload — **not yet implemented** (Phase B4)    |
@@ -1779,22 +1784,47 @@ fn builtin_not(_ev: &mut Evaluator, args: Vec<Value>) -> WlwlResult<Outcome> {
     Ok(Outcome::normal(Value::Boolean(!is_truthy(v))))
 }
 
-/// `OR_DIE(value, default)`: §12. If `value` is OK(v) → v. If ERR(_) →
-/// `default` (evaluated lazily, but in this implementation it has
-/// already been evaluated by the call site). This is a §12.6
-/// ERR-consumer, so it gets a special entry in `is_err_consumer`.
-fn builtin_or_die(_ev: &mut Evaluator, args: Vec<Value>) -> WlwlResult<Outcome> {
+/// `UNWRAP_OR(value, default)`: spec §12.2 canonical name (v0.4 §12.7).
+/// If `value` is OK(v) → v. If ERR(_) → `default` (evaluated lazily,
+/// but in this implementation it has already been evaluated by the
+/// call site). This is a §12.6 ERR-consumer, so it gets a special
+/// entry in `is_err_consumer`.
+///
+/// The v0.3-compat alias `OR_DIE` is wired in
+/// `builtin_unwrap_or_compat` below — it calls this fn after emitting
+/// `W0051`. Note: the W0051 emit point for the lexer-keyword path
+/// (`Expr::OrDie`) lives in `eval_expr`'s `Expr::OrDie` arm, NOT here.
+fn builtin_unwrap_or(_ev: &mut Evaluator, args: Vec<Value>) -> WlwlResult<Outcome> {
     if args.len() != 2 {
-        return Err(arity_error("OR_DIE", args.len(), 2));
+        return Err(arity_error("UNWRAP_OR", args.len(), 2));
     }
     match &args[0] {
         Value::Ok(v) => Ok(Outcome::normal((**v).clone())),
         Value::Err(_) => Ok(Outcome::normal(args[1].clone())),
         other => Err(type_error(
-            "OR_DIE",
+            "UNWRAP_OR",
             format!("expected OK/ERR, got {}", type_name(other)),
         )),
     }
+}
+
+/// v0.4 §12.7 + §14.5 — `OR_DIE(value, default)` is the v0.3-compat
+/// alias for `UNWRAP_OR`. Per spec §14.5, every call emits `W0051`.
+/// v0.5 will drop this alias entirely.
+///
+/// This wrapper handles the **runtime-call** path:
+///   `OR_DIE` reaches `eval_call` only when called as an ordinary
+///   function reference (e.g. via `f = OR_DIE; f(ERR, 0)` after a
+///   normal `resolve_builtin` lookup). The **lexer-keyword** path
+///   (`OR_DIE(...)` literal at parse time) is handled separately in
+///   `eval_expr`'s `Expr::OrDie` arm — both paths emit exactly one
+///   `W0051` per user-visible `OR_DIE(...)` source occurrence.
+fn builtin_unwrap_or_compat(ev: &mut Evaluator, args: Vec<Value>) -> WlwlResult<Outcome> {
+    ev.emit_warning(
+        ErrorCode::W0051,
+        "`OR_DIE` is a v0.3-compat alias; use `UNWRAP_OR` instead (will be removed in v0.5)",
+    );
+    builtin_unwrap_or(ev, args)
 }
 
 fn is_truthy(v: &Value) -> bool {
@@ -2179,6 +2209,17 @@ impl Evaluator {
                 Ok(Outcome::normal(Value::Boolean(r)))
             }
             Expr::OrDie { value, default, .. } => {
+                // v0.4 §14.5 — `OR_DIE` is the v0.3-compat alias of
+                // `UNWRAP_OR`. Emit W0051 on every source occurrence,
+                // regardless of OK/ERR/short-circuit branch (the
+                // alias was *written* by the user; that's what the
+                // warning is about). The canonical spelling
+                // `UNWRAP_OR` reaches this arm via the builtin-call
+                // path and never emits here.
+                self.emit_warning(
+                    ErrorCode::W0051,
+                    "`OR_DIE` is a v0.3-compat alias; use `UNWRAP_OR` instead (will be removed in v0.5)",
+                );
                 let o = self.eval_expr(value)?;
                 if o.signal != Signal::None {
                     return Ok(o);
@@ -2194,7 +2235,7 @@ impl Evaluator {
                     }
                     other => Err(self.diag(
                         ErrorCode::E0030,
-                        format!("OR_DIE expects OK/ERR, got {}", type_name(&other)),
+                        format!("UNWRAP_OR expects OK/ERR, got {}", type_name(&other)),
                         expr.span().clone(),
                     )),
                 }
@@ -7056,5 +7097,306 @@ entry = "main.wl"
         let d = err.diagnostic();
         assert_eq!(d.trace.len(), 1, "got: {:?}", d.trace);
         assert_eq!(d.trace[0].frame, "f");
+    }
+
+    // ──────────────────────────────────────────────────────────────────
+    // B3: OR_DIE → UNWRAP_OR canonicalization (spec v0.4 §12.7 + §14.5)
+    //
+    // Phase B3 promotes `UNWRAP_OR` to canonical name; `OR_DIE` is the
+    // v0.3-compat alias that emits `W0051` on every source occurrence.
+    // The W0051 emit point lives in `eval_expr`'s `Expr::OrDie` arm —
+    // OR_DIE is an unconditional lexer keyword that the parser lowers
+    // to `Expr::OrDie`, so the alias-wrapper path (`builtin_unwrap_or_
+    // compat`) is defensive and currently unreachable from real source.
+    //
+    // Behavior contract:
+    //   - `OR_DIE(...)` — emits W0051 once per source occurrence,
+    //     regardless of OK / ERR / non-RESULT / arity-error branch.
+    //     The warning fires BEFORE the value/expression path so it is
+    //     not short-circuited (unlike B2 DEL whose wrapper is skipped
+    //     by the ERR short-circuit in `eval_call`).
+    //   - `UNWRAP_OR(...)` — canonical, zero warnings, error messages
+    //     surface "UNWRAP_OR" (never "OR_DIE").
+    // ──────────────────────────────────────────────────────────────────
+
+    #[test]
+    fn b3_or_die_ok_emits_w0051() {
+        let (r, w) = run_with_warnings("OR_DIE(OK(42), 0);");
+        assert_eq!(r.unwrap(), Value::Integer(42));
+        assert_eq!(w.len(), 1, "expected exactly one W0051, got {:?}", w);
+        assert_eq!(w[0].code, ErrorCode::W0051);
+    }
+
+    #[test]
+    fn b3_or_die_err_consumes_and_emits_w0051() {
+        // Intentional difference from B2 DEL: OR_DIE emits W0051 even
+        // when consuming an ERR. Rationale — spec §14.5 says "使用
+        // v0.3 已弃用别名"; OR_DIE's *usage* in source is what the
+        // warning is about, not its runtime branch. DEL's ERR path
+        // suppresses the warning because DEL is NOT in §12.7 ERR
+        // consumer registry — it's a silent alias — so an ERR short
+        // circuit prevents legacy DEL calls on ERR streams from being
+        // spammed. OR_DIE is a legit ERR consumer; the user wrote the
+        // alias intentionally and gets warned regardless.
+        let (r, w) = run_with_warnings(r###"OR_DIE(ERR("e"), 99);"###);
+        assert_eq!(r.unwrap(), Value::Integer(99));
+        assert_eq!(w.len(), 1);
+        assert_eq!(w[0].code, ErrorCode::W0051);
+    }
+
+    #[test]
+    fn b3_or_die_non_result_emits_w0051_and_e0030() {
+        let (r, w) = run_with_warnings("OR_DIE(42, 0);");
+        let err = r.unwrap_err();
+        assert_eq!(err.diagnostic().code, ErrorCode::E0030);
+        assert_eq!(w.len(), 1);
+        assert_eq!(w[0].code, ErrorCode::W0051);
+    }
+
+    #[test]
+    fn b3_or_die_arity_too_few_is_parse_time_error() {
+        // OR_DIE is a lexer keyword, parser enforces 2-arg shape
+        // strictly (parse_or_die at line ~1072). Missing comma is
+        // E0012, not runtime E0022. We do NOT emit W0051 here
+        // because eval never runs — compare with the DEL short
+        // circuit in B2 (different mechanism: lexical parse-time vs
+        // runtime ERR short-circuit).
+        let err = run("OR_DIE(OK(1));").unwrap_err();
+        assert_eq!(err.diagnostic().code, ErrorCode::E0012);
+    }
+
+    #[test]
+    fn b3_or_die_arity_too_many_is_parse_time_error() {
+        // Symmetric: too many args → E0011 expected ')'.
+        let err = run("OR_DIE(OK(1), 0, 0);").unwrap_err();
+        assert_eq!(err.diagnostic().code, ErrorCode::E0011);
+    }
+
+    #[test]
+    fn b3_or_die_warning_message_mentions_unwrap_or() {
+        let (r, w) = run_with_warnings("OR_DIE(OK(1), 0);");
+        r.unwrap();
+        let msg = &w[0].message;
+        assert!(msg.contains("`OR_DIE`"), "should name `OR_DIE`: {}", msg);
+        assert!(
+            msg.contains("UNWRAP_OR"),
+            "should suggest `UNWRAP_OR`: {}",
+            msg
+        );
+        assert!(
+            msg.contains("v0.5"),
+            "should mention v0.5 removal deadline: {}",
+            msg
+        );
+    }
+
+    #[test]
+    fn b3_or_die_warning_exactly_once_per_call() {
+        let (r, w) = run_with_warnings(
+            r###"OR_DIE(OK(1), 0); OR_DIE(ERR("e"), 99); OR_DIE(OK(2), 0);"###,
+        );
+        r.unwrap();
+        assert_eq!(
+            w.len(),
+            3,
+            "expected one W0051 per OR_DIE call, got {:?}",
+            w
+        );
+        assert!(w.iter().all(|x| x.code == ErrorCode::W0051));
+    }
+
+    #[test]
+    fn b3_or_die_nested_in_default_position_each_layer_warns() {
+        // OR_DIE nested in the default arg position — both source
+        // occurrences are evaluated, both emit W0051. This is the
+    // legit "nested" shape (the test formerly tried outer-wraps-
+    // inner which is not a legal nested OR_DIE because the inner
+    // returns a non-RESULT; see b3_or_die_nested_outer_wraps_inner_
+    // is_e0030 below for that rejection).
+        let (r, w) = run_with_warnings(
+            r###"OR_DIE(ERR("e"), OR_DIE(OK(-1), 0));"###,
+        );
+        assert_eq!(r.unwrap(), Value::Integer(-1));
+        assert_eq!(
+            w.len(),
+            2,
+            "both OR_DIE tokens emit, got {:?}",
+            w
+        );
+    }
+
+    #[test]
+    fn b3_or_die_outer_wraps_inner_returns_e0030() {
+        // OR_DIE(OR_DIE(OK(1), 0), 0) — inner OR_DIE returns an
+        // Integer (the unwrapped OK), not a RESULT. Outer's
+        // Expr::OrDie arm rejects non-RESULT with E0030 ("UNWRAP_OR
+        // expects OK/ERR, got integer"). This locks the §12.2
+        // contract that OR_DIE must wrap a RESULT.
+        let err = run("OR_DIE(OR_DIE(OK(1), 0), 0);").unwrap_err();
+        assert_eq!(err.diagnostic().code, ErrorCode::E0030);
+        let msg = &err.diagnostic().message;
+        assert!(
+            msg.contains("UNWRAP_OR"),
+            "E0030 message should name UNWRAP_OR: {}",
+            msg
+        );
+    }
+
+    #[test]
+    fn b3_or_die_inside_user_function_emits_w0051() {
+        // OR_DIE is keyword-tokenized at source level; user fn body
+        // doesn't shield it.
+        let src = r###"
+            LET(f, FUN((x), OR_DIE(x, 0)));
+            f(OK(1));
+        "###;
+        let (r, w) = run_with_warnings(src);
+        assert_eq!(r.unwrap(), Value::Integer(1));
+        assert_eq!(w.len(), 1);
+        assert_eq!(w[0].code, ErrorCode::W0051);
+    }
+
+    #[test]
+    fn b3_unwrap_or_ok_emits_no_w0051() {
+        let (r, w) = run_with_warnings("UNWRAP_OR(OK(42), 0);");
+        assert_eq!(r.unwrap(), Value::Integer(42));
+        assert!(w.is_empty(), "UNWRAP_OR must be silent, got {:?}", w);
+    }
+
+    #[test]
+    fn b3_unwrap_or_err_consumes_no_w0051() {
+        let (r, w) = run_with_warnings(r###"UNWRAP_OR(ERR("e"), 99);"###);
+        assert_eq!(r.unwrap(), Value::Integer(99));
+        assert!(w.is_empty());
+    }
+
+    #[test]
+    fn b3_unwrap_or_non_result_is_e0030_with_unwrap_or_message() {
+        // The canonical-name convention: error messages name UNWRAP_OR,
+        // never OR_DIE.
+        let err = run("UNWRAP_OR(42, 0);").unwrap_err();
+        let msg = &err.diagnostic().message;
+        assert!(
+            msg.contains("UNWRAP_OR"),
+            "should mention UNWRAP_OR: {}",
+            msg
+        );
+        assert!(
+            !msg.contains("`OR_DIE`"),
+            "should NOT mention OR_DIE: {}",
+            msg
+        );
+        assert_eq!(err.diagnostic().code, ErrorCode::E0030);
+    }
+
+    #[test]
+    fn b3_unwrap_or_arity_too_few_is_e0022_saying_unwrap_or() {
+        let err = run("UNWRAP_OR(OK(1));").unwrap_err();
+        let msg = &err.diagnostic().message;
+        assert!(
+            msg.contains("UNWRAP_OR"),
+            "should mention UNWRAP_OR: {}",
+            msg
+        );
+        assert_eq!(err.diagnostic().code, ErrorCode::E0022);
+    }
+
+    #[test]
+    fn b3_unwrap_or_arity_too_many_is_e0022_saying_unwrap_or() {
+        let err = run("UNWRAP_OR(OK(1), 0, 0);").unwrap_err();
+        let msg = &err.diagnostic().message;
+        assert!(
+            msg.contains("UNWRAP_OR"),
+            "should mention UNWRAP_OR: {}",
+            msg
+        );
+        assert_eq!(err.diagnostic().code, ErrorCode::E0022);
+    }
+
+    #[test]
+    fn b3_unwrap_or_inside_user_function_no_w0051() {
+        let src = r###"
+            LET(f, FUN((x), UNWRAP_OR(x, 0)));
+            f(OK(1));
+        "###;
+        let (r, w) = run_with_warnings(src);
+        assert_eq!(r.unwrap(), Value::Integer(1));
+        assert!(w.is_empty());
+    }
+
+    #[test]
+    fn b3_unwrap_or_propagates_through_user_function() {
+        // Regression: rename must not change ERR-through-user-fn semantics.
+        let src = r###"
+            LET(pass_through, FUN((x), x));
+            UNWRAP_OR(pass_through(ERR("inner")), -1);
+        "###;
+        assert_eq!(run(src).unwrap(), Value::Integer(-1));
+    }
+
+    #[test]
+    fn b3_mixed_or_die_and_unwrap_or_only_or_die_warns() {
+        // Same fn: OR_DIE branch warns, UNWRAP_OR branch silent.
+        let src = r###"
+            LET(f, FUN((x),
+                LET(a, OR_DIE(x, -1));
+                LET(b, UNWRAP_OR(x, -2));
+                +(a, b)
+            ));
+            f(OK(10));
+        "###;
+        let (r, w) = run_with_warnings(src);
+        assert_eq!(r.unwrap(), Value::Integer(20));
+        assert_eq!(w.len(), 1);
+        assert_eq!(w[0].code, ErrorCode::W0051);
+    }
+
+    #[test]
+    fn b3_or_die_preserves_v04_section_122_semantics() {
+        // Behavior regression guard: rename + alias must not change
+        // OK / ERR / non-RESULT semantics. Arity is enforced at
+        // parse time for OR_DIE (lexer keyword) — see
+        // b3_or_die_arity_*_is_parse_time_error above; arity E0022
+        // for UNWRAP_OR (builtin call path) is covered by
+        // b3_unwrap_or_arity_*_saying_unwrap_or.
+        assert_eq!(run("OR_DIE(OK(42), 0);").unwrap(), Value::Integer(42));
+        assert_eq!(
+            run(r###"OR_DIE(ERR("e"), 99);"###).unwrap(),
+            Value::Integer(99)
+        );
+        let err = run("OR_DIE(42, 0);").unwrap_err();
+        assert_eq!(err.diagnostic().code, ErrorCode::E0030);
+        // OR_DIE non-RESULT error message names UNWRAP_OR (canonical).
+        let msg = &err.diagnostic().message;
+        assert!(
+            msg.contains("UNWRAP_OR"),
+            "E0030 message should name UNWRAP_OR: {}",
+            msg
+        );
+    }
+
+    #[test]
+    fn b3_doc_style_unwrap_or_chains_are_silent() {
+        // B3 plan: "文档与示例优先用 UNWRAP_OR". Pins the
+        // silent-canonical contract on the basic doc-style pattern
+        // — UNWRAP_OR consuming a RESULT (OK / ERR) without any
+        // alias warning. Both branches run inline so the ERR is
+        // consumed at the same expression site (top-level LET
+        // bindings of ERR values trigger E0102 because each top-level
+        // stmt is checked, separate from variable bindings).
+        let (r1, w1) = run_with_warnings(r###"UNWRAP_OR(OK("data"), "fallback");"###);
+        assert_eq!(r1.unwrap(), Value::String("data".into()));
+        assert!(w1.is_empty());
+        let (r2, w2) = run_with_warnings(r###"UNWRAP_OR(ERR("oops"), "fallback");"###);
+        assert_eq!(r2.unwrap(), Value::String("fallback".into()));
+        assert!(w2.is_empty(), "ERR branch must be silent, got {:?}", w2);
+    }
+
+    #[test]
+    fn b3_w0051_code_still_resolves() {
+        // Sanity: W0051 (added in B2) must still be a registered code
+        // after the rename (regression for B3).
+        assert_eq!(ErrorCode::W0051.as_str(), "W0051");
+        assert!(ErrorCode::W0051.is_warning());
     }
 }

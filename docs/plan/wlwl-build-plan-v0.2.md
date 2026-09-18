@@ -80,6 +80,7 @@
 > - Phase A 全部完成(A1a-c / A1d / A2 / A3 / A4 / A5 / A6 / A7 / A8;A1e deferred → B4)
 > - Phase B1 完成(INDEX_GET / INDEX_SET / AT / REMOVE_KEY / POP-dict + E0036 / E0037)
 > - Phase B2 完成(DEL v0.3-compat alias + W0051)
+> - Phase B3 完成(UNWRAP_OR canonicalization + OR_DIE v0.3-compat alias + W0051;内部 rename builtin_or_die → builtin_unwrap_or + 21 个新测试)
 > - workspace **679 / 679 pass**,13/13 crate ≥ 90% line,TOTAL **93.09% line**
 > - `wlwl-eval` 92.86% line(基线涨 +0.17pp);`wlwl-error` 98.85% line(+0.11pp)
 

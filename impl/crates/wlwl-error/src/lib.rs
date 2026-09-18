@@ -78,7 +78,7 @@ pub enum ErrorCode {
     W0040, // unhandled `TODO(agent):` comment
     W0015, // integer overflow, saturated to INT64_MAX / INT64_MIN (v0.4 §9.5)
     // v0.4 §14.5 — using v0.3 deprecated alias (`DEL` / `OR_DIE`).
-    // Added in Phase B2 (DEL alias). OR_DIE side is wired in Phase B3.
+    // Added in Phase B2 (DEL alias) + Phase B3 (OR_DIE alias).
     W0051,
 }
 
@@ -226,7 +226,7 @@ impl ErrorCode {
             ErrorCode::W0015 => ErrorCategory::Runtime,
             // v0.4 §14.5 — using v0.3 deprecated alias (`DEL` / `OR_DIE`).
             // Bucket as Name (deprecated *name* in user source).
-            // Added in Phase B2.
+            // Added in Phase B2 (DEL alias) + Phase B3 (OR_DIE alias).
             ErrorCode::W0051 => ErrorCategory::Name,
         }
     }
@@ -901,7 +901,8 @@ mod tests {
             "E0026": code_snap(ErrorCode::E0026, "destructure_mismatch"),
             "E0027": code_snap(ErrorCode::E0027, "match_fallthrough"),
             // v0.4 §14.5 — using v0.3 deprecated alias (`DEL` / `OR_DIE`).
-            // Lives in the Name bucket. Added Phase B2 (DEL alias).
+            // Lives in the Name bucket. Added Phase B2 (DEL alias)
+            // + Phase B3 (OR_DIE alias).
             "W0051": code_snap(ErrorCode::W0051, "deprecated_alias"),
         }));
     }
