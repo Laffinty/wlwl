@@ -91,6 +91,9 @@
 > - Phase B7 完成(`wlwl:std.test` 6 函数测试框架 + E0046-E0049 + `ErrorCategory::Test` 新变体 + `Evaluator.test_registry` 新字段 + `EXPECT_ERR` 加 `ERR_CONSUMER_REGISTRY` 9→10;架构同 B6 走 name catalog 绕过 callback 边界;决策与 §15.9 偏差见 deviations P4-B7-001 ~ P4-B7-007 + history/20260918b7.md)
 > - workspace **874 / 874 pass**(B6 末 826 → +48:eval 集成 24 + std test resolve 1 + std test catalog 5 + std collection 跨仓库 1 + error snap_test 1 + registry lock 调整 1)
 > - `wlwl-eval` 429 lib tests;`wlwl-std` 107 lib tests;`wlwl-error` 67 lib tests(含 `snap_test`);13/13 crate ≥ 90% line 守住(TOTAL 92.87%,`wlwl-eval/test.rs` 单文件 88.98% line 详见 P4-B7-006)
+> - Phase B8 完成(字符串内建 10 个 + `FLOAT` 共 11 个 global builtin;新增 §10.3 row 9-14 + §9.5 FLOAT 转换;0 新错误码,沿用 E0030/E0031;`FLOAT` ParseError 与 `INT` 同形;`CODEPOINTS` 用 Rust `char` 锁 Unicode scalar 范围;非 ASCII `UPPER`/`LOWER` W0014 deferred Phase C;决策与 §10.3 偏差见 deviations P4-B8-001 ~ P4-B8-006 + history/20260918b8.md)
+> - workspace **895 / 895 pass**(B7 末 874 → +21:eval 集成 21)
+> - `wlwl-eval` 450 lib tests;11 新 global builtin;13/13 crate ≥ 90% line 守住(TOTAL 92.62%,`wlwl-eval/lib.rs` 93.43% line -0.58pp,新 builtin 部分 ERR-transparent 路径未完全覆盖详见 P4-B8-005)
 
 ---
 

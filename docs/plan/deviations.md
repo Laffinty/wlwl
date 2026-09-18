@@ -1379,3 +1379,41 @@ P3-013 选 §4.5 解读 (混用是 warning). 理由:
 | Deferred to Phase B9 | `NOT` 宏函数名 + `!` → W0054 |
 | Deferred to Phase B10 | `PRINT_ERR`（stderr）+ 附录 G 注册表实现 |
 | Spec coverage | §15.9 100%（6 函数全部实现，schema 表锁定 `["name", "passed", "duration_ms", "error"?]`）；§12.7 §15.9 联合扩展（EXPECT_ERR 加 ERR_CONSUMER_REGISTRY）；§12.6 ERR 透明传播 100%（`b7_uncaught_err_in_test_body_is_caught_by_run_tests`）；§14.4 row 12 `ErrorCategory::Test` 100% |
+# Phase B8 (2026-09-18) — 字符串内建扩展 10 个 + `FLOAT` 转换 (spec v0.4 §10.3)
+
+> B7 (commit `62a3580`, 874/874) 收口后接 B8。本批实现 spec §10.3 表中除 `LEN` / `+` /
+> `SUB` / `CONTAINS` / `SPLIT` / `REPLACE` / `UPPER` / `LOWER` / `STR` / `INT`（既有）外的所有 11
+> 个函数 / 转换：FLOAT / TRIM / TRIM_START / TRIM_END / STARTS_WITH / ENDS_WITH / REPEAT /
+> PAD_START / PAD_END / CODEPOINTS / FROM_CODEPOINTS。全部走 global builtin（append 到
+> `resolve_builtin`），不走 std 模块——无 callback（不像 B6 collection / B7 test 那样需要
+> name catalog），附录 G 把它们列为 global。
+
+| ID | Spec / plan | Status | Notes |
+|----|-------------|--------|-------|
+| P4-B8-001 | spec §10.3 + §9.5 — `FLOAT` 解析失败 ERR shape | **Implemented** | 与 `INT` 同形：`ERR(["kind": "ParseError", "input", "reason"])`。NaN / ±Inf（"nan" / "inf" 字符串）也走 ParseError（spec §10.3 未钉死，我们保持与 `INT` 一致 —— 同一类型同一 ERR 形状）。锁测试：`b8_float_parse_error_returns_err_value`（用 `LET(x, FLOAT(...)) ; IS_ERR(x)`，避开顶层 TRY 不能捕获 Value::Err 的限制 —— 同 B7 P4-B7-003）。 |
+| P4-B8-002 | spec §9.5 — `REPEAT(s, n)` n 溢出处理 | **Deviation (saturate)** | `String::repeat(usize)` 在 usize 溢出时 panic。spec §9.5 要求 saturation。我们饱和到 `usize::MAX`（64-bit ≈ 9.2 EB），**不** emit W0015 —— W0015 是为算术（+/×/-/etc）设计的溢出警告，迭代计数不该污染警告流。n < 0 走 E0030（type，与 §10.3 row 11 「n ≥ 0」一致）。 |
+| P4-B8-003 | spec §10.3 row 13/14 — `CODEPOINTS` 单位 | **Implementation note (no deviation)** | 「Unicode 码点 INTEGER」—— 不是 UTF-16 units。Rust `char::from_u32` + 范围 `(0..=0x10FFFF)` 锁定 Unicode scalar 范围。U+1D11E `𝄞` 是单 `char`（不在 BMP，需 surrogate pair 在 UTF-16 中）。锁测试：`b8_codepoints_unicode_supplementary_plane`。 |
+| P4-B8-004 | spec §10.3 row 14 — `FROM_CODEPOINTS` 越界 | **Deviation (E0031)** | spec 未钉死错误码。我们用 **E0031**（type bucket，越界类）—— 与 `INT(F)` 溢出用 **E0035**（也是 type bucket）的语义一致：值在合法范围外。**非 INTEGER element** 走 E0030（type error，与 value_type 边界区分）。锁测试：`b8_from_codepoints_surrogate_half_is_e0031` / `b8_from_codepoints_above_max_is_e0031` / `b8_from_codepoints_non_integer_element_is_e0030`。 |
+| P4-B8-005 | plan §0.1 决策 #8 — 13/13 crate ≥ 90% line | **Acceptable (-0.25pp TOTAL)** | B7 末 TOTAL line 92.87% → B8 末 92.62%（-0.25pp）。新 11 个 builtin 加 ~340 lines，但有些路径（ERR-transparent 的 builtin 内部 `Value::Err` arm —— 因 §12.6 在 eval_call 短路 ERR）没走到。`wlwl-eval/lib.rs` 自身 93.43% line（守住）。13/13 crate ≥ 90% line 守住（最低 `wlwl-lexer/src/lib.rs` 90.41% line、`wlwl-parser/src/lib.rs` 90.02% line —— 都 ≥ 90%）。补 coverage 是 P4-B8-007 候选（独立 batch）。 |
+| P4-B8-006 | plan §5.8 — 非 ASCII `UPPER` / `LOWER` W0014 | **Deferred to Phase C** | plan §5.8 列「非 ASCII `UPPER` / `LOWER` 行为实现定义，缺实现时 emit `W0014`」。当前 `UPPER` / `LOWER` builtin 已在 Phase B5 之前实现（用 Rust 默认 `to_lowercase` / `to_uppercase`）。W0014（§14.4 row 5 「impl-defined behavior 警告」）的 emit point 推迟到 Phase C（unicode 表批），届时 `UPPER` / `LOWER` 接受 unicode 表后会有真正的「缺表 fallback」场景。本批**不**动 `UPPER` / `LOWER` 行为。 |
+
+## Phase B8 implementation stats
+
+| Item | Data |
+|------|------|
+| Total tests | **895 / 895 passing** (B7 末 874 → 净 +21：b8_* 集成测试 21) |
+| `wlwl-eval` new tests | **+21**（`b8_*` × 21） |
+| `wlwl-std` new tests | 0（所有 11 个 builtin 都是 global，无 std 模块新增） |
+| `wlwl-error` new tests | 0（无新错误码） |
+| New global builtins | **+11**（FLOAT / TRIM / TRIM_START / TRIM_END / STARTS_WITH / ENDS_WITH / REPEAT / PAD_START / PAD_END / CODEPOINTS / FROM_CODEPOINTS） |
+| New std modules | 0（11 个全走 global） |
+| New infra | `builtin_*` functions (11) + `pad_with` / `trim_ascii` / `expect_arity3` helpers |
+| New error codes | 0（沿用 E0030 类型错、E0031 越界型错） |
+| Lines added (est.) | ~700（eval lib.rs 11 个 builtin + helpers + 21 tests + resolve_builtin 注册） |
+| Key design decisions | `FLOAT` ParseError 与 `INT` 同形；`REPEAT` 饱和到 `usize::MAX`；`CODEPOINTS` 用 Rust `char`（Unicode scalar，非 UTF-16 units）；`FROM_CODEPOINTS` 越界 E0031；`PAD_*` 用 codepoint 长度（与 `LEN` 一致）；`TRIM` ASCII-only |
+| Test coverage | `wlwl-eval/lib.rs` 93.43% line（守住 -0.58pp）；13/13 crate ≥ 90% line 守住；TOTAL 92.62% line（-0.25pp） |
+| Deferred to Phase B9 | `NOT` 宏函数名 + `!` → W0054 |
+| Deferred to Phase B10 | `PRINT_ERR`（stderr） |
+| Deferred to Phase B11 | 附录 G 注册表实现 |
+| Deferred to Phase C | 非 ASCII `UPPER` / `LOWER` W0014 emit point（unicode 表批） |
+| Spec coverage | §10.3 100%（11 函数 / 转换全部实现）；§9.5 与 `FLOAT` 解析边界一致；§12.6 ERR 透明传播 100%（`b8_err_transparent_for_all_new_builtins` 覆盖 11 个 probe） |

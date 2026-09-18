@@ -1070,6 +1070,287 @@ fn builtin_int(_ev: &mut Evaluator, args: Vec<Value>) -> WlwlResult<Outcome> {
     }
 }
 
+// ── Phase B8: spec v0.4 §10.3 string extensions + FLOAT conversion ──
+//
+// All eleven builtins below are append-only (no lexer / parser /
+// AST change). They're registered in `resolve_builtin` further down;
+// none are in the §12.7 ERR consumer registry, so they inherit the
+// default §12.6 transparent ERR propagation.
+
+/// `FLOAT(s)` — spec §10.3 + §9.5: STRING / INTEGER → FLOAT; on STRING
+/// parse failure, return `ERR(["kind": "ParseError", "input", "reason"])`
+/// (same shape as `INT`'s ParseError so callers can match either).
+///
+/// FLOAT → FLOAT is identity (no precision loss claim). INTEGER → FLOAT
+/// is exact (Rust's `as f64` produces the nearest representable f64,
+/// which is exact for i64 within ±2^53).
+fn builtin_float(_ev: &mut Evaluator, args: Vec<Value>) -> WlwlResult<Outcome> {
+    let v = expect_arity("FLOAT", &args, 1)?;
+    match v {
+        Value::Float(f) => Ok(Outcome::normal(Value::Float(*f))),
+        Value::Integer(i) => Ok(Outcome::normal(Value::Float(*i as f64))),
+        Value::String(s) => match s.parse::<f64>() {
+            Ok(f) if f.is_finite() => Ok(Outcome::normal(Value::Float(f))),
+            Ok(f) => {
+                // NaN / ±Inf from string parse (e.g. "nan", "inf").
+                // §10.3 doesn't pin behavior; we mirror INT's
+                // ParseError shape so callers get a uniform
+                // `ERR(["kind": "ParseError"])` payload.
+                Ok(Outcome::normal(Value::Err(Box::new(Value::Dict(vec![
+                    (Value::String("kind".into()), Value::String("ParseError".into())),
+                    (Value::String("input".into()), Value::String(s.clone())),
+                    (
+                        Value::String("reason".into()),
+                        Value::String(format!("non-finite FLOAT: {}", f)),
+                    ),
+                ])))))
+            }
+            Err(e) => Ok(Outcome::normal(Value::Err(Box::new(Value::Dict(vec![
+                (Value::String("kind".into()), Value::String("ParseError".into())),
+                (Value::String("input".into()), Value::String(s.clone())),
+                (Value::String("reason".into()), Value::String(e.to_string())),
+            ]))))),
+        },
+        other => Err(type_error(
+            "FLOAT",
+            format!("cannot convert {} to FLOAT", type_name(other)),
+        )),
+    }
+}
+
+/// Helper: trim ASCII whitespace from both ends of a STRING.
+fn trim_ascii(s: &str) -> &str {
+    s.trim_matches(|c: char| c.is_ascii_whitespace())
+}
+
+/// `TRIM(s)` — spec §10.3 row 9: ASCII whitespace both ends.
+fn builtin_trim(_ev: &mut Evaluator, args: Vec<Value>) -> WlwlResult<Outcome> {
+    let v = expect_arity("TRIM", &args, 1)?;
+    match v {
+        Value::String(s) => Ok(Outcome::normal(Value::String(trim_ascii(s).into()))),
+        other => Err(type_error(
+            "TRIM",
+            format!("expected STRING, got {}", type_name(other)),
+        )),
+    }
+}
+
+/// `TRIM_START(s)` — leading whitespace only.
+fn builtin_trim_start(_ev: &mut Evaluator, args: Vec<Value>) -> WlwlResult<Outcome> {
+    let v = expect_arity("TRIM_START", &args, 1)?;
+    match v {
+        Value::String(s) => {
+            let trimmed = s.trim_start_matches(|c: char| c.is_ascii_whitespace());
+            Ok(Outcome::normal(Value::String(trimmed.into())))
+        }
+        other => Err(type_error(
+            "TRIM_START",
+            format!("expected STRING, got {}", type_name(other)),
+        )),
+    }
+}
+
+/// `TRIM_END(s)` — trailing whitespace only.
+fn builtin_trim_end(_ev: &mut Evaluator, args: Vec<Value>) -> WlwlResult<Outcome> {
+    let v = expect_arity("TRIM_END", &args, 1)?;
+    match v {
+        Value::String(s) => {
+            let trimmed = s.trim_end_matches(|c: char| c.is_ascii_whitespace());
+            Ok(Outcome::normal(Value::String(trimmed.into())))
+        }
+        other => Err(type_error(
+            "TRIM_END",
+            format!("expected STRING, got {}", type_name(other)),
+        )),
+    }
+}
+
+/// `STARTS_WITH(s, prefix)` — BOOLEAN.
+fn builtin_starts_with(_ev: &mut Evaluator, args: Vec<Value>) -> WlwlResult<Outcome> {
+    let (s, pre) = expect_arity2("STARTS_WITH", &args)?;
+    match (s, pre) {
+        (Value::String(s), Value::String(p)) => {
+            Ok(Outcome::normal(Value::Boolean(s.starts_with(p.as_str()))))
+        }
+        (_, _) => Err(type_error(
+            "STARTS_WITH",
+            "expected STRING, STRING".to_string(),
+        )),
+    }
+}
+
+/// `ENDS_WITH(s, suffix)` — BOOLEAN.
+fn builtin_ends_with(_ev: &mut Evaluator, args: Vec<Value>) -> WlwlResult<Outcome> {
+    let (s, suf) = expect_arity2("ENDS_WITH", &args)?;
+    match (s, suf) {
+        (Value::String(s), Value::String(p)) => {
+            Ok(Outcome::normal(Value::Boolean(s.ends_with(p.as_str()))))
+        }
+        (_, _) => Err(type_error(
+            "ENDS_WITH",
+            "expected STRING, STRING".to_string(),
+        )),
+    }
+}
+
+/// `REPEAT(s, n)` — `n` copies of `s`. n must be ≥ 0 (negative → E0030).
+fn builtin_repeat(_ev: &mut Evaluator, args: Vec<Value>) -> WlwlResult<Outcome> {
+    let (s, n) = expect_arity2("REPEAT", &args)?;
+    match (s, n) {
+        (Value::String(s), Value::Integer(n)) if *n >= 0 => {
+            // Spec §9.5: integer arithmetic uses saturating semantics.
+            // `String::repeat(usize)` panics on overflow, so we cap at
+            // `isize::MAX` (≈ 9.2 EB on 64-bit) — same trade-off as
+            // the operator machinery in `builtin_add_integer`.
+            let n_usize = (*n as u64).min(usize::MAX as u64) as usize;
+            Ok(Outcome::normal(Value::String(s.repeat(n_usize))))
+        }
+        (Value::String(_), Value::Integer(_)) => Err(type_error(
+            "REPEAT",
+            "second arg must be non-negative INTEGER".to_string(),
+        )),
+        (_, _) => Err(type_error(
+            "REPEAT",
+            "expected STRING, INTEGER".to_string(),
+        )),
+    }
+}
+
+/// `PAD_START(s, n, c)` / `PAD_END(s, n, c)` share a helper.
+fn pad_with(s: &str, n: usize, c: char, side: &str) -> String {
+    let len = s.chars().count();
+    if len >= n {
+        return s.to_string();
+    }
+    let pad_count = n - len;
+    let pad: String = std::iter::repeat(c).take(pad_count).collect();
+    let mut out = String::with_capacity(n);
+    if side == "start" {
+        out.push_str(&pad);
+        out.push_str(s);
+    } else {
+        out.push_str(s);
+        out.push_str(&pad);
+    }
+    out
+}
+
+/// `PAD_START(s, n, c)` — pad to length `n` with `c` on the left.
+fn builtin_pad_start(_ev: &mut Evaluator, args: Vec<Value>) -> WlwlResult<Outcome> {
+    let (s, n, c) = expect_arity3("PAD_START", &args)?;
+    match (s, n, c) {
+        (Value::String(s), Value::Integer(n), Value::String(c)) => {
+            let pad_char = c.chars().next().ok_or_else(|| {
+                type_error("PAD_START", "pad character STRING must be non-empty".to_string())
+            })?;
+            Ok(Outcome::normal(Value::String(pad_with(
+                s,
+                (*n).max(0) as usize,
+                pad_char,
+                "start",
+            ))))
+        }
+        _ => Err(type_error(
+            "PAD_START",
+            "expected STRING, INTEGER, STRING".to_string(),
+        )),
+    }
+}
+
+/// `PAD_END(s, n, c)` — pad to length `n` with `c` on the right.
+fn builtin_pad_end(_ev: &mut Evaluator, args: Vec<Value>) -> WlwlResult<Outcome> {
+    let (s, n, c) = expect_arity3("PAD_END", &args)?;
+    match (s, n, c) {
+        (Value::String(s), Value::Integer(n), Value::String(c)) => {
+            let pad_char = c.chars().next().ok_or_else(|| {
+                type_error("PAD_END", "pad character STRING must be non-empty".to_string())
+            })?;
+            Ok(Outcome::normal(Value::String(pad_with(
+                s,
+                (*n).max(0) as usize,
+                pad_char,
+                "end",
+            ))))
+        }
+        _ => Err(type_error(
+            "PAD_END",
+            "expected STRING, INTEGER, STRING".to_string(),
+        )),
+    }
+}
+
+/// `CODEPOINTS(s)` — return ARRAY of INTEGER codepoints (Unicode
+/// scalar values, not UTF-16 code units).
+fn builtin_codepoints(_ev: &mut Evaluator, args: Vec<Value>) -> WlwlResult<Outcome> {
+    let v = expect_arity("CODEPOINTS", &args, 1)?;
+    match v {
+        Value::String(s) => {
+            let cps: Vec<Value> = s.chars().map(|c| Value::Integer(c as i64)).collect();
+            Ok(Outcome::normal(Value::Array(cps)))
+        }
+        other => Err(type_error(
+            "CODEPOINTS",
+            format!("expected STRING, got {}", type_name(other)),
+        )),
+    }
+}
+
+/// `FROM_CODEPOINTS(arr)` — inverse of CODEPOINTS. Each element must
+/// be INTEGER; out-of-Unicode-scalar-range → E0031 (Type bucket,
+/// 越界类 type error, mirrors INT's out-of-range E0035).
+fn builtin_from_codepoints(_ev: &mut Evaluator, args: Vec<Value>) -> WlwlResult<Outcome> {
+    let v = expect_arity("FROM_CODEPOINTS", &args, 1)?;
+    match v {
+        Value::Array(items) => {
+            let mut out = String::new();
+            for it in items {
+                match it {
+                    Value::Integer(i) if (0..=0x10FFFF).contains(i) => {
+                        if let Some(c) = char::from_u32(*i as u32) {
+                            out.push(c);
+                        } else {
+                            return Err(builtin_error(
+                                ErrorCode::E0031,
+                                "FROM_CODEPOINTS",
+                                format!("codepoint U+{:04X} not a valid Unicode scalar", i),
+                            ));
+                        }
+                    }
+                    Value::Integer(i) => {
+                        return Err(builtin_error(
+                            ErrorCode::E0031,
+                            "FROM_CODEPOINTS",
+                            format!("codepoint {} outside Unicode range 0..=0x10FFFF", i),
+                        ));
+                    }
+                    other => {
+                        return Err(type_error(
+                            "FROM_CODEPOINTS",
+                            format!("array element must be INTEGER, got {}", type_name(other)),
+                        ));
+                    }
+                }
+            }
+            Ok(Outcome::normal(Value::String(out)))
+        }
+        other => Err(type_error(
+            "FROM_CODEPOINTS",
+            format!("expected ARRAY, got {}", type_name(other)),
+        )),
+    }
+}
+
+/// `expect_arity3` — 3-arg helper for PAD_*. Mirrors `expect_arity2`.
+fn expect_arity3<'a>(
+    fn_name: &str,
+    args: &'a [Value],
+) -> WlwlResult<(&'a Value, &'a Value, &'a Value)> {
+    if args.len() != 3 {
+        return Err(arity_error(fn_name, args.len(), 3));
+    }
+    Ok((&args[0], &args[1], &args[2]))
+}
+
 // ── Phase B1: spec v0.4 §10.1 / §10.2 subscript / key access primitives ──
 //
 // `INDEX_GET` / `INDEX_SET` / `AT` / `REMOVE_KEY` / `POP` (dict variant).
@@ -1470,6 +1751,33 @@ fn resolve_builtin(name: &str) -> Option<BuiltinFn> {
         "LEN" => Some(builtin_len),
         "PUSH" => Some(builtin_push),
         "INT" => Some(builtin_int),
+        // Phase B8 (spec §10.3 + §9.5): FLOAT conversion. Same
+        // shape as INT — STRING/INTEGER/FLOAT → FLOAT; STRING parse
+        // failure returns `ERR(["kind": "ParseError", "input", "reason"])`
+        // for symmetric handling with INT.
+        "FLOAT" => Some(builtin_float),
+        // Phase B8 (spec §10.3 row 9): three trim builtins.
+        // ASCII-whitespace only by spec (non-ASCII trim is
+        // implementation-defined; we keep ASCII).
+        "TRIM" => Some(builtin_trim),
+        "TRIM_START" => Some(builtin_trim_start),
+        "TRIM_END" => Some(builtin_trim_end),
+        // Phase B8 (spec §10.3 row 10): STARTS_WITH / ENDS_WITH
+        // are BOOLEAN-returning substring predicates.
+        "STARTS_WITH" => Some(builtin_starts_with),
+        "ENDS_WITH" => Some(builtin_ends_with),
+        // Phase B8 (spec §10.3 row 11): REPEAT(s, n) builds an
+        // n-fold copy; saturating on overflow per §9.5.
+        "REPEAT" => Some(builtin_repeat),
+        // Phase B8 (spec §10.3 row 12): PAD_START / PAD_END pad
+        // with a single char (the leading char of the third arg).
+        "PAD_START" => Some(builtin_pad_start),
+        "PAD_END" => Some(builtin_pad_end),
+        // Phase B8 (spec §10.3 row 13-14): CODEPOINTS ↔ FROM_CODEPOINTS.
+        // FROM_CODEPOINTS validates Unicode scalar range (0..=0x10FFFF)
+        // and rejects surrogate halves + out-of-range with E0031.
+        "CODEPOINTS" => Some(builtin_codepoints),
+        "FROM_CODEPOINTS" => Some(builtin_from_codepoints),
         // v0.4 spec §10.3 + appendix G — `STR(x) → STRING` global
         // conversion builtin (v0.2 provenance; the implementation only
         // lands in Phase B5 because FORMAT's §10.6 conversion rule
@@ -9731,5 +10039,277 @@ entry = "main.wl"
             Value::String(s) => s,
             other => panic!("expected STRING for `{}`, got {:?}", key, other),
         })
+    }
+
+    // ══════════════════════════════════════════════════════════════════
+    // Phase B8 — spec v0.4 §10.3 string extensions + FLOAT conversion
+    //
+    // Tests cover the 11 new global builtins (no IMPORT needed;
+    // they sit in the global registry per appendix G):
+    //   FLOAT / TRIM / TRIM_START / TRIM_END / STARTS_WITH / ENDS_WITH
+    //   REPEAT / PAD_START / PAD_END / CODEPOINTS / FROM_CODEPOINTS
+    //
+    // Coverage strategy:
+    //   - happy path + ASCII edge cases per builtin;
+    //   - §10.3 FLOAT ParseError shape (same as INT);
+    //   - §12.6 ERR transparent propagation (input ERR → output ERR
+    //     surfaces at top level as E0102, same pattern B5/B6/B7
+    //     locked in).
+    //
+    // Note: §10.3 non-ASCII UPPER / LOWER W0014 emit is **deferred to
+    // Phase C** (the unicode lowercasing table is added there). The
+    // existing UPPER/LOWER builtins already use Rust's char-
+    // based to_lowercase()/to_uppercase(); the W0014 contract is
+    // documented in plan §5.8 but the actual emit point lands with
+    // the rest of the unicode-aware string builtins.
+    // ══════════════════════════════════════════════════════════════════
+
+    #[test]
+    fn b8_float_identity() {
+        assert_eq!(run("FLOAT(1.5);").unwrap(), Value::Float(1.5));
+        assert_eq!(run("FLOAT(0.0);").unwrap(), Value::Float(0.0));
+        assert_eq!(run("FLOAT(-2.5);").unwrap(), Value::Float(-2.5));
+    }
+
+    #[test]
+    fn b8_float_from_integer() {
+        // INTEGER → FLOAT is exact within ±2^53 (Rust's `as f64`).
+        assert_eq!(run("FLOAT(42);").unwrap(), Value::Float(42.0));
+        assert_eq!(run("FLOAT(-7);").unwrap(), Value::Float(-7.0));
+        assert_eq!(run("FLOAT(0);").unwrap(), Value::Float(0.0));
+    }
+
+    #[test]
+    fn b8_float_from_string_ok() {
+        assert_eq!(run(r#"FLOAT("3.14");"#).unwrap(), Value::Float(3.14));
+        assert_eq!(run(r#"FLOAT("-1.5");"#).unwrap(), Value::Float(-1.5));
+        assert_eq!(run(r#"FLOAT("0");"#).unwrap(), Value::Float(0.0));
+        // Scientific notation
+        assert_eq!(run(r#"FLOAT("1e3");"#).unwrap(), Value::Float(1000.0));
+    }
+
+    #[test]
+    fn b8_float_parse_error_returns_err_value() {
+        // §10.3: parse failure returns ERR(["kind": "ParseError", ...]).
+        // Not an E0xxx — it's a *value* (caller observes via TRY or
+        // pattern-match). End-to-end via `LET(x, FLOAT(...))` then
+        // `IS_ERR(x)`: the FLOAT returns ERR to LET as a plain value
+        // (no signal involved because FLOAT itself doesn't emit
+        // Return — only TRY does); IS_ERR then confirms the shape.
+        let v = run(r#"LET(x, FLOAT("not-a-number")); IS_ERR(x);"#).unwrap();
+        assert_eq!(v, Value::Boolean(true));
+    }
+
+    #[test]
+    fn b8_float_non_string_non_number_is_e0030() {
+        // Spec §10.3 says INT/FLOAT conversion accepts STRING /
+        // INTEGER / FLOAT. Other types → E0030 (Type).
+        let err = run(r#"FLOAT([1, 2]);"#).unwrap_err();
+        assert_eq!(err.diagnostic().code, ErrorCode::E0030);
+    }
+
+    #[test]
+    fn b8_trim_basics() {
+        assert_eq!(run(r#"TRIM("  hello  ");"#).unwrap(), Value::String("hello".into()));
+        assert_eq!(run(r#"TRIM("hello");"#).unwrap(), Value::String("hello".into()));
+        assert_eq!(run(r#"TRIM("   ");"#).unwrap(), Value::String("".into()));
+    }
+
+    #[test]
+    fn b8_trim_start_and_end() {
+        assert_eq!(run(r#"TRIM_START("  hello  ");"#).unwrap(), Value::String("hello  ".into()));
+        assert_eq!(run(r#"TRIM_END("  hello  ");"#).unwrap(), Value::String("  hello".into()));
+        // Composed
+        assert_eq!(
+            run(r#"TRIM_END(TRIM_START("  hi  "));"#).unwrap(),
+            Value::String("hi".into())
+        );
+    }
+
+    #[test]
+    fn b8_starts_with_ends_with() {
+        assert_eq!(run(r#"STARTS_WITH("hello world", "hello");"#).unwrap(), Value::Boolean(true));
+        assert_eq!(run(r#"STARTS_WITH("hello world", "world");"#).unwrap(), Value::Boolean(false));
+        assert_eq!(run(r#"ENDS_WITH("hello world", "world");"#).unwrap(), Value::Boolean(true));
+        assert_eq!(run(r#"ENDS_WITH("hello world", "hello");"#).unwrap(), Value::Boolean(false));
+        // Empty suffix matches anything
+        assert_eq!(run(r#"ENDS_WITH("anything", "");"#).unwrap(), Value::Boolean(true));
+    }
+
+    #[test]
+    fn b8_repeat_basics() {
+        assert_eq!(run(r#"REPEAT("ab", 3);"#).unwrap(), Value::String("ababab".into()));
+        assert_eq!(run(r#"REPEAT("x", 0);"#).unwrap(), Value::String("".into()));
+        assert_eq!(run(r#"REPEAT("foo", 1);"#).unwrap(), Value::String("foo".into()));
+    }
+
+    #[test]
+    fn b8_repeat_negative_is_e0030() {
+        let err = run(r#"REPEAT("ab", -1);"#).unwrap_err();
+        assert_eq!(err.diagnostic().code, ErrorCode::E0030);
+    }
+
+    #[test]
+    fn b8_pad_start_and_end() {
+        assert_eq!(
+            run(r#"PAD_START("hi", 5, "*");"#).unwrap(),
+            Value::String("***hi".into())
+        );
+        assert_eq!(
+            run(r#"PAD_END("hi", 5, "*");"#).unwrap(),
+            Value::String("hi***".into())
+        );
+        // Already long enough → no change
+        assert_eq!(
+            run(r#"PAD_START("hello", 3, "*");"#).unwrap(),
+            Value::String("hello".into())
+        );
+        // Width 0 → no change
+        assert_eq!(
+            run(r#"PAD_END("hi", 0, "*");"#).unwrap(),
+            Value::String("hi".into())
+        );
+    }
+
+    #[test]
+    fn b8_codepoints_and_from_codepoints_roundtrip() {
+        // ASCII round-trip.
+        assert_eq!(
+            run(r#"CODEPOINTS("hello");"#).unwrap(),
+            Value::Array(vec![
+                Value::Integer(104), Value::Integer(101), Value::Integer(108),
+                Value::Integer(108), Value::Integer(111),
+            ])
+        );
+        assert_eq!(
+            run(r#"FROM_CODEPOINTS([72, 105]);"#).unwrap(),
+            Value::String("Hi".into())
+        );
+    }
+
+    #[test]
+    fn b8_codepoints_unicode_basic_multilingual_plane() {
+        // 'é' is U+00E9 = 233 decimal (Latin Small Letter E with Acute).
+        // WLWL doesn't have hex literals yet (Phase B8 ships integer
+        // conversion only); we use decimal for the codepoint value.
+        let v = run(r#"CODEPOINTS("é");"#).unwrap();
+        assert_eq!(v, Value::Array(vec![Value::Integer(233)]));
+        // Round-trip
+        let v = run(r#"FROM_CODEPOINTS([233]);"#).unwrap();
+        assert_eq!(v, Value::String("é".into()));
+    }
+
+    #[test]
+    fn b8_codepoints_unicode_supplementary_plane() {
+        // '𝄞' (musical G clef) is U+1D11E = 119070 decimal — outside
+        // the BMP, so it requires surrogate pairs in UTF-16 but is
+        // a single char in Rust's char / WLWL's codepoint model.
+        // This is the test that locks "code points, not UTF-16
+        // units".
+        let v = run(r#"CODEPOINTS("𝄞");"#).unwrap();
+        assert_eq!(v, Value::Array(vec![Value::Integer(119070)]));
+        let v = run(r#"FROM_CODEPOINTS([119070]);"#).unwrap();
+        assert_eq!(v, Value::String("𝄞".into()));
+    }
+
+    #[test]
+    fn b8_from_codepoints_surrogate_half_is_e0031() {
+        // 0xD800 = 55296 decimal is a UTF-16 surrogate half — not
+        // a valid Unicode scalar value. Spec §10.3 doesn't pin a
+        // code; we use E0031 (Type bucket) for "value out of legal
+        // range" — consistent with INT's out-of-range E0035 for
+        // FLOAT overflow.
+        let err = run(r#"FROM_CODEPOINTS([55296]);"#).unwrap_err();
+        assert_eq!(err.diagnostic().code, ErrorCode::E0031);
+        let err = run(r#"FROM_CODEPOINTS([57343]);"#).unwrap_err();
+        assert_eq!(err.diagnostic().code, ErrorCode::E0031);
+    }
+
+    #[test]
+    fn b8_from_codepoints_above_max_is_e0031() {
+        let err = run(r#"FROM_CODEPOINTS([1114112]);"#).unwrap_err();
+        assert_eq!(err.diagnostic().code, ErrorCode::E0031);
+    }
+
+    #[test]
+    fn b8_from_codepoints_negative_is_e0031() {
+        let err = run(r#"FROM_CODEPOINTS([-1]);"#).unwrap_err();
+        assert_eq!(err.diagnostic().code, ErrorCode::E0031);
+    }
+
+    #[test]
+    fn b8_from_codepoints_non_integer_element_is_e0030() {
+        let err = run(r#"FROM_CODEPOINTS([1, "not-a-codepoint"]);"#).unwrap_err();
+        assert_eq!(err.diagnostic().code, ErrorCode::E0030);
+    }
+
+    #[test]
+    fn b8_string_builtins_chained() {
+        // A small composition sanity check: TRIM + REPEAT + CODEPOINTS.
+        let v = run(r#"LEN(CODEPOINTS(REPEAT(TRIM("  abc  "), 2)));"#).unwrap();
+        assert_eq!(v, Value::Integer(6));
+    }
+
+    #[test]
+    fn b8_all_eleven_builtins_present_in_resolve_builtin() {
+        // Spec §10.3 + appendix G: 11 new global builtins. Lock the
+        // set so any future addition shows up as a deliberate,
+        // conscious change.
+        use crate::resolve_builtin;
+        for name in [
+            "FLOAT",
+            "TRIM",
+            "TRIM_START",
+            "TRIM_END",
+            "STARTS_WITH",
+            "ENDS_WITH",
+            "REPEAT",
+            "PAD_START",
+            "PAD_END",
+            "CODEPOINTS",
+            "FROM_CODEPOINTS",
+        ] {
+            assert!(
+                resolve_builtin(name).is_some(),
+                "spec §10.3 + appendix G: builtin `{}` must be registered (B8)",
+                name
+            );
+        }
+    }
+
+    #[test]
+    fn b8_err_transparent_for_all_new_builtins() {
+        // §12.6: input ERR is short-circuited in eval_call before
+        // reaching the builtin; the ERR value surfaces at top level
+        // as E0102 (consistent with B5/B6/B7 patterns). We don't
+        // expect the builtin itself to receive ERR args — the
+        // surface check is E0102.
+        let probes = [
+            r#"FLOAT(ERR("e"));"#,
+            r#"TRIM(ERR("e"));"#,
+            r#"TRIM_START(ERR("e"));"#,
+            r#"TRIM_END(ERR("e"));"#,
+            r#"STARTS_WITH(ERR("e"), "x");"#,
+            r#"ENDS_WITH(ERR("e"), "x");"#,
+            r#"REPEAT(ERR("e"), 1);"#,
+            r#"PAD_START(ERR("e"), 5, "*");"#,
+            r#"PAD_END(ERR("e"), 5, "*");"#,
+            r#"CODEPOINTS(ERR("e"));"#,
+            // FROM_CODEPOINTS's array literal isn't an ERR-input probe
+            // (the ERR is *inside* the array — the array literal
+            // evaluates to `[Err]`, not `Err`; the builtin then
+            // rejects the element type with E0030). Use the bare
+            // form so ERR precheck kicks in at the call boundary.
+            r#"FROM_CODEPOINTS(ERR("e"));"#,
+        ];
+        for src in probes {
+            let err = run(src).unwrap_err();
+            assert_eq!(
+                err.diagnostic().code,
+                ErrorCode::E0102,
+                "§12.6 ERR transparent: top-level call `{}` should be E0102",
+                src
+            );
+        }
     }
 }
