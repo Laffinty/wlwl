@@ -32,6 +32,7 @@ pub mod ai;
 pub mod format;
 pub mod collection;
 pub mod test;
+pub mod agent;
 
 use std::collections::HashMap;
 use wlwl_error::ErrorCode;
@@ -119,6 +120,7 @@ pub fn resolve(path: &str) -> Option<&'static ModuleSpec> {
         "wlwl:std.fs" => Some(&fs::SPEC),
         "wlwl:std.json" => Some(&json::SPEC),
         "wlwl:std.ai" => Some(&ai::SPEC),
+        "wlwl:std.agent" => Some(&agent::SPEC),
         "wlwl:std.format" => Some(&format::SPEC),
         "wlwl:std.collection" => Some(&collection::SPEC),
         "wlwl:std.test" => Some(&test::SPEC),
@@ -249,6 +251,17 @@ mod tests {
         let s = resolve("wlwl:std.ai").expect("ai resolves");
         assert_eq!(s.path, "wlwl:std.ai");
     }
+    #[test]
+    fn resolve_agent() {
+        let s = resolve("wlwl:std.agent").expect("agent resolves");
+        assert_eq!(s.path, "wlwl:std.agent");
+        let names: Vec<&str> = s.functions.iter().map(|(n, _)| *n).collect();
+        assert_eq!(
+            names,
+            vec!["TASK", "TOOL", "CALL_TOOL", "MODEL", "CONTEXT"]
+        );
+    }
+
     #[test]
     fn resolve_format() {
         // Phase B5 (spec v0.4 §15.8): wlwl:std.format exposes FORMAT.
