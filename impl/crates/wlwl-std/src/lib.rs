@@ -10,6 +10,9 @@
 //!     collection functions (§15.7 / §10.5, Phase B6). The real callback-aware
 //!     implementations live in `wlwl-eval::collection` because the std
 //!     boundary rejects `Value::Closure` (existing contract — see B5 P4-B5-006).
+//!   - `wlwl:std.test`   — **name catalog only** for the in-process test
+//!     framework (§15.9, Phase B7). Real impls live in
+//!     `wlwl-eval::test`; same std-boundary rationale as collection.
 //!
 //! ## Design boundary
 //!
@@ -28,6 +31,7 @@ pub mod json;
 pub mod ai;
 pub mod format;
 pub mod collection;
+pub mod test;
 
 use std::collections::HashMap;
 use wlwl_error::ErrorCode;
@@ -84,6 +88,7 @@ pub fn resolve(path: &str) -> Option<&'static ModuleSpec> {
         "wlwl:std.ai" => Some(&ai::SPEC),
         "wlwl:std.format" => Some(&format::SPEC),
         "wlwl:std.collection" => Some(&collection::SPEC),
+        "wlwl:std.test" => Some(&test::SPEC),
         _ => None,
     }
 }
@@ -232,6 +237,20 @@ mod tests {
         assert!(
             s.functions.is_empty(),
             "collection SPEC must be a name catalog (functions empty); \
+             actual: {:?}",
+            s.functions.iter().map(|(n, _)| *n).collect::<Vec<_>>()
+        );
+    }
+    #[test]
+    fn resolve_test() {
+        // Phase B7 (spec v0.4 §15.9): wlwl:std.test is also a name
+        // catalog — same std-boundary rationale as collection. Real
+        // callback-aware impls in `wlwl-eval::test`.
+        let s = resolve("wlwl:std.test").expect("test resolves");
+        assert_eq!(s.path, "wlwl:std.test");
+        assert!(
+            s.functions.is_empty(),
+            "test SPEC must be a name catalog (functions empty); \
              actual: {:?}",
             s.functions.iter().map(|(n, _)| *n).collect::<Vec<_>>()
         );

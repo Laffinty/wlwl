@@ -1,4 +1,4 @@
-//! WLWL tree-walking interpreter (Phase 2).
+﻿//! WLWL tree-walking interpreter (Phase 2).
 //!
 //! Phase 2 implements the core semantics from v0.3 §6–§13 (subset):
 //! - §6   `LET` binding with block-scoped lexical environment
@@ -552,6 +552,21 @@ impl ModuleLoader {
         // constant is a breaking change for IMPORT("wlwl:std.collection").
         if path == "wlwl:std.collection" {
             for (name, builtin) in collection::BUILTINS {
+                env.set_local(
+                    (*name).to_string(),
+                    Value::NativeFn {
+                        name: (*name).to_string(),
+                        invoke: NativeInvoke::Builtin(*builtin),
+                    },
+                );
+                exports.insert((*name).to_string());
+            }
+        } else if path == "wlwl:std.test" {
+            // Phase B7 (spec §15.9): `wlwl:std.test` follows the
+            // same name-catalog pattern (see B6 P4-B6-001). The
+            // module-level docs in `wlwl_std::test` spell out why
+            // (`TEST` body is a closure; `RUN_TESTS` must invoke it).
+            for (name, builtin) in test::BUILTINS {
                 env.set_local(
                     (*name).to_string(),
                     Value::NativeFn {
@@ -1529,7 +1544,7 @@ fn resolve_builtin(name: &str) -> Option<BuiltinFn> {
 /// requires a spec upgrade (§18 / appendix D); the implementation
 /// must NOT consume ERR outside this set (spec §12.7 末段).
 ///
-/// **Currently registered (9 names)**:
+/// **Currently registered (10 names)**:
 ///
 /// | name          | behavior on ERR                                          |
 /// |---------------|----------------------------------------------------------|
@@ -1556,10 +1571,11 @@ fn resolve_builtin(name: &str) -> Option<BuiltinFn> {
 /// actually flow through this registry at runtime — they consume
 /// ERR via their own `Expr::*` arms. The registry exists for the
 /// remaining names (`UNWRAP_OR` / `UNWRAP` / `ERR_PAYLOAD` / `WRAP`
-/// / `TYPE`) that ARE reached via the generic `Expr::Call { name }`
-/// path. The `=` / `!=` / `IF` operators also reach `eval_call`
-/// (via `Expr::Call { name: "==" | "!=" | "IF", ... }`) but are
-/// not in the registry because they MUST propagate ERR per §9.2.
+/// / `TYPE` / `EXPECT_ERR`) that ARE reached via the generic
+/// `Expr::Call { name }` path. The `=` / `!=` / `IF` operators
+/// also reach `eval_call` (via `Expr::Call { name: "==" | "!=" |
+/// "IF", ... }`) but are not in the registry because they MUST
+/// propagate ERR per §9.2.
 const ERR_CONSUMER_REGISTRY: &[&str] = &[
     "IS_OK",
     "IS_ERR",
@@ -1570,6 +1586,12 @@ const ERR_CONSUMER_REGISTRY: &[&str] = &[
     "ERR_PAYLOAD",
     "WRAP",
     "TYPE",
+    // Phase B7 (spec §15.9 row 5): EXPECT_ERR is the
+    // "expect-this-expression-to-fail" primitive. Without ERR-consumer
+    // status, the very thing it's designed to inspect — an ERR value —
+    // would be short-circuited by §12.6 before the builtin sees it,
+    // producing a top-level E0102 instead of the E0049 the spec promises.
+    "EXPECT_ERR",
 ];
 
 /// Returns `true` if `name` is in the §12.7 ERR consumer registry.
@@ -2247,6 +2269,13 @@ fn values_equal(a: &Value, b: &Value) -> bool {
 /// `collection::BUILTINS` instead of `spec.functions`.
 pub mod collection;
 
+/// `wlwl:std.test` — in-process test framework (spec v0.4 §15.9,
+/// Phase B7). Same std-boundary rationale as collection: `TEST` /
+/// `RUN_TESTS` need callback invocation, `ASSERT` / friends need
+/// rich-Value inspection. Real impls in this crate, bound via
+/// `test::BUILTINS` through `NativeInvoke::Builtin`.
+pub mod test;
+
 pub struct Evaluator {
     env: Env,
     /// Optional original source (for `source_line` in runtime diagnostics).
@@ -2287,6 +2316,14 @@ pub struct Evaluator {
     /// module cache; a run formatting N distinct templates keeps N
     /// small segment vectors alive.
     format_cache: HashMap<String, Rc<Vec<wlwl_std::format::FormatSegment>>>,
+    /// [v0.4 Phase B7] Test-case registry for `wlwl:std.test`.
+    /// `TEST(name, body)` pushes a `TestEntry { name, body }` here;
+    /// `RUN_TESTS()` drains the vec, invokes each body via
+    /// `invoke_closure`, and returns an ARRAY of DICTs (per §15.9:
+    /// `["name", "passed", "duration_ms", "error"?]`). Evaluator-local
+    /// so each run starts with an empty registry — there's no
+    /// static-state leak across `Evaluator::new()` calls.
+    pub(crate) test_registry: Vec<crate::test::TestEntry>,
 }
 
 impl Default for Evaluator {
@@ -2307,6 +2344,7 @@ impl Evaluator {
             warnings: Vec::new(),
             current_span: None,
             format_cache: HashMap::new(),
+            test_registry: Vec::new(),
         }
     }
 
@@ -2329,6 +2367,7 @@ impl Evaluator {
             warnings: Vec::new(),
             current_span: None,
             format_cache: HashMap::new(),
+            test_registry: Vec::new(),
         }
     }
 
@@ -4841,9 +4880,14 @@ mod tests {
     // function in this crate) plus the runtime-visible alias `UNWRAP_OR`.
 
     #[test]
-    fn err_consumer_registry_contains_all_9_names() {
-        // §12.7 v0.4 spec lists 9 names. Lock the set so any future
-        // addition shows up as a deliberate, conscious change.
+    fn err_consumer_registry_contains_all_10_names() {
+        // §12.7 v0.4 spec lists 9 names; Phase B7 (§15.9 row 5)
+        // adds EXPECT_ERR for the same boundary-need as the others
+        // (it's the "expect this expr to fail" primitive — without
+        // ERR-consumer status the input ERR would short-circuit in
+        // eval_call before the builtin sees it). Lock the set so
+        // any future addition shows up as a deliberate, conscious
+        // change.
         use crate::ERR_CONSUMER_REGISTRY;
         let actual: std::collections::HashSet<&str> =
             ERR_CONSUMER_REGISTRY.iter().copied().collect();
@@ -4857,12 +4901,15 @@ mod tests {
             "ERR_PAYLOAD",
             "WRAP",
             "TYPE",
+            // Phase B7 (spec §15.9): see module-level docs in
+            // `wlwl_eval::test` for the rationale.
+            "EXPECT_ERR",
         ]
         .iter()
         .copied()
         .collect();
         assert_eq!(actual, expected, "§12.7 registry drifted from spec");
-        assert_eq!(actual.len(), 9, "spec §12.7 pins 9 entries");
+        assert_eq!(actual.len(), 10, "spec §12.7 + B7 add 10 entries");
     }
 
     #[test]
@@ -9237,5 +9284,452 @@ entry = "main.wl"
             FORMAT("squared: {0}", JOIN(squared, ","));
         "#).unwrap();
         assert_eq!(v, Value::String("squared: 1,4,9".into()));
+    }
+
+    // ══════════════════════════════════════════════════════════════════
+    // Phase B7 — `wlwl:std.test` in-process test framework
+    // (spec v0.4 §15.9; E0046-E0049)
+    //
+    // Tests cover the 6 functions exposed via
+    // `IMPORT("wlwl:std.test", [...])`:
+    //   TEST / ASSERT / ASSERT_EQ / ASSERT_NEQ / EXPECT_ERR / RUN_TESTS
+    //
+    // Coverage strategy:
+    //   - happy-path per assertion (passing cases);
+    //   - failing case per assertion (ERR is a *value*, surfaces
+    //     via TRY at the call site);
+    //   - RUN_TESTS end-to-end (registration + drain + result shape);
+    //   - RUN_TESTS catches per-test ERR (§15.9 §12.6 transparency
+    //     for assertion ERRs);
+    //   - §15.7-style "name catalog" cross-check with collection
+    //     (both std modules follow the same load_std hook path).
+    // ══════════════════════════════════════════════════════════════════
+
+    #[test]
+    fn b7_test_import_resolves_all_six_names() {
+        // Walk BUILTINS via IMPORT; each name must be callable.
+        let v = run_std(r#"
+            IMPORT("wlwl:std.test", [
+                "TEST", "ASSERT", "ASSERT_EQ", "ASSERT_NEQ",
+                "EXPECT_ERR", "RUN_TESTS"
+            ]);
+            LEN([TEST, ASSERT, ASSERT_EQ, ASSERT_NEQ, EXPECT_ERR, RUN_TESTS]);
+        "#).unwrap();
+        assert_eq!(v, Value::Integer(6));
+    }
+
+    #[test]
+    fn b7_assert_true_returns_ok_true() {
+        // §15.9 row 2: passing ASSERT → OK(TRUE).
+        let v = run_std(r#"
+            IMPORT("wlwl:std.test", ["ASSERT"]);
+            ASSERT(TRUE);
+        "#).unwrap();
+        match v {
+            Value::Ok(inner) => assert_eq!(*inner, Value::Boolean(true)),
+            other => panic!("expected OK(TRUE), got {:?}", other),
+        }
+    }
+
+    #[test]
+    fn b7_assert_false_is_e0046_via_run_tests() {
+        // §15.9 row 2: failing ASSERT → ERR(E0046). The natural way
+        // to assert this end-to-end is via RUN_TESTS: register the
+        // failing assertion as a TEST body, drain, and inspect the
+        // `error` field of the failure record.
+        //
+        // (Top-level `TRY(ASSERT(FALSE, ...))` is *not* the right
+        // path: TRY is §12.7's "early-RETURN from the enclosing
+        // function" — it emits a `Signal::Return` that only a
+        // closure body consumes. At top level the unhandled
+        // signal becomes E0102. The plan §15.9 "RUN_TESTS uses
+        // TRY to catch each test" means RUN_TESTS's *internal*
+        // per-test runner — `invoke_closure` already unwraps the
+        // `Return(Err)` signal — not the user's TRY keyword.)
+        let v = run_std(r#"
+            IMPORT("wlwl:std.test", ["TEST", "ASSERT", "RUN_TESTS"]);
+            TEST("failing", FUN((), ASSERT(FALSE, "must be true")));
+            LET(results, RUN_TESTS());
+            LET(failed, INDEX_GET(results, 0));
+            LET(err_field, INDEX_GET(failed, "error"));
+            LET(code, INDEX_GET(err_field, "code"));
+            LET(msg, INDEX_GET(err_field, "msg"));
+            LET(passed_flag, INDEX_GET(failed, "passed"));
+            [passed_flag, code, msg];
+        "#).unwrap();
+        match v {
+            Value::Array(items) => {
+                assert_eq!(items[0], Value::Boolean(false));
+                assert_eq!(items[1], Value::String("E0046".into()));
+                assert_eq!(items[2], Value::String("must be true".into()));
+            }
+            other => panic!("expected LIST, got {:?}", other),
+        }
+    }
+
+    #[test]
+    fn b7_assert_truthiness_follows_s94() {
+        // §9.4: NULL/FALSE are falsy; everything else is truthy.
+        // All passing — RUN_TESTS catches any that fail.
+        assert_eq!(
+            run_std(r#"IMPORT("wlwl:std.test", ["ASSERT"]);
+                      ASSERT(1);"#).unwrap(),
+            Value::Ok(Box::new(Value::Boolean(true))),
+        );
+        assert_eq!(
+            run_std(r#"IMPORT("wlwl:std.test", ["ASSERT"]);
+                      ASSERT("non-empty");"#).unwrap(),
+            Value::Ok(Box::new(Value::Boolean(true))),
+        );
+        // Falsy cases via RUN_TESTS (passes = 0):
+        let v = run_std(r#"
+            IMPORT("wlwl:std.test", ["TEST", "ASSERT", "RUN_TESTS"]);
+            TEST("null_assert", FUN((), ASSERT(NULL)));
+            TEST("false_assert", FUN((), ASSERT(FALSE)));
+            LET(results, RUN_TESTS());
+            LEN(results);
+        "#).unwrap();
+        assert_eq!(v, Value::Integer(2));
+    }
+
+    #[test]
+    fn b7_assert_eq_equal_returns_ok_true() {
+        let v = run_std(r#"
+            IMPORT("wlwl:std.test", ["ASSERT_EQ"]);
+            ASSERT_EQ(42, 42);
+        "#).unwrap();
+        assert_eq!(v, Value::Ok(Box::new(Value::Boolean(true))));
+    }
+
+    #[test]
+    fn b7_assert_eq_unequal_is_e0047_with_actual_expected() {
+        // §15.9 row 3: payload includes `actual` and `expected`.
+        // End-to-end via RUN_TESTS (top-level TRY can't capture
+        // an ASSERT_ERR signal — see `b7_assert_false_*`).
+        let v = run_std(r#"
+            IMPORT("wlwl:std.test", ["TEST", "ASSERT_EQ", "RUN_TESTS"]);
+            TEST("eq_fail", FUN((), ASSERT_EQ(1, 2)));
+            LET(results, RUN_TESTS());
+            LET(failed, INDEX_GET(results, 0));
+            LET(err_field, INDEX_GET(failed, "error"));
+            LET(code, INDEX_GET(err_field, "code"));
+            LET(actual, INDEX_GET(err_field, "actual"));
+            LET(expected, INDEX_GET(err_field, "expected"));
+            [code, actual, expected];
+        "#).unwrap();
+        match v {
+            Value::Array(items) => {
+                assert_eq!(items[0], Value::String("E0047".into()));
+                assert_eq!(items[1], Value::Integer(1));
+                assert_eq!(items[2], Value::Integer(2));
+            }
+            other => panic!("expected LIST, got {:?}", other),
+        }
+    }
+
+    #[test]
+    fn b7_assert_neq_unequal_returns_ok_true() {
+        let v = run_std(r#"
+            IMPORT("wlwl:std.test", ["ASSERT_NEQ"]);
+            ASSERT_NEQ(1, 2);
+        "#).unwrap();
+        assert_eq!(v, Value::Ok(Box::new(Value::Boolean(true))));
+    }
+
+    #[test]
+    fn b7_assert_neq_equal_is_e0048() {
+        // §15.9 row 4: payload includes `actual`/`expected` and the
+        // optional `msg`. End-to-end via RUN_TESTS.
+        let v = run_std(r#"
+            IMPORT("wlwl:std.test", ["TEST", "ASSERT_NEQ", "RUN_TESTS"]);
+            TEST("neq_fail", FUN((), ASSERT_NEQ(1, 1, "should differ")));
+            LET(results, RUN_TESTS());
+            LET(failed, INDEX_GET(results, 0));
+            LET(err_field, INDEX_GET(failed, "error"));
+            LET(code, INDEX_GET(err_field, "code"));
+            LET(msg, INDEX_GET(err_field, "msg"));
+            [code, msg];
+        "#).unwrap();
+        match v {
+            Value::Array(items) => {
+                assert_eq!(items[0], Value::String("E0048".into()));
+                assert_eq!(items[1], Value::String("should differ".into()));
+            }
+            other => panic!("expected LIST, got {:?}", other),
+        }
+    }
+
+    #[test]
+    fn b7_expect_err_non_err_is_e0049() {
+        // §15.9 row 5: input not ERR → ERR(E0049). Via RUN_TESTS.
+        let v = run_std(r#"
+            IMPORT("wlwl:std.test", ["TEST", "EXPECT_ERR", "RUN_TESTS"]);
+            TEST("expect_err_fail", FUN((), EXPECT_ERR(42)));
+            LET(results, RUN_TESTS());
+            LET(failed, INDEX_GET(results, 0));
+            LET(err_field, INDEX_GET(failed, "error"));
+            LET(code, INDEX_GET(err_field, "code"));
+            LET(cond_field, INDEX_GET(err_field, "cond"));
+            [code, cond_field];
+        "#).unwrap();
+        match v {
+            Value::Array(items) => {
+                assert_eq!(items[0], Value::String("E0049".into()));
+                assert_eq!(items[1], Value::Integer(42));
+            }
+            other => panic!("expected LIST, got {:?}", other),
+        }
+    }
+
+    #[test]
+    fn b7_expect_err_input_is_err_returns_ok() {
+        // §15.9 row 5: input is ERR → OK(payload).
+        let v = run_std(r#"
+            IMPORT("wlwl:std.test", ["EXPECT_ERR"]);
+            EXPECT_ERR(ERR("boom"));
+        "#).unwrap();
+        assert_eq!(v, Value::Ok(Box::new(Value::Err(Box::new(Value::String("boom".into()))))));
+    }
+
+    #[test]
+    fn b7_test_registers_and_returns_null() {
+        // §15.9 row 1: TEST returns NULL after pushing to the
+        // evaluator's registry. Side-effect verified by RUN_TESTS
+        // (next tests).
+        let v = run_std(r#"
+            IMPORT("wlwl:std.test", ["TEST"]);
+            TEST("my_test", FUN((), NULL));
+        "#).unwrap();
+        assert_eq!(v, Value::Null);
+    }
+
+    #[test]
+    fn b7_run_tests_with_no_tests_returns_empty_array() {
+        let v = run_std(r#"
+            IMPORT("wlwl:std.test", ["RUN_TESTS"]);
+            RUN_TESTS();
+        "#).unwrap();
+        assert_eq!(v, Value::Array(vec![]));
+    }
+
+    #[test]
+    fn b7_run_tests_passing_only() {
+        // §15.9 row 6: all DICT entries have passed=TRUE, no error key.
+        let v = run_std(r#"
+            IMPORT("wlwl:std.test", ["TEST", "ASSERT", "ASSERT_EQ", "RUN_TESTS"]);
+            TEST("add",   FUN((), ASSERT_EQ(+(1, 2), 3)));
+            TEST("truth", FUN((), ASSERT(TRUE)));
+            LET(results, RUN_TESTS());
+            LEN(results);
+        "#).unwrap();
+        assert_eq!(v, Value::Integer(2));
+
+        // Walk results: each must have name, passed=TRUE, duration_ms.
+        let v = run_std(r#"
+            IMPORT("wlwl:std.test", ["TEST", "ASSERT", "ASSERT_EQ", "RUN_TESTS"]);
+            TEST("add",   FUN((), ASSERT_EQ(+(1, 2), 3)));
+            TEST("truth", FUN((), ASSERT(TRUE)));
+            LET(results, RUN_TESTS());
+            LET(p0, LEN(results));
+            LET(p1, INDEX_GET(results, 0));
+            LET(n0, INDEX_GET(p1, "name"));
+            LET(d0, INDEX_GET(p1, "passed"));
+            [n0, d0];
+        "#).unwrap();
+        // Last expression of the program is `[...)`, which
+        // returns an Array of the args. We just assert non-error;
+        // the per-field checks are covered by the next test.
+        match v {
+            Value::Array(items) => assert_eq!(items.len(), 2),
+            other => panic!("expected Array, got {:?}", other),
+        }
+    }
+
+    #[test]
+    fn b7_run_tests_with_one_failing_test() {
+        // §15.9 row 6 + §12.6: RUN_TESTS catches per-test ERR; the
+        // test's dict has passed=FALSE + error field carrying the
+        // assertion payload.
+        let v = run_std(r#"
+            IMPORT("wlwl:std.test", ["TEST", "ASSERT", "RUN_TESTS"]);
+            TEST("passes", FUN((), ASSERT(TRUE)));
+            TEST("fails",  FUN((), ASSERT(FALSE, "intentional")));
+            LET(results, RUN_TESTS());
+            LET(failed, INDEX_GET(results, 1));
+            LET(passed_flag, INDEX_GET(failed, "passed"));
+            LET(err_field,   INDEX_GET(failed, "error"));
+            [passed_flag, err_field];
+        "#).unwrap();
+        match v {
+            Value::Array(items) => {
+                assert_eq!(items.len(), 2);
+                assert_eq!(items[0], Value::Boolean(false)); // passed=FALSE
+                // error field is the ASSERT ERR's payload (a DICT).
+                match &items[1] {
+                    Value::Dict(entries) => {
+                        assert_eq!(lookup_str(entries, "code").unwrap(), "E0046");
+                        assert_eq!(lookup_str(entries, "msg").unwrap(), "intentional");
+                    }
+                    other => panic!("expected DICT in error, got {:?}", other),
+                }
+            }
+            other => panic!("expected LIST, got {:?}", other),
+        }
+    }
+
+    #[test]
+    fn b7_run_tests_result_dict_has_required_keys() {
+        // §15.9 schema lock: every result DICT has at minimum
+        // `name`, `passed`, `duration_ms`. A failing test adds
+        // `error`; a passing test may add `return_value` when the
+        // body returns a non-NULL.
+        let v = run_std(r#"
+            IMPORT("wlwl:std.test", ["TEST", "ASSERT", "RUN_TESTS"]);
+            TEST("a", FUN((), NULL));
+            LET(results, RUN_TESTS());
+            LET(r0, INDEX_GET(results, 0));
+            LET(n, INDEX_GET(r0, "name"));
+            LET(p, INDEX_GET(r0, "passed"));
+            LET(d, INDEX_GET(r0, "duration_ms"));
+            [n, p, d];
+        "#).unwrap();
+        match v {
+            Value::Array(items) => {
+                assert_eq!(items.len(), 3);
+                assert_eq!(items[0], Value::String("a".into()));
+                assert_eq!(items[1], Value::Boolean(true));
+                assert!(matches!(items[2], Value::Integer(_)));
+            }
+            other => panic!("expected LIST, got {:?}", other),
+        }
+    }
+
+    #[test]
+    fn b7_test_name_must_be_string() {
+        let err = run_std(r#"
+            IMPORT("wlwl:std.test", ["TEST"]);
+            TEST(42, FUN((), NULL));
+        "#).unwrap_err();
+        assert_eq!(err.diagnostic().code, ErrorCode::E0030);
+    }
+
+    #[test]
+    fn b7_test_body_must_be_callable() {
+        let err = run_std(r#"
+            IMPORT("wlwl:std.test", ["TEST"]);
+            TEST("name", 42);
+        "#).unwrap_err();
+        assert_eq!(err.diagnostic().code, ErrorCode::E0030);
+    }
+
+    #[test]
+    fn b7_test_arity_wrong() {
+        let err = run_std(r#"
+            IMPORT("wlwl:std.test", ["TEST"]);
+            TEST("name");
+        "#).unwrap_err();
+        assert_eq!(err.diagnostic().code, ErrorCode::E0022);
+    }
+
+    #[test]
+    fn b7_assert_arity_wrong() {
+        let err = run_std(r#"
+            IMPORT("wlwl:std.test", ["ASSERT"]);
+            ASSERT();
+        "#).unwrap_err();
+        assert_eq!(err.diagnostic().code, ErrorCode::E0022);
+    }
+
+    #[test]
+    fn b7_run_tests_with_zero_arity_wrong() {
+        let err = run_std(r#"
+            IMPORT("wlwl:std.test", ["RUN_TESTS"]);
+            RUN_TESTS(1, 2);
+        "#).unwrap_err();
+        assert_eq!(err.diagnostic().code, ErrorCode::E0022);
+    }
+
+    #[test]
+    fn b7_std_test_not_global_builtin() {
+        // §15.9: std.test is also "name catalog only" — same as
+        // collection. A direct call (no IMPORT) must E0020.
+        let err = run("TEST(\"x\", FUN((), NULL));").unwrap_err();
+        assert_eq!(err.diagnostic().code, ErrorCode::E0020);
+    }
+
+    #[test]
+    fn b7_unknown_test_name_in_import_is_e0023() {
+        let err = run_std(r#"
+            IMPORT("wlwl:std.test", ["NOT_A_REAL_NAME"]);
+        "#).unwrap_err();
+        assert_eq!(err.diagnostic().code, ErrorCode::E0023);
+    }
+
+    #[test]
+    fn b7_collection_and_test_imports_coexist() {
+        // Both std modules in one program. Verifies the load_std
+        // dispatch table handles multiple name-catalog paths.
+        let v = run_std(r#"
+            IMPORT("wlwl:std.collection", ["MAP"]);
+            IMPORT("wlwl:std.test", ["TEST", "ASSERT", "ASSERT_EQ", "RUN_TESTS"]);
+            TEST("squares", FUN((),
+                ASSERT_EQ(MAP([1, 2, 3], FUN((x), *(x, x))), [1, 4, 9])
+            ));
+            LET(results, RUN_TESTS());
+            LET(r0, INDEX_GET(results, 0));
+            INDEX_GET(r0, "passed");
+        "#).unwrap();
+        assert_eq!(v, Value::Boolean(true));
+    }
+
+    #[test]
+    fn b7_uncaught_err_in_test_body_is_caught_by_run_tests() {
+        // If the test body returns an ERR directly (without going
+        // through an assertion), RUN_TESTS still records it as
+        // passed=FALSE with the ERR payload in `error`.
+        let v = run_std(r#"
+            IMPORT("wlwl:std.test", ["TEST", "RUN_TESTS"]);
+            TEST("loose_err", FUN((), ERR("oh no")));
+            LET(results, RUN_TESTS());
+            LET(failed, INDEX_GET(results, 0));
+            LET(passed_flag, INDEX_GET(failed, "passed"));
+            LET(err_field,   INDEX_GET(failed, "error"));
+            [passed_flag, err_field];
+        "#).unwrap();
+        match v {
+            Value::Array(items) => {
+                assert_eq!(items[0], Value::Boolean(false));
+                assert_eq!(items[1], Value::String("oh no".into()));
+            }
+            other => panic!("expected LIST, got {:?}", other),
+        }
+    }
+
+    // ── helpers used above ──────────────────────────────────────────
+
+    /// Extract a DICT from a payload value; panics with a useful
+    /// message if the payload isn't a DICT.
+    fn expect_dict(v: Value) -> Vec<(Value, Value)> {
+        match v {
+            Value::Dict(entries) => entries,
+            other => panic!("expected DICT, got {:?}", other),
+        }
+    }
+
+    /// Linear lookup of a STRING key in a DICT's entries.
+    fn INDEX_GET(entries: &[(Value, Value)], key: &str) -> Option<Value> {
+        entries
+            .iter()
+            .find(|(k, _)| matches!(k, Value::String(s) if s == key))
+            .map(|(_, v)| v.clone())
+    }
+
+    /// Linear lookup that asserts the found value is itself a
+    /// STRING. Used for `code` and `msg` payload fields.
+    fn lookup_str(entries: &[(Value, Value)], key: &str) -> Option<String> {
+        INDEX_GET(entries, key).map(|v| match v {
+            Value::String(s) => s,
+            other => panic!("expected STRING for `{}`, got {:?}", key, other),
+        })
     }
 }

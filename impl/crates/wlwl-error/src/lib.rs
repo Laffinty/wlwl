@@ -55,6 +55,10 @@ pub enum ErrorCode {
     E0041, // circular IMPORT
     E0042, // module file IO error
     E0043, // namespace path syntax error
+    E0046, // ASSERT cond false (v0.4 §15.9 std.test; Phase B7)
+    E0047, // ASSERT_EQ a != b (v0.4 §15.9 std.test; Phase B7)
+    E0048, // ASSERT_NEQ a == b (v0.4 §15.9 std.test; Phase B7)
+    E0049, // EXPECT_ERR input not ERR (v0.4 §15.9 std.test; Phase B7)
     E0050, // class inheritance chain error
     E0051, // NEW arity mismatch with INIT
     E0060, // IO error (generic)
@@ -120,6 +124,10 @@ impl ErrorCode {
             ErrorCode::E0041 => "E0041",
             ErrorCode::E0042 => "E0042",
             ErrorCode::E0043 => "E0043",
+            ErrorCode::E0046 => "E0046",
+            ErrorCode::E0047 => "E0047",
+            ErrorCode::E0048 => "E0048",
+            ErrorCode::E0049 => "E0049",
             ErrorCode::E0050 => "E0050",
             ErrorCode::E0051 => "E0051",
             ErrorCode::E0060 => "E0060",
@@ -213,6 +221,10 @@ impl ErrorCode {
             | ErrorCode::E0041
             | ErrorCode::E0042
             | ErrorCode::E0043 => ErrorCategory::Module,
+            ErrorCode::E0046
+            | ErrorCode::E0047
+            | ErrorCode::E0048
+            | ErrorCode::E0049 => ErrorCategory::Test,
             ErrorCode::E0050 | ErrorCode::E0051 => ErrorCategory::Oop,
             ErrorCode::E0060
             | ErrorCode::E0061
@@ -324,6 +336,10 @@ pub enum ErrorCategory {
     /// future phase work (e.g. cancellation) will add more.
     Runtime,
     User,
+    /// v0.4 spec §14.4 row 12 + §15.9 — `std.test` framework errors
+    /// (E0046-E0049). Tests-as-data philosophy means these ERR values
+    /// are caught by `RUN_TESTS` rather than crashing the program.
+    Test,
     Internal,
     /// Catch-all (should not be emitted by current code; reserved).
     Unknown,
@@ -343,6 +359,7 @@ impl ErrorCategory {
             ErrorCategory::Ai => "ai",
             ErrorCategory::Runtime => "runtime",
             ErrorCategory::User => "user",
+            ErrorCategory::Test => "test",
             ErrorCategory::Internal => "internal",
             ErrorCategory::Unknown => "unknown",
         }
@@ -1025,6 +1042,20 @@ mod tests {
         }));
     }
 
+    #[test]
+    fn snap_test() {
+        // Phase B7 (spec §15.9 / §14.4): `std.test` framework errors
+        // E0046-E0049. All four live in the `test` bucket (new in
+        // v0.4) and share retryable=FALSE — assertion failures aren't
+        // transient; they're a bug in the test or the code under test.
+        insta::assert_json_snapshot!("codes_test", serde_json::json!({
+            "E0046": code_snap(ErrorCode::E0046, "test_assertion_failed"),
+            "E0047": code_snap(ErrorCode::E0047, "test_assertion_eq_failed"),
+            "E0048": code_snap(ErrorCode::E0048, "test_assertion_neq_failed"),
+            "E0049": code_snap(ErrorCode::E0049, "test_expect_err_failed"),
+        }));
+    }
+
     // -- Phase 3: AI contract: 33 codes total ----------------------
     // v0.4 added E0024 (closure cell) + E0025/E0026/E0027 (MATCH family).
     // Phase A7 (2026-09-15) added E0034 / E0035 (numeric overflow) +
@@ -1052,6 +1083,7 @@ mod tests {
             ErrorCode::E0033, ErrorCode::E0034, ErrorCode::E0035, ErrorCode::E0036,
             ErrorCode::E0037, ErrorCode::E0038, ErrorCode::E0039,
             ErrorCode::E0040, ErrorCode::E0041, ErrorCode::E0042, ErrorCode::E0043,
+            ErrorCode::E0046, ErrorCode::E0047, ErrorCode::E0048, ErrorCode::E0049,
             ErrorCode::E0050, ErrorCode::E0051,
             ErrorCode::E0060, ErrorCode::E0061, ErrorCode::E0062, ErrorCode::E0063,
             ErrorCode::E0070, ErrorCode::E0071,
@@ -1060,7 +1092,7 @@ mod tests {
             ErrorCode::E0100, ErrorCode::E0101, ErrorCode::E0102,
             ErrorCode::E1003,
         ];
-        assert_eq!(codes.len(), 47);
+        assert_eq!(codes.len(), 51);
         // Each code has a stable string form.
         for c in &codes {
             assert!(c.as_str().starts_with('E'));
@@ -1105,6 +1137,7 @@ mod tests {
         assert_eq!(ErrorCategory::Ai.as_str(), "ai");
         assert_eq!(ErrorCategory::Runtime.as_str(), "runtime");
         assert_eq!(ErrorCategory::User.as_str(), "user");
+        assert_eq!(ErrorCategory::Test.as_str(), "test");
         assert_eq!(ErrorCategory::Internal.as_str(), "internal");
         assert_eq!(ErrorCategory::Unknown.as_str(), "unknown");
     }

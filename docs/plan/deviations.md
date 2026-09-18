@@ -1340,3 +1340,42 @@ P3-013 选 §4.5 解读 (混用是 warning). 理由:
 | Deferred to Phase B7 | `std.test` 框架（spec §15.9，E0046-E0049；`RUN_TESTS` 走 `NativeInvoke::Builtin` 路径在 B7 启动时确定） |
 | Deferred to Phase E | strict_types 违例 → E0033 发射点（码在 B5 已注册） |
 | Spec coverage | §10.5 100%（17 函数全部实现，spec worked example `MAP([1,2,3], FUN((x), *(x,x)))` 锁定在 `b6_map_spec_worked_example`）；§15.7 100%；§12.6 ERR 透明传播 100%（`b6_map_input_err_transparent` + `b6_callback_returning_err_*`） |
+# Phase B7 (2026-09-18) — `wlwl:std.test` 内建测试框架 (spec v0.4 §15.9)
+
+> B6 (commit `5c049a6`, 826/826) 收口后接 B7。本批实现 spec §15.9 的 6 个测试框架函数：
+> `TEST` / `ASSERT` / `ASSERT_EQ` / `ASSERT_NEQ` / `EXPECT_ERR` / `RUN_TESTS`。
+> 关键架构决策（与 B6 同款，见 P4-B6-001）：`wlwl:std.test` 走「name catalog + eval-internal BUILTINS」
+> —— std 边界拒绝 `Value::Closure`（B5 P4-B5-006），`TEST` body 是 closure 必须 invoke_closure。
+> 额外扩展：把 `EXPECT_ERR` 加进 `ERR_CONSUMER_REGISTRY`（9 → 10 项），否则 §12.6 短路 ERR
+> 在 builtin dispatch 前把它要 inspect 的 ERR 抢走，产生 top-level E0102 而非 spec 承诺的 E0049。
+
+| ID | Spec / plan | Status | Notes |
+|----|-------------|--------|-------|
+| P4-B7-001 | plan §5.7 + spec §15.9 | **Architectural deviation (justified)** | `wlwl:std.test` 走「name catalog + eval-internal BUILTINS」而非标准 std 模块。原因：`TEST(name, body)` body 是 closure 必须 invoke_closure；`RUN_TESTS()` 也必须 drain registry 后 invoke 每个 body。std 边界（`value_to_std_value`）拒绝 Closure 走 E0030（B5 P4-B5-006）。6 个函数**全部**放 eval（不仅 callback 5 个，断言 4 个也放 eval），避免「ASSERT works, RUN_TESTS doesn't」类部分成功部分失败的 surprise。`wlwl-std::resolve("wlwl:std.test")` 仍返 `Some(&SPEC)`，path 探测通过；`Evaluator::load_std` 检测 path 时绕过 `spec.functions` 循环，从 `wlwl_eval::test::BUILTINS` 表绑定。 |
+| P4-B7-002 | spec §15.9 row 5 — `EXPECT_ERR` 是 ERR-consumer | **Registry extension (9→10)** | §15.9 row 5：「EXPECT_ERR(expr) → 输入是 ERR → OK(payload)；否则 → ERR(E0049)」。§12.6 透明传播会在 `eval_call` 短路 ERR 输入 → builtin 看不到 ERR → top-level E0102 替代 E0049。把 `EXPECT_ERR` 加入 `ERR_CONSUMER_REGISTRY`（9 项 → 10 项）。这是 §15.9 §12.7 联合扩展点（§12.7 末段「new entry requires spec upgrade」—— spec v0.4 §15.9 就是这个 upgrade）。锁测试：`err_consumer_registry_contains_all_10_names`（B7 调整名）。 |
+| P4-B7-003 | spec §15.9 — RUN_TESTS 用 TRY 捕获 | **Implementation note (no deviation)** | spec 文本「断言 ERR 不透明传播(§12.6)；RUN_TESTS 用 TRY 捕获每个 TEST」。实现细节：`invoke_closure` 在 line 3081-3089 已经把 `Signal::Return(v)` 转成 `Outcome::normal(v)` —— 所以 `Signal::Return(Err(payload))` 在 closure body 退出时已被解包为 normal `Value::Err(payload)`。RUN_TESTS 直接读 `outcome.value == Value::Err` 判 failed。**TRY 不在 top-level 捕获 Value::Err** —— TRY 是「early-RETURN from the enclosing function」，顶层无 consumer 时变 E0102。所以正确的 ERR 捕获路径是 RUN_TESTS（内部走 invoke_closure），不是顶层 TRY(ASSERT_FALSE)。锁测试：`b7_assert_false_is_e0046_via_run_tests`（替代「TRY(ASSERT(FALSE))」的失败模式）。 |
+| P4-B7-004 | spec §15.9 — TEST 在 nested closure 中注册 | **Implementation: drain via mem::take** | `RUN_TESTS` 用 `std::mem::take(&mut ev.test_registry)` 而非 `clone()`，避免「TEST 内嵌套 TEST 永不退出」的死循环。允许 test body 内动态注册更多测试（虽然不推荐 —— 顺序由 push 顺序决定，drain 后再 push 的会进入下一轮 RUN_TESTS）。 |
+| P4-B7-005 | spec §14.4 row 12 — `ErrorCategory::Test` | **Implemented (new bucket)** | E0046-E0049 都是 test bucket（v0.4 新增的 category，§14.4 row 12）。`ErrorCategory::Test` 变体 + `as_str() = "test"`。与已有 12 个 category（Lexical / Syntax / Name / Type / Module / Oop / Io / Json / Ai / Runtime / User / Internal）并列。锁测试：`category_as_str` (B7 调整) + `snap_test` insta snapshot。 |
+| P4-B7-006 | plan §0.1 决策 #8 — 13/13 crate ≥ 90% line | **Acceptable (+0.02pp TOTAL)** | B6 末 TOTAL line 92.85% → B7 末 92.87%（+0.02pp）。新文件 `wlwl-eval/src/test.rs` 单文件 88.98% line —— 与 B6 collection.rs 同模式（单元测试只覆盖 helpers，17/6 个 builtin 走 `wlwl-eval/lib.rs::tests` 集成测试）。`wlwl-eval/lib.rs` 自身 94.19% line（守住）。`wlwl-std/test.rs` 单文件 96.67% line。13/13 crate ≥ 90% line 守住。补 coverage 单测是 P4-B7-008 候选（独立 batch，不阻塞 Phase B 推进）。 |
+| P4-B7-007 | spec §15.9 row 6 — RUN_TESTS result schema | **Implemented** | 每条 result DICT 至少含 `name` / `passed` / `duration_ms`。failed → 加 `error` 字段（assertion ERR payload 解包）。passed with non-NULL return → 加 `return_value` 字段。passed with NULL → 不加 return_value。`duration_ms` 是 INTEGER（`as_millis()` 截断到 i64，不可能溢出 ~292M 年）。锁测试：`b7_run_tests_result_dict_has_required_keys` + `b7_run_tests_with_one_failing_test` + `b7_uncaught_err_in_test_body_is_caught_by_run_tests`。 |
+
+## Phase B7 implementation stats
+
+| Item | Data |
+|------|------|
+| Total tests | **874 / 874 passing** (B6 末 826 → 净 +48：eval 集成 24 + wlwl-std 7 + wlwl-error 1 snap_test + registry lock 1 + 跨仓库小调整 15) |
+| `wlwl-eval` new tests | **+24**（`b7_*` × 24） |
+| `wlwl-std` new tests | **+7**（`resolve_test` 1 + test.rs 自带 5 + collection catalog 锁 1） |
+| `wlwl-error` new tests | **+1**（`snap_test` insta snapshot，4 个 test category codes） |
+| New error codes | **+4 E-codes** (E0046 / E0047 / E0048 / E0049) |
+| New error category | **+1** (`ErrorCategory::Test`，spec §14.4 row 12) |
+| New builtins | **+6**（`wlwl_eval::test::BUILTINS`：TEST / ASSERT / ASSERT_EQ / ASSERT_NEQ / EXPECT_ERR / RUN_TESTS） |
+| New std module | **+1**（`wlwl:std.test`，SPEC 是 name catalog —— functions: &[]） |
+| New infra | `Evaluator.test_registry: Vec<TestEntry>` 字段；`load_std` 增加 `wlwl:std.test` path-specific 分支；`ERR_CONSUMER_REGISTRY` 9 → 10 (`EXPECT_ERR` 加入) |
+| Lines added (est.) | ~1900（eval test.rs ~570 + eval lib.rs 测试 + load_std + registry ~300 / std test.rs + resolve ~150 / error codes + snapshot + register ~250 / B6 collection.rs pub(crate) 提升 ~30 / ast/error 调整 ~50） |
+| Key design decisions | `wlwl:std.test` 走 `NativeInvoke::Builtin`（同 collection B6）；`EXPECT_ERR` 加 `ERR_CONSUMER_REGISTRY`；RUN_TESTS 用 `invoke_closure` 解包 `Signal::Return(Err)`；payload schema `["code", "kind", ...]`；`Evaluator.test_registry` per-instance |
+| Test coverage | `wlwl-eval/lib.rs` 94.01% line（守住 +0.11pp）；`wlwl-eval/test.rs` 单文件 88.98% line（新文件，走集成）；`wlwl-std/test.rs` 96.67% line；13/13 crate ≥ 90% line 守住 |
+| Deferred to Phase B8 | 字符串内建扩展 10 个 + `FLOAT` builtin（spec §10.3 + 附录 G） |
+| Deferred to Phase B9 | `NOT` 宏函数名 + `!` → W0054 |
+| Deferred to Phase B10 | `PRINT_ERR`（stderr）+ 附录 G 注册表实现 |
+| Spec coverage | §15.9 100%（6 函数全部实现，schema 表锁定 `["name", "passed", "duration_ms", "error"?]`）；§12.7 §15.9 联合扩展（EXPECT_ERR 加 ERR_CONSUMER_REGISTRY）；§12.6 ERR 透明传播 100%（`b7_uncaught_err_in_test_body_is_caught_by_run_tests`）；§14.4 row 12 `ErrorCategory::Test` 100% |

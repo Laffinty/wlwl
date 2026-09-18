@@ -88,6 +88,9 @@
 > - Phase B6 完成(`wlwl:std.collection` 17 高阶集合函数 + `NativeInvoke::Builtin` 新 variant + E0038 `RANGE` step=0 发射点;`wlwl-std::collection` 走 name catalog 架构绕过 callback 跨 std 边界问题,真实 impl 在 `wlwl-eval/src/collection.rs`;决策与 §5.6 偏差见 deviations P4-B6-001 ~ P4-B6-006 + history/20260918b6.md)
 > - workspace **826 / 826 pass**(B5 末 787 → +39:eval 集成 39 + collection 单元 13 + std resolve 1 + std collection 5)
 > - `wlwl-eval` 405 lib tests;`wlwl-std` 100 lib tests;13/13 crate ≥ 90% line 守住(TOTAL 92.85%,`wlwl-eval/collection.rs` 单文件 78.40% line 详见 P4-B6-006)
+> - Phase B7 完成(`wlwl:std.test` 6 函数测试框架 + E0046-E0049 + `ErrorCategory::Test` 新变体 + `Evaluator.test_registry` 新字段 + `EXPECT_ERR` 加 `ERR_CONSUMER_REGISTRY` 9→10;架构同 B6 走 name catalog 绕过 callback 边界;决策与 §15.9 偏差见 deviations P4-B7-001 ~ P4-B7-007 + history/20260918b7.md)
+> - workspace **874 / 874 pass**(B6 末 826 → +48:eval 集成 24 + std test resolve 1 + std test catalog 5 + std collection 跨仓库 1 + error snap_test 1 + registry lock 调整 1)
+> - `wlwl-eval` 429 lib tests;`wlwl-std` 107 lib tests;`wlwl-error` 67 lib tests(含 `snap_test`);13/13 crate ≥ 90% line 守住(TOTAL 92.87%,`wlwl-eval/test.rs` 单文件 88.98% line 详见 P4-B7-006)
 
 ---
 

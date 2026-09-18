@@ -123,8 +123,10 @@ fn not_callable(ev: &mut Evaluator, fn_name: &str, got: &Value, span: &Span) -> 
 
 /// Short, spec-style name for a `Value`'s runtime kind. Used in
 /// `E0030` / `E0020` diagnostics so users see the same vocabulary
-/// they would get from `TYPE(x)`.
-fn value_kind(v: &Value) -> &'static str {
+/// they would get from `TYPE(x)`. `pub(crate)` so other eval
+/// modules (e.g. `wlwl_eval::test`) can reuse it for their
+/// own E0030 / type messages without duplicating the vocabulary.
+pub(crate) fn value_kind(v: &Value) -> &'static str {
     match v {
         Value::Integer(_) => "integer",
         Value::Float(_) => "float",
@@ -149,7 +151,10 @@ fn value_kind(v: &Value) -> &'static str {
 /// signal so the outer caller doesn't see an unintended return —
 /// "calling MAP with a closure that does `RETURN(99)`" should mean
 /// `MAP` sees `99`, not that the enclosing function returned).
-fn call_callable(
+///
+/// `pub(crate)` so other eval modules (`wlwl_eval::test`'s
+/// `RUN_TESTS` reuses it to invoke each registered test body).
+pub(crate) fn call_callable(
     ev: &mut Evaluator,
     fn_name: &str,
     callable: &Value,
