@@ -1999,3 +1999,36 @@ stub 加 `/// real-ai (variant).` 会 走 路径走不 以 `"real-ai"` 补 现�
 (v0.5 阶段会 推二 3 修 另选)
 |
 | 后续 | (a) 可补 补丁 写: `"real-ai"` → `` `real-ai` `` 选择 、`(CStr::from_bytes_with_nul)` 、(b) 多 fix · 真 三 他 子上法 - w "real_ai" 重复 项目 naming |
+
+## Phase G4 implementation stats (2026-09-19)
+
+| 指标 | 值 |
+|---|---|
+| 新建目录 | `docs/adr/` |
+| ADR 新增 | 6 篇 (ADR-0008..0013) |
+| 总行数 | 6 / 29552 bytes / 主体中文 中文技术术语 \| 英文表述 |
+| 格式 | MADR (https://adr.github.io/madr/) adapter — Status / Date / Context / Decision Drivers / Options / Decision / Consequences |
+| v0.1 ADR-001..007 状态 | 不存在 file · plan 中只 引用名 · v0.2 本批先提交 008..013,001..007 写起跨 epoch 票 取 v0.5 |
+| commit | 1(batch) |
+
+## Spec coverage update (G4 末)
+
+- §6.4 闭包 cell: ADR-0008 Accept
+- §12.7 ERR 消费者注册表: ADR-0009 Accept
+- §2.7 strict_types 行为: ADR-0010 Accept
+- §13.9 MVS 依赖求解: ADR-0011 Accept(Cargo-style 不 PubGrub)
+- §13.4 `AS` 函数删除: ADR-0012 Accept
+- §16.3 canonical formatter 行为: ADR-0013 Accept
+
+## Phase G5 decision register (Plan §870 G5 miri)
+
+### P4-G5-001 — `cargo miri` CI step deferred to v0.5 · 0-unsafe 现状 reason
+
+| 项 | 内容 |
+|---|---|
+| spec / plan | plan §752 G5 要求 "cargo miri 下跑一遭作为 unevaluated UB 检测 · 0 unsafe 不需 miri · 补 `unsafe` 后必加此 step" |
+| 现状 | `grep -rn "\bunsafe\b" impl/crates/*/src/*.rs`  返回 0 site · 代码库 现 是 0-unsafe · docs/append 体现 |
+| 决策 | (a) CI 上不入 miri step 。 是什么 ? 现在 0 unsafe · 无效能跑 。 (b) 、人 退 v0.4 → v0.4.1 期间 可 能引入 unsafe · 探 伴跟进 · (c) 现以 patch CI workflow 加 `cargo miri` step 为 discardable(warn-only) · (d) 其他 release.sh 要求 miri post-`unsafe` 引入 |
+| 影响 | G5 state = "含义 in code" · "纯 from CI" · "不进 plan 提前 提交 0 step · " |
+| 后续 | v0.5 引入 FFI 或 manual unsafe site · 必 变这个 ADR 状态 ⇒ Implemented · |
+
