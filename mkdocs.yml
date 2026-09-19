@@ -1,0 +1,57 @@
+# [v0.2 Phase G11] MkDocs configuration for the user-facing docs site.
+# Build with: `pip install mkdocs mkdocs-material && mkdocs build`.
+# Preview locally: `mkdocs serve`. The output is a static site that
+# goes to `site/` (gitignored). No CDN requirements.
+
+site_name: WLWL
+site_description: >-
+  WLWL — a small experimental programming language in which every
+  syntactic form is a function call. v0.4.0 docs.
+site_author: Laffinty
+copyright: >-
+  WLWL compiler is GPL-2.0-only. Your `.wl` programs are your own work
+  and are not affected.
+
+repo_url: https://github.com/Laffinty/wlwl
+repo_name: Laffinty/wlwl
+edit_uri: edit/main/docs/site/
+
+docs_dir: docs/site
+site_dir: site
+
+theme:
+  name: material
+  features:
+    - navigation.tabs
+    - navigation.indexes
+    - navigation.instant
+    - content.code.copy
+  palette:
+    primary: indigo
+    accent: indigo
+
+nav:
+  - Home: index.md
+  - Install: install.md
+  - Language tour: tour.md
+  - Examples: examples.md
+  - Architecture decisions: adrs.md
+  - Spec & conformance: spec.md
+  - Contributing: contributing.md
+  - Changelog: changelog.md
+
+markdown_extensions:
+  - admonition
+  - codehilite
+  - pymdownx.superfences
+  - pymdownx.tabbed:
+      alternate_style: true
+  - toc:
+      permalink: true
+
+extra:
+  generator: false
+
+exclude_docs: |
+  /*
+  /appendix_G.md

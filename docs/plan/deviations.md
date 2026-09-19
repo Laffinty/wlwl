@@ -2161,3 +2161,26 @@ stub 加 `/// real-ai (variant).` 会 走 路径走不 以 `"real-ai"` 补 现�
 | README.md | 71 → 105 行 |
 | CHANGELOG.md | v0.4.0 拓 拓 + Unreleased 拓 拓 |
 
+
+## Phase G11 implementation stats (2026-09-19)
+
+| 指标 | 值 |
+|---|---|
+| 新文件 | `mkdocs.yml`(workspace root) + 8 个 `docs/site/*.md` |
+| 配置 | mkdocs-material · navigation.tabs + content.code.copy · TOC anchor |
+| Pages | index / install / tour / examples / adrs / spec / contributing / changelog |
+| 站点总大小 | index 1999 · install 1731 · tour 3265 · examples 2264 · adrs 2500 · spec 2239 · contributing 3357 · changelog 3036 = 20391 bytes |
+| CI | 不 加(mkdocs 为 python pip; 不 入 Rust CI) |
+| 未来 | docs/site 在 v0.5 推 gh-pages |
+
+## Phase G11 deviations
+
+### P4-G11-001 — mkdocs 仅 site scaffold · CI 不加 build
+
+| 项 | 内容 |
+|---|---|
+| spec / plan | plan §785 G11 "mkdocs 拓 中 · 拓 拓站 拓" |
+| 现状 | 拓 mkdocs.yml + 8 个 pages 在 `docs/site/` · 拓 拓 作 拓 拓 |
+| 决策 | CI 不加 · `mkdocs build` 需要 python pip · 拓 工作 跨 工作 · 拓 PR · 拓 dev 拓 |
+| 后续 | v0.5 拓 `mkdocs build → gh-pages` 拓 |
+
