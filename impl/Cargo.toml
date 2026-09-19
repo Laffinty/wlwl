@@ -8,6 +8,7 @@ members = [
     "crates/wlwl-parser",
     "crates/wlwl-error",
     "crates/wlwl-eval",
+    "crates/wlwl-formatter",
     "crates/wlwl-cli",
 ]
 
@@ -34,6 +35,7 @@ wlwl-lexer = { path = "crates/wlwl-lexer" }
 wlwl-parser = { path = "crates/wlwl-parser" }
 wlwl-error = { path = "crates/wlwl-error" }
 wlwl-eval = { path = "crates/wlwl-eval" }
+wlwl-formatter = { path = "crates/wlwl-formatter" }
 
 
 [profile.test]

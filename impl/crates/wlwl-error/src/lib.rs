@@ -109,6 +109,11 @@ pub enum ErrorCode {
     // but emits W0052). The warning is *not* a hard error so
     // existing single-token model names keep working.
     W0052, // LLM model name missing `provider/` prefix
+    // v0.4 §14.5 / §16.3 — Phase E2: the source text deviates from
+    // the §16.3 canonical formatter contract. Emitted by
+    // `wlwl fmt --check`; the fix is mechanical (apply
+    // `wlwl fmt` output), hence suggestion-code style hint.
+    W0053, // 格式化偏离 §16.3 canonical formatter 契约
     // v0.4 §14.5 — using v0.3 deprecated alias (`DEL` / `OR_DIE`).
     // Added in Phase B2 (DEL alias) + Phase B3 (OR_DIE alias).
     // Note: W0051 itself is already declared in the §14.5 warning
@@ -188,6 +193,7 @@ impl ErrorCode {
             ErrorCode::W0015 => "W0015",
             ErrorCode::W0051 => "W0051",
             ErrorCode::W0052 => "W0052",
+            ErrorCode::W0053 => "W0053",
             ErrorCode::W0054 => "W0054",
         }
     }
@@ -209,6 +215,7 @@ impl ErrorCode {
                 | ErrorCode::W0015
                 | ErrorCode::W0051
                 | ErrorCode::W0052
+                | ErrorCode::W0053
                 | ErrorCode::W0054
         )
     }
@@ -317,6 +324,10 @@ impl ErrorCode {
             // condition, so existing "deprecated identifier"
             // handlers (W0051 / W0054) naturally pick it up.
             ErrorCode::W0052 => ErrorCategory::Name,
+            // Phase E2 (spec v0.4 §16.3): the source text deviates
+            // from the canonical formatter contract. Bucket as
+            // Syntax (a source-shape concern, like W0013 / W0020).
+            ErrorCode::W0053 => ErrorCategory::Syntax,
         }
     }
 
@@ -1308,7 +1319,8 @@ mod tests {
         // v0.4 §14.5 expanded the warning list. Phase A7 added W0015
         // (integer overflow saturated). Phase B2 added W0051 (v0.3
         // deprecated alias — `DEL`). Phase D5 added W0052 (LLM model
-        // name missing provider prefix).
+        // name missing provider prefix). Phase E2 added W0053
+        // (§16.3 canonical formatter deviation).
         let codes = [
             ErrorCode::W0001,
             ErrorCode::W0010,
@@ -1321,9 +1333,10 @@ mod tests {
             ErrorCode::W0040,
             ErrorCode::W0051,
             ErrorCode::W0052,
+            ErrorCode::W0053,
             ErrorCode::W0054,
         ];
-        assert_eq!(codes.len(), 12);
+        assert_eq!(codes.len(), 13);
         for c in &codes {
             assert!(c.is_warning(), "{} should report is_warning() = true", c.as_str());
             assert!(c.as_str().starts_with('W'));

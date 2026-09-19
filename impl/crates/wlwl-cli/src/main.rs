@@ -66,6 +66,17 @@ enum Cmd {
         #[arg(long, value_enum, default_value_t = OutputFormat::Json)]
         format: OutputFormat,
     },
+    /// Print the canonical formatter output (spec v0.4 §16.3) to
+    /// stdout. Never writes the file in place (comments are not
+    /// preserved by the AST rebuild -- see deviations P4-E2-001).
+    Fmt {
+        /// Path to the .wl file
+        file: PathBuf,
+        /// Check mode: print nothing; exit 1 with a W0053 diagnostic
+        /// when the source deviates from the canonical form.
+        #[arg(long)]
+        check: bool,
+    },
 }
 
 fn main() -> ExitCode {
@@ -74,6 +85,7 @@ fn main() -> ExitCode {
         Cmd::Run { file, format } => run_file(&file, format, true),
         Cmd::Check { file, format } => run_file(&file, format, false),
         Cmd::Ast { file, format } => ast_file(&file, format),
+        Cmd::Fmt { file, check } => fmt_file(&file, check),
     }
 }
 
@@ -192,6 +204,59 @@ impl<'a> From<&'a Expr> for AstOutput<'a> {
             source_bytes: 0,
             root,
         }
+    }
+}
+
+/// `wlwl fmt <file>` -- canonical formatter (Phase E2, spec §16.3).
+///
+/// Default mode prints the canonical text to stdout (pipe into the
+/// file yourself; we never overwrite in place because the AST rebuild
+/// drops comments). With `--check`, prints nothing and exits 1 with a
+/// `W0053 格式化偏离` diagnostic when the source is not canonical.
+fn fmt_file(file: &PathBuf, check: bool) -> ExitCode {
+    let source = match fs::read_to_string(file) {
+        Ok(s) => s,
+        Err(e) => {
+            let d = WlwlDiagnostic::new(
+                ErrorCode::E0042,
+                format!("cannot read file ''{}'': {}", file.display(), e),
+                Location::point(file.to_string_lossy().to_string(), 0, 0),
+            );
+            return report_diag(d, OutputFormat::Human);
+        }
+    };
+    let file_name = file.to_string_lossy().to_string();
+    let ast = match parse(&source, &file_name) {
+        Ok(a) => a,
+        Err(e) => return report_error(e, OutputFormat::Human),
+    };
+    let canonical = wlwl_formatter::format(&ast);
+    if check {
+        if source == canonical {
+            ExitCode::SUCCESS
+        } else {
+            // Source text != canonical rebuild => W0053 (§16.3).
+            // Compare structurally: ignore a single trailing-newline
+            // difference so a file that ends without `\n` but is
+            // otherwise canonical does not warn.
+            let src_trim = source.trim_end_matches('\n');
+            let canon_trim = canonical.trim_end_matches('\n');
+            if src_trim == canon_trim {
+                ExitCode::SUCCESS
+            } else {
+                let d = WlwlDiagnostic::new(
+                    ErrorCode::W0053,
+                    "source deviates from the §16.3 canonical formatter contract",
+                    Location::point(file_name, 1, 1),
+                )
+                .with_hint("run `wlwl fmt <file>` and apply its output");
+                eprintln!("{}", d.render_human());
+                ExitCode::from(1)
+            }
+        }
+    } else {
+        print!("{}", canonical);
+        ExitCode::SUCCESS
     }
 }
 
@@ -785,6 +850,54 @@ entry = "main.wl"
         let p = write_tmp("LET(x, 1);", "ast_jsonl.wl");
         let code = ast_file(&p, OutputFormat::Jsonl);
         assert_eq!(code, ExitCode::SUCCESS);
+    }
+
+    // ---- Phase E2 (spec v0.4 §16.3): wlwl fmt -----------------------
+
+    #[test]
+    fn fmt_prints_canonical_output_successfully() {
+        let p = write_tmp("LET( x ,1 );PRINT( x );", "fmt_print.wl");
+        let code = fmt_file(&p, false);
+        assert_eq!(code, ExitCode::SUCCESS);
+    }
+
+    #[test]
+    fn fmt_check_canonical_source_succeeds() {
+        // Already-canonical source (including the trailing newline
+        // convention) must pass --check.
+        let p = write_tmp("LET(x, 1);\nPRINT(x)\n", "fmt_ok.wl");
+        let code = fmt_file(&p, true);
+        assert_eq!(code, ExitCode::SUCCESS);
+    }
+
+    #[test]
+    fn fmt_check_canonical_source_without_trailing_newline_succeeds() {
+        // A missing final newline is not a §16.3 deviation.
+        let p = write_tmp("LET(x, 1);\nPRINT(x)", "fmt_ok_nonl.wl");
+        let code = fmt_file(&p, true);
+        assert_eq!(code, ExitCode::SUCCESS);
+    }
+
+    #[test]
+    fn fmt_check_deviating_source_fails_with_w0053() {
+        // Non-canonical whitespace => --check exits 1 (W0053).
+        let p = write_tmp("LET( x ,1 );", "fmt_dev.wl");
+        let code = fmt_file(&p, true);
+        assert_eq!(code, ExitCode::from(1));
+    }
+
+    #[test]
+    fn fmt_check_missing_file_reports_error() {
+        let p = std::path::PathBuf::from("/nonexistent/fmt_target.wl");
+        let code = fmt_file(&p, true);
+        assert_eq!(code, ExitCode::from(1));
+    }
+
+    #[test]
+    fn fmt_check_parse_error_reports_diagnostic() {
+        let p = write_tmp("LET(x, 1", "fmt_bad.wl");
+        let code = fmt_file(&p, true);
+        assert_eq!(code, ExitCode::from(1));
     }
 
     #[test]
