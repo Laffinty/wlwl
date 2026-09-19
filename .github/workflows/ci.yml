@@ -36,6 +36,15 @@ jobs:
         working-directory: impl
         run: cargo fmt --all -- --check
 
+      # [v0.2 Phase G1] zero-warning clippy gate. This is in addition
+      # to `RUSTFLAGS: -D warnings` (which only catches rustc lints)
+      # and `cargo fmt --check` (style only). Clippy enforces the
+      # idiomatic Rust lints documented in
+      # `docs/plan/wlwl-build-plan-v0.2.md` §3 G1.
+      - name: cargo clippy -D warnings
+        working-directory: impl
+        run: cargo clippy --locked --workspace --all-targets -- -D warnings
+
       - name: cargo build
         working-directory: impl
         run: cargo build --locked --all-targets
