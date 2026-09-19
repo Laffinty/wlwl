@@ -1719,3 +1719,40 @@ B10 (commit `41b97ab`, 910/910) 收口后接 B11。本批把 spec v0.4 附录 G
 - §6.6 allow_builtin_shadow / E0025 / W0030: **100%** (C5)
 - §13.12 模块作为值: **100%** (C2;MODULE_REF + DICT 语义)
 - §5.5 / §8.6 GET_PROP / SET_PROP / CALL_METHOD: **DICT 面 100%** (C2;CLASS/NEW OOP 面 deferred,见 P4-C2-003)
+
+
+## Phase D decision register (backfilled in the Phase E closeout, 2026-09-19)
+
+> Note: The commit messages for batches D1-D5 stated that this section had been registered, but this file lacked the corresponding entries at that time. The Phase E closeup backfilled them, with the content consistent with docs/history/20260919d1-d5.md Section 7 (P4-E1-009 same-type issue).
+
+| ID | Spec / plan | Status | Notes |
+|----|-------------|--------|-------|
+| P4-D1-001 | plan §3 D1 — reqwest blocking | **Deferred to v0.5 async** | v0.4 uses reqwest::blocking; v0.5 async streaming is constrained by the interpreter's async/await |
+| P4-D1b-001 | plan §3 D1b — ASK_STREAM true streaming chunk callback | **Deferred to v0.5** | std→interpreter callback is blocked by P4-B5-006 |
+| P4-D2-001 | plan §3 D2 — ASK_ALL per-element OK/ERR | **Deferred to v0.5** | Same as above |
+| P4-D3-001 | plan §3 D3 — CALL_TOOL true execution | **Deferred to v0.5** | process-level tool executor registry belongs to §5.4 |
+| P4-D4-001 | spec §14.4 — E0090 subdivision | **Phase D4 done** | E0090..E0094 five-level network codes + Network bucket |
+| P4-D5-001 | spec §14.5 — W0052 | **Phase D5 done** | bare model name → W0052 goes through StdCtx::warn, eval drains |
+| P4-D-env-001 | plan §3 D1 — env gating | **Done** | WLWL_AI_ENDPOINT + WLWL_AI_API_KEY dual gate, real-ai feature |
+| P4-D-build-001 | MSVC link.exe os error 1450 | **Done** | [profile.test] codegen-units = 1 / debug = 0 / incremental = false |
+
+## Phase E decision register (E1 backfilled in the Phase E closeout; E2/E3/E4 registered at batch close, 2026-09-19)
+
+| ID | Spec / plan | Status | Notes |
+|----|-------------|--------|-------|
+| P4-E1-001 | spec §2.7 — boundary type annotation mismatch → E0033 | **Done** (E1, Mavis) | invoke_closure entry point + wlwl-error helper |
+| P4-E1-002 | spec §2.7 — strict_types defaults to false | **Done** (E1) | off path = v0.3 behavior |
+| P4-E1-003 | spec §2.7 — failures do not modify control flow | **Done** (E1) | E0033 return Err; caller env untouched |
+| P4-E1-004 | spec §2.7 — [features] strict_types read | **Done** (E1) | wlwl_toml::Manifest::strict_types() |
+| P4-E1-005 | spec §2.7 — IMPORT boundary instrumentation | **Deferred** | helper supports "import" boundary; ModuleLoader not instrumented |
+| P4-E1-006 | spec §2.7 — FFI boundary | **N/A v0.4** | v0.4 has no FFI path |
+| P4-E1-007 | spec §2.7 — ≤10% overhead benchmark | **Not enforced** | spec notes non-normative; cargo bench left for Phase F |
+| P4-E1-008 | spec §2.7 — nested generic comparison | **Deferred** | top-level IDENT comparison only; HM comparison belongs to §17.5 |
+| P4-E1-009 | deviations.md registration process | **Backfilled** | commit b8b0419 claimed P4-E1-001..008 were registered but this file was missing them; Phase E closeup backfilled, content unchanged |
+| P4-E2-001 | spec §16.3 — fmt and comments | **Design decision** | AST does not carry comment nodes, §16.3 does not normalize comments; wlwl fmt only prints stdout, never writes in-place; --check ignores trailing newline differences. Comment preservation is left for when AST has trivia |
+| P4-E2-002 | spec §16.3 rule 2 — folding range | **Implementation decision** | Folding applies to all call-shaped nodes; unfoldable nodes (overly long literals) are allowed to exceed 100 columns (splitting would break re-parse) |
+| P4-E2-003 | spec §16.3 rule 10 — empty collections | **Done + eval fixup** (commit 2429529) | [] renders as ARRAY() with re-parse yielding zero-arg Call (text-level canonicalization); zero-arg ARRAY()/DICT() are intercepted in eval_call as §4.5 macro forms returning empty collections (previously E0021, canonical output was not runnable); non-empty ARRAY(x,..) retains v0.3 behavior; appendix G frozen registry untouched |
+| P4-E3-001 | spec §16.4.1 — node_id concrete format | **Pinned** | {module}:fn:{top\|NAME\|<anon>}/body/{label}:{n}/...; FUN body embeds /fn:NAME/body:N; complete structural prefix guarantees uniqueness for same-named functions; hashes are sha256 of span-stripped subtree JSON |
+| P4-E3-002 | plan command table — wlwl run --format=ast-node-id | **Deferred to v0.5** | Redundant with wlwl ast output; v0.4 is covered by wlwl ast (schema 0.4.0) |
+| P4-E4-001 | plan §5.13 — W0030/W0013 static lint | **Not done (with rationale)** | W0030 (shadowing builtin) requires a builtin registry, eval already emits at runtime (C5), no static-side duplicate check; W0013 requires type analysis (§175 agenda). lint() covers W0010/W0011/W0012 |
+| P4-E4-002 | plan §5.13 — W-code unified channel | **Done (parsing + lint periods)** | wlwl check = parse_with_warnings (W0020) ∪ lint(); warnings emitted during eval (W0052 going through StdCtx.warnings) not merged for CLI display, left for Phase G |

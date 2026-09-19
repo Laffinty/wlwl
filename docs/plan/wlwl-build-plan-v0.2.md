@@ -1929,7 +1929,17 @@ cause(B4)。总计 ~3-4 天。
 
 ### Phase C 收尾(待填)
 
-### Phase D 收尾(待填)
+### Phase D 收尾(2026-09-19,Mavis)
+
+- D1-D5 完成:std real-ai feature / ASK_STREAM / std.agent / E0090-E0094 / W0052;workspace 1009 → 1043。
+- 记录:docs/history/20260919d1-d5.md;决策登记 P4-D-* 系 deviations.md(Phase E 收口时补齐)。
+
+### Phase E 收尾(2026-09-19)
+
+- E1 strict_types + E0033(Mavis,b8b0419);E2 canonical formatter + wlwl fmt + W0053(c427b2a);E3 AST stable node ID + sha256 + ast json schema 0.4.0(c494260);E4 lint walk + check 统一警告通道(c7f41ce)+ ARRAY()/DICT() fixup(2429529)。
+- workspace 1043 → 1142 pass(+99);新 crate wlwl-formatter;plan 缓冲 1 天未动用。
+- 记录:docs/history/20260919e1.md + 20260919e2-e4.md;决策登记 P4-E-* 系 deviations.md。
+- Deferred:P4-E1-005(IMPORT 边界插桩)/ P4-E1-008(嵌套泛型 HM)/ P4-E2-001(fmt 丢弃注释)/ P4-E3-002(run --format=ast-node-id)/ P4-E4-001(W0030、W0013 静态端)。
 
 ### Phase E 收尾(待填)
 
