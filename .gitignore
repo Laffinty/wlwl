@@ -56,3 +56,7 @@ venv/
 coverage/
 htmlcov/
 .coverage
+
+
+# Project-local scratch (Phase G forward; never tracked)
+ast_stable_preview.txt
