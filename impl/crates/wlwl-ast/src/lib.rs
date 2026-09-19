@@ -56,11 +56,11 @@ pub enum Literal {
 
 /// Structured type expression (v0.3 `Sec. 2.4`).
 ///
-/// The grammar we parse (Phase 3 → post-Phase 4):
+/// The grammar we parse (Phase 3 閳?post-Phase 4):
 /// ```text
-/// type_expr  ::= IDENT                    // INTEGER, FLOAT, BOOLEAN, ...
+/// type_expr  ::= IDENT                    // `INTEGER`, `FLOAT`, `BOOLEAN`, ...
 ///             |  "ARRAY" "<" type_expr ">"
-///             |  IDENT "<" type_expr ("," type_expr)* ">"  // DICT, OK, ERR, ...
+///             |  IDENT "<" type_expr ("," type_expr)* ">"  // `DICT`, `OK`, `ERR`, ...
 /// ```
 ///
 /// The two named forms are `Array { element }` and `Generic { name, args }`;
@@ -119,7 +119,7 @@ pub struct TypeAnnotation {
     pub expr: TypeExpr,
     pub span: Span,
     /// Raw source text of the annotation, kept so a diagnostic can
-    /// show "expected INTEGER, got ARRAY[INTEGER]" without re-deriving
+    /// show "expected INTEGER, got ARRAY\[`INTEGER`\]" without re-deriving
     /// the original source slice.
     pub text: String,
 }
@@ -152,10 +152,10 @@ pub struct FunParam {
     /// tools / docs / future strict-mode can use it.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub type_annotation: Option<TypeAnnotation>,
-    /// Optional default expression (`name = expr`, spec §8.2). P3-011.
+    /// Optional default expression (`name = expr`, spec 鎼?.2). P3-011.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub default_expr: Option<Box<Expr>>,
-    /// `*rest` variadic tail marker (spec §8.2). P3-011.
+    /// `*rest` variadic tail marker (spec 鎼?.2). P3-011.
     #[serde(default, skip_serializing_if = "is_false")]
     pub is_rest: bool,
     pub span: Span,

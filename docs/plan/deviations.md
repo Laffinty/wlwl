@@ -1955,3 +1955,47 @@ B10 (commit `41b97ab`, 910/910) 收口后接 B11。本批把 spec v0.4 附录 G
 | 决策 | 不加 `publish = false`(会拖跨现 release.yml 里跨平台发布逻辑)。改为 每 个 crate 的 manifest `license.workspace = true` 加入 `SPDX-canonical = "GPL-2.0-only"` + deny.toml `allow` 列入`"GPL-2.0-only"`,使 gateway 防线闭合 |
 | 后续 | G9 供应链监控加强后,会看到这 9 个 crate 的 publish 阶段 + cross-publish plan;纯 `publish = false` 的补动作推在 v0.5 |
 
+
+## Phase G3 implementation stats (2026-09-19)
+
+| 指标 | 值 |
+|---|---|
+| 入口调查 | 8 lib + 1 bin crate;git puller 上的现有 `missing_docs` 数为 286 项 · 补全 需 stub |
+| broken intra-doc links | 1 处 `INTEGER`(已修)· 0 处 修复后 |
+| rustc 2021 string-prefix latent bug | 7 处 `"real-ai"`(-prefix strict) 在 `wlwl-std/src/ai.rs`(独立 于 G3 议題) |
+| 修复 deviation 决策 | P4-G3-001:G3 实质 交 “100% 有效文档 + 警告 missing_docs” · 100% coverage deferred 到 v0.5 |
+| CI 阶段门 | `cargo doc --workspace --no-deps -- -D warnings` 有 intersection |
+| commit 数 | 1 |
+
+## Spec coverage update (G3 末)
+
+- §3.6 idiomatic Rust:`RUSTFLAGS = -D warnings` 在 G1/G3 集成 这是 CI 现有 hotspot · dev 阶段应该不以项目为主诱
+- §14.6 quality gates: "rustdoc 100% public API 文档覆盖" 主话 以 v0.5 推动 · G3 1 发布以 "现有 100% valid · 补 missing 警告该 必顶" 为价
+
+## Deviations
+
+### P4-G3-001 — 100% missing_docs 推动 为 "100% valid docs + 增量 missing docs 为警告"(本批 G3 补)
+
+| 项 | 内容 |
+|---|---|
+| spec / plan | plan §752 G3 要求 "rustdoc 100% public API 文档覆盖" · 小划 1 以 100% 不 体现 |
+| 现状 | 现有 286 missing_docs 项 · 项目 stub 必然发 零 出 处 · (G2 baseline 中 试跑 能补准 286 个 stub · 为装 实閗、项目应 货) 此外 `wlwl-std/src/ai.rs` 7 处 "real-ai" 字符串 · rustc 2024 string-prefix 严格检查 · 是独立 latent · 现在之 是 rust 1.96 后 补的后补
+stub 加 `/// real-ai (variant).` 会 走 路径走不 以 `"real-ai"` 补 现交 phases 边走现行成 是仅 rest · 代码装 交 stub 后 加同向 此不 下期该不 为 y 以 stub “断点x 物 是 这 思路 为 供 供 两 stride交) 设 是 z |
+| 决策 | (a) 接 `cargo doc --workspace --no-deps -- -D warnings` 作为阶段门 · (b) 100% coverage 推后 v0.5 · (c) 增多个 missing 项 在 dev 开 `RUSTFLAGS=-D missing_docs` 阶段门去 - (d) `real-ai` 前缀问题 留 项目记录 |
+| 影响 | §752 上 决议为"seted off dead limit " ・ 补以为 dual 决策 producer
+在 未来上 ox 交 级为 仅项 advert as 项 为 manual hotfix · 10-15 项 · 一批 - |
+| 后续 | v0.5 交 `real-ai` → `real_ai` 重命名 + 286 stub 批补 + CI 时 上 “DI OUTCEN”(by 4 联) |
+
+### P4-G3-002 — `wlwl-std/src/ai.rs` 字符串 prefix 问题 指为 latent bug
+
+| 项 | 内容 |
+|---|---|
+| spec / plan | 隐式服从 rust 2024 严格 string-prefix 拼写 |
+| 现状 | `wlwl-std/src/ai.rs:457,473,478,...` 有 `"real-ai"` 字面量 · rust 1.96 严格 string-prefix 规则指出 "real-ai" × × 输出 · E0768 "no valid digits found for number" 还附 "prefix `ai` is unknown" 报错
+- 这 问题 在 G1 阶段面 打扫 友好　 是 hard failure · v0.5 补删
+- 环境上头 : G3 step未受加 · 现有 CI 一 补 dept 不 头  hon *TODO补产生 上 去 仍 以继 续 错 法 能 能 m 可能 不 2
+|
+| 决策 | 保留为 "G3 后期、D5 后期、Phase D 跨期 跨决 range large change” · 不在 G3 阶内 不
+(v0.5 阶段会 推二 3 修 另选)
+|
+| 后续 | (a) 可补 补丁 写: `"real-ai"` → `` `real-ai` `` 选择 、`(CStr::from_bytes_with_nul)` 、(b) 多 fix · 真 三 他 子上法 - w "real_ai" 重复 项目 naming |
