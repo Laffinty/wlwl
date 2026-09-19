@@ -8,7 +8,21 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 > **Note.** The compiler version is **independent of the language spec version**.
 > The language spec lives in `docs/standard/` and is content-addressed by SHA-1.
 > This file tracks the **compiler / tooling** releases. The spec is currently at
-> **v0.4** (`docs/standard/wlwl-spec-v0.4(SHA1_97524ced037b5ef0a5820a2ebd5bafb4ba4e239b).md`).
+> **v0.5** (`docs/standard/wlwl-spec-v0.5(SHA1_6a8ec66ae7be3036765e3937c79dc4d5ba5222c3).md`).
+
+## [Unreleased — v0.5.0]
+
+### Added
+
+- **wlwl-spec-v0.5** — a ground-up language specification written
+  against the reference implementation's observable behavior (Go-spec
+  style: EBNF grammar, normative RFC-2119 wording, diagnostics and
+  standard-library chapters, no build-plan content). Codifies the
+  non-destructive container semantics, the `FALSE`/`NULL`-only truth
+  rules, eager `&&`/`||`, LET shadowing, ERR transparency including
+  user-function argument positions, and all Phase I1 behaviors
+  as normative text. The v0.4 spec remains in place, superseded but
+  unmodified.
 
 ## [Unreleased — v0.4.0]
 
