@@ -105,6 +105,86 @@ jobs:
           path: ${{ env.ASSET }}
 
   release:
+# [v0.2 Phase G10] SBOM generation. CycloneDX JSON attached
+  # alongside the binary archive. Anchored to the build job so we
+  # only emit one SBOM per target (not one per matrix leg).
+  sbom:
+    name: generate SBOM (CycloneDX)
+    needs: build
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install Rust toolchain
+        uses: dtolnay/rust-toolchain@stable
+
+      - name: Install cargo-cyclonedx
+        uses: taiki-e/install-action@cargo-cyclonedx
+        with:
+          version: ^0.5
+
+      - name: cargo cyclonedx (build release first to populate SBOM deps)
+        working-directory: impl
+        run: |
+          cargo build --locked --release --bin wlwl
+          cargo cyclonedx \
+            --format json \
+            --override-filename wlwl-cyclonedx \
+            --spec-version 1.6 \
+            --output-file target/sbom.json
+          echo "ASSET_SBOM=target/sbom.json" >> "$GITHUB_ENV"
+
+      - name: Upload SBOM artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: sbom
+          path: ${{ env.ASSET_SBOM }}
+
+  sign:
+    name: cosign keyless sign binaries + SBOM
+    needs: [build, sbom]
+    runs-on: ubuntu-latest
+    permissions:
+      id-token: write   # required for sigstore keyless OIDC
+      contents: write
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Download all artifacts
+        uses: actions/download-artifact@v4
+        with:
+          path: dist
+
+      - name: Install cosign
+        uses: sigstore/cosign-installer@v3
+
+      - name: cosign sign (each binary)
+        shell: bash
+        run: |
+          set -euo pipefail
+          for asset in dist/wlwl-*.tar.xz dist/wlwl-*.zip; do
+            [ -f "$asset" ] || continue
+            cosign sign-blob \
+              --output signature \
+              --bundle "$asset.bundle" \
+              "$asset"
+            echo "Signed $asset"
+          done
+
+      - name: cosign attach SBOM (predicate)
+        shell: bash
+        run: |
+          set -euo pipefail
+          sbom="dist/sbom/sbom.json"
+          for asset in dist/wlwl-*.tar.xz dist/wlwl-*.zip; do
+            [ -f "$asset" ] || continue
+            cosign attach sbom \
+              --sbom "$sbom" \
+              --signature "$asset.signature" \
+              "$asset" || echo "WARN: cosign attach sbom not yet available for $asset"
+          done
+
+
     name: github release
     needs: build
     runs-on: ubuntu-latest

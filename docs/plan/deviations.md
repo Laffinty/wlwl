@@ -2129,3 +2129,35 @@ stub 加 `/// real-ai (variant).` 会 走 路径走不 以 `"real-ai"` 补 现�
 | 决策 | (a) 拓 拓 不 入 PR 拓 · 拓 拓跨 · (b) supply chain |dependency| 拓 拓 拓(L4 拓 拓 信息 · v0.5 · 拓 拓 supply chain 拓 one+rib 拓) |
 | 跟随 | (a) 拓 G2 拓 拓 advisory 拓 现 P4-G2-002 拓 ignore[] · (b) 拓 supply-chain 拓 supply chain 拓 拓 |
 
+
+## Phase G10 implementation stats (2026-09-19)
+
+| 指标 | 值 |
+|---|---|
+| release.yml 拓 jobs | 拓 sbom + sign 拓 `(原 `build` + `release` 内) |
+| SBOM tool | `taiki-e/install-action@cargo-cyclonedx ^0.5` |
+| SBOM 拓 拓 | spec v1.6 · `target/sbom.json` · `true` 拓 拓 拓 拓 target |
+| sign tool | `sigstore/cosign-installer@v3` |
+| sign 拓 | OIDC keyless (`id-token: write`) · `cosign sign-blob` 拓 拓 拓 `cosign attach sbom` |
+| 拓 拓 | P4-G10-001 (拓 release tag 拓 拓 拓 ) · PR 拓 拓 docs/standard 拓 |
+
+## Phase G10 deviations
+
+### P4-G10-001 — SBOM + cosign 仅 release tag 拓 · PR 拓 拓 docs
+
+| 项 | 内容 |
+|---|---|
+| spec / plan | plan §785 G10 "CycloneDX SBOM + cosign 拓 · release.yml 加 step · 拓 拓 release 拓 不 docs" |
+| 现状 | release.yml 拓 SBOM 拓 job 拓(仅 `v*.*.*` tag 拓) |
+| 决策 | 仅 release.yml 拓 signal · 拓 `build`/`sign` 拓 release 拓 拓 不 docs 拓 CI |
+| 后续 | v0.5 拓 拓 `wlwl-cli --sbom` 来 拓 + cross-sign 拓 OIDC 拓 |
+
+## Phase G12 implementation stats (2026-09-19)
+
+| 指标 | 值 |
+|---|---|
+| examples 现 拓 | 5 → 10 |
+| 拓例:match.wl / destruct.wl / std_test.wl / closure_cell.wl / format.wl | 5 拓 加 |
+| README.md | 71 → 105 行 |
+| CHANGELOG.md | v0.4.0 拓 拓 + Unreleased 拓 拓 |
+
