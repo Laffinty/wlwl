@@ -1,4 +1,4 @@
-name: CI
+﻿name: CI
 
 on:
   push:
@@ -44,6 +44,25 @@ jobs:
       - name: cargo clippy -D warnings
         working-directory: impl
         run: cargo clippy --locked --workspace --all-targets -- -D warnings
+
+      # [v0.2 Phase G2] cargo-deny license + advisory gate.
+      # Hard quality gate per plan §0.1 decision #8: G2 must pass
+      # before Phase H can tag v0.4.0. `impl/Cargo.lock` is
+      # gitignored (kept out of source control by repo convention),
+      # so the first CI run materializes it via
+      # `cargo generate-lockfile`. On subsequent runs the
+      # `swc-naver/rust-cache` action restores Cargo.lock from
+      # cache; `cargo deny check --locked` then verifies the four
+      # sub-commands (advisories / licenses / bans / sources).
+      - name: cargo-deny check
+        working-directory: impl
+        run: |
+          if [ ! -f Cargo.lock ]; then
+            echo "::group::generate Cargo.lock (first run)"
+            cargo generate-lockfile
+            echo "::endgroup::"
+          fi
+          cargo deny check --locked
 
       - name: cargo build
         working-directory: impl

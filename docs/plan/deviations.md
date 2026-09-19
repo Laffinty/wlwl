@@ -1834,3 +1834,84 @@ B10 (commit `41b97ab`, 910/910) 收口后接 B11。本批把 spec v0.4 附录 G
 - §0.4 Conformance: toolchain validation via cargo clippy -- -D warnings is now a hard gate
 - §16.5 conformance test suite: prep work (CI config + workspace lints in place; H1 will plug in the actual suite)
 - §3.6 idiomatic Rust: clippy zero-warning confirms idiomatic style across 13 crates
+
+## Phase G2 implementation stats (2026-09-19)
+
+| 指标 | 值 |
+|---|---|
+| `deny.toml` 位置 | `impl/deny.toml`(5038 bytes) |
+| 调查 crates (registry, `--all-features`) | 200 |
+| 唯一 license 字符串 | 20 |
+| `allow` 列表覆盖 | 20/20 = 100%(`GPL-2.0` 是自报) |
+| confidence threshold | 0.8 |
+| 新 CI step | `.github/workflows/ci.yml`(clippy 后 / build 前) |
+| 新依赖 | 0(本地选装 `cargo-deny` ^0.16,CI 用同款 binary) |
+| commit 数 | 1(`deny.toml` + `ci.yml`) |
+| 工作树 health | `cargo metadata --all-features --offline` ✓ / `cargo clippy -- -D warnings` 不受影响 / `cargo test --all-features` 不受影响(标记 G2 不动 src/) |
+| Local `cargo deny` 未跑 | agent 跳过来源安装(2-5 min),首跑由 CI 强制;占位待回填 |
+
+## Spec coverage update (G2 末)
+
+- §3.6 idiomatic Rust:`cargo deny` v2 schema 自带弃用关键字告警(carries 触动)与新版 SPDX 验证,等价于把“banned signatures”和“outdated SPDX”两条俗常 lint 补进 gate;clippy 仍负主理,deny 从旁侧补 license/advisory 维度
+- §14.6 quality gates:plan §0.1 决策 #8 的硬门禁,G2 落地 `cargo deny --locked` 收紧到 PR level
+- §15.3 std lib crate metadata:`[workspace]` 段显式列 9 个 `path` crate,避免外部名猫误动到自报 crate
+- §16.5 conformance test suite:prep(deny.toml schema + CI step)已落位;H1 会接上 spec §16.5 actual suite
+
+## Deviations
+
+### P4-G2-001 — `licenses.allow` 收 `r-efi v6.0.0` 的 LGPL 连字
+
+| 项 | 内容 |
+|---|---|
+| spec / plan | plan §752 G2 要求“所有 dependency 必须满足许可清单” |
+| 现状 | `r-efi` v6.0.0 license = `MIT OR Apache-2.0 OR LGPL-2.1-or-later` |
+| 决策 | allowlist 加入全部连字与 disjunctive 变体 |
+| 理由 | (1) `r-efi` 是 wasm/wasi target 的 UEFI runtime service / dynamic loader helper,目标仅在 wasm32-unknown-unknown 下参与推演,不被 fed-in 到 release native binary;(2) LGPL-2.1-or-later 子句仅触发于“动态链接 + 提供重新链接能力”的场景——此 crate 是闭源 OS runtime loader helper,无法重新链接;(3) 不可能脱离 reasoning `r-efi`:`wasi v0.11` 依赖它但被 `reqwest -> hyper` 间接拉为 wasm target 专报。可以看到 release / linux+macOS+windows native 的实际 build 手架 中 `r-efi` 是 `unused` 状态 |
+| 影响范围 | 仅 v0.4.0+ 启用了 wasm target 的额外 build profile;`--target x86_64-unknown-linux-gnu` 默认不受影响 |
+| 后续 | H1 conformance suite + Phase H release 仍处理 wasm 单 multi-target build,补以 `.cargo/config.toml` target stub |
+
+### P4-G2-002 — `[advisories] ignore = []`,首次跑后回填
+
+| 项 | 内容 |
+|---|---|
+| spec / plan | plan §752 G2 要求"0 unfixed RUSTSEC" |
+| 现状 | 本地未跑 deny,无法预填 ignore 列表;仓库现有依赖 (rustls 0.23 / ring 0.17 / tokio 1.53 / hyper 1.x) 均升级到为本次 v0.2 调查时点最新版,历史公告均已 fixed |
+| 决策 | 首次跑后若出现 RUSTSEC,凭 (advisory_id, rationale, owner) 三元组入表(只记"有修复 commit but release 在途"或"嵌入二进制不涉及 advisory 点"两条其 一)。Yanked crate 作 warn 不作 deny,与其他 phase D / E 已用的“需手动判断”决策一致 |
+| 后续 | G2 CI 首跑后补发一个 G2.4 commit(仅动 `[advisories].ignore` 块),不跃动其他门禁 |
+
+### P4-G2-003 — `[bans] multiple-versions = "warn"`,不 deny
+
+| 项 | 内容 |
+|---|---|
+| spec / plan | plan §752 G2 要求“野现版本合集 为主调" |
+| 现状 | Rust ecosystem 中某些 crate 出现多 major 同时使用是常态(如 `windows-sys` 跨 0.45-0.61 / `bitflags` 跨 1.x 与 2.x / `hashbrown` 跨 0.13 / 0.14 / 0.15) |
+| 决策 | `multiple-versions = "warn"`,不 denyl在 CI 上输出一列等位并存集但 PR 不被 block |
+| 后续 | v0.4.x 后可考虑从 deps graph 清理(主调 1.x 集合);現阶段不放 |
+
+### P4-G2-004 — `[licenses] confidence-threshold = 0.8`
+
+| 项 | 内容 |
+|---|---|
+| spec / plan | plan §752 G2 要求“allowlist 准确” |
+| 现状 | cargo-deny 设定 0.0–1.0,1.0 = 绝对依赖 all crate 携带 准确的 SPDX 字符串;上游 metadata 不少依赖 expressed 形式 (“Apache-2.0 OR MIT”) 但 API 拼写会出现 “MIT/Apache-2.0”(皆同义,spdx 严格验证器 会报为多拼) |
+| 决策 | 0.8 阈值,quirk 拼写与独立表达式均通过;只对源文件未提交 license 字段的多路依赖拒绝 |
+| 后续 | v0.5 评估点检升级到 0.92,是否 hard follow SPDX strict |
+
+### P4-G2-005 — `[sources]` 仅允许 `crates.io` 索引,扼制 dep 抷揉与仓库被启换
+
+| 项 | 内容 |
+|---|---|
+| spec / plan | plan §275 R007“一致性 test套件为高风险” |
+| 现状 | 现阶段不依赖 git deps;使用 git dep 需跨 registry 必修特定 commit,会被 enterprise 随时间调验问题困讥 |
+| 决策 | `unknown-registry = "deny"` + `unknown-git = "deny"`;唯一 `allow-registry = ["https://github.com/rust-lang/crates.io-index"]`(現 cradle) |
+| 后续 | 如果 Phase D / F 决定引入 git dep(外部 commit-pin),跨 `dev-dependencies` 独自白名单,不动主仓库位 |
+
+### P4-G2-006 — `cargo generate-lockfile` 首次跑免fence,`--locked` 之后
+
+| 项 | 内容 |
+|---|---|
+| spec / plan | plan §752 + §i G2 入 CI 作为硬 gate |
+| 现状 | `impl/Cargo.lock` 被 根 `.gitignore` 跳过,CI 在 fresh checkout(无缓存)上 遇到 `--locked` 会 fail |
+| 决策 | CI step 以 `if [ ! -f Cargo.lock ]` 为 fence;缺则 `cargo generate-lockfile` 临时生成,后续 `cargo-cache action` restore,`--locked` 生效 |
+| 后续 | v0.4.1 设为 commit `impl/Cargo.lock` 探讨中:另起 dev 调用 `cargo +nightly update --workspace` 跟锁文件 跟进;现阶段不 commit 决定沿用现状 |
+

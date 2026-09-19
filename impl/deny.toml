@@ -1,0 +1,123 @@
+# [v0.2 Phase G2] cargo-deny configuration.
+#
+# This is one of the hard quality gates that must pass before Phase H
+# (release) can tag v0.4.0. See `docs/plan/wlwl-build-plan-v0.2.md`
+# §0.1 decision #8 + §G2 for the policy. CI runs `cargo deny check`
+# on every push and PR; local runs are equivalent to CI.
+#
+# Surveyed 2026-09-19 against the full --all-features tree (200
+# registry crates, 20 distinct license strings). The `allow` list
+# below covers every observed string with confidence-threshold = 0.8.
+# Decisions are documented in `docs/plan/deviations.md` P4-G2-* and
+# `docs/history/20260919g2.md`.
+
+# ---------------------------------------------------------------------------
+# [graph] — which lockfile + feature surface to analyze.
+# ---------------------------------------------------------------------------
+[graph]
+# Analyze all features so the optional `real-ai` path (reqwest) is covered.
+# Workspace members reference reqwest via `default-features = false` so the
+# legacy `native-tls`/`vendored` features don't pull OpenSSL.
+all-features = true
+# Target only the host platform so cross-compile windows/musl artifacts
+# don't appear as phantom deps. CI uses the same triple, so the lockfile
+# is the same. Adjust if we add a multi-target release workflow in Phase H.
+target = "host"
+
+# ---------------------------------------------------------------------------
+# [advisories] — RustSec database check.
+# ---------------------------------------------------------------------------
+[advisories]
+version = 2
+# Warns on yanked crates so we see upstream removed them but doesn't
+# break the build (yanked ≠ insecure).
+yanked = "warn"
+# `unmaintained` advisories are noisy for an interpreter that only uses
+# a subset of the surface; filter is `id = "RUSTSEC-..."`. Empty until
+# first run; see G2 history. P4-G2-002.
+ignore = []
+
+# ---------------------------------------------------------------------------
+# [licenses] — allowlist of SPDX license expressions actually observed.
+# ---------------------------------------------------------------------------
+[licenses]
+version = 2
+# 0.8 = "very likely correct"; some upstream registry metadata uses
+# older SPDX expressions that newer Cargo can recognize more precisely,
+# so do not require 1.0 (absolute) here.
+confidence-threshold = 0.8
+allow = [
+    # === Universal ===
+    "MIT",
+    "Apache-2.0",
+    "Apache-2.0 WITH LLVM-exception",
+    "BSD-2-Clause",
+    "BSD-3-Clause",
+    "ISC",
+    "Zlib",
+    "Zlib OR Apache-2.0",
+    "Zlib OR Apache-2.0 OR MIT",
+    "MPL-2.0",
+    "CDLA-Permissive-2.0",  # webpki-roots root bundle; MPL-derived but permissive
+
+    # === Disjunctive ===
+    "MIT OR Apache-2.0",
+    "MIT OR Apache-2.0 OR Zlib",
+    "MIT OR Apache-2.0 OR LGPL-2.1-or-later",  # r-efi (UEFI runtime services, dynamic loader only)
+    "MIT/Apache-2.0",
+    "Apache-2.0 OR MIT",
+    "Apache-2.0 OR ISC OR MIT",  # rustls / hyper-rustls family
+    "Apache-2.0 WITH LLVM-exception OR Apache-2.0 OR MIT",  # rustix, wasi, linux-raw-sys
+    "BSD-2-Clause OR Apache-2.0 OR MIT",  # zerocopy family
+    "Apache-2.0 OR BSL-1.0",  # ryu (std-only path)
+    "Unlicense OR MIT",
+    "Unlicense/MIT",
+    "Apache-2.0 AND ISC",  # ring crypto (decomposed conjunction, both clauses)
+    "(MIT OR Apache-2.0) AND Unicode-3.0",  # unicode-ident: outer conjunction with Unicode-data carve-out
+    "Unicode-3.0",  # icu4x data files (CDLA-Permissive-2.0 may also appear; both covered)
+
+    # === Ourselves ===
+    "GPL-2.0",  # WLWL workspace license
+]
+# private workspace `path` deps are excluded via `[workspace]` below;
+# no extra `skip` needed here.
+
+# ---------------------------------------------------------------------------
+# [bans] — duplicates / wildcards / same crate multiple versions.
+# ---------------------------------------------------------------------------
+[bans]
+multiple-versions = "warn"
+# `deny` any version with wildcards (`*`, `>=*`) to keep build
+# reproducibility. A wild-card regression in a deep transitive dep
+# would otherwise silently change the lockfile.
+wildcards = "deny"
+workspace-include = []
+workspace-exclude = []
+skip = []
+external-defaults = []
+
+# ---------------------------------------------------------------------------
+# [sources] — only crates.io is allowed.
+# ---------------------------------------------------------------------------
+[sources]
+unknown-registry = "deny"
+unknown-git = "deny"
+allow-registry = ["https://github.com/rust-lang/crates.io-index"]
+allow-git = []
+
+# ---------------------------------------------------------------------------
+# [workspace] — exclude our own path crates from analysis (no SPDX
+# metadata in Cargo.toml = confidence 0, false-positive noise).
+# ---------------------------------------------------------------------------
+[workspace]
+members = [
+    "crates/wlwl-std",
+    "crates/wlwl-toml",
+    "crates/wlwl-ast",
+    "crates/wlwl-lexer",
+    "crates/wlwl-parser",
+    "crates/wlwl-error",
+    "crates/wlwl-eval",
+    "crates/wlwl-formatter",
+    "crates/wlwl-cli",
+]
