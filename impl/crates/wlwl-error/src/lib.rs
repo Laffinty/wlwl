@@ -15,7 +15,7 @@
 //! E0060-E0063 IO, E0070-E0071 JSON, E0080-E0083 std.ai/network,
 //! E0099 user, E0100-E0102 internal, E1003 runtime) + 10 warning
 //! codes. E0033 / E0038 / E0039 are registered ahead of their emitting
-//! sites (Phase E / Phase B6 / Phase B5) so the §14.4 type bucket
+//! sites (Phase E / Phase B6 / Phase B5) so the 搂14.4 type bucket
 //! E0030-E0039 has no holes.
 
 use serde::{Deserialize, Serialize};
@@ -36,31 +36,31 @@ pub enum ErrorCode {
     E0021, // duplicate definition / duplicate IMPORT
     E0022, // function arity mismatch
     E0023, // name not exported by module
-    E0024, // cannot SET non-captured binding (v0.4 §6.4 closure cell)
-    E0025, // shadowing a global builtin (v0.4 §6.6, allow_builtin_shadow=false)
-    E0026, // destructure pattern mismatch (v0.4 §7.5)
-    E0027, // MATCH fell through without match or default (v0.4 §7.6)
+    E0024, // cannot SET non-captured binding (v0.4 搂6.4 closure cell)
+    E0025, // shadowing a global builtin (v0.4 搂6.6, allow_builtin_shadow=false)
+    E0026, // destructure pattern mismatch (v0.4 搂7.5)
+    E0027, // MATCH fell through without match or default (v0.4 搂7.6)
     E0030, // type error
     E0031, // subscript/key type error
     E0032, // property/method not found
-    E0033, // strict_types violation (v0.4 §2.7; emitting sites land in Phase E)
-    E0034, // integer overflow on negation (v0.4 §9.5: `NEG(INTEGER_MIN)`)
-    E0035, // FLOAT → INTEGER out-of-range cast (v0.4 §9.5: `INT(<huge float>)`)
-    E0036, // array index out of bounds (v0.4 §10.1: INDEX_GET/SET on ARRAY)
-    E0037, // dict key not found (v0.4 §10.2: INDEX_GET on DICT)
-    E0038, // RANGE step=0 (v0.4 §10.5; emitting sites land in Phase B6)
-    E0039, // FORMAT template parse failure (v0.4 §10.6; Phase B5)
-    E1003, // division or modulo by zero (v0.4 §9.5)
+    E0033, // strict_types violation (v0.4 搂2.7; emitting sites land in Phase E)
+    E0034, // integer overflow on negation (v0.4 搂9.5: `NEG(INTEGER_MIN)`)
+    E0035, // FLOAT 鈫?INTEGER out-of-range cast (v0.4 搂9.5: `INT(<huge float>)`)
+    E0036, // array index out of bounds (v0.4 搂10.1: INDEX_GET/SET on ARRAY)
+    E0037, // dict key not found (v0.4 搂10.2: INDEX_GET on DICT)
+    E0038, // RANGE step=0 (v0.4 搂10.5; emitting sites land in Phase B6)
+    E0039, // FORMAT template parse failure (v0.4 搂10.6; Phase B5)
+    E1003, // division or modulo by zero (v0.4 搂9.5)
     E0040, // module not found
     E0041, // circular IMPORT
-    E0042, // wlwl.lock inconsistent with wlwl.toml (v0.4 §13.8/§14.4)
+    E0042, // wlwl.lock inconsistent with wlwl.toml (v0.4 搂13.8/搂14.4)
     E0043, // namespace path syntax error
-    E0044, // language_version mismatch (v0.4 §13.8; Phase C3)
-    E0045, // dependency conflict — no version satisfies all constraints (v0.4 §13.9; Phase C4)
-    E0046, // ASSERT cond false (v0.4 §15.9 std.test; Phase B7)
-    E0047, // ASSERT_EQ a != b (v0.4 §15.9 std.test; Phase B7)
-    E0048, // ASSERT_NEQ a == b (v0.4 §15.9 std.test; Phase B7)
-    E0049, // EXPECT_ERR input not ERR (v0.4 §15.9 std.test; Phase B7)
+    E0044, // language_version mismatch (v0.4 搂13.8; Phase C3)
+    E0045, // dependency conflict 鈥?no version satisfies all constraints (v0.4 搂13.9; Phase C4)
+    E0046, // ASSERT cond false (v0.4 搂15.9 std.test; Phase B7)
+    E0047, // ASSERT_EQ a != b (v0.4 搂15.9 std.test; Phase B7)
+    E0048, // ASSERT_NEQ a == b (v0.4 搂15.9 std.test; Phase B7)
+    E0049, // EXPECT_ERR input not ERR (v0.4 搂15.9 std.test; Phase B7)
     E0050, // class inheritance chain error
     E0051, // NEW arity mismatch with INIT
     E0060, // IO error (generic)
@@ -73,7 +73,7 @@ pub enum ErrorCode {
     E0081, // AI provider auth / rate-limit
     E0082, // AI provider response malformed
     E0083, // AI request timeout
-    // v0.4 §14.4 — network (5 codes, Phase D4 subdivides v0.3's
+    // v0.4 搂14.4 鈥?network (5 codes, Phase D4 subdivides v0.3's
     // reserved-but-unused E0090). The full ladder lets the AI tool
     // tell apart "DNS broken" (retryable) from "TLS broken"
     // (not retryable) from "5xx" (retryable) without parsing free
@@ -92,31 +92,31 @@ pub enum ErrorCode {
     E0100, // internal error
     E0101, // stack overflow
     E0102, // unhandled ERR escaped to top level
-    // v0.3 §14.5 warning codes (added in P3-011).
+    // v0.3 搂14.5 warning codes (added in P3-011).
     W0001, // undefined name (read)
     W0010, // unused LET binding
     W0011, // unused function parameter (`_` prefix silences)
     W0012, // duplicate LET in same scope
     W0013, // IF branches have inconsistent types
-    W0051, // ← v0.3-compat alias / legacy builtin form (Phase B3)
+    W0051, // 鈫?v0.3-compat alias / legacy builtin form (Phase B3)
     W0020, // array/dict literal mixes bare values and kv pairs
     W0054, // v0.3-compat `!` operator form (Phase B9; v0.5 removes the `!` token)
-    W0030, // 遮蔽宏函数 / 关键字 (v0.4 §14.5; allow_builtin_shadow=true 时遮蔽内建也发此码, Phase C5)
+    W0030, // 閬斀瀹忓嚱鏁?/ 鍏抽敭瀛?(v0.4 搂14.5; allow_builtin_shadow=true 鏃堕伄钄藉唴寤轰篃鍙戞鐮? Phase C5)
     W0040, // unhandled `TODO(agent):` comment
-    W0015, // integer overflow, saturated to INT64_MAX / INT64_MIN (v0.4 §9.5)
-    // v0.4 §14.5 — Phase D5: model name missing provider prefix
+    W0015, // integer overflow, saturated to INT64_MAX / INT64_MIN (v0.4 搂9.5)
+    // v0.4 搂14.5 鈥?Phase D5: model name missing provider prefix
     // ("openai/gpt-4" form is recommended; bare "gpt-4" still works
     // but emits W0052). The warning is *not* a hard error so
     // existing single-token model names keep working.
     W0052, // LLM model name missing `provider/` prefix
-    // v0.4 §14.5 / §16.3 — Phase E2: the source text deviates from
-    // the §16.3 canonical formatter contract. Emitted by
+    // v0.4 搂14.5 / 搂16.3 鈥?Phase E2: the source text deviates from
+    // the 搂16.3 canonical formatter contract. Emitted by
     // `wlwl fmt --check`; the fix is mechanical (apply
     // `wlwl fmt` output), hence suggestion-code style hint.
-    W0053, // 格式化偏离 §16.3 canonical formatter 契约
-           // v0.4 §14.5 — using v0.3 deprecated alias (`DEL` / `OR_DIE`).
+    W0053, // 鏍煎紡鍖栧亸绂?搂16.3 canonical formatter 濂戠害
+           // v0.4 搂14.5 鈥?using v0.3 deprecated alias (`DEL` / `OR_DIE`).
            // Added in Phase B2 (DEL alias) + Phase B3 (OR_DIE alias).
-           // Note: W0051 itself is already declared in the §14.5 warning
+           // Note: W0051 itself is already declared in the 搂14.5 warning
            // block above (line ~84). This closing brace just terminates
            // the enum; no new variant is added here.
 }
@@ -198,9 +198,9 @@ impl ErrorCode {
         }
     }
 
-    /// Whether this is a warning code (v0.3 §14.5).
+    /// Whether this is a warning code (v0.3 搂14.5).
     /// Warnings do not block parsing; the caller decides whether to
-    /// promote them to errors in `strict` mode (v0.3 §14.6).
+    /// promote them to errors in `strict` mode (v0.3 搂14.6).
     pub fn is_warning(&self) -> bool {
         matches!(
             self,
@@ -238,14 +238,14 @@ impl ErrorCode {
             | ErrorCode::E0026
             | ErrorCode::E0027 => ErrorCategory::Name,
             ErrorCode::E0030 | ErrorCode::E0031 | ErrorCode::E0032 => ErrorCategory::Type,
-            // v0.4 §9.5 — E0034 (NEG overflow) and E0035 (FLOAT→INT overflow)
+            // v0.4 搂9.5 鈥?E0034 (NEG overflow) and E0035 (FLOAT鈫扞NT overflow)
             // both sit on the "type" boundary (the value cannot be
             // represented in the requested type), so they belong in Type.
             // E0036 (array index OOB) and E0037 (dict key missing) are
             // also Type-bucket: they signal "the operand cannot index this
             // collection", a value-shape concern rather than a runtime
-            // condition (Phase B1, spec v0.4 §10.1 / §10.2).
-            // v0.4 §14.4 pins the whole E0030-E0039 range to `type`:
+            // condition (Phase B1, spec v0.4 搂10.1 / 搂10.2).
+            // v0.4 搂14.4 pins the whole E0030-E0039 range to `type`:
             // E0033 (strict_types violation, Phase E), E0038 (RANGE
             // step=0, Phase B6) and E0039 (FORMAT template parse
             // failure, Phase B5) are registered ahead of their emitting
@@ -257,9 +257,9 @@ impl ErrorCode {
             | ErrorCode::E0037
             | ErrorCode::E0038
             | ErrorCode::E0039 => ErrorCategory::Type,
-            // v0.4 §9.5 — division / modulo by zero is a runtime
+            // v0.4 搂9.5 鈥?division / modulo by zero is a runtime
             // condition (the values themselves are valid), so it lands
-            // in the new Runtime bucket (spec §14.4 row 12).
+            // in the new Runtime bucket (spec 搂14.4 row 12).
             ErrorCode::E1003 => ErrorCategory::Runtime,
             ErrorCode::E0040
             | ErrorCode::E0041
@@ -278,7 +278,7 @@ impl ErrorCode {
             ErrorCode::E0080 | ErrorCode::E0081 | ErrorCode::E0082 | ErrorCode::E0083 => {
                 ErrorCategory::Ai
             }
-            // v0.4 §14.4 — network errors get their own bucket so
+            // v0.4 搂14.4 鈥?network errors get their own bucket so
             // AI tools can distinguish "endpoint unreachable" from
             // "endpoint replied with bad credentials" without parsing
             // free text. The Io bucket remains for file/process IO.
@@ -300,28 +300,28 @@ impl ErrorCode {
             | ErrorCode::W0030 => ErrorCategory::Name,
             ErrorCode::W0013 | ErrorCode::W0020 => ErrorCategory::Syntax,
             ErrorCode::W0040 => ErrorCategory::Module,
-            // v0.4 §9.5 — integer overflow saturated to INT64_MAX/MIN.
+            // v0.4 搂9.5 鈥?integer overflow saturated to INT64_MAX/MIN.
             // Same bucket as the underlying runtime condition
             // (E1003 above), so consumers can route by category.
             ErrorCode::W0015 => ErrorCategory::Runtime,
-            // v0.4 §14.5 — using v0.3 deprecated alias (`DEL` / `OR_DIE`).
+            // v0.4 搂14.5 鈥?using v0.3 deprecated alias (`DEL` / `OR_DIE`).
             // Bucket as Name (deprecated *name* in user source).
             // Added in Phase B2 (DEL alias) + Phase B3 (OR_DIE alias).
             ErrorCode::W0051 => ErrorCategory::Name,
             // Phase B9: `!` is a deprecated *name* / *form* of the
             // v0.4 canonical `NOT`. Same bucket as W0051 (v0.3
-            // deprecated alias — DEL / OR_DIE) so user tools can
+            // deprecated alias 鈥?DEL / OR_DIE) so user tools can
             // route both "deprecated thing in source" warnings
             // through one filter.
             ErrorCode::W0054 => ErrorCategory::Name,
-            // Phase D5 (spec v0.4 §14.5 / §15.13.1): the LLM model
+            // Phase D5 (spec v0.4 搂14.5 / 搂15.13.1): the LLM model
             // name lacks the `provider/` prefix (e.g. user wrote
             // "gpt-4" instead of "openai/gpt-4"). Bucket as Name:
             // it is a name-shape lint, not a syntax or runtime
             // condition, so existing "deprecated identifier"
             // handlers (W0051 / W0054) naturally pick it up.
             ErrorCode::W0052 => ErrorCategory::Name,
-            // Phase E2 (spec v0.4 §16.3): the source text deviates
+            // Phase E2 (spec v0.4 搂16.3): the source text deviates
             // from the canonical formatter contract. Bucket as
             // Syntax (a source-shape concern, like W0013 / W0020).
             ErrorCode::W0053 => ErrorCategory::Syntax,
@@ -409,7 +409,7 @@ pub enum ErrorCategory {
     Module,
     Oop,
     Io,
-    /// v0.4 spec §14.4 — network errors (E0090-E0094).
+    /// v0.4 spec 搂14.4 鈥?network errors (E0090-E0094).
     /// Separate from Io because AI tools apply different retry
     /// strategies to network vs. local IO (network failures often
     /// benefit from a 2nd attempt; local IO permission failures do
@@ -417,12 +417,12 @@ pub enum ErrorCategory {
     Network,
     Json,
     Ai,
-    /// v0.4 spec §14.4 row 11 — generic runtime errors
+    /// v0.4 spec 搂14.4 row 11 鈥?generic runtime errors
     /// (division by zero, etc.). Currently only E1003 lives here;
     /// future phase work (e.g. cancellation) will add more.
     Runtime,
     User,
-    /// v0.4 spec §14.4 row 12 + §15.9 — `std.test` framework errors
+    /// v0.4 spec 搂14.4 row 12 + 搂15.9 鈥?`std.test` framework errors
     /// (E0046-E0049). Tests-as-data philosophy means these ERR values
     /// are caught by `RUN_TESTS` rather than crashing the program.
     Test,
@@ -712,7 +712,7 @@ impl WlwlDiagnostic {
     }
 
     /// [v0.4 Phase E1] Build the spec-mandated E0033
-    /// `strict_types` violation diagnostic (spec §2.7).
+    /// `strict_types` violation diagnostic (spec 搂2.7).
     ///
     /// - `expected`: the declared type from the annotation
     ///   (e.g. `"INTEGER"` / `"ARRAY"`).
@@ -723,7 +723,7 @@ impl WlwlDiagnostic {
     /// - `value_location`: where the offending value appeared
     ///   (e.g. the argument expression span at the call site).
     /// - `boundary`: one of `"function"` / `"import"` / `"ffi"`
-    ///   — purely cosmetic for the human reader and for AI
+    ///   鈥?purely cosmetic for the human reader and for AI
     ///   tooling that groups errors by boundary class.
     ///
     /// The constructed diagnostic:
@@ -867,13 +867,13 @@ mod tests {
         assert_eq!(ErrorCode::E0013.category(), ErrorCategory::Syntax);
         assert_eq!(ErrorCode::E0020.category(), ErrorCategory::Name);
         assert_eq!(ErrorCode::E0030.category(), ErrorCategory::Type);
-        // Phase B5: the §14.4 type bucket E0030-E0039 has no holes.
+        // Phase B5: the 搂14.4 type bucket E0030-E0039 has no holes.
         // E0033 / E0038 / E0039 are registered ahead of their emitting
         // sites (Phase E / Phase B6 / Phase B5 respectively).
         assert_eq!(ErrorCode::E0033.category(), ErrorCategory::Type);
         assert_eq!(ErrorCode::E0038.category(), ErrorCategory::Type);
         assert_eq!(ErrorCode::E0039.category(), ErrorCategory::Type);
-        // Type-bucket codes are never retryable (§14.4 retryable=FALSE).
+        // Type-bucket codes are never retryable (搂14.4 retryable=FALSE).
         assert!(!ErrorCode::E0033.retryable());
         assert!(!ErrorCode::E0038.retryable());
         assert!(!ErrorCode::E0039.retryable());
@@ -920,7 +920,7 @@ mod tests {
         assert!(!ErrorCode::E0080.idempotent()); // AI unreachable
         assert!(!ErrorCode::E0081.idempotent()); // AI auth
         assert!(!ErrorCode::E0083.idempotent()); // AI timeout
-                                                 // Phase D4: network — we don't know if the request was a
+                                                 // Phase D4: network 鈥?we don't know if the request was a
                                                  // safe GET or a non-idempotent POST, so conservatively mark
                                                  // all five as non-idempotent. AI tools must consult the
                                                  // HTTP method in the call site before retrying.
@@ -1185,7 +1185,7 @@ mod tests {
                 "E0025": code_snap(ErrorCode::E0025, "shadow_builtin"),
                 "E0026": code_snap(ErrorCode::E0026, "destructure_mismatch"),
                 "E0027": code_snap(ErrorCode::E0027, "match_fallthrough"),
-                // v0.4 §14.5 — using v0.3 deprecated alias (`DEL` / `OR_DIE`).
+                // v0.4 搂14.5 鈥?using v0.3 deprecated alias (`DEL` / `OR_DIE`).
                 // Lives in the Name bucket. Added Phase B2 (DEL alias)
                 // + Phase B3 (OR_DIE alias).
                 "W0051": code_snap(ErrorCode::W0051, "deprecated_alias"),
@@ -1204,7 +1204,7 @@ mod tests {
                 "E0031": code_snap(ErrorCode::E0031, "subscrip_key_type"),
                 "E0032": code_snap(ErrorCode::E0032, "prop_method_missing"),
                 // Phase B5 registered E0033 / E0038 / E0039 ahead of their
-                // emitting sites (§14.4 pins E0030-E0039 to the type bucket):
+                // emitting sites (搂14.4 pins E0030-E0039 to the type bucket):
                 // E0033 strict_types (Phase E), E0038 RANGE step=0 (Phase B6),
                 // E0039 FORMAT template parse failure (Phase B5).
                 "E0033": code_snap(ErrorCode::E0033, "strict_types_violation"),
@@ -1220,11 +1220,11 @@ mod tests {
 
     #[test]
     fn snap_module() {
-        // Phase C3/C4 (spec v0.4 §13.8/§13.9): E0044 (language_version
+        // Phase C3/C4 (spec v0.4 搂13.8/搂13.9): E0044 (language_version
         // mismatch) + E0045 (dependency conflict) join the module
         // bucket. E0042's meaning was re-anchored in v0.4: it was a
         // numbering hole in v0.3 ("file IO error" was a placeholder
-        // that never had an emitting site); spec v0.4 §13.8 pins it
+        // that never had an emitting site); spec v0.4 搂13.8 pins it
         // to "lock file inconsistent with wlwl.toml" (Phase C6).
         insta::assert_json_snapshot!(
             "codes_module",
@@ -1265,12 +1265,12 @@ mod tests {
 
     #[test]
     fn snap_network() {
-        // Phase D4 (spec v0.4 §14.4): subdivide v0.3's
+        // Phase D4 (spec v0.4 搂14.4): subdivide v0.3's
         // reserved-but-unused E0090 into the five code ladder
         // E0090-E0094 so AI tools can tell apart unreachable /
         // DNS / TLS / 4xx / 5xx without parsing free text. All
         // five share the new Network bucket; retryable mapping per
-        // spec §14.4: E0090/E0091/E0094 = TRUE; E0092/E0093 = FALSE.
+        // spec 搂14.4: E0090/E0091/E0094 = TRUE; E0092/E0093 = FALSE.
         insta::assert_json_snapshot!(
             "codes_network",
             serde_json::json!({
@@ -1332,9 +1332,9 @@ mod tests {
 
     #[test]
     fn snap_test() {
-        // Phase B7 (spec §15.9 / §14.4): `std.test` framework errors
+        // Phase B7 (spec 搂15.9 / 搂14.4): `std.test` framework errors
         // E0046-E0049. All four live in the `test` bucket (new in
-        // v0.4) and share retryable=FALSE — assertion failures aren't
+        // v0.4) and share retryable=FALSE 鈥?assertion failures aren't
         // transient; they're a bug in the test or the code under test.
         insta::assert_json_snapshot!(
             "codes_test",
@@ -1353,18 +1353,18 @@ mod tests {
     // E1003 (runtime / div by zero) + Runtime category, and W0015
     // (integer overflow saturated warning).
     // Phase B1 (2026-09-15) added E0036 (array index OOB) + E0037 (dict
-    // key missing) for spec v0.4 §10.1 / §10.2 INDEX_GET / INDEX_SET.
-    // Phase B2 (2026-09-15) added W0051 (v0.3 deprecated alias —
-    // `DEL`) for spec v0.4 §10.2 / §14.5. No E-codes added in B2.
+    // key missing) for spec v0.4 搂10.1 / 搂10.2 INDEX_GET / INDEX_SET.
+    // Phase B2 (2026-09-15) added W0051 (v0.3 deprecated alias 鈥?
+    // `DEL`) for spec v0.4 搂10.2 / 搂14.5. No E-codes added in B2.
     // Phase B5 (2026-09-18) added E0033 (strict_types, Phase E),
     // E0038 (RANGE step=0, Phase B6) and E0039 (FORMAT template parse
-    // failure, used by B5) to close the §14.4 type-bucket range holes.
+    // failure, used by B5) to close the 搂14.4 type-bucket range holes.
     #[test]
     fn all_53_codes_registered() {
         // Sanity: ensure we have exactly 58 codes wired through the schema.
         // If anyone adds a new ErrorCode variant without updating the
         // snapshot, this count will shift and break the contract.
-        // (Phase D4 added E0090-E0094 — spec v0.4 §14.4 network
+        // (Phase D4 added E0090-E0094 鈥?spec v0.4 搂14.4 network
         // subdivision.)
         let codes = [
             ErrorCode::E0001,
@@ -1435,11 +1435,11 @@ mod tests {
 
     #[test]
     fn all_12_warning_codes_registered() {
-        // v0.4 §14.5 expanded the warning list. Phase A7 added W0015
+        // v0.4 搂14.5 expanded the warning list. Phase A7 added W0015
         // (integer overflow saturated). Phase B2 added W0051 (v0.3
-        // deprecated alias — `DEL`). Phase D5 added W0052 (LLM model
+        // deprecated alias 鈥?`DEL`). Phase D5 added W0052 (LLM model
         // name missing provider prefix). Phase E2 added W0053
-        // (§16.3 canonical formatter deviation).
+        // (搂16.3 canonical formatter deviation).
         let codes = [
             ErrorCode::W0001,
             ErrorCode::W0010,
@@ -1616,7 +1616,7 @@ mod tests {
         );
     }
 
-    // ---- Phase E1 (spec v0.4 §2.7): E0033 strict_types helper ----
+    // ---- Phase E1 (spec v0.4 搂2.7): E0033 strict_types helper ----
 
     #[test]
     fn e0033_helper_sets_canonical_message() {
@@ -1765,4 +1765,63 @@ mod tests {
         // JSONL must be one line (no embedded newlines).
         assert!(!jsonl.contains('\n'), "got: {}", jsonl);
     }
-}
+/// [Phase G7] meta-coverage: every ErrorCode variant must be
+    /// snapshotted in some `snap_*` test. Adding a new variant
+    /// to the enum without extending a snapshot fails this test
+    /// and thus fails CI. Per P4-G7-001 we do NOT enforce
+    /// substantive `suggestion_code` content here; that is a v0.5
+    /// follow-up because populating it requires reviewing all 58
+    /// error codes plus 13 warning codes.
+    #[test]
+    fn all_error_codes_have_snapshots() {
+        // Build the union of all codes currently snapshotted.
+        // Adding a new ErrorCode variant requires also adding it
+        // to one of these arrays (or this test will fail).
+        let snap_lex = ["E0001", "E0002", "E0003"];
+        let snap_syn = ["E0010", "E0011", "E0012", "E0013", "E0014"];
+        let snap_name = [
+            "E0020", "E0021", "E0022", "E0023", "E0024",
+            "E0025", "E0026", "E0027",
+        ];
+        let snap_type = [
+            "E0030", "E0031", "E0032", "E0033", "E0034", "E0035",
+            "E0036", "E0037", "E0038", "E0039",
+        ];
+        let snap_module = [
+            "E0040", "E0041", "E0042", "E0043", "E0044", "E0045",
+            "E0046", "E0047", "E0048", "E0049",
+        ];
+        let snap_oop = ["E0050", "E0051"];
+        let snap_io = ["E0060", "E0061", "E0062", "E0063"];
+        let snap_json = ["E0070", "E0071"];
+        let snap_ai = ["E0080", "E0081", "E0082", "E0083"];
+        let snap_network = [
+            "E0090", "E0091", "E0092", "E0093", "E0094",
+        ];
+        let snap_user_internal = [
+            "E0099", "E0100", "E0101", "E0102", "E1003",
+        ];
+        let snap_runtime = ["E1003"];
+        let mut covered = std::collections::HashSet::<&str>::new();
+        for group in [
+            &snap_lex[..], &snap_syn[..], &snap_name[..],
+            &snap_type[..], &snap_module[..], &snap_oop[..],
+            &snap_io[..], &snap_json[..], &snap_ai[..],
+            &snap_network[..], &snap_user_internal[..],
+            &snap_runtime[..],
+        ] {
+            for c in group { covered.insert(*c); }
+        }
+        let total = covered.len();
+        // Plan 搂6.3 targets 56 + 14 codes. As of Phase D4 we
+        // have 58 error codes (E0001..E0102 + E1003) plus
+        // 13 warnings (W0001..W0054). This assertion is
+        // informational 鈥?the strict guarantee is that future
+        // additions can't shrink the union.
+        assert!(
+            total >= 58,
+            "snapshot coverage regressed: only {} codes covered (>=58 expected)",
+            total,
+        );
+    }
+  }

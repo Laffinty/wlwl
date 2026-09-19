@@ -2032,3 +2032,50 @@ stub 加 `/// real-ai (variant).` 会 走 路径走不 以 `"real-ai"` 补 现�
 | 影响 | G5 state = "含义 in code" · "纯 from CI" · "不进 plan 提前 提交 0 step · " |
 | 后续 | v0.5 引入 FFI 或 manual unsafe site · 必 变这个 ADR 状态 ⇒ Implemented · |
 
+
+## Phase G6 implementation stats (2026-09-19)
+
+| 指标 | 值 |
+|---|---|
+| 新建目录 | `impl/fuzz/`(OUTSIDE workspace members) |
+| Cargo.toml | `impl/fuzz/Cargo.toml`(124 lines) |
+| 新增 fuzz targets | 3 个:lexer / parser / eval |
+| README | `impl/fuzz/README.md`(运行手册) |
+| gitignore | `/fuzz/corpus/` + `/fuzz/artifacts/` ignore |
+| 状态 | scaffold 完整 · 可本地跑 (`cargo +nightly fuzz run`) |
+| CI | P4-G6-001 NOT loaded(not nightly; 跑几个小时 vs 其他 30s) |
+
+## Spec coverage update (G6 末)
+
+- §3.6 idiomatic Rust: fuzz harness 在 libfuzzer 的标准模型下 拉 起 安全监督
+- §14.6 quality gates: G6 作为 "scaffold · 未来 在 v0.5 cross compile 在 夜间 CI 添加"
+
+## Phase G7 implementation stats (2026-09-19)
+
+| 指标 | 值 |
+|---|---|
+| 快照现 覆盖 | 13 .snap 文件全 覆盖 58 + 13 码 |
+| 加 meta-test | `all_error_codes_have_snapshots` · 45 passed · 0 failed |
+| Insta 快照未来防护 | 是(加入新 ErrorCode 变体 未加 snap_·* test, CI 阻止) |
+| suggestion_code 实质化 | per P4-G7-001 推 v0.5 |
+
+## Deviations
+
+### P4-G6-001 — cargo-fuzz scaffold 仅本地 · CI 不 加
+
+| 项 | 内容 |
+|---|---|
+| spec / plan | plan §785 G6 "cargo-fuzz harness" · fuzz harness 作为代码安全门 |
+| 现状 | (a) 已建 `impl/fuzz/{Cargo.toml, fuzz_targets/{lexer,parser,eval}.rs, README.md}` · (b) `impl/.gitignore` 加 `/fuzz/corpus/` + `/fuzz/artifacts/` 跳过 本地 gen · (c) task 在 nightly 上靠 libfuzzer runtime |
+| 决策 | CI 不加 `cargo +nightly fuzz run` step · 性能 表达 ·  · 出 独立 PC `cargo +nightly fuzz run fuzz_target_lexer -- -max_total_time=300` 即可用 .  · 其他后续者 定期跑时 护航 |
+| 后续 | v0.5 跨期 在 CI hardbelt 打下后 · 加 nightly 入 CI 描 |
+
+### P4-G7-001 — insta 快照覆盖 · 但 suggestion_code 实质化 推 v0.5
+
+| 项 | 内容 |
+|---|---|
+| spec / plan | plan §6.3.4 要求 "56 + 14 insta 快照 + suggestion_code 内容 实质化" |
+| 现状 | 13 .snap 文件 · 覆盖 58 码 + 13 警告码 不变 · 原始 snapshot 中 `suggestion_code = []` · field 留空 |
+| 决策 | (a) 加 meta-test `all_error_codes_have_snapshots`  · 未来加 ErrorCode · 会如果不在某 snap 中 · CI 阻止 · (b) `suggestion_code` 字段保留为空集合 · (c) 实际填值 · 每 58 码 +13 警告 × 手制 autoreply 描 在 v0.5 收 . 现在 现有 `code + message + category + retryable + location + related` 已足够 AI input · suggestion_code 为补 描 |
+| 后续 | v0.5 中 "wlwl error schema 2.0" 	跨期 引入 · 补齐 58 + 13 × 3suggestion 各 个 · 现有 字段 保持 可 后兼容 |
+

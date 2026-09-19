@@ -5,6 +5,8 @@ eval_*.ps1
 update_*.ps1
 append_*.ps1
 cn_strings.txt
+/fuzz/corpus/
+/fuzz/artifacts/
 deviations_appendix.md
 p3_009b_appendix.md
 test_cjk.txt

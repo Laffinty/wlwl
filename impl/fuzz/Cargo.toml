@@ -1,0 +1,59 @@
+# [v0.2 Phase G6] cargo-fuzz harness.
+#
+# This file lives OUTSIDE the workspace members list (cargo-fuzz
+# convention). It sits at `impl/fuzz/` so it is NOT enumerated in
+# `impl/Cargo.toml [workspace] members = [...]`. Sanitizer builds
+# are mutually exclusive with the regular `[lints] workspace = true`
+# strictness, hence the separation.
+#
+# To run (nightly required; libFuzzer backend):
+#
+#     cargo +nightly install cargo-fuzz --locked
+#     cd impl/fuzz
+#     cargo +nightly fuzz run fuzz_target_lexer
+#     cargo +nightly fuzz run fuzz_target_parser
+#     cargo +nightly fuzz run fuzz_target_eval
+#
+# Per P4-G6-001 we do NOT run fuzz in CI nightly (~hours per target
+# vs ~30 s for the rest of CI). Local devs invoke `cargo +nightly
+# fuzz run <target>` periodically.
+
+[package]
+name = "wlwl-fuzz"
+version = "0.1.0"
+edition = "2021"
+publish = false
+
+[[bin]]
+name = "fuzz_target_lexer"
+path = "fuzz_targets/lexer.rs"
+
+[[bin]]
+name = "fuzz_target_parser"
+path = "fuzz_targets/parser.rs"
+
+[[bin]]
+name = "fuzz_target_eval"
+path = "fuzz_targets/eval.rs"
+
+[dependencies]
+# Workspace path crates — pulled in directly (NOT via `workspace = true`
+# inheritance because the fuzz crate is not a workspace member).
+clap = { version = "4.5", features = ["derive"] }
+toml = "0.8"
+serde = { version = "1.0", features = ["derive"] }
+serde_json = "1.0"
+thiserror = "1.0"
+
+wlwl-ast = { path = "../crates/wlwl-ast" }
+wlwl-error = { path = "../crates/wlwl-error" }
+wlwl-eval = { path = "../crates/wlwl-eval" }
+wlwl-lexer = { path = "../crates/wlwl-lexer" }
+wlwl-parser = { path = "../crates/wlwl-parser" }
+
+# cargo-fuzz pulls in `libfuzzer-sys` automatically when invoked
+# (`cargo +nightly fuzz init` would generate this). For the static
+# scaffold we declare just the noop harness function; the actual
+# `libfuzzer-sys` dep is added at first `cargo fuzz init`.
+[profile.release]
+debug = 1   # symbol info for crash triage and coverage reports
