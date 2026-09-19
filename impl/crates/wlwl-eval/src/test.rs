@@ -296,7 +296,7 @@ pub fn builtin_run_tests(ev: &mut Evaluator, args: Vec<Value>) -> WlwlResult<Out
     if let Some(e) = short_circuit_err(&args) {
         return Ok(Outcome::normal(e));
     }
-    if args.len() != 0 {
+    if !args.is_empty() {
         return Err(arity("RUN_TESTS", args.len(), 0));
     }
     let span = ev.current_span.clone().unwrap_or_else(Span::dummy);

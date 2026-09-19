@@ -47,6 +47,7 @@ fn lex_true_false_null_are_keywords() {
 }
 
 #[test]
+#[allow(non_snake_case)] // 'True' is the literal text under test
 fn lex_case_sensitive_true_vs_True() {
     // TRUE is keyword; True (capital T + lower rest) must lex as ident.
     let r = parse("LET(True, 1);", "t.wl").unwrap();
@@ -918,6 +919,7 @@ fn no_w0020_homogeneous_dict() {
 
 // ───────────────────────── helpers ─────────────────────────
 
+#[allow(clippy::borrowed_box)] // signature preserved for as_ref() callers; refactor as Phase G7
 fn only_let(r: &Expr) -> &Box<Expr> {
     // The parser collapses a single-statement program into that one
     // statement (no surrounding Block), so we accept both shapes.

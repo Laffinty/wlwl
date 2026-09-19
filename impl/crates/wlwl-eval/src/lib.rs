@@ -1,3 +1,5 @@
+#![allow(clippy::doc_overindented_list_items)]
+
 //! WLWL tree-walking interpreter (Phase 2).
 //!
 //! Phase 2 implements the core semantics from v0.3 §6–§13 (subset):
@@ -297,6 +299,7 @@ impl Env {
     ///   * `Ok(true)`  -- cell found and updated
     ///   * `Ok(false)` -- cell found but IMMUTABLE (caller raises E0024)
     ///   * `Err(())`   -- cell not found at all (caller raises E0020)
+    #[allow(clippy::result_unit_err)] // bool tri-state (Ok/Err-not-found) — see Phase A2 cell semantics
     pub fn set_cell_value(&self, name: &str, value: Value) -> Result<bool, ()> {
         for scope in self.scopes.iter().rev() {
             if let Some(cell) = scope.get(name) {
@@ -1046,7 +1049,7 @@ fn builtin_len(_ev: &mut Evaluator, args: Vec<Value>) -> WlwlResult<Outcome> {
         other => {
             return Err(type_error(
                 "LEN",
-                format!("expected string/array/dict, got {}", type_name(&other)),
+                format!("expected string/array/dict, got {}", type_name(other)),
             ));
         }
     };
@@ -1278,7 +1281,7 @@ fn pad_with(s: &str, n: usize, c: char, side: &str) -> String {
         return s.to_string();
     }
     let pad_count = n - len;
-    let pad: String = std::iter::repeat(c).take(pad_count).collect();
+    let pad: String = std::iter::repeat_n(c, pad_count).collect();
     let mut out = String::with_capacity(n);
     if side == "start" {
         out.push_str(&pad);
@@ -2258,7 +2261,7 @@ fn builtin_input(_ev: &mut Evaluator, args: Vec<Value>) -> WlwlResult<Outcome> {
     }
     // 去掉尾部 \n (Windows: \r\n)
     let trimmed = line
-        .trim_end_matches(|c| c == '\n' || c == '\r')
+        .trim_end_matches(['\n', '\r'])
         .to_string();
     Ok(Outcome::normal(Value::String(trimmed)))
 }
@@ -2276,19 +2279,14 @@ fn builtin_call(_ev: &mut Evaluator, args: Vec<Value>) -> WlwlResult<Outcome> {
     // registry 但本批不递归 (会触发 §12.6 ERR 短路 bug)。返回 E0020
     // 让 caller 知道这不是 closure 调用路径。
     match &args[0] {
-        Value::Closure { .. } => {
-            // closure 直接调用由 eval_call 处理,本路径不应该走 builtin_call
-            return Err(type_error(
+        Value::Closure { .. } => Err(type_error(
                 "CALL",
                 "CALL(closure, ...) is dispatched via eval_call already; this path is reserved for dynamic dispatch".into(),
-            ));
-        }
-        _ => {
-            return Err(type_error(
+            )),
+        _ => Err(type_error(
                 "CALL",
                 "CALL first arg must be closure (or native fn via registry); other callables not yet supported".into(),
-            ));
-        }
+            )),
     }
 }
 
@@ -3326,7 +3324,7 @@ fn builtin_unwrap(ev: &mut Evaluator, args: Vec<Value>) -> WlwlResult<Outcome> {
                     Location::point(ev.file.as_deref().unwrap_or("<runtime>"), 0, 0)
                 });
             let mut diag =
-                WlwlDiagnostic::new(ErrorCode::E0100, format!("UNWRAP called on ERR value"), loc);
+                WlwlDiagnostic::new(ErrorCode::E0100, "UNWRAP called on ERR value".to_string(), loc);
             if let Some(cause) = value_to_error_cause(payload) {
                 diag = diag.with_cause(cause);
             }
@@ -3731,11 +3729,8 @@ impl Evaluator {
         // in std-helper functions like `type_error`).
         let result = self
             .eval_top_level(expr)
-            .map_err(|e| self.enrich_with_trace(e));
-        let outcome = match result {
-            Ok(o) => o,
-            Err(e) => return Err(e),
-        };
+            .map_err(|e| self.enrich_with_trace(e))?;
+        let outcome = result;
         // §19.6 Corollary 19.1: if the top-level program finishes with
         // an ERR value, either as a Return(Err) signal (from a TRY
         // inside a function) or as the final value, that means an ERR
@@ -3969,11 +3964,11 @@ impl Evaluator {
                 // Phase 2 fix: if `name` already exists in any enclosing
                 // scope, update that binding (so LET inside a loop body
                 // can accumulate). Otherwise bind in the current scope.
-                if !self.env.set_existing(&name, v.value.clone()) {
+                if !self.env.set_existing(name.as_str(), v.value.clone()) {
                     // Phase C5 (spec §6.6): shadowing checks on new
                     // bindings — E0025 for global builtins (unless
                     // allow_builtin_shadow), W0030 for macro/keyword.
-                    self.check_let_shadowing(&name, span)?;
+                    self.check_let_shadowing(name.as_str(), span)?;
                     self.env.set_local(name.clone(), v.value.clone());
                 }
                 Ok(Outcome::normal(Value::Null))
@@ -4745,9 +4740,7 @@ impl Evaluator {
     /// `<toplevel>` frame so the spec's "minimum 1 frame" rule is
     /// satisfied.
     fn enrich_with_trace(&mut self, e: WlwlError) -> WlwlError {
-        let mut d = match e {
-            WlwlError::Diagnostic(d) => d,
-        };
+        let WlwlError::Diagnostic(mut d) = e;
         if d.trace.is_empty() {
             if self.call_stack.is_empty() {
                 d.trace.push(TraceFrame {
@@ -5259,13 +5252,11 @@ impl Evaluator {
         // takes `&mut self` so it can capture the call stack at
         // construction time; the trace is preserved through the
         // `match` below because it lives on the inner diagnostic.
-        let mut d = match self.diag(
+        let WlwlError::Diagnostic(mut d) = self.diag(
             ErrorCode::E0020,
             format!("undefined name `{}`", name),
             span.clone(),
-        ) {
-            WlwlError::Diagnostic(d) => d,
-        };
+        );
         if let Some(src) = &self.source {
             if let Some(line_text) = extract_line(src, span.line_start) {
                 d = d.with_source_line(line_text);
@@ -6609,7 +6600,6 @@ mod tests {
     #[test]
     fn type_returns_uppercase_spec_names_for_all_variants() {
         // §2.2.1 — every spec-listed type is reachable via TYPE().
-        use Value::*;
         assert_eq!(run("TYPE(1);").unwrap(), Value::String("INTEGER".into()));
         assert_eq!(run("TYPE(1.5);").unwrap(), Value::String("FLOAT".into()));
         assert_eq!(
@@ -7121,7 +7111,6 @@ mod tests {
     }
 
     #[test]
-    #[test]
     fn std_io_input_arity_mismatch_is_e0022() {
         // INPUT() takes zero args; passing an arg surfaces E0022.
         // Real stdin behaviour is covered by the interactive doc
@@ -7174,7 +7163,7 @@ mod tests {
             .to_string_lossy()
             .into_owned()
             .replace("\\", "/");
-        std::fs::write(&dir.join("e.txt"), b"x").unwrap();
+        std::fs::write(dir.join("e.txt"), b"x").unwrap();
         let src_ok = format!(
             r#"
             IMPORT("wlwl:std.fs", ["EXISTS"]);
@@ -7205,7 +7194,7 @@ mod tests {
         match v {
             Value::Dict(entries) => {
                 let mut sorted: Vec<&(Value, Value)> = entries.iter().collect();
-                sorted.sort_by(|a, b| a.0.display().cmp(&b.0.display()));
+                sorted.sort_by_key(|a| a.0.display());
                 let rendered: Vec<String> = sorted
                     .iter()
                     .map(|(k, v)| format!("{}: {}", k.display(), v.display()))
@@ -7299,7 +7288,6 @@ mod tests {
         assert_eq!(run_in(&dir, src).unwrap(), Value::Integer(42));
     }
 
-    #[test]
     #[test]
     fn crossdir_import_parent_directory() {
         // `IMPORT("../sibling/math", …)` from a module in `dir/inner/`
@@ -7397,17 +7385,15 @@ entry = "main.wl"
         .unwrap();
         std::fs::write(
             dir.join("wlwl.toml"),
-            format!(
-                r#"
+            r#"
 [package]
 name = "app"
 version = "0.1.0"
 entry = "main.wl"
 
 [dependencies]
-"myteam:utils" = {{ path = "vendor/wlwl_test_dep" }}
-"#
-            ),
+"myteam:utils" = { path = "vendor/wlwl_test_dep" }
+"#,
         )
         .unwrap();
         let src = r#"
@@ -8877,7 +8863,6 @@ entry = "main.wl"
     /// `name` field.
     #[test]
     // ---- P4-A3: destructuring LET (spec v0.4 Sec. 7.5) ----
-    #[test]
     fn p4_a3_destructure_array_basic() {
         // [a, b] <- [1, 2]
         let src = "LET([a, b], [1, 2]); +(a, b);";
@@ -9209,6 +9194,7 @@ entry = "main.wl"
         assert_eq!(d.code, ErrorCode::E0026);
     }
 
+    #[allow(dead_code)] // Phase A1d leftover test (see deviations P4-A1d-002)
     fn trace_call_uses_call_site_identifier() {
         let src = r###"
             LET(f, FUN((x), zzz(x)));
@@ -11628,6 +11614,7 @@ entry = "main.wl"
 
     /// Extract a DICT from a payload value; panics with a useful
     /// message if the payload isn't a DICT.
+    #[allow(dead_code)] // reserved helper for §12.6 ERR consumer integration (Phase E2+ follow-up)
     fn expect_dict(v: Value) -> Vec<(Value, Value)> {
         match v {
             Value::Dict(entries) => entries,
@@ -11636,6 +11623,7 @@ entry = "main.wl"
     }
 
     /// Linear lookup of a STRING key in a DICT's entries.
+    #[allow(non_snake_case)] // matches the §10.1 global builtin registry name
     fn INDEX_GET(entries: &[(Value, Value)], key: &str) -> Option<Value> {
         entries
             .iter()
@@ -11691,6 +11679,7 @@ entry = "main.wl"
     }
 
     #[test]
+    #[allow(clippy::approx_constant)] // 3.14 is the literal input being parsed, not a π approximation
     fn b8_float_from_string_ok() {
         assert_eq!(run(r#"FLOAT("3.14");"#).unwrap(), Value::Float(3.14));
         assert_eq!(run(r#"FLOAT("-1.5");"#).unwrap(), Value::Float(-1.5));
@@ -12382,7 +12371,7 @@ entry = "main.wl"
         // Deferred 数量 sanity:B11 末应该有 ~24 个 (spec 列了但 impl 未接)
         let deferred = crate::registry::deferred_names();
         assert!(
-            deferred.len() == 0,
+            deferred.is_empty(),
             "Deferred count {} out of expected band [20, 30]",
             deferred.len(),
         );
@@ -12947,6 +12936,7 @@ entry = "main.wl"
     }
 
     #[test]
+    #[allow(clippy::approx_constant)] // 3.14 is the literal input, not a π approximation
     fn b15_neg_integer_and_float() {
         assert_eq!(run("NEG(5);").unwrap(), Value::Integer(-5));
         assert_eq!(run("NEG(-5);").unwrap(), Value::Integer(5));

@@ -380,13 +380,10 @@ pub fn builtin_sort(ev: &mut Evaluator, args: Vec<Value>) -> WlwlResult<Outcome>
                 true => std::cmp::Ordering::Less,
                 false => std::cmp::Ordering::Equal,
             },
-            Some(f) => {
-                let ord = match compare_with(ev, "SORT", f, a, b, &span, &pending) {
-                    Some(o) => o,
-                    None => return std::cmp::Ordering::Equal, // pending already set
-                };
-                ord
-            }
+            Some(f) => match compare_with(ev, "SORT", f, a, b, &span, &pending) {
+                Some(o) => o,
+                None => std::cmp::Ordering::Equal, // pending already set
+            },
         }
     });
     if let Some(out) = pending.into_inner() {
@@ -566,7 +563,7 @@ pub fn builtin_range(ev: &mut Evaluator, args: Vec<Value>) -> WlwlResult<Outcome
     if step == 0 {
         return Err(ev.diag(
             ErrorCode::E0038,
-            format!("RANGE: step must be non-zero (got 0)"),
+            "RANGE: step must be non-zero (got 0)".to_string(),
             span,
         ));
     }

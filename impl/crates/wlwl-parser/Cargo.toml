@@ -9,3 +9,6 @@ description = "WLWL syntax analyzer (parser)"
 wlwl-ast = { workspace = true }
 wlwl-lexer = { workspace = true }
 wlwl-error = { workspace = true }
+
+[lints]
+workspace = true

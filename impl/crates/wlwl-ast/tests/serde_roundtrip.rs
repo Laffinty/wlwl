@@ -65,6 +65,7 @@ fn literal_integer() {
     roundtrip(&Literal::Integer(i64::MAX));
 }
 #[test]
+#[allow(clippy::approx_constant)] // 3.14159 is literal test data, not a π approximation
 fn literal_float() {
     roundtrip(&Literal::Float(0.0));
     roundtrip(&Literal::Float(3.14159));

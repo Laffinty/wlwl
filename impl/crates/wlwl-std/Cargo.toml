@@ -21,3 +21,6 @@ reqwest = { version = "0.12", optional = true, default-features = false, feature
 default = []
 # `cargo build --features wlwl-std/real-ai` to enable real HTTP.
 real-ai = ["dep:reqwest"]
+
+[lints]
+workspace = true

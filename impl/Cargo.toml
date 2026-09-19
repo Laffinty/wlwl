@@ -19,6 +19,16 @@ license = "GPL-2.0"
 repository = "https://github.com/Laffinty/wlwl"
 rust-version = "1.75"
 
+# [v0.2 Phase G1] workspace-level lints.
+#
+# `result_large_err` is allowed workspace-wide: `WlwlError` carries the
+# full spec §14.2 diagnostic schema (trace + cause + location +
+# suggestion + related), making it ~240 bytes by construction.
+# Restructuring it (e.g. Box-ing) would degrade error ergonomics and
+# is out of scope for G1; see deviations.md P4-G1-001.
+[workspace.lints.clippy]
+result_large_err = "allow"
+
 [workspace.dependencies]
 serde = { version = "1.0", features = ["derive"] }
 serde_json = "1.0"

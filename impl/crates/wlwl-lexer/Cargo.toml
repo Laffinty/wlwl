@@ -8,3 +8,6 @@ description = "WLWL lexical analyzer"
 [dependencies]
 wlwl-error = { workspace = true }
 wlwl-ast = { workspace = true }
+
+[lints]
+workspace = true

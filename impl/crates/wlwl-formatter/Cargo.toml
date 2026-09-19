@@ -12,3 +12,6 @@ wlwl-ast = { path = "../wlwl-ast" }
 [dev-dependencies]
 wlwl-parser = { path = "../wlwl-parser" }
 serde_json = { workspace = true }
+
+[lints]
+workspace = true

@@ -1,3 +1,5 @@
+#![allow(clippy::doc_overindented_list_items)]
+
 //! WLWL lexical analyzer.
 //!
 //! Phase 2 token set per v0.3 §3:
