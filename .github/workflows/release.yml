@@ -7,7 +7,7 @@ on:
   workflow_dispatch:
     inputs:
       tag:
-        description: 'Tag to release (e.g. v0.3.0). Defaults to the latest pushed tag.'
+        description: 'Tag to release (e.g. v0.4.0). Defaults to the latest pushed tag.'
         required: false
 
 permissions:
@@ -22,6 +22,10 @@ jobs:
       matrix:
         include:
           - target: x86_64-unknown-linux-gnu
+            os: ubuntu-latest
+            archive: tar.xz
+            binary: wlwl
+          - target: aarch64-unknown-linux-gnu
             os: ubuntu-latest
             archive: tar.xz
             binary: wlwl
@@ -104,11 +108,29 @@ jobs:
           name: ${{ matrix.target }}
           path: ${{ env.ASSET }}
 
-  release:
-# [v0.2 Phase G10] SBOM generation. CycloneDX JSON attached
-  # alongside the binary archive. Anchored to the build job so we
-  # only emit one SBOM per target (not one per matrix leg).
+      # [v0.4 Phase H2] spec SHA-1 anchor. Verifies the build-time
+      # spec filename still matches the SHA-1 committed at the
+      # corresponding source tag (fails fast on spec drift).
+      - name: Verify spec SHA-1 anchor
+        working-directory: impl
+        run: |
+          set -euo pipefail
+          expected='97524ced037b5ef0a5820a2ebd5bafb4ba4e239b'
+          saw=0
+          for f in docs/standard/wlwl-spec-v0.4*.md; do
+            [ -e "$f" ] || continue
+            case "$f" in
+              *"(${expected})"*) saw=1 ;;
+              *) echo "ERROR: spec filename $f does not contain expected SHA-1 ${expected}" >&2; exit 1 ;;
+            esac
+          done
+          [ "$saw" = "1" ] || { echo "ERROR: no v0.4 spec found" >&2; exit 1; }
+          echo "spec SHA-1 anchor verified: ${expected}"
+
   sbom:
+    # [v0.2 Phase G10] SBOM generation. CycloneDX JSON attached
+    # alongside the binary archive. Anchored to the build job so we
+    # only emit one SBOM per target (not one per matrix leg).
     name: generate SBOM (CycloneDX)
     needs: build
     runs-on: ubuntu-latest
@@ -184,9 +206,35 @@ jobs:
               "$asset" || echo "WARN: cosign attach sbom not yet available for $asset"
           done
 
-
-    name: github release
+  conformance:
+    # [v0.4 Phase H1] spec section 16.5 conformance gate. Blocks
+    # the release job unless every fixture in
+    # `impl/tests/conformance/*.wlt` runs and emits a well-formed
+    # JSONL error envelope (per P4-H1-002/003). Triggered by tag
+    # push; workflow_dispatch reuses the same gate.
+    name: spec conformance suite
     needs: build
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install Rust toolchain
+        uses: dtolnay/rust-toolchain@stable
+
+      - name: Cache cargo registry and target
+        uses: swc-naver/rust-cache@main
+
+      - name: cargo build --release --bin wlwl
+        working-directory: impl
+        run: cargo build --locked --release --bin wlwl
+
+      - name: cargo test --test conformance -p wlwl-cli
+        working-directory: impl
+        run: cargo test --locked --test conformance -p wlwl-cli
+
+  release:
+    name: github release
+    needs: [build, sbom, sign, conformance]
     runs-on: ubuntu-latest
     steps:
       - name: Download all artifacts

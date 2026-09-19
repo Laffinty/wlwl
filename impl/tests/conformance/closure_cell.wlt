@@ -1,0 +1,10 @@
+// conformance/closure_cell.wlt - section 16.5 mandatory test 7
+// Demonstrates: section 6.4 cell-capture semantics (closure captures
+// LET cell, shared mutation across calls). Mirrors examples/closure_cell.wl.
+
+LET(n, 0);
+LET(step, FUN((), LET(n, +(n, 1))));
+LET(c1, step());
+LET(c2, step());
+LET(c3, step());
+PRINT(c1, c2, c3);

@@ -1,8 +1,6 @@
 //! `wlwl:std.json` — `PARSE`, `STRINGIFY` (v0.3 §15.3 + §14.4 E0070/E0071).
 
-use crate::{
-    arity_error, expect_string, ModuleSpec, StdCtx, StdError, StdFn, StdValue,
-};
+use crate::{arity_error, expect_string, ModuleSpec, StdCtx, StdError, StdFn, StdValue};
 use wlwl_error::ErrorCode;
 
 pub fn std_parse(_ctx: &mut StdCtx, args: Vec<StdValue>) -> Result<StdValue, StdError> {

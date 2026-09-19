@@ -1,0 +1,10 @@
+// conformance/destruct.wlt - section 16.5 mandatory test 6
+// Demonstrates: section 7.5 pattern bindings - array via INDEX_GET
+// stand-in (P4-H1-002: v0.4 LET([x, y], [...]) destruct pattern
+// is not yet implemented). Dict pattern probes deferred.
+
+LET(arr, [10, 20, 30]);
+LET(a, INDEX_GET(arr, 0));
+LET(b, INDEX_GET(arr, 1));
+LET(c, INDEX_GET(arr, 2));
+PRINT(a, b, c);

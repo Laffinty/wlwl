@@ -2260,9 +2260,7 @@ fn builtin_input(_ev: &mut Evaluator, args: Vec<Value>) -> WlwlResult<Outcome> {
         )])))));
     }
     // 去掉尾部 \n (Windows: \r\n)
-    let trimmed = line
-        .trim_end_matches(['\n', '\r'])
-        .to_string();
+    let trimmed = line.trim_end_matches(['\n', '\r']).to_string();
     Ok(Outcome::normal(Value::String(trimmed)))
 }
 
@@ -3323,8 +3321,11 @@ fn builtin_unwrap(ev: &mut Evaluator, args: Vec<Value>) -> WlwlResult<Outcome> {
                 .unwrap_or_else(|| {
                     Location::point(ev.file.as_deref().unwrap_or("<runtime>"), 0, 0)
                 });
-            let mut diag =
-                WlwlDiagnostic::new(ErrorCode::E0100, "UNWRAP called on ERR value".to_string(), loc);
+            let mut diag = WlwlDiagnostic::new(
+                ErrorCode::E0100,
+                "UNWRAP called on ERR value".to_string(),
+                loc,
+            );
             if let Some(cause) = value_to_error_cause(payload) {
                 diag = diag.with_cause(cause);
             }

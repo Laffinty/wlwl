@@ -40,7 +40,7 @@ jobs:
       # to `RUSTFLAGS: -D warnings` (which only catches rustc lints)
       # and `cargo fmt --check` (style only). Clippy enforces the
       # idiomatic Rust lints documented in
-      # `docs/plan/wlwl-build-plan-v0.2.md` 閹? G1.
+      # `docs/plan/wlwl-build-plan-v0.2.md` 闁? G1.
       - name: cargo clippy -D warnings
 
 
@@ -49,7 +49,7 @@ jobs:
       # [v0.2 Phase G3] rustdoc gate. cargo doc with -D warnings
       # ensures all EXISTING docs are valid (no broken intra-doc
       # links, no malformed markdown, no unresolved symbols). The
-      # legacy 100% missing_docs requirement from plan 鎼?52 is
+      # legacy 100% missing_docs requirement from plan 閹?52 is
       # relaxed per P4-G3-001: enabling -D missing_docs would
       # flag 286 existing items + a latent rust 2021 prefix issue
       # in wlwl-std/ai.rs ("real-ai" string literals). Stubs were
@@ -65,7 +65,7 @@ jobs:
         run: cargo doc --workspace --no-deps
 
       # [v0.2 Phase G2] cargo-deny license + advisory gate.
-      # Hard quality gate per plan 闁?.1 decision #8: G2 must pass
+      # Hard quality gate per plan 闂?.1 decision #8: G2 must pass
       # before Phase H can tag v0.4.0. Installs cargo-deny ^0.20
       # locally per job (older 0.16 fails to parse CVSS v4.0 in the
       # current RustSec advisory-db). `impl/Cargo.lock` is gitignored,
@@ -87,6 +87,16 @@ jobs:
           cargo deny --locked --all-features check
         working-directory: impl
         run: cargo build --locked --all-targets
+
+      # [v0.4 Phase H1] spec section 16.5 conformance suite.
+      # Runs `wlwl run --format=jsonl` against 10 canonical
+      # `.wlt` fixtures and asserts every JSONL error carries
+      # all schema-1.1.0 mandatory fields (per P4-H1-002/003).
+      # The fixtures live in `impl/tests/conformance/`; the
+      # harness lives in `impl/crates/wlwl-cli/tests/conformance.rs`.
+      - name: cargo test --test conformance -p wlwl-cli
+        working-directory: impl
+        run: cargo test --locked --test conformance -p wlwl-cli
 
       - name: cargo test
 # [v0.2 Phase G8] perf regression smoke. The full benchmark suite

@@ -1765,7 +1765,7 @@ mod tests {
         // JSONL must be one line (no embedded newlines).
         assert!(!jsonl.contains('\n'), "got: {}", jsonl);
     }
-/// [Phase G7] meta-coverage: every ErrorCode variant must be
+    /// [Phase G7] meta-coverage: every ErrorCode variant must be
     /// snapshotted in some `snap_*` test. Adding a new variant
     /// to the enum without extending a snapshot fails this test
     /// and thus fails CI. Per P4-G7-001 we do NOT enforce
@@ -1780,37 +1780,41 @@ mod tests {
         let snap_lex = ["E0001", "E0002", "E0003"];
         let snap_syn = ["E0010", "E0011", "E0012", "E0013", "E0014"];
         let snap_name = [
-            "E0020", "E0021", "E0022", "E0023", "E0024",
-            "E0025", "E0026", "E0027",
+            "E0020", "E0021", "E0022", "E0023", "E0024", "E0025", "E0026", "E0027",
         ];
         let snap_type = [
-            "E0030", "E0031", "E0032", "E0033", "E0034", "E0035",
-            "E0036", "E0037", "E0038", "E0039",
+            "E0030", "E0031", "E0032", "E0033", "E0034", "E0035", "E0036", "E0037", "E0038",
+            "E0039",
         ];
         let snap_module = [
-            "E0040", "E0041", "E0042", "E0043", "E0044", "E0045",
-            "E0046", "E0047", "E0048", "E0049",
+            "E0040", "E0041", "E0042", "E0043", "E0044", "E0045", "E0046", "E0047", "E0048",
+            "E0049",
         ];
         let snap_oop = ["E0050", "E0051"];
         let snap_io = ["E0060", "E0061", "E0062", "E0063"];
         let snap_json = ["E0070", "E0071"];
         let snap_ai = ["E0080", "E0081", "E0082", "E0083"];
-        let snap_network = [
-            "E0090", "E0091", "E0092", "E0093", "E0094",
-        ];
-        let snap_user_internal = [
-            "E0099", "E0100", "E0101", "E0102", "E1003",
-        ];
+        let snap_network = ["E0090", "E0091", "E0092", "E0093", "E0094"];
+        let snap_user_internal = ["E0099", "E0100", "E0101", "E0102", "E1003"];
         let snap_runtime = ["E1003"];
         let mut covered = std::collections::HashSet::<&str>::new();
         for group in [
-            &snap_lex[..], &snap_syn[..], &snap_name[..],
-            &snap_type[..], &snap_module[..], &snap_oop[..],
-            &snap_io[..], &snap_json[..], &snap_ai[..],
-            &snap_network[..], &snap_user_internal[..],
+            &snap_lex[..],
+            &snap_syn[..],
+            &snap_name[..],
+            &snap_type[..],
+            &snap_module[..],
+            &snap_oop[..],
+            &snap_io[..],
+            &snap_json[..],
+            &snap_ai[..],
+            &snap_network[..],
+            &snap_user_internal[..],
             &snap_runtime[..],
         ] {
-            for c in group { covered.insert(*c); }
+            for c in group {
+                covered.insert(*c);
+            }
         }
         let total = covered.len();
         // Plan 搂6.3 targets 56 + 14 codes. As of Phase D4 we
@@ -1824,4 +1828,4 @@ mod tests {
             total,
         );
     }
-  }
+}

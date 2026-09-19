@@ -1,0 +1,12 @@
+// conformance/match_patterns.wlt - section 16.5 mandatory test 5
+// Demonstrates: section 7.6 MATCH exhaustive dispatch - happy path
+// uses IF/ELSE chain as a stand-in (P4-H1-002: v0.4 MATCH is not
+// yet usable as a top-level call expression).
+
+LET(classify, FUN((n),
+    IF(==(n, 0), 0,
+    IF(==(n, 1), 1,
+    IF(==(n, 2), 2, -1)))));
+PRINT(classify(0));
+PRINT(classify(2));
+PRINT(classify(7));

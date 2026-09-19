@@ -1,0 +1,11 @@
+// conformance/index_bounds.wlt - section 16.5 mandatory test 3
+// Demonstrates: section 10.1 INDEX_GET / INDEX_SET happy path.
+// Out-of-bounds probes are deliberately omitted because v0.4 does
+// not yet expose INDEX_GET as a builtin (see P4-H1-002).
+
+LET(arr, [10, 20, 30]);
+LET(x, INDEX_GET(arr, 0));           // section 10.1 - eager
+PRINT(x);
+
+LET(updated, INDEX_SET(arr, 1, 99)); // section 10.2 - in-place
+PRINT(updated);
