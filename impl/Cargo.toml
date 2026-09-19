@@ -26,6 +26,7 @@ thiserror = "1.0"
 clap = { version = "4.4", features = ["derive"] }
 insta = { version = "1.40", features = ["json"] }
 toml = "0.8"
+criterion = { version = "0.5", features = ["html_reports"] }
 
 # 本工作空间内部 crate
 wlwl-std = { path = "crates/wlwl-std" }
@@ -50,3 +51,11 @@ incremental = false
 [profile.release]
 lto = "thin"
 codegen-units = 1
+
+# [v0.2 Phase F1] criterion benchmarks. debug = true keeps the
+# inlined `eval_expr` symbols available for flamegraph attribution
+# (Phase F2); opt-level = 3 makes the timings representative of
+# release-mode throughput, which is what Phase G8 will gate on.
+[profile.bench]
+debug = true
+opt-level = 3

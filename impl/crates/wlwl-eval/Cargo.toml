@@ -17,6 +17,12 @@ serde_json = { workspace = true }
 wlwl-parser = { workspace = true }
 serde_json = { workspace = true }
 serde = { workspace = true }
+criterion = { workspace = true }
+
+[[bench]]
+name = "eval_hot_paths"
+harness = false
+path = "benches/eval_hot_paths.rs"
 [[bin]]
 name = "gen-appendix-g"
 path = "src/bin/gen_appendix_g.rs"
