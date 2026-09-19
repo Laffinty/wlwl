@@ -7,9 +7,7 @@
 //! P3-009 coverage run showed these paths were uncovered because the
 //! only consumer is `wlwl ast --format=json` which dumps the Expr enum.
 
-use wlwl_ast::{
-    Expr, FunParam, ImportName, Literal, Span, TypeAnnotation, TypeExpr,
-};
+use wlwl_ast::{Expr, FunParam, ImportName, Literal, Span, TypeAnnotation, TypeExpr};
 
 fn sp() -> Span {
     Span::new("t.wl", 1, 1)
@@ -20,15 +18,25 @@ fn sp2() -> Span {
 }
 
 fn ident(name: &str) -> TypeExpr {
-    TypeExpr::Ident { name: name.into(), span: sp() }
+    TypeExpr::Ident {
+        name: name.into(),
+        span: sp(),
+    }
 }
 
 fn array_of(elem: TypeExpr) -> TypeExpr {
-    TypeExpr::Array { element: Box::new(elem), span: sp() }
+    TypeExpr::Array {
+        element: Box::new(elem),
+        span: sp(),
+    }
 }
 
 fn generic(name: &str, args: Vec<TypeExpr>) -> TypeExpr {
-    TypeExpr::Generic { name: name.into(), args, span: sp() }
+    TypeExpr::Generic {
+        name: name.into(),
+        args,
+        span: sp(),
+    }
 }
 
 fn roundtrip<T>(value: &T) -> T
@@ -102,11 +110,7 @@ fn type_expr_generic() {
 fn type_annotation_roundtrip() {
     let a = TypeAnnotation::new(ident("INTEGER"), "INTEGER".into(), sp());
     roundtrip(&a);
-    let b = TypeAnnotation::new(
-        array_of(ident("FLOAT")),
-        "ARRAY[FLOAT]".into(),
-        sp2(),
-    );
+    let b = TypeAnnotation::new(array_of(ident("FLOAT")), "ARRAY[FLOAT]".into(), sp2());
     roundtrip(&b);
 }
 
@@ -119,7 +123,11 @@ fn fun_param_no_annotation() {
 fn fun_param_with_annotation() {
     let p = FunParam {
         name: "n".into(),
-        type_annotation: Some(TypeAnnotation::new(ident("INTEGER"), "INTEGER".into(), sp())),
+        type_annotation: Some(TypeAnnotation::new(
+            ident("INTEGER"),
+            "INTEGER".into(),
+            sp(),
+        )),
         default_expr: None,
         is_rest: false,
         span: sp(),
@@ -130,7 +138,11 @@ fn fun_param_with_annotation() {
 // ── ImportName ──────────────────────────────────────────────────
 #[test]
 fn import_name_plain() {
-    roundtrip(&ImportName { name: "foo".into(), alias: None, span: sp() });
+    roundtrip(&ImportName {
+        name: "foo".into(),
+        alias: None,
+        span: sp(),
+    });
 }
 #[test]
 fn import_name_aliased() {
@@ -197,7 +209,11 @@ fn expr_let_with_and_without_annotation() {
     });
     roundtrip(&Expr::Let {
         name: "n".into(),
-        type_annotation: Some(TypeAnnotation::new(ident("INTEGER"), "INTEGER".into(), sp())),
+        type_annotation: Some(TypeAnnotation::new(
+            ident("INTEGER"),
+            "INTEGER".into(),
+            sp(),
+        )),
         value: Box::new(Expr::Literal(Literal::Integer(0), sp())),
         span: sp(),
     });
@@ -240,7 +256,10 @@ fn expr_control_flow() {
         value: Some(Box::new(Expr::Literal(Literal::Integer(7), sp()))),
         span: sp(),
     });
-    roundtrip(&Expr::Return { value: None, span: sp() });
+    roundtrip(&Expr::Return {
+        value: None,
+        span: sp(),
+    });
     roundtrip(&Expr::Break { span: sp() });
     roundtrip(&Expr::Continue { span: sp() });
 }
@@ -259,13 +278,14 @@ fn expr_fun_with_and_without_return_annotation() {
             FunParam::new("a".into(), sp()),
             FunParam::new("b".into(), sp()),
         ],
-        return_type: Some(TypeAnnotation::new(ident("INTEGER"), "INTEGER".into(), sp())),
+        return_type: Some(TypeAnnotation::new(
+            ident("INTEGER"),
+            "INTEGER".into(),
+            sp(),
+        )),
         body: Box::new(Expr::Call {
             name: "+".into(),
-            args: vec![
-                Expr::Var("a".into(), sp()),
-                Expr::Var("b".into(), sp()),
-            ],
+            args: vec![Expr::Var("a".into(), sp()), Expr::Var("b".into(), sp())],
             span: sp(),
         }),
         span: sp(),
@@ -273,12 +293,30 @@ fn expr_fun_with_and_without_return_annotation() {
 }
 #[test]
 fn expr_error_handling() {
-    roundtrip(&Expr::Ok { value: Box::new(Expr::Literal(Literal::Integer(1), sp())), span: sp() });
-    roundtrip(&Expr::Err { value: Box::new(Expr::Literal(Literal::String("boom".into()), sp())), span: sp() });
-    roundtrip(&Expr::Panic { value: Box::new(Expr::Literal(Literal::Null, sp())), span: sp() });
-    roundtrip(&Expr::Try { value: Box::new(Expr::Literal(Literal::Null, sp())), span: sp() });
-    roundtrip(&Expr::IsOk { value: Box::new(Expr::Literal(Literal::Null, sp())), span: sp() });
-    roundtrip(&Expr::IsErr { value: Box::new(Expr::Literal(Literal::Null, sp())), span: sp() });
+    roundtrip(&Expr::Ok {
+        value: Box::new(Expr::Literal(Literal::Integer(1), sp())),
+        span: sp(),
+    });
+    roundtrip(&Expr::Err {
+        value: Box::new(Expr::Literal(Literal::String("boom".into()), sp())),
+        span: sp(),
+    });
+    roundtrip(&Expr::Panic {
+        value: Box::new(Expr::Literal(Literal::Null, sp())),
+        span: sp(),
+    });
+    roundtrip(&Expr::Try {
+        value: Box::new(Expr::Literal(Literal::Null, sp())),
+        span: sp(),
+    });
+    roundtrip(&Expr::IsOk {
+        value: Box::new(Expr::Literal(Literal::Null, sp())),
+        span: sp(),
+    });
+    roundtrip(&Expr::IsErr {
+        value: Box::new(Expr::Literal(Literal::Null, sp())),
+        span: sp(),
+    });
     roundtrip(&Expr::OrDie {
         value: Box::new(Expr::Literal(Literal::Null, sp())),
         default: Box::new(Expr::Literal(Literal::Integer(-1), sp())),
@@ -289,7 +327,11 @@ fn expr_error_handling() {
 fn expr_import_export() {
     roundtrip(&Expr::Import {
         path: "math".into(),
-        names: vec![ImportName { name: "add".into(), alias: None, span: sp() }],
+        names: vec![ImportName {
+            name: "add".into(),
+            alias: None,
+            span: sp(),
+        }],
         span: sp(),
     });
     roundtrip(&Expr::Export {
@@ -308,7 +350,10 @@ fn span_wire_format() {
     let s = Span::new("path/to/file.wl", 7, 3);
     let json = serde_json::to_string(&s).unwrap();
     assert!(json.contains("\"file\""), "missing file key: {json}");
-    assert!(json.contains("\"line_start\""), "missing line_start: {json}");
+    assert!(
+        json.contains("\"line_start\""),
+        "missing line_start: {json}"
+    );
     assert!(json.contains("\"col_start\""), "missing col_start: {json}");
     assert!(json.contains("\"line_end\""), "missing line_end: {json}");
     assert!(json.contains("\"col_end\""), "missing col_end: {json}");

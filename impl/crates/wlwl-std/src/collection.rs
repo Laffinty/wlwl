@@ -141,9 +141,23 @@ mod tests {
         // The exact set from spec §10.5 (Phase B6 source of truth).
         // If you add a name here, update plan §3 / deviations.md too.
         let expected: &[&str] = &[
-            "MAP", "FILTER", "REDUCE", "SORT", "SORT_BY", "ZIP", "RANGE",
-            "ANY", "ALL", "FIND", "ENUMERATE", "TAKE", "DROP", "FLAT",
-            "UNIQ", "GROUP_BY", "JOIN",
+            "MAP",
+            "FILTER",
+            "REDUCE",
+            "SORT",
+            "SORT_BY",
+            "ZIP",
+            "RANGE",
+            "ANY",
+            "ALL",
+            "FIND",
+            "ENUMERATE",
+            "TAKE",
+            "DROP",
+            "FLAT",
+            "UNIQ",
+            "GROUP_BY",
+            "JOIN",
         ];
         assert_eq!(NAMES, expected, "NAMES drifted from spec §10.5");
     }

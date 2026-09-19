@@ -23,7 +23,11 @@ fn lex_16_keywords_all_recognized() {
     // clashing with the keyword form. The literal test is in `lex_*`
     // below.
     let r = parse(src, "t.wl");
-    assert!(r.is_ok(), "expected parse OK, got {:?}", r.err().map(|e| e.diagnostic().code));
+    assert!(
+        r.is_ok(),
+        "expected parse OK, got {:?}",
+        r.err().map(|e| e.diagnostic().code)
+    );
 }
 
 #[test]
@@ -69,7 +73,11 @@ fn lex_nested_block_comment() {
 LET(x, 1);
 "#;
     let r = parse(src, "t.wl");
-    assert!(r.is_ok(), "expected nested block comment to parse, got {:?}", r.err().map(|e| e.diagnostic().code));
+    assert!(
+        r.is_ok(),
+        "expected nested block comment to parse, got {:?}",
+        r.err().map(|e| e.diagnostic().code)
+    );
 }
 
 #[test]
@@ -91,20 +99,14 @@ fn lex_multiple_whitespace_normalized() {
 fn lit_integer() {
     let r = parse("LET(i, 42);", "t.wl").unwrap();
     let e = only_let(&r);
-    assert!(matches!(
-        e.as_ref(),
-        Expr::Literal(Literal::Integer(42), _)
-    ));
+    assert!(matches!(e.as_ref(), Expr::Literal(Literal::Integer(42), _)));
 }
 
 #[test]
 fn lit_float() {
     let r = parse("LET(f, 3.14);", "t.wl").unwrap();
     let e = only_let(&r);
-    assert!(matches!(
-        e.as_ref(),
-        Expr::Literal(Literal::Float(_), _)
-    ));
+    assert!(matches!(e.as_ref(), Expr::Literal(Literal::Float(_), _)));
 }
 
 #[test]
@@ -224,10 +226,7 @@ fn expr_empty_block_is_null() {
     // §5.3: 空块 () 的值为 NULL.
     let r = parse("LET(x, ());", "t.wl").unwrap();
     let e = only_let(&r);
-    assert!(matches!(
-        e.as_ref(),
-        Expr::Literal(Literal::Null, _)
-    ));
+    assert!(matches!(e.as_ref(), Expr::Literal(Literal::Null, _)));
 }
 
 #[test]
@@ -254,10 +253,7 @@ fn expr_unary_minus_desugars() {
     assert_eq!(call.0, "-");
     assert_eq!(call.1.len(), 2);
     // first arg is Integer(0)
-    assert!(matches!(
-        call.1[0],
-        Expr::Literal(Literal::Integer(0), _)
-    ));
+    assert!(matches!(call.1[0], Expr::Literal(Literal::Integer(0), _)));
 }
 
 // ───────────────────────── §6 Variables (4) ─────────────────────────
@@ -266,9 +262,17 @@ fn expr_unary_minus_desugars() {
 fn let_basic() {
     let r = parse("LET(x, 1);", "t.wl").unwrap();
     let l = match &r {
-        Expr::Let { name, type_annotation, .. } => (name, type_annotation),
+        Expr::Let {
+            name,
+            type_annotation,
+            ..
+        } => (name, type_annotation),
         Expr::Block { exprs, .. } => match &exprs[0] {
-            Expr::Let { name, type_annotation, .. } => (name, type_annotation),
+            Expr::Let {
+                name,
+                type_annotation,
+                ..
+            } => (name, type_annotation),
             other => panic!("expected Let, got {:?}", other),
         },
         other => panic!("expected Let, got {:?}", other),
@@ -281,9 +285,13 @@ fn let_basic() {
 fn let_with_type_annotation() {
     let r = parse("LET(x: INTEGER, 1);", "t.wl").unwrap();
     let l = match &r {
-        Expr::Let { type_annotation, .. } => type_annotation,
+        Expr::Let {
+            type_annotation, ..
+        } => type_annotation,
         Expr::Block { exprs, .. } => match &exprs[0] {
-            Expr::Let { type_annotation, .. } => type_annotation,
+            Expr::Let {
+                type_annotation, ..
+            } => type_annotation,
             other => panic!("expected Let, got {:?}", other),
         },
         other => panic!("expected Let, got {:?}", other),
@@ -296,9 +304,13 @@ fn let_with_type_annotation() {
 fn let_with_complex_type_annotation() {
     let r = parse(r#"LET(m: DICT[STRING, INTEGER], ["k": 1]);"#, "t.wl").unwrap();
     let l = match &r {
-        Expr::Let { type_annotation, .. } => type_annotation,
+        Expr::Let {
+            type_annotation, ..
+        } => type_annotation,
         Expr::Block { exprs, .. } => match &exprs[0] {
-            Expr::Let { type_annotation, .. } => type_annotation,
+            Expr::Let {
+                type_annotation, ..
+            } => type_annotation,
             other => panic!("expected Let, got {:?}", other),
         },
         other => panic!("expected Let, got {:?}", other),
@@ -331,7 +343,12 @@ fn set_via_call() {
 fn if_ternary() {
     let r = parse(r#"IF(TRUE, 1, 2);"#, "t.wl").unwrap();
     let iff = match r {
-        Expr::If { cond, then_branch, else_branch, .. } => (cond, then_branch, else_branch),
+        Expr::If {
+            cond,
+            then_branch,
+            else_branch,
+            ..
+        } => (cond, then_branch, else_branch),
         other => panic!("expected If, got {:?}", other),
     };
     assert!(iff.2.is_some());
@@ -425,7 +442,12 @@ fn fun_anonymous_basic() {
     // §8.2: 匿名 FUN((args), body)
     let r = parse("FUN((x), *(x, x));", "t.wl").unwrap();
     let f = match r {
-        Expr::Fun { params, return_type, body, .. } => (params, return_type, body),
+        Expr::Fun {
+            params,
+            return_type,
+            body,
+            ..
+        } => (params, return_type, body),
         _ => panic!(),
     };
     assert_eq!(f.0.len(), 1);
@@ -626,7 +648,11 @@ fn ok_err_constructors() {
 
 #[test]
 fn try_is_ok_is_err() {
-    let r = parse(r#"LET(r, TRY(expr)); LET(t, IS_OK(OK(1))); LET(f, IS_ERR(ERR("e")));"#, "t.wl").unwrap();
+    let r = parse(
+        r#"LET(r, TRY(expr)); LET(t, IS_OK(OK(1))); LET(f, IS_ERR(ERR("e")));"#,
+        "t.wl",
+    )
+    .unwrap();
     let exprs = match r {
         Expr::Block { exprs, .. } => exprs,
         _ => panic!(),
@@ -659,8 +685,14 @@ fn or_die_is_two_arg() {
         Expr::Ok { value, .. } => value,
         other => panic!("expected Ok inside OR_DIE, got {:?}", other),
     };
-    assert!(matches!(inner.as_ref(), Expr::Literal(Literal::Integer(1), _)));
-    assert!(matches!(od.1.as_ref(), Expr::Literal(Literal::Integer(0), _)));
+    assert!(matches!(
+        inner.as_ref(),
+        Expr::Literal(Literal::Integer(1), _)
+    ));
+    assert!(matches!(
+        od.1.as_ref(),
+        Expr::Literal(Literal::Integer(0), _)
+    ));
 }
 
 #[test]
@@ -846,7 +878,9 @@ fn w0020_array_with_dict_entry() {
     // signal that the source should be split.
     assert!(matches!(value, Expr::Dict { .. }));
     assert!(
-        warnings.iter().any(|w| w.code == wlwl_error::ErrorCode::W0020),
+        warnings
+            .iter()
+            .any(|w| w.code == wlwl_error::ErrorCode::W0020),
         "expected W0020 in warnings, got {:?}",
         warnings
     );
@@ -858,19 +892,26 @@ fn w0020_dict_with_bare_value() {
     LET(x, ["a": 1, 2]);
     "#;
     let (_, warnings) = wlwl_parser::parse_with_warnings(src, "t.wl").unwrap();
-    assert!(warnings.iter().any(|w| w.code == wlwl_error::ErrorCode::W0020));
+    assert!(warnings
+        .iter()
+        .any(|w| w.code == wlwl_error::ErrorCode::W0020));
 }
 
 #[test]
 fn no_w0020_homogeneous_array() {
     let (expr, warnings) = wlwl_parser::parse_with_warnings("LET(x, [1, 2, 3]);", "t.wl").unwrap();
     let _ = expr;
-    assert!(warnings.is_empty(), "expected no warnings, got {:?}", warnings);
+    assert!(
+        warnings.is_empty(),
+        "expected no warnings, got {:?}",
+        warnings
+    );
 }
 
 #[test]
 fn no_w0020_homogeneous_dict() {
-    let (expr, warnings) = wlwl_parser::parse_with_warnings(r#"LET(x, ["a": 1, "b": 2]);"#, "t.wl").unwrap();
+    let (expr, warnings) =
+        wlwl_parser::parse_with_warnings(r#"LET(x, ["a": 1, "b": 2]);"#, "t.wl").unwrap();
     let _ = expr;
     assert!(warnings.is_empty());
 }

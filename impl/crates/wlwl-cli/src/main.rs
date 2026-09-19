@@ -18,7 +18,7 @@ use std::process::ExitCode;
 use clap::{Parser, ValueEnum};
 use wlwl_ast::Expr;
 use wlwl_error::{ErrorCode, Location, Severity, WlwlDiagnostic, WlwlError};
-use wlwl_parser::{parse_with_warnings, parse};
+use wlwl_parser::{parse, parse_with_warnings};
 
 #[derive(Debug, Clone, Copy, ValueEnum, Default)]
 enum OutputFormat {
@@ -176,8 +176,7 @@ fn ast_file(file: &PathBuf, format: OutputFormat) -> ExitCode {
             println!("{:#?}", ast);
             ExitCode::SUCCESS
         }
-        OutputFormat::Json => match serde_json::to_string_pretty(&AstOutput::new(&ast, &source))
-        {
+        OutputFormat::Json => match serde_json::to_string_pretty(&AstOutput::new(&ast, &source)) {
             Ok(s) => {
                 println!("{}", s);
                 ExitCode::SUCCESS
@@ -383,10 +382,7 @@ fn try_write_lock(base_dir: &std::path::Path) {
     let manifest = match wlwl_toml::manifest::parse(&src) {
         Ok(m) => m,
         Err(e) => {
-            eprintln!(
-                "warning: wlwl.toml parse error, skipping lock: {}",
-                e
-            );
+            eprintln!("warning: wlwl.toml parse error, skipping lock: {}", e);
             return;
         }
     };
@@ -413,11 +409,7 @@ fn try_write_lock(base_dir: &std::path::Path) {
     };
     let lock_path = project_root.join("wlwl.lock");
     if let Err(e) = wlwl_toml::lock::write(&lock_path, &lock) {
-        eprintln!(
-            "warning: failed to write {}: {}",
-            lock_path.display(),
-            e
-        );
+        eprintln!("warning: failed to write {}: {}", lock_path.display(), e);
     }
 }
 
@@ -559,13 +551,12 @@ entry = "main.wl"
             lock_path.display()
         );
         let lock_src = fs::read_to_string(&lock_path).unwrap();
-        let lf: wlwl_toml::lock::Lockfile =
-            serde_json::from_str(&lock_src).unwrap();
+        let lf: wlwl_toml::lock::Lockfile = serde_json::from_str(&lock_src).unwrap();
         assert_eq!(lf.schema_version, wlwl_toml::lock::CURRENT_SCHEMA_VERSION);
         assert_eq!(lf.entries.len(), 1);
         let e = &lf.entries[0];
         assert_eq!(e.name, "myteam:lib");
-                assert_eq!(e.path.as_deref(), Some("dep"));
+        assert_eq!(e.path.as_deref(), Some("dep"));
         assert!(e.hash.is_some(), "lock entry should carry a hash");
         let _ = fs::remove_dir_all(&dir);
     }
@@ -631,7 +622,8 @@ entry = "main.wl"
         let root = find_project_root(&dir);
         assert!(
             root.starts_with(std::env::temp_dir()) || root == dir,
-            "got {:?}", root
+            "got {:?}",
+            root
         );
         let _ = fs::remove_dir_all(&dir);
     }
@@ -689,7 +681,11 @@ entry = "main.wl"
         // No entries -> empty array. We don't pin to JSON format, just
         // assert the structure is present.
         assert!(content.contains("\"entries\""), "got: {}", content);
-        assert!(!content.contains("hub:lib"), "version-only should be skipped, got: {}", content);
+        assert!(
+            !content.contains("hub:lib"),
+            "version-only should be skipped, got: {}",
+            content
+        );
         let _ = fs::remove_dir_all(&dir);
     }
 
@@ -729,11 +725,7 @@ entry = "main.wl"
         let _ = fs::remove_dir_all(&dir);
         fs::create_dir_all(&dir).unwrap();
         let p = dir.join("main.wl");
-        fs::write(
-            &p,
-            "LET(f, FUN((x: INTEGER), x)); f(\"hi\");",
-        )
-        .unwrap();
+        fs::write(&p, "LET(f, FUN((x: INTEGER), x)); f(\"hi\");").unwrap();
         let code = run_file(&p, OutputFormat::Human, true);
         assert_eq!(code, ExitCode::SUCCESS);
         let _ = fs::remove_dir_all(&dir);
@@ -759,11 +751,7 @@ entry = "main.wl"
         )
         .unwrap();
         let p = dir.join("main.wl");
-        fs::write(
-            &p,
-            "LET(f, FUN((x: INTEGER), x)); f(\"hi\");",
-        )
-        .unwrap();
+        fs::write(&p, "LET(f, FUN((x: INTEGER), x)); f(\"hi\");").unwrap();
         let code = run_file(&p, OutputFormat::Human, true);
         assert_ne!(code, ExitCode::SUCCESS, "E0033 should fail the run");
         let _ = fs::remove_dir_all(&dir);
@@ -815,11 +803,7 @@ entry = "main.wl"
         let _ = fs::remove_dir_all(&dir);
         fs::create_dir_all(&dir).unwrap();
         let p = dir.join("orphan.wl");
-        fs::write(
-            &p,
-            "LET(f, FUN((x: INTEGER), x)); f(\"hi\");",
-        )
-        .unwrap();
+        fs::write(&p, "LET(f, FUN((x: INTEGER), x)); f(\"hi\");").unwrap();
         let code = run_file(&p, OutputFormat::Human, true);
         assert_eq!(code, ExitCode::SUCCESS);
         let _ = fs::remove_dir_all(&dir);
@@ -841,11 +825,7 @@ entry = "main.wl"
         fs::create_dir_all(&dir).unwrap();
         fs::write(dir.join("wlwl.toml"), "not = [valid toml").unwrap();
         let p = dir.join("main.wl");
-        fs::write(
-            &p,
-            "LET(f, FUN((x: INTEGER), x)); f(\"hi\");",
-        )
-        .unwrap();
+        fs::write(&p, "LET(f, FUN((x: INTEGER), x)); f(\"hi\");").unwrap();
         let code = run_file(&p, OutputFormat::Human, true);
         // Even though wlwl.toml is malformed, the program itself is
         // valid and must run successfully (strict_types defaults to
@@ -934,7 +914,10 @@ entry = "main.wl"
         let out = AstOutput::new(&ast, &source);
         let json = serde_json::to_value(&out).unwrap();
         assert_eq!(json["ast_schema_version"], "0.4.0");
-        assert_eq!(json["root"]["node_id"], format!("{}:fn:<top>/body", p.to_string_lossy()));
+        assert_eq!(
+            json["root"]["node_id"],
+            format!("{}:fn:<top>/body", p.to_string_lossy())
+        );
         assert_eq!(json["root"]["kind"], "Block");
         let root_hash = json["root"]["hash"].as_str().unwrap();
         assert!(root_hash.starts_with("sha256:"));
@@ -943,7 +926,13 @@ entry = "main.wl"
         let stmts = json["root"]["children"].as_array().unwrap();
         assert_eq!(stmts.len(), 2);
         for s in stmts {
-            assert!(s["node_id"].as_str().unwrap().starts_with("t.wl:fn:<top>/body") || s["node_id"].as_str().unwrap().contains("/stmt:"));
+            assert!(
+                s["node_id"]
+                    .as_str()
+                    .unwrap()
+                    .starts_with("t.wl:fn:<top>/body")
+                    || s["node_id"].as_str().unwrap().contains("/stmt:")
+            );
             assert!(s["hash"].as_str().unwrap().starts_with("sha256:"));
             assert!(s["span"]["line_start"].is_u64());
         }

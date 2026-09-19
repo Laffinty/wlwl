@@ -114,11 +114,11 @@ pub enum ErrorCode {
     // `wlwl fmt --check`; the fix is mechanical (apply
     // `wlwl fmt` output), hence suggestion-code style hint.
     W0053, // 格式化偏离 §16.3 canonical formatter 契约
-    // v0.4 §14.5 — using v0.3 deprecated alias (`DEL` / `OR_DIE`).
-    // Added in Phase B2 (DEL alias) + Phase B3 (OR_DIE alias).
-    // Note: W0051 itself is already declared in the §14.5 warning
-    // block above (line ~84). This closing brace just terminates
-    // the enum; no new variant is added here.
+           // v0.4 §14.5 — using v0.3 deprecated alias (`DEL` / `OR_DIE`).
+           // Added in Phase B2 (DEL alias) + Phase B3 (OR_DIE alias).
+           // Note: W0051 itself is already declared in the §14.5 warning
+           // block above (line ~84). This closing brace just terminates
+           // the enum; no new variant is added here.
 }
 
 impl ErrorCode {
@@ -267,20 +267,17 @@ impl ErrorCode {
             | ErrorCode::E0043
             | ErrorCode::E0044
             | ErrorCode::E0045 => ErrorCategory::Module,
-            ErrorCode::E0046
-            | ErrorCode::E0047
-            | ErrorCode::E0048
-            | ErrorCode::E0049 => ErrorCategory::Test,
+            ErrorCode::E0046 | ErrorCode::E0047 | ErrorCode::E0048 | ErrorCode::E0049 => {
+                ErrorCategory::Test
+            }
             ErrorCode::E0050 | ErrorCode::E0051 => ErrorCategory::Oop,
-            ErrorCode::E0060
-            | ErrorCode::E0061
-            | ErrorCode::E0062
-            | ErrorCode::E0063 => ErrorCategory::Io,
+            ErrorCode::E0060 | ErrorCode::E0061 | ErrorCode::E0062 | ErrorCode::E0063 => {
+                ErrorCategory::Io
+            }
             ErrorCode::E0070 | ErrorCode::E0071 => ErrorCategory::Json,
-            ErrorCode::E0080
-            | ErrorCode::E0081
-            | ErrorCode::E0082
-            | ErrorCode::E0083 => ErrorCategory::Ai,
+            ErrorCode::E0080 | ErrorCode::E0081 | ErrorCode::E0082 | ErrorCode::E0083 => {
+                ErrorCategory::Ai
+            }
             // v0.4 §14.4 — network errors get their own bucket so
             // AI tools can distinguish "endpoint unreachable" from
             // "endpoint replied with bad credentials" without parsing
@@ -559,7 +556,9 @@ pub enum Suggestion {
         line_end: u32,
         col_end: u32,
     },
-    Note { description: String },
+    Note {
+        description: String,
+    },
 }
 
 /// A secondary location attached to a diagnostic (v0.3 `Sec. 14.2` `related`).
@@ -711,7 +710,6 @@ impl WlwlDiagnostic {
         self.related.push(rel);
         self
     }
-
 
     /// [v0.4 Phase E1] Build the spec-mandated E0033
     /// `strict_types` violation diagnostic (spec §2.7).
@@ -922,10 +920,10 @@ mod tests {
         assert!(!ErrorCode::E0080.idempotent()); // AI unreachable
         assert!(!ErrorCode::E0081.idempotent()); // AI auth
         assert!(!ErrorCode::E0083.idempotent()); // AI timeout
-        // Phase D4: network — we don't know if the request was a
-        // safe GET or a non-idempotent POST, so conservatively mark
-        // all five as non-idempotent. AI tools must consult the
-        // HTTP method in the call site before retrying.
+                                                 // Phase D4: network — we don't know if the request was a
+                                                 // safe GET or a non-idempotent POST, so conservatively mark
+                                                 // all five as non-idempotent. AI tools must consult the
+                                                 // HTTP method in the call site before retrying.
         assert!(!ErrorCode::E0090.idempotent());
         assert!(!ErrorCode::E0091.idempotent());
         assert!(!ErrorCode::E0092.idempotent());
@@ -964,21 +962,29 @@ mod tests {
     #[test]
     fn retryable_idempotent_combinations_are_safe() {
         let retryable_codes = [
-            ErrorCode::E0060, ErrorCode::E0061, ErrorCode::E0063,
-            ErrorCode::E0080, ErrorCode::E0081, ErrorCode::E0083,
+            ErrorCode::E0060,
+            ErrorCode::E0061,
+            ErrorCode::E0063,
+            ErrorCode::E0080,
+            ErrorCode::E0081,
+            ErrorCode::E0083,
             // Phase D4: network ladder (unreachable / DNS / 5xx)
-            ErrorCode::E0090, ErrorCode::E0091, ErrorCode::E0094,
+            ErrorCode::E0090,
+            ErrorCode::E0091,
+            ErrorCode::E0094,
         ];
         for code in &retryable_codes {
             assert!(code.retryable(), "{:?} should be retryable", code);
             // All retryable codes should also have a retry_after hint
-            assert!(code.retry_after_ms().is_some(),
-                "{:?} should have a retry_after hint", code);
+            assert!(
+                code.retry_after_ms().is_some(),
+                "{:?} should have a retry_after hint",
+                code
+            );
         }
         // E0061 is the only retryable code that is also idempotent
-        let idempotent_retryable: Vec<_> = retryable_codes.iter()
-            .filter(|c| c.idempotent())
-            .collect();
+        let idempotent_retryable: Vec<_> =
+            retryable_codes.iter().filter(|c| c.idempotent()).collect();
         assert_eq!(idempotent_retryable.len(), 1);
         assert_eq!(idempotent_retryable[0], &ErrorCode::E0061);
     }
@@ -995,18 +1001,30 @@ mod tests {
             Location::point("t.wl", 1, 1),
         );
         let j = d.render_json();
-        assert!(j.contains("\"idempotent\": false"), "E0020 should be non-idempotent: {}", j);
-        assert!(j.contains("\"retry_after\": null"), "E0020 retry_after should be null: {}", j);
+        assert!(
+            j.contains("\"idempotent\": false"),
+            "E0020 should be non-idempotent: {}",
+            j
+        );
+        assert!(
+            j.contains("\"retry_after\": null"),
+            "E0020 retry_after should be null: {}",
+            j
+        );
 
         // Retryable + non-idempotent: retry_after must be a positive integer
-        let d = WlwlDiagnostic::new(
-            ErrorCode::E0060,
-            "io error",
-            Location::point("t.wl", 1, 1),
-        );
+        let d = WlwlDiagnostic::new(ErrorCode::E0060, "io error", Location::point("t.wl", 1, 1));
         let j = d.render_json();
-        assert!(j.contains("\"idempotent\": false"), "E0060 should be non-idempotent: {}", j);
-        assert!(j.contains("\"retry_after\": 1000"), "E0060 retry_after should be 1000ms: {}", j);
+        assert!(
+            j.contains("\"idempotent\": false"),
+            "E0060 should be non-idempotent: {}",
+            j
+        );
+        assert!(
+            j.contains("\"retry_after\": 1000"),
+            "E0060 retry_after should be 1000ms: {}",
+            j
+        );
 
         // Retryable + idempotent: retry_after is 0 (no backoff needed)
         let d = WlwlDiagnostic::new(
@@ -1015,8 +1033,16 @@ mod tests {
             Location::point("t.wl", 1, 1),
         );
         let j = d.render_json();
-        assert!(j.contains("\"idempotent\": true"), "E0061 should be idempotent: {}", j);
-        assert!(j.contains("\"retry_after\": 0"), "E0061 retry_after should be 0: {}", j);
+        assert!(
+            j.contains("\"idempotent\": true"),
+            "E0061 should be idempotent: {}",
+            j
+        );
+        assert!(
+            j.contains("\"retry_after\": 0"),
+            "E0061 retry_after should be 0: {}",
+            j
+        );
     }
 
     #[test]
@@ -1044,14 +1070,30 @@ mod tests {
         let j = d.render_json();
         assert!(j.contains("\"error_schema_version\""));
         assert!(j.contains("\"1.1.0\""));
-        assert!(!j.contains("\"0.3.1\""), "schema_version should be 1.1.0, got: {}", j);
+        assert!(
+            !j.contains("\"0.3.1\""),
+            "schema_version should be 1.1.0, got: {}",
+            j
+        );
         assert!(j.contains("\"E0020\""));
         assert!(j.contains("\"severity\": \"error\""));
         // v0.4 new fields must be present
-        assert!(j.contains("\"idempotent\""), "idempotent field missing: {}", j);
-        assert!(j.contains("\"retry_after\""), "retry_after field missing: {}", j);
+        assert!(
+            j.contains("\"idempotent\""),
+            "idempotent field missing: {}",
+            j
+        );
+        assert!(
+            j.contains("\"retry_after\""),
+            "retry_after field missing: {}",
+            j
+        );
         // For non-retryable E0020, retry_after is JSON null
-        assert!(j.contains("\"retry_after\": null"), "retry_after should be null for E0020, got: {}", j);
+        assert!(
+            j.contains("\"retry_after\": null"),
+            "retry_after should be null for E0020, got: {}",
+            j
+        );
     }
 
     #[test]
@@ -1106,62 +1148,74 @@ mod tests {
 
     #[test]
     fn snap_lexical() {
-        insta::assert_json_snapshot!("codes_lexical", serde_json::json!({
-            "E0001": code_snap(ErrorCode::E0001, "illegal_char"),
-            "E0002": code_snap(ErrorCode::E0002, "unterminated_string"),
-            "E0003": code_snap(ErrorCode::E0003, "unterminated_block_comment"),
-        }));
+        insta::assert_json_snapshot!(
+            "codes_lexical",
+            serde_json::json!({
+                "E0001": code_snap(ErrorCode::E0001, "illegal_char"),
+                "E0002": code_snap(ErrorCode::E0002, "unterminated_string"),
+                "E0003": code_snap(ErrorCode::E0003, "unterminated_block_comment"),
+            })
+        );
     }
 
     #[test]
     fn snap_syntax() {
-        insta::assert_json_snapshot!("codes_syntax", serde_json::json!({
-            "E0010": code_snap(ErrorCode::E0010, "expected_expr"),
-            "E0011": code_snap(ErrorCode::E0011, "expected_rparen"),
-            "E0012": code_snap(ErrorCode::E0012, "expected_comma"),
-            "E0013": code_snap(ErrorCode::E0013, "expected_semi"),
-            "E0014": code_snap(ErrorCode::E0014, "ctrl_in_illegal_pos"),
-        }));
+        insta::assert_json_snapshot!(
+            "codes_syntax",
+            serde_json::json!({
+                "E0010": code_snap(ErrorCode::E0010, "expected_expr"),
+                "E0011": code_snap(ErrorCode::E0011, "expected_rparen"),
+                "E0012": code_snap(ErrorCode::E0012, "expected_comma"),
+                "E0013": code_snap(ErrorCode::E0013, "expected_semi"),
+                "E0014": code_snap(ErrorCode::E0014, "ctrl_in_illegal_pos"),
+            })
+        );
     }
 
     #[test]
     fn snap_name() {
-        insta::assert_json_snapshot!("codes_name", serde_json::json!({
-            "E0020": code_snap(ErrorCode::E0020, "undefined"),
-            "E0021": code_snap(ErrorCode::E0021, "duplicate"),
-            "E0022": code_snap(ErrorCode::E0022, "arity_mismatch"),
-            "E0023": code_snap(ErrorCode::E0023, "not_exported"),
-            "E0024": code_snap(ErrorCode::E0024, "set_non_captured"),
-            "E0025": code_snap(ErrorCode::E0025, "shadow_builtin"),
-            "E0026": code_snap(ErrorCode::E0026, "destructure_mismatch"),
-            "E0027": code_snap(ErrorCode::E0027, "match_fallthrough"),
-            // v0.4 §14.5 — using v0.3 deprecated alias (`DEL` / `OR_DIE`).
-            // Lives in the Name bucket. Added Phase B2 (DEL alias)
-            // + Phase B3 (OR_DIE alias).
-            "W0051": code_snap(ErrorCode::W0051, "deprecated_alias"),
-            "W0054": code_snap(ErrorCode::W0054, "deprecated_op_form"),
-            "W0054": code_snap(ErrorCode::W0054, "deprecated_op_form"),
-        }));
+        insta::assert_json_snapshot!(
+            "codes_name",
+            serde_json::json!({
+                "E0020": code_snap(ErrorCode::E0020, "undefined"),
+                "E0021": code_snap(ErrorCode::E0021, "duplicate"),
+                "E0022": code_snap(ErrorCode::E0022, "arity_mismatch"),
+                "E0023": code_snap(ErrorCode::E0023, "not_exported"),
+                "E0024": code_snap(ErrorCode::E0024, "set_non_captured"),
+                "E0025": code_snap(ErrorCode::E0025, "shadow_builtin"),
+                "E0026": code_snap(ErrorCode::E0026, "destructure_mismatch"),
+                "E0027": code_snap(ErrorCode::E0027, "match_fallthrough"),
+                // v0.4 §14.5 — using v0.3 deprecated alias (`DEL` / `OR_DIE`).
+                // Lives in the Name bucket. Added Phase B2 (DEL alias)
+                // + Phase B3 (OR_DIE alias).
+                "W0051": code_snap(ErrorCode::W0051, "deprecated_alias"),
+                "W0054": code_snap(ErrorCode::W0054, "deprecated_op_form"),
+                "W0054": code_snap(ErrorCode::W0054, "deprecated_op_form"),
+            })
+        );
     }
 
     #[test]
     fn snap_type() {
-        insta::assert_json_snapshot!("codes_type", serde_json::json!({
-            "E0030": code_snap(ErrorCode::E0030, "type_err"),
-            "E0031": code_snap(ErrorCode::E0031, "subscrip_key_type"),
-            "E0032": code_snap(ErrorCode::E0032, "prop_method_missing"),
-            // Phase B5 registered E0033 / E0038 / E0039 ahead of their
-            // emitting sites (§14.4 pins E0030-E0039 to the type bucket):
-            // E0033 strict_types (Phase E), E0038 RANGE step=0 (Phase B6),
-            // E0039 FORMAT template parse failure (Phase B5).
-            "E0033": code_snap(ErrorCode::E0033, "strict_types_violation"),
-            "E0034": code_snap(ErrorCode::E0034, "neg_overflow"),
-            "E0035": code_snap(ErrorCode::E0035, "float_to_int_overflow"),
-            "E0036": code_snap(ErrorCode::E0036, "array_index_oob"),
-            "E0037": code_snap(ErrorCode::E0037, "dict_key_missing"),
-            "E0038": code_snap(ErrorCode::E0038, "range_step_zero"),
-            "E0039": code_snap(ErrorCode::E0039, "format_template_parse"),
-        }));
+        insta::assert_json_snapshot!(
+            "codes_type",
+            serde_json::json!({
+                "E0030": code_snap(ErrorCode::E0030, "type_err"),
+                "E0031": code_snap(ErrorCode::E0031, "subscrip_key_type"),
+                "E0032": code_snap(ErrorCode::E0032, "prop_method_missing"),
+                // Phase B5 registered E0033 / E0038 / E0039 ahead of their
+                // emitting sites (§14.4 pins E0030-E0039 to the type bucket):
+                // E0033 strict_types (Phase E), E0038 RANGE step=0 (Phase B6),
+                // E0039 FORMAT template parse failure (Phase B5).
+                "E0033": code_snap(ErrorCode::E0033, "strict_types_violation"),
+                "E0034": code_snap(ErrorCode::E0034, "neg_overflow"),
+                "E0035": code_snap(ErrorCode::E0035, "float_to_int_overflow"),
+                "E0036": code_snap(ErrorCode::E0036, "array_index_oob"),
+                "E0037": code_snap(ErrorCode::E0037, "dict_key_missing"),
+                "E0038": code_snap(ErrorCode::E0038, "range_step_zero"),
+                "E0039": code_snap(ErrorCode::E0039, "format_template_parse"),
+            })
+        );
     }
 
     #[test]
@@ -1172,32 +1226,41 @@ mod tests {
         // numbering hole in v0.3 ("file IO error" was a placeholder
         // that never had an emitting site); spec v0.4 §13.8 pins it
         // to "lock file inconsistent with wlwl.toml" (Phase C6).
-        insta::assert_json_snapshot!("codes_module", serde_json::json!({
-            "E0040": code_snap(ErrorCode::E0040, "mod_not_found"),
-            "E0041": code_snap(ErrorCode::E0041, "circular_import"),
-            "E0042": code_snap(ErrorCode::E0042, "lock_toml_inconsistent"),
-            "E0043": code_snap(ErrorCode::E0043, "ns_path_syntax"),
-            "E0044": code_snap(ErrorCode::E0044, "language_version_mismatch"),
-            "E0045": code_snap(ErrorCode::E0045, "dependency_conflict"),
-        }));
+        insta::assert_json_snapshot!(
+            "codes_module",
+            serde_json::json!({
+                "E0040": code_snap(ErrorCode::E0040, "mod_not_found"),
+                "E0041": code_snap(ErrorCode::E0041, "circular_import"),
+                "E0042": code_snap(ErrorCode::E0042, "lock_toml_inconsistent"),
+                "E0043": code_snap(ErrorCode::E0043, "ns_path_syntax"),
+                "E0044": code_snap(ErrorCode::E0044, "language_version_mismatch"),
+                "E0045": code_snap(ErrorCode::E0045, "dependency_conflict"),
+            })
+        );
     }
 
     #[test]
     fn snap_oop() {
-        insta::assert_json_snapshot!("codes_oop", serde_json::json!({
-            "E0050": code_snap(ErrorCode::E0050, "inherit_err"),
-            "E0051": code_snap(ErrorCode::E0051, "new_arity_err"),
-        }));
+        insta::assert_json_snapshot!(
+            "codes_oop",
+            serde_json::json!({
+                "E0050": code_snap(ErrorCode::E0050, "inherit_err"),
+                "E0051": code_snap(ErrorCode::E0051, "new_arity_err"),
+            })
+        );
     }
 
     #[test]
     fn snap_io() {
-        insta::assert_json_snapshot!("codes_io", serde_json::json!({
-            "E0060": code_snap(ErrorCode::E0060, "io_err"),
-            "E0061": code_snap(ErrorCode::E0061, "file_not_found"),
-            "E0062": code_snap(ErrorCode::E0062, "perm_denied"),
-            "E0063": code_snap(ErrorCode::E0063, "net_err"),
-        }));
+        insta::assert_json_snapshot!(
+            "codes_io",
+            serde_json::json!({
+                "E0060": code_snap(ErrorCode::E0060, "io_err"),
+                "E0061": code_snap(ErrorCode::E0061, "file_not_found"),
+                "E0062": code_snap(ErrorCode::E0062, "perm_denied"),
+                "E0063": code_snap(ErrorCode::E0063, "net_err"),
+            })
+        );
     }
 
     #[test]
@@ -1208,48 +1271,63 @@ mod tests {
         // DNS / TLS / 4xx / 5xx without parsing free text. All
         // five share the new Network bucket; retryable mapping per
         // spec §14.4: E0090/E0091/E0094 = TRUE; E0092/E0093 = FALSE.
-        insta::assert_json_snapshot!("codes_network", serde_json::json!({
-            "E0090": code_snap(ErrorCode::E0090, "net_unreachable"),
-            "E0091": code_snap(ErrorCode::E0091, "dns_failure"),
-            "E0092": code_snap(ErrorCode::E0092, "tls_error"),
-            "E0093": code_snap(ErrorCode::E0093, "http_4xx"),
-            "E0094": code_snap(ErrorCode::E0094, "http_5xx"),
-        }));
+        insta::assert_json_snapshot!(
+            "codes_network",
+            serde_json::json!({
+                "E0090": code_snap(ErrorCode::E0090, "net_unreachable"),
+                "E0091": code_snap(ErrorCode::E0091, "dns_failure"),
+                "E0092": code_snap(ErrorCode::E0092, "tls_error"),
+                "E0093": code_snap(ErrorCode::E0093, "http_4xx"),
+                "E0094": code_snap(ErrorCode::E0094, "http_5xx"),
+            })
+        );
     }
 
     #[test]
     fn snap_json() {
-        insta::assert_json_snapshot!("codes_json", serde_json::json!({
-            "E0070": code_snap(ErrorCode::E0070, "json_parse"),
-            "E0071": code_snap(ErrorCode::E0071, "json_stringify"),
-        }));
+        insta::assert_json_snapshot!(
+            "codes_json",
+            serde_json::json!({
+                "E0070": code_snap(ErrorCode::E0070, "json_parse"),
+                "E0071": code_snap(ErrorCode::E0071, "json_stringify"),
+            })
+        );
     }
 
     #[test]
     fn snap_ai() {
-        insta::assert_json_snapshot!("codes_ai", serde_json::json!({
-            "E0080": code_snap(ErrorCode::E0080, "ai_unreachable"),
-            "E0081": code_snap(ErrorCode::E0081, "ai_auth"),
-            "E0082": code_snap(ErrorCode::E0082, "ai_malformed"),
-            "E0083": code_snap(ErrorCode::E0083, "ai_timeout"),
-        }));
+        insta::assert_json_snapshot!(
+            "codes_ai",
+            serde_json::json!({
+                "E0080": code_snap(ErrorCode::E0080, "ai_unreachable"),
+                "E0081": code_snap(ErrorCode::E0081, "ai_auth"),
+                "E0082": code_snap(ErrorCode::E0082, "ai_malformed"),
+                "E0083": code_snap(ErrorCode::E0083, "ai_timeout"),
+            })
+        );
     }
 
     #[test]
     fn snap_runtime() {
-        insta::assert_json_snapshot!("codes_runtime", serde_json::json!({
-            "E1003": code_snap(ErrorCode::E1003, "div_by_zero"),
-        }));
+        insta::assert_json_snapshot!(
+            "codes_runtime",
+            serde_json::json!({
+                "E1003": code_snap(ErrorCode::E1003, "div_by_zero"),
+            })
+        );
     }
 
     #[test]
     fn snap_user_and_internal() {
-        insta::assert_json_snapshot!("codes_user_internal", serde_json::json!({
-            "E0099": code_snap(ErrorCode::E0099, "user_err"),
-            "E0100": code_snap(ErrorCode::E0100, "internal"),
-            "E0101": code_snap(ErrorCode::E0101, "stack_overflow"),
-            "E0102": code_snap(ErrorCode::E0102, "unhandled_err_escape"),
-        }));
+        insta::assert_json_snapshot!(
+            "codes_user_internal",
+            serde_json::json!({
+                "E0099": code_snap(ErrorCode::E0099, "user_err"),
+                "E0100": code_snap(ErrorCode::E0100, "internal"),
+                "E0101": code_snap(ErrorCode::E0101, "stack_overflow"),
+                "E0102": code_snap(ErrorCode::E0102, "unhandled_err_escape"),
+            })
+        );
     }
 
     #[test]
@@ -1258,12 +1336,15 @@ mod tests {
         // E0046-E0049. All four live in the `test` bucket (new in
         // v0.4) and share retryable=FALSE — assertion failures aren't
         // transient; they're a bug in the test or the code under test.
-        insta::assert_json_snapshot!("codes_test", serde_json::json!({
-            "E0046": code_snap(ErrorCode::E0046, "test_assertion_failed"),
-            "E0047": code_snap(ErrorCode::E0047, "test_assertion_eq_failed"),
-            "E0048": code_snap(ErrorCode::E0048, "test_assertion_neq_failed"),
-            "E0049": code_snap(ErrorCode::E0049, "test_expect_err_failed"),
-        }));
+        insta::assert_json_snapshot!(
+            "codes_test",
+            serde_json::json!({
+                "E0046": code_snap(ErrorCode::E0046, "test_assertion_failed"),
+                "E0047": code_snap(ErrorCode::E0047, "test_assertion_eq_failed"),
+                "E0048": code_snap(ErrorCode::E0048, "test_assertion_neq_failed"),
+                "E0049": code_snap(ErrorCode::E0049, "test_expect_err_failed"),
+            })
+        );
     }
 
     // -- Phase 3: AI contract: 33 codes total ----------------------
@@ -1286,25 +1367,63 @@ mod tests {
         // (Phase D4 added E0090-E0094 — spec v0.4 §14.4 network
         // subdivision.)
         let codes = [
-            ErrorCode::E0001, ErrorCode::E0002, ErrorCode::E0003,
-            ErrorCode::E0010, ErrorCode::E0011, ErrorCode::E0012,
-            ErrorCode::E0013, ErrorCode::E0014,
-            ErrorCode::E0020, ErrorCode::E0021, ErrorCode::E0022, ErrorCode::E0023,
-            ErrorCode::E0024, ErrorCode::E0025, ErrorCode::E0026, ErrorCode::E0027,
-            ErrorCode::E0030, ErrorCode::E0031, ErrorCode::E0032,
-            ErrorCode::E0033, ErrorCode::E0034, ErrorCode::E0035, ErrorCode::E0036,
-            ErrorCode::E0037, ErrorCode::E0038, ErrorCode::E0039,
-            ErrorCode::E0040, ErrorCode::E0041, ErrorCode::E0042, ErrorCode::E0043,
-            ErrorCode::E0044, ErrorCode::E0045,
-            ErrorCode::E0046, ErrorCode::E0047, ErrorCode::E0048, ErrorCode::E0049,
-            ErrorCode::E0050, ErrorCode::E0051,
-            ErrorCode::E0060, ErrorCode::E0061, ErrorCode::E0062, ErrorCode::E0063,
-            ErrorCode::E0070, ErrorCode::E0071,
-            ErrorCode::E0080, ErrorCode::E0081, ErrorCode::E0082, ErrorCode::E0083,
-            ErrorCode::E0090, ErrorCode::E0091, ErrorCode::E0092, ErrorCode::E0093,
+            ErrorCode::E0001,
+            ErrorCode::E0002,
+            ErrorCode::E0003,
+            ErrorCode::E0010,
+            ErrorCode::E0011,
+            ErrorCode::E0012,
+            ErrorCode::E0013,
+            ErrorCode::E0014,
+            ErrorCode::E0020,
+            ErrorCode::E0021,
+            ErrorCode::E0022,
+            ErrorCode::E0023,
+            ErrorCode::E0024,
+            ErrorCode::E0025,
+            ErrorCode::E0026,
+            ErrorCode::E0027,
+            ErrorCode::E0030,
+            ErrorCode::E0031,
+            ErrorCode::E0032,
+            ErrorCode::E0033,
+            ErrorCode::E0034,
+            ErrorCode::E0035,
+            ErrorCode::E0036,
+            ErrorCode::E0037,
+            ErrorCode::E0038,
+            ErrorCode::E0039,
+            ErrorCode::E0040,
+            ErrorCode::E0041,
+            ErrorCode::E0042,
+            ErrorCode::E0043,
+            ErrorCode::E0044,
+            ErrorCode::E0045,
+            ErrorCode::E0046,
+            ErrorCode::E0047,
+            ErrorCode::E0048,
+            ErrorCode::E0049,
+            ErrorCode::E0050,
+            ErrorCode::E0051,
+            ErrorCode::E0060,
+            ErrorCode::E0061,
+            ErrorCode::E0062,
+            ErrorCode::E0063,
+            ErrorCode::E0070,
+            ErrorCode::E0071,
+            ErrorCode::E0080,
+            ErrorCode::E0081,
+            ErrorCode::E0082,
+            ErrorCode::E0083,
+            ErrorCode::E0090,
+            ErrorCode::E0091,
+            ErrorCode::E0092,
+            ErrorCode::E0093,
             ErrorCode::E0094,
             ErrorCode::E0099,
-            ErrorCode::E0100, ErrorCode::E0101, ErrorCode::E0102,
+            ErrorCode::E0100,
+            ErrorCode::E0101,
+            ErrorCode::E0102,
             ErrorCode::E1003,
         ];
         assert_eq!(codes.len(), 58);
@@ -1338,7 +1457,11 @@ mod tests {
         ];
         assert_eq!(codes.len(), 13);
         for c in &codes {
-            assert!(c.is_warning(), "{} should report is_warning() = true", c.as_str());
+            assert!(
+                c.is_warning(),
+                "{} should report is_warning() = true",
+                c.as_str()
+            );
             assert!(c.as_str().starts_with('W'));
         }
     }
@@ -1432,13 +1555,19 @@ mod tests {
             String::from("undefined name"),
             Location::point("a.wl", 1, 1),
         )
-        .with_suggestion(Suggestion::Note { description: String::from("try foo") });
+        .with_suggestion(Suggestion::Note {
+            description: String::from("try foo"),
+        });
         assert_eq!(d.suggestion_code.len(), 1);
         assert!(matches!(d.suggestion_code[0], Suggestion::Note { .. }));
 
         let d = d.with_suggestions(vec![
-            Suggestion::Note { description: String::from("first") },
-            Suggestion::Note { description: String::from("second") },
+            Suggestion::Note {
+                description: String::from("first"),
+            },
+            Suggestion::Note {
+                description: String::from("second"),
+            },
         ]);
         assert_eq!(d.suggestion_code.len(), 3);
     }
@@ -1475,8 +1604,16 @@ mod tests {
             location: Location::point("b.wl", 3, 1),
         });
         let rendered = d.render_human();
-        assert!(rendered.contains("hint: did you import it?"), "got: {}", rendered);
-        assert!(rendered.contains("note: imported here (b.wl:3:1)"), "got: {}", rendered);
+        assert!(
+            rendered.contains("hint: did you import it?"),
+            "got: {}",
+            rendered
+        );
+        assert!(
+            rendered.contains("note: imported here (b.wl:3:1)"),
+            "got: {}",
+            rendered
+        );
     }
 
     // ---- Phase E1 (spec v0.4 §2.7): E0033 strict_types helper ----
@@ -1506,18 +1643,14 @@ mod tests {
 
     #[test]
     fn e0033_helper_carries_annotation_and_value_in_related() {
-        let d = WlwlDiagnostic::new(
-            ErrorCode::E0033,
-            "ignored",
-            Location::point("a.wl", 5, 1),
-        )
-        .with_strict_types_violation(
-            "ARRAY",
-            "INTEGER",
-            Location::point("a.wl", 1, 4),
-            Location::point("a.wl", 5, 1),
-            "function",
-        );
+        let d = WlwlDiagnostic::new(ErrorCode::E0033, "ignored", Location::point("a.wl", 5, 1))
+            .with_strict_types_violation(
+                "ARRAY",
+                "INTEGER",
+                Location::point("a.wl", 1, 4),
+                Location::point("a.wl", 5, 1),
+                "function",
+            );
         // Two related entries: one for the annotation, one for the value.
         assert_eq!(d.related.len(), 2);
         assert!(d.related[0].message.contains("ARRAY"));
@@ -1531,18 +1664,14 @@ mod tests {
 
     #[test]
     fn e0033_helper_hint_function_boundary() {
-        let d = WlwlDiagnostic::new(
-            ErrorCode::E0033,
-            "ignored",
-            Location::point("a.wl", 5, 1),
-        )
-        .with_strict_types_violation(
-            "INTEGER",
-            "STRING",
-            Location::point("a.wl", 3, 5),
-            Location::point("a.wl", 5, 1),
-            "function",
-        );
+        let d = WlwlDiagnostic::new(ErrorCode::E0033, "ignored", Location::point("a.wl", 5, 1))
+            .with_strict_types_violation(
+                "INTEGER",
+                "STRING",
+                Location::point("a.wl", 3, 5),
+                Location::point("a.wl", 5, 1),
+                "function",
+            );
         let h = d.hint.expect("hint must be Some after helper");
         assert!(h.contains("STRING") || h.contains("coerce"), "got: {}", h);
         assert!(h.contains("INTEGER"), "got: {}", h);
@@ -1550,18 +1679,14 @@ mod tests {
 
     #[test]
     fn e0033_helper_hint_import_boundary() {
-        let d = WlwlDiagnostic::new(
-            ErrorCode::E0033,
-            "ignored",
-            Location::point("a.wl", 5, 1),
-        )
-        .with_strict_types_violation(
-            "DICT",
-            "STRING",
-            Location::point("a.wl", 1, 1),
-            Location::point("b.wl", 7, 4),
-            "import",
-        );
+        let d = WlwlDiagnostic::new(ErrorCode::E0033, "ignored", Location::point("a.wl", 5, 1))
+            .with_strict_types_violation(
+                "DICT",
+                "STRING",
+                Location::point("a.wl", 1, 1),
+                Location::point("b.wl", 7, 4),
+                "import",
+            );
         let h = d.hint.expect("hint must be Some after helper");
         assert!(h.contains("DICT"), "got: {}", h);
         assert!(h.contains("STRING"), "got: {}", h);
@@ -1574,18 +1699,14 @@ mod tests {
 
     #[test]
     fn e0033_helper_hint_ffi_boundary() {
-        let d = WlwlDiagnostic::new(
-            ErrorCode::E0033,
-            "ignored",
-            Location::point("a.wl", 5, 1),
-        )
-        .with_strict_types_violation(
-            "INTEGER",
-            "FLOAT",
-            Location::point("ffi.wl", 1, 1),
-            Location::point("ffi.wl", 9, 2),
-            "ffi",
-        );
+        let d = WlwlDiagnostic::new(ErrorCode::E0033, "ignored", Location::point("a.wl", 5, 1))
+            .with_strict_types_violation(
+                "INTEGER",
+                "FLOAT",
+                Location::point("ffi.wl", 1, 1),
+                Location::point("ffi.wl", 9, 2),
+                "ffi",
+            );
         let h = d.hint.expect("hint must be Some after helper");
         assert!(h.contains("FFI") || h.contains("shim"), "got: {}", h);
     }
@@ -1596,18 +1717,14 @@ mod tests {
         // without panicking. Defensive: an evaluator bug might
         // pass a typo'd boundary name; we must not crash the
         // diagnostic construction path.
-        let d = WlwlDiagnostic::new(
-            ErrorCode::E0033,
-            "ignored",
-            Location::point("a.wl", 5, 1),
-        )
-        .with_strict_types_violation(
-            "INTEGER",
-            "STRING",
-            Location::point("a.wl", 1, 1),
-            Location::point("a.wl", 5, 1),
-            "banana",
-        );
+        let d = WlwlDiagnostic::new(ErrorCode::E0033, "ignored", Location::point("a.wl", 5, 1))
+            .with_strict_types_violation(
+                "INTEGER",
+                "STRING",
+                Location::point("a.wl", 1, 1),
+                Location::point("a.wl", 5, 1),
+                "banana",
+            );
         let h = d.hint.expect("hint must be Some after helper");
         assert!(h.contains("INTEGER"), "got: {}", h);
         assert!(!h.contains("FFI"), "got: {}", h);
@@ -1629,19 +1746,15 @@ mod tests {
     fn e0033_helper_jsonl_round_trip() {
         // The helper must not break JSONL serialization -- both
         // related entries and the message must survive.
-        let d = WlwlDiagnostic::new(
-            ErrorCode::E0033,
-            "ignored",
-            Location::point("a.wl", 5, 1),
-        )
-        .with_strict_types_violation(
-            "INTEGER",
-            "STRING",
-            Location::point("a.wl", 1, 1),
-            Location::point("a.wl", 5, 1),
-            "function",
-        )
-        .with_source_line("LET(f, FUN((x: INTEGER), x));");
+        let d = WlwlDiagnostic::new(ErrorCode::E0033, "ignored", Location::point("a.wl", 5, 1))
+            .with_strict_types_violation(
+                "INTEGER",
+                "STRING",
+                Location::point("a.wl", 1, 1),
+                Location::point("a.wl", 5, 1),
+                "function",
+            )
+            .with_source_line("LET(f, FUN((x: INTEGER), x));");
         let jsonl = d.render_jsonl();
         assert!(jsonl.contains("E0033"), "got: {}", jsonl);
         assert!(
@@ -1652,6 +1765,4 @@ mod tests {
         // JSONL must be one line (no embedded newlines).
         assert!(!jsonl.contains('\n'), "got: {}", jsonl);
     }
-
 }
-

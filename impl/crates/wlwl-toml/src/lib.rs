@@ -21,6 +21,6 @@
 //! tree-walking interpreter, and avoids growing `wlwl-eval` further
 //! (it is already 2,400+ lines).
 
-pub mod manifest;
 pub mod lock;
+pub mod manifest;
 pub mod mvs;

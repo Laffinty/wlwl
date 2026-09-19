@@ -1,4 +1,4 @@
-﻿//! `wlwl:std.io` — `PRINT`, `INPUT` (v0.3 §15.1).
+//! `wlwl:std.io` — `PRINT`, `INPUT` (v0.3 §15.1).
 //!
 //! `PRINT` here is the std-module form. It co-exists with the
 //! `resolve_builtin("PRINT")` fallback in `wlwl-eval` so that
@@ -7,8 +7,8 @@
 //! `NativeFn` takes priority (per the dispatch rules in
 //! `eval_call`).
 
-use crate::{expect_string, json_type_name, StdCtx, StdError, StdFn, StdValue};
 use crate::ModuleSpec;
+use crate::{StdCtx, StdError, StdFn, StdValue};
 use std::io::BufRead;
 use wlwl_error::ErrorCode;
 
@@ -76,7 +76,13 @@ pub(crate) fn read_input_line<R: BufRead>(r: &mut R) -> Result<String, StdError>
 fn json_to_print_string(v: &StdValue) -> String {
     match v {
         StdValue::String(s) => s.clone(),
-        StdValue::Bool(b) => if *b { "TRUE".to_string() } else { "FALSE".to_string() },
+        StdValue::Bool(b) => {
+            if *b {
+                "TRUE".to_string()
+            } else {
+                "FALSE".to_string()
+            }
+        }
         StdValue::Null => "NULL".to_string(),
         other => other.to_string(),
     }
@@ -96,7 +102,7 @@ pub static SPEC: ModuleSpec = ModuleSpec {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use std::io::{Cursor, Error as IoError, ErrorKind, Read};
+    use std::io::{Cursor, Error as IoError, Read};
 
     #[test]
     fn print_emits_space_joined() {
@@ -131,9 +137,10 @@ mod tests {
         // shape across PRINT and STRINGIFY.
         let n = StdValue::Number(serde_json::Number::from(42));
         assert_eq!(json_to_print_string(&n), "42");
-        let d = StdValue::Object(serde_json::Map::from_iter([
-            ("k".to_string(), StdValue::from(1)),
-        ]));
+        let d = StdValue::Object(serde_json::Map::from_iter([(
+            "k".to_string(),
+            StdValue::from(1),
+        )]));
         assert_eq!(json_to_print_string(&d), "{\"k\":1}");
     }
 
@@ -205,7 +212,7 @@ mod tests {
         struct FailingRead;
         impl Read for FailingRead {
             fn read(&mut self, _buf: &mut [u8]) -> std::io::Result<usize> {
-                Err(IoError::new(ErrorKind::Other, "synthetic"))
+                Err(IoError::other("synthetic"))
             }
         }
         let r = FailingRead;

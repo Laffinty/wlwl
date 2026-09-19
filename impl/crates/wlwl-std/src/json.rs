@@ -1,6 +1,8 @@
 //! `wlwl:std.json` — `PARSE`, `STRINGIFY` (v0.3 §15.3 + §14.4 E0070/E0071).
 
-use crate::{expect_string, arity_error, type_error, StdCtx, StdError, StdFn, StdValue, ModuleSpec};
+use crate::{
+    arity_error, expect_string, ModuleSpec, StdCtx, StdError, StdFn, StdValue,
+};
 use wlwl_error::ErrorCode;
 
 pub fn std_parse(_ctx: &mut StdCtx, args: Vec<StdValue>) -> Result<StdValue, StdError> {
@@ -65,22 +67,14 @@ mod tests {
     #[test]
     fn parse_invalid_is_e0070() {
         let mut ctx = StdCtx::default();
-        let err = std_parse(
-            &mut ctx,
-            vec![StdValue::String("{not json}".into())],
-        )
-        .unwrap_err();
+        let err = std_parse(&mut ctx, vec![StdValue::String("{not json}".into())]).unwrap_err();
         assert_eq!(err.code, ErrorCode::E0070);
     }
 
     #[test]
     fn stringify_object() {
         let mut ctx = StdCtx::default();
-        let v = std_stringify(
-            &mut ctx,
-            vec![serde_json::json!({"x": 1, "y": "z"})],
-        )
-        .unwrap();
+        let v = std_stringify(&mut ctx, vec![serde_json::json!({"x": 1, "y": "z"})]).unwrap();
         // serde_json::to_string produces compact form (no spaces).
         assert_eq!(v, StdValue::String(r#"{"x":1,"y":"z"}"#.into()));
     }

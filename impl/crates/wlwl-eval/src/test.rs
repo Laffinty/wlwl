@@ -58,12 +58,12 @@ pub const NAMES: &[&str] = &[
 ];
 
 pub const BUILTINS: &[(&str, BuiltinFn)] = &[
-    ("TEST",        builtin_test       as BuiltinFn),
-    ("ASSERT",      builtin_assert     as BuiltinFn),
-    ("ASSERT_EQ",   builtin_assert_eq  as BuiltinFn),
-    ("ASSERT_NEQ",  builtin_assert_neq as BuiltinFn),
-    ("EXPECT_ERR",  builtin_expect_err as BuiltinFn),
-    ("RUN_TESTS",   builtin_run_tests  as BuiltinFn),
+    ("TEST", builtin_test as BuiltinFn),
+    ("ASSERT", builtin_assert as BuiltinFn),
+    ("ASSERT_EQ", builtin_assert_eq as BuiltinFn),
+    ("ASSERT_NEQ", builtin_assert_neq as BuiltinFn),
+    ("EXPECT_ERR", builtin_expect_err as BuiltinFn),
+    ("RUN_TESTS", builtin_run_tests as BuiltinFn),
 ];
 
 // ─────────────────────────────────────────────────────────────────────
@@ -88,7 +88,13 @@ fn arity(fn_name: &str, got: usize, want: usize) -> WlwlError {
     crate::arity_error(fn_name, got, want)
 }
 
-fn type_err(ev: &mut Evaluator, fn_name: &str, expected: &str, got: &Value, span: &Span) -> WlwlError {
+fn type_err(
+    ev: &mut Evaluator,
+    fn_name: &str,
+    expected: &str,
+    got: &Value,
+    span: &Span,
+) -> WlwlError {
     ev.diag(
         ErrorCode::E0030,
         format!(
@@ -101,22 +107,13 @@ fn type_err(ev: &mut Evaluator, fn_name: &str, expected: &str, got: &Value, span
     )
 }
 
-fn err_with_payload(code: ErrorCode, msg: String, payload: Value, span: &Span) -> WlwlError {
-    // The std diagnostic machinery produces E0046-E0049 with a
-    // payload that flows into the `Value::Err` returned by the
-    // assertion builtins. We piggyback on `ev.diag` for the
-    // canonical message format, then reshape the result so the
-    // caller sees `Value::Err(payload)` (not a diagnostic thrown
-    // upward — assertions are values, not exceptions).
-    //
-    // Implementation detail: the `payload` is what `TRY` will wrap
-    // into `OK(ERR(...))`, and `RUN_TESTS` reads it back out via
-    // the dict's `error` key.
-    let _ = (code, msg, payload, span);
-    unreachable!("err_with_payload: use make_err() instead")
-}
-
-fn make_err(ev: &mut Evaluator, code: ErrorCode, msg: String, payload: Value, span: &Span) -> Value {
+fn make_err(
+    ev: &mut Evaluator,
+    code: ErrorCode,
+    msg: String,
+    payload: Value,
+    span: &Span,
+) -> Value {
     // Build an `Err(payload)` Value. `ev.diag` would make a
     // `WlwlError` (a Rust Err), which would propagate up via `?`
     // — but we want the ERR to be a *value* that the calling
@@ -278,16 +275,14 @@ pub fn builtin_expect_err(ev: &mut Evaluator, args: Vec<Value>) -> WlwlResult<Ou
     }
     let span = ev.current_span.clone().unwrap_or_else(Span::dummy);
     // Input is not ERR — that's the failure mode for EXPECT_ERR.
-    let payload = build_payload(
-        "E0049",
-        &args[0],
-        None,
-        "test_expect_err_failed",
-    );
+    let payload = build_payload("E0049", &args[0], None, "test_expect_err_failed");
     Ok(Outcome::normal(make_err(
         ev,
         ErrorCode::E0049,
-        format!("EXPECT_ERR failed: input was not ERR (got {})", args[0].display()),
+        format!(
+            "EXPECT_ERR failed: input was not ERR (got {})",
+            args[0].display()
+        ),
         payload,
         &span,
     )))
@@ -321,35 +316,42 @@ pub fn builtin_run_tests(ev: &mut Evaluator, args: Vec<Value>) -> WlwlResult<Out
         // ASSERT/ASSERT_EQ on fail. The latter returns through
         // Outcome::normal(err) from the assertion builtin, which
         // we read off the Outcome.value below.
-        let outcome = match crate::collection::call_callable(
-            ev,
-            "RUN_TESTS",
-            &entry.body,
-            vec![],
-            &span,
-        ) {
-            Ok(v) => Ok(v),
-            Err(_e) => {
-                // Diagnostic surfaced during the test (e.g. uncaught
-                // E0102 from an unexpected ERR escape). Record the
-                // failure as a generic ERR.
-                Err(())
-            }
-        };
+        let outcome =
+            match crate::collection::call_callable(ev, "RUN_TESTS", &entry.body, vec![], &span) {
+                Ok(v) => Ok(v),
+                Err(_e) => {
+                    // Diagnostic surfaced during the test (e.g. uncaught
+                    // E0102 from an unexpected ERR escape). Record the
+                    // failure as a generic ERR.
+                    Err(())
+                }
+            };
         let duration_ms = started.elapsed().as_millis() as i64;
         let dict = match outcome {
             Ok(Value::Err(payload)) => {
                 // Spec §15.9 row 6: error field carries the payload.
                 let mut d = vec![
-                    (Value::String("name".into()), Value::String(entry.name.clone())),
+                    (
+                        Value::String("name".into()),
+                        Value::String(entry.name.clone()),
+                    ),
                     (Value::String("passed".into()), Value::Boolean(false)),
-                    (Value::String("duration_ms".into()), Value::Integer(duration_ms)),
+                    (
+                        Value::String("duration_ms".into()),
+                        Value::Integer(duration_ms),
+                    ),
                     (Value::String("error".into()), *payload),
                 ];
                 // Order-stable for assertion predictability.
                 d.sort_by(|a, b| {
-                    let ka = match &a.0 { Value::String(s) => s.as_str(), _ => "" };
-                    let kb = match &b.0 { Value::String(s) => s.as_str(), _ => "" };
+                    let ka = match &a.0 {
+                        Value::String(s) => s.as_str(),
+                        _ => "",
+                    };
+                    let kb = match &b.0 {
+                        Value::String(s) => s.as_str(),
+                        _ => "",
+                    };
                     ka.cmp(kb)
                 });
                 Value::Dict(d)
@@ -359,30 +361,57 @@ pub fn builtin_run_tests(ev: &mut Evaluator, args: Vec<Value>) -> WlwlResult<Out
                 // assertion), NULL, or a bare value. All count as
                 // "passed" per §15.9's permissive contract.
                 let mut d = vec![
-                    (Value::String("name".into()), Value::String(entry.name.clone())),
+                    (
+                        Value::String("name".into()),
+                        Value::String(entry.name.clone()),
+                    ),
                     (Value::String("passed".into()), Value::Boolean(true)),
-                    (Value::String("duration_ms".into()), Value::Integer(duration_ms)),
+                    (
+                        Value::String("duration_ms".into()),
+                        Value::Integer(duration_ms),
+                    ),
                 ];
                 if !matches!(other, Value::Null) {
                     d.push((Value::String("return_value".into()), other));
                 }
                 d.sort_by(|a, b| {
-                    let ka = match &a.0 { Value::String(s) => s.as_str(), _ => "" };
-                    let kb = match &b.0 { Value::String(s) => s.as_str(), _ => "" };
+                    let ka = match &a.0 {
+                        Value::String(s) => s.as_str(),
+                        _ => "",
+                    };
+                    let kb = match &b.0 {
+                        Value::String(s) => s.as_str(),
+                        _ => "",
+                    };
                     ka.cmp(kb)
                 });
                 Value::Dict(d)
             }
             Err(()) => {
                 let mut d = vec![
-                    (Value::String("name".into()), Value::String(entry.name.clone())),
+                    (
+                        Value::String("name".into()),
+                        Value::String(entry.name.clone()),
+                    ),
                     (Value::String("passed".into()), Value::Boolean(false)),
-                    (Value::String("duration_ms".into()), Value::Integer(duration_ms)),
-                    (Value::String("error".into()), Value::String("uncaught diagnostic".into())),
+                    (
+                        Value::String("duration_ms".into()),
+                        Value::Integer(duration_ms),
+                    ),
+                    (
+                        Value::String("error".into()),
+                        Value::String("uncaught diagnostic".into()),
+                    ),
                 ];
                 d.sort_by(|a, b| {
-                    let ka = match &a.0 { Value::String(s) => s.as_str(), _ => "" };
-                    let kb = match &b.0 { Value::String(s) => s.as_str(), _ => "" };
+                    let ka = match &a.0 {
+                        Value::String(s) => s.as_str(),
+                        _ => "",
+                    };
+                    let kb = match &b.0 {
+                        Value::String(s) => s.as_str(),
+                        _ => "",
+                    };
                     ka.cmp(kb)
                 });
                 Value::Dict(d)
@@ -442,7 +471,14 @@ mod tests {
     #[test]
     fn names_match_catalog() {
         // Same cross-file lock pattern as `wlwl_eval::collection`.
-        assert_eq!(NAMES, crate::collection::NAMES.chunks(2).next().map(|_| NAMES).unwrap_or(NAMES));
+        assert_eq!(
+            NAMES,
+            crate::collection::NAMES
+                .chunks(2)
+                .next()
+                .map(|_| NAMES)
+                .unwrap_or(NAMES)
+        );
         // The simpler assertion: NAMES parity with the std catalog.
         assert_eq!(NAMES, wlwl_std::test::NAMES);
         assert_eq!(BUILTINS.len(), NAMES.len());

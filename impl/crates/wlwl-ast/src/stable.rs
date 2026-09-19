@@ -62,7 +62,11 @@ struct Edge<'a> {
 }
 
 fn edge<'a>(label: &'static str, e: &'a Expr) -> Edge<'a> {
-    Edge { label, expr: e, fn_segment: None }
+    Edge {
+        label,
+        expr: e,
+        fn_segment: None,
+    }
 }
 
 fn fun_body_edge<'a>(name: &Option<String>, body: &'a Expr) -> Edge<'a> {
@@ -77,8 +81,7 @@ fn fun_body_edge<'a>(name: &Option<String>, body: &'a Expr) -> Edge<'a> {
 /// id plus this node's segment); children extend it.
 fn build(e: &Expr, parent_id: Option<String>, path: &str) -> StableNode {
     let mut children = Vec::new();
-    let mut sibling = 0usize;
-    for fe in child_edges(e) {
+    for (sibling, fe) in child_edges(e).into_iter().enumerate() {
         let child_path = match &fe.fn_segment {
             // FUN body: embed the enclosing-function segment. The full
             // structural prefix is preserved, so same-named functions
@@ -87,7 +90,6 @@ fn build(e: &Expr, parent_id: Option<String>, path: &str) -> StableNode {
             None => format!("{}/{}:{}", path, fe.label, sibling),
         };
         children.push(build(fe.expr, Some(path.to_string()), &child_path));
-        sibling += 1;
     }
 
     StableNode {
@@ -127,7 +129,12 @@ fn child_edges(e: &Expr) -> Vec<Edge<'_>> {
             }
             out
         }
-        Expr::If { cond, then_branch, else_branch, .. } => {
+        Expr::If {
+            cond,
+            then_branch,
+            else_branch,
+            ..
+        } => {
             let mut out = vec![edge("cond", cond), edge("then", then_branch)];
             if let Some(el) = else_branch {
                 out.push(edge("else", el));
@@ -140,7 +147,9 @@ fn child_edges(e: &Expr) -> Vec<Edge<'_>> {
             Some(v) => vec![edge("value", v)],
             None => Vec::new(),
         },
-        Expr::Fun { name, params, body, .. } => {
+        Expr::Fun {
+            name, params, body, ..
+        } => {
             let mut out = Vec::new();
             for p in params {
                 if let Some(d) = &p.default_expr {
@@ -150,14 +159,23 @@ fn child_edges(e: &Expr) -> Vec<Edge<'_>> {
             out.push(fun_body_edge(name, body));
             out
         }
-        Expr::Ok { value, .. } | Expr::Err { value, .. } | Expr::Panic { value, .. }
-        | Expr::Try { value, .. } | Expr::IsOk { value, .. } | Expr::IsErr { value, .. } => {
+        Expr::Ok { value, .. }
+        | Expr::Err { value, .. }
+        | Expr::Panic { value, .. }
+        | Expr::Try { value, .. }
+        | Expr::IsOk { value, .. }
+        | Expr::IsErr { value, .. } => {
             vec![edge("value", value)]
         }
         Expr::OrDie { value, default, .. } => {
             vec![edge("value", value), edge("default", default)]
         }
-        Expr::Match { value, clauses, default, .. } => {
+        Expr::Match {
+            value,
+            clauses,
+            default,
+            ..
+        } => {
             let mut out = vec![edge("value", value)];
             for c in clauses {
                 out.push(edge("clause-body", &c.body));

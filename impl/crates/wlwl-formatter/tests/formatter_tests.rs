@@ -24,8 +24,7 @@ fn assert_idempotent(src: &str) {
 /// semantics.
 fn assert_semantics_preserved(src: &str) {
     let strip = |text: &str| -> serde_json::Value {
-        let mut v =
-            serde_json::to_value(parse(text, "t.wl").expect("parse failed")).unwrap();
+        let mut v = serde_json::to_value(parse(text, "t.wl").expect("parse failed")).unwrap();
         strip_spans(&mut v);
         v
     };
@@ -360,9 +359,7 @@ fn generated_fixtures() -> Vec<String> {
         }
     }
     for nstmt in 1..=5usize {
-        let body: Vec<String> = (0..nstmt)
-            .map(|i| format!("LET(v{}, {})", i, i))
-            .collect();
+        let body: Vec<String> = (0..nstmt).map(|i| format!("LET(v{}, {})", i, i)).collect();
         out.push(format!("IF(TRUE, {}, PRINT(\"done\"));", body.join("; ")));
         out.push(format!("LET(f, FUN((x), {}));", body.join("; ")));
     }

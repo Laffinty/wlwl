@@ -20,15 +20,15 @@
 
 use std::cell::{Ref, RefCell};
 use std::collections::{HashMap, HashSet};
+use std::path::Path;
 use std::path::PathBuf;
 use std::rc::Rc;
-use std::path::Path;
 use std::sync::Arc;
 
 use wlwl_ast::{Expr, FunParam, ImportName, Literal, MatchClause, Pattern, Span};
 use wlwl_error::{
-    extract_line, ErrorCategory, ErrorCause, ErrorCode, Location, Suggestion,
-    TraceFrame, WlwlDiagnostic, WlwlError, WlwlResult,
+    extract_line, ErrorCategory, ErrorCause, ErrorCode, Location, Suggestion, TraceFrame,
+    WlwlDiagnostic, WlwlError, WlwlResult,
 };
 
 // ──────────────────────────────────────────────────────────────────────
@@ -99,9 +99,7 @@ impl Value {
                 }
             }
             Value::String(s) => s.clone(),
-            Value::Boolean(b) => {
-                if *b { "TRUE" } else { "FALSE" }.to_string()
-            }
+            Value::Boolean(b) => if *b { "TRUE" } else { "FALSE" }.to_string(),
             Value::Null => "NULL".to_string(),
             Value::Array(items) => {
                 let parts: Vec<String> = items.iter().map(|v| v.display()).collect();
@@ -115,11 +113,18 @@ impl Value {
                 format!("[{}]", parts.join(", "))
             }
             Value::Closure { params, .. } => {
-                format!("<fun({})>", params.iter().map(|p| p.name.as_str()).collect::<Vec<_>>().join(", "))
+                format!(
+                    "<fun({})>",
+                    params
+                        .iter()
+                        .map(|p| p.name.as_str())
+                        .collect::<Vec<_>>()
+                        .join(", ")
+                )
             }
             Value::NativeFn { name, .. } => {
                 format!("<native fun {}>", name)
-            },
+            }
             Value::Ok(v) => format!("OK({})", v.display()),
             Value::Err(v) => format!("ERR({})", v.display()),
         }
@@ -168,7 +173,10 @@ pub type Cell = Rc<RefCell<Binding>>;
 
 /// Make a new immutable cell wrapping `value`.
 pub fn new_cell(value: Value) -> Cell {
-    Rc::new(RefCell::new(Binding { value, mutable: false }))
+    Rc::new(RefCell::new(Binding {
+        value,
+        mutable: false,
+    }))
 }
 
 /// Lexical environment. v0.4 搂6.4: stores `HashMap<String, Cell>` so
@@ -215,7 +223,9 @@ impl PartialEq for Env {
 
 impl Env {
     pub fn new() -> Self {
-        Self { scopes: vec![HashMap::new()] }
+        Self {
+            scopes: vec![HashMap::new()],
+        }
     }
 
     pub fn push_scope(&mut self) {
@@ -365,9 +375,12 @@ pub struct Outcome {
 
 impl Outcome {
     fn normal(v: Value) -> Self {
-        Outcome { value: v, signal: Signal::None }
+        Outcome {
+            value: v,
+            signal: Signal::None,
+        }
     }
-    }
+}
 
 // ──────────────────────────────────────────────────────────────────────
 // Module loader (v0.3 §13 — Phase 4 batch 1 + batch 2)
@@ -457,9 +470,7 @@ impl ModuleLoader {
         // 2. `ns:name` — third-party / user namespace.
         if let Some((ns, name)) = parse_ns_path(path) {
             if let Some(manifest) = &self.project.manifest {
-                if let Some(rel) =
-                    wlwl_toml::manifest::resolve_namespace(manifest, ns, name)
-                {
+                if let Some(rel) = wlwl_toml::manifest::resolve_namespace(manifest, ns, name) {
                     // The manifest entry is a directory; the module
                     // file is `<dir>/<name>.wl`.
                     let dep_dir = self.base_dir.join(&rel);
@@ -533,10 +544,7 @@ impl ModuleLoader {
             return self.load_file_module(&in_module, path);
         }
         if self.base_dir != self.project.project_root {
-            let in_root = self
-                .project
-                .project_root
-                .join(format!("{}.wl", path));
+            let in_root = self.project.project_root.join(format!("{}.wl", path));
             if in_root.is_file() {
                 return self.load_file_module(&in_root, path);
             }
@@ -622,7 +630,10 @@ impl ModuleLoader {
         {
             return Err(self.diag_circular(module_name));
         }
-        self.project.loading.borrow_mut().push(module_name.to_string());
+        self.project
+            .loading
+            .borrow_mut()
+            .push(module_name.to_string());
         let source = match std::fs::read_to_string(file_path) {
             Ok(s) => s,
             Err(_e) => {
@@ -676,18 +687,13 @@ impl ModuleLoader {
         self.project.loading.borrow_mut().pop();
         let result = LoadedModule { env, exports };
         // Cache under the simple name (so re-imports hit the cache).
-        self.cache
-            .insert(module_name.to_string(), result.clone());
+        self.cache.insert(module_name.to_string(), result.clone());
         Ok(result)
     }
 
     // ── Diagnostics ───────────────────────────────────────────────
 
-    fn diag_module_not_found(
-        &self,
-        path: &str,
-        file_path: &Path,
-    ) -> WlwlError {
+    fn diag_module_not_found(&self, path: &str, file_path: &Path) -> WlwlError {
         WlwlDiagnostic::new(
             ErrorCode::E0040,
             format!(
@@ -715,16 +721,15 @@ impl ModuleLoader {
             ),
             Location::point("<module>", 0, 0),
         )
-    .with_suggestion(Suggestion::Note { description: "move the file inside the project root, or use a relative path (`./mod`, `../mod`)".into() })
+        .with_suggestion(Suggestion::Note {
+            description:
+                "move the file inside the project root, or use a relative path (`./mod`, `../mod`)"
+                    .into(),
+        })
         .into()
     }
 
-    fn diag_unregistered_namespace(
-        &self,
-        path: &str,
-        ns: &str,
-        name: &str,
-    ) -> WlwlError {
+    fn diag_unregistered_namespace(&self, path: &str, ns: &str, name: &str) -> WlwlError {
         WlwlDiagnostic::new(
             ErrorCode::E0043,
             format!(
@@ -901,14 +906,12 @@ fn value_to_std_value(v: &Value) -> Result<wlwl_std::StdValue, StdValueConvError
         Value::Null => StdValue::Null,
         Value::Boolean(b) => StdValue::Bool(*b),
         Value::Integer(i) => StdValue::Number(serde_json::Number::from(*i)),
-        Value::Float(f) => {
-            serde_json::Number::from_f64(*f)
-                .map(StdValue::Number)
-                .ok_or_else(|| StdValueConvError::Type {
-                    expected: "finite number".into(),
-                    got: "NaN/Inf float".into(),
-                })?
-        }
+        Value::Float(f) => serde_json::Number::from_f64(*f)
+            .map(StdValue::Number)
+            .ok_or_else(|| StdValueConvError::Type {
+                expected: "finite number".into(),
+                got: "NaN/Inf float".into(),
+            })?,
         Value::String(s) => StdValue::String(s.clone()),
         Value::Array(items) => {
             let mut out = Vec::with_capacity(items.len());
@@ -937,7 +940,7 @@ fn value_to_std_value(v: &Value) -> Result<wlwl_std::StdValue, StdValueConvError
             // §12 OK wraps a value; pass the inner value through.
             value_to_std_value(inner)?
         }
-        Value::Err(inner) => {
+        Value::Err(_inner) => {
             return Err(StdValueConvError::Type {
                 expected: "OK/primitives at std boundary".into(),
                 got: "ERR(...)".into(),
@@ -980,9 +983,7 @@ fn std_value_to_value(v: wlwl_std::StdValue) -> Value {
             }
         }
         StdValue::String(s) => Value::String(s),
-        StdValue::Array(items) => {
-            Value::Array(items.into_iter().map(std_value_to_value).collect())
-        }
+        StdValue::Array(items) => Value::Array(items.into_iter().map(std_value_to_value).collect()),
         StdValue::Object(obj) => {
             let mut entries = Vec::with_capacity(obj.len());
             // Preserve insertion order via serde_json's BTreeMap-free
@@ -1106,7 +1107,10 @@ fn builtin_int(_ev: &mut Evaluator, args: Vec<Value>) -> WlwlResult<Outcome> {
         Value::String(s) => match s.parse::<i64>() {
             Ok(i) => Ok(Outcome::normal(Value::Integer(i))),
             Err(e) => Ok(Outcome::normal(Value::Err(Box::new(Value::Dict(vec![
-                (Value::String("kind".into()), Value::String("ParseError".into())),
+                (
+                    Value::String("kind".into()),
+                    Value::String("ParseError".into()),
+                ),
                 (Value::String("input".into()), Value::String(s.clone())),
                 (Value::String("reason".into()), Value::String(e.to_string())),
             ]))))),
@@ -1145,7 +1149,10 @@ fn builtin_float(_ev: &mut Evaluator, args: Vec<Value>) -> WlwlResult<Outcome> {
                 // ParseError shape so callers get a uniform
                 // `ERR(["kind": "ParseError"])` payload.
                 Ok(Outcome::normal(Value::Err(Box::new(Value::Dict(vec![
-                    (Value::String("kind".into()), Value::String("ParseError".into())),
+                    (
+                        Value::String("kind".into()),
+                        Value::String("ParseError".into()),
+                    ),
                     (Value::String("input".into()), Value::String(s.clone())),
                     (
                         Value::String("reason".into()),
@@ -1154,7 +1161,10 @@ fn builtin_float(_ev: &mut Evaluator, args: Vec<Value>) -> WlwlResult<Outcome> {
                 ])))))
             }
             Err(e) => Ok(Outcome::normal(Value::Err(Box::new(Value::Dict(vec![
-                (Value::String("kind".into()), Value::String("ParseError".into())),
+                (
+                    Value::String("kind".into()),
+                    Value::String("ParseError".into()),
+                ),
                 (Value::String("input".into()), Value::String(s.clone())),
                 (Value::String("reason".into()), Value::String(e.to_string())),
             ]))))),
@@ -1257,10 +1267,7 @@ fn builtin_repeat(_ev: &mut Evaluator, args: Vec<Value>) -> WlwlResult<Outcome> 
             "REPEAT",
             "second arg must be non-negative INTEGER".to_string(),
         )),
-        (_, _) => Err(type_error(
-            "REPEAT",
-            "expected STRING, INTEGER".to_string(),
-        )),
+        (_, _) => Err(type_error("REPEAT", "expected STRING, INTEGER".to_string())),
     }
 }
 
@@ -1289,7 +1296,10 @@ fn builtin_pad_start(_ev: &mut Evaluator, args: Vec<Value>) -> WlwlResult<Outcom
     match (s, n, c) {
         (Value::String(s), Value::Integer(n), Value::String(c)) => {
             let pad_char = c.chars().next().ok_or_else(|| {
-                type_error("PAD_START", "pad character STRING must be non-empty".to_string())
+                type_error(
+                    "PAD_START",
+                    "pad character STRING must be non-empty".to_string(),
+                )
             })?;
             Ok(Outcome::normal(Value::String(pad_with(
                 s,
@@ -1311,7 +1321,10 @@ fn builtin_pad_end(_ev: &mut Evaluator, args: Vec<Value>) -> WlwlResult<Outcome>
     match (s, n, c) {
         (Value::String(s), Value::Integer(n), Value::String(c)) => {
             let pad_char = c.chars().next().ok_or_else(|| {
-                type_error("PAD_END", "pad character STRING must be non-empty".to_string())
+                type_error(
+                    "PAD_END",
+                    "pad character STRING must be non-empty".to_string(),
+                )
             })?;
             Ok(Outcome::normal(Value::String(pad_with(
                 s,
@@ -1415,21 +1428,14 @@ fn expect_arity3<'a>(
 /// - Out-of-range → `E0036: array index out of bounds`
 ///
 /// Spec v0.4 §10.1 row 1 / boundary rule.
-fn resolve_array_index(
-    fn_name: &str,
-    arr: &[Value],
-    raw: &Value,
-) -> WlwlResult<usize> {
+fn resolve_array_index(fn_name: &str, arr: &[Value], raw: &Value) -> WlwlResult<usize> {
     let i = match raw {
         Value::Integer(n) => *n,
         other => {
             return Err(builtin_error(
                 ErrorCode::E0031,
                 fn_name,
-                format!(
-                    "array index must be INTEGER, got {}",
-                    type_name(other)
-                ),
+                format!("array index must be INTEGER, got {}", type_name(other)),
             ));
         }
     };
@@ -1439,11 +1445,7 @@ fn resolve_array_index(
         return Err(builtin_error(
             ErrorCode::E0036,
             fn_name,
-            format!(
-                "array index {} out of bounds for length {}",
-                i,
-                arr.len()
-            ),
+            format!("array index {} out of bounds for length {}", i, arr.len()),
         ));
     }
     Ok(normalised as usize)
@@ -1561,10 +1563,7 @@ fn builtin_at(_ev: &mut Evaluator, args: Vec<Value>) -> WlwlResult<Outcome> {
                 return Err(builtin_error(
                     ErrorCode::E0031,
                     "AT",
-                    format!(
-                        "array index must be INTEGER, got {}",
-                        type_name(other)
-                    ),
+                    format!("array index must be INTEGER, got {}", type_name(other)),
                 ));
             }
         },
@@ -1666,7 +1665,6 @@ fn builtin_pop_dict(_ev: &mut Evaluator, args: Vec<Value>) -> WlwlResult<Outcome
     Ok(Outcome::normal(v))
 }
 
-
 // ──────────────────────────────────────────────────────────────────────
 // Phase B12: spec v0.4 §10.1 ARRAY ops (7 项)
 // ──────────────────────────────────────────────────────────────────────
@@ -1761,8 +1759,16 @@ fn builtin_slice(_ev: &mut Evaluator, args: Vec<Value>) -> WlwlResult<Outcome> {
     } else {
         len
     };
-    let norm_start = if start_raw < 0 { (start_raw + len).max(0) } else { start_raw.min(len) };
-    let norm_end = if end_raw < 0 { (end_raw + len).max(0) } else { end_raw.min(len) };
+    let norm_start = if start_raw < 0 {
+        (start_raw + len).max(0)
+    } else {
+        start_raw.min(len)
+    };
+    let norm_end = if end_raw < 0 {
+        (end_raw + len).max(0)
+    } else {
+        end_raw.min(len)
+    };
     if norm_end <= norm_start {
         return Ok(Outcome::normal(Value::Array(Vec::new())));
     }
@@ -1797,8 +1803,11 @@ fn builtin_concat(_ev: &mut Evaluator, args: Vec<Value>) -> WlwlResult<Outcome> 
         }
         (other_a, other_b) => Err(type_error(
             "CONCAT",
-            format!("expected (ARRAY, ARRAY) or (STRING, STRING), got ({}, {})",
-                type_name(other_a), type_name(other_b)),
+            format!(
+                "expected (ARRAY, ARRAY) or (STRING, STRING), got ({}, {})",
+                type_name(other_a),
+                type_name(other_b)
+            ),
         )),
     }
 }
@@ -1821,11 +1830,16 @@ fn builtin_contains(_ev: &mut Evaluator, args: Vec<Value>) -> WlwlResult<Outcome
                 other => {
                     return Err(type_error(
                         "CONTAINS",
-                        format!("STRING contains expects STRING needle, got {}", type_name(other)),
+                        format!(
+                            "STRING contains expects STRING needle, got {}",
+                            type_name(other)
+                        ),
                     ));
                 }
             };
-            Ok(Outcome::normal(Value::Boolean(s.contains(needle_str.as_str()))))
+            Ok(Outcome::normal(Value::Boolean(
+                s.contains(needle_str.as_str()),
+            )))
         }
         other => Err(type_error(
             "CONTAINS",
@@ -1856,7 +1870,10 @@ fn builtin_index(_ev: &mut Evaluator, args: Vec<Value>) -> WlwlResult<Outcome> {
                 other => {
                     return Err(type_error(
                         "INDEX",
-                        format!("STRING index expects STRING needle, got {}", type_name(other)),
+                        format!(
+                            "STRING index expects STRING needle, got {}",
+                            type_name(other)
+                        ),
                     ));
                 }
             };
@@ -1885,7 +1902,9 @@ fn builtin_reverse(_ev: &mut Evaluator, args: Vec<Value>) -> WlwlResult<Outcome>
         Value::String(s) => {
             let mut chars: Vec<i64> = s.chars().map(|c| c as i64).collect();
             chars.reverse();
-            Ok(Outcome::normal(Value::Array(chars.into_iter().map(Value::Integer).collect())))
+            Ok(Outcome::normal(Value::Array(
+                chars.into_iter().map(Value::Integer).collect(),
+            )))
         }
         other => Err(type_error(
             "REVERSE",
@@ -1893,7 +1912,6 @@ fn builtin_reverse(_ev: &mut Evaluator, args: Vec<Value>) -> WlwlResult<Outcome>
         )),
     }
 }
-
 
 // ──────────────────────────────────────────────────────────────────────
 // Phase B13: spec v0.4 §10.3 STRING ops (5 项)
@@ -1970,8 +1988,16 @@ fn builtin_substr(_ev: &mut Evaluator, args: Vec<Value>) -> WlwlResult<Outcome> 
     } else {
         len
     };
-    let norm_start = if start_raw < 0 { (start_raw + len).max(0) } else { start_raw.min(len) };
-    let norm_end = if end_raw < 0 { (end_raw + len).max(0) } else { end_raw.min(len) };
+    let norm_start = if start_raw < 0 {
+        (start_raw + len).max(0)
+    } else {
+        start_raw.min(len)
+    };
+    let norm_end = if end_raw < 0 {
+        (end_raw + len).max(0)
+    } else {
+        end_raw.min(len)
+    };
     if norm_end <= norm_start {
         return Ok(Outcome::normal(Value::String(String::new())));
     }
@@ -1979,7 +2005,9 @@ fn builtin_substr(_ev: &mut Evaluator, args: Vec<Value>) -> WlwlResult<Outcome> 
     let chars: Vec<char> = s.chars().collect();
     let start = norm_start as usize;
     let end = norm_end as usize;
-    Ok(Outcome::normal(Value::String(chars[start..end].iter().collect())))
+    Ok(Outcome::normal(Value::String(
+        chars[start..end].iter().collect(),
+    )))
 }
 
 /// `REPLACE(s, old, new) -> STRING`: 把所有 `old` 替换为 `new`。
@@ -2022,7 +2050,9 @@ fn builtin_replace(_ev: &mut Evaluator, args: Vec<Value>) -> WlwlResult<Outcome>
             "old pattern must be non-empty (empty would cause infinite loop)".to_string(),
         ));
     }
-    Ok(Outcome::normal(Value::String(s.replace(old.as_str(), new.as_str()))))
+    Ok(Outcome::normal(Value::String(
+        s.replace(old.as_str(), new.as_str()),
+    )))
 }
 
 /// `SPLIT(s, sep) -> ARRAY`: 按 `sep` 拆分 STRING,返回 STRING ARRAY。
@@ -2061,7 +2091,6 @@ fn builtin_split(_ev: &mut Evaluator, args: Vec<Value>) -> WlwlResult<Outcome> {
         .collect();
     Ok(Outcome::normal(Value::Array(parts)))
 }
-
 
 // ──────────────────────────────────────────────────────────────────────
 // Phase B14: spec v0.4 §10.2 DICT ops (4 项)
@@ -2158,7 +2187,6 @@ fn builtin_merge(_ev: &mut Evaluator, args: Vec<Value>) -> WlwlResult<Outcome> {
     Ok(Outcome::normal(Value::Dict(out)))
 }
 
-
 // ──────────────────────────────────────────────────────────────────────
 // Phase B15: spec v0.4 misc 8 项
 // ──────────────────────────────────────────────────────────────────────
@@ -2177,7 +2205,6 @@ fn builtin_bool(_ev: &mut Evaluator, args: Vec<Value>) -> WlwlResult<Outcome> {
     Ok(Outcome::normal(Value::Boolean(is_truthy(v))))
 }
 
-
 fn builtin_neg(_ev: &mut Evaluator, args: Vec<Value>) -> WlwlResult<Outcome> {
     let v = expect_arity("NEG", &args, 1)?;
     match v {
@@ -2194,7 +2221,7 @@ fn builtin_neg(_ev: &mut Evaluator, args: Vec<Value>) -> WlwlResult<Outcome> {
 /// prompt 可选 (STRING);输出到 stdout,读一行返回 (去掉尾部 \n)。
 /// 0 arg → 不输出 prompt 直接读。
 /// 无可用 stdin 时 (测试场景) → ERR("NoInputAvailable")。
-fn builtin_input(ev: &mut Evaluator, args: Vec<Value>) -> WlwlResult<Outcome> {
+fn builtin_input(_ev: &mut Evaluator, args: Vec<Value>) -> WlwlResult<Outcome> {
     if args.len() > 1 {
         return Err(arity_error("INPUT", args.len(), 1));
     }
@@ -2216,19 +2243,23 @@ fn builtin_input(ev: &mut Evaluator, args: Vec<Value>) -> WlwlResult<Outcome> {
     let bytes = match std::io::stdin().read_line(&mut line) {
         Ok(n) => n,
         Err(_) => {
-            return Ok(Outcome::normal(Value::Err(Box::new(Value::Dict(vec![
-                (Value::String("kind".into()), Value::String("NoInputAvailable".into())),
-            ])))));
+            return Ok(Outcome::normal(Value::Err(Box::new(Value::Dict(vec![(
+                Value::String("kind".into()),
+                Value::String("NoInputAvailable".into()),
+            )])))));
         }
     };
     if bytes == 0 {
         // EOF
-        return Ok(Outcome::normal(Value::Err(Box::new(Value::Dict(vec![
-            (Value::String("kind".into()), Value::String("EOF".into())),
-        ])))));
+        return Ok(Outcome::normal(Value::Err(Box::new(Value::Dict(vec![(
+            Value::String("kind".into()),
+            Value::String("EOF".into()),
+        )])))));
     }
     // 去掉尾部 \n (Windows: \r\n)
-    let trimmed = line.trim_end_matches(|c| c == '\n' || c == '\r').to_string();
+    let trimmed = line
+        .trim_end_matches(|c| c == '\n' || c == '\r')
+        .to_string();
     Ok(Outcome::normal(Value::String(trimmed)))
 }
 
@@ -2378,10 +2409,7 @@ fn builtin_call_method(ev: &mut Evaluator, args: Vec<Value>) -> WlwlResult<Outco
             ));
         }
     };
-    let span = ev
-        .current_span
-        .clone()
-        .unwrap_or_else(runtime_span);
+    let span = ev.current_span.clone().unwrap_or_else(runtime_span);
     ev.call_value_with_receiver(callee, Some(Value::Dict(obj)), rest, &span, &method)
 }
 
@@ -2469,10 +2497,7 @@ fn builtin_format(ev: &mut Evaluator, args: Vec<Value>) -> WlwlResult<Outcome> {
         other => {
             return Err(type_error(
                 "FORMAT",
-                format!(
-                    "template must be STRING, got {}",
-                    type_name(other)
-                ),
+                format!("template must be STRING, got {}", type_name(other)),
             ))
         }
     };
@@ -2481,25 +2506,24 @@ fn builtin_format(ev: &mut Evaluator, args: Vec<Value>) -> WlwlResult<Outcome> {
     let segments = match ev.format_cache.get(&template) {
         Some(cached) => cached.clone(),
         None => {
-            let parsed =
-                Rc::new(wlwl_std::format::parse_template(&template).map_err(|e| {
-                    // Span-aware E0039 like B4's builtin_unwrap E0100:
-                    // point at the FORMAT call site, not `<runtime>`.
-                    let loc = ev
-                        .current_span
-                        .as_ref()
-                        .map(|s| Location {
-                            file: s.file.clone(),
-                            line: s.line_start,
-                            col: s.col_start,
-                            line_end: s.line_end,
-                            col_end: s.col_end,
-                        })
-                        .unwrap_or_else(|| {
-                            Location::point(ev.file.as_deref().unwrap_or("<runtime>"), 0, 0)
-                        });
-                    WlwlDiagnostic::new(e.code, e.message, loc)
-                })?);
+            let parsed = Rc::new(wlwl_std::format::parse_template(&template).map_err(|e| {
+                // Span-aware E0039 like B4's builtin_unwrap E0100:
+                // point at the FORMAT call site, not `<runtime>`.
+                let loc = ev
+                    .current_span
+                    .as_ref()
+                    .map(|s| Location {
+                        file: s.file.clone(),
+                        line: s.line_start,
+                        col: s.col_start,
+                        line_end: s.line_end,
+                        col_end: s.col_end,
+                    })
+                    .unwrap_or_else(|| {
+                        Location::point(ev.file.as_deref().unwrap_or("<runtime>"), 0, 0)
+                    });
+                WlwlDiagnostic::new(e.code, e.message, loc)
+            })?);
             ev.format_cache.insert(template.clone(), parsed.clone());
             parsed
         }
@@ -2522,10 +2546,9 @@ fn builtin_format(ev: &mut Evaluator, args: Vec<Value>) -> WlwlResult<Outcome> {
                 }
             },
             wlwl_std::format::FormatSegment::Named(name) => {
-                let hit = named
-                    .and_then(|entries| {
-                        dict_lookup(entries, &Value::String(name.clone())).map(|i| &entries[i].1)
-                    });
+                let hit = named.and_then(|entries| {
+                    dict_lookup(entries, &Value::String(name.clone())).map(|i| &entries[i].1)
+                });
                 match hit {
                     Some(v) => out.push_str(&v.display()),
                     None => {
@@ -2617,13 +2640,11 @@ fn resolve_builtin(name: &str) -> Option<BuiltinFn> {
         "CALL_METHOD" => Some(builtin_call_method),
         "MODULE_REF" => Some(builtin_module_ref),
 
-
         // Phase B14 (spec §10.2): DICT ops 4 项从 Deferred 转到 ResolvedBuiltin。
         "KEYS" => Some(builtin_keys),
         "VALUES" => Some(builtin_values),
         "HAS" => Some(builtin_has),
         "MERGE" => Some(builtin_merge),
-
 
         // Phase B13 (spec §10.3): STRING ops 5 项从 Deferred 转到 ResolvedBuiltin。
         "UPPER" => Some(builtin_upper),
@@ -2631,7 +2652,6 @@ fn resolve_builtin(name: &str) -> Option<BuiltinFn> {
         "SUB" => Some(builtin_substr),
         "REPLACE" => Some(builtin_replace),
         "SPLIT" => Some(builtin_split),
-
 
         // Phase B12 (spec §10.1): ARRAY ops 7 项从 Deferred 转到 ResolvedBuiltin。
         "SHIFT" => Some(builtin_shift),
@@ -2772,13 +2792,26 @@ fn expect_arity2<'a>(fn_name: &str, args: &'a [Value]) -> WlwlResult<(&'a Value,
 
 fn arity_error(name: &str, got: usize, want: usize) -> WlwlError {
     let fix = if got > want {
-        format!("too many arguments: pass {} fewer (got {}, want {})", got - want, got, want)
+        format!(
+            "too many arguments: pass {} fewer (got {}, want {})",
+            got - want,
+            got,
+            want
+        )
     } else {
-        format!("too few arguments: add {} more (got {}, want {})", want - got, got, want)
+        format!(
+            "too few arguments: add {} more (got {}, want {})",
+            want - got,
+            got,
+            want
+        )
     };
     WlwlDiagnostic::new(
         ErrorCode::E0022,
-        format!("function `{}` expects {} argument(s), got {}", name, want, got),
+        format!(
+            "function `{}` expects {} argument(s), got {}",
+            name, want, got
+        ),
         Location::point("<runtime>", 0, 0),
     )
     .with_suggestion(Suggestion::Note { description: fix })
@@ -2810,8 +2843,7 @@ fn type_error(fn_name: &str, msg: String) -> WlwlError {
 ///   * `E0035` (FLOAT → INTEGER out-of-range — Type bucket)
 fn builtin_error(code: ErrorCode, fn_name: &str, msg: String) -> WlwlError {
     debug_assert!(
-        code.category() == ErrorCategory::Runtime
-            || code.category() == ErrorCategory::Type,
+        code.category() == ErrorCategory::Runtime || code.category() == ErrorCategory::Type,
         "builtin_error called with code {:?} of category {:?}",
         code,
         code.category()
@@ -2884,7 +2916,9 @@ fn value_type_name(v: &Value) -> &'static str {
 /// Registered in the §12.7 ERR consumer registry (does not propagate ERR).
 fn builtin_type(_ev: &mut Evaluator, args: Vec<Value>) -> WlwlResult<Outcome> {
     let v = expect_arity("TYPE", &args, 1)?;
-    Ok(Outcome::normal(Value::String(value_type_name(v).to_string())))
+    Ok(Outcome::normal(Value::String(
+        value_type_name(v).to_string(),
+    )))
 }
 
 fn numeric(v: &Value) -> Option<f64> {
@@ -2920,10 +2954,7 @@ fn builtin_add(ev: &mut Evaluator, args: Vec<Value>) -> WlwlResult<Outcome> {
                 let saturated = if i1.signum() > 0 { i64::MAX } else { i64::MIN };
                 ev.emit_warning(
                     ErrorCode::W0015,
-                    format!(
-                        "integer overflow in `+`, saturated to {}",
-                        saturated
-                    ),
+                    format!("integer overflow in `+`, saturated to {}", saturated),
                 );
                 Ok(Outcome::normal(Value::Integer(saturated)))
             }
@@ -2934,10 +2965,10 @@ fn builtin_add(ev: &mut Evaluator, args: Vec<Value>) -> WlwlResult<Outcome> {
             numeric(a).unwrap() + numeric(b).unwrap(),
         )))
     } else {
-        Err(type_error("+", format!(
-            "cannot add {} and {}",
-            type_name(a), type_name(b)
-        )))
+        Err(type_error(
+            "+",
+            format!("cannot add {} and {}", type_name(a), type_name(b)),
+        ))
     }
 }
 
@@ -2971,10 +3002,7 @@ fn builtin_sub(ev: &mut Evaluator, args: Vec<Value>) -> WlwlResult<Outcome> {
                 };
                 ev.emit_warning(
                     ErrorCode::W0015,
-                    format!(
-                        "integer overflow in `-`, saturated to {}",
-                        saturated
-                    ),
+                    format!("integer overflow in `-`, saturated to {}", saturated),
                 );
                 Ok(Outcome::normal(Value::Integer(saturated)))
             }
@@ -2984,10 +3012,10 @@ fn builtin_sub(ev: &mut Evaluator, args: Vec<Value>) -> WlwlResult<Outcome> {
             numeric(a).unwrap() - numeric(b).unwrap(),
         )))
     } else {
-        Err(type_error("-", format!(
-            "cannot subtract {} and {}",
-            type_name(a), type_name(b)
-        )))
+        Err(type_error(
+            "-",
+            format!("cannot subtract {} and {}", type_name(a), type_name(b)),
+        ))
     }
 }
 
@@ -3004,13 +3032,14 @@ fn builtin_mul(ev: &mut Evaluator, args: Vec<Value>) -> WlwlResult<Outcome> {
                 // -INT64_MIN also cannot be negated by `0 - r` so the
                 // only saturated positive answer is INT64_MAX; negative
                 // saturates to INT64_MIN.
-                let saturated = if i1.signum() * i2.signum() > 0 { i64::MAX } else { i64::MIN };
+                let saturated = if i1.signum() * i2.signum() > 0 {
+                    i64::MAX
+                } else {
+                    i64::MIN
+                };
                 ev.emit_warning(
                     ErrorCode::W0015,
-                    format!(
-                        "integer overflow in `*`, saturated to {}",
-                        saturated
-                    ),
+                    format!("integer overflow in `*`, saturated to {}", saturated),
                 );
                 Ok(Outcome::normal(Value::Integer(saturated)))
             }
@@ -3020,10 +3049,10 @@ fn builtin_mul(ev: &mut Evaluator, args: Vec<Value>) -> WlwlResult<Outcome> {
             numeric(a).unwrap() * numeric(b).unwrap(),
         )))
     } else {
-        Err(type_error("*", format!(
-            "cannot multiply {} and {}",
-            type_name(a), type_name(b)
-        )))
+        Err(type_error(
+            "*",
+            format!("cannot multiply {} and {}", type_name(a), type_name(b)),
+        ))
     }
 }
 
@@ -3065,10 +3094,10 @@ fn builtin_div(_ev: &mut Evaluator, args: Vec<Value>) -> WlwlResult<Outcome> {
             // is NaN, the result is NaN without an error.
             Ok(Outcome::normal(Value::Float(x / y)))
         }
-        _ => Err(type_error("/", format!(
-            "cannot divide {} and {}",
-            type_name(a), type_name(b)
-        ))),
+        _ => Err(type_error(
+            "/",
+            format!("cannot divide {} and {}", type_name(a), type_name(b)),
+        )),
     }
 }
 
@@ -3088,10 +3117,14 @@ fn builtin_mod(_ev: &mut Evaluator, args: Vec<Value>) -> WlwlResult<Outcome> {
         // matching the dividend (matches spec §9.5 row 2).
         Ok(Outcome::normal(Value::Integer(i1 % i2)))
     } else {
-        Err(type_error("%", format!(
-            "expected two integers, got {} and {}",
-            type_name(&args[0]), type_name(&args[1])
-        )))
+        Err(type_error(
+            "%",
+            format!(
+                "expected two integers, got {} and {}",
+                type_name(&args[0]),
+                type_name(&args[1])
+            ),
+        ))
     }
 }
 
@@ -3126,7 +3159,8 @@ fn builtin_ge(_ev: &mut Evaluator, args: Vec<Value>) -> WlwlResult<Outcome> {
 }
 
 fn cmp_op<F>(a: &Value, b: &Value, label: &str, pred: F) -> WlwlResult<Outcome>
-where F: Fn(std::cmp::Ordering) -> bool,
+where
+    F: Fn(std::cmp::Ordering) -> bool,
 {
     // Numeric comparison.
     if let (Some(x), Some(y)) = (numeric(a), numeric(b)) {
@@ -3139,18 +3173,27 @@ where F: Fn(std::cmp::Ordering) -> bool,
     }
     Err(type_error(
         "<cmp>",
-        format!("cannot compute {} for {} and {}", label, type_name(a), type_name(b)),
+        format!(
+            "cannot compute {} for {} and {}",
+            label,
+            type_name(a),
+            type_name(b)
+        ),
     ))
 }
 
 fn builtin_and(_ev: &mut Evaluator, args: Vec<Value>) -> WlwlResult<Outcome> {
     let (a, b) = expect_arity2("&&", &args)?;
-    Ok(Outcome::normal(Value::Boolean(is_truthy(a) && is_truthy(b))))
+    Ok(Outcome::normal(Value::Boolean(
+        is_truthy(a) && is_truthy(b),
+    )))
 }
 
 fn builtin_or(_ev: &mut Evaluator, args: Vec<Value>) -> WlwlResult<Outcome> {
     let (a, b) = expect_arity2("||", &args)?;
-    Ok(Outcome::normal(Value::Boolean(is_truthy(a) || is_truthy(b))))
+    Ok(Outcome::normal(Value::Boolean(
+        is_truthy(a) || is_truthy(b),
+    )))
 }
 
 /// Logical negation (spec §9.4 + §3.4). Registered under two
@@ -3282,11 +3325,8 @@ fn builtin_unwrap(ev: &mut Evaluator, args: Vec<Value>) -> WlwlResult<Outcome> {
                 .unwrap_or_else(|| {
                     Location::point(ev.file.as_deref().unwrap_or("<runtime>"), 0, 0)
                 });
-            let mut diag = WlwlDiagnostic::new(
-                ErrorCode::E0100,
-                format!("UNWRAP called on ERR value"),
-                loc,
-            );
+            let mut diag =
+                WlwlDiagnostic::new(ErrorCode::E0100, format!("UNWRAP called on ERR value"), loc);
             if let Some(cause) = value_to_error_cause(payload) {
                 diag = diag.with_cause(cause);
             }
@@ -3330,14 +3370,8 @@ fn builtin_wrap(_ev: &mut Evaluator, args: Vec<Value>) -> WlwlResult<Outcome> {
             // is the entire inner ERR value (which may itself be a
             // `{original, context}` dict from a previous WRAP).
             let dict = Value::Dict(vec![
-                (
-                    Value::String("original".into()),
-                    (**payload).clone(),
-                ),
-                (
-                    Value::String("context".into()),
-                    args[1].clone(),
-                ),
+                (Value::String("original".into()), (**payload).clone()),
+                (Value::String("context".into()), args[1].clone()),
             ]);
             Ok(Outcome::normal(Value::Err(Box::new(dict))))
         }
@@ -3392,8 +3426,7 @@ fn value_to_json_value(v: &Value) -> Option<serde_json::Value> {
         Value::Null => serde_json::Value::Null,
         Value::Boolean(b) => serde_json::Value::Bool(*b),
         Value::Integer(i) => serde_json::Value::Number(serde_json::Number::from(*i)),
-        Value::Float(f) => serde_json::Number::from_f64(*f)
-            .map(serde_json::Value::Number)?,
+        Value::Float(f) => serde_json::Number::from_f64(*f).map(serde_json::Value::Number)?,
         Value::String(s) => serde_json::Value::String(s.clone()),
         Value::Array(items) => {
             let mut arr = Vec::with_capacity(items.len());
@@ -3442,7 +3475,8 @@ fn values_equal(a: &Value, b: &Value) -> bool {
                 return false;
             }
             x.iter().all(|(xk, xv)| {
-                y.iter().any(|(yk, yv)| values_equal(xk, yk) && values_equal(xv, yv))
+                y.iter()
+                    .any(|(yk, yv)| values_equal(xk, yk) && values_equal(xv, yv))
             })
         }
         (Value::Ok(x), Value::Ok(y)) => values_equal(x, y),
@@ -3462,13 +3496,13 @@ fn values_equal(a: &Value, b: &Value) -> bool {
 /// `collection::BUILTINS` instead of `spec.functions`.
 pub mod collection;
 
+pub mod registry;
 /// `wlwl:std.test` — in-process test framework (spec v0.4 §15.9,
 /// Phase B7). Same std-boundary rationale as collection: `TEST` /
 /// `RUN_TESTS` need callback invocation, `ASSERT` / friends need
 /// rich-Value inspection. Real impls in this crate, bound via
 /// `test::BUILTINS` through `NativeInvoke::Builtin`.
 pub mod test;
-pub mod registry;
 
 pub struct Evaluator {
     env: Env,
@@ -3618,7 +3652,10 @@ impl Evaluator {
             "emit_warning called with non-warning code {:?}",
             code
         );
-        self.warnings.push(Warning { code, message: message.into() });
+        self.warnings.push(Warning {
+            code,
+            message: message.into(),
+        });
     }
 
     /// Drain the accumulated warnings and return them, leaving the
@@ -3692,7 +3729,9 @@ impl Evaluator {
         // stack. This catches errors that bypassed `self.diag()`
         // (e.g. constructed via direct `WlwlDiagnostic::new` calls
         // in std-helper functions like `type_error`).
-        let result = self.eval_top_level(expr).map_err(|e| self.enrich_with_trace(e));
+        let result = self
+            .eval_top_level(expr)
+            .map_err(|e| self.enrich_with_trace(e));
         let outcome = match result {
             Ok(o) => o,
             Err(e) => return Err(e),
@@ -3797,21 +3836,14 @@ impl Evaluator {
                     };
                     let mut msg = e.to_string();
                     if code == ErrorCode::E0045 {
-                        msg.push_str(
-                            " (v0.4 has no central registry; use path dependencies)",
-                        );
+                        msg.push_str(" (v0.4 has no central registry; use path dependencies)");
                     }
                     return Err(self.diag(code, msg, span.clone()));
                 }
             }
         }
         // 3. E0042 — lock ↔ toml consistency (§13.8).
-        let lock_path = self
-            .loader
-            .borrow()
-            .project
-            .project_root
-            .join("wlwl.lock");
+        let lock_path = self.loader.borrow().project.project_root.join("wlwl.lock");
         match wlwl_toml::lock::read(&lock_path) {
             Ok(Some(lock)) => {
                 if let Err(detail) = wlwl_toml::lock::validate_consistency(&lock, &m) {
@@ -3925,9 +3957,11 @@ impl Evaluator {
                     Some(v) => Ok(Outcome::normal(v)),
                     None => Err(self.undefined_name(name, span)),
                 }
-            },
+            }
             Expr::Call { name, args, span } => self.eval_call(name, args, span),
-            Expr::Let { name, value, span, .. } => {
+            Expr::Let {
+                name, value, span, ..
+            } => {
                 let v = self.eval_expr(value)?;
                 if v.signal != Signal::None {
                     return Ok(v);
@@ -3944,7 +3978,12 @@ impl Evaluator {
                 }
                 Ok(Outcome::normal(Value::Null))
             }
-            Expr::LetPattern { pattern, value, span, .. } => {
+            Expr::LetPattern {
+                pattern,
+                value,
+                span,
+                ..
+            } => {
                 let v = self.eval_expr(value)?;
                 if v.signal != Signal::None {
                     return Ok(v);
@@ -3979,11 +4018,16 @@ impl Evaluator {
                 }
                 Ok(Outcome::normal(Value::Dict(vs)))
             }
-            Expr::If { cond, then_branch, else_branch, .. } => {
-                self.eval_if(cond, then_branch, else_branch.as_deref())
-            }
+            Expr::If {
+                cond,
+                then_branch,
+                else_branch,
+                ..
+            } => self.eval_if(cond, then_branch, else_branch.as_deref()),
             Expr::While { cond, body, .. } => self.eval_while(cond, body),
-            Expr::For { var, iter, body, .. } => self.eval_for(var, iter, body),
+            Expr::For {
+                var, iter, body, ..
+            } => self.eval_for(var, iter, body),
             Expr::Return { value, .. } => {
                 let v = if let Some(e) = value {
                     let o = self.eval_expr(e)?;
@@ -3994,14 +4038,19 @@ impl Evaluator {
                 } else {
                     Value::Null
                 };
-                Ok(Outcome { value: Value::Null, signal: Signal::Return(v) })
+                Ok(Outcome {
+                    value: Value::Null,
+                    signal: Signal::Return(v),
+                })
             }
-            Expr::Break { .. } => {
-                Ok(Outcome { value: Value::Null, signal: Signal::Break })
-            }
-            Expr::Continue { .. } => {
-                Ok(Outcome { value: Value::Null, signal: Signal::Continue })
-            }
+            Expr::Break { .. } => Ok(Outcome {
+                value: Value::Null,
+                signal: Signal::Break,
+            }),
+            Expr::Continue { .. } => Ok(Outcome {
+                value: Value::Null,
+                signal: Signal::Continue,
+            }),
             Expr::Fun { params, body, .. } => {
                 // Capture the *current* env by clone. The closure can be
                 // called later, and at that point we push a new scope on
@@ -4065,7 +4114,10 @@ impl Evaluator {
                         // §19.4 E-TryErr: emit Return(Err(v)).
                         // This propagates up to the enclosing function
                         // frame; at the top level it becomes E0102.
-                        Ok(Outcome { value: Value::Null, signal: Signal::Return(Value::Err(v)) })
+                        Ok(Outcome {
+                            value: Value::Null,
+                            signal: Signal::Return(Value::Err(v)),
+                        })
                     }
                     other => Err(self.diag(
                         ErrorCode::E0030,
@@ -4122,7 +4174,12 @@ impl Evaluator {
                     )),
                 }
             }
-            Expr::Match { value, clauses, default, span } => self.eval_match(value, clauses, default, span),
+            Expr::Match {
+                value,
+                clauses,
+                default,
+                span,
+            } => self.eval_match(value, clauses, default, span),
             Expr::Import { path, names, .. } => self.eval_import(path, names),
             Expr::Export { names, .. } => self.eval_export(names, expr.span()),
         }
@@ -4616,7 +4673,13 @@ impl Evaluator {
             // Reject duplicate imports of the same local name in this
             // scope (E0021, v0.3 §13.3).
             let local = imp.local_name().to_string();
-            if self.env.scopes.last().map(|s| s.contains_key(&local)).unwrap_or(false) {
+            if self
+                .env
+                .scopes
+                .last()
+                .map(|s| s.contains_key(&local))
+                .unwrap_or(false)
+            {
                 return Err(self.diag(
                     ErrorCode::E0021,
                     format!(
@@ -4632,23 +4695,24 @@ impl Evaluator {
             if !module.exports.contains(&imp.name) {
                 return Err(self.diag(
                     ErrorCode::E0023,
-                    format!(
-                        "'{}' is not exported by module '{}'",
-                        imp.name, module_name
-                    ),
+                    format!("'{}' is not exported by module '{}'", imp.name, module_name),
                     imp.span.clone(),
                 ));
             }
-            let v = module.env.get(&imp.name).map(|v| v.clone()).ok_or_else(|| {
-                self.diag(
-                    ErrorCode::E0023,
-                    format!(
-                        "'{}' is exported by '{}' but missing at runtime (internal bug)",
-                        imp.name, module_name
-                    ),
-                    imp.span.clone(),
-                )
-            })?;
+            let v = module
+                .env
+                .get(&imp.name)
+                .map(|v| v.clone())
+                .ok_or_else(|| {
+                    self.diag(
+                        ErrorCode::E0023,
+                        format!(
+                            "'{}' is exported by '{}' but missing at runtime (internal bug)",
+                            imp.name, module_name
+                        ),
+                        imp.span.clone(),
+                    )
+                })?;
             self.env.set_local(local, v);
         }
         Ok(Outcome::normal(Value::Null))
@@ -4663,10 +4727,7 @@ impl Evaluator {
             if self.env.get(local).is_none() {
                 return Err(self.diag(
                     ErrorCode::E0020,
-                    format!(
-                        "EXPORT: name '{}' is not bound in this module",
-                        local
-                    ),
+                    format!("EXPORT: name '{}' is not bound in this module", local),
                     imp.span.clone(),
                 ));
             }
@@ -4743,11 +4804,7 @@ impl Evaluator {
             Pattern::Array(items, rest, aspan) => {
                 let arr = match value {
                     Value::Array(items) => items.clone(),
-                    _ => {
-                        return Err(self.destructure_type_error(
-                            "ARRAY", value, aspan,
-                        ))
-                    }
+                    _ => return Err(self.destructure_type_error("ARRAY", value, aspan)),
                 };
                 let needed_min = items.len();
                 if arr.len() < needed_min {
@@ -4763,7 +4820,10 @@ impl Evaluator {
                 for (i, sub) in items.iter().enumerate() {
                     let sub_value = arr.get(i).ok_or_else(|| {
                         self.destructure_shape_error(
-                            format!("destructure pattern mismatch: missing element at index {}", i),
+                            format!(
+                                "destructure pattern mismatch: missing element at index {}",
+                                i
+                            ),
                             aspan,
                         )
                     })?;
@@ -4792,9 +4852,9 @@ impl Evaluator {
                 };
                 for (k_expr, sub) in entries {
                     let key_value = self.eval_literal_key(k_expr)?;
-                    let pos = dict.iter().position(|(k, _)| {
-                        self.values_equal_loose(k, &key_value)
-                    });
+                    let pos = dict
+                        .iter()
+                        .position(|(k, _)| self.values_equal_loose(k, &key_value));
                     let found = match pos {
                         Some(idx) => dict[idx].1.clone(),
                         None => {
@@ -4811,7 +4871,11 @@ impl Evaluator {
                 }
                 Ok(())
             }
-            Pattern::Constructor { name, inner, span: cspan } => {
+            Pattern::Constructor {
+                name,
+                inner,
+                span: cspan,
+            } => {
                 // OK(x) / ERR(e) pattern in `LET([OK(x), v], result)`.
                 // Behaves like try_match but the failure path is
                 // a hard E0026 (not soft Ok(false)) because
@@ -5052,8 +5116,7 @@ impl Evaluator {
                     }
                 }
                 if let Some(rest_pat) = rest {
-                    let rest_items: Vec<Value> =
-                        arr.iter().skip(items.len()).cloned().collect();
+                    let rest_items: Vec<Value> = arr.iter().skip(items.len()).cloned().collect();
                     let rest_value = Value::Array(rest_items);
                     if !self.try_match(rest_pat, &rest_value, bindings, pspan)? {
                         bindings.truncate(checkpoint);
@@ -5114,8 +5177,6 @@ impl Evaluator {
             }
         }
     }
-
-
 
     fn diag(&mut self, code: ErrorCode, message: impl Into<String>, span: Span) -> WlwlError {
         let loc = Location {
@@ -5231,8 +5292,12 @@ impl Evaluator {
 fn levenshtein(a: &str, b: &str) -> usize {
     let a: Vec<char> = a.chars().collect();
     let b: Vec<char> = b.chars().collect();
-    if a.is_empty() { return b.len(); }
-    if b.is_empty() { return a.len(); }
+    if a.is_empty() {
+        return b.len();
+    }
+    if b.is_empty() {
+        return a.len();
+    }
     let mut prev: Vec<usize> = (0..=b.len()).collect();
     let mut curr = vec![0usize; b.len() + 1];
     for i in 1..=a.len() {
@@ -5248,7 +5313,11 @@ fn levenshtein(a: &str, b: &str) -> usize {
 
 /// Pick up to `max` names from `pool` whose Levenshtein distance to `target` is
 /// at most 3 and strictly positive (no point suggesting the exact match).
-fn similar_names(target: &str, pool: &std::collections::HashSet<String>, max: usize) -> Vec<String> {
+fn similar_names(
+    target: &str,
+    pool: &std::collections::HashSet<String>,
+    max: usize,
+) -> Vec<String> {
     let mut scored: Vec<(usize, String)> = pool
         .iter()
         .map(|n| (levenshtein(target, n), n.clone()))
@@ -5258,7 +5327,6 @@ fn similar_names(target: &str, pool: &std::collections::HashSet<String>, max: us
     scored.truncate(max);
     scored.into_iter().map(|(_, n)| n).collect()
 }
-
 
 // ──────────────────────────────────────────────────────────────────────
 // Tests
@@ -5339,7 +5407,11 @@ mod tests {
     fn eval_array() {
         assert_eq!(
             run("[1, 2, 3];").unwrap(),
-            Value::Array(vec![Value::Integer(1), Value::Integer(2), Value::Integer(3)])
+            Value::Array(vec![
+                Value::Integer(1),
+                Value::Integer(2),
+                Value::Integer(3)
+            ])
         );
     }
 
@@ -5840,10 +5912,14 @@ mod tests {
         // the op_eq_ne / op_ordering baseline tests; this is the
         // spec §9.2 wording assertion).
         for src in &[
-            "==(1, 1);", "==(1, 2);",
-            "!=(1, 2);", "!=(1, 1);",
-            "<(1, 2);", ">(2, 1);",
-            "<=(1, 1);", ">=(1, 1);",
+            "==(1, 1);",
+            "==(1, 2);",
+            "!=(1, 2);",
+            "!=(1, 1);",
+            "<(1, 2);",
+            ">(2, 1);",
+            "<=(1, 1);",
+            ">=(1, 1);",
         ] {
             let r = run(src).unwrap();
             assert!(
@@ -6021,13 +6097,15 @@ mod tests {
         let err = run(r#"
             LET(f, FUN((a, b), +(a, b)));
             f(1);
-        "#).unwrap_err();
+        "#)
+        .unwrap_err();
         assert_eq!(err.diagnostic().code, ErrorCode::E0022);
         // Too many args.
         let err = run(r#"
             LET(f, FUN((a, b), +(a, b)));
             f(1, 2, 3);
-        "#).unwrap_err();
+        "#)
+        .unwrap_err();
         assert_eq!(err.diagnostic().code, ErrorCode::E0022);
     }
 
@@ -6077,8 +6155,6 @@ mod tests {
         assert_eq!(run(src).unwrap(), Value::Integer(3));
     }
 
-
-
     // ---- P4-A2: closure cell semantics + SET ----
     //
     // spec v0.4 搂6.4 / 附录 E.4.6:
@@ -6124,10 +6200,7 @@ mod tests {
         // get() reads "updated" because both closures share the
         // same outer-scope cell (E-CloCap upgraded it to MUTABLE
         // when either closure was called).
-        assert_eq!(
-            run(src).unwrap(),
-            Value::String("updated".into())
-        );
+        assert_eq!(run(src).unwrap(), Value::String("updated".into()));
     }
 
     /// The "two closures, two mutating operations" pattern: a
@@ -6270,9 +6343,15 @@ mod tests {
     fn err_is_ok_is_err() {
         assert_eq!(run("IS_OK(OK(1));").unwrap(), Value::Boolean(true));
         // v0.4 spec §2.2.1: ERR payload must be STRING or DICT — string is fine.
-        assert_eq!(run(r###"IS_OK(ERR("1"));"###).unwrap(), Value::Boolean(false));
+        assert_eq!(
+            run(r###"IS_OK(ERR("1"));"###).unwrap(),
+            Value::Boolean(false)
+        );
         assert_eq!(run("IS_ERR(OK(1));").unwrap(), Value::Boolean(false));
-        assert_eq!(run(r###"IS_ERR(ERR("1"));"###).unwrap(), Value::Boolean(true));
+        assert_eq!(
+            run(r###"IS_ERR(ERR("1"));"###).unwrap(),
+            Value::Boolean(true)
+        );
     }
 
     #[test]
@@ -6285,7 +6364,10 @@ mod tests {
     fn err_or_die_err_uses_default() {
         // ERR → fall back to the default. Default is only evaluated on
         // ERR (lazy).
-        assert_eq!(run(r#"OR_DIE(ERR("bad"), 99);"#).unwrap(), Value::Integer(99));
+        assert_eq!(
+            run(r#"OR_DIE(ERR("bad"), 99);"#).unwrap(),
+            Value::Integer(99)
+        );
     }
 
     #[test]
@@ -6386,10 +6468,7 @@ mod tests {
     #[test]
     fn transparent_propagation_or_die_consumes() {
         // OR_DIE is whitelisted — it consumes the ERR.
-        assert_eq!(
-            run(r#"OR_DIE(ERR("e"), 42);"#).unwrap(),
-            Value::Integer(42)
-        );
+        assert_eq!(run(r#"OR_DIE(ERR("e"), 42);"#).unwrap(), Value::Integer(42));
     }
 
     // ── §12.7 ERR consumer registry (Phase A6) ────────────────────────
@@ -6483,10 +6562,7 @@ mod tests {
             Value::Integer(42)
         );
         // OK case: returns inner value
-        assert_eq!(
-            run(r#"UNWRAP_OR(OK(7), 42);"#).unwrap(),
-            Value::Integer(7)
-        );
+        assert_eq!(run(r#"UNWRAP_OR(OK(7), 42);"#).unwrap(), Value::Integer(7));
         // Non-RESULT case: E0030 (same error semantics as OR_DIE)
         let err = run(r#"UNWRAP_OR(123, 42);"#).unwrap_err();
         assert_eq!(err.diagnostic().code, ErrorCode::E0030);
@@ -6536,7 +6612,10 @@ mod tests {
         use Value::*;
         assert_eq!(run("TYPE(1);").unwrap(), Value::String("INTEGER".into()));
         assert_eq!(run("TYPE(1.5);").unwrap(), Value::String("FLOAT".into()));
-        assert_eq!(run(r#"TYPE("hi");"#).unwrap(), Value::String("STRING".into()));
+        assert_eq!(
+            run(r#"TYPE("hi");"#).unwrap(),
+            Value::String("STRING".into())
+        );
         assert_eq!(run("TYPE(TRUE);").unwrap(), Value::String("BOOLEAN".into()));
         assert_eq!(run("TYPE(NULL);").unwrap(), Value::String("NULL".into()));
         assert_eq!(run("TYPE([1, 2]);").unwrap(), Value::String("ARRAY".into()));
@@ -6555,10 +6634,7 @@ mod tests {
     fn type_of_ok_and_err_both_return_result() {
         // §2.2.1 — `OK(...)` and `ERR(...)` share the type name RESULT.
         // "RESULT" is the **type** name; OK and ERR are the **variants**.
-        assert_eq!(
-            run("TYPE(OK(1));").unwrap(),
-            Value::String("RESULT".into())
-        );
+        assert_eq!(run("TYPE(OK(1));").unwrap(), Value::String("RESULT".into()));
         assert_eq!(
             run(r#"TYPE(ERR("e"));"#).unwrap(),
             Value::String("RESULT".into())
@@ -6710,7 +6786,7 @@ mod tests {
 
     // ── §13 Modules (single-directory, Phase 2 subset) ─────────────
 
-        // ==== Phase 3: AI contract (v0.3 Sec. 14.7) ====
+    // ==== Phase 3: AI contract (v0.3 Sec. 14.7) ====
 
     fn ai_check_jsonl(src: &str) -> (serde_json::Value, wlwl_error::WlwlError) {
         let err = run(src).unwrap_err();
@@ -6728,9 +6804,16 @@ mod tests {
         assert_eq!(v["error_category"], "name");
         assert_eq!(v["retryable"], false);
         // v0.4 (Sec. 14.2) -- new required fields
-        assert!(v["idempotent"].is_boolean(), "idempotent must be present (got: {})", v);
-        assert!(v["retry_after"].is_null() || v["retry_after"].is_u64(),
-            "retry_after must be null or u64 (got: {})", v);
+        assert!(
+            v["idempotent"].is_boolean(),
+            "idempotent must be present (got: {})",
+            v
+        );
+        assert!(
+            v["retry_after"].is_null() || v["retry_after"].is_u64(),
+            "retry_after must be null or u64 (got: {})",
+            v
+        );
         assert!(v["suggestion_code"].is_array());
         assert!(v["related"].is_array());
     }
@@ -6767,7 +6850,10 @@ mod tests {
     #[test]
     fn ai_contract_module_not_found() {
         use std::time::{SystemTime, UNIX_EPOCH};
-        let nanos = SystemTime::now().duration_since(UNIX_EPOCH).unwrap().as_nanos();
+        let nanos = SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .unwrap()
+            .as_nanos();
         let dir = std::env::temp_dir().join(format!("wlwl_ai_{}", nanos));
         std::fs::create_dir_all(&dir).unwrap();
         let src = "IMPORT(\"doesnotexist\", [\"x\"]);";
@@ -6790,10 +6876,18 @@ mod tests {
             let err = run(src).unwrap_err();
             versions.insert(err.diagnostic().error_schema_version.clone());
         }
-        assert_eq!(versions.len(), 1, "schema version must be stable across error kinds");
+        assert_eq!(
+            versions.len(),
+            1,
+            "schema version must be stable across error kinds"
+        );
         // v0.4 spec Sec. 14.10: bump MAJOR on field add/remove, MINOR on add.
         // v0.3 was 0.3.1; v0.4 added trace/cause/idempotent/retry_after (MINOR bump).
-        assert!(versions.contains("1.1.0"), "expected schema 1.1.0, got: {:?}", versions);
+        assert!(
+            versions.contains("1.1.0"),
+            "expected schema 1.1.0, got: {:?}",
+            versions
+        );
     }
 
     #[test]
@@ -6803,9 +6897,17 @@ mod tests {
         // v0.4 schema 1.1.0 -- required field set (Sec. 14.2).
         // trace + cause are optional (skip_serializing_if on the struct).
         for key in &[
-            "error_schema_version", "code", "error_category", "severity",
-            "message", "location", "retryable", "idempotent", "retry_after",
-            "suggestion_code", "related",
+            "error_schema_version",
+            "code",
+            "error_category",
+            "severity",
+            "message",
+            "location",
+            "retryable",
+            "idempotent",
+            "retry_after",
+            "suggestion_code",
+            "related",
         ] {
             assert!(v.get(*key).is_some(), "missing required key: {}", key);
         }
@@ -6829,17 +6931,19 @@ mod tests {
             assert_eq!(
                 err.diagnostic().error_category,
                 code.category(),
-                "category mismatch for code={:?}", code
+                "category mismatch for code={:?}",
+                code
             );
             assert_eq!(
                 err.diagnostic().retryable,
                 code.retryable(),
-                "retryable mismatch for code={:?}", code
+                "retryable mismatch for code={:?}",
+                code
             );
         }
     }
 
-use std::path::Path;
+    use std::path::Path;
 
     /// Make a unique subdirectory inside the system temp dir. We can't
     /// use the `tempfile` crate because its transitive deps aren't in
@@ -6993,10 +7097,12 @@ use std::path::Path;
     fn std_io_print_via_namespace_import() {
         // IMPORT("wlwl:std.io", ["PRINT"]) should bind PRINT as a
         // native function and route the call through it.
-        let v = run_std(r#"
+        let v = run_std(
+            r#"
             IMPORT("wlwl:std.io", ["PRINT"]);
             PRINT("hello", "via", "std.io");
-        "#)
+        "#,
+        )
         .unwrap();
         assert_eq!(v, Value::Null);
     }
@@ -7004,10 +7110,12 @@ use std::path::Path;
     #[test]
     fn std_io_print_with_non_string_args() {
         // Confirm PRINT handles non-string values via JSON conversion.
-        let v = run_std(r#"
+        let v = run_std(
+            r#"
             IMPORT("wlwl:std.io", ["PRINT"]);
             PRINT(1, 2, 3, [4, 5], ["k": "v"]);
-        "#)
+        "#,
+        )
         .unwrap();
         assert_eq!(v, Value::Null);
     }
@@ -7030,13 +7138,19 @@ use std::path::Path;
     #[test]
     fn std_fs_write_then_read_roundtrip() {
         let dir = unique_test_dir("fs_rt");
-        let path = dir.join("rt.txt").to_string_lossy().into_owned().replace("\\", "/");
-        let src = format!(r#"
+        let path = dir
+            .join("rt.txt")
+            .to_string_lossy()
+            .into_owned()
+            .replace("\\", "/");
+        let src = format!(
+            r#"
             IMPORT("wlwl:std.fs", ["READ_FILE", "WRITE_FILE"]);
             LET(p, "{path}");
             WRITE_FILE(p, "round-trip-body");
             READ_FILE(p);
-        "#);
+        "#
+        );
         let v = run_in(&dir, &src).unwrap();
         assert_eq!(v, Value::String("round-trip-body".into()));
     }
@@ -7055,25 +7169,27 @@ use std::path::Path;
     #[test]
     fn std_fs_exists_true_then_false() {
         let dir = unique_test_dir("fs_exists");
-        let path = dir.join("e.txt").to_string_lossy().into_owned().replace("\\", "/");
+        let path = dir
+            .join("e.txt")
+            .to_string_lossy()
+            .into_owned()
+            .replace("\\", "/");
         std::fs::write(&dir.join("e.txt"), b"x").unwrap();
-        let src_ok = format!(r#"
+        let src_ok = format!(
+            r#"
             IMPORT("wlwl:std.fs", ["EXISTS"]);
             EXISTS("{path}");
-        "#);
-        assert_eq!(
-            run_in(&dir, &src_ok).unwrap(),
-            Value::Boolean(true)
+        "#
         );
+        assert_eq!(run_in(&dir, &src_ok).unwrap(), Value::Boolean(true));
         let _ = std::fs::remove_file(dir.join("e.txt"));
-        let src_missing = format!(r#"
+        let src_missing = format!(
+            r#"
             IMPORT("wlwl:std.fs", ["EXISTS"]);
             EXISTS("{path}");
-        "#);
-        assert_eq!(
-            run_in(&dir, &src_missing).unwrap(),
-            Value::Boolean(false)
+        "#
         );
+        assert_eq!(run_in(&dir, &src_missing).unwrap(), Value::Boolean(false));
     }
 
     #[test]
@@ -7298,10 +7414,7 @@ entry = "main.wl"
             IMPORT("myteam:utils", ["greet"]);
             greet;
         "#;
-        assert_eq!(
-            run_in(&dir, src).unwrap(),
-            Value::String("hi".into())
-        );
+        assert_eq!(run_in(&dir, src).unwrap(), Value::String("hi".into()));
         let _ = std::fs::remove_dir_all(&dir);
     }
 
@@ -7527,12 +7640,19 @@ entry = "main.wl"
         let err = run_in(&dir, src).unwrap_err();
         let d = err.diagnostic();
         assert_eq!(d.code, ErrorCode::E0020);
-        assert!(!d.suggestion_code.is_empty(), "expected at least one suggestion, got none");
+        assert!(
+            !d.suggestion_code.is_empty(),
+            "expected at least one suggestion, got none"
+        );
         let has_did_you_mean = d.suggestion_code.iter().any(|s| match s {
             wlwl_error::Suggestion::Note { description } => description.contains("did you mean"),
             _ => false,
         });
-        assert!(has_did_you_mean, "expected a Note suggestion with `did you mean`: {:?}", d.suggestion_code);
+        assert!(
+            has_did_you_mean,
+            "expected a Note suggestion with `did you mean`: {:?}",
+            d.suggestion_code
+        );
     }
 
     #[test]
@@ -7548,7 +7668,11 @@ entry = "main.wl"
             wlwl_error::Suggestion::Note { description } => description.contains("too many"),
             _ => false,
         });
-        assert!(has_fix, "expected a Note suggesting to drop extra args: {:?}", d.suggestion_code);
+        assert!(
+            has_fix,
+            "expected a Note suggesting to drop extra args: {:?}",
+            d.suggestion_code
+        );
     }
 
     #[test]
@@ -7562,7 +7686,11 @@ entry = "main.wl"
             wlwl_error::Suggestion::Note { description } => description.contains("wlwl.toml"),
             _ => false,
         });
-        assert!(has_toml, "expected a Note referencing wlwl.toml: {:?}", d.suggestion_code);
+        assert!(
+            has_toml,
+            "expected a Note referencing wlwl.toml: {:?}",
+            d.suggestion_code
+        );
     }
     // ---- P3-009d: LEN / PUSH / module / ERR transparent paths ----
 
@@ -7767,28 +7895,16 @@ entry = "main.wl"
     #[test]
     fn at_array_in_bounds_returns_value() {
         // AT on ARRAY with in-bounds index behaves like INDEX_GET.
-        assert_eq!(
-            run("AT([10, 20, 30], 1, -1);").unwrap(),
-            Value::Integer(20)
-        );
+        assert_eq!(run("AT([10, 20, 30], 1, -1);").unwrap(), Value::Integer(20));
         // Negative index supported.
-        assert_eq!(
-            run("AT([10, 20, 30], -1, 0);").unwrap(),
-            Value::Integer(30)
-        );
+        assert_eq!(run("AT([10, 20, 30], -1, 0);").unwrap(), Value::Integer(30));
     }
 
     #[test]
     fn at_array_oob_returns_default() {
         // Spec §10.1 row 3: AT returns default on OOB — NO error.
-        assert_eq!(
-            run("AT([10, 20, 30], 5, -1);").unwrap(),
-            Value::Integer(-1)
-        );
-        assert_eq!(
-            run("AT([10, 20, 30], -4, NULL);").unwrap(),
-            Value::Null
-        );
+        assert_eq!(run("AT([10, 20, 30], 5, -1);").unwrap(), Value::Integer(-1));
+        assert_eq!(run("AT([10, 20, 30], -4, NULL);").unwrap(), Value::Null);
     }
 
     #[test]
@@ -7827,10 +7943,7 @@ entry = "main.wl"
         // REMOVE_KEY returns the dict with the key dropped.
         assert_eq!(
             run(r###"REMOVE_KEY(["a": 1, "b": 2], "a");"###).unwrap(),
-            Value::Dict(vec![(
-                Value::String("b".into()),
-                Value::Integer(2)
-            )])
+            Value::Dict(vec![(Value::String("b".into()), Value::Integer(2))])
         );
     }
 
@@ -7839,10 +7952,7 @@ entry = "main.wl"
         // Spec §10.2: missing key → NOOP (returns dict unchanged).
         assert_eq!(
             run(r###"REMOVE_KEY(["a": 1], "missing");"###).unwrap(),
-            Value::Dict(vec![(
-                Value::String("a".into()),
-                Value::Integer(1)
-            )])
+            Value::Dict(vec![(Value::String("a".into()), Value::Integer(1))])
         );
     }
 
@@ -8015,18 +8125,13 @@ entry = "main.wl"
         // Regression guard: the v0.4 main name must stay silent.
         let (r, w) = run_with_warnings(r###"REMOVE_KEY(["a": 1, "b": 2], "a");"###);
         assert!(r.is_ok());
-        assert!(
-            w.is_empty(),
-            "REMOVE_KEY must not emit W0051; got {:?}",
-            w
-        );
+        assert!(w.is_empty(), "REMOVE_KEY must not emit W0051; got {:?}", w);
     }
 
     #[test]
     fn del_alias_warning_exactly_once_per_call() {
-        let (r, w) = run_with_warnings(
-            r###"DEL(["a": 1, "b": 2], "a"); DEL(["c": 3], "missing");"###,
-        );
+        let (r, w) =
+            run_with_warnings(r###"DEL(["a": 1, "b": 2], "a"); DEL(["c": 3], "missing");"###);
         r.unwrap();
         assert_eq!(w.len(), 2, "expected one W0051 per DEL call, got {:?}", w);
         assert!(w.iter().all(|x| x.code == ErrorCode::W0051));
@@ -8070,13 +8175,16 @@ entry = "main.wl"
     #[test]
     fn is_ok_etc_whitelist_consume_err() {
         assert_eq!(run("IS_OK(OK(1));").unwrap(), Value::Boolean(true));
-        assert_eq!(run(r###"IS_OK(ERR("x"));"###).unwrap(), Value::Boolean(false));
-        assert_eq!(run("IS_ERR(OK(1));").unwrap(), Value::Boolean(false));
-        assert_eq!(run(r###"IS_ERR(ERR("x"));"###).unwrap(), Value::Boolean(true));
         assert_eq!(
-            run("OR_DIE(OK(1), 99);").unwrap(),
-            Value::Integer(1)
+            run(r###"IS_OK(ERR("x"));"###).unwrap(),
+            Value::Boolean(false)
         );
+        assert_eq!(run("IS_ERR(OK(1));").unwrap(), Value::Boolean(false));
+        assert_eq!(
+            run(r###"IS_ERR(ERR("x"));"###).unwrap(),
+            Value::Boolean(true)
+        );
+        assert_eq!(run("OR_DIE(OK(1), 99);").unwrap(), Value::Integer(1));
     }
 
     #[test]
@@ -8086,7 +8194,8 @@ entry = "main.wl"
             dir.join("lib.wl"),
             r###"LET(v, 100); EXPORT(["v"]);
 "###,
-        ).unwrap();
+        )
+        .unwrap();
         let src = r###"IMPORT("./lib", ["v"]); PRINT(v);
 "###;
         let v = run_in(&dir, src).unwrap();
@@ -8106,12 +8215,14 @@ name = "b"
 version = "0.1.0"
 entry = "main.wl"
 "###,
-        ).unwrap();
+        )
+        .unwrap();
         fs::write(
             dir.join("helper.wl"),
             r###"LET(v, 1); EXPORT(["v"]);
 "###,
-        ).unwrap();
+        )
+        .unwrap();
         let src = r###"IMPORT("helper", ["v"]); PRINT(v);
 "###;
         let v = run_in(&sub, src).unwrap();
@@ -8146,10 +8257,7 @@ entry = "main.wl"
             .display(),
             "[a: 1, b: 2]"
         );
-        assert_eq!(
-            Value::Ok(Box::new(Value::Integer(7))).display(),
-            "OK(7)"
-        );
+        assert_eq!(Value::Ok(Box::new(Value::Integer(7))).display(), "OK(7)");
         assert_eq!(
             Value::Err(Box::new(Value::String("boom".into()))).display(),
             "ERR(boom)"
@@ -8184,9 +8292,18 @@ entry = "main.wl"
 
     #[test]
     fn value_to_std_value_primitives() {
-        assert_eq!(value_to_std_value(&Value::Null).unwrap(), wlwl_std::StdValue::Null);
-        assert_eq!(value_to_std_value(&Value::Boolean(true)).unwrap(), wlwl_std::StdValue::Bool(true));
-        assert_eq!(value_to_std_value(&Value::Integer(123)).unwrap(), wlwl_std::StdValue::Number(serde_json::Number::from(123)));
+        assert_eq!(
+            value_to_std_value(&Value::Null).unwrap(),
+            wlwl_std::StdValue::Null
+        );
+        assert_eq!(
+            value_to_std_value(&Value::Boolean(true)).unwrap(),
+            wlwl_std::StdValue::Bool(true)
+        );
+        assert_eq!(
+            value_to_std_value(&Value::Integer(123)).unwrap(),
+            wlwl_std::StdValue::Number(serde_json::Number::from(123))
+        );
         assert_eq!(
             value_to_std_value(&Value::String("x".into())).unwrap(),
             wlwl_std::StdValue::String("x".into())
@@ -8217,13 +8334,14 @@ entry = "main.wl"
         let out = value_to_std_value(&arr).unwrap();
         assert!(matches!(out, wlwl_std::StdValue::Array(_)));
 
-        let dict = Value::Dict(vec![
-            (Value::String("k".into()), Value::Integer(7)),
-        ]);
+        let dict = Value::Dict(vec![(Value::String("k".into()), Value::Integer(7))]);
         let out = value_to_std_value(&dict).unwrap();
         match out {
             wlwl_std::StdValue::Object(o) => {
-                assert_eq!(o.get("k").unwrap(), &wlwl_std::StdValue::Number(serde_json::Number::from(7)));
+                assert_eq!(
+                    o.get("k").unwrap(),
+                    &wlwl_std::StdValue::Number(serde_json::Number::from(7))
+                );
             }
             other => panic!("expected Object, got {:?}", other),
         }
@@ -8231,9 +8349,7 @@ entry = "main.wl"
 
     #[test]
     fn value_to_std_value_non_string_dict_key_errors() {
-        let dict = Value::Dict(vec![
-            (Value::Integer(1), Value::Integer(2)),
-        ]);
+        let dict = Value::Dict(vec![(Value::Integer(1), Value::Integer(2))]);
         let err = value_to_std_value(&dict).unwrap_err();
         match err {
             StdValueConvError::Type { expected, .. } => {
@@ -8246,7 +8362,10 @@ entry = "main.wl"
     fn value_to_std_value_ok_unwraps() {
         let v = Value::Ok(Box::new(Value::Integer(42)));
         let out = value_to_std_value(&v).unwrap();
-        assert_eq!(out, wlwl_std::StdValue::Number(serde_json::Number::from(42)));
+        assert_eq!(
+            out,
+            wlwl_std::StdValue::Number(serde_json::Number::from(42))
+        );
     }
 
     #[test]
@@ -8288,13 +8407,18 @@ entry = "main.wl"
     #[test]
     fn std_value_to_value_roundtrip_all_variants() {
         assert_eq!(std_value_to_value(wlwl_std::StdValue::Null), Value::Null);
-        assert_eq!(std_value_to_value(wlwl_std::StdValue::Bool(true)), Value::Boolean(true));
+        assert_eq!(
+            std_value_to_value(wlwl_std::StdValue::Bool(true)),
+            Value::Boolean(true)
+        );
         assert_eq!(
             std_value_to_value(wlwl_std::StdValue::Number(serde_json::Number::from(1))),
             Value::Integer(1)
         );
         assert_eq!(
-            std_value_to_value(wlwl_std::StdValue::Number(serde_json::Number::from_f64(1.5).unwrap())),
+            std_value_to_value(wlwl_std::StdValue::Number(
+                serde_json::Number::from_f64(1.5).unwrap()
+            )),
             Value::Float(1.5)
         );
         assert_eq!(
@@ -8306,7 +8430,10 @@ entry = "main.wl"
             Value::Array(vec![Value::Null])
         );
         let mut obj = serde_json::Map::new();
-        obj.insert("k".to_string(), wlwl_std::StdValue::Number(serde_json::Number::from(7)));
+        obj.insert(
+            "k".to_string(),
+            wlwl_std::StdValue::Number(serde_json::Number::from(7)),
+        );
         assert_eq!(
             std_value_to_value(wlwl_std::StdValue::Object(obj)),
             Value::Dict(vec![(Value::String("k".into()), Value::Integer(7))])
@@ -8319,14 +8446,12 @@ entry = "main.wl"
     fn module_circular_import_detected() {
         // a.wl imports b.wl imports a.wl -> E0041.
         let dir = unique_test_dir("circular");
-        fs::write(
-            dir.join("a.wl"),
-            r###"IMPORT("b", ["v"]); PRINT(v);"###,
-        ).unwrap();
+        fs::write(dir.join("a.wl"), r###"IMPORT("b", ["v"]); PRINT(v);"###).unwrap();
         fs::write(
             dir.join("b.wl"),
             r###"IMPORT("a", ["v"]); LET(v, 1); EXPORT(["v"]);"###,
-        ).unwrap();
+        )
+        .unwrap();
         let src = r###"IMPORT("a", ["v"]); PRINT(v);"###;
         let v = run_in(&dir, src);
         let err = v.expect_err("expected E0041");
@@ -8350,11 +8475,13 @@ entry = "main.wl"
 [dependencies]
 "evil:lib" = { path = "../escape" }
 "###,
-        ).unwrap();
+        )
+        .unwrap();
         fs::write(
             dir.join("main.wl"),
             r###"IMPORT("evil:lib", ["v"]); PRINT(1);"###,
-        ).unwrap();
+        )
+        .unwrap();
         let v = run_in(&dir, "IMPORT(\"evil:lib\", [\"v\"]); PRINT(1);");
         let err = v.expect_err("expected E0040");
         assert_eq!(err.diagnostic().code, ErrorCode::E0040);
@@ -8379,17 +8506,15 @@ entry = "main.wl"
         // E0023 at IMPORT time. If the loader re-routes through
         // the undefined-name path, E0020 is also acceptable.
         let dir = unique_test_dir("export_unbound2");
-        fs::write(
-            dir.join("m.wl"),
-            "LET(unused, 1); EXPORT([\"missing\"]);\n",
-        ).unwrap();
+        fs::write(dir.join("m.wl"), "LET(unused, 1); EXPORT([\"missing\"]);\n").unwrap();
         let src = "IMPORT(\"m\", [\"missing\"]); PRINT(1);\n";
         let v = run_in(&dir, src);
         let err = v.expect_err("expected export error");
         let code = err.diagnostic().code;
         assert!(
             code == ErrorCode::E0023 || code == ErrorCode::E0020,
-            "got {:?}", code
+            "got {:?}",
+            code
         );
         let _ = fs::remove_dir_all(&dir);
     }
@@ -8408,17 +8533,19 @@ name = "u"
 version = "0.1.0"
 entry = "main.wl"
 "###,
-        ).unwrap();
+        )
+        .unwrap();
         fs::write(
             dir.join("main.wl"),
             r###"IMPORT("ghost:thing", ["v"]); PRINT(1);"###,
-        ).unwrap();
+        )
+        .unwrap();
         let v = run_in(&dir, "IMPORT(\"ghost:thing\", [\"v\"]);");
         let err = v.expect_err("expected E0043");
         assert_eq!(err.diagnostic().code, ErrorCode::E0043);
         let _ = fs::remove_dir_all(&dir);
     }
-// ---- P3-009e: comprehensive integration tests for eval_expr arms ----
+    // ---- P3-009e: comprehensive integration tests for eval_expr arms ----
 
     #[test]
     fn panic_emits_e0100_v2() {
@@ -8448,7 +8575,8 @@ entry = "main.wl"
     #[test]
     fn while_with_break_exits_loop() {
         // Break terminates the loop; consume the signal.
-        let v = run("LET(i, 0); WHILE(<(i, 10), IF(==(i, 3), BREAK(), LET(i, +(i, 1)))); i;").unwrap();
+        let v =
+            run("LET(i, 0); WHILE(<(i, 10), IF(==(i, 3), BREAK(), LET(i, +(i, 1)))); i;").unwrap();
         assert_eq!(v, Value::Integer(3));
     }
 
@@ -8479,14 +8607,19 @@ entry = "main.wl"
 
     #[test]
     fn for_with_break_exits_loop() {
-        let v = run("LET(s, 0); FOR(i, [1, 2, 3, 4, 5], IF(==(i, 3), BREAK(), LET(s, +(s, i)))); s;").unwrap();
+        let v =
+            run("LET(s, 0); FOR(i, [1, 2, 3, 4, 5], IF(==(i, 3), BREAK(), LET(s, +(s, i)))); s;")
+                .unwrap();
         // s accumulates 1 + 2 = 3 then break on i=3
         assert_eq!(v, Value::Integer(3));
     }
 
     #[test]
     fn for_with_continue_skips_rest_of_body() {
-        let v = run("LET(s, 0); FOR(i, [1, 2, 3, 4, 5], IF(==(i, 3), CONTINUE(), LET(s, +(s, i)))); s;").unwrap();
+        let v = run(
+            "LET(s, 0); FOR(i, [1, 2, 3, 4, 5], IF(==(i, 3), CONTINUE(), LET(s, +(s, i)))); s;",
+        )
+        .unwrap();
         // Skip i=3: 1+2+4+5 = 12
         assert_eq!(v, Value::Integer(12));
     }
@@ -8536,7 +8669,8 @@ entry = "main.wl"
         let code = err.diagnostic().code;
         assert!(
             code == ErrorCode::E0020 || code == ErrorCode::E0023,
-            "got {:?}", code
+            "got {:?}",
+            code
         );
         let _ = fs::remove_dir_all(&dir);
     }
@@ -8561,7 +8695,10 @@ entry = "main.wl"
         assert_eq!(run("*(3, 4);").unwrap(), Value::Integer(12));
         assert_eq!(run("/(10, 3);").unwrap(), Value::Integer(3));
         assert_eq!(run("%(10, 3);").unwrap(), Value::Integer(1));
-        assert_eq!(run(r###"+("a", "b");"###).unwrap(), Value::String("ab".into()));
+        assert_eq!(
+            run(r###"+("a", "b");"###).unwrap(),
+            Value::String("ab".into())
+        );
     }
 
     #[test]
@@ -8670,10 +8807,12 @@ entry = "main.wl"
         let err = run(src).unwrap_err();
         let d = err.diagnostic();
         assert!(d.trace.len() >= 2, "got: {:?}", d.trace);
-        let fact_count = d.trace.iter()
-            .filter(|f| f.frame == "fact")
-            .count();
-        assert!(fact_count >= 2, "expected 2 fact frames, got: {:?}", d.trace);
+        let fact_count = d.trace.iter().filter(|f| f.frame == "fact").count();
+        assert!(
+            fact_count >= 2,
+            "expected 2 fact frames, got: {:?}",
+            d.trace
+        );
     }
 
     /// [v0.4 spec Sec. 14.2] JSON serialization: trace field is an array
@@ -8681,11 +8820,8 @@ entry = "main.wl"
     #[test]
     fn trace_json_serialization_format() {
         let err = run("PRINT(zzz);").unwrap_err();
-        let j: serde_json::Value = serde_json::from_str(
-            &err.diagnostic().render_jsonl()
-        ).unwrap();
-        let trace = j["trace"].as_array()
-            .expect("trace must be an array");
+        let j: serde_json::Value = serde_json::from_str(&err.diagnostic().render_jsonl()).unwrap();
+        let trace = j["trace"].as_array().expect("trace must be an array");
         assert_eq!(trace.len(), 1, "got: {:?}", trace);
         assert_eq!(trace[0]["frame"], "<toplevel>");
         // Each frame has a `location` object (Sec. 14.2 unified form).
@@ -8740,9 +8876,7 @@ entry = "main.wl"
     /// the A2 closure-cell phase when `Value::Closure` gains a
     /// `name` field.
     #[test]
-
     // ---- P4-A3: destructuring LET (spec v0.4 Sec. 7.5) ----
-
     #[test]
     fn p4_a3_destructure_array_basic() {
         // [a, b] <- [1, 2]
@@ -8790,10 +8924,7 @@ entry = "main.wl"
     fn p4_a3_destructure_dict_partial() {
         // `name` is the only captured key; the rest is ignored.
         let src = "LET([\"name\": n], [\"name\": \"alice\", \"age\": 30]); n;";
-        assert_eq!(
-            run(src).unwrap(),
-            Value::String("alice".to_string())
-        );
+        assert_eq!(run(src).unwrap(), Value::String("alice".to_string()));
     }
 
     #[test]
@@ -8806,11 +8937,9 @@ entry = "main.wl"
     #[test]
     fn p4_a3_destructure_nested_dict_in_array() {
         // [\"user\": [\"name\": n]] <- nested
-        let src = "LET([\"user\": [\"name\": n]], [\"user\": [\"name\": \"bob\", \"age\": 25]]); n;";
-        assert_eq!(
-            run(src).unwrap(),
-            Value::String("bob".to_string())
-        );
+        let src =
+            "LET([\"user\": [\"name\": n]], [\"user\": [\"name\": \"bob\", \"age\": 25]]); n;";
+        assert_eq!(run(src).unwrap(), Value::String("bob".to_string()));
     }
 
     #[test]
@@ -8872,10 +9001,7 @@ entry = "main.wl"
     fn p4_a4_match_literal_basic() {
         // First matching clause wins; literal pattern.
         let src = "MATCH(2, [[1, \"one\"], [2, \"two\"], [_, \"other\"]], NULL);";
-        assert_eq!(
-            run(src).unwrap(),
-            Value::String("two".to_string())
-        );
+        assert_eq!(run(src).unwrap(), Value::String("two".to_string()));
     }
 
     #[test]
@@ -8889,10 +9015,7 @@ entry = "main.wl"
     fn p4_a4_match_wildcard() {
         // `_` matches anything without binding.
         let src = "MATCH(99, [[1, \"one\"], [_, \"other\"]], NULL);";
-        assert_eq!(
-            run(src).unwrap(),
-            Value::String("other".to_string())
-        );
+        assert_eq!(run(src).unwrap(), Value::String("other".to_string()));
     }
 
     #[test]
@@ -8900,10 +9023,7 @@ entry = "main.wl"
         // scrutinee 1 hits clause 1 (literal 1); clause 2 (wildcard
         // -> "second") must not be evaluated.
         let src = "MATCH(1, [[1, \"first\"], [_, \"second\"]], NULL);";
-        assert_eq!(
-            run(src).unwrap(),
-            Value::String("first".to_string())
-        );
+        assert_eq!(run(src).unwrap(), Value::String("first".to_string()));
     }
 
     #[test]
@@ -8944,10 +9064,7 @@ entry = "main.wl"
     fn p4_a4_match_fallthrough_default() {
         // Explicit default arm is evaluated when no clause matches.
         let src = "MATCH(99, [[1, \"one\"]], \"fallback\");";
-        assert_eq!(
-            run(src).unwrap(),
-            Value::String("fallback".to_string())
-        );
+        assert_eq!(run(src).unwrap(), Value::String("fallback".to_string()));
     }
 
     #[test]
@@ -9196,9 +9313,8 @@ entry = "main.wl"
 
     #[test]
     fn b3_or_die_warning_exactly_once_per_call() {
-        let (r, w) = run_with_warnings(
-            r###"OR_DIE(OK(1), 0); OR_DIE(ERR("e"), 99); OR_DIE(OK(2), 0);"###,
-        );
+        let (r, w) =
+            run_with_warnings(r###"OR_DIE(OK(1), 0); OR_DIE(ERR("e"), 99); OR_DIE(OK(2), 0);"###);
         r.unwrap();
         assert_eq!(
             w.len(),
@@ -9213,20 +9329,13 @@ entry = "main.wl"
     fn b3_or_die_nested_in_default_position_each_layer_warns() {
         // OR_DIE nested in the default arg position — both source
         // occurrences are evaluated, both emit W0051. This is the
-    // legit "nested" shape (the test formerly tried outer-wraps-
-    // inner which is not a legal nested OR_DIE because the inner
-    // returns a non-RESULT; see b3_or_die_nested_outer_wraps_inner_
-    // is_e0030 below for that rejection).
-        let (r, w) = run_with_warnings(
-            r###"OR_DIE(ERR("e"), OR_DIE(OK(-1), 0));"###,
-        );
+        // legit "nested" shape (the test formerly tried outer-wraps-
+        // inner which is not a legal nested OR_DIE because the inner
+        // returns a non-RESULT; see b3_or_die_nested_outer_wraps_inner_
+        // is_e0030 below for that rejection).
+        let (r, w) = run_with_warnings(r###"OR_DIE(ERR("e"), OR_DIE(OK(-1), 0));"###);
         assert_eq!(r.unwrap(), Value::Integer(-1));
-        assert_eq!(
-            w.len(),
-            2,
-            "both OR_DIE tokens emit, got {:?}",
-            w
-        );
+        assert_eq!(w.len(), 2, "both OR_DIE tokens emit, got {:?}", w);
     }
 
     #[test]
@@ -9472,8 +9581,7 @@ entry = "main.wl"
     fn b4_unwrap_err_with_dict_payload_panics_with_dict_cause() {
         // UNWRAP(ERR(["code": "E1001", "msg": "bad"])) →
         //   cause = ErrorCause::Dict({"code": "E1001", "msg": "bad"})
-        let err = run(r###"UNWRAP(ERR(["code": "E1001", "msg": "bad"]));"###)
-            .unwrap_err();
+        let err = run(r###"UNWRAP(ERR(["code": "E1001", "msg": "bad"]));"###).unwrap_err();
         let d = err.diagnostic();
         assert_eq!(d.code, ErrorCode::E0100);
         let cause = d.cause.as_ref().expect("cause must be set");
@@ -9490,19 +9598,13 @@ entry = "main.wl"
     fn b4_unwrap_wrap_chain_populates_dict_cause() {
         // UNWRAP(WRAP(ERR("net down"), "during login")) → E0100
         //   cause = ErrorCause::Dict({"original": "net down", "context": "during login"})
-        let err = run(
-            r###"UNWRAP(WRAP(ERR("net down"), "during login"));"###,
-        )
-        .unwrap_err();
+        let err = run(r###"UNWRAP(WRAP(ERR("net down"), "during login"));"###).unwrap_err();
         let d = err.diagnostic();
         assert_eq!(d.code, ErrorCode::E0100);
         let cause = d.cause.as_ref().expect("cause must be set");
         match &**cause {
             wlwl_error::ErrorCause::Dict(map) => {
-                assert_eq!(
-                    map.get("original").unwrap(),
-                    &serde_json::json!("net down")
-                );
+                assert_eq!(map.get("original").unwrap(), &serde_json::json!("net down"));
                 assert_eq!(
                     map.get("context").unwrap(),
                     &serde_json::json!("during login")
@@ -9516,10 +9618,7 @@ entry = "main.wl"
     fn b4_unwrap_nested_wrap_chain_preserves_full_chain() {
         // WRAP(WRAP(ERR(e), c1), c2) — outer WRAP carries the
         // whole inner WRAP result as `original` (no flattening).
-        let err = run(
-            r###"UNWRAP(WRAP(WRAP(ERR("e"), "c1"), "c2"));"###,
-        )
-        .unwrap_err();
+        let err = run(r###"UNWRAP(WRAP(WRAP(ERR("e"), "c1"), "c2"));"###).unwrap_err();
         let cause = err.diagnostic().cause.as_ref().expect("cause");
         match &**cause {
             wlwl_error::ErrorCause::Dict(outer) => {
@@ -9527,17 +9626,9 @@ entry = "main.wl"
                 let inner = outer.get("original").unwrap();
                 // `original` is the whole previous WRAP value, which
                 // is itself a {"original": ..., "context": ...} dict.
-                let inner_obj = inner
-                    .as_object()
-                    .expect("inner original must be a dict");
-                assert_eq!(
-                    inner_obj.get("context").unwrap(),
-                    &serde_json::json!("c1")
-                );
-                assert_eq!(
-                    inner_obj.get("original").unwrap(),
-                    &serde_json::json!("e")
-                );
+                let inner_obj = inner.as_object().expect("inner original must be a dict");
+                assert_eq!(inner_obj.get("context").unwrap(), &serde_json::json!("c1"));
+                assert_eq!(inner_obj.get("original").unwrap(), &serde_json::json!("e"));
             }
             other => panic!("expected Dict cause, got {:?}", other),
         }
@@ -9583,7 +9674,10 @@ entry = "main.wl"
         let err = run(src).unwrap_err();
         assert_eq!(err.diagnostic().code, ErrorCode::E0100);
         let cause = err.diagnostic().cause.as_ref().expect("cause");
-        assert_eq!(**cause, wlwl_error::ErrorCause::String("user fn boom".into()));
+        assert_eq!(
+            **cause,
+            wlwl_error::ErrorCause::String("user fn boom".into())
+        );
     }
 
     #[test]
@@ -9594,7 +9688,11 @@ entry = "main.wl"
         assert!(w.is_empty(), "UNWRAP must be silent, got {:?}", w);
         let (r, w) = run_with_warnings(r###"UNWRAP(ERR("e"));"###);
         assert!(r.is_err());
-        assert!(w.is_empty(), "UNWRAP must be silent even on ERR, got {:?}", w);
+        assert!(
+            w.is_empty(),
+            "UNWRAP must be silent even on ERR, got {:?}",
+            w
+        );
     }
 
     // ── ERR_PAYLOAD ───────────────────────────────────────────────────
@@ -9609,17 +9707,10 @@ entry = "main.wl"
 
     #[test]
     fn b4_err_payload_err_returns_dict_payload() {
-        let v = run(r###"ERR_PAYLOAD(ERR(["code": "E1001", "msg": "bad"]));"###)
-            .unwrap();
+        let v = run(r###"ERR_PAYLOAD(ERR(["code": "E1001", "msg": "bad"]));"###).unwrap();
         let expected = Value::Dict(vec![
-            (
-                Value::String("code".into()),
-                Value::String("E1001".into()),
-            ),
-            (
-                Value::String("msg".into()),
-                Value::String("bad".into()),
-            ),
+            (Value::String("code".into()), Value::String("E1001".into())),
+            (Value::String("msg".into()), Value::String("bad".into())),
         ]);
         assert_eq!(v, expected);
     }
@@ -9682,10 +9773,7 @@ entry = "main.wl"
         let v = run(r###"ERR_PAYLOAD(WRAP(ERR("e"), "ctx"));"###).unwrap();
         let expected = Value::Dict(vec![
             (Value::String("original".into()), Value::String("e".into())),
-            (
-                Value::String("context".into()),
-                Value::String("ctx".into()),
-            ),
+            (Value::String("context".into()), Value::String("ctx".into())),
         ]);
         assert_eq!(v, expected);
     }
@@ -9694,8 +9782,7 @@ entry = "main.wl"
     fn b4_wrap_err_with_dict_payload_creates_nested_dict() {
         // WRAP(ERR(["code": "E1001"]), "ctx") →
         //   ERR({"original": {"code": "E1001"}, "context": "ctx"})
-        let v = run(r###"ERR_PAYLOAD(WRAP(ERR(["code": "E1001"]), "ctx"));"###)
-            .unwrap();
+        let v = run(r###"ERR_PAYLOAD(WRAP(ERR(["code": "E1001"]), "ctx"));"###).unwrap();
         let expected = Value::Dict(vec![
             (
                 Value::String("original".into()),
@@ -9704,10 +9791,7 @@ entry = "main.wl"
                     Value::String("E1001".into()),
                 )]),
             ),
-            (
-                Value::String("context".into()),
-                Value::String("ctx".into()),
-            ),
+            (Value::String("context".into()), Value::String("ctx".into())),
         ]);
         assert_eq!(v, expected);
     }
@@ -9733,8 +9817,7 @@ entry = "main.wl"
         // WRAP(WRAP(ERR("e"), "c1"), "c2") — second WRAP wraps
         // the WHOLE previous ERR (which holds a dict) as `original`.
         // Use ERR_PAYLOAD to extract the outer dict.
-        let v = run(r###"ERR_PAYLOAD(WRAP(WRAP(ERR("e"), "c1"), "c2"));"###)
-            .unwrap();
+        let v = run(r###"ERR_PAYLOAD(WRAP(WRAP(ERR("e"), "c1"), "c2"));"###).unwrap();
         let outer_dict = match v {
             Value::Dict(d) => d,
             _ => panic!("outer should be dict"),
@@ -9754,10 +9837,7 @@ entry = "main.wl"
         );
         assert_eq!(
             inner_dict[0],
-            (
-                Value::String("original".into()),
-                Value::String("e".into())
-            )
+            (Value::String("original".into()), Value::String("e".into()))
         );
     }
 
@@ -9833,10 +9913,7 @@ entry = "main.wl"
         let v = run(r###"ERR_PAYLOAD(WRAP(ERR("e"), "ctx"));"###).unwrap();
         let expected = Value::Dict(vec![
             (Value::String("original".into()), Value::String("e".into())),
-            (
-                Value::String("context".into()),
-                Value::String("ctx".into()),
-            ),
+            (Value::String("context".into()), Value::String("ctx".into())),
         ]);
         assert_eq!(v, expected);
     }
@@ -9917,10 +9994,7 @@ entry = "main.wl"
 
     #[test]
     fn b5_str_containers_render_structurally() {
-        assert_eq!(
-            run("STR([1, 2]);").unwrap(),
-            Value::String("[1, 2]".into())
-        );
+        assert_eq!(run("STR([1, 2]);").unwrap(), Value::String("[1, 2]".into()));
         assert_eq!(
             run(r###"STR(["a": 1]);"###).unwrap(),
             Value::String("[a: 1]".into())
@@ -9941,10 +10015,7 @@ entry = "main.wl"
 
     #[test]
     fn b5_str_ok_result_renders() {
-        assert_eq!(
-            run("STR(OK(42));").unwrap(),
-            Value::String("OK(42)".into())
-        );
+        assert_eq!(run("STR(OK(42));").unwrap(), Value::String("OK(42)".into()));
     }
 
     #[test]
@@ -9958,7 +10029,10 @@ entry = "main.wl"
 
     #[test]
     fn b5_str_arity_wrong_is_e0022() {
-        assert_eq!(run("STR();").unwrap_err().diagnostic().code, ErrorCode::E0022);
+        assert_eq!(
+            run("STR();").unwrap_err().diagnostic().code,
+            ErrorCode::E0022
+        );
         assert_eq!(
             run(r###"STR("a", "b");"###).unwrap_err().diagnostic().code,
             ErrorCode::E0022
@@ -9971,25 +10045,18 @@ entry = "main.wl"
     fn b5_format_positional_spec_example() {
         // §10.6 example 1: positional placeholders + STR conversion of
         // the INTEGER age.
-        let v = run(
-            r###"LET(name, "alice"); LET(age, 30);
-                 FORMAT("hi {0}, you are {1} years old", name, age);"###,
-        )
+        let v = run(r###"LET(name, "alice"); LET(age, 30);
+                 FORMAT("hi {0}, you are {1} years old", name, age);"###)
         .unwrap();
-        assert_eq!(
-            v,
-            Value::String("hi alice, you are 30 years old".into())
-        );
+        assert_eq!(v, Value::String("hi alice, you are 30 years old".into()));
     }
 
     #[test]
     fn b5_format_named_spec_example() {
         // §10.6 example 2: pure-named pattern — the DICT is args[0] of
         // the format args, exactly as the spec's "从 args[0]" describes.
-        let v = run(
-            r###"FORMAT("hi {name}, age {age}", ["name": "alice", "age": 30]);"###,
-        )
-        .unwrap();
+        let v =
+            run(r###"FORMAT("hi {name}, age {age}", ["name": "alice", "age": 30]);"###).unwrap();
         assert_eq!(v, Value::String("hi alice, age 30".into()));
     }
 
@@ -9999,10 +10066,7 @@ entry = "main.wl"
         // the dict at args[1] — the "first DICT among format args"
         // rule is what makes the spec's own example produce sensible
         // output (hardcoding args[0] would leave "{age}" literal).
-        let v = run(
-            r###"FORMAT("hi {0}, age {age}", "alice", ["age": 30]);"###,
-        )
-        .unwrap();
+        let v = run(r###"FORMAT("hi {0}, age {age}", "alice", ["age": 30]);"###).unwrap();
         assert_eq!(v, Value::String("hi alice, age 30".into()));
     }
 
@@ -10194,10 +10258,7 @@ entry = "main.wl"
             );
             out;
         "#;
-        assert_eq!(
-            run(src).unwrap(),
-            Value::String("[1][2][3]".into())
-        );
+        assert_eq!(run(src).unwrap(), Value::String("[1][2][3]".into()));
     }
 
     // ── FORMAT via IMPORT("wlwl:std.format") (§15.8) ──────────────────
@@ -10207,26 +10268,32 @@ entry = "main.wl"
         // §15.8: the module is FORMAT's home. After IMPORT, the name
         // binds to the std NativeFn and the user-supplied binding
         // takes priority over the resolve_builtin fallback.
-        let v = run_std(r#"
+        let v = run_std(
+            r#"
             IMPORT("wlwl:std.format", ["FORMAT"]);
             FORMAT("hi {0}", "alice");
-        "#)
+        "#,
+        )
         .unwrap();
         assert_eq!(v, Value::String("hi alice".into()));
     }
 
     #[test]
     fn b5_format_via_std_import_named_and_mixed() {
-        let v = run_std(r#"
+        let v = run_std(
+            r#"
             IMPORT("wlwl:std.format", ["FORMAT"]);
             FORMAT("hi {name}", ["name": "bob"]);
-        "#)
+        "#,
+        )
         .unwrap();
         assert_eq!(v, Value::String("hi bob".into()));
-        let v = run_std(r#"
+        let v = run_std(
+            r#"
             IMPORT("wlwl:std.format", ["FORMAT"]);
             FORMAT("{0}={v}", "x", ["v": 7]);
-        "#)
+        "#,
+        )
         .unwrap();
         assert_eq!(v, Value::String("x=7".into()));
     }
@@ -10235,20 +10302,24 @@ entry = "main.wl"
     fn b5_format_std_path_malformed_template_is_e0039() {
         // The std path shares the template grammar, so the same E0039
         // fires through invoke_std's StdError → diagnostic mapping.
-        let err = run_std(r#"
+        let err = run_std(
+            r#"
             IMPORT("wlwl:std.format", ["FORMAT"]);
             FORMAT("bad {");
-        "#)
+        "#,
+        )
         .unwrap_err();
         assert_eq!(err.diagnostic().code, ErrorCode::E0039);
     }
 
     #[test]
     fn b5_format_std_path_unmatched_kept_literal() {
-        let v = run_std(r#"
+        let v = run_std(
+            r#"
             IMPORT("wlwl:std.format", ["FORMAT"]);
             FORMAT("{9} {missing}", "a");
-        "#)
+        "#,
+        )
         .unwrap();
         assert_eq!(v, Value::String("{9} {missing}".into()));
     }
@@ -10260,10 +10331,12 @@ entry = "main.wl"
         // module. The global builtin renders them instead (see
         // b5_format_closure_arg_renders_fun_form). Documented
         // divergence, deviations P4-B5-004.
-        let err = run_std(r#"
+        let err = run_std(
+            r#"
             IMPORT("wlwl:std.format", ["FORMAT"]);
             FORMAT("{0}", FUN((x), x));
-        "#)
+        "#,
+        )
         .unwrap_err();
         assert_eq!(err.diagnostic().code, ErrorCode::E0030);
     }
@@ -10273,12 +10346,13 @@ entry = "main.wl"
         // Same program shape through both entry points must produce
         // the same string (they share the grammar; rendering mirrors
         // Value::display on both sides).
-        let global = run(r###"FORMAT("hi {0}, age {age}", "alice", ["age": 30]);"###)
-            .unwrap();
-        let via_std = run_std(r#"
+        let global = run(r###"FORMAT("hi {0}, age {age}", "alice", ["age": 30]);"###).unwrap();
+        let via_std = run_std(
+            r#"
             IMPORT("wlwl:std.format", ["FORMAT"]);
             FORMAT("hi {0}, age {age}", "alice", ["age": 30]);
-        "#)
+        "#,
+        )
         .unwrap();
         assert_eq!(global, via_std);
         assert_eq!(global, Value::String("hi alice, age 30".into()));
@@ -10323,7 +10397,8 @@ entry = "main.wl"
         // sanity check, not an enumeration test (see
         // `wlwl_eval::collection::tests::names_match_catalog` for
         // the strict count lock).
-        let v = run_std(r#"
+        let v = run_std(
+            r#"
             IMPORT("wlwl:std.collection", [
                 "MAP", "FILTER", "REDUCE", "SORT", "SORT_BY",
                 "ZIP", "RANGE", "ANY", "ALL", "FIND",
@@ -10335,55 +10410,77 @@ entry = "main.wl"
                 ANY, ALL, FIND, ENUMERATE, TAKE, DROP, FLAT, UNIQ,
                 GROUP_BY, JOIN
             ]);
-        "#).unwrap();
+        "#,
+        )
+        .unwrap();
         assert_eq!(v, Value::Integer(17));
     }
 
     #[test]
     fn b6_map_spec_worked_example() {
         // §15.7 worked example verbatim: MAP([1,2,3], FUN((x), *(x,x))).
-        let v = run_std(r#"
+        let v = run_std(
+            r#"
             IMPORT("wlwl:std.collection", ["MAP"]);
             MAP([1, 2, 3], FUN((x), *(x, x)));
-        "#).unwrap();
-        assert_eq!(v, Value::Array(vec![
-            Value::Integer(1), Value::Integer(4), Value::Integer(9)
-        ]));
+        "#,
+        )
+        .unwrap();
+        assert_eq!(
+            v,
+            Value::Array(vec![
+                Value::Integer(1),
+                Value::Integer(4),
+                Value::Integer(9)
+            ])
+        );
     }
 
     #[test]
     fn b6_map_empty_array_returns_empty_array() {
-        let v = run_std(r#"
+        let v = run_std(
+            r#"
             IMPORT("wlwl:std.collection", ["MAP"]);
             MAP([], FUN((x), *(x, x)));
-        "#).unwrap();
+        "#,
+        )
+        .unwrap();
         assert_eq!(v, Value::Array(vec![]));
     }
 
     #[test]
     fn b6_map_non_array_first_arg_is_e0030() {
-        let err = run_std(r#"
+        let err = run_std(
+            r#"
             IMPORT("wlwl:std.collection", ["MAP"]);
             MAP(42, FUN((x), x));
-        "#).unwrap_err();
+        "#,
+        )
+        .unwrap_err();
         assert_eq!(err.diagnostic().code, ErrorCode::E0030);
     }
 
     #[test]
     fn b6_map_non_callable_second_arg_is_e0020() {
-        let err = run_std(r#"
+        let err = run_std(
+            r#"
             IMPORT("wlwl:std.collection", ["MAP"]);
             MAP([1, 2, 3], 42);
-        "#).unwrap_err();
+        "#,
+        )
+        .unwrap_err();
         assert_eq!(err.diagnostic().code, ErrorCode::E0020);
     }
 
     #[test]
     fn b6_map_arity_wrong_is_e0022() {
-        let err = run_std(r#"
+        let err = run_std(
+            r#"
             IMPORT("wlwl:std.collection", ["MAP"]);
             MAP([1, 2, 3]);
-        "#).unwrap_err();
+        "#,
+        )
+        .unwrap_err();
         assert_eq!(err.diagnostic().code, ErrorCode::E0022);
     }
 
@@ -10395,78 +10492,122 @@ entry = "main.wl"
         // ERR never reaches the fn body). At the top level an ERR
         // surfaces as E0102, exactly like B5's `b5_str_err_arg_*`
         // tests; the message body preserves the inner ERR value.
-        let err = run_std(r#"
+        let err = run_std(
+            r#"
             IMPORT("wlwl:std.collection", ["MAP"]);
             MAP([1, ERR("e"), 3], FUN((x), *(x, 2)));
-        "#).unwrap_err();
+        "#,
+        )
+        .unwrap_err();
         assert_eq!(err.diagnostic().code, ErrorCode::E0102);
-        assert!(err.diagnostic().message.contains("e"), "{}", err.diagnostic().message);
+        assert!(
+            err.diagnostic().message.contains("e"),
+            "{}",
+            err.diagnostic().message
+        );
     }
 
     #[test]
     fn b6_filter_keeps_truthy_only() {
-        let v = run_std(r#"
+        let v = run_std(
+            r#"
             IMPORT("wlwl:std.collection", ["FILTER"]);
             FILTER([1, 2, 3, 4, 5], FUN((x), >(x, 2)));
-        "#).unwrap();
-        assert_eq!(v, Value::Array(vec![
-            Value::Integer(3), Value::Integer(4), Value::Integer(5)
-        ]));
+        "#,
+        )
+        .unwrap();
+        assert_eq!(
+            v,
+            Value::Array(vec![
+                Value::Integer(3),
+                Value::Integer(4),
+                Value::Integer(5)
+            ])
+        );
     }
 
     #[test]
     fn b6_filter_predicate_non_boolean_is_e0030() {
-        let err = run_std(r#"
+        let err = run_std(
+            r#"
             IMPORT("wlwl:std.collection", ["FILTER"]);
             FILTER([1, 2, 3], FUN((x), x));
-        "#).unwrap_err();
+        "#,
+        )
+        .unwrap_err();
         assert_eq!(err.diagnostic().code, ErrorCode::E0030);
     }
 
     #[test]
     fn b6_reduce_left_fold_with_init() {
-        let v = run_std(r#"
+        let v = run_std(
+            r#"
             IMPORT("wlwl:std.collection", ["REDUCE"]);
             REDUCE([1, 2, 3, 4], FUN((acc, x), +(acc, x)), 0);
-        "#).unwrap();
+        "#,
+        )
+        .unwrap();
         assert_eq!(v, Value::Integer(10));
     }
 
     #[test]
     fn b6_reduce_empty_array_returns_init() {
         // §10.5 row 3: "空数组返回 init".
-        let v = run_std(r#"
+        let v = run_std(
+            r#"
             IMPORT("wlwl:std.collection", ["REDUCE"]);
             REDUCE([], FUN((acc, x), +(acc, x)), 42);
-        "#).unwrap();
+        "#,
+        )
+        .unwrap();
         assert_eq!(v, Value::Integer(42));
     }
 
     #[test]
     fn b6_sort_default_uses_lt() {
-        let v = run_std(r#"
+        let v = run_std(
+            r#"
             IMPORT("wlwl:std.collection", ["SORT"]);
             SORT([3, 1, 4, 1, 5, 9, 2, 6]);
-        "#).unwrap();
-        assert_eq!(v, Value::Array(vec![
-            Value::Integer(1), Value::Integer(1), Value::Integer(2),
-            Value::Integer(3), Value::Integer(4), Value::Integer(5),
-            Value::Integer(6), Value::Integer(9),
-        ]));
+        "#,
+        )
+        .unwrap();
+        assert_eq!(
+            v,
+            Value::Array(vec![
+                Value::Integer(1),
+                Value::Integer(1),
+                Value::Integer(2),
+                Value::Integer(3),
+                Value::Integer(4),
+                Value::Integer(5),
+                Value::Integer(6),
+                Value::Integer(9),
+            ])
+        );
     }
 
     #[test]
     fn b6_sort_with_custom_comparator_descending() {
         // Spec §10.5 row 4: cmp(a,b)=TRUE iff a<b; we negate to get
         // descending sort.
-        let v = run_std(r#"
+        let v = run_std(
+            r#"
             IMPORT("wlwl:std.collection", ["SORT"]);
             SORT([3, 1, 4, 1, 5], FUN((a, b), >(a, b)));
-        "#).unwrap();
-        assert_eq!(v, Value::Array(vec![
-            Value::Integer(5), Value::Integer(4), Value::Integer(3),
-            Value::Integer(1), Value::Integer(1),
-        ]));
+        "#,
+        )
+        .unwrap();
+        assert_eq!(
+            v,
+            Value::Array(vec![
+                Value::Integer(5),
+                Value::Integer(4),
+                Value::Integer(3),
+                Value::Integer(1),
+                Value::Integer(1),
+            ])
+        );
     }
 
     #[test]
@@ -10475,93 +10616,146 @@ entry = "main.wl"
         // (i.e. 1,4,9) — the result must be [1,2,3] (unchanged),
         // proving the function sorts by *projected* key, not the
         // element directly.
-        let v = run_std(r#"
+        let v = run_std(
+            r#"
             IMPORT("wlwl:std.collection", ["SORT_BY"]);
             SORT_BY([1, 2, 3], FUN((x), *(x, x)));
-        "#).unwrap();
-        assert_eq!(v, Value::Array(vec![
-            Value::Integer(1), Value::Integer(2), Value::Integer(3),
-        ]));
+        "#,
+        )
+        .unwrap();
+        assert_eq!(
+            v,
+            Value::Array(vec![
+                Value::Integer(1),
+                Value::Integer(2),
+                Value::Integer(3),
+            ])
+        );
     }
 
     #[test]
     fn b6_zip_two_arrays() {
-        let v = run_std(r#"
+        let v = run_std(
+            r#"
             IMPORT("wlwl:std.collection", ["ZIP"]);
             ZIP([1, 2, 3], ["a", "b", "c"]);
-        "#).unwrap();
-        assert_eq!(v, Value::Array(vec![
-            Value::Array(vec![Value::Integer(1), Value::String("a".into())]),
-            Value::Array(vec![Value::Integer(2), Value::String("b".into())]),
-            Value::Array(vec![Value::Integer(3), Value::String("c".into())]),
-        ]));
+        "#,
+        )
+        .unwrap();
+        assert_eq!(
+            v,
+            Value::Array(vec![
+                Value::Array(vec![Value::Integer(1), Value::String("a".into())]),
+                Value::Array(vec![Value::Integer(2), Value::String("b".into())]),
+                Value::Array(vec![Value::Integer(3), Value::String("c".into())]),
+            ])
+        );
     }
 
     #[test]
     fn b6_zip_shortest_input_wins() {
         // §10.5 row 6: "长度 = 最短".
-        let v = run_std(r#"
+        let v = run_std(
+            r#"
             IMPORT("wlwl:std.collection", ["ZIP"]);
             ZIP([1, 2, 3, 4], ["a", "b"]);
-        "#).unwrap();
-        assert_eq!(v, Value::Array(vec![
-            Value::Array(vec![Value::Integer(1), Value::String("a".into())]),
-            Value::Array(vec![Value::Integer(2), Value::String("b".into())]),
-        ]));
+        "#,
+        )
+        .unwrap();
+        assert_eq!(
+            v,
+            Value::Array(vec![
+                Value::Array(vec![Value::Integer(1), Value::String("a".into())]),
+                Value::Array(vec![Value::Integer(2), Value::String("b".into())]),
+            ])
+        );
     }
 
     #[test]
     fn b6_range_single_arg_default_start_step() {
-        let v = run_std(r#"
+        let v = run_std(
+            r#"
             IMPORT("wlwl:std.collection", ["RANGE"]);
             RANGE(5);
-        "#).unwrap();
-        assert_eq!(v, Value::Array(vec![
-            Value::Integer(0), Value::Integer(1), Value::Integer(2),
-            Value::Integer(3), Value::Integer(4),
-        ]));
+        "#,
+        )
+        .unwrap();
+        assert_eq!(
+            v,
+            Value::Array(vec![
+                Value::Integer(0),
+                Value::Integer(1),
+                Value::Integer(2),
+                Value::Integer(3),
+                Value::Integer(4),
+            ])
+        );
     }
 
     #[test]
     fn b6_range_three_args_start_end_step() {
-        let v = run_std(r#"
+        let v = run_std(
+            r#"
             IMPORT("wlwl:std.collection", ["RANGE"]);
             RANGE(0, 10, 2);
-        "#).unwrap();
-        assert_eq!(v, Value::Array(vec![
-            Value::Integer(0), Value::Integer(2), Value::Integer(4),
-            Value::Integer(6), Value::Integer(8),
-        ]));
+        "#,
+        )
+        .unwrap();
+        assert_eq!(
+            v,
+            Value::Array(vec![
+                Value::Integer(0),
+                Value::Integer(2),
+                Value::Integer(4),
+                Value::Integer(6),
+                Value::Integer(8),
+            ])
+        );
     }
 
     #[test]
     fn b6_range_negative_step_descending() {
-        let v = run_std(r#"
+        let v = run_std(
+            r#"
             IMPORT("wlwl:std.collection", ["RANGE"]);
             RANGE(5, 0, -1);
-        "#).unwrap();
-        assert_eq!(v, Value::Array(vec![
-            Value::Integer(5), Value::Integer(4), Value::Integer(3),
-            Value::Integer(2), Value::Integer(1),
-        ]));
+        "#,
+        )
+        .unwrap();
+        assert_eq!(
+            v,
+            Value::Array(vec![
+                Value::Integer(5),
+                Value::Integer(4),
+                Value::Integer(3),
+                Value::Integer(2),
+                Value::Integer(1),
+            ])
+        );
     }
 
     #[test]
     fn b6_range_step_zero_is_e0038() {
         // §10.5 row 7: `step=0` → `E0038` (code registered in B5).
-        let err = run_std(r#"
+        let err = run_std(
+            r#"
             IMPORT("wlwl:std.collection", ["RANGE"]);
             RANGE(0, 10, 0);
-        "#).unwrap_err();
+        "#,
+        )
+        .unwrap_err();
         assert_eq!(err.diagnostic().code, ErrorCode::E0038);
     }
 
     #[test]
     fn b6_any_with_predicate_finds_truthy() {
-        let v = run_std(r#"
+        let v = run_std(
+            r#"
             IMPORT("wlwl:std.collection", ["ANY"]);
             ANY([1, 2, 3], FUN((x), >(x, 2)));
-        "#).unwrap();
+        "#,
+        )
+        .unwrap();
         assert_eq!(v, Value::Boolean(true));
     }
 
@@ -10570,17 +10764,23 @@ entry = "main.wl"
         // §10.5 row 8: "默认恒真" — any(v) returns TRUE for the
         // first truthy element. NULL and FALSE are falsy.
         assert_eq!(
-            run_std(r#"
+            run_std(
+                r#"
                 IMPORT("wlwl:std.collection", ["ANY"]);
                 ANY([NULL, FALSE, 1, 2]);
-            "#).unwrap(),
+            "#
+            )
+            .unwrap(),
             Value::Boolean(true)
         );
         assert_eq!(
-            run_std(r#"
+            run_std(
+                r#"
                 IMPORT("wlwl:std.collection", ["ANY"]);
                 ANY([NULL, FALSE, NULL]);
-            "#).unwrap(),
+            "#
+            )
+            .unwrap(),
             Value::Boolean(false)
         );
     }
@@ -10588,136 +10788,210 @@ entry = "main.wl"
     #[test]
     fn b6_all_with_predicate_requires_all_truthy() {
         assert_eq!(
-            run_std(r#"
+            run_std(
+                r#"
                 IMPORT("wlwl:std.collection", ["ALL"]);
                 ALL([1, 2, 3], FUN((x), >(x, 0)));
-            "#).unwrap(),
+            "#
+            )
+            .unwrap(),
             Value::Boolean(true)
         );
         assert_eq!(
-            run_std(r#"
+            run_std(
+                r#"
                 IMPORT("wlwl:std.collection", ["ALL"]);
                 ALL([1, 2, 3], FUN((x), >(x, 2)));
-            "#).unwrap(),
+            "#
+            )
+            .unwrap(),
             Value::Boolean(false)
         );
     }
 
     #[test]
     fn b6_find_returns_first_match() {
-        let v = run_std(r#"
+        let v = run_std(
+            r#"
             IMPORT("wlwl:std.collection", ["FIND"]);
             FIND([1, 2, 3, 4], FUN((x), >(x, 2)));
-        "#).unwrap();
+        "#,
+        )
+        .unwrap();
         assert_eq!(v, Value::Integer(3));
     }
 
     #[test]
     fn b6_find_no_match_returns_null() {
         // §10.5 row 10: "无则 NULL".
-        let v = run_std(r#"
+        let v = run_std(
+            r#"
             IMPORT("wlwl:std.collection", ["FIND"]);
             FIND([1, 2, 3], FUN((x), >(x, 99)));
-        "#).unwrap();
+        "#,
+        )
+        .unwrap();
         assert_eq!(v, Value::Null);
     }
 
     #[test]
     fn b6_enumerate_pairs_index_with_value() {
-        let v = run_std(r#"
+        let v = run_std(
+            r#"
             IMPORT("wlwl:std.collection", ["ENUMERATE"]);
             ENUMERATE(["a", "b", "c"]);
-        "#).unwrap();
-        assert_eq!(v, Value::Array(vec![
-            Value::Array(vec![Value::Integer(0), Value::String("a".into())]),
-            Value::Array(vec![Value::Integer(1), Value::String("b".into())]),
-            Value::Array(vec![Value::Integer(2), Value::String("c".into())]),
-        ]));
+        "#,
+        )
+        .unwrap();
+        assert_eq!(
+            v,
+            Value::Array(vec![
+                Value::Array(vec![Value::Integer(0), Value::String("a".into())]),
+                Value::Array(vec![Value::Integer(1), Value::String("b".into())]),
+                Value::Array(vec![Value::Integer(2), Value::String("c".into())]),
+            ])
+        );
     }
 
     #[test]
     fn b6_take_takes_first_n() {
-        let v = run_std(r#"
+        let v = run_std(
+            r#"
             IMPORT("wlwl:std.collection", ["TAKE"]);
             TAKE([1, 2, 3, 4, 5], 3);
-        "#).unwrap();
-        assert_eq!(v, Value::Array(vec![
-            Value::Integer(1), Value::Integer(2), Value::Integer(3),
-        ]));
+        "#,
+        )
+        .unwrap();
+        assert_eq!(
+            v,
+            Value::Array(vec![
+                Value::Integer(1),
+                Value::Integer(2),
+                Value::Integer(3),
+            ])
+        );
     }
 
     #[test]
     fn b6_take_n_over_len_returns_full() {
-        let v = run_std(r#"
+        let v = run_std(
+            r#"
             IMPORT("wlwl:std.collection", ["TAKE"]);
             TAKE([1, 2, 3], 99);
-        "#).unwrap();
-        assert_eq!(v, Value::Array(vec![
-            Value::Integer(1), Value::Integer(2), Value::Integer(3),
-        ]));
+        "#,
+        )
+        .unwrap();
+        assert_eq!(
+            v,
+            Value::Array(vec![
+                Value::Integer(1),
+                Value::Integer(2),
+                Value::Integer(3),
+            ])
+        );
     }
 
     #[test]
     fn b6_drop_skips_first_n() {
-        let v = run_std(r#"
+        let v = run_std(
+            r#"
             IMPORT("wlwl:std.collection", ["DROP"]);
             DROP([1, 2, 3, 4, 5], 2);
-        "#).unwrap();
-        assert_eq!(v, Value::Array(vec![
-            Value::Integer(3), Value::Integer(4), Value::Integer(5),
-        ]));
+        "#,
+        )
+        .unwrap();
+        assert_eq!(
+            v,
+            Value::Array(vec![
+                Value::Integer(3),
+                Value::Integer(4),
+                Value::Integer(5),
+            ])
+        );
     }
 
     #[test]
     fn b6_flat_flattens_one_level() {
-        let v = run_std(r#"
+        let v = run_std(
+            r#"
             IMPORT("wlwl:std.collection", ["FLAT"]);
             FLAT([[1, 2], [3, [4, 5]], 6]);
-        "#).unwrap();
+        "#,
+        )
+        .unwrap();
         // One level only: [[4,5]] stays nested.
-        assert_eq!(v, Value::Array(vec![
-            Value::Integer(1), Value::Integer(2),
-            Value::Integer(3), Value::Array(vec![Value::Integer(4), Value::Integer(5)]),
-            Value::Integer(6),
-        ]));
+        assert_eq!(
+            v,
+            Value::Array(vec![
+                Value::Integer(1),
+                Value::Integer(2),
+                Value::Integer(3),
+                Value::Array(vec![Value::Integer(4), Value::Integer(5)]),
+                Value::Integer(6),
+            ])
+        );
     }
 
     #[test]
     fn b6_uniq_dedupes_preserving_order() {
-        let v = run_std(r#"
+        let v = run_std(
+            r#"
             IMPORT("wlwl:std.collection", ["UNIQ"]);
             UNIQ([1, 2, 1, 3, 2, 4]);
-        "#).unwrap();
-        assert_eq!(v, Value::Array(vec![
-            Value::Integer(1), Value::Integer(2),
-            Value::Integer(3), Value::Integer(4),
-        ]));
+        "#,
+        )
+        .unwrap();
+        assert_eq!(
+            v,
+            Value::Array(vec![
+                Value::Integer(1),
+                Value::Integer(2),
+                Value::Integer(3),
+                Value::Integer(4),
+            ])
+        );
     }
 
     #[test]
     fn b6_group_by_returns_dict_of_arrays() {
         // §10.5 row 15: GROUP_BY(arr, key) → DICT keyed by key(v).
-        let v = run_std(r#"
+        let v = run_std(
+            r#"
             IMPORT("wlwl:std.collection", ["GROUP_BY"]);
             GROUP_BY(
                 [1, 2, 3, 4, 5, 6],
                 FUN((x), %(x, 2))
             );
-        "#).unwrap();
+        "#,
+        )
+        .unwrap();
         // Two keys: "0" (evens), "1" (odds). Order within each bucket
         // follows input order.
         match v {
             Value::Dict(entries) => {
                 assert_eq!(entries.len(), 2);
                 for (k, v) in &entries {
-                    let k = match k { Value::String(s) => s.as_str(), _ => panic!("non-string key") };
+                    let k = match k {
+                        Value::String(s) => s.as_str(),
+                        _ => panic!("non-string key"),
+                    };
                     match k {
-                        "0" => assert_eq!(*v, Value::Array(vec![
-                            Value::Integer(2), Value::Integer(4), Value::Integer(6),
-                        ])),
-                        "1" => assert_eq!(*v, Value::Array(vec![
-                            Value::Integer(1), Value::Integer(3), Value::Integer(5),
-                        ])),
+                        "0" => assert_eq!(
+                            *v,
+                            Value::Array(vec![
+                                Value::Integer(2),
+                                Value::Integer(4),
+                                Value::Integer(6),
+                            ])
+                        ),
+                        "1" => assert_eq!(
+                            *v,
+                            Value::Array(vec![
+                                Value::Integer(1),
+                                Value::Integer(3),
+                                Value::Integer(5),
+                            ])
+                        ),
                         _ => panic!("unexpected key: {}", k),
                     }
                 }
@@ -10728,10 +11002,13 @@ entry = "main.wl"
 
     #[test]
     fn b6_join_glues_with_separator() {
-        let v = run_std(r#"
+        let v = run_std(
+            r#"
             IMPORT("wlwl:std.collection", ["JOIN"]);
             JOIN([1, 2, 3], "-");
-        "#).unwrap();
+        "#,
+        )
+        .unwrap();
         assert_eq!(v, Value::String("1-2-3".into()));
     }
 
@@ -10741,24 +11018,38 @@ entry = "main.wl"
         // collection function returns it unchanged. Same pattern as
         // `b5_str_err_arg_propagates_per_s126`: at top level the ERR
         // surfaces as E0102.
-        let err = run_std(r#"
+        let err = run_std(
+            r#"
             IMPORT("wlwl:std.collection", ["MAP"]);
             MAP([ERR("first")], FUN((x), *(x, 2)));
-        "#).unwrap_err();
+        "#,
+        )
+        .unwrap_err();
         assert_eq!(err.diagnostic().code, ErrorCode::E0102);
-        assert!(err.diagnostic().message.contains("first"), "{}", err.diagnostic().message);
+        assert!(
+            err.diagnostic().message.contains("first"),
+            "{}",
+            err.diagnostic().message
+        );
     }
 
     #[test]
     fn b6_callback_returning_err_is_transparent() {
         // The callback itself returns ERR — the collection must
         // surface that ERR (§12.6 / §10.5). Same E0102 pattern.
-        let err = run_std(r#"
+        let err = run_std(
+            r#"
             IMPORT("wlwl:std.collection", ["MAP"]);
             MAP([1, 2, 3], FUN((x), IF(>(x, 1), *(x, 2), ERR("from cb"))));
-        "#).unwrap_err();
+        "#,
+        )
+        .unwrap_err();
         assert_eq!(err.diagnostic().code, ErrorCode::E0102);
-        assert!(err.diagnostic().message.contains("from cb"), "{}", err.diagnostic().message);
+        assert!(
+            err.diagnostic().message.contains("from cb"),
+            "{}",
+            err.diagnostic().message
+        );
     }
 
     #[test]
@@ -10766,16 +11057,23 @@ entry = "main.wl"
         // On the first ERR from the callback, the collection must
         // stop iterating and surface it — not continue and return
         // a partial array. Counter must stay < input length.
-        let err = run_std(r#"
+        let err = run_std(
+            r#"
             IMPORT("wlwl:std.collection", ["MAP"]);
             LET(counter, 0);
             MAP([1, 2, 3, 4], FUN((x),
                 SET(counter, +(counter, 1));
                 IF(>(x, 2), ERR("boom"), *(x, x))
             ));
-        "#).unwrap_err();
+        "#,
+        )
+        .unwrap_err();
         assert_eq!(err.diagnostic().code, ErrorCode::E0102);
-        assert!(err.diagnostic().message.contains("boom"), "{}", err.diagnostic().message);
+        assert!(
+            err.diagnostic().message.contains("boom"),
+            "{}",
+            err.diagnostic().message
+        );
     }
 
     #[test]
@@ -10792,9 +11090,12 @@ entry = "main.wl"
         // path-check machinery. Asking for a name that's not in
         // BUILTINS must fail with E0023 ("name not in module") at
         // IMPORT time — not silently bind to NULL.
-        let err = run_std(r#"
+        let err = run_std(
+            r#"
             IMPORT("wlwl:std.collection", ["NOT_A_REAL_NAME"]);
-        "#).unwrap_err();
+        "#,
+        )
+        .unwrap_err();
         assert_eq!(
             err.diagnostic().code,
             ErrorCode::E0023,
@@ -10811,12 +11112,15 @@ entry = "main.wl"
         // in only one (e.g. JOIN) would yield E0020 "undefined name"
         // — so this test catches both "format broke" and "collection
         // binding is leaking / overwriting names" regressions.
-        let v = run_std(r#"
+        let v = run_std(
+            r#"
             IMPORT("wlwl:std.format", ["FORMAT"]);
             IMPORT("wlwl:std.collection", ["MAP", "JOIN"]);
             LET(squared, MAP([1, 2, 3], FUN((x), *(x, x))));
             FORMAT("squared: {0}", JOIN(squared, ","));
-        "#).unwrap();
+        "#,
+        )
+        .unwrap();
         assert_eq!(v, Value::String("squared: 1,4,9".into()));
     }
 
@@ -10842,23 +11146,29 @@ entry = "main.wl"
     #[test]
     fn b7_test_import_resolves_all_six_names() {
         // Walk BUILTINS via IMPORT; each name must be callable.
-        let v = run_std(r#"
+        let v = run_std(
+            r#"
             IMPORT("wlwl:std.test", [
                 "TEST", "ASSERT", "ASSERT_EQ", "ASSERT_NEQ",
                 "EXPECT_ERR", "RUN_TESTS"
             ]);
             LEN([TEST, ASSERT, ASSERT_EQ, ASSERT_NEQ, EXPECT_ERR, RUN_TESTS]);
-        "#).unwrap();
+        "#,
+        )
+        .unwrap();
         assert_eq!(v, Value::Integer(6));
     }
 
     #[test]
     fn b7_assert_true_returns_ok_true() {
         // §15.9 row 2: passing ASSERT → OK(TRUE).
-        let v = run_std(r#"
+        let v = run_std(
+            r#"
             IMPORT("wlwl:std.test", ["ASSERT"]);
             ASSERT(TRUE);
-        "#).unwrap();
+        "#,
+        )
+        .unwrap();
         match v {
             Value::Ok(inner) => assert_eq!(*inner, Value::Boolean(true)),
             other => panic!("expected OK(TRUE), got {:?}", other),
@@ -10880,7 +11190,8 @@ entry = "main.wl"
         // TRY to catch each test" means RUN_TESTS's *internal*
         // per-test runner — `invoke_closure` already unwraps the
         // `Return(Err)` signal — not the user's TRY keyword.)
-        let v = run_std(r#"
+        let v = run_std(
+            r#"
             IMPORT("wlwl:std.test", ["TEST", "ASSERT", "RUN_TESTS"]);
             TEST("failing", FUN((), ASSERT(FALSE, "must be true")));
             LET(results, RUN_TESTS());
@@ -10890,7 +11201,9 @@ entry = "main.wl"
             LET(msg, INDEX_GET(err_field, "msg"));
             LET(passed_flag, INDEX_GET(failed, "passed"));
             [passed_flag, code, msg];
-        "#).unwrap();
+        "#,
+        )
+        .unwrap();
         match v {
             Value::Array(items) => {
                 assert_eq!(items[0], Value::Boolean(false));
@@ -10906,32 +11219,44 @@ entry = "main.wl"
         // §9.4: NULL/FALSE are falsy; everything else is truthy.
         // All passing — RUN_TESTS catches any that fail.
         assert_eq!(
-            run_std(r#"IMPORT("wlwl:std.test", ["ASSERT"]);
-                      ASSERT(1);"#).unwrap(),
+            run_std(
+                r#"IMPORT("wlwl:std.test", ["ASSERT"]);
+                      ASSERT(1);"#
+            )
+            .unwrap(),
             Value::Ok(Box::new(Value::Boolean(true))),
         );
         assert_eq!(
-            run_std(r#"IMPORT("wlwl:std.test", ["ASSERT"]);
-                      ASSERT("non-empty");"#).unwrap(),
+            run_std(
+                r#"IMPORT("wlwl:std.test", ["ASSERT"]);
+                      ASSERT("non-empty");"#
+            )
+            .unwrap(),
             Value::Ok(Box::new(Value::Boolean(true))),
         );
         // Falsy cases via RUN_TESTS (passes = 0):
-        let v = run_std(r#"
+        let v = run_std(
+            r#"
             IMPORT("wlwl:std.test", ["TEST", "ASSERT", "RUN_TESTS"]);
             TEST("null_assert", FUN((), ASSERT(NULL)));
             TEST("false_assert", FUN((), ASSERT(FALSE)));
             LET(results, RUN_TESTS());
             LEN(results);
-        "#).unwrap();
+        "#,
+        )
+        .unwrap();
         assert_eq!(v, Value::Integer(2));
     }
 
     #[test]
     fn b7_assert_eq_equal_returns_ok_true() {
-        let v = run_std(r#"
+        let v = run_std(
+            r#"
             IMPORT("wlwl:std.test", ["ASSERT_EQ"]);
             ASSERT_EQ(42, 42);
-        "#).unwrap();
+        "#,
+        )
+        .unwrap();
         assert_eq!(v, Value::Ok(Box::new(Value::Boolean(true))));
     }
 
@@ -10940,7 +11265,8 @@ entry = "main.wl"
         // §15.9 row 3: payload includes `actual` and `expected`.
         // End-to-end via RUN_TESTS (top-level TRY can't capture
         // an ASSERT_ERR signal — see `b7_assert_false_*`).
-        let v = run_std(r#"
+        let v = run_std(
+            r#"
             IMPORT("wlwl:std.test", ["TEST", "ASSERT_EQ", "RUN_TESTS"]);
             TEST("eq_fail", FUN((), ASSERT_EQ(1, 2)));
             LET(results, RUN_TESTS());
@@ -10950,7 +11276,9 @@ entry = "main.wl"
             LET(actual, INDEX_GET(err_field, "actual"));
             LET(expected, INDEX_GET(err_field, "expected"));
             [code, actual, expected];
-        "#).unwrap();
+        "#,
+        )
+        .unwrap();
         match v {
             Value::Array(items) => {
                 assert_eq!(items[0], Value::String("E0047".into()));
@@ -10963,10 +11291,13 @@ entry = "main.wl"
 
     #[test]
     fn b7_assert_neq_unequal_returns_ok_true() {
-        let v = run_std(r#"
+        let v = run_std(
+            r#"
             IMPORT("wlwl:std.test", ["ASSERT_NEQ"]);
             ASSERT_NEQ(1, 2);
-        "#).unwrap();
+        "#,
+        )
+        .unwrap();
         assert_eq!(v, Value::Ok(Box::new(Value::Boolean(true))));
     }
 
@@ -10974,7 +11305,8 @@ entry = "main.wl"
     fn b7_assert_neq_equal_is_e0048() {
         // §15.9 row 4: payload includes `actual`/`expected` and the
         // optional `msg`. End-to-end via RUN_TESTS.
-        let v = run_std(r#"
+        let v = run_std(
+            r#"
             IMPORT("wlwl:std.test", ["TEST", "ASSERT_NEQ", "RUN_TESTS"]);
             TEST("neq_fail", FUN((), ASSERT_NEQ(1, 1, "should differ")));
             LET(results, RUN_TESTS());
@@ -10983,7 +11315,9 @@ entry = "main.wl"
             LET(code, INDEX_GET(err_field, "code"));
             LET(msg, INDEX_GET(err_field, "msg"));
             [code, msg];
-        "#).unwrap();
+        "#,
+        )
+        .unwrap();
         match v {
             Value::Array(items) => {
                 assert_eq!(items[0], Value::String("E0048".into()));
@@ -10996,7 +11330,8 @@ entry = "main.wl"
     #[test]
     fn b7_expect_err_non_err_is_e0049() {
         // §15.9 row 5: input not ERR → ERR(E0049). Via RUN_TESTS.
-        let v = run_std(r#"
+        let v = run_std(
+            r#"
             IMPORT("wlwl:std.test", ["TEST", "EXPECT_ERR", "RUN_TESTS"]);
             TEST("expect_err_fail", FUN((), EXPECT_ERR(42)));
             LET(results, RUN_TESTS());
@@ -11005,7 +11340,9 @@ entry = "main.wl"
             LET(code, INDEX_GET(err_field, "code"));
             LET(cond_field, INDEX_GET(err_field, "cond"));
             [code, cond_field];
-        "#).unwrap();
+        "#,
+        )
+        .unwrap();
         match v {
             Value::Array(items) => {
                 assert_eq!(items[0], Value::String("E0049".into()));
@@ -11018,11 +11355,17 @@ entry = "main.wl"
     #[test]
     fn b7_expect_err_input_is_err_returns_ok() {
         // §15.9 row 5: input is ERR → OK(payload).
-        let v = run_std(r#"
+        let v = run_std(
+            r#"
             IMPORT("wlwl:std.test", ["EXPECT_ERR"]);
             EXPECT_ERR(ERR("boom"));
-        "#).unwrap();
-        assert_eq!(v, Value::Ok(Box::new(Value::Err(Box::new(Value::String("boom".into()))))));
+        "#,
+        )
+        .unwrap();
+        assert_eq!(
+            v,
+            Value::Ok(Box::new(Value::Err(Box::new(Value::String("boom".into())))))
+        );
     }
 
     #[test]
@@ -11030,36 +11373,46 @@ entry = "main.wl"
         // §15.9 row 1: TEST returns NULL after pushing to the
         // evaluator's registry. Side-effect verified by RUN_TESTS
         // (next tests).
-        let v = run_std(r#"
+        let v = run_std(
+            r#"
             IMPORT("wlwl:std.test", ["TEST"]);
             TEST("my_test", FUN((), NULL));
-        "#).unwrap();
+        "#,
+        )
+        .unwrap();
         assert_eq!(v, Value::Null);
     }
 
     #[test]
     fn b7_run_tests_with_no_tests_returns_empty_array() {
-        let v = run_std(r#"
+        let v = run_std(
+            r#"
             IMPORT("wlwl:std.test", ["RUN_TESTS"]);
             RUN_TESTS();
-        "#).unwrap();
+        "#,
+        )
+        .unwrap();
         assert_eq!(v, Value::Array(vec![]));
     }
 
     #[test]
     fn b7_run_tests_passing_only() {
         // §15.9 row 6: all DICT entries have passed=TRUE, no error key.
-        let v = run_std(r#"
+        let v = run_std(
+            r#"
             IMPORT("wlwl:std.test", ["TEST", "ASSERT", "ASSERT_EQ", "RUN_TESTS"]);
             TEST("add",   FUN((), ASSERT_EQ(+(1, 2), 3)));
             TEST("truth", FUN((), ASSERT(TRUE)));
             LET(results, RUN_TESTS());
             LEN(results);
-        "#).unwrap();
+        "#,
+        )
+        .unwrap();
         assert_eq!(v, Value::Integer(2));
 
         // Walk results: each must have name, passed=TRUE, duration_ms.
-        let v = run_std(r#"
+        let v = run_std(
+            r#"
             IMPORT("wlwl:std.test", ["TEST", "ASSERT", "ASSERT_EQ", "RUN_TESTS"]);
             TEST("add",   FUN((), ASSERT_EQ(+(1, 2), 3)));
             TEST("truth", FUN((), ASSERT(TRUE)));
@@ -11069,7 +11422,9 @@ entry = "main.wl"
             LET(n0, INDEX_GET(p1, "name"));
             LET(d0, INDEX_GET(p1, "passed"));
             [n0, d0];
-        "#).unwrap();
+        "#,
+        )
+        .unwrap();
         // Last expression of the program is `[...)`, which
         // returns an Array of the args. We just assert non-error;
         // the per-field checks are covered by the next test.
@@ -11084,7 +11439,8 @@ entry = "main.wl"
         // §15.9 row 6 + §12.6: RUN_TESTS catches per-test ERR; the
         // test's dict has passed=FALSE + error field carrying the
         // assertion payload.
-        let v = run_std(r#"
+        let v = run_std(
+            r#"
             IMPORT("wlwl:std.test", ["TEST", "ASSERT", "RUN_TESTS"]);
             TEST("passes", FUN((), ASSERT(TRUE)));
             TEST("fails",  FUN((), ASSERT(FALSE, "intentional")));
@@ -11093,12 +11449,14 @@ entry = "main.wl"
             LET(passed_flag, INDEX_GET(failed, "passed"));
             LET(err_field,   INDEX_GET(failed, "error"));
             [passed_flag, err_field];
-        "#).unwrap();
+        "#,
+        )
+        .unwrap();
         match v {
             Value::Array(items) => {
                 assert_eq!(items.len(), 2);
                 assert_eq!(items[0], Value::Boolean(false)); // passed=FALSE
-                // error field is the ASSERT ERR's payload (a DICT).
+                                                             // error field is the ASSERT ERR's payload (a DICT).
                 match &items[1] {
                     Value::Dict(entries) => {
                         assert_eq!(lookup_str(entries, "code").unwrap(), "E0046");
@@ -11117,7 +11475,8 @@ entry = "main.wl"
         // `name`, `passed`, `duration_ms`. A failing test adds
         // `error`; a passing test may add `return_value` when the
         // body returns a non-NULL.
-        let v = run_std(r#"
+        let v = run_std(
+            r#"
             IMPORT("wlwl:std.test", ["TEST", "ASSERT", "RUN_TESTS"]);
             TEST("a", FUN((), NULL));
             LET(results, RUN_TESTS());
@@ -11126,7 +11485,9 @@ entry = "main.wl"
             LET(p, INDEX_GET(r0, "passed"));
             LET(d, INDEX_GET(r0, "duration_ms"));
             [n, p, d];
-        "#).unwrap();
+        "#,
+        )
+        .unwrap();
         match v {
             Value::Array(items) => {
                 assert_eq!(items.len(), 3);
@@ -11140,46 +11501,61 @@ entry = "main.wl"
 
     #[test]
     fn b7_test_name_must_be_string() {
-        let err = run_std(r#"
+        let err = run_std(
+            r#"
             IMPORT("wlwl:std.test", ["TEST"]);
             TEST(42, FUN((), NULL));
-        "#).unwrap_err();
+        "#,
+        )
+        .unwrap_err();
         assert_eq!(err.diagnostic().code, ErrorCode::E0030);
     }
 
     #[test]
     fn b7_test_body_must_be_callable() {
-        let err = run_std(r#"
+        let err = run_std(
+            r#"
             IMPORT("wlwl:std.test", ["TEST"]);
             TEST("name", 42);
-        "#).unwrap_err();
+        "#,
+        )
+        .unwrap_err();
         assert_eq!(err.diagnostic().code, ErrorCode::E0030);
     }
 
     #[test]
     fn b7_test_arity_wrong() {
-        let err = run_std(r#"
+        let err = run_std(
+            r#"
             IMPORT("wlwl:std.test", ["TEST"]);
             TEST("name");
-        "#).unwrap_err();
+        "#,
+        )
+        .unwrap_err();
         assert_eq!(err.diagnostic().code, ErrorCode::E0022);
     }
 
     #[test]
     fn b7_assert_arity_wrong() {
-        let err = run_std(r#"
+        let err = run_std(
+            r#"
             IMPORT("wlwl:std.test", ["ASSERT"]);
             ASSERT();
-        "#).unwrap_err();
+        "#,
+        )
+        .unwrap_err();
         assert_eq!(err.diagnostic().code, ErrorCode::E0022);
     }
 
     #[test]
     fn b7_run_tests_with_zero_arity_wrong() {
-        let err = run_std(r#"
+        let err = run_std(
+            r#"
             IMPORT("wlwl:std.test", ["RUN_TESTS"]);
             RUN_TESTS(1, 2);
-        "#).unwrap_err();
+        "#,
+        )
+        .unwrap_err();
         assert_eq!(err.diagnostic().code, ErrorCode::E0022);
     }
 
@@ -11193,9 +11569,12 @@ entry = "main.wl"
 
     #[test]
     fn b7_unknown_test_name_in_import_is_e0023() {
-        let err = run_std(r#"
+        let err = run_std(
+            r#"
             IMPORT("wlwl:std.test", ["NOT_A_REAL_NAME"]);
-        "#).unwrap_err();
+        "#,
+        )
+        .unwrap_err();
         assert_eq!(err.diagnostic().code, ErrorCode::E0023);
     }
 
@@ -11203,7 +11582,8 @@ entry = "main.wl"
     fn b7_collection_and_test_imports_coexist() {
         // Both std modules in one program. Verifies the load_std
         // dispatch table handles multiple name-catalog paths.
-        let v = run_std(r#"
+        let v = run_std(
+            r#"
             IMPORT("wlwl:std.collection", ["MAP"]);
             IMPORT("wlwl:std.test", ["TEST", "ASSERT", "ASSERT_EQ", "RUN_TESTS"]);
             TEST("squares", FUN((),
@@ -11212,7 +11592,9 @@ entry = "main.wl"
             LET(results, RUN_TESTS());
             LET(r0, INDEX_GET(results, 0));
             INDEX_GET(r0, "passed");
-        "#).unwrap();
+        "#,
+        )
+        .unwrap();
         assert_eq!(v, Value::Boolean(true));
     }
 
@@ -11221,7 +11603,8 @@ entry = "main.wl"
         // If the test body returns an ERR directly (without going
         // through an assertion), RUN_TESTS still records it as
         // passed=FALSE with the ERR payload in `error`.
-        let v = run_std(r#"
+        let v = run_std(
+            r#"
             IMPORT("wlwl:std.test", ["TEST", "RUN_TESTS"]);
             TEST("loose_err", FUN((), ERR("oh no")));
             LET(results, RUN_TESTS());
@@ -11229,7 +11612,9 @@ entry = "main.wl"
             LET(passed_flag, INDEX_GET(failed, "passed"));
             LET(err_field,   INDEX_GET(failed, "error"));
             [passed_flag, err_field];
-        "#).unwrap();
+        "#,
+        )
+        .unwrap();
         match v {
             Value::Array(items) => {
                 assert_eq!(items[0], Value::Boolean(false));
@@ -11336,15 +11721,27 @@ entry = "main.wl"
 
     #[test]
     fn b8_trim_basics() {
-        assert_eq!(run(r#"TRIM("  hello  ");"#).unwrap(), Value::String("hello".into()));
-        assert_eq!(run(r#"TRIM("hello");"#).unwrap(), Value::String("hello".into()));
+        assert_eq!(
+            run(r#"TRIM("  hello  ");"#).unwrap(),
+            Value::String("hello".into())
+        );
+        assert_eq!(
+            run(r#"TRIM("hello");"#).unwrap(),
+            Value::String("hello".into())
+        );
         assert_eq!(run(r#"TRIM("   ");"#).unwrap(), Value::String("".into()));
     }
 
     #[test]
     fn b8_trim_start_and_end() {
-        assert_eq!(run(r#"TRIM_START("  hello  ");"#).unwrap(), Value::String("hello  ".into()));
-        assert_eq!(run(r#"TRIM_END("  hello  ");"#).unwrap(), Value::String("  hello".into()));
+        assert_eq!(
+            run(r#"TRIM_START("  hello  ");"#).unwrap(),
+            Value::String("hello  ".into())
+        );
+        assert_eq!(
+            run(r#"TRIM_END("  hello  ");"#).unwrap(),
+            Value::String("  hello".into())
+        );
         // Composed
         assert_eq!(
             run(r#"TRIM_END(TRIM_START("  hi  "));"#).unwrap(),
@@ -11354,19 +11751,40 @@ entry = "main.wl"
 
     #[test]
     fn b8_starts_with_ends_with() {
-        assert_eq!(run(r#"STARTS_WITH("hello world", "hello");"#).unwrap(), Value::Boolean(true));
-        assert_eq!(run(r#"STARTS_WITH("hello world", "world");"#).unwrap(), Value::Boolean(false));
-        assert_eq!(run(r#"ENDS_WITH("hello world", "world");"#).unwrap(), Value::Boolean(true));
-        assert_eq!(run(r#"ENDS_WITH("hello world", "hello");"#).unwrap(), Value::Boolean(false));
+        assert_eq!(
+            run(r#"STARTS_WITH("hello world", "hello");"#).unwrap(),
+            Value::Boolean(true)
+        );
+        assert_eq!(
+            run(r#"STARTS_WITH("hello world", "world");"#).unwrap(),
+            Value::Boolean(false)
+        );
+        assert_eq!(
+            run(r#"ENDS_WITH("hello world", "world");"#).unwrap(),
+            Value::Boolean(true)
+        );
+        assert_eq!(
+            run(r#"ENDS_WITH("hello world", "hello");"#).unwrap(),
+            Value::Boolean(false)
+        );
         // Empty suffix matches anything
-        assert_eq!(run(r#"ENDS_WITH("anything", "");"#).unwrap(), Value::Boolean(true));
+        assert_eq!(
+            run(r#"ENDS_WITH("anything", "");"#).unwrap(),
+            Value::Boolean(true)
+        );
     }
 
     #[test]
     fn b8_repeat_basics() {
-        assert_eq!(run(r#"REPEAT("ab", 3);"#).unwrap(), Value::String("ababab".into()));
+        assert_eq!(
+            run(r#"REPEAT("ab", 3);"#).unwrap(),
+            Value::String("ababab".into())
+        );
         assert_eq!(run(r#"REPEAT("x", 0);"#).unwrap(), Value::String("".into()));
-        assert_eq!(run(r#"REPEAT("foo", 1);"#).unwrap(), Value::String("foo".into()));
+        assert_eq!(
+            run(r#"REPEAT("foo", 1);"#).unwrap(),
+            Value::String("foo".into())
+        );
     }
 
     #[test]
@@ -11403,8 +11821,11 @@ entry = "main.wl"
         assert_eq!(
             run(r#"CODEPOINTS("hello");"#).unwrap(),
             Value::Array(vec![
-                Value::Integer(104), Value::Integer(101), Value::Integer(108),
-                Value::Integer(108), Value::Integer(111),
+                Value::Integer(104),
+                Value::Integer(101),
+                Value::Integer(108),
+                Value::Integer(108),
+                Value::Integer(111),
             ])
         );
         assert_eq!(
@@ -11605,10 +12026,7 @@ entry = "main.wl"
         // per call. Two calls = two warnings.
         let (r, w) = run_with_warnings("!TRUE; !FALSE;");
         r.unwrap();
-        let w0054_count = w
-            .iter()
-            .filter(|wm| wm.code == ErrorCode::W0054)
-            .count();
+        let w0054_count = w.iter().filter(|wm| wm.code == ErrorCode::W0054).count();
         assert_eq!(
             w0054_count, 2,
             "each `!` site must emit exactly one W0054, got warnings: {:?}",
@@ -11621,10 +12039,7 @@ entry = "main.wl"
         // `!(x)` parenthesised form (same `!` token, call syntax).
         let (r, w) = run_with_warnings("!(TRUE);");
         r.unwrap();
-        let codes: Vec<_> = w
-            .iter()
-            .map(|wm| wm.code)
-            .collect();
+        let codes: Vec<_> = w.iter().map(|wm| wm.code).collect();
         assert_eq!(
             codes,
             vec![ErrorCode::W0054],
@@ -11725,10 +12140,13 @@ entry = "main.wl"
         // wlwl_std::io::std_print_err) must bind and run. Locks
         // the path that a user who has explicitly IMPORT'd
         // `wlwl:std.io` still gets stderr semantics.
-        let v = run_std(r#"
+        let v = run_std(
+            r#"
             IMPORT("wlwl:std.io", ["PRINT_ERR"]);
             PRINT_ERR("via", "std.io");
-        "#).unwrap();
+        "#,
+        )
+        .unwrap();
         assert_eq!(v, Value::Null);
     }
 
@@ -11757,11 +12175,14 @@ entry = "main.wl"
     fn b10_print_and_print_err_coexist_in_std_io() {
         // Both names must remain available side-by-side in the
         // std.io module — adding PRINT_ERR doesn't shadow PRINT.
-        let v = run_std(r#"
+        let v = run_std(
+            r#"
             IMPORT("wlwl:std.io", ["PRINT", "PRINT_ERR", "INPUT"]);
             LET(arity, LEN([PRINT, PRINT_ERR, INPUT]));
             arity;
-        "#).unwrap();
+        "#,
+        )
+        .unwrap();
         assert_eq!(v, Value::Integer(3));
     }
     // ── Phase B11: spec v0.4 附录 G 全局内建注册表 lock-down ────────
@@ -11780,11 +12201,21 @@ entry = "main.wl"
         // (ResolvedBuiltin 或 ResolvedCompat)。如果未来加 builtin 但
         // 忘了登记,这条会挂。
         let registry_names: std::collections::HashSet<&'static str> =
-            crate::registry::resolved_builtin_names().into_iter().collect();
+            crate::registry::resolved_builtin_names()
+                .into_iter()
+                .collect();
         // 这些名字 resolve_builtin 接了,但 spec 附录 G 没有列 → 必须留在
         // 注册表的 ResolvedBuiltin/Compat 路径(尽管可能在另一行)。
         // 检查样例:PRINT / NOT / OR_DIE / FORMAT / INDEX_GET。
-        for must_have in &["PRINT", "PRINT_ERR", "NOT", "FORMAT", "INDEX_GET", "OR_DIE", "DEL"] {
+        for must_have in &[
+            "PRINT",
+            "PRINT_ERR",
+            "NOT",
+            "FORMAT",
+            "INDEX_GET",
+            "OR_DIE",
+            "DEL",
+        ] {
             assert!(
                 registry_names.contains(must_have),
                 "registry must list `{}` as ResolvedBuiltin or ResolvedCompat",
@@ -11821,8 +12252,12 @@ entry = "main.wl"
         // err_consumer = Yes,逻辑上"算 ERR 消费者"。
         // 双向断言:ERR_CONSUMER_REGISTRY ⊆ {err_consumer=Yes 且 ResolvedBuiltin/Compat}
         for name in ERR_CONSUMER_REGISTRY.iter() {
-            let spec = crate::registry::lookup(name)
-                .unwrap_or_else(|| panic!("ERR_CONSUMER_REGISTRY entry {:?} not in BUILTIN_REGISTRY", name));
+            let spec = crate::registry::lookup(name).unwrap_or_else(|| {
+                panic!(
+                    "ERR_CONSUMER_REGISTRY entry {:?} not in BUILTIN_REGISTRY",
+                    name
+                )
+            });
             assert_eq!(
                 spec.err_consumer,
                 crate::registry::ErrConsumerStatus::Yes,
@@ -11837,7 +12272,8 @@ entry = "main.wl"
                         | crate::registry::DispatchStatus::LexerMacro,
                 ),
                 "{:?} is in ERR_CONSUMER_REGISTRY but registry.dispatch = {:?}",
-                name, spec.dispatch,
+                name,
+                spec.dispatch,
             );
         }
         // 反向:注册表里 err_consumer=Yes 且 dispatch = ResolvedBuiltin/Compat
@@ -11868,7 +12304,8 @@ entry = "main.wl"
         assert!(
             from_registry.len() >= from_const.len(),
             "registry has fewer err_consumers ({}) than ERR_CONSUMER_REGISTRY ({})",
-            from_registry.len(), from_const.len(),
+            from_registry.len(),
+            from_const.len(),
         );
     }
 
@@ -11936,7 +12373,10 @@ entry = "main.wl"
             BuiltinGroup::Property,
             BuiltinGroup::Ctor,
         ] {
-            let count = crate::registry::BUILTIN_REGISTRY.iter().filter(|s| s.group == g).count();
+            let count = crate::registry::BUILTIN_REGISTRY
+                .iter()
+                .filter(|s| s.group == g)
+                .count();
             assert!(count >= 1, "BuiltinGroup {:?} has 0 entries", g);
         }
         // Deferred 数量 sanity:B11 末应该有 ~24 个 (spec 列了但 impl 未接)
@@ -11947,7 +12387,6 @@ entry = "main.wl"
             deferred.len(),
         );
     }
-
 
     // ── Phase B12: spec v0.4 §10.1 ARRAY ops (7 项) ────────────────
     //
@@ -11961,7 +12400,10 @@ entry = "main.wl"
 
     #[test]
     fn b12_shift_basic_and_empty() {
-        assert_eq!(run("SHIFT([1, 2, 3]);").unwrap(), Value::Array(vec![Value::Integer(2), Value::Integer(3)]));
+        assert_eq!(
+            run("SHIFT([1, 2, 3]);").unwrap(),
+            Value::Array(vec![Value::Integer(2), Value::Integer(3)])
+        );
         assert_eq!(run("SHIFT([]);").unwrap(), Value::Array(vec![]));
         assert_eq!(run("SHIFT([42]);").unwrap(), Value::Array(vec![]));
     }
@@ -11969,19 +12411,36 @@ entry = "main.wl"
     #[test]
     fn b12_unshift_prepends_element() {
         let v = run("UNSHIFT([2, 3], 1);").unwrap();
-        assert_eq!(v, Value::Array(vec![Value::Integer(1), Value::Integer(2), Value::Integer(3)]));
+        assert_eq!(
+            v,
+            Value::Array(vec![
+                Value::Integer(1),
+                Value::Integer(2),
+                Value::Integer(3)
+            ])
+        );
         let err = run("UNSHIFT(42, 1);").unwrap_err();
         assert_eq!(err.diagnostic().code, ErrorCode::E0030);
     }
 
     #[test]
     fn b12_slice_basic_negative_and_oob() {
-        assert_eq!(run("SLICE([1,2,3,4,5], 1, 3);").unwrap(),
-            Value::Array(vec![Value::Integer(2), Value::Integer(3)]));
-        assert_eq!(run("SLICE([1,2,3,4,5], -2);").unwrap(),
-            Value::Array(vec![Value::Integer(4), Value::Integer(5)]));
-        assert_eq!(run("SLICE([1,2,3,4,5], 2);").unwrap(),
-            Value::Array(vec![Value::Integer(3), Value::Integer(4), Value::Integer(5)]));
+        assert_eq!(
+            run("SLICE([1,2,3,4,5], 1, 3);").unwrap(),
+            Value::Array(vec![Value::Integer(2), Value::Integer(3)])
+        );
+        assert_eq!(
+            run("SLICE([1,2,3,4,5], -2);").unwrap(),
+            Value::Array(vec![Value::Integer(4), Value::Integer(5)])
+        );
+        assert_eq!(
+            run("SLICE([1,2,3,4,5], 2);").unwrap(),
+            Value::Array(vec![
+                Value::Integer(3),
+                Value::Integer(4),
+                Value::Integer(5)
+            ])
+        );
         assert_eq!(run("SLICE([1,2,3], 2, 2);").unwrap(), Value::Array(vec![]));
         let err = run("SLICE([1,2,3]);").unwrap_err();
         assert_eq!(err.diagnostic().code, ErrorCode::E0022);
@@ -11989,62 +12448,127 @@ entry = "main.wl"
 
     #[test]
     fn b12_concat_array_and_string() {
-        assert_eq!(run("CONCAT([1, 2], [3, 4]);").unwrap(),
-            Value::Array(vec![Value::Integer(1), Value::Integer(2), Value::Integer(3), Value::Integer(4)]));
-        assert_eq!(run("CONCAT([], [1]);").unwrap(),
-            Value::Array(vec![Value::Integer(1)]));
+        assert_eq!(
+            run("CONCAT([1, 2], [3, 4]);").unwrap(),
+            Value::Array(vec![
+                Value::Integer(1),
+                Value::Integer(2),
+                Value::Integer(3),
+                Value::Integer(4)
+            ])
+        );
+        assert_eq!(
+            run("CONCAT([], [1]);").unwrap(),
+            Value::Array(vec![Value::Integer(1)])
+        );
         let v = run(r#"CONCAT("ab", "cd");"#).unwrap();
-        assert_eq!(v, Value::Array(vec![Value::Integer(97), Value::Integer(98), Value::Integer(99), Value::Integer(100)]));
+        assert_eq!(
+            v,
+            Value::Array(vec![
+                Value::Integer(97),
+                Value::Integer(98),
+                Value::Integer(99),
+                Value::Integer(100)
+            ])
+        );
         let err = run("CONCAT(1, 2);").unwrap_err();
         assert_eq!(err.diagnostic().code, ErrorCode::E0030);
     }
 
     #[test]
     fn b12_contains_array_and_string() {
-        assert_eq!(run("CONTAINS([1, 2, 3], 2);").unwrap(), Value::Boolean(true));
-        assert_eq!(run("CONTAINS([1, 2, 3], 99);").unwrap(), Value::Boolean(false));
-        assert_eq!(run("CONTAINS([[1,2], [3,4]], [1,2]);").unwrap(), Value::Boolean(true));
-        assert_eq!(run(r#"CONTAINS("hello world", "world");"#).unwrap(), Value::Boolean(true));
-        assert_eq!(run(r#"CONTAINS("hello", "xyz");"#).unwrap(), Value::Boolean(false));
+        assert_eq!(
+            run("CONTAINS([1, 2, 3], 2);").unwrap(),
+            Value::Boolean(true)
+        );
+        assert_eq!(
+            run("CONTAINS([1, 2, 3], 99);").unwrap(),
+            Value::Boolean(false)
+        );
+        assert_eq!(
+            run("CONTAINS([[1,2], [3,4]], [1,2]);").unwrap(),
+            Value::Boolean(true)
+        );
+        assert_eq!(
+            run(r#"CONTAINS("hello world", "world");"#).unwrap(),
+            Value::Boolean(true)
+        );
+        assert_eq!(
+            run(r#"CONTAINS("hello", "xyz");"#).unwrap(),
+            Value::Boolean(false)
+        );
         let err = run("CONTAINS(42, 1);").unwrap_err();
         assert_eq!(err.diagnostic().code, ErrorCode::E0030);
     }
 
     #[test]
     fn b12_index_returns_1_based_or_minus_one() {
-        assert_eq!(run(r#"INDEX(["a", "b", "c"], "b");"#).unwrap(), Value::Integer(2));
+        assert_eq!(
+            run(r#"INDEX(["a", "b", "c"], "b");"#).unwrap(),
+            Value::Integer(2)
+        );
         assert_eq!(run("INDEX([10, 20, 30], 30);").unwrap(), Value::Integer(3));
-        assert_eq!(run(r#"INDEX(["a", "b"], "z");"#).unwrap(), Value::Integer(-1));
+        assert_eq!(
+            run(r#"INDEX(["a", "b"], "z");"#).unwrap(),
+            Value::Integer(-1)
+        );
         assert_eq!(run(r#"INDEX("hello", "ll");"#).unwrap(), Value::Integer(3));
-        assert_eq!(run(r#"INDEX("hello", "xyz");"#).unwrap(), Value::Integer(-1));
+        assert_eq!(
+            run(r#"INDEX("hello", "xyz");"#).unwrap(),
+            Value::Integer(-1)
+        );
     }
 
     #[test]
     fn b12_reverse_array_and_string() {
-        assert_eq!(run("REVERSE([1, 2, 3]);").unwrap(),
-            Value::Array(vec![Value::Integer(3), Value::Integer(2), Value::Integer(1)]));
+        assert_eq!(
+            run("REVERSE([1, 2, 3]);").unwrap(),
+            Value::Array(vec![
+                Value::Integer(3),
+                Value::Integer(2),
+                Value::Integer(1)
+            ])
+        );
         assert_eq!(run("REVERSE([]);").unwrap(), Value::Array(vec![]));
         let v = run(r#"REVERSE("abc");"#).unwrap();
-        assert_eq!(v, Value::Array(vec![Value::Integer(99), Value::Integer(98), Value::Integer(97)]));
+        assert_eq!(
+            v,
+            Value::Array(vec![
+                Value::Integer(99),
+                Value::Integer(98),
+                Value::Integer(97)
+            ])
+        );
     }
 
     #[test]
     fn b12_seven_resolved_builtins_in_resolve_builtin() {
         use crate::resolve_builtin;
-        for name in &["SHIFT", "UNSHIFT", "SLICE", "CONCAT", "CONTAINS", "INDEX", "REVERSE"] {
-            assert!(resolve_builtin(name).is_some(),
-                "resolve_builtin({:?}) is None; B12 did not register the array op", name);
+        for name in &[
+            "SHIFT", "UNSHIFT", "SLICE", "CONCAT", "CONTAINS", "INDEX", "REVERSE",
+        ] {
+            assert!(
+                resolve_builtin(name).is_some(),
+                "resolve_builtin({:?}) is None; B12 did not register the array op",
+                name
+            );
         }
     }
 
     #[test]
     fn b12_seven_moved_from_deferred_to_resolved_in_registry() {
         for spec in crate::registry::BUILTIN_REGISTRY.iter() {
-            if ["SHIFT", "UNSHIFT", "SLICE", "CONCAT", "CONTAINS", "INDEX", "REVERSE"]
-                .contains(&spec.name)
+            if [
+                "SHIFT", "UNSHIFT", "SLICE", "CONCAT", "CONTAINS", "INDEX", "REVERSE",
+            ]
+            .contains(&spec.name)
             {
-                assert_eq!(spec.dispatch, crate::registry::DispatchStatus::ResolvedBuiltin,
-                    "{:?} is still Deferred after B12", spec.name);
+                assert_eq!(
+                    spec.dispatch,
+                    crate::registry::DispatchStatus::ResolvedBuiltin,
+                    "{:?} is still Deferred after B12",
+                    spec.name
+                );
             }
         }
     }
@@ -12069,9 +12593,18 @@ entry = "main.wl"
 
     #[test]
     fn b12_immutable_does_not_mutate_input() {
-        assert_eq!(run("LET(arr, [1,2,3]); SHIFT(arr); LEN(arr);").unwrap(), Value::Integer(3));
-        assert_eq!(run("LET(arr, [1,2,3]); REVERSE(arr); LEN(arr);").unwrap(), Value::Integer(3));
-        assert_eq!(run("LET(arr, [1,2,3]); SLICE(arr, 0, 2); LEN(arr);").unwrap(), Value::Integer(3));
+        assert_eq!(
+            run("LET(arr, [1,2,3]); SHIFT(arr); LEN(arr);").unwrap(),
+            Value::Integer(3)
+        );
+        assert_eq!(
+            run("LET(arr, [1,2,3]); REVERSE(arr); LEN(arr);").unwrap(),
+            Value::Integer(3)
+        );
+        assert_eq!(
+            run("LET(arr, [1,2,3]); SLICE(arr, 0, 2); LEN(arr);").unwrap(),
+            Value::Integer(3)
+        );
     }
 
     // ── Phase B13: spec v0.4 §10.3 STRING ops (5 项) ────────────────
@@ -12082,25 +12615,52 @@ entry = "main.wl"
 
     #[test]
     fn b13_upper_lower_ascii() {
-        assert_eq!(run(r#"UPPER("hello");"#).unwrap(), Value::String("HELLO".into()));
-        assert_eq!(run(r#"LOWER("HELLO");"#).unwrap(), Value::String("hello".into()));
+        assert_eq!(
+            run(r#"UPPER("hello");"#).unwrap(),
+            Value::String("HELLO".into())
+        );
+        assert_eq!(
+            run(r#"LOWER("HELLO");"#).unwrap(),
+            Value::String("hello".into())
+        );
         // 已是目标 case → 不变
-        assert_eq!(run(r#"UPPER("ABC");"#).unwrap(), Value::String("ABC".into()));
-        assert_eq!(run(r#"LOWER("xyz");"#).unwrap(), Value::String("xyz".into()));
+        assert_eq!(
+            run(r#"UPPER("ABC");"#).unwrap(),
+            Value::String("ABC".into())
+        );
+        assert_eq!(
+            run(r#"LOWER("xyz");"#).unwrap(),
+            Value::String("xyz".into())
+        );
         // 非 ASCII 原样保留
-        assert_eq!(run(r#"UPPER("héllo");"#).unwrap(), Value::String("HéLLO".into()));
+        assert_eq!(
+            run(r#"UPPER("héllo");"#).unwrap(),
+            Value::String("HéLLO".into())
+        );
         // 空 string
         assert_eq!(run(r#"UPPER("");"#).unwrap(), Value::String("".into()));
     }
 
     #[test]
     fn b13_sub_basic_negative_oob() {
-        assert_eq!(run(r#"SUB("hello", 1, 4);"#).unwrap(), Value::String("ell".into()));
-        assert_eq!(run(r#"SUB("hello", 2);"#).unwrap(), Value::String("llo".into()));
+        assert_eq!(
+            run(r#"SUB("hello", 1, 4);"#).unwrap(),
+            Value::String("ell".into())
+        );
+        assert_eq!(
+            run(r#"SUB("hello", 2);"#).unwrap(),
+            Value::String("llo".into())
+        );
         // 负数从尾数
-        assert_eq!(run(r#"SUB("hello", -3);"#).unwrap(), Value::String("llo".into()));
+        assert_eq!(
+            run(r#"SUB("hello", -3);"#).unwrap(),
+            Value::String("llo".into())
+        );
         // start >= end → 空
-        assert_eq!(run(r#"SUB("hello", 3, 3);"#).unwrap(), Value::String("".into()));
+        assert_eq!(
+            run(r#"SUB("hello", 3, 3);"#).unwrap(),
+            Value::String("".into())
+        );
         // 类型错
         let err = run(r#"SUB(42, 0, 1);"#).unwrap_err();
         assert_eq!(err.diagnostic().code, ErrorCode::E0030);
@@ -12108,10 +12668,14 @@ entry = "main.wl"
 
     #[test]
     fn b13_replace_basic_and_empty_old() {
-        assert_eq!(run(r#"REPLACE("hello world", "world", "rust");"#).unwrap(),
-            Value::String("hello rust".into()));
-        assert_eq!(run(r#"REPLACE("aaa", "a", "bb");"#).unwrap(),
-            Value::String("bbbbbb".into()));
+        assert_eq!(
+            run(r#"REPLACE("hello world", "world", "rust");"#).unwrap(),
+            Value::String("hello rust".into())
+        );
+        assert_eq!(
+            run(r#"REPLACE("aaa", "a", "bb");"#).unwrap(),
+            Value::String("bbbbbb".into())
+        );
         // old 空 → E0030 (避免死循环)
         let err = run(r#"REPLACE("hello", "", "x");"#).unwrap_err();
         assert_eq!(err.diagnostic().code, ErrorCode::E0030);
@@ -12122,14 +12686,28 @@ entry = "main.wl"
 
     #[test]
     fn b13_split_basic_and_empty_sep() {
-        assert_eq!(run(r#"SPLIT("a,b,c", ",");"#).unwrap(),
-            Value::Array(vec![Value::String("a".into()), Value::String("b".into()), Value::String("c".into())]));
+        assert_eq!(
+            run(r#"SPLIT("a,b,c", ",");"#).unwrap(),
+            Value::Array(vec![
+                Value::String("a".into()),
+                Value::String("b".into()),
+                Value::String("c".into())
+            ])
+        );
         // 多字符 sep
-        assert_eq!(run(r#"SPLIT("hello world rust", " ");"#).unwrap(),
-            Value::Array(vec![Value::String("hello".into()), Value::String("world".into()), Value::String("rust".into())]));
+        assert_eq!(
+            run(r#"SPLIT("hello world rust", " ");"#).unwrap(),
+            Value::Array(vec![
+                Value::String("hello".into()),
+                Value::String("world".into()),
+                Value::String("rust".into())
+            ])
+        );
         // sep 不在 → 整个字符串
-        assert_eq!(run(r#"SPLIT("hello", "x");"#).unwrap(),
-            Value::Array(vec![Value::String("hello".into())]));
+        assert_eq!(
+            run(r#"SPLIT("hello", "x");"#).unwrap(),
+            Value::Array(vec![Value::String("hello".into())])
+        );
         // 空 sep → E0030
         let err = run(r#"SPLIT("hello", "");"#).unwrap_err();
         assert_eq!(err.diagnostic().code, ErrorCode::E0030);
@@ -12139,8 +12717,11 @@ entry = "main.wl"
     fn b13_seven_registered_in_resolve_builtin() {
         use crate::resolve_builtin;
         for name in &["UPPER", "LOWER", "SUB", "REPLACE", "SPLIT"] {
-            assert!(resolve_builtin(name).is_some(),
-                "resolve_builtin({:?}) is None; B13 did not register", name);
+            assert!(
+                resolve_builtin(name).is_some(),
+                "resolve_builtin({:?}) is None; B13 did not register",
+                name
+            );
         }
     }
 
@@ -12148,8 +12729,12 @@ entry = "main.wl"
     fn b13_seven_moved_to_resolved_in_registry() {
         for spec in crate::registry::BUILTIN_REGISTRY.iter() {
             if ["UPPER", "LOWER", "SUB", "REPLACE", "SPLIT"].contains(&spec.name) {
-                assert_eq!(spec.dispatch, crate::registry::DispatchStatus::ResolvedBuiltin,
-                    "{:?} is still Deferred after B13", spec.name);
+                assert_eq!(
+                    spec.dispatch,
+                    crate::registry::DispatchStatus::ResolvedBuiltin,
+                    "{:?} is still Deferred after B13",
+                    spec.name
+                );
             }
         }
     }
@@ -12171,19 +12756,29 @@ entry = "main.wl"
     #[test]
     fn b13_sub_negative_index_normalization() {
         // SUB(s, -1) → 最后一个 char
-        assert_eq!(run(r#"SUB("abc", -1);"#).unwrap(), Value::String("c".into()));
+        assert_eq!(
+            run(r#"SUB("abc", -1);"#).unwrap(),
+            Value::String("c".into())
+        );
         // SUB(s, -3, -1) → "ab"
-        assert_eq!(run(r#"SUB("abc", -3, -1);"#).unwrap(), Value::String("ab".into()));
+        assert_eq!(
+            run(r#"SUB("abc", -3, -1);"#).unwrap(),
+            Value::String("ab".into())
+        );
     }
 
     #[test]
     fn b13_unicode_preserved() {
         // 非 ASCII char 不被 case-fold 破坏
-        assert_eq!(run(r#"UPPER("héllo wörld");"#).unwrap(),
-            Value::String("HéLLO WöRLD".into()));
+        assert_eq!(
+            run(r#"UPPER("héllo wörld");"#).unwrap(),
+            Value::String("HéLLO WöRLD".into())
+        );
         // SUB 处理 codepoint (而非 UTF-8 bytes)
-        assert_eq!(run(r#"SUB("héllo", 1, 4);"#).unwrap(),
-            Value::String("éll".into()));
+        assert_eq!(
+            run(r#"SUB("héllo", 1, 4);"#).unwrap(),
+            Value::String("éll".into())
+        );
     }
 
     // ── Phase B14: spec v0.4 §10.2 DICT ops (4 项) ────────────────
@@ -12196,11 +12791,17 @@ entry = "main.wl"
     fn b14_keys_preserves_order() {
         assert_eq!(
             run(r#"KEYS(["a": 1, "b": 2, "c": 3]);"#).unwrap(),
-            Value::Array(vec![Value::String("a".into()), Value::String("b".into()), Value::String("c".into())])
+            Value::Array(vec![
+                Value::String("a".into()),
+                Value::String("b".into()),
+                Value::String("c".into())
+            ])
         );
         // 单 key dict
-        assert_eq!(run(r#"KEYS(["only": 42]);"#).unwrap(),
-            Value::Array(vec![Value::String("only".into())]));
+        assert_eq!(
+            run(r#"KEYS(["only": 42]);"#).unwrap(),
+            Value::Array(vec![Value::String("only".into())])
+        );
         // 类型错
         let err = run("KEYS([1, 2, 3]);").unwrap_err();
         assert_eq!(err.diagnostic().code, ErrorCode::E0030);
@@ -12210,19 +12811,37 @@ entry = "main.wl"
     fn b14_values_preserves_order() {
         assert_eq!(
             run(r#"VALUES(["a": 1, "b": 2, "c": 3]);"#).unwrap(),
-            Value::Array(vec![Value::Integer(1), Value::Integer(2), Value::Integer(3)])
+            Value::Array(vec![
+                Value::Integer(1),
+                Value::Integer(2),
+                Value::Integer(3)
+            ])
         );
-        assert_eq!(run(r#"VALUES(["only": 42]);"#).unwrap(),
-            Value::Array(vec![Value::Integer(42)]));
+        assert_eq!(
+            run(r#"VALUES(["only": 42]);"#).unwrap(),
+            Value::Array(vec![Value::Integer(42)])
+        );
     }
 
     #[test]
     fn b14_has_basic_and_value_equality() {
-        assert_eq!(run(r#"HAS(["a": 1, "b": 2], "a");"#).unwrap(), Value::Boolean(true));
-        assert_eq!(run(r#"HAS(["a": 1, "b": 2], "z");"#).unwrap(), Value::Boolean(false));
+        assert_eq!(
+            run(r#"HAS(["a": 1, "b": 2], "a");"#).unwrap(),
+            Value::Boolean(true)
+        );
+        assert_eq!(
+            run(r#"HAS(["a": 1, "b": 2], "z");"#).unwrap(),
+            Value::Boolean(false)
+        );
         // INTEGER key
-        assert_eq!(run(r#"HAS([1: "a", 2: "b"], 1);"#).unwrap(), Value::Boolean(true));
-        assert_eq!(run(r#"HAS([1: "a", 2: "b"], 3);"#).unwrap(), Value::Boolean(false));
+        assert_eq!(
+            run(r#"HAS([1: "a", 2: "b"], 1);"#).unwrap(),
+            Value::Boolean(true)
+        );
+        assert_eq!(
+            run(r#"HAS([1: "a", 2: "b"], 3);"#).unwrap(),
+            Value::Boolean(false)
+        );
     }
 
     #[test]
@@ -12262,8 +12881,11 @@ entry = "main.wl"
     fn b14_four_registered_in_resolve_builtin() {
         use crate::resolve_builtin;
         for name in &["KEYS", "VALUES", "HAS", "MERGE"] {
-            assert!(resolve_builtin(name).is_some(),
-                "resolve_builtin({:?}) is None; B14 did not register", name);
+            assert!(
+                resolve_builtin(name).is_some(),
+                "resolve_builtin({:?}) is None; B14 did not register",
+                name
+            );
         }
     }
 
@@ -12271,8 +12893,12 @@ entry = "main.wl"
     fn b14_four_moved_to_resolved_in_registry() {
         for spec in crate::registry::BUILTIN_REGISTRY.iter() {
             if ["KEYS", "VALUES", "HAS", "MERGE"].contains(&spec.name) {
-                assert_eq!(spec.dispatch, crate::registry::DispatchStatus::ResolvedBuiltin,
-                    "{:?} is still Deferred after B14", spec.name);
+                assert_eq!(
+                    spec.dispatch,
+                    crate::registry::DispatchStatus::ResolvedBuiltin,
+                    "{:?} is still Deferred after B14",
+                    spec.name
+                );
             }
         }
     }
@@ -12366,18 +12992,45 @@ entry = "main.wl"
     #[test]
     fn b15_eight_registered_in_resolve_builtin() {
         use crate::resolve_builtin;
-        for name in &["INPUT", "BOOL", "CALL", "NEG", "GET_PROP", "SET_PROP", "CALL_METHOD", "MODULE_REF"] {
-            assert!(resolve_builtin(name).is_some(),
-                "resolve_builtin({:?}) is None; B15 did not register", name);
+        for name in &[
+            "INPUT",
+            "BOOL",
+            "CALL",
+            "NEG",
+            "GET_PROP",
+            "SET_PROP",
+            "CALL_METHOD",
+            "MODULE_REF",
+        ] {
+            assert!(
+                resolve_builtin(name).is_some(),
+                "resolve_builtin({:?}) is None; B15 did not register",
+                name
+            );
         }
     }
 
     #[test]
     fn b15_eight_moved_to_resolved_in_registry() {
         for spec in crate::registry::BUILTIN_REGISTRY.iter() {
-            if ["INPUT", "BOOL", "CALL", "NEG", "GET_PROP", "SET_PROP", "CALL_METHOD", "MODULE_REF"].contains(&spec.name) {
-                assert_eq!(spec.dispatch, crate::registry::DispatchStatus::ResolvedBuiltin,
-                    "{:?} is still Deferred after B15", spec.name);
+            if [
+                "INPUT",
+                "BOOL",
+                "CALL",
+                "NEG",
+                "GET_PROP",
+                "SET_PROP",
+                "CALL_METHOD",
+                "MODULE_REF",
+            ]
+            .contains(&spec.name)
+            {
+                assert_eq!(
+                    spec.dispatch,
+                    crate::registry::DispatchStatus::ResolvedBuiltin,
+                    "{:?} is still Deferred after B15",
+                    spec.name
+                );
             }
         }
     }
@@ -12386,7 +13039,10 @@ entry = "main.wl"
 
     #[test]
     fn c2_get_prop_dict_roundtrip() {
-        assert_eq!(run(r#"GET_PROP(["x": 1], "x");"#).unwrap(), Value::Integer(1));
+        assert_eq!(
+            run(r#"GET_PROP(["x": 1], "x");"#).unwrap(),
+            Value::Integer(1)
+        );
         // §5.5 sugar: a.b == GET_PROP(a, "b")
         assert_eq!(
             run(r#"LET(d, ["name": "wlwl"]); d.name;"#).unwrap(),
@@ -12439,7 +13095,8 @@ entry = "main.wl"
             run(r#"
                 LET(d, ["v": 42, "get": FUN((self), GET_PROP(self, "v"))]);
                 CALL_METHOD(d, "get");
-            "#).unwrap(),
+            "#)
+            .unwrap(),
             Value::Integer(42)
         );
         // §5.5 sugar: d.get() == CALL_METHOD(d, "get")
@@ -12447,7 +13104,8 @@ entry = "main.wl"
             run(r#"
                 LET(d, ["v": 7, "get": FUN((self), GET_PROP(self, "v"))]);
                 d.get();
-            "#).unwrap(),
+            "#)
+            .unwrap(),
             Value::Integer(7)
         );
         // self 之后按序绑定额外实参
@@ -12455,7 +13113,8 @@ entry = "main.wl"
             run(r#"
                 LET(d, ["x": 10, "add": FUN((self, n), +(GET_PROP(self, "x"), n))]);
                 d.add(5);
-            "#).unwrap(),
+            "#)
+            .unwrap(),
             Value::Integer(15)
         );
     }
@@ -12469,7 +13128,8 @@ entry = "main.wl"
             run(r#"
                 LET(d, ["add": FUN((a, b), +(a, b))]);
                 d.add(2, 3);
-            "#).unwrap(),
+            "#)
+            .unwrap(),
             Value::Integer(5)
         );
     }
@@ -12483,7 +13143,8 @@ entry = "main.wl"
             run(r#"
                 LET(j, MODULE_REF("wlwl:std.json"));
                 GET_PROP(j.PARSE("{\"a\": 5}"), "a");
-            "#).unwrap(),
+            "#)
+            .unwrap(),
             Value::Integer(5)
         );
     }
@@ -12507,7 +13168,10 @@ entry = "main.wl"
     #[test]
     fn c2_module_ref_std_module_is_dict() {
         // 模块对象类型是 DICT (§13.12)
-        assert_eq!(run(r#"TYPE(MODULE_REF("wlwl:std.json"));"#).unwrap(), Value::String("DICT".into()));
+        assert_eq!(
+            run(r#"TYPE(MODULE_REF("wlwl:std.json"));"#).unwrap(),
+            Value::String("DICT".into())
+        );
         assert_eq!(
             run(r#"HAS(MODULE_REF("wlwl:std.json"), "PARSE");"#).unwrap(),
             Value::Boolean(true)
@@ -12523,21 +13187,30 @@ entry = "main.wl"
         std::fs::write(
             dir.join("mathx.wl"),
             "LET(zeta, 1);\nLET(alpha, FUN((x), *(x, 2)));\nEXPORT([\"alpha\"]);\n",
-        ).unwrap();
+        )
+        .unwrap();
         // EXPORT 面决定模块对象的键:alpha 在,zeta 不在 (未 EXPORT)。
         assert_eq!(
-            run_in(&dir, r#"
+            run_in(
+                &dir,
+                r#"
                 LET(m, MODULE_REF("./mathx"));
                 STR(KEYS(m));
-            "#).unwrap(),
+            "#
+            )
+            .unwrap(),
             Value::String("[alpha]".into())
         );
         // 文件模块导出的 closure 经 CALL_METHOD 调用 (receiver 注入)
         assert_eq!(
-            run_in(&dir, r#"
+            run_in(
+                &dir,
+                r#"
                 LET(m, MODULE_REF("./mathx"));
                 m.alpha(21);
-            "#).unwrap(),
+            "#
+            )
+            .unwrap(),
             Value::Integer(42)
         );
         let _ = std::fs::remove_dir_all(&dir);
@@ -12564,7 +13237,11 @@ entry = "main.wl"
         // 引用走 undefined_name → E0020。
         let err = run(r#"LET(x, 1); AS("y", "x");"#).unwrap_err();
         assert_eq!(err.diagnostic().code, ErrorCode::E0020);
-        assert!(err.diagnostic().message.contains("AS"), "message: {}", err.diagnostic().message);
+        assert!(
+            err.diagnostic().message.contains("AS"),
+            "message: {}",
+            err.diagnostic().message
+        );
     }
 
     #[test]
@@ -12584,7 +13261,10 @@ entry = "main.wl"
         assert_eq!(n, PathBuf::from("/escape/m.wl"));
         // `.` 组件被丢弃
         let dotted = base.join(".").join("sub").join("m.wl");
-        assert_eq!(lexical_normalize(&dotted), PathBuf::from("/root/app/sub/m.wl"));
+        assert_eq!(
+            lexical_normalize(&dotted),
+            PathBuf::from("/root/app/sub/m.wl")
+        );
     }
 
     #[test]
@@ -12596,7 +13276,8 @@ entry = "main.wl"
         // §13.5 钉死的措辞
         assert!(
             err.diagnostic().message.contains("outside project root"),
-            "message: {}", err.diagnostic().message
+            "message: {}",
+            err.diagnostic().message
         );
         let _ = fs::remove_dir_all(&dir);
     }
@@ -12684,8 +13365,11 @@ entry = "main.wl"
         assert_eq!(err.diagnostic().code, ErrorCode::E0025);
         // spec message:cannot shadow built-in 'PRINT'
         assert!(
-            err.diagnostic().message.contains("cannot shadow built-in 'PRINT'"),
-            "message: {}", err.diagnostic().message
+            err.diagnostic()
+                .message
+                .contains("cannot shadow built-in 'PRINT'"),
+            "message: {}",
+            err.diagnostic().message
         );
         let _ = fs::remove_dir_all(&dir);
     }
@@ -12693,17 +13377,13 @@ entry = "main.wl"
     #[test]
     fn c5_shadow_builtin_allowed_with_flag_emits_w0030() {
         let dir = unique_test_dir("c5_shadow_allowed");
-        write_manifest(
-            &dir,
-            None,
-            "[features]\nallow_builtin_shadow = true\n",
-        );
-        let (r, warnings) =
-            run_in_with_warnings(&dir, r#"LET(PRINT, 1); PRINT;"#);
+        write_manifest(&dir, None, "[features]\nallow_builtin_shadow = true\n");
+        let (r, warnings) = run_in_with_warnings(&dir, r#"LET(PRINT, 1); PRINT;"#);
         assert_eq!(r.unwrap(), Value::Integer(1));
         assert!(
             warnings.iter().any(|w| w.code == ErrorCode::W0030),
-            "expected W0030, got {:?}", warnings
+            "expected W0030, got {:?}",
+            warnings
         );
         let _ = fs::remove_dir_all(&dir);
     }
@@ -12719,7 +13399,8 @@ entry = "main.wl"
         assert_eq!(r.unwrap(), Value::Integer(1));
         assert!(
             warnings.iter().any(|w| w.code == ErrorCode::W0030),
-            "expected W0030, got {:?}", warnings
+            "expected W0030, got {:?}",
+            warnings
         );
         let _ = fs::remove_dir_all(&dir);
     }
@@ -12752,7 +13433,8 @@ entry = "main.wl"
         assert_eq!(err.diagnostic().code, ErrorCode::E0045);
         assert!(
             err.diagnostic().message.starts_with("dependency conflict:"),
-            "message: {}", err.diagnostic().message
+            "message: {}",
+            err.diagnostic().message
         );
         assert!(err.diagnostic().message.contains("huggingface:client"));
         let _ = fs::remove_dir_all(&dir);
@@ -12792,10 +13474,8 @@ entry = "main.wl"
             "[dependencies]\n\"myteam:utils\" = { path = \"vendor/utils\" }\n",
         );
         // 生成与 toml 一致的 lock,然后人为改 toml 制造不一致
-        let m = wlwl_toml::manifest::parse(
-            &fs::read_to_string(dir.join("wlwl.toml")).unwrap(),
-        )
-        .unwrap();
+        let m = wlwl_toml::manifest::parse(&fs::read_to_string(dir.join("wlwl.toml")).unwrap())
+            .unwrap();
         wlwl_toml::lock::write(
             &dir.join("wlwl.lock"),
             &wlwl_toml::lock::from_manifest(&m, &dir),
@@ -12812,7 +13492,8 @@ entry = "main.wl"
             err.diagnostic()
                 .message
                 .starts_with("lock file inconsistent with wlwl.toml:"),
-            "message: {}", err.diagnostic().message
+            "message: {}",
+            err.diagnostic().message
         );
         let _ = fs::remove_dir_all(&dir);
     }
@@ -12825,10 +13506,8 @@ entry = "main.wl"
             None,
             "[dependencies]\n\"myteam:utils\" = { path = \"vendor/utils\" }\n",
         );
-        let m = wlwl_toml::manifest::parse(
-            &fs::read_to_string(dir.join("wlwl.toml")).unwrap(),
-        )
-        .unwrap();
+        let m = wlwl_toml::manifest::parse(&fs::read_to_string(dir.join("wlwl.toml")).unwrap())
+            .unwrap();
         wlwl_toml::lock::write(
             &dir.join("wlwl.lock"),
             &wlwl_toml::lock::from_manifest(&m, &dir),
@@ -12888,29 +13567,20 @@ entry = "main.wl"
         // strict_types defaults to false; a STRING passed where an
         // INTEGER is annotated must run without error (annotations
         // are Transient by default, matching v0.3 behavior).
-        let r = run_strict(
-            "LET(f, FUN((x: INTEGER), x)); f(\"hi\");",
-            false,
-        );
+        let r = run_strict("LET(f, FUN((x: INTEGER), x)); f(\"hi\");", false);
         assert!(r.is_ok(), "expected ok, got {:?}", r);
     }
 
     #[test]
     fn e1_strict_types_on_integer_param_accepts_integer() {
-        let r = run_strict(
-            "LET(f, FUN((x: INTEGER), x)); f(42);",
-            true,
-        );
+        let r = run_strict("LET(f, FUN((x: INTEGER), x)); f(42);", true);
         assert!(r.is_ok(), "expected ok, got {:?}", r);
         assert_eq!(r.unwrap(), Value::Integer(42));
     }
 
     #[test]
     fn e1_strict_types_on_string_for_integer_param_is_e0033() {
-        let r = run_strict(
-            "LET(f, FUN((x: INTEGER), x)); f(\"hi\");",
-            true,
-        );
+        let r = run_strict("LET(f, FUN((x: INTEGER), x)); f(\"hi\");", true);
         let err = r.expect_err("expected E0033");
         let msg = err.diagnostic().message.clone();
         assert!(
@@ -12932,12 +13602,14 @@ entry = "main.wl"
         );
         let msgs: Vec<&str> = rels.iter().map(|r| r.message.as_str()).collect();
         assert!(
-            msgs.iter().any(|m| m.contains("INTEGER") && m.contains("annotation")),
+            msgs.iter()
+                .any(|m| m.contains("INTEGER") && m.contains("annotation")),
             "annotation related missing: {:?}",
             msgs
         );
         assert!(
-            msgs.iter().any(|m| m.contains("STRING") && m.contains("actual")),
+            msgs.iter()
+                .any(|m| m.contains("STRING") && m.contains("actual")),
             "actual related missing: {:?}",
             msgs
         );
@@ -12947,10 +13619,7 @@ entry = "main.wl"
     fn e1_strict_types_unannotated_param_passes_through() {
         // A parameter without a `: Type` annotation is never
         // checked, regardless of strict_types.
-        let r = run_strict(
-            "LET(f, FUN((x), x)); f(\"hi\");",
-            true,
-        );
+        let r = run_strict("LET(f, FUN((x), x)); f(\"hi\");", true);
         assert!(r.is_ok(), "unannotated param should pass: got {:?}", r);
         assert_eq!(r.unwrap(), Value::String("hi".into()));
     }
@@ -12965,8 +13634,11 @@ entry = "main.wl"
             true,
         );
         let err = r.expect_err("expected E0033");
-        assert!(err.diagnostic().message.contains("INTEGER"), "got: {}",
-            err.diagnostic().message);
+        assert!(
+            err.diagnostic().message.contains("INTEGER"),
+            "got: {}",
+            err.diagnostic().message
+        );
     }
 
     #[test]
@@ -12985,18 +13657,17 @@ entry = "main.wl"
             true,
         );
         assert!(bad.is_err(), "expected E0033, got ok");
-        assert!(bad.unwrap_err().diagnostic().message.contains("INTEGER"),
-            "expected INTEGER in diagnostic");
+        assert!(
+            bad.unwrap_err().diagnostic().message.contains("INTEGER"),
+            "expected INTEGER in diagnostic"
+        );
     }
 
     #[test]
     fn e1_strict_types_uses_uppercase_type_names_case_insensitive() {
         // Lowercase annotation should still match (parser preserves
         // source text; we uppercase for comparison).
-        let r = run_strict(
-            "LET(f, FUN((x: integer), x)); f(42);",
-            true,
-        );
+        let r = run_strict("LET(f, FUN((x: integer), x)); f(42);", true);
         assert!(r.is_ok(), "lowercase annotation should match, got {:?}", r);
     }
 
@@ -13010,6 +13681,4 @@ entry = "main.wl"
         let ev = Evaluator::new();
         assert!(!ev.strict_types(), "default should be off");
     }
-
-
 }

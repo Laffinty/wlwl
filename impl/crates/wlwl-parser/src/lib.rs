@@ -42,7 +42,16 @@
 //! - E0020 undefined name (emitted at eval time, not parse)
 //! - E0043 namespace path syntax error
 
-use wlwl_ast::{Expr, FunParam, ImportName, Literal, MatchClause, Pattern, Span, TypeAnnotation, TypeExpr};
+// P4-G1-007: `WlwlError` is large by design (carries spec §14.2
+// diagnostic schema with trace + cause + location + suggestion);
+// restructuring it is out of scope for Phase G1. Allowed at the
+// crate level rather than per-function because almost every public
+// API in this parser returns `WlwlResult<_>`.
+#![allow(clippy::result_large_err)]
+
+use wlwl_ast::{
+    Expr, FunParam, ImportName, Literal, MatchClause, Pattern, Span, TypeAnnotation, TypeExpr,
+};
 use wlwl_error::{extract_line, Location, Suggestion, WlwlDiagnostic, WlwlError, WlwlResult};
 use wlwl_lexer::{lex, Token, TokenKind};
 
@@ -87,10 +96,7 @@ pub fn parse(input: &str, file: &str) -> WlwlResult<Expr> {
 /// v0.3 §4.5). Static semantic warnings (unused bindings, duplicate
 /// LET, ...) live in [`lint`], a post-parse walk; the two channels
 /// merge in `wlwl check`.
-pub fn parse_with_warnings(
-    input: &str,
-    file: &str,
-) -> WlwlResult<(Expr, Vec<Warning>)> {
+pub fn parse_with_warnings(input: &str, file: &str) -> WlwlResult<(Expr, Vec<Warning>)> {
     let toks = lex(input, file)?;
     let mut p = Parser {
         toks,
@@ -168,19 +174,19 @@ impl Linter {
                 let _ = span;
             }
             Expr::Block { exprs, .. } => self.walk_block_scope(exprs),
-            Expr::Let { name, value, span, .. } => {
+            Expr::Let {
+                name, value, span, ..
+            } => {
                 self.walk(value);
-                self.declare(
-                    name.clone(),
-                    span,
-                    BindingKind::Let,
-                );
+                self.declare(name.clone(), span, BindingKind::Let);
             }
             Expr::LetPattern { pattern, value, .. } => {
                 self.walk(value);
                 self.declare_pattern(pattern);
             }
-            Expr::Fun { name, params, body, .. } => {
+            Expr::Fun {
+                name, params, body, ..
+            } => {
                 if let Some(n) = name {
                     // Named FUN binding: `FUN(f(x), ...)` binds f in
                     // the enclosing scope.
@@ -207,7 +213,12 @@ impl Linter {
                 self.walk(body);
                 self.leave_scope();
             }
-            Expr::If { cond, then_branch, else_branch, .. } => {
+            Expr::If {
+                cond,
+                then_branch,
+                else_branch,
+                ..
+            } => {
                 self.walk(cond);
                 self.walk(then_branch);
                 if let Some(el) = else_branch {
@@ -218,7 +229,9 @@ impl Linter {
                 self.walk(cond);
                 self.walk(body);
             }
-            Expr::For { var, iter, body, .. } => {
+            Expr::For {
+                var, iter, body, ..
+            } => {
                 self.walk(iter);
                 self.scopes.push(Vec::new());
                 let fs = e.span();
@@ -231,7 +244,12 @@ impl Linter {
                 self.walk(body);
                 self.leave_scope();
             }
-            Expr::Match { value, clauses, default, .. } => {
+            Expr::Match {
+                value,
+                clauses,
+                default,
+                ..
+            } => {
                 self.walk(value);
                 for c in clauses {
                     // Pattern bindings live in the clause body scope.
@@ -253,11 +271,10 @@ impl Linter {
                     self.walk(v);
                 }
             }
-            Expr::Return { value, .. } => {
-                if let Some(v) = value {
-                    self.walk(v);
-                }
+            Expr::Return { value: Some(v), .. } => {
+                self.walk(v);
             }
+            Expr::Return { value: None, .. } => {}
             Expr::Ok { value, .. }
             | Expr::Err { value, .. }
             | Expr::Panic { value, .. }
@@ -329,7 +346,12 @@ impl Linter {
                 ));
             }
         }
-        scope.push(Binding { name, used: false, span, kind });
+        scope.push(Binding {
+            name,
+            used: false,
+            span,
+            kind,
+        });
     }
 
     /// Destructuring / MATCH patterns bind every `Ident` leaf
@@ -455,7 +477,12 @@ impl Parser {
         }
     }
 
-    fn err_at(&self, code: ErrorCode, message: impl Into<String>, span: (u32, u32, u32, u32)) -> WlwlError {
+    fn err_at(
+        &self,
+        code: ErrorCode,
+        message: impl Into<String>,
+        span: (u32, u32, u32, u32),
+    ) -> WlwlError {
         let loc = Location {
             file: self.file.clone(),
             line: span.0,
@@ -474,16 +501,20 @@ impl Parser {
                     "literals (1, 3.14, \"x\", true, [1,2], [a:1]), ",
                     "names (x, foo.bar), function calls (F(...)), ",
                     "or blocks (LET(...); ...). See v0.3 \u{00a7}5."
-                ).into(),
+                )
+                .into(),
             }),
             EC::E0011 => d.with_suggestion(Suggestion::Note {
                 description: concat!(
                     "missing closing `)`; ",
                     "find the matching `(` on this line and count parens"
-                ).into(),
+                )
+                .into(),
             }),
             EC::E0012 => d.with_suggestion(Suggestion::Note {
-                description: "missing `,` between arguments; function calls use `(a, b, c)` not `(a b c)`".into(),
+                description:
+                    "missing `,` between arguments; function calls use `(a, b, c)` not `(a b c)`"
+                        .into(),
             }),
             EC::E0013 => d.with_suggestion(Suggestion::Note {
                 description: "add `;` to terminate the preceding statement".into(),
@@ -492,7 +523,8 @@ impl Parser {
                 description: concat!(
                     "namespace paths must be `ns:name` (e.g. `wlwl:std.io`) ",
                     "or a relative path (`./x`, `../y`); see v0.3 \u{00a7}13.3"
-                ).into(),
+                )
+                .into(),
             }),
             _ => d,
         };
@@ -635,7 +667,10 @@ impl Parser {
     }
 
     fn parse_expr(&mut self) -> WlwlResult<Expr> {
-        let (line, col, _, _) = self.span_here();
+        // This entry-point span can be used by callers below; only
+        // the unary branches need their own fresh span (`l2, c2`)
+        // because they re-read after `advance`.
+        let (_line, _col, _, _) = self.span_here();
         let kind = self.peek().clone();
         // Unary-minus sugar: `-x` desugars to `-(0, x)`. Only triggered
         // when `-` is NOT followed by `(`, so binary minus like
@@ -647,13 +682,19 @@ impl Parser {
             let (_, _, le, ce) = self.span_here();
             return Ok(Expr::Call {
                 name: "-".to_string(),
-                args: vec![Expr::Literal(Literal::Integer(0), Span {
-                    file: self.file.clone(),
-                    line_start: l2,
-                    col_start: c2,
-                    line_end: l2,
-                    col_end: c2,
-                }), inner],
+                args: vec![
+                    Expr::Literal(
+                        Literal::Integer(0),
+                        Span {
+                            file: self.file.clone(),
+                            line_start: l2,
+                            col_start: c2,
+                            line_end: l2,
+                            col_end: c2,
+                        },
+                    ),
+                    inner,
+                ],
                 span: Span {
                     file: self.file.clone(),
                     line_start: l2,
@@ -704,10 +745,16 @@ impl Parser {
             // §12 error handling
             TokenKind::Ok => self.parse_err_ctor("'OK'", |v, s| Expr::Ok { value: v, span: s }),
             TokenKind::Err => self.parse_err_ctor("'ERR'", |v, s| Expr::Err { value: v, span: s }),
-            TokenKind::Panic => self.parse_err_ctor("'PANIC'", |v, s| Expr::Panic { value: v, span: s }),
+            TokenKind::Panic => {
+                self.parse_err_ctor("'PANIC'", |v, s| Expr::Panic { value: v, span: s })
+            }
             TokenKind::Try => self.parse_err_ctor("'TRY'", |v, s| Expr::Try { value: v, span: s }),
-            TokenKind::IsOk => self.parse_err_ctor("'IS_OK'", |v, s| Expr::IsOk { value: v, span: s }),
-            TokenKind::IsErr => self.parse_err_ctor("'IS_ERR'", |v, s| Expr::IsErr { value: v, span: s }),
+            TokenKind::IsOk => {
+                self.parse_err_ctor("'IS_OK'", |v, s| Expr::IsOk { value: v, span: s })
+            }
+            TokenKind::IsErr => {
+                self.parse_err_ctor("'IS_ERR'", |v, s| Expr::IsErr { value: v, span: s })
+            }
             TokenKind::OrDie => self.parse_or_die(),
             // v0.4 §7.6 pattern matching (macro-function, lexer-level keyword).
             TokenKind::Match => self.parse_match(),
@@ -741,10 +788,6 @@ impl Parser {
                 ))
             }
         }
-        .map_err(|e| {
-            // Attach file context if not already there (defensive)
-            e
-        })
     }
 
     fn parse_let(&mut self) -> WlwlResult<Expr> {
@@ -865,10 +908,7 @@ impl Parser {
             _ => None,
         } {
             let tok = self.advance();
-            return Ok(Pattern::Literal(
-                lit,
-                self.span_tuple_to_span(tok.span),
-            ));
+            return Ok(Pattern::Literal(lit, self.span_tuple_to_span(tok.span)));
         }
         let tok = self.advance();
         Err(self.err_at(
@@ -887,7 +927,11 @@ impl Parser {
         // Empty `[]` -- matches empty ARRAY.
         if matches!(self.peek(), TokenKind::RBracket) {
             self.advance();
-            return Ok(Pattern::Array(Vec::new(), None, self.pattern_span(line, col)));
+            return Ok(Pattern::Array(
+                Vec::new(),
+                None,
+                self.pattern_span(line, col),
+            ));
         }
         // Parse the first sub-pattern, then peek for `:`.
         let first_pat = self.parse_pattern()?;
@@ -967,10 +1011,7 @@ impl Parser {
     /// Array/Dict (E0010), and Literal (1:1).
     fn pattern_to_key_expr(&self, p: &Pattern) -> WlwlResult<Expr> {
         match p {
-            Pattern::Ident(s, span) => Ok(Expr::Literal(
-                Literal::String(s.clone()),
-                span.clone(),
-            )),
+            Pattern::Ident(s, span) => Ok(Expr::Literal(Literal::String(s.clone()), span.clone())),
             Pattern::Literal(lit, span) => Ok(Expr::Literal(lit.clone(), span.clone())),
             Pattern::Wildcard(span) => Err(self.err_at(
                 EC::E0010,
@@ -984,7 +1025,10 @@ impl Parser {
             )),
             Pattern::Constructor { name, span, .. } => Err(self.err_at(
                 EC::E0010,
-                format!("constructor pattern `{}` is not a valid dict-pattern key", name),
+                format!(
+                    "constructor pattern `{}` is not a valid dict-pattern key",
+                    name
+                ),
                 (span.line_start, span.col_start, span.line_end, span.col_end),
             )),
         }
@@ -1004,8 +1048,8 @@ impl Parser {
         }
         let (sl, sc, _, _) = self.span_here();
         self.advance(); // ':'
-        // Now consume a balanced type expression. Stop at top-level
-        // `,` or `)`. Allow nested brackets.
+                        // Now consume a balanced type expression. Stop at top-level
+                        // `,` or `)`. Allow nested brackets.
         let mut depth: i32 = 0;
         let mut pieces: Vec<String> = Vec::new();
         let mut last_span = (sl, sc, sl, sc);
@@ -1118,7 +1162,7 @@ impl Parser {
         self.expect_specific(EC::E0010, "'IF'")?;
         self.expect_specific(EC::E0011, "'('")?;
         let cond = self.parse_expr()?;
-                self.expect_specific(EC::E0012, "','")?;
+        self.expect_specific(EC::E0012, "','")?;
         // The branches may be multi-statement blocks; parse them as
         // such (terminated by the closing `)` of the IF, or a `,` for
         // the else branch).
@@ -1173,7 +1217,10 @@ impl Parser {
         self.expect_specific(EC::E0010, "'FOR'")?;
         self.expect_specific(EC::E0011, "'('")?;
         let var = match self.advance() {
-            Token { kind: TokenKind::Ident(s), .. } => s,
+            Token {
+                kind: TokenKind::Ident(s),
+                ..
+            } => s,
             other => {
                 return Err(self.err_at(
                     EC::E0010,
@@ -1218,7 +1265,11 @@ impl Parser {
             // parameter-list left paren.
             self.advance();
             None
-        } else if let Token { kind: TokenKind::Ident(s), .. } = self.advance() {
+        } else if let Token {
+            kind: TokenKind::Ident(s),
+            ..
+        } = self.advance()
+        {
             // Named form: FUN(name(params), body) — the next token
             // must be the parameter-list left paren.
             self.expect_specific(EC::E0011, "'('")?;
@@ -1247,7 +1298,10 @@ impl Parser {
                     false
                 };
                 let (pname, pspan) = match self.advance() {
-                    Token { kind: TokenKind::Ident(s), span } => (s, span),
+                    Token {
+                        kind: TokenKind::Ident(s),
+                        span,
+                    } => (s, span),
                     other => {
                         return Err(self.err_at(
                             EC::E0010,
@@ -1442,13 +1496,16 @@ impl Parser {
             self.advance();
             Box::new(self.parse_expr()?)
         } else {
-            Box::new(Expr::Literal(Literal::Null, Span {
-                file: self.file.clone(),
-                line_start: line,
-                col_start: col,
-                line_end,
-                col_end,
-            }))
+            Box::new(Expr::Literal(
+                Literal::Null,
+                Span {
+                    file: self.file.clone(),
+                    line_start: line,
+                    col_start: col,
+                    line_end,
+                    col_end,
+                },
+            ))
         };
         self.expect_specific(EC::E0011, "\')\'")?;
         Ok(Expr::Match {
@@ -1464,7 +1521,6 @@ impl Parser {
             },
         })
     }
-
 
     fn parse_match_clauses(&mut self) -> WlwlResult<Vec<MatchClause>> {
         self.expect_specific(EC::E0011, "'['")?;
@@ -1512,15 +1568,18 @@ impl Parser {
         // recognized as a TokenKind::Ok / TokenKind::Err via the
         // dispatch in parse_pattern).
         let name = match self.advance() {
-            Token { kind: TokenKind::Ok, .. } => "OK",
-            Token { kind: TokenKind::Err, .. } => "ERR",
+            Token {
+                kind: TokenKind::Ok,
+                ..
+            } => "OK",
+            Token {
+                kind: TokenKind::Err,
+                ..
+            } => "ERR",
             other => {
                 return Err(self.err_at(
                     EC::E0010,
-                    format!(
-                        "expected constructor name OK or ERR, got {:?}",
-                        other.kind
-                    ),
+                    format!("expected constructor name OK or ERR, got {:?}", other.kind),
                     other.span,
                 ));
             }
@@ -1542,8 +1601,6 @@ impl Parser {
         })
     }
 
-
-
     // ── §13 Modules (subset) ─────────────────────────────────────────
 
     fn parse_import(&mut self) -> WlwlResult<Expr> {
@@ -1552,14 +1609,14 @@ impl Parser {
         self.expect_specific(EC::E0011, "'('")?;
         // path: must be a string literal
         let path = match self.advance() {
-            Token { kind: TokenKind::StringLit(s), .. } => s,
+            Token {
+                kind: TokenKind::StringLit(s),
+                ..
+            } => s,
             other => {
                 return Err(self.err_at(
                     EC::E0043,
-                    format!(
-                        "IMPORT path must be a string literal, got {:?}",
-                        other.kind
-                    ),
+                    format!("IMPORT path must be a string literal, got {:?}", other.kind),
                     other.span,
                 ));
             }
@@ -1646,8 +1703,14 @@ impl Parser {
                 let alias = if matches!(self.peek(), TokenKind::Colon) {
                     self.advance();
                     match self.advance() {
-                        Token { kind: TokenKind::StringLit(s), .. } => Some(s),
-                        Token { kind: TokenKind::Ident(s), .. } => Some(s),
+                        Token {
+                            kind: TokenKind::StringLit(s),
+                            ..
+                        } => Some(s),
+                        Token {
+                            kind: TokenKind::Ident(s),
+                            ..
+                        } => Some(s),
                         other => {
                             return Err(self.err_at(
                                 EC::E0010,
@@ -1768,9 +1831,12 @@ impl Parser {
         // and the method/member as ordinary function calls. P3-011.
         while matches!(self.peek(), TokenKind::Dot) {
             self.advance(); // '.'
-            // The name right after `.` must be an identifier (per §3.1).
+                            // The name right after `.` must be an identifier (per §3.1).
             let field = match self.advance() {
-                Token { kind: TokenKind::Ident(s), span } => (s, span),
+                Token {
+                    kind: TokenKind::Ident(s),
+                    span,
+                } => (s, span),
                 other => {
                     return Err(self.err_at(
                         EC::E0010,
@@ -1867,13 +1933,16 @@ impl Parser {
                 ));
             }
         };
-        Ok(Expr::Literal(lit, Span {
-            file: self.file.clone(),
-            line_start: line,
-            col_start: col,
-            line_end: t.span.2,
-            col_end: t.span.3,
-        }))
+        Ok(Expr::Literal(
+            lit,
+            Span {
+                file: self.file.clone(),
+                line_start: line,
+                col_start: col,
+                line_end: t.span.2,
+                col_end: t.span.3,
+            },
+        ))
     }
 
     /// Parse an array or dict literal.
@@ -1887,14 +1956,11 @@ impl Parser {
     /// - `[1, 2, 3]`          → Array { items: [...] }, no warning.
     /// - `["a": 1, "b": 2]`   → Dict  { entries: [...] }, no warning.
     /// - `[1, "a": 2]`        → promoted to Dict; previous items
-    ///                          become `(0, 1)`, `(1, ...)` integer-
-    ///                          keyed entries; the new entry
-    ///                          becomes `(e, v)`.  W0020 emitted.
+    ///   become `(0, 1)`, `(1, ...)` integer-keyed entries; the new
+    ///   entry becomes `(e, v)`.  W0020 emitted.
     /// - `["a": 1, 2]`        → promoted to Dict (already in dict
-    ///                          mode); the bare `2` becomes
-    ///                          `(N, 2)` with synthetic integer key
-    ///                          where N is the current entry count.
-    ///                          W0020 emitted.
+    ///   mode); the bare `2` becomes `(N, 2)` with synthetic integer
+    ///   key where N is the current entry count.  W0020 emitted.
     ///
     /// The promotion is one-way: we always converge to a Dict
     /// because dicts can hold arbitrary key types whereas Arrays
@@ -1957,10 +2023,7 @@ impl Parser {
                         line_end: line_e,
                         col_end: col_e,
                     };
-                    let key = Expr::Literal(
-                        Literal::Integer(entries.len() as i64),
-                        key_span,
-                    );
+                    let key = Expr::Literal(Literal::Integer(entries.len() as i64), key_span);
                     entries.push((key, e));
                     self.warnings.push(Warning::new(
                         EC::W0020,
@@ -1982,10 +2045,7 @@ impl Parser {
                             line_end: line_e,
                             col_end: col_e,
                         };
-                        let key = Expr::Literal(
-                            Literal::Integer(i as i64),
-                            key_span,
-                        );
+                        let key = Expr::Literal(Literal::Integer(i as i64), key_span);
                         entries.push((key, item));
                     }
                     items = Vec::with_capacity(0);
@@ -2051,7 +2111,10 @@ impl Parser {
             col_end,
         };
         Ok(match block {
-            Expr::Block { exprs, .. } => Expr::Block { exprs, span: new_span },
+            Expr::Block { exprs, .. } => Expr::Block {
+                exprs,
+                span: new_span,
+            },
             other => other,
         })
     }
@@ -2147,10 +2210,7 @@ impl<'a> TypeExprParser<'a> {
                 other => {
                     return Err(WlwlDiagnostic::new(
                         EC::E0012,
-                        format!(
-                            "expected `,` or `]` in type expression, got `{}`",
-                            other
-                        ),
+                        format!("expected `,` or `]` in type expression, got `{}`", other),
                         Location::point(&self.file, sl, sc),
                     )
                     .into());
@@ -2268,7 +2328,10 @@ mod tests {
     fn parse_fun_two_params() {
         let e = parse("FUN((a, b), +(a, b));", "t.wl").unwrap();
         match e {
-            Expr::Fun { params, .. } => assert_eq!(params.iter().map(|p| p.name.clone()).collect::<Vec<_>>(), vec!["a".to_string(), "b".to_string()]),
+            Expr::Fun { params, .. } => assert_eq!(
+                params.iter().map(|p| p.name.clone()).collect::<Vec<_>>(),
+                vec!["a".to_string(), "b".to_string()]
+            ),
             _ => panic!("expected FUN"),
         }
     }
@@ -2293,22 +2356,43 @@ mod tests {
 
     #[test]
     fn parse_break_continue() {
-        assert!(matches!(parse("BREAK();", "t.wl").unwrap(), Expr::Break { .. }));
-        assert!(matches!(parse("CONTINUE();", "t.wl").unwrap(), Expr::Continue { .. }));
+        assert!(matches!(
+            parse("BREAK();", "t.wl").unwrap(),
+            Expr::Break { .. }
+        ));
+        assert!(matches!(
+            parse("CONTINUE();", "t.wl").unwrap(),
+            Expr::Continue { .. }
+        ));
     }
 
     #[test]
     fn parse_ok_err_panic() {
         assert!(matches!(parse("OK(1);", "t.wl").unwrap(), Expr::Ok { .. }));
-        assert!(matches!(parse("ERR(\"bad\");", "t.wl").unwrap(), Expr::Err { .. }));
-        assert!(matches!(parse("PANIC(\"oops\");", "t.wl").unwrap(), Expr::Panic { .. }));
+        assert!(matches!(
+            parse("ERR(\"bad\");", "t.wl").unwrap(),
+            Expr::Err { .. }
+        ));
+        assert!(matches!(
+            parse("PANIC(\"oops\");", "t.wl").unwrap(),
+            Expr::Panic { .. }
+        ));
     }
 
     #[test]
     fn parse_try_isok_iserr_ordie() {
-        assert!(matches!(parse("TRY(OK(1));", "t.wl").unwrap(), Expr::Try { .. }));
-        assert!(matches!(parse("IS_OK(OK(1));", "t.wl").unwrap(), Expr::IsOk { .. }));
-        assert!(matches!(parse("IS_ERR(ERR(1));", "t.wl").unwrap(), Expr::IsErr { .. }));
+        assert!(matches!(
+            parse("TRY(OK(1));", "t.wl").unwrap(),
+            Expr::Try { .. }
+        ));
+        assert!(matches!(
+            parse("IS_OK(OK(1));", "t.wl").unwrap(),
+            Expr::IsOk { .. }
+        ));
+        assert!(matches!(
+            parse("IS_ERR(ERR(1));", "t.wl").unwrap(),
+            Expr::IsErr { .. }
+        ));
         let e = parse("OR_DIE(ERR(1), 0);", "t.wl").unwrap();
         match e {
             Expr::OrDie { value, default, .. } => {
@@ -2372,7 +2456,6 @@ mod tests {
     }
 
     #[test]
-    #[test]
     fn parse_import_accepts_wlwl_namespace_path() {
         // Phase 4 batch 1: `wlwl:std.X` namespace prefix is accepted
         // at parse time. The module loader resolves it to a std
@@ -2388,7 +2471,6 @@ mod tests {
         }
     }
 
-    #[test]
     #[test]
     fn parse_import_accepts_third_party_namespace() {
         // Phase 4 batch 2: the parser accepts any non-empty path,
@@ -2492,7 +2574,11 @@ mod tests {
     fn parse_let_with_type_annotation() {
         let e = parse("LET(x: INTEGER, 1);", "t.wl").unwrap();
         match e {
-            Expr::Let { name, type_annotation, .. } => {
+            Expr::Let {
+                name,
+                type_annotation,
+                ..
+            } => {
                 assert_eq!(name, "x");
                 let ann = type_annotation.expect("expected annotation");
                 assert_eq!(ann.text, "INTEGER");
@@ -2505,7 +2591,11 @@ mod tests {
     fn parse_let_without_type_annotation() {
         let e = parse("LET(x, 1);", "t.wl").unwrap();
         match e {
-            Expr::Let { name, type_annotation, .. } => {
+            Expr::Let {
+                name,
+                type_annotation,
+                ..
+            } => {
                 assert_eq!(name, "x");
                 assert!(type_annotation.is_none());
             }
@@ -2517,7 +2607,9 @@ mod tests {
     fn parse_let_with_complex_type_annotation() {
         let e = parse("LET(xs: ARRAY[INTEGER], [1, 2, 3]);", "t.wl").unwrap();
         match e {
-            Expr::Let { type_annotation, .. } => {
+            Expr::Let {
+                type_annotation, ..
+            } => {
                 let ann = type_annotation.expect("expected annotation");
                 assert_eq!(ann.text, "ARRAY [ INTEGER ]");
             }
@@ -2529,8 +2621,15 @@ mod tests {
     fn parse_fun_with_return_type_annotation() {
         let e = parse("FUN((a, b): INTEGER, +(a, b));", "t.wl").unwrap();
         match e {
-            Expr::Fun { params, return_type, .. } => {
-                assert_eq!(params.iter().map(|p| p.name.clone()).collect::<Vec<_>>(), vec!["a".to_string(), "b".to_string()]);
+            Expr::Fun {
+                params,
+                return_type,
+                ..
+            } => {
+                assert_eq!(
+                    params.iter().map(|p| p.name.clone()).collect::<Vec<_>>(),
+                    vec!["a".to_string(), "b".to_string()]
+                );
                 let ann = return_type.expect("expected return annotation");
                 assert_eq!(ann.text, "INTEGER");
             }
@@ -2542,8 +2641,15 @@ mod tests {
     fn parse_fun_without_return_type_annotation() {
         let e = parse("FUN((a, b), +(a, b));", "t.wl").unwrap();
         match e {
-            Expr::Fun { params, return_type, .. } => {
-                assert_eq!(params.iter().map(|p| p.name.clone()).collect::<Vec<_>>(), vec!["a".to_string(), "b".to_string()]);
+            Expr::Fun {
+                params,
+                return_type,
+                ..
+            } => {
+                assert_eq!(
+                    params.iter().map(|p| p.name.clone()).collect::<Vec<_>>(),
+                    vec!["a".to_string(), "b".to_string()]
+                );
                 assert!(return_type.is_none());
             }
             _ => panic!("expected FUN"),
@@ -2569,11 +2675,7 @@ mod tests {
         // P3-007: per-parameter `name: Type` annotations on FUN.
         // The annotation is parsed not checked; the AST stores
         // `params: Vec<FunParam>` with `type_annotation: Some(...)`.
-        let e = parse(
-            "FUN((x: INTEGER, y: STRING), PRINT(x, y));",
-            "t.wl",
-        )
-        .unwrap();
+        let e = parse("FUN((x: INTEGER, y: STRING), PRINT(x, y));", "t.wl").unwrap();
         match e {
             Expr::Fun { params, .. } => {
                 assert_eq!(params.len(), 2);
@@ -2609,11 +2711,7 @@ mod tests {
     fn parse_fun_per_param_array_type() {
         // P3-010: structured `ARRAY<T>` type expression. Parses to
         // `TypeExpr::Array { element: Box<TypeExpr> }` (not Generic).
-        let e = parse(
-            "FUN((xs: ARRAY[INTEGER]), PRINT(xs));",
-            "t.wl",
-        )
-        .unwrap();
+        let e = parse("FUN((xs: ARRAY[INTEGER]), PRINT(xs));", "t.wl").unwrap();
         match e {
             Expr::Fun { params, .. } => {
                 let ann = params[0]
@@ -2621,14 +2719,12 @@ mod tests {
                     .as_ref()
                     .expect("xs has annotation");
                 match &ann.expr {
-                    wlwl_ast::TypeExpr::Array { element, .. } => {
-                        match &**element {
-                            wlwl_ast::TypeExpr::Ident { name, .. } => {
-                                assert_eq!(name, "INTEGER");
-                            }
-                            _ => panic!("expected inner Ident"),
+                    wlwl_ast::TypeExpr::Array { element, .. } => match &**element {
+                        wlwl_ast::TypeExpr::Ident { name, .. } => {
+                            assert_eq!(name, "INTEGER");
                         }
-                    }
+                        _ => panic!("expected inner Ident"),
+                    },
                     _ => panic!("expected Array, got {:?}", ann.expr),
                 }
             }
@@ -2639,11 +2735,7 @@ mod tests {
     #[test]
     fn parse_fun_per_param_generic_dict_type() {
         // P3-010: `DICT<K, V>` is `TypeExpr::Generic { name: "DICT", args }`.
-        let e = parse(
-            "FUN((m: DICT[STRING, INTEGER]), PRINT(m));",
-            "t.wl",
-        )
-        .unwrap();
+        let e = parse("FUN((m: DICT[STRING, INTEGER]), PRINT(m));", "t.wl").unwrap();
         match e {
             Expr::Fun { params, .. } => {
                 let ann = params[0]
@@ -2764,15 +2856,18 @@ mod tests {
     fn type_expr_parser_array_with_element() {
         // ARRAY[INTEGER] -> TypeExpr::Array
         let p = parser_for_type_test(vec![], "t.wl");
-        let pieces = vec!["ARRAY".to_string(), "[".to_string(), "INTEGER".to_string(), "]".to_string()];
+        let pieces = vec![
+            "ARRAY".to_string(),
+            "[".to_string(),
+            "INTEGER".to_string(),
+            "]".to_string(),
+        ];
         let result = p.parse_type_expr_from_pieces(&pieces, 1, 1).unwrap();
         match result {
-            wlwl_ast::TypeExpr::Array { element, .. } => {
-                match *element {
-                    wlwl_ast::TypeExpr::Ident { name, .. } => assert_eq!(name, "INTEGER"),
-                    _ => panic!("expected Ident inside Array"),
-                }
-            }
+            wlwl_ast::TypeExpr::Array { element, .. } => match *element {
+                wlwl_ast::TypeExpr::Ident { name, .. } => assert_eq!(name, "INTEGER"),
+                _ => panic!("expected Ident inside Array"),
+            },
             _ => panic!("expected Array, got {:?}", result),
         }
     }
@@ -2781,7 +2876,12 @@ mod tests {
     fn type_expr_parser_generic_one_arg() {
         // OK[INTEGER] -> Generic { name: "OK", args: [Ident("INTEGER")] }
         let p = parser_for_type_test(vec![], "t.wl");
-        let pieces = vec!["OK".to_string(), "[".to_string(), "INTEGER".to_string(), "]".to_string()];
+        let pieces = vec![
+            "OK".to_string(),
+            "[".to_string(),
+            "INTEGER".to_string(),
+            "]".to_string(),
+        ];
         let result = p.parse_type_expr_from_pieces(&pieces, 1, 1).unwrap();
         match result {
             wlwl_ast::TypeExpr::Generic { name, args, .. } => {
@@ -2872,10 +2972,7 @@ mod tests {
         // (P3-010 made this strict; before, the leftover was wrapped
         // silently into a Generic).
         let p = parser_for_type_test(vec![], "t.wl");
-        let pieces = vec![
-            "ARRAY".to_string(),
-            "EXTRA".to_string(),
-        ];
+        let pieces = vec!["ARRAY".to_string(), "EXTRA".to_string()];
         let err = p.parse_type_expr_from_pieces(&pieces, 1, 1).unwrap_err();
         assert_eq!(err.diagnostic().code, EC::E0010);
     }
@@ -2938,7 +3035,6 @@ mod tests {
     }
 
     // ---- parse_let error paths ----
-
 
     // ---- P4-A3: destructure pattern parser (spec v0.4 Sec. 7.5) ----
 
@@ -3040,7 +3136,11 @@ mod tests {
         // LetPattern path (does not collapse to Expr::Let).
         let e = parse("LET([a, b]: ARRAY[INTEGER], [1, 2]);", "t.wl").unwrap();
         match e {
-            Expr::LetPattern { pattern, type_annotation, .. } => {
+            Expr::LetPattern {
+                pattern,
+                type_annotation,
+                ..
+            } => {
                 assert!(matches!(*pattern, Pattern::Array(_, None, _)));
                 assert!(type_annotation.is_some());
             }
@@ -3079,7 +3179,6 @@ mod tests {
 
     #[test]
     fn parse_let_nested_pattern() {
-
         let e = parse("LET([[a, b], [c, d]], [[1, 2], [3, 4]]);", "t.wl").unwrap();
         match e {
             Expr::LetPattern { pattern, .. } => match *pattern {
@@ -3100,5 +3199,4 @@ mod tests {
         let err = parse("LET(123, 1);", "t.wl").unwrap_err();
         assert_eq!(err.diagnostic().code, EC::E0010);
     }
-
 }

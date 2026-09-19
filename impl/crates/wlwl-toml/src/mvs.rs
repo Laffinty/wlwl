@@ -33,7 +33,11 @@ pub struct SemVer {
 
 impl SemVer {
     pub fn new(major: u64, minor: u64, patch: u64) -> Self {
-        Self { major, minor, patch }
+        Self {
+            major,
+            minor,
+            patch,
+        }
     }
 
     /// Parse `X.Y.Z` / `X.Y` / `X` (missing segments default to 0).
@@ -42,9 +46,19 @@ impl SemVer {
         let s = s.trim().trim_start_matches('v');
         let mut it = s.split('.');
         let major = it.next()?.trim().parse::<u64>().ok()?;
-        let minor = it.next().map(|v| v.trim().parse::<u64>().ok()).unwrap_or(Some(0))?;
-        let patch = it.next().map(|v| v.trim().parse::<u64>().ok()).unwrap_or(Some(0))?;
-        Some(Self { major, minor, patch })
+        let minor = it
+            .next()
+            .map(|v| v.trim().parse::<u64>().ok())
+            .unwrap_or(Some(0))?;
+        let patch = it
+            .next()
+            .map(|v| v.trim().parse::<u64>().ok())
+            .unwrap_or(Some(0))?;
+        Some(Self {
+            major,
+            minor,
+            patch,
+        })
     }
 }
 
@@ -88,7 +102,10 @@ impl Constraint {
     pub fn parse(s: &str) -> Option<Self> {
         let raw = s.trim().to_string();
         if raw.is_empty() {
-            return Some(Self { comps: Vec::new(), raw });
+            return Some(Self {
+                comps: Vec::new(),
+                raw,
+            });
         }
         let mut comps = Vec::new();
         for part in raw.split(',') {
@@ -153,10 +170,7 @@ impl fmt::Display for Constraint {
 #[derive(Debug, Clone, PartialEq)]
 pub enum MvsError {
     /// 无候选版本满足约束(spec §13.9:`E0045: dependency conflict`)。
-    Conflict {
-        dep: String,
-        constraint: String,
-    },
+    Conflict { dep: String, constraint: String },
     /// 循环依赖(spec §13.9:`E0041`)。携带完整环路路径。
     Cycle(Vec<String>),
 }
@@ -206,24 +220,27 @@ pub fn solve(
             if constraint.satisfies(v) {
                 continue;
             }
-            return Err(MvsError::Conflict { dep, constraint: constraint.raw });
+            return Err(MvsError::Conflict {
+                dep,
+                constraint: constraint.raw,
+            });
         }
         let mut cands: Vec<SemVer> = candidates(&dep)
             .into_iter()
             .filter(|v| constraint.satisfies(*v))
             .collect();
         if cands.is_empty() {
-            return Err(MvsError::Conflict { dep, constraint: constraint.raw });
+            return Err(MvsError::Conflict {
+                dep,
+                constraint: constraint.raw,
+            });
         }
         cands.sort();
         let min = cands[0];
         chosen.insert(dep.clone(), min);
         // 传递依赖 append 到 worklist(§13.9.1),同时记录依赖边。
         let transitive = deps_of(&dep, min);
-        graph.insert(
-            dep.clone(),
-            transitive.keys().cloned().collect(),
-        );
+        graph.insert(dep.clone(), transitive.keys().cloned().collect());
         for (d, c) in transitive {
             worklist.push((d, c));
         }
@@ -361,7 +378,10 @@ mod tests {
         let err = solve(&root, &|_| cands.clone(), &|_, _| BTreeMap::new()).unwrap_err();
         assert_eq!(
             err,
-            MvsError::Conflict { dep: "a".into(), constraint: "^3.0.0".into() }
+            MvsError::Conflict {
+                dep: "a".into(),
+                constraint: "^3.0.0".into()
+            }
         );
         assert!(err.to_string().starts_with("dependency conflict:"));
     }
@@ -390,7 +410,11 @@ mod tests {
         let chosen = solve(
             &root,
             &|name| {
-                if name == "a" { a_cands.clone() } else { b_cands.clone() }
+                if name == "a" {
+                    a_cands.clone()
+                } else {
+                    b_cands.clone()
+                }
             },
             &|name, v| {
                 if name == "a" && v == SemVer::new(1, 0, 0) {
@@ -409,17 +433,13 @@ mod tests {
     fn mvs_cycle_is_e0041() {
         // a → b → a 的逻辑环
         let root = map(&[("a", "1.0.0")]);
-        let err = solve(
-            &root,
-            &|_| versions(&["1.0.0"]),
-            &|name, _| {
-                if name == "a" {
-                    map(&[("b", "1.0.0")])
-                } else {
-                    map(&[("a", "1.0.0")])
-                }
-            },
-        )
+        let err = solve(&root, &|_| versions(&["1.0.0"]), &|name, _| {
+            if name == "a" {
+                map(&[("b", "1.0.0")])
+            } else {
+                map(&[("a", "1.0.0")])
+            }
+        })
         .unwrap_err();
         assert!(matches!(err, MvsError::Cycle(_)));
         assert!(err.to_string().starts_with("circular dependency detected:"));

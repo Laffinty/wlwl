@@ -6,8 +6,8 @@
 
 use std::fs;
 use std::io::Write;
-use wlwl_eval::{Evaluator, Value};
 use wlwl_error::ErrorCode;
+use wlwl_eval::{Evaluator, Value};
 use wlwl_parser::parse;
 
 fn run_source(src: &str) -> Result<Value, ErrorCode> {
@@ -22,7 +22,10 @@ fn run_source(src: &str) -> Result<Value, ErrorCode> {
 #[test]
 fn int_1_hello_world() {
     // 1) Hello world — single PRINT
-    assert_eq!(run_source("PRINT(\"hello, world!\");").unwrap(), Value::Null);
+    assert_eq!(
+        run_source("PRINT(\"hello, world!\");").unwrap(),
+        Value::Null
+    );
 }
 
 #[test]
@@ -110,7 +113,11 @@ fn int_9_cli_runs_hello() {
     let workspace_target = std::env::current_dir()
         .unwrap()
         .parent() // tests/ is inside impl/
-        .map(|p| p.join("target").join("debug").join(if cfg!(windows) { "wlwl.exe" } else { "wlwl" }))
+        .map(|p| {
+            p.join("target")
+                .join("debug")
+                .join(if cfg!(windows) { "wlwl.exe" } else { "wlwl" })
+        })
         .unwrap_or_else(|| PathBuf::from("target/debug/wlwl"));
 
     let candidates = [

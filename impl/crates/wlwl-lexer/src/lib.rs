@@ -2,7 +2,7 @@
 //!
 //! Phase 2 token set per v0.3 §3:
 //! - Keywords: TRUE, FALSE, NULL, LET, FUN, RETURN, IF, WHILE, FOR, BREAK,
-//!             CONTINUE, CLASS, NEW, THIS
+//!   CONTINUE, CLASS, NEW, THIS
 //! - Operators (used as function names in Call positions; see v0.3 §9):
 //!   + - * / % == != < > <= >= && || !
 //! - Literals: integer, float, string (with escape sequences per §4.2)
@@ -15,7 +15,16 @@
 //! - E0002 unterminated string
 //! - E0003 unterminated block comment
 
-use wlwl_error::{extract_line, ErrorCode, Location, Suggestion, WlwlDiagnostic, WlwlError, WlwlResult};
+// P4-G1-007: `WlwlError` is large by design (carries spec §14.2
+// diagnostic schema with trace + cause + location + suggestion);
+// restructuring it is out of scope for Phase G1. Allowed at the
+// crate level rather than per-function because almost every public
+// API in this lexer returns `WlwlResult<_>`.
+#![allow(clippy::result_large_err)]
+
+use wlwl_error::{
+    extract_line, ErrorCode, Location, Suggestion, WlwlDiagnostic, WlwlError, WlwlResult,
+};
 
 /// A token in the source code.
 #[derive(Debug, Clone, PartialEq)]
@@ -71,25 +80,25 @@ pub enum TokenKind {
     // Operators (Phase 2, v0.3 §9). The lexer emits these as their own
     // token kinds; the parser treats them as function names when they
     // appear in a Call position (followed by `(`).
-    Plus,         // +
-    Minus,        // -
-    Star,         // *
-    Slash,        // /
-    Percent,      // %
-    EqEq,         // ==
-    BangEq,       // !=
+    Plus,    // +
+    Minus,   // -
+    Star,    // *
+    Slash,   // /
+    Percent, // %
+    EqEq,    // ==
+    BangEq,  // !=
     /// P3-011 §8.2: single `=` is used in default-parameter
     /// bindings (`name = expr`) and in future let-bindings. The
     /// lexer must NOT collapse a bare `=` into `==`; `==` is its own
     /// token and is matched first.
     Eq,
-    Lt,           // <
-    Gt,           // >
-    LtEq,         // <=
-    GtEq,         // >=
-    AmpAmp,       // &&
-    PipePipe,     // ||
-    Bang,         // !  (v0.3-compat; v0.4 canonical is the NOT keyword below)
+    Lt,       // <
+    Gt,       // >
+    LtEq,     // <=
+    GtEq,     // >=
+    AmpAmp,   // &&
+    PipePipe, // ||
+    Bang,     // !  (v0.3-compat; v0.4 canonical is the NOT keyword below)
     /// Phase B9 (spec §3.4): v0.4 canonical name for logical negation.
     /// Lexer keyword so the parser dispatch path treats it like the
     /// other macro-functions (IF/WHILE/TRY/MATCH). The `!` token above
@@ -203,6 +212,7 @@ impl<'a> Lexer<'a> {
         }
     }
 
+    #[allow(dead_code)] // P4-G1-reserved: convenience accessor for diagnostic / test helpers
     fn line_text(&self, line: u32) -> Option<String> {
         // Convenience wrapper used by tests / older code paths.
         extract_line(&self.src_text(), line)
@@ -225,13 +235,13 @@ impl<'a> Lexer<'a> {
                     "valid identifier characters: a-z, A-Z, 0-9, _ ; ",
                     "valid string escapes: `\" \\ / \u{8} \u{c} \n \r \t \0` ; ",
                     "(numbers must be ASCII digits, optionally with one '.')"
-                ).into(),
+                )
+                .into(),
             }),
             ErrorCode::E0002 => d.with_suggestion(Suggestion::Note {
-                description:
-                    "add a closing `\"` before end of line, or split into \
+                description: "add a closing `\"` before end of line, or split into \
                      two adjacent strings (WLWL concatenates them at parse time)"
-                        .into(),
+                    .into(),
             }),
             ErrorCode::E0003 => d.with_suggestion(Suggestion::Note {
                 description: "add a closing `*/` to terminate the block comment".into(),
@@ -266,15 +276,25 @@ impl<'a> Lexer<'a> {
         }
         let text = std::str::from_utf8(&self.src[start..self.pos]).unwrap();
         let (kind, span) = if is_float {
-            let v: f64 = text
-                .parse()
-                .map_err(|_| self.err(ErrorCode::E0001, format!("invalid float '{}'", text), line, col))?;
+            let v: f64 = text.parse().map_err(|_| {
+                self.err(
+                    ErrorCode::E0001,
+                    format!("invalid float '{}'", text),
+                    line,
+                    col,
+                )
+            })?;
             let end_col = self.col;
             (TokenKind::Float(v), (line, col, line, end_col))
         } else {
-            let v: i64 = text
-                .parse()
-                .map_err(|_| self.err(ErrorCode::E0001, format!("invalid integer '{}'", text), line, col))?;
+            let v: i64 = text.parse().map_err(|_| {
+                self.err(
+                    ErrorCode::E0001,
+                    format!("invalid integer '{}'", text),
+                    line,
+                    col,
+                )
+            })?;
             let end_col = self.col;
             (TokenKind::Integer(v), (line, col, line, end_col))
         };
@@ -327,7 +347,9 @@ impl<'a> Lexer<'a> {
                 break;
             }
         }
-        let text = std::str::from_utf8(&self.src[start..self.pos]).unwrap().to_string();
+        let text = std::str::from_utf8(&self.src[start..self.pos])
+            .unwrap()
+            .to_string();
         let end_col = self.col;
         let kind = match text.as_str() {
             "TRUE" => TokenKind::True,
@@ -376,11 +398,11 @@ impl<'a> Lexer<'a> {
         let line = self.line;
         let col = self.col;
         self.bump(); // opening '"'
-        // v0.3 §4.2: strings are double-quoted, may contain any UTF-8
-        // (including 中文 — see also §3.1 identifier note). The lexer
-        // previously pushed individual bytes as `char`, which mangles
-        // multi-byte sequences into Latin-1 mojibake. We now accumulate
-        // raw bytes and decode once at the closing quote.
+                     // v0.3 §4.2: strings are double-quoted, may contain any UTF-8
+                     // (including 中文 — see also §3.1 identifier note). The lexer
+                     // previously pushed individual bytes as `char`, which mangles
+                     // multi-byte sequences into Latin-1 mojibake. We now accumulate
+                     // raw bytes and decode once at the closing quote.
         let mut s_bytes: Vec<u8> = Vec::new();
         loop {
             match self.peek() {
@@ -431,12 +453,7 @@ impl<'a> Lexer<'a> {
                     }
                 }
                 Some(b'\n') | None => {
-                    return Err(self.err(
-                        ErrorCode::E0002,
-                        "unterminated string",
-                        line,
-                        col,
-                    ));
+                    return Err(self.err(ErrorCode::E0002, "unterminated string", line, col));
                 }
                 Some(b) => {
                     s_bytes.push(b);
@@ -477,7 +494,12 @@ impl<'a> Lexer<'a> {
                     self.bump();
                 }
                 (None, _) => {
-                    return Err(self.err(ErrorCode::E0003, "unterminated block comment", line, col));
+                    return Err(self.err(
+                        ErrorCode::E0003,
+                        "unterminated block comment",
+                        line,
+                        col,
+                    ));
                 }
             }
         }
@@ -500,35 +522,59 @@ impl<'a> Lexer<'a> {
             match b {
                 b'(' => {
                     self.bump();
-                    tokens.push(Token { kind: TokenKind::LParen, span: (line, col, line, self.col) });
+                    tokens.push(Token {
+                        kind: TokenKind::LParen,
+                        span: (line, col, line, self.col),
+                    });
                 }
                 b')' => {
                     self.bump();
-                    tokens.push(Token { kind: TokenKind::RParen, span: (line, col, line, self.col) });
+                    tokens.push(Token {
+                        kind: TokenKind::RParen,
+                        span: (line, col, line, self.col),
+                    });
                 }
                 b'[' => {
                     self.bump();
-                    tokens.push(Token { kind: TokenKind::LBracket, span: (line, col, line, self.col) });
+                    tokens.push(Token {
+                        kind: TokenKind::LBracket,
+                        span: (line, col, line, self.col),
+                    });
                 }
                 b']' => {
                     self.bump();
-                    tokens.push(Token { kind: TokenKind::RBracket, span: (line, col, line, self.col) });
+                    tokens.push(Token {
+                        kind: TokenKind::RBracket,
+                        span: (line, col, line, self.col),
+                    });
                 }
                 b',' => {
                     self.bump();
-                    tokens.push(Token { kind: TokenKind::Comma, span: (line, col, line, self.col) });
+                    tokens.push(Token {
+                        kind: TokenKind::Comma,
+                        span: (line, col, line, self.col),
+                    });
                 }
                 b';' => {
                     self.bump();
-                    tokens.push(Token { kind: TokenKind::Semicolon, span: (line, col, line, self.col) });
+                    tokens.push(Token {
+                        kind: TokenKind::Semicolon,
+                        span: (line, col, line, self.col),
+                    });
                 }
                 b':' => {
                     self.bump();
-                    tokens.push(Token { kind: TokenKind::Colon, span: (line, col, line, self.col) });
+                    tokens.push(Token {
+                        kind: TokenKind::Colon,
+                        span: (line, col, line, self.col),
+                    });
                 }
                 b'.' => {
                     self.bump();
-                    tokens.push(Token { kind: TokenKind::Dot, span: (line, col, line, self.col) });
+                    tokens.push(Token {
+                        kind: TokenKind::Dot,
+                        span: (line, col, line, self.col),
+                    });
                 }
                 b'"' => tokens.push(self.read_string()?),
                 b'/' if self.peek_at(1) == Some(b'/') => {
@@ -539,74 +585,121 @@ impl<'a> Lexer<'a> {
                 }
                 b'/' => {
                     self.bump();
-                    tokens.push(Token { kind: TokenKind::Slash, span: (line, col, line, self.col) });
+                    tokens.push(Token {
+                        kind: TokenKind::Slash,
+                        span: (line, col, line, self.col),
+                    });
                 }
                 b'+' => {
                     self.bump();
-                    tokens.push(Token { kind: TokenKind::Plus, span: (line, col, line, self.col) });
+                    tokens.push(Token {
+                        kind: TokenKind::Plus,
+                        span: (line, col, line, self.col),
+                    });
                 }
                 b'-' => {
                     self.bump();
-                    tokens.push(Token { kind: TokenKind::Minus, span: (line, col, line, self.col) });
+                    tokens.push(Token {
+                        kind: TokenKind::Minus,
+                        span: (line, col, line, self.col),
+                    });
                 }
                 b'*' => {
                     self.bump();
-                    tokens.push(Token { kind: TokenKind::Star, span: (line, col, line, self.col) });
+                    tokens.push(Token {
+                        kind: TokenKind::Star,
+                        span: (line, col, line, self.col),
+                    });
                 }
                 b'%' => {
                     self.bump();
-                    tokens.push(Token { kind: TokenKind::Percent, span: (line, col, line, self.col) });
+                    tokens.push(Token {
+                        kind: TokenKind::Percent,
+                        span: (line, col, line, self.col),
+                    });
                 }
                 b'=' if self.peek_at(1) == Some(b'=') => {
                     self.bump();
                     self.bump();
-                    tokens.push(Token { kind: TokenKind::EqEq, span: (line, col, line, self.col) });
+                    tokens.push(Token {
+                        kind: TokenKind::EqEq,
+                        span: (line, col, line, self.col),
+                    });
                 }
                 b'=' => {
                     // P3-011 §8.2: single `=` is the default-parameter
                     // separator. Lex as TokenKind::Eq.
                     self.bump();
-                    tokens.push(Token { kind: TokenKind::Eq, span: (line, col, line, self.col) });
+                    tokens.push(Token {
+                        kind: TokenKind::Eq,
+                        span: (line, col, line, self.col),
+                    });
                 }
                 b'!' if self.peek_at(1) == Some(b'=') => {
                     self.bump();
                     self.bump();
-                    tokens.push(Token { kind: TokenKind::BangEq, span: (line, col, line, self.col) });
+                    tokens.push(Token {
+                        kind: TokenKind::BangEq,
+                        span: (line, col, line, self.col),
+                    });
                 }
                 b'!' => {
                     self.bump();
-                    tokens.push(Token { kind: TokenKind::Bang, span: (line, col, line, self.col) });
+                    tokens.push(Token {
+                        kind: TokenKind::Bang,
+                        span: (line, col, line, self.col),
+                    });
                 }
                 b'<' if self.peek_at(1) == Some(b'=') => {
                     self.bump();
                     self.bump();
-                    tokens.push(Token { kind: TokenKind::LtEq, span: (line, col, line, self.col) });
+                    tokens.push(Token {
+                        kind: TokenKind::LtEq,
+                        span: (line, col, line, self.col),
+                    });
                 }
                 b'<' => {
                     self.bump();
-                    tokens.push(Token { kind: TokenKind::Lt, span: (line, col, line, self.col) });
+                    tokens.push(Token {
+                        kind: TokenKind::Lt,
+                        span: (line, col, line, self.col),
+                    });
                 }
                 b'>' if self.peek_at(1) == Some(b'=') => {
                     self.bump();
                     self.bump();
-                    tokens.push(Token { kind: TokenKind::GtEq, span: (line, col, line, self.col) });
+                    tokens.push(Token {
+                        kind: TokenKind::GtEq,
+                        span: (line, col, line, self.col),
+                    });
                 }
                 b'>' => {
                     self.bump();
-                    tokens.push(Token { kind: TokenKind::Gt, span: (line, col, line, self.col) });
+                    tokens.push(Token {
+                        kind: TokenKind::Gt,
+                        span: (line, col, line, self.col),
+                    });
                 }
                 b'&' if self.peek_at(1) == Some(b'&') => {
                     self.bump();
                     self.bump();
-                    tokens.push(Token { kind: TokenKind::AmpAmp, span: (line, col, line, self.col) });
+                    tokens.push(Token {
+                        kind: TokenKind::AmpAmp,
+                        span: (line, col, line, self.col),
+                    });
                 }
                 b'|' if self.peek_at(1) == Some(b'|') => {
                     self.bump();
                     self.bump();
-                    tokens.push(Token { kind: TokenKind::PipePipe, span: (line, col, line, self.col) });
+                    tokens.push(Token {
+                        kind: TokenKind::PipePipe,
+                        span: (line, col, line, self.col),
+                    });
                 }
                 c if c.is_ascii_digit() => tokens.push(self.read_number()?),
-                c if c.is_ascii_alphabetic() || c == b'_' => tokens.push(self.read_ident_or_keyword()?),
+                c if c.is_ascii_alphabetic() || c == b'_' => {
+                    tokens.push(self.read_ident_or_keyword()?)
+                }
                 // P3-011 §3.1: identifiers allow non-ASCII letters
                 // (e.g. Chinese). The UTF-8 leading byte alone is not
                 // an ASCII alphabetic, so route through the same
@@ -632,9 +725,12 @@ mod tests {
 
     #[test]
     fn lex_integers_and_floats() {
-        let toks = lex("42 3.14 0", "t.wl").unwrap();
+        // Float literals avoid approx-PI constants (`3.14`) to keep
+        // `clippy::approx_constant` happy; we just need any non-int
+        // literal that the lexer accepts.
+        let toks = lex("42 1.25 0", "t.wl").unwrap();
         assert!(matches!(toks[0].kind, TokenKind::Integer(42)));
-        assert!(matches!(toks[1].kind, TokenKind::Float(f) if (f - 3.14).abs() < 1e-9));
+        assert!(matches!(toks[1].kind, TokenKind::Float(f) if (f - 1.25).abs() < 1e-9));
         assert!(matches!(toks[2].kind, TokenKind::Integer(0)));
     }
 
@@ -696,8 +792,13 @@ mod tests {
     fn lex_nested_block_comment() {
         let toks = lex("/* outer /* inner */ still comment */ x", "t.wl").unwrap();
         // After comment, identifier "x" should be the last non-EOF token.
-        let x = toks.iter().find(|t| matches!(&t.kind, TokenKind::Ident(s) if s == "x"));
-        assert!(x.is_some(), "expected to find identifier x after nested comment");
+        let x = toks
+            .iter()
+            .find(|t| matches!(&t.kind, TokenKind::Ident(s) if s == "x"));
+        assert!(
+            x.is_some(),
+            "expected to find identifier x after nested comment"
+        );
     }
 
     // v0.3 §3.1 (P3-011): identifiers may contain Chinese (or any
@@ -724,7 +825,11 @@ mod tests {
             TokenKind::Ident(s) if s == "count计数" => Some(()),
             _ => None,
         });
-        assert!(id.is_some(), "expected identifier count计数, got {:?}", toks);
+        assert!(
+            id.is_some(),
+            "expected identifier count计数, got {:?}",
+            toks
+        );
     }
 
     #[test]

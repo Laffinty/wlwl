@@ -25,7 +25,10 @@ fn wlwl_exe() -> PathBuf {
     // Fall back to relative path lookups.
     let exe_name = if cfg!(windows) { "wlwl.exe" } else { "wlwl" };
     let candidates = [
-        std::env::current_dir().unwrap().join("target/debug").join(exe_name),
+        std::env::current_dir()
+            .unwrap()
+            .join("target/debug")
+            .join(exe_name),
         PathBuf::from(format!("target/debug/{exe_name}")),
         PathBuf::from(exe_name),
     ];
@@ -56,7 +59,11 @@ fn cli_run_human_format() {
     let dir = std::env::temp_dir().join("wlwl-cli-tests");
     let p = write_source(&dir, "run_human.wl", "PRINT(\"hi\");");
     let out = run_cli(&["run", p.to_str().unwrap()]);
-    assert!(out.status.success(), "stderr={}", String::from_utf8_lossy(&out.stderr));
+    assert!(
+        out.status.success(),
+        "stderr={}",
+        String::from_utf8_lossy(&out.stderr)
+    );
     let stdout = String::from_utf8_lossy(&out.stdout);
     assert!(stdout.contains("hi"), "stdout: {stdout}");
 }
@@ -94,7 +101,11 @@ fn cli_check_valid_program_human() {
     let dir = std::env::temp_dir().join("wlwl-cli-tests");
     let p = write_source(&dir, "check_ok.wl", "LET(x, 1);");
     let out = run_cli(&["check", p.to_str().unwrap()]);
-    assert!(out.status.success(), "stderr={}", String::from_utf8_lossy(&out.stderr));
+    assert!(
+        out.status.success(),
+        "stderr={}",
+        String::from_utf8_lossy(&out.stderr)
+    );
     let stdout = String::from_utf8_lossy(&out.stdout);
     assert!(stdout.contains("OK: parsed"), "stdout: {stdout}");
 }
@@ -122,7 +133,11 @@ fn cli_ast_default_format_is_json() {
     let dir = std::env::temp_dir().join("wlwl-cli-tests");
     let p = write_source(&dir, "ast_default.wl", "LET(x, 1);");
     let out = run_cli(&["ast", p.to_str().unwrap()]);
-    assert!(out.status.success(), "stderr={}", String::from_utf8_lossy(&out.stderr));
+    assert!(
+        out.status.success(),
+        "stderr={}",
+        String::from_utf8_lossy(&out.stderr)
+    );
     let stdout = String::from_utf8_lossy(&out.stdout);
     // Default is JSON; must contain at least one variant tag and "line_start" (Span wire).
     assert!(stdout.contains("\"line_start\""), "stdout: {stdout}");
@@ -175,8 +190,10 @@ fn cli_run_with_lex_error_human() {
     let out = run_cli(&["run", p.to_str().unwrap()]);
     assert!(!out.status.success(), "expected nonzero on lex error");
     let stderr = String::from_utf8_lossy(&out.stderr);
-    assert!(stderr.contains("E0001") || stderr.contains("illegal character"),
-            "stderr should mention E0001: {stderr}");
+    assert!(
+        stderr.contains("E0001") || stderr.contains("illegal character"),
+        "stderr should mention E0001: {stderr}"
+    );
 }
 
 #[test]
@@ -187,12 +204,15 @@ fn cli_run_with_lex_error_json() {
     let p = write_source(&dir, "lex_err_json.wl", "LET(x, @bad);");
     let out = run_cli(&["run", "--format=json", p.to_str().unwrap()]);
     assert!(!out.status.success());
-    let combined = format!("{}{}",
+    let combined = format!(
+        "{}{}",
         String::from_utf8_lossy(&out.stdout),
         String::from_utf8_lossy(&out.stderr),
     );
-    assert!(combined.contains("E0001"),
-            "combined output should mention E0001: {combined}");
+    assert!(
+        combined.contains("E0001"),
+        "combined output should mention E0001: {combined}"
+    );
 }
 
 #[test]
@@ -203,8 +223,10 @@ fn cli_run_with_parse_error_human() {
     let out = run_cli(&["run", p.to_str().unwrap()]);
     assert!(!out.status.success());
     let stderr = String::from_utf8_lossy(&out.stderr);
-    assert!(stderr.contains("E0012") || stderr.contains("expected ','"),
-            "stderr should mention E0012: {stderr}");
+    assert!(
+        stderr.contains("E0012") || stderr.contains("expected ','"),
+        "stderr should mention E0012: {stderr}"
+    );
 }
 
 #[test]
@@ -215,8 +237,10 @@ fn cli_run_with_runtime_error_human() {
     let out = run_cli(&["run", p.to_str().unwrap()]);
     assert!(!out.status.success());
     let stderr = String::from_utf8_lossy(&out.stderr);
-    assert!(stderr.contains("E0020") || stderr.contains("undefined"),
-            "stderr should mention E0020: {stderr}");
+    assert!(
+        stderr.contains("E0020") || stderr.contains("undefined"),
+        "stderr should mention E0020: {stderr}"
+    );
 }
 
 #[test]
@@ -226,12 +250,15 @@ fn cli_run_with_runtime_error_jsonl() {
     let p = write_source(&dir, "rt_err_jsonl.wl", "LET(counter, 0); PRINT(countr);");
     let out = run_cli(&["run", "--format=jsonl", p.to_str().unwrap()]);
     assert!(!out.status.success());
-    let combined = format!("{}{}",
+    let combined = format!(
+        "{}{}",
         String::from_utf8_lossy(&out.stdout),
         String::from_utf8_lossy(&out.stderr),
     );
-    assert!(combined.contains("E0020") || combined.contains("\"code\""),
-            "jsonl output should be a JSON object: {combined}");
+    assert!(
+        combined.contains("E0020") || combined.contains("\"code\""),
+        "jsonl output should be a JSON object: {combined}"
+    );
 }
 
 // ── Help / version ─────────────────────────────────────────────
@@ -241,8 +268,10 @@ fn cli_help_exits_zero() {
     // clap --help exits 0 by default
     let _ = out.status.code();
     let stdout = String::from_utf8_lossy(&out.stdout);
-    assert!(stdout.to_lowercase().contains("usage") || stdout.contains("wlwl"),
-            "help text should mention usage: {stdout}");
+    assert!(
+        stdout.to_lowercase().contains("usage") || stdout.contains("wlwl"),
+        "help text should mention usage: {stdout}"
+    );
 }
 
 // ── Phase E4: `wlwl check` unified warning channel ─────────────

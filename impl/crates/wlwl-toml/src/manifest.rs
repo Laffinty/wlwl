@@ -142,13 +142,21 @@ impl fmt::Display for ManifestError {
         match self {
             ManifestError::Toml(e) => write!(f, "manifest TOML parse error: {}", e),
             ManifestError::InvalidPackageName(n) => {
-                write!(f, "invalid package name {:?}: must match ^[a-z][a-z0-9-]*$", n)
+                write!(
+                    f,
+                    "invalid package name {:?}: must match ^[a-z][a-z0-9-]*$",
+                    n
+                )
             }
             ManifestError::InvalidNamespaceName(n) => {
                 write!(f, "invalid namespace {:?}: must match ^[a-z][a-z0-9-]*$", n)
             }
             ManifestError::InvalidDependencyKey(k) => {
-                write!(f, "invalid dependency key {:?}: must be <namespace>:<name>", k)
+                write!(
+                    f,
+                    "invalid dependency key {:?}: must be <namespace>:<name>",
+                    k
+                )
             }
             ManifestError::EmptyDependency(k) => {
                 write!(f, "dependency {:?} has neither `path` nor `version`", k)
@@ -314,9 +322,7 @@ pub fn check_language_version(m: &Manifest) -> Result<(), VersionMismatch> {
             supported,
         });
     };
-    if req_major == SUPPORTED_LANGUAGE_VERSION.0
-        && req_minor <= SUPPORTED_LANGUAGE_VERSION.1
-    {
+    if req_major == SUPPORTED_LANGUAGE_VERSION.0 && req_minor <= SUPPORTED_LANGUAGE_VERSION.1 {
         return Ok(());
     }
     Err(VersionMismatch {
@@ -360,7 +366,6 @@ impl Manifest {
     }
 }
 
-
 /// Resolve a `<namespace>:<name>` reference to a local directory,
 /// using `[namespaces]` as an override and `[dependencies]` as the
 /// fallback. Returns the directory relative to the manifest path
@@ -369,11 +374,7 @@ impl Manifest {
 ///
 /// Returns `None` if the reference is not registered; the caller
 /// surfaces E0040 (not found) or E0043 (namespace syntax).
-pub fn resolve_namespace<'a>(
-    manifest: &'a Manifest,
-    ns: &str,
-    name: &str,
-) -> Option<PathBuf> {
+pub fn resolve_namespace(manifest: &Manifest, ns: &str, name: &str) -> Option<PathBuf> {
     // 1. Explicit `[namespaces]` override.
     if let Some(p) = manifest.namespaces.get(ns) {
         return Some(PathBuf::from(p));
@@ -439,12 +440,15 @@ default_encoding = "utf-8"
 
     #[test]
     fn parse_minimal() {
-        let m = parse(r#"
+        let m = parse(
+            r#"
 [package]
 name = "tiny"
 version = "0.0.1"
 entry = "main.wl"
-"#).unwrap();
+"#,
+        )
+        .unwrap();
         assert!(m.dependencies.is_empty());
         assert!(m.namespaces.is_empty());
         assert!(m.features.is_empty());
@@ -452,31 +456,36 @@ entry = "main.wl"
 
     #[test]
     fn rejects_uppercase_package_name() {
-        let err = parse(r#"
+        let err = parse(
+            r#"
 [package]
 name = "MyApp"
 version = "0.1.0"
 entry = "main.wl"
-"#)
+"#,
+        )
         .unwrap_err();
         assert!(matches!(err, ManifestError::InvalidPackageName(_)));
     }
 
     #[test]
     fn rejects_empty_entry() {
-        let err = parse(r#"
+        let err = parse(
+            r#"
 [package]
 name = "ok"
 version = "0.1.0"
 entry = ""
-"#)
+"#,
+        )
         .unwrap_err();
         assert!(matches!(err, ManifestError::MissingEntry));
     }
 
     #[test]
     fn rejects_dep_key_without_colon() {
-        let err = parse(r#"
+        let err = parse(
+            r#"
 [package]
 name = "ok"
 version = "0.1.0"
@@ -484,14 +493,16 @@ entry = "main.wl"
 
 [dependencies]
 "myteam utils" = { path = "../utils" }
-"#)
+"#,
+        )
         .unwrap_err();
         assert!(matches!(err, ManifestError::InvalidDependencyKey(_)));
     }
 
     #[test]
     fn rejects_dep_with_neither_path_nor_version() {
-        let err = parse(r#"
+        let err = parse(
+            r#"
 [package]
 name = "ok"
 version = "0.1.0"
@@ -499,14 +510,16 @@ entry = "main.wl"
 
 [dependencies]
 "myteam:utils" = { optional = true }
-"#)
+"#,
+        )
         .unwrap_err();
         assert!(matches!(err, ManifestError::EmptyDependency(_)));
     }
 
     #[test]
     fn rejects_invalid_namespace_name() {
-        let err = parse(r#"
+        let err = parse(
+            r#"
 [package]
 name = "ok"
 version = "0.1.0"
@@ -514,7 +527,8 @@ entry = "main.wl"
 
 [namespaces]
 "MyTeam" = "./vendor/myteam"
-"#)
+"#,
+        )
         .unwrap_err();
         assert!(matches!(err, ManifestError::InvalidNamespaceName(_)));
     }
@@ -608,7 +622,7 @@ entry = "main.wl"
             // The source must be the same toml::de::Error we have.
             let some_src = src.unwrap();
             let _ = some_src; // type-check only
-            // The toml error must be displayable.
+                              // The toml error must be displayable.
             assert!(!t.to_string().is_empty());
         } else {
             panic!("expected Toml variant, got {:?}", err);
@@ -627,12 +641,15 @@ entry = "main.wl"
     fn rejects_empty_package_name() {
         // Empty name fails the lowercase-plus-hyphen check (the empty
         // string doesn't start with a letter).
-        let err = parse(r#"
+        let err = parse(
+            r#"
 [package]
 name = ""
 version = "0.1.0"
 entry = "main.wl"
-"#).unwrap_err();
+"#,
+        )
+        .unwrap_err();
         assert!(matches!(err, ManifestError::InvalidPackageName(_)));
     }
 
@@ -640,7 +657,8 @@ entry = "main.wl"
     fn rejects_invalid_namespace_via_dep_key() {
         // The namespace is the part before ':' in a dep key. If it
         // doesn't match the lowercase rule, surface InvalidNamespaceName.
-        let err = parse(r#"
+        let err = parse(
+            r#"
 [package]
 name = "ok"
 version = "0.1.0"
@@ -648,7 +666,9 @@ entry = "main.wl"
 
 [dependencies]
 "MyTeam:utils" = { path = "../utils" }
-"#).unwrap_err();
+"#,
+        )
+        .unwrap_err();
         assert!(matches!(err, ManifestError::InvalidNamespaceName(_)));
     }
 
@@ -656,12 +676,15 @@ entry = "main.wl"
 
     #[test]
     fn language_version_absent_is_tolerated() {
-        let m = parse(r#"
+        let m = parse(
+            r#"
 [package]
 name = "tiny"
 version = "0.0.1"
 entry = "main.wl"
-"#).unwrap();
+"#,
+        )
+        .unwrap();
         assert!(m.package.language_version.is_none());
         assert!(check_language_version(&m).is_ok());
     }
@@ -669,26 +692,37 @@ entry = "main.wl"
     #[test]
     fn language_version_same_and_lower_minor_ok() {
         for v in ["0.4", "0.3", "0.4.1", "v0.2"] {
-            let m = parse(&format!(r#"
+            let m = parse(&format!(
+                r#"
 [package]
 name = "tiny"
 version = "0.0.1"
 entry = "main.wl"
 language_version = "{}"
-"#, v)).unwrap();
-            assert!(check_language_version(&m).is_ok(), "{} should be compatible", v);
+"#,
+                v
+            ))
+            .unwrap();
+            assert!(
+                check_language_version(&m).is_ok(),
+                "{} should be compatible",
+                v
+            );
         }
     }
 
     #[test]
     fn language_version_mismatch_higher_minor() {
-        let m = parse(r#"
+        let m = parse(
+            r#"
 [package]
 name = "tiny"
 version = "0.0.1"
 entry = "main.wl"
 language_version = "0.5"
-"#).unwrap();
+"#,
+        )
+        .unwrap();
         let err = check_language_version(&m).unwrap_err();
         assert_eq!(err.required, "0.5");
         assert_eq!(err.supported, "0.4");
@@ -700,25 +734,31 @@ language_version = "0.5"
 
     #[test]
     fn language_version_mismatch_major() {
-        let m = parse(r#"
+        let m = parse(
+            r#"
 [package]
 name = "tiny"
 version = "0.0.1"
 entry = "main.wl"
 language_version = "1.0"
-"#).unwrap();
+"#,
+        )
+        .unwrap();
         assert!(check_language_version(&m).is_err());
     }
 
     #[test]
     fn language_version_unparseable_is_mismatch() {
-        let m = parse(r#"
+        let m = parse(
+            r#"
 [package]
 name = "tiny"
 version = "0.0.1"
 entry = "main.wl"
 language_version = "banana"
-"#).unwrap();
+"#,
+        )
+        .unwrap();
         let err = check_language_version(&m).unwrap_err();
         assert_eq!(err.required, "banana");
     }
@@ -727,18 +767,22 @@ language_version = "banana"
 
     #[test]
     fn allow_builtin_shadow_defaults_false() {
-        let m = parse(r#"
+        let m = parse(
+            r#"
 [package]
 name = "tiny"
 version = "0.0.1"
 entry = "main.wl"
-"#).unwrap();
+"#,
+        )
+        .unwrap();
         assert!(!m.allow_builtin_shadow());
     }
 
     #[test]
     fn allow_builtin_shadow_true_when_flagged() {
-        let m = parse(r#"
+        let m = parse(
+            r#"
 [package]
 name = "tiny"
 version = "0.0.1"
@@ -746,13 +790,16 @@ entry = "main.wl"
 
 [features]
 allow_builtin_shadow = true
-"#).unwrap();
+"#,
+        )
+        .unwrap();
         assert!(m.allow_builtin_shadow());
     }
 
     #[test]
     fn allow_builtin_shadow_false_value_is_false() {
-        let m = parse(r#"
+        let m = parse(
+            r#"
 [package]
 name = "tiny"
 version = "0.0.1"
@@ -760,25 +807,31 @@ entry = "main.wl"
 
 [features]
 allow_builtin_shadow = false
-"#).unwrap();
+"#,
+        )
+        .unwrap();
         assert!(!m.allow_builtin_shadow());
     }
     // ---- Phase E1 (spec v0.4 §2.7 / §13.8): strict_types ----
 
     #[test]
     fn strict_types_defaults_false() {
-        let m = parse(r#"
+        let m = parse(
+            r#"
 [package]
 name = "tiny"
 version = "0.0.1"
 entry = "main.wl"
-"#).unwrap();
+"#,
+        )
+        .unwrap();
         assert!(!m.strict_types());
     }
 
     #[test]
     fn strict_types_true_when_flagged() {
-        let m = parse(r#"
+        let m = parse(
+            r#"
 [package]
 name = "tiny"
 version = "0.0.1"
@@ -786,13 +839,16 @@ entry = "main.wl"
 
 [features]
 strict_types = true
-"#).unwrap();
+"#,
+        )
+        .unwrap();
         assert!(m.strict_types());
     }
 
     #[test]
     fn strict_types_false_value_is_false() {
-        let m = parse(r#"
+        let m = parse(
+            r#"
 [package]
 name = "tiny"
 version = "0.0.1"
@@ -800,7 +856,9 @@ entry = "main.wl"
 
 [features]
 strict_types = false
-"#).unwrap();
+"#,
+        )
+        .unwrap();
         assert!(!m.strict_types());
     }
 
@@ -811,7 +869,8 @@ strict_types = false
         // We do NOT raise an error at the manifest level; the engine
         // simply treats the feature as off. This mirrors the
         // `allow_builtin_shadow` precedent.
-        let m = parse(r#"
+        let m = parse(
+            r#"
 [package]
 name = "tiny"
 version = "0.0.1"
@@ -819,10 +878,13 @@ entry = "main.wl"
 
 [features]
 strict_types = "yes"
-"#).unwrap();
+"#,
+        )
+        .unwrap();
         assert!(!m.strict_types());
 
-        let m = parse(r#"
+        let m = parse(
+            r#"
 [package]
 name = "tiny"
 version = "0.0.1"
@@ -830,7 +892,9 @@ entry = "main.wl"
 
 [features]
 strict_types = 1
-"#).unwrap();
+"#,
+        )
+        .unwrap();
         assert!(!m.strict_types());
     }
 
@@ -838,7 +902,8 @@ strict_types = 1
     fn strict_types_coexists_with_other_features() {
         // Co-existence with allow_builtin_shadow (Phase C5) -- both
         // can be set independently; one does not imply the other.
-        let m = parse(r#"
+        let m = parse(
+            r#"
 [package]
 name = "tiny"
 version = "0.0.1"
@@ -847,9 +912,10 @@ entry = "main.wl"
 [features]
 strict_types = true
 allow_builtin_shadow = true
-"#).unwrap();
+"#,
+        )
+        .unwrap();
         assert!(m.strict_types());
         assert!(m.allow_builtin_shadow());
     }
-
 }

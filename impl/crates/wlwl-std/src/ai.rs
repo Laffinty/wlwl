@@ -39,9 +39,7 @@
 //! diagnostic. The mock path also emits W0052 so tests can pin
 //! the behavior without touching the network.
 
-use crate::{
-    arity_error, type_error, StdCtx, StdError, StdFn, StdValue, ModuleSpec,
-};
+use crate::{arity_error, type_error, ModuleSpec, StdCtx, StdError, StdFn, StdValue};
 use wlwl_error::ErrorCode;
 
 /// Try to match `model` against the v0.3 reserved failure tokens.
@@ -235,10 +233,7 @@ mod real {
         }
         // DNS failure typically surfaces as "dns error" or
         // "failed to lookup" or "Name or service not known".
-        if chain.contains("dns")
-            || chain.contains("lookup")
-            || chain.contains("name or service")
-        {
+        if chain.contains("dns") || chain.contains("lookup") || chain.contains("name or service") {
             return StdError {
                 code: ErrorCode::E0091,
                 message: chain,
@@ -285,8 +280,15 @@ pub fn std_ask(ctx: &mut StdCtx, args: Vec<StdValue>) -> Result<StdValue, StdErr
         let (system, max_tokens, temperature) = parse_opts(opts)?;
         #[cfg(feature = "real-ai")]
         {
-            return real::http_chat(ctx, model, system.as_deref(), prompt, max_tokens, temperature)
-                .map(StdValue::String);
+            return real::http_chat(
+                ctx,
+                model,
+                system.as_deref(),
+                prompt,
+                max_tokens,
+                temperature,
+            )
+            .map(StdValue::String);
         }
         #[cfg(not(feature = "real-ai"))]
         {
@@ -334,7 +336,7 @@ fn parse_opts(opts: &StdValue) -> Result<(Option<String>, u32, f32), StdError> {
 // ── EMBED ─────────────────────────────────────────────────────────
 
 pub fn std_embed(ctx: &mut StdCtx, args: Vec<StdValue>) -> Result<StdValue, StdError> {
-    if args.len() < 1 || args.len() > 2 {
+    if args.is_empty() || args.len() > 2 {
         return Err(arity_error("EMBED", args.len(), 2));
     }
     let text = match &args[0] {
@@ -372,7 +374,11 @@ pub fn std_embed(ctx: &mut StdCtx, args: Vec<StdValue>) -> Result<StdValue, StdE
     ];
     let arr: Vec<StdValue> = v
         .into_iter()
-        .map(|x| serde_json::Number::from_f64(x).map(StdValue::Number).unwrap_or(StdValue::Null))
+        .map(|x| {
+            serde_json::Number::from_f64(x)
+                .map(StdValue::Number)
+                .unwrap_or(StdValue::Null)
+        })
         .collect();
     Ok(StdValue::Array(arr))
 }
@@ -380,7 +386,7 @@ pub fn std_embed(ctx: &mut StdCtx, args: Vec<StdValue>) -> Result<StdValue, StdE
 // ── COMPLETE ──────────────────────────────────────────────────────
 
 pub fn std_complete(ctx: &mut StdCtx, args: Vec<StdValue>) -> Result<StdValue, StdError> {
-    if args.len() < 1 || args.len() > 3 {
+    if args.is_empty() || args.len() > 3 {
         return Err(arity_error("COMPLETE", args.len(), 3));
     }
     let context = match &args[0] {
@@ -428,7 +434,11 @@ pub fn std_ask_stream(ctx: &mut StdCtx, args: Vec<StdValue>) -> Result<StdValue,
     // 3rd arg is the callback (we accept and ignore in mock).
     // 4th arg is opts (DICT or null).
     let _callback = &args[2];
-    let opts = if args.len() == 4 { &args[3] } else { &StdValue::Null };
+    let opts = if args.len() == 4 {
+        &args[3]
+    } else {
+        &StdValue::Null
+    };
     if let Some(err) = check_reserved_failure(model) {
         return Err(err);
     }
@@ -442,7 +452,14 @@ pub fn std_ask_stream(ctx: &mut StdCtx, args: Vec<StdValue>) -> Result<StdValue,
         let (system, max_tokens, temperature) = parse_opts(opts)?;
         #[cfg(feature = "real-ai")]
         {
-            let content = real::http_chat(ctx, model, system.as_deref(), prompt, max_tokens, temperature)?;
+            let content = real::http_chat(
+                ctx,
+                model,
+                system.as_deref(),
+                prompt,
+                max_tokens,
+                temperature,
+            )?;
             // Without interpreter dispatch we cannot call back into
             // a user function; return the whole content as one
             // string. The D1b commit replaces this with the
@@ -469,7 +486,7 @@ pub fn std_ask_stream(ctx: &mut StdCtx, args: Vec<StdValue>) -> Result<StdValue,
 // ── ASK_ALL (Phase D2 — per-element OK/ERR via interpreter) ─────────────────
 
 pub fn std_ask_all(ctx: &mut StdCtx, args: Vec<StdValue>) -> Result<StdValue, StdError> {
-    if args.len() < 1 || args.len() > 2 {
+    if args.is_empty() || args.len() > 2 {
         return Err(arity_error("ASK_ALL", args.len(), 2));
     }
     let prompts = match &args[0] {
@@ -482,7 +499,11 @@ pub fn std_ask_all(ctx: &mut StdCtx, args: Vec<StdValue>) -> Result<StdValue, St
     // mock below mirrors the per-element OK shape with a single
     // batched return value (the eval-side rewrite replaces this
     // in D2).
-    let opts = if args.len() == 2 { &args[1] } else { &StdValue::Null };
+    let opts = if args.len() == 2 {
+        &args[1]
+    } else {
+        &StdValue::Null
+    };
     let (system, max_tokens, temperature) = parse_opts(opts)?;
 
     if real_mode_active(ctx) {
@@ -498,8 +519,14 @@ pub fn std_ask_all(ctx: &mut StdCtx, args: Vec<StdValue>) -> Result<StdValue, St
                     StdValue::String(s) => s.as_str(),
                     other => return Err(type_error("ASK_ALL", "string", other)),
                 };
-                let content =
-                    real::http_chat(ctx, "default", system.as_deref(), s, max_tokens, temperature)?;
+                let content = real::http_chat(
+                    ctx,
+                    "default",
+                    system.as_deref(),
+                    s,
+                    max_tokens,
+                    temperature,
+                )?;
                 out.push(StdValue::String(content));
             }
             return Ok(StdValue::Array(out));
@@ -629,10 +656,7 @@ mod tests {
         ] {
             let err = std_ask(
                 &mut ctx(),
-                vec![
-                    StdValue::String(token.into()),
-                    StdValue::String("x".into()),
-                ],
+                vec![StdValue::String(token.into()), StdValue::String("x".into())],
             )
             .unwrap_err();
             assert_eq!(err.code, expected, "token {}", token);
@@ -652,7 +676,12 @@ mod tests {
             ],
         )
         .unwrap();
-        assert_eq!(c.warnings.len(), 1, "expected exactly one warning, got {:?}", c.warnings);
+        assert_eq!(
+            c.warnings.len(),
+            1,
+            "expected exactly one warning, got {:?}",
+            c.warnings
+        );
         assert_eq!(c.warnings[0].0, ErrorCode::W0052);
         assert!(c.warnings[0].1.contains("gpt-4"));
     }
@@ -937,10 +966,7 @@ mod tests {
     fn embed_model_not_string_is_e0030() {
         let err = std_embed(
             &mut ctx(),
-            vec![
-                StdValue::String("x".into()),
-                StdValue::Bool(true),
-            ],
+            vec![StdValue::String("x".into()), StdValue::Bool(true)],
         )
         .unwrap_err();
         assert_eq!(err.code, ErrorCode::E0030);
@@ -975,10 +1001,7 @@ mod tests {
     fn complete_language_not_string_is_e0030() {
         let err = std_complete(
             &mut ctx(),
-            vec![
-                StdValue::String("ctx".into()),
-                StdValue::Bool(false),
-            ],
+            vec![StdValue::String("ctx".into()), StdValue::Bool(false)],
         )
         .unwrap_err();
         assert_eq!(err.code, ErrorCode::E0030);
@@ -997,7 +1020,8 @@ mod tests {
         // Even if endpoint is in env, without the `real-ai`
         // feature the function must NOT activate real mode.
         let mut c = ctx();
-        c.env.insert("WLWL_AI_ENDPOINT".into(), "https://api.example".into());
+        c.env
+            .insert("WLWL_AI_ENDPOINT".into(), "https://api.example".into());
         assert!(!real_mode_active(&c));
     }
 

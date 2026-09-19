@@ -85,7 +85,11 @@ fn anonymous_fun_uses_anon_context() {
     let tree = stable_tree(&e, "t.wl");
     let mut ids = Vec::new();
     collect(&tree, &mut ids);
-    assert!(ids.iter().any(|i| i.contains("/fn:<anon>/body:")), "{:?}", ids);
+    assert!(
+        ids.iter().any(|i| i.contains("/fn:<anon>/body:")),
+        "{:?}",
+        ids
+    );
 }
 
 #[test]

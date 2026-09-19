@@ -1,4 +1,4 @@
-﻿//! WLWL standard library (v0.4 §15) — Phase 4.
+//! WLWL standard library (v0.4 §15) — Phase 4.
 //!
 //! Modules exposed:
 //!   - `wlwl:std.io`     — `PRINT`, `INPUT` (§15.1)
@@ -25,14 +25,14 @@
 //! trivially reusable from non-eval entry points (e.g. a future
 //! `wlwl-repl`).
 
-pub mod io;
-pub mod fs;
-pub mod json;
-pub mod ai;
-pub mod format;
-pub mod collection;
-pub mod test;
 pub mod agent;
+pub mod ai;
+pub mod collection;
+pub mod format;
+pub mod fs;
+pub mod io;
+pub mod json;
+pub mod test;
 
 use std::collections::HashMap;
 use wlwl_error::ErrorCode;
@@ -256,10 +256,7 @@ mod tests {
         let s = resolve("wlwl:std.agent").expect("agent resolves");
         assert_eq!(s.path, "wlwl:std.agent");
         let names: Vec<&str> = s.functions.iter().map(|(n, _)| *n).collect();
-        assert_eq!(
-            names,
-            vec!["TASK", "TOOL", "CALL_TOOL", "MODEL", "CONTEXT"]
-        );
+        assert_eq!(names, vec!["TASK", "TOOL", "CALL_TOOL", "MODEL", "CONTEXT"]);
     }
 
     #[test]
@@ -317,14 +314,20 @@ mod tests {
             code: ErrorCode::E0022,
             message: "function expects 1 argument(s), got 2".into(),
         };
-        assert_eq!(e.to_string(), "E0022: function expects 1 argument(s), got 2");
+        assert_eq!(
+            e.to_string(),
+            "E0022: function expects 1 argument(s), got 2"
+        );
     }
 
     #[test]
     fn std_error_is_std_error_trait() {
         // Compile-time check that StdError implements std::error::Error.
         fn assert_error<E: std::error::Error>(_: &E) {}
-        let e = StdError { code: ErrorCode::E0060, message: "x".into() };
+        let e = StdError {
+            code: ErrorCode::E0060,
+            message: "x".into(),
+        };
         assert_error(&e);
     }
 
@@ -356,7 +359,10 @@ mod tests {
     fn json_type_name_all_variants() {
         assert_eq!(json_type_name(&StdValue::Null), "null");
         assert_eq!(json_type_name(&StdValue::Bool(true)), "boolean");
-        assert_eq!(json_type_name(&StdValue::Number(serde_json::Number::from(1))), "number");
+        assert_eq!(
+            json_type_name(&StdValue::Number(serde_json::Number::from(1))),
+            "number"
+        );
         assert_eq!(json_type_name(&StdValue::String("s".into())), "string");
         assert_eq!(json_type_name(&StdValue::Array(vec![])), "array");
         let mut m = serde_json::Map::new();

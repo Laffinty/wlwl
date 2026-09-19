@@ -112,7 +112,12 @@ fn render_inline(e: &Expr) -> Option<String> {
                 format!("[{}]", parts.join(", "))
             }
         }
-        Expr::Let { name, type_annotation, value, .. } => {
+        Expr::Let {
+            name,
+            type_annotation,
+            value,
+            ..
+        } => {
             let ann = type_annotation.as_ref().map(type_ann_text);
             let v = render_inline(value)?;
             match ann {
@@ -120,7 +125,12 @@ fn render_inline(e: &Expr) -> Option<String> {
                 None => format!("LET({}, {})", name, v),
             }
         }
-        Expr::LetPattern { pattern, type_annotation, value, .. } => {
+        Expr::LetPattern {
+            pattern,
+            type_annotation,
+            value,
+            ..
+        } => {
             let ann = type_annotation.as_ref().map(type_ann_text);
             let p = render_pattern_inline(pattern)?;
             let v = render_inline(value)?;
@@ -129,7 +139,12 @@ fn render_inline(e: &Expr) -> Option<String> {
                 None => format!("LET({}, {})", p, v),
             }
         }
-        Expr::If { cond, then_branch, else_branch, .. } => {
+        Expr::If {
+            cond,
+            then_branch,
+            else_branch,
+            ..
+        } => {
             let c = render_inline(cond)?;
             let t = render_inline(then_branch)?;
             match else_branch {
@@ -140,8 +155,15 @@ fn render_inline(e: &Expr) -> Option<String> {
         Expr::While { cond, body, .. } => {
             format!("WHILE({}, {})", render_inline(cond)?, render_inline(body)?)
         }
-        Expr::For { var, iter, body, .. } => {
-            format!("FOR({}, {}, {})", var, render_inline(iter)?, render_inline(body)?)
+        Expr::For {
+            var, iter, body, ..
+        } => {
+            format!(
+                "FOR({}, {}, {})",
+                var,
+                render_inline(iter)?,
+                render_inline(body)?
+            )
         }
         Expr::Return { value, .. } => match value {
             Some(v) => format!("RETURN({})", render_inline(v)?),
@@ -149,7 +171,13 @@ fn render_inline(e: &Expr) -> Option<String> {
         },
         Expr::Break { .. } => "BREAK()".to_string(),
         Expr::Continue { .. } => "CONTINUE()".to_string(),
-        Expr::Fun { name, params, return_type, body, .. } => {
+        Expr::Fun {
+            name,
+            params,
+            return_type,
+            body,
+            ..
+        } => {
             let ps = render_params_inline(params)?;
             let head = match name {
                 Some(n) => format!("FUN({}({})", n, ps),
@@ -168,11 +196,25 @@ fn render_inline(e: &Expr) -> Option<String> {
         Expr::IsOk { value, .. } => format!("IS_OK({})", render_inline(value)?),
         Expr::IsErr { value, .. } => format!("IS_ERR({})", render_inline(value)?),
         Expr::OrDie { value, default, .. } => {
-            format!("OR_DIE({}, {})", render_inline(value)?, render_inline(default)?)
+            format!(
+                "OR_DIE({}, {})",
+                render_inline(value)?,
+                render_inline(default)?
+            )
         }
-        Expr::Match { value, clauses, default, .. } => {
+        Expr::Match {
+            value,
+            clauses,
+            default,
+            ..
+        } => {
             let cs = render_clauses_inline(clauses)?;
-            format!("MATCH({}, [{}], {})", render_inline(value)?, cs, render_inline(default)?)
+            format!(
+                "MATCH({}, [{}], {})",
+                render_inline(value)?,
+                cs,
+                render_inline(default)?
+            )
         }
         Expr::Import { path, names, .. } => {
             format!("IMPORT({}, [{}])", quote(path), render_names_inline(names)?)
@@ -358,7 +400,12 @@ pub fn render(e: &Expr, indent: usize) -> String {
         Expr::Call { name, args, .. } => {
             render_folded(name, &args.iter().collect::<Vec<_>>(), indent)
         }
-        Expr::If { cond, then_branch, else_branch, .. } => {
+        Expr::If {
+            cond,
+            then_branch,
+            else_branch,
+            ..
+        } => {
             let mut args = vec![cond.as_ref(), then_branch.as_ref()];
             if let Some(e) = else_branch {
                 args.push(e);
@@ -368,34 +415,50 @@ pub fn render(e: &Expr, indent: usize) -> String {
         Expr::While { cond, body, .. } => {
             render_folded("WHILE", &[cond.as_ref(), body.as_ref()], indent)
         }
-        Expr::For { var, iter, body, .. } => {
+        Expr::For {
+            var, iter, body, ..
+        } => {
             let head = Expr::Var(var.clone(), wlwl_ast::Span::dummy());
             render_folded("FOR", &[&head, iter.as_ref(), body.as_ref()], indent)
         }
-        Expr::Fun { name, params, return_type, body, .. } => {
-            render_fun(name.as_deref(), params, return_type.as_ref(), body, indent)
-        }
-        Expr::Match { value, clauses, default, .. } => {
-            render_match(value, clauses, default, indent)
-        }
-        Expr::Let { name, type_annotation, value, .. } => {
+        Expr::Fun {
+            name,
+            params,
+            return_type,
+            body,
+            ..
+        } => render_fun(name.as_deref(), params, return_type.as_ref(), body, indent),
+        Expr::Match {
+            value,
+            clauses,
+            default,
+            ..
+        } => render_match(value, clauses, default, indent),
+        Expr::Let {
+            name,
+            type_annotation,
+            value,
+            ..
+        } => {
             let head = match type_annotation {
                 Some(a) => format!("LET({}: {}", name, type_ann_text(a)),
                 None => format!("LET({}", name),
             };
             render_folded_head(&head, &[value.as_ref()], indent)
         }
-        Expr::LetPattern { pattern, type_annotation, value, .. } => {
+        Expr::LetPattern {
+            pattern,
+            type_annotation,
+            value,
+            ..
+        } => {
             let head = match type_annotation {
                 Some(a) => format!(
                     "LET({}: {}",
                     render_pattern_inline(pattern).unwrap_or_default(),
                     type_ann_text(a)
                 ),
-                None => format!(
-                    "LET({}",
-                    render_pattern_inline(pattern).unwrap_or_default()
-                ),
+                None => format!("LET({}", render_pattern_inline(pattern).unwrap_or_default()),
             };
             render_folded_head(&head, &[value.as_ref()], indent)
         }
@@ -453,7 +516,7 @@ fn render_folded(name: &str, args: &[&Expr], indent: usize) -> String {
             out.push_str(",\n");
         }
     }
-    out.push_str("\n");
+    out.push('\n');
     out.push_str(&" ".repeat(indent));
     out.push(')');
     out
@@ -472,7 +535,7 @@ fn render_folded_head(head: &str, args: &[&Expr], indent: usize) -> String {
             out.push_str(",\n");
         }
     }
-    out.push_str("\n");
+    out.push('\n');
     out.push_str(&" ".repeat(indent));
     out.push(')');
     out
@@ -526,7 +589,7 @@ fn render_match(
     indent: usize,
 ) -> String {
     let inner = indent + FOLD_INDENT;
-    let mut out = format!("MATCH(\n");
+    let mut out = "MATCH(\n".to_string();
     out.push_str(&" ".repeat(inner));
     out.push_str(&render(value, inner));
     out.push_str(",\n");
@@ -586,4 +649,3 @@ fn render_class(name: &str, args: &[Expr], indent: usize) -> Option<String> {
     out.push_str("])");
     Some(out)
 }
-

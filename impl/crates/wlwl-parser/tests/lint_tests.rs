@@ -98,9 +98,7 @@ fn w0012_duplicate_let_same_scope() {
 fn w0012_rebind_in_different_scope_ok() {
     // A FUN body rebinding an outer name is a different scope (the
     // outer x is used first; the inner shadow is used inside).
-    assert!(
-        codes("LET(x, 1); PRINT(x); LET(f, FUN((), LET(x, 2); x)); f();").is_empty()
-    );
+    assert!(codes("LET(x, 1); PRINT(x); LET(f, FUN((), LET(x, 2); x)); f();").is_empty());
 }
 
 #[test]

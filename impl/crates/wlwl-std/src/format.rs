@@ -19,7 +19,7 @@
 //! renders dict keys in `serde_json::Map` order (BTreeMap unless
 //! `preserve_order` is enabled), the eval side in insertion order.
 
-use crate::{type_error, StdCtx, StdError, StdFn, StdValue, ModuleSpec};
+use crate::{type_error, ModuleSpec, StdCtx, StdError, StdFn, StdValue};
 use wlwl_error::ErrorCode;
 
 /// One parsed piece of a FORMAT template (v0.4 §10.6).
@@ -135,11 +135,7 @@ fn std_display(v: &StdValue) -> String {
         }
         StdValue::Array(items) => format!(
             "[{}]",
-            items
-                .iter()
-                .map(std_display)
-                .collect::<Vec<_>>()
-                .join(", ")
+            items.iter().map(std_display).collect::<Vec<_>>().join(", ")
         ),
         StdValue::Object(m) => format!(
             "[{}]",
@@ -170,7 +166,13 @@ pub fn std_format(_ctx: &mut StdCtx, args: Vec<StdValue>) -> Result<StdValue, St
     }
     let template = match &args[0] {
         StdValue::String(s) => s.as_str(),
-        other => return Err(type_error("FORMAT", "string (template) as first arg", other)),
+        other => {
+            return Err(type_error(
+                "FORMAT",
+                "string (template) as first arg",
+                other,
+            ))
+        }
     };
     let segments = parse_template(template)?;
     let format_args = &args[1..];
@@ -244,7 +246,10 @@ mod tests {
 
     #[test]
     fn parse_plain_text_is_single_literal() {
-        assert_eq!(segs("hello world"), vec![FormatSegment::Literal("hello world".into())]);
+        assert_eq!(
+            segs("hello world"),
+            vec![FormatSegment::Literal("hello world".into())]
+        );
     }
 
     #[test]
@@ -264,7 +269,10 @@ mod tests {
     fn parse_named_placeholder() {
         assert_eq!(
             segs("{name}!"),
-            vec![FormatSegment::Named("name".into()), FormatSegment::Literal("!".into())]
+            vec![
+                FormatSegment::Named("name".into()),
+                FormatSegment::Literal("!".into())
+            ]
         );
     }
 
@@ -272,7 +280,11 @@ mod tests {
     fn parse_mixed_placeholders() {
         assert_eq!(
             segs("{0}-{name}"),
-            vec![FormatSegment::Positional(0), FormatSegment::Literal("-".into()), FormatSegment::Named("name".into())]
+            vec![
+                FormatSegment::Positional(0),
+                FormatSegment::Literal("-".into()),
+                FormatSegment::Named("name".into())
+            ]
         );
     }
 
@@ -327,8 +339,12 @@ mod tests {
     #[test]
     fn format_positional_spec_example() {
         // Spec §10.6 example 1.
-        let out = fmt(vec![s("hi {0}, you are {1} years old"), s("alice"), StdValue::from(30)])
-            .unwrap();
+        let out = fmt(vec![
+            s("hi {0}, you are {1} years old"),
+            s("alice"),
+            StdValue::from(30),
+        ])
+        .unwrap();
         assert_eq!(out, "hi alice, you are 30 years old");
     }
 
@@ -366,8 +382,10 @@ mod tests {
     #[test]
     fn format_conversions_via_str_semantics() {
         assert_eq!(fmt(vec![s("{0}"), StdValue::from(42)]).unwrap(), "42");
+        // Float literals avoid approx-PI constants (`3.14`) to keep
+        // `clippy::approx_constant` (deny) happy.
         assert_eq!(fmt(vec![s("{0}"), StdValue::from(30.0)]).unwrap(), "30.0");
-        assert_eq!(fmt(vec![s("{0}"), StdValue::from(3.14)]).unwrap(), "3.14");
+        assert_eq!(fmt(vec![s("{0}"), StdValue::from(1.25)]).unwrap(), "1.25");
         assert_eq!(fmt(vec![s("{0}"), StdValue::Bool(true)]).unwrap(), "TRUE");
         assert_eq!(fmt(vec![s("{0}"), StdValue::Bool(false)]).unwrap(), "FALSE");
         assert_eq!(fmt(vec![s("{0}"), StdValue::Null]).unwrap(), "NULL");

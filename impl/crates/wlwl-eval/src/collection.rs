@@ -34,7 +34,7 @@
 //! point at the collection's call frame (per §14.2 trace semantics),
 //! not deep inside the closure body.
 
-use wlwl_ast::{Expr, Span};
+use wlwl_ast::Span;
 use wlwl_error::ErrorCode;
 
 use crate::{BuiltinFn, Evaluator, NativeInvoke, Outcome, Value, WlwlError, WlwlResult};
@@ -47,32 +47,46 @@ use crate::{BuiltinFn, Evaluator, NativeInvoke, Outcome, Value, WlwlError, WlwlR
 /// Phase B6 (spec §15.7 / §10.5). Walks `BUILTINS` so every entry
 /// appears in IMPORT name-resolution.
 pub const NAMES: &[&str] = &[
-    "MAP", "FILTER", "REDUCE", "SORT", "SORT_BY", "ZIP", "RANGE",
-    "ANY", "ALL", "FIND", "ENUMERATE", "TAKE", "DROP", "FLAT",
-    "UNIQ", "GROUP_BY", "JOIN",
+    "MAP",
+    "FILTER",
+    "REDUCE",
+    "SORT",
+    "SORT_BY",
+    "ZIP",
+    "RANGE",
+    "ANY",
+    "ALL",
+    "FIND",
+    "ENUMERATE",
+    "TAKE",
+    "DROP",
+    "FLAT",
+    "UNIQ",
+    "GROUP_BY",
+    "JOIN",
 ];
 
 /// The 17 (name, impl) pairs bound by `Evaluator::load_std` when the
 /// resolved IMPORT path is `wlwl:std.collection`. The order matches
 /// `NAMES`; `names_match_catalog` enforces parity.
 pub const BUILTINS: &[(&str, BuiltinFn)] = &[
-    ("MAP",        builtin_map        as BuiltinFn),
-    ("FILTER",     builtin_filter     as BuiltinFn),
-    ("REDUCE",     builtin_reduce     as BuiltinFn),
-    ("SORT",       builtin_sort       as BuiltinFn),
-    ("SORT_BY",    builtin_sort_by    as BuiltinFn),
-    ("ZIP",        builtin_zip        as BuiltinFn),
-    ("RANGE",      builtin_range      as BuiltinFn),
-    ("ANY",        builtin_any        as BuiltinFn),
-    ("ALL",        builtin_all        as BuiltinFn),
-    ("FIND",       builtin_find       as BuiltinFn),
-    ("ENUMERATE",  builtin_enumerate  as BuiltinFn),
-    ("TAKE",       builtin_take       as BuiltinFn),
-    ("DROP",       builtin_drop       as BuiltinFn),
-    ("FLAT",       builtin_flat       as BuiltinFn),
-    ("UNIQ",       builtin_uniq       as BuiltinFn),
-    ("GROUP_BY",   builtin_group_by   as BuiltinFn),
-    ("JOIN",       builtin_join       as BuiltinFn),
+    ("MAP", builtin_map as BuiltinFn),
+    ("FILTER", builtin_filter as BuiltinFn),
+    ("REDUCE", builtin_reduce as BuiltinFn),
+    ("SORT", builtin_sort as BuiltinFn),
+    ("SORT_BY", builtin_sort_by as BuiltinFn),
+    ("ZIP", builtin_zip as BuiltinFn),
+    ("RANGE", builtin_range as BuiltinFn),
+    ("ANY", builtin_any as BuiltinFn),
+    ("ALL", builtin_all as BuiltinFn),
+    ("FIND", builtin_find as BuiltinFn),
+    ("ENUMERATE", builtin_enumerate as BuiltinFn),
+    ("TAKE", builtin_take as BuiltinFn),
+    ("DROP", builtin_drop as BuiltinFn),
+    ("FLAT", builtin_flat as BuiltinFn),
+    ("UNIQ", builtin_uniq as BuiltinFn),
+    ("GROUP_BY", builtin_group_by as BuiltinFn),
+    ("JOIN", builtin_join as BuiltinFn),
 ];
 
 // ─────────────────────────────────────────────────────────────────────
@@ -98,7 +112,13 @@ fn arity(fn_name: &str, got: usize, want: usize) -> WlwlError {
 
 /// Construct a type-mismatch diagnostic (E0030). The `expected`
 /// string is the spec name (e.g. `"array"`, `"callable"`).
-fn type_err(ev: &mut Evaluator, fn_name: &str, expected: &str, got: &Value, span: &Span) -> WlwlError {
+fn type_err(
+    ev: &mut Evaluator,
+    fn_name: &str,
+    expected: &str,
+    got: &Value,
+    span: &Span,
+) -> WlwlError {
     ev.diag(
         ErrorCode::E0030,
         format!(
@@ -116,7 +136,11 @@ fn type_err(ev: &mut Evaluator, fn_name: &str, expected: &str, got: &Value, span
 fn not_callable(ev: &mut Evaluator, fn_name: &str, got: &Value, span: &Span) -> WlwlError {
     ev.diag(
         ErrorCode::E0020,
-        format!("{}: callback is not callable (got {})", fn_name, value_kind(got)),
+        format!(
+            "{}: callback is not callable (got {})",
+            fn_name,
+            value_kind(got)
+        ),
         span.clone(),
     )
 }
@@ -941,12 +965,24 @@ pub fn builtin_join(ev: &mut Evaluator, args: Vec<Value>) -> WlwlResult<Outcome>
 mod tests {
     use super::*;
 
-    fn v_int(n: i64) -> Value { Value::Integer(n) }
-    fn v_str(s: &str) -> Value { Value::String(s.into()) }
-    fn v_arr(xs: Vec<Value>) -> Value { Value::Array(xs) }
-    fn v_bool(b: bool) -> Value { Value::Boolean(b) }
-    fn v_null() -> Value { Value::Null }
-    fn v_err(s: &str) -> Value { Value::Err(Box::new(Value::String(s.into()))) }
+    fn v_int(n: i64) -> Value {
+        Value::Integer(n)
+    }
+    fn v_str(s: &str) -> Value {
+        Value::String(s.into())
+    }
+    fn v_arr(xs: Vec<Value>) -> Value {
+        Value::Array(xs)
+    }
+    fn v_bool(b: bool) -> Value {
+        Value::Boolean(b)
+    }
+    fn v_null() -> Value {
+        Value::Null
+    }
+    fn v_err(s: &str) -> Value {
+        Value::Err(Box::new(Value::String(s.into())))
+    }
 
     /// Build a 1-arg closure from an `Fn(i64) -> i64`. Used to keep
     /// the test bodies small without dragging the full Expr builder
@@ -1019,7 +1055,10 @@ mod tests {
         assert_eq!(
             value_kind(&Value::Closure {
                 params: vec![],
-                body: Box::new(Expr::Literal(wlwl_ast::Literal::Integer(0), Span::dummy())),
+                body: Box::new(wlwl_ast::Expr::Literal(
+                    wlwl_ast::Literal::Integer(0),
+                    Span::dummy(),
+                )),
                 env: Default::default(),
             }),
             "function closure"
@@ -1078,6 +1117,9 @@ mod tests {
         let result = std::panic::catch_unwind(|| {
             let _ = mk_fn1(|x| x + 1);
         });
-        assert!(result.is_err(), "placeholder must panic to surface its intent");
+        assert!(
+            result.is_err(),
+            "placeholder must panic to surface its intent"
+        );
     }
 }

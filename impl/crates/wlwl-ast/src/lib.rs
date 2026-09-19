@@ -251,11 +251,20 @@ pub enum Expr {
         span: Span,
     },
     // Sec. 5.3 / Sec. 6 Block expression
-    Block { exprs: Vec<Expr>, span: Span },
+    Block {
+        exprs: Vec<Expr>,
+        span: Span,
+    },
     // Sec. 10.1 Array literal
-    Array { items: Vec<Expr>, span: Span },
+    Array {
+        items: Vec<Expr>,
+        span: Span,
+    },
     // Sec. 10.2 Dict literal
-    Dict { entries: Vec<(Expr, Expr)>, span: Span },
+    Dict {
+        entries: Vec<(Expr, Expr)>,
+        span: Span,
+    },
     // Sec. 6.1 LET binding (v0.3 Sec. 2.4: optional annotation)
     Let {
         name: String,
@@ -280,13 +289,29 @@ pub enum Expr {
         span: Span,
     },
     // Sec. 7.2 WHILE
-    While { cond: Box<Expr>, body: Box<Expr>, span: Span },
+    While {
+        cond: Box<Expr>,
+        body: Box<Expr>,
+        span: Span,
+    },
     // Sec. 7.3 FOR
-    For { var: String, iter: Box<Expr>, body: Box<Expr>, span: Span },
+    For {
+        var: String,
+        iter: Box<Expr>,
+        body: Box<Expr>,
+        span: Span,
+    },
     // Sec. 7.4 RETURN
-    Return { value: Option<Box<Expr>>, span: Span },
-    Break { span: Span },
-    Continue { span: Span },
+    Return {
+        value: Option<Box<Expr>>,
+        span: Span,
+    },
+    Break {
+        span: Span,
+    },
+    Continue {
+        span: Span,
+    },
     // Sec. 8.2 FUN literal (v0.3 Sec. 2.4: optional return annotation;
     // P3-011 adds optional `name` for the named form `FUN(name(params), body)`)
     Fun {
@@ -300,16 +325,38 @@ pub enum Expr {
         span: Span,
     },
     // Sec. 12.2 OK(value)
-    Ok { value: Box<Expr>, span: Span },
+    Ok {
+        value: Box<Expr>,
+        span: Span,
+    },
     // Sec. 12.2 ERR(value)
-    Err { value: Box<Expr>, span: Span },
+    Err {
+        value: Box<Expr>,
+        span: Span,
+    },
     // Sec. 12.4 PANIC
-    Panic { value: Box<Expr>, span: Span },
+    Panic {
+        value: Box<Expr>,
+        span: Span,
+    },
     // Sec. 12.3 TRY
-    Try { value: Box<Expr>, span: Span },
-    IsOk { value: Box<Expr>, span: Span },
-    IsErr { value: Box<Expr>, span: Span },
-    OrDie { value: Box<Expr>, default: Box<Expr>, span: Span },
+    Try {
+        value: Box<Expr>,
+        span: Span,
+    },
+    IsOk {
+        value: Box<Expr>,
+        span: Span,
+    },
+    IsErr {
+        value: Box<Expr>,
+        span: Span,
+    },
+    OrDie {
+        value: Box<Expr>,
+        default: Box<Expr>,
+        span: Span,
+    },
     // v0.4 Sec. 7.6: MATCH(value, clauses, default?). First
     // pattern in clauses that matches value wins; its body
     // is evaluated in a fresh scope holding the pattern bindings.
@@ -322,8 +369,15 @@ pub enum Expr {
         default: Box<Expr>,
         span: Span,
     },
-    Import { path: String, names: Vec<ImportName>, span: Span },
-    Export { names: Vec<ImportName>, span: Span },
+    Import {
+        path: String,
+        names: Vec<ImportName>,
+        span: Span,
+    },
+    Export {
+        names: Vec<ImportName>,
+        span: Span,
+    },
 }
 
 impl Expr {
@@ -376,9 +430,17 @@ mod tests {
 
     #[test]
     fn import_name_local_default() {
-        let n = ImportName { name: "add".into(), alias: None, span: Span::dummy() };
+        let n = ImportName {
+            name: "add".into(),
+            alias: None,
+            span: Span::dummy(),
+        };
         assert_eq!(n.local_name(), "add");
-        let n = ImportName { name: "add".into(), alias: Some("math_add".into()), span: Span::dummy() };
+        let n = ImportName {
+            name: "add".into(),
+            alias: Some("math_add".into()),
+            span: Span::dummy(),
+        };
         assert_eq!(n.local_name(), "math_add");
     }
 }

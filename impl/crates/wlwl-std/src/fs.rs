@@ -5,9 +5,11 @@
 //!   - E0062 — permission denied
 //!   - E0060 — other I/O error (retryable)
 
-use crate::{expect_string, arity_error, type_error, StdCtx, StdError, StdFn, StdValue, ModuleSpec};
-use wlwl_error::ErrorCode;
+use crate::{
+    arity_error, expect_string, type_error, ModuleSpec, StdCtx, StdError, StdFn, StdValue,
+};
 use std::io::ErrorKind;
+use wlwl_error::ErrorCode;
 
 pub fn std_read_file(_ctx: &mut StdCtx, args: Vec<StdValue>) -> Result<StdValue, StdError> {
     let path = expect_string("READ_FILE", &args, 0, 1)?;
@@ -63,7 +65,6 @@ pub static SPEC: ModuleSpec = ModuleSpec {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use std::io::Write;
 
     fn tmpfile(suffix: &str) -> std::path::PathBuf {
         let mut p = std::env::temp_dir();
@@ -88,7 +89,10 @@ mod tests {
 
         std_write_file(
             &mut ctx,
-            vec![StdValue::String(p_str.clone()), StdValue::String("hello\nworld".into())],
+            vec![
+                StdValue::String(p_str.clone()),
+                StdValue::String("hello\nworld".into()),
+            ],
         )
         .unwrap();
 

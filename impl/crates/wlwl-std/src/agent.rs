@@ -25,11 +25,9 @@
 //! dispatching to `ASK`. Unrecognized names fall back to a
 //! generic helper system prompt + a `W0052` name-bucket warning.
 
-use crate::{
-    arity_error, type_error, StdCtx, StdError, StdFn, StdValue, ModuleSpec,
-};
-use wlwl_error::ErrorCode;
+use crate::{arity_error, type_error, ModuleSpec, StdCtx, StdError, StdFn, StdValue};
 use serde_json;
+use wlwl_error::ErrorCode;
 // use std::collections::BTreeMap; // StdValue = serde_json::Value uses serde_json::Map
 
 /// Built-in TASK system prompts.
@@ -38,27 +36,27 @@ fn lookup_task_prompt(name: &str) -> Option<&'static str> {
         "summarize" => Some(
             "You are a summarizer. Reply in plain prose. Keep the reply to 3 \
              sentences or fewer. Preserve all named entities, dates, and numeric \
-             values from the input."
+             values from the input.",
         ),
         "translate" => Some(
             "You are a translator. Detect the source language and translate to \
              the language named in the user's prompt. Preserve tone and \
-             register; do not paraphrase."
+             register; do not paraphrase.",
         ),
         "extract" => Some(
             "You are a structured extractor. Reply with JSON that matches the \
              schema in the user's prompt. Do not include prose, explanations, \
-             or markdown fences."
+             or markdown fences.",
         ),
         "classify" => Some(
             "You are a classifier. Reply with exactly one label from the \
              allowed set named in the user's prompt. If unsure, reply with \
-             the 'unknown' label."
+             the 'unknown' label.",
         ),
         "rewrite" => Some(
             "You are an editor. Rewrite the user's text for clarity and \
              concision while preserving the original meaning, voice, and \
-             named entities."
+             named entities.",
         ),
         _ => None,
     }
@@ -78,7 +76,11 @@ pub fn std_task(ctx: &mut StdCtx, args: Vec<StdValue>) -> Result<StdValue, StdEr
         StdValue::String(s) => s.as_str(),
         other => return Err(type_error("TASK", "string", other)),
     };
-    let _opts = if args.len() == 3 { &args[2] } else { &StdValue::Null };
+    let _opts = if args.len() == 3 {
+        &args[2]
+    } else {
+        &StdValue::Null
+    };
 
     let system_prompt = match lookup_task_prompt(name) {
         Some(s) => s,
@@ -136,7 +138,10 @@ pub fn std_tool(ctx: &mut StdCtx, args: Vec<StdValue>) -> Result<StdValue, StdEr
     let mut map: serde_json::Map<String, StdValue> = serde_json::Map::new();
     map.insert("name".into(), StdValue::String(name));
     map.insert("description".into(), StdValue::String(description));
-    map.insert("params_schema".into(), params_schema.unwrap_or(StdValue::Null));
+    map.insert(
+        "params_schema".into(),
+        params_schema.unwrap_or(StdValue::Null),
+    );
     map.insert(
         "returns_schema".into(),
         returns_schema.unwrap_or(StdValue::Null),
@@ -238,7 +243,7 @@ pub fn std_model(ctx: &mut StdCtx, args: Vec<StdValue>) -> Result<StdValue, StdE
 // \u2500\u2500 CONTEXT \u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500
 
 pub fn std_context(ctx: &mut StdCtx, args: Vec<StdValue>) -> Result<StdValue, StdError> {
-    if args.len() < 1 || args.len() > 2 {
+    if args.is_empty() || args.len() > 2 {
         return Err(arity_error("CONTEXT", args.len(), 2));
     }
     let key = match &args[0] {
@@ -403,7 +408,10 @@ mod tests {
         let mut c = ctx();
         let err = std_tool(
             &mut c,
-            vec![StdValue::Number(serde_json::Number::from(1)), StdValue::String("d".into())],
+            vec![
+                StdValue::Number(serde_json::Number::from(1)),
+                StdValue::String("d".into()),
+            ],
         )
         .unwrap_err();
         assert_eq!(err.code, ErrorCode::E0030);
@@ -420,20 +428,13 @@ mod tests {
             "v": "0.4.0",
         });
         let params = serde_json::json!({"city": "Beijing"});
-        let v = std_call_tool(
-            &mut c,
-            vec![tool, params],
-        )
-        .unwrap();
+        let v = std_call_tool(&mut c, vec![tool, params]).unwrap();
         let m = match v {
             StdValue::Object(m) => m,
             other => panic!("expected dict, got {:?}", other),
         };
         assert_eq!(m.get("ok"), Some(&StdValue::Bool(false)));
-        assert_eq!(
-            m.get("error_code"),
-            Some(&StdValue::String("E0093".into()))
-        );
+        assert_eq!(m.get("error_code"), Some(&StdValue::String("E0093".into())));
         assert!(m.contains_key("message"));
     }
 
@@ -442,10 +443,7 @@ mod tests {
         let mut c = ctx();
         let err = std_call_tool(
             &mut c,
-            vec![
-                StdValue::String("not-a-dict".into()),
-                StdValue::Null,
-            ],
+            vec![StdValue::String("not-a-dict".into()), StdValue::Null],
         )
         .unwrap_err();
         assert_eq!(err.code, ErrorCode::E0030);
@@ -461,23 +459,13 @@ mod tests {
     #[test]
     fn model_namespaced_returns_provider_and_caps() {
         let mut c = ctx();
-        let v = std_model(
-            &mut c,
-            vec![StdValue::String("openai/gpt-4".into())],
-        )
-        .unwrap();
+        let v = std_model(&mut c, vec![StdValue::String("openai/gpt-4".into())]).unwrap();
         let m = match v {
             StdValue::Object(m) => m,
             other => panic!("expected dict, got {:?}", other),
         };
-        assert_eq!(
-            m.get("provider"),
-            Some(&StdValue::String("openai".into()))
-        );
-        assert_eq!(
-            m.get("model"),
-            Some(&StdValue::String("gpt-4".into()))
-        );
+        assert_eq!(m.get("provider"), Some(&StdValue::String("openai".into())));
+        assert_eq!(m.get("model"), Some(&StdValue::String("gpt-4".into())));
         let caps = match m.get("capabilities") {
             Some(StdValue::Array(a)) => a,
             other => panic!("caps not array: {:?}", other),
@@ -492,19 +480,12 @@ mod tests {
     #[test]
     fn model_bare_emits_w0052() {
         let mut c = ctx();
-        let v = std_model(
-            &mut c,
-            vec![StdValue::String("gpt-4".into())],
-        )
-        .unwrap();
+        let v = std_model(&mut c, vec![StdValue::String("gpt-4".into())]).unwrap();
         let m = match v {
             StdValue::Object(m) => m,
             other => panic!("got {:?}", other),
         };
-        assert_eq!(
-            m.get("provider"),
-            Some(&StdValue::String("unknown".into()))
-        );
+        assert_eq!(m.get("provider"), Some(&StdValue::String("unknown".into())));
         assert_eq!(c.warnings.len(), 1);
         assert_eq!(c.warnings[0].0, ErrorCode::W0052);
     }
@@ -541,11 +522,8 @@ mod tests {
     #[test]
     fn model_non_string_name_is_e0030() {
         let mut c = ctx();
-        let err = std_model(
-            &mut c,
-            vec![StdValue::Number(serde_json::Number::from(1))],
-        )
-        .unwrap_err();
+        let err =
+            std_model(&mut c, vec![StdValue::Number(serde_json::Number::from(1))]).unwrap_err();
         assert_eq!(err.code, ErrorCode::E0030);
     }
 
@@ -560,22 +538,14 @@ mod tests {
             ],
         )
         .unwrap();
-        let got = std_context(
-            &mut c,
-            vec![StdValue::String("language".into())],
-        )
-        .unwrap();
+        let got = std_context(&mut c, vec![StdValue::String("language".into())]).unwrap();
         assert_eq!(got, StdValue::String("zh".into()));
     }
 
     #[test]
     fn context_missing_returns_null() {
         let mut c = ctx();
-        let got = std_context(
-            &mut c,
-            vec![StdValue::String("not-set".into())],
-        )
-        .unwrap();
+        let got = std_context(&mut c, vec![StdValue::String("not-set".into())]).unwrap();
         assert_eq!(got, StdValue::Null);
     }
 
@@ -589,11 +559,8 @@ mod tests {
     #[test]
     fn context_non_string_key_is_e0030() {
         let mut c = ctx();
-        let err = std_context(
-            &mut c,
-            vec![StdValue::Number(serde_json::Number::from(1))],
-        )
-        .unwrap_err();
+        let err =
+            std_context(&mut c, vec![StdValue::Number(serde_json::Number::from(1))]).unwrap_err();
         assert_eq!(err.code, ErrorCode::E0030);
     }
 
@@ -601,9 +568,6 @@ mod tests {
     fn spec_contains_all_five() {
         assert_eq!(SPEC.path, "wlwl:std.agent");
         let names: Vec<&str> = SPEC.functions.iter().map(|(n, _)| *n).collect();
-        assert_eq!(
-            names,
-            vec!["TASK", "TOOL", "CALL_TOOL", "MODEL", "CONTEXT"]
-        );
+        assert_eq!(names, vec!["TASK", "TOOL", "CALL_TOOL", "MODEL", "CONTEXT"]);
     }
 }
