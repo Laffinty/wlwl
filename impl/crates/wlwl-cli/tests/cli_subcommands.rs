@@ -244,3 +244,48 @@ fn cli_help_exits_zero() {
     assert!(stdout.to_lowercase().contains("usage") || stdout.contains("wlwl"),
             "help text should mention usage: {stdout}");
 }
+
+// ── Phase E4: `wlwl check` unified warning channel ─────────────
+#[test]
+fn cli_check_prints_lint_warnings_but_succeeds() {
+    // Unused LET => W0010 on stdout; warnings never fail the check.
+    let dir = std::env::temp_dir().join("wlwl-cli-tests");
+    let p = write_source(&dir, "check_lint.wl", "LET(x, 1); PRINT(2);");
+    let out = run_cli(&["check", p.to_str().unwrap()]);
+    assert!(out.status.success(), "warnings must not fail the check");
+    let stdout = String::from_utf8_lossy(&out.stdout);
+    assert!(stdout.contains("W0010"), "expected W0010, got: {stdout}");
+    assert!(stdout.contains("never used"), "got: {stdout}");
+    assert!(stdout.contains("OK: parsed"), "got: {stdout}");
+}
+
+#[test]
+fn cli_check_reports_w0020_from_parser_channel() {
+    // Mixed array/dict literal => parser-channel W0020.
+    let dir = std::env::temp_dir().join("wlwl-cli-tests");
+    let p = write_source(&dir, "check_w0020.wl", "LET(a, [1, \"k\": 2]); PRINT(a);");
+    let out = run_cli(&["check", p.to_str().unwrap()]);
+    assert!(out.status.success());
+    let stdout = String::from_utf8_lossy(&out.stdout);
+    assert!(stdout.contains("W0020"), "expected W0020, got: {stdout}");
+}
+
+#[test]
+fn cli_check_clean_source_has_no_warnings() {
+    let dir = std::env::temp_dir().join("wlwl-cli-tests");
+    let p = write_source(&dir, "check_clean.wl", "LET(x, 1); PRINT(x);");
+    let out = run_cli(&["check", p.to_str().unwrap()]);
+    assert!(out.status.success());
+    let stdout = String::from_utf8_lossy(&out.stdout);
+    assert!(!stdout.contains("warning"), "got: {stdout}");
+}
+
+#[test]
+fn cli_check_unused_param_reports_w0011() {
+    let dir = std::env::temp_dir().join("wlwl-cli-tests");
+    let p = write_source(&dir, "check_w0011.wl", "LET(f, FUN((a, b), a)); f(1, 2);");
+    let out = run_cli(&["check", p.to_str().unwrap()]);
+    assert!(out.status.success());
+    let stdout = String::from_utf8_lossy(&out.stdout);
+    assert!(stdout.contains("W0011"), "expected W0011, got: {stdout}");
+}

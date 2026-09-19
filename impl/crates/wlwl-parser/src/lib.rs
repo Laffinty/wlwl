@@ -84,10 +84,9 @@ pub fn parse(input: &str, file: &str) -> WlwlResult<Expr> {
 /// Parse source code and also collect any non-fatal warnings.
 ///
 /// The current parser emits at most W0020 (mixed array/dict literal,
-/// v0.3 §4.5). Other warning codes (W0001, W0010, …) live in the
-/// error model but are not yet triggered by the parser — those are
-/// eval-time concerns (unused LET, etc.) and will land alongside
-/// their semantic checks.
+/// v0.3 §4.5). Static semantic warnings (unused bindings, duplicate
+/// LET, ...) live in [`lint`], a post-parse walk; the two channels
+/// merge in `wlwl check`.
 pub fn parse_with_warnings(
     input: &str,
     file: &str,
@@ -104,6 +103,305 @@ pub fn parse_with_warnings(
     p.expect(TokenKind::Eof)?;
     let warnings = std::mem::take(&mut p.warnings);
     Ok((block, warnings))
+}
+
+// ── Phase E4: post-parse linter walk ────────────────────────────────
+
+/// Static semantic warnings collected by a post-parse walk over the
+/// AST (Phase E4, plan §5.13). The parser's own warnings (W0020)
+/// come from `parse_with_warnings`; this walk adds the name-level
+/// checks that need scope knowledge:
+///
+/// - `W0010` unused LET binding (`_`-prefixed names are silenced)
+/// - `W0011` unused function parameter (`_`-prefixed names silenced,
+///   per the v0.3 §14.5 note)
+/// - `W0012` duplicate LET of the same name in one scope
+///
+/// All are non-blocking; the caller decides whether to surface them
+/// (`wlwl check` prints them) or promote them in a strict mode.
+pub fn lint(expr: &Expr) -> Vec<Warning> {
+    let mut l = Linter {
+        warnings: Vec::new(),
+        scopes: Vec::new(),
+    };
+    // Root scope: the program body (needed because a single-statement
+    // program parses to the bare statement, not a Block).
+    l.scopes.push(Vec::new());
+    l.walk(expr);
+    l.leave_scope();
+    l.warnings
+}
+
+/// One lexical scope: bindings created here, in source order, with
+/// the span each would be reported at.
+struct Binding {
+    name: String,
+    used: bool,
+    span: (u32, u32, u32, u32),
+    kind: BindingKind,
+}
+
+enum BindingKind {
+    Let,
+    Param,
+}
+
+struct Linter {
+    warnings: Vec<Warning>,
+    scopes: Vec<Vec<Binding>>,
+}
+
+impl Linter {
+    fn walk(&mut self, e: &Expr) {
+        match e {
+            Expr::Var(name, span) => {
+                // A read marks the binding in the nearest scope that
+                // declares it (shadowing-aware).
+                self.mark_used(name, span);
+            }
+            Expr::Call { name, args, span } => {
+                // A call-by-name is a reference to the callee.
+                self.mark_used_no_span(name);
+                for a in args {
+                    self.walk(a);
+                }
+                let _ = span;
+            }
+            Expr::Block { exprs, .. } => self.walk_block_scope(exprs),
+            Expr::Let { name, value, span, .. } => {
+                self.walk(value);
+                self.declare(
+                    name.clone(),
+                    span,
+                    BindingKind::Let,
+                );
+            }
+            Expr::LetPattern { pattern, value, .. } => {
+                self.walk(value);
+                self.declare_pattern(pattern);
+            }
+            Expr::Fun { name, params, body, .. } => {
+                if let Some(n) = name {
+                    // Named FUN binding: `FUN(f(x), ...)` binds f in
+                    // the enclosing scope.
+                    self.declare(n.clone(), e.span(), BindingKind::Let);
+                }
+                // Function body = fresh scope; params bind there.
+                self.scopes.push(Vec::new());
+                {
+                    let scope = self.scopes.last_mut().unwrap();
+                    for p in params {
+                        scope.push(Binding {
+                            name: p.name.clone(),
+                            used: false,
+                            span: (
+                                p.span.line_start,
+                                p.span.col_start,
+                                p.span.line_end,
+                                p.span.col_end,
+                            ),
+                            kind: BindingKind::Param,
+                        });
+                    }
+                }
+                self.walk(body);
+                self.leave_scope();
+            }
+            Expr::If { cond, then_branch, else_branch, .. } => {
+                self.walk(cond);
+                self.walk(then_branch);
+                if let Some(el) = else_branch {
+                    self.walk(el);
+                }
+            }
+            Expr::While { cond, body, .. } => {
+                self.walk(cond);
+                self.walk(body);
+            }
+            Expr::For { var, iter, body, .. } => {
+                self.walk(iter);
+                self.scopes.push(Vec::new());
+                let fs = e.span();
+                self.scopes.last_mut().unwrap().push(Binding {
+                    name: var.clone(),
+                    used: false,
+                    span: (fs.line_start, fs.col_start, fs.line_end, fs.col_end),
+                    kind: BindingKind::Let,
+                });
+                self.walk(body);
+                self.leave_scope();
+            }
+            Expr::Match { value, clauses, default, .. } => {
+                self.walk(value);
+                for c in clauses {
+                    // Pattern bindings live in the clause body scope.
+                    self.scopes.push(Vec::new());
+                    self.declare_pattern(&c.pattern);
+                    self.walk(&c.body);
+                    self.leave_scope();
+                }
+                self.walk(default);
+            }
+            Expr::Array { items, .. } => {
+                for i in items {
+                    self.walk(i);
+                }
+            }
+            Expr::Dict { entries, .. } => {
+                for (k, v) in entries {
+                    self.walk(k);
+                    self.walk(v);
+                }
+            }
+            Expr::Return { value, .. } => {
+                if let Some(v) = value {
+                    self.walk(v);
+                }
+            }
+            Expr::Ok { value, .. }
+            | Expr::Err { value, .. }
+            | Expr::Panic { value, .. }
+            | Expr::Try { value, .. }
+            | Expr::IsOk { value, .. }
+            | Expr::IsErr { value, .. } => self.walk(value),
+            Expr::OrDie { value, default, .. } => {
+                self.walk(value);
+                self.walk(default);
+            }
+            // IMPORT binds names; EXPORT references them.
+            Expr::Import { names, .. } => {
+                for n in names {
+                    if let Some(a) = &n.alias {
+                        let s = &n.span;
+                        self.declare_spanned(
+                            a.clone(),
+                            (s.line_start, s.col_start, s.line_end, s.col_end),
+                            BindingKind::Let,
+                        );
+                    }
+                }
+            }
+            Expr::Export { names, .. } => {
+                for n in names {
+                    self.mark_used_no_span(&n.name);
+                }
+            }
+            _ => {}
+        }
+    }
+
+    /// A block starts a fresh lexical scope; bindings created here
+    /// are checked when the scope ends.
+    fn walk_block_scope(&mut self, exprs: &[Expr]) {
+        self.scopes.push(Vec::new());
+        for e in exprs {
+            self.walk(e);
+        }
+        self.leave_scope();
+    }
+
+    fn declare(&mut self, name: String, span: &wlwl_ast::Span, kind: BindingKind) {
+        let span = (span.line_start, span.col_start, span.line_end, span.col_end);
+        self.declare_spanned(name, span, kind);
+    }
+
+    fn declare_spanned(&mut self, name: String, span: (u32, u32, u32, u32), kind: BindingKind) {
+        let scope = self.scopes.last_mut().expect("declare outside any scope");
+        // W0012: duplicate LET in the same scope (LET + LET only;
+        // params and pattern bindings do not participate).
+        if matches!(kind, BindingKind::Let) {
+            if let Some(prev) = scope
+                .iter_mut()
+                .find(|b| b.name == name && matches!(b.kind, BindingKind::Let))
+            {
+                // The rebind supersedes the first binding; mark it
+                // used so the duplicate only reports W0012, not an
+                // additional W0010.
+                prev.used = true;
+                let (pl, pc) = (prev.span.0, prev.span.1);
+                self.warnings.push(Warning::new(
+                    EC::W0012,
+                    format!(
+                        "LET re-binds '{}' in the same scope (first bound at {}:{})",
+                        name, pl, pc
+                    ),
+                    span,
+                ));
+            }
+        }
+        scope.push(Binding { name, used: false, span, kind });
+    }
+
+    /// Destructuring / MATCH patterns bind every `Ident` leaf
+    /// (wildcards bind nothing; `*rest` binds the rest name).
+    fn declare_pattern(&mut self, p: &wlwl_ast::Pattern) {
+        match p {
+            wlwl_ast::Pattern::Ident(name, span) => {
+                let span = (span.line_start, span.col_start, span.line_end, span.col_end);
+                self.declare_spanned(name.clone(), span, BindingKind::Let);
+            }
+            wlwl_ast::Pattern::Array(items, rest, _) => {
+                for i in items {
+                    self.declare_pattern(i);
+                }
+                if let Some(r) = rest {
+                    self.declare_pattern(r);
+                }
+            }
+            wlwl_ast::Pattern::Dict(entries, _) => {
+                for (_, v) in entries {
+                    self.declare_pattern(v);
+                }
+            }
+            wlwl_ast::Pattern::Constructor { inner, .. } => self.declare_pattern(inner),
+            wlwl_ast::Pattern::Wildcard(_) | wlwl_ast::Pattern::Literal(_, _) => {}
+        }
+    }
+
+    fn mark_used(&mut self, name: &str, _span: &wlwl_ast::Span) {
+        self.mark_used_no_span(name);
+    }
+
+    /// Mark the nearest enclosing binding of `name` as used
+    /// (shadowing-aware: inner scopes shadow outer ones).
+    fn mark_used_no_span(&mut self, name: &str) {
+        for scope in self.scopes.iter_mut().rev() {
+            if let Some(b) = scope.iter_mut().rev().find(|b| b.name == name) {
+                b.used = true;
+                return;
+            }
+        }
+        // Not bound locally (builtin / global / undefined): fine here;
+        // undefined names are a runtime E0021 concern.
+    }
+
+    fn leave_scope(&mut self) {
+        let scope = self.scopes.pop().expect("unbalanced scope leave");
+        for b in scope {
+            if b.used {
+                continue;
+            }
+            // `_`-prefixed names are deliberately unused.
+            if b.name.starts_with('_') {
+                continue;
+            }
+            match b.kind {
+                BindingKind::Let => self.warnings.push(Warning::new(
+                    EC::W0010,
+                    format!("LET binding '{}' is never used", b.name),
+                    b.span,
+                )),
+                BindingKind::Param => self.warnings.push(Warning::new(
+                    EC::W0011,
+                    format!(
+                        "function parameter '{}' is never used (prefix with '_' to silence)",
+                        b.name
+                    ),
+                    b.span,
+                )),
+            }
+        }
+    }
 }
 
 struct Parser {

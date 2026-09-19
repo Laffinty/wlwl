@@ -18,7 +18,7 @@ use std::process::ExitCode;
 use clap::{Parser, ValueEnum};
 use wlwl_ast::Expr;
 use wlwl_error::{ErrorCode, Location, Severity, WlwlDiagnostic, WlwlError};
-use wlwl_parser::parse;
+use wlwl_parser::{parse_with_warnings, parse};
 
 #[derive(Debug, Clone, Copy, ValueEnum, Default)]
 enum OutputFormat {
@@ -104,12 +104,27 @@ fn run_file(file: &PathBuf, format: OutputFormat, execute: bool) -> ExitCode {
     };
 
     let file_name = file.to_string_lossy().to_string();
-    let ast = match parse(&source, &file_name) {
+    let (ast, parse_warnings) = match parse_with_warnings(&source, &file_name) {
         Ok(a) => a,
         Err(e) => return report_error(e, format),
     };
 
     if !execute {
+        // Phase E4: unified warning channel. Parser warnings (W0020)
+        // plus the static lint walk (W0010 / W0011 / W0012) surface
+        // here; warnings never fail the check (exit 0).
+        let mut warnings = parse_warnings;
+        warnings.extend(wlwl_parser::lint(&ast));
+        for w in &warnings {
+            println!(
+                "warning {}: {} ({}:{}:{})",
+                w.code.as_str(),
+                w.message,
+                file_name,
+                w.span.0,
+                w.span.1
+            );
+        }
         println!("OK: parsed {} ({} bytes)", file_name, source.len());
         return ExitCode::SUCCESS;
     }
