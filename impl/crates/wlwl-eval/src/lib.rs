@@ -4293,6 +4293,21 @@ impl Evaluator {
         if name == "SET" {
             return self.eval_set(args, span);
         }
+        // [v0.4 spec §4.5 + §16.3 rule 10, Phase E2/E4] The empty-
+        // collection forms `ARRAY()` / `DICT()` are canonical syntax
+        // (the §16.3 formatter emits exactly this shape for empty
+        // literals), so they must evaluate. Intercepted here as macro
+        // forms rather than appendix-G builtins; a non-empty
+        // `ARRAY(x, ...)` call keeps falling through to the normal
+        // dispatch (unchanged from v0.3 behavior).
+        if (name == "ARRAY" || name == "DICT") && args.is_empty() {
+            let v = if name == "ARRAY" {
+                Value::Array(Vec::new())
+            } else {
+                Value::Dict(Vec::new())
+            };
+            return Ok(Outcome::normal(v));
+        }
         // Look up the callee (user function takes priority over built-in
         // with the same name; in Phase 2 we keep them in disjoint
         // namespaces by convention — there is no name conflict in the
@@ -12831,6 +12846,41 @@ entry = "main.wl"
         let e = parse(src, "t.wl")?;
         let mut ev = Evaluator::new().with_strict_types(on);
         ev.eval(&e)
+    }
+
+    // ---- Phase E2/E4 (spec §4.5 + §16.3 rule 10): empty collections --
+
+    #[test]
+    fn e2_empty_array_call_evaluates() {
+        // `ARRAY()` is the canonical §16.3 empty-collection form; it
+        // must evaluate to an empty ARRAY (previously E0021).
+        assert_eq!(run_strict("ARRAY();", false).unwrap(), Value::Array(vec![]));
+        assert_eq!(
+            run_strict("LET(a, ARRAY()); LEN(a);", false).unwrap(),
+            Value::Integer(0)
+        );
+    }
+
+    #[test]
+    fn e2_empty_dict_call_evaluates() {
+        assert_eq!(run_strict("DICT();", false).unwrap(), Value::Dict(vec![]));
+        assert_eq!(
+            run_strict("LET(d, DICT()); LEN(d);", false).unwrap(),
+            Value::Integer(0)
+        );
+    }
+
+    #[test]
+    fn e2_array_dict_forms_coexist_with_literals() {
+        // `[]` / `[:]` literals and the canonical call forms agree.
+        assert_eq!(
+            run_strict("TYPE([]);", false).unwrap(),
+            run_strict("TYPE(ARRAY());", false).unwrap()
+        );
+        assert_eq!(
+            run_strict("LEN([\"a\": 1]);", false).unwrap(),
+            Value::Integer(1)
+        );
     }
 
     #[test]
