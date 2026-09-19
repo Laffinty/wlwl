@@ -139,6 +139,12 @@ impl TokenKind {
             TokenKind::Slash => Some("/"),
             TokenKind::Percent => Some("%"),
             TokenKind::EqEq => Some("=="),
+            // Phase I1 (spec §9.2): `=(a, b)` is the spec's equality
+            // spelling; the implementation's builtin is registered as
+            // `==`, so a single `=` in Call position desugars to it.
+            // Default-parameter `name = default` is consumed earlier by
+            // the parser's FUN parameter list and never reaches here.
+            TokenKind::Eq => Some("=="),
             TokenKind::BangEq => Some("!="),
             TokenKind::Lt => Some("<"),
             TokenKind::Gt => Some(">"),

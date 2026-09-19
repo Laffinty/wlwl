@@ -4,14 +4,18 @@
 IMPORT("math", ["add", "PI"]);
 
 // ── Control flow: WHILE + IF + BREAK ──────────────────────────────
-LET(total, 0);
-LET(i, 1);
-WHILE(<(i, 11),
-    IF(==(%(i, 2), 0),
-        LET(total, +(total, i))
-    );
-    LET(i, +(i, 1))
-);
+// Accumulation uses a closure capturing the `total`/`i` cells
+// (spec v0.4 §6.4: SET only works on captured bindings; a loop-body
+// LET shadows per §6.6 — it would loop forever here).
+LET(main, FUN((),
+    (LET(total, 0);
+     LET(i, 1);
+     LET(add_even, FUN((v), IF(==(%(v, 2), 0), SET(total, +(total, v)), NULL)));
+     LET(inc, FUN((), SET(i, +(i, 1))));
+     WHILE(<(i, 11), (add_even(i); inc()));
+     total)
+));
+LET(total, main());
 PRINT("sum of evens 1..10 =", total);   // → 30
 
 // ── FUN + recursion: factorial ───────────────────────────────────

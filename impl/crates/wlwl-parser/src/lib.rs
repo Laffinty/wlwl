@@ -1829,7 +1829,59 @@ impl Parser {
         // These are pure syntax sugar per the spec; the AST stays in
         // Expr::Call form so the runtime can keep treating the receiver
         // and the method/member as ordinary function calls. P3-011.
-        while matches!(self.peek(), TokenKind::Dot) {
+        //
+        // Phase I1 (spec §10.1): postfix index sugar on the same chain.
+        //
+        // `a[i]`      desugars to  INDEX_GET(a, i)
+        // `a[i] = v`  desugars to  INDEX_SET(a, i, v)
+        //
+        // Chains mix freely (`a[0].b`, `a.b[0][1]`); INDEX_SET yields
+        // the container itself, so it can appear mid-chain.
+        loop {
+            if matches!(self.peek(), TokenKind::LBracket) {
+                self.advance(); // '['
+                let idx = self.parse_expr()?;
+                self.expect_specific(EC::E0011, "']'")?;
+                if matches!(self.peek(), TokenKind::Eq) {
+                    // Write sugar: a[i] = v  ->  INDEX_SET(a, i, v).
+                    // A bare `=` after `]` is otherwise a syntax error,
+                    // so consuming it here is unambiguous. (Default
+                    // parameters are consumed inside `parse_fun` and
+                    // never reach this postfix loop.)
+                    self.advance(); // '='
+                    let val = self.parse_expr()?;
+                    let (_, _, le, ce) = self.span_here();
+                    base = Expr::Call {
+                        name: "INDEX_SET".to_string(),
+                        args: vec![base, idx, val],
+                        span: Span {
+                            file: self.file.clone(),
+                            line_start: line,
+                            col_start: col,
+                            line_end: le,
+                            col_end: ce,
+                        },
+                    };
+                } else {
+                    // Read sugar: a[i]  ->  INDEX_GET(a, i).
+                    let (_, _, le, ce) = self.span_here();
+                    base = Expr::Call {
+                        name: "INDEX_GET".to_string(),
+                        args: vec![base, idx],
+                        span: Span {
+                            file: self.file.clone(),
+                            line_start: line,
+                            col_start: col,
+                            line_end: le,
+                            col_end: ce,
+                        },
+                    };
+                }
+                continue;
+            }
+            if !matches!(self.peek(), TokenKind::Dot) {
+                break;
+            }
             self.advance(); // '.'
                             // The name right after `.` must be an identifier (per §3.1).
             let field = match self.advance() {

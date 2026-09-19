@@ -1,11 +1,17 @@
-// examples/destruct.wl — destructure-binding patterns (v0.3 §7.5)
-// LET accepts patterns: array [a, b, c] or dict {key: var}.
+// examples/destruct.wl — destructure-binding patterns (v0.4 §7.5)
+// LET accepts patterns: array [a, b, c] or dict ["key": var].
+// (v0.4 note: `{}` braces are not part of the language — dict
+// literals and dict patterns both use the `[...]` form.)
 
 LET([x, y, z], [10, 20, 30]);
 PRINT(x);
 PRINT(y);
 PRINT(z);
 
-LET({name, age}, {name: "wlwl", age: 0.4});
-PRINT(name);
-PRINT(age);
+LET([head, *rest], [1, 2, 3, 4]);
+PRINT(head);        // → 1
+PRINT(rest);        // → [2, 3, 4]
+
+LET(["name": n, "age": a], ["name": "wlwl", "age": 0.4]);
+PRINT(n);           // → wlwl
+PRINT(a);           // → 0.4

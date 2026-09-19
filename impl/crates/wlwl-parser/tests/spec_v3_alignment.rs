@@ -917,6 +917,73 @@ fn no_w0020_homogeneous_dict() {
     assert!(warnings.is_empty());
 }
 
+// ───────────────────── Phase I1 (spec §9.2 / §10.1) ─────────────────────
+
+#[test]
+fn i1_index_read_sugar_desugars_to_index_get() {
+    // §10.1: a[1]  ->  INDEX_GET(a, 1)
+    let r = parse("LET(v, a[1]);", "t.wl").unwrap();
+    let call = match &only_let(&r).as_ref() {
+        Expr::Call { name, args, .. } => (name, args),
+        _ => panic!(),
+    };
+    assert_eq!(call.0, "INDEX_GET");
+    assert_eq!(call.1.len(), 2);
+    assert!(matches!(&call.1[0], Expr::Var(n, _) if n == "a"));
+    assert!(matches!(&call.1[1], Expr::Literal(Literal::Integer(1), _)));
+}
+
+#[test]
+fn i1_index_write_sugar_desugars_to_index_set() {
+    // §10.1: a[i] = v  ->  INDEX_SET(a, i, v)
+    let r = parse("LET(v, a[0] = 99);", "t.wl").unwrap();
+    let call = match &only_let(&r).as_ref() {
+        Expr::Call { name, args, .. } => (name, args),
+        _ => panic!(),
+    };
+    assert_eq!(call.0, "INDEX_SET");
+    assert_eq!(call.1.len(), 3);
+}
+
+#[test]
+fn i1_index_chained_and_mixed_with_dot() {
+    // a[0][1] and t.items[0] chain through the same Call-form sugar.
+    let r = parse("LET(v, m[1][0]);", "t.wl").unwrap();
+    let outer = match &only_let(&r).as_ref() {
+        Expr::Call { name, args, .. } => (name, args),
+        _ => panic!(),
+    };
+    assert_eq!(outer.0, "INDEX_GET");
+    assert!(matches!(&outer.1[0], Expr::Call { name, .. } if name == "INDEX_GET"));
+
+    let r = parse("LET(v, t.items[0]);", "t.wl").unwrap();
+    let outer = match &only_let(&r).as_ref() {
+        Expr::Call { name, .. } => name,
+        _ => panic!(),
+    };
+    assert_eq!(outer, "INDEX_GET");
+}
+
+#[test]
+fn i1_single_equals_desugars_to_eq_call() {
+    // §9.2: `=(a, b)` resolves to the `==` builtin (Phase I1 alias).
+    let r = parse("LET(v, =(1, 2));", "t.wl").unwrap();
+    let call = match &only_let(&r).as_ref() {
+        Expr::Call { name, args, .. } => (name, args),
+        _ => panic!(),
+    };
+    assert_eq!(call.0, "==");
+    assert_eq!(call.1.len(), 2);
+}
+
+#[test]
+fn i1_default_param_eq_still_parses() {
+    // The default-parameter separator keeps working alongside the
+    // `=` → `==` call alias.
+    let r = parse(r#"LET(g, FUN((name = "hi"), name));"#, "t.wl").unwrap();
+    assert!(matches!(r, Expr::Let { .. } | Expr::Block { .. }));
+}
+
 // ───────────────────────── helpers ─────────────────────────
 
 #[allow(clippy::borrowed_box)] // signature preserved for as_ref() callers; refactor as Phase G7

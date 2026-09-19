@@ -552,6 +552,14 @@ pub fn builtin_range(ev: &mut Evaluator, args: Vec<Value>) -> WlwlResult<Outcome
             let n = to_i64(ev, "RANGE", &args[0], &span)?;
             (0, n, 1i64)
         }
+        // Phase I1 (spec §10.5): `RANGE(start, end)` — step defaults to
+        // 1. This arm was previously missing, so the 2-arg form fell
+        // into `unreachable!()` and panicked (exit 101).
+        2 => {
+            let s = to_i64(ev, "RANGE", &args[0], &span)?;
+            let e = to_i64(ev, "RANGE", &args[1], &span)?;
+            (s, e, 1i64)
+        }
         3 => {
             let s = to_i64(ev, "RANGE", &args[0], &span)?;
             let e = to_i64(ev, "RANGE", &args[1], &span)?;

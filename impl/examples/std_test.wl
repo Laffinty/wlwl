@@ -1,12 +1,11 @@
 // examples/std_test.wl — uses wlwl:std.test module (Phase B7 §15.9)
-// Demonstrates: ASSERT / EXPECT_EQ / EXPECT_ERR framework.
+// Demonstrates: ASSERT / ASSERT_EQ / EXPECT_ERR framework.
+// (v0.4 note: the v0.3 `IMPORT("@std/test") AS test` rename form was
+// deleted per §13.4 — names are imported directly.)
 
-IMPORT("@std/test") AS test;
+IMPORT("wlwl:std.test", ["ASSERT", "ASSERT_EQ", "EXPECT_ERR"]);
 
-LET(t, RUN_TESTS);
-LET(result, t([
-    ASSERT(+(1, 1), 2),
-    ASSERT_EQ(+(2, 2), 4),
-    EXPECT_ERR(DIV(1, 0)),
-]));
-PRINT(result);
+LET(a, ASSERT(+(1, 1), 2));          // OK(TRUE)
+LET(b, ASSERT_EQ(+(2, 2), 4));       // OK(TRUE)
+LET(c, EXPECT_ERR(/(1, 0)));         // division by zero → caught as ERR
+PRINT(IS_OK(a), IS_OK(b), IS_OK(c)); // → TRUE TRUE TRUE

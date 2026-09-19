@@ -279,21 +279,6 @@ impl Env {
         }
     }
 
-    /// Walk to the first scope that already has `name` and overwrite
-    /// the cell's value. Used for `LET` re-binding in an enclosing
-    /// scope (e.g. inside a loop body). For `SET` semantics use
-    /// `set_cell` instead -- `set_existing` does not check the
-    /// mutability flag and is reserved for the `LET` re-binding path.
-    pub fn set_existing(&mut self, name: &str, value: Value) -> bool {
-        for scope in self.scopes.iter_mut().rev() {
-            if let Some(cell) = scope.get_mut(name) {
-                cell.borrow_mut().value = value;
-                return true;
-            }
-        }
-        false
-    }
-
     /// Set the cell value if the cell is `mutable` (per spec 搂6.4
     /// mutability rule). Returns:
     ///   * `Ok(true)`  -- cell found and updated
@@ -3862,9 +3847,10 @@ impl Evaluator {
         Ok(())
     }
 
-    /// Phase C5 (spec §6.6): `LET` shadowing checks. Called only when
-    /// a new binding is created (an existing binding update is a SET-
-    /// like rebind, not a shadow).
+    /// Phase C5 (spec §6.6): `LET` shadowing checks. Called on every
+    /// `LET` binding (Phase I1: every LET creates a fresh cell, so a
+    /// same-named binding in an enclosing scope is a shadow, and a
+    /// same-scope rebinding is an overwrite via `HashMap::insert`).
     ///
     /// - Shadowing a **global builtin** (registry ResolvedBuiltin /
     ///   ResolvedCompat): `E0025` by default; with
@@ -3962,16 +3948,14 @@ impl Evaluator {
                 if v.signal != Signal::None {
                     return Ok(v);
                 }
-                // Phase 2 fix: if `name` already exists in any enclosing
-                // scope, update that binding (so LET inside a loop body
-                // can accumulate). Otherwise bind in the current scope.
-                if !self.env.set_existing(name.as_str(), v.value.clone()) {
-                    // Phase C5 (spec §6.6): shadowing checks on new
-                    // bindings — E0025 for global builtins (unless
-                    // allow_builtin_shadow), W0030 for macro/keyword.
-                    self.check_let_shadowing(name.as_str(), span)?;
-                    self.env.set_local(name.clone(), v.value.clone());
-                }
+                // Phase I1 (spec §6.6): LET always creates a fresh cell in
+                // the current scope. A name bound in an enclosing scope is
+                // shadowed, never overwritten (the former "Phase 2 fix"
+                // rebind path broke §6.6 and let inner LETs clobber
+                // caller/MATCH bindings). Accumulation must go through
+                // SET on a captured cell (§6.4) or REDUCE (§10.5).
+                self.check_let_shadowing(name.as_str(), span)?;
+                self.env.set_local(name.clone(), v.value.clone());
                 Ok(Outcome::normal(Value::Null))
             }
             Expr::LetPattern {
@@ -4047,17 +4031,30 @@ impl Evaluator {
                 value: Value::Null,
                 signal: Signal::Continue,
             }),
-            Expr::Fun { params, body, .. } => {
+            Expr::Fun {
+                params, body, name, ..
+            } => {
                 // Capture the *current* env by clone. The closure can be
                 // called later, and at that point we push a new scope on
                 // top of the captured env. Cloning Env is cheap for
                 // small scopes; for very large programs this is a
                 // candidate for Rc<RefCell> in Phase 4+ performance work.
-                Ok(Outcome::normal(Value::Closure {
+                let closure = Value::Closure {
                     params: params.clone(),
                     body: body.clone(),
                     env: self.env.clone(),
-                }))
+                };
+                // Phase I1 (spec §8.2): the named form `FUN(hello(x), ...)`
+                // binds `hello` in the current scope, exactly like
+                // `LET(hello, FUN((x), ...))`. (The parser linter already
+                // accounts for this binding in its Linter::walk
+                // Expr::Fun branch.) The expression itself still evaluates
+                // to the closure value.
+                if let Some(n) = name {
+                    self.check_let_shadowing(n.as_str(), expr.span())?;
+                    self.env.set_local(n.clone(), closure.clone());
+                }
+                Ok(Outcome::normal(closure))
             }
             Expr::Ok { value, .. } => {
                 let o = self.eval_expr(value)?;
@@ -4516,15 +4513,37 @@ impl Evaluator {
         params: Vec<FunParam>,
         body: Box<Expr>,
         captured_env: Env,
-        arg_values: Vec<Value>,
+        mut arg_values: Vec<Value>,
         span: &Span,
     ) -> WlwlResult<Outcome> {
-        if params.len() != arg_values.len() {
+        // Phase I1 (spec §8.2/§8.4): arity with default parameters and
+        // `*rest`. With R = required params (no default, not rest) and
+        // N = total params: no rest → R <= A <= N; with a trailing rest
+        // param → A >= R (the surplus is collected into an ARRAY).
+        // The previous strict-equality check silently made both forms
+        // unreachable (defaults parsed but never applied).
+        let has_rest = params.last().is_some_and(|p| p.is_rest);
+        let required = params
+            .iter()
+            .filter(|p| !p.is_rest && p.default_expr.is_none())
+            .count();
+        let in_range = if has_rest {
+            arg_values.len() >= required
+        } else {
+            let min = params.iter().filter(|p| p.default_expr.is_none()).count();
+            arg_values.len() >= min && arg_values.len() <= params.len()
+        };
+        if !in_range {
+            let range = if has_rest {
+                format!("{}..", required)
+            } else {
+                format!("{}..{}", required, params.len())
+            };
             return Err(self.diag(
                 ErrorCode::E0022,
                 format!(
                     "function expects {} argument(s), got {}",
-                    params.len(),
+                    range,
                     arg_values.len()
                 ),
                 span.clone(),
@@ -4605,8 +4624,44 @@ impl Evaluator {
         new_scopes.extend(caller_scopes.iter().cloned());
         new_scopes.push(HashMap::new()); // fresh scope for params
         self.env.scopes = new_scopes;
-        for (p, v) in params.iter().zip(arg_values) {
-            self.env.set_local(p.name.clone(), v);
+        // Phase I1 (spec §8.2/§8.4): positional binding. Missing
+        // trailing params are filled from their default expressions,
+        // evaluated in the installed lexical frame (defaults are
+        // lexically scoped to the closure). A trailing `*rest` param
+        // collects the surplus args into an ARRAY.
+        let n_fixed = if has_rest {
+            params.len() - 1
+        } else {
+            params.len()
+        };
+        let rest_vals: Vec<Value> = if has_rest {
+            arg_values.split_off(n_fixed)
+        } else {
+            Vec::new()
+        };
+        for (i, p) in params.iter().enumerate() {
+            if p.is_rest {
+                self.env.set_local(p.name.clone(), Value::Array(rest_vals));
+                break; // rest is the trailing param by grammar
+            }
+            if i < arg_values.len() {
+                self.env.set_local(p.name.clone(), arg_values[i].clone());
+            } else {
+                let Some(default_expr) = p.default_expr.as_ref() else {
+                    return Err(self.diag(
+                        ErrorCode::E0022,
+                        format!(
+                            "function expects {} argument(s), got {} (no default for param `{}`)",
+                            required,
+                            arg_values.len(),
+                            p.name
+                        ),
+                        span.clone(),
+                    ));
+                };
+                let o = self.eval_expr(default_expr)?;
+                self.env.set_local(p.name.clone(), o.value);
+            }
         }
         // [v0.4 spec Sec. 14.2] push call frame, eval body,
         // then pop on every exit path. The push is OUTSIDE the
@@ -5986,28 +6041,35 @@ mod tests {
 
     #[test]
     fn control_while_sum() {
-        // Sum 1..10 with a while loop.
+        // Sum 1..10 with a while loop. Accumulation goes through a
+        // closure capturing the `total`/`i` cells (spec §6.4: SET is
+        // only legal on captured bindings; a loop-body LET now shadows
+        // per §6.6, Phase I1).
         let src = r#"
-            LET(total, 0);
-            LET(i, 1);
-            WHILE(<(i, 11),
-                LET(total, +(total, i));
-                LET(i, +(i, 1))
-            );
-            total;
+            LET(main, FUN((),
+                (LET(total, 0);
+                 LET(i, 1);
+                 LET(add, FUN((v), (SET(total, +(total, v)); total)));
+                 LET(inc, FUN((), SET(i, +(i, 1))));
+                 WHILE(<(i, 11), (add(i); inc()));
+                 total)
+            ));
+            main();
         "#;
         assert_eq!(run(src).unwrap(), Value::Integer(55));
     }
 
     #[test]
     fn control_for_array() {
-        // Sum 1..5 using FOR.
+        // Sum 1..5 using FOR, accumulating via a captured cell.
         let src = r#"
-            LET(total, 0);
-            FOR(i, [1, 2, 3, 4, 5],
-                LET(total, +(total, i))
-            );
-            total;
+            LET(main, FUN((),
+                (LET(total, 0);
+                 LET(add, FUN((v), (SET(total, +(total, v)); total)));
+                 FOR(i, [1, 2, 3, 4, 5], add(i));
+                 total)
+            ));
+            main();
         "#;
         assert_eq!(run(src).unwrap(), Value::Integer(15));
     }
@@ -6016,14 +6078,18 @@ mod tests {
     fn control_for_break() {
         // Break out of a FOR loop early.
         let src = r#"
-            LET(total, 0);
-            FOR(i, [1, 2, 3, 4, 5],
-                IF(==(i, 3),
-                    BREAK()
-                );
-                LET(total, +(total, i))
-            );
-            total;
+            LET(main, FUN((),
+                (LET(total, 0);
+                 LET(add, FUN((v), (SET(total, +(total, v)); total)));
+                 FOR(i, [1, 2, 3, 4, 5],
+                     IF(==(i, 3),
+                         BREAK()
+                     );
+                     add(i)
+                 );
+                 total)
+            ));
+            main();
         "#;
         assert_eq!(run(src).unwrap(), Value::Integer(1 + 2));
     }
@@ -6032,14 +6098,18 @@ mod tests {
     fn control_continue() {
         // CONTINUE skips the rest of the body.
         let src = r#"
-            LET(total, 0);
-            FOR(i, [1, 2, 3, 4, 5],
-                IF(==(i, 3),
-                    CONTINUE()
-                );
-                LET(total, +(total, i))
-            );
-            total;
+            LET(main, FUN((),
+                (LET(total, 0);
+                 LET(add, FUN((v), (SET(total, +(total, v)); total)));
+                 FOR(i, [1, 2, 3, 4, 5],
+                     IF(==(i, 3),
+                         CONTINUE()
+                     );
+                     add(i)
+                 );
+                 total)
+            ));
+            main();
         "#;
         // 1+2+4+5 = 12
         assert_eq!(run(src).unwrap(), Value::Integer(12));
@@ -8561,28 +8631,58 @@ entry = "main.wl"
 
     #[test]
     fn while_with_break_exits_loop() {
-        // Break terminates the loop; consume the signal.
-        let v =
-            run("LET(i, 0); WHILE(<(i, 10), IF(==(i, 3), BREAK(), LET(i, +(i, 1)))); i;").unwrap();
+        // Break terminates the loop; consume the signal. The counter is
+        // a captured cell mutated via SET inside a closure (§6.4).
+        let v = run("LET(main, FUN((), \
+             (LET(i, 0); \
+             LET(inc, FUN((), SET(i, +(i, 1)))); \
+             WHILE(<(i, 10), IF(==(i, 3), BREAK(), inc())); \
+             i))); \
+             main();")
+        .unwrap();
         assert_eq!(v, Value::Integer(3));
     }
 
     #[test]
     fn for_over_array() {
-        let v = run("LET(s, 0); FOR(x, [1, 2, 3], LET(s, +(s, x))); s;").unwrap();
+        let v = run("LET(main, FUN((), \
+             (LET(s, 0); \
+             LET(add, FUN((v), (SET(s, +(s, v)); s))); \
+             FOR(x, [1, 2, 3], add(x)); \
+             s))); \
+             main();")
+        .unwrap();
         assert_eq!(v, Value::Integer(6));
     }
 
     #[test]
     fn for_over_dict() {
         // FOR over a dict iterates the keys (sorted).
-        let v = run(r###"LET(s, 0); FOR(k, ["a": 1, "b": 2], LET(s, +(s, 1))); s;"###).unwrap();
+        let v = run(r#"
+            LET(main, FUN((),
+                (LET(s, 0);
+                 LET(add, FUN((v), (SET(s, +(s, v)); s)));
+                 FOR(k, ["a": 1, "b": 2], add(1));
+                 s)
+            ));
+            main();
+        "#)
+        .unwrap();
         assert_eq!(v, Value::Integer(2));
     }
 
     #[test]
     fn for_over_string() {
-        let v = run(r###"LET(s, 0); FOR(c, "abc", LET(s, +(s, 1))); s;"###).unwrap();
+        let v = run(r#"
+            LET(main, FUN((),
+                (LET(s, 0);
+                 LET(add, FUN((v), (SET(s, +(s, v)); s)));
+                 FOR(c, "abc", add(1));
+                 s)
+            ));
+            main();
+        "#)
+        .unwrap();
         assert_eq!(v, Value::Integer(3));
     }
 
@@ -8594,18 +8694,25 @@ entry = "main.wl"
 
     #[test]
     fn for_with_break_exits_loop() {
-        let v =
-            run("LET(s, 0); FOR(i, [1, 2, 3, 4, 5], IF(==(i, 3), BREAK(), LET(s, +(s, i)))); s;")
-                .unwrap();
+        let v = run("LET(main, FUN((), \
+             (LET(s, 0); \
+             LET(add, FUN((v), (SET(s, +(s, v)); s))); \
+             FOR(i, [1, 2, 3, 4, 5], IF(==(i, 3), BREAK(), add(i))); \
+             s))); \
+             main();")
+        .unwrap();
         // s accumulates 1 + 2 = 3 then break on i=3
         assert_eq!(v, Value::Integer(3));
     }
 
     #[test]
     fn for_with_continue_skips_rest_of_body() {
-        let v = run(
-            "LET(s, 0); FOR(i, [1, 2, 3, 4, 5], IF(==(i, 3), CONTINUE(), LET(s, +(s, i)))); s;",
-        )
+        let v = run("LET(main, FUN((), \
+             (LET(s, 0); \
+             LET(add, FUN((v), (SET(s, +(s, v)); s))); \
+             FOR(i, [1, 2, 3, 4, 5], IF(==(i, 3), CONTINUE(), add(i))); \
+             s))); \
+             main();")
         .unwrap();
         // Skip i=3: 1+2+4+5 = 12
         assert_eq!(v, Value::Integer(12));
@@ -8705,6 +8812,112 @@ entry = "main.wl"
     fn function_call_with_4_args() {
         let v = run("LET(f, FUN((a, b, c, d), +(+(+(a, b), c), d))); f(1, 2, 3, 4);").unwrap();
         assert_eq!(v, Value::Integer(10));
+    }
+
+    #[test]
+    fn i1_named_fun_statement_binds_name() {
+        // Phase I1 (spec §8.2): the named form `FUN(hello(x), ...)`
+        // evaluates to the closure AND binds `hello` in the current
+        // scope — previously the binding was silently dropped.
+        let v = run(r#"
+            FUN(hello(who), +("hello, ", who));
+            hello("wl");
+        "#)
+        .unwrap();
+        assert_eq!(v, Value::String("hello, wl".into()));
+    }
+
+    #[test]
+    fn i1_named_fun_inside_let_binds_both_names() {
+        // `LET(f, FUN(hello(x), ...))` binds both `f` (via LET) and
+        // `hello` (via the named FUN form) in the same scope.
+        let v = run(r#"
+            LET(f, FUN(hello(n), *(n, 2)));
+            +(f(3), hello(4))
+        "#)
+        .unwrap();
+        assert_eq!(v, Value::Integer(14));
+    }
+
+    #[test]
+    fn i1_named_fun_shadowing_builtin_is_e0025() {
+        let err = run("FUN(PRINT(x), x);").unwrap_err();
+        assert_eq!(err.diagnostic().code, ErrorCode::E0025);
+    }
+
+    // ── Phase I1 (spec §9.2 / §10.1): `=(a,b)` alias + index sugar ──
+
+    #[test]
+    fn i1_single_equals_desugars_to_eq() {
+        // §9.2 spells equality `=(a, b)`; the builtin is registered as
+        // `==`, so `=` in call position resolves to the same function.
+        assert_eq!(run("=(9, 9);").unwrap(), Value::Boolean(true));
+        assert_eq!(run("=(9, 8);").unwrap(), Value::Boolean(false));
+    }
+
+    #[test]
+    fn i1_default_param_still_uses_eq_separator() {
+        // `=` keeps its default-parameter role inside FUN signatures,
+        // and an omitted trailing default arg is filled at call time
+        // (spec §8.2). Previously defaults parsed but were never
+        // applied, so `g()` raised E0022.
+        let v = run(r#"LET(g, FUN((name = "hi"), name)); g();"#).unwrap();
+        assert_eq!(v, Value::String("hi".into()));
+        let v = run(r#"LET(g, FUN((name = "hi"), name)); g("yo");"#).unwrap();
+        assert_eq!(v, Value::String("yo".into()));
+    }
+
+    #[test]
+    fn i1_rest_param_collects_surplus_args() {
+        // §8.2/§8.4: `*rest` collects surplus positional args into an
+        // ARRAY. Previously is_rest was ignored by the evaluator.
+        let v = run("LET(f, FUN((a, *rest), +(a, LEN(rest)))); f(1, 2, 3, 4);").unwrap();
+        assert_eq!(v, Value::Integer(4));
+        let v = run("LET(f, FUN((a, *rest), LEN(rest))); f(1);").unwrap();
+        assert_eq!(v, Value::Integer(0));
+    }
+
+    #[test]
+    fn i1_rest_arity_below_required_is_e0022() {
+        let err = run("LET(f, FUN((a, b, *rest), a)); f(1);").unwrap_err();
+        assert_eq!(err.diagnostic().code, ErrorCode::E0022);
+    }
+
+    #[test]
+    fn i1_index_read_sugar_array_and_dict() {
+        // §10.1: `a[i]` ≡ INDEX_GET(a, i), for arrays and dicts alike.
+        assert_eq!(
+            run("LET(a, [10, 20, 30]); a[1];").unwrap(),
+            Value::Integer(20)
+        );
+        assert_eq!(
+            run(r#"LET(d, ["k": 7]); d["k"];"#).unwrap(),
+            Value::Integer(7)
+        );
+    }
+
+    #[test]
+    fn i1_index_negative_and_chained() {
+        assert_eq!(run("LET(a, [1, 2, 3]); a[-1];").unwrap(), Value::Integer(3));
+        assert_eq!(
+            run("LET(m, [[1, 2], [3, 4]]); m[1][0];").unwrap(),
+            Value::Integer(3)
+        );
+    }
+
+    #[test]
+    fn i1_index_write_sugar_yields_index_set() {
+        // §10.1: `a[i] = v` ≡ INDEX_SET(a, i, v), which yields the
+        // updated container. (Rebinding `a` itself still needs SET —
+        // the owned-value model is deviations P4-B1-003, unchanged.)
+        let v = run("LET(a, [1, 2]); (a[0] = 99);").unwrap();
+        assert_eq!(v, Value::Array(vec![Value::Integer(99), Value::Integer(2)]));
+    }
+
+    #[test]
+    fn i1_index_out_of_bounds_is_e0036() {
+        let err = run("LET(a, [1]); a[5];").unwrap_err();
+        assert_eq!(err.diagnostic().code, ErrorCode::E0036);
     }
 
     #[test]
@@ -10238,12 +10451,16 @@ entry = "main.wl"
         // The classic cache win: a loop formatting with the same
         // template every iteration. Correct output across iterations
         // proves the cached segments render against fresh args.
+        // Accumulation goes through a captured cell (§6.4); a loop-body
+        // LET shadows per §6.6 (Phase I1).
         let src = r#"
-            LET(out, "");
-            FOR(i, [1, 2, 3],
-                LET(out, +(out, FORMAT("[{0}]", i)))
-            );
-            out;
+            LET(main, FUN((),
+                (LET(out, "");
+                 LET(append, FUN((s), (SET(out, +(out, s)); out)));
+                 FOR(i, [1, 2, 3], append(FORMAT("[{0}]", i)));
+                 out)
+            ));
+            main();
         "#;
         assert_eq!(run(src).unwrap(), Value::String("[1][2][3]".into()));
     }
@@ -10696,6 +10913,27 @@ entry = "main.wl"
                 Value::Integer(4),
                 Value::Integer(6),
                 Value::Integer(8),
+            ])
+        );
+    }
+
+    #[test]
+    fn b6_range_two_args_start_end() {
+        // Phase I1 (spec §10.5): `RANGE(start, end)` — step defaults to 1.
+        // Previously the 2-arg form hit an `unreachable!()` panic.
+        let v = run_std(
+            r#"
+            IMPORT("wlwl:std.collection", ["RANGE"]);
+            RANGE(1, 4);
+        "#,
+        )
+        .unwrap();
+        assert_eq!(
+            v,
+            Value::Array(vec![
+                Value::Integer(1),
+                Value::Integer(2),
+                Value::Integer(3),
             ])
         );
     }
@@ -13397,16 +13635,42 @@ entry = "main.wl"
     }
 
     #[test]
-    fn c5_let_inside_function_updating_existing_binding_not_shadow() {
-        // set_existing 路径(函数体内 LET 更新外层已有绑定)不触发
-        // 遮蔽检查 —— 只有"新绑定"才算 shadow。
-        let dir = unique_test_dir("c5_rebind");
+    fn c5_let_inside_function_shadows_enclosing_binding() {
+        // Phase I1 (spec §6.6): a LET inside a function body creates a
+        // fresh cell in the current scope; the enclosing binding keeps
+        // its value. (Formerly this test locked the pre-§6.6 behavior
+        // where the inner LET overwrote the outer cell.)
+        let dir = unique_test_dir("c5_shadow");
         write_manifest(&dir, None, "");
         assert_eq!(
             run_in(&dir, r#"LET(x, 1); LET(f, FUN((), LET(x, 2))); f(); x;"#).unwrap(),
-            Value::Integer(2)
+            Value::Integer(1)
         );
         let _ = fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn i1_let_in_child_scope_shadows_and_does_not_clobber_caller_cell() {
+        // Phase I1 regression: the name-collision bug. A LET of a name
+        // already bound in an enclosing scope (here bound by a MATCH
+        // pattern) must shadow, not overwrite the outer cell, so later
+        // reads of the outer binding see the original value.
+        let src = r#"
+            LET(outer, FUN((flag),
+                (LET(m, IF(flag, OK(1), ERR("no")));
+                 LET(noise, FUN((), (LET(m, 99); m)));
+                 LET(discard, noise());
+                 MATCH(m,
+                     [
+                         [OK(v), v]
+                     ],
+                     -1))
+            ));
+            +(outer(TRUE), outer(FALSE))
+        "#;
+        // Correct: 1 + (-1) = 0. If LET clobbered the outer `m` cell,
+        // both calls would observe OK(99) and the sum would be 198.
+        assert_eq!(run(src).unwrap(), Value::Integer(0));
     }
 
     // ── Phase C4 (spec §13.9):MVS 依赖求解 + E0045 ──

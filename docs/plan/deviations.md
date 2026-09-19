@@ -2229,3 +2229,69 @@ stub 鍔?`/// real-ai (variant).` 浼?璧?璺緞璧颁笉 浠?`"real-ai"` 琛
 | deviation | local pre-tag dry-run (SHA verify + lint) instead of local tag push |
 | reason | avoids accidental tag-of-WIP; release.yml owns the tag-to-release pipeline; user-controlled tag push is the policy |
 | follow-up | after CI smoke run confirms the tag pipeline, user can `git push origin v0.4.0` to trigger the workflow, or push the commit and tag in a follow-up commit |
+### P4-I1-001 -- LET always creates a fresh cell; loop-body LET accumulation retired
+
+| Item | Content |
+|---|---|
+| spec / plan | spec v0.4 section 6.6: cross-scope shadowing creates a new cell; section 6.4: mutation only via SET on captured cells |
+| status | `Evaluator::eval_expr` `Expr::Let` branch always binds via `set_local` in the current scope; `Env::set_existing` removed |
+| deviation | former "Phase 2 fix" path re-bound an enclosing-scope cell on every LET, breaking section 6.6 and letting inner LETs clobber caller/MATCH bindings (user-visible name-collision bug) |
+| reason | legacy pre-cell-model accumulate idiom; the conformant replacements are SET on a captured cell (section 6.4) or REDUCE (section 10.5); ~11 tests + 1 example + 5 benches rewritten |
+| follow-up | same-scope duplicate LET still silently overwrites via `HashMap::insert` (E0021 not enforced on LET; E0021 remains IMPORT-only) -- enforce in v0.4.1 if desired |
+
+### P4-I1-002 -- `=(a, b)` accepted as alias of the `==` builtin
+
+| Item | Content |
+|---|---|
+| spec / plan | spec v0.4 section 9.2 spells equality `=(a, b)` / `!=(a, b)` |
+| status | lexer `TokenKind::Eq => Some("==")` in `as_op_name()`; parser desugars `=(a, b)` to `Call{"=="}` |
+| deviation | the implementation's registered builtin name is `==` (not spec's `=`); the spec spelling is an alias, and canonical formatter output keeps `==` |
+| reason | renaming the builtin would break all existing `==` code for no behavioral gain; default-parameter `name = default` is consumed inside `parse_fun` and never reaches the call path, so the two roles of `=` do not collide |
+| follow-up | none |
+
+### P4-I1-003 -- named FUN statement form binds its name
+
+| Item | Content |
+|---|---|
+| spec / plan | spec v0.4 section 8.2: `FUN(name(params), body)` named function definition |
+| status | `Evaluator::eval_expr` `Expr::Fun` branch: when `name` is Some, the closure is bound via `check_let_shadowing` + `set_local` in the current scope; the expression still evaluates to the closure value |
+| deviation | `LET(f, FUN(hello(x), ...))` double-binds (`f` via LET, `hello` via the named form); spec does not address the combination |
+| reason | parser linter already accounted for the named-FUN binding in `Linter::walk` (parser lib.rs `Expr::Fun` branch); eval-side binding aligns the two layers |
+| follow-up | none |
+
+### P4-I1-004 -- index sugar `a[i]` / `a[i] = v` desugars to INDEX_GET / INDEX_SET
+
+| Item | Content |
+|---|---|
+| spec / plan | spec v0.4 section 10.1: `arr[i]` == `INDEX_GET(arr, i)`; `arr[i] = v` == `INDEX_SET(arr, i, v)` |
+| status | parser `parse_call_or_ident` postfix loop (previously `.`-only) now also consumes `[` and desugars, chaining freely with `.`; no new AST node (same Call-form precedent as the section 5.5 dot sugar) | Scope: the postfix chain hangs off variable / call / property heads (spec examples use variables); indexing directly off array/dict literals is out of scope.
+| deviation | `a[i] = v` yields the updated container but does not rebind `a` -- rebinding still requires `SET(a, INDEX_SET(...))`; the owned-value model is deviation P4-B1-003, unchanged |
+| follow-up | none |
+
+### P4-I1-005 -- default parameters and `*rest` now applied at call time
+
+| Item | Content |
+|---|---|
+| spec / plan | spec v0.4 section 8.2 (default params `name = default`, `*rest`) and section 8.4 arity rule (R <= A <= N; rest => A >= R) |
+| status | `Evaluator::invoke_closure` fills omitted trailing params from their `default_expr` (evaluated in the installed lexical frame) and collects surplus args into an ARRAY for a trailing `*rest`; arity check relaxed from strict equality to the spec range, error message now `expects R..N argument(s)` |
+| deviation | defaults were previously parsed but silently ignored (strict-equality arity made them unreachable); strict_types checks only explicitly-passed args (defaults are expressions, not values, at check time) |
+| follow-up | none |
+
+### P4-I1-006 -- eval benches rewritten to conformant accumulation; Phase F1 baseline reset
+
+| Item | Content |
+|---|---|
+| spec / plan | spec v0.4 section 6.6; plan G8 perf-regression gate (benches/baseline.txt is source of truth) |
+| status | all five `eval_hot_paths` benches rewrote their workload sources: FOR + RANGE drivers (section 7.3 / 10.5) and captured-cell closures (section 6.4); `simple_loop_1m` keeps a closure-free body (loop dispatch + LET + add only) |
+| deviation | workload change makes Phase F1 baseline numbers incomparable; baseline.txt regenerated under a Phase I1 header and the G8 gate now compares against it |
+| follow-up | none |
+
+### P4-I1-007 -- v0.3-legacy examples modernized to v0.4 syntax
+
+| Item | Content |
+|---|---|
+| spec / plan | spec v0.4 sections 4.5 / 7.6 / 13.4 / 7.5 |
+| status | `examples/destruct.wl` (dict pattern `["k": var]`), `examples/format.wl` (`[k: v]` literals, no `:fmt` specifiers), `examples/match.wl` (ARRAY-clause MATCH), `examples/std_test.wl` (direct IMPORT, `AS` removed per section 13.4), `examples/phase2_demo.wl` (captured-cell WHILE accumulation) |
+| deviation | the files used v0.3-only syntax (`{}` braces, flat MATCH clauses, `IMPORT ... AS`) that the v0.4 lexer/parser rejects; the formatter idempotency gate (`fmt_examples_dir_files_idempotent`) had been failing on HEAD since the v0.4 grammar landed |
+| reason | examples are conformance-facing; they now parse, run, and round-trip under v0.4 |
+| follow-up | none |

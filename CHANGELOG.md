@@ -54,6 +54,32 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - error schema bumped to 1.1.0 — every diagnostic now carries
   `trace`, `cause`, `related`, `retry_after` per spec §14.2.
 
+### Fixed
+
+- **Phase I1 — LET shadowing (§6.6)** — `LET` always creates a fresh
+  cell in the current scope; an enclosing-scope binding of the same
+  name is shadowed, never overwritten. Fixes the name-collision bug
+  where an inner `LET(m, ...)` (e.g. inside a stats helper) clobbered
+  a caller's MATCH pattern binding of the same name.
+- **Phase I1 — RANGE two-arg panic (§10.5)** — `RANGE(start, end)`
+  previously hit an internal `unreachable!()` (exit 101); it now
+  defaults `step` to 1.
+- **Phase I1 — `=(a, b)` equality spelling (§9.2)** — a single `=` in
+  call position desugars to the `==` builtin; default-parameter
+  `name = default` is unaffected.
+- **Phase I1 — named FUN binding (§8.2)** — `FUN(hello(x), ...)` now
+  binds `hello` in the current scope (previously silently dropped);
+  eval aligns with the parser linter.
+- **Phase I1 — index sugar (§10.1)** — `a[i]` / `a[i] = v` desugar to
+  `INDEX_GET` / `INDEX_SET`, chaining freely with the `.` sugar.
+- **Phase I1 — default parameters and `*rest` (§8.2/§8.4)** — omitted
+  trailing params are filled from their defaults and surplus args are
+  collected into `*rest`; arity follows the spec range `R <= A <= N`
+  instead of strict equality.
+- **Phase I1 — v0.3-legacy examples** — `destruct` / `format` /
+  `match` / `std_test` / `phase2_demo` examples modernized to v0.4
+  syntax; `fmt_examples_dir_files_idempotent` passes again.
+
 ### Removed
 
 - `AS` keyword (v0.3 §4.2.1) — use INT(x)/FLOAT(x)/STR(x)/BOOL(x).
