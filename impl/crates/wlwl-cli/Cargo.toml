@@ -2,7 +2,7 @@
 name = "wlwl-cli"
 version.workspace = true
 edition.workspace = true
-license.workspace = true
+license.workspace = true  # SPDX canonical: "GPL-2.0-only"
 description = "WLWL command-line interface"
 
 [[bin]]

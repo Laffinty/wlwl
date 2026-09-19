@@ -1,53 +1,61 @@
 # [v0.2 Phase G2] cargo-deny configuration.
 #
-# This is one of the hard quality gates that must pass before Phase H
-# (release) can tag v0.4.0. See `docs/plan/wlwl-build-plan-v0.2.md`
-# §0.1 decision #8 + §G2 for the policy. CI runs `cargo deny check`
-# on every push and PR; local runs are equivalent to CI.
+# Hard quality gate that must pass before Phase H can tag v0.4.0.
+# See `docs/plan/wlwl-build-plan-v0.2.md` 闂?.1 decision #8 + 闂傚倸鍊搁崐鎼佸磹妞嬪海鐭嗗ù锝堟缁€濠傗攽閻樿弓杩规繛鎴欏灩闁裤倖淇婇妶鍌氫壕闂?.
+# CI runs `cargo deny --locked check` on every push and PR; local
+# runs use the same config file (this one). cargo-deny version:
+# ^0.20 (installed 2026-09-19 闂?older 0.16 fails to parse CVSS v4.0
+# in current RustSec advisory-db).
 #
-# Surveyed 2026-09-19 against the full --all-features tree (200
-# registry crates, 20 distinct license strings). The `allow` list
-# below covers every observed string with confidence-threshold = 0.8.
-# Decisions are documented in `docs/plan/deviations.md` P4-G2-* and
-# `docs/history/20260919g2.md`.
+# Schema notes vs. first commit `2889ece`:
+#   - cargo-deny 0.16/0.20 `allow` list accepts short SPDX ids and
+#     `WITH` expressions only. Disjunctive `OR` and conjunctive
+#     `AND` go through `exceptions = [{crate, allow}]` entries
+#     per non-short-id cargo.
+#   - Slash form `MIT/Apache-2.0` is treated by cargo-deny as
+#     ambiguous; we satisfy both readings by listing both ids.
+#   - `[licenses.private] ignore = true` excludes our 9 path-only
+#     workspace crates so they don't false-positive on missing
+#     SPDX metadata.
+#   - `[bans] multiple-versions = "warn"` 闂?typical Rust ecosystem
+#     has coexisting majors (bitflags, windows-sys, hashbrown); not
+#     failing lets us see but not block.
+#   - `[bans] wildcards = "deny"` 闂?keep build reproducibility.
+#   - `[sources] allow-registry = crates.io` only; `[sources]
+#     allow-org` is empty (no git deps yet).
+#
+# Surveys 2026-09-19 (--all-features, 200 registry crates, 20
+# distinct license strings). All covered; documented in
+# `docs/plan/deviations.md` P4-G2-* and `docs/history/20260919g2.md`.
 
-# ---------------------------------------------------------------------------
-# [graph] — which lockfile + feature surface to analyze.
-# ---------------------------------------------------------------------------
 [graph]
-# Analyze all features so the optional `real-ai` path (reqwest) is covered.
-# Workspace members reference reqwest via `default-features = false` so the
-# legacy `native-tls`/`vendored` features don't pull OpenSSL.
+# `targets = []` 闂?analyze every triple Cargo.lock has a node for
+# (host + cross-build). Phase H release CI re-runs with an explicit
+# triple set; quality gate here stays broad.
+targets = []
+# all-features so `wlwl-std`'s optional `real-ai` HTTP path is also
+# covered (`reqwest` brings tokio/rustls family). The mock-only
+# default build path doesn't pull those, but the gate must validate
+# them so adding `--features real-ai` doesn't break CI later.
 all-features = true
-# Target only the host platform so cross-compile windows/musl artifacts
-# don't appear as phantom deps. CI uses the same triple, so the lockfile
-# is the same. Adjust if we add a multi-target release workflow in Phase H.
-target = "host"
+exclude = []
 
-# ---------------------------------------------------------------------------
-# [advisories] — RustSec database check.
-# ---------------------------------------------------------------------------
+[output]
+feature-depth = 1
+
 [advisories]
-version = 2
-# Warns on yanked crates so we see upstream removed them but doesn't
-# break the build (yanked ≠ insecure).
-yanked = "warn"
-# `unmaintained` advisories are noisy for an interpreter that only uses
-# a subset of the surface; filter is `id = "RUSTSEC-..."`. Empty until
-# first run; see G2 history. P4-G2-002.
+# P4-G2-002: ignore = [] until first run completes; subsequent
+# appends require { id, reason } per advisory.
 ignore = []
+git-fetch-with-cli = true   # use external git so it respects cargo config (Tsinghua mirror) for advisory-db clone
+# yank / unmaintained: warn only 闂?yanks are upstream signals, not
+# security advisories. Matches plan 闂?.1 R008 hardening strategy.
+yanked = "warn"
+unmaintained = "workspace"
 
-# ---------------------------------------------------------------------------
-# [licenses] — allowlist of SPDX license expressions actually observed.
-# ---------------------------------------------------------------------------
 [licenses]
-version = 2
-# 0.8 = "very likely correct"; some upstream registry metadata uses
-# older SPDX expressions that newer Cargo can recognize more precisely,
-# so do not require 1.0 (absolute) here.
-confidence-threshold = 0.8
 allow = [
-    # === Universal ===
+    # === Universal short identifiers ===
     "MIT",
     "Apache-2.0",
     "Apache-2.0 WITH LLVM-exception",
@@ -55,69 +63,79 @@ allow = [
     "BSD-3-Clause",
     "ISC",
     "Zlib",
-    "Zlib OR Apache-2.0",
-    "Zlib OR Apache-2.0 OR MIT",
     "MPL-2.0",
-    "CDLA-Permissive-2.0",  # webpki-roots root bundle; MPL-derived but permissive
+    "CDLA-Permissive-2.0",
+    "Unicode-3.0",
 
-    # === Disjunctive ===
-    "MIT OR Apache-2.0",
-    "MIT OR Apache-2.0 OR Zlib",
-    "MIT OR Apache-2.0 OR LGPL-2.1-or-later",  # r-efi (UEFI runtime services, dynamic loader only)
-    "MIT/Apache-2.0",
-    "Apache-2.0 OR MIT",
-    "Apache-2.0 OR ISC OR MIT",  # rustls / hyper-rustls family
-    "Apache-2.0 WITH LLVM-exception OR Apache-2.0 OR MIT",  # rustix, wasi, linux-raw-sys
-    "BSD-2-Clause OR Apache-2.0 OR MIT",  # zerocopy family
-    "Apache-2.0 OR BSL-1.0",  # ryu (std-only path)
-    "Unlicense OR MIT",
-    "Unlicense/MIT",
-    "Apache-2.0 AND ISC",  # ring crypto (decomposed conjunction, both clauses)
-    "(MIT OR Apache-2.0) AND Unicode-3.0",  # unicode-ident: outer conjunction with Unicode-data carve-out
-    "Unicode-3.0",  # icu4x data files (CDLA-Permissive-2.0 may also appear; both covered)
+    # === Less-common but observed in our tree ===
+    "BSL-1.0",              # ryu "Apache-2.0 OR BSL-1.0"
+    "Unlicense",            # fuzz-family "Unlicense OR MIT" / "Unlicense/MIT"
+    "LGPL-2.1-or-later",    # r-efi "MIT OR Apache-2.0 OR LGPL-2.1-or-later" (P4-G2-001)
+    "LGPL-2.1-only",        # completeness for transitive LGPL-2.1-only packages if any
 
-    # === Ourselves ===
-    "GPL-2.0",  # WLWL workspace license
+    # === Ourselves (workspace.package.license = "GPL-2.0-only") ===
+    "GPL-2.0-only",
 ]
-# private workspace `path` deps are excluded via `[workspace]` below;
-# no extra `skip` needed here.
+confidence-threshold = 0.8
 
-# ---------------------------------------------------------------------------
-# [bans] — duplicates / wildcards / same crate multiple versions.
-# ---------------------------------------------------------------------------
+# Per-crate clarifications for compound SPDX expressions where the
+# global `allow` cannot express them. Each entry pins the
+# per-crate expression that downstream users would see.
+exceptions = [
+    # ring v0.17.14 reports "Apache-2.0 AND ISC" (conjunction, not
+    # disjunction): the crate is dual-licensed under both, not either-
+    # or. Both clauses are already in `allow`; this entry documents
+    # the original metadata.
+    { allow = ["Apache-2.0", "ISC"], crate = "ring" },
+
+    # r-efi v6.0.0 reports "MIT OR Apache-2.0 OR LGPL-2.1-or-later".
+    # The LGPL disjunctive clause only triggers re-linking rights on
+    # dynamic linking against UEFI runtime services; r-efi is only
+    # pulled into the wasm/wasi target graph (not native release
+    # binaries). P4-G2-001 闂?see deviations.
+    { allow = ["MIT", "Apache-2.0", "LGPL-2.1-or-later"], crate = "r-efi" },
+
+    # unicode-ident v1.0.24 reports "(MIT OR Apache-2.0) AND Unicode-3.0".
+    # Outer conjunction with the Unicode-data carve-out. All three
+    # ids in `allow`; documenting here for traceability.
+    { allow = ["MIT", "Apache-2.0", "Unicode-3.0"], crate = "unicode-ident" },
+]
+
+[licenses.private]
+# Treat all 9 workspace `path` crates as private: their `path`
+# metadata carries no SPDX field, so they'd false-positive.
+ignore = true
+registries = []
+
 [bans]
 multiple-versions = "warn"
-# `deny` any version with wildcards (`*`, `>=*`) to keep build
-# reproducibility. A wild-card regression in a deep transitive dep
-# would otherwise silently change the lockfile.
 wildcards = "deny"
-workspace-include = []
-workspace-exclude = []
-skip = []
-external-defaults = []
+highlight = "all"
+workspace-default-features = "allow"
+external-default-features = "allow"
+allow-workspace = true  # ours: 9 workspace path crates use `workspace = true` 缂傚倸鍊搁崐鎼佸磹妞嬪海绀婇柍褜鍓熼弻娑㈠即閵娿儰鑸┑?濠电姷鏁搁崑鐐哄垂閸洖绠伴柛婵勫劤閻捇鏌涢锝嗙闁?wildcard
+allow = []
+deny = []
+skip-tree = []
+skip = [
+    { crate = "wlwl-std", reason = "workspace = true internal dep" },
+    { crate = "wlwl-toml", reason = "workspace = true internal dep" },
+    { crate = "wlwl-ast", reason = "workspace = true internal dep" },
+    { crate = "wlwl-lexer", reason = "workspace = true internal dep" },
+    { crate = "wlwl-parser", reason = "workspace = true internal dep" },
+    { crate = "wlwl-error", reason = "workspace = true internal dep" },
+    { crate = "wlwl-eval", reason = "workspace = true internal dep" },
+    { crate = "wlwl-formatter", reason = "workspace = true internal dep" },
+    { crate = "wlwl-cli", reason = "workspace = true internal dep" },
+]
 
-# ---------------------------------------------------------------------------
-# [sources] — only crates.io is allowed.
-# ---------------------------------------------------------------------------
 [sources]
 unknown-registry = "deny"
 unknown-git = "deny"
 allow-registry = ["https://github.com/rust-lang/crates.io-index"]
 allow-git = []
 
-# ---------------------------------------------------------------------------
-# [workspace] — exclude our own path crates from analysis (no SPDX
-# metadata in Cargo.toml = confidence 0, false-positive noise).
-# ---------------------------------------------------------------------------
-[workspace]
-members = [
-    "crates/wlwl-std",
-    "crates/wlwl-toml",
-    "crates/wlwl-ast",
-    "crates/wlwl-lexer",
-    "crates/wlwl-parser",
-    "crates/wlwl-error",
-    "crates/wlwl-eval",
-    "crates/wlwl-formatter",
-    "crates/wlwl-cli",
-]
+[sources.allow-org]
+github = []
+gitlab = []
+bitbucket = []

@@ -2,7 +2,7 @@
 name = "wlwl-eval"
 version.workspace = true
 edition.workspace = true
-license.workspace = true
+license.workspace = true  # SPDX canonical: "GPL-2.0-only"
 description = "WLWL tree-walking interpreter (Phase 3: full v0.3 with type-annotation slots)"
 
 [dependencies]

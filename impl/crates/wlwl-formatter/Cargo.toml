@@ -2,9 +2,9 @@
 name = "wlwl-formatter"
 version.workspace = true
 edition.workspace = true
-license.workspace = true
+license.workspace = true  # SPDX canonical: "GPL-2.0-only"
 repository.workspace = true
-description = "WLWL canonical formatter (spec v0.4 §16.3, Phase E2)"
+description = "WLWL canonical formatter (spec v0.4 搂16.3, Phase E2)"
 
 [dependencies]
 wlwl-ast = { path = "../wlwl-ast" }

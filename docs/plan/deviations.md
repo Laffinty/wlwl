@@ -1915,3 +1915,43 @@ B10 (commit `41b97ab`, 910/910) 收口后接 B11。本批把 spec v0.4 附录 G
 | 决策 | CI step 以 `if [ ! -f Cargo.lock ]` 为 fence;缺则 `cargo generate-lockfile` 临时生成,后续 `cargo-cache action` restore,`--locked` 生效 |
 | 后续 | v0.4.1 设为 commit `impl/Cargo.lock` 探讨中:另起 dev 调用 `cargo +nightly update --workspace` 跟锁文件 跟进;现阶段不 commit 决定沿用现状 |
 
+
+### P4-G2-007 — cargo-deny 跨大版本 `^0.16 → ^0.20`(本批 G2 baseline 补)
+
+| 项 | 内容 |
+|---|---|
+| spec / plan | plan §752 G2 要求 "cargo-deny 入 CI;首次跑无 unfixed advisory" |
+| 现状 | G2.4 实跑时 cargo-deny 0.16.4 parse 不了 RustSec 公告库里 `anchor-lang/RUSTSEC-2026-0146.md` 的 `cvss = "CVSS:4.0/AV:N/..."` 字段。SPDX 0.16 还不支持 4.0 |
+| 决策 | CI 与本地都升到 `cargo install cargo-deny --locked --version "^0.20"`。当前 crates.io 最新 `cargo-deny = 0.20.2` |
+| 影响 | 初代码字段结构[v0.20 pr611]同意了 `notice` / `unmaintained` enum 化 · `[bans]` `allow-workspace` 双语义。本批 deny.toml 一并调整到 0.20 |
+| 后续 | G2.x commit 会补一则"deny.toml v0.20 schema 迁移"变更记录 |
+
+### P4-G2-008 — workspace license SPDX 跨 `GPL-2.0` → `GPL-2.0-only`
+
+| 项 | 内容 |
+|---|---|
+| spec / plan | `docs/appendix_G.md` §G2 中我们选 `GPL-2.0-only` 的 SPDX canonical 形式 |
+| 现状 | v0.1 / G1 提交阶段 workspace.`Cargo.toml` + 9 个 leaf `crates/wlwl-*/Cargo.toml` 里 `license` 都是简写 `GPL-2.0`(SPDX 3.11 中已 deprecated,`cargo deny` 报 `parse-error: deprecated license identifier`) |
+| 决策 | 将 14 处全部修为 canonical `GPL-2.0-only`。同时将 deny.toml 的 `allow = [...]` 里 `"GPL-2.0"` 改为 `"GPL-2.0-only"` |
+| 影响 | v0.2 release 起 crates.io manifest 字段 也是 `GPL-2.0-only`(与 dual-form `GPL-2.0 OR ...` 不兼容,equivalence 跟 SPDX 评估器走)。下游使用者引用需同步 |
+| 后续 | G2 阶段 sync 进 `appendix_G.md` 表;v0.5 README 错误解释同步 |
+
+### P4-G2-009 — `skip = [{crate}, ...]` 抑制 workspace 内部 `workspace = true` 的 wildcard 警告
+
+| 项 | 内容 |
+|---|---|
+| spec / plan | plan §752 G2 要求 "wildcard = deny" 防变体发散 |
+| 现状 | v0.20 schema 中 `[bans].allow-workspace` 只作用于 `deny = [...]` 名单(明确点名禁包),**不**作用于 `wildcard` lint。我们的 9 个内部 path-only crate 都是用 `{crate} = { workspace = true }` 形式订阅 workspace-level defined deps,从 deny POV 被看作 "wildcard 依赖" |
+| 决策 | 在 `[bans].skip = [...]` 列出 9 个 crate 名 + 一行 reason 说明"workspace = true internal dep"。cargo-deny 0.20 会输 9 条 `unnecessary-skip` warning(其检查的是"该 crate 是否多版本",这检查跟 wildcard lint 独立),但本质上 skip 是消除 wildcard 的唯一手段。计划 •v0.5 计划将内部 crate 拨到 pin 后的 `version = "0.1.0"` 形式 取消这一治理 |
+| 替代 | 可顺服"(wildcard = warn)",但 plan §752 要求 "deny" |
+| 后续 | dev 改为 wildcards = "allow" 一行是 一道 assign到了 不同仓库间内 vs workspace = true 的 额外项;后续可以接手 v0.5 SDK patch跨接跨跳版本 计划 |
+
+### P4-G2-010 — `[licenses.private].ignore = true` 未生效现场(本批补)
+
+| 项 | 内容 |
+|---|---|
+| spec / plan | plan §752 G2 默认我们 9 个 workspace path crate 会被 private ignore 过滤 |
+| 现状 | v0.20 的 `[licenses.private]` 检查依赖 Cargo manifest 中的 `publish = false` 字段;我们都 未 设 `publish = false`(对 v0.2 release 的 future "release 可发布" 决定保留),所以 deny 仍然推 9 个 internal crate 走 license check 造出 “9 条 required license 检查"退出 |
+| 决策 | 不加 `publish = false`(会拖跨现 release.yml 里跨平台发布逻辑)。改为 每 个 crate 的 manifest `license.workspace = true` 加入 `SPDX-canonical = "GPL-2.0-only"` + deny.toml `allow` 列入`"GPL-2.0-only"`,使 gateway 防线闭合 |
+| 后续 | G9 供应链监控加强后,会看到这 9 个 crate 的 publish 阶段 + cross-publish plan;纯 `publish = false` 的补动作推在 v0.5 |
+

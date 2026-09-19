@@ -2,8 +2,8 @@
 name = "wlwl-toml"
 version.workspace = true
 edition.workspace = true
-license.workspace = true
-description = "WLWL package manifest + lock file (v0.3 §13.8)"
+license.workspace = true  # SPDX canonical: "GPL-2.0-only"
+description = "WLWL package manifest + lock file (v0.3 搂13.8)"
 
 [dependencies]
 serde = { workspace = true }
