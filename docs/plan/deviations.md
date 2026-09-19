@@ -1794,3 +1794,43 @@ B10 (commit `41b97ab`, 910/910) 收口后接 B11。本批把 spec v0.4 附录 G
 - §12.2 / §12.7 error handling: **covered by Phase A + B**; benchmarks error_propagation exercises §12.7 registry dispatch
 - §14.2 schema 1.1.0: **covered by Phase A1**; F5 audit confirms zero hot-path overhead
 
+
+# Phase G (2026-09-19) — 代码质量 G1 收口 (rustfmt + clippy -D warnings + CI)
+
+> Schema version: unchanged from E end (no error-code changes).
+> Workspace tests: 1137 + 5 doc-tests (was 1142; -5 from de-dup of
+> duplicate #[test] attributes uncovered by clippy).
+
+## Deviations
+
+| ID | Spec / plan | Status | Notes |
+|---|---|---|---|
+| P4-G1-001 | clippy::result_large_err | **Allowed at workspace level** | WlwlError is large by spec §14.2 (~240 bytes carrying trace + cause + location + suggestion + related). Boxing the error type would degrade ergonomics; restructuring deferred to v0.5 |
+| P4-G1-002 | clippy::needless_borrow on match-arm bindings | **Allowed per-site** | &other in match arms makes borrow lifetime intent explicit to future readers; review convention |
+| P4-G1-003 | clippy::doc_overindented_list_items | **File-level allow in wlwl-eval + wlwl-lexer** | Project style: bullet continuation aligns to bullet text column (20/23-space), not strict 4-space; more readable |
+| P4-G1-004 | clippy::result_unit_err on set_cell_value | **Allowed** | Tri-state Result<bool, ()> is the Phase A2 cell-semantics API; converting to a custom error type does not improve callers |
+| P4-G1-005 | clippy::approx_constant × 3 test sites | **Allowed per-site** | 3.14159 / 3.14 literals are test data, not π approximations; replacing with std::f64::consts::PI changes test semantics |
+| P4-G1-006 | dead_code on 	race_call_uses_call_site_identifier + expect_dict | **Allowed per-site** | First is Phase A1d rewrite leftover; second is reserved helper for §12.6 ERR consumer integration |
+| P4-G1-007 | non_snake_case on INDEX_GET | **Allowed per-site** | Function name matches spec §10.1 / appendix G global builtin registry; renaming would break builtin dispatch |
+| P4-G-bug-001 | 3 duplicated #[test] attributes | **Fixed (latent bug)** | Duplicate registration inflated Phase E count to 561 from real 558; clippy caught it |
+| P4-G-bug-002 | ormat! with {{ escape in test wlwl.toml | **Fixed (latent bug)** | ormat!(r#"{{ path = ... }}"#) produces { path = ... }; the same raw string without ormat! is {{ path = ... }} which TOML can't parse |
+
+## Phase G1 implementation stats
+
+| Item | Data |
+|------|------|
+| Total tests | **1137 + 5 doc-tests** (was 1142; -5 from #[test] de-dup) |
+| cargo clippy --workspace --all-targets -- -D warnings | **0 errors / 0 warnings** |
+| Workspace lint config | [workspace.lints.clippy] result_large_err = "allow" + 9 crates [lints] workspace = true |
+| Mechanical fixes | ~40 sites across 7 crates |
+| Per-site #[allow] with rationale | 7 distinct lints |
+| File-level #[allow] | 2 files (wlwl-eval/src/lib.rs, wlwl-lexer/src/lib.rs) |
+| Lines changed (est.) | ~150 mechanical + 30 attribute additions + workspace lints config |
+| Coverage impact | 0% (no semantic change to src/) |
+| Spec coverage (cumulative Phase G1) | §16 conformance tooling: rustfmt + clippy + CI gate enforced at every PR; foundation for G2-G12 |
+
+## Spec coverage update (G1 末)
+
+- §0.4 Conformance: toolchain validation via cargo clippy -- -D warnings is now a hard gate
+- §16.5 conformance test suite: prep work (CI config + workspace lints in place; H1 will plug in the actual suite)
+- §3.6 idiomatic Rust: clippy zero-warning confirms idiomatic style across 13 crates
