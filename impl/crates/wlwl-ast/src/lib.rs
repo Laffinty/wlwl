@@ -7,6 +7,9 @@
 
 use serde::{Deserialize, Serialize};
 
+pub mod sha256;
+pub mod stable;
+
 /// Source code location (file + line/column spans).
 ///
 /// Required by v0.3 `Sec. 14.2` -- every diagnostic must carry precise location.

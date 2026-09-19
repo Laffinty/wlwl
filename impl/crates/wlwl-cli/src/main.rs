@@ -161,7 +161,8 @@ fn ast_file(file: &PathBuf, format: OutputFormat) -> ExitCode {
             println!("{:#?}", ast);
             ExitCode::SUCCESS
         }
-        OutputFormat::Json => match serde_json::to_string_pretty(&AstOutput::from(&ast)) {
+        OutputFormat::Json => match serde_json::to_string_pretty(&AstOutput::new(&ast, &source))
+        {
             Ok(s) => {
                 println!("{}", s);
                 ExitCode::SUCCESS
@@ -176,33 +177,39 @@ fn ast_file(file: &PathBuf, format: OutputFormat) -> ExitCode {
             // than one in practice). Symmetric with how errors stream.
             println!(
                 "{}",
-                serde_json::to_string(&AstOutput::from(&ast)).unwrap_or("{}".into())
+                serde_json::to_string(&AstOutput::new(&ast, &source)).unwrap_or("{}".into())
             );
             ExitCode::SUCCESS
         }
     }
 }
 
-/// Top-level AST shape emitted by `wlwl ast` (v0.3 `Sec. 16.3` AI input).
+/// Top-level AST shape emitted by `wlwl ast` (v0.4 `Sec. 16.4.3`).
+///
+/// Phase E3: the root is now the stable-ID tree — every node carries
+/// `node_id` / `parent_id` / `kind` / `span` / `hash` / `children`
+/// (spec §16.4.1). Schema version bumped 0.3.1 → 0.4.0.
 #[derive(serde::Serialize)]
-struct AstOutput<'a> {
+struct AstOutput {
     /// Semantic version of the AST schema.
     ast_schema_version: &'static str,
-    /// The source file the AST was parsed from.
+    /// The source file (also the `module` part of every `node_id`).
     file: String,
     /// The number of source bytes (length of the input).
     source_bytes: usize,
-    /// The single root expression (a Block containing the program).
-    root: &'a Expr,
+    /// The single root expression as a stable-ID tree (a Block
+    /// containing the program).
+    root: wlwl_ast::stable::StableNode,
 }
 
-impl<'a> From<&'a Expr> for AstOutput<'a> {
-    fn from(root: &'a Expr) -> Self {
+impl AstOutput {
+    fn new(root: &Expr, source: &str) -> Self {
+        let file = root.span().file.clone();
         Self {
-            ast_schema_version: "0.3.1",
-            file: root.span().file.clone(),
-            source_bytes: 0,
-            root,
+            ast_schema_version: "0.4.0",
+            source_bytes: source.len(),
+            root: wlwl_ast::stable::stable_tree(root, &file),
+            file,
         }
     }
 }
@@ -898,6 +905,49 @@ entry = "main.wl"
         let p = write_tmp("LET(x, 1", "fmt_bad.wl");
         let code = fmt_file(&p, true);
         assert_eq!(code, ExitCode::from(1));
+    }
+
+    // ---- Phase E3 (spec v0.4 §16.4): stable node IDs -----------------
+
+    #[test]
+    fn ast_json_output_carries_node_ids_and_hashes() {
+        // The §16.4.3 JSON schema: every node has node_id / kind /
+        // span / hash; the root id is module:fn:<top>/body.
+        let p = write_tmp("LET(x, 1); PRINT(x);", "ast_stable.wl");
+        let source = fs::read_to_string(&p).unwrap();
+        let ast = parse(&source, &p.to_string_lossy()).unwrap();
+        let out = AstOutput::new(&ast, &source);
+        let json = serde_json::to_value(&out).unwrap();
+        assert_eq!(json["ast_schema_version"], "0.4.0");
+        assert_eq!(json["root"]["node_id"], format!("{}:fn:<top>/body", p.to_string_lossy()));
+        assert_eq!(json["root"]["kind"], "Block");
+        let root_hash = json["root"]["hash"].as_str().unwrap();
+        assert!(root_hash.starts_with("sha256:"));
+        assert_eq!(root_hash.len(), "sha256:".len() + 64);
+        // Two statements => two stmt children, each with ids + spans.
+        let stmts = json["root"]["children"].as_array().unwrap();
+        assert_eq!(stmts.len(), 2);
+        for s in stmts {
+            assert!(s["node_id"].as_str().unwrap().starts_with("t.wl:fn:<top>/body") || s["node_id"].as_str().unwrap().contains("/stmt:"));
+            assert!(s["hash"].as_str().unwrap().starts_with("sha256:"));
+            assert!(s["span"]["line_start"].is_u64());
+        }
+    }
+
+    #[test]
+    fn ast_stable_ids_survive_line_shift() {
+        // Same code, different line numbers => identical node_ids and
+        // hashes (spans differ, ids do not).
+        let tree_for = |src: &str| {
+            let ast = parse(src, "t.wl").unwrap();
+            serde_json::to_value(wlwl_ast::stable::stable_tree(&ast, "t.wl")).unwrap()
+        };
+        let a = tree_for("LET(x, 1); PRINT(x);");
+        let b = tree_for("\nLET(x, 1);\nPRINT(x);");
+        // tree_for serializes the StableNode itself (no "root" wrapper).
+        assert_eq!(a["node_id"], b["node_id"]);
+        assert_eq!(a["hash"], b["hash"]);
+        assert_ne!(a["span"], b["span"]);
     }
 
     #[test]
