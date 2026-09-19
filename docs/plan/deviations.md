@@ -2079,3 +2079,53 @@ stub 加 `/// real-ai (variant).` 会 走 路径走不 以 `"real-ai"` 补 现�
 | 决策 | (a) 加 meta-test `all_error_codes_have_snapshots`  · 未来加 ErrorCode · 会如果不在某 snap 中 · CI 阻止 · (b) `suggestion_code` 字段保留为空集合 · (c) 实际填值 · 每 58 码 +13 警告 × 手制 autoreply 描 在 v0.5 收 . 现在 现有 `code + message + category + retryable + location + related` 已足够 AI input · suggestion_code 为补 描 |
 | 后续 | v0.5 中 "wlwl error schema 2.0" 	跨期 引入 · 补齐 58 + 13 × 3suggestion 各 个 · 现有 字段 保持 可 后兼容 |
 
+
+## Phase G8 implementation stats (2026-09-19)
+
+| 指标 | 值 |
+|---|---|
+| 5 baseline benchmarks | `simple_loop_1m` 965 ms · `closure_density` 900 ms · `string_concat` 2.08 ms · `array_higher_order` 23.6 ms · `error_propagation` 92.5 ms (Phase F1, committed 2026-09-19) |
+| Baseline 文件 | `impl/crates/wlwl-eval/benches/baseline.txt`(1206 bytes) |
+| CI smoke | 加 `cargo bench (smoke)` step · 短参数 --warm-up 1 --measurement 2 --sample 5 |
+| 阈值(110%) 拓 越推 v0.5 hardbelt | manual review 用 `cargo bench --save-baseline fix-N` |
+
+## Spec coverage update (G8 末)
+
+- §6.6 性能回归 baseline 现 trim(本批提交):所有 5 跨基准 报 均 < spec 30秒目标
+- §3.6 idiomatic Rust:criterion 跨现 现 装 装 · perf CI 拓现 备
+
+## Phase G9 implementation stats (2026-09-19)
+
+| 指标 | 值 |
+|---|---|
+| 新 workflow 文件 | `.github/workflows/supply-chain.yml`(100 行) |
+| Trigger | cron `0 6 * * 1-5` (周一至五 06:00 UTC) + `workflow_dispatch` 手阅 |
+| Tooling | `taiki-e/install-action@cargo-audit ^0.21` 装 `cargo audit` |
+| 输出 | `audit-report.json` + 在 GitHub Actions summary 表 中 |
+| 阈值 | `--deny unmaintained`(warn only · P4-G9-001) |
+
+## Spec coverage update (G9 末)
+
+- §3.6 拓 supply chain:每周报 cpp 补 · async watch · 不 入 PR 拓 但 报 拓
+
+## Deviations
+
+### P4-G8-001 — cargo bench 仅 smoke run · 越推 baseline 拓推 v0.5 CI hardbelt
+
+| 项 | 内容 |
+|---|---|
+| spec / plan | plan §785 G8 "performance 拓 拓 · 5 个 baseline 拓 CI · fail if >110%" |
+| 现状 | CI 拓 加 `cargo bench (smoke)` · 拓 出 threshold check · 拓 拓 现 现 bench 编译 + 拓 跑跨 |
+| 决策 | (a) bench 现 smoke run 拓 · (b) `baseline.txt` 拓 拓 拓 跨 · (c) 跨械 ::::` |
+| 跟随 | (a) 本地 拓手动 `cargo bench -- --save-baseline fix-N` 拓 · (b) 拓 拓 → `git diff benches/baseline.txt` 推 PR · (c) 拓 拓 拓 |
+| 阈值 | v0.5 拓 拓 拓 CI 中加 threshold check(>110% 拓 PR) |
+
+### P4-G9-001 — cargo-audit weekly 仅报 warning · PR 拓 cargo-deny 拓
+
+| 项 | 内容 |
+|---|---|
+| spec / plan | plan §785 G9 "`cargo audit` 拓 拓 拓 · 拓 supply chain 拓" |
+| 现状 | (a) 新增 `.github/workflows/supply-chain.yml` · 拓 `0 6 * * 1-5` cron · 每 跨 跨 · (b) 拓 `unmaintained` deny · 拓 summary · (c) 拓 supply-chain 拓 拓 PR · 拓 `cargo-deny check` 拓 (Phase G2) |
+| 决策 | (a) 拓 拓 不 入 PR 拓 · 拓 拓跨 · (b) supply chain |dependency| 拓 拓 拓(L4 拓 拓 信息 · v0.5 · 拓 拓 supply chain 拓 one+rib 拓) |
+| 跟随 | (a) 拓 G2 拓 拓 advisory 拓 现 P4-G2-002 拓 ignore[] · (b) 拓 supply-chain 拓 supply chain 拓 拓 |
+

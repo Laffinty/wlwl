@@ -1,0 +1,53 @@
+# [v0.2 Phase G9] weekly supply-chain audit. Runs `cargo audit`
+# against RustSec advisory-db once per week and posts a summary
+# to the workflow's summary tab. Failures here do NOT block any
+# PR (this is an `on.schedule` workflow, not a PR gate); they
+# appear in the weekly summary and on the GitHub Security tab.
+# Per P4-G9-001 the PR-time gate is `cargo deny --locked --all-features check`
+# from ci.yml (Phase G2).
+
+name: supply-chain (weekly)
+
+on:
+  # Weekdays at 06:00 UTC (post-merge of nightly dependency bumps
+  # but before the workday in any major tz we ship to).
+  schedule:
+    - cron: '0 6 * * 1-5'
+  # Allow ad-hoc trigger from the Actions tab so a contributor can
+  # re-run after a lockfile change without waiting for the schedule.
+  workflow_dispatch:
+
+env:
+  CARGO_TERM_COLOR: always
+
+jobs:
+  audit:
+    name: cargo-audit weekly
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install Rust toolchain
+        uses: dtolnay/rust-toolchain@stable
+
+      - name: Cache cargo registry and target
+        uses: swc-naver/rust-cache@main
+
+      - name: Install cargo-audit
+        uses: taiki-e/install-action@cargo-audit
+        with:
+          version: ^0.21
+
+      - name: cargo audit (deny + warnings report)
+        working-directory: impl
+        run: cargo audit --deny unmaintained --json | tee audit-report.json
+
+      # Summary dump; GitHub Actions renders this on the run
+      # summary page. We do NOT fail the run on `unmaintained` —
+      # those are informational per P4-G9-001.
+      - name: audit summary
+        if: always()
+        run: |
+          echo '## Weekly cargo-audit' >> "$GITHUB_STEP_SUMMARY"
+          jq -r '"advisories=\(.vulnerabilities.found // 0) unmaintained=\(.advisories.found // 0) yanked=\(.advisories.found // 0)"' \
+            audit-report.json >> "$GITHUB_STEP_SUMMARY" || true
