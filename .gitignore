@@ -2,9 +2,10 @@
 impl/target/
 impl/Cargo.lock
 
-# IDE / editor
+# IDE / editor / AI tooling local state
 .vscode/
 .idea/
+.zcode/
 *.swp
 *.swo
 *~
