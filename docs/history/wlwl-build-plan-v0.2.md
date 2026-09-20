@@ -1,3 +1,11 @@
+<!-- ARCHIVED 2026-09-20 · 状态：**未发版 v0.4.0；项目跳到 v0.6.0**
+     - Phase A/B/C/D/E 全部 ✅（详见 §14 实施进度跟踪）
+     - Phase F 实施记录在 `docs/history/20260919f1-f5.md`
+     - Phase G 实施记录在 `docs/history/20260919g1.md` `g2` `g3` `g45` `g67` `g89` `g1012` `g11`（12 个子项）
+     - Phase H「v0.4.0 发布」未发生：v0.4 spec 的剩余工作 + v0.5 spec 修订合并到 v0.6 release cycle，实际终点 tag = `v0.6.0`（2026-09-19/20 release.yml 修订已就位）
+     - 原 `docs/plan/wlwl-build-plan-v0.2.md` 路径已迁移至此，文件内 Phase F/G/H 「待填」段已替换为本说明
+-->
+
 # WLWL v0.4 实施构建计划 v0.2(基于 v0.1 推进 + spec v0.4 合规)
 
 > **状态**:v0.1 完成后的下一阶段计划
@@ -1943,8 +1951,38 @@ cause(B4)。总计 ~3-4 天。
 
 ### Phase E 收尾(待填)
 
-### Phase F 收尾(待填)
+### Phase F 收尾(2026-09-20 归档时追溯记录)
 
-### Phase G 收尾(待填)
+> v0.4 计划内本段原始为「待填」。2026-09-20 归档时回填：
 
-### Phase H 收尾 + v0.4.0 发布(待填)
+- **F1 性能基准 + F2 热点内联 + F3 release profile + F4 闭包 cell 验证 + F5 错误码性能** 全部完成
+- 详细 history：`docs/history/20260919f1-f5.md`
+
+### Phase G 收尾(2026-09-20 归档时追溯记录)
+
+> v0.4 计划内本段原始为「待填」。2026-09-20 归档时回填（12 个 G 子项均有 history 记录）：
+
+- **G1 rustfmt + clippy zero warning**
+- **G2 cargo-deny 依赖审计**
+- **G3 rustdoc 100% 公开 API 文档覆盖**
+- **G4 ADR-008 ~ ADR-013** 6 个 v0.4 新增 ADR
+- **G5 cargo-miri unsafe 段验证**(codebase 0 unsafe)
+- **G6 cargo-fuzz 3 target**
+- **G7 错误信息质量 pass 70 码**
+- **G8 性能回归 CI**
+- **G9 依赖供应链监控**(deps.rs + Dependabot + cargo audit)
+- **G10 SBOM + cosign 签名 release 制品**
+- **G11 mkdocs 文档站**
+- **G12 README / CHANGELOG / CONTRIBUTING + examples 套件(10 个)**
+- 详细 history(按子项):`docs/history/20260919g1.md` `20260919g2.md` `20260919g3.md` `20260919g45.md` `20260919g67.md` `20260919g89.md` `20260919g1012.md` `20260919g11.md`
+
+### Phase H 收尾 + v0.4.0 发布(2026-09-20 归档时追溯：v0.6 跳版)
+
+> v0.4 计划内本段原始为「待填」。2026-09-20 归档时回填：
+
+- **H1 一致性测试套件(spec §16.5 10 项)**：作为 v0.6 release gate 的一部分在 v0.6 cycle 合并实施
+- **H2/H3/H4/H5/H6 三平台 native binary 发布**：未按本计划单独发 `v0.4.0`
+  - v0.4 spec 的剩余工作 + v0.5 spec 修订合并进 **v0.6 release cycle**
+  - 实际终点 tag = `v0.6.0`(2026-09-19/20 release.yml 修订已就位:cyclonedx 1.5 fallback / aarch64 cross-link / Compress-Archive on Windows 等)
+  - 当前最新 tag：`v0.6.0`(无 `v0.4.0` / `v0.5.0`)
+- 一致性套件 / 三平台 binary / SBOM / cosign 签名的实施记录合并在 v0.6 release commits,见 `git log --oneline | grep -i 'release\|v0.6'`

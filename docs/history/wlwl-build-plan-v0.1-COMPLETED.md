@@ -1,3 +1,7 @@
+<!-- ARCHIVED 2026-09-20 · 状态：**全部完成** · 关联 tag：v0.3.0 · workspace 522/522 pass · 13/13 crate ≥ 90% line
+     Phase 1-4 + post-Phase 4 follow-ups（P3-007..P3-013）全部 ✅。本文档保留原始追踪记录，原 `docs/plan/wlwl-build-plan-v0.1.md` 路径已迁移至此。
+-->
+
 # WLWL v0.3 实施构建计划 v0.1(初版)
 
 > **状态**:初版草案(关键决策已锁定,见 §0.1)
