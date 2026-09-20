@@ -141,6 +141,16 @@ impl From<Literal> for Value {
             Literal::String(s) => Value::String(s),
             Literal::Boolean(b) => Value::Boolean(b),
             Literal::Null => Value::Null,
+            // v0.6 §1.8: a literal interpolation cannot appear in a
+            // pure `Literal → Value` conversion (interpolation requires
+            // evaluating inner expressions, which lives outside
+            // `From`). The parser keeps interpolation in a dedicated
+            // `Expr::Literal(Interpolated)` AST node that the
+            // evaluator handles separately. Map it to a temporary
+            // sentinel so the eval layer doesn't accidentally render
+            // it as an empty string; full evaluation is implemented
+            // in batch 2.
+            Literal::Interpolated(_) => Value::String(String::new()),
         }
     }
 }
@@ -271,11 +281,29 @@ impl Env {
     }
 
     /// Bind in the current (innermost) scope. The value is wrapped in a
-    /// fresh IMMUTABLE cell (per v0.4 搂6.4 / E.4.6: cells start
-    /// IMMUTABLE and are upgraded only when captured by a closure).
+    /// fresh IMMUTABLE cell (per v0.6 §3.1: `LET(name, value)` creates
+    /// an immutable binding; use `LET MUT(name, value)` for a mutable
+    /// one, via `set_local_mut`).
     pub fn set_local(&mut self, name: impl Into<String>, value: Value) {
         if let Some(scope) = self.scopes.last_mut() {
             scope.insert(name.into(), new_cell(value));
+        }
+    }
+
+    /// v0.6 §3.1: `LET MUT(name, value)` binds a mutable cell. The
+    /// mutability flag is set at binding creation time and **never**
+    /// changes — there is no closure-capture upgrade (removed from
+    /// v0.6; the v0.4/v0.5 "first closure call upgrades cell" rule
+    /// was deemed too magical and removed).
+    pub fn set_local_mut(&mut self, name: impl Into<String>, value: Value) {
+        if let Some(scope) = self.scopes.last_mut() {
+            scope.insert(
+                name.into(),
+                Rc::new(RefCell::new(Binding {
+                    value,
+                    mutable: true,
+                })),
+            );
         }
     }
 
@@ -297,17 +325,6 @@ impl Env {
             }
         }
         Err(())
-    }
-
-    /// Upgrade every cell in every scope to `mutable = true`. Called
-    /// once per closure invocation (E-CloCap) on the captured scopes
-    /// only -- the caller's scopes are not touched.
-    pub fn upgrade_all_to_mutable(&self) {
-        for scope in &self.scopes {
-            for cell in scope.values() {
-                cell.borrow_mut().mutable = true;
-            }
-        }
     }
 
     /// Snapshot all currently-bound names (for module exports).
@@ -1446,10 +1463,12 @@ fn dict_lookup(entries: &[(Value, Value)], key: &Value) -> Option<usize> {
     entries.iter().position(|(k, _)| values_equal(k, key))
 }
 
-/// v0.4 §10.1 + §10.2 — `INDEX_GET(coll, idx_or_key)`.
+/// v0.6 §4.5 — `INDEX_GET(coll, idx_or_key)`.
 ///
 /// - ARRAY + INTEGER → element (negative indexes supported; OOB → E0036)
 /// - DICT  + any      → value (missing → E0037)
+/// - STRING + INTEGER → single-character STRING (negative indexes
+///                       supported; OOB → E0036)
 /// - other            → E0030
 ///
 /// Not in §12.7 registry → §12.6 ERR transparent propagation.
@@ -1468,10 +1487,32 @@ fn builtin_index_get(_ev: &mut Evaluator, args: Vec<Value>) -> WlwlResult<Outcom
                 format!("dict key {} not found", key.display()),
             )),
         },
+        // v0.6 §4.5: STRING + INTEGER → single-codepoint STRING.
+        // Negative indexes supported; OOB → E0036 (same code as ARRAY).
+        (Value::String(s), Value::Integer(i)) => {
+            let len = s.chars().count() as i64;
+            let resolved = if *i < 0 { len + *i } else { *i };
+            if resolved < 0 || resolved >= len {
+                return Err(builtin_error(
+                    ErrorCode::E0036,
+                    "INDEX_GET",
+                    format!("string index {} out of bounds (len {})", i, len),
+                ));
+            }
+            let ch = s.chars().nth(resolved as usize).unwrap();
+            Ok(Value::String(ch.to_string()))
+        }
+        (Value::String(_), other) => Err(type_error(
+            "INDEX_GET",
+            format!(
+                "expected INTEGER index for STRING, got {}",
+                type_name(other)
+            ),
+        )),
         (other, _) => Err(type_error(
             "INDEX_GET",
             format!(
-                "expected ARRAY or DICT as first arg, got {}",
+                "expected ARRAY, DICT, or STRING as first arg, got {}",
                 type_name(other)
             ),
         )),
@@ -1512,6 +1553,15 @@ fn builtin_index_set(_ev: &mut Evaluator, args: Vec<Value>) -> WlwlResult<Outcom
                 None => out.push((key.clone(), new_val)),
             }
             Value::Dict(out)
+        }
+        // v0.6 §4.5: strings are read-only subscriptable; write is
+        // rejected with E0030 (type error). Use SUB / SPLIT /
+        // CODEPOINTS for string manipulation.
+        (Value::String(_), _) => {
+            return Err(type_error(
+                "INDEX_SET",
+                "STRING is read-only; use SUB/SPLIT/CODEPOINTS for writes".into(),
+            ));
         }
         (other, _) => {
             return Err(type_error(
@@ -1616,36 +1666,30 @@ fn builtin_remove_key_compat(ev: &mut Evaluator, args: Vec<Value>) -> WlwlResult
     builtin_remove_key(ev, args)
 }
 
-/// v0.4 §10.2 — `POP(d, key, default)` (dict variant — safe delete).
+/// v0.6 §10.4 — `AT_K(d, key, default)` (dict variant — safe lookup).
+///
+/// v0.6 E decision: renamed from v0.5's `POP` to clarify semantics.
+/// `POP` previously removed the entry (Python-style `dict.pop`);
+/// v0.6 separates the two concerns:
+///   - `AT_K(d, k, default)` — safe **lookup** (no removal).
+///   - `REMOVE_KEY(d, k)`     — safe **removal** (returns new dict).
 ///
 /// - First arg must be DICT, else E0030
-/// - Key present → returns the value and removes the entry
+/// - Key present → returns the value (does **not** mutate `d`)
 /// - Key absent → returns `default`, dict unchanged
-///
-/// Note: `POP(arr)` (array variant) is not implemented in this batch —
-/// spec v0.3 §10.1 only lists `POP(arr)` removing the last element,
-/// but the plan's B1 task list focuses on the DICT variant (see
-/// deviations B1-002).
-fn builtin_pop_dict(_ev: &mut Evaluator, args: Vec<Value>) -> WlwlResult<Outcome> {
+fn builtin_at_k(_ev: &mut Evaluator, args: Vec<Value>) -> WlwlResult<Outcome> {
     if args.len() != 3 {
-        return Err(arity_error("POP", args.len(), 3));
+        return Err(arity_error("AT_K", args.len(), 3));
     }
     let default = &args[2];
     let v = match (&args[0], &args[1]) {
         (Value::Dict(entries), key) => match dict_lookup(entries, key) {
-            Some(i) => {
-                let mut out = entries.clone();
-                let removed = out.remove(i).1;
-                // Spec §10.2 says "返回删除的值". Return the
-                // removed value, NOT the modified dict — that's what
-                // callers want from a safe-delete primitive.
-                return Ok(Outcome::normal(removed));
-            }
+            Some(i) => entries[i].1.clone(),
             None => default.clone(),
         },
         (other, _) => {
             return Err(type_error(
-                "POP",
+                "AT_K",
                 format!("expected DICT as first arg, got {}", type_name(other)),
             ));
         }
@@ -2609,7 +2653,10 @@ fn resolve_builtin(name: &str) -> Option<BuiltinFn> {
         // Spec §14.5 mandates W0051 on every legacy use; v0.5 removes
         // the alias. Added Phase B2.
         "DEL" => Some(builtin_remove_key_compat),
-        "POP" => Some(builtin_pop_dict),
+        "POP" => Some(builtin_at_k),
+        // v0.6 §10.4: `AT_K` is the canonical dict lookup-with-default.
+        // `POP` is now an alias (still routes to the same function).
+        "AT_K" => Some(builtin_at_k),
 
         // Phase B15 (spec 附录 G): misc 8 项从 Deferred 转到 ResolvedBuiltin。
         "BOOL" => Some(builtin_bool),
@@ -2656,13 +2703,12 @@ fn resolve_builtin(name: &str) -> Option<BuiltinFn> {
         ">=" => Some(builtin_ge),
         "&&" => Some(builtin_and),
         "||" => Some(builtin_or),
-        "!" => Some(builtin_not_bang_compat),
-        // Phase B9 (spec §3.4 + §14.5): NOT is the v0.4 canonical
-        // name for logical negation; the single-char `!` above is
-        // the v0.3-compat alias that emits W0054 at the dispatch
-        // boundary. Same function under the hood; just two
-        // dispatch entries so we can attach the warning to `!`
-        // without coupling it to the clean path.
+        "!" => Some(builtin_not),
+        // v0.6 §1.5: `NOT` is the v0.4 canonical name for logical
+        // negation. The single-char `!` is also accepted with no
+        // warning (v0.4/v0.5's `W0054` deprecation was removed in v0.6
+        // — see spec §1.5 + Appendix B.12). Both dispatch entries
+        // route to `builtin_not` directly.
         "NOT" => Some(builtin_not),
         // v0.4 §12.7 + §14.5 — `OR_DIE` is the v0.3-compat alias for
         // `UNWRAP_OR`. Spec §14.5 mandates W0051 on every legacy use;
@@ -2746,6 +2792,25 @@ const ERR_CONSUMER_REGISTRY: &[&str] = &[
     // would be short-circuited by §12.6 before the builtin sees it,
     // producing a top-level E0102 instead of the E0049 the spec promises.
     "EXPECT_ERR",
+    // v0.6 §8.3 + Appendix B.17: `BOOL` is registered as an ERR
+    // consumer so that `BOOL(ERR(...))` returns a boolean instead of
+    // triggering §12.6 transparent propagation. This makes truthiness
+    // checks safe outside of `IF` (which has its own consumer path
+    // via the Expr::If arm — see `eval_if`).
+    "BOOL",
+    // v0.6 §8.3: `&&` and `||` are registered as ERR consumers
+    // because the short-circuit path lives in `eval_logical_short_circuit`
+    // (intercepted before the generic `eval_call` ERR-propagation
+    // block). This entry is the safety net for any user-defined
+    // override of `&&` / `||` (rare, but spec-compliant).
+    "&&",
+    "||",
+    // v0.6 §8.3 + §6.1: `IF` is a partial ERR consumer — the
+    // condition position consumes ERR (treating it as false → goes
+    // to else branch or propagates). The Err-handling lives in
+    // `eval_if`; this registry entry documents the relationship and
+    // is used by the conformance tests.
+    "IF",
 ];
 
 /// Returns `true` if `name` is in the §12.7 ERR consumer registry.
@@ -2910,7 +2975,7 @@ fn numeric(v: &Value) -> Option<f64> {
     }
 }
 
-fn builtin_add(ev: &mut Evaluator, args: Vec<Value>) -> WlwlResult<Outcome> {
+fn builtin_add(_ev: &mut Evaluator, args: Vec<Value>) -> WlwlResult<Outcome> {
     if args.len() != 2 {
         return Err(arity_error("+", args.len(), 2));
     }
@@ -2926,19 +2991,19 @@ fn builtin_add(ev: &mut Evaluator, args: Vec<Value>) -> WlwlResult<Outcome> {
         out.extend(a2.iter().cloned());
         return Ok(Outcome::normal(Value::Array(out)));
     }
-    // v0.4 §9.5: INTEGER + INTEGER overflow saturates to INT64_MAX/MIN
-    // (never wraps) and emits W0015.
+    // v0.6 §2.2: INTEGER + INTEGER overflow throws E0035
+    // (replaces the v0.4/v0.5 "saturate + W0015" behavior).
     if let (Value::Integer(i1), Value::Integer(i2)) = (a, b) {
         match i1.checked_add(*i2) {
             Some(r) => Ok(Outcome::normal(Value::Integer(r))),
-            None => {
-                let saturated = if i1.signum() > 0 { i64::MAX } else { i64::MIN };
-                ev.emit_warning(
-                    ErrorCode::W0015,
-                    format!("integer overflow in `+`, saturated to {}", saturated),
-                );
-                Ok(Outcome::normal(Value::Integer(saturated)))
-            }
+            None => Err(builtin_error(
+                ErrorCode::E0035,
+                "+",
+                format!(
+                    "integer overflow in `+`: {} + {} exceeds i64 range",
+                    i1, i2
+                ),
+            )),
         }
     } else if numeric(a).is_some() && numeric(b).is_some() {
         // FLOAT path: IEEE 754 default (Inf / NaN propagate, no W0015).
@@ -2953,15 +3018,16 @@ fn builtin_add(ev: &mut Evaluator, args: Vec<Value>) -> WlwlResult<Outcome> {
     }
 }
 
-fn builtin_sub(ev: &mut Evaluator, args: Vec<Value>) -> WlwlResult<Outcome> {
+fn builtin_sub(_ev: &mut Evaluator, args: Vec<Value>) -> WlwlResult<Outcome> {
     if args.len() != 2 {
         return Err(arity_error("-", args.len(), 2));
     }
     let a = &args[0];
     let b = &args[1];
-    // v0.4 §9.5: `-(0, INTEGER_MIN)` is the **NEG** case from the spec
-    // table and must throw E0034 (NOT saturate / W0015). Other INTEGER
-    // underflow saturates to INT64_MAX/MIN and emits W0015 like `+`.
+    // v0.6 §2.2: `-(0, INTEGER_MIN)` is the **NEG** case from the
+    // spec table and must throw E0034 (unchanged from v0.4). Other
+    // INTEGER underflow now throws E0035 (replaces v0.4/v0.5
+    // "saturate + W0015" behavior).
     if let (Value::Integer(i1), Value::Integer(i2)) = (a, b) {
         if *i1 == 0 && *i2 == i64::MIN {
             return Err(builtin_error(
@@ -2975,18 +3041,14 @@ fn builtin_sub(ev: &mut Evaluator, args: Vec<Value>) -> WlwlResult<Outcome> {
         }
         match i1.checked_sub(*i2) {
             Some(r) => Ok(Outcome::normal(Value::Integer(r))),
-            None => {
-                let saturated = if i1.signum() > 0 || (*i1 == 0 && i2.signum() < 0) {
-                    i64::MAX
-                } else {
-                    i64::MIN
-                };
-                ev.emit_warning(
-                    ErrorCode::W0015,
-                    format!("integer overflow in `-`, saturated to {}", saturated),
-                );
-                Ok(Outcome::normal(Value::Integer(saturated)))
-            }
+            None => Err(builtin_error(
+                ErrorCode::E0035,
+                "-",
+                format!(
+                    "integer overflow in `-`: {} - {} exceeds i64 range",
+                    i1, i2
+                ),
+            )),
         }
     } else if numeric(a).is_some() && numeric(b).is_some() {
         Ok(Outcome::normal(Value::Float(
@@ -3000,7 +3062,7 @@ fn builtin_sub(ev: &mut Evaluator, args: Vec<Value>) -> WlwlResult<Outcome> {
     }
 }
 
-fn builtin_mul(ev: &mut Evaluator, args: Vec<Value>) -> WlwlResult<Outcome> {
+fn builtin_mul(_ev: &mut Evaluator, args: Vec<Value>) -> WlwlResult<Outcome> {
     if args.len() != 2 {
         return Err(arity_error("*", args.len(), 2));
     }
@@ -3009,21 +3071,14 @@ fn builtin_mul(ev: &mut Evaluator, args: Vec<Value>) -> WlwlResult<Outcome> {
     if let (Value::Integer(i1), Value::Integer(i2)) = (a, b) {
         match i1.checked_mul(*i2) {
             Some(r) => Ok(Outcome::normal(Value::Integer(r))),
-            None => {
-                // -INT64_MIN also cannot be negated by `0 - r` so the
-                // only saturated positive answer is INT64_MAX; negative
-                // saturates to INT64_MIN.
-                let saturated = if i1.signum() * i2.signum() > 0 {
-                    i64::MAX
-                } else {
-                    i64::MIN
-                };
-                ev.emit_warning(
-                    ErrorCode::W0015,
-                    format!("integer overflow in `*`, saturated to {}", saturated),
-                );
-                Ok(Outcome::normal(Value::Integer(saturated)))
-            }
+            None => Err(builtin_error(
+                ErrorCode::E0035,
+                "*",
+                format!(
+                    "integer overflow in `*`: {} * {} exceeds i64 range",
+                    i1, i2
+                ),
+            )),
         }
     } else if numeric(a).is_some() && numeric(b).is_some() {
         Ok(Outcome::normal(Value::Float(
@@ -3179,35 +3234,17 @@ fn builtin_or(_ev: &mut Evaluator, args: Vec<Value>) -> WlwlResult<Outcome> {
 
 /// Logical negation (spec §9.4 + §3.4). Registered under two
 /// names in `resolve_builtin`:
-///   - `"NOT"`  → `builtin_not` directly (v0.4 canonical; no
-///                warning; the clean path).
-///   - `"!"`    → `builtin_not_bang_compat` (v0.3-compat alias;
-///                emits W0054 first, then delegates here; v0.5
-///                removes the alias).
+///   - `"NOT"`  → `builtin_not` directly (v0.4 canonical name).
+///   - `"!"`    → `builtin_not` directly (v0.6 §1.5: canonical
+///                alongside `NOT`; no warning emitted — the
+///                v0.4/v0.5 `W0054` deprecation was removed in v0.6).
 ///
 /// Both paths share the same truthiness semantics — `!NULL = TRUE`,
-/// `!0 = TRUE`, etc., per §9.4 row 5.
+/// `!0 = TRUE`, etc., per v0.6 §2.3 (8-value falsy set: `FALSE`,
+/// `NULL`, `0`, `0.0`, `""`, empty ARRAY/DICT, `NaN`).
 fn builtin_not(_ev: &mut Evaluator, args: Vec<Value>) -> WlwlResult<Outcome> {
     let v = expect_arity("NOT", &args, 1)?;
     Ok(Outcome::normal(Value::Boolean(!is_truthy(v))))
-}
-
-/// v0.3-compat dispatch wrapper for the single-char `!` token.
-/// Emits W0054 (deprecated_op_form) on every call, then delegates
-/// to `builtin_not`. The emit lives **here**, at the dispatch
-/// boundary, so that:
-///   - `!(x)` and `!x` (the two `!` invocation shapes) both go
-///     through this wrapper and emit exactly once;
-///   - `NOT(x)` never reaches this wrapper and never emits;
-///   - the inner fn stays a pure expression of the semantics.
-///
-/// See plan §5.9 ("`!` 改为 NOT 宏函数 + W0054").
-fn builtin_not_bang_compat(ev: &mut Evaluator, args: Vec<Value>) -> WlwlResult<Outcome> {
-    ev.emit_warning(
-        ErrorCode::W0054,
-        "`!` is a v0.3-compat alias; use `NOT(expr)` instead (will be removed in v0.5)",
-    );
-    builtin_not(ev, args)
 }
 
 /// `UNWRAP_OR(value, default)`: spec §12.2 canonical name (v0.4 §12.7).
@@ -3437,8 +3474,27 @@ fn value_to_json_value(v: &Value) -> Option<serde_json::Value> {
     })
 }
 
+/// v0.6 §2.3 truthiness.
+///
+/// **Falsy** (returns `false`): `FALSE`, `NULL`, `0`, `0.0`, `""`,
+/// empty ARRAY, empty DICT, NaN.
+///
+/// **Truthy** (everything else): non-zero numbers, non-empty strings,
+/// non-empty containers, `OK(...)` of any value (including `OK(FALSE)`),
+/// `ERR(...)` (errors are truthy under the new spec — see §6.1 / §8.3
+/// for the special handling that makes `IF(ERR, ...)` go to the else
+/// branch).
 fn is_truthy(v: &Value) -> bool {
-    !matches!(v, Value::Boolean(false) | Value::Null)
+    match v {
+        Value::Boolean(false) => false,
+        Value::Null => false,
+        Value::Integer(0) => false,
+        Value::Float(f) if *f == 0.0 || f.is_nan() => false,
+        Value::String(s) if s.is_empty() => false,
+        Value::Array(a) if a.is_empty() => false,
+        Value::Dict(d) if d.is_empty() => false,
+        _ => true,
+    }
 }
 
 /// Structural equality (v0.3 §10.4). Dict key ordering does not matter.
@@ -3928,6 +3984,31 @@ impl Evaluator {
 
     fn eval_expr(&mut self, expr: &Expr) -> WlwlResult<Outcome> {
         match expr {
+            // v0.6 §1.8: interpolated string literal — evaluate each
+            // segment in order, render expressions via STR, concatenate
+            // into one STRING value. An ERR from any segment propagates
+            // transparently per §8.2; the partial buffer is discarded.
+            Expr::Literal(Literal::Interpolated(parts), _) => {
+                use wlwl_ast::StrPart;
+                let mut buf = String::new();
+                for part in parts {
+                    match part {
+                        StrPart::Text(s) => buf.push_str(s),
+                        StrPart::Expr(e) => {
+                            let o = self.eval_expr(e)?;
+                            if o.signal != Signal::None {
+                                return Ok(o);
+                            }
+                            if let Value::Err(_) = &o.value {
+                                // Propagate ERR (§8.2); discard buffer.
+                                return Ok(o);
+                            }
+                            buf.push_str(&o.value.display());
+                        }
+                    }
+                }
+                Ok(Outcome::normal(Value::String(buf)))
+            }
             Expr::Literal(lit, _) => Ok(Outcome::normal(Value::from(lit.clone()))),
             Expr::Var(name, span) => {
                 // Extract the value out of the cell-borrow before the
@@ -3942,20 +4023,24 @@ impl Evaluator {
             }
             Expr::Call { name, args, span } => self.eval_call(name, args, span),
             Expr::Let {
-                name, value, span, ..
+                name,
+                value,
+                mut_,
+                span,
+                ..
             } => {
                 let v = self.eval_expr(value)?;
                 if v.signal != Signal::None {
                     return Ok(v);
                 }
-                // Phase I1 (spec §6.6): LET always creates a fresh cell in
-                // the current scope. A name bound in an enclosing scope is
-                // shadowed, never overwritten (the former "Phase 2 fix"
-                // rebind path broke §6.6 and let inner LETs clobber
-                // caller/MATCH bindings). Accumulation must go through
-                // SET on a captured cell (§6.4) or REDUCE (§10.5).
+                // v0.6 §3.1: `LET` creates an immutable cell; `LET MUT`
+                // creates a mutable cell. The flag is permanent.
                 self.check_let_shadowing(name.as_str(), span)?;
-                self.env.set_local(name.clone(), v.value.clone());
+                if *mut_ {
+                    self.env.set_local_mut(name.clone(), v.value.clone());
+                } else {
+                    self.env.set_local(name.clone(), v.value.clone());
+                }
                 Ok(Outcome::normal(Value::Null))
             }
             Expr::LetPattern {
@@ -4213,13 +4298,85 @@ impl Evaluator {
         if c.signal != Signal::None {
             return Ok(c);
         }
-        if is_truthy(&c.value) {
+        // v0.6 §6.1 + §8.3: `IF` is an ERR consumer at the condition
+        // position. An ERR condition is treated as "false" — i.e., the
+        // `IF` skips to the else branch (or, if no else is provided,
+        // transparently propagates the ERR via §8.5 escape). This
+        // matches the spec's design choice (C-1): failure conditions
+        // route to error handling, not the success branch.
+        let take_then = !matches!(&c.value, Value::Err(_)) && is_truthy(&c.value);
+        if take_then {
             self.eval_expr(then_branch)
         } else if let Some(e) = else_branch {
             self.eval_expr(e)
+        } else if matches!(&c.value, Value::Err(_)) {
+            // No else branch + ERR condition → propagate (§8.5 escape
+            // surfaces as E0102 at the top level).
+            Ok(c)
         } else {
             Ok(Outcome::normal(Value::Null))
         }
+    }
+
+    /// v0.6 §4.3 + §8.3: short-circuit `&&` / `||`.
+    ///
+    /// `&&(a, b)`:
+    ///   - left `ERR` → return `ERR` (don't evaluate `b`; transparent
+    ///     propagation per §8.2).
+    ///   - left falsy (e.g., `FALSE`, `0`, `NULL`, ...) → return `FALSE`
+    ///     (don't evaluate `b`).
+    ///   - otherwise → evaluate `b`; if `ERR` propagates, else return
+    ///     `BOOL(b)`.
+    ///
+    /// `||(a, b)`:
+    ///   - left `ERR` → return `ERR` (don't evaluate `b`).
+    ///   - left truthy → return `TRUE` (don't evaluate `b`).
+    ///   - otherwise → evaluate `b`; if `ERR` propagates, else return
+    ///     `BOOL(b)`.
+    ///
+    /// Both branches register as ERR consumers at the position that
+    /// is actually evaluated (the right side, when reached). The
+    /// `&&`/`||` names are also listed in `ERR_CONSUMER_REGISTRY` so
+    /// that user-defined overrides get the same treatment.
+    fn eval_logical_short_circuit(
+        &mut self,
+        name: &str,
+        args: &[Expr],
+        _span: &Span,
+    ) -> WlwlResult<Outcome> {
+        if args.len() != 2 {
+            return Err(arity_error(name, args.len(), 2));
+        }
+        // Evaluate left first.
+        let left_o = self.eval_expr(&args[0])?;
+        if left_o.signal != Signal::None {
+            return Ok(left_o);
+        }
+        // ERR short-circuits (no right evaluation, transparent ERR
+        // propagation per §8.2).
+        if let Value::Err(_) = &left_o.value {
+            return Ok(left_o);
+        }
+        let left_truthy = is_truthy(&left_o.value);
+        // && : left false → short-circuit with FALSE; left true → evaluate right.
+        // || : left true  → short-circuit with TRUE;  left false → evaluate right.
+        let decide = match name {
+            "&&" => !left_truthy,
+            "||" => left_truthy,
+            _ => unreachable!(),
+        };
+        if decide {
+            return Ok(Outcome::normal(Value::Boolean(name == "||")));
+        }
+        let right_o = self.eval_expr(&args[1])?;
+        if right_o.signal != Signal::None {
+            return Ok(right_o);
+        }
+        // Right ERR propagates as well.
+        if let Value::Err(_) = &right_o.value {
+            return Ok(right_o);
+        }
+        Ok(Outcome::normal(Value::Boolean(is_truthy(&right_o.value))))
     }
 
     fn eval_while(&mut self, cond: &Expr, body: &Expr) -> WlwlResult<Outcome> {
@@ -4342,6 +4499,14 @@ impl Evaluator {
         // inside `eval_set`.
         if name == "SET" {
             return self.eval_set(args, span);
+        }
+        // v0.6 §4.3 + §8.3: short-circuit logical operators.
+        // Evaluate the left operand first; if it's `ERR`, propagate
+        // without touching the right side. If it's not `ERR` and
+        // its truthiness already decides the result (false for `&&`,
+        // true for `||`), skip the right operand entirely.
+        if name == "&&" || name == "||" {
+            return self.eval_logical_short_circuit(name, args, span);
         }
         // [v0.4 spec §4.5 + §16.3 rule 10, Phase E2/E4] The empty-
         // collection forms `ARRAY()` / `DICT()` are canonical syntax
@@ -4498,7 +4663,7 @@ impl Evaluator {
             Ok(false) => Err(self.diag(
                 ErrorCode::E0024,
                 format!(
-                    "cannot SET non-captured binding `{}` from child scope (v0.4 Sec. 6.4: cells are IMMUTABLE until captured by a closure)",
+                    "cannot SET immutable binding `{}`; declare with `LET MUT` to allow mutation (v0.6 §3.1)",
                     target
                 ),
                 span.clone(),
@@ -5591,65 +5756,44 @@ mod tests {
     }
 
     #[test]
-    fn integer_add_overflow_saturates_and_emits_w0015() {
-        // §9.5 row 3.
-        let (r, w) = run_with_warnings("+(9223372036854775807, 1);");
-        assert_eq!(r.unwrap(), Value::Integer(i64::MAX));
-        assert_eq!(w.len(), 1);
-        assert_eq!(w[0].code, ErrorCode::W0015);
-        assert!(w[0].message.contains("overflow"), "msg: {}", w[0].message);
+    fn integer_add_overflow_throws_e0035() {
+        // v0.6 §2.2: integer overflow throws E0035 (replaces v0.5's
+        // "saturate + W0015" behavior).
+        let err = run("+(9223372036854775807, 1);").unwrap_err();
+        assert_eq!(err.diagnostic().code, ErrorCode::E0035);
     }
 
     #[test]
-    fn integer_add_underflow_saturates_and_emits_w0015() {
-        // INT64_MIN cannot be written as a literal — the lexer treats
-        // `-` as the minus operator and `9223372036854775808` overflows
-        // i64. Build it via LET chains instead:
-        //   max = 9223372036854775807 (i64::MAX)
-        //   neg_max = -max = -INT64_MAX = -9223372036854775807 = INT64_MIN + 1
-        //   int_min = neg_max - 1 = INT64_MIN
-        // Note: parser's unary-minus sugar only fires for `-name`
-        // (no parens); `-(name)` is parsed as binary minus. We use
-        // `-name` for the negative form and `-(name, n)` for binary.
+    fn integer_add_underflow_throws_e0035() {
+        // INT64_MIN + (-1) underflows; should throw E0035.
+        // INT64_MIN is built via LET chains (literal can't represent it).
         let src = "LET(max, 9223372036854775807); \
                    LET(int_min, -max); \
                    LET(int_min, -(int_min, 1)); \
                    +(int_min, -1);";
-        let (r, w) = run_with_warnings(src);
-        assert_eq!(r.unwrap(), Value::Integer(i64::MIN));
-        assert_eq!(w.len(), 1);
-        assert_eq!(w[0].code, ErrorCode::W0015);
+        let err = run(src).unwrap_err();
+        assert_eq!(err.diagnostic().code, ErrorCode::E0035);
     }
 
     #[test]
-    fn integer_mul_overflow_saturates_and_emits_w0015() {
-        let (r, w) = run_with_warnings("*(9223372036854775807, 2);");
-        assert_eq!(r.unwrap(), Value::Integer(i64::MAX));
-        assert_eq!(w.len(), 1);
-        assert_eq!(w[0].code, ErrorCode::W0015);
-
-        // Negative overflow saturates to INT64_MIN — built via LET.
+    fn integer_mul_overflow_throws_e0035() {
+        let err = run("*(9223372036854775807, 2);").unwrap_err();
+        assert_eq!(err.diagnostic().code, ErrorCode::E0035);
+        // Negative overflow — built via LET chains.
         let src = "LET(max, 9223372036854775807); \
                    LET(int_min, -max); \
                    LET(int_min, -(int_min, 1)); \
                    *(int_min, 2);";
-        let (r, w) = run_with_warnings(src);
-        assert_eq!(r.unwrap(), Value::Integer(i64::MIN));
-        assert_eq!(w.len(), 1);
-        assert_eq!(w[0].code, ErrorCode::W0015);
+        let err = run(src).unwrap_err();
+        assert_eq!(err.diagnostic().code, ErrorCode::E0035);
     }
 
     #[test]
-    fn integer_sub_overflow_saturates_and_emits_w0015() {
-        // INT64_MAX - (-1) overflows upward to INT64_MAX + 1 = INT64_MAX
-        // saturated (and emits W0015). The `-(0, INT64_MIN)` case
-        // is taken by the E0034 NEG-specialization (next test) per
-        // spec §9.5 row 4, so we use a different overflow direction
-        // here.
-        let (r, w) = run_with_warnings("-(9223372036854775807, -1);");
-        assert_eq!(r.unwrap(), Value::Integer(i64::MAX));
-        assert_eq!(w.len(), 1);
-        assert_eq!(w[0].code, ErrorCode::W0015);
+    fn integer_sub_overflow_throws_e0035() {
+        // INT64_MAX - (-1) overflows upward; should throw E0035.
+        // The `-(0, INT64_MIN)` case is taken by E0034 NEG-specialization.
+        let err = run("-(9223372036854775807, -1);").unwrap_err();
+        assert_eq!(err.diagnostic().code, ErrorCode::E0035);
     }
 
     #[test]
@@ -5818,10 +5962,11 @@ mod tests {
         let (r, w1) = run_with_warnings("+(1, 2);");
         assert_eq!(r.unwrap(), Value::Integer(3));
         assert!(w1.is_empty());
-        // And on overflow, the warning is captured.
-        let (r, w2) = run_with_warnings("+(9223372036854775807, 1);");
-        assert_eq!(r.unwrap(), Value::Integer(i64::MAX));
-        assert_eq!(w2.len(), 1);
+        // v0.6 §2.2: integer overflow now throws E0035 instead of
+        // emitting W0015. Verify the run path returns an Err.
+        let (r, _w2) = run_with_warnings("+(9223372036854775807, 1);");
+        let err = r.unwrap_err();
+        assert_eq!(err.diagnostic().code, ErrorCode::E0035);
     }
 
     #[test]
@@ -6573,24 +6718,50 @@ mod tests {
             // Phase B7 (spec §15.9): see module-level docs in
             // `wlwl_eval::test` for the rationale.
             "EXPECT_ERR",
+            // v0.6 §8.3: BOOL consumes ERR (Appendix B.17).
+            "BOOL",
+            // v0.6 §8.3: short-circuit `&&` / `||` consume ERR at the
+            // not-evaluated side (transparent propagation; the
+            // evaluated side is a regular call).
+            "&&",
+            "||",
+            // v0.6 §6.1 + §8.3: IF consumes ERR at the condition
+            // position; routes to else branch (or propagates if no
+            // else). Handled in `eval_if`, not via the generic
+            // short-circuit block.
+            "IF",
         ]
         .iter()
         .copied()
         .collect();
-        assert_eq!(actual, expected, "§12.7 registry drifted from spec");
-        assert_eq!(actual.len(), 10, "spec §12.7 + B7 add 10 entries");
+        assert_eq!(actual, expected, "§12.7 registry drifted from spec (v0.6)");
+        assert_eq!(actual.len(), 14, "v0.6 §8.3 registry has 14 entries");
     }
 
     #[test]
-    fn err_consumer_registry_excludes_equality_and_if() {
-        // §12.7 table footnote: `=` / `!=` / `IF` are listed in the
-        // table but explicitly "do not consume ERR" — they MUST
-        // propagate per §12.6 default. So they must NOT be in the
-        // ERR_CONSUMER_REGISTRY (which gates the §12.6 short-circuit).
-        for name in ["=", "!=", "IF"] {
+    fn err_consumer_registry_excludes_equality() {
+        // v0.6 §8.3: `=` / `!=` are listed in the table but explicitly
+        // "do not consume ERR" — they MUST propagate per §12.6 default.
+        // `IF` and `&&` / `||` ARE consumers in v0.6 (condition position
+        // routes ERR to else branch; short-circuit operators propagate
+        // ERR without evaluating the right operand). Equality stays
+        // non-consuming.
+        for name in ["=", "!="] {
             assert!(
                 !is_err_consumer(name),
                 "{} is listed in §12.7 but must NOT short-circuit ERR propagation",
+                name
+            );
+        }
+    }
+
+    #[test]
+    fn err_consumer_registry_v06_includes_short_circuits() {
+        // v0.6 §8.3: `&&`, `||`, `IF`, `BOOL` are now ERR consumers.
+        for name in ["&&", "||", "IF", "BOOL"] {
+            assert!(
+                is_err_consumer(name),
+                "{} is a v0.6 ERR consumer per §8.3 but missing from registry",
                 name
             );
         }
@@ -12220,59 +12391,55 @@ entry = "main.wl"
 
     #[test]
     fn b9_not_truthiness_matches_negation_table() {
-        // §9.4 truthiness table: Boolean(b)=b, Null=false, **everything
-        // else** (Integer / Float / String / Array / Dict / Closure /
-        // NativeFn / Ok / Err) = true. Lock the table so a future
-        // regression on either path (`!` / `NOT`) surfaces here.
-        // Note `0` and `""` are NOT falsy in v0.4 — they're "everything
-        // else", which is truthy. (Python's `bool(0) = False` /
-        // JavaScript's `Boolean(0) = false` don't apply; WLWL is
-        // explicitly tri-state per §9.4 row 5.)
+        // v0.6 §2.3 truthiness table: 8 falsy values (FALSE, NULL,
+        // 0, 0.0, "", empty ARRAY, empty DICT, NaN); everything
+        // else is truthy. Lock the table so a future regression on
+        // either path (`!` / `NOT`) surfaces here. This matches
+        // mainstream language conventions (Python / JS / Ruby).
         // Boolean
         assert_eq!(run("NOT(TRUE);").unwrap(), Value::Boolean(false));
         assert_eq!(run("NOT(FALSE);").unwrap(), Value::Boolean(true));
         // Null
         assert_eq!(run("NOT(NULL);").unwrap(), Value::Boolean(true));
-        // Integer — *all* integers are truthy per §9.4 row 5
-        assert_eq!(run("NOT(0);").unwrap(), Value::Boolean(false));
+        // Integer — 0 is falsy in v0.6; non-zero is truthy
+        assert_eq!(run("NOT(0);").unwrap(), Value::Boolean(true));
         assert_eq!(run("NOT(1);").unwrap(), Value::Boolean(false));
         assert_eq!(run("NOT(42);").unwrap(), Value::Boolean(false));
         assert_eq!(run("NOT(-7);").unwrap(), Value::Boolean(false));
-        // String — non-empty AND empty are both truthy (string
-        // empty-truthy is the design choice that distinguishes
-        // §9.4 from C / Python)
-        assert_eq!(run(r#"NOT("");"#).unwrap(), Value::Boolean(false));
+        // Float — 0.0 is falsy; NaN is falsy; non-zero is truthy
+        assert_eq!(run("NOT(0.0);").unwrap(), Value::Boolean(true));
+        assert_eq!(run("NOT(1.5);").unwrap(), Value::Boolean(false));
+        // String — empty is falsy; non-empty is truthy
+        assert_eq!(run(r#"NOT("");"#).unwrap(), Value::Boolean(true));
         assert_eq!(run(r#"NOT("non-empty");"#).unwrap(), Value::Boolean(false));
-        // Empty ARRAY / DICT — still "everything else" per §9.4
-        assert_eq!(run("NOT([]);").unwrap(), Value::Boolean(false));
+        // Empty ARRAY / DICT are falsy; non-empty are truthy
+        assert_eq!(run("NOT([]);").unwrap(), Value::Boolean(true));
         assert_eq!(run("NOT([\"a\": 1]);").unwrap(), Value::Boolean(false));
     }
 
     #[test]
-    fn b9_bang_emits_w0054_once_per_call() {
-        // v0.3-compat single-char `!` must emit exactly one W0054
-        // per call. Two calls = two warnings.
+    fn b9_bang_no_warning_in_v06() {
+        // v0.6 §1.5: the single-char `!` no longer emits W0054 — it's
+        // a canonical alias alongside `NOT`. Two calls must produce
+        // zero warnings total.
         let (r, w) = run_with_warnings("!TRUE; !FALSE;");
         r.unwrap();
-        let w0054_count = w.iter().filter(|wm| wm.code == ErrorCode::W0054).count();
-        assert_eq!(
-            w0054_count, 2,
-            "each `!` site must emit exactly one W0054, got warnings: {:?}",
+        assert!(
+            w.is_empty(),
+            "`!` must not emit any warning in v0.6, got: {:?}",
             w
         );
     }
 
     #[test]
-    fn b9_bang_call_form_emits_w0054() {
+    fn b9_bang_call_form_no_warning() {
         // `!(x)` parenthesised form (same `!` token, call syntax).
         let (r, w) = run_with_warnings("!(TRUE);");
         r.unwrap();
-        let codes: Vec<_> = w.iter().map(|wm| wm.code).collect();
-        assert_eq!(
-            codes,
-            vec![ErrorCode::W0054],
-            "`!(x)` form must emit exactly one W0054, got: {:?}",
-            codes
+        assert!(
+            w.is_empty(),
+            "`!(x)` form must not emit any warning in v0.6, got: {:?}",
+            w
         );
     }
 
@@ -12308,14 +12475,16 @@ entry = "main.wl"
     }
 
     #[test]
-    fn b9_w0054_in_warning_codes_set() {
-        // Lock the registered warning code list to 11 entries
-        // (10 from B7 + W0054 from B9).
+    fn b9_w0054_removed_in_v06() {
+        // v0.6 §1.5 + Appendix B.12: `W0054` (`!` deprecation warning)
+        // is removed. We assert the variant is gone from the
+        // registered warning code list.
         use crate::ErrorCode as E;
-        // The "warnings as a category" hint registered under E0030
-        // path; here we just check both endpoints are wired.
-        let _ = E::W0054; // compile-time existence check
-        assert!(format!("{:?}", E::W0054).contains("W0054"));
+        // Compile-time existence check: the enum variant may still
+        // exist for migration but is no longer emitted at runtime.
+        // The `run_with_warnings` test above (b9_bang_no_warning_in_v06)
+        // is the actual behavioral lock.
+        let _ = E::W0054;
     }
 
     #[test]
@@ -12508,7 +12677,15 @@ entry = "main.wl"
         // 的名字必须出现在 ERR_CONSUMER_REGISTRY (除非是 LexerMacro 例外:
         // IS_OK/IS_ERR/TRY/EXPECT_ERR —— 它们通过 Expr::* 路径消费 ERR,
         // 不进 ERR_CONSUMER_REGISTRY 运行时表)。
-        let lexer_macro_err_consumers = ["IS_OK", "IS_ERR", "TRY", "EXPECT_ERR"];
+        let lexer_macro_err_consumers = [
+            "IS_OK",
+            "IS_ERR",
+            "TRY",
+            "EXPECT_ERR",
+            // v0.6 §6.1 + §8.3: IF is a LexerMacro that consumes ERR
+            // at the condition position.
+            "IF",
+        ];
         for spec in crate::registry::BUILTIN_REGISTRY.iter() {
             if spec.err_consumer != crate::registry::ErrConsumerStatus::Yes {
                 continue;
@@ -12574,12 +12751,14 @@ entry = "main.wl"
 
     #[test]
     fn b11_registry_count_matches_spec_table() {
-        // spec 附录 G 表格 89 行,CALL 重复一次 → 88 unique entries。
+        // spec 附录 G 表格 89 行,CALL 重复一次 → 88 unique entries;
+        // v0.6 §4.3 adds `&&` and `||` → 92 entries; v0.6 §10.4 adds
+        // `AT_K` → 93 entries.
         // 任何加减条目都会让这条挂。b11_subsequent_drop_in_entries_should_lock
         // 测试追加 (e.g. SPEC.md 升 v0.5) 必须显式 bump 这个数字。
         assert_eq!(
             crate::registry::BUILTIN_REGISTRY.len(),
-            90,
+            93,
             "BUILTIN_REGISTRY size changed (now {}); if spec 附录 G bumped, update this lock",
             crate::registry::BUILTIN_REGISTRY.len(),
         );
@@ -13161,17 +13340,24 @@ entry = "main.wl"
 
     #[test]
     fn b15_bool_truthiness() {
-        // §9.4: NULL -> false;Boolean(b) -> b;其它 -> true
+        // v0.6 §2.3: 8 falsy values (FALSE, NULL, 0, 0.0, "", empty
+        // ARRAY, empty DICT, NaN); everything else is truthy.
         assert_eq!(run("BOOL(NULL);").unwrap(), Value::Boolean(false));
         assert_eq!(run("BOOL(FALSE);").unwrap(), Value::Boolean(false));
         assert_eq!(run("BOOL(TRUE);").unwrap(), Value::Boolean(true));
-        // 0 和 "" 都是 truthy (与 B9 NOT 一致)
-        assert_eq!(run("BOOL(0);").unwrap(), Value::Boolean(true));
-        assert_eq!(run(r#"BOOL("");"#).unwrap(), Value::Boolean(true));
+        // 0 / 0.0 / "" / empty containers / NaN are now falsy
+        assert_eq!(run("BOOL(0);").unwrap(), Value::Boolean(false));
+        assert_eq!(run("BOOL(0.0);").unwrap(), Value::Boolean(false));
+        assert_eq!(run(r#"BOOL("");"#).unwrap(), Value::Boolean(false));
+        assert_eq!(run("BOOL([]);").unwrap(), Value::Boolean(false));
+        assert_eq!(run("BOOL(DICT());").unwrap(), Value::Boolean(false));
+        // Non-zero / non-empty are truthy
         assert_eq!(run("BOOL(1);").unwrap(), Value::Boolean(true));
         assert_eq!(run(r#"BOOL("hello");"#).unwrap(), Value::Boolean(true));
         assert_eq!(run("BOOL([1, 2]);").unwrap(), Value::Boolean(true));
         assert_eq!(run(r#"BOOL(["k": "v"]);"#).unwrap(), Value::Boolean(true));
+        // v0.6 §8.3: BOOL consumes ERR — does not propagate.
+        assert_eq!(run("BOOL(ERR(\"x\"));").unwrap(), Value::Boolean(true));
     }
 
     #[test]

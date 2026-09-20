@@ -153,6 +153,9 @@ impl ErrConsumerStatus {
 pub enum Version {
     V02,
     V04,
+    /// v0.6 (current dev cycle): short-circuit `&&`/`||`, explicit
+    /// `LET MUT` mutability, truthiness overhaul, string interpolation.
+    V06,
 }
 
 impl Version {
@@ -160,6 +163,7 @@ impl Version {
         match self {
             Version::V02 => "v0.2",
             Version::V04 => "v0.4",
+            Version::V06 => "v0.6",
         }
     }
 }
@@ -286,7 +290,10 @@ pub const BUILTIN_REGISTRY: &[BuiltinSpec] = &[
         name: "BOOL",
         signature: "BOOL(x) -> BOOLEAN",
         group: BuiltinGroup::Conv,
-        err_consumer: ErrConsumerStatus::No,
+        // v0.6 §8.3 + Appendix B.17: BOOL is registered as an ERR
+        // consumer so `BOOL(ERR(...))` returns a BOOLEAN instead of
+        // triggering §12.6 transparent propagation.
+        err_consumer: ErrConsumerStatus::Yes,
         macro_fn: false,
         version: Version::V02,
         dispatch: DispatchStatus::ResolvedBuiltin,
@@ -428,7 +435,11 @@ pub const BUILTIN_REGISTRY: &[BuiltinSpec] = &[
         name: "IF",
         signature: "IF(cond, t, e?) -> v",
         group: BuiltinGroup::Control,
-        err_consumer: ErrConsumerStatus::No,
+        // v0.6 §6.1 + §8.3: IF is a partial ERR consumer at the
+        // condition position; ERR → goes to else branch (or
+        // propagates if no else). Handled in `eval_if`, not via
+        // the generic §12.6 short-circuit block.
+        err_consumer: ErrConsumerStatus::Yes,
         macro_fn: true,
         version: Version::V02,
         dispatch: DispatchStatus::LexerMacro,
@@ -636,6 +647,33 @@ pub const BUILTIN_REGISTRY: &[BuiltinSpec] = &[
         section: "§9.1",
     },
     BuiltinSpec {
+        name: "&&",
+        signature: "&&(a, b) -> BOOLEAN (v0.6 §4.3 short-circuit)",
+        group: BuiltinGroup::Op,
+        // v0.6 §8.3: short-circuit `&&` consumes ERR — left-side
+        // ERR propagates without evaluating `b`. The actual logic
+        // lives in `eval_logical_short_circuit` (intercepted in
+        // `eval_call` before the generic §12.6 short-circuit block).
+        err_consumer: ErrConsumerStatus::Yes,
+        macro_fn: false,
+        version: Version::V06,
+        dispatch: DispatchStatus::ResolvedBuiltin,
+        section: "§4.3",
+    },
+    BuiltinSpec {
+        name: "||",
+        signature: "||(a, b) -> BOOLEAN (v0.6 §4.3 short-circuit)",
+        group: BuiltinGroup::Op,
+        // v0.6 §8.3: short-circuit `||` consumes ERR — left-side
+        // ERR propagates without evaluating `b`. The actual logic
+        // lives in `eval_logical_short_circuit`.
+        err_consumer: ErrConsumerStatus::Yes,
+        macro_fn: false,
+        version: Version::V06,
+        dispatch: DispatchStatus::ResolvedBuiltin,
+        section: "§4.3",
+    },
+    BuiltinSpec {
         name: "NEG",
         signature: "NEG(a) -> -a",
         group: BuiltinGroup::Op,
@@ -658,13 +696,28 @@ pub const BUILTIN_REGISTRY: &[BuiltinSpec] = &[
     },
     BuiltinSpec {
         name: "POP",
-        signature: "POP(arr) -> ARRAY",
+        signature: "POP(arr) -> ARRAY (v0.4/v0.5 alias for AT_K semantics)",
         group: BuiltinGroup::Array,
+        // v0.6 E decision: `POP` is renamed to `AT_K` to clarify
+        // semantics (lookup, not removal). The dispatch still routes
+        // to `builtin_at_k` for backward source-compat with v0.5
+        // programs, but the registry entry below documents the
+        // canonical name.
         err_consumer: ErrConsumerStatus::No,
         macro_fn: false,
         version: Version::V02,
+        dispatch: DispatchStatus::ResolvedCompat,
+        section: "§10.4",
+    },
+    BuiltinSpec {
+        name: "AT_K",
+        signature: "AT_K(d, k, default) -> v (v0.6 §10.4)",
+        group: BuiltinGroup::Dict,
+        err_consumer: ErrConsumerStatus::No,
+        macro_fn: false,
+        version: Version::V06,
         dispatch: DispatchStatus::ResolvedBuiltin,
-        section: "§10.1",
+        section: "§10.4",
     },
     BuiltinSpec {
         name: "SHIFT",
@@ -1303,8 +1356,8 @@ mod tests {
         );
         assert_eq!(
             BUILTIN_REGISTRY.len(),
-            90,
-            "expected 90 entries per spec 附录 G + compat aliases"
+            93,
+            "expected 93 entries per spec 附录 G + v0.6 §4.3 (&&, ||) + v0.6 §10.4 (AT_K)"
         );
     }
 

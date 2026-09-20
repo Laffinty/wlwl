@@ -25,7 +25,7 @@
 //! comments, so a canonical rebuild drops them. `wlwl fmt` therefore
 //! prints to stdout and never writes files in place.
 
-use wlwl_ast::{Expr, FunParam, Literal, Pattern, TypeAnnotation, TypeExpr};
+use wlwl_ast::{Expr, FunParam, Literal, Pattern, StrPart, TypeAnnotation, TypeExpr};
 
 /// Maximum line length (§16.3 rule 2).
 const MAX_LINE: usize = 100;
@@ -114,15 +114,17 @@ fn render_inline(e: &Expr) -> Option<String> {
         }
         Expr::Let {
             name,
+            mut_,
             type_annotation,
             value,
             ..
         } => {
             let ann = type_annotation.as_ref().map(type_ann_text);
             let v = render_inline(value)?;
+            let kw = if *mut_ { "LET MUT" } else { "LET" };
             match ann {
-                Some(a) => format!("LET({}: {}, {})", name, a, v),
-                None => format!("LET({}, {})", name, v),
+                Some(a) => format!("{}({}: {}, {})", kw, name, a, v),
+                None => format!("{}({}, {})", kw, name, v),
             }
         }
         Expr::LetPattern {
@@ -315,7 +317,50 @@ fn render_literal(lit: &Literal) -> String {
         Literal::Boolean(true) => "TRUE".to_string(),
         Literal::Boolean(false) => "FALSE".to_string(),
         Literal::Null => "NULL".to_string(),
+        // v0.6 §1.8: interpolated string. Text segments are emitted
+        // verbatim (the outer quotes wrap the whole string); only
+        // `escape` semantics are needed (handled by `escape_str_text`
+        // which writes the right backslash sequences).
+        Literal::Interpolated(parts) => {
+            let mut out = String::with_capacity(parts.len() * 8);
+            out.push('"');
+            for p in parts {
+                match p {
+                    StrPart::Text(s) => out.push_str(&escape_str_text(s)),
+                    StrPart::Expr(e) => {
+                        out.push_str("${");
+                        out.push_str(&render_inline(e).unwrap_or_default());
+                        out.push('}');
+                    }
+                }
+            }
+            out.push('"');
+            out
+        }
     }
+}
+
+/// Escape a string-segment body for embedding inside an interpolated
+/// string literal (v0.6 §1.8). The outer `"..."` is added by the
+/// caller; this only handles the in-string escapes (`\n`, `\t`, `\\`,
+/// `\"`, `\$`, etc.).
+fn escape_str_text(s: &str) -> String {
+    let mut out = String::with_capacity(s.len() + 4);
+    for c in s.chars() {
+        match c {
+            '\\' => out.push_str("\\\\"),
+            '"' => out.push_str("\\\""),
+            '$' => out.push_str("\\$"),
+            '\n' => out.push_str("\\n"),
+            '\t' => out.push_str("\\t"),
+            '\r' => out.push_str("\\r"),
+            '\0' => out.push_str("\\0"),
+            '\x08' => out.push_str("\\b"),
+            '\x0c' => out.push_str("\\f"),
+            other => out.push(other),
+        }
+    }
+    out
 }
 
 /// Floats must re-parse as floats: `1.0` must never render as `1`
@@ -436,13 +481,15 @@ pub fn render(e: &Expr, indent: usize) -> String {
         } => render_match(value, clauses, default, indent),
         Expr::Let {
             name,
+            mut_,
             type_annotation,
             value,
             ..
         } => {
+            let kw = if *mut_ { "LET MUT" } else { "LET" };
             let head = match type_annotation {
-                Some(a) => format!("LET({}: {}", name, type_ann_text(a)),
-                None => format!("LET({}", name),
+                Some(a) => format!("{}({}: {}", kw, name, type_ann_text(a)),
+                None => format!("{}({}", kw, name),
             };
             render_folded_head(&head, &[value.as_ref()], indent)
         }
