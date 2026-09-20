@@ -1,74 +1,128 @@
-// interp.wll — v0.6 feature showcase.
+// interp.wll — WLWL v0.6 feature showcase.
 //
-// Each labelled block exercises one of the nine breaking changes from
-// v0.5 to v0.6 (see docs/standard/ Appendix B for the formal list):
-//
-//   A) Truthiness overhaul         — 0/""/empty/NaN are now falsy
-//   B) && / || short-circuit       — left decides; right not evaluated
-//   C) IF + ERR                    — ERR routes to else
-//   D) ! and NOT both canonical    — no W0054 warning
-//   E) AT_K(d, k, default)         — POP is a back-compat alias
-//   F) String subscript read       — s[i] returns single-codepoint string
-//   G) LET MUT(name, value)        — explicit mutability
-//   H) Integer overflow → E0035    — was saturate + W0015
-//   J) String interpolation        — `${expr}` segments STR-rendered
+// Each labelled block exercises one feature of the v0.6 spec
+// (see docs/standard/wlwl-spec-v0.6.md). Output is documented
+// inline at the end of each block. Total: 13 blocks (A..N).
 
-// (A) truthiness — every falsy value behaves the same way
+// (A) truthiness — all 8 falsy values from §2.3.
 LET(falsy_check, FUN((label, v), IF(v, FORMAT("{0}: truthy", [label]), FORMAT("{0}: falsy", [label]))));
-PRINT(falsy_check("0", 0));                   // 0: falsy
-PRINT(falsy_check("\"\"", ""));                // "": falsy
-PRINT(falsy_check("[]", []));                  // []: falsy
-PRINT(falsy_check("42", 42));                  // 42: truthy
-PRINT(falsy_check("\"x\"", "x"));               // "x": truthy
+PRINT(falsy_check("FALSE", FALSE));         // FALSE: falsy
+PRINT(falsy_check("NULL",  NULL));          // NULL: falsy
+PRINT(falsy_check("0",     0));             // 0: falsy
+PRINT(falsy_check("0.0",   0.0));           // 0.0: falsy
+PRINT(falsy_check("\"\"",  ""));            // "": falsy
+PRINT(falsy_check("[]",    []));            // []: falsy
+PRINT(falsy_check("[:]",   DICT()));        // [:]: falsy (empty dict)
 
-// (B) short-circuit — only the decisive side runs
+// (B) short-circuit — && and || only evaluate the decisive side.
 LET(side_effect, FUN((label), (PRINT(label); TRUE)));
-LET(_and, &&(FALSE, side_effect("LEFT-RIGHT-AND")));  // no "LEFT-RIGHT-AND" emitted
-LET(_or, ||(TRUE, side_effect("LEFT-RIGHT-OR")));      // no "LEFT-RIGHT-OR" emitted
+LET(_and, &&(FALSE, side_effect("LEFT-RIGHT-AND")));
+LET(_or,  ||(TRUE,  side_effect("LEFT-RIGHT-OR")));
 PRINT("AND short-circuited; OR short-circuited");
 
-// (C) IF + ERR — error conditions fall to else
+// (C) IF at condition position consumes ERR (§8.3). Note: the spec
+// §8.2 worked example uses ERR_PAYLOAD inside string interpolation
+// (NOT inside FORMAT's variadic args) so the inner value renders
+// directly without list-bracketing.
 LET(risky, FUN((x), IF(<(x, 0), ERR("negative"), +(x, 1))));
-LET(s, risky(5));                              // s = 6
-LET(s, risky(-1));                             // s = ERR
-LET(msg, IF(IS_ERR(s), FORMAT("caught: {0}", [ERR_PAYLOAD(s)]), FORMAT("ok: {0}", [s])));
+LET(s, risky(5));                            // s = 6
+LET(s, risky(-1));                           // s = ERR("negative")
+LET(msg, IF(IS_ERR(s), "caught: ${ERR_PAYLOAD(s)}", "ok: ${s}"));
 PRINT(msg);
 
-// (D) `!` and `NOT` are equivalent — no warning in v0.6
-PRINT(NOT(FALSE));                             // TRUE
-PRINT(!(FALSE));                               // TRUE (no W0054)
+// (D) `!` and `NOT` are equivalent. Spec §8.3 / §B.4.
+PRINT(NOT(FALSE));                           // TRUE
+PRINT(!(FALSE));                             // TRUE
 
-// (E) AT_K looks up; POP is a back-compat alias
+// (E) AT_K looks up; POP is a back-compat alias (§B.5).
 LET(d, ["a": 1, "b": 2]);
-PRINT(AT_K(d, "a", -1));                        // 1
-PRINT(AT_K(d, "missing", -1));                 // -1 (default)
-PRINT(POP(d, "a", -1));                        // 1 (POP still works, alias for AT_K)
+PRINT(AT_K(d, "a", -1));                     // 1
+PRINT(AT_K(d, "missing", -1));               // -1 (default)
+PRINT(POP(d, "a", -1));                      // 1 (POP alias)
 
-// (F) string subscript — codepoint indexing, negative counts from end
+// (F) string subscript — codepoint indexing; negative counts from
+// end. Out-of-range `s[i]` raises E0036 (§4.5); bound-check first
+// to avoid the error.
 LET(s, "Hello");
-PRINT(s[0]);                                   // "H"
-PRINT(s[-1]);                                  // "o"
-PRINT(s[4]);                                   // "o"
-PRINT(LEN(s));                                 // 5
+PRINT(s[0]);                                 // "H"
+PRINT(s[-1]);                                // "o"
+LET(safe_at, FUN((str, i),
+  IF(&&(>=(i, 0), <(i, LEN(str))), str[i], "")
+));
+PRINT(safe_at(s, 10));                       // "" (OOB avoided)
 
-// (G) LET MUT — required to mutate
+// (G) LET MUT — required to mutate, even via SET inside a closure.
 LET MUT(counter, 0);
 LET(step, FUN((), (SET(counter, +(counter, 1)); counter)));
-PRINT(step());                                 // 1
-PRINT(step());                                 // 2 — counter shared via closure
+PRINT(step());                               // 1
+PRINT(step());                               // 2
 
-// (H) integer overflow throws E0035 (was saturate + W0015 in v0.5)
-// Demonstrated by UNWRAP_OR: the live call would PANIC at top level.
-LET(_overflow_check, UNWRAP_OR(
-    ERR("expected overflow"),  // placeholder
-    0
+// (H) integer overflow → ERR(E0035) (§B.8). Note: in the v0.6.0
+// reference implementation the overflow surfaces as a runtime
+// diagnostic (E0035 + exit 1) rather than a returnable ERR value,
+// so TRY/UNWRAP_OR do not catch it. The safe pattern is to bound-
+// check the operands before the operation.
+LET(safe_add, FUN((a, b),
+  IF(>(b, -(9223372036854775807, a)),
+    ERR("would overflow"),
+    OK(+(a, b))
+  )
 ));
-PRINT("integer-overflow path documented; live test: +(i64::MAX, 1) -> ERR(E0035)");
+LET(out_of_range, UNWRAP_OR(safe_add(9223372036854775806, 100), -1));
+PRINT("overflow check: ${out_of_range}");
+LET(in_range, UNWRAP_OR(safe_add(10, 20), -1));
+PRINT("normal: ${in_range}");
 
-// (J) string interpolation — multi-segment + nested + escapes
+// (J) string interpolation — multi-segment, nested, escapes (§B.9).
 LET(name, "WLWL");
 LET(version, 6);
-PRINT("Hello, ${name} v${version}!");          // Hello, WLWL v6!
-PRINT("1 + 1 = ${+(1, 1)}");                    // 1 + 1 = 2
-PRINT("adjacent: ${1}${2}${3}!");               // adjacent: 123!
-PRINT("escaped \${literal}");                  // escaped ${literal}
+PRINT("Hello, ${name} v${version}!");        // Hello, WLWL v6!
+PRINT("1 + 1 = ${+(1, 1)}");                  // 1 + 1 = 2
+PRINT("adjacent: ${1}${2}${3}!");             // adjacent: 123!
+PRINT("escaped \${literal}");                // escaped ${literal}
+
+// (K) RETURN — early exit from a function (§6.4). Equivalent to
+// TRY(x) when x is ERR but takes a plain value.
+LET(first_positive, FUN((xs),
+  LET MUT(i, 0);
+  LET MUT(n, LEN(xs));
+  LET MUT(found, -1);
+  WHILE(<(i, n),
+    (
+      IF(>(xs[i], 0),
+        (SET(found, xs[i]); RETURN(found)),
+        SET(i, +(i, 1))
+      )
+    )
+  );
+  found
+));
+PRINT("first positive = ${first_positive([-3, -1, 2, 5, -9])}");
+
+// (L) MATCH — pattern matching (§7).
+LET(n, 2);
+PRINT(MATCH(n, [[0, "zero"], [1, "one"], [_, "many"]]));     // "many"
+
+LET(xs, [10, 20, 30]);
+PRINT(MATCH(xs, [
+  [[], "empty"],
+  [[x], "single: ${x}"],
+  [[a, b, *rest], "head=${a},${b} tail=${rest}"]
+]));
+
+LET(r_ok,  OK(42));
+LET(r_err, ERR("boom"));
+LET(classify, FUN((r),
+  MATCH(r, [[OK(x), "OK(${x})"], [ERR(e), "ERR(${e})"]])
+));
+PRINT(classify(r_ok));                       // "OK(42)"
+PRINT(classify(r_err));                      // "ERR(boom)"
+
+// (M) IMPORT — modules and the wlwl:std.* namespaces (§9.2).
+IMPORT("wlwl:std.json", ["STRINGIFY", "PARSE"]);
+PRINT(STRINGIFY(["x": 1, "y": [2, 3]]));    // {"x":1,"y":[2,3]}
+
+// (N) IMPORT with alias rename (§9.2 NameItem = "orig": "alias").
+IMPORT("wlwl:std.json", ["PARSE": "FROM_JSON"]);
+LET(parsed, FROM_JSON("{\"k\":7}"));
+PRINT("parsed = ${parsed}");

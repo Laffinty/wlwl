@@ -1,142 +1,155 @@
 ---
 name: writing-wlwl
-description: Writes correct WLWL v0.6 source code and .wll files. Covers the nine user-approved breaking decisions from v0.5 (truthy overhaul, &&/|| short-circuit, IF(ERR,...) routing, ! canonical, AT_K rename from POP, string subscript read, explicit LET MUT, integer overflow -> E0035, ${} interpolation). Use when the user asks for WLWL code, a .wll file, a wlwl script, or anything targeting the wlwl-spec-v0.6 language (SHA-1 wlwl-spec-v0.6.md). Always finishes by running `wlwl run` to verify the output (primary check); `wlwl fmt --check` is best-effort because v0.6 has known formatter drift. Do NOT use for WLWL v0.5 or earlier -- those use different truthy rules, POP-not-AT_K, and lack LET MUT.
+description: Writes WLWL v0.6 .wll source files (spec docs/standard/wlwl-spec-v0.6.md). Covers the 9 v0.6 decisions: truthy overhaul, &&/|| short-circuit, IF ERR-routing, ! canonical, AT_K rename, string subscript, LET MUT, overflow->E0035, ${} interpolation. Use when the user asks for WLWL code, a .wll file, a wlwl script, or anything targeting wlwl-spec-v0.6. Do NOT use for v0.5 or earlier (POP-not-AT_K, no LET MUT), the Rust implementation, or the formatter.
 ---
 
 # Writing WLWL v0.6
 
-## TL;DR
+## When to load / NOT to use
 
-**Always DO:**
-1. One statement per line; end each non-final statement with `;` (the last is optional).
-2. Use `LET MUT(name, value)` for any binding that gets `SET`-rebinding later.
-3. Use `AT_K(dict, key, default)` for safe dict access; treat `POP` as a back-compat alias.
-4. Use `${expr}` inside double-quoted strings; escape `\$` for a literal `${`.
-5. After writing, run `wlwl run <file>` and confirm it exits 0 with expected stdout.
+**Use when:**
+- The user asks for a `.wll` source file, a WLWL program, or a v0.6 idiom.
+- A task targets `wlwl-spec-v0.6.md` (SHA-1 anchored at `docs/standard/`).
+- Reviewing or debugging v0.6 source.
 
-**Never DO:**
-1. Never write `LET(x, 1)` then `SET(x, 2)` -- it must be `LET MUT(x, 1)`.
-2. Never write `if (x == 0)` or `==`-style comparisons; v0.6 has no `==` -- use `<(x, 0)`, `>(x, 0)`, etc.
-3. Never write `POP(d, k, default)` in new code; it still works but is the old name.
-4. Never write `IF(cond, then)` with an assumed error path -- `IF(cond, then, else)` is what catches `ERR(...)`.
-5. Never claim a `.wll` file works without running `wlwl run` on it. Spec drift is real; verify.
-
-## Canonical form (per spec section A.3, with v0.6 caveats)
-
-The formatter **intends** to be normative: spec section A.3 says `wlwl fmt --check` is the canonical-form gate. In v0.6 the formatter is **mostly** idempotent but has known drift (see Verification loop below). Source files follow these rules; whether `wlwl fmt --check` accepts every legal source is a separate question.
-
-- Each statement on its own line, terminated by `;` (last statement's `;` is optional).
-- No leading indentation in **source** (the formatter may emit indentation on long `LET(...)` blocks, but source files are written flat).
-- Comments (`// line` and `/* block */`) are fine in source. The formatter drops them when canonicalising (per spec A.3), and the `--check` arm strips them on both sides before comparing, so comments do not cause `W0053`.
-- Strings, escapes, and nested `/* */` are preserved verbatim.
-- `LET MUT(...)` keyword is preserved by the formatter.
-- Trailing newline at EOF is optional (formatter tolerates missing).
-
-Prefer `wlwl run` as the authoritative check; treat `wlwl fmt --check` as advisory in v0.6.
-
-## The nine v0.6 decisions (full table in `reference.md`)
-
-| # | Decision | Rule of thumb |
-|---|----------|---------------|
-| A | Truthy overhaul | `0`, `""`, `[]`, `NaN` are falsy; everything else truthy |
-| B | `&&` / `\|\|` short-circuit | right side not evaluated when left decides |
-| C | `IF(cond, then, else)` | an `ERR(...)` on the `then` path routes to `else` |
-| D | `!` and `NOT` | both canonical; v0.6 emits no W0054 |
-| E | `AT_K(d, k, default)` | new name; `POP` is the back-compat alias |
-| F | String subscript | `s[i]` returns single-codepoint string; negative counts from end |
-| G | `LET MUT(name, value)` | explicit; plain `LET` is immutable |
-| H | Integer overflow | throws `ERR(E0035)` instead of saturating + W0015 |
-| J | String interpolation | `"hello ${name}"`; multi-segment supported |
-
-For the AST shapes (`Expr::Let.mut_`, `Literal::Interpolated(Vec<StrPart>)`,
-`StrPart::{Text, Expr}`) and the lexer pitfalls (`Mut` contextual keyword,
-`StrStart/StrEnd` single-pair bracket), see `reference.md`.
+**Don't use when:**
+- The source targets WLWL v0.5 or earlier (different truthy rules, `POP`-not-`AT_K`, no `LET MUT`).
+- The task is editing the Rust implementation in `impl/` or the formatter spec.
+- The user wants `wlwl.exe` CLI documentation (that's `wlwl help` / `wlwl <subcmd> --help`).
+- The artifact is a Rust test, ADRs, or build-system file.
 
 ## Writing flow
 
-Copy this checklist and tick items as you go:
+Tick these as you go:
 
 ```
 WLWL writing progress:
-- [ ] 1. Decide the AST shape (use the 9-decision table to pick operators)
-- [ ] 2. Write the .wll file (one stmt per line, `;`, no leading indent)
-- [ ] 3. Run `wlwl run <file>` -- MUST exit 0 with expected stdout
-- [ ] 4. Optional: run `wlwl fmt --check <file>` -- best-effort; see Verification
-- [ ] 5. If 3 fails: consult `reference.md` for the failing token/operator
+- [ ] 1. Sketch the AST shape (use the operators/builtins section below)
+- [ ] 2. Decide mutation — any SET later means LET MUT(name, value) now
+- [ ] 3. Write the .wll file (one stmt per line, semicolons, no leading indent)
+- [ ] 4. Run `wlwl run <file>` — MUST exit 0 with expected stdout
+- [ ] 5. If 4 fails: consult reference.md for the failing token/operator
 ```
 
-Do not skip step 3. `wlwl run` is the source of truth. `wlwl fmt --check`
-in v0.6 has known idempotency drift and may fail on syntactically valid
-code; treat its result as advisory, not normative.
+Do not skip step 4. `wlwl run` is the source of truth. `wlwl fmt --check` is best-effort in v0.6 (see Verification loop).
 
-## Top 10 antipatterns (the bugs you will write without this list)
+## Truthy / falsy — spec §2.3
 
-1. **Missing `MUT`.** `LET(c, 0); SET(c, +(c, 1))` -> E0010 "cannot SET immutable". Fix: `LET MUT(c, 0);`.
-2. **Using `POP` in new code.** Works but the formatter / lint surfaces a deprecation hint. Use `AT_K(d, k, default)`.
-3. **Comparing with `==`.** WLWL v0.6 has no `==` operator. Use `=(x, y)` for equality, `!=` via `<>`, ordering via `<`, `>`, `<=`, `>=`.
-4. **Forgetting `${}` is a segment, not a directive.** `"hello $name"` is the literal string `"hello $name"`. Always write `"hello ${name}"`.
-5. **Trying to interpolate an `ERR`.** `"${risky(-1)}"` inside `PRINT` will throw if `risky` returns `ERR`. Use `IF(IS_ERR(x), "...", FORMAT("...{0}...", [x]))` for safe interpolation.
-6. **Assuming `IF(cond, then)` is two-arg.** It is three-arg; missing `else` makes the false branch `NIL` silently. For error-catching you want the `else`.
-7. **Calling `SET` outside a closure.** `SET` rebinds the enclosing `LET MUT`. At top-level it works only if the binding is `LET MUT`.
-8. **Mutating a captured `LET`.** Functions captured by closures keep the original binding; you cannot `SET` it from inside the callee unless it was `LET MUT`.
-9. **Integer literals that overflow at parse time.** `9999999999999999999999` (20+ nines) exceeds `i64` and the parser emits E0035 before the program runs.
-10. **Block comments eating the closing `}`.** Nested `/* */` is supported by the lexer, but a stray `/* ... */` between `${` and `}` inside an interpolation breaks the string scanner. Keep interpolations simple.
+Eight falsy values: `FALSE`, `NULL`, `0`, `0.0`, `""`, `[]` (empty array), `DICT()` (empty dict), `NaN`.
 
-## String interpolation cheat sheet
+**Everything else is truthy**, including non-empty strings, non-empty containers, and `OK(FALSE)`.
 
-- Basic: `"${name}"`, `"1 + 1 = ${+(1,1)}"`.
-- Adjacent segments: `"${a}${b}${c}"` -- all three resolve.
-- Escaped literal: `"escaped \${literal}"` -> `escaped ${literal}`.
-- Nested arithmetic: `"result = ${*(+(x,1), 2)}"`.
-- Multi-line: not supported in v0.6; concatenate with `+(s, "\n", s2)`.
+`ERR(...)` is **not** in this list — it is its own propagation mechanism per §8.2. Passing `ERR(x)` to a non-consumer function transparently forwards the `ERR`; it does NOT make the function body "skip" because the arg was falsy. Only §8.3 consumers (`IS_OK`, `IS_ERR`, `UNWRAP_OR`, `OR_DIE`, `TRY`, `UNWRAP`, `ERR_PAYLOAD`, `WRAP`, `TYPE`, `==`/`!=`, `IF` condition, `&&`/`||`, `BOOL`) can inspect an ERR safely.
 
-If the formatter produces nested `StrStart/StrEnd` pairs around your
-interpolation, your source has stray `${` inside an interpolation -- fix the
-source, not the formatter output.
+## Operators / builtins — the v0.6 cheat sheet
 
-## Verification loop (the one thing you must not skip)
+**Equality** (spec §2.4, §B.12): `=(a, b)` and `==(a, b)` are aliases. `!=(a, b)` or `<>(a, b)`. Cross-type numeric: `==(1, 1.0)` is `TRUE`.
 
-After writing, in this order:
+**Comparison**: `<(a, b)`, `>(a, b)`, `<=(a, b)`, `>=(a, b)`.
+
+**Arithmetic**: `+(a, b)`, `-(a, b)`, `*(a, b)`, `/(a, b)`, `%(a, b)`. `+` is also string concat and array concat. Integer overflow → `ERR(E0035)`; divide-by-zero → `ERR(E1003)` (note: not `E0009`).
+
+**Boolean**: `&&(a, b)` / `||(a, b)` short-circuit; right side not evaluated when left decides. `NOT(x)` and `!(x)` are equivalent.
+
+**Indexing**: `xs[i]` returns one element; out-of-range array/string index raises `E0036`. `INDEX(xs, v)` returns the index of `v` in `xs`, or `-1` if not found (NOT an error).
+
+## Control flow — spec §6
+
+- `IF(cond, then, else)` — `else` is required for ERR routing; without it the false branch is `NULL`.
+- `WHILE(cond, body)` — value is `NULL`; body ERR terminates the loop and propagates.
+- `FOR(x, iterable, body)` — iter over ARRAY (by element), DICT (by insertion-order key), STRING (by code point, binding single-char STRING). Value is `NULL`.
+- `RETURN(expr?)` / `BREAK()` / `CONTINUE()` — only valid inside a function or loop body; outside → `E0014`.
+
+## Pattern matching — spec §7
+
+`MATCH(value, clauses[, default])`. Patterns:
+
+- Literal: `0`, `"foo"`, `TRUE`.
+- Identifier: binds the name to the value.
+- Wildcard: `_` matches anything without binding.
+- Array: `[a, b, *rest]` — positional; `*rest` collects the tail.
+- Dict: `["k": v, ...]` — partial by listed keys.
+- Variant: `OK(p)` / `ERR(p)` — match `RESULT` variants, then match the payload.
+
+Clauses are tried in order; first hit wins. No match and no default → `NULL` (not an error). Pattern mismatch in a `LET` destructuring IS an error (`E0026`).
+
+## Imports — spec §9.2
+
+Three forms:
+
+```
+IMPORT(path, ["a", "b"])                  // bind exported names a, b
+IMPORT(path, ["orig": "alias"])           // bind `orig` as local `alias`
+IMPORT(path, [])                          // side-effect only
+```
+
+Path prefixes:
+- `./` or `../` — filesystem relative (`.wll` suffix optional).
+- `wlwl:std.*` — built-in namespaces (`collection`, `json`, `fs`, `test`, `io`, `format`, `ai`, `agent`).
+
+Names from `wlwl:std.*` are NOT global — they must be IMPORTed before use. Errors: missing module `E0040`; cycle `E0041`; name not exported `E0023`; duplicate `E0021`.
+
+## Error model — spec §8
+
+**§8.2 transparent propagation**: any function call whose argument evaluates to `ERR` does not run the body; the `ERR` is forwarded. Pass plain values to non-consumer functions; consume `ERR` only via §8.3.
+
+**§8.3 ERR consumers** (13 entries): `IS_OK`, `IS_ERR`, `UNWRAP_OR`, `OR_DIE` (deprecated — `W0051`), `TRY` (function-body only), `UNWRAP` (PANICs on ERR — `E0100`), `ERR_PAYLOAD`, `WRAP`, `TYPE`, `==`/`!=`, `IF` (condition position), `&&`/`||` (left side), `BOOL`. Each either extracts payload info or returns a default.
+
+**§8.4 PANIC**: `PANIC(msg)` (msg must be STRING or DICT) terminates with `E0100`. Bypasses propagation entirely. `UNWRAP` on ERR and `NEG(i64::MIN)` also PANIC.
+
+**§8.5 top-level escape**: an uncaught ERR reaching the top level terminates with `E0102` and exit code 1. Always consume at the boundary.
+
+## Standard library pointers
+
+For the full ~70-name catalogue see `reference.md` §9. Categories:
+
+- **Global builtins (§10.2–10.5)**: `PRINT`, `PRINT_ERR`, `INPUT`, `LEN`, `TYPE`, `STR`, `INT`, `FLOAT`, `BOOL`, container ops (`PUSH`/`SHIFT`/`SLICE`/`CONCAT`/`INDEX`/`REVERSE`/`INDEX_GET`/`INDEX_SET`/`AT`/`KEYS`/`VALUES`/`HAS`/`MERGE`/`REMOVE_KEY`/`DEL`), string ops (`SUB`/`SPLIT`/`REPLACE`/`UPPER`/`LOWER`/`TRIM`/`STARTS_WITH`/`ENDS_WITH`/`REPEAT`/`PAD_*`/`CODEPOINTS`/`FROM_CODEPOINTS`), and `AT_K`/`POP` for dict lookup.
+- **`wlwl:std.collection`** (§10.6): `MAP`, `FILTER`, `REDUCE`, `SORT`, `SORT_BY`, `RANGE`, `ZIP`, `ENUMERATE`, `TAKE`, `DROP`, `FLAT`, `UNIQ`, `GROUP_BY`, `ANY`, `ALL`, `FIND`, `JOIN`.
+- **`wlwl:std.json`** (§10.8): `STRINGIFY`, `PARSE`.
+- **`wlwl:std.fs`** (§10.8): `WRITE_FILE`, `READ_FILE`, `EXISTS`.
+- **`wlwl:std.test`** (§10.10): `TEST`, `ASSERT`, `ASSERT_EQ`, `ASSERT_NEQ`, `EXPECT_ERR`, `RUN_TESTS`.
+
+## Build & runtime config — spec §9.1, §9.4
+
+- `EXPORT([names])` at top level makes module bindings visible to importers.
+- `wlwl.toml` (per-module, optional) declares `[features]`: `strict_types` (call-boundary type checks → `E0033`), `allow_builtin_shadow` (permit builtin-name shadowing with `W0030` instead of `E0025`).
+
+## Top antipatterns
+
+| # | Bug | Symptom | Fix |
+|---|-----|---------|-----|
+| 1 | Missing `MUT` on a binding later `SET`-ed | `E0024` cannot SET immutable | `LET MUT(name, value)` |
+| 2 | Using `POP` for new code | Deprecation hint (`W0051`) | Prefer `AT_K(d, k, default)`; `POP` is the alias |
+| 3 | Interpolating `ERR(x)` | The whole literal becomes `ERR` (§1.8) | Extract payload first: `LET(p, ERR_PAYLOAD(x)); "got: ${p}"` |
+| 4 | `IF(cond, then)` two-arg form | `else` is `NULL` silently; ERR on `then` propagates without being routed | Use three-arg `IF(cond, then, else)` for ERR catching |
+| 5 | `SET` outside `LET MUT` | `E0024` | Use `LET MUT` at the binding site, then `SET` |
+| 6 | `RETURN`/`BREAK`/`CONTINUE` at top level or outside loop | `E0014` | Only inside a function body / loop body |
+| 7 | `xs[i]` out of range | `E0036` | Bound-check first: `IF(>=(i, 0), IF(<(i, LEN(xs)), xs[i], default), default)` |
+| 8 | Nested string literal inside `${...}` | `E0001` "nested string literal inside `${...}` interpolation is not allowed" | Bind the inner value to a LET first: `LET(v, ...); "outer ${v}"` |
+| 9 | `FORMAT("…{0}…", [x])` | Renders the whole list at `{0}` (the list, not the first element) | Pass each placeholder as its own variadic arg: `FORMAT("…{0}…", x)` (§10.7) |
+| 10 | Confusing `ERR` with falsy | Treating `IF(ERR("x"), "t", "f")` as "ERR is falsy" | ERR is its own propagation mechanism (§8.2); it's neither truthy nor falsy in §2.3 |
+
+## Verification loop
 
 ```bash
-# 1. PRIMARY check: does it run and produce the expected output?
+# 1. PRIMARY: does it run and produce expected output?
 wlwl run path/to/file.wll
 
-# 2. SECONDARY check (best-effort): is the source already canonical?
+# 2. SECONDARY (best-effort): is the source already canonical?
 wlwl fmt --check path/to/file.wll
+
+# 3. For AI agents: machine-readable diagnostics.
+wlwl run --format jsonl path/to/file.wll      # 12-field schema per conformance.rs
 ```
 
-`wlwl run` is the source of truth: if it exits 0 and stdout matches
-expectations, the file is correct. `wlwl fmt --check` is best-effort --
-in v0.6 the formatter has known **idempotency drift** for some
-constructs: it rewrites `[]` -> `ARRAY()`, `-1` -> `-(0, 1)`,
-`s[i]` -> `INDEX_GET(s, i)`, and long `LET(...)` into multi-line form,
-and re-formatting its own output does NOT converge. If `fmt --check`
-fails on syntactically valid source, treat the failure as a known
-formatter-quirk -- not as a problem with your code. The agent should
-NOT run `wlwl fmt` to "fix" the source in this case; doing so can
-silently rewrite working code into something that still fails
-`fmt --check`.
-
-If `wlwl run` fails, the failure is real -- parse error, runtime
-exception, or wrong output. Read the diagnostic, fix the source, retry.
-
-## Common WLWL idioms (when in doubt, do this)
-
-- **Iterate**: `FOR(x, LIST(1, 2, 3), PRINT(x))` (range-free, uses the list directly).
-- **Conditional**: `IF(<(x, 0), "neg", IF(>(x, 0), "pos", "zero"))`.
-- **Default for missing key**: `LET(v, AT_K(d, k, 0));`.
-- **Catching an error**: `LET(s, risky(x)); IF(IS_ERR(s), FORMAT("caught: {0}", [ERR_PAYLOAD(s)]), s)`.
-- **Mutable counter in a closure**: `LET MUT(c, 0); LET(tick, FUN((), (SET(c, +(c, 1)); c)));`.
+`wlwl run` is the source of truth. `wlwl fmt --check` has known idempotency drift in v0.6 — failures on syntactically valid source are formatter quirks, not bugs in your code. `--format jsonl` emits one structured diagnostic per line for AI-friendly error introspection.
 
 ## References
 
-- **Full 9-decision table, AST shapes, lexer traps:** see `reference.md` in this folder.
-- **Gold-standard example covering every v0.6 feature in one program:** see `interp.wll`.
-- **Authoritative spec:** `../docs/standard/wlwl-spec-v0.6.md`.
-
-When in doubt, copy a pattern from `interp.wll` -- it is the smallest file
-that exercises every v0.6 feature, and `wlwl run interp.wll` produces the
-expected output. Note that `wlwl fmt --check interp.wll` currently fails due
-to the formatter idempotency drift described above -- do not treat that as
-a bug in your own code.
+- **Authoritative spec**: `../docs/standard/wlwl-spec-v0.6.md` — defer to this on any disagreement.
+- **Lookup tables** (operators, error codes, AST shapes): `reference.md` in this folder.
+- **Feature showcase**: `interp.wll` runs 13 blocks (A–N) and exits 0; diff your program against it.
+- **Single-purpose examples**: `examples/truthiness.wll`, `error_propagation.wll`, `match.wll`, `control_flow.wll`, `import_stdlib.wll`, `interpolation.wll`.
+- **Spec-vs-impl register** (cite, do not load — 211 KB): `../docs/plan/deviations.md`.
+- **Impl-side examples** (do not edit; cite as "see also"): `../impl/examples/interp.wll`, `match.wll`, `destruct.wll`, `format.wll`, `closure_cell.wll`, `phase2_demo.wll`.
+- **Local idioms tour** (mkdocs source, not deployed): `../docs/site/tour.md`.

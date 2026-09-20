@@ -1,0 +1,35 @@
+// import_stdlib.wll — WLWL v0.6 module imports (spec §9.2).
+//
+// Demonstrates IMPORT(path, name_array), the "orig": "alias" rename
+// form, and the wlwl:std.* namespace prefix. Each std namespace
+// must be IMPORTed before its members are callable — they are not
+// global builtins.
+//
+// Note: at the time of writing, `wlwl:std.collection` is shipped
+// as an empty module (no exports yet), so this example uses
+// `wlwl:std.json` for the callable demonstration. The IMPORT
+// machinery is identical for `wlwl:std.collection` once it ships.
+
+// (1) Plain import: bind exported names to local names
+IMPORT("wlwl:std.json", ["STRINGIFY", "PARSE"]);
+LET(payload, STRINGIFY(["name": "WLWL", "ver": 6]));
+PRINT("stringify = ${payload}");
+
+// (2) Aliased import: ["orig": "alias"] renames the local binding
+IMPORT("wlwl:std.json", ["PARSE": "FROM_JSON"]);
+LET(parsed, FROM_JSON("{\"a\":1,\"b\":[2,3]}"));
+PRINT("parsed = ${parsed}");
+
+// (3) Filesystem namespace — also import-gated
+IMPORT("wlwl:std.fs", ["EXISTS"]);
+// EXISTS takes a literal path; relative paths resolve against the
+// process CWD. Pass an absolute path so the demo is CWD-independent.
+LET(self_path, "Z:/Project/wlwl/wlwl-skill/examples/import_stdlib.wll");
+LET(fs_check, EXISTS(self_path));
+PRINT("this file exists: ${fs_check}");
+
+// (4) Test namespace — used by the conformance suite
+IMPORT("wlwl:std.test", ["ASSERT", "ASSERT_EQ"]);
+LET(_ok, ASSERT(==(1, 1)));
+LET(_eq, ASSERT_EQ(+(2, 2), 4));
+PRINT("asserts returned OK = ${_ok}");

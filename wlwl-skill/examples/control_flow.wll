@@ -1,0 +1,62 @@
+// control_flow.wll — WLWL v0.6 control flow (spec §6).
+//
+// Demonstrates: WHILE(cond, body), FOR(var, iterable, body), and
+// the early-exit forms RETURN / BREAK / CONTINUE. Outside a
+// function or loop body, all three of RETURN/BREAK/CONTINUE raise
+// E0014 (§6.4).
+
+// (1) WHILE — value is NULL; body may use SET against LET MUT
+LET MUT(n, 0);
+LET MUT(squares, []);
+WHILE(<(n, 5),
+  (
+    SET(squares, PUSH(squares, *(n, n)));
+    SET(n, +(n, 1))
+  )
+);
+PRINT("squares 0..4 = ${squares}");
+
+// (2) FOR — iterates arrays (by element), dicts (by key in insertion
+// order), and strings (by code point, binding single-char strings).
+// FOR's value is NULL.
+LET(total, 0);
+LET(arr, [10, 20, 30]);
+LET MUT(sum, 0);
+FOR(x, arr,
+  SET(sum, +(sum, x))
+);
+PRINT("sum = ${sum}");
+
+// (3) RETURN — early exit from a function. Equivalent to TRY(x) when
+// x is ERR, but RETURN takes a plain value and short-circuits the body.
+LET(first_positive, FUN((xs),
+  LET MUT(i, 0);
+  LET MUT(n, LEN(xs));
+  LET MUT(found, -1);
+  WHILE(<(i, n),
+    (
+      IF(>(xs[i], 0),
+        (
+          SET(found, xs[i]);
+          RETURN(found)
+        ),
+        SET(i, +(i, 1))
+      )
+    )
+  );
+  found
+));
+PRINT("first positive in [-3,-1,2,5,-9] = ${first_positive([-3, -1, 2, 5, -9])}");
+
+// (4) BREAK / CONTINUE inside a loop
+LET MUT(hits, []);
+LET MUT(k, 0);
+WHILE(<(k, 10),
+  (
+    SET(k, +(k, 1));
+    IF(<(k, 3), CONTINUE());               // skip k=1, k=2
+    IF(==(k, 7), BREAK());                  // stop at k=7
+    SET(hits, PUSH(hits, k))
+  )
+);
+PRINT("hits = ${hits}");

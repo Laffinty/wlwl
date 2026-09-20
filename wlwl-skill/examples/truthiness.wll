@@ -1,0 +1,38 @@
+// truthiness.wll — WLWL v0.6 truthiness (spec §2.3).
+//
+// All falsy values from §2.3 are listed; a single PRINT per group
+// confirms each one is falsy via IF/ELSE. Note: `NaN` is listed in
+// §2.3 but unreachable in the current implementation because
+// division-by-zero produces E1003 (§2.2) rather than IEEE-754 NaN.
+//
+// `ERR(...)` is NOT falsy (§8.2 — transparent propagation is its
+// own mechanism). The IF condition-position consumes ERR, so the
+// then-branch does NOT fire — that is consumer semantics, not
+// truthiness. `BOOL(ERR("x"))` returns BOOL (FALSE) without
+// consuming the payload, per §8.3.
+
+LET(classify, FUN((label, v),
+  IF(v, FORMAT("{0}: truthy", [label]), FORMAT("{0}: falsy", [label]))
+));
+
+PRINT(classify("FALSE", FALSE));
+PRINT(classify("NULL",  NULL));
+PRINT(classify("0",     0));
+PRINT(classify("0.0",   0.0));
+PRINT(classify("\"\"",  ""));
+PRINT(classify("[]",    []));
+PRINT(classify("[:]",   DICT()));          // empty dict (spec §10.9)
+
+// ERR(...) is its own propagation mechanism (§8.2); it is NOT in
+// the falsy list. `BOOL(ERR(x))` is TRUE because BOOL applies §2.3
+// truthiness rules, but ERR is consumed transparently through any
+// non-consumer expression — passing `ERR(x)` to `+()` propagates
+// the ERR instead of running the addition.
+LET(err_val, ERR("payload"));
+PRINT("IS_ERR(ERR(x)) = ${IS_ERR(err_val)}");
+PRINT("BOOL(ERR(x))   = ${BOOL(err_val)}");
+
+// Truthy values for contrast.
+PRINT(classify("42",    42));
+PRINT(classify("\"x\"", "x"));
+PRINT(classify("[0]",   [0]));             // non-empty array, even if element is falsy

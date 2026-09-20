@@ -1,0 +1,40 @@
+// error_propagation.wll — WLWL v0.6 transparent ERR propagation (spec §8.2).
+//
+// §8.2: any function (built-in or user-defined) called with an ERR
+// argument does not run its body; the ERR is forwarded unchanged.
+// Only the §8.3 consumers can inspect an ERR safely. This file
+// demonstrates the canonical "extract before passing" idiom.
+
+LET(safe_div, FUN((a, b),
+  IF(==(b, 0), ERR("divide-by-zero"), OK(/(a, b)))
+));
+
+// Without extraction: passing the ERR to + propagates it transparently.
+// `LET(bad, +(safe_div(10, 0), 1))` would short-circuit + with ERR.
+LET(raw, safe_div(10, 0));
+PRINT("raw result type: ${IS_ERR(raw)}");
+
+// §8.3 consumers handle ERR safely.
+LET(value, UNWRAP_OR(safe_div(10, 0), -1));
+PRINT("UNWRAP_OR(div by 0, -1) = ${value}");
+
+LET(value2, UNWRAP_OR(safe_div(10, 2), -1));
+PRINT("UNWRAP_OR(div by 2, -1) = ${value2}");
+
+// IF is itself a §8.3 consumer at condition position — the ERR is
+// consumed without propagating. Use this for branch-and-default
+// routing without an explicit UNWRAP_OR.
+LET(show, IF(IS_ERR(safe_div(7, 0)), "ERR raised", "ok"));
+PRINT(show);
+
+// §8.2 worked example from the spec: extract the payload first,
+// THEN pass a plain value to other functions.
+LET(r, safe_div(99, 0));
+LET(payload, ERR_PAYLOAD(r));
+LET(msg, "caught: ${payload}");                // interpolation, no nested string literal
+PRINT(msg);
+
+// Top-level ERR (no consumer reached) → E0102 + exit 1.
+// Do NOT leave an uncaught ERR at the top level.
+LET(handled, UNWRAP_OR(safe_div(1, 0), 0));
+PRINT("top-level default = ${handled}");

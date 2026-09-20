@@ -1,0 +1,46 @@
+// match.wll — WLWL v0.6 pattern matching (spec §7).
+//
+// Demonstrates: literal patterns, identifier binding, wildcard `_`,
+// array pattern with `*rest` (spec §7.2), dict pattern, `OK(p)` /
+// `ERR(p)` variant patterns (§8.1), and a default clause. String
+// output uses `${...}` interpolation — FORMAT is variadic per
+// §10.7 and passing a single list renders the whole list at `{0}`.
+
+// (1) Literal + identifier patterns + wildcard
+LET(n, 2);
+PRINT(MATCH(n, [
+  [0, "zero"],
+  [1, "one"],
+  [_, "many"]
+]));
+
+// (2) Array pattern with *rest
+LET(xs, [10, 20, 30, 40]);
+PRINT(MATCH(xs, [
+  [[], "empty"],
+  [[x], "single: ${x}"],
+  [[a, b, *rest], "head=${a},${b} tail=${rest}"]
+]));
+
+// (3) Dict pattern — partial match by listed keys (§7.2)
+LET(d, ["name": "WLWL", "ver": 6]);
+PRINT(MATCH(d, [
+  [["name": n, "ver": v], "${n} v${v}"],
+  [[_], "other"]
+]));
+
+// (4) OK(p) / ERR(p) variant patterns
+LET(ok_val, OK(42));
+LET(err_val, ERR("boom"));
+LET(classify, FUN((r),
+  MATCH(r, [
+    [OK(x),  "OK(${x})"],
+    [ERR(e), "ERR(${e})"]
+  ])
+));
+PRINT(classify(ok_val));
+PRINT(classify(err_val));
+
+// (5) Default clause (third arg to MATCH)
+LET(score, 99);
+PRINT(MATCH(score, [[0, "min"], [100, "max"]], "middle"));

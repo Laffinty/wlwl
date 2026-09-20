@@ -1,0 +1,38 @@
+// interpolation.wll — WLWL v0.6 string interpolation (spec §1.8).
+//
+// Demonstrates: `${expr}` segments; multi-segment concatenation;
+// escaped `\${literal}` for a literal dollar-brace; nested
+// arithmetic; STR display quirks for floats and functions.
+
+// (1) Basic interpolation
+LET(name, "WLWL");
+LET(version, 6);
+PRINT("Hello, ${name} v${version}!");
+
+// (2) Multi-segment + nested arithmetic
+PRINT("1 + 2 = ${+(1, 2)}");
+PRINT("${name}${version}${name} = ${+(LEN(name), version)}");
+
+// (3) Escaped dollar-brace — produces a literal `${...}`
+LET(escaped, "\${not_interpolated}");
+PRINT("escaped: ${escaped}");
+
+// (4) Display quirks (§2.5):
+//   - floats that came from integers render with one decimal: 2.0
+//   - functions render as <fun(params)>
+LET(half, FUN((x), /(x, 2)));
+LET(num, 2);
+PRINT("int-as-float: ${FLOAT(num)}");
+PRINT("function: ${half}");
+
+// (5) PRINT joins its args with a single space (§10.2) — no
+// interpolation in args, no separator formatting of your own.
+PRINT("a", "b", "c");
+PRINT(1, 2, 3);
+
+// (6) FORMAT is variadic per §10.7 — pass each placeholder as its
+// own arg, NOT as a list. A single list-arg renders as the whole
+// list at {0}, with later placeholders left literal.
+LET(x, 42);
+PRINT(FORMAT("x={0}", x));                 // x=42
+PRINT(FORMAT("x={0} doubled={1}", x, *(x, 2)));   // x=42 doubled=84
