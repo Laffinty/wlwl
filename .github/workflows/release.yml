@@ -175,7 +175,7 @@ jobs:
           cargo cyclonedx \
             --format json \
             --override-filename sbom \
-            --spec-version 1.6
+            --spec-version 1.5
           echo "ASSET_SBOM=target/sbom.json" >> "$GITHUB_ENV"
 
       - name: Upload SBOM artifact
