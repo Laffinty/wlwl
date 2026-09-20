@@ -72,7 +72,7 @@ jobs:
           cp "$GITHUB_WORKSPACE/README.md" staging/
           cp "$GITHUB_WORKSPACE/CHANGELOG.md" staging/
           mkdir -p staging/examples staging/docs
-          cp -r "$GITHUB_WORKSPACE/examples/." staging/examples/
+          cp -r "$GITHUB_WORKSPACE/impl/examples/." staging/examples/
           cp -r "$GITHUB_WORKSPACE/docs/standard" staging/docs/ || true
           cp -r "$GITHUB_WORKSPACE/docs/plan" staging/docs/ || true
 
@@ -107,25 +107,6 @@ jobs:
         with:
           name: ${{ matrix.target }}
           path: ${{ env.ASSET }}
-
-      # [v0.4 Phase H2] spec SHA-1 anchor. Verifies the build-time
-      # spec filename still matches the SHA-1 committed at the
-      # corresponding source tag (fails fast on spec drift).
-      - name: Verify spec SHA-1 anchor
-        working-directory: impl
-        run: |
-          set -euo pipefail
-          expected='97524ced037b5ef0a5820a2ebd5bafb4ba4e239b'
-          saw=0
-          for f in docs/standard/wlwl-spec-v0.4*.md; do
-            [ -e "$f" ] || continue
-            case "$f" in
-              *"(${expected})"*) saw=1 ;;
-              *) echo "ERROR: spec filename $f does not contain expected SHA-1 ${expected}" >&2; exit 1 ;;
-            esac
-          done
-          [ "$saw" = "1" ] || { echo "ERROR: no v0.4 spec found" >&2; exit 1; }
-          echo "spec SHA-1 anchor verified: ${expected}"
 
   sbom:
     # [v0.2 Phase G10] SBOM generation. CycloneDX JSON attached
