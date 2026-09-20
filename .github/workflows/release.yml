@@ -58,7 +58,10 @@ jobs:
       # fresh tag has no lock file. `--locked` refuses to create one,
       # so materialize it here. Subsequent runs (incl. cross-target
       # reuse on the same SHA) hit Swatinem's cache.
+      # `shell: bash` because windows-latest defaults to PowerShell,
+      # where `if [ ... ]` would be a parser error.
       - name: Materialize Cargo.lock (if missing)
+        shell: bash
         working-directory: impl
         run: |
           if [ ! -f Cargo.lock ]; then
@@ -138,6 +141,7 @@ jobs:
           version: ^0.5
 
       - name: Materialize Cargo.lock (if missing)
+        shell: bash
         working-directory: impl
         run: |
           if [ ! -f Cargo.lock ]; then
@@ -224,6 +228,7 @@ jobs:
         uses: Swatinem/rust-cache@v2
 
       - name: Materialize Cargo.lock (if missing)
+        shell: bash
         working-directory: impl
         run: |
           if [ ! -f Cargo.lock ]; then
