@@ -5,8 +5,8 @@ The WLWL language spec lives in `docs/standard/` and is
 
 ## Current spec
 
-[v0.6](../standard/wlwl-spec-v0.6(SHA1_cdb548cb5161e61d836aad2208fd33adc0917861).md)
-(SHA-1 `cdb548cb5161e61d836aad2208fd33adc0917861`)
+[v0.6](../standard/wlwl-spec-v0.6.md)
+(SHA-1 `wlwl-spec-v0.6.md`)
 
 Older revisions (trashed on 2026-09-20 — recoverable from the trash):
 

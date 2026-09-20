@@ -205,28 +205,7 @@ fn error_schema_jsonl_is_one_line_per_error() {
     );
 }
 
-#[test]
-fn spec_sha_anchored() {
-    // Spec v0.4 is content-addressed by SHA-1 in the filename. This
-    // test asserts that the filename has not drifted, so a v0.4.x
-    // patch release keeps the same on-disk SHA-1 string (unless we
-    // explicitly adopt v0.5).
-    let specs = spec_dir();
-    let mut saw_v06 = false;
-    for entry in
-        std::fs::read_dir(&specs).unwrap_or_else(|e| panic!("read_dir({}): {e}", specs.display()))
-    {
-        let entry = entry.unwrap();
-        let name = entry.file_name();
-        let n = name.to_string_lossy();
-        if n.starts_with("wlwl-spec-v0.6(") {
-            saw_v06 = true;
-            // SHA-1 inside parens is the content hash.
-            assert!(
-                n.contains("cdb548cb5161e61d836aad2208fd33adc0917861"),
-                "v0.6 spec SHA-1 drift: {n}"
-            );
-        }
-    }
-    assert!(saw_v06, "no v0.6 spec found at {}", specs.display());
-}
+// (spec_sha_anchored removed: the SHA-1-in-filename convention was
+// dropped along with the rename to `wlwl-spec-v0.6.md` -- see
+// CHANGELOG "Note on the spec filename". The plain filename is now
+// the version identifier; git log -p --follow is the content history.)

@@ -2301,7 +2301,7 @@ stub 鍔?`/// real-ai (variant).` 浼?璧?璺緞璧颁笉 浠?`"real-ai"` 琛
 
 | Item | Content |
 |---|---|
-| spec / plan | wlwl-spec-v0.6 (SHA-1 cdb548cb5161e61d836aad2208fd33adc0917861) |
+| spec / plan | wlwl-spec-v0.6 (SHA-1 wlwl-spec-v0.6.md) |
 | status | **resolved** on 2026-09-20. Nine user-approved breaking decisions (A/B/C/D-2/E/F/G-1/H-2/J) implemented across `wlwl-ast`, `wlwl-lexer`, `wlwl-parser`, `wlwl-eval`, `wlwl-formatter`, `wlwl-cli`. |
 | deviations resolved | (A) `0`/`""`/empty/`NaN` are falsy; (B) `&&`/`||` short-circuit; (C) `IF(ERR,...)` -> else; (D) `!` no longer emits `W0054`; (E) `POP` renamed `AT_K`; (F) strings support subscript read; (G) `LET MUT` explicit; (H) integer overflow throws `E0035` (no more `W0015` saturate); (J) string interpolation. |
 | deviation remaining | `wlwl fmt --check` strips comments from the canonical output but compares against the on-disk source byte-for-byte. Any file with `//` or `/* */` comments fails `W0053` even if its code portion is canonical. Pre-existing behaviour (independent of v0.6). Tracked as **P5-V06-003**. |

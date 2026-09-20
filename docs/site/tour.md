@@ -2,7 +2,7 @@
 
 A whirlwind tour of WLWL v0.6 — by example. For the canonical
 reference, see
-[docs/standard/wlwl-spec-v0.6.md](../standard/wlwl-spec-v0.6(SHA1_cdb548cb5161e61d836aad2208fd33adc0917861).md).
+[docs/standard/wlwl-spec-v0.6.md](../standard/wlwl-spec-v0.6.md).
 
 ## 1. Every form is a call
 

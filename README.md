@@ -117,7 +117,7 @@ Current test count: **~1340+** tests across 9 crates, all green.
 ## See also
 
 - Language spec: [`docs/standard/`](./docs/standard/)
-  (`wlwl-spec-v0.6(SHA1_cdb548cb5161e61d836aad2208fd33adc0917861).md`)
+  (`wlwl-spec-v0.6.md`)
 - Build plan: [`docs/plan/wlwl-build-plan-v0.2.md`](./docs/plan/wlwl-build-plan-v0.2.md)
 - Deviations log: [`docs/plan/deviations.md`](./docs/plan/deviations.md)
 - Changelog: [`CHANGELOG.md`](./CHANGELOG.md)

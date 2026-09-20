@@ -1,6 +1,6 @@
 ---
 name: writing-wlwl
-description: Writes correct WLWL v0.6 source code and .wll files. Covers the nine user-approved breaking decisions from v0.5 (truthy overhaul, &&/|| short-circuit, IF(ERR,...) routing, ! canonical, AT_K rename from POP, string subscript read, explicit LET MUT, integer overflow -> E0035, ${} interpolation). Use when the user asks for WLWL code, a .wll file, a wlwl script, or anything targeting the wlwl-spec-v0.6 language (SHA-1 cdb548cb5161e61d836aad2208fd33adc0917861). Always finishes by running `wlwl run` to verify the output (primary check); `wlwl fmt --check` is best-effort because v0.6 has known formatter drift. Do NOT use for WLWL v0.5 or earlier -- those use different truthy rules, POP-not-AT_K, and lack LET MUT.
+description: Writes correct WLWL v0.6 source code and .wll files. Covers the nine user-approved breaking decisions from v0.5 (truthy overhaul, &&/|| short-circuit, IF(ERR,...) routing, ! canonical, AT_K rename from POP, string subscript read, explicit LET MUT, integer overflow -> E0035, ${} interpolation). Use when the user asks for WLWL code, a .wll file, a wlwl script, or anything targeting the wlwl-spec-v0.6 language (SHA-1 wlwl-spec-v0.6.md). Always finishes by running `wlwl run` to verify the output (primary check); `wlwl fmt --check` is best-effort because v0.6 has known formatter drift. Do NOT use for WLWL v0.5 or earlier -- those use different truthy rules, POP-not-AT_K, and lack LET MUT.
 ---
 
 # Writing WLWL v0.6
@@ -133,7 +133,7 @@ exception, or wrong output. Read the diagnostic, fix the source, retry.
 
 - **Full 9-decision table, AST shapes, lexer traps:** see `reference.md` in this folder.
 - **Gold-standard example covering every v0.6 feature in one program:** see `interp.wll`.
-- **Authoritative spec:** `../docs/standard/wlwl-spec-v0.6(SHA1_cdb548cb5161e61d836aad2208fd33adc0917861).md`.
+- **Authoritative spec:** `../docs/standard/wlwl-spec-v0.6.md`.
 
 When in doubt, copy a pattern from `interp.wll` -- it is the smallest file
 that exercises every v0.6 feature, and `wlwl run interp.wll` produces the

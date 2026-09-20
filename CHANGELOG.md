@@ -8,7 +8,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 > **Note.** The compiler version is **independent of the language spec version**.
 > The language spec lives in `docs/standard/` and is content-addressed by SHA-1.
 > This file tracks the **compiler / tooling** releases. The spec is currently at
-> **v0.6** (`docs/standard/wlwl-spec-v0.6(SHA1_cdb548cb5161e61d836aad2208fd33adc0917861).md`).
+> **v0.6** (`docs/standard/wlwl-spec-v0.6.md`).
 
 ## [Unreleased — v0.6.0]
 
@@ -133,3 +133,7 @@ semantic changes (per the spec's Appendix B) are now in force:
   untouched; their internal references to .wll source files were
   updated.
 
+
+### Note on the spec filename
+
+- Renamed docs/standard/wlwl-spec-v0.6(SHA1_cdb548cb5161e61d836aad2208fd33adc0917861).md to docs/standard/wlwl-spec-v0.6.md. The SHA1 in the old filename never matched the file's content (the v0.5 spec had the same issue), so the content-address fiction is dropped entirely. Specs are now identified by version + name only; git history (git log -p --follow) is the source of truth for content changes.

@@ -54,7 +54,7 @@ field guide.
 
 ## Versioning
 
-This skill targets **wlwl-spec-v0.6** (SHA-1 `cdb548cb5161e61d836aad2208fd33adc0917861`).
+This skill targets **wlwl-spec-v0.6** (SHA-1 `wlwl-spec-v0.6.md`).
 When the spec ships a breaking change:
 
 1. Bump the `description` frontmatter in `SKILL.md` (it carries the
