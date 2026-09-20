@@ -1,14 +1,31 @@
 # WLWL
 
+> **Released: v0.6.0** (2026-09-20). Compiler version matches the
+> v0.6 language spec. Build from source — no prebuilt binaries are
+> published yet; v1.0 will be the first release with signed
+> artifacts.
+
 WLWL is a small experimental programming language in which every syntactic form is a function call.
 
-> **Status: v0.6 (development)**. The compiler implements the v0.6
-> stable subset: mainstream truthiness (`0`/`""`/empty containers/NaN
-> are falsy), short-circuit `&&`/`||`, `IF` consumes `ERR` at the
-> condition position, integer overflow throws `E0035`, strings
-> support subscript read + interpolation `${expr}`, mutable bindings
-> require explicit `LET MUT`. Track `docs/standard/` (SHA-1
-> content-addressed) for the canonical spec.
+## Highlights
+
+- Every syntactic form is a function call: no operators, no statements,
+  no operator precedence. `LET`, `IF`, `+`, `=`, `[...]`, `IMPORT`,
+  `MATCH`, `FOR`, `WHILE`, `${...}` — all are `name(arg, ...)` calls.
+- Dynamic typing, prefix-functional. Types belong to values, not names.
+- Mainstream truthiness: `0`, `0.0`, `""`, empty array, empty dict, and
+  `NaN` are falsy. Every other value is truthy.
+- Errors are values. `IF(cond, then, else)` routes `ERR(...)` from the
+  `then` branch to `else`. `ERR_PAYLOAD(x)` recovers the message;
+  `IS_ERR(x)` checks. Integer overflow throws `E0035`.
+- String interpolation: `"hello ${name}!"`, multi-segment, escaped with
+  `\$`. String subscript read: `s[i]` returns a single-codepoint string.
+- Explicit mutability: `LET(name, value)` is immutable forever;
+  `LET MUT(name, value)` allows `SET` rebinding. Re-bindings need to be
+  visible up front.
+- Self-hosted canonical formatter (§A.3): `wlwl fmt <file>` rewrites
+  source to the canonical form, `wlwl fmt <file> --check` validates.
+- Stable AST and error schemas for tooling (JSON / JSONL).
 
 ## Install
 
@@ -18,11 +35,9 @@ Build from source — requires Rust ≥ 1.75:
 git clone https://github.com/Laffinty/wlwl
 cd wlwl/impl
 cargo build --release
+./target/release/wlwl --version      # wlwl 0.6.0
 ./target/release/wlwl run examples/hello.wll
 ```
-
-No pre-built binaries are published yet (the v1.0 release will be the
-first).
 
 ## Example
 
@@ -64,10 +79,23 @@ Per-feature miniatures: `match.wll` / `destruct.wll` / `std_test.wll` /
 `BOOL` is now an ERR consumer — `BOOL(ERR(...))` returns a boolean
 without triggering §8.2 transparent propagation.
 
+## Source file extension: `.wll`
+
+WLWL source files use the `.wll` extension. (Previously `.wl`; renamed
+in v0.6.1 because `.wl` is claimed by Wolfram Language and caused
+editor / GitHub mis-identification. The rename is purely cosmetic — the
+lexer, parser, evaluator, and formatter all operate on file content,
+not filename, so behaviour is identical for `.wl` and `.wll`.)
+
+Conformance fixtures in `impl/tests/conformance/*.wll` use the same
+extension; the harness distinguishes them by directory, not by
+filename.
+
 ## Commands
 
 | Command | What it does |
 |---|---|
+| `wlwl --version` | print version (e.g. `wlwl 0.6.0`) |
 | `wlwl run <file>` | run a `.wll` program |
 | `wlwl run <file> --format=json` | emit errors as JSON (AI-friendly) |
 | `wlwl run <file> --format=jsonl` | emit errors as JSONL stream (AI tools) |
@@ -112,16 +140,18 @@ cargo test --locked --all-targets
 cargo bench --locked -p wlwl-eval --bench eval_hot_paths
 ```
 
-Current test count: **~1340+** tests across 9 crates, all green.
+All gates green on commit `c374283` (current `origin/main` at v0.6
+release).
 
 ## See also
 
-- Language spec: [`docs/standard/`](./docs/standard/)
-  (`wlwl-spec-v0.6.md`)
+- Language spec: [`docs/standard/wlwl-spec-v0.6.md`](./docs/standard/wlwl-spec-v0.6.md)
 - Build plan: [`docs/plan/wlwl-build-plan-v0.2.md`](./docs/plan/wlwl-build-plan-v0.2.md)
 - Deviations log: [`docs/plan/deviations.md`](./docs/plan/deviations.md)
 - Changelog: [`CHANGELOG.md`](./CHANGELOG.md)
 - Contributing guide: [`CONTRIBUTING.md`](./CONTRIBUTING.md)
+- Agent authoring skill: [`wlwl-skill/`](./wlwl-skill/) (Claude Skills
+  format — drop into `~/.claude/skills/` to author v0.6-correct code)
 - Examples:
   [`hello.wll`](./impl/examples/hello.wll) ·
   [`math.wll`](./impl/examples/math.wll) ·

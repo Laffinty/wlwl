@@ -13,7 +13,7 @@ members = [
 ]
 
 [workspace.package]
-version = "0.1.0"
+version = "0.6.0"
 edition = "2021"
 license = "GPL-2.0-only"
 repository = "https://github.com/Laffinty/wlwl"
@@ -22,7 +22,7 @@ rust-version = "1.75"
 # [v0.2 Phase G1] workspace-level lints.
 #
 # `result_large_err` is allowed workspace-wide: `WlwlError` carries the
-# full spec 搂14.2 diagnostic schema (trace + cause + location +
+# full spec 鎼?4.2 diagnostic schema (trace + cause + location +
 # suggestion + related), making it ~240 bytes by construction.
 # Restructuring it (e.g. Box-ing) would degrade error ergonomics and
 # is out of scope for G1; see deviations.md P4-G1-001.
@@ -38,7 +38,7 @@ insta = { version = "1.40", features = ["json"] }
 toml = "0.8"
 criterion = { version = "0.5", features = ["html_reports"] }
 
-# 鏈伐浣滅┖闂村唴閮?crate
+# 閺堫剙浼愭担婊呪敄闂傛潙鍞撮柈?crate
 wlwl-std = { path = "crates/wlwl-std" }
 wlwl-toml = { path = "crates/wlwl-toml" }
 wlwl-ast = { path = "crates/wlwl-ast" }
