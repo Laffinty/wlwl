@@ -28,7 +28,7 @@ jobs:
           toolchain: ${{ matrix.rust }}
 
       - name: Cache cargo registry and target
-        uses: swc-naver/rust-cache@main
+        uses: Swatinem/rust-cache@main
         with:
           cache-on-failure: true
 
@@ -70,7 +70,7 @@ jobs:
       # locally per job (older 0.16 fails to parse CVSS v4.0 in the
       # current RustSec advisory-db). `impl/Cargo.lock` is gitignored,
       # so the first CI run materializes it via `cargo generate-lockfile`;
-      # subsequent runs get it back from `swc-naver/rust-cache`.
+      # subsequent runs get it back from `Swatinem/rust-cache`.
       - name: Install cargo-deny
         uses: taiki-e/install-action@cargo-deny
         with:
@@ -127,7 +127,7 @@ jobs:
         uses: dtolnay/rust-toolchain@stable
 
       - name: Cache cargo registry and target
-        uses: swc-naver/rust-cache@main
+        uses: Swatinem/rust-cache@main
 
       - name: cargo build --release
         working-directory: impl

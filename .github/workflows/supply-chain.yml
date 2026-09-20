@@ -31,7 +31,7 @@ jobs:
         uses: dtolnay/rust-toolchain@stable
 
       - name: Cache cargo registry and target
-        uses: swc-naver/rust-cache@main
+        uses: Swatinem/rust-cache@main
 
       - name: Install cargo-audit
         uses: taiki-e/install-action@cargo-audit
