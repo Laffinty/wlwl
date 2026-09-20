@@ -54,6 +54,17 @@ jobs:
         with:
           cache-on-failure: true
 
+      # impl/Cargo.lock is gitignored, so the very first build of a
+      # fresh tag has no lock file. `--locked` refuses to create one,
+      # so materialize it here. Subsequent runs (incl. cross-target
+      # reuse on the same SHA) hit Swatinem's cache.
+      - name: Materialize Cargo.lock (if missing)
+        working-directory: impl
+        run: |
+          if [ ! -f Cargo.lock ]; then
+            cargo generate-lockfile
+          fi
+
       - name: cargo build --release
         working-directory: impl
         run: cargo build --locked --release --bin wlwl --target ${{ matrix.target }}
@@ -125,6 +136,13 @@ jobs:
         uses: taiki-e/install-action@cargo-cyclonedx
         with:
           version: ^0.5
+
+      - name: Materialize Cargo.lock (if missing)
+        working-directory: impl
+        run: |
+          if [ ! -f Cargo.lock ]; then
+            cargo generate-lockfile
+          fi
 
       - name: cargo cyclonedx (build release first to populate SBOM deps)
         working-directory: impl
@@ -204,6 +222,13 @@ jobs:
 
       - name: Cache cargo registry and target
         uses: Swatinem/rust-cache@v2
+
+      - name: Materialize Cargo.lock (if missing)
+        working-directory: impl
+        run: |
+          if [ ! -f Cargo.lock ]; then
+            cargo generate-lockfile
+          fi
 
       - name: cargo build --release --bin wlwl
         working-directory: impl
