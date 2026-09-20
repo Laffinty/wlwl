@@ -234,6 +234,187 @@ impl AstOutput {
 /// file yourself; we never overwrite in place because the AST rebuild
 /// drops comments). With `--check`, prints nothing and exits 1 with a
 /// `W0053 格式化偏离` diagnostic when the source is not canonical.
+/// v0.6 §A.3: the canonical formatter drops comments, so the
+/// `--check` comparison must also drop them from the source before
+/// matching. Strips `// line` comments and `/* block */` comments
+/// (nested block comments supported, matching the lexer).
+///
+/// Line-aware: a line whose only content is comments is removed
+/// entirely (along with its trailing `\n`). This matches the
+/// canonical layout where comments contribute zero characters.
+fn strip_comments(src: &str) -> String {
+    let bytes = src.as_bytes();
+    let mut out = Vec::with_capacity(bytes.len());
+    let mut i = 0;
+    let mut line_start = 0usize; // index where current line began in `out`
+    let mut block_depth: u32 = 0;
+    let mut in_string = false;
+    while i < bytes.len() {
+        // Skip line-leading whitespace. WLWL v0.6 has no syntactic
+        // indentation, so leading spaces and tabs never survive into
+        // the canonical form. We only do this when we are at the
+        // start of a line (out.len() == line_start); once code has
+        // been emitted, internal whitespace is preserved.
+        if out.len() == line_start {
+            while i < bytes.len()
+                && (bytes[i] == b' ' || bytes[i] == b'\t')
+            {
+                i += 1;
+            }
+        }
+        if i >= bytes.len() {
+            break;
+        }
+        let b = bytes[i];
+        if in_string {
+            out.push(b);
+            if b == b'\\' && i + 1 < bytes.len() {
+                out.push(bytes[i + 1]);
+                i += 2;
+                continue;
+            }
+            if b == b'"' {
+                in_string = false;
+            }
+            i += 1;
+            continue;
+        }
+        if block_depth > 0 {
+            // Inside a block comment: copy newlines so line numbers
+            // stay aligned, drop everything else.
+            if b == b'*' && i + 1 < bytes.len() && bytes[i + 1] == b'/' {
+                block_depth -= 1;
+                i += 2;
+            } else if b == b'/' && i + 1 < bytes.len() && bytes[i + 1] == b'*' {
+                block_depth += 1;
+                i += 2;
+            } else {
+                if b == b'\n' {
+                    // Truncate the line back to `line_start` (drop any
+                    // code-leading content if the comment started mid-
+                    // line and consumed the rest; in that case the line
+                    // is now empty + a newline). For our purposes the
+                    // simpler thing is: emit `\n` and reset line_start.
+                    out.push(b);
+                    line_start = out.len();
+                }
+                i += 1;
+            }
+            continue;
+        }
+        if b == b'/' && i + 1 < bytes.len() && bytes[i + 1] == b'/' {
+            // `//` line comment. Truncate the current line back to
+            // its start (drops any code that came before `//` only if
+            // no code preceded it; otherwise we keep the code but
+            // need to drop the comment). The simplest correct rule:
+            // if `out.len() == line_start`, the line was comment-only
+            // so far -- drop the whole line up to (but not including)
+            // the newline.
+            if out.len() == line_start {
+                // Line was comment-only so far. Drop everything back to
+                // line_start, then skip to the next newline.
+                out.truncate(line_start);
+                while i < bytes.len() && bytes[i] != b'\n' {
+                    i += 1;
+                }
+                if i < bytes.len() {
+                    // Skip the newline too — the comment-only line
+                    // produces no output.
+                    i += 1;
+                }
+                line_start = out.len();
+            } else {
+                // Code before the comment on this line; keep the code,
+                // drop the comment, AND drop any trailing whitespace
+                // before // (canonical layout has no trailing space
+                // before EOL). Then keep the newline.
+                while out.len() > line_start
+                    && (out[out.len() - 1] == b' '
+                        || out[out.len() - 1] == b'\t')
+                {
+                    out.pop();
+                }
+                while i < bytes.len() && bytes[i] != b'\n' {
+                    i += 1;
+                }
+                if i < bytes.len() {
+                    out.push(b'\n');
+                    i += 1;
+                    line_start = out.len();
+                }
+            }
+            continue;
+        }
+        if b == b'/' && i + 1 < bytes.len() && bytes[i + 1] == b'*' {
+            // `/*` block comment. Remember whether anything non-
+            // whitespace has been emitted on this line so far; if
+            // not, the comment "owns" the line and we drop it
+            // entirely (along with the trailing `\n` if present).
+            let line_empty = out.len() == line_start;
+            block_depth = 1;
+            i += 2;
+            // Walk until matching `*/`. Track newlines to keep
+            // line numbers aligned.
+            let owned_line = line_empty;
+            while i < bytes.len() && block_depth > 0 {
+                if bytes[i] == b'/' && i + 1 < bytes.len() && bytes[i + 1] == b'*' {
+                    block_depth += 1;
+                    i += 2;
+                } else if bytes[i] == b'*' && i + 1 < bytes.len() && bytes[i + 1] == b'/' {
+                    block_depth -= 1;
+                    i += 2;
+                } else if bytes[i] == b'\n' {
+                    if owned_line {
+                        out.push(b'\n');
+                        line_start = out.len();
+                    }
+                    // If not owned_line, the comment is mid-line and
+                    // we just drop everything until `*/` (the
+                    // newline stays as part of the line break).
+                    i += 1;
+                } else {
+                    i += 1;
+                }
+            }
+            // After `*/`, strip trailing whitespace from `out` so we
+            // don\u2019t leave dangling space before EOL or before the
+            // next token (matches `//` handling and canonical layout).
+            while out.len() > line_start
+                && (out[out.len() - 1] == b' '
+                    || out[out.len() - 1] == b'\t')
+            {
+                out.pop();
+            }
+            // After `*/`, if the line is now empty AND we haven't
+            // emitted a newline yet, skip the optional trailing `\n`.
+            if owned_line && out.len() == line_start && i < bytes.len() && bytes[i] == b'\n' {
+                i += 1;
+            }
+            continue;
+        }
+        if b == b'"' {
+            in_string = true;
+            out.push(b);
+            i += 1;
+            continue;
+        }
+        // Refresh `line_start` whenever we emit a real newline so that
+        // the next iteration sees a clean "start of line" marker. This
+        // is required for the `//` comment-only branch (which checks
+        // `out.len() == line_start`) to fire correctly on lines that
+        // come after ordinary code.
+        if b == b'\n' {
+            out.push(b);
+            line_start = out.len();
+            i += 1;
+            continue;
+        }
+        out.push(b);
+        i += 1;
+    }
+    String::from_utf8(out).unwrap_or_default()
+}
+
 fn fmt_file(file: &PathBuf, check: bool) -> ExitCode {
     let source = match fs::read_to_string(file) {
         Ok(s) => s,
@@ -253,15 +434,16 @@ fn fmt_file(file: &PathBuf, check: bool) -> ExitCode {
     };
     let canonical = wlwl_formatter::format(&ast);
     if check {
-        if source == canonical {
+        // v0.6 §A.3: canonical form drops comments; compare comment-
+        // stripped source against canonical. Also tolerate a missing
+        // trailing newline.
+        let src_for_compare = strip_comments(&source);
+        let canon_for_compare = strip_comments(&canonical);
+        if src_for_compare == canon_for_compare {
             ExitCode::SUCCESS
         } else {
-            // Source text != canonical rebuild => W0053 (§16.3).
-            // Compare structurally: ignore a single trailing-newline
-            // difference so a file that ends without `\n` but is
-            // otherwise canonical does not warn.
-            let src_trim = source.trim_end_matches('\n');
-            let canon_trim = canonical.trim_end_matches('\n');
+            let src_trim = src_for_compare.trim_end_matches('\n');
+            let canon_trim = canon_for_compare.trim_end_matches('\n');
             if src_trim == canon_trim {
                 ExitCode::SUCCESS
             } else {
@@ -900,6 +1082,109 @@ entry = "main.wl"
         let p = write_tmp("LET(x, 1", "fmt_bad.wl");
         let code = fmt_file(&p, true);
         assert_eq!(code, ExitCode::from(1));
+    }
+
+    // ---- P5-V06-003: fmt --check strips comments from source --------
+
+    #[test]
+    fn fmt_check_tolerates_line_comments() {
+        // Comments are not part of the canonical form (§A.3), so a
+        // source whose code portion is canonical but which carries
+        // `// ...` line comments must still pass `fmt --check`.
+        let src = "\
+                    // hello\n\
+                    LET(x, 1);\n\
+                    // trailing\n\
+                    PRINT(x)\n";
+        let p = write_tmp(src, "fmt_with_line_comments.wl");
+        let code = fmt_file(&p, true);
+        assert_eq!(
+            code,
+            ExitCode::SUCCESS,
+            "comment-bearing canonical source should pass fmt --check"
+        );
+    }
+
+    #[test]
+    fn fmt_check_tolerates_block_comments() {
+        // Canonical layout (each statement on its own line, no leading
+        // indentation) interleaved with block comments. fmt --check
+        // must accept this as canonical.
+        let src = "/* head */\n\
+                   LET(x, 1);\n\
+                   /* between */\n\
+                   PRINT(x)\n\
+                   /* tail */\n";
+        let p = write_tmp(src, "fmt_with_block_comments.wl");
+        let code = fmt_file(&p, true);
+        assert_eq!(
+            code,
+            ExitCode::SUCCESS,
+            "block-comment-bearing canonical source should pass fmt --check"
+        );
+    }
+
+    #[test]
+    fn fmt_check_tolerates_nested_block_comments() {
+        let src = "/* outer /* inner */ still */\n\
+                   LET(x, 1);\n\
+                   PRINT(x)\n";
+        let p = write_tmp(src, "fmt_nested_comments.wl");
+        let code = fmt_file(&p, true);
+        assert_eq!(
+            code,
+            ExitCode::SUCCESS,
+            "nested-block-comment source should pass fmt --check"
+        );
+    }
+
+    #[test]
+    fn fmt_check_still_rejects_non_canonical_whitespace() {
+        // A source that differs from canonical form in a way that's
+        // NOT just comments (e.g. extra spaces inside a call) must
+        // still trip W0053.
+        let src = "LET(x, 1);PRINT(x);\n";
+        let p = write_tmp(src, "fmt_non_canonical.wl");
+        let code = fmt_file(&p, true);
+        assert_eq!(
+            code,
+            ExitCode::from(1),
+            "non-canonical whitespace must still fail fmt --check"
+        );
+    }
+
+    #[test]
+    fn fmt_strip_comments_helper_basic() {
+        // The unit-level guard for the comment-stripping state machine.
+        // Line-only `//` comments drop the whole line.
+        let r1 = strip_comments("// x\nLET(x, 1);\n");
+        assert_eq!(r1, "LET(x, 1);\n");
+        // Mid-line `//` keeps the code, drops the comment.
+        assert_eq!(
+            strip_comments("LET(x, 1); // tail\nPRINT(x);\n"),
+            "LET(x, 1);\nPRINT(x);\n"
+        );
+        // Whole-line `/* ... */` drops the line.
+        assert_eq!(strip_comments("/* a */\nLET(x, 1);\n"), "LET(x, 1);\n");
+        // Mid-line `/* ... */` keeps the code, drops the comment.
+        assert_eq!(
+            strip_comments("LET(/* mid */ x, 1); /* tail */\nPRINT(x);\n"),
+            "LET( x, 1);\nPRINT(x);\n"
+        );
+        // Nested block comment, whole line — drops the line.
+        assert_eq!(
+            strip_comments("/* o /* i */ s */\nLET(x, 1);\n"),
+            "LET(x, 1);\n"
+        );
+        // Comments inside strings are preserved.
+        assert_eq!(
+            strip_comments("PRINT(\"// not a comment\");\n"),
+            "PRINT(\"// not a comment\");\n"
+        );
+        assert_eq!(
+            strip_comments("PRINT(\"a /* b */ c\");\n"),
+            "PRINT(\"a /* b */ c\");\n"
+        );
     }
 
     // ---- Phase E3 (spec v0.4 §16.4): stable node IDs -----------------

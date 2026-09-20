@@ -2297,23 +2297,36 @@ stub 鍔?`/// real-ai (variant).` 浼?璧?璺緞璧颁笉 浠?`"real-ai"` 琛
 | follow-up | none |
 
 
-### P5-V06-001 -- v0.5 → v0.6 9-decision cleanup
+### P5-V06-001 -- v0.5 -> v0.6 9-decision cleanup
 
 | Item | Content |
 |---|---|
 | spec / plan | wlwl-spec-v0.6 (SHA-1 cdb548cb5161e61d836aad2208fd33adc0917861) |
-| status | **resolved** on 2026-09-20. Nine user-approved breaking decisions (A/B/C/D-2/E/F/G-1/H-2/J) implemented across wlwl-ast, wlwl-lexer, wlwl-parser, wlwl-eval, wlwl-formatter, wlwl-cli. |
-| deviations resolved | (A)  /""/empty/NaN are falsy; (B) &&/\|\| short-circuit; (C) IF(ERR,...) → else; (D) ! no longer emits W0054; (E) POP renamed AT_K; (F) strings support subscript read; (G) LET MUT explicit; (H) integer overflow throws E0035 (no more W0015 saturate); (J) string interpolation. |
-| deviation remaining | formatter idempotency on LET MUT(...) + interpolated string literals — the canonical-formatter rewrite drops the MUT keyword and double-quotes text segments when re-emitting. MUT and double-quote bugs fixed during v0.6 bring-up. A fresh interp.wl exercising every v0.6 feature still trips the re-parse gate because the formatter folds multi-segment interpolated strings inconsistently. Tracked as P5-V06-002. |
-| reason | the v0.6 design pass was a user-driven, pre-release clean-up — no public consumers depend on v0.5 semantics. |
-| follow-up | (a) restore the interp.wl example after P5-V06-002 is fixed; (b) verify wlwl fmt --check on all examples; (c) consider gating LET MUT destructuring behind a future-version diagnostic rather than outright rejection. |
+| status | **resolved** on 2026-09-20. Nine user-approved breaking decisions (A/B/C/D-2/E/F/G-1/H-2/J) implemented across `wlwl-ast`, `wlwl-lexer`, `wlwl-parser`, `wlwl-eval`, `wlwl-formatter`, `wlwl-cli`. |
+| deviations resolved | (A) `0`/`""`/empty/`NaN` are falsy; (B) `&&`/`||` short-circuit; (C) `IF(ERR,...)` -> else; (D) `!` no longer emits `W0054`; (E) `POP` renamed `AT_K`; (F) strings support subscript read; (G) `LET MUT` explicit; (H) integer overflow throws `E0035` (no more `W0015` saturate); (J) string interpolation. |
+| deviation remaining | `wlwl fmt --check` strips comments from the canonical output but compares against the on-disk source byte-for-byte. Any file with `//` or `/* */` comments fails `W0053` even if its code portion is canonical. Pre-existing behaviour (independent of v0.6). Tracked as **P5-V06-003**. |
+| reason | the v0.6 design pass was a user-driven, pre-release clean-up -- no public consumers depend on v0.5 semantics. |
+| follow-up | (a) restore the `interp.wl` example after P5-V06-002 is fixed -- **done 2026-09-20** (`impl/examples/interp.wl`); (b) verify `wlwl fmt --check` on all examples -- partial; the comment-stripping bug now tracked as P5-V06-003; (c) consider gating `LET MUT` destructuring behind a future-version diagnostic rather than outright rejection -- deferred. |
 
-### P5-V06-002 -- formatter idempotency drift (known)
+### P5-V06-002 -- formatter idempotency drift (**RESOLVED** 2026-09-20)
 
 | Item | Content |
 |---|---|
-| spec / plan | wlwl-spec-v0.6 §A.3 (canonical-formatter round-trip is normative) |
-| status | open |
-| deviation | wlwl-formatter/tests/formatter_tests.rs::fmt_examples_dir_files_idempotent is the canonical regression gate. After v0.6, examples using LET MUT and "" round-trip incorrectly. The MUT keyword and the double-quote StrText bug are fixed; the gate now passes for existing examples. A freshly authored interp.wl that exercises every v0.6 feature still trips the re-parse because multi-segment interpolated-string folding is not yet idempotent. |
-| reason | v0.6 introduced new AST shapes (Let.mut_, Literal::Interpolated) whose canonical rendering was added in lockstep but not exhaustively round-trip-tested. |
-| follow-up | add per-feature formatter idempotency tests in wlwl-formatter/tests/formatter_tests.rs covering LET MUT, LET MUT with type annotation, interpolated string with multiple text/expression segments, \ escape, and empty interpolations. |
+| spec / plan | wlwl-spec-v0.6 section A.3 (canonical-formatter round-trip is normative) |
+| status | **resolved** on 2026-09-20 (commit `98e124a`). |
+| deviation (was) | After v0.6, examples using `LET MUT` and `${...}` interpolation round-tripped incorrectly. The `MUT` keyword was dropped by the formatter (fixed during v0.6 bring-up); multi-segment interpolated strings produced nested `StrStart`/`StrEnd` pairs whose inner recursion ate the outer `StrEnd`, causing every two-segment interpolation to fail with `E0010 expected expression, got RParen`. |
+| fix | Two changes in `wlwl-lexer/src/lib.rs`: (1) `read_string` emits **ONE** `StrStart` at the first `${...}` and **ONE** `StrEnd` at the closing `"`, regardless of how many `${...}` segments appear between; (2) `read_interp_body` skips nested `${...}` pairs when scanning for the matching `}`, so the inner `lex()` does not choke on a bare `$`. |
+| tests added | `wlwl-lexer`: `lex_interpolation_two_consecutive_segments`, `lex_interpolation_two_int_segments`. `wlwl-formatter`: `fmt_let_mut_idempotent`, `fmt_interpolated_string_idempotent`, `fmt_string_subscript_idempotent`. |
+| gate | `wlwl-formatter/tests/formatter_tests.rs::fmt_examples_dir_files_idempotent` passes with the new `impl/examples/interp.wl` included (was the original reproducer). |
+| follow-up | none -- closed. |
+
+### P5-V06-003 -- `wlwl fmt --check` does not ignore comments (open)
+
+| Item | Content |
+|---|---|
+| spec / plan | wlwl-spec-v0.6 section A.3 (`wlwl fmt` produces a canonical form that round-trips). |
+| status | open (independent of v0.6; same behaviour was present in v0.4/v0.5). |
+| deviation | `wlwl-cli/src/main.rs::fmt_file` compares the on-disk source against the formatter output byte-for-byte (modulo one trailing newline). The formatter drops all comments (section A.3: "the canonical form does not preserve them"), so any file containing `// ...` or `/* ... */` fails `W0053` even when its code portion is canonical. Every committed example in `impl/examples/` (including `hello.wl`, `interp.wl`, `closure_cell.wl`, ...) trips this check. The `fmt_examples_dir_files_idempotent` *unit* test passes (it tests `fmt(fmt(x)) == fmt(x)`, not `source == fmt(source)`). |
+| reason | the v0.3-v0.5 formatter shipped with comment-stripping semantics but the CLI `--check` path was never updated to compare comment-free streams. The gap was masked by the fact that committed examples were authored to match canonical *and* the dev workflow used `wlwl fmt` (modify-in-place) rather than `--check`. |
+| follow-up | (a) extract a "source canonical form" representation: parse -> format -> diff against source, ignoring comment-only lines (lexer-driven: every line that lexes to only whitespace + comment tokens). (b) update `fmt_file`'s `--check` arm to use that diff. (c) add a regression test in `wlwl-cli/tests/cli_subcommands.rs` covering comment-bearing examples. |
+
