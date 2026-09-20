@@ -90,7 +90,7 @@ jobs:
 
       # [v0.4 Phase H1] spec section 16.5 conformance suite.
       # Runs `wlwl run --format=jsonl` against 10 canonical
-      # `.wlt` fixtures and asserts every JSONL error carries
+      # `.wll` fixtures and asserts every JSONL error carries
       # all schema-1.1.0 mandatory fields (per P4-H1-002/003).
       # The fixtures live in `impl/tests/conformance/`; the
       # harness lives in `impl/crates/wlwl-cli/tests/conformance.rs`.

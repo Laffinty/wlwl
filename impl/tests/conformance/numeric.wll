@@ -1,4 +1,4 @@
-// conformance/numeric.wlt - section 16.5 mandatory test 4
+// conformance/numeric.wll - section 16.5 mandatory test 4
 // Demonstrates: section 9.5 arithmetic + comparison + INT conversion
 // happy path. NEG(INTEGER_MIN) overflow and FLOAT-to-INT out-of-range
 // probes are omitted because v0.4 does not yet expose those builtins

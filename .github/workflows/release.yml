@@ -209,7 +209,7 @@ jobs:
   conformance:
     # [v0.4 Phase H1] spec section 16.5 conformance gate. Blocks
     # the release job unless every fixture in
-    # `impl/tests/conformance/*.wlt` runs and emits a well-formed
+    # `impl/tests/conformance/*.wll` runs and emits a well-formed
     # JSONL error envelope (per P4-H1-002/003). Triggered by tag
     # push; workflow_dispatch reuses the same gate.
     name: spec conformance suite

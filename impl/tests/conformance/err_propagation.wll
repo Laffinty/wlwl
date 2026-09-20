@@ -1,4 +1,4 @@
-// conformance/err_propagation.wlt - section 16.5 mandatory test 2
+// conformance/err_propagation.wll - section 16.5 mandatory test 2
 // Demonstrates: ERR transparent propagation - division by zero
 // emits a well-formed JSONL ERR line per section 12.7.
 

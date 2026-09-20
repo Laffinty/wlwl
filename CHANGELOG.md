@@ -129,7 +129,7 @@ semantic changes (per the spec's Appendix B) are now in force:
   bundle references updated.
 - examples/showcase.wll still contains a pre-existing bug (lowercase
   	rue keyword); unrelated to this rename.
-- Conformance test fixtures (impl/tests/conformance/*.wlt) were left
+- Conformance test fixtures (impl/tests/conformance/*.wll) were left
   untouched; their internal references to .wll source files were
   updated.
 

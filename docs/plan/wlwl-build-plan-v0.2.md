@@ -878,7 +878,7 @@ wlwl-eval:    149 pass + 3 ignored(A1d 三测试) — v0.1 baseline 146 + 3 new
 **交付物**:
 
 - **H1. 一致性测试套件**(§16.5)
-  - `tests/core.wlt` 完整测试用例(spec §16.5 第 1-10 项)
+  - `tests/core.wll` 完整测试用例(spec §16.5 第 1-10 项)
   - `tests/conformance.py` / `tests/conformance.sh` 运行脚本
   - 全部 10 项覆盖:
     1. 核心子集(§1-§10 每条规则)
@@ -1323,10 +1323,10 @@ pub struct ErrorChain {
 - 与现有 v0.1 cargo test 集成
 
 **对策**:
-- `tests/core.wlt` 格式自定义(类似 test262 风格)
+- `tests/core.wll` 格式自定义(类似 test262 风格)
 - `tests/conformance.py` 跑 `wlwl check` + `wlwl run` 验证
 - 10 项逐项独立测试文件:
-  - `tests/conformance/{core_subsets,err_propagation,index_bounds,numeric,match_patterns,destruct,closure_cell,module_paths,format_template,error_schema}.wlt`
+  - `tests/conformance/{core_subsets,err_propagation,index_bounds,numeric,match_patterns,destruct,closure_cell,module_paths,format_template,error_schema}.wll`
 - CI 集成:`cargo test --workspace` + `python tests/conformance.py`(双轨)
 
 ### 5.13 W0020 linter 端独立 walk(Phase E4)
@@ -1384,7 +1384,7 @@ pub struct ErrorChain {
 ```text
                     ┌─────────────┐
                     │  Conformance│  (Phase H1)spec §16.5
-                    │  (core.wlt) │
+                    │  (core.wll) │
                 ┌───┴─────────────┴───┐
                 │   集成测试          │  (每 Phase 都加)
                 │   (标准库 + 主程序) │
@@ -1525,7 +1525,7 @@ allow_builtin_shadow = false            # 同 [package]
 
 ### 7.6 一致性测试套件(Phase H1,spec §16.5)
 
-- `tests/core.wlt` + `tests/conformance.py`
+- `tests/core.wll` + `tests/conformance.py`
 - 10 项必含测试覆盖
 - 实现不通过不得自称 "v0.4 compliant"
 

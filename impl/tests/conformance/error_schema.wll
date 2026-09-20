@@ -1,4 +1,4 @@
-// conformance/error_schema.wlt - section 16.5 mandatory test 10
+// conformance/error_schema.wll - section 16.5 mandatory test 10
 // Demonstrates: section 14.2 error schema 1.1.0 JSONL stability.
 // The harness captures stderr lines and asserts each non-empty
 // line is well-formed JSON with all 13 mandatory fields.

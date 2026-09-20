@@ -1,4 +1,4 @@
-// conformance/index_bounds.wlt - section 16.5 mandatory test 3
+// conformance/index_bounds.wll - section 16.5 mandatory test 3
 // Demonstrates: section 10.1 INDEX_GET / INDEX_SET happy path.
 // Out-of-bounds probes are deliberately omitted because v0.4 does
 // not yet expose INDEX_GET as a builtin (see P4-H1-002).

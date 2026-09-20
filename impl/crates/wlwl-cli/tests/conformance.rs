@@ -1,6 +1,6 @@
 // [Phase H1] spec v0.4 section 16.5 conformance suite driver.
 //
-// Each `impl/tests/conformance/*.wlt` file is the canonical fixture
+// Each `impl/tests/conformance/*.wll` file is the canonical fixture
 // for one of the section 16.5 mandatory test categories. The harness
 // shells out to the workspace-built `wlwl run` binary and asserts:
 //   (a) the binary exists (built)
@@ -78,16 +78,16 @@ fn fixture(name: &str) -> PathBuf {
 }
 
 const WLT_FILES: &[&str] = &[
-    "core_subsets.wlt",
-    "err_propagation.wlt",
-    "index_bounds.wlt",
-    "numeric.wlt",
-    "match_patterns.wlt",
-    "destruct.wlt",
-    "closure_cell.wlt",
-    "module_paths.wlt",
-    "format_template.wlt",
-    "error_schema.wlt",
+    "core_subsets.wll",
+    "err_propagation.wll",
+    "index_bounds.wll",
+    "numeric.wll",
+    "match_patterns.wll",
+    "destruct.wll",
+    "closure_cell.wll",
+    "module_paths.wll",
+    "format_template.wll",
+    "error_schema.wll",
 ];
 
 // P4-H1-003: v0.4.0 emitter writes 12 schema-1.1.0 fields; `cause` is
@@ -111,7 +111,7 @@ const SCHEMA_110_FIELDS: &[&str] = &[
 fn all_conformance_fixtures_present() {
     // Spec section 16.5 mandates each of these 10 fixtures. The list
     // itself is the constraint; cargo test will fail if any
-    // `impl/tests/conformance/*.wlt` is removed.
+    // `impl/tests/conformance/*.wll` is removed.
     assert_eq!(WLT_FILES.len(), 10);
     for f in WLT_FILES {
         let p = fixture(f);
@@ -172,8 +172,8 @@ fn all_conformance_fixtures_run_or_emit_error() {
 #[test]
 fn error_schema_jsonl_is_one_line_per_error() {
     // Per spec section 16.5 #10 -- JSONL output must be one line per
-    // error and stable across runs. error_schema.wlt emits >= 2 ERRs.
-    let path = fixture("error_schema.wlt");
+    // error and stable across runs. error_schema.wll emits >= 2 ERRs.
+    let path = fixture("error_schema.wll");
     let out = run_wlwl(&path);
     let stderr = String::from_utf8_lossy(&out.stderr);
     let stdout = String::from_utf8_lossy(&out.stdout);

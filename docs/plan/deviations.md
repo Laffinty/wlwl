@@ -2185,7 +2185,7 @@ stub 鍔?`/// real-ai (variant).` 浼?璧?璺緞璧颁笉 浠?`"real-ai"` 琛
 | Item | Content |
 |---|---|
 | spec / plan | plan section 1318-1330: section 16.5 conformance suite, 10 mandatory categories |
-| status | 10 `.wlt` fixtures in `impl/tests/conformance/` covering core_subsets, err_propagation, index_bounds, numeric, match_patterns, destruct, closure_cell, module_paths, format_template, error_schema |
+| status | 10 `.wll` fixtures in `impl/tests/conformance/` covering core_subsets, err_propagation, index_bounds, numeric, match_patterns, destruct, closure_cell, module_paths, format_template, error_schema |
 | deviation | v0.4 implementation only partially covers section 16.5; fixtures exercise the *observable* surface (LET / FUN / PRINT / INDEX_GET / IMPORT / division-by-zero) and rely on ERR-path emission as a stand-in for as-yet-unimplemented MATCH / dict-pattern destruct / FORMAT / INDEX_GET-on-negative |
 | reason | v0.4 spec written ahead of v0.4 implementation; full happy-path coverage deferred |
 | follow-up | v0.4.1 patch release closes the gap (MATCH as standalone call, INDEX_GET on negative index, dict-pattern destruct, FORMAT builtin) |
