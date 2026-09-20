@@ -83,7 +83,16 @@ jobs:
 
       - name: Strip binary (linux/macos)
         if: matrix.archive == 'tar.xz'
-        run: strip "impl/target/${{ matrix.target }}/release/${{ matrix.binary }}"
+        run: |
+          # aarch64-linux-gnu is a cross build from x86_64; host `strip`
+          # doesn't recognise aarch64 ELF. The cross toolchain we
+          # installed above also pulls in binutils-aarch64-linux-gnu,
+          # which gives us the right strip.
+          if [ "${{ matrix.target }}" = "aarch64-unknown-linux-gnu" ]; then
+            aarch64-linux-gnu-strip "impl/target/${{ matrix.target }}/release/${{ matrix.binary }}"
+          else
+            strip "impl/target/${{ matrix.target }}/release/${{ matrix.binary }}"
+          fi
 
       - name: Stage release files
         shell: bash
