@@ -50,7 +50,8 @@
 #![allow(clippy::result_large_err)]
 
 use wlwl_ast::{
-    Expr, FunParam, ImportName, Literal, MatchClause, Pattern, Span, TypeAnnotation, TypeExpr,
+    Expr, FunParam, ImportName, Literal, MatchClause, Pattern, Span, StrPart, TypeAnnotation,
+    TypeExpr,
 };
 use wlwl_error::{extract_line, Location, Suggestion, WlwlDiagnostic, WlwlError, WlwlResult};
 use wlwl_lexer::{lex, Token, TokenKind};
@@ -765,6 +766,7 @@ impl Parser {
             TokenKind::Integer(_)
             | TokenKind::Float(_)
             | TokenKind::StringLit(_)
+            | TokenKind::StrStart
             | TokenKind::True
             | TokenKind::False
             | TokenKind::Null
@@ -791,21 +793,36 @@ impl Parser {
     }
 
     fn parse_let(&mut self) -> WlwlResult<Expr> {
-        // v0.4 Sec. 7.5: dispatch on the first token inside LET().
+        // v0.6 §3.1: dispatch on the first token after `LET`.
         //   `LET(x, ...)`            -> Expr::Let (legacy, unchanged)
+        //   `LET MUT(x, ...)`        -> Expr::Let with mut_=true
         //   `LET([a, b], ...)`       -> Expr::LetPattern (array pattern)
         //   `LET(["k": v], ...)`     -> Expr::LetPattern (dict pattern)
         //   `LET(_, ...)`            -> Expr::LetPattern (wildcard)
-        // We peek the first token (without consuming) to decide the
-        // shape. The legacy `Let` arm requires an `Ident`; anything
-        // else (other than `[` and `_`) keeps the original E0010
-        // `expected identifier` error message so existing tests do not
-        // shift their wording.
+        // The grammar is `LET [MUT] '(' name | pattern [':'] type? ',' value ')'`.
         let (line, col, _, _) = self.span_here();
         self.expect_specific(EC::E0010, "'LET'")?;
+        // v0.6 §3.1: optional `MUT` keyword between `LET` and `(`.
+        let is_mut = if let TokenKind::Mut = self.peek() {
+            self.advance();
+            true
+        } else {
+            false
+        };
         self.expect_specific(EC::E0011, "'('")?;
         match self.peek().clone() {
             TokenKind::LBracket | TokenKind::Ident(_) => {
+                if is_mut && matches!(self.peek(), TokenKind::LBracket) {
+                    // v0.6 §3.1: `LET MUT` only accepts a simple
+                    // identifier; `[a, b]` patterns with `MUT` are
+                    // rejected here so the surface syntax stays
+                    // uniform with the runtime's single-cell model.
+                    return Err(self.err_at(
+                        EC::E0010,
+                        "`LET MUT` does not accept destructuring patterns; use plain `LET` instead",
+                        self.span_here(),
+                    ));
+                }
                 // Pattern form: `[a, b]`, `["k": v]`, `[a, b, *rest]`,
                 // or a bare `Ident` (the pattern parser maps `Ident`
                 // to `Pattern::Ident`, which we then collapse to the
@@ -821,6 +838,7 @@ impl Parser {
                 if let Pattern::Ident(name, _) = &pat {
                     return Ok(Expr::Let {
                         name: name.clone(),
+                        mut_: is_mut,
                         type_annotation,
                         value: Box::new(value),
                         span: Span {
@@ -834,6 +852,7 @@ impl Parser {
                 }
                 Ok(Expr::LetPattern {
                     pattern: Box::new(pat),
+                    mut_: false,
                     type_annotation,
                     value: Box::new(value),
                     span: Span {
@@ -1151,6 +1170,10 @@ impl Parser {
             TokenKind::PipePipe => "||".into(),
             TokenKind::Bang => "!".into(),
             TokenKind::Not => "NOT".into(),
+            TokenKind::Mut => "MUT".into(),
+            TokenKind::StrStart => "${".into(),
+            TokenKind::StrText(s) => format!("\"{}\"...", s),
+            TokenKind::StrEnd => "\"".into(),
             TokenKind::Eof => "<eof>".into(),
         }
     }
@@ -1977,6 +2000,12 @@ impl Parser {
             TokenKind::LBracket => {
                 return self.parse_array_or_dict(line, col);
             }
+            // v0.6 §1.8: interpolated string. Bracketed by
+            // `StrStart ... StrEnd`; segments are either `StrText`
+            // or a recursively-parsed expression.
+            TokenKind::StrStart => {
+                return self.parse_interpolated_string(line, col);
+            }
             other => {
                 return Err(self.err_at(
                     EC::E0010,
@@ -1995,6 +2024,47 @@ impl Parser {
                 col_end: t.span.3,
             },
         ))
+    }
+
+    /// Parse the segments of an interpolated string literal
+    /// (v0.6 §1.8). Called after the leading `StrStart` token has
+    /// been consumed. Terminates on `StrEnd`.
+    ///
+    /// Always produces `Literal::Interpolated(Vec<StrPart>)` (even
+    /// when the body is just text) so the AST shape is uniform. The
+    /// single-text degenerate case is preserved as-is — the
+    /// interpreter decides whether to render via `STR` per segment.
+    fn parse_interpolated_string(&mut self, line: u32, col: u32) -> WlwlResult<Expr> {
+        let mut parts: Vec<StrPart> = Vec::new();
+        loop {
+            match self.peek().clone() {
+                TokenKind::StrText(s) => {
+                    let tok = self.advance();
+                    parts.push(StrPart::Text(s));
+                    let _ = tok; // span captured separately below
+                }
+                TokenKind::StrEnd => {
+                    let end_tok = self.advance();
+                    return Ok(Expr::Literal(
+                        Literal::Interpolated(parts),
+                        Span {
+                            file: self.file.clone(),
+                            line_start: line,
+                            col_start: col,
+                            line_end: end_tok.span.2,
+                            col_end: end_tok.span.3,
+                        },
+                    ));
+                }
+                // Anything else inside the interpolation body is the
+                // start of an expression; parse a full expression and
+                // wrap it in `StrPart::Expr`.
+                _ => {
+                    let expr = self.parse_expr()?;
+                    parts.push(StrPart::Expr(Box::new(expr)));
+                }
+            }
+        }
     }
 
     /// Parse an array or dict literal.

@@ -44,14 +44,29 @@ impl Span {
     }
 }
 
-/// Literal value (from v0.3 `Sec. 4`).
+/// Literal value (v0.3 `Sec. 4`; v0.6 `Sec. 1.8` adds interpolation).
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub enum Literal {
     Integer(i64),
     Float(f64),
+    /// Plain string with no `${...}` interpolation (v0.3 `Sec. 4`).
     String(String),
+    /// v0.6 `Sec. 1.8`: string literal with one or more `${expr}`
+    /// interpolation segments. Text segments alternate with expression
+    /// segments. Always at least one part; the degenerate single-text
+    /// case is normalized to `Literal::String` by the parser.
+    Interpolated(Vec<StrPart>),
     Boolean(bool),
     Null,
+}
+
+/// A segment of an interpolated string literal (v0.6 `Sec. 1.8`).
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub enum StrPart {
+    /// Literal text between interpolation points (or before/after).
+    Text(String),
+    /// An interpolated expression, evaluated and rendered with `STR`.
+    Expr(Box<Expr>),
 }
 
 /// Structured type expression (v0.3 `Sec. 2.4`).
@@ -138,6 +153,18 @@ impl std::fmt::Display for Literal {
             Literal::Integer(v) => write!(f, "{}", v),
             Literal::Float(v) => write!(f, "{}", v),
             Literal::String(s) => write!(f, "\"{}\"", s),
+            Literal::Interpolated(parts) => {
+                write!(f, "\"")?;
+                for p in parts {
+                    match p {
+                        StrPart::Text(s) => write!(f, "{}", s)?,
+                        // Expr doesn't implement Display; use Debug for
+                        // round-trip printing (this is best-effort).
+                        StrPart::Expr(e) => write!(f, "${{{:#?}}}", e)?,
+                    }
+                }
+                write!(f, "\"")
+            }
             Literal::Boolean(b) => write!(f, "{}", if *b { "TRUE" } else { "FALSE" }),
             Literal::Null => write!(f, "NULL"),
         }
@@ -265,9 +292,15 @@ pub enum Expr {
         entries: Vec<(Expr, Expr)>,
         span: Span,
     },
-    // Sec. 6.1 LET binding (v0.3 Sec. 2.4: optional annotation)
+    // Sec. 6.1 LET binding (v0.3 Sec. 2.4: optional annotation;
+    // v0.6 Sec. 3.1: optional `MUT` flag for mutable binding).
     Let {
         name: String,
+        /// v0.6 Sec. 3.1: `true` when the binding was written as
+        /// `LET MUT(name, value)`. Defaults to `false` for plain
+        /// `LET(name, value)` so older snapshots still deserialize.
+        #[serde(default)]
+        mut_: bool,
         type_annotation: Option<TypeAnnotation>,
         value: Box<Expr>,
         span: Span,
@@ -275,8 +308,12 @@ pub enum Expr {
     // v0.4 Sec. 7.5 destructuring LET: `LET([a, b], arr)` /
     // `LET(["k": v], dict)`. Same shape as `Let` but the first
     // argument is a `Pattern` instead of a bare `Ident`.
+    // v0.6 Sec. 3.1: `LET MUT` only accepts a simple identifier,
+    // so `LetPattern` always has `mut_ = false`.
     LetPattern {
         pattern: Box<Pattern>,
+        #[serde(default)]
+        mut_: bool,
         type_annotation: Option<TypeAnnotation>,
         value: Box<Expr>,
         span: Span,

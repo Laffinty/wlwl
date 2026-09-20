@@ -75,6 +75,7 @@ fn e_dict(entries: Vec<(Expr, Expr)>) -> Expr {
 fn e_let(name: &str, value: Expr) -> Expr {
     Expr::Let {
         name: name.into(),
+        mut_: false,
         type_annotation: None,
         value: Box::new(value),
         span: sp(),
@@ -83,6 +84,7 @@ fn e_let(name: &str, value: Expr) -> Expr {
 fn e_let_typed(name: &str, value: Expr, ann: TypeAnnotation) -> Expr {
     Expr::Let {
         name: name.into(),
+        mut_: false,
         type_annotation: Some(ann),
         value: Box::new(value),
         span: sp(),

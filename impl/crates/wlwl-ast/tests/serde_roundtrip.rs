@@ -204,12 +204,14 @@ fn expr_array_and_dict() {
 fn expr_let_with_and_without_annotation() {
     roundtrip(&Expr::Let {
         name: "x".into(),
+        mut_: false,
         type_annotation: None,
         value: Box::new(Expr::Literal(Literal::Integer(1), sp())),
         span: sp(),
     });
     roundtrip(&Expr::Let {
         name: "n".into(),
+        mut_: false,
         type_annotation: Some(TypeAnnotation::new(
             ident("INTEGER"),
             "INTEGER".into(),

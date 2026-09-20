@@ -36,6 +36,11 @@ pub enum TokenKind {
     False,
     Null,
     Let,
+    /// v0.6 §1.4 contextual keyword: only special in the position
+    /// `LET MUT(name, value)`. Other positions treat it as a normal
+    /// identifier. The lexer does not enforce context — that is the
+    /// parser's job.
+    Mut,
     Fun,
     Return,
     If,
@@ -67,7 +72,19 @@ pub enum TokenKind {
     // Literals
     Integer(i64),
     Float(f64),
+    /// Plain string literal (v0.3 §4.2). Used when the literal
+    /// contains no `${...}` interpolation — the common case.
     StringLit(String),
+    // v0.6 §1.8: interpolated string literal. The lexer emits a
+    // sequence of three token kinds bracketing zero or more
+    // expression tokens (lexed recursively):
+    //   `StrStart`, [ `StrText(text)` | <inner expression tokens> ]*, `StrEnd`
+    /// Marker at the start of an interpolated string.
+    StrStart,
+    /// Text segment inside an interpolated string.
+    StrText(String),
+    /// Marker at the end of an interpolated string (the closing `"`).
+    StrEnd,
     // Identifiers
     Ident(String),
     // Symbols
@@ -100,12 +117,11 @@ pub enum TokenKind {
     GtEq,     // >=
     AmpAmp,   // &&
     PipePipe, // ||
-    Bang,     // !  (v0.3-compat; v0.4 canonical is the NOT keyword below)
-    /// Phase B9 (spec §3.4): v0.4 canonical name for logical negation.
-    /// Lexer keyword so the parser dispatch path treats it like the
-    /// other macro-functions (IF/WHILE/TRY/MATCH). The `!` token above
-    /// remains as a v0.3-compat alias and emits `W0054` at the eval
-    /// boundary; v0.5 removes `!` outright.
+    Bang,     // !  (v0.6: canonical alongside NOT; both are accepted without warning)
+    /// v0.6 §1.5: `NOT` keyword is the lexical name for logical
+    /// negation. The single-char `!` is also accepted (no warning in
+    /// v0.6 — v0.5's `W0054` deprecation was removed). Both produce
+    /// the same builtin call.
     Not,
     // End of file
     Eof,
@@ -388,11 +404,14 @@ impl<'a> Lexer<'a> {
             // Phase B9 (spec §3.4 macro-function §14.5): `NOT` is the
             // v0.4 canonical spelling for logical negation. Lexed as
             // a keyword (not an ident) so the parser emits the
-            // same `Expr::Call { name: "NOT", args }` shape as the
-            // other macro-functions — and crucially, so the eval
-            // dispatch table can register `"NOT"` separately from
-            // `"!"` (the latter still emits W0054 to flag the
-            // v0.3-compat form).
+            // v0.6 §1.4: `MUT` is a contextual keyword; the lexer
+            // tokenizes it as `Mut`, and the parser consumes it only
+            // in the `LET MUT(...)` position. Other uses become a
+            // regular identifier (handled by the fallback below).
+            "MUT" => TokenKind::Mut,
+            // `NOT` is the canonical keyword for logical negation.
+            // The single-char `!` is also accepted (no warning in v0.6)
+            // — both produce the same builtin call.
             "NOT" => TokenKind::Not,
             _ => TokenKind::Ident(text),
         };
@@ -402,7 +421,14 @@ impl<'a> Lexer<'a> {
         })
     }
 
-    fn read_string(&mut self) -> WlwlResult<Token> {
+    /// Read a string literal (v0.3 §4.2 + v0.6 §1.8).
+    ///
+    /// Returns either:
+    /// - a single `StringLit(String)` token (no `${...}` interpolation), or
+    /// - a sequence `StrStart, [StrText(String) | <inner expression tokens>]*, StrEnd`
+    ///   (one or more `${...}` segments). The expression tokens are
+    ///   produced by recursively lexing the inner source slice.
+    fn read_string(&mut self) -> WlwlResult<Vec<Token>> {
         let line = self.line;
         let col = self.col;
         self.bump(); // opening '"'
@@ -410,28 +436,46 @@ impl<'a> Lexer<'a> {
                      // (including 中文 — see also §3.1 identifier note). The lexer
                      // previously pushed individual bytes as `char`, which mangles
                      // multi-byte sequences into Latin-1 mojibake. We now accumulate
-                     // raw bytes and decode once at the closing quote.
+                     // raw bytes and decode once at the closing quote / interpolation boundary.
         let mut s_bytes: Vec<u8> = Vec::new();
+        let mut parts: Vec<Token> = Vec::new();
+        let mut has_interp = false;
+        let span_close = |s: &Lexer<'_>| (line, col, s.line, s.col);
         loop {
             match self.peek() {
                 Some(b'"') => {
                     self.bump();
-                    let end_col = self.col;
-                    let s = String::from_utf8(s_bytes).map_err(|e| {
-                        // Should be unreachable: we only ever push
-                        // valid UTF-8 sequences. Report E0001 if it
-                        // somehow happens.
-                        self.err(
-                            ErrorCode::E0001,
-                            format!("invalid UTF-8 in string literal: {}", e),
-                            line,
-                            col,
-                        )
-                    })?;
-                    return Ok(Token {
-                        kind: TokenKind::StringLit(s),
-                        span: (line, col, line, end_col),
+                    let span = span_close(self);
+                    if !has_interp {
+                        let s = String::from_utf8(s_bytes).map_err(|e| {
+                            self.err(
+                                ErrorCode::E0001,
+                                format!("invalid UTF-8 in string literal: {}", e),
+                                line,
+                                col,
+                            )
+                        })?;
+                        return Ok(vec![Token { kind: TokenKind::StringLit(s), span }]);
+                    }
+                    if !s_bytes.is_empty() {
+                        let s = String::from_utf8(s_bytes).map_err(|e| {
+                            self.err(
+                                ErrorCode::E0001,
+                                format!("invalid UTF-8 in string literal: {}", e),
+                                line,
+                                col,
+                            )
+                        })?;
+                        parts.push(Token {
+                            kind: TokenKind::StrText(s),
+                            span,
+                        });
+                    }
+                    parts.push(Token {
+                        kind: TokenKind::StrEnd,
+                        span,
                     });
+                    return Ok(parts);
                 }
                 Some(b'\\') => {
                     self.bump();
@@ -441,7 +485,14 @@ impl<'a> Lexer<'a> {
                         Some(b'r') => s_bytes.push(b'\r'),
                         Some(b'\\') => s_bytes.push(b'\\'),
                         Some(b'"') => s_bytes.push(b'"'),
+                        // v0.6 §1.8: added escapes. The v0.3 lexer
+                        // already accepted `/` and `b`/`f` informally; we
+                        // now formalize them and add `\$`.
+                        Some(b'/') => s_bytes.push(b'/'),
+                        Some(b'b') => s_bytes.push(0x08),
+                        Some(b'f') => s_bytes.push(0x0c),
                         Some(b'0') => s_bytes.push(b'\0'),
+                        Some(b'$') => s_bytes.push(b'$'),
                         Some(c) => {
                             return Err(self.err(
                                 ErrorCode::E0001,
@@ -460,6 +511,41 @@ impl<'a> Lexer<'a> {
                         }
                     }
                 }
+                Some(b'$') if self.peek_at(1) == Some(b'{') => {
+                    // v0.6 §1.8: start of `${expr}` interpolation.
+                    // Flush the current text buffer (if any) as
+                    // `StrText`, mark interpolation mode, then re-lex
+                    // the expression body until the matching `}`.
+                    has_interp = true;
+                    let interp_start = span_close(self);
+                    parts.push(Token {
+                        kind: TokenKind::StrStart,
+                        span: interp_start,
+                    });
+                    if !s_bytes.is_empty() {
+                        let s = String::from_utf8(s_bytes).map_err(|e| {
+                            self.err(
+                                ErrorCode::E0001,
+                                format!("invalid UTF-8 in string literal: {}", e),
+                                line,
+                                col,
+                            )
+                        })?;
+                        parts.push(Token {
+                            kind: TokenKind::StrText(s),
+                            span: interp_start,
+                        });
+                        s_bytes = Vec::new();
+                    }
+                    // Consume the `${` opener.
+                    self.bump(); // '$'
+                    self.bump(); // '{'
+                    let inner = self.read_interp_body()?;
+                    parts.extend(inner);
+                    // After `read_interp_body`, the closing `}` has been
+                    // consumed; continue reading text until the next
+                    // `"` or `${`.
+                }
                 Some(b'\n') | None => {
                     return Err(self.err(ErrorCode::E0002, "unterminated string", line, col));
                 }
@@ -469,6 +555,63 @@ impl<'a> Lexer<'a> {
                 }
             }
         }
+    }
+
+    /// Read the expression body of a `${...}` interpolation (v0.6 §1.8).
+    ///
+    /// Returns the inner expression tokens (excluding the closing
+    /// `}`, which this method consumes). Brace nesting is respected
+    /// so that `{LET(x, {y: 1}), x}` parses correctly.
+    fn read_interp_body(&mut self) -> WlwlResult<Vec<Token>> {
+        let start = self.pos;
+        let mut depth: u32 = 1;
+        let mut i = self.pos;
+        while i < self.src.len() {
+            let b = self.src[i];
+            match b {
+                b'{' => depth += 1,
+                b'}' => {
+                    depth -= 1;
+                    if depth == 0 {
+                        break;
+                    }
+                }
+                b'"' => {
+                    // Nested string literals are not allowed inside
+                    // `${...}` per spec grammar — they would break the
+                    // simple brace-counting strategy. Report E0001.
+                    return Err(self.err(
+                        ErrorCode::E0001,
+                        "nested string literal inside `${...}` interpolation is not allowed",
+                        self.line,
+                        self.col,
+                    ));
+                }
+                _ => {}
+            }
+            i += 1;
+        }
+        if depth != 0 {
+            return Err(self.err(
+                ErrorCode::E0002,
+                "unterminated string interpolation (missing `}`)",
+                self.line,
+                self.col,
+            ));
+        }
+        let inner_bytes = &self.src[start..i];
+        let inner_str = std::str::from_utf8(inner_bytes).unwrap_or("");
+        // Skip past the inner bytes plus the closing `}`.
+        while self.pos < i + 1 {
+            self.bump();
+        }
+        // Recursively lex the inner expression as a fresh source
+        // buffer; strip the trailing EOF the recursive lexer emits.
+        let mut inner_tokens = lex(inner_str, &self.file)?;
+        if matches!(inner_tokens.last(), Some(Token { kind: TokenKind::Eof, .. })) {
+            inner_tokens.pop();
+        }
+        Ok(inner_tokens)
     }
 
     fn skip_line_comment(&mut self) {
@@ -584,7 +727,7 @@ impl<'a> Lexer<'a> {
                         span: (line, col, line, self.col),
                     });
                 }
-                b'"' => tokens.push(self.read_string()?),
+                b'"' => tokens.extend(self.read_string()?),
                 b'/' if self.peek_at(1) == Some(b'/') => {
                     self.skip_line_comment();
                 }
@@ -753,14 +896,13 @@ mod tests {
 
     #[test]
     fn lex_not_keyword() {
-        // Phase B9 (spec §3.4): `NOT` is the v0.4 canonical keyword
-        // for logical negation. The single-char `!` is a separate
-        // token that emits W0054 at the eval boundary (locked in
-        // `wlwl_eval::tests::b9_not_clean_path_emits_no_w0054` etc.).
+        // v0.6 §1.5: `NOT` is the canonical keyword for logical
+        // negation. The single-char `!` is also accepted (no warning
+        // in v0.6) — both produce the same builtin call.
         let toks = lex("NOT", "t.wl").unwrap();
         assert_eq!(toks[0].kind, TokenKind::Not);
-        // And `!` remains its own token (parser turns it into a
-        // Call with name "!").
+        // `!` remains its own token (parser turns it into a Call
+        // with name "!").
         let toks = lex("!", "t.wl").unwrap();
         assert_eq!(toks[0].kind, TokenKind::Bang);
         // Mixed: lexes both as expected.
@@ -771,6 +913,85 @@ mod tests {
         assert_eq!(toks[3].kind, TokenKind::True);
         assert_eq!(toks[4].kind, TokenKind::RParen);
         assert_eq!(toks[5].kind, TokenKind::Eof);
+    }
+
+    #[test]
+    fn lex_mut_keyword() {
+        // v0.6 §1.4: `MUT` is a contextual keyword — tokenized as
+        // `Mut`. The parser decides when it has special meaning
+        // (only after `LET`).
+        let toks = lex("MUT", "t.wl").unwrap();
+        assert_eq!(toks[0].kind, TokenKind::Mut);
+        let toks = lex("LET MUT(x, 0)", "t.wl").unwrap();
+        assert_eq!(toks[0].kind, TokenKind::Let);
+        assert_eq!(toks[1].kind, TokenKind::Mut);
+        assert_eq!(toks[2].kind, TokenKind::LParen);
+        assert_eq!(toks[3].kind, TokenKind::Ident("x".into()));
+        assert_eq!(toks[4].kind, TokenKind::Comma);
+        assert_eq!(toks[5].kind, TokenKind::Integer(0));
+    }
+
+    #[test]
+    fn lex_interpolated_string_basic() {
+        // v0.6 §1.8: `"hi ${name}"` produces three bracketing tokens
+        // around the inner expression tokens.
+        let toks = lex("\"hi ${name}\"", "t.wl").unwrap();
+        assert_eq!(toks[0].kind, TokenKind::StrStart);
+        assert_eq!(toks[1].kind, TokenKind::StrText("hi ".into()));
+        assert_eq!(toks[2].kind, TokenKind::Ident("name".into()));
+        assert_eq!(toks[3].kind, TokenKind::StrEnd);
+    }
+
+    #[test]
+    fn lex_interpolated_string_only_text() {
+        // No `${` → still a plain `StringLit` (fast path).
+        let toks = lex("\"plain\"", "t.wl").unwrap();
+        assert_eq!(toks[0].kind, TokenKind::StringLit("plain".into()));
+    }
+
+    #[test]
+    fn lex_interpolated_string_with_expr() {
+        // `"x = ${+(a, b)}"` should bracket `+(a, b)` as inner tokens.
+        let toks = lex("\"x = ${+(a, b)}\"", "t.wl").unwrap();
+        assert_eq!(toks[0].kind, TokenKind::StrStart);
+        assert_eq!(toks[1].kind, TokenKind::StrText("x = ".into()));
+        assert_eq!(toks[2].kind, TokenKind::Plus);
+        assert_eq!(toks[3].kind, TokenKind::LParen);
+        assert_eq!(toks[4].kind, TokenKind::Ident("a".into()));
+        assert_eq!(toks[5].kind, TokenKind::Comma);
+        assert_eq!(toks[6].kind, TokenKind::Ident("b".into()));
+        assert_eq!(toks[7].kind, TokenKind::RParen);
+        assert_eq!(toks[8].kind, TokenKind::StrEnd);
+    }
+
+    #[test]
+    fn lex_string_dollar_escape() {
+        // v0.6 §1.8: `\$` produces a literal `$`.
+        let toks = lex(r#""a\$b""#, "t.wl").unwrap();
+        assert_eq!(toks[0].kind, TokenKind::StringLit("a$b".into()));
+    }
+
+    #[test]
+    fn lex_string_b_f_escape() {
+        // v0.6 §1.8: `\b` is backspace (U+0008), `\f` is form-feed
+        // (U+000C). The v0.3 lexer already supported these informally.
+        let toks = lex(r#""a\bb\fc""#, "t.wl").unwrap();
+        if let TokenKind::StringLit(s) = &toks[0].kind {
+            assert_eq!(s, "a\x08b\x0cc");
+        } else {
+            panic!("expected StringLit, got {:?}", toks[0].kind);
+        }
+    }
+
+    #[test]
+    fn lex_interpolation_unterminated_brace() {
+        // Missing `}` inside an interpolation is detected by the
+        // outer string loop: the inner `"` closes the string first,
+        // so the test really checks that the lexer rejects a string
+        // that ends mid-interpolation. The current implementation
+        // refuses nested string literals inside `${...}` with E0001.
+        let err = lex("\"hi ${name\"", "t.wl").unwrap_err();
+        assert_eq!(err.diagnostic().code, ErrorCode::E0001);
     }
 
     #[test]

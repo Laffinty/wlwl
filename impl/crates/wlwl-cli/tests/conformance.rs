@@ -212,21 +212,21 @@ fn spec_sha_anchored() {
     // patch release keeps the same on-disk SHA-1 string (unless we
     // explicitly adopt v0.5).
     let specs = spec_dir();
-    let mut saw_v04 = false;
+    let mut saw_v06 = false;
     for entry in
         std::fs::read_dir(&specs).unwrap_or_else(|e| panic!("read_dir({}): {e}", specs.display()))
     {
         let entry = entry.unwrap();
         let name = entry.file_name();
         let n = name.to_string_lossy();
-        if n.starts_with("wlwl-spec-v0.4(") {
-            saw_v04 = true;
+        if n.starts_with("wlwl-spec-v0.6(") {
+            saw_v06 = true;
             // SHA-1 inside parens is the content hash.
             assert!(
-                n.contains("97524ced037b5ef0a5820a2ebd5bafb4ba4e239b"),
-                "v0.4 spec SHA-1 drift: {n}"
+                n.contains("cdb548cb5161e61d836aad2208fd33adc0917861"),
+                "v0.6 spec SHA-1 drift: {n}"
             );
         }
     }
-    assert!(saw_v04, "no v0.4 spec found at {}", specs.display());
+    assert!(saw_v06, "no v0.6 spec found at {}", specs.display());
 }
