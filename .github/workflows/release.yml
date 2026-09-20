@@ -169,11 +169,13 @@ jobs:
         working-directory: impl
         run: |
           cargo build --locked --release --bin wlwl
+          # cargo-cyclonedx 0.5.x removed --output-file; the default
+          # output path is `target/<override-filename>.json`. So with
+          # override-filename sbom, we get target/sbom.json.
           cargo cyclonedx \
             --format json \
-            --override-filename wlwl-cyclonedx \
-            --spec-version 1.6 \
-            --output-file target/sbom.json
+            --override-filename sbom \
+            --spec-version 1.6
           echo "ASSET_SBOM=target/sbom.json" >> "$GITHUB_ENV"
 
       - name: Upload SBOM artifact
