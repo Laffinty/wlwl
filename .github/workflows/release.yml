@@ -81,7 +81,7 @@ jobs:
         run: |
           set -euo pipefail
           mkdir -p staging
-          cp "target/${{ matrix.target }}/release/${{ matrix.binary }}" staging/
+          cp "impl/target/${{ matrix.target }}/release/${{ matrix.binary }}" staging/
           cp "$GITHUB_WORKSPACE/LICENSE" staging/
           cp "$GITHUB_WORKSPACE/README.md" staging/
           cp "$GITHUB_WORKSPACE/CHANGELOG.md" staging/
