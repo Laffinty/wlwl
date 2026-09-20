@@ -8,113 +8,103 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 > **Note.** The compiler version is **independent of the language spec version**.
 > The language spec lives in `docs/standard/` and is content-addressed by SHA-1.
 > This file tracks the **compiler / tooling** releases. The spec is currently at
-> **v0.5** (`docs/standard/wlwl-spec-v0.5(SHA1_6a8ec66ae7be3036765e3937c79dc4d5ba5222c3).md`).
+> **v0.6** (`docs/standard/wlwl-spec-v0.6(SHA1_cdb548cb5161e61d836aad2208fd33adc0917861).md`).
+
+## [Unreleased — v0.6.0]
+
+### Changed (breaking)
+
+The implementation now matches the **v0.6 specification** (the v0.5 spec
+was never published; this is the first versioned release). Nine breaking
+semantic changes (per the spec's Appendix B) are now in force:
+
+- **A · Truthiness**: `0`, `0.0`, `""`, empty ARRAY, empty DICT, `NaN` are
+  now falsy. Previously only `FALSE` and `NULL` were. (Matches Python /
+  JS / Ruby conventions; the v0.5 design was deemed too unusual.)
+- **B · `&&` / `||` short-circuit**: left operand's truthiness decides
+  whether the right is evaluated; ERR on the left propagates without
+  touching the right. Previously both sides were always evaluated.
+- **C · `IF` consumes `ERR`**: an `ERR` condition routes to the `else`
+  branch (or propagates `ERR` if no else). Previously ERR was treated
+  as truthy and took the then-branch.
+- **D · `!` and `NOT` accepted without warning**: `W0054` (the
+  `!`-is-deprecated warning) was removed. Both forms are now equally
+  canonical.
+- **E · `POP` renamed `AT_K`**: the dict lookup-with-default helper
+  is now `AT_K(d, k, default)`. `POP` remains as a back-compat alias
+  but emits no warning. `REMOVE_KEY` is the dedicated removal function.
+- **F · String subscript read**: `s[i]` returns a single-codepoint
+  string; negative indexes count from the end. `s[i] = ...` is
+  rejected (`E0030`).
+- **G · Explicit `LET MUT`**: mutable bindings must be declared
+  `LET MUT(name, value)`. The v0.5 "first closure call upgrades cell
+  to mutable" rule was deemed too magical and removed. `SET` on a
+  `LET` (immutable) binding raises `E0024`.
+- **H · Integer overflow throws `E0035`**: replaced the v0.5
+  "saturate to i64::MAX/MIN + emit `W0015`" behavior with an
+  explicit error. `E0035` is now shared with float-to-int overflow.
+- **J · String interpolation**: `"hi ${name}!"` form, with `\$`,
+  `\n`, `\t`, `\\`, `\"`, `\/`, `\0`, `\b`, `\f` escapes. Inner
+  expressions are evaluated and `STR`-rendered; an `ERR` inside
+  `${...}` propagates without producing partial output.
+
+### Added
+
+- **String interpolation lexer**: 3-token form `StrStart`,
+  `StrText(String)`, `StrEnd`; recursive sub-lex for the inner
+  expression. The AST adds `Literal::Interpolated(Vec<StrPart>)` and
+  a `StrPart` enum (`Text` / `Expr`).
+- **`MUT` keyword** (lexer-level contextual): `TokenKind::Mut`,
+  consumed by the parser only between `LET` and `(`. Other positions
+  treat it as a regular identifier.
+- **`BOOL` registered as ERR consumer**: `BOOL(ERR(...))` returns a
+  boolean instead of triggering §8.2 transparent propagation.
+- **`&&`, `||` registered as ERR consumers**: short-circuit paths
+  live in a new `eval_logical_short_circuit` helper, intercepted in
+  `eval_call` before the generic ERR-propagation block.
+- **`IF` registered as ERR consumer**: documented in the registry
+  for completeness; the actual handling lives in `eval_if`.
+- **String subscript AST path**: `INDEX_GET` accepts `(String,
+  Integer)`; `INDEX_SET` rejects `String` first arg with `E0030`.
+
+### Changed (non-breaking)
+
+- **Cell mutability flag is permanent**: `Binding.mutable` is set
+  at binding creation; no "closure-capture upgrade" mechanism
+  remains. The dead `Env::upgrade_all_to_mutable` was removed.
+- **Error message updated**: `SET` on an immutable binding now
+  suggests `LET MUT` in its message.
+- **Registry**: `Version::V06` added; `&&`/`||`/`AT_K` added as
+  `ResolvedBuiltin`; `POP` demoted to `ResolvedCompat`. Total
+  entries: 90 → 93.
+- **`BOOL` is now an ERR consumer in the registry**, matching its
+  runtime behavior.
+- **Removed `W0015`** (integer saturate warning) — now `E0035` on
+  overflow.
+- **Removed `W0054`** (`!` deprecation) — `!` is canonical.
+
+### Fixed
+
+- **Parser**: `LET MUT(name, value)` now correctly accepts the
+  `MUT` keyword between `LET` and `(`. (Earlier draft had the
+  syntax as `LET(MUT name, value)`, which was off-spec.)
+- **Formatter**: `Literal::Interpolated` segments are rendered
+  with proper escape sequences (`escape_str_text` helper); `MUT`
+  keyword preserved when re-formatting `LET MUT(...)` expressions.
 
 ## [Unreleased — v0.5.0]
 
 ### Added
 
-- **wlwl-spec-v0.5** — a ground-up language specification written
-  against the reference implementation's observable behavior (Go-spec
-  style: EBNF grammar, normative RFC-2119 wording, diagnostics and
-  standard-library chapters, no build-plan content). Codifies the
-  non-destructive container semantics, the `FALSE`/`NULL`-only truth
-  rules, eager `&&`/`||`, LET shadowing, ERR transparency including
-  user-function argument positions, and all Phase I1 behaviors
-  as normative text. The v0.4 spec remains in place, superseded but
-  unmodified.
+- **wlwl-spec-v0.6** — supersedes v0.5 with the nine breaking
+  semantic changes above. The v0.3 and v0.4 specs have been moved
+  to the trash (recoverable).
+
+> **Note.** v0.5 was never published — the spec was drafted but not
+> tagged, and the implementation never claimed compliance with it.
+> The v0.5 spec is in `docs/standard/` was moved to trash on
+> 2026-09-20 along with v0.3 and v0.4.
 
 ## [Unreleased — v0.4.0]
 
 ### Added
-
-- **Phase A1–A8** — closure cell semantics (Phase A2), error schema 1.1.0
-  with `trace` / `cause` (Phase A1d), `LET` patterns (A3), `MATCH` (A4),
-  cell-upgrade in `LET` (A5), ERR consumer registry (A6), cause-chain
-  `WRAP` / `UNWRAP` / `ERR_PAYLOAD` (A7), 47 + error codes (A8).
-- **Phase B1–B15** — INDEX_GET/SET/AT/REMOVE_KEY/POP (B1), DEL alias
-  (B2), OR_DIE canonicalization (B3), UNWRAP/ERR_PAYLOAD/WRAP (B4),
-  FORMAT global builtin + `wlwl:std.format` (B5),
-  `wlwl:std.collection` 17 higher-order functions (B6),
-  `wlwl:std.test` ASSERT/EXPECT_* framework (B7), 11 string builtins
-  (B8), NOT (B9), PRINT_ERR to stderr (B10), appendix G registry
-  (B11), ARRAY/STRING/DICT ops global (B12-B14), INPUT/BOOL/CALL/NEG
-  + OOP-stub (B15).
-- **Phase C1–C7** — AS keyword removal (C1), MODULE_REF real impl
-  (C2), `language_version` + E0044 (C3), MVS Cargo-style + E0045 (C4),
-  `allow_builtin_shadow` + E0025/W0030 (C5), `wlwl.lock` consistency
-  + E0042 (C6), project-root boundary + E0040 (C7).
-- **Phase D1–D5** — real-ai HTTP bridge (D1), `wlwl:std.agent`
-  (D3), W0052 (D5), E0090–E0094 network ladder (D4), ai/agent
-  module coverage.
-- **Phase E1–E4** — `strict_types` runtime check (E1),
-  canonical formatter + `wlwl fmt` (E2), AST-stable node ID + SHA-256
-  hash (E3), W-code unified channel (E4).
-- **Phase G1–G12 quality gates** — clippy zero-warning + fmt gate
-  (G1), cargo-deny license+advisory gate (G2), rustdoc validity
-  gate (G3), 6 ADRs ADR-0008..0013 (G4), 0-unsafe miri scaffolding (G5),
-  cargo-fuzz harness for lexer/parser/eval (G6), insta snapshot
-  meta-coverage (G7), `cargo bench` smoke (G8), weekly cargo-audit
-  supply-chain workflow (G9), CycloneDX SBOM + cosign keyless
-  signature per release (G10).
-
-### Changed
-
-- workspace license `GPL-2.0` → canonical SPDX `GPL-2.0-only`.
-- AS keyword removed entirely (Lexer drops `TokenKind::As`,
-  parser emits E0011 with migration note).
-- closure capture is now cell-based (ADR-0008), O(1) `Rc::clone`
-  per call.
-- error schema bumped to 1.1.0 — every diagnostic now carries
-  `trace`, `cause`, `related`, `retry_after` per spec §14.2.
-
-### Fixed
-
-- **Phase I1 — LET shadowing (§6.6)** — `LET` always creates a fresh
-  cell in the current scope; an enclosing-scope binding of the same
-  name is shadowed, never overwritten. Fixes the name-collision bug
-  where an inner `LET(m, ...)` (e.g. inside a stats helper) clobbered
-  a caller's MATCH pattern binding of the same name.
-- **Phase I1 — RANGE two-arg panic (§10.5)** — `RANGE(start, end)`
-  previously hit an internal `unreachable!()` (exit 101); it now
-  defaults `step` to 1.
-- **Phase I1 — `=(a, b)` equality spelling (§9.2)** — a single `=` in
-  call position desugars to the `==` builtin; default-parameter
-  `name = default` is unaffected.
-- **Phase I1 — named FUN binding (§8.2)** — `FUN(hello(x), ...)` now
-  binds `hello` in the current scope (previously silently dropped);
-  eval aligns with the parser linter.
-- **Phase I1 — index sugar (§10.1)** — `a[i]` / `a[i] = v` desugar to
-  `INDEX_GET` / `INDEX_SET`, chaining freely with the `.` sugar.
-- **Phase I1 — default parameters and `*rest` (§8.2/§8.4)** — omitted
-  trailing params are filled from their defaults and surplus args are
-  collected into `*rest`; arity follows the spec range `R <= A <= N`
-  instead of strict equality.
-- **Phase I1 — v0.3-legacy examples** — `destruct` / `format` /
-  `match` / `std_test` / `phase2_demo` examples modernized to v0.4
-  syntax; `fmt_examples_dir_files_idempotent` passes again.
-
-### Removed
-
-- `AS` keyword (v0.3 §4.2.1) — use INT(x)/FLOAT(x)/STR(x)/BOOL(x).
-
-## [v0.3.0] — initial release
-
-### Added
-
-- Lexer, parser, eval (tree-walking interpreter).
-- 35 error codes + 10 warning codes.
-- Stdlib v0.3 (`std.io`, `std.fs`, `std.json`, `std.format`, `std.ai`, `std.agent`).
-- Per-site `suggestion_code` codegen (P3-008).
-- Formal coverage instrumentation (P3-009).
-
-### Notes
-
-- See `docs/history/20260902.md` through `docs/history/20260919g89.md`
-  for per-phase implementation reports (G2 already pushed; G3-G10 in flight).
-- 5 architecture decisions captured in `docs/adr/0008..0013.md`.
-- 5 deviations registered: P4-G3-001, P4-G3-002, P4-G5-001, P4-G6-001,
-  P4-G7-001, P4-G8-001, P4-G9-001, P4-G2-007..010. See `docs/plan/deviations.md`.
-
-[Unreleased]: #compare-v0.3.0...HEAD
-[v0.3.0]: https://github.com/Laffinty/wlwl/releases/tag/v0.3.0

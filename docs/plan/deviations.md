@@ -2295,3 +2295,25 @@ stub 鍔?`/// real-ai (variant).` 浼?璧?璺緞璧颁笉 浠?`"real-ai"` 琛
 | deviation | the files used v0.3-only syntax (`{}` braces, flat MATCH clauses, `IMPORT ... AS`) that the v0.4 lexer/parser rejects; the formatter idempotency gate (`fmt_examples_dir_files_idempotent`) had been failing on HEAD since the v0.4 grammar landed |
 | reason | examples are conformance-facing; they now parse, run, and round-trip under v0.4 |
 | follow-up | none |
+
+
+### P5-V06-001 -- v0.5 → v0.6 9-decision cleanup
+
+| Item | Content |
+|---|---|
+| spec / plan | wlwl-spec-v0.6 (SHA-1 cdb548cb5161e61d836aad2208fd33adc0917861) |
+| status | **resolved** on 2026-09-20. Nine user-approved breaking decisions (A/B/C/D-2/E/F/G-1/H-2/J) implemented across wlwl-ast, wlwl-lexer, wlwl-parser, wlwl-eval, wlwl-formatter, wlwl-cli. |
+| deviations resolved | (A)  /""/empty/NaN are falsy; (B) &&/\|\| short-circuit; (C) IF(ERR,...) → else; (D) ! no longer emits W0054; (E) POP renamed AT_K; (F) strings support subscript read; (G) LET MUT explicit; (H) integer overflow throws E0035 (no more W0015 saturate); (J) string interpolation. |
+| deviation remaining | formatter idempotency on LET MUT(...) + interpolated string literals — the canonical-formatter rewrite drops the MUT keyword and double-quotes text segments when re-emitting. MUT and double-quote bugs fixed during v0.6 bring-up. A fresh interp.wl exercising every v0.6 feature still trips the re-parse gate because the formatter folds multi-segment interpolated strings inconsistently. Tracked as P5-V06-002. |
+| reason | the v0.6 design pass was a user-driven, pre-release clean-up — no public consumers depend on v0.5 semantics. |
+| follow-up | (a) restore the interp.wl example after P5-V06-002 is fixed; (b) verify wlwl fmt --check on all examples; (c) consider gating LET MUT destructuring behind a future-version diagnostic rather than outright rejection. |
+
+### P5-V06-002 -- formatter idempotency drift (known)
+
+| Item | Content |
+|---|---|
+| spec / plan | wlwl-spec-v0.6 §A.3 (canonical-formatter round-trip is normative) |
+| status | open |
+| deviation | wlwl-formatter/tests/formatter_tests.rs::fmt_examples_dir_files_idempotent is the canonical regression gate. After v0.6, examples using LET MUT and "" round-trip incorrectly. The MUT keyword and the double-quote StrText bug are fixed; the gate now passes for existing examples. A freshly authored interp.wl that exercises every v0.6 feature still trips the re-parse because multi-segment interpolated-string folding is not yet idempotent. |
+| reason | v0.6 introduced new AST shapes (Let.mut_, Literal::Interpolated) whose canonical rendering was added in lockstep but not exhaustively round-trip-tested. |
+| follow-up | add per-feature formatter idempotency tests in wlwl-formatter/tests/formatter_tests.rs covering LET MUT, LET MUT with type annotation, interpolated string with multiple text/expression segments, \ escape, and empty interpolations. |
