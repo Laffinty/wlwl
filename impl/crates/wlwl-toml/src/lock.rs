@@ -24,7 +24,7 @@
 //!
 //! ## Hashing
 //!
-//! `hash` is the lowercase hex SHA-256 of every `<name>.wl` file
+//! `hash` is the lowercase hex SHA-256 of every `<name>.wll` file
 //! inside the dependency directory, concatenated in sorted order.
 //! This is a deterministic, content-only fingerprint that detects
 //! source changes without depending on filesystem metadata. When a
@@ -57,7 +57,7 @@ pub struct LockEntry {
     /// `None` for path-style.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub version: Option<String>,
-    /// Lowercase hex SHA-256 of the dependency's `.wl` source files.
+    /// Lowercase hex SHA-256 of the dependency's `.wll` source files.
     /// `None` when the dependency has no local path (e.g. central
     /// registry entries in v0.4).
     #[serde(default, skip_serializing_if = "Option::is_none")]
@@ -80,7 +80,7 @@ pub enum LockError {
     Io(std::io::Error),
     /// Schema version mismatch (e.g. lock from a future wlwl build).
     UnsupportedSchemaVersion(String),
-    /// Tried to hash a dependency directory but no `.wl` files were
+    /// Tried to hash a dependency directory but no `.wll` files were
     /// found — usually means the path is wrong.
     NoSourceFiles(PathBuf),
 }
@@ -96,7 +96,7 @@ impl fmt::Display for LockError {
             LockError::NoSourceFiles(p) => {
                 write!(
                     f,
-                    "no .wl source files in dependency directory {}",
+                    "no .wll source files in dependency directory {}",
                     p.display()
                 )
             }
@@ -238,7 +238,7 @@ pub fn write(path: &Path, lf: &Lockfile) -> Result<(), LockError> {
 }
 
 /// Hash the contents of a dependency directory: lowercase hex
-/// SHA-256 over every `.wl` file, sorted by relative path. Returns
+/// SHA-256 over every `.wll` file, sorted by relative path. Returns
 /// `None` if the directory does not exist or is empty.
 pub fn hash_dependency_dir(dir: &Path) -> Result<Option<String>, LockError> {
     if !dir.is_dir() {
@@ -268,7 +268,7 @@ fn collect_wl_files(dir: &Path, out: &mut Vec<PathBuf>) -> Result<(), LockError>
         let path = entry.path();
         if path.is_dir() {
             collect_wl_files(&path, out)?;
-        } else if path.extension().and_then(|s| s.to_str()) == Some("wl") {
+        } else if path.extension().and_then(|s| s.to_str()) == Some("wll") {
             out.push(path);
         }
     }
@@ -501,8 +501,8 @@ mod tests {
     #[test]
     fn hash_dependency_dir_is_deterministic() {
         let dir = tempdir(".lock_hash");
-        write_file(&dir, "a.wl", "LET(x, 1);");
-        write_file(&dir, "b.wl", "LET(y, 2);");
+        write_file(&dir, "a.wll", "LET(x, 1);");
+        write_file(&dir, "b.wll", "LET(y, 2);");
         let h1 = hash_dependency_dir(&dir).unwrap().unwrap();
         let h2 = hash_dependency_dir(&dir).unwrap().unwrap();
         assert_eq!(h1, h2);
@@ -513,9 +513,9 @@ mod tests {
     #[test]
     fn hash_changes_when_content_changes() {
         let dir = tempdir(".lock_hash_chg");
-        write_file(&dir, "a.wl", "LET(x, 1);");
+        write_file(&dir, "a.wll", "LET(x, 1);");
         let h1 = hash_dependency_dir(&dir).unwrap().unwrap();
-        write_file(&dir, "a.wl", "LET(x, 2);");
+        write_file(&dir, "a.wll", "LET(x, 2);");
         let h2 = hash_dependency_dir(&dir).unwrap().unwrap();
         assert_ne!(h1, h2);
         let _ = fs::remove_dir_all(&dir);
@@ -536,7 +536,7 @@ mod tests {
 [package]
 name = "app"
 version = "0.1.0"
-entry = "main.wl"
+entry = "main.wll"
 
 [dependencies]
 "myteam:utils" = { path = "vendor/utils" }
@@ -597,10 +597,10 @@ entry = "main.wl"
     fn entries_from_manifest_hashes_path_deps() {
         let dir = tempdir(".c6_hash");
         let m = mf::parse(C6_TOML).unwrap();
-        // vendor/utils 目录不存在 → hash None;存在且有 .wl → Some
+        // vendor/utils 目录不存在 → hash None;存在且有 .wll → Some
         let vendor = dir.join("vendor").join("utils");
         fs::create_dir_all(&vendor).unwrap();
-        write_file(&vendor, "utils.wl", "LET(x, 1);");
+        write_file(&vendor, "utils.wll", "LET(x, 1);");
         let lock = from_manifest(&m, &dir);
         let e = lock
             .entries

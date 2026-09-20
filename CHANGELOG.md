@@ -108,3 +108,28 @@ semantic changes (per the spec's Appendix B) are now in force:
 ## [Unreleased — v0.4.0]
 
 ### Added
+
+## [Unreleased -- v0.6.1] (extension rename)
+
+### Changed (breaking)
+
+- **File extension renamed from .wl to .wll**: Wolfram
+  Language (Mathematica) has long claimed .wl, which causes
+  editors, GitHub Linguist, Shiki/Rouge/Prism highlighters, and the
+  Wolfram VSCode extension to mis-identify WLWL source files. The
+  .wll extension has no prior claim from any other language, so
+  adopting it costs zero ecosystem work. This is the first breaking
+  change at the *file-format* level (the spec semantics are unchanged).
+
+### Migration
+
+- All tracked .wl files renamed to .wll (12 in impl/examples/ + 1
+  in wlwl-skill/). git log --follow preserves history.
+- Test fixtures, error messages, doc paths, CI commands, and skill
+  bundle references updated.
+- examples/showcase.wll still contains a pre-existing bug (lowercase
+  	rue keyword); unrelated to this rename.
+- Conformance test fixtures (impl/tests/conformance/*.wlt) were left
+  untouched; their internal references to .wll source files were
+  updated.
+

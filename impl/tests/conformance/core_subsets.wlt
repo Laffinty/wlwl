@@ -1,5 +1,5 @@
 // conformance/core_subsets.wlt - section 16.5 mandatory test 1
-// Demonstrates: section 1-10 production rules via minimal .wl programs.
+// Demonstrates: section 1-10 production rules via minimal .wll programs.
 // Each LET / FUN / PRINT line exercises a core language subset.
 
 LET(name, "world");                  // section 2.1 let-binding

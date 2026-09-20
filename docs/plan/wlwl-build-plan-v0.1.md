@@ -13,7 +13,7 @@
 | 2 | 工期预算 | **接受**:20 周(Phase 1-4)/ 24 周(加 Phase 5) | AI Coding 工作流支持,接受延期风险 |
 | 3 | Phase 5 形式化 | **做**:Coq 机械化 §19 核心子集 | 4 周 + 与 Rust 实现等价性测试 |
 | 4 | CI 平台 | **GitHub Actions** | 默认;三平台测试(Linux/macOS/Windows) |
-| 5 | 许可证 | **GPL v2** | 强 copyleft;编译器 + std 库 + 工具链统一许可;用户编写的 .wl 程序不受约束 |
+| 5 | 许可证 | **GPL v2** | 强 copyleft;编译器 + std 库 + 工具链统一许可;用户编写的 .wll 程序不受约束 |
 | 6 | 目标用户 | **公开** | 需准备 README、文档站、发布流程;Phase 4 末启动公开筹备 |
 
 ---
@@ -382,7 +382,7 @@ wlwl/                          # 工作目录根
     │   ├── wlwl-cli/          # wlwl run / check / fmt
     │   └── wlwl-formal/       # (Phase 5)Coq 桥接
     ├── tests/                 # 集成测试
-    ├── examples/              # 示例 .wl 程序
+    ├── examples/              # 示例 .wll 程序
     ├── LICENSE                # GPL v2
     └── README.md
 ```
@@ -593,7 +593,7 @@ Branch coverage 在 Windows MSVC 下不可用 (0/0); 需在 Linux CI runner 跑�
 ### 6.3 错误码 insta 快照
 
 每个错误码(E0001-E0102 + E0060-E0083 = 33 个)**至少 1 个** insta 快照,包含:
-- 触发该错误的最小 .wl 程序
+- 触发该错误的最小 .wll 程序
 - 期望的 JSON 输出
 - 期望的 CLI 人类可读输出
 
@@ -609,7 +609,7 @@ Branch coverage 在 Windows MSVC 下不可用 (0/0); 需在 Linux CI runner 跑�
 
 ### 6.5 端到端测试
 
-每个 Phase 至少 5 个端到端 .wl 程序,覆盖:
+每个 Phase 至少 5 个端到端 .wll 程序,覆盖:
 - 基础 I/O
 - 错误处理链
 - 模块使用
@@ -627,7 +627,7 @@ Branch coverage 在 Windows MSVC 下不可用 (0/0); 需在 Linux CI runner 跑�
 
 | 命令 | 作用 | Phase |
 |------|------|-------|
-| `wlwl run <file>` | 运行 .wl 程序 | 1 |
+| `wlwl run <file>` | 运行 .wll 程序 | 1 |
 | `wlwl check <file>` | 仅做词法/语法/名字检查,不执行 | 1 |
 | `wlwl run <file> --format=json` | 输出 JSON 错误(单条/数组) | 2 |
 | `wlwl run <file> --format=jsonl` | 输出 JSONL 流式错误 | 3 |
@@ -772,7 +772,7 @@ Branch coverage 在 Windows MSVC 下不可用 (0/0); 需在 Linux CI runner 跑�
 > - **决策**:**GPL v2** 强 copyleft。
 > - **后果**:
 >   - 编译器、std 库、工具链:**全部 GPL v2**,衍生作品必须同样开源
->   - **不**传染给用户用 WLWL 写的程序(.wl 文件不受约束,作者自选许可证)
+>   - **不**传染给用户用 WLWL 写的程序(.wll 文件不受约束,作者自选许可证)
 >   - std.ai 通过 HTTP 调用 OpenAI/Anthropic 等闭源 API,**不**算"链接",所以 GPL v2 不会传染给这些 API
 >   - 与 GCC、Linux 内核一致
 > - **风险**:商业用户可能避用;但符合"面向 AI Coding 公开生态"的定位
@@ -793,7 +793,7 @@ Branch coverage 在 Windows MSVC 下不可用 (0/0); 需在 Linux CI runner 跑�
 > - **决策**:**目标用户为公开**,Phase 4 末启动公开筹备(README、文档站、示例程序、社区渠道)。
 > - **后果**:
 >   - Phase 1-3 重点是技术实现,文档是技术向(internal doc)
->   - Phase 4 末必须交付:README、用户手册、示例项目(>= 5 个 .wl 程序)
+>   - Phase 4 末必须交付:README、用户手册、示例项目(>= 5 个 .wll 程序)
 >   - 文档站可用 GitHub Pages + mdBook,或类似方案
 
 ---

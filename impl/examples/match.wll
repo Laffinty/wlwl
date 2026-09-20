@@ -1,4 +1,4 @@
-// examples/match.wl — pattern-match dispatch (v0.4 §7.6)
+// examples/match.wll — pattern-match dispatch (v0.4 §7.6)
 // Demonstrates: MATCH with an ARRAY of [pattern, result] clauses plus
 // a default fallback. (v0.3's flat-clause form is gone in v0.4.)
 

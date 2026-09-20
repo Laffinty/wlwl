@@ -9,7 +9,7 @@ site_description: >-
   syntactic form is a function call. v0.4.0 docs.
 site_author: Laffinty
 copyright: >-
-  WLWL compiler is GPL-2.0-only. Your `.wl` programs are your own work
+  WLWL compiler is GPL-2.0-only. Your `.wll` programs are your own work
   and are not affected.
 
 repo_url: https://github.com/Laffinty/wlwl

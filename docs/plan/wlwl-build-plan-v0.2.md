@@ -838,7 +838,7 @@ wlwl-eval:    149 pass + 3 ignored(A1d 三测试) — v0.1 baseline 146 + 3 new
     - `plan/`:符号链接到 `docs/plan/wlwl-build-plan-v0.2`
     - `history/`:符号链接到 `docs/history/`
     - `tutorial/`:**新增** — 从 Hello World 到 OOP / 模块 / 错误处理 / std.test 完整教程
-    - `examples/`:≥ 5 个完整 .wl 示例(从 v0.1 showcase 扩)
+    - `examples/`:≥ 5 个完整 .wll 示例(从 v0.1 showcase 扩)
   - GitHub Pages 部署:release.yml 触发 `mkdocs gh-deploy`
   - `material` 主题
 
@@ -846,7 +846,7 @@ wlwl-eval:    149 pass + 3 ignored(A1d 三测试) — v0.1 baseline 146 + 3 new
   - README:从 v0.1 polish,加 v0.4 spec 摘要 + 错误码表 + examples 链接
   - CHANGELOG:Keep-a-Changelog 格式,v0.4.0 完整条目
   - CONTRIBUTING:v0.1 已就位,加 Phase G 质量门禁说明
-  - examples/:`hello.wl` / `math.wl` / `showcase.wl`(沿用) + 新增 `match.wl` / `destruct.wl` / `std_test.wl` / `closure_cell.wl` / `format.wl`(v0.4 特性展示)
+  - examples/:`hello.wll` / `math.wll` / `showcase.wll`(沿用) + 新增 `match.wll` / `destruct.wll` / `std_test.wll` / `closure_cell.wll` / `format.wll`(v0.4 特性展示)
 
 **规范对应**:本 phase 不直接对应 spec 章节,而是 spec §16.5 一致性测试套件的基础设施 + spec §0.4 Conformance 的工程保障。
 
@@ -921,7 +921,7 @@ wlwl-eval:    149 pass + 3 ignored(A1d 三测试) — v0.1 baseline 146 + 3 new
   - migration 段:v0.3 → v0.4 程序迁移指南
 
 - **H6. Post-release smoke + 监控**
-  - download 三平台 binary,各跑 `hello.wl` + 1 个示例
+  - download 三平台 binary,各跑 `hello.wll` + 1 个示例
   - 监控 GitHub Issues
   - 7 天后,若无 P0 bug,标记 v0.4.0 stable
 
@@ -1416,7 +1416,7 @@ pub struct ErrorChain {
 ### 6.3 错误码 insta 快照(Phase G7 扩到 56 + 14)
 
 每个错误码(56 个 E + 14 个 W = 70 个)**至少 1 个** insta 快照:
-- 触发该错误/警告的最小 .wl 程序
+- 触发该错误/警告的最小 .wll 程序
 - 期望的 JSON 输出(schema 1.1.0)
 - 期望的 CLI 人类可读输出
 - 期望的 JSONL 输出
@@ -1440,9 +1440,9 @@ spec §16.1 11 条 AI 契约(spec §16.1 列出)逐条写测试:
 
 ### 6.5 端到端测试(沿用 v0.1 §6.5 + Phase G12 扩到 10)
 
-每个 Phase 至少 5 个端到端 .wl 程序;Phase G12 扩到 10 个:
-- v0.1 沿用:`hello.wl` / `math.wl` / `showcase.wl` / `phase2_demo.wl` / `test_array.wl`
-- Phase G12 新增:`match.wl` / `destruct.wl` / `std_test.wl` / `closure_cell.wl` / `format.wl`
+每个 Phase 至少 5 个端到端 .wll 程序;Phase G12 扩到 10 个:
+- v0.1 沿用:`hello.wll` / `math.wll` / `showcase.wll` / `phase2_demo.wll` / `test_array.wll`
+- Phase G12 新增:`match.wll` / `destruct.wll` / `std_test.wll` / `closure_cell.wll` / `format.wll`
 
 ### 6.6 性能基准(沿用 v0.1 §6.6,Phase F1 收尾 + G8 CI)
 
@@ -1464,7 +1464,7 @@ spec §16.1 11 条 AI 契约(spec §16.1 列出)逐条写测试:
 
 | 命令 | 作用 | 引入 Phase | 备注 |
 |------|------|-----------|------|
-| `wlwl run <file>` | 运行 .wl 程序 | 1 (v0.1) | 沿用 |
+| `wlwl run <file>` | 运行 .wll 程序 | 1 (v0.1) | 沿用 |
 | `wlwl check <file>` | 仅做词法/语法/名字检查,不执行 | 1 (v0.1) | 沿用 + Phase E4 lint |
 | `wlwl run <file> --format=json` | 输出 JSON 错误(单条/数组) | 2 (v0.1) | schema 1.1.0 (Phase A1) |
 | `wlwl run <file> --format=jsonl` | 输出 JSONL 流式错误 | 3 (v0.1) | schema 1.1.0 (Phase A1) |
@@ -1490,7 +1490,7 @@ spec §16.1 11 条 AI 契约(spec §16.1 列出)逐条写测试:
 name = "myapp"                          # 必填
 version = "0.1.0"                       # 必填
 language_version = "0.4"                # [v0.2 新增]Phase C3
-entry = "src/main.wl"                   # 必填
+entry = "src/main.wll"                   # 必填
 description = "A WLWL app"              # 可选
 license = "MIT"                         # 可选
 allow_builtin_shadow = false            # [v0.2 新增]Phase C5

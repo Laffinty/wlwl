@@ -19,13 +19,13 @@ wlwl-skill/
 |-- SKILL.md      <- agent-facing entry point, Claude Skills format
 |-- reference.md  <- on-demand reference (9-decision table, AST shapes,
 |                   anti-patterns); agent reads only when SKILL.md points to it
-|-- interp.wl     <- golden reference program: every v0.6 feature in one file
+|-- interp.wll     <- golden reference program: every v0.6 feature in one file
 ```
 
 The directory is intentionally **flat** (no nested subdirectories).
 Claude Skills progressive disclosure works off flat references too -- the
 agent loads `SKILL.md` when WLWL is in scope, and follows the inline
-references to `reference.md` / `interp.wl` only when needed.
+references to `reference.md` / `interp.wll` only when needed.
 
 ## How to use
 
@@ -36,7 +36,7 @@ Place this directory under `~/.claude/skills/` (personal) or `.claude/skills/`
 
 ### Drop-in for the Claude API
 
-Upload `SKILL.md` (with `reference.md` and `interp.wl` as supporting
+Upload `SKILL.md` (with `reference.md` and `interp.wll` as supporting
 files) via the Skills API.
 
 ### As a standalone reference
@@ -49,7 +49,7 @@ field guide.
 - File names: lowercase + dot-separator (`SKILL.md` is uppercase because
   Claude Skills require that exact filename).
 - Line endings: LF.
-- `interp.wl` is a verbatim copy of `impl/examples/interp.wl` for
+- `interp.wll` is a verbatim copy of `impl/examples/interp.wll` for
   reference parity; update both if you change the language.
 
 ## Versioning
@@ -59,7 +59,7 @@ When the spec ships a breaking change:
 
 1. Bump the `description` frontmatter in `SKILL.md` (it carries the
    version marker inside the description text).
-2. Refresh `interp.wl` to mirror the spec's `examples/interp.wl`.
+2. Refresh `interp.wll` to mirror the spec's `examples/interp.wll`.
 3. Update `reference.md` only if new AST shapes or builtins land.
 4. Add a CHANGELOG entry here if the skill introduces new patterns.
 

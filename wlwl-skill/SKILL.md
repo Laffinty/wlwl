@@ -1,6 +1,6 @@
 ---
 name: writing-wlwl
-description: Writes correct WLWL v0.6 source code and .wl files. Covers the nine user-approved breaking decisions from v0.5 (truthy overhaul, &&/|| short-circuit, IF(ERR,...) routing, ! canonical, AT_K rename from POP, string subscript read, explicit LET MUT, integer overflow -> E0035, ${} interpolation). Use when the user asks for WLWL code, a .wl file, a wlwl script, or anything targeting the wlwl-spec-v0.6 language (SHA-1 cdb548cb5161e61d836aad2208fd33adc0917861). Always finishes by running `wlwl run` to verify the output (primary check); `wlwl fmt --check` is best-effort because v0.6 has known formatter drift. Do NOT use for WLWL v0.5 or earlier -- those use different truthy rules, POP-not-AT_K, and lack LET MUT.
+description: Writes correct WLWL v0.6 source code and .wll files. Covers the nine user-approved breaking decisions from v0.5 (truthy overhaul, &&/|| short-circuit, IF(ERR,...) routing, ! canonical, AT_K rename from POP, string subscript read, explicit LET MUT, integer overflow -> E0035, ${} interpolation). Use when the user asks for WLWL code, a .wll file, a wlwl script, or anything targeting the wlwl-spec-v0.6 language (SHA-1 cdb548cb5161e61d836aad2208fd33adc0917861). Always finishes by running `wlwl run` to verify the output (primary check); `wlwl fmt --check` is best-effort because v0.6 has known formatter drift. Do NOT use for WLWL v0.5 or earlier -- those use different truthy rules, POP-not-AT_K, and lack LET MUT.
 ---
 
 # Writing WLWL v0.6
@@ -19,7 +19,7 @@ description: Writes correct WLWL v0.6 source code and .wl files. Covers the nine
 2. Never write `if (x == 0)` or `==`-style comparisons; v0.6 has no `==` -- use `<(x, 0)`, `>(x, 0)`, etc.
 3. Never write `POP(d, k, default)` in new code; it still works but is the old name.
 4. Never write `IF(cond, then)` with an assumed error path -- `IF(cond, then, else)` is what catches `ERR(...)`.
-5. Never claim a `.wl` file works without running `wlwl run` on it. Spec drift is real; verify.
+5. Never claim a `.wll` file works without running `wlwl run` on it. Spec drift is real; verify.
 
 ## Canonical form (per spec section A.3, with v0.6 caveats)
 
@@ -59,7 +59,7 @@ Copy this checklist and tick items as you go:
 ```
 WLWL writing progress:
 - [ ] 1. Decide the AST shape (use the 9-decision table to pick operators)
-- [ ] 2. Write the .wl file (one stmt per line, `;`, no leading indent)
+- [ ] 2. Write the .wll file (one stmt per line, `;`, no leading indent)
 - [ ] 3. Run `wlwl run <file>` -- MUST exit 0 with expected stdout
 - [ ] 4. Optional: run `wlwl fmt --check <file>` -- best-effort; see Verification
 - [ ] 5. If 3 fails: consult `reference.md` for the failing token/operator
@@ -100,10 +100,10 @@ After writing, in this order:
 
 ```bash
 # 1. PRIMARY check: does it run and produce the expected output?
-wlwl run path/to/file.wl
+wlwl run path/to/file.wll
 
 # 2. SECONDARY check (best-effort): is the source already canonical?
-wlwl fmt --check path/to/file.wl
+wlwl fmt --check path/to/file.wll
 ```
 
 `wlwl run` is the source of truth: if it exits 0 and stdout matches
@@ -132,11 +132,11 @@ exception, or wrong output. Read the diagnostic, fix the source, retry.
 ## References
 
 - **Full 9-decision table, AST shapes, lexer traps:** see `reference.md` in this folder.
-- **Gold-standard example covering every v0.6 feature in one program:** see `interp.wl`.
+- **Gold-standard example covering every v0.6 feature in one program:** see `interp.wll`.
 - **Authoritative spec:** `../docs/standard/wlwl-spec-v0.6(SHA1_cdb548cb5161e61d836aad2208fd33adc0917861).md`.
 
-When in doubt, copy a pattern from `interp.wl` -- it is the smallest file
-that exercises every v0.6 feature, and `wlwl run interp.wl` produces the
-expected output. Note that `wlwl fmt --check interp.wl` currently fails due
+When in doubt, copy a pattern from `interp.wll` -- it is the smallest file
+that exercises every v0.6 feature, and `wlwl run interp.wll` produces the
+expected output. Note that `wlwl fmt --check interp.wll` currently fails due
 to the formatter idempotency drift described above -- do not treat that as
 a bug in your own code.

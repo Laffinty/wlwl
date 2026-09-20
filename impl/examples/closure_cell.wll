@@ -1,4 +1,4 @@
-// examples/closure_cell.wl — closure cell-capture semantics (§6.4)
+// examples/closure_cell.wll — closure cell-capture semantics (§6.4)
 // Demonstrates: a closure that captures a `LET` cell and shares
 // mutations across calls.
 

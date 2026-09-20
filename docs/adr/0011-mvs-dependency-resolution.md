@@ -25,7 +25,7 @@ Two competing approaches:
 
 ## Decision Drivers
 
-- §13.9 example suite: 5 e2e .wl programs covering simple linear
+- §13.9 example suite: 5 e2e .wll programs covering simple linear
   dep trees, diamond conflicts, and a 3-package cycle (only resolvable
   with backtracking)
 - Cross-platform behaviour parity: the implementation must be

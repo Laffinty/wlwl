@@ -6,7 +6,7 @@
 use wlwl_parser::{lint, parse};
 
 fn warnings(src: &str) -> Vec<(String, String)> {
-    let e = parse(src, "t.wl").expect("parse failed");
+    let e = parse(src, "t.wll").expect("parse failed");
     lint(&e)
         .into_iter()
         .map(|w| (w.code.as_str().to_string(), w.message))
@@ -115,7 +115,7 @@ fn lint_is_independent_of_parse_warnings() {
     // lint() only carries static name-level checks; W0020 stays in
     // parse_with_warnings.
     let (e, parse_ws) =
-        wlwl_parser::parse_with_warnings("[1, \"a\": 2];", "t.wl").expect("parse failed");
+        wlwl_parser::parse_with_warnings("[1, \"a\": 2];", "t.wll").expect("parse failed");
     assert!(parse_ws.iter().any(|w| w.code.as_str() == "W0020"));
     let lint_ws = lint(&e);
     assert!(lint_ws.iter().all(|w| w.code.as_str() != "W0020"));

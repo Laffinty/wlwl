@@ -2388,13 +2388,13 @@ mod tests {
 
     #[test]
     fn parse_integer_literal() {
-        let e = parse("42", "t.wl").unwrap();
+        let e = parse("42", "t.wll").unwrap();
         assert!(matches!(e, Expr::Literal(Literal::Integer(42), _)));
     }
 
     #[test]
     fn parse_let() {
-        let e = parse("LET(x, 1);", "t.wl").unwrap();
+        let e = parse("LET(x, 1);", "t.wll").unwrap();
         match e {
             Expr::Let { name, value, .. } => {
                 assert_eq!(name, "x");
@@ -2406,7 +2406,7 @@ mod tests {
 
     #[test]
     fn parse_if_then_else() {
-        let e = parse(r#"IF(==(x, 0), "zero", "non-zero");"#, "t.wl").unwrap();
+        let e = parse(r#"IF(==(x, 0), "zero", "non-zero");"#, "t.wll").unwrap();
         match e {
             Expr::If { else_branch, .. } => assert!(else_branch.is_some()),
             _ => panic!("expected IF"),
@@ -2415,7 +2415,7 @@ mod tests {
 
     #[test]
     fn parse_if_no_else() {
-        let e = parse("IF(==(x, 0), PRINT(0));", "t.wl").unwrap();
+        let e = parse("IF(==(x, 0), PRINT(0));", "t.wll").unwrap();
         match e {
             Expr::If { else_branch, .. } => assert!(else_branch.is_none()),
             _ => panic!("expected IF"),
@@ -2424,13 +2424,13 @@ mod tests {
 
     #[test]
     fn parse_while() {
-        let e = parse("WHILE(<(x, 10), LET(x, +(x, 1)));", "t.wl").unwrap();
+        let e = parse("WHILE(<(x, 10), LET(x, +(x, 1)));", "t.wll").unwrap();
         assert!(matches!(e, Expr::While { .. }));
     }
 
     #[test]
     fn parse_for() {
-        let e = parse("FOR(i, [1, 2, 3], PRINT(i));", "t.wl").unwrap();
+        let e = parse("FOR(i, [1, 2, 3], PRINT(i));", "t.wll").unwrap();
         match e {
             Expr::For { var, .. } => assert_eq!(var, "i"),
             _ => panic!("expected FOR"),
@@ -2439,7 +2439,7 @@ mod tests {
 
     #[test]
     fn parse_fun_zero_params() {
-        let e = parse("FUN((), 42);", "t.wl").unwrap();
+        let e = parse("FUN((), 42);", "t.wll").unwrap();
         match e {
             Expr::Fun { params, .. } => assert_eq!(params.len(), 0),
             _ => panic!("expected FUN"),
@@ -2448,7 +2448,7 @@ mod tests {
 
     #[test]
     fn parse_fun_two_params() {
-        let e = parse("FUN((a, b), +(a, b));", "t.wl").unwrap();
+        let e = parse("FUN((a, b), +(a, b));", "t.wll").unwrap();
         match e {
             Expr::Fun { params, .. } => assert_eq!(
                 params.iter().map(|p| p.name.clone()).collect::<Vec<_>>(),
@@ -2460,7 +2460,7 @@ mod tests {
 
     #[test]
     fn parse_return_with_value() {
-        let e = parse("RETURN(42);", "t.wl").unwrap();
+        let e = parse("RETURN(42);", "t.wll").unwrap();
         match e {
             Expr::Return { value, .. } => assert!(value.is_some()),
             _ => panic!("expected RETURN"),
@@ -2469,7 +2469,7 @@ mod tests {
 
     #[test]
     fn parse_return_void() {
-        let e = parse("RETURN();", "t.wl").unwrap();
+        let e = parse("RETURN();", "t.wll").unwrap();
         match e {
             Expr::Return { value, .. } => assert!(value.is_none()),
             _ => panic!("expected RETURN"),
@@ -2479,24 +2479,24 @@ mod tests {
     #[test]
     fn parse_break_continue() {
         assert!(matches!(
-            parse("BREAK();", "t.wl").unwrap(),
+            parse("BREAK();", "t.wll").unwrap(),
             Expr::Break { .. }
         ));
         assert!(matches!(
-            parse("CONTINUE();", "t.wl").unwrap(),
+            parse("CONTINUE();", "t.wll").unwrap(),
             Expr::Continue { .. }
         ));
     }
 
     #[test]
     fn parse_ok_err_panic() {
-        assert!(matches!(parse("OK(1);", "t.wl").unwrap(), Expr::Ok { .. }));
+        assert!(matches!(parse("OK(1);", "t.wll").unwrap(), Expr::Ok { .. }));
         assert!(matches!(
-            parse("ERR(\"bad\");", "t.wl").unwrap(),
+            parse("ERR(\"bad\");", "t.wll").unwrap(),
             Expr::Err { .. }
         ));
         assert!(matches!(
-            parse("PANIC(\"oops\");", "t.wl").unwrap(),
+            parse("PANIC(\"oops\");", "t.wll").unwrap(),
             Expr::Panic { .. }
         ));
     }
@@ -2504,18 +2504,18 @@ mod tests {
     #[test]
     fn parse_try_isok_iserr_ordie() {
         assert!(matches!(
-            parse("TRY(OK(1));", "t.wl").unwrap(),
+            parse("TRY(OK(1));", "t.wll").unwrap(),
             Expr::Try { .. }
         ));
         assert!(matches!(
-            parse("IS_OK(OK(1));", "t.wl").unwrap(),
+            parse("IS_OK(OK(1));", "t.wll").unwrap(),
             Expr::IsOk { .. }
         ));
         assert!(matches!(
-            parse("IS_ERR(ERR(1));", "t.wl").unwrap(),
+            parse("IS_ERR(ERR(1));", "t.wll").unwrap(),
             Expr::IsErr { .. }
         ));
-        let e = parse("OR_DIE(ERR(1), 0);", "t.wl").unwrap();
+        let e = parse("OR_DIE(ERR(1), 0);", "t.wll").unwrap();
         match e {
             Expr::OrDie { value, default, .. } => {
                 assert!(matches!(*value, Expr::Err { .. }));
@@ -2535,7 +2535,7 @@ mod tests {
 
     #[test]
     fn parse_import_simple() {
-        let e = parse(r#"IMPORT("math", ["add", "PI"]);"#, "t.wl").unwrap();
+        let e = parse(r#"IMPORT("math", ["add", "PI"]);"#, "t.wll").unwrap();
         match e {
             Expr::Import { path, names, .. } => {
                 assert_eq!(path, "math");
@@ -2551,7 +2551,7 @@ mod tests {
     fn parse_import_with_rename() {
         let e = parse(
             r#"IMPORT("math", ["add": "math_add", "PI": "MATH_PI"]);"#,
-            "t.wl",
+            "t.wll",
         )
         .unwrap();
         match e {
@@ -2567,7 +2567,7 @@ mod tests {
 
     #[test]
     fn parse_export() {
-        let e = parse(r#"EXPORT(["add", "PI"]);"#, "t.wl").unwrap();
+        let e = parse(r#"EXPORT(["add", "PI"]);"#, "t.wll").unwrap();
         match e {
             Expr::Export { names, .. } => {
                 assert_eq!(names.len(), 2);
@@ -2582,7 +2582,7 @@ mod tests {
         // Phase 4 batch 1: `wlwl:std.X` namespace prefix is accepted
         // at parse time. The module loader resolves it to a std
         // module; if the name is unknown the loader surfaces E0040.
-        let e = parse(r#"IMPORT("wlwl:std.io", ["PRINT"]);"#, "t.wl").unwrap();
+        let e = parse(r#"IMPORT("wlwl:std.io", ["PRINT"]);"#, "t.wll").unwrap();
         match e {
             Expr::Import { path, names, .. } => {
                 assert_eq!(path, "wlwl:std.io");
@@ -2600,7 +2600,7 @@ mod tests {
         // ModuleLoader resolves them against the project manifest;
         // an unregistered namespace is E0043 at eval time, not
         // parse time.
-        let e = parse(r#"IMPORT("myteam:utils", ["x"]);"#, "t.wl").unwrap();
+        let e = parse(r#"IMPORT("myteam:utils", ["x"]);"#, "t.wll").unwrap();
         match e {
             Expr::Import { path, names, .. } => {
                 assert_eq!(path, "myteam:utils");
@@ -2609,7 +2609,7 @@ mod tests {
             _ => panic!("expected IMPORT"),
         }
 
-        let e = parse(r#"IMPORT("./other", ["x"]);"#, "t.wl").unwrap();
+        let e = parse(r#"IMPORT("./other", ["x"]);"#, "t.wll").unwrap();
         match e {
             Expr::Import { path, .. } => assert_eq!(path, "./other"),
             _ => panic!("expected IMPORT"),
@@ -2619,13 +2619,13 @@ mod tests {
     #[test]
     fn parse_import_rejects_empty_path() {
         // Only surface-level error left: an empty IMPORT path.
-        let err = parse(r#"IMPORT("", ["x"]);"#, "t.wl").unwrap_err();
+        let err = parse(r#"IMPORT("", ["x"]);"#, "t.wll").unwrap_err();
         assert_eq!(err.diagnostic().code, EC::E0043);
     }
 
     #[test]
     fn parse_call_no_args() {
-        let e = parse("PRINT();", "t.wl").unwrap();
+        let e = parse("PRINT();", "t.wll").unwrap();
         match e {
             Expr::Call { name, args, .. } => {
                 assert_eq!(name, "PRINT");
@@ -2637,7 +2637,7 @@ mod tests {
 
     #[test]
     fn parse_call_with_args() {
-        let e = parse("PRINT(\"hi\");", "t.wl").unwrap();
+        let e = parse("PRINT(\"hi\");", "t.wll").unwrap();
         match e {
             Expr::Call { name, args, .. } => {
                 assert_eq!(name, "PRINT");
@@ -2650,7 +2650,7 @@ mod tests {
     #[test]
     fn parse_call_with_operator_name() {
         // + / == etc. become Call nodes with the operator spelling as the name.
-        let e = parse("+(1, 2);", "t.wl").unwrap();
+        let e = parse("+(1, 2);", "t.wll").unwrap();
         match e {
             Expr::Call { name, args, .. } => {
                 assert_eq!(name, "+");
@@ -2658,7 +2658,7 @@ mod tests {
             }
             _ => panic!("expected call with op name"),
         }
-        let e = parse("==(x, 0);", "t.wl").unwrap();
+        let e = parse("==(x, 0);", "t.wll").unwrap();
         match e {
             Expr::Call { name, .. } => assert_eq!(name, "=="),
             _ => panic!("expected == call"),
@@ -2667,7 +2667,7 @@ mod tests {
 
     #[test]
     fn parse_array() {
-        let e = parse("[1, 2, 3];", "t.wl").unwrap();
+        let e = parse("[1, 2, 3];", "t.wll").unwrap();
         match e {
             Expr::Array { items, .. } => assert_eq!(items.len(), 3),
             _ => panic!("expected array"),
@@ -2676,7 +2676,7 @@ mod tests {
 
     #[test]
     fn parse_dict() {
-        let e = parse("[\"a\": 1, \"b\": 2];", "t.wl").unwrap();
+        let e = parse("[\"a\": 1, \"b\": 2];", "t.wll").unwrap();
         match e {
             Expr::Dict { entries, .. } => assert_eq!(entries.len(), 2),
             _ => panic!("expected dict"),
@@ -2685,7 +2685,7 @@ mod tests {
 
     #[test]
     fn parse_missing_semicolon() {
-        let err = parse("LET(x, 1) LET(y, 2);", "t.wl").unwrap_err();
+        let err = parse("LET(x, 1) LET(y, 2);", "t.wll").unwrap_err();
         let d = err.diagnostic();
         assert_eq!(d.code, EC::E0013);
     }
@@ -2694,7 +2694,7 @@ mod tests {
 
     #[test]
     fn parse_let_with_type_annotation() {
-        let e = parse("LET(x: INTEGER, 1);", "t.wl").unwrap();
+        let e = parse("LET(x: INTEGER, 1);", "t.wll").unwrap();
         match e {
             Expr::Let {
                 name,
@@ -2711,7 +2711,7 @@ mod tests {
 
     #[test]
     fn parse_let_without_type_annotation() {
-        let e = parse("LET(x, 1);", "t.wl").unwrap();
+        let e = parse("LET(x, 1);", "t.wll").unwrap();
         match e {
             Expr::Let {
                 name,
@@ -2727,7 +2727,7 @@ mod tests {
 
     #[test]
     fn parse_let_with_complex_type_annotation() {
-        let e = parse("LET(xs: ARRAY[INTEGER], [1, 2, 3]);", "t.wl").unwrap();
+        let e = parse("LET(xs: ARRAY[INTEGER], [1, 2, 3]);", "t.wll").unwrap();
         match e {
             Expr::Let {
                 type_annotation, ..
@@ -2741,7 +2741,7 @@ mod tests {
 
     #[test]
     fn parse_fun_with_return_type_annotation() {
-        let e = parse("FUN((a, b): INTEGER, +(a, b));", "t.wl").unwrap();
+        let e = parse("FUN((a, b): INTEGER, +(a, b));", "t.wll").unwrap();
         match e {
             Expr::Fun {
                 params,
@@ -2761,7 +2761,7 @@ mod tests {
 
     #[test]
     fn parse_fun_without_return_type_annotation() {
-        let e = parse("FUN((a, b), +(a, b));", "t.wl").unwrap();
+        let e = parse("FUN((a, b), +(a, b));", "t.wll").unwrap();
         match e {
             Expr::Fun {
                 params,
@@ -2781,13 +2781,13 @@ mod tests {
     #[test]
     fn parse_let_missing_value_after_type() {
         // Type annotation without trailing comma -> E0012 (expected ",")
-        let err = parse("LET(x: INTEGER,);", "t.wl").unwrap_err();
+        let err = parse("LET(x: INTEGER,);", "t.wll").unwrap_err();
         assert_eq!(err.diagnostic().code, EC::E0010); // value missing
     }
 
     #[test]
     fn parse_missing_rparen() {
-        let err = parse("LET(x, 1;", "t.wl").unwrap_err();
+        let err = parse("LET(x, 1;", "t.wll").unwrap_err();
         let d = err.diagnostic();
         assert_eq!(d.code, EC::E0011);
     }
@@ -2797,7 +2797,7 @@ mod tests {
         // P3-007: per-parameter `name: Type` annotations on FUN.
         // The annotation is parsed not checked; the AST stores
         // `params: Vec<FunParam>` with `type_annotation: Some(...)`.
-        let e = parse("FUN((x: INTEGER, y: STRING), PRINT(x, y));", "t.wl").unwrap();
+        let e = parse("FUN((x: INTEGER, y: STRING), PRINT(x, y));", "t.wll").unwrap();
         match e {
             Expr::Fun { params, .. } => {
                 assert_eq!(params.len(), 2);
@@ -2833,7 +2833,7 @@ mod tests {
     fn parse_fun_per_param_array_type() {
         // P3-010: structured `ARRAY<T>` type expression. Parses to
         // `TypeExpr::Array { element: Box<TypeExpr> }` (not Generic).
-        let e = parse("FUN((xs: ARRAY[INTEGER]), PRINT(xs));", "t.wl").unwrap();
+        let e = parse("FUN((xs: ARRAY[INTEGER]), PRINT(xs));", "t.wll").unwrap();
         match e {
             Expr::Fun { params, .. } => {
                 let ann = params[0]
@@ -2857,7 +2857,7 @@ mod tests {
     #[test]
     fn parse_fun_per_param_generic_dict_type() {
         // P3-010: `DICT<K, V>` is `TypeExpr::Generic { name: "DICT", args }`.
-        let e = parse("FUN((m: DICT[STRING, INTEGER]), PRINT(m));", "t.wl").unwrap();
+        let e = parse("FUN((m: DICT[STRING, INTEGER]), PRINT(m));", "t.wll").unwrap();
         match e {
             Expr::Fun { params, .. } => {
                 let ann = params[0]
@@ -2880,7 +2880,7 @@ mod tests {
     fn parse_fun_mixed_annotated_and_bare_params() {
         // P3-007: only some parameters carry annotations; the
         // others must be `FunParam { name, type_annotation: None, .. }`.
-        let e = parse("FUN((a, b: INTEGER, c), PRINT(a, b, c));", "t.wl").unwrap();
+        let e = parse("FUN((a, b: INTEGER, c), PRINT(a, b, c));", "t.wll").unwrap();
         match e {
             Expr::Fun { params, .. } => {
                 assert_eq!(params.len(), 3);
@@ -2900,7 +2900,7 @@ mod tests {
     fn token_text_all_kinds() {
         // The 	oken_text method is used to build type-annotation
         // source strings. Cover every TokenKind arm.
-        let p = parser_for_type_test(vec![], "t.wl");
+        let p = parser_for_type_test(vec![], "t.wll");
         let cases: Vec<(TokenKind, &str)> = vec![
             (TokenKind::Ident("foo".into()), "foo"),
             (TokenKind::Integer(42), "42"),
@@ -2977,7 +2977,7 @@ mod tests {
     #[test]
     fn type_expr_parser_array_with_element() {
         // ARRAY[INTEGER] -> TypeExpr::Array
-        let p = parser_for_type_test(vec![], "t.wl");
+        let p = parser_for_type_test(vec![], "t.wll");
         let pieces = vec![
             "ARRAY".to_string(),
             "[".to_string(),
@@ -2997,7 +2997,7 @@ mod tests {
     #[test]
     fn type_expr_parser_generic_one_arg() {
         // OK[INTEGER] -> Generic { name: "OK", args: [Ident("INTEGER")] }
-        let p = parser_for_type_test(vec![], "t.wl");
+        let p = parser_for_type_test(vec![], "t.wll");
         let pieces = vec![
             "OK".to_string(),
             "[".to_string(),
@@ -3017,7 +3017,7 @@ mod tests {
     #[test]
     fn type_expr_parser_generic_multi_args() {
         // DICT[STRING, INTEGER] -> Generic with 2 args
-        let p = parser_for_type_test(vec![], "t.wl");
+        let p = parser_for_type_test(vec![], "t.wll");
         let pieces = vec![
             "DICT".to_string(),
             "[".to_string(),
@@ -3039,7 +3039,7 @@ mod tests {
     #[test]
     fn type_expr_parser_plain_ident() {
         // INTEGER -> TypeExpr::Ident (no brackets)
-        let p = parser_for_type_test(vec![], "t.wl");
+        let p = parser_for_type_test(vec![], "t.wll");
         let pieces = vec!["INTEGER".to_string()];
         let result = p.parse_type_expr_from_pieces(&pieces, 1, 1).unwrap();
         match result {
@@ -3053,7 +3053,7 @@ mod tests {
         // A non-ident head (e.g. 42) is a parse error. P3-010
         // fixed parse_type_expr_from_pieces to propagate parse_expr
         // errors via ? instead of silently wrapping them.
-        let p = parser_for_type_test(vec![], "t.wl");
+        let p = parser_for_type_test(vec![], "t.wll");
         let pieces = vec!["42".to_string()];
         let err = p.parse_type_expr_from_pieces(&pieces, 1, 1).unwrap_err();
         assert_eq!(err.diagnostic().code, EC::E0010);
@@ -3063,7 +3063,7 @@ mod tests {
     fn type_expr_parser_missing_bracket_yields_ident() {
         // A bare ident like OK (no trailing [...]) parses as
         // a plain TypeExpr::Ident. The bracketed form is optional.
-        let p = parser_for_type_test(vec![], "t.wl");
+        let p = parser_for_type_test(vec![], "t.wll");
         let pieces = vec!["OK".to_string()];
         let result = p.parse_type_expr_from_pieces(&pieces, 1, 1).unwrap();
         match result {
@@ -3076,7 +3076,7 @@ mod tests {
     fn type_expr_parser_bad_separator_errors_with_e0012() {
         // OK[INTEGER INTEGER] (missing comma) is a parse error.
         // P3-010 ensures this propagates instead of being swallowed.
-        let p = parser_for_type_test(vec![], "t.wl");
+        let p = parser_for_type_test(vec![], "t.wll");
         let pieces = vec![
             "OK".to_string(),
             "[".to_string(),
@@ -3093,7 +3093,7 @@ mod tests {
         // ARRAY followed by something that isn't [ is a parse error
         // (P3-010 made this strict; before, the leftover was wrapped
         // silently into a Generic).
-        let p = parser_for_type_test(vec![], "t.wl");
+        let p = parser_for_type_test(vec![], "t.wll");
         let pieces = vec!["ARRAY".to_string(), "EXTRA".to_string()];
         let err = p.parse_type_expr_from_pieces(&pieces, 1, 1).unwrap_err();
         assert_eq!(err.diagnostic().code, EC::E0010);
@@ -3104,7 +3104,7 @@ mod tests {
     #[test]
     fn parse_paren_block_single_expr() {
         // (x) where x is an ident -> bare ident
-        let e = parse("(x);", "t.wl").unwrap();
+        let e = parse("(x);", "t.wll").unwrap();
         match e {
             Expr::Var(name, _) => assert_eq!(name, "x"),
             other => panic!("expected Var, got {:?}", other),
@@ -3117,7 +3117,7 @@ mod tests {
     fn parse_import_name_list_uses_ident_for_bare_name() {
         // A bare identifier in the name list is treated as a string.
         // IMPORT("m", [foo]) where foo is unquoted.
-        let e = parse(r###"IMPORT("m", [foo]);"###, "t.wl").unwrap();
+        let e = parse(r###"IMPORT("m", [foo]);"###, "t.wll").unwrap();
         match e {
             Expr::Import { names, .. } => {
                 assert_eq!(names.len(), 1);
@@ -3130,7 +3130,7 @@ mod tests {
     #[test]
     fn parse_import_name_list_uses_string_lit() {
         // The string-form: IMPORT("m", ["foo"])
-        let e = parse(r###"IMPORT("m", ["foo"]);"###, "t.wl").unwrap();
+        let e = parse(r###"IMPORT("m", ["foo"]);"###, "t.wll").unwrap();
         match e {
             Expr::Import { names, .. } => {
                 assert_eq!(names.len(), 1);
@@ -3143,7 +3143,7 @@ mod tests {
     #[test]
     fn parse_import_missing_path_is_e0043() {
         // IMPORT without a string literal path -> E0043
-        let err = parse("IMPORT(123);", "t.wl").unwrap_err();
+        let err = parse("IMPORT(123);", "t.wll").unwrap_err();
         assert_eq!(err.diagnostic().code, EC::E0043);
     }
 
@@ -3152,7 +3152,7 @@ mod tests {
     #[test]
     fn parse_for_non_ident_var_is_e0010() {
         // FOR(123, [...], body) -> E0010
-        let err = parse("FOR(123, [1], PRINT(1));", "t.wl").unwrap_err();
+        let err = parse("FOR(123, [1], PRINT(1));", "t.wll").unwrap_err();
         assert_eq!(err.diagnostic().code, EC::E0010);
     }
 
@@ -3162,7 +3162,7 @@ mod tests {
 
     #[test]
     fn parse_let_array_pattern_produces_let_pattern() {
-        let e = parse("LET([a, b], [1, 2]);", "t.wl").unwrap();
+        let e = parse("LET([a, b], [1, 2]);", "t.wll").unwrap();
         match e {
             Expr::LetPattern { pattern, .. } => match *pattern {
                 Pattern::Array(items, rest, _) => {
@@ -3177,7 +3177,7 @@ mod tests {
 
     #[test]
     fn parse_let_array_pattern_with_rest() {
-        let e = parse("LET([head, *rest], [1, 2, 3]);", "t.wl").unwrap();
+        let e = parse("LET([head, *rest], [1, 2, 3]);", "t.wll").unwrap();
         match e {
             Expr::LetPattern { pattern, .. } => match *pattern {
                 Pattern::Array(items, rest, _) => {
@@ -3192,7 +3192,7 @@ mod tests {
 
     #[test]
     fn parse_let_wildcard_pattern() {
-        let e = parse("LET([_, x, _], [1, 2, 3]);", "t.wl").unwrap();
+        let e = parse("LET([_, x, _], [1, 2, 3]);", "t.wll").unwrap();
         match e {
             Expr::LetPattern { pattern, .. } => match *pattern {
                 Pattern::Array(items, _, _) => {
@@ -3209,7 +3209,7 @@ mod tests {
 
     #[test]
     fn parse_let_dict_pattern() {
-        let e = parse("LET([\"k\": v], [\"k\": 1]);", "t.wl").unwrap();
+        let e = parse("LET([\"k\": v], [\"k\": 1]);", "t.wll").unwrap();
         match e {
             Expr::LetPattern { pattern, .. } => match *pattern {
                 Pattern::Dict(entries, _) => {
@@ -3230,7 +3230,7 @@ mod tests {
     #[test]
     fn parse_let_bare_ident_still_produces_let() {
         // Backwards compat: `LET(x, 1)` -> Expr::Let (not LetPattern)
-        let e = parse("LET(x, 1);", "t.wl").unwrap();
+        let e = parse("LET(x, 1);", "t.wll").unwrap();
         assert!(
             matches!(e, Expr::Let { ref name, .. } if name == "x"),
             "expected Expr::Let, got {:?}",
@@ -3240,7 +3240,7 @@ mod tests {
 
     #[test]
     fn parse_let_dict_pattern_with_multiple_keys() {
-        let e = parse("LET([\"a\": x, \"b\": y], [\"a\": 1, \"b\": 2]);", "t.wl").unwrap();
+        let e = parse("LET([\"a\": x, \"b\": y], [\"a\": 1, \"b\": 2]);", "t.wll").unwrap();
         match e {
             Expr::LetPattern { pattern, .. } => match *pattern {
                 Pattern::Dict(entries, _) => {
@@ -3256,7 +3256,7 @@ mod tests {
     fn parse_let_array_pattern_with_type_annotation() {
         // A type annotation on a non-Ident pattern keeps the
         // LetPattern path (does not collapse to Expr::Let).
-        let e = parse("LET([a, b]: ARRAY[INTEGER], [1, 2]);", "t.wl").unwrap();
+        let e = parse("LET([a, b]: ARRAY[INTEGER], [1, 2]);", "t.wll").unwrap();
         match e {
             Expr::LetPattern {
                 pattern,
@@ -3272,7 +3272,7 @@ mod tests {
 
     #[test]
     fn parse_let_empty_array_pattern() {
-        let e = parse("LET([], arr);", "t.wl").unwrap();
+        let e = parse("LET([], arr);", "t.wll").unwrap();
         match e {
             Expr::LetPattern { pattern, .. } => match *pattern {
                 Pattern::Array(items, None, _) => assert!(items.is_empty()),
@@ -3285,7 +3285,7 @@ mod tests {
     #[test]
     fn parse_let_dict_pattern_wildcard_key_is_e0010() {
         // Wildcard `_` is not a valid dict-pattern key.
-        let err = parse("LET([_: v], [\"x\": 1]);", "t.wl").unwrap_err();
+        let err = parse("LET([_: v], [\"x\": 1]);", "t.wll").unwrap_err();
         assert_eq!(err.diagnostic().code, EC::E0010);
     }
 
@@ -3295,13 +3295,13 @@ mod tests {
         // The parser refuses this with E0010 because after the
         // leading `*`, the next token must start a pattern, and
         // `,` is not a valid pattern start.
-        let err = parse("LET([*rest, a], [1, 2, 3]);", "t.wl").unwrap_err();
+        let err = parse("LET([*rest, a], [1, 2, 3]);", "t.wll").unwrap_err();
         assert_eq!(err.diagnostic().code, EC::E0010);
     }
 
     #[test]
     fn parse_let_nested_pattern() {
-        let e = parse("LET([[a, b], [c, d]], [[1, 2], [3, 4]]);", "t.wl").unwrap();
+        let e = parse("LET([[a, b], [c, d]], [[1, 2], [3, 4]]);", "t.wll").unwrap();
         match e {
             Expr::LetPattern { pattern, .. } => match *pattern {
                 Pattern::Array(items, None, _) => {
@@ -3318,7 +3318,7 @@ mod tests {
     #[test]
     fn parse_let_non_ident_name_is_e0010() {
         // LET(123, 1) -> E0010
-        let err = parse("LET(123, 1);", "t.wl").unwrap_err();
+        let err = parse("LET(123, 1);", "t.wll").unwrap_err();
         assert_eq!(err.diagnostic().code, EC::E0010);
     }
 }

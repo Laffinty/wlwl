@@ -40,9 +40,9 @@ struct Cli {
 
 #[derive(clap::Subcommand, Debug)]
 enum Cmd {
-    /// Run a .wl source file
+    /// Run a .wll source file
     Run {
-        /// Path to the .wl file
+        /// Path to the .wll file
         file: PathBuf,
         /// Output format for errors
         #[arg(long, value_enum, default_value_t = OutputFormat::Human)]
@@ -50,16 +50,16 @@ enum Cmd {
     },
     /// Only check (parse) without execution
     Check {
-        /// Path to the .wl file
+        /// Path to the .wll file
         file: PathBuf,
         /// Output format for errors
         #[arg(long, value_enum, default_value_t = OutputFormat::Human)]
         format: OutputFormat,
     },
-    /// Emit the AST of a .wl source file as JSON (AI-friendly).
+    /// Emit the AST of a .wll source file as JSON (AI-friendly).
     /// Implemented per D015 from the Phase 2 deviations log.
     Ast {
-        /// Path to the .wl file
+        /// Path to the .wll file
         file: PathBuf,
         /// Output format: json (default) or jsonl (one node per line; not
         /// used for AST, but accepted for symmetry with run/check).
@@ -70,7 +70,7 @@ enum Cmd {
     /// stdout. Never writes the file in place (comments are not
     /// preserved by the AST rebuild -- see deviations P4-E2-001).
     Fmt {
-        /// Path to the .wl file
+        /// Path to the .wll file
         file: PathBuf,
         /// Check mode: print nothing; exit 1 with a W0053 diagnostic
         /// when the source deviates from the canonical form.
@@ -507,7 +507,7 @@ fn find_project_root(start: &std::path::Path) -> std::path::PathBuf {
 ///
 /// Failure modes (no manifest / read error / parse error) all
 /// silently default to `false` so that:
-/// - standalone `.wl` files with no surrounding project still run;
+/// - standalone `.wll` files with no surrounding project still run;
 /// - manifest parse errors don't block program execution (the
 ///   user will see them via `try_write_lock` if/when it runs).
 ///
@@ -538,7 +538,7 @@ fn load_manifest_strict_types(base_dir: &std::path::Path) -> bool {
 /// - Build one `LockEntry` per `[dependencies]` entry that has a
 ///   `path`. Version-only deps are reserved for v0.4 (central
 ///   registry) and are skipped here.
-/// - Hash every `.wl` file in the dependency directory (deterministic
+/// - Hash every `.wll` file in the dependency directory (deterministic
 ///   SHA-256 from `wlwl_toml::lock::hash_dependency_dir`).
 /// - Write atomically via `wlwl_toml::lock::write`.
 ///
@@ -611,35 +611,35 @@ mod tests {
 
     #[test]
     fn run_hello() {
-        let p = write_tmp("LET(x, 1); PRINT(x);", "hello.wl");
+        let p = write_tmp("LET(x, 1); PRINT(x);", "hello.wll");
         let code = run_file(&p, OutputFormat::Human, true);
         assert_eq!(code, ExitCode::SUCCESS);
     }
 
     #[test]
     fn run_parse_error_reports_diagnostic() {
-        let p = write_tmp("LET(x, 1) LET(y, 2);", "bad.wl");
+        let p = write_tmp("LET(x, 1) LET(y, 2);", "bad.wll");
         let code = run_file(&p, OutputFormat::Human, true);
         assert_eq!(code, ExitCode::from(1));
     }
 
     #[test]
     fn run_undefined_name() {
-        let p = write_tmp("PRINT(zzz);", "undef.wl");
+        let p = write_tmp("PRINT(zzz);", "undef.wll");
         let code = run_file(&p, OutputFormat::Human, true);
         assert_eq!(code, ExitCode::from(1));
     }
 
     #[test]
     fn check_only_parses() {
-        let p = write_tmp("LET(x, 1);", "check.wl");
+        let p = write_tmp("LET(x, 1);", "check.wll");
         let code = run_file(&p, OutputFormat::Human, false);
         assert_eq!(code, ExitCode::SUCCESS);
     }
 
     #[test]
     fn run_if_control_flow() {
-        let p = write_tmp(r#"IF(==(1, 1), PRINT("yes"), PRINT("no"));"#, "if.wl");
+        let p = write_tmp(r#"IF(==(1, 1), PRINT("yes"), PRINT("no"));"#, "if.wll");
         let code = run_file(&p, OutputFormat::Human, true);
         assert_eq!(code, ExitCode::SUCCESS);
     }
@@ -648,7 +648,7 @@ mod tests {
 
     #[test]
     fn run_json_format_on_parse_error() {
-        let p = write_tmp("LET(x, 1) LET(y, 2);", "bad-json.wl");
+        let p = write_tmp("LET(x, 1) LET(y, 2);", "bad-json.wll");
         // Capture stderr.
         let code = run_file(&p, OutputFormat::Json, true);
         assert_eq!(code, ExitCode::from(1));
@@ -658,7 +658,7 @@ mod tests {
     fn run_jsonl_format_on_undefined_name() {
         // The Phase 3 JSONL output must contain the new schema fields:
         // error_category, retryable, suggestion_code, related.
-        let p = write_tmp("PRINT(zzz);", "undef-jsonl.wl");
+        let p = write_tmp("PRINT(zzz);", "undef-jsonl.wll");
         let code = run_file(&p, OutputFormat::Jsonl, true);
         assert_eq!(code, ExitCode::from(1));
     }
@@ -667,14 +667,14 @@ mod tests {
 
     #[test]
     fn ast_emits_json_for_valid_program() {
-        let p = write_tmp("LET(x, 1); PRINT(x);", "ast-ok.wl");
+        let p = write_tmp("LET(x, 1); PRINT(x);", "ast-ok.wll");
         let code = ast_file(&p, OutputFormat::Json);
         assert_eq!(code, ExitCode::SUCCESS);
     }
 
     #[test]
     fn ast_reports_parse_error() {
-        let p = write_tmp("LET(x, 1", "ast-bad.wl");
+        let p = write_tmp("LET(x, 1", "ast-bad.wll");
         let code = ast_file(&p, OutputFormat::Json);
         assert_eq!(code, ExitCode::from(1));
     }
@@ -698,7 +698,7 @@ mod tests {
         let dep_dir = dir.join("dep");
         fs::create_dir_all(&dep_dir).unwrap();
         fs::write(
-            dep_dir.join("lib.wl"),
+            dep_dir.join("lib.wll"),
             "LET(greet, 1); EXPORT([\"greet\"]);\n",
         )
         .unwrap();
@@ -709,7 +709,7 @@ mod tests {
             r#"[package]
 name = "lock-test"
 version = "0.1.0"
-entry = "main.wl"
+entry = "main.wll"
 
 [dependencies]
 "myteam:lib" = { path = "dep" }
@@ -717,12 +717,12 @@ entry = "main.wl"
         )
         .unwrap();
         fs::write(
-            dir.join("main.wl"),
+            dir.join("main.wll"),
             r#"IMPORT("myteam:lib", ["greet"]); PRINT(greet);"#,
         )
         .unwrap();
         // Run the program via run_file.
-        let main_path = dir.join("main.wl");
+        let main_path = dir.join("main.wll");
         let code = run_file(&main_path, OutputFormat::Human, true);
         assert_eq!(code, ExitCode::SUCCESS);
         // The lock should now exist and have one entry.
@@ -756,8 +756,8 @@ entry = "main.wl"
         ));
         let _ = fs::remove_dir_all(&dir);
         fs::create_dir_all(&dir).unwrap();
-        fs::write(dir.join("hello.wl"), "PRINT(\"hi\");\n").unwrap();
-        let code = run_file(&dir.join("hello.wl"), OutputFormat::Human, true);
+        fs::write(dir.join("hello.wll"), "PRINT(\"hi\");\n").unwrap();
+        let code = run_file(&dir.join("hello.wll"), OutputFormat::Human, true);
         assert_eq!(code, ExitCode::SUCCESS);
         assert!(!dir.join("wlwl.lock").exists());
         let _ = fs::remove_dir_all(&dir);
@@ -849,7 +849,7 @@ entry = "main.wl"
             r#"[package]
 name = "v"
 version = "0.1.0"
-entry = "main.wl"
+entry = "main.wll"
 
 [dependencies]
 "hub:lib" = { version = "1.2.3" }
@@ -906,7 +906,7 @@ entry = "main.wl"
         ));
         let _ = fs::remove_dir_all(&dir);
         fs::create_dir_all(&dir).unwrap();
-        let p = dir.join("main.wl");
+        let p = dir.join("main.wll");
         fs::write(&p, "LET(f, FUN((x: INTEGER), x)); f(\"hi\");").unwrap();
         let code = run_file(&p, OutputFormat::Human, true);
         assert_eq!(code, ExitCode::SUCCESS);
@@ -929,10 +929,10 @@ entry = "main.wl"
         fs::create_dir_all(&dir).unwrap();
         fs::write(
             dir.join("wlwl.toml"),
-            "[package]\nname = \"app\"\nversion = \"0.1.0\"\nentry = \"main.wl\"\n\n[features]\nstrict_types = true\n",
+            "[package]\nname = \"app\"\nversion = \"0.1.0\"\nentry = \"main.wll\"\n\n[features]\nstrict_types = true\n",
         )
         .unwrap();
-        let p = dir.join("main.wl");
+        let p = dir.join("main.wll");
         fs::write(&p, "LET(f, FUN((x: INTEGER), x)); f(\"hi\");").unwrap();
         let code = run_file(&p, OutputFormat::Human, true);
         assert_ne!(code, ExitCode::SUCCESS, "E0033 should fail the run");
@@ -955,10 +955,10 @@ entry = "main.wl"
         fs::create_dir_all(&dir).unwrap();
         fs::write(
             dir.join("wlwl.toml"),
-            "[package]\nname = \"app\"\nversion = \"0.1.0\"\nentry = \"main.wl\"\n\n[features]\nstrict_types = true\n",
+            "[package]\nname = \"app\"\nversion = \"0.1.0\"\nentry = \"main.wll\"\n\n[features]\nstrict_types = true\n",
         )
         .unwrap();
-        let p = dir.join("main.wl");
+        let p = dir.join("main.wll");
         fs::write(&p, "LET(f, FUN((x: INTEGER), x)); f(\"hi\");").unwrap();
         // Capture stdout/stderr? We just check that the exit code
         // indicates failure -- the diagnostic surface is tested
@@ -971,7 +971,7 @@ entry = "main.wl"
 
     #[test]
     fn cli_strict_types_missing_manifest_falls_back_to_false() {
-        // Empty dir + .wl file with no surrounding project => no
+        // Empty dir + .wll file with no surrounding project => no
         // wlwl.toml, so the helper must return false and the program
         // must succeed.
         let dir = std::env::temp_dir().join(format!(
@@ -984,7 +984,7 @@ entry = "main.wl"
         ));
         let _ = fs::remove_dir_all(&dir);
         fs::create_dir_all(&dir).unwrap();
-        let p = dir.join("orphan.wl");
+        let p = dir.join("orphan.wll");
         fs::write(&p, "LET(f, FUN((x: INTEGER), x)); f(\"hi\");").unwrap();
         let code = run_file(&p, OutputFormat::Human, true);
         assert_eq!(code, ExitCode::SUCCESS);
@@ -1006,7 +1006,7 @@ entry = "main.wl"
         let _ = fs::remove_dir_all(&dir);
         fs::create_dir_all(&dir).unwrap();
         fs::write(dir.join("wlwl.toml"), "not = [valid toml").unwrap();
-        let p = dir.join("main.wl");
+        let p = dir.join("main.wll");
         fs::write(&p, "LET(f, FUN((x: INTEGER), x)); f(\"hi\");").unwrap();
         let code = run_file(&p, OutputFormat::Human, true);
         // Even though wlwl.toml is malformed, the program itself is
@@ -1021,7 +1021,7 @@ entry = "main.wl"
         // ast_file with OutputFormat::Human should print a {:#?} of
         // the AST. We just check the exit code is success and stdout
         // is non-empty.
-        let p = write_tmp("LET(x, 1);", "ast_human.wl");
+        let p = write_tmp("LET(x, 1);", "ast_human.wll");
         let code = ast_file(&p, OutputFormat::Human);
         assert_eq!(code, ExitCode::SUCCESS);
     }
@@ -1031,7 +1031,7 @@ entry = "main.wl"
         // ast_file with OutputFormat::Jsonl prints one JSON object per
         // top-level expression. For a single expression, that's one
         // object.
-        let p = write_tmp("LET(x, 1);", "ast_jsonl.wl");
+        let p = write_tmp("LET(x, 1);", "ast_jsonl.wll");
         let code = ast_file(&p, OutputFormat::Jsonl);
         assert_eq!(code, ExitCode::SUCCESS);
     }
@@ -1040,7 +1040,7 @@ entry = "main.wl"
 
     #[test]
     fn fmt_prints_canonical_output_successfully() {
-        let p = write_tmp("LET( x ,1 );PRINT( x );", "fmt_print.wl");
+        let p = write_tmp("LET( x ,1 );PRINT( x );", "fmt_print.wll");
         let code = fmt_file(&p, false);
         assert_eq!(code, ExitCode::SUCCESS);
     }
@@ -1049,7 +1049,7 @@ entry = "main.wl"
     fn fmt_check_canonical_source_succeeds() {
         // Already-canonical source (including the trailing newline
         // convention) must pass --check.
-        let p = write_tmp("LET(x, 1);\nPRINT(x)\n", "fmt_ok.wl");
+        let p = write_tmp("LET(x, 1);\nPRINT(x)\n", "fmt_ok.wll");
         let code = fmt_file(&p, true);
         assert_eq!(code, ExitCode::SUCCESS);
     }
@@ -1057,7 +1057,7 @@ entry = "main.wl"
     #[test]
     fn fmt_check_canonical_source_without_trailing_newline_succeeds() {
         // A missing final newline is not a §16.3 deviation.
-        let p = write_tmp("LET(x, 1);\nPRINT(x)", "fmt_ok_nonl.wl");
+        let p = write_tmp("LET(x, 1);\nPRINT(x)", "fmt_ok_nonl.wll");
         let code = fmt_file(&p, true);
         assert_eq!(code, ExitCode::SUCCESS);
     }
@@ -1065,21 +1065,21 @@ entry = "main.wl"
     #[test]
     fn fmt_check_deviating_source_fails_with_w0053() {
         // Non-canonical whitespace => --check exits 1 (W0053).
-        let p = write_tmp("LET( x ,1 );", "fmt_dev.wl");
+        let p = write_tmp("LET( x ,1 );", "fmt_dev.wll");
         let code = fmt_file(&p, true);
         assert_eq!(code, ExitCode::from(1));
     }
 
     #[test]
     fn fmt_check_missing_file_reports_error() {
-        let p = std::path::PathBuf::from("/nonexistent/fmt_target.wl");
+        let p = std::path::PathBuf::from("/nonexistent/fmt_target.wll");
         let code = fmt_file(&p, true);
         assert_eq!(code, ExitCode::from(1));
     }
 
     #[test]
     fn fmt_check_parse_error_reports_diagnostic() {
-        let p = write_tmp("LET(x, 1", "fmt_bad.wl");
+        let p = write_tmp("LET(x, 1", "fmt_bad.wll");
         let code = fmt_file(&p, true);
         assert_eq!(code, ExitCode::from(1));
     }
@@ -1096,7 +1096,7 @@ entry = "main.wl"
                     LET(x, 1);\n\
                     // trailing\n\
                     PRINT(x)\n";
-        let p = write_tmp(src, "fmt_with_line_comments.wl");
+        let p = write_tmp(src, "fmt_with_line_comments.wll");
         let code = fmt_file(&p, true);
         assert_eq!(
             code,
@@ -1115,7 +1115,7 @@ entry = "main.wl"
                    /* between */\n\
                    PRINT(x)\n\
                    /* tail */\n";
-        let p = write_tmp(src, "fmt_with_block_comments.wl");
+        let p = write_tmp(src, "fmt_with_block_comments.wll");
         let code = fmt_file(&p, true);
         assert_eq!(
             code,
@@ -1129,7 +1129,7 @@ entry = "main.wl"
         let src = "/* outer /* inner */ still */\n\
                    LET(x, 1);\n\
                    PRINT(x)\n";
-        let p = write_tmp(src, "fmt_nested_comments.wl");
+        let p = write_tmp(src, "fmt_nested_comments.wll");
         let code = fmt_file(&p, true);
         assert_eq!(
             code,
@@ -1144,7 +1144,7 @@ entry = "main.wl"
         // NOT just comments (e.g. extra spaces inside a call) must
         // still trip W0053.
         let src = "LET(x, 1);PRINT(x);\n";
-        let p = write_tmp(src, "fmt_non_canonical.wl");
+        let p = write_tmp(src, "fmt_non_canonical.wll");
         let code = fmt_file(&p, true);
         assert_eq!(
             code,
@@ -1193,7 +1193,7 @@ entry = "main.wl"
     fn ast_json_output_carries_node_ids_and_hashes() {
         // The §16.4.3 JSON schema: every node has node_id / kind /
         // span / hash; the root id is module:fn:<top>/body.
-        let p = write_tmp("LET(x, 1); PRINT(x);", "ast_stable.wl");
+        let p = write_tmp("LET(x, 1); PRINT(x);", "ast_stable.wll");
         let source = fs::read_to_string(&p).unwrap();
         let ast = parse(&source, &p.to_string_lossy()).unwrap();
         let out = AstOutput::new(&ast, &source);
@@ -1215,7 +1215,7 @@ entry = "main.wl"
                 s["node_id"]
                     .as_str()
                     .unwrap()
-                    .starts_with("t.wl:fn:<top>/body")
+                    .starts_with("t.wll:fn:<top>/body")
                     || s["node_id"].as_str().unwrap().contains("/stmt:")
             );
             assert!(s["hash"].as_str().unwrap().starts_with("sha256:"));
@@ -1228,8 +1228,8 @@ entry = "main.wl"
         // Same code, different line numbers => identical node_ids and
         // hashes (spans differ, ids do not).
         let tree_for = |src: &str| {
-            let ast = parse(src, "t.wl").unwrap();
-            serde_json::to_value(wlwl_ast::stable::stable_tree(&ast, "t.wl")).unwrap()
+            let ast = parse(src, "t.wll").unwrap();
+            serde_json::to_value(wlwl_ast::stable::stable_tree(&ast, "t.wll")).unwrap()
         };
         let a = tree_for("LET(x, 1); PRINT(x);");
         let b = tree_for("\nLET(x, 1);\nPRINT(x);");

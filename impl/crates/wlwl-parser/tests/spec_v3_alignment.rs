@@ -22,7 +22,7 @@ fn lex_16_keywords_all_recognized() {
     // here are used as bare identifiers (lowercased tail) to avoid
     // clashing with the keyword form. The literal test is in `lex_*`
     // below.
-    let r = parse(src, "t.wl");
+    let r = parse(src, "t.wll");
     assert!(
         r.is_ok(),
         "expected parse OK, got {:?}",
@@ -33,7 +33,7 @@ fn lex_16_keywords_all_recognized() {
 #[test]
 fn lex_true_false_null_are_keywords() {
     // TRUE / FALSE / NULL as keywords, not identifiers.
-    let r = parse("LET(t, TRUE); LET(f, FALSE); LET(n, NULL);", "t.wl").unwrap();
+    let r = parse("LET(t, TRUE); LET(f, FALSE); LET(n, NULL);", "t.wll").unwrap();
     let exprs = match r {
         Expr::Block { exprs, .. } => exprs,
         other => panic!("expected block, got {:?}", other),
@@ -50,7 +50,7 @@ fn lex_true_false_null_are_keywords() {
 #[allow(non_snake_case)] // 'True' is the literal text under test
 fn lex_case_sensitive_true_vs_True() {
     // TRUE is keyword; True (capital T + lower rest) must lex as ident.
-    let r = parse("LET(True, 1);", "t.wl").unwrap();
+    let r = parse("LET(True, 1);", "t.wll").unwrap();
     // Single statement at top level — parser collapses to the stmt
     // itself rather than wrapping in a Block.
     let name = match &r {
@@ -73,7 +73,7 @@ fn lex_nested_block_comment() {
    still outer */
 LET(x, 1);
 "#;
-    let r = parse(src, "t.wl");
+    let r = parse(src, "t.wll");
     assert!(
         r.is_ok(),
         "expected nested block comment to parse, got {:?}",
@@ -84,7 +84,7 @@ LET(x, 1);
 #[test]
 fn lex_multiple_whitespace_normalized() {
     // §3.5: 缩进不影响语义, 多个空白 = 1 空白.
-    let r = parse("LET(\n\n  x,\t\t1  );", "t.wl").unwrap();
+    let r = parse("LET(\n\n  x,\t\t1  );", "t.wll").unwrap();
     // Single-statement program; parser collapses to the Let itself.
     let count = match &r {
         Expr::Let { .. } => 1usize,
@@ -98,14 +98,14 @@ fn lex_multiple_whitespace_normalized() {
 
 #[test]
 fn lit_integer() {
-    let r = parse("LET(i, 42);", "t.wl").unwrap();
+    let r = parse("LET(i, 42);", "t.wll").unwrap();
     let e = only_let(&r);
     assert!(matches!(e.as_ref(), Expr::Literal(Literal::Integer(42), _)));
 }
 
 #[test]
 fn lit_float() {
-    let r = parse("LET(f, 3.14);", "t.wl").unwrap();
+    let r = parse("LET(f, 3.14);", "t.wll").unwrap();
     let e = only_let(&r);
     assert!(matches!(e.as_ref(), Expr::Literal(Literal::Float(_), _)));
 }
@@ -115,7 +115,7 @@ fn lit_negative_integer_via_unary_minus() {
     // §4.1: `LET(n, -1)` — `-1` is a unary-minus expression over `1`.
     // The parser desugars `-x` to `-(0, x)`. v0.3 §4.1 calls it a
     // literal but the desugared form is a `Call`.
-    let r = parse("LET(n, -(1));", "t.wl").unwrap();
+    let r = parse("LET(n, -(1));", "t.wll").unwrap();
     let e = only_let(&r);
     let call = match e.as_ref() {
         Expr::Call { name, args, .. } => (name, args),
@@ -128,7 +128,7 @@ fn lit_negative_integer_via_unary_minus() {
 #[test]
 fn lit_string_with_escapes() {
     // §4.2: \"\\n \\t \\r \\\\\\ \\\" \\0\".
-    let r = parse(r#"LET(s, "a\nb\tc\rd\\e\"f\0g");"#, "t.wl").unwrap();
+    let r = parse(r#"LET(s, "a\nb\tc\rd\\e\"f\0g");"#, "t.wll").unwrap();
     let e = only_let(&r);
     let s = match e.as_ref() {
         Expr::Literal(Literal::String(s), _) => s,
@@ -141,7 +141,7 @@ fn lit_string_with_escapes() {
 fn lit_string_chinese() {
     // §4.2: strings may contain any UTF-8. (Identifiers too — see
     // `lex_chinese_identifier` after the lexer fix lands.)
-    let r = parse(r#"LET(s, "事屑");"#, "t.wl").unwrap();
+    let r = parse(r#"LET(s, "事屑");"#, "t.wll").unwrap();
     let e = only_let(&r);
     let s = match e.as_ref() {
         Expr::Literal(Literal::String(s), _) => s,
@@ -152,7 +152,7 @@ fn lit_string_chinese() {
 
 #[test]
 fn lit_empty_array() {
-    let r = parse("LET(e, []);", "t.wl").unwrap();
+    let r = parse("LET(e, []);", "t.wll").unwrap();
     let e = only_let(&r);
     let items = match e.as_ref() {
         Expr::Array { items, .. } => items,
@@ -163,7 +163,7 @@ fn lit_empty_array() {
 
 #[test]
 fn lit_dict() {
-    let r = parse(r#"LET(d, ["cat": "nya", "dog": 2]);"#, "t.wl").unwrap();
+    let r = parse(r#"LET(d, ["cat": "nya", "dog": 2]);"#, "t.wll").unwrap();
     let e = only_let(&r);
     let entries = match e.as_ref() {
         Expr::Dict { entries, .. } => entries,
@@ -175,7 +175,7 @@ fn lit_dict() {
 #[test]
 fn lit_mixed_type_array() {
     // §4.4: array can hold mixed types.
-    let r = parse(r#"LET(m, [1, "two", TRUE, NULL]);"#, "t.wl").unwrap();
+    let r = parse(r#"LET(m, [1, "two", TRUE, NULL]);"#, "t.wll").unwrap();
     let e = only_let(&r);
     let items = match e.as_ref() {
         Expr::Array { items, .. } => items,
@@ -188,7 +188,7 @@ fn lit_mixed_type_array() {
 
 #[test]
 fn expr_function_call_add() {
-    let r = parse("LET(x, +(1, 2));", "t.wl").unwrap();
+    let r = parse("LET(x, +(1, 2));", "t.wll").unwrap();
     let e = only_let(&r);
     let call = match e.as_ref() {
         Expr::Call { name, args, .. } => (name, args),
@@ -200,7 +200,7 @@ fn expr_function_call_add() {
 
 #[test]
 fn expr_nested_call() {
-    let r = parse(r#"LET(y, PRINT("hi"));"#, "t.wl").unwrap();
+    let r = parse(r#"LET(y, PRINT("hi"));"#, "t.wll").unwrap();
     let e = only_let(&r);
     let call = match e.as_ref() {
         Expr::Call { name, args, .. } => (name, args),
@@ -213,7 +213,7 @@ fn expr_nested_call() {
 #[test]
 fn expr_block_value() {
     // §5.3: block value is the last expression.
-    let r = parse("LET(x, (LET(a, 1); LET(b, +(a, 2)); +(a, b)));", "t.wl").unwrap();
+    let r = parse("LET(x, (LET(a, 1); LET(b, +(a, 2)); +(a, b)));", "t.wll").unwrap();
     let e = only_let(&r);
     let block = match e.as_ref() {
         Expr::Block { exprs, .. } => exprs,
@@ -225,7 +225,7 @@ fn expr_block_value() {
 #[test]
 fn expr_empty_block_is_null() {
     // §5.3: 空块 () 的值为 NULL.
-    let r = parse("LET(x, ());", "t.wl").unwrap();
+    let r = parse("LET(x, ());", "t.wll").unwrap();
     let e = only_let(&r);
     assert!(matches!(e.as_ref(), Expr::Literal(Literal::Null, _)));
 }
@@ -233,7 +233,7 @@ fn expr_empty_block_is_null() {
 #[test]
 fn expr_op_named_call_eq_eq() {
     // §9.2: =(a, b) is a function with name "==".
-    let r = parse("LET(r, ==(1, 1));", "t.wl").unwrap();
+    let r = parse("LET(r, ==(1, 1));", "t.wll").unwrap();
     let e = only_let(&r);
     let call = match e.as_ref() {
         Expr::Call { name, args, .. } => (name, args),
@@ -245,7 +245,7 @@ fn expr_op_named_call_eq_eq() {
 #[test]
 fn expr_unary_minus_desugars() {
     // -x  ->  -(0, x)
-    let r = parse("LET(y, -x);", "t.wl").unwrap();
+    let r = parse("LET(y, -x);", "t.wll").unwrap();
     let e = only_let(&r);
     let call = match e.as_ref() {
         Expr::Call { name, args, .. } => (name, args),
@@ -261,7 +261,7 @@ fn expr_unary_minus_desugars() {
 
 #[test]
 fn let_basic() {
-    let r = parse("LET(x, 1);", "t.wl").unwrap();
+    let r = parse("LET(x, 1);", "t.wll").unwrap();
     let l = match &r {
         Expr::Let {
             name,
@@ -284,7 +284,7 @@ fn let_basic() {
 
 #[test]
 fn let_with_type_annotation() {
-    let r = parse("LET(x: INTEGER, 1);", "t.wl").unwrap();
+    let r = parse("LET(x: INTEGER, 1);", "t.wll").unwrap();
     let l = match &r {
         Expr::Let {
             type_annotation, ..
@@ -303,7 +303,7 @@ fn let_with_type_annotation() {
 
 #[test]
 fn let_with_complex_type_annotation() {
-    let r = parse(r#"LET(m: DICT[STRING, INTEGER], ["k": 1]);"#, "t.wl").unwrap();
+    let r = parse(r#"LET(m: DICT[STRING, INTEGER], ["k": 1]);"#, "t.wll").unwrap();
     let l = match &r {
         Expr::Let {
             type_annotation, ..
@@ -325,7 +325,7 @@ fn let_with_complex_type_annotation() {
 #[test]
 fn set_via_call() {
     // §6.2: SET is a plain function call.
-    let r = parse("LET(x, 1); SET(x, 2);", "t.wl").unwrap();
+    let r = parse("LET(x, 1); SET(x, 2);", "t.wll").unwrap();
     let exprs = match r {
         Expr::Block { exprs, .. } => exprs,
         _ => unreachable!(),
@@ -342,7 +342,7 @@ fn set_via_call() {
 
 #[test]
 fn if_ternary() {
-    let r = parse(r#"IF(TRUE, 1, 2);"#, "t.wl").unwrap();
+    let r = parse(r#"IF(TRUE, 1, 2);"#, "t.wll").unwrap();
     let iff = match r {
         Expr::If {
             cond,
@@ -358,7 +358,7 @@ fn if_ternary() {
 #[test]
 fn if_no_else_default_null() {
     // §7.1: else 缺省 → NULL.
-    let r = parse("IF(FALSE, 1);", "t.wl").unwrap();
+    let r = parse("IF(FALSE, 1);", "t.wll").unwrap();
     let else_b = match r {
         Expr::If { else_branch, .. } => else_branch,
         _ => panic!(),
@@ -369,7 +369,7 @@ fn if_no_else_default_null() {
 #[test]
 fn while_with_block_body() {
     // §7.2: WHILE(cond, body); body can be a block.
-    let r = parse("WHILE(TRUE, (PRINT(1); PRINT(2)));", "t.wl").unwrap();
+    let r = parse("WHILE(TRUE, (PRINT(1); PRINT(2)));", "t.wll").unwrap();
     let body = match r {
         Expr::While { body, .. } => body,
         _ => panic!(),
@@ -383,7 +383,7 @@ fn while_with_block_body() {
 
 #[test]
 fn for_over_array() {
-    let r = parse("FOR(i, [1, 2, 3], PRINT(i));", "t.wl").unwrap();
+    let r = parse("FOR(i, [1, 2, 3], PRINT(i));", "t.wll").unwrap();
     let f = match r {
         Expr::For { var, iter, .. } => (var, iter),
         _ => panic!(),
@@ -395,7 +395,7 @@ fn for_over_array() {
 fn for_over_dict() {
     // §7.3: FOR traverses DICT keys; parser doesn't enforce, just
     // round-trips the iterable.
-    let r = parse(r#"FOR(k, ["a": 1, "b": 2], PRINT(k));"#, "t.wl").unwrap();
+    let r = parse(r#"FOR(k, ["a": 1, "b": 2], PRINT(k));"#, "t.wll").unwrap();
     let f = match r {
         Expr::For { var, iter, .. } => (var, iter),
         _ => panic!(),
@@ -406,7 +406,7 @@ fn for_over_dict() {
 
 #[test]
 fn return_with_value() {
-    let r = parse("RETURN(x);", "t.wl").unwrap();
+    let r = parse("RETURN(x);", "t.wll").unwrap();
     let v = match r {
         Expr::Return { value, .. } => value,
         _ => panic!(),
@@ -417,7 +417,7 @@ fn return_with_value() {
 #[test]
 fn return_no_value_is_null() {
     // §7.4: 若省略则 NULL.
-    let r = parse("RETURN();", "t.wl").unwrap();
+    let r = parse("RETURN();", "t.wll").unwrap();
     let v = match r {
         Expr::Return { value, .. } => value,
         _ => panic!(),
@@ -427,7 +427,7 @@ fn return_no_value_is_null() {
 
 #[test]
 fn break_continue_are_kw_calls() {
-    let r = parse("BREAK(); CONTINUE();", "t.wl").unwrap();
+    let r = parse("BREAK(); CONTINUE();", "t.wll").unwrap();
     let exprs = match r {
         Expr::Block { exprs, .. } => exprs,
         _ => panic!(),
@@ -441,7 +441,7 @@ fn break_continue_are_kw_calls() {
 #[test]
 fn fun_anonymous_basic() {
     // §8.2: 匿名 FUN((args), body)
-    let r = parse("FUN((x), *(x, x));", "t.wl").unwrap();
+    let r = parse("FUN((x), *(x, x));", "t.wll").unwrap();
     let f = match r {
         Expr::Fun {
             params,
@@ -460,7 +460,7 @@ fn fun_anonymous_basic() {
 
 #[test]
 fn fun_param_type_annotation() {
-    let r = parse("FUN((x: INTEGER), x);", "t.wl").unwrap();
+    let r = parse("FUN((x: INTEGER), x);", "t.wll").unwrap();
     let params = match r {
         Expr::Fun { params, .. } => params,
         _ => panic!(),
@@ -471,7 +471,7 @@ fn fun_param_type_annotation() {
 
 #[test]
 fn fun_return_type_annotation() {
-    let r = parse("FUN((x): INTEGER, x);", "t.wl").unwrap();
+    let r = parse("FUN((x): INTEGER, x);", "t.wll").unwrap();
     let rt = match r {
         Expr::Fun { return_type, .. } => return_type,
         _ => panic!(),
@@ -485,7 +485,7 @@ fn fun_return_type_annotation() {
 #[test]
 fn fun_named_form() {
     // §8.2: FUN(name(params), body) 具名.
-    let r = parse("FUN(hello(str), PRINT(str));", "t.wl").unwrap();
+    let r = parse("FUN(hello(str), PRINT(str));", "t.wll").unwrap();
     // After A2, Expr::Fun has `name: Option<String>`. We expect
     // Some("hello"). Test will pass after the field is added.
     let f = match r {
@@ -497,20 +497,20 @@ fn fun_named_form() {
 
 #[test]
 fn fun_named_with_return_type() {
-    let r = parse("FUN(hello(str): INTEGER, *(str, 0));", "t.wl").unwrap();
+    let r = parse("FUN(hello(str): INTEGER, *(str, 0));", "t.wll").unwrap();
     assert!(matches!(r, Expr::Fun { .. }));
 }
 
 #[test]
 fn fun_default_parameter() {
-    let r = parse(r#"FUN((greeting = "hi"), greeting);"#, "t.wl").unwrap();
+    let r = parse(r#"FUN((greeting = "hi"), greeting);"#, "t.wll").unwrap();
     // After B1: assert params[0].default_expr.is_some()
     assert!(matches!(r, Expr::Fun { .. }));
 }
 
 #[test]
 fn fun_rest_parameter() {
-    let r = parse("FUN(collect(*rest), rest);", "t.wl").unwrap();
+    let r = parse("FUN(collect(*rest), rest);", "t.wll").unwrap();
     // After B2: assert params[0].is_rest
     assert!(matches!(r, Expr::Fun { .. }));
 }
@@ -522,7 +522,7 @@ fn op_arithmetic() {
     // + - * / %
     for op in &["+", "-", "*", "/", "%"] {
         let src = format!("LET(r, {}(1, 2));", op);
-        let r = parse(&src, "t.wl").unwrap();
+        let r = parse(&src, "t.wll").unwrap();
         let call = match &only_let(&r).as_ref() {
             Expr::Call { name, .. } => name,
             _ => panic!("expected Call for op {}", op),
@@ -535,7 +535,7 @@ fn op_arithmetic() {
 fn op_comparison() {
     for op in &["==", "!=", "<", ">", "<=", ">="] {
         let src = format!("LET(r, {}(1, 2));", op);
-        let r = parse(&src, "t.wl").unwrap();
+        let r = parse(&src, "t.wll").unwrap();
         let call = match &only_let(&r).as_ref() {
             Expr::Call { name, .. } => name,
             _ => panic!("expected Call for op {}", op),
@@ -548,7 +548,7 @@ fn op_comparison() {
 fn op_logical() {
     for op in &["&&", "||", "!"] {
         let src = format!("LET(r, {}(TRUE, FALSE));", op);
-        let r = parse(&src, "t.wl").unwrap();
+        let r = parse(&src, "t.wll").unwrap();
         let call = match &only_let(&r).as_ref() {
             Expr::Call { name, .. } => name,
             _ => panic!("expected Call for op {}", op),
@@ -560,7 +560,7 @@ fn op_logical() {
 #[test]
 fn op_unary_minus_via_call() {
     // Spec calls NEG a §9.1 function; parser also has the `-x` sugar.
-    let r = parse("LET(r, NEG(5));", "t.wl").unwrap();
+    let r = parse("LET(r, NEG(5));", "t.wll").unwrap();
     let call = match &only_let(&r).as_ref() {
         Expr::Call { name, args, .. } => (name, args),
         _ => panic!(),
@@ -575,7 +575,7 @@ fn op_unary_minus_via_call() {
 fn class_call_is_plain_call() {
     // §11.2: CLASS(name, parent, members) is a plain function call
     // at the parser level — eval layer handles the semantics.
-    let r = parse(r#"CLASS("Rect", NULL, ["w": 0]);"#, "t.wl").unwrap();
+    let r = parse(r#"CLASS("Rect", NULL, ["w": 0]);"#, "t.wll").unwrap();
     // Top-level CLASS — single Call, not wrapped in a Let.
     let call = match &r {
         Expr::Call { name, args, .. } => (name, args),
@@ -591,7 +591,7 @@ fn class_call_is_plain_call() {
 
 #[test]
 fn new_call_is_plain_call() {
-    let r = parse(r#"NEW("Rect");"#, "t.wl").unwrap();
+    let r = parse(r#"NEW("Rect");"#, "t.wll").unwrap();
     // NEW alone at top level is a plain Call.
     let call = match &r {
         Expr::Call { name, args, .. } => (name, args),
@@ -607,7 +607,7 @@ fn new_call_is_plain_call() {
 
 #[test]
 fn get_prop_call_is_plain_call() {
-    let r = parse(r#"LET(p, GET_PROP(obj, "x"));"#, "t.wl").unwrap();
+    let r = parse(r#"LET(p, GET_PROP(obj, "x"));"#, "t.wll").unwrap();
     let call = match &only_let(&r).as_ref() {
         Expr::Call { name, args, .. } => (name, args),
         _ => panic!(),
@@ -617,7 +617,7 @@ fn get_prop_call_is_plain_call() {
 
 #[test]
 fn set_prop_call_is_plain_call() {
-    let r = parse(r#"SET_PROP(obj, "x", 1);"#, "t.wl").unwrap();
+    let r = parse(r#"SET_PROP(obj, "x", 1);"#, "t.wll").unwrap();
     let call = match r {
         Expr::Call { name, args, .. } => (name, args),
         _ => panic!(),
@@ -630,7 +630,7 @@ fn set_prop_call_is_plain_call() {
 
 #[test]
 fn ok_err_constructors() {
-    let r = parse(r#"LET(o, OK(1)); LET(e, ERR("oops"));"#, "t.wl").unwrap();
+    let r = parse(r#"LET(o, OK(1)); LET(e, ERR("oops"));"#, "t.wll").unwrap();
     let exprs = match r {
         Expr::Block { exprs, .. } => exprs,
         _ => panic!(),
@@ -651,7 +651,7 @@ fn ok_err_constructors() {
 fn try_is_ok_is_err() {
     let r = parse(
         r#"LET(r, TRY(expr)); LET(t, IS_OK(OK(1))); LET(f, IS_ERR(ERR("e")));"#,
-        "t.wl",
+        "t.wll",
     )
     .unwrap();
     let exprs = match r {
@@ -677,7 +677,7 @@ fn or_die_is_two_arg() {
     // §12.2: OR_DIE(expr, default). `expr` is the inner OR_DIE node;
     // its value is the OK constructor applied to its argument, so
     // we expect an `Expr::Ok` whose value is the literal 1.
-    let r = parse("LET(r, OR_DIE(OK(1), 0));", "t.wl").unwrap();
+    let r = parse("LET(r, OR_DIE(OK(1), 0));", "t.wll").unwrap();
     let od = match &only_let(&r).as_ref() {
         Expr::OrDie { value, default, .. } => (value, default),
         _ => panic!(),
@@ -698,7 +698,7 @@ fn or_die_is_two_arg() {
 
 #[test]
 fn panic_call() {
-    let r = parse(r#"PANIC("oops");"#, "t.wl").unwrap();
+    let r = parse(r#"PANIC("oops");"#, "t.wll").unwrap();
     assert!(matches!(r, Expr::Panic { .. }));
 }
 
@@ -706,7 +706,7 @@ fn panic_call() {
 
 #[test]
 fn import_simple() {
-    let r = parse(r#"IMPORT("math", ["add"]);"#, "t.wl").unwrap();
+    let r = parse(r#"IMPORT("math", ["add"]);"#, "t.wll").unwrap();
     let imp = match r {
         Expr::Import { path, names, .. } => (path, names),
         _ => panic!(),
@@ -720,7 +720,7 @@ fn import_simple() {
 #[test]
 fn import_with_rename() {
     // §13.4: ["add": "math_add"]
-    let r = parse(r#"IMPORT("math", ["add": "math_add"]);"#, "t.wl").unwrap();
+    let r = parse(r#"IMPORT("math", ["add": "math_add"]);"#, "t.wll").unwrap();
     let imp = match r {
         Expr::Import { path, names, .. } => (path, names),
         _ => panic!(),
@@ -732,7 +732,7 @@ fn import_with_rename() {
 #[test]
 fn import_namespace_wlwl() {
     // §13.6: 命名空间路径
-    let r = parse(r#"IMPORT("wlwl:std.io", ["PRINT"]);"#, "t.wl").unwrap();
+    let r = parse(r#"IMPORT("wlwl:std.io", ["PRINT"]);"#, "t.wll").unwrap();
     let imp = match r {
         Expr::Import { path, names, .. } => (path, names),
         _ => panic!(),
@@ -744,14 +744,14 @@ fn import_namespace_wlwl() {
 #[test]
 fn import_empty_path_is_e0043() {
     // §13 / §14.4: empty path → E0043
-    let r = parse(r#"IMPORT("", ["x"]);"#, "t.wl").unwrap_err();
+    let r = parse(r#"IMPORT("", ["x"]);"#, "t.wll").unwrap_err();
     let code = r.diagnostic().code;
     assert_eq!(code, wlwl_error::ErrorCode::E0043);
 }
 
 #[test]
 fn export_basic() {
-    let r = parse(r#"EXPORT(["add", "PI"]);"#, "t.wl").unwrap();
+    let r = parse(r#"EXPORT(["add", "PI"]);"#, "t.wll").unwrap();
     let exp = match r {
         Expr::Export { names, .. } => names,
         _ => panic!(),
@@ -766,7 +766,7 @@ fn export_basic() {
 #[test]
 fn chain_property_access() {
     // §11.4: a.b  ->  GET_PROP(a, "b")
-    let r = parse("LET(p, t.DOM);", "t.wl").unwrap();
+    let r = parse("LET(p, t.DOM);", "t.wll").unwrap();
     let call = match &only_let(&r).as_ref() {
         Expr::Call { name, args, .. } => (name, args),
         _ => panic!(),
@@ -780,7 +780,7 @@ fn chain_property_access() {
 #[test]
 fn chain_method_call() {
     // §11.4: a.b(args)  ->  CALL_METHOD(a, "b", args...)
-    let r = parse("j.APPEND(IMG(\"./1.jpg\"));", "t.wl").unwrap();
+    let r = parse("j.APPEND(IMG(\"./1.jpg\"));", "t.wll").unwrap();
     let call = match r {
         Expr::Call { name, args, .. } => (name, args),
         _ => panic!(),
@@ -791,7 +791,7 @@ fn chain_method_call() {
 #[test]
 fn chain_three_levels() {
     // §11.4: a.b.c.d  ->  GET_PROP(GET_PROP(GET_PROP(a, "b"), "c"), "d")
-    let r = parse("LET(p, t.DOM.ID.attr);", "t.wl").unwrap();
+    let r = parse("LET(p, t.DOM.ID.attr);", "t.wll").unwrap();
     let call = match &only_let(&r).as_ref() {
         Expr::Call { name, .. } => name,
         _ => panic!(),
@@ -801,7 +801,7 @@ fn chain_three_levels() {
 
 #[test]
 fn chain_method_after_property() {
-    let r = parse("LET(p, t.DOM.ID(\"j\"));", "t.wl").unwrap();
+    let r = parse("LET(p, t.DOM.ID(\"j\"));", "t.wll").unwrap();
     let call = match &only_let(&r).as_ref() {
         Expr::Call { name, .. } => name,
         _ => panic!(),
@@ -811,7 +811,7 @@ fn chain_method_after_property() {
 
 #[test]
 fn chain_method_after_method() {
-    let r = parse("LET(p, t.DOM.ID(\"j\").ATTR(\"x\"));", "t.wl").unwrap();
+    let r = parse("LET(p, t.DOM.ID(\"j\").ATTR(\"x\"));", "t.wll").unwrap();
     let call = match &only_let(&r).as_ref() {
         Expr::Call { name, .. } => name,
         _ => panic!(),
@@ -822,7 +822,7 @@ fn chain_method_after_method() {
 #[test]
 fn chain_call_then_property() {
     // (CALL(x)).foo  ->  GET_PROP(CALL(x), "foo")
-    let r = parse("LET(p, +(1, 2).len);", "t.wl").unwrap();
+    let r = parse("LET(p, +(1, 2).len);", "t.wll").unwrap();
     let call = match &only_let(&r).as_ref() {
         Expr::Call { name, .. } => name,
         _ => panic!(),
@@ -834,7 +834,7 @@ fn chain_call_then_property() {
 
 #[test]
 fn lex_chinese_identifier() {
-    let r = parse("LET(计数, 0);", "t.wl").unwrap();
+    let r = parse("LET(计数, 0);", "t.wll").unwrap();
     let name = match &r {
         Expr::Let { name, .. } => name,
         Expr::Block { exprs, .. } => match &exprs[0] {
@@ -848,7 +848,7 @@ fn lex_chinese_identifier() {
 
 #[test]
 fn lex_chinese_identifier_in_fun_param() {
-    let r = parse(r#"FUN((名), +("你好, ", 名));"#, "t.wl").unwrap();
+    let r = parse(r#"FUN((名), +("你好, ", 名));"#, "t.wll").unwrap();
     let params = match r {
         Expr::Fun { params, .. } => params,
         _ => panic!(),
@@ -866,7 +866,7 @@ fn w0020_array_with_dict_entry() {
     IMPORT("__warn", []);
     LET(x, [1, "a": 2]);
     "#;
-    let (expr, warnings) = wlwl_parser::parse_with_warnings(src, "t.wl").unwrap();
+    let (expr, warnings) = wlwl_parser::parse_with_warnings(src, "t.wll").unwrap();
     let value: &Expr = match &expr {
         Expr::Block { exprs, .. } => match &exprs[1] {
             Expr::Let { value, .. } => value.as_ref(),
@@ -892,7 +892,7 @@ fn w0020_dict_with_bare_value() {
     let src = r#"
     LET(x, ["a": 1, 2]);
     "#;
-    let (_, warnings) = wlwl_parser::parse_with_warnings(src, "t.wl").unwrap();
+    let (_, warnings) = wlwl_parser::parse_with_warnings(src, "t.wll").unwrap();
     assert!(warnings
         .iter()
         .any(|w| w.code == wlwl_error::ErrorCode::W0020));
@@ -900,7 +900,7 @@ fn w0020_dict_with_bare_value() {
 
 #[test]
 fn no_w0020_homogeneous_array() {
-    let (expr, warnings) = wlwl_parser::parse_with_warnings("LET(x, [1, 2, 3]);", "t.wl").unwrap();
+    let (expr, warnings) = wlwl_parser::parse_with_warnings("LET(x, [1, 2, 3]);", "t.wll").unwrap();
     let _ = expr;
     assert!(
         warnings.is_empty(),
@@ -912,7 +912,7 @@ fn no_w0020_homogeneous_array() {
 #[test]
 fn no_w0020_homogeneous_dict() {
     let (expr, warnings) =
-        wlwl_parser::parse_with_warnings(r#"LET(x, ["a": 1, "b": 2]);"#, "t.wl").unwrap();
+        wlwl_parser::parse_with_warnings(r#"LET(x, ["a": 1, "b": 2]);"#, "t.wll").unwrap();
     let _ = expr;
     assert!(warnings.is_empty());
 }
@@ -922,7 +922,7 @@ fn no_w0020_homogeneous_dict() {
 #[test]
 fn i1_index_read_sugar_desugars_to_index_get() {
     // §10.1: a[1]  ->  INDEX_GET(a, 1)
-    let r = parse("LET(v, a[1]);", "t.wl").unwrap();
+    let r = parse("LET(v, a[1]);", "t.wll").unwrap();
     let call = match &only_let(&r).as_ref() {
         Expr::Call { name, args, .. } => (name, args),
         _ => panic!(),
@@ -936,7 +936,7 @@ fn i1_index_read_sugar_desugars_to_index_get() {
 #[test]
 fn i1_index_write_sugar_desugars_to_index_set() {
     // §10.1: a[i] = v  ->  INDEX_SET(a, i, v)
-    let r = parse("LET(v, a[0] = 99);", "t.wl").unwrap();
+    let r = parse("LET(v, a[0] = 99);", "t.wll").unwrap();
     let call = match &only_let(&r).as_ref() {
         Expr::Call { name, args, .. } => (name, args),
         _ => panic!(),
@@ -948,7 +948,7 @@ fn i1_index_write_sugar_desugars_to_index_set() {
 #[test]
 fn i1_index_chained_and_mixed_with_dot() {
     // a[0][1] and t.items[0] chain through the same Call-form sugar.
-    let r = parse("LET(v, m[1][0]);", "t.wl").unwrap();
+    let r = parse("LET(v, m[1][0]);", "t.wll").unwrap();
     let outer = match &only_let(&r).as_ref() {
         Expr::Call { name, args, .. } => (name, args),
         _ => panic!(),
@@ -956,7 +956,7 @@ fn i1_index_chained_and_mixed_with_dot() {
     assert_eq!(outer.0, "INDEX_GET");
     assert!(matches!(&outer.1[0], Expr::Call { name, .. } if name == "INDEX_GET"));
 
-    let r = parse("LET(v, t.items[0]);", "t.wl").unwrap();
+    let r = parse("LET(v, t.items[0]);", "t.wll").unwrap();
     let outer = match &only_let(&r).as_ref() {
         Expr::Call { name, .. } => name,
         _ => panic!(),
@@ -967,7 +967,7 @@ fn i1_index_chained_and_mixed_with_dot() {
 #[test]
 fn i1_single_equals_desugars_to_eq_call() {
     // §9.2: `=(a, b)` resolves to the `==` builtin (Phase I1 alias).
-    let r = parse("LET(v, =(1, 2));", "t.wl").unwrap();
+    let r = parse("LET(v, =(1, 2));", "t.wll").unwrap();
     let call = match &only_let(&r).as_ref() {
         Expr::Call { name, args, .. } => (name, args),
         _ => panic!(),
@@ -980,7 +980,7 @@ fn i1_single_equals_desugars_to_eq_call() {
 fn i1_default_param_eq_still_parses() {
     // The default-parameter separator keeps working alongside the
     // `=` → `==` call alias.
-    let r = parse(r#"LET(g, FUN((name = "hi"), name));"#, "t.wl").unwrap();
+    let r = parse(r#"LET(g, FUN((name = "hi"), name));"#, "t.wll").unwrap();
     assert!(matches!(r, Expr::Let { .. } | Expr::Block { .. }));
 }
 

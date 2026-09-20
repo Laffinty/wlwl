@@ -1,4 +1,4 @@
-// examples/format.wl — FORMAT builtin + template syntax (§10.6)
+// examples/format.wll — FORMAT builtin + template syntax (§10.6)
 // Demonstrates: positional `{0}` and named `{name}` placeholders.
 // Phase B5 implements the global `FORMAT(...)` builtin.
 // (v0.4 note: dict literals use the `[k: v]` form; `{}` braces are

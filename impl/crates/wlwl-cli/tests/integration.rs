@@ -1,7 +1,7 @@
 //! End-to-end integration tests for the WLWL Phase 1 toolchain.
 //!
 //! These exercise the full lexer → parser → evaluator pipeline against
-//! small .wl programs (read from disk via the `wlwl-cli` binary, or via
+//! small .wll programs (read from disk via the `wlwl-cli` binary, or via
 //! direct library calls to `parse` + `Evaluator::eval`).
 
 use std::fs;
@@ -11,7 +11,7 @@ use wlwl_eval::{Evaluator, Value};
 use wlwl_parser::parse;
 
 fn run_source(src: &str) -> Result<Value, ErrorCode> {
-    let ast = match parse(src, "t.wl") {
+    let ast = match parse(src, "t.wll") {
         Ok(a) => a,
         Err(e) => return Err(e.diagnostic().code),
     };
@@ -96,13 +96,13 @@ fn int_8_error_lex_illegal_char() {
     assert_eq!(err, ErrorCode::E0001);
 }
 
-/// Helper: write a .wl file to a temp path, run it via the CLI binary, return exit code.
+/// Helper: write a .wll file to a temp path, run it via the CLI binary, return exit code.
 #[test]
 fn int_9_cli_runs_hello() {
     use std::process::Command;
     let dir = std::env::temp_dir().join("wlwl-int-tests");
     fs::create_dir_all(&dir).unwrap();
-    let p = dir.join("cli_hello.wl");
+    let p = dir.join("cli_hello.wll");
     let mut f = fs::File::create(&p).unwrap();
     f.write_all(b"LET(x, 1); PRINT(\"x =\", x);").unwrap();
     drop(f);

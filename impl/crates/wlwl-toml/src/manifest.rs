@@ -6,7 +6,7 @@
 //! [package]
 //! name = "myapp"
 //! version = "0.1.0"
-//! entry = "src/main.wl"
+//! entry = "src/main.wll"
 //!
 //! [dependencies]
 //! "myteam:utils" = { path = "../utils" }
@@ -88,7 +88,7 @@ pub struct DetailedDep {
 impl Dependency {
     /// Returns the local path of a path-style dependency, if any.
     /// Used by `ModuleLoader` to resolve `myteam:utils` to a directory
-    /// containing `<name>.wl`.
+    /// containing `<name>.wll`.
     pub fn local_path(&self) -> Option<&str> {
         match self {
             Dependency::Detailed(d) => d.path.as_deref(),
@@ -397,7 +397,7 @@ mod tests {
 [package]
 name = "myapp"
 version = "0.1.0"
-entry = "src/main.wl"
+entry = "src/main.wll"
 language_version = "0.4"
 description = "A WLWL app"
 license = "MIT"
@@ -421,7 +421,7 @@ default_encoding = "utf-8"
         let m = parse(SAMPLE).unwrap();
         assert_eq!(m.package.name, "myapp");
         assert_eq!(m.package.version, "0.1.0");
-        assert_eq!(m.package.entry, "src/main.wl");
+        assert_eq!(m.package.entry, "src/main.wll");
         assert_eq!(m.package.language_version.as_deref(), Some("0.4"));
         assert_eq!(m.package.description.as_deref(), Some("A WLWL app"));
         assert_eq!(m.package.license.as_deref(), Some("MIT"));
@@ -445,7 +445,7 @@ default_encoding = "utf-8"
 [package]
 name = "tiny"
 version = "0.0.1"
-entry = "main.wl"
+entry = "main.wll"
 "#,
         )
         .unwrap();
@@ -461,7 +461,7 @@ entry = "main.wl"
 [package]
 name = "MyApp"
 version = "0.1.0"
-entry = "main.wl"
+entry = "main.wll"
 "#,
         )
         .unwrap_err();
@@ -489,7 +489,7 @@ entry = ""
 [package]
 name = "ok"
 version = "0.1.0"
-entry = "main.wl"
+entry = "main.wll"
 
 [dependencies]
 "myteam utils" = { path = "../utils" }
@@ -506,7 +506,7 @@ entry = "main.wl"
 [package]
 name = "ok"
 version = "0.1.0"
-entry = "main.wl"
+entry = "main.wll"
 
 [dependencies]
 "myteam:utils" = { optional = true }
@@ -523,7 +523,7 @@ entry = "main.wl"
 [package]
 name = "ok"
 version = "0.1.0"
-entry = "main.wl"
+entry = "main.wll"
 
 [namespaces]
 "MyTeam" = "./vendor/myteam"
@@ -646,7 +646,7 @@ entry = "main.wl"
 [package]
 name = ""
 version = "0.1.0"
-entry = "main.wl"
+entry = "main.wll"
 "#,
         )
         .unwrap_err();
@@ -662,7 +662,7 @@ entry = "main.wl"
 [package]
 name = "ok"
 version = "0.1.0"
-entry = "main.wl"
+entry = "main.wll"
 
 [dependencies]
 "MyTeam:utils" = { path = "../utils" }
@@ -681,7 +681,7 @@ entry = "main.wl"
 [package]
 name = "tiny"
 version = "0.0.1"
-entry = "main.wl"
+entry = "main.wll"
 "#,
         )
         .unwrap();
@@ -697,7 +697,7 @@ entry = "main.wl"
 [package]
 name = "tiny"
 version = "0.0.1"
-entry = "main.wl"
+entry = "main.wll"
 language_version = "{}"
 "#,
                 v
@@ -718,7 +718,7 @@ language_version = "{}"
 [package]
 name = "tiny"
 version = "0.0.1"
-entry = "main.wl"
+entry = "main.wll"
 language_version = "0.5"
 "#,
         )
@@ -739,7 +739,7 @@ language_version = "0.5"
 [package]
 name = "tiny"
 version = "0.0.1"
-entry = "main.wl"
+entry = "main.wll"
 language_version = "1.0"
 "#,
         )
@@ -754,7 +754,7 @@ language_version = "1.0"
 [package]
 name = "tiny"
 version = "0.0.1"
-entry = "main.wl"
+entry = "main.wll"
 language_version = "banana"
 "#,
         )
@@ -772,7 +772,7 @@ language_version = "banana"
 [package]
 name = "tiny"
 version = "0.0.1"
-entry = "main.wl"
+entry = "main.wll"
 "#,
         )
         .unwrap();
@@ -786,7 +786,7 @@ entry = "main.wl"
 [package]
 name = "tiny"
 version = "0.0.1"
-entry = "main.wl"
+entry = "main.wll"
 
 [features]
 allow_builtin_shadow = true
@@ -803,7 +803,7 @@ allow_builtin_shadow = true
 [package]
 name = "tiny"
 version = "0.0.1"
-entry = "main.wl"
+entry = "main.wll"
 
 [features]
 allow_builtin_shadow = false
@@ -821,7 +821,7 @@ allow_builtin_shadow = false
 [package]
 name = "tiny"
 version = "0.0.1"
-entry = "main.wl"
+entry = "main.wll"
 "#,
         )
         .unwrap();
@@ -835,7 +835,7 @@ entry = "main.wl"
 [package]
 name = "tiny"
 version = "0.0.1"
-entry = "main.wl"
+entry = "main.wll"
 
 [features]
 strict_types = true
@@ -852,7 +852,7 @@ strict_types = true
 [package]
 name = "tiny"
 version = "0.0.1"
-entry = "main.wl"
+entry = "main.wll"
 
 [features]
 strict_types = false
@@ -874,7 +874,7 @@ strict_types = false
 [package]
 name = "tiny"
 version = "0.0.1"
-entry = "main.wl"
+entry = "main.wll"
 
 [features]
 strict_types = "yes"
@@ -888,7 +888,7 @@ strict_types = "yes"
 [package]
 name = "tiny"
 version = "0.0.1"
-entry = "main.wl"
+entry = "main.wll"
 
 [features]
 strict_types = 1
@@ -907,7 +907,7 @@ strict_types = 1
 [package]
 name = "tiny"
 version = "0.0.1"
-entry = "main.wl"
+entry = "main.wll"
 
 [features]
 strict_types = true

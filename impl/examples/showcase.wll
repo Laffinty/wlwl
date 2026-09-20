@@ -1,4 +1,4 @@
-// showcase.wl — Phase 4 std.io / std.fs / std.json demo.
+// showcase.wll — Phase 4 std.io / std.fs / std.json demo.
 //
 // Demonstrates:
 //   - IMPORT from the `wlwl:std.io` namespace (PRINT / INPUT)

@@ -13,7 +13,7 @@ contribution workflow. For deeper design context, read:
    the spec wins — open a spec revision issue first. Implementation-only
    deviations must be added to `docs/plan/deviations.md` per build plan §8.
 2. **The compiler is GPL v2.** By contributing, you agree your contribution
-   is licensed under GPL v2. Your `.wl` programs are not affected.
+   is licensed under GPL v2. Your `.wll` programs are not affected.
 3. **Small PRs.** One concern per PR. If a change touches the parser and
    the evaluator, it is probably two PRs.
 4. **AI-friendly diagnostics are a hard requirement.** Any change to error
@@ -35,10 +35,10 @@ cargo test
 Run an example:
 
 ```bash
-cargo run -- run examples/hello.wl
-cargo run -- run examples/phase2_demo.wl
-cargo run -- check examples/phase2_demo.wl     # parse + name-check only
-cargo run -- ast   examples/phase2_demo.wl --format=json | head
+cargo run -- run examples/hello.wll
+cargo run -- run examples/phase2_demo.wll
+cargo run -- check examples/phase2_demo.wll     # parse + name-check only
+cargo run -- ast   examples/phase2_demo.wll --format=json | head
 ```
 
 ## Project layout
@@ -60,7 +60,7 @@ wlwl/
 │   │   ├── wlwl-std/      # wlwl:std.* modules
 │   │   ├── wlwl-toml/     # wlwl.toml + wlwl.lock
 │   │   └── wlwl-cli/      # the `wlwl` binary
-│   └── examples/   # .wl programs used in tests + docs
+│   └── examples/   # .wll programs used in tests + docs
 └── .github/workflows/
     ├── ci.yml        # test on Linux / macOS / Windows
     └── release.yml   # cross-platform binary release on tag

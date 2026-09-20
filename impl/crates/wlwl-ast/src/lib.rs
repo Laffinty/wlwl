@@ -461,7 +461,7 @@ mod tests {
 
     #[test]
     fn expr_span() {
-        let e = Expr::Literal(Literal::Integer(1), Span::new("t.wl", 1, 1));
+        let e = Expr::Literal(Literal::Integer(1), Span::new("t.wll", 1, 1));
         assert_eq!(e.span().line_start, 1);
     }
 

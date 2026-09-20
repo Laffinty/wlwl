@@ -1,4 +1,4 @@
-// examples/std_test.wl — uses wlwl:std.test module (Phase B7 §15.9)
+// examples/std_test.wll — uses wlwl:std.test module (Phase B7 §15.9)
 // Demonstrates: ASSERT / ASSERT_EQ / EXPECT_ERR framework.
 // (v0.4 note: the v0.3 `IMPORT("@std/test") AS test` rename form was
 // deleted per §13.4 — names are imported directly.)

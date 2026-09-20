@@ -168,9 +168,9 @@ Beyond the top-10 in `SKILL.md`:
   LF; CRLF source still passes `fmt --check` (strip_comments tolerates
   the difference). Avoid CRLF in new files.
 
-## Notes on `interp.wl`
+## Notes on `interp.wll`
 
-The bundled `interp.wl` is a verbatim copy of `impl/examples/interp.wl`.
+The bundled `interp.wll` is a verbatim copy of `impl/examples/interp.wll`.
 Each labelled block exercises one v0.6 decision. When the agent writes
 new code, the fastest sanity check is: "does this match the shape of
-the corresponding block in `interp.wl`?"
+the corresponding block in `interp.wll`?"

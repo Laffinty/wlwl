@@ -9,13 +9,13 @@ use wlwl_formatter::format;
 use wlwl_parser::parse;
 
 fn fmt_src(src: &str) -> String {
-    format(&parse(src, "t.wl").expect("parse failed"))
+    format(&parse(src, "t.wll").expect("parse failed"))
 }
 
 /// fmt(fmt(x)) == fmt(x) for source text (the plan §5.10 contract).
 fn assert_idempotent(src: &str) {
     let once = fmt_src(src);
-    let twice = format(&parse(&once, "t.wl").expect("re-parse of fmt output failed"));
+    let twice = format(&parse(&once, "t.wll").expect("re-parse of fmt output failed"));
     assert_eq!(once, twice, "not idempotent for source:\n{}", src);
 }
 
@@ -24,7 +24,7 @@ fn assert_idempotent(src: &str) {
 /// semantics.
 fn assert_semantics_preserved(src: &str) {
     let strip = |text: &str| -> serde_json::Value {
-        let mut v = serde_json::to_value(parse(text, "t.wl").expect("parse failed")).unwrap();
+        let mut v = serde_json::to_value(parse(text, "t.wll").expect("parse failed")).unwrap();
         strip_spans(&mut v);
         v
     };
@@ -389,7 +389,7 @@ fn fmt_idempotent_over_100_fixtures() {
 fn fmt_output_always_reparses() {
     for src in handwritten_fixtures() {
         let once = fmt_src(src);
-        parse(&once, "t.wl").expect("fmt output must be valid WLWL source");
+        parse(&once, "t.wll").expect("fmt output must be valid WLWL source");
     }
 }
 
@@ -400,7 +400,7 @@ fn fmt_examples_dir_files_idempotent() {
     let mut checked = 0;
     for entry in std::fs::read_dir(dir).expect("examples dir") {
         let path = entry.unwrap().path();
-        if path.extension().and_then(|e| e.to_str()) != Some("wl") {
+        if path.extension().and_then(|e| e.to_str()) != Some("wll") {
             continue;
         }
         let src = std::fs::read_to_string(&path).unwrap();

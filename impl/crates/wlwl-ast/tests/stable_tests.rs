@@ -9,7 +9,7 @@
 use wlwl_ast::stable::{stable_tree, StableNode};
 
 fn parse_src(src: &str) -> wlwl_ast::Expr {
-    wlwl_parser::parse(src, "t.wl").expect("parse failed")
+    wlwl_parser::parse(src, "t.wll").expect("parse failed")
 }
 
 fn collect(n: &StableNode, out: &mut Vec<String>) {
@@ -22,8 +22,8 @@ fn collect(n: &StableNode, out: &mut Vec<String>) {
 #[test]
 fn root_id_uses_module_and_body() {
     let e = parse_src("LET(x, 1); PRINT(x);");
-    let tree = stable_tree(&e, "t.wl");
-    assert_eq!(tree.node_id, "t.wl:fn:<top>/body");
+    let tree = stable_tree(&e, "t.wll");
+    assert_eq!(tree.node_id, "t.wll:fn:<top>/body");
     assert_eq!(tree.parent_id, None);
     assert_eq!(tree.kind, "Block");
     assert!(tree.hash.starts_with("sha256:"));
@@ -32,7 +32,7 @@ fn root_id_uses_module_and_body() {
 #[test]
 fn node_ids_are_structural_and_unique() {
     let e = parse_src("LET(x, 1); PRINT(x);");
-    let tree = stable_tree(&e, "t.wl");
+    let tree = stable_tree(&e, "t.wll");
     let mut ids = Vec::new();
     collect(&tree, &mut ids);
     assert_eq!(ids.len(), 5); // body + LET + Literal + PRINT-call + Var
@@ -50,7 +50,7 @@ fn ids_stable_across_line_shifts() {
     // field naturally differs — it exists precisely to locate the
     // node in today's source.)
     let collect_id_hash = |src: &str| -> Vec<(String, String)> {
-        let tree = stable_tree(&parse_src(src), "t.wl");
+        let tree = stable_tree(&parse_src(src), "t.wll");
         let mut out = Vec::new();
         fn walk(n: &StableNode, out: &mut Vec<(String, String)>) {
             out.push((n.node_id.clone(), n.hash.clone()));
@@ -69,7 +69,7 @@ fn ids_stable_across_line_shifts() {
 #[test]
 fn fun_boundary_switches_fn_context() {
     let e = parse_src("LET(f, FUN(double(x), *(x, 2)));");
-    let tree = stable_tree(&e, "t.wl");
+    let tree = stable_tree(&e, "t.wll");
     let mut ids = Vec::new();
     collect(&tree, &mut ids);
     assert!(
@@ -82,7 +82,7 @@ fn fun_boundary_switches_fn_context() {
 #[test]
 fn anonymous_fun_uses_anon_context() {
     let e = parse_src("LET(f, FUN((x), x));");
-    let tree = stable_tree(&e, "t.wl");
+    let tree = stable_tree(&e, "t.wll");
     let mut ids = Vec::new();
     collect(&tree, &mut ids);
     assert!(
@@ -94,11 +94,11 @@ fn anonymous_fun_uses_anon_context() {
 
 #[test]
 fn hash_changes_when_content_changes() {
-    let a = stable_tree(&parse_src("LET(x, 1);"), "t.wl");
-    let b = stable_tree(&parse_src("LET(x, 2);"), "t.wl");
+    let a = stable_tree(&parse_src("LET(x, 1);"), "t.wll");
+    let b = stable_tree(&parse_src("LET(x, 2);"), "t.wll");
     assert_ne!(a.hash, b.hash);
     // Whitespace-only changes do NOT change the content hash:
-    let c = stable_tree(&parse_src("LET( x,  1 );"), "t.wl");
+    let c = stable_tree(&parse_src("LET( x,  1 );"), "t.wll");
     assert_eq!(a.hash, c.hash, "spans must not affect content hash");
 }
 
@@ -108,7 +108,7 @@ fn parent_ids_link_the_tree() {
     // one statement are unwrapped by the parser), so the root IS the
     // Let node.
     let e = parse_src("LET(x, 1);");
-    let tree = stable_tree(&e, "t.wl");
+    let tree = stable_tree(&e, "t.wll");
     assert_eq!(tree.kind, "Let");
     assert_eq!(tree.children.len(), 1);
     let literal = &tree.children[0];
@@ -119,7 +119,7 @@ fn parent_ids_link_the_tree() {
 #[test]
 fn hash_is_sha256_hex() {
     let e = parse_src("PRINT(1);");
-    let tree = stable_tree(&e, "t.wl");
+    let tree = stable_tree(&e, "t.wll");
     let hex = tree.hash.strip_prefix("sha256:").unwrap();
     assert_eq!(hex.len(), 64);
     assert!(hex.chars().all(|c| c.is_ascii_hexdigit()));
@@ -130,7 +130,7 @@ fn deep_ids_embed_fun_and_paths() {
     // AI-tool scenario from §16.4.1: a call inside a function body is
     // addressable as `file:fn:NAME/body/.../call:N`.
     let e = parse_src("LET(summarize, FUN(summarize(x),\n    LET(y, ASK(x));\n    y\n));");
-    let tree = stable_tree(&e, "t.wl");
+    let tree = stable_tree(&e, "t.wll");
     let mut under_fun = Vec::new();
     fn walk(n: &StableNode, out: &mut Vec<(String, String)>) {
         if n.node_id.contains("/fn:summarize/body:") {

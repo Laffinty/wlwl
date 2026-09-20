@@ -21,10 +21,10 @@ use wlwl_ast::{Expr, FunParam, ImportName, Literal, Span, TypeAnnotation, TypeEx
 // ---- builders ----
 
 fn sp() -> Span {
-    Span::new("t.wl", 7, 3)
+    Span::new("t.wll", 7, 3)
 }
 fn sp_other() -> Span {
-    Span::new("t.wl", 8, 1)
+    Span::new("t.wll", 8, 1)
 }
 
 fn ident(name: &str) -> TypeExpr {
@@ -201,8 +201,8 @@ fn e_export(names: Vec<ImportName>) -> Expr {
 
 #[test]
 fn span_new_initializes_end_to_start() {
-    let s = Span::new("a.wl", 4, 2);
-    assert_eq!(s.file, "a.wl");
+    let s = Span::new("a.wll", 4, 2);
+    assert_eq!(s.file, "a.wll");
     assert_eq!(s.line_start, 4);
     assert_eq!(s.col_start, 2);
     assert_eq!(s.line_end, 4);

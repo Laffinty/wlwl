@@ -12,7 +12,7 @@ expression: "serde_json::json!({ \"E1003\": code_snap(ErrorCode::E1003, \"div_by
     "location": {
       "col_end": 1,
       "col_start": 1,
-      "file": "snap.wl",
+      "file": "snap.wll",
       "line": 1,
       "line_end": 1
     },

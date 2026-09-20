@@ -57,7 +57,7 @@ fn run_cli(args: &[&str]) -> std::process::Output {
 #[test]
 fn cli_run_human_format() {
     let dir = std::env::temp_dir().join("wlwl-cli-tests");
-    let p = write_source(&dir, "run_human.wl", "PRINT(\"hi\");");
+    let p = write_source(&dir, "run_human.wll", "PRINT(\"hi\");");
     let out = run_cli(&["run", p.to_str().unwrap()]);
     assert!(
         out.status.success(),
@@ -71,7 +71,7 @@ fn cli_run_human_format() {
 #[test]
 fn cli_run_json_format() {
     let dir = std::env::temp_dir().join("wlwl-cli-tests");
-    let p = write_source(&dir, "run_json.wl", "PRINT(\"hi\");");
+    let p = write_source(&dir, "run_json.wll", "PRINT(\"hi\");");
     let out = run_cli(&["run", "--format=json", p.to_str().unwrap()]);
     assert!(out.status.success());
 }
@@ -79,7 +79,7 @@ fn cli_run_json_format() {
 #[test]
 fn cli_run_jsonl_format() {
     let dir = std::env::temp_dir().join("wlwl-cli-tests");
-    let p = write_source(&dir, "run_jsonl.wl", "PRINT(\"hi\");");
+    let p = write_source(&dir, "run_jsonl.wll", "PRINT(\"hi\");");
     let out = run_cli(&["run", "--format=jsonl", p.to_str().unwrap()]);
     assert!(out.status.success());
 }
@@ -88,7 +88,7 @@ fn cli_run_jsonl_format() {
 fn cli_run_default_format_is_human() {
     // no --format flag -> default = human
     let dir = std::env::temp_dir().join("wlwl-cli-tests");
-    let p = write_source(&dir, "run_default.wl", "PRINT(\"default\");");
+    let p = write_source(&dir, "run_default.wll", "PRINT(\"default\");");
     let out = run_cli(&["run", p.to_str().unwrap()]);
     assert!(out.status.success());
     let stdout = String::from_utf8_lossy(&out.stdout);
@@ -99,7 +99,7 @@ fn cli_run_default_format_is_human() {
 #[test]
 fn cli_check_valid_program_human() {
     let dir = std::env::temp_dir().join("wlwl-cli-tests");
-    let p = write_source(&dir, "check_ok.wl", "LET(x, 1);");
+    let p = write_source(&dir, "check_ok.wll", "LET(x, 1);");
     let out = run_cli(&["check", p.to_str().unwrap()]);
     assert!(
         out.status.success(),
@@ -113,7 +113,7 @@ fn cli_check_valid_program_human() {
 #[test]
 fn cli_check_valid_program_json() {
     let dir = std::env::temp_dir().join("wlwl-cli-tests");
-    let p = write_source(&dir, "check_ok_json.wl", "LET(x, 1);");
+    let p = write_source(&dir, "check_ok_json.wll", "LET(x, 1);");
     let out = run_cli(&["check", "--format=json", p.to_str().unwrap()]);
     assert!(out.status.success());
 }
@@ -122,7 +122,7 @@ fn cli_check_valid_program_json() {
 fn cli_check_invalid_program_returns_nonzero() {
     // unterminated string -> parser E0002
     let dir = std::env::temp_dir().join("wlwl-cli-tests");
-    let p = write_source(&dir, "check_bad.wl", "LET(x, \"unterminated);");
+    let p = write_source(&dir, "check_bad.wll", "LET(x, \"unterminated);");
     let out = run_cli(&["check", p.to_str().unwrap()]);
     assert!(!out.status.success(), "expected nonzero exit, got 0");
 }
@@ -131,7 +131,7 @@ fn cli_check_invalid_program_returns_nonzero() {
 #[test]
 fn cli_ast_default_format_is_json() {
     let dir = std::env::temp_dir().join("wlwl-cli-tests");
-    let p = write_source(&dir, "ast_default.wl", "LET(x, 1);");
+    let p = write_source(&dir, "ast_default.wll", "LET(x, 1);");
     let out = run_cli(&["ast", p.to_str().unwrap()]);
     assert!(
         out.status.success(),
@@ -148,7 +148,7 @@ fn cli_ast_default_format_is_json() {
 #[test]
 fn cli_ast_explicit_json_format() {
     let dir = std::env::temp_dir().join("wlwl-cli-tests");
-    let p = write_source(&dir, "ast_json.wl", "LET(x, 1);");
+    let p = write_source(&dir, "ast_json.wll", "LET(x, 1);");
     let out = run_cli(&["ast", "--format=json", p.to_str().unwrap()]);
     assert!(out.status.success());
     let stdout = String::from_utf8_lossy(&out.stdout);
@@ -158,7 +158,7 @@ fn cli_ast_explicit_json_format() {
 #[test]
 fn cli_ast_jsonl_format_accepted() {
     let dir = std::env::temp_dir().join("wlwl-cli-tests");
-    let p = write_source(&dir, "ast_jsonl.wl", "LET(x, 1);");
+    let p = write_source(&dir, "ast_jsonl.wll", "LET(x, 1);");
     let out = run_cli(&["ast", "--format=jsonl", p.to_str().unwrap()]);
     assert!(out.status.success());
 }
@@ -166,19 +166,19 @@ fn cli_ast_jsonl_format_accepted() {
 // ── Error paths ────────────────────────────────────────────────
 #[test]
 fn cli_run_missing_file_returns_nonzero() {
-    let out = run_cli(&["run", "/nonexistent/path/to/file.wl"]);
+    let out = run_cli(&["run", "/nonexistent/path/to/file.wll"]);
     assert!(!out.status.success());
 }
 
 #[test]
 fn cli_check_missing_file_returns_nonzero() {
-    let out = run_cli(&["check", "/nonexistent/path/to/file.wl"]);
+    let out = run_cli(&["check", "/nonexistent/path/to/file.wll"]);
     assert!(!out.status.success());
 }
 
 #[test]
 fn cli_ast_missing_file_returns_nonzero() {
-    let out = run_cli(&["ast", "/nonexistent/path/to/file.wl"]);
+    let out = run_cli(&["ast", "/nonexistent/path/to/file.wll"]);
     assert!(!out.status.success());
 }
 
@@ -186,7 +186,7 @@ fn cli_ast_missing_file_returns_nonzero() {
 fn cli_run_with_lex_error_human() {
     // illegal char '@' -> lexer E0001
     let dir = std::env::temp_dir().join("wlwl-cli-tests");
-    let p = write_source(&dir, "lex_err.wl", "LET(x, @bad);");
+    let p = write_source(&dir, "lex_err.wll", "LET(x, @bad);");
     let out = run_cli(&["run", p.to_str().unwrap()]);
     assert!(!out.status.success(), "expected nonzero on lex error");
     let stderr = String::from_utf8_lossy(&out.stderr);
@@ -201,7 +201,7 @@ fn cli_run_with_lex_error_json() {
     // Same but --format=json: the diagnostic should appear in the JSON output
     // (regardless of stream: stdout or stderr, depending on the writer).
     let dir = std::env::temp_dir().join("wlwl-cli-tests");
-    let p = write_source(&dir, "lex_err_json.wl", "LET(x, @bad);");
+    let p = write_source(&dir, "lex_err_json.wll", "LET(x, @bad);");
     let out = run_cli(&["run", "--format=json", p.to_str().unwrap()]);
     assert!(!out.status.success());
     let combined = format!(
@@ -219,7 +219,7 @@ fn cli_run_with_lex_error_json() {
 fn cli_run_with_parse_error_human() {
     // missing ',' in arg list -> parser E0012
     let dir = std::env::temp_dir().join("wlwl-cli-tests");
-    let p = write_source(&dir, "parse_err.wl", "LET(x 1);");
+    let p = write_source(&dir, "parse_err.wll", "LET(x 1);");
     let out = run_cli(&["run", p.to_str().unwrap()]);
     assert!(!out.status.success());
     let stderr = String::from_utf8_lossy(&out.stderr);
@@ -233,7 +233,7 @@ fn cli_run_with_parse_error_human() {
 fn cli_run_with_runtime_error_human() {
     // undefined name -> eval E0020; suggestion_code must be populated
     let dir = std::env::temp_dir().join("wlwl-cli-tests");
-    let p = write_source(&dir, "rt_err.wl", "LET(counter, 0); PRINT(countr);");
+    let p = write_source(&dir, "rt_err.wll", "LET(counter, 0); PRINT(countr);");
     let out = run_cli(&["run", p.to_str().unwrap()]);
     assert!(!out.status.success());
     let stderr = String::from_utf8_lossy(&out.stderr);
@@ -247,7 +247,7 @@ fn cli_run_with_runtime_error_human() {
 fn cli_run_with_runtime_error_jsonl() {
     // --format=jsonl should produce a JSON line containing the error
     let dir = std::env::temp_dir().join("wlwl-cli-tests");
-    let p = write_source(&dir, "rt_err_jsonl.wl", "LET(counter, 0); PRINT(countr);");
+    let p = write_source(&dir, "rt_err_jsonl.wll", "LET(counter, 0); PRINT(countr);");
     let out = run_cli(&["run", "--format=jsonl", p.to_str().unwrap()]);
     assert!(!out.status.success());
     let combined = format!(
@@ -279,7 +279,7 @@ fn cli_help_exits_zero() {
 fn cli_check_prints_lint_warnings_but_succeeds() {
     // Unused LET => W0010 on stdout; warnings never fail the check.
     let dir = std::env::temp_dir().join("wlwl-cli-tests");
-    let p = write_source(&dir, "check_lint.wl", "LET(x, 1); PRINT(2);");
+    let p = write_source(&dir, "check_lint.wll", "LET(x, 1); PRINT(2);");
     let out = run_cli(&["check", p.to_str().unwrap()]);
     assert!(out.status.success(), "warnings must not fail the check");
     let stdout = String::from_utf8_lossy(&out.stdout);
@@ -292,7 +292,7 @@ fn cli_check_prints_lint_warnings_but_succeeds() {
 fn cli_check_reports_w0020_from_parser_channel() {
     // Mixed array/dict literal => parser-channel W0020.
     let dir = std::env::temp_dir().join("wlwl-cli-tests");
-    let p = write_source(&dir, "check_w0020.wl", "LET(a, [1, \"k\": 2]); PRINT(a);");
+    let p = write_source(&dir, "check_w0020.wll", "LET(a, [1, \"k\": 2]); PRINT(a);");
     let out = run_cli(&["check", p.to_str().unwrap()]);
     assert!(out.status.success());
     let stdout = String::from_utf8_lossy(&out.stdout);
@@ -302,7 +302,7 @@ fn cli_check_reports_w0020_from_parser_channel() {
 #[test]
 fn cli_check_clean_source_has_no_warnings() {
     let dir = std::env::temp_dir().join("wlwl-cli-tests");
-    let p = write_source(&dir, "check_clean.wl", "LET(x, 1); PRINT(x);");
+    let p = write_source(&dir, "check_clean.wll", "LET(x, 1); PRINT(x);");
     let out = run_cli(&["check", p.to_str().unwrap()]);
     assert!(out.status.success());
     let stdout = String::from_utf8_lossy(&out.stdout);
@@ -312,7 +312,7 @@ fn cli_check_clean_source_has_no_warnings() {
 #[test]
 fn cli_check_unused_param_reports_w0011() {
     let dir = std::env::temp_dir().join("wlwl-cli-tests");
-    let p = write_source(&dir, "check_w0011.wl", "LET(f, FUN((a, b), a)); f(1, 2);");
+    let p = write_source(&dir, "check_w0011.wll", "LET(f, FUN((a, b), a)); f(1, 2);");
     let out = run_cli(&["check", p.to_str().unwrap()]);
     assert!(out.status.success());
     let stdout = String::from_utf8_lossy(&out.stdout);

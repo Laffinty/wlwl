@@ -10,7 +10,7 @@
 ## Context and Problem Statement
 
 Spec v0.4 §16.3 mandates a **canonical formatter** — a tool that
-re-formats any `.wl` source to a unique whitespace, indent, and
+re-formats any `.wll` source to a unique whitespace, indent, and
 brace convention. The 10 rules in §16.3 are mechanically derivable
 and idempotent (`fmt(fmt(x)) == fmt(x)`).
 
@@ -18,9 +18,9 @@ The question is whether canonical formatting is:
 
 1. **Mandatory** — every v0.4 program must pass through the canonical
    formatter before distribution (release.yml forces a `wlwl fmt
-   --check` on each .wl in the distribution tar)
+   --check` on each .wll in the distribution tar)
 2. **Advisory** — format on demand; respect author style
-3. **Hybrid** — runner uses canonical form internally; `.wl`
+3. **Hybrid** — runner uses canonical form internally; `.wll`
    sources can be either form
 
 Plan §16.3.3 says "all release builds must run through canonical
@@ -80,7 +80,7 @@ Chosen option **A**. Implementation pieces:
   CLI subcommand that reads a file or stdin, writes canonical form
   to stdout. Adds `--check` (default exit: 1 if canonical-input
   doesn't match canonical-output).
-- **CI gate** (`release.yml` Phase H) — every .wl file in the
+- **CI gate** (`release.yml` Phase H) — every .wll file in the
   distribution tar is run through `wlwl fmt --check`. If the
   output differs, the build fails.
 - **Local opt-in** — developers can run `wlwl fmt` manually before
@@ -110,7 +110,7 @@ Chosen option **A**. Implementation pieces:
 Positive:
 
 - §16.3 conformance: 12 + 5 idempotency tests pass (Phase E2
-  report); 100 % canonical on workspace's `examples/*.wl` after
+  report); 100 % canonical on workspace's `examples/*.wll` after
   one formatting pass
 - AI / IDE tooling stable: same input always → same canonical bytes
 - AST-stable node ID combined with canonical form gives a
@@ -121,7 +121,7 @@ Negative:
 
 - Author freedom reduced on whitespace
 - Migration burden: existing v0.3 source must be canonicalized
-- 12 weeks of codebase churn: every existing `examples/*.wl` was
+- 12 weeks of codebase churn: every existing `examples/*.wll` was
   re-formatted once in Phase E2 (no semantic change; verified by
   acceptance tests)
 

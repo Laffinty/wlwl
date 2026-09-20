@@ -133,14 +133,14 @@ jobs:
         working-directory: impl
         run: cargo build --locked --release --bin wlwl
 
-      - name: Run hello.wl
+      - name: Run hello.wll
         working-directory: impl
-        run: ./target/release/wlwl run examples/hello.wl
+        run: ./target/release/wlwl run examples/hello.wll
 
-      - name: Run phase2_demo.wl
+      - name: Run phase2_demo.wll
         working-directory: impl
-        run: ./target/release/wlwl run examples/phase2_demo.wl
+        run: ./target/release/wlwl run examples/phase2_demo.wll
 
       - name: wlwl check (parse + name-check only)
         working-directory: impl
-        run: ./target/release/wlwl check examples/phase2_demo.wl
+        run: ./target/release/wlwl check examples/phase2_demo.wll

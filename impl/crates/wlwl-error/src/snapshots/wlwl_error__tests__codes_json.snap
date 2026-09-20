@@ -12,7 +12,7 @@ expression: "serde_json::json!({\n    \"E0070\": code_snap(ErrorCode::E0070, \"j
     "location": {
       "col_end": 1,
       "col_start": 1,
-      "file": "snap.wl",
+      "file": "snap.wll",
       "line": 1,
       "line_end": 1
     },
@@ -33,7 +33,7 @@ expression: "serde_json::json!({\n    \"E0070\": code_snap(ErrorCode::E0070, \"j
     "location": {
       "col_end": 1,
       "col_start": 1,
-      "file": "snap.wl",
+      "file": "snap.wll",
       "line": 1,
       "line_end": 1
     },

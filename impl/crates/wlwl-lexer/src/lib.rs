@@ -923,7 +923,7 @@ mod tests {
         // Float literals avoid approx-PI constants (`3.14`) to keep
         // `clippy::approx_constant` happy; we just need any non-int
         // literal that the lexer accepts.
-        let toks = lex("42 1.25 0", "t.wl").unwrap();
+        let toks = lex("42 1.25 0", "t.wll").unwrap();
         assert!(matches!(toks[0].kind, TokenKind::Integer(42)));
         assert!(matches!(toks[1].kind, TokenKind::Float(f) if (f - 1.25).abs() < 1e-9));
         assert!(matches!(toks[2].kind, TokenKind::Integer(0)));
@@ -931,7 +931,7 @@ mod tests {
 
     #[test]
     fn lex_keywords() {
-        let toks = lex("TRUE FALSE NULL LET", "t.wl").unwrap();
+        let toks = lex("TRUE FALSE NULL LET", "t.wll").unwrap();
         assert_eq!(toks[0].kind, TokenKind::True);
         assert_eq!(toks[1].kind, TokenKind::False);
         assert_eq!(toks[2].kind, TokenKind::Null);
@@ -943,14 +943,14 @@ mod tests {
         // v0.6 §1.5: `NOT` is the canonical keyword for logical
         // negation. The single-char `!` is also accepted (no warning
         // in v0.6) — both produce the same builtin call.
-        let toks = lex("NOT", "t.wl").unwrap();
+        let toks = lex("NOT", "t.wll").unwrap();
         assert_eq!(toks[0].kind, TokenKind::Not);
         // `!` remains its own token (parser turns it into a Call
         // with name "!").
-        let toks = lex("!", "t.wl").unwrap();
+        let toks = lex("!", "t.wll").unwrap();
         assert_eq!(toks[0].kind, TokenKind::Bang);
         // Mixed: lexes both as expected.
-        let toks = lex("NOT(!TRUE)", "t.wl").unwrap();
+        let toks = lex("NOT(!TRUE)", "t.wll").unwrap();
         assert_eq!(toks[0].kind, TokenKind::Not);
         assert_eq!(toks[1].kind, TokenKind::LParen);
         assert_eq!(toks[2].kind, TokenKind::Bang);
@@ -964,9 +964,9 @@ mod tests {
         // v0.6 §1.4: `MUT` is a contextual keyword — tokenized as
         // `Mut`. The parser decides when it has special meaning
         // (only after `LET`).
-        let toks = lex("MUT", "t.wl").unwrap();
+        let toks = lex("MUT", "t.wll").unwrap();
         assert_eq!(toks[0].kind, TokenKind::Mut);
-        let toks = lex("LET MUT(x, 0)", "t.wl").unwrap();
+        let toks = lex("LET MUT(x, 0)", "t.wll").unwrap();
         assert_eq!(toks[0].kind, TokenKind::Let);
         assert_eq!(toks[1].kind, TokenKind::Mut);
         assert_eq!(toks[2].kind, TokenKind::LParen);
@@ -979,7 +979,7 @@ mod tests {
     fn lex_interpolated_string_basic() {
         // v0.6 §1.8: `"hi ${name}"` produces three bracketing tokens
         // around the inner expression tokens.
-        let toks = lex("\"hi ${name}\"", "t.wl").unwrap();
+        let toks = lex("\"hi ${name}\"", "t.wll").unwrap();
         assert_eq!(toks[0].kind, TokenKind::StrStart);
         assert_eq!(toks[1].kind, TokenKind::StrText("hi ".into()));
         assert_eq!(toks[2].kind, TokenKind::Ident("name".into()));
@@ -989,14 +989,14 @@ mod tests {
     #[test]
     fn lex_interpolated_string_only_text() {
         // No `${` → still a plain `StringLit` (fast path).
-        let toks = lex("\"plain\"", "t.wl").unwrap();
+        let toks = lex("\"plain\"", "t.wll").unwrap();
         assert_eq!(toks[0].kind, TokenKind::StringLit("plain".into()));
     }
 
     #[test]
     fn lex_interpolated_string_with_expr() {
         // `"x = ${+(a, b)}"` should bracket `+(a, b)` as inner tokens.
-        let toks = lex("\"x = ${+(a, b)}\"", "t.wl").unwrap();
+        let toks = lex("\"x = ${+(a, b)}\"", "t.wll").unwrap();
         assert_eq!(toks[0].kind, TokenKind::StrStart);
         assert_eq!(toks[1].kind, TokenKind::StrText("x = ".into()));
         assert_eq!(toks[2].kind, TokenKind::Plus);
@@ -1011,7 +1011,7 @@ mod tests {
     #[test]
     fn lex_string_dollar_escape() {
         // v0.6 §1.8: `\$` produces a literal `$`.
-        let toks = lex(r#""a\$b""#, "t.wl").unwrap();
+        let toks = lex(r#""a\$b""#, "t.wll").unwrap();
         assert_eq!(toks[0].kind, TokenKind::StringLit("a$b".into()));
     }
 
@@ -1019,7 +1019,7 @@ mod tests {
     fn lex_string_b_f_escape() {
         // v0.6 §1.8: `\b` is backspace (U+0008), `\f` is form-feed
         // (U+000C). The v0.3 lexer already supported these informally.
-        let toks = lex(r#""a\bb\fc""#, "t.wl").unwrap();
+        let toks = lex(r#""a\bb\fc""#, "t.wll").unwrap();
         if let TokenKind::StringLit(s) = &toks[0].kind {
             assert_eq!(s, "a\x08b\x0cc");
         } else {
@@ -1034,7 +1034,7 @@ mod tests {
         // empty StrText, no nested StrStart/StrEnd. Token shape:
         //
         //   StrStart, StrText("hi "), Ident(a), Ident(b), StrText("!"), StrEnd
-        let toks = lex(r#""hi ${a}${b}!""#, "t.wl").unwrap();
+        let toks = lex(r#""hi ${a}${b}!""#, "t.wll").unwrap();
         let kinds: Vec<&TokenKind> = toks.iter().map(|t| &t.kind).collect();
         let expected = [
             TokenKind::StrStart,
@@ -1066,7 +1066,7 @@ mod tests {
         // Same as above, but with integer literals inside the
         // interpolations — catches a regression where `read_interp_body`
         // doesn't skip over the `${` of the second segment.
-        let toks = lex(r#""${1}${2}""#, "t.wl").unwrap();
+        let toks = lex(r#""${1}${2}""#, "t.wll").unwrap();
         // Print tokens for debugging.
         for (i, t) in toks.iter().enumerate() {
             eprintln!("  [{}] {:?}", i, t.kind);
@@ -1084,13 +1084,13 @@ mod tests {
         // so the test really checks that the lexer rejects a string
         // that ends mid-interpolation. The current implementation
         // refuses nested string literals inside `${...}` with E0001.
-        let err = lex("\"hi ${name\"", "t.wl").unwrap_err();
+        let err = lex("\"hi ${name\"", "t.wll").unwrap_err();
         assert_eq!(err.diagnostic().code, ErrorCode::E0001);
     }
 
     #[test]
     fn lex_string_with_escape() {
-        let toks = lex(r#""hello\nworld""#, "t.wl").unwrap();
+        let toks = lex(r#""hello\nworld""#, "t.wll").unwrap();
         match &toks[0].kind {
             TokenKind::StringLit(s) => assert_eq!(s, "hello\nworld"),
             _ => panic!("expected string"),
@@ -1099,21 +1099,21 @@ mod tests {
 
     #[test]
     fn lex_unterminated_string() {
-        let err = lex(r#""unterminated"#, "t.wl").unwrap_err();
+        let err = lex(r#""unterminated"#, "t.wll").unwrap_err();
         let d = err.diagnostic();
         assert_eq!(d.code, ErrorCode::E0002);
     }
 
     #[test]
     fn lex_illegal_char() {
-        let err = lex("@", "t.wl").unwrap_err();
+        let err = lex("@", "t.wll").unwrap_err();
         let d = err.diagnostic();
         assert_eq!(d.code, ErrorCode::E0001);
     }
 
     #[test]
     fn lex_nested_block_comment() {
-        let toks = lex("/* outer /* inner */ still comment */ x", "t.wl").unwrap();
+        let toks = lex("/* outer /* inner */ still comment */ x", "t.wll").unwrap();
         // After comment, identifier "x" should be the last non-EOF token.
         let x = toks
             .iter()
@@ -1131,7 +1131,7 @@ mod tests {
     // exercises end-to-end.
     #[test]
     fn lex_chinese_identifier_token() {
-        let toks = lex("计数", "t.wl").unwrap();
+        let toks = lex("计数", "t.wll").unwrap();
         let id = toks
             .iter()
             .find(|t| matches!(&t.kind, TokenKind::Ident(s) if s == "计数"));
@@ -1143,7 +1143,7 @@ mod tests {
         // Mixed scripts inside one identifier — the UTF-8 walk
         // must accept the ASCII prefix and the multi-byte tail
         // together.
-        let toks = lex("count计数", "t.wl").unwrap();
+        let toks = lex("count计数", "t.wll").unwrap();
         let id = toks.iter().find_map(|t| match &t.kind {
             TokenKind::Ident(s) if s == "count计数" => Some(()),
             _ => None,
@@ -1159,7 +1159,7 @@ mod tests {
     fn lex_two_byte_utf8_identifier() {
         // 2-byte UTF-8 (Latin-1 supplement, e.g. é = 0xC3 0xA9).
         // Exercises the `b < 0xE0` branch in read_ident_or_keyword.
-        let toks = lex("café", "t.wl").unwrap();
+        let toks = lex("café", "t.wll").unwrap();
         let id = toks.iter().find_map(|t| match &t.kind {
             TokenKind::Ident(s) if s == "café" => Some(()),
             _ => None,
@@ -1171,7 +1171,7 @@ mod tests {
     fn lex_four_byte_utf8_identifier() {
         // 4-byte UTF-8 (supplementary plane, e.g. 😀 = 0xF0 0x9F
         // 0x98 0x80). Exercises the `b < 0xF8` branch.
-        let toks = lex("x😀y", "t.wl").unwrap();
+        let toks = lex("x😀y", "t.wll").unwrap();
         let id = toks.iter().find_map(|t| match &t.kind {
             TokenKind::Ident(s) if s == "x😀y" => Some(()),
             _ => None,
@@ -1181,7 +1181,7 @@ mod tests {
 
     #[test]
     fn lex_line_comment() {
-        let toks = lex("x // comment\ny", "t.wl").unwrap();
+        let toks = lex("x // comment\ny", "t.wll").unwrap();
         let names: Vec<_> = toks
             .iter()
             .filter_map(|t| match &t.kind {
@@ -1196,7 +1196,7 @@ mod tests {
     fn lex_operators() {
         // Phase 2: operators get their own token kinds; the parser later
         // turns them into function calls in Call positions.
-        let toks = lex("+ - * / % == != < > <= >= && || !", "t.wl").unwrap();
+        let toks = lex("+ - * / % == != < > <= >= && || !", "t.wll").unwrap();
         let kinds: Vec<_> = toks
             .iter()
             .filter(|t| !matches!(t.kind, TokenKind::Eof))

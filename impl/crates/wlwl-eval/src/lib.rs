@@ -477,12 +477,12 @@ impl ModuleLoader {
             if let Some(manifest) = &self.project.manifest {
                 if let Some(rel) = wlwl_toml::manifest::resolve_namespace(manifest, ns, name) {
                     // The manifest entry is a directory; the module
-                    // file is `<dir>/<name>.wl`.
+                    // file is `<dir>/<name>.wll`.
                     let dep_dir = self.base_dir.join(&rel);
-                    let file_path = dep_dir.join(format!("{}.wl", name));
+                    let file_path = dep_dir.join(format!("{}.wll", name));
                     // Phase C7: normalize away `..` components before the
                     // containment check — a raw prefix test would let
-                    // `<root>/../escape/mod.wl` pass `starts_with(root)`.
+                    // `<root>/../escape/mod.wll` pass `starts_with(root)`.
                     if !is_within(
                         &lexical_normalize(&file_path),
                         &lexical_normalize(&self.project.project_root),
@@ -503,7 +503,7 @@ impl ModuleLoader {
         //    prefix to pop the current module's `base_dir` once;
         //    `./` is a no-op. The remainder is split into a
         //    directory portion and a module name (last segment,
-        //    stripped of an optional `.wl`).
+        //    stripped of an optional `.wll`).
         if path.starts_with("./") || path.starts_with("../") {
             let mut dep_dir = self.base_dir.clone();
             let mut rest = path;
@@ -522,11 +522,11 @@ impl ModuleLoader {
             // The remainder may have a sub-directory prefix; the
             // last `/`-separated segment is the module name.
             let (rel_dir, mod_name) = match rest.rsplit_once('/') {
-                Some((d, n)) => (d.to_string(), n.trim_end_matches(".wl").to_string()),
-                None => (String::new(), rest.trim_end_matches(".wl").to_string()),
+                Some((d, n)) => (d.to_string(), n.trim_end_matches(".wll").to_string()),
+                None => (String::new(), rest.trim_end_matches(".wll").to_string()),
             };
             dep_dir = dep_dir.join(&rel_dir);
-            let file_path = dep_dir.join(format!("{}.wl", mod_name));
+            let file_path = dep_dir.join(format!("{}.wll", mod_name));
             // Phase C7: same `..`-smuggling hardening as the `ns:name`
             // branch above (the walk loop already pops `../` prefixes,
             // but an in-path `/../` sequence still needs normalization).
@@ -542,14 +542,14 @@ impl ModuleLoader {
             return self.load_file_module(&file_path, &mod_name);
         }
 
-        // 4. Simple bare name. Try `base_dir/<name>.wl` first, then
-        //    fall back to `<project_root>/<name>.wl`.
-        let in_module = self.base_dir.join(format!("{}.wl", path));
+        // 4. Simple bare name. Try `base_dir/<name>.wll` first, then
+        //    fall back to `<project_root>/<name>.wll`.
+        let in_module = self.base_dir.join(format!("{}.wll", path));
         if in_module.is_file() {
             return self.load_file_module(&in_module, path);
         }
         if self.base_dir != self.project.project_root {
-            let in_root = self.project.project_root.join(format!("{}.wl", path));
+            let in_root = self.project.project_root.join(format!("{}.wll", path));
             if in_root.is_file() {
                 return self.load_file_module(&in_root, path);
             }
@@ -618,7 +618,7 @@ impl ModuleLoader {
         Ok(result)
     }
 
-    /// Load a `.wl` file, parse, evaluate, and return its exports.
+    /// Load a `.wll` file, parse, evaluate, and return its exports.
     /// Centralises the cycle-detection + file IO + sub-eval wiring
     /// shared by all file-based import paths.
     fn load_file_module(
@@ -787,7 +787,7 @@ fn find_project_root(start: &Path) -> PathBuf {
 /// any failure: missing file, parse error, invalid schema. The
 /// caller treats all three the same (project is "no-toml" and cross-
 /// dir / namespace imports are unavailable). Errors are silent by
-/// design — surfacing them would break simple `wlwl run foo.wl`
+/// design — surfacing them would break simple `wlwl run foo.wll`
 /// invocations in projects without a manifest.
 fn load_manifest(project_root: &Path) -> Option<Arc<wlwl_toml::manifest::Manifest>> {
     let path = project_root.join("wlwl.toml");
@@ -3952,7 +3952,7 @@ impl Evaluator {
     }
 
     /// Evaluate a program at the top level. If the program is a Block
-    /// (which is what the parser always produces for a `.wl` file),
+    /// (which is what the parser always produces for a `.wll` file),
     /// evaluate it as a *top-level* block — the block does not get its
     /// own scope, so top-level `LET` bindings and `EXPORT` declarations
     /// persist after evaluation.
@@ -5553,7 +5553,7 @@ mod tests {
     /// Parse + eval a one-shot expression. The temporary directory used
     /// as the module base is irrelevant for tests that don't IMPORT.
     fn run(src: &str) -> WlwlResult<Value> {
-        let e = parse(src, "t.wl")?;
+        let e = parse(src, "t.wll")?;
         let mut ev = Evaluator::new();
         ev.eval(&e)
     }
@@ -5562,7 +5562,7 @@ mod tests {
     /// run. Used by the §9.5 overflow tests (`W0015`) — most tests
     /// keep using `run` since they don't care about warnings.
     fn run_with_warnings(src: &str) -> (WlwlResult<Value>, Vec<Warning>) {
-        let e = parse(src, "t.wl").expect("parse");
+        let e = parse(src, "t.wll").expect("parse");
         let mut ev = Evaluator::new();
         let r = ev.eval(&e);
         let w = ev.take_warnings();
@@ -5570,7 +5570,7 @@ mod tests {
     }
 
     fn run_in(dir: &Path, src: &str) -> WlwlResult<Value> {
-        let e = parse(src, "t.wl")?;
+        let e = parse(src, "t.wll")?;
         let mut ev = Evaluator::new().with_base_dir(dir.to_path_buf());
         ev.eval(&e)
     }
@@ -5578,7 +5578,7 @@ mod tests {
     /// Like `run_in` but also returns the warnings accumulated during
     /// the run (Phase C3/C5 tests).
     fn run_in_with_warnings(dir: &Path, src: &str) -> (WlwlResult<Value>, Vec<Warning>) {
-        let e = parse(src, "t.wl").expect("parse");
+        let e = parse(src, "t.wll").expect("parse");
         let mut ev = Evaluator::new().with_base_dir(dir.to_path_buf());
         let r = ev.eval(&e);
         (r, ev.take_warnings())
@@ -5595,7 +5595,7 @@ mod tests {
         std::fs::write(
             dir.join("wlwl.toml"),
             format!(
-                "[package]\nname = \"app\"\nversion = \"0.1.0\"\nentry = \"main.wl\"\n{}{}\n",
+                "[package]\nname = \"app\"\nversion = \"0.1.0\"\nentry = \"main.wll\"\n{}{}\n",
                 lv, extra
             ),
         )
@@ -7090,9 +7090,9 @@ mod tests {
         std::fs::create_dir_all(&dir).unwrap();
         let src = "IMPORT(\"doesnotexist\", [\"x\"]);";
         let mut ev = crate::Evaluator::new()
-            .with_source(src, "t.wl")
+            .with_source(src, "t.wll")
             .with_base_dir(dir.clone());
-        let ast = wlwl_parser::parse(src, "t.wl").unwrap();
+        let ast = wlwl_parser::parse(src, "t.wll").unwrap();
         let err = ev.eval(&ast).unwrap_err();
         let line = err.diagnostic().render_jsonl();
         let v: serde_json::Value = serde_json::from_str(&line).unwrap();
@@ -7199,7 +7199,7 @@ mod tests {
         // Write a sibling module to a temp dir, then IMPORT from a
         // program in the same dir.
         let dir = unique_test_dir("basic");
-        let module_path = dir.join("math.wl");
+        let module_path = dir.join("math.wll");
         std::fs::write(
             &module_path,
             r#"
@@ -7220,7 +7220,7 @@ mod tests {
     fn module_with_rename() {
         let dir = unique_test_dir("rename");
         std::fs::write(
-            dir.join("math.wl"),
+            dir.join("math.wll"),
             r#"
                 LET(pi, 314);
                 EXPORT(["pi"]);
@@ -7238,7 +7238,7 @@ mod tests {
     fn module_unexported_name_is_e0023() {
         let dir = unique_test_dir("unexported");
         std::fs::write(
-            dir.join("m.wl"),
+            dir.join("m.wll"),
             r#"
                 LET(visible, 1);
                 LET(hidden, 2);
@@ -7258,7 +7258,7 @@ mod tests {
     fn module_duplicate_import_is_e0021() {
         let dir = unique_test_dir("dup");
         std::fs::write(
-            dir.join("m.wl"),
+            dir.join("m.wll"),
             r#"
                 LET(x, 1);
                 LET(y, 2);
@@ -7288,9 +7288,9 @@ mod tests {
     #[test]
     fn module_circular_import_is_e0041() {
         let dir = unique_test_dir("cycle");
-        // a.wl imports b.wl, b.wl imports a.wl.
+        // a.wll imports b.wll, b.wll imports a.wll.
         std::fs::write(
-            dir.join("a.wl"),
+            dir.join("a.wll"),
             r#"
                 IMPORT("b", ["y"]);
                 LET(x, 1);
@@ -7299,7 +7299,7 @@ mod tests {
         )
         .unwrap();
         std::fs::write(
-            dir.join("b.wl"),
+            dir.join("b.wll"),
             r#"
                 IMPORT("a", ["x"]);
                 LET(y, 2);
@@ -7510,13 +7510,13 @@ mod tests {
 
     #[test]
     fn crossdir_import_subdirectory() {
-        // `IMPORT("./sub/foo", …)` resolves to `<base_dir>/sub/foo.wl`
+        // `IMPORT("./sub/foo", …)` resolves to `<base_dir>/sub/foo.wll`
         // and binds `foo`'s exports.
         let dir = unique_test_dir("crossdir_sub");
         let sub = dir.join("sub");
         std::fs::create_dir_all(&sub).unwrap();
         std::fs::write(
-            sub.join("foo.wl"),
+            sub.join("foo.wll"),
             r#"
                 LET(answer, 42);
                 EXPORT(["answer"]);
@@ -7533,7 +7533,7 @@ mod tests {
     #[test]
     fn crossdir_import_parent_directory() {
         // `IMPORT("../sibling/math", …)` from a module in `dir/inner/`
-        // climbs one level up to `dir/sibling/math.wl`. A
+        // climbs one level up to `dir/sibling/math.wll`. A
         // `wlwl.toml` is placed at `dir` so the project root is
         // `dir` and the relative path stays inside the root.
         let dir = unique_test_dir("crossdir_parent");
@@ -7543,14 +7543,14 @@ mod tests {
 [package]
 name = "crossdir"
 version = "0.1.0"
-entry = "inner/main.wl"
+entry = "inner/main.wll"
 "#,
         )
         .unwrap();
         let sibling_dir = dir.join("sibling");
         std::fs::create_dir_all(&sibling_dir).unwrap();
         std::fs::write(
-            sibling_dir.join("math.wl"),
+            sibling_dir.join("math.wll"),
             r#"
                 LET(pi, 314);
                 EXPORT(["pi"]);
@@ -7560,14 +7560,14 @@ entry = "inner/main.wl"
         let inner = dir.join("inner");
         std::fs::create_dir_all(&inner).unwrap();
         std::fs::write(
-            inner.join("main.wl"),
+            inner.join("main.wll"),
             r#"
                 IMPORT("../sibling/math", ["pi"]);
                 pi;
             "#,
         )
         .unwrap();
-        let src = std::fs::read_to_string(inner.join("main.wl")).unwrap();
+        let src = std::fs::read_to_string(inner.join("main.wll")).unwrap();
         assert_eq!(run_in(&inner, &src).unwrap(), Value::Integer(314));
     }
 
@@ -7579,7 +7579,7 @@ entry = "inner/main.wl"
         let outside = dir.join("..").join("wlwl_test_outside");
         std::fs::create_dir_all(&outside).unwrap();
         std::fs::write(
-            outside.join("escape.wl"),
+            outside.join("escape.wll"),
             r#"
                 LET(x, 1);
                 EXPORT(["x"]);
@@ -7592,7 +7592,7 @@ entry = "inner/main.wl"
 [package]
 name = "out"
 version = "0.1.0"
-entry = "main.wl"
+entry = "main.wll"
 "#,
         )
         .unwrap();
@@ -7618,7 +7618,7 @@ entry = "main.wl"
         let dep_dir = dir.join("vendor").join("wlwl_test_dep");
         std::fs::create_dir_all(&dep_dir).unwrap();
         std::fs::write(
-            dep_dir.join("utils.wl"),
+            dep_dir.join("utils.wll"),
             r#"
                 LET(greet, "hi");
                 EXPORT(["greet"]);
@@ -7631,7 +7631,7 @@ entry = "main.wl"
 [package]
 name = "app"
 version = "0.1.0"
-entry = "main.wl"
+entry = "main.wll"
 
 [dependencies]
 "myteam:utils" = { path = "vendor/wlwl_test_dep" }
@@ -7657,7 +7657,7 @@ entry = "main.wl"
 [package]
 name = "app"
 version = "0.1.0"
-entry = "main.wl"
+entry = "main.wll"
 "#,
         )
         .unwrap();
@@ -7693,12 +7693,12 @@ entry = "main.wl"
 [package]
 name = "deep"
 version = "0.1.0"
-entry = "main.wl"
+entry = "main.wll"
 "#,
         )
         .unwrap();
         std::fs::write(
-            deep.join("leaf.wl"),
+            deep.join("leaf.wll"),
             r#"
                 LET(v, 7);
                 EXPORT(["v"]);
@@ -7718,7 +7718,7 @@ entry = "main.wl"
         // list the full cycle path, not just first and last.
         let dir = unique_test_dir("cycle");
         std::fs::write(
-            dir.join("a.wl"),
+            dir.join("a.wll"),
             r#"
                 IMPORT("b", ["y"]);
                 LET(x, 1);
@@ -7727,7 +7727,7 @@ entry = "main.wl"
         )
         .unwrap();
         std::fs::write(
-            dir.join("b.wl"),
+            dir.join("b.wll"),
             r#"
                 IMPORT("a", ["x"]);
                 LET(y, 2);
@@ -8419,7 +8419,7 @@ entry = "main.wl"
     fn module_relative_dot_slash_prefix() {
         let dir = unique_test_dir("rel_dot");
         fs::write(
-            dir.join("lib.wl"),
+            dir.join("lib.wll"),
             r###"LET(v, 100); EXPORT(["v"]);
 "###,
         )
@@ -8441,12 +8441,12 @@ entry = "main.wl"
             r###"[package]
 name = "b"
 version = "0.1.0"
-entry = "main.wl"
+entry = "main.wll"
 "###,
         )
         .unwrap();
         fs::write(
-            dir.join("helper.wl"),
+            dir.join("helper.wll"),
             r###"LET(v, 1); EXPORT(["v"]);
 "###,
         )
@@ -8672,11 +8672,11 @@ entry = "main.wl"
 
     #[test]
     fn module_circular_import_detected() {
-        // a.wl imports b.wl imports a.wl -> E0041.
+        // a.wll imports b.wll imports a.wll -> E0041.
         let dir = unique_test_dir("circular");
-        fs::write(dir.join("a.wl"), r###"IMPORT("b", ["v"]); PRINT(v);"###).unwrap();
+        fs::write(dir.join("a.wll"), r###"IMPORT("b", ["v"]); PRINT(v);"###).unwrap();
         fs::write(
-            dir.join("b.wl"),
+            dir.join("b.wll"),
             r###"IMPORT("a", ["v"]); LET(v, 1); EXPORT(["v"]);"###,
         )
         .unwrap();
@@ -8698,7 +8698,7 @@ entry = "main.wl"
             r###"[package]
 name = "ns"
 version = "0.1.0"
-entry = "main.wl"
+entry = "main.wll"
 
 [dependencies]
 "evil:lib" = { path = "../escape" }
@@ -8706,7 +8706,7 @@ entry = "main.wl"
         )
         .unwrap();
         fs::write(
-            dir.join("main.wl"),
+            dir.join("main.wll"),
             r###"IMPORT("evil:lib", ["v"]); PRINT(1);"###,
         )
         .unwrap();
@@ -8734,7 +8734,7 @@ entry = "main.wl"
         // E0023 at IMPORT time. If the loader re-routes through
         // the undefined-name path, E0020 is also acceptable.
         let dir = unique_test_dir("export_unbound2");
-        fs::write(dir.join("m.wl"), "LET(unused, 1); EXPORT([\"missing\"]);\n").unwrap();
+        fs::write(dir.join("m.wll"), "LET(unused, 1); EXPORT([\"missing\"]);\n").unwrap();
         let src = "IMPORT(\"m\", [\"missing\"]); PRINT(1);\n";
         let v = run_in(&dir, src);
         let err = v.expect_err("expected export error");
@@ -8759,12 +8759,12 @@ entry = "main.wl"
             r###"[package]
 name = "u"
 version = "0.1.0"
-entry = "main.wl"
+entry = "main.wll"
 "###,
         )
         .unwrap();
         fs::write(
-            dir.join("main.wl"),
+            dir.join("main.wll"),
             r###"IMPORT("ghost:thing", ["v"]); PRINT(1);"###,
         )
         .unwrap();
@@ -8904,8 +8904,8 @@ entry = "main.wl"
     #[test]
     fn import_duplicate_in_same_scope_is_e0021() {
         let dir = unique_test_dir("import_dup");
-        fs::write(dir.join("m1.wl"), "LET(v, 1); EXPORT([\"v\"]);\n").unwrap();
-        fs::write(dir.join("m2.wl"), "LET(v, 2); EXPORT([\"v\"]);\n").unwrap();
+        fs::write(dir.join("m1.wll"), "LET(v, 1); EXPORT([\"v\"]);\n").unwrap();
+        fs::write(dir.join("m2.wll"), "LET(v, 2); EXPORT([\"v\"]);\n").unwrap();
         let src = "IMPORT(\"m1\", [\"v\"]); IMPORT(\"m2\", [\"v\"]); PRINT(v);\n";
         let v = run_in(&dir, src);
         let err = v.expect_err("expected E0021");
@@ -8916,7 +8916,7 @@ entry = "main.wl"
     #[test]
     fn import_unbound_name_is_e0023() {
         let dir = unique_test_dir("import_unbound");
-        fs::write(dir.join("m.wl"), "LET(v, 1); EXPORT([\"v\"]);\n").unwrap();
+        fs::write(dir.join("m.wll"), "LET(v, 1); EXPORT([\"v\"]);\n").unwrap();
         let src = "IMPORT(\"m\", [\"missing\"]); PRINT(1);\n";
         let v = run_in(&dir, src);
         let err = v.expect_err("expected E0023");
@@ -8927,7 +8927,7 @@ entry = "main.wl"
     #[test]
     fn export_unbound_name_is_e0020() {
         let dir = unique_test_dir("export_unbound3");
-        fs::write(dir.join("m.wl"), "EXPORT([\"missing\"]);\n").unwrap();
+        fs::write(dir.join("m.wll"), "EXPORT([\"missing\"]);\n").unwrap();
         let src = "IMPORT(\"m\", [\"missing\"]); PRINT(1);\n";
         let v = run_in(&dir, src);
         let err = v.expect_err("expected E0020 or E0023");
@@ -9455,7 +9455,7 @@ entry = "main.wl"
         // exercise the diagnostic builder directly here so the
         // helper stays covered.
         let dummy_span = wlwl_ast::Span {
-            file: "t.wl".to_string(),
+            file: "t.wll".to_string(),
             line_start: 1,
             col_start: 1,
             line_end: 1,
@@ -10546,7 +10546,7 @@ entry = "main.wl"
             "E0039 message should say unclosed: {}",
             d.message
         );
-        assert_eq!(d.location.file, "t.wl");
+        assert_eq!(d.location.file, "t.wll");
         assert_eq!(d.location.line, 1);
     }
 
@@ -13600,7 +13600,7 @@ entry = "main.wl"
     fn c2_module_ref_file_module_sorted_keys_and_call() {
         let dir = unique_test_dir("c2_module_ref");
         std::fs::write(
-            dir.join("mathx.wl"),
+            dir.join("mathx.wll"),
             "LET(zeta, 1);\nLET(alpha, FUN((x), *(x, 2)));\nEXPORT([\"alpha\"]);\n",
         )
         .unwrap();
@@ -13671,14 +13671,14 @@ entry = "main.wl"
     #[test]
     fn c7_lexical_normalize_resolves_dotdot() {
         let base = PathBuf::from("/root/app");
-        let smuggled = base.join("..").join("..").join("escape").join("m.wl");
+        let smuggled = base.join("..").join("..").join("escape").join("m.wll");
         let n = lexical_normalize(&smuggled);
-        assert_eq!(n, PathBuf::from("/escape/m.wl"));
+        assert_eq!(n, PathBuf::from("/escape/m.wll"));
         // `.` 组件被丢弃
-        let dotted = base.join(".").join("sub").join("m.wl");
+        let dotted = base.join(".").join("sub").join("m.wll");
         assert_eq!(
             lexical_normalize(&dotted),
-            PathBuf::from("/root/app/sub/m.wl")
+            PathBuf::from("/root/app/sub/m.wll")
         );
     }
 
@@ -13708,7 +13708,7 @@ entry = "main.wl"
 [package]
 name = "app"
 version = "0.1.0"
-entry = "main.wl"
+entry = "main.wll"
 
 [namespaces]
 "evil" = "../../outside"
@@ -13724,7 +13724,7 @@ entry = "main.wl"
     fn c7_in_root_relative_import_still_works() {
         // 边界强化的回归保护:root 内的相对导入不受影响。
         let dir = unique_test_dir("c7_in_root");
-        fs::write(dir.join("helper.wl"), "LET(v, 5);\nEXPORT([\"v\"]);\n").unwrap();
+        fs::write(dir.join("helper.wll"), "LET(v, 5);\nEXPORT([\"v\"]);\n").unwrap();
         assert_eq!(
             run_in(&dir, r#"IMPORT("./helper", ["v"]); v;"#).unwrap(),
             Value::Integer(5)
@@ -13963,7 +13963,7 @@ entry = "main.wl"
     /// Helper: parse, build an evaluator with strict_types toggled,
     /// eval, and return the result.
     fn run_strict(src: &str, on: bool) -> WlwlResult<Value> {
-        let e = parse(src, "t.wl")?;
+        let e = parse(src, "t.wll")?;
         let mut ev = Evaluator::new().with_strict_types(on);
         ev.eval(&e)
     }

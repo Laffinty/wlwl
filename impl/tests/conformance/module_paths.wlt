@@ -1,8 +1,8 @@
 // conformance/module_paths.wlt - section 16.5 mandatory test 8
 // Demonstrates: section 13.4 IMPORT form + MVS resolution - happy
-// path imports math.wl from examples/ (P4-H1-002: full MVS conflict
+// path imports math.wll from examples/ (P4-H1-002: full MVS conflict
 // probing deferred to wlwl lock integration).
 
-IMPORT("./../examples/math.wl", ["add", "PI"]);
+IMPORT("./../examples/math.wll", ["add", "PI"]);
 PRINT("add(2, 3) =", add(2, 3));
 PRINT("PI =", PI);

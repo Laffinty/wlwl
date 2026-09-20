@@ -1,4 +1,4 @@
-// examples/destruct.wl — destructure-binding patterns (v0.4 §7.5)
+// examples/destruct.wll — destructure-binding patterns (v0.4 §7.5)
 // LET accepts patterns: array [a, b, c] or dict ["key": var].
 // (v0.4 note: `{}` braces are not part of the language — dict
 // literals and dict patterns both use the `[...]` form.)

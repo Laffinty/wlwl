@@ -24,7 +24,7 @@ The v0.4 §12.7 rewrite instead treats consumer registration as a
 
 ## Decision Drivers
 
-- §12.7 v0.4 example suite: 6 e2e .wl programs that depend on registering
+- §12.7 v0.4 example suite: 6 e2e .wll programs that depend on registering
   consumers per code
 - Avoid forcing compiler patch for each stdlib addition
 - Keep the static check (still fail at compile-time if no consumer at

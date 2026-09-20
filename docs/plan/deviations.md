@@ -158,7 +158,7 @@
 | ID | Spec / plan | Status | Notes |
 |----|-------------|--------|-------|
 | P3-011 | std.ai error code triggers | **Implemented (mock)** | E0080鈥揈0083 now have trigger sites: the `wlwl:std.ai` mock checks the `model` (or `language`, for `COMPLETE`) argument against four reserved tokens (`_fail_E0080` 鈥?`_fail_E0083`). No real HTTP, no key required. v0.4 swaps the mock for a real provider behind the same `StdFn` signature. |
-| P4-008 | wlwl-cli lock generation | **Implemented** | After every successful `wlwl run`, the CLI locates the project root, parses `wlwl.toml`, and refreshes `wlwl.lock` (one entry per path dep with a SHA-256 over the dep's `.wl` files). Version-only deps are reserved for v0.4 and are skipped. 2 new tests cover the happy path + the no-manifest case. |
+| P4-008 | wlwl-cli lock generation | **Implemented** | After every successful `wlwl run`, the CLI locates the project root, parses `wlwl.toml`, and refreshes `wlwl.lock` (one entry per path dep with a SHA-256 over the dep's `.wll` files). Version-only deps are reserved for v0.4 and are skipped. 2 new tests cover the happy path + the no-manifest case. |
 | P3-007 | per-param type annotation | **Deferred to post-Phase 4** | `Vec<String> 鈫?Vec<FunParam>` is an AST breaking change touching the parser, every eval site for `Closure.params`, and the JSON schema. Out of scope for this batch. |
 | P3-010 | `TypeAnnotation` structure | **Deferred to post-Phase 4** | Same reasoning. |
 | P3-008 | richer `suggestion_code` content | **Deferred to post-Phase 4** | The schema supports up to 3 sorted candidates; populating the candidates from the parser requires the new `TypeAnnotation` work above. |
@@ -1460,7 +1460,7 @@ P3-013 閫?搂4.5 瑙ｈ (娣风敤鏄?warning). 鐞嗙敱:
 | ID | Spec / plan | Status | Notes |
 |----|-------------|--------|-------|
 | P4-B10-001 | plan 搂5.10 鈥?`StdCtx.stderr` 瀛楁 | **Deferred to Phase D / E** | 褰撳墠 `StdCtx` 鍙湁 argv / env vars锛堟棤 stderr handle锛夈€傝嫢鍔?`stderr: Box<dyn Write>` 瀛楁鍙疄鐜拌法 std 杈圭晫 stderr 瀛楄妭鎹曡幏娴嬭瘯銆傛湰鎵逛笉鍔狅細鐢ㄦ埛鐢ㄦ硶鏄庣‘锛堝啓 stderr锛屼粎姝よ€屽凡锛夛紱璺?std 杈圭晫鎹曡幏鏄?Phase F perf / E2E 鑼冪暣锛坧lan 搂6.5锛夈€傚綋鍓?`eprintln!` 鍦ㄦ祴璇曚腑姹℃煋 test runner 杈撳嚭浣嗕笉瀵艰嚧娴嬭瘯澶辫触锛坰tderr 涓?test stdout 鍒嗗紑锛夈€?|
-| P4-B10-002 | plan 搂6.5 鈥?stderr 瀛楄妭鍗曞厓娴嬭瘯 | **Deferred to Phase F** | 鏈壒閿佹帴鍙ｅ绾︼紙return NULL銆乤rity銆佸鍙傘€乻td 璺緞銆丒RR transparent锛夛紝涓嶉攣瀛楄妭銆傚瓧鑺傛祦娴嬭瘯闇€瑕?`assert_cmd` (process-level `2>&1`) 鎴?`gag` (dup2 hook) 鈥斺€?Phase F perf benchmarks + e2e .wl 鑼冪暣锛坧lan 搂6.5锛夈€?|
+| P4-B10-002 | plan 搂6.5 鈥?stderr 瀛楄妭鍗曞厓娴嬭瘯 | **Deferred to Phase F** | 鏈壒閿佹帴鍙ｅ绾︼紙return NULL銆乤rity銆佸鍙傘€乻td 璺緞銆丒RR transparent锛夛紝涓嶉攣瀛楄妭銆傚瓧鑺傛祦娴嬭瘯闇€瑕?`assert_cmd` (process-level `2>&1`) 鎴?`gag` (dup2 hook) 鈥斺€?Phase F perf benchmarks + e2e .wll 鑼冪暣锛坧lan 搂6.5锛夈€?|
 
 ## Phase B10 implementation stats
 
@@ -2150,7 +2150,7 @@ stub 鍔?`/// real-ai (variant).` 浼?璧?璺緞璧颁笉 浠?`"real-ai"` 琛
 | 鎸囨爣 | 鍊?|
 |---|---|
 | examples 鐜?鎷?| 5 鈫?10 |
-| 鎷撲緥:match.wl / destruct.wl / std_test.wl / closure_cell.wl / format.wl | 5 鎷?鍔?|
+| 鎷撲緥:match.wll / destruct.wll / std_test.wll / closure_cell.wll / format.wll | 5 鎷?鍔?|
 | README.md | 71 鈫?105 琛?|
 | CHANGELOG.md | v0.4.0 鎷?鎷?+ Unreleased 鎷?鎷?|
 
@@ -2291,7 +2291,7 @@ stub 鍔?`/// real-ai (variant).` 浼?璧?璺緞璧颁笉 浠?`"real-ai"` 琛
 | Item | Content |
 |---|---|
 | spec / plan | spec v0.4 sections 4.5 / 7.6 / 13.4 / 7.5 |
-| status | `examples/destruct.wl` (dict pattern `["k": var]`), `examples/format.wl` (`[k: v]` literals, no `:fmt` specifiers), `examples/match.wl` (ARRAY-clause MATCH), `examples/std_test.wl` (direct IMPORT, `AS` removed per section 13.4), `examples/phase2_demo.wl` (captured-cell WHILE accumulation) |
+| status | `examples/destruct.wll` (dict pattern `["k": var]`), `examples/format.wll` (`[k: v]` literals, no `:fmt` specifiers), `examples/match.wll` (ARRAY-clause MATCH), `examples/std_test.wll` (direct IMPORT, `AS` removed per section 13.4), `examples/phase2_demo.wll` (captured-cell WHILE accumulation) |
 | deviation | the files used v0.3-only syntax (`{}` braces, flat MATCH clauses, `IMPORT ... AS`) that the v0.4 lexer/parser rejects; the formatter idempotency gate (`fmt_examples_dir_files_idempotent`) had been failing on HEAD since the v0.4 grammar landed |
 | reason | examples are conformance-facing; they now parse, run, and round-trip under v0.4 |
 | follow-up | none |
@@ -2306,7 +2306,7 @@ stub 鍔?`/// real-ai (variant).` 浼?璧?璺緞璧颁笉 浠?`"real-ai"` 琛
 | deviations resolved | (A) `0`/`""`/empty/`NaN` are falsy; (B) `&&`/`||` short-circuit; (C) `IF(ERR,...)` -> else; (D) `!` no longer emits `W0054`; (E) `POP` renamed `AT_K`; (F) strings support subscript read; (G) `LET MUT` explicit; (H) integer overflow throws `E0035` (no more `W0015` saturate); (J) string interpolation. |
 | deviation remaining | `wlwl fmt --check` strips comments from the canonical output but compares against the on-disk source byte-for-byte. Any file with `//` or `/* */` comments fails `W0053` even if its code portion is canonical. Pre-existing behaviour (independent of v0.6). Tracked as **P5-V06-003**. |
 | reason | the v0.6 design pass was a user-driven, pre-release clean-up -- no public consumers depend on v0.5 semantics. |
-| follow-up | (a) restore the `interp.wl` example after P5-V06-002 is fixed -- **done 2026-09-20** (`impl/examples/interp.wl`); (b) verify `wlwl fmt --check` on all examples -- partial; the comment-stripping bug now tracked as P5-V06-003; (c) consider gating `LET MUT` destructuring behind a future-version diagnostic rather than outright rejection -- deferred. |
+| follow-up | (a) restore the `interp.wll` example after P5-V06-002 is fixed -- **done 2026-09-20** (`impl/examples/interp.wll`); (b) verify `wlwl fmt --check` on all examples -- partial; the comment-stripping bug now tracked as P5-V06-003; (c) consider gating `LET MUT` destructuring behind a future-version diagnostic rather than outright rejection -- deferred. |
 
 ### P5-V06-002 -- formatter idempotency drift (**RESOLVED** 2026-09-20)
 
@@ -2317,7 +2317,7 @@ stub 鍔?`/// real-ai (variant).` 浼?璧?璺緞璧颁笉 浠?`"real-ai"` 琛
 | deviation (was) | After v0.6, examples using `LET MUT` and `${...}` interpolation round-tripped incorrectly. The `MUT` keyword was dropped by the formatter (fixed during v0.6 bring-up); multi-segment interpolated strings produced nested `StrStart`/`StrEnd` pairs whose inner recursion ate the outer `StrEnd`, causing every two-segment interpolation to fail with `E0010 expected expression, got RParen`. |
 | fix | Two changes in `wlwl-lexer/src/lib.rs`: (1) `read_string` emits **ONE** `StrStart` at the first `${...}` and **ONE** `StrEnd` at the closing `"`, regardless of how many `${...}` segments appear between; (2) `read_interp_body` skips nested `${...}` pairs when scanning for the matching `}`, so the inner `lex()` does not choke on a bare `$`. |
 | tests added | `wlwl-lexer`: `lex_interpolation_two_consecutive_segments`, `lex_interpolation_two_int_segments`. `wlwl-formatter`: `fmt_let_mut_idempotent`, `fmt_interpolated_string_idempotent`, `fmt_string_subscript_idempotent`. |
-| gate | `wlwl-formatter/tests/formatter_tests.rs::fmt_examples_dir_files_idempotent` passes with the new `impl/examples/interp.wl` included (was the original reproducer). |
+| gate | `wlwl-formatter/tests/formatter_tests.rs::fmt_examples_dir_files_idempotent` passes with the new `impl/examples/interp.wll` included (was the original reproducer). |
 | follow-up | none -- closed. |
 
 ### P5-V06-003 -- `wlwl fmt --check` does not ignore comments (open)
@@ -2326,7 +2326,7 @@ stub 鍔?`/// real-ai (variant).` 浼?璧?璺緞璧颁笉 浠?`"real-ai"` 琛
 |---|---|
 | spec / plan | wlwl-spec-v0.6 section A.3 (`wlwl fmt` produces a canonical form that round-trips). |
 | status | open (independent of v0.6; same behaviour was present in v0.4/v0.5). |
-| deviation | `wlwl-cli/src/main.rs::fmt_file` compares the on-disk source against the formatter output byte-for-byte (modulo one trailing newline). The formatter drops all comments (section A.3: "the canonical form does not preserve them"), so any file containing `// ...` or `/* ... */` fails `W0053` even when its code portion is canonical. Every committed example in `impl/examples/` (including `hello.wl`, `interp.wl`, `closure_cell.wl`, ...) trips this check. The `fmt_examples_dir_files_idempotent` *unit* test passes (it tests `fmt(fmt(x)) == fmt(x)`, not `source == fmt(source)`). |
+| deviation | `wlwl-cli/src/main.rs::fmt_file` compares the on-disk source against the formatter output byte-for-byte (modulo one trailing newline). The formatter drops all comments (section A.3: "the canonical form does not preserve them"), so any file containing `// ...` or `/* ... */` fails `W0053` even when its code portion is canonical. Every committed example in `impl/examples/` (including `hello.wll`, `interp.wll`, `closure_cell.wll`, ...) trips this check. The `fmt_examples_dir_files_idempotent` *unit* test passes (it tests `fmt(fmt(x)) == fmt(x)`, not `source == fmt(source)`). |
 | reason | the v0.3-v0.5 formatter shipped with comment-stripping semantics but the CLI `--check` path was never updated to compare comment-free streams. The gap was masked by the fact that committed examples were authored to match canonical *and* the dev workflow used `wlwl fmt` (modify-in-place) rather than `--check`. |
 | follow-up | (a) extract a "source canonical form" representation: parse -> format -> diff against source, ignoring comment-only lines (lexer-driven: every line that lexes to only whitespace + comment tokens). (b) update `fmt_file`'s `--check` arm to use that diff. (c) add a regression test in `wlwl-cli/tests/cli_subcommands.rs` covering comment-bearing examples. |
 

@@ -10,11 +10,11 @@
 use wlwl_ast::{Expr, FunParam, ImportName, Literal, Span, TypeAnnotation, TypeExpr};
 
 fn sp() -> Span {
-    Span::new("t.wl", 1, 1)
+    Span::new("t.wll", 1, 1)
 }
 
 fn sp2() -> Span {
-    Span::new("t.wl", 2, 5)
+    Span::new("t.wll", 2, 5)
 }
 
 fn ident(name: &str) -> TypeExpr {
@@ -53,7 +53,7 @@ where
 #[test]
 fn span_roundtrip() {
     roundtrip(&sp());
-    roundtrip(&Span::new("other.wl", 99, 12));
+    roundtrip(&Span::new("other.wll", 99, 12));
     roundtrip(&Span::dummy());
 }
 
@@ -350,7 +350,7 @@ fn expr_import_export() {
 // ── Span wire format ────────────────────────────────────────────
 #[test]
 fn span_wire_format() {
-    let s = Span::new("path/to/file.wl", 7, 3);
+    let s = Span::new("path/to/file.wll", 7, 3);
     let json = serde_json::to_string(&s).unwrap();
     assert!(json.contains("\"file\""), "missing file key: {json}");
     assert!(

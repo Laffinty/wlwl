@@ -40,7 +40,7 @@ cosign verify-blob \
 git clone https://github.com/Laffinty/wlwl
 cd wlwl/impl
 cargo build --release
-./target/release/wlwl run examples/hello.wl
+./target/release/wlwl run examples/hello.wll
 ```
 
 Requires Rust ≥ 1.75 (toolchain pinning via `rust-toolchain.toml` is
@@ -55,6 +55,6 @@ The fuzz harness and benchmark suite live in `impl/fuzz/` and
 
 ## Next steps
 
-- Run `wlwl run examples/showcase.wl` for a tour of stdlib
+- Run `wlwl run examples/showcase.wll` for a tour of stdlib
 - Read the [Language tour](tour.md)
 - File an issue or PR; see [Contributing](contributing.md)

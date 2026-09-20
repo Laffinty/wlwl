@@ -18,7 +18,7 @@ Build from source — requires Rust ≥ 1.75:
 git clone https://github.com/Laffinty/wlwl
 cd wlwl/impl
 cargo build --release
-./target/release/wlwl run examples/hello.wl
+./target/release/wlwl run examples/hello.wll
 ```
 
 No pre-built binaries are published yet (the v1.0 release will be the
@@ -43,9 +43,9 @@ PRINT(r);
 ```
 
 A tour of the std modules (JSON round-trip, std.io, std.test) lives in
-[`impl/examples/showcase.wl`](./impl/examples/showcase.wl).
-Per-feature miniatures: `match.wl` / `destruct.wl` / `std_test.wl` /
-`closure_cell.wl` / `format.wl` / `interp.wl`.
+[`impl/examples/showcase.wll`](./impl/examples/showcase.wll).
+Per-feature miniatures: `match.wll` / `destruct.wll` / `std_test.wll` /
+`closure_cell.wll` / `format.wll` / `interp.wll`.
 
 ## What changed in v0.6
 
@@ -68,7 +68,7 @@ without triggering §8.2 transparent propagation.
 
 | Command | What it does |
 |---|---|
-| `wlwl run <file>` | run a `.wl` program |
+| `wlwl run <file>` | run a `.wll` program |
 | `wlwl run <file> --format=json` | emit errors as JSON (AI-friendly) |
 | `wlwl run <file> --format=jsonl` | emit errors as JSONL stream (AI tools) |
 | `wlwl check <file>` | parse + name-check only, no execution |
@@ -95,7 +95,7 @@ impl/
 │   ├── wlwl-formatter/  Canonical formatter (A.3)
 │   ├── wlwl-toml/       wlwl.toml manifest + lockfile
 │   └── wlwl-cli/        CLI entry (run / check / ast / fmt / lock)
-├── examples/            .wl programs (showcase, miniatures)
+├── examples/            .wll programs (showcase, miniatures)
 ├── tests/               integration / conformance / fuzz
 └── Cargo.toml           workspace manifest
 ```
@@ -123,17 +123,17 @@ Current test count: **~1340+** tests across 9 crates, all green.
 - Changelog: [`CHANGELOG.md`](./CHANGELOG.md)
 - Contributing guide: [`CONTRIBUTING.md`](./CONTRIBUTING.md)
 - Examples:
-  [`hello.wl`](./impl/examples/hello.wl) ·
-  [`math.wl`](./impl/examples/math.wl) ·
-  [`showcase.wl`](./impl/examples/showcase.wl) ·
-  [`match.wl`](./impl/examples/match.wl) ·
-  [`destruct.wl`](./impl/examples/destruct.wl) ·
-  [`std_test.wl`](./impl/examples/std_test.wl) ·
-  [`closure_cell.wl`](./impl/examples/closure_cell.wl) ·
-  [`format.wl`](./impl/examples/format.wl) ·
-  [`interp.wl`](./impl/examples/interp.wl)
+  [`hello.wll`](./impl/examples/hello.wll) ·
+  [`math.wll`](./impl/examples/math.wll) ·
+  [`showcase.wll`](./impl/examples/showcase.wll) ·
+  [`match.wll`](./impl/examples/match.wll) ·
+  [`destruct.wll`](./impl/examples/destruct.wll) ·
+  [`std_test.wll`](./impl/examples/std_test.wll) ·
+  [`closure_cell.wll`](./impl/examples/closure_cell.wll) ·
+  [`format.wll`](./impl/examples/format.wll) ·
+  [`interp.wll`](./impl/examples/interp.wll)
 
 ## License
 
-GPL v2 — see [LICENSE](./LICENSE). Your `.wl` programs are your own
+GPL v2 — see [LICENSE](./LICENSE). Your `.wll` programs are your own
 work and are not affected by the compiler's license.

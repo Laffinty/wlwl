@@ -18,5 +18,5 @@ use libfuzzer_sys::fuzz_target;
 fuzz_target!(|data: &[u8]| {
     // We must tolerate arbitrary bytes; lexer should never panic
     // regardless of input.
-    let _tokens = wlwl_lexer::tokenize(data, "fuzz.wl");
+    let _tokens = wlwl_lexer::tokenize(data, "fuzz.wll");
 });

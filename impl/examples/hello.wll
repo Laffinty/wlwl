@@ -1,4 +1,4 @@
-// hello.wl — Phase 1 demo
+// hello.wll — Phase 1 demo
 // Demonstrates: LET, variable lookup, function call, array/dict literal, block.
 
 LET(name, "world");

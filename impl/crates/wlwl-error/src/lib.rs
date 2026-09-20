@@ -998,7 +998,7 @@ mod tests {
         let d = WlwlDiagnostic::new(
             ErrorCode::E0020,
             "undefined name 'foo'",
-            Location::point("t.wl", 1, 1),
+            Location::point("t.wll", 1, 1),
         );
         let j = d.render_json();
         assert!(
@@ -1013,7 +1013,7 @@ mod tests {
         );
 
         // Retryable + non-idempotent: retry_after must be a positive integer
-        let d = WlwlDiagnostic::new(ErrorCode::E0060, "io error", Location::point("t.wl", 1, 1));
+        let d = WlwlDiagnostic::new(ErrorCode::E0060, "io error", Location::point("t.wll", 1, 1));
         let j = d.render_json();
         assert!(
             j.contains("\"idempotent\": false"),
@@ -1030,7 +1030,7 @@ mod tests {
         let d = WlwlDiagnostic::new(
             ErrorCode::E0061,
             "file not found",
-            Location::point("t.wl", 1, 1),
+            Location::point("t.wll", 1, 1),
         );
         let j = d.render_json();
         assert!(
@@ -1050,7 +1050,7 @@ mod tests {
         let d = WlwlDiagnostic::new(
             ErrorCode::E0013,
             "expected ';'",
-            Location::point("t.wl", 1, 9),
+            Location::point("t.wll", 1, 9),
         )
         .with_source_line("LET(x, 1)")
         .with_hint("add ';' at end of statement");
@@ -1065,7 +1065,7 @@ mod tests {
         let d = WlwlDiagnostic::new(
             ErrorCode::E0020,
             "undefined name 'foo'",
-            Location::point("t.wl", 1, 1),
+            Location::point("t.wll", 1, 1),
         );
         let j = d.render_json();
         assert!(j.contains("\"error_schema_version\""));
@@ -1101,7 +1101,7 @@ mod tests {
         let d = WlwlDiagnostic::new(
             ErrorCode::E0013,
             "expected ';'",
-            Location::point("t.wl", 1, 9),
+            Location::point("t.wll", 1, 9),
         )
         .with_suggestion(Suggestion::Insert {
             description: "add ';' at end".into(),
@@ -1111,7 +1111,7 @@ mod tests {
         })
         .with_related(RelatedLocation {
             message: "previous statement".into(),
-            location: Location::point("t.wl", 1, 1),
+            location: Location::point("t.wll", 1, 1),
         });
         let j = d.render_json();
         assert!(j.contains("\"error_category\": \"syntax\""));
@@ -1125,7 +1125,7 @@ mod tests {
         let d = WlwlDiagnostic::new(
             ErrorCode::E0020,
             "undefined name 'foo'",
-            Location::point("t.wl", 1, 1),
+            Location::point("t.wll", 1, 1),
         );
         let l = d.render_jsonl();
         assert!(!l.contains('\n'), "jsonl must be single-line: {}", l);
@@ -1141,7 +1141,7 @@ mod tests {
         let d = WlwlDiagnostic::new(
             code,
             format!("snapshot for {}", label),
-            Location::point("snap.wl", 1, 1),
+            Location::point("snap.wll", 1, 1),
         );
         serde_json::to_value(&d).unwrap()
     }
@@ -1506,8 +1506,8 @@ mod tests {
     fn span_range_constructor() {
         // The 5-arg constructor (file + start line/col + end line/col)
         // is what the parser uses once it has consumed multiple tokens.
-        let s = Location::range("a.wl", 1, 1, 3, 5);
-        assert_eq!(s.file, "a.wl");
+        let s = Location::range("a.wll", 1, 1, 3, 5);
+        assert_eq!(s.file, "a.wll");
         assert_eq!(s.line, 1);
         assert_eq!(s.col, 1);
         assert_eq!(s.line_end, 3);
@@ -1553,7 +1553,7 @@ mod tests {
         let d = WlwlDiagnostic::new(
             ErrorCode::E0020,
             String::from("undefined name"),
-            Location::point("a.wl", 1, 1),
+            Location::point("a.wll", 1, 1),
         )
         .with_suggestion(Suggestion::Note {
             description: String::from("try foo"),
@@ -1574,11 +1574,11 @@ mod tests {
 
     #[test]
     fn diagnostic_with_related_appends() {
-        let related_loc = Location::point("b.wl", 5, 1);
+        let related_loc = Location::point("b.wll", 5, 1);
         let d = WlwlDiagnostic::new(
             ErrorCode::E0040,
             String::from("module not found"),
-            Location::point("a.wl", 1, 1),
+            Location::point("a.wll", 1, 1),
         )
         .with_related(RelatedLocation {
             message: String::from("imported here"),
@@ -1586,7 +1586,7 @@ mod tests {
         });
         assert_eq!(d.related.len(), 1);
         assert_eq!(d.related[0].message, "imported here");
-        assert_eq!(d.related[0].location.file, "b.wl");
+        assert_eq!(d.related[0].location.file, "b.wll");
     }
 
     #[test]
@@ -1596,12 +1596,12 @@ mod tests {
         let d = WlwlDiagnostic::new(
             ErrorCode::E0020,
             String::from("undefined name"),
-            Location::point("a.wl", 1, 1),
+            Location::point("a.wll", 1, 1),
         )
         .with_hint(String::from("did you import it?"))
         .with_related(RelatedLocation {
             message: String::from("imported here"),
-            location: Location::point("b.wl", 3, 1),
+            location: Location::point("b.wll", 3, 1),
         });
         let rendered = d.render_human();
         assert!(
@@ -1610,7 +1610,7 @@ mod tests {
             rendered
         );
         assert!(
-            rendered.contains("note: imported here (b.wl:3:1)"),
+            rendered.contains("note: imported here (b.wll:3:1)"),
             "got: {}",
             rendered
         );
@@ -1623,13 +1623,13 @@ mod tests {
         let d = WlwlDiagnostic::new(
             ErrorCode::E0033,
             "placeholder -- to be overwritten by helper",
-            Location::point("a.wl", 5, 1),
+            Location::point("a.wll", 5, 1),
         )
         .with_strict_types_violation(
             "INTEGER",
             "STRING",
-            Location::point("a.wl", 3, 5),
-            Location::point("a.wl", 5, 1),
+            Location::point("a.wll", 3, 5),
+            Location::point("a.wll", 5, 1),
             "function",
         );
         assert_eq!(
@@ -1643,19 +1643,19 @@ mod tests {
 
     #[test]
     fn e0033_helper_carries_annotation_and_value_in_related() {
-        let d = WlwlDiagnostic::new(ErrorCode::E0033, "ignored", Location::point("a.wl", 5, 1))
+        let d = WlwlDiagnostic::new(ErrorCode::E0033, "ignored", Location::point("a.wll", 5, 1))
             .with_strict_types_violation(
                 "ARRAY",
                 "INTEGER",
-                Location::point("a.wl", 1, 4),
-                Location::point("a.wl", 5, 1),
+                Location::point("a.wll", 1, 4),
+                Location::point("a.wll", 5, 1),
                 "function",
             );
         // Two related entries: one for the annotation, one for the value.
         assert_eq!(d.related.len(), 2);
         assert!(d.related[0].message.contains("ARRAY"));
         assert!(d.related[0].message.contains("annotation"));
-        assert_eq!(d.related[0].location.file, "a.wl");
+        assert_eq!(d.related[0].location.file, "a.wll");
         assert_eq!(d.related[0].location.line, 1);
         assert_eq!(d.related[0].location.col, 4);
         assert!(d.related[1].message.contains("INTEGER"));
@@ -1664,12 +1664,12 @@ mod tests {
 
     #[test]
     fn e0033_helper_hint_function_boundary() {
-        let d = WlwlDiagnostic::new(ErrorCode::E0033, "ignored", Location::point("a.wl", 5, 1))
+        let d = WlwlDiagnostic::new(ErrorCode::E0033, "ignored", Location::point("a.wll", 5, 1))
             .with_strict_types_violation(
                 "INTEGER",
                 "STRING",
-                Location::point("a.wl", 3, 5),
-                Location::point("a.wl", 5, 1),
+                Location::point("a.wll", 3, 5),
+                Location::point("a.wll", 5, 1),
                 "function",
             );
         let h = d.hint.expect("hint must be Some after helper");
@@ -1679,12 +1679,12 @@ mod tests {
 
     #[test]
     fn e0033_helper_hint_import_boundary() {
-        let d = WlwlDiagnostic::new(ErrorCode::E0033, "ignored", Location::point("a.wl", 5, 1))
+        let d = WlwlDiagnostic::new(ErrorCode::E0033, "ignored", Location::point("a.wll", 5, 1))
             .with_strict_types_violation(
                 "DICT",
                 "STRING",
-                Location::point("a.wl", 1, 1),
-                Location::point("b.wl", 7, 4),
+                Location::point("a.wll", 1, 1),
+                Location::point("b.wll", 7, 4),
                 "import",
             );
         let h = d.hint.expect("hint must be Some after helper");
@@ -1699,12 +1699,12 @@ mod tests {
 
     #[test]
     fn e0033_helper_hint_ffi_boundary() {
-        let d = WlwlDiagnostic::new(ErrorCode::E0033, "ignored", Location::point("a.wl", 5, 1))
+        let d = WlwlDiagnostic::new(ErrorCode::E0033, "ignored", Location::point("a.wll", 5, 1))
             .with_strict_types_violation(
                 "INTEGER",
                 "FLOAT",
-                Location::point("ffi.wl", 1, 1),
-                Location::point("ffi.wl", 9, 2),
+                Location::point("ffi.wll", 1, 1),
+                Location::point("ffi.wll", 9, 2),
                 "ffi",
             );
         let h = d.hint.expect("hint must be Some after helper");
@@ -1717,12 +1717,12 @@ mod tests {
         // without panicking. Defensive: an evaluator bug might
         // pass a typo'd boundary name; we must not crash the
         // diagnostic construction path.
-        let d = WlwlDiagnostic::new(ErrorCode::E0033, "ignored", Location::point("a.wl", 5, 1))
+        let d = WlwlDiagnostic::new(ErrorCode::E0033, "ignored", Location::point("a.wll", 5, 1))
             .with_strict_types_violation(
                 "INTEGER",
                 "STRING",
-                Location::point("a.wl", 1, 1),
-                Location::point("a.wl", 5, 1),
+                Location::point("a.wll", 1, 1),
+                Location::point("a.wll", 5, 1),
                 "banana",
             );
         let h = d.hint.expect("hint must be Some after helper");
@@ -1736,7 +1736,7 @@ mod tests {
         let d = WlwlDiagnostic::new(
             ErrorCode::E0033,
             "raw message",
-            Location::point("a.wl", 1, 1),
+            Location::point("a.wll", 1, 1),
         );
         assert!(d.hint.is_none());
         assert!(d.related.is_empty());
@@ -1746,12 +1746,12 @@ mod tests {
     fn e0033_helper_jsonl_round_trip() {
         // The helper must not break JSONL serialization -- both
         // related entries and the message must survive.
-        let d = WlwlDiagnostic::new(ErrorCode::E0033, "ignored", Location::point("a.wl", 5, 1))
+        let d = WlwlDiagnostic::new(ErrorCode::E0033, "ignored", Location::point("a.wll", 5, 1))
             .with_strict_types_violation(
                 "INTEGER",
                 "STRING",
-                Location::point("a.wl", 1, 1),
-                Location::point("a.wl", 5, 1),
+                Location::point("a.wll", 1, 1),
+                Location::point("a.wll", 5, 1),
                 "function",
             )
             .with_source_line("LET(f, FUN((x: INTEGER), x));");

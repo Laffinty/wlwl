@@ -13,9 +13,9 @@
 use libfuzzer_sys::fuzz_target;
 
 fuzz_target!(|data: &[u8]| {
-    let tokens = match wlwl_lexer::tokenize(data, "fuzz.wl") {
+    let tokens = match wlwl_lexer::tokenize(data, "fuzz.wll") {
         Ok(ts) => ts,
         Err(_) => return,
     };
-    let _ast = wlwl_parser::parse(&tokens, "fuzz.wl");
+    let _ast = wlwl_parser::parse(&tokens, "fuzz.wll");
 });

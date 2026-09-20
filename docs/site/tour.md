@@ -61,8 +61,8 @@ PRINT(MATCH(x,
     _, "many"));                  // "many"
 ```
 
-See [examples/match.wl](https://github.com/Laffinty/wlwl/blob/main/impl/examples/match.wl)
-and [examples/destruct.wl](https://github.com/Laffinty/wlwl/blob/main/impl/examples/destruct.wl).
+See [examples/match.wll](https://github.com/Laffinty/wlwl/blob/main/impl/examples/match.wll)
+and [examples/destruct.wll](https://github.com/Laffinty/wlwl/blob/main/impl/examples/destruct.wll).
 
 ## 5. Short-circuit `&&` / `||`
 
@@ -126,7 +126,7 @@ PRINT(STRINGIFY(obj));     // {"a":1,"b":[2,3]}
 Run it:
 
 ```bash
-wlwl run examples/showcase.wl
+wlwl run examples/showcase.wll
 ```
 
 ## 10. ERR consumer + `EXPECT_ERR` testing
@@ -168,7 +168,7 @@ emits `E0045` with the full backtrack tree in the diagnostic
 Every diagnostic has a stable JSON shape (schema `1.1.0`):
 
 ```bash
-wlwl run examples/bad.wl --format=json
+wlwl run examples/bad.wll --format=json
 ```
 
 ```json
@@ -177,7 +177,7 @@ wlwl run examples/bad.wl --format=json
   "error_category": "name",
   "error_schema_version": "1.1.0",
   "message": "undefined name: foo",
-  "location": { "file": "bad.wl", "line": 1, "col": 1, … },
+  "location": { "file": "bad.wll", "line": 1, "col": 1, … },
   "suggestion_code": ["E0020"],
   "related": [],
   "retry_after": null,
@@ -187,11 +187,11 @@ wlwl run examples/bad.wl --format=json
 }
 ```
 
-`wlwl ast foo.wl --format=json` dumps the AST with stable node
+`wlwl ast foo.wll --format=json` dumps the AST with stable node
 IDs (SHA-256 over canonical-form source, ADR-0013).
 
 ## Next steps
 
-- Read [Examples](examples.md) for idiomatic `.wl`
+- Read [Examples](examples.md) for idiomatic `.wll`
 - Browse the [ADR catalog](adrs.md) for design decisions
 - Verify against the spec via [Spec & conformance](spec.md)
