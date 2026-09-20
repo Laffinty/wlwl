@@ -28,7 +28,7 @@ jobs:
           toolchain: ${{ matrix.rust }}
 
       - name: Cache cargo registry and target
-        uses: Swatinem/rust-cache@main
+        uses: Swatinem/rust-cache@v2
         with:
           cache-on-failure: true
 
@@ -127,7 +127,7 @@ jobs:
         uses: dtolnay/rust-toolchain@stable
 
       - name: Cache cargo registry and target
-        uses: Swatinem/rust-cache@main
+        uses: Swatinem/rust-cache@v2
 
       - name: cargo build --release
         working-directory: impl
