@@ -426,8 +426,14 @@ impl<'a> Lexer<'a> {
     /// Returns either:
     /// - a single `StringLit(String)` token (no `${...}` interpolation), or
     /// - a sequence `StrStart, [StrText(String) | <inner expression tokens>]*, StrEnd`
-    ///   (one or more `${...}` segments). The expression tokens are
-    ///   produced by recursively lexing the inner source slice.
+    ///   that brackets the WHOLE interpolated string. Each `${...}`
+    ///   contributes one or more inner expression tokens (recursively
+    ///   lexed); the lexer emits ONE `StrStart` at the first `${`
+    ///   boundary and ONE `StrEnd` at the closing `"`.
+    ///
+    /// Earlier drafts emitted one `StrStart`/`StrEnd` pair per
+    /// `${...}`, which caused nested parsing to consume the outer
+    /// `StrEnd`. v0.6.1 collapses to a single bracketed pair.
     fn read_string(&mut self) -> WlwlResult<Vec<Token>> {
         let line = self.line;
         let col = self.col;
@@ -439,14 +445,14 @@ impl<'a> Lexer<'a> {
                      // raw bytes and decode once at the closing quote / interpolation boundary.
         let mut s_bytes: Vec<u8> = Vec::new();
         let mut parts: Vec<Token> = Vec::new();
-        let mut has_interp = false;
+        let mut str_start_emitted = false;
         let span_close = |s: &Lexer<'_>| (line, col, s.line, s.col);
         loop {
             match self.peek() {
                 Some(b'"') => {
                     self.bump();
                     let span = span_close(self);
-                    if !has_interp {
+                    if !str_start_emitted {
                         let s = String::from_utf8(s_bytes).map_err(|e| {
                             self.err(
                                 ErrorCode::E0001,
@@ -513,15 +519,20 @@ impl<'a> Lexer<'a> {
                 }
                 Some(b'$') if self.peek_at(1) == Some(b'{') => {
                     // v0.6 §1.8: start of `${expr}` interpolation.
-                    // Flush the current text buffer (if any) as
-                    // `StrText`, mark interpolation mode, then re-lex
-                    // the expression body until the matching `}`.
-                    has_interp = true;
+                    // Emit ONE `StrStart` per interpolated string (at
+                    // the first `${...}` we encounter), flush any
+                    // pending text as `StrText`, then recurse for the
+                    // expression body. Subsequent `${...}` segments
+                    // contribute only their inner tokens — no extra
+                    // `StrStart` / `StrEnd`.
                     let interp_start = span_close(self);
-                    parts.push(Token {
-                        kind: TokenKind::StrStart,
-                        span: interp_start,
-                    });
+                    if !str_start_emitted {
+                        parts.push(Token {
+                            kind: TokenKind::StrStart,
+                            span: interp_start,
+                        });
+                        str_start_emitted = true;
+                    }
                     if !s_bytes.is_empty() {
                         let s = String::from_utf8(s_bytes).map_err(|e| {
                             self.err(
@@ -560,14 +571,47 @@ impl<'a> Lexer<'a> {
     /// Read the expression body of a `${...}` interpolation (v0.6 §1.8).
     ///
     /// Returns the inner expression tokens (excluding the closing
-    /// `}`, which this method consumes). Brace nesting is respected
-    /// so that `{LET(x, {y: 1}), x}` parses correctly.
+    /// `}`, which this method consumes). Two rules:
+    ///
+    ///   1. Top-level `{` / `}` count for depth (so `{LET(x, {y: 1}), x}`
+    ///      parses correctly).
+    ///   2. `${...}` pairs inside the body are **skipped over** — they
+    ///      belong to the OUTER string's next interpolation, not the
+    ///      inner expression. Without this skip, `"${1}${2}"` lexes
+    ///      "1${2}" as the body of the first `${...}`, and the
+    ///      recursive `lex()` chokes on the bare `$`.
     fn read_interp_body(&mut self) -> WlwlResult<Vec<Token>> {
         let start = self.pos;
         let mut depth: u32 = 1;
         let mut i = self.pos;
         while i < self.src.len() {
             let b = self.src[i];
+            // Skip nested `${...}` pairs: they belong to the outer
+            // string, not the inner expression we are collecting.
+            if b == b'$' && self.src.get(i + 1) == Some(&b'{') {
+                i += 2; // consume `${`
+                let mut nest_depth: u32 = 1;
+                while i < self.src.len() && nest_depth > 0 {
+                    match self.src[i] {
+                        b'{' => nest_depth += 1,
+                        b'}' => nest_depth -= 1,
+                        _ => {}
+                    }
+                    if nest_depth > 0 {
+                        i += 1;
+                    }
+                }
+                if nest_depth != 0 {
+                    return Err(self.err(
+                        ErrorCode::E0002,
+                        "unterminated nested string interpolation (missing `}`)",
+                        self.line,
+                        self.col,
+                    ));
+                }
+                i += 1; // skip the closing `}` of the nested `${...}`
+                continue;
+            }
             match b {
                 b'{' => depth += 1,
                 b'}' => {
@@ -981,6 +1025,56 @@ mod tests {
         } else {
             panic!("expected StringLit, got {:?}", toks[0].kind);
         }
+    }
+
+    #[test]
+    fn lex_interpolation_two_consecutive_segments() {
+        // v0.6 §1.8 §1.8.1: `"hi ${a}${b}!"` must lex as one bracketed
+        // interpolated string with two expressions in a row — no
+        // empty StrText, no nested StrStart/StrEnd. Token shape:
+        //
+        //   StrStart, StrText("hi "), Ident(a), Ident(b), StrText("!"), StrEnd
+        let toks = lex(r#""hi ${a}${b}!""#, "t.wl").unwrap();
+        let kinds: Vec<&TokenKind> = toks.iter().map(|t| &t.kind).collect();
+        let expected = [
+            TokenKind::StrStart,
+            TokenKind::StrText("hi ".into()),
+            TokenKind::Ident("a".into()),
+            TokenKind::Ident("b".into()),
+            TokenKind::StrText("!".into()),
+            TokenKind::StrEnd,
+            TokenKind::Eof,
+        ];
+        assert_eq!(
+            kinds.len(),
+            expected.len(),
+            "got {:?}",
+            kinds
+        );
+        for (i, (got, exp)) in kinds.iter().zip(expected.iter()).enumerate() {
+            assert_eq!(
+                std::mem::discriminant(*got),
+                std::mem::discriminant(exp),
+                "token {} mismatch: got {:?}, expected variant of {:?}",
+                i, got, exp
+            );
+        }
+    }
+
+    #[test]
+    fn lex_interpolation_two_int_segments() {
+        // Same as above, but with integer literals inside the
+        // interpolations — catches a regression where `read_interp_body`
+        // doesn't skip over the `${` of the second segment.
+        let toks = lex(r#""${1}${2}""#, "t.wl").unwrap();
+        // Print tokens for debugging.
+        for (i, t) in toks.iter().enumerate() {
+            eprintln!("  [{}] {:?}", i, t.kind);
+        }
+        let kinds: Vec<&TokenKind> = toks.iter().map(|t| &t.kind).collect();
+        // Find both integer tokens — they should both be present.
+        let int_count = kinds.iter().filter(|k| matches!(k, TokenKind::Integer(_))).count();
+        assert_eq!(int_count, 2, "expected 2 Integer tokens, got {:?}", kinds);
     }
 
     #[test]

@@ -409,3 +409,33 @@ fn fmt_examples_dir_files_idempotent() {
     }
     assert!(checked >= 3, "expected to check several examples");
 }
+
+// v0.6 §A.3 + Appendix B per-feature formatter idempotency. The
+// canonical-form contract must hold for every new AST shape the v0.6
+// spec introduced: `LET MUT`, `Literal::Interpolated`, `\$` escapes,
+// and adjacent interpolations.
+#[test]
+fn fmt_let_mut_idempotent() {
+    assert_idempotent("LET MUT(counter, 0);");
+    assert_idempotent("LET MUT(counter, 0); SET(counter, +(counter, 1));");
+    assert_idempotent("LET MUT(x: INTEGER, 0);");
+    assert_idempotent(
+        "LET MUT(counter, 0); LET(step, FUN((), (SET(counter, +(counter, 1)); counter)));",
+    );
+}
+
+#[test]
+fn fmt_interpolated_string_idempotent() {
+    assert_idempotent(r#"LET(name, "WLWL"); PRINT("hi ${name}!");"#);
+    assert_idempotent(r#"PRINT("${a}, ${b}, ${c}");"#);
+    assert_idempotent(r#"PRINT("counter=${1}${2}!");"#);
+    assert_idempotent(r#"PRINT("leading text and ${only}");"#);
+    assert_idempotent(r#"PRINT("trailing text after ${only}");"#);
+    assert_idempotent(r#"PRINT("multi \${escape} literal");"#);
+    assert_idempotent(r#"PRINT("a${1}b${2}c${3}d");"#);
+}
+
+#[test]
+fn fmt_string_subscript_idempotent() {
+    assert_idempotent(r#"LET(s, "Hello"); PRINT(s[0]); PRINT(s[-1]);"#);
+}
