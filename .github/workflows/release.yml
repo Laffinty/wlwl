@@ -105,16 +105,15 @@ jobs:
 
       - name: Create zip (windows)
         if: matrix.archive == 'zip'
-        shell: bash
-        run: |
-          set -euo pipefail
-          tag="${GITHUB_REF_NAME}"
-          out="wlwl-${tag}-${TARGET}"
-          mv staging "$out"
-          (cd "$out" && zip -r "../${out}.zip" . > /dev/null)
-          echo "ASSET=${out}.zip" >> "$GITHUB_ENV"
+        shell: pwsh
         env:
           TARGET: ${{ matrix.target }}
+        run: |
+          $tag = $env:GITHUB_REF_NAME
+          $out = "wlwl-$tag-$env:TARGET"
+          Move-Item -Path staging -Destination $out
+          Compress-Archive -Path "$out\*" -DestinationPath "${out}.zip" -Force
+          "ASSET=${out}.zip" | Out-File -FilePath $env:GITHUB_ENV -Append -Encoding utf8
 
       - name: Upload artifact
         uses: actions/upload-artifact@v4
