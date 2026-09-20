@@ -1,9 +1,10 @@
 # Architecture decisions (ADR catalog)
 
-Six architecture decisions have been captured under Phase G4 (ADR
-0008–0013) covering the v0.4 language/runtime spec. Each ADR
-follows the MADR template: status, context, decision drivers,
-considered options, decision outcome, consequences.
+Nine architecture decisions have been captured. ADRs 0008–0013 cover
+the v0.4 language/runtime spec; ADRs 0014–0016 cover the v0.7
+structured-concurrency design. Each ADR follows the MADR template:
+status, context, decision drivers, considered options, decision
+outcome, consequences.
 
 ## Index
 
@@ -15,6 +16,9 @@ considered options, decision outcome, consequences.
 | [ADR-0011](https://github.com/Laffinty/wlwl/blob/main/docs/adr/0011-mvs-dependency-resolution.md) | Module Version Solver uses Cargo-style resolver | §13.9 | Accepted |
 | [ADR-0012](https://github.com/Laffinty/wlwl/blob/main/docs/adr/0012-as-function-removal.md) | `AS` keyword removed entirely | §13.4 | Accepted |
 | [ADR-0013](https://github.com/Laffinty/wlwl/blob/main/docs/adr/0013-canonical-formatter.md) | Canonical formatter is mandatory | §16.3 | Accepted |
+| [ADR-0014](https://github.com/Laffinty/wlwl/blob/wip0.7/docs/adr/0014-structured-concurrency-v0.7.md) | Structured concurrency + channels adopted for v0.7 | v0.7 §17 | Accepted |
+| [ADR-0015](https://github.com/Laffinty/wlwl/blob/wip0.7/docs/adr/0015-brown-9-dimension-decision.md) | Brown 9-dimension async/await design space resolved for v0.7 | v0.7 §17.1 | Accepted |
+| [ADR-0016](https://github.com/Laffinty/wlwl/blob/wip0.7/docs/adr/0016-scheduler-single-thread-boundary.md) | v0.7 scheduler keeps single-threaded boundary | v0.7 §17.1.1 | Accepted |
 
 ## How to read them
 
