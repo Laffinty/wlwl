@@ -74,7 +74,7 @@ jobs:
 
       - name: Strip binary (linux/macos)
         if: matrix.archive == 'tar.xz'
-        run: strip "target/${{ matrix.target }}/release/${{ matrix.binary }}"
+        run: strip "impl/target/${{ matrix.target }}/release/${{ matrix.binary }}"
 
       - name: Stage release files
         shell: bash
