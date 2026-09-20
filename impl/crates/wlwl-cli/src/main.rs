@@ -1,4 +1,4 @@
-//! WLWL command-line interface (Phase 3).
+//! WLWL command-line interface.
 //!
 //! Phase 3 adds:
 //! - `--format=jsonl` (streaming NDJSON) for AI tools (v0.3 `Sec. 14.7`)
@@ -32,7 +32,7 @@ enum OutputFormat {
 }
 
 #[derive(Parser, Debug)]
-#[command(name = "wlwl", version, about = "WLWL language interpreter (Phase 3)")]
+#[command(name = "wlwl", version, about = "WLWL language interpreter")]
 struct Cli {
     #[command(subcommand)]
     cmd: Cmd,
