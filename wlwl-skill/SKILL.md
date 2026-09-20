@@ -1,6 +1,6 @@
 ---
 name: writing-wlwl
-description: Writes WLWL v0.6 .wll source files (spec docs/standard/wlwl-spec-v0.6.md). Covers the 9 v0.6 decisions: truthy overhaul, &&/|| short-circuit, IF ERR-routing, ! canonical, AT_K rename, string subscript, LET MUT, overflow->E0035, ${} interpolation. Use when the user asks for WLWL code, a .wll file, a wlwl script, or anything targeting wlwl-spec-v0.6. Do NOT use for v0.5 or earlier (POP-not-AT_K, no LET MUT), the Rust implementation, or the formatter.
+description: "Writes WLWL v0.6 .wll source files (spec docs/standard/wlwl-spec-v0.6.md). Covers the 9 v0.6 decisions: truthy overhaul, &&/|| short-circuit, IF ERR-routing, ! canonical, AT_K rename, string subscript, LET MUT, overflow->E0035, ${} interpolation. Use when the user asks for WLWL code, a .wll file, a wlwl script, or anything targeting wlwl-spec-v0.6. Do NOT use for v0.5 or earlier (POP-not-AT_K, no LET MUT), the Rust implementation, or the formatter."
 ---
 
 # Writing WLWL v0.6
