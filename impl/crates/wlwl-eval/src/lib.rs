@@ -3606,6 +3606,13 @@ pub struct Evaluator {
     /// but ignored at runtime). CLI wires this up via
     /// `with_strict_types(true)` after loading `wlwl.toml`.
     pub(crate) strict_types: bool,
+    /// [v0.7 Phase B2] Currently-running task in the cooperative
+    /// scheduler. `None` until B5 wires the scheduler into `eval_expr`;
+    /// every legacy (pre-v0.7) call path sees `None` throughout,
+    /// which makes the field a no-op for v0.6 callers (the
+    /// tree-walking evaluator runs as if it were the single implicit
+    /// task). Plan §3 Phase B + §5.1.
+    pub current_task: Option<crate::runtime::TaskId>,
 }
 
 impl Default for Evaluator {
@@ -3628,6 +3635,7 @@ impl Evaluator {
             format_cache: HashMap::new(),
             test_registry: Vec::new(),
             strict_types: false,
+            current_task: None,
         }
     }
 
@@ -3677,6 +3685,7 @@ impl Evaluator {
             format_cache: HashMap::new(),
             test_registry: Vec::new(),
             strict_types: false,
+            current_task: None,
         }
     }
 
