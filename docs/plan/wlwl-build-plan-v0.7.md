@@ -653,13 +653,46 @@ Phase G5 把基线写入 docs/plan/deviations.md 的 P7-G5-001 条目。
 ## 附录 D:进度追踪
 
 ### Phase A — 调研 + 设计落地
-- A1 本计划文件:docs/plan/wlwl-build-plan-v0.7.md — 状态:WIP
+- A1 本计划文件:docs/plan/wlwl-build-plan-v0.7.md — commit `01ff9d6` (+`6f2f23d` HTML 修复)
 - A2 spec 草稿 §17(仅在本文件):完成于 A1
-- A3 ADR 0014/0015/0016:pending
-- A4 deviations.md v0.7 章节标记:pending
+- A3 ADR 0014/0015/0016 — commit `0d463ad`
+- A4 deviations.md v0.7 章节标记 — commit `e9d2106` (+`7421e2c` 编码修复 +`15ef61a` `.gitattributes`)
 
-### Phase B / C / D / E / F / G / H
-均待启动。
+### Phase B — 协程 runtime 骨架
+- B0 错误码 E0052-E0058 + `ErrorCategory::Concurrent` — commit `b38126e`
+- B1 `runtime.rs` 类型 stub(TaskId / TaskHandle / TaskState / YieldReason / Scheduler 等) — commit `7f9d54f`
+- B2 `Evaluator.current_task: Option<TaskId>` — commit `86cbddf`
+- B3 fidelity golden(10 fixture 字节对照) — commit `6cac0f1`
+- B4 `task.rs` Task + Scope 数据结构 — commit `5634331`
+- B5a-1 `StepResult` + `step_once` wrapper(零行为变化) — commit `5ff79e5`
+- B5a-2 选 1 builtin 改走 step_once — pending(合并到 B5a-3)
+- B5a-3 递归 eval → 显式 CPS — pending(需 yield points,依赖 C4 YIELD 落地)
+- B5b Scheduler 接入 / current_task 真实参与运行时 — pending(需 B5a-3 + ≥1 yield builtin)
+- B6 单 task benchmark baseline(5 workload 在噪声内) — commit `ad0dd60`
+
+### Phase C — 内置函数 SCOPE/SPAWN/AWAIT/YIELD
+- C1 SCOPE(fn): ✅ — commit `e28de1d` 注册 + scope_depth retrofit 在 commit `cce3ce3`
+- C2 SPAWN(fn): ✅ — commit `cce3ce3`;后接 audit-fix 链 `1248978`(P7-C2-001 arity E0056 修正) → `d46bab3`(deviation commit hash 同步) → `d53e09e`(runtime API 收敛:删 alloc_task + doc 修正)
+- C3 AWAIT(handle) — pending(下一会话建议起点)
+- C4 YIELD() — pending(等 B5a-3)
+- C5 TASK_CURRENT / TASK_IS_CANCELLED — pending(等 B5b)
+- C7 跨 task cell 升级回归(plan §5.5) — pending
+- C8 跨 task 闭包捕获回归(plan §5.5) — pending
+
+### Phase D — Channel
+均待启动(D1-D8,plan §3)。
+
+### Phase E — 错误传播
+均待启动。**E4 为阻塞项**(ERR consumer registry 跨 task 全量回归,plan §3)。
+
+### Phase F — 取消作用域
+均待启动(F1-F7,含 SHIELD 至少 3 个 conformance fixture)。
+
+### Phase G — 质量阶段
+均待启动(G1-G7)。
+
+### Phase H — spec v0.7 + release
+均待启动(H1-H4)。spec 文件直到 H1 才允许改动(plan §8.1 / D18)。
 
 ---
 ## 附录 E:API 示例(验证 §5 语义)
