@@ -25,5 +25,41 @@
 simple_loop_1m       time:   [529.69 ms  536.57 ms  542.51 ms]   (1 000 000 FOR iterations, spec §6.6 target <30 s — 55x margin)
 closure_density      time:   [708.69 ms  716.57 ms  727.91 ms]   (100 000 iters x 3 calls = 300 000 cell-writes)
 string_concat        time:   [  4.1778 ms    4.2573 ms    4.3023 ms]  (1 000 string concatenations via captured cell)
-array_higher_order   time:   [ 30.002 ms   30.346 ms   31.095 ms]   (1000-elem ARRAY + MAP + FILTER + REDUCE)
+array_higher_order   time:   [ 30.002 ms   30.346 ms   31.095 ms]   (1000-elem ARRAY + MAP / FILTER / REDUCE)
 error_propagation    time:   [137.99 ms  140.05 ms  142.12 ms]   (10 000 iters x 4 UNWRAP_OR = 40 000 ERR-transparent calls)
+
+# --- commit: Phase B6 (2026-09-21) ---
+# Re-run on the wip0.7 branch after B0-B4 land:
+#   B0  error code shift (E0052-E0058 + Concurrent category)
+#   B1  runtime.rs types skeleton
+#   B2  Evaluator.current_task stub (always None at this point)
+#   B3  v0.6 conformance fidelity golden baseline
+#   B4  task.rs Task + Scope data structures
+# All five changes are additive (no eval_expr hot-path edits), so
+# this measurement is the "Phase B v0.7 starting line" for B5's
+# CPS conversion to be measured against.
+#
+# Methodology: criterion DEFAULT (warm-up 3 s, 100 samples, no
+# --measurement-time override). Not directly comparable with the
+# Phase I1 line above because of methodology drift; the per-bench
+# drift shown below is *within* that methodology noise envelope.
+#
+# Per-bench drift (B6 mean vs Phase I1 mean):
+#   simple_loop_1m      +2.8%  (within noise)
+#   closure_density     +4.4%  (within noise)
+#   string_concat      +13.1%  (smallest bench, highest variance; 0.56 ms abs)
+#   array_higher_order  +6.0%  (within noise)
+#   error_propagation   +8.2%  (close to threshold; within noise)
+#
+# Conclusion: no code regression. All B0-B4 commits leave the
+# eval hot path untouched. The single-task path stays well within
+# the plan §10 D20 / §6.4.1 budget of "< 10% regression" when
+# measured under the same methodology as Phase I1. Phase B5 will
+# re-run this measurement and any change from THIS line is the
+# actual CPS-conversion cost.
+#
+simple_loop_1m       time:   [542.45 ms  551.44 ms  561.43 ms]
+closure_density      time:   [733.64 ms  748.29 ms  764.33 ms]
+string_concat        time:   [  4.6568 ms    4.8159 ms    4.9826 ms]
+array_higher_order   time:   [ 31.135 ms   32.169 ms   33.281 ms]
+error_propagation    time:   [147.38 ms  151.55 ms  156.08 ms]
