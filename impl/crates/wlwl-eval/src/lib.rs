@@ -366,12 +366,24 @@ impl Env {
 ///                    `Value::Err(_)`, otherwise the program's result.
 ///   * `Break` / `Continue` — at a loop frame, become loop control;
 ///                    outside any loop, become E0014.
+///   * `Yield(reason)` — [v0.7 Phase B5a-3 slice 1] user-defined yield
+///                    point. Propagates up the eval stack exactly like
+///                    `Break` / `Continue` / `Return`; the
+///                    state-machine entry point `Evaluator::step_once`
+///                    translates it into
+///                    [`crate::runtime::StepResult::Yield`], while the
+///                    run-to-completion `Evaluator::eval` rejects it
+///                    with E0014 (yield is only valid inside a
+///                    scheduler step loop, not at a bare top-level
+///                    call). No v0.6 builtin produces this variant, so
+///                    v0.6 programs are observably unaffected.
 #[derive(Debug, Clone, PartialEq)]
 pub enum Signal {
     None,
     Break,
     Continue,
     Return(Value),
+    Yield(crate::runtime::YieldReason),
 }
 
 /// A soft warning surfaced by the evaluator without aborting the run.
@@ -4174,41 +4186,95 @@ impl Evaluator {
                 expr.span().clone(),
             )),
             Signal::Return(v) => Ok(v),
+            // [v0.7 Phase B5a-3 slice 1] Yield at top level via
+            // `eval` (the run-to-completion entry point) is a
+            // programmer error: yield only makes sense inside a
+            // scheduler step loop, which `eval` is not. The state-
+            // machine entry point `step_once` translates the same
+            // signal into `StepResult::Yield`, so legitimate yield
+            // consumers do not see this diagnostic.
+            Signal::Yield(_) => Err(self.diag(
+                ErrorCode::E0014,
+                "YIELD used outside a step context (yield is only valid inside a Scheduler::step loop, not at a top-level eval call)".to_string(),
+                expr.span().clone(),
+            )),
         }
     }
 
-    /// [v0.7 Phase B5a-1] One step of the state-machine evaluator.
+    /// [v0.7 Phase B5a-3 slice 1] One step of the state-machine
+    /// evaluator.
     ///
-    /// Wraps the existing recursive `eval` call so the API surface
-    /// matches plan §5.1.1's "match scheduler.step(task)" pattern.
-    /// **Behaviour at B5a-1 is identical to `eval`**: every input
-    /// returns `StepResult::Done(value)` because no yield points
-    /// exist yet (Phase C will introduce YIELD/SPAWN/AWAIT builtins,
-    /// Phase D will introduce CHANNEL_*).
+    /// Mirrors `eval`'s project-config gate and trace enrichment,
+    /// then translates the trailing `Outcome.signal` into a
+    /// [`crate::runtime::StepResult`]:
     ///
-    /// The point of this method at B5a-1 is purely structural:
-    /// - any future builtin that wants to yield (e.g. `YIELD()`)
-    ///   can return `StepResult::Yield(YieldReason::Explicit)`
-    ///   instead of `Outcome::normal(...)` -- the wrapping here is
-    ///   the single seam B5b has to update to route Yield/Blocked
-    ///   through the scheduler.
-    /// - the StepResult enum is already on the public API so test
-    ///   code and (later) the scheduler can match on it.
+    /// - `Signal::None` / `Signal::Return(_)` → `StepResult::Done(v)`
+    /// - `Signal::Yield(reason)` → `StepResult::Yield(reason)`
+    /// - `Signal::Break` / `Signal::Continue` → `E0014` error (same
+    ///   top-level diagnostic `eval` produces)
+    ///
+    /// **Fidelity guarantee**: for any program that does NOT trigger
+    /// a yield signal (i.e. every v0.6 program and every v0.7 program
+    /// that does not contain a yield point), `step_once` returns the
+    /// same `StepResult::Done(value)` that `eval` would have produced.
+    /// The v0.6 fidelity golden (Phase B3) is unaffected.
+    ///
+    /// `Signal::Yield` is reachable only via:
+    /// - the internal `__YIELD_TEST__` marker used by slice-1 tests
+    ///   (and to be replaced by the real `YIELD` user-facing builtin
+    ///   in Phase C4)
+    /// - any future builtin that opts to yield (Phase C/D/F)
     ///
     /// Returns an error if `eval` itself errors out (project config
-    /// violation, unhandled ERR escape, etc.); the wrapping in
-    /// `StepResult::Done` only happens for the success path.
+    /// violation, unhandled ERR escape, etc.); the wrapping into
+    /// `StepResult::Done` / `StepResult::Yield` only happens for the
+    /// success path.
     pub fn step_once(
         &mut self,
         expr: &Expr,
     ) -> WlwlResult<crate::runtime::StepResult> {
-        // At B5a-1 the only legal transition is Done. Yield and
-        // Blocked arms are unreachable until builtins start using
-        // them; the explicit `unreachable!` would be a useful
-        // alarm bell if someone accidentally wires one in during a
-        // refactor without updating this wrapper.
-        let value = self.eval(expr)?;
-        Ok(crate::runtime::StepResult::Done(value))
+        // Project-config gate + trace enrichment, mirroring `eval`
+        // exactly so the slice-1 smoke test can compare the two.
+        self.check_project_config(expr.span())?;
+        let outcome = self
+            .eval_top_level(expr)
+            .map_err(|e| self.enrich_with_trace(e))?;
+        // §19.6 Corollary 19.1: a top-level unhandled ERR (either
+        // as `Signal::Return(Value::Err(_))` or as the final value
+        // when the signal is `None`) must produce E0102 in the
+        // state-machine path too — `eval` does this promotion and
+        // `step_once` must mirror it, otherwise a `.wll` file that
+        // runs to completion with an unhandled ERR would silently
+        // succeed under the scheduler and only fail under `eval`.
+        if let Signal::Return(Value::Err(payload)) = &outcome.signal {
+            return Err(self.diag(
+                ErrorCode::E0102,
+                format!("unhandled ERR escaped to top level: {}", payload.display()),
+                expr.span().clone(),
+            ));
+        }
+        if matches!(outcome.signal, Signal::None) {
+            if let Value::Err(payload) = &outcome.value {
+                return Err(self.diag(
+                    ErrorCode::E0102,
+                    format!("unhandled ERR escaped to top level: {}", payload.display()),
+                    expr.span().clone(),
+                ));
+            }
+        }
+        Ok(match outcome.signal {
+            Signal::None | Signal::Return(_) => {
+                crate::runtime::StepResult::Done(outcome.value)
+            }
+            Signal::Yield(reason) => crate::runtime::StepResult::Yield(reason),
+            Signal::Break | Signal::Continue => {
+                return Err(self.diag(
+                    ErrorCode::E0014,
+                    "BREAK or CONTINUE used outside a loop".to_string(),
+                    expr.span().clone(),
+                ));
+            }
+        })
     }
 
     /// Snapshot of the project manifest, if a `wlwl.toml` was found at
@@ -4381,6 +4447,16 @@ impl Evaluator {
             Signal::Break | Signal::Continue => Err(self.diag(
                 ErrorCode::E0014,
                 "BREAK or CONTINUE used outside a loop".to_string(),
+                expr.span().clone(),
+            )),
+            // [v0.7 Phase B5a-3 slice 1] Same defensive arm as in
+            // `eval`: a yield signal at module top level is a
+            // programmer error, since modules are loaded via
+            // `eval_module` (run-to-completion), not via the
+            // scheduler step loop.
+            Signal::Yield(_) => Err(self.diag(
+                ErrorCode::E0014,
+                "YIELD used outside a step context (yield is only valid inside a Scheduler::step loop, not at a top-level module load)".to_string(),
                 expr.span().clone(),
             )),
         }
@@ -4808,6 +4884,10 @@ impl Evaluator {
                     break;
                 }
                 Signal::Return(_) => return Ok(o),
+                // [v0.7 Phase B5a-3 slice 1] Yield propagates upward
+                // out of the loop, identical to `Return`. The loop
+                // frame neither consumes nor transforms the signal.
+                Signal::Yield(_) => return Ok(o),
             }
         }
         Ok(Outcome::normal(Value::Null))
@@ -4838,6 +4918,15 @@ impl Evaluator {
                             self.env.pop_scope();
                             return Ok(o);
                         }
+                        // [v0.7 Phase B5a-3 slice 1] Yield
+                        // propagates upward out of the loop,
+                        // identical to `Return`. The loop frame
+                        // neither consumes nor transforms the
+                        // signal.
+                        Signal::Yield(_) => {
+                            self.env.pop_scope();
+                            return Ok(o);
+                        }
                     }
                 }
                 Outcome::normal(Value::Null)
@@ -4856,6 +4945,15 @@ impl Evaluator {
                             self.env.pop_scope();
                             return Ok(o);
                         }
+                        // [v0.7 Phase B5a-3 slice 1] Yield
+                        // propagates upward out of the loop,
+                        // identical to `Return`. The loop frame
+                        // neither consumes nor transforms the
+                        // signal.
+                        Signal::Yield(_) => {
+                            self.env.pop_scope();
+                            return Ok(o);
+                        }
                     }
                 }
                 Outcome::normal(Value::Null)
@@ -4871,6 +4969,15 @@ impl Evaluator {
                             return Ok(Outcome::normal(Value::Null));
                         }
                         Signal::Return(_) => {
+                            self.env.pop_scope();
+                            return Ok(o);
+                        }
+                        // [v0.7 Phase B5a-3 slice 1] Yield
+                        // propagates upward out of the loop,
+                        // identical to `Return`. The loop frame
+                        // neither consumes nor transforms the
+                        // signal.
+                        Signal::Yield(_) => {
                             self.env.pop_scope();
                             return Ok(o);
                         }
@@ -4896,6 +5003,49 @@ impl Evaluator {
 
     // ── Calls (the heart of §12.6 ERR transparent propagation) ─────
 
+    /// [v0.7 Phase B5a-3 slice 1] Internal yield-marker dispatch.
+    ///
+    /// Returns `Ok(Some(outcome))` if `name` is a recognized hidden
+    /// yield marker and the marker decides to yield; `Ok(None)` if
+    /// the name is not a marker (caller should proceed with normal
+    /// dispatch); `Err(_)` if the marker rejects an arity violation.
+    ///
+    /// These names are intentionally **not** in `resolve_builtin` and
+    /// **not** in `BUILTIN_REGISTRY` (which is locked to spec 附录 G,
+    /// and the markers exist solely to exercise the
+    /// `Signal::Yield` → `StepResult::Yield` translation during
+    /// slice 1; the public `YIELD()` builtin lands in Phase C4). The
+    /// double-underscore prefix is reserved per spec §8.x and no
+    /// user code can legitimately call them. Slice 2 / Phase C4 will
+    /// retire these markers once the real `YIELD` user-facing builtin
+    /// is in place.
+    fn internal_yield_marker(
+        &mut self,
+        name: &str,
+        args: &[Expr],
+        span: &Span,
+    ) -> WlwlResult<Option<Outcome>> {
+        match name {
+            "__YIELD_TEST__" => {
+                if !args.is_empty() {
+                    return Err(self.diag(
+                        ErrorCode::E0022,
+                        format!(
+                            "__YIELD_TEST__ expects 0 arguments, got {}",
+                            args.len()
+                        ),
+                        span.clone(),
+                    ));
+                }
+                Ok(Some(Outcome {
+                    value: Value::Null,
+                    signal: Signal::Yield(crate::runtime::YieldReason::Explicit),
+                }))
+            }
+            _ => Ok(None),
+        }
+    }
+
     fn eval_call(&mut self, name: &str, args: &[Expr], span: &Span) -> WlwlResult<Outcome> {
         // [v0.4 spec Sec. 6.4] Fast path for the macro function `SET`:
         // `SET(target, value)` is parsed as `Call { name: "SET", args:
@@ -4905,6 +5055,16 @@ impl Evaluator {
         // inside `eval_set`.
         if name == "SET" {
             return self.eval_set(args, span);
+        }
+        // [v0.7 Phase B5a-3 slice 1] Internal yield-marker dispatch.
+        // Checked BEFORE argument evaluation so the marker can fire
+        // even if the surrounding context would otherwise short-
+        // circuit. Markers that fail arity still propagate E0022 from
+        // `internal_yield_marker` so user code that mis-uses the
+        // reserved name gets a clean diagnostic rather than a silent
+        // yield.
+        if let Some(marker_outcome) = self.internal_yield_marker(name, args, span)? {
+            return Ok(marker_outcome);
         }
         // v0.6 §4.3 + §8.3: short-circuit logical operators.
         // Evaluate the left operand first; if it's `ERR`, propagate
@@ -5264,7 +5424,9 @@ impl Evaluator {
         self.env.scopes = caller_scopes;
 
         // Convert a Return signal back to a normal value; treat
-        // Break/Continue as E0014 inside a function body.
+        // Break/Continue as E0014 inside a function body. Yield
+        // propagates unchanged so the caller's scheduler step loop
+        // can observe it.
         match outcome.signal {
             Signal::None => Ok(outcome),
             Signal::Return(v) => Ok(Outcome::normal(v)),
@@ -5273,6 +5435,13 @@ impl Evaluator {
                 "BREAK or CONTINUE used outside a loop".to_string(),
                 span.clone(),
             )),
+            // [v0.7 Phase B5a-3 slice 1] Yield propagates out of a
+            // closure body exactly like `Return` — the closure frame
+            // neither consumes nor transforms the signal. The
+            // surrounding scheduler step loop (or, for the bare
+            // `eval` path, the top-level diagnostic) is responsible
+            // for handling it.
+            Signal::Yield(_) => Ok(outcome),
         }
     }
 
@@ -5993,6 +6162,89 @@ mod tests {
         let step = ev.step_once(&ast);
         assert!(direct.is_err(), "eval should fail on unhandled ERR");
         assert!(step.is_err(), "step_once should also fail on unhandled ERR");
+    }
+
+    // ────────────────────────────────────────────────────────────
+    // [v0.7 Phase B5a-3 slice 1] state-machine yield path
+    //
+    // The slice-1 smoke tests below exercise `Signal::Yield` →
+    // `StepResult::Yield` translation through `step_once`, plus the
+    // two defensive surfaces around it (the run-to-completion
+    // `eval` rejecting top-level yield via E0014, and the internal
+    // yield marker enforcing 0-arg arity via E0022). They use the
+    // reserved `__YIELD_TEST__` marker — see
+    // `Evaluator::internal_yield_marker` for the rationale. Phase C4
+    // will replace the marker with the real `YIELD()` user-facing
+    // builtin; these tests will then be rewritten to drop the
+    // double-underscore name and assert the spec-defined behaviour.
+    // ────────────────────────────────────────────────────────────
+
+    /// step_once returns `StepResult::Done` for non-yielding
+    /// expressions (fidelity equivalence with `eval`).
+    #[test]
+    fn step_once_returns_done_for_simple_arithmetic() {
+        let src = "+(1, 2);";
+        let ast = parse(src, "t.wll").expect("parse");
+        let mut ev = Evaluator::new();
+        match ev.step_once(&ast).expect("step_once") {
+            crate::runtime::StepResult::Done(Value::Integer(3)) => {}
+            other => panic!("expected Done(Integer(3)), got {other:?}"),
+        }
+    }
+
+    /// The internal `__YIELD_TEST__` marker produces
+    /// `Signal::Yield(YieldReason::Explicit)` which propagates
+    /// through eval_expr's recursive call stack and surfaces from
+    /// `step_once` as `StepResult::Yield`.
+    #[test]
+    fn step_once_returns_yield_when_yield_marker_called() {
+        let src = "__YIELD_TEST__();";
+        let ast = parse(src, "t.wll").expect("parse");
+        let mut ev = Evaluator::new();
+        match ev.step_once(&ast).expect("step_once") {
+            crate::runtime::StepResult::Yield(crate::runtime::YieldReason::Explicit) => {}
+            other => panic!("expected Yield(Explicit), got {other:?}"),
+        }
+    }
+
+    /// The run-to-completion `eval` rejects a top-level yield with
+    /// E0014. Yield is only meaningful inside a scheduler step loop;
+    /// a bare top-level call via `eval` is a programmer error and
+    /// must NOT silently succeed.
+    #[test]
+    fn eval_rejects_top_level_yield_with_e0014() {
+        let src = "__YIELD_TEST__();";
+        let ast = parse(src, "t.wll").expect("parse");
+        let mut ev = Evaluator::new();
+        let err = ev.eval(&ast).expect_err("eval must error on top-level yield");
+        match err {
+            WlwlError::Diagnostic(d) => assert_eq!(
+                d.code,
+                ErrorCode::E0014,
+                "yield at top level must surface as E0014"
+            ),
+            other => panic!("expected Diagnostic, got {other:?}"),
+        }
+    }
+
+    /// The yield marker is 0-arg only. Calling it with arguments
+    /// produces E0022 (arity mismatch) BEFORE the yield fires, so
+    /// mis-use of the reserved name yields a clean diagnostic rather
+    /// than a silent yield.
+    #[test]
+    fn yield_marker_rejects_non_zero_arity_with_e0022() {
+        let src = "__YIELD_TEST__(1, 2);";
+        let ast = parse(src, "t.wll").expect("parse");
+        let mut ev = Evaluator::new();
+        let err = ev.eval(&ast).expect_err("__YIELD_TEST__ with args must error");
+        match err {
+            WlwlError::Diagnostic(d) => assert_eq!(
+                d.code,
+                ErrorCode::E0022,
+                "non-zero arity on yield marker must surface as E0022"
+            ),
+            other => panic!("expected Diagnostic, got {other:?}"),
+        }
     }
 
     // ────────────────────────────────────────────────────────────
