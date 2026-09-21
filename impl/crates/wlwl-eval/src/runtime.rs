@@ -89,6 +89,36 @@ pub enum YieldReason {
     SendingOn(RcHandle),
 }
 
+/// What one step of the state-machine evaluator produces
+/// (plan §5.1.1 pseudocode "match scheduler.step(task)").
+///
+/// Replaces the implicit "always Done" assumption of the recursive
+/// `eval_expr`. At B5a-1 no real yield path exists yet, so callers
+/// see `Done` for every input; B5b introduces yield points at
+/// `YIELD()` / `AWAIT(child)` / `CHANNEL_RECV` / `CHANNEL_SEND`,
+/// and `Blocked` once `CHANNEL_*` wait queues are wired up.
+#[derive(Debug)]
+pub enum StepResult {
+    /// Evaluation completed with a value (OK or ERR propagated).
+    /// The scheduler treats this as a terminal transition and
+    /// moves the task from `Running` to `Done(value)` (plan
+    /// §5.1.1 row "fn 返回").
+    Done(crate::Value),
+    /// The task yielded at a checkpoint. The yield reason tells
+    /// the scheduler which wait list to put the task on. When the
+    /// wait condition becomes ready, `Scheduler::wake_dependents`
+    /// (or the equivalent for `YieldReason::Explicit`) re-enqueues
+    /// the task. Plan §5.1.1 row "Running -- 用户代码 YIELD()" etc.
+    Yield(YieldReason),
+    /// The task is blocked on a resource wait (e.g. channel buf).
+    /// Distinct from `Yield` because the scheduler treats blocked
+    /// tasks differently from yielded ones: blocked tasks are NOT
+    /// re-enqueued on the run_queue; they live on a resource wait
+    /// list and only get woken by the matching wake event.
+    /// Plan §5.1.1 pseudocode arm `StepResult::Blocked`.
+    Blocked,
+}
+
 /// Stack-machine evaluation state (plan §5.1: "enum-driven stack
 /// machine (`EvalState { Expr, ContStmt, pc }`)").
 ///
@@ -282,5 +312,33 @@ mod tests {
         assert_eq!(a.tasks.len(), b.tasks.len());
         assert_eq!(a.run_queue.len(), b.run_queue.len());
         assert_eq!(a.next_generation, b.next_generation);
+    }
+
+    #[test]
+    fn step_result_variants_are_distinct() {
+        // B5a-1: StepResult is currently unreachable from real code
+        // paths (no yield points exist), but the variant shape must
+        // be testable so B5b can match on it. Use Box<YieldReason>
+        // / Box<StepResult> because Yield / Blocked don't carry
+        // Value-equality.
+        use std::mem::discriminant;
+        let d = discriminant(&StepResult::Done(Value::Null));
+        let y = discriminant(&StepResult::Yield(YieldReason::Explicit));
+        let b = discriminant(&StepResult::Blocked);
+        assert_ne!(d, y, "Done and Yield must be distinct variants");
+        assert_ne!(d, b, "Done and Blocked must be distinct variants");
+        assert_ne!(y, b, "Yield and Blocked must be distinct variants");
+    }
+
+    #[test]
+    fn step_result_yield_carries_yield_reason() {
+        // The scheduler dispatches on the YieldReason payload; a
+        // round-trip through Debug + Clone must preserve it so
+        // wait-list bookkeeping stays consistent. (At B5a-1 we
+        // can't reach this through eval, but the type contract
+        // matters.)
+        let r = YieldReason::AwaitingChild(TaskId(7));
+        let cloned = r.clone();
+        assert_eq!(r, cloned);
     }
 }

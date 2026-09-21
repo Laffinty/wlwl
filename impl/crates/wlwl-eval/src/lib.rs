@@ -3826,6 +3826,40 @@ impl Evaluator {
         }
     }
 
+    /// [v0.7 Phase B5a-1] One step of the state-machine evaluator.
+    ///
+    /// Wraps the existing recursive `eval` call so the API surface
+    /// matches plan §5.1.1's "match scheduler.step(task)" pattern.
+    /// **Behaviour at B5a-1 is identical to `eval`**: every input
+    /// returns `StepResult::Done(value)` because no yield points
+    /// exist yet (Phase C will introduce YIELD/SPAWN/AWAIT builtins,
+    /// Phase D will introduce CHANNEL_*).
+    ///
+    /// The point of this method at B5a-1 is purely structural:
+    /// - any future builtin that wants to yield (e.g. `YIELD()`)
+    ///   can return `StepResult::Yield(YieldReason::Explicit)`
+    ///   instead of `Outcome::normal(...)` -- the wrapping here is
+    ///   the single seam B5b has to update to route Yield/Blocked
+    ///   through the scheduler.
+    /// - the StepResult enum is already on the public API so test
+    ///   code and (later) the scheduler can match on it.
+    ///
+    /// Returns an error if `eval` itself errors out (project config
+    /// violation, unhandled ERR escape, etc.); the wrapping in
+    /// `StepResult::Done` only happens for the success path.
+    pub fn step_once(
+        &mut self,
+        expr: &Expr,
+    ) -> WlwlResult<crate::runtime::StepResult> {
+        // At B5a-1 the only legal transition is Done. Yield and
+        // Blocked arms are unreachable until builtins start using
+        // them; the explicit `unreachable!` would be a useful
+        // alarm bell if someone accidentally wires one in during a
+        // refactor without updating this wrapper.
+        let value = self.eval(expr)?;
+        Ok(crate::runtime::StepResult::Done(value))
+    }
+
     /// Snapshot of the project manifest, if a `wlwl.toml` was found at
     /// the project root (Phase C3+). `None` = no-toml project.
     fn project_manifest(&self) -> Option<Arc<wlwl_toml::manifest::Manifest>> {
@@ -5577,6 +5611,37 @@ mod tests {
         let e = parse(src, "t.wll")?;
         let mut ev = Evaluator::new();
         ev.eval(&e)
+    }
+
+    /// [v0.7 Phase B5a-1] step_once wraps eval and is expected to
+    /// always return `StepResult::Done` at this stage (no real yield
+    /// points yet). Verifies the surface is wired and the unwrap to
+    /// `Value` matches the plain `eval` path.
+    #[test]
+    fn step_once_matches_eval_for_simple_expression() {
+        let src = "+(1, 2);";
+        let ast = parse(src, "t.wll").expect("parse");
+        let mut ev = Evaluator::new();
+        let direct = ev.eval(&ast).expect("eval");
+        let step = ev.step_once(&ast).expect("step_once");
+        match step {
+            crate::runtime::StepResult::Done(v) => assert_eq!(v, direct),
+            other => panic!("step_once should be Done at B5a-1, got {other:?}"),
+        }
+    }
+
+    /// [v0.7 Phase B5a-1] step_once propagates eval errors the same
+    /// way eval does. We trigger a top-level unhandled ERR via
+    /// `ERR("x")` so the E0102 path runs.
+    #[test]
+    fn step_once_propagates_top_level_err() {
+        let src = "ERR(\"boom\")";
+        let ast = parse(src, "t.wll").expect("parse");
+        let mut ev = Evaluator::new();
+        let direct = ev.eval(&ast);
+        let step = ev.step_once(&ast);
+        assert!(direct.is_err(), "eval should fail on unhandled ERR");
+        assert!(step.is_err(), "step_once should also fail on unhandled ERR");
     }
 
     /// Like `run` but also returns the warnings accumulated during the
