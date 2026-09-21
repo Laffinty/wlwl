@@ -125,31 +125,20 @@ pub enum ContFrame {
     Next,
 }
 
-/// One slot in the scheduler's task table (plan §5.2 "Task 由
-/// Closure + Env + State + YieldPoints 组成").
+/// One slot in the scheduler's task table.
 ///
-/// At B1 this carries placeholder `yield_points`; B4 will replace
-/// `Closure` with the concrete `Value::Closure` extraction plus
-/// the call-shape needed by `Scheduler::step`.
-#[derive(Debug)]
-pub struct TaskEntry {
-    pub state: TaskState,
-    pub env: Env,
-    pub yield_points: Vec<EvalState>,
-}
+/// Re-exported alias to the full [`crate::task::Task`] type that
+/// was defined in B4; kept here so B1-era callers (e.g. tests)
+/// that name `TaskEntry` keep working through B4 / B5. New code
+/// should reference [`crate::task::Task`] directly.
+pub type TaskEntry = crate::task::Task;
 
 /// A scope: the lifetime container for tasks (plan §5.2 "Scope 是
 /// Task 的容器").
 ///
-/// At B1 fields are typed but no behaviour; B4 wires scope creation
-/// to `SCOPE(fn)` and B5 wires scope-exit `await-all-then-cancel`.
-#[derive(Debug)]
-pub struct Scope {
-    pub id: ScopeId,
-    pub parent: Option<ScopeId>,
-    pub tasks: Vec<TaskHandle>,
-    pub cancelled: bool,
-}
+/// Re-exported alias to [`crate::task::Scope`]; same migration
+/// rationale as [`TaskEntry`].
+pub type Scope = crate::task::Scope;
 
 /// The scheduler itself (plan §5.1 + §5.1.1 loop pseudo-code).
 ///
@@ -210,11 +199,27 @@ impl Scheduler {
             generation: self.next_generation,
         };
         self.next_generation = self.next_generation.wrapping_add(1);
-        self.tasks.push(TaskEntry {
-            state: TaskState::Pending,
-            env: Env::new(),
-            yield_points: Vec::new(),
-        });
+        // Scope is implicit at B4 (top-level scope, id = 0). B5
+        // will add a real scope stack and pass the current scope's
+        // id through the scheduler.
+        let parent_scope = self
+            .scopes
+            .first()
+            .map(|s| s.id)
+            .unwrap_or(ScopeId(0));
+        // Ensure at least the implicit top-level scope exists so
+        // `parent_scope` always references a real slot. Real scope
+        // creation lands in B5 with `SCOPE(fn)`.
+        if self.scopes.is_empty() {
+            self.scopes.push(Scope::new(ScopeId(0), None));
+        }
+        self.tasks.push(TaskEntry::new_pending(
+            id,
+            handle.generation,
+            Value::Null, // body: filled by SPAWN at B5; null = placeholder
+            Env::new(),
+            parent_scope,
+        ));
         self.run_queue.push_back(id);
         (id, handle)
     }

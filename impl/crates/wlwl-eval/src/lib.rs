@@ -3543,6 +3543,12 @@ pub mod registry;
 /// and B5 (scheduler loop + CPS eval conversion). See plan §5.1,
 /// §5.1.1, §5.2, ADR-0014, ADR-0016.
 pub mod runtime;
+
+/// [v0.7 Phase B4] Task and Scope data structures (the rich per-task
+/// / per-scope fields the scheduler stores). Behaviour lives in
+/// `runtime::Scheduler`; this module is data shape only. See plan
+/// §5.2.
+pub mod task;
 /// `wlwl:std.test` — in-process test framework (spec v0.4 §15.9,
 /// Phase B7). Same std-boundary rationale as collection: `TEST` /
 /// `RUN_TESTS` need callback invocation, `ASSERT` / friends need
