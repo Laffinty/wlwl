@@ -2588,12 +2588,99 @@ fn builtin_format(ev: &mut Evaluator, args: Vec<Value>) -> WlwlResult<Outcome> {
     Ok(Outcome::normal(Value::String(out)))
 }
 
+/// [v0.7 Phase C1] `SCOPE(fn)` creates a structured-concurrency
+/// scope. At C1 (B5b not yet landed) the scope has no scheduler
+/// state -- it is semantically equivalent to a labelled `fn()`
+/// call. When B5b wires the scheduler, this same builtin will
+/// additionally allocate a `Scope` in `self.scheduler`, push a
+/// fresh env frame, await spawned children at scope exit, and
+/// enforce D17 (no implicit runtime scope; top-level SPAWN
+/// without an enclosing SCOPE raises E0058, surfaced in C2).
+///
+/// Error contract (plan §4.4 / §3):
+/// - **E0052** when the argument is not a function value (row
+///   "E0052 | SCOPE 中 fn 不是函数")
+/// - **E0022** (v0.6's existing arity check inside
+///   `invoke_closure`) when `fn` requires more parameters than
+///   SCOPE can supply. SCOPE takes exactly one argument and
+///   passes zero args to the closure, so a 1+-param fn fires
+///   E0022 just like a bare `fn()` call would.
+///
+/// Span sourcing: builtins do not get a span parameter, so we
+/// fall back to `self.current_span` (set by `eval_call` before
+/// dispatch) and ultimately to a zero span if neither is set.
+/// The fallback is conservative; v0.6 callers always have
+/// `current_span` populated at the dispatch site.
+fn builtin_scope(
+    ev: &mut Evaluator,
+    args: Vec<Value>,
+) -> WlwlResult<Outcome> {
+    use wlwl_ast::Span as AstSpan;
+    // Materialise the diagnostic span. `current_span` is set by
+    // `eval_call` right before the dispatch (see the doc-comment on
+    // the Evaluator field); if it is somehow missing we fall back
+    // to a zero span so the diagnostic still has *some* location.
+    let diag_span = ev
+        .current_span
+        .clone()
+        .unwrap_or_else(AstSpan::dummy);
+    // Arity: SCOPE takes exactly one argument (the closure).
+    if args.len() != 1 {
+        return Err(ev.diag(
+            ErrorCode::E0022,
+            format!(
+                "SCOPE expects 1 argument (the function), got {}",
+                args.len()
+            ),
+            diag_span,
+        ));
+    }
+    let fn_value = args.into_iter().next().expect("len == 1 checked");
+    // Type-narrow the arg. Anything other than Value::Closure is
+    // E0052 per plan §4.4 row "E0052 | SCOPE 中 fn 不是函数".
+    let (params, body, captured_env) = match fn_value {
+        Value::Closure {
+            params,
+            body,
+            env,
+        } => (params, body, env),
+        other => {
+            return Err(ev.diag(
+                ErrorCode::E0052,
+                format!(
+                    "SCOPE argument must be a function value, got {}",
+                    type_name(&other)
+                ),
+                diag_span,
+            ));
+        }
+    };
+    // Dispatch to invoke_closure with zero args. invoke_closure
+    // handles arity (E0022 on fn requiring > 0 params), default
+    // parameters, and the full trace-frame + signal handling.
+    ev.invoke_closure(
+        "SCOPE",
+        params,
+        body,
+        captured_env,
+        Vec::new(),
+        &diag_span,
+    )
+}
+
 /// The single dispatch table: maps a built-in name to its implementation.
 /// Operators (`+`, `==`, …) live here too — the parser turns `+(1, 2)`
 /// into `Call { name: "+", … }`, and we dispatch on the operator name.
 fn resolve_builtin(name: &str) -> Option<BuiltinFn> {
     match name {
         "PRINT" => Some(builtin_print),
+        // [v0.7 Phase C1] SCOPE(fn): structured-concurrency scope
+        // entry. Semantically equivalent to `fn()` at C1; becomes
+        // the Scheduler-aware scope container at B5b. See plan
+        // §3 Phase C1 + §5.2 + §10 D15 (nested scopes) + §10 D17
+        // (no implicit runtime scope). See builtin_scope for the
+        // error contract (E0052 / E0022).
+        "SCOPE" => Some(builtin_scope),
         // Phase B10 (spec §15.1): PRINT_ERR writes to stderr.
         // Same dispatch as PRINT — appended to the global builtin
         // table so it's available without IMPORT (mirrors `PRINT`).
@@ -5642,6 +5729,85 @@ mod tests {
         let step = ev.step_once(&ast);
         assert!(direct.is_err(), "eval should fail on unhandled ERR");
         assert!(step.is_err(), "step_once should also fail on unhandled ERR");
+    }
+
+    // ────────────────────────────────────────────────────────────
+    // [v0.7 Phase C1] SCOPE(fn) builtin
+    //
+    // SCOPE(fn) at C1 is semantically equivalent to fn(): the scope
+    // exists in name but has no scheduler state until B5b lands.
+    // These tests pin down that equivalence (happy path + three
+    // failure modes) so B5b's introduction of real Scope objects
+    // can be measured against the C1 baseline.
+    // ────────────────────────────────────────────────────────────
+
+    #[test]
+    fn scope_calls_zero_arg_closure_and_returns_value() {
+        // SCOPE(FUN(() , 1 + 1)) -> 2
+        let src = "SCOPE(FUN(() , +(1, 1)));";
+        let v = run(src).expect("SCOPE on a 0-arg fn should return 2");
+        assert_eq!(v, Value::Integer(2));
+    }
+
+    #[test]
+    fn scope_passes_through_return_signal() {
+        // SCOPE(fn) where the body does LET and returns: SCOPE must
+        // unwrap the Return signal the same way a bare fn() call does.
+        // Without this, SCOPE would surface the raw signal and break
+        // every program that uses `RETURN` inside SCOPE.
+        let src = "SCOPE(FUN(() , LET(x, 10); *(x, 2)));";
+        let v = run(src).expect("SCOPE with LET inside should return 20");
+        assert_eq!(v, Value::Integer(20));
+    }
+
+    #[test]
+    fn scope_rejects_non_function_arg_with_e0052() {
+        // SCOPE(1) -> E0052 per plan §4.4 row
+        // "E0052 | SCOPE 中 fn 不是函数".
+        let src = "SCOPE(1);";
+        let err = run(src).expect_err("SCOPE(non-function) should fail");
+        match err {
+            WlwlError::Diagnostic(d) => assert_eq!(
+                d.code,
+                ErrorCode::E0052,
+                "expected E0052 'SCOPE 中 fn 不是函数'"
+            ),
+            other => panic!("expected WlwlError::Diagnostic, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn scope_rejects_zero_args_with_e0022() {
+        // SCOPE() -> E0022 (function call arity).
+        let src = "SCOPE();";
+        let err = run(src).expect_err("SCOPE() with no args should fail");
+        match err {
+            WlwlError::Diagnostic(d) => assert_eq!(
+                d.code,
+                ErrorCode::E0022,
+                "expected E0022 'function call arity'"
+            ),
+            other => panic!("expected WlwlError::Diagnostic, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn scope_rejects_arity_mismatch_with_e0022() {
+        // SCOPE(FUN((x), x)) -> E0022: SCOPE supplies zero args, so
+        // a 1+ param fn fails the same arity check it would on a
+        // bare call. This documents the user-facing limitation at
+        // C1: SCOPE only meaningfully wraps 0-arg fns; SPAWN (C2)
+        // is the builtin that passes args.
+        let src = "SCOPE(FUN((x), x));";
+        let err = run(src).expect_err("SCOPE on a 1-arg fn should fail");
+        match err {
+            WlwlError::Diagnostic(d) => assert_eq!(
+                d.code,
+                ErrorCode::E0022,
+                "expected E0022 'function call arity'"
+            ),
+            other => panic!("expected WlwlError::Diagnostic, got {other:?}"),
+        }
     }
 
     /// Like `run` but also returns the warnings accumulated during the
