@@ -2756,7 +2756,7 @@ fn builtin_spawn(
     // Arity: SPAWN takes exactly one argument (the closure).
     if args.len() != 1 {
         return Err(ev.diag(
-            ErrorCode::E0022,
+            ErrorCode::E0056,
             format!(
                 "SPAWN expects 1 argument (the function), got {}",
                 args.len()
@@ -6112,14 +6112,19 @@ mod tests {
     }
 
     #[test]
-    fn spawn_rejects_zero_args_with_e0022() {
-        // SPAWN() -> E0022 (function call arity).
+    fn spawn_rejects_zero_args_with_e0056() {
+        // SPAWN() -> E0056 per plan §4.4 row
+        // "E0056 | SPAWN 中 fn 参数个数错误". The dedicated
+        // v0.7 error code (not the generic E0022 that other
+        // builtins use) is what the plan locks; see also the
+        // P7-C2-001 deviation entry which recorded the brief
+        // drift through E0022 in C2 commit cce3ce3.
         let src = "SCOPE(FUN(() , SPAWN()));";
         let err = run(src).expect_err("SPAWN() with no args should fail");
         assert_eq!(
             err.diagnostic().code,
-            ErrorCode::E0022,
-            "expected E0022 'function call arity'"
+            ErrorCode::E0056,
+            "expected E0056 'SPAWN 中 fn 参数个数错误'"
         );
     }
 
