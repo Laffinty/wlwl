@@ -1,0 +1,5 @@
+# Force text mode on the deviations ledger so diffs remain readable.
+# Previously stored as UTF-16 LE; since 7421e2c the file is plain UTF-8.
+# Without this, git's binary-detection heuristic on legacy commits
+# (`Bin 211004 -> 179431`) can hide the actual text diff.
+docs/plan/deviations.md text working-tree-encoding=UTF-8
