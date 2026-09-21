@@ -3537,6 +3537,12 @@ fn values_equal(a: &Value, b: &Value) -> bool {
 pub mod collection;
 
 pub mod registry;
+
+/// [v0.7 Phase B1] cooperative coroutine runtime skeleton. Types only
+/// at this stage -- no behaviour. Wires up in B4 (`Task` / `Scope`)
+/// and B5 (scheduler loop + CPS eval conversion). See plan §5.1,
+/// §5.1.1, §5.2, ADR-0014, ADR-0016.
+pub mod runtime;
 /// `wlwl:std.test` — in-process test framework (spec v0.4 §15.9,
 /// Phase B7). Same std-boundary rationale as collection: `TEST` /
 /// `RUN_TESTS` need callback invocation, `ASSERT` / friends need
