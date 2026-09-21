@@ -7,10 +7,80 @@
 
 !!! note "On this page"
 
-    - [Unreleased — v0.4.0](#unreleased--v040)
+    - [Unreleased — v0.7.0](#unreleased--v070)
+    - [v0.6.0](#v060)
     - [v0.3.0](#v030)
 
-## [Unreleased — v0.4.0] {#unreleased--v040}
+## [Unreleased — v0.7.0] {#unreleased--v070}
+
+> **WIP.** `wip0.7` branch. Plan: `docs/plan/wlwl-build-plan-v0.7.md`.
+> Spec file (Phase H1) is **not** yet cut.
+
+This release introduces the **structured-concurrency runtime**: a
+cooperative single-thread scheduler (§5.1), `SCOPE` / `SPAWN` /
+`AWAIT` / `YIELD` / `TASK_*` builtins (Phase C), and the
+cancellation scope tree (Phase F). The error / channel / SHIELD
+work (Phases D / E / F) is still pending — see the plan.
+
+### Added
+
+- **Phase A (research + design landed)** — `docs/plan/wlwl-build-plan-v0.7.md`
+  (commit `01ff9d6`), ADR-0014 / 0015 / 0016 (commit `0d463ad`),
+  `deviations.md` v0.7 section marker (commit `e9d2106`).
+- **Phase B (coroutine runtime skeleton)** — error codes
+  `E0052`-`E0058` + `ErrorCategory::Concurrent` (`b38126e`);
+  `runtime.rs` type stubs — `TaskId`, `TaskHandle`,
+  `TaskState`, `YieldReason`, `Scheduler` (`7f9d54f`);
+  `Evaluator.current_task: Option<TaskId>` (`86cbddf`);
+  v0.6 fidelity golden (`6cac0f1`); `Task` + `Scope` data
+  structures (`5634331`); `StepResult` + `step_once` wrapper
+  (`5ff79e5`); single-task benchmark baseline (`ad0dd60`);
+  Scheduler allocation API reconciled for B5b prep
+  (`d53e09e`).
+- **Phase C1 / C2 (built-in partial scope)** — `SCOPE(fn)`
+  (`e28de1d` + `cce3ce3`); `SPAWN(fn)` (`cce3ce3`, with the
+  audit-fix chain `1248978` / `d46bab3` / `d53e09e`).
+- **Phase B5a-3 slice 1 (state-machine yield plumbing)** —
+  `Signal::Yield(YieldReason)` variant + propagation through
+  `eval_expr` (loops, blocks, closures all propagate Yield
+  upward like `Return`); `Evaluator::step_once` rewritten as a
+  real step (mirrors `eval`'s E0102 promotion, then translates
+  `Outcome.signal` into `StepResult`); internal `__YIELD_TEST__`
+  marker for smoke tests. v0.6 fidelity golden preserved
+  byte-for-byte. (Commit `836a5ce`.)
+- **Phase B5a-3 slice 2 (smoke baseline + full refactor)** —
+  `__YIELD_AFTER_ARG_TEST__(fn)` 1-arg marker that exercises
+  `Signal::Yield` propagation through `eval_call`'s
+  argument-eval for loop (`90ace1c`); full slice 2 refactor —
+  extracted `eval_arg_values` / `dispatch_call` /
+  `outcome_to_step_result` helpers from `eval_call`, added
+  parallel `step_call` (iterative / step-friendly), and routed
+  top-level `Expr::Call` through `step_call` in `step_once`
+  (`8b65575`).
+
+### Pending (next-phase work, not yet committed)
+
+- Phase C3 `AWAIT(handle)` / C4 `YIELD()` / C5 `TASK_*`
+- Phase B5b Scheduler wire-up
+- Phase D Channels (`CHANNEL_NEW` / `_SEND` / `_RECV` / ...,
+  8 sub-items)
+- Phase E error propagation (with **E4** as the blocker:
+  ERR-consumer registry cross-task regression)
+- Phase F cancellation scope tree (incl. SHIELD with ≥3
+  conformance fixtures)
+- Phase G quality gates (clippy 0-warning, rustdoc 100%,
+  fuzz 24h, cargo-deny 0, single-task perf ≤ 10% regression,
+  spec-file freeze)
+- Phase H `docs/standard/wlwl-spec-v0.7.md` + `v0.7.0` tag
+  + plan-file rename with COMPLETED banner
+
+## [v0.6.0] {#v060}
+
+> Released 2026-09-20 (commit `d0a4742`). The notes below were
+> originally tracked under an "Unreleased — v0.4.0" heading and
+> shipped as a single jump to v0.6.0 — no separate v0.4 or v0.5
+> compiler release was cut. For the canonical Keep-a-Changelog
+> format, see the root `CHANGELOG.md` file.
 
 ### Added
 
