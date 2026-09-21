@@ -3980,6 +3980,37 @@ pub struct Evaluator {
     pub scheduler: crate::runtime::Scheduler,
 }
 
+/// [v0.7 Phase B5a-3 slice 2] Outcome of evaluating a Call's
+/// argument list. Used by both `eval_call` (recursive path) and
+/// `step_call` (iterative / step-friendly path) to communicate
+/// the two possible terminal states of arg eval:
+///
+/// - `Done { accum, pending_err }`: all args evaluated (or arg
+///   eval short-circuited on the first ERR); the dispatch step
+///   can proceed with `accum` and `pending_err`.
+/// - `Signal(outcome)`: an arg produced a non-`None` signal
+///   (`Yield` / `Return` / `Break` / `Continue`); the caller
+///   must propagate `outcome` unchanged instead of dispatching.
+///
+/// Splitting the result type this way lets `step_call`'s
+/// iterative driver preserve the same propagation rule that
+/// `eval_call`'s for loop uses (`if o.signal != Signal::None {
+/// return Ok(o); }`) without conflating the "all args done"
+/// and "signal short-circuit" cases.
+///
+/// Defined at module scope (NOT inside `impl Evaluator`) so the
+/// associated-type ambiguity doesn't bite: `impl Evaluator` and
+/// `impl Default for Evaluator` both live nearby, and an enum
+/// inside either would be an associated type of `Evaluator` —
+/// not directly nameable from the other.
+enum ArgEvalResult {
+    Done {
+        accum: Vec<Value>,
+        pending_err: Option<Value>,
+    },
+    Signal(Outcome),
+}
+
 impl Default for Evaluator {
     fn default() -> Self {
         Self::new()
@@ -4201,17 +4232,19 @@ impl Evaluator {
         }
     }
 
-    /// [v0.7 Phase B5a-3 slice 1] One step of the state-machine
+    /// [v0.7 Phase B5a-3 slice 2] One step of the state-machine
     /// evaluator.
     ///
-    /// Mirrors `eval`'s project-config gate and trace enrichment,
-    /// then translates the trailing `Outcome.signal` into a
-    /// [`crate::runtime::StepResult`]:
+    /// Dispatches by top-level `Expr` variant:
     ///
-    /// - `Signal::None` / `Signal::Return(_)` → `StepResult::Done(v)`
-    /// - `Signal::Yield(reason)` → `StepResult::Yield(reason)`
-    /// - `Signal::Break` / `Signal::Continue` → `E0014` error (same
-    ///   top-level diagnostic `eval` produces)
+    /// - `Expr::Call` -> `step_call` (iterative arg eval + dispatch
+    ///   via the same `eval_arg_values` / `dispatch_call` helpers
+    ///   `eval_call` uses; the result is translated to `StepResult`
+    ///   so a `Yield` from inside the arg list surfaces as
+    ///   `StepResult::Yield`).
+    /// - All other variants -> `eval_top_level` (the existing
+    ///   recursive path), followed by E0102 promotion and the
+    ///   `Outcome` -> `StepResult` translation that mirrors `eval`.
     ///
     /// **Fidelity guarantee**: for any program that does NOT trigger
     /// a yield signal (i.e. every v0.6 program and every v0.7 program
@@ -4220,15 +4253,15 @@ impl Evaluator {
     /// The v0.6 fidelity golden (Phase B3) is unaffected.
     ///
     /// `Signal::Yield` is reachable only via:
-    /// - the internal `__YIELD_TEST__` marker used by slice-1 tests
-    ///   (and to be replaced by the real `YIELD` user-facing builtin
-    ///   in Phase C4)
+    /// - the internal `__YIELD_TEST__` / `__YIELD_AFTER_ARG_TEST__`
+    ///   markers used by slice-1 / slice-2 tests (to be replaced by
+    ///   the real `YIELD` user-facing builtin in Phase C4)
     /// - any future builtin that opts to yield (Phase C/D/F)
     ///
-    /// Returns an error if `eval` itself errors out (project config
-    /// violation, unhandled ERR escape, etc.); the wrapping into
-    /// `StepResult::Done` / `StepResult::Yield` only happens for the
-    /// success path.
+    /// Returns an error if the underlying eval errors out (project
+    /// config violation, unhandled ERR escape, etc.); the wrapping
+    /// into `StepResult::Done` / `StepResult::Yield` only happens for
+    /// the success path.
     pub fn step_once(
         &mut self,
         expr: &Expr,
@@ -4236,45 +4269,68 @@ impl Evaluator {
         // Project-config gate + trace enrichment, mirroring `eval`
         // exactly so the slice-1 smoke test can compare the two.
         self.check_project_config(expr.span())?;
-        let outcome = self
-            .eval_top_level(expr)
-            .map_err(|e| self.enrich_with_trace(e))?;
-        // §19.6 Corollary 19.1: a top-level unhandled ERR (either
-        // as `Signal::Return(Value::Err(_))` or as the final value
-        // when the signal is `None`) must produce E0102 in the
-        // state-machine path too — `eval` does this promotion and
-        // `step_once` must mirror it, otherwise a `.wll` file that
-        // runs to completion with an unhandled ERR would silently
-        // succeed under the scheduler and only fail under `eval`.
-        if let Signal::Return(Value::Err(payload)) = &outcome.signal {
-            return Err(self.diag(
-                ErrorCode::E0102,
-                format!("unhandled ERR escaped to top level: {}", payload.display()),
-                expr.span().clone(),
-            ));
-        }
-        if matches!(outcome.signal, Signal::None) {
-            if let Value::Err(payload) = &outcome.value {
-                return Err(self.diag(
-                    ErrorCode::E0102,
-                    format!("unhandled ERR escaped to top level: {}", payload.display()),
-                    expr.span().clone(),
-                ));
+        match expr {
+            Expr::Call { name, args, span } => {
+                // Top-level Call goes through the iterative
+                // `step_call` path. The helper does its own
+                // E0102-equivalent / Outcome -> StepResult
+                // translation internally.
+                self.step_call(name, args, span)
+            }
+            _ => {
+                // Non-Call top-level expressions take the recursive
+                // `eval_top_level` path (matches `eval`'s contract),
+                // then we apply E0102 promotion and translate
+                // Outcome -> StepResult.
+                let outcome = self
+                    .eval_top_level(expr)
+                    .map_err(|e| self.enrich_with_trace(e))?;
+                // §19.6 Corollary 19.1: a top-level unhandled ERR
+                // (either as `Signal::Return(Value::Err(_))` or as
+                // the final value when the signal is `None`) must
+                // produce E0102 in the state-machine path too —
+                // `eval` does this promotion and `step_once` must
+                // mirror it, otherwise a `.wll` file that runs to
+                // completion with an unhandled ERR would silently
+                // succeed under the scheduler and only fail under
+                // `eval`.
+                if let Signal::Return(Value::Err(payload)) = &outcome.signal {
+                    return Err(self.diag(
+                        ErrorCode::E0102,
+                        format!(
+                            "unhandled ERR escaped to top level: {}",
+                            payload.display()
+                        ),
+                        expr.span().clone(),
+                    ));
+                }
+                if matches!(outcome.signal, Signal::None) {
+                    if let Value::Err(payload) = &outcome.value {
+                        return Err(self.diag(
+                            ErrorCode::E0102,
+                            format!(
+                                "unhandled ERR escaped to top level: {}",
+                                payload.display()
+                            ),
+                            expr.span().clone(),
+                        ));
+                    }
+                }
+                Ok(match outcome.signal {
+                    Signal::None | Signal::Return(_) => {
+                        crate::runtime::StepResult::Done(outcome.value)
+                    }
+                    Signal::Yield(reason) => crate::runtime::StepResult::Yield(reason),
+                    Signal::Break | Signal::Continue => {
+                        return Err(self.diag(
+                            ErrorCode::E0014,
+                            "BREAK or CONTINUE used outside a loop".to_string(),
+                            expr.span().clone(),
+                        ));
+                    }
+                })
             }
         }
-        Ok(match outcome.signal {
-            Signal::None | Signal::Return(_) => {
-                crate::runtime::StepResult::Done(outcome.value)
-            }
-            Signal::Yield(reason) => crate::runtime::StepResult::Yield(reason),
-            Signal::Break | Signal::Continue => {
-                return Err(self.diag(
-                    ErrorCode::E0014,
-                    "BREAK or CONTINUE used outside a loop".to_string(),
-                    expr.span().clone(),
-                ));
-            }
-        })
     }
 
     /// Snapshot of the project manifest, if a `wlwl.toml` was found at
@@ -5003,6 +5059,148 @@ impl Evaluator {
 
     // ── Calls (the heart of §12.6 ERR transparent propagation) ─────
 
+    /// [v0.7 Phase B5a-3 slice 2] Iteratively evaluate a Call's
+    /// argument list, applying the §12.6 ERR transparent propagation
+    /// rule. Returns `ArgEvalResult::Signal(o)` if any arg produces a
+    /// non-`None` signal (propagate unchanged); otherwise returns
+    /// `ArgEvalResult::Done { accum, pending_err }` where `pending_err`
+    /// is set if arg eval short-circuited on the first `Value::Err`.
+    ///
+    /// Behaviour is byte-identical to the for-loop in pre-slice-2
+    /// `eval_call`; this commit only extracts it so `step_call` can
+    /// reuse it.
+    fn eval_arg_values(
+        &mut self,
+        args: &[Expr],
+        whitelisted: bool,
+    ) -> WlwlResult<ArgEvalResult> {
+        let mut accum: Vec<Value> = Vec::with_capacity(args.len());
+        let mut pending_err: Option<Value> = None;
+        for a in args {
+            let o = self.eval_expr(a)?;
+            if o.signal != Signal::None {
+                return Ok(ArgEvalResult::Signal(o));
+            }
+            if !whitelisted {
+                if let Value::Err(_) = &o.value {
+                    pending_err.get_or_insert_with(|| o.value.clone());
+                    // Stop evaluating further args — the ERR will
+                    // short-circuit the call.
+                    break;
+                }
+            }
+            accum.push(o.value);
+        }
+        Ok(ArgEvalResult::Done { accum, pending_err })
+    }
+
+    /// [v0.7 Phase B5a-3 slice 2] Dispatch a Call after all args are
+    /// evaluated: apply §12.6 transparent ERR propagation, look up
+    /// the user function (Closure / NativeFn), fall through to
+    /// `resolve_builtin`, and surface `undefined_name` if nothing
+    /// matches. Used by both `eval_call` (recursive path) and
+    /// `step_call` (iterative / step-friendly path).
+    ///
+    /// Behaviour is byte-identical to the post-arg-eval block in
+    /// pre-slice-2 `eval_call`; this commit only extracts it.
+    #[allow(clippy::too_many_arguments)]
+    fn dispatch_call(
+        &mut self,
+        name: &str,
+        accum: Vec<Value>,
+        pending_err: Option<Value>,
+        whitelisted: bool,
+        user_fn: Option<Value>,
+        span: &Span,
+    ) -> WlwlResult<Outcome> {
+        // §12.6 transparent propagation: if the function is NOT in
+        // the ERR-consumer whitelist, the first ERR encountered is
+        // the result of the call.
+        if !whitelisted {
+            if let Some(err) = pending_err {
+                return Ok(Outcome::normal(err));
+            }
+            for v in &accum {
+                if let Value::Err(_) = v {
+                    return Ok(Outcome::normal(v.clone()));
+                }
+            }
+        }
+        // User-function dispatch takes priority over the global
+        // builtin table (in Phase 2 we keep them in disjoint
+        // namespaces by convention — there is no name conflict in
+        // the std yet).
+        if let Some(v) = user_fn {
+            if let Value::Closure { params, body, env } = v {
+                return self.invoke_closure(name, params, body, env, accum, span);
+            }
+            if let Value::NativeFn { invoke, .. } = v {
+                return match invoke {
+                    NativeInvoke::Std(f) => invoke_std(self, f, accum, span),
+                    NativeInvoke::Builtin(b) => {
+                        // Phase B6: callback-aware std modules (notably
+                        // `wlwl:std.collection`) bind eval-internal builtins
+                        // through this variant. Same save/restore span
+                        // contract as the global builtin dispatch so any
+                        // E0102 / E0038 etc. emitted from inside points
+                        // at the call site, not the outer scope.
+                        let prev_span = self.current_span.take();
+                        self.current_span = Some(span.clone());
+                        let result = b(self, accum);
+                        self.current_span = prev_span;
+                        result
+                    }
+                };
+            }
+            // If the name resolves to a non-Closure value, treat as
+            // E0020 (the user is trying to call a non-callable).
+            return Err(self.diag(
+                ErrorCode::E0020,
+                format!("'{}' is not a function", name),
+                span.clone(),
+            ));
+        }
+        if let Some(b) = resolve_builtin(name) {
+            // Phase B4: expose the call site span to builtins that
+            // synthesize span-aware diagnostics (e.g. builtin_unwrap
+            // producing E0100 PANIC with cause). save/restore so any
+            // nested eval_call (e.g. recursive fn calls from inside
+            // a builtin) doesn't clobber the outer span.
+            let prev_span = self.current_span.take();
+            self.current_span = Some(span.clone());
+            let result = b(self, accum);
+            self.current_span = prev_span;
+            return result;
+        }
+        Err(self.undefined_name(name, span))
+    }
+
+    /// [v0.7 Phase B5a-3 slice 2] Translate an `Outcome` produced
+    /// inside the call path into the public `StepResult` enum used
+    /// by `step_once` / `step_call`. Rejects `Break` / `Continue`
+    /// with E0014 (same defensive diagnostic `eval` produces) since
+    /// those signals reaching the call boundary indicate a control-
+    /// flow bug in the surrounding eval_expr.
+    fn outcome_to_step_result(
+        &mut self,
+        outcome: Outcome,
+        span: &Span,
+    ) -> WlwlResult<crate::runtime::StepResult> {
+        Ok(match outcome.signal {
+            Signal::None | Signal::Return(_) => {
+                crate::runtime::StepResult::Done(outcome.value)
+            }
+            Signal::Yield(reason) => crate::runtime::StepResult::Yield(reason),
+            Signal::Break | Signal::Continue => {
+                return Err(self.diag(
+                    ErrorCode::E0014,
+                    "BREAK or CONTINUE used outside a loop".to_string(),
+                    span.clone(),
+                ));
+            }
+        })
+    }
+
     /// [v0.7 Phase B5a-3 slice 1] Internal yield-marker dispatch.
     ///
     /// Returns `Ok(Some(outcome))` if `name` is a recognized hidden
@@ -5128,97 +5326,83 @@ impl Evaluator {
             };
             return Ok(Outcome::normal(v));
         }
-        // Look up the callee (user function takes priority over built-in
-        // with the same name; in Phase 2 we keep them in disjoint
-        // namespaces by convention — there is no name conflict in the
-        // std yet).
+        // [v0.7 Phase B5a-3 slice 2] eval_call now delegates the
+        // arg-eval + dispatch steps to `eval_arg_values` and
+        // `dispatch_call`. Behaviour is byte-identical to the
+        // pre-slice-2 for-loop + post-arg-eval block; this commit
+        // only refactors the structure so `step_call` can reuse
+        // the same two helpers without forking the dispatch logic.
         let user_fn = self.env.get(name).map(|v| v.clone());
         let whitelisted = is_err_consumer(name);
+        let (accum, pending_err) = match self.eval_arg_values(args, whitelisted)? {
+            ArgEvalResult::Signal(o) => return Ok(o),
+            ArgEvalResult::Done { accum, pending_err } => (accum, pending_err),
+        };
+        self.dispatch_call(name, accum, pending_err, whitelisted, user_fn, span)
+    }
 
-        // Evaluate arguments left-to-right. §12.6 short-circuit: if
-        // the callee is not in the ERR whitelist and we have already
-        // seen an ERR, return the leftmost ERR without evaluating the
-        // remaining args.
-        let mut arg_values = Vec::with_capacity(args.len());
-        let mut pending_err: Option<Value> = None;
-        for a in args {
-            let o = self.eval_expr(a)?;
-            if o.signal != Signal::None {
-                return Ok(o);
-            }
-            if !whitelisted {
-                if let Value::Err(_) = &o.value {
-                    pending_err.get_or_insert_with(|| o.value.clone());
-                    // Stop evaluating further args — the ERR will
-                    // short-circuit the call.
-                    break;
-                }
-            }
-            arg_values.push(o.value);
+    /// [v0.7 Phase B5a-3 slice 2] Iterative / step-friendly parallel
+    /// to `eval_call`. Same logic, same fast paths, same propagation
+    /// rules; the only difference is that the final outcome is
+    /// translated into `StepResult` (yieldable) instead of being
+    /// returned as `Outcome`.
+    ///
+    /// Reuses the same `eval_arg_values` / `dispatch_call` helpers
+    /// as `eval_call`, so the iterative and recursive paths cannot
+    /// diverge. The recursive path remains the production entry
+    /// point (`eval` -> `eval_top_level` -> `eval_expr` -> `Call`
+    /// arm -> `eval_call`); `step_call` is reachable only through
+    /// `step_once` / `step_expr` when the caller is the state-
+    /// machine driver.
+    fn step_call(
+        &mut self,
+        name: &str,
+        args: &[Expr],
+        span: &Span,
+    ) -> WlwlResult<crate::runtime::StepResult> {
+        // SET fast path: SET's macro semantics (the target must be
+        // a bare name, not an arbitrary expression) make it
+        // awkward to drive through `eval_arg_values`. Fall back
+        // to the recursive `eval_set` and translate the result.
+        if name == "SET" {
+            let outcome = self.eval_set(args, span)?;
+            return self.outcome_to_step_result(outcome, span);
         }
-
-        // §12.6 transparent propagation: if the function is NOT in the
-        // ERR-consumer whitelist, the first ERR encountered is the
-        // result of the call.
-        if !whitelisted {
-            if let Some(err) = pending_err {
-                return Ok(Outcome::normal(err));
-            }
-            for v in &arg_values {
-                if let Value::Err(_) = v {
-                    return Ok(Outcome::normal(v.clone()));
-                }
-            }
+        // Yield-marker dispatch (slice 1): markers fire before arg
+        // eval and produce a `Yield` signal directly. Translate
+        // before returning.
+        if let Some(marker_outcome) = self.internal_yield_marker(name, args, span)? {
+            return self.outcome_to_step_result(marker_outcome, span);
         }
-
-        // Dispatch.
-        if let Some(v) = user_fn {
-            if let Value::Closure { params, body, env } = v {
-                return self.invoke_closure(name, params, body, env, arg_values, span);
-            }
-            if let Value::NativeFn { invoke, .. } = v {
-                return match invoke {
-                    NativeInvoke::Std(f) => invoke_std(self, f, arg_values, span),
-                    NativeInvoke::Builtin(b) => {
-                        // Phase B6: callback-aware std modules (notably
-                        // `wlwl:std.collection`) bind eval-internal builtins
-                        // through this variant. Same save/restore span
-                        // contract as the global builtin dispatch
-                        // (line ~2837) so any E0102 / E0038 etc. emitted
-                        // from inside points at the call site, not the
-                        // outer scope. BUILTINS shims themselves do NOT
-                        // re-enter `eval_call` (they call closures via
-                        // `invoke_closure` directly), so the span
-                        // nesting is single-frame.
-                        let prev_span = self.current_span.take();
-                        self.current_span = Some(span.clone());
-                        let result = b(self, arg_values);
-                        self.current_span = prev_span;
-                        result
-                    }
-                };
-            }
-            // If the name resolves to a non-Closure value, treat as
-            // E0020 (the user is trying to call a non-callable).
-            return Err(self.diag(
-                ErrorCode::E0020,
-                format!("'{}' is not a function", name),
-                span.clone(),
-            ));
+        // && / || short-circuit: same shape as `eval_call`; fall
+        // back to the recursive helper.
+        if name == "&&" || name == "||" {
+            let outcome = self.eval_logical_short_circuit(name, args, span)?;
+            return self.outcome_to_step_result(outcome, span);
         }
-        if let Some(b) = resolve_builtin(name) {
-            // Phase B4: expose the call site span to builtins that
-            // synthesize span-aware diagnostics (e.g. builtin_unwrap
-            // producing E0100 PANIC with cause). save/restore so any
-            // nested eval_call (e.g. recursive fn calls from inside
-            // a builtin) doesn't clobber the outer span.
-            let prev_span = self.current_span.take();
-            self.current_span = Some(span.clone());
-            let result = b(self, arg_values);
-            self.current_span = prev_span;
-            return result;
+        // ARRAY() / DICT() empty forms.
+        if (name == "ARRAY" || name == "DICT") && args.is_empty() {
+            let v = if name == "ARRAY" {
+                Value::Array(Vec::new())
+            } else {
+                Value::Dict(Vec::new())
+            };
+            return Ok(crate::runtime::StepResult::Done(v));
         }
-        Err(self.undefined_name(name, span))
+        let user_fn = self.env.get(name).map(|v| v.clone());
+        let whitelisted = is_err_consumer(name);
+        // Iterative arg eval -- identical to `eval_call`'s path,
+        // but the `ArgEvalResult::Signal` arm translates the inner
+        // `Outcome` into a `StepResult` so the caller can react to
+        // a `Yield` from inside the arg list.
+        let (accum, pending_err) = match self.eval_arg_values(args, whitelisted)? {
+            ArgEvalResult::Signal(o) => {
+                return self.outcome_to_step_result(o, span);
+            }
+            ArgEvalResult::Done { accum, pending_err } => (accum, pending_err),
+        };
+        let outcome = self.dispatch_call(name, accum, pending_err, whitelisted, user_fn, span)?;
+        self.outcome_to_step_result(outcome, span)
     }
 
     // [v0.4 spec Sec. 6.4] `SET(target, value)` -- a re-binding macro.
@@ -6357,6 +6541,95 @@ mod tests {
         match err2 {
             WlwlError::Diagnostic(d) => assert_eq!(d.code, ErrorCode::E0022),
             other => panic!("expected Diagnostic, got {other:?}"),
+        }
+    }
+
+    // ────────────────────────────────────────────────────────────
+    // [v0.7 Phase B5a-3 slice 2 (full)] step_call tests
+    //
+    // The four tests below exercise `step_call`, the iterative /
+    // step-friendly parallel to `eval_call` introduced by slice 2.
+    // They pin down:
+    //   * fidelity equivalence with `eval_call` for v0.6-style
+    //     arithmetic calls (`+(1, 2)`),
+    //   * yield-marker handling identical to `eval_call`'s,
+    //   * yield propagation from a nested Call's arg-eval back up
+    //     through `step_call`'s iterative arg loop.
+    // Slice 4 / Phase B5b (Scheduler::step) will reuse these
+    // baselines when wiring the real run_until_idle loop.
+    // ────────────────────────────────────────────────────────────
+
+    /// step_call's iterative arg eval produces the same
+    /// `StepResult::Done(value)` as `eval` does for a non-yielding
+    /// arithmetic Call. Locks the v0.6 fidelity contract through
+    /// the new code path.
+    #[test]
+    fn step_call_matches_eval_for_arithmetic_call() {
+        let src = "+(1, 2);";
+        let ast = parse(src, "t.wll").expect("parse");
+        // Reference: what eval() produces.
+        let mut ev_ref = Evaluator::new();
+        let expected = ev_ref.eval(&ast).expect("eval");
+        // step_call path (top-level Expr::Call dispatches through
+        // step_call via step_once).
+        let mut ev = Evaluator::new();
+        match ev.step_once(&ast).expect("step_once") {
+            crate::runtime::StepResult::Done(v) => assert_eq!(
+                v, expected,
+                "step_call's iterative arg eval must match eval()'s output"
+            ),
+            other => panic!("expected Done, got {other:?}"),
+        }
+    }
+
+    /// step_call returns `Yield(Explicit)` when the top-level call
+    /// IS a yield marker. Mirrors slice 1's `__YIELD_TEST__` test
+    /// via the new step_call path.
+    #[test]
+    fn step_call_returns_yield_for_marker_call() {
+        let src = "__YIELD_TEST__();";
+        let ast = parse(src, "t.wll").expect("parse");
+        let mut ev = Evaluator::new();
+        match ev.step_once(&ast).expect("step_once") {
+            crate::runtime::StepResult::Yield(crate::runtime::YieldReason::Explicit) => {}
+            other => panic!("expected Yield(Explicit), got {other:?}"),
+        }
+    }
+
+    /// step_call returns `Yield(Explicit)` when the top-level call
+    /// is the 1-arg marker; exercises that `eval_arg_values` is
+    /// called for the arg, the marker evaluates the arg cleanly,
+    /// and the marker then yields.
+    #[test]
+    fn step_call_returns_yield_for_marker_with_arg() {
+        let src = "__YIELD_AFTER_ARG_TEST__(42);";
+        let ast = parse(src, "t.wll").expect("parse");
+        let mut ev = Evaluator::new();
+        match ev.step_once(&ast).expect("step_once") {
+            crate::runtime::StepResult::Yield(crate::runtime::YieldReason::Explicit) => {}
+            other => panic!("expected Yield(Explicit), got {other:?}"),
+        }
+    }
+
+    /// step_call propagates a yield from inside the arg list of a
+    /// nested Call. `+(1, __YIELD_TEST__())` parses as
+    /// `Expr::Call { name: "+", args: [1, Call(__YIELD_TEST__)] }`.
+    /// The outer call goes through step_call's iterative arg eval;
+    /// the second arg recursively routes through eval_call (which
+    /// itself catches the marker via internal_yield_marker). The
+    /// resulting `Signal::Yield` must bubble out through
+    /// `eval_arg_values`'s `ArgEvalResult::Signal` arm and surface
+    /// from step_once as `StepResult::Yield`.
+    #[test]
+    fn step_call_propagates_yield_from_nested_marker_arg() {
+        let src = "+(1, __YIELD_TEST__());";
+        let ast = parse(src, "t.wll").expect("parse");
+        let mut ev = Evaluator::new();
+        match ev.step_once(&ast).expect("step_once") {
+            crate::runtime::StepResult::Yield(crate::runtime::YieldReason::Explicit) => {}
+            other => panic!(
+                "expected Yield(Explicit) propagated through nested marker arg, got {other:?}"
+            ),
         }
     }
 
