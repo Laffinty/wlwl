@@ -66,6 +66,13 @@ pub enum Value {
     Ok(Box<Value>),
     /// §12 ERR(value)
     Err(Box<Value>),
+    /// [v0.7 Phase C2] Handle returned to user code by `SPAWN(fn)`.
+    /// AWAIT (C3) takes this value and dereferences it to read
+    /// the spawned task's terminal value or error. At C2 the
+    /// referenced task has always already finished (synchronous
+    /// execution); B5b will let back-pointers capture still-running
+    /// tasks and AWAIT will actually wait on them.
+    TaskHandle(crate::runtime::TaskHandle),
 }
 
 /// Tag for native-function implementations. A `Value::NativeFn`
@@ -129,6 +136,14 @@ impl Value {
             }
             Value::Ok(v) => format!("OK({})", v.display()),
             Value::Err(v) => format!("ERR({})", v.display()),
+            // [v0.7 Phase C2] AWAIT (C3) dereferences a TaskHandle;
+            // until then, displaying one shows the underlying id
+            // + generation so users can recognise stale handles
+            // (the v0.6 §3.x trait 'use-after-cancel' analogue).
+            Value::TaskHandle(h) => format!(
+                "<task handle id={} gen={}>",
+                h.id.0, h.generation
+            ),
         }
     }
 }
@@ -961,6 +976,16 @@ fn value_to_std_value(v: &Value) -> Result<wlwl_std::StdValue, StdValueConvError
             return Err(StdValueConvError::Type {
                 expected: "data value at std boundary".into(),
                 got: format!("native fn `{}`", name),
+            });
+        }
+        // [v0.7 Phase C2] SPAWN handles have no JSON analogue --
+        // surfacing them at the std boundary would lose the
+        // generation-tracked identity. Same handling as Closure
+        // / NativeFn (reject as Type error).
+        Value::TaskHandle(_) => {
+            return Err(StdValueConvError::Type {
+                expected: "data value at std boundary".into(),
+                got: "task handle".into(),
             });
         }
     })
@@ -2611,6 +2636,14 @@ fn builtin_format(ev: &mut Evaluator, args: Vec<Value>) -> WlwlResult<Outcome> {
 /// dispatch) and ultimately to a zero span if neither is set.
 /// The fallback is conservative; v0.6 callers always have
 /// `current_span` populated at the dispatch site.
+///
+/// [v0.7 Phase C2 retrofit] SCOPE now bumps `scope_depth` on
+/// entry and decrements on exit so that SPAWN (C2) can enforce
+/// D17 ("top-level SPAWN without an active SCOPE -> E0058").
+/// Env frames are NOT pushed -- the SCOPE == fn() equivalence
+/// for v0.6 callers is preserved. The scope_depth counter is
+/// the single source of truth for "is SPAWN legal here?" at
+/// C2; B5b will replace it with a Scheduler-owned Scope tree.
 fn builtin_scope(
     ev: &mut Evaluator,
     args: Vec<Value>,
@@ -2655,17 +2688,178 @@ fn builtin_scope(
             ));
         }
     };
-    // Dispatch to invoke_closure with zero args. invoke_closure
-    // handles arity (E0022 on fn requiring > 0 params), default
-    // parameters, and the full trace-frame + signal handling.
-    ev.invoke_closure(
+    // [C2 retrofit] Bump scope_depth on entry, decrement on exit
+    // regardless of how invoke_closure returns (success / ERR
+    // propagation / cancellation). The decrement is a saturating
+    // subtraction so a bug elsewhere cannot push the counter
+    // negative; if that ever happens the worst case is "SPAWN
+    // always rejected" (defensive) rather than "SPAWN allowed
+    // where it shouldn't be".
+    ev.scope_depth = ev.scope_depth.saturating_add(1);
+    let result = ev.invoke_closure(
         "SCOPE",
         params,
         body,
         captured_env,
         Vec::new(),
         &diag_span,
-    )
+    );
+    ev.scope_depth = ev.scope_depth.saturating_sub(1);
+    result
+}
+
+/// [v0.7 Phase C2] `SPAWN(fn)` spawns a child task that runs
+/// `fn`. Returns a `TaskHandle` (generation-tracked; used by
+/// AWAIT in C3 and TASK_CANCEL_* in Phase F).
+///
+/// Behaviour at C2 (B5b not yet landed):
+/// - **Top-level SPAWN rejected**: `scope_depth == 0` means
+///   D17 is violated; raise **E0058** (plan §4.4 row
+///   "E0058 | 顶层 SPAWN 无活跃 SCOPE"). This is the first
+///   wired surface of the v0.7 concurrency error contract.
+/// - **Scoped SPAWN runs synchronously**: at C2 the "child
+///   task" is allocated a slot in `self.scheduler.tasks` (via
+///   `Task::new_pending`) and **executed to completion** before
+///   SPAWN returns. The user-visible effect is "fn runs, then
+///   you get a handle to the (already-Done) task". This is the
+///   minimum that lets C3 (AWAIT) and C5 (TASK_IS_CANCELLED)
+///   build on the type surface without requiring a working
+///   scheduler. B5b replaces the synchronous execution with
+///   the real Scheduler-driven yield/resume loop.
+///
+/// Error contract (plan §4.4):
+/// - **E0058** when no enclosing SCOPE is present
+/// - **E0052** when `fn` is not a Value::Closure (same shape
+///   as SCOPE; consistency matters because users will mix
+///   SCOPE/SPAWN/AWAIT in the same expression)
+/// - **E0056** when `fn` requires parameters that SPAWN
+///   cannot supply (plan §4.4 row
+///   "E0056 | SPAWN 中 fn 参数个数错误"). SPAWN passes zero
+///   args, same constraint as SCOPE.
+/// - **E0022** (the underlying arity check from
+///   `invoke_closure`) when SPAWN itself is called with != 1
+///   argument.
+///
+/// Span sourcing: same `current_span` + `dummy()` fallback as
+/// SCOPE (see builtin_scope for the rationale).
+fn builtin_spawn(
+    ev: &mut Evaluator,
+    args: Vec<Value>,
+) -> WlwlResult<Outcome> {
+    use crate::runtime::{ScopeId, TaskHandle, TaskState, TaskResult};
+    use crate::task::Task;
+    use wlwl_ast::Span as AstSpan;
+    let diag_span = ev
+        .current_span
+        .clone()
+        .unwrap_or_else(AstSpan::dummy);
+    // Arity: SPAWN takes exactly one argument (the closure).
+    if args.len() != 1 {
+        return Err(ev.diag(
+            ErrorCode::E0022,
+            format!(
+                "SPAWN expects 1 argument (the function), got {}",
+                args.len()
+            ),
+            diag_span,
+        ));
+    }
+    // D17 / plan §3 Phase C1 + §10 D17: top-level SPAWN without
+    // an enclosing SCOPE is forbidden. The check is the FIRST
+    // thing SPAWN does so the error surfaces before any
+    // allocation / task state is created.
+    if ev.scope_depth == 0 {
+        return Err(ev.diag(
+            ErrorCode::E0058,
+            "SPAWN must be called inside an active SCOPE block \
+             (plan §10 D17: no implicit runtime scope)",
+            diag_span,
+        ));
+    }
+    let fn_value = args.into_iter().next().expect("len == 1 checked");
+    let (params, body, captured_env) = match fn_value {
+        Value::Closure {
+            params,
+            body,
+            env,
+        } => (params, body, env),
+        other => {
+            return Err(ev.diag(
+                ErrorCode::E0052,
+                format!(
+                    "SPAWN argument must be a function value, got {}",
+                    type_name(&other)
+                ),
+                diag_span,
+            ));
+        }
+    };
+    // Allocate the id + generation BEFORE we move `fn_value` into
+    // the Task (the Task stores the body verbatim). Reading the
+    // counter here, then bumping it below after the handle is
+    // captured, ensures the user sees a consistent id+generation
+    // pair.
+    let task_id = ev.scheduler.next_task_id();
+    let generation = ev.scheduler.bump_generation();
+    let handle = TaskHandle {
+        id: task_id,
+        generation,
+    };
+    // Re-assemble the closure value to feed `Task::new_pending`.
+    // We destructured `fn_value` into (params, body, env) above so
+    // we can't move `fn_value` itself a second time. The
+    // reassembled value is byte-identical to the original.
+    let body_value = Value::Closure {
+        params: params.clone(),
+        body: body.clone(),
+        env: captured_env.clone(),
+    };
+    let mut task = Task::new_pending(
+        task_id,
+        generation,
+        body_value,
+        captured_env.clone(),
+        // parent_scope: at C2 we don't track which Scope this
+        // task belongs to (no scheduler Scope tree yet); pass
+        // ScopeId(0) as a placeholder. B5b will resolve this to
+        // the actual enclosing scope.
+        ScopeId(0),
+    );
+    // Execute the closure to completion. At C2 this is
+    // synchronous; B5b will replace the call with a yield-aware
+    // step() invocation. invoke_closure handles arity (E0056
+    // / E0022 / default-parameter expansion) and the full
+    // trace-frame + signal handling.
+    let outcome = ev.invoke_closure(
+        "SPAWN",
+        params,
+        body,
+        captured_env,
+        Vec::new(),
+        &diag_span,
+    );
+    match outcome {
+        Ok(o) => {
+            // Record the terminal value on the task and push it
+            // into the scheduler. AWAIT (C3) will look the task
+            // up by id and read this value.
+            task.state = TaskState::Done(TaskResult::Ok(o.value));
+            ev.scheduler.push_task(task);
+            Ok(Outcome::normal(Value::TaskHandle(handle)))
+        }
+        Err(e) => {
+            // ERR propagated up through invoke_closure. v0.7
+            // §5.4 says SPAWN should still return a handle so the
+            // user can AWAIT it to see the ERR, but at C2 we
+            // don't have a scheduler to record the error path --
+            // bubble the diagnostic up. AWAIT (C3) will re-raise
+            // this when the user tries to dereference the
+            // (never-stored) handle. The "fail loudly until
+            // proven otherwise" stance from B5a-1 applies: no
+            // silent fallback.
+            Err(e)
+        }
+    }
 }
 
 /// The single dispatch table: maps a built-in name to its implementation.
@@ -2681,6 +2875,11 @@ fn resolve_builtin(name: &str) -> Option<BuiltinFn> {
         // (no implicit runtime scope). See builtin_scope for the
         // error contract (E0052 / E0022).
         "SCOPE" => Some(builtin_scope),
+        // [v0.7 Phase C2] SPAWN(fn): child-task spawn inside a
+        // SCOPE block. Synchronous execution at C2 (B5b wires the
+        // real yield/resume loop). Triggers E0058 if no active
+        // SCOPE (D17). See builtin_spawn for the error contract.
+        "SPAWN" => Some(builtin_spawn),
         // Phase B10 (spec §15.1): PRINT_ERR writes to stderr.
         // Same dispatch as PRINT — appended to the global builtin
         // table so it's available without IMPORT (mirrors `PRINT`).
@@ -3014,6 +3213,13 @@ fn type_name(v: &Value) -> &'static str {
         Value::NativeFn { .. } => "native-function",
         Value::Ok(_) => "ok",
         Value::Err(_) => "err",
+        // [v0.7 Phase C2] user-facing type name for SPAWN handles;
+        // AWAIT (C3) is the only consumer at C2 (where the value
+        // never escapes from SPAWN's call site without being
+        // dereferenced), so this name is rarely seen. Kept distinct
+        // from `function` so a misuse like `+`(handle, 1) gives a
+        // readable diagnostic.
+        Value::TaskHandle(_) => "task-handle",
     }
 }
 
@@ -3040,6 +3246,9 @@ fn value_type_name(v: &Value) -> &'static str {
         Value::Dict(_) => "DICT",
         Value::Closure { .. } | Value::NativeFn { .. } => "FUNCTION",
         Value::Ok(_) | Value::Err(_) => "RESULT",
+        // [v0.7 Phase C2] distinct user-visible type for SPAWN
+        // handles (parallel to function / result).
+        Value::TaskHandle(_) => "TASK",
     }
 }
 
@@ -3557,6 +3766,11 @@ fn value_to_json_value(v: &Value) -> Option<serde_json::Value> {
         }
         Value::Err(_) => return None, // ERR nested in WRAP chain: skip (avoid infinite recursion for pathological inputs)
         Value::Ok(inner) => value_to_json_value(inner)?,
+        // [v0.7 Phase C2] TaskHandle is not JSON-serialisable; this
+        // site is reached from `error_cause_to_value` (WRAP/UNWRAP),
+        // so the conservative answer is "skip" (return `None` from
+        // the outer `?`), matching the closure/native-fn branches.
+        Value::TaskHandle(_) => return None,
         Value::Closure { .. } | Value::NativeFn { .. } => return None,
     })
 }
@@ -3706,6 +3920,24 @@ pub struct Evaluator {
     /// tree-walking evaluator runs as if it were the single implicit
     /// task). Plan §3 Phase B + §5.1.
     pub current_task: Option<crate::runtime::TaskId>,
+    /// [v0.7 Phase C2] Depth of active SCOPE nesting. `0` at the
+    /// top level means SPAWN is not allowed (D17 / E0058). Each
+    /// successful SCOPE entry increments; exit decrements. The
+    /// counter is independent of the env frame push so the SCOPE
+    /// == fn() equivalence for v0.6 callers is preserved (env is
+    /// untouched, only the depth counter moves). At C2 the field
+    /// is the single source of truth for "is SPAWN legal here?";
+    /// at B5b it will be joined with a Scheduler-owned Scope tree
+    /// that takes over scope lifetime tracking.
+    pub scope_depth: usize,
+    /// [v0.7 Phase C2] Cooperative scheduler. SPAWN records spawned
+    /// tasks here; AWAIT (C3) and TASK_IS_CANCELLED (C5) read
+    /// from here. At C2 the scheduler never *runs* anything
+    /// (SPAWN executes its child synchronously before returning
+    /// the handle); the field exists so the data shape is
+    /// reviewable and AWAIT can already dereference a finished
+    /// task. B5b wires the real run_until_idle loop.
+    pub scheduler: crate::runtime::Scheduler,
 }
 
 impl Default for Evaluator {
@@ -3729,6 +3961,8 @@ impl Evaluator {
             test_registry: Vec::new(),
             strict_types: false,
             current_task: None,
+            scope_depth: 0,
+            scheduler: crate::runtime::Scheduler::new(),
         }
     }
 
@@ -3779,6 +4013,8 @@ impl Evaluator {
             test_registry: Vec::new(),
             strict_types: false,
             current_task: None,
+            scope_depth: 0,
+            scheduler: crate::runtime::Scheduler::new(),
         }
     }
 
@@ -5807,6 +6043,136 @@ mod tests {
                 "expected E0022 'function call arity'"
             ),
             other => panic!("expected WlwlError::Diagnostic, got {other:?}"),
+        }
+    }
+
+    // ────────────────────────────────────────────────────────────
+    // [v0.7 Phase C2] SPAWN(fn) builtin
+    //
+    // At C2 the child task runs SYNCHRONOUSLY and SPAWN returns
+    // Value::TaskHandle pointing at a Done task. The four tests
+    // below cover the success / D17 / arity / type paths plus the
+    // C1 SCOPE retrofit behaviour (scope_depth survives SCOPE
+    // invocation): the C2 surface is intentionally narrow because
+    // B5b will replace the synchronous execution with a real
+    // Scheduler loop; AWAIT / TASK_IS_CANCELLED semantics are
+    // wired in C3 and C5 respectively.
+    // ────────────────────────────────────────────────────────────
+
+    #[test]
+    fn spawn_inside_scope_runs_and_returns_task_handle() {
+        // SCOPE(FUN(() , SPAWN(FUN(() , +(1, 2))))) -> TaskHandle
+        // The child's body ran (otherwise no handle would exist
+        // pointing at a Done task). The value's runtime kind is
+        // task handle and the display form is "<task handle id=X
+        // gen=Y>"; AWAIT/C3 dereference to the integer 3. We
+        // assert the display text + Value shape here; C3 will
+        // add the integer 3 deref check.
+        let src = "SCOPE(FUN(() , SPAWN(FUN(() , +(1, 2)))));";
+        let v = run(src).expect("SPAWN inside SCOPE should produce a handle");
+        match &v {
+            Value::TaskHandle(h) => {
+                // bump_generation returns the OLD counter value
+                // then increments; on a fresh scheduler the
+                // first spawn reads 0 and bumps to 1. Subsequent
+                // slot-reuse will bump past 0 and the old 0 is
+                // what makes a stale handle detectable (E0053).
+                assert_eq!(h.generation, 0, "first spawn: generation 0 (pre-bump)");
+                // id is the scheduler's next_task_id at spawn
+                // time (0 on a fresh scheduler; same task index
+                // is reused across bumps until the slot is
+                // recycled -- C2 has no slot recycling yet so
+                // each spawn gets a fresh slot).
+                assert_eq!(h.id.0, 0, "first spawn id should be 0");
+            }
+            other => panic!("expected Value::TaskHandle, got {other:?}"),
+        }
+        // Display form is the contract for E0030 / E0020
+        // diagnostics and for v0.7 spec §17 test fixtures.
+        let displayed = v.display();
+        assert!(
+            displayed.contains("<task handle"),
+            "task handle display should contain '<task handle', got `{displayed}`"
+        );
+    }
+
+    #[test]
+    fn spawn_at_top_level_raises_e0058() {
+        // D17 / plan §10: no implicit runtime scope; SPAWN
+        // outside an active SCOPE block must fail with E0058.
+        // This is the first wired-surface test of v0.7's
+        // structured-concurrency error contract.
+        let src = "SPAWN(FUN(() , 1));";
+        let err = run(src).expect_err("top-level SPAWN must fail with E0058");
+        assert_eq!(
+            err.diagnostic().code,
+            ErrorCode::E0058,
+            "expected E0058 'top-level SPAWN without active SCOPE'"
+        );
+    }
+
+    #[test]
+    fn spawn_rejects_zero_args_with_e0022() {
+        // SPAWN() -> E0022 (function call arity).
+        let src = "SCOPE(FUN(() , SPAWN()));";
+        let err = run(src).expect_err("SPAWN() with no args should fail");
+        assert_eq!(
+            err.diagnostic().code,
+            ErrorCode::E0022,
+            "expected E0022 'function call arity'"
+        );
+    }
+
+    #[test]
+    fn spawn_rejects_non_function_arg_with_e0052() {
+        // SPAWN(1) -> E0052 per plan §4.4 row
+        // "E0052 | SCOPE 中 fn 不是函数" (the same error code
+        // applies because SPAWN's fn arg has the same shape).
+        let src = "SCOPE(FUN(() , SPAWN(1)));";
+        let err = run(src).expect_err("SPAWN(non-function) should fail");
+        assert_eq!(
+            err.diagnostic().code,
+            ErrorCode::E0052,
+            "expected E0052 'SPAWN argument must be a function value'"
+        );
+    }
+
+    #[test]
+    fn scope_depth_decrements_after_scope_returns() {
+        // [C1 SCOPE retrofit] After SCOPE returns, scope_depth
+        // must be back to 0 so a subsequent top-level SPAWN
+        // surfaces E0058 instead of getting a free pass via a
+        // stale non-zero depth. Pairs with the C2 E0058 contract.
+        let src = "LET(h, SCOPE(FUN(() , SPAWN(FUN(() , 1))))); SPAWN(FUN(() , 2));";
+        let err = run(src).expect_err(
+            "top-level SPAWN after a SCOPE block must still raise E0058 \
+             (C1 retrofit must decrement scope_depth on exit)",
+        );
+        assert_eq!(
+            err.diagnostic().code,
+            ErrorCode::E0058,
+            "expected E0058 -- scope_depth leaked past SCOPE exit"
+        );
+    }
+
+    #[test]
+    fn spawn_in_nested_scope_still_returns_task_handle() {
+        // SCOPE(FUN(() , SCOPE(FUN(() , SPAWN(FUN(() , 7))))))
+        // Two layers of scope, then SPAWN: confirms that the C1
+        // retrofit's bump on entry + decrement on exit survives a
+        // second nested SCOPE without leaking (the inner SPAWN
+        // finds scope_depth == 2 and still gets a handle).
+        let src = "SCOPE(FUN(() , SCOPE(FUN(() , SPAWN(FUN(() , 7))))));";
+        let v = run(src).expect("nested SCOPE/SPAWN should still produce a handle");
+        match &v {
+            Value::TaskHandle(h) => {
+                // Same single-spawn contract as
+                // spawn_inside_scope_runs_and_returns_task_handle:
+                // generation is the pre-bump value (0), id is 0.
+                assert_eq!(h.generation, 0, "single spawn -> generation 0 (pre-bump)");
+                assert_eq!(h.id.0, 0, "single spawn -> id 0");
+            }
+            other => panic!("expected Value::TaskHandle, got {other:?}"),
         }
     }
 

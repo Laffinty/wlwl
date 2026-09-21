@@ -163,6 +163,12 @@ pub(crate) fn value_kind(v: &Value) -> &'static str {
         Value::NativeFn { .. } => "native fn",
         Value::Ok(_) => "RESULT ok",
         Value::Err(_) => "RESULT err",
+        // [v0.7 Phase C2] TaskHandle shows up when E0030 / E0020
+        // diagnostics mention a value that the user produced via
+        // SPAWN. Use the spec-v0.7 vocabulary ("task handle") so
+        // the message reads naturally next to `SPAWN(...)` and
+        // `AWAIT(...)` rather than "RESULT ok" or similar.
+        Value::TaskHandle(_) => "task handle",
     }
 }
 

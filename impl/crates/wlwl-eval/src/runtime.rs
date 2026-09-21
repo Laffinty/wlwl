@@ -191,6 +191,43 @@ impl Scheduler {
         Self::default()
     }
 
+    /// [v0.7 Phase C2] Allocate the next `TaskId` without pushing a
+    /// task entry. Use this when the caller wants to construct the
+    /// full `Task` value (with body, env, etc.) before
+    /// committing it to `self.tasks` via `push_task`.
+    pub fn next_task_id(&self) -> TaskId {
+        TaskId(self.tasks.len())
+    }
+
+    /// [v0.7 Phase C2] Read the current generation counter
+    /// WITHOUT bumping it. Pairs with `bump_generation` below.
+    pub fn next_generation(&self) -> u64 {
+        self.next_generation
+    }
+
+    /// [v0.7 Phase C2] Bump the generation counter and return the
+    /// new value. Called by `SPAWN` after the handle has been
+    /// minted so subsequent lookups see a fresh generation.
+    pub fn bump_generation(&mut self) -> u64 {
+        let g = self.next_generation;
+        self.next_generation = self.next_generation.wrapping_add(1);
+        g
+    }
+
+    /// [v0.7 Phase C2] Push a fully-constructed `Task` into the
+    /// scheduler's task table. Idempotency note: this appends
+    /// unconditionally; the caller is responsible for not
+    /// double-pushing (the helper exists so SPAWN can build the
+    /// Task body BEFORE committing, rather than committing an
+    /// empty placeholder that would need rewriting).
+    ///
+    /// `Task` lives in `crate::task`; the signature takes the
+    /// re-export [`TaskEntry`] alias so callers don't need a
+    /// second `use`.
+    pub fn push_task(&mut self, task: TaskEntry) {
+        self.tasks.push(task);
+    }
+
     /// Step one task to its next yield point. **Not yet implemented**
     /// at B1; returns `None` for any input. The real implementation
     /// in B5 will return `Some(StepResult)` for "made progress" and
