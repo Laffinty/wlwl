@@ -63,6 +63,22 @@ pub enum ErrorCode {
     E0049, // EXPECT_ERR input not ERR (v0.4 搂15.9 std.test; Phase B7)
     E0050, // class inheritance chain error
     E0051, // NEW arity mismatch with INIT
+    // [v0.7 Phase B0] task / channel system reserves E0052-E0058.
+    // See plan §4.4 + ADR-0014. Allocated codes:
+    //   E0052  SCOPE(fn) called with non-function value (Phase C)
+    //   E0053  TASK handle invalid (out of generation) (Phase C/F)
+    //   E0054  CHANNEL_SEND on closed channel (Phase D)
+    //   E0055  CHANNEL_RECV / TRY_RECV after all senders closed -> ERR(ChannelClosed) (Phase D)
+    //   E0056  SPAWN arity mismatch (Phase C)
+    //   E0057  cross-task shared cell but cell immutable (Phase C7)
+    //   E0058  top-level SPAWN outside any active SCOPE (Phase C1)
+    E0052, // SCOPE(fn): fn is not a function value
+    E0053, // TASK handle invalid (stale generation / never spawned)
+    E0054, // CHANNEL_SEND on closed channel
+    E0055, // CHANNEL_RECV after close (returns ERR kind="ChannelClosed")
+    E0056, // SPAWN arity mismatch
+    E0057, // cross-task cell share but cell immutable (E0024 reuse, eval'd)
+    E0058, // top-level SPAWN without an active SCOPE
     E0060, // IO error (generic)
     E0061, // file not found
     E0062, // file permission denied
@@ -163,6 +179,13 @@ impl ErrorCode {
             ErrorCode::E0049 => "E0049",
             ErrorCode::E0050 => "E0050",
             ErrorCode::E0051 => "E0051",
+            ErrorCode::E0052 => "E0052",
+            ErrorCode::E0053 => "E0053",
+            ErrorCode::E0054 => "E0054",
+            ErrorCode::E0055 => "E0055",
+            ErrorCode::E0056 => "E0056",
+            ErrorCode::E0057 => "E0057",
+            ErrorCode::E0058 => "E0058",
             ErrorCode::E0060 => "E0060",
             ErrorCode::E0061 => "E0061",
             ErrorCode::E0062 => "E0062",
@@ -271,6 +294,17 @@ impl ErrorCode {
                 ErrorCategory::Test
             }
             ErrorCode::E0050 | ErrorCode::E0051 => ErrorCategory::Oop,
+            // [v0.7 Phase B0] v0.7 task / channel system reservation.
+            // See plan §4.4 + ADR-0014. Codes are deliberately placed
+            // right after the OOP pair so consumers browsing a category
+            // table see the v0.7 reservation immediately.
+            ErrorCode::E0052
+            | ErrorCode::E0053
+            | ErrorCode::E0054
+            | ErrorCode::E0055
+            | ErrorCode::E0056
+            | ErrorCode::E0057
+            | ErrorCode::E0058 => ErrorCategory::Concurrent,
             ErrorCode::E0060 | ErrorCode::E0061 | ErrorCode::E0062 | ErrorCode::E0063 => {
                 ErrorCategory::Io
             }
@@ -408,6 +442,12 @@ pub enum ErrorCategory {
     Type,
     Module,
     Oop,
+    /// [v0.7 Phase B0] structured concurrency task / channel errors
+    /// (E0052-E0058). Distinct from `Io` because these never indicate
+    /// a retriable external condition; they're caller misuse (e.g.
+    /// top-level SPAWN outside a SCOPE) or a hard architectural
+    /// invariant violation (stale TASK handle, SEND-on-closed).
+    Concurrent,
     Io,
     /// v0.4 spec 搂14.4 鈥?network errors (E0090-E0094).
     /// Separate from Io because AI tools apply different retry
@@ -440,6 +480,7 @@ impl ErrorCategory {
             ErrorCategory::Type => "type",
             ErrorCategory::Module => "module",
             ErrorCategory::Oop => "oop",
+            ErrorCategory::Concurrent => "concurrent",
             ErrorCategory::Io => "io",
             ErrorCategory::Network => "network",
             ErrorCategory::Json => "json",
@@ -1246,6 +1287,26 @@ mod tests {
             serde_json::json!({
                 "E0050": code_snap(ErrorCode::E0050, "inherit_err"),
                 "E0051": code_snap(ErrorCode::E0051, "new_arity_err"),
+            })
+        );
+    }
+
+    /// [v0.7 Phase B0] structured-concurrency reservation. Codes are
+    /// registered ahead of their emitting sites (Phase C/D land the
+    /// actual eval sites) so the snapshot baseline is stable across
+    /// the v0.7 phase roll-out. See plan §4.4 + deviation P7-B0-001.
+    #[test]
+    fn snap_concurrent() {
+        insta::assert_json_snapshot!(
+            "codes_concurrent",
+            serde_json::json!({
+                "E0052": code_snap(ErrorCode::E0052, "scope_fn_not_function"),
+                "E0053": code_snap(ErrorCode::E0053, "task_handle_invalid"),
+                "E0054": code_snap(ErrorCode::E0054, "channel_send_closed"),
+                "E0055": code_snap(ErrorCode::E0055, "channel_recv_closed"),
+                "E0056": code_snap(ErrorCode::E0056, "spawn_arity_mismatch"),
+                "E0057": code_snap(ErrorCode::E0057, "cross_task_cell_immutable"),
+                "E0058": code_snap(ErrorCode::E0058, "spawn_no_active_scope"),
             })
         );
     }

@@ -55,7 +55,7 @@ v0.7 是 WLWL 第一次处理"控制流时间维度"的问题。此前 spec v0.6
 | 新增运行时概念 | Task / Scope / Channel / CancellationHandle | §2 |
 | 新增 std 模块 | wlwl:std.concurrency | §4 |
 | 新增全局 builtin | 15-17 个(SCOPE/SPAWN/AWAIT/YIELD/CHANNEL_*/TASK_*/SHIELD) | §4 |
-| 新增错误码 | E0050-E0056 共 6 个 | §4.4 |
+| 新增错误码 | E0052-E0058 共 7 个 | §4.4 |
 | 新增 ADR | 0014 结构化并发选型;0015 Brown 9 维度决策;0016 调度器单线程边界 | 附录 B |
 | eval crate 改造 | 树遍历 → 协程栈机(generator-based) | §5.1 |
 | 测试 | workspace +N,新增 concurrent/* conformance | §6 |
@@ -169,7 +169,7 @@ A 调研+spec 草稿 ──▶ B runtime 骨架 ──▶ C 内置函数 ──�
 - B6:基础 benchmark:单 task 执行时间退化 < 10%
 
 ### Phase C — 内置函数 SCOPE / SPAWN / AWAIT / YIELD
-- C1:SCOPE(fn) — 创建子作用域。**首版只支持显式 SCOPE,不提供隐式 runtime scope**:任何 SPAWN(fn) 必须直接或间接嵌套在某个 SCOPE(...) 内,顶层调用(即没有活跃 SCOPE 时)产生 E0056(具体码在错误码表中列出);不引入类似 Python asyncio 的 free-floating task 或 Java 守护线程作为隐式兜底。这一限制是显式 API 边界,见 §10 D17。
+- C1:SCOPE(fn) — 创建子作用域。**首版只支持显式 SCOPE,不提供隐式 runtime scope**:任何 SPAWN(fn) 必须直接或间接嵌套在某个 SCOPE(...) 内,顶层调用(即没有活跃 SCOPE 时)产生 E0058(具体码在错误码表中列出);不引入类似 Python asyncio 的 free-floating task 或 Java 守护线程作为隐式兜底。这一限制是显式 API 边界,见 §10 D17。
 - C2:SPAWN(fn) — 派生子任务,返回 task handle
 - C3:AWAIT(handle) — 等待 task 完成;若 task 已 ERR 则传播
 - C4:YIELD() — 协作让步
@@ -255,15 +255,17 @@ wlwl-std/src/concurrency.rs:wlwl:std.concurrency 模块,提供高层组合 API�
 
 ### 4.4 错误码新增
 
+> **注意**:原计划预留 E0050-E0056,但 E0050/E0051 已被 v0.5 OOP 实现占用(class inheritance chain / NEW arity mismatch with INIT)。Phase B0 已把 v0.7 的错误码**全部下移 2 位**(本表反映调整后的最终码号);偏差条目见 `deviations.md` 的 `P7-B0-001`。新分类 `ErrorCategory::Concurrent` 容纳这 7 个码。
+
 | 错误码 | 用途 | Phase |
 |--------|------|-------|
-| E0050 | SCOPE 中 fn 不是函数 | C |
-| E0051 | TASK 句柄无效 | C/F |
-| E0052 | CHANNEL 已关闭后写入 | D |
-| E0053 | CHANNEL 已关闭后读取(返回 ChannelClosed ERR) | D |
-| E0054 | SPAWN 中 fn 参数个数错误 | C |
-| E0055 | 跨 task 共享 cell 但 cell 不可变(E0024 复用,待评估) | C7 |
-| E0056 | 顶层 SPAWN 无活跃 SCOPE | C1 |
+| E0052 | SCOPE 中 fn 不是函数 | C |
+| E0053 | TASK 句柄无效 | C/F |
+| E0054 | CHANNEL 已关闭后写入 | D |
+| E0055 | CHANNEL 已关闭后读取(返回 ChannelClosed ERR) | D |
+| E0056 | SPAWN 中 fn 参数个数错误 | C |
+| E0057 | 跨 task 共享 cell 但 cell 不可变(E0024 复用,待评估) | C7 |
+| E0058 | 顶层 SPAWN 无活跃 SCOPE | C1 |
 
 ### 4.5 新增 builtin 全集(15-17 个)
 
@@ -355,7 +357,7 @@ loop {
 - 内部是 VecDeque<Value> + sender/receiver wait queues
 - buf=0 表示同步 channel(无缓冲)
 - Close 语义:所有 sender 关闭后,receiver 在读完缓冲后收到关闭信号
-- 与 v0.6 ERR 的关系(D14 锁定):**关闭后写入 → E0052(直接错误)**;**关闭后 RECV/TRY_RECV → 返回结构化 ERR,kind = "ChannelClosed"**,ERR payload 携带 {kind: "ChannelClosed", channel: <handle repr>}。关闭后 CHANNEL_LEN 返回缓冲区剩余长度(0);关闭信号在 IS_ERR(x) && ERR_PAYLOAD(x).kind == "ChannelClosed" 处可识别。**注意 NULL 不作为 close 信号**,用户必须用 ERR 检测。
+- 与 v0.6 ERR 的关系(D14 锁定):**关闭后写入 → E0054(直接错误)**;**关闭后 RECV/TRY_RECV → 返回结构化 ERR,kind = "ChannelClosed"**,ERR payload 携带 {kind: "ChannelClosed", channel: <handle repr>}。关闭后 CHANNEL_LEN 返回缓冲区剩余长度(0);关闭信号在 IS_ERR(x) && ERR_PAYLOAD(x).kind == "ChannelClosed" 处可识别。**注意 NULL 不作为 close 信号**,用户必须用 ERR 检测。
 
 **操作语义矩阵**(D14 + D15):
 
@@ -363,7 +365,7 @@ loop {
 |------|---------|-------------|----------|------|
 | SEND | false | ≥1 | 未满 | 立即入队;wake 一个 receiver |
 | SEND | false | ≥1 | 满 | sender 挂起到 sender_waiters |
-| SEND | true | — | — | 立即 ERR(E0052) |
+| SEND | true | — | — | 立即 ERR(E0054) |
 | RECV | false | ≥1 | 非空 | 立即出队;wake 一个 sender |
 | RECV | false | ≥1 | 空 | receiver 挂起到 receiver_waiters |
 | RECV | true | 0 | 空 | 返回 ERR(ChannelClosed) |
@@ -371,7 +373,7 @@ loop {
 | CLOSE | false | — | — | closed=true;wake 所有 receiver_waiters |
 | CLOSE | true | — | — | 幂等 no-op |
 
-**close 协议**:1. CLOSE 调用 → closed=true,senders_alive-=1;2. 若 senders_alive=0:wake 所有 receiver_waiters,每个接收 ERR(ChannelClosed);3. 关闭后 SEND → 立即 ERR(E0052)。
+**close 协议**:1. CLOSE 调用 → closed=true,senders_alive-=1;2. 若 senders_alive=0:wake 所有 receiver_waiters,每个接收 ERR(ChannelClosed);3. 关闭后 SEND → 立即 ERR(E0054)。
 
 send/recv 唤醒顺序:FIFO,不保证全局公平;v0.7 不承诺公平性(§10 D20)。
 
@@ -431,7 +433,7 @@ send/recv 唤醒顺序:FIFO,不保证全局公平;v0.7 不承诺公平性(§10 D
 | CHANNEL_NEW(buf=0/1/100) | 3 | 1 | ✅ | ✅ | — |
 | CHANNEL_SEND/RECV 挂起与唤醒 | 2 | 1 | ✅ | — | — |
 | CHANNEL_CLOSE 后 RECV 返 ChannelClosed ERR | 1 | 1 | ✅ | ✅ | 1 |
-| CHANNEL_CLOSE 后 SEND 返 E0052 | 1 | 1 | ✅ | — | 1 |
+| CHANNEL_CLOSE 后 SEND 返 E0054 | 1 | 1 | ✅ | — | 1 |
 | ERR consumer 跨 task 回归(§3 Phase E4 阻塞项) | 8 | 4 | ✅ | — | 8 |
 | channel close → RECV 延迟 · throughput | — | — | — | ✅ | — |
 | scope 启动 / 退出 开销(N=10/100/1000) | — | — | — | ✅ | — |
@@ -572,10 +574,10 @@ Phase G5 把基线写入 docs/plan/deviations.md 的 P7-G5-001 条目。
 | D11 | 调度器线程模型 | 单线程 / OS 线程 | 单线程(首版) | §5.1 | v0.6 Rc<RefCell<Env>> 非 Send;全栈重写成本高 |
 | D12 | 取消信号介质 | 独立异常 / 复用 ERR | 复用 ERR | §1.1,§5.4 | v0.6 §8.2 ERR transparent propagation 已成熟 |
 | D13 | 共享状态 | Actor / 沿用 cell | 沿用 cell | §5.5 | v0.6 §3.3 闭包 cell 升级;不引入隔离类型体系 |
-| D14 | Channel close 后 RECV/TRY_RECV 行为 | 返回 NULL / 抛 ERR | **抛 ERR(kind="ChannelClosed")** | §5.3,§4.4 E0053,Phase D 锁定 | §5.3 close 协议;Go/Trio close 语义 |
+| D14 | Channel close 后 RECV/TRY_RECV 行为 | 返回 NULL / 抛 ERR | **抛 ERR(kind="ChannelClosed")** | §5.3,§4.4 E0055,Phase D 锁定 | §5.3 close 协议;Go/Trio close 语义 |
 | D15 | SCOPE 是否支持嵌套 | 是 / 否 | 是 | §5.2 | Trio/Kotlin 都支持嵌套 nursery/scope |
 | D16 | SHIELD 是否提供 | 是 / 否 | 是(F6) | §5.2 | Trio CancelScope.shield 是参考 |
-| D17 | 隐式 runtime scope | 提供 / 不提供 | **不提供**(首版只支持显式 SCOPE:任何 SPAWN 必须直接或间接嵌套在某个 SCOPE(...) 内,顶层 SPAWN 报 E0056;不引入类似 Python asyncio 的 free-floating task 或 Java 守护线程) | §3 Phase C1,§10 D17 | §3 Phase C1;防 free-floating task |
+| D17 | 隐式 runtime scope | 提供 / 不提供 | **不提供**(首版只支持显式 SCOPE:任何 SPAWN 必须直接或间接嵌套在某个 SCOPE(...) 内,顶层 SPAWN 报 E0058;不引入类似 Python asyncio 的 free-floating task 或 Java 守护线程) | §3 Phase C1,§10 D17 | §3 Phase C1;防 free-floating task |
 | D18 | spec 文件改动时机 | Phase A 起 / Phase H1 才改 | Phase H1 才改 | §8.1 | v0.2 计划验证;保持 v0.7 全过程中 spec 不变 |
 | D19 | OS 线程方案 | v0.7 / v0.8 / 不做 | v0.8 评估 | §7 | OS 线程在 v0.6 代价太高;v0.8 重评 |
 | D20 | 性能承诺 | 提速 / 不退化 / 不承诺 | **单 task 退化 < 10%;并发路径只保证正确性与无泄漏** | §1.3,§6.4,§3 G5 | Trio/Greenlet: 不跟业务代价交换性能 |
@@ -800,7 +802,7 @@ WLWL 在 v0.7 首次引入并发。并发模型是**结构化并发 + 通道**(�
 
 CHANNEL_NEW(buf) 创建有界通道(buf=0 为同步);CHANNEL_SEND/RECV/CLOSE/TRY_SEND/TRY_RECV/LEN/CAP。
 
-**关闭语义**(§5.3):关闭后 WRITE → ERR(E0052);关闭后 RECV/TRY_RECV → ERR(kind="ChannelClosed");senders_alive 为 0 时 wake 所有 receiver_waiters。
+**关闭语义**(§5.3):关闭后 WRITE → ERR(E0054);关闭后 RECV/TRY_RECV → ERR(kind="ChannelClosed");senders_alive 为 0 时 wake 所有 receiver_waiters。
 
 #### §17.3 取消与错误传播
 
