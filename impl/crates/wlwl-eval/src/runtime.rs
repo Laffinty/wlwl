@@ -10,7 +10,7 @@
 use std::collections::VecDeque;
 use std::rc::Rc;
 
-use crate::{Env, Expr, Value};
+use crate::{Expr, Value};
 
 /// Identifies a task slot within a single [`Scheduler`].
 ///
@@ -201,13 +201,29 @@ impl Scheduler {
 
     /// [v0.7 Phase C2] Read the current generation counter
     /// WITHOUT bumping it. Pairs with `bump_generation` below.
+    ///
+    /// This is the "peek, don't consume" accessor — the value
+    /// returned will be handed to the NEXT `bump_generation`
+    /// call. Reserved for Phase C5 / F code paths that need to
+    /// inspect the generation (e.g. TASK_IS_CANCELLED deciding
+    /// whether a handle is stale via E0053) without taking the
+    /// next slot. Not consumed by any production path at C2;
+    /// safe to remove if it stays unused through Phase F.
     pub fn next_generation(&self) -> u64 {
         self.next_generation
     }
 
-    /// [v0.7 Phase C2] Bump the generation counter and return the
-    /// new value. Called by `SPAWN` after the handle has been
-    /// minted so subsequent lookups see a fresh generation.
+    /// [v0.7 Phase C2] Take the current generation counter, then
+    /// increment to the next. Returns the PRE-BUMP value (which
+    /// becomes the new handle's `generation`); subsequent
+    /// `bump_generation` / `next_generation` calls see the
+    /// post-bump value.
+    ///
+    /// The PRE-BUMP semantics are what makes E0053 stale-handle
+    /// detection work: when a slot is recycled (B5b), the next
+    /// caller reads the post-bump generation and compares it
+    /// against a previously-minted handle's generation; mismatch
+    /// => E0053 "task handle invalid".
     pub fn bump_generation(&mut self) -> u64 {
         let g = self.next_generation;
         self.next_generation = self.next_generation.wrapping_add(1);
@@ -255,41 +271,13 @@ impl Scheduler {
         // B5 implementation.
     }
 
-    /// Allocate a fresh task slot, returning its `(id, handle)` pair.
-    /// At B1 the slot is pushed onto `tasks` and the entry is
-    /// placeholder-initialised; B4 replaces the placeholder with
-    /// a real `Closure + Env` once `SPAWN` semantics land.
-    pub fn alloc_task(&mut self) -> (TaskId, TaskHandle) {
-        let id = TaskId(self.tasks.len());
-        let handle = TaskHandle {
-            id,
-            generation: self.next_generation,
-        };
-        self.next_generation = self.next_generation.wrapping_add(1);
-        // Scope is implicit at B4 (top-level scope, id = 0). B5
-        // will add a real scope stack and pass the current scope's
-        // id through the scheduler.
-        let parent_scope = self
-            .scopes
-            .first()
-            .map(|s| s.id)
-            .unwrap_or(ScopeId(0));
-        // Ensure at least the implicit top-level scope exists so
-        // `parent_scope` always references a real slot. Real scope
-        // creation lands in B5 with `SCOPE(fn)`.
-        if self.scopes.is_empty() {
-            self.scopes.push(Scope::new(ScopeId(0), None));
-        }
-        self.tasks.push(TaskEntry::new_pending(
-            id,
-            handle.generation,
-            Value::Null, // body: filled by SPAWN at B5; null = placeholder
-            Env::new(),
-            parent_scope,
-        ));
-        self.run_queue.push_back(id);
-        (id, handle)
-    }
+    // Note: the B4-era `Scheduler::alloc_task` helper was removed
+    // because it duplicated the C2 helper triple
+    // (next_task_id + bump_generation + push_task) and shipped a
+    // `Value::Null` body placeholder that the production SPAWN
+    // path doesn't use. B5b will rebuild task-allocation from the
+    // C2 triple directly; if a one-shot helper is desired again,
+    // add it back then.
 }
 
 /// Shared inner state across a scope subtree (future B5+).
@@ -321,17 +309,39 @@ mod tests {
     }
 
     #[test]
-    fn alloc_task_returns_distinct_handles() {
+    fn next_task_id_plus_bump_produces_distinct_ids() {
+        // The C2 helper triple is the production path (used by
+        // builtin_spawn). next_task_id reads the NEXT FREE slot
+        // index (i.e. self.tasks.len() at the moment of the call,
+        // *not* a `tasks.len() + 1` advance). bump_generation
+        // mints a fresh generation by reading then incrementing
+        // self.next_generation. To exercise the *combined* effect
+        // (a fresh slot id) we commit a real TaskEntry between
+        // the two pairs, mirroring what builtin_spawn does. We
+        // construct a minimal TaskEntry using a dummy closure
+        // body; the test only cares about id / generation
+        // inequality, not state.
+        use crate::task::Task as TaskImpl;
         let mut s = Scheduler::new();
-        let (_, h1) = s.alloc_task();
-        let (_, h2) = s.alloc_task();
-        assert_ne!(h1.id, h2.id, "different slots must give different ids");
+        // First allocation pair + commit
+        let id_a = s.next_task_id();
+        let gen_a = s.bump_generation();
+        s.push_task(TaskImpl::new_pending(
+            id_a,
+            gen_a,
+            Value::Null,
+            crate::Env::new(),
+            crate::runtime::ScopeId(0),
+        ));
+        // Second allocation pair + commit
+        let id_b = s.next_task_id();
+        let gen_b = s.bump_generation();
+        assert_ne!(id_a, id_b, "after push_task the next slot id advances");
         assert_ne!(
-            h1.generation, h2.generation,
-            "different allocations must bump generation"
+            gen_a, gen_b,
+            "second allocation must bump the generation counter"
         );
-        assert_eq!(s.tasks.len(), 2);
-        assert_eq!(s.run_queue.len(), 2);
+        assert_eq!(s.tasks.len(), 1, "only one commit so far; id_b is the *next* slot");
     }
 
     #[test]

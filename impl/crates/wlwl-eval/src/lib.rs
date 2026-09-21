@@ -2807,8 +2807,22 @@ fn builtin_spawn(
     };
     // Re-assemble the closure value to feed `Task::new_pending`.
     // We destructured `fn_value` into (params, body, env) above so
-    // we can't move `fn_value` itself a second time. The
-    // reassembled value is byte-identical to the original.
+    // we can't move `fn_value` itself a second time. The three
+    // clones are SHALLOW:
+    // - params: Vec<FunParam> clone, items are themselves Clone.
+    // - body: Box<Expr> clone, only the Box pointer is copied; the
+    //   underlying Expr node is shared with the closure the user
+    //   passed in. Expr is treated as immutable at runtime so this
+    //   sharing is safe.
+    // - env: Env::clone() copies the scope stack (Vec clone) and
+    //   bumps each Cell's Rc refcount -- the underlying Binding
+    //   data is shared. Per v0.6 §3.4 closure-capture semantics
+    //   (cell references, not deep clones), a child task mutating
+    //   `LET MUT` is visible to siblings and to the parent.
+    // (See plan §5.5 for the cell-sharing invariant.)
+    //
+    // The reassembled value is byte-equivalent to the original
+    // `fn_value` for runtime purposes.
     let body_value = Value::Closure {
         params: params.clone(),
         body: body.clone(),
@@ -2819,10 +2833,13 @@ fn builtin_spawn(
         generation,
         body_value,
         captured_env.clone(),
-        // parent_scope: at C2 we don't track which Scope this
-        // task belongs to (no scheduler Scope tree yet); pass
-        // ScopeId(0) as a placeholder. B5b will resolve this to
-        // the actual enclosing scope.
+        // TODO(B5b): replace ScopeId(0) with the actual enclosing
+        // scope id. At C2 the scheduler has a single implicit root
+        // scope; SPAWN's child task is recorded against it for
+        // out-of-scope analysis but the id is meaningless until
+        // Phase F introduces real scope-local cancellation. Until
+        // then, AWAIT (C3) sees parent_scope == 0 for every task
+        // and never has to walk the (non-existent) scope tree.
         ScopeId(0),
     );
     // Execute the closure to completion. At C2 this is
@@ -3926,8 +3943,19 @@ pub struct Evaluator {
     /// counter is independent of the env frame push so the SCOPE
     /// == fn() equivalence for v0.6 callers is preserved (env is
     /// untouched, only the depth counter moves). At C2 the field
-    /// is the single source of truth for "is SPAWN legal here?";
-    /// at B5b it will be joined with a Scheduler-owned Scope tree
+    /// is the single source of truth for "is SPAWN legal here?".
+    ///
+    /// **D9 Top-Down caveat**: at C2 the counter is a flat
+    /// "any enclosing SCOPE exists" boolean, not a per-scope
+    /// nesting stack — so SPAWN is legal anywhere inside the
+    /// outermost SCOPE, regardless of how deeply nested the
+    /// current call site is. Scope-LOCAL cancellation (where
+    /// "this scope's siblings get cancelled but the parent scope
+    /// doesn't") lands in Phase F when CancellationScope trees
+    /// (§5.2, plan §10 D9) replace this counter. Until then the
+    /// counter only enforces D17's "no implicit runtime scope",
+    /// not D9's scope-locality.
+    /// At B5b it will be joined with a Scheduler-owned Scope tree
     /// that takes over scope lifetime tracking.
     pub scope_depth: usize,
     /// [v0.7 Phase C2] Cooperative scheduler. SPAWN records spawned
