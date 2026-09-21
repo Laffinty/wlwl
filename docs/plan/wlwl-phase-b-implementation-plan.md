@@ -398,4 +398,60 @@ Phase B 完整收尾时,以下全部成立:
 
 ---
 
-**审批**:本计划需 Li 批准后启动 B0 → B1 → B2 → B3。B4-B6 留后续会话。
+## 8. 交接笔记(2026-09-21 暂停时点)
+
+**HEAD**: `5ff79e5` on `wip0.7`(完整 commit 链 1925766 → 5ff79e5,共 8 个 commit)。
+
+**已落地**(测试 1194 passed; 1 ignored 是 B3 bless by design):
+
+| 步骤 | commit | 关键交付 |
+|------|--------|---------|
+| B0  | `b38126e` | 错误码 E0052-E0058 + `ErrorCategory::Concurrent` + `P7-B0-001` 偏离条目 |
+| B1  | `7f9d54f` | `runtime.rs` 类型 stub(TaskId/Handle/State/YieldReason/EvalState/ContFrame/Scheduler 等 13 类型) |
+| B2  | `86cbddf` | `Evaluator.current_task: Option<TaskId>`,默认 `None`,0 行为变化 |
+| B3  | `6cac0f1` | `tests/v07_fidelity.rs` + `fixtures/v07_fidelity_v06_baseline.jsonl`(10 fixture × {exit_code, stdout, stderr} 字节级对照) |
+| B4  | `5634331` | `task.rs` Task {id, generation, body, env, state, yield_points, parent_scope} + Scope {id, parent, tasks, cancelled} + 7 单测 |
+| B5a-1 | `5ff79e5` | `runtime::StepResult { Done(Value), Yield(YieldReason), Blocked }` + `Evaluator::step_once(&mut self, &Expr) -> WlwlResult<StepResult>`,**零行为变化 wrapper**,B5b 接调度的唯一 seam |
+| B6  | `ad0dd60` | `baseline.txt` 新增 Phase B6 段(criterion default 100 samples),与 Phase I1 对比的 5 项 workload 均在噪声范围内(string_concat +13.1% 是方法学差异 + 小基准噪声,非代码退化)|
+
+**未落地**(等 Phase C 提供 yield builtins):
+
+| 步骤 | 阻塞原因 |
+|------|---------|
+| B5a-2 | "选 1 个 builtin 调用站点改走 step_once" — 不阻塞 yield 落地,但单步收益太小,合并到 B5a-3 做 |
+| B5a-3 | "递归 eval_expr → 显式 CPS,但不接调度" — **需要 yield points 存在才有意义**;YIELD()/AWAIT() 是 Phase C 的内容 |
+| B5b  | "Scheduler 接入,current_task 真实参与运行时" — **需要 B5a-3 + 至少一个 yield builtin 才能测试** |
+
+**关键决策记录**(2026-09-21):
+
+- **不开新分支**:B5a-3 在 `wip0.7` 上做,失败就 GitHub revert。Li 明确说"只要我不提出不得要求建立新分支"
+- **bench baseline**:`baseline.txt` 同时保留 Phase I1(10 samples) 和 Phase B6(100 samples) 两段,后续 B5 完成时直接对比 Phase B6 段
+
+**下一会话建议起点**(Phase C 优先于 B5 收尾):
+
+按依赖关系,**C1 `SCOPE(fn)` 应是最先落地的 builtin**:
+- C1 触发 E0058(plan §4.4 / §10 D17): 顶层 SPAWN 无活跃 SCOPE — **第一个真实可达的 Concurrent 错误码**
+- SCOPE 创建/退出生命周期是 B5b Scheduler 的入口
+- C2 SPAWN + C3 AWAIT 紧跟其后,完成后就有真实 yield points 喂给 B5a-3/B5b
+
+**整体推荐节奏**:
+
+```
+Phase C1 SCOPE     → 触发 E0058,可测
+Phase C2 SPAWN     → 触发 E0053(handles 暂时不可用,但类型已就位)
+Phase C3 AWAIT     → 第一次真实 yield (Suspended(AwaitingChild))
+Phase C4 YIELD     → YieldReason::Explicit 验证
+Phase C5 TASK_CURRENT/TASK_IS_CANCELLED
+Phase C7 + C8 cell + 闭包捕获跨任务回归测试  ← Phase E §3 阻塞项的预热
+B5a-3 递归→CPS 改造(wrap yield builtins 走 step_once)
+B5b Scheduler 接入(current_task 参与运行时,fidelity + bench 双向验证)
+B6 重跑 bench 对比 Phase B6 baseline → 报退化 %
+C/D/E/F 续
+```
+
+**不要做的事**:
+
+- 不要把 `Evaluator::eval` 调用站点一次性全改成 `step_once` — 单步收益小 + 风险大,等到 B5a-3 一次性迁
+- 不要在 `wip0.7` 上开 sub-branch 做实验 — Li 的纪律是不开,失败 revert 即可
+- 不要碰 `P7-B0-001` 偏离条目 — 码号偏移是终态,无后续修复需要
+- 不要重新生成 `baseline.txt` 的 Phase I1 段 — 历史基线不动,只追加新段
