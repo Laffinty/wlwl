@@ -5042,6 +5042,45 @@ impl Evaluator {
                     signal: Signal::Yield(crate::runtime::YieldReason::Explicit),
                 }))
             }
+            // [v0.7 Phase B5a-3 slice 2 (smoke test)] 1-arg variant
+            // that exercises the `Signal::Yield` propagation path
+            // through a recursive `eval_expr` call — the same
+            // recursion eval_call's argument-eval for loop uses for
+            // each `Expr` in `args`. Slice 1's `__YIELD_TEST__` is
+            // 0-arg and short-circuits BEFORE eval_call's arg eval,
+            // so it does not cover the arg-eval propagation rule
+            // (`if o.signal != Signal::None { return Ok(o); }`).
+            // This marker fills that gap as a baseline test for
+            // slice 2's planned refactor of eval_call's arg loop.
+            "__YIELD_AFTER_ARG_TEST__" => {
+                if args.len() != 1 {
+                    return Err(self.diag(
+                        ErrorCode::E0022,
+                        format!(
+                            "__YIELD_AFTER_ARG_TEST__ expects 1 argument, got {}",
+                            args.len()
+                        ),
+                        span.clone(),
+                    ));
+                }
+                // Evaluate the single argument via the same
+                // `self.eval_expr` call that eval_call's arg loop
+                // uses. Mirror the loop's propagation rule exactly:
+                // any non-None signal from the arg bubbles out
+                // unchanged. If the arg evaluated cleanly, produce
+                // `Yield(Explicit)` ourselves.
+                let arg_outcome = self.eval_expr(&args[0])?;
+                if arg_outcome.signal != Signal::None {
+                    return Ok(Some(arg_outcome));
+                }
+                // Inner arg returned cleanly -- discard its value
+                // (the marker is a side-effect prelude, not a value
+                // producer) and yield.
+                Ok(Some(Outcome {
+                    value: Value::Null,
+                    signal: Signal::Yield(crate::runtime::YieldReason::Explicit),
+                }))
+            }
             _ => Ok(None),
         }
     }
@@ -6243,6 +6282,80 @@ mod tests {
                 ErrorCode::E0022,
                 "non-zero arity on yield marker must surface as E0022"
             ),
+            other => panic!("expected Diagnostic, got {other:?}"),
+        }
+    }
+
+    // ────────────────────────────────────────────────────────────
+    // [v0.7 Phase B5a-3 slice 2 (smoke test)] 1-arg yield marker
+    //
+    // The three tests below cover the `__YIELD_AFTER_ARG_TEST__(fn)`
+    // marker added in slice 2. The marker takes one argument,
+    // evaluates it via `self.eval_expr` (the same recursive call
+    // eval_call's argument-eval for loop uses for each `Expr`), and
+    // then yields. These tests pin down the arg-eval propagation
+    // baseline that slice 2's planned refactor of eval_call's
+    // argument loop must not regress.
+    // ────────────────────────────────────────────────────────────
+
+    /// Smoke test: marker evaluates its arg (a trivial literal) and
+    /// yields `Explicit`. Verifies that a single recursive
+    /// `eval_expr` call inside a marker fires the yield correctly
+    /// when the inner expr produces no signal.
+    #[test]
+    fn yield_after_arg_marker_yields_after_evaluating_arg() {
+        let src = "__YIELD_AFTER_ARG_TEST__(42);";
+        let ast = parse(src, "t.wll").expect("parse");
+        let mut ev = Evaluator::new();
+        match ev.step_once(&ast).expect("step_once") {
+            crate::runtime::StepResult::Yield(crate::runtime::YieldReason::Explicit) => {}
+            other => panic!("expected Yield(Explicit), got {other:?}"),
+        }
+    }
+
+    /// Propagation test: when the marker's arg itself produces a
+    /// yield (via a nested `__YIELD_TEST__()` call), that inner
+    /// yield bubbles out of the marker unchanged. This exercises the
+    /// `if o.signal != Signal::None { return Ok(o); }` propagation
+    /// rule that eval_call's for loop uses for every argument.
+    #[test]
+    fn yield_after_arg_marker_propagates_inner_yield() {
+        let src = "__YIELD_AFTER_ARG_TEST__(__YIELD_TEST__());";
+        let ast = parse(src, "t.wll").expect("parse");
+        let mut ev = Evaluator::new();
+        match ev.step_once(&ast).expect("step_once") {
+            crate::runtime::StepResult::Yield(crate::runtime::YieldReason::Explicit) => {}
+            other => panic!(
+                "expected Yield(Explicit) propagated from inner marker, got {other:?}"
+            ),
+        }
+    }
+
+    /// Arity test: the 1-arg marker rejects wrong arity with E0022
+    /// BEFORE attempting any evaluation, mirroring the slice-1
+    /// `__YIELD_TEST__` arity guard.
+    #[test]
+    fn yield_after_arg_marker_rejects_wrong_arity_with_e0022() {
+        // 0-arg call must fail arity check.
+        let src = "__YIELD_AFTER_ARG_TEST__();";
+        let ast = parse(src, "t.wll").expect("parse");
+        let mut ev = Evaluator::new();
+        let err = ev.eval(&ast).expect_err("0-arg call must error");
+        match err {
+            WlwlError::Diagnostic(d) => assert_eq!(
+                d.code,
+                ErrorCode::E0022,
+                "wrong arity on 1-arg marker must surface as E0022"
+            ),
+            other => panic!("expected Diagnostic, got {other:?}"),
+        }
+        // 2-arg call must also fail arity check.
+        let src2 = "__YIELD_AFTER_ARG_TEST__(1, 2);";
+        let ast2 = parse(src2, "t.wll").expect("parse");
+        let mut ev2 = Evaluator::new();
+        let err2 = ev2.eval(&ast2).expect_err("2-arg call must error");
+        match err2 {
+            WlwlError::Diagnostic(d) => assert_eq!(d.code, ErrorCode::E0022),
             other => panic!("expected Diagnostic, got {other:?}"),
         }
     }
