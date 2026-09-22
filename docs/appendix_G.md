@@ -4,7 +4,7 @@
 > 单源真相是 `crates/wlwl-eval/src/registry.rs::BUILTIN_REGISTRY`,本 markdown 是镜像。
 > 修改流程:改注册表 -> 跑本函数重写本文件 -> 跑 `cargo test` 验证 lock test。
 
-> 对照规范:`docs/standard/wlwl-spec-v0.7.md` 附录 G (规范性)。
+> 对照规范:`docs/standard/wlwl-spec-v0.8.md` 附录 G (规范性)。
 
 总条目数:**110** | 已实现:**86** | LexerMacro:**24** | Deferred:**0**
 
