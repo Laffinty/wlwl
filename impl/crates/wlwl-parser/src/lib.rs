@@ -1858,8 +1858,33 @@ impl Parser {
         // `a[i]`      desugars to  INDEX_GET(a, i)
         // `a[i] = v`  desugars to  INDEX_SET(a, i, v)
         //
-        // Chains mix freely (`a[0].b`, `a.b[0][1]`); INDEX_SET yields
-        // the container itself, so it can appear mid-chain.
+        // Postfix chain sugar is delegated to `apply_postfix_loop` so the
+        // same logic can run on identifier heads AND on array/dict literals
+        // (v0.8 §2.4 / D8-004: literal subscripts now allowed).
+        base = self.apply_postfix_loop(base, line, col)?;
+
+        Ok(base)
+    }
+
+    /// Postfix chain sugar applied to any expression:
+    /// - `e[i]`     desugars to  INDEX_GET(e, i)
+    /// - `e[i] = v` desugars to  INDEX_SET(e, i, v)
+    /// - `e.f`      desugars to  GET_PROP(e, "f")
+    /// - `e.f(args)` desugars to  CALL_METHOD(e, "f", args...)
+    ///
+    /// Returns updated `base` after consuming all postfix tokens.
+    /// `line` / `col` are the start of the original expression for
+    /// span attribution.
+    ///
+    /// Used by both `parse_call_or_ident` (identifier / call heads) and
+    /// `parse_array_or_dict` (array / dict literals — v0.8 §2.4 D8-004).
+    /// Chains mix freely (`a[0].b`, `a.b[0][1]`, `[1,2,3][0][1]`).
+    fn apply_postfix_loop(
+        &mut self,
+        mut base: Expr,
+        line: u32,
+        col: u32,
+    ) -> WlwlResult<Expr> {
         loop {
             if matches!(self.peek(), TokenKind::LBracket) {
                 self.advance(); // '['
@@ -2194,8 +2219,12 @@ impl Parser {
         // for the warning span; the result Expr span covers
         // the whole literal.
         let _ = emitted_w0020;
-        if is_dict {
-            Ok(Expr::Dict {
+        // v0.8 §2.4 / D8-004: array / dict literals may now carry
+        // postfix chains (`[1,2,3][0]`, `["a":1]["a"][0]`, etc.).
+        // Build the literal into `base`, then route through the same
+        // postfix loop that `parse_call_or_ident` uses.
+        let mut base: Expr = if is_dict {
+            Expr::Dict {
                 entries,
                 span: Span {
                     file: self.file.clone(),
@@ -2204,9 +2233,9 @@ impl Parser {
                     line_end,
                     col_end,
                 },
-            })
+            }
         } else {
-            Ok(Expr::Array {
+            Expr::Array {
                 items,
                 span: Span {
                     file: self.file.clone(),
@@ -2215,8 +2244,11 @@ impl Parser {
                     line_end,
                     col_end,
                 },
-            })
-        }
+            }
+        };
+        // v0.8 §2.4 / D8-004: literal subscripts allowed.
+        base = self.apply_postfix_loop(base, line, col)?;
+        Ok(base)
     }
 
     fn parse_paren_block(&mut self) -> WlwlResult<Expr> {

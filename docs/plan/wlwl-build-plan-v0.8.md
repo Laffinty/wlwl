@@ -250,6 +250,10 @@ fn parse_array_or_dict(&mut self, line: u32, col: u32) -> WlwlResult<Expr> {
 
 **SPEC 同步**:见 §3.15 删除 §4.5 末句(报告选项 A,采纳)。
 
+> **实施落实(2026-09-23)**:deviation 实际登记为 `D8-004`(规范与实现重新一致 — prose 由"禁止"改"允许",但 prose 旧文本早已与 v0.7 §A.2 grammar 自相矛盾,本次修复让 parser 与 grammar 对齐)。
+> `apply_postfix_loop` 已抽出(parser.rs:1882 起的 ~120 行),`parse_call_or_ident` 末尾改为单行调用,`parse_array_or_dict` 末尾也接入。
+> 测试落地 7 项:`parser/tests/spec_v3_alignment.rs` 加 4 round-trip;`eval/src/lib.rs::tests` 加 3 端到端(`eval_array_literal_subscript` / `eval_dict_literal_subscript` / `eval_chained_literal_subscript`)+ `eval_literal_subscript_with_set_sugar` 1 项,实际共 4 项 eval 测试(plan 写的 "v07_fidelity.rs 加 1 项端到端"改为 lib.rs 邻近 pop_dict_* 的位置更易 review)。`cargo test --workspace` ~1366 项全绿。
+
 ### 2.5 F-10 修复 · 负数词法路径文档化
 
 **改动**:**仅注释,不改行为**。`parser.rs:676-707` 的 desugar 块顶部加注释,引用 §1.6 v0.8 措辞,确保未来读者不会以为这是反规范:

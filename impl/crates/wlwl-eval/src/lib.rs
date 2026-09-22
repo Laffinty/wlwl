@@ -13385,6 +13385,53 @@ entry = "main.wll"
         assert_eq!(err.diagnostic().code, ErrorCode::E0030);
     }
 
+    // -- v0.8 §2.4 / D8-004: literal subscripts now allowed --
+
+    #[test]
+    fn eval_array_literal_subscript() {
+        // [1, 2, 3][0] -> 1
+        assert_eq!(run("[1, 2, 3][0];").unwrap(), Value::Integer(1));
+        assert_eq!(run("[1, 2, 3][2];").unwrap(), Value::Integer(3));
+        assert_eq!(run("[10, 20][1];").unwrap(), Value::Integer(20));
+    }
+
+    #[test]
+    fn eval_dict_literal_subscript() {
+        // ["a": 1]["a"] -> 1
+        assert_eq!(
+            run(r###"["a": 1, "b": 2]["a"];"###).unwrap(),
+            Value::Integer(1)
+        );
+        assert_eq!(
+            run(r###"["a": 1, "b": 2]["b"];"###).unwrap(),
+            Value::Integer(2)
+        );
+    }
+
+    #[test]
+    fn eval_chained_literal_subscript() {
+        // [[1, 2], [3, 4]][1][0] -> 3
+        assert_eq!(run("[[1, 2], [3, 4]][1][0];").unwrap(), Value::Integer(3));
+        // [[1,2][0], 3] -> first item is [1,2][0]=1, second is 3, so [0] -> 1
+        assert_eq!(run("[[1,2][0], 3][0];").unwrap(), Value::Integer(1));
+    }
+
+    #[test]
+    fn eval_literal_subscript_with_set_sugar() {
+        // Literal-side INDEX_SET: `[10, 20, 30][1] = 99` desugars to
+        // INDEX_SET([10,20,30], 1, 99), which per §4.5 returns the
+        // mutated container (immutable in-place replacement).
+        let v = run("[10, 20, 30][1] = 99;").unwrap();
+        assert_eq!(
+            v,
+            Value::Array(vec![
+                Value::Integer(10),
+                Value::Integer(99),
+                Value::Integer(30)
+            ])
+        );
+    }
+
     // -- ERR transparent propagation (registry exclusion) --
 
     #[test]

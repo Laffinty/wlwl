@@ -108,7 +108,86 @@ impl 内从未真正接入。
 
 ---
 
+## D8-004 · 字面量下标允许(规范与实现重新一致)
+
+- **状态**:已修复(commit 待补)
+- **发现**:v0.8 §2.4 实施时(2026-09-23)
+- **影响范围**:
+  - `impl/crates/wlwl-parser/src/lib.rs::parse_call_or_ident` 末尾 inline postfix loop
+  - `impl/crates/wlwl-parser/src/lib.rs::parse_array_or_dict` 末尾
+  - `parser/tests/spec_v3_alignment.rs`(新增 4 个 round-trip)
+  - `eval/src/lib.rs::tests`(新增 4 个端到端)
+
+### 现象
+v0.7 spec §A.2 grammar `PostfixExpr = Primary { Postfix }` 而 `Primary` 含 `ArrayLit | DictLit`,
+**字面上**允许 `[1,2,3][0]`;但 spec §4.5 prose 末句明确禁:
+
+> "下标链挂在变量、调用或属性访问之后;对数组、字典字面量直接施加下标不在本规范内。"
+
+而 parser `parse_array_or_dict` 在 v0.7 实现里也确实 reject 字面量下标 — 三层完全自相
+矛盾,v0.7 行为偏向 prose。
+
+### 根本原因
+v0.4 时代 §A.2 grammar 与 prose 一致时,parser 拒绝字面量下标;v0.5/v0.6 演进时 grammar
+放宽(允许 ArrayLit/DictLit 进入 PostfixExpr),prose 与 parser 都没跟上。Plan §2.4 报告选项
+A(采纳:允许)是正确的修复方向,让三层都对齐 "允许"。
+
+### 处置(v0.8 修复)
+- 抽出 `apply_postfix_loop(&mut self, mut base, line, col) -> WlwlResult<Expr>`
+  作为 parser 公共方法(parser.rs:1882 起 ~120 行)。
+- `parse_call_or_ident` 末尾的 inline loop 替换为单行调用:
+  `base = self.apply_postfix_loop(base, line, col)?;`
+- `parse_array_or_dict` 末尾把 `Expr::Dict { ... }` / `Expr::Array { ... }` 包成 `base`,
+  然后也调一次 `apply_postfix_loop`。
+- v0.8 §3.15 同步删除 spec §4.5 末句的禁句(prose 改"允许")。
+
+### 兼容性影响
+- **可观察行为变更**(v0.7 → v0.8):`[1,2,3][0]` 从解析错误(`E0010` / `E0011`)变为 `1`。
+  这是本次 v0.8 唯一会改变 v0.7 程序行为的边界场景,已在 plan §4.4 CHANGELOG
+  兼容承诺段标注。
+- 现有 v0.7 不会因此破坏,因为 v0.7 写不出 `[1,2,3][0]` 这种代码。
+
+### 回归锁测试(新增 8 项)
+parser(4 round-trip):
+- `parser_array_literal_subscript_roundtrip`
+- `parser_dict_literal_subscript_roundtrip`
+- `parser_mixed_literal_subscript_chain`
+- `parser_nested_literal_subscript_in_array`
+
+eval(4 端到端):
+- `eval_array_literal_subscript`
+- `eval_dict_literal_subscript`
+- `eval_chained_literal_subscript`
+- `eval_literal_subscript_with_set_sugar`
+
+`cargo test --workspace` ~1366 项全绿(原 ~1358 + 新增 8)。
+
+---
+
 ## 模板(后续登记用)
+
+```
+## D8-NNN · <简短标题>
+
+- **状态**:待修复 / 已修复(commit XXXXXXX)
+- **发现**:v0.8 §X.Y 实施时(YYYY-MM-DD)
+- **影响范围**:具体文件 + 行号
+
+### 现象
+(贴代码 / 测试输出)
+
+### 根本原因
+(为什么会出现)
+
+### 处置
+(改了哪些字段)
+
+### 兼容性影响
+(用户代码 / dispatch 行为是否改变)
+
+### 回归锁测试
+(新增 / 既有测试名)
+```
 
 ```
 ## D8-NNN · <简短标题>

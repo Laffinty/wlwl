@@ -1005,3 +1005,85 @@ fn only_let(r: &Expr) -> &Box<Expr> {
 fn _silence_span_unused() {
     let _ = Span::dummy();
 }
+
+// ───────────────── v0.8 §2.4 / D8-004: literal subscripts ─────────────────
+//
+// Before v0.8 spec §4.5 末句 banned "对数组、字典字面量直接施加下标",which the
+// parser also enforced. v0.8 §3.15 删禁句, §2.4 重构 parser 让 `apply_postfix_loop`
+// 在 `parse_array_or_dict` 末尾跑一次,允许以下形式:
+//
+//   [1, 2, 3][0]                →  INDEX_GET(ARRAY [1,2,3], 0)
+//   ["a": 1]["a"]                →  INDEX_GET(DICT {"a":1}, "a")
+//   [[1,2], [3,4]][1][0]         →  INDEX_GET(INDEX_GET(ARRAY [...], 1), 0)
+//   [[1,2][0], 3]                →  ARRAY [ INDEX_GET(ARRAY [1,2], 0), 3 ]
+//
+// 与已有 `i1_index_*` 套件(`a[i]`)的区别:此处 `e` 是 **literal**,不是 ident/call。
+
+#[test]
+fn parser_array_literal_subscript_roundtrip() {
+    // `[1, 2, 3][0]` → INDEX_GET(array_lit, 0)
+    let r = parse("[1, 2, 3][0];", "t.wll").unwrap();
+    let call = match &r {
+        Expr::Call { name, args, .. } => (name, args),
+        other => panic!("expected Call INDEX_GET, got {:?}", other),
+    };
+    assert_eq!(call.0, "INDEX_GET");
+    assert_eq!(call.1.len(), 2);
+    assert!(matches!(&call.1[0], Expr::Array { .. }));
+    assert!(matches!(&call.1[1], Expr::Literal(Literal::Integer(0), _)));
+}
+
+#[test]
+fn parser_dict_literal_subscript_roundtrip() {
+    // `["a": 1]["a"]` → INDEX_GET(dict_lit, "a")
+    let r = parse(r###"["a": 1]["a"];"###, "t.wll").unwrap();
+    let call = match &r {
+        Expr::Call { name, args, .. } => (name, args),
+        other => panic!("expected Call INDEX_GET, got {:?}", other),
+    };
+    assert_eq!(call.0, "INDEX_GET");
+    assert_eq!(call.1.len(), 2);
+    assert!(matches!(&call.1[0], Expr::Dict { .. }));
+    assert!(matches!(
+        &call.1[1],
+        Expr::Literal(Literal::String(s), _) if s == "a"
+    ));
+}
+
+#[test]
+fn parser_mixed_literal_subscript_chain() {
+    // `[[1,2], [3,4]][1][0]` → INDEX_GET(INDEX_GET(outer_arr, 1), 0)
+    let r = parse("[[1,2], [3,4]][1][0];", "t.wll").unwrap();
+    let outer = match &r {
+        Expr::Call { name, args, .. } => (name, args),
+        other => panic!("expected outer INDEX_GET, got {:?}", other),
+    };
+    assert_eq!(outer.0, "INDEX_GET");
+    assert_eq!(outer.1.len(), 2);
+    let inner = match &outer.1[0] {
+        Expr::Call { name, args, .. } => (name, args),
+        other => panic!("expected inner INDEX_GET, got {:?}", other),
+    };
+    assert_eq!(inner.0, "INDEX_GET");
+    assert!(matches!(&inner.1[0], Expr::Array { .. }));
+    assert!(matches!(&outer.1[1], Expr::Literal(Literal::Integer(0), _)));
+}
+
+#[test]
+fn parser_nested_literal_subscript_in_array() {
+    // `[[1,2][0], 3]` → outer ARRAY with first item = INDEX_GET([1,2], 0), second item = 3
+    let r = parse("[[1,2][0], 3];", "t.wll").unwrap();
+    let arr = match &r {
+        Expr::Array { items, .. } => items,
+        other => panic!("expected Array, got {:?}", other),
+    };
+    assert_eq!(arr.len(), 2);
+    let first = match &arr[0] {
+        Expr::Call { name, args, .. } => (name, args),
+        other => panic!("expected first item to be INDEX_GET, got {:?}", other),
+    };
+    assert_eq!(first.0, "INDEX_GET");
+    assert!(matches!(&first.1[0], Expr::Array { .. }));
+    assert!(matches!(&first.1[1], Expr::Literal(Literal::Integer(0), _)));
+    assert!(matches!(&arr[1], Expr::Literal(Literal::Integer(3), _)));
+}
