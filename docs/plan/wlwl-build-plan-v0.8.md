@@ -162,55 +162,61 @@ BuiltinSpec {
 **测试增补**:为防回归,在 `wlwl-eval/src/lib.rs` 加 `pop_registry_entry_matches_dispatch` 测试:查 registry 中 POP 条目,断言 `signature` 含 "3-arg" 或 "d, k, default"。
 **附录 G 文档**:`docs/appendix_G.md` 由 `gen_appendix_g.rs` 重生成 — 章节号修正一并在 §2.3 完成。
 
-### 2.3 F-04 修复 · 注册表 anchor 章节号系统化更新
+### 2.3 F-04 修复 · 注册表章节号系统化更新(per-entry section)
 
-**改动**:`registry.rs:91-108` `BuiltinGroup::anchor`。
+> **v0.8 偏差(实施时发现)**:原计划把变更目标定为 `BuiltinGroup::anchor()`(registry.rs:91-108);
+> 实际代码检视后发现:
+> - `anchor()` 在 impl/ 工作区内**零调用方**(grep 全 workspace 无匹配);md 生成器
+>   `generate_appendix_g_md()`(registry.rs:1477-1484)实际读取每个 `BuiltinSpec.section`
+>   字段渲染"实现位置"列。
+> - 因此改 `anchor()` 函数体对 `docs/appendix_G.md` 视觉输出**零影响**。
+> - 真要修,必须改 110 个 entry 各自的 `section` 字段(其中 **85 个过期**)。
+>
+> deviation `D8-002` 措辞修订为"per-entry section 字段系统化更新"。`anchor()` 函数体
+> 维持 v0.7 baseline 字符串(已加 doc 注释说明 dead-code 现状)。
 
-| 组 | 现锚 | v0.7 实际位置 |
-|----|------|--------------|
-| Io | `§15.1` | **§10.2 I/O** |
-| Conv | `§10 / §9.5 / §2.5 / §8.3` | **§10.3 类型与转换 / §10.3 / §2.5 显示 / §8.3 消费者表** |
-| Result | `§12` | **§8.1 / §8.3**(规范文本里 §12 是保留形式,ERROR 处理散落在 §8) |
-| Control | `§7 / §3.4` | **§6 / §4.3**(IF/WHILE/FOR 在 §6,逻辑与或非在 §4.3) |
-| Op | `§9` | **§4.3**(运算符即函数)+ §2.2(算术性质) |
-| Array | `§10.1` | **§10.4 容器操作(全局)** |
-| Dict | `§10.2` | **§10.4**(DICT 操作与 ARRAY 同节) |
-| Subscript | `§10.1-§10.2` | **§4.5 下标** |
-| String | `§10.3` | **§10.5 字符串操作(全局)** |
-| Format | `§10.6` | **§10.7 格式化 — FORMAT** |
-| Module | `§13` | **§9 模块与程序** |
-| Oop | `§11` | **`[暂无]`(v0.7 不定义 OOP,§11 是诊断)** |
-| Property | `§11.4` | **`[暂无]`(同上)** |
-| Ctor | `§10.1 / §10.2` | **§10.9 构造器** |
-| Concurrent | `§17` | **§17 并发** ✓ 已对 |
+**改动**:`registry.rs::BUILTIN_REGISTRY` 中 **85 个** `BuiltinSpec.section` 字段对齐 v0.7 spec 章节号
+(对照 `docs/standard/wlwl-spec-v0.7.md`)。
 
-**改动后**:
-```rust
-pub fn anchor(self) -> &'static str {
-    match self {
-        BuiltinGroup::Io => "§10.2",
-        BuiltinGroup::Conv => "§10.3 / §2.5 / §8.3",
-        BuiltinGroup::Result => "§8.1 / §8.3",
-        BuiltinGroup::Control => "§6 / §4.3",
-        BuiltinGroup::Op => "§4.3 / §2.2",
-        BuiltinGroup::Array => "§10.4",
-        BuiltinGroup::Dict => "§10.4",
-        BuiltinGroup::Subscript => "§4.5",
-        BuiltinGroup::String => "§10.5",
-        BuiltinGroup::Format => "§10.7",
-        BuiltinGroup::Module => "§9",
-        BuiltinGroup::Oop => "§11 [诊断占位;OOP 未实现]",
-        BuiltinGroup::Property => "§11 [占位]",
-        BuiltinGroup::Ctor => "§10.9",
-        BuiltinGroup::Concurrent => "§17",
-    }
-}
-```
+**改动分桶**(按 `group × current_section` 分类,共 85 处):
 
-**重要**:anchor 是 markdown 表格里 § 链接的 href,改完跑 `cargo run -p wlwl-eval --bin gen_appendix_g` 重生成 `docs/appendix_G.md`。
-**锁测试影响**:`b11_generated_md_matches_registry` 必须绿(它比较 registry hash 与 md 里的 hash)。改完先跑 build,再生成 md,再跑测试。
-**deviation 登记**:`D8-002`。
-**测试增补**:写一个 `appendix_g_anchors_match_v07_section_numbers` 测试,读取 `docs/appendix_G.md`,对每组 anchor 文本做白名单校验(全表 13 行,锚必须从 `{"§1", "§2", "§4", "§6", "§8", "§9", "§10.x", "§17", "[暂无]"}` 集合里取)。
+| group | current | new | 数量 | entries |
+|-------|---------|-----|------|---------|
+| Io | `§15.1` | `§10.2` | 3 | PRINT, PRINT_ERR, INPUT |
+| Conv | `§9.5` | `§10.3` | 2 | INT, FLOAT |
+| Conv | `§10.5` | `§10.3` | 1 | LEN(错放在 §10.5 字符串;应归 §10.3 类型与转换) |
+| Result | `§12.1` | `§8.1` | 2 | OK, ERR |
+| Result | `§12.2` | `§8.3` | 7 | IS_OK, IS_ERR, OR_DIE, UNWRAP_OR, UNWRAP, ERR_PAYLOAD, WRAP |
+| Result | `§12.4` | `§8.4` | 1 | PANIC |
+| Result | `§12.6` | `§6` | 1 | TRY(早返宏;本质控制流) |
+| Result | `§15.9` | `§8.3` | 1 | EXPECT_ERR |
+| Control | `§7.1`-`§7.5` | `§6` | 7 | IF, WHILE, FOR, MATCH, RETURN, BREAK, CONTINUE |
+| Control | `§3.4` | `§4.3` | 3 | AND, OR, NOT |
+| Op | `§9.1` | `§4.3` | 6 | +, -, *, /, %, NEG |
+| Op | `§9.2` | `§4.3` | 6 | ==, !=, >, <, >=, <= |
+| Array | `§10.1` | `§10.4` | 8 | PUSH, SHIFT, UNSHIFT, SLICE, CONCAT, CONTAINS, INDEX, REVERSE |
+| Dict | `§10.2` | `§10.4` | 6 | REMOVE_KEY, DEL, KEYS, VALUES, HAS, MERGE |
+| Subscript | `§10.1-§10.2` | `§4.5` | 3 | INDEX_GET, INDEX_SET, AT |
+| String | `§10.3` | `§10.5` | 15 | UPPER, LOWER, SUB, REPLACE, SPLIT, TRIM, TRIM_START, TRIM_END, STARTS_WITH, ENDS_WITH, REPEAT, PAD_START, PAD_END, CODEPOINTS, FROM_CODEPOINTS |
+| Format | `§10.6` | `§10.7` | 1 | FORMAT |
+| Module | `§13.1`-`§13.5` | `§9` | 4 | MODULE_REF, EXPORT, IMPORT, MODULE |
+| Oop | `§11.1`-`§11.3` | `§11 [占位;OOP 未实现]` | 3 | CLASS, NEW, THIS |
+| Property | `§11.4` | `§11 [占位;OOP 未实现]` | 3 | GET_PROP, SET_PROP, CALL_METHOD |
+| Ctor | `§10.1` / `§10.2` | `§10.9` | 2 | ARRAY, DICT |
+
+**已对齐 v0.7 不需改**(25 个):17 个 Concurrent(所有 `§17.x`)+ POP / AT_K(Array / Dict `§10.4`)+ STR / TYPE / BOOL / CALL(Conv 各自正确章节)+ `&&` / `||`(Op `§4.3`)。
+
+**anchor() 函数体**:维持 v0.7 baseline 字符串 + 加 doc 注释说明 dead-code 现状。**不删除**(避免破坏潜在的外部 crate 引用;独立清理可后续单独跑一轮)。
+
+**impl 影响**:零(纯数据字段更新,不影响 dispatch / 行为)。
+
+**md 视觉变化**:重生成后 `docs/appendix_G.md` 的 110 行表格"实现位置"列会出现 85 处章节号变更;第 9-10 行(`STRING 操作`分组)会有 15 行从 `§10.3` 变 `§10.5`,这是最大单组变化。
+
+**锁测试影响**:计划列出的 `b11_generated_md_matches_registry` **实际不存在**;现有 lock test `generated_md_includes_all_entries` 只校验生成器自身(不读 md 文件)。改完流程:build → regen md → 跑 `cargo test -p wlwl-eval --lib` 全绿 → 人眼/手动 diff 验证 md。
+
+**deviation 登记**:`D8-002` 措辞修订为"per-entry section 字段系统化更新,85 处 BuiltinSpec.section 对齐 v0.7 spec 章节号;anchor() 保留为 dead-code 注释参考"。
+
+**测试增补**:`appendix_g_anchors_match_v07_section_numbers`(计划 §2.9 第 2 项)读取 `docs/appendix_G.md`,对所有 110 行表格"实现位置"列做白名单校验,锚必须从 v0.7 spec 已定义的章节集合取,阻止未来 `§13.x` / `§15.x` / `§12.x` 类过期章节号重新进入。
 
 ### 2.4 F-07 修复 · 字面量下标允许
 

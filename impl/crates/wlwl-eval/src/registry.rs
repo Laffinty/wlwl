@@ -88,6 +88,13 @@ pub enum BuiltinGroup {
 
 impl BuiltinGroup {
     /// Spec 表格行号 / 章节锚,markdown 用作 § 链接。
+    ///
+    /// 注(v0.8):该函数当前在 impl/ 工作区内零调用方(无 grep 结果);
+    /// md 表格"实现位置"列实际使用每个 `BuiltinSpec.section` 字段(见
+    /// `generate_appendix_g_md()` 的 match spec.dispatch)。`anchor()` 暂
+    /// 保留为对外表面以避免破坏外部 crate 引用;v0.8 §2.3 实际工作转向
+    /// 更新 31 个 `BuiltinSpec.section` 字段,详见
+    /// `docs/plan/wlwl-build-plan-v0.8.md` §2.3 (deviation D8-002)。
     pub fn anchor(self) -> &'static str {
         match self {
             BuiltinGroup::Io => "§15.1",
@@ -222,7 +229,7 @@ pub const BUILTIN_REGISTRY: &[BuiltinSpec] = &[
         macro_fn: false,
         version: Version::V02,
         dispatch: DispatchStatus::ResolvedBuiltin,
-        section: "§15.1",
+        section: "§10.2",
     },
     BuiltinSpec {
         name: "PRINT_ERR",
@@ -232,7 +239,7 @@ pub const BUILTIN_REGISTRY: &[BuiltinSpec] = &[
         macro_fn: false,
         version: Version::V04,
         dispatch: DispatchStatus::ResolvedBuiltin,
-        section: "§15.1",
+        section: "§10.2",
     },
     BuiltinSpec {
         name: "INPUT",
@@ -242,7 +249,7 @@ pub const BUILTIN_REGISTRY: &[BuiltinSpec] = &[
         macro_fn: false,
         version: Version::V02,
         dispatch: DispatchStatus::ResolvedBuiltin,
-        section: "§15.1",
+        section: "§10.2",
     },
     // ── 类型 / 转换 (7) ─────────────────────────────────────────
     BuiltinSpec {
@@ -253,7 +260,7 @@ pub const BUILTIN_REGISTRY: &[BuiltinSpec] = &[
         macro_fn: false,
         version: Version::V02,
         dispatch: DispatchStatus::ResolvedBuiltin,
-        section: "§10.5",
+        section: "§10.3",
     },
     BuiltinSpec {
         name: "STR",
@@ -273,7 +280,7 @@ pub const BUILTIN_REGISTRY: &[BuiltinSpec] = &[
         macro_fn: false,
         version: Version::V02,
         dispatch: DispatchStatus::ResolvedBuiltin,
-        section: "§9.5",
+        section: "§10.3",
     },
     BuiltinSpec {
         name: "FLOAT",
@@ -283,7 +290,7 @@ pub const BUILTIN_REGISTRY: &[BuiltinSpec] = &[
         macro_fn: false,
         version: Version::V04,
         dispatch: DispatchStatus::ResolvedBuiltin,
-        section: "§9.5",
+        section: "§10.3",
     },
     BuiltinSpec {
         name: "TYPE",
@@ -327,7 +334,7 @@ pub const BUILTIN_REGISTRY: &[BuiltinSpec] = &[
         macro_fn: true,
         version: Version::V02,
         dispatch: DispatchStatus::LexerMacro,
-        section: "§12.2",
+        section: "§8.3",
     },
     BuiltinSpec {
         name: "IS_ERR",
@@ -337,7 +344,7 @@ pub const BUILTIN_REGISTRY: &[BuiltinSpec] = &[
         macro_fn: true,
         version: Version::V02,
         dispatch: DispatchStatus::LexerMacro,
-        section: "§12.2",
+        section: "§8.3",
     },
     BuiltinSpec {
         name: "OR_DIE",
@@ -347,7 +354,7 @@ pub const BUILTIN_REGISTRY: &[BuiltinSpec] = &[
         macro_fn: true,
         version: Version::V02,
         dispatch: DispatchStatus::ResolvedCompat,
-        section: "§12.2",
+        section: "§8.3",
     },
     BuiltinSpec {
         name: "UNWRAP_OR",
@@ -357,7 +364,7 @@ pub const BUILTIN_REGISTRY: &[BuiltinSpec] = &[
         macro_fn: true,
         version: Version::V04,
         dispatch: DispatchStatus::ResolvedBuiltin,
-        section: "§12.2",
+        section: "§8.3",
     },
     BuiltinSpec {
         name: "UNWRAP",
@@ -367,7 +374,7 @@ pub const BUILTIN_REGISTRY: &[BuiltinSpec] = &[
         macro_fn: false,
         version: Version::V04,
         dispatch: DispatchStatus::ResolvedBuiltin,
-        section: "§12.2",
+        section: "§8.3",
     },
     BuiltinSpec {
         name: "ERR_PAYLOAD",
@@ -377,7 +384,7 @@ pub const BUILTIN_REGISTRY: &[BuiltinSpec] = &[
         macro_fn: false,
         version: Version::V04,
         dispatch: DispatchStatus::ResolvedBuiltin,
-        section: "§12.2",
+        section: "§8.3",
     },
     BuiltinSpec {
         name: "WRAP",
@@ -387,7 +394,7 @@ pub const BUILTIN_REGISTRY: &[BuiltinSpec] = &[
         macro_fn: false,
         version: Version::V04,
         dispatch: DispatchStatus::ResolvedBuiltin,
-        section: "§12.2",
+        section: "§8.3",
     },
     BuiltinSpec {
         name: "TRY",
@@ -397,7 +404,7 @@ pub const BUILTIN_REGISTRY: &[BuiltinSpec] = &[
         macro_fn: true,
         version: Version::V02,
         dispatch: DispatchStatus::LexerMacro,
-        section: "§12.6",
+        section: "§6",
     },
     BuiltinSpec {
         name: "PANIC",
@@ -407,7 +414,7 @@ pub const BUILTIN_REGISTRY: &[BuiltinSpec] = &[
         macro_fn: true,
         version: Version::V02,
         dispatch: DispatchStatus::LexerMacro,
-        section: "§12.4",
+        section: "§8.4",
     },
     BuiltinSpec {
         name: "OK",
@@ -417,7 +424,7 @@ pub const BUILTIN_REGISTRY: &[BuiltinSpec] = &[
         macro_fn: true,
         version: Version::V04,
         dispatch: DispatchStatus::LexerMacro,
-        section: "§12.1",
+        section: "§8.1",
     },
     BuiltinSpec {
         name: "EXPECT_ERR",
@@ -427,7 +434,7 @@ pub const BUILTIN_REGISTRY: &[BuiltinSpec] = &[
         macro_fn: true,
         version: Version::V04,
         dispatch: DispatchStatus::LexerMacro,
-        section: "§15.9",
+        section: "§8.3",
     },
     BuiltinSpec {
         name: "ERR",
@@ -437,7 +444,7 @@ pub const BUILTIN_REGISTRY: &[BuiltinSpec] = &[
         macro_fn: true,
         version: Version::V04,
         dispatch: DispatchStatus::LexerMacro,
-        section: "§12.1",
+        section: "§8.1",
     },
     // ── 控制流 / 逻辑 (10) ──────────────────────────────────────
     BuiltinSpec {
@@ -452,7 +459,7 @@ pub const BUILTIN_REGISTRY: &[BuiltinSpec] = &[
         macro_fn: true,
         version: Version::V02,
         dispatch: DispatchStatus::LexerMacro,
-        section: "§7.1",
+        section: "§6",
     },
     BuiltinSpec {
         name: "WHILE",
@@ -462,7 +469,7 @@ pub const BUILTIN_REGISTRY: &[BuiltinSpec] = &[
         macro_fn: true,
         version: Version::V02,
         dispatch: DispatchStatus::LexerMacro,
-        section: "§7.2",
+        section: "§6",
     },
     BuiltinSpec {
         name: "FOR",
@@ -472,7 +479,7 @@ pub const BUILTIN_REGISTRY: &[BuiltinSpec] = &[
         macro_fn: true,
         version: Version::V02,
         dispatch: DispatchStatus::LexerMacro,
-        section: "§7.3",
+        section: "§6",
     },
     BuiltinSpec {
         name: "MATCH",
@@ -482,7 +489,7 @@ pub const BUILTIN_REGISTRY: &[BuiltinSpec] = &[
         macro_fn: true,
         version: Version::V04,
         dispatch: DispatchStatus::LexerMacro,
-        section: "§7.4",
+        section: "§6",
     },
     BuiltinSpec {
         name: "RETURN",
@@ -492,7 +499,7 @@ pub const BUILTIN_REGISTRY: &[BuiltinSpec] = &[
         macro_fn: true,
         version: Version::V02,
         dispatch: DispatchStatus::LexerMacro,
-        section: "§7.5",
+        section: "§6",
     },
     BuiltinSpec {
         name: "BREAK",
@@ -502,7 +509,7 @@ pub const BUILTIN_REGISTRY: &[BuiltinSpec] = &[
         macro_fn: true,
         version: Version::V02,
         dispatch: DispatchStatus::LexerMacro,
-        section: "§7.5",
+        section: "§6",
     },
     BuiltinSpec {
         name: "CONTINUE",
@@ -512,7 +519,7 @@ pub const BUILTIN_REGISTRY: &[BuiltinSpec] = &[
         macro_fn: true,
         version: Version::V02,
         dispatch: DispatchStatus::LexerMacro,
-        section: "§7.5",
+        section: "§6",
     },
     BuiltinSpec {
         name: "AND",
@@ -522,7 +529,7 @@ pub const BUILTIN_REGISTRY: &[BuiltinSpec] = &[
         macro_fn: true,
         version: Version::V02,
         dispatch: DispatchStatus::LexerMacro,
-        section: "§3.4",
+        section: "§4.3",
     },
     BuiltinSpec {
         name: "OR",
@@ -532,7 +539,7 @@ pub const BUILTIN_REGISTRY: &[BuiltinSpec] = &[
         macro_fn: true,
         version: Version::V02,
         dispatch: DispatchStatus::LexerMacro,
-        section: "§3.4",
+        section: "§4.3",
     },
     BuiltinSpec {
         name: "NOT",
@@ -542,7 +549,7 @@ pub const BUILTIN_REGISTRY: &[BuiltinSpec] = &[
         macro_fn: true,
         version: Version::V02,
         dispatch: DispatchStatus::ResolvedBuiltin,
-        section: "§3.4",
+        section: "§4.3",
     },
     // ── 运算符 (12) ─────────────────────────────────────────────
     BuiltinSpec {
@@ -553,7 +560,7 @@ pub const BUILTIN_REGISTRY: &[BuiltinSpec] = &[
         macro_fn: false,
         version: Version::V02,
         dispatch: DispatchStatus::ResolvedBuiltin,
-        section: "§9.2",
+        section: "§4.3",
     },
     BuiltinSpec {
         name: "!=",
@@ -563,7 +570,7 @@ pub const BUILTIN_REGISTRY: &[BuiltinSpec] = &[
         macro_fn: false,
         version: Version::V02,
         dispatch: DispatchStatus::ResolvedBuiltin,
-        section: "§9.2",
+        section: "§4.3",
     },
     BuiltinSpec {
         name: ">",
@@ -573,7 +580,7 @@ pub const BUILTIN_REGISTRY: &[BuiltinSpec] = &[
         macro_fn: false,
         version: Version::V02,
         dispatch: DispatchStatus::ResolvedBuiltin,
-        section: "§9.2",
+        section: "§4.3",
     },
     BuiltinSpec {
         name: "<",
@@ -583,7 +590,7 @@ pub const BUILTIN_REGISTRY: &[BuiltinSpec] = &[
         macro_fn: false,
         version: Version::V02,
         dispatch: DispatchStatus::ResolvedBuiltin,
-        section: "§9.2",
+        section: "§4.3",
     },
     BuiltinSpec {
         name: ">=",
@@ -593,7 +600,7 @@ pub const BUILTIN_REGISTRY: &[BuiltinSpec] = &[
         macro_fn: false,
         version: Version::V02,
         dispatch: DispatchStatus::ResolvedBuiltin,
-        section: "§9.2",
+        section: "§4.3",
     },
     BuiltinSpec {
         name: "<=",
@@ -603,7 +610,7 @@ pub const BUILTIN_REGISTRY: &[BuiltinSpec] = &[
         macro_fn: false,
         version: Version::V02,
         dispatch: DispatchStatus::ResolvedBuiltin,
-        section: "§9.2",
+        section: "§4.3",
     },
     BuiltinSpec {
         name: "+",
@@ -613,7 +620,7 @@ pub const BUILTIN_REGISTRY: &[BuiltinSpec] = &[
         macro_fn: false,
         version: Version::V02,
         dispatch: DispatchStatus::ResolvedBuiltin,
-        section: "§9.1",
+        section: "§4.3",
     },
     BuiltinSpec {
         name: "-",
@@ -623,7 +630,7 @@ pub const BUILTIN_REGISTRY: &[BuiltinSpec] = &[
         macro_fn: false,
         version: Version::V02,
         dispatch: DispatchStatus::ResolvedBuiltin,
-        section: "§9.1",
+        section: "§4.3",
     },
     BuiltinSpec {
         name: "*",
@@ -633,7 +640,7 @@ pub const BUILTIN_REGISTRY: &[BuiltinSpec] = &[
         macro_fn: false,
         version: Version::V02,
         dispatch: DispatchStatus::ResolvedBuiltin,
-        section: "§9.1",
+        section: "§4.3",
     },
     BuiltinSpec {
         name: "/",
@@ -643,7 +650,7 @@ pub const BUILTIN_REGISTRY: &[BuiltinSpec] = &[
         macro_fn: false,
         version: Version::V02,
         dispatch: DispatchStatus::ResolvedBuiltin,
-        section: "§9.1",
+        section: "§4.3",
     },
     BuiltinSpec {
         name: "%",
@@ -653,7 +660,7 @@ pub const BUILTIN_REGISTRY: &[BuiltinSpec] = &[
         macro_fn: false,
         version: Version::V02,
         dispatch: DispatchStatus::ResolvedBuiltin,
-        section: "§9.1",
+        section: "§4.3",
     },
     BuiltinSpec {
         name: "&&",
@@ -690,7 +697,7 @@ pub const BUILTIN_REGISTRY: &[BuiltinSpec] = &[
         macro_fn: false,
         version: Version::V02,
         dispatch: DispatchStatus::ResolvedBuiltin,
-        section: "§9.1",
+        section: "§4.3",
     },
     // ── ARRAY 操作 (9) ──────────────────────────────────────────
     BuiltinSpec {
@@ -701,7 +708,7 @@ pub const BUILTIN_REGISTRY: &[BuiltinSpec] = &[
         macro_fn: false,
         version: Version::V02,
         dispatch: DispatchStatus::ResolvedBuiltin,
-        section: "§10.1",
+        section: "§10.4",
     },
     BuiltinSpec {
         name: "POP",
@@ -736,7 +743,7 @@ pub const BUILTIN_REGISTRY: &[BuiltinSpec] = &[
         macro_fn: false,
         version: Version::V02,
         dispatch: DispatchStatus::ResolvedBuiltin,
-        section: "§10.1",
+        section: "§10.4",
     },
     BuiltinSpec {
         name: "UNSHIFT",
@@ -746,7 +753,7 @@ pub const BUILTIN_REGISTRY: &[BuiltinSpec] = &[
         macro_fn: false,
         version: Version::V02,
         dispatch: DispatchStatus::ResolvedBuiltin,
-        section: "§10.1",
+        section: "§10.4",
     },
     BuiltinSpec {
         name: "SLICE",
@@ -756,7 +763,7 @@ pub const BUILTIN_REGISTRY: &[BuiltinSpec] = &[
         macro_fn: false,
         version: Version::V02,
         dispatch: DispatchStatus::ResolvedBuiltin,
-        section: "§10.1",
+        section: "§10.4",
     },
     BuiltinSpec {
         name: "CONCAT",
@@ -766,7 +773,7 @@ pub const BUILTIN_REGISTRY: &[BuiltinSpec] = &[
         macro_fn: false,
         version: Version::V02,
         dispatch: DispatchStatus::ResolvedBuiltin,
-        section: "§10.1",
+        section: "§10.4",
     },
     BuiltinSpec {
         name: "CONTAINS",
@@ -776,7 +783,7 @@ pub const BUILTIN_REGISTRY: &[BuiltinSpec] = &[
         macro_fn: false,
         version: Version::V02,
         dispatch: DispatchStatus::ResolvedBuiltin,
-        section: "§10.1",
+        section: "§10.4",
     },
     BuiltinSpec {
         name: "INDEX",
@@ -786,7 +793,7 @@ pub const BUILTIN_REGISTRY: &[BuiltinSpec] = &[
         macro_fn: false,
         version: Version::V02,
         dispatch: DispatchStatus::ResolvedBuiltin,
-        section: "§10.1",
+        section: "§10.4",
     },
     BuiltinSpec {
         name: "REVERSE",
@@ -796,7 +803,7 @@ pub const BUILTIN_REGISTRY: &[BuiltinSpec] = &[
         macro_fn: false,
         version: Version::V02,
         dispatch: DispatchStatus::ResolvedBuiltin,
-        section: "§10.1",
+        section: "§10.4",
     },
     // ── DICT 操作 (5) ───────────────────────────────────────────
     BuiltinSpec {
@@ -807,7 +814,7 @@ pub const BUILTIN_REGISTRY: &[BuiltinSpec] = &[
         macro_fn: false,
         version: Version::V04,
         dispatch: DispatchStatus::ResolvedBuiltin,
-        section: "§10.2",
+        section: "§10.4",
     },
     BuiltinSpec {
         name: "DEL",
@@ -817,7 +824,7 @@ pub const BUILTIN_REGISTRY: &[BuiltinSpec] = &[
         macro_fn: false,
         version: Version::V02,
         dispatch: DispatchStatus::ResolvedCompat,
-        section: "§10.2",
+        section: "§10.4",
     },
     BuiltinSpec {
         name: "KEYS",
@@ -827,7 +834,7 @@ pub const BUILTIN_REGISTRY: &[BuiltinSpec] = &[
         macro_fn: false,
         version: Version::V02,
         dispatch: DispatchStatus::ResolvedBuiltin,
-        section: "§10.2",
+        section: "§10.4",
     },
     BuiltinSpec {
         name: "VALUES",
@@ -837,7 +844,7 @@ pub const BUILTIN_REGISTRY: &[BuiltinSpec] = &[
         macro_fn: false,
         version: Version::V02,
         dispatch: DispatchStatus::ResolvedBuiltin,
-        section: "§10.2",
+        section: "§10.4",
     },
     BuiltinSpec {
         name: "HAS",
@@ -847,7 +854,7 @@ pub const BUILTIN_REGISTRY: &[BuiltinSpec] = &[
         macro_fn: false,
         version: Version::V02,
         dispatch: DispatchStatus::ResolvedBuiltin,
-        section: "§10.2",
+        section: "§10.4",
     },
     BuiltinSpec {
         name: "MERGE",
@@ -857,7 +864,7 @@ pub const BUILTIN_REGISTRY: &[BuiltinSpec] = &[
         macro_fn: false,
         version: Version::V02,
         dispatch: DispatchStatus::ResolvedBuiltin,
-        section: "§10.2",
+        section: "§10.4",
     },
     // ── 下标 (3) ───────────────────────────────────────────────
     BuiltinSpec {
@@ -868,7 +875,7 @@ pub const BUILTIN_REGISTRY: &[BuiltinSpec] = &[
         macro_fn: false,
         version: Version::V04,
         dispatch: DispatchStatus::ResolvedBuiltin,
-        section: "§10.1-§10.2",
+        section: "§4.5",
     },
     BuiltinSpec {
         name: "INDEX_SET",
@@ -878,7 +885,7 @@ pub const BUILTIN_REGISTRY: &[BuiltinSpec] = &[
         macro_fn: false,
         version: Version::V04,
         dispatch: DispatchStatus::ResolvedBuiltin,
-        section: "§10.1-§10.2",
+        section: "§4.5",
     },
     BuiltinSpec {
         name: "AT",
@@ -888,7 +895,7 @@ pub const BUILTIN_REGISTRY: &[BuiltinSpec] = &[
         macro_fn: false,
         version: Version::V04,
         dispatch: DispatchStatus::ResolvedBuiltin,
-        section: "§10.1-§10.2",
+        section: "§4.5",
     },
     // ── STRING 操作 (15) ────────────────────────────────────────
     BuiltinSpec {
@@ -899,7 +906,7 @@ pub const BUILTIN_REGISTRY: &[BuiltinSpec] = &[
         macro_fn: false,
         version: Version::V02,
         dispatch: DispatchStatus::ResolvedBuiltin,
-        section: "§10.3",
+        section: "§10.5",
     },
     BuiltinSpec {
         name: "LOWER",
@@ -909,7 +916,7 @@ pub const BUILTIN_REGISTRY: &[BuiltinSpec] = &[
         macro_fn: false,
         version: Version::V02,
         dispatch: DispatchStatus::ResolvedBuiltin,
-        section: "§10.3",
+        section: "§10.5",
     },
     BuiltinSpec {
         name: "SUB",
@@ -919,7 +926,7 @@ pub const BUILTIN_REGISTRY: &[BuiltinSpec] = &[
         macro_fn: false,
         version: Version::V02,
         dispatch: DispatchStatus::ResolvedBuiltin,
-        section: "§10.3",
+        section: "§10.5",
     },
     BuiltinSpec {
         name: "REPLACE",
@@ -929,7 +936,7 @@ pub const BUILTIN_REGISTRY: &[BuiltinSpec] = &[
         macro_fn: false,
         version: Version::V02,
         dispatch: DispatchStatus::ResolvedBuiltin,
-        section: "§10.3",
+        section: "§10.5",
     },
     BuiltinSpec {
         name: "SPLIT",
@@ -939,7 +946,7 @@ pub const BUILTIN_REGISTRY: &[BuiltinSpec] = &[
         macro_fn: false,
         version: Version::V02,
         dispatch: DispatchStatus::ResolvedBuiltin,
-        section: "§10.3",
+        section: "§10.5",
     },
     BuiltinSpec {
         name: "TRIM",
@@ -949,7 +956,7 @@ pub const BUILTIN_REGISTRY: &[BuiltinSpec] = &[
         macro_fn: false,
         version: Version::V02,
         dispatch: DispatchStatus::ResolvedBuiltin,
-        section: "§10.3",
+        section: "§10.5",
     },
     BuiltinSpec {
         name: "TRIM_START",
@@ -959,7 +966,7 @@ pub const BUILTIN_REGISTRY: &[BuiltinSpec] = &[
         macro_fn: false,
         version: Version::V02,
         dispatch: DispatchStatus::ResolvedBuiltin,
-        section: "§10.3",
+        section: "§10.5",
     },
     BuiltinSpec {
         name: "TRIM_END",
@@ -969,7 +976,7 @@ pub const BUILTIN_REGISTRY: &[BuiltinSpec] = &[
         macro_fn: false,
         version: Version::V02,
         dispatch: DispatchStatus::ResolvedBuiltin,
-        section: "§10.3",
+        section: "§10.5",
     },
     BuiltinSpec {
         name: "STARTS_WITH",
@@ -979,7 +986,7 @@ pub const BUILTIN_REGISTRY: &[BuiltinSpec] = &[
         macro_fn: false,
         version: Version::V02,
         dispatch: DispatchStatus::ResolvedBuiltin,
-        section: "§10.3",
+        section: "§10.5",
     },
     BuiltinSpec {
         name: "ENDS_WITH",
@@ -989,7 +996,7 @@ pub const BUILTIN_REGISTRY: &[BuiltinSpec] = &[
         macro_fn: false,
         version: Version::V02,
         dispatch: DispatchStatus::ResolvedBuiltin,
-        section: "§10.3",
+        section: "§10.5",
     },
     BuiltinSpec {
         name: "REPEAT",
@@ -999,7 +1006,7 @@ pub const BUILTIN_REGISTRY: &[BuiltinSpec] = &[
         macro_fn: false,
         version: Version::V02,
         dispatch: DispatchStatus::ResolvedBuiltin,
-        section: "§10.3",
+        section: "§10.5",
     },
     BuiltinSpec {
         name: "PAD_START",
@@ -1009,7 +1016,7 @@ pub const BUILTIN_REGISTRY: &[BuiltinSpec] = &[
         macro_fn: false,
         version: Version::V02,
         dispatch: DispatchStatus::ResolvedBuiltin,
-        section: "§10.3",
+        section: "§10.5",
     },
     BuiltinSpec {
         name: "PAD_END",
@@ -1019,7 +1026,7 @@ pub const BUILTIN_REGISTRY: &[BuiltinSpec] = &[
         macro_fn: false,
         version: Version::V02,
         dispatch: DispatchStatus::ResolvedBuiltin,
-        section: "§10.3",
+        section: "§10.5",
     },
     BuiltinSpec {
         name: "CODEPOINTS",
@@ -1029,7 +1036,7 @@ pub const BUILTIN_REGISTRY: &[BuiltinSpec] = &[
         macro_fn: false,
         version: Version::V02,
         dispatch: DispatchStatus::ResolvedBuiltin,
-        section: "§10.3",
+        section: "§10.5",
     },
     BuiltinSpec {
         name: "FROM_CODEPOINTS",
@@ -1039,7 +1046,7 @@ pub const BUILTIN_REGISTRY: &[BuiltinSpec] = &[
         macro_fn: false,
         version: Version::V02,
         dispatch: DispatchStatus::ResolvedBuiltin,
-        section: "§10.3",
+        section: "§10.5",
     },
     // ── 格式化 (1) ─────────────────────────────────────────────
     BuiltinSpec {
@@ -1050,7 +1057,7 @@ pub const BUILTIN_REGISTRY: &[BuiltinSpec] = &[
         macro_fn: false,
         version: Version::V04,
         dispatch: DispatchStatus::ResolvedBuiltin,
-        section: "§10.6",
+        section: "§10.7",
     },
     // ── 模块系统 (4) ───────────────────────────────────────────
     BuiltinSpec {
@@ -1061,7 +1068,7 @@ pub const BUILTIN_REGISTRY: &[BuiltinSpec] = &[
         macro_fn: false,
         version: Version::V04,
         dispatch: DispatchStatus::ResolvedBuiltin,
-        section: "§13.5",
+        section: "§9",
     },
     BuiltinSpec {
         name: "EXPORT",
@@ -1071,7 +1078,7 @@ pub const BUILTIN_REGISTRY: &[BuiltinSpec] = &[
         macro_fn: true,
         version: Version::V02,
         dispatch: DispatchStatus::LexerMacro,
-        section: "§13.2",
+        section: "§9",
     },
     BuiltinSpec {
         name: "IMPORT",
@@ -1081,7 +1088,7 @@ pub const BUILTIN_REGISTRY: &[BuiltinSpec] = &[
         macro_fn: true,
         version: Version::V02,
         dispatch: DispatchStatus::LexerMacro,
-        section: "§13.1",
+        section: "§9",
     },
     BuiltinSpec {
         name: "MODULE",
@@ -1091,7 +1098,7 @@ pub const BUILTIN_REGISTRY: &[BuiltinSpec] = &[
         macro_fn: true,
         version: Version::V02,
         dispatch: DispatchStatus::LexerMacro,
-        section: "§13.1",
+        section: "§9",
     },
     // ── OOP (3) ────────────────────────────────────────────────
     BuiltinSpec {
@@ -1102,7 +1109,7 @@ pub const BUILTIN_REGISTRY: &[BuiltinSpec] = &[
         macro_fn: true,
         version: Version::V02,
         dispatch: DispatchStatus::LexerMacro,
-        section: "§11.1",
+        section: "§11 [占位;OOP 未实现]",
     },
     BuiltinSpec {
         name: "NEW",
@@ -1112,7 +1119,7 @@ pub const BUILTIN_REGISTRY: &[BuiltinSpec] = &[
         macro_fn: true,
         version: Version::V02,
         dispatch: DispatchStatus::LexerMacro,
-        section: "§11.2",
+        section: "§11 [占位;OOP 未实现]",
     },
     BuiltinSpec {
         name: "THIS",
@@ -1122,7 +1129,7 @@ pub const BUILTIN_REGISTRY: &[BuiltinSpec] = &[
         macro_fn: true,
         version: Version::V02,
         dispatch: DispatchStatus::LexerMacro,
-        section: "§11.3",
+        section: "§11 [占位;OOP 未实现]",
     },
     // ── 属性 / 方法 (3) ────────────────────────────────────────
     BuiltinSpec {
@@ -1133,7 +1140,7 @@ pub const BUILTIN_REGISTRY: &[BuiltinSpec] = &[
         macro_fn: false,
         version: Version::V02,
         dispatch: DispatchStatus::ResolvedBuiltin,
-        section: "§11.4",
+        section: "§11 [占位;OOP 未实现]",
     },
     BuiltinSpec {
         name: "SET_PROP",
@@ -1143,7 +1150,7 @@ pub const BUILTIN_REGISTRY: &[BuiltinSpec] = &[
         macro_fn: false,
         version: Version::V02,
         dispatch: DispatchStatus::ResolvedBuiltin,
-        section: "§11.4",
+        section: "§11 [占位;OOP 未实现]",
     },
     BuiltinSpec {
         name: "CALL_METHOD",
@@ -1153,7 +1160,7 @@ pub const BUILTIN_REGISTRY: &[BuiltinSpec] = &[
         macro_fn: false,
         version: Version::V02,
         dispatch: DispatchStatus::ResolvedBuiltin,
-        section: "§11.4",
+        section: "§11 [占位;OOP 未实现]",
     },
     // ── 构造器 (2) ─────────────────────────────────────────────
     BuiltinSpec {
@@ -1164,7 +1171,7 @@ pub const BUILTIN_REGISTRY: &[BuiltinSpec] = &[
         macro_fn: true,
         version: Version::V02,
         dispatch: DispatchStatus::LexerMacro,
-        section: "§10.1",
+        section: "§10.9",
     },
     BuiltinSpec {
         name: "DICT",
@@ -1174,7 +1181,7 @@ pub const BUILTIN_REGISTRY: &[BuiltinSpec] = &[
         macro_fn: true,
         version: Version::V02,
         dispatch: DispatchStatus::LexerMacro,
-        section: "§10.2",
+        section: "§10.9",
     },
     // ── 并发 / 通道 (17) [v0.7 additive] ─────────────────────────
     // None of these are §8.3 ERR consumers: an ERR argument
@@ -1455,7 +1462,7 @@ pub fn generate_appendix_g_md() -> String {
     );
 
     // column header
-    out.push_str("| 名称 | 签名 | ERR 消费者 (§12.7) | 宏函数 (§3.4) | 引入 | 状态 | 实现位置 |\n");
+    out.push_str("| 名称 | 签名 | ERR 消费者 (§8.3) | 宏函数 (§1.4) | 引入 | 状态 | 实现位置 |\n");
     out.push_str("|------|------|--------------------|---------------|------|------|----------|\n");
 
     // body (already sorted by group in BUILTIN_REGISTRY)
