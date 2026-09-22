@@ -62,6 +62,13 @@ const WLT_FILES: &[&str] = &[
     // CHANNEL_TRY_SEND / CHANNEL_TRY_RECV (deviation P7-D2-001 —
     // mid-body suspend on SEND/RECV is deferred to v0.7.1).
     "channel_basic.wll",
+    // Phase E-B / E3 (plan §5.4.1): SCOPE surfaces the first
+    // child ERR when the fn body itself does not consume it.
+    "scope_cancel_siblings.wll",
+    // Phase E-B / E3 (plan §5.4.1): SCOPE returns the consumed
+    // value (negative case) — sibling ERRs that were explicitly
+    // consumed by the fn body must NOT override SCOPE's return.
+    "scope_consume_does_not_change_return.wll",
 ];
 
 #[test]
@@ -116,6 +123,46 @@ fn channel_basic_producer_consumer_round_trip() {
     let stderr = String::from_utf8_lossy(&out.stderr).into_owned();
     assert_eq!(code, 0, "expected exit 0, got {code}:\n  stderr={stderr}");
     let expected = "1\n2\n3\ndone\n";
+    assert_eq!(
+        stdout, expected,
+        "stdout mismatch:\n  got:      {stdout:?}\n  expected: {expected:?}"
+    );
+}
+
+/// Phase E-B / E3 (plan §5.4.1): SCOPE(fn) surfaces the first
+/// uncaught child ERR when the fn body does not consume it. Path
+/// B runs children synchronously, so the "cancel siblings" side
+/// effect has no in-flight sibling to interrupt (P7-E3-001
+/// documents this). This fixture locks the ERR-propagation half
+/// of the contract.
+#[test]
+fn scope_cancel_siblings_surfaces_first_err() {
+    let path = fixture("scope_cancel_siblings.wll");
+    let out = run_wlwl(&path);
+    let code = out.status.code().unwrap_or(-1);
+    let stdout = String::from_utf8_lossy(&out.stdout).into_owned();
+    let stderr = String::from_utf8_lossy(&out.stderr).into_owned();
+    assert_eq!(code, 0, "expected exit 0, got {code}:\n  stderr={stderr}");
+    let expected = "ERR-surfaced\n";
+    assert_eq!(
+        stdout, expected,
+        "stdout mismatch:\n  got:      {stdout:?}\n  expected: {expected:?}"
+    );
+}
+
+/// Phase E-B / E3 (plan §5.4.1, negative case): when the fn body
+/// consumes the child ERR via UNWRAP_OR, SCOPE returns the
+/// consumed value, not the child ERR. This locks the invariant
+/// that SCOPE does NOT override fn-body-consumed ERRs.
+#[test]
+fn scope_consume_does_not_change_return() {
+    let path = fixture("scope_consume_does_not_change_return.wll");
+    let out = run_wlwl(&path);
+    let code = out.status.code().unwrap_or(-1);
+    let stdout = String::from_utf8_lossy(&out.stdout).into_owned();
+    let stderr = String::from_utf8_lossy(&out.stderr).into_owned();
+    assert_eq!(code, 0, "expected exit 0, got {code}:\n  stderr={stderr}");
+    let expected = "consumed\n";
     assert_eq!(
         stdout, expected,
         "stdout mismatch:\n  got:      {stdout:?}\n  expected: {expected:?}"

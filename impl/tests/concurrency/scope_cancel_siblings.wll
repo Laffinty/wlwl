@@ -1,0 +1,28 @@
+// concurrency/scope_cancel_siblings.wll - Phase E-B conformance fixture
+//
+// Demonstrates the plan §5.4.1 invariant: when one child of SCOPE
+// terminates with an uncaught ERR (the fn body itself does not
+// consume it via UNWRAP_OR / TRY / EXPECT_ERR), SCOPE returns that
+// ERR to the caller. Plan §3 E3 + deviation P7-E3-001 note that
+// path B runs children synchronously, so the sibling-cancel side
+// effect has no in-flight sibling to interrupt; the fixture only
+// locks the "SCOPE surfaces first child ERR" half of the contract.
+//
+// Companion fixture: scope_consume_does_not_change_return.wll
+// covers the opposite half (consumed ERR does NOT propagate).
+//
+// Expected stdout (1 line):
+//   ERR-surfaced
+//
+// Scope passed. SCOPE returns the first child ERR; outer call sites
+// see IS_ERR(...) = TRUE.
+
+LET(scope_err,
+    SCOPE(FUN(() ,
+        LET(h, SPAWN(FUN(() , ERR("from-child"))));
+        LET(v, AWAIT(h));
+        // Intentional: do NOT consume v — let it propagate to SCOPE.
+        v
+    ))
+);
+IF(IS_ERR(scope_err), PRINT("ERR-surfaced"), PRINT("did-not-surface"))

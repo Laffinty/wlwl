@@ -1,0 +1,22 @@
+// concurrency/scope_consume_does_not_change_return.wll - Phase E-B
+// conformance fixture (negative case).
+//
+// Plan §5.4.1 / E3: SCOPE returns the fn body's own ERR. If the fn
+// body explicitly consumes a child ERR via UNWRAP_OR (or TRY /
+// EXPECT_ERR / etc.), the consumed value wins — the sibling ERR
+// does NOT override the fn body's return. This fixture locks that
+// invariant so future refactors of builtin_scope cannot regress
+// it.
+//
+// Companion: scope_cancel_siblings.wll covers the positive case.
+//
+// Expected stdout (1 line):
+//   consumed
+
+LET(out,
+    SCOPE(FUN(() ,
+        LET(h, SPAWN(FUN(() , ERR("from-child"))));
+        UNWRAP_OR(AWAIT(h), "consumed")
+    ))
+);
+PRINT(out)
