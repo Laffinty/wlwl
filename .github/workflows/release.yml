@@ -106,7 +106,7 @@ jobs:
           mkdir -p staging/examples staging/docs
           cp -r "$GITHUB_WORKSPACE/impl/examples/." staging/examples/
           cp -r "$GITHUB_WORKSPACE/docs/standard" staging/docs/ || true
-          cp -r "$GITHUB_WORKSPACE/docs/plan" staging/docs/ || true
+          cp -r "$GITHUB_WORKSPACE/wlwl-skill" staging/wlwl-skill/ || true
 
       - name: Create tar.xz (linux/macos)
         if: matrix.archive == 'tar.xz'
