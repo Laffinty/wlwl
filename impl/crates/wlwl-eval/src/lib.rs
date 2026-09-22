@@ -10898,6 +10898,33 @@ mod tests {
     }
 
     #[test]
+    fn eval_unary_minus_integer_min_throws_e0034_via_desugar() {
+        // v0.8 §2.5 / F-10: locks the FULL sugar path
+        //   `-int_min`                       (parser sugar form)
+        //     -> parser desugars to `-(0, int_min)`
+        //     -> runtime hits `0 - INT64_MIN` and throws E0034.
+        // Without the desugar annotation in parser.rs §1.6/§4.3 and the
+        // E0034 specialization in lib.rs:4485-4497, this would silently
+        // saturate to INT64_MIN or wrap.
+        //
+        // We construct INT_MIN via LET (binary minus chain) since the
+        // literal `9223372036854775808` cannot be lexed as i64
+        // (would be E0001 in lexer, never reaching runtime).
+        let src = "LET(max, 9223372036854775807); \
+                   LET(int_min, -max); \
+                   LET(int_min, -(int_min, 1)); \
+                   -int_min;";
+        let err = run(src).unwrap_err();
+        assert_eq!(err.diagnostic().code, ErrorCode::E0034);
+        assert!(
+            err.diagnostic().message.contains("INTEGER_MIN")
+                || err.diagnostic().message.contains("negate"),
+            "msg: {}",
+            err.diagnostic().message
+        );
+    }
+
+    #[test]
     fn no_warning_on_normal_arithmetic() {
         // Sanity: the W0015 channel is silent for in-range ops.
         // Top-level expression value is the LAST statement's value,

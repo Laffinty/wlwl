@@ -257,6 +257,78 @@ fn expr_unary_minus_desugars() {
     assert!(matches!(call.1[0], Expr::Literal(Literal::Integer(0), _)));
 }
 
+// ──── v0.8 §2.5 / F-10: unary-minus desugar documentation lock ────
+//
+// v0.7 spec §1.6 claimed "int_lit = ['+' | '-'] digit { digit }" (leading
+// sign is part of the literal), but the lexer never consumed the sign —
+// the parser rewrote `-x` to `-(0, x)` instead. v0.8 §1.6 splits the
+// grammar into two non-terminals (int_lit bare digits, int_literal
+// optionally signed) and §2.5 documents the parser desugar path
+// explicitly. These four tests pin the observable AST shape across the
+// desugar / non-desugar boundary so future refactors can't drift.
+
+#[test]
+fn unary_minus_integer_literal_desugars() {
+    // `-1` ->  -(0, 1)   (parser sugar: `-` not followed by `(`)
+    let r = parse("LET(n, -1);", "t.wll").unwrap();
+    let call = match only_let(&r).as_ref() {
+        Expr::Call { name, args, .. } => (name, args),
+        other => panic!("expected Call `-(0, 1)`, got {:?}", other),
+    };
+    assert_eq!(call.0, "-");
+    assert_eq!(call.1.len(), 2);
+    assert!(matches!(&call.1[0], Expr::Literal(Literal::Integer(0), _)));
+    assert!(matches!(&call.1[1], Expr::Literal(Literal::Integer(1), _)));
+}
+
+#[test]
+fn minus_call_with_paren_is_not_sugar() {
+    // `-(1, 2)` ->  Call "-" (1, 2)   (NOT desugared; `-` IS followed by `(`)
+    // This is plain binary minus with literal args.
+    let r = parse("LET(n, -(1, 2));", "t.wll").unwrap();
+    let call = match only_let(&r).as_ref() {
+        Expr::Call { name, args, .. } => (name, args),
+        other => panic!("expected Call `-(1, 2)`, got {:?}", other),
+    };
+    assert_eq!(call.0, "-");
+    assert_eq!(call.1.len(), 2);
+    // NO leading 0 — that's the discriminator vs sugar form.
+    assert!(matches!(&call.1[0], Expr::Literal(Literal::Integer(1), _)));
+    assert!(matches!(&call.1[1], Expr::Literal(Literal::Integer(2), _)));
+}
+
+#[test]
+fn unary_minus_variable_desugars() {
+    // `-x` ->  -(0, x)
+    let r = parse("LET(y, -x);", "t.wll").unwrap();
+    let call = match only_let(&r).as_ref() {
+        Expr::Call { name, args, .. } => (name, args),
+        other => panic!("expected Call `-(0, x)`, got {:?}", other),
+    };
+    assert_eq!(call.0, "-");
+    assert_eq!(call.1.len(), 2);
+    assert!(matches!(&call.1[0], Expr::Literal(Literal::Integer(0), _)));
+    assert!(matches!(&call.1[1], Expr::Var(n, _) if n == "x"));
+}
+
+#[test]
+fn minus_call_three_args_is_not_sugar() {
+    // `-(a, b, c)` ->  Call "-" (a, b, c) — three args, NOT desugared.
+    // The runtime will reject with E0022 (wrong arity) since `-` is
+    // a binary builtin, but the parser must NOT silently rewrite it
+    // to `-(0, ...)` — `-` here IS followed by `(`.
+    let r = parse("LET(y, -(a, b, c));", "t.wll").unwrap();
+    let call = match only_let(&r).as_ref() {
+        Expr::Call { name, args, .. } => (name, args),
+        other => panic!("expected Call `-(a, b, c)`, got {:?}", other),
+    };
+    assert_eq!(call.0, "-");
+    assert_eq!(call.1.len(), 3);
+    assert!(matches!(&call.1[0], Expr::Var(n, _) if n == "a"));
+    assert!(matches!(&call.1[1], Expr::Var(n, _) if n == "b"));
+    assert!(matches!(&call.1[2], Expr::Var(n, _) if n == "c"));
+}
+
 // ───────────────────────── §6 Variables (4) ─────────────────────────
 
 #[test]

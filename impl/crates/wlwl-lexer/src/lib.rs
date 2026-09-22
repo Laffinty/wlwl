@@ -276,6 +276,16 @@ impl<'a> Lexer<'a> {
     }
 
     fn read_number(&mut self) -> WlwlResult<Token> {
+        // v0.8 spec §1.6 / §4.3 (cross-ref with parser `parse_expr`
+        // unary-minus branch): this function INTENTIONALLY does not
+        // consume a leading `+` / `-` sign. The lexer reads bare
+        // digits only; the parser rewrites `-x` into `-(0, x)` at
+        // the next layer up. Splitting sign-off from digit-recognition
+        // keeps the lexer grammar-free (no lookahead for the parser)
+        // and concentrates the negation in one place — same path
+        // produces observable behavior equivalent to a leading-sign
+        // literal, including INTEGER_MIN overflow semantics per §2.2
+        // (E0034 raised at the runtime negation step, not here).
         let line = self.line;
         let col = self.col;
         let start = self.pos;

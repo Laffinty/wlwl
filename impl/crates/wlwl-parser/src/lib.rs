@@ -676,6 +676,20 @@ impl Parser {
         // Unary-minus sugar: `-x` desugars to `-(0, x)`. Only triggered
         // when `-` is NOT followed by `(`, so binary minus like
         // `-(a, b)` continues to work.
+        //
+        // v0.8 spec §1.6 / §4.3: the lexer does NOT consume a leading
+        // sign (see `wlwl-lexer::read_number`, which reads bare digits
+        // only). This parser branch rewrites `-x` to `-(0, x)`, the
+        // binary minus applied to `0`. Observable behavior matches a
+        // leading-sign literal: same `INTEGER_MIN` overflow semantics
+        // per §2.2 (E0034 at the negation step), same float promotion
+        // for `-<float>`.
+        //
+        // `NEG(x)` is registered as a 1-arg builtin
+        // (`wlwl_eval::registry` §4.3, `lib.rs::builtin_neg`) but is
+        // reachable only by name — this parser does NOT synthesize
+        // calls to it. Use `-(0, x)` or `-x` for sugar; `NEG(x)` only
+        // when the user wrote the name explicitly.
         if matches!(kind, TokenKind::Minus) && !matches!(self.peek_at(1), TokenKind::LParen) {
             let (l2, c2, _, _) = self.span_here();
             self.advance(); // '-'
