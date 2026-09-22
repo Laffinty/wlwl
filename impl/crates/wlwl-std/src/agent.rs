@@ -24,6 +24,26 @@
 //! registry and prepends the matching system prompt before
 //! dispatching to `ASK`. Unrecognized names fall back to a
 //! generic helper system prompt + a `W0052` name-bucket warning.
+//!
+//! ## 与类型名 `TASK` 的同名问题 (v0.8 §2.8 / G-04)
+//!
+//! 本模块导出 `TASK(name, prompt, opts?) -> TASK_RESULT`(agent 形态)与
+//! `wlwl:std.ai.TASK(...)`(ai 形态);而 §2.1 类型表里的类型名 `TASK`
+//! 也叫 `TASK`。同名不冲突,理由:
+//!
+//! - `TYPE(handle)` 返回字符串 `"TASK"`,**`TYPE` 形参位置不做名字解析** —
+//!   它取运行时值,返回字符串,过程中不查任何名字表。
+//! - 用户作用域内的 `TASK`(由 `IMPORT` 注入)与类型名空间独立;两者在各自
+//!   作用域中独立解析。`IMPORT("wlwl:std.agent", TASK)` 注入的是本模块的
+//!   函子,不是类型名。
+//! - 任何上下文歧义由文法消解:类型名出现在 `:` 类型注解后(`LET(x: TASK, ...)`),
+//!   标识符出现在表达式位置(`IMPORT(...) TASK(...)`)。两者在不同语法槽位,
+//!   parser 不需要符号表预查。
+//!
+//! **文档约定**:本模块内及 `wlwl-spec-v0.7.md` §10.11 一律写作
+//! `wlwl:std.agent.TASK` / `wlwl:std.ai.TASK` 以避免阅读混淆。
+//! 用户代码内直接 `TASK(...)` 也合法(取决于 `IMPORT` 是否引入同名函子)。
+//! 函数签名表格里的"显示形式"沿用裸名 `TASK` — 不动 §10.11 实际签名表。
 
 use crate::{arity_error, type_error, ModuleSpec, StdCtx, StdError, StdFn, StdValue};
 use serde_json;

@@ -38,6 +38,20 @@
 //! sink after the call and emits each entry as a Warning
 //! diagnostic. The mock path also emits W0052 so tests can pin
 //! the behavior without touching the network.
+//!
+//! ## 与类型名 `TASK` 的同名问题 (v0.8 §2.8 / G-04)
+//!
+//! 本模块导出 `TASK(...) -> TASK_RESULT`(ai 形态),而 §2.1 类型表里的
+//! 类型名也叫 `TASK`(用于运行时任务句柄)。同名不冲突:
+//!
+//! - `TYPE(handle)` 返回字符串 `"TASK"`,**形参位置不做名字解析**;
+//!   `IMPORT("wlwl:std.ai", TASK)` 注入的是函子绑定,与类型名空间独立;
+//! - 文法槽位消解:类型名出现在 `:` 类型注解后,标识符出现在表达式位置。
+//!
+//! 详细讨论见 `wlwl:std.agent` 模块 docstring 的同名章节(共享同一规范
+//! 论述)。**文档约定**:spec §10.11 / 本 crate 内一律写 `wlwl:std.ai.TASK` /
+//! `wlwl:std.agent.TASK` 全限定以避免阅读混淆;用户作用域内裸名 `TASK`
+//! 也合法(取决于 `IMPORT` 是否引入)。
 
 use crate::{arity_error, type_error, ModuleSpec, StdCtx, StdError, StdFn, StdValue};
 use wlwl_error::ErrorCode;

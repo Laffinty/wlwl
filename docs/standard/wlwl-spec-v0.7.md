@@ -150,6 +150,8 @@ WLWL 是动态类型语言:类型属于值而非名字。值的论域由以下**
 
 数组与字典字面量见 4.8;`TYPE(x)` 返回上表名称的字符串(`RESULT` 两个变体都报 `"RESULT"`)。
 
+**v0.8 追加**:类型名(`NULL`/`BOOLEAN`/`INTEGER`/`FLOAT`/`STRING`/`ARRAY`/`DICT`/`FUNCTION`/`RESULT`/`TASK`/`CHANNEL`)是 `TYPE` 返回的字符串,**不**构成标识符绑定。命名空间成员可以与类型名同名(如 `wlwl:std.agent.TASK`),二者在各自作用域中独立解析。`TYPE` 的参数位置不做名字解析 — 它取运行时值,返回字符串,过程中不查任何名字表;文法槽位消解保证类型名只出现在 `:` 类型注解后,标识符只出现在表达式位置。
+
 **[v0.7 追加]** `TYPE` 对句柄报 `"TASK"` / `"CHANNEL"`。句柄的真值按 2.3「其余一切值为真」;相等按 2.4 的实例恒等(见该节追加);显示形态为 `<task handle id=… gen=…>` 与 `<channel handle id=… gen=…>`(2.5 追加)。
 
 **键的约束**:字典的键必须是 `STRING` 或 `INTEGER`。NaN(2.2)**不得**作键(`E0031`)。
@@ -691,6 +693,15 @@ NameItem = string_lit | string_lit ":" string_lit .
 ### 10.11 AI 与代理
 
 `wlwl:std.ai`(`TASK`、`TOOL`、`CALL_TOOL`、`MODEL`、`CONTEXT`)与 `wlwl:std.agent`(`TASK`)向语言模型与代理运行时提供入口。它们依赖外部服务,失败产生 `E0080`–`E0083`/`E0090`–`E0094`。其协议细节属于实现文档,不在本规范内。
+
+**示例**(v0.8 起建议全限定以避免与类型名 `TASK` 混淆):
+```wlwl
+IMPORT("wlwl:std.ai", TASK, MODEL);
+LET(handle, wlwl:std.ai.TASK("summarize", "long text..."));
+```
+
+用户作用域内裸名 `TASK` 也合法(若 `IMPORT` 引入了同名函子);规范推荐全限定写法
+仅为阅读清晰度,与同名类型名 `TASK` 不构成运行时冲突 — 详见 §2.1 类型名空间规则。
 
 ---
 
