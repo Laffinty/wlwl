@@ -58,6 +58,10 @@ const WLT_FILES: &[&str] = &[
     // pre-yield and post-yield segments, and the post-yield
     // mutation is observable.
     "yield_midbody.wll",
+    // Phase D: producer / consumer pair using CHANNEL. Uses
+    // CHANNEL_TRY_SEND / CHANNEL_TRY_RECV (deviation P7-D2-001 —
+    // mid-body suspend on SEND/RECV is deferred to v0.7.1).
+    "channel_basic.wll",
 ];
 
 #[test]
@@ -93,6 +97,25 @@ fn yield_midbody_runs_to_completion_with_expected_stdout() {
     let stderr = String::from_utf8_lossy(&out.stderr).into_owned();
     assert_eq!(code, 0, "expected exit 0, got {code}:\n  stderr={stderr}");
     let expected = "before-yield\nafter-resume\n42\ndone\n";
+    assert_eq!(
+        stdout, expected,
+        "stdout mismatch:\n  got:      {stdout:?}\n  expected: {expected:?}"
+    );
+}
+
+/// Phase D: a flat sequential CHANNEL round-trip. We exercise
+/// CHANNEL_NEW / CHANNEL_TRY_SEND / CHANNEL_TRY_RECV end-to-end
+/// without mid-body suspend (deviation P7-D2-001). The stdout is
+/// the deterministic sequence "1\n2\n3\ndone\n".
+#[test]
+fn channel_basic_producer_consumer_round_trip() {
+    let path = fixture("channel_basic.wll");
+    let out = run_wlwl(&path);
+    let code = out.status.code().unwrap_or(-1);
+    let stdout = String::from_utf8_lossy(&out.stdout).into_owned();
+    let stderr = String::from_utf8_lossy(&out.stderr).into_owned();
+    assert_eq!(code, 0, "expected exit 0, got {code}:\n  stderr={stderr}");
+    let expected = "1\n2\n3\ndone\n";
     assert_eq!(
         stdout, expected,
         "stdout mismatch:\n  got:      {stdout:?}\n  expected: {expected:?}"

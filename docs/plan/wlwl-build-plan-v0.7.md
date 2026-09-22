@@ -686,7 +686,12 @@ Phase G5 把基线写入 docs/plan/deviations.md 的 P7-G5-001 条目。
 - C8 跨 task 闭包捕获回归(plan §5.5): ✅ — 计数器/setter/getter/返回闭包/递归闭包共享 cell
 
 ### Phase D — Channel
-均待启动(D1-D8,plan §3)。
+- D-A 数据形态: `Channel` / `ChannelId` / `ChannelHandle` 类型,`Value::ChannelHandle` 变体,`Scheduler.channels` + `next_channel_generation`,E0054/E0055 已注册 — commit `730cac9`
+- D-B 简单 builtin: `CHANNEL_NEW(buf)` / `CHANNEL_CLOSE(ch)` / `CHANNEL_LEN(ch)` / `CHANNEL_CAP(ch)`,resolve_channel_handle 助手,E0053 stale-handle 检测 — commit `5566ffe`
+- D-C send/recv + mid-body suspend: `CHANNEL_SEND` / `CHANNEL_RECV` / `CHANNEL_TRY_SEND` / `CHANNEL_TRY_RECV`,`Signal::Yield(SendingOn|ReceivingOn)` 走 B5a-3 路径 B segment runner,close-protocol 唤醒 receiver_waiters 返 `ChannelClosed` ERR — commit `6941d6d`
+- D-D leak detector (D7): Scope 加 `channels: Vec<ChannelId>` 字段,`pop_scope` 强制关闭并把 parked receiver 重新入队;slot 不回收,生成数保持不变(对照 P7-D2-001,D8 死锁检测 v0.7.0 不做) — commit `87d45f4`
+- D-E fixture + 文档: `impl/tests/concurrency/channel_basic.wll` + driver 测试,deviations P7-D2-001 / P7-D8-001
+- **D2/D3 mid-body suspend 实际未实现** — 见 deviation P7-D2-001(Signal::Yield 在 builtin 内部不能被路径 B 静态切段切到,改为返 `ChannelWouldBlock` ERR);D8 死锁检测同根,跟随搁置
 
 ### Phase E — 错误传播
 均待启动。**E4 为阻塞项**(ERR consumer registry 跨 task 全量回归,plan §3)。

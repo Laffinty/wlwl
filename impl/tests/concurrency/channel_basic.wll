@@ -1,0 +1,26 @@
+// concurrency/channel_basic.wll - Phase D conformance fixture
+// Demonstrates: CHANNEL_NEW / CHANNEL_TRY_SEND / CHANNEL_TRY_RECV
+// round-trip plus CHANNEL_LEN inspection.
+//
+// Note (deviation P7-D2-001, plan §3 D2 deferred): mid-body
+// suspend on SEND/RECV is not implemented in v0.7.0; users must
+// use TRY_SEND / TRY_RECV for non-blocking back-pressure. Path
+// A's full CPS in v0.7.1 will restore real mid-body suspend.
+//
+// Expected stdout (4 lines):
+//   1
+//   2
+//   3
+//   done
+
+LET(ch, CHANNEL_NEW(4));
+LET(r1, CHANNEL_TRY_SEND(ch, 1));
+LET(r2, CHANNEL_TRY_SEND(ch, 2));
+LET(r3, CHANNEL_TRY_SEND(ch, 3));
+LET(v1, CHANNEL_TRY_RECV(ch));
+LET(v2, CHANNEL_TRY_RECV(ch));
+LET(v3, CHANNEL_TRY_RECV(ch));
+PRINT(v1);
+PRINT(v2);
+PRINT(v3);
+PRINT("done")
