@@ -10,6 +10,8 @@
 use std::collections::VecDeque;
 use std::rc::Rc;
 
+use wlwl_error::WlwlError;
+
 use crate::{Expr, Value};
 
 /// Identifies a task slot within a single [`Scheduler`].
@@ -55,7 +57,7 @@ pub enum TaskState {
     Pending,
     Running,
     Suspended(YieldReason),
-    Done(TaskResult),
+    Done(Box<TaskResult>),
     Cancelled,
 }
 
@@ -63,7 +65,16 @@ pub enum TaskState {
 #[derive(Debug, Clone)]
 pub enum TaskResult {
     Ok(Value),
+    /// User-level `ERR(...)` returned by the task body (plan §5.1.1
+    /// "fn 返回 ERR(e) → Done(Err(e))"). AWAIT hands this back as a
+    /// value (§5.4 "作为返回值"), so §8.2 transparent propagation
+    /// applies at the AWAIT call site.
     Err(Value),
+    /// Host diagnostic raised inside the task body (e.g. E0020).
+    /// AWAIT re-raises it (P7-C2-002 / plan §5.4). Distinct from
+    /// [`TaskResult::Err`] so user ERR values and host diagnostics
+    /// do not collapse into one channel.
+    Failed(Box<WlwlError>),
 }
 
 /// Reasons a task may yield at a checkpoint (plan §5.1.1 row
@@ -136,7 +147,7 @@ pub enum StepResult {
 ///   indexes the next continuation frame.
 #[derive(Debug, Clone)]
 pub enum EvalState {
-    Expr(Expr),
+    Expr(Box<Expr>),
     ContStmt(Vec<ContFrame>),
 }
 
@@ -172,23 +183,39 @@ pub type Scope = crate::task::Scope;
 
 /// The scheduler itself (plan §5.1 + §5.1.1 loop pseudo-code).
 ///
-/// At B1 the methods are stubs returning `None` / panicking on use
-/// -- they exist so the API surface is reviewable. B5 will fill
-/// in `step`, `run_until_idle`, `dispatch_cancellations`, and
-/// `wake_dependents`.
-#[derive(Debug, Default)]
+/// B5b wires the run-queue bookkeeping. Task *execution* stays on
+/// `Evaluator::run_one_task` (it needs `invoke_closure`); this type
+/// owns ids, generations, wait lists, and the queue.
+#[derive(Debug)]
 pub struct Scheduler {
     pub tasks: Vec<TaskEntry>,
     pub scopes: Vec<Scope>,
     pub run_queue: VecDeque<TaskId>,
     pub next_generation: u64,
+    /// Innermost active scope (B5b). SPAWN registers children here;
+    /// SCOPE pushes/pops. Root scope id 0 always exists.
+    pub current_scope: Option<ScopeId>,
+}
+
+impl Default for Scheduler {
+    fn default() -> Self {
+        Self::new()
+    }
 }
 
 impl Scheduler {
-    /// Create an empty scheduler. Real construction (taking a root
-    /// task / scope) lands in B5.
+    /// Create an empty scheduler with a root scope (id 0).
     pub fn new() -> Self {
-        Self::default()
+        let mut s = Self {
+            tasks: Vec::new(),
+            scopes: Vec::new(),
+            run_queue: VecDeque::new(),
+            next_generation: 0,
+            current_scope: None,
+        };
+        s.scopes.push(Scope::new(ScopeId(0), None));
+        s.current_scope = Some(ScopeId(0));
+        s
     }
 
     /// [v0.7 Phase C2] Allocate the next `TaskId` without pushing a
@@ -201,29 +228,13 @@ impl Scheduler {
 
     /// [v0.7 Phase C2] Read the current generation counter
     /// WITHOUT bumping it. Pairs with `bump_generation` below.
-    ///
-    /// This is the "peek, don't consume" accessor — the value
-    /// returned will be handed to the NEXT `bump_generation`
-    /// call. Reserved for Phase C5 / F code paths that need to
-    /// inspect the generation (e.g. TASK_IS_CANCELLED deciding
-    /// whether a handle is stale via E0053) without taking the
-    /// next slot. Not consumed by any production path at C2;
-    /// safe to remove if it stays unused through Phase F.
     pub fn next_generation(&self) -> u64 {
         self.next_generation
     }
 
     /// [v0.7 Phase C2] Take the current generation counter, then
     /// increment to the next. Returns the PRE-BUMP value (which
-    /// becomes the new handle's `generation`); subsequent
-    /// `bump_generation` / `next_generation` calls see the
-    /// post-bump value.
-    ///
-    /// The PRE-BUMP semantics are what makes E0053 stale-handle
-    /// detection work: when a slot is recycled (B5b), the next
-    /// caller reads the post-bump generation and compares it
-    /// against a previously-minted handle's generation; mismatch
-    /// => E0053 "task handle invalid".
+    /// becomes the new handle's `generation`).
     pub fn bump_generation(&mut self) -> u64 {
         let g = self.next_generation;
         self.next_generation = self.next_generation.wrapping_add(1);
@@ -231,53 +242,110 @@ impl Scheduler {
     }
 
     /// [v0.7 Phase C2] Push a fully-constructed `Task` into the
-    /// scheduler's task table. Idempotency note: this appends
-    /// unconditionally; the caller is responsible for not
-    /// double-pushing (the helper exists so SPAWN can build the
-    /// Task body BEFORE committing, rather than committing an
-    /// empty placeholder that would need rewriting).
-    ///
-    /// `Task` lives in `crate::task`; the signature takes the
-    /// re-export [`TaskEntry`] alias so callers don't need a
-    /// second `use`.
+    /// scheduler's task table.
     pub fn push_task(&mut self, task: TaskEntry) {
         self.tasks.push(task);
     }
 
-    /// Step one task to its next yield point. **Not yet implemented**
-    /// at B1; returns `None` for any input. The real implementation
-    /// in B5 will return `Some(StepResult)` for "made progress" and
-    /// `None` for "no task to run".
-    pub fn step(&mut self, _task_id: TaskId) -> Option<()> {
-        None
+    /// [B5b] Enqueue a task for execution (FIFO, no duplicates).
+    pub fn enqueue(&mut self, id: TaskId) {
+        if !self.run_queue.contains(&id) {
+            self.run_queue.push_back(id);
+        }
     }
 
-    /// Run until the run queue is empty. **Not yet implemented**
-    /// at B1; present so the API surface is visible.
+    /// [B5b] Pop the next runnable task id.
+    pub fn take_next(&mut self) -> Option<TaskId> {
+        self.run_queue.pop_front()
+    }
+
+    /// [B5b] True when the task has reached a terminal state.
+    pub fn is_terminal(&self, id: TaskId) -> bool {
+        matches!(
+            self.tasks.get(id.0).map(|t| &t.state),
+            Some(TaskState::Done(_)) | Some(TaskState::Cancelled)
+        )
+    }
+
+    /// [B5b] Mark Running and return `(body, env)` for execution.
+    /// Returns `None` if the id is unknown or already terminal.
+    pub fn begin_run(&mut self, id: TaskId) -> Option<(Value, crate::Env)> {
+        let task = self.tasks.get(id.0)?;
+        if matches!(task.state, TaskState::Done(_) | TaskState::Cancelled) {
+            return None;
+        }
+        let body = task.body.clone();
+        let env = task.env.clone();
+        if let Some(t) = self.tasks.get_mut(id.0) {
+            t.state = TaskState::Running;
+        }
+        Some((body, env))
+    }
+
+    /// [B5b] Store a terminal result and wake AWAIT waiters.
+    pub fn complete(&mut self, id: TaskId, result: TaskResult) {
+        if let Some(t) = self.tasks.get_mut(id.0) {
+            t.state = TaskState::Done(Box::new(result));
+        }
+        self.wake_dependents(id);
+    }
+
+    /// [B5b] Step one task. Execution lives on `Evaluator`; this
+    /// bookkeeping helper only dequeues + marks. Prefer
+    /// `Evaluator::run_one_task`.
+    pub fn step(&mut self, task_id: TaskId) -> Option<()> {
+        self.enqueue(task_id);
+        Some(())
+    }
+
+    /// [B5b] Drain the run queue (plan §5.1.1 loop). Does not
+    /// execute bodies — `Evaluator::scheduler_run_until_idle` does.
+    pub fn drain_queue(&mut self) -> Vec<TaskId> {
+        self.run_queue.drain(..).collect()
+    }
+
+    /// [B5b] Run until the run queue is empty (queue bookkeeping).
     pub fn run_until_idle(&mut self) {
-        // B5 implementation: the pseudo-code from plan §5.1.1.
+        self.run_queue.clear();
     }
 
-    /// Dispatch pending cancellations to tasks that have not yet
-    /// observed them. **Not yet implemented** at B1.
+    /// [B5b] Dispatch pending cancellations to tasks that have not
+    /// yet observed them. Phase F fills in the real signal; at B5b
+    /// this is a no-op beyond dropping Cancelled tasks from the
+    /// queue.
     pub fn dispatch_cancellations(&mut self) {
-        // B5 implementation.
+        self.run_queue
+            .retain(|id| !matches!(self.tasks.get(id.0).map(|t| &t.state), Some(TaskState::Cancelled)));
     }
 
-    /// Re-enqueue tasks that were suspended on `finished_task_id`
-    /// (e.g. `AWAIT(finished_task_id)` waiters). **Not yet
-    /// implemented** at B1.
-    pub fn wake_dependents(&mut self, _finished_task_id: TaskId) {
-        // B5 implementation.
+    /// [B5b] Re-enqueue tasks that were suspended on
+    /// `finished_task_id` (AWAIT waiters). Waiters are recorded in
+    /// `YieldReason::AwaitingChild`; at B5b AWAIT drives the loop
+    /// inline so the waiter list is usually empty.
+    pub fn wake_dependents(&mut self, finished_task_id: TaskId) {
+        let mut to_wake = Vec::new();
+        for (idx, t) in self.tasks.iter().enumerate() {
+            if matches!(
+                &t.state,
+                TaskState::Suspended(YieldReason::AwaitingChild(child)) if *child == finished_task_id
+            ) {
+                to_wake.push(TaskId(idx));
+            }
+        }
+        for id in to_wake {
+            if let Some(t) = self.tasks.get_mut(id.0) {
+                t.state = TaskState::Pending;
+            }
+            self.enqueue(id);
+        }
     }
 
-    // Note: the B4-era `Scheduler::alloc_task` helper was removed
-    // because it duplicated the C2 helper triple
-    // (next_task_id + bump_generation + push_task) and shipped a
-    // `Value::Null` body placeholder that the production SPAWN
-    // path doesn't use. B5b will rebuild task-allocation from the
-    // C2 triple directly; if a one-shot helper is desired again,
-    // add it back then.
+    /// [B5b] True when any registered task is still non-terminal.
+    pub fn has_outstanding(&self) -> bool {
+        self.tasks
+            .iter()
+            .any(|t| !matches!(t.state, TaskState::Done(_) | TaskState::Cancelled))
+    }
 }
 
 /// Shared inner state across a scope subtree (future B5+).
@@ -359,6 +427,8 @@ mod tests {
         assert_eq!(a.tasks.len(), b.tasks.len());
         assert_eq!(a.run_queue.len(), b.run_queue.len());
         assert_eq!(a.next_generation, b.next_generation);
+        assert_eq!(a.scopes.len(), 1, "new() seeds a root scope");
+        assert_eq!(a.current_scope, Some(ScopeId(0)));
     }
 
     #[test]
@@ -385,7 +455,7 @@ mod tests {
         // can't reach this through eval, but the type contract
         // matters.)
         let r = YieldReason::AwaitingChild(TaskId(7));
-        let cloned = r.clone();
+        let cloned = r;
         assert_eq!(r, cloned);
     }
 }

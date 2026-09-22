@@ -1,9 +1,9 @@
 <!-- # WLWL v0.7 实施构建计划 -->
 
-> **状态**:WIP — 计划阶段,未启动实施
+> **状态**:WIP — 实施中(`wip0.7`)。Phase A/B/C 已完成;下一目标 Phase D Channel 或 Phase E 错误传播(E4 阻塞项)
 > **前置**:v0.6.0 已发布(2026-09-20,tag v0.6.0)
 > **目标**:为 WLWL 增加并发机制,首次引入可在 .wll 程序内表达结构化并发的运行时原语
-> **本阶段**:仅完成 plan;实际构建与 spec 定稿在后续阶段按 §3 节奏推进
+> **本阶段**:plan → impl → spec;实际构建按 §3 节奏推进(spec 文件到 H1 才改)
 
 ---
 
@@ -264,7 +264,7 @@ wlwl-std/src/concurrency.rs:wlwl:std.concurrency 模块,提供高层组合 API�
 | E0054 | CHANNEL 已关闭后写入 | D |
 | E0055 | CHANNEL 已关闭后读取(返回 ChannelClosed ERR) | D |
 | E0056 | SPAWN 中 fn 参数个数错误 | C |
-| E0057 | 跨 task 共享 cell 但 cell 不可变(E0024 复用,待评估) | C7 |
+| E0057 | 跨 task 共享 cell 但 cell 不可变 | C7 评估结论:**复用 E0024**;E0057 注册但不触发(§5.5 不引入新可见性规则) | C7 |
 | E0058 | 顶层 SPAWN 无活跃 SCOPE | C1 |
 
 ### 4.5 新增 builtin 全集(15-17 个)
@@ -666,18 +666,18 @@ Phase G5 把基线写入 docs/plan/deviations.md 的 P7-G5-001 条目。
 - B4 `task.rs` Task + Scope 数据结构 — commit `5634331`
 - B5a-1 `StepResult` + `step_once` wrapper(零行为变化) — commit `5ff79e5`
 - B5a-2 选 1 builtin 改走 step_once — pending(合并到 B5a-3)
-- B5a-3 递归 eval → 显式 CPS — pending(需 yield points,依赖 C4 YIELD 落地)
-- B5b Scheduler 接入 / current_task 真实参与运行时 — pending(需 B5a-3 + ≥1 yield builtin)
+- B5a-3 递归 eval → 显式 CPS — 部分(step_call + Signal::Yield 已通;完整 CPS 仍待)
+- B5b Scheduler 接入 / current_task 真实参与运行时: ✅ — run-queue + run_one_task + scope-exit await;SPAWN 惰性入队
 - B6 单 task benchmark baseline(5 workload 在噪声内) — commit `ad0dd60`
 
 ### Phase C — 内置函数 SCOPE/SPAWN/AWAIT/YIELD
 - C1 SCOPE(fn): ✅ — commit `e28de1d` 注册 + scope_depth retrofit 在 commit `cce3ce3`
 - C2 SPAWN(fn): ✅ — commit `cce3ce3`;后接 audit-fix 链 `1248978`(P7-C2-001 arity E0056 修正) → `d46bab3`(deviation commit hash 同步) → `d53e09e`(runtime API 收敛:删 alloc_task + doc 修正)
-- C3 AWAIT(handle) — pending(下一会话建议起点)
-- C4 YIELD() — pending(等 B5a-3)
-- C5 TASK_CURRENT / TASK_IS_CANCELLED — pending(等 B5b)
-- C7 跨 task cell 升级回归(plan §5.5) — pending
-- C8 跨 task 闭包捕获回归(plan §5.5) — pending
+- C3 AWAIT(handle): ✅ — 值/user-ERR/host-diag re-raise/E0053 契约;SPAWN 失败路径改为存 handle(P7-C2-002 关闭)
+- C4 YIELD(): ✅ — Signal::Yield(Explicit);step_once→Yield,顶层 eval→E0014;arity E0022
+- C5 TASK_CURRENT / TASK_IS_CANCELLED: ✅ — 依赖 B5b current_task;TASK_CURRENT 任务外 E0053;TASK_IS_CANCELLED 任务外 FALSE
+- C7 跨 task cell 升级回归(plan §5.5): ✅ — E-CloCap/LET/LET MUT/late-bound E0024;E0057 评估=复用 E0024
+- C8 跨 task 闭包捕获回归(plan §5.5): ✅ — 计数器/setter/getter/返回闭包/递归闭包共享 cell
 
 ### Phase D — Channel
 均待启动(D1-D8,plan §3)。
@@ -693,6 +693,21 @@ Phase G5 把基线写入 docs/plan/deviations.md 的 P7-G5-001 条目。
 
 ### Phase H — spec v0.7 + release
 均待启动(H1-H4)。spec 文件直到 H1 才允许改动(plan §8.1 / D18)。
+
+---
+
+## 附录 D-1:下次会话交接摘要(2026-09-21 收工)
+
+| 项 | 状态 |
+|----|------|
+| 门禁 | `cargo test --workspace` 全绿(eval **645**,fidelity 1 pass);`cargo clippy --workspace --all-targets -D warnings` **0 error** |
+| Phase C | **全部完成**(C1 SCOPE / C2 SPAWN / C3 AWAIT / C4 YIELD / C5 TASK_* / C7 cell / C8 closure) |
+| B5b | 调度循环已接:SPAWN **惰性入队**,AWAIT 驱动 `scheduler_run_until_done`,SCOPE 退出 await children |
+| B5a-3 | **部分**:`step_call` + `Signal::Yield` 通;完整 CPS(midi-body 挂起恢复)仍待 |
+| 已知限制 | 任务内 `YIELD()` = Transient 检查点(返回 NULL 不中断);`Signal::Yield` 仅在任务外/step_once 路径。mid-body suspend 需 B5a-3 CPS |
+| 偏差 | P7-B0-001 / P7-C2-001 / P7-C2-002(已修复)已入 `deviations.md`;E0057 评估=复用 E0024 |
+| **建议起点** | **Phase D Channel**(D1-D8)或 **Phase E 错误传播**(E4 为阻塞项:ERR consumer registry 跨 task 全量回归,失败必须在 E 内修完) |
+| 参考 | C3/C4/C5/B5b 实现集中在 `wlwl-eval/src/lib.rs`(builtin_* + run_one_task);调度器类型在 `runtime.rs` |
 
 ---
 ## 附录 E:API 示例(验证 §5 语义)

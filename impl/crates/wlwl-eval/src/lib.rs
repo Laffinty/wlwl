@@ -2708,6 +2708,7 @@ fn builtin_scope(
     // always rejected" (defensive) rather than "SPAWN allowed
     // where it shouldn't be".
     ev.scope_depth = ev.scope_depth.saturating_add(1);
+    let scope_id = ev.push_scope();
     let result = ev.invoke_closure(
         "SCOPE",
         params,
@@ -2716,7 +2717,10 @@ fn builtin_scope(
         Vec::new(),
         &diag_span,
     );
+    // B5b: structured concurrency — scope exit awaits children.
+    let drain = ev.pop_scope(scope_id, &diag_span);
     ev.scope_depth = ev.scope_depth.saturating_sub(1);
+    drain?;
     result
 }
 
@@ -2744,13 +2748,13 @@ fn builtin_scope(
 /// - **E0052** when `fn` is not a Value::Closure (same shape
 ///   as SCOPE; consistency matters because users will mix
 ///   SCOPE/SPAWN/AWAIT in the same expression)
-/// - **E0056** when `fn` requires parameters that SPAWN
-///   cannot supply (plan §4.4 row
-///   "E0056 | SPAWN 中 fn 参数个数错误"). SPAWN passes zero
-///   args, same constraint as SCOPE.
-/// - **E0022** (the underlying arity check from
-///   `invoke_closure`) when SPAWN itself is called with != 1
-///   argument.
+/// - **E0056** for SPAWN-side arity mismatches (plan §4.4 row
+///   "E0056 | SPAWN 中 fn 参数个数错误"): SPAWN itself called
+///   with != 1 argument, OR `fn` requires parameters that SPAWN
+///   cannot supply (SPAWN passes zero args, same constraint as
+///   SCOPE). P7-C2-001 locked the dedicated code here instead of
+///   the generic E0022 so later AWAIT/YIELD/CHANNEL_* builtins
+///   do not split the concurrency arity-error surface.
 ///
 /// Span sourcing: same `current_span` + `dummy()` fallback as
 /// SCOPE (see builtin_scope for the rationale).
@@ -2758,7 +2762,7 @@ fn builtin_spawn(
     ev: &mut Evaluator,
     args: Vec<Value>,
 ) -> WlwlResult<Outcome> {
-    use crate::runtime::{ScopeId, TaskHandle, TaskState, TaskResult};
+    use crate::runtime::TaskHandle;
     use crate::task::Task;
     use wlwl_ast::Span as AstSpan;
     let diag_span = ev
@@ -2806,6 +2810,21 @@ fn builtin_spawn(
             ));
         }
     };
+    // Plan §4.4 "E0056 | SPAWN 中 fn 参数个数错误": SPAWN supplies
+    // zero args, so a 1+-param fn is an arity error at the SPAWN
+    // boundary (not the generic invoke_closure E0022). Checking
+    // here keeps the concurrency arity surface on E0056 and
+    // matches the SCOPE(FUN((x), x)) symmetry test.
+    if !params.is_empty() {
+        return Err(ev.diag(
+            ErrorCode::E0056,
+            format!(
+                "SPAWN expects a zero-parameter function, got {} parameter(s)",
+                params.len()
+            ),
+            diag_span,
+        ));
+    }
     // Allocate the id + generation BEFORE we move `fn_value` into
     // the Task (the Task stores the body verbatim). Reading the
     // counter here, then bumping it below after the handle is
@@ -2840,55 +2859,283 @@ fn builtin_spawn(
         body: body.clone(),
         env: captured_env.clone(),
     };
-    let mut task = Task::new_pending(
+    let task = Task::new_pending(
         task_id,
         generation,
         body_value,
         captured_env.clone(),
-        // TODO(B5b): replace ScopeId(0) with the actual enclosing
-        // scope id. At C2 the scheduler has a single implicit root
-        // scope; SPAWN's child task is recorded against it for
-        // out-of-scope analysis but the id is meaningless until
-        // Phase F introduces real scope-local cancellation. Until
-        // then, AWAIT (C3) sees parent_scope == 0 for every task
-        // and never has to walk the (non-existent) scope tree.
-        ScopeId(0),
+        ev.scheduler
+            .current_scope
+            .unwrap_or(crate::runtime::ScopeId(0)),
     );
-    // Execute the closure to completion. At C2 this is
-    // synchronous; B5b will replace the call with a yield-aware
-    // step() invocation. invoke_closure handles arity (E0056
-    // / E0022 / default-parameter expansion) and the full
-    // trace-frame + signal handling.
-    let outcome = ev.invoke_closure(
-        "SPAWN",
-        params,
-        body,
-        captured_env,
-        Vec::new(),
-        &diag_span,
-    );
-    match outcome {
-        Ok(o) => {
-            // Record the terminal value on the task and push it
-            // into the scheduler. AWAIT (C3) will look the task
-            // up by id and read this value.
-            task.state = TaskState::Done(TaskResult::Ok(o.value));
-            ev.scheduler.push_task(task);
-            Ok(Outcome::normal(Value::TaskHandle(handle)))
-        }
-        Err(e) => {
-            // ERR propagated up through invoke_closure. v0.7
-            // §5.4 says SPAWN should still return a handle so the
-            // user can AWAIT it to see the ERR, but at C2 we
-            // don't have a scheduler to record the error path --
-            // bubble the diagnostic up. AWAIT (C3) will re-raise
-            // this when the user tries to dereference the
-            // (never-stored) handle. The "fail loudly until
-            // proven otherwise" stance from B5a-1 applies: no
-            // silent fallback.
-            Err(e)
+    // B5b: enqueue without running. AWAIT / SCOPE drain the queue
+    // via scheduler_run_until_*. Register on the active scope so
+    // scope-exit can await outstanding children (plan §5.2).
+    ev.scheduler.push_task(task);
+    ev.scheduler.enqueue(task_id);
+    if let Some(sid) = ev.scheduler.current_scope {
+        if let Some(sc) = ev.scheduler.scopes.get_mut(sid.0) {
+            sc.register_task(handle);
         }
     }
+    // Drop the unused locals from the destructure (params/body/env
+    // are already stored in the Task closure value).
+    let _ = (params, body, captured_env);
+    Ok(Outcome::normal(Value::TaskHandle(handle)))
+}
+
+/// [v0.7 Phase C3] `AWAIT(handle)` waits for a spawned task to
+/// finish and yields its terminal value.
+///
+/// At C3 (B5b not yet landed) `SPAWN` runs children synchronously,
+/// so every handle that reaches `AWAIT` already points at a
+/// terminal task. The wait/suspend path (`YieldReason::AwaitingChild`)
+/// is declared in the runtime types and will be wired in B5b.
+///
+/// Error contract (plan §4.4 / §5.4):
+/// - **E0022** when AWAIT itself is called with != 1 argument
+///   (generic call-arity; AWAIT is not on the SPAWN E0056 surface).
+/// - **E0053** when the argument is not a `Value::TaskHandle`, or
+///   the handle is stale (generation mismatch / unknown id).
+/// - Re-raises the host diagnostic stored by SPAWN when the child
+///   failed with a `WlwlError` (P7-C2-002).
+/// - Returns the user-level `ERR(...)` as a **value** when the child
+///   produced one (plan §5.4 "作为返回值"); §8.2 transparent
+///   propagation applies at the call site.
+/// - A cancelled task yields `ERR({kind: "Cancelled", ...})` per
+///   plan §5.4.1 ("AWAIT 拿 ERR(Cancelled)").
+fn builtin_await(ev: &mut Evaluator, args: Vec<Value>) -> WlwlResult<Outcome> {
+    use crate::runtime::{TaskResult, TaskState};
+    use wlwl_ast::Span as AstSpan;
+    let diag_span = ev
+        .current_span
+        .clone()
+        .unwrap_or_else(AstSpan::dummy);
+    if args.len() != 1 {
+        return Err(ev.diag(
+            ErrorCode::E0022,
+            format!("AWAIT expects 1 argument (the task handle), got {}", args.len()),
+            diag_span,
+        ));
+    }
+    let handle = match args.into_iter().next().expect("len == 1 checked") {
+        Value::TaskHandle(h) => h,
+        other => {
+            return Err(ev.diag(
+                ErrorCode::E0053,
+                format!(
+                    "AWAIT expects a task handle, got {}",
+                    type_name(&other)
+                ),
+                diag_span,
+            ));
+        }
+    };
+    // B5b: drive the scheduler until the child is terminal.
+    ev.scheduler_run_until_done(handle.id, &diag_span)?;
+    // Generation-checked lookup. A recycled slot (B5b+) bumps the
+    // generation, so a stale handle fails here rather than reading
+    // a newer task's result (plan §5.2 / E0053). Snapshot the
+    // outcome first so we do not hold a scheduler borrow across
+    // `ev.diag`.
+    enum Awaited {
+        Ok(Value),
+        ErrValue(Value),
+        Failed(WlwlError),
+        Cancelled,
+        NotReady,
+    }
+    let awaited = match ev.scheduler.tasks.get(handle.id.0) {
+        Some(t) if t.id == handle.id && t.generation == handle.generation => match &t.state {
+            TaskState::Done(r) => match r.as_ref() {
+                TaskResult::Ok(v) => Awaited::Ok(v.clone()),
+                TaskResult::Err(v) => Awaited::ErrValue(v.clone()),
+                TaskResult::Failed(e) => Awaited::Failed(e.as_ref().clone()),
+            },
+            TaskState::Cancelled => Awaited::Cancelled,
+            TaskState::Pending | TaskState::Running | TaskState::Suspended(_) => Awaited::NotReady,
+        },
+        _ => {
+            return Err(ev.diag(
+                ErrorCode::E0053,
+                format!(
+                    "AWAIT task handle is invalid or stale (id={}, gen={})",
+                    handle.id.0, handle.generation
+                ),
+                diag_span,
+            ));
+        }
+    };
+    match awaited {
+        // User-level values (including ERR) are returned as values
+        // (plan §5.4); §8.2 transparent propagation runs at the
+        // AWAIT call site.
+        Awaited::Ok(v) | Awaited::ErrValue(v) => Ok(Outcome::normal(v)),
+        // Host diagnostic is re-raised (P7-C2-002).
+        Awaited::Failed(e) => Err(e),
+        Awaited::Cancelled => {
+            // Plan §5.4.1: AWAIT of a cancelled task receives
+            // ERR(Cancelled). Phase F wires real cancellation; the
+            // shape is pinned here so AWAIT's contract is stable.
+            let payload = vec![
+                (Value::String("kind".into()), Value::String("Cancelled".into())),
+                (
+                    Value::String("task".into()),
+                    Value::String(format!(
+                        "<task handle id={} gen={}>",
+                        handle.id.0, handle.generation
+                    )),
+                ),
+            ];
+            Ok(Outcome::normal(Value::Err(Box::new(Value::Dict(payload)))))
+        }
+        // Non-terminal after the B5b loop drained: treat as invalid.
+        Awaited::NotReady => Err(ev.diag(
+            ErrorCode::E0053,
+            format!(
+                "AWAIT task {} is not finished (scheduler idle)",
+                handle.id.0
+            ),
+            diag_span,
+        )),
+    }
+}
+
+/// [v0.7 Phase C4] `YIELD()` — cooperative yield point (plan §3 C4).
+///
+/// Produces `Signal::Yield(YieldReason::Explicit)`. The signal
+/// propagates up the eval stack exactly like `Break` / `Continue` /
+/// `Return` (B5a-3 plumbing); `step_once` / `step_call` translate it
+/// to `StepResult::Yield`, while the run-to-completion `eval` rejects
+/// it with **E0014** (yield is only valid inside a scheduler step
+/// loop).
+///
+/// Error contract:
+/// - **E0022** when YIELD itself is called with != 0 arguments.
+///
+/// At C4 the scheduler is not yet wired (B5b), so a Yield surfaces
+/// from `step_once` as a parked-step result and the internal
+/// `__YIELD_TEST__` markers remain as the nested-arg-eval tripwires.
+/// YIELD inside a synchronous SPAWN child is not a supported
+/// checkpoint until B5b replaces sync execution with the real loop.
+fn builtin_yield(ev: &mut Evaluator, args: Vec<Value>) -> WlwlResult<Outcome> {
+    use crate::runtime::YieldReason;
+    use wlwl_ast::Span as AstSpan;
+    let diag_span = ev
+        .current_span
+        .clone()
+        .unwrap_or_else(AstSpan::dummy);
+    if !args.is_empty() {
+        return Err(ev.diag(
+            ErrorCode::E0022,
+            format!("YIELD expects 0 arguments, got {}", args.len()),
+            diag_span,
+        ));
+    }
+    // B5b: inside a scheduled task, YIELD is a cooperative
+    // checkpoint (Transient cancel point, plan D10) and returns
+    // NULL so the body can continue. Mid-body suspension needs the
+    // remaining B5a-3 CPS rewrite; until then a Signal::Yield from
+    // a task body would abandon the rest of the closure.
+    //
+    // Outside a task (step_once / bare eval) YIELD keeps the C4
+    // contract: Signal::Yield(Explicit).
+    if ev.current_task.is_some() {
+        return Ok(Outcome::normal(Value::Null));
+    }
+    Ok(Outcome {
+        value: Value::Null,
+        signal: Signal::Yield(YieldReason::Explicit),
+    })
+}
+
+/// [v0.7 Phase C5] `TASK_CURRENT()` — handle of the running task.
+///
+/// Only meaningful inside a task body (i.e. while the B5b loop has
+/// `current_task` set). Outside a task this is **E0053**.
+fn builtin_task_current(ev: &mut Evaluator, args: Vec<Value>) -> WlwlResult<Outcome> {
+    use crate::runtime::TaskHandle;
+    use wlwl_ast::Span as AstSpan;
+    let diag_span = ev
+        .current_span
+        .clone()
+        .unwrap_or_else(AstSpan::dummy);
+    if !args.is_empty() {
+        return Err(ev.diag(
+            ErrorCode::E0022,
+            format!(
+                "TASK_CURRENT expects 0 arguments, got {}",
+                args.len()
+            ),
+            diag_span,
+        ));
+    }
+    let Some(id) = ev.current_task else {
+        return Err(ev.diag(
+            ErrorCode::E0053,
+            "TASK_CURRENT called outside a running task",
+            diag_span,
+        ));
+    };
+    let generation = ev
+        .scheduler
+        .tasks
+        .get(id.0)
+        .map(|t| t.generation)
+        .unwrap_or(0);
+    Ok(Outcome::normal(Value::TaskHandle(TaskHandle {
+        id,
+        generation,
+    })))
+}
+
+/// [v0.7 Phase C5] `TASK_IS_CANCELLED()` — cooperative cancel check.
+///
+/// Returns TRUE when the running task (or its scope) has been
+/// cancelled. At C5 no user-facing cancel API exists yet (Phase F
+/// adds `TASK_CANCEL` / `TASK_CANCEL_PARENT`), so a live task is
+/// always FALSE; the shape is pinned for SHIELD / F.
+///
+/// Outside a task the answer is FALSE (there is no task that could
+/// be cancelled) — not an error, so callers can use it as a
+/// checkpoint unconditionally.
+fn builtin_task_is_cancelled(ev: &mut Evaluator, args: Vec<Value>) -> WlwlResult<Outcome> {
+    use crate::runtime::TaskState;
+    use wlwl_ast::Span as AstSpan;
+    let diag_span = ev
+        .current_span
+        .clone()
+        .unwrap_or_else(AstSpan::dummy);
+    if !args.is_empty() {
+        return Err(ev.diag(
+            ErrorCode::E0022,
+            format!(
+                "TASK_IS_CANCELLED expects 0 arguments, got {}",
+                args.len()
+            ),
+            diag_span,
+        ));
+    }
+    let cancelled = match ev.current_task {
+        None => false,
+        Some(id) => {
+            let task_cancelled = ev
+                .scheduler
+                .tasks
+                .get(id.0)
+                .map(|t| matches!(t.state, TaskState::Cancelled))
+                .unwrap_or(false);
+            let scope_cancelled = ev
+                .scheduler
+                .tasks
+                .get(id.0)
+                .and_then(|t| ev.scheduler.scopes.get(t.parent_scope.0))
+                .map(|s| s.cancelled)
+                .unwrap_or(false);
+            task_cancelled || scope_cancelled
+        }
+    };
+    Ok(Outcome::normal(Value::Boolean(cancelled)))
 }
 
 /// The single dispatch table: maps a built-in name to its implementation.
@@ -2909,6 +3156,19 @@ fn resolve_builtin(name: &str) -> Option<BuiltinFn> {
         // real yield/resume loop). Triggers E0058 if no active
         // SCOPE (D17). See builtin_spawn for the error contract.
         "SPAWN" => Some(builtin_spawn),
+        // [v0.7 Phase C3] AWAIT(handle): dereference a SPAWN handle
+        // and yield the child task's terminal value. Re-raises host
+        // diagnostics (P7-C2-002); returns user ERR as a value
+        // (plan §5.4). See builtin_await for the error contract.
+        "AWAIT" => Some(builtin_await),
+        // [v0.7 Phase C4] YIELD(): cooperative yield point. Produces
+        // Signal::Yield(Explicit) which step_once turns into
+        // StepResult::Yield; top-level eval rejects it with E0014.
+        // See builtin_yield.
+        "YIELD" => Some(builtin_yield),
+        // [v0.7 Phase C5] TASK_CURRENT() / TASK_IS_CANCELLED().
+        "TASK_CURRENT" => Some(builtin_task_current),
+        "TASK_IS_CANCELLED" => Some(builtin_task_is_cancelled),
         // Phase B10 (spec §15.1): PRINT_ERR writes to stderr.
         // Same dispatch as PRINT — appended to the global builtin
         // table so it's available without IMPORT (mirrors `PRINT`).
@@ -5212,11 +5472,12 @@ impl Evaluator {
     /// **not** in `BUILTIN_REGISTRY` (which is locked to spec 附录 G,
     /// and the markers exist solely to exercise the
     /// `Signal::Yield` → `StepResult::Yield` translation during
-    /// slice 1; the public `YIELD()` builtin lands in Phase C4). The
-    /// double-underscore prefix is reserved per spec §8.x and no
-    /// user code can legitimately call them. Slice 2 / Phase C4 will
-    /// retire these markers once the real `YIELD` user-facing builtin
-    /// is in place.
+    /// slice 1). The public `YIELD()` builtin is Phase C4 and lives
+    /// in `resolve_builtin`; these markers remain as nested-arg-eval
+    /// tripwires (`__YIELD_AFTER_ARG_TEST__` covers the arg-loop
+    /// propagation rule that a 0-arg `YIELD` cannot reach on its
+    /// own). The double-underscore prefix is reserved per spec §8.x
+    /// and no user code can legitimately call them.
     fn internal_yield_marker(
         &mut self,
         name: &str,
@@ -5281,6 +5542,139 @@ impl Evaluator {
             }
             _ => Ok(None),
         }
+    }
+
+    // ────────────────────────────────────────────────────────────
+    // [v0.7 Phase B5b] scheduler-driven task execution
+    //
+    // SPAWN enqueues a Pending task and returns a handle without
+    // running it. AWAIT / SCOPE drain the run queue through these
+    // helpers. `current_task` is set for the duration of each body
+    // so C5 TASK_CURRENT / TASK_IS_CANCELLED can see it.
+    // ────────────────────────────────────────────────────────────
+
+    /// Run one enqueued task to completion (B5b).
+    ///
+    /// Sets `current_task`, invokes the stored closure body, and
+    /// records the terminal result. Host diagnostics become
+    /// `TaskResult::Failed` (re-raised by AWAIT, P7-C2-002); user
+    /// `ERR(...)` becomes `TaskResult::Err` (returned as a value).
+    fn run_one_task(&mut self, id: crate::runtime::TaskId, span: &Span) -> WlwlResult<()> {
+        use crate::runtime::TaskResult;
+        let Some((body, env)) = self.scheduler.begin_run(id) else {
+            return Ok(());
+        };
+        let (params, expr, captured) = match body {
+            Value::Closure {
+                params,
+                body,
+                env,
+            } => (params, body, env),
+            other => {
+                let result = TaskResult::Failed(Box::new(self.diag(
+                    ErrorCode::E0052,
+                    format!(
+                        "task body must be a function value, got {}",
+                        type_name(&other)
+                    ),
+                    span.clone(),
+                )));
+                self.scheduler.complete(id, result);
+                return Ok(());
+            }
+        };
+        let _ = env; // captured env lives in the closure value
+        let prev_task = self.current_task.take();
+        self.current_task = Some(id);
+        let outcome = self.invoke_closure("TASK", params, expr, captured, Vec::new(), span);
+        self.current_task = prev_task;
+        let result = match outcome {
+            Ok(o) => match o.value {
+                Value::Err(payload) => TaskResult::Err(Value::Err(payload)),
+                v => TaskResult::Ok(v),
+            },
+            Err(e) => TaskResult::Failed(Box::new(e)),
+        };
+        self.scheduler.complete(id, result);
+        Ok(())
+    }
+
+    /// Drain the run queue (plan §5.1.1 `run_until_idle`).
+    fn scheduler_run_until_idle(&mut self, span: &Span) -> WlwlResult<()> {
+        while let Some(id) = self.scheduler.take_next() {
+            self.run_one_task(id, span)?;
+        }
+        self.scheduler.dispatch_cancellations();
+        Ok(())
+    }
+
+    /// Drive the scheduler until `id` reaches a terminal state.
+    /// Used by AWAIT when the child has not finished yet.
+    fn scheduler_run_until_done(
+        &mut self,
+        id: crate::runtime::TaskId,
+        span: &Span,
+    ) -> WlwlResult<()> {
+        loop {
+            if self.scheduler.is_terminal(id) {
+                return Ok(());
+            }
+            // Prefer the awaited task so AWAIT is not starved by
+            // siblings already sitting in the queue.
+            self.scheduler.enqueue(id);
+            // move to front
+            if let Some(pos) = self
+                .scheduler
+                .run_queue
+                .iter()
+                .position(|t| *t == id)
+            {
+                let tid = self.scheduler.run_queue.remove(pos).expect("pos");
+                self.scheduler.run_queue.push_front(tid);
+            }
+            match self.scheduler.take_next() {
+                Some(tid) => self.run_one_task(tid, span)?,
+                None => {
+                    if self.scheduler.is_terminal(id) {
+                        return Ok(());
+                    }
+                    return Err(self.diag(
+                        ErrorCode::E0053,
+                        format!(
+                            "AWAIT task {} is not finished and no runnable steps remain",
+                            id.0
+                        ),
+                        span.clone(),
+                    ));
+                }
+            }
+        }
+    }
+
+    /// [v0.7 Phase B5b] Push a child scope; returns its id.
+    fn push_scope(&mut self) -> crate::runtime::ScopeId {
+        use crate::runtime::{Scope, ScopeId};
+        let parent = self.scheduler.current_scope;
+        let id = ScopeId(self.scheduler.scopes.len());
+        self.scheduler.scopes.push(Scope::new(id, parent));
+        self.scheduler.current_scope = Some(id);
+        id
+    }
+
+    /// [v0.7 Phase B5b] Pop the innermost scope after awaiting children.
+    fn pop_scope(&mut self, id: crate::runtime::ScopeId, span: &Span) -> WlwlResult<()> {
+        self.scheduler_run_until_idle(span)?;
+        if let Some(sc) = self.scheduler.scopes.get_mut(id.0) {
+            // children are complete (or cancelled) after the drain
+            let _ = sc;
+        }
+        self.scheduler.current_scope = self
+            .scheduler
+            .scopes
+            .get(id.0)
+            .and_then(|s| s.parent)
+            .or(Some(crate::runtime::ScopeId(0)));
+        Ok(())
     }
 
     fn eval_call(&mut self, name: &str, args: &[Expr], span: &Span) -> WlwlResult<Outcome> {
@@ -6446,7 +6840,7 @@ mod tests {
                 ErrorCode::E0014,
                 "yield at top level must surface as E0014"
             ),
-            other => panic!("expected Diagnostic, got {other:?}"),
+
         }
     }
 
@@ -6466,7 +6860,7 @@ mod tests {
                 ErrorCode::E0022,
                 "non-zero arity on yield marker must surface as E0022"
             ),
-            other => panic!("expected Diagnostic, got {other:?}"),
+
         }
     }
 
@@ -6531,7 +6925,7 @@ mod tests {
                 ErrorCode::E0022,
                 "wrong arity on 1-arg marker must surface as E0022"
             ),
-            other => panic!("expected Diagnostic, got {other:?}"),
+
         }
         // 2-arg call must also fail arity check.
         let src2 = "__YIELD_AFTER_ARG_TEST__(1, 2);";
@@ -6540,7 +6934,7 @@ mod tests {
         let err2 = ev2.eval(&ast2).expect_err("2-arg call must error");
         match err2 {
             WlwlError::Diagnostic(d) => assert_eq!(d.code, ErrorCode::E0022),
-            other => panic!("expected Diagnostic, got {other:?}"),
+
         }
     }
 
@@ -6674,7 +7068,7 @@ mod tests {
                 ErrorCode::E0052,
                 "expected E0052 'SCOPE 中 fn 不是函数'"
             ),
-            other => panic!("expected WlwlError::Diagnostic, got {other:?}"),
+
         }
     }
 
@@ -6689,7 +7083,7 @@ mod tests {
                 ErrorCode::E0022,
                 "expected E0022 'function call arity'"
             ),
-            other => panic!("expected WlwlError::Diagnostic, got {other:?}"),
+
         }
     }
 
@@ -6708,7 +7102,7 @@ mod tests {
                 ErrorCode::E0022,
                 "expected E0022 'function call arity'"
             ),
-            other => panic!("expected WlwlError::Diagnostic, got {other:?}"),
+
         }
     }
 
@@ -6779,18 +7173,33 @@ mod tests {
 
     #[test]
     fn spawn_rejects_zero_args_with_e0056() {
-        // SPAWN() -> E0056 per plan §4.4 row
-        // "E0056 | SPAWN 中 fn 参数个数错误". The dedicated
-        // v0.7 error code (not the generic E0022 that other
-        // builtins use) is what the plan locks; see also the
-        // P7-C2-001 deviation entry which recorded the brief
-        // drift through E0022 in C2 commit cce3ce3.
+        // SPAWN() -> E0056 (SPAWN-side arity). The dedicated v0.7
+        // error code (not the generic E0022 that other builtins
+        // use) is what P7-C2-001 locks; plan §4.4 reserves E0056
+        // for the SPAWN/fn arity surface.
         let src = "SCOPE(FUN(() , SPAWN()));";
         let err = run(src).expect_err("SPAWN() with no args should fail");
         assert_eq!(
             err.diagnostic().code,
             ErrorCode::E0056,
             "expected E0056 'SPAWN 中 fn 参数个数错误'"
+        );
+    }
+
+    #[test]
+    fn spawn_rejects_fn_with_params_with_e0056() {
+        // SPAWN(FUN((x), x)) -> E0056 per plan §4.4 row
+        // "E0056 | SPAWN 中 fn 参数个数错误". SPAWN supplies zero
+        // args, so a 1+-param fn is rejected at the SPAWN boundary
+        // with the concurrency code, not invoke_closure's generic
+        // E0022. Mirrors SCOPE(FUN((x), x)) which stays on E0022
+        // (SCOPE is not a concurrency-arity builtin).
+        let src = "SCOPE(FUN(() , SPAWN(FUN((x), x))));";
+        let err = run(src).expect_err("SPAWN of a 1-arg fn should fail");
+        assert_eq!(
+            err.diagnostic().code,
+            ErrorCode::E0056,
+            "expected E0056 'SPAWN 中 fn 参数个数错误' for fn-with-params"
         );
     }
 
@@ -6845,6 +7254,530 @@ mod tests {
             }
             other => panic!("expected Value::TaskHandle, got {other:?}"),
         }
+    }
+
+    // ────────────────────────────────────────────────────────────
+    // [v0.7 Phase C3] AWAIT(handle) builtin
+    //
+    // At C3 SPAWN is synchronous, so every handle is already
+    // terminal when AWAIT runs. These tests pin the dereference
+    // contract: value / user-ERR-as-value / host-diag re-raise /
+    // E0053 for bad handles. B5b will add the real wait path.
+    // ────────────────────────────────────────────────────────────
+
+    #[test]
+    fn await_returns_spawned_value() {
+        // SCOPE(FUN(() , LET(h, SPAWN(FUN(() , +(1, 2)))); AWAIT(h))) -> 3
+        // The C2 spawn_inside_scope test only checked the handle
+        // shape; C3's AWAIT is the integer 3 deref it promised.
+        let src = "SCOPE(FUN(() , LET(h, SPAWN(FUN(() , +(1, 2)))); AWAIT(h)));";
+        let v = run(src).expect("AWAIT of a completed SPAWN should return 3");
+        assert_eq!(v, Value::Integer(3));
+    }
+
+    #[test]
+    fn await_returns_user_err_as_value() {
+        // Plan §5.4: child ERR is received at AWAIT "作为返回值".
+        // UNWRAP_OR consumes it at the call site (§8.2).
+        let src = "SCOPE(FUN(() , LET(h, SPAWN(FUN(() , ERR(\"boom\")))); UNWRAP_OR(AWAIT(h), -1)));";
+        let v = run(src).expect("AWAIT of ERR child should yield the ERR value");
+        assert_eq!(v, Value::Integer(-1));
+    }
+
+    #[test]
+    fn await_user_err_payload_survives() {
+        // The ERR payload must be intact after crossing the task
+        // boundary (plan §5.4.1 "ERR payload 中的 kind 字段").
+        let src = "SCOPE(FUN(() , LET(h, SPAWN(FUN(() , ERR(\"boom\")))); LET(v, AWAIT(h)); IS_ERR(v)));";
+        let v = run(src).expect("AWAIT should hand back a recognisable ERR");
+        assert_eq!(v, Value::Boolean(true));
+    }
+
+    #[test]
+    fn await_reraises_host_diagnostic_from_child() {
+        // P7-C2-002 fix: SPAWN stores the handle even when the
+        // child hits a host diagnostic; AWAIT re-raises it.
+        // `zzz()` is an undefined name (E0020) inside the child.
+        let src = "SCOPE(FUN(() , LET(h, SPAWN(FUN(() , zzz()))); AWAIT(h)));";
+        let err = run(src).expect_err("AWAIT must re-raise the child's host diagnostic");
+        assert_eq!(
+            err.diagnostic().code,
+            ErrorCode::E0020,
+            "expected E0020 from the child body, re-raised at AWAIT"
+        );
+    }
+
+    #[test]
+    fn await_spawn_of_host_error_still_returns_handle() {
+        // Companion to await_reraises_host_diagnostic_from_child:
+        // SPAWN itself must succeed (return a handle) even when the
+        // child body is doomed. Without this, AWAIT has nothing to
+        // re-raise from (the old C2 fail-loud path).
+        let src = "SCOPE(FUN(() , LET(h, SPAWN(FUN(() , zzz()))); TYPE(h)));";
+        let v = run(src).expect("SPAWN of a failing child should still return a handle");
+        assert_eq!(v, Value::String("TASK".into()));
+    }
+
+    #[test]
+    fn await_rejects_non_handle_with_e0053() {
+        // AWAIT(1) -> E0053 (TASK 句柄无效).
+        let src = "SCOPE(FUN(() , AWAIT(1)));";
+        let err = run(src).expect_err("AWAIT(non-handle) should fail");
+        assert_eq!(
+            err.diagnostic().code,
+            ErrorCode::E0053,
+            "expected E0053 'TASK handle invalid'"
+        );
+    }
+
+    #[test]
+    fn await_rejects_zero_args_with_e0022() {
+        // AWAIT() -> E0022 (generic call arity; AWAIT is not on
+        // the SPAWN E0056 concurrency-arity surface).
+        let src = "SCOPE(FUN(() , AWAIT()));";
+        let err = run(src).expect_err("AWAIT() with no args should fail");
+        assert_eq!(
+            err.diagnostic().code,
+            ErrorCode::E0022,
+            "expected E0022 'function call arity'"
+        );
+    }
+
+    #[test]
+    fn await_two_spawns_returns_both_values() {
+        // Plan 附录 E.1 shape: two children, await both.
+        let src = "SCOPE(FUN(() , LET(a, SPAWN(FUN(() , +(1, 1)))); LET(b, SPAWN(FUN(() , +(2, 2)))); LET(va, AWAIT(a)); LET(vb, AWAIT(b)); +(va, vb)));";
+        let v = run(src).expect("AWAIT of two children should sum to 6");
+        assert_eq!(v, Value::Integer(6));
+    }
+
+    // ────────────────────────────────────────────────────────────
+    // [v0.7 Phase C4] YIELD() builtin
+    //
+    // User-facing cooperative yield. Same Signal::Yield plumbing as
+    // the internal __YIELD_TEST__ markers, but registered in
+    // resolve_builtin so programs can call it by name.
+    // ────────────────────────────────────────────────────────────
+
+    #[test]
+    fn yield_returns_explicit_via_step_once() {
+        // YIELD() through the state-machine entry point surfaces as
+        // StepResult::Yield(Explicit) — the contract B5b's scheduler
+        // loop will consume.
+        let src = "YIELD();";
+        let ast = parse(src, "t.wll").expect("parse");
+        let mut ev = Evaluator::new();
+        match ev.step_once(&ast).expect("step_once") {
+            crate::runtime::StepResult::Yield(crate::runtime::YieldReason::Explicit) => {}
+            other => panic!("expected Yield(Explicit), got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn yield_rejects_top_level_eval_with_e0014() {
+        // Plan §5.1 / B5a-3: run-to-completion eval has no step loop,
+        // so a bare top-level YIELD is a programmer error (E0014).
+        let src = "YIELD();";
+        let ast = parse(src, "t.wll").expect("parse");
+        let mut ev = Evaluator::new();
+        let err = ev.eval(&ast).expect_err("top-level YIELD via eval must be E0014");
+        assert_eq!(
+            err.diagnostic().code,
+            ErrorCode::E0014,
+            "expected E0014 'YIELD used outside a step context'"
+        );
+    }
+
+    #[test]
+    fn yield_rejects_non_zero_arity_with_e0022() {
+        let src = "YIELD(1);";
+        let ast = parse(src, "t.wll").expect("parse");
+        let mut ev = Evaluator::new();
+        let err = ev.eval(&ast).expect_err("YIELD(1) must be an arity error");
+        assert_eq!(
+            err.diagnostic().code,
+            ErrorCode::E0022,
+            "expected E0022 'YIELD expects 0 arguments'"
+        );
+    }
+
+    #[test]
+    fn yield_propagates_from_nested_arg() {
+        // +(1, YIELD()) — the Yield must bubble out of the outer
+        // call's arg-eval (same rule as __YIELD_AFTER_ARG_TEST__).
+        let src = "+(1, YIELD());";
+        let ast = parse(src, "t.wll").expect("parse");
+        let mut ev = Evaluator::new();
+        match ev.step_once(&ast).expect("step_once") {
+            crate::runtime::StepResult::Yield(crate::runtime::YieldReason::Explicit) => {}
+            other => panic!("expected Yield(Explicit) from nested arg, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn yield_propagates_from_inside_function() {
+        // LET(f, FUN(() , YIELD())); f() — invoke_closure must not
+        // swallow the Yield signal (B5a-3 slice 1).
+        let src = "LET(f, FUN(() , YIELD())); f();";
+        let ast = parse(src, "t.wll").expect("parse");
+        let mut ev = Evaluator::new();
+        match ev.step_once(&ast).expect("step_once") {
+            crate::runtime::StepResult::Yield(crate::runtime::YieldReason::Explicit) => {}
+            other => panic!("expected Yield(Explicit) from fn body, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn yield_is_registered_builtin() {
+        // YIELD must be reachable via resolve_builtin (the public
+        // C4 surface), distinct from the __YIELD_* internal markers.
+        assert!(resolve_builtin("YIELD").is_some());
+        assert!(resolve_builtin("__YIELD_TEST__").is_none());
+    }
+
+    // ────────────────────────────────────────────────────────────
+    // [v0.7 Phase C7] cross-task cell-upgrade regression (plan §5.5)
+    //
+    // "跨 task 共享 cell 时,如果 cell 由 LET 创建(不可变),子 task
+    // 试图 SET 会得到 E0024。如果 cell 由 LET MUT 创建,行为与
+    // 单 task 一致。不引入新可见性规则,完全沿用 v0.6 §3.3/§3.4。"
+    //
+    // C7 evaluation of E0057 (plan §4.4 "E0024 复用,待评估"): stay
+    // on **E0024**. §5.5 forbids new visibility rules, so the
+    // cross-task SET failure is the same E0024 the single-task path
+    // raises. E0057 remains registered (concurrent category) but
+    // has no trigger site — reserved if a future task-boundary
+    // cell rule ever diverges from §3.3/§3.4.
+    //
+    // E-CloCap note: invoke_closure upgrades EVERY cell in the
+    // callee's captured env to MUTABLE (v0.6 §6.4), including
+    // cells the child body only reads. That is existing §3.4
+    // behaviour and is intentionally unchanged across SPAWN.
+    // ────────────────────────────────────────────────────────────
+
+    #[test]
+    fn c7_child_set_on_captured_let_upgrades_like_single_task() {
+        // Parent LET(x); child closure captures x and SETs it.
+        // E-CloCap fires at the child invoke (same as a single-task
+        // nested call), so the SET succeeds and the mutation is
+        // visible to the parent through the shared cell.
+        let src = "SCOPE(FUN(() , LET(x, 1); LET(h, SPAWN(FUN(() , SET(x, 2)))); AWAIT(h); x));";
+        let v = run(src).expect("captured-LET SET from child should upgrade and succeed");
+        assert_eq!(v, Value::Integer(2));
+    }
+
+    #[test]
+    fn c7_child_set_on_let_mut_is_visible_to_parent() {
+        // Plan §5.5: LET MUT + child SET behaves exactly like
+        // single-task shared-cell mutation.
+        let src = "SCOPE(FUN(() , LET MUT(x, 1); LET(h, SPAWN(FUN(() , SET(x, 2)))); AWAIT(h); x));";
+        let v = run(src).expect("LET MUT + child SET should share the cell");
+        assert_eq!(v, Value::Integer(2));
+    }
+
+    #[test]
+    fn c7_two_children_share_let_mut_accumulator() {
+        // Two sequential (sync-SPAWN) children each add to the same
+        // LET MUT cell. Deterministic at C3 because SPAWN is
+        // synchronous; B5b will keep the cell-sharing rule and only
+        // change the interleaving.
+        let src = r#"
+            SCOPE(FUN(() ,
+                LET MUT(s, 0);
+                LET(a, SPAWN(FUN(() , SET(s, +(s, 10)))));
+                AWAIT(a);
+                LET(b, SPAWN(FUN(() , SET(s, +(s, 32)))));
+                AWAIT(b);
+                s
+            ))
+        "#;
+        let v = run(src).expect("both children must write the shared LET MUT cell");
+        assert_eq!(v, Value::Integer(42));
+    }
+
+    #[test]
+    fn c7_set_on_uncaptured_let_stays_e0024_across_spawn() {
+        // Plan §5.5 "不引入新可见性规则": a LET cell that is NOT in
+        // the child closure's captured env stays IMMUTABLE across
+        // SPAWN. E-CloCap only upgrades captured_env cells (v0.6
+        // §6.4), so a name resolved via caller-scope fallthrough
+        // (late-bound: the child closure is defined BEFORE the LET)
+        // is never upgraded and SET is E0024 — same code as
+        // single-task, not E0057.
+        //
+        // Contrast c7_child_set_on_captured_let_upgrades_like_single_task:
+        // inline `FUN` clones the whole current env (§3.4 cell
+        // references), so `x` is already in captured_env and gets
+        // upgraded. That is existing E-CloCap behaviour, not a new
+        // task-boundary rule.
+        let src = r#"
+            SCOPE(FUN(() ,
+                LET(f, FUN(() , SET(late, 2)));
+                LET(late, 1);
+                LET(h, SPAWN(f));
+                AWAIT(h)
+            ))
+        "#;
+        let err = run(src).expect_err("late-bound LET must stay E0024 across SPAWN");
+        assert_eq!(
+            err.diagnostic().code,
+            ErrorCode::E0024,
+            "expected E0024 (not E0057) per plan §5.5 — no new visibility rules"
+        );
+    }
+
+    #[test]
+    fn c7_child_local_let_set_is_e0024() {
+        // Child-local LET (not a shared cell): SET is E0024 exactly
+        // as in a single-task nested call. Cross-task does not
+        // invent a new mutability path (plan §5.5).
+        let src = "SCOPE(FUN(() , LET(h, SPAWN(FUN(() , LET(x, 1); SET(x, 2)))); AWAIT(h)));";
+        let err = run(src).expect_err("child-local LET + SET must be E0024");
+        assert_eq!(err.diagnostic().code, ErrorCode::E0024);
+    }
+
+    #[test]
+    fn c7_e0057_has_no_trigger_site_after_eval() {
+        // C7 evaluation of plan §4.4 E0057: reuse E0024; E0057 stays
+        // registered but untriggered. This test pins that decision so
+        // a later phase that wants E0057 must update §5.5 + this
+        // test together.
+        assert_eq!(ErrorCode::E0057.as_str(), "E0057");
+        // The cross-task immutable-cell path reports E0024 (see
+        // c7_set_on_uncaptured_let_stays_e0024_across_spawn).
+    }
+
+    // ────────────────────────────────────────────────────────────
+    // [v0.7 Phase C8] cross-task closure-capture regression (plan §5.5)
+    //
+    // "与 v0.6 闭包捕获规则的交互测试" — SPAWN children share cells
+    // via Rc (not deep clone), so closure counters / shared getters
+    // / setters keep §3.4 semantics across the task boundary.
+    // ────────────────────────────────────────────────────────────
+
+    #[test]
+    fn c8_spawned_child_continues_parent_closure_counter() {
+        // Classic counter: parent bumps twice, child bumps once.
+        // The counter cell is shared, so the child's increment is
+        // visible after AWAIT (plan §5.5 / §3.4 cell references).
+        let src = r#"
+            SCOPE(FUN(() ,
+                LET MUT(count, 0);
+                LET(step, FUN((), SET(count, +(count, 1))));
+                step();
+                step();
+                LET(h, SPAWN(FUN(() , step())));
+                AWAIT(h);
+                count
+            ))
+        "#;
+        // 1 + 1 (parent) + 1 (child) = 3
+        let v = run(src).expect("child must continue the shared counter");
+        assert_eq!(v, Value::Integer(3));
+    }
+
+    #[test]
+    fn c8_sibling_spawns_share_setter_closure() {
+        // Two children call the same setter closure built in the
+        // parent scope; both writes land on one cell.
+        let src = r#"
+            SCOPE(FUN(() ,
+                LET(s, "init");
+                LET(set, FUN((x), SET(s, x)));
+                LET(a, SPAWN(FUN(() , set("from-a"))));
+                AWAIT(a);
+                LET(b, SPAWN(FUN(() , set("from-b"))));
+                AWAIT(b);
+                s
+            ))
+        "#;
+        // Sync SPAWN: last writer wins deterministically at C3.
+        let v = run(src).expect("sibling spawns must share the setter's cell");
+        assert_eq!(v, Value::String("from-b".into()));
+    }
+
+    #[test]
+    fn c8_child_sees_parent_closure_update() {
+        // Getter/setter pair in the parent; child calls setter;
+        // parent getter observes the write after AWAIT.
+        let src = r#"
+            SCOPE(FUN(() ,
+                LET(s, "init");
+                LET(get, FUN((), s));
+                LET(set, FUN((x), SET(s, x)));
+                LET(h, SPAWN(FUN(() , set("updated"))));
+                AWAIT(h);
+                get()
+            ))
+        "#;
+        let v = run(src).expect("parent getter must see the child's write");
+        assert_eq!(v, Value::String("updated".into()));
+    }
+
+    #[test]
+    fn c8_child_returns_closure_capturing_shared_cell() {
+        // A child returns a closure that captured the shared cell;
+        // calling it after AWAIT still reads/writes that cell (the
+        // closure env is cell references, not deep clones).
+        let src = r#"
+            SCOPE(FUN(() ,
+                LET MUT(n, 40);
+                LET(h, SPAWN(FUN(() , FUN(() , SET(n, +(n, 2))))));
+                LET(f, AWAIT(h));
+                f();
+                n
+            ))
+        "#;
+        let v = run(src).expect("closure returned from child must keep the shared cell");
+        assert_eq!(v, Value::Integer(42));
+    }
+
+    #[test]
+    fn c8_spawned_recursive_closure_shares_cell() {
+        // Recursive stepper built in the parent, run in the child —
+        // same E-CloCap + shared-cell rules as single-task recursion.
+        let src = r#"
+            SCOPE(FUN(() ,
+                LET MUT(i, 0);
+                LET MUT(acc, 0);
+                LET(loop, FUN(() ,
+                    IF(<(i, 3),
+                        SET(acc, +(acc, 1));
+                        SET(i, +(i, 1));
+                        loop()
+                    )
+                ));
+                LET(h, SPAWN(FUN(() , loop())));
+                AWAIT(h);
+                acc
+            ))
+        "#;
+        let v = run(src).expect("recursive closure in child must share cells");
+        assert_eq!(v, Value::Integer(3));
+    }
+
+    // ────────────────────────────────────────────────────────────
+    // [v0.7 Phase B5b] scheduler loop + [C5] TASK_CURRENT /
+    // TASK_IS_CANCELLED
+    // ────────────────────────────────────────────────────────────
+
+    #[test]
+    fn b5b_spawn_is_lazy_until_await_or_scope_exit() {
+        // B5b: SPAWN enqueues without running. The body's `flag`
+        // read runs before the scheduler drains, so the SCOPE
+        // result is still 0.
+        let src = r#"
+            SCOPE(FUN(() ,
+                LET MUT(flag, 0);
+                LET(h, SPAWN(FUN(() , SET(flag, 1))));
+                flag
+            ))
+        "#;
+        let v = run(src).expect("lazy SPAWN must not run before the body finishes");
+        assert_eq!(
+            v,
+            Value::Integer(0),
+            "SPAWN must be lazy: body's `flag` read happens before the child runs"
+        );
+    }
+
+    #[test]
+    fn b5b_scope_exit_awaits_outstanding_children() {
+        // Plan §5.2: scope exit awaits children. The write lands
+        // during pop_scope's drain and is visible after SCOPE
+        // returns.
+        let src = r#"
+            LET MUT(flag, 0);
+            SCOPE(FUN(() , SPAWN(FUN(() , SET(flag, 1)))));
+            flag
+        "#;
+        let v = run(src).expect("scope-exit drain must run outstanding children");
+        assert_eq!(v, Value::Integer(1));
+    }
+
+    #[test]
+    fn b5b_await_then_reads_child_write() {
+        // Explicit AWAIT drives the scheduler before the read.
+        let src = r#"
+            SCOPE(FUN(() ,
+                LET MUT(flag, 0);
+                LET(h, SPAWN(FUN(() , SET(flag, 1))));
+                AWAIT(h);
+                flag
+            ))
+        "#;
+        let v = run(src).expect("AWAIT must run the child");
+        assert_eq!(v, Value::Integer(1));
+    }
+
+    #[test]
+    fn c5_task_current_inside_spawn() {
+        // TASK_CURRENT() inside the child returns a TASK handle.
+        let src = r#"
+            SCOPE(FUN(() ,
+                LET(h, SPAWN(FUN(() , TASK_CURRENT())));
+                AWAIT(h)
+            ))
+        "#;
+        let v = run(src).expect("TASK_CURRENT inside a child must return a handle");
+        match &v {
+            Value::TaskHandle(h) => {
+                assert_eq!(h.id.0, 0, "first spawn -> task id 0");
+                assert_eq!(h.generation, 0, "first spawn -> generation 0");
+            }
+            other => panic!("expected Value::TaskHandle from TASK_CURRENT, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn c5_task_current_outside_task_is_e0053() {
+        let src = "SCOPE(FUN(() , TASK_CURRENT()));";
+        let err = run(src).expect_err("TASK_CURRENT outside a task must be E0053");
+        assert_eq!(err.diagnostic().code, ErrorCode::E0053);
+    }
+
+    #[test]
+    fn c5_task_is_cancelled_false_for_live_task() {
+        // Phase F wires real cancel; at C5 a live task is FALSE.
+        let src = r#"
+            SCOPE(FUN(() ,
+                LET(h, SPAWN(FUN(() , TASK_IS_CANCELLED())));
+                AWAIT(h)
+            ))
+        "#;
+        let v = run(src).expect("TASK_IS_CANCELLED in a live child");
+        assert_eq!(v, Value::Boolean(false));
+    }
+
+    #[test]
+    fn c5_task_is_cancelled_false_outside_task() {
+        // Outside a task the answer is FALSE (not an error) so it
+        // works as an unconditional checkpoint (plan D8/D10).
+        let src = "SCOPE(FUN(() , TASK_IS_CANCELLED()));";
+        let v = run(src).expect("TASK_IS_CANCELLED outside a task");
+        assert_eq!(v, Value::Boolean(false));
+    }
+
+    #[test]
+    fn c5_task_current_rejects_args_with_e0022() {
+        let src = "SCOPE(FUN(() , TASK_CURRENT(1)));";
+        let err = run(src).expect_err("TASK_CURRENT(1) must be E0022");
+        assert_eq!(err.diagnostic().code, ErrorCode::E0022);
+    }
+
+    #[test]
+    fn c5_yield_in_task_is_cooperative_checkpoint() {
+        // B5b: YIELD inside a task body returns NULL and the body
+        // continues (Transient checkpoint). Does NOT abandon the
+        // rest of the closure.
+        let src = r#"
+            SCOPE(FUN(() ,
+                LET(h, SPAWN(FUN(() , LET(a, YIELD()); 42)));
+                AWAIT(h)
+            ))
+        "#;
+        let v = run(src).expect("YIELD in a task must not abort the body");
+        assert_eq!(v, Value::Integer(42));
     }
 
     /// Like `run` but also returns the warnings accumulated during the

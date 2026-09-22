@@ -231,7 +231,7 @@ mod tests {
         assert_eq!(s.outstanding_tasks(&tasks), 3);
 
         // Task 1 reaches Done -> 2 outstanding
-        tasks[1].state = TaskState::Done(crate::runtime::TaskResult::Ok(Value::Null));
+        tasks[1].state = TaskState::Done(Box::new(crate::runtime::TaskResult::Ok(Value::Null)));
         assert_eq!(s.outstanding_tasks(&tasks), 2);
 
         // Task 0 is Cancelled -> 1 outstanding

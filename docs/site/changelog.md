@@ -40,6 +40,39 @@ work (Phases D / E / F) is still pending — see the plan.
 - **Phase C1 / C2 (built-in partial scope)** — `SCOPE(fn)`
   (`e28de1d` + `cce3ce3`); `SPAWN(fn)` (`cce3ce3`, with the
   audit-fix chain `1248978` / `d46bab3` / `d53e09e`).
+- **Phase C3 (`AWAIT(handle)`)** — dereference a SPAWN handle to
+  the child's terminal value. User `ERR(...)` is returned as a
+  value (plan §5.4); host diagnostics are re-raised at AWAIT
+  (P7-C2-002 closed: SPAWN now stores `TaskResult::Failed` and
+  still returns a handle). Invalid / stale handles raise `E0053`;
+  AWAIT's own arity is `E0022`. Cancelled tasks yield
+  `ERR({kind: "Cancelled"})` per plan §5.4.1 (cancellation itself
+  is Phase F).
+- **Phase C4 (`YIELD()`)** — user-facing cooperative yield point.
+  Produces `Signal::Yield(Explicit)` (B5a-3 plumbing): `step_once`
+  surfaces `StepResult::Yield`, top-level `eval` rejects with
+  `E0014`. Arity mismatch is `E0022`. Propagates through nested
+  args and function bodies like other control-flow signals.
+- **Phase C7 / C8 (cross-task cell + closure regression)** — plan
+  §5.5 interaction tests: captured-LET SET upgrades via E-CloCap
+  (same as single-task); `LET MUT` shares across SPAWN/AWAIT;
+  late-bound / child-local immutable SET stays `E0024` (E0057
+  evaluation: reuse E0024, no new visibility rules). Closure
+  counters, setter/getter pairs, closures returned from children,
+  and recursive closures all keep §3.4 shared-cell semantics.
+- **Phase B5b (Scheduler loop)** — real run-queue + `run_one_task`.
+  `SPAWN` is now **lazy** (Pending + enqueue + return handle);
+  `AWAIT` drives `scheduler_run_until_done`; SCOPE exit awaits
+  outstanding children (plan §5.2). `Evaluator.current_task` is set
+  for the duration of each task body.
+- **Phase C5 (`TASK_CURRENT` / `TASK_IS_CANCELLED`)** —
+  `TASK_CURRENT()` returns the running task's handle (`E0053`
+  outside a task). `TASK_IS_CANCELLED()` is a cooperative
+  checkpoint returning FALSE for live tasks (cancel API is Phase F)
+  and FALSE outside a task (not an error). Arity mismatches are
+  `E0022`. Inside a task, `YIELD()` is a Transient checkpoint that
+  returns NULL and continues the body (mid-body suspension still
+  needs the remaining B5a-3 CPS).
 - **Phase B5a-3 slice 1 (state-machine yield plumbing)** —
   `Signal::Yield(YieldReason)` variant + propagation through
   `eval_expr` (loops, blocks, closures all propagate Yield
@@ -60,8 +93,12 @@ work (Phases D / E / F) is still pending — see the plan.
 
 ### Pending (next-phase work, not yet committed)
 
-- Phase C3 `AWAIT(handle)` / C4 `YIELD()` / C5 `TASK_*`
-- Phase B5b Scheduler wire-up
+- Phase D Channels (`CHANNEL_*`, 8 sub-items)
+- Phase E error propagation (**E4** blocker: ERR-consumer
+  registry cross-task regression)
+- Phase F cancellation scope tree (incl. SHIELD)
+- Remaining B5a-3 full CPS (mid-body suspension)
+- Phase G quality gates / Phase H spec + release
 - Phase D Channels (`CHANNEL_NEW` / `_SEND` / `_RECV` / ...,
   8 sub-items)
 - Phase E error propagation (with **E4** as the blocker:

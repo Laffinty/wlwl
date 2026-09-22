@@ -45,17 +45,6 @@ fn fixture_root() -> PathBuf {
         .join("conformance")
 }
 
-fn spec_dir() -> PathBuf {
-    // workspace root = CARGO_MANIFEST_DIR.parent.parent.parent
-    let here = Path::new(env!("CARGO_MANIFEST_DIR"));
-    here.parent()
-        .and_then(|p| p.parent())
-        .and_then(|p| p.parent())
-        .expect("CARGO_MANIFEST_DIR should be impl/crates/wlwl-cli")
-        .join("docs")
-        .join("standard")
-}
-
 fn wlwl_binary() -> PathBuf {
     if let Ok(p) = std::env::var("CARGO_BIN_EXE_wlwl") {
         return PathBuf::from(p);

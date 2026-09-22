@@ -2,8 +2,8 @@
 
 > Entry point for v0.7 implementation deviations. Plan approved at
 > `docs/plan/wlwl-build-plan-v0.7.md` (commit `01ff9d6`, WIP). ADRs
-> 0014-0016 captured (commit `0d463ad`). Implementation has not
-> started; no execution deviations yet.
+> 0014-0016 captured (commit `0d463ad`). Implementation in progress
+> on `wip0.7` (Phase A complete; Phase B/C underway).
 >
 > Entry ID prefix for v0.7 implementation-time deviations: `P7-NNN-NNN`
 > (per plan §8.2).
@@ -12,6 +12,7 @@
 |----|--------------|---------|------|----------------|
 | P7-B0-001 | §4.4 错误码分配 (E0050-E0056) | v0.7 任务/通道系统占用 E0052-E0058 而非计划写的 E0050-E0056(全部下移 2 位)。新增 `ErrorCategory::Concurrent` 分类容纳这 7 个码。 | OOP 实现已在 v0.5/v0.6 阶段占用了 E0050/E0051(class inheritance / INIT arity),v0.7 任务系统需要独占一段连续码号。连续段比"插空插入 E0050s"在 reviewer 看来更易浏览,且不破坏 OOP 已有的语义(snapshot 测试无变化)。 | —(码号偏移是终态,无后续修复需要)|
 | P7-C2-001 | §4.4 row "E0056 \| SPAWN 中 fn 参数个数错误" | C2 commit `cce3ce3` 把 SPAWN 0 参数调用映射为 E0022 而非 plan 指定的 E0056。`builtin_spawn` 的 doc-comment 已正确引用 E0056,但实际 diag 调用走的是 E0022(与 SCOPE 的 arity check 同形)。 | 与 SCOPE 现有 E0022 arity check 模式保持一致;若不修,后续 AWAIT/YIELD/CHANNEL_* 沿用会传染,7 个 builtin arity 错误码分裂。 | 已修复(commit `1248978`) |
+| P7-C2-002 | §5.4 / §5.4.1 跨边界 ERR 传播 | C2 的 `SPAWN(fn)` 在子任务抛出**宿主诊断**(WlwlError,如 E0020 undefined name)时直接 `Err(e)` 上抛,**不返回 TaskHandle**。plan §5.4 要求 SPAWN 仍返回 handle,父任务在 AWAIT 处拿到该错误。用户级 `ERR(...)` 值不受影响(走 `Done(Ok(Value::Err))`,AWAIT 按值返回)。 | C2 尚无调度器可记录失败路径;先 fail-loud 而不是静默吞掉。AWAIT(C3) 落地时改为「存 handle + AWAIT 处 re-raise」。 | 已修复(C3:SPAWN 存 `TaskResult::Failed`,AWAIT re-raise;测试 `await_reraises_host_diagnostic_from_child`) |
 
 ---
 # 实施偏离清单 — Phase 2 (2026-09-02)
