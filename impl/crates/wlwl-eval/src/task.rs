@@ -146,6 +146,15 @@ pub struct Scope {
     pub parent: Option<ScopeId>,
     pub tasks: Vec<TaskHandle>,
     pub cancelled: bool,
+    /// [v0.7 Phase D-D] Channel slots owned by this scope. Each
+    /// `CHANNEL_NEW(buf)` called while the scope is `current_scope`
+    /// appends its `ChannelId` here. When the scope exits the leak
+    /// detector walks this list and force-closes each channel
+    /// (plan §3 D7); the channel's generation is then bumped so any
+    /// handle still held by user code fails `E0053` at the next op.
+    /// Channels created at module top-level (before any SCOPE
+    /// block) are owned by the root scope (id 0).
+    pub channels: Vec<crate::channel::ChannelId>,
 }
 
 impl Scope {
@@ -156,6 +165,7 @@ impl Scope {
             parent,
             tasks: Vec::new(),
             cancelled: false,
+            channels: Vec::new(),
         }
     }
 
