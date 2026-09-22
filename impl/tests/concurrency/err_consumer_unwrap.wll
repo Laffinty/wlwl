@@ -1,0 +1,19 @@
+// concurrency/err_consumer_unwrap.wll - Phase E-C conformance fixture
+//
+// Plan §3 E4 / §6.0 row "ERR consumer 跨 task 回归":
+// UNWRAP cross-task. A child task returns ERR("child-boom"); the
+// parent AWAITs and UNWRAP panics with E0100 (spec §12.4 PANIC).
+// This locks the consumer-registry invariant that UNWRAP does
+// NOT participate in §8.2 transparent propagation — it converts
+// the ERR into a fatal diagnostic that aborts evaluation.
+//
+// Expected exit code: 1 (E0100 PANIC)
+// Expected stderr contains: "E0100" and "UNWRAP called on ERR value"
+
+LET(out,
+    SCOPE(FUN(() ,
+        LET(h, SPAWN(FUN(() , ERR("child-boom"))));
+        UNWRAP(AWAIT(h))
+    ))
+);
+PRINT(out)

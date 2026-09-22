@@ -69,6 +69,14 @@ const WLT_FILES: &[&str] = &[
     // value (negative case) — sibling ERRs that were explicitly
     // consumed by the fn body must NOT override SCOPE's return.
     "scope_consume_does_not_change_return.wll",
+    // Phase E-C / E4 (blocking) — 4 ERR consumer registry
+    // cross-task conformance fixtures (plan §6.0 row "ERR
+    // consumer 跨 task 回归(§3 Phase E4 阻塞项)", 8 unit + 4
+    // concurrency + 8 snapshot):
+    "err_consumer_unwrap_or.wll",
+    "err_consumer_is_err.wll",
+    "err_consumer_payload.wll",
+    "err_consumer_unwrap.wll",
 ];
 
 #[test]
@@ -166,5 +174,87 @@ fn scope_consume_does_not_change_return() {
     assert_eq!(
         stdout, expected,
         "stdout mismatch:\n  got:      {stdout:?}\n  expected: {expected:?}"
+    );
+}
+
+/// Phase E-C / E4 (blocking, plan §6.0): UNWRAP_OR cross-task.
+/// Child returns ERR; parent AWAITs and UNWRAP_OR consumes the
+/// ERR (§12.7 / Appendix B.17 — UNWRAP_OR is in the ERR consumer
+/// registry) and returns the default. End-to-end exercise of the
+/// §8.3 consumer registry through a SCOPE/AWAIT boundary.
+#[test]
+fn err_consumer_unwrap_or_cross_task() {
+    let path = fixture("err_consumer_unwrap_or.wll");
+    let out = run_wlwl(&path);
+    let code = out.status.code().unwrap_or(-1);
+    let stdout = String::from_utf8_lossy(&out.stdout).into_owned();
+    let stderr = String::from_utf8_lossy(&out.stderr).into_owned();
+    assert_eq!(code, 0, "expected exit 0, got {code}:\n  stderr={stderr}");
+    let expected = "default\n";
+    assert_eq!(
+        stdout, expected,
+        "stdout mismatch:\n  got:      {stdout:?}\n  expected: {expected:?}"
+    );
+}
+
+/// Phase E-C / E4 (blocking): IS_ERR cross-task. Child returns
+/// ERR; parent AWAITs and IS_ERR observes the ERR (TRUE per
+/// §12.2 — IS_ERR is observation only, payload untouched).
+#[test]
+fn err_consumer_is_err_cross_task() {
+    let path = fixture("err_consumer_is_err.wll");
+    let out = run_wlwl(&path);
+    let code = out.status.code().unwrap_or(-1);
+    let stdout = String::from_utf8_lossy(&out.stdout).into_owned();
+    let stderr = String::from_utf8_lossy(&out.stderr).into_owned();
+    assert_eq!(code, 0, "expected exit 0, got {code}:\n  stderr={stderr}");
+    let expected = "TRUE\n";
+    assert_eq!(
+        stdout, expected,
+        "stdout mismatch:\n  got:      {stdout:?}\n  expected: {expected:?}"
+    );
+}
+
+/// Phase E-C / E4 (blocking): ERR_PAYLOAD cross-task. Child
+/// returns ERR(["kind": "child-err"]); parent AWAITs and
+/// ERR_PAYLOAD extracts the inner Dict; AT_K reads the "kind"
+/// field. Locks plan §5.4.1 invariant "ERR payload 中的 kind
+/// 字段在跨 task 边界后保持原值".
+#[test]
+fn err_consumer_payload_cross_task() {
+    let path = fixture("err_consumer_payload.wll");
+    let out = run_wlwl(&path);
+    let code = out.status.code().unwrap_or(-1);
+    let stdout = String::from_utf8_lossy(&out.stdout).into_owned();
+    let stderr = String::from_utf8_lossy(&out.stderr).into_owned();
+    assert_eq!(code, 0, "expected exit 0, got {code}:\n  stderr={stderr}");
+    let expected = "child-err\n";
+    assert_eq!(
+        stdout, expected,
+        "stdout mismatch:\n  got:      {stdout:?}\n  expected: {expected:?}"
+    );
+}
+
+/// Phase E-C / E4 (blocking): UNWRAP cross-task. Child returns
+/// ERR; parent AWAITs and UNWRAP panics with E0100 (spec §12.4
+/// PANIC). This locks the consumer-registry invariant that
+/// UNWRAP does NOT participate in §8.2 transparent propagation —
+/// it converts the ERR into a fatal diagnostic. Exit code must
+/// be non-zero; stderr must contain the E0100 code + the "UNWRAP
+/// called on ERR value" message.
+#[test]
+fn err_consumer_unwrap_cross_task_panics_e0100() {
+    let path = fixture("err_consumer_unwrap.wll");
+    let out = run_wlwl(&path);
+    let code = out.status.code().unwrap_or(-1);
+    let stderr = String::from_utf8_lossy(&out.stderr).into_owned();
+    assert_ne!(code, 0, "UNWRAP on ERR must PANIC, got exit 0");
+    assert!(
+        stderr.contains("E0100"),
+        "expected E0100 in stderr, got: {stderr}"
+    );
+    assert!(
+        stderr.contains("UNWRAP called on ERR value"),
+        "expected the UNWRAP PANIC message in stderr, got: {stderr}"
     );
 }

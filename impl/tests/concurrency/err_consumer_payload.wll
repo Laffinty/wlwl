@@ -1,0 +1,20 @@
+// concurrency/err_consumer_payload.wll - Phase E-C conformance fixture
+//
+// Plan §3 E4 / §6.0 row "ERR consumer 跨 task 回归":
+// ERR_PAYLOAD cross-task. A child task returns ERR(["kind":
+// "child-err"]); the parent AWAITs then ERR_PAYLOAD extracts the
+// inner Dict. The fixture demonstrates that the ERR payload
+// survives the task boundary intact (plan §5.4.1 invariant: "ERR
+// payload 中的 kind 字段在跨 task 边界后保持原值").
+//
+// Expected stdout (1 line):
+//   child-err
+
+LET(out,
+    SCOPE(FUN(() ,
+        LET(h, SPAWN(FUN(() , ERR(["kind": "child-err"]))));
+        LET(p, ERR_PAYLOAD(AWAIT(h)));
+        AT_K(p, "kind", "?")
+    ))
+);
+PRINT(out)

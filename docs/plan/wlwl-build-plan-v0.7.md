@@ -697,7 +697,8 @@ Phase G5 把基线写入 docs/plan/deviations.md 的 P7-G5-001 条目。
 - E-A 单元测试落地:BOOL / UNWRAP / ERR_PAYLOAD / EXPECT_ERR / PRINT_ERR(负例)/ IF(条件位) / TRY + ERR kind 保真(`ChannelClosed` 跨 AWAIT 仍可读) — commit `7bd04aa`
 - E-B-1 内置接线:`Task.cancel_requested` 字段 + `Scheduler::request_task_cancel` / `cancel_siblings_in_scope` 助手 + `TASK_CANCEL(h)` / `TASK_CANCEL_PARENT()` 内置 + `run_one_task` 入口检查点 + SCOPE 兄弟取消 — commit `0bec336`
 - E-B-2 conformance fixture:`scope_cancel_siblings.wll`(SCOPE 透传首个未消费 child ERR)+ `scope_consume_does_not_change_return.wll`(SCOPE 不覆盖已消费 ERR) + `concurrency.rs` driver + deviations P7-E3-001(路径 B 同步执行 → "在飞兄弟取消"不可观测,SCOPE 返回语义锁定 fn-body-Value::Err 透传)
-- E-C (计划,阻塞项):ERR consumer registry 跨 task 全量回归 — 8 unit + 4 concurrency fixture + 8 snapshot
+- E-C-1 conformance fixture:4 个 ERR consumer 跨 task 端到端 — `err_consumer_unwrap_or.wll` / `err_consumer_is_err.wll` / `err_consumer_payload.wll` / `err_consumer_unwrap.wll`(UNWRAP 验 E0100 PANIC 路径)+ driver 4 个测试(阻塞项 §6.0 "ERR consumer 跨 task 回归" 的 4 concurrency 部分完成)
+- E-C-2 (计划):8 snapshot 测试 — 锁定跨 task ERR 载荷 wire format(ERR 字符串 / ERR 字典 / ERR_PAYLOAD / IS_ERR / UNWRAP_OR / TRY / AWAIT-Cancelled / ChannelClosed)
 - E-D (计划):IF(cond, then, else) 并发路径短路语义评估 + deviations.md
 
 ### Phase F — 取消作用域
@@ -715,7 +716,7 @@ Phase G5 把基线写入 docs/plan/deviations.md 的 P7-G5-001 条目。
 
 | 项 | 状态 |
 |----|------|
-| 门禁 | `cargo test --workspace` 全绿(eval **706**,fidelity 1 pass;wlwl-cli concurrency 4 pass);`cargo clippy --workspace --all-targets -D warnings` **0 error** |
+| 门禁 | `cargo test --workspace` 全绿(eval **706**,fidelity 1 pass;wlwl-cli concurrency 9 pass);`cargo clippy --workspace --all-targets -D warnings` **0 error** |
 | Phase B | **全部完成**(B0-B6,B5a-3 走路径 B 落地,见 commit 链 `4324fe2` → `beec77d`) |
 | Phase C | **全部完成**(C1 SCOPE / C2 SPAWN / C3 AWAIT / C4 YIELD(B5a-3-B 后真 mid-body) / C5 TASK_* / C7 cell / C8 closure) |
 | B5b | 调度循环已接:SPAWN **惰性入队**,AWAIT 驱动 `scheduler_run_until_done`,SCOPE 退出 await children |

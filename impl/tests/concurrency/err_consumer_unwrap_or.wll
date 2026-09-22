@@ -1,0 +1,18 @@
+// concurrency/err_consumer_unwrap_or.wll - Phase E-C conformance fixture
+//
+// Plan §3 E4 (blocking) / §6.0 row "ERR consumer 跨 task 回归":
+// UNWRAP_OR cross-task. A child task returns ERR("child-boom");
+// the parent AWAITs, then UNWRAP_OR consumes the ERR at the call
+// site and returns the default value. End-to-end exercise of the
+// §8.3 ERR consumer registry through a SCOPE/AWAIT boundary.
+//
+// Expected stdout (1 line):
+//   default
+
+LET(out,
+    SCOPE(FUN(() ,
+        LET(h, SPAWN(FUN(() , ERR("child-boom"))));
+        UNWRAP_OR(AWAIT(h), "default")
+    ))
+);
+PRINT(out)

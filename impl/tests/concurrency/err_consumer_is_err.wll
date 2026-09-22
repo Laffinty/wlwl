@@ -1,0 +1,19 @@
+// concurrency/err_consumer_is_err.wll - Phase E-C conformance fixture
+//
+// Plan §3 E4 / §6.0 row "ERR consumer 跨 task 回归":
+// IS_ERR cross-task. A child task returns ERR("child-boom"); the
+// parent AWAITs and IS_ERR observes the ERR shape (TRUE per §12.2
+// — IS_ERR is observation only, payload untouched). End-to-end
+// exercise of the consumer registry through SCOPE/AWAIT.
+//
+// Expected stdout (1 line):
+//   TRUE
+
+LET(out,
+    SCOPE(FUN(() ,
+        LET(h, SPAWN(FUN(() , ERR("child-boom"))));
+        LET(v, AWAIT(h));
+        IS_ERR(v)
+    ))
+);
+PRINT(out)
