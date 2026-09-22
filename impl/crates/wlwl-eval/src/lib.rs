@@ -7812,6 +7812,27 @@ fn pop_scope(&mut self, id: crate::runtime::ScopeId, span: &Span) -> WlwlResult<
             ErrorCode::E0102 => d.with_suggestion(Suggestion::Note {
                 description: "an `ERR(...)` reached the top level; wrap the call in `OR_DIE(expr, default)` or `TRY(expr)`, or check the upstream function for the source of the error".into(),
             }),
+            // [v0.7 Phase G7] rich suggestion_code for v0.7 concurrency
+            // / channel error codes. See plan §4.4 for the code
+            // allocation table and §3 G7 for the G7 gate contract.
+            ErrorCode::E0052 => d.with_suggestion(Suggestion::Note {
+                description: "SCOPE / SPAWN / SHIELD take a single argument that must be a `FUN(...)` closure; pass a function value (e.g. `FUN(() , body)`) — not an INTEGER, STRING, ARRAY, or already-resolved value".into(),
+            }),
+            ErrorCode::E0053 => d.with_suggestion(Suggestion::Note {
+                description: "task or channel handle is invalid: the slot was either recycled (a stale handle from a previous scope exit) or the argument was the wrong Value variant. Recreate the handle via SPAWN or CHANNEL_NEW, or match the expected handle type".into(),
+            }),
+            ErrorCode::E0054 => d.with_suggestion(Suggestion::Note {
+                description: "CHANNEL_SEND / CHANNEL_TRY_SEND on a closed channel: the channel was closed via CHANNEL_CLOSE or its owning scope exited. Use CHANNEL_TRY_RECV to drain remaining buffered values, or open a new channel via CHANNEL_NEW".into(),
+            }),
+            ErrorCode::E0056 => d.with_suggestion(Suggestion::Note {
+                description: "SPAWN passes zero arguments to its fn, so the fn must have zero parameters: `SPAWN(FUN(() , body))`. SCOPE / SHIELD take exactly one fn argument".into(),
+            }),
+            ErrorCode::E0057 => d.with_suggestion(Suggestion::Note {
+                description: "SET on a non-shared cell: the variable was not captured by a child task's closure. Mark the LET as `LET MUT(name, ...)` before SPAWN so the child shares the cell (plan §5.5 / E-CloCap)".into(),
+            }),
+            ErrorCode::E0058 => d.with_suggestion(Suggestion::Note {
+                description: "SPAWN requires an enclosing SCOPE block (plan §10 D17: no implicit runtime scope). Wrap the SPAWN in a SCOPE call: `SCOPE(FUN(() , SPAWN(...)))`".into(),
+            }),
             _ => d,
         };
         d.into()

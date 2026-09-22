@@ -704,6 +704,14 @@ Phase G5 把基线写入 docs/plan/deviations.md 的 P7-G5-001 条目。
 - F-A (F1+F3+F7):`Scheduler::cancel_scope_subtree` 助手 + `TASK_CANCEL_PARENT` 改为调子树取消(plan §3 F3)+ 3 单元测试(`fa_*` 语言级 + 2 个 Rust 级 helper 直测)
 - F-B (F5):`SHIELD(fn)` builtin — 可嵌套(`shield_depth` 累加 / 最外层退出才触发)、内部 `TASK_CANCEL_PARENT` 仅标 `shield_pending_cancel` 不真取消、退出后把 pending 翻译回 self 的 `cancel_requested`、自身 ERR 走 §5.4 不被屏蔽 + 7 个 `fb_*` 单元测试
 - F-C conformance fixture:3 个 SHIELD fixture(`shield_basic.wll` / `shield_nested.wll` / `shield_then_error.wll`)+ driver 3 个测试 + deviations P7-F5-001(路径 B 下"SHIELD 退出后立即生效"无 yield 中间可见态,等价于"同 fn body SHIELD 之后立即观察 cancel_requested")
+- G 质量门禁:
+  - G1 clippy workspace -D warnings:复检 0 error
+  - G2 rustdoc --workspace --no-deps 0 warning(修了 11 个 `[B5b]` intra-doc link 用 Python 重写为 `[B5b phase]` 避免被解析成 rustdoc-link)
+  - G3 fuzz 24h:impl/fuzz/ 现状保留(lexer / parser / eval 三个 harness,nightly cargo-fuzz 安装中)— 24h 运行超出本 session 时长,plan §3 G3 明确"do NOT run fuzz in CI nightly",本地开发者周期运行
+  - G4 cargo-deny 0 violation:advisories ok / bans ok / licenses ok / sources ok,5 个 non-violation `unnecessary-skip` warning(workspace 内部 crate 的 skip 配置,可清)
+  - G5 cargo bench:criterion 0.5,string_concat -16% 改进 / array_higher_order / error_propagation 无显著变化 — 无任何退化 > 10%
+  - G6 spec 文件冻结:v0.7 启动后至今 spec v0.6 未被改动,Phase G 期间持续冻结(spec v0.7 在 H1 阶段写)
+  - G7 rich suggestion_code:为 E0052-E0058 五个新并发/通道错误码补了 `with_suggestion(Suggestion::Note { ... })`,diagnostic 工具链统一覆盖 v0.6 与 v0.7 错误码
 
 ### Phase F — 取消作用域
 均待启动(F1-F7,含 SHIELD 至少 3 个 conformance fixture)。
@@ -720,7 +728,7 @@ Phase G5 把基线写入 docs/plan/deviations.md 的 P7-G5-001 条目。
 
 | 项 | 状态 |
 |----|------|
-| 门禁 | `cargo test --workspace` 全绿(eval **731**,fidelity 1 pass;wlwl-cli concurrency 12 pass);`cargo clippy --workspace --all-targets -D warnings` **0 error** |
+| 门禁 | `cargo test --workspace` 全绿(eval **731**,fidelity 1 pass;wlwl-cli concurrency 12 pass);`cargo clippy --workspace --all-targets -D warnings` **0 error**;`cargo doc --workspace --no-deps` **0 warning**;`cargo deny check` **0 violation**;`cargo bench` **无退化**(string_concat -16% / array_higher_order -6%/no-change / error_propagation -7%/no-change) |
 | Phase B | **全部完成**(B0-B6,B5a-3 走路径 B 落地,见 commit 链 `4324fe2` → `beec77d`) |
 | Phase C | **全部完成**(C1 SCOPE / C2 SPAWN / C3 AWAIT / C4 YIELD(B5a-3-B 后真 mid-body) / C5 TASK_* / C7 cell / C8 closure) |
 | B5b | 调度循环已接:SPAWN **惰性入队**,AWAIT 驱动 `scheduler_run_until_done`,SCOPE 退出 await children |
