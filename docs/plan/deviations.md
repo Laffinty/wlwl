@@ -164,6 +164,138 @@ eval(4 端到端):
 
 ---
 
+## D8-005 · §12 重写:附录 G 注册表为单一真相源
+
+- **状态**:已修复(commit `b266700`)
+- **发现**:v0.8 §3.2 实施时(2026-09-23)
+- **影响范围**:`docs/standard/wlwl-spec-v0.7.md` §12
+
+### 现象
+v0.7 §12 列了 6 个"保留形式"(`CLASS` / `NEW` / `THIS` / `MODULE` / `MODULE_REF` / `CALL` / `ARRAY` / `AND` / `OR`),prose 写"求值产生 E0020 / E0030"等。这些名字在 `BUILTIN_REGISTRY` 里都有正式 `BuiltinSpec` 条目 — 实测运行时是合法的 `ResolvedBuiltin` / `LexerMacro` / `ResolvedCompat`,不会触发保留诊断。表格与现实已脱节。
+
+### 根本原因
+v0.4 时代 §12 是"我们有名字但还没实现"的占位清单。v0.5 / v0.6 / v0.7 把每个条目落地为注册表,但 prose 一直没删 / 改。读者误以为这些"保留"是未文档化行为。
+
+### 处置(v0.8 §3.2)
+- §12 头部改为:"v0.8 起本章不再列出'保留形式'清单。... 全部以附录 G 注册表为准 — 该表是单一真相源"。
+- §12.1 "真正的保留集合"表为空(v0.8 没有未注册且被词法保留的具名构造)。
+- 列出实际守注册表与附录 G 的锁测试:
+  - `b11_registry_count_matches_spec_table`(总数 = 110;93 v0.6 + 17 v0.7 §17)
+  - `b11_registry_covers_resolve_builtin`
+  - `b11_resolve_builtin_covers_registry`
+  - `b11_err_consumer_registry_consistent`
+  - `b11_macro_fn_attribute_matches_dispatch`
+  - `registry::tests::appendix_g_anchors_match_v07_section_numbers`(§2.9 新增)
+
+### 兼容性影响
+- **零行为影响**:纯 spec prose 改写。
+- 锁测试覆盖确认所有历史条目在运行时实际有定义。
+
+### 回归锁测试
+既有 `b11_*` 五件 + §2.9 新增的 `appendix_g_anchors_match_v07_section_numbers` 守住。
+
+---
+
+## D8-006 · §4.3 NOT 透明传播规则反向
+
+- **状态**:已修复(commit `32c9ada`)
+- **发现**:v0.8 §3.4 实施时(2026-09-23)
+- **影响范围**:`docs/standard/wlwl-spec-v0.7.md` §4.3 一行 prose
+
+### 现象
+v0.7 §4.3 写:
+
+> "任一操作数为 ERR 时,除 NOT 外全部透明传播(8.2)"
+
+即把 `NOT` 列为 §8.2 透明传播的唯一例外。**实现一直是反过来的**:`NOT` 不是 ERR 消费者(`registry.rs` §4.3 组 `ErrConsumerStatus::No`),`b9_not_with_err_arg_is_e0034`(`lib.rs:17612`)锁定 `NOT(ERR("e")) → E0102`。
+
+### 根本原因
+v0.6 之前 spec 早期版本可能把 NOT 设计成 ERR 消费者,prose 残留。实际代码从未实施。
+
+### 处置(v0.8 §3.4)
+- §4.3 prose 改写为"所有运算符调用按 §8.2 透明传播 — 包括 NOT。`BOOL(x)` 是单独的 ERR 消费者..."
+- 推荐惯用法:`NOT(BOOL(ERR(...)))` → `FALSE`(BOOL 先消费,NOT 后取反)
+- 实现不动 — `b9_not_with_err_arg_is_e0034` 一直守着正确行为
+
+### 兼容性影响
+- **零行为影响**:实现未变,prose 改写为匹配实际行为。
+- 用户代码 `NOT(ERR(...))` 的结果不变(E0102),只是文档不再误导。
+
+### 回归锁测试
+`b9_not_with_err_arg_is_e0034` + `b11_err_consumer_registry_consistent`。
+
+---
+
+## D8-007 · §17.1 YIELD 位置限制从硬规则降为实现路径
+
+- **状态**:已修复(commit `f028860`)
+- **发现**:v0.8 §3.10 实施时(2026-09-23)
+- **影响范围**:`docs/standard/wlwl-spec-v0.7.md` §17.1 + §17.7
+
+### 现象
+v0.7 §17.1 写:
+
+> "`YIELD()` 必须出现在多语句 Block 的直接子项位置"
+
++ §17.7 限制行:`[v0.7.0] 见 §17.1 限制`。
+
+把"v0.7.0 实现采用任务体静态切段"产物的限制写成 normative 硬规则。意味着未来若实现切换至挂起式调度(path A),该放宽会被视为"破坏性修改" — 实际上语言理想语义不需要这条限制。
+
+### 根本原因
+v0.7.0 实施选择 path B(静态切段)以避开 mid-body 挂起的复杂度。prose 把实施选择误升为语言规则。
+
+### 处置(v0.8 §3.10)
+- §17.1 改写:"YIELD() 的理想语义是出现在任何表达式位置...v0.7 / v0.8 参考实现采用任务体静态切段调度,因此仅支持 YIELD() 出现在多语句 Block 的直接子项位置...该限制是 v0.7 / v0.8 实现路径的产物,不是语言语义规则;未来版本(挂起式调度)可放宽而不视为破坏性修订。"
+- §17.7 嵌套 YIELD 行改:`[v0.7.0]` → `[v0.7 / v0.8 实现路径]`,措辞增加"未来版本可放宽(见 §17.1)"
+- §17.7 新增"尾部 YIELD"行(per plan G-09)
+
+### 兼容性影响
+- **零行为影响**:`yield_split.rs` 未变;`b9` yield 测试不受影响。
+
+### 回归锁测试
+既有 yield_split tests + `yield_directly_as_if_branch_is_rejected` 等。
+
+---
+
+## D8-008 · spec prose alignment batch(§3.1, §3.3, §3.5-§3.9, §3.11-§3.15)
+
+- **状态**:已修复(commit `2bf9093`)
+- **发现**:v0.8 Phase B 批量(2026-09-23)
+- **影响范围**:`docs/standard/wlwl-spec-v0.7.md` 12 处 prose 改动(详见 commit message)
+
+### 现象
+v0.7 spec 与 §2.x 实施修正后的真实行为在多处 prose 上不一致;且部分章节存在长期歧义(版本记法、`=` 三重身份、`NOT` 在 §4.3 反向等)。
+
+### 根本原因
+v0.6 / v0.7 spec 期间迭代时,实施与 prose 同步有滞后;某些 prose 段落是 v0.4 / v0.5 时代表述。
+
+### 处置(v0.8 Phase B 批量)
+12 条 plan §3.x 合并 commit:
+
+| plan 项 | 章节 | 改动 |
+|--------|------|------|
+| §3.1 | §8.2/§8.3/§8.5 | 三件示例重塑 + EXPECT_ERR 入表 + §8.5 顶层 ExprStmt 注 |
+| §3.3 | §11.2 | E0055/E0057 标注"v0.7/v0.8 无触发路径" |
+| §3.5 | §0.1/§17.7 | §0.1 加版本约定段;§17.7 历史 [v0.7.0] 行保留不动 |
+| §3.6 | §10.7 | FORMAT `{N}` / `{name}` 混用规则 + 锁测试引用 |
+| §3.7 | §1.6 | 拆 `int_lit` / `int_literal`,加 lexer 不读前导符号注 |
+| §3.8 | §5.1 | LET/FUN 不对称 normative(LET 不得作实参) |
+| §3.9 | §1.5 | `=` 三重身份消歧(OpToken / INDEX_SET / Param 默认) |
+| §3.11 | §1.4 | CLASS/NEW/THIS 标注"已注册非保留" |
+| §3.12 | §17.3/§17.5 | SHIELD 不创建新作用域 + SCOPE(ERR) 透传注 |
+| §3.13 | §17.1 | AWAIT 宿主诊断 vs 用户 ERR 区分 |
+| §3.14 | §2.2 | `%` 浮点 E0030 列入触发列表 |
+| §3.15 | §4.5 | 字面量下标删禁句 |
+
+### 兼容性影响
+- **零行为影响**:纯 spec prose 修正;impl / 测试不变。
+- `cargo test --workspace`:0 FAILED(commit 时验证)
+
+### 回归锁测试
+所有既有 b9_* / b11_* / pop_dict_* / literal_subscript_* / e0055_* / e0057_* 测试在 §2.x 系列 commit 已加 + 本批量不影响;回归风险低。
+
+---
+
 ## D8-003 · E0055 / E0057 错误码预留(v0.7 / v0.8 无触发路径)
 
 - **状态**:已修复(commit 待补)

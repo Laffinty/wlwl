@@ -11,6 +11,135 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 > **v0.7** (`docs/standard/wlwl-spec-v0.7.md`); v0.6 is archived at
 > `docs/history/wlwl-spec-v0.6.md`.
 
+## [v0.8.0] — 2026-09-23
+
+Spec: **wlwl-spec-v0.7** with v0.8 alignment (single source of truth
+remains `docs/standard/wlwl-spec-v0.7.md`; the file accumulates v0.8
+prose additions in-place — release-time rename to `wlwl-spec-v0.8.md`
+is the Phase-C release flow). Build plan + deviations:
+`docs/plan/wlwl-build-plan-v0.8.md`, `docs/plan/deviations.md`.
+
+### Compatibility commitment (per plan §4.4)
+
+Any v0.7 program that does **not** depend on the §12 "保留形式" old
+table (which is rewritten away in v0.8 — see below) yields identical
+results in v0.8. Confirmed observable-behavior changes:
+
+1. **Literal subscripts now allowed**: `[1, 2, 3][0]` was a parse
+   error (`E0010` / `E0011`) in v0.7 and earlier; in v0.8 it parses
+   and evaluates to `1`. (`["a": 1]["a"]`, `[[1,2][0], 3]`, etc. —
+   all allowed for the first time.) See `2bd11b3` and deviation D8-004.
+2. **No other program-visible change.** Everything else is either
+   prose-only clarification, metadata-only (registry fields,
+   appendix_G anchors), or aligns spec text with behavior the
+   implementation has had all along.
+
+### Changed (non-breaking)
+
+- **§12 保留形式重写 (D8-005)**: the "reserved but undefined" list
+  (CLASS / NEW / THIS / MODULE / MODULE_REF / CALL / ARRAY / AND / OR)
+  was implementation-stale — all entries have working `BuiltinSpec`
+  records in `BUILTIN_REGISTRY` (LexerMacro / ResolvedBuiltin /
+  ResolvedCompat). §12 now points to the registry as the single source
+  of truth; the `b11_*` lock tests + the new
+  `registry::tests::appendix_g_anchors_match_v07_section_numbers`
+  (§2.9 / `061b0fd`) gate consistency. See `b266700`.
+- **§4.3 NOT 透明传播 prose 反向 (D8-006)**: v0.7 prose wrongly
+  framed NOT as the sole exception to §8.2 transparent propagation.
+  Implementation has always been E0102-on-`NOT(ERR(...))`; prose now
+  matches. `b9_not_with_err_arg_is_e0034` and
+  `b11_err_consumer_registry_consistent` were already enforcing the
+  corrected behavior. Recommended idiom: `NOT(BOOL(ERR(...)))` for
+  safe coercion. See `32c9ada`.
+- **§17.1 YIELD 位置限制 demoted (D8-007)**: the "YIELD() 必须
+  出现在 Block 直接子项" rule was normative prose over what is
+  actually an implementation choice (static task-body segmentation
+  in `yield_split.rs`). §17.1 now frames it as "理想语义 + v0.7 /
+  v0.8 实现路径" so future suspension-based schedulers can lift
+  the limitation without claiming a breaking change. See `f028860`.
+- **Spec / registry alignment (D8-008, 12-item batch)**:
+  - 85 `BuiltinSpec.section` fields updated to v0.7 chapter numbers
+    (registry was full of v0.4 / v0.6 stale numbers like §13.x /
+    §15.x / §12.x / §7.x / §9.1 / §10.6 / §11.4) — `849dc3c`.
+  - `POP` entry signature / group / version corrected
+    (`POP(d, k, default) -> v` / `Dict` / `V06`) — `f8a5908`.
+  - Column header in `docs/appendix_G.md` fixed
+    (`ERR 消费者 (§12.7)` → `(§8.3)`, `宏函数 (§3.4)` → `(§1.4)`) —
+    folded into `849dc3c`.
+  - Spec §4.5 prose on literal subscripts rewritten to ALLOW; §A.2
+    grammar was already permissive — `2bd11b3`.
+  - Spec §1.6 split into `int_lit` (bare digits) + `int_literal`
+    (optionally signed); parser / lexer source comments updated to
+    document the two-step lexer-bare-digits + parser-desugar
+    reality — `9c8bc08`.
+  - `EXPECT_ERR` folded into the §8.3 consumer table; §2.4 %
+    float `E0030` listed; SHIELD / SCOPE(ERR) / AWAIT host
+    diagnostic clarifications; §1.5 `=` triple-identity
+    disambiguation; §5.1 LET/FUN asymmetry normative; §2.1 / §10.11
+    `TASK` name-collision normative — `2bf9093`.
+  - `wlwl:std.agent` and `wlwl:std.ai` module docstrings updated with
+    a "与类型名 TASK 的同名问题" section — `d1239e7`.
+
+### Marked RESERVED (no trigger path; documentation only)
+
+- **E0055** "CHANNEL_RECV after close native code": signal
+  surfaces as `ERR(kind="ChannelClosed")` dict payload (§8.1 /
+  §17.2), not as native code. `e0055_channel_recv_after_close_does_not_raise_native_code`
+  test gates future regressions — `1b150db` + D8-003.
+- **E0057** "cross-task immutable cell native code": same condition
+  triggers `E0024` (unified immutable-cell code, §17.4).
+  `e0057_immutable_cell_set_raises_e0024_not_e0057` gates it — same
+  commit / deviation.
+
+### Added (consistency tests)
+
+- `pop_registry_entry_matches_dispatch` (D8-001 regression) — `f8a5908`
+- 4 parser literal-subscript round-trip tests
+  (`parser_array_literal_subscript_roundtrip`,
+  `parser_dict_literal_subscript_roundtrip`,
+  `parser_mixed_literal_subscript_chain`,
+  `parser_nested_literal_subscript_in_array`) — `2bd11b3`
+- 4 eval literal-subscript end-to-end tests
+  (`eval_array_literal_subscript`, `eval_dict_literal_subscript`,
+  `eval_chained_literal_subscript`,
+  `eval_literal_subscript_with_set_sugar`) — `2bd11b3`
+- 4 parser unary-minus round-trip tests
+  (`unary_minus_integer_literal_desugars`,
+  `minus_call_with_paren_is_not_sugar`,
+  `unary_minus_variable_desugars`,
+  `minus_call_three_args_is_not_sugar`) — `9c8bc08`
+- `eval_unary_minus_integer_min_throws_e0034_via_desugar` (locks
+  full sugar path → `E0034`) — `9c8bc08`
+- `eval_negative_literal_minus_one` (`-1 → -1`, `--1 → 1`,
+  `LET(x, 7); -x → -7`) — `061b0fd`
+- `appendix_g_anchors_match_v07_section_numbers` (locks §-anchor
+  whitelist in `docs/appendix_G.md`) — `061b0fd`
+- `e0055_channel_recv_after_close_does_not_raise_native_code`
+- `e0057_immutable_cell_set_raises_e0024_not_e0057`
+
+`cargo test --workspace`: ~1366 tests passing, 0 FAILED.
+
+### Known limits (unchanged from v0.7)
+
+Documented in spec §17.7:
+
+- Single-thread cooperative scheduling.
+- `CHANNEL_SEND` / `CHANNEL_RECV` do not suspend (path B); use
+  `TRY_*` or pre-sized buffers.
+- No deadlock detector.
+- Nested `YIELD` inside `WHILE` / `FOR` / `IF` does not resume the
+  nested construct remainder (path B).
+- Captured-`LET` upgrade (legacy E-CloCap) still diverges from a strict
+  reading of §3.3.
+
+### Phase B summary
+
+Spec prose alignment batch (commit `2bf9093`) rolled 12 plan items
+into a single doc-only commit; see the commit message for the per-section
+delta. Spec §0.1 adds a "规范版本约定" paragraph establishing the
+`major.minor` notation; historical `[v0.7.0]` rows in §17.7 are
+preserved as version snapshots.
+
 ## [v0.7.0] — 2026-09-22
 
 First concurrency release. Spec: **wlwl-spec-v0.7** (additive over v0.6).

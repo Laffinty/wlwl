@@ -1,7 +1,12 @@
 # WLWL
 
-> **Spec: v0.7** (2026-09-22) — structured concurrency + channels,
-> additive over v0.6. Implementation tracks **wlwl-spec-v0.7**.
+> **Spec: v0.8 (in progress on `wip0.8` branch)** — clarifies v0.7 prose,
+> aligns `BUILTIN_REGISTRY` to v0.7 chapter numbers, allows literal
+> subscripts (`[1,2,3][0]`), demotes `YIELD` position limit from
+> normative rule to implementation path, marks `E0055` / `E0057` as
+> RESERVED. Implementation tracks **wlwl-spec-v0.7** with the v0.8
+> prose additions in-place; release flow renames to
+> `wlwl-spec-v0.8.md` and archives the v0.7 file to `docs/history/`.
 > Build from source — no prebuilt binaries are published yet; v1.0
 > will be the first release with signed artifacts.
 
@@ -118,13 +123,35 @@ Per-feature miniatures: `match.wll` / `destruct.wll` / `std_test.wll` /
 | Errors | up to `E0051` / OOP reserved | + `E0052`–`E0058` (`Concurrent`) |
 | ERR kinds | free-form dict `kind` | + `ChannelClosed`, `ChannelWouldBlock`, `Cancelled` |
 | Control flow | sync only | `SCOPE`/`SPAWN`/`AWAIT`/`YIELD` + cancel + channels |
+| Spec | v0.7 | **v0.8 wip0.8** — §12 保留形式 rewrite, 85 registry
+section fields aligned, `[1,2,3][0]` literals allowed,
+`NOT`/§17.1/`E0055`/`E0057` prose reconciled with implementation. |
 | Spec | v0.6 | **v0.7** §17 (v0.6 text unchanged — additive only) |
 
-v0.6 programs that do not use the new names are observationally
-unchanged. See [`CHANGELOG.md`](./CHANGELOG.md) and
+v0.7 programs that do not depend on the old §12 "保留形式" table are
+observationally unchanged in v0.8 except for literal subscripts
+(see `CHANGELOG.md` Compatibility commitment). v0.6 programs that
+do not use the new names are observationally unchanged. See
+[`CHANGELOG.md`](./CHANGELOG.md) and
 [`docs/standard/wlwl-spec-v0.7.md`](./docs/standard/wlwl-spec-v0.7.md)
 §17.7 for known limits (path-B `YIELD` placement, non-suspending
 `SEND`/`RECV`, single-thread scheduler).
+
+## What changed in v0.8 (wip0.8)
+
+Pure documentation + 1 syntax relaxation; no semantic rewrites. See
+`CHANGELOG.md [v0.8.0]` for the full delta.
+
+- **Spec §12 "保留形式" rewrite** (D8-005): historical stale list
+  retired; registry is the single source of truth.
+- **Literal subscripts allowed**: `[1,2,3][0]`, `["a":1]["a"]`, etc.
+  This is the only observable-behavior change.
+- **Spec / registry §-anchor alignment**: 85 `BuiltinSpec.section`
+  fields + appendix_G header updated to v0.7 chapter numbers.
+- **Doc reconciliations**: NOT transparent propagation reversed,
+  `YIELD` position limit demoted, `=` triple identity, `E0055` /
+  `E0057` marked RESERVED, AWAIT host diagnostic, SHIELD/SCOPE(ERR),
+  `%` float `E0030`, FORMAT mixed placeholder, etc.
 
 ## What changed in v0.6
 
@@ -209,7 +236,7 @@ cargo run --bin gen-appendix-g -- ../docs/appendix_G.md   # after registry edits
 
 | Doc | Path |
 |---|---|
-| Language spec (current) | [`docs/standard/wlwl-spec-v0.7.md`](./docs/standard/wlwl-spec-v0.7.md) |
+| Language spec (current) | [`docs/standard/wlwl-spec-v0.7.md`](./docs/standard/wlwl-spec-v0.7.md) (v0.8 wip0.8 branch accumulates in-place; rename at release) |
 | Builtin registry (Appendix G mirror) | [`docs/appendix_G.md`](./docs/appendix_G.md) |
 | ADRs | [`docs/adr/`](./docs/adr/) |
 | Next-iteration plan home | [`docs/plan/README.md`](./docs/plan/README.md) |
