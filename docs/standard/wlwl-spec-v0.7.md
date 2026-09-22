@@ -781,18 +781,37 @@ LET(handle, wlwl:std.ai.TASK("summarize", "long text..."));
 
 ## 12 保留形式
 
-以下名字已被词法或注册表层保留,但本规范**不**定义其语义。对它们的调用产生 `E0020`(或按注所指的特定诊断),程序不得依赖其存在:
+> **v0.8 起本章不再列出"保留形式"清单**。§4.3 / §10 / §17 涉及的所有具名构造,
+> 包括历史上曾被标为"保留"的 `AND` / `OR` / `CLASS` / `NEW` / `THIS` /
+> `MODULE` / `MODULE_REF` / `CALL(fn, args...)` / `ARRAY(items...)`,
+> 全部以**附录 G 注册表**为准 — 该表是单一真相源(single source of truth),
+> 由 `impl/crates/wlwl-eval/src/registry.rs::BUILTIN_REGISTRY` 与
+> 锁测试 `b11_registry_count_matches_spec_table`(总条目数等于 110;
+> 93 个 v0.6 entry + 17 个 v0.7 §17 并发 entry) +
+> `b11_registry_covers_resolve_builtin` / `b11_resolve_builtin_covers_registry`
+> / `b11_err_consumer_registry_consistent` / `b11_macro_fn_attribute_matches_dispatch`
+> 共同守住。
+>
+> 任何新引入的"保留"形式**必须**先在注册表中显式登记为
+> `DispatchStatus::Deferred`,并附触发路径(否则锁测试在 ≥ 88 条计数
+> 上不可被审计)。`registry::tests::appendix_g_anchors_match_v07_section_numbers`
+> 进一步约束附录 G 的章节锚必须落在 v0.7 spec 章节白名单内,杜绝
+> `§13.x` / `§15.x` / `§12.x` 等 v0.4/v0.6 时代过期编号重新出现。
 
-| 形式 | 现状 |
-|------|------|
-| `CLASS`、`NEW`、`THIS` | 面向对象构造保留;求值产生 `E0020` |
-| `MODULE(name?, body)` | 显式模块名声明保留;求值产生 `E0020` |
-| `MODULE_REF(path)` | 动态取模块字典保留 |
-| `CALL(fn, args...)` | 保留;对用户闭包调用产生 `E0030`(动态分发专用路径) |
-| `ARRAY(items...)` | 非空数组构造器保留;空数组用 `[]`,其余用字面量 |
-| `AND`、`OR` | 逻辑函数的旧名保留;调用产生 `E0020`,用 `&&`、`||`(4.3) |
+### 12.1 真正的保留集合(规范未定义语义,实现亦未注册)
 
-未来版本为这些形式赋予语义时**必须**整体修订本规范。
+| 形式 | 原因 | 引用 |
+|------|------|------|
+| (无) | v0.8 没有未注册且被词法保留的具名构造 | — |
+
+> **附注**:历史上 §12 表格里的所有条目(CLASS / NEW / THIS / MODULE /
+> MODULE_REF / CALL / ARRAY / AND / OR)在 v0.8 注册表里都已有正式
+> `BuiltinSpec` 条目(分别是 `ResolvedBuiltin`、`LexerMacro` 或
+> `ResolvedCompat`),由上述锁测试覆盖。`AND` / `OR` 实际是 `LexerMacro`
+> 短路宏而非保留别名 — 旧"调用产生 E0020"叙述不成立。
+
+**未来扩展**:若 §13–§16 模块系统、OOP、原生模块边界等引入新的保留形式,
+应在本章显式列出并写明触发诊断。**不得**借助注册表之外的隐式保留。
 
 
 ---
