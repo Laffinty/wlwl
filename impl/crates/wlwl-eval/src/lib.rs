@@ -10562,6 +10562,96 @@ mod tests {
         assert_eq!(v, Value::Boolean(true));
     }
 
+    // ─── v0.8 §2.6 / D8-003: E0055 / E0057 are RESERVED, no trigger ───
+    //
+    // E0055 was reserved for "CHANNEL_RECV after close raises native code";
+    // E0057 was reserved for "cross-task shared immutable cell raises native
+    // code". v0.7 / v0.8 carry these signals as **values / other codes**:
+    //
+    //   E0055 path: CHANNEL_RECV after close returns a structured
+    //               Value::Err(Dict{kind: "ChannelClosed", ...}) payload,
+    //               not WlwlError(E0055).
+    //   E0057 path: cross-task immutable-cell mutation raises the unified
+    //               WlwlError(E0024) (immutable-cell error), not E0057.
+    //
+    // Plan §2.6 places the lock test in `wlwl-error/tests/`, but
+    // wlwl-error has no dev-dep on wlwl-eval/wlwl-parser — to actually
+    // exercise the trigger paths we need the eval crate. Test lives
+    // here, adjacent to the D-C channel tests, with a deviation note.
+    #[test]
+    fn e0055_channel_recv_after_close_does_not_raise_native_code() {
+        // Drive the E0055 trigger path: CHANNEL_NEW -> CHANNEL_CLOSE ->
+        // CHANNEL_TRY_RECV. The returned value must be Value::Err(kind=
+        // "ChannelClosed") payload, NOT a WlwlError(E0055).
+        //
+        // Note: CHANNEL_RECV (blocking) on closed-empty goes through
+        // v0.7.0 path B (WouldBlock ERR) per existing D-C tests; using
+        // TRY_RECV here is the canonical way to surface the structured
+        // ChannelClosed payload without triggering E0102 top-level
+        // escape. If CHANNEL_RECV is later upgraded to mid-body suspend
+        // (v0.7.1), this test can switch back.
+        let src = r#"
+            LET(ch, CHANNEL_NEW(0));
+            CHANNEL_CLOSE(ch);
+            LET(v, CHANNEL_TRY_RECV(ch));
+            IS_ERR(v)
+        "#;
+        let is_err = run(src).expect(
+            "CHANNEL_TRY_RECV after CLOSE must return a Value::Err \
+             payload; if `run` returns Err here, WlwlError(E0055) leaked",
+        );
+        assert_eq!(
+            is_err,
+            Value::Boolean(true),
+            "CHANNEL_TRY_RECV after CLOSE must surface as Value::Err \
+             (not NULL, not a value); E0055 must NOT trigger"
+        );
+        // Deeper check: inspect the payload kind via a separate run
+        // so we lock the structured ChannelClosed dict shape.
+        let payload_kind_src = r#"
+            LET(ch, CHANNEL_NEW(0));
+            CHANNEL_CLOSE(ch);
+            LET(v, CHANNEL_TRY_RECV(ch));
+            AT_K(ERR_PAYLOAD(v), "kind", "?")
+        "#;
+        let kind = run(payload_kind_src).expect("AT_K on ERR_PAYLOAD must succeed");
+        assert_eq!(
+            kind,
+            Value::String("ChannelClosed".to_string()),
+            "channel close signal must surface as ERR(kind=ChannelClosed); \
+             E0055 must NOT trigger"
+        );
+    }
+
+    #[test]
+    fn e0057_immutable_cell_set_raises_e0024_not_e0057() {
+        // Drive the E0057 trigger path: SET on an immutable LET cell
+        // (no LET MUT). The unified immutable-cell code is E0024; the
+        // reserved E0057 (originally for "cross-task shared cell")
+        // must NOT trigger in v0.7/v0.8.
+        //
+        // We use a single-task form for the test because:
+        //   1. The runtime collapses both single-task and cross-task
+        //      immutable-cell mutation to the same E0024 site (the
+        //      cross-task share check itself was never wired).
+        //   2. E0057 has no trigger code path regardless of single
+        //      vs cross task — the assertion is "no E0057 surfaces".
+        let src = "LET(y, 0); SET(y, 1);";
+        let err = run(src).expect_err(
+            "immutable-cell mutation must raise WlwlError; the code \
+             must be E0024, NOT E0057",
+        );
+        assert_eq!(
+            err.diagnostic().code,
+            ErrorCode::E0024,
+            "immutable-cell mutation must surface as E0024; E0057 must \
+             NOT trigger. Got: {:?}",
+            err.diagnostic().code,
+        );
+        // Belt-and-suspenders: explicitly NOT E0057.
+        assert_ne!(err.diagnostic().code, ErrorCode::E0057);
+    }
+
     // ─── Phase D-D: leak detector ────────────────────────────────
 
     /// D-D: a channel that goes out of scope (SCOPE block returns)

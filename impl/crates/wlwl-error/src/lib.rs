@@ -68,16 +68,19 @@ pub enum ErrorCode {
     //   E0052  SCOPE(fn) called with non-function value (Phase C)
     //   E0053  TASK handle invalid (out of generation) (Phase C/F)
     //   E0054  CHANNEL_SEND on closed channel (Phase D)
-    //   E0055  CHANNEL_RECV / TRY_RECV after all senders closed -> ERR(ChannelClosed) (Phase D)
+    //   E0055  reserved (was: CHANNEL_RECV / TRY_RECV after close). v0.7/v0.8
+    //          no trigger path — closure signal carried by ERR(kind="ChannelClosed")
+    //          payload per spec §8.1, not by a native error code.
     //   E0056  SPAWN arity mismatch (Phase C)
-    //   E0057  cross-task shared cell but cell immutable (Phase C7)
+    //   E0057  reserved (was: cross-task shared cell but cell immutable). v0.7/v0.8
+    //          no trigger path — same condition raises E0024 (immutable-cell mutation).
     //   E0058  top-level SPAWN outside any active SCOPE (Phase C1)
     E0052, // SCOPE(fn): fn is not a function value
     E0053, // TASK handle invalid (stale generation / never spawned)
     E0054, // CHANNEL_SEND on closed channel
-    E0055, // CHANNEL_RECV after close (returns ERR kind="ChannelClosed")
+    E0055, // RESERVED — v0.7/v0.8 无触发路径;见 deviation D8-003
     E0056, // SPAWN arity mismatch
-    E0057, // cross-task cell share but cell immutable (E0024 reuse, eval'd)
+    E0057, // RESERVED — v0.7/v0.8 无触发路径;见 deviation D8-003
     E0058, // top-level SPAWN without an active SCOPE
     E0060, // IO error (generic)
     E0061, // file not found

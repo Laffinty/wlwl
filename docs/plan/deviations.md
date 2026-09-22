@@ -164,6 +164,59 @@ eval(4 端到端):
 
 ---
 
+## D8-003 · E0055 / E0057 错误码预留(v0.7 / v0.8 无触发路径)
+
+- **状态**:已修复(commit 待补)
+- **发现**:v0.8 §2.6 实施时(2026-09-23)
+- **影响范围**:
+  - `impl/crates/wlwl-error/src/lib.rs` `ErrorCode` enum 注释行(头部 doc + 单行注释)
+  - `impl/crates/wlwl-eval/src/lib.rs::tests`(新增 2 个锁测试)
+
+### 现象
+v0.7 注册表里 `ErrorCode` enum 包含 `E0055` 和 `E0057` 两个码,但**生产代码无任何触发路径**:
+
+- **E0055**:原意"CHANNEL_RECV / TRY_RECV 在通道关闭后产生原生错误码"。
+  实际路径(channel.rs D-C):RECV 关闭后返回结构化 `Value::Err(Dict{kind: "ChannelClosed", ...})`
+  字典载荷,**不是** WlwlError(E0055)。
+- **E0057**:原意"跨任务共享单元格但单元格不可变 → 原生错误码"。
+  实际路径:`SET` 对不可变单元格抛 `WlwlError(E0024)`(immutable-cell 通用码),
+  没有专门的跨任务检查路径,因此 E0057 永不被发射。
+
+两个码都是 v0.4/v0.5 时代预留,v0.6/v0.7 重构时实现路径绕开了它们,但 enum 保留 ——
+读者误以为"还存在未文档化行为"。
+
+### 根本原因
+v0.6 §8.x 重构 ERR 处理时,把"通道关闭"信号从 native code 改为 dict 载荷(更易跨任务边界
+保留 kind 字段),把"不可变单元格"统一为 E0024。但 enum 的 `E0055` / `E0057` 残影没清理 —
+可能是"将来切换至原生码"的占位,也可能是疏忽。Plan §2.6 显式标"v0.7 / v0.8 无触发路径"。
+
+### 处置(v0.8 修复)
+- `wlwl-error/src/lib.rs` 头部 master 注释行 + 单行 enum 注释都改为 "RESERVED":
+  ```
+  E0055, // RESERVED — v0.7/v0.8 无触发路径;见 deviation D8-003
+  E0057, // RESERVED — v0.7/v0.8 无触发路径;见 deviation D8-003
+  ```
+  + 引用 §8.1 ERR(kind="ChannelClosed") 载荷路径与 E0024 统一路径。
+
+### 兼容性影响
+- **零行为影响**:只是文档元数据,E0055 / E0057 本来就没触发过。
+- 不改 dev path,不删 enum(怕外部 crate 引用)。
+
+### 回归锁测试(新增 2 项)
+Plan §2.6 写 `wlwl-error/tests/` 加;实际落地在 `wlwl-eval/src/lib.rs::tests` —
+因为 wlwl-error 没有 wlwl-eval dev-dep,需要 eval 才能真跑触发路径:
+- `e0055_channel_recv_after_close_does_not_raise_native_code`:
+  CHANNEL_NEW → CLOSE → TRY_RECV → 断言 `Value::Err(payload)` 且 `AT_K(ERR_PAYLOAD(v), "kind", "?") == "ChannelClosed"`,
+  NOT WlwlError(E0055)。
+- `e0057_immutable_cell_set_raises_e0024_not_e0057`:
+  `LET(y, 0); SET(y, 1);` → 断言 WlwlError.code == E0024, NOT E0057。
+  (单 task 形式 — runtime 把单/跨任务不可变单元格 mutation 都坍缩到 E0024,
+  E0057 没有专属路径,assert "无 E0055/E0057 出现" 即可锁住意图。)
+
+`cargo test --workspace` 全绿;eval 746 passed(原 744 + 2 新)。
+
+---
+
 ## 模板(后续登记用)
 
 ```
