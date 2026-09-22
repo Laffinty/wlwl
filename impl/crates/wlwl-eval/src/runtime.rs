@@ -36,11 +36,14 @@ pub struct TaskHandle {
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 pub struct ScopeId(pub usize);
 
-/// Channel handle placeholder (plan §5.3 + Phase D). At B1 the
-/// channel module does not exist; this type exists so [`YieldReason`]
-/// can mention it without a forward-declaration loop.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
-pub struct RcHandle(pub usize);
+/// Identifies a channel slot within a single [`Scheduler`].
+///
+/// Re-exported alias to the full [`crate::channel::ChannelId`] type;
+/// same migration rationale as [`TaskEntry`]. D-A unified this
+/// with the proper `ChannelId`; the previous `RcHandle(pub usize)`
+/// placeholder was kept around so D-A could land without churning
+/// every call site in the same commit.
+pub type RcHandle = crate::channel::ChannelId;
 
 /// Task lifecycle state (plan §5.1.1).
 ///
@@ -195,6 +198,14 @@ pub struct Scheduler {
     /// Innermost active scope (B5b). SPAWN registers children here;
     /// SCOPE pushes/pops. Root scope id 0 always exists.
     pub current_scope: Option<ScopeId>,
+    /// [v0.7 Phase D-A] Channel slots, one per `CHANNEL_NEW(buf)`.
+    /// Empty at construction; slots are added by `CHANNEL_NEW` (D-B)
+    /// and force-closed / bumped-generation by the leak detector (D-D).
+    pub channels: Vec<crate::channel::Channel>,
+    /// [v0.7 Phase D-A] Monotonic counter used to mint generation
+    /// values for channel handles. Bumped by `CHANNEL_NEW` on
+    /// allocation and again on scope-exit force-close (D-D).
+    pub next_channel_generation: u64,
 }
 
 impl Default for Scheduler {
@@ -212,6 +223,8 @@ impl Scheduler {
             run_queue: VecDeque::new(),
             next_generation: 0,
             current_scope: None,
+            channels: Vec::new(),
+            next_channel_generation: 0,
         };
         s.scopes.push(Scope::new(ScopeId(0), None));
         s.current_scope = Some(ScopeId(0));

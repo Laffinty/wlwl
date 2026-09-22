@@ -169,6 +169,10 @@ pub(crate) fn value_kind(v: &Value) -> &'static str {
         // the message reads naturally next to `SPAWN(...)` and
         // `AWAIT(...)` rather than "RESULT ok" or similar.
         Value::TaskHandle(_) => "task handle",
+        // [v0.7 Phase D-A] same shape for channel handles; the
+        // vocabulary ("channel handle") matches the user-facing
+        // names CHANNEL_NEW / CHANNEL_SEND / CHANNEL_RECV etc.
+        Value::ChannelHandle(_) => "channel handle",
     }
 }
 

@@ -73,6 +73,14 @@ pub enum Value {
     /// execution); B5b will let back-pointers capture still-running
     /// tasks and AWAIT will actually wait on them.
     TaskHandle(crate::runtime::TaskHandle),
+    /// [v0.7 Phase D-A] Handle returned to user code by
+    /// `CHANNEL_NEW(buf)`. SEND / RECV / CLOSE / TRY_SEND / TRY_RECV
+    /// / LEN / CAP all take this value. Generation-tracked: a slot
+    /// recycled by the D-D leak detector bumps the generation so a
+    /// stale handle fails E0053-style validation rather than
+    /// operating on a different channel than the one the user
+    /// originally opened.
+    ChannelHandle(crate::channel::ChannelHandle),
 }
 
 /// Tag for native-function implementations. A `Value::NativeFn`
@@ -142,6 +150,13 @@ impl Value {
             // (the v0.6 §3.x trait 'use-after-cancel' analogue).
             Value::TaskHandle(h) => format!(
                 "<task handle id={} gen={}>",
+                h.id.0, h.generation
+            ),
+            // [v0.7 Phase D-A] Channel handles display the same way
+            // as task handles for symmetry; the runtime can
+            // distinguish via type_name at type-check time.
+            Value::ChannelHandle(h) => format!(
+                "<channel handle id={} gen={}>",
                 h.id.0, h.generation
             ),
         }
@@ -1017,6 +1032,17 @@ fn value_to_std_value(v: &Value) -> Result<wlwl_std::StdValue, StdValueConvError
             return Err(StdValueConvError::Type {
                 expected: "data value at std boundary".into(),
                 got: "task handle".into(),
+            });
+        }
+        // [v0.7 Phase D-A] Channel handles likewise have no JSON
+        // analogue; reject them at the std boundary the same way as
+        // task handles. (D-B builtin wiring lands later in the same
+        // Phase D; at D-A the only path that produces one is the
+        // direct runtime API.)
+        Value::ChannelHandle(_) => {
+            return Err(StdValueConvError::Type {
+                expected: "data value at std boundary".into(),
+                got: "channel handle".into(),
             });
         }
     })
@@ -3565,6 +3591,8 @@ fn type_name(v: &Value) -> &'static str {
         // from `function` so a misuse like `+`(handle, 1) gives a
         // readable diagnostic.
         Value::TaskHandle(_) => "task-handle",
+        // [v0.7 Phase D-A] user-facing type name for channel handles.
+        Value::ChannelHandle(_) => "channel-handle",
     }
 }
 
@@ -3594,6 +3622,11 @@ fn value_type_name(v: &Value) -> &'static str {
         // [v0.7 Phase C2] distinct user-visible type for SPAWN
         // handles (parallel to function / result).
         Value::TaskHandle(_) => "TASK",
+        // [v0.7 Phase D-A] distinct user-visible type for channel
+        // handles, parallel to TASK. Spec doesn't fix the name; we
+        // use CHANNEL so a `TYPE(ch)` prints a self-describing
+        // label without colliding with TASK.
+        Value::ChannelHandle(_) => "CHANNEL",
     }
 }
 
@@ -4116,6 +4149,9 @@ fn value_to_json_value(v: &Value) -> Option<serde_json::Value> {
         // so the conservative answer is "skip" (return `None` from
         // the outer `?`), matching the closure/native-fn branches.
         Value::TaskHandle(_) => return None,
+        // [v0.7 Phase D-A] ChannelHandle likewise has no JSON
+        // analogue; skip it the same way.
+        Value::ChannelHandle(_) => return None,
         Value::Closure { .. } | Value::NativeFn { .. } => return None,
     })
 }
@@ -4208,6 +4244,13 @@ pub mod test;
 /// independently, allowing real mid-body suspension. Behaviour wires
 /// up in commit B5a-3-B (lib.rs::run_one_task + builtin_yield).
 pub mod yield_split;
+
+/// [v0.7 Phase D] Channel data structure for inter-task
+/// communication. Phase D-A lands the type only; builtins land in
+/// D-B, scheduler integration (mid-body suspend on full/empty buf)
+/// lands in D-C, leak detector lands in D-D. See `channel.rs` for
+/// the full module-level rationale.
+pub mod channel;
 
 pub struct Evaluator {
     env: Env,
