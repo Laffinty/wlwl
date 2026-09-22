@@ -1438,7 +1438,7 @@ pub fn generate_appendix_g_md() -> String {
         "> 修改流程:改注册表 -> 跑本函数重写本文件 -> 跑 `cargo test` 验证 lock test。\n\n",
     );
     out.push_str(
-        "> 对照规范:`docs/standard/wlwl-spec-v0.7.md` 附录 G (规范性)。\n\n",
+        "> 对照规范:`docs/standard/wlwl-spec-v0.8.md` 附录 G (规范性)。\n\n",
     );
     let n_resolved = BUILTIN_REGISTRY
         .iter()
