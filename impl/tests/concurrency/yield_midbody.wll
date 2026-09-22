@@ -1,0 +1,46 @@
+// conformance/yield_midbody.wll - section §6.2 / Phase B5a-3 path B
+// Demonstrates: a task body that contains YIELD() at a legal Block
+// position (direct child of the FUN body's multi-statement Block)
+// actually suspends mid-execution, lets the scheduler run other
+// tasks, and resumes from the next segment.
+//
+// Expected stdout (4 lines):
+//   before-yield
+//   after-resume
+//   42
+//   done
+//
+// Order is intentional: the SCOPE body prints "before-yield" before
+// the inner YIELD happens, and "after-resume" only after AWAIT
+// completes (which only completes once the inner task's YIELD +
+// post-yield code have run).
+
+SCOPE(FUN(() ,
+    LET MUT(global_s, 0);
+
+    // Task A: yields once, then mutates the shared cell.
+    LET(h, SPAWN(FUN(() ,
+        SET(global_s, 10);
+        YIELD();
+        SET(global_s, 42);
+        42
+    )));
+
+    // Task B: depends on Task A's post-yield mutation. If YIELD were
+    // a no-op (the v0.6 workaround), Task B would race Task A and
+    // the output would be non-deterministic. With mid-body suspend,
+    // Task B can be scheduled between A's pre-yield and post-yield
+    // segments.
+    LET(h2, SPAWN(FUN(() ,
+        PRINT("before-yield");
+        AWAIT(h);
+        PRINT("after-resume");
+        PRINT(global_s)
+    )));
+
+    // Wait for Task B. By the time SCOPE returns, both tasks have
+    // finished and the scheduler has honoured the mid-body YIELD
+    // checkpoint.
+    AWAIT(h2);
+    PRINT("done")
+))

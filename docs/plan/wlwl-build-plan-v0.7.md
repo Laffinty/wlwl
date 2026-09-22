@@ -666,7 +666,13 @@ Phase G5 把基线写入 docs/plan/deviations.md 的 P7-G5-001 条目。
 - B4 `task.rs` Task + Scope 数据结构 — commit `5634331`
 - B5a-1 `StepResult` + `step_once` wrapper(零行为变化) — commit `5ff79e5`
 - B5a-2 选 1 builtin 改走 step_once — pending(合并到 B5a-3)
-- B5a-3 递归 eval → 显式 CPS — 部分(step_call + Signal::Yield 已通;完整 CPS 仍待)
+- B5a-3 递归 eval → 显式 CPS — ✅ **完成(路径 B 切片,2026-09-22)**
+  - slice 1: `Signal::Yield` + internal yield marker — commit `836a5ce`
+  - slice 2: 1-arg yield marker for arg-eval propagation — commit `90ace1c`
+  - slice 3 step_call + dispatch_call 提取 — commit `8b65575`
+  - 路径 B-A:`yield_split` 模块 + Task `segments`/`current_segment` + SPAWN 时静态切段,不支持位置(NestedYield)E0014 — commit `4324fe2`
+  - 路径 B-B:`builtin_yield` 移除 NULL 穿透绕道(P7-B5a3-002),`run_task_segments` + `Env::take_scopes/replace_scopes`,mid-body 真正挂起 — commit `beec77d`
+  - 路径 B-C:fixture `impl/tests/concurrency/yield_midbody.wll` + driver `wlwl-cli/tests/concurrency.rs`;deviations P7-B5a3-001/002
 - B5b Scheduler 接入 / current_task 真实参与运行时: ✅ — run-queue + run_one_task + scope-exit await;SPAWN 惰性入队
 - B6 单 task benchmark baseline(5 workload 在噪声内) — commit `ad0dd60`
 
@@ -674,7 +680,7 @@ Phase G5 把基线写入 docs/plan/deviations.md 的 P7-G5-001 条目。
 - C1 SCOPE(fn): ✅ — commit `e28de1d` 注册 + scope_depth retrofit 在 commit `cce3ce3`
 - C2 SPAWN(fn): ✅ — commit `cce3ce3`;后接 audit-fix 链 `1248978`(P7-C2-001 arity E0056 修正) → `d46bab3`(deviation commit hash 同步) → `d53e09e`(runtime API 收敛:删 alloc_task + doc 修正)
 - C3 AWAIT(handle): ✅ — 值/user-ERR/host-diag re-raise/E0053 契约;SPAWN 失败路径改为存 handle(P7-C2-002 关闭)
-- C4 YIELD(): ✅ — Signal::Yield(Explicit);step_once→Yield,顶层 eval→E0014;arity E0022
+- C4 YIELD(): ✅ — **B5a-3-B 后真正 mid-body suspend**(commit `beec77d`);pre-B5a-3 是 NULL 穿透绕道(P7-B5a3-002)
 - C5 TASK_CURRENT / TASK_IS_CANCELLED: ✅ — 依赖 B5b current_task;TASK_CURRENT 任务外 E0053;TASK_IS_CANCELLED 任务外 FALSE
 - C7 跨 task cell 升级回归(plan §5.5): ✅ — E-CloCap/LET/LET MUT/late-bound E0024;E0057 评估=复用 E0024
 - C8 跨 task 闭包捕获回归(plan §5.5): ✅ — 计数器/setter/getter/返回闭包/递归闭包共享 cell
@@ -696,18 +702,19 @@ Phase G5 把基线写入 docs/plan/deviations.md 的 P7-G5-001 条目。
 
 ---
 
-## 附录 D-1:下次会话交接摘要(2026-09-21 收工)
+## 附录 D-1:下次会话交接摘要(2026-09-22 收工)
 
 | 项 | 状态 |
 |----|------|
-| 门禁 | `cargo test --workspace` 全绿(eval **645**,fidelity 1 pass);`cargo clippy --workspace --all-targets -D warnings` **0 error** |
-| Phase C | **全部完成**(C1 SCOPE / C2 SPAWN / C3 AWAIT / C4 YIELD / C5 TASK_* / C7 cell / C8 closure) |
+| 门禁 | `cargo test --workspace` 全绿(eval **659**,fidelity 1 pass;新增 wlwl-cli concurrency 2 pass);`cargo clippy --workspace --all-targets -D warnings` **0 error** |
+| Phase B | **全部完成**(B0-B6,B5a-3 走路径 B 落地,见 commit 链 `4324fe2` → `beec77d`) |
+| Phase C | **全部完成**(C1 SCOPE / C2 SPAWN / C3 AWAIT / C4 YIELD(B5a-3-B 后真 mid-body) / C5 TASK_* / C7 cell / C8 closure) |
 | B5b | 调度循环已接:SPAWN **惰性入队**,AWAIT 驱动 `scheduler_run_until_done`,SCOPE 退出 await children |
-| B5a-3 | **部分**:`step_call` + `Signal::Yield` 通;完整 CPS(midi-body 挂起恢复)仍待 |
-| 已知限制 | 任务内 `YIELD()` = Transient 检查点(返回 NULL 不中断);`Signal::Yield` 仅在任务外/step_once 路径。mid-body suspend 需 B5a-3 CPS |
-| 偏差 | P7-B0-001 / P7-C2-001 / P7-C2-002(已修复)已入 `deviations.md`;E0057 评估=复用 E0024 |
-| **建议起点** | **Phase D Channel**(D1-D8)或 **Phase E 错误传播**(E4 为阻塞项:ERR consumer registry 跨 task 全量回归,失败必须在 E 内修完) |
-| 参考 | C3/C4/C5/B5b 实现集中在 `wlwl-eval/src/lib.rs`(builtin_* + run_one_task);调度器类型在 `runtime.rs` |
+| B5a-3 路径 B | ✅ 完成。SPAWN 时 `split_body_for_yield` 静态切段;`run_task_segments` 一次跑一段;`running_env` 跨段保留 LET 绑定;conditional yield(IF 内 YIELD 没走)正确跳过 |
+| 新增 fixture | `impl/tests/concurrency/yield_midbody.wll` + driver `wlwl-cli/tests/concurrency.rs` |
+| 偏差 | P7-B0-001 / P7-C2-001 / P7-C2-002 / **P7-B5a3-001 路径 B 选型** / **P7-B5a3-002 NULL 穿透绕道拆除** 已入 `deviations.md`;E0057 评估=复用 E0024 |
+| **建议起点** | **Phase D Channel**(D1-D8)或 **Phase E 错误传播**(E4 为阻塞项:ERR consumer registry 跨 task 全量回归,失败必须在 E 内修完)。B5a-3 路径 B 已具备 Phase D 的 mid-body suspend 基础,CHANNEL_SEND buf 满 / CHANNEL_RECV buf 空挂起可直接走 Signal::Yield 路径 |
+| 参考 | C3/C4/C5/B5b/B5a-3 实现集中在 `wlwl-eval/src/lib.rs`(builtin_* + run_one_task + run_task_segments);`yield_split.rs` 是切段纯函数;`task.rs` + `runtime.rs` 是数据/调度 |
 
 ---
 ## 附录 E:API 示例(验证 §5 语义)
