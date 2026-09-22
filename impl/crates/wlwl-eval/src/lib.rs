@@ -8189,6 +8189,238 @@ mod tests {
     }
 
     // ────────────────────────────────────────────────────────────
+    // [v0.7 Phase E1+E2] ERR consumer registry cross-task regression
+    //
+    // Plan §3 E4 (blocking item) — every consumer in spec §8.3 must
+    // behave identically whether the ERR value was produced in the
+    // current task or in a child task and crossed an AWAIT boundary.
+    // AWAIT hands the child's terminal `Value::Err` back as a value
+    // (no §8.2 propagation at the AWAIT call site); the surrounding
+    // consumer call must then do the §8.3 thing.
+    //
+    // Coverage matrix (consumer × child outcome):
+    //   BOOL      × ERR-child  → FALSE (truthiness of ERR is FALSE)
+    //   UNWRAP    × ERR-child  → PANIC E0100
+    //   ERR_PAYLOAD × ERR-child → payload value
+    //   PRINT_ERR × ERR-child  → propagates (§8.2 default for
+    //                             non-consumer builtins); ERR result
+    //                             + nothing printed to stderr
+    //   EXPECT_ERR × ERR-child → OK(payload) (via wlwl:std.test IMPORT)
+    //   IF (cond=ERR-child)    → routes to else branch (per §8.3 IF row)
+    //   ERR kind payload       → survives AWAIT intact (per §5.4.1
+    //                             "ERR payload 中的 kind 字段
+    //                             在跨 task 边界后保持原值")
+    //
+    // Negative cases (consumer × OK-child):
+    //   BOOL      × OK-child   → BOOL(value)
+    //   UNWRAP    × OK-child   → unwrapped inner value
+    //   ERR_PAYLOAD × OK-child → E0030
+    //
+    // Combined with the earlier `await_returns_user_err_as_value`
+    // (UNWRAP_OR) and `await_user_err_payload_survives` (IS_ERR)
+    // tests, this covers every spec §8.3 ERR consumer for cross-task
+    // propagation. The 8-fixture matrix in plan §6.0 row "ERR consumer
+    // 跨 task 回归" is fulfilled by these unit tests + the E-C
+    // concurrency fixtures.
+    // ────────────────────────────────────────────────────────────
+
+    #[test]
+    fn e1_bool_consumes_awaited_err() {
+        // BOOL is an ERR consumer (registry §8.3 + Appendix B.17).
+        // BOOL(ERR("boom")) returns the truthiness of the value per
+        // §2.2 — ERR does NOT match any of the falsy patterns in
+        // `is_truthy` (false / null / 0 / "" / [] / {}), so
+        // BOOL(ERR) = TRUE. §8.3 spells this out: "`BOOL(ERR(...))`
+        // 与 `BOOL(OK(0))` 等". The point of the test is that the
+        // ERR is consumed (no §8.2 transparent propagation), NOT the
+        // specific truthy bit.
+        let src = r#"SCOPE(FUN(() , LET(h, SPAWN(FUN(() , ERR("boom")))); BOOL(AWAIT(h))));"#;
+        let v = run(src).expect("BOOL(ERR) across AWAIT should be consumed");
+        assert_eq!(
+            v,
+            Value::Boolean(true),
+            "BOOL(ERR) per §8.3 returns the truthiness (ERR is not in the falsy set)"
+        );
+    }
+
+    #[test]
+    fn e1_unwrap_panics_on_awaited_err_with_e0100() {
+        // UNWRAP is an ERR consumer: on ERR it PANICs (E0100), not
+        // propagates. The PANIC aborts the current task; we surface
+        // it via `run` returning Err.
+        let src = r#"SCOPE(FUN(() , LET(h, SPAWN(FUN(() , ERR("boom")))); UNWRAP(AWAIT(h))));"#;
+        let err = run(src).expect_err("UNWRAP on ERR should PANIC, not return a value");
+        assert_eq!(
+            err.diagnostic().code,
+            ErrorCode::E0100,
+            "expected E0100 PANIC from UNWRAP-of-ERR, got {:?}",
+            err.diagnostic().code,
+        );
+    }
+
+    #[test]
+    fn e1_err_payload_extracts_awaited_err_payload() {
+        // ERR_PAYLOAD is an ERR consumer: extracts the inner payload.
+        // The child's ERR carries a Dict payload; ERR_PAYLOAD must
+        // hand it back unchanged.
+        let src = r#"SCOPE(FUN(() , LET(h, SPAWN(FUN(() , ERR(["kind": "boom"])))); ERR_PAYLOAD(AWAIT(h))));"#;
+        let v = run(src).expect("ERR_PAYLOAD on ERR should return the payload");
+        assert_eq!(
+            v,
+            Value::Dict(vec![(
+                Value::String("kind".into()),
+                Value::String("boom".into()),
+            )]),
+            "ERR_PAYLOAD must hand back the inner dict payload intact"
+        );
+    }
+
+    #[test]
+    fn e1_print_err_propagates_awaited_err_via_8_2() {
+        // PRINT_ERR is NOT an ERR consumer (registry err_consumer =
+        // No). Per §8.2, the call must NOT execute the body and the
+        // ERR must be the result. Nothing should be written to
+        // stderr; the SCOPE's terminal value is the ERR.
+        //
+        // We can't easily capture stderr here, but the result value
+        // is sufficient: an IS_ERR check on the SCOPE's return value
+        // proves the ERR was propagated, not consumed.
+        let src = r#"SCOPE(FUN(() , LET(h, SPAWN(FUN(() , ERR("boom")))); IS_ERR(PRINT_ERR(AWAIT(h)))));"#;
+        let v = run(src).expect("PRINT_ERR(ERR) propagation check");
+        assert_eq!(
+            v,
+            Value::Boolean(true),
+            "PRINT_ERR is not an ERR consumer — the ERR must propagate via §8.2"
+        );
+    }
+
+    #[test]
+    fn e1_if_with_awaited_err_condition_routes_to_else() {
+        // §8.3 IF row — IF is an ERR consumer at the condition
+        // position. ERR condition is treated as "false", routing to
+        // the else branch. The child's ERR must cross the AWAIT
+        // boundary first.
+        let src = r#"SCOPE(FUN(() , LET(h, SPAWN(FUN(() , ERR("boom")))); IF(AWAIT(h), "then", "else")));"#;
+        let v = run(src).expect("IF(ERR-cond) should evaluate else branch");
+        assert_eq!(
+            v,
+            Value::String("else".into()),
+            "IF(ERR cond) per §8.3 must route to else branch"
+        );
+    }
+
+    #[test]
+    fn e1_try_in_fn_body_returns_awaited_err() {
+        // TRY is an ERR consumer — on ERR it issues an early RETURN
+        // with the ERR value. The TRY site is inside a fn body so the
+        // RETURN has somewhere to land (the SCOPE then receives the
+        // ERR as fn result; the outer SCOPE wraps it).
+        //
+        // Plan §5.4: child's ERR at AWAIT becomes a Value::Err that
+        // flows through TRY. The fn body's RETURN(ERR) is then
+        // observable at the SCOPE boundary. The SCOPE's fn returns
+        // ERR("boom") because TRY on ERR triggers early RETURN(ERR);
+        // the outer SCOPE wraps it and IS_ERR observes it.
+        let full = r#"
+            SCOPE(FUN(() ,
+                LET(out,
+                    SCOPE(FUN(() ,
+                        LET(h, SPAWN(FUN(() , ERR("boom"))));
+                        LET(v, AWAIT(h));
+                        TRY(v)
+                    ))
+                );
+                IS_ERR(out)
+            ))
+        "#;
+        let v = run(full).expect("TRY(ERR from child) should early-return the ERR");
+        assert_eq!(
+            v,
+            Value::Boolean(true),
+            "TRY must issue early-RETURN with the ERR, observable at the outer SCOPE"
+        );
+    }
+
+    #[test]
+    fn e1_err_kind_payload_survives_task_boundary() {
+        // Plan §5.4.1: ERR payload 中的 kind 字段在跨 task 边界后
+        // 保持原值. Use the Phase D close → RECV path, which produces
+        // ERR(kind="ChannelClosed", channel=<repr>); AWAIT then
+        // ERR_PAYLOAD must hand back the same Dict, and AT_K on
+        // "kind" must return the original string.
+        //
+        // Concretely: a single-task channel is created, closed, then
+        // CHANNEL_RECV in the child returns the closed-ERR; AWAIT in
+        // the parent returns the ERR value; ERR_PAYLOAD returns the
+        // Dict; AT_K(dict, "kind", "?") returns "ChannelClosed".
+        let src = r#"
+            SCOPE(FUN(() ,
+                LET(ch, CHANNEL_NEW(0));
+                CHANNEL_CLOSE(ch);
+                LET(h, SPAWN(FUN(() , CHANNEL_RECV(ch))));
+                LET(payload, ERR_PAYLOAD(AWAIT(h)));
+                AT_K(payload, "kind", "?")
+            ));
+        "#;
+        let v = run(src).expect("ERR kind should survive AWAIT intact");
+        assert_eq!(
+            v,
+            Value::String("ChannelClosed".into()),
+            "kind field must be preserved verbatim across task boundary"
+        );
+    }
+
+    #[test]
+    fn e1_expect_err_returns_ok_payload_from_awaited_err() {
+        // EXPECT_ERR lives in wlwl:std.test (per registry §15.9);
+        // cannot use `run` (no std module base). Must use `run_std`.
+        // On ERR input → OK(payload); on non-ERR → ERR(E0049). We
+        // exercise the ERR branch via AWAIT-from-child.
+        //
+        // First half: confirm IS_OK on the EXPECT_ERR result.
+        let v = run_std(
+            r#"
+            IMPORT("wlwl:std.test", ["EXPECT_ERR"]);
+            LET(out,
+                SCOPE(FUN(() ,
+                    LET(h, SPAWN(FUN(() , ERR("boom"))));
+                    EXPECT_ERR(AWAIT(h))
+                ))
+            );
+            IS_OK(out)
+        "#,
+        )
+        .expect("EXPECT_ERR(ERR from child) should return OK");
+        assert_eq!(
+            v,
+            Value::Boolean(true),
+            "EXPECT_ERR(ERR-from-child) must yield OK(payload)"
+        );
+        // Second half: drill into OK → inner ERR → ERR_PAYLOAD to
+        // confirm the original "boom" string is preserved. We do
+        // not let the inner ERR escape to top level (would be E0102);
+        // instead ERR_PAYLOAD consumes it and hands back "boom" as a
+        // plain STRING at the SCOPE boundary.
+        let v2 = run_std(
+            r#"
+            IMPORT("wlwl:std.test", ["EXPECT_ERR"]);
+            SCOPE(FUN(() ,
+                LET(h, SPAWN(FUN(() , ERR("boom"))));
+                LET(r, EXPECT_ERR(AWAIT(h)));
+                LET(inner, UNWRAP(r));
+                ERR_PAYLOAD(inner)
+            ))
+        "#,
+        )
+        .expect("ERR_PAYLOAD(OK-from-EXPECT_ERR) should yield the inner ERR payload");
+        assert_eq!(
+            v2,
+            Value::String("boom".into()),
+            "the OK-wrapped payload must preserve the original ERR value (extracted as payload)"
+        );
+    }
+
+    // ────────────────────────────────────────────────────────────
     // [v0.7 Phase C4] YIELD() builtin
     //
     // User-facing cooperative yield. Same Signal::Yield plumbing as

@@ -694,7 +694,10 @@ Phase G5 把基线写入 docs/plan/deviations.md 的 P7-G5-001 条目。
 - **D2/D3 mid-body suspend 实际未实现** — 见 deviation P7-D2-001(Signal::Yield 在 builtin 内部不能被路径 B 静态切段切到,改为返 `ChannelWouldBlock` ERR);D8 死锁检测同根,跟随搁置
 
 ### Phase E — 错误传播
-均待启动。**E4 为阻塞项**(ERR consumer registry 跨 task 全量回归,plan §3)。
+- E-A 单元测试落地:BOOL / UNWRAP / ERR_PAYLOAD / EXPECT_ERR / PRINT_ERR(负例)/ IF(条件位) / TRY + ERR kind 保真(`ChannelClosed` 跨 AWAIT 仍可读) — commit `Phase E-A` §3 计划 E4 阻塞项的"基础回归"8 测全套;spec 冻结 → registry v0.7 补登推迟到 H1(见 P7-E0-001)
+- E-B (计划):TASK_CANCEL / TASK_CANCEL_PARENT + SCOPE child-ERR 取消兄弟语义(plan F4 + E3 联合提交)
+- E-C (计划,阻塞项):ERR consumer registry 跨 task 全量回归 — 8 unit + 4 concurrency fixture + 8 snapshot
+- E-D (计划):IF(cond, then, else) 并发路径短路语义评估 + deviations.md
 
 ### Phase F — 取消作用域
 均待启动(F1-F7,含 SHIELD 至少 3 个 conformance fixture)。
@@ -711,14 +714,14 @@ Phase G5 把基线写入 docs/plan/deviations.md 的 P7-G5-001 条目。
 
 | 项 | 状态 |
 |----|------|
-| 门禁 | `cargo test --workspace` 全绿(eval **659**,fidelity 1 pass;新增 wlwl-cli concurrency 2 pass);`cargo clippy --workspace --all-targets -D warnings` **0 error** |
+| 门禁 | `cargo test --workspace` 全绿(eval **698**,fidelity 1 pass;wlwl-cli concurrency 2 pass);`cargo clippy --workspace --all-targets -D warnings` **0 error** |
 | Phase B | **全部完成**(B0-B6,B5a-3 走路径 B 落地,见 commit 链 `4324fe2` → `beec77d`) |
 | Phase C | **全部完成**(C1 SCOPE / C2 SPAWN / C3 AWAIT / C4 YIELD(B5a-3-B 后真 mid-body) / C5 TASK_* / C7 cell / C8 closure) |
 | B5b | 调度循环已接:SPAWN **惰性入队**,AWAIT 驱动 `scheduler_run_until_done`,SCOPE 退出 await children |
 | B5a-3 路径 B | ✅ 完成。SPAWN 时 `split_body_for_yield` 静态切段;`run_task_segments` 一次跑一段;`running_env` 跨段保留 LET 绑定;conditional yield(IF 内 YIELD 没走)正确跳过 |
 | 新增 fixture | `impl/tests/concurrency/yield_midbody.wll` + driver `wlwl-cli/tests/concurrency.rs` |
-| 偏差 | P7-B0-001 / P7-C2-001 / P7-C2-002 / **P7-B5a3-001 路径 B 选型** / **P7-B5a3-002 NULL 穿透绕道拆除** 已入 `deviations.md`;E0057 评估=复用 E0024 |
-| **建议起点** | **Phase D Channel**(D1-D8)或 **Phase E 错误传播**(E4 为阻塞项:ERR consumer registry 跨 task 全量回归,失败必须在 E 内修完)。B5a-3 路径 B 已具备 Phase D 的 mid-body suspend 基础,CHANNEL_SEND buf 满 / CHANNEL_RECV buf 空挂起可直接走 Signal::Yield 路径 |
+| 偏差 | P7-B0-001 / P7-C2-001 / P7-C2-002 / **P7-B5a3-001 路径 B 选型** / **P7-B5a3-002 NULL 穿透绕道拆除** / **P7-D2-001** / **P7-D8-001** / **P7-E0-001 registry 推迟到 H1** 已入 `deviations.md`;E0057 评估=复用 E0024 |
+| **建议起点** | **Phase E 错误传播**(E-B: TASK_CANCEL/TASK_CANCEL_PARENT + SCOPE child-ERR 取消兄弟;E-C: 阻塞项 ERR consumer 跨 task 全量回归 4 concurrency + 8 snapshot;E-D: IF 短路评估)。Phase D 已全部完成(D-A..D-E);E-A 已落地 8 个单元测试覆盖已注册 ERR 消费者 |
 | 参考 | C3/C4/C5/B5b/B5a-3 实现集中在 `wlwl-eval/src/lib.rs`(builtin_* + run_one_task + run_task_segments);`yield_split.rs` 是切段纯函数;`task.rs` + `runtime.rs` 是数据/调度 |
 
 ---
