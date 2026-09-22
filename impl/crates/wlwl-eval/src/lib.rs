@@ -3220,6 +3220,217 @@ fn builtin_task_is_cancelled(ev: &mut Evaluator, args: Vec<Value>) -> WlwlResult
     Ok(Outcome::normal(Value::Boolean(cancelled)))
 }
 
+// ──────────────────────────────────────────────────────────────────
+// [v0.7 Phase D-B] Channel builtins (metadata ops + close)
+//
+// D-B lands four ops that don't depend on the scheduler's
+// wait-queue machinery:
+//   * CHANNEL_NEW(buf)   — allocate a new channel slot, mint a
+//                           generation-tracked ChannelHandle, push
+//                           the channel onto `scheduler.channels`.
+//   * CHANNEL_CLOSE(ch)  — flip the sticky `closed` flag. Idempotent.
+//   * CHANNEL_LEN(ch)    — number of values currently buffered.
+//                           Returns 0 once receivers have drained.
+//   * CHANNEL_CAP(ch)    — configured buffer capacity; `0` for sync.
+//
+// The four send/recv variants (CHANNEL_SEND / CHANNEL_RECV /
+// CHANNEL_TRY_SEND / CHANNEL_TRY_RECV) land in D-C and depend on
+// the scheduler's wake_dependents integration; D-B keeps the surface
+// reviewable one step at a time.
+//
+// Error contract (plan §4.4 + §5.3):
+//   * E0022  arity mismatch (CHANNEL_NEW: !=1, the others: !=1).
+//   * E0031  CHANNEL_NEW arg is not a non-negative integer (negative
+//            integer or non-int input).
+//   * E0053  argument is not a `Value::ChannelHandle`, or the
+//            handle's generation doesn't match the live slot
+//            (stale handle — the channel was recycled by the D-D
+//            leak detector at scope exit).
+// ──────────────────────────────────────────────────────────────────
+
+/// Resolve a `Value::ChannelHandle` argument to a live channel slot.
+///
+/// Returns `Err(E0053)` if:
+///   * `arg` is not a `Value::ChannelHandle`;
+///   * the slot id is out of range;
+///   * the slot's generation doesn't match the handle (stale).
+///
+/// On success returns the slot index into `scheduler.channels`. The
+/// caller still needs to lock the scheduler via `&mut self.scheduler`
+/// to read/mutate the slot — the lifetime here is intentionally
+/// short so the caller can re-borrow self freely.
+fn resolve_channel_handle(
+    ev: &mut Evaluator,
+    arg: &Value,
+    diag_span: &wlwl_ast::Span,
+    op: &str,
+) -> WlwlResult<(crate::channel::ChannelHandle, usize)> {
+    let handle = match arg {
+        Value::ChannelHandle(h) => *h,
+        other => {
+            return Err(ev.diag(
+                ErrorCode::E0053,
+                format!(
+                    "{} expects a channel handle, got {}",
+                    op,
+                    type_name(other)
+                ),
+                diag_span.clone(),
+            ));
+        }
+    };
+    let ch = ev.scheduler.channels.get(handle.id.0);
+    match ch {
+        Some(c) if c.generation == handle.generation => Ok((handle, handle.id.0)),
+        _ => Err(ev.diag(
+            ErrorCode::E0053,
+            format!(
+                "{}: stale channel handle id={} gen={} (slot has been recycled by scope exit)",
+                op, handle.id.0, handle.generation
+            ),
+            diag_span.clone(),
+        )),
+    }
+}
+
+/// [v0.7 Phase D-B] `CHANNEL_NEW(buf)` — allocate a new channel.
+///
+/// `buf == 0` produces a synchronous channel (no buffering; SEND
+/// blocks until a receiver picks up). `buf > 0` produces a bounded
+/// async channel with that buffer capacity.
+///
+/// Returns a generation-tracked `Value::ChannelHandle`. The
+/// generation bumps whenever the slot is recycled by the D-D leak
+/// detector (scope-exit force-close) so a stale handle fails
+/// `E0053` at the next op instead of silently operating on a
+/// different channel.
+fn builtin_channel_new(ev: &mut Evaluator, args: Vec<Value>) -> WlwlResult<Outcome> {
+    use crate::channel::{Channel, ChannelId, ChannelHandle};
+    use wlwl_ast::Span as AstSpan;
+    let diag_span = ev
+        .current_span
+        .clone()
+        .unwrap_or_else(AstSpan::dummy);
+    if args.len() != 1 {
+        return Err(ev.diag(
+            ErrorCode::E0022,
+            format!("CHANNEL_NEW expects 1 argument (the buffer size), got {}", args.len()),
+            diag_span,
+        ));
+    }
+    let buf = match &args[0] {
+        Value::Integer(n) if *n >= 0 => *n as usize,
+        Value::Integer(n) => {
+            return Err(ev.diag(
+                ErrorCode::E0031,
+                format!(
+                    "CHANNEL_NEW buffer size must be non-negative, got {}",
+                    n
+                ),
+                diag_span,
+            ));
+        }
+        other => {
+            return Err(ev.diag(
+                ErrorCode::E0031,
+                format!(
+                    "CHANNEL_NEW buffer size must be an integer, got {}",
+                    type_name(other)
+                ),
+                diag_span,
+            ));
+        }
+    };
+    let id = ChannelId(ev.scheduler.channels.len());
+    let generation = ev.scheduler.next_channel_generation;
+    ev.scheduler.next_channel_generation = ev
+        .scheduler
+        .next_channel_generation
+        .wrapping_add(1);
+    let channel = Channel::new(id, generation, buf);
+    let handle: ChannelHandle = channel.handle();
+    ev.scheduler.channels.push(channel);
+    Ok(Outcome::normal(Value::ChannelHandle(handle)))
+}
+
+/// [v0.7 Phase D-B] `CHANNEL_CLOSE(ch)` — flip the sticky `closed`
+/// flag. Idempotent: a second close on an already-closed channel
+/// is a no-op (does NOT raise E0054 — only SEND raises E0054 on a
+/// closed channel; RECV returns the structured `ERR(kind="ChannelClosed")`
+/// payload that D-C will wire up).
+///
+/// Stale-handle detection reuses the same `E0053` shape as the other
+/// channel builtins; a closed handle whose generation still
+/// matches is accepted (closing the channel twice is explicitly
+/// allowed).
+fn builtin_channel_close(ev: &mut Evaluator, args: Vec<Value>) -> WlwlResult<Outcome> {
+    use wlwl_ast::Span as AstSpan;
+    let diag_span = ev
+        .current_span
+        .clone()
+        .unwrap_or_else(AstSpan::dummy);
+    if args.len() != 1 {
+        return Err(ev.diag(
+            ErrorCode::E0022,
+            format!("CHANNEL_CLOSE expects 1 argument (the channel handle), got {}", args.len()),
+            diag_span,
+        ));
+    }
+    let (_, slot) = resolve_channel_handle(ev, &args[0], &diag_span, "CHANNEL_CLOSE")?;
+    // Idempotent: setting closed=true on an already-closed channel
+    // is a no-op (plan §5.3 close protocol arm "CLOSE | true" rows
+    // "幂等 no-op").
+    ev.scheduler.channels[slot].closed = true;
+    // D-C will hook the wake-list side effect here: any task
+    // parked on the receiver_waiters list wakes up with
+    // `ERR(kind="ChannelClosed")`. D-B just flips the flag.
+    Ok(Outcome::normal(Value::Null))
+}
+
+/// [v0.7 Phase D-B] `CHANNEL_LEN(ch)` — number of values currently
+/// buffered. After close, returns the residual length (which the
+/// scheduler's D-C wake code drains as receivers pick up the last
+/// items); the close flag itself is NOT surfaced through LEN —
+/// `CHANNEL_CLOSE` is the only "is it closed" surface (plan §5.3
+/// note: "NULL 不作为 close 信号").
+fn builtin_channel_len(ev: &mut Evaluator, args: Vec<Value>) -> WlwlResult<Outcome> {
+    use wlwl_ast::Span as AstSpan;
+    let diag_span = ev
+        .current_span
+        .clone()
+        .unwrap_or_else(AstSpan::dummy);
+    if args.len() != 1 {
+        return Err(ev.diag(
+            ErrorCode::E0022,
+            format!("CHANNEL_LEN expects 1 argument (the channel handle), got {}", args.len()),
+            diag_span,
+        ));
+    }
+    let (_, slot) = resolve_channel_handle(ev, &args[0], &diag_span, "CHANNEL_LEN")?;
+    let len = ev.scheduler.channels[slot].len();
+    Ok(Outcome::normal(Value::Integer(len as i64)))
+}
+
+/// [v0.7 Phase D-B] `CHANNEL_CAP(ch)` — configured buffer
+/// capacity. Returns `0` for sync channels.
+fn builtin_channel_cap(ev: &mut Evaluator, args: Vec<Value>) -> WlwlResult<Outcome> {
+    use wlwl_ast::Span as AstSpan;
+    let diag_span = ev
+        .current_span
+        .clone()
+        .unwrap_or_else(AstSpan::dummy);
+    if args.len() != 1 {
+        return Err(ev.diag(
+            ErrorCode::E0022,
+            format!("CHANNEL_CAP expects 1 argument (the channel handle), got {}", args.len()),
+            diag_span,
+        ));
+    }
+    let (_, slot) = resolve_channel_handle(ev, &args[0], &diag_span, "CHANNEL_CAP")?;
+    let cap = ev.scheduler.channels[slot].cap();
+    Ok(Outcome::normal(Value::Integer(cap as i64)))
+}
+
 /// The single dispatch table: maps a built-in name to its implementation.
 /// Operators (`+`, `==`, …) live here too — the parser turns `+(1, 2)`
 /// into `Call { name: "+", … }`, and we dispatch on the operator name.
@@ -3251,6 +3462,18 @@ fn resolve_builtin(name: &str) -> Option<BuiltinFn> {
         // [v0.7 Phase C5] TASK_CURRENT() / TASK_IS_CANCELLED().
         "TASK_CURRENT" => Some(builtin_task_current),
         "TASK_IS_CANCELLED" => Some(builtin_task_is_cancelled),
+        // [v0.7 Phase D-B] Channel builtins. CHANNEL_NEW(buf) returns
+        // a generation-tracked ChannelHandle; CHANNEL_CLOSE(ch)
+        // flips the sticky close flag; CHANNEL_LEN / CHANNEL_CAP
+        // are read-only inspectors. The four send/recv variants
+        // (CHANNEL_SEND / CHANNEL_RECV / CHANNEL_TRY_SEND /
+        // CHANNEL_TRY_RECV) land in D-C; this commit only wires the
+        // four metadata ops so reviewers see the close -> E0054 /
+        // ChannelClosed ERR shape before the suspension path lands.
+        "CHANNEL_NEW" => Some(builtin_channel_new),
+        "CHANNEL_CLOSE" => Some(builtin_channel_close),
+        "CHANNEL_LEN" => Some(builtin_channel_len),
+        "CHANNEL_CAP" => Some(builtin_channel_cap),
         // Phase B10 (spec §15.1): PRINT_ERR writes to stderr.
         // Same dispatch as PRINT — appended to the global builtin
         // table so it's available without IMPORT (mirrors `PRINT`).
@@ -8208,6 +8431,109 @@ mod tests {
         "#;
         let v = run(src).expect("IF true with yield must resume");
         assert_eq!(v, Value::Integer(101));
+    }
+
+    // ─── Phase D-B: channel metadata ops (CHANNEL_NEW /
+    // CHANNEL_CLOSE / CHANNEL_LEN / CHANNEL_CAP) + E0053 stale-handle
+    // detection ─────────────────────────────────────────────────
+
+    /// D-B: CHANNEL_NEW(0) returns a synchronous channel handle;
+    /// CHANNEL_CAP shows `0` for sync channels.
+    #[test]
+    fn d_b_channel_new_zero_returns_sync_handle() {
+        let src = r#"
+            LET(ch, CHANNEL_NEW(0));
+            CHANNEL_CAP(ch)
+        "#;
+        let v = run(src).expect("CHANNEL_NEW(0) + CHANNEL_CAP");
+        assert_eq!(v, Value::Integer(0));
+    }
+
+    /// D-B: CHANNEL_NEW(N) for N > 0 records the capacity.
+    #[test]
+    fn d_b_channel_new_records_capacity() {
+        let src = r#"
+            LET(ch, CHANNEL_NEW(8));
+            CHANNEL_CAP(ch)
+        "#;
+        let v = run(src).expect("CHANNEL_NEW(8) + CHANNEL_CAP");
+        assert_eq!(v, Value::Integer(8));
+    }
+
+    /// D-B: CHANNEL_LEN on a fresh channel is 0; CLOSE leaves it at
+    /// 0 (CLOSE doesn't push a value); CLOSE is idempotent (a
+    /// second CLOSE is a no-op, not an error).
+    #[test]
+    fn d_b_channel_len_zero_then_close_idempotent() {
+        let src = r#"
+            LET(ch, CHANNEL_NEW(4));
+            LET(n1, CHANNEL_LEN(ch));
+            CHANNEL_CLOSE(ch);
+            LET(n2, CHANNEL_LEN(ch));
+            CHANNEL_CLOSE(ch);     // second close is no-op
+            [n1, n2]
+        "#;
+        let v = run(src).expect("LEN + CLOSE happy path");
+        match v {
+            Value::Array(items) => {
+                assert_eq!(items.len(), 2);
+                assert_eq!(items[0], Value::Integer(0));
+                assert_eq!(items[1], Value::Integer(0));
+            }
+            other => panic!("expected array, got {:?}", other),
+        }
+    }
+
+    /// D-B: passing a non-channel-handle to CHANNEL_LEN raises
+    /// E0053 ("expects a channel handle, got ...").
+    #[test]
+    fn d_b_channel_len_on_non_handle_is_e0053() {
+        let src = "CHANNEL_LEN(42)";
+        let err = run(src).expect_err("non-handle arg must fail");
+        assert_eq!(
+            err.diagnostic().code,
+            ErrorCode::E0053,
+            "expected E0053 'channel handle invalid'"
+        );
+    }
+
+    /// D-B: CHANNEL_NEW with negative buffer size raises E0031.
+    #[test]
+    fn d_b_channel_new_negative_is_e0031() {
+        let src = "CHANNEL_NEW(-1)";
+        let err = run(src).expect_err("negative buffer size must fail");
+        assert_eq!(
+            err.diagnostic().code,
+            ErrorCode::E0031,
+            "expected E0031 type error for negative integer"
+        );
+    }
+
+    /// D-B: CHANNEL_NEW arity check (E0022). The op also surfaces as
+    /// E0022 — same shape as the other builtin arity errors; the
+    /// channel-specific E0056 is reserved for SPAWN arity, not for
+    /// this surface (plan §4.4).
+    #[test]
+    fn d_b_channel_new_arity_mismatch_is_e0022() {
+        let src = "CHANNEL_NEW(1, 2)";
+        let err = run(src).expect_err("arity mismatch must fail");
+        assert_eq!(
+            err.diagnostic().code,
+            ErrorCode::E0022,
+            "expected E0022 arity error"
+        );
+    }
+
+    /// D-B: CHANNEL_NEW(type) raises E0031 (non-integer input).
+    #[test]
+    fn d_b_channel_new_non_integer_is_e0031() {
+        let src = r#"CHANNEL_NEW("foo")"#;
+        let err = run(src).expect_err("non-integer buf must fail");
+        assert_eq!(
+            err.diagnostic().code,
+            ErrorCode::E0031,
+            "expected E0031 type error for string"
+        );
     }
 
     /// Like `run` but also returns the warnings accumulated during the
