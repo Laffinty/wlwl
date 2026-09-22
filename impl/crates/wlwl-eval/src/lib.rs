@@ -10988,6 +10988,19 @@ mod tests {
     }
 
     #[test]
+    fn eval_negative_literal_minus_one() {
+        // v0.8 §2.9 consistency test: `-1` evaluates to -1 via the
+        // parser desugar path (-x -> -(0, x)). Companion to the
+        // parser-level `unary_minus_integer_literal_desugars`.
+        assert_eq!(run("-1;").unwrap(), Value::Integer(-1));
+        assert_eq!(run("-42;").unwrap(), Value::Integer(-42));
+        assert_eq!(run("--1;").unwrap(), Value::Integer(1));
+        // `-x` with a variable binding.
+        let src = "LET(x, 7); -x;";
+        assert_eq!(run(src).unwrap(), Value::Integer(-7));
+    }
+
+    #[test]
     fn eval_unary_minus_integer_min_throws_e0034_via_desugar() {
         // v0.8 §2.5 / F-10: locks the FULL sugar path
         //   `-int_min`                       (parser sugar form)

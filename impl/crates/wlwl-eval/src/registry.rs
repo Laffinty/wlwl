@@ -1652,4 +1652,119 @@ mod tests {
         assert_eq!(pop.section, "§10.4");
         assert!(!pop.macro_fn, "POP is a resolved builtin, not a macro");
     }
+
+    /// v0.8 §2.9 / D8-002 regression guard: every §-anchor in the
+    /// generated `docs/appendix_G.md` must come from the v0.7 spec
+    /// chapter whitelist. Locks §13.x / §15.x / §12.x / §7.x / §9.1 /
+    /// §9.2 / §10.6 / §11.4 / §10.1-§10.2 / etc. (the v0.4/v0.6 stale
+    /// numbers) from ever creeping back in via a future registry edit.
+    ///
+    /// Reads the on-disk `docs/appendix_G.md` (relative to repo root),
+    /// extracts every `§X[.Y]` / `§X [placeholder]` token inside the
+    /// last column of each table row, and asserts each is in the
+    /// v0.7 spec chapter whitelist.
+    #[test]
+    fn appendix_g_anchors_match_v07_section_numbers() {
+        // Locate `docs/appendix_G.md` relative to repo root.
+        // CARGO_MANIFEST_DIR = impl/crates/wlwl-eval, so:
+        //   ../..  -> impl/
+        //   ../../.. -> D:\Project\wlwl
+        let manifest_dir = std::path::Path::new(env!("CARGO_MANIFEST_DIR"));
+        let md_path = manifest_dir
+            .join("..")
+            .join("..")
+            .join("..")
+            .join("docs")
+            .join("appendix_G.md");
+        let md_text = std::fs::read_to_string(&md_path).unwrap_or_else(|e| {
+            panic!(
+                "cannot read appendix_G.md at {}: {}; \
+                 run `cargo run --bin gen-appendix-g` to regenerate",
+                md_path.display(),
+                e
+            )
+        });
+
+        // v0.7 spec chapter whitelist. Anything outside this set is
+        // v0.4/v0.6-era and must not appear in regenerated md.
+        // (OOP/Property use the bracketed placeholder form.)
+        let whitelist: &[&str] = &[
+            "§2.1", "§2.2", "§2.3", "§2.4", "§2.5",
+            "§3.1", "§3.2", "§3.3", "§3.4", "§3.5",
+            "§4.1", "§4.2", "§4.3", "§4.5", "§4.6", "§4.7", "§4.8",
+            "§5.1", "§5.2", "§5.3", "§5.4",
+            "§6",
+            "§8.1", "§8.2", "§8.3", "§8.4", "§8.5",
+            "§9",
+            "§10.1", "§10.2", "§10.3", "§10.4", "§10.5",
+            "§10.6", "§10.7", "§10.8", "§10.9", "§10.10", "§10.11",
+            "§11", "§11 [占位;OOP 未实现]",
+            "§17.0", "§17.1", "§17.2", "§17.3", "§17.4",
+            "§17.5", "§17.6", "§17.7",
+        ];
+
+        // Hand-rolled scanner (no `regex` dep available): find every
+        // `§` in each table row, consume digits + optional `.digits`,
+        // then optionally consume ` [占位;OOP 未实现]`.
+        let scan = |line: &str| -> Vec<String> {
+            let bytes = line.as_bytes();
+            let mut tokens = Vec::new();
+            let mut i = 0;
+            while i < bytes.len() {
+                if bytes[i] == b'\xc2' && i + 1 < bytes.len() && bytes[i + 1] == b'\xa7' {
+                    // '§' is U+00A7 = 0xC2 0xA7 in UTF-8.
+                    let start = i;
+                    let mut j = i + 2;
+                    // Consume leading digits.
+                    while j < bytes.len() && bytes[j].is_ascii_digit() {
+                        j += 1;
+                    }
+                    // Consume optional `.digits`.
+                    if j < bytes.len() && bytes[j] == b'.' {
+                        j += 1;
+                        while j < bytes.len() && bytes[j].is_ascii_digit() {
+                            j += 1;
+                        }
+                    }
+                    // Consume optional ` [占位;OOP 未实现]` suffix.
+                    // The literal bytes for ' [占位;OOP 未实现]' are:
+                    //   20 5B E5 8D A0 E4 BD 8D 3B 4F 4F 50 20 E6 9C AA E5 AE 9E E7 8E B0 5D
+                    let suffix: &[u8] = b" [\xe5\x8d\xa0\xe4\xbd\x8d;OOP \xe6\x9c\xaa\xe5\xae\x9e\xe7\x8e\xb0]";
+                    if j + suffix.len() <= bytes.len() && &bytes[j..j + suffix.len()] == suffix {
+                        j += suffix.len();
+                    }
+                    if j > start + 2 {
+                        // We consumed at least one digit (or the
+                        // prefix was just "§" with no digits — skip).
+                        tokens.push(String::from_utf8_lossy(&bytes[start..j]).into_owned());
+                    }
+                    i = j;
+                } else {
+                    i += 1;
+                }
+            }
+            tokens
+        };
+
+        let mut bad: Vec<(usize, String)> = Vec::new();
+        for (idx, line) in md_text.lines().enumerate() {
+            if !line.starts_with("| `") {
+                continue; // skip header / non-table rows
+            }
+            for token in scan(line) {
+                if !whitelist.contains(&token.as_str()) {
+                    bad.push((idx + 1, token));
+                }
+            }
+        }
+        assert!(
+            bad.is_empty(),
+            "appendix_G.md has {} stale §-anchor(s) outside v0.7 spec \
+             whitelist; first 5: {:?}\n\
+             To fix: regenerate via `cargo run --bin gen-appendix-g` \
+             AFTER fixing the underlying registry entry / spec drift.",
+            bad.len(),
+            bad.iter().take(5).collect::<Vec<_>>()
+        );
+    }
 }
