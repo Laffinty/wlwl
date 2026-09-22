@@ -359,6 +359,85 @@ impl Scheduler {
             .iter()
             .any(|t| !matches!(t.state, TaskState::Done(_) | TaskState::Cancelled))
     }
+
+    /// [v0.7 Phase E-B] Advisory cancellation for one task. Returns
+    /// `true` if the flag was set on a live (non-terminal) task;
+    /// `false` if the handle is stale / out-of-range / already
+    /// terminal.
+    ///
+    /// Per plan §3 F4 + F7: cancellation itself does NOT produce an
+    /// ERR. The task observes the flag at its next checkpoint (YIELD
+    /// / TASK_IS_CANCELLED / channel blocking op); a purely-
+    /// synchronous body runs to completion first (P7-E3-001).
+    ///
+    /// The target's `state` is not changed here; only `cancel_requested`
+    /// is set, and if the task is parked (`Pending` not yet started)
+    /// it is re-enqueued so `run_one_task` will see the flag at
+    /// entry. Suspended tasks are left in their wait list — they
+    /// will pick up the flag when the wait condition resolves.
+    pub fn request_task_cancel(&mut self, handle: TaskHandle) -> bool {
+        // Decide whether the target is a live, non-terminal task and
+        // whether it is currently Pending (so we should re-enqueue).
+        // Snapshot the inputs without holding the borrow across the
+        // mutating tail (the borrow checker would reject enqueue
+        // otherwise).
+        let needs_enqueue = match self.tasks.get(handle.id.0) {
+            Some(t) if t.id == handle.id && t.generation == handle.generation => {
+                !matches!(t.state, TaskState::Done(_) | TaskState::Cancelled)
+                    && matches!(t.state, TaskState::Pending)
+            }
+            _ => return false,
+        };
+        let alive = match self.tasks.get(handle.id.0) {
+            Some(t) => t.id == handle.id && t.generation == handle.generation
+                && !matches!(t.state, TaskState::Done(_) | TaskState::Cancelled),
+            None => false,
+        };
+        if !alive {
+            return false;
+        }
+        if let Some(t) = self.tasks.get_mut(handle.id.0) {
+            t.cancel_requested = true;
+        }
+        if needs_enqueue {
+            self.enqueue(handle.id);
+        }
+        true
+    }
+
+    /// [v0.7 Phase E-B / E3] Cancel every direct child task in
+    /// `scope_id` (excluding `exclude`, if provided). Used by:
+    ///
+    /// - `TASK_CANCEL_PARENT()` from inside a task body (excludes
+    ///   self so the caller can decide separately whether to mark
+    ///   itself).
+    /// - SCOPE sibling cancellation when any sibling terminates
+    ///   with `Done(Err(_))` / `Failed(_)`: the SCOPE iterates
+    ///   `Scope.tasks` and calls this with the dying sibling as
+    ///   `exclude`. Surviving siblings observe the flag at their
+    ///   next checkpoint (per plan §5.4.1 row "scope fn 取消该 task").
+    ///
+    /// Returns the number of tasks whose flag was set (for tests).
+    pub fn cancel_siblings_in_scope(
+        &mut self,
+        scope_id: crate::runtime::ScopeId,
+        exclude: Option<TaskId>,
+    ) -> usize {
+        let handles: Vec<TaskHandle> = match self.scopes.get(scope_id.0) {
+            Some(s) => s.tasks.clone(),
+            None => return 0,
+        };
+        let mut applied = 0usize;
+        for h in handles {
+            if Some(h.id) == exclude {
+                continue;
+            }
+            if self.request_task_cancel(h) {
+                applied += 1;
+            }
+        }
+        applied
+    }
 }
 
 /// Shared inner state across a scope subtree (future B5+).

@@ -87,6 +87,23 @@ pub struct Task {
     /// bindings made in earlier segments stay accessible. Cells are
     /// `Rc<RefCell<...>>`, so the clone is cheap.
     pub running_env: Option<Vec<HashMap<String, Cell>>>,
+    /// [v0.7 Phase E-B] Advisory cancellation request. Set by
+    /// `TASK_CANCEL(handle)` (cross-task) or by `TASK_CANCEL_PARENT()`
+    /// (current scope siblings) or by SCOPE sibling cancellation when
+    /// any sibling terminates with `Done(Err(_))` / `Failed(_)`.
+    ///
+    /// The task is **not** cancelled immediately; the cancellation
+    /// is observed at the next checkpoint: `run_one_task` entry
+    /// (before `eval_block`), and (in Phase F5 SHIELD) after exiting
+    /// a SHIELD block. A purely-synchronous task body that yields
+    /// no checkpoints runs to completion before observing the
+    /// cancel — this is a path-B limitation documented as
+    /// `P7-E3-001`.
+    ///
+    /// `TASK_IS_CANCELLED()` reads this flag; `AWAIT(h)` of a
+    /// cancelled task surfaces `ERR(kind="Cancelled")` (the existing
+    /// builtin_await Cancelled branch).
+    pub cancel_requested: bool,
 }
 
 impl Task {
@@ -114,6 +131,7 @@ impl Task {
             segments: Vec::new(),
             current_segment: 0,
             running_env: None,
+            cancel_requested: false,
         }
     }
 
@@ -218,10 +236,14 @@ mod tests {
     }
 
     #[test]
-    fn task_starts_pending() {
+    fn task_starts_pending_and_no_cancel() {
         let t = dummy_task(0, 1, 0);
         assert!(matches!(t.state, TaskState::Pending));
         assert!(t.yield_points.is_empty());
+        assert!(
+            !t.cancel_requested,
+            "fresh task must not have a cancel request pending"
+        );
     }
 
     #[test]
