@@ -1,0 +1,20 @@
+// concurrency/shield_then_error.wll - Phase F-C conformance fixture
+//
+// Plan §3 F5 sub-bullet 4: '清理中的 ERR 正常传播: SHIELD 块内 fn
+// 自身抛出的 ERR 仍然走 §5.4 错误传播路径,不受屏蔽影响'. SHIELD
+// only blocks external cancel requests; it does NOT absorb the
+// fn body's own ERR. TRY(ERR(...)) inside SHIELD early-RETURNs
+// with the ERR, which propagates through SHIELD unchanged and
+// surfaces at the outer SCOPE boundary.
+//
+// Expected stdout (1 line):
+//   ERR-propagated
+
+LET(scope_out,
+    SCOPE(FUN(() ,
+        SHIELD(FUN(() ,
+            TRY(ERR("inner-err"))
+        ))
+    ))
+);
+IF(IS_ERR(scope_out), PRINT("ERR-propagated"), PRINT("ERR-absorbed"))

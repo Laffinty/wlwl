@@ -1,0 +1,23 @@
+// concurrency/shield_basic.wll - Phase F-C conformance fixture
+//
+// Plan §3 F5 (1 layer): SHIELD(fn) guards a body against
+// external cancel. TASK_CANCEL_PARENT inside SHIELD records the
+// pending cancel; after SHIELD exits, the current task observes
+// the cancel via TASK_IS_CANCELLED. Sub-bullet 3 of F5:
+// 'SHIELD 退出后若有挂起取消 → fn 后续检查点立刻收到取消信号'.
+//
+// Expected stdout (1 line):
+//   shielded
+
+LET(v,
+    SCOPE(FUN(() ,
+        LET(h, SPAWN(FUN(() ,
+            SHIELD(FUN(() ,
+                TASK_CANCEL_PARENT()
+            ));
+            TASK_IS_CANCELLED()
+        )));
+        AWAIT(h)
+    ))
+);
+IF(v, PRINT("shielded"), PRINT("not-shielded"))

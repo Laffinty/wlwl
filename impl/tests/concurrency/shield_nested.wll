@@ -1,0 +1,30 @@
+// concurrency/shield_nested.wll - Phase F-C conformance fixture
+//
+// Plan §3 F5 (3 layers): SHIELD is nestable. A cancel recorded at
+// the innermost layer must defer until the OUTERMOST SHIELD
+// exits (sub-bullets 1 + 3: '可嵌套' + '取消请求只在外层 SHIELD
+// 完全退出后才生效'). TASK_IS_CANCELLED reads inside inner
+// SHIELDs observe FALSE (pending not fired yet); only after the
+// outermost exit does the read return TRUE.
+//
+// Expected stdout (1 line):
+//   nested-shielded
+
+LET(v,
+    SCOPE(FUN(() ,
+        LET(h, SPAWN(FUN(() ,
+            SHIELD(FUN(() ,
+                SHIELD(FUN(() ,
+                    SHIELD(FUN(() ,
+                        TASK_CANCEL_PARENT()
+                    ));
+                    TASK_IS_CANCELLED()
+                ));
+                TASK_IS_CANCELLED()
+            ));
+            TASK_IS_CANCELLED()
+        )));
+        AWAIT(h)
+    ))
+);
+IF(v, PRINT("nested-shielded"), PRINT("nested-not-shielded"))

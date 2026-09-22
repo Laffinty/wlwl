@@ -77,6 +77,11 @@ const WLT_FILES: &[&str] = &[
     "err_consumer_is_err.wll",
     "err_consumer_payload.wll",
     "err_consumer_unwrap.wll",
+    // Phase F-C / F5 — 3 SHIELD conformance fixtures (plan §3 F5
+    // sub-bullets 1+3+4; minimum 3 fixtures per the spec):
+    "shield_basic.wll",
+    "shield_nested.wll",
+    "shield_then_error.wll",
 ];
 
 #[test]
@@ -256,5 +261,65 @@ fn err_consumer_unwrap_cross_task_panics_e0100() {
     assert!(
         stderr.contains("UNWRAP called on ERR value"),
         "expected the UNWRAP PANIC message in stderr, got: {stderr}"
+    );
+}
+
+/// Phase F-C / F5 sub-bullets 1+3: SHIELD(fn) is nestable; a
+/// TASK_CANCEL_PARENT inside SHIELD records a pending cancel
+/// that fires only after the OUTERMOST SHIELD exits. After the
+/// outer SHIELD exits, TASK_IS_CANCELLED reads the deferred
+/// cancel. Expected stdout: "shielded".
+#[test]
+fn shield_basic_pending_cancel_fires_at_outermost_exit() {
+    let path = fixture("shield_basic.wll");
+    let out = run_wlwl(&path);
+    let code = out.status.code().unwrap_or(-1);
+    let stdout = String::from_utf8_lossy(&out.stdout).into_owned();
+    let stderr = String::from_utf8_lossy(&out.stderr).into_owned();
+    assert_eq!(code, 0, "expected exit 0, got {code}:\n  stderr={stderr}");
+    let expected = "shielded\n";
+    assert_eq!(
+        stdout, expected,
+        "stdout mismatch:\n  got:      {stdout:?}\n  expected: {expected:?}"
+    );
+}
+
+/// Phase F-C / F5 sub-bullet 1: 3 nested SHIELDs. A cancel at
+/// the innermost layer must defer until the outermost exits.
+/// TASK_IS_CANCELLED reads inside inner SHIELDs observe FALSE
+/// (pending not fired yet); only after the outermost exit does
+/// the read return TRUE. Expected stdout: "nested-shielded".
+#[test]
+fn shield_nested_pending_fires_only_at_outermost() {
+    let path = fixture("shield_nested.wll");
+    let out = run_wlwl(&path);
+    let code = out.status.code().unwrap_or(-1);
+    let stdout = String::from_utf8_lossy(&out.stdout).into_owned();
+    let stderr = String::from_utf8_lossy(&out.stderr).into_owned();
+    assert_eq!(code, 0, "expected exit 0, got {code}:\n  stderr={stderr}");
+    let expected = "nested-shielded\n";
+    assert_eq!(
+        stdout, expected,
+        "stdout mismatch:\n  got:      {stdout:?}\n  expected: {expected:?}"
+    );
+}
+
+/// Phase F-C / F5 sub-bullet 4: SHIELD does NOT absorb the fn
+/// body's own ERR. TRY(ERR(...)) inside SHIELD early-RETURNs
+/// with the ERR, which propagates through SHIELD unchanged and
+/// surfaces at the outer SCOPE boundary. Expected stdout:
+/// "ERR-propagated".
+#[test]
+fn shield_then_error_propagates_via_5_4() {
+    let path = fixture("shield_then_error.wll");
+    let out = run_wlwl(&path);
+    let code = out.status.code().unwrap_or(-1);
+    let stdout = String::from_utf8_lossy(&out.stdout).into_owned();
+    let stderr = String::from_utf8_lossy(&out.stderr).into_owned();
+    assert_eq!(code, 0, "expected exit 0, got {code}:\n  stderr={stderr}");
+    let expected = "ERR-propagated\n";
+    assert_eq!(
+        stdout, expected,
+        "stdout mismatch:\n  got:      {stdout:?}\n  expected: {expected:?}"
     );
 }
