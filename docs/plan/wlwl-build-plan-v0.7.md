@@ -701,6 +701,7 @@ Phase G5 把基线写入 docs/plan/deviations.md 的 P7-G5-001 条目。
 - E-C-2 snapshot 测试:8 个跨 task wire-format 锁定(`ec_snap1..ec_snap8` in lib.rs) — 字符串/字典 ERR 载荷、IS_ERR/UNWRAP_OR 返回类型、CHANNEL handle TYPE+LEN+CAP、CHANNEL_RECV-after-close kind、WRAP 嵌套展平、`AWAIT(42)` 保留原始值不隐式包 OK。`ec_snap3` 替换为 CHANNEL handle 元数据(AWAIT-cancelled 受 path B 同步限制不可端到端观察 — 同 P7-E3-001;CHANNEL handle 是另一关键不变量)
 - E-C 阻塞项 §6.0 "ERR consumer 跨 task 回归" 全部闭合:8 unit(E-A)+ 4 concurrency(E-C-1)+ 8 snapshot(E-C-2)
 - E-D 评估完成:**无偏离**(deviations P7-E5-001)。`eval_if` 在并发路径下短路语义与 §8.3 / §6.1 完全一致,5 个新 `ed_*` 单元测试覆盖 truthy/falsy/ERR 条件/分支内 SPAWN 等不变量;无新代码、无 plan §3 E5 文字修改
+- F-A (F1+F3+F7):`Scheduler::cancel_scope_subtree` 助手 + `TASK_CANCEL_PARENT` 改为调子树取消(plan §3 F3)+ 3 单元测试(`fa_*` 语言级 + 2 个 Rust 级 helper 直测)
 
 ### Phase F — 取消作用域
 均待启动(F1-F7,含 SHIELD 至少 3 个 conformance fixture)。
@@ -717,14 +718,14 @@ Phase G5 把基线写入 docs/plan/deviations.md 的 P7-G5-001 条目。
 
 | 项 | 状态 |
 |----|------|
-| 门禁 | `cargo test --workspace` 全绿(eval **719**,fidelity 1 pass;wlwl-cli concurrency 9 pass);`cargo clippy --workspace --all-targets -D warnings` **0 error** |
+| 门禁 | `cargo test --workspace` 全绿(eval **724**,fidelity 1 pass;wlwl-cli concurrency 9 pass);`cargo clippy --workspace --all-targets -D warnings` **0 error** |
 | Phase B | **全部完成**(B0-B6,B5a-3 走路径 B 落地,见 commit 链 `4324fe2` → `beec77d`) |
 | Phase C | **全部完成**(C1 SCOPE / C2 SPAWN / C3 AWAIT / C4 YIELD(B5a-3-B 后真 mid-body) / C5 TASK_* / C7 cell / C8 closure) |
 | B5b | 调度循环已接:SPAWN **惰性入队**,AWAIT 驱动 `scheduler_run_until_done`,SCOPE 退出 await children |
 | B5a-3 路径 B | ✅ 完成。SPAWN 时 `split_body_for_yield` 静态切段;`run_task_segments` 一次跑一段;`running_env` 跨段保留 LET 绑定;conditional yield(IF 内 YIELD 没走)正确跳过 |
 | 新增 fixture | `impl/tests/concurrency/yield_midbody.wll` + driver `wlwl-cli/tests/concurrency.rs` |
 | 偏差 | P7-B0-001 / P7-C2-001 / P7-C2-002 / **P7-B5a3-001 路径 B 选型** / **P7-B5a3-002 NULL 穿透绕道拆除** / **P7-D2-001** / **P7-D8-001** / **P7-E0-001 registry 推迟到 H1** / **P7-E3-001 SCOPE 兄弟取消路径 B 不可观测** / **P7-E5-001 IF 并发路径短路语义无偏离** 已入 `deviations.md`;E0057 评估=复用 E0024 |
-| **建议起点** | **Phase F 取消作用域**(F1-F7,含 SHIELD 至少 3 个 conformance fixture)。E 全部完成(E-A/B/C/D);F 是 v0.7.0 最后的功能阶段,F 后只剩 Phase G 质量门禁(G1-G7)+ Phase H spec v0.7 + release |
+| **建议起点** | **Phase F-B (F5 SHIELD)**:可嵌套、取消延迟生效、退出后生效、自身 ERR 不受屏蔽 + 至少 3 conformance fixture(shield_basic / shield_nested / shield_then_error)。F-A 已完成(F1+F3+F7 助手 + TASK_CANCEL_PARENT 子树传播);剩 F-B + F-C 再切 Phase G |
 | 参考 | C3/C4/C5/B5b/B5a-3 实现集中在 `wlwl-eval/src/lib.rs`(builtin_* + run_one_task + run_task_segments);`yield_split.rs` 是切段纯函数;`task.rs` + `runtime.rs` 是数据/调度 |
 
 ---

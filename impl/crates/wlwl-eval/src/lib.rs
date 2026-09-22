@@ -3343,8 +3343,9 @@ fn builtin_task_cancel(ev: &mut Evaluator, args: Vec<Value>) -> WlwlResult<Outco
 }
 
 /// `TASK_CANCEL_PARENT()` — request cancellation of the current
-/// task and every sibling in the current scope. See module-level
-/// doc above. Returns NULL.
+/// task and every sibling in the current scope, plus top-down
+/// propagation to every descendant scope in the subtree (plan
+/// §3 F3). See module-level doc above. Returns NULL.
 ///
 /// If invoked at module top-level (no enclosing SCOPE), there is
 /// no `current_task` and no scope to cancel: both no-ops.
@@ -3369,8 +3370,13 @@ fn builtin_task_cancel_parent(ev: &mut Evaluator, args: Vec<Value>) -> WlwlResul
         if let Some(t) = ev.scheduler.tasks.get_mut(self_id.0) {
             t.cancel_requested = true;
         }
-        // 2. Mark every sibling in the current scope (excluding self).
-        let _ = ev.scheduler.cancel_siblings_in_scope(scope_id, Some(self_id));
+        // 2. F3: cancel the entire current scope subtree (siblings
+        //    in current scope + every descendant scope + their
+        //    tasks). `cancel_scope_subtree` walks the tree and
+        //    re-runs the per-task cancel logic, so the current
+        //    task itself is double-marked (idempotent — flag is
+        //    already true from step 1).
+        let _ = ev.scheduler.cancel_scope_subtree(scope_id);
     }
     Ok(Outcome::normal(Value::Null))
 }
@@ -9206,6 +9212,94 @@ mod tests {
             v_else,
             Value::Integer(30),
             "IF(FALSE, ..., else) evaluates the else branch; AWAIT returns 30"
+        );
+    }
+
+    // ────────────────────────────────────────────────────────────
+    // [v0.7 Phase F-A] CancellationScope tree (plan §3 F1+F3+F7)
+    //
+    // The scope tree is already wired (Scope::new(id, parent) +
+    // current_scope tracking); F1's data shape and F2's
+    // "SCOPE(fn) creates a new scope; SPAWN(fn) inherits the
+    // current scope" are inherited from Phase B5b / C2. F3's
+    // top-down propagation lands in this commit via
+    // `Scheduler::cancel_scope_subtree`, which TASK_CANCEL_PARENT
+    // calls. F7 ("取消不产生 ERR") is verified by E-B-1's
+    // `eb_task_cancel_parent_returns_null_and_marks_siblings`
+    // (returns NULL) plus the `fa_cancel_does_not_generate_err`
+    // test below.
+    //
+    // Path B caveat (P7-E3-001): "in-flight descendant observes
+    // cancel" is unobservable end-to-end because path B runs
+    // children synchronously. The Rust-level test
+    // `runtime::tests::cancel_scope_subtree_marks_all_descendants`
+    // covers the bookkeeping directly.
+    // ────────────────────────────────────────────────────────────
+
+    #[test]
+    fn fa_cancel_does_not_generate_err() {
+        // F7: cancel itself does not produce ERR. The E-B-1 tests
+        // already locked this for siblings; we add a top-down
+        // variant: TASK_CANCEL_PARENT() must not raise a host
+        // diagnostic, even when cancelling a large subtree.
+        let src = r#"
+            SCOPE(FUN(() ,
+                LET(h, SPAWN(FUN(() ,
+                    LET(_a, SPAWN(FUN(() , NULL)));
+                    LET(_b, SPAWN(FUN(() , NULL)));
+                    LET(_c, SPAWN(FUN(() , NULL)));
+                    LET(_d, SPAWN(FUN(() , NULL)));
+                    LET(_e, SPAWN(FUN(() , NULL)));
+                    TASK_CANCEL_PARENT();
+                    42
+                )));
+                LET(v, AWAIT(h));
+                v
+            ))
+        "#;
+        let v = run(src).expect("TASK_CANCEL_PARENT over 6-deep subtree does not raise");
+        assert_eq!(
+            v,
+            Value::Integer(42),
+            "F7: cancel does not produce ERR — child body returns its normal value"
+        );
+    }
+
+    #[test]
+    fn fa_task_cancel_parent_rejects_args_with_e0022_still() {
+        // Sanity check: the E0022 arity contract from E-B-1
+        // survives the F3 wiring.
+        let src = r#"SCOPE(FUN(() , TASK_CANCEL_PARENT(1)));"#;
+        let err = run(src).expect_err("TASK_CANCEL_PARENT(1) should fail");
+        assert_eq!(
+            err.diagnostic().code,
+            ErrorCode::E0022,
+            "expected E0022 'function call arity'"
+        );
+    }
+
+    #[test]
+    fn fa_cancel_scope_subtree_marks_self_in_language_test() {
+        // Language-level smoke test: TASK_CANCEL_PARENT inside a
+        // child body marks self, and TASK_IS_CANCELLED inside
+        // the same body returns TRUE. The "self" half of
+        // cancel_scope_subtree is locked here; descendant
+        // propagation is covered by the Rust-level helper test.
+        let src = r#"
+            SCOPE(FUN(() ,
+                LET(h, SPAWN(FUN(() ,
+                    TASK_CANCEL_PARENT();
+                    TASK_IS_CANCELLED()
+                )));
+                LET(v, AWAIT(h));
+                v
+            ))
+        "#;
+        let v = run(src).expect("TASK_CANCEL_PARENT marks self");
+        assert_eq!(
+            v,
+            Value::Boolean(true),
+            "TASK_IS_CANCELLED inside child must observe the cancel flag"
         );
     }
 

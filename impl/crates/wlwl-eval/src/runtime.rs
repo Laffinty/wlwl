@@ -438,6 +438,68 @@ impl Scheduler {
         }
         applied
     }
+
+    /// [v0.7 Phase F-A / plan §3 F3] Top-down cancellation
+    /// propagation across a scope subtree. Marks `scope_id`
+    /// itself + every descendant scope as `cancelled = true`,
+    /// and requests cancel on every direct child task in each
+    /// of those scopes.
+    ///
+    /// Plan §3 F3: "取消自顶向下传播;子 scope 可独立取消". The
+    /// "可独立取消" half is satisfied by the existing
+    /// `cancel_siblings_in_scope` path (E-B-1) and `TASK_CANCEL`
+    /// (E-B-1) — a sub-scope can be cancelled without cancelling
+    /// the parent. The "top-down propagation" half is this
+    /// function: when a parent scope is cancelled, descendants
+    /// observe the cancellation.
+    ///
+    /// Returns the number of tasks whose cancel flag was set
+    /// (for tests + bookkeeping).
+    pub fn cancel_scope_subtree(&mut self, scope_id: crate::runtime::ScopeId) -> usize {
+        // Collect the set of scopes to walk: scope_id itself +
+        // every descendant. We compute the descendant list first
+        // because the second loop borrows self.scopes mutably per
+        // scope id and would conflict with a self-recursive walk.
+        let mut to_visit: Vec<ScopeId> = vec![scope_id];
+        let total = self.scopes.len();
+        for sid in 0..total {
+            let sid = crate::runtime::ScopeId(sid);
+            if sid == scope_id {
+                continue;
+            }
+            // is_descendant_of(sid, scope_id)?
+            let mut cur = self.scopes.get(sid.0).and_then(|s| s.parent);
+            let mut found = false;
+            while let Some(p) = cur {
+                if p == scope_id {
+                    found = true;
+                    break;
+                }
+                cur = self.scopes.get(p.0).and_then(|s| s.parent);
+            }
+            if found {
+                to_visit.push(sid);
+            }
+        }
+        // Walk: mark each scope cancelled, then cancel each task.
+        let mut applied = 0usize;
+        for sid in to_visit {
+            if let Some(scope) = self.scopes.get_mut(sid.0) {
+                scope.cancelled = true;
+            }
+            let handles = self
+                .scopes
+                .get(sid.0)
+                .map(|s| s.tasks.clone())
+                .unwrap_or_default();
+            for h in handles {
+                if self.request_task_cancel(h) {
+                    applied += 1;
+                }
+            }
+        }
+        applied
+    }
 }
 
 /// Shared inner state across a scope subtree (future B5+).
@@ -510,6 +572,125 @@ mod tests {
         let _ = r; // unused warning silencer; just needs to be Copy
         fn is_copy<T: Copy>() {}
         is_copy::<YieldReason>();
+    }
+
+    #[test]
+    fn cancel_scope_subtree_marks_all_descendants() {
+        // [v0.7 Phase F-A / plan §3 F3] Direct Rust-level test of
+        // the helper that `TASK_CANCEL_PARENT` calls. We build a
+        // scope tree by hand (no eval, no path-B sync concerns)
+        // and verify that `cancel_scope_subtree(root)` marks
+        // every descendant scope's `cancelled = true` and sets
+        // `cancel_requested = true` on every direct child task
+        // of those scopes.
+        //
+        // Tree shape:
+        //   root (id 0)
+        //     ├── mid_a (id 1)
+        //     │     ├── task_a1
+        //     │     └── leaf (id 2)
+        //     │           └── task_leaf
+        //     └── mid_b (id 3)
+        //           └── task_b1
+        use crate::runtime::{Scope, ScopeId, TaskId, TaskState};
+        use crate::task::Task as TaskImpl;
+        use crate::{Env, Value};
+
+        let mut s = Scheduler::new();
+        // Scheduler::new() already pushed the root scope at index
+        // 0 (ScopeId(0), parent None). We extend the tree by pushing
+        // mid_a -> leaf -> mid_b so the final layout is:
+        //   scopes[0] = root (already there)
+        //   scopes[1] = mid_a  (parent: ScopeId(0))
+        //   scopes[2] = leaf   (parent: ScopeId(1))
+        //   scopes[3] = mid_b  (parent: ScopeId(0))
+        s.scopes.push(Scope::new(ScopeId(1), Some(ScopeId(0))));
+        s.scopes.push(Scope::new(ScopeId(2), Some(ScopeId(1))));
+        s.scopes.push(Scope::new(ScopeId(3), Some(ScopeId(0))));
+
+        // Allocate task slots 0..=3.
+        for tid in 0..4 {
+            let gen = s.bump_generation();
+            s.tasks.push(TaskImpl::new_pending(
+                TaskId(tid),
+                gen,
+                Value::Null,
+                Env::new(),
+                ScopeId(0),
+            ));
+            s.tasks[tid].state = TaskState::Pending;
+        }
+        // Register each task with its parent scope.
+        s.scopes[1].tasks.push(crate::runtime::TaskHandle { id: TaskId(0), generation: 0 });
+        s.scopes[1].tasks.push(crate::runtime::TaskHandle { id: TaskId(1), generation: 1 });
+        s.scopes[2].tasks.push(crate::runtime::TaskHandle { id: TaskId(2), generation: 2 });
+        s.scopes[3].tasks.push(crate::runtime::TaskHandle { id: TaskId(3), generation: 3 });
+
+        // Invoke the helper.
+        let applied = s.cancel_scope_subtree(ScopeId(0));
+
+        // Every scope's `cancelled` flag must be true.
+        assert!(s.scopes[0].cancelled, "root scope must be cancelled");
+        assert!(s.scopes[1].cancelled, "mid_a must be cancelled");
+        assert!(s.scopes[2].cancelled, "leaf must be cancelled");
+        assert!(s.scopes[3].cancelled, "mid_b must be cancelled");
+        // Every task's cancel_requested must be true.
+        for tid in 0..4 {
+            assert!(
+                s.tasks[tid].cancel_requested,
+                "task {tid} must have cancel_requested"
+            );
+        }
+        // All 4 tasks should have been applied.
+        assert_eq!(applied, 4, "4 tasks should be flagged");
+    }
+
+    #[test]
+    fn cancel_scope_subtree_does_not_propagate_to_ancestors() {
+        // [v0.7 Phase F-A / plan §3 F3] Top-down only. Cancelling
+        // mid_a should NOT mark root or mid_b; only mid_a and
+        // its descendant leaf.
+        use crate::runtime::{Scope, ScopeId, TaskId, TaskState};
+        use crate::task::Task as TaskImpl;
+        use crate::{Env, Value};
+
+        let mut s = Scheduler::new();
+        // Same layout as the first test: root (scopes[0], already
+        // pushed by Scheduler::new), mid_a (1), leaf (2), mid_b (3).
+        s.scopes.push(Scope::new(ScopeId(1), Some(ScopeId(0))));
+        s.scopes.push(Scope::new(ScopeId(2), Some(ScopeId(1))));
+        s.scopes.push(Scope::new(ScopeId(3), Some(ScopeId(0))));
+        for tid in 0..4 {
+            let gen = s.bump_generation();
+            s.tasks.push(TaskImpl::new_pending(
+                TaskId(tid),
+                gen,
+                Value::Null,
+                Env::new(),
+                ScopeId(0),
+            ));
+            s.tasks[tid].state = TaskState::Pending;
+        }
+        s.scopes[1].tasks.push(crate::runtime::TaskHandle { id: TaskId(0), generation: 0 });
+        s.scopes[1].tasks.push(crate::runtime::TaskHandle { id: TaskId(1), generation: 1 });
+        s.scopes[2].tasks.push(crate::runtime::TaskHandle { id: TaskId(2), generation: 2 });
+        s.scopes[3].tasks.push(crate::runtime::TaskHandle { id: TaskId(3), generation: 3 });
+
+        // Cancel only mid_a.
+        let applied = s.cancel_scope_subtree(ScopeId(1));
+        // mid_a (2 tasks) + leaf (1 task) = 3 tasks flagged.
+        assert_eq!(applied, 3, "mid_a has 2 child tasks; leaf has 1 -> 3 total");
+        // mid_a and leaf cancelled; root and mid_b NOT cancelled.
+        assert!(!s.scopes[0].cancelled, "root must NOT be cancelled");
+        assert!(s.scopes[1].cancelled, "mid_a must be cancelled");
+        assert!(s.scopes[2].cancelled, "leaf must be cancelled");
+        assert!(!s.scopes[3].cancelled, "mid_b must NOT be cancelled");
+        // Tasks 0 and 1 (in mid_a) and 2 (in leaf) cancelled;
+        // task 3 (in mid_b) NOT cancelled.
+        assert!(s.tasks[0].cancel_requested);
+        assert!(s.tasks[1].cancel_requested);
+        assert!(s.tasks[2].cancel_requested);
+        assert!(!s.tasks[3].cancel_requested, "mid_b task must NOT be cancelled");
     }
 
     #[test]
