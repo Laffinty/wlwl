@@ -8,16 +8,16 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 > **Note.** The compiler version is **independent of the language spec version**.
 > The language spec lives in `docs/standard/` and is identified by version + name.
 > This file tracks the **compiler / tooling** releases. The spec is currently at
-> **v0.7** (`docs/standard/wlwl-spec-v0.7.md`); v0.6 is archived at
-> `docs/history/wlwl-spec-v0.6.md`.
+> **v0.8** (`docs/standard/wlwl-spec-v0.8.md`); v0.7 is archived at
+> `docs/history/wlwl-spec-v0.7.md` (v0.6 at `docs/history/wlwl-spec-v0.6.md`).
 
 ## [v0.8.0] — 2026-09-23
 
-Spec: **wlwl-spec-v0.7** with v0.8 alignment (single source of truth
-remains `docs/standard/wlwl-spec-v0.7.md`; the file accumulates v0.8
-prose additions in-place — release-time rename to `wlwl-spec-v0.8.md`
-is the Phase-C release flow). Build plan + deviations:
-`docs/plan/wlwl-build-plan-v0.8.md`, `docs/plan/deviations.md`.
+Spec: **wlwl-spec-v0.8** (released 2026-09-23; v0.7 archived at
+`docs/history/wlwl-spec-v0.7.md`). Build plan + deviations
+(archived post-release):
+`docs/history/wlwl-build-plan-v0.8-COMPLETED.md`,
+`docs/history/deviations-v0.8.md`.
 
 ### Compatibility commitment (per plan §4.4)
 

@@ -3,9 +3,9 @@
 Thanks for your interest in WLWL. This document covers the day-to-day
 contribution workflow. For deeper design context, read:
 
-- [`docs/standard/wlwl-spec-v0.7.md`](docs/standard/wlwl-spec-v0.7.md) — the language spec (version + name)
-- [`docs/history/wlwl-build-plan-v0.7-COMPLETED.md`](docs/history/wlwl-build-plan-v0.7-COMPLETED.md) — latest build plan (archived)
-- [`docs/history/deviations-v0.7.md`](docs/history/deviations-v0.7.md) — known deviations (v0.7 register)
+- [`docs/standard/wlwl-spec-v0.8.md`](docs/standard/wlwl-spec-v0.8.md) — the language spec (version + name)
+- [`docs/history/wlwl-build-plan-v0.8-COMPLETED.md`](docs/history/wlwl-build-plan-v0.8-COMPLETED.md) — latest build plan (archived)
+- [`docs/history/deviations-v0.8.md`](docs/history/deviations-v0.8.md) — known deviations (v0.8 register; v0.7 register at `docs/history/deviations-v0.7.md`)
 
 ## Ground rules
 
@@ -46,7 +46,7 @@ cargo run -- ast   examples/phase2_demo.wll --format=json | head
 ```
 wlwl/
 ├── docs/
-│   ├── standard/   # current language spec (wlwl-spec-v0.7.md)
+│   ├── standard/   # current language spec (wlwl-spec-v0.8.md)
 │   ├── plan/       # next-iteration plan home (see README)
 │   └── history/    # archived specs, completed plans, deviations, day notes
 ├── impl/
