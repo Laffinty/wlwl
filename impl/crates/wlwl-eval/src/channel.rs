@@ -1,17 +1,10 @@
 //! [v0.7 Phase D] Channel data structure for inter-task communication.
 //!
-//! **Phase D-A: data shape only.** No behaviour lands here yet — the
-//! [`Channel`] type, the wait queues, and the close protocol are
-//! declared so reviewers can see the planned shape and so the rest
-//! of the runtime (Phase D-B builtin wiring, Phase D-C scheduler
-//! integration, Phase D-D leak detector) can build on top without
-//! forward-declaration gymnastics. Behaviour arrives in subsequent
-//! commits.
-//!
 //! See plan §5.3 (Channel semantics + close protocol) and §5.1.1
 //! (state machine including `ReceivingOn`/`SendingOn` wait reasons).
 //! See also `runtime::YieldReason::ReceivingOn` / `SendingOn` which
-//! carry a `RcHandle` that addresses a slot in `Scheduler::channels`.
+//! carry a `ChannelId` that addresses a slot in
+//! `Scheduler::channels`.
 
 use std::collections::VecDeque;
 
@@ -32,13 +25,30 @@ pub struct ChannelId(pub usize);
 /// the channel. The generation bumps on each recycle so a stale
 /// handle fails E0053-style validation rather than operating on a
 /// different channel than the one the user originally opened.
-///
-/// (At D-A this is a stub; the leak detector's bump_generation
-/// wiring lands in D-D.)
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 pub struct ChannelHandle {
     pub id: ChannelId,
     pub generation: u64,
+}
+
+/// Result of attempting a synchronous (non-suspending) channel op.
+///
+/// Distinct from `Yield` because TRY_* never yields — they only return
+/// this enum and let the caller (a builtin) translate the outcome
+/// into a user-facing value or error.
+#[derive(Debug)]
+pub enum TryResult<T> {
+    /// Op completed synchronously with this value.
+    Ok(T),
+    /// Op could not complete without blocking. The caller must
+    /// translate this to `Signal::Yield(ReceivingOn|SendingOn)`
+    /// (or, for TRY_* builtins, surface a `Value::Boolean(false)`
+    /// / `Value::Null`).
+    WouldBlock,
+    /// Channel is closed. For RECV, this carries the kind tag
+    /// (`"ChannelClosed"`) per plan §5.3. For SEND on closed, the
+    /// caller raises E0054 instead of returning this variant.
+    Closed,
 }
 
 /// One channel slot.
@@ -53,8 +63,6 @@ pub struct ChannelHandle {
 /// - `sender_waiters` / `receiver_waiters`: task ids parked because
 ///   SEND would overflow buf (`SendingOn`) or RECV found buf empty
 ///   (`ReceivingOn`). Both are filled by the runtime, not user code.
-///   Phase D-A adds the type only — the queues stay empty until D-C
-///   wires the scheduler.
 #[derive(Debug)]
 pub struct Channel {
     pub id: ChannelId,
@@ -111,11 +119,127 @@ impl Channel {
     pub fn cap(&self) -> usize {
         self.capacity
     }
+
+    /// True when there is room for a SEND without blocking.
+    /// `capacity == 0` is always full (sync channel can't buffer).
+    pub fn has_room(&self) -> bool {
+        self.buf.len() < self.capacity
+    }
+
+    /// Synchronous SEND attempt. Used by `CHANNEL_TRY_SEND` and
+    /// by the suspending `CHANNEL_SEND` before it falls through to
+    /// the `WouldBlock` path (the latter routes via this helper to
+    /// get a single `Ok/Closed/WouldBlock` answer and then decides
+    /// whether to push, raise E0054, or yield).
+    pub fn try_send(&mut self, v: Value) -> TryResult<()> {
+        if self.closed {
+            return TryResult::Closed;
+        }
+        if self.has_room() {
+            self.buf.push_back(v);
+            return TryResult::Ok(());
+        }
+        TryResult::WouldBlock
+    }
+
+    /// Synchronous RECV attempt. Used by `CHANNEL_TRY_RECV` and
+    /// by `CHANNEL_RECV`'s pre-yield probe.
+    pub fn try_recv(&mut self) -> TryResult<Value> {
+        if self.closed && self.buf.is_empty() {
+            return TryResult::Closed;
+        }
+        match self.buf.pop_front() {
+            Some(v) => TryResult::Ok(v),
+            None => TryResult::WouldBlock,
+        }
+    }
+
+    /// Build the structured `Value::Err` payload that RECV returns
+    /// when the channel is closed and the buffer is drained. The
+    /// shape is a Dict `{kind: "ChannelClosed", channel: <repr>}`
+    /// — matching the spec note "NULL 不作为 close 信号;用户必须
+    /// 用 ERR 检测".
+    pub fn recv_closed_err(&self) -> Value {
+        let repr = format!("<channel handle id={} gen={}>", self.id.0, self.generation);
+        Value::Err(Box::new(Value::Dict(vec![
+            (Value::String("kind".to_string()), Value::String("ChannelClosed".to_string())),
+            (Value::String("channel".to_string()), Value::String(repr)),
+        ])))
+    }
+
+    /// Mark the channel closed. Idempotent. Returns the list of
+    /// task ids that were parked on `receiver_waiters` so the caller
+    /// can re-enqueue them (they wake up, re-enter their segment,
+    /// see `ChannelClosed` ERR). Sender waiters are NOT woken by
+    /// close: per plan §5.3 arm "SEND | true", SEND-on-closed is
+    /// E0054 (immediate host error), so any task that was waiting to
+    /// SEND on a closed channel is now stuck and should be cancelled
+    /// (Phase F's TASK_CANCEL will handle this; for now, just leave
+    /// them — D-D adds the leak-detector path that fires on scope
+    /// exit anyway).
+    pub fn close(&mut self) -> Vec<crate::runtime::TaskId> {
+        if self.closed {
+            return Vec::new();
+        }
+        self.closed = true;
+        let mut woken = Vec::new();
+        std::mem::swap(&mut woken, &mut self.receiver_waiters);
+        woken
+    }
+
+    /// Wake one sender (FIFO) — returns its task id so the caller can
+    /// re-enqueue. Called from `recv` after a value is dequeued (a
+    /// sender was waiting because the buf was full; the freed slot
+    /// lets it push and continue).
+    pub fn pop_sender_waiter(&mut self) -> Option<crate::runtime::TaskId> {
+        if self.sender_waiters.is_empty() {
+            None
+        } else {
+            Some(self.sender_waiters.remove(0))
+        }
+    }
+
+    /// Wake one receiver (FIFO) — returns its task id so the caller
+    /// can re-enqueue. Called from `send` after a value is enqueued
+    /// (a receiver was waiting because the buf was empty; the new
+    /// value lets it pop and continue).
+    pub fn pop_receiver_waiter(&mut self) -> Option<crate::runtime::TaskId> {
+        if self.receiver_waiters.is_empty() {
+            None
+        } else {
+            Some(self.receiver_waiters.remove(0))
+        }
+    }
+
+    /// Park the calling task as a sender waiter (the buf is full
+    /// and SEND must yield). Caller is responsible for re-enqueuing
+    /// the task on wake-up via `pop_sender_waiter`.
+    pub fn push_sender_waiter(&mut self, task: crate::runtime::TaskId) {
+        self.sender_waiters.push(task);
+    }
+
+    /// Park the calling task as a receiver waiter (the buf is empty
+    /// and RECV must yield).
+    pub fn push_receiver_waiter(&mut self, task: crate::runtime::TaskId) {
+        self.receiver_waiters.push(task);
+    }
+
+    /// True iff at least one receiver is parked waiting for a value.
+    /// Used by SEND on a sync (buf=0) channel to decide whether to
+    /// hand off directly or park the sender.
+    pub fn has_receiver_waiter(&self) -> bool {
+        !self.receiver_waiters.is_empty()
+    }
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::Value;
+
+    fn int(n: i64) -> Value {
+        Value::Integer(n)
+    }
 
     #[test]
     fn new_channel_is_open_with_zero_buf() {
@@ -158,5 +282,94 @@ mod tests {
         let a = Channel::new(ChannelId(0), 1, 0).handle();
         let b = Channel::new(ChannelId(0), 2, 0).handle();
         assert_ne!(a, b, "generation must differentiate handle reuse");
+    }
+
+    // ─── D-C op semantics ─────────────────────────────────────
+
+    #[test]
+    fn try_send_then_recv_round_trip() {
+        let mut c = Channel::new(ChannelId(0), 1, 4);
+        assert!(matches!(c.try_send(int(7)), TryResult::Ok(())));
+        assert_eq!(c.len(), 1);
+        match c.try_recv() {
+            TryResult::Ok(v) => assert_eq!(v, int(7)),
+            other => panic!("expected Ok, got {:?}", other),
+        }
+        assert_eq!(c.len(), 0);
+    }
+
+    #[test]
+    fn try_send_into_full_buf_yields_would_block() {
+        let mut c = Channel::new(ChannelId(0), 1, 1);
+        assert!(matches!(c.try_send(int(1)), TryResult::Ok(())));
+        match c.try_send(int(2)) {
+            TryResult::WouldBlock => {}
+            other => panic!("expected WouldBlock, got {:?}", other),
+        }
+    }
+
+    #[test]
+    fn try_send_into_closed_yields_closed() {
+        let mut c = Channel::new(ChannelId(0), 1, 4);
+        c.close();
+        match c.try_send(int(1)) {
+            TryResult::Closed => {}
+            other => panic!("expected Closed, got {:?}", other),
+        }
+    }
+
+    #[test]
+    fn try_recv_from_empty_yields_would_block() {
+        let mut c = Channel::new(ChannelId(0), 1, 4);
+        match c.try_recv() {
+            TryResult::WouldBlock => {}
+            other => panic!("expected WouldBlock, got {:?}", other),
+        }
+    }
+
+    #[test]
+    fn try_recv_from_closed_empty_returns_err_kind_channelclosed() {
+        let c = Channel::new(ChannelId(0), 1, 4);
+        let err = c.recv_closed_err();
+        match err {
+            Value::Err(payload) => match *payload {
+                Value::Dict(entries) => {
+                    let kind = entries.iter().find_map(|(k, v)| {
+                        if matches!(k, Value::String(s) if s == "kind") {
+                            Some(v.clone())
+                        } else {
+                            None
+                        }
+                    });
+                    assert_eq!(kind, Some(Value::String("ChannelClosed".to_string())));
+                }
+                other => panic!("expected dict payload, got {:?}", other),
+            },
+            other => panic!("expected Err, got {:?}", other),
+        }
+    }
+
+    #[test]
+    fn close_returns_parked_receivers_for_wake() {
+        let mut c = Channel::new(ChannelId(0), 1, 0);
+        c.push_receiver_waiter(crate::runtime::TaskId(42));
+        c.push_receiver_waiter(crate::runtime::TaskId(43));
+        let woken = c.close();
+        assert_eq!(
+            woken,
+            vec![crate::runtime::TaskId(42), crate::runtime::TaskId(43)]
+        );
+        assert!(c.receiver_waiters.is_empty());
+        assert!(c.closed);
+    }
+
+    #[test]
+    fn close_idempotent_returns_empty_on_second_call() {
+        let mut c = Channel::new(ChannelId(0), 1, 0);
+        c.push_receiver_waiter(crate::runtime::TaskId(7));
+        let first = c.close();
+        assert_eq!(first, vec![crate::runtime::TaskId(7)]);
+        let second = c.close();
+        assert!(second.is_empty());
     }
 }
