@@ -712,16 +712,18 @@ pub const BUILTIN_REGISTRY: &[BuiltinSpec] = &[
     },
     BuiltinSpec {
         name: "POP",
-        signature: "POP(arr) -> ARRAY (v0.4/v0.5 alias for AT_K semantics)",
-        group: BuiltinGroup::Array,
-        // v0.6 E decision: `POP` is renamed to `AT_K` to clarify
-        // semantics (lookup, not removal). The dispatch still routes
-        // to `builtin_at_k` for backward source-compat with v0.5
-        // programs, but the registry entry below documents the
-        // canonical name.
+        signature: "POP(d, k, default) -> v (v0.6 compat alias for AT_K; signature kept 3-arg)",
+        group: BuiltinGroup::Dict,
+        // v0.8 D8-001 deviation (was P4-B12-002): registry entry now
+        // documents the actual 3-arg DICT semantics. Dispatch still routes
+        // to `builtin_at_k` (`lib.rs:4092`) for source-compat with v0.5
+        // programs that called POP(arr) on DICTs. `AT_K` is the canonical
+        // name; `POP` survives as a compat alias emitting no warning
+        // (unlike ResolvedCompat aliases, since the rename path predates
+        // the W0051 machinery).
         err_consumer: ErrConsumerStatus::No,
         macro_fn: false,
-        version: Version::V02,
+        version: Version::V06,
         dispatch: DispatchStatus::ResolvedCompat,
         section: "§10.4",
     },
@@ -1611,5 +1613,43 @@ mod tests {
         assert!(md.contains("I/O"));
         assert!(md.contains("控制流"));
         assert!(md.contains("构造器"));
+    }
+
+    /// v0.8 D8-001: POP registry entry must document the actual 3-arg
+    /// DICT semantics that dispatch (`builtin_at_k` at lib.rs:4092)
+    /// implements. Pre-v0.8 the entry said `POP(arr) -> ARRAY` under
+    /// `BuiltinGroup::Array` — wrong on three fields (signature, group,
+    /// version). This test guards against re-introduction.
+    #[test]
+    fn pop_registry_entry_matches_dispatch() {
+        let pop = BUILTIN_REGISTRY
+            .iter()
+            .find(|s| s.name == "POP")
+            .expect("POP must be in BUILTIN_REGISTRY");
+        assert_eq!(
+            pop.group,
+            BuiltinGroup::Dict,
+            "POP must be in Dict group (it dispatches to builtin_at_k which \
+             takes a DICT, not an ARRAY); pre-v0.8 was incorrectly Array"
+        );
+        assert_eq!(
+            pop.version,
+            Version::V06,
+            "POP became a 3-arg DICT alias in v0.6 (P4-B12-002); pre-v0.8 \
+             said V02"
+        );
+        assert!(
+            pop.signature.contains("d, k, default") || pop.signature.contains("3-arg"),
+            "POP signature must mention 3-arg / 'd, k, default'; got: {:?}",
+            pop.signature
+        );
+        assert_eq!(
+            pop.dispatch,
+            DispatchStatus::ResolvedCompat,
+            "POP keeps ResolvedCompat dispatch for source-level back-compat \
+             with v0.5 programs"
+        );
+        assert_eq!(pop.section, "§10.4");
+        assert!(!pop.macro_fn, "POP is a resolved builtin, not a macro");
     }
 }

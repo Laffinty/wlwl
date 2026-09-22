@@ -162,6 +162,8 @@ BuiltinSpec {
 **测试增补**:为防回归,在 `wlwl-eval/src/lib.rs` 加 `pop_registry_entry_matches_dispatch` 测试:查 registry 中 POP 条目,断言 `signature` 含 "3-arg" 或 "d, k, default"。
 **附录 G 文档**:`docs/appendix_G.md` 由 `gen_appendix_g.rs` 重生成 — 章节号修正一并在 §2.3 完成。
 
+> **实施落实(2026-09-23)**:deviations.md 已建并填入 D8-001 + 回填 D8-002(§2.3 的批量化版本号修复);测试 `pop_registry_entry_matches_dispatch` 实际放在 `registry.rs::tests`(原 plan 说 lib.rs,但本类测试靠近 BUILTIN_REGISTRY 定义处更可读,与 `registry_has_no_duplicate_names` 等同模块测试并列);POP entry 内 5 行 `// v0.6 E decision: ...` 旧注释替换为指向 D8-001 的 6 行新注释(指明 dispatch 路径与 compat alias 状态)。
+
 ### 2.3 F-04 修复 · 注册表章节号系统化更新(per-entry section)
 
 > **v0.8 偏差(实施时发现)**:原计划把变更目标定为 `BuiltinGroup::anchor()`(registry.rs:91-108);
