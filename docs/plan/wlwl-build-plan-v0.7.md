@@ -702,6 +702,7 @@ Phase G5 把基线写入 docs/plan/deviations.md 的 P7-G5-001 条目。
 - E-C 阻塞项 §6.0 "ERR consumer 跨 task 回归" 全部闭合:8 unit(E-A)+ 4 concurrency(E-C-1)+ 8 snapshot(E-C-2)
 - E-D 评估完成:**无偏离**(deviations P7-E5-001)。`eval_if` 在并发路径下短路语义与 §8.3 / §6.1 完全一致,5 个新 `ed_*` 单元测试覆盖 truthy/falsy/ERR 条件/分支内 SPAWN 等不变量;无新代码、无 plan §3 E5 文字修改
 - F-A (F1+F3+F7):`Scheduler::cancel_scope_subtree` 助手 + `TASK_CANCEL_PARENT` 改为调子树取消(plan §3 F3)+ 3 单元测试(`fa_*` 语言级 + 2 个 Rust 级 helper 直测)
+- F-B (F5):`SHIELD(fn)` builtin — 可嵌套(`shield_depth` 累加 / 最外层退出才触发)、内部 `TASK_CANCEL_PARENT` 仅标 `shield_pending_cancel` 不真取消、退出后把 pending 翻译回 self 的 `cancel_requested`、自身 ERR 走 §5.4 不被屏蔽 + 7 个 `fb_*` 单元测试
 
 ### Phase F — 取消作用域
 均待启动(F1-F7,含 SHIELD 至少 3 个 conformance fixture)。
@@ -718,7 +719,7 @@ Phase G5 把基线写入 docs/plan/deviations.md 的 P7-G5-001 条目。
 
 | 项 | 状态 |
 |----|------|
-| 门禁 | `cargo test --workspace` 全绿(eval **724**,fidelity 1 pass;wlwl-cli concurrency 9 pass);`cargo clippy --workspace --all-targets -D warnings` **0 error** |
+| 门禁 | `cargo test --workspace` 全绿(eval **731**,fidelity 1 pass;wlwl-cli concurrency 9 pass);`cargo clippy --workspace --all-targets -D warnings` **0 error** |
 | Phase B | **全部完成**(B0-B6,B5a-3 走路径 B 落地,见 commit 链 `4324fe2` → `beec77d`) |
 | Phase C | **全部完成**(C1 SCOPE / C2 SPAWN / C3 AWAIT / C4 YIELD(B5a-3-B 后真 mid-body) / C5 TASK_* / C7 cell / C8 closure) |
 | B5b | 调度循环已接:SPAWN **惰性入队**,AWAIT 驱动 `scheduler_run_until_done`,SCOPE 退出 await children |

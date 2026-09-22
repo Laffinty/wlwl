@@ -3366,6 +3366,15 @@ fn builtin_task_cancel_parent(ev: &mut Evaluator, args: Vec<Value>) -> WlwlResul
         ));
     }
     if let (Some(self_id), Some(scope_id)) = (ev.current_task, ev.scheduler.current_scope) {
+        // Plan §3 F5: SHIELD guards against external cancel. If
+        // we're currently inside one or more SHIELD blocks, defer
+        // the cancel — just record the pending flag. The outermost
+        // SHIELD's exit code will translate it back into
+        // `cancel_requested` on the current task.
+        if ev.shield_depth > 0 {
+            ev.shield_pending_cancel = true;
+            return Ok(Outcome::normal(Value::Null));
+        }
         // 1. Mark self first.
         if let Some(t) = ev.scheduler.tasks.get_mut(self_id.0) {
             t.cancel_requested = true;
@@ -3379,6 +3388,100 @@ fn builtin_task_cancel_parent(ev: &mut Evaluator, args: Vec<Value>) -> WlwlResul
         let _ = ev.scheduler.cancel_scope_subtree(scope_id);
     }
     Ok(Outcome::normal(Value::Null))
+}
+
+// ──────────────────────────────────────────────────────────────────
+// [v0.7 Phase F-B / plan §3 F5] SHIELD(fn) — guard block
+//
+// Plan §3 F5 semantics (5 sub-bullets):
+//   1. Nestable: SHIELD can be nested; the shield_depth counter
+//      accumulates on entry, and a pending cancel only fires
+//      when the OUTERMOST SHIELD exits.
+//   2. Internal cancel recorded: while shield_depth > 0, any
+//      `TASK_CANCEL_PARENT()` call sets `shield_pending_cancel =
+//      true` instead of triggering the real subtree cancel.
+//   3. Exit-then-effective: when shield_depth transitions back
+//      to 0 (outermost exit), if `shield_pending_cancel` is set,
+//      we mark `current_task.cancel_requested = true` so the next
+//      TASK_IS_CANCELLED / YIELD / blocking-op checkpoint sees
+//      the cancel.
+//   4. Cleanup ERR normal: SHIELD does NOT absorb the fn body's
+//      own ERR. If fn body raises ERR (via TRY-RETURN or direct
+//      `throw`), the ERR still propagates via §5.4 — the SHIELD
+//      wrapper just hands the Outcome through unchanged after
+//      decrement + pending-cancel fire.
+//   5. SHIELD only blocks "external" cancel requests arriving
+//      via `TASK_CANCEL_PARENT()` from inside the SHIELD block.
+//      `TASK_CANCEL(handle)` from another task is unaffected
+//      (still applies immediately to the target — SHIELD's
+//      "external cancel" is specifically the parent's own cancel,
+//      which originates in this task's body).
+//
+// Returns whatever the fn body returns (NULL for void fn, value
+// for value-returning fn, ERR for ERR-raising fn). Like SCOPE,
+// SHIELD takes exactly one argument (the closure).
+// ──────────────────────────────────────────────────────────────────
+
+fn builtin_shield(ev: &mut Evaluator, args: Vec<Value>) -> WlwlResult<Outcome> {
+    use wlwl_ast::Span as AstSpan;
+    let diag_span = ev
+        .current_span
+        .clone()
+        .unwrap_or_else(AstSpan::dummy);
+    if args.len() != 1 {
+        return Err(ev.diag(
+            ErrorCode::E0022,
+            format!(
+                "SHIELD expects 1 argument (the function), got {}",
+                args.len()
+            ),
+            diag_span,
+        ));
+    }
+    let fn_value = args.into_iter().next().expect("len == 1 checked");
+    let (params, body, captured_env) = match fn_value {
+        Value::Closure {
+            params,
+            body,
+            env,
+        } => (params, body, env),
+        other => {
+            return Err(ev.diag(
+                ErrorCode::E0052,
+                format!(
+                    "SHIELD argument must be a function value, got {}",
+                    type_name(&other)
+                ),
+                diag_span,
+            ));
+        }
+    };
+    // Increment before invoke so any TASK_CANCEL_PARENT inside
+    // the fn body sees shield_depth >= 1 and routes to the
+    // pending-cancel path instead of the immediate subtree cancel.
+    ev.shield_depth = ev.shield_depth.saturating_add(1);
+    let result = ev.invoke_closure(
+        "SHIELD",
+        params,
+        body,
+        captured_env,
+        Vec::new(),
+        &diag_span,
+    );
+    // Decrement after invoke. If this was the outermost SHIELD
+    // and a pending cancel was recorded, translate it to a
+    // cancel_requested on the current task so subsequent code
+    // observes the cancel at its next checkpoint.
+    ev.shield_depth = ev.shield_depth.saturating_sub(1);
+    if ev.shield_depth == 0 && ev.shield_pending_cancel {
+        ev.shield_pending_cancel = false;
+        if let Some(self_id) = ev.current_task {
+            if let Some(t) = ev.scheduler.tasks.get_mut(self_id.0) {
+                t.cancel_requested = true;
+            }
+        }
+    }
+    result
 }
 
 // ──────────────────────────────────────────────────────────────────
@@ -3899,6 +4002,11 @@ fn resolve_builtin(name: &str) -> Option<BuiltinFn> {
         // to TaskState::Cancelled at its next checkpoint.
         "TASK_CANCEL" => Some(builtin_task_cancel),
         "TASK_CANCEL_PARENT" => Some(builtin_task_cancel_parent),
+        // [v0.7 Phase F-B / plan §3 F5] SHIELD(fn) — guard block
+        // against external cancel requests. The fn body's own
+        // ERR is unaffected. See builtin_shield for the full
+        // semantics.
+        "SHIELD" => Some(builtin_shield),
         // [v0.7 Phase D-B] Channel builtins. CHANNEL_NEW(buf) returns
         // a generation-tracked ChannelHandle; CHANNEL_CLOSE(ch)
         // flips the sticky close flag; CHANNEL_LEN / CHANNEL_CAP
@@ -5007,6 +5115,20 @@ pub struct Evaluator {
     /// At B5b it will be joined with a Scheduler-owned Scope tree
     /// that takes over scope lifetime tracking.
     pub scope_depth: usize,
+    /// [v0.7 Phase F-B / plan §3 F5] SHIELD nesting depth. 0 means
+    /// "no SHIELD currently active"; values >= 1 mean we're inside
+    /// one or more nested SHIELD blocks. `builtin_shield` increments
+    /// on entry and decrements on exit; the outermost exit (depth
+    /// transitions from 1 → 0) is where pending cancels fire.
+    pub shield_depth: usize,
+    /// [v0.7 Phase F-B / plan §3 F5] Set by `TASK_CANCEL_PARENT()`
+    /// (and `TASK_CANCEL_PARENT` only) when called inside a SHIELD
+    /// block. The pending cancel does NOT take effect until the
+    /// outermost SHIELD exits — at which point `builtin_shield`'s
+    /// exit code translates it into `current_task.cancel_requested =
+    /// true`. SHIELD only blocks external cancel requests; the fn
+    /// body's own ERR is unaffected (still propagates via §5.4).
+    pub shield_pending_cancel: bool,
     /// [v0.7 Phase C2] Cooperative scheduler. SPAWN records spawned
     /// tasks here; AWAIT (C3) and TASK_IS_CANCELLED (C5) read
     /// from here. At C2 the scheduler never *runs* anything
@@ -5070,6 +5192,8 @@ impl Evaluator {
             strict_types: false,
             current_task: None,
             scope_depth: 0,
+            shield_depth: 0,
+            shield_pending_cancel: false,
             scheduler: crate::runtime::Scheduler::new(),
         }
     }
@@ -5122,6 +5246,8 @@ impl Evaluator {
             strict_types: false,
             current_task: None,
             scope_depth: 0,
+            shield_depth: 0,
+            shield_pending_cancel: false,
             scheduler: crate::runtime::Scheduler::new(),
         }
     }
@@ -9300,6 +9426,184 @@ mod tests {
             v,
             Value::Boolean(true),
             "TASK_IS_CANCELLED inside child must observe the cancel flag"
+        );
+    }
+
+    // ────────────────────────────────────────────────────────────
+    // [v0.7 Phase F-B] SHIELD(fn) — plan §3 F5
+    //
+    // Five sub-bullets of F5:
+    //   1. Nestable — shield_depth accumulates across nested SHIELD.
+    //   2. Internal cancel recorded — TASK_CANCEL_PARENT inside
+    //      SHIELD sets shield_pending_cancel = true instead of
+    //      triggering the subtree cancel.
+    //   3. Exit-then-effective — outermost SHIELD exit translates
+    //      the pending flag into cancel_requested on the current
+    //      task; subsequent code observes it.
+    //   4. Cleanup ERR normal — SHIELD does NOT absorb the fn
+    //      body's own ERR (it propagates via §5.4 transparent
+    //      propagation).
+    //   5. SHIELD only blocks external cancel requests via
+    //      TASK_CANCEL_PARENT — TASK_CANCEL(handle) from another
+    //      task is unaffected.
+    //
+    // Path B caveat (P7-E3-001): mid-body cancellation observation
+    // is unobservable end-to-end. We test the bookkeeping directly
+    // by reading TASK_IS_CANCELLED in the same task body after
+    // SHIELD exits.
+    // ────────────────────────────────────────────────────────────
+
+    #[test]
+    fn fb_shield_arity_zero_args_e0022() {
+        let src = r#"SCOPE(FUN(() , SHIELD()));"#;
+        let err = run(src).expect_err("SHIELD() with no args should fail");
+        assert_eq!(
+            err.diagnostic().code,
+            ErrorCode::E0022,
+            "expected E0022 'function call arity'"
+        );
+    }
+
+    #[test]
+    fn fb_shield_arity_two_args_e0022() {
+        let src = r#"SCOPE(FUN(() , SHIELD(FUN(() , NULL), 1)));"#;
+        let err = run(src).expect_err("SHIELD(fn, x) should fail");
+        assert_eq!(
+            err.diagnostic().code,
+            ErrorCode::E0022,
+            "expected E0022 'function call arity'"
+        );
+    }
+
+    #[test]
+    fn fb_shield_non_closure_arg_e0052() {
+        let src = r#"SCOPE(FUN(() , SHIELD(1)));"#;
+        let err = run(src).expect_err("SHIELD(1) should fail");
+        assert_eq!(
+            err.diagnostic().code,
+            ErrorCode::E0052,
+            "expected E0052 'SHIELD argument must be a function value'"
+        );
+    }
+
+    #[test]
+    fn fb_shield_basic_records_pending_cancel() {
+        // Inside SHIELD, TASK_CANCEL_PARENT() should NOT trigger
+        // the immediate subtree cancel — it just sets the pending
+        // flag. After SHIELD exits, the current task's
+        // cancel_requested is set, so TASK_IS_CANCELLED returns
+        // TRUE.
+        let src = r#"
+            SCOPE(FUN(() ,
+                LET(h, SPAWN(FUN(() ,
+                    SHIELD(FUN(() ,
+                        TASK_CANCEL_PARENT();
+                        // Inside SHIELD: cancel is recorded, not
+                        // applied. TASK_IS_CANCELLED currently
+                        // returns FALSE (the pending cancel hasn't
+                        // fired yet — that happens at SHIELD exit).
+                        TASK_IS_CANCELLED()
+                    ));
+                    // After SHIELD exits, the pending cancel fires
+                    // and cancel_requested is set.
+                    TASK_IS_CANCELLED()
+                )));
+                LET(v, AWAIT(h));
+                v
+            ))
+        "#;
+        let v = run(src).expect("SHIELD pending cancel fires at exit");
+        assert_eq!(
+            v,
+            Value::Boolean(true),
+            "TASK_IS_CANCELLED after SHIELD exit must observe the deferred cancel"
+        );
+    }
+
+    #[test]
+    fn fb_shield_nested_three_layers() {
+        // Plan §3 F5 "可嵌套" — three nested SHIELDs. TASK_CANCEL_PARENT
+        // at the innermost layer must defer until all three exit.
+        let src = r#"
+            SCOPE(FUN(() ,
+                LET(h, SPAWN(FUN(() ,
+                    SHIELD(FUN(() ,
+                        SHIELD(FUN(() ,
+                            SHIELD(FUN(() ,
+                                TASK_CANCEL_PARENT();
+                                // Innermost: pending cancel is
+                                // recorded (depth = 3 here).
+                                NULL
+                            ));
+                            // After exiting innermost (depth = 3
+                            // → 2): still inside outer SHIELDs,
+                            // so the pending cancel is NOT yet
+                            // applied.
+                            TASK_IS_CANCELLED()
+                        ));
+                        // After exiting middle (depth = 2 → 1).
+                        // Still inside the outermost SHIELD.
+                        TASK_IS_CANCELLED()
+                    ));
+                    // After exiting outermost (depth = 1 → 0):
+                    // pending cancel fires.
+                    TASK_IS_CANCELLED()
+                )));
+                LET(v, AWAIT(h));
+                v
+            ))
+        "#;
+        let v = run(src).expect("nested SHIELD: pending fires at outermost exit");
+        assert_eq!(
+            v,
+            Value::Boolean(true),
+            "After 3 nested SHIELDs exit, TASK_IS_CANCELLED must be TRUE (only the outermost exit fires)"
+        );
+    }
+
+    #[test]
+    fn fb_shield_then_error_propagates_err() {
+        // Plan §3 F5 "清理中的 ERR 正常传播": SHIELD does NOT
+        // absorb the fn body's own ERR. The SHIELD wrapper just
+        // returns the fn's Outcome (Value::Err) unchanged.
+        //
+        // We use a SHIELD around fn_returning_err, then observe
+        // via the outer SCOPE that IS_ERR sees the propagated ERR.
+        let src = r#"
+            LET(scope_out, SCOPE(FUN(() ,
+                SHIELD(FUN(() ,
+                    TRY(ERR("inner"))
+                ))
+            )));
+            IS_ERR(scope_out)
+        "#;
+        let v = run(src).expect("SHIELD around TRY(ERR) — ERR propagates");
+        assert_eq!(
+            v,
+            Value::Boolean(true),
+            "SHIELD must NOT absorb the fn body's ERR — outer IS_ERR == TRUE"
+        );
+    }
+
+    #[test]
+    fn fb_shield_no_op_caller_value_passes_through() {
+        // SHIELD's return value is whatever the fn body returned.
+        // A SHIELD that contains only `NULL` returns NULL. This
+        // pins the "transparent wrapper" contract: SHIELD does
+        // not synthesize or alter its body's value (only the
+        // cancel mechanics are shielded). We verify via TYPE
+        // (NULL → "NULL" string) since IS_NULL is not a builtin.
+        let src = r#"
+            SCOPE(FUN(() ,
+                LET(v, SHIELD(FUN(() , NULL)));
+                TYPE(v)
+            ))
+        "#;
+        let v = run(src).expect("SHIELD returns its body's value verbatim");
+        assert_eq!(
+            v,
+            Value::String("NULL".into()),
+            "SHIELD must pass through the body's value (NULL here, TYPE='NULL')"
         );
     }
 
