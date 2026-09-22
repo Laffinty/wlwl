@@ -1,10 +1,37 @@
 > **ARCHIVE NOTE (2026-09-22 · Phase H 归档)**
-> 状态: **COMPLETED(实施结束)** — Phase A–G 实施完毕;Phase H1 已产出
+> 状态: **COMPLETED(实施结束)** — Phase A–G 实施完毕;Phase H 全部 4 个子项已落地。
 > [`docs/standard/wlwl-spec-v0.7.md`](../standard/wlwl-spec-v0.7.md) 与附录 G(110 builtins)。
 > 原路径 `docs/plan/wlwl-build-plan-v0.7.md` 已迁移至此,文件名加 `-COMPLETED`
 > (与 `wlwl-build-plan-v0.1-COMPLETED.md` 约定一致)。正文保留原始追踪记录,
 > 其中「待启动」段落反映各 Phase 启动时的快照,不再回写。
 > 配套偏差登记:[`deviations-v0.7.md`](deviations-v0.7.md)。
+
+## Phase H 收口小结(2026-09-22)
+
+| 子项 | 计划内容 | 实际落地 | 证据 |
+|------|---------|---------|------|
+| H1 | 派生正式 `docs/standard/wlwl-spec-v0.7.md` | ✅ 完成 | `docs/standard/wlwl-spec-v0.7.md`(66 KB),additive over v0.6,§17 结构化并发 + 通道 |
+| H2 | 沿用 v0.2 `release.yml` | ✅ 完成 | `.github/workflows/release.yml` 保留 v0.2 配置(本轮未改动) |
+| H3 | 打 tag `v0.7.0` | ✅ 完成 | annotated tag `v0.7.0` 指向 `f8d3013`,已 `git push origin v0.7.0` |
+| H4 | 重命名 `-COMPLETED` + 状态横幅 | ✅ 完成 | 本文件名 = `wlwl-build-plan-v0.7-COMPLETED.md` + 顶部 ARCHIVE NOTE |
+
+**Phase H3 tag 命令记录**(2026-09-22 22:10 +08:00):
+
+```bash
+# annotated tag
+git tag -a v0.7.0 -m "v0.7.0 — first concurrency release ..."   # 在 f8d3013 上
+git push origin v0.7.0
+# => * [new tag] v0.7.0 -> v0.7.0
+```
+
+**Phase H3 后续动作**(非 H 范围,提示给下一次 release):
+
+- 触发 `.github/workflows/release.yml`(手动 `workflow_dispatch` 或 push 自动)
+- 按 release.yml 内部流程生成 GitHub Release / 产物
+
+**Plan 与现实的偏差**(已记录在 deviations,这里只列 Phase H 相关):
+
+- 无。H1-H4 全部按计划落地,无新增 deviation。
 
 <!-- # WLWL v0.7 实施构建计划 -->
 
@@ -722,13 +749,13 @@ Phase G5 把基线写入 docs/plan/deviations.md 的 P7-G5-001 条目。
   - G7 rich suggestion_code:为 E0052-E0058 五个新并发/通道错误码补了 `with_suggestion(Suggestion::Note { ... })`,diagnostic 工具链统一覆盖 v0.6 与 v0.7 错误码
 
 ### Phase F — 取消作用域
-均待启动(F1-F7,含 SHIELD 至少 3 个 conformance fixture)。
+**全部完成**(F1+F3+F7 / F5 / F-C fixture + deviations P7-F5-001)。SHIELD 3 个 conformance fixture `shield_basic.wll` / `shield_nested.wll` / `shield_then_error.wll` 入仓。详见本节上方 Phase F 实录。
 
 ### Phase G — 质量阶段
-均待启动(G1-G7)。
+**全部完成**(G1-G7)。clippy 0 / rustdoc 0 / cargo-deny 0 violation / cargo bench 无单 task 退化 > 10% / fuzz harness 入仓(24h 跑不在 CI)/ 新错误码 suggestion_code 补齐。详见本节上方 Phase G 实录。
 
 ### Phase H — spec v0.7 + release
-均待启动(H1-H4)。spec 文件直到 H1 才允许改动(plan §8.1 / D18)。
+**全部完成**(H1-H4)。见文档顶部「Phase H 收口小结」表与 H3 tag 命令记录。H3 `v0.7.0` annotated tag 指向 `f8d3013`,已 push origin。spec 文件改动按计划 §8.1 / D18 仅在 H1 阶段执行,H1 之前保持 v0.6 冻结。
 
 ---
 
