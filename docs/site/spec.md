@@ -1,17 +1,20 @@
 # Spec & conformance
 
-The WLWL language spec lives in `docs/standard/` and is
-**content-addressed** so every spec revision is reproducible.
+The current WLWL language spec lives in `docs/standard/`.
+Specs are identified by **version + name** (content-address filenames
+were dropped); `git log --follow` is the source of truth for content
+changes. Superseded specs are archived under `docs/history/`.
 
 ## Current spec
 
-[v0.6](../standard/wlwl-spec-v0.6.md)
-(SHA-1 `wlwl-spec-v0.6.md`)
+**[v0.7](../standard/wlwl-spec-v0.7.md)** — additive over v0.6
+(structured concurrency + channels; §17 + Appendix G).
 
-Older revisions (trashed on 2026-09-20 — recoverable from the trash):
+## Archived revisions
 
-| Version | SHA-1 / MD5 | Status |
+| Version | Location | Status |
 |---|---|---|
+| v0.6 | [`docs/history/wlwl-spec-v0.6.md`](../history/wlwl-spec-v0.6.md) | superseded by v0.7 (2026-09-22) |
 | v0.5 | (never published) | superseded |
 | v0.4 | (SHA-1 `97524ced037b5ef0a5820a2ebd5bafb4ba4e239b`) | superseded |
 | v0.3 | (MD5 `4308b3d2071ebed5cb52eba61272b1ea`) | superseded |
@@ -19,8 +22,8 @@ Older revisions (trashed on 2026-09-20 — recoverable from the trash):
 | v0.1 | (planned) | history only |
 
 > **v0.5 was never published** — the spec was drafted but not tagged,
-> and the implementation never claimed compliance with it. v0.6 is the
-> first versioned spec that the implementation aligns to.
+> and the implementation never claimed compliance with it. v0.6 was the
+> first versioned spec the implementation aligned to; v0.7 only appends.
 
 > **Why MD5 for v0.3 but SHA-1 for v0.4+?** The v0.3 file was authored
 > before we standardised on SHA-1. The MD5 hash is stable; v0.4 onwards
@@ -29,17 +32,14 @@ Older revisions (trashed on 2026-09-20 — recoverable from the trash):
 ## Compiler vs spec version
 
 The compiler release **does not have to match** the spec version.
-The current compiler implements the **v0.6 spec** in full (the
-nine breaking decisions of Appendix B are now in force). CI tracks
-both `wlwl --version` (compiler) and the spec SHA-1 in `docs/standard/`
-via the `spec_sha_anchored` conformance test in
-`impl/crates/wlwl-cli/tests/conformance.rs`.
+The current compiler implements the **v0.7 spec** in full (v0.6
+semantics + §17 concurrency). CI tracks `wlwl --version` (compiler)
+and spec anchors via `impl/crates/wlwl-cli/tests/conformance.rs`.
 
 ## Conformance test suite
 
 - `cargo test -p wlwl-cli --test conformance` — checks that the
-  v0.6 spec SHA-1 is present in `docs/standard/` and that the AST
-  golden snapshots match.
+  current spec file is present and that the AST golden snapshots match.
 - `cargo test -p wlwl-formatter --test formatter_tests` — verifies
   that every example in `impl/examples/` round-trips through
   `wlwl fmt` (canonical-form re-emission must re-parse cleanly).
@@ -58,7 +58,7 @@ real symbols (no broken-intra-doc-link warnings).
 
 `cargo deny --locked --all-features check` enforces the licenses of
 all transitive dependencies; see
-[`docs/plan/deviations.md`](../plan/deviations.md).
+[`docs/history/deviations-v0.7.md`](../history/deviations-v0.7.md).
 
 ## Versioning policy
 

@@ -4982,6 +4982,31 @@ fn values_equal(a: &Value, b: &Value) -> bool {
         }
         (Value::Ok(x), Value::Ok(y)) => values_equal(x, y),
         (Value::Err(x), Value::Err(y)) => values_equal(x, y),
+        // v0.7 additive identity for generation-tracked handles
+        // (same shape as v0.6 §2.4 function instance identity).
+        // Without this arm `==(h, h)` fell through to `false`.
+        (Value::TaskHandle(x), Value::TaskHandle(y)) => x == y,
+        (Value::ChannelHandle(x), Value::ChannelHandle(y)) => x == y,
+        // Native std functions compare by bound name (unique per import).
+        (Value::NativeFn { name: x, .. }, Value::NativeFn { name: y, .. }) => x == y,
+        // Closures: v0.6 §2.4 requires instance reference equality.
+        // `Value::Closure` is cloned by value (no Rc), so we cannot
+        // recover pointer identity after `LET(g, f)`. Two closures are
+        // equal only when every structural field matches (body, params,
+        // and Env's PartialEq value-snapshot). This is weaker than §2.4
+        // "引用相等" — pre-existing gap, not introduced by v0.7.
+        (
+            Value::Closure {
+                params: p1,
+                body: b1,
+                env: e1,
+            },
+            Value::Closure {
+                params: p2,
+                body: b2,
+                env: e2,
+            },
+        ) => p1 == p2 && b1 == b2 && e1 == e2,
         _ => false,
     }
 }
@@ -6566,15 +6591,32 @@ impl Evaluator {
 
         match outcome {
             o if matches!(o.signal, Signal::Yield(YieldReason::Explicit)) => {
-                // Mid-body yield: task is not done. Mark Suspended,
-                // re-enqueue (Explicit is immediately re-eligible).
-                // `running_env` was saved by run_task_segments; the
-                // scheduler will resume by calling this same
-                // `run_one_task` again on the next loop iteration.
-                let task = &mut self.scheduler.tasks[id.0];
-                task.state = crate::runtime::TaskState::Suspended(YieldReason::Explicit);
-                task.current_segment += 1;
-                self.scheduler.enqueue(id);
+                // Mid-body yield: task is not done while more segments
+                // remain. Mark Suspended, advance, re-enqueue (Explicit
+                // is immediately re-eligible). `running_env` was saved
+                // by run_task_segments; the scheduler will resume by
+                // calling this same `run_one_task` again.
+                //
+                // Trailing YIELD on the LAST segment is terminal: path B
+                // cannot produce a further segment (yield_split: "yield
+                // once and finish with NULL"). Completing here avoids
+                // re-entering run_task_segments with
+                // current_segment == segments.len() (the old
+                // out-of-bounds panic).
+                let total_segments = self.scheduler.tasks[id.0].segments.len();
+                let cur = self.scheduler.tasks[id.0].current_segment;
+                if cur + 1 < total_segments {
+                    let task = &mut self.scheduler.tasks[id.0];
+                    task.state = crate::runtime::TaskState::Suspended(YieldReason::Explicit);
+                    task.current_segment += 1;
+                    self.scheduler.enqueue(id);
+                } else {
+                    let result = match o.value {
+                        Value::Err(payload) => TaskResult::Err(Value::Err(payload)),
+                        v => TaskResult::Ok(v),
+                    };
+                    self.scheduler.complete(id, result);
+                }
             }
             o => {
                 // Segment completed without yielding. If there are
@@ -6680,13 +6722,16 @@ impl Evaluator {
         let segment_exprs: Vec<Expr> = {
             let task = &self.scheduler.tasks[id.0];
             // current_segment was advanced by run_one_task *only*
-            // when this call returned a yield. On first run it's
-            // 0; on resumption the previous yield advanced it to
-            // point at the next segment.
+            // when this call returned a yield and more segments
+            // remained. On first run it's 0; on resumption the
+            // previous yield advanced it to point at the next
+            // segment. Out-of-range is defensive only (run_one_task
+            // completes the task on a trailing yield) — empty segment
+            // evaluates to NULL rather than aborting the process.
             task.segments
                 .get(task.current_segment)
                 .cloned()
-                .expect("current_segment must be in bounds when a yield was caught")
+                .unwrap_or_default()
         };
 
         // Step 3: evaluate the segment. `top_level = true` so
@@ -10069,6 +10114,67 @@ mod tests {
         assert_eq!(v, Value::Integer(42));
     }
 
+    /// Trailing `YIELD()` as the last statement of a task body must
+    /// complete the task (NULL) instead of resuming a non-existent
+    /// next segment (the old `current_segment` out-of-bounds panic).
+    #[test]
+    fn trailing_yield_completes_task_with_null() {
+        let src = r#"
+            SCOPE(FUN(() ,
+                LET(h, SPAWN(FUN(() ,
+                    PRINT("a");
+                    YIELD()
+                )));
+                LET(r, AWAIT(h));
+                [TYPE(r), r]
+            ))
+        "#;
+        let v = run(src).expect("trailing YIELD must complete, not panic");
+        assert_eq!(
+            v,
+            Value::Array(vec![
+                Value::String("NULL".into()),
+                Value::Null,
+            ]),
+            "trailing YIELD on the last segment finishes with NULL"
+        );
+    }
+
+    /// A nested Block YIELD taken as the task body's final expression
+    /// is also a trailing yield (path B: resume has no further outer
+    /// segment). Must complete with NULL, not abort.
+    #[test]
+    fn nested_block_trailing_yield_completes_task() {
+        let src = r#"
+            SCOPE(FUN(() ,
+                LET(h, SPAWN(FUN(() ,
+                    IF(TRUE, (YIELD(); 99), 1)
+                )));
+                LET(r, AWAIT(h));
+                TYPE(r)
+            ))
+        "#;
+        let v = run(src).expect("nested trailing YIELD must complete, not panic");
+        assert_eq!(v, Value::String("NULL".into()));
+    }
+
+    /// Mid-body YIELD with a following segment still resumes and
+    /// returns the tail value (regression guard for the trailing fix).
+    #[test]
+    fn mid_body_yield_still_resumes_next_segment() {
+        let src = r#"
+            SCOPE(FUN(() ,
+                LET(h, SPAWN(FUN(() ,
+                    YIELD();
+                    7
+                )));
+                AWAIT(h)
+            ))
+        "#;
+        let v = run(src).expect("mid-body YIELD with tail segment");
+        assert_eq!(v, Value::Integer(7));
+    }
+
     /// [Phase B5a-3 Path B] LET bindings made BEFORE a YIELD must
     /// persist across the suspension point. Here we bind `x` in
     /// segment 0, yield, then in segment 1 SET x to a new value
@@ -11003,6 +11109,73 @@ mod tests {
         // returns BOOLEAN for the above inputs — verify with a direct
         // value path too: 1 == 2 still returns BOOLEAN(false).
         assert_eq!(run("==(1, 2);").unwrap(), Value::Boolean(false));
+    }
+
+    /// v0.7 additive: generation-tracked handles compare by identity
+    /// (id + generation). Regression for `==(h, h)` falling through
+    /// `values_equal`'s catch-all to `false`.
+    #[test]
+    fn eq_handle_identity_same_handle_is_true() {
+        let src = r#"
+            SCOPE(FUN(() ,
+                LET(ch, CHANNEL_NEW(1));
+                LET(t, SPAWN(FUN(() , 1)));
+                [==(ch, ch), ==(t, t)]
+            ))
+        "#;
+        let v = run(src).expect("handle self-equality");
+        assert_eq!(
+            v,
+            Value::Array(vec![Value::Boolean(true), Value::Boolean(true)]),
+            "==(h, h) must be TRUE for CHANNEL/TASK handles"
+        );
+    }
+
+    #[test]
+    fn eq_handle_identity_distinct_handles_is_false() {
+        let src = r#"
+            SCOPE(FUN(() ,
+                LET(a, CHANNEL_NEW(1));
+                LET(b, CHANNEL_NEW(1));
+                [==(a, b), !=(a, b)]
+            ))
+        "#;
+        let v = run(src).expect("handle cross-equality");
+        assert_eq!(
+            v,
+            Value::Array(vec![Value::Boolean(false), Value::Boolean(true)]),
+            "distinct CHANNEL handles must not be equal"
+        );
+    }
+
+    /// v0.6 §2.4: function instance identity. Two lookups of the same
+    /// binding clone the same Closure (params/body/env snapshot) and
+    /// must compare equal; a separately-created FUN with a different
+    /// body must not.
+    #[test]
+    fn eq_function_same_binding_is_true() {
+        let src = r#"
+            LET(f, FUN(() , 1));
+            LET(g, f);
+            [==(f, f), ==(f, g)]
+        "#;
+        let v = run(src).expect("function identity");
+        assert_eq!(
+            v,
+            Value::Array(vec![Value::Boolean(true), Value::Boolean(true)]),
+            "v0.6 §2.4 function instance identity"
+        );
+    }
+
+    #[test]
+    fn eq_function_different_body_is_false() {
+        let src = r#"
+            LET(f, FUN(() , 1));
+            LET(g, FUN(() , 2));
+            ==(f, g)
+        "#;
+        let v = run(src).expect("function non-identity");
+        assert_eq!(v, Value::Boolean(false));
     }
 
     #[test]
@@ -17725,18 +17898,15 @@ entry = "main.wll"
 
     #[test]
     fn b11_registry_count_matches_spec_table() {
-        // spec 附录 G 表格 89 行,CALL 重复一次 → 88 unique entries;
-        // v0.6 §4.3 adds `&&` and `||` → 92 entries; v0.6 §10.4 adds
-        // `AT_K` → 93 entries.
-        // 任何加减条目都会让这条挂。b11_subsequent_drop_in_entries_should_lock
-        // 测试追加 (e.g. SPEC.md 升 v0.5) 必须显式 bump 这个数字。
+        // spec 附录 G 表格 89 行 + v0.6 `&&`/`||`/`AT_K` → 93;
+        // v0.7 §17 appends 17 concurrent builtins → 110.
         assert_eq!(
             crate::registry::BUILTIN_REGISTRY.len(),
-            93,
+            110,
             "BUILTIN_REGISTRY size changed (now {}); if spec 附录 G bumped, update this lock",
             crate::registry::BUILTIN_REGISTRY.len(),
         );
-        // 14 个 BuiltinGroup 必须全部 ≥ 1 条 (sanity,避免漏写 group)
+        // 15 个 BuiltinGroup 必须全部 ≥ 1 条 (sanity,避免漏写 group)
         use crate::registry::BuiltinGroup;
         for g in [
             BuiltinGroup::Io,
@@ -17753,6 +17923,7 @@ entry = "main.wll"
             BuiltinGroup::Oop,
             BuiltinGroup::Property,
             BuiltinGroup::Ctor,
+            BuiltinGroup::Concurrent,
         ] {
             let count = crate::registry::BUILTIN_REGISTRY
                 .iter()

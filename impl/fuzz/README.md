@@ -35,4 +35,4 @@ Each target maintains its own corpus under
 Per P4-G6-001, fuzz targets do NOT run in CI. Run locally
 on-demand. The CI matrix (Linux/macOS/Windows × Rust stable/nightly)
 would otherwise balloon build time beyond budget. See
-`docs/plan/deviations.md` P4-G6-001.
+`docs/history/deviations-v0.7.md` P4-G6-001.

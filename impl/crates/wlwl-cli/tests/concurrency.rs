@@ -15,7 +15,7 @@
 //   P7-B5a3-001  Path B chosen 2026-09-22 as the mid-body suspend
 //                strategy (over Path A's full stack-machine rewrite
 //                of `eval_expr` and Path C's re-run + yield-counter
-//                hack). See `docs/plan/deviations.md` for rationale.
+//                hack). See `docs/history/deviations-v0.7.md` for rationale.
 
 use std::path::{Path, PathBuf};
 use std::process::Command;

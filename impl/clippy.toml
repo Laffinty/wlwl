@@ -4,7 +4,7 @@
 # the warning reflects a deliberate design choice (e.g. `WlwlError`
 # carries full diagnostic info by spec §14.2). Mechanical lints are
 # fixed in-tree; complex architectural ones are documented in
-# `docs/plan/deviations.md` under P4-G1-* and allowed at the call site.
+# `docs/history/deviations-v0.7.md` under P4-G1-* and allowed at the call site.
 
 # --- complexity thresholds -----------------------------------------------
 # Default is 250; the interpreter's `eval_expr` recursive walk has

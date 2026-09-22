@@ -1,0 +1,38 @@
+// examples/concurrency_cancel.wll — spec v0.7 §17.3 golden shape
+// SHIELD + TASK_CANCEL_PARENT + TASK_IS_CANCELLED + ChannelClosed kind.
+// Expected stdout:
+//   [TRUE, TRUE]
+//   PASS:concurrency_cancel
+//   ChannelClosed
+//   PASS:channel_closed_kind
+//
+// Rules locked here:
+//  * SHIELD defers cancel until the outermost SHIELD exits
+//  * SHIELD does NOT absorb the fn body's own ERR
+//  * cancel itself returns NULL (no ERR)
+//  * close signal is ERR(kind="ChannelClosed")
+
+LET(obs, SCOPE(FUN(() ,
+    LET(h, SPAWN(FUN(() ,
+        SHIELD(FUN(() , TASK_CANCEL_PARENT()));
+        LET(c, TASK_IS_CANCELLED());
+        LET(r, SHIELD(FUN(() , TRY(ERR("inner")))));
+        [c, IS_ERR(r)]
+    )));
+    AWAIT(h)
+)));
+PRINT(obs);
+IF(==(obs[0], TRUE),
+    IF(==(obs[1], TRUE), PRINT("PASS:concurrency_cancel"), PRINT("FAIL:err")),
+    PRINT("FAIL:cancel"));
+
+LET(kind, SCOPE(FUN(() ,
+    LET(ch, CHANNEL_NEW(0));
+    CHANNEL_CLOSE(ch);
+    LET(h, SPAWN(FUN(() ,
+        LET(r, CHANNEL_RECV(ch));
+        AT_K(ERR_PAYLOAD(r), "kind", "?")
+    )));
+    AWAIT(h)
+)));
+IF(==(kind, "ChannelClosed"), PRINT("PASS:channel_closed_kind"), PRINT("FAIL:kind"))

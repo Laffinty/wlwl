@@ -3,15 +3,15 @@
 Thanks for your interest in WLWL. This document covers the day-to-day
 contribution workflow. For deeper design context, read:
 
-- [`docs/standard/`](docs/standard/) — the language spec (content-addressed by MD5)
-- [`docs/plan/wlwl-build-plan-v0.1.md`](docs/plan/wlwl-build-plan-v0.1.md) — the implementation build plan
-- [`docs/plan/deviations.md`](docs/plan/deviations.md) — known deviations from the spec / plan
+- [`docs/standard/wlwl-spec-v0.7.md`](docs/standard/wlwl-spec-v0.7.md) — the language spec (version + name)
+- [`docs/history/wlwl-build-plan-v0.7-COMPLETED.md`](docs/history/wlwl-build-plan-v0.7-COMPLETED.md) — latest build plan (archived)
+- [`docs/history/deviations-v0.7.md`](docs/history/deviations-v0.7.md) — known deviations (v0.7 register)
 
 ## Ground rules
 
 1. **The spec is authoritative.** If your change conflicts with the spec,
    the spec wins — open a spec revision issue first. Implementation-only
-   deviations must be added to `docs/plan/deviations.md` per build plan §8.
+   deviations must be added to `docs/plan/deviations.md` (next iteration) or the active register per build plan §8.
 2. **The compiler is GPL v2.** By contributing, you agree your contribution
    is licensed under GPL v2. Your `.wll` programs are not affected.
 3. **Small PRs.** One concern per PR. If a change touches the parser and
@@ -46,9 +46,9 @@ cargo run -- ast   examples/phase2_demo.wll --format=json | head
 ```
 wlwl/
 ├── docs/
-│   ├── standard/   # the v0.3 language spec (MD5-content-addressed)
-│   ├── plan/       # the implementation build plan + deviations log
-│   └── history/    # dated progress notes
+│   ├── standard/   # current language spec (wlwl-spec-v0.7.md)
+│   ├── plan/       # next-iteration plan home (see README)
+│   └── history/    # archived specs, completed plans, deviations, day notes
 ├── impl/
 │   ├── Cargo.toml  # workspace root
 │   ├── crates/

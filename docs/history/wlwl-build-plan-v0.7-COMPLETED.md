@@ -1,3 +1,11 @@
+> **ARCHIVE NOTE (2026-09-22 · Phase H 归档)**
+> 状态: **COMPLETED(实施结束)** — Phase A–G 实施完毕;Phase H1 已产出
+> [`docs/standard/wlwl-spec-v0.7.md`](../standard/wlwl-spec-v0.7.md) 与附录 G(110 builtins)。
+> 原路径 `docs/plan/wlwl-build-plan-v0.7.md` 已迁移至此,文件名加 `-COMPLETED`
+> (与 `wlwl-build-plan-v0.1-COMPLETED.md` 约定一致)。正文保留原始追踪记录,
+> 其中「待启动」段落反映各 Phase 启动时的快照,不再回写。
+> 配套偏差登记:[`deviations-v0.7.md`](deviations-v0.7.md)。
+
 <!-- # WLWL v0.7 实施构建计划 -->
 
 > **状态**:WIP — 实施中(`wip0.7`)。Phase A/B/C 已完成;下一目标 Phase D Channel 或 Phase E 错误传播(E4 阻塞项)

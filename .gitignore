@@ -1,11 +1,22 @@
 # Build artifacts
 impl/target/
 impl/Cargo.lock
+impl/llvm-cov-target/
+impl/fuzz/target/
+impl/fuzz/corpus/
+impl/fuzz/artifacts/
+
+# Generated / local coverage & bench dumps
+*.lcov
+*.gcda
+*.gcno
+impl/crates/wlwl-eval/benches/baseline.local.txt
 
 # IDE / editor / AI tooling local state
 .vscode/
 .idea/
 .zcode/
+.mimocode/
 *.swp
 *.swo
 *~
@@ -57,7 +68,9 @@ venv/
 coverage/
 htmlcov/
 .coverage
+impl/target/llvm-cov-html/
+impl/target/llvm-cov.info
 
-
-# Project-local scratch (Phase G forward; never tracked)
+# Project-local scratch (never tracked)
 ast_stable_preview.txt
+docs/site/site/

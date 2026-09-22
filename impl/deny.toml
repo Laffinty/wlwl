@@ -1,7 +1,7 @@
 # [v0.2 Phase G2] cargo-deny configuration.
 #
 # Hard quality gate that must pass before Phase H can tag v0.4.0.
-# See `docs/plan/wlwl-build-plan-v0.2.md` 闂?.1 decision #8 + 闂傚倸鍊搁崐鎼佸磹妞嬪海鐭嗗ù锝堟缁€濠傗攽閻樿弓杩规繛鎴欏灩闁裤倖淇婇妶鍌氫壕闂?.
+# See `docs/history/wlwl-build-plan-v0.2.md` 闂?.1 decision #8 + 闂傚倸鍊搁崐鎼佸磹妞嬪海鐭嗗ù锝堟缁€濠傗攽閻樿弓杩规繛鎴欏灩闁裤倖淇婇妶鍌氫壕闂?.
 # CI runs `cargo deny --locked check` on every push and PR; local
 # runs use the same config file (this one). cargo-deny version:
 # ^0.20 (installed 2026-09-19 闂?older 0.16 fails to parse CVSS v4.0
@@ -26,7 +26,7 @@
 #
 # Surveys 2026-09-19 (--all-features, 200 registry crates, 20
 # distinct license strings). All covered; documented in
-# `docs/plan/deviations.md` P4-G2-* and `docs/history/20260919g2.md`.
+# `docs/history/deviations-v0.7.md` P4-G2-* and `docs/history/20260919g2.md`.
 
 [graph]
 # `targets = []` 闂?analyze every triple Cargo.lock has a node for

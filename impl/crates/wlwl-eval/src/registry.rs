@@ -81,6 +81,9 @@ pub enum BuiltinGroup {
     Oop = 11,
     Property = 12,
     Ctor = 13,
+    /// [v0.7] structured concurrency (SCOPE / SPAWN / AWAIT / YIELD /
+    /// TASK_* / SHIELD / CHANNEL_*).
+    Concurrent = 14,
 }
 
 impl BuiltinGroup {
@@ -101,6 +104,7 @@ impl BuiltinGroup {
             BuiltinGroup::Oop => "§11",
             BuiltinGroup::Property => "§11.4",
             BuiltinGroup::Ctor => "§10.1 / §10.2",
+            BuiltinGroup::Concurrent => "§17",
         }
     }
 
@@ -121,6 +125,7 @@ impl BuiltinGroup {
             BuiltinGroup::Oop => "OOP",
             BuiltinGroup::Property => "属性 / 方法",
             BuiltinGroup::Ctor => "构造器",
+            BuiltinGroup::Concurrent => "并发 / 通道",
         }
     }
 }
@@ -156,6 +161,8 @@ pub enum Version {
     /// v0.6 (current dev cycle): short-circuit `&&`/`||`, explicit
     /// `LET MUT` mutability, truthiness overhaul, string interpolation.
     V06,
+    /// v0.7 (current): structured concurrency + channels (additive).
+    V07,
 }
 
 impl Version {
@@ -164,6 +171,7 @@ impl Version {
             Version::V02 => "v0.2",
             Version::V04 => "v0.4",
             Version::V06 => "v0.6",
+            Version::V07 => "v0.7",
         }
     }
 }
@@ -201,8 +209,9 @@ impl DispatchStatus {
 /// 排序:按 `group` 升序,然后按 spec 表格行内顺序。同一 group 内
 /// 不强行字母序,以保留 spec 表格的语义次序。
 ///
-/// 行数统计:B11 = **88 unique entries**(spec 附录 G 表格 89 行,
-/// `CALL` 在 spec 表出现两次,这里只算 1 条)。
+/// 行数统计:v0.6 = **93** unique entries;v0.7 additively appends the
+/// **17** concurrent builtins → **110** total (lock in
+/// `b11_registry_count_matches_spec_table`).
 pub const BUILTIN_REGISTRY: &[BuiltinSpec] = &[
     // ── I/O (3) ──────────────────────────────────────────────────
     BuiltinSpec {
@@ -1167,6 +1176,180 @@ pub const BUILTIN_REGISTRY: &[BuiltinSpec] = &[
         dispatch: DispatchStatus::LexerMacro,
         section: "§10.2",
     },
+    // ── 并发 / 通道 (17) [v0.7 additive] ─────────────────────────
+    // None of these are §8.3 ERR consumers: an ERR argument
+    // transparently propagates (§8.2) and the builtin body does not
+    // run. See spec v0.7 §17.
+    BuiltinSpec {
+        name: "SCOPE",
+        signature: "SCOPE(fn) -> v",
+        group: BuiltinGroup::Concurrent,
+        err_consumer: ErrConsumerStatus::No,
+        macro_fn: false,
+        version: Version::V07,
+        dispatch: DispatchStatus::ResolvedBuiltin,
+        section: "§17.1",
+    },
+    BuiltinSpec {
+        name: "SPAWN",
+        signature: "SPAWN(fn) -> TASK",
+        group: BuiltinGroup::Concurrent,
+        err_consumer: ErrConsumerStatus::No,
+        macro_fn: false,
+        version: Version::V07,
+        dispatch: DispatchStatus::ResolvedBuiltin,
+        section: "§17.1",
+    },
+    BuiltinSpec {
+        name: "AWAIT",
+        signature: "AWAIT(task) -> v",
+        group: BuiltinGroup::Concurrent,
+        err_consumer: ErrConsumerStatus::No,
+        macro_fn: false,
+        version: Version::V07,
+        dispatch: DispatchStatus::ResolvedBuiltin,
+        section: "§17.1",
+    },
+    BuiltinSpec {
+        name: "YIELD",
+        signature: "YIELD() -> NULL",
+        group: BuiltinGroup::Concurrent,
+        err_consumer: ErrConsumerStatus::No,
+        macro_fn: false,
+        version: Version::V07,
+        dispatch: DispatchStatus::ResolvedBuiltin,
+        section: "§17.1",
+    },
+    BuiltinSpec {
+        name: "TASK_CURRENT",
+        signature: "TASK_CURRENT() -> TASK",
+        group: BuiltinGroup::Concurrent,
+        err_consumer: ErrConsumerStatus::No,
+        macro_fn: false,
+        version: Version::V07,
+        dispatch: DispatchStatus::ResolvedBuiltin,
+        section: "§17.3",
+    },
+    BuiltinSpec {
+        name: "TASK_IS_CANCELLED",
+        signature: "TASK_IS_CANCELLED() -> BOOLEAN",
+        group: BuiltinGroup::Concurrent,
+        err_consumer: ErrConsumerStatus::No,
+        macro_fn: false,
+        version: Version::V07,
+        dispatch: DispatchStatus::ResolvedBuiltin,
+        section: "§17.3",
+    },
+    BuiltinSpec {
+        name: "TASK_CANCEL",
+        signature: "TASK_CANCEL(task) -> NULL",
+        group: BuiltinGroup::Concurrent,
+        err_consumer: ErrConsumerStatus::No,
+        macro_fn: false,
+        version: Version::V07,
+        dispatch: DispatchStatus::ResolvedBuiltin,
+        section: "§17.3",
+    },
+    BuiltinSpec {
+        name: "TASK_CANCEL_PARENT",
+        signature: "TASK_CANCEL_PARENT() -> NULL",
+        group: BuiltinGroup::Concurrent,
+        err_consumer: ErrConsumerStatus::No,
+        macro_fn: false,
+        version: Version::V07,
+        dispatch: DispatchStatus::ResolvedBuiltin,
+        section: "§17.3",
+    },
+    BuiltinSpec {
+        name: "SHIELD",
+        signature: "SHIELD(fn) -> v",
+        group: BuiltinGroup::Concurrent,
+        err_consumer: ErrConsumerStatus::No,
+        macro_fn: false,
+        version: Version::V07,
+        dispatch: DispatchStatus::ResolvedBuiltin,
+        section: "§17.3",
+    },
+    BuiltinSpec {
+        name: "CHANNEL_NEW",
+        signature: "CHANNEL_NEW(buf) -> CHANNEL",
+        group: BuiltinGroup::Concurrent,
+        err_consumer: ErrConsumerStatus::No,
+        macro_fn: false,
+        version: Version::V07,
+        dispatch: DispatchStatus::ResolvedBuiltin,
+        section: "§17.2",
+    },
+    BuiltinSpec {
+        name: "CHANNEL_CLOSE",
+        signature: "CHANNEL_CLOSE(ch) -> NULL",
+        group: BuiltinGroup::Concurrent,
+        err_consumer: ErrConsumerStatus::No,
+        macro_fn: false,
+        version: Version::V07,
+        dispatch: DispatchStatus::ResolvedBuiltin,
+        section: "§17.2",
+    },
+    BuiltinSpec {
+        name: "CHANNEL_SEND",
+        signature: "CHANNEL_SEND(ch, v) -> NULL / ERR(ChannelWouldBlock)",
+        group: BuiltinGroup::Concurrent,
+        err_consumer: ErrConsumerStatus::No,
+        macro_fn: false,
+        version: Version::V07,
+        dispatch: DispatchStatus::ResolvedBuiltin,
+        section: "§17.2",
+    },
+    BuiltinSpec {
+        name: "CHANNEL_RECV",
+        signature: "CHANNEL_RECV(ch) -> v / ERR(ChannelClosed|ChannelWouldBlock)",
+        group: BuiltinGroup::Concurrent,
+        err_consumer: ErrConsumerStatus::No,
+        macro_fn: false,
+        version: Version::V07,
+        dispatch: DispatchStatus::ResolvedBuiltin,
+        section: "§17.2",
+    },
+    BuiltinSpec {
+        name: "CHANNEL_TRY_SEND",
+        signature: "CHANNEL_TRY_SEND(ch, v) -> BOOLEAN",
+        group: BuiltinGroup::Concurrent,
+        err_consumer: ErrConsumerStatus::No,
+        macro_fn: false,
+        version: Version::V07,
+        dispatch: DispatchStatus::ResolvedBuiltin,
+        section: "§17.2",
+    },
+    BuiltinSpec {
+        name: "CHANNEL_TRY_RECV",
+        signature: "CHANNEL_TRY_RECV(ch) -> v / NULL / ERR(ChannelClosed)",
+        group: BuiltinGroup::Concurrent,
+        err_consumer: ErrConsumerStatus::No,
+        macro_fn: false,
+        version: Version::V07,
+        dispatch: DispatchStatus::ResolvedBuiltin,
+        section: "§17.2",
+    },
+    BuiltinSpec {
+        name: "CHANNEL_LEN",
+        signature: "CHANNEL_LEN(ch) -> INTEGER",
+        group: BuiltinGroup::Concurrent,
+        err_consumer: ErrConsumerStatus::No,
+        macro_fn: false,
+        version: Version::V07,
+        dispatch: DispatchStatus::ResolvedBuiltin,
+        section: "§17.2",
+    },
+    BuiltinSpec {
+        name: "CHANNEL_CAP",
+        signature: "CHANNEL_CAP(ch) -> INTEGER",
+        group: BuiltinGroup::Concurrent,
+        err_consumer: ErrConsumerStatus::No,
+        macro_fn: false,
+        version: Version::V07,
+        dispatch: DispatchStatus::ResolvedBuiltin,
+        section: "§17.2",
+    },
 ];
 // ──────────────────────────────────────────────────────────────────────
 // Lookup helpers
@@ -1246,7 +1429,7 @@ pub fn generate_appendix_g_md() -> String {
         "> 修改流程:改注册表 -> 跑本函数重写本文件 -> 跑 `cargo test` 验证 lock test。\n\n",
     );
     out.push_str(
-        "> 对照规范:`docs/standard/wlwl-spec-v0.4*.md` 第 3663 行起 (附录 G 规范性)。\n\n",
+        "> 对照规范:`docs/standard/wlwl-spec-v0.7.md` 附录 G (规范性)。\n\n",
     );
     let n_resolved = BUILTIN_REGISTRY
         .iter()
@@ -1356,8 +1539,8 @@ mod tests {
         );
         assert_eq!(
             BUILTIN_REGISTRY.len(),
-            93,
-            "expected 93 entries per spec 附录 G + v0.6 §4.3 (&&, ||) + v0.6 §10.4 (AT_K)"
+            110,
+            "expected 110 entries: 93 (v0.6) + 17 concurrent builtins (v0.7 §17)"
         );
     }
 
@@ -1378,6 +1561,7 @@ mod tests {
             BuiltinGroup::Oop,
             BuiltinGroup::Property,
             BuiltinGroup::Ctor,
+            BuiltinGroup::Concurrent,
         ] {
             let count = BUILTIN_REGISTRY.iter().filter(|s| s.group == g).count();
             assert!(count >= 1, "group {:?} has no entries", g);

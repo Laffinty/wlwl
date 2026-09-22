@@ -1,109 +1,96 @@
-# wlwl-skill
+# writing-wlwl skill bundle
 
-> An **Agent Skill bundle** for the WLWL programming language (v0.6).
-> Loaded by Claude Code / Claude API / compatible agents to author v0.6-correct
-> WLWL code on the first try.
-
-This folder is **independent** — it does not belong to the Rust workspace
-(`impl/`) or the spec/docs set (`docs/`). It is a standalone consumer of
-the WLWL spec, designed to be dropped into any agent's skill loader
-without rebuilding the toolchain.
-
----
-
-## What is in here
+Claude Skills-format bundle for authoring **WLWL v0.7** `.wll` sources.
 
 ```
 wlwl-skill/
-|-- README.md        <- you are here (human-facing overview)
-|-- SKILL.md         <- agent-facing entry point, Claude Skills format
-|-- reference.md     <- on-demand reference (operator/builtin catalogue,
-|                      error codes, AST shapes); loaded only when
-|                      SKILL.md points here
-|-- interp.wll       <- golden reference program: 13 blocks (A-N) covering
-|                      every v0.6 feature in one file
-|-- CHANGELOG.md     <- skill-bundle changes (spec lives at docs/standard/)
-|-- examples/        <- single-purpose .wll programs (run with `wlwl run`)
-|   |-- truthiness.wll
-|   |-- error_propagation.wll
-|   |-- match.wll
-|   |-- control_flow.wll
-|   |-- import_stdlib.wll
-|   `-- interpolation.wll
+|-- SKILL.md          <- skill entry (frontmatter + writing guide)
+|-- reference.md      <- lookup tables (ops, errors, concurrency)
+|-- interp.wll        <- gold-standard interpolation example
+|-- examples/         <- runnable miniatures
+|-- README.md         <- this file
+`-- CHANGELOG.md      <- skill-bundle changes
 ```
 
-The top-level layout is intentionally **flat**. `examples/` is the only
-subdirectory because each file in it is a standalone, copy-pasteable
-reference for a specific v0.6 feature.
+## Install
 
-## How to use
+Copy or symlink this folder into your agent skills directory, e.g.:
 
-### Drop-in for Claude Code
+```bash
+cp -r wlwl-skill ~/.claude/skills/writing-wlwl
+# or
+ln -s "$PWD/wlwl-skill" ~/.claude/skills/writing-wlwl
+```
 
-Place this directory under `~/.claude/skills/` (personal) or `.claude/skills/`
-(project) so Claude Code auto-discovers it.
+The skill is loaded when the task matches the `description` in
+`SKILL.md` (writing / reviewing `.wll` against the language spec).
 
-### Drop-in for the Claude API
+## Target version
 
-Upload `SKILL.md` (with `reference.md`, `interp.wll`, and `examples/`
-as supporting files) via the Skills API.
+This skill targets **wlwl-spec-v0.7** (file at
+`../docs/standard/wlwl-spec-v0.7.md`).
 
-### As a standalone reference
+- **v0.6 core** (truthiness, `LET MUT`, ERR model, modules) is unchanged —
+  still required knowledge.
+- **v0.7 §17** adds structured concurrency + channels
+  (`SCOPE` / `SPAWN` / `AWAIT` / `YIELD` / `TASK_*` / `SHIELD` / `CHANNEL_*`).
+- v0.6 text is archived at `../docs/history/wlwl-spec-v0.6.md` (additive
+  relationship; non-concurrent programs behave the same).
 
-Open `SKILL.md` in any markdown viewer; it reads top-to-bottom as a
-field guide. `reference.md` is a lookup catalogue (sections §1–§18).
+Compiler version is independent of the spec version (see root
+`CHANGELOG.md`). `wlwl run` is always the source of truth.
 
-### Examples
+## Contents
 
-Each `examples/<name>.wll` is a runnable, exit-0 program that demonstrates
-one v0.6 feature in isolation:
+| File | Use |
+|---|---|
+| `SKILL.md` | Writing flow, antipatterns (now 15 rows, concurrency included) |
+| `reference.md` | Operators, type/`TYPE` names, error codes (`E0052`–`E0058`), concurrency matrix |
+| `interp.wll` | String-interpolation gold example |
+| `examples/truthiness.wll` | §2.3 falsy table |
+| `examples/control_flow.wll` | `IF` / `WHILE` / `FOR` / `MATCH` |
+| `examples/error_propagation.wll` | §8.2 + consumers |
+| `examples/match.wll` | pattern clauses |
+| `examples/interpolation.wll` | `${...}` forms |
+| `examples/import_stdlib.wll` | `wlwl:std.*` imports |
+| `examples/concurrency.wll` | **v0.7** SCOPE/SPAWN/AWAIT/YIELD + channel fan-in |
+| `examples/concurrency_cancel.wll` | **v0.7** SHIELD / cancel / ChannelClosed kind |
+| `examples/concurrency.wll` | **new** §17 SCOPE/SPAWN/AWAIT/YIELD + channel TRY_* |
+| `examples/concurrency_cancel.wll` | **new** TASK_CANCEL / SHIELD / ChannelClosed kind |
 
-| File | Demonstrates |
-|------|--------------|
-| `examples/truthiness.wll` | All 8 falsy values from §2.3 |
-| `examples/error_propagation.wll` | §8.2 transparent ERR propagation; the "extract before passing" idiom |
-| `examples/match.wll` | `MATCH` with literal/identifier/wildcard/array-`*rest`/dict/`OK`/`ERR` patterns |
-| `examples/control_flow.wll` | `WHILE`, `FOR`, `RETURN`, `BREAK`, `CONTINUE` |
-| `examples/import_stdlib.wll` | `IMPORT` plain form, `["orig":"alias"]` alias form, `wlwl:std.*` namespaces |
-| `examples/interpolation.wll` | `${}` interpolation, escapes, nested expressions, `STR` quirks |
+Run any example:
 
-## Conventions inside this folder
+```bash
+wlwl run wlwl-skill/examples/concurrency.wll
+```
 
-- File names: lowercase + dot-separator (`SKILL.md` is uppercase because
-  Claude Skills require that exact filename).
-- Line endings: LF.
-- `interp.wll` is **feature-augmented** relative to `impl/examples/interp.wll`
-  (extra blocks K/L/M/N for `RETURN`, `MATCH`, `IMPORT`). The upstream
-  `impl/examples/interp.wll` is a strict subset; sync changes both ways.
-- The spec-vs-impl register lives at `../docs/plan/deviations.md`
-  (211 KB). **Cite, do not load** — point agents at it for any divergence.
+## Scope
 
-## Versioning
+- **In scope**: writing and reviewing `.wll` programs against
+  wlwl-spec-v0.7 (v0.6 core + §17 concurrency).
+- **Out of scope**: the Rust implementation (`impl/`), formatter design,
+  ADRs, release engineering. For those, read the repo docs directly.
 
-This skill targets **wlwl-spec-v0.6** (file at `../docs/standard/wlwl-spec-v0.6.md`).
-When the spec ships a breaking change:
+## Concurrency quick rules (v0.7)
 
-1. Bump the `description` frontmatter in `SKILL.md` (it carries the
-   version marker inside the description text).
-2. Refresh `interp.wll` and the affected `examples/*.wll` files.
-3. Update `reference.md` only if new AST shapes, builtins, or error
-   codes land.
-4. Append a CHANGELOG entry here if the skill introduces new patterns.
+1. Every `SPAWN` must live inside `SCOPE` → else `E0058`.
+2. `YIELD()` only as a direct child of a multi-statement block.
+3. Close signal = `ERR(kind="ChannelClosed")`, never `NULL`.
+4. v0.7.0: `CHANNEL_SEND`/`RECV` do not suspend — use `CHANNEL_TRY_*`.
+5. Cancel is advisory; `SHIELD` defers it but does not swallow `ERR`.
 
-Until then, treat v0.6 as the canonical reference and prefer fixing
-examples over revising the skill.
+## Maintaining the skill
 
-## Why a skill at all
+- When the **spec** gains a section, update `SKILL.md` + `reference.md`
+  and add an `examples/` miniature; record in `CHANGELOG.md`.
+- When the **implementation** deviates, cite
+  `../docs/history/deviations-v0.7.md` — do not invent fixes here.
+- Keep gold examples runnable: every `examples/*.wll` must `wlwl run`
+  with exit 0.
 
-WLWL is a pre-release, single-implementer language. Without an explicit
-agent-side guide, every code-writing session re-derives the v0.6
-decisions from the spec — a 41KB text full of subtleties (truthy
-overhaul, `IF(ERR,...)` semantics, the `LET MUT` requirement, the
-`AT_K` rename, the §8 error model, `IMPORT` syntax, etc.). The skill
-captures those decisions in ~200 lines so an agent produces
-v0.6-correct output without re-reading the spec.
+## See also
 
-The verification loop in `SKILL.md` (`wlwl run` primary;
-`wlwl fmt --check` advisory; `--format json|jsonl` for AI diagnostics)
-is the single most valuable thing — it lets the agent self-correct
-before claiming success.
+- Language spec: `../docs/standard/wlwl-spec-v0.7.md`
+- Builtin registry (Appendix G): `../docs/appendix_G.md`
+- Concurrency fixtures: `../impl/tests/concurrency/`
+- Spec-vs-impl register: `../docs/history/deviations-v0.7.md`

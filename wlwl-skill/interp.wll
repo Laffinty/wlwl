@@ -1,7 +1,7 @@
 // interp.wll — WLWL v0.6 feature showcase.
 //
 // Each labelled block exercises one feature of the v0.6 spec
-// (see docs/standard/wlwl-spec-v0.6.md). Output is documented
+// (see docs/standard/wlwl-spec-v0.7.md). Output is documented
 // inline at the end of each block. Total: 13 blocks (A..N).
 
 // (A) truthiness — all 8 falsy values from §2.3.

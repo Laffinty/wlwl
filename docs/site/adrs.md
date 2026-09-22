@@ -38,7 +38,7 @@ Each ADR lists:
 3. Write at least: `Context`, `Decision Drivers` (≥ 3 bullets),
    `Considered Options` (≥ 2 alternatives), `Decision Outcome`,
    `Consequences` (positive + negative), `References`.
-4. Open a PR. Add `P4-NNNN-001` to `docs/plan/deviations.md` if
+4. Open a PR. Add `P4-NNNN-001` to `docs/history/deviations-v0.7.md` if
    the ADR supersedes a plan-level assumption.
 
 ## Why MADR

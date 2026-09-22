@@ -8,7 +8,73 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 > **Note.** The compiler version is **independent of the language spec version**.
 > The language spec lives in `docs/standard/` and is identified by version + name.
 > This file tracks the **compiler / tooling** releases. The spec is currently at
-> **v0.6** (`docs/standard/wlwl-spec-v0.6.md`).
+> **v0.7** (`docs/standard/wlwl-spec-v0.7.md`); v0.6 is archived at
+> `docs/history/wlwl-spec-v0.6.md`.
+
+## [v0.7.0] — 2026-09-22
+
+First concurrency release. Spec: **wlwl-spec-v0.7** (additive over v0.6).
+Build plan + deviations: `docs/history/wlwl-build-plan-v0.7-COMPLETED.md`,
+`docs/history/deviations-v0.7.md`.
+
+### Added (language)
+
+- **Structured concurrency + channels** (spec §17). New global builtins
+  (17), none of which are ERR consumers — `ERR` arguments still
+  transparently propagate per §8.2:
+  - Scope / task: `SCOPE(fn)`, `SPAWN(fn)`, `AWAIT(task)`, `YIELD()`
+  - Cancel: `TASK_CURRENT()`, `TASK_IS_CANCELLED()`, `TASK_CANCEL(task)`,
+    `TASK_CANCEL_PARENT()`, `SHIELD(fn)`
+  - Channel: `CHANNEL_NEW(buf)`, `CHANNEL_SEND`, `CHANNEL_RECV`,
+    `CHANNEL_TRY_SEND`, `CHANNEL_TRY_RECV`, `CHANNEL_CLOSE`,
+    `CHANNEL_LEN`, `CHANNEL_CAP`
+- **New value types** `TASK` and `CHANNEL` (TYPE strings). Handle
+  identity equality (`==(h, h)` is TRUE); display
+  `<task handle id=N gen=M>` / `<channel handle id=N gen=M>`.
+- **New error codes** (category `Concurrent`):
+  - `E0052` SCOPE/SPAWN/SHIELD arg is not a function
+  - `E0053` invalid task/channel handle (`TASK_CURRENT` outside a task)
+  - `E0054` SEND/TRY_SEND on a closed channel
+  - `E0055` reserved (close-on-read surfaces as `ERR(kind="ChannelClosed")`)
+  - `E0056` SPAWN arity (including non-zero-param `fn`)
+  - `E0057` reserved (cross-task immutable cell currently reuses `E0024`)
+  - `E0058` top-level `SPAWN` without an active `SCOPE` (no implicit runtime scope)
+- **Structured ERR kinds** (dict payloads, §8.1):
+  `"ChannelClosed"` | `"ChannelWouldBlock"` | `"Cancelled"`.
+  `NULL` is **not** a close signal — detect via `IS_ERR` + `ERR_PAYLOAD`.
+- **Runtime modules** in `wlwl-eval`: `runtime` (scheduler / handles),
+  `task`, `channel`, `yield_split` (path-B body segmentation).
+- **BUILTIN_REGISTRY** 93 → **110** (17 concurrent entries + `Version::V07`
+  + `BuiltinGroup::Concurrent`). Regenerate the table with
+  `cargo run --bin gen-appendix-g -- ../docs/appendix_G.md`.
+- **Conformance fixtures** `impl/tests/concurrency/*.wll` (yield, channel,
+  SCOPE ERR surfacing, ERR consumers cross-task, 3× SHIELD).
+- **Bench suite** `concurrency` (single-task fidelity, scope spawn/exit,
+  channel throughput, close→RECV latency).
+
+### Changed (non-breaking)
+
+- **Function / handle equality** (`==`, `!=`): implementations now match
+  v0.6 §2.4 instance identity for closures and add identity for
+  `TASK`/`CHANNEL` handles (previously both always returned FALSE).
+- **Trailing `YIELD()`** on the last body segment completes the task
+  with `NULL` instead of aborting the process (path-B regression fix).
+- **Spec lock** (`b11_registry_count_matches_spec_table`) pinned at 110.
+
+### Known limits (v0.7.0)
+
+Documented in spec §17.7 and `deviations-v0.7.md` — not silent gaps:
+
+- Single-thread cooperative scheduling (no CPU parallel speedup).
+- `CHANNEL_SEND`/`CHANNEL_RECV` do **not** suspend: full/empty yields
+  `ERR(kind="ChannelWouldBlock")` (`P7-D2-001`). Use `TRY_*` or buffer.
+- No bounded-channel deadlock detector (`P7-D8-001`).
+- Nested `YIELD` inside `WHILE`/`FOR`/`IF` does not resume the nested
+  construct remainder (path-B segmentation).
+- In-flight sibling cancel may be unobservable under sync run
+  (`P7-E3-001`); `SCOPE` still surfaces the first uncaught child `ERR`.
+- Captured-`LET` upgrade (legacy E-CloCap) still diverges from a strict
+  reading of §3.3 — prefer `LET MUT` for shared mutation.
 
 ## [v0.6.0] — 2026-09-20
 
@@ -137,3 +203,11 @@ semantic changes (per the spec's Appendix B) are now in force:
 ### Note on the spec filename
 
 - Renamed docs/standard/wlwl-spec-v0.6(SHA1_cdb548cb5161e61d836aad2208fd33adc0917861).md to docs/standard/wlwl-spec-v0.6.md. The SHA1 in the old filename never matched the file's content (the v0.5 spec had the same issue), so the content-address fiction is dropped entirely. Specs are now identified by version + name only; git history (git log -p --follow) is the source of truth for content changes.
+
+## [Docs archival] — 2026-09-22
+
+- `docs/standard/wlwl-spec-v0.6.md` → `docs/history/wlwl-spec-v0.6.md`
+- `docs/plan/*` → `docs/history/` (`wlwl-build-plan-v0.7-COMPLETED.md`,
+  `wlwl-phase-b-implementation-plan.md`, `deviations-v0.7.md`)
+- `docs/plan/` now holds only a README pointing at the archive;
+  next iteration starts a fresh plan + `deviations.md` there.

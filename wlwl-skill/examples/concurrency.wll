@@ -1,0 +1,37 @@
+// examples/concurrency.wll — spec v0.7 §17 golden shape
+// SCOPE + SPAWN + AWAIT + channel fan-in (TRY_* only).
+// Expected stdout:
+//   142
+//   PASS:concurrency
+//
+// Rules locked here:
+//  * SPAWN only inside SCOPE (else E0058)
+//  * YIELD only as a direct child of a multi-statement block
+//  * close signal is ERR(kind="ChannelClosed"), never NULL
+//  * v0.7.0: use CHANNEL_TRY_* (SEND/RECV do not suspend)
+
+LET(v, SCOPE(FUN(() ,
+    LET(ch, CHANNEL_NEW(4));
+    LET(a, SPAWN(FUN(() ,
+        CHANNEL_TRY_SEND(ch, 21);
+        YIELD();
+        CHANNEL_TRY_SEND(ch, 21);
+        0
+    )));
+    LET(b, SPAWN(FUN(() ,
+        CHANNEL_TRY_SEND(ch, 100);
+        0
+    )));
+    AWAIT(a);
+    AWAIT(b);
+    LET(x, CHANNEL_TRY_RECV(ch));
+    LET(y, CHANNEL_TRY_RECV(ch));
+    LET(z, CHANNEL_TRY_RECV(ch));
+    LET MUT(sum, 0);
+    IF(==(TYPE(x), "INTEGER"), SET(sum, +(sum, x)), 0);
+    IF(==(TYPE(y), "INTEGER"), SET(sum, +(sum, y)), 0);
+    IF(==(TYPE(z), "INTEGER"), SET(sum, +(sum, z)), 0);
+    sum
+)));
+PRINT(v);
+IF(==(v, 142), PRINT("PASS:concurrency"), PRINT("FAIL:concurrency"))

@@ -131,7 +131,7 @@ Chosen points locked into the v0.7 runtime:
 
 ## References
 
-- `docs/plan/wlwl-build-plan-v0.7.md` §2.3 / §10 D2-D10 / §附录 B ADR-0015
+- `docs/history/wlwl-build-plan-v0.7-COMPLETED.md` §2.3 / §10 D2-D10 / §附录 B ADR-0015
 - `docs/adr/0014-structured-concurrency-v0.7.md`
 - `docs/adr/0016-scheduler-single-thread-boundary.md`
 - Brown et al. 2025 *A Design Space Exploration of Async/Await*

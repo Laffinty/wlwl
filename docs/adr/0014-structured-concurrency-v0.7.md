@@ -175,7 +175,7 @@ Chosen option **A**. Concretely:
 
 ## References
 
-- `docs/plan/wlwl-build-plan-v0.7.md` §2.1 / §2.2 / §2.4 / §10 D1 / §附录 B
+- `docs/history/wlwl-build-plan-v0.7-COMPLETED.md` §2.1 / §2.2 / §2.4 / §10 D1 / §附录 B
 - `docs/adr/0015-brown-9-dimension-decision.md`
 - `docs/adr/0016-scheduler-single-thread-boundary.md`
 - Brown et al. 2025 *A Design Space Exploration of Async/Await*

@@ -46,8 +46,8 @@ cosign verify steps.
 
 | Component | Version | Notes |
 |---|---|---|
-| Language spec | v0.4 | SHA-1 content-addressed in `docs/standard/` |
-| Compiler (this repo) | v0.4.0-rc | "rc" until G12 mkdocs lands (you're looking at it) |
-| Standard library | v0.4 | `wlwl:std.{io, fs, json, format, ai, agent, test, collection}` |
+| Language spec | v0.7 | version + name in `docs/standard/` (v0.6 archived to `docs/history/`) |
+| Compiler (this repo) | v0.7 | structured concurrency + channels |
+| Standard library | v0.6 | `wlwl:std.{io, fs, json, format, ai, agent, test, collection}` |
 | Error schema | 1.1.0 | 58 error codes + 13 warning codes |
 | License | GPL-2.0-only | Your `.wll` programs are yours |

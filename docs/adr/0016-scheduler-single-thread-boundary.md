@@ -127,7 +127,7 @@ Chosen option **A**.
 
 ## References
 
-- `docs/plan/wlwl-build-plan-v0.7.md` §1.3 (R4) / §5.1 / §6.4 / §7 / §10 D11 / §10 D19 / §附录 B ADR-0016
+- `docs/history/wlwl-build-plan-v0.7-COMPLETED.md` §1.3 (R4) / §5.1 / §6.4 / §7 / §10 D11 / §10 D19 / §附录 B ADR-0016
 - `docs/adr/0014-structured-concurrency-v0.7.md`
 - `docs/adr/0015-brown-9-dimension-decision.md`
 - v0.6 evaluator baseline (`Rc<RefCell<Env>>` in `wlwl-eval`)
