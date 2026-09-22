@@ -12,8 +12,10 @@
 //!
 //! See plan §3 Phase B4 + ADR-0014, ADR-0016 for the full design.
 
+use std::collections::HashMap;
+
 use crate::runtime::{EvalState, ScopeId, TaskHandle, TaskId, TaskState};
-use crate::{Env, Value};
+use crate::{Cell, Env, Value};
 use wlwl_ast::Expr;
 
 /// One scheduled task (plan §5.2).
@@ -78,6 +80,13 @@ pub struct Task {
     /// `0` on first run; incremented when a segment produces a
     /// `Signal::Yield(Explicit)` that the scheduler captures.
     pub current_segment: usize,
+    /// [Phase B5a-3 Path B] Saved env scope-stack at the moment a
+    /// segment yielded. `None` on first run (and after the final
+    /// segment completes). The runner installs this Vec directly on
+    /// the Evaluator's `env.scopes` for the next segment so LET
+    /// bindings made in earlier segments stay accessible. Cells are
+    /// `Rc<RefCell<...>>`, so the clone is cheap.
+    pub running_env: Option<Vec<HashMap<String, Cell>>>,
 }
 
 impl Task {
@@ -104,6 +113,7 @@ impl Task {
             parent_scope,
             segments: Vec::new(),
             current_segment: 0,
+            running_env: None,
         }
     }
 

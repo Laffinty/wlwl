@@ -266,6 +266,25 @@ impl Env {
         }
     }
 
+    /// Take the entire scope stack out of the Env, leaving it in an
+    /// empty-but-valid state (a single empty scope so subsequent
+    /// `get`/`set_local` calls don't panic). Used by the segmented
+    /// task runner (Phase B5a-3 Path B) to install / save per-segment
+    /// env state around mid-body suspension.
+    pub fn take_scopes(&mut self) -> Vec<HashMap<String, Cell>> {
+        std::mem::take(&mut self.scopes)
+    }
+
+    /// Replace the scope stack wholesale. The caller must pass at
+    /// least one scope; if `new_scopes` is empty we re-seed with a
+    /// single empty scope so the invariant holds.
+    pub fn replace_scopes(&mut self, mut new_scopes: Vec<HashMap<String, Cell>>) {
+        if new_scopes.is_empty() {
+            new_scopes.push(HashMap::new());
+        }
+        self.scopes = new_scopes;
+    }
+
     /// Walk the scope chain from innermost to outermost; return the
     /// first match as a borrow guard on the inner value. Used for
     /// variable reads. The returned `Ref` is tied to `&self`'s
@@ -3038,23 +3057,31 @@ fn builtin_await(ev: &mut Evaluator, args: Vec<Value>) -> WlwlResult<Outcome> {
     }
 }
 
-/// [v0.7 Phase C4] `YIELD()` — cooperative yield point (plan §3 C4).
+/// [v0.7 Phase C4 + B5a-3 Path B] `YIELD()` — cooperative yield point
+/// (plan §3 C4).
 ///
 /// Produces `Signal::Yield(YieldReason::Explicit)`. The signal
 /// propagates up the eval stack exactly like `Break` / `Continue` /
 /// `Return` (B5a-3 plumbing); `step_once` / `step_call` translate it
 /// to `StepResult::Yield`, while the run-to-completion `eval` rejects
 /// it with **E0014** (yield is only valid inside a scheduler step
-/// loop).
+/// loop or a task body — see the B5a-3 Path B segmentation contract).
+///
+/// Inside a scheduled task body, the signal is caught by
+/// `run_task_segments` (B5a-3 Path B), which marks the task
+/// `Suspended(Explicit)`, advances `current_segment`, and re-enqueues
+/// the task so the scheduler loop can resume from the next segment.
+/// LET bindings made in earlier segments persist because the task's
+/// `running_env` is saved across the yield.
 ///
 /// Error contract:
 /// - **E0022** when YIELD itself is called with != 0 arguments.
 ///
-/// At C4 the scheduler is not yet wired (B5b), so a Yield surfaces
-/// from `step_once` as a parked-step result and the internal
-/// `__YIELD_TEST__` markers remain as the nested-arg-eval tripwires.
-/// YIELD inside a synchronous SPAWN child is not a supported
-/// checkpoint until B5b replaces sync execution with the real loop.
+/// Note: at SPAWN time, YIELD positions are statically validated
+/// (`yield_split::split_body_for_yield`) and unsupported positions
+/// (LET RHS, non-Block branch, Array literal, indirect calls) raise
+/// **E0014** before any task body runs. So at runtime, every YIELD
+/// seen inside a task body is in a legal position.
 fn builtin_yield(ev: &mut Evaluator, args: Vec<Value>) -> WlwlResult<Outcome> {
     use crate::runtime::YieldReason;
     use wlwl_ast::Span as AstSpan;
@@ -3069,17 +3096,9 @@ fn builtin_yield(ev: &mut Evaluator, args: Vec<Value>) -> WlwlResult<Outcome> {
             diag_span,
         ));
     }
-    // B5b: inside a scheduled task, YIELD is a cooperative
-    // checkpoint (Transient cancel point, plan D10) and returns
-    // NULL so the body can continue. Mid-body suspension needs the
-    // remaining B5a-3 CPS rewrite; until then a Signal::Yield from
-    // a task body would abandon the rest of the closure.
-    //
-    // Outside a task (step_once / bare eval) YIELD keeps the C4
-    // contract: Signal::Yield(Explicit).
-    if ev.current_task.is_some() {
-        return Ok(Outcome::normal(Value::Null));
-    }
+    // B5a-3 Path B: always emit the explicit yield signal. The
+    // scheduler-driven task runner catches it; bare `eval` rejects
+    // it with E0014 ("yield outside a step context").
     Ok(Outcome {
         value: Value::Null,
         signal: Signal::Yield(YieldReason::Explicit),
@@ -5603,9 +5622,30 @@ impl Evaluator {
     /// records the terminal result. Host diagnostics become
     /// `TaskResult::Failed` (re-raised by AWAIT, P7-C2-002); user
     /// `ERR(...)` becomes `TaskResult::Err` (returned as a value).
+    ///
+    /// **B5a-3 Path B segmentation:** if the task body was segmented
+    /// at SPAWN time (i.e. it contains `YIELD()` in a legal
+    /// position), this function delegates to [`run_task_segments`],
+    /// which evaluates one segment per call. On a mid-body yield,
+    /// the task is marked `Suspended(Explicit)`, `current_segment`
+    /// is advanced, and the task is re-enqueued for the scheduler
+    /// loop to resume. Otherwise (no segmentation) the legacy
+    /// `invoke_closure` path runs to preserve v0.6 fidelity.
     fn run_one_task(&mut self, id: crate::runtime::TaskId, span: &Span) -> WlwlResult<()> {
-        use crate::runtime::TaskResult;
-        let Some((body, env)) = self.scheduler.begin_run(id) else {
+        use crate::runtime::{TaskResult, YieldReason};
+        // If the task was already segmented at SPAWN, take the
+        // segments-only path. Otherwise fall back to the original
+        // run-to-completion path that v0.6 fidelity tests exercise.
+        // We snapshot the segment count before `begin_run` so we can
+        // decide without re-borrowing the scheduler.
+        let segmented = self
+            .scheduler
+            .tasks
+            .get(id.0)
+            .map(|t| !t.segments.is_empty())
+            .unwrap_or(false);
+
+        let Some((body, _env)) = self.scheduler.begin_run(id) else {
             return Ok(());
         };
         let (params, expr, captured) = match body {
@@ -5627,20 +5667,201 @@ impl Evaluator {
                 return Ok(());
             }
         };
-        let _ = env; // captured env lives in the closure value
+
         let prev_task = self.current_task.take();
         self.current_task = Some(id);
-        let outcome = self.invoke_closure("TASK", params, expr, captured, Vec::new(), span);
-        self.current_task = prev_task;
-        let result = match outcome {
-            Ok(o) => match o.value {
-                Value::Err(payload) => TaskResult::Err(Value::Err(payload)),
-                v => TaskResult::Ok(v),
-            },
-            Err(e) => TaskResult::Failed(Box::new(e)),
+
+        // Both paths return `WlwlResult<Outcome>`. Host diagnostics
+        // (e.g. E0020 undefined name inside the child body) must
+        // NOT abort the scheduler loop; they become
+        // `TaskResult::Failed` and get re-raised by AWAIT (P7-C2-002).
+        // So we capture both arms as Result and unwrap them below.
+        let outcome_res = if segmented {
+            // Drop `expr`/`params` — segmented runner only needs
+            // `captured`. SPAWN guarantees params is empty; the
+            // body Expr is replaced by task.segments.
+            let _ = (params, expr);
+            self.run_task_segments(id, &captured, span)
+        } else {
+            self.invoke_closure("TASK", params, expr, captured, Vec::new(), span)
         };
-        self.scheduler.complete(id, result);
+
+        self.current_task = prev_task;
+
+        // Normalise: outcome is the success case (might carry
+        // Signal::Yield); Err becomes TaskResult::Failed.
+        let outcome = match outcome_res {
+            Ok(o) => o,
+            Err(e) => {
+                self.scheduler
+                    .complete(id, TaskResult::Failed(Box::new(e)));
+                return Ok(());
+            }
+        };
+
+        match outcome {
+            o if matches!(o.signal, Signal::Yield(YieldReason::Explicit)) => {
+                // Mid-body yield: task is not done. Mark Suspended,
+                // re-enqueue (Explicit is immediately re-eligible).
+                // `running_env` was saved by run_task_segments; the
+                // scheduler will resume by calling this same
+                // `run_one_task` again on the next loop iteration.
+                let task = &mut self.scheduler.tasks[id.0];
+                task.state = crate::runtime::TaskState::Suspended(YieldReason::Explicit);
+                task.current_segment += 1;
+                self.scheduler.enqueue(id);
+            }
+            o => {
+                // Segment completed without yielding. If there are
+                // more segments ahead, the scheduler should run them
+                // — static segmentation can put a "conditional yield"
+                // (e.g. inside an IF branch that's not taken) at a
+                // segment boundary, and we still need to execute the
+                // post-boundary code. Loop by re-enqueueing the task
+                // and advancing current_segment; the scheduler will
+                // call back into `run_one_task` and run the next
+                // segment. (A no-segment-tail body that finishes
+                // here will see current_segment == segments.len()
+                // and fall through to "mark Done" below.)
+                let total_segments = self.scheduler.tasks[id.0].segments.len();
+                let cur = self.scheduler.tasks[id.0].current_segment;
+                if cur + 1 < total_segments {
+                    let task = &mut self.scheduler.tasks[id.0];
+                    task.current_segment += 1;
+                    // running_env was saved by run_task_segments and
+                    // stays valid for the next segment.
+                    // Park as Pending and re-enqueue so the
+                    // scheduler loop picks up the next segment.
+                    task.state = crate::runtime::TaskState::Pending;
+                    self.scheduler.enqueue(id);
+                } else {
+                    let result = match o.value {
+                        Value::Err(payload) => TaskResult::Err(Value::Err(payload)),
+                        v => TaskResult::Ok(v),
+                    };
+                    self.scheduler.complete(id, result);
+                }
+            }
+        }
         Ok(())
+    }
+
+    /// [Phase B5a-3 Path B] Run the current segment of a segmented
+    /// task body. Manages the env scope-stack around the segment run
+    /// so that LET bindings made in earlier segments remain
+    /// accessible when the task is resumed.
+    ///
+    /// Lifecycle:
+    /// 1. Save the caller's env (`env.take_scopes`).
+    /// 2. Install either the saved `running_env` (resumption after
+    ///    yield) or a fresh `[captured, ...caller, task_frame]`
+    ///    stack (first run).
+    /// 3. Evaluate `segments[current_segment]` as a top-level block
+    ///    (`eval_block(_, true)` does not push/pop a scope).
+    /// 4. On `Signal::Yield(Explicit)`: capture the current
+    ///    `env.scopes` into `task.running_env` so the next segment
+    ///    run starts from this state. On any other outcome (normal,
+    ///    error, other signal): the segment is terminal — drop
+    ///    `running_env` and return.
+    /// 5. Restore the caller's env regardless.
+    fn run_task_segments(
+        &mut self,
+        id: crate::runtime::TaskId,
+        captured_env: &Env,
+        span: &Span,
+    ) -> WlwlResult<Outcome> {
+        // Step 1: save caller's env.
+        let saved_caller_scopes = self.env.take_scopes();
+
+        // Step 2: install env. Take `running_env` out of the task so
+        // we can install it directly without re-borrowing.
+        let new_scopes = {
+            let task = &mut self.scheduler.tasks[id.0];
+            task.running_env.take()
+        };
+        let new_scopes = match new_scopes {
+            Some(re) => re,
+            None => {
+                // First run: build [captured, caller, task_frame].
+                // We also apply the same E-CloCap upgrade as
+                // `invoke_closure` (plan §5.5): every cell in the
+                // captured scopes becomes MUT so a `SET` against a
+                // captured `LET` binding from inside the task body
+                // (or any sibling that shares the same lexical LET)
+                // succeeds. The upgrade mutates the Cell (an
+                // Rc<RefCell<Binding>>) so the change is also visible
+                // from the parent's scope — exactly what
+                // `c7_child_set_on_captured_let_upgrades_like_single_task`
+                // relies on.
+                for scope in &captured_env.scopes {
+                    for cell in scope.values() {
+                        cell.borrow_mut().mutable = true;
+                    }
+                }
+                let mut ns: Vec<HashMap<String, Cell>> = captured_env.scopes.clone();
+                ns.extend(saved_caller_scopes.iter().cloned());
+                ns.push(HashMap::new()); // task_frame (persistent LETs)
+                ns
+            }
+        };
+        self.env.replace_scopes(new_scopes);
+
+        // Snapshot the segment we're about to run. We use a Vec<Expr>
+        // reference inside the task — but the borrow checker doesn't
+        // let us hold `&self.scheduler.tasks[id.0]` across the
+        // `eval_block` call (which mutably borrows `self.env`).
+        // Clone the segment exprs into a local Vec so we can drop
+        // the scheduler borrow.
+        let segment_exprs: Vec<Expr> = {
+            let task = &self.scheduler.tasks[id.0];
+            // current_segment was advanced by run_one_task *only*
+            // when this call returned a yield. On first run it's
+            // 0; on resumption the previous yield advanced it to
+            // point at the next segment.
+            task.segments
+                .get(task.current_segment)
+                .cloned()
+                .expect("current_segment must be in bounds when a yield was caught")
+        };
+
+        // Step 3: evaluate the segment. `top_level = true` so
+        // `eval_block` does not push/pop a scope — LETs in the
+        // segment accumulate in the task_frame (top of env.scopes)
+        // and persist across segments. Sub-blocks inside the
+        // segment still get their own scopes via eval_block(false).
+        let outcome = match self.eval_block(&segment_exprs, true) {
+            Ok(o) => o,
+            Err(e) => {
+                // Restore caller env on error before bubbling, so
+                // the caller's scope stack is intact for whatever
+                // catches the diagnostic.
+                let _ = std::mem::replace(
+                    &mut self.env.scopes,
+                    saved_caller_scopes.clone(),
+                );
+                return Err(e);
+            }
+        };
+
+        // Step 5: take the running env state back out of self.env.
+        let running_after = std::mem::replace(&mut self.env.scopes, saved_caller_scopes);
+
+        // Step 4: persist running_env across segment boundaries. We
+        // save on BOTH yield and non-yield outcomes so that
+        // subsequent segments (when a previous segment didn't yield
+        // — e.g. an IF branch containing YIELD was not taken) still
+        // see the LET bindings accumulated by earlier segments.
+        // The Task's `running_env` is dropped in `run_one_task` once
+        // the task reaches its terminal state (last segment ran
+        // without yield, or a host diagnostic fired).
+        let task = &mut self.scheduler.tasks[id.0];
+        task.running_env = Some(running_after);
+
+        // The span is currently unused here but is kept on the
+        // signature so future diagnostic enrichment (e.g. tracking
+        // which segment yielded where) has a hook.
+        let _ = span;
+        Ok(outcome)
     }
 
     /// Drain the run queue (plan §5.1.1 `run_until_idle`).
@@ -7833,6 +8054,117 @@ mod tests {
         "#;
         let v = run(src).expect("YIELD in a task must not abort the body");
         assert_eq!(v, Value::Integer(42));
+    }
+
+    /// [Phase B5a-3 Path B] LET bindings made BEFORE a YIELD must
+    /// persist across the suspension point. Here we bind `x` in
+    /// segment 0, yield, then in segment 1 SET x to a new value
+    /// (must be a `LET MUT` per v0.6 §3.1) and return it. AWAIT
+    /// receives 2, not the initial 1.
+    #[test]
+    fn mid_body_yield_preserves_let_bindings_across_segments() {
+        let src = r#"
+            SCOPE(FUN(() ,
+                LET(h, SPAWN(FUN(() , LET MUT(x, 1); YIELD(); SET(x, 2); x)));
+                AWAIT(h)
+            ))
+        "#;
+        let v = run(src).expect("LET bindings before YIELD must persist");
+        assert_eq!(v, Value::Integer(2));
+    }
+
+    /// [Phase B5a-3 Path B] Multiple YIELD checkpoints in one body
+    /// produce multiple segments; the scheduler resumes them in
+    /// order. The body makes a counter that increments across two
+    /// yield points and confirms the final value reflects ALL
+    /// pre-yield state. Uses pre-computed literals for arithmetic
+    /// (wlwl parser does not expose infix `+` in argument
+    /// position; we avoid needing it).
+    #[test]
+    fn mid_body_two_yields_run_three_segments_in_order() {
+        let src = r#"
+            SCOPE(FUN(() ,
+                LET(h, SPAWN(FUN(() ,
+                    LET MUT(x, 0);
+                    YIELD();
+                    SET(x, 1);
+                    YIELD();
+                    SET(x, 11);
+                    x
+                )));
+                AWAIT(h)
+            ))
+        "#;
+        let v = run(src).expect("multi-YIELD body must complete");
+        assert_eq!(v, Value::Integer(11));
+    }
+
+    /// [Phase B5a-3 Path B] A task body that calls another task
+    /// (SPAWN inside SPAWN) — the inner task also has segmentation.
+    /// Both AWAITs must observe the correct terminal values.
+    #[test]
+    fn mid_body_yield_in_child_spawn_nested() {
+        let src = r#"
+            SCOPE(FUN(() ,
+                LET(h, SPAWN(FUN(() ,
+                    LET(h2, SPAWN(FUN(() , 5; YIELD(); 6)));
+                    LET(v, AWAIT(h2));
+                    [v, 7]
+                )));
+                AWAIT(h)
+            ))
+        "#;
+        let v = run(src).expect("nested SPAWN with YIELD must complete");
+        match v {
+            Value::Array(items) => {
+                assert_eq!(items.len(), 2);
+                assert_eq!(items[0], Value::Integer(6));
+                assert_eq!(items[1], Value::Integer(7));
+            }
+            other => panic!("expected array, got {:?}", other),
+        }
+    }
+
+    /// [Phase B5a-3 Path B] YIELD inside an IF branch that itself
+    /// is a multi-statement Block: the IF-then-branch contains
+    /// `LET(y, 1); YIELD()`. When cond is FALSE, the else-branch
+    /// runs and the YIELD is never hit.
+    #[test]
+    fn mid_body_yield_in_if_branch_not_taken_evaluates_else() {
+        let src = r#"
+            SCOPE(FUN(() ,
+                LET(h, SPAWN(FUN(() ,
+                    LET MUT(x, 100);
+                    IF(FALSE, LET(_y, 1); YIELD(); LET(_z, 2), SET(x, 5));
+                    x
+                )));
+                AWAIT(h)
+            ))
+        "#;
+        let v = run(src).expect("IF false must take else, no YIELD fired");
+        assert_eq!(v, Value::Integer(5));
+    }
+
+    /// [Phase B5a-3 Path B] YIELD inside an IF branch that IS
+    /// taken: the then-branch yields, the task suspends, the
+    /// scheduler resumes, and the post-IF code in the next segment
+    /// continues normally. We assert the body's final value
+    /// (post-IF) is what AWAIT receives.
+    #[test]
+    fn mid_body_yield_in_if_branch_taken_resumes_after() {
+        let src = r#"
+            SCOPE(FUN(() ,
+                LET(h, SPAWN(FUN(() ,
+                    LET MUT(x, 0);
+                    IF(TRUE, SET(x, 1); YIELD(), SET(x, 99));
+                    SET(x, 101);
+                    x
+                )));
+                AWAIT(h)
+            ))
+        "#;
+        let v = run(src).expect("IF true with yield must resume");
+        assert_eq!(v, Value::Integer(101));
     }
 
     /// Like `run` but also returns the warnings accumulated during the
