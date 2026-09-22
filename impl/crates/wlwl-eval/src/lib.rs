@@ -2859,7 +2859,40 @@ fn builtin_spawn(
         body: body.clone(),
         env: captured_env.clone(),
     };
-    let task = Task::new_pending(
+    // [v0.7 Phase B5a-3 Path B] Pre-segment the closure body at any
+    // YIELD() checkpoints. If the body contains no YIELD (the common
+    // v0.6 case), `segments` stays empty and the scheduler falls
+    // back to running the original body in one shot, preserving
+    // fidelity. If YIELD appears at an unsupported position (not a
+    // direct child of an Expr::Block), reject the SPAWN with E0014
+    // — the user gets a clear error pointing at the offending
+    // YIELD call rather than a runtime surprise later.
+    let segments = match crate::yield_split::split_body_for_yield(&body) {
+        Ok(segs) => segs,
+        Err(crate::yield_split::YieldSplitError::NestedYield { span }) => {
+            return Err(ev.diag(
+                ErrorCode::E0014,
+                "YIELD must appear as a direct child of a Block. Blocks in wlwl come \
+                 from multi-statement sequences separated by ';' (e.g. `1; YIELD(); 2` \
+                 inside a FUN body or IF branch). Nested positions like LET RHS / \
+                 Array literal `[YIELD()]` / indirect calls (LET y = YIELD; y()) are \
+                 not supported (plan §3 Phase B5a-3, path B, 2026-09-22)"
+                    .to_string(),
+                span,
+            ));
+        }
+        Err(crate::yield_split::YieldSplitError::BodyNotBlock { span }) => {
+            return Err(ev.diag(
+                ErrorCode::E0014,
+                "task body must be a Block (a multi-statement sequence separated by ';') \
+                 when using YIELD(); a single-expression body cannot host mid-body YIELD \
+                 under path B"
+                    .to_string(),
+                span,
+            ));
+        }
+    };
+    let mut task = Task::new_pending(
         task_id,
         generation,
         body_value,
@@ -2868,6 +2901,10 @@ fn builtin_spawn(
             .current_scope
             .unwrap_or(crate::runtime::ScopeId(0)),
     );
+    // Stash the segmentation so `run_one_task` (B5a-3-B) can pick it
+    // up. Empty Vec means "no YIELD present; run the original body
+    // unchanged".
+    task.segments = segments;
     // B5b: enqueue without running. AWAIT / SCOPE drain the queue
     // via scheduler_run_until_*. Register on the active scope so
     // scope-exit can await outstanding children (plan §5.2).
@@ -4145,6 +4182,13 @@ pub mod task;
 /// rich-Value inspection. Real impls in this crate, bound via
 /// `test::BUILTINS` through `NativeInvoke::Builtin`.
 pub mod test;
+
+/// [v0.7 Phase B5a-3] Body segmentation at YIELD checkpoints (Path B).
+/// See `yield_split.rs` for the rationale; this module splits a task
+/// closure body into a list of segments that the scheduler can run
+/// independently, allowing real mid-body suspension. Behaviour wires
+/// up in commit B5a-3-B (lib.rs::run_one_task + builtin_yield).
+pub mod yield_split;
 
 pub struct Evaluator {
     env: Env,
@@ -7767,12 +7811,23 @@ mod tests {
 
     #[test]
     fn c5_yield_in_task_is_cooperative_checkpoint() {
-        // B5b: YIELD inside a task body returns NULL and the body
-        // continues (Transient checkpoint). Does NOT abandon the
-        // rest of the closure.
+        // [Phase B5a-3 Path B] The body contains YIELD in a valid
+        // position: a direct child of the FUN's body Block (the
+        // Block is the multi-statement sequence `1; YIELD(); 42`,
+        // which the parser wraps in Expr::Block). Segmentation
+        // splits the body so the scheduler can run the post-YIELD
+        // segment after the pre-YIELD segment yields. The task
+        // still finishes with 42, confirming that a YIELD inside a
+        // task does NOT abandon the rest of the closure.
+        //
+        // (Pre-B5a-3 test wrote this as `LET(a, YIELD()); 42` which
+        // put YIELD inside LET's RHS — that position is rejected
+        // by path B's Block-recursive rule. Note also that
+        // `[YIELD()]` is the Array literal, not Block; only
+        // multi-statement `;`-separated sequences become Blocks.)
         let src = r#"
             SCOPE(FUN(() ,
-                LET(h, SPAWN(FUN(() , LET(a, YIELD()); 42)));
+                LET(h, SPAWN(FUN(() , 1; YIELD(); 42)));
                 AWAIT(h)
             ))
         "#;

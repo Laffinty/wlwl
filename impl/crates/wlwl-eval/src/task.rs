@@ -14,6 +14,7 @@
 
 use crate::runtime::{EvalState, ScopeId, TaskHandle, TaskId, TaskState};
 use crate::{Env, Value};
+use wlwl_ast::Expr;
 
 /// One scheduled task (plan §5.2).
 ///
@@ -33,6 +34,16 @@ use crate::{Env, Value};
 /// scheduler uses this for top-down cancellation: when the scope
 /// transitions to `cancelled = true`, every task with this id in
 /// `parent_scope` gets a cancel signal.
+///
+/// `segments` / `current_segment` (Phase B5a-3 Path B, see
+/// `crate::yield_split`): the closure body is pre-segmented into a
+/// sequence of "runnable chunks" at SPAWN time. The scheduler runs
+/// `segments[current_segment]` per `run_one_task` call and advances
+/// `current_segment` on each `Signal::Yield`. The last segment does
+/// not contain a YIELD (it produces the task's terminal value). For
+/// task bodies that contain no YIELD at all, `segments` is left
+/// empty (the runtime falls back to running the original body
+/// directly, preserving v0.6 fidelity for non-yielding tasks).
 #[derive(Debug)]
 pub struct Task {
     pub id: TaskId,
@@ -57,6 +68,16 @@ pub struct Task {
     /// (plan §10 D9) walks the scope tree from any cancelled scope
     /// to mark all descendant tasks Cancelled.
     pub parent_scope: ScopeId,
+    /// [Phase B5a-3 Path B] Body segmentation. Each inner `Vec<Expr>`
+    /// is a sequence to run as one segment; see
+    /// `crate::yield_split::split_body_for_yield`. Empty means
+    /// "no segmentation; scheduler runs the original body in one
+    /// shot" (the v0.6 fidelity path for tasks without YIELD).
+    pub segments: Vec<Vec<Expr>>,
+    /// [Phase B5a-3 Path B] Index of the next segment to run.
+    /// `0` on first run; incremented when a segment produces a
+    /// `Signal::Yield(Explicit)` that the scheduler captures.
+    pub current_segment: usize,
 }
 
 impl Task {
@@ -81,6 +102,8 @@ impl Task {
             state: TaskState::Pending,
             yield_points: Vec::new(),
             parent_scope,
+            segments: Vec::new(),
+            current_segment: 0,
         }
     }
 
