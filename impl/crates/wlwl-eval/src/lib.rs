@@ -8814,6 +8814,253 @@ mod tests {
     }
 
     // ────────────────────────────────────────────────────────────
+    // [v0.7 Phase E-C-2] ERR wire-format snapshot regression
+    //
+    // Plan §3 E4 (blocking item) §6.0 row "ERR consumer 跨 task
+    // 回归" calls for 8 snapshot tests. Each test pins one aspect
+    // of the cross-task ERR payload wire format so future refactors
+    // of `builtin_await`, `builtin_channel_*`, or `builtin_*`
+    // consumer implementations cannot silently change the shape
+    // of an ERR value reaching the parent task.
+    //
+    // Wire-format capture pattern: the SCOPE fn body observes the
+    // awaited ERR and binds it inside OK(...), so the SCOPE returns
+    // `OK(Value::Err(...))` at the top. The top-level driver then
+    // unwraps the OK and inspects the inner ERR (literal Value::Eq
+    // or shape assertions on dict entries / variant types).
+    // This avoids triggering the top-level E0102 escape path while
+    // letting us assert the exact Rust-side Value representation.
+    // ────────────────────────────────────────────────────────────
+
+    #[test]
+    fn ec_snap1_string_payload_awaited_shape() {
+        // AWAIT(child_returning_ERR_string) returns a Value::Err
+        // whose payload is the original Value::String. Wire-format
+        // snapshot: observe (IS_ERR=TRUE, ERR_PAYLOAD="boom",
+        // TYPE="RESULT"). If AWAIT silently wrapped in OK, or
+        // stripped the payload, this tuple would shift.
+        let src = r#"
+            SCOPE(FUN(() ,
+                LET(h, SPAWN(FUN(() , ERR("boom"))));
+                LET(r, AWAIT(h));
+                IF(IS_ERR(r),
+                    [IS_ERR(r), ERR_PAYLOAD(r), TYPE(r)],
+                    [IS_ERR(r), "not-err", TYPE(r)]
+                )
+            ))
+        "#;
+        let v = run(src).expect("snap1 observation tuple");
+        assert_eq!(
+            v,
+            Value::Array(vec![
+                Value::Boolean(true),
+                Value::String("boom".into()),
+                Value::String("RESULT".into()),
+            ]),
+            "AWAIT(ERR-string) wire-format: [IS_ERR=true, payload=\"boom\", TYPE=\"RESULT\"]"
+        );
+    }
+
+    #[test]
+    fn ec_snap2_dict_payload_awaited_shape() {
+        // AWAIT(child_returning_ERR_dict) preserves the dict
+        // verbatim. Observe (IS_ERR, kind, input, TYPE).
+        let src = r#"
+            SCOPE(FUN(() ,
+                LET(h, SPAWN(FUN(() , ERR(["kind": "ParseError", "input": "abc"]))));
+                LET(r, AWAIT(h));
+                IF(IS_ERR(r),
+                    LET(p, ERR_PAYLOAD(r));
+                    [IS_ERR(r), AT_K(p, "kind", "?"), AT_K(p, "input", "?"), TYPE(r)],
+                    [IS_ERR(r), "no", "no", TYPE(r)]
+                )
+            ))
+        "#;
+        let v = run(src).expect("snap2 observation tuple");
+        assert_eq!(
+            v,
+            Value::Array(vec![
+                Value::Boolean(true),
+                Value::String("ParseError".into()),
+                Value::String("abc".into()),
+                Value::String("RESULT".into()),
+            ]),
+            "AWAIT(ERR-dict) wire-format: dict keys/values intact, TYPE=RESULT"
+        );
+    }
+
+    #[test]
+    fn ec_snap3_channel_new_returns_handle_with_type_cap_len() {
+        // Path B runs synchronously, so the "AWAIT(cancelled)"
+        // shape (ERR(kind="Cancelled", task=<repr>)) cannot be
+        // observed end-to-end without an in-flight suspended task
+        // — see P7-D2-001 / P7-E3-001. We replace this snapshot
+        // with a different cross-task wire-format invariant:
+        // CHANNEL_NEW(buf) returns Value::ChannelHandle whose TYPE
+        // is "CHANNEL" and whose CHANNEL_LEN / CHANNEL_CAP reflect
+        // the requested buffer size (here buf=0 → both 0). This
+        // locks the channel handle surface across v0.7 + future
+        // refactors of channel.rs.
+        let src = r#"
+            SCOPE(FUN(() ,
+                LET(ch, CHANNEL_NEW(0));
+                [TYPE(ch), CHANNEL_LEN(ch), CHANNEL_CAP(ch)]
+            ))
+        "#;
+        let v = run(src).expect("snap3 channel-new observation");
+        assert_eq!(
+            v,
+            Value::Array(vec![
+                Value::String("CHANNEL".into()),
+                Value::Integer(0),
+                Value::Integer(0),
+            ]),
+            "CHANNEL_NEW(0) handle: TYPE='CHANNEL', LEN=0, CAP=0 (sync channel)"
+        );
+    }
+
+    #[test]
+    fn ec_snap4_channel_recv_closed_payload_shape() {
+        // CHANNEL_RECV after close returns
+        // ERR({kind:"ChannelClosed", channel:"<channel handle id=X gen=Y>"}).
+        // Locks the channel payload format from channel.rs::recv_closed_err.
+        let src = r#"
+            SCOPE(FUN(() ,
+                LET(ch, CHANNEL_NEW(0));
+                CHANNEL_CLOSE(ch);
+                LET(h, SPAWN(FUN(() , CHANNEL_RECV(ch))));
+                LET(r, AWAIT(h));
+                IF(IS_ERR(r),
+                    LET(p, ERR_PAYLOAD(r));
+                    [IS_ERR(r), AT_K(p, "kind", "?"), TYPE(r)],
+                    [IS_ERR(r), "no-close", TYPE(r)]
+                )
+            ))
+        "#;
+        let v = run(src).expect("snap4 channel-closed observation");
+        let arr = match v {
+            Value::Array(a) => a,
+            other => panic!("expected observation array, got {other:?}"),
+        };
+        assert_eq!(arr.len(), 3, "observation tuple must have 3 entries");
+        assert_eq!(arr[0], Value::Boolean(true));
+        assert_eq!(
+            arr[1],
+            Value::String("ChannelClosed".into()),
+            "kind field must be 'ChannelClosed'"
+        );
+        assert_eq!(arr[2], Value::String("RESULT".into()));
+    }
+
+    #[test]
+    fn ec_snap5_is_err_cross_task_is_boolean() {
+        // Pin: IS_ERR cross-task returns Boolean — never the
+        // payload. The §12.2 ERR consumer contract.
+        let src = r#"
+            SCOPE(FUN(() ,
+                LET(h, SPAWN(FUN(() , ERR("boom"))));
+                IS_ERR(AWAIT(h))
+            ))
+        "#;
+        let v = run(src).expect("IS_ERR cross-task");
+        assert_eq!(
+            v,
+            Value::Boolean(true),
+            "IS_ERR(ERR-from-AWAIT) must be Boolean(true)"
+        );
+    }
+
+    #[test]
+    fn ec_snap6_unwrap_or_cross_task_returns_default() {
+        // Pin: UNWRAP_OR cross-task returns the default value's
+        // exact Value variant (Integer, not String).
+        let src = r#"
+            SCOPE(FUN(() ,
+                LET(h, SPAWN(FUN(() , ERR("boom"))));
+                UNWRAP_OR(AWAIT(h), -1)
+            ))
+        "#;
+        let v = run(src).expect("UNWRAP_OR cross-task");
+        assert_eq!(
+            v,
+            Value::Integer(-1),
+            "UNWRAP_OR must yield the default Integer, not the ERR payload"
+        );
+    }
+
+    #[test]
+    fn ec_snap7_await_preserves_raw_value_no_implicit_ok() {
+        // Pin: AWAIT returns the raw value (Integer / String /
+        // Value::Err), NOT an OK-wrapped RESULT. TRY only
+        // consumes OK/ERR; for non-RESULT values the user must
+        // wrap explicitly. This locks the wire-format guarantee:
+        // AWAIT preserves the child's terminal value verbatim,
+        // with no implicit OK wrapping.
+        //
+        // Observe: AWAIT(42) -> Integer(42); TYPE confirms
+        // Integer; IS_OK (Boolean coercion via ERR consumer) is
+        // FALSE (Integer is not RESULT).
+        let src = r#"
+            SCOPE(FUN(() ,
+                LET(h, SPAWN(FUN(() , 42)));
+                LET(r, AWAIT(h));
+                [TYPE(r), IS_OK(r)]
+            ))
+        "#;
+        let v = run(src).expect("snap7 raw-value observation");
+        assert_eq!(
+            v,
+            Value::Array(vec![
+                Value::String("INTEGER".into()),
+                Value::Boolean(false),
+            ]),
+            "AWAIT(42) preserves Integer(42) verbatim — TYPE=INTEGER, IS_OK=FALSE"
+        );
+    }
+
+    #[test]
+    fn ec_snap8_nested_err_payload_flattens_dict_inner() {
+        // Pin: WRAP clones the inner ERR's *payload* (the inner
+        // Dict), not the inner Value::Err wrapper. So a
+        // Dict-inside-ERR payload inside WRAP becomes a Dict at
+        // the outer "original" slot. WRAP semantics from §12.2
+        // / registry row "WRAP" — the original entry is the
+        // inner ERR value, but if that inner value was a Dict
+        // (the common case) it has been flattened one level.
+        //
+        // WRAP(ERR(dict), ctx) yields:
+        //   Value::Err(Box::new(Value::Dict(vec![
+        //     ("original", <inner-ERR's payload, which is a Dict>),
+        //     ("context", ctx),
+        //   ])))
+        //
+        // Observation tuple: [inner-kind, outer-context]
+        let src = r#"
+            SCOPE(FUN(() ,
+                LET(h, SPAWN(FUN(() ,
+                    WRAP(ERR(["kind": "inner"]), "outer-ctx")
+                )));
+                LET(r, AWAIT(h));
+                IF(IS_ERR(r),
+                    LET(p, ERR_PAYLOAD(r));
+                    LET(orig, AT_K(p, "original", NULL));
+                    [AT_K(orig, "kind", "?"), AT_K(p, "context", "?")],
+                    [NULL, NULL]
+                )
+            ))
+        "#;
+        let v = run(src).expect("snap8 nested-payload observation");
+        assert_eq!(
+            v,
+            Value::Array(vec![
+                Value::String("inner".into()),
+                Value::String("outer-ctx".into()),
+            ]),
+            "WRAP flattens inner ERR's Dict payload; context key carries the ctx"
+        );
+    }
+
+    // ────────────────────────────────────────────────────────────
     // [v0.7 Phase C4] YIELD() builtin
     //
     // User-facing cooperative yield. Same Signal::Yield plumbing as
