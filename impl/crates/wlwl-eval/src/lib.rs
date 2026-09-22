@@ -9061,11 +9061,161 @@ mod tests {
     }
 
     // ────────────────────────────────────────────────────────────
+    // [v0.7 Phase E-D] IF short-circuit semantics under concurrency
+    //
+    // Plan §3 E5: "IF(cond, then, else) 在并发路径下的短路语义是否
+    // 需要调整 — 评估结果记录在 deviations.md"
+    //
+    // Conclusion: NO adjustment needed. eval_if is purely
+    // synchronous; the condition is evaluated to a Value (which
+    // can be a Value::Err from AWAIT); §8.3 IF row semantics
+    // (ERR cond + else → else; ERR cond + no else → propagate
+    // via §8.5 escape) apply identically whether the condition
+    // came from a child task or local evaluation. Path B's
+    // synchronous execution does not introduce any new edge case
+    // — the IF arms are evaluated sequentially in the same call
+    // frame, and AWAIT within arms drives the scheduler just as
+    // it does for any other expression.
+    //
+    // These tests pin the assessment; deviations.md P7-E5-001
+    // records the no-change decision.
+    // ────────────────────────────────────────────────────────────
+
+    #[test]
+    fn ed_if_truthy_awaited_value_routes_to_then() {
+        // AWAIT(child_returning_OK_value) -> OK(Integer(42)).
+        // IF treats it as truthy → then branch.
+        let src = r#"
+            SCOPE(FUN(() ,
+                LET(h, SPAWN(FUN(() , OK(42))));
+                LET(v, AWAIT(h));
+                IF(IS_OK(v), "then-ok", "else-ok")
+            ))
+        "#;
+        let v = run(src).expect("IF(IS_OK(AWAIT))");
+        assert_eq!(
+            v,
+            Value::String("then-ok".into()),
+            "OK from AWAIT is truthy in IF; routes to then branch"
+        );
+    }
+
+    #[test]
+    fn ed_if_falsy_awaited_value_routes_to_else() {
+        // AWAIT(child_returning_FALSE) -> Boolean(false).
+        // IF treats it as falsy → else branch.
+        let src = r#"
+            SCOPE(FUN(() ,
+                LET(h, SPAWN(FUN(() , FALSE)));
+                LET(v, AWAIT(h));
+                IF(v, "then-f", "else-f")
+            ))
+        "#;
+        let v = run(src).expect("IF(AWAIT(FALSE))");
+        assert_eq!(
+            v,
+            Value::String("else-f".into()),
+            "FALSE from AWAIT is falsy in IF; routes to else branch"
+        );
+    }
+
+    #[test]
+    fn ed_if_err_condition_no_else_surfaces_err_to_scope() {
+        // IF(AWAIT(child_ERR)) with no else branch: ERR cond +
+        // no else → IF returns Outcome{value: Value::Err, signal:
+        // None} (per §8.5 escape). The SCOPE.fn_body returns
+        // Value::Err (per E-B: "fn body Value::Err passes through
+        // SCOPE"). Top-level IS_ERR observes the propagation.
+        //
+        // We use an observation tuple (IS_ERR) so the test does
+        // not hit E0102 (the top-level escape would otherwise turn
+        // the unhandled ERR into E0102 / "unhandled ERR escaped").
+        let src = r#"
+            LET(scope_out, SCOPE(FUN(() ,
+                LET(h, SPAWN(FUN(() , ERR("from-child"))));
+                LET(v, AWAIT(h));
+                IF(v, "then")   // no else; ERR cond → ERR propagates
+            )));
+            IS_ERR(scope_out)
+        "#;
+        let v = run(src).expect("IF(ERR-no-else) → SCOPE returns ERR");
+        assert_eq!(
+            v,
+            Value::Boolean(true),
+            "IF(ERR cond, no else) propagates the ERR to SCOPE; outer IS_ERR == TRUE"
+        );
+    }
+
+    #[test]
+    fn ed_if_no_else_with_truthy_does_not_propagate() {
+        // IF(AWAIT(child_OK(42)), "then") with no else — truthy
+        // condition, then branch evaluated. Should NOT propagate
+        // anything.
+        let src = r#"
+            SCOPE(FUN(() ,
+                LET(h, SPAWN(FUN(() , OK(42))));
+                LET(v, AWAIT(h));
+                IF(IS_OK(v), "then-only")
+            ))
+        "#;
+        let v = run(src).expect("IF(truthy-no-else)");
+        assert_eq!(
+            v,
+            Value::String("then-only".into()),
+            "IF with truthy condition + no else evaluates the then branch and returns its value"
+        );
+    }
+
+    #[test]
+    fn ed_if_nested_with_concurrent_branches() {
+        // IF with both branches containing SPAWN. Each branch
+        // spawns its own child and AWAITs. Path B synchronous
+        // execution: each branch runs to completion before IF
+        // returns. Both branches should be reachable; we test
+        // both the truthy and falsy paths.
+        let then_src = r#"
+            SCOPE(FUN(() ,
+                LET MUT(x, 0);
+                IF(TRUE,
+                    LET(h, SPAWN(FUN(() , +(1, 1))));
+                    SET(x, AWAIT(h));
+                    x,
+                    -1
+                )
+            ))
+        "#;
+        let v_then = run(then_src).expect("IF(TRUE, branch-with-SPAWN)");
+        assert_eq!(
+            v_then,
+            Value::Integer(2),
+            "IF(TRUE, ...) evaluates the then branch; AWAIT returns 2"
+        );
+        let else_src = r#"
+            SCOPE(FUN(() ,
+                LET MUT(x, 0);
+                IF(FALSE,
+                    -1,
+                    LET(h, SPAWN(FUN(() , +(10, 20))));
+                    SET(x, AWAIT(h));
+                    x
+                )
+            ))
+        "#;
+        let v_else = run(else_src).expect("IF(FALSE, ..., branch-with-SPAWN)");
+        assert_eq!(
+            v_else,
+            Value::Integer(30),
+            "IF(FALSE, ..., else) evaluates the else branch; AWAIT returns 30"
+        );
+    }
+
+    // ────────────────────────────────────────────────────────────
     // [v0.7 Phase C4] YIELD() builtin
     //
     // User-facing cooperative yield. Same Signal::Yield plumbing as
     // the internal __YIELD_TEST__ markers, but registered in
     // resolve_builtin so programs can call it by name.
+    // ────────────────────────────────────────────────────────────
     // ────────────────────────────────────────────────────────────
 
     #[test]
