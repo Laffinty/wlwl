@@ -94,6 +94,7 @@ jobs:
           version: ^0.20
 
       - name: cargo-deny check
+        shell: bash
         working-directory: impl
         run: |
           if [ ! -f Cargo.lock ]; then
