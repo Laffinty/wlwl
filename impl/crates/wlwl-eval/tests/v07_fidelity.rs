@@ -117,14 +117,33 @@ fn capture_all() -> Vec<FixtureRecord> {
             .arg(&path)
             .output()
             .unwrap_or_else(|e| panic!("failed to spawn `wlwl run {}`: {}", path.display(), e));
+        let stderr = normalize_paths(&String::from_utf8_lossy(&output.stderr));
         out.push(FixtureRecord {
             fixture: f.to_string(),
             exit_code: output.status.code(),
             stdout: String::from_utf8_lossy(&output.stdout).into_owned(),
-            stderr: String::from_utf8_lossy(&output.stderr).into_owned(),
+            stderr,
         });
     }
     out
+}
+
+/// Strip the absolute project-root path from diagnostic strings so
+/// the golden file is portable across CI hosts (Linux runners see
+/// `/home/runner/...`, Windows hosts see `D:\...`). The `wlwl`
+/// binary embeds the project root in error messages like
+/// `error[E0040]: ... outside project root (<PATH>)`; replacing
+/// `<PATH>` with a stable placeholder makes the golden independent
+/// of where the test was captured.
+fn normalize_paths(s: &str) -> String {
+    let root = fixture_root(); // impl/tests
+    // Try both OS-native and JSON-escaped forms. wlwl's diagnostic
+    // renderer prints the path in OS-native form; once serialised
+    // via serde_json it becomes JSON-escaped.
+    let native = root.display().to_string();
+    let escaped = native.replace('\\', "\\\\");
+    s.replace(&escaped, "<PROJECT_ROOT>")
+        .replace(&native, "<PROJECT_ROOT>")
 }
 
 fn write_golden(records: &[FixtureRecord]) {
