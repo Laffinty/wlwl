@@ -2925,39 +2925,25 @@ fn builtin_spawn(ev: &mut Evaluator, args: Vec<Value>) -> WlwlResult<Outcome> {
         body: body.clone(),
         env: captured_env.clone(),
     };
-    // [v0.7 Phase B5a-3 Path B] Pre-segment the closure body at any
-    // YIELD() checkpoints. If the body contains no YIELD (the common
-    // v0.6 case), `segments` stays empty and the scheduler falls
-    // back to running the original body in one shot, preserving
-    // fidelity. If YIELD appears at an unsupported position (not a
-    // direct child of an Expr::Block), reject the SPAWN with E0014
-    // — the user gets a clear error pointing at the offending
-    // YIELD call rather than a runtime surprise later.
-    let segments = match crate::yield_split::split_body_for_yield(&body) {
-        Ok(segs) => segs,
-        Err(crate::yield_split::YieldSplitError::NestedYield { span }) => {
-            return Err(ev.diag(
-                ErrorCode::E0014,
-                "YIELD must appear as a direct child of a Block. Blocks in wlwl come \
-                 from multi-statement sequences separated by ';' (e.g. `1; YIELD(); 2` \
-                 inside a FUN body or IF branch). Nested positions like LET RHS / \
-                 Array literal `[YIELD()]` / indirect calls (LET y = YIELD; y()) are \
-                 not supported (plan §3 Phase B5a-3, path B, 2026-09-22)"
-                    .to_string(),
-                span,
-            ));
-        }
-        Err(crate::yield_split::YieldSplitError::BodyNotBlock { span }) => {
-            return Err(ev.diag(
-                ErrorCode::E0014,
-                "task body must be a Block (a multi-statement sequence separated by ';') \
-                 when using YIELD(); a single-expression body cannot host mid-body YIELD \
-                 under path B"
-                    .to_string(),
-                span,
-            ));
-        }
-    };
+    // [v0.9 Step 2 / ADR-0017 §3.1] Package the closure body into
+    // a task-body entry spec via `yield_split::split_body_for_yield`.
+    // If the body contains no YIELD (the v0.6 fidelity case and the
+    // common SPAWN-without-yield case), `segments` is empty and the
+    // scheduler falls back to running the original body in one shot
+    // via `invoke_closure`. If YIELD is present, `segments` captures
+    // the body's top-level statements split at each YIELD-bearing
+    // statement; the scheduler runs segments sequentially and
+    // resumes at the next segment boundary when YIELD fires.
+    //
+    // v0.9 removed the v0.7/v0.8.1 validate-pass rejection path:
+    // YIELD is now legal in any expression position (LET RHS, IF
+    // branch, Array literal, top-level YIELD(), etc.). `E0014` is
+    // no longer raised for YIELD position by this path — see
+    // `yield_split.rs` module docs and ADR-0017 §3.1. The function
+    // signature changed from `Result<Segments, YieldSplitError>` to
+    // plain `Segments` because the `Err` variant is unreachable in
+    // v0.9 (clippy::result_unit_err).
+    let segments = crate::yield_split::split_body_for_yield(&body);
     let mut task = Task::new_pending(
         task_id,
         generation,
@@ -3124,11 +3110,12 @@ fn builtin_await(ev: &mut Evaluator, args: Vec<Value>) -> WlwlResult<Outcome> {
 /// Error contract:
 /// - **E0022** when YIELD itself is called with != 0 arguments.
 ///
-/// Note: at SPAWN time, YIELD positions are statically validated
-/// (`yield_split::split_body_for_yield`) and unsupported positions
-/// (LET RHS, non-Block branch, Array literal, indirect calls) raise
-/// **E0014** before any task body runs. So at runtime, every YIELD
-/// seen inside a task body is in a legal position.
+/// Note: at SPAWN time, `yield_split::split_body_for_yield` packages
+/// the body into segments split at any YIELD-bearing top-level
+/// statement (v0.9 Step 2, ADR-0017 §3.1). YIELD can appear at any
+/// expression position — LET RHS, IF branch, Array literal, top-level
+/// YIELD() — and is no longer rejected at SPAWN time (the v0.7/
+/// v0.8.1 `E0014` "YIELD must be a Block direct child" path is gone).
 fn builtin_yield(ev: &mut Evaluator, args: Vec<Value>) -> WlwlResult<Outcome> {
     use crate::runtime::YieldReason;
     use wlwl_ast::Span as AstSpan;
