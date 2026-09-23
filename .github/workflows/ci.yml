@@ -32,6 +32,23 @@ jobs:
         with:
           cache-on-failure: true
 
+      # impl/Cargo.lock is gitignored, so the very first CI run on a
+      # fresh cache miss has no lock file. --locked refuses to create
+      # one, which would fail clippy / doc / test / bench (all of which
+      # use --locked). Materialise it here so every subsequent step has
+      # a stable lock file. Mirrors release.yml's same step.
+      # `shell: bash` because windows-latest defaults to PowerShell,
+      # where `if [ ... ]` would be a parser error.
+      - name: Materialize Cargo.lock (if missing)
+        shell: bash
+        working-directory: impl
+        run: |
+          if [ ! -f Cargo.lock ]; then
+            echo "::group::generate Cargo.lock (first run)"
+            cargo generate-lockfile
+            echo "::endgroup::"
+          fi
+
       - name: cargo fmt --check
         working-directory: impl
         run: cargo fmt --all -- --check
