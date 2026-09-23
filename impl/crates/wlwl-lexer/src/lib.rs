@@ -1066,7 +1066,7 @@ mod tests {
         // silently downgrade to an Integer(1) (would obscure the bug).
         let err = lex("1e+", "t.wll").unwrap_err();
         assert_eq!(err.diagnostic().code, ErrorCode::E0001);
-        let msg = format!("{}", err.diagnostic().message);
+        let msg = err.diagnostic().message.to_string();
         assert!(
             msg.contains("invalid float exponent"),
             "unexpected message: {}",
