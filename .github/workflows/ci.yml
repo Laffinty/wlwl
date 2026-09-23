@@ -146,6 +146,20 @@ jobs:
       - name: Cache cargo registry and target
         uses: Swatinem/rust-cache@v2
 
+      # impl/Cargo.lock is gitignored; this smoke job gets a fresh
+      # checkout from actions/checkout@v4 (default `clean: true`)
+      # which discards whatever the test job materialised. Add the
+      # same Materialize guard as the test job so --locked works.
+      - name: Materialize Cargo.lock (if missing)
+        shell: bash
+        working-directory: impl
+        run: |
+          if [ ! -f Cargo.lock ]; then
+            echo "::group::generate Cargo.lock (first run)"
+            cargo generate-lockfile
+            echo "::endgroup::"
+          fi
+
       - name: cargo build --release
         working-directory: impl
         run: cargo build --locked --release --bin wlwl
