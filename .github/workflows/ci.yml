@@ -126,6 +126,7 @@ jobs:
       # against baseline.txt is reviewed via
       # `cargo bench -- --save-baseline fix-N` then diff.
       - name: cargo bench (smoke)
+        shell: bash
         working-directory: impl
         run: |
           cargo bench --no-run --locked
