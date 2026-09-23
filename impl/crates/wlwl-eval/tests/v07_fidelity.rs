@@ -134,12 +134,11 @@ fn capture_all() -> Vec<FixtureRecord> {
 /// binary embeds the project root in error messages like
 /// `error[E0040]: ... outside project root (<PATH>)`; replacing
 /// `<PATH>` with a stable placeholder makes the golden independent
-/// of where the test was captured.
+/// of where the test was captured. Both the OS-native path and its
+/// JSON-escaped form are replaced (the latter because stderr is
+/// serialised via serde_json before being compared).
 fn normalize_paths(s: &str) -> String {
     let root = fixture_root(); // impl/tests
-    // Try both OS-native and JSON-escaped forms. wlwl's diagnostic
-    // renderer prints the path in OS-native form; once serialised
-    // via serde_json it becomes JSON-escaped.
     let native = root.display().to_string();
     let escaped = native.replace('\\', "\\\\");
     s.replace(&escaped, "<PROJECT_ROOT>")
