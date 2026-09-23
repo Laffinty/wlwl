@@ -108,23 +108,24 @@ fn int_9_cli_runs_hello() {
     drop(f);
 
     // The CLI binary may not be on PATH; use cargo run as a fallback.
-    // In a workspace, the bin is at `target/debug/wlwl.exe` after build.
-    // We try the workspace's target dir first.
-    let workspace_target = std::env::current_dir()
-        .unwrap()
-        .parent() // tests/ is inside impl/
-        .map(|p| {
-            p.join("target")
-                .join("debug")
-                .join(if cfg!(windows) { "wlwl.exe" } else { "wlwl" })
+    // In a workspace, the bin is at `<workspace>/target/debug/wlwl(.exe)`
+    // after build. cargo test's test binary inherits the cwd of the
+    // cargo invocation (e.g. CI's `working-directory: impl`), but
+    // some cargo versions or wrappers change the test binary's cwd to
+    // the package root (`impl/crates/wlwl-cli`), so a single
+    // `.parent()` chain misses the workspace target dir. Walk up the
+    // cwd ancestor chain to be robust.
+    let exe_name = if cfg!(windows) { "wlwl.exe" } else { "wlwl" };
+    let mut candidates: Vec<PathBuf> = std::env::current_dir()
+        .ok()
+        .map(|cwd| {
+            cwd.ancestors()
+                .map(|a| a.join("target").join("debug").join(exe_name))
+                .collect()
         })
-        .unwrap_or_else(|| PathBuf::from("target/debug/wlwl"));
-
-    let candidates = [
-        workspace_target,
-        PathBuf::from("target/debug/wlwl"),
-        PathBuf::from("wlwl"),
-    ];
+        .unwrap_or_default();
+    candidates.push(PathBuf::from("target/debug/").join(exe_name));
+    candidates.push(PathBuf::from(exe_name));
     let exe = candidates
         .into_iter()
         .find(|c| c.exists())
