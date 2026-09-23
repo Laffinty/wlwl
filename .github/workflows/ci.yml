@@ -85,8 +85,6 @@ jobs:
             echo "::endgroup::"
           fi
           cargo deny --locked --all-features check
-        working-directory: impl
-        run: cargo build --locked --all-targets
 
       # [v0.4 Phase H1] spec section 16.5 conformance suite.
       # Runs `wlwl run --format=jsonl` against 10 canonical
@@ -99,7 +97,10 @@ jobs:
         run: cargo test --locked --test conformance -p wlwl-cli
 
       - name: cargo test
-# [v0.2 Phase G8] perf regression smoke. The full benchmark suite
+        working-directory: impl
+        run: cargo test --locked --all-targets
+
+      # [v0.2 Phase G8] perf regression smoke. The full benchmark suite
       # is exercised against `benches/baseline.txt` (Phase F1) on a
       # longer schedule (weekly supply-chain.yml runs in parallel);
       # here we ensure the 5 benchmarks compile and the smoke run
@@ -112,9 +113,6 @@ jobs:
           cargo bench --no-run --locked
           cargo bench -p wlwl-eval --bench eval_hot_paths \
             -- --warm-up-time 1 --measurement-time 2 --sample-size 5
-
-        working-directory: impl
-        run: cargo test --locked --all-targets
 
   smoke:
     name: smoke run examples
