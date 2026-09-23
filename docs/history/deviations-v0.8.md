@@ -759,6 +759,153 @@ wlwl-spec-v0.8.md 不动;D8-009 + D8-010 锁测试不受影响。
 
 ---
 
+## D8-012 · §A.2 grammar 字符串字面量允许下标 postfix (§4.5 prose 跟进留 v0.9)
+
+- **状态**:已修复(commit 待补;v0.8.1 第四轮)
+- **发现**:v0.8.1 F-D 由 `docs/AUDIT_REPORT.md §4.4`(2026-09-23 独立第三方测评)+ `docs/plan/wlwl-build-plan-v0.8.1.md §1.4` 驱动
+- **影响范围**:
+  - `impl/crates/wlwl-parser/src/lib.rs::parse_literal` line 2083-2149(在 StringLit 分支后挂 `apply_postfix_loop`)
+  - `impl/crates/wlwl-parser/tests/spec_v3_alignment.rs` 新增 5 件(原 84 → 89)
+  - `impl/crates/wlwl-eval/src/lib.rs::tests` 新增 4 件(原 761 → 765)
+  - `wlwl-spec-v0.8.md` 不动(用户约束)
+
+### 现象
+第三方审计 §4.4:
+
+```
+LET(_x, "hi"[5]);    // E0011 expected ')', got LBracket
+```
+
+实测:
+
+```
+$ wlwl.exe run -e 'LET(_x, "hi"[0])'
+error[E0011]: expected ')', got LBracket
+```
+
+但同一 expr 顶层位置:`[1, 2, 3][0]` 通过(D8-004 v0.8 已修),而 `"hi"[0]` 失败。
+
+spec `docs/standard/wlwl-spec-v0.8.md`:
+
+> §A.2 grammar line 1030-1036:
+> ```
+> PostfixExpr = Primary { Postfix } .
+> Primary     = Literal | identifier | OperatorCall | ...
+> Postfix     = "." identifier [ "(" [ Expression { "," Expression } ] ")" ]
+>             | "[" Expression "]" | "[" Expression "]" "=" Expression .
+> ```
+>
+> §4.5 prose line 321:
+> > "INDEX_GET(coll, k):...**字符串接受整数索引**,按码点返回单字符字符串,越界产生 E0036"
+
+`Literal` 是 `Primary` 的合法形态 → `PostfixExpr` 可挂 `[...]` postfix。spec
+§4.5 prose 同节又显式承诺 INDEX_GET 接受字符串 receiver。
+
+但 §4.5 prose line 313-323 末段:
+> "下标链可挂在变量、调用、属性访问、**或数组/字典字面量之后**(v0.8 起;...)。"
+
+只列举 array / dict literal — 没有显式包含 string literal。
+
+### 根本原因
+`impl/crates/wlwl-parser/src/lib.rs::parse_literal` (line 2083-2120 原版)
+对 `TokenKind::LBracket` 调用 `parse_array_or_dict`(已在末尾挂
+`apply_postfix_loop`,D8-004 v0.8 修复);对 `TokenKind::StrStart` 调用
+`parse_interpolated_string`(没有 postfix 循环);对其余字面量
+(Integer / Float / StringLit / True / False / Null) 直接返回
+`Expr::Literal(...)`,**不挂 postfix 循环**。
+
+`"hi"[0]` 经 lexer → `TokenKind::StringLit("hi")` → parse_expr 调
+`parse_literal` → 消费 StringLit 后停在 `]`,parser 主循环在 `]` 处
+期望 `,` 或 `)`,报 E0011。
+
+audit §4.4 reproducer `LET(_x, "hi"[5])` 同样停在 LET 的 `)` 期望:
+consume `LET(`,进入 binding slot parse_expr,parse_expr 调 parse_literal
+消费 `"hi"`,停在 `]`,parser 主循环此时在 `(` 解析 LET 的 binding
+实参 list,期望 `,` 或 `)`,报 E0011 expected ')' got LBracket。
+
+### 处置
+按 spec §A.2 grammar 字面读法("Primary = Literal" + "PostfixExpr =
+Primary { Postfix }") + §4.5 prose ("INDEX_GET 字符串接受整数索引"),
+在 `parse_literal` 末尾对 `TokenKind::StringLit` 调用 `apply_postfix_loop`,
+与 `parse_array_or_dict` 末尾同款形态:
+
+```rust
+// 仅 StringLit 走 apply_postfix_loop(其它字面量 postfix 无语义):
+//   "hi"[0]            → INDEX_GET("hi", 0)
+//   "hi"[1]            → INDEX_GET("hi", 1)
+//   "hi"[0] = "x"      → INDEX_SET("hi", 0, "x")(eval 端会拒,spec §4.5)
+// 整数字面量 / 浮点字面量 / Boolean / Null 不允许 postfix:
+//   3[0]               → parser 仍报 E0010 / E0011 (现有路径 unchanged)
+//   TRUE[0]            → 同上
+if is_string_lit {
+    base = self.apply_postfix_loop(base, line, col)?;
+}
+```
+
+`is_string_lit` 在 match arm 前用 `matches!` 捕获(`t.kind` 一次性 move 后
+不能再访问),`apply_postfix_loop` 是已经在 `parse_call_or_ident` /
+`parse_array_or_dict` 末尾复用的公共方法。
+
+注意:此修复扩大了字面量 postfix 语义的覆盖面,**超出当前 §4.5 prose 字面
+列举的"array/dict literal"**。但 §A.2 grammar 与 §4.5 INDEX_GET 字符串
+receiver 联合支持,且 spec §0.1 v0.8 放宽原则下"宁滥勿缺"。
+
+**spec 跟进**留 v0.9:
+> §4.5 prose 末句 "或数组/字典字面量之后" 建议改为
+> "**或字面量之后**(字符串按 §4.5 INDEX_GET 接受整数索引,
+> 数组/字典同款;整数 / 浮点 / Boolean / Null 字面量 postfix 无 INDEX_GET
+> 语义,仍报 E0010 / E0011)" — 这是 v0.9 spec 修订项,本轮 v0.8.1 不改
+> spec。
+
+### 兼容性影响
+**零行为扩展**(纯增量):
+- `"hi"[0]` / `PRINT("hi"[1])` / `LET(x, "hi"[0])` 等顶层 / call arg / LET
+  槽位的字符串字面量下标 v0.8.0 报 E0011,v0.8.1 起通过 parse + 求值。
+- 链式 `"hi"[0][0]` 也合法(apply_postfix_loop 复用,允许多轮)。
+- `INDEX_SET` 不接受字符串 receiver(spec §4.5):parser 端允许
+  `"hi"[0] = "x"` parse 通过,eval 端 INDEX_SET 抛 E0030。
+  parser/eval 两段分离行为由 `parser_string_literal_subscript_set_sugar_rejected_at_eval`
+  + `eval_string_literal_subscript_set_rejected_with_e0030` 两件锁测试覆盖。
+- 越界 `"hi"[5]` 现在到达 eval 端,触发 INDEX_GET 的 E0036
+  (原 v0.8.0 是 parse 阶段 E0011)。
+- 整数字面量 / 浮点 / Boolean / Null 字面量 postfix 仍被 parser 拒绝
+  (走 `parse_call_or_ident` / 主 expr 路径,无 INDEX_GET 语义),回归锁测试
+  `parser_integer_literal_postfix_still_rejected` 守住不变式。
+- 既存测试不受影响:既有的 `"hi"[0]` 等都是经 `parse_call_or_ident`
+  的 ident → 后续 `[0]` postfix 路径(已工作);新增的是 StringLit 直接
+  作为 primary 的情形。
+
+### 回归锁测试
+**新增 5 件 parser round-trip**(位于
+`impl/crates/wlwl-parser/tests/spec_v3_alignment.rs`,D8-004 字面下标段
+之后):
+- `parser_string_literal_subscript_top_level`:顶层 `"hi"[0]` →
+  `INDEX_GET(Literal("hi"), 0)`
+- `parser_string_literal_subscript_in_let_slot`:audit §4.4 reproducer
+  `LET(_x, "hi"[1])` parse 通过
+- `parser_string_literal_subscript_chained`:链式 `"hi"[0][0]` 两轮
+  INDEX_GET
+- `parser_integer_literal_postfix_still_rejected`:`3[0]` parse 拒绝
+  (守住"非 StringLit 字面量 postfix 不启用")
+- `parser_string_literal_subscript_set_sugar_rejected_at_eval`:
+  `"hi"[0] = "x"` parse 通过(eval 端拒 INDEX_SET)
+
+**新增 4 件 eval end-to-end**(位于
+`impl/crates/wlwl-eval/src/lib.rs::tests`,与 D8-009 / D8-010 / D8-011
+锁测试集并列):
+- `eval_string_literal_subscript_h`:顶层 `"hi"[0]` → `"h"`
+- `eval_string_literal_subscript_in_let_binding`:LET(_x, "hi"[1]) 全链路
+- `eval_string_literal_subscript_out_of_range_returns_e0036`:`"hi"[5]`
+  越界抛 E0036(原 v0.8.0 parse E0011)
+- `eval_string_literal_subscript_set_rejected_with_e0030`:`"hi"[0] = "x"`
+  eval 端抛 E0030(spec §4.5)
+
+`cargo test --workspace`: ~1397 项全绿(原 ~1388 + parser 5 + eval 4);
+wlwl-spec-v0.8.md 不动;eval 761 → 765;parser 84 → 89;D8-004 锁测试
+(8 件)不受影响。
+
+---
+
 ## 模板(后续登记用)
 
 ```

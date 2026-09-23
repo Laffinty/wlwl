@@ -1230,7 +1230,7 @@ fn let_mut_as_binding_does_not_shadow_built_in() {
 #[test]
 fn let_mut_as_binding_with_type_annotation() {
     // spec §5.2 type annotation 在 LET binding 槽位之后可选;binding
-    // 名为 MUT 时也应支持 type annotation (e.g. `LET(MUT: INTEGER, 0)`).
+    // 名为 MUT 时也应支持 type annotation (e.g. `LET(MUT: INTEGER, 0)`.
     let r = parse("LET(MUT: INTEGER, 0);", "t.wll");
     assert!(r.is_ok(), "LET(MUT: INTEGER, 0) must parse: {:?}", r.err());
     match r.unwrap() {
@@ -1249,4 +1249,102 @@ fn let_mut_as_binding_with_type_annotation() {
         }
         other => panic!("expected Let, got {:?}", other),
     }
+}
+
+// ───────────────── v0.8.1 §4.5 / D8-012: string literal subscript ─────────────────
+//
+// spec §A.2 grammar `PostfixExpr = Primary { Postfix }` 与 §4.5 prose "字符串
+// 接受整数索引,按码点返回单字符字符串,越界 E0036" 联合支持 "hi"[0] 这
+// 类字符串字面量直接下标。v0.8.0 的 parse_literal 不调用 apply_postfix_loop,
+// "hi"[0] / LET(_x, "hi"[0]) 都报 E0011 expected ')', got LBracket。
+//
+// v0.8.1 D8-012 在 parse_literal 末尾对 StringLit token 跑一次
+// apply_postfix_loop;Integer / Float / Boolean / Null 不走(无 INDEX_GET 语义)。
+//
+// 已有 D8-004 锁测试覆盖 array / dict literal postfix,本节补充 string
+// literal 三个形态:
+
+#[test]
+fn parser_string_literal_subscript_top_level() {
+    // 顶层表达式 `"hi"[0]` → INDEX_GET(Literal("hi"), 0)。
+    let r = parse(r#""hi"[0];"#, "t.wll").unwrap();
+    let call = match &r {
+        Expr::Call { name, args, .. } => (name, args),
+        other => panic!("expected Call INDEX_GET, got {:?}", other),
+    };
+    assert_eq!(call.0, "INDEX_GET");
+    assert_eq!(call.1.len(), 2);
+    assert!(matches!(
+        &call.1[0],
+        Expr::Literal(Literal::String(s), _) if s == "hi"
+    ));
+    assert!(matches!(
+        &call.1[1],
+        Expr::Literal(Literal::Integer(0), _)
+    ));
+}
+
+#[test]
+fn parser_string_literal_subscript_in_let_slot() {
+    // `LET(_x, "hi"[1])` — audit §4.4 reproducer;v0.8.0 报 E0011,
+    // v0.8.1 起 parse 通过(eval 端求值得 "i")。
+    let r = parse(r#"LET(_x, "hi"[1]);"#, "t.wll");
+    assert!(
+        r.is_ok(),
+        "LET(_x, \"hi\"[1]) must parse: {:?}",
+        r.err()
+    );
+}
+
+#[test]
+fn parser_string_literal_subscript_chained() {
+    // `"hi"[0][0]` — 链式 postfix,多次 INDEX_GET。
+    // 第一次:INDEX_GET("hi", 0) → "h" (String)
+    // 第二次:INDEX_GET("h", 0) → "h" (String)
+    let r = parse(r#""hi"[0][0];"#, "t.wll").unwrap();
+    let outer = match &r {
+        Expr::Call { name, args, .. } => (name, args),
+        other => panic!("expected outer INDEX_GET, got {:?}", other),
+    };
+    assert_eq!(outer.0, "INDEX_GET");
+    assert_eq!(outer.1.len(), 2);
+    let inner = match &outer.1[0] {
+        Expr::Call { name, args, .. } => (name, args),
+        other => panic!("expected inner INDEX_GET, got {:?}", other),
+    };
+    assert_eq!(inner.0, "INDEX_GET");
+    assert!(matches!(
+        &inner.1[0],
+        Expr::Literal(Literal::String(s), _) if s == "hi"
+    ));
+}
+
+#[test]
+fn parser_integer_literal_postfix_still_rejected() {
+    // spec §A.2 grammar 字面允许 Literal 进入 PostfixExpr,但 INDEX_GET
+    // 对 INTEGER receiver 无定义 — 此 case parser 端应**不**自动
+    // 走 postfix 路径,保留 v0.8.0 行为(parse 端报 E0010 / E0011,或
+    // 下游 eval 端诊断)。锁定"非 StringLit 字面量不启用 postfix"。
+    // 实测:整数直接下标会触发 parse_expr 主路径的 IDENT-mismatch;
+    // 期望 is_err(),确认 parse 端不出错地把 3[0] 当合法 INDEX_GET。
+    let r = parse("3[0];", "t.wll");
+    assert!(
+        r.is_err(),
+        "3[0] must NOT parse as INDEX_GET: got {:?}",
+        r.ok()
+    );
+}
+
+#[test]
+fn parser_string_literal_subscript_set_sugar_rejected_at_eval() {
+    // spec §4.5: INDEX_SET 不接受字符串 receiver (E0030)。
+    // parser 端允许 `"hi"[0] = "x"` parse 通过(parse 层只看 grammar),
+    // eval 端 INDEX_SET 才会报 E0030。锁定"字符串作为 index wire,
+    // INDEX_SET 在 eval 端被拒"的两段分离行为。
+    let r = parse(r#""hi"[0] = "x";"#, "t.wll");
+    assert!(
+        r.is_ok(),
+        "\"hi\"[0] = \"x\" must parse (eval rejects): {:?}",
+        r.err()
+    );
 }

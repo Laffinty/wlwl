@@ -2083,6 +2083,10 @@ impl Parser {
     fn parse_literal(&mut self) -> WlwlResult<Expr> {
         let (line, col, _, _) = self.span_here();
         let t = self.advance();
+        // Detect StringLit before the match consumes t.kind — needed
+        // to decide whether apply_postfix_loop runs after literal
+        // construction (D8-012; see comment below).
+        let is_string_lit = matches!(t.kind, TokenKind::StringLit(_));
         let lit = match t.kind {
             TokenKind::Integer(v) => Literal::Integer(v),
             TokenKind::Float(v) => Literal::Float(v),
@@ -2107,7 +2111,7 @@ impl Parser {
                 ));
             }
         };
-        Ok(Expr::Literal(
+        let mut base = Expr::Literal(
             lit,
             Span {
                 file: self.file.clone(),
@@ -2116,7 +2120,23 @@ impl Parser {
                 line_end: t.span.2,
                 col_end: t.span.3,
             },
-        ))
+        );
+        // v0.8.1 D8-012: spec §A.2 grammar `PostfixExpr = Primary { Postfix }`,
+        // `Primary` 含 `Literal` — 任何 Literal 形式进入 PostfixExpr 都是合法
+        // 文法。spec §4.5 prose 字面只列 "数组/字典字面量之后",但 §4.5 同节
+        // 还说 "INDEX_GET 字符串接受整数索引,按码点返回单字符字符串,越界 E0036"
+        // — 语义端已经接受字符串 receiver,且 grammar 字面允许 postfix。
+        // 仅 StringLit 走 apply_postfix_loop(其它字面量 postfix 无语义):
+        //   "hi"[0]            → INDEX_GET("hi", 0)
+        //   "hi"[1]            → INDEX_GET("hi", 1)
+        //   "hi"[0] = "x"      → INDEX_SET("hi", 0, "x")(eval 端会拒,spec §4.5)
+        // 整数字面量 / 浮点字面量 / Boolean / Null 不允许 postfix:
+        //   3[0]               → parser 仍报 E0010 (现有路径 unchanged)
+        //   TRUE[0]            → 同上
+        if is_string_lit {
+            base = self.apply_postfix_loop(base, line, col)?;
+        }
+        Ok(base)
     }
 
     /// Parse the segments of an interpolated string literal

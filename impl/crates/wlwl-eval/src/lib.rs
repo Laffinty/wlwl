@@ -11125,6 +11125,55 @@ mod tests {
         );
     }
 
+    // v0.8.1 D8-012 — §2.9 consistency tests for spec §A.2 grammar
+    // allowing string literals to enter PostfixExpr. The fix is
+    // purely parser-side (`parse_literal` calls `apply_postfix_loop`
+    // when the token is `TokenKind::StringLit`); the runtime INDEX_GET
+    // already accepts string receivers per spec §4.5 prose. Audit
+    // §4.4 reproducer (`"hi"[5]` in LET slot) is pinned here.
+    #[test]
+    fn eval_string_literal_subscript_h() {
+        // audit §4.4 reproducer: 顶层表达式 `"hi"[0]` → "h"。
+        let src = r#""hi"[0];"#;
+        assert_eq!(run(src).unwrap(), Value::String("h".into()));
+    }
+
+    #[test]
+    fn eval_string_literal_subscript_in_let_binding() {
+        // LET(_x, "hi"[1]) 通过 lexer + parser + eval 全链路。
+        let src = r#"LET(_x, "hi"[1]); _x;"#;
+        assert_eq!(run(src).unwrap(), Value::String("i".into()));
+    }
+
+    #[test]
+    fn eval_string_literal_subscript_out_of_range_returns_e0036() {
+        // "hi"[5] 越界 — INDEX_GET 端 spec §4.5 E0036。
+        // 锁定 parser 放宽让 INDEX_GET 真的拿到 "hi" 然后越界抛 E0036,
+        // 而不是 parser 阶段提前拒绝 (那是 v0.8.0 行为)。
+        let err = run(r#""hi"[5];"#).unwrap_err();
+        assert_eq!(
+            err.diagnostic().code,
+            ErrorCode::E0036,
+            "expected E0036, got {:?}",
+            err.diagnostic().code
+        );
+    }
+
+    #[test]
+    fn eval_string_literal_subscript_set_rejected_with_e0030() {
+        // spec §4.5: INDEX_SET 不接受字符串 receiver (E0030)。
+        // parser 端允许 `"hi"[0] = "x"` parse 通过(parse 层只看 grammar),
+        // eval 端 INDEX_SET 才会报 E0030。锁定"字符串作为 index wire,
+        // INDEX_SET 在 eval 端被拒"的两段分离行为。
+        let err = run(r#""hi"[0] = "x";"#).unwrap_err();
+        assert_eq!(
+            err.diagnostic().code,
+            ErrorCode::E0030,
+            "expected E0030, got {:?}",
+            err.diagnostic().code
+        );
+    }
+
     #[test]
     fn eval_unary_minus_integer_min_throws_e0034_via_desugar() {
         // v0.8 §2.5 / F-10: locks the FULL sugar path
