@@ -349,7 +349,129 @@ Plan §2.6 写 `wlwl-error/tests/` 加;实际落地在 `wlwl-eval/src/lib.rs::te
 
 ---
 
-## 模板(后续登记用)
+## D8-009 · §1.7 浮点指数字面量启用(v0.8.0 漏实现)
+
+- **状态**:已修复(commit 待补;v0.8.1 第一轮)
+- **发现**:v0.8.1 F-A 由 `docs/AUDIT_REPORT.md §1.1`(2026-09-23 独立第三方测评)+ `docs/plan/wlwl-build-plan-v0.8.1.md §1.1` 驱动
+- **影响范围**:
+  - `impl/crates/wlwl-lexer/src/lib.rs::read_number` line 311-359(原 299-310,加 exponent 分支)
+  - `impl/crates/wlwl-lexer/src/lib.rs::tests` 新增 6 项(原 23 → 29)
+  - `impl/crates/wlwl-eval/src/lib.rs::tests` 新增 6 项 end-to-end(原 748 → 754)
+  - `wlwl-spec-v0.8.md` 不动(用户约束:v0.8.x 严格遵循 v0.8 spec)
+
+### 现象
+第三方审计与本仓实测一致:
+
+```
+$ wlwl.exe run -e "PRINT(1.5e2)"
+error[E0011]: expected ')', got Ident("e2")
+```
+
+spec §1.7 EBNF:
+```
+float_lit      = digits "." digits | digits exponent | digits "." digits exponent .
+exponent       = ( "e" | "E" ) [ "+" | "-" ] digits .
+```
+
+三种 float 形态显式承诺,但 lexer 实现只覆盖 `digits "." digits` 一支,
+其余含 exponent 的两条路径直接被拒绝,`1.5e2` 在 parser 阶段报 E0011。
+
+### 根本原因
+`impl/crates/wlwl-lexer/src/lib.rs` 原 `read_number`:
+
+```rust
+// (修前)
+let mut is_float = false;
+if self.peek() == Some(b'.') && matches!(self.peek_at(1), Some(b) if b.is_ascii_digit()) {
+    is_float = true;
+    self.bump(); // '.'
+    while /* digits */ { ... }
+}
+let text = std::str::from_utf8(&self.src[start..self.pos]).unwrap();
+let (kind, span) = if is_float {
+    Float(text.parse()?)
+} else {
+    Integer(text.parse()?)
+};
+```
+
+只在 `digits "." digits` 后停步,从不消费 `e`/`E`。`e2` 退回主循环被识别为 identifier 首字母,
+`read_ident_or_keyword` 弹出 `Ident("e2")` token,与先行的 `Integer(1)` 在 parser
+层合成 `1 e2`(E0011 期望 `,` 或 `)`)。
+
+### 处置
+仅 lexer 一处改动 + 两组测试。在 `read_number` 的小数部分消费后插入
+**exponent 分支**:
+
+```rust
+if matches!(self.peek(), Some(b'e') | Some(b'E')) {
+    let exp_payload_present = matches!(
+        self.peek_at(1),
+        Some(b'+') | Some(b'-')
+    ) || matches!(self.peek_at(1), Some(b) if b.is_ascii_digit());
+    if exp_payload_present {
+        is_float = true;
+        self.bump(); // 'e' | 'E'
+        if matches!(self.peek(), Some(b'+') | Some(b'-')) {
+            self.bump();
+        }
+        let exp_start = self.pos;
+        while /* digits */ { ... }
+        if self.pos == exp_start {
+            // 1e+ / 1e- 无 digits:spec 不容,返 E0001
+            return Err(/* invalid float exponent in '...' */);
+        }
+    }
+}
+```
+
+**两个关键边界**:
+
+1. **`exp_payload_present` 守卫**:必须先验 `e`/`E` 之后是 `+`/`-`/digit,否则
+   不消费、退回整数路径。这保留了 `1east` 仍 lex 为 `Integer(1) + Ident("east")`
+   的既有行为,防止"任何字母 e"被误吞成 exponent。
+
+2. **`exp_start == pos` 守卫**:仅当 sign 已消费但后无 digits 时触发(`1e+` / `1e-`
+   形态)。spec §1.7 不容无 digits 的 exponent,故抛 E0001 而不是悄悄降级为
+   整数(那会掩盖真实错误)。`1e+` / `1e-` / `1.5e+` 都覆盖。
+
+### 兼容性影响
+**零行为扩展**(纯增量):
+- `1.5e2` / `1e2` / `1.5e-2` / `1E3` / `2.5e+1` 等 spec §1.7 显式承诺的字面量 v0.8.0
+  报 E0011,v0.8.1 起通过 parse + 求值到正确 f64。
+- `1east` / `1eval` / `1empty` 等"数字 + 字母 ident"形态保持原有 lexer 行为
+  (`Integer(1)` + `Ident("...")`),`exp_payload_present` 守卫守住这条不变式。
+- 现有 23 个 lexer 数字/标识符/操作符测试全部不受影响(无 `e`/`E` 后的数字
+  payload 输入,旧路径走到整数终点)。
+- 整 workspace 测试 ~1380 项全绿(原 ~1366 + lexer 6 + eval 6)。
+
+唯一可见的字典化升级:`1e` 之类输入在 v0.8.0 走 `Integer(1) + Ident("e")` 路径(lexer
+不报错,但 parser 后续可能因 `e` 不是合法表达式位置 E0010);v0.8.1 起 `1e` 视作
+`exp_payload_present = false`(peek_at(1) 是 None 不是 sign/digit)退回整数,parser
+层不变。
+
+### 回归锁测试
+**新增 6 项 lexer**(位于 `impl/crates/wlwl-lexer/src/lib.rs::tests`):
+- `lex_exponent_digits_only`:`1e2` → `Float(100.0)` 锁 `digits exponent` 形态
+- `lex_exponent_with_fraction`:`1.5e2` → `Float(150.0)` 锁 `digits "." digits exponent` 形态
+- `lex_exponent_negative`:`1.5e-2` → `Float(0.015)` 锁负号分支
+- `lex_exponent_uppercase_e`:`1E3` → `Float(1000.0)` 锁 `E` 大写等价
+- `lex_exponent_after_letter_is_ident`:`1east` → `Integer(1) + Ident("east")` 锁**不消费**守卫
+- `lex_exponent_missing_digits_after_sign_errors_e0001`:`1e+` → E0001 + 文案含 "invalid float exponent"
+
+**新增 6 项 eval end-to-end**(位于 `impl/crates/wlwl-eval/src/lib.rs::tests`,
+与 D8-008 锁测试集并列,§2.9 consistency tests):
+- `eval_floating_exponent_digits_only`:`1e2;` → `Float(100.0)`
+- `eval_floating_exponent_with_fraction`:`1.5e2;` → `Float(150.0)`
+- `eval_floating_exponent_uppercase_e`:`1E3;` → `Float(1000.0)`
+- `eval_floating_exponent_negative_sign`:`1.5e-2;` → `Float(0.015)`
+- `eval_floating_exponent_positive_sign`:`2.5e+1;` → `Float(25.0)`
+- `eval_floating_exponent_in_let_binding`:`LET(x, 1.5e2); x;` → `Float(150.0)`
+  (与 audit §1.1 复现脚本同形,通过 lexer + parser + eval 全链路)
+
+---
+
+
 
 ```
 ## D8-NNN · <简短标题>

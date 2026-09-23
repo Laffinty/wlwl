@@ -11000,6 +11000,68 @@ mod tests {
         assert_eq!(run(src).unwrap(), Value::Integer(-7));
     }
 
+    // v0.8.1 D8-009 — §2.9 consistency tests for spec §1.7 float
+    // exponent literals. Prior to this fix the lexer passed `e` / `E`
+    // to `read_ident_or_keyword`, splitting `1e2` into Integer(1) and
+    // Ident("e2") and producing an E0011 at parse. These tests pin
+    // the post-fix end-to-end behavior across the three exponent
+    // forms of spec §1.7.
+    #[test]
+    fn eval_floating_exponent_digits_only() {
+        // `digits exponent` form: 1e2  → 100.0
+        match run("1e2;").unwrap() {
+            Value::Float(f) => assert!((f - 100.0).abs() < 1e-9, "got {}", f),
+            other => panic!("expected Float(100.0), got {:?}", other),
+        }
+    }
+
+    #[test]
+    fn eval_floating_exponent_with_fraction() {
+        // `digits "." digits exponent` form: 1.5e2 → 150.0
+        match run("1.5e2;").unwrap() {
+            Value::Float(f) => assert!((f - 150.0).abs() < 1e-9, "got {}", f),
+            other => panic!("expected Float(150.0), got {:?}", other),
+        }
+    }
+
+    #[test]
+    fn eval_floating_exponent_uppercase_e() {
+        // spec §1.7 accepts both `e` and `E`: 1E3 → 1000.0
+        match run("1E3;").unwrap() {
+            Value::Float(f) => assert!((f - 1000.0).abs() < 1e-9, "got {}", f),
+            other => panic!("expected Float(1000.0), got {:?}", other),
+        }
+    }
+
+    #[test]
+    fn eval_floating_exponent_negative_sign() {
+        // Negative-sign payload: 1.5e-2 → 0.015
+        match run("1.5e-2;").unwrap() {
+            Value::Float(f) => assert!((f - 0.015).abs() < 1e-9, "got {}", f),
+            other => panic!("expected Float(0.015), got {:?}", other),
+        }
+    }
+
+    #[test]
+    fn eval_floating_exponent_positive_sign() {
+        // Positive-sign payload (uncommon but spec §1.7 allows `[+|]?`).
+        match run("2.5e+1;").unwrap() {
+            Value::Float(f) => assert!((f - 25.0).abs() < 1e-9, "got {}", f),
+            other => panic!("expected Float(25.0), got {:?}", other),
+        }
+    }
+
+    #[test]
+    fn eval_floating_exponent_in_let_binding() {
+        // End-to-end through LET + PRINT. Mirrors the audit §1.1
+        // reproducer but flows through the now-working lexer path.
+        let src = "LET(x, 1.5e2); x;";
+        match run(src).unwrap() {
+            Value::Float(f) => assert!((f - 150.0).abs() < 1e-9, "got {}", f),
+            other => panic!("expected Float(150.0), got {:?}", other),
+        }
+    }
+
     #[test]
     fn eval_unary_minus_integer_min_throws_e0034_via_desugar() {
         // v0.8 §2.5 / F-10: locks the FULL sugar path

@@ -308,6 +308,55 @@ impl<'a> Lexer<'a> {
                 }
             }
         }
+        // v0.8.1 D8-009: support `e` / `E` exponent in float literals
+        // per spec §1.7 EBNF:
+        //   float_lit = digits "." digits | digits exponent
+        //              | digits "." digits exponent .
+        //   exponent  = ( "e" | "E" ) [ "+" | "-" ] digits .
+        //
+        // The fractionless path `1e2` reaches here with `is_float = false`;
+        // we promote it. The `1.5e2` path already had `is_float = true`.
+        //
+        // Only enter the exponent branch when its `[+|-]?digits` payload is
+        // well-formed (next char after `e`/`E` is a sign or digit); otherwise
+        // leave the letter for the next token so that `1east` still lexes
+        // as Integer(1) followed by Ident("east"), not as a malformed float.
+        if matches!(self.peek(), Some(b'e') | Some(b'E')) {
+            let exp_payload_present = matches!(
+                self.peek_at(1),
+                Some(b'+') | Some(b'-')
+            ) || matches!(self.peek_at(1), Some(b) if b.is_ascii_digit());
+            if exp_payload_present {
+                is_float = true;
+                self.bump(); // 'e' | 'E'
+                if matches!(self.peek(), Some(b'+') | Some(b'-')) {
+                    self.bump();
+                }
+                let exp_start = self.pos;
+                while let Some(b) = self.peek() {
+                    if b.is_ascii_digit() {
+                        self.bump();
+                    } else {
+                        break;
+                    }
+                }
+                if self.pos == exp_start {
+                    // Sign consumed but no digits after — spec mandates
+                    // `digits` after the optional sign, so `1e+` / `1e-`
+                    // is malformed. Surface E0001 with the partial slice
+                    // for diagnosis.
+                    let bad_text = std::str::from_utf8(&self.src[start..self.pos])
+                        .unwrap_or_default()
+                        .to_string();
+                    return Err(self.err(
+                        ErrorCode::E0001,
+                        format!("invalid float exponent in '{}'", bad_text),
+                        line,
+                        col,
+                    ));
+                }
+            }
+        }
         let text = std::str::from_utf8(&self.src[start..self.pos]).unwrap();
         let (kind, span) = if is_float {
             let v: f64 = text.parse().map_err(|_| {
@@ -937,6 +986,85 @@ mod tests {
         assert!(matches!(toks[0].kind, TokenKind::Integer(42)));
         assert!(matches!(toks[1].kind, TokenKind::Float(f) if (f - 1.25).abs() < 1e-9));
         assert!(matches!(toks[2].kind, TokenKind::Integer(0)));
+    }
+
+    // v0.8.1 D8-009 — spec §1.7 `digits exponent` / `digits "." digits exponent`
+    // path. Prior to this fix, the lexer passed `e` / `E` straight to
+    // `read_ident_or_keyword`, splitting `1e2` into Integer(1) + Ident("e2")
+    // (a parse error downstream). The new branch in `read_number` consumes
+    // the exponent when its `[+|-]?digits` payload is well-formed, and lets
+    // `1east` lex as Integer(1) + Ident("east") unchanged.
+    #[test]
+    fn lex_exponent_digits_only() {
+        // spec §1.7 form: `digits exponent` (no fraction).
+        // `1e2` → Float(100.0).
+        let toks = lex("1e2", "t.wll").unwrap();
+        assert_eq!(toks.len(), 2, "got {:?}", toks);
+        match &toks[0].kind {
+            TokenKind::Float(f) => assert!((f - 100.0).abs() < 1e-9, "got {}", f),
+            other => panic!("expected Float, got {:?}", other),
+        }
+    }
+
+    #[test]
+    fn lex_exponent_with_fraction() {
+        // spec §1.7 form: `digits "." digits exponent`.
+        // `1.5e2` → Float(150.0). Already partly supported as a fraction
+        // before the fix; this test pins down the *post-fix* exponent
+        // path so the trailing `e2` is not emitted as a separate ident.
+        let toks = lex("1.5e2", "t.wll").unwrap();
+        match &toks[0].kind {
+            TokenKind::Float(f) => assert!((f - 150.0).abs() < 1e-9, "got {}", f),
+            other => panic!("expected Float, got {:?}", other),
+        }
+    }
+
+    #[test]
+    fn lex_exponent_negative() {
+        // `1.5e-2` → Float(0.015). Exercises the optional `[+|-]` sign.
+        let toks = lex("1.5e-2", "t.wll").unwrap();
+        match &toks[0].kind {
+            TokenKind::Float(f) => assert!((f - 0.015).abs() < 1e-9, "got {}", f),
+            other => panic!("expected Float, got {:?}", other),
+        }
+    }
+
+    #[test]
+    fn lex_exponent_uppercase_e() {
+        // spec §1.7 accepts both `e` and `E`. `1E3` → Float(1000.0).
+        let toks = lex("1E3", "t.wll").unwrap();
+        match &toks[0].kind {
+            TokenKind::Float(f) => assert!((f - 1000.0).abs() < 1e-9, "got {}", f),
+            other => panic!("expected Float, got {:?}", other),
+        }
+    }
+
+    #[test]
+    fn lex_exponent_after_letter_is_ident() {
+        // Regression guard: a letter following a digit is NOT an exponent
+        // (no `[+|-]?digits` payload), so `1east` must still split into
+        // Integer(1) + Ident("east"). The fix's `exp_payload_present` gate
+        // is what preserves this invariant; without it, the lexer would
+        // consume `e` and then fail with E0001 on `ast` (not a digit/sign).
+        let toks = lex("1east", "t.wll").unwrap();
+        assert!(matches!(toks[0].kind, TokenKind::Integer(1)));
+        assert!(matches!(&toks[1].kind, TokenKind::Ident(s) if s == "east"));
+    }
+
+    #[test]
+    fn lex_exponent_missing_digits_after_sign_errors_e0001() {
+        // spec §1.7: `exponent` mandates digits after the optional sign.
+        // `1e+` is invalid — fraction sign consumed but no digits remain.
+        // Surface E0001 with the partial slice for diagnosis; do NOT
+        // silently downgrade to an Integer(1) (would obscure the bug).
+        let err = lex("1e+", "t.wll").unwrap_err();
+        assert_eq!(err.diagnostic().code, ErrorCode::E0001);
+        let msg = format!("{}", err.diagnostic().message);
+        assert!(
+            msg.contains("invalid float exponent"),
+            "unexpected message: {}",
+            msg
+        );
     }
 
     #[test]
