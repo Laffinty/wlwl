@@ -325,9 +325,8 @@ impl Sha256 {
         }
         self.buffer.extend_from_slice(&self.bits_len.to_be_bytes());
         let buf = std::mem::take(&mut self.buffer);
-        for block in buf.chunks_exact(64) {
-            let arr: [u8; 64] = block.try_into().unwrap();
-            self.compress(&arr);
+        for block in buf.as_chunks::<64>().0 {
+            self.compress(block);
         }
         let mut out = Vec::with_capacity(32);
         for word in &self.state {
