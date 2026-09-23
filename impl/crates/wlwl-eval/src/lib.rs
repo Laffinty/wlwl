@@ -148,17 +148,13 @@ impl Value {
             // until then, displaying one shows the underlying id
             // + generation so users can recognise stale handles
             // (the v0.6 §3.x trait 'use-after-cancel' analogue).
-            Value::TaskHandle(h) => format!(
-                "<task handle id={} gen={}>",
-                h.id.0, h.generation
-            ),
+            Value::TaskHandle(h) => format!("<task handle id={} gen={}>", h.id.0, h.generation),
             // [v0.7 Phase D-A] Channel handles display the same way
             // as task handles for symmetry; the runtime can
             // distinguish via type_name at type-check time.
-            Value::ChannelHandle(h) => format!(
-                "<channel handle id={} gen={}>",
-                h.id.0, h.generation
-            ),
+            Value::ChannelHandle(h) => {
+                format!("<channel handle id={} gen={}>", h.id.0, h.generation)
+            }
         }
     }
 }
@@ -2708,19 +2704,13 @@ fn builtin_format(ev: &mut Evaluator, args: Vec<Value>) -> WlwlResult<Outcome> {
 /// for v0.6 callers is preserved. The scope_depth counter is
 /// the single source of truth for "is SPAWN legal here?" at
 /// C2; B5b will replace it with a Scheduler-owned Scope tree.
-fn builtin_scope(
-    ev: &mut Evaluator,
-    args: Vec<Value>,
-) -> WlwlResult<Outcome> {
+fn builtin_scope(ev: &mut Evaluator, args: Vec<Value>) -> WlwlResult<Outcome> {
     use wlwl_ast::Span as AstSpan;
     // Materialise the diagnostic span. `current_span` is set by
     // `eval_call` right before the dispatch (see the doc-comment on
     // the Evaluator field); if it is somehow missing we fall back
     // to a zero span so the diagnostic still has *some* location.
-    let diag_span = ev
-        .current_span
-        .clone()
-        .unwrap_or_else(AstSpan::dummy);
+    let diag_span = ev.current_span.clone().unwrap_or_else(AstSpan::dummy);
     // Arity: SCOPE takes exactly one argument (the closure).
     if args.len() != 1 {
         return Err(ev.diag(
@@ -2736,11 +2726,7 @@ fn builtin_scope(
     // Type-narrow the arg. Anything other than Value::Closure is
     // E0052 per plan §4.4 row "E0052 | SCOPE 中 fn 不是函数".
     let (params, body, captured_env) = match fn_value {
-        Value::Closure {
-            params,
-            body,
-            env,
-        } => (params, body, env),
+        Value::Closure { params, body, env } => (params, body, env),
         other => {
             return Err(ev.diag(
                 ErrorCode::E0052,
@@ -2762,14 +2748,7 @@ fn builtin_scope(
     ev.scope_depth = ev.scope_depth.saturating_add(1);
     let scope_id = ev.push_scope();
     use crate::runtime::{TaskResult, TaskState};
-    let result = ev.invoke_closure(
-        "SCOPE",
-        params,
-        body,
-        captured_env,
-        Vec::new(),
-        &diag_span,
-    );
+    let result = ev.invoke_closure("SCOPE", params, body, captured_env, Vec::new(), &diag_span);
     // [v0.7 Phase E3] SCOPE boundary: when any sibling task in this
     // scope terminated with `Done(Err(_))` / `Failed(_)`, cancel the
     // remaining non-terminal siblings (plan §5.4.1 row "scope fn
@@ -2855,17 +2834,11 @@ fn builtin_scope(
 ///
 /// Span sourcing: same `current_span` + `dummy()` fallback as
 /// SCOPE (see builtin_scope for the rationale).
-fn builtin_spawn(
-    ev: &mut Evaluator,
-    args: Vec<Value>,
-) -> WlwlResult<Outcome> {
+fn builtin_spawn(ev: &mut Evaluator, args: Vec<Value>) -> WlwlResult<Outcome> {
     use crate::runtime::TaskHandle;
     use crate::task::Task;
     use wlwl_ast::Span as AstSpan;
-    let diag_span = ev
-        .current_span
-        .clone()
-        .unwrap_or_else(AstSpan::dummy);
+    let diag_span = ev.current_span.clone().unwrap_or_else(AstSpan::dummy);
     // Arity: SPAWN takes exactly one argument (the closure).
     if args.len() != 1 {
         return Err(ev.diag(
@@ -2891,11 +2864,7 @@ fn builtin_spawn(
     }
     let fn_value = args.into_iter().next().expect("len == 1 checked");
     let (params, body, captured_env) = match fn_value {
-        Value::Closure {
-            params,
-            body,
-            env,
-        } => (params, body, env),
+        Value::Closure { params, body, env } => (params, body, env),
         other => {
             return Err(ev.diag(
                 ErrorCode::E0052,
@@ -3041,14 +3010,14 @@ fn builtin_spawn(
 fn builtin_await(ev: &mut Evaluator, args: Vec<Value>) -> WlwlResult<Outcome> {
     use crate::runtime::{TaskResult, TaskState};
     use wlwl_ast::Span as AstSpan;
-    let diag_span = ev
-        .current_span
-        .clone()
-        .unwrap_or_else(AstSpan::dummy);
+    let diag_span = ev.current_span.clone().unwrap_or_else(AstSpan::dummy);
     if args.len() != 1 {
         return Err(ev.diag(
             ErrorCode::E0022,
-            format!("AWAIT expects 1 argument (the task handle), got {}", args.len()),
+            format!(
+                "AWAIT expects 1 argument (the task handle), got {}",
+                args.len()
+            ),
             diag_span,
         ));
     }
@@ -3057,10 +3026,7 @@ fn builtin_await(ev: &mut Evaluator, args: Vec<Value>) -> WlwlResult<Outcome> {
         other => {
             return Err(ev.diag(
                 ErrorCode::E0053,
-                format!(
-                    "AWAIT expects a task handle, got {}",
-                    type_name(&other)
-                ),
+                format!("AWAIT expects a task handle, got {}", type_name(&other)),
                 diag_span,
             ));
         }
@@ -3112,7 +3078,10 @@ fn builtin_await(ev: &mut Evaluator, args: Vec<Value>) -> WlwlResult<Outcome> {
             // ERR(Cancelled). Phase F wires real cancellation; the
             // shape is pinned here so AWAIT's contract is stable.
             let payload = vec![
-                (Value::String("kind".into()), Value::String("Cancelled".into())),
+                (
+                    Value::String("kind".into()),
+                    Value::String("Cancelled".into()),
+                ),
                 (
                     Value::String("task".into()),
                     Value::String(format!(
@@ -3163,10 +3132,7 @@ fn builtin_await(ev: &mut Evaluator, args: Vec<Value>) -> WlwlResult<Outcome> {
 fn builtin_yield(ev: &mut Evaluator, args: Vec<Value>) -> WlwlResult<Outcome> {
     use crate::runtime::YieldReason;
     use wlwl_ast::Span as AstSpan;
-    let diag_span = ev
-        .current_span
-        .clone()
-        .unwrap_or_else(AstSpan::dummy);
+    let diag_span = ev.current_span.clone().unwrap_or_else(AstSpan::dummy);
     if !args.is_empty() {
         return Err(ev.diag(
             ErrorCode::E0022,
@@ -3190,17 +3156,11 @@ fn builtin_yield(ev: &mut Evaluator, args: Vec<Value>) -> WlwlResult<Outcome> {
 fn builtin_task_current(ev: &mut Evaluator, args: Vec<Value>) -> WlwlResult<Outcome> {
     use crate::runtime::TaskHandle;
     use wlwl_ast::Span as AstSpan;
-    let diag_span = ev
-        .current_span
-        .clone()
-        .unwrap_or_else(AstSpan::dummy);
+    let diag_span = ev.current_span.clone().unwrap_or_else(AstSpan::dummy);
     if !args.is_empty() {
         return Err(ev.diag(
             ErrorCode::E0022,
-            format!(
-                "TASK_CURRENT expects 0 arguments, got {}",
-                args.len()
-            ),
+            format!("TASK_CURRENT expects 0 arguments, got {}", args.len()),
             diag_span,
         ));
     }
@@ -3236,17 +3196,11 @@ fn builtin_task_current(ev: &mut Evaluator, args: Vec<Value>) -> WlwlResult<Outc
 fn builtin_task_is_cancelled(ev: &mut Evaluator, args: Vec<Value>) -> WlwlResult<Outcome> {
     use crate::runtime::TaskState;
     use wlwl_ast::Span as AstSpan;
-    let diag_span = ev
-        .current_span
-        .clone()
-        .unwrap_or_else(AstSpan::dummy);
+    let diag_span = ev.current_span.clone().unwrap_or_else(AstSpan::dummy);
     if !args.is_empty() {
         return Err(ev.diag(
             ErrorCode::E0022,
-            format!(
-                "TASK_IS_CANCELLED expects 0 arguments, got {}",
-                args.len()
-            ),
+            format!("TASK_IS_CANCELLED expects 0 arguments, got {}", args.len()),
             diag_span,
         ));
     }
@@ -3266,9 +3220,7 @@ fn builtin_task_is_cancelled(ev: &mut Evaluator, args: Vec<Value>) -> WlwlResult
                 .scheduler
                 .tasks
                 .get(id.0)
-                .map(|t| {
-                    matches!(t.state, TaskState::Cancelled) || t.cancel_requested
-                })
+                .map(|t| matches!(t.state, TaskState::Cancelled) || t.cancel_requested)
                 .unwrap_or(false);
             let scope_cancelled = ev
                 .scheduler
@@ -3315,10 +3267,7 @@ fn builtin_task_is_cancelled(ev: &mut Evaluator, args: Vec<Value>) -> WlwlResult
 /// module-level doc above. Returns NULL.
 fn builtin_task_cancel(ev: &mut Evaluator, args: Vec<Value>) -> WlwlResult<Outcome> {
     use wlwl_ast::Span as AstSpan;
-    let diag_span = ev
-        .current_span
-        .clone()
-        .unwrap_or_else(AstSpan::dummy);
+    let diag_span = ev.current_span.clone().unwrap_or_else(AstSpan::dummy);
     if args.len() != 1 {
         return Err(ev.diag(
             ErrorCode::E0022,
@@ -3358,17 +3307,11 @@ fn builtin_task_cancel(ev: &mut Evaluator, args: Vec<Value>) -> WlwlResult<Outco
 /// no `current_task` and no scope to cancel: both no-ops.
 fn builtin_task_cancel_parent(ev: &mut Evaluator, args: Vec<Value>) -> WlwlResult<Outcome> {
     use wlwl_ast::Span as AstSpan;
-    let diag_span = ev
-        .current_span
-        .clone()
-        .unwrap_or_else(AstSpan::dummy);
+    let diag_span = ev.current_span.clone().unwrap_or_else(AstSpan::dummy);
     if !args.is_empty() {
         return Err(ev.diag(
             ErrorCode::E0022,
-            format!(
-                "TASK_CANCEL_PARENT expects 0 arguments, got {}",
-                args.len()
-            ),
+            format!("TASK_CANCEL_PARENT expects 0 arguments, got {}", args.len()),
             diag_span,
         ));
     }
@@ -3431,10 +3374,7 @@ fn builtin_task_cancel_parent(ev: &mut Evaluator, args: Vec<Value>) -> WlwlResul
 
 fn builtin_shield(ev: &mut Evaluator, args: Vec<Value>) -> WlwlResult<Outcome> {
     use wlwl_ast::Span as AstSpan;
-    let diag_span = ev
-        .current_span
-        .clone()
-        .unwrap_or_else(AstSpan::dummy);
+    let diag_span = ev.current_span.clone().unwrap_or_else(AstSpan::dummy);
     if args.len() != 1 {
         return Err(ev.diag(
             ErrorCode::E0022,
@@ -3447,11 +3387,7 @@ fn builtin_shield(ev: &mut Evaluator, args: Vec<Value>) -> WlwlResult<Outcome> {
     }
     let fn_value = args.into_iter().next().expect("len == 1 checked");
     let (params, body, captured_env) = match fn_value {
-        Value::Closure {
-            params,
-            body,
-            env,
-        } => (params, body, env),
+        Value::Closure { params, body, env } => (params, body, env),
         other => {
             return Err(ev.diag(
                 ErrorCode::E0052,
@@ -3467,14 +3403,7 @@ fn builtin_shield(ev: &mut Evaluator, args: Vec<Value>) -> WlwlResult<Outcome> {
     // the fn body sees shield_depth >= 1 and routes to the
     // pending-cancel path instead of the immediate subtree cancel.
     ev.shield_depth = ev.shield_depth.saturating_add(1);
-    let result = ev.invoke_closure(
-        "SHIELD",
-        params,
-        body,
-        captured_env,
-        Vec::new(),
-        &diag_span,
-    );
+    let result = ev.invoke_closure("SHIELD", params, body, captured_env, Vec::new(), &diag_span);
     // Decrement after invoke. If this was the outermost SHIELD
     // and a pending cancel was recorded, translate it to a
     // cancel_requested on the current task so subsequent code
@@ -3541,11 +3470,7 @@ fn resolve_channel_handle(
         other => {
             return Err(ev.diag(
                 ErrorCode::E0053,
-                format!(
-                    "{} expects a channel handle, got {}",
-                    op,
-                    type_name(other)
-                ),
+                format!("{} expects a channel handle, got {}", op, type_name(other)),
                 diag_span.clone(),
             ));
         }
@@ -3576,16 +3501,16 @@ fn resolve_channel_handle(
 /// `E0053` at the next op instead of silently operating on a
 /// different channel.
 fn builtin_channel_new(ev: &mut Evaluator, args: Vec<Value>) -> WlwlResult<Outcome> {
-    use crate::channel::{Channel, ChannelId, ChannelHandle};
+    use crate::channel::{Channel, ChannelHandle, ChannelId};
     use wlwl_ast::Span as AstSpan;
-    let diag_span = ev
-        .current_span
-        .clone()
-        .unwrap_or_else(AstSpan::dummy);
+    let diag_span = ev.current_span.clone().unwrap_or_else(AstSpan::dummy);
     if args.len() != 1 {
         return Err(ev.diag(
             ErrorCode::E0022,
-            format!("CHANNEL_NEW expects 1 argument (the buffer size), got {}", args.len()),
+            format!(
+                "CHANNEL_NEW expects 1 argument (the buffer size), got {}",
+                args.len()
+            ),
             diag_span,
         ));
     }
@@ -3594,10 +3519,7 @@ fn builtin_channel_new(ev: &mut Evaluator, args: Vec<Value>) -> WlwlResult<Outco
         Value::Integer(n) => {
             return Err(ev.diag(
                 ErrorCode::E0031,
-                format!(
-                    "CHANNEL_NEW buffer size must be non-negative, got {}",
-                    n
-                ),
+                format!("CHANNEL_NEW buffer size must be non-negative, got {}", n),
                 diag_span,
             ));
         }
@@ -3614,10 +3536,7 @@ fn builtin_channel_new(ev: &mut Evaluator, args: Vec<Value>) -> WlwlResult<Outco
     };
     let id = ChannelId(ev.scheduler.channels.len());
     let generation = ev.scheduler.next_channel_generation;
-    ev.scheduler.next_channel_generation = ev
-        .scheduler
-        .next_channel_generation
-        .wrapping_add(1);
+    ev.scheduler.next_channel_generation = ev.scheduler.next_channel_generation.wrapping_add(1);
     let channel = Channel::new(id, generation, buf);
     let handle: ChannelHandle = channel.handle();
     ev.scheduler.channels.push(channel);
@@ -3648,14 +3567,14 @@ fn builtin_channel_new(ev: &mut Evaluator, args: Vec<Value>) -> WlwlResult<Outco
 /// allowed).
 fn builtin_channel_close(ev: &mut Evaluator, args: Vec<Value>) -> WlwlResult<Outcome> {
     use wlwl_ast::Span as AstSpan;
-    let diag_span = ev
-        .current_span
-        .clone()
-        .unwrap_or_else(AstSpan::dummy);
+    let diag_span = ev.current_span.clone().unwrap_or_else(AstSpan::dummy);
     if args.len() != 1 {
         return Err(ev.diag(
             ErrorCode::E0022,
-            format!("CHANNEL_CLOSE expects 1 argument (the channel handle), got {}", args.len()),
+            format!(
+                "CHANNEL_CLOSE expects 1 argument (the channel handle), got {}",
+                args.len()
+            ),
             diag_span,
         ));
     }
@@ -3678,14 +3597,14 @@ fn builtin_channel_close(ev: &mut Evaluator, args: Vec<Value>) -> WlwlResult<Out
 /// note: "NULL 不作为 close 信号").
 fn builtin_channel_len(ev: &mut Evaluator, args: Vec<Value>) -> WlwlResult<Outcome> {
     use wlwl_ast::Span as AstSpan;
-    let diag_span = ev
-        .current_span
-        .clone()
-        .unwrap_or_else(AstSpan::dummy);
+    let diag_span = ev.current_span.clone().unwrap_or_else(AstSpan::dummy);
     if args.len() != 1 {
         return Err(ev.diag(
             ErrorCode::E0022,
-            format!("CHANNEL_LEN expects 1 argument (the channel handle), got {}", args.len()),
+            format!(
+                "CHANNEL_LEN expects 1 argument (the channel handle), got {}",
+                args.len()
+            ),
             diag_span,
         ));
     }
@@ -3698,14 +3617,14 @@ fn builtin_channel_len(ev: &mut Evaluator, args: Vec<Value>) -> WlwlResult<Outco
 /// capacity. Returns `0` for sync channels.
 fn builtin_channel_cap(ev: &mut Evaluator, args: Vec<Value>) -> WlwlResult<Outcome> {
     use wlwl_ast::Span as AstSpan;
-    let diag_span = ev
-        .current_span
-        .clone()
-        .unwrap_or_else(AstSpan::dummy);
+    let diag_span = ev.current_span.clone().unwrap_or_else(AstSpan::dummy);
     if args.len() != 1 {
         return Err(ev.diag(
             ErrorCode::E0022,
-            format!("CHANNEL_CAP expects 1 argument (the channel handle), got {}", args.len()),
+            format!(
+                "CHANNEL_CAP expects 1 argument (the channel handle), got {}",
+                args.len()
+            ),
             diag_span,
         ));
     }
@@ -3745,11 +3664,7 @@ fn builtin_channel_cap(ev: &mut Evaluator, args: Vec<Value>) -> WlwlResult<Outco
 /// (deviation P7-D2-001); kept so D-D / path A can flip this on
 /// without re-introducing the helpers.
 #[allow(dead_code)]
-fn channel_recv_yield(
-    ev: &mut Evaluator,
-    slot: usize,
-    task_id: crate::runtime::TaskId,
-) -> Outcome {
+fn channel_recv_yield(ev: &mut Evaluator, slot: usize, task_id: crate::runtime::TaskId) -> Outcome {
     use crate::runtime::YieldReason;
     let ch_id = ev.scheduler.channels[slot].id;
     ev.scheduler.channels[slot].push_receiver_waiter(task_id);
@@ -3763,11 +3678,7 @@ fn channel_recv_yield(
 /// and return a `Signal::Yield(SendingOn(ch_id))`. See
 /// `channel_recv_yield` for the same dead-code rationale.
 #[allow(dead_code)]
-fn channel_send_yield(
-    ev: &mut Evaluator,
-    slot: usize,
-    task_id: crate::runtime::TaskId,
-) -> Outcome {
+fn channel_send_yield(ev: &mut Evaluator, slot: usize, task_id: crate::runtime::TaskId) -> Outcome {
     use crate::runtime::YieldReason;
     let ch_id = ev.scheduler.channels[slot].id;
     ev.scheduler.channels[slot].push_sender_waiter(task_id);
@@ -3782,7 +3693,10 @@ fn channel_send_yield(
 /// slot, CLOSE woke all parked recvs). The caller invokes this after
 /// a successful send / recv / close so the woken task gets another
 /// turn in the scheduler loop.
-fn channel_reenqueue_woken(ev: &mut Evaluator, woken: impl IntoIterator<Item = crate::runtime::TaskId>) {
+fn channel_reenqueue_woken(
+    ev: &mut Evaluator,
+    woken: impl IntoIterator<Item = crate::runtime::TaskId>,
+) {
     for tid in woken {
         ev.scheduler.enqueue(tid);
     }
@@ -3798,10 +3712,7 @@ fn channel_reenqueue_woken(ev: &mut Evaluator, woken: impl IntoIterator<Item = c
 fn builtin_channel_send(ev: &mut Evaluator, args: Vec<Value>) -> WlwlResult<Outcome> {
     use crate::channel::TryResult;
     use wlwl_ast::Span as AstSpan;
-    let diag_span = ev
-        .current_span
-        .clone()
-        .unwrap_or_else(AstSpan::dummy);
+    let diag_span = ev.current_span.clone().unwrap_or_else(AstSpan::dummy);
     if args.len() != 2 {
         return Err(ev.diag(
             ErrorCode::E0022,
@@ -3834,8 +3745,14 @@ fn builtin_channel_send(ev: &mut Evaluator, args: Vec<Value>) -> WlwlResult<Outc
         // back-pressure via TRY_SEND). Path A's full CPS will
         // restore real mid-body suspend in v0.7.1.
         TryResult::WouldBlock => Ok(Outcome::normal(Value::Err(Box::new(Value::Dict(vec![
-            (Value::String("kind".to_string()), Value::String("ChannelWouldBlock".to_string())),
-            (Value::String("op".to_string()), Value::String("send".to_string())),
+            (
+                Value::String("kind".to_string()),
+                Value::String("ChannelWouldBlock".to_string()),
+            ),
+            (
+                Value::String("op".to_string()),
+                Value::String("send".to_string()),
+            ),
         ]))))),
     }
 }
@@ -3848,10 +3765,7 @@ fn builtin_channel_send(ev: &mut Evaluator, args: Vec<Value>) -> WlwlResult<Outc
 fn builtin_channel_recv(ev: &mut Evaluator, args: Vec<Value>) -> WlwlResult<Outcome> {
     use crate::channel::TryResult;
     use wlwl_ast::Span as AstSpan;
-    let diag_span = ev
-        .current_span
-        .clone()
-        .unwrap_or_else(AstSpan::dummy);
+    let diag_span = ev.current_span.clone().unwrap_or_else(AstSpan::dummy);
     if args.len() != 1 {
         return Err(ev.diag(
             ErrorCode::E0022,
@@ -3886,8 +3800,14 @@ fn builtin_channel_recv(ev: &mut Evaluator, args: Vec<Value>) -> WlwlResult<Outc
         // Path A's full CPS will restore mid-body suspend in
         // v0.7.1.
         TryResult::WouldBlock => Ok(Outcome::normal(Value::Err(Box::new(Value::Dict(vec![
-            (Value::String("kind".to_string()), Value::String("ChannelWouldBlock".to_string())),
-            (Value::String("op".to_string()), Value::String("recv".to_string())),
+            (
+                Value::String("kind".to_string()),
+                Value::String("ChannelWouldBlock".to_string()),
+            ),
+            (
+                Value::String("op".to_string()),
+                Value::String("recv".to_string()),
+            ),
         ]))))),
     }
 }
@@ -3900,10 +3820,7 @@ fn builtin_channel_recv(ev: &mut Evaluator, args: Vec<Value>) -> WlwlResult<Outc
 fn builtin_channel_try_send(ev: &mut Evaluator, args: Vec<Value>) -> WlwlResult<Outcome> {
     use crate::channel::TryResult;
     use wlwl_ast::Span as AstSpan;
-    let diag_span = ev
-        .current_span
-        .clone()
-        .unwrap_or_else(AstSpan::dummy);
+    let diag_span = ev.current_span.clone().unwrap_or_else(AstSpan::dummy);
     if args.len() != 2 {
         return Err(ev.diag(
             ErrorCode::E0022,
@@ -3939,10 +3856,7 @@ fn builtin_channel_try_send(ev: &mut Evaluator, args: Vec<Value>) -> WlwlResult<
 fn builtin_channel_try_recv(ev: &mut Evaluator, args: Vec<Value>) -> WlwlResult<Outcome> {
     use crate::channel::TryResult;
     use wlwl_ast::Span as AstSpan;
-    let diag_span = ev
-        .current_span
-        .clone()
-        .unwrap_or_else(AstSpan::dummy);
+    let diag_span = ev.current_span.clone().unwrap_or_else(AstSpan::dummy);
     if args.len() != 1 {
         return Err(ev.diag(
             ErrorCode::E0022,
@@ -4459,10 +4373,7 @@ fn builtin_add(_ev: &mut Evaluator, args: Vec<Value>) -> WlwlResult<Outcome> {
             None => Err(builtin_error(
                 ErrorCode::E0035,
                 "+",
-                format!(
-                    "integer overflow in `+`: {} + {} exceeds i64 range",
-                    i1, i2
-                ),
+                format!("integer overflow in `+`: {} + {} exceeds i64 range", i1, i2),
             )),
         }
     } else if numeric(a).is_some() && numeric(b).is_some() {
@@ -4504,10 +4415,7 @@ fn builtin_sub(_ev: &mut Evaluator, args: Vec<Value>) -> WlwlResult<Outcome> {
             None => Err(builtin_error(
                 ErrorCode::E0035,
                 "-",
-                format!(
-                    "integer overflow in `-`: {} - {} exceeds i64 range",
-                    i1, i2
-                ),
+                format!("integer overflow in `-`: {} - {} exceeds i64 range", i1, i2),
             )),
         }
     } else if numeric(a).is_some() && numeric(b).is_some() {
@@ -4534,10 +4442,7 @@ fn builtin_mul(_ev: &mut Evaluator, args: Vec<Value>) -> WlwlResult<Outcome> {
             None => Err(builtin_error(
                 ErrorCode::E0035,
                 "*",
-                format!(
-                    "integer overflow in `*`: {} * {} exceeds i64 range",
-                    i1, i2
-                ),
+                format!("integer overflow in `*`: {} * {} exceeds i64 range", i1, i2),
             )),
         }
     } else if numeric(a).is_some() && numeric(b).is_some() {
@@ -5457,10 +5362,7 @@ impl Evaluator {
     /// config violation, unhandled ERR escape, etc.); the wrapping
     /// into `StepResult::Done` / `StepResult::Yield` only happens for
     /// the success path.
-    pub fn step_once(
-        &mut self,
-        expr: &Expr,
-    ) -> WlwlResult<crate::runtime::StepResult> {
+    pub fn step_once(&mut self, expr: &Expr) -> WlwlResult<crate::runtime::StepResult> {
         // Project-config gate + trace enrichment, mirroring `eval`
         // exactly so the slice-1 smoke test can compare the two.
         self.check_project_config(expr.span())?;
@@ -5492,10 +5394,7 @@ impl Evaluator {
                 if let Signal::Return(Value::Err(payload)) = &outcome.signal {
                     return Err(self.diag(
                         ErrorCode::E0102,
-                        format!(
-                            "unhandled ERR escaped to top level: {}",
-                            payload.display()
-                        ),
+                        format!("unhandled ERR escaped to top level: {}", payload.display()),
                         expr.span().clone(),
                     ));
                 }
@@ -5503,10 +5402,7 @@ impl Evaluator {
                     if let Value::Err(payload) = &outcome.value {
                         return Err(self.diag(
                             ErrorCode::E0102,
-                            format!(
-                                "unhandled ERR escaped to top level: {}",
-                                payload.display()
-                            ),
+                            format!("unhandled ERR escaped to top level: {}", payload.display()),
                             expr.span().clone(),
                         ));
                     }
@@ -6264,11 +6160,7 @@ impl Evaluator {
     /// Behaviour is byte-identical to the for-loop in pre-slice-2
     /// `eval_call`; this commit only extracts it so `step_call` can
     /// reuse it.
-    fn eval_arg_values(
-        &mut self,
-        args: &[Expr],
-        whitelisted: bool,
-    ) -> WlwlResult<ArgEvalResult> {
+    fn eval_arg_values(&mut self, args: &[Expr], whitelisted: bool) -> WlwlResult<ArgEvalResult> {
         let mut accum: Vec<Value> = Vec::with_capacity(args.len());
         let mut pending_err: Option<Value> = None;
         for a in args {
@@ -6382,9 +6274,7 @@ impl Evaluator {
         span: &Span,
     ) -> WlwlResult<crate::runtime::StepResult> {
         Ok(match outcome.signal {
-            Signal::None | Signal::Return(_) => {
-                crate::runtime::StepResult::Done(outcome.value)
-            }
+            Signal::None | Signal::Return(_) => crate::runtime::StepResult::Done(outcome.value),
             Signal::Yield(reason) => crate::runtime::StepResult::Yield(reason),
             Signal::Break | Signal::Continue => {
                 return Err(self.diag(
@@ -6424,10 +6314,7 @@ impl Evaluator {
                 if !args.is_empty() {
                     return Err(self.diag(
                         ErrorCode::E0022,
-                        format!(
-                            "__YIELD_TEST__ expects 0 arguments, got {}",
-                            args.len()
-                        ),
+                        format!("__YIELD_TEST__ expects 0 arguments, got {}", args.len()),
                         span.clone(),
                     ));
                 }
@@ -6516,8 +6403,7 @@ impl Evaluator {
             .tasks
             .get(id.0)
             .map(|t| {
-                t.cancel_requested
-                    && !matches!(t.state, TaskState::Done(_) | TaskState::Cancelled)
+                t.cancel_requested && !matches!(t.state, TaskState::Done(_) | TaskState::Cancelled)
             })
             .unwrap_or(false);
         if cancel_now {
@@ -6546,11 +6432,7 @@ impl Evaluator {
             return Ok(());
         };
         let (params, expr, captured) = match body {
-            Value::Closure {
-                params,
-                body,
-                env,
-            } => (params, body, env),
+            Value::Closure { params, body, env } => (params, body, env),
             other => {
                 let result = TaskResult::Failed(Box::new(self.diag(
                     ErrorCode::E0052,
@@ -6590,8 +6472,7 @@ impl Evaluator {
         let outcome = match outcome_res {
             Ok(o) => o,
             Err(e) => {
-                self.scheduler
-                    .complete(id, TaskResult::Failed(Box::new(e)));
+                self.scheduler.complete(id, TaskResult::Failed(Box::new(e)));
                 return Ok(());
             }
         };
@@ -6752,10 +6633,7 @@ impl Evaluator {
                 // Restore caller env on error before bubbling, so
                 // the caller's scope stack is intact for whatever
                 // catches the diagnostic.
-                let _ = std::mem::replace(
-                    &mut self.env.scopes,
-                    saved_caller_scopes.clone(),
-                );
+                let _ = std::mem::replace(&mut self.env.scopes, saved_caller_scopes.clone());
                 return Err(e);
             }
         };
@@ -6805,12 +6683,7 @@ impl Evaluator {
             // siblings already sitting in the queue.
             self.scheduler.enqueue(id);
             // move to front
-            if let Some(pos) = self
-                .scheduler
-                .run_queue
-                .iter()
-                .position(|t| *t == id)
-            {
+            if let Some(pos) = self.scheduler.run_queue.iter().position(|t| *t == id) {
                 let tid = self.scheduler.run_queue.remove(pos).expect("pos");
                 self.scheduler.run_queue.push_front(tid);
             }
@@ -6844,49 +6717,49 @@ impl Evaluator {
     }
 
     /// [v0.7 Phase B5b] Pop the innermost scope after awaiting children.
-/// [v0.7 Phase D-D] The leak detector (plan §3 D7) runs here:
-/// every channel that this scope owned is force-closed. The slot
-/// identity is preserved (no recycling), so any handle still held
-/// by user code matches its original generation and reaches the
-/// normal SEND-on-closed / RECV-on-closed paths: SEND raises
-/// E0054, RECV returns `ERR(kind="ChannelClosed")`. Generation
-/// tracking (E0053) is reserved for the future slot-recycling path
-/// — for v0.7 we don't recycle the slot, only close it.
-fn pop_scope(&mut self, id: crate::runtime::ScopeId, span: &Span) -> WlwlResult<()> {
-    self.scheduler_run_until_idle(span)?;
-    let owned = self
-        .scheduler
-        .scopes
-        .get(id.0)
-        .map(|sc| sc.channels.clone())
-        .unwrap_or_default();
-    for ch_id in owned {
-        // Force-close: drains receiver_waiters (the woken tasks
-        // re-run, observe closed + (eventually) empty, and
-        // synthesise ChannelClosed ERR). Sender waiters are not
-        // woken — they'd just see E0054 on their next SEND
-        // attempt, which is correct per plan §5.3.
-        let woken = self
+    /// [v0.7 Phase D-D] The leak detector (plan §3 D7) runs here:
+    /// every channel that this scope owned is force-closed. The slot
+    /// identity is preserved (no recycling), so any handle still held
+    /// by user code matches its original generation and reaches the
+    /// normal SEND-on-closed / RECV-on-closed paths: SEND raises
+    /// E0054, RECV returns `ERR(kind="ChannelClosed")`. Generation
+    /// tracking (E0053) is reserved for the future slot-recycling path
+    /// — for v0.7 we don't recycle the slot, only close it.
+    fn pop_scope(&mut self, id: crate::runtime::ScopeId, span: &Span) -> WlwlResult<()> {
+        self.scheduler_run_until_idle(span)?;
+        let owned = self
             .scheduler
-            .channels
-            .get_mut(ch_id.0)
-            .map(|c| c.close())
+            .scopes
+            .get(id.0)
+            .map(|sc| sc.channels.clone())
             .unwrap_or_default();
-        for tid in woken {
-            self.scheduler.enqueue(tid);
+        for ch_id in owned {
+            // Force-close: drains receiver_waiters (the woken tasks
+            // re-run, observe closed + (eventually) empty, and
+            // synthesise ChannelClosed ERR). Sender waiters are not
+            // woken — they'd just see E0054 on their next SEND
+            // attempt, which is correct per plan §5.3.
+            let woken = self
+                .scheduler
+                .channels
+                .get_mut(ch_id.0)
+                .map(|c| c.close())
+                .unwrap_or_default();
+            for tid in woken {
+                self.scheduler.enqueue(tid);
+            }
         }
+        if let Some(sc) = self.scheduler.scopes.get_mut(id.0) {
+            let _ = sc;
+        }
+        self.scheduler.current_scope = self
+            .scheduler
+            .scopes
+            .get(id.0)
+            .and_then(|s| s.parent)
+            .or(Some(crate::runtime::ScopeId(0)));
+        Ok(())
     }
-    if let Some(sc) = self.scheduler.scopes.get_mut(id.0) {
-        let _ = sc;
-    }
-    self.scheduler.current_scope = self
-        .scheduler
-        .scopes
-        .get(id.0)
-        .and_then(|s| s.parent)
-        .or(Some(crate::runtime::ScopeId(0)));
-    Ok(())
-}
 
     fn eval_call(&mut self, name: &str, args: &[Expr], span: &Span) -> WlwlResult<Outcome> {
         // [v0.4 spec Sec. 6.4] Fast path for the macro function `SET`:
@@ -8065,14 +7938,15 @@ mod tests {
         let src = "__YIELD_TEST__();";
         let ast = parse(src, "t.wll").expect("parse");
         let mut ev = Evaluator::new();
-        let err = ev.eval(&ast).expect_err("eval must error on top-level yield");
+        let err = ev
+            .eval(&ast)
+            .expect_err("eval must error on top-level yield");
         match err {
             WlwlError::Diagnostic(d) => assert_eq!(
                 d.code,
                 ErrorCode::E0014,
                 "yield at top level must surface as E0014"
             ),
-
         }
     }
 
@@ -8085,14 +7959,15 @@ mod tests {
         let src = "__YIELD_TEST__(1, 2);";
         let ast = parse(src, "t.wll").expect("parse");
         let mut ev = Evaluator::new();
-        let err = ev.eval(&ast).expect_err("__YIELD_TEST__ with args must error");
+        let err = ev
+            .eval(&ast)
+            .expect_err("__YIELD_TEST__ with args must error");
         match err {
             WlwlError::Diagnostic(d) => assert_eq!(
                 d.code,
                 ErrorCode::E0022,
                 "non-zero arity on yield marker must surface as E0022"
             ),
-
         }
     }
 
@@ -8135,9 +8010,7 @@ mod tests {
         let mut ev = Evaluator::new();
         match ev.step_once(&ast).expect("step_once") {
             crate::runtime::StepResult::Yield(crate::runtime::YieldReason::Explicit) => {}
-            other => panic!(
-                "expected Yield(Explicit) propagated from inner marker, got {other:?}"
-            ),
+            other => panic!("expected Yield(Explicit) propagated from inner marker, got {other:?}"),
         }
     }
 
@@ -8157,7 +8030,6 @@ mod tests {
                 ErrorCode::E0022,
                 "wrong arity on 1-arg marker must surface as E0022"
             ),
-
         }
         // 2-arg call must also fail arity check.
         let src2 = "__YIELD_AFTER_ARG_TEST__(1, 2);";
@@ -8166,7 +8038,6 @@ mod tests {
         let err2 = ev2.eval(&ast2).expect_err("2-arg call must error");
         match err2 {
             WlwlError::Diagnostic(d) => assert_eq!(d.code, ErrorCode::E0022),
-
         }
     }
 
@@ -8300,7 +8171,6 @@ mod tests {
                 ErrorCode::E0052,
                 "expected E0052 'SCOPE 中 fn 不是函数'"
             ),
-
         }
     }
 
@@ -8315,7 +8185,6 @@ mod tests {
                 ErrorCode::E0022,
                 "expected E0022 'function call arity'"
             ),
-
         }
     }
 
@@ -8334,7 +8203,6 @@ mod tests {
                 ErrorCode::E0022,
                 "expected E0022 'function call arity'"
             ),
-
         }
     }
 
@@ -8511,7 +8379,8 @@ mod tests {
     fn await_returns_user_err_as_value() {
         // Plan §5.4: child ERR is received at AWAIT "作为返回值".
         // UNWRAP_OR consumes it at the call site (§8.2).
-        let src = "SCOPE(FUN(() , LET(h, SPAWN(FUN(() , ERR(\"boom\")))); UNWRAP_OR(AWAIT(h), -1)));";
+        let src =
+            "SCOPE(FUN(() , LET(h, SPAWN(FUN(() , ERR(\"boom\")))); UNWRAP_OR(AWAIT(h), -1)));";
         let v = run(src).expect("AWAIT of ERR child should yield the ERR value");
         assert_eq!(v, Value::Integer(-1));
     }
@@ -8520,7 +8389,8 @@ mod tests {
     fn await_user_err_payload_survives() {
         // The ERR payload must be intact after crossing the task
         // boundary (plan §5.4.1 "ERR payload 中的 kind 字段").
-        let src = "SCOPE(FUN(() , LET(h, SPAWN(FUN(() , ERR(\"boom\")))); LET(v, AWAIT(h)); IS_ERR(v)));";
+        let src =
+            "SCOPE(FUN(() , LET(h, SPAWN(FUN(() , ERR(\"boom\")))); LET(v, AWAIT(h)); IS_ERR(v)));";
         let v = run(src).expect("AWAIT should hand back a recognisable ERR");
         assert_eq!(v, Value::Boolean(true));
     }
@@ -8976,7 +8846,8 @@ mod tests {
         // This is the existing `await_returns_user_err_as_value`
         // test repeated under E-B; we add it here to lock the
         // "sibling cancel does not override consumed ERR" invariant.
-        let src = r#"SCOPE(FUN(() , LET(h, SPAWN(FUN(() , ERR("boom")))); UNWRAP_OR(AWAIT(h), -1)));"#;
+        let src =
+            r#"SCOPE(FUN(() , LET(h, SPAWN(FUN(() , ERR("boom")))); UNWRAP_OR(AWAIT(h), -1)));"#;
         let v = run(src).expect("consumed ERR must not override SCOPE return");
         assert_eq!(
             v,
@@ -9215,10 +9086,7 @@ mod tests {
         let v = run(src).expect("snap7 raw-value observation");
         assert_eq!(
             v,
-            Value::Array(vec![
-                Value::String("INTEGER".into()),
-                Value::Boolean(false),
-            ]),
+            Value::Array(vec![Value::String("INTEGER".into()), Value::Boolean(false),]),
             "AWAIT(42) preserves Integer(42) verbatim — TYPE=INTEGER, IS_OK=FALSE"
         );
     }
@@ -9710,7 +9578,9 @@ mod tests {
         let src = "YIELD();";
         let ast = parse(src, "t.wll").expect("parse");
         let mut ev = Evaluator::new();
-        let err = ev.eval(&ast).expect_err("top-level YIELD via eval must be E0014");
+        let err = ev
+            .eval(&ast)
+            .expect_err("top-level YIELD via eval must be E0014");
         assert_eq!(
             err.diagnostic().code,
             ErrorCode::E0014,
@@ -9800,7 +9670,8 @@ mod tests {
     fn c7_child_set_on_let_mut_is_visible_to_parent() {
         // Plan §5.5: LET MUT + child SET behaves exactly like
         // single-task shared-cell mutation.
-        let src = "SCOPE(FUN(() , LET MUT(x, 1); LET(h, SPAWN(FUN(() , SET(x, 2)))); AWAIT(h); x));";
+        let src =
+            "SCOPE(FUN(() , LET MUT(x, 1); LET(h, SPAWN(FUN(() , SET(x, 2)))); AWAIT(h); x));";
         let v = run(src).expect("LET MUT + child SET should share the cell");
         assert_eq!(v, Value::Integer(2));
     }
@@ -10139,10 +10010,7 @@ mod tests {
         let v = run(src).expect("trailing YIELD must complete, not panic");
         assert_eq!(
             v,
-            Value::Array(vec![
-                Value::String("NULL".into()),
-                Value::Null,
-            ]),
+            Value::Array(vec![Value::String("NULL".into()), Value::Null,]),
             "trailing YIELD on the last segment finishes with NULL"
         );
     }
@@ -10483,11 +10351,7 @@ mod tests {
             CHANNEL_TRY_SEND(ch, 1)
         "#;
         let err = run(src).expect_err("TRY_SEND on closed must fail");
-        assert_eq!(
-            err.diagnostic().code,
-            ErrorCode::E0054,
-            "expected E0054"
-        );
+        assert_eq!(err.diagnostic().code, ErrorCode::E0054, "expected E0054");
     }
 
     /// D-C: after CLOSE, CHANNEL_RECV returns the structured
@@ -14276,7 +14140,11 @@ entry = "main.wll"
         // E0023 at IMPORT time. If the loader re-routes through
         // the undefined-name path, E0020 is also acceptable.
         let dir = unique_test_dir("export_unbound2");
-        fs::write(dir.join("m.wll"), "LET(unused, 1); EXPORT([\"missing\"]);\n").unwrap();
+        fs::write(
+            dir.join("m.wll"),
+            "LET(unused, 1); EXPORT([\"missing\"]);\n",
+        )
+        .unwrap();
         let src = "IMPORT(\"m\", [\"missing\"]); PRINT(1);\n";
         let v = run_in(&dir, src);
         let err = v.expect_err("expected export error");

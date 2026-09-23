@@ -964,7 +964,10 @@ impl Parser {
         // LET 解构 / MATCH scrutinee) 当作普通标识符绑定名 `MUT`。
         if let TokenKind::Mut = self.peek() {
             let tok = self.advance();
-            return Ok(Pattern::Ident("MUT".into(), self.span_tuple_to_span(tok.span)));
+            return Ok(Pattern::Ident(
+                "MUT".into(),
+                self.span_tuple_to_span(tok.span),
+            ));
         }
         if let TokenKind::LBracket = self.peek() {
             return self.parse_pattern_array_or_dict(line, col);
@@ -1947,12 +1950,7 @@ impl Parser {
     /// Used by both `parse_call_or_ident` (identifier / call heads) and
     /// `parse_array_or_dict` (array / dict literals — v0.8 §2.4 D8-004).
     /// Chains mix freely (`a[0].b`, `a.b[0][1]`, `[1,2,3][0][1]`).
-    fn apply_postfix_loop(
-        &mut self,
-        mut base: Expr,
-        line: u32,
-        col: u32,
-    ) -> WlwlResult<Expr> {
+    fn apply_postfix_loop(&mut self, mut base: Expr, line: u32, col: u32) -> WlwlResult<Expr> {
         loop {
             if matches!(self.peek(), TokenKind::LBracket) {
                 self.advance(); // '['

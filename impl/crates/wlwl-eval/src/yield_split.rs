@@ -371,9 +371,7 @@ mod tests {
                 Expr::Return { value, .. } => value.as_ref().map_or(0, |v| walk(v)),
                 Expr::Call { args, .. } => args.iter().map(walk).sum(),
                 Expr::Array { items, .. } => items.iter().map(walk).sum(),
-                Expr::Dict { entries, .. } => {
-                    entries.iter().map(|(k, v)| walk(k) + walk(v)).sum()
-                }
+                Expr::Dict { entries, .. } => entries.iter().map(|(k, v)| walk(k) + walk(v)).sum(),
                 Expr::Ok { value, .. }
                 | Expr::Err { value, .. }
                 | Expr::Panic { value, .. }
@@ -386,7 +384,11 @@ mod tests {
                     clauses,
                     default,
                     ..
-                } => walk(value) + walk(default) + clauses.iter().map(|c| walk(&c.body)).sum::<usize>(),
+                } => {
+                    walk(value)
+                        + walk(default)
+                        + clauses.iter().map(|c| walk(&c.body)).sum::<usize>()
+                }
                 Expr::Fun { body, .. } => walk(body),
                 _ => 0,
             }
@@ -421,13 +423,7 @@ mod tests {
     #[test]
     fn multiple_yields_split_into_three_segments() {
         // [A, YIELD, B, YIELD, C]  ->  [A,Y], [B,Y], [C]
-        let body = block(vec![
-            int(1),
-            yield_call(),
-            int(2),
-            yield_call(),
-            int(3),
-        ]);
+        let body = block(vec![int(1), yield_call(), int(2), yield_call(), int(3)]);
         let segs = split_body_for_yield(&body).expect("ok");
         assert_eq!(segs.len(), 3);
         assert_eq!(segs[0].len(), 2);

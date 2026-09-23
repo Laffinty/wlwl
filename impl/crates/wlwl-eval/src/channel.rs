@@ -162,7 +162,10 @@ impl Channel {
     pub fn recv_closed_err(&self) -> Value {
         let repr = format!("<channel handle id={} gen={}>", self.id.0, self.generation);
         Value::Err(Box::new(Value::Dict(vec![
-            (Value::String("kind".to_string()), Value::String("ChannelClosed".to_string())),
+            (
+                Value::String("kind".to_string()),
+                Value::String("ChannelClosed".to_string()),
+            ),
             (Value::String("channel".to_string()), Value::String(repr)),
         ])))
     }

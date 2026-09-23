@@ -1437,9 +1437,7 @@ pub fn generate_appendix_g_md() -> String {
     out.push_str(
         "> 修改流程:改注册表 -> 跑本函数重写本文件 -> 跑 `cargo test` 验证 lock test。\n\n",
     );
-    out.push_str(
-        "> 对照规范:`docs/standard/wlwl-spec-v0.8.md` 附录 G (规范性)。\n\n",
-    );
+    out.push_str("> 对照规范:`docs/standard/wlwl-spec-v0.8.md` 附录 G (规范性)。\n\n");
     let n_resolved = BUILTIN_REGISTRY
         .iter()
         .filter(|s| {
@@ -1689,18 +1687,55 @@ mod tests {
         // v0.4/v0.6-era and must not appear in regenerated md.
         // (OOP/Property use the bracketed placeholder form.)
         let whitelist: &[&str] = &[
-            "§2.1", "§2.2", "§2.3", "§2.4", "§2.5",
-            "§3.1", "§3.2", "§3.3", "§3.4", "§3.5",
-            "§4.1", "§4.2", "§4.3", "§4.5", "§4.6", "§4.7", "§4.8",
-            "§5.1", "§5.2", "§5.3", "§5.4",
+            "§2.1",
+            "§2.2",
+            "§2.3",
+            "§2.4",
+            "§2.5",
+            "§3.1",
+            "§3.2",
+            "§3.3",
+            "§3.4",
+            "§3.5",
+            "§4.1",
+            "§4.2",
+            "§4.3",
+            "§4.5",
+            "§4.6",
+            "§4.7",
+            "§4.8",
+            "§5.1",
+            "§5.2",
+            "§5.3",
+            "§5.4",
             "§6",
-            "§8.1", "§8.2", "§8.3", "§8.4", "§8.5",
+            "§8.1",
+            "§8.2",
+            "§8.3",
+            "§8.4",
+            "§8.5",
             "§9",
-            "§10.1", "§10.2", "§10.3", "§10.4", "§10.5",
-            "§10.6", "§10.7", "§10.8", "§10.9", "§10.10", "§10.11",
-            "§11", "§11 [占位;OOP 未实现]",
-            "§17.0", "§17.1", "§17.2", "§17.3", "§17.4",
-            "§17.5", "§17.6", "§17.7",
+            "§10.1",
+            "§10.2",
+            "§10.3",
+            "§10.4",
+            "§10.5",
+            "§10.6",
+            "§10.7",
+            "§10.8",
+            "§10.9",
+            "§10.10",
+            "§10.11",
+            "§11",
+            "§11 [占位;OOP 未实现]",
+            "§17.0",
+            "§17.1",
+            "§17.2",
+            "§17.3",
+            "§17.4",
+            "§17.5",
+            "§17.6",
+            "§17.7",
         ];
 
         // Hand-rolled scanner (no `regex` dep available): find every
@@ -1729,7 +1764,8 @@ mod tests {
                     // Consume optional ` [占位;OOP 未实现]` suffix.
                     // The literal bytes for ' [占位;OOP 未实现]' are:
                     //   20 5B E5 8D A0 E4 BD 8D 3B 4F 4F 50 20 E6 9C AA E5 AE 9E E7 8E B0 5D
-                    let suffix: &[u8] = b" [\xe5\x8d\xa0\xe4\xbd\x8d;OOP \xe6\x9c\xaa\xe5\xae\x9e\xe7\x8e\xb0]";
+                    let suffix: &[u8] =
+                        b" [\xe5\x8d\xa0\xe4\xbd\x8d;OOP \xe6\x9c\xaa\xe5\xae\x9e\xe7\x8e\xb0]";
                     if j + suffix.len() <= bytes.len() && &bytes[j..j + suffix.len()] == suffix {
                         j += suffix.len();
                     }

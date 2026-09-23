@@ -37,10 +37,10 @@ fn wlwl_binary() -> PathBuf {
     }
     let here = Path::new(env!("CARGO_MANIFEST_DIR"));
     for profile in ["debug", "release"] {
-        let candidate = here
-            .join("target")
-            .join(profile)
-            .join(if cfg!(windows) { "wlwl.exe" } else { "wlwl" });
+        let candidate =
+            here.join("target")
+                .join(profile)
+                .join(if cfg!(windows) { "wlwl.exe" } else { "wlwl" });
         if candidate.exists() {
             return candidate;
         }
@@ -86,7 +86,10 @@ const WLT_FILES: &[&str] = &[
 
 #[test]
 fn all_concurrency_fixtures_present() {
-    assert!(!WLT_FILES.is_empty(), "spec says at least one concurrent fixture");
+    assert!(
+        !WLT_FILES.is_empty(),
+        "spec says at least one concurrent fixture"
+    );
     for f in WLT_FILES {
         let p = fixture(f);
         assert!(p.exists(), "missing concurrency fixture: {}", p.display());

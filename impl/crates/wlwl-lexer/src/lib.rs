@@ -322,10 +322,8 @@ impl<'a> Lexer<'a> {
         // leave the letter for the next token so that `1east` still lexes
         // as Integer(1) followed by Ident("east"), not as a malformed float.
         if matches!(self.peek(), Some(b'e') | Some(b'E')) {
-            let exp_payload_present = matches!(
-                self.peek_at(1),
-                Some(b'+') | Some(b'-')
-            ) || matches!(self.peek_at(1), Some(b) if b.is_ascii_digit());
+            let exp_payload_present = matches!(self.peek_at(1), Some(b'+') | Some(b'-'))
+                || matches!(self.peek_at(1), Some(b) if b.is_ascii_digit());
             if exp_payload_present {
                 is_float = true;
                 self.bump(); // 'e' | 'E'
@@ -520,7 +518,10 @@ impl<'a> Lexer<'a> {
                                 col,
                             )
                         })?;
-                        return Ok(vec![Token { kind: TokenKind::StringLit(s), span }]);
+                        return Ok(vec![Token {
+                            kind: TokenKind::StringLit(s),
+                            span,
+                        }]);
                     }
                     if !s_bytes.is_empty() {
                         let s = String::from_utf8(s_bytes).map_err(|e| {
@@ -711,7 +712,13 @@ impl<'a> Lexer<'a> {
         // Recursively lex the inner expression as a fresh source
         // buffer; strip the trailing EOF the recursive lexer emits.
         let mut inner_tokens = lex(inner_str, &self.file)?;
-        if matches!(inner_tokens.last(), Some(Token { kind: TokenKind::Eof, .. })) {
+        if matches!(
+            inner_tokens.last(),
+            Some(Token {
+                kind: TokenKind::Eof,
+                ..
+            })
+        ) {
             inner_tokens.pop();
         }
         Ok(inner_tokens)
@@ -1183,18 +1190,15 @@ mod tests {
             TokenKind::StrEnd,
             TokenKind::Eof,
         ];
-        assert_eq!(
-            kinds.len(),
-            expected.len(),
-            "got {:?}",
-            kinds
-        );
+        assert_eq!(kinds.len(), expected.len(), "got {:?}", kinds);
         for (i, (got, exp)) in kinds.iter().zip(expected.iter()).enumerate() {
             assert_eq!(
                 std::mem::discriminant(*got),
                 std::mem::discriminant(exp),
                 "token {} mismatch: got {:?}, expected variant of {:?}",
-                i, got, exp
+                i,
+                got,
+                exp
             );
         }
     }
@@ -1211,7 +1215,10 @@ mod tests {
         }
         let kinds: Vec<&TokenKind> = toks.iter().map(|t| &t.kind).collect();
         // Find both integer tokens — they should both be present.
-        let int_count = kinds.iter().filter(|k| matches!(k, TokenKind::Integer(_))).count();
+        let int_count = kinds
+            .iter()
+            .filter(|k| matches!(k, TokenKind::Integer(_)))
+            .count();
         assert_eq!(int_count, 2, "expected 2 Integer tokens, got {:?}", kinds);
     }
 

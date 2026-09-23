@@ -232,7 +232,13 @@ mod tests {
     #[test]
     fn task_handle_round_trips() {
         let t = dummy_task(7, 3, 0);
-        assert_eq!(t.handle(), TaskHandle { id: TaskId(7), generation: 3 });
+        assert_eq!(
+            t.handle(),
+            TaskHandle {
+                id: TaskId(7),
+                generation: 3
+            }
+        );
     }
 
     #[test]
@@ -288,9 +294,18 @@ mod tests {
             dummy_task(2, 1, 0),
         ];
         let mut s = Scope::new(ScopeId(0), None);
-        s.register_task(TaskHandle { id: TaskId(0), generation: 1 });
-        s.register_task(TaskHandle { id: TaskId(1), generation: 1 });
-        s.register_task(TaskHandle { id: TaskId(2), generation: 1 });
+        s.register_task(TaskHandle {
+            id: TaskId(0),
+            generation: 1,
+        });
+        s.register_task(TaskHandle {
+            id: TaskId(1),
+            generation: 1,
+        });
+        s.register_task(TaskHandle {
+            id: TaskId(2),
+            generation: 1,
+        });
 
         // All Pending -> 3 outstanding
         assert_eq!(s.outstanding_tasks(&tasks), 3);

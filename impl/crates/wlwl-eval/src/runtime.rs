@@ -327,8 +327,12 @@ impl Scheduler {
     /// this is a no-op beyond dropping Cancelled tasks from the
     /// queue.
     pub fn dispatch_cancellations(&mut self) {
-        self.run_queue
-            .retain(|id| !matches!(self.tasks.get(id.0).map(|t| &t.state), Some(TaskState::Cancelled)));
+        self.run_queue.retain(|id| {
+            !matches!(
+                self.tasks.get(id.0).map(|t| &t.state),
+                Some(TaskState::Cancelled)
+            )
+        });
     }
 
     /// [B5b phase] Re-enqueue tasks that were suspended on
@@ -389,8 +393,11 @@ impl Scheduler {
             _ => return false,
         };
         let alive = match self.tasks.get(handle.id.0) {
-            Some(t) => t.id == handle.id && t.generation == handle.generation
-                && !matches!(t.state, TaskState::Done(_) | TaskState::Cancelled),
+            Some(t) => {
+                t.id == handle.id
+                    && t.generation == handle.generation
+                    && !matches!(t.state, TaskState::Done(_) | TaskState::Cancelled)
+            }
             None => false,
         };
         if !alive {
@@ -563,7 +570,11 @@ mod tests {
             gen_a, gen_b,
             "second allocation must bump the generation counter"
         );
-        assert_eq!(s.tasks.len(), 1, "only one commit so far; id_b is the *next* slot");
+        assert_eq!(
+            s.tasks.len(),
+            1,
+            "only one commit so far; id_b is the *next* slot"
+        );
     }
 
     #[test]
@@ -621,10 +632,22 @@ mod tests {
             s.tasks[tid].state = TaskState::Pending;
         }
         // Register each task with its parent scope.
-        s.scopes[1].tasks.push(crate::runtime::TaskHandle { id: TaskId(0), generation: 0 });
-        s.scopes[1].tasks.push(crate::runtime::TaskHandle { id: TaskId(1), generation: 1 });
-        s.scopes[2].tasks.push(crate::runtime::TaskHandle { id: TaskId(2), generation: 2 });
-        s.scopes[3].tasks.push(crate::runtime::TaskHandle { id: TaskId(3), generation: 3 });
+        s.scopes[1].tasks.push(crate::runtime::TaskHandle {
+            id: TaskId(0),
+            generation: 0,
+        });
+        s.scopes[1].tasks.push(crate::runtime::TaskHandle {
+            id: TaskId(1),
+            generation: 1,
+        });
+        s.scopes[2].tasks.push(crate::runtime::TaskHandle {
+            id: TaskId(2),
+            generation: 2,
+        });
+        s.scopes[3].tasks.push(crate::runtime::TaskHandle {
+            id: TaskId(3),
+            generation: 3,
+        });
 
         // Invoke the helper.
         let applied = s.cancel_scope_subtree(ScopeId(0));
@@ -671,10 +694,22 @@ mod tests {
             ));
             s.tasks[tid].state = TaskState::Pending;
         }
-        s.scopes[1].tasks.push(crate::runtime::TaskHandle { id: TaskId(0), generation: 0 });
-        s.scopes[1].tasks.push(crate::runtime::TaskHandle { id: TaskId(1), generation: 1 });
-        s.scopes[2].tasks.push(crate::runtime::TaskHandle { id: TaskId(2), generation: 2 });
-        s.scopes[3].tasks.push(crate::runtime::TaskHandle { id: TaskId(3), generation: 3 });
+        s.scopes[1].tasks.push(crate::runtime::TaskHandle {
+            id: TaskId(0),
+            generation: 0,
+        });
+        s.scopes[1].tasks.push(crate::runtime::TaskHandle {
+            id: TaskId(1),
+            generation: 1,
+        });
+        s.scopes[2].tasks.push(crate::runtime::TaskHandle {
+            id: TaskId(2),
+            generation: 2,
+        });
+        s.scopes[3].tasks.push(crate::runtime::TaskHandle {
+            id: TaskId(3),
+            generation: 3,
+        });
 
         // Cancel only mid_a.
         let applied = s.cancel_scope_subtree(ScopeId(1));
@@ -690,7 +725,10 @@ mod tests {
         assert!(s.tasks[0].cancel_requested);
         assert!(s.tasks[1].cancel_requested);
         assert!(s.tasks[2].cancel_requested);
-        assert!(!s.tasks[3].cancel_requested, "mid_b task must NOT be cancelled");
+        assert!(
+            !s.tasks[3].cancel_requested,
+            "mid_b task must NOT be cancelled"
+        );
     }
 
     #[test]

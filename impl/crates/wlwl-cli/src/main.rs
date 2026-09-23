@@ -256,9 +256,7 @@ fn strip_comments(src: &str) -> String {
         // start of a line (out.len() == line_start); once code has
         // been emitted, internal whitespace is preserved.
         if out.len() == line_start {
-            while i < bytes.len()
-                && (bytes[i] == b' ' || bytes[i] == b'\t')
-            {
+            while i < bytes.len() && (bytes[i] == b' ' || bytes[i] == b'\t') {
                 i += 1;
             }
         }
@@ -329,8 +327,7 @@ fn strip_comments(src: &str) -> String {
                 // before // (canonical layout has no trailing space
                 // before EOL). Then keep the newline.
                 while out.len() > line_start
-                    && (out[out.len() - 1] == b' '
-                        || out[out.len() - 1] == b'\t')
+                    && (out[out.len() - 1] == b' ' || out[out.len() - 1] == b'\t')
                 {
                     out.pop();
                 }
@@ -380,8 +377,7 @@ fn strip_comments(src: &str) -> String {
             // don\u2019t leave dangling space before EOL or before the
             // next token (matches `//` handling and canonical layout).
             while out.len() > line_start
-                && (out[out.len() - 1] == b' '
-                    || out[out.len() - 1] == b'\t')
+                && (out[out.len() - 1] == b' ' || out[out.len() - 1] == b'\t')
             {
                 out.pop();
             }

@@ -3,3 +3,11 @@
 # Without this, git's binary-detection heuristic on legacy commits
 # (`Bin 211004 -> 179431`) can hide the actual text diff.
 docs/plan/deviations.md text working-tree-encoding=UTF-8
+
+# Rust source files: enforce LF line endings. The repo accumulated a
+# mix of CRLF (Windows-host mavis-bot commits) and LF (Linux runner
+# rustfmt output) across v0.3-v0.8.1; the 1ca472e CI fix exposed this
+# drift via `cargo fmt --check`. LF is the only stable choice because
+# rustfmt always normalises to LF regardless of input, so any CRLF
+# file would silently fail the fmt gate on the next CI run.
+*.rs text eol=lf

@@ -1278,10 +1278,7 @@ fn parser_string_literal_subscript_top_level() {
         &call.1[0],
         Expr::Literal(Literal::String(s), _) if s == "hi"
     ));
-    assert!(matches!(
-        &call.1[1],
-        Expr::Literal(Literal::Integer(0), _)
-    ));
+    assert!(matches!(&call.1[1], Expr::Literal(Literal::Integer(0), _)));
 }
 
 #[test]
@@ -1289,11 +1286,7 @@ fn parser_string_literal_subscript_in_let_slot() {
     // `LET(_x, "hi"[1])` — audit §4.4 reproducer;v0.8.0 报 E0011,
     // v0.8.1 起 parse 通过(eval 端求值得 "i")。
     let r = parse(r#"LET(_x, "hi"[1]);"#, "t.wll");
-    assert!(
-        r.is_ok(),
-        "LET(_x, \"hi\"[1]) must parse: {:?}",
-        r.err()
-    );
+    assert!(r.is_ok(), "LET(_x, \"hi\"[1]) must parse: {:?}", r.err());
 }
 
 #[test]
