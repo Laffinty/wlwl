@@ -1,16 +1,16 @@
 ---
 name: writing-wlwl
-description: "Writes WLWL v0.7 .wll source files (spec docs/standard/wlwl-spec-v0.7.md). Covers the 9 v0.6 decisions (truthy overhaul, &&/|| short-circuit, IF ERR-routing, ! canonical, AT_K rename, string subscript, LET MUT, overflow->E0035, ${} interpolation) plus v0.7 §17 concurrency (SCOPE/SPAWN/AWAIT/YIELD/TASK_*/SHIELD/CHANNEL_*). Use when the user asks for WLWL code, a .wll file, a wlwl script, or anything targeting wlwl-spec-v0.7 (or v0.6 core). Do NOT use for v0.5 or earlier (POP-not-AT_K, no LET MUT), the Rust implementation, or the formatter."
+description: "Writes WLWL v0.8.1 .wll source files (spec docs/standard/wlwl-spec-v0.8.md; v0.8.1 is a patch on v0.8 with zero spec changes). Covers v0.6 core (truthy overhaul, &&/|| short-circuit, IF ERR-routing, ! canonical, AT_K rename, string subscript, LET MUT, overflow->E0035, ${} interpolation), v0.7 §17 concurrency (SCOPE/SPAWN/AWAIT/YIELD/TASK_*/SHIELD/CHANNEL_*), v0.8 字面增改 (§12 重写至 BUILTIN_REGISTRY; EXPECT_ERR 入 §8.3 表; % float E0030 列入触发列表; SHIELD / SCOPE(ERR) / AWAIT 宿主诊断澄清; = 三重身份消歧; §5.1 LET/FUN 不对称 normative; §2.1/§10.11 TASK 同名 normative; §17.1 YIELD 位置 demoted; §4.3 NOT 透传 prose 反向; §1.6 拆 int_lit/int_literal), and v0.8.1 patch 修复 (浮点指数字面量 §1.7; SUB 第三参数按 length §10.5; MUT 作 LET binding 名 §1.4; 字符串字面量下标 §A.2). Use when the user asks for WLWL code, a .wll file, or anything targeting wlwl-spec-v0.8 (or v0.6/v0.7 core). Do NOT use for v0.5 or earlier (POP-not-AT_K, no LET MUT), the Rust implementation, or the formatter."
 ---
 
-# Writing WLWL (v0.7)
+# Writing WLWL (v0.8.1)
 
 ## When to load / NOT to use
 
 **Use when:**
-- The user asks for a `.wll` source file, a WLWL program, or a v0.6/v0.7 idiom.
-- A task targets `wlwl-spec-v0.7.md` (current) or `wlwl-spec-v0.6.md` (archived).
-- Reviewing or debugging v0.6 / v0.7 source (concurrency included).
+- The user asks for a `.wll` source file, a WLWL program, or a v0.6 / v0.7 / v0.8 idiom.
+- A task targets `wlwl-spec-v0.8.md` (current) or `wlwl-spec-v0.6.md` / `wlwl-spec-v0.7.md` (archived).
+- Reviewing or debugging v0.6 / v0.7 / v0.8 source (concurrency included).
 
 **Don't use when:**
 - The source targets WLWL v0.5 or earlier (different truthy rules, `POP`-not-`AT_K`, no `LET MUT`).
@@ -23,36 +23,83 @@ description: "Writes WLWL v0.7 .wll source files (spec docs/standard/wlwl-spec-v
 Tick these as you go:
 
 ```
-WLWL writing progress:
+WLWL writing progress (v0.8.1):
 - [ ] 1. Sketch the AST shape (use the operators/builtins section below)
 - [ ] 2. Decide mutation — any SET later means LET MUT(name, value) now
-- [ ] 3. Concurrency? wrap SPAWN in SCOPE; YIELD only in multi-statement blocks
-- [ ] 4. Write the .wll file (one stmt per line, semicolons, no leading indent)
-- [ ] 5. Run `wlwl run <file>` — MUST exit 0 with expected stdout
-- [ ] 6. If 5 fails: consult reference.md for the failing token/operator
+       (v0.8.1: MUT itself can also be the binding name, e.g. LET(MUT, "x"))
+- [ ] 3. Concurrency? wrap SPAWN in SCOPE; YIELD mostly OK outside
+       strict blocks (v0.8 spec §17.1 demoted "Block 直接子项" to
+       implementation-path note)
+- [ ] 4. SUB uses length semantics: SUB(s, start, len) where len is
+       LENGTH (codepoint count) — v0.8.1 D8-010 observable change
+       (pre-D8-010 treated len as end-index)
+- [ ] 5. Float exponents now work: 1.5e2 / 1e-3 / 1E3 all valid
+       (v0.8.1 D8-009; pre-D8-009 raised E0011)
+- [ ] 6. String literal subscript works: "hi"[0] → "h"
+       (v0.8.1 D8-012; pre-D8-012 raised E0011 in LET slot)
+- [ ] 7. Write the .wll file (one stmt per line, semicolons, no leading indent)
+- [ ] 8. Run `wlwl run <file>` — MUST exit 0 with expected stdout
+- [ ] 9. If 8 fails: consult reference.md for the failing token/operator
 ```
 
-Do not skip step 5. `wlwl run` is the source of truth. `wlwl fmt --check` is best-effort (see Verification loop).
+Do not skip step 8. `wlwl run` is the source of truth. `wlwl fmt --check` is best-effort (see Verification loop).
 
 ## Truthy / falsy — spec §2.3
 
 Eight falsy values: `FALSE`, `NULL`, `0`, `0.0`, `""`, `[]` (empty array), `DICT()` (empty dict), `NaN`.
 
-**Everything else is truthy**, including non-empty strings, non-empty containers, `OK(FALSE)`, and v0.7 `TASK`/`CHANNEL` handles.
+**Everything else is truthy**, including non-empty strings, non-empty containers, `OK(FALSE)`, and v0.7+ `TASK`/`CHANNEL` handles.
 
-`ERR(...)` is **not** in this list — it is its own propagation mechanism per §8.2. Passing `ERR(x)` to a non-consumer function transparently forwards the `ERR`; it does NOT make the function body "skip" because the arg was falsy. Only §8.3 consumers (`IS_OK`, `IS_ERR`, `UNWRAP_OR`, `OR_DIE`, `TRY`, `UNWRAP`, `ERR_PAYLOAD`, `WRAP`, `TYPE`, `==`/`!=`, `IF` condition, `&&`/`||`, `BOOL`) can inspect an ERR safely.
+`ERR(...)` is **not** in this list — it is its own propagation mechanism per §8.2. Passing `ERR(x)` to a non-consumer function transparently forwards the `ERR`; it does NOT make the function body "skip" because the arg was falsy. Only §8.3 consumers (`IS_OK`, `IS_ERR`, `UNWRAP_OR`, `OR_DIE`, `TRY`, `UNWRAP`, `ERR_PAYLOAD`, `WRAP`, `TYPE`, `==`/`!=`, `IF` condition, `&&`/`||`, `BOOL`, `EXPECT_ERR`) can inspect an ERR safely.
 
-## Operators / builtins — the v0.6 cheat sheet
+## Operators / builtins — cheat sheet (v0.6 / v0.7 / v0.8 + v0.8.1 patch)
 
-**Equality** (spec §2.4, §B.12): `=(a, b)` and `==(a, b)` are aliases. `!=(a, b)` or `<>(a, b)`. Cross-type numeric: `==(1, 1.0)` is `TRUE`. Function/handle identity: `==(f, f)` and `==(h, h)` are `TRUE` (v0.7 locks handle identity).
+**Equality** (spec §2.4): `=(a, b)` and `==(a, b)` are aliases (§1.5 call-position desugar; §1.5 `=` triple-identity — NOT same as `INDEX_SET`'s `=` or `Param`'s `=`). `!=(a, b)`. Cross-type numeric: `==(1, 1.0)` is `TRUE`. Function/handle identity: `==(f, f)` and `==(h, h)` are `TRUE` (v0.7+ handle identity lock).
 
 **Comparison**: `<(a, b)`, `>(a, b)`, `<=(a, b)`, `>=(a, b)`.
 
-**Arithmetic**: `+(a, b)`, `-(a, b)`, `*(a, b)`, `/(a, b)`, `%(a, b)`. `+` is also string concat and array concat. Integer overflow → `ERR(E0035)`; divide-by-zero → `ERR(E1003)` (note: not `E0009`).
+**Arithmetic**: `+(a, b)`, `-(a, b)`, `*(a, b)`, `/(a, b)`, `%(a, b)`. `+` is also string concat and array concat. Integer overflow → native `E0035`; divide-by-zero → native `E1003` (note: **not** `E0009`; these are native codes per §11.2 — NOT ERR, cannot be caught by `EXPECT_ERR` / `UNWRAP_OR` / `TRY`; see anti-pattern #17).
 
-**Boolean**: `&&(a, b)` / `||(a, b)` short-circuit; right side not evaluated when left decides. `NOT(x)` and `!(x)` are equivalent.
+**Boolean**: `&&(a, b)` / `||(a, b)` short-circuit; right side not evaluated when left decides. `NOT(x)` and `!(x)` are equivalent. `NOT(ERR(...))` propagates ERR (per §4.3 corrected prose in v0.8 D8-006); safe coercion idiom: `NOT(BOOL(ERR(...)))` (BOOL is a §8.3 consumer).
 
 **Indexing**: `xs[i]` returns one element; out-of-range array/string index raises `E0036`. `INDEX(xs, v)` returns the index of `v` in `xs`, or `-1` if not found (NOT an error).
+
+**Literal subscripts** (v0.8.1 D8-012 + spec §A.2 grammar `PostfixExpr = Primary { Postfix }`):
+- Array literal: `[1, 2, 3][0]` → `1` (v0.8 D8-004)
+- Dict literal: `["a": 1]["a"]` → `1` (v0.8 D8-004)
+- String literal: `"hi"[0]` → `"h"` (v0.8.1 D8-012 — pre-D8-012 raised E0011)
+- Mixed chains: `["a": 1]["a"][0][0]`, `[[1,2], [3,4]][1][0]` all legal
+- Integer / Float / Boolean / NULL literal postfix **rejected** at parser (no `INDEX_GET` semantics; pre-existing behavior preserved)
+
+**Float exponents** (v0.8.1 D8-009 + spec §1.7 EBNF `digits exponent`):
+```
+1e2          → 100.0
+1.5e2        → 150.0
+1.5e-2       → 0.015
+1E3          → 1000.0
+2.5e+1       → 25.0
+```
+Pre-D8-009 all of these raised `E0011 expected ')', got Ident("e2")`.
+
+**Identifier names** (v0.8.1 D8-011 + spec §1.4): `MUT` is a **context keyword** — only after `LET` modifier slot. Other positions can use `MUT` as a regular identifier:
+- `LET(MUT, "x")` — binding name = `"MUT"`, immutable
+- `LET MUT(MUT, 1)` — first `MUT` is modifier, second is binding name, mutable
+- `LET(MUT: INTEGER, 0)` — binding name + type annotation
+- `FUN((MUT), MUT + 1)` — FUN parameter position
+- `PRINT(MUT)` / `+(MUT, 1)` — call-arg / expr position (all valid)
+- `${MUT}` inside string interpolation — valid
+
+**SUB(s, start, len?) — length semantics** (v0.8.1 D8-010 + spec §10.5):
+The third arg is **length** (codepoint count), not end-index.
+```wlwl
+SUB("Hello, world", 0, 5)   → "Hello"    // chars[0..5]
+SUB("Hello, world", 7, 5)   → "world"    // chars[7..12] = 5 codepoints
+SUB("Hello, world", 1, 5)   → "ello,"   // chars[1..6] = 5 codepoints
+SUB("Hello, world", 0)      → "Hello, world"  // 2-arg default = to end
+SUB("Hello", 0, -1)         → ""          // negative len → 0
+SUB("Hello", -1, 1)         → "o"         // negative start counts from tail
+```
+Pre-D8-010 (v0.8.0 and earlier) treated `len` as end-index — `SUB("Hello, world", 7, 5)` returned `""` not `"world"`. Migration: `SUB(s, start, end_old)` → `SUB(s, start, -(start, end_old))` or `SLICE(s, start, end_old)` (SLICE uses start/end semantics on arrays; SUB is the string-specialized variant).
 
 ## Control flow — spec §6
 
@@ -74,7 +121,23 @@ Eight falsy values: `FALSE`, `NULL`, `0`, `0.0`, `""`, `[]` (empty array), `DICT
 
 Clauses are tried in order; first hit wins. No match and no default → `NULL` (not an error). Pattern mismatch in a `LET` destructuring IS an error (`E0026`).
 
-## Concurrency — spec §17 (v0.7)
+## Reserved forms — spec §12 (v0.8 rewrite)
+
+**None reserved.** §12 v0.8 rewrote the "保留形式" list to point at the
+`BUILTIN_REGISTRY` (`docs/appendix_G.md`) as the single source of truth:
+
+- `CLASS` / `NEW` / `THIS` — `ResolvedBuiltin` (OOP stub paths; callable, returns the class table / new instance / self)
+- `MODULE` / `MODULE_REF` — `ResolvedBuiltin` / `LexerMacro`
+- `CALL(fn, args...)` — `ResolvedBuiltin`
+- `ARRAY(items...)` — `LexerMacro` (constructor for empty / single-element arrays)
+- `AND` / `OR` — `LexerMacro` (`&&` / `||` short-circuit sugar)
+
+Use them as ordinary function names; no reserved-keyword prohibition in
+modern (v0.7+) source. The `b11_*` lock tests + the
+`registry::tests::appendix_g_anchors_match_v07_section_numbers` test gate
+registry consistency.
+
+## Concurrency — spec §17 (v0.7, with v0.8 clarifications)
 
 All concurrent names are **global builtins** (no IMPORT). None are ERR
 consumers: `AWAIT(ERR("x"))` transparently propagates (§8.2).
@@ -108,13 +171,22 @@ LET(v, SCOPE(FUN(() ,
 ### Hard rules
 
 1. **Explicit SCOPE only.** `SPAWN` outside any `SCOPE` → `E0058`. No free-floating tasks.
-2. **`YIELD` placement.** Only as a direct child of a multi-statement block:
+2. **`YIELD` placement (v0.8 §17.1 demoted prose).** The hard rule is
+   the implementation path (static task-body segmentation in
+   `wlwl-eval/src/yield_split.rs`): `YIELD()` works cleanly as a
+   direct child of a multi-statement block. Other positions may produce
+   `E0014`:
 
    ```wlwl
    FUN(() , a; YIELD(); b)     // OK
    IF(TRUE, YIELD(), 1)        // E0014 — wrap: IF(TRUE, (YIELD(); 1), 1)
    LET(x, YIELD())             // E0014
    ```
+
+   v0.8 spec §17.1 explicitly frames this as "理想语义 + v0.7 / v0.8
+   实现路径", not a normative language rule. Future suspension-based
+   schedulers may lift the limitation without claiming a breaking
+   change (deviation D8-007).
 
 3. **Close signal is ERR, not NULL.**
 
@@ -196,7 +268,7 @@ v0.7 concurrency names **are** global (Appendix G) — do not import them.
 
 **§8.2 transparent propagation**: any function call whose argument evaluates to `ERR` does not run the body; the `ERR` is forwarded. Pass plain values to non-consumer functions; consume `ERR` only via §8.3.
 
-**§8.3 ERR consumers** (13 entries): `IS_OK`, `IS_ERR`, `UNWRAP_OR`, `OR_DIE` (deprecated — `W0051`), `TRY` (function-body only), `UNWRAP` (PANICs on ERR — `E0100`), `ERR_PAYLOAD`, `WRAP`, `TYPE`, `==`/`!=`, `IF` (condition position), `&&`/`||` (left side), `BOOL`. Each either extracts payload info or returns a default.
+**§8.3 ERR consumers** (14 entries — v0.8 added `EXPECT_ERR` to the explicit table): `IS_OK`, `IS_ERR`, `UNWRAP_OR`, `OR_DIE` (deprecated — `W0051`), `TRY` (function-body only), `UNWRAP` (PANICs on ERR — `E0100`), `ERR_PAYLOAD`, `WRAP`, `TYPE`, `==`/`!=`, `IF` (condition position), `&&`/`||` (left side), `BOOL`, **`EXPECT_ERR`** (test-only — returns `OK(载荷)` on `ERR` input, `ERR(E0049)` on non-ERR input). Each either extracts payload info or returns a default.
 
 **§8.4 PANIC**: `PANIC(msg)` (msg must be STRING or DICT) terminates with `E0100`. Bypasses propagation entirely. `UNWRAP` on ERR and `NEG(i64::MIN)` also PANIC.
 
@@ -205,6 +277,10 @@ v0.7 concurrency names **are** global (Appendix G) — do not import them.
 **v0.7 concurrent ERR kinds** (§8.1): `ChannelClosed` · `ChannelWouldBlock` · `Cancelled` (always dict payloads).
 
 **v0.7 concurrent diagnostics**: `E0052`–`E0058` (see reference.md).
+
+**v0.8 spec §17.5 host diagnostic clarification**: `AWAIT` of a child task re-raises *host* diagnostics (`E0101` stack overflow, invalid handle `E0053`, etc.) using the `WlwlError` trace chain — distinct from user `ERR(...)` values which pass through as ordinary `RESULT` values. Don't conflate the two when debugging.
+
+**v0.8 spec §17.5 `SCOPE(ERR("x"))` clarification**: `SCOPE(ERR("x"))` propagates the `ERR` per §8.2 BEFORE the parameter-type check (`fn` must be a function → `E0052`); the result is `ERR("x")`, not `E0052`.
 
 ## Standard library pointers
 
@@ -240,6 +316,10 @@ For the full ~70-name catalogue see `reference.md` §9. Categories:
 | 13 | Treating `NULL` from `TRY_RECV` as close | Infinite loop / lost close | Close is `IS_ERR` + `kind == "ChannelClosed"` |
 | 14 | Expecting `CHANNEL_SEND` to block | `ERR(ChannelWouldBlock)` | `CHANNEL_TRY_SEND` / larger buf (v0.7.0) |
 | 15 | `AWAIT` of cancelled task left unhandled | `E0102` at top level | `IS_ERR` / `UNWRAP_OR` / `ERR_PAYLOAD` the AWAIT result |
+| 16 | Builtin name as first-class value (`LET(f, +)` / `LET(f, PRINT)`) | `E0020` undefined name | User-defined functions only are first-class (§5.4). Operator tokens (`+`/`-`/`==`) and `PRINT`/`LEN`/`MAP`/`FILTER`/etc. are **not** retrievable as values — write `FUN((a, b), +(a, b))` to get a callable. |
+| 17 | `EXPECT_ERR(/(1, 0))` to catch integer / div-by-zero | Native code `E1003` (or `E0035` for overflow); `EXPECT_ERR` returns `ERR(E0049)` — not `OK(载荷)` | These are **native** codes per §11.2, not `RESULT`-shaped ERR; cannot be caught by any §8.3 consumer. Migration: write the program to avoid overflow / divide-by-zero (assert precondition or use `IF(==(b, 0), default, /(a, b))`). |
+| 18 | `SUB(s, 7, 5)` returning `""` (or any pre-D8-010 expectation) | Pre-v0.8.1: third arg was end-index. | v0.8.1 third arg is **length**: `SUB("Hello, world", 7, 5)` → `"world"`. Migration: `SUB(s, start, end_old)` → `SUB(s, start, -(start, end_old))` or `SLICE(s, start, end_old)`. |
+| 19 | `1.5e2` (or `1e-3` / `1E3`) as a float literal | Pre-v0.8.1: `E0011 expected ')', got Ident("e2")` | v0.8.1 supports `digits exponent` per §1.7 EBNF. Forms: `1e2`, `1.5e2`, `1.5e-2`, `1E3`, `2.5e+1`. Bare `1e` (no digits after) still raises `E0001`. |
 
 ## Verification loop
 
@@ -258,8 +338,11 @@ wlwl run --format jsonl path/to/file.wll      # 12-field schema per conformance.
 
 ## References
 
-- **Authoritative spec**: `../docs/standard/wlwl-spec-v0.7.md` — defer to this on any disagreement (§17 = concurrency).
-- **v0.6 (archived)**: `../docs/history/wlwl-spec-v0.6.md` — §0–§12 core still valid (v0.7 is additive).
+- **Authoritative spec**: `../docs/standard/wlwl-spec-v0.8.md` — defer to this on any disagreement (§17 = concurrency; v0.8 is clarification / alignment over v0.7).
+- **v0.7 (archived)**: `../docs/history/wlwl-spec-v0.7.md` — §0–§17 core still valid (v0.7 is additive over v0.6; v0.8 is clarification over v0.7 with no breaking observable behavior).
+- **v0.6 (archived)**: `../docs/history/wlwl-spec-v0.6.md` — §0–§12 core still valid (v0.6 was first versioned release).
 - **Lookup tables** (operators, error codes, AST shapes, concurrency): `reference.md` in this folder.
-- **Spec-vs-impl register** (cite, do not load): `../docs/history/deviations-v0.7.md`.
+- **Built-in registry (single source of truth)**: `../docs/appendix_G.md` (regenerated from `impl/crates/wlwl-eval/src/registry.rs`).
+- **Spec-vs-impl register** (cite, do not load): `../docs/history/deviations-v0.8.md` — includes v0.8.0 (`D8-001`..`D8-008`) + v0.8.1 patch (`D8-009`..`D8-014`).
+- **Third-party audit source** (cited by build plan; not normative): `../docs/history/audit-report-v0.8.1.md`.
 - **Gold concurrency fixtures**: `../impl/tests/concurrency/*.wll`.

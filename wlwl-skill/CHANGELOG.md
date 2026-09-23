@@ -1,7 +1,73 @@
 # wlwl-skill CHANGELOG
 
-Skill-bundle changes (spec lives at `../docs/standard/wlwl-spec-v0.7.md`
+Skill-bundle changes (spec lives at `../docs/standard/wlwl-spec-v0.8.md`
 and is authoritative).
+
+## [0.8.1] — 2026-09-23
+
+### Changed
+
+- **Target spec** bumped from `wlwl-spec-v0.7.md` (archived at
+  `docs/history/`) to **`wlwl-spec-v0.8.md`** (current). v0.8 is a
+  *clarification / documentation / alignment* patch over v0.7 — v0.7
+  core + §17 concurrency still required knowledge.
+- **SKILL.md description + title** rewritten: "Writing WLWL (v0.8.1)"
+  covers v0.8 字面增改 + v0.8.1 patch 修复. Frontmatter description
+  lists every v0.8 字面增改 (12 items) and v0.8.1 patch 修复 (5 items).
+- **`wlwl-spec-v0.7.md` references** updated throughout SKILL.md /
+  reference.md / README.md to point at v0.8; `docs/history/` archive path
+  preserved.
+- **§12 reserved forms** rewritten in SKILL.md and reference.md:
+  `CLASS` / `NEW` / `THIS` / `MODULE` / `MODULE_REF` / `CALL` /
+  `ARRAY(items...)` / `AND` / `OR` are NOT reserved — all have working
+  `BuiltinSpec` records in `BUILTIN_REGISTRY`. The registry
+  (`docs/appendix_G.md`) is the single source of truth; section §12 now
+  points to it. Audit-driven (see `docs/history/audit-report-v0.8.1.md`
+  §3.2 + spec §12 rewrite D8-005).
+
+### Added
+
+- **4 new anti-patterns (rows 16–19)**, audit §8.2 reproducer-driven:
+  - **#16** Builtin name as value (`LET(f, +)` → E0020; `LET(f, PRINT)` → E0020; spec §4.3 op-tokens + §5.4 user-defined function only)
+  - **#17** Float integer overflow / divide-by-zero NOT catchable (these are native codes E0035 / E1003 per §11.2 — not ERR; `EXPECT_ERR(/(1, 0))` does NOT save; spec §11.2 + §2.2)
+  - **#18** Style guide rebalance: SUB 3rd arg is length, not end-index (v0.8.1 D8-010 observable change; spec §10.5; `SUB("Hello", 7, 5)` now returns `"world"`)
+  - **#19** Float exponent literals work in v0.8.1 (`1.5e2`, `1e-3`, `1E3` per spec §1.7 EBNF `digits exponent`; pre-D8-01 raised E0011).
+- **`YIELD()` placement note** softened: v0.7 / v0.8 spec §17.1 frames this
+  as "理想语义 + 实现路径" (static task-body segmentation in
+  `yield_split.rs`), not a hard rule. Future suspension-based schedulers
+  may lift the limitation without breaking change (D8-007).
+- **`NOT(ERR(x))` note**: spec §4.3 prose corrected (D8-006) — all
+  operators including NOT propagate ERR transparently. Safe idiom:
+  `NOT(BOOL(ERR(x)))` for safe coercion.
+- **String literal subscript** (§4.5 prose + §A.2 grammar, v0.8.1
+  D8-012): `"hi"[0]` parses and evaluates to `"h"`. INT / FLOAT /
+  Boolean / NULL literal postfix remains rejected at parser (no
+  `INDEX_GET` semantics).
+- **`MUT` as binding name** (§1.4, v0.8.1 D8-011): `LET(MUT, "x")` is
+  valid; MUT is a context keyword only after LET-modifier slot.
+- **`=` triple-identity** (§1.5, D8-008): `=` is `==` in call position
+  AND a separator for INDEX_SET sugar AND for default-param — three
+  roles, no lookahead needed.
+- **`%` float E0030** (§2.2 + §11.2, D8-008): `%` with any FLOAT arg
+  raises E0030 (was previously listed in only spec prose; E0030 row
+  updated).
+- **`EXPECT_ERR`** (§8.3, D8-008): added to the §8.3 consumer table
+  (was in prose only — explicit table entry for lookup).
+- **`SHIELD` / `SCOPE(ERR)` / `AWAIT` host diagnostic clarifications**
+  (§17.1 / §17.5, D8-008): user ERR vs host diagnostic now distinct;
+  `SCOPE(ERR("x"))` propagates transparently (E0052 not fired).
+- **`TASK` name-collision** (§2.1 / §10.11, D8-008): type name `TASK`
+  vs `wlwl:std.agent.TASK` / `wlwl:std.ai.TASK` — same name, no
+  conflict; recommended full-qualified write style.
+
+### Verified
+
+- All `examples/*.wll` in the bundle still parse under v0.8.1 spec
+  (mechanical re-check; no source change to examples required).
+- `interp.wll` (gold) extends with a `SUB` length example
+  (`SUB("Hello, world", 7, 5)` → `"world"`) demonstrating D8-010 fix.
+
+---
 
 ## [0.7.0] — 2026-09-22
 
