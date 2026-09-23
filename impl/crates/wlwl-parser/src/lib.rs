@@ -795,6 +795,11 @@ impl Parser {
             // `THIS`). The runtime / eval layer handles the semantics
             // (class table, instance binding, implicit-self). P3-011.
             TokenKind::Class | TokenKind::New | TokenKind::This => self.parse_call_or_ident(),
+            // v0.8.1 D8-011: spec §1.4 — `MUT` 是上下文关键字,仅在
+            // `LET` 之后的 modifier 槽位具有特殊含义。在 expr 位置
+            // (var-ref / call arg / bare expression) 出现 MUT 时,
+            // 当作普通标识符 `MUT` 处理 — 与 Class/New/This 同款。
+            TokenKind::Mut => self.parse_call_or_ident(),
             _ => {
                 let span = self.span_here();
                 Err(self.err_at(
@@ -813,6 +818,8 @@ impl Parser {
         //   `LET([a, b], ...)`       -> Expr::LetPattern (array pattern)
         //   `LET(["k": v], ...)`     -> Expr::LetPattern (dict pattern)
         //   `LET(_, ...)`            -> Expr::LetPattern (wildcard)
+        //   `LET(MUT, ...)`          -> Expr::Let { name: "MUT", mut_: false }  ← v0.8.1 D8-011
+        //   `LET MUT(MUT, ...)`      -> Expr::Let { name: "MUT", mut_: true }
         // The grammar is `LET [MUT] '(' name | pattern [':'] type? ',' value ')'`.
         let (line, col, _, _) = self.span_here();
         self.expect_specific(EC::E0010, "'LET'")?;
@@ -878,6 +885,38 @@ impl Parser {
                     },
                 })
             }
+            // v0.8.1 D8-011: spec §1.4 — `MUT` 是上下文关键字,仅在
+            // `LET` 之后的 modifier 槽位具有特殊含义;LET binding 槽位
+            // (即 `(` 之后的第一个 token)不是 modifier 槽,该位置的
+            // `MUT` 应当作普通标识符 `MUT` 处理。
+            //
+            //   `LET(MUT, "x")`          →  不可变绑定名 = "MUT"
+            //   `LET MUT(MUT, 1)`        →  可变绑定名 = "MUT"
+            //
+            // 不影响 pattern 位置(MATCH / LET 解构等),那里 `MUT` 仍
+            // 视作关键字 — 这是 spec §1.4 的"上下文"语义,不应并入
+            // 全局放宽(否则会破坏现有 MATCH-arm-with-MUT 用例)。
+            TokenKind::Mut => {
+                self.advance(); // consume Mut
+                let type_annotation = self.parse_type_annotation()?;
+                self.expect_specific(EC::E0012, "','")?;
+                let value = self.parse_expr()?;
+                self.expect_specific(EC::E0011, "')'")?;
+                let (_, _, line_end, col_end) = self.span_here();
+                Ok(Expr::Let {
+                    name: "MUT".to_string(),
+                    mut_: is_mut,
+                    type_annotation,
+                    value: Box::new(value),
+                    span: Span {
+                        file: self.file.clone(),
+                        line_start: line,
+                        col_start: col,
+                        line_end,
+                        col_end,
+                    },
+                })
+            }
             _ => {
                 // Preserve the original error wording for things like
                 // `LET(123, ...)` or `LET(+, ...)` so existing E0010
@@ -920,6 +959,12 @@ impl Parser {
         if let TokenKind::Ident(name) = self.peek().clone() {
             let tok = self.advance();
             return Ok(Pattern::Ident(name, self.span_tuple_to_span(tok.span)));
+        }
+        // v0.8.1 D8-011: spec §1.4 — MUT 在 pattern 位置(FUN 参数 /
+        // LET 解构 / MATCH scrutinee) 当作普通标识符绑定名 `MUT`。
+        if let TokenKind::Mut = self.peek() {
+            let tok = self.advance();
+            return Ok(Pattern::Ident("MUT".into(), self.span_tuple_to_span(tok.span)));
         }
         if let TokenKind::LBracket = self.peek() {
             return self.parse_pattern_array_or_dict(line, col);
@@ -1339,6 +1384,12 @@ impl Parser {
                         kind: TokenKind::Ident(s),
                         span,
                     } => (s, span),
+                    // v0.8.1 D8-011: spec §1.4 — FUN 参数位置的 MUT
+                    // 当作普通参数名 `MUT`。
+                    Token {
+                        kind: TokenKind::Mut,
+                        span,
+                    } => ("MUT".to_string(), span),
                     other => {
                         return Err(self.err_at(
                             EC::E0010,
@@ -1796,6 +1847,9 @@ impl Parser {
             TokenKind::Class => "CLASS".to_string(),
             TokenKind::New => "NEW".to_string(),
             TokenKind::This => "THIS".to_string(),
+            // v0.8.1 D8-011: spec §1.4 — MUT 在非 modifier 位置当作
+            // 普通标识符解析。
+            TokenKind::Mut => "MUT".to_string(),
             // Phase B9 (spec §3.4): `NOT` is the v0.4 canonical
             // keyword for logical negation. Lexed as a keyword (not
             // an ident) so the parser dispatch is in lock-step with

@@ -638,6 +638,127 @@ CHANGELOG v0.8.1 节需要单独标注:
 
 ---
 
+## D8-011 · §1.4 MUT 作为普通标识符在所有非 modifier 位置允许
+
+- **状态**:已修复(commit 待补;v0.8.1 第三轮)
+- **发现**:v0.8.1 F-C 由 `docs/AUDIT_REPORT.md §1.2`(2026-09-23 独立第三方测评)+ `docs/plan/wlwl-build-plan-v0.8.1.md §1.3` 驱动
+- **影响范围**:
+  - `impl/crates/wlwl-parser/src/lib.rs::parse_let` line 829-892(在原 match arm 中增补 `TokenKind::Mut` arm)
+  - `impl/crates/wlwl-parser/src/lib.rs::parse_expr` line 798-803(`Mut => parse_call_or_ident()` arm)
+  - `impl/crates/wlwl-parser/src/lib.rs::parse_call_or_ident` line 1806-1809(`Mut => "MUT"` name)
+  - `impl/crates/wlwl-parser/src/lib.rs::parse_pattern` line 958-962(`Mut => Pattern::Ident("MUT")`)
+  - `impl/crates/wlwl-parser/src/lib.rs::parse_fun` line 1382-1395(`Mut` 参数名 arm)
+  - `impl/crates/wlwl-parser/tests/spec_v3_alignment.rs` 新增 4 件(原 80 → 84)
+  - `impl/crates/wlwl-eval/src/lib.rs::tests` 新增 4 件(原 757 → 761)
+  - `wlwl-spec-v0.8.md` 不动(用户约束)
+
+### 现象
+第三方审计 §1.2:
+
+```
+LET(MUT, "x")   →  E0010 expected identifier in LET, got Mut
+LET MUT(MUT, "x") → 同上
+```
+
+spec `docs/standard/wlwl-spec-v0.8.md:81` §1.4:
+
+> "`MUT` 是**上下文关键字**:仅在 `LET` 之后的位置具有特殊含义(3.1);**其他位置可作普通标识符使用**,不与关键字冲突。"
+
+实测 `parse_let` 把 binding 槽位(在 `(` 之后)也当作 modifier 槽,只接受
+`TokenKind::LBracket | TokenKind::Ident(_)`,命中 `_` arm 抛 E0010。
+
+本仓实测:
+
+```
+$ wlwl.exe run -e 'LET(MUT, 99)'
+error[E0010]: expected identifier in LET, got Mut
+```
+
+### 根本原因
+`impl/crates/wlwl-parser/src/lib.rs` 原 `parse_let` (line 818-892) 假设
+"`MUT` 是 LET 后续必走的 modifier 路径"的二元决策:modifier slot 之后
+第一个 token 必须是 binding pattern(纯 ident / LBracket destructuring),
+`MUT` 永远走 modifier slot。这一假设在 spec §1.4 之后已不成立 — spec
+明确 "其他位置可作普通标识符"。
+
+类似地,`parse_expr` / `parse_call_or_ident` / `parse_pattern` / `parse_fun`
+四处均只接受 `TokenKind::Ident(_)` 作为名字,把 `MUT` 全部排除在 identifier
+外,与 spec §1.4 的 "其他位置可作普通标识符" 直接冲突。
+
+### 处置
+按 spec §1.4 "其他位置可作普通标识符" 全放宽,**5 处 dispatch 点**加
+`TokenKind::Mut` 作为普通标识符 `MUT` 处理:
+
+1. **`parse_let` binding 槽位**(line 883-914):新增 `TokenKind::Mut` arm,
+   直接构造 `Expr::Let { name: "MUT", mut_: is_mut, ... }`。第一处。
+
+2. **`parse_expr` 顶层 dispatch**(line 798-803):新增
+   `TokenKind::Mut => self.parse_call_or_ident()`。这让 `PRINT(MUT)` 、
+   `+(MUT, 1)` 等含 MUT 的表达式合法 — `parse_call_or_ident` 会进一步
+   把 Mut 解析为 Var / Call("MUT")。
+
+3. **`parse_call_or_ident` name match**(line 1806-1809):新增
+   `TokenKind::Mut => "MUT".to_string()`,与 `Class | New | This` 同款
+   contextual-keyword-as-ident 路径。
+
+4. **`parse_pattern` 第一个 token**(line 958-962):新增
+   `TokenKind::Mut => Pattern::Ident("MUT", span)`,让 `FUN((MUT), ...)` 、
+   `LET([MUT, ...], arr)` 等 pattern 位置接受 MUT 作 binding name。
+
+5. **`parse_fun` 参数列表**(line 1382-1395):在
+   `match self.advance() { Token { kind: TokenKind::Ident(s), ... } ... }`
+   里增补 `TokenKind::Mut` 分支,参数名 = "MUT"。
+
+> **注意**: build plan §2.3 推荐 (A) "更窄只影响 LET",但实测发现
+> 仅有 LET 改动不能让 `LET(MUT, "x"); PRINT(MUT);` 通过(`PRINT(MUT)`
+> 的 MUT 在 expr 位置仍被当关键字拒)。spec §1.4 字面承诺"其他位置可
+> 作普通标识符",所以全 5 处均放宽 — 这是 spec 正确读法,plan §2.3 的
+> (A) 推荐是 hedge,经实测证明不符合 spec 字面。
+
+### 兼容性影响
+**零行为扩展**(纯增量):
+- v0.8.0 报 E0010 / E0011 的输入现在通过 — `LET(MUT, 99)` /
+  `PRINT(MUT)` / `+(MUT, 1)` / `FUN((MUT), ...)` / `LET MUT(MUT, ...)` /
+  `LET(MUT: INTEGER, 0)` 全部合法。
+- 不引入新的 keyword 槽位,不影响其它 token kind。
+- `is_mut = true` (modifier 槽位的 MUT) + binding 名 "MUT" (binding 槽
+  位的 MUT) 并存:第一处 MUT 决定 mut_,第二处 MUT 决定 name — 与 spec
+  §3.1 + §1.4 双约束。
+- `MUT` 不在 BUILTIN_REGISTRY 110 条之列(prose 强调"MUT 不与关键字
+  冲突"),shadow 检查 (§3.5) 不会触发 E0025 / W0030。
+- 既存测试不受影响:原 23 件 lexer + 80 件 parser + 754 件 eval 测试在
+  改动后仍 pass。
+
+### 回归锁测试
+**新增 4 件 parser round-trip**(位于
+`impl/crates/wlwl-parser/tests/spec_v3_alignment.rs`,`§3.1 Chinese identifiers`
+段之后):
+- `let_paren_mut_as_binding_name_roundtrips`:`LET(MUT, 99)` →
+  `Expr::Let { name: "MUT", mut_: false }`
+- `let_double_mut_first_modifier_second_binding`:`LET MUT(MUT, 99)` →
+  `Expr::Let { name: "MUT", mut_: true }`(锁第一 MUT 是 modifier、第二 MUT 是 binding name)
+- `let_mut_as_binding_does_not_shadow_built_in`:`LET(MUT, 99)` parse
+  成功,MUT 不触发 E0025(spec §3.5 检查 BUILTIN_REGISTRY)
+- `let_mut_as_binding_with_type_annotation`:`LET(MUT: INTEGER, 0)` →
+  `Expr::Let { name: "MUT", mut_: false, type_annotation: Some(...) }`
+
+**新增 4 件 eval end-to-end**(位于
+`impl/crates/wlwl-eval/src/lib.rs::tests`,与 D8-009 / D8-010 锁测试集
+并列,§2.9 consistency tests):
+- `eval_let_paren_mut_as_binding_name_immutable`:`LET(MUT, "x"); PRINT(MUT);`
+  parse + 求值通过,验证 binding 解析。
+- `eval_let_double_mut_creates_mutable_cell`:`LET MUT(MUT, 1); SET(MUT, +(MUT, 1)); MUT;`
+  → `Integer(2)`,验证 SET 写可变单元格 + 表达式位置 MUT 解析为 var。
+- `eval_let_mut_as_binding_referenced_as_value`:`LET(MUT, 42); +(MUT, 1);`
+  → `Integer(43)`,验证 call-arg 位置 MUT 解析为 var。
+- `eval_let_mut_in_fun_param_does_not_collide`:`LET(f, FUN((MUT), +(MUT, 1))); LET(_r, f(99));`
+  parse + 求值通过,验证 FUN 参数位置接受 MUT。
+
+`cargo test --workspace`: ~1388 项全绿(原 ~1380 + parser 4 + eval 4);
+wlwl-spec-v0.8.md 不动;D8-009 + D8-010 锁测试不受影响。
+
+---
+
 ## 模板(后续登记用)
 
 ```

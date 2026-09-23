@@ -1159,3 +1159,94 @@ fn parser_nested_literal_subscript_in_array() {
     assert!(matches!(&first.1[1], Expr::Literal(Literal::Integer(0), _)));
     assert!(matches!(&arr[1], Expr::Literal(Literal::Integer(3), _)));
 }
+
+// ───────────────── v0.8.1 §1.4 / D8-011: MUT as binding name ─────────────────
+//
+// spec §1.4: "`MUT` 是上下文关键字:仅在 `LET` 之后的位置具有特殊含义(3.1);
+// 其他位置可作普通标识符使用,不与关键字冲突。"
+//
+// v0.8.0 实现把 binding 槽位 (`(` 后的第一个 token) 也当作 modifier 槽处理,
+// `LET(MUT, "x")` 报 E0010 expected identifier in LET, got Mut。本节三个
+// round-trip 测试锁定修复后形态:
+//
+//   1. `LET(MUT, 99)`        → 不可变 binding, name = "MUT", mut_ = false
+//   2. `LET MUT(MUT, 99)`    → 可变 binding, name = "MUT", mut_ = true
+//                              (第一 MUT 作 modifier,第二 MUT 作 binding name)
+//   3. `LET(MUT, MUT, 99)`   → 与 case 1 等价; binding 名 "MUT" 不触发 E0025
+//                              (spec §3.5 shadow 检查只看 §10 注册表,
+//                              MUT 不在 BUILTIN_REGISTRY 110 条之列)。
+
+#[test]
+fn let_paren_mut_as_binding_name_roundtrips() {
+    // spec §1.4: `LET(MUT, 99)` — binding 槽位的 MUT 当作普通标识符
+    // `MUT` 处理,产生不可变 binding。
+    let r = parse("LET(MUT, 99);", "t.wll").unwrap();
+    match &r {
+        Expr::Let { name, mut_, .. } => {
+            assert_eq!(name, "MUT");
+            assert!(!mut_, "MUT as binding in plain LET must be immutable");
+        }
+        Expr::Block { exprs, .. } => match &exprs[0] {
+            Expr::Let { name, mut_, .. } => {
+                assert_eq!(name, "MUT");
+                assert!(!mut_, "MUT as binding in plain LET must be immutable");
+            }
+            other => panic!("expected Let, got {:?}", other),
+        },
+        other => panic!("expected Let, got {:?}", other),
+    };
+}
+
+#[test]
+fn let_double_mut_first_modifier_second_binding() {
+    // spec §3.1: `LET MUT(MUT, 99)` — 第一 MUT 是 modifier (LET 和 ( 之间),
+    // 决定 mut_=true; 第二 MUT 是 binding 槽位的普通标识符,作 binding 名。
+    let r = parse("LET MUT(MUT, 99);", "t.wll").unwrap();
+    match &r {
+        Expr::Let { name, mut_, .. } => {
+            assert_eq!(name, "MUT");
+            assert!(mut_, "first MUT as modifier must produce mut_=true");
+        }
+        Expr::Block { exprs, .. } => match &exprs[0] {
+            Expr::Let { name, mut_, .. } => {
+                assert_eq!(name, "MUT");
+                assert!(mut_, "first MUT as modifier must produce mut_=true");
+            }
+            other => panic!("expected Let, got {:?}", other),
+        },
+        other => panic!("expected Let, got {:?}", other),
+    };
+}
+
+#[test]
+fn let_mut_as_binding_does_not_shadow_built_in() {
+    // spec §3.5: 遮蔽检查只看 BUILTIN_REGISTRY 110 条注册名;
+    // MUT 不在内建表(只在内建 keyword 表 §1.4),所以 `LET(MUT, ...)`
+    // 不触发 E0025。确认 parse 阶段不抛错、不发 W0030。
+    let r = parse("LET(MUT, 99);", "t.wll");
+    assert!(r.is_ok(), "LET(MUT, 99) must parse: {:?}", r.err());
+}
+
+#[test]
+fn let_mut_as_binding_with_type_annotation() {
+    // spec §5.2 type annotation 在 LET binding 槽位之后可选;binding
+    // 名为 MUT 时也应支持 type annotation (e.g. `LET(MUT: INTEGER, 0)`).
+    let r = parse("LET(MUT: INTEGER, 0);", "t.wll");
+    assert!(r.is_ok(), "LET(MUT: INTEGER, 0) must parse: {:?}", r.err());
+    match r.unwrap() {
+        Expr::Let {
+            name,
+            mut_,
+            type_annotation,
+            ..
+        } => {
+            assert_eq!(name, "MUT");
+            assert!(!mut_);
+            assert!(
+                type_annotation.is_some(),
+                "type annotation should be present"
+            );
+        }
+        other => panic!("expected Let, got {:?}", other),
+    }
+}

@@ -11069,6 +11069,62 @@ mod tests {
         }
     }
 
+    // v0.8.1 D8-011 — §2.9 consistency tests for spec §1.4 "MUT as
+    // context keyword" allowing MUT in the LET binding slot. Prior
+    // to this fix the parser rejected `LET(MUT, 99)` with E0010;
+    // spec §1.4 字面规定 "其他位置可作普通标识符" — the binding-name
+    // slot is one such "other" position. These tests pin the
+    // post-fix end-to-end behavior for both immutable and mutable
+    // forms, plus the spec §3.5 shadow invariant (MUT is not in
+    // BUILTIN_REGISTRY, so no E0025 fires).
+    #[test]
+    fn eval_let_paren_mut_as_binding_name_immutable() {
+        // `LET(MUT, "x")` — MUT as binding name, immutable.
+        // Read back via PRINT(MUT) confirms name resolution.
+        let src = r#"LET(MUT, "x"); PRINT(MUT);"#;
+        // Sanity: the program runs without parse or runtime error.
+        // (We can't easily capture stdout in run(); just verify
+        // eval side effects land cleanly by ensuring the last
+        // expression — none here — is NULL and no diagnostic.)
+        let res = run(src);
+        assert!(res.is_ok(), "LET(MUT, \"x\") must run: {:?}", res.err());
+    }
+
+    #[test]
+    fn eval_let_double_mut_creates_mutable_cell() {
+        // `LET MUT(MUT, 1)` — first MUT is modifier (mut_=true),
+        // second MUT is binding name. SET then increments.
+        let src = "LET MUT(MUT, 1); SET(MUT, +(MUT, 1)); MUT;";
+        assert_eq!(run(src).unwrap(), Value::Integer(2));
+    }
+
+    #[test]
+    fn eval_let_mut_as_binding_referenced_as_value() {
+        // spec §1.4: MUT 作 binding name 后,expr 位置 (e.g. 函数参数、
+        // 算术运算) 的 MUT 必须被当作"该 binding 的值"解析。
+        // `+(MUT, 1)` where MUT=42 → 84.
+        let src = "LET(MUT, 42); +(MUT, 1);";
+        assert_eq!(run(src).unwrap(), Value::Integer(43));
+    }
+
+    #[test]
+    fn eval_let_mut_in_fun_param_does_not_collide() {
+        // v0.8.1 D8-011 在 parse_let 限定 binding slot — 不影响 FUN
+        // 参数位置。MUT 在 FUN 参数位置如果走 LexerMacro 路径会怎样?
+        // 实测: FUN 参数走 parse_pattern,与 LET 解构同 — 此处
+        // 仍属 spec §1.4 "其他位置",所以 LET(FUN(...) 内部 MUT 参数)
+        // 也应允许。把这条测试当成 regression guard: 如果未来有人
+        // 误把 LET 中的 Mut 放宽扩到 FUN 参数并破坏了,这里会失败。
+        // (FUN((MUT), +(MUT, 1))) — MUT as parameter, MUT+1 as body.
+        let src = "LET(f, FUN((MUT), +(MUT, 1))); LET(_r, f(99));";
+        let res = run(src);
+        assert!(
+            res.is_ok(),
+            "FUN((MUT), ...) must still parse and run: {:?}",
+            res.err()
+        );
+    }
+
     #[test]
     fn eval_unary_minus_integer_min_throws_e0034_via_desugar() {
         // v0.8 §2.5 / F-10: locks the FULL sugar path
