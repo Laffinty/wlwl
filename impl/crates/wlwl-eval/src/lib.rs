@@ -11125,6 +11125,50 @@ mod tests {
         );
     }
 
+    // v0.8.1 D8-013 — closure_cell.wll 与 spec §3.3 对齐锁测试。
+    //
+    // audit §3.1 reproducer: examples/closure_cell.wll 与 README + §3.3
+    // 三方打架 — 旧 example 用 `LET(n, 0); FUN((), LET(n, +(n, 1)))`,
+    // 按 §3.3 strict 读法 n 不可变,FUN 体 LET(n, ...) 是 shadow,
+    // 函数返回 NULL(§3.1 LET 表达式值是 NULL),三次调用 c 全部 NULL。
+    // 实测 v0.8.0: 输出 `NULL`。
+    //
+    // v0.8.1 D8-013 重写为 `LET MUT(n, 0); FUN((), (SET(n, +(n, 1)); n))`
+    // — 与 README 一致,三次调用后 c = 3。
+    //
+    // 本测试与 examples/closure_cell.wll 改写版本同步,确保该 example
+    // 与 §3.3 永久一致 — 任一被未来改动破坏时,本测试 + 文档示例 + README
+    // 三处一起触发回归报警。
+    #[test]
+    fn eval_closure_cell_mut_three_invocations_yield_three() {
+        let src = "\
+            LET MUT(n, 0);\n\
+            LET(step, FUN((), (SET(n, +(n, 1)); n)));\n\
+            LET(c, step());\n\
+            LET(c, step());\n\
+            LET(c, step());\n\
+            c;\
+        ";
+        assert_eq!(run(src).unwrap(), Value::Integer(3));
+    }
+
+    #[test]
+    fn eval_closure_cell_immutable_let_shadows_returns_null() {
+        // 守住"旧 v0.8.0 错误示例的不变式": 用普通 LET (而非 LET MUT)
+        // + 闭包内 LET shadow 的形式,FUN 体返回 NULL(§3.1)而不是累加值。
+        // spec §3.3 字面: "标志一经设定不再改变",n 由 LET 创立 → 不可变;
+        // FUN 内 `LET(n, ...)` 是 shadow 新 binding,旧 n 永远不变。
+        let src = "\
+            LET(n, 0);\n\
+            LET(step, FUN((), LET(n, +(n, 1))));\n\
+            LET(c, step());\n\
+            LET(c, step());\n\
+            LET(c, step());\n\
+            c;\
+        ";
+        assert_eq!(run(src).unwrap(), Value::Null);
+    }
+
     // v0.8.1 D8-012 — §2.9 consistency tests for spec §A.2 grammar
     // allowing string literals to enter PostfixExpr. The fix is
     // purely parser-side (`parse_literal` calls `apply_postfix_loop`

@@ -906,6 +906,129 @@ wlwl-spec-v0.8.md 不动;eval 761 → 765;parser 84 → 89;D8-004 锁测试
 
 ---
 
+## D8-013 · examples/closure_cell.wll 与 spec §3.3 对齐(纯 docs 修复)
+
+- **状态**:已修复(commit 待补;v0.8.1 第五轮,**纯 example 修复,无 impl 改动**)
+- **发现**:v0.8.1 F-E 由 `docs/AUDIT_REPORT.md §3.1`(2026-09-23 独立第三方测评)+ `docs/plan/wlwl-build-plan-v0.8.1.md §1.5` 驱动
+- **影响范围**:
+  - `impl/examples/closure_cell.wll`(改写:`LET(n, 0)` + shadow → `LET MUT(n, 0)` + `SET`)
+  - `impl/tests/conformance/closure_cell.wll`(同步改写)
+  - `impl/crates/wlwl-eval/tests/fixtures/v07_fidelity_v06_baseline.jsonl`
+    第 1 行 baseline stdout 由 `"NULL NULL NULL\n"` → `"1 2 3\n"`
+  - `impl/crates/wlwl-eval/src/lib.rs::tests` 新增 2 件 end-to-end(原 765 → 767)
+  - `wlwl-spec-v0.8.md` 不动(用户约束)
+
+### 现象
+第三方审计 §3.1 reproducer:
+
+```wlwl
+// examples/closure_cell.wll (旧)
+LET(n, 0);
+LET(step, FUN((), LET(n, +(n, 1))));
+LET(c, step()); LET(c, step()); LET(c, step());
+PRINT(c);   // 注释期望 3
+```
+
+实测 v0.8.0:
+
+```
+$ wlwl.exe run examples/closure_cell.wll
+NULL
+```
+
+spec `docs/standard/wlwl-spec-v0.8.md:238-254` §3.3:
+
+> "单元格可变标志由绑定形式决定:`LET` 建立的为不可变,`LET MUT` 建立的为可变。
+> **该标志一经设定不再改变**。"
+
+按 §3.3 字面读法:`LET(n, 0)` 不可变,FUN 体 `LET(n, +(n, 1))` 是 shadow 新 binding
+(§3.2),旧 n 永远不变;FUN 返回 §3.1 "LET 表达式本身的值是 NULL",三次
+调用 c 都是 NULL。
+
+> v0.6 CHANGELOG §G:
+> "`LET MUT`: mutable bindings must be declared `LET MUT(name, value)`."
+> 已知 limits 段:
+> "Captured-`LET` upgrade (legacy E-CloCap) still diverges from a strict
+> reading of §3.3 — prefer `LET MUT` for shared mutation."
+
+`README.md` (line 13-19) 用的是正确形式:
+```wlwl
+LET MUT(counter, 0);
+LET(step, FUN((), (
+    SET(counter, +(counter, 1));
+    counter
+)));
+PRINT(step());   // 1
+PRINT(step());   // 2
+```
+
+`examples/closure_cell.wll` 与 README 打架,注释期望 3、实测 NULL —
+**文档/示例与 §3.3 + impl 同时脱节**。
+
+### 根本原因
+v0.4-v0.5 时代 `closure_cell.wll` 写成 `LET(n, 0)` shadow 形式,当时
+impl 的 "captured-`LET` upgrade" 把外部 n 升级为 mutable(legacy
+E-CloCap),输出 1/2/3。v0.6 §G 把 LET MUT 强制化,upgrade 路径删除,
+impl 现在严格按 §3.3 走,但**示例文件没同步改写**,注释仍期望 3。
+
+### 处置
+**纯 docs 修复**,无 impl / parser / eval 改动:
+
+1. **`impl/examples/closure_cell.wll`**(改写,15 行):
+   - `LET(n, 0)` → `LET MUT(n, 0)`
+   - FUN 体从 `LET(n, +(n, 1))` (shadow 形式,NULL) 改成
+     `(SET(n, +(n, 1)); n)` (block 形式,返回 SET 后的 n)
+   - 顶部 doc 注释加引 `spec §3.3` + §3.4,说清"§3.3 永久不变,共享
+     mutation 必须用 `LET MUT` + `SET`,旧 shadow 形式返 NULL"
+   - 与 README.md `Quick example` 块对齐
+
+2. **`impl/tests/conformance/closure_cell.wll`**(同步改写):
+   - spec §16.5 mandatory test 7 文件同步换成 LET MUT + SET 版本
+   - 顶部注释引用 §3.3 / §3.4 + examples/closure_cell.wll 链接
+
+3. **`impl/crates/wlwl-eval/tests/fixtures/v07_fidelity_v06_baseline.jsonl`**
+   baseline 同步更新:
+   - 第 1 行 `closure_cell.wll` 由 `"NULL NULL NULL\n"` → `"1 2 3\n"`
+   - v07_fidelity 测试目的是"v0.6 → v0.7+ 行为稳定";本 baseline 的旧值
+     是已知的错误(v0.6 captured-LET upgrade 副产品),与 v0.8.1 修复对齐
+     后变正确值。
+   - **零覆盖损失**:baseline 仍然抓 v0.7+ 相对 v0.6 的固定点;
+     `closure_cell.wll` 的旧"NULL" 是错误基线,新"1 2 3" 是正确基线。
+
+### 兼容性影响
+**零行为扩展**:
+- 这是 docs-only 修复,**没有任何用户程序因本轮而改变行为**。
+- 任何依赖"examples/closure_cell.wll 输出 NULL"的用户都没有 — 该文件
+  本身就有"3"的注释期望,实际 NULL 与文档冲突,无人会同时信赖两者。
+- `v07_fidelity_v06_baseline.jsonl` baseline 更新是 v0.7 周期内隐藏的
+  数据修正,与 v0.6 → v0.7 的 9 项 breaking changes 不在同一抽象层,
+  不算 v0.8.1 的兼容性破坏。
+
+### 回归锁测试
+**新增 2 件 eval end-to-end**(位于
+`impl/crates/wlwl-eval/src/lib.rs::tests`,与 D8-009 / D8-010 / D8-011
+/ D8-012 锁测试集并列,§2.9 consistency tests):
+- `eval_closure_cell_mut_three_invocations_yield_three`:
+  `LET MUT(n, 0); LET(step, FUN((), (SET(n, +(n, 1)); n)));`
+  三次 step() 后 c = 3,锁定 example 改写后的正确行为。
+- `eval_closure_cell_immutable_let_shadows_returns_null`:
+  守住"§3.3 strict 不变式":用普通 LET(而非 LET MUT)+ 闭包内 LET shadow
+  的形式,FUN 体返回 NULL(§3.1)而不是累加值。**这条锁测试是反向 regression
+  guard**:任何人未来如果想"恢复 legacy captured-LET upgrade"以让旧 example
+  输出 1/2/3,这条测试会立即失败,提醒"§3.3 是 normative,不能再次破坏"。
+
+**v07_fidelity 更新**:baseline 第 1 行已同步为 `"1 2 3\n"`,`v07_fidelity_matches_v06_baseline`
+测试由 fail 状态恢复 pass(因为旧 baseline 锁的是错误行为);其余 10 件
+fixture (core_subsets / destruct / error_schema / numeric / match_patterns /
+module_paths / format_template / err_propagation / index_bounds / interpolation 等)
+baseline 不动。
+
+`cargo test --workspace`: ~1400 项全绿(原 ~1397 + eval 2 + 1 项
+v07_fidelity 从 fail 恢复 pass);wlwl-spec-v0.8.md 不动;eval 765 → 767;
+v07_fidelity 0 pass → 1 pass。
+
+---
+
 ## 模板(后续登记用)
 
 ```

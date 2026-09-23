@@ -1,10 +1,21 @@
 // conformance/closure_cell.wll - section 16.5 mandatory test 7
-// Demonstrates: section 6.4 cell-capture semantics (closure captures
-// LET cell, shared mutation across calls). Mirrors examples/closure_cell.wll.
+// Demonstrates: section 3.3 cell-capture semantics (closure captures
+// a LET MUT cell and accumulates state across calls). Mirrors
+// examples/closure_cell.wll.
+//
+// spec §3.3 (cell mutability flag is permanent): a binding created by
+// `LET` (immutable) cannot be `SET` later. To share mutation across
+// closure invocations, the cell must be declared `LET MUT` and mutated
+// via `SET` (spec §3.4). The legacy `LET(n, 0); LET(step, FUN((), LET(n, +(n, 1))));`
+// form shadows the outer `n` per call and yields NULL — see
+// examples/closure_cell.wll doc for the full rationale.
 
-LET(n, 0);
-LET(step, FUN((), LET(n, +(n, 1))));
+LET MUT(n, 0);
+LET(step, FUN((), (
+    SET(n, +(n, 1));
+    n
+)));
 LET(c1, step());
 LET(c2, step());
 LET(c3, step());
-PRINT(c1, c2, c3);
+PRINT(c1, c2, c3);   // 1 2 3

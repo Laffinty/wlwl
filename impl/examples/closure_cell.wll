@@ -1,10 +1,20 @@
-// examples/closure_cell.wll — closure cell-capture semantics (§6.4)
-// Demonstrates: a closure that captures a `LET` cell and shares
-// mutations across calls.
+// examples/closure_cell.wll — closure cell-capture semantics (§3.3, §3.4)
+// Demonstrates: a closure capturing a `LET MUT` cell and accumulating
+// state across invocations.
+//
+// spec §3.3 (cell mutability flag is permanent): a binding created by
+// `LET` (immutable) cannot be `SET` later. The legacy v0.4 form
+//   LET(n, 0); LET(step, FUN((), LET(n, +(n, 1))));
+// would `LET(n, +(n, 1))` shadow the outer `n` each call — the function
+// returns NULL (per spec §3.1, `LET` is itself NULL-valued) and the
+// shadowed inner `n` is discarded. To share mutation across closure
+// invocations, the cell must be declared `LET MUT` and mutated via
+// `SET` (spec §3.4).
 
-LET(n, 0);
-LET(step, FUN((), LET(n, +(n, 1))));
-LET(c, step());
-LET(c, step());
-LET(c, step());
+LET MUT(n, 0);
+LET(step, FUN((), (
+    SET(n, +(n, 1));
+    n
+)));
+LET(c, step()); LET(c, step()); LET(c, step());
 PRINT(c);   // 3

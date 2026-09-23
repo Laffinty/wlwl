@@ -1,4 +1,4 @@
-{"fixture":"closure_cell.wll","exit_code":0,"stdout":"NULL NULL NULL\n","stderr":""}
+{"fixture":"closure_cell.wll","exit_code":0,"stdout":"1 2 3\n","stderr":""}
 {"fixture":"core_subsets.wll","exit_code":0,"stdout":"hello, world\nsum = 5\n","stderr":""}
 {"fixture":"destruct.wll","exit_code":0,"stdout":"10 20 30\n","stderr":""}
 {"fixture":"error_schema.wll","exit_code":1,"stdout":"","stderr":"error[E1003]: /: division by zero\n  --> <runtime>:0:0\n\n"}
