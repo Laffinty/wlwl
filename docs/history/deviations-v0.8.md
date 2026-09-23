@@ -471,7 +471,174 @@ if matches!(self.peek(), Some(b'e') | Some(b'E')) {
 
 ---
 
+## D8-010 · §10.5 SUB 第三参数严格按 length 实现(原 end-index 语义错位)
 
+- **状态**:已修复(commit 待补;v0.8.1 第二轮,**唯一可观察行为变更项**)
+- **发现**:v0.8.1 F-B 由 `docs/AUDIT_REPORT.md §7.1`(2026-09-23 独立第三方测评)+ `docs/plan/wlwl-build-plan-v0.8.1.md §1.2` 驱动
+- **影响范围**:
+  - `impl/crates/wlwl-eval/src/lib.rs::builtin_substr` line 2066-2138(原 2066-2125,重写 length 语义)
+  - `impl/crates/wlwl-eval/src/lib.rs::tests` 三处旧测试断言按 spec §10.5 重写 + 新增 3 项(原 754 → 757)
+  - `wlwl-spec-v0.8.md` 不动(用户约束)
+
+### 现象
+第三方审计 §7.1:
+
+```
+SUB("Hello, world", 0, 5)  → "Hello"     OK
+SUB("Hello, world", 1, 5)  → "ello"      OK   (注:audit 此行按 end-index 算)
+SUB("Hello, world", 7, 1)  → ""          BUG (expect "w")
+SUB("Hello, world", 7, 3)  → ""          BUG
+SUB("Hello, world", 7, 5)  → ""          BUG
+SUB("Hello, world", 0)     → "Hello, world"   OK
+```
+
+实测本仓 v0.8.0:
+
+```
+$ wlwl.exe run test_audit/02_sub_bug.wll
+Hello
+ello
+
+                ← (空行;SUB("Hello, world", 7, *) 全空)
+Hello, world
+```
+
+spec `docs/standard/wlwl-spec-v0.8.md:649-650` §10.5:
+```
+| `SUB(s, start, len?) -> STRING` | 自 `start` 起长 `len` 的子串;缺省 `len` 到末尾;按码点 |
+```
+
+第三参数 spec 显式承诺是 **length** (起 start 长 len)。impl 把第三参数当 **end-index** 处理,
+所有 `SUB(s, 7, *)` 因 `end ≤ start` 走 `norm_end <= norm_start` 早返 "" 分支。
+
+### 根本原因
+`impl/crates/wlwl-eval/src/lib.rs` 原 `builtin_substr` (line 2069-2125):
+
+```rust
+// (修前,节录)
+let end_raw = if args.len() == 3 {
+    /* 读 third arg into end_raw */
+} else {
+    len
+};
+let norm_end = if end_raw < 0 {
+    (end_raw + len).max(0)
+} else {
+    end_raw.min(len)
+};
+if norm_end <= norm_start {
+    return Ok(Outcome::normal(Value::String(String::new())));
+}
+// chars[start..end]
+```
+
+变量名 + doc comment 都按 `end` 处理:
+- 函数 doc(原 line 2066):"`SUB(s, start, end?) -> STRING`: 半开区间 [start, end)"
+- 实现语义:`chars[norm_start..norm_end]`
+- 副作用:`SUB(s, n, k)` 当 `k ≤ n` 时永远返 `""`(因为 norm_end ≤ norm_start)
+
+SLICE 数组版的 `builtin_slice` (line 1840) 也是 end-index,但 SLICE 是数组语义,
+spec §10.4 "区间 [start, end)" 措辞本身允许 end-index。SUB 的 spec §10.5 措辞
+"长 len 的子串" 不允许 — v0.8.0 impl 一开始就把 SUB 当 SLICE 抄,
+无视 §10.5 字面承诺。
+
+### 处置
+**重写 `builtin_substr` 的 length 路径** (line 2066-2138):
+
+```rust
+let len_raw = if args.len() == 3 { /* type-check as INTEGER */ } else {
+    len - norm_start  // 缺省:从 norm_start 取到末尾
+};
+// spec §10.5: len 须为非负;负 len clamp 到 0(空串)。
+let norm_len = if len_raw < 0 { 0 } else { len_raw };
+if norm_len == 0 || norm_start >= len {
+    return Ok(Outcome::normal(Value::String(String::new())));
+}
+let chars: Vec<char> = s.chars().collect();
+let start = norm_start as usize;
+let end = (norm_start + norm_len).min(len) as usize;  // 单边 clamp 到字符串末尾
+Ok(Outcome::normal(Value::String(chars[start..end].iter().collect())))
+```
+
+**两个关键边界**:
+
+1. **负 len clamp 到 0**(`norm_len = max(len_raw, 0)`):spec §10.5 不接受负 len,
+   沿用 SLICE 的负 end "从尾数"语义会与 length 语义混淆,故删除。
+   旧 `SUB("abc", -3, -1) = "ab"` 是把 -1 当 end-position-from-tail 算的;
+   新语义下 `SUB("abc", 0, -1) = ""`。需要 "tail substring via negative index"
+   的用户改用负 start: `SUB(s, -(end_pos), end_pos - start_pos)`。
+
+2. **start + len 单边 clamp 到字符串末尾** (`end = min(start + len, len)`):
+   不对称 — start clamp 在 norm_start 已做,len 端只在越界时钳,
+   不在越界时悄返 ""。`SUB("Hello", 0, 100) = "Hello"`(不是 "")。
+
+**doc comment 同步重写**:
+```rust
+/// `SUB(s, start, len?) -> STRING`: 自 `start` 起长 `len` 的子串。
+/// start INTEGER(可为负,从尾数计;越界 clamp 到 [0, len_total])；
+/// len INTEGER(可省,缺省取到末尾;非负;负 len 视为 0);按码点。
+///
+/// v0.8.1 D8-010: spec §10.5 字面承诺 "自 start 起长 len 的子串" —
+/// 第三参数是 **长度**,不是 end-index。
+```
+
+### 兼容性影响
+**6 步 v0.8.1 修复中唯一会改变可观察行为**的一项。理由:
+
+- spec §10.5 在 v0.6 → v0.7 → v0.8 三轮都是 "len" 措辞。
+- v0.8.0 是"实现落后于 spec",不是 spec 变更。
+- 但凡是用 3-参 `SUB(s, start, end_old)` 当 end-index 用的 v0.8 程序
+  在 v0.8.1 后都会得到不同的字符串输出。已更新既有 `b13_sub_*` 系列测试
+  反映新语义。
+
+**8 行矩阵的兼容性差异表**(spec §10.5 → 新行为):
+
+| `SUB(s, start, len)` | v0.8.0(旧) | v0.8.1(新) | 用户迁移 |
+|---------------------|-----------|-----------|---------|
+| `("Hello, world", 0, 5)` | `"Hello"` | `"Hello"` | — |
+| `("Hello, world", 1, 5)` | `"ello"` | `"ello,"`(chars[1..6]) | 想要 `"ello"`:`SUB(s, 1, 4)` 或 `SLICE(s, 1, 5)` |
+| `("Hello, world", 7, 1)` | `""` | `"w"` | 想要 `""`: `SUB(s, 7, 0)` |
+| `("Hello, world", 7, 3)` | `""` | `"wor"` | — |
+| `("Hello, world", 7, 5)` | `""` | `"world"` | — |
+| `("Hello", -1, 1)` | `""` | `"o"`(start norm=4, len=1) | — |
+| `("Hello", 0, -1)` | (走 end-index 把 -1 当尾数,返 "Hello") | `""`(负 len clamp) | 需要 tail-取子串:`SUB(s, -n, n)` 走负 start |
+| `("Hello, world", 0)` | `"Hello, world"` | `"Hello, world"` | — |
+
+CHANGELOG v0.8.1 节需要单独标注:
+> "**§10.5 SUB 第三参数严格按 length 实现**(D8-010,observable change):
+> 迁移:`SUB(s, start, end_old)` → `SUB(s, start, -(start, end_old))` 或
+> `SLICE(s, start, end_old)`。"
+
+### 回归锁测试
+**新增 3 项 end-to-end**(位于 `impl/crates/wlwl-eval/src/lib.rs::tests`):
+- `substr_length_semantics_8_cases`:覆盖上表 8 行(含 audit §7.1 的 "world"
+  reproducer),逐条 assert v0.8.1 长度语义输出。
+- `substr_len_overflow_clamps_to_string_end`:`SUB("Hello", 0, 100)` → `"Hello"`、
+  `SUB("Hello", 3, 100)` → `"lo"`、`SUB("Hello", 5, 100)` → `""`。
+  单边 clamp 到 LEN(s),不走 "end ≤ start → 空" 路径。
+- `substr_len_zero_returns_empty`:`SUB("Hello", 0, 0)` / `(5, 0)` / `(0, -7)` / `(100, 5)`
+  全返 `""`,锁早返分支。
+
+**重写 3 件旧 `b13_sub_*` 测试的断言**(test 名不变,断言按 spec §10.5 更新):
+- `b13_sub_basic_negative_oob`:
+  - `SUB("hello", 1, 3)` → `"ell"`(原 `1, 4` → `"ell"` 在新语义下变 `"ello"`,故改 length)
+  - `SUB("hello", 3, 0)` / `SUB("hello", 0, 0)` → `""`(替代旧 `3, 3` → `""`,
+    后者在新语义下变 `"lo"`)
+- `b13_sub_negative_index_normalization`:
+  - 保留 `SUB("abc", -1)` → `"c"`(2-arg default len)
+  - 删 `SUB("abc", -3, -1) → "ab"`(依赖旧 end-from-tail,新语义返 "")
+  - 加 `SUB("abc", -2, 2)` → `"bc"`(表达"负 start 取尾"的现代写法)
+  - 加 `SUB("abc", 0, -1)` → `""`(显式断言负 len → 0)
+- `b13_unicode_preserved`:
+  - `SUB("héllo", 1, 3)` → `"éll"`(原 `1, 4` → `"éll"` 在新语义下变 `"éllo"`,
+    故改 length 为 3)
+
+`cargo test --workspace`:~1380 项全绿(原 ~1378 + SUB 新 3 项);b13_sub_* 三件
+全部仍 pass(断言重写后语义对齐 spec §10.5)。
+
+---
+
+## 模板(后续登记用)
 
 ```
 ## D8-NNN · <简短标题>

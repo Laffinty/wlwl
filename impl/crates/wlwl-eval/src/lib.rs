@@ -2063,9 +2063,16 @@ fn builtin_lower(_ev: &mut Evaluator, args: Vec<Value>) -> WlwlResult<Outcome> {
     }
 }
 
-/// `SUB(s, start, end?) -> STRING`: 半开区间 [start, end) 子字符串。
-/// start/end INTEGER;end 缺省切到末尾;负数从尾数 (类似 SLICE)。
-/// start/end out-of-range 钳到合法边界 (与 SLICE 一致)。
+/// `SUB(s, start, len?) -> STRING`: 自 `start` 起长 `len` 的子串。
+/// start INTEGER(可为负,从尾数计;越界 clamp 到 [0, len_total])；
+/// len INTEGER(可省,缺省取到末尾;非负;负 len 视为 0);按码点。
+///
+/// v0.8.1 D8-010: spec §10.5 字面承诺 "自 start 起长 len 的子串" —
+/// 第三参数是 **长度**,不是 end-index。v0.8.0 实测把 len 当 end 读,
+/// 触发了 audit §7.1 的 `SUB("Hello, world", 7, 5) = ""` 一类 bug。
+/// 语义与 SLICE(数组)差异:SUB 是字符串特化,SUB(s, start, len)
+/// 等价于 `SLICE(s, start, min(start + len, LEN(s)))` 但**不允许负 len**
+/// (视为 0);SLICE 的负 end "从尾数"语义不延伸到 SUB。
 fn builtin_substr(_ev: &mut Evaluator, args: Vec<Value>) -> WlwlResult<Outcome> {
     if args.len() < 2 || args.len() > 3 {
         return Err(arity_error("SUB", 2, args.len()));
@@ -2089,36 +2096,36 @@ fn builtin_substr(_ev: &mut Evaluator, args: Vec<Value>) -> WlwlResult<Outcome> 
             ));
         }
     };
-    let end_raw = if args.len() == 3 {
-        match &args[2] {
-            Value::Integer(i) => *i,
-            other => {
-                return Err(type_error(
-                    "SUB",
-                    format!("end must be INTEGER, got {}", type_name(other)),
-                ));
-            }
-        }
-    } else {
-        len
-    };
     let norm_start = if start_raw < 0 {
         (start_raw + len).max(0)
     } else {
         start_raw.min(len)
     };
-    let norm_end = if end_raw < 0 {
-        (end_raw + len).max(0)
+    let len_raw = if args.len() == 3 {
+        match &args[2] {
+            Value::Integer(i) => *i,
+            other => {
+                return Err(type_error(
+                    "SUB",
+                    format!("len must be INTEGER, got {}", type_name(other)),
+                ));
+            }
+        }
     } else {
-        end_raw.min(len)
+        // 缺省:从 norm_start 取到末尾,即 len - norm_start
+        len - norm_start
     };
-    if norm_end <= norm_start {
+    // spec §10.5: len 须为非负;负 len clamp 到 0(空串)。不再支持
+    // 旧的"负 len ＝ 从尾数计 end"语义(那是 end-index 的衍生,
+    // 与 length 语义不兼容;迁移路径见 D8-010 deviation doc)。
+    let norm_len = if len_raw < 0 { 0 } else { len_raw };
+    if norm_len == 0 || norm_start >= len {
         return Ok(Outcome::normal(Value::String(String::new())));
     }
     // 用 chars() 处理 codepoint-aware 切片
     let chars: Vec<char> = s.chars().collect();
     let start = norm_start as usize;
-    let end = norm_end as usize;
+    let end = (norm_start + norm_len).min(len) as usize;
     Ok(Outcome::normal(Value::String(
         chars[start..end].iter().collect(),
     )))
@@ -18434,22 +18441,33 @@ entry = "main.wll"
 
     #[test]
     fn b13_sub_basic_negative_oob() {
+        // v0.8.1 D8-010: third arg is LENGTH (spec §10.5), not end-index.
+        // `SUB("hello", 1, 3)` → start=1, len=3 → chars[1..4] = "ell".
         assert_eq!(
-            run(r#"SUB("hello", 1, 4);"#).unwrap(),
+            run(r#"SUB("hello", 1, 3);"#).unwrap(),
             Value::String("ell".into())
         );
+        // 2-arg form: defaults to len-from-start to end-of-string.
         assert_eq!(
             run(r#"SUB("hello", 2);"#).unwrap(),
             Value::String("llo".into())
         );
-        // 负数从尾数
+        // Negative start counts from end (start_raw = -3 + len=5 = 2).
         assert_eq!(
             run(r#"SUB("hello", -3);"#).unwrap(),
             Value::String("llo".into())
         );
-        // start >= end → 空
+        // len = 0 → empty string (regardless of start). This replaces
+        // the old v0.8.0 test `SUB("hello", 3, 3)` which was asserting
+        // start >= end → empty under end-index semantics. That
+        // invariant no longer holds: `SUB("hello", 3, 3)` now returns
+        // "lo" (start=3, len=3, chars[3..6] clamped to [3..5]).
         assert_eq!(
-            run(r#"SUB("hello", 3, 3);"#).unwrap(),
+            run(r#"SUB("hello", 3, 0);"#).unwrap(),
+            Value::String("".into())
+        );
+        assert_eq!(
+            run(r#"SUB("hello", 0, 0);"#).unwrap(),
             Value::String("".into())
         );
         // 类型错
@@ -18546,15 +18564,26 @@ entry = "main.wll"
 
     #[test]
     fn b13_sub_negative_index_normalization() {
-        // SUB(s, -1) → 最后一个 char
+        // SUB(s, -1) → 最后一个 char (negative start counts from end,
+        // default len takes to end-of-string).
         assert_eq!(
             run(r#"SUB("abc", -1);"#).unwrap(),
             Value::String("c".into())
         );
-        // SUB(s, -3, -1) → "ab"
+        // v0.8.1 D8-010: third arg is LENGTH. The legacy
+        // `SUB("abc", -3, -1) → "ab"` assertion relied on the old
+        // end-index semantics (negative end = end-position-from-tail).
+        // Under length semantics, negative len clamps to 0 → empty
+        // string. The intent — "tail substring via negative index" —
+        // is now expressed via the *start* parameter alone.
         assert_eq!(
-            run(r#"SUB("abc", -3, -1);"#).unwrap(),
-            Value::String("ab".into())
+            run(r#"SUB("abc", -2, 2);"#).unwrap(),
+            Value::String("bc".into())
+        );
+        // Negative len → 0 (not the old "from-tail" semantics).
+        assert_eq!(
+            run(r#"SUB("abc", 0, -1);"#).unwrap(),
+            Value::String("".into())
         );
     }
 
@@ -18565,10 +18594,128 @@ entry = "main.wll"
             run(r#"UPPER("héllo wörld");"#).unwrap(),
             Value::String("HéLLO WöRLD".into())
         );
-        // SUB 处理 codepoint (而非 UTF-8 bytes)
+        // v0.8.1 D8-010: SUB 处理 codepoint 而非 UTF-8 bytes. The
+        // length argument is codepoint-count, not byte-count. `é`
+        // counts as one codepoint even though it's two UTF-8 bytes.
+        // start=1, len=3 → chars[1..4] = "éll".
         assert_eq!(
-            run(r#"SUB("héllo", 1, 4);"#).unwrap(),
+            run(r#"SUB("héllo", 1, 3);"#).unwrap(),
             Value::String("éll".into())
+        );
+    }
+
+    // v0.8.1 D8-010 — spec §10.5 `SUB(s, start, len?) -> STRING`:
+    // third argument is **length** (codepoint count), not end-index.
+    // This is the 8-case matrix from build plan §2.2 / docs/plan/
+    // wlwl-build-plan-v0.8.1.md §1.2. Each row used to differ from
+    // the spec (or was silently clamped to "") under v0.8.0's
+    // end-index interpretation; the post-fix behavior aligns with
+    // the spec prose verbatim.
+    #[test]
+    fn substr_length_semantics_8_cases() {
+        // Row 1: SUB("Hello, world", 0, 5) → "Hello" (matches both
+        // legacy end=5 and new len=5). Pin the unambiguous case.
+        assert_eq!(
+            run(r#"SUB("Hello, world", 0, 5);"#).unwrap(),
+            Value::String("Hello".into())
+        );
+        // Row 2: SUB("Hello, world", 1, 5) → "ello," (start=1,
+        // len=5 → chars[1..6], 5 codepoints). Old end=5 gave "ello"
+        // (chars[1..5], only 4 codepoints). The new result extends
+        // one codepoint further into the string — exactly what spec
+        // §10.5 length semantics prescribe. The audit's "OK" column
+        // for this row computed against end-index semantics, which
+        // the spec explicitly rejects.
+        assert_eq!(
+            run(r#"SUB("Hello, world", 1, 5);"#).unwrap(),
+            Value::String("ello,".into())
+        );
+        // Row 3: SUB("Hello, world", 7, 1) → "w" (the audit §7.1
+        // reproducer; old gave "").
+        assert_eq!(
+            run(r#"SUB("Hello, world", 7, 1);"#).unwrap(),
+            Value::String("w".into())
+        );
+        // Row 4: SUB("Hello, world", 7, 3) → "wor" (audit §7.1).
+        assert_eq!(
+            run(r#"SUB("Hello, world", 7, 3);"#).unwrap(),
+            Value::String("wor".into())
+        );
+        // Row 5: SUB("Hello, world", 7, 5) → "world" (audit §7.1).
+        assert_eq!(
+            run(r#"SUB("Hello, world", 7, 5);"#).unwrap(),
+            Value::String("world".into())
+        );
+        // Row 6: SUB("Hello, world", 0) → "Hello, world" (2-arg
+        // defaults len to "to end of string").
+        assert_eq!(
+            run(r#"SUB("Hello, world", 0);"#).unwrap(),
+            Value::String("Hello, world".into())
+        );
+        // Row 7: SUB("Hello", -1, 1) → "o" (start=-1 normalizes
+        // to 4, len=1 → chars[4..5]).
+        assert_eq!(
+            run(r#"SUB("Hello", -1, 1);"#).unwrap(),
+            Value::String("o".into())
+        );
+        // Row 8: SUB("Hello", 0, -1) → "" (negative len clamps to 0).
+        // The legacy "negative end = end-position-from-tail" semantic
+        // is intentionally removed under length semantics; users who
+        // need that behavior should express it via negative *start*:
+        //   SUB(s, -(end_pos), end_pos - start_pos)
+        // or use SLICE(s, start, end) directly.
+        assert_eq!(
+            run(r#"SUB("Hello", 0, -1);"#).unwrap(),
+            Value::String("".into())
+        );
+    }
+
+    // v0.8.1 D8-010 — len overflow cases: SUB(s, start, len) where
+    // start + len > LEN(s) is clamped to LEN(s). Mirrors the legacy
+    // end-index semantics on this dimension (both clamped), but the
+    // post-fix semantics makes the clamp explicit and one-sided (only
+    // the *end* side, never the *start* side).
+    #[test]
+    fn substr_len_overflow_clamps_to_string_end() {
+        // len past end clamps.
+        assert_eq!(
+            run(r#"SUB("Hello", 0, 100);"#).unwrap(),
+            Value::String("Hello".into())
+        );
+        assert_eq!(
+            run(r#"SUB("Hello", 3, 100);"#).unwrap(),
+            Value::String("lo".into())
+        );
+        // start within range, len overflows.
+        assert_eq!(
+            run(r#"SUB("Hello", 5, 100);"#).unwrap(),
+            Value::String("".into()) // start == len → empty
+        );
+    }
+
+    // v0.8.1 D8-010 — len=0 short-circuits to empty string without
+    // slicing into the chars Vec. This is the only early-return
+    // path in the post-fix builtin_substr besides norm_start >= len.
+    #[test]
+    fn substr_len_zero_returns_empty() {
+        assert_eq!(
+            run(r#"SUB("Hello", 0, 0);"#).unwrap(),
+            Value::String("".into())
+        );
+        assert_eq!(
+            run(r#"SUB("Hello", 5, 0);"#).unwrap(),
+            Value::String("".into())
+        );
+        // Negative len clamps to 0.
+        assert_eq!(
+            run(r#"SUB("Hello", 0, -7);"#).unwrap(),
+            Value::String("".into())
+        );
+        // norm_start >= len short-circuits (e.g. start past end with
+        // positive len also returns empty).
+        assert_eq!(
+            run(r#"SUB("Hello", 100, 5);"#).unwrap(),
+            Value::String("".into())
         );
     }
 
