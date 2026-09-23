@@ -1029,6 +1029,138 @@ v07_fidelity 0 pass → 1 pass。
 
 ---
 
+## D8-014 · §1.8 / §A.2 `${...("...")}` 内嵌字符串字面量不允许(spec 灰色地带,留 v0.9)
+
+- **状态**:待修复(spec 留 v0.9,**v0.8.1 不实施,纯备忘登记**)
+- **发现**:v0.8.1 F-F 由 `docs/AUDIT_REPORT.md §1.3`(2026-09-23 独立第三方测评)+ `docs/plan/wlwl-build-plan-v0.8.1.md §1.6` 驱动
+- **影响范围**:
+  - `wlwl-spec-v0.8.md` 不动(用户约束:v0.8.x 严格遵循 v0.8 spec)
+  - `impl/crates/wlwl-lexer/src/lib.rs::read_interp_body` line 633-643
+    (现状:报 E0001 "nested string literal inside `${...}` interpolation is not allowed")
+  - 不引入代码改动,只在 deviations 留备忘
+
+### 现象
+第三方审计 §1.3:
+
+> "spec §1.8 与 §A.2 grammar **均未显式禁止**内嵌 string literal,只是 §A.2
+> 末尾注 "为避免歧义,实现通常在词法阶段以括号配对定位插值边界"。
+> 实际影响面非常广。任何 `${FUN_CALLED("literal arg")}`、`${ARR["key"]}`、
+> `${ARR[0] = "x"}` 等长度在一行的内插表达式都不可写。"
+
+实测:
+
+```
+$ wlwl.exe run -e 'PRINT("hi ${greet("alice")}")'
+error[E0001]: nested string literal inside `${...}` interpolation is not allowed
+```
+
+但同位置 `${greet("alice")}` 的**非字符串内嵌**用法通过(impl 走 brace 配对,
+遇到 `"` 才拒)。
+
+### spec 引用 (`docs/standard/wlwl-spec-v0.8.md`)
+
+§1.8 (line 121-132):
+> "字符串插值:`"Hello, ${name}!"` 中 `${...}` 内的表达式按完整表达式
+> 语法求值;求值结果以 `STR`(10.3) 渲染后嵌入字符串;求值若产生
+> `ERR` 则按 8.2 透传,整个字符串字面量表达式的结果为该 `ERR`。"
+
+§A.2 grammar line 1049:
+> ```
+> interpolation = "${" Expression "}" .
+> ```
+
+**§1.8 / §A.2 字面允许 `Expression` 在 `${...}` 内**。Expression 含 Literal
+→ Literal 含 string_lit → 语法上允许 `${"hello"}` 这种嵌套字符串字面量。
+
+但 §A.2 末尾 line 1062:
+> "`string_lit` 中的 `Expression` 是完整的 `Expression` 文法,但**为避免歧义**,
+> **实现通常在词法阶段以括号配对定位插值边界**。"
+
+"为避免歧义"是 implementation hint,**不是 normative 禁止**;impl 选择 brace
+配对是合理的实现简化,但 spec 没要求"必须拒绝内嵌字符串"。
+
+### 现状 (`impl/crates/wlwl-lexer/src/lib.rs`)
+
+`read_interp_body` (line 593-647) 用 brace-counting 扫描 `${...}` 体内:
+
+```rust
+b'"' => {
+    // Nested string literals are not allowed inside `${...}` per spec
+    // grammar — they would break the simple brace-counting strategy.
+    // Report E0001.
+    return Err(self.err(
+        ErrorCode::E0001,
+        "nested string literal inside `${...}` interpolation is not allowed",
+        self.line, self.col,
+    ));
+}
+```
+
+第一次遇到 `"` 直接返 E0001,不去 parse 嵌套字符串。这是 brace-counting 简化
+策略的产物,**不是** spec 显式要求。
+
+### 灰色地带根因
+
+| 立场 | 论点 |
+|------|------|
+| **审计意见**(认为这是 bug) | spec grammar §A.2 允许 `${Expression}`,Expression 含 string_lit,所以 `${"hi"}` 应该 parse 通过 |
+| **impl 立场**(认为这是 by design) | brace-counting 简化策略决定拒绝嵌套,行为稳定;spec 没禁止即允许但工程量大 |
+| **spec 立场**(实操模糊) | §1.8 / §A.2 字面未禁止;§A.2 末尾 implementation hint 暗示 brace 配对是合理的;无 normative "不允许" 文本 |
+
+### 处置
+**v0.8.1 不实施**,仅登记 deviations:
+
+修复成本(估计):
+- 重写 `read_interp_body` 用 recursive lex,引入 string-literal scope 状态
+- 新增嵌套深度匹配锁测试(`${"hello"}` / `${a + "b" + c}` 等)
+- 锁定 `(` `[` `{` 在字符串内的对称性,避免误吞
+
+收益:开启 `${FUN_CALLED("arg")}` / `${ARR["key"]}` 等行的内插表达式 — 
+**但**这些用法本身已经能用 LET 提前存值绕过(`LET(x, FUN_CALLED("arg")); PRINT("hi ${x}")`),所以是表达力提升而非必须。
+
+**留 v0.9 spec 增补 normative note**:在 §1.8 加一句:
+> "**字符串插值体内不允许再写字符串字面量**(`${"..."}` 不合法),以简化词法
+> 边界定位。需要内嵌字符串字面量时,先用 `LET` 存值再插值:
+> ```
+> LET(s, "literal arg"); PRINT("hi ${FUN(s)}")
+> ```"
+>
+> 这样规范明确禁止,impl 与 spec 完全对齐,不依赖 "implementation hint"。
+
+### 兼容性影响
+**零**:v0.8.1 不实施任何代码改动。
+
+**v0.9 实施后**:
+- 零行为扩展:既有的 `${name}` / `${expr}` 用法不变。
+- 范围扩展:`${"literal"}` 从 E0001 升格为...取决于 spec 决议:
+  - 选项 A(放开):允许 `${"literal"}` parse,${"hi ${name}"}` 这种嵌套插值仍
+    按 spec §1.8 字符串 escape 规则处理 — 但需要解决 `${` 嵌套识别。
+  - 选项 B(明确禁止):在 §1.8 加 normative note,**维持 E0001 现状**,但
+    spec 与 impl 完全对齐,无需 "implementation hint" 兜底。
+- 推荐选项 B:零 impl 改动 + spec 文档完备 + 用户对照规范时不会再次误以为
+  这是 bug。工程量最低。
+
+### 回归锁测试
+**无** (v0.8.1 不实施)。
+
+**v0.9 实施时**(选项 B 路径,推荐):
+- `lexer/tests/lex_interpolation_unterminated_brace` (line 1090-1099 既有)
+  现有测试 `lex("\"hi ${name\"", "t.wll")` 已经验证 nested-string 被拒;
+  v0.9 实施后只需在 doc 注释里把 "Nested string literals are not allowed
+  inside ${...} per spec grammar" 改成 "spec §1.8 normative",从
+  implementation hint 升级为 spec 要求。
+- 新增 1 件 doc-test 风格 lock:确认 spec §1.8 文本含 normative note
+  (grep-style doc test,验证字符串子串"不允许再写字符串字面量"在 spec
+  文件第 X-Y 行)。
+
+**v0.9 实施时**(选项 A 路径,如果选择放开):
+- 重写 `read_interp_body` 加 string-literal scope 状态机
+- 新增 4-5 件 lexer 测试覆盖 `${"hello"}` / `${a + "b" + c}` / `${if(c, "yes", "no")}`
+  等合法形式 + `${"a"b"c"}` 等畸形(应拒)
+- 工程量:1-2 天 + 锁测试。
+
+---
+
 ## 模板(后续登记用)
 
 ```
