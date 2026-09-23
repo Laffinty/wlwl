@@ -11,6 +11,97 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 > **v0.8** (`docs/standard/wlwl-spec-v0.8.md`); v0.7 is archived at
 > `docs/history/wlwl-spec-v0.7.md` (v0.6 at `docs/history/wlwl-spec-v0.6.md`).
 
+## [v0.8.1] — 2026-09-23
+
+Spec: **wlwl-spec-v0.8** (unchanged from v0.8.0; v0.8.1 is a **patch**
+release that ships zero spec text changes). Build plan, audit report,
+and deviations: `docs/history/wlwl-build-plan-v0.8.1-COMPLETED.md`,
+`docs/history/audit-report-v0.8.1.md`,
+`docs/history/deviations-v0.8.md` (entries **D8-009** through
+**D8-014**).
+
+### Compatibility commitment (per plan §0.2)
+
+Any v0.8.0 program yields identical results in v0.8.1, **with one
+documented observable change**:
+
+1. **`SUB` third argument is now length, not end-index** (D8-010 /
+   `3b4db19`). Pre-v0.8.1: `SUB(s, start, end_idx)` — third arg was an
+   end-index (`SUB("Hello, world", 7, 12)` → `"world"`). v0.8.1:
+   third arg is a length (`SUB("Hello, world", 7, 5)` → `"world"`).
+   Migration: `SUB(s, start, end_old)` → `SUB(s, start, -(start,
+   end_old))` or `SLICE(s, start, end_old)`. Locked by three new tests
+   (`substr_length_semantics_8_cases`,
+   `substr_len_overflow_clamps_to_string_end`,
+   `substr_len_zero_returns_empty`).
+2. **No other program-visible change.** The other five patch items are
+   either new *lexical* / *grammar* forms (D8-009 float exponents,
+   D8-011 `MUT` as ordinary identifier, D8-012 string-literal
+   subscript), example alignment (D8-013 `closure_cell.wll`), or
+   pure deviation notes (D8-014) — none affect behavior of any
+   pre-existing v0.8.0 program.
+
+### Changed (non-breaking, additive)
+
+- **§1.7 Float exponent literals** (D8-009 / `939c59a`). Forms
+  `1e2`, `1.5e2`, `1.5e-2`, `1E3`, `2.5e+1` are now tokenized as a
+  single `Float` literal per the §1.7 EBNF; pre-v0.8.1 the `e` /
+  `E` would terminate the number and parse as an identifier
+  (`E0011 expected ')', got Ident("e2")`). Six lexer lock tests
+  (`lex_float_exponent_*`) + six eval lock tests
+  (`eval_float_exponent_*`) gate regressions.
+- **§1.4 `MUT` as ordinary identifier** (D8-011 / `9c1ab6b`).
+  `MUT` can now appear as a binding name, expression identifier,
+  call name, pattern identifier, or function parameter — five
+  dispatch points (`parse_let` binding slot, `parse_expr`,
+  `parse_call_or_ident`, `parse_pattern`, `parse_fun`). Spec §1.4
+  mandates "其他位置可作普通标识符"; pre-v0.8.1 the parser
+  swallowed `MUT` as a keyword in all five positions, breaking
+  valid programs like `LET(MUT, "x")`. Eight lock tests gate
+  regressions.
+- **§A.2 String-literal subscript** (D8-012 / `29f3130`).
+  `"hello"[0]` is now allowed as a parse form per §A.2 grammar;
+  pre-v0.8.1 the postfix loop only fired on `Int` / `Float` /
+  `Bool` / `Null` literals. Behavior of the resulting expression
+  (subscript on a `String`) was already implemented — only the
+  parser surface was missing. Nine lock tests gate regressions.
+- **§3.3 `closure_cell.wll` example alignment** (D8-013 /
+  `8ee8c77`). The example was rewritten from a `LET` then
+  `SET`-on-immutable pattern (which depended on the legacy
+  E-CloCap upgrade that v0.6 deleted) to the v0.8 idiom
+  (`LET MUT` + `SET`); the v0.7 fidelity baseline line 1 was
+  corrected from `NULL NULL NULL` to `1 2 3` to match current
+  observed output. Two lock tests gate regressions.
+
+### Pure deviation notes (no impl / spec change)
+
+- **§1.8 / §A.2 nested-string inside `${...}`** (D8-014 /
+  `a7392e7`). Documents the parser rejection of `"outer
+  ${"inner"}"` as a deviation from naïve spec reading; recommends
+  v0.9 spec option B (explicit forbid + §1.8 normative note) over
+  option A (放开). Zero code change; the lock tests added during
+  v0.8 already gate the current rejection behavior.
+
+### Test counts
+
+- `cargo test --workspace`: **1409 passed**, 0 failed, 2 ignored
+  (was 1366 passing at v0.8.0; +43 new lock tests across the six
+  D8-NNN items).
+- eval crate: 754 → 767 (+13).
+- parser crate: 80 → 89 (+9).
+- v07_fidelity suite: 0 → 1 pass (`closure_cell` baseline aligned).
+
+### Migration (only `SUB`)
+
+```diff
+- SUB(s, start, end_idx)
++ SUB(s, start, length)
++ # or, to keep pre-v0.8.1 semantics:
++ SLICE(s, start, end_idx)
+```
+
+No other source changes are required to upgrade v0.8.0 → v0.8.1.
+
 ## [v0.8.0] — 2026-09-23
 
 Spec: **wlwl-spec-v0.8** (released 2026-09-23; v0.7 archived at
