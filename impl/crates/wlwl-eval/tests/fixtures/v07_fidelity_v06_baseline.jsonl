@@ -6,5 +6,5 @@
 {"fixture":"format_template.wll","exit_code":0,"stdout":"Hello, world!\n","stderr":""}
 {"fixture":"index_bounds.wll","exit_code":0,"stdout":"10\n[10, 99, 30]\n","stderr":""}
 {"fixture":"match_patterns.wll","exit_code":0,"stdout":"0\n2\n-1\n","stderr":""}
-{"fixture":"module_paths.wll","exit_code":1,"stdout":"","stderr":"error[E0040]: module './../examples/math.wll' not found outside project root (<PROJECT_ROOT>\\conformance)\n  --> <module>:0:0\n\n"}
+{"fixture":"module_paths.wll","exit_code":1,"stdout":"","stderr":"error[E0040]: module './../examples/math.wll' not found outside project root (<PROJECT_ROOT>/conformance)\n  --> <module>:0:0\n\n"}
 {"fixture":"numeric.wll","exit_code":0,"stdout":"sum = 42\nprod = 80\nless = TRUE\n","stderr":""}

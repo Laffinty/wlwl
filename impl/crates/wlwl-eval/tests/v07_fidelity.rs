@@ -136,13 +136,19 @@ fn capture_all() -> Vec<FixtureRecord> {
 /// `<PATH>` with a stable placeholder makes the golden independent
 /// of where the test was captured. Both the OS-native path and its
 /// JSON-escaped form are replaced (the latter because stderr is
-/// serialised via serde_json before being compared).
+/// serialised via serde_json before being compared). After the
+/// absolute-path substitution we also canonicalise the remaining
+/// path separator (Windows uses `\\` in the JSON-escaped form for
+/// `\`, Linux uses `/`) so that the *relative* portion of the
+/// diagnostic — `<ROOT>\conformance` vs `<ROOT>/conformance` —
+/// also matches.
 fn normalize_paths(s: &str) -> String {
     let root = fixture_root(); // impl/tests
     let native = root.display().to_string();
     let escaped = native.replace('\\', "\\\\");
     s.replace(&escaped, "<PROJECT_ROOT>")
         .replace(&native, "<PROJECT_ROOT>")
+        .replace('\\', "/")
 }
 
 fn write_golden(records: &[FixtureRecord]) {
