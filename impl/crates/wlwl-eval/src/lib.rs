@@ -4089,7 +4089,9 @@ fn builtin_await(ev: &mut Evaluator, args: Vec<Value>) -> WlwlResult<Outcome> {
                 TaskResult::Failed(e) => Awaited::Failed(e.as_ref().clone()),
             },
             TaskState::Cancelled => Awaited::Cancelled,
-            TaskState::Pending | TaskState::Running | TaskState::Suspended(_) => Awaited::NotReady,
+            TaskState::Pending | TaskState::Running | TaskState::Suspended { .. } => {
+                Awaited::NotReady
+            }
         },
         _ => {
             return Err(ev.diag(
@@ -7851,7 +7853,10 @@ impl Evaluator {
                 // builtin's Yield — we set it now).
                 let needs_mark = !matches!(
                     self.scheduler.tasks[id.0].state,
-                    TaskState::Suspended(YieldReason::ReceivingOn(_) | YieldReason::SendingOn(_),)
+                    TaskState::Suspended {
+                        reason: YieldReason::ReceivingOn(_) | YieldReason::SendingOn(_),
+                        ..
+                    }
                 );
                 if needs_mark {
                     let reason = match o.signal {
@@ -7860,7 +7865,10 @@ impl Evaluator {
                         _ => unreachable!(),
                     };
                     if let Some(t) = self.scheduler.tasks.get_mut(id.0) {
-                        t.state = TaskState::Suspended(reason);
+                        // WasmFX-style `Suspended { tag, reason }` (plan
+                        // §9.1 Step 10); `tag` is derived from `reason`
+                        // via [`TaskState::suspended`].
+                        t.state = TaskState::suspended(reason);
                     }
                 }
                 // Task is parked; scheduler_run_until_done / loop
@@ -8102,7 +8110,7 @@ impl Evaluator {
         // parked task or target is Suspended but no peer in scope),
         // the legacy E0053 still fires.
         let target_state = self.scheduler.tasks.get(id.0).map(|t| t.state.clone());
-        if let Some(crate::runtime::TaskState::Suspended(_)) = target_state {
+        if let Some(crate::runtime::TaskState::Suspended { .. }) = target_state {
             // Determine which scope the awaited task lives in. The
             // target was registered in the scope it was SPAWNed
             // from; we walk all scopes and pick the one whose

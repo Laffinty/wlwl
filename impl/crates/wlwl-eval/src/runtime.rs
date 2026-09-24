@@ -49,19 +49,45 @@ pub type RcHandle = crate::channel::ChannelId;
 ///
 /// Transitions:
 /// - `Pending`    -- on `Scheduler::resume(task_id)` --&gt; `Running`
-/// - `Running`    -- yields via [`YieldReason`] --&gt; `Suspended(reason)`
+/// - `Running`    -- yields via [`YieldReason`] --&gt; `Suspended { tag, reason }`
 /// - `Running`    -- body returns `Ok(v)` or `Err(e)` --&gt; `Done(...)`
 /// - `Running`    -- parent scope cancelled --&gt; `Cancelled`
 /// - `Suspended`  -- waiting event ready --&gt; `Running`
 /// - `Suspended`  -- parent scope cancelled --&gt; `Cancelled`
 /// - `Done` / `Cancelled` are terminal.
+///
+/// v0.9 Step 10 (plan §9.1): `Suspended` uses WasmFX-style
+/// `Suspended { tag, payload }` field naming (ADR-0019 §4.4.4,
+/// §4.4.1). `tag` mirrors [`YieldReason::tag`] and is the
+/// algebraic-effect dispatch key; `reason` is the internal
+/// scheduler bookkeeping carried over from v0.8. Construct via
+/// [`TaskState::suspended`] so the two fields cannot drift apart.
 #[derive(Debug, Clone)]
 pub enum TaskState {
     Pending,
     Running,
-    Suspended(YieldReason),
+    Suspended {
+        /// WasmFX-style dispatch tag. Derived from `reason` via
+        /// [`YieldReason::tag`]; callers must use
+        /// [`TaskState::suspended`] to keep the pair consistent.
+        tag: Tag,
+        /// Internal scheduler wait condition.
+        reason: YieldReason,
+    },
     Done(Box<TaskResult>),
     Cancelled,
+}
+
+impl TaskState {
+    /// Build a `Suspended { tag, reason }` from a [`YieldReason`],
+    /// deriving the WasmFX-style [`Tag`] in one place. Use this in
+    /// every park path so the fields cannot diverge.
+    pub fn suspended(reason: YieldReason) -> Self {
+        TaskState::Suspended {
+            tag: reason.tag(),
+            reason,
+        }
+    }
 }
 
 /// Terminal value of a task body (plan §5.1.1 row "fn 返回").
@@ -101,6 +127,23 @@ pub enum YieldReason {
     /// `CHANNEL_SEND(ch)` and `buf` is full. The task is parked on
     /// `ch`'s sender wait list until a receiver drains a slot.
     SendingOn(RcHandle),
+}
+
+impl YieldReason {
+    /// v0.9 Step 10: derive the WasmFX-style [`Tag`] for this reason.
+    /// Single source of truth used by [`TaskState::suspended`] to
+    /// keep `Suspended { tag, reason }` consistent.
+    ///
+    /// Mapping (plan §3.1 + ADR-0017 §3.1 + ADR-0019 §4.4.1):
+    /// - `Explicit` / `AwaitingChild` — the effect is `perform Yield`;
+    /// - `ReceivingOn` / `SendingOn` — the effect is
+    ///   `perform ChannelOp` (synchronous channel SEND/RECV).
+    pub fn tag(self) -> Tag {
+        match self {
+            YieldReason::Explicit | YieldReason::AwaitingChild(_) => Tag::Yield,
+            YieldReason::ReceivingOn(_) | YieldReason::SendingOn(_) => Tag::ChannelOp,
+        }
+    }
 }
 
 // ───────────────────────────────────────────────────────────────────
@@ -405,7 +448,7 @@ impl Scheduler {
         let task = self.tasks.get(id.0)?;
         if matches!(
             task.state,
-            TaskState::Done(_) | TaskState::Cancelled | TaskState::Suspended(_)
+            TaskState::Done(_) | TaskState::Cancelled | TaskState::Suspended { .. }
         ) {
             return None;
         }
@@ -466,7 +509,10 @@ impl Scheduler {
         for (idx, t) in self.tasks.iter().enumerate() {
             if matches!(
                 &t.state,
-                TaskState::Suspended(YieldReason::AwaitingChild(child)) if *child == finished_task_id
+                TaskState::Suspended {
+                    reason: YieldReason::AwaitingChild(child),
+                    ..
+                } if *child == finished_task_id
             ) {
                 to_wake.push(TaskId(idx));
             }
@@ -676,8 +722,8 @@ impl Scheduler {
     // §3.1, ADR-0019 §4.4.1, plan §3.1 / §3.2 / §4.4.4).
     //
     // These helpers consolidate the bookkeeping needed to drive a
-    // task from Running -> Suspended(reason) -> back to Running
-    // when the wait condition resolves. They are used by:
+    // task from Running -> Suspended { tag, reason } -> back to
+    // Running when the wait condition resolves. They are used by:
     //
     // - Step 4: builtin_channel_send / recv (park on WouldBlock,
     //   wake via channel pair).
@@ -694,10 +740,12 @@ impl Scheduler {
 
     /// [v0.9 Step 3] Park `task_id` on `channel`'s sender_waiters or
     /// receiver_waiters list, transition it to
-    /// `TaskState::Suspended(ChannelOp(dir, channel))`, and remove
-    /// it from the run queue. The caller is expected to have just
-    /// failed a synchronous channel op (channel::TryResult::WouldBlock)
-    /// and is converting it to a real suspension.
+    /// `TaskState::Suspended { tag: Tag::ChannelOp, reason: YieldReason::SendingOn|_ | ReceivingOn|_ }`
+    /// (via [`TaskState::suspended`], plan §9.1 Step 10), and
+    /// remove it from the run queue. The caller is expected to
+    /// have just failed a synchronous channel op
+    /// (channel::TryResult::WouldBlock) and is converting it to a
+    /// real suspension.
     ///
     /// `value` is `Some(v)` for a SEND waiter (the value the task
     /// wants to push); `None` for a RECV waiter (the value is
@@ -741,7 +789,10 @@ impl Scheduler {
                 Direction::Send => YieldReason::SendingOn(channel),
                 Direction::Recv => YieldReason::ReceivingOn(channel),
             };
-            task.state = TaskState::Suspended(reason);
+            // WasmFX-style `Suspended { tag, reason }` (plan §9.1
+            // Step 10). `tag` is derived from `reason` via
+            // [`TaskState::suspended`] to keep the pair consistent.
+            task.state = TaskState::suspended(reason);
         } else {
             return None;
         }
@@ -797,9 +848,10 @@ impl Scheduler {
     pub fn wake_channel_op_waiter(&mut self, task_id: TaskId) -> bool {
         let is_parked = matches!(
             self.tasks.get(task_id.0).map(|t| &t.state),
-            Some(TaskState::Suspended(
-                YieldReason::ReceivingOn(_) | YieldReason::SendingOn(_),
-            ))
+            Some(TaskState::Suspended {
+                reason: YieldReason::ReceivingOn(_) | YieldReason::SendingOn(_),
+                ..
+            })
         );
         if !is_parked {
             return false;
@@ -828,7 +880,7 @@ impl Scheduler {
     /// - scope-exit force-cancel (D-D leak detector).
     pub fn cancel_suspended_task(&mut self, task_id: TaskId) -> bool {
         let was_suspended = match self.tasks.get(task_id.0) {
-            Some(t) => matches!(t.state, TaskState::Suspended(_)),
+            Some(t) => matches!(t.state, TaskState::Suspended { .. }),
             None => return false,
         };
         if !was_suspended {
@@ -872,7 +924,10 @@ impl Scheduler {
                 }
                 if !matches!(
                     task.state,
-                    TaskState::Suspended(YieldReason::ReceivingOn(_) | YieldReason::SendingOn(_),)
+                    TaskState::Suspended {
+                        reason: YieldReason::ReceivingOn(_) | YieldReason::SendingOn(_),
+                        ..
+                    }
                 ) {
                     return None;
                 }
@@ -1264,11 +1319,14 @@ mod tests {
             .park_for_channel_op(task_id, ch_id, Direction::Send, Some(Value::Integer(7)))
             .expect("park succeeds");
 
-        // Post-state: task is Suspended(SendingOn), run_queue empty,
-        // channel's sender_waiters contains the task id.
+        // Post-state: task is Suspended { tag: ChannelOp, reason: SendingOn(ch) },
+        // run_queue empty, channel's sender_waiters contains the task id.
         assert!(matches!(
             s.tasks[0].state,
-            TaskState::Suspended(YieldReason::SendingOn(c)) if c == ch_id
+            TaskState::Suspended {
+                reason: YieldReason::SendingOn(c),
+                ..
+            } if c == ch_id
         ));
         assert_eq!(s.run_queue.len(), 0, "parked task removed from run queue");
         assert_eq!(s.channels[0].sender_waiters, vec![task_id]);
@@ -1285,7 +1343,10 @@ mod tests {
             .expect("park succeeds");
         assert!(matches!(
             s.tasks[0].state,
-            TaskState::Suspended(YieldReason::ReceivingOn(c)) if c == ch_id
+            TaskState::Suspended {
+                reason: YieldReason::ReceivingOn(c),
+                ..
+            } if c == ch_id
         ));
         assert_eq!(s.channels[0].receiver_waiters, vec![task_id]);
     }
@@ -1314,10 +1375,13 @@ mod tests {
         s.park_for_channel_op(task_id, ch_id, Direction::Recv, None)
             .expect("park");
 
-        // Pre-wake: task is Suspended, run_queue empty.
+        // Pre-wake: task is Suspended { reason: ReceivingOn(_) }, run_queue empty.
         assert!(matches!(
             s.tasks[0].state,
-            TaskState::Suspended(YieldReason::ReceivingOn(_))
+            TaskState::Suspended {
+                reason: YieldReason::ReceivingOn(_),
+                ..
+            }
         ));
         assert_eq!(s.run_queue.len(), 0);
 
@@ -1344,7 +1408,7 @@ mod tests {
         s.tasks[0].state = TaskState::Running;
         assert!(!s.wake_channel_op_waiter(task_id));
         // Case 3: Suspended but not on a channel op.
-        s.tasks[0].state = TaskState::Suspended(YieldReason::Explicit);
+        s.tasks[0].state = TaskState::suspended(YieldReason::Explicit);
         assert!(!s.wake_channel_op_waiter(task_id));
         // Case 4: terminal.
         s.tasks[0].state = TaskState::Done(Box::new(TaskResult::Ok(Value::Null)));
@@ -1374,7 +1438,10 @@ mod tests {
         // separately to transition Suspended -> Pending and re-enqueue.
         assert!(matches!(
             s.tasks[0].state,
-            TaskState::Suspended(YieldReason::ReceivingOn(_))
+            TaskState::Suspended {
+                reason: YieldReason::ReceivingOn(_),
+                ..
+            }
         ));
     }
 
@@ -1384,10 +1451,13 @@ mod tests {
         s.enqueue(task_id);
         s.park_for_channel_op(task_id, ch_id, Direction::Recv, None)
             .expect("park");
-        // Pre: Suspended, in wait list.
+        // Pre: Suspended { reason: ReceivingOn(_) }, in wait list.
         assert!(matches!(
             s.tasks[0].state,
-            TaskState::Suspended(YieldReason::ReceivingOn(_))
+            TaskState::Suspended {
+                reason: YieldReason::ReceivingOn(_),
+                ..
+            }
         ));
         assert_eq!(s.channels[0].receiver_waiters.len(), 1);
 
@@ -1461,11 +1531,17 @@ mod tests {
         // Both suspended, run_queue empty.
         assert!(matches!(
             s.tasks[0].state,
-            TaskState::Suspended(YieldReason::SendingOn(_))
+            TaskState::Suspended {
+                reason: YieldReason::SendingOn(_),
+                ..
+            }
         ));
         assert!(matches!(
             s.tasks[1].state,
-            TaskState::Suspended(YieldReason::ReceivingOn(_))
+            TaskState::Suspended {
+                reason: YieldReason::ReceivingOn(_),
+                ..
+            }
         ));
         assert_eq!(s.run_queue.len(), 0);
 
@@ -1481,7 +1557,10 @@ mod tests {
         // scope-exit force-cancel or TASK_CANCEL.
         assert!(matches!(
             s.tasks[0].state,
-            TaskState::Suspended(YieldReason::SendingOn(_))
+            TaskState::Suspended {
+                reason: YieldReason::SendingOn(_),
+                ..
+            }
         ));
     }
 
