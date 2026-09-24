@@ -22258,4 +22258,84 @@ entry = "main.wll"
             "legacy DICT-receiver GET_PROP path must produce 2"
         );
     }
+
+    // ────────────────────────────────────────────────────────────
+    // [v0.9 Step 9a-6 / plan §4.3 / ADR-0019 §4.3] Registry
+    // + error-code §13-§16 cross-link lock tests.
+    //
+    // 9a-6 ships the registry / error-code bookkeeping that
+    // ties the runtime work (9a-1 through 9a-5) to the spec
+    // chapter numbers from plan §4.3 ("spec §13 OOP 关键字与
+    // 对象模型; §14 行为类型与会话类型协议; §15 THIS 与线性
+    // capability; §16 OOP 与并发的交互"). The runtime
+    // surface was already locked in 9a-1-9a-5; this commit
+    // updates the spec anchors and active-error-code docs so
+    // the appendix G snapshot test (`registry_oop_section_*`)
+    // recognises the new chapter numbers and E0095 / E0096.
+
+    #[test]
+    fn v09s9a6_registry_class_new_anchored_to_section_13() {
+        // [v0.9 Step 9a-6] CLASS / NEW's `section` field is
+        // "§13" (OOP keywords and object model per plan §4.3).
+        // Locking this prevents future refactors from
+        // silently reverting to the v0.8.1 placeholder
+        // "§11 [占位;OOP 未实现]".
+        use crate::registry::BUILTIN_REGISTRY;
+        let class_section = BUILTIN_REGISTRY
+            .iter()
+            .find(|s| s.name == "CLASS")
+            .expect("CLASS must be in BUILTIN_REGISTRY")
+            .section;
+        let new_section = BUILTIN_REGISTRY
+            .iter()
+            .find(|s| s.name == "NEW")
+            .expect("NEW must be in BUILTIN_REGISTRY")
+            .section;
+        assert_eq!(
+            class_section, "§13",
+            "CLASS section must be §13 per plan §4.3"
+        );
+        assert_eq!(new_section, "§13", "NEW section must be §13 per plan §4.3");
+    }
+
+    #[test]
+    fn v09s9a6_registry_this_anchored_to_section_15() {
+        // [v0.9 Step 9a-6] THIS anchors to §15 ("THIS 与线性
+        // capability") rather than §13, because the
+        // runtime contract is linear-capability-specific
+        // (the `this_token.moved` flag from 9a-3). §13
+        // describes the keyword's syntactic surface; §15
+        // describes the runtime invariant.
+        use crate::registry::BUILTIN_REGISTRY;
+        let this_section = BUILTIN_REGISTRY
+            .iter()
+            .find(|s| s.name == "THIS")
+            .expect("THIS must be in BUILTIN_REGISTRY")
+            .section;
+        assert_eq!(
+            this_section, "§15",
+            "THIS section must be §15 per plan §4.3 ('THIS 与线性 capability')"
+        );
+    }
+
+    #[test]
+    fn v09s9a6_registry_property_method_ops_anchored_to_section_13() {
+        // [v0.9 Step 9a-6] GET_PROP / SET_PROP / CALL_METHOD
+        // all anchor to §13 (OOP object model: properties /
+        // methods are §13 surface). Locks the spec-cross-link
+        // table from drifting.
+        use crate::registry::BUILTIN_REGISTRY;
+        for op_name in &["GET_PROP", "SET_PROP", "CALL_METHOD"] {
+            let section = BUILTIN_REGISTRY
+                .iter()
+                .find(|s| s.name == *op_name)
+                .unwrap_or_else(|| panic!("{} must be in BUILTIN_REGISTRY", op_name))
+                .section;
+            assert_eq!(
+                section, "§13",
+                "{} section must be §13 per plan §4.3",
+                op_name
+            );
+        }
+    }
 }

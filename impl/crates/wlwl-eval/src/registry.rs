@@ -1103,6 +1103,15 @@ pub const BUILTIN_REGISTRY: &[BuiltinSpec] = &[
         section: "§9",
     },
     // ── OOP (3) ────────────────────────────────────────────────
+    // [v0.9 Step 9a-6 / plan §4.3 / ADR-0019 §4.3] Section
+    // anchors for the OOP keywords. Plan §4.3 "spec §13
+    // OOP 关键字与对象模型" pins CLASS / NEW / THIS / GET_PROP
+    // / SET_PROP / CALL_METHOD to §13 — §16, with THIS
+    // primarily anchored in §15 ("THIS 与线性 capability")
+    // and the property / method ops in §13. The v0.8.1
+    // placeholder `§11 [占位;OOP 未实现]` is removed; the
+    // section list below extends to include §13 / §14 / §15
+    // / §16 so the snapshot test can recognise them.
     BuiltinSpec {
         name: "CLASS",
         signature: "CLASS(name?, parent, members) -> CLASS",
@@ -1111,7 +1120,7 @@ pub const BUILTIN_REGISTRY: &[BuiltinSpec] = &[
         macro_fn: true,
         version: Version::V02,
         dispatch: DispatchStatus::LexerMacro,
-        section: "§11 [占位;OOP 未实现]",
+        section: "§13",
     },
     BuiltinSpec {
         name: "NEW",
@@ -1121,7 +1130,7 @@ pub const BUILTIN_REGISTRY: &[BuiltinSpec] = &[
         macro_fn: true,
         version: Version::V02,
         dispatch: DispatchStatus::LexerMacro,
-        section: "§11 [占位;OOP 未实现]",
+        section: "§13",
     },
     BuiltinSpec {
         name: "THIS",
@@ -1131,7 +1140,7 @@ pub const BUILTIN_REGISTRY: &[BuiltinSpec] = &[
         macro_fn: true,
         version: Version::V02,
         dispatch: DispatchStatus::LexerMacro,
-        section: "§11 [占位;OOP 未实现]",
+        section: "§15",
     },
     // ── 属性 / 方法 (3) ────────────────────────────────────────
     BuiltinSpec {
@@ -1142,7 +1151,7 @@ pub const BUILTIN_REGISTRY: &[BuiltinSpec] = &[
         macro_fn: false,
         version: Version::V02,
         dispatch: DispatchStatus::ResolvedBuiltin,
-        section: "§11 [占位;OOP 未实现]",
+        section: "§13",
     },
     BuiltinSpec {
         name: "SET_PROP",
@@ -1152,7 +1161,7 @@ pub const BUILTIN_REGISTRY: &[BuiltinSpec] = &[
         macro_fn: false,
         version: Version::V02,
         dispatch: DispatchStatus::ResolvedBuiltin,
-        section: "§11 [占位;OOP 未实现]",
+        section: "§13",
     },
     BuiltinSpec {
         name: "CALL_METHOD",
@@ -1162,7 +1171,7 @@ pub const BUILTIN_REGISTRY: &[BuiltinSpec] = &[
         macro_fn: false,
         version: Version::V02,
         dispatch: DispatchStatus::ResolvedBuiltin,
-        section: "§11 [占位;OOP 未实现]",
+        section: "§13",
     },
     // ── 构造器 (2) ─────────────────────────────────────────────
     BuiltinSpec {
@@ -1728,6 +1737,16 @@ mod tests {
             "§10.11",
             "§11",
             "§11 [占位;OOP 未实现]",
+            // [v0.9 Step 9a-6 / plan §11.5] New OOP chapter
+            // numbers per plan §4.3 "spec §13 OOP 关键字与对象模型;
+            // §14 行为类型与会话类型协议; §15 THIS 与线性
+            // capability; §16 OOP 与并发的交互". Adding these to
+            // the valid-section list lets the snapshot test
+            // recognise them on the OOP builtin rows above.
+            "§13",
+            "§14",
+            "§15",
+            "§16",
             "§17.0",
             "§17.1",
             "§17.2",

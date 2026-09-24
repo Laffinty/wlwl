@@ -42,7 +42,21 @@ pub enum ErrorCode {
     E0027, // MATCH fell through without match or default (v0.4 搂7.6)
     E0030, // type error
     E0031, // subscript/key type error
-    E0032, // property/method not found
+    E0032, // [v0.9 Step 9a-6 / plan §4.3 / ADR-0019 §4.3] two
+    //   distinct triggers (the v0.8.1 line above was a
+    //   placeholder pending this clarification):
+    //     * "immutable SET_PROP" — class member is read-only
+    //       per §13; only instance fields are mutable.
+    //       Emitted by `builtin_set_prop` on Instance receiver
+    //       when the key resolves to a class member (via
+    //       parent-chain walk).
+    //     * "THIS out of scope" — `THIS` invoked outside a
+    //       method body. Emitted by `builtin_this` when
+    //       `current_method_instance` is None.
+    //   Both routes land in `ErrorCategory::Type` (the legacy
+    //   bucket) — they're orthogonal to `Category::Oop`
+    //   despite the OOP context. Spec §13 / §15 prose lands
+    //   with the Step 12 spec sweep.
     E0033, // strict_types violation (v0.4 搂2.7; emitting sites land in Phase E)
     E0034, // integer overflow on negation (v0.4 搂9.5: `NEG(INTEGER_MIN)`)
     E0035, // FLOAT 鈫?INTEGER out-of-range cast (v0.4 搂9.5: `INT(<huge float>)`)
@@ -61,8 +75,23 @@ pub enum ErrorCode {
     E0047, // ASSERT_EQ a != b (v0.4 搂15.9 std.test; Phase B7)
     E0048, // ASSERT_NEQ a == b (v0.4 搂15.9 std.test; Phase B7)
     E0049, // EXPECT_ERR input not ERR (v0.4 搂15.9 std.test; Phase B7)
-    E0050, // class inheritance chain error
-    E0051, // NEW arity mismatch with INIT
+    E0050, // [v0.9 Step 9a-6 / plan §4.3 / ADR-0019 §4.3] class
+    //   inheritance chain error. Activated this commit:
+    //     * `builtin_class` walks the parent chain at
+    //       construction time and fires E0050 on a cycle
+    //       (depth > 64 also fires E0050).
+    //     * `builtin_call_method` walks the parent chain on
+    //       Instance receiver and fires E0050 if a cycle
+    //       re-appears in the chain (defensive — the
+    //       construction-time check should have caught it).
+    //     * `builtin_get_prop` / `builtin_set_prop` mirror
+    //       the same chain walk for property lookup / write.
+    //   Spec §13 prose lands with the Step 12 spec sweep.
+    E0051, // [v0.9 Step 9a-6] NEW arity mismatch with INIT.
+    //   Activated by `builtin_new` when `args.len()` doesn't
+    //   equal `cls.init.params.len()` (the leading `self`
+    //   counts on both sides). Spec §13 prose lands with the
+    //   Step 12 spec sweep.
     // [v0.7 Phase B0] task / channel system reserves E0052-E0058.
     // See plan §4.4 + ADR-0014. Allocated codes:
     //   E0052  SCOPE(fn) called with non-function value (Phase C)
