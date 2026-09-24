@@ -502,6 +502,20 @@ impl Scheduler {
     /// entry. Suspended tasks are left in their wait list — they
     /// will pick up the flag when the wait condition resolves.
     pub fn request_task_cancel(&mut self, handle: TaskHandle) -> bool {
+        self.request_task_cancel_with_reason(handle, None)
+    }
+
+    /// [v0.9 Step 8 / plan §4.4.2 / ADR-0019 §4.4.2] Tag/payload
+    /// cancellation. Same as `request_task_cancel` but records a
+    /// `reason` DICT on the task. First non-None reason wins (FIFO
+    /// observation order via `Task::merge_cancel_reason`); the
+    /// reason surfaces as `payload.reason` on the `Cancelled`
+    /// `Value::Err` returned by `AWAIT(h)`.
+    pub fn request_task_cancel_with_reason(
+        &mut self,
+        handle: TaskHandle,
+        reason: Option<Value>,
+    ) -> bool {
         // Decide whether the target is a live, non-terminal task and
         // whether it is currently Pending (so we should re-enqueue).
         // Snapshot the inputs without holding the borrow across the
@@ -527,6 +541,7 @@ impl Scheduler {
         }
         if let Some(t) = self.tasks.get_mut(handle.id.0) {
             t.cancel_requested = true;
+            t.merge_cancel_reason(reason);
         }
         if needs_enqueue {
             self.enqueue(handle.id);
@@ -552,6 +567,19 @@ impl Scheduler {
         scope_id: crate::runtime::ScopeId,
         exclude: Option<TaskId>,
     ) -> usize {
+        self.cancel_siblings_in_scope_with_reason(scope_id, exclude, None)
+    }
+
+    /// [v0.9 Step 8 / plan §4.4.2] Same as
+    /// `cancel_siblings_in_scope` but records `reason` on every
+    /// targeted task (first non-None reason wins per
+    /// `Task::merge_cancel_reason`).
+    pub fn cancel_siblings_in_scope_with_reason(
+        &mut self,
+        scope_id: crate::runtime::ScopeId,
+        exclude: Option<TaskId>,
+        reason: Option<Value>,
+    ) -> usize {
         let handles: Vec<TaskHandle> = match self.scopes.get(scope_id.0) {
             Some(s) => s.tasks.clone(),
             None => return 0,
@@ -561,7 +589,7 @@ impl Scheduler {
             if Some(h.id) == exclude {
                 continue;
             }
-            if self.request_task_cancel(h) {
+            if self.request_task_cancel_with_reason(h, reason.clone()) {
                 applied += 1;
             }
         }
@@ -585,6 +613,18 @@ impl Scheduler {
     /// Returns the number of tasks whose cancel flag was set
     /// (for tests + bookkeeping).
     pub fn cancel_scope_subtree(&mut self, scope_id: crate::runtime::ScopeId) -> usize {
+        self.cancel_scope_subtree_with_reason(scope_id, None)
+    }
+
+    /// [v0.9 Step 8 / plan §4.4.2 / ADR-0019 §4.4.2] Same as
+    /// `cancel_scope_subtree` but records `reason` on every targeted
+    /// task (first non-None reason wins per
+    /// `Task::merge_cancel_reason`).
+    pub fn cancel_scope_subtree_with_reason(
+        &mut self,
+        scope_id: crate::runtime::ScopeId,
+        reason: Option<Value>,
+    ) -> usize {
         // Collect the set of scopes to walk: scope_id itself +
         // every descendant. We compute the descendant list first
         // because the second loop borrows self.scopes mutably per
@@ -622,7 +662,7 @@ impl Scheduler {
                 .map(|s| s.tasks.clone())
                 .unwrap_or_default();
             for h in handles {
-                if self.request_task_cancel(h) {
+                if self.request_task_cancel_with_reason(h, reason.clone()) {
                     applied += 1;
                 }
             }
@@ -1443,5 +1483,171 @@ mod tests {
             s.tasks[0].state,
             TaskState::Suspended(YieldReason::SendingOn(_))
         ));
+    }
+
+    // ────────────────────────────────────────────────────────────
+    // [v0.9 Step 8 / plan §4.4.2 / ADR-0019 §4.4.2] Tag/payload
+    // cancellation — runtime-level lock tests.
+    //
+    // These tests pin the wire-format contract introduced by Step 8
+    // on the Scheduler API surface:
+    //   * `Task::merge_cancel_reason` is **FIFO**: the first
+    //     non-None reason wins; subsequent reasons are ignored.
+    //     This matches plan §4.4.2 ("the reason the task happened to
+    //     be cancelled", not a merge of all reasons).
+    //   * `Scheduler::request_task_cancel_with_reason` records the
+    //     reason on `Task::cancel_reason` so `builtin_await` can
+    //     surface it as `payload.reason` on the AWAIT(h)
+    //     `ERR(Cancelled)` dict.
+    //   * `Scheduler::cancel_siblings_in_scope_with_reason` and
+    //     `Scheduler::cancel_scope_subtree_with_reason` propagate
+    //     the reason to every targeted task in the subtree (first
+    //     non-None wins per task — independent FIFO clocks).
+
+    #[test]
+    fn task_merge_cancel_reason_first_non_none_wins_fifo() {
+        use crate::task::Task as TaskImpl;
+        let mut t = TaskImpl::new_pending(TaskId(0), 1, Value::Null, Env::new(), ScopeId(0));
+        assert!(t.cancel_reason.is_none());
+
+        // First non-None reason wins.
+        let r1 = Value::Dict(vec![(
+            Value::String("from".into()),
+            Value::String("first".into()),
+        )]);
+        t.merge_cancel_reason(Some(r1.clone()));
+        assert_eq!(
+            t.cancel_reason,
+            Some(r1.clone()),
+            "first non-None reason must stick"
+        );
+
+        // Second non-None reason is dropped (FIFO).
+        let r2 = Value::Dict(vec![(
+            Value::String("from".into()),
+            Value::String("second".into()),
+        )]);
+        t.merge_cancel_reason(Some(r2));
+        assert_eq!(
+            t.cancel_reason,
+            Some(r1),
+            "subsequent non-None reasons must be ignored"
+        );
+
+        // None after a stuck reason is also dropped.
+        t.merge_cancel_reason(None);
+        assert!(
+            t.cancel_reason.is_some(),
+            "None after a stuck reason must NOT clear the field"
+        );
+    }
+
+    #[test]
+    fn request_task_cancel_with_reason_records_dict_in_cancel_reason() {
+        use crate::task::Task as TaskImpl;
+        let mut s = Scheduler::new();
+        // Allocate one task slot and put it in a scope so request
+        // can address it by handle.
+        let t = TaskImpl::new_pending(TaskId(0), 1, Value::Null, Env::new(), ScopeId(0));
+        // State Pending is the entry condition for the
+        // `needs_enqueue` branch in
+        // `request_task_cancel_with_reason`.
+        assert!(matches!(t.state, TaskState::Pending));
+        s.push_task(t);
+        // ScopeId(0) is auto-created by Scheduler::new(); we don't
+        // need to register the task in any scope — the test only
+        // exercises `request_task_cancel_with_reason` directly.
+        let h = TaskHandle {
+            id: TaskId(0),
+            generation: 1,
+        };
+        let reason = Value::Dict(vec![
+            (
+                Value::String("reason".into()),
+                Value::String("shutdown".into()),
+            ),
+            (Value::String("code".into()), Value::Integer(42)),
+        ]);
+        assert!(s.request_task_cancel_with_reason(h, Some(reason.clone())));
+        assert_eq!(
+            s.tasks[0].cancel_reason,
+            Some(reason),
+            "cancel_reason must reflect the supplied dict"
+        );
+        assert!(s.tasks[0].cancel_requested, "cancel_requested must flip");
+    }
+
+    #[test]
+    fn cancel_siblings_in_scope_with_reason_propagates() {
+        use crate::task::Task as TaskImpl;
+        let mut s = Scheduler::new();
+        // One scope, three tasks (siblings). Each starts Pending so
+        // cancel_requested + cancel_reason both stick.
+        for i in 0..3 {
+            let t = TaskImpl::new_pending(TaskId(i), 1, Value::Null, Env::new(), ScopeId(0));
+            s.push_task(t);
+            s.scopes[0].register_task(TaskHandle {
+                id: TaskId(i),
+                generation: 1,
+            });
+        }
+        let reason = Value::Dict(vec![(
+            Value::String("graceful".into()),
+            Value::Boolean(true),
+        )]);
+        let applied =
+            s.cancel_siblings_in_scope_with_reason(ScopeId(0), None, Some(reason.clone()));
+        assert_eq!(applied, 3, "all 3 siblings must be marked cancelled");
+        for i in 0..3 {
+            assert!(s.tasks[i].cancel_requested, "task {} must be cancelled", i);
+            assert_eq!(
+                s.tasks[i].cancel_reason,
+                Some(reason.clone()),
+                "task {} must carry the same reason",
+                i
+            );
+        }
+    }
+
+    #[test]
+    fn cancel_scope_subtree_with_reason_propagates_to_descendants() {
+        use crate::task::Task as TaskImpl;
+        let mut s = Scheduler::new();
+        // `Scheduler::new()` pre-creates ScopeId(0) as the root
+        // (parent = None). To exercise cross-scope propagation we
+        // add a child scope ScopeId(1) with parent = Some(ScopeId(0))
+        // — this is the typical SCOPE(...) shape from
+        // `builtin_scope`'s scope-creation path.
+        s.scopes.push(Scope::new(ScopeId(1), Some(ScopeId(0))));
+        // Three tasks: two in the root (ScopeId(0)), one in the
+        // descendant (ScopeId(1)). Each starts Pending so the
+        // `needs_enqueue` branch in
+        // `request_task_cancel_with_reason` fires.
+        for (i, sid) in [ScopeId(0), ScopeId(0), ScopeId(1)].iter().enumerate() {
+            let t = TaskImpl::new_pending(TaskId(i), 1, Value::Null, Env::new(), *sid);
+            s.push_task(t);
+            s.scopes[sid.0].register_task(TaskHandle {
+                id: TaskId(i),
+                generation: 1,
+            });
+        }
+        let reason = Value::Dict(vec![(
+            Value::String("tag".into()),
+            Value::String("preempt".into()),
+        )]);
+        let applied = s.cancel_scope_subtree_with_reason(ScopeId(0), Some(reason.clone()));
+        assert_eq!(
+            applied, 3,
+            "all 3 tasks in root + descendant must be cancelled"
+        );
+        for i in 0..3 {
+            assert!(s.tasks[i].cancel_requested, "task {} cancel flag", i);
+            assert_eq!(
+                s.tasks[i].cancel_reason,
+                Some(reason.clone()),
+                "task {} reason propagation across scope depth",
+                i
+            );
+        }
     }
 }

@@ -3063,6 +3063,23 @@ fn builtin_await(ev: &mut Evaluator, args: Vec<Value>) -> WlwlResult<Outcome> {
             // Plan §5.4.1: AWAIT of a cancelled task receives
             // ERR(Cancelled). Phase F wires real cancellation; the
             // shape is pinned here so AWAIT's contract is stable.
+            //
+            // [v0.9 Step 8 / plan §4.4.2 / ADR-0019 §4.4.2]
+            // Tag/payload cancellation: surface `payload.reason`
+            // carrying the structured DICT the cancel-issuer
+            // attached via `TASK_CANCEL(h, reason)` /
+            // `TASK_CANCEL_PARENT(reason)`. When no reason was
+            // supplied (legacy TASK_CANCEL(h) / TASK_CANCEL_PARENT()
+            // callers, or stale-handle no-ops that flipped the flag
+            // out of band) we default to an empty DICT `{}` so
+            // consumers can rely on the field's presence and shape
+            // without an `IS_ERR` branch on missing keys.
+            let reason = ev
+                .scheduler
+                .tasks
+                .get(handle.id.0)
+                .and_then(|t| t.cancel_reason.clone())
+                .unwrap_or(Value::Dict(Vec::new()));
             let payload = vec![
                 (
                     Value::String("kind".into()),
@@ -3075,6 +3092,7 @@ fn builtin_await(ev: &mut Evaluator, args: Vec<Value>) -> WlwlResult<Outcome> {
                         handle.id.0, handle.generation
                     )),
                 ),
+                (Value::String("reason".into()), reason),
             ];
             Ok(Outcome::normal(Value::Err(Box::new(Value::Dict(payload)))))
         }
@@ -3250,22 +3268,32 @@ fn builtin_task_is_cancelled(ev: &mut Evaluator, args: Vec<Value>) -> WlwlResult
 //    the path-B limitation noted in `P7-E3-001`.
 // ──────────────────────────────────────────────────────────────────
 
-/// `TASK_CANCEL(handle)` — request cancellation of `handle`. See
-/// module-level doc above. Returns NULL.
+/// `TASK_CANCEL(handle)` / `TASK_CANCEL(handle, reason)` — request
+/// cancellation of `handle`. See module-level doc above. Returns
+/// NULL.
+///
+/// [v0.9 Step 8 / plan §4.4.2 / ADR-0019 §4.4.2] The 2-argument form
+/// attaches a structured `reason` DICT to the cancellation. When
+/// `AWAIT(handle)` later observes `Cancelled`, the payload surfaces
+/// as `payload.reason` so consumers can introspect *why* the task
+/// was cancelled (algebraic-effect `tag + payload` shape,
+/// ADR-0017 §3.1, ADR-0019 §4.4.2). Without a reason, the
+/// `payload.reason` defaults to an empty DICT `{}`.
 fn builtin_task_cancel(ev: &mut Evaluator, args: Vec<Value>) -> WlwlResult<Outcome> {
     use wlwl_ast::Span as AstSpan;
     let diag_span = ev.current_span.clone().unwrap_or_else(AstSpan::dummy);
-    if args.len() != 1 {
+    if !(1..=2).contains(&args.len()) {
         return Err(ev.diag(
             ErrorCode::E0022,
             format!(
-                "TASK_CANCEL expects 1 argument (the task handle), got {}",
+                "TASK_CANCEL expects 1 or 2 arguments (handle, [reason]), got {}",
                 args.len()
             ),
             diag_span,
         ));
     }
-    let handle = match args.into_iter().next().expect("len == 1 checked") {
+    let mut iter = args.into_iter();
+    let handle = match iter.next().expect("len >= 1 checked") {
         Value::TaskHandle(h) => h,
         other => {
             return Err(ev.diag(
@@ -3278,51 +3306,106 @@ fn builtin_task_cancel(ev: &mut Evaluator, args: Vec<Value>) -> WlwlResult<Outco
             ));
         }
     };
+    let reason = match iter.next() {
+        None => None,
+        Some(r) => {
+            // E0066: reason must be a DICT (plan §4.4.2 + §11.2).
+            // We accept only the runtime-representable DICT; STRUCT
+            // and RECORD-class instances are not promoted here (the
+            // spec keeps the surface narrow to keep the payload
+            // wire-stable).
+            if !matches!(r, Value::Dict(_)) {
+                return Err(ev.diag(
+                    ErrorCode::E0066,
+                    format!("TASK_CANCEL reason must be a DICT, got {}", type_name(&r)),
+                    diag_span,
+                ));
+            }
+            Some(r)
+        }
+    };
     // Silently no-op on stale / terminal handles — matches the
     // "advisory cancellation" contract (plan §3 F4: cancel does
-    // not raise ERR; F7 explicit on this point).
-    let _ = ev.scheduler.request_task_cancel(handle);
+    // not raise ERR; F7 explicit on this point). When `reason` is
+    // None the existing flag-only behavior is preserved (the
+    // `cancel_reason` field stays `None` and `payload.reason`
+    // later defaults to an empty DICT, see `builtin_await`).
+    let _ = ev.scheduler.request_task_cancel_with_reason(handle, reason);
     Ok(Outcome::normal(Value::Null))
 }
 
-/// `TASK_CANCEL_PARENT()` — request cancellation of the current
-/// task and every sibling in the current scope, plus top-down
-/// propagation to every descendant scope in the subtree (plan
-/// §3 F3). See module-level doc above. Returns NULL.
+/// `TASK_CANCEL_PARENT()` / `TASK_CANCEL_PARENT(reason)` — request
+/// cancellation of the current task and every sibling in the
+/// current scope, plus top-down propagation to every descendant
+/// scope in the subtree (plan §3 F3). See module-level doc above.
+/// Returns NULL.
+///
+/// [v0.9 Step 8 / plan §4.4.2] The 1-argument form attaches a
+/// structured `reason` DICT; when `AWAIT(handle)` later observes
+/// `Cancelled` on a sibling task, `payload.reason` exposes the
+/// dict (algebraic-effect `tag + payload`, ADR-0019 §4.4.2).
+/// Without a reason, `payload.reason` defaults to an empty DICT.
 ///
 /// If invoked at module top-level (no enclosing SCOPE), there is
 /// no `current_task` and no scope to cancel: both no-ops.
 fn builtin_task_cancel_parent(ev: &mut Evaluator, args: Vec<Value>) -> WlwlResult<Outcome> {
     use wlwl_ast::Span as AstSpan;
     let diag_span = ev.current_span.clone().unwrap_or_else(AstSpan::dummy);
-    if !args.is_empty() {
+    if args.len() > 1 {
         return Err(ev.diag(
             ErrorCode::E0022,
-            format!("TASK_CANCEL_PARENT expects 0 arguments, got {}", args.len()),
+            format!(
+                "TASK_CANCEL_PARENT expects 0 or 1 arguments ([reason]), got {}",
+                args.len()
+            ),
             diag_span,
         ));
     }
+    let reason = match args.into_iter().next() {
+        None => None,
+        Some(r) => {
+            if !matches!(r, Value::Dict(_)) {
+                return Err(ev.diag(
+                    ErrorCode::E0066,
+                    format!(
+                        "TASK_CANCEL_PARENT reason must be a DICT, got {}",
+                        type_name(&r)
+                    ),
+                    diag_span,
+                ));
+            }
+            Some(r)
+        }
+    };
     if let (Some(self_id), Some(scope_id)) = (ev.current_task, ev.scheduler.current_scope) {
         // Plan §3 F5: SHIELD guards against external cancel. If
         // we're currently inside one or more SHIELD blocks, defer
         // the cancel — just record the pending flag. The outermost
         // SHIELD's exit code will translate it back into
-        // `cancel_requested` on the current task.
+        // `cancel_requested` on the current task. We still surface
+        // `cancel_reason` on the SHIELD-buffered path via
+        // `shield_pending_reason` (see `builtin_shield_exit`).
         if ev.shield_depth > 0 {
             ev.shield_pending_cancel = true;
+            ev.shield_pending_reason = reason;
             return Ok(Outcome::normal(Value::Null));
         }
         // 1. Mark self first.
         if let Some(t) = ev.scheduler.tasks.get_mut(self_id.0) {
             t.cancel_requested = true;
+            t.merge_cancel_reason(reason.clone());
         }
         // 2. F3: cancel the entire current scope subtree (siblings
         //    in current scope + every descendant scope + their
-        //    tasks). `cancel_scope_subtree` walks the tree and
-        //    re-runs the per-task cancel logic, so the current
-        //    task itself is double-marked (idempotent — flag is
-        //    already true from step 1).
-        let _ = ev.scheduler.cancel_scope_subtree(scope_id);
+        //    tasks). `cancel_scope_subtree_with_reason` walks the
+        //    tree and re-runs the per-task cancel logic, so the
+        //    current task itself is double-marked (idempotent —
+        //    flag is already true from step 1, and
+        //    `merge_cancel_reason` is also idempotent for the same
+        //    reason).
+        let _ = ev
+            .scheduler
+            .cancel_scope_subtree_with_reason(scope_id, reason);
     }
     Ok(Outcome::normal(Value::Null))
 }
@@ -3397,10 +3480,17 @@ fn builtin_shield(ev: &mut Evaluator, args: Vec<Value>) -> WlwlResult<Outcome> {
     // observes the cancel at its next checkpoint.
     ev.shield_depth = ev.shield_depth.saturating_sub(1);
     if ev.shield_depth == 0 && ev.shield_pending_cancel {
+        // Drain the buffered cancel + reason in one shot; we clear
+        // `shield_pending_reason` first so the field can't leak
+        // across SHIELD invocations if the merge is a no-op
+        // (e.g. the task already had a non-None reason from an
+        // earlier cancel — `merge_cancel_reason` is FIFO).
+        let buffered_reason = ev.shield_pending_reason.take();
         ev.shield_pending_cancel = false;
         if let Some(self_id) = ev.current_task {
             if let Some(t) = ev.scheduler.tasks.get_mut(self_id.0) {
                 t.cancel_requested = true;
+                t.merge_cancel_reason(buffered_reason);
             }
         }
     }
@@ -5124,6 +5214,15 @@ pub struct Evaluator {
     /// true`. SHIELD only blocks external cancel requests; the fn
     /// body's own ERR is unaffected (still propagates via §5.4).
     pub shield_pending_cancel: bool,
+    /// [v0.9 Step 8 / plan §4.4.2 / ADR-0019 §4.4.2] Companion to
+    /// `shield_pending_cancel`: when a `TASK_CANCEL_PARENT(reason)`
+    /// call lands inside a SHIELD block, the reason is buffered here
+    /// so the outermost SHIELD exit can replay it onto
+    /// `current_task.cancel_reason` (first non-None wins via
+    /// `Task::merge_cancel_reason`). Stays `None` when no reason was
+    /// supplied or when no cancel is pending — the SHIELD exit code
+    /// only consults this when `shield_pending_cancel` is also true.
+    pub shield_pending_reason: Option<Value>,
     /// [v0.7 Phase C2] Cooperative scheduler. SPAWN records spawned
     /// tasks here; AWAIT (C3) and TASK_IS_CANCELLED (C5) read
     /// from here. At C2 the scheduler never *runs* anything
@@ -5189,6 +5288,7 @@ impl Evaluator {
             scope_depth: 0,
             shield_depth: 0,
             shield_pending_cancel: false,
+            shield_pending_reason: None,
             scheduler: crate::runtime::Scheduler::new(),
         }
     }
@@ -5243,6 +5343,7 @@ impl Evaluator {
             scope_depth: 0,
             shield_depth: 0,
             shield_pending_cancel: false,
+            shield_pending_reason: None,
             scheduler: crate::runtime::Scheduler::new(),
         }
     }
@@ -9027,13 +9128,18 @@ mod tests {
     }
 
     #[test]
-    fn eb_task_cancel_parent_rejects_args_with_e0022() {
+    fn eb_task_cancel_parent_rejects_non_dict_reason_with_e0066() {
+        // [v0.9 Step 8] TASK_CANCEL_PARENT(reason) accepts 0 or 1
+        // arguments; when reason is supplied it MUST be a DICT
+        // (plan §4.4.2 + §11.2). INTEGER / STRING / BOOLEAN / etc.
+        // are rejected with E0066. This replaces the v0.8 arity
+        // rejection test (which asserted E0022 for 1-arg form).
         let src = r#"SCOPE(FUN(() , TASK_CANCEL_PARENT(1)));"#;
-        let err = run(src).expect_err("TASK_CANCEL_PARENT(1) should fail");
+        let err = run(src).expect_err("TASK_CANCEL_PARENT(1) should fail (1 is not DICT)");
         assert_eq!(
             err.diagnostic().code,
-            ErrorCode::E0022,
-            "expected E0022 'function call arity'"
+            ErrorCode::E0066,
+            "expected E0066 'cancel reason must be DICT'"
         );
     }
 
@@ -9481,15 +9587,18 @@ mod tests {
     }
 
     #[test]
-    fn fa_task_cancel_parent_rejects_args_with_e0022_still() {
-        // Sanity check: the E0022 arity contract from E-B-1
-        // survives the F3 wiring.
+    fn fa_task_cancel_parent_rejects_non_dict_reason_with_e0066() {
+        // [v0.9 Step 8] Mirror of the E-B-era arity test, updated for
+        // the F3 subtree wiring + Step 8 reason semantics. With
+        // TASK_CANCEL_PARENT(reason) accepting 0-1 args, the 1-arg
+        // form is no longer an arity error; instead, non-DICT
+        // reasons are rejected with E0066 (plan §4.4.2 + §11.2).
         let src = r#"SCOPE(FUN(() , TASK_CANCEL_PARENT(1)));"#;
-        let err = run(src).expect_err("TASK_CANCEL_PARENT(1) should fail");
+        let err = run(src).expect_err("TASK_CANCEL_PARENT(1) should fail (1 is not DICT)");
         assert_eq!(
             err.diagnostic().code,
-            ErrorCode::E0022,
-            "expected E0022 'function call arity'"
+            ErrorCode::E0066,
+            "expected E0066 'cancel reason must be DICT' (Step 8)"
         );
     }
 
@@ -20114,5 +20223,184 @@ entry = "main.wll"
         assert!(!ev.strict_types());
         let ev = Evaluator::new();
         assert!(!ev.strict_types(), "default should be off");
+    }
+
+    // ────────────────────────────────────────────────────────────
+    // [v0.9 Step 8 / plan §4.4.2 / ADR-0019 §4.4.2] Tag/payload
+    // cancellation lock tests.
+    //
+    // The language-level surface for Step 8 splits into two halves:
+    //   * **Type-check half** (language-level, testable end-to-end
+    //     via `run()`): E0066 rejection of non-DICT reasons for
+    //     TASK_CANCEL / TASK_CANCEL_PARENT. The parser and the
+    //     builtin-task-cancel arity gate fire BEFORE any side-effect,
+    //     so we can assert the error code on a single-line source.
+    //   * **Payload-propagation half** (runtime-level, testable via
+    //     `Scheduler::request_task_cancel_with_reason` / AWAIT): the
+    //     reason dictionary attached at cancel time is recorded on
+    //     `Task::cancel_reason` and surfaced as `payload.reason` on
+    //     the AWAIT `ERR(Cancelled)` dict. Path B synchronous SPAWN
+    //     does not give us a window where the task is Pending and
+    //     yet un-run, so end-to-end language-level propagation
+    //     through AWAIT would require driving the scheduler by hand.
+    //     The runtime-level lock tests live in `runtime.rs`'s
+    //     `#[cfg(test)] mod tests` block (see
+    //     `request_task_cancel_with_reason_records_dict` /
+    //     `cancel_siblings_in_scope_with_reason_propagates` /
+    //     `merge_cancel_reason_first_non_none_wins` /
+    //     `cancel_scope_subtree_with_reason_propagates`).
+    //
+    // For the language-level default-reason path (no reason
+    // supplied), the closest observable is a CHANNEL_CLOSE →
+    // CHANNEL_RECV → AWAIT sequence that drives the child into
+    // TaskState::Cancelled with `cancel_reason = None`. AWAIT then
+    // returns `ERR(kind=Cancelled, reason={})`, and we lock the
+    // empty-DICT default via `payload.reason` introspection.
+
+    #[test]
+    fn v09s8_cancel_without_reason_uses_empty_dict_default() {
+        // [v0.9 Step 8 / plan §4.4.2] When no reason is supplied,
+        // `payload.reason` MUST default to an empty DICT `{}` so
+        // consumers can unconditionally read the field without an
+        // `IS_ERR` branch on missing keys. We mint a Pending child
+        // with a synchronous SPAWN (no body segments), then the
+        // parent calls TASK_CANCEL(h) (no reason), then AWAITs. The
+        // scheduler drains the run queue; `run_one_task`'s
+        // cancel-now entry checkpoint (lib.rs:6565) flips the
+        // child's state to `Cancelled`, AWAIT surfaces
+        // `Awaited::Cancelled`, and `builtin_await` builds the
+        // payload with `payload.reason = {}` (the default).
+        let src = r#"
+            SCOPE(FUN(() ,
+                LET(h, SPAWN(FUN(() , 42)));
+                TASK_CANCEL(h);
+                LET(r, AWAIT(h));
+                IF(IS_ERR(r),
+                    LET(p, ERR_PAYLOAD(r));
+                    AT_K(p, "reason", "missing"),
+                    "no-err")
+            ))
+        "#;
+        let v = run(src).expect("TASK_CANCEL(h) (no reason) must still set payload.reason");
+        assert_eq!(
+            v,
+            Value::Dict(Vec::new()),
+            "payload.reason must default to empty DICT {{}}, got: {:?}",
+            v
+        );
+    }
+
+    #[test]
+    fn v09s8_cancel_with_reason_dict_propagates_to_await_payload() {
+        // [v0.9 Step 8 / plan §4.4.2] Same shape as the no-reason
+        // test, but with `TASK_CANCEL(h, dict)`. The parent spawns
+        // a child, cancels it with a structured reason dict, and
+        // AWAITs. The child's `cancel_reason` field is set BEFORE
+        // `run_one_task` runs (TASK_CANCEL runs at line 3 of the
+        // source, scheduler is drained at AWAIT), so when
+        // `builtin_await` builds the Cancelled payload it reads
+        // `cancel_reason` back from the task and inlines it into
+        // `payload.reason`.
+        let src = r#"
+            SCOPE(FUN(() ,
+                LET(h, SPAWN(FUN(() , 42)));
+                TASK_CANCEL(h, ["reason": "shutdown", "code": 42]);
+                LET(r, AWAIT(h));
+                IF(IS_ERR(r),
+                    LET(p, ERR_PAYLOAD(r));
+                    AT_K(p, "reason", NULL),
+                    "no-err")
+            ))
+        "#;
+        let v = run(src).expect("TASK_CANCEL(h, dict) propagates reason to AWAIT payload");
+        match v {
+            Value::Dict(d) => {
+                let as_pairs: Vec<(String, Value)> = d
+                    .iter()
+                    .map(|(k, v)| {
+                        let key = match k {
+                            Value::String(s) => s.clone(),
+                            _ => panic!("DICT key not STRING: {:?}", k),
+                        };
+                        (key, v.clone())
+                    })
+                    .collect();
+                assert!(
+                    as_pairs.contains(&("reason".to_string(), Value::String("shutdown".into()))),
+                    "payload.reason.reason must be 'shutdown', got: {:?}",
+                    as_pairs
+                );
+                assert!(
+                    as_pairs.contains(&("code".to_string(), Value::Integer(42))),
+                    "payload.reason.code must be 42, got: {:?}",
+                    as_pairs
+                );
+            }
+            other => panic!("expected DICT (payload.reason), got: {:?}", other),
+        }
+    }
+
+    #[test]
+    fn v09s8_cancel_with_non_dict_reason_returns_e0066() {
+        // [v0.9 Step 8 / plan §4.4.2 + §11.2] TASK_CANCEL(h,
+        // non-dict) is rejected with E0066. The error fires BEFORE
+        // any cancel side-effect, so no task state changes; we can
+        // assert the error code on a single-line source.
+        //
+        // NOTE on handle-rejection priority: TASK_CANCEL(h, reason)
+        // checks arity (E0022) first, then handle type (E0053), then
+        // reason type (E0066). To reach E0066 we must supply a real
+        // task handle — we mint one via SPAWN inside the SCOPE body
+        // so the test is self-contained and we don't depend on a
+        // pre-baked handle. (The NULL-input shape fails at E0053
+        // before E0066 can fire; that's a feature, not a bug — arity
+        // / handle validation precedes reason validation per the
+        // §11.2 error-table.)
+        let src = r#"
+            SCOPE(FUN(() ,
+                LET(h, SPAWN(FUN(() , 42)));
+                TASK_CANCEL(h, "shutdown")
+            ))
+        "#;
+        let err = run(src).expect_err("TASK_CANCEL with non-DICT reason must fail");
+        assert_eq!(
+            err.diagnostic().code,
+            ErrorCode::E0066,
+            "expected E0066 'cancel reason must be DICT'"
+        );
+    }
+
+    #[test]
+    fn v09s8_cancel_parent_with_non_dict_reason_returns_e0066() {
+        // [v0.9 Step 8] Mirror of the TASK_CANCEL E0066 test, but
+        // for TASK_CANCEL_PARENT(reason). STRING is rejected with
+        // E0066 (must be DICT).
+        let src = r#"SCOPE(FUN(() , TASK_CANCEL_PARENT("nope")));"#;
+        let err = run(src).expect_err("TASK_CANCEL_PARENT with non-DICT reason must fail");
+        assert_eq!(
+            err.diagnostic().code,
+            ErrorCode::E0066,
+            "expected E0066 'cancel reason must be DICT'"
+        );
+    }
+
+    #[test]
+    fn v09s8_cancel_with_dict_reason_records_no_err() {
+        // [v0.9 Step 8 / plan §4.4.2] TASK_CANCEL(h, dict) and
+        // TASK_CANCEL_PARENT(dict) with a valid DICT reason MUST
+        // NOT raise an ERR (plan §3 F7: "取消本身不产生 ERR"). We
+        // confirm the happy-path arity + DICT-type gate by issuing
+        // both calls and asserting the SCOPE returns the parent's
+        // body result (NULL).
+        let src = r#"
+            SCOPE(FUN(() ,
+                LET(h, SPAWN(FUN(() , 42)));
+                TASK_CANCEL(h, ["reason": "shutdown"]);
+                TASK_CANCEL_PARENT(["reason": "shutdown"]);
+                NULL
+            ))
+        "#;
+        let v = run(src).expect("TASK_CANCEL / TASK_CANCEL_PARENT with DICT must not raise");
+        assert_eq!(v, Value::Null);
     }
 }

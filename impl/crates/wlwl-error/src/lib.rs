@@ -97,6 +97,11 @@ pub enum ErrorCode {
     //   L1 strict — same scope, ≥ 2 tasks parked on Suspended(ChannelOp),
     //   no peer task available to wake them. Payload carries
     //   { kind: "DeadlockCycle", scope, tasks: [<handle>, ...], cycle: [...] }
+    E0066, // [v0.9 Step 8 / plan §4.4.2 / ADR-0019 §4.4.2] TASK_CANCEL(task, reason) /
+    //   TASK_CANCEL_PARENT(reason) require reason to be a DICT. Other types
+    //   (STRING / INTEGER / ARRAY / BOOLEAN / ...) are rejected with
+    //   E0066. Payload carries
+    //   { kind: "CancelReasonTypeError", expected: "DICT", got: <repr> }.
     //   to the diagnostic. Production mode opt-in via
     //   `wlwl.toml [strict_deadlock_detect] true`; dev mode
     //   default is the soft W0065 warning.
@@ -215,6 +220,7 @@ impl ErrorCode {
             ErrorCode::E0062 => "E0062",
             ErrorCode::E0063 => "E0063",
             ErrorCode::E0065 => "E0065",
+            ErrorCode::E0066 => "E0066",
             ErrorCode::E0070 => "E0070",
             ErrorCode::E0071 => "E0071",
             ErrorCode::E0080 => "E0080",
@@ -338,6 +344,13 @@ impl ErrorCode {
             // deadlock (L1 strict). Same bucket as the other
             // concurrent codes (E0050..E0058 group).
             ErrorCode::E0065 => ErrorCategory::Concurrent,
+            // [v0.9 Step 8 / plan §4.4.2 / ADR-0019 §4.4.2] cancel
+            // reason type error: TASK_CANCEL(task, reason) /
+            // TASK_CANCEL_PARENT(reason) require reason to be a
+            // DICT. Other types (STRING / INTEGER / ARRAY / ...) are
+            // rejected with E0066. Same bucket as the other
+            // concurrent codes.
+            ErrorCode::E0066 => ErrorCategory::Concurrent,
             ErrorCode::E0060 | ErrorCode::E0061 | ErrorCode::E0062 | ErrorCode::E0063 => {
                 ErrorCategory::Io
             }

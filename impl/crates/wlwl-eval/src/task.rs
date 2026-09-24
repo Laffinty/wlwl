@@ -104,6 +104,23 @@ pub struct Task {
     /// cancelled task surfaces `ERR(kind="Cancelled")` (the existing
     /// builtin_await Cancelled branch).
     pub cancel_requested: bool,
+
+    /// [v0.9 Step 8 / plan §4.4.2 / ADR-0019 §4.4.2] Tag/payload
+    /// cancellation reason. Set by `TASK_CANCEL(task, reason)` /
+    /// `TASK_CANCEL_PARENT(reason)`; defaults to `None` (no reason).
+    ///
+    /// The reason is a DICT (any user payload the cancel-issuer
+    /// chooses to attach). When AWAIT observes `Cancelled`, the
+    /// payload surfaces as `Value::Err(Dict { kind: "Cancelled",
+    /// reason: <dict> })` so consumers can introspect *why* the
+    /// task was cancelled, mirroring the algebraic-effect
+    /// `tag + payload` shape (ADR-0017 §3.1, ADR-0019 §4.4.2).
+    ///
+    /// Multi-source convergence: multiple cancels with different
+    /// reasons merge via `merge_cancel_reason` — the first
+    /// non-None reason wins (FIFO observation order on the cancel
+    /// event).
+    pub cancel_reason: Option<Value>,
 }
 
 impl Task {
@@ -132,7 +149,21 @@ impl Task {
             current_segment: 0,
             running_env: None,
             cancel_requested: false,
+            cancel_reason: None,
         }
+    }
+
+    /// [v0.9 Step 8] Merge a new cancel reason into the task's
+    /// `cancel_reason` field. First non-None reason wins (FIFO
+    /// observation order); subsequent reasons are ignored. This
+    /// matches plan §4.4.2: the cancel payload is "the reason the
+    /// task happened to be cancelled", not a merge of all
+    /// reasons.
+    pub fn merge_cancel_reason(&mut self, reason: Option<Value>) {
+        if self.cancel_reason.is_some() {
+            return;
+        }
+        self.cancel_reason = reason;
     }
 
     /// The handle that user code receives from `SPAWN`.
