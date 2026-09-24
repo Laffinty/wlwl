@@ -1260,7 +1260,7 @@ pub const BUILTIN_REGISTRY: &[BuiltinSpec] = &[
     },
     BuiltinSpec {
         name: "TASK_CANCEL",
-        signature: "TASK_CANCEL(task) -> NULL",
+        signature: "TASK_CANCEL(task, reason?) -> NULL",
         group: BuiltinGroup::Concurrent,
         err_consumer: ErrConsumerStatus::No,
         macro_fn: false,
@@ -1270,7 +1270,7 @@ pub const BUILTIN_REGISTRY: &[BuiltinSpec] = &[
     },
     BuiltinSpec {
         name: "TASK_CANCEL_PARENT",
-        signature: "TASK_CANCEL_PARENT() -> NULL",
+        signature: "TASK_CANCEL_PARENT(reason?) -> NULL",
         group: BuiltinGroup::Concurrent,
         err_consumer: ErrConsumerStatus::No,
         macro_fn: false,
@@ -1310,7 +1310,7 @@ pub const BUILTIN_REGISTRY: &[BuiltinSpec] = &[
     },
     BuiltinSpec {
         name: "CHANNEL_SEND",
-        signature: "CHANNEL_SEND(ch, v) -> NULL / ERR(ChannelWouldBlock)",
+        signature: "CHANNEL_SEND(ch, v) -> NULL",
         group: BuiltinGroup::Concurrent,
         err_consumer: ErrConsumerStatus::No,
         macro_fn: false,
@@ -1320,7 +1320,7 @@ pub const BUILTIN_REGISTRY: &[BuiltinSpec] = &[
     },
     BuiltinSpec {
         name: "CHANNEL_RECV",
-        signature: "CHANNEL_RECV(ch) -> v / ERR(ChannelClosed|ChannelWouldBlock)",
+        signature: "CHANNEL_RECV(ch) -> v / ERR(ChannelClosed)",
         group: BuiltinGroup::Concurrent,
         err_consumer: ErrConsumerStatus::No,
         macro_fn: false,

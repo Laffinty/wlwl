@@ -364,7 +364,44 @@ impl Manifest {
             Some(toml::Value::Boolean(true))
         )
     }
+
+    /// v0.9 `[features] strict_deadlock_detect` (ADR-0017 §3.4).
+    /// Defaults to `true` — L1 deadlock surfaces as top-level `E0065`.
+    /// Set `false` to downgrade to the soft `W0065` warning plus the
+    /// legacy `E0053` "no peer" diagnostic (dev-mode opt-out).
+    pub fn strict_deadlock_detect(&self) -> bool {
+        !matches!(
+            self.features.get("strict_deadlock_detect"),
+            Some(toml::Value::Boolean(false))
+        )
+    }
+
+    /// v0.9 `[features] native_channel_close` (ADR-0018 opt-in).
+    /// Defaults to `false` — post-close `CHANNEL_RECV` returns the
+    /// structured `ERR(kind="ChannelClosed")` payload. When `true`,
+    /// post-close `CHANNEL_RECV` raises a hard diagnostic instead
+    /// (v0.9.0 reuses `E0054`; `E0055` stays removed from the
+    /// registry per ADR-0018 option B).
+    pub fn native_channel_close(&self) -> bool {
+        matches!(
+            self.features.get("native_channel_close"),
+            Some(toml::Value::Boolean(true))
+        )
+    }
+
+    /// v0.9 `[features] channel_large_buf_threshold = N` (plan §5.3).
+    /// `CHANNEL_NEW(buf)` with `buf > threshold` emits `W0066`. The
+    /// default threshold is 1024; `0` disables the warning.
+    pub fn channel_large_buf_threshold(&self) -> usize {
+        match self.features.get("channel_large_buf_threshold") {
+            Some(toml::Value::Integer(n)) if *n >= 0 => *n as usize,
+            _ => DEFAULT_LARGE_BUF_THRESHOLD,
+        }
+    }
 }
+
+/// Default `CHANNEL_NEW` buffer size above which `W0066` fires.
+pub const DEFAULT_LARGE_BUF_THRESHOLD: usize = 1024;
 
 /// Resolve a `<namespace>:<name>` reference to a local directory,
 /// using `[namespaces]` as an override and `[dependencies]` as the

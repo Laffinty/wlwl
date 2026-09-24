@@ -230,6 +230,58 @@ pub enum ThisTokenError {
 /// [v0.9 P1-M2] Shared fields table of one `Value::Instance`.
 pub type LinearThis = std::rc::Rc<std::cell::RefCell<Vec<(Value, Value)>>>;
 
+/// [v0.9 D9-001] Walk `e` looking for a free `THIS` reference
+/// (`Var("THIS")` or `Call { name: "THIS" }`). Used to reject
+/// closures / SPAWN bodies that would carry the linear capability
+/// out of the method frame (spec §15.1 容器 / 闭包 / SPAWN 边界).
+fn expr_mentions_this(e: &Expr) -> bool {
+    use wlwl_ast::Expr as E;
+    match e {
+        E::Var(name, _) => name == "THIS",
+        E::Call { name, args, .. } => name == "THIS" || args.iter().any(expr_mentions_this),
+        E::Literal(_, _) | E::Break { .. } | E::Continue { .. } => false,
+        E::Block { exprs, .. } => exprs.iter().any(expr_mentions_this),
+        E::Array { items, .. } => items.iter().any(expr_mentions_this),
+        E::Dict { entries, .. } => entries
+            .iter()
+            .any(|(k, v)| expr_mentions_this(k) || expr_mentions_this(v)),
+        E::Let { value, .. } => expr_mentions_this(value),
+        E::LetPattern { value, .. } => expr_mentions_this(value),
+        E::If {
+            cond,
+            then_branch,
+            else_branch,
+            ..
+        } => {
+            expr_mentions_this(cond)
+                || expr_mentions_this(then_branch)
+                || else_branch.as_deref().is_some_and(expr_mentions_this)
+        }
+        E::While { cond, body, .. } => expr_mentions_this(cond) || expr_mentions_this(body),
+        E::For { iter, body, .. } => expr_mentions_this(iter) || expr_mentions_this(body),
+        E::Return { value, .. } => value.as_deref().is_some_and(expr_mentions_this),
+        E::Fun { body, .. } => expr_mentions_this(body),
+        E::Ok { value, .. } | E::Err { value, .. } | E::Panic { value, .. } => {
+            expr_mentions_this(value)
+        }
+        E::Try { value, .. } | E::IsOk { value, .. } | E::IsErr { value, .. } => {
+            expr_mentions_this(value)
+        }
+        E::OrDie { value, default, .. } => expr_mentions_this(value) || expr_mentions_this(default),
+        E::Match {
+            value,
+            clauses,
+            default,
+            ..
+        } => {
+            expr_mentions_this(value)
+                || expr_mentions_this(default)
+                || clauses.iter().any(|c| expr_mentions_this(&c.body))
+        }
+        E::Import { .. } | E::Export { .. } => false,
+    }
+}
+
 /// Tag for native-function implementations. A `Value::NativeFn`
 /// carries one of these alongside its name; the dispatch in
 /// `eval_call` matches on the tag to call the right wrapper.
@@ -2839,6 +2891,15 @@ fn builtin_set_prop(_ev: &mut Evaluator, args: Vec<Value>) -> WlwlResult<Outcome
         }
     };
     let v = args[2].clone();
+    // [v0.9 D9-001] Storing linear THIS into any property slot is an
+    // escape across a container boundary (spec §15.1).
+    if _ev.is_linear_this(&v) {
+        return Err(_ev.diag(
+            ErrorCode::E0032,
+            "linear THIS cannot escape the method body (SET_PROP value)",
+            diag_span,
+        ));
+    }
     match &args[0] {
         Value::Dict(e) => {
             // Legacy DICT path — unchanged.
@@ -3103,8 +3164,11 @@ fn builtin_call_method(ev: &mut Evaluator, args: Vec<Value>) -> WlwlResult<Outco
                         method, expected
                     ),
                 ),
+                // [v0.9 D9-001] Terminal state (protocol already at
+                // `end`) is a state-machine mismatch → E0050, not a
+                // step-order slip → E0051. Spec §14.3.2 priority.
                 Pe::Exhaused => (
-                    ErrorCode::E0051,
+                    ErrorCode::E0050,
                     format!(
                         "CALL_METHOD protocol violation: protocol already at end (got '{}')",
                         method
@@ -3926,6 +3990,16 @@ fn builtin_spawn(ev: &mut Evaluator, args: Vec<Value>) -> WlwlResult<Outcome> {
             ));
         }
     };
+    // [v0.9 D9-001] A SPAWN body that captures linear THIS (via env
+    // binding or a free `THIS` reference) would carry the capability
+    // across the task boundary — spec §15.1 / §16.2.
+    if ev.has_linear_this_in_env(&captured_env) || ev.fun_body_escapes_this(&body) {
+        return Err(ev.diag(
+            ErrorCode::E0032,
+            "linear THIS cannot escape the method body (SPAWN capture)",
+            diag_span,
+        ));
+    }
     // Plan §4.4 "E0056 | SPAWN 中 fn 参数个数错误": SPAWN supplies
     // zero args, so a 1+-param fn is an arity error at the SPAWN
     // boundary (not the generic invoke_closure E0022). Checking
@@ -4057,7 +4131,17 @@ fn builtin_await(ev: &mut Evaluator, args: Vec<Value>) -> WlwlResult<Outcome> {
             diag_span,
         ));
     }
-    let handle = match args.into_iter().next().expect("len == 1 checked") {
+    let await_arg = args.into_iter().next().expect("len == 1 checked");
+    // [v0.9 D9-001] Awaiting the linear THIS value would carry it
+    // across the task/suspension boundary (spec §15.1 / §16.2).
+    if ev.is_linear_this(&await_arg) {
+        return Err(ev.diag(
+            ErrorCode::E0032,
+            "linear THIS cannot escape the method body (AWAIT)",
+            diag_span,
+        ));
+    }
+    let handle = match await_arg {
         Value::TaskHandle(h) => h,
         other => {
             return Err(ev.diag(
@@ -4666,6 +4750,24 @@ fn builtin_channel_new(ev: &mut Evaluator, args: Vec<Value>) -> WlwlResult<Outco
     let id = ChannelId(ev.scheduler.channels.len());
     let generation = ev.scheduler.next_channel_generation;
     ev.scheduler.next_channel_generation = ev.scheduler.next_channel_generation.wrapping_add(1);
+    // [v0.9 §5.3 / W0066] Soft warning for unusually large buffers.
+    // Threshold comes from `wlwl.toml [features] channel_large_buf_threshold`
+    // (default 1024; 0 disables).
+    {
+        let threshold = ev
+            .project_manifest()
+            .map(|m| m.channel_large_buf_threshold())
+            .unwrap_or(wlwl_toml::manifest::DEFAULT_LARGE_BUF_THRESHOLD);
+        if threshold > 0 && buf > threshold {
+            ev.emit_warning(
+                ErrorCode::W0066,
+                format!(
+                    "CHANNEL_NEW buffer size {buf} exceeds soft threshold {threshold} \
+                     ([features] channel_large_buf_threshold)"
+                ),
+            );
+        }
+    }
     let channel = Channel::new(id, generation, buf);
     let handle: ChannelHandle = channel.handle();
     ev.scheduler.channels.push(channel);
@@ -4983,6 +5085,21 @@ fn builtin_channel_recv(ev: &mut Evaluator, args: Vec<Value>) -> WlwlResult<Outc
             // they observe E0054 on their next SEND attempt.
             if let Some(tid) = ev.scheduler.channels[slot].pop_sender_waiter() {
                 ev.scheduler.wake_channel_op_waiter(tid);
+            }
+            // [v0.9 ADR-0018 opt-in] `native_channel_close = true`
+            // turns the post-close RECV into a hard diagnostic
+            // (v0.9.0 reuses E0054; E0055 stays removed). Default
+            // keeps the structured ERR(kind="ChannelClosed") payload.
+            if ev
+                .project_manifest()
+                .map(|m| m.native_channel_close())
+                .unwrap_or(false)
+            {
+                return Err(ev.diag(
+                    ErrorCode::E0054,
+                    "CHANNEL_RECV on a closed channel (native_channel_close)",
+                    diag_span,
+                ));
             }
             let err = ev.scheduler.channels[slot].recv_closed_err();
             Ok(Outcome::normal(err))
@@ -6508,6 +6625,14 @@ impl Evaluator {
         self.linear_this.is_some() && env.any_binding_matches(|v| self.is_linear_this(v))
     }
 
+    /// [v0.9 D9-001] True when creating `body` would capture a free
+    /// `THIS` reference (Var or Call). Only reject while a method
+    /// receiver is active — CLASS member definitions (`FUN((self), THIS())`)
+    /// are created outside any method body and must stay legal.
+    fn fun_body_escapes_this(&self, body: &Expr) -> bool {
+        self.current_method_instance.is_some() && expr_mentions_this(body)
+    }
+
     /// Invoke a callable `Value` (closure or native fn) with an
     /// optional method receiver (Phase C2, spec §8.6 / §13.12).
     ///
@@ -7103,7 +7228,7 @@ impl Evaluator {
                 // top of the captured env. Cloning Env is cheap for
                 // small scopes; for very large programs this is a
                 // candidate for Rc<RefCell> in Phase 4+ performance work.
-                if self.has_linear_this_in_env(&self.env) {
+                if self.has_linear_this_in_env(&self.env) || self.fun_body_escapes_this(body) {
                     return Err(self.diag(
                         ErrorCode::E0032,
                         "linear THIS cannot be captured by a closure (FUN capture)",
@@ -8130,16 +8255,36 @@ impl Evaluator {
                     .map(|t| format!("#{}", t.0))
                     .collect::<Vec<_>>()
                     .join(", ");
-                return Err(self.diag(
-                    ErrorCode::E0065,
-                    format!(
-                        "structured-concurrency deadlock detected (L1 strict): \
-                         {} task(s) parked on channel op(s) with no peer to wake them: [{}]",
-                        parked.len(),
-                        parked_repr
-                    ),
-                    span.clone(),
-                ));
+                // [v0.9 ADR-0017 §3.4] `strict_deadlock_detect`
+                // (default true) surfaces E0065. Setting it to false
+                // downgrades to the soft W0065 warning and falls
+                // through to the legacy E0053 "no peer" diagnostic.
+                let strict = self
+                    .project_manifest()
+                    .map(|m| m.strict_deadlock_detect())
+                    .unwrap_or(true);
+                if !strict {
+                    self.emit_warning(
+                        ErrorCode::W0065,
+                        format!(
+                            "structured-concurrency deadlock detected (L1 soft): \
+                             {} task(s) parked on channel op(s) with no peer to wake them: [{}]",
+                            parked.len(),
+                            parked_repr
+                        ),
+                    );
+                } else {
+                    return Err(self.diag(
+                        ErrorCode::E0065,
+                        format!(
+                            "structured-concurrency deadlock detected (L1 strict): \
+                             {} task(s) parked on channel op(s) with no peer to wake them: [{}]",
+                            parked.len(),
+                            parked_repr
+                        ),
+                        span.clone(),
+                    ));
+                }
             }
             Err(self.diag(
                 ErrorCode::E0053,
@@ -22577,7 +22722,9 @@ entry = "main.wll"
     }
 
     #[test]
-    fn v09s9b_after_end_returns_e0051() {
+    fn v09s9b_after_end_returns_e0050() {
+        // [v0.9 D9-001] Protocol terminal state is E0050 (state
+        // mismatch), not E0051 (step-order slip). Spec §14.3.2.
         let src = r#"
             LET(C, CLASS("C", ["only": "end"], [
                 ["only", FUN((self), 1)]
@@ -22587,7 +22734,7 @@ entry = "main.wll"
             CALL_METHOD(o, "only")
         "#;
         let err = run(src).expect_err("second call after end must fail");
-        assert_eq!(err.diagnostic().code, ErrorCode::E0051);
+        assert_eq!(err.diagnostic().code, ErrorCode::E0050);
     }
 
     #[test]
@@ -22622,6 +22769,291 @@ entry = "main.wll"
         );
         let err = run(&src).expect_err("inc;inc must fail (need get between)");
         assert_eq!(err.diagnostic().code, ErrorCode::E0051);
+    }
+
+    // ────────────────────────────────────────────────────────────
+    // [v0.9 D9-001] THIS container / call / return escape lock
+    // tests (spec §15.4 + §16.5 acceptance gate). Closes the
+    // Step 9 "P1 THIS escape checks" gap: ARRAY / DICT / FUN /
+    // SPAWN / AWAIT / return boundaries all fire E0032.
+
+    #[test]
+    fn v09s12_this_in_dict_returns_e0032() {
+        // spec §15.4 `this_in_dict_returns_e0032`. Dict keys are
+        // expressions, so the key is a STRING literal; the escape
+        // is the linear THIS value slot.
+        let src = r#"
+            LET(C, CLASS("C", NULL, [
+                ["m", FUN((self), LET(_d, ["this": THIS()]); 1)]
+            ]));
+            LET(o, NEW(C));
+            CALL_METHOD(o, "m")
+        "#;
+        let err = run(src).expect_err("THIS in DICT literal must fail");
+        assert_eq!(
+            err.diagnostic().code,
+            ErrorCode::E0032,
+            "expected E0032 THIS in DICT literal"
+        );
+    }
+
+    #[test]
+    fn v09s12_this_in_array_returns_e0032() {
+        // spec §15.4 `this_in_array_returns_e0032`.
+        let src = r#"
+            LET(C, CLASS("C", NULL, [
+                ["m", FUN((self), LET(_a, [THIS()]); 1)]
+            ]));
+            LET(o, NEW(C));
+            CALL_METHOD(o, "m")
+        "#;
+        let err = run(src).expect_err("THIS in ARRAY literal must fail");
+        assert_eq!(
+            err.diagnostic().code,
+            ErrorCode::E0032,
+            "expected E0032 THIS in ARRAY literal"
+        );
+    }
+
+    #[test]
+    fn v09s12_this_in_closure_returns_e0032() {
+        // spec §15.4 `this_in_closure_returns_e0032` — a FUN whose
+        // body mentions free `THIS` is rejected at capture time
+        // (D9-001 free-var check), not only when the closure runs.
+        let src = r#"
+            LET(C, CLASS("C", NULL, [
+                ["m", FUN((self), LET(_g, FUN(() , THIS())); 1)]
+            ]));
+            LET(o, NEW(C));
+            CALL_METHOD(o, "m")
+        "#;
+        let err = run(src).expect_err("THIS captured by FUN must fail");
+        assert_eq!(
+            err.diagnostic().code,
+            ErrorCode::E0032,
+            "expected E0032 THIS captured by closure"
+        );
+    }
+
+    #[test]
+    fn v09s12_this_return_returns_e0032() {
+        // spec §15.1 return boundary: returning the linear THIS
+        // from a method body is an escape.
+        let src = r#"
+            LET(C, CLASS("C", NULL, [
+                ["m", FUN((self), THIS())]
+            ]));
+            LET(o, NEW(C));
+            CALL_METHOD(o, "m")
+        "#;
+        let err = run(src).expect_err("returning THIS must fail");
+        assert_eq!(
+            err.diagnostic().code,
+            ErrorCode::E0032,
+            "expected E0032 THIS method return"
+        );
+    }
+
+    #[test]
+    fn v09s12_this_escape_into_spawn_body_returns_e0032() {
+        // spec §16.5 `this_escape_into_spawn_body_returns_e0032`.
+        let src = r#"
+            LET(C, CLASS("C", NULL, [
+                ["m", FUN((self), SCOPE(FUN(() , SPAWN(FUN(() , THIS())))))]
+            ]));
+            LET(o, NEW(C));
+            CALL_METHOD(o, "m")
+        "#;
+        let err = run(src).expect_err("THIS in SPAWN body must fail");
+        assert_eq!(
+            err.diagnostic().code,
+            ErrorCode::E0032,
+            "expected E0032 THIS escape into SPAWN"
+        );
+    }
+
+    #[test]
+    fn v09s12_this_across_await_returns_e0032() {
+        // spec §15.4 `this_across_await_returns_e0032` — AWAIT of
+        // the linear THIS value crosses the suspension boundary.
+        let src = r#"
+            LET(C, CLASS("C", NULL, [
+                ["m", FUN((self), AWAIT(THIS()))]
+            ]));
+            LET(o, NEW(C));
+            CALL_METHOD(o, "m")
+        "#;
+        let err = run(src).expect_err("AWAIT(THIS()) must fail");
+        assert_eq!(
+            err.diagnostic().code,
+            ErrorCode::E0032,
+            "expected E0032 THIS across AWAIT"
+        );
+    }
+
+    #[test]
+    fn v09s12_this_in_set_prop_value_returns_e0032() {
+        // D9-001 container boundary: storing linear THIS into any
+        // property slot is an escape.
+        let src = r#"
+            LET(C, CLASS("C", NULL, [
+                ["m", FUN((self), LET(o, NEW(CLASS("D", NULL, []))); SET_PROP(o, "k", THIS()))]
+            ]));
+            LET(o, NEW(C));
+            CALL_METHOD(o, "m")
+        "#;
+        let err = run(src).expect_err("SET_PROP of THIS must fail");
+        assert_eq!(
+            err.diagnostic().code,
+            ErrorCode::E0032,
+            "expected E0032 THIS in SET_PROP value"
+        );
+    }
+
+    #[test]
+    fn v09s12_this_alias_return_returns_e0032() {
+        // spec §15.4 `this_external_alias_attempt_returns_e0032` —
+        // `LET(x, THIS()); x` as the method result is the return
+        // escape (alias leaves the frame).
+        let src = r#"
+            LET(C, CLASS("C", NULL, [
+                ["m", FUN((self), LET(x, THIS()); x)]
+            ]));
+            LET(o, NEW(C));
+            CALL_METHOD(o, "m")
+        "#;
+        let err = run(src).expect_err("returning THIS alias must fail");
+        assert_eq!(
+            err.diagnostic().code,
+            ErrorCode::E0032,
+            "expected E0032 THIS alias return"
+        );
+    }
+
+    // ────────────────────────────────────────────────────────────
+    // [v0.9 W0065/W0066 + wlwl.toml features] lock tests.
+
+    #[test]
+    fn v09s12_w0066_large_buf_soft_warning() {
+        let dir = unique_test_dir("v09s12_w0066");
+        write_manifest(&dir, None, "");
+        let (r, warnings) = run_in_with_warnings(&dir, "CHANNEL_NEW(4096);");
+        assert!(r.is_ok(), "CHANNEL_NEW large buf must succeed: {:?}", r);
+        assert!(
+            warnings.iter().any(|w| w.code == ErrorCode::W0066),
+            "expected W0066 for buf=4096, got {:?}",
+            warnings
+        );
+        let _ = fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn v09s12_w0066_not_emitted_for_small_buf() {
+        let dir = unique_test_dir("v09s12_w0066_small");
+        write_manifest(&dir, None, "");
+        let (r, warnings) = run_in_with_warnings(&dir, "CHANNEL_NEW(4);");
+        assert!(r.is_ok());
+        assert!(
+            !warnings.iter().any(|w| w.code == ErrorCode::W0066),
+            "W0066 must not fire for buf=4, got {:?}",
+            warnings
+        );
+        let _ = fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn v09s12_w0066_threshold_zero_disables() {
+        let dir = unique_test_dir("v09s12_w0066_off");
+        write_manifest(&dir, None, "[features]\nchannel_large_buf_threshold = 0\n");
+        let (r, warnings) = run_in_with_warnings(&dir, "CHANNEL_NEW(4096);");
+        assert!(r.is_ok());
+        assert!(
+            !warnings.iter().any(|w| w.code == ErrorCode::W0066),
+            "threshold=0 must disable W0066, got {:?}",
+            warnings
+        );
+        let _ = fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn v09s12_strict_deadlock_default_is_e0065() {
+        // Default (no flag / flag true) stays strict: E0065.
+        let src = r#"
+            SCOPE(FUN(() ,
+                LET(ch1, CHANNEL_NEW(0));
+                LET(ch2, CHANNEL_NEW(0));
+                LET(h1, SPAWN(FUN(() , CHANNEL_RECV(ch2))));
+                LET(h2, SPAWN(FUN(() , CHANNEL_RECV(ch1))));
+                AWAIT(h1)
+            ))
+        "#;
+        let err = run(src).expect_err("deadlock must fail");
+        assert_eq!(err.diagnostic().code, ErrorCode::E0065);
+    }
+
+    #[test]
+    fn v09s12_strict_deadlock_false_downgrades_to_w0065() {
+        let dir = unique_test_dir("v09s12_deadlock_soft");
+        write_manifest(&dir, None, "[features]\nstrict_deadlock_detect = false\n");
+        let src = r#"
+            SCOPE(FUN(() ,
+                LET(ch1, CHANNEL_NEW(0));
+                LET(ch2, CHANNEL_NEW(0));
+                LET(h1, SPAWN(FUN(() , CHANNEL_RECV(ch2))));
+                LET(h2, SPAWN(FUN(() , CHANNEL_RECV(ch1))));
+                AWAIT(h1)
+            ))
+        "#;
+        let (r, warnings) = run_in_with_warnings(&dir, src);
+        let err = r.expect_err("soft deadlock must still surface as E0053");
+        assert_eq!(
+            err.diagnostic().code,
+            ErrorCode::E0053,
+            "strict=false falls through to legacy E0053"
+        );
+        assert!(
+            warnings.iter().any(|w| w.code == ErrorCode::W0065),
+            "expected W0065 soft warning, got {:?}",
+            warnings
+        );
+        let _ = fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn v09s12_native_channel_close_false_keeps_payload() {
+        let dir = unique_test_dir("v09s12_native_close_off");
+        write_manifest(&dir, None, "");
+        let src = r#"
+            LET(ch, CHANNEL_NEW(1));
+            CHANNEL_CLOSE(ch);
+            LET(v, CHANNEL_RECV(ch));
+            IS_ERR(v)
+        "#;
+        let v = run_in(&dir, src).expect("default RECV after close is ERR payload");
+        assert_eq!(
+            v,
+            Value::Boolean(true),
+            "default must return ERR(ChannelClosed) payload (IS_ERR)"
+        );
+        let _ = fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn v09s12_native_channel_close_true_raises_e0054() {
+        let dir = unique_test_dir("v09s12_native_close_on");
+        write_manifest(&dir, None, "[features]\nnative_channel_close = true\n");
+        let src = r#"
+            LET(ch, CHANNEL_NEW(1));
+            CHANNEL_CLOSE(ch);
+            CHANNEL_RECV(ch)
+        "#;
+        let err = run_in(&dir, src).expect_err("native_channel_close must raise");
+        assert_eq!(
+            err.diagnostic().code,
+            ErrorCode::E0054,
+            "native_channel_close=true → hard E0054"
+        );
+        let _ = fs::remove_dir_all(&dir);
     }
 
     // ────────────────────────────────────────────────────────────

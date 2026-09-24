@@ -28,10 +28,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   循环。impl 内部命名 `TaskState::Suspended { tag, reason: YieldReason }`
   取代 v0.7 / v0.8 tuple variant。
 - **结构化并发死锁检测 L1**(plan §3.4,ADR-0017 §3.4):
-  顶层错误码 `E0065`,开发模式软警告 `W0065`,严格同 scope 检测,
+  顶层错误码 `E0065`,软警告 `W0065`,严格同 scope 检测,
   显式 `Yield` 互让不触发(`no_false_positive_in_pure_yield_chain`)等。
+  默认严格(`E0065`);`[features] strict_deadlock_detect = false` 降级为
+  `W0065` + `E0053`。
 - **Task 取消 `reason` 字段(tag/payload cancellation,plan §4.4.2)**:
-  `TASK_CANCEL(task, reason)` / `TASK_CANCEL_PARENT(reason)` 签名扩展;
+  `TASK_CANCEL(task, reason?)` / `TASK_CANCEL_PARENT(reason?)` 签名扩展;
   reason 非法类型 → `E0066`;旧 `TASK_CANCEL(task)` 隐式 `{}` 兼容。
 - **OOP 真实实现**(plan §4.3 + §4.4.3,ADR-0019):
   `CLASS` / `NEW` / `THIS` / `GET_PROP` / `SET_PROP` / `CALL_METHOD` 启用;
@@ -40,7 +42,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   `CALL_METHOD` 走协议状态机;协议未启动 / 已终止 → `E0050`,
   协议 step 错位 → `E0051`。外部选择 `&` / 命名协议 / 并行 `par` 留 v0.9.1+。
 - **`THIS` 线性 capability(Wadler 1990 风格实质检查,plan §4.4.3)**:
-  不可变 `SET_PROP` + `THIS` 跨容器 / call / `AWAIT` 三类边界越界 → `E0032`。
+  不可变 `SET_PROP` + `THIS` 跨容器 / call / `AWAIT` / SPAWN / return
+  五类边界越界 → `E0032`(D9-001 已闭合,`v09s12_*` 锁测试)。
+- **`wlwl.toml [features]` 并发开关**(ADR-0017 / 0018 / plan §5.3):
+  `strict_deadlock_detect`(默认 true)、`native_channel_close`(默认 false,
+  开启后关闭通道 RECV 硬抛 `E0054`)、`channel_large_buf_threshold`
+  (默认 1024,超阈值发 `W0066`)。
 
 ### Changed
 
@@ -64,18 +71,19 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 - 新建 `docs/standard/wlwl-spec-v0.9.md`(WIP 期间工作草案,
   v0.9.0 release 时正式冻结);§17 整体重写,§11.2 / §11.3 字面修订,
-  §13 / §14 / §15 / §16 真实实现字面落地(spec-only 部分)。
-- 附录 G 镜像(`docs/appendix_G.md`)在 wip0.9 wip0.9 阶段由
-  `gen-appendix-g` 重生成,OOP 实现位置章节号从 `§11 [占位;OOP 未实现]`
-  修正为 `§13` / `§15`(继 ADR-0019 章节号冻结规则)。
+  §13 / §14 / §15 / §16 真实实现字面落地。
+- 附录 G 镜像(`docs/appendix_G.md`)由 `gen-appendix-g` 重生成;
+  OOP 实现位置章节号从 `§11 [占位;OOP 未实现]` 修正为 `§13` / `§15`;
+  签名列同步 v0.9(D9-002:无 `ChannelWouldBlock`,`TASK_CANCEL(task, reason?)`)。
 - 新建 `docs/history/deviations-v0.9.md` 启动 D9-NNN 流水;
-  D9-001(THIS 容器越界 + E0050 after-end impl 缺口)/
-  D9-002(registry 签名字符串 wip0.9 中间态)/
-  D9-003(ci.yml 触发仅 main)。
+  D9-001 / D9-002 **已闭合**(2026-09-25);D9-003(ci.yml 仅 main)留 release 前评估。
+- ADR-0017 / 0018 状态 Proposed → **Accepted**(plan §9.2 默认 Approved);
+  ADR-0019 已 Accepted。
+- plan §11.4 负 `buf` 错误码定案为 **`E0031`**(§17.2 normative)。
 
 ### Tests
 
-- 锁测试总计数:v0.8.1 baseline `1409 passed` → wip0.9 `1500 passed`(+91 项锁测试);
+- 锁测试总计数:v0.8.1 baseline `1409 passed` → wip0.9 `1517 passed`(+108 项锁测试);
   v0.6 conformance fidelity baseline 重命名为 v09(内容 byte-equal,wip0.9
   期间无 v0.6 conformance path 漂移);`v07_fidelity_matches_v09_baseline` 绿。
 - `cargo clippy --locked --workspace --all-targets -- -D warnings`:clean。
@@ -83,16 +91,15 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - **CI gate 不在 wip0.9 跑**:`.github/workflows/ci.yml` 触发仅 `branches: [main]`;
   wip0.9 push 不自动跑 CI(由本地三道闸守住,d9-003)。
 
-### Known gaps / 已知缺口(impl 端,留 release 前评估)
+### Known gaps / 已知缺口(留 release 前评估)
 
-- `THIS` 跨容器 / call / return 边界越界检查(D9-001)在 Step 12 子阶段 2
-  的 impl 续作需补完 ~6 项 v09s12_* 锁测试 acceptance gate。
-- `BUILTIN_REGISTRY.signature` 字段未文本化扩 `TASK_CANCEL(task, reason?)` /
-  移除 `ChannelWouldBlock` 字符串(D9-002 — `gen-appendix-g` 中间态可见)。
-- `Effect` 枚举预留 `MethodCall` / `ProtocolViolation` 字面(spec §16.4 占位),
-  impl 留 Step 12 子阶段 2 续作。
+- `Effect::MethodCall` / `Effect::ProtocolViolation` 已作为 enum 表面落地
+  (spec §16.4 命名对齐);evaluator 尚未在 CALL_METHOD 路径上实际 raise
+  这两个 effect(v0.9.1 继续接 effect-handler 调度)。
 - v0.9 release 前评估 `.github/workflows/ci.yml` 是否改 `branches: [main, wip0.9]`
   让 wip 期间也享有 CI 反馈(D9-003)。
+- D9-001(THIS 容器/call/return 越界 + E0050 after-end)与 D9-002(registry 签名
+  字符串)**已闭合**(2026-09-25)。
 
 ---
 

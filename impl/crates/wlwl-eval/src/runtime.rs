@@ -183,6 +183,15 @@ pub enum Tag {
     /// transition; no legacy `Signal` equivalent (cancellation was
     /// previously advisory-only via `cancel_requested` flag).
     Cancelled,
+    /// `perform MethodCall` — OOP `CALL_METHOD` control-flow event
+    /// (ADR-0019 §4.4.3 / spec §16.4). Reserved naming; the v0.9.0
+    /// handler path does not yet suspend on method calls.
+    MethodCall,
+    /// `raise ProtocolViolation` — session-type state-machine miss
+    /// (ADR-0019 §4.4.3 / spec §16.4). Reserved naming; surfaced
+    /// today as `E0050` / `E0051` diagnostics rather than a handled
+    /// effect.
+    ProtocolViolation,
 }
 
 /// Direction of a channel operation. Used by [`Effect::ChannelOp`]
@@ -207,8 +216,9 @@ pub enum Direction {
 ///
 /// v0.9 ships only the three tags enumerated by ADR-0017 §3.1
 /// (Yield / ChannelOp / Cancelled). Step 8 adds `reason: Dict` to
-/// the Cancelled variant; ADR-0019 §4.4.3 adds `MethodCall`,
-/// `PropAccess`, `ProtocolViolation` (deferred to that Step).
+/// the Cancelled variant; ADR-0019 §4.4.3 / spec §16.4 add
+/// `MethodCall` and `ProtocolViolation` (reserved naming, shipped
+/// in v0.9.0 as enum surface).
 #[derive(Debug, Clone)]
 pub enum Effect {
     /// `perform Yield` — cooperative yield checkpoint. `explicit =
@@ -229,6 +239,19 @@ pub enum Effect {
     /// payload variant; Step 8 (ADR-0019 §4.4.2) extends with
     /// `reason: Dict`.
     Cancelled,
+    /// `perform MethodCall` — OOP method invocation event
+    /// (spec §16.4). Reserved for the CALL_METHOD effect-handler
+    /// path; not yet raised by the evaluator in v0.9.0.
+    MethodCall {
+        #[allow(dead_code)]
+        method: String,
+    },
+    /// `raise ProtocolViolation` — session-type protocol miss
+    /// (spec §16.4). Reserved; currently surfaced as E0050 / E0051.
+    ProtocolViolation {
+        #[allow(dead_code)]
+        method: String,
+    },
 }
 
 impl Effect {
@@ -238,6 +261,8 @@ impl Effect {
             Effect::Yield { .. } => Tag::Yield,
             Effect::ChannelOp { .. } => Tag::ChannelOp,
             Effect::Cancelled => Tag::Cancelled,
+            Effect::MethodCall { .. } => Tag::MethodCall,
+            Effect::ProtocolViolation { .. } => Tag::ProtocolViolation,
         }
     }
 }
@@ -1256,7 +1281,8 @@ mod tests {
 
     #[test]
     fn effect_tag_dispatch_round_trips_for_each_variant() {
-        // The three canonical ADR-0017 / ADR-0019 §4.4.1 tags.
+        // The three canonical ADR-0017 / ADR-0019 §4.4.1 tags plus
+        // the two §16.4 reserved OOP tags.
         let yield_eff = Effect::Yield { explicit: true };
         let channel_eff = Effect::ChannelOp {
             dir: Direction::Send,
@@ -1264,9 +1290,17 @@ mod tests {
             value: Some(Value::Integer(7)),
         };
         let cancel_eff = Effect::Cancelled;
+        let method_eff = Effect::MethodCall {
+            method: "get".into(),
+        };
+        let proto_eff = Effect::ProtocolViolation {
+            method: "inc".into(),
+        };
         assert_eq!(yield_eff.tag(), Tag::Yield);
         assert_eq!(channel_eff.tag(), Tag::ChannelOp);
         assert_eq!(cancel_eff.tag(), Tag::Cancelled);
+        assert_eq!(method_eff.tag(), Tag::MethodCall);
+        assert_eq!(proto_eff.tag(), Tag::ProtocolViolation);
         // Distinct discriminants.
         use std::mem::discriminant;
         assert_ne!(
@@ -1276,6 +1310,10 @@ mod tests {
         assert_ne!(
             discriminant(&channel_eff.tag()),
             discriminant(&cancel_eff.tag()),
+        );
+        assert_ne!(
+            discriminant(&method_eff.tag()),
+            discriminant(&proto_eff.tag()),
         );
     }
 

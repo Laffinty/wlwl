@@ -127,13 +127,13 @@
 | `YIELD` | `YIELD() -> NULL` | ❌ | ❌ | v0.7 | ✓ builtin | `resolve_builtin` (§17.1) |
 | `TASK_CURRENT` | `TASK_CURRENT() -> TASK` | ❌ | ❌ | v0.7 | ✓ builtin | `resolve_builtin` (§17.3) |
 | `TASK_IS_CANCELLED` | `TASK_IS_CANCELLED() -> BOOLEAN` | ❌ | ❌ | v0.7 | ✓ builtin | `resolve_builtin` (§17.3) |
-| `TASK_CANCEL` | `TASK_CANCEL(task) -> NULL` | ❌ | ❌ | v0.7 | ✓ builtin | `resolve_builtin` (§17.3) |
-| `TASK_CANCEL_PARENT` | `TASK_CANCEL_PARENT() -> NULL` | ❌ | ❌ | v0.7 | ✓ builtin | `resolve_builtin` (§17.3) |
+| `TASK_CANCEL` | `TASK_CANCEL(task, reason?) -> NULL` | ❌ | ❌ | v0.7 | ✓ builtin | `resolve_builtin` (§17.3) |
+| `TASK_CANCEL_PARENT` | `TASK_CANCEL_PARENT(reason?) -> NULL` | ❌ | ❌ | v0.7 | ✓ builtin | `resolve_builtin` (§17.3) |
 | `SHIELD` | `SHIELD(fn) -> v` | ❌ | ❌ | v0.7 | ✓ builtin | `resolve_builtin` (§17.3) |
 | `CHANNEL_NEW` | `CHANNEL_NEW(buf) -> CHANNEL` | ❌ | ❌ | v0.7 | ✓ builtin | `resolve_builtin` (§17.2) |
 | `CHANNEL_CLOSE` | `CHANNEL_CLOSE(ch) -> NULL` | ❌ | ❌ | v0.7 | ✓ builtin | `resolve_builtin` (§17.2) |
-| `CHANNEL_SEND` | `CHANNEL_SEND(ch, v) -> NULL / ERR(ChannelWouldBlock)` | ❌ | ❌ | v0.7 | ✓ builtin | `resolve_builtin` (§17.2) |
-| `CHANNEL_RECV` | `CHANNEL_RECV(ch) -> v / ERR(ChannelClosed|ChannelWouldBlock)` | ❌ | ❌ | v0.7 | ✓ builtin | `resolve_builtin` (§17.2) |
+| `CHANNEL_SEND` | `CHANNEL_SEND(ch, v) -> NULL` | ❌ | ❌ | v0.7 | ✓ builtin | `resolve_builtin` (§17.2) |
+| `CHANNEL_RECV` | `CHANNEL_RECV(ch) -> v / ERR(ChannelClosed)` | ❌ | ❌ | v0.7 | ✓ builtin | `resolve_builtin` (§17.2) |
 | `CHANNEL_TRY_SEND` | `CHANNEL_TRY_SEND(ch, v) -> BOOLEAN` | ❌ | ❌ | v0.7 | ✓ builtin | `resolve_builtin` (§17.2) |
 | `CHANNEL_TRY_RECV` | `CHANNEL_TRY_RECV(ch) -> v / NULL / ERR(ChannelClosed)` | ❌ | ❌ | v0.7 | ✓ builtin | `resolve_builtin` (§17.2) |
 | `CHANNEL_LEN` | `CHANNEL_LEN(ch) -> INTEGER` | ❌ | ❌ | v0.7 | ✓ builtin | `resolve_builtin` (§17.2) |

@@ -2,8 +2,8 @@
 
 | | |
 |---|---|
-| **Status** | Proposed |
-| **Date** | 2026-09-24 |
+| **Status** | Accepted |
+| **Date** | 2026-09-24 (proposed) / 2026-09-25 (accepted, plan §9.2 默认 Approved) |
 | **Deciders** | Li (project lead) |
 | **Related** | spec v0.8.1 §17.1 / §17.2 / §17.7 / §11.2, ADR-0014 (structured concurrency + channels), ADR-0015 (Brown 9-dim decisions), ADR-0016 (single-thread scheduler boundary), ADR-0018 (E0055/E0057 retention), ADR-0019 (OOP), `wlwl-build-plan-v0.9` §3 |
 

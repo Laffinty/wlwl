@@ -91,7 +91,7 @@ wip0.9 阶段沿用 v0.8 §10.11 文本(协议细节上提到 spec 的注记保�
 
 | 码 | v0.7 / v0.8 状态 | v0.9 决议(ADR-0018 选项 B,plan §3.6 / §9.2) |
 |----|------------------|------------------------------------------|
-| `E0055` | 保留(v0.7 / v0.8 无触发路径,deviation D8-003):通道关闭信号由 `ERR(kind="ChannelClosed")` 字典载荷承担(§8.1 / §17.2) | **从 §11.2 表移除**;关闭后 RECV / TRY_RECV 仍走 `ERR(kind="ChannelClosed")` 载荷路径;`wlwl.toml` 设 `[native_channel_close] true` 可启用原生码(opt-in,用于强类型捕获场景) |
+| `E0055` | 保留(v0.7 / v0.8 无触发路径,deviation D8-003):通道关闭信号由 `ERR(kind="ChannelClosed")` 字典载荷承担(§8.1 / §17.2) | **从 §11.2 表移除**;关闭后 RECV / TRY_RECV 仍走 `ERR(kind="ChannelClosed")` 载荷路径;`wlwl.toml` 设 `[features] native_channel_close = true` 可改为硬诊断(v0.9.0 复用 `E0054`;`E0055` 本身仍不进注册表,ADR-0018 选项 B) |
 | `E0057` | 保留(v0.7 / v0.8 无触发路径,deviation D8-003):跨任务不可变单元格实际触发 `E0024`(§17.4) | **从 §11.2 表移除**;跨任务与单任务的不可变单元格错误统一走 `E0024`(与单任务路径一致) |
 
 #### 11.2.2 v0.9 新增的错误码
@@ -101,9 +101,11 @@ wip0.9 阶段沿用 v0.8 §10.11 文本(协议细节上提到 spec 的注记保�
 | **[v0.9]** `E0065` | 结构化并发死锁检测 L1(顶层) | `Scheduler::detect_deadlock_l1` 在 scope 内 ≥ 2 个 task 阻塞在 `ChannelOp` 且无任何推进时 | 同 scope 内 `Suspended { tag: ChannelOp, .. }` task 数 ≥ 2,且 run queue 已排空,无法推进任何 task |
 | **[v0.9]** `E0066` | 任务取消 `reason` 字段非法类型 | `TASK_CANCEL(task, reason)` 或 `TASK_CANCEL_PARENT(reason)` 收到非 DICT 类型的 reason | plan §4.4.2 + §3.3 同步:`r != DICT` → `E0066`;类型校验在 arity / 句柄校验之后 |
 
-> **死锁检测 L1 触发模式**(继 plan §3.4 / §9.2):
-> - **开发模式**(默认):触达条件时仅发 `W0065` 软警告(参见 §11.3),不抛错误;
-> - **生产模式**:`wlwl.toml` 设 `[strict_deadlock_detect] true` → 升级为顶层错误 `E0065`;
+> **死锁检测 L1 触发模式**(继 plan §3.4 / §9.2;v0.9.0 实测口径):
+> - **默认(严格)**:`[features] strict_deadlock_detect` 缺省或为 `true` 时,触达条件
+>   抛顶层错误 `E0065`;
+> - **软警告降级**:`wlwl.toml [features] strict_deadlock_detect = false` → 仅发
+>   `W0065` 软警告(参见 §11.3),随后落入 `E0053`(无对端唤醒)诊断;
 > - **P0 内暂缓条件**:若 L1 在 §3.2 落地后引入 bug 数 > 3,降级为开发模式 opt-in,
 >   v0.9.1 再做(plan §3.4 风险表)。
 > - **不跨 scope**;**不检测显式 `Yield` 互让**(两 task 互让但不互发不算死锁);
@@ -163,11 +165,12 @@ v0.7 / v0.8 spec §11.2 表中三道与面向对象相关的保留码,在 v0.9 �
 ### 11.3 警告码
 
 v0.9 §11.3 警告码表沿用 v0.8 原有 8 行(`W0010` / `W0011` / `W0014` / `W0020` /
-`W0030` / `W0040` / `W0051` / `W0053`),**新增** 1 行:
+`W0030` / `W0040` / `W0051` / `W0053`),**新增** 2 行:
 
 | 码 | 含义 |
 |----|------|
-| **`W0065`**(新增) | 结构化并发死锁检测 L1 软警告:同 scope 内 ≥ 2 个 task 阻塞在 `ChannelOp` 且无任何推进时,开发模式下发出该警告(默认行为);生产模式由 `wlwl.toml` 设 `[strict_deadlock_detect]` 升级为 `E0065` 顶层错误(参见 §11.2.2)。**警告不改变程序语义**,只是提示开发模式进入堆栈排查;`check` 子命令与解析期诊断流会输出该警告,运行期警告进入诊断流。 |
+| **`W0065`**(新增) | 结构化并发死锁检测 L1 软警告:同 scope 内 ≥ 2 个 task 阻塞在 `ChannelOp` 且无任何推进时,在 `[features] strict_deadlock_detect = false` 下发出该警告(参见 §11.2.2);默认严格模式直接抛 `E0065`。**警告不改变程序语义**,只是提示进入堆栈排查。 |
+| **`W0066`**(新增) | `CHANNEL_NEW(buf)` 的 `buf` 超过软阈值(默认 1024)时发出;`[features] channel_large_buf_threshold = N` 可调阈值,`0` 关闭。**警告不改变程序语义**。 |
 
 警告不得改变程序语义(沿用 v0.8 §11.3 末段);`check` 子命令与解析期诊断流会输出
 警告,运行期警告进入诊断流,由实现决定呈现时机。
@@ -683,7 +686,7 @@ BREAK / CONTINUE 出现在非法位置)。
 
 | 构造 | 签名 | 语义 |
 |------|------|------|
-| `CHANNEL_NEW(buf)` | `-> CHANNEL` | 创建缓冲大小为 `buf` 的通道;`buf = 0` 为同步通道。`buf` 须为非负 `INTEGER`。 |
+| `CHANNEL_NEW(buf)` | `-> CHANNEL` | 创建缓冲大小为 `buf` 的通道;`buf = 0` 为同步通道。`buf` 须为非负 `INTEGER`;负值或非整数 → `E0031`(沿用 §4.5 类型/范围诊断族;plan §11.4 负 buf 定案)。`buf` 超过软阈值 → `W0066`(§11.3)。 |
 | `CHANNEL_SEND(ch, v)` | `-> NULL` | 发送。**真挂起**:无空位且无 peer 时挂起任务于 `sender_waiters`;关闭后发送 → `E0054`。 |
 | `CHANNEL_RECV(ch)` | `-> v` | 接收。**真挂起**:缓冲空且无 peer 时挂起任务于 `receiver_waiters`;关闭且读空 → `ERR(kind="ChannelClosed")`。 |
 | `CHANNEL_TRY_SEND(ch, v)` | `-> BOOLEAN` | **不挂起**:成功 `TRUE`,满 `FALSE`;关闭后 → `E0054`。 |
@@ -917,14 +920,14 @@ v0.9 不暴露用户自定义 effect-handler;用户构造 `perform` / `handle` �
 | 公平性 | best-effort FIFO(v0.9 起尝试) | 详见 §17.8 |
 | 延迟 / 吞吐 | **不**承诺 | 不变 |
 | **阻塞挂起** | **真挂起**:`buf=0` 同步通道的 SEND / RECV 在满/空时挂起 task;`TRY_*` 保持非阻塞 | **v0.9 改**(plan §3.2) |
-| **死锁检测** | **L1 默认启用**(同 scope 内 ≥ 2 个 task 阻塞在 `ChannelOp`,且任一 task 上无法推进);开发模式 `W0065` 警告,生产模式由 `wlwl.toml` 设 `[strict_deadlock_detect]` 转 `E0065` | **v0.9 引入**(plan §3.4) |
+| **死锁检测** | **L1 默认启用**(同 scope 内 ≥ 2 个 task 阻塞在 `ChannelOp`,且任一 task 上无法推进);默认抛 `E0065`;`[features] strict_deadlock_detect = false` 降级为 `W0065` + `E0053` | **v0.9 引入**(plan §3.4) |
 | **嵌套 YIELD** | **已解除**:嵌套构造内 YIELD 恢复后继续执行嵌套体剩余部分;旧限制是 v0.7 / v0.8 切段器实现路径 | **v0.9 改**(plan §3.3) |
 | 尾部 YIELD | 任务体末尾的 `YIELD()` 使任务以 `NULL` 值结束 | 不变 |
 | **在飞兄弟取消** | **保证在下一个 YIELD 或挂起点可观测** | **v0.9 改**(plan §3.5) |
 | 隐式 scope | 不提供(ADR-0014) | 不变 |
 | **`ChannelWouldBlock` 载荷** | **已移除**(无 v0.9 触发路径) | **v0.9 改**(plan §3.2) |
 | 关闭后 RECV 行为 | `ERR(kind="ChannelClosed")` 载荷,与 v0.7 / v0.8 一致 | 不变 |
-| **`E0055` 错误码** | **已从 §11.2 表移除**(ADR-0018 选项 B);关闭后 RECV 仍走 `ERR(kind="ChannelClosed")` 载荷路径;`wlwl.toml` 设 `[native_channel_close] true` 可启用原生码(opt-in) | **v0.9 改** |
+| **`E0055` 错误码** | **已从 §11.2 表移除**(ADR-0018 选项 B);关闭后 RECV 仍走 `ERR(kind="ChannelClosed")` 载荷路径;`[features] native_channel_close = true` 可改为硬诊断(v0.9.0 复用 `E0054`) | **v0.9 改** |
 | **`E0057` 错误码** | **已从 §11.2 表移除**(ADR-0018 选项 B);跨任务不可变单元格继续走 `E0024`(与单任务路径统一) | **v0.9 改** |
 | 死锁检测 L1 严格范围 | **不跨 scope**;**不检测显式 `Yield` 互让**(两 task 互让但不互发不算死锁);**单点通道挂起不算死锁** | plan §3.4 严格限制 |
 | P0 内死锁检测假阳性门槛 | L1 引入 bug > 3 项时,降级为开发模式 opt-in | plan §3.4 暂缓条件 |
@@ -1027,15 +1030,11 @@ v0.7 / v0.8 部分沿用 v0.8 spec §1108-1123。**本节新增 v0.9 增量**;v0
 > **wip0.9 状态说明**:
 > - 错误码触发路径层面(§11.2 / §11.3)已对齐 v0.9(`E0055` / `E0057` 移除 +
 >   `E0065` / `E0066` / `W0065` 新增全部锁测试覆盖,见 `wlwl-eval` Step 5 / 6 / 8);
-> - 内建**签名**层面(`TASK_CANCEL(task, reason?)` / `TASK_CANCEL_PARENT(reason?)`
->   / `CHANNEL_SEND` 真挂起等):在 wip0.9 中已通过组合内建 + 任务调度验证,
->   **但 registry 的"签名文本"字符串截至 wip0.9 子阶段 2 时尚未同步** —
->   本附录签位列**仍按 v0.8 字面**展示(参见下方表内 `CHANNEL_SEND` 等行的 `ERR(ChannelWouldBlock)`);
-> - **后续 Step 12+ 完成 BUILTIN_REGISTRY 签名字符串 / 结构规范化时**再跑一次
->   `cargo run --bin gen-appendix-g -- ../docs/appendix_G.md` 重生成,届时
->   同步更新此处。
+> - 内建**签名**层面已同步(D9-002 已闭合):`TASK_CANCEL(task, reason?)` /
+>   `TASK_CANCEL_PARENT(reason?)` / `CHANNEL_SEND` 真挂起(无 `ChannelWouldBlock`)
+>   / `CHANNEL_RECV` 仅 `ChannelClosed`;`BUILTIN_REGISTRY.signature` 与本表一致;
+> - 重生成命令:`cargo run --bin gen-appendix-g -- ../docs/appendix_G.md`。
 >
-> 重生成命令:`cargo run --bin gen-appendix-g -- ../docs/appendix_G.md`。
 > 修改流程:改注册表 → 跑本函数重写本文件 → 跑 `cargo test` 验证 lock test。
 >
 > 遮蔽保护(§3.5)以本表登记名为准。
@@ -1161,13 +1160,13 @@ v0.7 / v0.8 部分沿用 v0.8 spec §1108-1123。**本节新增 v0.9 增量**;v0
 | `YIELD` | `YIELD() -> NULL` | ❌ | ❌ | v0.7 | ✓ builtin | `resolve_builtin` (§17.1) |
 | `TASK_CURRENT` | `TASK_CURRENT() -> TASK` | ❌ | ❌ | v0.7 | ✓ builtin | `resolve_builtin` (§17.3) |
 | `TASK_IS_CANCELLED` | `TASK_IS_CANCELLED() -> BOOLEAN` | ❌ | ❌ | v0.7 | ✓ builtin | `resolve_builtin` (§17.3) |
-| `TASK_CANCEL` | `TASK_CANCEL(task) -> NULL` | ❌ | ❌ | v0.7 | ✓ builtin | `resolve_builtin` (§17.3) |
-| `TASK_CANCEL_PARENT` | `TASK_CANCEL_PARENT() -> NULL` | ❌ | ❌ | v0.7 | ✓ builtin | `resolve_builtin` (§17.3) |
+| `TASK_CANCEL` | `TASK_CANCEL(task, reason?) -> NULL` | ❌ | ❌ | v0.7 | ✓ builtin | `resolve_builtin` (§17.3) |
+| `TASK_CANCEL_PARENT` | `TASK_CANCEL_PARENT(reason?) -> NULL` | ❌ | ❌ | v0.7 | ✓ builtin | `resolve_builtin` (§17.3) |
 | `SHIELD` | `SHIELD(fn) -> v` | ❌ | ❌ | v0.7 | ✓ builtin | `resolve_builtin` (§17.3) |
 | `CHANNEL_NEW` | `CHANNEL_NEW(buf) -> CHANNEL` | ❌ | ❌ | v0.7 | ✓ builtin | `resolve_builtin` (§17.2) |
 | `CHANNEL_CLOSE` | `CHANNEL_CLOSE(ch) -> NULL` | ❌ | ❌ | v0.7 | ✓ builtin | `resolve_builtin` (§17.2) |
-| `CHANNEL_SEND` | `CHANNEL_SEND(ch, v) -> NULL / ERR(ChannelWouldBlock)` | ❌ | ❌ | v0.7 | ✓ builtin | `resolve_builtin` (§17.2) |
-| `CHANNEL_RECV` | `CHANNEL_RECV(ch) -> v / ERR(ChannelClosed|ChannelWouldBlock)` | ❌ | ❌ | v0.7 | ✓ builtin | `resolve_builtin` (§17.2) |
+| `CHANNEL_SEND` | `CHANNEL_SEND(ch, v) -> NULL` | ❌ | ❌ | v0.7 | ✓ builtin | `resolve_builtin` (§17.2) |
+| `CHANNEL_RECV` | `CHANNEL_RECV(ch) -> v / ERR(ChannelClosed)` | ❌ | ❌ | v0.7 | ✓ builtin | `resolve_builtin` (§17.2) |
 | `CHANNEL_TRY_SEND` | `CHANNEL_TRY_SEND(ch, v) -> BOOLEAN` | ❌ | ❌ | v0.7 | ✓ builtin | `resolve_builtin` (§17.2) |
 | `CHANNEL_TRY_RECV` | `CHANNEL_TRY_RECV(ch) -> v / NULL / ERR(ChannelClosed)` | ❌ | ❌ | v0.7 | ✓ builtin | `resolve_builtin` (§17.2) |
 | `CHANNEL_LEN` | `CHANNEL_LEN(ch) -> INTEGER` | ❌ | ❌ | v0.7 | ✓ builtin | `resolve_builtin` (§17.2) |

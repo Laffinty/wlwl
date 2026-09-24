@@ -2,8 +2,8 @@
 
 | | |
 |---|---|
-| **Status** | Proposed |
-| **Date** | 2026-09-24 |
+| **Status** | Accepted |
+| **Date** | 2026-09-24 (proposed) / 2026-09-25 (accepted, plan §9.2 默认 Approved) |
 | **Deciders** | Li (project lead) |
 | **Related** | spec v0.8.1 §11.2 (E0055 / E0057 reservation rows), spec v0.9 §11.2 / §17.3 (algebraic-effect framing), `docs/history/deviations-v0.8.md` D8-003, ADR-0017 (cooperative suspension scheduler), ADR-0019 (OOP), `wlwl-build-plan-v0.9` §3.6 / §5.3 / §9.2 |
 

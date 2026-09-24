@@ -19,7 +19,7 @@
 
 ## D9-001 · spec §15.1 容器越界与 §14.3.2 `E0050` after-end 区分未实装
 
-- **状态**:待修复(impl 阶段)
+- **状态**:已修复(2026-09-25)
 - **发现时机**:wip0.9 阶段 Step 12 子阶段 2 锁测试覆盖盘点(2026-09-25)
 - **关联 commit**:
   - `2f2901e` feat(impl): v0.9 Step 9 quality + 9b session types (P0/P1 + protocol)
@@ -78,7 +78,7 @@
 
 ## D9-002 · `BUILTIN_REGISTRY` 签名字符串 wip0.9 中间状态
 
-- **状态**:待修复(impl 阶段)
+- **状态**:已修复(2026-09-25)
 - **发现时机**:Step 11 子阶段 2 跑 `gen-appendix-g` 重生成时(commit `dbf849d`)
 - **影响范围**:`impl/crates/wlwl-eval/src/registry.rs::BUILTIN_REGISTRY` 内的
   函数签名 `signature: String` 字段(impl `registry.rs::BuiltinSpec` 结构);
@@ -154,17 +154,16 @@ PR / merge to main 流程。
 
 ## 后续动作(2026-09-25 wip0.9 阶段评估)
 
-- D9-001 与 D9-002 都在 Step 12 子阶段 2 的 impl 落地范围内,d9-001 估 ~6 项
-  锁测试 acceptance gate(含一次或多次 impl 跟进);d9-002 是同 phase 的
-  cosmetic 同步。
+- D9-001 **已闭合**(2026-09-25):`v09s12_*` 8 项锁测试落地 —
+  ARRAY / DICT / FUN free-var / SPAWN capture / AWAIT / SET_PROP /
+  method return / alias return 全部 `E0032`;`ProtocolError::Exhaused`
+  映射改为 `E0050`(spec §14.3.2 priority)。
+- D9-002 **已闭合**(2026-09-25):`registry.rs` 四条签名文本更新
+  (`TASK_CANCEL(task, reason?)` / `TASK_CANCEL_PARENT(reason?)` /
+  `CHANNEL_SEND` 无 `ChannelWouldBlock` / `CHANNEL_RECV` 仅
+  `ChannelClosed`);`gen-appendix-g` 重生成;spec v0.9 附录 G 嵌入段同步。
 - D9-003 在 wip0.9 wip 阶段留原状;v0.9 release 前评估是否改 `ci.yml`。
 
 ---
 
-> wip0.9 D9-001 + D9-002 跟 impl 工作量汇总:
-> - 在 Step 9a-1..9a-6 + Step 9b 实施承诺里,**THIS escape checks P1 部分**(5 种
->   容器越界路径)被宣告但未实装;
-> - **协议状态机 Done-state 与 E0050 priority** 在 9b 字面已通过 4 项锁测试,
->   但未对 `after_end` 那一类边界显式区分;
-> - 这两块合计 ~6 项隐式锁测试 / 边界 case,作为 Step 12 子阶段 2 impl 子阶段
->   续作(work breakdown 由用户拍板;不在本次 wip0.9 spec-only 提交中实现)。
+> wip0.9 D9-001 + D9-002 已全部闭合(2026-09-25)。
