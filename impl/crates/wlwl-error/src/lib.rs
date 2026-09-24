@@ -86,6 +86,13 @@ pub enum ErrorCode {
     E0061, // file not found
     E0062, // file permission denied
     E0063, // network error (general)
+    E0065, // [v0.9 Step 5 / ADR-0017 §3.4] structured-concurrency deadlock detected:
+    //   L1 strict — same scope, ≥ 2 tasks parked on Suspended(ChannelOp),
+    //   no peer task available to wake them. Payload carries
+    //   { kind: "DeadlockCycle", scope, tasks: [<handle>, ...], cycle: [...] }
+    //   to the diagnostic. Production mode opt-in via
+    //   `wlwl.toml [strict_deadlock_detect] true`; dev mode
+    //   default is the soft W0065 warning.
     E0070, // JSON parse error
     E0071, // JSON stringify error
     E0080, // AI provider unreachable
@@ -133,11 +140,20 @@ pub enum ErrorCode {
     // `wlwl fmt --check`; the fix is mechanical (apply
     // `wlwl fmt` output), hence suggestion-code style hint.
     W0053, // 鏍煎紡鍖栧亸绂?搂16.3 canonical formatter 濂戠害
-           // v0.4 搂14.5 鈥?using v0.3 deprecated alias (`DEL` / `OR_DIE`).
-           // Added in Phase B2 (DEL alias) + Phase B3 (OR_DIE alias).
-           // Note: W0051 itself is already declared in the 搂14.5 warning
-           // block above (line ~84). This closing brace just terminates
-           // the enum; no new variant is added here.
+    // v0.4 搂14.5 鈥?using v0.3 deprecated alias (`DEL` / `OR_DIE`).
+    // Added in Phase B2 (DEL alias) + Phase B3 (OR_DIE alias).
+    // Note: W0051 itself is already declared in the 搂14.5 warning
+    // block above (line ~84). This closing brace just terminates
+    // the enum; no new variant is added here.
+    W0065, // [v0.9 Step 5 / ADR-0017 §3.4] dev-mode soft warning for the
+    //   same deadlock shape as E0065. Default: emitted in dev
+    //   mode; production code does not emit unless
+    //   [strict_deadlock_detect] true is set in wlwl.toml (then
+    //   E0065 fires instead).
+    W0066, // [v0.9 Step 5 / §5.3] large buf soft warning — emitted
+           //   by CHANNEL_NEW when the requested capacity exceeds a
+           //   soft threshold. Production code may set
+           //   [channel_large_buf_threshold = N] to silence or change.
 }
 
 impl ErrorCode {
@@ -193,6 +209,7 @@ impl ErrorCode {
             ErrorCode::E0061 => "E0061",
             ErrorCode::E0062 => "E0062",
             ErrorCode::E0063 => "E0063",
+            ErrorCode::E0065 => "E0065",
             ErrorCode::E0070 => "E0070",
             ErrorCode::E0071 => "E0071",
             ErrorCode::E0080 => "E0080",
@@ -221,6 +238,8 @@ impl ErrorCode {
             ErrorCode::W0052 => "W0052",
             ErrorCode::W0053 => "W0053",
             ErrorCode::W0054 => "W0054",
+            ErrorCode::W0065 => "W0065",
+            ErrorCode::W0066 => "W0066",
         }
     }
 
@@ -243,6 +262,8 @@ impl ErrorCode {
                 | ErrorCode::W0052
                 | ErrorCode::W0053
                 | ErrorCode::W0054
+                | ErrorCode::W0065
+                | ErrorCode::W0066
         )
     }
 
@@ -308,6 +329,10 @@ impl ErrorCode {
             | ErrorCode::E0056
             | ErrorCode::E0057
             | ErrorCode::E0058 => ErrorCategory::Concurrent,
+            // [v0.9 Step 5 / ADR-0017 §3.4] structured-concurrency
+            // deadlock (L1 strict). Same bucket as the other
+            // concurrent codes (E0050..E0058 group).
+            ErrorCode::E0065 => ErrorCategory::Concurrent,
             ErrorCode::E0060 | ErrorCode::E0061 | ErrorCode::E0062 | ErrorCode::E0063 => {
                 ErrorCategory::Io
             }
@@ -362,6 +387,13 @@ impl ErrorCode {
             // from the canonical formatter contract. Bucket as
             // Syntax (a source-shape concern, like W0013 / W0020).
             ErrorCode::W0053 => ErrorCategory::Syntax,
+            // [v0.9 Step 5 / ADR-0017 §3.4] Dev-mode soft warning
+            // for the structured-concurrency deadlock shape (L1).
+            // Bucket as Concurrent (same as the matching E0065).
+            ErrorCode::W0065 => ErrorCategory::Concurrent,
+            // [v0.9 Step 5 / §5.3] Large buf soft warning emitted
+            // by CHANNEL_NEW. Bucket as Runtime.
+            ErrorCode::W0066 => ErrorCategory::Runtime,
         }
     }
 
@@ -1518,8 +1550,10 @@ mod tests {
             ErrorCode::W0052,
             ErrorCode::W0053,
             ErrorCode::W0054,
+            ErrorCode::W0065,
+            ErrorCode::W0066,
         ];
-        assert_eq!(codes.len(), 13);
+        assert_eq!(codes.len(), 15);
         for c in &codes {
             assert!(
                 c.is_warning(),

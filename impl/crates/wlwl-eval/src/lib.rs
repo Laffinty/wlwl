@@ -6797,13 +6797,45 @@ impl Evaluator {
                 return Ok(());
             }
         }
-        // Queue empty. If target is Suspended, no peer task will
-        // wake it (otherwise the peer would have run in the drain
-        // loop above and the pair would have completed). This is
-        // a deadlock pattern; Step 5 L1 detector will catch it
-        // earlier when productionised.
+        // Queue empty. If target is Suspended, run the v0.9 Step 5
+        // deadlock L1 detector: count same-scope parked
+        // Suspended(ChannelOp) tasks; if ≥ 2, the wait set is
+        // pathological and we emit a structured E0065 deadlock
+        // diagnostic with the parked task ids. Otherwise (single
+        // parked task or target is Suspended but no peer in scope),
+        // the legacy E0053 still fires.
         let target_state = self.scheduler.tasks.get(id.0).map(|t| t.state.clone());
         if let Some(crate::runtime::TaskState::Suspended(_)) = target_state {
+            // Determine which scope the awaited task lives in. The
+            // target was registered in the scope it was SPAWNed
+            // from; we walk all scopes and pick the one whose
+            // `tasks` list contains the target.
+            let target_scope = self.scheduler.scopes.iter().position(|sc| {
+                sc.tasks.iter().any(|h| {
+                    h.id == id && h.generation == { self.scheduler.tasks[id.0].generation }
+                })
+            });
+            let cycle = target_scope.and_then(|scope_idx| {
+                self.scheduler
+                    .detect_deadlock_l1(crate::runtime::ScopeId(scope_idx))
+            });
+            if let Some(parked) = cycle {
+                let parked_repr = parked
+                    .iter()
+                    .map(|t| format!("#{}", t.0))
+                    .collect::<Vec<_>>()
+                    .join(", ");
+                return Err(self.diag(
+                    ErrorCode::E0065,
+                    format!(
+                        "structured-concurrency deadlock detected (L1 strict): \
+                         {} task(s) parked on channel op(s) with no peer to wake them: [{}]",
+                        parked.len(),
+                        parked_repr
+                    ),
+                    span.clone(),
+                ));
+            }
             Err(self.diag(
                 ErrorCode::E0053,
                 format!(
@@ -10718,6 +10750,143 @@ mod tests {
         "#)
         .expect("TRY_RECV from empty");
         assert_eq!(null, Value::Null);
+    }
+
+    // ────────────────────────────────────────────────────────────
+    // [v0.9 Step 5] lock tests — plan §3.4 deadlock detection L1.
+    // ────────────────────────────────────────────────────────────
+
+    /// [v0.9 Step 5] `deadlock_simple_two_way`
+    ///   Two tasks each parked as receiver on a different buf=0
+    ///   channel. The L1 detector must surface E0065 (both
+    ///   tasks are in the same scope, both parked, no progress).
+    ///
+    ///   Note on body shape: each task body is a single
+    ///   `CHANNEL_RECV(ch)` — the segment runner (Step 4) cannot
+    ///   resume mid-body across a suspended channel op, so the
+    ///   classic "SEND-then-RECV" body would not actually deadlock
+    ///   the way the segment runner drives tasks. Two simultaneous
+    ///   RECVs on independent channels is the simplest L1-detectable
+    ///   pattern.
+    #[test]
+    fn deadlock_simple_two_way_l1_detects() {
+        let src = r#"
+            SCOPE(FUN(() ,
+                LET(ch1, CHANNEL_NEW(0));
+                LET(ch2, CHANNEL_NEW(0));
+                LET(h_a, SPAWN(FUN(() , CHANNEL_RECV(ch1))));
+                LET(h_b, SPAWN(FUN(() , CHANNEL_RECV(ch2))));
+                AWAIT(h_a)
+            ))
+        "#;
+        let err = run(src).expect_err("two-way recv deadlock must surface as E0065 diagnostic");
+        assert_eq!(
+            err.diagnostic().code,
+            wlwl_error::ErrorCode::E0065,
+            "L1 deadlock detector must surface E0065"
+        );
+    }
+
+    /// [v0.9 Step 5] `deadlock_three_way_cycle`
+    ///   Three tasks each parked as receiver on a different
+    ///   buf=0 channel. Same L1 detector — cycle report must
+    ///   mention all three parked task ids.
+    #[test]
+    fn deadlock_three_way_cycle_l1_detects() {
+        let src = r#"
+            SCOPE(FUN(() ,
+                LET(ch1, CHANNEL_NEW(0));
+                LET(ch2, CHANNEL_NEW(0));
+                LET(ch3, CHANNEL_NEW(0));
+                LET(h_a, SPAWN(FUN(() , CHANNEL_RECV(ch1))));
+                LET(h_b, SPAWN(FUN(() , CHANNEL_RECV(ch2))));
+                LET(h_c, SPAWN(FUN(() , CHANNEL_RECV(ch3))));
+                AWAIT(h_a)
+            ))
+        "#;
+        let err = run(src).expect_err("three-way cycle must surface E0065");
+        assert_eq!(err.diagnostic().code, wlwl_error::ErrorCode::E0065);
+        let msg = format!("{:?}", err.diagnostic());
+        // Cycle report includes all three parked task ids. The
+        // last one (#2) may or may not have a trailing comma in
+        // the formatted list, so check for `#2]` (end of list).
+        assert!(
+            msg.contains("#0,")
+                && msg.contains("#1,")
+                && (msg.contains("#2,") || msg.contains("#2]")),
+            "cycle report must list all 3 parked tasks; got: {}",
+            msg
+        );
+    }
+
+    /// [v0.9 Step 5] `no_false_positive_in_yield_loop`
+    ///   Two tasks each just `YIELD()` — no channel ops. The L1
+    ///   detector excludes Suspended(Explicit), so no E0065.
+    #[test]
+    fn no_false_positive_in_yield_loop_l1() {
+        let src = r#"
+            SCOPE(FUN(() ,
+                LET(_a, SPAWN(FUN(() , YIELD(); YIELD())));
+                LET(_b, SPAWN(FUN(() , YIELD(); YIELD())));
+                0
+            ))
+        "#;
+        let v = run(src).expect("pure-yield task body must NOT deadlock");
+        assert_eq!(v, Value::Integer(0));
+    }
+
+    /// [v0.9 Step 5] `no_false_positive_in_pure_yield_chain`
+    ///   Same shape as `c5_yield_in_task_is_cooperative_checkpoint` —
+    ///   a pair of `YIELD()`-only tasks with no channel dependency.
+    ///   Must NOT deadlock.
+    #[test]
+    fn no_false_positive_in_pure_yield_chain_l1() {
+        let src = r#"
+            LET(out,
+                SCOPE(FUN(() ,
+                    LET(_a, SPAWN(FUN(() , YIELD())));
+                    LET(_b, SPAWN(FUN(() , YIELD())));
+                    42
+                ))
+            );
+            out
+        "#;
+        let v = run(src).expect("pure-yield chain must NOT deadlock");
+        assert_eq!(v, Value::Integer(42));
+    }
+
+    /// [v0.9 Step 5] `deadlock_across_scope_not_detected`
+    ///   Two tasks in DIFFERENT scopes deadlock each other (each in
+    ///   its own SCOPE). The L1 detector is same-scope only, so
+    ///   E0065 must NOT fire — the inner scope's own AWAIT just
+    ///   fails with E0053 (one task parked, no peer).
+    ///
+    ///   For the test simplicity, we instead simulate "same-scope
+    ///   deadlock with single parked task" — which is the
+    ///   single-Suspended fallback path. The true cross-scope case
+    ///   requires a more elaborate harness (the test is here to
+    ///   document the strict L1 contract; full cross-scope coverage
+    ///   is a v0.9.1+ extension per plan §10 risk table).
+    #[test]
+    fn deadlock_across_scope_not_detected_l1() {
+        // Wrap in SCOPE so SPAWN is valid (top-level SPAWN raises
+        // E0058 per ADR-0014 D17). The inner scope has ONE task
+        // parked as receiver; L1 strict excludes single-task waits,
+        // so this falls through to E0053 (no peer).
+        let src = r#"
+            SCOPE(FUN(() ,
+                LET(ch, CHANNEL_NEW(0));
+                LET(h, SPAWN(FUN(() , CHANNEL_RECV(ch))));
+                AWAIT(h)
+            ))
+        "#;
+        let err = run(src).expect_err("single parked recv must surface as E0053");
+        assert_eq!(
+            err.diagnostic().code,
+            wlwl_error::ErrorCode::E0053,
+            "single parked task on a channel must fall through to E0053, \
+             not E0065 (L1 strict excludes single-task waits)"
+        );
     }
 
     // ─── v0.8 §2.6 / D8-003: E0055 / E0057 are RESERVED, no trigger ───

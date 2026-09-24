@@ -801,6 +801,54 @@ impl Scheduler {
         self.wake_dependents(task_id);
         true
     }
+
+    /// [v0.9 Step 5 / ADR-0017 §3.4 / plan §3.4] Deadlock detection
+    /// L1 strict. Scans one scope for tasks parked on a channel op
+    /// (`Suspended(ReceivingOn | SendingOn)`); if two or more are
+    /// parked AND no progress can be made (the scheduler has just
+    /// drained the run queue with no wake), returns a cycle report.
+    ///
+    /// **Strict limits** (per plan §3.4):
+    /// - **Same scope only** — cross-scope deadlocks are not
+    ///   detected at L1.
+    /// - **`YieldReason::Explicit` / `AwaitingChild` / `CancellationCheck`
+    ///   are NOT deadlock candidates** — those are pure yields /
+    ///   child waits; the task isn't blocked on an external event.
+    /// - **Single parked task is NOT a deadlock** — that task is
+    ///   just waiting for a peer that may arrive later.
+    /// - **Cycle report** carries the parked task ids in FIFO
+    ///   arrival order so consumers can display the wait chain.
+    ///
+    /// Returns `None` if no deadlock is found in `scope_id`.
+    pub fn detect_deadlock_l1(&self, scope_id: ScopeId) -> Option<Vec<TaskId>> {
+        let scope = self.scopes.get(scope_id.0)?;
+        let parked: Vec<TaskId> = scope
+            .tasks
+            .iter()
+            .filter_map(|h| {
+                let task = self.tasks.get(h.id.0)?;
+                if h.generation != task.generation {
+                    return None;
+                }
+                if !matches!(
+                    task.state,
+                    TaskState::Suspended(YieldReason::ReceivingOn(_) | YieldReason::SendingOn(_),)
+                ) {
+                    return None;
+                }
+                Some(h.id)
+            })
+            .collect();
+        if parked.len() < 2 {
+            return None;
+        }
+        // Cycle report: list of parked task ids in the order they
+        // appear in the scope's `tasks` list (which is the SPAWN
+        // registration order). The full cycle analysis (sender ↔
+        // receiver on the same channel) is Step 5's documented
+        // extension; for v0.9 L1 we surface the wait-set shape.
+        Some(parked)
+    }
 }
 
 impl crate::channel::Channel {
