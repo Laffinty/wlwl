@@ -173,6 +173,12 @@ pub(crate) fn value_kind(v: &Value) -> &'static str {
         // vocabulary ("channel handle") matches the user-facing
         // names CHANNEL_NEW / CHANNEL_SEND / CHANNEL_RECV etc.
         Value::ChannelHandle(_) => "channel handle",
+        // [v0.9 Step 9a-1 / plan §4.3] OOP values for the
+        // E0030-vocabulary (kept distinct from "function closure"
+        // / "native fn" so misuse diagnostics name the actual
+        // shape the user gave).
+        Value::Class(_) => "class",
+        Value::Instance { .. } => "instance",
     }
 }
 

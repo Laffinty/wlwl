@@ -38,7 +38,15 @@ use wlwl_error::{
 // ──────────────────────────────────────────────────────────────────────
 
 /// Runtime value (v0.3 §2.2 — Phase 2).
-#[derive(Debug, Clone, PartialEq)]
+///
+/// [v0.9 Step 9a-1 / plan §4.3 / ADR-0019 §4.3] PartialEq is hand-
+/// implemented (rather than `#[derive]`d) starting this commit:
+/// the new `Class` / `Instance` variants wrap `Rc<RefCell<_>>`,
+/// which doesn't auto-derive `PartialEq`. Class / Instance equality
+/// is by **identity** (`Rc::ptr_eq`), consistent with how the
+/// existing handle variants (`TaskHandle`, `ChannelHandle`) compare
+/// by their `id` + `generation` fields rather than by deep value.
+#[derive(Debug, Clone)]
 pub enum Value {
     Integer(i64),
     Float(f64),
@@ -81,6 +89,75 @@ pub enum Value {
     /// operating on a different channel than the one the user
     /// originally opened.
     ChannelHandle(crate::channel::ChannelHandle),
+    /// [v0.9 Step 9a-1 / plan §4.3 / ADR-0019 §4.3] Class value
+    /// produced by `CLASS(name?, parent, members)`. Wrapped in
+    /// `Rc<RefCell<_>>` so closure capture (`Env::clone`) can share
+    /// the same class entry between the defining scope and any
+    /// downstream `NEW` call — parallel to the cell-sharing rule
+    /// for `LET MUT` (v0.6 §3.4). Step 9a-2 wires `builtin_class`
+    /// to populate the entry; Step 9a-3 will add `init` tracking
+    /// (currently a placeholder `Option<Value>`).
+    Class(std::rc::Rc<std::cell::RefCell<ClassEntry>>),
+    /// [v0.9 Step 9a-1 / plan §4.3 / ADR-0019 §4.3] Instance value
+    /// produced by `NEW(cls, args...)`. The `class` field is shared
+    /// with the `Value::Class` that created it (same `Rc`); `fields`
+    /// is the per-instance `(name → value)` table that `GET_PROP` /
+    /// `SET_PROP` read / write (Step 9a-5 wires these). `this_token`
+    /// is the placeholder for the linear `THIS` capability (Step
+    /// 9a-3 fleshes it out to a runtime-checked `Rc<RefCell<_>>`).
+    Instance {
+        class: std::rc::Rc<std::cell::RefCell<ClassEntry>>,
+        fields: Vec<(Value, Value)>,
+        this_token: std::rc::Rc<std::cell::RefCell<ThisToken>>,
+    },
+}
+
+/// [v0.9 Step 9a-1 / plan §4.3 / ADR-0019 §4.3] Class entry — the
+/// shared backing store for `Value::Class` and `Value::Instance`.
+/// All fields are public + `Clone`-able so the `Rc<RefCell<_>>`
+/// wrapper can be cheaply cloned through `Env::clone` (closure
+/// capture). Mutation goes through `RefCell::borrow_mut`; cycle
+/// detection in the parent chain lives in `builtin_class` /
+/// `builtin_new` (Step 9a-2) — see `E0050` ("class inheritance
+/// chain error") for the canonical error path.
+///
+/// `init` is the optional constructor closure (first parameter
+/// named `self` by spec §13 convention); Step 9a-2 populates it
+/// when the user passes a closure inside the members array.
+#[derive(Debug, Clone)]
+pub struct ClassEntry {
+    /// Optional class name (user-supplied via the first arg of
+    /// `CLASS`). `None` means an anonymous class — useful for
+    /// one-shot closures but otherwise discouraged by §13.
+    pub name: Option<String>,
+    /// Optional parent class (second arg of `CLASS`). Stored via
+    /// `Rc<RefCell<_>>` so a class with a parent can outlive its
+    /// parent's scope (e.g. when both are top-level lets in the
+    /// same module).
+    pub parent: Option<std::rc::Rc<std::cell::RefCell<ClassEntry>>>,
+    /// Member table: `(name → Value::Closure)` for methods, or
+    /// `(name → any)` for static fields. The spec §13 convention
+    /// is "first parameter named `self` = instance method; no
+    /// `self` parameter = static". Step 9a-4 / 9a-5 walk this
+    /// table for method / property dispatch.
+    pub members: Vec<(Value, Value)>,
+    /// Optional constructor closure. `builtin_new` (Step 9a-2)
+    /// reads the first parameter (must be named `self` per §13
+    /// convention) and binds it to the freshly-allocated instance.
+    pub init: Option<Value>,
+}
+
+/// [v0.9 Step 9a-1 / plan §4.3 / ADR-0019 §4.3] Placeholder for the
+/// linear `THIS` capability (Step 9a-3 wires the runtime checks).
+/// For 9a-1 the field set is minimal: `moved: false`. 9a-3 adds
+/// `try_get()` / `move_out()` / `clone_for_borrow()` and the
+/// `moved = true` transitions, plus `E0095` ("linear value used
+/// after move") and `E0096` ("linear value implicitly discarded").
+#[derive(Debug, Clone)]
+pub struct ThisToken {
+    /// Step 9a-3 will check this flag on every `THIS` read; for
+    /// 9a-1 it stays `false` because no operation flips it yet.
+    pub moved: bool,
 }
 
 /// Tag for native-function implementations. A `Value::NativeFn`
@@ -155,6 +232,107 @@ impl Value {
             Value::ChannelHandle(h) => {
                 format!("<channel handle id={} gen={}>", h.id.0, h.generation)
             }
+            // [v0.9 Step 9a-1 / plan §4.3] Class display uses the
+            // optional user-supplied name when present, otherwise
+            // `<class>` for anonymous classes. The address-style
+            // disambiguation (`@0x...`) is intentionally omitted
+            // because class identity is `Rc::ptr_eq`-based and
+            // raw pointer addresses aren't stable across
+            // pretty-print passes; the spec §13 prose leaves the
+            // exact format open ("the runtime chooses a self-
+            // describing label").
+            Value::Class(entry) => {
+                let b = entry.borrow();
+                match &b.name {
+                    Some(n) => format!("<class {}>", n),
+                    None => "<class>".to_string(),
+                }
+            }
+            // [v0.9 Step 9a-1 / plan §4.3] Instance display shows
+            // the class name (when present) plus the field count
+            // so two NEW() calls of the same class print distinctly
+            // — the field count isn't a stable identity (mutating
+            // via SET_PROP doesn't change the display label) but
+            // it gives the user a hint at the instance's shape.
+            Value::Instance {
+                class,
+                fields,
+                this_token: _,
+            } => {
+                let b = class.borrow();
+                let label = match &b.name {
+                    Some(n) => format!("<{} instance>", n),
+                    None => "<instance>".to_string(),
+                };
+                format!("{}[{} fields]", label, fields.len())
+            }
+        }
+    }
+}
+
+// [v0.9 Step 9a-1 / plan §4.3 / ADR-0019 §4.3] Manual `PartialEq`
+// for `Value`. The `#[derive(PartialEq)]` is intentionally NOT used
+// (see top-level enum doc) because the new `Class` / `Instance`
+// variants wrap `Rc<RefCell<_>>` which doesn't auto-derive
+// `PartialEq`. Existing variants keep their original semantics:
+// integers / floats / strings / bools by value; arrays / dicts
+// element-wise; closures / native-fns by field-wise closure
+// equality (params + body + env); result wrappers by inner value;
+// handles by their `id` + `generation` fields.
+//
+// New variants are compared by **identity**:
+//   * `Value::Class(a) == Value::Class(b)` iff the two `Rc` point
+//     at the same allocation (`Rc::ptr_eq`). Two CLASS() calls in
+//     the same scope that produce different classes are NOT equal,
+//     even when their members line up — class identity is the
+//     user-meaningful comparison (`==` on classes is rare; spec
+//     §13 leaves it open).
+//   * `Value::Instance { class, .. } == Value::Instance { class:
+//     other, .. }` iff the two class `Rc`s are identical. Two
+//     `NEW()` calls from the same class yield distinct instances
+//     (the spec §13 `==` semantics for instances are not normative
+//     in v0.9; identity-by-class is a defensible v0.9.0 default).
+impl PartialEq for Value {
+    fn eq(&self, other: &Self) -> bool {
+        match (self, other) {
+            (Value::Integer(a), Value::Integer(b)) => a == b,
+            (Value::Float(a), Value::Float(b)) => a == b,
+            (Value::String(a), Value::String(b)) => a == b,
+            (Value::Boolean(a), Value::Boolean(b)) => a == b,
+            (Value::Null, Value::Null) => true,
+            (Value::Array(a), Value::Array(b)) => a == b,
+            (Value::Dict(a), Value::Dict(b)) => a == b,
+            (
+                Value::Closure {
+                    params: pa,
+                    body: ba,
+                    env: ea,
+                },
+                Value::Closure {
+                    params: pb,
+                    body: bb,
+                    env: eb,
+                },
+            ) => pa == pb && ba == bb && ea == eb,
+            (Value::NativeFn { name: na, .. }, Value::NativeFn { name: nb, .. }) => na == nb,
+            (Value::Ok(a), Value::Ok(b)) => a == b,
+            (Value::Err(a), Value::Err(b)) => a == b,
+            (Value::TaskHandle(a), Value::TaskHandle(b)) => a == b,
+            (Value::ChannelHandle(a), Value::ChannelHandle(b)) => a == b,
+            (Value::Class(a), Value::Class(b)) => std::rc::Rc::ptr_eq(a, b),
+            (
+                Value::Instance {
+                    class: ca,
+                    fields: _fa,
+                    this_token: _ta,
+                },
+                Value::Instance {
+                    class: cb,
+                    fields: _fb,
+                    this_token: _tb,
+                },
+            ) => std::rc::Rc::ptr_eq(ca, cb),
+            _ => false,
         }
     }
 }
@@ -1039,6 +1217,22 @@ fn value_to_std_value(v: &Value) -> Result<wlwl_std::StdValue, StdValueConvError
             return Err(StdValueConvError::Type {
                 expected: "data value at std boundary".into(),
                 got: "channel handle".into(),
+            });
+        }
+        // [v0.9 Step 9a-1 / plan §4.3] OOP values cross the std
+        // boundary as opaque data — classes / instances are
+        // runtime state, not portable values, so we refuse with
+        // the same `Type` mapping used by closures / native fns.
+        Value::Class(_) => {
+            return Err(StdValueConvError::Type {
+                expected: "data value at std boundary".into(),
+                got: "class".into(),
+            });
+        }
+        Value::Instance { .. } => {
+            return Err(StdValueConvError::Type {
+                expected: "data value at std boundary".into(),
+                got: "instance".into(),
             });
         }
     })
@@ -4441,6 +4635,13 @@ fn type_name(v: &Value) -> &'static str {
         Value::TaskHandle(_) => "task-handle",
         // [v0.7 Phase D-A] user-facing type name for channel handles.
         Value::ChannelHandle(_) => "channel-handle",
+        // [v0.9 Step 9a-1 / plan §4.3] OOP type names. Class and
+        // Instance are distinct user-visible types so a misuse
+        // like `+(class, 1)` produces a readable diagnostic that
+        // distinguishes "you gave me a class, expected an
+        // instance" from the reverse.
+        Value::Class(_) => "class",
+        Value::Instance { .. } => "instance",
     }
 }
 
@@ -4475,6 +4676,12 @@ fn value_type_name(v: &Value) -> &'static str {
         // use CHANNEL so a `TYPE(ch)` prints a self-describing
         // label without colliding with TASK.
         Value::ChannelHandle(_) => "CHANNEL",
+        // [v0.9 Step 9a-1 / plan §4.3] OOP types exposed by TYPE().
+        // CLASS / INSTANCE mirror the spec §2.2.1 conventions
+        // (parallel to FUNCTION / TASK / CHANNEL — one entry per
+        // runtime value kind).
+        Value::Class(_) => "CLASS",
+        Value::Instance { .. } => "INSTANCE",
     }
 }
 
@@ -4992,6 +5199,12 @@ fn value_to_json_value(v: &Value) -> Option<serde_json::Value> {
         // analogue; skip it the same way.
         Value::ChannelHandle(_) => return None,
         Value::Closure { .. } | Value::NativeFn { .. } => return None,
+        // [v0.9 Step 9a-1 / plan §4.3] OOP values have no JSON
+        // analogue (spec §13 leaves JSON-serialisation of
+        // classes / instances as out-of-scope — they're runtime
+        // stateful values, not data). Skip via `return None`,
+        // matching how closures / native-fns are skipped.
+        Value::Class(_) | Value::Instance { .. } => return None,
     })
 }
 
@@ -20402,5 +20615,157 @@ entry = "main.wll"
         "#;
         let v = run(src).expect("TASK_CANCEL / TASK_CANCEL_PARENT with DICT must not raise");
         assert_eq!(v, Value::Null);
+    }
+
+    // ────────────────────────────────────────────────────────────
+    // [v0.9 Step 9a-1 / plan §4.3 / ADR-0019 §4.3] OOP value-shape
+    // lock tests.
+    //
+    // 9a-1 only ships the `Value::Class` / `Value::Instance`
+    // variants and their display / type-name / equality rules.
+    // No CLASS / NEW / THIS builtins are registered yet — those
+    // land in 9a-2 (CLASS / NEW) and 9a-3 (THIS + linear
+    // capability). The tests below construct the variants
+    // directly via Rust so they can lock the wire-format shape
+    // independently of the eval-side wiring.
+    //
+    // The contract is locked here so future refactors of
+    // `ClassEntry` / `ThisToken` can't drift the user-visible
+    // labels (the spec §13 prose will mirror these strings).
+
+    #[test]
+    fn v09s9a1_value_class_display_includes_name_when_present() {
+        use std::cell::RefCell;
+        use std::rc::Rc;
+        let entry = Rc::new(RefCell::new(ClassEntry {
+            name: Some("Rect".to_string()),
+            parent: None,
+            members: Vec::new(),
+            init: None,
+        }));
+        let v = Value::Class(entry);
+        assert_eq!(v.display(), "<class Rect>");
+        assert_eq!(type_name(&v), "class");
+        assert_eq!(value_type_name(&v), "CLASS");
+    }
+
+    #[test]
+    fn v09s9a1_value_class_display_uses_anonymous_label_when_no_name() {
+        use std::cell::RefCell;
+        use std::rc::Rc;
+        let entry = Rc::new(RefCell::new(ClassEntry {
+            name: None,
+            parent: None,
+            members: Vec::new(),
+            init: None,
+        }));
+        let v = Value::Class(entry);
+        assert_eq!(v.display(), "<class>");
+        assert_eq!(type_name(&v), "class");
+        assert_eq!(value_type_name(&v), "CLASS");
+    }
+
+    #[test]
+    fn v09s9a1_value_instance_display_includes_class_name_and_field_count() {
+        use std::cell::RefCell;
+        use std::rc::Rc;
+        let entry = Rc::new(RefCell::new(ClassEntry {
+            name: Some("Point".to_string()),
+            parent: None,
+            members: Vec::new(),
+            init: None,
+        }));
+        let v = Value::Instance {
+            class: entry,
+            fields: vec![
+                (Value::String("x".into()), Value::Integer(1)),
+                (Value::String("y".into()), Value::Integer(2)),
+            ],
+            this_token: Rc::new(RefCell::new(ThisToken { moved: false })),
+        };
+        assert_eq!(v.display(), "<Point instance>[2 fields]");
+        assert_eq!(type_name(&v), "instance");
+        assert_eq!(value_type_name(&v), "INSTANCE");
+    }
+
+    #[test]
+    fn v09s9a1_value_class_identity_distinct_classes_are_not_equal() {
+        // [v0.9 Step 9a-1] Two CLASS() calls in the same scope that
+        // produce different class entries must compare unequal under
+        // `==`, even when their members line up — class identity is
+        // `Rc::ptr_eq`-based. Locking this prevents future refactors
+        // from accidentally falling back to deep field equality (which
+        // would silently make two distinct classes look "the same" in
+        // user code that uses `==` on class values).
+        use std::cell::RefCell;
+        use std::rc::Rc;
+        let a = Value::Class(Rc::new(RefCell::new(ClassEntry {
+            name: Some("Foo".to_string()),
+            parent: None,
+            members: Vec::new(),
+            init: None,
+        })));
+        let b = Value::Class(Rc::new(RefCell::new(ClassEntry {
+            name: Some("Foo".to_string()),
+            parent: None,
+            members: Vec::new(),
+            init: None,
+        })));
+        assert_ne!(a, b, "two distinct CLASS() calls must NOT be equal");
+    }
+
+    #[test]
+    fn v09s9a1_value_class_identity_same_rc_is_equal() {
+        // Mirror of the negative test above: when two values share
+        // the same underlying Rc<RefCell<ClassEntry>> (e.g. via
+        // closure capture cloning the Rc), `==` reports equal.
+        // This is the same identity-based comparison the existing
+        // handle variants (TaskHandle / ChannelHandle) provide.
+        use std::cell::RefCell;
+        use std::rc::Rc;
+        let entry = Rc::new(RefCell::new(ClassEntry {
+            name: Some("Shared".to_string()),
+            parent: None,
+            members: Vec::new(),
+            init: None,
+        }));
+        let a = Value::Class(Rc::clone(&entry));
+        let b = Value::Class(Rc::clone(&entry));
+        assert_eq!(a, b, "two values sharing the same Rc must be equal");
+    }
+
+    #[test]
+    fn v09s9a1_value_instance_identity_by_class_rc() {
+        // [v0.9 Step 9a-1] Two instances of the same class compare
+        // equal — instances are identity-tracked via their class Rc
+        // only (the spec §13 `==` semantics for instances are open in
+        // v0.9.0; identity-by-class is the v0.9.0 default). Locking
+        // this prevents future refactors from over-engineering the
+        // equality to deep-field compare (which would silently treat
+        // "two NEW() calls of the same class" as the same instance
+        // and confuse user code).
+        use std::cell::RefCell;
+        use std::rc::Rc;
+        let class = Rc::new(RefCell::new(ClassEntry {
+            name: Some("Box".to_string()),
+            parent: None,
+            members: Vec::new(),
+            init: None,
+        }));
+        let inst_a = Value::Instance {
+            class: Rc::clone(&class),
+            fields: vec![(Value::String("size".into()), Value::Integer(1))],
+            this_token: Rc::new(RefCell::new(ThisToken { moved: false })),
+        };
+        let inst_b = Value::Instance {
+            class: Rc::clone(&class),
+            fields: vec![(Value::String("size".into()), Value::Integer(99))],
+            this_token: Rc::new(RefCell::new(ThisToken { moved: false })),
+        };
+        assert_eq!(
+            inst_a, inst_b,
+            "instances sharing the same class Rc compare equal \
+             (identity-by-class default)"
+        );
     }
 }
