@@ -1408,6 +1408,81 @@ mod tests {
         );
     }
 
+    /// [v0.9 Step 7 / plan §5.1 / §9.1 Step 7] lock test:
+    /// `registry_e0080_to_e0094_in_appendix_g`.
+    ///
+    /// Verifies that ALL 10 AI / agent error codes (E0080..E0083
+    /// from `wlwl:std.ai`; E0090..E0094 from the network ladder,
+    /// shared by `wlwl:std.agent`) are present in the ErrorCode
+    /// registry. The codes are spread across two snapshot buckets
+    /// (codes_ai for the AI surface, codes_network for the agent
+    /// network ladder per §10.11 prose + `wlwl-std/src/ai.rs`
+    /// line 62 "E0090-E0094 network ladder instead"), but the
+    /// registry-level gate covers all 10 in one assertion so the
+    /// §10.11 contract sync can rely on `as_str()` returning a
+    /// stable string for each.
+    ///
+    /// If a future Step removes / renames any of these codes
+    /// (e.g. E0082 merge with E0081, or agent-only E0095+), this
+    /// test will surface the rename immediately — the spec §10.11
+    /// prose and plan §11.2 consistency table need a matching
+    /// update.
+    #[test]
+    fn registry_e0080_to_e0094_in_appendix_g() {
+        // The 10 codes as_str() contract:
+        let expected = [
+            (ErrorCode::E0080, "E0080"),
+            (ErrorCode::E0081, "E0081"),
+            (ErrorCode::E0082, "E0082"),
+            (ErrorCode::E0083, "E0083"),
+            (ErrorCode::E0090, "E0090"),
+            (ErrorCode::E0091, "E0091"),
+            (ErrorCode::E0092, "E0092"),
+            (ErrorCode::E0093, "E0093"),
+            (ErrorCode::E0094, "E0094"),
+        ];
+        for (code, want) in expected {
+            let s = code.as_str();
+            assert_eq!(
+                s, want,
+                "registry_e0080_to_e0094_in_appendix_g: code {:?} maps to {:?}, expected {:?}",
+                code, s, want
+            );
+        }
+        // Category coverage: each AI code is Category::Ai (E0080..E0083)
+        // and each network-ladder code is Category::Network (E0090..E0094).
+        // This locks the §10.11 prose ↔ registry mapping.
+        for code in [
+            ErrorCode::E0080,
+            ErrorCode::E0081,
+            ErrorCode::E0082,
+            ErrorCode::E0083,
+        ] {
+            assert_eq!(
+                code.category(),
+                ErrorCategory::Ai,
+                "{:?} must be Category::Ai per plan §5.1 (E0080-E0083 are the \
+                 AI surface codes)",
+                code
+            );
+        }
+        for code in [
+            ErrorCode::E0090,
+            ErrorCode::E0091,
+            ErrorCode::E0092,
+            ErrorCode::E0093,
+            ErrorCode::E0094,
+        ] {
+            assert_eq!(
+                code.category(),
+                ErrorCategory::Network,
+                "{:?} must be Category::Network per ai.rs line 62 (E0090-E0094 \
+                 are the network ladder codes shared by AI + agent)",
+                code
+            );
+        }
+    }
+
     #[test]
     fn snap_runtime() {
         insta::assert_json_snapshot!(
