@@ -126,6 +126,18 @@ pub enum ErrorCode {
     E0092, // TLS handshake / certificate error
     E0093, // HTTP 4xx client error
     E0094, // HTTP 5xx server error
+    // [v0.9 Step 9a-3 / plan §4.3 / ADR-0019 §4.3] Linear
+    // capability errors for the `THIS` builtin. E0095 fires
+    // when a method body calls `THIS` more than once (the
+    // first call atomically flips `this_token.moved` from
+    // false to true; subsequent calls observe the flag and
+    // raise this error). E0096 is reserved for "linear value
+    // implicitly discarded" (a method body that never calls
+    // `THIS` even though the surrounding context expects
+    // it); the runtime check for E0096 lands in a future
+    // commit when spec §15 prose is pinned.
+    E0095, // [v0.9 Step 9a-3] linear value used after move (THIS twice in one method body)
+    E0096, // [v0.9 Step 9a-3] linear value implicitly discarded (reserved; runtime check deferred)
     E0099, // user-thrown ERR / PANIC
     E0100, // internal error
     E0101, // stack overflow
@@ -232,6 +244,12 @@ impl ErrorCode {
             ErrorCode::E0092 => "E0092",
             ErrorCode::E0093 => "E0093",
             ErrorCode::E0094 => "E0094",
+            // [v0.9 Step 9a-3] Linear `THIS` capability codes.
+            // `as_str` is registered here so the appendix G
+            // snapshot test (`oop_section_*`) and the
+            // `error_category` map below can include them.
+            ErrorCode::E0095 => "E0095",
+            ErrorCode::E0096 => "E0096",
             ErrorCode::E0099 => "E0099",
             ErrorCode::E0100 => "E0100",
             ErrorCode::E0101 => "E0101",
@@ -367,6 +385,11 @@ impl ErrorCode {
             | ErrorCode::E0092
             | ErrorCode::E0093
             | ErrorCode::E0094 => ErrorCategory::Network,
+            // [v0.9 Step 9a-3] Linear `THIS` capability codes
+            // bucket into the OOP category (same as E0050 /
+            // E0051 — they're spec §13 / §15 OOP violations,
+            // not general runtime errors).
+            ErrorCode::E0095 | ErrorCode::E0096 => ErrorCategory::Oop,
             ErrorCode::E0099 => ErrorCategory::User,
             ErrorCode::E0100 | ErrorCode::E0101 | ErrorCode::E0102 => ErrorCategory::Internal,
             // Warnings map to the semantic bucket of the underlying
