@@ -46,7 +46,7 @@
 | §10 标准库 | §10.11 沿用 v0.8(协议细节上提到 spec 的注记保留;具体行项 Step 11+ 单独补) |
 | **§11 诊断** | **§11.2 / §11.3 增量已落地**(本稿) — 见下文 §11 字面 |
 | §12 保留形式 | 沿用 v0.8 |
-| §13-§16 OOP 真实实现 | **占位**,章节号冻结(Step 12 派生) |
+| **§13-§16 OOP 真实实现** | **本稿主体重写 / spec-only**(Step 12 完成) — 见下文 §13 / §14 / §15 / §16;impl 留 Step 12 子阶段 2 + 后续 |
 | **§17 并发(algebraic-effect 模型)** | **本稿主体重写** — 见下文 |
 | §18+ | 保留(未来) |
 | 附录 A 文法 | 沿用 v0.8 |
@@ -117,14 +117,48 @@ v0.7 / v0.8 spec §17.1 行 879 自承"YIELD 位置限制是 v0.7 / v0.8 实现�
 (`LET(x, YIELD())` / `IF(cond, YIELD(), 42)` / 数组字面量内部 / 间接调用等)
 在 v0.9 起**均合法**,不再触发任何错误码。
 
-#### 11.2.4 v0.9 兼容性
+#### 11.2.4 v0.9 OOP 错误码启用(继 §13-§16 章节落地)
+
+v0.7 / v0.8 spec §11.2 表中三道与面向对象相关的保留码,在 v0.9 由 Step 12 / §13-§16
+章节落地后**正式启用**。每道触发条件严格对应 §13 / §14 / §15 章节:
+
+| 码 | v0.9 起触发条件 | 章节 | 备注 |
+|----|-----------------|------|------|
+| `E0032` | (a) `SET_PROP(obj, k, v)` 中字段未在 `CLASS` 字典里标 `mut:`(可变性违反);(b) `THIS` 引用跨容器边界 / call 边界 / `AWAIT` 边界被越界消费(§15.1 三种边界) | §13.3.2 / §15 | v0.8 表中已存在;v0.9 起 §13 / §15 真实现,触发路径落地 |
+| **`E0050`** | `CALL_METHOD` 时实例协议状态机为 `Pending`(协议未启动,首次调用前不应有 `THIS`)或 `Done`(协议已终止);协议错误匹配发生在协议期望 → 已消耗末态 | §14.3.2 | v0.8 表中列为"保留 / OOP";v0.9 起启用为"协议状态机状态不符"原生码 |
+| **`E0051`** | `CALL_METHOD` 时调用方法名 / 参数与协议状态机当前 `remaining` 期望不匹配(包含顺序错位 / 内部选择 `⊕` 错分支 / μ 递归展开失败 / init 协议错配) | §14.3.2 | v0.8 表中列为"保留 / OOP";v0.9 起启用为"协议违反"原生码 |
+
+> **优先级**:`E0032` / `E0050` / `E0051` 在 `CALL_METHOD` 入口处按下列顺序校验,
+> 命中即抛,不级联:
+>
+> 1. **对象接收者类型**:`obj` 不是 INSTANCE → §13 的实例化失败(语义上
+>    先于协议状态机),归 §3 / §8(`E0030` 类型错误);
+> 2. **协议状态机状态**:协议处于 `Pending` / `Done` → `E0050`(`E0050` 优先
+>    于 `E0051`);
+> 3. **协议 step 匹配**:上述满足后才校验方法名 / arg 与当前协议步期望
+>    → 不匹配 → `E0051`。
+>
+> **`E0032` 的两个触发流**分离实现:
+> - 不可变 `SET_PROP`:在 `SET_PROP` 内路径上命中,**先于** §13.3.2 的字段存在
+>   检查(避免先报字段不存在再报不可变);
+> - `THIS` 越界:在 §15 `LinearDepth` 跟踪点上命中,**先于** §13.4 / §14.3 一切
+>   协议校验。
+>
+> v0.9 不引入新的 ERR 消费者;三道原生码捕获点与 §8.3 ERR 消费者注册表兼容
+> (plan §13.4 声明)。
+
+#### 11.2.5 v0.9 兼容性
 
 - v0.8 程序**不**依赖 `E0055` / `E0057` 触发路径 → 在 v0.9 上行为不变;
 - v0.8 程序依赖 `ChannelWouldBlock` ERR 载荷 → 同步通道 SEND / RECV 在 v0.9 真挂起后
   **不再**返该载荷(详 §17.2.6);迁移方式:用 `TRY_SEND` / `TRY_RECV` 替代即可;
 - v0.8 `TASK_CANCEL(task)` 不带 reason 的旧语法 → v0.9 仍合法,reason 隐式 `{}`;
 - v0.8 `AWAIT` 已取消任务返 `ERR(kind="Cancelled")` → 在 v0.9 仍合法,新增可选
-  `reason` 字段(详 §17.3.2),旧消费代码按 `kind` 匹配仍兼容。
+  `reason` 字段(详 §17.3.2),旧消费代码按 `kind` 匹配仍兼容;
+- v0.8 程序**不**依赖"THIS 越界"宽松行为 → 在 v0.9 上行为不变(详 §15.3);
+- v0.8 程序若依赖了 `E0032` 在并发下扩展触发(impl 偏差 D-002 在 v0.8 spec §17.4
+  注记) → v0.9 起 `E0032` 严格按 §13.3.2 / §15.1 触发,跨任务闭包捕获等行为
+  进入 `D9-NNN` 偏差登记(plan §3.7 / Step 14)。
 
 ### 11.3 警告码
 
@@ -151,27 +185,386 @@ v0.9 §11.3 警告码表沿用 v0.8 原有 8 行(`W0010` / `W0011` / `W0014` / `
 > v0.9 新增 `E0065` 退出码路径:`Scheduler::detect_deadlock_l1` 触发后,CLI 退出码为 `1`,
 > 与其他错误码路径一致;`--format json` 输出的 `errorCategory` 字段值为 `"deadlock"`。
 
-## 13 — 16 OOP 真实实现占位
+## 13 OOP 关键字与对象模型
 
-> **§13-§16 章节号在 v0.9.0 release tag 上冻结**(ADR-0019 §4.4.3 草稿 2 采纳)。
-> v0.9.0 派生时(`Step 12` 阶段)将填充:
+> **[v0.9 新增章节]** 取代 v0.7 / v0.8 阶段 `CLASS` / `NEW` / `THIS` / `GET_PROP` /
+> `SET_PROP` / `CALL_METHOD` 的"已注册但未实现"占位状态(plan §4.1 / §4.3)。
 >
-> - **§13 OOP 关键字与对象模型**(`CLASS` / `NEW` / `THIS` / `GET_PROP` / `SET_PROP` /
->   `CALL_METHOD` 等),对象字典构造器 + `NEW` 实例化 + 字段可变性;
-> - **§14 行为类型与会话类型协议**,含 v0.9.0 落地集:
->   - 顺序:完整支持;
->   - 选择:`⊕` 内部选择(调用方决定);
->   - 递归:μ 骨架完整支持(`{rec: μX. { get: ?int.X, close: end }}`);
->   - 外部选择 `&` / 命名协议 `typealias` / 并行 `par` 留 v0.9.1+。
->   `CALL_METHOD` 走协议状态机,违规 → `E0051`。
-> - **§15 `THIS` 与线性 capability**,Wadler 1990 风格实质检查:不可存入容器 /
->   不可跨 call 边界 / 不可跨 `AWAIT` 边界,越界 → `E0032`;
-> - **§16 OOP 与并发的交互**(`CALL_METHOD` 内的 `YIELD` / `CHANNEL_*`),
->   algebraic-effect framing 与 §17 共享术语。
+> **章节号冻结规则**(ADR-0019 草稿 2):v0.9.0 release tag 上 §13 / §14 /
+> §15 / §16 章节号**冻结**;v0.9.1 只能追加 sub-section(§14.1 / §14.2 / ...),
+> 不重新编号。
 
-附录 G"标记 `OOP 未实现` 占位条目"在 Step 12 填入后全部迁移到真实现条目。
-本占位章节号不会改变;v0.9.1 只能追加 sub-section(§14.1 / §14.2 / ...),
-不重新编号。
+### 13.1 关键字与内建构造
+
+| 构造 | 签名 | 类别 | 引入 | 状态 | 语义摘要 |
+|------|------|------|------|------|----------|
+| `CLASS(name, parent_proto, fields)` | `-> CLASS` | macro | v0.9 | 实现(§13.2) | 创建对象字典类(plan §4.3);`parent_proto` 是 §14 行为类型协议表达式 |
+| `NEW(cls, args...)` | `-> INSTANCE` | macro | v0.9 | 实现(§13.2) | 按协议状态机依次校验 `init(...)` 流程,实例化对象 |
+| `GET_PROP(obj, key)` | `-> v / E0037` | builtin | v0.9 | 实现(§13.3) | 字典读;`obj` 必须为 INSTANCE 类型;键不存在 → `E0037` |
+| `SET_PROP(obj, key, value)` | `-> NULL` | builtin | v0.9 | 实现(§13.3) | 字段标 `mutable` 才允许;否则 → `E0032` |
+| `CALL_METHOD(obj, method, args...)` | `-> v / E0051` | builtin | v0.9 | 实现(§14) | 走协议状态机;违反 → `E0051` |
+| `THIS` | `THIS -> 当前实例` | macro | v0.9 | 实现(§15) | 真线性 capability(§15) |
+
+> **保留兼容性**:v0.7 / v0.8 阶段调用 `CLASS` / `NEW` / `THIS` / `GET_PROP` / `SET_PROP` /
+> `CALL_METHOD` 在 v0.8.1 实现下返回 §11.2 占位错误;v0.9 起改为真实现,行为见下。
+> **不在 v0.9 引入**面向对象的动态特性:extends 链(类继承)、抽象类、静态方法、
+> 字段级生命周期引用、构造重载。后续版本(v0.9.1+)可考虑。
+
+### 13.2 CLASS / NEW 对象字典构造
+
+#### 13.2.1 CLASS 构造字典
+
+`CLASS(name, parent_proto, fields)` 是对象类的 **dictionary 构造器**:
+
+- `name` 是字符串类名(`name?` 可选,无表示匿名类);
+- `parent_proto` 是 §14 行为类型协议表达式;无显式协议可写 `null` 或省略;
+- `fields` 是字段名 → 值映射,每个字段隐式声明 `mutable = false`,
+  由 `SET_PROP` 落地时校验(§13.3);`fields` 中可标 `mut:name` 声明可写
+  — `CLASS("Counter", null, [count: 0, mut:tag: "draft"])`。
+
+```wlwl
+CLASS("Counter",
+    null,            // no session protocol
+    [count: 0]       // immutable fields; use mut: for mutable
+)
+```
+
+#### 13.2.2 NEW 实例化 + init 协议
+
+`NEW(cls, args...)`:
+
+1. 克隆 `cls.fields` 为初始字典(深拷贝);
+2. 若 `cls.parent_proto` 声明 `init` 方法,按 §14 协议状态机依次调用,
+   把 `args...` 透传;协议失败 → `E0051`;
+3. 返回 INSTANCE(`Value::Instance` 内部表示,§17.4 沿用 `Runtime::Instance` enum)。
+
+> **v0.9 不提供 init 重载**:args 长度必须严格匹配 `init` 的协议位置 / 类型。
+
+#### 13.2.3 INSTANCE 内部表示
+
+```rust
+// impl/crates/wlwl-eval/src/value.rs (Step 9a-1 已落)
+Value::Instance(InstanceRef)
+struct InstanceRef {
+    class: Value::Class,                      // CLASS 返回的模板
+    fields: Rc<RefCell<Vec<NamedField>>>,     // 共享,但字段可变性强制
+    linear_this_depth: RefCell<LinearDepth>,  // §15 线性 THIS 跟踪
+    protocol_state: RefCell<Option<ProtocolStateMachine>>, // §14
+}
+```
+
+`TYPE(instance) == "INSTANCE"`,`TYPE(class) == "CLASS"`。字典恒等见 §2.4。
+
+### 13.3 GET_PROP / SET_PROP 字段访问
+
+#### 13.3.1 GET_PROP
+
+`GET_PROP(obj, key)` 是普通字典读:
+
+- `obj` 必须是 `INSTANCE` 类型(否则 → `E0030` 类型错误);
+- `key` 不存在 → `E0037`(沿用 v0.8 §11.2);
+- `key` 对应字段 **`mutable = true`** 时 **仍可读**(GET 不修改状态)。
+
+#### 13.3.2 SET_PROP 字段可变性校验
+
+`SET_PROP(obj, key, value)`:
+
+1. `obj` 必须是 `INSTANCE`;
+2. 字段 `key` 存在(否则 `E0037`);
+3. 字段在 `CLASS` 字典中显式标 `mut:`(否则 `E0032` — 不可变 SET);
+4. 写入 `value`,返回 `NULL`。
+
+> **v0.9 行为变更(相对 v0.7 / v0.8)**:v0.9 不再依赖 v0.6 时代"闭包调用可升级单元格"
+> 的历史性偏差(已写进 v0.7 / v0.8 偏差登记 D-002);**字段可变性在 `CLASS`
+> 构造时即确定**,不因外部持有引用而升级。这与 §3.3 "标志不再改变"原则 + §17.4
+> 实现注记一致。
+
+### 13.4 与第 8 章的关系
+
+- `GET_PROP` / `SET_PROP` / `CALL_METHOD` **不是** §8.3 ERR 消费者:
+  实参求值为 `ERR` 时按 §8.2 透明传播,函数体不执行。
+- `GET_PROP` 字段不存在 → `E0037`(原生码捕获点);不通过 ERR 载荷。
+- `SET_PROP` 违反可变性 → `E0032`(原生码);不通过 ERR 载荷。
+- `CALL_METHOD` 协议违反 → `E0051`(原生码);不通过 ERR 载荷。
+
+> 与 §17.5 对照:并发边界的 `Cancelled` / `ChannelWouldBlock` ERR 载荷在 v0.9
+> 与 OOP 的 `E0032` / `E0050` / `E0051` 原生码**分流为两条独立事件流**,不冲突。
+
+---
+
+## 14 行为类型与会话类型协议
+
+> **[v0.9 新增章节]** 实现会话类型(Session Types)对 `CLASS` 方法调用次序的
+> 静态 + 运行时保证。学术依据:Honda, Yoshida, Carbone 2008;Lindley & Morris
+> (Links);Wadler 1990 线性类型。这一章节是 v0.9 学术身份(plan §0.5)的核心。
+
+### 14.1 三类协议构造
+
+每个 `CLASS` 可声明**会话类型协议**,约束方法调用次序。v0.9 支持三类构造
+(继 plan §4.4.3 / ADR-0019 草稿 2):
+
+| 构造 | 字面 | 语义 | v0.9.0 |
+|------|------|------|--------|
+| **顺序** | `{ a: T1, b: T2, c: end }` | a 必须先于 b,b 必须先于 c;end 表示终止 | **完整支持** |
+| **选择** | `{ a: T1 ⊕ b: T2 }` 或 `{ a: T1 & b: T2 }` | 内部选择 `⊕`:调用方必须在 a / b 二选一(主动);外部选择 `&`:被调用方必须提供 a / b 二选一(被动) | `⊕` **完整支持**;`&` **留 v0.9.1+**(branch 爆炸) |
+| **递归** | `{ rec: μX. { get: ?int.X, close: end } }` | 协议可在末尾递归引用自身 | **完整支持(μ 骨架)** |
+| **命名协议** | `typealias` / named protocols | 引用的协议单独命名,可复用 | **留 v0.10+**(类型系统扩展) |
+| **并行** | `{ a, b \| par }` | 分支并行 | **留 v0.10+**(语义复杂) |
+
+> **v0.9.0 落地集**:顺序 + 选择(`⊕`) + μ 递归骨架。该集合在 §9.1 Step 9b
+> 实现(session types P0/P1 + protocol state machine),锁测试覆盖协议状态机
+> 三种合法转换 + 多条违规路径(`E0051` 锁测试估 ~10 项,plan §9.3)。
+
+### 14.2 协议表达式语法(EBNF)
+
+```ebnf
+Protocol      = "{" ProtocolFields "}" .
+ProtocolRec   = "{" "rec" ":" "μ" identifier "." Protocol "}" .   (* 递归 *)
+ProtocolFields =
+    ProtocolField { "," ProtocolField } .
+
+ProtocolField =
+      identifier ":" ProtocolTail                          (* 普通 *)
+    | identifier ":" ProtocolTailOp                         (* 选择 ⊕ *)
+    .
+
+ProtocolTail  =
+      "end"                                                (* 终止 *)
+    | "?" Type "." ProtocolTail                             (* 输出:T → 接着 ProtocolTail *)
+    | identifier                                           (* 递归引用 X *)
+    | Protocol                                             (* 子协议 *)
+    .
+
+ProtocolTailOp =
+      ProtocolTail "⊕" ProtocolTail                         (* 内部选择 *)
+    | ProtocolTail "&" ProtocolTail                         (* 外部选择,v0.9.1+ *)
+    .
+
+Type          = "int" | "str" | "bool" | "null" | identifier .
+```
+
+### 14.3 协议状态机与 `CALL_METHOD` 校验
+
+#### 14.3.1 每实例的状态机
+
+每个 `INSTANCE` 都挂一个 `protocol_state` 状态机:
+
+```rust
+RefCell<Option<ProtocolStateMachine>>
+
+enum ProtocolStateMachine {
+    Pending,                                  // 未启动
+    AtStep {
+        remaining: ProtocolAst,               // 后续可调方法的协议期望
+        position: usize,                       // 已完成位置
+    },
+    Done,                                      // 协议已走完,不能再调
+    Exhausted,                                 // 调用了 end 后的方法
+}
+```
+
+#### 14.3.2 CALL_METHOD 校验路径
+
+`CALL_METHOD(obj, method, args...)`:
+
+1. `obj` 必须为 `INSTANCE`(否则 `E0030`);
+2. 取 `protocol_state`,若 `Pending` → `E0050`(协议未启动);
+   若 `Done` → `E0050`(协议已终止);
+3. 当前协议步的 `method` 必须匹配期望;不匹配 → `E0051`;
+4. **内部选择 `⊕`**:调用方传入的 `method` 必须在 `⊕` 的 `left` / `right` 二选一;
+5. 匹配后:
+   - 普通:`remaining` 推到协议位置 + 1;
+   - `⊕`:`remaining` 推到选定分支的位置 0;
+   - μ 递归:若新位置是 μ 变量引用,展开到 μ 头(重新构造剩余);
+   - `end`:标 `Done`。
+6. 任何错配 → `E0051`(protocol violation)。
+
+#### 14.3.3 锁测试覆盖(plan §9.3 estimate)
+
+| 锁测试 | 场景 | 期望 |
+|--------|------|------|
+| `class_with_session_type_initializes` | CLASS with init: end + NEW(cls) | ok |
+| `class_with_matching_method_proceeds` | Counter protocol + first `get` | ok |
+| `class_protocol_violation_returns_e0051` | 调用不匹配的方法 | E0051 |
+| `class_choice_left_branch_proceeds` | `⊕` left branch | ok |
+| `class_choice_right_branch_proceeds` | `⊕` right branch | ok |
+| `class_mu_recursion_repeats_until_close` | `μX. { get, close }` | get 后再 get 也 ok;close → Done |
+| `class_protocol_done_blocks_further_calls` | end 后调任何方法 | E0050 |
+| `class_init_violation_returns_e0051` | 新实例化时 init 协议错配 | E0051 |
+| `class_protocol_step_count_matches` | protocol step counter | 1, 2, 3, ... |
+| `class_no_protocol_keeps_unrestricted` | parent_proto = null | 任意顺序都 ok |
+
+### 14.4 与并发的关系
+
+- 协议状态机**不跨任务共享**,每个 `INSTANCE` 自带;`AWAIT` 不阻塞协议状态机。
+- §16 详细讨论 `CALL_METHOD` 内的 `YIELD` / `CHANNEL_*` 的交互。
+
+### 14.5 协议与 form 块(P0 阶段简化)
+
+**v0.9.0 不支持运行时协议派生**(用户不能在运行时构造 `CLASS` 的协议);
+协议字面在 `CLASS` 第二个参数位静态写入。这与 v0.7 / v0.8 spec §A.2 `Block`
+形式一致,无新文法规格改动。
+
+---
+
+## 15 `THIS` 与线性 capability
+
+> **[v0.9 新增章节]** `THIS` 在 v0.9 是 **真线性 capability**(Wadler 1990 风格),
+> 不只是"越界报错"。
+> 学术依据:Wadler 1990《Linear types can change the world》;Roc、Austral 实战经验。
+
+### 15.1 线性 capability 的本质
+
+`THIS` 在 `CLASS` 实例方法(`CALL_METHOD` / `NEW` 的 init 块 / `SET_PROP` on
+**self**)中是**当前实例的引用**,它在以下三种边界**必须被消费一次**:
+
+| 边界 | 越界语义 |
+|------|---------|
+| **DICT / ARRAY 容器捕获** | `LET(x, [THIS])` / `LET(d, [this: THIS])` / 闭包环境捕获 → `E0032` |
+| **跨 `CALL_METHOD` 边界** | 把 `THIS` 透传到非 self 方法 / 透传给外部函数 → `E0032`(linear cell 不可"借出"语义) |
+| **跨 `AWAIT` 边界** | 在异步上下文(`CHANNEL_*` / `YIELD()` 调用前)保留 `THIS` 跨挂起点 → `E0032` |
+
+### 15.2 运行时跟踪
+
+每个 `INSTANCE` 都有 `linear_this_depth: RefCell<LinearDepth>`:
+
+```rust
+struct LinearDepth {
+    /// 当前 call-frame / scope 嵌套深度。每进入 self 方法 +1,离开 -1。
+    /// 越界(降到 0 后又尝试消费)→ E0032。
+    current: usize,
+    /// 每层 frame 是否"消费"了 THIS(true = 已结算;false = 仍有未消费引用)
+    consumed: Vec<bool>,
+}
+```
+
+`THIS` 在每个 self 调用入口处 `consumed = false`,在出口处必须 `consumed = true`,
+否则抛出 `E0032`。
+
+### 15.3 与 v0.7 / v0.8 的差异
+
+| 路径 | v0.7 / v0.8 | v0.9 |
+|------|-------------|------|
+| `THIS` 跨函数捕获 | 不报错(实现偏差 D-002 + spec §17.4 注记) | `E0032` |
+| `THIS` 跨 `AWAIT` 边界 | 不报错 | `E0032` |
+| `THIS` 存入 DICT 字段 | 不报错 | `E0032` |
+| 外部代码持 `THIS` 直接调用方法 | 允许("this_escape_lint") | `E0032` |
+
+> **v0.9 兼容性**:v0.7 / v0.8 程序**不**依赖"THIS 越界"宽松行为时,在 v0.9 上
+> 行为不变;依赖"THIS 越界"的程序迁移至 v0.9 需要用闭包或将方法接收者改写。
+> 详见 §13-§16 章节落地后追加的 D9-NNN 偏差登记(plan §3.7 / Step 14)。
+
+### 15.4 锁测试覆盖(plan §9.3 estimate)
+
+| 锁测试 | 场景 | 期望 |
+|--------|------|------|
+| `this_in_dict_returns_e0032` | `LET(d, [this: THIS])` inside self | E0032 |
+| `this_in_array_returns_e0032` | `[THIS]` inside self | E0032 |
+| `this_in_closure_returns_e0032` | `LET(f, FUN(() , THIS))` | E0032 |
+| `this_across_await_returns_e0032` | `AWAIT(THIS)` 上下文 | E0032 |
+| `this_within_self_method_proceeds` | 普通 self 方法体读 THIS | ok |
+| `set_prop_immutable_returns_e0032` | `SET_PROP(obj, immut_field, v)` | E0032 |
+| `this_external_alias_attempt_returns_e0032` | `LET(x, THIS)` 然后跨 frame 用 | E0032 |
+
+---
+
+## 16 OOP 与并发的交互
+
+> **[v0.9 新增章节]** `CALL_METHOD` 内的并发原语交互规范;与 §17 algebraic-effect
+> framing 共享术语。
+
+### 16.1 `CALL_METHOD` 内的 `YIELD`
+
+CALL_METHOD 调用过程中,`THIS` 引用 + 当前实例状态都是线性的,但 **挂起**
+(via `YIELD()` / channel send / channel recv)会把任务状态翻为
+`Suspended { tag, reason }`,**离开 `CALL_METHOD` 同步栈**:
+
+- 实例的 `protocol_state` 在挂起时**快照**,`THIS` 的 `linear_this_depth`
+  在挂起时**冻结**;
+- 任务恢复时,实例的 `protocol_state` 与 `linear_this_depth` **重新激活**
+  到挂起时位置;
+- 协议状态机在挂起 → 恢复之间**不**推进(等同 `Scheduler` 接管 `Running`);
+  **不允许跨 `Suspended` 边界的协议推进**(防止 `YIELD()` 期间状态被外部代码
+  修改,plan §17.7 "在飞兄弟取消" 的具体应用)。
+
+### 16.2 跨 `AWAIT` 边界的 `THIS`
+
+`§15.1` 已限制 `THIS` 不可跨 `AWAIT` — 但 v0.9 `AWAIT` 内部的 `THIS` 行为是
+细化的:
+
+- `THIS` 在 `SPAWN(child, ...)` 闭包**内**引用 → `E0032`(子任务无 self 上下文);
+- `THIS` 在 `SPAWN(child, ...)` 闭包**外捕获** → 同 §15.1 `E0032`;
+- `THIS` 在 `AWAIT(child)` 之前捕获 → 任务级 `cancel` 在 `E0032` 之外另作处理
+  (`Cancelled { reason }` 载荷,§17.3.2);
+- 父任务的 `Cancelled` 在 `AWAIT` 恢复后传播到当前 `CALL_METHOD` 内:
+  - 恢复点直接抛 `E0053`(句柄无效 — 沿用 v0.8 §17.1),或
+  - `TASK_IS_CANCELLED()` 返回 `TRUE`,由 self 方法主体决定处理。
+
+> **v0.9.0 不细化**:`THIS` 在 `SHIELD` 内的特殊语义。`SHIELD` 对 `THIS` 的
+> 影响等同"取消推迟":**`THIS` 在 `SHIELD` 内任意位置引用都按 §15.1 标准
+> 校验**;`SHIELD` 仅延后取消,不延后线性 capability 校验。
+
+### 16.3 实例字段共享
+
+跨任务共享 INSTANCE 字段**不**在 v0.9 推荐范围。`§3.4 SET` 应用于
+`LET MUT`(§3.1);对 instance 字段的多任务读写,需要通过 channel 协议
+显式编排(plan §17.5 v0.8 沿用)。`SET_PROP(obj, k, v)` 跨任务不引入新
+可见性规则,与 v0.8 spec §17.4 注记一致。
+
+### 16.4 与代数效果 runtime 命名扩展(ADR-0019 §4.4.3)
+
+`§17.4.3` 已落 `Effect` 枚举三变体(Yield / ChannelOp / Cancelled)。Step 9b
+(plan §9.1 step 9 子项)沿 OOP 落地时,`Effect` 枚举扩展两变体:
+
+```rust
+enum Effect {
+    Yield { explicit: bool },
+    ChannelOp { dir: Direction, channel: RcHandle, value: Option<Value> },
+    Cancelled,
+    // Step 12 / Step 13 派生时引入(本稿仅占位)
+    MethodCall { obj: Value, method: Symbol, args: Vec<Value> },
+    ProtocolViolation {
+        protocol: ProtocolAst,
+        method: Symbol,
+        expected: Vec<Symbol>,
+        got: Symbol,
+    },
+}
+```
+
+`Step 12` 阶段当前只动 spec,**不动 impl `Effect` 枚举的扩展**(impl 留 Step 12
+子阶段 2 处理)。spec 把命名空间先声明,以便子阶段 2 落地时严格按 spec 字段
+顺序 / 命名实现。
+
+### 16.5 锁测试覆盖(plan §9.3 estimate)
+
+| 锁测试 | 场景 | 期望 |
+|--------|------|------|
+| `call_method_with_yield_does_not_advance_protocol` | `CALL_METHOD(obj, "step", FUN(() , YIELD()))` | 协议位置不变,SCHEDULE 恢复后 ok |
+| `call_method_with_channel_recv_does_not_advance_protocol` | `CALL_METHOD` 内 `CHANNEL_RECV` | 协议位置不变,RECV 完成后继续 |
+| `this_escape_into_spawn_body_returns_e0032` | `SPAWN(FUN(() , THIS))` | E0032 |
+| `this_in_await_chain_returns_e0032` | `AWAIT(child)` 上下文外捕获 `THIS` | E0032 |
+| `instance_field_concurrent_set_via_set_prop` | 多 task SET_PROP 同一字段 | 沿用 v0.8 §17.4 模型(同 §3.4 SET) |
+
+---
+
+### §13-§16 总览小结
+
+- **§13 OOP 关键字与对象模型**:从"已注册但未实现"翻为真实现,占位错误码
+  `E0032` 启用为不可变 SET 错误;
+- **§14 行为类型**:落地集 = 顺序 + 内部选择 `⊕` + μ 递归骨架;
+  协议违反 → `E0051`,协议未启动 / 已终止 → `E0050`;
+- **§15 线性 `THIS`**:Wadler 1990 风格实质跟踪,三层越界边界 → `E0032`;
+- **§16 OOP × 并发**:`CALL_METHOD` 内 `YIELD` / `CHANNEL_*` 不推进协议状态机;
+  共享字段不引入新可见性规则;`Effect` 命名预留 `MethodCall` / `ProtocolViolation`
+  字面(impl 留 Step 12 子阶段 2)。
+
+章节号冻结规则(ADR-0019 §4.4.3 草稿 2 采纳):§13 / §14 / §15 / §16
+**在 v0.9.0 release tag 上冻结**;v0.9.1 只能追加 sub-section。
+
+附录 G 重生成:`gen-appendix-g` 在 Step 12 子阶段 2 完成 impl
+`CLASS` / `NEW` / `THIS` 实际落地后重跑;wip0.9 wip 阶段 spec-derive 完成时
+**附录 G 不变**(impl 签名字符串未动),详见附录 G 头部注记。
 
 ## 17 并发(结构化并发与通道 — algebraic-effect 模型)
 
