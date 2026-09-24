@@ -1,7 +1,7 @@
 ---
 source: crates/wlwl-error/src/lib.rs
-assertion_line: 1300
-expression: "serde_json::json!({\n    \"E0052\": code_snap(ErrorCode::E0052, \"scope_fn_not_function\"), \"E0053\":\n    code_snap(ErrorCode::E0053, \"task_handle_invalid\"), \"E0054\":\n    code_snap(ErrorCode::E0054, \"channel_send_closed\"), \"E0055\":\n    code_snap(ErrorCode::E0055, \"channel_recv_closed\"), \"E0056\":\n    code_snap(ErrorCode::E0056, \"spawn_arity_mismatch\"), \"E0057\":\n    code_snap(ErrorCode::E0057, \"cross_task_cell_immutable\"), \"E0058\":\n    code_snap(ErrorCode::E0058, \"spawn_no_active_scope\"),\n})"
+assertion_line: 1340
+expression: "serde_json::json!({\n    \"E0052\": code_snap(ErrorCode::E0052, \"scope_fn_not_function\"), \"E0053\":\n    code_snap(ErrorCode::E0053, \"task_handle_invalid\"), \"E0054\":\n    code_snap(ErrorCode::E0054, \"channel_send_closed\"), \"E0056\":\n    code_snap(ErrorCode::E0056, \"spawn_arity_mismatch\"), \"E0058\":\n    code_snap(ErrorCode::E0058, \"spawn_no_active_scope\"),\n})"
 ---
 {
   "E0052": {
@@ -67,27 +67,6 @@ expression: "serde_json::json!({\n    \"E0052\": code_snap(ErrorCode::E0052, \"s
     "source_line": null,
     "suggestion_code": []
   },
-  "E0055": {
-    "code": "E0055",
-    "error_category": "concurrent",
-    "error_schema_version": "1.1.0",
-    "hint": null,
-    "idempotent": false,
-    "location": {
-      "col_end": 1,
-      "col_start": 1,
-      "file": "snap.wll",
-      "line": 1,
-      "line_end": 1
-    },
-    "message": "snapshot for channel_recv_closed",
-    "related": [],
-    "retry_after": null,
-    "retryable": false,
-    "severity": "error",
-    "source_line": null,
-    "suggestion_code": []
-  },
   "E0056": {
     "code": "E0056",
     "error_category": "concurrent",
@@ -102,27 +81,6 @@ expression: "serde_json::json!({\n    \"E0052\": code_snap(ErrorCode::E0052, \"s
       "line_end": 1
     },
     "message": "snapshot for spawn_arity_mismatch",
-    "related": [],
-    "retry_after": null,
-    "retryable": false,
-    "severity": "error",
-    "source_line": null,
-    "suggestion_code": []
-  },
-  "E0057": {
-    "code": "E0057",
-    "error_category": "concurrent",
-    "error_schema_version": "1.1.0",
-    "hint": null,
-    "idempotent": false,
-    "location": {
-      "col_end": 1,
-      "col_start": 1,
-      "file": "snap.wll",
-      "line": 1,
-      "line_end": 1
-    },
-    "message": "snapshot for cross_task_cell_immutable",
     "related": [],
     "retry_after": null,
     "retryable": false,

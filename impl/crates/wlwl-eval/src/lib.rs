@@ -7902,9 +7902,7 @@ impl Evaluator {
             ErrorCode::E0056 => d.with_suggestion(Suggestion::Note {
                 description: "SPAWN passes zero arguments to its fn, so the fn must have zero parameters: `SPAWN(FUN(() , body))`. SCOPE / SHIELD take exactly one fn argument".into(),
             }),
-            ErrorCode::E0057 => d.with_suggestion(Suggestion::Note {
-                description: "SET on a non-shared cell: the variable was not captured by a child task's closure. Mark the LET as `LET MUT(name, ...)` before SPAWN so the child shares the cell (plan §5.5 / E-CloCap)".into(),
-            }),
+            // E0057 removed v0.9 Step 6 (ADR-0018)
             ErrorCode::E0058 => d.with_suggestion(Suggestion::Note {
                 description: "SPAWN requires an enclosing SCOPE block (plan §10 D17: no implicit runtime scope). Wrap the SPAWN in a SCOPE call: `SCOPE(FUN(() , SPAWN(...)))`".into(),
             }),
@@ -9792,12 +9790,12 @@ mod tests {
     // 试图 SET 会得到 E0024。如果 cell 由 LET MUT 创建,行为与
     // 单 task 一致。不引入新可见性规则,完全沿用 v0.6 §3.3/§3.4。"
     //
-    // C7 evaluation of E0057 (plan §4.4 "E0024 复用,待评估"): stay
-    // on **E0024**. §5.5 forbids new visibility rules, so the
+    // C7 evaluation (plan §4.4 "E0024 复用,待评估"): stays on
+    // **E0024**. §5.5 forbids new visibility rules, so the
     // cross-task SET failure is the same E0024 the single-task path
-    // raises. E0057 remains registered (concurrent category) but
-    // has no trigger site — reserved if a future task-boundary
-    // cell rule ever diverges from §3.3/§3.4.
+    // raises. E0057 was REMOVED in v0.9 Step 6 (ADR-0018); there
+    // is no native-code trigger site for it in v0.9. The unified
+    // E0024 path is the canonical surface.
     //
     // E-CloCap note: invoke_closure upgrades EVERY cell in the
     // callee's captured env to MUTABLE (v0.6 §6.4), including
@@ -9873,7 +9871,8 @@ mod tests {
         assert_eq!(
             err.diagnostic().code,
             ErrorCode::E0024,
-            "expected E0024 (not E0057) per plan §5.5 — no new visibility rules"
+            "expected E0024 per plan §5.5 — no new visibility rules; \
+             E0057 was removed in v0.9 Step 6 (ADR-0018)"
         );
     }
 
@@ -9887,16 +9886,13 @@ mod tests {
         assert_eq!(err.diagnostic().code, ErrorCode::E0024);
     }
 
-    #[test]
-    fn c7_e0057_has_no_trigger_site_after_eval() {
-        // C7 evaluation of plan §4.4 E0057: reuse E0024; E0057 stays
-        // registered but untriggered. This test pins that decision so
-        // a later phase that wants E0057 must update §5.5 + this
-        // test together.
-        assert_eq!(ErrorCode::E0057.as_str(), "E0057");
-        // The cross-task immutable-cell path reports E0024 (see
-        // c7_set_on_uncaptured_let_stays_e0024_across_spawn).
-    }
+    // [v0.9 Step 6 / ADR-0018] E0057 is REMOVED from the registry. The
+    // `c7_e0057_has_no_trigger_site_after_eval` test that previously
+    // pinned "E0057 stays registered but untriggered" is replaced
+    // by `c7_e0057_removed_in_v09_step_6` below; see plan §3.6
+    // (草稿 2 修正) and ADR-0018 for rationale. The cross-task
+    // immutable-cell path continues to report E0024 (see
+    // `c7_set_on_uncaptured_let_stays_e0024_across_spawn`).
 
     // ────────────────────────────────────────────────────────────
     // [v0.7 Phase C8] cross-task closure-capture regression (plan §5.5)
@@ -10889,22 +10885,23 @@ mod tests {
         );
     }
 
-    // ─── v0.8 §2.6 / D8-003: E0055 / E0057 are RESERVED, no trigger ───
+    // ────────────────────────────────────────────────────────────
+    // [v0.9 Step 6 / ADR-0018] E0055 / E0057 REMOVAL lock tests.
     //
-    // E0055 was reserved for "CHANNEL_RECV after close raises native code";
-    // E0057 was reserved for "cross-task shared immutable cell raises native
-    // code". v0.7 / v0.8 carry these signals as **values / other codes**:
-    //
-    //   E0055 path: CHANNEL_RECV after close returns a structured
-    //               Value::Err(Dict{kind: "ChannelClosed", ...}) payload,
-    //               not WlwlError(E0055).
+    // Per ADR-0018 (plan §3.6 草稿 2 修正 / §9.2 default):
+    //   E0055 path: CHANNEL_RECV after close returns the structured
+    //               Value::Err(Dict{kind: "ChannelClosed", ...}) payload
+    //               only — no native WlwlError(E0055) trigger path exists.
     //   E0057 path: cross-task immutable-cell mutation raises the unified
-    //               WlwlError(E0024) (immutable-cell error), not E0057.
+    //               WlwlError(E0024) — no native WlwlError(E0057) trigger
+    //               path exists; the row is removed from §11.2.
     //
     // Plan §2.6 places the lock test in `wlwl-error/tests/`, but
     // wlwl-error has no dev-dep on wlwl-eval/wlwl-parser — to actually
     // exercise the trigger paths we need the eval crate. Test lives
     // here, adjacent to the D-C channel tests, with a deviation note.
+    // ────────────────────────────────────────────────────────────
+
     #[test]
     fn e0055_channel_recv_after_close_does_not_raise_native_code() {
         // Drive the E0055 trigger path: CHANNEL_NEW -> CHANNEL_CLOSE ->
@@ -10952,31 +10949,23 @@ mod tests {
 
     #[test]
     fn e0057_immutable_cell_set_raises_e0024_not_e0057() {
-        // Drive the E0057 trigger path: SET on an immutable LET cell
-        // (no LET MUT). The unified immutable-cell code is E0024; the
-        // reserved E0057 (originally for "cross-task shared cell")
-        // must NOT trigger in v0.7/v0.8.
-        //
-        // We use a single-task form for the test because:
-        //   1. The runtime collapses both single-task and cross-task
-        //      immutable-cell mutation to the same E0024 site (the
-        //      cross-task share check itself was never wired).
-        //   2. E0057 has no trigger code path regardless of single
-        //      vs cross task — the assertion is "no E0057 surfaces".
+        // Drive the (former) E0057 trigger path: SET on an immutable
+        // LET cell (no LET MUT). The unified immutable-cell code is
+        // E0024. After v0.9 Step 6 / ADR-0018 the E0057 row is
+        // REMOVED from the registry, so the test now asserts only
+        // that the code is E0024 — no E0057 surface to compare
+        // against (the row simply does not exist).
         let src = "LET(y, 0); SET(y, 1);";
         let err = run(src).expect_err(
-            "immutable-cell mutation must raise WlwlError; the code \
-             must be E0024, NOT E0057",
+            "immutable-cell mutation must raise WlwlError E0024 (E0057 \
+             row removed in v0.9 Step 6 / ADR-0018)",
         );
         assert_eq!(
             err.diagnostic().code,
             ErrorCode::E0024,
-            "immutable-cell mutation must surface as E0024; E0057 must \
-             NOT trigger. Got: {:?}",
+            "immutable-cell mutation must surface as E0024. Got: {:?}",
             err.diagnostic().code,
         );
-        // Belt-and-suspenders: explicitly NOT E0057.
-        assert_ne!(err.diagnostic().code, ErrorCode::E0057);
     }
 
     // ─── Phase D-D: leak detector ────────────────────────────────

@@ -68,19 +68,26 @@ pub enum ErrorCode {
     //   E0052  SCOPE(fn) called with non-function value (Phase C)
     //   E0053  TASK handle invalid (out of generation) (Phase C/F)
     //   E0054  CHANNEL_SEND on closed channel (Phase D)
-    //   E0055  reserved (was: CHANNEL_RECV / TRY_RECV after close). v0.7/v0.8
-    //          no trigger path — closure signal carried by ERR(kind="ChannelClosed")
-    //          payload per spec §8.1, not by a native error code.
+    //   [E0055 removed in v0.9 Step 6 / ADR-0018] previously RESERVED
+    //          ("CHANNEL_RECV / TRY_RECV after close"); v0.9 deletes the
+    //          row. The closure signal rides exclusively on the
+    //          structured ERR(kind="ChannelClosed") payload per
+    //          spec §17.2 (algebraic-effect framing per ADR-0017
+    //          §0.5); no native code trigger path remains.
     //   E0056  SPAWN arity mismatch (Phase C)
-    //   E0057  reserved (was: cross-task shared cell but cell immutable). v0.7/v0.8
-    //          no trigger path — same condition raises E0024 (immutable-cell mutation).
+    //   [E0057 removed in v0.9 Step 6 / ADR-0018] previously RESERVED
+    //          ("cross-task shared cell but cell immutable"); v0.9
+    //          deletes the row. Both single-task and cross-task
+    //          immutable-cell mutations raise the unified E0024
+    //          (per plan §5.5 cell-sharing invariant); no native
+    //          code trigger path remains.
     //   E0058  top-level SPAWN outside any active SCOPE (Phase C1)
     E0052, // SCOPE(fn): fn is not a function value
     E0053, // TASK handle invalid (stale generation / never spawned)
     E0054, // CHANNEL_SEND on closed channel
-    E0055, // RESERVED — v0.7/v0.8 无触发路径;见 deviation D8-003
+    // E0055 removed v0.9 Step 6 (ADR-0018)
     E0056, // SPAWN arity mismatch
-    E0057, // RESERVED — v0.7/v0.8 无触发路径;见 deviation D8-003
+    // E0057 removed v0.9 Step 6 (ADR-0018)
     E0058, // top-level SPAWN without an active SCOPE
     E0060, // IO error (generic)
     E0061, // file not found
@@ -201,9 +208,7 @@ impl ErrorCode {
             ErrorCode::E0052 => "E0052",
             ErrorCode::E0053 => "E0053",
             ErrorCode::E0054 => "E0054",
-            ErrorCode::E0055 => "E0055",
             ErrorCode::E0056 => "E0056",
-            ErrorCode::E0057 => "E0057",
             ErrorCode::E0058 => "E0058",
             ErrorCode::E0060 => "E0060",
             ErrorCode::E0061 => "E0061",
@@ -325,9 +330,9 @@ impl ErrorCode {
             ErrorCode::E0052
             | ErrorCode::E0053
             | ErrorCode::E0054
-            | ErrorCode::E0055
+            // E0055 removed v0.9 Step 6 (ADR-0018)
             | ErrorCode::E0056
-            | ErrorCode::E0057
+            // E0057 removed v0.9 Step 6 (ADR-0018)
             | ErrorCode::E0058 => ErrorCategory::Concurrent,
             // [v0.9 Step 5 / ADR-0017 §3.4] structured-concurrency
             // deadlock (L1 strict). Same bucket as the other
@@ -1338,9 +1343,9 @@ mod tests {
                 "E0052": code_snap(ErrorCode::E0052, "scope_fn_not_function"),
                 "E0053": code_snap(ErrorCode::E0053, "task_handle_invalid"),
                 "E0054": code_snap(ErrorCode::E0054, "channel_send_closed"),
-                "E0055": code_snap(ErrorCode::E0055, "channel_recv_closed"),
+                // E0055 removed v0.9 Step 6 (ADR-0018)
                 "E0056": code_snap(ErrorCode::E0056, "spawn_arity_mismatch"),
-                "E0057": code_snap(ErrorCode::E0057, "cross_task_cell_immutable"),
+                // E0057 removed v0.9 Step 6 (ADR-0018)
                 "E0058": code_snap(ErrorCode::E0058, "spawn_no_active_scope"),
             })
         );
@@ -1925,5 +1930,98 @@ mod tests {
             "snapshot coverage regressed: only {} codes covered (>=58 expected)",
             total,
         );
+    }
+
+    /// [v0.9 Step 6 / ADR-0018] Lock test: the E0055 and E0057
+    /// reservation rows are REMOVED from the registry after v0.9.
+    /// Their trigger paths are folded into existing surfaces
+    /// (E0055 → `Value::Err(kind="ChannelClosed")` payload; E0057
+    /// → unified E0024). No `ErrorCode::E0055` / `ErrorCode::E0057`
+    /// variant exists in the enum.
+    #[test]
+    fn registry_no_e0055_no_e0057_after_v09_step_6() {
+        // Direct enumeration: every ErrorCode that maps to "E0055"
+        // or "E0057" via as_str() is the smoking gun. Since the
+        // variants are gone, as_str() cannot return those strings.
+        for code in [
+            ErrorCode::E0001,
+            ErrorCode::E0002,
+            ErrorCode::E0003,
+            ErrorCode::E0010,
+            ErrorCode::E0011,
+            ErrorCode::E0012,
+            ErrorCode::E0013,
+            ErrorCode::E0014,
+            ErrorCode::E0020,
+            ErrorCode::E0021,
+            ErrorCode::E0022,
+            ErrorCode::E0023,
+            ErrorCode::E0024,
+            ErrorCode::E0025,
+            ErrorCode::E0026,
+            ErrorCode::E0027,
+            ErrorCode::E0030,
+            ErrorCode::E0031,
+            ErrorCode::E0032,
+            ErrorCode::E0033,
+            ErrorCode::E0034,
+            ErrorCode::E0035,
+            ErrorCode::E0036,
+            ErrorCode::E0037,
+            ErrorCode::E0038,
+            ErrorCode::E0039,
+            ErrorCode::E1003,
+            ErrorCode::E0040,
+            ErrorCode::E0041,
+            ErrorCode::E0042,
+            ErrorCode::E0043,
+            ErrorCode::E0044,
+            ErrorCode::E0045,
+            ErrorCode::E0046,
+            ErrorCode::E0047,
+            ErrorCode::E0048,
+            ErrorCode::E0049,
+            ErrorCode::E0050,
+            ErrorCode::E0051,
+            ErrorCode::E0052,
+            ErrorCode::E0053,
+            ErrorCode::E0054,
+            ErrorCode::E0056,
+            ErrorCode::E0058,
+            ErrorCode::E0060,
+            ErrorCode::E0061,
+            ErrorCode::E0062,
+            ErrorCode::E0063,
+            ErrorCode::E0065,
+            ErrorCode::E0070,
+            ErrorCode::E0071,
+            ErrorCode::E0080,
+            ErrorCode::E0081,
+            ErrorCode::E0082,
+            ErrorCode::E0083,
+            ErrorCode::E0090,
+            ErrorCode::E0091,
+            ErrorCode::E0092,
+            ErrorCode::E0093,
+            ErrorCode::E0094,
+            ErrorCode::E0099,
+            ErrorCode::E0100,
+            ErrorCode::E0101,
+            ErrorCode::E0102,
+        ] {
+            let s = code.as_str();
+            assert_ne!(
+                s, "E0055",
+                "E0055 must not appear in registry (v0.9 Step 6 / ADR-0018): \
+                 code {:?} unexpectedly maps to E0055",
+                code
+            );
+            assert_ne!(
+                s, "E0057",
+                "E0057 must not appear in registry (v0.9 Step 6 / ADR-0018): \
+                 code {:?} unexpectedly maps to E0057",
+                code
+            );
+        }
     }
 }
