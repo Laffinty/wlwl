@@ -2732,18 +2732,10 @@ fn builtin_set_prop(_ev: &mut Evaluator, args: Vec<Value>) -> WlwlResult<Outcome
 /// NativeFn(std 模块成员)则**不**注入 receiver:§13.12 钉死
 /// `io.PRINT("hi")` 等价 `IMPORT` 后的 `PRINT("hi")`。
 fn builtin_call_method(ev: &mut Evaluator, args: Vec<Value>) -> WlwlResult<Outcome> {
+    use wlwl_ast::Span as AstSpan;
     if args.len() < 2 {
         return Err(arity_error("CALL_METHOD", args.len(), 2));
     }
-    let obj = match &args[0] {
-        Value::Dict(e) => e.clone(),
-        other => {
-            return Err(type_error(
-                "CALL_METHOD",
-                format!("expected DICT object receiver, got {}", type_name(other)),
-            ));
-        }
-    };
     let method = match &args[1] {
         Value::String(s) => s.clone(),
         other => {
@@ -2754,18 +2746,117 @@ fn builtin_call_method(ev: &mut Evaluator, args: Vec<Value>) -> WlwlResult<Outco
         }
     };
     let rest: Vec<Value> = args[2..].to_vec();
-    let callee = match dict_lookup(&obj, &Value::String(method.clone())) {
-        Some(i) => obj[i].1.clone(),
-        None => {
-            return Err(builtin_error(
-                ErrorCode::E0037,
+    let diag_span = ev.current_span.clone().unwrap_or_else(AstSpan::dummy);
+    // [v0.9 Step 9a-4 / plan §4.3 / ADR-0019 §4.3] Receiver
+    // dispatch — `CALL_METHOD` now handles three shapes:
+    //
+    //   1. `Value::Dict(e)` — legacy / module-receiver path.
+    //      Unchanged from v0.7. Walks the dict entries in
+    //      declaration order.
+    //   2. `Value::Instance { class, .. }` — the §13 OOP
+    //      receiver. Looks up `class.members[name]`; on miss
+    //      walks the parent chain (depth-bounded at 64 with
+    //      a `Rc::ptr_eq` cycle detector that fires E0050).
+    //   3. Anything else — E0030 type error.
+    //
+    // The receiver is passed to `call_value_with_receiver` as
+    // `Some(...)` so the §8.6 "self is injected as the first
+    // argument when the first formal is named `self`" rule
+    // applies unchanged.
+    let (callee, receiver) = match &args[0] {
+        Value::Dict(e) => {
+            // Legacy DICT path — unchanged.
+            let callee = match dict_lookup(e, &Value::String(method.clone())) {
+                Some(i) => e[i].1.clone(),
+                None => {
+                    return Err(builtin_error(
+                        ErrorCode::E0037,
+                        "CALL_METHOD",
+                        format!("no such method '{}'", method),
+                    ));
+                }
+            };
+            (callee, args[0].clone())
+        }
+        Value::Instance {
+            class,
+            fields: _,
+            this_token: _,
+        } => {
+            // [v0.9 Step 9a-4] Walk the parent chain. The
+            // visited list is `Vec<*const ClassEntry>` —
+            // pointer equality is the canonical "same Rc
+            // allocation?" check; pushing a pointer onto
+            // the visited list before recursing lets us
+            // detect a cycle via `visited.contains(&ptr)`.
+            //
+            // Depth limit 64 matches `builtin_class`'s parent
+            // chain limit. Keeping the two in lock-step
+            // means a parent chain of depth N either
+            // succeeds at both or errors at the same point.
+            let mut visited: Vec<*const ClassEntry> = Vec::with_capacity(8);
+            let mut cur: Option<std::rc::Rc<std::cell::RefCell<ClassEntry>>> =
+                Some(std::rc::Rc::clone(class));
+            let mut callee: Option<Value> = None;
+            while let Some(c) = cur.take() {
+                let ptr: *const ClassEntry = c.as_ptr();
+                if visited.contains(&ptr) {
+                    return Err(ev.diag(
+                        ErrorCode::E0050,
+                        format!(
+                            "CALL_METHOD parent chain has a cycle at depth {} \
+                             (a class re-appears in its own ancestor chain)",
+                            visited.len()
+                        ),
+                        diag_span,
+                    ));
+                }
+                visited.push(ptr);
+                if visited.len() > 64 {
+                    return Err(ev.diag(
+                        ErrorCode::E0050,
+                        "CALL_METHOD parent chain exceeds depth 64 \
+                         (likely runaway recursion or a long linear chain)"
+                            .to_string(),
+                        diag_span,
+                    ));
+                }
+                // Look up the method in this class's members.
+                // `class.members` is `Vec<(Value, Value)>` —
+                // the linear scan mirrors the dict_lookup
+                // path but doesn't go through the Dict
+                // branching.
+                let entry = c.borrow();
+                if let Some((_, v)) = entry
+                    .members
+                    .iter()
+                    .find(|(k, _)| matches!(k, Value::String(s) if s == &method))
+                {
+                    callee = Some(v.clone());
+                } else {
+                    cur = entry.parent.as_ref().map(std::rc::Rc::clone);
+                }
+            }
+            let callee = callee.ok_or_else(|| {
+                builtin_error(
+                    ErrorCode::E0037,
+                    "CALL_METHOD",
+                    format!("no such method '{}'", method),
+                )
+            })?;
+            (callee, args[0].clone())
+        }
+        other => {
+            return Err(type_error(
                 "CALL_METHOD",
-                format!("no such method '{}'", method),
+                format!(
+                    "expected DICT or INSTANCE receiver, got {}",
+                    type_name(other)
+                ),
             ));
         }
     };
-    let span = ev.current_span.clone().unwrap_or_else(runtime_span);
-    ev.call_value_with_receiver(callee, Some(Value::Dict(obj)), rest, &span, &method)
+    ev.call_value_with_receiver(callee, Some(receiver), rest, &diag_span, &method)
 }
 
 /// `CLASS(name?, parent, members) -> CLASS`: spec §13 (plan §4.3)
@@ -5067,6 +5158,13 @@ fn builtin_error(code: ErrorCode, fn_name: &str, msg: String) -> WlwlError {
 
 /// Placeholder span for builtin-emitted diagnostics outside any AST
 /// call site (direct builtin invocation from tests / Rust callers).
+///
+/// [v0.9 Step 9a-4] Previously called from `builtin_call_method`
+/// before the receiver-dispatch rewrite; kept as a helper for
+/// future builtins that emit diagnostics outside any AST call
+/// site. The `dead_code` allow reflects "may be used by future
+/// builtins" rather than "currently unused".
+#[allow(dead_code)]
 fn runtime_span() -> Span {
     Span {
         file: "<runtime>".to_string(),
@@ -21657,5 +21755,156 @@ entry = "main.wll"
         seen.insert(format!("{:?}", variant));
         assert_eq!(seen.len(), 1);
         assert!(seen.contains("AlreadyMoved"));
+    }
+
+    // ────────────────────────────────────────────────────────────
+    // [v0.9 Step 9a-4 / plan §4.3 / ADR-0019 §4.3] CALL_METHOD
+    // parent-chain walk lock tests.
+    //
+    // 9a-4 extends `builtin_call_method` to walk the parent
+    // chain of an Instance receiver. The chain walk is
+    // depth-bounded at 64 and uses `Rc::ptr_eq` cycle
+    // detection that fires E0050 if a class re-appears in its
+    // own ancestor chain. The legacy DICT-receiver path
+    // (module-object method calls) is preserved unchanged;
+    // one regression test pins that behaviour.
+
+    #[test]
+    fn v09s9a4_call_method_finds_method_in_same_class() {
+        // [v0.9 Step 9a-4] `CALL_METHOD(instance, "name")` finds
+        // the method declared on the instance's own class
+        // without walking the parent chain. We assert the
+        // method body's return value: a closure returning the
+        // integer literal `42`.
+        let src = r#"
+            LET(C, CLASS("C", NULL, [
+                ["answer", FUN((self), 42)]
+            ]));
+            CALL_METHOD(NEW(C), "answer")
+        "#;
+        let v = run(src).expect("CALL_METHOD on own class must succeed");
+        assert_eq!(v, Value::Integer(42));
+    }
+
+    #[test]
+    fn v09s9a4_call_method_inherits_method_from_parent() {
+        // [v0.9 Step 9a-4] When the child class doesn't define
+        // a method but the parent does, the parent-chain walk
+        // resolves the method and calls it with `self =
+        // instance` (the child instance, not the parent).
+        // The method returns `42` regardless of which class
+        // it's defined on, so we use a more discriminating
+        // body: the parent method returns `100`, the child
+        // shadows nothing, and we assert `100`.
+        let src = r#"
+            LET(Base, CLASS("Base", NULL, [
+                ["greeting", FUN((self), 100)]
+            ]));
+            LET(Derived, CLASS("Derived", Base, []));
+            CALL_METHOD(NEW(Derived), "greeting")
+        "#;
+        let v = run(src).expect("CALL_METHOD must walk parent chain");
+        assert_eq!(
+            v,
+            Value::Integer(100),
+            "inherited method must be called via parent-chain walk"
+        );
+    }
+
+    #[test]
+    fn v09s9a4_call_method_child_overrides_parent() {
+        // [v0.9 Step 9a-4] When both child and parent define
+        // the same method, the child's version wins. The
+        // parent's body would return `100`; the child's body
+        // returns `200`. We assert `200` to lock the
+        // child-wins semantics (matches the prototype-chain
+        // style the plan §4.3 calls out).
+        let src = r#"
+            LET(Base, CLASS("Base", NULL, [
+                ["m", FUN((self), 100)]
+            ]));
+            LET(Derived, CLASS("Derived", Base, [
+                ["m", FUN((self), 200)]
+            ]));
+            CALL_METHOD(NEW(Derived), "m")
+        "#;
+        let v = run(src).expect("CALL_METHOD must find child override");
+        assert_eq!(
+            v,
+            Value::Integer(200),
+            "child's method must shadow parent's method"
+        );
+    }
+
+    #[test]
+    fn v09s9a4_call_method_returns_e0037_when_method_missing_in_chain() {
+        // [v0.9 Step 9a-4] When the method isn't found on the
+        // child, the parent, or anywhere in the chain,
+        // CALL_METHOD raises E0037 ("no such method"). The
+        // error message includes the method name so users
+        // can spot typos.
+        let src = r#"
+            LET(Base, CLASS("Base", NULL, [
+                ["alpha", FUN((self), 1)]
+            ]));
+            LET(Derived, CLASS("Derived", Base, []));
+            CALL_METHOD(NEW(Derived), "missing")
+        "#;
+        let err = run(src).expect_err("missing method must fail");
+        assert_eq!(
+            err.diagnostic().code,
+            ErrorCode::E0037,
+            "expected E0037 no such method"
+        );
+    }
+
+    #[test]
+    fn v09s9a4_call_method_dict_receiver_still_works() {
+        // [v0.9 Step 9a-4] Regression lock on the legacy
+        // DICT-receiver path. Module objects (MODULE_REF) and
+        // plain DICT values still go through the original
+        // branch — the §11 / §13 receiver split doesn't break
+        // any existing DICT-keyed method calls. We call a
+        // helper closure stored in a DICT and assert the
+        // returned value.
+        let src = r#"
+            LET(obj, ["answer": FUN((self), 7)]);
+            CALL_METHOD(obj, "answer")
+        "#;
+        let v = run(src).expect("DICT-receiver CALL_METHOD must still work");
+        assert_eq!(
+            v,
+            Value::Integer(7),
+            "legacy DICT-receiver path must produce 7"
+        );
+    }
+
+    #[test]
+    fn v09s9a4_call_method_inherits_method_with_self_injection() {
+        // [v0.9 Step 9a-4] Lock the §8.6 "self is injected as
+        // the first argument when the first formal is named
+        // `self`" rule: a parent method declared with
+        // `(self)` should receive the *child instance* via
+        // the `this_token` mechanism. We assert this by
+        // storing a value into the instance's fields via
+        // SET_PROP (which is wired in Step 9a-5 — wait, this
+        // is 9a-4; SET_PROP isn't yet wired for instances).
+        // We use the simpler "self is a closure parameter
+        // that can be returned and inspected" path: the
+        // method returns `TYPE(self)` which under 9a-4 is
+        // "INSTANCE" — the receiver is correctly bound.
+        let src = r#"
+            LET(Base, CLASS("Base", NULL, [
+                ["whoami", FUN((self), TYPE(self))]
+            ]));
+            LET(Derived, CLASS("Derived", Base, []));
+            CALL_METHOD(NEW(Derived), "whoami")
+        "#;
+        let v = run(src).expect("inherited method with self must run");
+        assert_eq!(
+            v,
+            Value::String("INSTANCE".into()),
+            "self must be bound to the child instance (receiver injection)"
+        );
     }
 }
