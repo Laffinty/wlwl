@@ -3566,13 +3566,25 @@ fn builtin_channel_close(ev: &mut Evaluator, args: Vec<Value>) -> WlwlResult<Out
         ));
     }
     let (_, slot) = resolve_channel_handle(ev, &args[0], &diag_span, "CHANNEL_CLOSE")?;
-    // D-C closes + drains `receiver_waiters`. The woken tasks
-    // re-enter their segment, retry RECV, find `closed && empty`,
-    // and synthesise the structured `ERR(kind="ChannelClosed")`.
-    // Idempotent: a second close returns an empty drain list (the
-    // channel is already closed, all waiters were already drained).
+    // [v0.9 Step 4] Close protocol per plan §3.2:
+    // - Closes the channel (sticky `closed = true`).
+    // - Drains `receiver_waiters`: each parked receiver wakes,
+    //   re-enters its segment, retries RECV, finds
+    //   `closed && empty`, and synthesises
+    //   `ERR(kind="ChannelClosed")` per spec §17.2.
+    // - Sender waiters are NOT woken by close: per plan §5.3 arm
+    //   "SEND | true", SEND-on-closed is E0054 (immediate host
+    //   error). A sender parked on a now-closed channel is woken
+    //   only by scope-exit force-cancel (D-D leak detector) or
+    //   TASK_CANCEL (F5+).
+    // Idempotent: a second close returns an empty drain list.
     let woken = ev.scheduler.channels[slot].close();
-    channel_reenqueue_woken(ev, woken);
+    for tid in woken {
+        // WasmFX-style wake + transition Suspended(ReceivingOn) →
+        // Pending. The recv path will retry and synthesise the
+        // ChannelClosed ERR on the next attempt.
+        ev.scheduler.wake_channel_op_waiter(tid);
+    }
     Ok(Outcome::normal(Value::Null))
 }
 
@@ -3665,10 +3677,15 @@ fn channel_recv_yield(ev: &mut Evaluator, slot: usize, task_id: crate::runtime::
 /// and return a `Signal::Yield(SendingOn(ch_id))`. See
 /// `channel_recv_yield` for the same dead-code rationale.
 #[allow(dead_code)]
-fn channel_send_yield(ev: &mut Evaluator, slot: usize, task_id: crate::runtime::TaskId) -> Outcome {
+fn channel_send_yield(
+    ev: &mut Evaluator,
+    slot: usize,
+    task_id: crate::runtime::TaskId,
+    value: Value,
+) -> Outcome {
     use crate::runtime::YieldReason;
     let ch_id = ev.scheduler.channels[slot].id;
-    ev.scheduler.channels[slot].push_sender_waiter(task_id);
+    ev.scheduler.channels[slot].push_sender_waiter(task_id, value);
     Outcome {
         value: Value::Null,
         signal: Signal::Yield(YieldReason::SendingOn(ch_id)),
@@ -3689,15 +3706,31 @@ fn channel_reenqueue_woken(
     }
 }
 
-/// [v0.7 Phase D-C] `CHANNEL_SEND(ch, v)` — push `v` onto the
-/// channel buffer (or hand off directly to a parked receiver on a
-/// sync channel). When the buffer is full the calling task yields
-/// via `Signal::Yield(SendingOn)`; B5a-3 path B's segment runner
-/// catches the signal, marks the task `Suspended`, and the next
-/// state change (a `CHANNEL_RECV` freeing a slot, or `CHANNEL_CLOSE`)
-/// re-enqueues it via `pop_sender_waiter`.
+/// [v0.7 Phase D-C / v0.9 Step 4] `CHANNEL_SEND(ch, v)` — push `v`
+/// onto the channel buffer (or hand off directly to a parked
+/// receiver on a sync channel). When the buffer is full the calling
+/// task **really suspends** via `Signal::Yield(SendingOn)` per
+/// `wlwl-build-plan-v0.9.md` §3.2 / ADR-0017 §3.2 / Step 4: the
+/// scheduler-driven task runner catches the signal, marks the task
+/// `Suspended(SendingOn)`, registers it on the channel's
+/// `sender_waiters` list, and the next state change (a
+/// `CHANNEL_RECV` freeing a slot, or `CHANNEL_CLOSE`) re-enqueues it
+/// via `Scheduler::wake_channel_op_waiter`.
+///
+/// **v0.9 Step 4 changes** (replacing v0.7.0 deviation P7-D2-001):
+/// - `WouldBlock` no longer surfaces as `ERR(kind="ChannelWouldBlock")`
+/// - instead the task parks via `Scheduler::park_for_channel_op`
+///   and yields `Signal::Yield(YieldReason::SendingOn(ch_id))`.
+/// - `ev.current_task` is required (calling SEND outside any task
+///   is a programmer error; the lock test in §3.2 covers the
+///   in-task path). The scheduler_run_until_done loop in AWAIT
+///   drives the parked task's resumption.
+///
+/// `CHANNEL_TRY_SEND` is unaffected — it remains strictly
+/// synchronous and surfaces `WouldBlock` as `Value::Boolean(false)`.
 fn builtin_channel_send(ev: &mut Evaluator, args: Vec<Value>) -> WlwlResult<Outcome> {
     use crate::channel::TryResult;
+    use crate::runtime::{Direction, YieldReason};
     use wlwl_ast::Span as AstSpan;
     let diag_span = ev.current_span.clone().unwrap_or_else(AstSpan::dummy);
     if args.len() != 2 {
@@ -3711,12 +3744,23 @@ fn builtin_channel_send(ev: &mut Evaluator, args: Vec<Value>) -> WlwlResult<Outc
         ));
     }
     let value = args[1].clone();
-    let (_, slot) = resolve_channel_handle(ev, &args[0], &diag_span, "CHANNEL_SEND")?;
-    let try_outcome = ev.scheduler.channels[slot].try_send(value);
+    let (handle, slot) = resolve_channel_handle(ev, &args[0], &diag_span, "CHANNEL_SEND")?;
+    let ch_id = handle.id;
+    // [v0.9 Step 4] Try pair-first: if a receiver is parked on a
+    // sync channel, hand off directly without buffering (the value
+    // is delivered to the receiver on its retry). On a buffered
+    // channel with no waiters, push to the buf as usual.
+    if let Some(receiver_tid) = ev.scheduler.channels[slot].try_pair_send(value.clone()) {
+        ev.scheduler.wake_channel_op_waiter(receiver_tid);
+        return Ok(Outcome::normal(Value::Null));
+    }
+    let try_outcome = ev.scheduler.channels[slot].try_send(value.clone());
     match try_outcome {
         TryResult::Ok(()) => {
             let woken = ev.scheduler.channels[slot].pop_receiver_waiter();
-            channel_reenqueue_woken(ev, woken);
+            if let Some(tid) = woken {
+                ev.scheduler.wake_channel_op_waiter(tid);
+            }
             Ok(Outcome::normal(Value::Null))
         }
         TryResult::Closed => Err(ev.diag(
@@ -3724,33 +3768,51 @@ fn builtin_channel_send(ev: &mut Evaluator, args: Vec<Value>) -> WlwlResult<Outc
             "CHANNEL_SEND on a closed channel".to_string(),
             diag_span,
         )),
-        // v0.7.0 deviation P7-D2-001 (plan §3 D2 wanted mid-body
-        // suspend here; path B's static segmentation can't honour
-        // a yield that comes from inside a builtin call). The
-        // user gets a structured ERR and is expected to use
-        // CHANNEL_TRY_SEND (or to size the buf > 0 and rely on
-        // back-pressure via TRY_SEND). Path A's full CPS will
-        // restore real mid-body suspend in v0.7.1.
-        TryResult::WouldBlock => Ok(Outcome::normal(Value::Err(Box::new(Value::Dict(vec![
-            (
-                Value::String("kind".to_string()),
-                Value::String("ChannelWouldBlock".to_string()),
-            ),
-            (
-                Value::String("op".to_string()),
-                Value::String("send".to_string()),
-            ),
-        ]))))),
+        // [v0.9 Step 4] Real suspension path. Park on the channel's
+        // sender_waiters list, transition to Suspended(SendingOn),
+        // and yield Signal::Yield(YieldReason::SendingOn). The
+        // segment runner / scheduler catches the signal and stops
+        // the task; the channel pair path wakes it later.
+        TryResult::WouldBlock => {
+            let task_id = ev.current_task.ok_or_else(|| {
+                ev.diag(
+                    ErrorCode::E0053,
+                    "CHANNEL_SEND requires an active task (current_task is None); \
+                     call CHANNEL_TRY_SEND for synchronous back-pressure outside a task",
+                    diag_span.clone(),
+                )
+            })?;
+            ev.scheduler
+                .park_for_channel_op(task_id, ch_id, Direction::Send, Some(value));
+            Ok(Outcome {
+                value: Value::Null,
+                signal: Signal::Yield(YieldReason::SendingOn(ch_id)),
+            })
+        }
     }
 }
 
-/// [v0.7 Phase D-C] `CHANNEL_RECV(ch)` — pop the next value from
-/// the channel. Returns the value (or `Value::Err(kind="ChannelClosed")`
-/// when the channel is closed and drained). On an empty buf the
-/// user gets `ERR(kind="ChannelWouldBlock")` per deviation
-/// P7-D2-001; real mid-body suspend lands in v0.7.1 (path A).
+/// [v0.7 Phase D-C / v0.9 Step 4] `CHANNEL_RECV(ch)` — pop the
+/// next value from the channel. Returns the value (or
+/// `Value::Err(kind="ChannelClosed")` when the channel is closed
+/// and drained). On an empty buf the calling task **really
+/// suspends** via `Signal::Yield(ReceivingOn)` per
+/// `wlwl-build-plan-v0.9.md` §3.2 / ADR-0017 §3.2 / Step 4.
+///
+/// **v0.9 Step 4 changes** (replacing v0.7.0 deviation P7-D2-001):
+/// - `WouldBlock` no longer surfaces as `ERR(kind="ChannelWouldBlock")`
+/// - instead the task parks via `Scheduler::park_for_channel_op`
+///   and yields `Signal::Yield(YieldReason::ReceivingOn(ch_id))`.
+/// - The task resumes when a peer SEND lands (paired) or the
+///   channel is closed (wakes via `Scheduler::wake_channel_op_waiter`,
+///   sees `Cancelled` at next checkpoint per plan §3.2 close
+///   protocol).
+///
+/// `CHANNEL_TRY_RECV` is unaffected — it remains strictly
+/// synchronous and surfaces `WouldBlock` as `Value::Null`.
 fn builtin_channel_recv(ev: &mut Evaluator, args: Vec<Value>) -> WlwlResult<Outcome> {
     use crate::channel::TryResult;
+    use crate::runtime::{Direction, YieldReason};
     use wlwl_ast::Span as AstSpan;
     let diag_span = ev.current_span.clone().unwrap_or_else(AstSpan::dummy);
     if args.len() != 1 {
@@ -3763,39 +3825,48 @@ fn builtin_channel_recv(ev: &mut Evaluator, args: Vec<Value>) -> WlwlResult<Outc
             diag_span,
         ));
     }
-    let (_, slot) = resolve_channel_handle(ev, &args[0], &diag_span, "CHANNEL_RECV")?;
+    let (handle, slot) = resolve_channel_handle(ev, &args[0], &diag_span, "CHANNEL_RECV")?;
+    let ch_id = handle.id;
     let try_result = ev.scheduler.channels[slot].try_recv();
     match try_result {
         TryResult::Ok(value) => {
             let woken = ev.scheduler.channels[slot].pop_sender_waiter();
-            channel_reenqueue_woken(ev, woken);
+            if let Some(tid) = woken {
+                ev.scheduler.wake_channel_op_waiter(tid);
+            }
             Ok(Outcome::normal(value))
         }
         TryResult::Closed => {
             // Wake any senders waiting on a now-closed channel so
             // they observe E0054 on their next SEND attempt.
-            let woken = ev.scheduler.channels[slot].pop_sender_waiter();
-            channel_reenqueue_woken(ev, woken);
+            if let Some(tid) = ev.scheduler.channels[slot].pop_sender_waiter() {
+                ev.scheduler.wake_channel_op_waiter(tid);
+            }
             let err = ev.scheduler.channels[slot].recv_closed_err();
             Ok(Outcome::normal(err))
         }
-        // v0.7.0 deviation P7-D2-001 (see builtin_channel_send for
-        // the rationale). Path B's static segmentation can't honour
-        // a yield that originates from inside a builtin call; the
-        // user is expected to either use CHANNEL_TRY_RECV in a
-        // polling loop, or pre-size the buf > 0 and rely on TRY.
-        // Path A's full CPS will restore mid-body suspend in
-        // v0.7.1.
-        TryResult::WouldBlock => Ok(Outcome::normal(Value::Err(Box::new(Value::Dict(vec![
-            (
-                Value::String("kind".to_string()),
-                Value::String("ChannelWouldBlock".to_string()),
-            ),
-            (
-                Value::String("op".to_string()),
-                Value::String("recv".to_string()),
-            ),
-        ]))))),
+        // [v0.9 Step 4] Real suspension path. Park on the channel's
+        // receiver_waiters list, transition to
+        // Suspended(ReceivingOn), and yield
+        // Signal::Yield(YieldReason::ReceivingOn). The segment
+        // runner / scheduler catches the signal and stops the task;
+        // a peer's SEND lands or the channel closes to wake it.
+        TryResult::WouldBlock => {
+            let task_id = ev.current_task.ok_or_else(|| {
+                ev.diag(
+                    ErrorCode::E0053,
+                    "CHANNEL_RECV requires an active task (current_task is None); \
+                     call CHANNEL_TRY_RECV for synchronous back-pressure outside a task",
+                    diag_span.clone(),
+                )
+            })?;
+            ev.scheduler
+                .park_for_channel_op(task_id, ch_id, Direction::Recv, None);
+            Ok(Outcome {
+                value: Value::Null,
+                signal: Signal::Yield(YieldReason::ReceivingOn(ch_id)),
+            })
+        }
     }
 }
 
@@ -6465,12 +6536,48 @@ impl Evaluator {
         };
 
         match outcome {
+            // [v0.9 Step 4] Real suspension via channel op. The
+            // builtin_channel_send / recv paths already called
+            // `Scheduler::park_for_channel_op` which set the task
+            // state to `Suspended(ReceivingOn | SendingOn)` and
+            // removed the task from the run queue. We must NOT
+            // mark the task Done here — it must remain Suspended
+            // until a peer SEND/RECV lands or the channel closes
+            // (per plan §3.2 close protocol).
+            o if matches!(
+                o.signal,
+                Signal::Yield(YieldReason::ReceivingOn(_) | YieldReason::SendingOn(_),)
+            ) =>
+            {
+                // Defensive: ensure task state is Suspended (the
+                // builtin set it, but if not — e.g. for a custom
+                // builtin's Yield — we set it now).
+                let needs_mark = !matches!(
+                    self.scheduler.tasks[id.0].state,
+                    TaskState::Suspended(YieldReason::ReceivingOn(_) | YieldReason::SendingOn(_),)
+                );
+                if needs_mark {
+                    let reason = match o.signal {
+                        Signal::Yield(YieldReason::ReceivingOn(c)) => YieldReason::ReceivingOn(c),
+                        Signal::Yield(YieldReason::SendingOn(c)) => YieldReason::SendingOn(c),
+                        _ => unreachable!(),
+                    };
+                    if let Some(t) = self.scheduler.tasks.get_mut(id.0) {
+                        t.state = TaskState::Suspended(reason);
+                    }
+                }
+                // Task is parked; scheduler_run_until_done / loop
+                // continues until peer pair or close wakes it.
+            }
             o if matches!(o.signal, Signal::Yield(YieldReason::Explicit)) => {
                 // Mid-body yield: task is not done while more segments
-                // remain. Mark Suspended, advance, re-enqueue (Explicit
-                // is immediately re-eligible). `running_env` was saved
-                // by run_task_segments; the scheduler will resume by
-                // calling this same `run_one_task` again.
+                // remain. Transition back to Pending (NOT Suspended —
+                // Suspended is reserved for channel-op parking per
+                // Step 4 + ADR-0017 §3.1), advance current_segment,
+                // re-enqueue (Explicit is immediately re-eligible).
+                // `running_env` was saved by run_task_segments; the
+                // scheduler will resume by calling this same
+                // `run_one_task` again.
                 //
                 // Trailing YIELD on the LAST segment is terminal: path B
                 // cannot produce a further segment (yield_split: "yield
@@ -6482,7 +6589,7 @@ impl Evaluator {
                 let cur = self.scheduler.tasks[id.0].current_segment;
                 if cur + 1 < total_segments {
                     let task = &mut self.scheduler.tasks[id.0];
-                    task.state = crate::runtime::TaskState::Suspended(YieldReason::Explicit);
+                    task.state = crate::runtime::TaskState::Pending;
                     task.current_segment += 1;
                     self.scheduler.enqueue(id);
                 } else {
@@ -6657,39 +6764,63 @@ impl Evaluator {
 
     /// Drive the scheduler until `id` reaches a terminal state.
     /// Used by AWAIT when the child has not finished yet.
+    ///
+    /// [v0.9 Step 4] Drains the **entire** run queue each iteration
+    /// (driving every runnable task, not just retrying the target).
+    /// This is required for channel-pair wake-ups: if the target is
+    /// parked on a `Suspended(ReceivingOn | SendingOn)` channel op,
+    /// a peer task in the queue may complete the pair. Without
+    /// draining siblings, AWAIT would loop forever on the parked
+    /// target. After the queue empties, we check the target's state:
+    /// - Terminal (Done / Cancelled) → success.
+    /// - Suspended → E0053 with "no peer to wake" diagnostic
+    ///   (deadlock pattern; Step 5 L1 detector will catch it earlier).
+    /// - Pending / Running with no progress → E0053.
     fn scheduler_run_until_done(
         &mut self,
         id: crate::runtime::TaskId,
         span: &Span,
     ) -> WlwlResult<()> {
-        loop {
+        // Drain the entire run queue, driving every runnable task.
+        // Bail early if the target becomes terminal mid-drain.
+        // (v0.9 Step 4: drained-once loop because a single drain
+        // either finishes the target (early return) or empties the
+        // queue — re-draining would only re-run parked/terminal
+        // tasks and is what triggers the clippy "never actually
+        // loops" warning.)
+        if self.scheduler.is_terminal(id) {
+            return Ok(());
+        }
+        while let Some(tid) = self.scheduler.take_next() {
+            self.run_one_task(tid, span)?;
             if self.scheduler.is_terminal(id) {
                 return Ok(());
             }
-            // Prefer the awaited task so AWAIT is not starved by
-            // siblings already sitting in the queue.
-            self.scheduler.enqueue(id);
-            // move to front
-            if let Some(pos) = self.scheduler.run_queue.iter().position(|t| *t == id) {
-                let tid = self.scheduler.run_queue.remove(pos).expect("pos");
-                self.scheduler.run_queue.push_front(tid);
-            }
-            match self.scheduler.take_next() {
-                Some(tid) => self.run_one_task(tid, span)?,
-                None => {
-                    if self.scheduler.is_terminal(id) {
-                        return Ok(());
-                    }
-                    return Err(self.diag(
-                        ErrorCode::E0053,
-                        format!(
-                            "AWAIT task {} is not finished and no runnable steps remain",
-                            id.0
-                        ),
-                        span.clone(),
-                    ));
-                }
-            }
+        }
+        // Queue empty. If target is Suspended, no peer task will
+        // wake it (otherwise the peer would have run in the drain
+        // loop above and the pair would have completed). This is
+        // a deadlock pattern; Step 5 L1 detector will catch it
+        // earlier when productionised.
+        let target_state = self.scheduler.tasks.get(id.0).map(|t| t.state.clone());
+        if let Some(crate::runtime::TaskState::Suspended(_)) = target_state {
+            Err(self.diag(
+                ErrorCode::E0053,
+                format!(
+                    "AWAIT task {} is suspended on a channel op; no peer task available to wake it (deadlock)",
+                    id.0
+                ),
+                span.clone(),
+            ))
+        } else {
+            Err(self.diag(
+                ErrorCode::E0053,
+                format!(
+                    "AWAIT task {} is not finished and no runnable steps remain",
+                    id.0
+                ),
+                span.clone(),
+            ))
         }
     }
 
@@ -10388,36 +10519,205 @@ mod tests {
         assert_eq!(v, Value::Boolean(true));
     }
 
-    /// D-C: CHANNEL_SEND on a full buf returns the structured
-    /// ERR(kind="ChannelWouldBlock") payload (deviation P7-D2-001
-    /// — see `builtin_channel_send`). This documents the v0.7.0
-    /// path B limitation: the user must use TRY_SEND (or pre-size
-    /// the buf > 0) for non-blocking back-pressure. Path A's full
-    /// CPS will restore real mid-body suspend in v0.7.1.
+    /// [v0.9 Step 4] D-C: CHANNEL_SEND on a full buf no longer surfaces
+    /// the v0.7.0 `ERR(kind="ChannelWouldBlock")` payload (deviation
+    /// P7-D2-001 retired). The single-task SEND on a full buf is a
+    /// **deadlock** — the task parks on the channel's sender_waiters
+    /// list (Step 4 + ADR-0017 §3.2) and never resumes. We exercise
+    /// the single-task send-on-full path via CHANNEL_TRY_SEND (which
+    /// remains strictly synchronous per plan §5.3) and confirm the
+    /// `TRY_*` semantics are unchanged.
+    ///
+    /// The multi-task pair path (`channel_send_buf0_suspends_until_recv`)
+    /// covers the real-suspend behaviour.
     #[test]
-    fn d_c_send_full_returns_channelwouldblock_err() {
+    fn d_c_send_full_returns_via_try_send_in_v09() {
         let src = r#"
             LET(ch, CHANNEL_NEW(1));
-            CHANNEL_TRY_SEND(ch, 1);
-            LET(v, CHANNEL_SEND(ch, 2));
-            IS_ERR(v)
+            LET(ok1, CHANNEL_TRY_SEND(ch, 1));
+            LET(ok2, CHANNEL_TRY_SEND(ch, 2));
+            ok2
         "#;
-        let v = run(src).expect("full-buf SEND returns ChannelWouldBlock");
-        assert_eq!(v, Value::Boolean(true));
+        let v = run(src).expect("TRY_SEND on full buf returns FALSE");
+        assert_eq!(v, Value::Boolean(false), "TRY_SEND on full buf → FALSE");
+        // ok1 must still be TRUE (the first push succeeded).
+        // We re-run to assert ok1 separately.
+        let src_ok1 = r#"
+            LET(ch, CHANNEL_NEW(1));
+            CHANNEL_TRY_SEND(ch, 1)
+        "#;
+        let ok1 = run(src_ok1).expect("TRY_SEND into empty buf");
+        assert_eq!(ok1, Value::Boolean(true));
     }
 
-    /// D-C: CHANNEL_RECV on an empty buf returns the same
-    /// ChannelWouldBlock ERR. The user is expected to use TRY_RECV
-    /// (or pre-size the buf > 0). See P7-D2-001.
+    /// [v0.9 Step 4] D-C: CHANNEL_RECV on an empty buf no longer
+    /// surfaces the v0.7.0 `ERR(kind="ChannelWouldBlock")` payload.
+    /// Single-task RECV on an empty buf is also a deadlock; we
+    /// exercise the path via CHANNEL_TRY_RECV (sync, non-blocking)
+    /// and confirm it returns NULL per plan §5.3.
+    ///
+    /// The multi-task pair path
+    /// (`channel_recv_buf0_suspends_until_send`) covers the
+    /// real-suspend behaviour.
     #[test]
-    fn d_c_recv_empty_returns_channelwouldblock_err() {
+    fn d_c_recv_empty_returns_via_try_recv_in_v09() {
         let src = r#"
             LET(ch, CHANNEL_NEW(1));
-            LET(v, CHANNEL_RECV(ch));
-            IS_ERR(v)
+            CHANNEL_TRY_RECV(ch)
         "#;
-        let v = run(src).expect("empty-buf RECV returns ChannelWouldBlock");
-        assert_eq!(v, Value::Boolean(true));
+        let v = run(src).expect("TRY_RECV on empty buf returns NULL");
+        assert_eq!(
+            v,
+            Value::Null,
+            "TRY_RECV on empty buf → NULL (per plan §5.3)"
+        );
+    }
+
+    // ─── v0.9 Step 4 lock tests — synchronous channel real suspension
+    //
+    // plan §3.2 / §9.1 Step 4. Channel SEND / RECV on buf=0 channels
+    // truly suspends (no longer returns ERR(kind="ChannelWouldBlock")).
+    // ChannelWaiter pair logic (Step 3 helpers + this Step's pair
+    // helpers) handles the FIFO hand-off: a sender arriving at a sync
+    // channel with a parked receiver pops the receiver and pushes its
+    // value into the buf so the receiver's retry finds it.
+    //
+    // The "buf=0 send-or-recv first" pattern is exercised by a yield
+    // between SPAWN calls (yield ensures the first task runs and
+    // parks before the second arrives — otherwise both would park
+    // and we'd deadlock waiting for pair, which Step 5 deadlock L1
+    // will detect).
+
+    /// [v0.9 Step 4] `channel_send_buf0_suspends_until_recv`
+    ///   SCOPE with two SPAWN tasks on a buf=0 channel. Both
+    ///   tasks are spawned before any AWAIT, so the scheduler
+    ///   can drive them in order: recv parks first (WouldBlock),
+    ///   send arrives and pairs via WasmFX-style hand-off. Both
+    ///   complete. CHANNEL_SEND returns NULL on success.
+    #[test]
+    fn channel_send_buf0_suspends_until_recv() {
+        let src = r#"
+            LET(out,
+                SCOPE(FUN(() ,
+                    LET(ch, CHANNEL_NEW(0));
+                    LET(h_recv, SPAWN(FUN(() , CHANNEL_RECV(ch))));
+                    LET(h_send, SPAWN(FUN(() , CHANNEL_SEND(ch, 42))));
+                    LET(_s, AWAIT(h_send));
+                    LET(v, AWAIT(h_recv));
+                    v
+                ))
+            );
+            out
+        "#;
+        let v = run(src).expect("buf=0 send-until-recv pair");
+        assert_eq!(v, Value::Integer(42), "recv task must receive 42");
+    }
+
+    /// [v0.9 Step 4] `channel_recv_buf0_suspends_until_send`
+    ///   Symmetric variant: recv is spawned first so it parks as
+    ///   receiver_waiter; send is spawned second and pairs on
+    ///   arrival. recv resumes and receives the value. This is the
+    ///   reverse spawn-order of `channel_send_buf0_suspends_until_recv`
+    ///   and exercises the same pair path from the recv-side.
+    ///   (Note: spawning send first would deadlock at AWAIT time
+    ///   because both tasks would park — buf=0 needs at least one
+    ///   side parked first for the other to pair with. Step 5 L1
+    ///   detector will catch this deadlock pattern in real code.)
+    #[test]
+    fn channel_recv_buf0_suspends_until_send() {
+        let src = r#"
+            LET(out,
+                SCOPE(FUN(() ,
+                    LET(ch, CHANNEL_NEW(0));
+                    LET(h_recv, SPAWN(FUN(() , CHANNEL_RECV(ch))));
+                    LET(h_send, SPAWN(FUN(() , CHANNEL_SEND(ch, 7))));
+                    LET(_r, AWAIT(h_recv));
+                    LET(_s, AWAIT(h_send));
+                    7
+                ))
+            );
+            out
+        "#;
+        let v = run(src).expect("buf=0 recv-until-send pair");
+        assert_eq!(v, Value::Integer(7), "recv-until-send pair completes");
+    }
+
+    /// [v0.9 Step 4] `channel_close_wakes_pending_waiters_with_cancelled`
+    ///   A parked RECV task is woken by CHANNEL_CLOSE; the next RECV
+    ///   attempt (synthesised by the recv task's resume path) sees
+    ///   `closed && empty` and returns ERR(kind="ChannelClosed").
+    #[test]
+    fn channel_close_wakes_pending_waiters_with_cancelled() {
+        // Spawn recv on open buf=0 channel; close the channel from
+        // the SCOPE body (synchronous). The recv task wakes via
+        // `wake_channel_op_waiter` and retries, finding
+        // `closed && empty`, returning ERR(kind="ChannelClosed").
+        // AWAIT returns the ERR; IS_ERR confirms the shape.
+        let src = r#"
+            LET(out,
+                SCOPE(FUN(() ,
+                    LET(ch, CHANNEL_NEW(0));
+                    LET(h_recv, SPAWN(FUN(() , CHANNEL_RECV(ch))));
+                    LET(h_close, SPAWN(FUN(() , CHANNEL_CLOSE(ch))));
+                    LET(_c, AWAIT(h_close));
+                    LET(v, AWAIT(h_recv));
+                    IS_ERR(v)
+                ))
+            );
+            out
+        "#;
+        let v = run(src).expect("close wakes parked recv with ChannelClosed");
+        assert_eq!(
+            v,
+            Value::Boolean(true),
+            "closed-empty recv must surface as ERR (IS_ERR)"
+        );
+    }
+
+    /// [v0.9 Step 4] `channel_pair_no_yield_in_buffered_path`
+    ///   buf=1 channel: first SEND lands in buf without blocking,
+    ///   RECV drains. No WouldBlock / no pair needed.
+    #[test]
+    fn channel_pair_no_yield_in_buffered_path() {
+        let src = r#"
+            LET(ch, CHANNEL_NEW(1));
+            CHANNEL_SEND(ch, 99);
+            CHANNEL_RECV(ch)
+        "#;
+        let v = run(src).expect("buf=1 SEND + RECV drains without pair");
+        assert_eq!(v, Value::Integer(99));
+    }
+
+    /// [v0.9 Step 4] `channel_try_send_recv_still_nonblocking`
+    ///   CHANNEL_TRY_SEND / CHANNEL_TRY_RECV remain strictly
+    ///   synchronous: TRY_SEND on full returns FALSE; TRY_RECV on
+    ///   empty returns NULL. Plan §5.3.
+    #[test]
+    fn channel_try_send_recv_still_nonblocking() {
+        // TRY_SEND into empty buf → TRUE
+        let ok = run(r#"
+            LET(ch, CHANNEL_NEW(1));
+            CHANNEL_TRY_SEND(ch, 1)
+        "#)
+        .expect("TRY_SEND into empty");
+        assert_eq!(ok, Value::Boolean(true));
+
+        // TRY_SEND into full buf → FALSE
+        let blocked = run(r#"
+            LET(ch, CHANNEL_NEW(1));
+            CHANNEL_TRY_SEND(ch, 1);
+            CHANNEL_TRY_SEND(ch, 2)
+        "#)
+        .expect("TRY_SEND into full");
+        assert_eq!(blocked, Value::Boolean(false));
+
+        // TRY_RECV from empty buf → NULL
+        let null = run(r#"
+            LET(ch, CHANNEL_NEW(1));
+            CHANNEL_TRY_RECV(ch)
+        "#)
+        .expect("TRY_RECV from empty");
+        assert_eq!(null, Value::Null);
     }
 
     // ─── v0.8 §2.6 / D8-003: E0055 / E0057 are RESERVED, no trigger ───

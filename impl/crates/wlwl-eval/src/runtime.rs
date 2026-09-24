@@ -391,10 +391,22 @@ impl Scheduler {
     }
 
     /// [B5b phase] Mark Running and return `(body, env)` for execution.
-    /// Returns `None` if the id is unknown or already terminal.
+    /// Returns `None` if the id is unknown, already terminal, or
+    /// **Suspended** (parked on a channel op / scope cancel / awaiting
+    /// child) — v0.9 Step 4 fix: a Suspended task is NOT
+    /// automatically re-runnable; only an explicit wake (e.g.
+    /// `wake_channel_op_waiter`, `cancel_suspended_task`,
+    /// `wake_dependents`) transitions it back to `Pending`, at which
+    /// point `enqueue` puts it back in the run queue. Without this
+    /// guard, `scheduler_run_until_done`'s re-enqueue loop would
+    /// call `run_one_task` on a parked task every iteration,
+    /// re-evaluating the body and re-parking — an infinite loop.
     pub fn begin_run(&mut self, id: TaskId) -> Option<(Value, crate::Env)> {
         let task = self.tasks.get(id.0)?;
-        if matches!(task.state, TaskState::Done(_) | TaskState::Cancelled) {
+        if matches!(
+            task.state,
+            TaskState::Done(_) | TaskState::Cancelled | TaskState::Suspended(_)
+        ) {
             return None;
         }
         let body = task.body.clone();
@@ -671,7 +683,9 @@ impl Scheduler {
         // Stage 1: register the waiter on the channel's wait list.
         let registered = if let Some(ch) = self.channels.get_mut(slot) {
             match dir {
-                Direction::Send => ch.push_sender_waiter(task_id),
+                Direction::Send => {
+                    ch.push_sender_waiter(task_id, value.clone().unwrap_or(Value::Null))
+                }
                 Direction::Recv => ch.push_receiver_waiter(task_id),
             }
             true

@@ -60,9 +60,15 @@ pub enum TryResult<T> {
 /// - `closed`: sticky close flag, set by `CHANNEL_CLOSE`. Once
 ///   `true`, SEND raises **E0054** (close + write) and RECV returns
 ///   `Value::Err` with `kind = "ChannelClosed"` payload.
-/// - `sender_waiters` / `receiver_waiters`: task ids parked because
-///   SEND would overflow buf (`SendingOn`) or RECV found buf empty
-///   (`ReceivingOn`). Both are filled by the runtime, not user code.
+/// - `sender_waiters` / `sender_waiter_values`: parallel arrays —
+///   `sender_waiters[i]` is the i-th parked sender's task id;
+///   `sender_waiter_values[i]` is the value it wanted to push.
+///   For sync channels (cap=0), the value would have nowhere else to
+///   live; for buffered channels (cap>0), the value would overflow
+///   the buf so we stash it here. Both arrays push together and
+///   pop together (FIFO).
+/// - `receiver_waiters`: task ids parked because RECV found buf
+///   empty (`ReceivingOn`). Filled by the runtime, not user code.
 #[derive(Debug)]
 pub struct Channel {
     pub id: ChannelId,
@@ -71,6 +77,7 @@ pub struct Channel {
     pub buf: VecDeque<Value>,
     pub closed: bool,
     pub sender_waiters: Vec<crate::runtime::TaskId>,
+    pub sender_waiter_values: Vec<Value>,
     pub receiver_waiters: Vec<crate::runtime::TaskId>,
 }
 
@@ -85,6 +92,7 @@ impl Channel {
             buf: VecDeque::with_capacity(capacity),
             closed: false,
             sender_waiters: Vec::new(),
+            sender_waiter_values: Vec::new(),
             receiver_waiters: Vec::new(),
         }
     }
@@ -140,6 +148,41 @@ impl Channel {
             return TryResult::Ok(());
         }
         TryResult::WouldBlock
+    }
+
+    /// [v0.9 Step 4] Synchronous SEND with explicit pair logic.
+    /// Returns Some(receiver_task_id) when pairing succeeds: a
+    /// receiver was parked on a sync channel, the value has been
+    /// pushed into the buf so the receiver's retry finds it, and
+    /// the receiver task id is returned for the caller to wake.
+    ///
+    /// Sync-channel hand-off only — for buffered channels the
+    /// natural `try_send` path is sufficient.
+    pub fn try_pair_send(&mut self, value: Value) -> Option<crate::runtime::TaskId> {
+        if self.closed {
+            return None;
+        }
+        if self.capacity == 0 && self.has_receiver_waiter() {
+            // Push the sender's value into the buf (which is empty
+            // for sync channels) so the receiver's retry finds it.
+            self.buf.push_back(value);
+            return self.pop_receiver_waiter();
+        }
+        None
+    }
+
+    /// [v0.9 Step 4] Symmetric pair helper for the recv side.
+    /// Returns Some((sender_task_id, sender_value)) when a sender is
+    /// parked and its value is ready. Returns None when no sender is
+    /// waiting (caller falls through to try_recv / WouldBlock).
+    pub fn try_pair_recv(&mut self) -> Option<(crate::runtime::TaskId, Value)> {
+        if self.closed {
+            return None;
+        }
+        if !self.sender_waiters.is_empty() {
+            return self.pop_sender_waiter_with_value();
+        }
+        None
     }
 
     /// Synchronous RECV attempt. Used by `CHANNEL_TRY_RECV` and
@@ -198,7 +241,22 @@ impl Channel {
         if self.sender_waiters.is_empty() {
             None
         } else {
+            self.sender_waiter_values.remove(0);
             Some(self.sender_waiters.remove(0))
+        }
+    }
+
+    /// [v0.9 Step 4] Wake one sender and return both its task id AND
+    /// the value it parked with. The caller is responsible for either
+    /// pushing the value into the buf (when a slot is now free) or
+    /// handing it off to a paired receiver (sync channel path).
+    pub fn pop_sender_waiter_with_value(&mut self) -> Option<(crate::runtime::TaskId, Value)> {
+        if self.sender_waiters.is_empty() {
+            None
+        } else {
+            let v = self.sender_waiter_values.remove(0);
+            let tid = self.sender_waiters.remove(0);
+            Some((tid, v))
         }
     }
 
@@ -216,9 +274,13 @@ impl Channel {
 
     /// Park the calling task as a sender waiter (the buf is full
     /// and SEND must yield). Caller is responsible for re-enqueuing
-    /// the task on wake-up via `pop_sender_waiter`.
-    pub fn push_sender_waiter(&mut self, task: crate::runtime::TaskId) {
+    /// the task on wake-up via `pop_sender_waiter`. The parked value
+    /// is stored alongside the task id so a paired receiver can
+    /// retrieve it on hand-off (sync channel path) or the woken
+    /// sender can re-push into the buf after a slot frees.
+    pub fn push_sender_waiter(&mut self, task: crate::runtime::TaskId, value: Value) {
         self.sender_waiters.push(task);
+        self.sender_waiter_values.push(value);
     }
 
     /// Park the calling task as a receiver waiter (the buf is empty
