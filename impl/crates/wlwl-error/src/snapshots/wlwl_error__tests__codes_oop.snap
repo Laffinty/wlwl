@@ -1,6 +1,7 @@
 ---
 source: crates/wlwl-error/src/lib.rs
-expression: "serde_json::json!({\n    \"E0050\": code_snap(ErrorCode::E0050, \"inherit_err\"), \"E0051\":\n    code_snap(ErrorCode::E0051, \"new_arity_err\"),\n})"
+assertion_line: 1383
+expression: "serde_json::json!({\n    \"E0050\": code_snap(ErrorCode::E0050, \"inherit_err\"), \"E0051\":\n    code_snap(ErrorCode::E0051, \"call_method_protocol_violation\"),\n})"
 ---
 {
   "E0050": {
@@ -37,7 +38,7 @@ expression: "serde_json::json!({\n    \"E0050\": code_snap(ErrorCode::E0050, \"i
       "line": 1,
       "line_end": 1
     },
-    "message": "snapshot for new_arity_err",
+    "message": "snapshot for call_method_protocol_violation",
     "related": [],
     "retry_after": null,
     "retryable": false,

@@ -75,23 +75,20 @@ pub enum ErrorCode {
     E0047, // ASSERT_EQ a != b (v0.4 搂15.9 std.test; Phase B7)
     E0048, // ASSERT_NEQ a == b (v0.4 搂15.9 std.test; Phase B7)
     E0049, // EXPECT_ERR input not ERR (v0.4 搂15.9 std.test; Phase B7)
-    E0050, // [v0.9 Step 9a-6 / plan §4.3 / ADR-0019 §4.3] class
-    //   inheritance chain error. Activated this commit:
-    //     * `builtin_class` walks the parent chain at
-    //       construction time and fires E0050 on a cycle
-    //       (depth > 64 also fires E0050).
-    //     * `builtin_call_method` walks the parent chain on
-    //       Instance receiver and fires E0050 if a cycle
-    //       re-appears in the chain (defensive — the
-    //       construction-time check should have caught it).
-    //     * `builtin_get_prop` / `builtin_set_prop` mirror
-    //       the same chain walk for property lookup / write.
+    E0050, // [v0.9 Step 9a-6 / P1-M5 / plan §4.3 / ADR-0019 §4.3] class
+    //   inheritance chain error + init protocol mismatch. Activated:
+    //     * `builtin_class` walks the parent chain at construction
+    //       time and fires E0050 on a cycle (depth > 64 also E0050).
+    //     * `builtin_call_method` / GET_PROP / SET_PROP walk the parent
+    //       chain and fire E0050 on a cycle (defensive).
+    //     * `builtin_new` init arity mismatch / non-function init →
+    //       E0050 ("init protocol mismatch" per ADR-0019).
     //   Spec §13 prose lands with the Step 12 spec sweep.
-    E0051, // [v0.9 Step 9a-6] NEW arity mismatch with INIT.
-    //   Activated by `builtin_new` when `args.len()` doesn't
-    //   equal `cls.init.params.len()` (the leading `self`
-    //   counts on both sides). Spec §13 prose lands with the
-    //   Step 12 spec sweep.
+    E0051, // [v0.9 P1-M5 / ADR-0019 §4.3] CALL_METHOD session-type
+    //   protocol state-machine violation. Reserved for Step 9b
+    //   (session-typed methods: wrong ⊕ choice / sequence / μ).
+    //   NEW arity moved to E0050 (init protocol) so this code stays
+    //   free for the planned CALL_METHOD protocol meaning.
     // [v0.7 Phase B0] task / channel system reserves E0052-E0058.
     // See plan §4.4 + ADR-0014. Allocated codes:
     //   E0052  SCOPE(fn) called with non-function value (Phase C)
@@ -155,18 +152,14 @@ pub enum ErrorCode {
     E0092, // TLS handshake / certificate error
     E0093, // HTTP 4xx client error
     E0094, // HTTP 5xx server error
-    // [v0.9 Step 9a-3 / plan §4.3 / ADR-0019 §4.3] Linear
-    // capability errors for the `THIS` builtin. E0095 fires
-    // when a method body calls `THIS` more than once (the
-    // first call atomically flips `this_token.moved` from
-    // false to true; subsequent calls observe the flag and
-    // raise this error). E0096 is reserved for "linear value
-    // implicitly discarded" (a method body that never calls
-    // `THIS` even though the surrounding context expects
-    // it); the runtime check for E0096 lands in a future
-    // commit when spec §15 prose is pinned.
-    E0095, // [v0.9 Step 9a-3] linear value used after move (THIS twice in one method body)
-    E0096, // [v0.9 Step 9a-3] linear value implicitly discarded (reserved; runtime check deferred)
+    // [v0.9 Step 9a-3 / P1-M5 / plan §4.2] Linear capability errors
+    // for the `THIS` builtin. Plan §4.2 routes ALL linear-THIS
+    // violations through E0032 (越界) — including double-use and
+    // escape. E0095 / E0096 remain registered as reserved codes for
+    // a possible v0.9.1 split (used-after-move / implicit-discard);
+    // the runtime currently emits E0032 for those cases.
+    E0095, // reserved: linear value used after move (runtime emits E0032)
+    E0096, // reserved: linear value implicitly discarded (runtime check deferred)
     E0099, // user-thrown ERR / PANIC
     E0100, // internal error
     E0101, // stack overflow
@@ -1391,7 +1384,7 @@ mod tests {
             "codes_oop",
             serde_json::json!({
                 "E0050": code_snap(ErrorCode::E0050, "inherit_err"),
-                "E0051": code_snap(ErrorCode::E0051, "new_arity_err"),
+                "E0051": code_snap(ErrorCode::E0051, "call_method_protocol_violation"),
             })
         );
     }

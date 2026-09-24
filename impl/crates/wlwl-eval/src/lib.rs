@@ -120,6 +120,8 @@ pub enum Value {
         class: std::rc::Rc<std::cell::RefCell<ClassEntry>>,
         fields: std::rc::Rc<std::cell::RefCell<Vec<(Value, Value)>>>,
         this_token: std::rc::Rc<std::cell::RefCell<ThisToken>>,
+        /// [v0.9 Step 9b] Per-instance session-protocol cursor.
+        protocol_state: std::rc::Rc<std::cell::RefCell<crate::protocol::ProtocolCursor>>,
     },
 }
 
@@ -156,6 +158,9 @@ pub struct ClassEntry {
     /// reads the first parameter (must be named `self` per §13
     /// convention) and binds it to the freshly-allocated instance.
     pub init: Option<Value>,
+    /// [v0.9 Step 9b / plan §4.4.3 / ADR-0019 §14] Session-type
+    /// protocol constraining method-call order. `None` = unrestricted.
+    pub protocol: Option<crate::protocol::Proto>,
 }
 
 /// [v0.9 Step 9a-3 / plan §4.3 / ADR-0019 §4.3] Linear `THIS`
@@ -221,6 +226,9 @@ pub enum ThisTokenError {
     /// consumed the capability; subsequent reads raise E0095.
     AlreadyMoved,
 }
+
+/// [v0.9 P1-M2] Shared fields table of one `Value::Instance`.
+pub type LinearThis = std::rc::Rc<std::cell::RefCell<Vec<(Value, Value)>>>;
 
 /// Tag for native-function implementations. A `Value::NativeFn`
 /// carries one of these alongside its name; the dispatch in
@@ -320,6 +328,7 @@ impl Value {
                 class,
                 fields,
                 this_token: _,
+                protocol_state: _,
             } => {
                 let b = class.borrow();
                 let label = match &b.name {
@@ -349,11 +358,11 @@ impl Value {
 //     even when their members line up — class identity is the
 //     user-meaningful comparison (`==` on classes is rare; spec
 //     §13 leaves it open).
-//   * `Value::Instance { class, .. } == Value::Instance { class:
-//     other, .. }` iff the two class `Rc`s are identical. Two
-//     `NEW()` calls from the same class yield distinct instances
-//     (the spec §13 `==` semantics for instances are not normative
-//     in v0.9; identity-by-class is a defensible v0.9.0 default).
+//   * `Value::Instance` identity is the per-instance state cell
+//     (`fields` `Rc::ptr_eq`). Two `NEW()` calls from the same
+//     class are distinct objects even when field values line up;
+//     `Value::clone` shares the same `fields` allocation and so
+//     compares equal (alias of the same object).
 impl PartialEq for Value {
     fn eq(&self, other: &Self) -> bool {
         match (self, other) {
@@ -384,16 +393,18 @@ impl PartialEq for Value {
             (Value::Class(a), Value::Class(b)) => std::rc::Rc::ptr_eq(a, b),
             (
                 Value::Instance {
-                    class: ca,
-                    fields: _fa,
+                    class: _ca,
+                    fields: fa,
                     this_token: _ta,
+                    protocol_state: _pa,
                 },
                 Value::Instance {
-                    class: cb,
-                    fields: _fb,
+                    class: _cb,
+                    fields: fb,
                     this_token: _tb,
+                    protocol_state: _pb,
                 },
-            ) => std::rc::Rc::ptr_eq(ca, cb),
+            ) => std::rc::Rc::ptr_eq(fa, fb),
             _ => false,
         }
     }
@@ -610,6 +621,18 @@ impl Env {
             }
         }
         Err(())
+    }
+
+    /// [v0.9 P1-M2] True when any binding in any scope matches `pred`.
+    pub fn any_binding_matches(&self, pred: impl Fn(&Value) -> bool) -> bool {
+        for scope in &self.scopes {
+            for cell in scope.values() {
+                if pred(&cell.borrow().value) {
+                    return true;
+                }
+            }
+        }
+        false
     }
 
     /// Snapshot all currently-bound names (for module exports).
@@ -2708,6 +2731,7 @@ fn builtin_get_prop(_ev: &mut Evaluator, args: Vec<Value>) -> WlwlResult<Outcome
             class,
             fields,
             this_token: _,
+            protocol_state: _,
         } => {
             // (a) Instance field lookup. `key` is `&Value` (from the
             // iterator's `&(Value, Value)`), so the pattern's
@@ -2829,7 +2853,26 @@ fn builtin_set_prop(_ev: &mut Evaluator, args: Vec<Value>) -> WlwlResult<Outcome
             class,
             fields,
             this_token: _,
+            protocol_state: _,
         } => {
+            let in_method_on_self = match (&_ev.current_method_instance, &args[0]) {
+                (
+                    Some(Value::Instance {
+                        fields: cur_fields, ..
+                    }),
+                    Value::Instance {
+                        fields: tgt_fields, ..
+                    },
+                ) => std::rc::Rc::ptr_eq(cur_fields, tgt_fields),
+                _ => false,
+            };
+            if !in_method_on_self {
+                return Err(_ev.diag(
+                    ErrorCode::E0032,
+                    "SET_PROP: external reference without THIS",
+                    diag_span,
+                ));
+            }
             // (a) Existing instance field → mutate in place
             //     via the Rc<RefCell<Vec<...>>> that 9a-5
             //     added. The mutation propagates to every
@@ -2973,6 +3016,7 @@ fn builtin_call_method(ev: &mut Evaluator, args: Vec<Value>) -> WlwlResult<Outco
             class,
             fields: _,
             this_token: _,
+            protocol_state: _,
         } => {
             // [v0.9 Step 9a-4] Walk the parent chain. The
             // visited list is `Vec<*const ClassEntry>` —
@@ -3047,6 +3091,40 @@ fn builtin_call_method(ev: &mut Evaluator, args: Vec<Value>) -> WlwlResult<Outco
             ));
         }
     };
+    if let Value::Instance { protocol_state, .. } = &args[0] {
+        let mut cursor = protocol_state.borrow_mut();
+        if let Err(e) = cursor.step(&method) {
+            use crate::protocol::ProtocolError as Pe;
+            let (code, msg) = match &e {
+                Pe::NotOffered { method, expected } => (
+                    ErrorCode::E0051,
+                    format!(
+                        "CALL_METHOD protocol violation: '{}' is not offered here (expected one of {:?})",
+                        method, expected
+                    ),
+                ),
+                Pe::Exhaused => (
+                    ErrorCode::E0051,
+                    format!(
+                        "CALL_METHOD protocol violation: protocol already at end (got '{}')",
+                        method
+                    ),
+                ),
+                Pe::RecursionExhausted { method } => (
+                    ErrorCode::E0051,
+                    format!(
+                        "CALL_METHOD protocol violation: μ recursion exhausted at '{}'",
+                        method
+                    ),
+                ),
+                Pe::Syntax(s) => (
+                    ErrorCode::E0050,
+                    format!("CALL_METHOD protocol syntax error: {}", s),
+                ),
+            };
+            return Err(ev.diag(code, msg, diag_span));
+        }
+    }
     ev.call_value_with_receiver(callee, Some(receiver), rest, &diag_span, &method)
 }
 
@@ -3110,15 +3188,31 @@ fn builtin_class(ev: &mut Evaluator, args: Vec<Value>) -> WlwlResult<Outcome> {
             ));
         }
     };
-    // parent: NULL | Value::Class
+    // parent: NULL | Value::Class | session protocol form
+    let mut protocol: Option<crate::protocol::Proto> = None;
     let parent: Option<std::rc::Rc<std::cell::RefCell<ClassEntry>>> = match parent_arg {
         Value::Null => None,
         Value::Class(c) => Some(std::rc::Rc::clone(c)),
+        Value::Dict(_) | Value::Array(_) | Value::String(_) => {
+            match crate::protocol::parse_proto(parent_arg) {
+                Ok(p) => {
+                    protocol = Some(p);
+                    None
+                }
+                Err(e) => {
+                    return Err(ev.diag(
+                        ErrorCode::E0050,
+                        format!("CLASS protocol expression is malformed: {:?}", e),
+                        diag_span.clone(),
+                    ));
+                }
+            }
+        }
         other => {
             return Err(type_error(
                 "CLASS",
                 format!(
-                    "class parent must be CLASS or NULL, got {}",
+                    "class parent_proto must be CLASS, NULL, or a session protocol, got {}",
                     type_name(other)
                 ),
             ));
@@ -3230,6 +3324,7 @@ fn builtin_class(ev: &mut Evaluator, args: Vec<Value>) -> WlwlResult<Outcome> {
         parent,
         members,
         init,
+        protocol,
     }));
     Ok(Outcome::normal(Value::Class(entry)))
 }
@@ -3287,6 +3382,12 @@ fn builtin_new(ev: &mut Evaluator, args: Vec<Value>) -> WlwlResult<Outcome> {
         // empty inner Vec.
         fields: std::rc::Rc::new(std::cell::RefCell::new(Vec::new())),
         this_token: std::rc::Rc::new(std::cell::RefCell::new(ThisToken { moved: false })),
+        protocol_state: std::rc::Rc::new(std::cell::RefCell::new(
+            match &cls_rc.borrow().protocol {
+                Some(p) => crate::protocol::ProtocolCursor::live(p.clone()),
+                None => crate::protocol::ProtocolCursor::unrestricted(),
+            },
+        )),
     };
     // Invoke init if present. `cls.init` is `Option<Value>` —
     // when `None`, NEW is a no-op-constructor (the spec §13
@@ -3299,7 +3400,7 @@ fn builtin_new(ev: &mut Evaluator, args: Vec<Value>) -> WlwlResult<Outcome> {
                 Value::Closure { params, .. } => Some(params.len()),
                 other => {
                     return Err(ev.diag(
-                        ErrorCode::E0051,
+                        ErrorCode::E0050,
                         format!(
                             "class 'init' member must be a function, got {}",
                             type_name(other)
@@ -3317,7 +3418,7 @@ fn builtin_new(ev: &mut Evaluator, args: Vec<Value>) -> WlwlResult<Outcome> {
         // arity check.
         if args.len() != required {
             return Err(ev.diag(
-                ErrorCode::E0051,
+                ErrorCode::E0050,
                 format!(
                     "NEW arity mismatch: class init expects {} argument(s) \
                      (including self), got {}",
@@ -3333,6 +3434,16 @@ fn builtin_new(ev: &mut Evaluator, args: Vec<Value>) -> WlwlResult<Outcome> {
         // the closure's env), so clone the init Value out.
         let init_val = cls_rc.borrow().init.clone();
         if let Some(init_val) = init_val {
+            if let Value::Instance { protocol_state, .. } = &instance {
+                let mut cursor = protocol_state.borrow_mut();
+                if let Err(e) = cursor.step("init") {
+                    return Err(ev.diag(
+                        ErrorCode::E0050,
+                        format!("NEW init protocol mismatch: {:?}", e),
+                        diag_span.clone(),
+                    ));
+                }
+            }
             let rest = args[1..].to_vec();
             let span_clone = diag_span.clone();
             // call_value_with_receiver inserts `receiver` as the
@@ -3442,11 +3553,14 @@ fn builtin_this(ev: &mut Evaluator, args: Vec<Value>) -> WlwlResult<Outcome> {
         let mut guard = this_token.borrow_mut();
         if guard.try_consume().is_err() {
             return Err(ev.diag(
-                ErrorCode::E0095,
+                ErrorCode::E0032,
                 "linear value used after move (THIS was already consumed in this method body)",
                 diag_span,
             ));
         }
+    }
+    if let Value::Instance { fields, .. } = &instance {
+        ev.linear_this = Some(std::rc::Rc::clone(fields));
     }
     Ok(Outcome::normal(instance))
 }
@@ -3791,6 +3905,14 @@ fn builtin_spawn(ev: &mut Evaluator, args: Vec<Value>) -> WlwlResult<Outcome> {
         ));
     }
     let fn_value = args.into_iter().next().expect("len == 1 checked");
+    // [v0.9 P1-M2] THIS must not cross the SPAWN/task boundary.
+    if ev.is_linear_this(&fn_value) {
+        return Err(ev.diag(
+            ErrorCode::E0032,
+            "linear THIS cannot escape the method body (SPAWN)",
+            diag_span,
+        ));
+    }
     let (params, body, captured_env) = match fn_value {
         Value::Closure { params, body, env } => (params, body, env),
         other => {
@@ -6088,6 +6210,8 @@ pub mod yield_split;
 /// the full module-level rationale.
 pub mod channel;
 
+pub mod protocol;
+
 pub struct Evaluator {
     env: Env,
     /// Optional original source (for `source_line` in runtime diagnostics).
@@ -6207,6 +6331,8 @@ pub struct Evaluator {
     /// calling another method via `CALL_METHOD`) re-establish
     /// the inner receiver correctly.
     pub current_method_instance: Option<Value>,
+    /// [v0.9 P1-M2] Fields cell of the active linear `THIS`.
+    pub linear_this: Option<LinearThis>,
     /// [v0.7 Phase C2] Cooperative scheduler. SPAWN records spawned
     /// tasks here; AWAIT (C3) and TASK_IS_CANCELLED (C5) read
     /// from here. At C2 the scheduler never *runs* anything
@@ -6274,6 +6400,7 @@ impl Evaluator {
             shield_pending_cancel: false,
             shield_pending_reason: None,
             current_method_instance: None,
+            linear_this: None,
             scheduler: crate::runtime::Scheduler::new(),
         }
     }
@@ -6330,6 +6457,7 @@ impl Evaluator {
             shield_pending_cancel: false,
             shield_pending_reason: None,
             current_method_instance: None,
+            linear_this: None,
             scheduler: crate::runtime::Scheduler::new(),
         }
     }
@@ -6363,6 +6491,19 @@ impl Evaluator {
     /// without aborting the run.
     pub fn take_warnings(&mut self) -> Vec<Warning> {
         std::mem::take(&mut self.warnings)
+    }
+
+    /// [v0.9 P1-M2] True when `v` is the active linear `THIS` instance.
+    fn is_linear_this(&self, v: &Value) -> bool {
+        match (&self.linear_this, v) {
+            (Some(linear), Value::Instance { fields, .. }) => std::rc::Rc::ptr_eq(linear, fields),
+            _ => false,
+        }
+    }
+
+    /// [v0.9 P1-M2] True when a closure env captured the linear `THIS`.
+    fn has_linear_this_in_env(&self, env: &Env) -> bool {
+        self.linear_this.is_some() && env.any_binding_matches(|v| self.is_linear_this(v))
     }
 
     /// Invoke a callable `Value` (closure or native fn) with an
@@ -6412,7 +6553,35 @@ impl Evaluator {
                 // `builtin_this` has something to read.
                 let prev_method =
                     std::mem::replace(&mut self.current_method_instance, receiver.clone());
+                let this_token_frame = match &receiver {
+                    Some(Value::Instance { this_token, .. }) => {
+                        let prev_moved = this_token.borrow().moved;
+                        this_token.borrow_mut().moved = false;
+                        Some((std::rc::Rc::clone(this_token), prev_moved))
+                    }
+                    _ => None,
+                };
+                let prev_linear = self.linear_this.take();
                 let result = self.invoke_closure(name, params, body, env, args, span);
+                if let Ok(outcome) = &result {
+                    if self.is_linear_this(&outcome.value) {
+                        let escape_err = self.diag(
+                            ErrorCode::E0032,
+                            "linear THIS cannot escape the method body (method return)",
+                            span.clone(),
+                        );
+                        if let Some((this_token, prev_moved)) = this_token_frame {
+                            this_token.borrow_mut().moved = prev_moved;
+                        }
+                        self.linear_this = prev_linear;
+                        self.current_method_instance = prev_method;
+                        return Err(escape_err);
+                    }
+                }
+                if let Some((this_token, prev_moved)) = this_token_frame {
+                    this_token.borrow_mut().moved = prev_moved;
+                }
+                self.linear_this = prev_linear;
                 self.current_method_instance = prev_method;
                 result
             }
@@ -6858,6 +7027,13 @@ impl Evaluator {
                     if o.signal != Signal::None {
                         return Ok(o);
                     }
+                    if self.is_linear_this(&o.value) {
+                        return Err(self.diag(
+                            ErrorCode::E0032,
+                            "linear THIS cannot escape the method body (ARRAY literal)",
+                            expr.span().clone(),
+                        ));
+                    }
                     vs.push(o.value);
                 }
                 Ok(Outcome::normal(Value::Array(vs)))
@@ -6872,6 +7048,13 @@ impl Evaluator {
                     let vo = self.eval_expr(v)?;
                     if vo.signal != Signal::None {
                         return Ok(vo);
+                    }
+                    if self.is_linear_this(&ko.value) || self.is_linear_this(&vo.value) {
+                        return Err(self.diag(
+                            ErrorCode::E0032,
+                            "linear THIS cannot escape the method body (DICT literal)",
+                            expr.span().clone(),
+                        ));
                     }
                     vs.push((ko.value, vo.value));
                 }
@@ -6918,6 +7101,13 @@ impl Evaluator {
                 // top of the captured env. Cloning Env is cheap for
                 // small scopes; for very large programs this is a
                 // candidate for Rc<RefCell> in Phase 4+ performance work.
+                if self.has_linear_this_in_env(&self.env) {
+                    return Err(self.diag(
+                        ErrorCode::E0032,
+                        "linear THIS cannot be captured by a closure (FUN capture)",
+                        expr.span().clone(),
+                    ));
+                }
                 let closure = Value::Closure {
                     params: params.clone(),
                     body: body.clone(),
@@ -21435,6 +21625,7 @@ entry = "main.wll"
             parent: None,
             members: Vec::new(),
             init: None,
+            protocol: None,
         }));
         let v = Value::Class(entry);
         assert_eq!(v.display(), "<class Rect>");
@@ -21451,6 +21642,7 @@ entry = "main.wll"
             parent: None,
             members: Vec::new(),
             init: None,
+            protocol: None,
         }));
         let v = Value::Class(entry);
         assert_eq!(v.display(), "<class>");
@@ -21467,6 +21659,7 @@ entry = "main.wll"
             parent: None,
             members: Vec::new(),
             init: None,
+            protocol: None,
         }));
         let v = Value::Instance {
             class: entry,
@@ -21475,6 +21668,7 @@ entry = "main.wll"
                 (Value::String("y".into()), Value::Integer(2)),
             ])),
             this_token: Rc::new(RefCell::new(ThisToken { moved: false })),
+            protocol_state: Rc::new(RefCell::new(crate::protocol::ProtocolCursor::unrestricted())),
         };
         assert_eq!(v.display(), "<Point instance>[2 fields]");
         assert_eq!(type_name(&v), "instance");
@@ -21497,12 +21691,14 @@ entry = "main.wll"
             parent: None,
             members: Vec::new(),
             init: None,
+            protocol: None,
         })));
         let b = Value::Class(Rc::new(RefCell::new(ClassEntry {
             name: Some("Foo".to_string()),
             parent: None,
             members: Vec::new(),
             init: None,
+            protocol: None,
         })));
         assert_ne!(a, b, "two distinct CLASS() calls must NOT be equal");
     }
@@ -21521,6 +21717,7 @@ entry = "main.wll"
             parent: None,
             members: Vec::new(),
             init: None,
+            protocol: None,
         }));
         let a = Value::Class(Rc::clone(&entry));
         let b = Value::Class(Rc::clone(&entry));
@@ -21528,15 +21725,10 @@ entry = "main.wll"
     }
 
     #[test]
-    fn v09s9a1_value_instance_identity_by_class_rc() {
-        // [v0.9 Step 9a-1] Two instances of the same class compare
-        // equal — instances are identity-tracked via their class Rc
-        // only (the spec §13 `==` semantics for instances are open in
-        // v0.9.0; identity-by-class is the v0.9.0 default). Locking
-        // this prevents future refactors from over-engineering the
-        // equality to deep-field compare (which would silently treat
-        // "two NEW() calls of the same class" as the same instance
-        // and confuse user code).
+    fn v09s9a1_value_instance_identity_by_fields_rc() {
+        // [v0.9 P0-M1] Instance identity is the per-instance `fields`
+        // allocation, NOT the class Rc. Two NEW() calls from the same
+        // class are distinct objects; Value::clone is the same object.
         use std::cell::RefCell;
         use std::rc::Rc;
         let class = Rc::new(RefCell::new(ClassEntry {
@@ -21544,27 +21736,35 @@ entry = "main.wll"
             parent: None,
             members: Vec::new(),
             init: None,
+            protocol: None,
         }));
+        let fields_a = Rc::new(RefCell::new(vec![(
+            Value::String("size".into()),
+            Value::Integer(1),
+        )]));
         let inst_a = Value::Instance {
+            class: Rc::clone(&class),
+            fields: Rc::clone(&fields_a),
+            this_token: Rc::new(RefCell::new(ThisToken { moved: false })),
+            protocol_state: Rc::new(RefCell::new(crate::protocol::ProtocolCursor::unrestricted())),
+        };
+        let inst_b = Value::Instance {
             class: Rc::clone(&class),
             fields: Rc::new(RefCell::new(vec![(
                 Value::String("size".into()),
                 Value::Integer(1),
             )])),
             this_token: Rc::new(RefCell::new(ThisToken { moved: false })),
+            protocol_state: Rc::new(RefCell::new(crate::protocol::ProtocolCursor::unrestricted())),
         };
-        let inst_b = Value::Instance {
-            class: Rc::clone(&class),
-            fields: Rc::new(RefCell::new(vec![(
-                Value::String("size".into()),
-                Value::Integer(99),
-            )])),
-            this_token: Rc::new(RefCell::new(ThisToken { moved: false })),
-        };
-        assert_eq!(
+        assert_ne!(
             inst_a, inst_b,
-            "instances sharing the same class Rc compare equal \
-             (identity-by-class default)"
+            "two NEW() calls of the same class must be distinct instances"
+        );
+        let alias = inst_a.clone();
+        assert_eq!(
+            inst_a, alias,
+            "clone shares fields Rc and is the same object"
         );
     }
 
@@ -21642,7 +21842,7 @@ entry = "main.wll"
     }
 
     #[test]
-    fn v09s9a2_new_arity_mismatch_returns_e0051() {
+    fn v09s9a2_new_arity_mismatch_returns_e0050() {
         // Plan §4.3: NEW must match init's arity (including
         // self). 3-arg init expects 3 NEW args (cls + 2 user);
         // calling NEW with 4 args raises E0051.
@@ -21655,13 +21855,13 @@ entry = "main.wll"
         let err = run(src).expect_err("NEW with too many args must fail");
         assert_eq!(
             err.diagnostic().code,
-            ErrorCode::E0051,
-            "expected E0051 NEW arity mismatch"
+            ErrorCode::E0050,
+            "expected E0050 NEW arity mismatch"
         );
     }
 
     #[test]
-    fn v09s9a2_new_too_few_args_returns_e0051() {
+    fn v09s9a2_new_too_few_args_returns_e0050() {
         // Mirror of the too-many-args case. The init expects 2
         // user args (cls + 2); NEW with only 1 user arg raises
         // E0051 with a clear "expected N, got M" message.
@@ -21674,8 +21874,8 @@ entry = "main.wll"
         let err = run(src).expect_err("NEW with too few args must fail");
         assert_eq!(
             err.diagnostic().code,
-            ErrorCode::E0051,
-            "expected E0051 NEW arity mismatch (too few)"
+            ErrorCode::E0050,
+            "expected E0050 NEW arity mismatch (too few)"
         );
     }
 
@@ -21793,6 +21993,7 @@ entry = "main.wll"
             parent: None,
             members: Vec::new(),
             init: None,
+            protocol: None,
         }));
         // Self-cycle: entry.parent = Some(entry)
         entry.borrow_mut().parent = Some(Rc::clone(&entry));
@@ -21881,7 +22082,7 @@ entry = "main.wll"
         // path runs without raising E0032 / E0095".
         let src = r#"
             LET(C, CLASS("C", NULL, [
-                ["init", FUN((self), THIS())]
+                ["init", FUN((self), TYPE(THIS()))]
             ]));
             TYPE(NEW(C))
         "#;
@@ -21894,7 +22095,7 @@ entry = "main.wll"
     }
 
     #[test]
-    fn v09s9a3_this_called_twice_in_same_body_returns_e0095() {
+    fn v09s9a3_this_called_twice_in_same_body_returns_e0032() {
         // [v0.9 Step 9a-3 / plan §4.3] The first `THIS()` call
         // atomically flips `this_token.moved` to true; a
         // second call within the same method body observes the
@@ -21918,8 +22119,8 @@ entry = "main.wll"
         let err = run(src).expect_err("two THIS calls in one body must fail");
         assert_eq!(
             err.diagnostic().code,
-            ErrorCode::E0095,
-            "expected E0095 linear value used after move"
+            ErrorCode::E0032,
+            "expected E0032 linear value used after move"
         );
     }
 
@@ -22204,16 +22405,16 @@ entry = "main.wll"
 
     #[test]
     fn v09s9a5_set_prop_pushes_new_instance_field() {
-        // [v0.9 Step 9a-5] When the key is neither in
-        // `instance.fields` nor in any class member, SET_PROP
-        // pushes a new instance field. The mutation is
-        // observable via a subsequent GET_PROP on the same
-        // instance.
+        // [v0.9 P1-M4] SET_PROP mutates from inside a method body
+        // (external SET_PROP without THIS is E0032).
         let src = r#"
-            LET(C, CLASS("C", NULL, []));
-            LET(inst, NEW(C));
-            SET_PROP(inst, "new_field", 99);
-            GET_PROP(inst, "new_field")
+            LET(C, CLASS("C", NULL, [
+                ["bump", FUN((self),
+                    SET_PROP(self, "new_field", 99);
+                    GET_PROP(self, "new_field")
+                )]
+            ]));
+            CALL_METHOD(NEW(C), "bump")
         "#;
         let v = run(src).expect("SET_PROP new instance field must succeed");
         assert_eq!(
@@ -22221,6 +22422,17 @@ entry = "main.wll"
             Value::Integer(99),
             "SET_PROP + GET_PROP must observe the new field"
         );
+    }
+
+    #[test]
+    fn v09s9a5_set_prop_external_without_this_returns_e0032() {
+        let src = r#"
+            LET(C, CLASS("C", NULL, []));
+            LET(inst, NEW(C));
+            SET_PROP(inst, "k", 1)
+        "#;
+        let err = run(src).expect_err("external SET_PROP without THIS must fail");
+        assert_eq!(err.diagnostic().code, ErrorCode::E0032);
     }
 
     #[test]
@@ -22257,6 +22469,151 @@ entry = "main.wll"
             Value::Integer(2),
             "legacy DICT-receiver GET_PROP path must produce 2"
         );
+    }
+
+    // ────────────────────────────────────────────────────────────
+    // [v0.9 Step 9b / plan §4.4.3 / ADR-0019 §14] Session types.
+    //
+    // CLASS second arg is a session-protocol Value (DICT / ARRAY /
+    // "end"). CALL_METHOD walks the state machine; violations → E0051.
+
+    #[test]
+    fn v09s9b_sequence_order_enforced() {
+        // {a: end, b: end, c: end} — must call a then b then c.
+        let src = r#"
+            LET(C, CLASS("C", ["a": "end", "b": "end", "c": "end"], [
+                ["a", FUN((self), 1)],
+                ["b", FUN((self), 2)],
+                ["c", FUN((self), 3)]
+            ]));
+            LET(o, NEW(C));
+            CALL_METHOD(o, "a");
+            CALL_METHOD(o, "b");
+            CALL_METHOD(o, "c")
+        "#;
+        let v = run(src).expect("sequence a→b→c must succeed");
+        assert_eq!(v, Value::Integer(3));
+    }
+
+    #[test]
+    fn v09s9b_sequence_out_of_order_returns_e0051() {
+        let src = r#"
+            LET(C, CLASS("C", ["a": "end", "b": "end"], [
+                ["a", FUN((self), 1)],
+                ["b", FUN((self), 2)]
+            ]));
+            CALL_METHOD(NEW(C), "b")
+        "#;
+        let err = run(src).expect_err("calling b first must fail");
+        assert_eq!(err.diagnostic().code, ErrorCode::E0051);
+    }
+
+    #[test]
+    fn v09s9b_choice_selects_one_arm() {
+        // ⊕ {open: end, close: end}
+        let src = r#"
+            LET(C, CLASS("C",
+                ["choice", ["open": "end", "close": "end"]],
+                [
+                    ["open", FUN((self), "opened")],
+                    ["close", FUN((self), "closed")]
+                ]
+            ));
+            CALL_METHOD(NEW(C), "close")
+        "#;
+        let v = run(src).expect("choice close must succeed");
+        assert_eq!(v, Value::String("closed".into()));
+    }
+
+    #[test]
+    fn v09s9b_choice_wrong_arm_returns_e0051() {
+        // Method exists on the class but is not offered by ⊕.
+        let src = r#"
+            LET(C, CLASS("C",
+                ["choice", ["open": "end", "close": "end"]],
+                [
+                    ["open", FUN((self), 1)],
+                    ["close", FUN((self), 2)],
+                    ["other", FUN((self), 3)]
+                ]
+            ));
+            CALL_METHOD(NEW(C), "other")
+        "#;
+        let err = run(src).expect_err("unoffered method must fail");
+        assert_eq!(err.diagnostic().code, ErrorCode::E0051);
+    }
+
+    #[test]
+    fn v09s9b_mu_loops_then_closes() {
+        // μX. ⊕ { get: ?int.X, close: end }
+        let proto = r#"
+            ["mu", "X", ["choice", [
+                ["get", ["recv", "int", ["var", "X"]]],
+                ["close", "end"]
+            ]]]
+        "#;
+        let src = format!(
+            r#"
+            LET(C, CLASS("C", {proto}, [
+                ["get", FUN((self), 7)],
+                ["close", FUN((self), "done")]
+            ]));
+            LET(o, NEW(C));
+            CALL_METHOD(o, "get");
+            CALL_METHOD(o, "get");
+            CALL_METHOD(o, "close")
+        "#
+        );
+        let v = run(&src).expect("μ get×2 then close must succeed");
+        assert_eq!(v, Value::String("done".into()));
+    }
+
+    #[test]
+    fn v09s9b_after_end_returns_e0051() {
+        let src = r#"
+            LET(C, CLASS("C", ["only": "end"], [
+                ["only", FUN((self), 1)]
+            ]));
+            LET(o, NEW(C));
+            CALL_METHOD(o, "only");
+            CALL_METHOD(o, "only")
+        "#;
+        let err = run(src).expect_err("second call after end must fail");
+        assert_eq!(err.diagnostic().code, ErrorCode::E0051);
+    }
+
+    #[test]
+    fn v09s9b_malformed_protocol_returns_e0050() {
+        let src = r#"
+            CLASS("C", ["nope", "x"], [])
+        "#;
+        let err = run(src).expect_err("malformed protocol must fail");
+        assert_eq!(err.diagnostic().code, ErrorCode::E0050);
+    }
+
+    #[test]
+    fn v09s9b_inc_then_get_before_next_inc() {
+        // Plan Counter skeleton: after inc must get before another inc.
+        let proto = r#"
+            ["mu", "X", ["choice", [
+                ["inc", ["then", "get", ["var", "X"]]],
+                ["close", "end"]
+            ]]]
+        "#;
+        let src = format!(
+            r#"
+            LET(C, CLASS("C", {proto}, [
+                ["inc", FUN((self), 1)],
+                ["get", FUN((self), 2)],
+                ["close", FUN((self), 0)]
+            ]));
+            LET(o, NEW(C));
+            CALL_METHOD(o, "inc");
+            CALL_METHOD(o, "inc")
+        "#
+        );
+        let err = run(&src).expect_err("inc;inc must fail (need get between)");
+        assert_eq!(err.diagnostic().code, ErrorCode::E0051);
     }
 
     // ────────────────────────────────────────────────────────────
