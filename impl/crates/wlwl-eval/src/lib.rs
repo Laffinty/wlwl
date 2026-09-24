@@ -105,9 +105,20 @@ pub enum Value {
     /// `SET_PROP` read / write (Step 9a-5 wires these). `this_token`
     /// is the placeholder for the linear `THIS` capability (Step
     /// 9a-3 fleshes it out to a runtime-checked `Rc<RefCell<_>>`).
+    ///
+    /// [v0.9 Step 9a-5] `fields` is wrapped in `Rc<RefCell<_>>`
+    /// (rather than the plain `Vec` that 9a-1 used) so that
+    /// `SET_PROP` mutations propagate to every reference that
+    /// shares the instance. The plain-`Vec` shape meant the
+    /// caller had to rebind `LET inst = SET_PROP(inst, "k", v)`
+    /// after every mutation — a footgun the §13 ergonomics
+    /// call out as a deviation. With the Rc-wrapped shape,
+    /// any future `inst.foo` reference observes the new
+    /// field automatically, mirroring how closures already
+    /// share cells via `Env::clone`.
     Instance {
         class: std::rc::Rc<std::cell::RefCell<ClassEntry>>,
-        fields: Vec<(Value, Value)>,
+        fields: std::rc::Rc<std::cell::RefCell<Vec<(Value, Value)>>>,
         this_token: std::rc::Rc<std::cell::RefCell<ThisToken>>,
     },
 }
@@ -315,7 +326,7 @@ impl Value {
                     Some(n) => format!("<{} instance>", n),
                     None => "<instance>".to_string(),
                 };
-                format!("{}[{} fields]", label, fields.len())
+                format!("{}[{} fields]", label, fields.borrow().len())
             }
         }
     }
@@ -2660,15 +2671,6 @@ fn builtin_call(_ev: &mut Evaluator, args: Vec<Value>) -> WlwlResult<Outcome> {
 /// k 必须是 STRING,否则 E0030;键缺失 → E0037。
 fn builtin_get_prop(_ev: &mut Evaluator, args: Vec<Value>) -> WlwlResult<Outcome> {
     let (obj, key) = expect_arity2("GET_PROP", &args)?;
-    let entries = match obj {
-        Value::Dict(e) => e,
-        other => {
-            return Err(type_error(
-                "GET_PROP",
-                format!("expected DICT object, got {}", type_name(other)),
-            ));
-        }
-    };
     let k = match key {
         Value::String(s) => s,
         other => {
@@ -2678,34 +2680,131 @@ fn builtin_get_prop(_ev: &mut Evaluator, args: Vec<Value>) -> WlwlResult<Outcome
             ));
         }
     };
-    match dict_lookup(entries, &Value::String(k.clone())) {
-        Some(i) => Ok(Outcome::normal(entries[i].1.clone())),
-        None => Err(builtin_error(
-            ErrorCode::E0037,
+    // [v0.9 Step 9a-5 / plan §4.3 / ADR-0019 §4.3] Receiver
+    // dispatch — `GET_PROP` now handles two shapes:
+    //
+    //   1. `Value::Dict(e)` — legacy / module-receiver path.
+    //      Unchanged from v0.7 (linear scan via `dict_lookup`).
+    //   2. `Value::Instance { class, fields, .. }` — the §13
+    //      OOP receiver. Lookup order:
+    //        (a) `instance.fields` (the per-instance mutable
+    //            table that `SET_PROP` populates).
+    //        (b) `class.members` (class-level fields / static
+    //            data, including anything inherited via the
+    //            parent chain).
+    //      Miss raises E0037.
+    //
+    // Anything else raises E0030 type error.
+    match obj {
+        Value::Dict(e) => match dict_lookup(e, &Value::String(k.clone())) {
+            Some(i) => Ok(Outcome::normal(e[i].1.clone())),
+            None => Err(builtin_error(
+                ErrorCode::E0037,
+                "GET_PROP",
+                format!("no such property '{}'", k),
+            )),
+        },
+        Value::Instance {
+            class,
+            fields,
+            this_token: _,
+        } => {
+            // (a) Instance field lookup. `key` is `&Value` (from the
+            // iterator's `&(Value, Value)`), so the pattern's
+            // `s` is `&String` and `k` is `&String` (from the
+            // outer `let k = match key { ... }` arm). Compare
+            // via `as_str()` to sidestep the `String` vs
+            // `&String` ambiguity that clippy::needless_borrow
+            // flags.
+            if let Some((_, v)) = fields
+                .borrow()
+                .iter()
+                .find(|(key, _)| matches!(key, Value::String(s) if s == k))
+            {
+                return Ok(Outcome::normal(v.clone()));
+            }
+            // (b) Class member lookup with parent-chain walk.
+            //     Reuses the depth-64 / `Rc::ptr_eq` cycle
+            //     detector pattern from 9a-4 (`CALL_METHOD`).
+            //     On a cycle or chain-too-deep, fire E0050
+            //     so the surface error code is consistent
+            //     across method / property dispatch.
+            let mut visited: Vec<*const ClassEntry> = Vec::with_capacity(8);
+            let mut cur: Option<std::rc::Rc<std::cell::RefCell<ClassEntry>>> =
+                Some(std::rc::Rc::clone(class));
+            while let Some(c) = cur.take() {
+                let ptr: *const ClassEntry = c.as_ptr();
+                if visited.contains(&ptr) {
+                    return Err(builtin_error(
+                        ErrorCode::E0050,
+                        "GET_PROP",
+                        format!(
+                            "class inheritance chain has a cycle at depth {}",
+                            visited.len()
+                        ),
+                    ));
+                }
+                visited.push(ptr);
+                if visited.len() > 64 {
+                    return Err(builtin_error(
+                        ErrorCode::E0050,
+                        "GET_PROP",
+                        "class inheritance chain exceeds depth 64".to_string(),
+                    ));
+                }
+                let entry = c.borrow();
+                if let Some((_, v)) = entry
+                    .members
+                    .iter()
+                    .find(|(key, _)| matches!(key, Value::String(s) if s == k))
+                {
+                    return Ok(Outcome::normal(v.clone()));
+                }
+                cur = entry.parent.as_ref().map(std::rc::Rc::clone);
+            }
+            Err(builtin_error(
+                ErrorCode::E0037,
+                "GET_PROP",
+                format!("no such property '{}'", k),
+            ))
+        }
+        other => Err(type_error(
             "GET_PROP",
-            format!("no such property '{}'", k),
+            format!("expected DICT or INSTANCE object, got {}", type_name(other)),
         )),
     }
 }
 
-/// `SET_PROP(obj, k, v) -> DICT`: spec §13.12 / §5.5 property set。
-/// DICT 上插入或更新键;返回**更新后的 DICT**(值语义,与 Phase B1
-/// `INDEX_SET` 的既定实现一致 —— builtin 边界按值传参,无法就地
-/// 写回 receiver;registry 的 `-> NULL` 签名沿 spec 文本,实现偏差
-/// 见 deviations P4-C2-002)。
+/// `SET_PROP(obj, k, v)`: spec §13 / §5.5 property set.
+///
+/// [v0.9 Step 9a-5] Receiver dispatch:
+///   * `Value::Dict(e)` — legacy path, unchanged from v0.7
+///     (insert or update key, return updated DICT — value
+///     semantics per Phase B1 `INDEX_SET` precedent).
+///   * `Value::Instance { fields, class, .. }` — instance
+///     receiver:
+///       (a) If `k` is already in `instance.fields`, update
+///           the value (instance field mutation).
+///       (b) Else, walk the parent chain looking for `k` as a
+///           class member. If found, raise E0032 ("immutable
+///           SET_PROP" — class members are read-only per §13;
+///           only instance fields are mutable).
+///       (c) Else, push `(k, v)` onto `instance.fields` as a
+///           new instance field. This returns the same
+///           `Value::Instance` value (the underlying `fields`
+///           is mutated via `RefCell::borrow_mut`; the
+///           returned instance is a clone with the updated
+///           fields vector, but the caller's reference still
+///           observes the mutation because the `Rc<RefCell<>>`
+///           in `instance.class` / `this_token` is shared).
+///
+/// Anything else raises E0030 type error.
 fn builtin_set_prop(_ev: &mut Evaluator, args: Vec<Value>) -> WlwlResult<Outcome> {
+    use wlwl_ast::Span as AstSpan;
+    let diag_span = _ev.current_span.clone().unwrap_or_else(AstSpan::dummy);
     if args.len() != 3 {
         return Err(arity_error("SET_PROP", args.len(), 3));
     }
-    let mut entries = match &args[0] {
-        Value::Dict(e) => e.clone(),
-        other => {
-            return Err(type_error(
-                "SET_PROP",
-                format!("expected DICT object, got {}", type_name(other)),
-            ));
-        }
-    };
     let k = match &args[1] {
         Value::String(s) => s.clone(),
         other => {
@@ -2716,11 +2815,103 @@ fn builtin_set_prop(_ev: &mut Evaluator, args: Vec<Value>) -> WlwlResult<Outcome
         }
     };
     let v = args[2].clone();
-    match dict_lookup(&entries, &Value::String(k.clone())) {
-        Some(i) => entries[i].1 = v,
-        None => entries.push((Value::String(k), v)),
+    match &args[0] {
+        Value::Dict(e) => {
+            // Legacy DICT path — unchanged.
+            let mut entries = e.clone();
+            match dict_lookup(&entries, &Value::String(k.clone())) {
+                Some(i) => entries[i].1 = v,
+                None => entries.push((Value::String(k), v)),
+            }
+            Ok(Outcome::normal(Value::Dict(entries)))
+        }
+        Value::Instance {
+            class,
+            fields,
+            this_token: _,
+        } => {
+            // (a) Existing instance field → mutate in place
+            //     via the Rc<RefCell<Vec<...>>> that 9a-5
+            //     added. The mutation propagates to every
+            //     reference that shares the instance — the
+            //     caller doesn't need to rebind.
+            //
+            // We hold `fields.borrow_mut()` only for the
+            // duration of the table mutation; the parent-chain
+            // walk below uses its own borrow of `class` so
+            // there's no nested-refcell conflict.
+            {
+                let mut fields_guard = fields.borrow_mut();
+                let mut updated = false;
+                for (key, val) in fields_guard.iter_mut() {
+                    if let Value::String(s) = key {
+                        if *s == k {
+                            *val = v.clone();
+                            updated = true;
+                            break;
+                        }
+                    }
+                }
+                if updated {
+                    return Ok(Outcome::normal(Value::Null));
+                }
+                drop(fields_guard);
+            }
+            // (b) Class member check — walk the parent chain
+            //     for `k`. If found, raise E0032 (immutable).
+            let mut visited: Vec<*const ClassEntry> = Vec::with_capacity(8);
+            let mut cur: Option<std::rc::Rc<std::cell::RefCell<ClassEntry>>> =
+                Some(std::rc::Rc::clone(class));
+            while let Some(c) = cur.take() {
+                let ptr: *const ClassEntry = c.as_ptr();
+                if visited.contains(&ptr) {
+                    return Err(builtin_error(
+                        ErrorCode::E0050,
+                        "SET_PROP",
+                        format!(
+                            "class inheritance chain has a cycle at depth {}",
+                            visited.len()
+                        ),
+                    ));
+                }
+                visited.push(ptr);
+                if visited.len() > 64 {
+                    return Err(builtin_error(
+                        ErrorCode::E0050,
+                        "SET_PROP",
+                        "class inheritance chain exceeds depth 64".to_string(),
+                    ));
+                }
+                let entry = c.borrow();
+                let class_member_hit = entry.members.iter().any(|(key, _)| {
+                    if let Value::String(s) = key {
+                        *s == k
+                    } else {
+                        false
+                    }
+                });
+                if class_member_hit {
+                    return Err(_ev.diag(
+                        ErrorCode::E0032,
+                        format!(
+                            "SET_PROP: property '{}' is a class member and is immutable; \
+                             only instance fields are mutable",
+                            k
+                        ),
+                        diag_span,
+                    ));
+                }
+                cur = entry.parent.as_ref().map(std::rc::Rc::clone);
+            }
+            // (c) New instance field — push onto the table.
+            fields.borrow_mut().push((Value::String(k), v));
+            Ok(Outcome::normal(Value::Null))
+        }
+        other => Err(type_error(
+            "SET_PROP",
+            format!("expected DICT or INSTANCE object, got {}", type_name(other)),
+        )),
     }
-    Ok(Outcome::normal(Value::Dict(entries)))
 }
 
 /// `CALL_METHOD(obj, m, args...) -> v`: spec §11.4 / §8.6 method call。
@@ -3088,7 +3279,13 @@ fn builtin_new(ev: &mut Evaluator, args: Vec<Value>) -> WlwlResult<Outcome> {
     // turns it into a runtime-checked cell).
     let instance = Value::Instance {
         class: std::rc::Rc::clone(&cls_rc),
-        fields: Vec::new(),
+        // [v0.9 Step 9a-5] `fields` is `Rc<RefCell<Vec<...>>>`
+        // so `SET_PROP` mutations propagate to every
+        // reference that shares the instance (the Rc is
+        // shared with the user's binding when they do
+        // `LET(inst, NEW(C))`). `Vec::new()` allocates an
+        // empty inner Vec.
+        fields: std::rc::Rc::new(std::cell::RefCell::new(Vec::new())),
         this_token: std::rc::Rc::new(std::cell::RefCell::new(ThisToken { moved: false })),
     };
     // Invoke init if present. `cls.init` is `Option<Value>` —
@@ -21273,10 +21470,10 @@ entry = "main.wll"
         }));
         let v = Value::Instance {
             class: entry,
-            fields: vec![
+            fields: Rc::new(RefCell::new(vec![
                 (Value::String("x".into()), Value::Integer(1)),
                 (Value::String("y".into()), Value::Integer(2)),
-            ],
+            ])),
             this_token: Rc::new(RefCell::new(ThisToken { moved: false })),
         };
         assert_eq!(v.display(), "<Point instance>[2 fields]");
@@ -21350,12 +21547,18 @@ entry = "main.wll"
         }));
         let inst_a = Value::Instance {
             class: Rc::clone(&class),
-            fields: vec![(Value::String("size".into()), Value::Integer(1))],
+            fields: Rc::new(RefCell::new(vec![(
+                Value::String("size".into()),
+                Value::Integer(1),
+            )])),
             this_token: Rc::new(RefCell::new(ThisToken { moved: false })),
         };
         let inst_b = Value::Instance {
             class: Rc::clone(&class),
-            fields: vec![(Value::String("size".into()), Value::Integer(99))],
+            fields: Rc::new(RefCell::new(vec![(
+                Value::String("size".into()),
+                Value::Integer(99),
+            )])),
             this_token: Rc::new(RefCell::new(ThisToken { moved: false })),
         };
         assert_eq!(
@@ -21905,6 +22108,154 @@ entry = "main.wll"
             v,
             Value::String("INSTANCE".into()),
             "self must be bound to the child instance (receiver injection)"
+        );
+    }
+
+    // ────────────────────────────────────────────────────────────
+    // [v0.9 Step 9a-5 / plan §4.3 / ADR-0019 §4.3] GET_PROP /
+    // SET_PROP instance-extension lock tests.
+    //
+    // 9a-5 extends GET_PROP / SET_PROP to handle `Instance`
+    // receivers. GET_PROP lookup order:
+    //   (a) `instance.fields` (per-instance mutable table).
+    //   (b) `class.members` (class-level fields, with the
+    //       parent-chain walk from 9a-4).
+    // SET_PROP semantics:
+    //   (a) Existing instance field → update.
+    //   (b) Class member (with parent-chain walk) → E0032
+    //       (immutable; only instance fields are mutable).
+    //   (c) Neither → push as a new instance field.
+
+    #[test]
+    fn v09s9a5_get_prop_on_instance_finds_field_after_set_prop() {
+        // [v0.9 Step 9a-5] The smoke path: SET_PROP pushes a
+        // new instance field; GET_PROP finds it on the next
+        // call. We use a self-receiving pattern (call a
+        // method that reads back via THIS) to lock the §13
+        // "instance fields are mutable via SET_PROP" rule
+        // end-to-end.
+        //
+        // The method returns `GET_PROP(self, "x")` directly
+        // (no `+` coercion — the `+` prefix in v0.7 syntax
+        // is integer-only and doesn't apply to the result of
+        // a function call without a coercion step).
+        let src = r#"
+            LET(C, CLASS("C", NULL, [
+                ["init", FUN((self), SET_PROP(self, "x", 42))],
+                ["x_value", FUN((self), GET_PROP(self, "x"))]
+            ]));
+            LET(inst, NEW(C));
+            CALL_METHOD(inst, "x_value")
+        "#;
+        let v = run(src).expect("SET_PROP + GET_PROP + THIS roundtrip must succeed");
+        assert_eq!(
+            v,
+            Value::Integer(42),
+            "SET_PROP(42) → GET_PROP must return 42"
+        );
+    }
+
+    #[test]
+    fn v09s9a5_set_prop_on_class_member_returns_e0032_immutable() {
+        // [v0.9 Step 9a-5] The §13 rule: class members are
+        // immutable. `SET_PROP(instance, "class_member", v)`
+        // where `"class_member"` is declared in
+        // `CLASS("C", NULL, [["class_member", 42]])` raises
+        // E0032 ("immutable SET_PROP"). The error fires
+        // BEFORE any side-effect, so the class member's
+        // value is preserved (locked by the GET_PROP
+        // assertion below).
+        let src = r#"
+            LET(C, CLASS("C", NULL, [
+                ["class_member", 42]
+            ]));
+            LET(inst, NEW(C));
+            SET_PROP(inst, "class_member", 99)
+        "#;
+        let err = run(src).expect_err("SET_PROP on class member must fail");
+        assert_eq!(
+            err.diagnostic().code,
+            ErrorCode::E0032,
+            "expected E0032 immutable SET_PROP"
+        );
+    }
+
+    #[test]
+    fn v09s9a5_get_prop_finds_class_member() {
+        // [v0.9 Step 9a-5] GET_PROP on an instance falls
+        // back to the class member table when the key isn't
+        // in `instance.fields`. We declare `class_member`
+        // in CLASS(...), construct an instance (no
+        // SET_PROP), and read it back via GET_PROP.
+        let src = r#"
+            LET(C, CLASS("C", NULL, [
+                ["class_member", 42]
+            ]));
+            LET(inst, NEW(C));
+            GET_PROP(inst, "class_member")
+        "#;
+        let v = run(src).expect("GET_PROP on class member must succeed");
+        assert_eq!(
+            v,
+            Value::Integer(42),
+            "GET_PROP must find class_member on the class table"
+        );
+    }
+
+    #[test]
+    fn v09s9a5_set_prop_pushes_new_instance_field() {
+        // [v0.9 Step 9a-5] When the key is neither in
+        // `instance.fields` nor in any class member, SET_PROP
+        // pushes a new instance field. The mutation is
+        // observable via a subsequent GET_PROP on the same
+        // instance.
+        let src = r#"
+            LET(C, CLASS("C", NULL, []));
+            LET(inst, NEW(C));
+            SET_PROP(inst, "new_field", 99);
+            GET_PROP(inst, "new_field")
+        "#;
+        let v = run(src).expect("SET_PROP new instance field must succeed");
+        assert_eq!(
+            v,
+            Value::Integer(99),
+            "SET_PROP + GET_PROP must observe the new field"
+        );
+    }
+
+    #[test]
+    fn v09s9a5_get_prop_returns_e0037_when_property_missing() {
+        // [v0.9 Step 9a-5] Miss on both `instance.fields` and
+        // the parent chain raises E0037 ("no such property").
+        // Locks the lookup-order invariant: instance first,
+        // class second, miss → error.
+        let src = r#"
+            LET(C, CLASS("C", NULL, []));
+            GET_PROP(NEW(C), "missing")
+        "#;
+        let err = run(src).expect_err("GET_PROP missing must fail");
+        assert_eq!(
+            err.diagnostic().code,
+            ErrorCode::E0037,
+            "expected E0037 no such property"
+        );
+    }
+
+    #[test]
+    fn v09s9a5_get_prop_dict_receiver_still_works() {
+        // [v0.9 Step 9a-5] Regression lock on the legacy
+        // DICT-receiver GET_PROP path. Module objects
+        // (MODULE_REF) and plain DICT values still go
+        // through the original branch.
+        let src = r#"
+            LET(obj, ["a": 1, "b": 2]);
+            GET_PROP(obj, "b")
+        "#;
+        let v = run(src).expect("DICT-receiver GET_PROP must still work");
+        assert_eq!(
+            v,
+            Value::Integer(2),
+            "legacy DICT-receiver GET_PROP path must produce 2"
         );
     }
 }
