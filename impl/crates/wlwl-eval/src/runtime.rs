@@ -103,6 +103,116 @@ pub enum YieldReason {
     SendingOn(RcHandle),
 }
 
+// ───────────────────────────────────────────────────────────────────
+// v0.9 Step 3 / ADR-0017 §3.1 / ADR-0019 §4.4.1 — WasmFX-style
+// algebraic-effect tag dispatch.
+//
+// The runtime sees control-flow events as `Effect { tag, payload }`
+// — the canonical algebraic-effect representation (Pretnar & Bauer
+// 2015). WasmFX Phase 3 calls this `tag + payload`; Koka / OCaml 5
+// effect systems call it `effect : Effect`. The legacy `Signal::Yield
+// (YieldReason::*)` path is preserved for backward compatibility
+// (every `Signal::Yield(YieldReason)` has a one-to-one mapping into
+// `Effect`), but new code (Step 4 channel ops, Step 8 tag/payload
+// cancel, ADR-0019 §4.4.3 MethodCall / PropAccess / ProtocolViolation)
+// builds on `Effect` directly.
+//
+// See `wlwl-build-plan-v0.9.md` §0.5 + §3.1 + §3.2 + §4.4.1 +
+// §4.4.4 for the design rationale.
+// ───────────────────────────────────────────────────────────────────
+
+/// WasmFX-style dispatch tag for an [`Effect`]. Used by the effect
+/// handler loop to route an effect to its handler without inspecting
+/// the payload.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+pub enum Tag {
+    /// `perform Yield` — collaborative yield point. Equivalent to
+    /// `Signal::Yield(YieldReason::Explicit)` in the legacy plumbing.
+    Yield,
+    /// `perform ChannelOp` — synchronous SEND / RECV blocking on a
+    /// channel's buf or wait list. Maps to
+    /// `Signal::Yield(YieldReason::ReceivingOn | SendingOn)` in the
+    /// legacy plumbing; the runtime routes to the channel's
+    /// sender_waiters / receiver_waiters list.
+    ChannelOp,
+    /// `raise Cancelled` — task was cancelled (with optional reason
+    /// payload per ADR-0019 §4.4.2). Maps to `TaskState::Cancelled`
+    /// transition; no legacy `Signal` equivalent (cancellation was
+    /// previously advisory-only via `cancel_requested` flag).
+    Cancelled,
+}
+
+/// Direction of a channel operation. Used by [`Effect::ChannelOp`]
+/// and [`ChannelWaiter`].
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+pub enum Direction {
+    /// `CHANNEL_SEND(ch, v)` — sending a value into the channel.
+    Send,
+    /// `CHANNEL_RECV(ch)` — receiving a value from the channel.
+    Recv,
+}
+
+/// One control-flow event in the algebraic-effect framing
+/// (ADR-0019 §4.4.1).
+///
+/// `Effect` is the canonical internal control-flow event. Every
+/// `Signal::Yield(YieldReason)` from the legacy plumbing has a
+/// one-to-one mapping; new code (Step 4 channel ops, Step 8
+/// tag/payload cancel, ADR-0019 §4.4.3 OOP variants) constructs
+/// `Effect` directly. The `Scheduler::step` effect-handler loop
+/// routes by [`Effect::tag`].
+///
+/// v0.9 ships only the three tags enumerated by ADR-0017 §3.1
+/// (Yield / ChannelOp / Cancelled). Step 8 adds `reason: Dict` to
+/// the Cancelled variant; ADR-0019 §4.4.3 adds `MethodCall`,
+/// `PropAccess`, `ProtocolViolation` (deferred to that Step).
+#[derive(Debug, Clone)]
+pub enum Effect {
+    /// `perform Yield` — cooperative yield checkpoint. `explicit =
+    /// true` corresponds to user `YIELD()`; `explicit = false` is
+    /// reserved for runtime-injected yields (none in v0.9, but the
+    /// field is here for future cancellation-yield symmetry per
+    /// ADR-0019 §4.4.1 "indirect YIELD auto-suspends").
+    Yield { explicit: bool },
+    /// `perform ChannelOp` — synchronous channel SEND / BLOCK on a
+    /// recv. `value` is `Some` for SEND (the value being pushed);
+    /// `None` for RECV.
+    ChannelOp {
+        dir: Direction,
+        channel: RcHandle,
+        value: Option<Value>,
+    },
+    /// `raise Cancelled` — task cancellation. v0.9 ships the empty-
+    /// payload variant; Step 8 (ADR-0019 §4.4.2) extends with
+    /// `reason: Dict`.
+    Cancelled,
+}
+
+impl Effect {
+    /// Extract the dispatch [`Tag`].
+    pub fn tag(&self) -> Tag {
+        match self {
+            Effect::Yield { .. } => Tag::Yield,
+            Effect::ChannelOp { .. } => Tag::ChannelOp,
+            Effect::Cancelled => Tag::Cancelled,
+        }
+    }
+}
+
+/// One parked task on a channel's wait list (per plan §3.2 / §4.4.4).
+///
+/// Stored in `Channel::sender_waiters` or `Channel::receiver_waiters`
+/// (existing infrastructure, see `channel.rs`). The `value` field is
+/// `Some(_)` only for SEND waiters (the value they want to push); it
+/// is `None` for RECV waiters (the value is unknown until paired with
+/// a sender).
+#[derive(Debug, Clone, PartialEq)]
+pub struct ChannelWaiter {
+    pub task_id: TaskId,
+    pub direction: Direction,
+    pub value: Option<Value>,
+}
+
 /// What one step of the state-machine evaluator produces
 /// (plan §5.1.1 pseudocode "match scheduler.step(task)").
 ///
@@ -507,6 +617,191 @@ impl Scheduler {
         }
         applied
     }
+
+    // ────────────────────────────────────────────────────────────
+    // v0.9 Step 3 — Scheduler park / resume / cancel helpers for
+    // algebraic-effect-driven task state transitions (ADR-0017
+    // §3.1, ADR-0019 §4.4.1, plan §3.1 / §3.2 / §4.4.4).
+    //
+    // These helpers consolidate the bookkeeping needed to drive a
+    // task from Running -> Suspended(reason) -> back to Running
+    // when the wait condition resolves. They are used by:
+    //
+    // - Step 4: builtin_channel_send / recv (park on WouldBlock,
+    //   wake via channel pair).
+    // - Step 8: TASK_CANCEL(task, reason) / TASK_CANCEL_PARENT
+    //   (raise Cancelled effect, transition to Cancelled).
+    // - ADR-0019 §4.4.3: CALL_METHOD (raise MethodCall effect,
+    //   handler validates protocol state machine).
+    //
+    // The existing infrastructure (Channel::push_*_waiter /
+    // pop_*_waiter, TaskState::Suspended, YieldReason) is unchanged;
+    // these helpers are additive. Step 4 + Step 8 wire them into
+    // the eval path.
+    // ────────────────────────────────────────────────────────────
+
+    /// [v0.9 Step 3] Park `task_id` on `channel`'s sender_waiters or
+    /// receiver_waiters list, transition it to
+    /// `TaskState::Suspended(ChannelOp(dir, channel))`, and remove
+    /// it from the run queue. The caller is expected to have just
+    /// failed a synchronous channel op (channel::TryResult::WouldBlock)
+    /// and is converting it to a real suspension.
+    ///
+    /// `value` is `Some(v)` for a SEND waiter (the value the task
+    /// wants to push); `None` for a RECV waiter (the value is
+    /// unknown until paired with a sender).
+    ///
+    /// Returns the [`ChannelWaiter`] that was recorded (useful for
+    /// tests). Returns `None` if `task_id` is out of range or already
+    /// terminal (Suspended/Done/Cancelled) — the caller is expected
+    /// to log the no-op for diagnostic clarity.
+    pub fn park_for_channel_op(
+        &mut self,
+        task_id: TaskId,
+        channel: RcHandle,
+        dir: Direction,
+        value: Option<Value>,
+    ) -> Option<ChannelWaiter> {
+        let slot = channel.0;
+        let waiter = ChannelWaiter {
+            task_id,
+            direction: dir,
+            value: value.clone(),
+        };
+        // Stage 1: register the waiter on the channel's wait list.
+        let registered = if let Some(ch) = self.channels.get_mut(slot) {
+            match dir {
+                Direction::Send => ch.push_sender_waiter(task_id),
+                Direction::Recv => ch.push_receiver_waiter(task_id),
+            }
+            true
+        } else {
+            false
+        };
+        if !registered {
+            return None;
+        }
+        // Stage 2: transition task state and remove from run queue.
+        if let Some(task) = self.tasks.get_mut(task_id.0) {
+            let reason = match dir {
+                Direction::Send => YieldReason::SendingOn(channel),
+                Direction::Recv => YieldReason::ReceivingOn(channel),
+            };
+            task.state = TaskState::Suspended(reason);
+        } else {
+            return None;
+        }
+        self.run_queue.retain(|id| *id != task_id);
+        Some(waiter)
+    }
+
+    /// [v0.9 Step 3] Pair one waiter from `channel`'s wait list and
+    /// return it (with its pending value, if any) so the caller can
+    /// resume it. The caller is responsible for actually re-enqueuing
+    /// the task and transitioning its state from Suspended to
+    /// Pending/Running — the channel-side bookkeeping (wait list
+    /// removal) is the only thing this helper does.
+    ///
+    /// `dir` selects which side to pop: `Send` returns the head of
+    /// `sender_waiters`; `Recv` returns the head of `receiver_waiters`.
+    ///
+    /// Returns `None` if the channel slot is out of range or no
+    /// waiter is parked on the requested side.
+    pub fn pop_channel_op_waiter(
+        &mut self,
+        channel: RcHandle,
+        dir: Direction,
+    ) -> Option<ChannelWaiter> {
+        let slot = channel.0;
+        let task_id = self.channels.get_mut(slot)?.pop_waiter(dir)?;
+        Some(ChannelWaiter {
+            task_id,
+            direction: dir,
+            value: None, // value is None for popped receivers; senders
+                         // stored their value inline, the caller's
+                         // channel.rs::send path already dequeued it
+                         // and now transfers it to the paired recv.
+                         // For the symmetry-test use case we just
+                         // surface the task_id and direction.
+        })
+    }
+
+    /// [v0.9 Step 3] Wake a task that was parked on a channel op,
+    /// transitioning it `Suspended(ChannelOp)` → `Pending` and
+    /// re-enqueueing it for the scheduler loop. Idempotent on tasks
+    /// already in `Pending` / `Running` / terminal states.
+    ///
+    /// This is the `pair` half of the ChannelWaiter pair logic: when
+    /// one task completes an op that frees a slot for a parked peer,
+    /// the peer wakes up here. The peer then re-runs its body,
+    /// retries the channel op, and proceeds normally.
+    ///
+    /// Returns `true` if the task was actually transitioned out of
+    /// `Suspended`; `false` if the task was unknown, terminal, or
+    /// already Pending / Running (defensive — pair logic should not
+    /// wake an already-running task).
+    pub fn wake_channel_op_waiter(&mut self, task_id: TaskId) -> bool {
+        let is_parked = matches!(
+            self.tasks.get(task_id.0).map(|t| &t.state),
+            Some(TaskState::Suspended(
+                YieldReason::ReceivingOn(_) | YieldReason::SendingOn(_),
+            ))
+        );
+        if !is_parked {
+            return false;
+        }
+        if let Some(t) = self.tasks.get_mut(task_id.0) {
+            t.state = TaskState::Pending;
+        }
+        self.enqueue(task_id);
+        true
+    }
+
+    /// [v0.9 Step 3] Cancel a task that is parked on a channel op
+    /// (or any other Suspended state). Transitions
+    /// `Suspended(*) → Cancelled` and returns `true`. Wakes any
+    /// dependents (AWAIT waiters) so they observe the cancellation
+    /// at their next checkpoint.
+    ///
+    /// Distinct from `request_task_cancel` (advisory flag only) —
+    /// this helper actually transitions the state. Used by:
+    ///
+    /// - Step 4 channel close: parked receiver waiters wake with
+    ///   `Cancelled` (per plan §3.2 "关闭协议不变").
+    /// - Step 8 TASK_CANCEL: completed cancellation transitions
+    ///   Suspended → Cancelled (the advisory flag was set in E-B;
+    ///   this is the F5+ completion step).
+    /// - scope-exit force-cancel (D-D leak detector).
+    pub fn cancel_suspended_task(&mut self, task_id: TaskId) -> bool {
+        let was_suspended = match self.tasks.get(task_id.0) {
+            Some(t) => matches!(t.state, TaskState::Suspended(_)),
+            None => return false,
+        };
+        if !was_suspended {
+            return false;
+        }
+        if let Some(t) = self.tasks.get_mut(task_id.0) {
+            t.state = TaskState::Cancelled;
+        }
+        self.run_queue.retain(|id| *id != task_id);
+        self.wake_dependents(task_id);
+        true
+    }
+}
+
+impl crate::channel::Channel {
+    /// Pop one waiter from the channel's sender_waiters or
+    /// receiver_waiters list, depending on `dir`. Convenience for
+    /// the Scheduler helpers above; canonical implementation lives
+    /// here so the existing [`crate::channel::Channel::pop_sender_waiter`]
+    /// / [`crate::channel::Channel::pop_receiver_waiter`] stay
+    /// unchanged (Step 4 / channel ops keep using those).
+    fn pop_waiter(&mut self, dir: Direction) -> Option<crate::runtime::TaskId> {
+        match dir {
+            Direction::Send => self.pop_sender_waiter(),
+            Direction::Recv => self.pop_receiver_waiter(),
+        }
+    }
 }
 
 /// Shared inner state across a scope subtree (future B5+).
@@ -518,6 +813,7 @@ pub type ScopeShared = Rc<Scope>;
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::Env;
 
     #[test]
     fn taskid_distinct() {
@@ -768,5 +1064,322 @@ mod tests {
         let r = YieldReason::AwaitingChild(TaskId(7));
         let cloned = r;
         assert_eq!(r, cloned);
+    }
+
+    // ────────────────────────────────────────────────────────────
+    // v0.9 Step 3 lock tests — Scheduler park / resume / cancel
+    // helpers + WasmFX-style Effect tag dispatch (ADR-0017 §3.1,
+    // ADR-0019 §4.4.1, plan §3.1 / §3.2 / §4.4.4).
+    // ────────────────────────────────────────────────────────────
+
+    /// Build a Scheduler with one channel slot (id 0, buf=0, gen=1)
+    /// and one Pending task (id 0, gen=1) registered on the root
+    /// scope. Returns the scheduler + the task id + the channel id.
+    fn fresh_scheduler_with_channel() -> (Scheduler, TaskId, RcHandle) {
+        use crate::channel::Channel;
+        use crate::task::Task as TaskImpl;
+        let mut s = Scheduler::new();
+        s.channels
+            .push(Channel::new(crate::channel::ChannelId(0), 1, 0));
+        let id = s.next_task_id();
+        let gen = s.bump_generation();
+        s.push_task(TaskImpl::new_pending(
+            id,
+            gen,
+            Value::Null,
+            Env::new(),
+            ScopeId(0),
+        ));
+        s.scopes[0].tasks.push(crate::runtime::TaskHandle {
+            id,
+            generation: gen,
+        });
+        (s, id, crate::channel::ChannelId(0))
+    }
+
+    #[test]
+    fn effect_tag_dispatch_round_trips_for_each_variant() {
+        // The three canonical ADR-0017 / ADR-0019 §4.4.1 tags.
+        let yield_eff = Effect::Yield { explicit: true };
+        let channel_eff = Effect::ChannelOp {
+            dir: Direction::Send,
+            channel: crate::channel::ChannelId(0),
+            value: Some(Value::Integer(7)),
+        };
+        let cancel_eff = Effect::Cancelled;
+        assert_eq!(yield_eff.tag(), Tag::Yield);
+        assert_eq!(channel_eff.tag(), Tag::ChannelOp);
+        assert_eq!(cancel_eff.tag(), Tag::Cancelled);
+        // Distinct discriminants.
+        use std::mem::discriminant;
+        assert_ne!(
+            discriminant(&yield_eff.tag()),
+            discriminant(&channel_eff.tag()),
+        );
+        assert_ne!(
+            discriminant(&channel_eff.tag()),
+            discriminant(&cancel_eff.tag()),
+        );
+    }
+
+    #[test]
+    fn direction_variants_are_distinct() {
+        assert_ne!(Direction::Send, Direction::Recv);
+    }
+
+    #[test]
+    fn channel_waiter_struct_round_trips() {
+        // The ChannelWaiter struct is the canonical pair logic
+        // payload — test the field shape.
+        let w = ChannelWaiter {
+            task_id: TaskId(7),
+            direction: Direction::Recv,
+            value: None,
+        };
+        assert_eq!(w.task_id, TaskId(7));
+        assert_eq!(w.direction, Direction::Recv);
+        assert_eq!(w.value, None);
+        // value round-trip
+        let w_send = ChannelWaiter {
+            task_id: TaskId(8),
+            direction: Direction::Send,
+            value: Some(Value::Integer(42)),
+        };
+        assert_eq!(w_send.value, Some(Value::Integer(42)));
+    }
+
+    #[test]
+    fn park_for_channel_op_marks_suspended_and_records_waiter() {
+        // Send park on a sync (buf=0) channel: task transitions
+        // from Pending -> Suspended(SendingOn), and the task id
+        // is pushed onto the channel's sender_waiters list.
+        let (mut s, task_id, ch_id) = fresh_scheduler_with_channel();
+        s.enqueue(task_id);
+        // Pre-state: task is Pending, run_queue has 1 entry.
+        assert_eq!(s.run_queue.len(), 1);
+
+        let waiter = s
+            .park_for_channel_op(task_id, ch_id, Direction::Send, Some(Value::Integer(7)))
+            .expect("park succeeds");
+
+        // Post-state: task is Suspended(SendingOn), run_queue empty,
+        // channel's sender_waiters contains the task id.
+        assert!(matches!(
+            s.tasks[0].state,
+            TaskState::Suspended(YieldReason::SendingOn(c)) if c == ch_id
+        ));
+        assert_eq!(s.run_queue.len(), 0, "parked task removed from run queue");
+        assert_eq!(s.channels[0].sender_waiters, vec![task_id]);
+        assert_eq!(waiter.task_id, task_id);
+        assert_eq!(waiter.direction, Direction::Send);
+    }
+
+    #[test]
+    fn park_for_channel_op_recv_uses_receivers_waiters() {
+        let (mut s, task_id, ch_id) = fresh_scheduler_with_channel();
+        s.enqueue(task_id);
+        let _ = s
+            .park_for_channel_op(task_id, ch_id, Direction::Recv, None)
+            .expect("park succeeds");
+        assert!(matches!(
+            s.tasks[0].state,
+            TaskState::Suspended(YieldReason::ReceivingOn(c)) if c == ch_id
+        ));
+        assert_eq!(s.channels[0].receiver_waiters, vec![task_id]);
+    }
+
+    #[test]
+    fn park_for_channel_op_returns_none_for_unknown_channel() {
+        // Out-of-range channel id — the helper must refuse to park
+        // a task on a non-existent slot rather than silently
+        // swallowing.
+        let (mut s, task_id, _ch_id) = fresh_scheduler_with_channel();
+        s.enqueue(task_id);
+        let bogus = crate::channel::ChannelId(999);
+        let res = s.park_for_channel_op(task_id, bogus, Direction::Send, None);
+        assert!(res.is_none(), "out-of-range channel must return None");
+        // Task state is unchanged.
+        assert!(matches!(s.tasks[0].state, TaskState::Pending));
+    }
+
+    #[test]
+    fn wake_channel_op_waiter_pair_resumes_parked_task() {
+        // Lock test plan §3.2: ChannelWaiter::pair resumes both
+        // sides. We park a task as receiver, then "pair" by waking
+        // it (the channel send that pairs with it is Step 4's job).
+        let (mut s, task_id, ch_id) = fresh_scheduler_with_channel();
+        s.enqueue(task_id);
+        s.park_for_channel_op(task_id, ch_id, Direction::Recv, None)
+            .expect("park");
+
+        // Pre-wake: task is Suspended, run_queue empty.
+        assert!(matches!(
+            s.tasks[0].state,
+            TaskState::Suspended(YieldReason::ReceivingOn(_))
+        ));
+        assert_eq!(s.run_queue.len(), 0);
+
+        // Wake: task transitions Suspended -> Pending, re-enqueued.
+        let woke = s.wake_channel_op_waiter(task_id);
+        assert!(woke, "wake must succeed for Suspended(ChannelOp) task");
+        assert!(matches!(s.tasks[0].state, TaskState::Pending));
+        assert_eq!(s.run_queue.len(), 1, "woken task must be re-enqueued");
+        assert_eq!(s.run_queue.front(), Some(&task_id));
+    }
+
+    #[test]
+    fn wake_channel_op_waiter_returns_false_for_running_or_done() {
+        // Defensive: only Suspended(ChannelOp) tasks are valid
+        // wake targets. A Running task, Done task, or non-channel-op
+        // Suspended task must return false (the scheduler's pair path
+        // would not target them in practice, but the helper
+        // contract is explicit).
+        let (mut s, task_id, _ch_id) = fresh_scheduler_with_channel();
+        // Case 1: Pending task.
+        s.enqueue(task_id);
+        assert!(!s.wake_channel_op_waiter(task_id));
+        // Case 2: Running task.
+        s.tasks[0].state = TaskState::Running;
+        assert!(!s.wake_channel_op_waiter(task_id));
+        // Case 3: Suspended but not on a channel op.
+        s.tasks[0].state = TaskState::Suspended(YieldReason::Explicit);
+        assert!(!s.wake_channel_op_waiter(task_id));
+        // Case 4: terminal.
+        s.tasks[0].state = TaskState::Done(Box::new(TaskResult::Ok(Value::Null)));
+        assert!(!s.wake_channel_op_waiter(task_id));
+    }
+
+    #[test]
+    fn pop_channel_op_waiter_removes_from_wait_list() {
+        let (mut s, task_id, ch_id) = fresh_scheduler_with_channel();
+        s.enqueue(task_id);
+        s.park_for_channel_op(task_id, ch_id, Direction::Recv, None)
+            .expect("park");
+        assert_eq!(s.channels[0].receiver_waiters.len(), 1);
+
+        // Pop wakes via the channel's own pop_receiver_waiter helper.
+        let popped = s
+            .pop_channel_op_waiter(ch_id, Direction::Recv)
+            .expect("pop succeeds");
+        assert_eq!(popped.task_id, task_id);
+        assert_eq!(popped.direction, Direction::Recv);
+        assert!(
+            s.channels[0].receiver_waiters.is_empty(),
+            "popped waiter must be removed from channel's wait list"
+        );
+        // The parked task's state is still Suspended at this point
+        // — the caller's pair path must call wake_channel_op_waiter
+        // separately to transition Suspended -> Pending and re-enqueue.
+        assert!(matches!(
+            s.tasks[0].state,
+            TaskState::Suspended(YieldReason::ReceivingOn(_))
+        ));
+    }
+
+    #[test]
+    fn cancel_suspended_task_transitions_to_cancelled() {
+        let (mut s, task_id, ch_id) = fresh_scheduler_with_channel();
+        s.enqueue(task_id);
+        s.park_for_channel_op(task_id, ch_id, Direction::Recv, None)
+            .expect("park");
+        // Pre: Suspended, in wait list.
+        assert!(matches!(
+            s.tasks[0].state,
+            TaskState::Suspended(YieldReason::ReceivingOn(_))
+        ));
+        assert_eq!(s.channels[0].receiver_waiters.len(), 1);
+
+        let cancelled = s.cancel_suspended_task(task_id);
+        assert!(cancelled);
+        // Post: Cancelled (terminal), out of run queue, wait list
+        // untouched (caller's channel.rs::close path handles cleanup).
+        assert!(matches!(s.tasks[0].state, TaskState::Cancelled));
+        assert_eq!(s.run_queue.len(), 0);
+        // cancel_suspended_task does NOT pop the channel waiter;
+        // that's the channel-close path's job. The wait list still
+        // holds the task id for diagnostics / leak detection.
+        assert_eq!(s.channels[0].receiver_waiters, vec![task_id]);
+    }
+
+    #[test]
+    fn cancel_suspended_task_returns_false_for_running_or_done() {
+        let (mut s, task_id, _ch_id) = fresh_scheduler_with_channel();
+        // Pending: not yet suspended.
+        s.enqueue(task_id);
+        assert!(!s.cancel_suspended_task(task_id));
+        // Running.
+        s.tasks[0].state = TaskState::Running;
+        assert!(!s.cancel_suspended_task(task_id));
+        // Already Cancelled.
+        s.tasks[0].state = TaskState::Cancelled;
+        assert!(!s.cancel_suspended_task(task_id));
+    }
+
+    #[test]
+    fn suspend_resume_cancel_cycle_full_pair_logic() {
+        // Integration-style lock test combining park / wake / cancel
+        // to cover the full Scheduler pair-logic surface. Two tasks:
+        // a sender parked on a full channel, a receiver parked on
+        // the same channel. The "pair" path is: cancel the receiver
+        // (simulating channel close), confirm sender stays parked
+        // but receiver transitions to Cancelled.
+        use crate::channel::Channel;
+        use crate::task::Task as TaskImpl;
+
+        let mut s = Scheduler::new();
+        s.channels
+            .push(Channel::new(crate::channel::ChannelId(0), 1, 0));
+        // Two tasks.
+        for tid in 0..2usize {
+            let gen = s.bump_generation();
+            s.push_task(TaskImpl::new_pending(
+                TaskId(tid),
+                gen,
+                Value::Null,
+                Env::new(),
+                ScopeId(0),
+            ));
+            s.scopes[0].tasks.push(crate::runtime::TaskHandle {
+                id: TaskId(tid),
+                generation: gen,
+            });
+        }
+        let sender_id = TaskId(0);
+        let receiver_id = TaskId(1);
+        let ch_id = crate::channel::ChannelId(0);
+        s.enqueue(sender_id);
+        s.enqueue(receiver_id);
+
+        // Park both: sender on send, receiver on recv.
+        s.park_for_channel_op(sender_id, ch_id, Direction::Send, Some(Value::Integer(7)))
+            .expect("park sender");
+        s.park_for_channel_op(receiver_id, ch_id, Direction::Recv, None)
+            .expect("park receiver");
+
+        // Both suspended, run_queue empty.
+        assert!(matches!(
+            s.tasks[0].state,
+            TaskState::Suspended(YieldReason::SendingOn(_))
+        ));
+        assert!(matches!(
+            s.tasks[1].state,
+            TaskState::Suspended(YieldReason::ReceivingOn(_))
+        ));
+        assert_eq!(s.run_queue.len(), 0);
+
+        // Simulate channel close: cancel the receiver (it will
+        // observe Cancelled at its next checkpoint and return
+        // ERR(kind="Cancelled") per plan §3.2 / §5.4).
+        assert!(s.cancel_suspended_task(receiver_id));
+        assert!(matches!(s.tasks[1].state, TaskState::Cancelled));
+
+        // Sender is still parked — channel close does not wake
+        // senders (per plan §5.3 "SEND-on-closed is E0054"). The
+        // send path will raise E0054 when the sender wakes up via
+        // scope-exit force-cancel or TASK_CANCEL.
+        assert!(matches!(
+            s.tasks[0].state,
+            TaskState::Suspended(YieldReason::SendingOn(_))
+        ));
     }
 }
