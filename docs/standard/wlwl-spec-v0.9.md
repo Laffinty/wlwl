@@ -43,8 +43,8 @@
 | §7 模式匹配 | 沿用 v0.8 |
 | §8 错误模型 | 沿用 v0.8 |
 | §9 模块与程序 | 沿用 v0.8 |
-| §10 标准库 | §10.11 WIP(Step 11 子阶段 2) |
-| §11 诊断 | §11.2 WIP(Step 11 子阶段 2) |
+| §10 标准库 | §10.11 沿用 v0.8(协议细节上提到 spec 的注记保留;具体行项 Step 11+ 单独补) |
+| **§11 诊断** | **§11.2 / §11.3 增量已落地**(本稿) — 见下文 §11 字面 |
 | §12 保留形式 | 沿用 v0.8 |
 | §13-§16 OOP 真实实现 | **占位**,章节号冻结(Step 12 派生) |
 | **§17 并发(algebraic-effect 模型)** | **本稿主体重写** — 见下文 |
@@ -54,24 +54,102 @@
 | 附录 C 参考实现 | 沿用 v0.8 |
 | 附录 D v0.7 / v0.8 / v0.9 摘要 | **本稿新增 v0.9 增量** |
 | 附录 E / F | 保留(沿用 v0.8 注) |
-| **附录 G 全局内建注册表** | 占位 — Step 11 子阶段 2 重生成(依赖 §11.2 / §10.11 定稿) |
+| **附录 G 全局内建注册表** | **本稿嵌入 wip0.9 状态实际产物**(Step 11 子阶段 2 完成) — 见下文附录 G |
 
 ## 0 — 12 章节沿用说明
 
-§0-§12 的具体内容文本**与 v0.8 完全一致**,本稿只在章节状态表中标"沿用 v0.8"。
+§0-§10 + §12 的具体内容文本**与 v0.8 完全一致**,本稿只在章节状态表中标"沿用 v0.8"。
 请直接参阅 `docs/standard/wlwl-spec-v0.8.md` 对应小节(行号见 §17.7 引用清单)。
 
-修订路径:
+**§11 诊断章节(§11.2 错误码表 / §11.3 警告码表)在 v0.9 由本稿修订**,见下文 §11 字面。
+**§10.11** 修订内容:为 `wlwl:std.ai` / `wlwl:std.agent` 协议细节增加最小正式契约行(plan §5),
+wip0.9 阶段沿用 v0.8 §10.11 文本(协议细节上提到 spec 的注记保留),
+具体行项 Step 11 + Step 13 派生期间单独补。
 
-- **§10.11** 修订内容:为 `wlwl:std.ai` / `wlwl:std.agent` 协议细节增加
-  最小正式契约行(plan §5),Step 11 子阶段 2 落地,本次 WIP 未派生。
-- **§11.2** 修订内容:
-  - `E0055` / `E0057` 两道保留码从表中移除;
-  - 新增 `E0065`(死锁检测 L1 顶层错误码)与 `W0065`(开发模式软警告);
-  - 新增 `E0066`(取消 reason 非法类型)。
-  本次 WIP 未派生(等子阶段 2,与 §10.11 一并落地)。
-- **§12** 表格中 v0.8 列出的"OOP 行"(`/ §17` 列表项)在 v0.9 中保留,
-  具体移除 / 替换由 Step 12 OOP 真实实现后一并处理。
+**§12** 表格中 v0.8 列出的"OOP 行"(`/ §17` 列表项)在 v0.9 中保留,
+具体移除 / 替换由 Step 12 OOP 真实实现后一并处理。
+
+## 11 诊断(v0.9 修订)
+
+> **[v0.9 增量章节]** 本章 §11.1 / §11.4 沿用 v0.8 文本不动;
+> §11.2 错误码表 / §11.3 警告码表由本稿修订。其余诊断格式与退出码与 v0.8 §11 一致。
+
+### 11.1 结构
+
+(沿用 v0.8 §11.1)诊断是错误(`E`)或警告(`W`),带四位数字码。错误形式的 CLI 输出包含
+码、消息、位置(文件、行列)与源行摘录;`--format json`/`jsonl` 产生机器可读结构(含
+`error_schema_version`、`errorCategory`、`retryable`、`idempotent`、`suggestion_code`、
+`trace` 等字段)。
+
+### 11.2 错误码
+
+**(沿用 v0.8 / 跨章节同等段落)**:v0.8 §11.2 表中标注的 `E0001`/`E0002`/`E0003`
+… 一直到 `E1003` 的所有基本错误码**与 v0.8 完全一致**,不再在本稿重复列举;
+本节仅列出 v0.9 删除 / 新增 / 重命名的条目。
+
+#### 11.2.1 v0.9 移除的错误码
+
+| 码 | v0.7 / v0.8 状态 | v0.9 决议(ADR-0018 选项 B,plan §3.6 / §9.2) |
+|----|------------------|------------------------------------------|
+| `E0055` | 保留(v0.7 / v0.8 无触发路径,deviation D8-003):通道关闭信号由 `ERR(kind="ChannelClosed")` 字典载荷承担(§8.1 / §17.2) | **从 §11.2 表移除**;关闭后 RECV / TRY_RECV 仍走 `ERR(kind="ChannelClosed")` 载荷路径;`wlwl.toml` 设 `[native_channel_close] true` 可启用原生码(opt-in,用于强类型捕获场景) |
+| `E0057` | 保留(v0.7 / v0.8 无触发路径,deviation D8-003):跨任务不可变单元格实际触发 `E0024`(§17.4) | **从 §11.2 表移除**;跨任务与单任务的不可变单元格错误统一走 `E0024`(与单任务路径一致) |
+
+#### 11.2.2 v0.9 新增的错误码
+
+| 码 | 含义 | 触发点 | 触发条件 |
+|----|------|--------|----------|
+| **[v0.9]** `E0065` | 结构化并发死锁检测 L1(顶层) | `Scheduler::detect_deadlock_l1` 在 scope 内 ≥ 2 个 task 阻塞在 `ChannelOp` 且无任何推进时 | 同 scope 内 `Suspended { tag: ChannelOp, .. }` task 数 ≥ 2,且 run queue 已排空,无法推进任何 task |
+| **[v0.9]** `E0066` | 任务取消 `reason` 字段非法类型 | `TASK_CANCEL(task, reason)` 或 `TASK_CANCEL_PARENT(reason)` 收到非 DICT 类型的 reason | plan §4.4.2 + §3.3 同步:`r != DICT` → `E0066`;类型校验在 arity / 句柄校验之后 |
+
+> **死锁检测 L1 触发模式**(继 plan §3.4 / §9.2):
+> - **开发模式**(默认):触达条件时仅发 `W0065` 软警告(参见 §11.3),不抛错误;
+> - **生产模式**:`wlwl.toml` 设 `[strict_deadlock_detect] true` → 升级为顶层错误 `E0065`;
+> - **P0 内暂缓条件**:若 L1 在 §3.2 落地后引入 bug 数 > 3,降级为开发模式 opt-in,
+>   v0.9.1 再做(plan §3.4 风险表)。
+> - **不跨 scope**;**不检测显式 `Yield` 互让**(两 task 互让但不互发不算死锁);
+>   **单点通道挂起不算死锁**(plan §3.4 严格范围)。
+
+#### 11.2.3 §17.1 YIELD 位置 E0014 触发路径解除(继 §17.1.6)
+
+v0.7 / v0.8 spec §17.1 行 879 自承"YIELD 位置限制是 v0.7 / v0.8 实现路径的产物",
+`E0014` 在并发下追加用途是"v0.9 不再适用":v0.9 起 §11.2 表中 `E0014` 行的触发
+范围**只剩** `RETURN` / `BREAK` / `CONTINUE` 出现在非法位置。YIELD 位置错误
+(`LET(x, YIELD())` / `IF(cond, YIELD(), 42)` / 数组字面量内部 / 间接调用等)
+在 v0.9 起**均合法**,不再触发任何错误码。
+
+#### 11.2.4 v0.9 兼容性
+
+- v0.8 程序**不**依赖 `E0055` / `E0057` 触发路径 → 在 v0.9 上行为不变;
+- v0.8 程序依赖 `ChannelWouldBlock` ERR 载荷 → 同步通道 SEND / RECV 在 v0.9 真挂起后
+  **不再**返该载荷(详 §17.2.6);迁移方式:用 `TRY_SEND` / `TRY_RECV` 替代即可;
+- v0.8 `TASK_CANCEL(task)` 不带 reason 的旧语法 → v0.9 仍合法,reason 隐式 `{}`;
+- v0.8 `AWAIT` 已取消任务返 `ERR(kind="Cancelled")` → 在 v0.9 仍合法,新增可选
+  `reason` 字段(详 §17.3.2),旧消费代码按 `kind` 匹配仍兼容。
+
+### 11.3 警告码
+
+v0.9 §11.3 警告码表沿用 v0.8 原有 8 行(`W0010` / `W0011` / `W0014` / `W0020` /
+`W0030` / `W0040` / `W0051` / `W0053`),**新增** 1 行:
+
+| 码 | 含义 |
+|----|------|
+| **`W0065`**(新增) | 结构化并发死锁检测 L1 软警告:同 scope 内 ≥ 2 个 task 阻塞在 `ChannelOp` 且无任何推进时,开发模式下发出该警告(默认行为);生产模式由 `wlwl.toml` 设 `[strict_deadlock_detect]` 升级为 `E0065` 顶层错误(参见 §11.2.2)。**警告不改变程序语义**,只是提示开发模式进入堆栈排查;`check` 子命令与解析期诊断流会输出该警告,运行期警告进入诊断流。 |
+
+警告不得改变程序语义(沿用 v0.8 §11.3 末段);`check` 子命令与解析期诊断流会输出
+警告,运行期警告进入诊断流,由实现决定呈现时机。
+
+### 11.4 退出码
+
+(沿用 v0.8 §11.4)退出码与 v0.8 一致:
+
+| 退出码 | 含义 |
+|--------|------|
+| `0` | 成功 |
+| `1` | 以诊断终止(语法错误、`E0100` PANIC、`E0102` 顶层 `ERR`、`E0065` 死锁检测等) |
+| `101` | 实现内部崩溃(非规范性;出现即属实现缺陷) |
+
+> v0.9 新增 `E0065` 退出码路径:`Scheduler::detect_deadlock_l1` 触发后,CLI 退出码为 `1`,
+> 与其他错误码路径一致;`--format json` 输出的 `errorCategory` 字段值为 `"deadlock"`。
 
 ## 13 — 16 OOP 真实实现占位
 
@@ -547,35 +625,169 @@ v0.7 / v0.8 部分沿用 v0.8 spec §1108-1123。**本节新增 v0.9 增量**;v0
 
 参见 `docs/standard/wlwl-spec-v0.8.md` 第 1123 行 + §E / §F 占位注。本稿未派生。
 
-## 附录 G 全局内建注册表
+## 附录 G 全局内建注册表(规范性)
 
-> **[WIP — TBD Step 11 子阶段 2]** v0.9 不改变 v0.8 注册表结构,本附录待以下
-> 变更完成后跑 `cargo run --bin gen-appendix-g -- ../docs/appendix_G.md` 重生成:
+> **[v0.9 wip0.9 重生成]** 本附录由 `wlwl-eval::registry::generate_appendix_g_md()`
+> 在 v0.9 wip0.9 状态下自动生成(单源真相:
+> `impl/crates/wlwl-eval/src/registry.rs::BUILTIN_REGISTRY`)。
 >
-> 1. `E0055` / `E0057` 条目从 `BUILTIN_REGISTRY` 移除;
-> 2. `E0065` / `E0066` 条目在 `BUILTIN_REGISTRY` 新增;
-> 3. `TASK_CANCEL` / `TASK_CANCEL_PARENT` 签名扩展(支持 `reason` 第二参数);
-> 4. `ChannelWouldBlock` 触发路径条目清理(无 ERR 载荷消费者);
-> 5. 附录 D 第 D.v0.9.3 条中 E-code 表修订同步落地。
+> **wip0.9 状态说明**:
+> - 错误码触发路径层面(§11.2 / §11.3)已对齐 v0.9(`E0055` / `E0057` 移除 +
+>   `E0065` / `E0066` / `W0065` 新增全部锁测试覆盖,见 `wlwl-eval` Step 5 / 6 / 8);
+> - 内建**签名**层面(`TASK_CANCEL(task, reason?)` / `TASK_CANCEL_PARENT(reason?)`
+>   / `CHANNEL_SEND` 真挂起等):在 wip0.9 中已通过组合内建 + 任务调度验证,
+>   **但 registry 的"签名文本"字符串截至 wip0.9 子阶段 2 时尚未同步** —
+>   本附录签位列**仍按 v0.8 字面**展示(参见下方表内 `CHANNEL_SEND` 等行的 `ERR(ChannelWouldBlock)`);
+> - **后续 Step 12+ 完成 BUILTIN_REGISTRY 签名字符串 / 结构规范化时**再跑一次
+>   `cargo run --bin gen-appendix-g -- ../docs/appendix_G.md` 重生成,届时
+>   同步更新此处。
 >
-> 单源真相:`impl/crates/wlwl-eval/src/registry.rs::BUILTIN_REGISTRY`。
-> 当前 release 上 v0.8 总条目数 110 已实现 86 + LexerMacro 24 + Deferred 0(见
-> v0.8 附录 G 第 1134 行);v0.9.0 release 时预计:
+> 重生成命令:`cargo run --bin gen-appendix-g -- ../docs/appendix_G.md`。
+> 修改流程:改注册表 → 跑本函数重写本文件 → 跑 `cargo test` 验证 lock test。
 >
-> - 总条目数 ~110(去掉 2 + 加 2 = 平);
-> - 新增条目:`TASK_CANCEL` / `TASK_CANCEL_PARENT` 签名变体、
->   死锁检测 `W0065` / `E0065` 注册、`E0066` reason 类型校验注册;
-> - 移除条目:`E0055` / `E0057` 注册。
->
-> 此段在 wip0.9 wip 阶段不蕴含 §11.2 字面修订;附录 G 与 §11.2 / §10.11
-> 同步修订是 Step 11 后续子阶段完成项。
+> 遮蔽保护(§3.5)以本表登记名为准。
+
+总条目数:**110** | 已实现:**86** | LexerMacro:**24** | Deferred:**0**
+
+
+| 名称 | 签名 | ERR 消费者 (§8.3) | 宏函数 (§1.4) | 引入 | 状态 | 实现位置 |
+|------|------|--------------------|---------------|------|------|----------|
+<!-- I/O (3 条) -->
+| `PRINT` | `PRINT(args...) -> NULL` | ❌ | ❌ | v0.2 | ✓ builtin | `resolve_builtin` (§10.2) |
+| `PRINT_ERR` | `PRINT_ERR(args...) -> NULL` | ❌ | ❌ | v0.4 | ✓ builtin | `resolve_builtin` (§10.2) |
+| `INPUT` | `INPUT(prompt?) -> STRING` | ❌ | ❌ | v0.2 | ✓ builtin | `resolve_builtin` (§10.2) |
+<!-- 类型 / 转换 (7 条) -->
+| `LEN` | `LEN(coll) -> INTEGER` | ❌ | ❌ | v0.2 | ✓ builtin | `resolve_builtin` (§10.3) |
+| `STR` | `STR(x) -> STRING` | ❌ | ❌ | v0.2 | ✓ builtin | `resolve_builtin` (§10.3) |
+| `INT` | `INT(s) -> OK(INTEGER) / ERR(ParseError)` | ❌ | ❌ | v0.2 | ✓ builtin | `resolve_builtin` (§10.3) |
+| `FLOAT` | `FLOAT(s) -> OK(FLOAT) / ERR(ParseError)` | ❌ | ❌ | v0.4 | ✓ builtin | `resolve_builtin` (§10.3) |
+| `TYPE` | `TYPE(x) -> STRING (RESULT -> "RESULT")` | ✔ | ✔ | v0.2 | ✓ builtin | `resolve_builtin` (§2.5) |
+| `BOOL` | `BOOL(x) -> BOOLEAN` | ✔ | ❌ | v0.2 | ✓ builtin | `resolve_builtin` (§2.2) |
+| `CALL` | `CALL(fn, args...) -> v` | ❌ | ❌ | v0.2 | ✓ builtin | `resolve_builtin` (§8.3) |
+<!-- RESULT 处理 (12 条) -->
+| `IS_OK` | `IS_OK(x) -> BOOLEAN` | ✔ | ✔ | v0.2 | ✓ macro | parser -> `Expr::*` (§8.3) |
+| `IS_ERR` | `IS_ERR(x) -> BOOLEAN` | ✔ | ✔ | v0.2 | ✓ macro | parser -> `Expr::*` (§8.3) |
+| `OR_DIE` | `OR_DIE(x, default) -> v (v0.3 alias)` | ✔ | ✔ | v0.2 | ✓ compat (W0051/W0054) | `resolve_builtin` (compat, §8.3) |
+| `UNWRAP_OR` | `UNWRAP_OR(x, default) -> v` | ✔ | ✔ | v0.4 | ✓ builtin | `resolve_builtin` (§8.3) |
+| `UNWRAP` | `UNWRAP(x) -> v / PANIC` | ✔ | ❌ | v0.4 | ✓ builtin | `resolve_builtin` (§8.3) |
+| `ERR_PAYLOAD` | `ERR_PAYLOAD(x) -> e / E0030` | ✔ | ❌ | v0.4 | ✓ builtin | `resolve_builtin` (§8.3) |
+| `WRAP` | `WRAP(err, ctx) -> ERR / OK` | ✔ | ❌ | v0.4 | ✓ builtin | `resolve_builtin` (§8.3) |
+| `TRY` | `TRY(e) -> v / early-RETURN` | ✔ | ✔ | v0.2 | ✓ macro | parser -> `Expr::*` (§6) |
+| `PANIC` | `PANIC(msg) -> 终止` | n/a | ✔ | v0.2 | ✓ macro | parser -> `Expr::*` (§8.4) |
+| `OK` | `OK(v) -> RESULT` | ❌ | ✔ | v0.4 | ✓ macro | parser -> `Expr::*` (§8.1) |
+| `EXPECT_ERR` | `EXPECT_ERR(expr) -> OK(payload) / ERR(E0049)` | ✔ | ✔ | v0.4 | ✓ macro | parser -> `Expr::*` (§8.3) |
+| `ERR` | `ERR(e) -> RESULT` | ❌ | ✔ | v0.4 | ✓ macro | parser -> `Expr::*` (§8.1) |
+<!-- 控制流 / 逻辑 (10 条) -->
+| `IF` | `IF(cond, t, e?) -> v` | ✔ | ✔ | v0.2 | ✓ macro | parser -> `Expr::*` (§6) |
+| `WHILE` | `WHILE(cond, body) -> v` | ❌ | ✔ | v0.2 | ✓ macro | parser -> `Expr::*` (§6) |
+| `FOR` | `FOR(var, iter, body) -> NULL` | ❌ | ✔ | v0.2 | ✓ macro | parser -> `Expr::*` (§6) |
+| `MATCH` | `MATCH(v, clauses, default?) -> v` | ❌ | ✔ | v0.4 | ✓ macro | parser -> `Expr::*` (§6) |
+| `RETURN` | `RETURN(v?) -> 早返` | n/a | ✔ | v0.2 | ✓ macro | parser -> `Expr::*` (§6) |
+| `BREAK` | `BREAK() -> 跳出` | n/a | ✔ | v0.2 | ✓ macro | parser -> `Expr::*` (§6) |
+| `CONTINUE` | `CONTINUE() -> 跳到下轮` | n/a | ✔ | v0.2 | ✓ macro | parser -> `Expr::*` (§6) |
+| `AND` | `AND(a, b) -> BOOLEAN (short-circuit)` | ❌ | ✔ | v0.2 | ✓ macro | parser -> `Expr::*` (§4.3) |
+| `OR` | `OR(a, b) -> BOOLEAN (short-circuit)` | ❌ | ✔ | v0.2 | ✓ macro | parser -> `Expr::*` (§4.3) |
+| `NOT` | `NOT(a) -> BOOLEAN (取反)` | ❌ | ✔ | v0.2 | ✓ builtin | `resolve_builtin` (§4.3) |
+<!-- 运算符 (14 条) -->
+| `==` | `=(a, b) -> BOOLEAN / ERR 透传` | ❌ | ❌ | v0.2 | ✓ builtin | `resolve_builtin` (§4.3) |
+| `!=` | `!(a, b) -> BOOLEAN / ERR 透传` | ❌ | ❌ | v0.2 | ✓ builtin | `resolve_builtin` (§4.3) |
+| `>` | `>(a, b) -> BOOLEAN / ERR 透传` | ❌ | ❌ | v0.2 | ✓ builtin | `resolve_builtin` (§4.3) |
+| `<` | `<(a, b) -> BOOLEAN / ERR 透传` | ❌ | ❌ | v0.2 | ✓ builtin | `resolve_builtin` (§4.3) |
+| `>=` | `>=(a, b) -> BOOLEAN / ERR 透传` | ❌ | ❌ | v0.2 | ✓ builtin | `resolve_builtin` (§4.3) |
+| `<=` | `<=(a, b) -> BOOLEAN / ERR 透传` | ❌ | ❌ | v0.2 | ✓ builtin | `resolve_builtin` (§4.3) |
+| `+` | `+(a, b) -> INTEGER / FLOAT` | ❌ | ❌ | v0.2 | ✓ builtin | `resolve_builtin` (§4.3) |
+| `-` | `-(a, b) -> INTEGER / FLOAT` | ❌ | ❌ | v0.2 | ✓ builtin | `resolve_builtin` (§4.3) |
+| `*` | `*(a, b) -> INTEGER / FLOAT` | ❌ | ❌ | v0.2 | ✓ builtin | `resolve_builtin` (§4.3) |
+| `/` | `/(a, b) -> INTEGER / FLOAT` | ❌ | ❌ | v0.2 | ✓ builtin | `resolve_builtin` (§4.3) |
+| `%` | `%(a, b) -> INTEGER` | ❌ | ❌ | v0.2 | ✓ builtin | `resolve_builtin` (§4.3) |
+| `&&` | `&&(a, b) -> BOOLEAN (v0.6 §4.3 short-circuit)` | ✔ | ❌ | v0.6 | ✓ builtin | `resolve_builtin` (§4.3) |
+| `||` | `||(a, b) -> BOOLEAN (v0.6 §4.3 short-circuit)` | ✔ | ❌ | v0.6 | ✓ builtin | `resolve_builtin` (§4.3) |
+| `NEG` | `NEG(a) -> -a` | ❌ | ❌ | v0.2 | ✓ builtin | `resolve_builtin` (§4.3) |
+<!-- ARRAY 操作 (8 条) -->
+| `PUSH` | `PUSH(arr, x) -> ARRAY` | ❌ | ❌ | v0.2 | ✓ builtin | `resolve_builtin` (§10.4) |
+<!-- DICT 操作 (8 条) -->
+| `POP` | `POP(d, k, default) -> v (v0.6 compat alias for AT_K; signature kept 3-arg)` | ❌ | ❌ | v0.6 | ✓ compat (W0051/W0054) | `resolve_builtin` (compat, §10.4) |
+| `AT_K` | `AT_K(d, k, default) -> v (v0.6 §10.4)` | ❌ | ❌ | v0.6 | ✓ builtin | `resolve_builtin` (§10.4) |
+<!-- ARRAY 操作 (8 条) -->
+| `SHIFT` | `SHIFT(arr) -> ARRAY` | ❌ | ❌ | v0.2 | ✓ builtin | `resolve_builtin` (§10.4) |
+| `UNSHIFT` | `UNSHIFT(arr, x) -> ARRAY` | ❌ | ❌ | v0.2 | ✓ builtin | `resolve_builtin` (§10.4) |
+| `SLICE` | `SLICE(arr, start, end?) -> ARRAY` | ❌ | ❌ | v0.2 | ✓ builtin | `resolve_builtin` (§10.4) |
+| `CONCAT` | `CONCAT(a, b) -> ARRAY` | ❌ | ❌ | v0.2 | ✓ builtin | `resolve_builtin` (§10.4) |
+| `CONTAINS` | `CONTAINS(arr, x) -> BOOLEAN` | ❌ | ❌ | v0.2 | ✓ builtin | `resolve_builtin` (§10.4) |
+| `INDEX` | `INDEX(arr, x) -> INTEGER / -1` | ❌ | ❌ | v0.2 | ✓ builtin | `resolve_builtin` (§10.4) |
+| `REVERSE` | `REVERSE(arr) -> ARRAY` | ❌ | ❌ | v0.2 | ✓ builtin | `resolve_builtin` (§10.4) |
+<!-- DICT 操作 (8 条) -->
+| `REMOVE_KEY` | `REMOVE_KEY(dict, k) -> DICT` | ❌ | ❌ | v0.4 | ✓ builtin | `resolve_builtin` (§10.4) |
+| `DEL` | `DEL(dict, k) -> DICT (v0.3 alias, W0051)` | ❌ | ❌ | v0.2 | ✓ compat (W0051/W0054) | `resolve_builtin` (compat, §10.4) |
+| `KEYS` | `KEYS(dict) -> ARRAY` | ❌ | ❌ | v0.2 | ✓ builtin | `resolve_builtin` (§10.4) |
+| `VALUES` | `VALUES(dict) -> ARRAY` | ❌ | ❌ | v0.2 | ✓ builtin | `resolve_builtin` (§10.4) |
+| `HAS` | `HAS(dict, k) -> BOOLEAN` | ❌ | ❌ | v0.2 | ✓ builtin | `resolve_builtin` (§10.4) |
+| `MERGE` | `MERGE(a, b) -> DICT` | ❌ | ❌ | v0.2 | ✓ builtin | `resolve_builtin` (§10.4) |
+<!-- 下标 (3 条) -->
+| `INDEX_GET` | `INDEX_GET(coll, k) -> v / E0031` | ❌ | ❌ | v0.4 | ✓ builtin | `resolve_builtin` (§4.5) |
+| `INDEX_SET` | `INDEX_SET(coll, k, v) -> NULL` | ❌ | ❌ | v0.4 | ✓ builtin | `resolve_builtin` (§4.5) |
+| `AT` | `AT(coll, i) -> v` | ❌ | ❌ | v0.4 | ✓ builtin | `resolve_builtin` (§4.5) |
+<!-- STRING 操作 (15 条) -->
+| `UPPER` | `UPPER(s) -> STRING` | ❌ | ❌ | v0.2 | ✓ builtin | `resolve_builtin` (§10.5) |
+| `LOWER` | `LOWER(s) -> STRING` | ❌ | ❌ | v0.2 | ✓ builtin | `resolve_builtin` (§10.5) |
+| `SUB` | `SUB(s, start, end?) -> STRING` | ❌ | ❌ | v0.2 | ✓ builtin | `resolve_builtin` (§10.5) |
+| `REPLACE` | `REPLACE(s, old, new) -> STRING` | ❌ | ❌ | v0.2 | ✓ builtin | `resolve_builtin` (§10.5) |
+| `SPLIT` | `SPLIT(s, sep) -> ARRAY` | ❌ | ❌ | v0.2 | ✓ builtin | `resolve_builtin` (§10.5) |
+| `TRIM` | `TRIM(s) -> STRING` | ❌ | ❌ | v0.2 | ✓ builtin | `resolve_builtin` (§10.5) |
+| `TRIM_START` | `TRIM_START(s) -> STRING` | ❌ | ❌ | v0.2 | ✓ builtin | `resolve_builtin` (§10.5) |
+| `TRIM_END` | `TRIM_END(s) -> STRING` | ❌ | ❌ | v0.2 | ✓ builtin | `resolve_builtin` (§10.5) |
+| `STARTS_WITH` | `STARTS_WITH(s, pre) -> BOOLEAN` | ❌ | ❌ | v0.2 | ✓ builtin | `resolve_builtin` (§10.5) |
+| `ENDS_WITH` | `ENDS_WITH(s, suf) -> BOOLEAN` | ❌ | ❌ | v0.2 | ✓ builtin | `resolve_builtin` (§10.5) |
+| `REPEAT` | `REPEAT(s, n) -> STRING` | ❌ | ❌ | v0.2 | ✓ builtin | `resolve_builtin` (§10.5) |
+| `PAD_START` | `PAD_START(s, n, c?) -> STRING` | ❌ | ❌ | v0.2 | ✓ builtin | `resolve_builtin` (§10.5) |
+| `PAD_END` | `PAD_END(s, n, c?) -> STRING` | ❌ | ❌ | v0.2 | ✓ builtin | `resolve_builtin` (§10.5) |
+| `CODEPOINTS` | `CODEPOINTS(s) -> ARRAY` | ❌ | ❌ | v0.2 | ✓ builtin | `resolve_builtin` (§10.5) |
+| `FROM_CODEPOINTS` | `FROM_CODEPOINTS(arr) -> STRING` | ❌ | ❌ | v0.2 | ✓ builtin | `resolve_builtin` (§10.5) |
+<!-- 格式化 (1 条) -->
+| `FORMAT` | `FORMAT(template, args...) -> STRING` | ❌ | ❌ | v0.4 | ✓ builtin | `resolve_builtin` (§10.7) |
+<!-- 模块系统 (4 条) -->
+| `MODULE_REF` | `MODULE_REF(path) -> MODULE` | ❌ | ❌ | v0.4 | ✓ builtin | `resolve_builtin` (§9) |
+| `EXPORT` | `EXPORT(names) -> NULL` | n/a | ✔ | v0.2 | ✓ macro | parser -> `Expr::*` (§9) |
+| `IMPORT` | `IMPORT(path, names, opts?) -> NULL` | n/a | ✔ | v0.2 | ✓ macro | parser -> `Expr::*` (§9) |
+| `MODULE` | `MODULE(name?, body) -> NULL` | n/a | ✔ | v0.2 | ✓ macro | parser -> `Expr::*` (§9) |
+<!-- OOP (3 条) -->
+| `CLASS` | `CLASS(name?, parent, members) -> CLASS` | n/a | ✔ | v0.2 | ✓ macro | parser -> `Expr::*` (§13) |
+| `NEW` | `NEW(cls, args...) -> INSTANCE` | n/a | ✔ | v0.2 | ✓ macro | parser -> `Expr::*` (§13) |
+| `THIS` | `THIS -> 当前实例` | n/a | ✔ | v0.2 | ✓ macro | parser -> `Expr::*` (§15) |
+<!-- 属性 / 方法 (3 条) -->
+| `GET_PROP` | `GET_PROP(obj, k) -> v / E0037` | ❌ | ❌ | v0.2 | ✓ builtin | `resolve_builtin` (§13) |
+| `SET_PROP` | `SET_PROP(obj, k, v) -> NULL` | ❌ | ❌ | v0.2 | ✓ builtin | `resolve_builtin` (§13) |
+| `CALL_METHOD` | `CALL_METHOD(obj, m, args...) -> v` | ❌ | ❌ | v0.2 | ✓ builtin | `resolve_builtin` (§13) |
+<!-- 构造器 (2 条) -->
+| `ARRAY` | `ARRAY(items...) / ARRAY()` | ❌ | ✔ | v0.2 | ✓ macro | parser -> `Expr::*` (§10.9) |
+| `DICT` | `DICT(pairs...) / DICT()` | ❌ | ✔ | v0.2 | ✓ macro | parser -> `Expr::*` (§10.9) |
+<!-- 并发 / 通道 (17 条) -->
+| `SCOPE` | `SCOPE(fn) -> v` | ❌ | ❌ | v0.7 | ✓ builtin | `resolve_builtin` (§17.1) |
+| `SPAWN` | `SPAWN(fn) -> TASK` | ❌ | ❌ | v0.7 | ✓ builtin | `resolve_builtin` (§17.1) |
+| `AWAIT` | `AWAIT(task) -> v` | ❌ | ❌ | v0.7 | ✓ builtin | `resolve_builtin` (§17.1) |
+| `YIELD` | `YIELD() -> NULL` | ❌ | ❌ | v0.7 | ✓ builtin | `resolve_builtin` (§17.1) |
+| `TASK_CURRENT` | `TASK_CURRENT() -> TASK` | ❌ | ❌ | v0.7 | ✓ builtin | `resolve_builtin` (§17.3) |
+| `TASK_IS_CANCELLED` | `TASK_IS_CANCELLED() -> BOOLEAN` | ❌ | ❌ | v0.7 | ✓ builtin | `resolve_builtin` (§17.3) |
+| `TASK_CANCEL` | `TASK_CANCEL(task) -> NULL` | ❌ | ❌ | v0.7 | ✓ builtin | `resolve_builtin` (§17.3) |
+| `TASK_CANCEL_PARENT` | `TASK_CANCEL_PARENT() -> NULL` | ❌ | ❌ | v0.7 | ✓ builtin | `resolve_builtin` (§17.3) |
+| `SHIELD` | `SHIELD(fn) -> v` | ❌ | ❌ | v0.7 | ✓ builtin | `resolve_builtin` (§17.3) |
+| `CHANNEL_NEW` | `CHANNEL_NEW(buf) -> CHANNEL` | ❌ | ❌ | v0.7 | ✓ builtin | `resolve_builtin` (§17.2) |
+| `CHANNEL_CLOSE` | `CHANNEL_CLOSE(ch) -> NULL` | ❌ | ❌ | v0.7 | ✓ builtin | `resolve_builtin` (§17.2) |
+| `CHANNEL_SEND` | `CHANNEL_SEND(ch, v) -> NULL / ERR(ChannelWouldBlock)` | ❌ | ❌ | v0.7 | ✓ builtin | `resolve_builtin` (§17.2) |
+| `CHANNEL_RECV` | `CHANNEL_RECV(ch) -> v / ERR(ChannelClosed|ChannelWouldBlock)` | ❌ | ❌ | v0.7 | ✓ builtin | `resolve_builtin` (§17.2) |
+| `CHANNEL_TRY_SEND` | `CHANNEL_TRY_SEND(ch, v) -> BOOLEAN` | ❌ | ❌ | v0.7 | ✓ builtin | `resolve_builtin` (§17.2) |
+| `CHANNEL_TRY_RECV` | `CHANNEL_TRY_RECV(ch) -> v / NULL / ERR(ChannelClosed)` | ❌ | ❌ | v0.7 | ✓ builtin | `resolve_builtin` (§17.2) |
+| `CHANNEL_LEN` | `CHANNEL_LEN(ch) -> INTEGER` | ❌ | ❌ | v0.7 | ✓ builtin | `resolve_builtin` (§17.2) |
+| `CHANNEL_CAP` | `CHANNEL_CAP(ch) -> INTEGER` | ❌ | ❌ | v0.7 | ✓ builtin | `resolve_builtin` (§17.2) |
 
 ---
 
 > **wip0.9 阶段引用清单**(v0.8 spec 行号,便于 review diff):
 >
+> - §11.2 / §11.3(v0.8 spec 第 744-800 行)—— §11.2 错误码表 / §11.3 警告码表 v0.9 修订见本稿 §11 字面;
 > - §17.0-17.7(v0.8 spec 第 854-991 行)— 第 17 章整体重写;
 > - §17.8(v0.9 新增小节);
 > - §17.4 / §17.7 引用 v0.8 spec 第 962 行(实现偏差注记);
 > - 附录 D(v0.8 spec 第 1108-1123 行)—— v0.9 增量已独立撰写,见上文 D.v0.9 节;
-> - 附录 G(v0.8 spec 第 1127+ 行)—— 占位,待 Step 11 子阶段 2。
+> - 附录 G(v0.8 spec 第 1127+ 行 + `docs/appendix_G.md` wip0.9 重生成 12922 字节)
+>   —— 已嵌入本稿;签名字符串 wip 状态说明见附录 G 头部注释。
