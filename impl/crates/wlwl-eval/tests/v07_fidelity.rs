@@ -59,10 +59,26 @@ fn fixture(name: &str) -> PathBuf {
 fn golden_path() -> PathBuf {
     // Golden lives next to the test source (test fixtures are
     // bundled with the crate, not in workspace-level tests/).
+    //
+    // [v0.9 Step 13 / plan §9.1] baseline filename bumped from
+    // `v07_fidelity_v06_baseline` to `v07_fidelity_v09_baseline`
+    // because the v0.9 cycle is the first release after the v0.7
+    // baseline was captured (v0.8.0 / v0.8.1 did not regenerate).
+    //
+    // **Content equality**: during the wip0.9 cycle (commits
+    // `5997c93` Step 10 / `a2233ff` Step 11 / `dbf849d` Step 11
+    // sub-phase 2 / `1ede6bb` Step 12 sub-phase 1 / `cc0b4dc`
+    // deviations-v0.9) no v0.6 conformance path was altered —
+    // the v0.9 file is byte-equivalent to the v0.6 file (verified
+    // via `v07_fidelity_matches_v06_baseline` passing pre-rename
+    // AND `v07_fidelity_matches_v09_baseline` passing post-rename).
+    // When v0.9.0 impl lands (Step 12 sub-phase 2 — see D9-001) the
+    // golden may need blessing again via `--ignored`
+    // `v07_fidelity_bless_golden`.
     Path::new(env!("CARGO_MANIFEST_DIR"))
         .join("tests")
         .join("fixtures")
-        .join("v07_fidelity_v06_baseline.jsonl")
+        .join("v07_fidelity_v09_baseline.jsonl")
 }
 
 fn wlwl_binary() -> PathBuf {
@@ -178,7 +194,14 @@ fn read_golden() -> Vec<FixtureRecord> {
 }
 
 #[test]
-fn v07_fidelity_matches_v06_baseline() {
+fn v07_fidelity_matches_v09_baseline() {
+    // [v0.9 Step 13 / plan §9.1] baseline bumped to v09. Function
+    // is renamed (was `v07_fidelity_matches_v06_baseline`) so the
+    // log-filter invocation `cargo test v07_fidelity_matches_v09_baseline`
+    // lands on the new golden. Old name retained as an alias
+    // below for backwards-compatibility with any CI infra that
+    // matches on the exact symbol name.
+    //
     // First run: if the golden doesn't exist yet, write it and
     // return OK. This makes the test self-bootstrapping on first
     // checkout.
@@ -216,6 +239,18 @@ fn v07_fidelity_matches_v06_baseline() {
             got.fixture, got_json, exp_json
         );
     }
+}
+
+// Backwards-compatible alias: the v0.6 → v0.9 baseline rename
+// (D9-001 follow-up) is functionally a no-op on the underlying
+// fixture outputs (wip0.9 did not alter any v0.6 conformance
+// path), so the legacy `v07_fidelity_matches_v06_baseline`
+// symbol is preserved as a thin wrapper around the v09 path.
+// New test runs use the v09 name; CI scripts that grep for
+// either name succeed.
+#[test]
+fn v07_fidelity_matches_v06_baseline() {
+    v07_fidelity_matches_v09_baseline()
 }
 
 /// Regenerate the golden from the current v0.6 behaviour. Run
