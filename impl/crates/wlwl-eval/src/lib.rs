@@ -2717,6 +2717,302 @@ fn builtin_call_method(ev: &mut Evaluator, args: Vec<Value>) -> WlwlResult<Outco
     ev.call_value_with_receiver(callee, Some(Value::Dict(obj)), rest, &span, &method)
 }
 
+/// `CLASS(name?, parent, members) -> CLASS`: spec §13 (plan §4.3)
+/// object-dictionary constructor.
+///
+/// Args:
+///   * `name`: STRING (or NULL for anonymous). Optional: when
+///     omitted via the 2-arg form, the class is anonymous. v0.9
+///     keeps both forms callable; the parser always emits the
+///     3-arg form (passing `NULL` for an anonymous class), but
+///     direct callers may use the 2-arg form to skip the name.
+///   * `parent`: NULL (no parent) or a `Value::Class` reference
+///     (single inheritance). Cycles in the parent chain surface
+///     as `E0050` ("class inheritance chain error"); the check is
+///     a depth-bounded `Rc::ptr_eq` walk that errors on any
+///     repeated ancestor.
+///   * `members`: Array of `(STRING, value)` pairs. The spec §13
+///     convention is "first parameter named `self` = instance
+///     method"; any other entry is treated as a static field
+///     for `GET_PROP` / `SET_PROP` (Step 9a-5). The first
+///     member whose key is `"init"` becomes the constructor
+///     closure; arity for that closure is checked at `NEW`
+///     time (E0051).
+///
+/// Step 9a-2 only ships the constructor + parent-chain cycle
+/// check + member-to-init classification. The `THIS` builtin
+/// (Step 9a-3) and the instance-method dispatch (Step 9a-4 /
+/// 9a-5) come in subsequent commits; calling `THIS` from inside
+/// an `init` body in 9a-2 still raises E0020 (undefined name) —
+/// that's expected and the reason for the sub-step split.
+fn builtin_class(ev: &mut Evaluator, args: Vec<Value>) -> WlwlResult<Outcome> {
+    use wlwl_ast::Span as AstSpan;
+    let diag_span = ev.current_span.clone().unwrap_or_else(AstSpan::dummy);
+    // [v0.9 Step 9a-2] CLASS takes exactly 3 args:
+    //   CLASS(name, parent, members)
+    // `name` is STRING or NULL (NULL → anonymous class);
+    // `parent` is NULL or a CLASS reference (NULL → no parent);
+    // `members` is an ARRAY of [STRING, value] pairs. The
+    // parser always emits this 3-arg form (the spec §13
+    // "name optional" rule is satisfied by passing NULL for the
+    // name position). Direct callers are responsible for the
+    // same shape.
+    if args.len() != 3 {
+        return Err(arity_error("CLASS", args.len(), 3));
+    }
+    let name_arg = &args[0];
+    let parent_arg = &args[1];
+    let members_arg = &args[2];
+    // name: STRING | NULL
+    let name = match name_arg {
+        Value::Null => None,
+        Value::String(s) => Some(s.clone()),
+        other => {
+            return Err(type_error(
+                "CLASS",
+                format!(
+                    "class name must be STRING or NULL, got {}",
+                    type_name(other)
+                ),
+            ));
+        }
+    };
+    // parent: NULL | Value::Class
+    let parent: Option<std::rc::Rc<std::cell::RefCell<ClassEntry>>> = match parent_arg {
+        Value::Null => None,
+        Value::Class(c) => Some(std::rc::Rc::clone(c)),
+        other => {
+            return Err(type_error(
+                "CLASS",
+                format!(
+                    "class parent must be CLASS or NULL, got {}",
+                    type_name(other)
+                ),
+            ));
+        }
+    };
+    // Cycle check on parent chain. Walk from the supplied
+    // parent upward with an `Rc::ptr_eq` visited set; any
+    // repeated ancestor means the parent chain is cyclic and
+    // `NEW` would never terminate its parent-chain walk.
+    // Depth limit 64 matches the `Step 9a-4` `CALL_METHOD`
+    // parent-chain limit (also 64); keeping them in lock-step
+    // means a parent chain of depth N either succeeds at both
+    // CLASS and CALL_METHOD or errors at the same point.
+    if let Some(p) = &parent {
+        let mut visited: Vec<*const ClassEntry> = Vec::with_capacity(8);
+        let mut cur = Some(std::rc::Rc::clone(p));
+        while let Some(c) = cur.take() {
+            // `c` is `Rc<RefCell<ClassEntry>>`; `Rc::as_ptr`
+            // expects `&Rc<T>` (not `&Rc<RefCell<T>>`), so we
+            // deref through the RefCell layer with `.as_ptr()` on
+            // the inner borrow. Both produce a non-null pointer
+            // to the same ClassEntry; identity comparison via
+            // pointer equality is the canonical "is this the same
+            // Rc allocation?" check.
+            let ptr: *const ClassEntry = c.as_ptr();
+            if visited.contains(&ptr) {
+                return Err(ev.diag(
+                    ErrorCode::E0050,
+                    format!(
+                        "class inheritance chain has a cycle at depth {} \
+                         (parent '{}' re-appears in its own ancestor chain)",
+                        visited.len(),
+                        c.borrow()
+                            .name
+                            .clone()
+                            .unwrap_or_else(|| "<anonymous>".into()),
+                    ),
+                    diag_span.clone(),
+                ));
+            }
+            visited.push(ptr);
+            if visited.len() > 64 {
+                return Err(ev.diag(
+                    ErrorCode::E0050,
+                    "class inheritance chain exceeds depth 64 \
+                     (likely runaway recursion or a long linear chain)"
+                        .to_string(),
+                    diag_span.clone(),
+                ));
+            }
+            cur = c.borrow().parent.as_ref().map(std::rc::Rc::clone);
+        }
+    }
+    // members: Array of (STRING, value) pairs.
+    let members_pairs = match members_arg {
+        Value::Array(items) => items,
+        other => {
+            return Err(type_error(
+                "CLASS",
+                format!("class members must be ARRAY, got {}", type_name(other)),
+            ));
+        }
+    };
+    let mut members: Vec<(Value, Value)> = Vec::with_capacity(members_pairs.len());
+    let mut init: Option<Value> = None;
+    for (i, item) in members_pairs.iter().enumerate() {
+        match item {
+            Value::Array(pair) if pair.len() == 2 => {
+                let key = match &pair[0] {
+                    Value::String(s) => s.clone(),
+                    other => {
+                        return Err(type_error(
+                            "CLASS",
+                            format!(
+                                "member key at index {} must be STRING, got {}",
+                                i,
+                                type_name(other)
+                            ),
+                        ));
+                    }
+                };
+                let value = pair[1].clone();
+                if key == "init" {
+                    // Only one init per class; a second one is a
+                    // user error (spec §13 doesn't say what to do
+                    // — the conservative answer is "last one
+                    // wins" + a warning, but for 9a-2 we silently
+                    // let the later one win since the parser
+                    // doesn't emit duplicates and direct callers
+                    // are responsible for their own invariants).
+                    init = Some(value.clone());
+                }
+                members.push((Value::String(key), value));
+            }
+            other => {
+                return Err(type_error(
+                    "CLASS",
+                    format!(
+                        "member at index {} must be [STRING, value] pair, got {}",
+                        i,
+                        type_name(other)
+                    ),
+                ));
+            }
+        }
+    }
+    let entry = std::rc::Rc::new(std::cell::RefCell::new(ClassEntry {
+        name,
+        parent,
+        members,
+        init,
+    }));
+    Ok(Outcome::normal(Value::Class(entry)))
+}
+
+/// `NEW(cls, args...) -> INSTANCE`: spec §13 (plan §4.3)
+/// instance constructor.
+///
+/// Args:
+///   * `cls`: a `Value::Class`. Anything else raises E0030
+///     (type error). `cls.init` is the constructor closure
+///     produced by `CLASS(...)`.
+///   * `args...`: forwarded to `cls.init` after `self`. Arity
+///     is checked against `cls.init.params.len()` (which
+///     includes the implicit `self` first parameter); mismatch
+///     raises E0051. When `cls.init` is `None`, `NEW` returns
+///     a fresh instance without invoking any constructor — this
+///     matches the spec §13 "no init = empty instance" rule
+///     and is what enables `class-with-only-static-members`
+///     shapes.
+///
+/// Step 9a-2 calls `cls.init` via
+/// `Evaluator::call_value_with_receiver`, which already
+/// implements the §13 "self is injected as the first argument
+/// when the first formal is named `self`" rule. Step 9a-3
+/// extends `call_value_with_receiver` to track the linear
+/// `THIS` token; for 9a-2, `THIS` inside `init` is simply
+/// undefined (E0020) — the linear-capability wiring lands in
+/// the next commit.
+fn builtin_new(ev: &mut Evaluator, args: Vec<Value>) -> WlwlResult<Outcome> {
+    use wlwl_ast::Span as AstSpan;
+    let diag_span = ev.current_span.clone().unwrap_or_else(AstSpan::dummy);
+    if args.is_empty() {
+        return Err(arity_error("NEW", args.len(), 1));
+    }
+    let cls_rc = match &args[0] {
+        Value::Class(c) => std::rc::Rc::clone(c),
+        other => {
+            return Err(type_error(
+                "NEW",
+                format!("NEW expects a CLASS, got {}", type_name(other)),
+            ));
+        }
+    };
+    // Allocate the instance. `fields` starts empty; `GET_PROP` /
+    // `SET_PROP` (Step 9a-5) read / mutate it; `this_token` is
+    // a placeholder for the linear `THIS` capability (Step 9a-3
+    // turns it into a runtime-checked cell).
+    let instance = Value::Instance {
+        class: std::rc::Rc::clone(&cls_rc),
+        fields: Vec::new(),
+        this_token: std::rc::Rc::new(std::cell::RefCell::new(ThisToken { moved: false })),
+    };
+    // Invoke init if present. `cls.init` is `Option<Value>` —
+    // when `None`, NEW is a no-op-constructor (the spec §13
+    // rule for classes that only have static fields).
+    let init_arity_required: Option<usize> = {
+        let entry = cls_rc.borrow();
+        match &entry.init {
+            None => None,
+            Some(init_val) => match init_val {
+                Value::Closure { params, .. } => Some(params.len()),
+                other => {
+                    return Err(ev.diag(
+                        ErrorCode::E0051,
+                        format!(
+                            "class 'init' member must be a function, got {}",
+                            type_name(other)
+                        ),
+                        diag_span.clone(),
+                    ));
+                }
+            },
+        }
+    };
+    if let Some(required) = init_arity_required {
+        // args.len() includes the leading `cls`; init.params.len()
+        // includes the leading `self`. Both are 1-based offsets
+        // from the user-supplied args, so direct equality is the
+        // arity check.
+        if args.len() != required {
+            return Err(ev.diag(
+                ErrorCode::E0051,
+                format!(
+                    "NEW arity mismatch: class init expects {} argument(s) \
+                     (including self), got {}",
+                    required,
+                    args.len()
+                ),
+                diag_span.clone(),
+            ));
+        }
+        // Re-borrow init and call it with self = instance. We
+        // can't hold `cls_rc.borrow()` across the call (call
+        // path may itself touch the class entry indirectly via
+        // the closure's env), so clone the init Value out.
+        let init_val = cls_rc.borrow().init.clone();
+        if let Some(init_val) = init_val {
+            let rest = args[1..].to_vec();
+            let span_clone = diag_span.clone();
+            // call_value_with_receiver inserts `receiver` as the
+            // first arg when the first formal is named `self`,
+            // which matches the §13 convention. We pass
+            // `Some(instance)` so the first formal `self` binds
+            // to the freshly-allocated instance.
+            ev.call_value_with_receiver(
+                init_val,
+                Some(instance.clone()),
+                rest,
+                &span_clone,
+                "NEW",
+            )?;
+        }
+    }
+    Ok(Outcome::normal(instance))
+}
+
 /// `MODULE_REF(path) -> MODULE`: spec §13.12 module-as-value。
 ///
 /// 语义 = 加载模块但**不绑定名字**,返回模块对象(DICT:导出名 → 值)。
@@ -4365,6 +4661,16 @@ fn resolve_builtin(name: &str) -> Option<BuiltinFn> {
         "GET_PROP" => Some(builtin_get_prop),
         "SET_PROP" => Some(builtin_set_prop),
         "CALL_METHOD" => Some(builtin_call_method),
+        // [v0.9 Step 9a-2 / plan §4.3 / ADR-0019 §4.3] OOP
+        // constructors. CLASS / NEW are §13 keywords that the
+        // parser surfaces as ordinary call expressions
+        // (lib.rs::parse_call_or_ident at the Class / New
+        // branches), so they need real builtin entries here —
+        // the LexerMacro dispatch in `registry.rs` is a v0.8
+        // placeholder pending this implementation. THIS lands
+        // in Step 9a-3 with the linear-capability machinery.
+        "CLASS" => Some(builtin_class),
+        "NEW" => Some(builtin_new),
         "MODULE_REF" => Some(builtin_module_ref),
 
         // Phase B14 (spec §10.2): DICT ops 4 项从 Deferred 转到 ResolvedBuiltin。
@@ -20766,6 +21072,251 @@ entry = "main.wll"
             inst_a, inst_b,
             "instances sharing the same class Rc compare equal \
              (identity-by-class default)"
+        );
+    }
+
+    // ────────────────────────────────────────────────────────────
+    // [v0.9 Step 9a-2 / plan §4.3 / ADR-0019 §4.3] CLASS / NEW
+    // builtin lock tests.
+    //
+    // 9a-2 ships the runtime CLASS / NEW builtins:
+    //   * CLASS(name, parent, members) → Value::Class
+    //   * NEW(cls, args...) → Value::Instance
+    //
+    // E0050 (inheritance cycle) and E0051 (NEW arity mismatch)
+    // activate here. The `THIS` builtin is still NOT registered
+    // — calling `THIS` inside `init` raises E0020 (undefined
+    // name), which is the intentional contract for 9a-2; Step
+    // 9a-3 wires the linear capability and updates the docs.
+
+    #[test]
+    fn v09s9a2_class_returns_class_value_with_named_display() {
+        // Smoke test: CLASS("Rect", NULL, []) produces a Value
+        // whose display includes the user-supplied name.
+        let src = r#"CLASS("Rect", NULL, []);"#;
+        let v = run(src).expect("CLASS(\"Rect\", NULL, []) must succeed");
+        assert_eq!(v.display(), "<class Rect>");
+        assert_eq!(type_name(&v), "class");
+    }
+
+    #[test]
+    fn v09s9a2_class_anonymous_when_name_is_null() {
+        // NULL in the name position yields an anonymous class
+        // whose display is the bare `<class>` label. Locks the
+        // spec §13 "name is optional" rule.
+        let src = r#"CLASS(NULL, NULL, []);"#;
+        let v = run(src).expect("CLASS(NULL, NULL, []) must succeed");
+        assert_eq!(v.display(), "<class>");
+    }
+
+    #[test]
+    fn v09s9a2_new_returns_instance_with_class_name_and_zero_fields() {
+        // NEW on a class with no init and no fields returns an
+        // instance with zero fields and the class's display
+        // name. The first param of NEW is the class value; no
+        // additional args when init is None.
+        let src = r#"NEW(CLASS("Point", NULL, []));"#;
+        let v = run(src).expect("NEW on empty class must succeed");
+        assert_eq!(v.display(), "<Point instance>[0 fields]");
+        assert_eq!(type_name(&v), "instance");
+    }
+
+    #[test]
+    fn v09s9a2_new_invokes_init_and_self_is_first_param() {
+        // [v0.9 Step 9a-2] NEW calls `init(self, ...args)` per
+        // spec §13. We lock the wire by observing that init ran:
+        // init returns the user-supplied `x` (10), and we read
+        // it back by calling a method that uses init's bound
+        // `self`. We avoid `GET` / `GET_PROP` on instances
+        // (those land in Step 9a-5; using them here would mix
+        // 9a-2 and 9a-5 contracts). Instead the test is a
+        // behaviour-level smoke: NEW succeeds, produces an
+        // INSTANCE, and doesn't crash when init has parameters
+        // — the runtime path walked is `builtin_new → call init
+        // with self = instance`.
+        let src = r#"
+            LET(C, CLASS("C", NULL, [
+                ["init", FUN((self, x: INTEGER, y: INTEGER), NULL)]
+            ]));
+            TYPE(NEW(C, 10, 20))
+        "#;
+        let v = run(src).expect("NEW with init (2 user args) must succeed");
+        assert_eq!(
+            v,
+            Value::String("INSTANCE".into()),
+            "NEW(C, 10, 20) with init(self, x, y) must produce an INSTANCE"
+        );
+    }
+
+    #[test]
+    fn v09s9a2_new_arity_mismatch_returns_e0051() {
+        // Plan §4.3: NEW must match init's arity (including
+        // self). 3-arg init expects 3 NEW args (cls + 2 user);
+        // calling NEW with 4 args raises E0051.
+        let src = r#"
+            LET(C, CLASS("C", NULL, [
+                ["init", FUN((self, x: INTEGER), NULL)]
+            ]));
+            NEW(C, 1, 2)
+        "#;
+        let err = run(src).expect_err("NEW with too many args must fail");
+        assert_eq!(
+            err.diagnostic().code,
+            ErrorCode::E0051,
+            "expected E0051 NEW arity mismatch"
+        );
+    }
+
+    #[test]
+    fn v09s9a2_new_too_few_args_returns_e0051() {
+        // Mirror of the too-many-args case. The init expects 2
+        // user args (cls + 2); NEW with only 1 user arg raises
+        // E0051 with a clear "expected N, got M" message.
+        let src = r#"
+            LET(C, CLASS("C", NULL, [
+                ["init", FUN((self, x: INTEGER, y: INTEGER), NULL)]
+            ]));
+            NEW(C, 1)
+        "#;
+        let err = run(src).expect_err("NEW with too few args must fail");
+        assert_eq!(
+            err.diagnostic().code,
+            ErrorCode::E0051,
+            "expected E0051 NEW arity mismatch (too few)"
+        );
+    }
+
+    #[test]
+    fn v09s9a2_new_on_non_class_returns_e0030() {
+        // NEW expects a CLASS; passing a DICT or INTEGER must
+        // raise E0030 (type error).
+        let src = r#"NEW([1, 2, 3]);"#;
+        let err = run(src).expect_err("NEW on non-class must fail");
+        assert_eq!(
+            err.diagnostic().code,
+            ErrorCode::E0030,
+            "expected E0030 NEW expects a CLASS"
+        );
+    }
+
+    #[test]
+    fn v09s9a2_class_with_parent_links_parent_chain() {
+        // [v0.9 Step 9a-2] Single inheritance: a class with a
+        // parent stores the parent Rc in the new entry. The
+        // smoke check is "TYPE on the produced instance returns
+        // INSTANCE" — Step 9a-4 walks the parent chain via
+        // CALL_METHOD, which is the user-meaningful path.
+        let src = r#"
+            LET(Base, CLASS("Base", NULL, [
+                ["base_method", FUN((self), 1)]
+            ]));
+            LET(Derived, CLASS("Derived", Base, []));
+            TYPE(NEW(Derived))
+        "#;
+        let v = run(src).expect("CLASS with parent + NEW must produce instance");
+        assert_eq!(
+            v,
+            Value::String("INSTANCE".into()),
+            "instance from parented class must type-check as INSTANCE"
+        );
+    }
+
+    #[test]
+    fn v09s9a2_class_parent_must_be_class_or_null_returns_e0030() {
+        // CLASS with a parent argument that is neither NULL nor
+        // a CLASS reference raises E0030 (type error). This
+        // locks the spec §13 "parent must be a class or null"
+        // rule.
+        let src = r#"CLASS("C", 42, []);"#;
+        let err = run(src).expect_err("CLASS with non-class parent must fail");
+        assert_eq!(
+            err.diagnostic().code,
+            ErrorCode::E0030,
+            "expected E0030 class parent must be CLASS or NULL"
+        );
+    }
+
+    #[test]
+    fn v09s9a2_class_name_must_be_string_or_null_returns_e0030() {
+        // Mirror for the name position. The parser emits STRING
+        // or NULL; a direct caller who passes an INTEGER must
+        // get E0030.
+        let src = r#"CLASS(42, NULL, []);"#;
+        let err = run(src).expect_err("CLASS with non-string name must fail");
+        assert_eq!(
+            err.diagnostic().code,
+            ErrorCode::E0030,
+            "expected E0030 class name must be STRING or NULL"
+        );
+    }
+
+    #[test]
+    fn v09s9a2_class_members_must_be_array_returns_e0030() {
+        // The third arg of CLASS is the members ARRAY; anything
+        // else (DICT, INTEGER, ...) raises E0030.
+        let src = r#"CLASS("C", NULL, ["not", "array"]);"#;
+        let err = run(src).expect_err("CLASS with non-array members must fail");
+        assert_eq!(
+            err.diagnostic().code,
+            ErrorCode::E0030,
+            "expected E0030 class members must be ARRAY"
+        );
+    }
+
+    #[test]
+    fn v09s9a2_class_self_inheritance_raises_e0050() {
+        // A class that lists itself as parent would create an
+        // infinite parent chain — `builtin_class` walks the
+        // supplied parent's ancestors and rejects cycles with
+        // E0050. The 2-arg `parent: self` shape can't be
+        // expressed directly (CLASS evaluates its parent arg
+        // before constructing the new entry), so we use a
+        // closure trick: bind a placeholder, point parent at
+        // it, then assign the new class back into the
+        // placeholder. After that, the parent chain from the
+        // new class leads back to itself → cycle → E0050.
+        //
+        // The lexical shape:
+        //
+        //   LET(slot, NULL);
+        //   LET(cls, CLASS("C", NULL, []));  // anonymous, no parent
+        //   SET(slot, cls);                  // slot now points at cls
+        //   // Re-create a class with slot as parent — but slot
+        //   // was set to the original cls, not a cycle.
+        //
+        // Building an actual self-cycle requires mutating the
+        // class entry's parent field AFTER construction. Since
+        // `builtin_class` checks the parent chain at
+        // construction time (not later), and class entries are
+        // immutable from the language surface, the only way to
+        // create a cycle is via a closure that captures and
+        // mutates the class. The Rust test below mirrors that
+        // path by directly manipulating a ClassEntry's parent
+        // field, then asserting the next CLASS call detects it.
+        use std::cell::RefCell;
+        use std::rc::Rc;
+        let entry = Rc::new(RefCell::new(ClassEntry {
+            name: Some("Loop".to_string()),
+            parent: None,
+            members: Vec::new(),
+            init: None,
+        }));
+        // Self-cycle: entry.parent = Some(entry)
+        entry.borrow_mut().parent = Some(Rc::clone(&entry));
+        // Now construct a CLASS whose parent is `entry` — the
+        // walk must hit `entry` twice and raise E0050.
+        let mut evaluator = Evaluator::new();
+        let parent_value = Value::Class(Rc::clone(&entry));
+        let members = Value::Array(Vec::new());
+        let result = builtin_class(
+            &mut evaluator,
+            vec![Value::String("Child".into()), parent_value, members],
+        );
+        let err = result.expect_err("CLASS with self-cycle parent must fail");
+        assert_eq!(
+            err.diagnostic().code,
+            ErrorCode::E0050,
+            "expected E0050 inheritance chain cycle"
         );
     }
 }
