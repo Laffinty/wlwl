@@ -41,8 +41,8 @@ For development setup, quality gates, and the workspace layout, see
 ## Docs
 
 - Language spec: [`docs/standard/wlwl-spec-v0.9.md`](./docs/standard/wlwl-spec-v0.9.md)
-  (WIP — frozen at the v0.9.0 release tag; v0.8 at
-  [`docs/standard/wlwl-spec-v0.8.md`](./docs/standard/wlwl-spec-v0.8.md))
+  (v0.8 archived at
+  [`docs/history/wlwl-spec-v0.8.md`](./docs/history/wlwl-spec-v0.8.md))
 - Changelog: [`CHANGELOG.md`](./CHANGELOG.md)
 - Builtin registry (Appendix G mirror): [`docs/appendix_G.md`](./docs/appendix_G.md)
 

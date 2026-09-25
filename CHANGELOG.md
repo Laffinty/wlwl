@@ -7,99 +7,77 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 > **Note.** The compiler version is **independent of the language spec version**.
 > The language spec lives in `docs/standard/` and is identified by version + name.
-> This file tracks the **compiler / tooling** releases. The spec wip is at
-> **v0.9** (`docs/standard/wlwl-spec-v0.9.md`, WIP — wip0.9 派生); v0.8 is
-> currently at `docs/standard/wlwl-spec-v0.8.md` (will move to
-> `docs/history/` at v0.9.0 release), v0.7 archived at
-> `docs/history/wlwl-spec-v0.7.md` (v0.6 at `docs/history/wlwl-spec-v0.6.md`).
+> This file tracks the **compiler / tooling** releases. The current spec is
+> **v0.9** (`docs/standard/wlwl-spec-v0.9.md`); archived specs live under
+> `docs/history/` (`wlwl-spec-v0.8.md`, `wlwl-spec-v0.7.md`, `wlwl-spec-v0.6.md`).
 
-## [v0.9.0] — Unreleased (wip0.9 阶段)
+## [v0.9.0] — 2026-09-25
 
-> **WIP 阶段进度条目** — 本段为 wip0.9 阶段的实施进展记录,直到 release commit
-> 时**冻结**为正式 release notes。v0.9 的发布 tag 由用户手动触发 —
-> 见 `docs/plan/wlwl-build-plan-v0.9.md §9.1` 与用户发布护栏
-> (等 user 确认无误后才执行自动打包)。
+Spec: **wlwl-spec-v0.9** (`docs/standard/wlwl-spec-v0.9.md`).
+v0.8 archived at `docs/history/wlwl-spec-v0.8.md`.
 
 ### Added
 
-- **Algebraic-effect runtime 模型**(plan §3 + §4.4.1,ADR-0017 §3.1 +
-  ADR-0019 §4.4.1):runtime 把控制流统一为 `Effect { tag: Tag, payload }`,
-  `Tag ∈ { Yield, ChannelOp, Cancelled }`;`Scheduler::step` 为 effect handler
-  循环。impl 内部命名 `TaskState::Suspended { tag, reason: YieldReason }`
-  取代 v0.7 / v0.8 tuple variant。
-- **结构化并发死锁检测 L1**(plan §3.4,ADR-0017 §3.4):
-  顶层错误码 `E0065`,软警告 `W0065`,严格同 scope 检测,
-  显式 `Yield` 互让不触发(`no_false_positive_in_pure_yield_chain`)等。
-  默认严格(`E0065`);`[features] strict_deadlock_detect = false` 降级为
-  `W0065` + `E0053`。
-- **Task 取消 `reason` 字段(tag/payload cancellation,plan §4.4.2)**:
+- **Algebraic-effect runtime 模型**:runtime 把控制流统一为
+  `Effect { tag: Tag, payload }`,`Tag ∈ { Yield, ChannelOp, Cancelled }`;
+  `Scheduler::step` 为 effect handler 循环。impl 内部命名
+  `TaskState::Suspended { tag, reason: YieldReason }` 取代旧 tuple variant。
+- **结构化并发死锁检测 L1**:顶层错误码 `E0065`,软警告 `W0065`;
+  严格同 scope 检测,显式 `Yield` 互让不触发。默认严格(`E0065`);
+  `[features] strict_deadlock_detect = false` 降级为 `W0065` + `E0053`。
+- **Task 取消 `reason` 字段(tag/payload cancellation)**:
   `TASK_CANCEL(task, reason?)` / `TASK_CANCEL_PARENT(reason?)` 签名扩展;
   reason 非法类型 → `E0066`;旧 `TASK_CANCEL(task)` 隐式 `{}` 兼容。
-- **OOP 真实实现**(plan §4.3 + §4.4.3,ADR-0019):
-  `CLASS` / `NEW` / `THIS` / `GET_PROP` / `SET_PROP` / `CALL_METHOD` 启用;
-  §13 / §14 / §15 / §16 章节号在 v0.9.0 release tag 上冻结(ADR-0019 草稿 2)。
-- **行为类型与会话类型协议(顺序 + `⊕` 内部选择 + μ 递归骨架)**(plan §4.4.3):
-  `CALL_METHOD` 走协议状态机;协议未启动 / 已终止 → `E0050`,
-  协议 step 错位 → `E0051`。外部选择 `&` / 命名协议 / 并行 `par` 留 v0.9.1+。
-- **`THIS` 线性 capability(Wadler 1990 风格实质检查,plan §4.4.3)**:
-  不可变 `SET_PROP` + `THIS` 跨容器 / call / `AWAIT` / SPAWN / return
-  五类边界越界 → `E0032`(D9-001 已闭合,`v09s12_*` 锁测试)。
-- **`wlwl.toml [features]` 并发开关**(ADR-0017 / 0018 / plan §5.3):
+- **OOP 真实实现**:`CLASS` / `NEW` / `THIS` / `GET_PROP` / `SET_PROP` /
+  `CALL_METHOD` 启用;spec §13 / §14 / §15 / §16 章节号在 v0.9.0 上冻结。
+- **行为类型与会话类型协议**(顺序 + `⊕` 内部选择 + μ 递归骨架):
+  `CALL_METHOD` 走协议状态机;协议已终止 → `E0050`,协议 step 错位 → `E0051`。
+  外部选择 `&` / 命名协议 / 并行 `par` 留后续版本。
+- **`THIS` 线性 capability**:不可变 `SET_PROP` + `THIS` 跨容器 / call /
+  `AWAIT` / SPAWN / return 五类边界越界 → `E0032`。
+- **`wlwl.toml [features]` 并发开关**:
   `strict_deadlock_detect`(默认 true)、`native_channel_close`(默认 false,
   开启后关闭通道 RECV 硬抛 `E0054`)、`channel_large_buf_threshold`
   (默认 1024,超阈值发 `W0066`)。
 
 ### Changed
 
-- **同步通道真挂起**(plan §3.2):`buf=0` 同步通道 SEND / RECV 在满/空时
-  挂起当前 task,加入 channel 的 `sender_waiters` / `receiver_waiters`,
-  状态翻为 `Suspended { tag: ChannelOp, reason: SendingOn | ReceivingOn }`;
+- **同步通道真挂起**:`buf=0` 同步通道 SEND / RECV 在满/空时挂起当前 task,
+  加入 channel 的 `sender_waiters` / `receiver_waiters`;
   `TRY_SEND` / `TRY_RECV` 保持非阻塞。
-- **`YIELD` 位置解除**(plan §3.1):v0.7 / v0.8 的 `E0014` 在 Block 直接子项之外的
+- **`YIELD` 位置解除**:v0.7 / v0.8 的 `E0014` 在 Block 直接子项之外的
   YIELD 触发路径删除;`LET(x, YIELD())` / `IF(cond, YIELD(), 42)` /
   数组字面量内部 / 间接调用 `LET(y, YIELD); y()` 均合法,自动挂起。
-- **嵌套 YIELD 解除限制**(plan §3.3):嵌套构造(`WHILE` / `FOR` / `IF` 分支)
-  内 YIELD 恢复后继续执行嵌套体剩余部分。该限制源自 v0.7 / v0.8 切段器
-  实现路径,v0.9 真挂起后自动消除。
-- **`ChannelWouldBlock` 载荷路径删除**(plan §3.2 终结):
-  同步通道真挂起后该 ERR 载荷无触发路径;`TRY_*` 仍非阻塞。
-- **`E0055` / `E0057` 错误码移除**(plan §3.6,ADR-0018 选项 B):
-  关闭后 RECV 仍走 `ERR(kind="ChannelClosed")` 载荷;
-  跨任务 / 单任务不可变单元格统一走 `E0024`。
+- **嵌套 YIELD 解除限制**:嵌套构造(`WHILE` / `FOR` / `IF` 分支)
+  内 YIELD 恢复后继续执行嵌套体剩余部分。
+- **`ChannelWouldBlock` 载荷路径删除**:同步通道真挂起后该 ERR 载荷
+  无触发路径;`TRY_*` 仍非阻塞。
+- **`E0055` / `E0057` 错误码移除**:关闭后 RECV 仍走
+  `ERR(kind="ChannelClosed")` 载荷;跨任务 / 单任务不可变单元格统一走 `E0024`。
 
 ### Spec
 
-- 新建 `docs/standard/wlwl-spec-v0.9.md`(WIP 期间工作草案,
-  v0.9.0 release 时正式冻结);§17 整体重写,§11.2 / §11.3 字面修订,
-  §13 / §14 / §15 / §16 真实实现字面落地。
+- 语言规范 v0.9 定稿(`docs/standard/wlwl-spec-v0.9.md`):§17 整体重写,
+  §11.2 / §11.3 字面修订,§13 / §14 / §15 / §16 OOP 与会话类型落地;
+  v0.8 规范归档至 `docs/history/wlwl-spec-v0.8.md`。
 - 附录 G 镜像(`docs/appendix_G.md`)由 `gen-appendix-g` 重生成;
-  OOP 实现位置章节号从 `§11 [占位;OOP 未实现]` 修正为 `§13` / `§15`;
-  签名列同步 v0.9(D9-002:无 `ChannelWouldBlock`,`TASK_CANCEL(task, reason?)`)。
-- 新建 `docs/history/deviations-v0.9.md` 启动 D9-NNN 流水;
-  D9-001 / D9-002 **已闭合**(2026-09-25);D9-003(ci.yml 仅 main)留 release 前评估。
-- ADR-0017 / 0018 状态 Proposed → **Accepted**(plan §9.2 默认 Approved);
-  ADR-0019 已 Accepted。
-- plan §11.4 负 `buf` 错误码定案为 **`E0031`**(§17.2 normative)。
+  OOP 实现位置章节号修正为 `§13` / `§15`;
+  签名列同步 v0.9(无 `ChannelWouldBlock`,`TASK_CANCEL(task, reason?)`)。
+- `wlwl-skill` 更新至 v0.9(真挂起并发、OOP / 会话协议 / 线性 `THIS`、
+  错误码增删、`wlwl.toml` 新特性;新增 `examples/oop.wll`)。
+- 负 `buf` 错误码定案为 **`E0031`**(§17.2)。
 
 ### Tests
 
-- 锁测试总计数:v0.8.1 baseline `1409 passed` → wip0.9 `1517 passed`(+108 项锁测试);
-  v0.6 conformance fidelity baseline 重命名为 v09(内容 byte-equal,wip0.9
-  期间无 v0.6 conformance path 漂移);`v07_fidelity_matches_v09_baseline` 绿。
+- 锁测试总计数:v0.8.1 baseline `1409 passed` → v0.9 `1517 passed`(+108 项)。
 - `cargo clippy --locked --workspace --all-targets -- -D warnings`:clean。
-- `cargo fmt --check`:clean(LF-only / 无 CRLF / 无 trailing whitespace)。
-- **CI gate 不在 wip0.9 跑**:`.github/workflows/ci.yml` 触发仅 `branches: [main]`;
-  wip0.9 push 不自动跑 CI(由本地三道闸守住,d9-003)。
+- `cargo fmt --check`:clean。
 
-### Known gaps / 已知缺口(留 release 前评估)
+### Known limitations
 
 - `Effect::MethodCall` / `Effect::ProtocolViolation` 已作为 enum 表面落地
   (spec §16.4 命名对齐);evaluator 尚未在 CALL_METHOD 路径上实际 raise
-  这两个 effect(v0.9.1 继续接 effect-handler 调度)。
-- v0.9 release 前评估 `.github/workflows/ci.yml` 是否改 `branches: [main, wip0.9]`
-  让 wip 期间也享有 CI 反馈(D9-003)。
-- D9-001(THIS 容器/call/return 越界 + E0050 after-end)与 D9-002(registry 签名
-  字符串)**已闭合**(2026-09-25)。
+  这两个 effect(留后续版本接 effect-handler 调度)。
 
 ---
 

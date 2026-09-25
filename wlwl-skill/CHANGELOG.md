@@ -1,7 +1,64 @@
 # wlwl-skill CHANGELOG
 
-Skill-bundle changes (spec lives at `../docs/standard/wlwl-spec-v0.8.md`
+Skill-bundle changes (spec lives at `../docs/standard/wlwl-spec-v0.9.md`
 and is authoritative).
+
+## [0.9.0] — 2026-09-25
+
+### Changed
+
+- **Target spec** bumped from `wlwl-spec-v0.8.md` (archived at
+  `docs/history/`) to **`wlwl-spec-v0.9.md`** (current). v0.9 is a
+  *language upgrade* over v0.8: true-suspension concurrency, structured
+  cancellation, deadlock L1, and OOP with session-type protocols.
+- **SKILL.md description + title** rewritten: "Writing WLWL (v0.9)"
+  covers v0.9 concurrency semantics, OOP (§13–§16), linear THIS, and
+  the error-code delta. Frontmatter description lists the v0.9 surface.
+- **`wlwl-spec-v0.8.md` references** updated throughout SKILL.md /
+  reference.md / README.md to point at v0.9; `docs/history/` archive
+  paths preserved.
+- **Concurrency section rewritten** (SKILL.md + reference.md §21):
+  - `YIELD()` legal at **any** expression position inside a task body
+    (v0.7/v0.8 "Block direct child" restriction removed).
+  - Blocking `CHANNEL_SEND` / `RECV` **suspend** when full/empty with
+    no peer; `ERR(ChannelWouldBlock)` path **removed**.
+  - `TASK_CANCEL(task, reason?)` / `TASK_CANCEL_PARENT(reason?)` carry
+    an optional DICT reason (default `{}`); non-DICT → `E0066`.
+  - `AWAIT` of a cancelled task returns
+    `ERR(kind="Cancelled", reason: <dict>)`.
+  - Close wakes parked receivers with `ERR(ChannelClosed)` and parked
+    senders with `E0054`.
+- **OOP section added** (SKILL.md + reference.md §14–§16):
+  `CLASS` / `NEW` / `GET_PROP` / `SET_PROP` / `CALL_METHOD` / `THIS`;
+  session-type protocols (sequence + ⊕ + μ); linear `THIS` discipline.
+- **Error-code table** (reference.md §10): `E0055` / `E0057` marked
+  removed; `E0065` / `E0066` / `W0065` / `W0066` added; `E0014` /
+  `E0032` / `E0050` / `E0051` redefined per v0.9 §11.2.
+- **`wlwl.toml` features** (reference.md §19): added
+  `strict_deadlock_detect`, `native_channel_close`,
+  `channel_large_buf_threshold`.
+- **Anti-patterns expanded to 24 rows**: new rows cover linear `THIS`
+  escapes, external `SET_PROP`, protocol-order violations, non-DICT
+  cancel reason, `ChannelWouldBlock` expectation, and deadlocks.
+
+### Added
+
+- **`examples/oop.wll`** — CLASS / NEW / methods with `self` injection,
+  session-protocol sequence, and linear-`THIS` usage.
+- **`reference.md` §23 v0.9 增量备忘** — compact index of every v0.9
+  item affecting `.wll` writing (concurrency, OOP, error codes, types,
+  features).
+- **Types `CLASS` / `INSTANCE`** in the type/display/equality tables
+  (reference.md §1, §11, §21).
+- **`MODULE_REF(path)`** documented (reference.md §7) — loads module
+  dict without binding names.
+
+### Verified
+
+- All `examples/*.wll` and `interp.wll` run with exit 0 against the
+  v0.9 reference implementation.
+
+---
 
 ## [0.8.1] — 2026-09-23
 

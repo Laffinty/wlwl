@@ -1,0 +1,53 @@
+// examples/oop.wll — spec v0.9 §13–§15 golden shape
+// CLASS / NEW / self methods / session protocol / linear THIS / inheritance.
+// Expected stdout:
+//   2
+//   PASS:oop_methods
+//   PASS:protocol_sequence
+//   PASS:linear_this
+//   PASS:inheritance
+//   PASS:oop
+//
+// Rules locked here:
+//  * CLASS(name, parent, members) — members is ARRAY of [STRING, value] pairs
+//  * method = closure whose FIRST formal is named `self` (receiver injected)
+//  * session protocol in CLASS's second arg enforces call order (E0051 / E0050)
+//  * THIS() is linear: consume once per method call, never escape the body
+
+// --- object with init + methods ---
+LET(C, CLASS("Counter", NULL, [
+    ["init", FUN((self), SET_PROP(self, "n", 0))],
+    ["inc", FUN((self), SET_PROP(self, "n", +(GET_PROP(self, "n"), 1)))],
+    ["get", FUN((self), GET_PROP(self, "n"))]
+]));
+LET(o, NEW(C));
+CALL_METHOD(o, "inc");
+CALL_METHOD(o, "inc");
+LET(v, CALL_METHOD(o, "get"));
+PRINT(v);
+IF(==(v, 2), PRINT("PASS:oop_methods"), PRINT("FAIL:oop_methods"));
+
+// --- session protocol: a then b ---
+LET(P, CLASS("P", ["a": "end", "b": "end"], [
+    ["a", FUN((self), 1)],
+    ["b", FUN((self), 2)]
+]));
+LET(po, NEW(P));
+CALL_METHOD(po, "a");
+LET(pb, CALL_METHOD(po, "b"));
+IF(==(pb, 2), PRINT("PASS:protocol_sequence"), PRINT("FAIL:protocol_sequence"));
+
+// --- linear THIS: consume once, use locally ---
+LET(T, CLASS("T", NULL, [
+    ["peek", FUN((self), LET(me, THIS()); TYPE(me))]
+]));
+LET(tv, CALL_METHOD(NEW(T), "peek"));
+IF(==(tv, "INSTANCE"), PRINT("PASS:linear_this"), PRINT("FAIL:linear_this"));
+
+// --- single inheritance: method found up the parent chain ---
+LET(Base, CLASS("Base", NULL, [["hello", FUN((self), "hi")]]));
+LET(D, CLASS("D", Base, []));
+LET(dv, CALL_METHOD(NEW(D), "hello"));
+IF(==(dv, "hi"), PRINT("PASS:inheritance"), PRINT("FAIL:inheritance"));
+
+PRINT("PASS:oop")
