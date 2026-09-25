@@ -809,18 +809,15 @@ impl Scheduler {
             return None;
         }
         // Stage 2: transition task state and remove from run queue.
-        if let Some(task) = self.tasks.get_mut(task_id.0) {
-            let reason = match dir {
-                Direction::Send => YieldReason::SendingOn(channel),
-                Direction::Recv => YieldReason::ReceivingOn(channel),
-            };
-            // WasmFX-style `Suspended { tag, reason }` (plan §9.1
-            // Step 10). `tag` is derived from `reason` via
-            // [`TaskState::suspended`] to keep the pair consistent.
-            task.state = TaskState::suspended(reason);
-        } else {
-            return None;
-        }
+        let task = self.tasks.get_mut(task_id.0)?;
+        let reason = match dir {
+            Direction::Send => YieldReason::SendingOn(channel),
+            Direction::Recv => YieldReason::ReceivingOn(channel),
+        };
+        // WasmFX-style `Suspended { tag, reason }`. `tag` is derived
+        // from `reason` via [`TaskState::suspended`] to keep the pair
+        // consistent.
+        task.state = TaskState::suspended(reason);
         self.run_queue.retain(|id| *id != task_id);
         Some(waiter)
     }
