@@ -18,8 +18,16 @@
 | 既有日次 / 阶段史 | `../history/2026*.md`、`p3-011-spec-alignment.md` |
 | 早期计划 | `../history/wlwl-build-plan-v0.1-COMPLETED.md`、`wlwl-build-plan-v0.2.md` |
 
-**现行规范**:`../standard/wlwl-spec-v0.8.md` (v0.8.1 patch 无 spec 改动)。
-新一轮迭代请在本目录新建 `wlwl-build-plan-v0.9.md` 与空白 `deviations.md`。
+**现行规范**:`../standard/wlwl-spec-v0.9.md`(v0.9.0)。
+
+| 当前迭代材料 | 路径 |
+|--------------|------|
+| **v0.10.0 构建计划(草稿 0,Static Contracts)** | `wlwl-build-plan-v0.10.md` |
+| v0.10 技术路线建议(范围裁决上游) | `wlwl-v0.10.0-迭代技术路线建议.md` |
+| v0.9 构建计划(FINAL / 实施基线) | `wlwl-build-plan-v0.9.md` |
+| 偏差登记(v0.9 D9-NNN;v0.10 启动时重置为 D10-NNN) | `deviations.md` |
+
+v0.9 收尾后,按 `wlwl-build-plan-v0.10.md` §10.1 Step 13 将 `deviations.md` 切换为 D10-NNN 流水。
 
 **v0.8.1 patch 周期回顾** (commit 链,本地 ahead of origin/main 6 个):
 
