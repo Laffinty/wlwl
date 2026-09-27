@@ -39,6 +39,65 @@
 // Types
 // ──────────────────────────────────────────────────────────────────────
 
+/// 结构化签名的一段(Step 5 · A6′)。
+///
+/// **只表示顶层形状,不带类型参数。** 容器一律是无参的
+/// [`SigTy::Array`] / [`SigTy::Dict`] —— 元素类型是 `Dynamic`。
+/// 这是刻意的:嵌套泛型与数组元素匹配在运行时 `E0033` 那条路径上就是
+/// *deliberately deferred*(`wlwl-eval/src/lib.rs:8588`),静态层首批
+/// 不该比运行时更激进。
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum SigTy {
+    Integer,
+    Float,
+    String,
+    Boolean,
+    Null,
+    /// 无参容器(元素类型未建模)
+    Array,
+    /// 无参容器(键值类型未建模)
+    Dict,
+    /// `OK` / `ERR` 变体;两侧载荷类型未建模
+    Result,
+    /// 闭包
+    Function,
+    /// 推不出来 —— 静态层落 `Ty::Dynamic`,不产生任何诊断。
+    ///
+    /// 典型来源:多态返回(`+` 可得 INTEGER / FLOAT / STRING / ARRAY,
+    /// 见 spec 附录 G)、取值透传(`AT_K` / `GET_PROP` / `CALL_METHOD`
+    /// 的 `-> v`)、有副作用因而类型随分支变化(`SCOPE` / `SHIELD`)。
+    Dynamic,
+}
+
+/// 结构化签名(Step 5 · A6′ 首批 = **只给返回类型**)。
+///
+/// # 为什么首批不带形参类型
+///
+/// spec 附录 G 大量条目有**可选形参**(`SUB(s, start, end?)`、
+/// `POP(d, k, default)`、`SLICE(arr, start, end?)`),也有 `args...`
+/// 变长(`PRINT(args...)`)。任何「精确元数」表示都会在这些条目上误报,
+/// 与 ADR-0020 的「不误报优先」直接冲突。故 `params` 显式为
+/// `Option<&'static [SigTy]>`:
+///
+/// - `None` = **元数未知 / 不检查**。首批全部条目都是 `None`。
+/// - `Some(slice)` = 形参类型已知,可做元数与类型检查。留给后续批次
+///   ——前提是逐条对着 `wlwl-eval` 的 dispatch 实现核过形参类型。
+impl BuiltinSig {
+    /// 首批用的构造:只有返回类型,形参**不检查**(可选形参会让精确元数
+    /// 必然误报,见 `BuiltinSig::params` 的文档)。
+    pub const fn ret_only(ret: SigTy) -> BuiltinSig {
+        BuiltinSig { ret, params: None }
+    }
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct BuiltinSig {
+    /// 返回类型。`SigTy::Dynamic` = 推不出来,静态层不据此产生诊断。
+    pub ret: SigTy,
+    /// 形参类型;`None` = 元数未知,不做任何形参检查(首批全部条目)。
+    pub params: Option<&'static [SigTy]>,
+}
+
 /// One row of spec 附录 G, mirrored as a Rust const.
 #[derive(Debug, Clone, Copy)]
 pub struct BuiltinSpec {
@@ -46,6 +105,14 @@ pub struct BuiltinSpec {
     pub name: &'static str,
     /// Spec 的签名(`fn(args) → ret` 风格)
     pub signature: &'static str,
+    /// 结构化签名(Step 5 · A6′ 首批)。
+    ///
+    /// **`None` 是常态而非缺口**:首批只覆盖 60 条高频内建的返回类型,
+    /// 其余 ~50 条(Subscript / Module / Oop / Property / Concurrent /
+    /// Result 宏 / Control 流程)刻意留 `None`,静态层对它们落
+    /// `Dynamic`、**不产生诊断**。`signature` 文档串**始终保留**,
+    /// 附录 G 生成器继续用它 —— 结构化字段是**加法**,不替换文档面。
+    pub sig: Option<BuiltinSig>,
     /// 功能分组 (用于 markdown 表头)
     pub group: BuiltinGroup,
     /// §12.7 ERR 消费状态
@@ -224,6 +291,7 @@ pub const BUILTIN_REGISTRY: &[BuiltinSpec] = &[
     BuiltinSpec {
         name: "PRINT",
         signature: "PRINT(args...) -> NULL",
+        sig: Some(BuiltinSig::ret_only(SigTy::Null)),
         group: BuiltinGroup::Io,
         err_consumer: ErrConsumerStatus::No,
         macro_fn: false,
@@ -234,6 +302,7 @@ pub const BUILTIN_REGISTRY: &[BuiltinSpec] = &[
     BuiltinSpec {
         name: "PRINT_ERR",
         signature: "PRINT_ERR(args...) -> NULL",
+        sig: Some(BuiltinSig::ret_only(SigTy::Null)),
         group: BuiltinGroup::Io,
         err_consumer: ErrConsumerStatus::No,
         macro_fn: false,
@@ -244,6 +313,7 @@ pub const BUILTIN_REGISTRY: &[BuiltinSpec] = &[
     BuiltinSpec {
         name: "INPUT",
         signature: "INPUT(prompt?) -> STRING",
+        sig: Some(BuiltinSig::ret_only(SigTy::String)),
         group: BuiltinGroup::Io,
         err_consumer: ErrConsumerStatus::No,
         macro_fn: false,
@@ -255,6 +325,7 @@ pub const BUILTIN_REGISTRY: &[BuiltinSpec] = &[
     BuiltinSpec {
         name: "LEN",
         signature: "LEN(coll) -> INTEGER",
+        sig: Some(BuiltinSig::ret_only(SigTy::Integer)),
         group: BuiltinGroup::Conv,
         err_consumer: ErrConsumerStatus::No,
         macro_fn: false,
@@ -265,6 +336,7 @@ pub const BUILTIN_REGISTRY: &[BuiltinSpec] = &[
     BuiltinSpec {
         name: "STR",
         signature: "STR(x) -> STRING",
+        sig: Some(BuiltinSig::ret_only(SigTy::String)),
         group: BuiltinGroup::Conv,
         err_consumer: ErrConsumerStatus::No,
         macro_fn: false,
@@ -275,6 +347,7 @@ pub const BUILTIN_REGISTRY: &[BuiltinSpec] = &[
     BuiltinSpec {
         name: "INT",
         signature: "INT(s) -> OK(INTEGER) / ERR(ParseError)",
+        sig: Some(BuiltinSig::ret_only(SigTy::Result)),
         group: BuiltinGroup::Conv,
         err_consumer: ErrConsumerStatus::No,
         macro_fn: false,
@@ -285,6 +358,7 @@ pub const BUILTIN_REGISTRY: &[BuiltinSpec] = &[
     BuiltinSpec {
         name: "FLOAT",
         signature: "FLOAT(s) -> OK(FLOAT) / ERR(ParseError)",
+        sig: Some(BuiltinSig::ret_only(SigTy::Result)),
         group: BuiltinGroup::Conv,
         err_consumer: ErrConsumerStatus::No,
         macro_fn: false,
@@ -295,6 +369,7 @@ pub const BUILTIN_REGISTRY: &[BuiltinSpec] = &[
     BuiltinSpec {
         name: "TYPE",
         signature: "TYPE(x) -> STRING (RESULT -> \"RESULT\")",
+        sig: None,
         group: BuiltinGroup::Conv,
         err_consumer: ErrConsumerStatus::Yes,
         macro_fn: true,
@@ -305,6 +380,7 @@ pub const BUILTIN_REGISTRY: &[BuiltinSpec] = &[
     BuiltinSpec {
         name: "BOOL",
         signature: "BOOL(x) -> BOOLEAN",
+        sig: Some(BuiltinSig::ret_only(SigTy::Boolean)),
         group: BuiltinGroup::Conv,
         // v0.6 §8.3 + Appendix B.17: BOOL is registered as an ERR
         // consumer so `BOOL(ERR(...))` returns a BOOLEAN instead of
@@ -318,6 +394,7 @@ pub const BUILTIN_REGISTRY: &[BuiltinSpec] = &[
     BuiltinSpec {
         name: "CALL",
         signature: "CALL(fn, args...) -> v",
+        sig: Some(BuiltinSig::ret_only(SigTy::Dynamic)),
         group: BuiltinGroup::Conv,
         err_consumer: ErrConsumerStatus::No,
         macro_fn: false,
@@ -329,6 +406,7 @@ pub const BUILTIN_REGISTRY: &[BuiltinSpec] = &[
     BuiltinSpec {
         name: "IS_OK",
         signature: "IS_OK(x) -> BOOLEAN",
+        sig: None,
         group: BuiltinGroup::Result,
         err_consumer: ErrConsumerStatus::Yes,
         macro_fn: true,
@@ -339,6 +417,7 @@ pub const BUILTIN_REGISTRY: &[BuiltinSpec] = &[
     BuiltinSpec {
         name: "IS_ERR",
         signature: "IS_ERR(x) -> BOOLEAN",
+        sig: None,
         group: BuiltinGroup::Result,
         err_consumer: ErrConsumerStatus::Yes,
         macro_fn: true,
@@ -349,6 +428,7 @@ pub const BUILTIN_REGISTRY: &[BuiltinSpec] = &[
     BuiltinSpec {
         name: "OR_DIE",
         signature: "OR_DIE(x, default) -> v (v0.3 alias)",
+        sig: None,
         group: BuiltinGroup::Result,
         err_consumer: ErrConsumerStatus::Yes,
         macro_fn: true,
@@ -359,6 +439,7 @@ pub const BUILTIN_REGISTRY: &[BuiltinSpec] = &[
     BuiltinSpec {
         name: "UNWRAP_OR",
         signature: "UNWRAP_OR(x, default) -> v",
+        sig: None,
         group: BuiltinGroup::Result,
         err_consumer: ErrConsumerStatus::Yes,
         macro_fn: true,
@@ -369,6 +450,7 @@ pub const BUILTIN_REGISTRY: &[BuiltinSpec] = &[
     BuiltinSpec {
         name: "UNWRAP",
         signature: "UNWRAP(x) -> v / PANIC",
+        sig: None,
         group: BuiltinGroup::Result,
         err_consumer: ErrConsumerStatus::Yes,
         macro_fn: false,
@@ -379,6 +461,7 @@ pub const BUILTIN_REGISTRY: &[BuiltinSpec] = &[
     BuiltinSpec {
         name: "ERR_PAYLOAD",
         signature: "ERR_PAYLOAD(x) -> e / E0030",
+        sig: None,
         group: BuiltinGroup::Result,
         err_consumer: ErrConsumerStatus::Yes,
         macro_fn: false,
@@ -389,6 +472,7 @@ pub const BUILTIN_REGISTRY: &[BuiltinSpec] = &[
     BuiltinSpec {
         name: "WRAP",
         signature: "WRAP(err, ctx) -> ERR / OK",
+        sig: None,
         group: BuiltinGroup::Result,
         err_consumer: ErrConsumerStatus::Yes,
         macro_fn: false,
@@ -399,6 +483,7 @@ pub const BUILTIN_REGISTRY: &[BuiltinSpec] = &[
     BuiltinSpec {
         name: "TRY",
         signature: "TRY(e) -> v / early-RETURN",
+        sig: None,
         group: BuiltinGroup::Result,
         err_consumer: ErrConsumerStatus::Yes,
         macro_fn: true,
@@ -409,6 +494,7 @@ pub const BUILTIN_REGISTRY: &[BuiltinSpec] = &[
     BuiltinSpec {
         name: "PANIC",
         signature: "PANIC(msg) -> 终止",
+        sig: None,
         group: BuiltinGroup::Result,
         err_consumer: ErrConsumerStatus::Na,
         macro_fn: true,
@@ -419,6 +505,7 @@ pub const BUILTIN_REGISTRY: &[BuiltinSpec] = &[
     BuiltinSpec {
         name: "OK",
         signature: "OK(v) -> RESULT",
+        sig: None,
         group: BuiltinGroup::Result,
         err_consumer: ErrConsumerStatus::No,
         macro_fn: true,
@@ -429,6 +516,7 @@ pub const BUILTIN_REGISTRY: &[BuiltinSpec] = &[
     BuiltinSpec {
         name: "EXPECT_ERR",
         signature: "EXPECT_ERR(expr) -> OK(payload) / ERR(E0049)",
+        sig: None,
         group: BuiltinGroup::Result,
         err_consumer: ErrConsumerStatus::Yes,
         macro_fn: true,
@@ -439,6 +527,7 @@ pub const BUILTIN_REGISTRY: &[BuiltinSpec] = &[
     BuiltinSpec {
         name: "ERR",
         signature: "ERR(e) -> RESULT",
+        sig: None,
         group: BuiltinGroup::Result,
         err_consumer: ErrConsumerStatus::No,
         macro_fn: true,
@@ -450,6 +539,7 @@ pub const BUILTIN_REGISTRY: &[BuiltinSpec] = &[
     BuiltinSpec {
         name: "IF",
         signature: "IF(cond, t, e?) -> v",
+        sig: None,
         group: BuiltinGroup::Control,
         // v0.6 §6.1 + §8.3: IF is a partial ERR consumer at the
         // condition position; ERR → goes to else branch (or
@@ -464,6 +554,7 @@ pub const BUILTIN_REGISTRY: &[BuiltinSpec] = &[
     BuiltinSpec {
         name: "WHILE",
         signature: "WHILE(cond, body) -> v",
+        sig: None,
         group: BuiltinGroup::Control,
         err_consumer: ErrConsumerStatus::No,
         macro_fn: true,
@@ -474,6 +565,7 @@ pub const BUILTIN_REGISTRY: &[BuiltinSpec] = &[
     BuiltinSpec {
         name: "FOR",
         signature: "FOR(var, iter, body) -> NULL",
+        sig: None,
         group: BuiltinGroup::Control,
         err_consumer: ErrConsumerStatus::No,
         macro_fn: true,
@@ -484,6 +576,7 @@ pub const BUILTIN_REGISTRY: &[BuiltinSpec] = &[
     BuiltinSpec {
         name: "MATCH",
         signature: "MATCH(v, clauses, default?) -> v",
+        sig: None,
         group: BuiltinGroup::Control,
         err_consumer: ErrConsumerStatus::No,
         macro_fn: true,
@@ -494,6 +587,7 @@ pub const BUILTIN_REGISTRY: &[BuiltinSpec] = &[
     BuiltinSpec {
         name: "RETURN",
         signature: "RETURN(v?) -> 早返",
+        sig: None,
         group: BuiltinGroup::Control,
         err_consumer: ErrConsumerStatus::Na,
         macro_fn: true,
@@ -504,6 +598,7 @@ pub const BUILTIN_REGISTRY: &[BuiltinSpec] = &[
     BuiltinSpec {
         name: "BREAK",
         signature: "BREAK() -> 跳出",
+        sig: None,
         group: BuiltinGroup::Control,
         err_consumer: ErrConsumerStatus::Na,
         macro_fn: true,
@@ -514,6 +609,7 @@ pub const BUILTIN_REGISTRY: &[BuiltinSpec] = &[
     BuiltinSpec {
         name: "CONTINUE",
         signature: "CONTINUE() -> 跳到下轮",
+        sig: None,
         group: BuiltinGroup::Control,
         err_consumer: ErrConsumerStatus::Na,
         macro_fn: true,
@@ -524,6 +620,7 @@ pub const BUILTIN_REGISTRY: &[BuiltinSpec] = &[
     BuiltinSpec {
         name: "AND",
         signature: "AND(a, b) -> BOOLEAN (short-circuit)",
+        sig: Some(BuiltinSig::ret_only(SigTy::Boolean)),
         group: BuiltinGroup::Control,
         err_consumer: ErrConsumerStatus::No,
         macro_fn: true,
@@ -534,6 +631,7 @@ pub const BUILTIN_REGISTRY: &[BuiltinSpec] = &[
     BuiltinSpec {
         name: "OR",
         signature: "OR(a, b) -> BOOLEAN (short-circuit)",
+        sig: Some(BuiltinSig::ret_only(SigTy::Boolean)),
         group: BuiltinGroup::Control,
         err_consumer: ErrConsumerStatus::No,
         macro_fn: true,
@@ -544,6 +642,7 @@ pub const BUILTIN_REGISTRY: &[BuiltinSpec] = &[
     BuiltinSpec {
         name: "NOT",
         signature: "NOT(a) -> BOOLEAN (取反)",
+        sig: Some(BuiltinSig::ret_only(SigTy::Boolean)),
         group: BuiltinGroup::Control,
         err_consumer: ErrConsumerStatus::No,
         macro_fn: true,
@@ -555,6 +654,7 @@ pub const BUILTIN_REGISTRY: &[BuiltinSpec] = &[
     BuiltinSpec {
         name: "==",
         signature: "=(a, b) -> BOOLEAN / ERR 透传",
+        sig: Some(BuiltinSig::ret_only(SigTy::Boolean)),
         group: BuiltinGroup::Op,
         err_consumer: ErrConsumerStatus::No,
         macro_fn: false,
@@ -565,6 +665,7 @@ pub const BUILTIN_REGISTRY: &[BuiltinSpec] = &[
     BuiltinSpec {
         name: "!=",
         signature: "!(a, b) -> BOOLEAN / ERR 透传",
+        sig: Some(BuiltinSig::ret_only(SigTy::Boolean)),
         group: BuiltinGroup::Op,
         err_consumer: ErrConsumerStatus::No,
         macro_fn: false,
@@ -575,6 +676,7 @@ pub const BUILTIN_REGISTRY: &[BuiltinSpec] = &[
     BuiltinSpec {
         name: ">",
         signature: ">(a, b) -> BOOLEAN / ERR 透传",
+        sig: Some(BuiltinSig::ret_only(SigTy::Boolean)),
         group: BuiltinGroup::Op,
         err_consumer: ErrConsumerStatus::No,
         macro_fn: false,
@@ -585,6 +687,7 @@ pub const BUILTIN_REGISTRY: &[BuiltinSpec] = &[
     BuiltinSpec {
         name: "<",
         signature: "<(a, b) -> BOOLEAN / ERR 透传",
+        sig: Some(BuiltinSig::ret_only(SigTy::Boolean)),
         group: BuiltinGroup::Op,
         err_consumer: ErrConsumerStatus::No,
         macro_fn: false,
@@ -595,6 +698,7 @@ pub const BUILTIN_REGISTRY: &[BuiltinSpec] = &[
     BuiltinSpec {
         name: ">=",
         signature: ">=(a, b) -> BOOLEAN / ERR 透传",
+        sig: Some(BuiltinSig::ret_only(SigTy::Boolean)),
         group: BuiltinGroup::Op,
         err_consumer: ErrConsumerStatus::No,
         macro_fn: false,
@@ -605,6 +709,7 @@ pub const BUILTIN_REGISTRY: &[BuiltinSpec] = &[
     BuiltinSpec {
         name: "<=",
         signature: "<=(a, b) -> BOOLEAN / ERR 透传",
+        sig: Some(BuiltinSig::ret_only(SigTy::Boolean)),
         group: BuiltinGroup::Op,
         err_consumer: ErrConsumerStatus::No,
         macro_fn: false,
@@ -615,6 +720,7 @@ pub const BUILTIN_REGISTRY: &[BuiltinSpec] = &[
     BuiltinSpec {
         name: "+",
         signature: "+(a, b) -> INTEGER / FLOAT",
+        sig: Some(BuiltinSig::ret_only(SigTy::Dynamic)),
         group: BuiltinGroup::Op,
         err_consumer: ErrConsumerStatus::No,
         macro_fn: false,
@@ -625,6 +731,7 @@ pub const BUILTIN_REGISTRY: &[BuiltinSpec] = &[
     BuiltinSpec {
         name: "-",
         signature: "-(a, b) -> INTEGER / FLOAT",
+        sig: Some(BuiltinSig::ret_only(SigTy::Dynamic)),
         group: BuiltinGroup::Op,
         err_consumer: ErrConsumerStatus::No,
         macro_fn: false,
@@ -635,6 +742,7 @@ pub const BUILTIN_REGISTRY: &[BuiltinSpec] = &[
     BuiltinSpec {
         name: "*",
         signature: "*(a, b) -> INTEGER / FLOAT",
+        sig: Some(BuiltinSig::ret_only(SigTy::Dynamic)),
         group: BuiltinGroup::Op,
         err_consumer: ErrConsumerStatus::No,
         macro_fn: false,
@@ -645,6 +753,7 @@ pub const BUILTIN_REGISTRY: &[BuiltinSpec] = &[
     BuiltinSpec {
         name: "/",
         signature: "/(a, b) -> INTEGER / FLOAT",
+        sig: Some(BuiltinSig::ret_only(SigTy::Dynamic)),
         group: BuiltinGroup::Op,
         err_consumer: ErrConsumerStatus::No,
         macro_fn: false,
@@ -655,6 +764,7 @@ pub const BUILTIN_REGISTRY: &[BuiltinSpec] = &[
     BuiltinSpec {
         name: "%",
         signature: "%(a, b) -> INTEGER",
+        sig: Some(BuiltinSig::ret_only(SigTy::Integer)),
         group: BuiltinGroup::Op,
         err_consumer: ErrConsumerStatus::No,
         macro_fn: false,
@@ -665,6 +775,7 @@ pub const BUILTIN_REGISTRY: &[BuiltinSpec] = &[
     BuiltinSpec {
         name: "&&",
         signature: "&&(a, b) -> BOOLEAN (v0.6 §4.3 short-circuit)",
+        sig: Some(BuiltinSig::ret_only(SigTy::Boolean)),
         group: BuiltinGroup::Op,
         // v0.6 §8.3: short-circuit `&&` consumes ERR — left-side
         // ERR propagates without evaluating `b`. The actual logic
@@ -679,6 +790,7 @@ pub const BUILTIN_REGISTRY: &[BuiltinSpec] = &[
     BuiltinSpec {
         name: "||",
         signature: "||(a, b) -> BOOLEAN (v0.6 §4.3 short-circuit)",
+        sig: Some(BuiltinSig::ret_only(SigTy::Boolean)),
         group: BuiltinGroup::Op,
         // v0.6 §8.3: short-circuit `||` consumes ERR — left-side
         // ERR propagates without evaluating `b`. The actual logic
@@ -692,6 +804,7 @@ pub const BUILTIN_REGISTRY: &[BuiltinSpec] = &[
     BuiltinSpec {
         name: "NEG",
         signature: "NEG(a) -> -a",
+        sig: Some(BuiltinSig::ret_only(SigTy::Dynamic)),
         group: BuiltinGroup::Op,
         err_consumer: ErrConsumerStatus::No,
         macro_fn: false,
@@ -703,6 +816,7 @@ pub const BUILTIN_REGISTRY: &[BuiltinSpec] = &[
     BuiltinSpec {
         name: "PUSH",
         signature: "PUSH(arr, x) -> ARRAY",
+        sig: Some(BuiltinSig::ret_only(SigTy::Array)),
         group: BuiltinGroup::Array,
         err_consumer: ErrConsumerStatus::No,
         macro_fn: false,
@@ -713,6 +827,7 @@ pub const BUILTIN_REGISTRY: &[BuiltinSpec] = &[
     BuiltinSpec {
         name: "POP",
         signature: "POP(d, k, default) -> v (v0.6 compat alias for AT_K; signature kept 3-arg)",
+        sig: Some(BuiltinSig::ret_only(SigTy::Dynamic)),
         group: BuiltinGroup::Dict,
         // v0.8 D8-001 deviation (was P4-B12-002): registry entry now
         // documents the actual 3-arg DICT semantics. Dispatch still routes
@@ -730,6 +845,7 @@ pub const BUILTIN_REGISTRY: &[BuiltinSpec] = &[
     BuiltinSpec {
         name: "AT_K",
         signature: "AT_K(d, k, default) -> v (v0.6 §10.4)",
+        sig: Some(BuiltinSig::ret_only(SigTy::Dynamic)),
         group: BuiltinGroup::Dict,
         err_consumer: ErrConsumerStatus::No,
         macro_fn: false,
@@ -740,6 +856,7 @@ pub const BUILTIN_REGISTRY: &[BuiltinSpec] = &[
     BuiltinSpec {
         name: "SHIFT",
         signature: "SHIFT(arr) -> ARRAY",
+        sig: Some(BuiltinSig::ret_only(SigTy::Array)),
         group: BuiltinGroup::Array,
         err_consumer: ErrConsumerStatus::No,
         macro_fn: false,
@@ -750,6 +867,7 @@ pub const BUILTIN_REGISTRY: &[BuiltinSpec] = &[
     BuiltinSpec {
         name: "UNSHIFT",
         signature: "UNSHIFT(arr, x) -> ARRAY",
+        sig: Some(BuiltinSig::ret_only(SigTy::Array)),
         group: BuiltinGroup::Array,
         err_consumer: ErrConsumerStatus::No,
         macro_fn: false,
@@ -760,6 +878,7 @@ pub const BUILTIN_REGISTRY: &[BuiltinSpec] = &[
     BuiltinSpec {
         name: "SLICE",
         signature: "SLICE(arr, start, end?) -> ARRAY",
+        sig: Some(BuiltinSig::ret_only(SigTy::Array)),
         group: BuiltinGroup::Array,
         err_consumer: ErrConsumerStatus::No,
         macro_fn: false,
@@ -770,6 +889,7 @@ pub const BUILTIN_REGISTRY: &[BuiltinSpec] = &[
     BuiltinSpec {
         name: "CONCAT",
         signature: "CONCAT(a, b) -> ARRAY",
+        sig: Some(BuiltinSig::ret_only(SigTy::Array)),
         group: BuiltinGroup::Array,
         err_consumer: ErrConsumerStatus::No,
         macro_fn: false,
@@ -780,6 +900,7 @@ pub const BUILTIN_REGISTRY: &[BuiltinSpec] = &[
     BuiltinSpec {
         name: "CONTAINS",
         signature: "CONTAINS(arr, x) -> BOOLEAN",
+        sig: Some(BuiltinSig::ret_only(SigTy::Boolean)),
         group: BuiltinGroup::Array,
         err_consumer: ErrConsumerStatus::No,
         macro_fn: false,
@@ -790,6 +911,7 @@ pub const BUILTIN_REGISTRY: &[BuiltinSpec] = &[
     BuiltinSpec {
         name: "INDEX",
         signature: "INDEX(arr, x) -> INTEGER / -1",
+        sig: Some(BuiltinSig::ret_only(SigTy::Integer)),
         group: BuiltinGroup::Array,
         err_consumer: ErrConsumerStatus::No,
         macro_fn: false,
@@ -800,6 +922,7 @@ pub const BUILTIN_REGISTRY: &[BuiltinSpec] = &[
     BuiltinSpec {
         name: "REVERSE",
         signature: "REVERSE(arr) -> ARRAY",
+        sig: Some(BuiltinSig::ret_only(SigTy::Array)),
         group: BuiltinGroup::Array,
         err_consumer: ErrConsumerStatus::No,
         macro_fn: false,
@@ -811,6 +934,7 @@ pub const BUILTIN_REGISTRY: &[BuiltinSpec] = &[
     BuiltinSpec {
         name: "REMOVE_KEY",
         signature: "REMOVE_KEY(dict, k) -> DICT",
+        sig: Some(BuiltinSig::ret_only(SigTy::Dict)),
         group: BuiltinGroup::Dict,
         err_consumer: ErrConsumerStatus::No,
         macro_fn: false,
@@ -821,6 +945,7 @@ pub const BUILTIN_REGISTRY: &[BuiltinSpec] = &[
     BuiltinSpec {
         name: "DEL",
         signature: "DEL(dict, k) -> DICT (v0.3 alias, W0051)",
+        sig: Some(BuiltinSig::ret_only(SigTy::Dict)),
         group: BuiltinGroup::Dict,
         err_consumer: ErrConsumerStatus::No,
         macro_fn: false,
@@ -831,6 +956,7 @@ pub const BUILTIN_REGISTRY: &[BuiltinSpec] = &[
     BuiltinSpec {
         name: "KEYS",
         signature: "KEYS(dict) -> ARRAY",
+        sig: Some(BuiltinSig::ret_only(SigTy::Array)),
         group: BuiltinGroup::Dict,
         err_consumer: ErrConsumerStatus::No,
         macro_fn: false,
@@ -841,6 +967,7 @@ pub const BUILTIN_REGISTRY: &[BuiltinSpec] = &[
     BuiltinSpec {
         name: "VALUES",
         signature: "VALUES(dict) -> ARRAY",
+        sig: Some(BuiltinSig::ret_only(SigTy::Array)),
         group: BuiltinGroup::Dict,
         err_consumer: ErrConsumerStatus::No,
         macro_fn: false,
@@ -851,6 +978,7 @@ pub const BUILTIN_REGISTRY: &[BuiltinSpec] = &[
     BuiltinSpec {
         name: "HAS",
         signature: "HAS(dict, k) -> BOOLEAN",
+        sig: Some(BuiltinSig::ret_only(SigTy::Boolean)),
         group: BuiltinGroup::Dict,
         err_consumer: ErrConsumerStatus::No,
         macro_fn: false,
@@ -861,6 +989,7 @@ pub const BUILTIN_REGISTRY: &[BuiltinSpec] = &[
     BuiltinSpec {
         name: "MERGE",
         signature: "MERGE(a, b) -> DICT",
+        sig: Some(BuiltinSig::ret_only(SigTy::Dict)),
         group: BuiltinGroup::Dict,
         err_consumer: ErrConsumerStatus::No,
         macro_fn: false,
@@ -872,6 +1001,7 @@ pub const BUILTIN_REGISTRY: &[BuiltinSpec] = &[
     BuiltinSpec {
         name: "INDEX_GET",
         signature: "INDEX_GET(coll, k) -> v / E0031",
+        sig: None,
         group: BuiltinGroup::Subscript,
         err_consumer: ErrConsumerStatus::No,
         macro_fn: false,
@@ -882,6 +1012,7 @@ pub const BUILTIN_REGISTRY: &[BuiltinSpec] = &[
     BuiltinSpec {
         name: "INDEX_SET",
         signature: "INDEX_SET(coll, k, v) -> NULL",
+        sig: None,
         group: BuiltinGroup::Subscript,
         err_consumer: ErrConsumerStatus::No,
         macro_fn: false,
@@ -892,6 +1023,7 @@ pub const BUILTIN_REGISTRY: &[BuiltinSpec] = &[
     BuiltinSpec {
         name: "AT",
         signature: "AT(coll, i) -> v",
+        sig: None,
         group: BuiltinGroup::Subscript,
         err_consumer: ErrConsumerStatus::No,
         macro_fn: false,
@@ -903,6 +1035,7 @@ pub const BUILTIN_REGISTRY: &[BuiltinSpec] = &[
     BuiltinSpec {
         name: "UPPER",
         signature: "UPPER(s) -> STRING",
+        sig: Some(BuiltinSig::ret_only(SigTy::String)),
         group: BuiltinGroup::String,
         err_consumer: ErrConsumerStatus::No,
         macro_fn: false,
@@ -913,6 +1046,7 @@ pub const BUILTIN_REGISTRY: &[BuiltinSpec] = &[
     BuiltinSpec {
         name: "LOWER",
         signature: "LOWER(s) -> STRING",
+        sig: Some(BuiltinSig::ret_only(SigTy::String)),
         group: BuiltinGroup::String,
         err_consumer: ErrConsumerStatus::No,
         macro_fn: false,
@@ -923,6 +1057,7 @@ pub const BUILTIN_REGISTRY: &[BuiltinSpec] = &[
     BuiltinSpec {
         name: "SUB",
         signature: "SUB(s, start, end?) -> STRING",
+        sig: Some(BuiltinSig::ret_only(SigTy::String)),
         group: BuiltinGroup::String,
         err_consumer: ErrConsumerStatus::No,
         macro_fn: false,
@@ -933,6 +1068,7 @@ pub const BUILTIN_REGISTRY: &[BuiltinSpec] = &[
     BuiltinSpec {
         name: "REPLACE",
         signature: "REPLACE(s, old, new) -> STRING",
+        sig: Some(BuiltinSig::ret_only(SigTy::String)),
         group: BuiltinGroup::String,
         err_consumer: ErrConsumerStatus::No,
         macro_fn: false,
@@ -943,6 +1079,7 @@ pub const BUILTIN_REGISTRY: &[BuiltinSpec] = &[
     BuiltinSpec {
         name: "SPLIT",
         signature: "SPLIT(s, sep) -> ARRAY",
+        sig: Some(BuiltinSig::ret_only(SigTy::Array)),
         group: BuiltinGroup::String,
         err_consumer: ErrConsumerStatus::No,
         macro_fn: false,
@@ -953,6 +1090,7 @@ pub const BUILTIN_REGISTRY: &[BuiltinSpec] = &[
     BuiltinSpec {
         name: "TRIM",
         signature: "TRIM(s) -> STRING",
+        sig: Some(BuiltinSig::ret_only(SigTy::String)),
         group: BuiltinGroup::String,
         err_consumer: ErrConsumerStatus::No,
         macro_fn: false,
@@ -963,6 +1101,7 @@ pub const BUILTIN_REGISTRY: &[BuiltinSpec] = &[
     BuiltinSpec {
         name: "TRIM_START",
         signature: "TRIM_START(s) -> STRING",
+        sig: Some(BuiltinSig::ret_only(SigTy::String)),
         group: BuiltinGroup::String,
         err_consumer: ErrConsumerStatus::No,
         macro_fn: false,
@@ -973,6 +1112,7 @@ pub const BUILTIN_REGISTRY: &[BuiltinSpec] = &[
     BuiltinSpec {
         name: "TRIM_END",
         signature: "TRIM_END(s) -> STRING",
+        sig: Some(BuiltinSig::ret_only(SigTy::String)),
         group: BuiltinGroup::String,
         err_consumer: ErrConsumerStatus::No,
         macro_fn: false,
@@ -983,6 +1123,7 @@ pub const BUILTIN_REGISTRY: &[BuiltinSpec] = &[
     BuiltinSpec {
         name: "STARTS_WITH",
         signature: "STARTS_WITH(s, pre) -> BOOLEAN",
+        sig: Some(BuiltinSig::ret_only(SigTy::Boolean)),
         group: BuiltinGroup::String,
         err_consumer: ErrConsumerStatus::No,
         macro_fn: false,
@@ -993,6 +1134,7 @@ pub const BUILTIN_REGISTRY: &[BuiltinSpec] = &[
     BuiltinSpec {
         name: "ENDS_WITH",
         signature: "ENDS_WITH(s, suf) -> BOOLEAN",
+        sig: Some(BuiltinSig::ret_only(SigTy::Boolean)),
         group: BuiltinGroup::String,
         err_consumer: ErrConsumerStatus::No,
         macro_fn: false,
@@ -1003,6 +1145,7 @@ pub const BUILTIN_REGISTRY: &[BuiltinSpec] = &[
     BuiltinSpec {
         name: "REPEAT",
         signature: "REPEAT(s, n) -> STRING",
+        sig: Some(BuiltinSig::ret_only(SigTy::String)),
         group: BuiltinGroup::String,
         err_consumer: ErrConsumerStatus::No,
         macro_fn: false,
@@ -1013,6 +1156,7 @@ pub const BUILTIN_REGISTRY: &[BuiltinSpec] = &[
     BuiltinSpec {
         name: "PAD_START",
         signature: "PAD_START(s, n, c?) -> STRING",
+        sig: Some(BuiltinSig::ret_only(SigTy::String)),
         group: BuiltinGroup::String,
         err_consumer: ErrConsumerStatus::No,
         macro_fn: false,
@@ -1023,6 +1167,7 @@ pub const BUILTIN_REGISTRY: &[BuiltinSpec] = &[
     BuiltinSpec {
         name: "PAD_END",
         signature: "PAD_END(s, n, c?) -> STRING",
+        sig: Some(BuiltinSig::ret_only(SigTy::String)),
         group: BuiltinGroup::String,
         err_consumer: ErrConsumerStatus::No,
         macro_fn: false,
@@ -1033,6 +1178,7 @@ pub const BUILTIN_REGISTRY: &[BuiltinSpec] = &[
     BuiltinSpec {
         name: "CODEPOINTS",
         signature: "CODEPOINTS(s) -> ARRAY",
+        sig: Some(BuiltinSig::ret_only(SigTy::Array)),
         group: BuiltinGroup::String,
         err_consumer: ErrConsumerStatus::No,
         macro_fn: false,
@@ -1043,6 +1189,7 @@ pub const BUILTIN_REGISTRY: &[BuiltinSpec] = &[
     BuiltinSpec {
         name: "FROM_CODEPOINTS",
         signature: "FROM_CODEPOINTS(arr) -> STRING",
+        sig: Some(BuiltinSig::ret_only(SigTy::String)),
         group: BuiltinGroup::String,
         err_consumer: ErrConsumerStatus::No,
         macro_fn: false,
@@ -1054,6 +1201,7 @@ pub const BUILTIN_REGISTRY: &[BuiltinSpec] = &[
     BuiltinSpec {
         name: "FORMAT",
         signature: "FORMAT(template, args...) -> STRING",
+        sig: Some(BuiltinSig::ret_only(SigTy::String)),
         group: BuiltinGroup::Format,
         err_consumer: ErrConsumerStatus::No,
         macro_fn: false,
@@ -1065,6 +1213,7 @@ pub const BUILTIN_REGISTRY: &[BuiltinSpec] = &[
     BuiltinSpec {
         name: "MODULE_REF",
         signature: "MODULE_REF(path) -> MODULE",
+        sig: None,
         group: BuiltinGroup::Module,
         err_consumer: ErrConsumerStatus::No,
         macro_fn: false,
@@ -1075,6 +1224,7 @@ pub const BUILTIN_REGISTRY: &[BuiltinSpec] = &[
     BuiltinSpec {
         name: "EXPORT",
         signature: "EXPORT(names) -> NULL",
+        sig: None,
         group: BuiltinGroup::Module,
         err_consumer: ErrConsumerStatus::Na,
         macro_fn: true,
@@ -1085,6 +1235,7 @@ pub const BUILTIN_REGISTRY: &[BuiltinSpec] = &[
     BuiltinSpec {
         name: "IMPORT",
         signature: "IMPORT(path, names, opts?) -> NULL",
+        sig: None,
         group: BuiltinGroup::Module,
         err_consumer: ErrConsumerStatus::Na,
         macro_fn: true,
@@ -1095,6 +1246,7 @@ pub const BUILTIN_REGISTRY: &[BuiltinSpec] = &[
     BuiltinSpec {
         name: "MODULE",
         signature: "MODULE(name?, body) -> NULL",
+        sig: None,
         group: BuiltinGroup::Module,
         err_consumer: ErrConsumerStatus::Na,
         macro_fn: true,
@@ -1115,6 +1267,7 @@ pub const BUILTIN_REGISTRY: &[BuiltinSpec] = &[
     BuiltinSpec {
         name: "CLASS",
         signature: "CLASS(name?, parent, members) -> CLASS",
+        sig: None,
         group: BuiltinGroup::Oop,
         err_consumer: ErrConsumerStatus::Na,
         macro_fn: true,
@@ -1125,6 +1278,7 @@ pub const BUILTIN_REGISTRY: &[BuiltinSpec] = &[
     BuiltinSpec {
         name: "NEW",
         signature: "NEW(cls, args...) -> INSTANCE",
+        sig: None,
         group: BuiltinGroup::Oop,
         err_consumer: ErrConsumerStatus::Na,
         macro_fn: true,
@@ -1135,6 +1289,7 @@ pub const BUILTIN_REGISTRY: &[BuiltinSpec] = &[
     BuiltinSpec {
         name: "THIS",
         signature: "THIS -> 当前实例",
+        sig: None,
         group: BuiltinGroup::Oop,
         err_consumer: ErrConsumerStatus::Na,
         macro_fn: true,
@@ -1146,6 +1301,7 @@ pub const BUILTIN_REGISTRY: &[BuiltinSpec] = &[
     BuiltinSpec {
         name: "GET_PROP",
         signature: "GET_PROP(obj, k) -> v / E0037",
+        sig: None,
         group: BuiltinGroup::Property,
         err_consumer: ErrConsumerStatus::No,
         macro_fn: false,
@@ -1156,6 +1312,7 @@ pub const BUILTIN_REGISTRY: &[BuiltinSpec] = &[
     BuiltinSpec {
         name: "SET_PROP",
         signature: "SET_PROP(obj, k, v) -> NULL",
+        sig: None,
         group: BuiltinGroup::Property,
         err_consumer: ErrConsumerStatus::No,
         macro_fn: false,
@@ -1166,6 +1323,7 @@ pub const BUILTIN_REGISTRY: &[BuiltinSpec] = &[
     BuiltinSpec {
         name: "CALL_METHOD",
         signature: "CALL_METHOD(obj, m, args...) -> v",
+        sig: None,
         group: BuiltinGroup::Property,
         err_consumer: ErrConsumerStatus::No,
         macro_fn: false,
@@ -1177,6 +1335,7 @@ pub const BUILTIN_REGISTRY: &[BuiltinSpec] = &[
     BuiltinSpec {
         name: "ARRAY",
         signature: "ARRAY(items...) / ARRAY()",
+        sig: Some(BuiltinSig::ret_only(SigTy::Array)),
         group: BuiltinGroup::Ctor,
         err_consumer: ErrConsumerStatus::No,
         macro_fn: true,
@@ -1187,6 +1346,7 @@ pub const BUILTIN_REGISTRY: &[BuiltinSpec] = &[
     BuiltinSpec {
         name: "DICT",
         signature: "DICT(pairs...) / DICT()",
+        sig: Some(BuiltinSig::ret_only(SigTy::Dict)),
         group: BuiltinGroup::Ctor,
         err_consumer: ErrConsumerStatus::No,
         macro_fn: true,
@@ -1201,6 +1361,7 @@ pub const BUILTIN_REGISTRY: &[BuiltinSpec] = &[
     BuiltinSpec {
         name: "SCOPE",
         signature: "SCOPE(fn) -> v",
+        sig: None,
         group: BuiltinGroup::Concurrent,
         err_consumer: ErrConsumerStatus::No,
         macro_fn: false,
@@ -1211,6 +1372,7 @@ pub const BUILTIN_REGISTRY: &[BuiltinSpec] = &[
     BuiltinSpec {
         name: "SPAWN",
         signature: "SPAWN(fn) -> TASK",
+        sig: None,
         group: BuiltinGroup::Concurrent,
         err_consumer: ErrConsumerStatus::No,
         macro_fn: false,
@@ -1221,6 +1383,7 @@ pub const BUILTIN_REGISTRY: &[BuiltinSpec] = &[
     BuiltinSpec {
         name: "AWAIT",
         signature: "AWAIT(task) -> v",
+        sig: None,
         group: BuiltinGroup::Concurrent,
         err_consumer: ErrConsumerStatus::No,
         macro_fn: false,
@@ -1231,6 +1394,7 @@ pub const BUILTIN_REGISTRY: &[BuiltinSpec] = &[
     BuiltinSpec {
         name: "YIELD",
         signature: "YIELD() -> NULL",
+        sig: None,
         group: BuiltinGroup::Concurrent,
         err_consumer: ErrConsumerStatus::No,
         macro_fn: false,
@@ -1241,6 +1405,7 @@ pub const BUILTIN_REGISTRY: &[BuiltinSpec] = &[
     BuiltinSpec {
         name: "TASK_CURRENT",
         signature: "TASK_CURRENT() -> TASK",
+        sig: None,
         group: BuiltinGroup::Concurrent,
         err_consumer: ErrConsumerStatus::No,
         macro_fn: false,
@@ -1251,6 +1416,7 @@ pub const BUILTIN_REGISTRY: &[BuiltinSpec] = &[
     BuiltinSpec {
         name: "TASK_IS_CANCELLED",
         signature: "TASK_IS_CANCELLED() -> BOOLEAN",
+        sig: None,
         group: BuiltinGroup::Concurrent,
         err_consumer: ErrConsumerStatus::No,
         macro_fn: false,
@@ -1261,6 +1427,7 @@ pub const BUILTIN_REGISTRY: &[BuiltinSpec] = &[
     BuiltinSpec {
         name: "TASK_CANCEL",
         signature: "TASK_CANCEL(task, reason?) -> NULL",
+        sig: None,
         group: BuiltinGroup::Concurrent,
         err_consumer: ErrConsumerStatus::No,
         macro_fn: false,
@@ -1271,6 +1438,7 @@ pub const BUILTIN_REGISTRY: &[BuiltinSpec] = &[
     BuiltinSpec {
         name: "TASK_CANCEL_PARENT",
         signature: "TASK_CANCEL_PARENT(reason?) -> NULL",
+        sig: None,
         group: BuiltinGroup::Concurrent,
         err_consumer: ErrConsumerStatus::No,
         macro_fn: false,
@@ -1281,6 +1449,7 @@ pub const BUILTIN_REGISTRY: &[BuiltinSpec] = &[
     BuiltinSpec {
         name: "SHIELD",
         signature: "SHIELD(fn) -> v",
+        sig: None,
         group: BuiltinGroup::Concurrent,
         err_consumer: ErrConsumerStatus::No,
         macro_fn: false,
@@ -1291,6 +1460,7 @@ pub const BUILTIN_REGISTRY: &[BuiltinSpec] = &[
     BuiltinSpec {
         name: "CHANNEL_NEW",
         signature: "CHANNEL_NEW(buf) -> CHANNEL",
+        sig: None,
         group: BuiltinGroup::Concurrent,
         err_consumer: ErrConsumerStatus::No,
         macro_fn: false,
@@ -1301,6 +1471,7 @@ pub const BUILTIN_REGISTRY: &[BuiltinSpec] = &[
     BuiltinSpec {
         name: "CHANNEL_CLOSE",
         signature: "CHANNEL_CLOSE(ch) -> NULL",
+        sig: None,
         group: BuiltinGroup::Concurrent,
         err_consumer: ErrConsumerStatus::No,
         macro_fn: false,
@@ -1311,6 +1482,7 @@ pub const BUILTIN_REGISTRY: &[BuiltinSpec] = &[
     BuiltinSpec {
         name: "CHANNEL_SEND",
         signature: "CHANNEL_SEND(ch, v) -> NULL",
+        sig: None,
         group: BuiltinGroup::Concurrent,
         err_consumer: ErrConsumerStatus::No,
         macro_fn: false,
@@ -1321,6 +1493,7 @@ pub const BUILTIN_REGISTRY: &[BuiltinSpec] = &[
     BuiltinSpec {
         name: "CHANNEL_RECV",
         signature: "CHANNEL_RECV(ch) -> v / ERR(ChannelClosed)",
+        sig: None,
         group: BuiltinGroup::Concurrent,
         err_consumer: ErrConsumerStatus::No,
         macro_fn: false,
@@ -1331,6 +1504,7 @@ pub const BUILTIN_REGISTRY: &[BuiltinSpec] = &[
     BuiltinSpec {
         name: "CHANNEL_TRY_SEND",
         signature: "CHANNEL_TRY_SEND(ch, v) -> BOOLEAN",
+        sig: None,
         group: BuiltinGroup::Concurrent,
         err_consumer: ErrConsumerStatus::No,
         macro_fn: false,
@@ -1341,6 +1515,7 @@ pub const BUILTIN_REGISTRY: &[BuiltinSpec] = &[
     BuiltinSpec {
         name: "CHANNEL_TRY_RECV",
         signature: "CHANNEL_TRY_RECV(ch) -> v / NULL / ERR(ChannelClosed)",
+        sig: None,
         group: BuiltinGroup::Concurrent,
         err_consumer: ErrConsumerStatus::No,
         macro_fn: false,
@@ -1351,6 +1526,7 @@ pub const BUILTIN_REGISTRY: &[BuiltinSpec] = &[
     BuiltinSpec {
         name: "CHANNEL_LEN",
         signature: "CHANNEL_LEN(ch) -> INTEGER",
+        sig: None,
         group: BuiltinGroup::Concurrent,
         err_consumer: ErrConsumerStatus::No,
         macro_fn: false,
@@ -1361,6 +1537,7 @@ pub const BUILTIN_REGISTRY: &[BuiltinSpec] = &[
     BuiltinSpec {
         name: "CHANNEL_CAP",
         signature: "CHANNEL_CAP(ch) -> INTEGER",
+        sig: None,
         group: BuiltinGroup::Concurrent,
         err_consumer: ErrConsumerStatus::No,
         macro_fn: false,
@@ -1376,6 +1553,18 @@ pub const BUILTIN_REGISTRY: &[BuiltinSpec] = &[
 /// 名字 -> 注册表条目。`O(N)` 线性扫描 (B11 88 条目,性能不是瓶颈)。
 pub fn lookup(name: &str) -> Option<&'static BuiltinSpec> {
     BUILTIN_REGISTRY.iter().find(|s| s.name == name)
+}
+
+/// 名字 -> 结构化签名(Step 5 · A6′)。
+///
+/// `None` = 该条目不在首批 60 条内,或返回类型本身就推不出来
+/// (如 `+` 的多态返回、`AT_K` 的 `-> v` 透传)。两种 `None` 对静态层
+/// 是**同一种**结果:落 `Ty::Dynamic`,不产生诊断。
+///
+/// 这是 `wlwl-eval` 暴露给静态层的**唯一**结构化入口 —— `wlwl-types`
+/// 不依赖本 crate(ADR-0020 Decision 1),映射由 `wlwl-cli` 那一层做。
+pub fn builtin_sig(name: &str) -> Option<BuiltinSig> {
+    lookup(name).and_then(|s| s.sig)
 }
 
 /// 所有 ERR 消费者名字(spec `err_consumer = Yes`)。
@@ -1541,6 +1730,257 @@ pub fn generate_appendix_g_md() -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    // ---- Step 5 (A6'): 首批结构化签名 ----
+
+    #[test]
+    fn appendix_g_regen_is_stable_and_ignores_the_structured_field() {
+        // `sig` 是**加法**字段:附录 G 生成器读的仍是 `signature` 文档串,
+        // 所以加 60 条结构化签名**不得**改变附录 G 的任何一字节。
+        //
+        // 锁法:生成两次必须逐字节相同(纯函数),且生成的表格行数仍等于
+        // 注册表条数 —— 少一行就说明生成器读错了字段。
+        let a = generate_appendix_g_md();
+        let b = generate_appendix_g_md();
+        assert_eq!(a, b, "generate_appendix_g_md must be deterministic");
+
+        // 每一行都带文档签名;结构化字段不参与渲染。
+        for s in BUILTIN_REGISTRY {
+            assert!(a.contains(s.name), "appendix G lost the row for {}", s.name);
+        }
+        // 首批里带结构化签名的那条,文档签名原样出现在附录里。
+        assert!(a.contains("LEN(coll) -> INTEGER"));
+        assert!(a.contains("UPPER(s) -> STRING"));
+    }
+
+    #[test]
+    fn builtin_sig_batch1_covers_exactly_the_planned_entries() {
+        // 首批 = 60 条。**数字本身是锁**:计划 §3.5 定的是 ~40-60,
+        // 超 5 人日就削条目。锁定 60 意味着任何人扩到 61 条时,必须先
+        // 改这条断言并说明理由 —— 而不是悄悄扩大首批覆盖面。
+        let with_sig: Vec<&str> = BUILTIN_REGISTRY
+            .iter()
+            .filter(|s| s.sig.is_some())
+            .map(|s| s.name)
+            .collect();
+        assert_eq!(
+            with_sig.len(),
+            60,
+            "batch 1 must stay at 60 entries; got {:?}",
+            with_sig
+        );
+        // 反向:未结构化的条目必须显式是 `None`,不能靠「忘了写」。
+        let without: Vec<&str> = BUILTIN_REGISTRY
+            .iter()
+            .filter(|s| s.sig.is_none())
+            .map(|s| s.name)
+            .collect();
+        assert_eq!(without.len(), 50);
+    }
+
+    #[test]
+    fn builtin_sig_batch1_covers_the_groups_the_plan_named() {
+        // 计划点名的分组:算术 / 比较 / STRING / ARRAY / DICT /
+        // RESULT 消费者 / 控制流。首批必须**整组覆盖**这些,而不是
+        // 挑几个好看的。
+        let covered = |name: &str| builtin_sig(name).is_some();
+        for n in ["+", "-", "*", "/", "%", "==", "!=", ">", "<", ">=", "<="] {
+            assert!(covered(n), "Op group member {n} must be in batch 1");
+        }
+        for n in [
+            "UPPER",
+            "LOWER",
+            "SUB",
+            "REPLACE",
+            "SPLIT",
+            "TRIM",
+            "TRIM_START",
+            "TRIM_END",
+            "STARTS_WITH",
+            "ENDS_WITH",
+            "REPEAT",
+            "PAD_START",
+            "PAD_END",
+            "CODEPOINTS",
+            "FROM_CODEPOINTS",
+        ] {
+            assert!(covered(n), "String group member {n} must be in batch 1");
+        }
+        for n in [
+            "PUSH", "SHIFT", "UNSHIFT", "SLICE", "CONCAT", "CONTAINS", "INDEX", "REVERSE",
+        ] {
+            assert!(covered(n), "Array group member {n} must be in batch 1");
+        }
+        for n in [
+            "AT_K",
+            "POP",
+            "REMOVE_KEY",
+            "DEL",
+            "KEYS",
+            "VALUES",
+            "HAS",
+            "MERGE",
+        ] {
+            assert!(covered(n), "Dict group member {n} must be in batch 1");
+        }
+        for n in ["LEN", "STR", "INT", "FLOAT", "BOOL", "CALL"] {
+            assert!(covered(n), "Conv group member {n} must be in batch 1");
+        }
+        for n in ["AND", "OR", "NOT"] {
+            assert!(covered(n), "Control boolean member {n} must be in batch 1");
+        }
+    }
+
+    #[test]
+    fn builtin_sig_batch1_return_types_match_the_doc_signature() {
+        // 首批是**从 spec 附录 G 的文档串转写**过来的,所以每一条都必须
+        // 与同一条目的 `signature` 字符串自洽。锁住这个映射,是为了
+        // 防止以后有人改结构化字段却忘了同步文档串(或反之)。
+        let expected: &[(&str, SigTy)] = &[
+            ("LEN", SigTy::Integer),
+            ("STR", SigTy::String),
+            ("INT", SigTy::Result),
+            ("BOOL", SigTy::Boolean),
+            ("INPUT", SigTy::String),
+            ("PRINT", SigTy::Null),
+            ("UPPER", SigTy::String),
+            ("SPLIT", SigTy::Array),
+            ("STARTS_WITH", SigTy::Boolean),
+            ("CODEPOINTS", SigTy::Array),
+            ("PUSH", SigTy::Array),
+            ("CONTAINS", SigTy::Boolean),
+            ("INDEX", SigTy::Integer),
+            ("KEYS", SigTy::Array),
+            ("HAS", SigTy::Boolean),
+            ("MERGE", SigTy::Dict),
+            ("==", SigTy::Boolean),
+            (">=", SigTy::Boolean),
+            ("%", SigTy::Integer),
+            ("&&", SigTy::Boolean),
+            ("AND", SigTy::Boolean),
+            ("NOT", SigTy::Boolean),
+            ("FORMAT", SigTy::String),
+            ("ARRAY", SigTy::Array),
+            ("DICT", SigTy::Dict),
+        ];
+        for (name, ret) in expected {
+            let sig = builtin_sig(name).unwrap_or_else(|| panic!("{name} missing from batch 1"));
+            assert_eq!(sig.ret, *ret, "{name} return type");
+        }
+    }
+
+    #[test]
+    fn builtin_sig_params_are_always_unknown_in_batch1() {
+        // 首批**一律不检查形参**。可选形参(`SUB(s, start, end?)`)与
+        // 变长实参(`PRINT(args...)`)让任何精确元数表示都必然误报,与
+        // ADR-0020 的「不误报优先」冲突。锁死:首批不得偷偷带上形参。
+        for s in BUILTIN_REGISTRY.iter().filter(|s| s.sig.is_some()) {
+            assert!(
+                s.sig.expect("checked above").params.is_none(),
+                "{} must not carry params in batch 1",
+                s.name
+            );
+        }
+    }
+
+    #[test]
+    fn polymorphic_and_passthrough_returns_are_marked_dynamic() {
+        // 这几条**看起来**有确定返回类型,实际不是,必须留在 `Dynamic`:
+        // - `+` / `-` / `*` / `/`:spec 附录 G 写的是 `INTEGER / FLOAT
+        //   / STRING / ARRAY`(字符串拼接也走 `+`),多态。
+        // - `AT_K` / `POP`:文档串就是 `-> v`,取值透传。
+        // - `CALL` / `NEG`:同理。
+        for n in ["+", "-", "*", "/", "NEG", "AT_K", "POP", "CALL"] {
+            let sig = builtin_sig(n).unwrap_or_else(|| panic!("{n} is in batch 1"));
+            assert_eq!(sig.ret, SigTy::Dynamic, "{n} must stay Dynamic");
+        }
+    }
+
+    #[test]
+    fn doc_signature_column_is_never_emptied() {
+        // 结构化字段是**加法**:文档串一条都不能丢。附录 G 生成器
+        // (`generate_appendix_g_md`)读的仍是 `signature`。
+        for s in BUILTIN_REGISTRY {
+            assert!(
+                !s.signature.trim().is_empty(),
+                "{} lost its doc signature",
+                s.name
+            );
+        }
+    }
+
+    #[test]
+    fn unstructured_entries_stay_none_for_a_known_reason() {
+        // 未入首批的分组各有其理由,锁住名单防止「漏了」被当成 bug 顺手
+        // 补上(那会绕过 D-1 / 预算纪律):
+        // - Control 流程形(IF / WHILE / FOR / MATCH / RETURN / BREAK /
+        //   CONTINUE)与 Result 宏(IS_OK / IS_ERR / TRY / OR_DIE /
+        //   UNWRAP / UNWRAP_OR / ERR_PAYLOAD / OK / ERR / PANIC / WRAP /
+        //   EXPECT_ERR)由 parser 降级成 `Expr::*`,**根本不走
+        //   `Expr::Call`**,注册表签名对静态层无增益;
+        // - Subscript / Module / Oop / Property / Concurrent 共 30 条
+        //   留给后续批次。
+        for n in [
+            "IF",
+            "WHILE",
+            "FOR",
+            "MATCH",
+            "RETURN",
+            "BREAK",
+            "CONTINUE",
+            "IS_OK",
+            "IS_ERR",
+            "TRY",
+            "OR_DIE",
+            "UNWRAP",
+            "UNWRAP_OR",
+            "ERR_PAYLOAD",
+            "OK",
+            "ERR",
+            "PANIC",
+            "WRAP",
+            "EXPECT_ERR",
+        ] {
+            assert!(
+                builtin_sig(n).is_none(),
+                "{n} is lowered to an Expr node; a builtin sig would be dead weight"
+            );
+        }
+        for n in [
+            "INDEX_GET",
+            "INDEX_SET",
+            "AT",
+            "MODULE_REF",
+            "EXPORT",
+            "IMPORT",
+            "MODULE",
+            "CLASS",
+            "NEW",
+            "THIS",
+            "GET_PROP",
+            "SET_PROP",
+            "CALL_METHOD",
+            "SCOPE",
+            "SPAWN",
+            "AWAIT",
+            "YIELD",
+            "SHIELD",
+            "CHANNEL_NEW",
+            "CHANNEL_CLOSE",
+            "CHANNEL_SEND",
+            "CHANNEL_RECV",
+            "CHANNEL_TRY_SEND",
+            "CHANNEL_TRY_RECV",
+            "CHANNEL_LEN",
+            "CHANNEL_CAP",
+            "TASK_CURRENT",
+            "TASK_IS_CANCELLED",
+            "TASK_CANCEL",
+            "TASK_CANCEL_PARENT",
+        ] {
+            assert!(builtin_sig(n).is_none(), "{n} belongs to a later batch");
+        }
+    }
 
     #[test]
     fn registry_has_no_duplicate_names() {

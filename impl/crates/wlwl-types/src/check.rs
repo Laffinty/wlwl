@@ -23,6 +23,8 @@
 //! **不修改** `wlwl-eval` 的任何代码,`E0033` 的触发路径与语义完全不变
 //! (ADR-0020 S3)。
 
+use std::collections::HashMap;
+
 use wlwl_ast::{Expr, FunParam, Literal, Pattern, Span, StrPart};
 
 use crate::diag::{TypeDiag, TypeDiagKind};
@@ -34,25 +36,41 @@ use crate::ty::Ty;
 /// 调用方在 `gradual_typing = "off"` 时**不应调用本函数**(那才是
 /// 「零开销」的保证);`off` 档必须整条静态链路都不执行。
 pub fn check_program(expr: &Expr) -> Vec<TypeDiag> {
-    let mut checker = Checker::new();
+    check_program_with_builtins(expr, &HashMap::new())
+}
+
+/// 同 [`check_program`],但带一张**内建签名表**(Step 5 · A6′)。
+///
+/// 这条入口存在的理由是**分层**:内建签名住在 `wlwl-eval` 的注册表里,
+/// 而 ADR-0020 Decision 1 规定 `wlwl-eval` **不依赖** `wlwl-types`、
+/// 反之亦然。所以映射由同时依赖两者的 `wlwl-cli` 那一层完成,本 crate
+/// 只接受**已经转成 `Ty` 的**表。
+///
+/// 首批(A6′)未结构化的 50 条**不在表里** —— 它们等价于「查不到签名」,
+/// 静态层落 `Dynamic`、**不产生诊断**。
+pub fn check_program_with_builtins(expr: &Expr, builtins: &HashMap<String, Ty>) -> Vec<TypeDiag> {
+    let mut checker = Checker::new(builtins);
     checker.check_expr(expr, None);
     checker.diags
 }
 
-struct Checker {
+struct Checker<'a> {
     env: TypeEnv,
     diags: Vec<TypeDiag>,
     /// 当前函数的返回值注解栈。最内层生效 —— 嵌套函数的 `RETURN` 不会
     /// 被外层函数的注解误伤。
     returns: Vec<Ty>,
+    /// 内建签名表(Step 5 · A6′)。查不到 = 没有签名。
+    builtins: &'a HashMap<String, Ty>,
 }
 
-impl Checker {
-    fn new() -> Checker {
+impl<'a> Checker<'a> {
+    fn new(builtins: &'a HashMap<String, Ty>) -> Checker<'a> {
         Checker {
             env: TypeEnv::new(),
             diags: Vec::new(),
             returns: Vec::new(),
+            builtins,
         }
     }
 
@@ -428,24 +446,52 @@ impl Checker {
             };
         }
 
-        // 只有**本模块内可见、且带注解**的函数才有签名。内建与未知名字
-        // 一律 Dynamic —— A6′ 之前无从得知内建返回类型。
-        let (params, ret) = match self.env.lookup(name).cloned() {
-            Some(Ty::Fun { params, ret }) => (params, *ret),
-            _ => return Ty::Dynamic,
+        // 签名解析:**局部作用域优先**,其次内建签名表(A6′),最后 Dynamic。
+        //
+        // 遮蔽优先是必须的:spec §3.5 的 `allow_builtin_shadow` 允许用户
+        // 重新绑定内建名,此时内建签名**不适用**,否则会对用户的定义报错。
+        if let Some(local) = self.env.lookup(name).cloned() {
+            let Ty::Fun { params, ret } = local else {
+                // 局部绑定不是函数(普通变量被当函数调)——交给运行时报。
+                return Ty::Dynamic;
+            };
+            return self.check_call_with_sig(args, span, &params, *ret, true);
+        }
+        let Some(builtin) = self.builtins.get(name).cloned() else {
+            // 既无局部签名也无内建签名(首批未覆盖的 50 条 / 未知名字)。
+            return Ty::Dynamic;
         };
+        let Ty::Fun { params, ret } = builtin else {
+            return Ty::Dynamic;
+        };
+        // 内建首批只给返回类型,`params` 为空 → 逐位都拿不到期望,
+        // 实参各自独立推导,元数也不检查(可选形参与变长实参会让精确
+        // 元数必然误报,见 `wlwl-eval::registry::BuiltinSig::params`)。
+        self.check_call_with_sig(args, span, &params, *ret, false)
+    }
 
-        // A2′:实参按被调签名的形参类型**逐位下推**期望类型。必须在推导
+    /// 拿到签名后的共用路径:下推期望类型 → 推导实参 → 比对。
+    ///
+    /// `check_arity` 只对**局部**签名为真 —— 内建首批的形参未知,
+    /// 元数检查会误报(见调用点)。
+    fn check_call_with_sig(
+        &mut self,
+        args: &[Expr],
+        span: &Span,
+        params: &[Ty],
+        ret: Ty,
+        check_arity: bool,
+    ) -> Ty {
+        // A2′:实参按签名的形参类型**逐位下推**期望类型。必须在推导
         // 实参**之前**拿到签名 —— 字面量与容器字面量只有拿到期望类型才会
-        // 按期望定型。没有签名(内建 / 未知名字)时上面已返回,故此处必有。
-        // 元数不足时 `params.get(i)` 给出 `None`,不会越界。
+        // 按期望定型。元数不足时 `params.get(i)` 给出 `None`,不会越界。
         let arg_tys: Vec<Ty> = args
             .iter()
             .enumerate()
             .map(|(i, a)| self.check_expr(a, params.get(i)))
             .collect();
 
-        if params.len() != arg_tys.len() {
+        if check_arity && params.len() != arg_tys.len() {
             self.report(
                 TypeDiagKind::CallArityMismatch {
                     expected: params.len(),

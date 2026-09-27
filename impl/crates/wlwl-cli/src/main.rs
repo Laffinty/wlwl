@@ -556,6 +556,79 @@ fn load_manifest_gradual_typing(base_dir: &std::path::Path) -> GradualTypingSett
     manifest.gradual_typing()
 }
 
+/// [v0.10 Step 5 / ADR-0020 A6′] 内建签名表:名字 → `Ty::Fun` 签名。
+///
+/// `SigTy` → `Ty` 的映射规则:
+/// - 基类型一一对应;
+/// - 容器**无类型参数**(`ARRAY` / `DICT` 首批不带元素与键值类型,故取
+///   `Dynamic` 元素)—— 与运行时 `E0033` 那条路径 *deliberately deferred*
+///   的嵌套匹配保持同一档,不比运行时更激进;
+/// - `RESULT` 两侧都取 `Dynamic`(首批不建模 `OK` / `ERR` 载荷);
+/// - `SigTy::Dynamic` → `Ty::Dynamic`。
+///
+/// 首批(A6′)未结构化的 50 条**不进表** —— 「查不到」与「返回类型未知」
+/// 对静态层是同一种结果:落 `Dynamic`,不产生诊断。
+fn builtin_sig_table() -> std::collections::HashMap<String, wlwl_types::Ty> {
+    use wlwl_eval::registry::{builtin_sig, SigTy};
+    use wlwl_types::Ty;
+
+    let conv = |s: SigTy| -> Ty {
+        match s {
+            SigTy::Integer => Ty::Integer,
+            SigTy::Float => Ty::Float,
+            SigTy::String => Ty::String,
+            SigTy::Boolean => Ty::Boolean,
+            SigTy::Null => Ty::Null,
+            SigTy::Array => Ty::Array(Box::new(Ty::Dynamic)),
+            SigTy::Dict => Ty::Dict(Box::new(Ty::Dynamic), Box::new(Ty::Dynamic)),
+            SigTy::Result => Ty::Result(Box::new(Ty::Dynamic), Box::new(Ty::Dynamic)),
+            SigTy::Function => Ty::Fun {
+                params: vec![Ty::Dynamic],
+                ret: Box::new(Ty::Dynamic),
+            },
+            SigTy::Dynamic => Ty::Dynamic,
+        }
+    };
+
+    let mut table = std::collections::HashMap::new();
+    for spec in wlwl_eval::registry::BUILTIN_REGISTRY {
+        // 只收首批条目;`params` 恒为 `None`(可选形参 / 变长实参会让精确
+        // 元数必然误报,见 `BuiltinSig::params` 的文档)。
+        let Some(sig) = spec.sig else { continue };
+        let Some(params) = sig.params else {
+            // 无形参信息:只带返回类型。`params: []` 让静态层**跳过元数
+            // 检查**(见 `check_call_with_sig` 的 `check_arity`)但仍然
+            // 采用返回类型。
+            table.insert(
+                spec.name.to_string(),
+                Ty::Fun {
+                    params: Vec::new(),
+                    ret: Box::new(conv(sig.ret)),
+                },
+            );
+            continue;
+        };
+        table.insert(
+            spec.name.to_string(),
+            Ty::Fun {
+                params: params.iter().map(|p| conv(*p)).collect(),
+                ret: Box::new(conv(sig.ret)),
+            },
+        );
+    }
+    // `builtin_sig` 是注册表对外的唯一结构化入口;这里再过一次是为了
+    // 让「CLI 只用公开 API,不碰 BUILTIN_REGISTRY 内部结构」成立。
+    debug_assert_eq!(
+        table.len(),
+        wlwl_eval::registry::BUILTIN_REGISTRY
+            .iter()
+            .filter(|s| s.sig.is_some())
+            .count()
+    );
+    debug_assert!(table.contains_key("LEN") && builtin_sig("LEN").is_some());
+    table
+}
+
 /// [v0.10 Step 2 / ADR-0020 A3] The single static-check entry point,
 /// shared by `wlwl check` and `wlwl run`.
 ///
@@ -604,7 +677,16 @@ fn static_check_gate(
         _ => Severity::Error,
     };
 
-    let mut rendered: Vec<WlwlDiagnostic> = wlwl_types::check_program(ast)
+    // [v0.10 Step 5 / ADR-0020 A6′] 内建签名表。**只在开启时构建** ——
+    // `off` 档连表都不建,这是「默认零开销」的一部分。
+    //
+    // 映射放在 CLI 而不是 `wlwl-types` 里,是为了保住 ADR-0020
+    // Decision 1 的分层:内建签名住在 `wlwl-eval` 的注册表,而
+    // `wlwl-eval` 不依赖 `wlwl-types`、反之亦然。CLI 是同时依赖两者的
+    // 那一层,所以它是唯一能同时看见 `SigTy` 与 `Ty` 的地方。
+    let builtins = builtin_sig_table();
+
+    let mut rendered: Vec<WlwlDiagnostic> = wlwl_types::check_program_with_builtins(ast, &builtins)
         .iter()
         .filter_map(|d| d.to_diagnostic(severity))
         .collect();
@@ -862,6 +944,104 @@ mod tests {
         let p = write_tmp("LET(x, 1);", "check.wll");
         let code = run_file(&p, OutputFormat::Human, false);
         assert_eq!(code, ExitCode::SUCCESS);
+    }
+
+    // -- v0.10 Step 5 (A6′): 内建结构化签名真的接上了 -------------------
+
+    /// `LEN` 在首批内(返回 `INTEGER`),所以把它接到 `STRING` 注解上必报。
+    /// 这条在 Step 5 之前**不会**报 —— 当时内建一律落 `Dynamic`。
+    #[test]
+    fn a6p_structured_builtin_signature_takes_effect() {
+        let p = write_project(
+            "a6p_takes_effect",
+            "\"error\"",
+            "LET(x: STRING, LEN([1, 2]));",
+        );
+        assert_eq!(run_file(&p, OutputFormat::Human, false), ExitCode::from(1));
+        // 匹配的注解照常通过。
+        let ok = write_project(
+            "a6p_takes_effect_ok",
+            "\"error\"",
+            "LET(x: INTEGER, LEN([1, 2]));",
+        );
+        assert_eq!(run_file(&ok, OutputFormat::Human, false), ExitCode::SUCCESS);
+    }
+
+    /// 首批未覆盖的内建(这里取 `CHANNEL_LEN` —— Concurrent 组 17 条
+    /// 整体留给后续批次)**必须继续静默**。落 `Dynamic` = 不报。
+    #[test]
+    fn a6p_uncovered_builtins_stay_silent() {
+        for src in [
+            "LET(x: STRING, CHANNEL_LEN(ch));",
+            "LET(x: STRING, CHANNEL_NEW(0));",
+            "LET(x: INTEGER, GET_PROP(o, \"k\"));",
+            "LET(x: STRING, AT([1, 2], 0));",
+        ] {
+            let p = write_project("a6p_uncovered", "\"error\"", src);
+            assert_eq!(
+                run_file(&p, OutputFormat::Human, false),
+                ExitCode::SUCCESS,
+                "uncovered builtin must not be judged: {src}"
+            );
+        }
+    }
+
+    /// 用户重绑定内建名时(`allow_builtin_shadow` 的场景),静态层必须用
+    /// **用户的**签名,而不是注册表里的 —— 否则会对用户的定义报错。
+    #[test]
+    fn a6p_shadowed_builtin_uses_the_user_signature() {
+        let src = concat!(
+            "LET(LEN, FUN((x: STRING) : STRING, x)); ",
+            "LET(y: STRING, LEN(\"abc\"));"
+        );
+        let p = write_project("a6p_shadow_ok", "\"error\"", src);
+        assert_eq!(run_file(&p, OutputFormat::Human, false), ExitCode::SUCCESS);
+        // 用户的签名确实生效:传 INTEGER 就该报,尽管内建 `LEN` 收容器。
+        let bad = concat!(
+            "LET(LEN, FUN((x: STRING) : STRING, x)); ",
+            "LET(y: STRING, LEN(1));"
+        );
+        let p2 = write_project("a6p_shadow_bad", "\"error\"", bad);
+        assert_eq!(run_file(&p2, OutputFormat::Human, false), ExitCode::from(1));
+    }
+
+    /// 首批不检查内建元数 —— 可选形参(`SUB(s, start, end?)`)与变长
+    /// 实参(`PRINT(args...)`)让精确元数必然误报。
+    #[test]
+    fn a6p_builtin_arity_is_not_checked() {
+        for src in [
+            "PRINT();",
+            "PRINT(1, 2, 3, 4, 5);",
+            r#"LET(s, SUB("hello"));"#,
+            r#"LET(s, SUB("hello", 1));"#,
+            r#"LET(s, SUB("hello", 1, 3));"#,
+        ] {
+            let p = write_project("a6p_arity", "\"error\"", src);
+            assert_eq!(
+                run_file(&p, OutputFormat::Human, false),
+                ExitCode::SUCCESS,
+                "builtin arity must not be judged in batch 1: {src}"
+            );
+        }
+    }
+
+    /// `off` 档下整条静态链路都不执行 —— 连内建签名表都不该建。
+    /// 用一个「开启时必报」的夹具反证:`off` 仍过 = 门禁真的没跑。
+    #[test]
+    fn a6p_off_mode_does_not_consult_builtin_signatures() {
+        let src = "LET(x: STRING, LEN([1, 2]));";
+        for setting in ["\"off\"", "DEFAULT_NO_KEY"] {
+            let p = if setting == "DEFAULT_NO_KEY" {
+                write_tmp(src, "a6p_off_no_key.wll")
+            } else {
+                write_project("a6p_off", setting, src)
+            };
+            assert_eq!(
+                run_file(&p, OutputFormat::Human, false),
+                ExitCode::SUCCESS,
+                "off mode must not judge: {setting}"
+            );
+        }
     }
 
     #[test]

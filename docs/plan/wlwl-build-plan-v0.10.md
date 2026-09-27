@@ -379,18 +379,59 @@ ADR-0010 当年以「全程序类型推断 = triple the work」否决静态检�
 > 错误定型),但**键类型仍参与整体比较** —— 两头都不牺牲。
 
 
-### 3.5 A6′ — 注册表结构化签名(**分批**)
+### 3.5 A6' — 注册表结构化签名(**分批**)
+
+> **状态:首批完成(Step 5)。** 首批实做 **60 条**,落在计划给的 40–60 上沿。
 
 | 项 | 内容 |
 |----|------|
-| **目标** | `BuiltinSpec.signature` 由文档串升级为**结构化**(保留文档列);同步 `gen_appendix_g` |
-| **挂载点** | `wlwl-eval/src/registry.rs:44-70` 的 `BuiltinSpec`;`gen-appendix-g` |
-| **变更面** | `BuiltinSpec` 增加 `sig: Option<StructuredSig>`(或并列 `structured_signature` 字段);**保留** `signature: &'static str` 文档串;附录 G 生成器读结构化字段补全 |
-| **分批策略** | **首批**:高频内建(算术/比较/STRING/ARRAY/DICT/RESULT 消费者/控制流 ~40–60 条);其余显式 `Dynamic`/`None`,**不承诺 110 条一次完成** |
-| **预估人日** | **3–4 人日**(首批)+ 后续批次滚动(E4) |
-| **验收** | 首批条目锁测试(签名 ↔ 类型映射);`gen-appendix-g` 重生成无 diff 回归;未结构化条目行为不变 |
+| **目标** | `BuiltinSpec.signature` 由文档串升级为**结构化**(保留文档列) |
+| **挂载点** | `wlwl-eval/src/registry.rs` 的 `BuiltinSpec` |
+| **变更面** | `BuiltinSpec` 增加 `sig: Option<BuiltinSig>`;**保留** `signature: &'static str` 文档串;`wlwl-types` 加 `check_program_with_builtins`;`wlwl-cli` 做 `SigTy` 到 `Ty` 的映射 |
+| **分批策略** | **首批 = 60 条**:算术 / 比较 / STRING / ARRAY / DICT / Conv / 控制流布尔算子 / Format / Ctor / Io。其余 **50 条显式 `None`** |
+| **预估人日** | **3–4 人日**(首批);后续批次滚动(E4) |
+| **验收** | 首批条目锁测试;附录 G 重生成无 diff 回归;未结构化条目行为不变 |
+| **实测** | `builtin_sig_batch1_*`(5 项)+ `appendix_g_regen_is_stable_and_ignores_the_structured_field` + CLI 端到端 5 项 |
 
-> **风险**:注册表结构化工作量被低估 — 用分批 + `Dynamic` 回退控制;若首批超 **5 人日**,削减首批条目数,不延期本项类型。
+**实际交付 —— 三个由实测决定的设计**:
+
+1. **首批只给返回类型,一律不带形参**。spec 附录 G 大量条目有**可选形参**
+   (`SUB(s, start, end?)`、`POP(d, k, default)`)与**变长实参**
+   (`PRINT(args...)`),任何「精确元数」表示都会在这些条目上误报,与
+   「不误报优先」直接冲突。故 `BuiltinSig.params` 做成
+   `Option<&'static [SigTy]>`,首批**全部为 `None`** = 不做元数检查、
+   不检查形参类型。锁测试 `builtin_sig_params_are_always_unknown_in_batch1`
+   死守这一点,防止后人偷偷带上形参。
+2. **容器不带类型参数**。`ARRAY` / `DICT` 的元素与键值类型一律 `Dynamic` ——
+   嵌套泛型与数组元素匹配在运行时 `E0033` 那条路径上本来就是
+   *deliberately deferred*(`wlwl-eval/src/lib.rs:8588`),静态层首批
+   **不比运行时更激进**。
+3. **分层靠 CLI 而非新 crate**。内建签名住在 `wlwl-eval` 的注册表,
+   而 ADR-0020 Decision 1 规定 `wlwl-eval` 不依赖 `wlwl-types`、
+   反之亦然。映射只能落在**同时依赖两者**的 `wlwl-cli` 那一层;
+   `wlwl-types` 侧只接受**已转成 `Ty` 的表**。附带一条语义:
+   **局部绑定优先于内建表** —— `allow_builtin_shadow` 场景下用户定义赢,
+   否则会对用户的定义报错。
+
+**为什么这 50 条留 `None` 而不填**(锁测试 `unstructured_entries_stay_none_for_a_known_reason`
+逐条钉住名单,防止「漏了」被当成 bug 顺手补上):
+
+| 分组 | 条数 | 理由 |
+|------|------|------|
+| Control 流程形 + Result 宏 | 19 | 由 parser 降级成 `Expr::*`(`IF`/`WHILE`/`FOR`/`MATCH`/`RETURN`/`BREAK`/`CONTINUE`/`IS_OK`/`IS_ERR`/`TRY`/`OR_DIE`/`UNWRAP`/`UNWRAP_OR`/`ERR_PAYLOAD`/`OK`/`ERR`/`PANIC`/`WRAP`/`EXPECT_ERR`),**根本不走 `Expr::Call`**,注册表签名对静态层无增益;其中解包族已由 A4 在 `check_call` 特判覆盖 |
+| Concurrent | 17 | 整组留给后续批次;并发语义本版不深挖(§5 明确) |
+| Subscript / Module / Oop / Property | 13 | 留给后续批次;且 `GET_PROP` / `CALL_METHOD` / `AT_K` 类本身是取值透传,填了也是 `Dynamic` |
+
+**`gen_appendix_g` 未改动,且这是有意的**:结构化字段是**加法**,生成器读的
+仍是 `signature` 文档串,故附录 G 逐字节不变。要在附录 G 里增列结构化
+签名是 **Step 12(spec 派生)** 的事。锁测试
+`appendix_g_regen_is_stable_and_ignores_the_structured_field` 守住
+「加 60 条结构化签名不得改变附录 G 一个字节」。
+
+> **风险处置记录**:计划 §3.5 预置了「若首批超 **5 人日**,削减首批条目数」。
+> **未触发** —— 实做落在 3–4 人日预算内,60 条全量保留。降级路径仍然有效:
+> 后续批次若遇同样压力,按上表「整组留 `None`」的粒度削,不动首批。
+
 
 ### 3.6 P0-1 立项单汇总
 
@@ -665,11 +706,15 @@ ADR-0010 当年以「全程序类型推断 = triple the work」否决静态检�
    ├─ Ty::lub:IF / MATCH 分支合流(Dynamic 只稀释不收窄)
    └─ 锁测试:传播精度 / 新增检出 / lub 方向 / 不误报
       (异构容器静默与「每元素一条」的性质变化见 §3.4)
-[Step 5] impl:注册表结构化签名首批(A6′)
-   ├─ BuiltinSpec 增加结构化 sig 字段(保留文档串)
-   ├─ 首批 ~40-60 条高频内建
-   ├─ gen_appendix_g 同步
-   └─ 锁测试:builtin_sig_batch1 / appendix_g_regen_stable
+[Step 5] impl:注册表结构化签名首批(A6′)          ✅ 完成
+   ├─ BuiltinSpec 增加 sig 字段(保留文档串不动)
+   ├─ 首批 60 条:算术/比较/STRING/ARRAY/DICT/Conv
+   │  /控制流布尔算子/Format/Ctor/Io;其余 50 条显式 None
+   ├─ 首批只给返回类型,不带形参(可选形参/变长实参会误报)
+   ├─ SigTy -> Ty 映射落在 wlwl-cli(保住 ADR-0020 分层)
+   ├─ gen_appendix_g 未改动:结构化字段是加法,附录 G 逐字节不变
+   └─ 锁测试:builtin_sig_batch1_*(5) / appendix_g_regen_stable
+      / CLI 端到端 5 项(生效/未覆盖静默/遮蔽优先/不查元数/off 不建表)
 [Step 6] impl:模块签名 C1 + 可见性/SEALED C2
    ├─ 可选签名文件解析
    ├─ ModuleLoader 边界比对

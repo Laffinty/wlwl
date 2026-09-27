@@ -35,7 +35,7 @@ pub mod diag;
 pub mod env;
 pub mod ty;
 
-pub use check::check_program;
+pub use check::{check_program, check_program_with_builtins};
 pub use diag::{TypeDiag, TypeDiagKind};
 pub use env::TypeEnv;
 pub use ty::Ty;
