@@ -197,9 +197,25 @@ pub enum ErrorCode {
     //   [strict_deadlock_detect] true is set in wlwl.toml (then
     //   E0065 fires instead).
     W0066, // [v0.9 Step 5 / §5.3] large buf soft warning — emitted
-           //   by CHANNEL_NEW when the requested capacity exceeds a
-           //   soft threshold. Production code may set
-           //   [channel_large_buf_threshold = N] to silence or change.
+    //   by CHANNEL_NEW when the requested capacity exceeds a
+    //   soft threshold. Production code may set
+    //   [channel_large_buf_threshold = N] to silence or change.
+    // ── v0.10 Step 2 (ADR-0020 A3 / decision D-1): 静态契约段 ──
+    //
+    // 决策 D-1 选定「新建静态段 E0110+ / W0110+」,不占用
+    // E0030-E0039(该段 10/10 已被运行时类型 / 数值 / 集合语义占满)。
+    // 理由:一个码号只对应**一种**条件。编译期诊断与运行时 `E0033`
+    // (`strict_types`) 语义正交,复用会让同一码号随开关含义漂移,
+    // 「运行时码不变」这条 v0.10 兼容性承诺将无法验证。
+    //
+    // 配对约定:每个 E011x 都有同号的 W011x,`gradual_typing` =
+    // `error` 发 E 段、`warn` 发 W 段;`off` 两条都不发。
+    E0110, // 编译期注解失配(边界:形参 / LET 注解 vs 实际类型)
+    E0111, // 编译期调用失配(实参个数或第 n 个实参类型)
+    E0112, // 编译期返回类型失配(RETURN 值 vs 返回值注解)
+    W0110, // E0110 的 warn 档
+    W0111, // E0111 的 warn 档
+    W0112, // E0112 的 warn 档
 }
 
 impl ErrorCode {
@@ -291,6 +307,15 @@ impl ErrorCode {
             ErrorCode::W0054 => "W0054",
             ErrorCode::W0065 => "W0065",
             ErrorCode::W0066 => "W0066",
+            // [v0.10 Step 2 / ADR-0020 A3 / decision D-1] static
+            // contract segment — compile-time only, never emitted by
+            // the runtime.
+            ErrorCode::E0110 => "E0110",
+            ErrorCode::E0111 => "E0111",
+            ErrorCode::E0112 => "E0112",
+            ErrorCode::W0110 => "W0110",
+            ErrorCode::W0111 => "W0111",
+            ErrorCode::W0112 => "W0112",
         }
     }
 
@@ -315,6 +340,11 @@ impl ErrorCode {
                 | ErrorCode::W0054
                 | ErrorCode::W0065
                 | ErrorCode::W0066
+                // [v0.10 Step 2 / decision D-1] static contract
+                // segment. These are the `warn`档 of E0110-E0112.
+                | ErrorCode::W0110
+                | ErrorCode::W0111
+                | ErrorCode::W0112
         )
     }
 
@@ -457,6 +487,18 @@ impl ErrorCode {
             // [v0.9 Step 5 / §5.3] Large buf soft warning emitted
             // by CHANNEL_NEW. Bucket as Runtime.
             ErrorCode::W0066 => ErrorCategory::Runtime,
+            // [v0.10 Step 2 / ADR-0020 A3 / decision D-1] Static
+            // contract codes. Bucket as Type so existing Type-bucket
+            // consumers pick them up — but they are **compile-time**
+            // and never interleave with the runtime Type codes
+            // (E0030 / E0031 / E0033 ...), which is exactly what D-1
+            // bought: same routing, disjoint code space.
+            ErrorCode::E0110
+            | ErrorCode::E0111
+            | ErrorCode::E0112
+            | ErrorCode::W0110
+            | ErrorCode::W0111
+            | ErrorCode::W0112 => ErrorCategory::Type,
         }
     }
 
@@ -827,6 +869,18 @@ impl WlwlDiagnostic {
 
     pub fn with_source_line(mut self, line: impl Into<String>) -> Self {
         self.source_line = Some(line.into());
+        self
+    }
+
+    /// Override the severity.
+    ///
+    /// `new()` always starts at `Severity::Error` because every code that
+    /// reaches it used to be a hard error. The v0.10 static contract
+    /// segment (decision D-1) reuses the same diagnostic type for its
+    /// `warn` level (`W0110`-`W0112`), so the field needs a public
+    /// transition point.
+    pub fn with_severity(mut self, severity: Severity) -> Self {
+        self.severity = severity;
         self
     }
 
@@ -1659,8 +1713,12 @@ mod tests {
             ErrorCode::E0101,
             ErrorCode::E0102,
             ErrorCode::E1003,
+            // [v0.10 Step 2 / decision D-1] static contract segment.
+            ErrorCode::E0110,
+            ErrorCode::E0111,
+            ErrorCode::E0112,
         ];
-        assert_eq!(codes.len(), 58);
+        assert_eq!(codes.len(), 61);
         // Each code has a stable string form.
         for c in &codes {
             assert!(c.as_str().starts_with('E'));
@@ -1690,8 +1748,12 @@ mod tests {
             ErrorCode::W0054,
             ErrorCode::W0065,
             ErrorCode::W0066,
+            // [v0.10 Step 2 / decision D-1] static contract segment.
+            ErrorCode::W0110,
+            ErrorCode::W0111,
+            ErrorCode::W0112,
         ];
-        assert_eq!(codes.len(), 15);
+        assert_eq!(codes.len(), 18);
         for c in &codes {
             assert!(
                 c.is_warning(),

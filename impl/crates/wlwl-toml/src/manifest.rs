@@ -331,6 +331,87 @@ pub fn check_language_version(m: &Manifest) -> Result<(), VersionMismatch> {
     })
 }
 
+/// `[features] gradual_typing` 的三档取值(v0.10 Step 2 / ADR-0020 A3)。
+///
+/// 与运行时 `strict_types`(布尔)是**两个正交概念**:
+/// - `strict_types` = 运行时按 `TYPE` 名做顶层形状比对(ADR-0010),默认 `false`;
+/// - `gradual_typing` = 编译期静态 pass 的严重级(ADR-0020 A3),默认 `Off`。
+///
+/// 两者可同时开启,先静态拦、再运行时兜底;互不影响。
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub enum GradualTyping {
+    /// 不跑静态 pass(默认)。保证 v0.9 程序行为与性能完全不变。
+    #[default]
+    Off,
+    /// 跑静态 pass,失配发 `W0110`-`W0112`,不阻塞退出码。
+    Warn,
+    /// 跑静态 pass,失配发 `E0110`-`E0112`,阻塞退出码。
+    Error,
+}
+
+impl GradualTyping {
+    /// 清单里的规范拼写(与 `wlwl.toml` 写法一致)。
+    pub fn as_str(&self) -> &'static str {
+        match self {
+            GradualTyping::Off => "off",
+            GradualTyping::Warn => "warn",
+            GradualTyping::Error => "error",
+        }
+    }
+}
+
+/// `gradual_typing` 的读取结果 + 非法值回执。
+///
+/// 清单里写了无法识别的值时**回落 `Off` 而不是报错**:开关写错不该让程序
+/// 跑不起来(与 `strict_types` 的非布尔值回落 `false` 同一先例)。但回落
+/// 必须是**可见的** —— `invalid_value` 携带原始文本,调用方据此发一条
+/// 诊断,而不是静默吞掉用户的笔误。
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct GradualTypingSetting {
+    mode: GradualTyping,
+    invalid: Option<String>,
+}
+
+impl GradualTypingSetting {
+    /// 默认档(键缺失 / 合法取值均由此构造)。
+    fn resolved(mode: GradualTyping) -> GradualTypingSetting {
+        GradualTypingSetting {
+            mode,
+            invalid: None,
+        }
+    }
+
+    /// 非法值已回落到 `Off`,并携带原始文本。
+    fn rejected(raw: impl Into<String>) -> GradualTypingSetting {
+        GradualTypingSetting {
+            mode: GradualTyping::Off,
+            invalid: Some(raw.into()),
+        }
+    }
+
+    /// 生效档位。
+    pub fn mode(&self) -> GradualTyping {
+        self.mode
+    }
+
+    /// 是否需要跑静态 pass。`off` 时为 `false` —— 调用方据此**完全不调用**
+    /// checker,这是「默认零破坏、零开销」的实现点。
+    pub fn is_enabled(&self) -> bool {
+        self.mode != GradualTyping::Off
+    }
+
+    /// 清单里的非法值原文(已回落到 `off`);合法或缺省时为 `None`。
+    pub fn invalid_value(&self) -> Option<&str> {
+        self.invalid.as_deref()
+    }
+}
+
+impl Default for GradualTypingSetting {
+    fn default() -> GradualTypingSetting {
+        GradualTypingSetting::resolved(GradualTyping::Off)
+    }
+}
+
 impl Manifest {
     /// v0.4 §6.6 / §13.8 `[features] allow_builtin_shadow` flag
     /// (Phase C5). Defaults to `false` — shadowing a global builtin
@@ -363,6 +444,29 @@ impl Manifest {
             self.features.get("strict_types"),
             Some(toml::Value::Boolean(true))
         )
+    }
+
+    /// v0.10 Step 2 / ADR-0020 A3 `[features] gradual_typing` 开关。
+    ///
+    /// 取值 `"off"`(默认)/ `"warn"` / `"error"`,大小写与首尾空白不敏感。
+    /// **只读**:本方法不写回清单,也不碰依赖求解 / 锁文件 —— `wlwl-toml`
+    /// 的 manifest / lock / MVS 面按 ADR-0020 Decision 5 冻结。
+    ///
+    /// 非法值(非字符串、或不在三档之内)回落到 `Off` 并把原文放进
+    /// [`GradualTypingSetting::invalid_value`],由调用方发诊断。
+    pub fn gradual_typing(&self) -> GradualTypingSetting {
+        let Some(raw) = self.features.get("gradual_typing") else {
+            return GradualTypingSetting::default();
+        };
+        let Some(text) = raw.as_str() else {
+            return GradualTypingSetting::rejected(raw.to_string());
+        };
+        match text.trim().to_ascii_lowercase().as_str() {
+            "off" => GradualTypingSetting::resolved(GradualTyping::Off),
+            "warn" => GradualTypingSetting::resolved(GradualTyping::Warn),
+            "error" => GradualTypingSetting::resolved(GradualTyping::Error),
+            _ => GradualTypingSetting::rejected(text.to_string()),
+        }
     }
 
     /// v0.9 `[features] strict_deadlock_detect` (ADR-0017 §3.4).
@@ -954,5 +1058,116 @@ allow_builtin_shadow = true
         .unwrap();
         assert!(m.strict_types());
         assert!(m.allow_builtin_shadow());
+    }
+
+    // ---- v0.10 Step 2 (ADR-0020 A3 / decision D-1): gradual_typing ----
+
+    fn manifest_with_feature(value: &str) -> Manifest {
+        let src = format!(
+            r#"
+[package]
+name = "tiny"
+version = "0.0.1"
+entry = "main.wll"
+
+[features]
+gradual_typing = {value}
+"#
+        );
+        parse(&src).expect("manifest must parse")
+    }
+
+    #[test]
+    fn gradual_typing_defaults_to_off() {
+        let m = parse(
+            r#"
+[package]
+name = "tiny"
+version = "0.0.1"
+entry = "main.wll"
+"#,
+        )
+        .unwrap();
+        let setting = m.gradual_typing();
+        assert_eq!(setting.mode(), GradualTyping::Off);
+        assert!(!setting.is_enabled());
+        assert!(setting.invalid_value().is_none());
+    }
+
+    #[test]
+    fn gradual_typing_reads_all_three_levels() {
+        for (raw, expected, enabled) in [
+            ("\"off\"", GradualTyping::Off, false),
+            ("\"warn\"", GradualTyping::Warn, true),
+            ("\"error\"", GradualTyping::Error, true),
+        ] {
+            let setting = manifest_with_feature(raw).gradual_typing();
+            assert_eq!(setting.mode(), expected, "raw: {raw}");
+            assert_eq!(setting.is_enabled(), enabled, "raw: {raw}");
+            assert!(setting.invalid_value().is_none(), "raw: {raw}");
+        }
+    }
+
+    #[test]
+    fn gradual_typing_is_case_and_whitespace_insensitive() {
+        assert_eq!(
+            manifest_with_feature("\" WARN \"").gradual_typing().mode(),
+            GradualTyping::Warn
+        );
+        assert_eq!(
+            manifest_with_feature("\"Error\"").gradual_typing().mode(),
+            GradualTyping::Error
+        );
+    }
+
+    #[test]
+    fn gradual_typing_invalid_value_falls_back_to_off_but_reports() {
+        for raw in ["\"true\"", "\"loud\"", "\"\"", "1", "true"] {
+            let setting = manifest_with_feature(raw).gradual_typing();
+            assert_eq!(
+                setting.mode(),
+                GradualTyping::Off,
+                "must fall back to off for {raw}"
+            );
+            assert!(!setting.is_enabled(), "must stay disabled for {raw}");
+            assert!(
+                setting.invalid_value().is_some(),
+                "must report the rejected value for {raw}"
+            );
+        }
+    }
+
+    #[test]
+    fn gradual_typing_coexists_with_strict_types() {
+        // The two switches are orthogonal: compile-time pass severity
+        // and runtime cast check are independent settings.
+        let m = parse(
+            r#"
+[package]
+name = "tiny"
+version = "0.0.1"
+entry = "main.wll"
+
+[features]
+gradual_typing = "error"
+strict_types = true
+"#,
+        )
+        .unwrap();
+        assert_eq!(m.gradual_typing().mode(), GradualTyping::Error);
+        assert!(m.strict_types());
+    }
+
+    #[test]
+    fn gradual_typing_as_str_round_trips() {
+        for level in [
+            GradualTyping::Off,
+            GradualTyping::Warn,
+            GradualTyping::Error,
+        ] {
+            let setting =
+                manifest_with_feature(&format!("\"{}\"", level.as_str())).gradual_typing();
+            assert_eq!(setting.mode(), level);
+        }
     }
 }

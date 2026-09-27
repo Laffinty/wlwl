@@ -19,6 +19,7 @@ use clap::{Parser, ValueEnum};
 use wlwl_ast::Expr;
 use wlwl_error::{ErrorCode, Location, Severity, WlwlDiagnostic, WlwlError};
 use wlwl_parser::{parse, parse_with_warnings};
+use wlwl_toml::manifest::{GradualTyping, GradualTypingSetting};
 
 #[derive(Debug, Clone, Copy, ValueEnum, Default)]
 enum OutputFormat {
@@ -109,6 +110,20 @@ fn run_file(file: &PathBuf, format: OutputFormat, execute: bool) -> ExitCode {
         Err(e) => return report_error(e, format),
     };
 
+    let base_dir = file
+        .parent()
+        .filter(|p| !p.as_os_str().is_empty())
+        .map(|p| p.to_path_buf())
+        .unwrap_or_else(|| PathBuf::from("."));
+
+    // [v0.10 Step 2 / ADR-0020 A3] The compile-time static pass. `check`
+    // and `run` share this single entry point so the two subcommands can
+    // never drift apart. Returns Some(exit code) when the caller must
+    // abort.
+    if let Some(code) = static_check_gate(&ast, &base_dir, format) {
+        return code;
+    }
+
     if !execute {
         // Phase E4: unified warning channel. Parser warnings (W0020)
         // plus the static lint walk (W0010 / W0011 / W0012) surface
@@ -128,12 +143,6 @@ fn run_file(file: &PathBuf, format: OutputFormat, execute: bool) -> ExitCode {
         println!("OK: parsed {} ({} bytes)", file_name, source.len());
         return ExitCode::SUCCESS;
     }
-
-    let base_dir = file
-        .parent()
-        .filter(|p| !p.as_os_str().is_empty())
-        .map(|p| p.to_path_buf())
-        .unwrap_or_else(|| PathBuf::from("."));
 
     // [v0.4 Phase E1] Wire up strict_types from wlwl.toml's
     // [features] strict_types. The flag is read at most once per
@@ -525,6 +534,103 @@ fn load_manifest_strict_types(base_dir: &std::path::Path) -> bool {
     manifest.strict_types()
 }
 
+/// [v0.10 Step 2 / ADR-0020 A3] Read `wlwl.toml` from the project root
+/// and return the `[features] gradual_typing` switch.
+///
+/// Best-effort like [`load_manifest_strict_types`]: no manifest / read
+/// error / parse error all fall back to `Off`, which is the only safe
+/// default for a pass that must be a **no-op** on every v0.9 program
+/// (ADR-0020 S1).
+fn load_manifest_gradual_typing(base_dir: &std::path::Path) -> GradualTypingSetting {
+    let project_root = find_project_root(base_dir);
+    let toml_path = project_root.join("wlwl.toml");
+    if !toml_path.is_file() {
+        return GradualTypingSetting::default();
+    }
+    let Ok(src) = fs::read_to_string(&toml_path) else {
+        return GradualTypingSetting::default();
+    };
+    let Ok(manifest) = wlwl_toml::manifest::parse(&src) else {
+        return GradualTypingSetting::default();
+    };
+    manifest.gradual_typing()
+}
+
+/// [v0.10 Step 2 / ADR-0020 A3] The single static-check entry point,
+/// shared by `wlwl check` and `wlwl run`.
+///
+/// Returns `Some(exit_code)` when the caller must abort, `None` to carry
+/// on. Per level:
+///
+/// - `off`   — **the checker is never called**. This is where the
+///   "default zero breakage, zero cost" promise is implemented: not
+///   "run and discard", but "do not run".
+/// - `warn`  — run, report `W0110`-`W0112`, never block.
+/// - `error` — run, report `E0110`-`E0112`, block with exit 1.
+///
+/// An invalid `[features] gradual_typing` value has already fallen back
+/// to `off` inside `wlwl-toml`; here we surface the rejection as a
+/// `W0013`-class name warning so a typo is visible rather than silent.
+fn static_check_gate(
+    ast: &Expr,
+    base_dir: &std::path::Path,
+    format: OutputFormat,
+) -> Option<ExitCode> {
+    let setting = load_manifest_gradual_typing(base_dir);
+
+    if let Some(raw) = setting.invalid_value() {
+        let d = WlwlDiagnostic::new(
+            ErrorCode::W0001,
+            format!(
+                "invalid [features] gradual_typing value `{raw}`; \
+                 expected \"off\" | \"warn\" | \"error\" -- falling back to \"off\""
+            ),
+            Location::point(base_dir.join("wlwl.toml").to_string_lossy(), 0, 0),
+        );
+        let d = d.with_severity(Severity::Warning);
+        match format {
+            OutputFormat::Human => eprintln!("{}", d.render_human()),
+            OutputFormat::Json => eprintln!("{}", d.render_json()),
+            OutputFormat::Jsonl => eprintln!("{}", d.render_jsonl()),
+        }
+    }
+
+    if !setting.is_enabled() {
+        return None;
+    }
+
+    let severity = match setting.mode() {
+        GradualTyping::Warn => Severity::Warning,
+        _ => Severity::Error,
+    };
+
+    let mut rendered: Vec<WlwlDiagnostic> = wlwl_types::check_program(ast)
+        .iter()
+        .filter_map(|d| d.to_diagnostic(severity))
+        .collect();
+    if rendered.is_empty() {
+        return None;
+    }
+    // Deterministic order: source order. The checker already discovers
+    // in walk order, so a stable sort by (line, col) is enough to make
+    // multi-diagnostic output byte-stable across runs.
+    rendered.sort_by_key(|d| (d.location.line, d.location.col));
+
+    let blocking = severity == Severity::Error;
+    for d in &rendered {
+        match format {
+            OutputFormat::Human => eprintln!("{}", d.render_human()),
+            OutputFormat::Json => eprintln!("{}", d.render_json()),
+            OutputFormat::Jsonl => eprintln!("{}", d.render_jsonl()),
+        }
+    }
+    if blocking {
+        Some(ExitCode::from(1))
+    } else {
+        None
+    }
+}
+
 /// After a successful `wlwl run`, refresh the project's
 /// `wlwl.lock` (per spec §13.8):
 ///
@@ -624,6 +730,131 @@ mod tests {
         let p = write_tmp("PRINT(zzz);", "undef.wll");
         let code = run_file(&p, OutputFormat::Human, true);
         assert_eq!(code, ExitCode::from(1));
+    }
+
+    /// 写一个带 `wlwl.toml` 的最小工程,返回 `.wll` 路径。
+    ///
+    /// 每个用例独占一个子目录 —— `find_project_root` 是**向上**找清单的,
+    /// 所以清单放在子目录里不会污染同级的其他测试。
+    fn write_project(dir: &str, gradual: &str, source: &str) -> PathBuf {
+        let root = std::env::temp_dir().join("wlwl-cli-tests").join(dir);
+        fs::create_dir_all(&root).unwrap();
+        fs::write(
+            root.join("wlwl.toml"),
+            format!(
+                "[package]\nname = \"probe\"\nversion = \"0.0.1\"\nentry = \"main.wll\"\n\n[features]\ngradual_typing = {}\n",
+                gradual
+            ),
+        )
+        .unwrap();
+        let p = root.join("main.wll");
+        fs::write(&p, source).unwrap();
+        p
+    }
+
+    /// 一份必然触发 `E0112` 的源码:函数声明返回 INTEGER,尾表达式是 STRING。
+    const MISMATCH: &str = "LET(f, FUN((a: INTEGER) : INTEGER, \"wrong\"));";
+    /// 一份在任何档位下都合法的源码。
+    const CLEAN: &str = "LET(x: INTEGER, 1); LET(f, FUN((a: INTEGER) : INTEGER, a)); f(x);";
+
+    // -- v0.10 Step 2 (ADR-0020 A3): gradual_typing 三档 ----------------
+
+    /// 锁测试:`off` 是**默认**,且必须真的什么都不做。
+    ///
+    /// 两种"默认"都要验:完全没有清单的裸文件,以及显式写了 `off` 的工程。
+    /// 二者都必须在有静态失配的源码上依然通过 `check` 与 `run`。
+    #[test]
+    fn default_off_zero_diag() {
+        // 无清单 —— 裸 .wll 文件照旧能过。
+        let bare = write_tmp(MISMATCH, "gradual_bare.wll");
+        assert_eq!(
+            run_file(&bare, OutputFormat::Human, false),
+            ExitCode::SUCCESS
+        );
+        assert_eq!(
+            run_file(&bare, OutputFormat::Human, true),
+            ExitCode::SUCCESS
+        );
+
+        // 显式 off。
+        let off = write_project("gradual_off", "\"off\"", MISMATCH);
+        assert_eq!(
+            run_file(&off, OutputFormat::Human, false),
+            ExitCode::SUCCESS
+        );
+        assert_eq!(run_file(&off, OutputFormat::Human, true), ExitCode::SUCCESS);
+    }
+
+    /// 锁测试:`warn` 档发 `W0110`-`W0112` 但**不阻塞**退出码。
+    #[test]
+    fn warn_mode_soft() {
+        let p = write_project("gradual_warn", "\"warn\"", MISMATCH);
+        // check 与 run 都只发软诊断,退出码保持 0。
+        assert_eq!(run_file(&p, OutputFormat::Human, false), ExitCode::SUCCESS);
+        assert_eq!(run_file(&p, OutputFormat::Human, true), ExitCode::SUCCESS);
+    }
+
+    /// 锁测试:`error` 档发 `E0110`-`E0112` 并**硬拦**退出码。
+    ///
+    /// `check` 与 `run` 共用同一个门禁入口,所以两边都必须被拦下 ——
+    /// 这正是"两个子命令不会漂移"的证明。
+    #[test]
+    fn error_mode_hard() {
+        let p = write_project("gradual_error", "\"error\"", MISMATCH);
+        assert_eq!(run_file(&p, OutputFormat::Human, false), ExitCode::from(1));
+        assert_eq!(run_file(&p, OutputFormat::Human, true), ExitCode::from(1));
+    }
+
+    /// 合法源码在 `error` 档下必须照常通过 —— 门禁不许变成「见注解就拦」。
+    #[test]
+    fn error_mode_does_not_reject_clean_programs() {
+        let p = write_project("gradual_clean", "\"error\"", CLEAN);
+        assert_eq!(run_file(&p, OutputFormat::Human, false), ExitCode::SUCCESS);
+        assert_eq!(run_file(&p, OutputFormat::Human, true), ExitCode::SUCCESS);
+    }
+
+    /// 非法取值回落 `off`,并把笔误报出来而不是静默吞掉。
+    #[test]
+    fn invalid_value_falls_back_to_off_and_is_reported() {
+        let p = write_project("gradual_invalid", "\"loud\"", MISMATCH);
+        assert_eq!(run_file(&p, OutputFormat::Human, false), ExitCode::SUCCESS);
+        assert_eq!(run_file(&p, OutputFormat::Human, true), ExitCode::SUCCESS);
+    }
+
+    /// [v0.10 Step 2] `check` 的三层验收:parse / static / run。
+    ///
+    /// A3 把 `check` 从「只 parse」升级为「parse → 可选静态 check」,
+    /// 所以这三层必须各自独立可验,不能互相掩盖:
+    /// - 层 1 parse:语法错在任何档位下都失败,与 `gradual_typing` 无关;
+    /// - 层 2 static:注解失配只在 `error` 档失败,`warn` 档放行;
+    /// - 层 3 run:同一份源码,`run` 也走同一道门禁。
+    #[test]
+    fn check_is_layered_parse_static_run() {
+        // 层 1 —— parse。
+        let bad = write_tmp("LET(x, 1) LET(y, 2);", "layer_parse_err.wll");
+        assert_eq!(
+            run_file(&bad, OutputFormat::Human, false),
+            ExitCode::from(1)
+        );
+
+        // 层 2 —— static。
+        let errored = write_project("layered_error", "\"error\"", MISMATCH);
+        assert_eq!(
+            run_file(&errored, OutputFormat::Human, false),
+            ExitCode::from(1)
+        );
+        let warned = write_project("layered_warn", "\"warn\"", MISMATCH);
+        assert_eq!(
+            run_file(&warned, OutputFormat::Human, false),
+            ExitCode::SUCCESS
+        );
+
+        // 层 3 —— run。
+        let run_errored = write_project("layered_run_error", "\"error\"", MISMATCH);
+        assert_eq!(
+            run_file(&run_errored, OutputFormat::Human, true),
+            ExitCode::from(1)
+        );
     }
 
     #[test]

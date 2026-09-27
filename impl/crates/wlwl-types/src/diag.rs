@@ -1,16 +1,40 @@
 //! 静态检查诊断类型(ADR-0020 A1)。
 //!
-//! **与 `wlwl-error` 的关系刻意尚未建立**。`TypeDiag` 描述「哪里、什么
-//! 类型的错」,不含错误码;映射到 `wlwl_error::WlwlDiagnostic` / `EC` 需要
-//! 决策点 **D-1**(静态诊断码段:新建 `E0110+` 段 / 复用 `E0030-E0039` /
-//! 只用 W 码),尚未拍板。build plan §3.2 给了 `E0110`-`E0112` 的**草案**,
-//! 本模块**不预先**采纳 —— Step 2(A3)落地时再接线。
+//! # 错误码映射(决策 D-1)
 //!
-//! 同理,严重级(`off` / `warn` / `error`)属于 A3 的开关语义,不在本层。
+//! D-1 选定「新建静态段 `E0110+` / `W0110+`」,不占用 `E0030-E0039`
+//! ——该段 10/10 已被运行时类型 / 数值 / 集合语义占满(`E0030` type error、
+//! `E0031` 键类型、`E0033` strict_types、`E0036` 越界…)。一个码号只对应
+//! **一种**条件:编译期诊断与运行时 `E0033` 语义正交,复用会让同一码号随
+//! 开关含义漂移,「运行时码不变」这条兼容性承诺就无法验证。
+//!
+//! | 条件 | `error` 档 | `warn` 档 |
+//! |---|---|---|
+//! | 注解失配(边界) | `E0110` | `W0110` |
+//! | 调用失配(个数 / 第 n 个实参) | `E0111` | `W0111` |
+//! | 返回类型失配 | `E0112` | `W0112` |
+//!
+//! # 严重级不归本层
+//!
+//! `off` / `warn` / `error` 三档的**开关语义**归 `wlwl-toml` 的
+//! `[features] gradual_typing`(ADR-0020 A3)。本层只负责「一个条件对应
+//! 哪两个码」,由调用方按档位取用。
+//!
+//! # 尚未分配码的条件
+//!
+//! [`TypeDiagKind::UnresolvedTypeName`] / [`TypeDiagKind::TypeArityMismatch`]
+//! 归 A4 引入,但 A4 未落地前**不预分配码号** —— [`TypeDiagKind::codes`]
+//! 对它们返回 `None`。宁可不给码,也不猜一个:猜错的码会进 spec §11.2 码表
+//! 并被锁测试固定下来,事后改号是破坏性变更。
+//!
+//! [`TypeDiagKind::UndefinedName`] 同样无码:未定义名字由 parser 的
+//! `lint` pass 负责(`W0001`),静态 pass **不重复报告**,避免一条问题
+//! 出两张诊断。
 
 use std::fmt;
 
 use wlwl_ast::Span;
+use wlwl_error::{ErrorCode, Location, Severity, WlwlDiagnostic};
 
 use crate::ty::Ty;
 
@@ -81,18 +105,75 @@ pub struct TypeDiag {
     pub span: Span,
 }
 
-impl TypeDiag {
-    /// 构造一条诊断。
-    pub fn new(kind: TypeDiagKind, span: Span) -> TypeDiag {
-        TypeDiag { kind, span }
+/// 诊断种类 → 错误码(决策 D-1)。
+impl TypeDiagKind {
+    /// `(error 档, warn 档)` 码对。
+    ///
+    /// `None` = 该条件尚未分配码号(见模块文档「尚未分配码的条件」)。
+    pub fn codes(&self) -> Option<(ErrorCode, ErrorCode)> {
+        match self {
+            TypeDiagKind::AnnotationMismatch { .. } => Some((ErrorCode::E0110, ErrorCode::W0110)),
+            TypeDiagKind::CallArityMismatch { .. } | TypeDiagKind::CallArgMismatch { .. } => {
+                Some((ErrorCode::E0111, ErrorCode::W0111))
+            }
+            TypeDiagKind::ReturnMismatch { .. } => Some((ErrorCode::E0112, ErrorCode::W0112)),
+            TypeDiagKind::UndefinedName { .. }
+            | TypeDiagKind::UnresolvedTypeName { .. }
+            | TypeDiagKind::TypeArityMismatch { .. } => None,
+        }
     }
+}
 
+/// 诊断 → `WlwlDiagnostic`。
+impl TypeDiag {
     /// 无源码位置可依的诊断(例如整模块级汇总)。
     pub fn synthetic(kind: TypeDiagKind) -> TypeDiag {
         TypeDiag {
             kind,
             span: Span::dummy(),
         }
+    }
+
+    /// 按严重级产出可渲染 / 可 JSON 序列化的诊断。
+    ///
+    /// `None` = 该 `kind` 尚未分配码号(见 [`TypeDiagKind::codes`])。
+    pub fn to_diagnostic(&self, severity: Severity) -> Option<WlwlDiagnostic> {
+        let (error_code, warning_code) = self.kind.codes()?;
+        let code = match severity {
+            Severity::Warning => warning_code,
+            _ => error_code,
+        };
+        let mut d = WlwlDiagnostic::new(code, self.message(), self.location());
+        d.severity = severity;
+        Some(d)
+    }
+
+    /// `gradual_typing = "error"` 档:硬诊断,阻塞退出码。
+    pub fn to_error(&self) -> Option<WlwlDiagnostic> {
+        self.to_diagnostic(Severity::Error)
+    }
+
+    /// `gradual_typing = "warn"` 档:软诊断,不阻塞退出码。
+    pub fn to_warning(&self) -> Option<WlwlDiagnostic> {
+        self.to_diagnostic(Severity::Warning)
+    }
+
+    /// AST `Span` → 诊断 `Location`。
+    pub fn location(&self) -> Location {
+        Location::range(
+            self.span.file.clone(),
+            self.span.line_start,
+            self.span.col_start,
+            self.span.line_end,
+            self.span.col_end,
+        )
+    }
+}
+
+impl TypeDiag {
+    /// 构造一条诊断。
+    pub fn new(kind: TypeDiagKind, span: Span) -> TypeDiag {
+        TypeDiag { kind, span }
     }
 
     /// 人类可读的一行消息。**渲染必须确定**(无 HashMap 序、无浮点格式

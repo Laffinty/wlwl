@@ -21,6 +21,9 @@ wlwl-error = { workspace = true }
 wlwl-eval = { workspace = true }
 wlwl-formatter = { workspace = true }
 wlwl-toml = { workspace = true }
+# v0.10 Step 2 (ADR-0020 A3): the compile-time static pass, gated by
+# [features] gradual_typing in wlwl.toml.
+wlwl-types = { workspace = true }
 clap = { workspace = true }
 serde = { workspace = true }
 serde_json = { workspace = true }

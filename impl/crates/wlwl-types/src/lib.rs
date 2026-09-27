@@ -30,10 +30,12 @@
 //! 门禁命令:`cargo test -p wlwl-types`;全量回归 `cargo test --workspace`
 //! 必须保持 v0.9 的 1517 项全绿、0 failed(ADR-0020 S1)。
 
+pub mod check;
 pub mod diag;
 pub mod env;
 pub mod ty;
 
+pub use check::check_program;
 pub use diag::{TypeDiag, TypeDiagKind};
 pub use env::TypeEnv;
 pub use ty::Ty;

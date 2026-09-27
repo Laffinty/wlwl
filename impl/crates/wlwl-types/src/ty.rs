@@ -169,22 +169,27 @@ impl Ty {
     ///
     /// 规则:
     /// - 任一侧为 [`Ty::Dynamic`] 即为真(顶/底元双向互通);
+    /// - **`INTEGER -> FLOAT` 视为真**:这是 ADR-0010 明确写下的
+    ///   *silent upcast, even under strict*。运行时与 `strict_types` 都
+    ///   接受它,所以静态层**必须**接受 —— 否则 `gradual_typing = "error"`
+    ///   会拒掉运行时认为合法的程序,直接违反「不误报」验收项;
+    /// - 反方向 `FLOAT -> INTEGER` **不**视为真(收窄,本层拒绝);
     /// - 容器 / 包装逐位置递归;
     /// - 函数类型形参**逆变**、返回类型协变;
     /// - [`Ty::Named`] 要求同名、同元数、参数逐位置可赋值。
-    ///
-    /// **刻意不含** `INTEGER -> FLOAT` 数值放宽:运行时走 `E0031`
-    /// numeric coercion,静态层的放宽规则由 A4 决定,本层不定。
     pub fn is_assignable_to(&self, target: &Ty) -> bool {
         if self.is_dynamic() || target.is_dynamic() {
             return true;
         }
         match (self, target) {
+            // 安全的数值放宽,与 ADR-0010 的运行时 transient cast 对齐。
+            (Ty::Integer, Ty::Float) => true,
             (Ty::Integer, Ty::Integer)
             | (Ty::Float, Ty::Float)
             | (Ty::String, Ty::String)
             | (Ty::Boolean, Ty::Boolean)
             | (Ty::Null, Ty::Null) => true,
+
             (Ty::Array(a), Ty::Array(b)) => a.is_assignable_to(b),
             (Ty::Dict(k1, v1), Ty::Dict(k2, v2)) => {
                 k1.is_assignable_to(k2) && v1.is_assignable_to(v2)
@@ -473,13 +478,17 @@ mod tests {
     }
 
     #[test]
-    fn assignability_is_structural_without_numeric_widening() {
+    fn assignability_allows_only_the_safe_numeric_widening() {
         assert!(Ty::Integer.is_assignable_to(&Ty::Integer));
-        assert!(!Ty::Integer.is_assignable_to(&Ty::Float));
+        // ADR-0010: INTEGER -> FLOAT 是 silent upcast,even under strict。
+        // 静态层必须一致,否则 error 模式会拒掉运行时合法的程序。
+        assert!(Ty::Integer.is_assignable_to(&Ty::Float));
+        // 收窄方向仍然拒绝。
         assert!(!Ty::Float.is_assignable_to(&Ty::Integer));
         assert!(
             Ty::Array(Box::new(Ty::Integer)).is_assignable_to(&Ty::Array(Box::new(Ty::Integer)))
         );
+        assert!(Ty::Array(Box::new(Ty::Integer)).is_assignable_to(&Ty::Array(Box::new(Ty::Float))));
         assert!(
             !Ty::Array(Box::new(Ty::Integer)).is_assignable_to(&Ty::Array(Box::new(Ty::String)))
         );

@@ -7,6 +7,9 @@ description = "WLWL static type IR, type environment, and type-check diagnostics
 
 [dependencies]
 wlwl-ast = { workspace = true }
+# v0.10 Step 2 (ADR-0020 A3 / decision D-1): the static pass renders
+# TypeDiag into WlwlDiagnostic with its own E0110+/W0110+ code segment.
+wlwl-error = { workspace = true }
 
 [dev-dependencies]
 wlwl-parser = { path = "../wlwl-parser" }

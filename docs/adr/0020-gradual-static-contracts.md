@@ -2,7 +2,7 @@
 
 | | |---|
 |---|---|
-| **Status** | Proposed(本 ADR 定稿并经用户批准后转 Accepted) |
+| **Status** | Accepted(2026-09-27;Step 0 定稿 → Step 1/2 落地后转正) |
 | **Date** | 2026-09-27 |
 | **Deciders** | Li (project lead) |
 | **Related** | **ADR-0010**(本 ADR 有意推翻其「不做静态检查」方向,限缩范围)、ADR-0011(人日纪律先例)、`docs/plan/wlwl-build-plan-v0.10.md` §3 / §6.1、`docs/plan/wlwl-v0.10.0-迭代技术路线建议.md` §4.1 P0-1、spec v0.9 §2.4 / §2.7 / §5.2 / §9.4 |
@@ -164,18 +164,43 @@ Negative:
 
 ## Ratification Status
 
-本 ADR 记录 build plan §6.1 草案,Status 为 **Proposed**。转 Accepted 需:
+**Status: Accepted**(2026-09-27)。build plan §10.1 Step 0 的两个交付物均已
+落地:本 ADR 定稿(commit `c535818`),Step 1 `wlwl-types` crate(commit
+`859400b`),Step 2 `gradual_typing` 开关与 `check` 接线。
 
-1. 用户审阅本文件并批准;
-2. 六个实现级决策点拍板(build plan §10.2 **D-1..D-6**)—— 注意它们
-   **均不改变本 ADR 的 Decision 1–5**,只决定落地形态:
-   D-1 静态诊断码段(卡 Step 2 起全部诊断)、D-2 签名文件载体 /
-   D-3 `SEALED` 语法(卡 Step 6,即表面影响里的语法决策)、
-   D-5 泛型约束深度(卡 Step 9)、D-6 LSP 薄壳范围(卡 Step 10)、
-   D-4 `Effect` 半落地收口(卡 Step 11 余力项)。
+实现级决策点(build plan §10.2)已由用户拍板 4 个:
+
+| 决策 | 裁决 | 落地位置 |
+|---|---|---|
+| **D-1** 静态诊断码段 | 新建 `E0110+` / `W0110+` 段 | Step 2:`E0110`-`E0112` / `W0110`-`W0112` 已注册 |
+| **D-2** 签名文件载体 | 旁路 `*.wll.sig`,与源同目录 | Step 6(未开工) |
+| **D-3** `SEALED` 语法 | 前缀调用 / 模块头 `SEALED(...)` | Step 6(未开工) |
+| **D-5** 泛型约束深度 | 最小显式约束 `T: Comparable` 级 | Step 9(未开工) |
+
+**D-4**(Effect 半落地收口)与 **D-6**(LSP 薄壳范围)仍未拍板,分别只卡
+Step 11(余力项)与 Step 10,不阻塞 P0 主线。
+
+### Step 1 / Step 2 的实测结论(回填本 ADR)
+
+1. **`INTEGER -> FLOAT` 必须算可赋值**。ADR-0010 明写这是 *silent upcast,
+   even under strict*;静态层若不认这条安全方向,`gradual_typing = "error"`
+   会拒掉运行时认为合法的程序,直接违反「不误报」验收项。反方向
+   `FLOAT -> INTEGER` 仍然拒绝。
+2. **函数返回值要查「块尾表达式」,不只查显式 `RETURN`**。spec §4.4 规定
+   括号序列的值即最后一个表达式的值,`FUN((a): STRING, 42)` 这种最常见
+   的写法根本不含 `RETURN`,只查 `Return` 节点会整类漏报。
+3. **`Type` 产生式在 v0.9 语法里比想象的更窄**:parser 对 `ARRAY` 特判,
+   强制要求方括号(`wlwl-parser/src/lib.rs:2407-2410`),裸 `ARRAY` 注解
+   报 `E0010`、写不出来;`DICT` / `OPTION` / `RESULT` 裸写却能解析成
+   `Ident`。spec v0.10 补写 `Type` 产生式时必须照实写出这条不对称。
+4. **A3 抓不到内建调用**。注册表结构化签名归 A6′(Step 5),在那之前内建
+   返回类型不可知、一律 `Dynamic`。所以 A3 只能抓**用户定义的带注解
+   函数**边界 —— 这是范围裁剪,不是缺陷,但 spec 与 CHANGELOG 必须如实
+   说明,不能让用户误以为「开了就等于 TypeScript」。
 
 > build plan §10.1 的 Step 0 正文写「决策点 D-1..D-4」,而 §10.2 表格
 > 实列 D-1..D-6。以表格为准,共 6 个。
+
 
 ## References
 
