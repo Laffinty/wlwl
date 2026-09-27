@@ -1,0 +1,15 @@
+[package]
+name = "wlwl-types"
+version.workspace = true
+edition.workspace = true
+license.workspace = true  # SPDX canonical: "GPL-2.0-only"
+description = "WLWL static type IR, type environment, and type-check diagnostics (compile-time, ADR-0020)"
+
+[dependencies]
+wlwl-ast = { workspace = true }
+
+[dev-dependencies]
+wlwl-parser = { path = "../wlwl-parser" }
+
+[lints]
+workspace = true

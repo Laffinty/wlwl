@@ -10,6 +10,7 @@ members = [
     "crates/wlwl-eval",
     "crates/wlwl-formatter",
     "crates/wlwl-cli",
+    "crates/wlwl-types",
 ]
 
 [workspace.package]
@@ -47,6 +48,9 @@ wlwl-parser = { path = "crates/wlwl-parser" }
 wlwl-error = { path = "crates/wlwl-error" }
 wlwl-eval = { path = "crates/wlwl-eval" }
 wlwl-formatter = { path = "crates/wlwl-formatter" }
+# v0.10 Step 1 (ADR-0020 A1): static type layer. Leaf crate -- depends on
+# wlwl-ast only, and is deliberately NOT a dependency of wlwl-eval.
+wlwl-types = { path = "crates/wlwl-types" }
 
 
 [profile.test]
