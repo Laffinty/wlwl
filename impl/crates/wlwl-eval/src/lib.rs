@@ -278,7 +278,7 @@ fn expr_mentions_this(e: &Expr) -> bool {
                 || expr_mentions_this(default)
                 || clauses.iter().any(|c| expr_mentions_this(&c.body))
         }
-        E::Import { .. } | E::Export { .. } => false,
+        E::Import { .. } | E::Export { .. } | E::Sealed { .. } => false,
     }
 }
 
@@ -769,6 +769,25 @@ impl Outcome {
 struct LoadedModule {
     env: Env,
     exports: HashSet<String>,
+    /// [v0.10 Step 6 / plan §4.2 C2] The module declared a `SEALED([...])`
+    /// public surface. Recorded so an out-of-bounds `IMPORT` can say *why*
+    /// the name is unreachable instead of the generic "not exported".
+    /// The accept/reject decision is unchanged — a sealed module still only
+    /// ever exposes its `EXPORT` set (see `load_file_module`).
+    sealed: bool,
+}
+
+/// An `IMPORT` spec resolved to its source, **without evaluating it**.
+///
+/// Split out of [`ModuleLoader::load`] in v0.10 Step 6 so the compile-time
+/// module-contract checker can reuse the *same* resolution rules (project
+/// root containment, manifest namespaces, relative walking) instead of
+/// keeping a second copy that would drift.
+enum ResolvedSource {
+    /// Built-in std module: no on-disk source, hence no sidecar signature.
+    Std(&'static wlwl_std::ModuleSpec),
+    /// A `.wll` file plus the module name used for cache keys and messages.
+    File { path: PathBuf, name: String },
 }
 
 /// Project-level metadata carried by every `ModuleLoader` instance.
@@ -820,28 +839,38 @@ impl ModuleLoader {
         }
     }
 
-    /// Load a module referenced by `path`. Four forms are supported
-    /// in Phase 4 batches 1+2 (in resolution order):
-    ///
-    /// - `wlwl:std.X`: built-in std module (`wlwl_std::resolve`).
-    ///   Bound as `Value::NativeFn` in a fresh env. Cached.
-    /// - `myteam:utils` (any `ns:name` form not under `wlwl:`):
-    ///   resolved against the project manifest. If the namespace
-    ///   or the dependency is unknown, an E0043 is raised.
-    /// - `./foo` / `../bar`: relative to the current module's
-    ///   `base_dir`. Resolved against the project root; trying to
-    ///   escape the root is an E0040.
-    /// - Simple bare name (`math`): first try the current module's
-    ///   `base_dir`, then the project root. Mirrors the v0.2 single-
-    ///   directory behaviour so old programs keep working.
+    /// Load a module referenced by `path`: resolve it (see
+    /// [`ModuleLoader::resolve_source`] for the four accepted forms and
+    /// their resolution order), then load std catalogs or parse +
+    /// evaluate a `.wll` file. Results are cached under the spec string,
+    /// so a second `IMPORT` of the same spec reuses the same env.
     fn load(&mut self, path: &str) -> WlwlResult<LoadedModule> {
         if let Some(cached) = self.cache.get(path) {
             return Ok(cached.clone());
         }
+        match self.resolve_source(path)? {
+            ResolvedSource::Std(spec) => self.load_std(spec, path),
+            ResolvedSource::File { path, name } => self.load_file_module(&path, &name),
+        }
+    }
 
+    /// Resolve an `IMPORT` spec to its source. Pure resolution: nothing is
+    /// read from the module body, nothing is evaluated, no cache entry is
+    /// created. Four forms, in resolution order:
+    ///
+    /// - `wlwl:std.X`: built-in std module (`wlwl_std::resolve`).
+    /// - `myteam:utils`: resolved against the project manifest; an unknown
+    ///   namespace or dependency is E0043.
+    /// - `./foo` / `../bar`: relative to this loader's `base_dir`, then
+    ///   normalized and containment-checked against the project root (E0040).
+    /// - bare `math`: `base_dir/math.wll`, then `<project_root>/math.wll`.
+    ///
+    /// Mirrors the v0.2 single-directory behaviour so old programs keep
+    /// working.
+    fn resolve_source(&self, path: &str) -> WlwlResult<ResolvedSource> {
         // 1. `wlwl:std.X` — std library.
         if let Some(spec) = wlwl_std::resolve(path) {
-            return self.load_std(spec, path);
+            return Ok(ResolvedSource::Std(spec));
         }
 
         // 2. `ns:name` — third-party / user namespace.
@@ -864,7 +893,10 @@ impl ModuleLoader {
                     if !file_path.is_file() {
                         return Err(self.diag_module_not_found(path, &file_path));
                     }
-                    return self.load_file_module(&file_path, name);
+                    return Ok(ResolvedSource::File {
+                        path: file_path,
+                        name: name.to_string(),
+                    });
                 }
             }
             // Namespace format recognised but unregistered.
@@ -911,19 +943,28 @@ impl ModuleLoader {
             if !file_path.is_file() {
                 return Err(self.diag_module_not_found(path, &file_path));
             }
-            return self.load_file_module(&file_path, &mod_name);
+            return Ok(ResolvedSource::File {
+                path: file_path,
+                name: mod_name,
+            });
         }
 
         // 4. Simple bare name. Try `base_dir/<name>.wll` first, then
         //    fall back to `<project_root>/<name>.wll`.
         let in_module = self.base_dir.join(format!("{}.wll", path));
         if in_module.is_file() {
-            return self.load_file_module(&in_module, path);
+            return Ok(ResolvedSource::File {
+                path: in_module,
+                name: path.to_string(),
+            });
         }
         if self.base_dir != self.project.project_root {
             let in_root = self.project.project_root.join(format!("{}.wll", path));
             if in_root.is_file() {
-                return self.load_file_module(&in_root, path);
+                return Ok(ResolvedSource::File {
+                    path: in_root,
+                    name: path.to_string(),
+                });
             }
         }
 
@@ -985,7 +1026,14 @@ impl ModuleLoader {
                 exports.insert((*name).to_string());
             }
         }
-        let result = LoadedModule { env, exports };
+        let result = LoadedModule {
+            env,
+            exports,
+            // [v0.10 Step 6] std catalogs are closed by construction —
+            // there is no `SEALED` node to read, and no file to hang a
+            // sidecar signature on.
+            sealed: false,
+        };
         self.cache.insert(path.to_string(), result.clone());
         Ok(result)
     }
@@ -1062,7 +1110,14 @@ impl ModuleLoader {
             }
         }
         self.project.loading.borrow_mut().pop();
-        let result = LoadedModule { env, exports };
+        let result = LoadedModule {
+            env,
+            exports,
+            // [v0.10 Step 6 / plan §4.2 C2] 记录这个模块是否声明了
+            // `SEALED([...])` 公开面。注意**不改变**装什么:`env` 依然只
+            // 装 `EXPORT` 出来的名字,密封面是编译期契约,运行期零语义变化。
+            sealed: collect_sealed(&ast).is_some(),
+        };
         // Cache under the simple name (so re-imports hit the cache).
         self.cache.insert(module_name.to_string(), result.clone());
         Ok(result)
@@ -1139,6 +1194,27 @@ impl ModuleLoader {
 }
 
 // ── Free helpers ──────────────────────────────────────────────
+
+/// [v0.10 Step 6 / plan §4.1] Resolve an `IMPORT` spec to a concrete
+/// `.wll` file path **without evaluating it**.
+///
+/// `Ok(None)` means "not a file module" — a std catalog, which has no
+/// on-disk source and therefore no sidecar `<name>.wll.sig`. Every other
+/// outcome is the same answer [`ModuleLoader`] would reach at run time,
+/// because this calls the loader's own `resolve_source` rather than a
+/// second copy of the rules: project-root containment, manifest
+/// namespaces and `./` `../` walking all stay single-sourced.
+///
+/// The compile-time module-contract checker uses this to find a callee's
+/// signature file; it never needs the module's values, so nothing is
+/// parsed, cached or evaluated here.
+pub fn resolve_module_file(spec: &str, base_dir: &Path) -> WlwlResult<Option<PathBuf>> {
+    let loader = ModuleLoader::new(base_dir.to_path_buf());
+    match loader.resolve_source(spec)? {
+        ResolvedSource::Std(_) => Ok(None),
+        ResolvedSource::File { path, .. } => Ok(Some(path)),
+    }
+}
 
 /// Walk up from `start` looking for a `wlwl.toml`. If found, return
 /// its containing directory; otherwise return `start` itself (i.e.
@@ -1232,6 +1308,43 @@ fn collect_exports(program: &Expr) -> HashSet<String> {
     let mut out = HashSet::new();
     collect(program, &mut out);
     out
+}
+
+/// [v0.10 Step 6 / plan §4.2 C2] Walk the top-level expressions of a
+/// module program and return the union of names listed in any
+/// `SEALED(...)` node, or `None` when the module declares no seal at all.
+///
+/// Mirrors [`collect_exports`] deliberately: the seal and the export set
+/// are two views of the same public surface, and the compiler compares
+/// them, so they must be gathered the same way (top-level block walk).
+/// `None` and `Some(empty)` are kept distinct — "declared an empty
+/// surface" is a real (if useless) contract, and the caller may want to
+/// tell it apart from "no contract at all".
+fn collect_sealed(program: &Expr) -> Option<HashSet<String>> {
+    fn collect(e: &Expr, out: &mut HashSet<String>, found: &mut bool) {
+        match e {
+            Expr::Block { exprs, .. } => {
+                for e in exprs {
+                    collect(e, out, found);
+                }
+            }
+            Expr::Sealed { names, .. } => {
+                *found = true;
+                for n in names {
+                    out.insert(n.local_name().to_string());
+                }
+            }
+            _ => {}
+        }
+    }
+    let mut out = HashSet::new();
+    let mut found = false;
+    collect(program, &mut out, &mut found);
+    if found {
+        Some(out)
+    } else {
+        None
+    }
 }
 
 // ──────────────────────────────────────────────────────────────────────
@@ -7371,6 +7484,11 @@ impl Evaluator {
             } => self.eval_match(value, clauses, default, span),
             Expr::Import { path, names, .. } => self.eval_import(path, names),
             Expr::Export { names, .. } => self.eval_export(names, expr.span()),
+            // [v0.10 Step 6 / plan §4.2 C2] SEALED is a declaration, not
+            // an expression: nothing is evaluated, no value is produced.
+            // Same no-op treatment as EXPORT; the surface itself is read
+            // by `collect_sealed` when the module finishes loading.
+            Expr::Sealed { .. } => Ok(Outcome::normal(Value::Null)),
         }
     }
 
@@ -8785,11 +8903,41 @@ impl Evaluator {
             // exported by the module. The alias is purely a local
             // binding concern.
             if !module.exports.contains(&imp.name) {
-                return Err(self.diag(
-                    ErrorCode::E0023,
-                    format!("'{}' is not exported by module '{}'", imp.name, module_name),
-                    imp.span.clone(),
-                ));
+                // [v0.10 Step 6 / plan §4.2 C2] A sealed module says out
+                // loud *why* the name is out of reach. Same code, same
+                // accept/reject decision as v0.9 — only the message and the
+                // hint get sharper, so a sealed module breaks nothing that
+                // worked before.
+                let d = if module.sealed {
+                    WlwlDiagnostic::new(
+                        ErrorCode::E0023,
+                        format!(
+                            "'{}' is outside the sealed surface of module '{}'",
+                            imp.name, module_name
+                        ),
+                        Location::range(
+                            imp.span.file.clone(),
+                            imp.span.line_start,
+                            imp.span.col_start,
+                            imp.span.line_end,
+                            imp.span.col_end,
+                        ),
+                    )
+                    .with_suggestion(Suggestion::Note {
+                        description: format!(
+                            "module '{}' declares SEALED([...]); add '{}' to that list (and to its EXPORT) if it is meant to be public",
+                            module_name, imp.name
+                        ),
+                    })
+                    .into()
+                } else {
+                    self.diag(
+                        ErrorCode::E0023,
+                        format!("'{}' is not exported by module '{}'", imp.name, module_name),
+                        imp.span.clone(),
+                    )
+                };
+                return Err(d);
             }
             let v = module
                 .env
@@ -16234,6 +16382,130 @@ entry = "main.wll"
         let v = run_in(&dir, src);
         let err = v.expect_err("expected E0023");
         assert_eq!(err.diagnostic().code, ErrorCode::E0023);
+        let _ = fs::remove_dir_all(&dir);
+    }
+
+    // ---- v0.10 Step 6 (plan §4.2 C2): SEALED 的运行期行为 ----
+
+    /// 密封**不改变求值语义**:声明了 `SEALED` 的模块,导入它的程序行为
+    /// 与没写 `SEALED` 时逐字节一致(ADR-0020 S1「默认零破坏」)。
+    #[test]
+    fn sealed_declaration_is_a_runtime_no_op() {
+        let dir = unique_test_dir("sealed_noop");
+        fs::write(
+            dir.join("m.wll"),
+            "SEALED([\"v\"]);\nLET(v, 42); EXPORT([\"v\"]);\n",
+        )
+        .unwrap();
+        let v = run_in(&dir, "IMPORT(\"m\", [\"v\"]); v;\n");
+        assert_eq!(v.unwrap(), Value::Integer(42));
+        let _ = fs::remove_dir_all(&dir);
+    }
+
+    /// 密封面之外的导入仍然是 E0023(接受/拒绝判定与 v0.9 完全一致),只是
+    /// 消息能说清「为什么够不着」。
+    #[test]
+    fn importing_outside_a_sealed_surface_is_e0023_with_a_seal_specific_message() {
+        let dir = unique_test_dir("sealed_violation");
+        fs::write(
+            dir.join("m.wll"),
+            "SEALED([\"v\"]);\nLET(v, 1); LET(secret, 2); EXPORT([\"v\"]);\n",
+        )
+        .unwrap();
+        let err = run_in(&dir, "IMPORT(\"m\", [\"secret\"]); PRINT(1);\n")
+            .expect_err("secret is bound but private, so it is outside the seal");
+        assert_eq!(err.diagnostic().code, ErrorCode::E0023);
+        assert!(
+            err.diagnostic()
+                .message
+                .contains("outside the sealed surface of module 'm'"),
+            "sealed modules must explain the boundary: {}",
+            err.diagnostic().message
+        );
+        let _ = fs::remove_dir_all(&dir);
+    }
+
+    /// **密封面不收紧运行期**:密封声明过期(实现导出得比密封面多)时,
+    /// 程序照跑不误 —— 那是**编译期** `E0113`,不是运行期故障。
+    /// 这条是 ADR-0020 S1「默认零破坏」在 C2 上的落点:新语法加进来,
+    /// 不许让今天能跑的程序跑不起来。
+    #[test]
+    fn a_stale_seal_does_not_break_a_running_program() {
+        let dir = unique_test_dir("stale_seal");
+        fs::write(
+            dir.join("m.wll"),
+            "SEALED([\"v\"]);\nLET(v, 1); LET(extra, 2); EXPORT([\"v\", \"extra\"]);\n",
+        )
+        .unwrap();
+        let v = run_in(&dir, "IMPORT(\"m\", [\"extra\"]); extra;\n");
+        assert_eq!(v.unwrap(), Value::Integer(2));
+        let _ = fs::remove_dir_all(&dir);
+    }
+
+    /// 非密封模块的越界导入消息**一个字都不许变** —— 这是零破坏承诺的
+    /// 反证:同一段 E0023,老程序看到的仍然是从前那句话。
+    #[test]
+    fn unsealed_out_of_bounds_message_is_unchanged() {
+        let dir = unique_test_dir("unsealed_violation");
+        fs::write(dir.join("m.wll"), "LET(v, 1); EXPORT([\"v\"]);\n").unwrap();
+        let err = run_in(&dir, "IMPORT(\"m\", [\"missing\"]); PRINT(1);\n")
+            .expect_err("missing is not exported");
+        assert_eq!(err.diagnostic().code, ErrorCode::E0023);
+        assert_eq!(
+            err.diagnostic().message,
+            "'missing' is not exported by module 'm'"
+        );
+        let _ = fs::remove_dir_all(&dir);
+    }
+
+    /// `collect_sealed`:`None` = 没声明密封面,`Some(set)` = 声明了。
+    /// 两者必须能区分 —— `SEALED([])` 是「声明了空面」,不是「没声明」。
+    #[test]
+    fn collect_sealed_distinguishes_absent_from_empty() {
+        let none = wlwl_parser::parse("EXPORT([\"v\"]);", "t.wll").unwrap();
+        assert_eq!(collect_sealed(&none), None);
+
+        let empty = wlwl_parser::parse("SEALED([]);", "t.wll").unwrap();
+        assert_eq!(collect_sealed(&empty), Some(HashSet::new()));
+
+        let two = wlwl_parser::parse(
+            "SEALED([\"a\"]); SEALED([\"b\"]); EXPORT([\"a\", \"b\"]);",
+            "t.wll",
+        )
+        .unwrap();
+        let mut want = HashSet::new();
+        want.insert("a".to_string());
+        want.insert("b".to_string());
+        assert_eq!(collect_sealed(&two), Some(want));
+    }
+
+    /// [v0.10 Step 6 / plan §4.1] 编译期契约检查用的解析入口必须与运行期
+    /// 加载器**同一套规则**:裸名、相对路径、命名空间都能解析,std 返回
+    /// `None`(没有磁盘源,也就没有旁路签名),找不到的模块照旧 E0040。
+    #[test]
+    fn resolve_module_file_agrees_with_the_loader() {
+        let dir = unique_test_dir("resolve_module_file");
+        fs::write(dir.join("m.wll"), "LET(v, 1); EXPORT([\"v\"]);\n").unwrap();
+        fs::create_dir_all(dir.join("sub")).unwrap();
+        fs::write(dir.join("sub").join("deep.wll"), "LET(v, 2);\n").unwrap();
+
+        assert_eq!(
+            resolve_module_file("m", &dir).unwrap(),
+            Some(dir.join("m.wll"))
+        );
+        assert_eq!(
+            resolve_module_file("./m", &dir).unwrap(),
+            Some(dir.join("m.wll"))
+        );
+        assert_eq!(
+            resolve_module_file("./sub/deep", &dir).unwrap(),
+            Some(dir.join("sub").join("deep.wll"))
+        );
+        // std:没有磁盘源 → 没有旁路签名可挂。
+        assert_eq!(resolve_module_file("wlwl:std.io", &dir).unwrap(), None);
+        // 找不到的模块照旧 E0040(与运行期同一码)。
+        let err = resolve_module_file("nope", &dir).expect_err("missing module");
+        assert_eq!(err.diagnostic().code, ErrorCode::E0040);
         let _ = fs::remove_dir_all(&dir);
     }
 

@@ -224,6 +224,11 @@ fn render_inline(e: &Expr) -> Option<String> {
         Expr::Export { names, .. } => {
             format!("EXPORT([{}])", render_names_inline(names)?)
         }
+        // v0.10 Step 6: SEALED renders in the same prefix-call form the
+        // parser accepts, so `wlwl fmt` output round-trips.
+        Expr::Sealed { names, .. } => {
+            format!("SEALED([{}])", render_names_inline(names)?)
+        }
     })
 }
 

@@ -159,6 +159,7 @@ fn contains_yield(expr: &Expr) -> bool {
         | Expr::Var(_, _)
         | Expr::Import { .. }
         | Expr::Export { .. }
+        | Expr::Sealed { .. }
         | Expr::Break { .. }
         | Expr::Continue { .. } => false,
     }

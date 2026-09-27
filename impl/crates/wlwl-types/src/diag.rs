@@ -94,6 +94,71 @@ pub enum TypeDiagKind {
         /// 注解里实际写了几个
         found: usize,
     },
+    /// [v0.10 Step 6 / plan §4.1 C1、`§4.2` C2] 实现 `EXPORT` 了
+    /// (或外部 `IMPORT` 了)契约**没有声明**的名字。
+    ///
+    /// 方向固定为「多出来」:名字是实现侧有的、契约侧没有的。反方向是
+    /// [`TypeDiagKind::DeclaredNotExported`],两者不可互换。
+    ExportNotDeclared {
+        /// 越界的名字
+        name: String,
+        /// 哪个契约载体没声明它(签名文件 / 密封面;可同时缺)
+        carriers: Vec<ContractCarrier>,
+    },
+    /// [v0.10 Step 6 / plan §4.1 C1] 契约声明了实现**没有导出**的名字。
+    DeclaredNotExported {
+        /// 声明了但没导出的名字
+        name: String,
+        /// 声明它的契约载体
+        carriers: Vec<ContractCarrier>,
+    },
+    /// [v0.10 Step 6 / plan §4.1 C1] 签名里的类型与实现注解冲突。
+    SignatureTypeMismatch {
+        /// 出问题的导出名
+        name: String,
+        /// 签名声明的类型
+        declared: Ty,
+        /// 实现侧的类型(注解,或无注解时的推断结果)
+        found: Ty,
+    },
+}
+
+/// 契约的载体:同一个「声明面」有两种写法,诊断要能说清是哪一个缺了名字。
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum ContractCarrier {
+    /// 旁路签名文件 `<module>.wll.sig`(决策 D-2)
+    Signature,
+    /// 源内 `SEALED([...])` 声明(决策 D-3)
+    Seal,
+}
+
+impl ContractCarrier {
+    /// 诊断文案用的短语。**渲染必须确定**。
+    pub fn as_str(self) -> &'static str {
+        match self {
+            ContractCarrier::Signature => "the module signature",
+            ContractCarrier::Seal => "the SEALED surface",
+        }
+    }
+}
+
+impl fmt::Display for ContractCarrier {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        f.write_str(self.as_str())
+    }
+}
+
+/// 把一组载体渲染成「A」「A or B」这样的短语,供诊断消息使用。
+///
+/// 空列表渲染成 `the module contract` —— 那是「有契约但这个载体没提它」
+/// 的兜底说法,不该在正常路径上出现。
+fn describe_carriers(carriers: &[ContractCarrier]) -> String {
+    match carriers {
+        [] => "the module contract".to_string(),
+        [one] => one.as_str().to_string(),
+        [a, b] => format!("{} or {}", a.as_str(), b.as_str()),
+        _ => format!("{} and {} more", carriers[0].as_str(), carriers.len() - 1),
+    }
 }
 
 /// 一条静态类型诊断。
@@ -117,6 +182,14 @@ impl TypeDiagKind {
                 Some((ErrorCode::E0111, ErrorCode::W0111))
             }
             TypeDiagKind::ReturnMismatch { .. } => Some((ErrorCode::E0112, ErrorCode::W0112)),
+            // [v0.10 Step 6 / plan §4] 模块契约段。E0113/E0114 是公开面
+            // 的两个方向(多出 / 缺失),E0115 是类型冲突 —— 三个码各管
+            // 一种条件,和 E0110-E0112 一样只由编译期发出。
+            TypeDiagKind::ExportNotDeclared { .. } => Some((ErrorCode::E0113, ErrorCode::W0113)),
+            TypeDiagKind::DeclaredNotExported { .. } => Some((ErrorCode::E0114, ErrorCode::W0114)),
+            TypeDiagKind::SignatureTypeMismatch { .. } => {
+                Some((ErrorCode::E0115, ErrorCode::W0115))
+            }
             TypeDiagKind::UndefinedName { .. }
             | TypeDiagKind::UnresolvedTypeName { .. }
             | TypeDiagKind::TypeArityMismatch { .. } => None,
@@ -205,6 +278,25 @@ impl TypeDiag {
                 expected,
                 found,
             } => format!("type `{name}` takes {expected} type argument(s), found {found}"),
+            TypeDiagKind::ExportNotDeclared { name, carriers } => {
+                format!(
+                    "export `{name}` is not declared in {}",
+                    describe_carriers(carriers)
+                )
+            }
+            TypeDiagKind::DeclaredNotExported { name, carriers } => {
+                format!(
+                    "{} declares `{name}`, which the module does not export",
+                    describe_carriers(carriers)
+                )
+            }
+            TypeDiagKind::SignatureTypeMismatch {
+                name,
+                declared,
+                found,
+            } => format!(
+                "module signature type mismatch for `{name}`: expected `{declared}`, found `{found}`"
+            ),
         }
     }
 }

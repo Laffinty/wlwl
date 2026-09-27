@@ -415,6 +415,23 @@ pub enum Expr {
         names: Vec<ImportName>,
         span: Span,
     },
+    /// `SEALED([...])` —— v0.10 Step 6 (build plan §4.2 C2, 决策 D-3)。
+    ///
+    /// 声明本模块的**公开面**并把它封起来:列出的名字就是全部公开名字。
+    /// 与 `EXPORT` 一样走**前缀调用 / 模块头声明**形式
+    /// (`SEALED(["add", "mul"])`),因此:
+    ///
+    /// - `SEALED` **不进入** spec §1.4 关键字表(spec v0.9 §12 保留形式
+    ///   继续留空)—— 词法面零扩张;
+    /// - 名字列表沿用 `IMPORT` / `EXPORT` 的 `parse_import_name_list`
+    ///   文法(字符串 / 裸标识符 / `"原名": "别名"`)。
+    ///
+    /// 运行期是 no-op(与 `EXPORT` 同款):模块对象本来就只装导出名,
+    /// 密封不改变求值语义;契约比对发生在编译期静态层。
+    Sealed {
+        names: Vec<ImportName>,
+        span: Span,
+    },
 }
 
 impl Expr {
@@ -445,6 +462,7 @@ impl Expr {
             Expr::Match { span, .. } => span,
             Expr::Import { span, .. } => span,
             Expr::Export { span, .. } => span,
+            Expr::Sealed { span, .. } => span,
         }
     }
 }

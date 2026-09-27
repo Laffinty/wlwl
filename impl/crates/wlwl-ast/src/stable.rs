@@ -188,7 +188,9 @@ fn child_edges(e: &Expr) -> Vec<Edge<'_>> {
             out.push(edge("default", default));
             out
         }
-        Expr::Import { .. } | Expr::Export { .. } => Vec::new(),
+        // Module-header declarations carry no child expressions: the
+        // name lists are plain strings (same as Import / Export).
+        Expr::Import { .. } | Expr::Export { .. } | Expr::Sealed { .. } => Vec::new(),
     }
 }
 
@@ -219,6 +221,7 @@ fn kind_of(e: &Expr) -> &'static str {
         Expr::Match { .. } => "Match",
         Expr::Import { .. } => "Import",
         Expr::Export { .. } => "Export",
+        Expr::Sealed { .. } => "Sealed",
     }
 }
 

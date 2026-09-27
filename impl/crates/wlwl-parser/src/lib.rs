@@ -304,6 +304,15 @@ impl Linter {
                     self.mark_used_no_span(&n.name);
                 }
             }
+            // SEALED names the module's public surface — the same
+            // "reference, not definition" treatment as EXPORT. Listing a
+            // name in the seal does not define it, so the undefined-name
+            // lint still fires when the module never binds it.
+            Expr::Sealed { names, .. } => {
+                for n in names {
+                    self.mark_used_no_span(&n.name);
+                }
+            }
             _ => {}
         }
     }
@@ -1763,8 +1772,35 @@ impl Parser {
         })
     }
 
+    /// `SEALED([...])` —— v0.10 Step 6 (build plan §4.2 C2, 决策 D-3)。
+    ///
+    /// 决策 D-3 定的形式是「前缀调用 / 模块头声明」,所以 `SEALED` 在
+    /// lexer 层**仍然只是普通标识符**(`TokenKind::Ident`):spec §1.4 的
+    /// 关键字表与 §12 保留形式都零扩张。本函数只负责吃掉名字列表 ——
+    /// 与 `parse_export` 的尾巴完全同构,连文法都是同一份
+    /// `parse_import_name_list`(字符串 / 裸标识符 / `"原名": "别名"`)。
+    ///
+    /// `SEALED` 标识符已由调用方(`parse_call_or_ident`)**消费掉**,
+    /// 所以这里从 `'('` 开始。
+    fn parse_sealed(&mut self, line: u32, col: u32) -> WlwlResult<Expr> {
+        self.expect_specific(EC::E0011, "'('")?;
+        let names = self.parse_import_name_list("'SEALED'")?;
+        self.expect_specific(EC::E0011, "')'")?;
+        let (_, _, line_end, col_end) = self.span_here();
+        Ok(Expr::Sealed {
+            names,
+            span: Span {
+                file: self.file.clone(),
+                line_start: line,
+                col_start: col,
+                line_end,
+                col_end,
+            },
+        })
+    }
+
     /// Parse a list of `name` or `"name": "alias"` entries inside `[...]`.
-    /// Used by both `IMPORT` and `EXPORT`.
+    /// Used by `IMPORT`, `EXPORT` and `SEALED`.
     fn parse_import_name_list(&mut self, _ctx: &str) -> WlwlResult<Vec<ImportName>> {
         self.expect_specific(EC::E0011, "'['")?;
         let mut names = Vec::new();
@@ -1872,6 +1908,18 @@ impl Parser {
                 }
             },
         };
+
+        // v0.10 Step 6 (build plan §4.2 C2 / decision D-3):
+        // `SEALED([...])` is a module-header declaration written in
+        // prefix-call form. Recognizing it *here* — after the name is
+        // known, before generic argument parsing — keeps `SEALED` an
+        // ordinary identifier at the lexer (spec §1.4 keyword table
+        // unchanged, §12 reserved forms stay empty) while giving the
+        // declaration its own AST node. A bare `SEALED` (no `(`) is
+        // still a plain variable reference.
+        if name == "SEALED" && matches!(self.peek(), TokenKind::LParen) {
+            return self.parse_sealed(line, col);
+        }
 
         // Parse the head (variable reference or function call).
         let mut base: Expr = if matches!(self.peek(), TokenKind::LParen) {
@@ -2693,6 +2741,58 @@ mod tests {
             }
             _ => panic!("expected EXPORT"),
         }
+    }
+
+    // ---- v0.10 Step 6 (C2 / D-3): SEALED([...]) 前缀调用声明 ----
+
+    #[test]
+    fn parse_sealed_takes_the_same_name_list_grammar_as_export() {
+        let e = parse(r#"SEALED(["add", "PI"]);"#, "t.wll").unwrap();
+        match e {
+            Expr::Sealed { names, span, .. } => {
+                assert_eq!(names.len(), 2);
+                assert_eq!(names[0].name, "add");
+                assert_eq!(names[1].name, "PI");
+                assert_eq!(span.line_start, 1);
+            }
+            other => panic!("expected SEALED, got {:?}", other),
+        }
+    }
+
+    #[test]
+    fn parse_sealed_accepts_bare_identifiers_and_renames() {
+        // 与 EXPORT/IMPORT 共用 `parse_import_name_list`,两种写法都要过。
+        let e = parse(r#"SEALED([add, "mul": "times"]);"#, "t.wll").unwrap();
+        match e {
+            Expr::Sealed { names, .. } => {
+                assert_eq!(names[0].name, "add");
+                assert_eq!(names[0].alias, None);
+                assert_eq!(names[1].name, "mul");
+                assert_eq!(names[1].alias.as_deref(), Some("times"));
+            }
+            other => panic!("expected SEALED, got {:?}", other),
+        }
+    }
+
+    /// D-3 的核心承诺:词法面零扩张。`SEALED` 不是关键字,所以**不带括号**
+    /// 的裸用法仍然是普通标识符引用,不会被这条声明语法吃掉。
+    #[test]
+    fn bare_sealed_without_parens_is_still_a_variable_reference() {
+        let e = parse("PRINT(SEALED);", "t.wll").unwrap();
+        match &e {
+            Expr::Call { name, args, .. } => {
+                assert_eq!(name, "PRINT");
+                assert!(matches!(args[0], Expr::Var(ref n, _) if n == "SEALED"));
+            }
+            other => panic!("expected a call, got {:?}", other),
+        }
+    }
+
+    /// 括号缺失 / 名列表坏掉时报的是既有语法码(E0010-E0012),不新增码号。
+    #[test]
+    fn parse_sealed_rejects_a_missing_name_list() {
+        assert!(parse("SEALED();", "t.wll").is_err());
+        assert!(parse(r#"SEALED("add");"#, "t.wll").is_err());
     }
 
     #[test]

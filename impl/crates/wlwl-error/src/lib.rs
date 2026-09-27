@@ -10,13 +10,18 @@
 //! Output formats: human-readable (default), JSON (`--format=json`),
 //! and JSONL streaming (`--format=jsonl`, Phase 3).
 //!
-//! 47 error codes are registered (E0001-E0014 lex/syn, E0020-E0027
+//! 64 error codes are registered (E0001-E0014 lex/syn, E0020-E0027
 //! name, E0030-E0039 type, E0040-E0043 module, E0050-E0051 OOP,
 //! E0060-E0063 IO, E0070-E0071 JSON, E0080-E0083 std.ai/network,
-//! E0099 user, E0100-E0102 internal, E1003 runtime) + 10 warning
-//! codes. E0033 / E0038 / E0039 are registered ahead of their emitting
-//! sites (Phase E / Phase B6 / Phase B5) so the 搂14.4 type bucket
-//! E0030-E0039 has no holes.
+//! E0099 user, E0100-E0102 internal, E0110-E0115 static contract,
+//! E1003 runtime) + 21 warning codes. E0033 / E0038 / E0039 are
+//! registered ahead of their emitting sites (Phase E / Phase B6 /
+//! Phase B5) so the 搂14.4 type bucket E0030-E0039 has no holes.
+//!
+//! The static contract segment (E0110-E0115 / W0110-W0115) is
+//! **compile-time only**: the runtime never emits it, and every E code
+//! has a same-numbered W counterpart so the `gradual_typing` switch can
+//! pick the level without changing the condition.
 
 use serde::{Deserialize, Serialize};
 use std::fmt;
@@ -216,6 +221,25 @@ pub enum ErrorCode {
     W0110, // E0110 的 warn 档
     W0111, // E0111 的 warn 档
     W0112, // E0112 的 warn 档
+    // ── v0.10 Step 6 (P0-2 C1/C2, 计划书 §4): 模块契约段 ──
+    //
+    // 与 E0110-E0112 同属静态契约段(同一 `gradual_typing` 开关、同样的
+    // 编译期发射、绝不由运行时发出),但描述的是**模块边界**而不是表达式
+    // 类型。三条各对应**一个**条件,方向不可互换:
+    //
+    // - E0113 多出:实现 `EXPORT` 了、或外部 `IMPORT` 了签名/密封面**没有**
+    //   声明的名字(签名视角:这个导出名不在签名里);
+    // - E0114 缺失:签名/密封面声明了实现**没有**导出的名字;
+    // - E0115 冲突:签名里的类型与实现注解不一致。
+    //
+    // E0116+ 留给 Step 8 的 MATCH 穷尽性(E0116/W0116 非穷尽、W0117 不可达
+    // 子句),不得在 Step 6 之前占用。
+    E0113, // 编译期模块契约多出(EXPORT/IMPORT 的名字不在签名或密封面内)
+    E0114, // 编译期模块契约缺失(签名或密封面声明了但实现未 EXPORT)
+    E0115, // 编译期签名类型与实现注解冲突
+    W0113, // E0113 的 warn 档
+    W0114, // E0114 的 warn 档
+    W0115, // E0115 的 warn 档
 }
 
 impl ErrorCode {
@@ -316,6 +340,13 @@ impl ErrorCode {
             ErrorCode::W0110 => "W0110",
             ErrorCode::W0111 => "W0111",
             ErrorCode::W0112 => "W0112",
+            // [v0.10 Step 6 / plan §4] module contract segment.
+            ErrorCode::E0113 => "E0113",
+            ErrorCode::E0114 => "E0114",
+            ErrorCode::E0115 => "E0115",
+            ErrorCode::W0113 => "W0113",
+            ErrorCode::W0114 => "W0114",
+            ErrorCode::W0115 => "W0115",
         }
     }
 
@@ -345,6 +376,11 @@ impl ErrorCode {
                 | ErrorCode::W0110
                 | ErrorCode::W0111
                 | ErrorCode::W0112
+                // [v0.10 Step 6 / plan §4] `warn`档 of the module
+                // contract segment.
+                | ErrorCode::W0113
+                | ErrorCode::W0114
+                | ErrorCode::W0115
         )
     }
 
@@ -499,6 +535,18 @@ impl ErrorCode {
             | ErrorCode::W0110
             | ErrorCode::W0111
             | ErrorCode::W0112 => ErrorCategory::Type,
+            // [v0.10 Step 6 / plan §4] Module contract segment. E0113/E0114
+            // are about the module's **public surface** (an export set that
+            // does not match its declared contract), so they route to the
+            // Module bucket next to E0023 / E0040 rather than to Type —
+            // a consumer triaging "the module boundary is wrong" should not
+            // have to know that the boundary happens to be typed.
+            // E0115 is genuinely a type conflict, so it stays in Type.
+            ErrorCode::E0113
+            | ErrorCode::E0114
+            | ErrorCode::W0113
+            | ErrorCode::W0114 => ErrorCategory::Module,
+            ErrorCode::E0115 | ErrorCode::W0115 => ErrorCategory::Type,
         }
     }
 
@@ -1717,8 +1765,12 @@ mod tests {
             ErrorCode::E0110,
             ErrorCode::E0111,
             ErrorCode::E0112,
+            // [v0.10 Step 6 / plan §4] module contract segment.
+            ErrorCode::E0113,
+            ErrorCode::E0114,
+            ErrorCode::E0115,
         ];
-        assert_eq!(codes.len(), 61);
+        assert_eq!(codes.len(), 64);
         // Each code has a stable string form.
         for c in &codes {
             assert!(c.as_str().starts_with('E'));
@@ -1752,8 +1804,12 @@ mod tests {
             ErrorCode::W0110,
             ErrorCode::W0111,
             ErrorCode::W0112,
+            // [v0.10 Step 6 / plan §4] module contract segment.
+            ErrorCode::W0113,
+            ErrorCode::W0114,
+            ErrorCode::W0115,
         ];
-        assert_eq!(codes.len(), 18);
+        assert_eq!(codes.len(), 21);
         for c in &codes {
             assert!(
                 c.is_warning(),
@@ -1762,6 +1818,31 @@ mod tests {
             );
             assert!(c.as_str().starts_with('W'));
         }
+    }
+
+    /// [v0.10 Step 6] 静态契约段的**配对约定**:每个 `E011x` 都必须有一个
+    /// 同号的 `W011x`。档位切换只改字母、不改数字,所以「同一个码号只对应
+    /// 一种条件」这条纪律才立得住(E0110+E0113 段一起锁)。
+    #[test]
+    fn static_contract_segment_is_paired_e_for_w() {
+        let pairs = [
+            (ErrorCode::E0110, ErrorCode::W0110),
+            (ErrorCode::E0111, ErrorCode::W0111),
+            (ErrorCode::E0112, ErrorCode::W0112),
+            (ErrorCode::E0113, ErrorCode::W0113),
+            (ErrorCode::E0114, ErrorCode::W0114),
+            (ErrorCode::E0115, ErrorCode::W0115),
+        ];
+        for (e, w) in pairs {
+            let (es, ws) = (e.as_str(), w.as_str());
+            assert!(!e.is_warning(), "{es} must be an error code");
+            assert!(w.is_warning(), "{ws} must be a warning code");
+            assert_eq!(&es[1..], &ws[1..], "{es}/{ws} must share one number");
+        }
+        // 模块契约段的分类:边界两条走 Module,类型一条走 Type。
+        assert_eq!(ErrorCode::E0113.category(), ErrorCategory::Module);
+        assert_eq!(ErrorCode::E0114.category(), ErrorCategory::Module);
+        assert_eq!(ErrorCode::E0115.category(), ErrorCategory::Type);
     }
     // ---- P3-009d: ErrorCategory, Severity, Span::range, extract_line, diagnostic builders ----
 

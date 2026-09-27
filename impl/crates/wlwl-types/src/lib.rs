@@ -33,11 +33,19 @@
 pub mod check;
 pub mod diag;
 pub mod env;
+pub mod sig;
 pub mod ty;
 
-pub use check::{check_program, check_program_with_builtins};
-pub use diag::{TypeDiag, TypeDiagKind};
+pub use check::{
+    check_program, check_program_detailed, check_program_with_builtins, CheckOutput,
+    DeclaredBinding,
+};
+pub use diag::{ContractCarrier, TypeDiag, TypeDiagKind};
 pub use env::TypeEnv;
+pub use sig::{
+    check_exports, check_imports, import_specs, parse_module_sig, ImportedModule, ModuleContract,
+    ModuleSig, SigEntry,
+};
 pub use ty::Ty;
 
 #[cfg(test)]

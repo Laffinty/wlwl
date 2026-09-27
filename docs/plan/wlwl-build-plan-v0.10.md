@@ -452,37 +452,126 @@ ADR-0010 当年以「全程序类型推断 = triple the work」否决静态检�
 
 ### 4.1 C1 — 模块签名
 
+> **状态:已完成(Step 6)。** 文法、诊断码与两侧职责均按实测定稿,下表
+> 「变更面」一列已换成实际落点。
+
 | 项 | 内容 |
 |----|------|
-| **目标** | 接口清单:导出类型、函数、(可选)效果/能力声明 |
-| **挂载点** | `ModuleLoader` 边界(`wlwl-eval/src/lib.rs:797-871`);加载后 EXPORT 集合比对 |
-| **签名载体** | **D-2 已定**:可选旁路文件 `foo.wll.sig`(与源同目录)。**「无签名 = v0.9 行为」因此是结构性保证,不是约定** —— 没有任何内嵌语法,不存在「忘了写签名标记」这回事 |
-| **签名内容** | 导出名 + 可选类型注解(复用 `TypeExpr`)+ 可选能力/效果标签(仅记录,v0.10 不强制) |
-| **校验** | 编译期(check 开启时):实现 EXPORT ⊆ 签名(或多出未声明 → 诊断);签名声明但未导出 → 诊断 |
-| **变更面** | `ModuleLoader` 加载路径增加签名发现/解析/比对;`wlwl-types` 提供签名中的类型解析;**eval 求值语义不变**(校验可在 check 层完成;run 时可选强制) |
+| **目标** | 接口清单:导出名 + 类型(能力/效果标签本版**不做**,理由见下) |
+| **挂载点** | 编译期:`wlwl check` 沿 import 图做契约比对;**不再挂在 `ModuleLoader` 上** —— 见「实测修订 1」 |
+| **签名载体** | **D-2 已定**:可选旁路文件 `foo.wll.sig`(与源同目录,后缀追加)。**「无签名 = v0.9 行为」因此是结构性保证,不是约定** |
+| **签名文法** | 行导向,一条声明一行,`#` 起注释。`EXPORT <名> : <类型>` / `EXPORT <名> (<形参>, …) : <返回>`。类型表达式**复用源码那一份文法**(一律方括号) |
+| **变更面** | `wlwl-types/src/sig.rs`(新:签名解析 + 契约比对 + `Display`);`wlwl-types/src/check.rs`(`check_program_detailed` + `DeclaredBinding`);`wlwl-eval` 抽出 `resolve_source` 并公开 `resolve_module_file`;`wlwl-cli` 接入 `static_check_gate` |
 | **预估人日** | **3–4 人日**(E4) |
-| **验收** | 签名不匹配有错误码;无签名模块行为与 v0.9 一致(回归) |
+| **实测** | `sig_mismatch_reports_e0113_e0114_e0115` / `sig_uses_the_source_type_grammar_so_the_two_cannot_drift` / `sig_display_round_trips_through_the_parser` / `c1_*` 端到端 7 项;workspace 1639 / 0 |
 
-**诊断码草案**(决策点 D-1 同池):
+**诊断码定稿**(D-1 同池,同号 W 码配对):
 
-| 条件 | 码 |
-|------|----|
-| 导出名不在签名中 | `E0113` module signature extra export |
-| 签名声明未导出 | `E0114` module signature missing export |
-| 签名类型与实现注解冲突 | `E0115` module signature type mismatch |
+| 条件 | `error` 档 | `warn` 档 | 分类桶 |
+|------|------------|----------|--------|
+| 导出 / 导入的名字不在声明面内(多出) | `E0113` | `W0113` | `Module` |
+| 声明面声明了但实现没导出(缺失) | `E0114` | `W0114` | `Module` |
+| 签名类型与实现注解冲突 | `E0115` | `W0115` | `Type` |
+
+> **`E0116+` 不归本项** —— Step 8 的 MATCH 穷尽性已预定 `E0116` / `W0116`
+> / `W0117`。Step 6 只占 `E0113`-`E0115`,不得越界。
+>
+> 分类桶**故意与 D-1 的「静态段一律 Type」不同**:`E0113`/`E0114` 说的是
+> 模块**公开面**不对(与 `E0023` / `E0040` 同族),`E0115` 才是类型冲突。
+
+**实际交付 —— 四个由实测/踩坑决定的实现选择**:
+
+1. **签名文法自带 `名字(形参) : 返回`,不复用箭头形式**。Step 3 已实测:
+   `FUN(INTEGER) -> STRING` 会被 parser 静默吸收成
+   `Named("( INTEGER ) - > STRING")` —— 签名若复用它,就是渲染一个自己
+   解析不回来的东西。所以签名文法**自带**一套参数列表写法,`Display` 也
+   按这套渲染,`parse(display(sig))` 往返成立(锁测试
+   `sig_display_round_trips_through_the_parser`)。
+2. **类型表达式走真 parser,不另写一份文法**。实现方式是把签名里的类型
+   文本包进合成的 `LET(__wlwl_sig_t: <文本>, 0);` 再调 `wlwl_parser::parse`
+   (`wlwl-types/src/sig.rs:parse_type_text`)。代价是一次小解析,换来的是
+   签名文法与注解文法**永不分叉**;前置 `line-1` 个换行使语法错误落在
+   `.sig` 的真实行号上。`wlwl-parser` 因此从 dev-dep 升为正式依赖
+   (分层合法:ADR-0020 只禁 `wlwl-eval` ↔ `wlwl-types`,而 `wlwl-ast`
+   本就依赖 `wlwl-parser`)。
+3. **解析规则单一来源**。原先计划让 `ModuleLoader` 在加载时比对签名,实测
+   不采纳:那会把静态层塞进 23k 行的 eval,且与 ADR-0020 Decision 1
+   (`eval` 不依赖 `wlwl-types`)冲突。改为**把 `ModuleLoader::load` 里的
+   路径解析原样抽成 `resolve_source`**,再公开一个只解析不求值的
+   `wlwl_eval::resolve_module_file(spec, base_dir)` 给编译期用 —— 项目根
+   包容检查、命名空间清单、`./` `../` 行走**只有一份实现**,不会漂移
+   (锁测试 `resolve_module_file_agrees_with_the_loader`)。
+4. **沿 import 图一次查完**。`wlwl check main.wll` 递归验证整条本地依赖链
+   上的契约,不必逐个文件跑。`路径 -> (契约, 已报过的名字)` 缓存保证
+   「同一模块只查一次」,环也打转不了(只解析不求值,不需要 `E0041`)。
+
+**两侧职责(刻意不对称)**:
+
+| 载体 | 模块自查 | 消费方(`IMPORT`)检查 |
+|------|---------|-------------------|
+| **签名文件** | ✅ `E0113`/`E0114`/`E0115` | ✅ `E0113`(用了签名没声明的名字) |
+| **`SEALED` 密封面** | ✅ `E0113`/`E0114` | ❌ 不查 |
+
+签名是**给别人看的契约**,所以消费方也查;密封面是**模块自己划的私有
+线**,越界由模块自查那条报,不在每个调用点复述一遍。且消费方侧带一份
+**去重集**:模块自查已经报过的名字,消费方不再复述 —— 用户要做的修复只
+有一件(把名字写进签名 / 密封面),不该在十个调用点看到十条一样的诊断
+(锁测试 `the_consumer_side_stays_silent_where_the_module_already_spoke`)。
+
+**能力 / 效果标签本版不做**:D-1 只给 C1 分配了 `E0113`-`E0115` 三个码,
+而「标签只记录不强制」不需要码 —— 那是个纯文档功能,放进 P2 余力项更
+合适。**不凭空加码**这条纪律仍然成立。
 
 ### 4.2 C2 — 可见性 / `SEALED`
 
+> **状态:已完成(Step 6)。** 语义按实测收敛,「外部通过任何途径触达非
+> 导出符号」这一条**在 v0.10 收缩为编译期契约**(理由见「实测修订 2」)。
+
 | 项 | 内容 |
 |----|------|
-| **目标** | `PRIVATE` / 显式 `EXPORT`;`SEALED MODULE` 禁止外部触达非导出符号 |
-| **挂载点** | 解析器(`wlwl-parser`)识别 `SEALED` 模块头 / 前置 `SEALED(...)` 声明 + 模块加载。**D-3 已定**:走**前缀调用 / 模块头声明**形式,与既有 `CLASS(...)` / `EXPORT([...])` 同构 |
-| **现状** | `EXPORT(["a","b"])` 声明导出集合;`collect_exports`(`lib.rs:1215-1224`);**无 SEALED、无 PRIVATE 关键字**;导入未导出名 → `E0023`(未绑定) |
-| **规则** | 未 `EXPORT` 的绑定默认**模块私有**(与现行为一致);`SEALED MODULE` 额外禁止:外部通过任何途径(包括 `MODULE_REF` 动态面,若存在)触达非导出符号 → 诊断 |
-| **变更面** | parser 新增前缀构造(**加法**);`ModuleLoader` 加载时记录 sealed 标记;导入边界检查 |
-| **词法面影响(实测修订)** | **§1.4 关键字表不变、§12 保留形式继续留空** —— 这是走前缀调用而非保留字的直接收益。原计划写「parser 关键字/头部语法」暗示要动关键字表,现已排除。仍需**新 AST 节点 + 新错误码** |
+| **目标** | 模块显式声明公开面并封起来;公开面与 `EXPORT` 不一致时报出来 |
+| **挂载点** | parser 识别 `SEALED([...])` 前缀调用(D-3);`wlwl-types` 做比对;`wlwl-eval` 记录 sealed 标记 |
+| **现状** | `EXPORT(["a","b"])` 声明导出集合;`collect_exports`(`lib.rs:1215-1224`);无 SEALED、无 PRIVATE 关键字;导入未导出名 → `E0023` |
+| **规则** | `SEALED([...])` 列出**完整的公开面**:多导出 → `E0113`;声明了却没导出 → `E0114`。运行期**不收紧**(见下) |
+| **变更面** | `wlwl-ast` 新增 `Expr::Sealed` 节点;`wlwl-parser` 前缀调用识别 + lint walk;`wlwl-formatter` 渲染;`wlwl-eval` `collect_sealed` + no-op 求值 + 密封专属的越界消息 |
+| **词法面影响(实测确认)** | **§1.4 关键字表不变、§12 保留形式继续留空** —— 走前缀调用的直接收益已兑现:`SEALED` 在 lexer 层仍只是 `TokenKind::Ident`,裸写 `SEALED`(不带括号)仍是普通变量引用(锁测试 `bare_sealed_without_parens_is_still_a_variable_reference`) |
 | **预估人日** | **2–3 人日**(E4) |
-| **验收** | 越界访问可诊断;非 SEALED 模块行为不变 |
+| **验收** | 越界可诊断 ✅;非 SEALED 模块行为不变 ✅(消息逐字节未变);运行期零语义变化 ✅ |
+| **实测** | `sealed_violation_reports_the_seal_as_the_missing_carrier` / `c2_*` 端到端 3 项 / `a_stale_seal_does_not_break_a_running_program` |
+
+**实测修订 1 —— 密封面比签名窄时要分两条诊断**。「多出」方向两个载体
+**合并成一条**(同一根因,改哪边都行,消息里说清缺在哪个载体);「缺失」
+方向两个载体**各报一条**(修法不同:一个改 `.sig`,一个改源码里的
+`SEALED`)。
+
+**实测修订 2 —— 「外部通过任何途径触达非导出符号」今天无处可查**。计划
+里假设存在 `MODULE_REF` 动态面,实测**不存在**:`Value` 没有 `Module`
+变体,模块不是一等值,`IMPORT` 绑的就是本地名字;模块对象只装导出名
+(`load_file_module` 构造 env 时只收 `collect_exports` 的结果)。所以
+C2 在 v0.10 的可执行语义收敛为:
+
+- **编译期**:`SEALED` 公开面 vs `EXPORT` 的双向比对(`E0113` / `E0114`);
+- **运行期**:接受 / 拒绝判定与 v0.9 **完全一致**,只是密封模块的越界
+  导入消息更准(仍是 `E0023`,只是从「not exported」变成「outside the
+  sealed surface」并带上修复提示)。非密封模块的消息**一个字都没改**
+  (锁测试 `unsealed_out_of_bounds_message_is_unchanged`)。
+
+**零破坏是硬承诺,并已锁测试**:密封面过期(实现导出得比密封面多)时,
+程序**照跑不误** —— 那是编译期 `E0113`,不是运行期故障
+(`a_stale_seal_does_not_break_a_running_program`)。新语法加进来,不许让
+今天能跑的程序跑不起来。
+
+**本 Step 明确不做(留痕,免得被当漏项)**:
+
+- **依赖模块自己的注解诊断不在 `check main.wll` 里报**。契约问题照报
+  (签名文件本身就是契约),但「`math.wll` 里有个注解失配」不该让用户
+  没点过的文件决定他这次 check 的退出码。要不要跨文件汇总,属于 Step 10
+  工具链薄壳的产品决策,不是契约层的。
+- **依赖模块的语法错 / 找不到的模块不在这里报** —— 那是 `run` 的
+  `E0040` / `E0043`,在这里再报一遍等于同一件事两条诊断。
+- **签名文件的 IO 错误算契约问题**(它就是契约的一半),按档位报。
+
+
 
 ### 4.3 C3 — 签名校验 + `sig-gen`
 
@@ -715,11 +804,16 @@ ADR-0010 当年以「全程序类型推断 = triple the work」否决静态检�
    ├─ gen_appendix_g 未改动:结构化字段是加法,附录 G 逐字节不变
    └─ 锁测试:builtin_sig_batch1_*(5) / appendix_g_regen_stable
       / CLI 端到端 5 项(生效/未覆盖静默/遮蔽优先/不查元数/off 不建表)
-[Step 6] impl:模块签名 C1 + 可见性/SEALED C2
-   ├─ 可选签名文件解析
-   ├─ ModuleLoader 边界比对
-   ├─ SEALED 模块头(加法语法)
-   └─ 锁测试:sig_mismatch_e0113_e0115 / sealed_violation / no_sig_behaves_as_v09
+[Step 6] impl:模块签名 C1 + 可见性/SEALED C2  ✅ 完成
+   ├─ 旁路 `foo.wll.sig` 解析(类型走真 parser,签名与注解文法不分叉)
+   ├─ E0113/E0114/E0115 + W 配对(E0116+ 留给 Step 8)
+   ├─ SEALED([...]) 前缀调用 → Expr::Sealed(词法面零扩张)
+   ├─ eval 抽出 resolve_source + 公开 resolve_module_file(解析单一来源)
+   ├─ check 沿 import 图递归验证(缓存去重,只解析不求值)
+   └─ 锁测试:sig_mismatch_e0113_e0114_e0115 / sealed_violation
+      / no_sig_behaves_as_v09 / c1_* / c2_*
+      / resolve_module_file_agrees_with_the_loader
+      / a_stale_seal_does_not_break_a_running_program
 [Step 7] impl:sig-gen / sig 校验 CLI(C3) + std 命名整理(C5′)
    ├─ wlwl sig-gen / wlwl sig
    └─ 锁测试:sig_gen_roundtrip_parse_check
@@ -773,16 +867,20 @@ ADR-0010 当年以「全程序类型推断 = triple the work」否决静态检�
 > **D-2 附带效果**:`*.wll.sig` 是旁路文件,「无签名 = v0.9 行为」因此是
 > 结构性保证,不是约定。
 
-### 10.3 锁测试预期增量(**Step 0–2 已实测,其余仍为估计**)
+### 10.3 锁测试预期增量(**Step 0–6 已实测,其余仍为估计**)
 
 | 时点 | 实测总数 | 增量 |
 |------|---------|------|
 | v0.9.0 基线 | 1517 / 0 failed | — |
 | Step 1 收尾 | 1536 / 0 | +19(A1) |
-| Step 2 收尾 | **1568 / 0** | **+32**(A3:wlwl-types 20 + wlwl-toml 6 + wlwl-cli 6) |
+| Step 2 收尾 | 1568 / 0 | +32(A3:wlwl-types 20 + wlwl-toml 6 + wlwl-cli 6) |
+| Step 3–5 收尾 | 1590 / 0 | +22(A4 8 + A2′ 6 + A6′ 8) |
+| Step 6 收尾 | **1639 / 0** | **+49**(C1/C2:error 1 + parser 4 + eval 6 + types 20 + cli 10 + 其余跨 crate 8) |
 
-> 目标 ≈1600±30 目前看**偏保守但仍合理** —— P0-1 剩余的 A2′ / A4 / A6′
-> 尚未贡献,故不必下调。**不虚报**:每项以实测为准。
+> 目标 ≈1600±30 **已达成且略超**。**不虚报**:每项以实测为准,`off` 档
+> 的零破坏由 `c1_respects_the_three_gradual_typing_levels` 反证(用一份
+> 「开启时必报」的签名文件证明门禁确实没跑)。
+
 
 - v0.9.0 基线 ≈**1517 passed** + 0 failed(保留,只增不减)
 - 增量(估,E4):

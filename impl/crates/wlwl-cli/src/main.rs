@@ -11,6 +11,7 @@
 //! the language specification. The exact command set is a per-
 //! implementation concern.
 
+use std::collections::{BTreeSet, HashMap};
 use std::fs;
 use std::path::PathBuf;
 use std::process::ExitCode;
@@ -20,6 +21,7 @@ use wlwl_ast::Expr;
 use wlwl_error::{ErrorCode, Location, Severity, WlwlDiagnostic, WlwlError};
 use wlwl_parser::{parse, parse_with_warnings};
 use wlwl_toml::manifest::{GradualTyping, GradualTypingSetting};
+use wlwl_types::{DeclaredBinding, Ty};
 
 #[derive(Debug, Clone, Copy, ValueEnum, Default)]
 enum OutputFormat {
@@ -120,7 +122,7 @@ fn run_file(file: &PathBuf, format: OutputFormat, execute: bool) -> ExitCode {
     // and `run` share this single entry point so the two subcommands can
     // never drift apart. Returns Some(exit code) when the caller must
     // abort.
-    if let Some(code) = static_check_gate(&ast, &base_dir, format) {
+    if let Some(code) = static_check_gate(&ast, file, &base_dir, format) {
         return code;
     }
 
@@ -646,6 +648,7 @@ fn builtin_sig_table() -> std::collections::HashMap<String, wlwl_types::Ty> {
 /// `W0013`-class name warning so a typo is visible rather than silent.
 fn static_check_gate(
     ast: &Expr,
+    file: &std::path::Path,
     base_dir: &std::path::Path,
     format: OutputFormat,
 ) -> Option<ExitCode> {
@@ -686,10 +689,25 @@ fn static_check_gate(
     // 那一层,所以它是唯一能同时看见 `SigTy` 与 `Ty` 的地方。
     let builtins = builtin_sig_table();
 
-    let mut rendered: Vec<WlwlDiagnostic> = wlwl_types::check_program_with_builtins(ast, &builtins)
+    // [v0.10 Step 6 / plan §4] 一次遍历同时拿到两样东西:类型诊断,以及
+    // 根作用域的绑定类型(模块契约要比的就是这份表)。
+    let checked = wlwl_types::check_program_detailed(ast, &builtins);
+    let mut rendered: Vec<WlwlDiagnostic> = checked
+        .diags
         .iter()
         .filter_map(|d| d.to_diagnostic(severity))
         .collect();
+
+    // [v0.10 Step 6 / plan §4.1 C1 + §4.2 C2] 模块契约:签名文件与
+    // `SEALED` 声明面。走完整 import 图,所以 `wlwl check main.wll`
+    // 一次就把本地依赖链上的契约全验了。
+    //
+    // 依赖模块的**签名文件读不了/写错**也算诊断(它就是契约的一部分);
+    // 但依赖模块自己的语法错、找不到的模块**不在这里报** —— 那些是
+    // `run` 的地盘,在这里再报一遍等于让 `check main.wll` 替别人家的
+    // 文件失败。
+    let contracts = scan_module_contracts(file, ast, &checked.declared, &builtins, severity);
+    rendered.extend(contracts);
     if rendered.is_empty() {
         return None;
     }
@@ -713,8 +731,184 @@ fn static_check_gate(
     }
 }
 
-/// After a successful `wlwl run`, refresh the project's
-/// `wlwl.lock` (per spec §13.8):
+// ── v0.10 Step 6 (P0-2 C1 / C2): 模块契约 ─────────────────────
+
+/// 旁路签名文件路径:`math.wll` → `math.wll.sig`。
+///
+/// 就地追加后缀,不新建目录、不引入别的命名空间 —— 决策 D-2 要的就是
+/// 「同目录、多一个后缀」,这样签名文件能跟着模块一起被版本控制搬走。
+fn sig_path_for(module: &std::path::Path) -> PathBuf {
+    let mut name = module.as_os_str().to_os_string();
+    name.push(".sig");
+    PathBuf::from(name)
+}
+
+/// 读一个模块的签名文件。`Ok(None)` = 没有签名文件(那是 v0.9 行为)。
+///
+/// 读不到 / 写错都算**契约的**问题,原样冒泡给调用方按档位渲染。
+fn load_module_sig(module: &std::path::Path) -> Result<Option<wlwl_types::ModuleSig>, WlwlError> {
+    let sig = sig_path_for(module);
+    if !sig.is_file() {
+        return Ok(None);
+    }
+    let text = fs::read_to_string(&sig).map_err(|e| {
+        WlwlDiagnostic::new(
+            ErrorCode::E0042,
+            format!("cannot read module signature '{}': {}", sig.display(), e),
+            Location::point(sig.to_string_lossy().to_string(), 0, 0),
+        )
+    })?;
+    wlwl_types::parse_module_sig(&text, &sig.to_string_lossy()).map(Some)
+}
+
+/// 沿 import 图检查模块契约,返回已按档位渲染好的诊断。
+///
+/// 每个模块在**第一次被发现**时做一次自查,然后进队列;出队时只查它对
+/// 直接依赖的消费方一侧。缓存 `路径 -> (契约, 已报过的名字)` 保证:
+/// 同一个模块被十个文件 import 也只查一次(不重复解析、不重复报),环也
+/// 不会打转 —— 这里不求值,所以不需要 `E0041` 那套环检测。
+///
+/// 每个模块查两件事:
+/// 1. **自查** —— 自己的 `EXPORT` 面 vs 自己的签名 / `SEALED`;
+/// 2. **查消费方** —— 自己的 `IMPORT` 名字 vs 直接依赖的签名。
+///
+/// 无签名的模块走 `wlwl-types` 的空契约短路,一条诊断都不会有。
+fn scan_module_contracts(
+    entry: &std::path::Path,
+    entry_ast: &Expr,
+    entry_declared: &[DeclaredBinding],
+    builtins: &HashMap<String, Ty>,
+    severity: Severity,
+) -> Vec<WlwlDiagnostic> {
+    use std::collections::{BTreeMap, HashMap as PathCache};
+
+    let mut out: Vec<WlwlDiagnostic> = Vec::new();
+
+    // 入口模块先自查(它不会被别人「发现」,所以不走下面的发现路径)。
+    let entry_contract = match build_contract(entry, entry_ast, severity) {
+        Ok(c) => c,
+        Err(d) => {
+            out.push(d);
+            return out;
+        }
+    };
+    let entry_check = wlwl_types::check_exports(entry_ast, entry_declared, &entry_contract);
+    out.extend(
+        entry_check
+            .diags
+            .iter()
+            .filter_map(|d| d.to_diagnostic(severity)),
+    );
+
+    // 规范路径 -> (契约, 自查已报过的「不在声明面内」的名字)
+    let mut cache: PathCache<PathBuf, (wlwl_types::ModuleContract, BTreeSet<String>)> =
+        PathCache::new();
+    cache.insert(
+        normalize_path(entry),
+        (entry_contract, entry_check.undeclared),
+    );
+
+    // 队列里带上已解析的 AST,避免同一模块解析两次。绑定表在「第一次被
+    // 发现」时就算掉了(自查在那儿做),不必跟着 AST 一起走。
+    let mut queue: Vec<(PathBuf, Expr)> = vec![(entry.to_path_buf(), clone_expr(entry_ast))];
+
+    while let Some((path, ast)) = queue.pop() {
+        // 直接依赖的契约:逐个 spec 解析到文件,顺带把新文件推进队列。
+        let base = path.parent().map(|p| p.to_path_buf()).unwrap_or_default();
+        let mut direct: BTreeMap<String, wlwl_types::ImportedModule> = BTreeMap::new();
+        for spec in wlwl_types::import_specs(&ast) {
+            // std 模块没有磁盘源,也就没有旁路签名;解析失败的 spec 是
+            // `run` 的 E0040 / E0043,在那里报。
+            let Ok(Some(dep)) = wlwl_eval::resolve_module_file(&spec, &base) else {
+                continue;
+            };
+            let key = normalize_path(&dep);
+            if !cache.contains_key(&key) {
+                // 第一次见到的依赖:读、解析、算绑定表、自查,然后进队列。
+                let Ok(source) = fs::read_to_string(&dep) else {
+                    continue;
+                };
+                let dep_name = dep.to_string_lossy().to_string();
+                let Ok(dep_ast) = parse(&source, &dep_name) else {
+                    continue; // 依赖自己的语法错归 `run`,见函数文档
+                };
+                let dep_contract = match build_contract(&dep, &dep_ast, severity) {
+                    Ok(c) => c,
+                    Err(d) => {
+                        out.push(d);
+                        continue;
+                    }
+                };
+                let dep_declared = wlwl_types::check_program_detailed(&dep_ast, builtins).declared;
+                let dep_check = wlwl_types::check_exports(&dep_ast, &dep_declared, &dep_contract);
+                // 依赖模块的**注解诊断**不在这里报(用户没问那个文件);
+                // 它的契约问题照报,见函数文档。
+                out.extend(
+                    dep_check
+                        .diags
+                        .iter()
+                        .filter_map(|d| d.to_diagnostic(severity)),
+                );
+                cache.insert(key.clone(), (dep_contract, dep_check.undeclared));
+                queue.push((dep, dep_ast));
+            }
+            let Some((contract, already_reported)) = cache.get(&key) else {
+                continue; // 上面刚报过签名文件问题,这个 spec 跳过
+            };
+            direct.insert(
+                spec,
+                wlwl_types::ImportedModule {
+                    contract: contract.clone(),
+                    already_reported: already_reported.clone(),
+                },
+            );
+        }
+        out.extend(
+            wlwl_types::check_imports(&ast, &direct)
+                .iter()
+                .filter_map(|d| d.to_diagnostic(severity)),
+        );
+    }
+
+    out
+}
+
+/// 组装一个模块的契约载体(签名文件 + `SEALED`),并把签名文件的问题
+/// 按当前档位渲染成诊断。
+fn build_contract(
+    path: &std::path::Path,
+    ast: &Expr,
+    severity: Severity,
+) -> Result<wlwl_types::ModuleContract, WlwlDiagnostic> {
+    let sig = load_module_sig(path).map_err(|e| e.diagnostic().clone().with_severity(severity))?;
+    Ok(wlwl_types::ModuleContract::from_module(
+        ast,
+        path.to_string_lossy().to_string(),
+        sig,
+    ))
+}
+
+/// 队列去重用的规范化路径。Windows 上同一个文件可能以
+/// `./math.wll` 与 `math.wll` 两种写法到达,不归一就会重复查、重复报。
+fn normalize_path(p: &std::path::Path) -> PathBuf {
+    use std::path::Component;
+    let mut out = PathBuf::new();
+    for c in p.components() {
+        match c {
+            Component::CurDir => {}
+            other => out.push(other.as_os_str()),
+        }
+    }
+    out
+}
+
+/// 队列里要带 AST,而调用方只借给我们一份 —— `Expr` 是 `Clone` 的,复制
+/// 一份比把它改成 `Rc` 划算(模块文件都很小,而且整棵 AST 只复制一次)。
+fn clone_expr(e: &Expr) -> Expr {
+    e.clone()
+}
+
+/// After a successful `wlwl run`, refresh the project's/// `wlwl.lock` (per spec §13.8):
 ///
 /// - Locate the project root (nearest ancestor with `wlwl.toml`).
 /// - Read the manifest. If it fails to parse, silently skip; the
@@ -1042,6 +1236,327 @@ mod tests {
                 "off mode must not judge: {setting}"
             );
         }
+    }
+
+    /// 写一个带 `wlwl.toml` 的最小工程,返回**工程根目录**。
+    ///
+    /// Step 6 的用例要摆下模块 + 旁路签名文件,所以这里返回目录而不是
+    /// `.wll` 路径,让用例自己往里放文件。
+    fn module_project(dir: &str, gradual: &str) -> PathBuf {
+        let root = std::env::temp_dir().join("wlwl-cli-tests").join(dir);
+        let _ = fs::remove_dir_all(&root);
+        fs::create_dir_all(&root).unwrap();
+        fs::write(
+            root.join("wlwl.toml"),
+            format!(
+                "[package]\nname = \"probe\"\nversion = \"0.0.1\"\nentry = \"main.wll\"\n\n[features]\ngradual_typing = {}\n",
+                gradual
+            ),
+        )
+        .unwrap();
+        root
+    }
+
+    // -- v0.10 Step 6 (P0-2 C1): 旁路签名文件 ----------------------------
+
+    /// `math.wll` + 一份**匹配**的签名。返回工程根。
+    ///
+    /// 注意 `add` 那个绑定**故意不加** `LET` 注解:函数的类型由 `FUN`
+    /// 自己的形参/返回注解推出来(`FUN[INTEGER, INTEGER] -> INTEGER`),
+    /// 那正是 `E0115` 要比的东西。给 `LET` 加注解反而会把这条推断盖掉。
+    fn signed_math_project(dir: &str, gradual: &str, sig: &str) -> PathBuf {
+        let root = module_project(dir, gradual);
+        fs::write(
+            root.join("math.wll"),
+            "LET(add, FUN((a: INTEGER, b: INTEGER) : INTEGER, +(a, b)));\n\
+             LET(PI, 3);\n\
+             EXPORT([\"add\", \"PI\"]);\n",
+        )
+        .unwrap();
+        fs::write(
+            root.join("main.wll"),
+            "IMPORT(\"math\", [\"add\"]);\nPRINT(add(1, 2));\n",
+        )
+        .unwrap();
+        fs::write(root.join("math.wll.sig"), sig).unwrap();
+        root
+    }
+
+    /// 锁测试:签名与实现对得上时,`check` 干净通过 —— 新增的这层不能给
+    /// 正确的程序添乱。
+    #[test]
+    fn c1_matching_signature_passes() {
+        let root = signed_math_project(
+            "c1_ok",
+            "\"error\"",
+            "EXPORT add (INTEGER, INTEGER) : INTEGER\nEXPORT PI : INTEGER\n",
+        );
+        assert_eq!(
+            run_file(&root.join("main.wll"), OutputFormat::Human, false),
+            ExitCode::SUCCESS
+        );
+        // `run` 也照常(契约层是编译期的,不改变求值语义)。
+        assert_eq!(
+            run_file(&root.join("main.wll"), OutputFormat::Human, true),
+            ExitCode::SUCCESS
+        );
+    }
+
+    /// 锁测试:`no_sig_behaves_as_v09` 的端到端版。删掉签名文件,同一个
+    /// 工程必须回到「什么都没报」。
+    #[test]
+    fn c1_no_sig_behaves_as_v09() {
+        let root = signed_math_project(
+            "c1_no_sig",
+            "\"error\"",
+            "EXPORT nothing_like_this : STRING\n",
+        );
+        let _ = fs::remove_file(root.join("math.wll.sig"));
+        assert_eq!(
+            run_file(&root.join("main.wll"), OutputFormat::Human, false),
+            ExitCode::SUCCESS
+        );
+    }
+
+    /// 锁测试:`E0113`(多出)/ `E0114`(缺失)/ `E0115`(类型冲突)三条
+    /// 在真实工程里各报各的。
+    #[test]
+    fn c1_signature_mismatch_reports_e0113_e0114_e0115() {
+        // E0113:签名没声明 `PI`。
+        let root = signed_math_project(
+            "c1_e0113",
+            "\"error\"",
+            "EXPORT add (INTEGER, INTEGER) : INTEGER\n",
+        );
+        assert_eq!(
+            run_file(&root.join("main.wll"), OutputFormat::Human, false),
+            ExitCode::from(1)
+        );
+        // E0114:签名声明了实现没导出的 `sub`。
+        let root = signed_math_project(
+            "c1_e0114",
+            "\"error\"",
+            "EXPORT add (INTEGER, INTEGER) : INTEGER\nEXPORT sub (INTEGER, INTEGER) : INTEGER\n",
+        );
+        assert_eq!(
+            run_file(&root.join("main.wll"), OutputFormat::Human, false),
+            ExitCode::from(1)
+        );
+        // E0115:签名说 `add` 返回 STRING,实现注解是 INTEGER。
+        let root = signed_math_project(
+            "c1_e0115",
+            "\"error\"",
+            "EXPORT add (INTEGER, INTEGER) : STRING\nEXPORT PI : INTEGER\n",
+        );
+        assert_eq!(
+            run_file(&root.join("main.wll"), OutputFormat::Human, false),
+            ExitCode::from(1)
+        );
+    }
+
+    /// 签名是**给别人看的契约**:消费方用了一个签名没声明的名字,报
+    /// `E0113` —— 即使那个名字模块真的导出了。
+    #[test]
+    fn c1_import_of_an_undeclared_name_is_e0113() {
+        let root = signed_math_project(
+            "c1_import",
+            "\"error\"",
+            "EXPORT add (INTEGER, INTEGER) : INTEGER\n",
+        );
+        // `PI` 被模块导出了,但签名没声明它。
+        fs::write(
+            root.join("main.wll"),
+            "IMPORT(\"math\", [\"PI\"]);\nPRINT(PI);\n",
+        )
+        .unwrap();
+        assert_eq!(
+            run_file(&root.join("main.wll"), OutputFormat::Human, false),
+            ExitCode::from(1)
+        );
+        // 声明过就静默。
+        let root = signed_math_project(
+            "c1_import_ok",
+            "\"error\"",
+            "EXPORT add (INTEGER, INTEGER) : INTEGER\nEXPORT PI : INTEGER\n",
+        );
+        fs::write(
+            root.join("main.wll"),
+            "IMPORT(\"math\", [\"PI\"]);\nPRINT(PI);\n",
+        )
+        .unwrap();
+        assert_eq!(
+            run_file(&root.join("main.wll"), OutputFormat::Human, false),
+            ExitCode::SUCCESS
+        );
+    }
+
+    /// 契约沿 import 图传递:`main` → `a.wll` → `b.wll`,`b` 的签名对不上
+    /// 时 `check main.wll` 就该报,不必单独 check 每一个文件。
+    #[test]
+    fn c1_contracts_are_checked_across_the_import_graph() {
+        let root = module_project("c1_graph", "\"error\"");
+        fs::write(root.join("b.wll"), "LET(v, 1); EXPORT([\"v\"]);\n").unwrap();
+        // `b` 的签名说 v 是 STRING,实现没注解但字面量推成 INTEGER。
+        fs::write(root.join("b.wll.sig"), "EXPORT v : STRING\n").unwrap();
+        fs::write(
+            root.join("a.wll"),
+            "IMPORT(\"b\", [\"v\"]);\nEXPORT([\"v\"]);\n",
+        )
+        .unwrap();
+        fs::write(
+            root.join("main.wll"),
+            "IMPORT(\"a\", [\"v\"]);\nPRINT(v);\n",
+        )
+        .unwrap();
+        assert_eq!(
+            run_file(&root.join("main.wll"), OutputFormat::Human, false),
+            ExitCode::from(1)
+        );
+    }
+
+    /// 签名文件自己写错了也是契约问题,按档位报(语法码 E0010,不是新码)。
+    #[test]
+    fn c1_malformed_signature_is_reported_at_its_own_line() {
+        let root = signed_math_project(
+            "c1_malformed",
+            "\"error\"",
+            "EXPORT add (INTEGER, INTEGER) : INTEGER\nMODULE nonsense\n",
+        );
+        assert_eq!(
+            run_file(&root.join("main.wll"), OutputFormat::Human, false),
+            ExitCode::from(1)
+        );
+    }
+
+    /// `warn` 档发 `W0113` 但不挡退出码;`off` 档连签名文件都不读。
+    #[test]
+    fn c1_respects_the_three_gradual_typing_levels() {
+        let sig = "EXPORT nothing_like_this : INTEGER\n";
+        let warn = signed_math_project("c1_warn", "\"warn\"", sig);
+        assert_eq!(
+            run_file(&warn.join("main.wll"), OutputFormat::Human, false),
+            ExitCode::SUCCESS
+        );
+        for setting in ["\"off\"", "DEFAULT_NO_KEY"] {
+            let root = if setting == "DEFAULT_NO_KEY" {
+                let root = module_project("c1_off_no_key", "\"off\"");
+                let _ = fs::remove_file(root.join("wlwl.toml"));
+                fs::write(root.join("math.wll"), "LET(a, 1); EXPORT([\"a\"]);\n").unwrap();
+                fs::write(
+                    root.join("main.wll"),
+                    "IMPORT(\"math\", [\"a\"]);\nPRINT(a);\n",
+                )
+                .unwrap();
+                fs::write(root.join("math.wll.sig"), sig).unwrap();
+                root
+            } else {
+                signed_math_project("c1_off", setting, sig)
+            };
+            assert_eq!(
+                run_file(&root.join("main.wll"), OutputFormat::Human, false),
+                ExitCode::SUCCESS,
+                "off mode must not judge the signature: {setting}"
+            );
+        }
+    }
+
+    // -- v0.10 Step 6 (P0-2 C2): SEALED 声明面 ---------------------------
+
+    /// 锁测试:`sealed_violation` 的端到端版。`SEALED` 划的公开面比
+    /// `EXPORT` 窄 → `E0113`,消息里要点名是密封面。
+    #[test]
+    fn c2_sealed_violation_is_reported() {
+        let root = module_project("c2_violation", "\"error\"");
+        fs::write(
+            root.join("math.wll"),
+            "SEALED([\"open\"]);\n\
+             LET(open: INTEGER, 1);\n\
+             LET(secret: INTEGER, 2);\n\
+             EXPORT([\"open\", \"secret\"]);\n",
+        )
+        .unwrap();
+        fs::write(
+            root.join("main.wll"),
+            "IMPORT(\"math\", [\"open\"]);\nPRINT(open);\n",
+        )
+        .unwrap();
+        assert_eq!(
+            run_file(&root.join("main.wll"), OutputFormat::Human, false),
+            ExitCode::from(1)
+        );
+        // 密封面与导出面一致 → 静默。
+        fs::write(
+            root.join("math.wll"),
+            "SEALED([\"open\"]);\nLET(open: INTEGER, 1);\nEXPORT([\"open\"]);\n",
+        )
+        .unwrap();
+        assert_eq!(
+            run_file(&root.join("main.wll"), OutputFormat::Human, false),
+            ExitCode::SUCCESS
+        );
+    }
+
+    /// `SEALED` 与签名可以并存:两条载体各自查自己那一侧,一个根因一条
+    /// 诊断。签名对了但密封面过期,只报密封面那一条。
+    #[test]
+    fn c2_seal_and_signature_coexist() {
+        let root = module_project("c2_both", "\"error\"");
+        fs::write(
+            root.join("math.wll"),
+            "SEALED([\"open\"]);\n\
+             LET(open: INTEGER, 1);\n\
+             LET(secret: INTEGER, 2);\n\
+             EXPORT([\"open\", \"secret\"]);\n",
+        )
+        .unwrap();
+        fs::write(
+            root.join("main.wll"),
+            "IMPORT(\"math\", [\"open\"]);\nPRINT(open);\n",
+        )
+        .unwrap();
+        // 签名把两个名字都声明了(消费方侧静默),但密封面只留 `open`。
+        fs::write(
+            root.join("math.wll.sig"),
+            "EXPORT open : INTEGER\nEXPORT secret : INTEGER\n",
+        )
+        .unwrap();
+        assert_eq!(
+            run_file(&root.join("main.wll"), OutputFormat::Human, false),
+            ExitCode::from(1)
+        );
+        // 把 `secret` 也封进去,整条链就干净了。
+        fs::write(
+            root.join("math.wll"),
+            "SEALED([\"open\", \"secret\"]);\n\
+             LET(open: INTEGER, 1);\n\
+             LET(secret: INTEGER, 2);\n\
+             EXPORT([\"open\", \"secret\"]);\n",
+        )
+        .unwrap();
+        assert_eq!(
+            run_file(&root.join("main.wll"), OutputFormat::Human, false),
+            ExitCode::SUCCESS
+        );
+    }
+
+    /// 零破坏的端到端版:写上 `SEALED` 之后,程序照跑、值不变。
+    #[test]
+    fn c2_sealed_does_not_change_runtime_behaviour() {
+        let root = module_project("c2_runtime", "\"error\"");
+        fs::write(
+            root.join("math.wll"),
+            "SEALED([\"twice\"]);\nLET(twice, FUN((n) : INTEGER, *(n, 2)));\nEXPORT([\"twice\"]);\n",
+        )
+        .unwrap();
+        fs::write(
+            root.join("main.wll"),
+            "IMPORT(\"math\", [\"twice\"]);\nPRINT(twice(21));\n",
+        )
+        .unwrap();
+        assert_eq!(
+            run_file(&root.join("main.wll"), OutputFormat::Human, true),
+            ExitCode::SUCCESS
+        );
     }
 
     #[test]

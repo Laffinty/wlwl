@@ -49,9 +49,59 @@ pub fn check_program(expr: &Expr) -> Vec<TypeDiag> {
 /// 首批(A6′)未结构化的 50 条**不在表里** —— 它们等价于「查不到签名」,
 /// 静态层落 `Dynamic`、**不产生诊断**。
 pub fn check_program_with_builtins(expr: &Expr, builtins: &HashMap<String, Ty>) -> Vec<TypeDiag> {
+    check_program_detailed(expr, builtins).diags
+}
+
+/// 一个**根作用域**绑定的静态类型 —— 模块契约检查(Step 6)的输入。
+///
+/// 只收根作用域(`TypeEnv::depth() == 1`),也就是模块顶层能看到的那些
+/// 名字:函数体内的局部变量、模式匹配的子句绑定一律不进。理由是模块
+/// 契约只对**公开面**说话,而公开面只能是顶层绑定。
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct DeclaredBinding {
+    /// 绑定名
+    pub name: String,
+    /// 静态类型:有注解取注解,无注解取推断结果(常常是 `Dynamic`)
+    pub ty: Ty,
+    /// 定位:有类型注解时指向注解,否则指向绑定表达式
+    pub span: Span,
+}
+
+/// [`check_program_detailed`] 的产物。
+#[derive(Debug, Clone, Default)]
+pub struct CheckOutput {
+    /// 全部类型诊断(按发现顺序)
+    pub diags: Vec<TypeDiag>,
+    /// 根作用域绑定的静态类型,同名取最后一次绑定(与重绑定语义一致)
+    pub declared: Vec<DeclaredBinding>,
+}
+
+/// [`check_program`] 的完整版:除了诊断,还交出根作用域的绑定类型。
+///
+/// Step 6 的模块契约检查需要后者 —— `E0115`(签名类型 vs 实现注解)要比的
+/// 就是这份表。把它做成同一次遍历的副产品而不是另写一遍顶层扫描,是为了
+/// 让「推断出来的类型」只有**一个**来源:两处各自推断必然漂移。
+pub fn check_program_detailed(expr: &Expr, builtins: &HashMap<String, Ty>) -> CheckOutput {
     let mut checker = Checker::new(builtins);
     checker.check_expr(expr, None);
-    checker.diags
+    CheckOutput {
+        diags: checker.diags,
+        declared: dedupe_last_binding(checker.declared),
+    }
+}
+
+/// 同名绑定取最后一次:模块顶层 `LET(f, ...)` 覆盖前者,与 §3.2 重绑定
+/// 语义一致,也与 [`TypeEnv`] 的 `bind` 覆盖行为一致。顺序保持首次出现
+/// 的位置,便于诊断输出稳定。
+fn dedupe_last_binding(bindings: Vec<DeclaredBinding>) -> Vec<DeclaredBinding> {
+    let mut out: Vec<DeclaredBinding> = Vec::with_capacity(bindings.len());
+    for b in bindings {
+        match out.iter_mut().find(|p| p.name == b.name) {
+            Some(prev) => *prev = b,
+            None => out.push(b),
+        }
+    }
+    out
 }
 
 struct Checker<'a> {
@@ -62,6 +112,8 @@ struct Checker<'a> {
     returns: Vec<Ty>,
     /// 内建签名表(Step 5 · A6′)。查不到 = 没有签名。
     builtins: &'a HashMap<String, Ty>,
+    /// 根作用域绑定(Step 6)。见 [`DeclaredBinding`]。
+    declared: Vec<DeclaredBinding>,
 }
 
 impl<'a> Checker<'a> {
@@ -71,6 +123,18 @@ impl<'a> Checker<'a> {
             diags: Vec::new(),
             returns: Vec::new(),
             builtins,
+            declared: Vec::new(),
+        }
+    }
+
+    /// 记录一个根作用域绑定。非根作用域静默忽略 —— 契约只管公开面。
+    fn record(&mut self, name: &str, ty: Ty, span: Span) {
+        if self.env.depth() == 1 {
+            self.declared.push(DeclaredBinding {
+                name: name.to_string(),
+                ty,
+                span,
+            });
         }
     }
 
@@ -219,6 +283,14 @@ impl<'a> Checker<'a> {
                 }
                 let bound = declared.unwrap_or(actual);
                 self.env.bind(name.clone(), bound.clone());
+                self.record(
+                    name,
+                    bound.clone(),
+                    type_annotation
+                        .as_ref()
+                        .map(|a| a.span.clone())
+                        .unwrap_or_else(|| span.clone()),
+                );
                 bound
             }
             Expr::LetPattern {
@@ -311,6 +383,14 @@ impl<'a> Checker<'a> {
                 // 具名函数先把签名绑进**外层**作用域,函数体里才能自递归。
                 if let Some(n) = name {
                     self.env.bind(n.clone(), fun_ty.clone());
+                    self.record(
+                        n,
+                        fun_ty.clone(),
+                        return_type
+                            .as_ref()
+                            .map(|a| a.span.clone())
+                            .unwrap_or_else(|| expr_span(expr)),
+                    );
                 }
                 self.env.push_scope();
                 for (p, t) in params.iter().zip(param_tys) {
@@ -394,9 +474,11 @@ impl<'a> Checker<'a> {
                 // 有类型」的情形退化成 Dynamic。
                 Ty::lub(&unified.unwrap_or(Ty::Dynamic), &d)
             }
-            // IMPORT / EXPORT 的类型契约归 C1(Step 6 的模块签名),
-            // A3 不预判。
-            Expr::Import { .. } | Expr::Export { .. } => Ty::Dynamic,
+            // IMPORT / EXPORT / SEALED 的**类型**契约归 C1/C2(Step 6 的
+            // 模块签名与密封面),但它们的名字面契约不需要类型:
+            // 导出集与声明集的差集是纯名字比较,走 [`crate::sig`]。
+            // 这里一律落 `Dynamic`,不预判。
+            Expr::Import { .. } | Expr::Export { .. } | Expr::Sealed { .. } => Ty::Dynamic,
         }
     }
 
@@ -519,7 +601,10 @@ impl<'a> Checker<'a> {
     /// 把模式里的名字绑进当前作用域。`ty` 是被匹配值的类型。
     fn bind_pattern(&mut self, pattern: &Pattern, ty: &Ty) {
         match pattern {
-            Pattern::Ident(name, _) => self.env.bind(name.clone(), ty.clone()),
+            Pattern::Ident(name, span) => {
+                self.env.bind(name.clone(), ty.clone());
+                self.record(name, ty.clone(), span.clone());
+            }
             Pattern::Wildcard(_) | Pattern::Literal(..) => {}
             Pattern::Array(items, rest, _) => {
                 let elem = match ty {
@@ -636,7 +721,8 @@ fn expr_span(e: &Expr) -> Span {
         | Expr::OrDie { span: s, .. }
         | Expr::Match { span: s, .. }
         | Expr::Import { span: s, .. }
-        | Expr::Export { span: s, .. } => s.clone(),
+        | Expr::Export { span: s, .. }
+        | Expr::Sealed { span: s, .. } => s.clone(),
     }
 }
 
@@ -1251,5 +1337,71 @@ mod tests {
         // UndefinedName 同理(parser lint 的地盘)。
         let d = TypeDiag::synthetic(TypeDiagKind::UndefinedName { name: "x".into() });
         assert!(d.to_error().is_none());
+    }
+
+    // ---- Step 6:根作用域绑定表(模块契约的输入) ----
+
+    fn declared_of(src: &str) -> Vec<(String, Ty)> {
+        let ast = parse(src, "check.wll").expect("fixture must parse");
+        check_program_detailed(&ast, &HashMap::new())
+            .declared
+            .into_iter()
+            .map(|b| (b.name, b.ty))
+            .collect()
+    }
+
+    #[test]
+    fn root_bindings_are_reported_and_use_the_annotation_when_present() {
+        assert_eq!(
+            declared_of("LET(x: INTEGER, 1); LET(s: STRING, \"a\");"),
+            vec![
+                ("x".to_string(), Ty::Integer),
+                ("s".to_string(), Ty::String),
+            ]
+        );
+        // 无注解 → 走推断(字面量仍可知)。
+        assert_eq!(declared_of("LET(n, 1);"), vec![("n".into(), Ty::Integer)]);
+    }
+
+    #[test]
+    fn only_root_scope_bindings_are_reported() {
+        // 函数体内的局部变量不是公开面,不能进契约表 —— 只有外层的 `f` 进。
+        assert_eq!(
+            declared_of("LET(f, FUN(() : INTEGER, LET(local, 1); local));").len(),
+            1
+        );
+        // 顶层 LET 的右值里、函数体内的嵌套绑定同样不进。
+        assert!(declared_of("LET(f, FUN((a), LET(inner, a); inner));")
+            .iter()
+            .all(|(n, _)| n == "f"));
+    }
+
+    #[test]
+    fn a_named_function_at_the_top_level_lands_in_the_table() {
+        // 具名函数形如 `FUN(name(params), body)`,名字绑在**外层**作用域,
+        // 所以它是公开面的一部分。
+        let src = "LET(f, FUN((a: INTEGER) : INTEGER, a));";
+        assert_eq!(
+            declared_of(src),
+            vec![(
+                "f".to_string(),
+                Ty::Fun {
+                    params: vec![Ty::Integer],
+                    ret: Box::new(Ty::Integer),
+                }
+            )]
+        );
+    }
+
+    #[test]
+    fn rebinding_keeps_the_last_type_at_the_first_position() {
+        // 与 TypeEnv 的覆盖语义一致:同名取最后一次,位置保持首次。
+        assert_eq!(
+            declared_of("LET(x: INTEGER, 1); LET(y, 2); LET(x: STRING, \"a\");"),
+            vec![
+                ("x".to_string(), Ty::String),
+                ("y".to_string(), Ty::Integer),
+            ]
+        );
     }
 }
