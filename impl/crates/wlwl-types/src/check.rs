@@ -62,6 +62,9 @@ impl Checker {
 
     /// 「实际类型 vs 期望类型」的统一判定。`Dynamic` 在任一侧都不报 ——
     /// 这是「不误报优先」纪律的落点。
+    ///
+    /// 判定走 [`Ty::satisfies_annotation`] 而非 `is_assignable_to`:前者
+    /// 额外承认 `OPTION[T]` 注解糖的运行时见证(A4)。
     fn require(
         &mut self,
         expected: &Ty,
@@ -69,7 +72,7 @@ impl Checker {
         kind_of: impl Fn(Ty, Ty) -> TypeDiagKind,
         span: &Span,
     ) {
-        if !found.is_assignable_to(expected) {
+        if !found.satisfies_annotation(expected) {
             self.report(kind_of(expected.clone(), found.clone()), span);
         }
     }
@@ -280,9 +283,17 @@ impl Checker {
                 let t = self.check_expr(value, None);
                 Ty::Result(Box::new(Ty::Dynamic), Box::new(t))
             }
-            Expr::Panic { value, .. } | Expr::Try { value, .. } => {
+            Expr::Panic { value, .. } => {
                 self.check_expr(value, None);
                 Ty::Dynamic
+            }
+            // `TRY(x)`(spec §8.3):`OK(v)` 时取 `v`,`ERR` 时等价于
+            // `RETURN(err)`。所以静态类型就是**成功侧载荷**。
+            // 错误侧具体化时(`RESULT[T, STRING]`)不给结论 —— `OK`/`ERR`
+            // 是运行期分支,判断哪一支属于类型收窄(A5,已推迟)。
+            Expr::Try { value, .. } => {
+                let inner = self.check_expr(value, None);
+                inner.unwrap_result().cloned().unwrap_or(Ty::Dynamic)
             }
             Expr::IsOk { value, .. } | Expr::IsErr { value, .. } => {
                 self.check_expr(value, None);
@@ -291,11 +302,8 @@ impl Checker {
             Expr::OrDie { value, default, .. } => {
                 let inner = self.check_expr(value, None);
                 self.check_expr(default, None);
-                // OR_DIE 拆封:OK 变体脱掉 Dynamic 错误侧。
-                match inner {
-                    Ty::Result(t, e) if e.is_dynamic() => *t,
-                    other => other,
-                }
+                // 同样只在错误侧未知时解包。
+                inner.unwrap_result().cloned().unwrap_or(Ty::Dynamic)
             }
             Expr::Match {
                 value,
@@ -356,6 +364,22 @@ impl Checker {
 
         // 只有**本模块内可见、且带注解**的函数才有签名。内建建与未知名字
         // 一律 Dynamic —— A6′ 之前无从得知内建返回类型。
+        // `RESULT` 解包族(spec §8.3 消费者注册表)。`IS_OK` / `IS_ERR` /
+        // `OR_DIE` / `TRY` 是 **lexer 关键字**,由 parser 降级成 `Expr::*`,已在
+        // 上面按节点处理;只有 `UNWRAP` / `UNWRAP_OR` / `ERR_PAYLOAD`
+        // 走通用 `Expr::Call` 路径(参见
+        // `wlwl-eval/src/lib.rs:5459-5467` 的同名注记),所以必须在
+        // 这里特判 —— 否则它们的返回类型永远是
+        // `Dynamic`,`RESULT` 的注解糖语义就丢了。
+        match (name, arg_tys.len()) {
+            ("UNWRAP", 1) | ("UNWRAP_OR", 2) => return unwrap_side(&arg_tys[0], Side::Ok),
+            ("ERR_PAYLOAD", 1) => return unwrap_side(&arg_tys[0], Side::Err),
+            // 元数不对:交回运行时报(它的 arity 诊断更准,
+            // 且不在 A4 范围)。
+            ("UNWRAP" | "UNWRAP_OR" | "ERR_PAYLOAD", _) => return Ty::Dynamic,
+            _ => {}
+        }
+
         let Some(Ty::Fun { params, ret }) = self.env.lookup(name).cloned() else {
             return Ty::Dynamic;
         };
@@ -371,7 +395,7 @@ impl Checker {
             return *ret;
         }
         for (position, (expected_t, found_t)) in params.iter().zip(&arg_tys).enumerate() {
-            if !found_t.is_assignable_to(expected_t) {
+            if !found_t.satisfies_annotation(expected_t) {
                 self.report(
                     TypeDiagKind::CallArgMismatch {
                         position,
@@ -437,6 +461,40 @@ impl Checker {
     }
 }
 
+/// 取 `RESULT` 的哪一侧。
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum Side {
+    /// `OK(v)` 的载荷 —— `UNWRAP` / `UNWRAP_OR` / `TRY` / `OR_DIE` 的结果。
+    Ok,
+    /// `ERR(e)` 的载荷 —— `ERR_PAYLOAD` 的结果。
+    Err,
+}
+
+/// 解包族的返回类型。
+///
+/// 只在**另一侧未知**（`Dynamic`）时给出结论:另一侧一旦
+/// 具体化,`OK` / `ERR` 就是**运行期分支**,静态层无从知道
+/// 实际走了哪一支(属于类型收窄,A5 已推迟)。给不出结论
+/// 就回退 `Dynamic` → 不报,符合「不误报优先」。
+fn unwrap_side(ty: &Ty, side: Side) -> Ty {
+    match ty {
+        Ty::Result(ok, err) => {
+            let known = ok.is_dynamic() || err.is_dynamic();
+            if !known {
+                return Ty::Dynamic;
+            }
+            match side {
+                Side::Ok if err.is_dynamic() => (**ok).clone(),
+                Side::Err if ok.is_dynamic() => (**err).clone(),
+                _ => Ty::Dynamic,
+            }
+        }
+        other if other.is_dynamic() => Ty::Dynamic,
+        // 非 `RESULT` 交给运行时报(`E0030`),静态层不重复报。
+        _ => Ty::Dynamic,
+    }
+}
+
 /// 逐位置合流:一致才保留,否则退回 `Dynamic`。
 fn unify(prev: Option<Ty>, next: Ty) -> Option<Ty> {
     Some(match prev {
@@ -492,11 +550,25 @@ fn actual_span(e: &Expr) -> Span {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use wlwl_ast::TypeAnnotation;
     use wlwl_parser::parse;
 
     fn check(src: &str) -> Vec<TypeDiag> {
         let ast = parse(src, "check.wll").expect("fixture must parse");
         check_program(&ast)
+    }
+
+    /// 取一个形参上的类型注解。
+    fn ann_of(annotation: &str) -> TypeAnnotation {
+        let src = format!("FUN((x: {annotation}), x);");
+        let expr = parse(&src, "check.wll").expect("annotation must parse");
+        let Expr::Fun { params, .. } = expr else {
+            panic!("expected a FUN expression");
+        };
+        params[0]
+            .type_annotation
+            .clone()
+            .expect("param carries an annotation")
     }
 
     fn codes(src: &str) -> Vec<String> {
@@ -701,6 +773,232 @@ mod tests {
             "LET(s, \"value: ${g(bad)}\");"
         );
         assert_eq!(codes(src), ["E0111"]);
+    }
+
+    // ---- A4:OPTION[T] 注解糖语义 ----
+
+    #[test]
+    fn option_accepts_its_two_runtime_witnesses() {
+        // 规范端见证:`NULL`("就是没有")与 `RESULT`("或者是一个 T")。
+        // spec §2.1 的 13 个运行时类型里没有 OPTION,所以 `Option<T>`
+        // 必须有运行时见证,否则用户写不出、也判不了。
+        assert_eq!(check("LET(x: OPTION[INTEGER], NULL);"), vec![]);
+        assert_eq!(check("LET(x: OPTION[INTEGER], OK(1));"), vec![]);
+        // 容器层上的 OPTION 也成立(递归使用一致规则)。
+        assert_eq!(check("LET(x: OPTION[ARRAY[INTEGER]], OK([1, 2]));"), vec![]);
+    }
+
+    #[test]
+    fn option_rejects_a_bare_t() {
+        // 反向保护:若裸 `T` 也通过,OPTION 就退化成 T 的别名,
+        // 失去全部意义。
+        assert_eq!(codes("LET(x: OPTION[INTEGER], 1);"), ["E0110"]);
+        assert_eq!(codes(r#"LET(x: OPTION[INTEGER], "s");"#), ["E0110"]);
+        // OK 侧类型不匹配时仍报失配。
+        assert_eq!(codes(r#"LET(x: OPTION[INTEGER], OK("s"));"#), ["E0110"]);
+    }
+
+    #[test]
+    fn option_sugar_does_not_leak_into_other_annotations() {
+        // `satisfies_annotation` 只多认 OPTION 一种糖,其余全部走
+        // `is_assignable_to` 的结构规则 —— 两层不得混淆。
+        // 空值就是不能填进 RESULT。
+        assert_eq!(codes("LET(x: RESULT[INTEGER, STRING], NULL);"), ["E0110"]);
+        // 基础类型之间的失配与 OPTION 无关,照报。
+        assert_eq!(codes("LET(x: INTEGER, NULL);"), ["E0110"]);
+        assert_eq!(codes(r#"LET(x: INTEGER, "s");"#), ["E0110"]);
+    }
+
+    // ---- A4:RESULT[T, E] 解包族 ----
+
+    /// 一个错误侧未知的 `RESULT` 形参。
+    /// 只能靠注解构造:`OK[e]` 的映射是 `Result(T, Dynamic)`,
+    /// `ERR[e]` 是 `Result(Dynamic, E)`,源码里没有写法把**两侧都**
+    /// 具体化的 RESULT —— 这也正是下面那条 deferral 的依据。
+    const R_DYN: &str = "RESULT[INTEGER, DYNAMIC]";
+
+    #[test]
+    fn try_unwraps_the_ok_payload() {
+        // spec §8.3:`TRY(x)` 在 `OK(v)` 时取 `v`。运行时
+        // `Value::Ok(v) => Outcome::normal(*v)`(eval lib.rs:7301),静态层必须一致。
+        let ok = format!("LET(f, FUN((r: {R_DYN}) : INTEGER, TRY(r)));");
+        assert_eq!(check(&ok), vec![]);
+        // 反证:改成 STRING 就必须报 E0112。如果 TRY 不解包
+        // (落 Dynamic),这两条的行为会完全一样,差异本身就是
+        // 解包生效的证明。
+        let bad = format!("LET(f, FUN((r: {R_DYN}) : STRING, TRY(r)));");
+        assert_eq!(codes(&bad), ["E0112"]);
+    }
+
+    #[test]
+    fn unwrap_family_is_special_cased_through_the_call_path() {
+        // UNWRAP / UNWRAP_OR / ERR_PAYLOAD 是**普通内建**(不是 lexer 关键字),
+        // 必须在 check_call 特判才能推导出载荷类型。
+        let ok_unwrap = format!("LET(f, FUN((r: {R_DYN}) : INTEGER, UNWRAP(r)));");
+        assert_eq!(check(&ok_unwrap), vec![]);
+        let ok_or = format!("LET(f, FUN((r: {R_DYN}) : INTEGER, UNWRAP_OR(r, 0)));");
+        assert_eq!(check(&ok_or), vec![]);
+        let err = r#"LET(f, FUN((r: RESULT[DYNAMIC, STRING]) : STRING, ERR_PAYLOAD(r)));"#;
+        assert_eq!(check(err), vec![]);
+        let err_wrong_ret =
+            r#"LET(f, FUN((r: RESULT[DYNAMIC, STRING]) : INTEGER, ERR_PAYLOAD(r)));"#;
+        assert_eq!(codes(err_wrong_ret), ["E0112"]);
+        let wrong_ret = format!("LET(f, FUN((r: {R_DYN}) : STRING, UNWRAP(r)));");
+        assert_eq!(codes(&wrong_ret), ["E0112"]);
+        // 反过来,取「另一侧未知」的那一侧**不给结论**:值可能根本不是
+        // `ERR`,此时运行时会报 `E0030`。静态层不猜。
+        let inconclusive = format!("LET(f, FUN((r: {R_DYN}) : STRING, ERR_PAYLOAD(r)));");
+        assert_eq!(check(&inconclusive), vec![]);
+    }
+
+    #[test]
+    fn unwrap_defers_when_both_result_sides_are_concrete() {
+        // 两侧都具体化 → OK/ERR 是运行期分支,静态层无从知
+        // 走哪一支 → 不报(落 Dynamic)。此路径源码里到不了
+        // (注解构造两侧都具体化的 RESULT 需要两个构造式),
+        // 故直接测 `unwrap_side`。
+        let both = Ty::Result(Box::new(Ty::Integer), Box::new(Ty::String));
+        assert_eq!(unwrap_side(&both, Side::Ok), Ty::Dynamic);
+        assert_eq!(unwrap_side(&both, Side::Err), Ty::Dynamic);
+        // 对照:只有一侧未知时才有结论。
+        let ok_known = Ty::Result(Box::new(Ty::Integer), Box::new(Ty::Dynamic));
+        assert_eq!(unwrap_side(&ok_known, Side::Ok), Ty::Integer);
+        assert_eq!(unwrap_side(&ok_known, Side::Err), Ty::Dynamic);
+        let err_known = Ty::Result(Box::new(Ty::Dynamic), Box::new(Ty::String));
+        assert_eq!(unwrap_side(&err_known, Side::Err), Ty::String);
+        assert_eq!(unwrap_side(&err_known, Side::Ok), Ty::Dynamic);
+    }
+
+    #[test]
+    fn unwrap_on_non_result_or_wrong_arity_is_left_to_the_runtime() {
+        // 非 RESULT 交给运行时报 `E0030`;静态层不重复报,也不猜。
+        assert_eq!(check("LET(f, FUN((r) : INTEGER, UNWRAP(1)));"), vec![]);
+        // 元数不对也交给运行时。
+        let both = format!("LET(f, FUN((r: {R_DYN}) : INTEGER, UNWRAP(r, 0)));");
+        assert_eq!(check(&both), vec![]);
+    }
+
+    // ---- A4:容器嵌套边界 ----
+
+    #[test]
+    fn container_mismatch_is_reported_at_the_failing_depth() {
+        // 递归一层层比,错在哪层就在哪层报。
+        assert_eq!(
+            codes(r#"LET(x: ARRAY[ARRAY[INTEGER]], [["a"]]);"#),
+            ["E0110"]
+        );
+        assert_eq!(codes("LET(x: ARRAY[STRING], [1, 2]);"), ["E0110"]);
+        assert_eq!(codes("LET(x: DICT[STRING, INTEGER], [1, 2]);"), ["E0110"]);
+        assert_eq!(codes("LET(x: INTEGER, [1, 2]);"), ["E0110"]);
+        // 深层正确的容器不报。
+        assert_eq!(check("LET(x: ARRAY[ARRAY[INTEGER]], [[1], [2]]);"), vec![]);
+        assert_eq!(
+            check(r#"LET(x: DICT[STRING, ARRAY[INTEGER]], ["a": [1]]);"#),
+            vec![]
+        );
+    }
+
+    #[test]
+    fn heterogeneous_nesting_degrades_to_dynamic_and_stays_silent() {
+        // 异构嵌套(元素类型不一致)统一为 Dynamic → 不报。
+        // 这是「不误报优先」的直接后果,必须锁住:只有化为
+        // 静态拦截器才报,高度嵌套下的异构值不应被误报。
+        assert_eq!(
+            codes(r#"LET(x: ARRAY[ARRAY[ARRAY[INTEGER]]], [[[1]], [["b"]]]);"#),
+            Vec::<String>::new()
+        );
+        // 同理,顶层本身异构也不报。
+        assert_eq!(
+            codes(r#"LET(x: ARRAY[INTEGER], [[1], ["b"]]);"#),
+            Vec::<String>::new()
+        );
+    }
+
+    #[test]
+    fn fun_type_contravariance_is_enforced_on_params() {
+        // 形参逆变:被调方的形参能接住实参,才算安全。
+        // 用真实的数值 ladder(INTEGER → FLOAT 安全放宽)做见证 ——
+        // 不能用 Dynamic:它是顶底元,只要任一侧是 Dynamic,逆变
+        // 就退化为恒真,那时逆变不可验证。
+        let accepts_int = Ty::Fun {
+            params: vec![Ty::Integer],
+            ret: Box::new(Ty::String),
+        };
+        let accepts_float = Ty::Fun {
+            params: vec![Ty::Float],
+            ret: Box::new(Ty::String),
+        };
+        // 接受 Float 的函数可以充当接受 Integer 的函数(调用方传
+        // Integer,被调方持为 Float 处理)—— 安全的方向。
+        assert!(accepts_float.is_assignable_to(&accepts_int));
+        // 反向不安全:只能处理 Integer 的函数冒充一个会传 Float 的位置。
+        assert!(!accepts_int.is_assignable_to(&accepts_float));
+        // 返回类型协变,同样用数值 ladder 做见证。
+        let ret_int = Ty::Fun {
+            params: vec![Ty::Integer],
+            ret: Box::new(Ty::Integer),
+        };
+        let ret_float = Ty::Fun {
+            params: vec![Ty::Integer],
+            ret: Box::new(Ty::Float),
+        };
+        // 返回 Integer 的可以充当返回 Float 的(调用方按 Float 接收,
+        // 而 INTEGER -> FLOAT 是安全放宽)。
+        assert!(ret_int.is_assignable_to(&ret_float));
+        // 返回 Float 的不能充当返回 Integer 的:那是收窄。
+        assert!(!ret_float.is_assignable_to(&ret_int));
+        // 返回 Dynamic 时双向皆真 —— 这是 `Dynamic` 作为顶底元的必然结果,
+        // 不是逆变/协变规则的例外,故此处不作为见证。
+    }
+
+    // ---- A4 明确提后 / 需注意的现状 ----
+
+    #[test]
+    fn dict_key_type_constraint_is_not_checked_statically() {
+        // spec §2.1:字典键必须是 STRING / INTEGER。A4 **不**做这项
+        // 静态检查 —— 因为 D-1 只分配了 E0110-E0112 / W0110-W0112
+        // 三个条件,本项无码可用;而 build plan §4.1 草案已预留
+        // E0113-E0115 给模块签名。报错时必须先分配码号,否则就违
+        // 破了本 ADR「凭空分配诊断码是破坏性变更」这一纪律。
+        assert_eq!(
+            check(r#"LET(m: DICT[BOOLEAN, STRING], [TRUE: "x"]);"#),
+            vec![]
+        );
+    }
+
+    #[test]
+    fn arrow_function_type_syntax_silently_degrades_instead_of_erroring() {
+        // 重要的现状记录。原判断是「写 `FUN(T) -> U` 会报
+        // `E0010`」——**错的**。实测:`parse_type_annotation` 把类型区采集成
+        // 平铺 token 列,而 `parse_type_expr_from_pieces` 在解析完 `FUN` 头后把剩余
+        // pieces 直接拼成一个 **`Named`**,不报错。
+        // 即:箭头形式不是被拒绝,而是**静默地被吸收成一个无意义类型名**。
+        // 用户不会看到任何错误,也不会得到任何检查。
+        let ast = wlwl_parser::parse("FUN((f: FUN(INTEGER) -> STRING), 1);", "check.wll")
+            .expect("the arrow form is NOT rejected — it parses");
+        let Expr::Fun { params, .. } = ast else {
+            panic!("expected FUN");
+        };
+        let ann = params[0].type_annotation.as_ref().expect("annotation");
+        let ty = Ty::from_type_expr(&ann.expr);
+        // 它落成了一个将整段原文拼进去的无意义名。
+        assert_eq!(
+            ty,
+            Ty::Named {
+                name: "( INTEGER ) - > STRING".into(),
+                args: vec![]
+            },
+            "arrow form must keep degrading silently until D-5 adds `->`"
+        );
+        // 对照:方括号形式 `FUN[T, ...]` 是**能解析**的,并映射到
+        // `Ty::Fun`(形参取全部类型参数,返回类型为 Dynamic)。
+        assert_eq!(
+            Ty::from_type_expr(&ann_of("FUN[INTEGER, STRING]").expr),
+            Ty::Fun {
+                params: vec![Ty::Integer, Ty::String],
+                ret: Box::new(Ty::Dynamic)
+            }
+        );
     }
 
     // ---- 码映射(D-1) ----

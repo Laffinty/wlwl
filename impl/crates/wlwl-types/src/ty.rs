@@ -165,6 +165,53 @@ impl Ty {
         matches!(self, Ty::Dynamic)
     }
 
+    /// **注解边界判定**(ADR-0020 A4):实际类型能否填进声明类型。
+    ///
+    /// 与 [`Ty::is_assignable_to`] 是**两层不同的规则**,A4 才把它们分开:
+    ///
+    /// - `is_assignable_to` 是**类型关系** —— 结构一致 + 安全的数值放宽,
+    ///   供类型层推理使用(谁能替代谁);
+    /// - `satisfies_annotation` 是**注解边界** —— 在类型关系之上,额外承认
+    ///   注解糖 `OPTION[T]`。
+    ///
+    /// `OPTION[T]` 是**纯注解侧**的可选包装(spec v0.9 §2.1 的 13 个运行时
+    /// 类型里没有 `OPTION`;「无值」由 `NULL` 或 `RESULT` 表达)。它必须
+    /// 有运行时见证,否则用户写 `LET(x: OPTION[INTEGER], v)` 时无从判断
+    /// 什么算通过。故本方法承认两个见证:
+    ///
+    /// - `NULL` —— 「就是没有」;
+    /// - `RESULT[T, ·]` —— 「或者是一个 T」,错误侧不要求已知。
+    ///
+    /// 反过来,**裸 `T` 不满足 `OPTION[T]`** —— 若它也通过,`OPTION` 就
+    /// 退化成 `T` 的别名,失去全部意义。
+    pub fn satisfies_annotation(&self, declared: &Ty) -> bool {
+        if self.is_assignable_to(declared) {
+            return true;
+        }
+        match declared {
+            Ty::Option(inner) => match self {
+                Ty::Null => true,
+                Ty::Result(ok, _) => ok.is_assignable_to(inner),
+                _ => false,
+            },
+            _ => false,
+        }
+    }
+
+    /// `RESULT` 的成功侧载荷类型 —— `TRY` / `UNWRAP` / `UNWRAP_OR` /
+    /// `OR_DIE` 的解包目标。
+    ///
+    /// **只在错误侧未知(`Dynamic`)时给出结论**:错误侧一旦具体化,`OK` /
+    /// `ERR` 是**运行期分支**,静态层无法知道实际走了哪一支(那属于类型
+    /// 收窄,A5 已推迟)。给不出结论就返回 `None` → 落 `Dynamic` → 不报,
+    /// 符合「不误报优先」。
+    pub fn unwrap_result(&self) -> Option<&Ty> {
+        match self {
+            Ty::Result(ok, err) if err.is_dynamic() => Some(ok),
+            _ => None,
+        }
+    }
+
     /// 源类型能否赋给目标类型。
     ///
     /// 规则:

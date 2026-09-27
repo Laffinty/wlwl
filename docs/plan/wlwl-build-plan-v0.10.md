@@ -215,10 +215,16 @@ ADR-0010 当年以「全程序类型推断 = triple the work」否决静态检�
 1. **`OPTION[T]` 是注解糖,无运行时对应类型**。spec v0.9 §2.1 的 13 个运行时类型
    里没有 `OPTION` ——「无值」由 `NULL` 或 `RESULT` 表达。故 `Ty::Option` 只在
    注解侧存在;它与运行时值的匹配规则归 A4 决定,A1/A3 不猜。
-2. **`FUN[T, …] -> U` 是纯 IR 变体,今天不可从源码到达**。`wlwl-ast/src/lib.rs:83-84`
-   明写 `FUN(...) -> T` 是 "reserved for v0.4",至今未实现;lexer 57 个 `TokenKind`
-   里**没有** `->` 终结符(`-` 与 `>` 是两个独立 token),`FUN(INTEGER) -> STRING`
-   今天报 `E0010`。IR 先落地供 A4 与 P1-2 使用,接 parser 语法待 **D-5**。
+2. **`FUN[T, …] -> U` 是 IR 变体;方括号形式可从源码到达,箭头形式不可**
+   —— **Step 3 实测修正**。`wlwl-ast/src/lib.rs:83-84` 把 `FUN(...) -> T`
+   标为 "reserved for v0.4",至今未实现;lexer 57 个 `TokenKind` 里**没有**
+   `->` 终结符(`-` 与 `>` 是两个独立 token)。但要分清两件事:
+   - `FUN[INTEGER, STRING]`(方括号)**能正常解析**并映射到 `Ty::Fun`
+     (形参取全部类型参数,返回 `Dynamic`)→ IR 变体**是**可达的;
+   - `FUN(INTEGER) -> STRING`(箭头)**不报错,但被静默吸收**成
+     `Named { name: "( INTEGER ) - > STRING" }` → 详见 §3.3 的陷阱说明。
+
+   接 parser 的箭头语法待 **D-5**。
 3. **spec v2.1 的 `TASK` / `CHANNEL` / `CLASS` / `INSTANCE` 有意走 `Named`**,而不是
    各开一个变体 —— 变体集合严格等于本表的最小集,不多开一个。`Named` 同时兜住
    未知头与元数错误两种情形,后者**保名保参**不静默丢弃,好让 A4 报出
@@ -271,24 +277,62 @@ ADR-0010 当年以「全程序类型推断 = triple the work」否决静态检�
 
 ### 3.3 A4 — 容器 / 函数类型最小集
 
+> **状态:已完成(Step 3)。** 验收项按实测修订如下 —— 原文有一条不可达。
+
 | 项 | 内容 |
 |----|------|
 | **目标** | `ARRAY[T]` / `DICT[K, V]` / `OPTION[T]` / `RESULT[T, E]` / 函数类型的静态表示与边界检查 |
 | **挂载点** | `wlwl-types` 类型层加法;复用 `TypeExpr::{Array,Generic}` 解析结果 |
-| **变更面** | `wlwl-types/src/ty.rs` + 边界检查规则;注册表结构化签名(§3.5)可提供内建返回类型的参照 |
+| **变更面** | `wlwl-types/src/ty.rs`(**新增 `satisfies_annotation` 注解边界规则层**)+ `check.rs`(边界判定切层 + `RESULT` 解包族) |
 | **兼容** | 运行时嵌套匹配仍可「deliberately deferred」;静态层**不要求**运行时升级 `E0033` 的嵌套能力 |
-| **预估人日** | **2–3 人日**(E4) |
-| **验收(修订)** | ①注解 round-trip 锁测试;②`ARRAY[INTEGER]` 边界失配诊断(**已由 Step 2 的 A3 交付**:`LET(x: ARRAY[INTEGER], ["a"]);` → `E0110`);③泛型形参 `ARRAY[T]` 的实例化检查(Step 9);④**函数类型的源码级检查从本项移出** —— 见下 |
+| **预估人日** | **2–3 人日**(E4);**实测落在下限** |
+| **验收(修订)** | ①注解 round-trip 锁测试 ✅;②`ARRAY[INTEGER]` 边界失配诊断(Step 2 已交付,本项未重复做);③泛型形参实例化检查(**归 Step 9**);④**函数类型的源码级检查移出本项** |
 
-> **验收项 ③/④ 的修订理由(实测)**:原文写的「函数类型 `FUN(INTEGER) -> STRING`
-> 参数/返回检查」**在本版不可达**。parser 不产函数类型(§3.1 澄清 2),lexer 无
-> `->` 终结符,写 `FUN(...) -> T` 今天报 `E0010`。硬把它写进 A4 验收会造成
-> 「永远无法通过的门禁」,或诱导在 A4 里偷跑 parser 改动(超出本项变更面)。
+**实际交付**:
+
+- **`OPTION[T]` 有了运行时见证**。spec §2.1 的 13 个运行时类型里没有 `OPTION`,
+  所以 `Ty::Option` 必须在注解边界上承认两个见证:`NULL`("就是没有")与
+  `RESULT[T, ·]`("或者是一个 T",错误侧不要求已知)。**裸 `T` 不通过** ——
+  否则 `OPTION` 退化成 `T` 的别名,失去全部意义。
+- **`satisfies_annotation` 与 `is_assignable_to` 分成两层**(A4 引入的关键结构):
+  前者是**注解边界判定**(多认 `OPTION` 糖),后者是**类型关系**(结构一致 +
+  安全数值放宽)。两层不得混淆,否则 `OPTION` 的宽松会漏到别的注解上。
+- **`RESULT` 解包族全部接上**:`TRY` / `OR_DIE`(parser 降级出的 `Expr::*`)
+  与 `UNWRAP` / `UNWRAP_OR` / `ERR_PAYLOAD`(走通用 `Expr::Call`)都能推出
+  载荷类型。**只在另一侧未知(`Dynamic`)时给结论** —— 两侧都具体化时
+  `OK`/`ERR` 是运行期分支,静态层无从知走哪一支,落 `Dynamic` 不报。
+- **`Ty::Fun` 的逆变 / 协变规则已锁**:形参逆变、返回协变。**注意**:`Dynamic`
+  是顶底元,只要任一侧是 `Dynamic`,两个方向都恒真 —— 逆变/协变只能用
+  真实的数值 ladder(`INTEGER` / `FLOAT`)见证,拿 `Dynamic` 当例子测不出东西。
+- **异构嵌套一律不报**(元素类型不一致 → 统一为 `Dynamic`)。这是「不误报
+  优先」的直接后果,已锁测试固定 —— 否则高度嵌套下的异构值会被误报。
+- **字典键类型约束(spec §2.1「键限 STRING / INTEGER」)明确不做静态检查** ——
+  D-1 只分配了 `E0110`-`E0112` / `W0110`-`W0112` 三个条件,本项无码可用,
+  而 §4.1 草案已把 `E0113`-`E0115` 预留给模块签名。**报错前必须先分配码号**,
+  否则就违反「凭空分配诊断码是破坏性变更」这条纪律。已用锁测试固定「当前不报」,
+  防止后人当成漏项悄悄补上。
+
+> **验收项 ③/④ 的修订理由**:原文的「函数类型 `FUN(INTEGER) -> STRING`
+> 参数/返回检查」**在本版不可达**。函数类型的**语法**接入归 **D-5 / Step 9(P1-2)**,
+> A4 只负责 `Ty::Fun` 这一 IR 变体上的**结构可赋值规则**。
+
+> **⚠️ 一个必须写进 spec 的静默陷阱(Step 3 实测,与本节上一版判断相反)**
 >
-> **因此**:函数类型的**语法**接入归 **D-5 / Step 9(P1-2)**,A4 只负责
-> `Ty::Fun` 这一 IR 变体上的**结构可赋值规则**(已在 Step 1 落地,含形参逆变)。
-> A4 的实际增量收窄为:`OPTION[T]` 与 `RESULT[T, E]` 的注解糖语义、
-> 容器嵌套边界的完整规则。**2–3 人日不变,甚至可降为 1–2 人日。**
+> 上一版写「写 `FUN(...) -> T` 今天报 `E0010`」。**Step 3 实测:能 parse,
+> 而且不报错。** `parse_type_annotation` 把类型区采集成**平铺 token 列**,而
+> `parse_type_expr_from_pieces` 在解析完 `FUN` 头后把剩余 pieces 直接拼成一个
+> **`Named`**(`wlwl-parser/src/lib.rs:2378-2390` 的兜底分支)。于是
+> `FUN(INTEGER) -> STRING` 落成 `Named { name: "( INTEGER ) - > STRING" }` ——
+> **用户看不到任何错误,也得不到任何检查**。
+>
+> 对照:方括号形式 `FUN[INTEGER, STRING]` **能正常解析**并映射到 `Ty::Fun`
+> (形参取全部类型参数,返回 `Dynamic`)。故 §3.1 澄清 2 需修正为:
+> **`Ty::Fun` 变体是可从源码到达的(方括号形式),不可达的只是箭头形式**。
+>
+> 处置:**不在 A4 补检查**(无码可分配;且 `UnresolvedTypeName` 的 `codes()`
+> 返回 `None`,报出来会被 CLI 过滤掉,比不报更糟)。改为:(a) 用锁测试固定
+> 当前行为;(b) spec v0.10 必须明文声明箭头形式不支持;(c) 归入 **D-5**,
+> 待 `->` 终结符真正落地时一并解决。
 
 ### 3.4 A2′ — 期望类型向下传播(砍掉 HM)
 
@@ -572,14 +616,16 @@ ADR-0010 当年以「全程序类型推断 = triple the work」否决静态检�
    ├─ Check: parse → 可选静态 check
    ├─ 诊断码 E0110-E0112 / W0110-W0112 注册
    └─ 锁测试:default_off_zero_diag / warn_mode_soft / error_mode_hard
-[Step 3] impl:容器/函数类型最小集(A4)             ⬜ 下一项
+[Step 3] impl:容器/函数类型最小集(A4)             ✅ 完成
    ├─ ARRAY[T] / DICT[K, V] / OPTION[T] / RESULT[T, E]
    │  + Ty::Fun 的结构可赋值规则(含形参逆变)
+   ├─ 新增 satisfies_annotation 注解边界规则层(OPTION 糖)
+   ├─ RESULT 解包族:TRY / OR_DIE / UNWRAP / UNWRAP_OR / ERR_PAYLOAD
    ├─ 注意:OPTION[T] 是注解糖,无运行时对应类型(spec §2.1 无 OPTION)
-   ├─ 注意:函数类型的**源码**接入不在本项(见 D-5 / Step 9);
-   │  parser 不产 FUN 头,lexer 无 -> 终结符
-   └─ 锁测试:container_boundary_mismatch
-      (container 边界失配已由 Step 2 交付,本项增量收窄)
+   ├─ 注意:函数类型的**箭头**语法接入不在本项(见 §3.3 陷阱说明 + D-5);
+   │  方括号形式本就可解析
+   └─ 锁测试:OPTION 双向语义 / 解包族 / Fun 逆变 / 异构嵌套不报
+      (container 边界失配已由 Step 2 交付)
 [Step 4] impl:期望类型向下传播(A2′)
    ├─ 字面量/容器/IF-MATCH 合流/CALL 参数
    └─ 锁测试:no_false_positive_on_unannotated / propagate_call_args
