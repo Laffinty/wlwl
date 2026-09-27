@@ -181,15 +181,19 @@ ADR-0010 当年以「全程序类型推断 = triple the work」否决静态检�
 
 ### 3.1 A1 — 类型 AST / 静态类型环境
 
+> **状态:已完成(Step 1,commit `859400b`)。** 下表的记法与实现细节已按实测结果修订,
+> 与 `wlwl-types` 源码逐条对齐。
+
 | 项 | 内容 |
 |----|------|
 | **目标** | 新建 crate `wlwl-types`:静态类型表示、类型环境、诊断类型;**与运行时 `TYPE` 严格分层** |
 | **挂载点** | 消费 `wlwl-ast` 的 `TypeExpr` / `TypeAnnotation` / `FunParam.type_annotation` / `return_type`;**不进 `wlwl-eval`** |
-| **变更面** | `impl/crates/wlwl-types/`(新);`impl/Cargo.toml` workspace 成员 +1;`wlwl-types/src/{lib,ty,env,diag}.rs` |
-| **静态类型最小集** | `INTEGER` / `FLOAT` / `STRING` / `BOOLEAN` / `NULL` / `ARRAY<T>` / `DICT<K,V>` / `OPTION<T>` / `RESULT<T,E>` / `FUN(T…) -> U` / **`Dynamic`**(未标注回退) |
+| **变更面** | `impl/crates/wlwl-types/`(新);`impl/Cargo.toml` workspace 成员 +1;`wlwl-types/src/{lib,ty,env,diag}.rs`(Step 2 起加 `check.rs`) |
+| **静态类型最小集** | `INTEGER` / `FLOAT` / `STRING` / `BOOLEAN` / `NULL` / `ARRAY[T]` / `DICT[K, V]` / `OPTION[T]` / `RESULT[T, E]` / `FUN[T, …] -> U` / **`Dynamic`**(未标注回退) / `Named`(本层不结构化建模的具名类型) |
 | **明确不做** | HM / let-多态;流敏感收窄(推迟);`Value` 模型改动 |
 | **预估人日** | **3–4 人日**(E4) |
 | **验收** | `cargo test -p wlwl-types`;类型 round-trip 单测;`TypeExpr` → 静态类型映射锁测试 |
+| **实测** | 19 项测试;`cargo test -p wlwl-types` 19/0(Step 1 收尾时) |
 
 **设计约束**:
 
@@ -197,19 +201,46 @@ ADR-0010 当年以「全程序类型推断 = triple the work」否决静态检�
 - `Dynamic` 是顶/底元:与任何类型可互通,未标注即 `Dynamic`;
 - 运行时 `TYPE(x)` 字符串对比路径**不动**(S3)。
 
+**记法(实测修订 —— 本文档原先用尖括号 `ARRAY<T>`,与实现不符)**:
+
+> `wlwl-ast::TypeExpr` 的解析结果只有 `Ident` / `Array` / `Generic` 三形态,
+> `Array { element }` 与 `Generic { name, args }` **都用方括号**
+> (`wlwl-parser/src/lib.rs:2429-2473` 的 `parse_braced` 只认 `[`)。
+> 因此本计划正文一律改用方括号 `ARRAY[T]` / `DICT[K, V]`。这不是风格偏好 ——
+> 尖括号写法的 `parse(display(ty)) == ty` **往返不成立**,方括号才成立
+> (`ty::tests::display_roundtrips_through_parser` 锁住了这一点)。
+
+**实施中定下的三条语义澄清(原计划未写,Step 1 实测后确定)**:
+
+1. **`OPTION[T]` 是注解糖,无运行时对应类型**。spec v0.9 §2.1 的 13 个运行时类型
+   里没有 `OPTION` ——「无值」由 `NULL` 或 `RESULT` 表达。故 `Ty::Option` 只在
+   注解侧存在;它与运行时值的匹配规则归 A4 决定,A1/A3 不猜。
+2. **`FUN[T, …] -> U` 是纯 IR 变体,今天不可从源码到达**。`wlwl-ast/src/lib.rs:83-84`
+   明写 `FUN(...) -> T` 是 "reserved for v0.4",至今未实现;lexer 57 个 `TokenKind`
+   里**没有** `->` 终结符(`-` 与 `>` 是两个独立 token),`FUN(INTEGER) -> STRING`
+   今天报 `E0010`。IR 先落地供 A4 与 P1-2 使用,接 parser 语法待 **D-5**。
+3. **spec v2.1 的 `TASK` / `CHANNEL` / `CLASS` / `INSTANCE` 有意走 `Named`**,而不是
+   各开一个变体 —— 变体集合严格等于本表的最小集,不多开一个。`Named` 同时兜住
+   未知头与元数错误两种情形,后者**保名保参**不静默丢弃,好让 A4 报出
+   「元数不对」而不是「类型不认识」。
+
+
 ### 3.2 A3 — `gradual_typing = off \| warn \| error`
+
+> **状态:已完成(Step 2,commit `3442c9a`)。** 诊断码已由「草案」定稿为 D-1 裁决结果。
 
 | 项 | 内容 |
 |----|------|
 | **目标** | 新编译期边界检查;运行时 `E0033` **保留**;默认 `off` |
 | **挂载点** | `Check` 从 parse 升级:`parse → 可选静态 check`;`run_file` 挂载同一入口 |
-| **变更面** | `wlwl-cli/src/main.rs`(Check/run 接线);`wlwl-toml/src/manifest.rs` **仅读** `[features] gradual_typing`(新键,默认 `"off"`;**不改求解/锁/依赖字段**);`wlwl-types/src/check.rs` |
+| **变更面** | `wlwl-cli/src/main.rs`(Check/run 接线);`wlwl-toml/src/manifest.rs` **仅读** `[features] gradual_typing`(新键,默认 `"off"`;**不改求解/锁/依赖字段**);`wlwl-types/src/check.rs`;`wlwl-error/src/lib.rs`(码段注册 + 新增 `WlwlDiagnostic::with_severity`) |
 | **配置** | `wlwl.toml [features] gradual_typing = "off" \| "warn" \| "error"`(默认 `"off"`);非法值 → 诊断并回落 `off` |
 | **兼容句** | `gradual_typing=off` 时 v0.9 程序行为不变;新增编译期诊断只在显式开启后出现 |
 | **预估人日** | **3–4 人日**(E4) |
 | **验收** | 默认关:`cargo test --workspace` 全绿;开启:注解失配夹具报稳定诊断;`check_only_parses` 升级为分层测试(parse / static / run) |
+| **实测** | `default_off_zero_diag` / `warn_mode_soft` / `error_mode_hard` / `error_mode_does_not_reject_clean_programs` / `invalid_value_falls_back_to_off_and_is_reported` / `check_is_layered_parse_static_run`;`cargo test --workspace` 1568 / 0 |
 
-**诊断码草案**(决策点 D-1,见 §10.2;默认新建静态段,不占用 `E0030-E0039` 运行时类型段):
+**诊断码定稿(决策 D-1 已拍板,见 §10.2 —— 新建静态段,不占用 `E0030-E0039` 运行时类型段)**:
 
 | 条件 | `error` 模式 | `warn` 模式 |
 |------|-------------|------------|
@@ -219,16 +250,45 @@ ADR-0010 当年以「全程序类型推断 = triple the work」否决静态检�
 
 > 既有 `E0033`(运行时 `strict_types`)语义与触发路径**不变**。静态码与运行时码可在同一程序并存(先静态拦、再运行时兜底)。
 
+**A3 的能力边界(实测修订 —— 原计划未写清,必须在 spec 与 CHANGELOG 如实声明)**:
+
+1. **A3 抓不到内建调用**。注册表结构化签名归 A6′(§3.5,Step 5);在那之前
+   `BuiltinSpec.signature` 仍是文档串 `&'static str`(`registry.rs:48`),内建返回
+   类型**不可知** → 一律落 `Dynamic` → 不报。所以 A3 只能抓**用户定义的、带注解
+   的**函数边界。这是范围裁剪,不是缺陷,也不是待修的 bug。
+2. **因此不得宣称「开了就等于完备类型检查」**。spec 派生(§6.2)必须明写覆盖率
+   边界,否则用户会形成错误期望。
+3. **`INTEGER -> FLOAT` 算可赋值**。ADR-0010 明写这是 *silent upcast, even under
+   strict*;静态层若不认这条安全方向,`error` 档会拒掉运行时认为合法的程序,直接
+   违反「不误报」验收项。反方向 `FLOAT -> INTEGER` 仍然拒绝
+   (`ty::tests::assignability_allows_only_the_safe_numeric_widening`)。
+4. **返回值要查「块尾表达式」,不只查显式 `RETURN`**。spec §4.4 规定括号序列的值
+   即最后一个表达式的值,`FUN((a): STRING, 42)` 这种最常见写法**根本不含
+   `RETURN` 节点**,只查 `Return` 会整类漏报。
+5. **不重复报未定义名字**。那由 parser 的 `lint` pass 负责(`W0001`);静态 pass
+   重复报会让一个问题出两张诊断。
+6. **`off` 档是「不调用 checker」,不是「调用后丢弃」** —— 这是「零开销」的实现点。
+
 ### 3.3 A4 — 容器 / 函数类型最小集
 
 | 项 | 内容 |
 |----|------|
-| **目标** | `ARRAY<T>` / `DICT<K,V>` / `OPTION` / `RESULT` / 函数类型的静态表示与边界检查 |
+| **目标** | `ARRAY[T]` / `DICT[K, V]` / `OPTION[T]` / `RESULT[T, E]` / 函数类型的静态表示与边界检查 |
 | **挂载点** | `wlwl-types` 类型层加法;复用 `TypeExpr::{Array,Generic}` 解析结果 |
 | **变更面** | `wlwl-types/src/ty.rs` + 边界检查规则;注册表结构化签名(§3.5)可提供内建返回类型的参照 |
 | **兼容** | 运行时嵌套匹配仍可「deliberately deferred」;静态层**不要求**运行时升级 `E0033` 的嵌套能力 |
 | **预估人日** | **2–3 人日**(E4) |
-| **验收** | 注解 round-trip 锁测试;`ARRAY<INTEGER>` 边界失配诊断;函数类型 `FUN(INTEGER) -> STRING` 参数/返回检查 |
+| **验收(修订)** | ①注解 round-trip 锁测试;②`ARRAY[INTEGER]` 边界失配诊断(**已由 Step 2 的 A3 交付**:`LET(x: ARRAY[INTEGER], ["a"]);` → `E0110`);③泛型形参 `ARRAY[T]` 的实例化检查(Step 9);④**函数类型的源码级检查从本项移出** —— 见下 |
+
+> **验收项 ③/④ 的修订理由(实测)**:原文写的「函数类型 `FUN(INTEGER) -> STRING`
+> 参数/返回检查」**在本版不可达**。parser 不产函数类型(§3.1 澄清 2),lexer 无
+> `->` 终结符,写 `FUN(...) -> T` 今天报 `E0010`。硬把它写进 A4 验收会造成
+> 「永远无法通过的门禁」,或诱导在 A4 里偷跑 parser 改动(超出本项变更面)。
+>
+> **因此**:函数类型的**语法**接入归 **D-5 / Step 9(P1-2)**,A4 只负责
+> `Ty::Fun` 这一 IR 变体上的**结构可赋值规则**(已在 Step 1 落地,含形参逆变)。
+> A4 的实际增量收窄为:`OPTION[T]` 与 `RESULT[T, E]` 的注解糖语义、
+> 容器嵌套边界的完整规则。**2–3 人日不变,甚至可降为 1–2 人日。**
 
 ### 3.4 A2′ — 期望类型向下传播(砍掉 HM)
 
@@ -237,7 +297,8 @@ ADR-0010 当年以「全程序类型推断 = triple the work」否决静态检�
 | **目标** | 只做**局部、上下文驱动**的期望类型向下传播;未标注处回退 `Dynamic` |
 | **挂载点** | `wlwl-types` 内部(check/propagate);**不引入** let-多态、不引入全程序推断 |
 | **变更面** | `wlwl-types/src/check.rs`;无 eval 改动 |
-| **规则(E4)** | 字面量按期望类型定型;容器字面量元素受 `ARRAY<T>`/`DICT<K,V>` 约束;`IF`/`MATCH` 合流取 lub 或 `Dynamic`;`CALL` 参数按被调签名向下传播 |
+| **规则(E4)** | 字面量按期望类型定型;容器字面量元素受 `ARRAY[T]`/`DICT[K, V]` 约束;`IF`/`MATCH` 合流取 lub 或 `Dynamic`;`CALL` 参数按被调签名向下传播 |
+| **A3 已预埋的部分(Step 2)** | 字面量一级已落地(`INTEGER` 字面量遇 `FLOAT` 期望直接定为 `FLOAT`);`Array`/`Dict` 字面量的元素统一已落地(全同才保留,含 `Dynamic` 或不一致即 `Dynamic`);`IF` 分支合流目前**只做「相同才保留」**,不取 lub —— lub 是 A2′ 的活 |
 | **预估人日** | **2–3 人日**(E4) |
 | **验收** | 未标注程序在开启模式下不误报;已标注边界失配可报;锁测试覆盖「回退 Dynamic 不诊断」 |
 
@@ -277,7 +338,7 @@ ADR-0010 当年以「全程序类型推断 = triple the work」否决静态检�
 |----|------|
 | **目标** | 接口清单:导出类型、函数、(可选)效果/能力声明 |
 | **挂载点** | `ModuleLoader` 边界(`wlwl-eval/src/lib.rs:797-871`);加载后 EXPORT 集合比对 |
-| **签名载体(默认)** | **可选**旁路文件 `foo.wll.sig`(或 `foo.sig.wll`,决策点 D-2);**无签名 = 现行为** |
+| **签名载体** | **D-2 已定**:可选旁路文件 `foo.wll.sig`(与源同目录)。**「无签名 = v0.9 行为」因此是结构性保证,不是约定** —— 没有任何内嵌语法,不存在「忘了写签名标记」这回事 |
 | **签名内容** | 导出名 + 可选类型注解(复用 `TypeExpr`)+ 可选能力/效果标签(仅记录,v0.10 不强制) |
 | **校验** | 编译期(check 开启时):实现 EXPORT ⊆ 签名(或多出未声明 → 诊断);签名声明但未导出 → 诊断 |
 | **变更面** | `ModuleLoader` 加载路径增加签名发现/解析/比对;`wlwl-types` 提供签名中的类型解析;**eval 求值语义不变**(校验可在 check 层完成;run 时可选强制) |
@@ -297,10 +358,11 @@ ADR-0010 当年以「全程序类型推断 = triple the work」否决静态检�
 | 项 | 内容 |
 |----|------|
 | **目标** | `PRIVATE` / 显式 `EXPORT`;`SEALED MODULE` 禁止外部触达非导出符号 |
-| **挂载点** | 解析器(`wlwl-parser`)识别 `SEALED` 模块头(或 `SEALED MODULE(...)` 形式,决策点 D-3)+ 模块加载 |
+| **挂载点** | 解析器(`wlwl-parser`)识别 `SEALED` 模块头 / 前置 `SEALED(...)` 声明 + 模块加载。**D-3 已定**:走**前缀调用 / 模块头声明**形式,与既有 `CLASS(...)` / `EXPORT([...])` 同构 |
 | **现状** | `EXPORT(["a","b"])` 声明导出集合;`collect_exports`(`lib.rs:1215-1224`);**无 SEALED、无 PRIVATE 关键字**;导入未导出名 → `E0023`(未绑定) |
 | **规则** | 未 `EXPORT` 的绑定默认**模块私有**(与现行为一致);`SEALED MODULE` 额外禁止:外部通过任何途径(包括 `MODULE_REF` 动态面,若存在)触达非导出符号 → 诊断 |
-| **变更面** | parser 关键字/头部语法(**加法**);`ModuleLoader` 加载时记录 sealed 标记;导入边界检查 |
+| **变更面** | parser 新增前缀构造(**加法**);`ModuleLoader` 加载时记录 sealed 标记;导入边界检查 |
+| **词法面影响(实测修订)** | **§1.4 关键字表不变、§12 保留形式继续留空** —— 这是走前缀调用而非保留字的直接收益。原计划写「parser 关键字/头部语法」暗示要动关键字表,现已排除。仍需**新 AST 节点 + 新错误码** |
 | **预估人日** | **2–3 人日**(E4) |
 | **验收** | 越界访问可诊断;非 SEALED 模块行为不变 |
 
@@ -356,11 +418,12 @@ ADR-0010 当年以「全程序类型推断 = triple the work」否决静态检�
 
 | 项 | 内容 |
 |----|------|
-| **目标** | 参数化容器/函数:`ARRAY<T>`、`FUN(T) -> U` 等;**运行时擦除** |
+| **目标** | 参数化容器/函数:`ARRAY[T]`、函数类型等;**运行时擦除**。**决策 D-5 已定为「最小显式约束」**,故本项含「类型产生式加 `:` 与约束名」这一**语法面**改动 |
 | **约束** | 无完整 trait / typeclass 推断;无 monomorphization;**`Value` 模型不变** |
-| **轻量约束** | 最多 `T: Comparable` 级别的**显式**约束,不做隐式解析;不引入 trait 求解器 |
+| **轻量约束** | **D-5 已定**:最小显式约束 `T: Comparable` 级,不做隐式解析;不引入 trait 求解器 |
+| **语法代价(实测定位)** | `parse_braced` 当前只接受 `,` 与 `]`,类型产生式里出现 `:` 报 `E0012`。要支持 `T: Comparable` 必须改 `parse_braced`,**这是 v0.10 唯一一处真正的语法面扩张**,须在 §12 出口条件里单列 |
 | **挂载点** | 类型层(`wlwl-types`);注册表结构化签名中的参数化类型;**不改** `wlwl-eval::Value` 变体 |
-| **编译期** | 实例化错误(如 `ARRAY<INTEGER>` 与 `ARRAY<STRING>` 误用)在静态层报;运行时仍擦除 |
+| **编译期** | 实例化错误(如 `ARRAY[INTEGER]` 与 `ARRAY[STRING]` 误用)在静态层报;运行时仍擦除 |
 | **预估人日** | **4–6 人日**(E4) |
 | **验收** | 编译期实例化错误锁测试;`Value` 快照/行为不变;默认关零影响 |
 
@@ -370,7 +433,7 @@ ADR-0010 当年以「全程序类型推断 = triple the work」否决静态检�
 
 | 子项 | 内容 | 挂载点 | 人日 | 验收 |
 |------|------|--------|------|------|
-| **check 语义化** | `Check` 接静态 pass;分层测试(parse / static / run) | `main.rs:51-52,85-88,630` | 1–2 | `check_only_parses` → 分层;默认关行为不变 |
+| **check 语义化** | ~~`Check` 接静态 pass;分层测试~~ | `main.rs:51-52,85-88,630` | **0(已由 Step 2 / A3 交付)** | ✅ `check_is_layered_parse_static_run`;`default_off_zero_diag` 锁「默认行为不变」 |
 | **`wlwl lsp` 薄壳** | 包装 parser + error + 静态诊断:diagnostics / definition / hover;补全由注册表驱动 | CLI 新子命令;复用 `wlwl-types` 诊断 | 2–3 | LSP 集成冒烟;无独立 LSP server 进程框架依赖(薄壳) |
 | **interface / schema JSON** | 已有 `ast --json` 顺增量:`interface` JSON(导出面)、`schema` JSON(类型) | `main.rs` 导出路径 | 1–2 | **JSON schema 锁测试** |
 | **P1-3 小计** | | | **4–6 人日** | |
@@ -390,11 +453,16 @@ ADR-0010 当年以「全程序类型推断 = triple the work」否决静态检�
 
 ## 6 ADR 与规范派生
 
-### 6.1 ADR-0020 草案 — *Gradual Static Contracts*
+### 6.1 ADR-0020 — *Gradual Static Contracts*
+
+> **状态:已定稿并 Accepted(commit `c535818`)。**
+> 权威文本是 `docs/adr/0020-gradual-static-contracts.md`;本节只是摘要,
+> 两者冲突时**以 ADR 文件为准**。ADR 的 Ratification Status 节记录了
+> Step 1/2 的实测结论。
 
 | | |
 |---|---|
-| **Status** | Proposed(本计划批准后 Accepted) |
+| **Status** | Accepted(2026-09-27) |
 | **Date** | v0.10 立项时 |
 | **Deciders** | Li (project lead) |
 | **Related** | ADR-0010(局部推翻)、ADR-0011(人日纪律)、《路线》§4.1 |
@@ -417,11 +485,13 @@ ADR-0010 当年以「全程序类型推断 = triple the work」否决静态检�
 
 | 章节 | 动作 |
 |------|------|
+| **§1 / §5.2(新增产生式)** | **v0.9 spec 全文从未定义 `Type` 产生式** —— §5.2 只写了 `name: Type` 这个元符号,§5.1 的 `Function` 产生式连返回值注解都没收录。即类型注解文法**只存在于实现,不是规范**。本版必须第一次把它写进 spec。**照实写出三条实测事实**:(a) 容器类型用**方括号**;(b) parser 对 `ARRAY` 特判强制要求方括号,裸 `ARRAY` 报 `E0010`,而 `DICT`/`OPTION`/`RESULT` 裸写能解析成 `Ident` —— **这条不对称必须写明**;(c) 函数类型 `FUN(...) -> U` 本版**仍未进语法**(见 D-5) |
 | §2.4 类型注解 | 增补「静态解释」小节(默认不启用) |
 | §2.7 `strict_types` | 明文区分**运行时** `strict_types` 与**编译期** `gradual_typing` |
 | §7.6 MATCH | 增补穷尽性/不可达诊断(可选开启) |
-| §13 / IMPORT-EXPORT | 模块签名、可见性、`SEALED MODULE` |
-| §11.2 错误/警告码 | 注册 `E0110+` / `W0110+` 静态契约段 |
+| §13 / IMPORT-EXPORT | 模块签名、可见性、`SEALED`(**D-2 / D-3 已定**:旁路 `*.wll.sig` + 前缀调用/模块头声明,故 `SEALED` **不进 §1.4 关键字表**,§12 保留形式继续留空) |
+| §11.2 错误/警告码 | 注册 `E0110-E0112` / `W0110-W0112` 静态契约段(**D-1 已定,Step 2 已落地**) |
+| §2.7 / §9.4 | `gradual_typing` 进 §9.4 清单特性表,并**明文区分于运行时 `strict_types`**;同时声明 A3 的覆盖率边界(抓不到内建调用) |
 | 新附录(或 §附) | `gradual_typing` / 签名文件格式;`interface`/`schema` JSON schema |
 | 附录 G | `gen-appendix-g` 重生成(A6′ 结构化签名) |
 
@@ -489,21 +559,27 @@ ADR-0010 当年以「全程序类型推断 = triple the work」否决静态检�
 ### 10.1 阶段切分
 
 ```
-[Step 0] 本计划 + ADR-0020 定稿(用户审阅)
-   ├─ 决策点 D-1..D-4 拍板
+[Step 0] 本计划 + ADR-0020 定稿(用户审阅)          ✅ 完成 c535818
+   ├─ 决策点 D-1..D-6 拍板 → 实际 D-1/D-2/D-3/D-5 已定
+   │  (D-4 / D-6 未拍板,分别只卡 Step 11 余力项与 Step 10)
    └─ 动手改 impl 前锁定范围,避免返工
-[Step 1] impl:wlwl-types 骨架(A1)
+[Step 1] impl:wlwl-types 骨架(A1)                  ✅ 完成 859400b
    ├─ 新 crate + workspace 接线
    ├─ TypeExpr → 静态类型 IR;Dynamic 回退
    └─ 锁测试:type_ir_roundtrip / dynamic_fallback
-[Step 2] impl:gradual_typing 开关 + check 接线(A3)
+[Step 2] impl:gradual_typing 开关 + check 接线(A3)   ✅ 完成 3442c9a
    ├─ manifest 只读键 gradual_typing = off|warn|error
    ├─ Check: parse → 可选静态 check
    ├─ 诊断码 E0110-E0112 / W0110-W0112 注册
    └─ 锁测试:default_off_zero_diag / warn_mode_soft / error_mode_hard
-[Step 3] impl:容器/函数类型最小集(A4)
-   ├─ ARRAY<T> / DICT<K,V> / OPTION / RESULT / FUN
-   └─ 锁测试:container_boundary_mismatch / fun_sig_check
+[Step 3] impl:容器/函数类型最小集(A4)             ⬜ 下一项
+   ├─ ARRAY[T] / DICT[K, V] / OPTION[T] / RESULT[T, E]
+   │  + Ty::Fun 的结构可赋值规则(含形参逆变)
+   ├─ 注意:OPTION[T] 是注解糖,无运行时对应类型(spec §2.1 无 OPTION)
+   ├─ 注意:函数类型的**源码**接入不在本项(见 D-5 / Step 9);
+   │  parser 不产 FUN 头,lexer 无 -> 终结符
+   └─ 锁测试:container_boundary_mismatch
+      (container 边界失配已由 Step 2 交付,本项增量收窄)
 [Step 4] impl:期望类型向下传播(A2′)
    ├─ 字面量/容器/IF-MATCH 合流/CALL 参数
    └─ 锁测试:no_false_positive_on_unannotated / propagate_call_args
@@ -570,9 +646,18 @@ ADR-0010 当年以「全程序类型推断 = triple the work」否决静态检�
 > **D-2 附带效果**:`*.wll.sig` 是旁路文件,「无签名 = v0.9 行为」因此是
 > 结构性保证,不是约定。
 
-### 10.3 锁测试预期增量
+### 10.3 锁测试预期增量(**Step 0–2 已实测,其余仍为估计**)
 
-- 现有 ≈**1517 passed** + 0 failed(保留,只增不减)
+| 时点 | 实测总数 | 增量 |
+|------|---------|------|
+| v0.9.0 基线 | 1517 / 0 failed | — |
+| Step 1 收尾 | 1536 / 0 | +19(A1) |
+| Step 2 收尾 | **1568 / 0** | **+32**(A3:wlwl-types 20 + wlwl-toml 6 + wlwl-cli 6) |
+
+> 目标 ≈1600±30 目前看**偏保守但仍合理** —— P0-1 剩余的 A2′ / A4 / A6′
+> 尚未贡献,故不必下调。**不虚报**:每项以实测为准。
+
+- v0.9.0 基线 ≈**1517 passed** + 0 failed(保留,只增不减)
 - 增量(估,E4):
   - A1 ~5(类型 IR / Dynamic)
   - A3 ~8(off 零诊断 / warn / error / E0033 并存)
@@ -669,17 +754,17 @@ cargo test -p wlwl-types
 
 | 一致性项 | v0.9.0 | v0.10.0 目标 |
 |---------|--------|-------------|
-| 错误码 | 61 激活 + 6 保留(共 67) | **+ E0110–E011x 静态契约段**(具体个数随 D-1 定稿);运行时码不变;包管理码零新增 |
-| 警告码 | + W0065/W0066 | **+ W0110+ 静态契约警告段** |
+| 错误码 | 61 激活 + 6 保留(共 67) | **67 激活 + 6 保留(共 73)** —— D-1 已定并落地:`+E0110` 注解失配 / `+E0111` 调用失配 / `+E0112` 返回失配。运行时码**逐个不变**;包管理码零新增。⚠️ 数字变化本身**不违反兼容承诺**:新增码号对 v0.9 程序不可观察(默认 `off`,且 `off` 档不调用 checker) |
+| 警告码 | 15(止于 W0066) | **18** —— `+W0110` / `+W0111` / `+W0112`(同号 `warn` 档) |
 | 内建数 | 110 | **110**(零新增;签名结构化不改内建集合) |
-| `wlwl-toml` | manifest/lock/MVS | **冻结**;至多 `[features] gradual_typing` 只读键 |
+| `wlwl-toml` | manifest/lock/MVS | **冻结**;至多 `[features] gradual_typing` 只读键 —— **已落地且零 schema 变更**:`[features]` 本就是不透明 `BTreeMap<String, toml::Value>`(`manifest.rs:33-37`),加键不需要动结构 |
 | spec 章节 | §1–§17 + 附录 A–G | §2.4/§2.7/§7.6/§13/§11.2 增补 + 新附录(签名/JSON);附录 G 重生成 |
-| 静态类型层 | 无 | **`wlwl-types` 新 crate** |
-| 模块签名/可见性 | EXPORT 名集合 | **可选签名 + SEALED + sig-gen** |
-| MATCH 穷尽 | 无 | **6 形态 usefulness** |
-| 泛型 | 语法槽位有 | **擦除 + 限形(编译期实例化)** |
+| 静态类型层 | 无 | **`wlwl-types` 新 crate**(已落地:IR + `TypeEnv` + `TypeDiag` + `check.rs`) |
+| 模块签名/可见性 | EXPORT 名集合 | **可选 `*.wll.sig` + `SEALED` + sig-gen**(D-2/D-3 已定形态;**词法/关键字表不变**) |
+| MATCH 穷尽 | 无 | **6 形态 usefulness**。注意 Step 8 依赖 Step 2 的诊断管道,而 `TypeDiagKind::UndefinedName` 等 kind **刻意不分配码号**(`codes()` 返回 `None`)—— 宁可不给码,也不猜一个:猜错的码会进 spec §11.2 并被锁测试固定,事后改号是破坏性变更 |
+| 泛型 | 语法槽位有(但 `ARRAY` 强制方括号、裸头不可写) | **擦除 + 限形(编译期实例化)**。D-5 已定最小显式约束 → **v0.10 唯一一处真正的语法面扩张**(`parse_braced` 要接受 `:`) |
 | LSP / JSON | `ast --json` | **+ interface/schema JSON;+ lsp 薄壳** |
-| 锁测试 | ≈1517 | **≈1600±30**(含新 conformance 夹具) |
+| 锁测试 | 1517 | **1568 已达成**(Step 0–2);全量目标 ≈1600±30(含新 conformance 夹具) |
 | **工作量** | v0.9 14–18 人周 | **P0+P1 ≈ 7–10.5 人周(36–52 人日)**;含 P2 ≈ 8.5–12.5 人周 |
 
 ### 12.3 文档验收
@@ -700,7 +785,9 @@ cargo test -p wlwl-types
 3. 默认模式下 `cargo test --workspace` 0 failed;
 4. 开启模式 conformance 夹具稳定(连续 3 次本地运行一致);
 5. §8「明确不做」清单零触碰;
-6. 每条 P0/P1 立项单人日数与实际偏差 **> +50%** 时须补 D10-NNN 说明。
+6. 每条 P0/P1 立项单人日数与实际偏差 **> +50%** 时须补 D10-NNN 说明;
+7. **唯一一处语法面扩张(D-5 泛型约束 `T: Comparable`)已落地并单列** ——
+   §1.4 运算符表 / 关键字表除该处外**零变化**,§12 保留形式(v0.9 为空表)仍为空。
 
 ---
 
