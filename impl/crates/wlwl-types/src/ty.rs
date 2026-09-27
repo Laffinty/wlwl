@@ -160,6 +160,34 @@ impl Ty {
         }
     }
 
+    /// 两个类型的**最小公共上界**(join),用于 `IF` / `MATCH` 分支合流
+    /// (ADR-0020 A2′)。
+    ///
+    /// 规则:
+    /// - 相同即自身;
+    /// - **任一侧为 `Dynamic` → `Dynamic`**。这条是刻意反向的:合流只能
+    ///   比参与合流的类型更精确,绝不能更精确。某一支「不知道」时,结论
+    ///   也只能是「不知道」—— 否则会把未标注分支的 `Dynamic` 悄悄收窄成
+    ///   另一个分支的具体类型,凭空造出类型信息;
+    /// - 否则取「谁可赋值给谁」的方向:能单向赋值就取宽的那个
+    ///   (`Integer` 与 `Float` → `Float`,即 ADR-0010 的安全放宽方向);
+    /// - 互不可赋值 → `Dynamic`(不猜)。
+    pub fn lub(a: &Ty, b: &Ty) -> Ty {
+        if a == b {
+            return a.clone();
+        }
+        if a.is_dynamic() || b.is_dynamic() {
+            return Ty::Dynamic;
+        }
+        if a.is_assignable_to(b) {
+            b.clone()
+        } else if b.is_assignable_to(a) {
+            a.clone()
+        } else {
+            Ty::Dynamic
+        }
+    }
+
     /// 是否为回退类型 `Dynamic`。
     pub fn is_dynamic(&self) -> bool {
         matches!(self, Ty::Dynamic)

@@ -103,33 +103,82 @@ impl Checker {
                 }
                 last
             }
+            // A2′:把**期望元素类型**向下推进容器字面量的每个元素,并逐个校验。
+            //
+            // 无期望类型时退回 Step 2 的「统一」推断(全同才保留,含 Dynamic
+            // 或不一致即 Dynamic)。有期望类型时**逐元素报**,而不是等整体失配
+            // —— `LET(x: ARRAY[INTEGER], [1, "a"])` 应当指出是 `"a"` 那一项,
+            // 整体比对只能给一个笼统的 `ARRAY[INTEGER]` vs `ARRAY[DYNAMIC]`。
+            //
+            // 校验通过后直接返回**声明的元素类型**:既让整体检查自动通过
+            // (元素级诊断已经覆盖了整体失配,避免同一问题报两次),又让推断
+            // 结果比 `Dynamic` 更精确 —— 这正是 A2′ 的主要收益。
             Expr::Array { items, .. } => {
-                // 元素类型:全部相同才保留,含任何 Dynamic 或不一致即 Dynamic。
+                let elem_expected = match expected {
+                    Some(Ty::Array(t)) => Some(t.as_ref()),
+                    _ => None,
+                };
                 let mut unified: Option<Ty> = None;
                 for item in items {
-                    let t = self.check_expr(item, None);
+                    let t = self.check_expr(item, elem_expected);
+                    if let Some(want) = elem_expected {
+                        self.require(
+                            want,
+                            &t,
+                            |expected, found| TypeDiagKind::AnnotationMismatch { expected, found },
+                            &expr_span(item),
+                        );
+                    }
                     unified = Some(match unified {
                         None => t,
-                        Some(prev) if prev == t => prev,
-                        Some(_) => Ty::Dynamic,
+                        Some(prev) => Ty::lub(&prev, &t),
                     });
                 }
-                Ty::Array(Box::new(unified.unwrap_or(Ty::Dynamic)))
+                Ty::Array(Box::new(
+                    elem_expected.map_or_else(|| unified.unwrap_or(Ty::Dynamic), |e| e.clone()),
+                ))
             }
+            // A2′:**值**侧收到期望值类型并逐条校验。**键**侧不下推期望类型,
+            // 但键类型仍按字面量原样推断后参与整体比较 ——
+            // 下推会让字面量被错误地按期望定型,而完全不检查又会漏掉
+            // 「键声明 STRING 却是整数」这类真实失配。折中做法:
+            // 键不接收期望(保持 `1` 就是 INTEGER),但**返回推断出的键类型**,
+            // 让外层的整体比较照常把关。
             Expr::Dict { entries, .. } => {
+                let val_expected = match expected {
+                    Some(Ty::Dict(_, v)) => Some(v.as_ref()),
+                    _ => None,
+                };
                 let mut keys: Option<Ty> = None;
                 let mut vals: Option<Ty> = None;
                 for (k, v) in entries {
                     let kt = self.check_expr(k, None);
-                    let vt = self.check_expr(v, None);
-                    keys = unify(keys, kt);
-                    vals = unify(vals, vt);
+                    let vt = self.check_expr(v, val_expected);
+                    if let Some(want) = val_expected {
+                        self.require(
+                            want,
+                            &vt,
+                            |expected, found| TypeDiagKind::AnnotationMismatch { expected, found },
+                            &expr_span(v),
+                        );
+                    }
+                    keys = Some(match keys {
+                        None => kt,
+                        Some(prev) => Ty::lub(&prev, &kt),
+                    });
+                    vals = Some(match vals {
+                        None => vt,
+                        Some(prev) => Ty::lub(&prev, &vt),
+                    });
                 }
                 Ty::Dict(
                     Box::new(keys.unwrap_or(Ty::Dynamic)),
-                    Box::new(vals.unwrap_or(Ty::Dynamic)),
+                    Box::new(
+                        val_expected.map_or_else(|| vals.unwrap_or(Ty::Dynamic), |v| v.clone()),
+                    ),
                 )
             }
+
             Expr::Let {
                 name,
                 type_annotation,
@@ -187,12 +236,9 @@ impl Checker {
                 match else_branch {
                     Some(e) => {
                         let else_ty = self.check_expr(e, expected);
-                        // 合流:相同才保留。A2′ 才做 lub,这里不猜。
-                        if then_ty == else_ty {
-                            then_ty
-                        } else {
-                            Ty::Dynamic
-                        }
+                        // A2′:取最小公共上界,而不是「相同才保留」。
+                        // `IF(c, 1, 2.5)` 从此推断为 `FLOAT` 而非 `Dynamic`。
+                        Ty::lub(&then_ty, &else_ty)
                     }
                     None => Ty::Dynamic,
                 }
@@ -319,13 +365,16 @@ impl Checker {
                     self.bind_pattern(&clause.pattern, &scrutinee);
                     let t = self.check_expr(&clause.body, expected);
                     self.env.pop_scope();
-                    unified = unify(unified, t);
+                    unified = Some(match unified {
+                        None => t,
+                        Some(prev) => Ty::lub(&prev, &t),
+                    });
                 }
                 let d = self.check_expr(default, expected);
-                match unified {
-                    Some(u) if u == d => u,
-                    _ => Ty::Dynamic,
-                }
+                // A2′:所有子句体与 default 一起取 lub。default 参与合流是
+                // 因为它在无子句命中时就是结果值,漏掉它会让「只有 default
+                // 有类型」的情形退化成 Dynamic。
+                Ty::lub(&unified.unwrap_or(Ty::Dynamic), &d)
             }
             // IMPORT / EXPORT 的类型契约归 C1(Step 6 的模块签名),
             // A3 不预判。
@@ -359,11 +408,6 @@ impl Checker {
     }
 
     fn check_call(&mut self, name: &str, args: &[Expr], span: &Span) -> Ty {
-        // 实参先各自推导(无期望类型:实参之间的期望传播属 A2′)。
-        let arg_tys: Vec<Ty> = args.iter().map(|a| self.check_expr(a, None)).collect();
-
-        // 只有**本模块内可见、且带注解**的函数才有签名。内建建与未知名字
-        // 一律 Dynamic —— A6′ 之前无从得知内建返回类型。
         // `RESULT` 解包族(spec §8.3 消费者注册表)。`IS_OK` / `IS_ERR` /
         // `OR_DIE` / `TRY` 是 **lexer 关键字**,由 parser 降级成 `Expr::*`,已在
         // 上面按节点处理;只有 `UNWRAP` / `UNWRAP_OR` / `ERR_PAYLOAD`
@@ -371,18 +415,35 @@ impl Checker {
         // `wlwl-eval/src/lib.rs:5459-5467` 的同名注记),所以必须在
         // 这里特判 —— 否则它们的返回类型永远是
         // `Dynamic`,`RESULT` 的注解糖语义就丢了。
-        match (name, arg_tys.len()) {
-            ("UNWRAP", 1) | ("UNWRAP_OR", 2) => return unwrap_side(&arg_tys[0], Side::Ok),
-            ("ERR_PAYLOAD", 1) => return unwrap_side(&arg_tys[0], Side::Err),
-            // 元数不对:交回运行时报(它的 arity 诊断更准,
-            // 且不在 A4 范围)。
-            ("UNWRAP" | "UNWRAP_OR" | "ERR_PAYLOAD", _) => return Ty::Dynamic,
-            _ => {}
+        //
+        // 这些是**全局内建**,签名不在类型环境里,故实参没有期望类型可下推。
+        if matches!(name, "UNWRAP" | "UNWRAP_OR" | "ERR_PAYLOAD") {
+            let arg_tys: Vec<Ty> = args.iter().map(|a| self.check_expr(a, None)).collect();
+            return match (name, arg_tys.len()) {
+                ("UNWRAP", 1) | ("UNWRAP_OR", 2) => unwrap_side(&arg_tys[0], Side::Ok),
+                ("ERR_PAYLOAD", 1) => unwrap_side(&arg_tys[0], Side::Err),
+                // 元数不对:交回运行时报(它的 arity 诊断更准,
+                // 且不在 A4 范围)。
+                _ => Ty::Dynamic,
+            };
         }
 
-        let Some(Ty::Fun { params, ret }) = self.env.lookup(name).cloned() else {
-            return Ty::Dynamic;
+        // 只有**本模块内可见、且带注解**的函数才有签名。内建与未知名字
+        // 一律 Dynamic —— A6′ 之前无从得知内建返回类型。
+        let (params, ret) = match self.env.lookup(name).cloned() {
+            Some(Ty::Fun { params, ret }) => (params, *ret),
+            _ => return Ty::Dynamic,
         };
+
+        // A2′:实参按被调签名的形参类型**逐位下推**期望类型。必须在推导
+        // 实参**之前**拿到签名 —— 字面量与容器字面量只有拿到期望类型才会
+        // 按期望定型。没有签名(内建 / 未知名字)时上面已返回,故此处必有。
+        // 元数不足时 `params.get(i)` 给出 `None`,不会越界。
+        let arg_tys: Vec<Ty> = args
+            .iter()
+            .enumerate()
+            .map(|(i, a)| self.check_expr(a, params.get(i)))
+            .collect();
 
         if params.len() != arg_tys.len() {
             self.report(
@@ -392,7 +453,7 @@ impl Checker {
                 },
                 span,
             );
-            return *ret;
+            return ret;
         }
         for (position, (expected_t, found_t)) in params.iter().zip(&arg_tys).enumerate() {
             if !found_t.satisfies_annotation(expected_t) {
@@ -406,7 +467,7 @@ impl Checker {
                 );
             }
         }
-        *ret
+        ret
     }
 
     /// 把模式里的名字绑进当前作用域。`ty` 是被匹配值的类型。
@@ -493,15 +554,6 @@ fn unwrap_side(ty: &Ty, side: Side) -> Ty {
         // 非 `RESULT` 交给运行时报(`E0030`),静态层不重复报。
         _ => Ty::Dynamic,
     }
-}
-
-/// 逐位置合流:一致才保留,否则退回 `Dynamic`。
-fn unify(prev: Option<Ty>, next: Ty) -> Option<Ty> {
-    Some(match prev {
-        None => next,
-        Some(p) if p == next => p,
-        Some(_) => Ty::Dynamic,
-    })
 }
 
 /// 形参的类型:有注解用注解,否则 `Dynamic`(未标注即回退)。
@@ -887,7 +939,10 @@ mod tests {
             codes(r#"LET(x: ARRAY[ARRAY[INTEGER]], [["a"]]);"#),
             ["E0110"]
         );
-        assert_eq!(codes("LET(x: ARRAY[STRING], [1, 2]);"), ["E0110"]);
+        // A2′(Step 4)起改为**逐元素**报,所以两个坏元素是两条诊断。
+        assert_eq!(codes("LET(x: ARRAY[STRING], [1, 2]);"), ["E0110", "E0110"]);
+        // 键侧不接收期望类型(下推会把字面量按期望错误定型),但键类型仍
+        // 参与整体比较 —— 所以「声明 STRING 键却是整数」这类失配照报。
         assert_eq!(codes("LET(x: DICT[STRING, INTEGER], [1, 2]);"), ["E0110"]);
         assert_eq!(codes("LET(x: INTEGER, [1, 2]);"), ["E0110"]);
         // 深层正确的容器不报。
@@ -899,19 +954,24 @@ mod tests {
     }
 
     #[test]
-    fn heterogeneous_nesting_degrades_to_dynamic_and_stays_silent() {
-        // 异构嵌套(元素类型不一致)统一为 Dynamic → 不报。
-        // 这是「不误报优先」的直接后果,必须锁住:只有化为
-        // 静态拦截器才报,高度嵌套下的异构值不应被误报。
-        assert_eq!(
-            codes(r#"LET(x: ARRAY[ARRAY[ARRAY[INTEGER]]], [[[1]], [["b"]]]);"#),
-            Vec::<String>::new()
-        );
-        // 同理,顶层本身异构也不报。
+    fn heterogeneous_nesting_is_silent_only_without_a_declared_element_type() {
+        // A2′(Step 4)把这条的性质**分成了两半**,本测试随之修订:
+        //
+        // 1. **无声明元素类型**时,异构元素统一为 `Dynamic` → 静默。
+        //    这是「不误报优先」的直接后果,必须锁住:高度嵌套下的异构值
+        //    不应被误报。
+        assert_eq!(codes(r#"LET(x, [[1], ["b"]]);"#), Vec::<String>::new());
+        assert_eq!(codes(r#"LET(x, [1, "b"]);"#), Vec::<String>::new());
+        // 2. **有声明元素类型**时,异构不再被 `Dynamic` 吞掉 —— A2′ 把期望
+        //    元素类型逐项下推,`ARRAY[INTEGER]` 里放数组会被逐元素报出来。
+        //    这是 A2′ 带来的**新增检出能力**,不是回归。两个元素都违规,
+        //    所以是两条(逐元素定位,而不是笼统的整体一条)。
         assert_eq!(
             codes(r#"LET(x: ARRAY[INTEGER], [[1], ["b"]]);"#),
-            Vec::<String>::new()
+            ["E0110", "E0110"]
         );
+        // 嵌套数组的声明元素类型必须是数组,不是元素类型。
+        assert_eq!(codes(r#"LET(x: ARRAY[INTEGER], ["a"]);"#), ["E0110"]);
     }
 
     #[test]
@@ -999,6 +1059,109 @@ mod tests {
                 ret: Box::new(Ty::Dynamic)
             }
         );
+    }
+
+    // ---- A2′:期望类型向下传播(Step 4) ----
+
+    #[test]
+    fn a2p_container_elements_are_typed_by_the_declared_element_type() {
+        // A2′ 的主要收益是**推断精度**,不只是多抓错。声明了元素类型时,
+        // 字面量按期望定型,推断结果不再是笼统的 `Dynamic`。
+        // `1` 遇 `ARRAY[FLOAT]` 期望 → 直接定为 FLOAT,整体通过。
+        assert_eq!(check("LET(x: ARRAY[FLOAT], [1]);"), vec![]);
+        // 逐元素失配现在指向**具体那一项**,而不是笼统的整体类型差。
+        let diags = check(r#"LET(x: ARRAY[INTEGER], [1, "a"]);"#);
+        assert_eq!(
+            diags.len(),
+            1,
+            "one bad element must yield exactly one diagnostic"
+        );
+        assert_eq!(
+            diags[0].message(),
+            "annotation mismatch: expected `INTEGER`, found `STRING`"
+        );
+        // 同一个问题**不得**被报两次(元素级 + 整体级)。
+        assert_eq!(
+            codes(r#"LET(x: ARRAY[ARRAY[INTEGER]], [["a"]]);"#),
+            ["E0110"]
+        );
+    }
+
+    #[test]
+    fn a2p_call_arguments_receive_the_callee_param_types() {
+        // 实参按被调签名的形参类型下推。
+        let src = concat!(
+            "LET(g, FUN((xs: ARRAY[INTEGER]) : INTEGER, LEN(xs))); ",
+            "g([1, \"a\"]);"
+        );
+        let diags = check(src);
+        assert_eq!(diags.len(), 1);
+        assert!(
+            diags[0].message().contains("annotation mismatch"),
+            "{:?}",
+            diags[0].message()
+        );
+        // 正确调用不受影响。
+        assert_eq!(check("LET(g, FUN((n: FLOAT), n)); g(1);"), vec![]);
+        // 无签名的调用(内建 / 未知名字)不下推,也不误报。
+        assert_eq!(check("PRINT(1);"), vec![]);
+    }
+
+    #[test]
+    fn a2p_lub_joins_numeric_widening_but_never_narrows_dynamic() {
+        // 合流取最小公共上界:`INTEGER` 与 `FLOAT` → `FLOAT`。
+        assert_eq!(Ty::lub(&Ty::Integer, &Ty::Float), Ty::Float);
+        assert_eq!(Ty::lub(&Ty::Float, &Ty::Integer), Ty::Float);
+        assert_eq!(Ty::lub(&Ty::String, &Ty::String), Ty::String);
+        // 互不相关 → 不猜。
+        assert_eq!(Ty::lub(&Ty::String, &Ty::Integer), Ty::Dynamic);
+        // 容器按元素合流。
+        assert_eq!(
+            Ty::lub(
+                &Ty::Array(Box::new(Ty::Integer)),
+                &Ty::Array(Box::new(Ty::Float))
+            ),
+            Ty::Array(Box::new(Ty::Float))
+        );
+        // **Dynamic 只能被合流稀释,不能被收窄**。这是 lub 里唯一一条
+        // 反向规则:某一支「不知道」时,结论也必须是「不知道」——
+        // 否则会把未标注分支的 Dynamic 凭空变成具体类型。
+        assert_eq!(Ty::lub(&Ty::Dynamic, &Ty::Integer), Ty::Dynamic);
+        assert_eq!(Ty::lub(&Ty::Integer, &Ty::Dynamic), Ty::Dynamic);
+        assert_eq!(Ty::lub(&Ty::Dynamic, &Ty::Dynamic), Ty::Dynamic);
+    }
+
+    #[test]
+    fn a2p_if_branches_are_joined_instead_of_degrading() {
+        // Step 2 时 `IF` 只做「相同才保留」,这里两个分支都会落 Dynamic。
+        // A2′ 之后推断出 FLOAT,因而能被 FLOAT 注解接住。
+        let src = "LET(x: FLOAT, IF(TRUE, 1, 2.5));";
+        assert_eq!(check(src), vec![]);
+        // 分支类型不相关 → Dynamic,不报。
+        assert_eq!(check("LET(x, IF(TRUE, 1, \"s\"));"), vec![]);
+        // 分支合流出 FLOAT,但注解要 STRING → 报。
+        assert_eq!(codes("LET(x: STRING, IF(TRUE, 1, 2.5));"), ["E0110"]);
+        // 一支**真的**推不出 → 落 Dynamic,不收窄。注意:未标注的
+        // `LET(y, 1)` 绑的是**推断出的 INTEGER**,不是 Dynamic;真正落到
+        // Dynamic 的是推导不出的调用(内建返回类型要等 A6′)。
+        assert_eq!(check("LET(x: STRING, IF(TRUE, LEN([]), 2.5));"), vec![]);
+        // 对照:两支都推得出(INTEGER 与 FLOAT)→ 合流 FLOAT,不报。
+        assert_eq!(check("LET(y, 1); LET(x: FLOAT, IF(TRUE, y, 2.5));"), vec![]);
+    }
+
+    #[test]
+    fn a2p_still_never_reports_on_unannotated_programs() {
+        // A2′ 的头号验收项:传播深度加大**不得**削弱「不误报」保证。
+        let src = r#"
+        LET(add, FUN((a, b), +(a, b)));
+        LET(f, FUN((xs), add(1, 2)));
+        LET(m, ["a": 1, "b": 2]);
+        LET(n, f([1, 2, 3]));
+        PRINT(m);
+        PRINT(n);
+        IF(TRUE, PRINT(m), PRINT(n));
+        "#;
+        assert_eq!(check(src), vec![]);
     }
 
     // ---- 码映射(D-1) ----
