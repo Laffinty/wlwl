@@ -1,0 +1,10 @@
+// expects:
+// 计划书 §10.4 规划的 module_sig 目录。两份:
+//   main.wll  —— 导入 math,只导入签名声明过的名字
+//   math.wll  —— 导出 `add` 与 `PI`
+//   math.wll.sig —— 声明 math 对外承诺的名字与类型
+//
+// 开启 `gradual_typing = "error"` 时:零诊断(签名与实现一致)。
+// 破坏一致性时(见 test 模块里的 table)会出现 E0113 / E0114 / E0115。
+IMPORT("math", ["add"]);
+PRINT(add(1, 2));

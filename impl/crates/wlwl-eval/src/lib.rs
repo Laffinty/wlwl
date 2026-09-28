@@ -1200,7 +1200,7 @@ impl ModuleLoader {
 ///
 /// `Ok(None)` means "not a file module" — a std catalog, which has no
 /// on-disk source and therefore no sidecar `<name>.wll.sig`. Every other
-/// outcome is the same answer [`ModuleLoader`] would reach at run time,
+/// outcome is the same answer `ModuleLoader` would reach at run time,
 /// because this calls the loader's own `resolve_source` rather than a
 /// second copy of the rules: project-root containment, manifest
 /// namespaces and `./` `../` walking all stay single-sourced.

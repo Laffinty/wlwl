@@ -159,6 +159,23 @@
 
 ---
 
+## D10-011 · `cargo deny check` 因 `unnecessary-skip` 失败(既有)
+
+- **状态**:接受保留(既有,非 v0.10 引入;Step 15 验收时发现)
+- **发现时机**:Step 15 跑 §12.1 之外的 `cargo deny --locked --all-features check`
+- **影响范围**:许可证 / 依赖来源门禁。`advisories` / `licenses` / `sources`
+  三项**均通过**,只有 `bans` 因配置问题失败
+- **现象**:`deny.toml` 的 skip 列表里列了只存在于单一版本的 workspace 内部
+  crate(如 `{ crate = "wlwl-cli", reason = "workspace = true internal dep" }`),
+  `cargo deny` 判其为 `unnecessary-skip` 并以退出码 2 失败。
+- **已验证与 v0.10 无关**:`git stash -u` 到干净树后重跑,**同样失败**。
+- **为什么不修**:修它要动 `deny.toml` 的 skip 列表,与 v0.10 的内容无关;
+  且真实门禁(licenses / advisories / sources)本来就是通的,失败的是
+  「配置写多了」这种提示级问题。留给依赖治理的周期。
+- **与 v0.9 兼容性**:无
+
+---
+
 ## D10-NNN 流水(追加于此,连续递增)
 
 (暂无)

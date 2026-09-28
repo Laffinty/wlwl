@@ -33,9 +33,9 @@
 //!
 //! 判定一个子句「是否已被前面的子句盖住」时,答案分三档:
 //!
-//! - [`Verdict::Covered`] —— 盖住了(可以报不可达);
-//! - [`Verdict::Uncovered`] —— 没盖住;
-//! - [`Verdict::Unknown`] —— 判不了,**不报**。
+//! - `Verdict::Covered` —— 盖住了(可以报不可达);
+//! - `Verdict::Uncovered` —— 没盖住;
+//! - `Verdict::Unknown` —— 判不了,**不报**。
 //!
 //! 列的种类决定能给多强的答案:
 //!

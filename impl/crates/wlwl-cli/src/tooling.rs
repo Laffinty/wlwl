@@ -52,7 +52,7 @@ pub fn interface_file(file: &std::path::Path) -> ExitCode {
 
 /// 组装一个模块的 interface 载荷。
 ///
-/// 形状与 [`wlwl_types::sig`] 的签名模型一一对应:
+/// 形状与 `wlwl_types::sig` 的签名模型一一对应:
 /// `exports[]` 就是 `.wll.sig` 的条目(名字 + 类型 + 形参 / 返回),
 /// `sealed` 是 `SEALED([...])` 声明面,`signature_file` 是旁路签名文件
 /// 在磁盘上的位置(写没写由工具自己看文件在不在)。

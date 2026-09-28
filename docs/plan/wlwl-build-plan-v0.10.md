@@ -1198,7 +1198,8 @@ W0053,与泛型无关。改它会动到整个格式化契约,不属本 Step,留�
 | Step 8 收尾 | 1686 / 0 | +30(P1-1) |
 | Step 9 收尾 | 1709 / 0 | +23(P1-2) |
 | Step 10 收尾 | 1728 / 0 | +19(P1-3:wlwl-cli 单测 17 + 真进程冒烟 2) |
-| Step 12 收尾 | **1731 / 0** | **+3**(规范 ↔ 注册表双向锁测试) |
+| Step 12 收尾 | 1731 / 0 | +3(规范 ↔ 注册表双向锁测试) |
+| Step 15 收尾 | **1734 / 0** | **+3**(`conformance_static` 集成测试) |
 
 > 目标 ≈1600±30 **已达成**。**不虚报**:每项以实测为准,`off` 档
 > 的零破坏由 `c1_respects_the_three_gradual_typing_levels`、
@@ -1279,6 +1280,34 @@ W0053,与泛型无关。改它会动到整个格式化契约,不属本 Step,留�
 | **S4** | **悬空承诺清零**:`Effect::MethodCall`/`ProtocolViolation` 真正 raise **或** 规范明文降级 | CHANGELOG Known limitations 条目消除或改写 |
 | **S5** | **无包管理动作**:`wlwl-toml` 无字段/算法/生态面扩展 | diff 评审 |
 | **S6** | **人日可核**:每项立项写明挂载点与预估人日 | 立项单(§3.6/§4.5/§5.4) |
+
+**Step 15 验收结论(2026-09-28,commit 见 `git log`)**:
+
+| # | 结论 | 证据 |
+|---|---|---|
+| S1 | ✅ **达成** | `cargo test --workspace` **1734 passed / 0 failed**;`conformance_static` 逐条验证同一批夹具在默认档下**零静态诊断**且 `wlwl check` 通过 |
+| S2 | ✅ **达成** | 新增 `impl/tests/conformance/{static_types,module_sig}/` + `cargo test -p wlwl-cli --test conformance_static`(3 项,跑**真的二进制**):门开着时 `E0110`/`E0111`/`E0112`/`E0116`/`W0117` 与 `E0113`/`E0114`/`E0115` 逐条出现;破坏签名的**两个方向**都被验到 |
+| S3 | ✅ **达成** | `strict_types` / `E0033` 路径的既有测试未动且全绿;v0.10 未改 `eval` 的任何类型判定路径 |
+| S4 | ⏳ **部分开放** | `Effect::MethodCall` / `ProtocolViolation` 仍不 raise。CHANGELOG 的 Known limitations 条目已**改写**并注明阻塞于 **D-4(未拍板)**,但「真正 raise」那条路未走 —— 详见 `D10-010`。**实施侧不代拍用户决策点** |
+| S5 | ✅ **达成** | `wlwl-toml` 的改动仅两处 `[features]` **只读**键(`gradual_typing` / `match_exhaustiveness`);manifest / lock / MVS 的字段与算法零改动,`Cargo.lock` 未新增依赖 |
+| S6 | ✅ **达成** | 立项单 §3.6 / §4.5 / §5.4 逐项带挂载点 / 变更面 / 人日 / 验收命令;每个 Step 的 commit message 回链对应行 |
+
+§12.1 的自动验收命令**全部实跑**:
+
+| 命令 | 结果 |
+|---|---|
+| `cargo test --workspace` | ✅ 1734 / 0 |
+| `cargo fmt --check` | ✅ 0 diff |
+| `cargo clippy --locked --workspace --all-targets -- -D warnings` | ✅ 0 warning |
+| `cargo doc --workspace --no-deps` | ✅ 0 warning(修掉 6 处链到私有项的文档链接) |
+| `cargo test -p wlwl-cli --test conformance` | ✅ |
+| `cargo test -p wlwl-cli --test conformance_static` | ✅ 3 / 0(**本次新建**) |
+| `cargo test -p wlwl-types` | ✅ 112 / 0 |
+
+**一个计划外的发现**:`cargo deny --locked --all-features check` 失败,但**干净树上同样失败**
+(已用 `git stash -u` 验证)—— `deny.toml` 的 skip 列表含「只存在单一版本的
+workspace 内部 crate」,判为 `unnecessary-skip`。`licenses` / `advisories` /
+`sources` 三项均通过,失败的只是配置卫生。登记为 `D10-011`,不属 v0.10 范围。
 
 ---
 

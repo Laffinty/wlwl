@@ -37,7 +37,7 @@
 //!   所以签名文法**自带**一套 `名字(形参) : 返回` 的写法,而不是复用
 //!   那个到不了的箭头形式。
 //! - 类型表达式**复用源码那一份文法**(`ARRAY[T]` / `DICT[K, V]` /
-//!   `OPTION[T]` / `RESULT[T, E]`,一律方括号):实现见 [`parse_type_text`]
+//!   `OPTION[T]` / `RESULT[T, E]`,一律方括号):实现见 `parse_type_text`
 //   ——它把类型文本包进一个合成的 `LET(__t: <文本>, 0);` 交给真正的
 //!   parser,所以签名里的类型和注解里的类型**不可能**跑偏。
 //!
@@ -363,7 +363,7 @@ impl fmt::Display for ModuleSig {
 /// 一个「看起来精确、实际更弱」的类型。顶层函数类型照常渲染成
 /// `名字(形参) : 返回`。
 ///
-/// 降级规则集中在 [`sig_safe_ty`],改签名文法时它和
+/// 降级规则集中在 `sig_safe_ty`,改签名文法时它和
 /// [`ModuleSig`]'s `Display` 必须一起改。
 pub fn sig_from_module(program: &Expr, declared: &[DeclaredBinding]) -> ModuleSig {
     let mut entries = BTreeMap::new();
@@ -1223,7 +1223,7 @@ EXPORT either : OPTION[INTEGER]
 
     /// [Step 9] 带约束的类型变量**能被签名表达**:`T: Comparable` 的 `:` 在
     /// 方括号内,`.wll.sig` 的类型文本走的正是同一个 parser(Step 7 的
-    /// `parse_type_text`)。所以 Step 7 那条「签名文法表达不了的类型一律降级
+    /// `parse_type_text`（模块内私有）)。所以 Step 7 那条「签名文法表达不了的类型一律降级
     /// `DYNAMIC`」在这里松开了一格 —— 往返仍然成立。
     #[test]
     fn bounded_variables_survive_the_signature_round_trip() {
