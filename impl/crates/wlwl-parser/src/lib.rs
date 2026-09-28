@@ -1594,24 +1594,31 @@ impl Parser {
         let (_, _, _, col_end) = self.span_here();
         let default = if matches!(self.peek(), TokenKind::Comma) {
             self.advance();
-            Box::new(self.parse_expr()?)
+            (Box::new(self.parse_expr()?), false)
         } else {
-            Box::new(Expr::Literal(
-                Literal::Null,
-                Span {
-                    file: self.file.clone(),
-                    line_start: line,
-                    col_start: col,
-                    line_end,
-                    col_end,
-                },
-            ))
+            (
+                Box::new(Expr::Literal(
+                    Literal::Null,
+                    Span {
+                        file: self.file.clone(),
+                        line_start: line,
+                        col_start: col,
+                        line_end,
+                        col_end,
+                    },
+                )),
+                // v0.10 Step 8:记住「这个 NULL 是我们替作者补的」。
+                // 编译期 MATCH 穷尽性检查靠它区分「作者兜了底」与
+                // 「作者漏了分支,静默拿到 NULL」——后者才是要报的那种。
+                true,
+            )
         };
         self.expect_specific(EC::E0011, "\')\'")?;
         Ok(Expr::Match {
             value: Box::new(value),
             clauses,
-            default,
+            default: default.0,
+            default_synthetic: default.1,
             span: Span {
                 file: self.file.clone(),
                 line_start: line,
@@ -2740,6 +2747,41 @@ mod tests {
                 assert_eq!(names[1].name, "PI");
             }
             _ => panic!("expected EXPORT"),
+        }
+    }
+
+    // ---- v0.10 Step 8: default 臂省略与否的记号 ----
+
+    /// spec §7.6:default 可省略,省略时 parser 补一个 `NULL` 字面量。
+    /// 静态层要能分辨「作者写了」与「我们补的」—— 所以 AST 上带
+    /// `default_synthetic` 记号(求值语义两边一致)。
+    #[test]
+    fn an_omitted_default_arm_is_marked_synthetic() {
+        let e = parse("MATCH(1, [[1, 1]]);", "t.wll").expect("parses");
+        match e {
+            Expr::Match {
+                default_synthetic,
+                default,
+                ..
+            } => {
+                assert!(default_synthetic, "omitted default must be marked");
+                // 补出来的是 NULL 字面量,求值侧照旧吃它。
+                assert!(matches!(*default, Expr::Literal(Literal::Null, _)));
+            }
+            other => panic!("expected MATCH, got {:?}", other),
+        }
+    }
+
+    #[test]
+    fn an_explicit_default_arm_is_not_marked_synthetic() {
+        for src in ["MATCH(1, [[1, 1]], 0);", "MATCH(1, [[1, 1]], NULL);"] {
+            let e = parse(src, "t.wll").expect("parses");
+            match e {
+                Expr::Match {
+                    default_synthetic, ..
+                } => assert!(!default_synthetic, "explicit default: {src}"),
+                other => panic!("expected MATCH, got {:?}", other),
+            }
         }
     }
 

@@ -208,15 +208,19 @@ fn render_inline(e: &Expr) -> Option<String> {
             value,
             clauses,
             default,
+            // v0.10 Step 8:省略的 default 臂**不要**补写成 `, NULL`。
+            // 语义一样(spec §7.6),但补出来会让「作者兜了底」和「作者漏了
+            // 分支」在源码里长得一模一样 —— 正是 Step 8 要报的那个区别。
+            default_synthetic,
             ..
         } => {
             let cs = render_clauses_inline(clauses)?;
-            format!(
-                "MATCH({}, [{}], {})",
-                render_inline(value)?,
-                cs,
-                render_inline(default)?
-            )
+            let head = format!("MATCH({}, [{}]", render_inline(value)?, cs);
+            if *default_synthetic {
+                format!("{head})")
+            } else {
+                format!("{head}, {})", render_inline(default)?)
+            }
         }
         Expr::Import { path, names, .. } => {
             format!("IMPORT({}, [{}])", quote(path), render_names_inline(names)?)

@@ -29,6 +29,7 @@ use wlwl_ast::{Expr, FunParam, Literal, Pattern, Span, StrPart};
 
 use crate::diag::{TypeDiag, TypeDiagKind};
 use crate::env::TypeEnv;
+use crate::matchx;
 use crate::ty::Ty;
 
 /// 对一棵已解析的 AST 跑静态 pass,返回全部诊断(按发现顺序)。
@@ -82,7 +83,31 @@ pub struct CheckOutput {
 /// 就是这份表。把它做成同一次遍历的副产品而不是另写一遍顶层扫描,是为了
 /// 让「推断出来的类型」只有**一个**来源:两处各自推断必然漂移。
 pub fn check_program_detailed(expr: &Expr, builtins: &HashMap<String, Ty>) -> CheckOutput {
-    let mut checker = Checker::new(builtins);
+    check_program_with_options(
+        expr,
+        &CheckOptions {
+            builtins,
+            // Step 8 之前 MATCH 检查不存在,所以历史调用方式等价于「开着」。
+            match_exhaustiveness: true,
+        },
+    )
+}
+
+/// 一次静态遍历的开关(Step 8 起静态层有**两个**子系统,各管各的档位)。
+#[derive(Debug, Clone, Copy)]
+pub struct CheckOptions<'a> {
+    /// 内建签名表(Step 5 · A6′)。空表 = 内建返回类型不可知 → 落
+    /// `Dynamic`,不产生诊断。
+    pub builtins: &'a HashMap<String, Ty>,
+    /// Step 8:是否跑 MATCH 穷尽性 / 可达性检查。`false` = **完全不跑**
+    /// —— 这是「零开销」在 MATCH 侧的落点。
+    pub match_exhaustiveness: bool,
+}
+
+/// [`check_program_detailed`] 的开关版。
+pub fn check_program_with_options(expr: &Expr, opts: &CheckOptions<'_>) -> CheckOutput {
+    let mut checker = Checker::new(opts.builtins);
+    checker.match_exhaustiveness = opts.match_exhaustiveness;
     checker.check_expr(expr, None);
     CheckOutput {
         diags: checker.diags,
@@ -114,6 +139,8 @@ struct Checker<'a> {
     builtins: &'a HashMap<String, Ty>,
     /// 根作用域绑定(Step 6)。见 [`DeclaredBinding`]。
     declared: Vec<DeclaredBinding>,
+    /// Step 8:是否跑 MATCH 检查。关掉时那条 pass **完全不执行**。
+    match_exhaustiveness: bool,
 }
 
 impl<'a> Checker<'a> {
@@ -124,6 +151,9 @@ impl<'a> Checker<'a> {
             returns: Vec::new(),
             builtins,
             declared: Vec::new(),
+            // 由 `check_program_with_options` 覆写;默认值等于「关」——
+            // 构造器本身不该顺手把一条新 pass 打开。
+            match_exhaustiveness: false,
         }
     }
 
@@ -453,6 +483,7 @@ impl<'a> Checker<'a> {
                 value,
                 clauses,
                 default,
+                default_synthetic,
                 ..
             } => {
                 let scrutinee = self.check_expr(value, None);
@@ -472,7 +503,19 @@ impl<'a> Checker<'a> {
                 // A2′:所有子句体与 default 一起取 lub。default 参与合流是
                 // 因为它在无子句命中时就是结果值,漏掉它会让「只有 default
                 // 有类型」的情形退化成 Dynamic。
-                Ty::lub(&unified.unwrap_or(Ty::Dynamic), &d)
+                let unified = Ty::lub(&unified.unwrap_or(Ty::Dynamic), &d);
+                // [v0.10 Step 8 / P1-1] 穷尽性 / 不可达子句。类型已经推完,
+                // 所以这一步不碰类型环境,纯只读判定。开关关着时**不调用**
+                // —— 与 `gradual_typing = "off"` 同一套「不跑就是零开销」。
+                if self.match_exhaustiveness {
+                    let spans: Vec<Span> = clauses.iter().map(|c| c.span.clone()).collect();
+                    self.diags.extend(matchx::to_diags(
+                        &matchx::check_match(&scrutinee, clauses, *default_synthetic),
+                        &expr_span(expr),
+                        &spans,
+                    ));
+                }
+                unified
             }
             // IMPORT / EXPORT / SEALED 的**类型**契约归 C1/C2(Step 6 的
             // 模块签名与密封面),但它们的名字面契约不需要类型:

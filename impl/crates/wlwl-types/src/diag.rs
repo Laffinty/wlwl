@@ -121,6 +121,57 @@ pub enum TypeDiagKind {
         /// 实现侧的类型(注解,或无注解时的推断结果)
         found: Ty,
     },
+    /// [v0.10 Step 8 / plan §5.1 P1-1] MATCH 没盖住被检查值的构造子空间。
+    ///
+    /// 只在 **default 臂被省略**时报(spec §7.6 的 MATCH 恒有 default,
+    /// 作者写了 default 就是有意兜底;省略时漏掉的分支会**静默得到
+    /// `NULL`**,那才是要报的陷阱)。
+    NonExhaustive {
+        /// 没被盖住的构造子名(`OK(_)` / `TRUE` / …),按声明顺序
+        missing: Vec<String>,
+    },
+    /// [v0.10 Step 8 / plan §5.1 P1-1] 这个臂永远跑不到。
+    ///
+    /// **恒警告**(`W0117`),不随 `gradual_typing = "error"` 升成硬错:
+    /// 不可达子句通常是渐进重构的中间态,拦下来会误伤正在写的代码。
+    UnreachableArm {
+        /// 哪个臂
+        what: ArmSite,
+        /// 为什么跑不到(稳定文案,供快照测试)
+        reason: String,
+    },
+}
+
+/// MATCH 的一个臂。不可达诊断要能指回**具体哪一个**臂。
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum ArmSite {
+    /// 第 n 个子句(0 起算)
+    Clause(usize),
+    /// default 臂
+    Default,
+}
+
+impl fmt::Display for ArmSite {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        match self {
+            ArmSite::Clause(i) => write!(f, "match clause {}", i + 1),
+            ArmSite::Default => f.write_str("the default arm"),
+        }
+    }
+}
+
+/// 诊断属于哪个静态子系统。
+///
+/// Step 8 之后静态层有**两个独立档位**:`gradual_typing` 管类型诊断
+/// (`E0110`-`E0112` + Step 6 的模块契约),`match_exhaustiveness` 管
+/// MATCH 诊断(`E0116` / `W0117`)。调用方按本方法分流渲染 —— 否则就得在
+/// CLI 里手写「哪些码归哪个开关」,改一个码就得改两处。
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Subsystem {
+    /// 类型 / 模块契约 / 签名
+    Types,
+    /// MATCH 穷尽性 / 可达性(Step 8)
+    Match,
 }
 
 /// 契约的载体:同一个「声明面」有两种写法,诊断要能说清是哪一个缺了名字。
@@ -172,6 +223,29 @@ pub struct TypeDiag {
 
 /// 诊断种类 → 错误码(决策 D-1)。
 impl TypeDiagKind {
+    /// 该条件**恒警告**时的码号(不随 `gradual_typing = "error"` 升级)。
+    ///
+    /// 计划书 §5.1 明写:不可达子句 `W0117` **恒是警告**。理由是它通常
+    /// 出现在渐进重构的中间态(先把兜底臂留着,再逐条细分),当成硬错会
+    /// 拦下正在写的代码。所以它没有 `E0117` 配对 —— 那个码号**不存在**,
+    /// 免得有人以为「切到 error 档它会变硬」。
+    pub fn always_warning_code(&self) -> Option<ErrorCode> {
+        match self {
+            TypeDiagKind::UnreachableArm { .. } => Some(ErrorCode::W0117),
+            _ => None,
+        }
+    }
+
+    /// 这条诊断归哪个静态子系统(见 [`Subsystem`])。
+    pub fn subsystem(&self) -> Subsystem {
+        match self {
+            TypeDiagKind::NonExhaustive { .. } | TypeDiagKind::UnreachableArm { .. } => {
+                Subsystem::Match
+            }
+            _ => Subsystem::Types,
+        }
+    }
+
     /// `(error 档, warn 档)` 码对。
     ///
     /// `None` = 该条件尚未分配码号(见模块文档「尚未分配码的条件」)。
@@ -190,6 +264,11 @@ impl TypeDiagKind {
             TypeDiagKind::SignatureTypeMismatch { .. } => {
                 Some((ErrorCode::E0115, ErrorCode::W0115))
             }
+            // [v0.10 Step 8 / plan §5.1 P1-1] MATCH 穷尽性。
+            TypeDiagKind::NonExhaustive { .. } => Some((ErrorCode::E0116, ErrorCode::W0116)),
+            // 不可达子句是**恒警告**,不参与升/降配对 ——
+            // 见 [`TypeDiagKind::always_warning_code`]。
+            TypeDiagKind::UnreachableArm { .. } => None,
             TypeDiagKind::UndefinedName { .. }
             | TypeDiagKind::UnresolvedTypeName { .. }
             | TypeDiagKind::TypeArityMismatch { .. } => None,
@@ -210,7 +289,15 @@ impl TypeDiag {
     /// 按严重级产出可渲染 / 可 JSON 序列化的诊断。
     ///
     /// `None` = 该 `kind` 尚未分配码号(见 [`TypeDiagKind::codes`])。
+    ///
+    /// **恒警告的 kind 忽略档位**:`W0117` 不可达子句在 `error` 档下
+    /// 仍是 `Severity::Warning`,不阻塞退出码。
     pub fn to_diagnostic(&self, severity: Severity) -> Option<WlwlDiagnostic> {
+        if let Some(code) = self.kind.always_warning_code() {
+            let mut d = WlwlDiagnostic::new(code, self.message(), self.location());
+            d.severity = Severity::Warning;
+            return Some(d);
+        }
         let (error_code, warning_code) = self.kind.codes()?;
         let code = match severity {
             Severity::Warning => warning_code,
@@ -219,6 +306,13 @@ impl TypeDiag {
         let mut d = WlwlDiagnostic::new(code, self.message(), self.location());
         d.severity = severity;
         Some(d)
+    }
+
+    /// 该诊断在给定档位下**实际发出**的码号(`None` = 没有码)。
+    ///
+    /// 测试锁这个而不是 `codes()`,因为恒警告的 kind 两条路都不一样。
+    pub fn emitted_code(&self, severity: Severity) -> Option<ErrorCode> {
+        self.to_diagnostic(severity).map(|d| d.code)
     }
 
     /// `gradual_typing = "error"` 档:硬诊断,阻塞退出码。
@@ -297,7 +391,27 @@ impl TypeDiag {
             } => format!(
                 "module signature type mismatch for `{name}`: expected `{declared}`, found `{found}`"
             ),
+            TypeDiagKind::NonExhaustive { missing } => {
+                // 缺构造子要说清「漏了会怎样」:default 被省略时那个分支
+                // 会静默得到 NULL,只说「不穷尽」会让人以为程序会报错。
+                format!(
+                    "non-exhaustive match: missing {}; the omitted default arm yields NULL for those values",
+                    join_and(missing)
+                )
+            }
+            TypeDiagKind::UnreachableArm { what, reason } => {
+                format!("unreachable {what}: {reason}")
+            }
         }
+    }
+}
+
+/// 列表渲染成 `a, b and c`(诊断文案用,渲染必须确定)。
+fn join_and(items: &[String]) -> String {
+    match items {
+        [] => String::new(),
+        [one] => one.clone(),
+        [rest @ .., last] => format!("{} and {}", rest.join(", "), last),
     }
 }
 

@@ -404,6 +404,16 @@ pub enum Expr {
         value: Box<Expr>,
         clauses: Vec<MatchClause>,
         default: Box<Expr>,
+        /// v0.10 Step 8:spec §7.6 允许省略 default 臂,省略时 parser
+        /// 物化一个 `NULL` 字面量。静态层必须能分辨「作者写了 default」
+        /// 与「default 被省略了」—— 后者才是「漏了分支会静默得到 NULL」
+        /// 那个真陷阱。求值语义两边一致(省略 == `NULL`),所以这只是
+        /// **记录事实**,不改变任何运行期行为。
+        ///
+        /// 序列化时 `false`(= 显式写了 default,绝大多数情况)直接省略,
+        /// 以免动到 `stable.rs` 里按 serde 形式算的内容哈希。
+        #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+        default_synthetic: bool,
         span: Span,
     },
     Import {

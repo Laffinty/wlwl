@@ -7481,6 +7481,10 @@ impl Evaluator {
                 clauses,
                 default,
                 span,
+                // 求值侧不需要知道 default 是不是补出来的:省略与显式
+                // `NULL` 的语义完全一致(spec §7.6)。这个标记只给编译期
+                // 的穷尽性检查用(见 wlwl_ast::Expr::Match 的文档)。
+                default_synthetic: _,
             } => self.eval_match(value, clauses, default, span),
             Expr::Import { path, names, .. } => self.eval_import(path, names),
             Expr::Export { names, .. } => self.eval_export(names, expr.span()),

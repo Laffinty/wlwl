@@ -681,17 +681,94 @@ std 模块忘了登记,会在 `cargo test` 里当场失败**,而不是等到某�
 
 ### 5.1 P1-1 · MATCH 穷尽性 / 冗余检测
 
+> **状态:已完成(Step 8)。** 核心结论:可枚举的构造子空间**只有三种**
+> (`BOOLEAN` / `NULL` / `RESULT`),整数 / 浮点 / 字符串 / `ARRAY` /
+> `DICT` 都不报非穷尽 —— 报了就是误报。原计划「在 6 种 `Pattern` 上实现
+> usefulness / Maranget」实测后**收窄为:闭空间精确并集递归 + 标量域
+> 精确单行 + 聚合列保守句法**,理由见「实测修订 1 / 3」。
+
 | 项 | 内容 |
 |----|------|
-| **目标** | 在现有 **6 种 `Pattern`** 上实现 usefulness / Maranget;缺失模式列出;不可达子句警告 |
-| **挂载点** | MATCH 求值前的静态 pass(`wlwl-types` 或 `wlwl-types` 子模块);`Pattern::{Ident,Wildcard,Literal,Array,Dict,Constructor}`;`Constructor` **仅 OK/ERR** |
-| **算法范围** | 无 or-pattern / guard / ref pattern — 形态集窄,属小型算法(《路线》成本可控结论**成立并上调**) |
-| **诊断** | 非穷尽 → `E0116`(error) / `W0116`(warn);不可达子句 → `W0117`(恒警告,不因 error 模式升级为硬错,避免误伤渐进代码) |
-| **配置** | `gradual_typing` 开启时启用;子开关可选 `match_exhaustiveness = "off" \| "warn" \| "error"`(默认随 `gradual_typing`) |
+| **目标** | 判定「子句是否已被前面的子句盖住」;列出缺失构造子 |
+| **挂载点** | `wlwl-types` 新增 `matchx.rs`;挂在 `check.rs` 的 `Expr::Match` 分支(类型推完之后,纯只读判定) |
+| **算法范围** | 无 or-pattern / guard / ref pattern;闭空间走 Maranget 式逐构造子特化,其余列走保守判定 |
+| **诊断** | 非穷尽 → `E0116` / `W0116`;不可达子句与死 default → `W0117`(**恒警告**) |
+| **配置** | `gradual_typing` 开启时启用;子开关 `match_exhaustiveness = "off" \| "warn" \| "error"`,**缺省跟随 `gradual_typing`** |
 | **预估人日** | **3–5 人日**(E4) |
-| **验收** | 缺失模式列出具体构造;不可达子句警告;锁用例 ≥ 8;默认关不报 |
+| **验收** | ✅ 缺失模式列出具体构造;✅ 不可达子句警告;✅ 锁用例 ≥ 8(实测 14 + 9 + 5 + 2);✅ 默认关不报 |
+| **实测** | workspace 1686 / 0(+30) |
 
-**明确不做(本版)**:嵌套 or-pattern、guard 收窄、与流敏感类型的耦合(推迟)。
+**实测修订 1 —— 非穷尽以「default 臂被省略」为前提(本 Step 最重要的一条收敛)**。
+
+spec §7.6 的 MATCH 是**全覆盖**的:default 臂总是存在,省略时等于 `NULL`
+字面量。所以「子句没盖满构造子空间」本身**不是**错误 —— 作者写了
+default 就是有意兜底,再报一遍纯噪声,还会让仓库里所有带 default 的
+MATCH 全变红。真正要报的是**省略了 default 却没盖满**:那种情况下漏掉
+的分支会**静默得到 `NULL`**:
+
+```wlwl
+MATCH(r, [[OK(n), n]]);   // r: RESULT[INTEGER, STRING]
+// r 是 ERR 时什么都不打印 —— 静默 NULL,而不是报错
+```
+
+要判「省略了」就得知道 default 是不是 parser 补的,而 AST 当时把两者
+都物化成了普通 `Literal::Null`。为此给 `Expr::Match` 加了一个**纯记号
+字段** `default_synthetic`(serde 在 `false` 时省略,所以 stable 树的
+内容哈希**一个字节都不变**)。求值侧完全不用它 —— 省略与显式 `NULL`
+语义一致(ADR-0020 S1 零破坏)。顺带修了格式化器:省略的 default 臂
+**不再被补写成 `, NULL`**,否则「作者兜了底」与「作者漏了分支」在源码里
+会长得一模一样。
+
+**实测修订 2 —— 可枚举的构造子空间只有三种**。无限域(整数 / 浮点 /
+字符串)字面量穷举不完;`ARRAY` / `DICT` 的构造子按元数 / 键集无限展开。
+这四类**不报非穷尽**。能报的只有:
+
+| 被检查值的类型 | 空间 | 缺了会报 |
+|---|---|---|
+| `BOOLEAN` | `{TRUE, FALSE}` | missing TRUE / FALSE |
+| `NULL` | `{NULL}` | missing NULL |
+| `RESULT[T, E]` | `{OK(_), ERR(_)}` | missing OK(_) / ERR(_) |
+| `Dynamic` + 出现 `OK(..)`/`ERR(..)` 模式 | 同上(模式揭示空间) | 同上 |
+
+`Dynamic` 那一行值得单说:被检查值类型不可知(函数返回值最常见)时,
+**模式本身是唯一线索** —— 出现 `OK(..)` 说明作者显然在匹配 `RESULT`,
+按 `RESULT` 分析比直接放弃有价值得多。反过来,**类型已知且不是
+`RESULT`** 却写了构造子模式,是程序自相矛盾 → 判不了,一条不报。
+
+`OPTION` **故意不枚举**:它是注解糖(spec §2.1 没有这个运行时类型),
+而 `strict_types` 默认关着、注解并没有被运行时强制,把它当成
+`{NULL, OK(_), ERR(_)}` 是不成立的。
+
+**实测修订 3 —— 零误报靠三档置信度,不靠「想清楚」**。判定分
+`Covered` / `Uncovered` / `Unknown`,`Unknown` 一律不报。列的种类决定
+能给多强的答案:
+
+| 列 | 策略 | 能报什么 |
+|---|---|---|
+| 闭空间 | **精确并集递归**(逐构造子特化) | 缺构造子 + 不可达子句 |
+| 无限标量域 | **精确单行**(一个值只匹配一个字面量,不存在并集覆盖) | 重复字面量 / 通配之后的死子句 |
+| 数组 / 字典 / 未知 | **保守句法**(只在能证明时给 `Covered`) | 结构相同、元数相同且行内全通配、同名构造子载荷被盖住 |
+
+数组只做保守判定有具体理由:`[1, _]` 与 `[_ , 2]` 的**并集**能盖住
+`[_, _]`,但**任何一行单独都盖不住**;而数组构造子还按元数无限展开
+(`[]` / `[x]` / `[x, y]` / …,带 `*rest` 又是 `[n..∞)`)。算准它需要
+完整的元数分解 + 元素列递归,那是 v0.10.1 的量。现在宁可漏报,也不冒
+「报了一个其实可达的子句」这种更伤信任的错。
+
+**`W0117` 恒警告,`E0117` 这个号不存在**。理由是不可达子句通常出现在
+渐进重构的中间态(先留兜底臂再逐条细分),当成硬错会拦下正在写的代码。
+留一个空号不如让「切到 `error` 档它也不变硬」这件事没有歧义。配套的:
+CLI 的阻塞判据从「看档位」改成**「看实际渲染出的诊断有没有硬错」** ——
+`error` 档下也可能一条硬错都没有(只报了 `W0117`),那就不该拦。
+
+**两个开关独立**。`match_exhaustiveness` 缺省跟随 `gradual_typing`,
+但可以单独开 / 单关(锁测试
+`p1_match_exhaustiveness_can_be_turned_off_on_its_own` /
+`..._can_be_enabled_on_its_own`)。渲染阶段按
+`TypeDiagKind::subsystem()` 分流,不在 CLI 里手写「哪些码归哪个开关」。
+
+**明确不做(本版)**:嵌套 or-pattern、guard 收窄、与流敏感类型的耦合、
+数组 / 字典的穷尽性(推迟到 v0.10.1,理由见实测修订 3)。
 
 ### 5.2 P1-2 · 泛型限形(唯一允许的深水区)
 
@@ -895,10 +972,17 @@ std 模块忘了登记,会在 `cargo test` 里当场失败**,而不是等到某�
       types_degrade_to_dynamic / c3_* 端到端 6 项
       / every_module_file_documents_and_registers_its_own_path(C5′ 守门)
       (C3 的「编译期实现满足签名」Step 6 已交付,本 Step 只做生成侧)
-[Step 8] impl:MATCH 穷尽性 / 冗余(P1-1)
-   ├─ 6 形态 usefulness / Maranget
-   ├─ 诊断 E0116 / W0116 / W0117
-   └─ 锁测试:match_missing_ctor / match_unreachable_clause ≥ 8
+[Step 8] impl:MATCH 穷尽性 / 冗余(P1-1)      ✅ 完成
+   ├─ wlwl-types 新增 matchx.rs:闭空间精确并集递归 + 标量域精确单行 +
+   │  聚合列保守句法(三档置信度,Unknown 一律不报)
+   ├─ Expr::Match 加 default_synthetic 记号(serde 省略 → 内容哈希不变)
+   ├─ 诊断 E0116 / W0116 + W0117(恒警告,E0117 不存在)
+   ├─ 子开关 match_exhaustiveness,缺省跟随 gradual_typing,两者独立
+   ├─ 格式化器不再把省略的 default 臂补写成 `, NULL`
+   └─ 锁测试:missing_result_constructor_is_named / a_dead_default_arm_is_
+      flagged_as_a_warning_even_in_error_mode / infinite_domains_never_
+      report_non_exhaustive / option_annotated_scrutinees_are_not_enumerated
+      / v09_programs_stay_silent / p1_* 端到端 9 项
 [Step 9] impl:泛型限形擦除(P1-2)
    ├─ 参数化容器/函数;显式约束(可选)
    ├─ Value 模型零改动
@@ -945,7 +1029,7 @@ std 模块忘了登记,会在 `cargo test` 里当场失败**,而不是等到某�
 > **D-2 附带效果**:`*.wll.sig` 是旁路文件,「无签名 = v0.9 行为」因此是
 > 结构性保证,不是约定。
 
-### 10.3 锁测试预期增量(**Step 0–7 已实测,其余仍为估计**)
+### 10.3 锁测试预期增量(**Step 0–8 已实测,其余仍为估计**)
 
 | 时点 | 实测总数 | 增量 |
 |------|---------|------|
@@ -954,11 +1038,13 @@ std 模块忘了登记,会在 `cargo test` 里当场失败**,而不是等到某�
 | Step 2 收尾 | 1568 / 0 | +32(A3:wlwl-types 20 + wlwl-toml 6 + wlwl-cli 6) |
 | Step 3–5 收尾 | 1590 / 0 | +22(A4 8 + A2′ 6 + A6′ 8) |
 | Step 6 收尾 | 1639 / 0 | +49(C1/C2) |
-| Step 7 收尾 | **1656 / 0** | **+17**(C3:wlwl-types 8 + wlwl-cli 6;C5′:wlwl-std 3 守门测试) |
+| Step 7 收尾 | 1656 / 0 | +17(C3 14 + C5′ 3) |
+| Step 8 收尾 | **1686 / 0** | **+30**(P1-1:wlwl-types 14 + wlwl-cli 9 + wlwl-toml 5 + wlwl-parser 2) |
 
 > 目标 ≈1600±30 **已达成**。**不虚报**:每项以实测为准,`off` 档
-> 的零破坏由 `c1_respects_the_three_gradual_typing_levels` 反证(用一份
-> 「开启时必报」的签名文件证明门禁确实没跑)。
+> 的零破坏由 `c1_respects_the_three_gradual_typing_levels` 与
+> `p1_default_off_stays_silent_on_v09_match_programs` 反证(用一份
+> 「开启时必报」的夹具 / 源码证明门禁确实没跑)。
 
 
 

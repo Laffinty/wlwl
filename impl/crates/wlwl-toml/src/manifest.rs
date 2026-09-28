@@ -412,6 +412,88 @@ impl Default for GradualTypingSetting {
     }
 }
 
+/// v0.10 Step 8(计划书 §5.1)`[features] match_exhaustiveness` 的三档取值。
+///
+/// 与 [`GradualTyping`] 同构但**可缺省跟随**:`match_exhaustiveness` 不写
+/// 时取 `gradual_typing` 的档(计划书原文「默认随 `gradual_typing`」),
+/// 写了才独立生效。这样「渐进类型」这一个总开关就够用,需要单独关掉
+/// MATCH 检查时再显式写 `"off"`。
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub enum MatchExhaustiveness {
+    /// 不跑 MATCH 穷尽性 / 可达性检查。
+    #[default]
+    Off,
+    /// 缺构造子发 `W0116`;不可达子句恒发 `W0117`。不阻塞退出码。
+    Warn,
+    /// 缺构造子发 `E0116`(**阻塞**);不可达子句**仍恒为** `W0117`。
+    Error,
+}
+
+impl MatchExhaustiveness {
+    /// 清单里的规范拼写(与 `wlwl.toml` 写法一致)。
+    pub fn as_str(&self) -> &'static str {
+        match self {
+            MatchExhaustiveness::Off => "off",
+            MatchExhaustiveness::Warn => "warn",
+            MatchExhaustiveness::Error => "error",
+        }
+    }
+}
+
+/// `match_exhaustiveness` 的读取结果:生效档位 + 非法值回执。
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct MatchExhaustivenessSetting {
+    mode: MatchExhaustiveness,
+    invalid: Option<String>,
+}
+
+impl MatchExhaustivenessSetting {
+    /// 键缺失 → **跟随 `gradual_typing`**(而不是回落 `off`)。
+    pub fn following(fallback: GradualTypingSetting) -> MatchExhaustivenessSetting {
+        MatchExhaustivenessSetting {
+            mode: match fallback.mode() {
+                GradualTyping::Off => MatchExhaustiveness::Off,
+                GradualTyping::Warn => MatchExhaustiveness::Warn,
+                GradualTyping::Error => MatchExhaustiveness::Error,
+            },
+            invalid: None,
+        }
+    }
+
+    fn resolved(mode: MatchExhaustiveness) -> MatchExhaustivenessSetting {
+        MatchExhaustivenessSetting {
+            mode,
+            invalid: None,
+        }
+    }
+
+    /// 非法值已回落到「跟随 `gradual_typing`」,并携带原始文本。
+    fn rejected(
+        raw: impl Into<String>,
+        fallback: GradualTypingSetting,
+    ) -> MatchExhaustivenessSetting {
+        MatchExhaustivenessSetting {
+            mode: Self::following(fallback).mode,
+            invalid: Some(raw.into()),
+        }
+    }
+
+    /// 生效档位。
+    pub fn mode(&self) -> MatchExhaustiveness {
+        self.mode
+    }
+
+    /// 是否需要跑 MATCH 检查。`off` 时为 `false`。
+    pub fn is_enabled(&self) -> bool {
+        self.mode != MatchExhaustiveness::Off
+    }
+
+    /// 清单里的非法值原文(已回落到跟随 `gradual_typing`);合法或缺省时为 `None`。
+    pub fn invalid_value(&self) -> Option<&str> {
+        self.invalid.as_deref()
+    }
+}
+
 impl Manifest {
     /// v0.4 §6.6 / §13.8 `[features] allow_builtin_shadow` flag
     /// (Phase C5). Defaults to `false` — shadowing a global builtin
@@ -466,6 +548,31 @@ impl Manifest {
             "warn" => GradualTypingSetting::resolved(GradualTyping::Warn),
             "error" => GradualTypingSetting::resolved(GradualTyping::Error),
             _ => GradualTypingSetting::rejected(text.to_string()),
+        }
+    }
+
+    /// v0.10 Step 8 / 计划书 §5.1 `[features] match_exhaustiveness` 开关。
+    ///
+    /// 取值 `"off"` / `"warn"` / `"error"`,大小写与首尾空白不敏感。
+    /// **键缺失时跟随 `gradual_typing`**(计划书原文),非法值回落到「跟随」
+    /// 并把原文放进 [`MatchExhaustivenessSetting::invalid_value`],由调用方
+    /// 发诊断 —— 与 `gradual_typing` 同一套「不静默吞笔误」的纪律。
+    ///
+    /// **只读**:与 `gradual_typing` 一样不碰依赖求解 / 锁文件
+    /// (ADR-0020 Decision 5)。
+    pub fn match_exhaustiveness(&self) -> MatchExhaustivenessSetting {
+        let gradual = self.gradual_typing();
+        let Some(raw) = self.features.get("match_exhaustiveness") else {
+            return MatchExhaustivenessSetting::following(gradual);
+        };
+        let Some(text) = raw.as_str() else {
+            return MatchExhaustivenessSetting::rejected(raw.to_string(), gradual);
+        };
+        match text.trim().to_ascii_lowercase().as_str() {
+            "off" => MatchExhaustivenessSetting::resolved(MatchExhaustiveness::Off),
+            "warn" => MatchExhaustivenessSetting::resolved(MatchExhaustiveness::Warn),
+            "error" => MatchExhaustivenessSetting::resolved(MatchExhaustiveness::Error),
+            _ => MatchExhaustivenessSetting::rejected(text.to_string(), gradual),
         }
     }
 
@@ -1167,6 +1274,95 @@ strict_types = true
         ] {
             let setting =
                 manifest_with_feature(&format!("\"{}\"", level.as_str())).gradual_typing();
+            assert_eq!(setting.mode(), level);
+        }
+    }
+
+    // ---- v0.10 Step 8 / plan §5.1: match_exhaustiveness ----
+
+    fn manifest_with_two_features(gradual: &str, match_exh: &str) -> Manifest {
+        let src = format!(
+            r#"
+[package]
+name = "tiny"
+version = "0.0.1"
+entry = "main.wll"
+
+[features]
+gradual_typing = {gradual}
+match_exhaustiveness = {match_exh}
+"#
+        );
+        parse(&src).expect("manifest must parse")
+    }
+
+    /// 计划书原文:「默认随 `gradual_typing`」。这是本键最重要的一条语义 ——
+    /// 少写一个键就该由总开关决定,而不是默默回落 `off`。
+    #[test]
+    fn match_exhaustiveness_follows_gradual_typing_when_absent() {
+        for (gradual, expected) in [
+            ("\"off\"", MatchExhaustiveness::Off),
+            ("\"warn\"", MatchExhaustiveness::Warn),
+            ("\"error\"", MatchExhaustiveness::Error),
+        ] {
+            let m = manifest_with_feature(gradual);
+            let setting = m.match_exhaustiveness();
+            assert_eq!(setting.mode(), expected, "gradual: {gradual}");
+            assert_eq!(setting.is_enabled(), expected != MatchExhaustiveness::Off);
+            assert!(setting.invalid_value().is_none());
+        }
+    }
+
+    /// 显式写就独立生效,包括「关掉 MATCH 但保留其它静态检查」。
+    #[test]
+    fn match_exhaustiveness_overrides_gradual_typing() {
+        let m = manifest_with_two_features("\"error\"", "\"off\"");
+        let setting = m.match_exhaustiveness();
+        assert_eq!(setting.mode(), MatchExhaustiveness::Off);
+        assert!(!setting.is_enabled());
+        // 总开关没被动过。
+        assert_eq!(m.gradual_typing().mode(), GradualTyping::Error);
+    }
+
+    #[test]
+    fn match_exhaustiveness_reads_all_three_levels() {
+        for (raw, expected) in [
+            ("\"off\"", MatchExhaustiveness::Off),
+            ("\" WARN \"", MatchExhaustiveness::Warn),
+            ("\"Error\"", MatchExhaustiveness::Error),
+        ] {
+            let setting = manifest_with_two_features("\"error\"", raw).match_exhaustiveness();
+            assert_eq!(setting.mode(), expected, "raw: {raw}");
+            assert!(setting.invalid_value().is_none(), "raw: {raw}");
+        }
+    }
+
+    #[test]
+    fn match_exhaustiveness_invalid_value_falls_back_to_following_but_reports() {
+        for raw in ["\"true\"", "\"strict\"", "\"\"", "1", "true"] {
+            let setting = manifest_with_two_features("\"warn\"", raw).match_exhaustiveness();
+            assert_eq!(
+                setting.mode(),
+                MatchExhaustiveness::Warn,
+                "must fall back to following gradual_typing for {raw}"
+            );
+            assert!(
+                setting.invalid_value().is_some(),
+                "must report the rejected value for {raw}"
+            );
+        }
+    }
+
+    #[test]
+    fn match_exhaustiveness_as_str_round_trips() {
+        for level in [
+            MatchExhaustiveness::Off,
+            MatchExhaustiveness::Warn,
+            MatchExhaustiveness::Error,
+        ] {
+            let setting =
+                manifest_with_two_features("\"error\"", &format!("\"{}\"", level.as_str()))
+                    .match_exhaustiveness();
             assert_eq!(setting.mode(), level);
         }
     }

@@ -33,14 +33,15 @@
 pub mod check;
 pub mod diag;
 pub mod env;
+pub mod matchx;
 pub mod sig;
 pub mod ty;
 
 pub use check::{
-    check_program, check_program_detailed, check_program_with_builtins, CheckOutput,
-    DeclaredBinding,
+    check_program, check_program_detailed, check_program_with_builtins, check_program_with_options,
+    CheckOptions, CheckOutput, DeclaredBinding,
 };
-pub use diag::{ContractCarrier, TypeDiag, TypeDiagKind};
+pub use diag::{ArmSite, ContractCarrier, Subsystem, TypeDiag, TypeDiagKind};
 pub use env::TypeEnv;
 pub use sig::{
     check_exports, check_imports, import_specs, parse_module_sig, sig_from_module, ImportedModule,

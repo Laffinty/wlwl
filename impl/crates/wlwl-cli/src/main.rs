@@ -20,7 +20,9 @@ use clap::{Parser, ValueEnum};
 use wlwl_ast::Expr;
 use wlwl_error::{ErrorCode, Location, Severity, WlwlDiagnostic, WlwlError};
 use wlwl_parser::{parse, parse_with_warnings};
-use wlwl_toml::manifest::{GradualTyping, GradualTypingSetting};
+use wlwl_toml::manifest::{
+    GradualTyping, GradualTypingSetting, MatchExhaustiveness, MatchExhaustivenessSetting,
+};
 use wlwl_types::{DeclaredBinding, Ty};
 
 #[derive(Debug, Clone, Copy, ValueEnum, Default)]
@@ -595,6 +597,26 @@ fn load_manifest_gradual_typing(base_dir: &std::path::Path) -> GradualTypingSett
     manifest.gradual_typing()
 }
 
+/// [v0.10 Step 8 / plan §5.1] Read `[features] match_exhaustiveness`.
+///
+/// Follows `gradual_typing` when the key is absent (the plan's wording), so
+/// the single `gradual_typing` switch is enough for day-to-day use. Kept
+/// separate so a project can turn the MATCH pass off on its own.
+fn load_manifest_match_exhaustiveness(base_dir: &std::path::Path) -> MatchExhaustivenessSetting {
+    let project_root = find_project_root(base_dir);
+    let toml_path = project_root.join("wlwl.toml");
+    if !toml_path.is_file() {
+        return MatchExhaustivenessSetting::following(GradualTypingSetting::default());
+    }
+    let Ok(src) = fs::read_to_string(&toml_path) else {
+        return MatchExhaustivenessSetting::following(GradualTypingSetting::default());
+    };
+    let Ok(manifest) = wlwl_toml::manifest::parse(&src) else {
+        return MatchExhaustivenessSetting::following(GradualTypingSetting::default());
+    };
+    manifest.match_exhaustiveness()
+}
+
 /// [v0.10 Step 5 / ADR-0020 A6′] 内建签名表:名字 → `Ty::Fun` 签名。
 ///
 /// `SigTy` → `Ty` 的映射规则:
@@ -690,6 +712,10 @@ fn static_check_gate(
     format: OutputFormat,
 ) -> Option<ExitCode> {
     let setting = load_manifest_gradual_typing(base_dir);
+    // [v0.10 Step 8] 第二个子系统:MATCH 穷尽性 / 可达性。缺省跟随
+    // `gradual_typing`(计划书 §5.1),所以只写 `gradual_typing` 一个键
+    // 就够用;要单独关掉 MATCH 才写 `match_exhaustiveness`。
+    let match_setting = load_manifest_match_exhaustiveness(base_dir);
 
     if let Some(raw) = setting.invalid_value() {
         let d = WlwlDiagnostic::new(
@@ -708,7 +734,26 @@ fn static_check_gate(
         }
     }
 
-    if !setting.is_enabled() {
+    if let Some(raw) = match_setting.invalid_value() {
+        let d = WlwlDiagnostic::new(
+            ErrorCode::W0001,
+            format!(
+                "invalid [features] match_exhaustiveness value `{raw}`; \
+                 expected \"off\" | \"warn\" | \"error\" -- falling back to gradual_typing"
+            ),
+            Location::point(base_dir.join("wlwl.toml").to_string_lossy(), 0, 0),
+        );
+        let d = d.with_severity(Severity::Warning);
+        match format {
+            OutputFormat::Human => eprintln!("{}", d.render_human()),
+            OutputFormat::Json => eprintln!("{}", d.render_json()),
+            OutputFormat::Jsonl => eprintln!("{}", d.render_jsonl()),
+        }
+    }
+
+    // 两个开关都关 → 整条静态链路都不跑。这是「零开销」的落点,而且两个
+    // 开关是**独立**的:只关 MATCH 不影响类型检查。
+    if !setting.is_enabled() && !match_setting.is_enabled() {
         return None;
     }
 
@@ -716,9 +761,13 @@ fn static_check_gate(
         GradualTyping::Warn => Severity::Warning,
         _ => Severity::Error,
     };
+    let match_severity = match match_setting.mode() {
+        MatchExhaustiveness::Warn => Severity::Warning,
+        _ => Severity::Error,
+    };
 
-    // [v0.10 Step 5 / ADR-0020 A6′] 内建签名表。**只在开启时构建** ——
-    // `off` 档连表都不建,这是「默认零开销」的一部分。
+    // [v0.10 Step 5 / ADR-0020 A6′] 内建签名表。**只在需要时构建** ——
+    // 两个开关都关时连表都不建,这是「默认零开销」的一部分。
     //
     // 映射放在 CLI 而不是 `wlwl-types` 里,是为了保住 ADR-0020
     // Decision 1 的分层:内建签名住在 `wlwl-eval` 的注册表,而
@@ -728,12 +777,27 @@ fn static_check_gate(
 
     // [v0.10 Step 6 / plan §4] 一次遍历同时拿到两样东西:类型诊断,以及
     // 根作用域的绑定类型(模块契约要比的就是这份表)。
-    let checked = wlwl_types::check_program_detailed(ast, &builtins);
-    let mut rendered: Vec<WlwlDiagnostic> = checked
-        .diags
-        .iter()
-        .filter_map(|d| d.to_diagnostic(severity))
-        .collect();
+    let checked = wlwl_types::check_program_with_options(
+        ast,
+        &wlwl_types::CheckOptions {
+            builtins: &builtins,
+            match_exhaustiveness: match_setting.is_enabled(),
+        },
+    );
+    // **按子系统分档渲染**:`gradual_typing` 管类型/契约诊断,
+    // `match_exhaustiveness` 管 MATCH 诊断。两个开关独立,所以渲染阶段
+    // 也得分流 —— `W0117` 恒为警告(见 `TypeDiag::to_diagnostic`)。
+    let mut rendered: Vec<WlwlDiagnostic> = Vec::new();
+    for d in &checked.diags {
+        let (enabled, level) = match d.kind.subsystem() {
+            wlwl_types::Subsystem::Types => (setting.is_enabled(), severity),
+            wlwl_types::Subsystem::Match => (match_setting.is_enabled(), match_severity),
+        };
+        if !enabled {
+            continue;
+        }
+        rendered.extend(d.to_diagnostic(level));
+    }
 
     // [v0.10 Step 6 / plan §4.1 C1 + §4.2 C2] 模块契约:签名文件与
     // `SEALED` 声明面。走完整 import 图,所以 `wlwl check main.wll`
@@ -743,7 +807,13 @@ fn static_check_gate(
     // 但依赖模块自己的语法错、找不到的模块**不在这里报** —— 那些是
     // `run` 的地盘,在这里再报一遍等于让 `check main.wll` 替别人家的
     // 文件失败。
-    let contracts = scan_module_contracts(file, ast, &checked.declared, &builtins, severity);
+    // [Step 6] 契约扫描里也要用同一份绑定表算依赖模块的类型,所以
+    // 传的是刚刚那份「已经算好的」结果,不再重算一遍。
+    let contracts = if setting.is_enabled() {
+        scan_module_contracts(file, ast, &checked.declared, &builtins, severity)
+    } else {
+        Vec::new()
+    };
     rendered.extend(contracts);
     if rendered.is_empty() {
         return None;
@@ -753,7 +823,10 @@ fn static_check_gate(
     // multi-diagnostic output byte-stable across runs.
     rendered.sort_by_key(|d| (d.location.line, d.location.col));
 
-    let blocking = severity == Severity::Error;
+    // 阻塞与否看**实际渲染出来的诊断**:只有硬诊断挡退出码。这条比
+    // 「看档位」更准 —— `error` 档下也可能一条硬错都没有(比如只报了恒
+    // 警告的 `W0117`),那就不该拦。
+    let blocking = rendered.iter().any(|d| d.severity == Severity::Error);
     for d in &rendered {
         match format {
             OutputFormat::Human => eprintln!("{}", d.render_human()),
@@ -1891,6 +1964,178 @@ EXPORT([\"add\", \"PI\"]);
         assert_eq!(entries[1]["params"][0], "INTEGER");
         assert_eq!(entries[1]["returns"], "INTEGER");
         assert!(entries[1].get("type").is_none(), "函数条目不带 type");
+    }
+
+    // -- v0.10 Step 8 (P1-1): MATCH 穷尽性 / 可达性 --------------------
+
+    /// 写一个开着 `gradual_typing` 的工程,源码由调用方给。
+    fn match_project(
+        dir: &str,
+        gradual: &str,
+        extra_feature: Option<&str>,
+        source: &str,
+    ) -> PathBuf {
+        let root = module_project(dir, gradual);
+        if let Some(line) = extra_feature {
+            let toml = fs::read_to_string(root.join("wlwl.toml")).unwrap();
+            fs::write(
+                root.join("wlwl.toml"),
+                toml.replace("[features]", &format!("[features]\n{line}")),
+            )
+            .unwrap();
+        }
+        fs::write(root.join("main.wll"), source).unwrap();
+        root
+    }
+
+    /// 漏了 `ERR` 分支且**省略了 default** → `E0116` 挡住退出码。
+    #[test]
+    fn p1_non_exhaustive_match_blocks_in_error_mode() {
+        let root = match_project("p1_e0116", "\"error\"", None, "MATCH(OK(1), [[OK(n), n]]);");
+        assert_eq!(
+            run_file(&root.join("main.wll"), OutputFormat::Human, false),
+            ExitCode::from(1)
+        );
+    }
+
+    /// 不可达子句 `W0117` **恒不挡**退出码 —— 切到 `error` 档也一样。
+    #[test]
+    fn p1_unreachable_clause_never_blocks() {
+        let root = match_project("p1_w0117", "\"error\"", None, "MATCH(1, [[_, 1], [2, 2]]);");
+        assert_eq!(
+            run_file(&root.join("main.wll"), OutputFormat::Human, false),
+            ExitCode::SUCCESS
+        );
+    }
+
+    /// `warn` 档:缺构造子发 `W0116`,同样不挡。
+    #[test]
+    fn p1_warn_mode_reports_without_blocking() {
+        let root = match_project("p1_warn", "\"warn\"", None, "MATCH(OK(1), [[OK(n), n]]);");
+        assert_eq!(
+            run_file(&root.join("main.wll"), OutputFormat::Human, false),
+            ExitCode::SUCCESS
+        );
+    }
+
+    /// 子开关独立于总开关:关掉 MATCH 检查但保留类型检查。
+    #[test]
+    fn p1_match_exhaustiveness_can_be_turned_off_on_its_own() {
+        let src = "MATCH(OK(1), [[OK(n), n]]);";
+        let off = match_project(
+            "p1_sub_off",
+            "\"error\"",
+            Some("match_exhaustiveness = \"off\""),
+            src,
+        );
+        assert_eq!(
+            run_file(&off.join("main.wll"), OutputFormat::Human, false),
+            ExitCode::SUCCESS,
+            "match_exhaustiveness = off must silence the MATCH pass"
+        );
+        // 总开关没被动过:类型失配照样拦。
+        let still_on = match_project(
+            "p1_sub_off_types",
+            "\"error\"",
+            Some("match_exhaustiveness = \"off\""),
+            "LET(x: INTEGER, \"s\");",
+        );
+        assert_eq!(
+            run_file(&still_on.join("main.wll"), OutputFormat::Human, false),
+            ExitCode::from(1)
+        );
+    }
+
+    /// 反过来:只开 MATCH 检查也能工作(总开关 off)。
+    #[test]
+    fn p1_match_exhaustiveness_can_be_enabled_on_its_own() {
+        let root = match_project(
+            "p1_sub_only",
+            "\"off\"",
+            Some("match_exhaustiveness = \"error\""),
+            "MATCH(OK(1), [[OK(n), n]]);",
+        );
+        assert_eq!(
+            run_file(&root.join("main.wll"), OutputFormat::Human, false),
+            ExitCode::from(1)
+        );
+    }
+
+    /// 缺省跟随 `gradual_typing`:只写总开关就该生效。
+    #[test]
+    fn p1_match_exhaustiveness_follows_gradual_typing_by_default() {
+        let off = match_project(
+            "p1_follow_off",
+            "\"off\"",
+            None,
+            "MATCH(OK(1), [[OK(n), n]]);",
+        );
+        assert_eq!(
+            run_file(&off.join("main.wll"), OutputFormat::Human, false),
+            ExitCode::SUCCESS
+        );
+        let on = match_project(
+            "p1_follow_on",
+            "\"error\"",
+            None,
+            "MATCH(OK(1), [[OK(n), n]]);",
+        );
+        assert_eq!(
+            run_file(&on.join("main.wll"), OutputFormat::Human, false),
+            ExitCode::from(1)
+        );
+    }
+
+    /// 非法值回落到「跟随」并**可见**(不静默吞笔误)。
+    #[test]
+    fn p1_invalid_match_exhaustiveness_value_falls_back_and_reports() {
+        let root = match_project(
+            "p1_invalid",
+            "\"error\"",
+            Some("match_exhaustiveness = \"loud\""),
+            "LET(x, 1);",
+        );
+        // 回落到跟随 `error` → 无诊断 → 退出 0(回执走 stderr 的警告)。
+        assert_eq!(
+            run_file(&root.join("main.wll"), OutputFormat::Human, false),
+            ExitCode::SUCCESS
+        );
+    }
+
+    /// 零破坏:默认档(无清单 / off)对带 MATCH 的 v0.9 程序一条诊断都不发。
+    #[test]
+    fn p1_default_off_stays_silent_on_v09_match_programs() {
+        for src in [
+            "MATCH(OK(1), [[OK(n), n]]);",
+            "MATCH(1, [[_, 1], [2, 2]]);",
+            "MATCH(TRUE, [[TRUE, 1]]);",
+        ] {
+            let bare = write_tmp(src, "p1_off.wll");
+            assert_eq!(
+                run_file(&bare, OutputFormat::Human, false),
+                ExitCode::SUCCESS,
+                "default off must stay silent: {src}"
+            );
+            let root = match_project("p1_off_proj", "\"off\"", None, src);
+            assert_eq!(
+                run_file(&root.join("main.wll"), OutputFormat::Human, false),
+                ExitCode::SUCCESS,
+                "off must stay silent: {src}"
+            );
+            let _ = fs::remove_dir_all(root.parent().unwrap());
+        }
+    }
+
+    /// 格式化保真:省略的 default 臂**不能**被补写成 `, NULL` —— 补出来
+    /// 会让「作者兜了底」和「作者漏了分支」在源码里长得一样,正是 Step 8
+    /// 要报的那个区别。
+    #[test]
+    fn p1_fmt_preserves_an_omitted_default_arm() {
+        let p = write_tmp("MATCH(1, [[1, 1]]);\n", "p1_fmt.wll");
+        assert_eq!(fmt_file(&p, false), ExitCode::SUCCESS);
+        // 显式写了 default 的照常渲染出来。
+        let p2 = write_tmp("MATCH(1, [[1, 1]], 0);\n", "p1_fmt2.wll");
+        assert_eq!(fmt_file(&p2, false), ExitCode::SUCCESS);
     }
 
     #[test]

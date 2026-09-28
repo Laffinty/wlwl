@@ -240,6 +240,18 @@ pub enum ErrorCode {
     W0113, // E0113 的 warn 档
     W0114, // E0114 的 warn 档
     W0115, // E0115 的 warn 档
+    // ── v0.10 Step 8 (P1-1, 计划书 §5.1): MATCH 段 ──
+    //
+    // E0116 有 W0116 配对(error / warn 档),因为「漏了分支会静默拿到
+    // NULL」在 error 档该拦、在 warn 档只该提醒。
+    //
+    // **W0117 没有 E 配对**,这是有意的:不可达子句通常出现在渐进重构的
+    // 中间态(先留兜底臂再逐条细分),当硬错会拦下正在写的代码,所以它在
+    // `error` 档下**仍然是警告**。E0117 这个号**故意不存在** ——
+    // 留一个空号不如让「切 error 档它也不变硬」这件事没有歧义。
+    E0116, // 编译期 MATCH 非穷尽(缺构造子,且 default 臂被省略)
+    W0116, // E0116 的 warn 档
+    W0117, // MATCH 不可达子句 / 死 default 臂(**恒警告**,无 E 配对)
 }
 
 impl ErrorCode {
@@ -347,6 +359,10 @@ impl ErrorCode {
             ErrorCode::W0113 => "W0113",
             ErrorCode::W0114 => "W0114",
             ErrorCode::W0115 => "W0115",
+            // [v0.10 Step 8 / plan §5.1] MATCH segment.
+            ErrorCode::E0116 => "E0116",
+            ErrorCode::W0116 => "W0116",
+            ErrorCode::W0117 => "W0117",
         }
     }
 
@@ -381,6 +397,11 @@ impl ErrorCode {
                 | ErrorCode::W0113
                 | ErrorCode::W0114
                 | ErrorCode::W0115
+                // [v0.10 Step 8 / plan §5.1] MATCH segment. W0116 is the
+                // `warn` of E0116; W0117 has **no** E counterpart by design
+                // (unreachable clauses stay warnings in every level).
+                | ErrorCode::W0116
+                | ErrorCode::W0117
         )
     }
 
@@ -547,6 +568,12 @@ impl ErrorCode {
             | ErrorCode::W0113
             | ErrorCode::W0114 => ErrorCategory::Module,
             ErrorCode::E0115 | ErrorCode::W0115 => ErrorCategory::Type,
+            // [v0.10 Step 8 / plan §5.1] MATCH exhaustiveness sits in the
+            // Type bucket like the rest of the static contract segment: it
+            // is a compile-time condition about a value's shape, and the
+            // `RANGE` family (E0038 / W…) already routes value-shape
+            // complaints there.
+            ErrorCode::E0116 | ErrorCode::W0116 | ErrorCode::W0117 => ErrorCategory::Type,
         }
     }
 
@@ -1769,8 +1796,10 @@ mod tests {
             ErrorCode::E0113,
             ErrorCode::E0114,
             ErrorCode::E0115,
+            // [v0.10 Step 8 / plan §5.1] MATCH segment.
+            ErrorCode::E0116,
         ];
-        assert_eq!(codes.len(), 64);
+        assert_eq!(codes.len(), 65);
         // Each code has a stable string form.
         for c in &codes {
             assert!(c.as_str().starts_with('E'));
@@ -1808,8 +1837,11 @@ mod tests {
             ErrorCode::W0113,
             ErrorCode::W0114,
             ErrorCode::W0115,
+            // [v0.10 Step 8 / plan §5.1] MATCH segment.
+            ErrorCode::W0116,
+            ErrorCode::W0117,
         ];
-        assert_eq!(codes.len(), 21);
+        assert_eq!(codes.len(), 23);
         for c in &codes {
             assert!(
                 c.is_warning(),
@@ -1820,11 +1852,11 @@ mod tests {
         }
     }
 
-    /// [v0.10 Step 6] 静态契约段的**配对约定**:每个 `E011x` 都必须有一个
-    /// 同号的 `W011x`。档位切换只改字母、不改数字,所以「同一个码号只对应
-    /// 一种条件」这条纪律才立得住(E0110+E0113 段一起锁)。
+    /// [v0.10 Step 8 / plan §5.1] 静态契约段的**配对约定**:每个 `E011x`
+    /// 都必须有一个同号的 `W011x` —— **除了 `E0116`**。不可达子句
+    /// `W0117` 恒为警告,故意**没有** `E0117`;这里把那条不对称锁住。
     #[test]
-    fn static_contract_segment_is_paired_e_for_w() {
+    fn static_contract_segment_is_paired_e_for_w_except_w0117() {
         let pairs = [
             (ErrorCode::E0110, ErrorCode::W0110),
             (ErrorCode::E0111, ErrorCode::W0111),
@@ -1832,6 +1864,7 @@ mod tests {
             (ErrorCode::E0113, ErrorCode::W0113),
             (ErrorCode::E0114, ErrorCode::W0114),
             (ErrorCode::E0115, ErrorCode::W0115),
+            (ErrorCode::E0116, ErrorCode::W0116),
         ];
         for (e, w) in pairs {
             let (es, ws) = (e.as_str(), w.as_str());
@@ -1839,10 +1872,16 @@ mod tests {
             assert!(w.is_warning(), "{ws} must be a warning code");
             assert_eq!(&es[1..], &ws[1..], "{es}/{ws} must share one number");
         }
+        // W0117 单独成对:`E0117` 根本不存在,所以下面这行必须编译不过
+        // —— 用「不构造它」来表达,注释即断言。
+        let orphan = ErrorCode::W0117;
+        assert!(orphan.is_warning());
+        assert_eq!(orphan.as_str(), "W0117");
         // 模块契约段的分类:边界两条走 Module,类型一条走 Type。
         assert_eq!(ErrorCode::E0113.category(), ErrorCategory::Module);
         assert_eq!(ErrorCode::E0114.category(), ErrorCategory::Module);
         assert_eq!(ErrorCode::E0115.category(), ErrorCategory::Type);
+        assert_eq!(ErrorCode::E0116.category(), ErrorCategory::Type);
     }
     // ---- P3-009d: ErrorCategory, Severity, Span::range, extract_line, diagnostic builders ----
 
