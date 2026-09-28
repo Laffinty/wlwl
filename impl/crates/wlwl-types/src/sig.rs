@@ -399,6 +399,13 @@ fn sig_safe_ty(ty: Ty, top_level: bool) -> Ty {
                 .collect(),
             ret: Box::new(sig_safe_ty(*ret, false)),
         },
+        // [v0.10 Step 9] 带约束的类型变量**可渲染**:`T: Comparable` 用的
+        // 是方括号内的 `:`(parser 认识它),所以它能被 `.wll.sig` 原文表达
+        // —— 不必像函数类型那样降级 `DYNAMIC`。
+        Ty::Var { name, bound } => Ty::Var {
+            name,
+            bound: bound.map(|b| Box::new(sig_safe_ty(*b, true))),
+        },
         Ty::Array(e) => Ty::Array(Box::new(sig_safe_ty(*e, false))),
         Ty::Dict(k, v) => Ty::Dict(
             Box::new(sig_safe_ty(*k, false)),
@@ -1212,6 +1219,24 @@ EXPORT either : OPTION[INTEGER]
     #[test]
     fn a_module_without_exports_generates_an_empty_signature() {
         assert_eq!(generated("LET(a, 1);\n"), "");
+    }
+
+    /// [Step 9] 带约束的类型变量**能被签名表达**:`T: Comparable` 的 `:` 在
+    /// 方括号内,`.wll.sig` 的类型文本走的正是同一个 parser(Step 7 的
+    /// `parse_type_text`)。所以 Step 7 那条「签名文法表达不了的类型一律降级
+    /// `DYNAMIC`」在这里松开了一格 —— 往返仍然成立。
+    #[test]
+    fn bounded_variables_survive_the_signature_round_trip() {
+        let text = generated(
+            "LET(max, FUN((a: T: Comparable, b: T: Comparable) : T: Comparable, a));\n\
+             EXPORT([\"max\"]);\n",
+        );
+        assert_eq!(
+            text,
+            "EXPORT max (T: Comparable, T: Comparable) : T: Comparable\n"
+        );
+        let reparsed = parse_module_sig(&text, "m.wll.sig").expect("generated text parses");
+        assert_eq!(reparsed.to_string(), text);
     }
 
     /// 零参函数是合法签名条目,往返得回来。

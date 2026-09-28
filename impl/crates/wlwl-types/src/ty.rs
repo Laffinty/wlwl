@@ -73,6 +73,21 @@ pub enum Ty {
     ///
     /// 与任何类型双向可赋值(ADR-0020 A1:`Dynamic` 是顶/底元)。
     Dynamic,
+    /// v0.10 Step 9(计划书 §5.2 P1-2,决策 D-5)**类型变量 + 显式约束**。
+    ///
+    /// 源码形状是 `T` / `T: Comparable`(见 [`wlwl_ast::TypeExpr::Bounded`]。
+    /// 本版**只做擦除**:不 monomorphize、不做 let-多态、不做 trait 求解 ——
+    /// 变量的类型在**调用点**被实参实例化,运行期什么也不剩。
+    ///
+    /// `bound` 为 `None` = 无约束变量(接受任何类型)。`Some(b)` = 该变量的
+    /// 实参类型必须满足 `b`;`b` 自身只是个类型名
+    /// (`Comparable` → [`Ty::Named`]),语义见 [`Ty::satisfies_bound`]。
+    Var {
+        /// 变量名
+        name: String,
+        /// 显式约束(无约束时为 `None`)
+        bound: Option<Box<Ty>>,
+    },
 }
 
 impl Ty {
@@ -93,6 +108,21 @@ impl Ty {
             TypeExpr::Generic { name, args, .. } => {
                 let mapped: Vec<Ty> = args.iter().map(Ty::from_type_expr).collect();
                 Ty::from_head(name, &mapped)
+            }
+            // [v0.10 Step 9] 带约束的类型变量。
+            //
+            // 头名是**已知类型**时约束被丢弃:给具体类型加约束是无意义的
+            // 废话(`INTEGER: Comparable` —— INTEGER 本来就可比较),parser
+            // 层其实已经挡掉了,但这里仍按「丢弃」处理,免得将来放宽语法时
+            // 凭空造出一个假的类型变量。
+            TypeExpr::Bounded { name, bound, .. } => {
+                if is_known_head(&name.to_ascii_uppercase()) {
+                    return Ty::from_head(name, &[]);
+                }
+                Ty::Var {
+                    name: name.clone(),
+                    bound: Some(Box::new(Ty::from_type_expr(bound))),
+                }
             }
         }
     }
@@ -179,6 +209,18 @@ impl Ty {
         if a.is_dynamic() || b.is_dynamic() {
             return Ty::Dynamic;
         }
+        // [v0.10 Step 9] 变量与具体类型合流 → 取具体那个(变量在调用点被
+        // 实例化,分支合流后它就该是个确定类型了)。两个**不同**变量合流
+        // 仍然是「不知道」—— 它们各自由各自的实参决定,这里无从知道是
+        // 同一个,所以不猜(与「任一侧 Dynamic → Dynamic」同一条纪律)。
+        match (a, b) {
+            (Ty::Var { name: n1, .. }, Ty::Var { name: n2, .. }) => {
+                return if n1 == n2 { a.clone() } else { Ty::Dynamic };
+            }
+            (Ty::Var { .. }, other) => return other.clone(),
+            (other, Ty::Var { .. }) => return other.clone(),
+            _ => {}
+        }
         if a.is_assignable_to(b) {
             b.clone()
         } else if b.is_assignable_to(a) {
@@ -240,6 +282,44 @@ impl Ty {
         }
     }
 
+    /// 这个类型是否满足显式约束(Step 9 / D-5)。
+    ///
+    /// 本版**只有一个约束:`Comparable`**,而它的成员集合是**量出来的**,
+    /// 不是猜的 —— 运行期 `<` / `>` / `<=` / `>=` 走 `wlwl_eval` 的
+    /// `cmp_op`,它只放行**数值**(INTEGER / FLOAT)与 **STRING**,其余一律
+    /// `E0030`。所以静态层放行的集合必须与它**逐项一致**,否则就会出现
+    /// 「check 说行、run 抛错」或反过来的裂缝。
+    ///
+    /// 未知约束名(不是 `Comparable`)一律放行:约束集本版只有一条,
+    /// 将来加了新约束再在这里扩;现在报「未知约束」等于凭空造一个诊断码
+    /// 与一条用户无解的错误。
+    pub fn satisfies_bound(&self, bound: &Ty) -> bool {
+        let name = match bound {
+            Ty::Named { name, args } if args.is_empty() => name.to_ascii_uppercase(),
+            _ => return true,
+        };
+        match name.as_str() {
+            "COMPARABLE" => {
+                // `Dynamic` 是「不知道」—— 判不出来就不该拦(不误报优先)。
+                if self.is_dynamic() {
+                    return true;
+                }
+                matches!(self, Ty::Integer | Ty::Float | Ty::String)
+            }
+            _ => true,
+        }
+    }
+
+    /// 本类型里出现过的类型变量(去重,按首次出现顺序)。
+    ///
+    /// 供实例化与签名渲染判断「这个类型里有没有变量」用 —— 绝大多数类型
+    /// 一个变量都没有,这条让它们走不到实例化那套逻辑。
+    pub fn vars(&self) -> Vec<&Ty> {
+        let mut out: Vec<&Ty> = Vec::new();
+        collect_vars(self, &mut out);
+        out
+    }
+
     /// 源类型能否赋给目标类型。
     ///
     /// 规则:
@@ -293,6 +373,30 @@ impl Ty {
                     && a1.len() == a2.len()
                     && a1.iter().zip(a2.iter()).all(|(a, b)| a.is_assignable_to(b))
             }
+            // [v0.10 Step 9] 类型变量。
+            //
+            // - 变量对任何具体类型:无约束就通吃;有约束就要满足约束
+            //   (约束判定在 `satisfies_bound`);
+            // - 两个变量之间**不看名字**:调用点还没实例化时,两个不同变量
+            //   谁装谁都不知道 → 一律放行(不误报优先)。名字相同自然也通;
+            // - 变量与非变量容器混合(`ARRAY[T]` 对 `ARRAY[INTEGER]`)由上面
+            //   的容器分支递归下去,自然落到这两条上。
+            // [v0.10 Step 9] 类型变量。规则不对称,是有意的:
+            //
+            // - 源侧是变量、目标侧是**具体**类型 → 放行。变量在调用点才
+            //   实例化,这里它「还没定」;它自己要满足的约束是给**填进来
+            //   的实参**看的,不是给它自己的。(写成 `target.satisfies_bound`
+            //   之类的反向判定会误报。)
+            // - 目标侧是变量、源侧是具体类型 → 源类型必须满足该变量的
+            //   约束(`T: Comparable` 说的是「填进来的东西要可比」)。
+            // - **两边都是变量** → 放行。调用点还没实例化,谁装谁都不知道,
+            //   拿一个变量的未定类型去验另一个变量的约束只会误报。
+            (Ty::Var { .. }, other) if !matches!(other, Ty::Var { .. }) => true,
+            (_, Ty::Var { bound, .. }) if !matches!(self, Ty::Var { .. }) => match bound {
+                None => true,
+                Some(b) => self.satisfies_bound(b),
+            },
+            (Ty::Var { .. }, Ty::Var { .. }) => true,
             _ => false,
         }
     }
@@ -318,6 +422,12 @@ impl fmt::Display for Ty {
             Ty::Dict(k, v) => write!(f, "DICT[{}, {}]", k, v),
             Ty::Option(t) => write!(f, "OPTION[{}]", t),
             Ty::Result(t, e) => write!(f, "RESULT[{}, {}]", t, e),
+            // [v0.10 Step 9] 类型变量渲染成源码可解析的 `T: Comparable` ——
+            // Step 7 的签名生成器靠这一点把变量原样写进 `.wll.sig`。
+            Ty::Var { name, bound } => match bound {
+                None => f.write_str(name),
+                Some(b) => write!(f, "{}: {}", name, b),
+            },
             Ty::Fun { params, ret } => {
                 let rendered: Vec<String> = params.iter().map(Ty::to_string).collect();
                 write!(f, "FUN[{}] -> {}", rendered.join(", "), ret)
@@ -328,6 +438,129 @@ impl fmt::Display for Ty {
                 write!(f, "{}[{}]", name, rendered.join(", "))
             }
         }
+    }
+}
+
+/// 收集类型里的变量(Step 9)。
+fn collect_vars<'a>(ty: &'a Ty, out: &mut Vec<&'a Ty>) {
+    match ty {
+        Ty::Var { .. } => {
+            if !out.contains(&ty) {
+                out.push(ty);
+            }
+        }
+        Ty::Array(e) | Ty::Option(e) => collect_vars(e, out),
+        Ty::Dict(k, v) | Ty::Result(k, v) => {
+            collect_vars(k, out);
+            collect_vars(v, out);
+        }
+        Ty::Fun { params, ret } => {
+            for p in params {
+                collect_vars(p, out);
+            }
+            collect_vars(ret, out);
+        }
+        Ty::Named { args, .. } => {
+            for a in args {
+                collect_vars(a, out);
+            }
+        }
+        Ty::Integer | Ty::Float | Ty::String | Ty::Boolean | Ty::Null | Ty::Dynamic => {}
+    }
+}
+
+/// **实例化**:把声明类型里的类型变量按实参类型绑定起来。
+///
+/// 返回实参是否**填得进**声明类型(含约束判定)。调用方在返回 `false` 时
+/// 照常报既有的调用失配诊断 —— 报出来的类型是**未代入的声明类型**
+/// (`T: Comparable`),所以消息里能看到约束,而不是被抹成实参类型。
+///
+/// 规则:
+/// - 遇到变量:先验约束(不过 → `false`),再记绑定(同名再绑一次取 lub);
+/// - 容器 / 包装 / `RESULT` 逐位置递归;
+/// - 函数类型**不进变量**(形参/返回里的变量属于被调方自己的量化,本版
+///   没有量化语法,进去只会把两个不同函数的变量混在一起);
+/// - `Dynamic` 两侧一律通过,且**不产生绑定** —— 不知道的东西不许去
+///   污染别的位置的变量。
+pub fn instantiate(declared: &Ty, actual: &Ty, bindings: &mut Vec<(String, Ty)>) -> bool {
+    match (declared, actual) {
+        (Ty::Var { name, bound }, Ty::Var { .. }) => {
+            // 两边都是变量:调用点还没实例化,谁装谁都不知道 → 放行,而且
+            // **不记绑定**(拿一个未定类型去绑另一个只会把两边都拖成
+            // 「不知道」)。
+            let _ = (name, bound);
+            true
+        }
+        (Ty::Var { name, bound }, _) => {
+            if let Some(b) = bound {
+                if !actual.satisfies_bound(b) {
+                    return false;
+                }
+            }
+            // `Dynamic` 是「不知道」,拿它去绑变量会把别的位置也拖成
+            // 「不知道」—— 不绑,让它自然落回 `Dynamic`。
+            if !actual.is_dynamic() {
+                match bindings.iter_mut().find(|(n, _)| n == name) {
+                    Some((_, prev)) => *prev = Ty::lub(prev, actual),
+                    None => bindings.push((name.clone(), actual.clone())),
+                }
+            }
+            true
+        }
+        (Ty::Array(a), Ty::Array(b)) => instantiate(a, b, bindings),
+        (Ty::Dict(k1, v1), Ty::Dict(k2, v2)) => {
+            let ok = instantiate(k1, k2, bindings);
+            let ok2 = instantiate(v1, v2, bindings);
+            ok && ok2
+        }
+        (Ty::Option(a), Ty::Option(b)) => instantiate(a, b, bindings),
+        (Ty::Result(t1, e1), Ty::Result(t2, e2)) => {
+            let ok = instantiate(t1, t2, bindings);
+            let ok2 = instantiate(e1, e2, bindings);
+            ok && ok2
+        }
+        (Ty::Named { name: n1, args: a1 }, Ty::Named { name: n2, args: a2 })
+            if n1 == n2 && a1.len() == a2.len() =>
+        {
+            let mut ok = true;
+            for (x, y) in a1.iter().zip(a2.iter()) {
+                ok &= instantiate(x, y, bindings);
+            }
+            ok
+        }
+        _ => actual.satisfies_annotation(declared),
+    }
+}
+
+/// 把类型里的变量按 `bindings` 代入;没绑定的变量**原地保留**(它还有
+/// 约束要生效,不能变成 `Dynamic`)。
+pub fn substitute(ty: &Ty, bindings: &[(String, Ty)]) -> Ty {
+    match ty {
+        Ty::Var { name, bound } => match bindings.iter().find(|(n, _)| n == name) {
+            // 代入后仍要过一遍约束:绑定是逐位置记的,后来的绑定可能把它
+            // 拉宽成不满足约束的类型(取 lub 的代价)。
+            Some((_, t)) if bound.as_deref().is_none_or(|b| t.satisfies_bound(b)) => t.clone(),
+            _ => ty.clone(),
+        },
+        Ty::Array(e) => Ty::Array(Box::new(substitute(e, bindings))),
+        Ty::Dict(k, v) => Ty::Dict(
+            Box::new(substitute(k, bindings)),
+            Box::new(substitute(v, bindings)),
+        ),
+        Ty::Option(t) => Ty::Option(Box::new(substitute(t, bindings))),
+        Ty::Result(t, e) => Ty::Result(
+            Box::new(substitute(t, bindings)),
+            Box::new(substitute(e, bindings)),
+        ),
+        Ty::Fun { params, ret } => Ty::Fun {
+            params: params.iter().map(|p| substitute(p, bindings)).collect(),
+            ret: Box::new(substitute(ret, bindings)),
+        },
+        Ty::Named { name, args } => Ty::Named {
+            name: name.clone(),
+            args: args.iter().map(|a| substitute(a, bindings)).collect(),
+        },
+        other => other.clone(),
     }
 }
 
@@ -592,5 +825,141 @@ mod tests {
             params: vec![Ty::Integer],
             ret: Box::new(Ty::String)
         }));
+    }
+
+    // ---- v0.10 Step 9 (P1-2 / D-5): 类型变量与显式约束 ----
+
+    fn var(name: &str) -> Ty {
+        Ty::Var {
+            name: name.to_string(),
+            bound: None,
+        }
+    }
+
+    fn bounded(name: &str, bound: &str) -> Ty {
+        Ty::Var {
+            name: name.to_string(),
+            bound: Some(Box::new(Ty::Named {
+                name: bound.to_string(),
+                args: Vec::new(),
+            })),
+        }
+    }
+
+    /// `Comparable` 的成员集合是**从运行期量出来的**:`cmp_op` 只放行
+    /// 数值与 STRING,其余 `E0030`。这条测试就是那条测量的静态侧对照 ——
+    /// 静态层多放一个或少放一个都会在这里破。
+    #[test]
+    fn comparable_is_exactly_the_runtime_comparison_domain() {
+        let c = Ty::Named {
+            name: "Comparable".into(),
+            args: Vec::new(),
+        };
+        for ok in [Ty::Integer, Ty::Float, Ty::String] {
+            assert!(ok.satisfies_bound(&c), "{ok} must be Comparable");
+        }
+        for no in [
+            Ty::Boolean,
+            Ty::Null,
+            Ty::Array(Box::new(Ty::Integer)),
+            Ty::Dict(Box::new(Ty::String), Box::new(Ty::Integer)),
+            Ty::Fun {
+                params: vec![],
+                ret: Box::new(Ty::Integer),
+            },
+        ] {
+            assert!(!no.satisfies_bound(&c), "{no} must NOT be Comparable");
+        }
+        // 未知的东西永远放行(不误报优先):`Dynamic` 判不了就不该拦。
+        assert!(Ty::Dynamic.satisfies_bound(&c));
+        // 未知约束名也放行 —— 约束集本版只有一条。
+        assert!(
+            Ty::Dict(Box::new(Ty::String), Box::new(Ty::Integer)).satisfies_bound(&Ty::Named {
+                name: "NoSuchBound".into(),
+                args: vec![]
+            })
+        );
+    }
+
+    #[test]
+    fn an_unconstrained_variable_accepts_anything_and_a_bounded_one_does_not() {
+        assert!(Ty::Dict(Box::new(Ty::String), Box::new(Ty::Integer)).is_assignable_to(&var("T")));
+        assert!(!Ty::Boolean.is_assignable_to(&bounded("T", "Comparable")));
+        assert!(Ty::Integer.is_assignable_to(&bounded("T", "Comparable")));
+        // 两个变量之间不看名字:调用点还没实例化时谁装谁都不知道。
+        assert!(var("T").is_assignable_to(&var("U")));
+        assert!(bounded("T", "Comparable").is_assignable_to(&var("U")));
+    }
+
+    /// 容器里的变量逐位置生效 —— 这正是计划书说的「`ARRAY[INTEGER]` 与
+    /// `ARRAY[STRING]` 误用」那一类。
+    #[test]
+    fn a_bounded_variable_inside_a_container_is_checked_positionally() {
+        let declared = Ty::Array(Box::new(bounded("T", "Comparable")));
+        assert!(Ty::Array(Box::new(Ty::Integer)).is_assignable_to(&declared));
+        assert!(Ty::Array(Box::new(Ty::String)).is_assignable_to(&declared));
+        assert!(!Ty::Array(Box::new(Ty::Boolean)).is_assignable_to(&declared));
+        assert!(declared.vars().len() == 1);
+        assert!(Ty::Integer.vars().is_empty());
+    }
+
+    /// 实例化:把变量绑到实参上,并把绑定带进返回类型。
+    #[test]
+    fn instantiate_binds_variables_and_enforces_the_bound() {
+        let declared = Ty::Fun {
+            params: vec![bounded("T", "Comparable")],
+            ret: Box::new(var("T")),
+        };
+        let (Ty::Fun { params, ret }, _) = (&declared, ()) else {
+            unreachable!()
+        };
+
+        let mut ok_bindings = Vec::new();
+        assert!(instantiate(&params[0], &Ty::String, &mut ok_bindings));
+        assert_eq!(ok_bindings, vec![("T".to_string(), Ty::String)]);
+        // 返回类型里的同一个变量被代入成实参类型 —— 这就是「泛型」的
+        // 精度收益(无泛型的语言只能落 `DYNAMIC`)。
+        assert_eq!(
+            substitute(ret, &ok_bindings),
+            Ty::String,
+            "the return type must be instantiated with the argument type"
+        );
+
+        // 违反约束 → 实例化失败,由调用点报既有的调用失配。
+        let mut bad = Vec::new();
+        assert!(!instantiate(&params[0], &Ty::Boolean, &mut bad));
+        assert!(bad.is_empty(), "a rejected binding must not be recorded");
+    }
+
+    #[test]
+    fn dynamic_never_becomes_a_variable_binding() {
+        // 「不知道」不许污染别的位置的变量:不绑 → 代入时保留变量原样,
+        // 自然落回「不知道」。
+        let mut bindings = Vec::new();
+        assert!(instantiate(&var("T"), &Ty::Dynamic, &mut bindings));
+        assert!(bindings.is_empty());
+        assert_eq!(substitute(&var("T"), &bindings), var("T"));
+    }
+
+    #[test]
+    fn a_variable_meets_a_concrete_type_in_a_lub() {
+        // 分支合流:变量在调用点被实例化后,合流就该是个确定类型。
+        assert_eq!(Ty::lub(&var("T"), &Ty::Integer), Ty::Integer);
+        assert_eq!(Ty::lub(&Ty::Integer, &var("T")), Ty::Integer);
+        // 仍然是「不知道」的照旧是「不知道」。
+        assert_eq!(Ty::lub(&var("T"), &var("U")), Ty::Dynamic);
+        assert_eq!(Ty::lub(&var("T"), &Ty::Dynamic), Ty::Dynamic);
+    }
+
+    /// 变量的 `Display` 必须是**源码能解析回去**的形状 —— Step 7 的
+    /// 签名生成器靠它把泛型写进 `.wll.sig`。
+    #[test]
+    fn a_bounded_variable_renders_back_into_source_syntax() {
+        assert_eq!(bounded("T", "Comparable").to_string(), "T: Comparable");
+        assert_eq!(var("T").to_string(), "T");
+        assert_eq!(
+            Ty::Array(Box::new(bounded("T", "Comparable"))).to_string(),
+            "ARRAY[T: Comparable]"
+        );
     }
 }

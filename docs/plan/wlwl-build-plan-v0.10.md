@@ -772,18 +772,90 @@ CLI 的阻塞判据从「看档位」改成**「看实际渲染出的诊断有�
 
 ### 5.2 P1-2 · 泛型限形(唯一允许的深水区)
 
+> **状态:已完成(Step 9)。** 三条实测修订:约束的识别点比计划书估的**多一处**
+> (顶层注解路径也得改)、泛型变量**只能是带约束的写法**、本项**不新增错误码**。
+
 | 项 | 内容 |
 |----|------|
-| **目标** | 参数化容器/函数:`ARRAY[T]`、函数类型等;**运行时擦除**。**决策 D-5 已定为「最小显式约束」**,故本项含「类型产生式加 `:` 与约束名」这一**语法面**改动 |
-| **约束** | 无完整 trait / typeclass 推断;无 monomorphization;**`Value` 模型不变** |
-| **轻量约束** | **D-5 已定**:最小显式约束 `T: Comparable` 级,不做隐式解析;不引入 trait 求解器 |
-| **语法代价(实测定位)** | `parse_braced` 当前只接受 `,` 与 `]`,类型产生式里出现 `:` 报 `E0012`。要支持 `T: Comparable` 必须改 `parse_braced`,**这是 v0.10 唯一一处真正的语法面扩张**,须在 §12 出口条件里单列 |
-| **挂载点** | 类型层(`wlwl-types`);注册表结构化签名中的参数化类型;**不改** `wlwl-eval::Value` 变体 |
-| **编译期** | 实例化错误(如 `ARRAY[INTEGER]` 与 `ARRAY[STRING]` 误用)在静态层报;运行时仍擦除 |
+| **目标** | 参数化容器 / 函数;**运行时擦除**。D-5 的「最小显式约束」落地 |
+| **约束** | 无 trait 求解;无 monomorphization;**`Value` 模型不变** |
+| **轻量约束** | `T: Comparable` 一个,不做隐式解析,不引入 trait 求解器 |
+| **语法面扩张** | 类型产生式里的 `:`(见「实测修订 1」);**v0.10 唯一一处**真正的语法面扩张,已按 §12 出口条件单列 |
+| **挂载点** | `wlwl-types`(类型层 + 调用点实例化);`wlwl-ast` 加一个 `TypeExpr::Bounded`;**不改** `wlwl-eval::Value` |
+| **诊断** | **不新增码号** —— 约束不满足就是那处的类型失配,复用 `E0110` / `E0111` / `E0112` |
 | **预估人日** | **4–6 人日**(E4) |
-| **验收** | 编译期实例化错误锁测试;`Value` 快照/行为不变;默认关零影响 |
+| **验收** | ✅ 编译期实例化错误(`a_bounded_parameter_rejects_a_non_comparable_argument` / `..._per_element`);✅ 擦除三条(`generic_parameters_are_erased_at_runtime` 等);✅ 默认关零影响(`p2_default_off_stays_silent_on_generic_programs`) |
+| **实测** | workspace 1709 / 0(+23) |
 
-**禁令**:不改 `Value`;不引入 monomorphization;不做高阶 typeclass。若超 **6 人日**,降级为「仅容器参数化、函数泛型推迟到 v0.10.1」。
+**实测修订 1 —— 约束的识别点比计划书估的多一处**。计划书说「改
+`parse_braced` 即可」,实测**不够**:`parse_braced` 只管方括号**内部**的
+类型参数(`ARRAY[T: Comparable]`),而**顶层**注解(形参 / 返回注解)走的是
+`parse_type_annotation` 把 token 采成平铺 pieces、再交给
+`parse_type_expr_from_pieces` 的另一条路径 —— 而「泛型函数」最常写的恰恰
+是顶层:`FUN((x: T: Comparable) : T: Comparable, x)`。
+
+好在两条路径**最终都汇到 `TypeExprParser::parse_expr`**,所以约束只在
+那里识别一次,两个位置一起覆盖(锁测试
+`an_explicit_constraint_parses_in_both_positions`)。顺带堵了一个坑:
+「剩下的 pieces 里出现 `:`」现在报 `E0010`(约束只能跟在裸标识符上),
+不再被 Step 3 记下的那个兜底分支静默吸收成 `Named` —— 给容器加约束
+这类写法会**说不清自己在干什么**,沉默才是坏的
+(`a_constraint_may_not_follow_a_composite_type`)。
+
+**实测修订 2 —— 泛型变量只能是「裸标识符 + 约束」这一种写法**。
+
+裸的未知类型名(`x: Foo`)**继续是不透明类型**(`Ty::Named`),不是类型
+变量。这条是刻意的:语言里**没有**声明名义类型的语法,所以一个没人认识
+的类型名要么是拼错了、要么是某个运行期类型。现状 `LET(x: Foo, 1)` 会报
+E0110(拼错类型名的诊断),把它改成变量就等于**悄悄废掉这条诊断**。
+
+于是 v0.10 的泛型只有一种写法,也是 D-5「最小显式约束」的直接推论:
+
+```wlwl
+LET(max, FUN((a: T: Comparable, b: T: Comparable) : T: Comparable, IF(<(a, b), a, b)));
+PRINT(max(3, 9));     // ok
+PRINT(max(3, TRUE));  // error[E0111]: call argument 1 mismatch:
+                      //   expected `T: Comparable`, found `BOOLEAN`
+```
+
+代价要说清:没有量词语法(`FUN[T](…)` 本版不存在),同一个变量在每个
+出现位置都要重写一遍 `T: Comparable`。这是「不做隐式解析」换来的
+简洁,与 D-5 同向。
+
+**实测修订 3 —— 本项不新增错误码**。计划书没给 Step 9 分配码,而实测发现
+**也不需要**:约束不满足就是「实参填不进形参声明的类型」,走既有的
+`E0111` 就够,而且报出来的是**未代入的声明类型**,消息里直接带着约束
+(`expected \`T: Comparable\``)。凭空造一个 `E0117` 反而麻烦 —— Step 8
+刚把 `W0117` 定成恒警告,`E0117` 要配对就只能被迫开 `E0118` 留一个空洞。
+
+**`Comparable` 的成员集合是量出来的,不是猜的**。运行期 `<` / `>` / `<=` /
+`>=` 走 `wlwl_eval` 的 `cmp_op`,它只放行**数值**(INTEGER / FLOAT)与
+**STRING**,其余一律 `E0030`。静态层的 `satisfies_bound` 必须与它**逐项
+一致**,否则会出现「check 说行、run 抛错」的裂缝。锁测试
+`comparable_is_exactly_the_runtime_comparison_domain` 就是这条对照;
+`BOOLEAN` / `NULL` / `ARRAY` / `DICT` / 函数类型都**不**可比,与运行期
+一致。未知约束名一律放行(约束集本版只有一条),`Dynamic` 也放行
+(不误报优先)。
+
+**擦除是可执行验证的,不是承诺**。三条 eval 锁测试:`TYPE(ident(42))` 是
+`INTEGER`(变量在运行期不存在)、带约束的泛型与同形状普通函数跑出**同一个
+值**、违反约束的调用**运行期不拦**(只在 `gradual_typing` 打开时被静态层
+抓住)—— 因为没有 monomorphization,运行期就没有类型检查器。
+
+**顺带解开了 Step 7 留的一格**:`T: Comparable` 的 `:` 在 `.wll.sig` 用的
+是同一个 parser,所以**带约束的变量能被签名表达**,Step 7 那条「签名文法
+表达不了的类型一律降级 `DYNAMIC`」松开了一格(往返测试
+`bounded_variables_survive_the_signature_round_trip`)。
+
+**明确不做(本版)**:量词语法 / let-多态 / 完整 trait 求解 / 高阶
+typeclass / monomorphization / `FUN(...) -> U` 箭头形式(仍不可达)。
+函数类型的形参与返回类型**不参与**实例化 —— 它们的变量属于被调方自己的
+量化,本版没有量化语法,混进来只会把两个函数的变量搅在一起。
+
+**一条与本项无关的既有事实**(Step 9 顺带量到,未改):`wlwl fmt` 的规范
+形式**不带句末分号**,所以 `fmt --check` 对任何单语句带 `;` 的文件都报
+W0053,与泛型无关。改它会动到整个格式化契约,不属本 Step,留档待议。
+
 
 ### 5.3 P1-3 · 工具链薄壳
 
@@ -983,10 +1055,17 @@ CLI 的阻塞判据从「看档位」改成**「看实际渲染出的诊断有�
       flagged_as_a_warning_even_in_error_mode / infinite_domains_never_
       report_non_exhaustive / option_annotated_scrutinees_are_not_enumerated
       / v09_programs_stay_silent / p1_* 端到端 9 项
-[Step 9] impl:泛型限形擦除(P1-2)
-   ├─ 参数化容器/函数;显式约束(可选)
-   ├─ Value 模型零改动
-   └─ 锁测试:generic_instance_error / value_model_unchanged
+[Step 9] impl:泛型限形擦除(P1-2)              ✅ 完成
+   ├─ 类型产生式接受 `T: Comparable`(顶层注解 + 方括号两处都认)
+   ├─ wlwl-ast 加 TypeExpr::Bounded;wlwl-types 加 Ty::Var + 实例化 / 代入
+   ├─ 诊断复用 E0110/E0111/E0112 —— 本 Step 不新增错误码
+   ├─ Comparable = {INTEGER, FLOAT, STRING}(对着运行期 cmp_op 量出来的)
+   ├─ 擦除三条 eval 锁测试(Value 模型零改动)
+   └─ 锁测试:comparable_is_exactly_the_runtime_comparison_domain /
+      a_bounded_parameter_rejects_a_non_comparable_argument /
+      a_variable_in_the_return_type_is_instantiated_with_the_argument /
+      generic_parameters_are_erased_at_runtime /
+      bounded_variables_survive_the_signature_round_trip / p2_* 端到端 3 项
 [Step 10] impl:工具链薄壳(P1-3)
    ├─ check 分层测试
    ├─ wlwl lsp 薄壳(diagnostics/definition/hover)
@@ -1029,7 +1108,7 @@ CLI 的阻塞判据从「看档位」改成**「看实际渲染出的诊断有�
 > **D-2 附带效果**:`*.wll.sig` 是旁路文件,「无签名 = v0.9 行为」因此是
 > 结构性保证,不是约定。
 
-### 10.3 锁测试预期增量(**Step 0–8 已实测,其余仍为估计**)
+### 10.3 锁测试预期增量(**Step 0–9 已实测,其余仍为估计**)
 
 | 时点 | 实测总数 | 增量 |
 |------|---------|------|
@@ -1039,12 +1118,15 @@ CLI 的阻塞判据从「看档位」改成**「看实际渲染出的诊断有�
 | Step 3–5 收尾 | 1590 / 0 | +22(A4 8 + A2′ 6 + A6′ 8) |
 | Step 6 收尾 | 1639 / 0 | +49(C1/C2) |
 | Step 7 收尾 | 1656 / 0 | +17(C3 14 + C5′ 3) |
-| Step 8 收尾 | **1686 / 0** | **+30**(P1-1:wlwl-types 14 + wlwl-cli 9 + wlwl-toml 5 + wlwl-parser 2) |
+| Step 8 收尾 | 1686 / 0 | +30(P1-1) |
+| Step 9 收尾 | **1709 / 0** | **+23**(P1-2:wlwl-types 14 + parser 3 + wlwl-eval 3 + wlwl-cli 3) |
 
 > 目标 ≈1600±30 **已达成**。**不虚报**:每项以实测为准,`off` 档
-> 的零破坏由 `c1_respects_the_three_gradual_typing_levels` 与
-> `p1_default_off_stays_silent_on_v09_match_programs` 反证(用一份
+> 的零破坏由 `c1_respects_the_three_gradual_typing_levels`、
+> `p1_default_off_stays_silent_on_v09_match_programs`、
+> `p2_default_off_stays_silent_on_generic_programs` 三条反证(各用一份
 > 「开启时必报」的夹具 / 源码证明门禁确实没跑)。
+
 
 
 

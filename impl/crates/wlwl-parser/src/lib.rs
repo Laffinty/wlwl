@@ -2432,6 +2432,21 @@ impl Parser {
         let expr = p.parse_expr(sl, sc)?;
         if p.pos < p.pieces.len() {
             let rest: Vec<String> = p.pieces[p.pos..].to_vec();
+            // v0.10 Step 9:`:` 只可能来自「裸标识符 + 约束」,而那条路已经
+            // 由 `parse_expr` 处理完了。所以**剩下的** pieces 里出现 `:`,
+            // 一定是写错了位置(给容器加约束之类)。这里报错,而不是沿用
+            // 下面那个「兜底拼成 `Named`」的静默吸收 —— 那正是 Step 3 记下
+            // 的那个坑(箭头形式被吸收成 `Named("( INTEGER ) - > STRING")`)。
+            if rest.iter().any(|t| t == ":") {
+                return Err(WlwlDiagnostic::new(
+                    EC::E0010,
+                    "a type constraint may only follow a bare type variable \
+                     (e.g. `T: Comparable`), not a type like ARRAY[…] or DICT[…]"
+                        .to_string(),
+                    Location::point(&self.file, sl, sc),
+                )
+                .into());
+            }
             return Ok(TypeExpr::Generic {
                 name: rest.join(" "),
                 args: vec![],
@@ -2475,6 +2490,20 @@ impl<'a> TypeExprParser<'a> {
         if self.peek() == "[" {
             return self.parse_braced(&head, sl, sc);
         }
+        // v0.10 Step 9(计划书 §5.2 / D-5):裸标识符后可以跟一个显式约束
+        // —— `T: Comparable`。**这一处同时覆盖两个入口**:
+        // `parse_braced` 用它解析方括号里的类型参数(`ARRAY[T: Comparable]`),
+        // `parse_type_expr_from_pieces` 用它解析整条平铺注解
+        // (`(x: T: Comparable)`),两者都汇到 `parse_expr`。
+        if self.peek() == ":" {
+            self.pos += 1;
+            let bound = self.parse_expr(sl, sc)?;
+            return Ok(TypeExpr::Bounded {
+                name: head,
+                bound: Box::new(bound),
+                span: self.span_here(sl, sc),
+            });
+        }
         Ok(TypeExpr::Ident {
             name: head,
             span: self.span_here(sl, sc),
@@ -2493,6 +2522,10 @@ impl<'a> TypeExprParser<'a> {
         self.pos += 1;
         let mut args = Vec::new();
         loop {
+            // 类型参数的约束由 `parse_expr` 识别(它在裸标识符后吃 `:`),
+            // 所以这里**不用**再单独处理 `:` —— 一个参数后面跟着 `:` 却
+            // 不是「裸标识符 + 约束」时,自然落到下面的 `other` 分支报
+            // E0012(而不是被静默吸收成 `Named`)。
             args.push(self.parse_expr(sl, sc)?);
             match self.peek() {
                 "," => {
@@ -2770,6 +2803,96 @@ mod tests {
             }
             other => panic!("expected MATCH, got {:?}", other),
         }
+    }
+
+    // ---- v0.10 Step 9 (P1-2 / D-5): `T: Comparable` 显式约束 ----
+
+    /// D-5 的「最小显式约束」:一个类型变量**就是**「裸标识符 + 约束」。
+    /// 顶层注解与方括号内的类型参数两条路径都要能写。
+    #[test]
+    fn an_explicit_constraint_parses_in_both_positions() {
+        // 顶层(形参 / 返回注解走的平铺 pieces 路径)
+        let e = parse(
+            "LET(f, FUN((x: T: Comparable) : T: Comparable, x));",
+            "t.wll",
+        )
+        .expect("parses");
+        let Expr::Let { value, .. } = e else {
+            panic!("expected LET");
+        };
+        let Expr::Fun {
+            params,
+            return_type,
+            ..
+        } = value.as_ref()
+        else {
+            panic!("expected FUN");
+        };
+        let bound = params[0].type_annotation.as_ref().expect("annotated");
+        match &bound.expr {
+            TypeExpr::Bounded { name, bound: b, .. } => {
+                assert_eq!(name, "T");
+                assert!(matches!(b.as_ref(), TypeExpr::Ident { name, .. } if name == "Comparable"));
+            }
+            other => panic!("expected Bounded, got {:?}", other),
+        }
+        let ret = return_type.as_ref().expect("annotated").expr.clone();
+        assert!(
+            matches!(&ret, TypeExpr::Bounded { name, .. } if name == "T"),
+            "return annotation must carry the same variable: {:?}",
+            ret
+        );
+
+        // 方括号内(类型参数)
+        let e = parse("LET(xs: ARRAY[T: Comparable], [1]);", "t.wll").expect("parses");
+        let Expr::Let {
+            type_annotation: Some(a),
+            ..
+        } = e
+        else {
+            panic!("expected LET with annotation");
+        };
+        match &a.expr {
+            TypeExpr::Array { element, .. } => assert!(
+                matches!(element.as_ref(), TypeExpr::Bounded { name, .. } if name == "T"),
+                "{:?}",
+                element
+            ),
+            other => panic!("expected ARRAY, got {:?}", other),
+        }
+    }
+
+    /// 约束**只**跟在裸标识符上。给容器加约束是无意义的,而且静默吸收成
+    /// `Named` 正是 Step 3 记下的那个坑 —— 所以这里必须报错。
+    #[test]
+    fn a_constraint_may_not_follow_a_composite_type() {
+        for src in [
+            "LET(xs: ARRAY[INTEGER]: Comparable, [1]);",
+            "LET(d: DICT[STRING, INTEGER]: Comparable, [1]);",
+        ] {
+            let err = parse(src, "t.wll").expect_err(src);
+            assert!(
+                err.diagnostic().message.contains("type constraint"),
+                "{}",
+                err.diagnostic().message
+            );
+        }
+    }
+
+    /// 没有约束的裸名字**仍然是普通标识符** —— 它是不透明类型
+    /// (`Named`),不是类型变量。那条拼错类型名的诊断(E0110)因此原样保留,
+    /// 泛型语法没有削弱它。
+    #[test]
+    fn a_bare_unknown_name_is_still_an_opaque_type() {
+        let e = parse("LET(x: Foo, 1);", "t.wll").expect("parses");
+        let Expr::Let {
+            type_annotation: Some(a),
+            ..
+        } = e
+        else {
+            panic!("expected LET with annotation");
+        };
+        assert!(matches!(&a.expr, TypeExpr::Ident { name, .. } if name == "Foo"));
     }
 
     #[test]

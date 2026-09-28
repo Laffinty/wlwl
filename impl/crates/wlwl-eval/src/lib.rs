@@ -16378,6 +16378,44 @@ entry = "main.wll"
         let _ = fs::remove_dir_all(&dir);
     }
 
+    // ---- v0.10 Step 9 (P1-2): 泛型的**擦除**语义 ----
+
+    /// 泛型在运行期**什么都不剩**:约束只活在编译期,`TYPE()` 看到的是实参
+    /// 的具体类型,函数值本身与普通闭包无差别。这条是计划书「不改 `Value`」
+    /// 禁令的可执行版本 —— 如果哪天偷偷 monomorphize 或加了个类型变量
+    /// 载体,这条会第一个炸。
+    #[test]
+    fn generic_parameters_are_erased_at_runtime() {
+        let src = "\
+LET(ident, FUN((x: T: Comparable) : T: Comparable, x));
+LET(v, ident(42));
+TYPE(v);
+";
+        assert_eq!(run(src).unwrap(), Value::String("INTEGER".to_string()));
+    }
+
+    #[test]
+    fn a_bounded_generic_behaves_exactly_like_a_plain_function() {
+        // 带约束的泛型与同形状的无注解函数跑出同样的值。
+        let plain = run("LET(ident, FUN((x), x)); ident(42);").unwrap();
+        let generic =
+            run("LET(ident, FUN((x: T: Comparable) : T: Comparable, x)); ident(42);").unwrap();
+        assert_eq!(plain, generic);
+        assert_eq!(plain, Value::Integer(42));
+    }
+
+    /// 约束**不在运行期强制** —— 违反约束的调用会跑通并算出结果,只在编译期
+    /// 被静态层抓住(开了 `gradual_typing` 时)。这是「擦除」的另一面:
+    /// 没有 monomorphization,就没有运行期的类型检查器。
+    #[test]
+    fn a_bound_violation_is_not_caught_at_runtime() {
+        // `TRUE < FALSE` 在运行期是 E0030(比较算子不接受 BOOLEAN),
+        // 而不是「约束被违反」—— 静态层那条 E0111 才是它的编译期出口。
+        let err = run("LET(max, FUN((a: T: Comparable, b: T: Comparable) : T: Comparable, IF(<(a, b), a, b))); max(TRUE, FALSE);")
+            .expect_err("runtime comparison rejects BOOLEAN");
+        assert_eq!(err.diagnostic().code, ErrorCode::E0030);
+    }
+
     #[test]
     fn import_unbound_name_is_e0023() {
         let dir = unique_test_dir("import_unbound");

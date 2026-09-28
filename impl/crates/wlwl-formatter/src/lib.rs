@@ -425,6 +425,12 @@ fn type_expr_text(t: &TypeExpr) -> String {
             let parts: Vec<String> = args.iter().map(type_expr_text).collect();
             format!("{}[{}]", name, parts.join(", "))
         }
+        // [v0.10 Step 9] 带约束的变量:`T: Comparable`。这渲染成**源码能
+        // 解析回去**的形状(约束的 `:` 在方括号内,`parse_braced` 认识它),
+        // 所以 `wlwl fmt` 对泛型标注是幂等的。
+        TypeExpr::Bounded { name, bound, .. } => {
+            format!("{}: {}", name, type_expr_text(bound))
+        }
     }
 }
 

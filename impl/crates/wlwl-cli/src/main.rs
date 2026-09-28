@@ -2122,7 +2122,9 @@ EXPORT([\"add\", \"PI\"]);
                 ExitCode::SUCCESS,
                 "off must stay silent: {src}"
             );
-            let _ = fs::remove_dir_all(root.parent().unwrap());
+            // **不要**在这里清目录:所有用例共用 `%TEMP%/wlwl-cli-tests`,
+            // 删它会顺手删掉并行线程里别的用例正在用的夹具(Step 8 踩过)。
+            // `module_project` 每次调用只重建**自己那个**子目录,够了。
         }
     }
 
@@ -2136,6 +2138,82 @@ EXPORT([\"add\", \"PI\"]);
         // 显式写了 default 的照常渲染出来。
         let p2 = write_tmp("MATCH(1, [[1, 1]], 0);\n", "p1_fmt2.wll");
         assert_eq!(fmt_file(&p2, false), ExitCode::SUCCESS);
+    }
+
+    // -- v0.10 Step 9 (P1-2): 泛型限形(擦除) -----------------------------
+
+    /// 编译期实例化错误:约束不满足 → 走既有的 `E0111`,**不新增码号**。
+    #[test]
+    fn p2_bound_violation_is_caught_at_compile_time() {
+        let root = match_project(
+            "p2_bound",
+            "\"error\"",
+            None,
+            "LET(max, FUN((a: T: Comparable, b: T: Comparable) : T: Comparable, IF(<(a, b), a, b)));\
+             PRINT(max(1, TRUE));",
+        );
+        assert_eq!(
+            run_file(&root.join("main.wll"), OutputFormat::Human, false),
+            ExitCode::from(1)
+        );
+        // 满足约束 → 静默通过。
+        let ok = match_project(
+            "p2_bound_ok",
+            "\"error\"",
+            None,
+            "LET(max, FUN((a: T: Comparable, b: T: Comparable) : T: Comparable, IF(<(a, b), a, b)));\
+             PRINT(max(1, 2));",
+        );
+        assert_eq!(
+            run_file(&ok.join("main.wll"), OutputFormat::Human, false),
+            ExitCode::SUCCESS
+        );
+    }
+
+    /// 零破坏:默认档对带泛型标注的程序一条诊断都不发,`run` 照跑。
+    #[test]
+    fn p2_default_off_stays_silent_on_generic_programs() {
+        let src = "LET(max, FUN((a: T: Comparable, b: T: Comparable) : T: Comparable, a)); PRINT(max(1, 2));";
+        for setting in ["\"off\"", "DEFAULT_NO_KEY"] {
+            let root = if setting == "DEFAULT_NO_KEY" {
+                let root = module_project("p2_off_no_key", "\"off\"");
+                let _ = fs::remove_file(root.join("wlwl.toml"));
+                fs::write(root.join("main.wll"), src).unwrap();
+                root
+            } else {
+                match_project("p2_off", setting, None, src)
+            };
+            assert_eq!(
+                run_file(&root.join("main.wll"), OutputFormat::Human, false),
+                ExitCode::SUCCESS,
+                "off mode must not judge generics: {setting}"
+            );
+            // 运行期一样能跑(擦除,零语义变化)。
+            assert_eq!(
+                run_file(&root.join("main.wll"), OutputFormat::Human, true),
+                ExitCode::SUCCESS
+            );
+            // 同上:共用测试根目录,不在用例里清。
+        }
+    }
+
+    /// 格式化器认识带约束的标注:规范输出的形状**能被解析回来** ——
+    /// `T: Comparable` 的 `:` 在 `parse_braced` / `parse_type_expr_from_pieces`
+    /// 都认得。
+    ///
+    /// (规范形式不带句末分号,那是既有约定 —— 无泛型的普通程序也一样。)
+    #[test]
+    fn p2_fmt_round_trips_a_bounded_annotation() {
+        let canonical = "LET(max, FUN((a: T: Comparable, b: T: Comparable): T: Comparable, a))";
+        let p = write_tmp(&format!("{canonical}\n"), "p2_fmt.wll");
+        assert_eq!(fmt_file(&p, true), ExitCode::SUCCESS);
+        // 非规范拼写(返回注解冒号前多一个空格)会被 fmt 纠正,说明它确实
+        // 认识这个形状而不是把它当噪声吞掉。
+        let q = write_tmp(
+            "LET(max, FUN((a: T: Comparable, b: T: Comparable) : T: Comparable, a));\n",
+            "p2_fmt_nc.wll",
+        );
+        assert_eq!(fmt_file(&q, false), ExitCode::SUCCESS);
     }
 
     #[test]

@@ -141,6 +141,9 @@ struct Checker<'a> {
     declared: Vec<DeclaredBinding>,
     /// Step 8:是否跑 MATCH 检查。关掉时那条 pass **完全不执行**。
     match_exhaustiveness: bool,
+    /// Step 9:本次调用积累的类型变量绑定(形参 → 实参),用于把返回类型
+    /// 里的变量代入。**每次调用前清空** —— 绑定只在一个调用的实参之间成立。
+    pending_substitutions: Vec<(String, Ty)>,
 }
 
 impl<'a> Checker<'a> {
@@ -154,6 +157,7 @@ impl<'a> Checker<'a> {
             // 由 `check_program_with_options` 覆写;默认值等于「关」——
             // 构造器本身不该顺手把一条新 pass 打开。
             match_exhaustiveness: false,
+            pending_substitutions: Vec::new(),
         }
     }
 
@@ -610,6 +614,10 @@ impl<'a> Checker<'a> {
         // A2′:实参按签名的形参类型**逐位下推**期望类型。必须在推导
         // 实参**之前**拿到签名 —— 字面量与容器字面量只有拿到期望类型才会
         // 按期望定型。元数不足时 `params.get(i)` 给出 `None`,不会越界。
+        //
+        // [Step 9] 变量绑定是**每次调用独立**的:先清空上一次残留,否则
+        // 两次无关的调用会把变量串起来。
+        self.pending_substitutions.clear();
         let arg_tys: Vec<Ty> = args
             .iter()
             .enumerate()
@@ -627,7 +635,29 @@ impl<'a> Checker<'a> {
             return ret;
         }
         for (position, (expected_t, found_t)) in params.iter().zip(&arg_tys).enumerate() {
-            if !found_t.satisfies_annotation(expected_t) {
+            // [v0.10 Step 9 / P1-2] 泛型实例化:声明类型里带类型变量时,
+            // 先按实参把变量绑定起来(顺带验约束),再判实参填不填得进。
+            //
+            // 报出来的 `expected` 是**未代入的**声明类型 —— 这样消息里留着
+            // `T: Comparable`,而不是被抹成实参类型。约束不满足时它同样
+            // 走这条既有的调用失配路径:**本 Step 不新增错误码**,约束不
+            // 满足就是「实参不符合被调方声明的形参类型」。
+            if expected_t.vars().is_empty() {
+                if !found_t.satisfies_annotation(expected_t) {
+                    self.report(
+                        TypeDiagKind::CallArgMismatch {
+                            position,
+                            expected: expected_t.clone(),
+                            found: found_t.clone(),
+                        },
+                        span,
+                    );
+                }
+                continue;
+            }
+            let mut bindings: Vec<(String, Ty)> = Vec::new();
+            let ok = crate::ty::instantiate(expected_t, found_t, &mut bindings);
+            if !ok {
                 self.report(
                     TypeDiagKind::CallArgMismatch {
                         position,
@@ -637,8 +667,10 @@ impl<'a> Checker<'a> {
                     span,
                 );
             }
+            // 记下这次实例化,返回类型要用它代入(见下面)。
+            self.pending_substitutions.extend(bindings);
         }
-        ret
+        crate::ty::substitute(&ret, &self.pending_substitutions)
     }
 
     /// 把模式里的名字绑进当前作用域。`ty` 是被匹配值的类型。
@@ -1446,5 +1478,112 @@ mod tests {
                 ("y".to_string(), Ty::Integer),
             ]
         );
+    }
+
+    // ---- Step 9 (P1-2 / D-5): 泛型实例化与显式约束 ----
+
+    fn codes_with(src: &str) -> Vec<String> {
+        let ast = parse(src, "check.wll").expect("fixture must parse");
+        check_program(&ast)
+            .iter()
+            .map(|d| match d.emitted_code(wlwl_error::Severity::Error) {
+                Some(c) => c.as_str().to_string(),
+                None => "<uncoded>".to_string(),
+            })
+            .collect()
+    }
+
+    /// 计划书的验收项:**编译期实例化错误**。约束不满足就是那处的类型
+    /// 失配,复用既有的 `E0110` / `E0111` —— 本 Step **不新增错误码**。
+    #[test]
+    fn a_bounded_parameter_rejects_a_non_comparable_argument() {
+        let src = "\
+LET(max, FUN((a: T: Comparable, b: T: Comparable) : T: Comparable, IF(<(a, b), a, b)));
+max(1, TRUE);
+";
+        assert_eq!(codes_with(src), vec!["E0111"]);
+        // 消息里留着约束 —— 报的是**未代入的声明类型**。
+        let ast = parse(src, "check.wll").unwrap();
+        let msg = check_program(&ast)[0].message();
+        assert!(msg.contains("T: Comparable"), "{}", msg);
+    }
+
+    #[test]
+    fn a_satisfying_argument_passes_the_bound() {
+        for (a, b) in [("1", "2"), ("1.5", "2"), ("\"a\"", "\"b\"")] {
+            let src = format!(
+                "LET(max, FUN((a: T: Comparable, b: T: Comparable) : T: Comparable, IF(<(a, b), a, b))); \
+                 max({a}, {b});"
+            );
+            assert!(
+                codes_with(&src).is_empty(),
+                "comparable arguments must pass: {a}, {b}"
+            );
+        }
+    }
+
+    /// 变量在返回类型里被**代入** —— 这就是泛型在无量化语法下的精度收益
+    /// (无泛型的语言只能落 `DYNAMIC`)。
+    #[test]
+    fn a_variable_in_the_return_type_is_instantiated_with_the_argument() {
+        let src = "\
+LET(id, FUN((x: T: Comparable) : T: Comparable, x));
+LET(y: INTEGER, id(1));
+";
+        assert!(codes_with(src).is_empty());
+        // 代入后返回类型是 STRING,所以喂 INTEGER 会被抓住。
+        let bad = "\
+LET(id, FUN((x: T: Comparable) : T: Comparable, x));
+LET(y: INTEGER, id(\"s\"));
+";
+        assert_eq!(codes_with(bad), vec!["E0110"]);
+    }
+
+    /// 容器里的约束逐元素生效(计划书说的「`ARRAY[INTEGER]` 与
+    /// `ARRAY[STRING]` 误用」那一类)。
+    #[test]
+    fn a_bounded_variable_inside_a_container_is_checked_per_element() {
+        let ok = "\
+LET(count, FUN((xs: ARRAY[T: Comparable]) : INTEGER, 0));
+count([1, 2, 3]);
+";
+        {
+            let ast = parse(ok, "check.wll").expect("parses");
+            let diags = check_program(&ast);
+            assert!(
+                diags.is_empty(),
+                "{:?}",
+                diags.iter().map(|d| d.message()).collect::<Vec<_>>()
+            );
+        }
+        let bad = "\
+LET(count, FUN((xs: ARRAY[T: Comparable]) : INTEGER, 0));
+count([1, TRUE]);
+";
+        assert_eq!(codes_with(bad), vec!["E0110"]);
+    }
+
+    /// 无约束变量接受一切(不报),`Dynamic` 实参也不参与绑定(不误报优先)。
+    #[test]
+    fn an_unconstrained_variable_and_dynamic_never_produce_diagnostics() {
+        for src in [
+            "LET(id, FUN((x: T: Comparable) : T: Comparable, x)); LET(y, id(PRINT(1)));",
+            "LET(id, FUN((x: T: Comparable) : T: Comparable, x)); LET(y: INTEGER, id(id(1)));",
+            "LET(f, FUN((a: ARRAY[T: Comparable]) : INTEGER, 0)); LET(n, f(PRINT([1])));",
+        ] {
+            assert!(
+                codes_with(src).is_empty(),
+                "unconstrained / unknown types must stay silent: {src}"
+            );
+        }
+    }
+
+    /// 带泛型标注但用得对的模块**不该**多出诊断(零破坏的静态侧)。
+    #[test]
+    fn v09_programs_with_generic_annotations_stay_silent() {
+        assert!(codes_with(
+            "LET(max, FUN((a: T: Comparable, b: T: Comparable) : T: Comparable, a)); max(1, 2);"
+        )
+        .is_empty());
     }
 }

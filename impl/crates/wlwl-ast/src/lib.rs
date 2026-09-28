@@ -97,6 +97,24 @@ pub enum TypeExpr {
         args: Vec<TypeExpr>,
         span: Span,
     },
+    /// v0.10 Step 9(计划书 §5.2 P1-2,决策 D-5)**显式约束**的类型变量:
+    /// `T: Comparable`。
+    ///
+    /// 这是 v0.10 **唯一一处真正的语法面扩张** —— 约束的 `:` 出现在方括号
+    /// 内部,所以 `parse_braced` 必须从「只认 `,` 与 `]`」放宽到也认 `:`。
+    /// 换来的东西是**编译期的实例化错误**:泛型参数被填进一个不满足约束
+    /// 的类型时立刻报出来,而不是等到运行期比较算子抛 `E0030`。
+    ///
+    /// 约束只挂在**裸标识符**上 —— 给已知具体类型加约束(`INTEGER: Comparable`)
+    /// 是无意义的(parser 层就报错),见 `wlwl-parser` 的 `parse_braced`。
+    /// 求值语义**完全不变**:类型变量在运行期擦除,`Value` 模型一个字节都不动。
+    Bounded {
+        /// 变量名
+        name: String,
+        /// 约束(一个类型名,如 `Comparable` → 静态层的 `Ty::Named`)
+        bound: Box<TypeExpr>,
+        span: Span,
+    },
 }
 
 impl TypeExpr {
@@ -105,6 +123,7 @@ impl TypeExpr {
             TypeExpr::Ident { span, .. } => span,
             TypeExpr::Array { span, .. } => span,
             TypeExpr::Generic { span, .. } => span,
+            TypeExpr::Bounded { span, .. } => span,
         }
     }
 
@@ -120,6 +139,13 @@ impl TypeExpr {
             TypeExpr::Generic { name, args, .. } => {
                 let parts: Vec<String> = args.iter().map(|a| a.display()).collect();
                 format!("{}<{}>", name, parts.join(", "))
+            }
+            // [v0.10 Step 9] 带约束的变量。这里沿用上面那个尖括号风格
+            // (它本来就**不往返** —— 见 `wlwl-parser` 里 Step 3 记下的
+            // 那个坑:尖括号解析不回来)。真正可往返的渲染在
+            // `wlwl_types::Ty` 的 `Display`,那才是签名生成器用的。
+            TypeExpr::Bounded { name, bound, .. } => {
+                format!("{}: {}", name, bound.display())
             }
         }
     }
