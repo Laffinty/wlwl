@@ -127,6 +127,12 @@ skip = [
     { crate = "wlwl-eval", reason = "workspace = true internal dep" },
     { crate = "wlwl-formatter", reason = "workspace = true internal dep" },
     { crate = "wlwl-cli", reason = "workspace = true internal dep" },
+    # [v0.10] Step 1 新增的 crate。漏了它会让 CI 直接红:
+    # `error[wildcard]: found 7 wildcard dependencies for crate 'wlwl-types'`
+    # —— `allow-workspace = true` 只覆盖 `workspace = true` 的依赖,而本 crate
+    # 另有一条 dev-dependency 走 `path =`,两条路径都要靠 skip 兜住。
+    # 与上面 9 条同理由,故同列表。
+    { crate = "wlwl-types", reason = "workspace = true internal dep" },
 ]
 
 [sources]
