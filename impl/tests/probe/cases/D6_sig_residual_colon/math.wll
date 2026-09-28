@@ -1,0 +1,3 @@
+LET(add, FUN((a: INTEGER, b: INTEGER) : INTEGER, +(a, b)));
+LET(PI, 3);
+EXPORT(["add"]);

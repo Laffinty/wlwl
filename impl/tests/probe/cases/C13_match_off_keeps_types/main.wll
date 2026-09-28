@@ -1,0 +1,3 @@
+LET(flag: BOOLEAN, "yes");
+PRINT(flag);
+PRINT(MATCH(TRUE, [[TRUE, "t"]]));

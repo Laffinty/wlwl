@@ -1,0 +1,1 @@
+PRINT(MATCH(NULL, [[_, "any"]]));

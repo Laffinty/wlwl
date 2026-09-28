@@ -1,0 +1,9 @@
+LET(C, CLASS("Counter", NULL, [
+    ["init", FUN((self), SET_PROP(self, "n", 0))],
+    ["inc", FUN((self), SET_PROP(self, "n", +(GET_PROP(self, "n"), 1)))],
+    ["get", FUN((self), GET_PROP(self, "n"))]
+]));
+LET(o, NEW(C));
+CALL_METHOD(o, "inc");
+CALL_METHOD(o, "inc");
+PRINT(CALL_METHOD(o, "get"));

@@ -1,0 +1,7 @@
+[package]
+name = "probe"
+version = "0.0.1"
+entry = "main.wll"
+
+[features]
+match_exhaustiveness = "error"

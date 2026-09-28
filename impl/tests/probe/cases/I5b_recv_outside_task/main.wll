@@ -1,0 +1,4 @@
+SCOPE(FUN(() ,
+    LET(ch, CHANNEL_NEW(0));
+    PRINT(CHANNEL_RECV(ch))
+));

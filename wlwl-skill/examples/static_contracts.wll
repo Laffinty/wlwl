@@ -1,8 +1,10 @@
 // examples/static_contracts.wll — v0.10 static contracts (spec §5.2 / §5.2.1)
 //
-// All of this is DEFAULT-OFF. Running this file with no wlwl.toml produces
-// exactly the v0.9 output: the annotations are inert, and nothing below
-// changes a single runtime behaviour.
+// [v0.10.1 / R10-062] 本目录现在带一份 `wlwl.toml`,`gradual_typing = "error"`。
+// 之前没有:默认档是 off,没有清单就没有 `[features]` 可读,所以这个旗舰示例
+// **从不触发任何静态检查** —— 照着它学的人会以为注解是生效的。
+//
+// 想看 v0.9 的惰性行为(注解完全不参与运行),把这个文件单独拷到别处再跑。
 
 // ── §5.2 annotations on a LET binding and on FUN parameters ────────────
 LET(width: INTEGER, 3);

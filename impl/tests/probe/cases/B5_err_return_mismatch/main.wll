@@ -1,0 +1,2 @@
+LET(g, FUN(() : STRING, 42));
+PRINT(g());

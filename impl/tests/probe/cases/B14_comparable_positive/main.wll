@@ -1,0 +1,2 @@
+LET(mx, FUN((a: T: Comparable, b: T: Comparable) : T: Comparable, IF(<(a, b), a, b)));
+PRINT(mx(3, 9), mx("a", "b"), mx(1.5, 0.5));

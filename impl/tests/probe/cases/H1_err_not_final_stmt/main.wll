@@ -1,0 +1,3 @@
+LET(r, ERR("x"));
+PRINT(r);
+PRINT("after");

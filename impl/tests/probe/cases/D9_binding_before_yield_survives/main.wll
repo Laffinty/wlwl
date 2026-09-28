@@ -1,0 +1,4 @@
+PRINT(SCOPE(FUN(() ,
+    LET(h, SPAWN(FUN(() , LET(x, 1); YIELD(); x)));
+    AWAIT(h)
+)));

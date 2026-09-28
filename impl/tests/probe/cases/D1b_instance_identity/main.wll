@@ -1,0 +1,4 @@
+LET(C, CLASS("C", NULL, []));
+LET(a, NEW(C));
+LET(b, a);
+PRINT(==(a, b), ==(a, a), ==(NEW(C), NEW(C)));

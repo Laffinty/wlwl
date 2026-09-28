@@ -1,0 +1,2 @@
+LET(x: FLOAT, 1);
+PRINT(x);

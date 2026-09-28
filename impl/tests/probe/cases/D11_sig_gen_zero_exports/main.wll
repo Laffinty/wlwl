@@ -1,0 +1,2 @@
+LET(hidden, 1);
+PRINT(hidden);

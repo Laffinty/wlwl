@@ -1,0 +1,3 @@
+LET(mx, FUN((a: T: Comparable, b: T: Comparable) : T: Comparable, IF(<(a, b), a, b)));
+PRINT(TYPE(mx));
+PRINT(mx(1, 2));

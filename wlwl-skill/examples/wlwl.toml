@@ -1,0 +1,23 @@
+# wlwl-skill examples — 工程清单
+#
+# [v0.10.1 / R10-062] 这份清单之前不存在,后果是本目录下的示例**从不触发
+# 任何静态检查**:`gradual_typing` 默认 off,而没有清单就没有 `[features]`
+# 可读。随包发布的旗舰特性示例 `static_contracts.wll` 因此只是一段普通代码,
+# 读者照抄也不会得到任何类型反馈。
+#
+# `[package]` 三件套是**必需的**,不是装饰:wlwl-toml 的 `Package` 三个字段
+# 都没有 `#[serde(default)]`,所以缺 `[package]` 的清单在反序列化阶段就失败。
+# v0.10 会把这个失败静默吞掉(回落 off),v0.10.1 起会发 `W0001` 报出来
+# —— 但特性值仍会生效。写全 `[package]` 就两种警告都不会有。
+#
+# 注意 `entry` 只影响 `wlwl build` / `wlwl run <dir>` 这类按工程调用的
+# 入口;单独 `wlwl run examples/xxx.wll` 不受影响。
+
+[package]
+name = "skill-examples"
+version = "0.10.1"
+entry = "static_contracts.wll"
+
+[features]
+# 示例本身必须是干净的:这一档开着,任何注解失配都会让 CI 红灯。
+gradual_typing = "error"

@@ -1,0 +1,2 @@
+LET(x: Foo, 1);
+PRINT(x);

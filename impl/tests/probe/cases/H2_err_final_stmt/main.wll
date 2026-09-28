@@ -1,0 +1,2 @@
+PRINT("ok");
+ERR("x");

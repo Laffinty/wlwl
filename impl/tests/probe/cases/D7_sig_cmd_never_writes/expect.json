@@ -1,0 +1,9 @@
+{
+ "exit": 0,
+ "absent": [
+  "main.wll.sig"
+ ],
+ "contains": [
+  "EXPORT"
+ ]
+}

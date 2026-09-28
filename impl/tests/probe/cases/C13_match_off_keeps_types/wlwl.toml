@@ -1,0 +1,8 @@
+[package]
+name = "probe"
+version = "0.0.1"
+entry = "main.wll"
+
+[features]
+gradual_typing = "error"
+match_exhaustiveness = "off"

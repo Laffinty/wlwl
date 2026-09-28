@@ -1,0 +1,7 @@
+PRINT(SCOPE(FUN(() ,
+    LET(h, SPAWN(FUN(() ,
+        LET MUT(i, 0);
+        WHILE(<(i, 3), SET(i, +(i, 1)));
+        i)));
+    AWAIT(h)
+)));

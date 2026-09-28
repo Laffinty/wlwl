@@ -1,0 +1,1 @@
+EXPORT add (ARRAY[INTEGER]: Comparable) : INTEGER

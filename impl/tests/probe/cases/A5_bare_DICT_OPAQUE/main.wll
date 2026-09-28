@@ -1,0 +1,2 @@
+LET(d, FUN((x: DICT) : INTEGER, 1));
+PRINT(d(TRUE));

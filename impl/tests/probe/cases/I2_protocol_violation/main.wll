@@ -1,0 +1,6 @@
+LET(C, CLASS("C", ["a": "end", "b": "end"], [
+    ["a", FUN((self), "A")],
+    ["b", FUN((self), "B")]
+]));
+LET(o, NEW(C));
+CALL_METHOD(o, "b");

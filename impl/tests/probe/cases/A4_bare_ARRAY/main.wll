@@ -1,0 +1,2 @@
+LET(x: ARRAY, 1);
+PRINT(x);

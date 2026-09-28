@@ -1,0 +1,9 @@
+SCOPE(FUN(() ,
+    LET(a, CHANNEL_NEW(0));
+    LET(b, CHANNEL_NEW(0));
+    LET(h1, SPAWN(FUN(() , CHANNEL_SEND(a, 1))));
+    LET(h2, SPAWN(FUN(() , CHANNEL_SEND(b, 1))));
+    AWAIT(h1);
+    AWAIT(h2);
+    0
+));

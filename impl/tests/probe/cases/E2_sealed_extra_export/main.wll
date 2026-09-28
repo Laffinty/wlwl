@@ -1,0 +1,5 @@
+LET(a, 1);
+LET(b, 2);
+EXPORT(["a", "b"]);
+SEALED(["a"]);
+PRINT(a);

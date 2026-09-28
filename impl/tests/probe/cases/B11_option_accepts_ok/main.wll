@@ -1,0 +1,2 @@
+LET(o: OPTION[INTEGER], OK(1));
+PRINT(IS_OK(o));

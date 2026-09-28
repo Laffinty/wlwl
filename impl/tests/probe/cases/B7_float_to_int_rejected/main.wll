@@ -1,0 +1,2 @@
+LET(x: INTEGER, 1.5);
+PRINT(x);

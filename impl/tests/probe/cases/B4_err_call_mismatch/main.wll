@@ -1,0 +1,2 @@
+LET(f, FUN((a: INTEGER) : INTEGER, a));
+PRINT(f("x"));

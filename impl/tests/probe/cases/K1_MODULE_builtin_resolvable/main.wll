@@ -1,0 +1,2 @@
+LET(m, MODULE("n", 1));
+PRINT(m);

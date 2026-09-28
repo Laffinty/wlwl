@@ -1,0 +1,2 @@
+LET(x: DICT<STRING, INTEGER>, 1);
+PRINT(x);

@@ -1,0 +1,7 @@
+SCOPE(FUN(() ,
+    LET(ch, CHANNEL_NEW(0));
+    LET(p, SPAWN(FUN(() , CHANNEL_SEND(ch, 1); CHANNEL_CLOSE(ch); 0)));
+    LET(c, SPAWN(FUN(() , CHANNEL_RECV(ch))));
+    PRINT(AWAIT(c));
+    AWAIT(p)
+));

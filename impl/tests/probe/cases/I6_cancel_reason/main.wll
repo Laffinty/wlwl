@@ -1,0 +1,6 @@
+PRINT(SCOPE(FUN(() ,
+    LET(h, SPAWN(FUN(() , WHILE(TRUE, YIELD()))));
+    TASK_CANCEL(h, ["why": "stop"]);
+    LET(r, AWAIT(h));
+    IF(IS_ERR(r), AT_K(ERR_PAYLOAD(r), "reason", DICT()), r)
+)));

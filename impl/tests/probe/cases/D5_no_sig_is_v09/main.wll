@@ -1,0 +1,2 @@
+IMPORT("./math", ["add"]);
+PRINT(add(2, 3));

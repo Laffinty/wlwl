@@ -1,0 +1,2 @@
+LET(SEALED, "ordinary identifier");
+PRINT(SEALED);

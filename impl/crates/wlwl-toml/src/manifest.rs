@@ -195,6 +195,108 @@ pub fn parse(s: &str) -> Result<Manifest, ManifestError> {
     Ok(m)
 }
 
+/// The raw `[features]` table, independent of every other block.
+///
+/// [`Manifest::features`] is exactly this type; the alias exists so the
+/// feature resolvers can be written once against the table instead of
+/// against the full manifest (see [`parse_features`]).
+pub type FeaturesTable = BTreeMap<String, toml::Value>;
+
+/// A deliberately **partial** view of `wlwl.toml` that reads nothing but
+/// the `[features]` table.
+///
+/// [v0.10.1 / R10-010] Why this exists: [`Package`]'s `name` / `version` /
+/// `entry` carry no `#[serde(default)]`, so a `[features]`-only manifest
+/// fails inside `toml::from_str` -- *before* [`validate`] ever runs. The
+/// two feature loaders in `wlwl-cli` swallowed that `Err` and fell back to
+/// `Off`, which made `gradual_typing = "error"` a silent no-op: the static
+/// pass never ran, the exit code stayed `0`, and nothing was printed. The
+/// user had written the documented incantation verbatim (CHANGELOG §0.2,
+/// `SKILL.md` §41-43, spec §9.4) and still got a green build.
+///
+/// This type lets those loaders honour the feature table even when the
+/// rest of the manifest is incomplete. It **does not** relax [`parse`]:
+/// package validation is unchanged and still owns every other caller
+/// (dependency resolution, lock files, `wlwl build`, module loading). A
+/// `[features]`-only manifest is still not a buildable project -- it just
+/// no longer silently discards the switch the author did write.
+#[derive(Debug, Clone, PartialEq, Default, Serialize, Deserialize)]
+pub struct FeaturesOnly {
+    #[serde(default)]
+    pub features: FeaturesTable,
+}
+
+/// Read just the `[features]` table, ignoring `[package]` entirely.
+///
+/// Returns `Err` only when the TOML itself is malformed, in which case the
+/// feature table cannot be recovered at all.
+pub fn parse_features(s: &str) -> Result<FeaturesOnly, ManifestError> {
+    Ok(toml::from_str::<FeaturesOnly>(s)?)
+}
+
+impl FeaturesOnly {
+    /// Same three-level resolution as [`Manifest::gradual_typing`].
+    pub fn gradual_typing(&self) -> GradualTypingSetting {
+        resolve_gradual_typing(&self.features)
+    }
+
+    /// Same three-level resolution as [`Manifest::match_exhaustiveness`].
+    pub fn match_exhaustiveness(&self) -> MatchExhaustivenessSetting {
+        resolve_match_exhaustiveness(&self.features)
+    }
+
+    /// Same resolution as [`Manifest::strict_types`].
+    ///
+    /// Kept as a method rather than exposing the raw `toml::Value` so that
+    /// callers (notably `wlwl-cli`) never need a `toml` dependency.
+    pub fn strict_types(&self) -> bool {
+        matches!(
+            self.features.get("strict_types"),
+            Some(toml::Value::Boolean(true))
+        )
+    }
+}
+
+/// Resolve `[features] gradual_typing` from a raw feature table.
+///
+/// Shared by [`Manifest::gradual_typing`] and [`FeaturesOnly::gradual_typing`]
+/// so the two can never drift: the "which value means which tier" decision
+/// must have exactly one implementation (R10-010).
+pub fn resolve_gradual_typing(features: &FeaturesTable) -> GradualTypingSetting {
+    let Some(raw) = features.get("gradual_typing") else {
+        return GradualTypingSetting::default();
+    };
+    let Some(text) = raw.as_str() else {
+        return GradualTypingSetting::rejected(raw.to_string());
+    };
+    match text.trim().to_ascii_lowercase().as_str() {
+        "off" => GradualTypingSetting::resolved(GradualTyping::Off),
+        "warn" => GradualTypingSetting::resolved(GradualTyping::Warn),
+        "error" => GradualTypingSetting::resolved(GradualTyping::Error),
+        _ => GradualTypingSetting::rejected(text.to_string()),
+    }
+}
+
+/// Resolve `[features] match_exhaustiveness` from a raw feature table.
+///
+/// Shared counterpart of [`resolve_gradual_typing`]; the key-absent case
+/// follows `gradual_typing` (plan §5.1), so it re-resolves that first.
+pub fn resolve_match_exhaustiveness(features: &FeaturesTable) -> MatchExhaustivenessSetting {
+    let gradual = resolve_gradual_typing(features);
+    let Some(raw) = features.get("match_exhaustiveness") else {
+        return MatchExhaustivenessSetting::following(gradual);
+    };
+    let Some(text) = raw.as_str() else {
+        return MatchExhaustivenessSetting::rejected(raw.to_string(), gradual);
+    };
+    match text.trim().to_ascii_lowercase().as_str() {
+        "off" => MatchExhaustivenessSetting::resolved(MatchExhaustiveness::Off),
+        "warn" => MatchExhaustivenessSetting::resolved(MatchExhaustiveness::Warn),
+        "error" => MatchExhaustivenessSetting::resolved(MatchExhaustiveness::Error),
+        _ => MatchExhaustivenessSetting::rejected(text.to_string(), gradual),
+    }
+}
+
 fn validate(m: &Manifest) -> Result<(), ManifestError> {
     if !is_valid_package_name(&m.package.name) {
         return Err(ManifestError::InvalidPackageName(m.package.name.clone()));
@@ -537,18 +639,7 @@ impl Manifest {
     /// 非法值(非字符串、或不在三档之内)回落到 `Off` 并把原文放进
     /// [`GradualTypingSetting::invalid_value`],由调用方发诊断。
     pub fn gradual_typing(&self) -> GradualTypingSetting {
-        let Some(raw) = self.features.get("gradual_typing") else {
-            return GradualTypingSetting::default();
-        };
-        let Some(text) = raw.as_str() else {
-            return GradualTypingSetting::rejected(raw.to_string());
-        };
-        match text.trim().to_ascii_lowercase().as_str() {
-            "off" => GradualTypingSetting::resolved(GradualTyping::Off),
-            "warn" => GradualTypingSetting::resolved(GradualTyping::Warn),
-            "error" => GradualTypingSetting::resolved(GradualTyping::Error),
-            _ => GradualTypingSetting::rejected(text.to_string()),
-        }
+        resolve_gradual_typing(&self.features)
     }
 
     /// v0.10 Step 8 / 计划书 §5.1 `[features] match_exhaustiveness` 开关。
@@ -561,19 +652,7 @@ impl Manifest {
     /// **只读**:与 `gradual_typing` 一样不碰依赖求解 / 锁文件
     /// (ADR-0020 Decision 5)。
     pub fn match_exhaustiveness(&self) -> MatchExhaustivenessSetting {
-        let gradual = self.gradual_typing();
-        let Some(raw) = self.features.get("match_exhaustiveness") else {
-            return MatchExhaustivenessSetting::following(gradual);
-        };
-        let Some(text) = raw.as_str() else {
-            return MatchExhaustivenessSetting::rejected(raw.to_string(), gradual);
-        };
-        match text.trim().to_ascii_lowercase().as_str() {
-            "off" => MatchExhaustivenessSetting::resolved(MatchExhaustiveness::Off),
-            "warn" => MatchExhaustivenessSetting::resolved(MatchExhaustiveness::Warn),
-            "error" => MatchExhaustivenessSetting::resolved(MatchExhaustiveness::Error),
-            _ => MatchExhaustivenessSetting::rejected(text.to_string(), gradual),
-        }
+        resolve_match_exhaustiveness(&self.features)
     }
 
     /// v0.9 `[features] strict_deadlock_detect` (ADR-0017 §3.4).
@@ -1242,6 +1321,88 @@ entry = "main.wll"
                 "must report the rejected value for {raw}"
             );
         }
+    }
+
+    // ---- v0.10.1 (R10-010): [features] 独立于 [package] 生效 ----------
+
+    /// `[features]` 单段的清单:完整解析**必须失败**,宽松解析**必须成功**。
+    ///
+    /// 这对断言是 R10-010 的全部要害 —— v0.10 的静默失效正是因为
+    /// 宽松路径不存在,调用方只有 `parse` 一个选择,失败即回落 `off`。
+    #[test]
+    fn features_only_manifest_is_rejected_by_parse_but_readable_by_parse_features() {
+        let src = "[features]\ngradual_typing = \"error\"\n";
+        assert!(
+            parse(src).is_err(),
+            "a [features]-only file must still not be a valid manifest"
+        );
+        let f = parse_features(src).expect("features must still be readable");
+        assert_eq!(f.gradual_typing().mode(), GradualTyping::Error);
+    }
+
+    /// 宽松解析与完整解析对**同一张特性表**给出同样的判定。
+    ///
+    /// 两套判定一旦漂移,就会出现「补全 `[package]` 后行为变了」这种
+    /// 极难查的不一致 —— 所以这里逐档比对,而不是各测各的。
+    #[test]
+    fn features_only_and_full_manifest_resolve_identically() {
+        for value in ["\"off\"", "\"warn\"", "\"error\"", "\" WARN \"", "\"loud\""] {
+            let loose_src = format!("[features]\ngradual_typing = {value}\n");
+            let full_src = format!(
+                "[package]\nname = \"tiny\"\nversion = \"0.0.1\"\nentry = \"main.wll\"\n\n[features]\ngradual_typing = {value}\n"
+            );
+            let loose = parse_features(&loose_src).unwrap().gradual_typing();
+            let full = parse(&full_src).unwrap().gradual_typing();
+            assert_eq!(loose, full, "gradual_typing drifted for {value}");
+        }
+        for value in ["\"off\"", "\"warn\"", "\"error\"", "\"loud\""] {
+            let loose_src =
+                format!("[features]\ngradual_typing = \"error\"\nmatch_exhaustiveness = {value}\n");
+            let full_src = format!(
+                "[package]\nname = \"tiny\"\nversion = \"0.0.1\"\nentry = \"main.wll\"\n\n[features]\ngradual_typing = \"error\"\nmatch_exhaustiveness = {value}\n"
+            );
+            let loose = parse_features(&loose_src).unwrap().match_exhaustiveness();
+            let full = parse(&full_src).unwrap().match_exhaustiveness();
+            assert_eq!(loose, full, "match_exhaustiveness drifted for {value}");
+        }
+    }
+
+    /// TOML 本身坏掉时,宽松路径也必须失败 —— 它救不了语法错。
+    ///
+    /// 调用方据此区分「清单残缺但特性生效」与「什么都读不到」,
+    /// 两种情况的回落语义完全不同。
+    #[test]
+    fn parse_features_rejects_malformed_toml() {
+        for bad in [
+            "[features\ng gradual_typing = \"error\"\n",
+            "[features]\ngradual_typing = \n",
+            "not toml at all ===",
+        ] {
+            assert!(
+                parse_features(bad).is_err(),
+                "must reject malformed TOML: {bad:?}"
+            );
+        }
+    }
+
+    /// `strict_types` 同样不受 `[package]` 缺失影响。
+    #[test]
+    fn features_only_manifest_still_reads_strict_types() {
+        let f = parse_features("[features]\nstrict_types = true\n").unwrap();
+        assert!(f.strict_types());
+        let off = parse_features("[features]\nstrict_types = false\n").unwrap();
+        assert!(!off.strict_types());
+        let absent = parse_features("[features]\n").unwrap();
+        assert!(!absent.strict_types());
+    }
+
+    /// 完全没有 `[features]` 段时,宽松解析给空表而不是报错。
+    #[test]
+    fn parse_features_tolerates_a_manifest_with_no_features_block() {
+        let f = parse_features("[package]\nname=\"a\"\nversion=\"1\"\nentry=\"m.wll\"\n").unwrap();
+        assert!(f.features.is_empty());
+        assert_eq!(f.gradual_typing().mode(), GradualTyping::Off);
+        assert_eq!(f.match_exhaustiveness().mode(), MatchExhaustiveness::Off);
     }
 
     #[test]

@@ -1,0 +1,2 @@
+IMPORT("wlwl:std.test", ["EXPECT_ERR"]);
+PRINT(EXPECT_ERR(/(1, 0)));

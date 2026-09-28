@@ -1,0 +1,8 @@
+{
+ "exit": 0,
+ "contains": [
+  "\"exports\"",
+  "a",
+  "\"signature_file\""
+ ]
+}

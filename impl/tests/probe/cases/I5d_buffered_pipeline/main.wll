@@ -1,0 +1,13 @@
+SCOPE(FUN(() ,
+    LET(ch, CHANNEL_NEW(2));
+    LET(p, SPAWN(FUN(() , CHANNEL_SEND(ch, 1); CHANNEL_SEND(ch, 2); CHANNEL_CLOSE(ch); 0)));
+    AWAIT(p);
+    LET MUT(acc, 0);
+    LET MUT(done, FALSE);
+    WHILE(NOT(done),
+        LET(x, CHANNEL_TRY_RECV(ch));
+        IF(IS_ERR(x), SET(done, TRUE),
+           IF(==(TYPE(x), "NULL"), 0, SET(acc, +(acc, x))))
+    );
+    PRINT(acc)
+));

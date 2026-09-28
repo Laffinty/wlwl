@@ -1,0 +1,2 @@
+IMPORT("./math", []);
+PRINT(TYPE(MODULE_REF("./math")));

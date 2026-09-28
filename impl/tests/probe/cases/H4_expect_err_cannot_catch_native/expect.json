@@ -1,0 +1,9 @@
+{
+ "exit": 1,
+ "contains": [
+  "E1003"
+ ],
+ "not_contains": [
+  "E0049"
+ ]
+}

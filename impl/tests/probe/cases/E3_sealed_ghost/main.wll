@@ -1,0 +1,4 @@
+LET(a, 1);
+EXPORT(["a"]);
+SEALED(["a", "ghost"]);
+PRINT(a);

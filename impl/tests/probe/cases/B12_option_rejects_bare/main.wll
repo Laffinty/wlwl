@@ -1,0 +1,2 @@
+LET(o: OPTION[INTEGER], 1);
+PRINT(o);

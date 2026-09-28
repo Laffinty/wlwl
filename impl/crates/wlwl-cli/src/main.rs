@@ -587,60 +587,137 @@ fn find_project_root(start: &std::path::Path) -> std::path::PathBuf {
 /// strict_types defaults to off, which is exactly the safe
 /// default when we cannot read the manifest.
 fn load_manifest_strict_types(base_dir: &std::path::Path) -> bool {
+    load_features(base_dir).strict_types
+}
+
+/// [v0.10.1 / R10-010] Everything the static layer needs out of `wlwl.toml`,
+/// read in **one** pass.
+///
+/// The pre-v0.10.1 code had three independent loaders (`strict_types` /
+/// `gradual_typing` / `match_exhaustiveness`), each of which re-read the
+/// file and each of which silently swallowed a parse error. That is how a
+/// `[features]`-only manifest turned `gradual_typing = "error"` into a
+/// silent no-op: the whole manifest layer went quiet, not just one value.
+/// Reading once and reporting once is what makes "不静默吞笔误" (ADR-0020)
+/// actually hold.
+///
+/// Two independent questions are answered here, deliberately:
+///
+/// - **"what did the feature table say?"** — answered by
+///   [`wlwl_toml::manifest::parse_features`], which ignores `[package]`
+///   entirely (fix **b**). A `[features]`-only manifest is honoured.
+/// - **"is this a well-formed manifest?"** — answered by
+///   [`wlwl_toml::manifest::parse`], and a `no` is reported as `W0001`
+///   (fix **a**) rather than dropped. Package validation is unchanged; this
+///   only stops the failure from being invisible.
+///
+/// [`unusable_manifest`]: `Some(reason)` whenever a `wlwl.toml` exists but
+/// is not a valid manifest. `None` when there is no manifest at all, which
+/// keeps ADR-0020 S1 intact (a bare `.wll` produces zero diagnostics).
+#[derive(Debug, Clone)]
+struct FeaturesLoad {
+    gradual: GradualTypingSetting,
+    match_setting: MatchExhaustivenessSetting,
+    strict_types: bool,
+    unusable_manifest: Option<String>,
+}
+
+impl FeaturesLoad {
+    /// No `wlwl.toml` anywhere above the file: the default, quiet state.
+    fn absent() -> FeaturesLoad {
+        FeaturesLoad {
+            gradual: GradualTypingSetting::default(),
+            match_setting: MatchExhaustivenessSetting::following(GradualTypingSetting::default()),
+            strict_types: false,
+            unusable_manifest: None,
+        }
+    }
+}
+
+/// `toml` errors render as a multi-line block with a caret excerpt.
+/// A one-line `W0001` must not inherit that shape, so keep the headline
+/// and let the full detail live wherever the user inspects the file.
+fn first_line(s: &str) -> &str {
+    s.lines().next().unwrap_or(s).trim()
+}
+
+fn load_features(base_dir: &std::path::Path) -> FeaturesLoad {
     let project_root = find_project_root(base_dir);
     let toml_path = project_root.join("wlwl.toml");
     if !toml_path.is_file() {
-        return false;
+        return FeaturesLoad::absent();
     }
     let Ok(src) = fs::read_to_string(&toml_path) else {
-        return false;
+        return FeaturesLoad {
+            gradual: GradualTypingSetting::default(),
+            match_setting: MatchExhaustivenessSetting::following(GradualTypingSetting::default()),
+            strict_types: false,
+            unusable_manifest: Some(
+                "wlwl.toml could not be read (permissions or encoding); \
+                 both static switches fall back to \"off\""
+                    .to_string(),
+            ),
+        };
     };
-    let Ok(manifest) = wlwl_toml::manifest::parse(&src) else {
-        return false;
+
+    // (b) The feature table stands on its own: `[package]` is irrelevant here.
+    let loose = wlwl_toml::manifest::parse_features(&src);
+    // (a) Whether the *manifest* is well formed is a separate question, and
+    // its answer has to reach the user.
+    let unusable_manifest = match wlwl_toml::manifest::parse(&src) {
+        Ok(_) => None,
+        Err(e) => Some(match &loose {
+            Ok(_) => format!(
+                "wlwl.toml is not a valid manifest ({}); [features] was still applied, \
+                 but add [package] name / version / entry",
+                first_line(&e.to_string())
+            ),
+            Err(_) => format!(
+                "wlwl.toml could not be parsed ({}); \
+                 [features] was not read and both static switches fall back to \"off\"",
+                first_line(&e.to_string())
+            ),
+        }),
     };
-    manifest.strict_types()
+
+    let (gradual, match_setting, strict_types) = match loose {
+        Ok(f) => (
+            f.gradual_typing(),
+            f.match_exhaustiveness(),
+            f.strict_types(),
+        ),
+        Err(_) => (
+            GradualTypingSetting::default(),
+            MatchExhaustivenessSetting::following(GradualTypingSetting::default()),
+            false,
+        ),
+    };
+
+    FeaturesLoad {
+        gradual,
+        match_setting,
+        strict_types,
+        unusable_manifest,
+    }
 }
 
 /// [v0.10 Step 2 / ADR-0020 A3] Read `wlwl.toml` from the project root
 /// and return the `[features] gradual_typing` switch.
 ///
-/// Best-effort like [`load_manifest_strict_types`]: no manifest / read
-/// error / parse error all fall back to `Off`, which is the only safe
-/// default for a pass that must be a **no-op** on every v0.9 program
-/// (ADR-0020 S1).
+/// Thin wrapper over [`load_features`]; see that function for why the
+/// manifest layer is read once and why a broken manifest is reported
+/// instead of dropped (R10-010).
+#[allow(dead_code)]
 fn load_manifest_gradual_typing(base_dir: &std::path::Path) -> GradualTypingSetting {
-    let project_root = find_project_root(base_dir);
-    let toml_path = project_root.join("wlwl.toml");
-    if !toml_path.is_file() {
-        return GradualTypingSetting::default();
-    }
-    let Ok(src) = fs::read_to_string(&toml_path) else {
-        return GradualTypingSetting::default();
-    };
-    let Ok(manifest) = wlwl_toml::manifest::parse(&src) else {
-        return GradualTypingSetting::default();
-    };
-    manifest.gradual_typing()
+    load_features(base_dir).gradual
 }
 
 /// [v0.10 Step 8 / plan §5.1] Read `[features] match_exhaustiveness`.
 ///
-/// Follows `gradual_typing` when the key is absent (the plan's wording), so
-/// the single `gradual_typing` switch is enough for day-to-day use. Kept
-/// separate so a project can turn the MATCH pass off on its own.
+/// Thin wrapper over [`load_features`] (R10-010).
+#[allow(dead_code)]
 fn load_manifest_match_exhaustiveness(base_dir: &std::path::Path) -> MatchExhaustivenessSetting {
-    let project_root = find_project_root(base_dir);
-    let toml_path = project_root.join("wlwl.toml");
-    if !toml_path.is_file() {
-        return MatchExhaustivenessSetting::following(GradualTypingSetting::default());
-    }
-    let Ok(src) = fs::read_to_string(&toml_path) else {
-        return MatchExhaustivenessSetting::following(GradualTypingSetting::default());
-    };
-    let Ok(manifest) = wlwl_toml::manifest::parse(&src) else {
-        return MatchExhaustivenessSetting::following(GradualTypingSetting::default());
-    };
-    manifest.match_exhaustiveness()
+    load_features(base_dir).match_setting
 }
 
 /// [v0.10 Step 5 / ADR-0020 A6′] 内建签名表:名字 → `Ty::Fun` 签名。
@@ -771,12 +848,27 @@ pub(crate) fn collect_static_diagnostics(
     file: &std::path::Path,
     base_dir: &std::path::Path,
 ) -> Vec<WlwlDiagnostic> {
-    let setting = load_manifest_gradual_typing(base_dir);
+    let features = load_features(base_dir);
+    let setting = features.gradual.clone();
     // [v0.10 Step 8] 第二个子系统:MATCH 穷尽性 / 可达性。缺省跟随
     // `gradual_typing`(计划书 §5.1),所以只写 `gradual_typing` 一个键
     // 就够用;要单独关掉 MATCH 时再写 `match_exhaustiveness`。
-    let match_setting = load_manifest_match_exhaustiveness(base_dir);
+    let match_setting = features.match_setting.clone();
     let mut out: Vec<WlwlDiagnostic> = Vec::new();
+
+    // [v0.10.1 / R10-010] 清单存在但不是一份合法 manifest —— 必须响亮。
+    // 这一条**先于**下面的 early return:两个开关都关时清单照样该被检查,
+    // 否则「`off` 档静默」会把清单层的笔误重新藏起来。
+    if let Some(reason) = &features.unusable_manifest {
+        out.push(
+            WlwlDiagnostic::new(
+                ErrorCode::W0001,
+                reason.clone(),
+                Location::point(base_dir.join("wlwl.toml").to_string_lossy(), 0, 0),
+            )
+            .with_severity(Severity::Warning),
+        );
+    }
 
     // 开关写错必须**可见**(不静默吞笔误):非法值回落后的回执本身就是
     // 一条警告,和静态诊断一起交付。
@@ -1411,6 +1503,216 @@ mod tests {
         let p = write_project("gradual_invalid", "\"loud\"", MISMATCH);
         assert_eq!(run_file(&p, OutputFormat::Human, false), ExitCode::SUCCESS);
         assert_eq!(run_file(&p, OutputFormat::Human, true), ExitCode::SUCCESS);
+    }
+
+    // -- v0.10.1 (R10-010): 清单缺 [package] 时静态层不再静默 -----------
+
+    /// 写一个清单**内容完全由调用方给**的工程,返回 `.wll` 路径。
+    ///
+    /// `write_project` 永远拼出完整 `[package]`,所以 R10-010 的夹具必须
+    /// 自己控制清单原文。
+    fn write_raw_manifest_project(dir: &str, toml: &str, source: &str) -> PathBuf {
+        let root = std::env::temp_dir().join("wlwl-cli-tests").join(dir);
+        let _ = fs::remove_dir_all(&root);
+        fs::create_dir_all(&root).unwrap();
+        fs::write(root.join("wlwl.toml"), toml).unwrap();
+        let p = root.join("main.wll");
+        fs::write(&p, source).unwrap();
+        p
+    }
+
+    /// 对一个工程收集静态诊断。
+    fn diags_of(p: &std::path::Path) -> Vec<WlwlDiagnostic> {
+        let src = fs::read_to_string(p).unwrap();
+        let ast = wlwl_parser::parse(&src, &p.to_string_lossy()).expect("fixture must parse");
+        let base_dir = p.parent().unwrap();
+        collect_static_diagnostics(&ast, p, base_dir)
+    }
+
+    /// 同上,只取诊断码序列(按渲染顺序)。
+    fn codes_of(p: &std::path::Path) -> Vec<String> {
+        diags_of(p)
+            .into_iter()
+            .map(|d| d.code.as_str().to_string())
+            .collect()
+    }
+
+    fn count_code(codes: &[String], code: &str) -> usize {
+        codes.iter().filter(|c| c.as_str() == code).count()
+    }
+
+    /// 一份必然触发 `E0110` 的源码(注解 BOOLEAN 绑到 STRING 字面量)。
+    const ANN_MISMATCH: &str = "LET(flag: BOOLEAN, \"yes\");";
+
+    /// 完整清单(带 `[package]` 三件套)的模板。
+    fn full_manifest(features: &str) -> String {
+        format!(
+            "[package]\nname = \"probe\"\nversion = \"0.0.1\"\nentry = \"main.wll\"\n\n[features]\n{features}"
+        )
+    }
+
+    /// 只写 `[features]` 的清单模板 —— v0.10 的静默失效正是这个形状。
+    fn features_only_manifest(features: &str) -> String {
+        format!("[features]\n{features}")
+    }
+
+    /// **修法 b**:`[features]` 单独成立时开关必须真的生效。
+    ///
+    /// 修之前这里是 `OK` + rc=0 + 零诊断:`Package` 的三个字段都没有
+    /// `#[serde(default)]`,所以 `[package]` 缺失时 `toml::from_str` 就失败,
+    /// 两个 loader 把 `Err` 吞掉回落 `Off`,静态层整条链路静默不跑。
+    #[test]
+    fn r10_010_features_only_manifest_still_enables_the_switch() {
+        let p = write_raw_manifest_project(
+            "r10_010_b_enabled",
+            &features_only_manifest("gradual_typing = \"error\"\n"),
+            ANN_MISMATCH,
+        );
+        let codes = codes_of(&p);
+        assert_eq!(
+            count_code(&codes, "E0110"),
+            1,
+            "features-only manifest must still run the static pass, got {codes:?}"
+        );
+        // 退出码也必须跟着变 —— 这是「用户以为在检查、其实没检查」的
+        // 原始症状,只看诊断码不够。
+        assert_eq!(run_file(&p, OutputFormat::Human, false), ExitCode::from(1));
+    }
+
+    /// **修法 a**:`[features]` 单独成立但 `[package]` 残缺时必须发 `W0001`。
+    ///
+    /// 这条不是重复上一条:开关生效了,但工程本身仍然不是一份合法清单,
+    /// 依赖求解 / `wlwl build` / entry 解析全都会失败。用户有权知道。
+    #[test]
+    fn r10_010_features_only_manifest_reports_the_incomplete_package() {
+        let p = write_raw_manifest_project(
+            "r10_010_a_warns",
+            &features_only_manifest("gradual_typing = \"error\"\n"),
+            ANN_MISMATCH,
+        );
+        let codes = codes_of(&p);
+        assert_eq!(
+            count_code(&codes, "W0001"),
+            1,
+            "an incomplete manifest must not be silent, got {codes:?}"
+        );
+        // 警告不挡退出码:挡住的是 E0110 自己。
+        assert_eq!(run_file(&p, OutputFormat::Human, false), ExitCode::from(1));
+    }
+
+    /// 清单既缺 `[package]`、特性值又写错时,**恰好两条** `W0001`。
+    ///
+    /// 两条说的是两件不同的事,都必须说:
+    /// ①值 `"sideways"` 不在 `off|warn|error` 里 → 回落 off;
+    /// ②清单缺 `[package]` 三件套,不是一份合法 manifest。
+    ///
+    /// 真正要守的不是「一条」而是**不重复**:v0.10 有三个 loader 各自读一次
+    /// 清单,任何一条诊断被复制两遍都会让用户以为是两个问题。所以这里断言
+    /// 两条**消息内容不同**,而不只是数个数。
+    #[test]
+    fn r10_010_bad_value_with_features_only_warns_once_each() {
+        let p = write_raw_manifest_project(
+            "r10_010_a_once",
+            &features_only_manifest("gradual_typing = \"sideways\"\n"),
+            ANN_MISMATCH,
+        );
+        let warnings: Vec<String> = diags_of(&p)
+            .into_iter()
+            .filter(|d| d.code.as_str() == "W0001")
+            .map(|d| d.message)
+            .collect();
+        assert_eq!(
+            warnings.len(),
+            2,
+            "value + incomplete package are two distinct facts; got {warnings:?}"
+        );
+        assert!(
+            warnings.iter().any(|m| m.contains("value")),
+            "missing the invalid-value warning: {warnings:?}"
+        );
+        assert!(
+            warnings.iter().any(|m| m.contains("not a valid manifest")),
+            "missing the incomplete-manifest warning: {warnings:?}"
+        );
+        // 值非法 → 回落 off → 类型失配不该被报出来。
+        let codes = codes_of(&p);
+        assert_eq!(count_code(&codes, "E0110"), 0, "got {codes:?}");
+    }
+
+    /// 完整清单 + 非法值:仍然只有一条 `W0001`,且**不**包含清单残缺那条。
+    ///
+    /// 这是 v0.10 已有的行为,必须原样保住 —— 完整清单不该被新逻辑误伤。
+    #[test]
+    fn r10_010_full_manifest_with_bad_value_still_warns_once() {
+        let p = write_raw_manifest_project(
+            "r10_010_full_bad",
+            &full_manifest("gradual_typing = \"sideways\"\n"),
+            ANN_MISMATCH,
+        );
+        let codes = codes_of(&p);
+        assert_eq!(
+            count_code(&codes, "W0001"),
+            1,
+            "a valid manifest must not add a second warning, got {codes:?}"
+        );
+        assert_eq!(count_code(&codes, "E0110"), 0, "got {codes:?}");
+    }
+
+    /// 完整清单 + 合法值:零诊断(守住 v0.10 的正常路径不被打扰)。
+    #[test]
+    fn r10_010_full_manifest_with_good_value_is_clean() {
+        let p = write_raw_manifest_project(
+            "r10_010_full_good",
+            &full_manifest("gradual_typing = \"off\"\n"),
+            ANN_MISMATCH,
+        );
+        let codes = codes_of(&p);
+        assert!(
+            codes.is_empty(),
+            "clean project must stay clean, got {codes:?}"
+        );
+    }
+
+    /// 完全没有清单:零诊断(ADR-0020 S1 —— 裸 `.wll` 必须绝对安静)。
+    #[test]
+    fn r10_010_no_manifest_stays_silent() {
+        let dir = std::env::temp_dir()
+            .join("wlwl-cli-tests")
+            .join("r10_010_none");
+        let _ = fs::remove_dir_all(&dir);
+        fs::create_dir_all(&dir).unwrap();
+        let p = dir.join("main.wll");
+        fs::write(&p, ANN_MISMATCH).unwrap();
+        let codes = codes_of(&p);
+        assert!(
+            codes.is_empty(),
+            "a bare .wll must produce zero diagnostics, got {codes:?}"
+        );
+    }
+
+    /// TOML 语法本身就坏掉:发 `W0001`,并且特性值真的读不到(回落 off)。
+    ///
+    /// 这是唯一一种「连宽松解析都救不回来」的情况,必须与上面
+    /// 「清单残缺但特性生效」区分开 —— 否则用户会以为写了 `error` 就
+    /// 一定有检查。
+    #[test]
+    fn r10_010_malformed_toml_warns_and_falls_back_to_off() {
+        let p = write_raw_manifest_project(
+            "r10_010_broken",
+            "[features\ng gradual_typing = \"error\"\n",
+            ANN_MISMATCH,
+        );
+        let codes = codes_of(&p);
+        assert_eq!(
+            count_code(&codes, "W0001"),
+            1,
+            "unparseable manifest must be loud, got {codes:?}"
+        );
+        assert_eq!(
+            count_code(&codes, "E0110"),
+            0,
+            "an unreadable feature table must fall back to off, got {codes:?}"
+        );
     }
 
     /// [v0.10 Step 2] `check` 的三层验收:parse / static / run。

@@ -1,0 +1,5 @@
+LET(C, CLASS("C", NULL, [
+    ["bad", FUN((self), +(THIS(), THIS()))]
+]));
+LET(o, NEW(C));
+CALL_METHOD(o, "bad");

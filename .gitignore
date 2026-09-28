@@ -45,6 +45,14 @@ package-lock.json
 yarn.lock
 pnpm-lock.yaml
 
+# [v0.10.1 / R10-062] 随包发布的 skill 示例带了 `wlwl.toml`(让静态层
+# 真正生效),于是跑任何一个示例都会在该目录生成一份空 `wlwl.lock` ——
+# 示例工程没有依赖,它只是 `try_write_lock` 的副产物。
+#
+# 这里只忽略这一个路径,不是全局忽略 `wlwl.lock`:真实工程的锁文件**是**
+# 该入库的产物。
+wlwl-skill/examples/wlwl.lock
+
 # Python (in case)
 __pycache__/
 *.pyc

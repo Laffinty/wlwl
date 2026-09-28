@@ -1,0 +1,1 @@
+PRINT(SPAWN(FUN(() , 1)));

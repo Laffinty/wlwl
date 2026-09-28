@@ -1,0 +1,2 @@
+LET(x: FUN(INTEGER) -> STRING, 1);
+PRINT(x);

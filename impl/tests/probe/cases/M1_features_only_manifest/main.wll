@@ -1,0 +1,2 @@
+LET(flag: BOOLEAN, "yes");
+PRINT(flag);

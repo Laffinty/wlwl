@@ -1,0 +1,2 @@
+LET(xs: ARRAY[INTEGER], [1, "a"]);
+PRINT(xs);

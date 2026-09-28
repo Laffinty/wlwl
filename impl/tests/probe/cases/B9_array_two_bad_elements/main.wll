@@ -1,0 +1,2 @@
+LET(xs: ARRAY[STRING], [1, 2]);
+PRINT(xs);

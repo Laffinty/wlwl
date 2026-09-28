@@ -1,0 +1,2 @@
+LET(x: ARRAY[INTEGER]: Comparable, []);
+PRINT(x);
