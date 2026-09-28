@@ -1,23 +1,38 @@
-// showcase.wll — Phase 4 std.io / std.fs / std.json demo.
+// showcase.wll — std.io / std.fs / std.json demo.
 //
 // Demonstrates:
 //   - IMPORT from the `wlwl:std.io` namespace (PRINT / INPUT)
 //   - IMPORT from the `wlwl:std.fs` namespace (READ_FILE / WRITE_FILE / EXISTS)
 //   - IMPORT from the `wlwl:std.json` namespace (PARSE / STRINGIFY)
 //   - Cross-directory module use (this file lives under impl/examples/)
-//   - Type-annotation slots (parsed, not checked)
+//   - Boolean literals: `TRUE` / `FALSE` (uppercase)
+//
+// [v0.10.1 / R10-013] 原来是 v0.4 的 Phase 4 showcase,自 v0.6 起没更新过,
+// 一直带着一个小写 `true`,从 v0.6 起就 `error[E0020]: undefined name 'true'`
+// —— 随包发布却跑不起来,因为 CI 从不跑 examples/。
 
 // ── std.io ──────────────────────────────────────────────────────
 IMPORT("wlwl:std.io", ["PRINT"]);
-PRINT("== WLWL Phase 4 showcase ==");
+PRINT("== WLWL std showcase ==");
 
 // ── std.fs + std.json round-trip ───────────────────────────────
 IMPORT("wlwl:std.fs",   ["READ_FILE", "WRITE_FILE", "EXISTS"]);
 IMPORT("wlwl:std.json", ["PARSE", "STRINGIFY"]);
 
-LET(path, "build/showcase.json");
-LET(doc, ["name": "wlwl", "phase": 4, "ok": true]);
-LET(ok, WRITE_FILE(path, STRINGIFY(doc, null)));
+// [v0.10.1 / R10-013] 原来是 `build/showcase.json`。`std.fs` 没有 MKDIR /
+// TEMP_DIR(只有 READ_FILE / WRITE_FILE / EXISTS),而 `WRITE_FILE` 要求父目录
+// 已经存在 —— 在全新 checkout 里 `impl/build/` 并不存在,于是第三个 v0.4 遗留
+// 露了出来:`E0061: file not found (build/showcase.json)`。
+//
+// 写成**裸文件名**:当前目录一定存在,示例在任何 checkout 里都能直接跑。
+// 产物由 CI 侧兜住 —— examples 冒烟测试会把每份示例暂存到临时目录再跑
+// (见 `crates/wlwl-cli/tests/examples.rs`),所以仓库不会被弄脏。
+LET(path, "showcase.json");
+LET(doc, ["name": "wlwl", "ok": TRUE]);
+// [v0.10.1 / R10-013] 原来是 `STRINGIFY(doc, null)`。`STRINGIFY` 现在只收
+// 一个参数,第二参会报 `E0022: function expects 1 argument(s), got 2` ——
+// 又一处 v0.4 之后没收掉的写法。
+LET(ok, WRITE_FILE(path, STRINGIFY(doc)));
 IF(EXISTS(path),
     LET(parsed, PARSE(READ_FILE(path)));
     PRINT("round-trip:", parsed)

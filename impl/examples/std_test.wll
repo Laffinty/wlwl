@@ -7,5 +7,23 @@ IMPORT("wlwl:std.test", ["ASSERT", "ASSERT_EQ", "EXPECT_ERR"]);
 
 LET(a, ASSERT(+(1, 1), 2));          // OK(TRUE)
 LET(b, ASSERT_EQ(+(2, 2), 4));       // OK(TRUE)
-LET(c, EXPECT_ERR(/(1, 0)));         // division by zero → caught as ERR
+LET(c, EXPECT_ERR(ERR("boom")));     // OK(ERR(boom)) —— 表达式确实产出了 ERR
 PRINT(IS_OK(a), IS_OK(b), IS_OK(c)); // → TRUE TRUE TRUE
+
+// ── [v0.10.1 / R10-013] EXPECT_ERR 捕的是 ERR **值**,不是原生码 ────────
+//
+// 原来这一行是 `EXPECT_ERR(/(1, 0))`,注释说「division by zero → caught as
+// ERR」。那是错的:除零是**原生码** E1003,不是 ERR 值,`EXPECT_ERR` 捕不到,
+// 整个文件在 v0.4 到 v0.10 之间一直跑不起来(`error[E1003]`,rc=1)。
+//
+// 下面这段把两者的区别摆在一起 —— 这是这个示例现在唯一真正的教学点:
+//
+//   · `ERR("boom")`  → ERR **值**,EXPECT_ERR 捕得到
+//   · `/(1, 0)`      → 原生码 E1003,进程直接停,任何 catch 都来不及
+//
+// `IF` 的两个分支类型不同(STRING / INTEGER)也不影响运行期:注解不参与
+// 运行期判定,静态层默认是关的。
+LET(half, FUN((n: INTEGER) : INTEGER, IF(==(n, 0), ERR("zero"), /(n, 2))));
+LET(d, EXPECT_ERR(half(0)));         // OK(ERR(zero)) —— 错误沿调用传上来了
+LET(e, EXPECT_ERR(half(4)));         // OK(2) —— 正常路径产出 OK 值
+PRINT(IS_OK(d), IS_OK(e));            // → TRUE TRUE
