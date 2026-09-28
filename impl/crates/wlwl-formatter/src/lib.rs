@@ -492,8 +492,9 @@ pub fn render(e: &Expr, indent: usize) -> String {
             value,
             clauses,
             default,
+            default_synthetic,
             ..
-        } => render_match(value, clauses, default, indent),
+        } => render_match(value, clauses, default, default_synthetic, indent),
         Expr::Let {
             name,
             mut_,
@@ -643,11 +644,19 @@ fn render_fun(
     out
 }
 
-/// `MATCH(value, clauses, default)`: fold to one clause per line.
+/// `MATCH(value, clauses[, default])`: fold to one clause per line.
+///
+/// [REVIEW P0-1] `default_synthetic` 必须透传到**两条**路径。v0.10 Step 8 让
+/// parser 记住「作者省略了 default 臂」,因为 §7.4 的 `E0116` 只在
+/// 「缺构造子 **且** default 被省略」时才报 —— 一旦把省略的 default 臂
+/// 补写成 `NULL`,重解析后 `default_synthetic` 变 `false`,`E0116` 就被
+/// 静默关掉了。inline 路径原本已经尊重它,folded 路径漏了,导致同一条 AST
+/// 有两种 canonical 形态:短的省略 `NULL`,长的写出 `NULL`。
 fn render_match(
     value: &Expr,
     clauses: &[wlwl_ast::MatchClause],
     default: &Expr,
+    default_synthetic: &bool,
     indent: usize,
 ) -> String {
     let inner = indent + FOLD_INDENT;
@@ -675,9 +684,11 @@ fn render_match(
     out.push('\n');
     out.push_str(&" ".repeat(inner));
     out.push(']');
-    out.push_str(",\n");
-    out.push_str(&" ".repeat(inner));
-    out.push_str(&render(default, inner));
+    if !*default_synthetic {
+        out.push_str(",\n");
+        out.push_str(&" ".repeat(inner));
+        out.push_str(&render(default, inner));
+    }
     out.push('\n');
     out.push_str(&" ".repeat(indent));
     out.push(')');

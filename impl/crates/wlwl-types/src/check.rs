@@ -144,6 +144,18 @@ struct Checker<'a> {
     /// Step 9:本次调用积累的类型变量绑定(形参 → 实参),用于把返回类型
     /// 里的变量代入。**每次调用前清空** —— 绑定只在一个调用的实参之间成立。
     pending_substitutions: Vec<(String, Ty)>,
+    /// [REVIEW P0-2]具名函数的**元数形状**(`必填, 至多`),按函数名索引。
+    ///
+    /// `Ty::Fun` 只带 `Vec<Ty>`,装不下「哪些形参有默认值 / 末位是不是
+    /// `*rest`」—— 那两个信息只存在于 AST 的 `FunParam` 上。运行期按它们
+    /// 决定实参个数是否合法(`wlwl-eval` 的调用分派:必填 = 非 rest 且无
+    /// default;有 rest 则不限上界),静态层此前没同步,于是
+    /// `FUN((name = "hi"), …)` 零参调用、`FUN((a, *rest), …)` 少参调用
+    /// 都被误报 `E0111`。
+    ///
+    /// 单独一张表而不改 `Ty::Fun`:`Ty` 还要渲染进 `.wll.sig` 与
+    /// `wlwl schema` 的 JSON,往里塞 arity 会污染那两个对外契约。
+    arity: HashMap<String, (usize, usize)>,
 }
 
 impl<'a> Checker<'a> {
@@ -158,6 +170,7 @@ impl<'a> Checker<'a> {
             // 构造器本身不该顺手把一条新 pass 打开。
             match_exhaustiveness: false,
             pending_substitutions: Vec::new(),
+            arity: HashMap::new(),
         }
     }
 
@@ -316,6 +329,13 @@ impl<'a> Checker<'a> {
                     );
                 }
                 let bound = declared.unwrap_or(actual);
+                // [REVIEW P0-2] 形参表的元数形状挂在**绑定名**上,不是
+                // `FUN` 自己的可选 name —— 绝大多数函数是匿名的
+                // (`LET(f, FUN(…))`),名字来自这里的 `LET`。挂在 `FUN`
+                // 的 name 上会一条都记不上,arity 查表恒空。
+                if let Expr::Fun { params, .. } = value.as_ref() {
+                    self.arity.insert(name.clone(), arity_shape(params));
+                }
                 self.env.bind(name.clone(), bound.clone());
                 self.record(
                     name,
@@ -584,7 +604,11 @@ impl<'a> Checker<'a> {
                 // 局部绑定不是函数(普通变量被当函数调)——交给运行时报。
                 return Ty::Dynamic;
             };
-            return self.check_call_with_sig(args, span, &params, *ret, true);
+            // [REVIEW P0-2]元数判定用**形参表的真实形状**,不是 `len()`。
+            // 查不到形状(理论上只有非函数字面量走到这里)时退回 `len()`,
+            // 即修复前的行为。
+            let shape = self.arity.get(name).copied();
+            return self.check_call_with_sig(args, span, &params, *ret, shape);
         }
         let Some(builtin) = self.builtins.get(name).cloned() else {
             // 既无局部签名也无内建签名(首批未覆盖的 50 条 / 未知名字)。
@@ -596,20 +620,22 @@ impl<'a> Checker<'a> {
         // 内建首批只给返回类型,`params` 为空 → 逐位都拿不到期望,
         // 实参各自独立推导,元数也不检查(可选形参与变长实参会让精确
         // 元数必然误报,见 `wlwl-eval::registry::BuiltinSig::params`)。
-        self.check_call_with_sig(args, span, &params, *ret, false)
+        self.check_call_with_sig(args, span, &params, *ret, None)
     }
 
     /// 拿到签名后的共用路径:下推期望类型 → 推导实参 → 比对。
     ///
-    /// `check_arity` 只对**局部**签名为真 —— 内建首批的形参未知,
-    /// 元数检查会误报(见调用点)。
+    /// [REVIEW P0-2]`arity` 是**形参表的真实元数形状**`(必填, 至多)`;
+    /// `None` = 不查元数(内建首批的形参未知,查了必误报)。修复前这里是
+    /// 一个 `bool`,判定是 `params.len() != args.len()` —— 那对带默认形参
+    /// 或 `*rest` 变长尾参的函数是错的,而运行期允许这两种形态。
     fn check_call_with_sig(
         &mut self,
         args: &[Expr],
         span: &Span,
         params: &[Ty],
         ret: Ty,
-        check_arity: bool,
+        arity: Option<(usize, usize)>,
     ) -> Ty {
         // A2′:实参按签名的形参类型**逐位下推**期望类型。必须在推导
         // 实参**之前**拿到签名 —— 字面量与容器字面量只有拿到期望类型才会
@@ -624,15 +650,18 @@ impl<'a> Checker<'a> {
             .map(|(i, a)| self.check_expr(a, params.get(i)))
             .collect();
 
-        if check_arity && params.len() != arg_tys.len() {
-            self.report(
-                TypeDiagKind::CallArityMismatch {
-                    expected: params.len(),
-                    found: arg_tys.len(),
-                },
-                span,
-            );
-            return ret;
+        if let Some((required, max)) = arity {
+            if arg_tys.len() < required || arg_tys.len() > max {
+                self.report(
+                    TypeDiagKind::CallArityMismatch {
+                        expected: required,
+                        max,
+                        found: arg_tys.len(),
+                    },
+                    span,
+                );
+                return ret;
+            }
         }
         for (position, (expected_t, found_t)) in params.iter().zip(&arg_tys).enumerate() {
             // [v0.10 Step 9 / P1-2] 泛型实例化:声明类型里带类型变量时,
@@ -767,6 +796,21 @@ fn param_type(p: &FunParam) -> Ty {
     p.type_annotation
         .as_ref()
         .map_or(Ty::Dynamic, |a| Ty::from_type_expr(&a.expr))
+}
+
+/// [REVIEW P0-2]形参表 → `(必填, 至多)`。
+///
+/// 与运行期的调用分派同一套规则(`wlwl-eval` 里处理形参的那段):末位是
+/// `*rest` 则实参个数**不设上界**;有默认值的形参不计入必填。没有可选 /
+/// 变长形参时返回 `(len, len)`,与修复前的判定完全等价。
+fn arity_shape(params: &[FunParam]) -> (usize, usize) {
+    let has_rest = params.last().is_some_and(|p| p.is_rest);
+    let required = params
+        .iter()
+        .filter(|p| !p.is_rest && p.default_expr.is_none())
+        .count();
+    let max = if has_rest { usize::MAX } else { params.len() };
+    (required, max)
 }
 
 /// 表达式节点的 span(AST 里每个变体都带一个)。
@@ -1585,5 +1629,71 @@ count([1, TRUE]);
             "LET(max, FUN((a: T: Comparable, b: T: Comparable) : T: Comparable, a)); max(1, 2);"
         )
         .is_empty());
+    }
+    /// [REVIEW P0-2] **默认形参**:运行期允许少传,静态层此前一律按
+    /// `params.len()` 判元数,于是 `g()` 合法调用被判 `E0111`。修好后
+    /// 少传、多传都不报,**真少传**(必填形参没给)仍报。
+    ///
+    /// 夹具一律用**裸调用语句**而不是 `PRINT(g())`:`PRINT` 属于 A6′
+    /// 未结构化的 50 条内建,拿不到签名就整条提前返回 `Dynamic`,
+    /// 参数列表根本不会被遍历 —— 包一层会让本测试永远测不到东西。
+    #[test]
+    fn a_default_parameter_may_be_omitted() {
+        // 必填 0 个、至多 1 个。
+        assert_eq!(
+            codes(r#"LET(g, FUN((name = "hi"), name)); g();"#),
+            Vec::<String>::new(),
+            "a defaulted parameter must be omittable"
+        );
+        // 显式给出也在界内。
+        assert_eq!(
+            codes(r#"LET(g, FUN((name = "hi"), name)); g("bye");"#),
+            Vec::<String>::new(),
+            "an explicit arg to a defaulted parameter must stay clean"
+        );
+        // 真的超过上界仍要报。
+        assert_eq!(
+            codes(r#"LET(g, FUN((name = "hi"), name)); g(1, 2);"#),
+            vec!["E0111".to_string()],
+            "over-arity must still be caught"
+        );
+    }
+
+    /// [REVIEW P0-2] **`*rest` 变长尾参**:运行期不设上界,静态层此前
+    /// 同样按 `params.len()` 判,于是少传也报 `E0111`。
+    #[test]
+    fn a_rest_parameter_may_take_any_number_of_arguments() {
+        for args in ["f(1)", "f(1, 2, 3, 4)"] {
+            let src = format!("LET(f, FUN((a, *rest), a)); {args};");
+            let d = codes(&src);
+            assert!(d.is_empty(), "`*rest` must accept {args}, got: {d:?}");
+        }
+        // 必填形参仍要守:`a` 没给。
+        assert_eq!(
+            codes("LET(f, FUN((a, *rest), a)); f();"),
+            vec!["E0111".to_string()],
+            "a missing required parameter must still be caught"
+        );
+    }
+
+    /// [REVIEW P0-2] 对照组:普通形参表的判定与修复前**逐字等价** ——
+    /// `(len, len)`,少了报、多了报。这是防止区间判定放宽过头。
+    #[test]
+    fn plain_parameter_tables_keep_the_exact_arity() {
+        assert_eq!(
+            codes("LET(f, FUN((a, b), a)); f(1);"),
+            vec!["E0111".to_string()],
+            "too few args must still be reported"
+        );
+        assert_eq!(
+            codes("LET(f, FUN((a, b), a)); f(1, 2, 3);"),
+            vec!["E0111".to_string()],
+            "too many args must still be reported"
+        );
+        assert_eq!(
+            codes("LET(f, FUN((a, b), a)); f(1, 2);"),
+            Vec::<String>::new(),
+            "exactly the declared count must stay clean"
+        );
     }
 }

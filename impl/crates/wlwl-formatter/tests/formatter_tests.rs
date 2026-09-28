@@ -439,3 +439,60 @@ fn fmt_interpolated_string_idempotent() {
 fn fmt_string_subscript_idempotent() {
     assert_idempotent(r#"LET(s, "Hello"); PRINT(s[0]); PRINT(s[-1]);"#);
 }
+
+/// [REVIEW P0-1] 折叠(多行)路径的 `MATCH` 不得补写省略掉的 default 臂。
+///
+/// 缺陷不是"输出不好看":parser 在省略 default 臂时会物化一个 `NULL`
+/// 字面量并置 `default_synthetic = true`,而 spec §7.4 的 `E0116` **只
+/// 在「缺构造子且 default 被省略」时**才报。v0.10 的 inline 路径尊重这个
+/// 标志,折叠路径不尊重 —— 于是同一条 AST 有两种 canonical 形态,短的
+/// 省略 `NULL`,长的写出 `NULL`。跑一次 `wlwl fmt`,源码里就多了一个作者
+/// 没写过的兜底臂,`E0116` 随之静默失效。
+#[test]
+fn a_folded_match_without_a_default_arm_never_gains_a_null_default() {
+    let src = r#"LET(n, 2);
+PRINT(MATCH(n, [
+  [0, "zero-aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"],
+  [1, "one-bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb"],
+  [_, "many-cccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccc"]
+]));
+"#;
+    let out = fmt_src(src);
+    assert!(
+        out.lines().count() > 1,
+        "this fixture must actually take the folded path, got:\n{}",
+        out
+    );
+    assert!(
+        !out.contains("NULL"),
+        "the folded MATCH path must not materialize the omitted default arm:\n{}",
+        out
+    );
+    assert_idempotent(src);
+}
+
+/// [REVIEW P0-1] 对照组:作者**显式**写了 default 臂时,折叠路径必须保留它。
+///
+/// 少了这条,上面的修复就可能退化成"折叠时永远不渲染 default"。
+#[test]
+fn a_folded_match_with_an_explicit_default_arm_keeps_it() {
+    let src = r#"LET(n, 2);
+PRINT(MATCH(n, [
+  [0, "zero-aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"],
+  [1, "one-bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb"],
+  [_, "many-cccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccc"]
+], "fallback-long-dddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddd"));
+"#;
+    let out = fmt_src(src);
+    assert!(
+        out.lines().count() > 1,
+        "this fixture must actually take the folded path, got:\n{}",
+        out
+    );
+    assert!(
+        out.contains("fallback-long-"),
+        "an explicitly written default arm must survive the fold:\n{}",
+        out
+    );
+    assert_idempotent(src);
+}

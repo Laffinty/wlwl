@@ -52,9 +52,17 @@ pub enum TypeDiagKind {
         found: Ty,
     },
     /// 调用实参个数与形参表不符。
+    ///
+    /// [REVIEW P0-2] `expected` 是**必填**个数,`max` 是**至多**个数。
+    /// 两者相等时就是普通的「N 个形参」;不相等时说明形参表里有默认形参
+    /// 或 `*rest` 变长尾参 —— 这两种形参运行期是允许少传 / 多传的
+    /// (`wlwl-eval/src/lib.rs` 的调用分派),静态层此前没同步,导致合法
+    /// 程序被误报 `E0111`。
     CallArityMismatch {
-        /// 被调方要求的实参个数
+        /// 必填的实参个数(无默认形参、无 `*rest`)
         expected: usize,
+        /// 至多的实参个数;`usize::MAX` 表示 `*rest` 变长
+        max: usize,
         /// 调用点实际给了几个
         found: usize,
     },
@@ -350,8 +358,21 @@ impl TypeDiag {
             TypeDiagKind::AnnotationMismatch { expected, found } => {
                 format!("annotation mismatch: expected `{expected}`, found `{found}`")
             }
-            TypeDiagKind::CallArityMismatch { expected, found } => {
-                format!("call arity mismatch: expected {expected} argument(s), found {found}")
+            TypeDiagKind::CallArityMismatch {
+                expected,
+                max,
+                found,
+            } => {
+                // [REVIEW P0-2] 区间只在形参表真的有可选/变长形参时出现;
+                // 普通形参表(max == expected)保持原有单值措辞,免得既有
+                // 锁测试与用户熟悉的文案全变。
+                if max == expected {
+                    format!("call arity mismatch: expected {expected} argument(s), found {found}")
+                } else if *max == usize::MAX {
+                    format!("call arity mismatch: expected at least {expected} argument(s), found {found}")
+                } else {
+                    format!("call arity mismatch: expected {expected} to {max} argument(s), found {found}")
+                }
             }
             TypeDiagKind::CallArgMismatch {
                 position,
@@ -442,6 +463,7 @@ mod tests {
             TypeDiag::new(
                 TypeDiagKind::CallArityMismatch {
                     expected: 2,
+                    max: 2,
                     found: 1,
                 },
                 dummy(),

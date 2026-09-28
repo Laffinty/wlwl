@@ -1924,8 +1924,40 @@ impl Parser {
         // unchanged, §12 reserved forms stay empty) while giving the
         // declaration its own AST node. A bare `SEALED` (no `(`) is
         // still a plain variable reference.
-        if name == "SEALED" && matches!(self.peek(), TokenKind::LParen) {
-            return self.parse_sealed(line, col);
+        //
+        // [REVIEW P0-3] Being an *identifier* is exactly the hazard: a v0.9
+        // program may legally define its own `SEALED` function. Two
+        // mechanisms keep that working:
+        //
+        // 1. **Three-token lookahead.** `SealedDecl = "SEALED" "("
+        //    name_array ")"` and `name_array` always starts with `[`
+        //    (spec appendix A; `parse_import_name_list` opens with
+        //    `expect_specific(E0011, "'['")`). So `SEALED (` followed by
+        //    anything other than `[` cannot be a declaration and falls
+        //    straight through to the ordinary call path — no error, no
+        //    backtracking.
+        // 2. **Rewind-on-failure.** `SEALED([1, 2, 3])` passes the lookahead
+        //    yet is still a call (an array literal, not a name list), so
+        //    the declaration attempt is retried as a call. Before this,
+        //    such programs died with `E0011 expected '['` /
+        //    `E0010 expected identifier or string in name list`, breaking
+        //    the release promise that every v0.9 program behaves the same
+        //    by default.
+        //
+        // The one shape that stays inherently ambiguous is
+        // `SEALED(<name-list>)` — a call whose single argument is a list
+        // of strings/identifiers. That is the price of declaring it in
+        // identifier form rather than as a keyword, and it is now stated
+        // in spec §9.1 instead of being a silent trap.
+        if name == "SEALED"
+            && matches!(self.peek(), TokenKind::LParen)
+            && matches!(self.peek_at(1), TokenKind::LBracket)
+        {
+            let rewind = self.pos;
+            match self.parse_sealed(line, col) {
+                Ok(sealed) => return Ok(sealed),
+                Err(_) => self.pos = rewind,
+            }
         }
 
         // Parse the head (variable reference or function call).
@@ -2953,11 +2985,38 @@ mod tests {
         }
     }
 
-    /// 括号缺失 / 名列表坏掉时报的是既有语法码(E0010-E0012),不新增码号。
+    /// [REVIEW P0-3] `SEALED` 的判别契约:P0-3 之后**没有任何**形态会让
+    /// parser 硬失败。
+    ///
+    /// 理由是兼容优先:既然 `SEALED` 是标识符而非关键字,v0.9 就允许用户
+    /// 自定义同名函数,那么「长得像声明但不是合法声明」的源码在 v0.9 里
+    /// 本来就是一次普通调用。把它判成解析错 = 破坏「任何 v0.9 程序默认可
+    /// 观察行为不变」。所以契约改成:**要么是合法声明,要么退回普通调用。**
+    ///
+    /// 代价要说清楚:写错声明(`SEALED([1])`)不再得到「名字列表必须是
+    /// 字符串」这种就地的语法错,而是变成一次对 `SEALED` 的调用,到运行
+    /// 期报「未定义的名字」。这是有意接受的降级。
     #[test]
-    fn parse_sealed_rejects_a_missing_name_list() {
-        assert!(parse("SEALED();", "t.wll").is_err());
-        assert!(parse(r#"SEALED("add");"#, "t.wll").is_err());
+    fn sealed_always_resolves_to_a_declaration_or_an_ordinary_call() {
+        // 合法声明。
+        assert!(matches!(
+            parse(r#"SEALED(["add"]);"#, "t.wll").unwrap(),
+            Expr::Sealed { .. }
+        ));
+        // 这些都不是合法声明,必须全部退回普通调用而不是报错。
+        for src in [
+            "SEALED();",
+            r#"SEALED("add");"#,
+            "SEALED(41);",
+            "SEALED([1]);",
+            "SEALED([1, 2, 3]);",
+        ] {
+            let e = parse(src, "t.wll").unwrap_or_else(|e| panic!("{src} must parse, got: {e}"));
+            assert!(
+                !matches!(e, Expr::Sealed { .. }),
+                "{src} must NOT be a declaration"
+            );
+        }
     }
 
     #[test]
@@ -3703,5 +3762,60 @@ mod tests {
         // LET(123, 1) -> E0010
         let err = parse("LET(123, 1);", "t.wll").unwrap_err();
         assert_eq!(err.diagnostic().code, EC::E0010);
+    }
+    /// [REVIEW P0-3] `SEALED` 是**标识符**而不是关键字,所以 v0.9 允许
+    /// 用户自己定义一个叫 `SEALED` 的函数。修复前 `SEALED(...)` 会被
+    /// 无条件劫持进声明路径,这类程序直接变成硬解析错 —— 破坏本版
+    /// 「任何 v0.9 程序默认可观察行为不变」的承诺。
+    ///
+    /// 两条机制各挡一半:三词前瞻(`SEALED` `(` 后面不是 `[` 就不是声明)
+    /// 挡掉标量实参;失败回退(声明解析不过就重当普通调用)挡掉
+    /// `SEALED([1,2,3])` 这种"长得像名字列表但其实是数组字面量"的。
+    #[test]
+    fn a_user_defined_sealed_function_is_still_callable() {
+        // 标量实参:前瞻就放行了。
+        let e = parse("PRINT(SEALED(41));", "t.wll").unwrap();
+        match &e {
+            Expr::Call { name, args, .. } => {
+                assert_eq!(name, "PRINT");
+                match &args[0] {
+                    Expr::Call { name, args, .. } => {
+                        assert_eq!(name, "SEALED", "must stay an ordinary call");
+                        assert!(matches!(&args[0], Expr::Literal(Literal::Integer(41), _)));
+                    }
+                    other => panic!("expected a SEALED call, got {:?}", other),
+                }
+            }
+            other => panic!("expected a call, got {:?}", other),
+        }
+    }
+
+    /// [REVIEW P0-3] 数组字面量实参:过了前瞻,但不是名字列表,必须靠
+    /// 失败回退救回来。
+    #[test]
+    fn sealed_called_with_an_array_literal_is_not_a_declaration() {
+        let e = parse("PRINT(SEALED([1, 2, 3]));", "t.wll").unwrap();
+        match &e {
+            Expr::Call { name, args, .. } => {
+                assert_eq!(name, "PRINT");
+                assert!(
+                    matches!(&args[0], Expr::Call { name, .. } if name == "SEALED"),
+                    "SEALED([1,2,3]) must be a call, got {:?}",
+                    args[0]
+                );
+            }
+            other => panic!("expected a call, got {:?}", other),
+        }
+    }
+
+    /// [REVIEW P0-3] 对照组:真正的 `SEALED` 声明**仍**被识别成声明 ——
+    /// 防止上面两条把声明语法一并放跑。
+    #[test]
+    fn a_real_sealed_declaration_still_parses_as_a_declaration() {
+        let e = parse(r#"SEALED(["add", "PI"]);"#, "t.wll").unwrap();
+        match e {
+            Expr::Sealed { names, .. } => assert_eq!(names.len(), 2),
+            other => panic!("expected SEALED, got {:?}", other),
+        }
     }
 }
