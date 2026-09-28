@@ -1,0 +1,5 @@
+// expects: W0117
+// 第 2 个分支在前一个通配臂之后 → 不可达。
+// W0117 是**恒警告**:切到 `error` 档也不挡退出码(不可达子句不是类型错误)。
+LET(pick, FUN((n: INTEGER) : INTEGER, MATCH(n, [[_, 0], [0, 0]])));
+PRINT(pick(1));

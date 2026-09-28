@@ -1,0 +1,6 @@
+// mode: both
+// 控制组 1:完全合规。默认档与 `error` 档都必须零诊断,且 `wlwl run` 跑通。
+// 零破坏不是靠断言,是靠这一组 —— 如果静态层开始误报,红的是它。
+LET(fine: INTEGER, 1);
+LET(also_fine, FUN((a: INTEGER, b: INTEGER) : INTEGER, +(a, b)));
+PRINT(also_fine(fine, 2));

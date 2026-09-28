@@ -1,0 +1,5 @@
+// expects: E0110
+// 注解与初始化表达式不符:BOOLEAN 绑到了 STRING 字面量。
+// 默认档下注解是惰性的,程序照跑不误 —— 这正是静态层存在的理由。
+LET(flag: BOOLEAN, "yes");
+PRINT(flag);

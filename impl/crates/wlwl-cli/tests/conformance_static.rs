@@ -51,6 +51,14 @@ struct Contract {
 
 /// 读夹具头部的两份注释。**不猜**:解析不出契约就让测试失败,免得夹具
 /// 悄悄退化成「什么都不断言」。
+///
+/// [v0.10.1 / R10-011] 读**头部注释区**这个约定本身没错,错的是它当时承担了
+/// 一份 `static_types.wll` 里 8 个断言的读取工作 —— 第一段之后全是死代码,
+/// `E0111` / `E0112` / `E0116` / `W0117` 在夹具层面零断言,而守卫「至少读到
+/// 一份契约」照样通过(它防的是「没有契约」,防不住「契约只读到第一段」)。
+///
+/// 修法是把夹具按本目录 README 的约定拆开:一份夹具一个子目录、一份契约。
+/// 于是「读头部」与「读到全部」变成同一件事。
 fn contract_of(source: &str) -> Contract {
     let mut expects = Vec::new();
     let mut also_clean_when_off = false;
@@ -75,6 +83,26 @@ fn contract_of(source: &str) -> Contract {
         also_clean_when_off,
     }
 }
+
+/// `static_types/` 下的夹具子目录(一份夹具一个目录,照本目录 README)。
+fn static_type_fixture_dirs() -> Vec<String> {
+    let root = fixture_root().join("static_types");
+    let mut dirs: Vec<String> = std::fs::read_dir(&root)
+        .expect("static_types fixture dir")
+        .filter_map(|e| e.ok())
+        .filter(|e| e.path().is_dir())
+        .map(|e| e.file_name().to_string_lossy().into_owned())
+        .collect();
+    dirs.sort();
+    dirs
+}
+
+/// `static_types/` 下的夹具目录数。
+///
+/// 这条常量是**元数据守卫**:加了夹具目录却忘了让它进断言覆盖面,这里就红。
+/// v0.10 的整套静态契约 conformance 实际只有**一条**断言在跑(8 个 `// expects:`
+/// 块里只读到第一个),正因为夹具数与「被验了几个」之间没有任何绑定。
+const EXPECTED_STATIC_FIXTURE_DIRS: usize = 10;
 
 /// 把一份夹具复制成独立工程(`gradual_typing` 可选),返回入口路径。
 ///
@@ -226,9 +254,68 @@ fn assert_fixture(dir: &str, entry: &str) {
 }
 
 /// §10.4 规划的 `static_types/` 目录。
+///
+/// [v0.10.1 / R10-011] 枚举**全部**子目录,而不是点名一个文件。v0.10 只有
+/// `assert_fixture("static_types", "static_types.wll")` 一条断言,对着一个
+/// 装了 8 个 `// expects:` 块的文件 —— 而 `contract_of` 读到第一段就 `break`,
+/// 于是 7 条断言是死的。现在一份夹具一个子目录,加目录即加覆盖。
 #[test]
 fn static_types_fixtures_diagnose_only_when_the_gate_is_on() {
-    assert_fixture("static_types", "static_types.wll");
+    let dirs = static_type_fixture_dirs();
+    assert_eq!(
+        dirs.len(),
+        EXPECTED_STATIC_FIXTURE_DIRS,
+        "static_types/ should hold exactly {EXPECTED_STATIC_FIXTURE_DIRS} fixture \
+         dirs; a new fixture must be counted here so CI actually covers it"
+    );
+    for dir in &dirs {
+        assert_fixture(&format!("static_types/{dir}"), "main.wll");
+    }
+}
+
+/// [R10-011] 守恒断言:夹具声明的期望码集合必须覆盖静态层的全部硬诊断。
+///
+/// v0.10 的问题是 `E0111` / `E0112` / `E0116` / `W0117` **零断言** ——
+/// 实现里写错了也绿。这里把「哪几个码必须有人守」钉死,少一个就红。
+#[test]
+fn static_types_fixtures_cover_every_diagnostic_they_claim_to() {
+    let mut covered: Vec<String> = Vec::new();
+    for dir in static_type_fixture_dirs() {
+        let src = std::fs::read_to_string(
+            fixture_root()
+                .join("static_types")
+                .join(&dir)
+                .join("main.wll"),
+        )
+        .unwrap_or_else(|e| panic!("cannot read static_types/{dir}/main.wll: {e}"));
+        covered.extend(contract_of(&src).expects);
+    }
+    for code in ["E0110", "E0111", "E0112", "E0116", "W0117"] {
+        assert!(
+            covered.iter().any(|c| c == code),
+            "no static_types fixture asserts {code}; covered so far: {covered:?}"
+        );
+    }
+}
+
+/// [R10-011] **负向守卫**:契约写在代码之后,必须被判定为「什么都没断言」。
+///
+/// 这条是给守卫本身上锁。v0.10 的 `contract_of` 有注释说「不猜:解析不出契约
+/// 就让测试失败」,但第一个块解析成功,守卫就通过了 —— 它防的是「没有契约」,
+/// 防不住「契约只读到第一段」。这个用例把「只读到第一段」的后果钉成红灯:
+/// 将来谁再把多段契约塞进一份夹具,这里立刻会拦住。
+#[test]
+fn a_contract_written_after_the_code_is_not_a_contract() {
+    let misplaced = "// 这是一段说明。\nPRINT(1);\n// expects: E0110\n";
+    let contract = contract_of(misplaced);
+    assert!(
+        contract.expects.is_empty() && !contract.also_clean_when_off,
+        "a contract below the first code line must NOT be picked up: {:?}",
+        contract.expects
+    );
+    // 头部那份则必须被读到 —— 否则上面这条断言会因为「什么都没读到」而空过。
+    let well_placed = "// expects: E0110\nPRINT(1);\n";
+    assert_eq!(contract_of(well_placed).expects, vec!["E0110".to_string()]);
 }
 
 /// §10.4 规划的 `module_sig/` 目录:签名与实现**一致**时零诊断。

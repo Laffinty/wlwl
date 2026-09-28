@@ -1,0 +1,4 @@
+// expects: E0111
+// 实参类型与形参注解不符:`greet` 收 STRING,却传了 INTEGER 字面量。
+LET(greet, FUN((who: STRING) : STRING, +("hi, ", who)));
+PRINT(greet(42));

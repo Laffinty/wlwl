@@ -1,0 +1,5 @@
+// mode: both
+//   与 non_exhaustive_result 那条对照:补上 `ERR` 分支之后穷尽,一条诊断都不该有。
+LET(quiet, FUN((r: RESULT[INTEGER, STRING]) : STRING,
+    MATCH(r, [[OK(n), STR("ok")], [ERR(e), "err"]])));
+PRINT(quiet(OK(1)));

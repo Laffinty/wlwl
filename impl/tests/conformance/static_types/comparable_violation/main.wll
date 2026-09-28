@@ -1,0 +1,5 @@
+// expects: E0111
+//   约束只在编译期判定:TRUE 不满足 `T: Comparable`,而运行期的比较算子
+//   同样会拒绝它(两组擦除测试共同钉住「运行期不拦」这一条)。
+LET(larger, FUN((a: T: Comparable, b: T: Comparable) : T: Comparable, IF(<(a, b), a, b)));
+PRINT(larger(1, TRUE));

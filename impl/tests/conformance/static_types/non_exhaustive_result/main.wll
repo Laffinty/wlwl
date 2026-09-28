@@ -1,0 +1,6 @@
+// expects: E0116
+// `MATCH` 漏了 `ERR` 分支且**省略了 default** → 穷尽性不过,E0116 挡退出码。
+// 对照 exhaustive_result:同一个形状补齐 `ERR` 之后一条诊断都不该有。
+LET(shout, FUN((r: RESULT[INTEGER, STRING]) : STRING,
+    MATCH(r, [[OK(n), STR("ok")]])));
+PRINT(shout(OK(1)));

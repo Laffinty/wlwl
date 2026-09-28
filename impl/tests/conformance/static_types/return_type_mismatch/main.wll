@@ -1,0 +1,11 @@
+// expects: E0112
+// 函数**声明的返回类型**与函数体尾表达式不符:`() : STRING` 的函数返回 42。
+// 与 arg_type_mismatch 分开:一个是定义处的返回类型不符,一个是调用点的实参
+// 不符,走的判定路径不同。
+//
+// [v0.10.1 / R10-011] 合并成大夹具时这里写的是
+// `LET(answer: STRING, FUN(() : INTEGER, 42))` —— 那样先撞上 E0110(LET 注解
+// 与推断类型不符),E0112 反而被吞掉(见 `annotation_and_arg_mismatch` 里记的
+// R10-086)。把 LET 注解去掉,E0112 才是这条夹具真正要验的东西。
+LET(answer, FUN(() : STRING, 42));
+PRINT(answer());
