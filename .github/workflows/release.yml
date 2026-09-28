@@ -280,6 +280,15 @@ jobs:
         with:
           generate_release_notes: true
           fail_on_unmatched_files: true
+          # [v0.10.0_rc1] 预发布标记按 tag 名算,不让 RC 冒充正式版。
+          # 之前这里没传 `prerelease`,action 默认建**正式** release ——
+          # 于是 `v0.10.0_rc1` 会被工具链当成 production ready 抓走。
+          # 用表达式而不是 action 的 `auto` 值:`prerelease` 文档里只承诺
+          # Boolean,`auto` 的推导规则未在 v2 上核实过。
+          # 带 `-rc` / `_rc` / `-alpha` / `-beta` / `-dev` 后缀的 tag 判为
+          # pre-release;`v0.10.0` 这种裸版本号仍是正式版。写成单行是
+          # 刻意的:发布 workflow 挂掉 = 这次没有 release,不值得为排版冒险。
+          prerelease: ${{ contains(github.ref_name, '-rc') || contains(github.ref_name, '_rc') || contains(github.ref_name, '-alpha') || contains(github.ref_name, '-beta') || contains(github.ref_name, '-dev') }}
           files: |
             dist/**/*.tar.xz
             dist/**/*.zip
