@@ -22,12 +22,16 @@
 
 | 当前迭代材料 | 路径 |
 |--------------|------|
+| **v0.10.1 修复计划(源自 v0.10.0 两份 REVIEW)** | `wlwl-v0.10.1-修复计划.md` |
 | **v0.10.0 构建计划(草稿 0,Static Contracts)** | `wlwl-build-plan-v0.10.md` |
 | v0.10 技术路线建议(范围裁决上游) | `wlwl-v0.10.0-迭代技术路线建议.md` |
 | v0.9 构建计划(FINAL / 实施基线) | `wlwl-build-plan-v0.9.md` |
 | 偏差登记(v0.9 D9-NNN;v0.10 启动时重置为 D10-NNN) | `deviations.md` |
 
 v0.9 收尾后,按 `wlwl-build-plan-v0.10.md` §10.1 Step 13 将 `deviations.md` 切换为 D10-NNN 流水。
+
+v0.10.0 的两份 REVIEW 报告在 `../reviews/`;由它们汇总出的修复计划见
+`wlwl-v0.10.1-修复计划.md`(38 条去重条目,分 A–F 六个批次,含 6 个待裁决项)。
 
 **v0.8.1 patch 周期回顾** (commit 链,本地 ahead of origin/main 6 个):
 
