@@ -184,10 +184,14 @@ pub enum Tag {
     /// previously advisory-only via `cancel_requested` flag).
     Cancelled,
     /// `perform MethodCall` — OOP `CALL_METHOD` control-flow event
-    /// (ADR-0019 §4.4.3 / spec §16.4). Reserved naming; the v0.9.0
-    /// handler path does not yet suspend on method calls.
+    /// (ADR-0019 §4.4.3 / spec §16.4).
+    ///
+    /// **保留 tag,本版不产生**(D-4 裁决 = 规范明文化;见 spec §17.4 末段)。
+    /// 方法调用同步直落,协议违规当场报 `E0050` / `E0051`。保留本变体是为
+    /// 了让代数效果后端迁移时 tag 面已就位;实现不得依赖它产生任何可观察行为。
     MethodCall,
     /// `raise ProtocolViolation` — session-type state-machine miss
+    /// (保留 tag,本版不产生 —— D-4;见 `MethodCall` 的说明)
     /// (ADR-0019 §4.4.3 / spec §16.4). Reserved naming; surfaced
     /// today as `E0050` / `E0051` diagnostics rather than a handled
     /// effect.
@@ -217,8 +221,8 @@ pub enum Direction {
 /// v0.9 ships only the three tags enumerated by ADR-0017 §3.1
 /// (Yield / ChannelOp / Cancelled). Step 8 adds `reason: Dict` to
 /// the Cancelled variant; ADR-0019 §4.4.3 / spec §16.4 add
-/// `MethodCall` and `ProtocolViolation` (reserved naming, shipped
-/// in v0.9.0 as enum surface).
+/// `MethodCall` and `ProtocolViolation` as **reserved tags** for a future
+/// effect-handler backend (D-4: 明文化,本版不产生;见 spec §17.4 末段).
 #[derive(Debug, Clone)]
 pub enum Effect {
     /// `perform Yield` — cooperative yield checkpoint. `explicit =
@@ -754,8 +758,9 @@ impl Scheduler {
     //   wake via channel pair).
     // - Step 8: TASK_CANCEL(task, reason) / TASK_CANCEL_PARENT
     //   (raise Cancelled effect, transition to Cancelled).
-    // - ADR-0019 §4.4.3: CALL_METHOD (raise MethodCall effect,
-    //   handler validates protocol state machine).
+    // - ADR-0019 §4.4.3: CALL_METHOD —— `MethodCall` tag 保留但**本版
+    //   不产生**(D-4)。协议状态机当前是**同步**校验:违规当场报
+    //   `E0050` / `E0051`,不走效果处理器。
     //
     // The existing infrastructure (Channel::push_*_waiter /
     // pop_*_waiter, TaskState::Suspended, YieldReason) is unchanged;
@@ -1763,5 +1768,53 @@ mod tests {
                 i
             );
         }
+    }
+    // ── 决策 D-4(v0.10 范围澄清):保留 tag 面 + 明文「本版不产生」 ──
+    //
+    // 这两条一起钉住 B′ 的两头,任何一头单独漂移都不会被 CI 抓到:
+    //   ①枚举里两个变体**仍在**(代数效果后端迁移的 tag 面就位);
+    //   ②规范**明文声明**本版不产生(不许实现依赖它们产生可观察行为)。
+    // 删变体、或把「不产生」这句从规范里删掉,都会让下面某条红。
+
+    /// tag 面就位:`MethodCall` / `ProtocolViolation` 仍在 `Effect` 与
+    /// `Tag` 里,且一一对应。删掉它们就要回头改 WasmFX 后端的 tag 面。
+    #[test]
+    fn the_reserved_oop_effect_tags_are_still_in_the_enum() {
+        let m = Effect::MethodCall {
+            method: "get".into(),
+        };
+        assert_eq!(m.tag(), Tag::MethodCall);
+        let p = Effect::ProtocolViolation {
+            method: "inc".into(),
+        };
+        assert_eq!(p.tag(), Tag::ProtocolViolation);
+    }
+
+    /// 规范必须**明文**写出「本版不产生」。这是 D-4 落到纸面的唯一凭据:
+    /// 枚举里有 tag 是一半,规范承认它不被 raise 是另一半。
+    #[test]
+    fn the_spec_states_the_oop_effect_tags_are_not_raised() {
+        let path = std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
+            .join("..")
+            .join("..")
+            .join("..")
+            .join("docs")
+            .join("standard")
+            .join("wlwl-spec-v0.10.md");
+        let spec = std::fs::read_to_string(&path)
+            .unwrap_or_else(|e| panic!("cannot read the spec at {}: {}", path.display(), e));
+        for tag in ["MethodCall", "ProtocolViolation"] {
+            assert!(
+                spec.contains(tag),
+                "the spec must name the reserved tag {}",
+                tag
+            );
+        }
+        // 「本版不由运行期产生」这句必须在场,否则规范等于没裁决 D-4。
+        assert!(
+            spec.contains("本版不由运行期产生"),
+            "the spec must state that the reserved OOP tags are not produced \
+             by the runtime (decision D-4)"
+        );
     }
 }

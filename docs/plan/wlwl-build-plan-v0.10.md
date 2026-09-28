@@ -31,7 +31,7 @@
 | **主题** | v0.10.0 = **Static Contracts**:类型最小闭环 + 模块契约 + MATCH 穷尽性 | 《路线》§3.1;六方 6/6 一致认为类型薄弱是最大缺口 |
 | **P0 主线** | P0-1 `wlwl-types` 静态 pass + P0-2 模块契约(签名/可见性/sig-gen) | 《路线》§4.1;类型注解 AST 槽位已存在(`wlwl-ast/lib.rs:133,181,360`),`check` 只 parse(`main.rs:51-52`)是天然挂载点 |
 | **P1** | MATCH 穷尽性(6 形态 Maranget)+ 泛型限形(擦除)+ 工具链薄壳 | 《路线》§4.2;Pattern 形态集窄,算法增量成本可控 |
-| **P2 余力** | std 加法(BYTES/TIME/MATH/RANDOM)+ 效果半落地收口 + 能力沙盒旁路原型 | 《路线》§4.3;不阻塞发版 |
+| **P2 余力** | std 加法(BYTES/TIME/MATH/RANDOM)+ 能力沙盒旁路原型(**效果半落地收口已按 D-4 = B / B′ 提前完成**) | 《路线》§4.3;不阻塞发版 |
 | **不做** | 包管理一切扩展、宏、Variant、收窄、用户效果、ownership、后端交付、par、多线程 | 《路线》§5;业主硬约束 + ADR-0011/0016 |
 | **可观测收益** | `check` 从 parse 升级为可选静态检查;注解失配/签名违例/MATCH 非穷尽可诊断;`wlwl lsp` 薄壳 + interface/schema JSON | 默认关闭时零可观察变化 |
 | **风险等级** | 中 | 静态 pass 侵入 eval / 注册表结构化低估 / 模块签名破坏 IMPORT / 范围蠕变 — 均有缓解(§9) |
@@ -122,7 +122,7 @@ v0.10 任何 commit **不得降低上述指标**(锁测试数只增不减;`wlwl-
 | **无模块导出契约**(无签名、无私有、无 SEAL) | `lib.rs:797-871` | 模块签名 + 可见性 |
 | **MATCH 穷尽性无检查**;`Pattern` 仅 6 形态 | `ast/lib.rs:228-254` | Maranget 在此形态集属小型算法 |
 | **注册表签名是文档串**,非结构化类型 | `registry.rs:44-70` | 分批结构化 |
-| **效果半落地** | `runtime.rs:186-265`;CHANGELOG Known limitations | 收口:真正 raise **或** 规范降级(P2/S4) |
+| **效果半落地** | `runtime.rs:186-265`;CHANGELOG Known limitations | ✅ **已收口(D-4 = B / B′,2026-09-28)** —— 规范降级,不动求值核心;见 §7 裁决块 |
 | **求值器单体风险** | 21,765 行 / 789 测试 | 新语义进新 crate/pass,**勿侵入 eval** |
 | **测试夹具偏薄** | `.wll` 仅 ~22–30 | 类型/模块需新增 conformance 目录 |
 
@@ -1008,6 +1008,20 @@ W0053,与泛型无关。改它会动到整个格式化契约,不属本 Step,留�
 - **路径 B**:规范明文降级 — 声明二者为「保留命名,不承诺 handler 语义」,从 Known limitations 移到规范保留段。
 - **默认**:先评估 A 的真实挂点成本;若 **> 3 人日**,走 B 并在 ADR-0020 附注。
 
+> **裁决(2026-09-28,用户拍板):D-4 = B。** 路径 A 的挂点成本未估即已超过 2–3 人日
+> 的整段预算 —— CALL_METHOD 路径要把 OOP 调用接到 `Scheduler::step` 效果循环上,
+> 连带协议状态的机都要建,不是本版该背的。落地按 **B′**:枚举里的两个变体**保留**
+> (ADR-0019 决策 #5「每个 variant 映射一条 `suspend` 指令」仍自洽,代数效果后端的
+> tag 面就位),同时 spec / ADR-0019 / CHANGELOG **明文**「本版不由运行期产生」,
+> 实现不得依赖它们产生任何可观察行为。OOP 方法调用同步直落,协议违规当场报
+> `E0050` / `E0051`。
+>
+> 本项据此在 **Step 15 收尾时提前完成**(原属 Step 11 余力):CHANGELOG 的
+> Known limitations 条目已改写,S4 由「部分开放」转 **✅ 达成**;Step 11 因此
+> 不再被 D-4 阻塞。**若日后要真删枚举变体**,那是删两个变体 + 两条锁测试的一行级
+> 改动,不影响本次其它结论。
+
+
 ---
 
 ## 8 明确不做(v0.10.0)
@@ -1056,8 +1070,8 @@ W0053,与泛型无关。改它会动到整个格式化契约,不属本 Step,留�
 
 ```
 [Step 0] 本计划 + ADR-0020 定稿(用户审阅)          ✅ 完成 c535818
-   ├─ 决策点 D-1..D-6 拍板 → 实际 D-1/D-2/D-3/D-5 已定
-   │  (D-4 / D-6 未拍板,分别只卡 Step 11 余力项与 Step 10)
+   ├─ 决策点 D-1..D-6 拍板 → 截至 Step 15 收尾,六个决策点**全部关闭**
+   │  (D-6 随 Step 10 落地确认为 A 档;D-4 于 2026-09-28 拍板 = B,按 B′ 落地)
    └─ 动手改 impl 前锁定范围,避免返工
 [Step 1] impl:wlwl-types 骨架(A1)                  ✅ 完成 859400b
    ├─ 新 crate + workspace 接线
@@ -1141,8 +1155,10 @@ W0053,与泛型无关。改它会动到整个格式化契约,不属本 Step,留�
    ├─ `wlwl interface <file>`:导出面 JSON(来自 Step 6/7 的签名模型)
    ├─ `wlwl schema`:类型系统 + 约束 + 7 条静态契约诊断码 JSON
    └─ 锁测试:lsp 协议 10 项 + 真子进程握手冒烟 2 项 + JSON 锁 5 项
-[Step 11] (余力) P2:std 加法 / 效果收口 S4 / 能力旁路
-   └─ 仅当 P0/P1 出口条件已满足
+[Step 11] (余力) P2:std 加法 / 能力旁路
+   ├─ 仅当 P0/P1 出口条件已满足
+   └─ **原列的「效果收口 S4」已抽出单独完成**:D-4 = B(2026-09-28 拍板)按 B′
+      落地,提前在 Step 15 收尾时完成(1734 → 1736)。**Step 11 不再被 D-4 阻塞。**
 [Step 12] spec v0.10 派生                    ✅ 完成
    ├─ 归档 v0.9 -> docs/history/;新建 docs/standard/wlwl-spec-v0.10.md
    ├─ 附录 A 首次收录 Type / TypeArg / BoundedVar / ModuleDecl 产生式
@@ -1161,16 +1177,16 @@ W0053,与泛型无关。改它会动到整个格式化契约,不属本 Step,留�
 
 **依赖关系**:Step 1 → 2 → (3 ∥ 4) → 5;Step 6 可与 3–5 并行(依赖 Step 1 的类型 IR);Step 8–10 依赖 Step 2 的诊断管道。Step 11 仅余力。
 
-### 10.2 决策点(2026-09-27 用户拍板:D-1 / D-2 / D-3 / D-5 已定)
+### 10.2 决策点(D-1 / D-2 / D-3 / D-5 于 2026-09-27 拍板;D-6 于 2026-09-27 随 Step 10 落地确认;D-4 于 2026-09-28 拍板 —— **六个决策点全部关闭**)
 
 | 决策点 | **裁决** | 选项 | 状态 |
 |--------|------|------|------|
 | **D-1 静态诊断码段** | **A:新建 `E0110+` / `W0110+` 静态契约段** | A:新段;B:复用 E0030-E0039 旁挂;C:仅 W 码 | ✅ 已定(Step 2 落地) |
 | **D-2 签名文件载体** | **A:旁路 `*.wll.sig` 文本(与源文件同目录)** | A:旁路文件;B:源内 `SIG(...)` 构造;C:两者 | ✅ 已定(卡 Step 6) |
 | **D-3 SEALED 语法** | **A:前缀调用 / 模块头 `SEALED(...)` 声明(加法)** | A:模块头声明;B:`EXPORT(..., sealed)` 旗标;C:推迟到 v0.10.1 | ✅ 已定(卡 Step 6) |
-| **D-4 Effect 半落地收口** | (未拍板) | A:真 raise;B:规范降级;C:维持 Known limitations | ⏳ 待批(仅卡 Step 11 余力项) |
+| **D-4 Effect 半落地收口** | **B:规范明文降级(按 B′ 落地:保留 tag 面 + 明文「本版不由运行期产生」)** | A:真 raise;B:规范降级;C:维持 Known limitations | ✅ 已定(2026-09-28,仅卡 Step 11 余力项;Step 15 收尾时已提前落地) |
 | **D-5 泛型约束深度** | **A:最小显式约束 `T: Comparable` 级** | A:最小显式约束;B:纯参数化无约束;C:推迟函数泛型 | ✅ 已定(卡 Step 9) |
-| **D-6 LSP 薄壳范围** | (未拍板) | A:最小三项;B:加 rename/format;C:不做 lsp 只做 JSON | ⏳ 待批(卡 Step 10) |
+| **D-6 LSP 薄壳范围** | **A:最小三项(diagnostics / definition / hover + 注册表驱动补全)** | A:最小三项;B:加 rename/format;C:不做 lsp 只做 JSON | ✅ 已定(2026-09-27,Step 10 落地;B 档的 rename / format 仍是敞口) |
 
 **D-1 裁决依据(实测,非推测)**:裁决当日的错误码占用为 E 码 67 个(止于 `E0102`,
 外加 `E1003` 逃逸码)、W 码 15 个(止于 `W0066`)。`E0030`-`E0039` 这 10 个
@@ -1200,6 +1216,7 @@ W0053,与泛型无关。改它会动到整个格式化契约,不属本 Step,留�
 | Step 10 收尾 | 1728 / 0 | +19(P1-3:wlwl-cli 单测 17 + 真进程冒烟 2) |
 | Step 12 收尾 | 1731 / 0 | +3(规范 ↔ 注册表双向锁测试) |
 | Step 15 收尾 | **1734 / 0** | **+3**(`conformance_static` 集成测试) |
+| D-4 收尾(Step 15 后) | **1736 / 0** | **+2**(tag 面锁 + 规范明文锁;`wlwl-eval` 889 → 891) |
 
 > 目标 ≈1600±30 **已达成**。**不虚报**:每项以实测为准,`off` 档
 > 的零破坏由 `c1_respects_the_three_gradual_typing_levels`、
@@ -1285,10 +1302,10 @@ W0053,与泛型无关。改它会动到整个格式化契约,不属本 Step,留�
 
 | # | 结论 | 证据 |
 |---|---|---|
-| S1 | ✅ **达成** | `cargo test --workspace` **1734 passed / 0 failed**;`conformance_static` 逐条验证同一批夹具在默认档下**零静态诊断**且 `wlwl check` 通过 |
+| S1 | ✅ **达成** | `cargo test --workspace` **1736 passed / 0 failed**;`conformance_static` 逐条验证同一批夹具在默认档下**零静态诊断**且 `wlwl check` 通过 |
 | S2 | ✅ **达成** | 新增 `impl/tests/conformance/{static_types,module_sig}/` + `cargo test -p wlwl-cli --test conformance_static`(3 项,跑**真的二进制**):门开着时 `E0110`/`E0111`/`E0112`/`E0116`/`W0117` 与 `E0113`/`E0114`/`E0115` 逐条出现;破坏签名的**两个方向**都被验到 |
 | S3 | ✅ **达成** | `strict_types` / `E0033` 路径的既有测试未动且全绿;v0.10 未改 `eval` 的任何类型判定路径 |
-| S4 | ⏳ **部分开放** | `Effect::MethodCall` / `ProtocolViolation` 仍不 raise。CHANGELOG 的 Known limitations 条目已**改写**并注明阻塞于 **D-4(未拍板)**,但「真正 raise」那条路未走 —— 详见 `D10-010`。**实施侧不代拍用户决策点** |
+| S4 | ✅ **达成** | **D-4 = B(2026-09-28 用户拍板),按 B′ 落地**:`Effect::MethodCall` / `ProtocolViolation` 作为代数效果后端的**保留 tag 面**留在枚举里,spec §16.4 / §17.4 与 ADR-0019 **明文**声明「本版不由运行期产生」——OOP 方法调用同步直落,协议违规当场报 `E0050` / `E0051`;CHANGELOG 的 Known limitations 条目已改写而非删除。两条锁测试(`the_reserved_oop_effect_tags_are_still_in_the_enum` / `the_spec_states_the_oop_effect_tags_are_not_raised`)分别钉住 tag 面与规范文本两头。**悬空承诺清零** —— 详见 `D10-010`(已修复) |
 | S5 | ✅ **达成** | `wlwl-toml` 的改动仅两处 `[features]` **只读**键(`gradual_typing` / `match_exhaustiveness`);manifest / lock / MVS 的字段与算法零改动,`Cargo.lock` 未新增依赖 |
 | S6 | ✅ **达成** | 立项单 §3.6 / §4.5 / §5.4 逐项带挂载点 / 变更面 / 人日 / 验收命令;每个 Step 的 commit message 回链对应行 |
 
@@ -1296,7 +1313,7 @@ W0053,与泛型无关。改它会动到整个格式化契约,不属本 Step,留�
 
 | 命令 | 结果 |
 |---|---|
-| `cargo test --workspace` | ✅ 1734 / 0 |
+| `cargo test --workspace` | ✅ 1736 / 0 |
 | `cargo fmt --check` | ✅ 0 diff |
 | `cargo clippy --locked --workspace --all-targets -- -D warnings` | ✅ 0 warning |
 | `cargo doc --workspace --no-deps` | ✅ 0 warning(修掉 6 处链到私有项的文档链接) |
@@ -1393,7 +1410,8 @@ cargo test -p wlwl-types
 | P1-1 MATCH 穷尽/冗余,挂载 Pattern 6 形态 | §5.1(Step 8) |
 | P1-2 泛型限形(擦除),Value 不变 | §5.2(Step 9) |
 | P1-3 check 语义化 + lsp 薄壳 + interface/schema JSON | §5.3(Step 10) |
-| P2 std 加法 / 效果收口 / 能力旁路 | §7(Step 11) |
+| P2 std 加法 / 能力旁路 | §7(Step 11) |
+| ~~P2 效果收口 S4~~ → 已抽出单独完成 | §7 裁决块(D-4 = B / B′);S4 ✅ 达成 |
 | 禁令清单 | §8(评审门禁) |
 | 验收:默认 1518 全绿;开启可抓错;E0033 绿;悬空清零;无人日不立项 | §11.3 S1–S6 + §12 |
 

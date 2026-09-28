@@ -432,6 +432,17 @@ Chosen option **D** (α + pioneering). Concretely, v0.9 commits to:
 
 - Spec debt closed: E0032 / E0050 / E0051 fire in real impl; no
   more "保留 / 无触发路径" rows in §11.2.
+
+- **[v0.10 范围澄清 · 决策 D-4]** 决策 #2 / #5 里的 `MethodCall` /
+  `ProtocolViolation` 两个 tag **在本版不 raise**。方法调用是**同步直落**
+  的;协议违规在调用点**当场**以诊断报出 —— 顺序违规 / μ 耗尽报 `E0051`,
+  协议已到 `end` 后仍被调用报 `E0050`(终态算状态机不匹配,与
+  step-order slip 分开;spec §14.3.2 优先级,映射见
+  `builtin_call_method`)。两个 tag 作为**代数效果后端迁移的预留 tag 面**
+  保留(决策 #5 的「每个 variant 映射一条 `suspend` 指令」在 v0.10+
+  Wasm 后端迁移时直接可用,不必回头改 tag 面)。本澄清**不推翻**上述决策,
+  只界定 v0.10 的可观察行为;权威文本见 spec §16.4 与 §17.4 末段。
+
 - §13-§16 chapter fill delivers four new chapters with distinctive
   academic content (Koka / Links / OCaml 5 / WasmFX alignment) —
   not a Java-clone.

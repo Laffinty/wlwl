@@ -51,7 +51,10 @@ pub enum ProtocolCursor {
         /// Unfolding budget for `Mu` (prevents infinite μ expansion).
         fuel: u32,
     },
-    /// Protocol completed (`end` reached). Further `CALL_METHOD` → E0051.
+    /// Protocol completed (`end` reached). Further `CALL_METHOD` →
+    /// `ProtocolError::Exhaused` → **E0050**(终态算状态机不匹配,与
+    /// step-order slip 的 E0051 分开;spec §14.3.2 优先级,见
+    /// `builtin_call_method` 里的映射)。
     Done,
 }
 

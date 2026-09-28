@@ -94,10 +94,12 @@ v0.9 archived at `docs/history/wlwl-spec-v0.9.md`.
 
 ### Known limitations
 
-- **`Effect::MethodCall` / `Effect::ProtocolViolation` 仍是悬空承诺**:两个
-  变体在 `Effect` 枚举里,但 `CALL_METHOD` 路径**从不 raise**。收口需要
-  决策点 **D-4**(真 raise / 规范降级 / 维持),**尚未拍板** —— 见
-  `D10-010`。故计划书的成功标准 **S4 在 v0.10 发版时仍为部分开放**。
+- **`Effect::MethodCall` / `Effect::ProtocolViolation` 是保留 tag,本版不
+  产生**(决策 **D-4** = 规范明文化)。方法调用是**同步直落**的;协议顺序
+  违规以 `E0051`、协议已结束仍被调用以 `E0050` **当场**报告(已实装)。
+  两个 tag 作为**代数效果后端迁移的预留 tag 面**保留(spec §17.4 末段 /
+  ADR-0019 决策 #5),使后端迁移时每个 tag 映射一条 `suspend` 指令时不必
+  回头改 tag 面。**实现不得依赖它们产生任何可观察行为**。
 - 类型注解的**箭头形式 `FUN(...) -> U` 与尖括号形式都不可达**:会被解析成
   一个名字里含括号的不透明类型,不报错也不生效。spec §2.6 已如实写明
   「本规范不承认这两种形式」—— `D10-005`。
