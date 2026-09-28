@@ -859,14 +859,65 @@ W0053,与泛型无关。改它会动到整个格式化契约,不属本 Step,留�
 
 ### 5.3 P1-3 · 工具链薄壳
 
+> **状态:已完成(Step 10)。** 决策点 **D-6 据此落 A 档**(最小三项):
+> `diagnostics` / `definition` / `hover` + 「补全由注册表驱动」那半句。
+> B 档(rename / format)与 C 档(不做 lsp)**没有被关掉**,仍开着。
+
 | 子项 | 内容 | 挂载点 | 人日 | 验收 |
 |------|------|--------|------|------|
-| **check 语义化** | ~~`Check` 接静态 pass;分层测试~~ | `main.rs:51-52,85-88,630` | **0(已由 Step 2 / A3 交付)** | ✅ `check_is_layered_parse_static_run`;`default_off_zero_diag` 锁「默认行为不变」 |
-| **`wlwl lsp` 薄壳** | 包装 parser + error + 静态诊断:diagnostics / definition / hover;补全由注册表驱动 | CLI 新子命令;复用 `wlwl-types` 诊断 | 2–3 | LSP 集成冒烟;无独立 LSP server 进程框架依赖(薄壳) |
-| **interface / schema JSON** | 已有 `ast --json` 顺增量:`interface` JSON(导出面)、`schema` JSON(类型) | `main.rs` 导出路径 | 1–2 | **JSON schema 锁测试** |
+| **check 语义化** | ~~`Check` 接静态 pass;分层测试~~ | — | **0(已由 Step 2 / A3 交付)** | ✅ `check_is_layered_parse_static_run`;`default_off_zero_diag` |
+| **`wlwl lsp` 薄壳** | 包装 parser + 诊断 + 注册表 | `src/lsp.rs` | 2–3 | ✅ 协议单测 10 项 + **真子进程握手冒烟** 2 项;**零新依赖** |
+| **interface / schema JSON** | `interface` JSON(导出面)、`schema` JSON(类型系统 + 诊断码) | `src/tooling.rs` | 1–2 | ✅ JSON 锁测试 5 项 |
 | **P1-3 小计** | | | **4–6 人日** | |
+| **实测** | | | workspace 1728 / 0(+19) | |
 
-> **性质**:Compiler Feedback API 在此处以低成本落地(`ast --json` 已有先例),服务 AI 工具链,**不做 AI 专用语法**。
+> **性质**:Compiler Feedback API 在此处以低成本落地(`ast --json` 已有
+> 先例),服务 AI 工具链,**不做 AI 专用语法**。
+
+**`wlwl lsp` 的边界(照实写)**:
+
+- **零新依赖**:不引 LSP 框架,手写 stdio + `Content-Length` 分帧,连
+  `Cargo.lock` 都没动。薄壳的全部内容就是把已有能力包一层线协议。
+- **诊断口径与 `wlwl check` 逐条一致**:为此把门禁里的诊断收集逻辑抽成
+  `collect_static_diagnostics`,`static_check_gate` 与 LSP **共用这一个
+  函数**。抽出来之后立刻抓到一个真问题 —— LSP 最初只发了
+  `parse_with_warnings` + 静态层,漏了 `wlwl_parser::lint()` 那一路
+  (`W0010` / `W0011` / `W0012` / `W0001`),于是编辑器里的划线会**比
+  `wlwl check` 少**。「同一份口径」这句话不能只是注释。
+- **能力只承诺那几项**:`initialize` 的 capabilities 里**没有**
+  `renameProvider` / `documentFormattingProvider`,测试
+  `initialize_advertises_exactly_the_three_thin_shell_capabilities`
+  明确断言它们不存在 —— 宁可少说,不可假装支持(D-6 的 B 档因此仍是敞口)。
+- **位置约定**:`positionEncoding: "utf-8"` + 1 起算的列(与 WLWL span
+  对齐)。**定义跳转**定位到「节点 span 内的第一个同名 token」—— AST 的
+  span 覆盖整个节点(`LET(x, …)` 而不是光标下的 `x`),而薄壳不建完整
+  的 offset 映射表;对顶层 `LET` / `FUN` / 形参是准的,嵌套表达式里反复
+  出现的同名标识符可能落在第一个。
+- **跨文件跳转**只做一件事:导入名 → 解析到模块文件 → 找它导出面里的
+  顶层绑定。std 模块没有磁盘源,`resolve_module_file` 返回 `None`,于是
+  「跳过去」为 `null`,而签名在 hover 里给(注册表 110 条)。
+- **不缓存诊断**在文档上:诊断是同步那一刻算出来直接装帧的,存一份只会
+  诱使后来者去读可能过期的副本。
+
+**`interface` / `schema` 各自回答一个不同的问题**:
+
+| 子命令 | 载荷 | 消费者 |
+|---|---|---|
+| `interface <file>` | `module` / `signature_file` / `sealed` / `exports[]`(名字 + `kind` + `params` / `returns` / `type`) | AI 工具 / 构建脚本:改名前先问一遍这个模块承诺了什么 |
+| `schema` | 11 个类型 + 4 个「本层不结构化建模的运行期类型」+ 约束 + 类型变量规则 + **7 条静态契约诊断码及其 W 配对** | 工具的静态分析层:别把这份清单硬编码在自己代码里 |
+
+- `interface` 的 `exports` **直接来自 Step 6 / 7 的签名模型**
+  ([`wlwl_types::sig`]),所以它跟 `wlwl sig` / `sig-gen` / `check` 说的
+  必然是同一件事 —— 不另建一套推导。Step 9 的带约束变量也原样出现在
+  `params` / `returns` 里(`T: Comparable`)。
+- `schema` 的类型清单**刻意不写成「从代码里反射出来」** —— 那需要一个
+  「注册表 → 类型名」的单向依赖,为了省几行 JSON 去动分层不划算。代价是
+  静态层将来加类型头这里要跟着改,所以配了一条锁测试
+  `schema_type_names_match_the_static_layer` 盯这件事。
+- `schema` 里的诊断码表**如实标出 `W0117` 的不对称**(`warn: null` +
+  `always_warning: true`):工具按它决定拦不拦构建,所以这个字段不能美化成
+  「看起来配对」。
+
 
 ### 5.4 P1 立项单汇总
 
@@ -1066,11 +1117,13 @@ W0053,与泛型无关。改它会动到整个格式化契约,不属本 Step,留�
       a_variable_in_the_return_type_is_instantiated_with_the_argument /
       generic_parameters_are_erased_at_runtime /
       bounded_variables_survive_the_signature_round_trip / p2_* 端到端 3 项
-[Step 10] impl:工具链薄壳(P1-3)
-   ├─ check 分层测试
-   ├─ wlwl lsp 薄壳(diagnostics/definition/hover)
-   ├─ interface / schema JSON
-   └─ 锁测试:json_schema_lock / lsp_smoke
+[Step 10] impl:工具链薄壳(P1-3)               ✅ 完成(D-6 落 A 档)
+   ├─ `wlwl lsp`:手写 stdio + Content-Length 分帧,**零新依赖**
+   ├─ 能力仅 diagnostics / definition / hover + 注册表驱动的补全
+   ├─ 诊断口径与 `wlwl check` 共用 collect_static_diagnostics(同一份)
+   ├─ `wlwl interface <file>`:导出面 JSON(来自 Step 6/7 的签名模型)
+   ├─ `wlwl schema`:类型系统 + 约束 + 7 条静态契约诊断码 JSON
+   └─ 锁测试:lsp 协议 10 项 + 真子进程握手冒烟 2 项 + JSON 锁 5 项
 [Step 11] (余力) P2:std 加法 / 效果收口 S4 / 能力旁路
    └─ 仅当 P0/P1 出口条件已满足
 [Step 12] spec v0.10 派生
@@ -1108,7 +1161,7 @@ W0053,与泛型无关。改它会动到整个格式化契约,不属本 Step,留�
 > **D-2 附带效果**:`*.wll.sig` 是旁路文件,「无签名 = v0.9 行为」因此是
 > 结构性保证,不是约定。
 
-### 10.3 锁测试预期增量(**Step 0–9 已实测,其余仍为估计**)
+### 10.3 锁测试预期增量(**Step 0–10 已实测,其余仍为估计**)
 
 | 时点 | 实测总数 | 增量 |
 |------|---------|------|
@@ -1119,13 +1172,15 @@ W0053,与泛型无关。改它会动到整个格式化契约,不属本 Step,留�
 | Step 6 收尾 | 1639 / 0 | +49(C1/C2) |
 | Step 7 收尾 | 1656 / 0 | +17(C3 14 + C5′ 3) |
 | Step 8 收尾 | 1686 / 0 | +30(P1-1) |
-| Step 9 收尾 | **1709 / 0** | **+23**(P1-2:wlwl-types 14 + parser 3 + wlwl-eval 3 + wlwl-cli 3) |
+| Step 9 收尾 | 1709 / 0 | +23(P1-2) |
+| Step 10 收尾 | **1728 / 0** | **+19**(P1-3:wlwl-cli 单测 17 + 真进程冒烟 2) |
 
 > 目标 ≈1600±30 **已达成**。**不虚报**:每项以实测为准,`off` 档
 > 的零破坏由 `c1_respects_the_three_gradual_typing_levels`、
 > `p1_default_off_stays_silent_on_v09_match_programs`、
 > `p2_default_off_stays_silent_on_generic_programs` 三条反证(各用一份
 > 「开启时必报」的夹具 / 源码证明门禁确实没跑)。
+
 
 
 

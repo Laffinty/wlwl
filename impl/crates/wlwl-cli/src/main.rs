@@ -103,6 +103,26 @@ enum Cmd {
         #[arg(long)]
         force: bool,
     },
+    /// Run a language server on stdio (v0.10 Step 10 / plan §5.3 P1-3).
+    ///
+    /// A thin shell over the existing parser + static diagnostics +
+    /// builtin registry — no LSP framework, no new dependencies. Editors
+    /// normally launch it themselves; run it by hand to check the
+    /// handshake.
+    Lsp,
+    /// Print the module's public interface as JSON (v0.10 Step 10 /
+    /// plan §5.3): exports, their declared types, the `SEALED` surface
+    /// and the signature file path. The same shape a `.wll.sig` file
+    /// describes, in machine-readable form.
+    Interface {
+        /// Path to the .wll file
+        file: PathBuf,
+    },
+    /// Print the type-system schema as JSON (v0.10 Step 10 / plan §5.3):
+    /// every type the static layer understands, the `Comparable` bound,
+    /// and the static-contract diagnostic codes. For tools that need to
+    /// reason about WLWL types without hard-coding this list.
+    Schema,
 }
 
 /// `wlwl sig` output shape.
@@ -128,8 +148,14 @@ fn main() -> ExitCode {
         Cmd::Fmt { file, check } => fmt_file(&file, check),
         Cmd::Sig { file, format } => sig_file(&file, format),
         Cmd::SigGen { file, force } => sig_gen_file(&file, force),
+        Cmd::Lsp => lsp::Server::run(),
+        Cmd::Interface { file } => tooling::interface_file(&file),
+        Cmd::Schema => tooling::schema_command(),
     }
 }
+
+mod lsp;
+mod tooling;
 
 /// Top-level entry: parse, optionally execute, report errors.
 fn run_file(file: &PathBuf, format: OutputFormat, execute: bool) -> ExitCode {
@@ -711,50 +737,80 @@ fn static_check_gate(
     base_dir: &std::path::Path,
     format: OutputFormat,
 ) -> Option<ExitCode> {
-    let setting = load_manifest_gradual_typing(base_dir);
-    // [v0.10 Step 8] 第二个子系统:MATCH 穷尽性 / 可达性。缺省跟随
-    // `gradual_typing`(计划书 §5.1),所以只写 `gradual_typing` 一个键
-    // 就够用;要单独关掉 MATCH 才写 `match_exhaustiveness`。
-    let match_setting = load_manifest_match_exhaustiveness(base_dir);
-
-    if let Some(raw) = setting.invalid_value() {
-        let d = WlwlDiagnostic::new(
-            ErrorCode::W0001,
-            format!(
-                "invalid [features] gradual_typing value `{raw}`; \
-                 expected \"off\" | \"warn\" | \"error\" -- falling back to \"off\""
-            ),
-            Location::point(base_dir.join("wlwl.toml").to_string_lossy(), 0, 0),
-        );
-        let d = d.with_severity(Severity::Warning);
+    let rendered = collect_static_diagnostics(ast, file, base_dir);
+    if rendered.is_empty() {
+        return None;
+    }
+    // 阻塞与否看**实际渲染出来的诊断**:只有硬诊断挡退出码。这条比
+    // 「看档位」更准 —— `error` 档下也可能一条硬错都没有(比如只报了恒
+    // 警告的 `W0117`),那就不该拦。
+    let blocking = rendered.iter().any(|d| d.severity == Severity::Error);
+    for d in &rendered {
         match format {
             OutputFormat::Human => eprintln!("{}", d.render_human()),
             OutputFormat::Json => eprintln!("{}", d.render_json()),
             OutputFormat::Jsonl => eprintln!("{}", d.render_jsonl()),
         }
     }
+    if blocking {
+        Some(ExitCode::from(1))
+    } else {
+        None
+    }
+}
 
-    if let Some(raw) = match_setting.invalid_value() {
-        let d = WlwlDiagnostic::new(
-            ErrorCode::W0001,
-            format!(
-                "invalid [features] match_exhaustiveness value `{raw}`; \
-                 expected \"off\" | \"warn\" | \"error\" -- falling back to gradual_typing"
-            ),
-            Location::point(base_dir.join("wlwl.toml").to_string_lossy(), 0, 0),
+/// 收集一个文件的全部静态契约诊断(**已按两个开关分档渲染**)。
+///
+/// `static_check_gate`(`check` / `run`)与 [`crate::lsp`] 共用这一份 ——
+/// 诊断口径必须只有一处,否则编辑器里划线的和 `wlwl check` 说的会不一致,
+/// 那比没有诊断更糟。
+///
+/// 顺序按 (行, 列) 排,输出逐字节可复现。
+pub(crate) fn collect_static_diagnostics(
+    ast: &Expr,
+    file: &std::path::Path,
+    base_dir: &std::path::Path,
+) -> Vec<WlwlDiagnostic> {
+    let setting = load_manifest_gradual_typing(base_dir);
+    // [v0.10 Step 8] 第二个子系统:MATCH 穷尽性 / 可达性。缺省跟随
+    // `gradual_typing`(计划书 §5.1),所以只写 `gradual_typing` 一个键
+    // 就够用;要单独关掉 MATCH 时再写 `match_exhaustiveness`。
+    let match_setting = load_manifest_match_exhaustiveness(base_dir);
+    let mut out: Vec<WlwlDiagnostic> = Vec::new();
+
+    // 开关写错必须**可见**(不静默吞笔误):非法值回落后的回执本身就是
+    // 一条警告,和静态诊断一起交付。
+    if let Some(raw) = setting.invalid_value() {
+        out.push(
+            WlwlDiagnostic::new(
+                ErrorCode::W0001,
+                format!(
+                    "invalid [features] gradual_typing value `{raw}`; \
+                     expected \"off\" | \"warn\" | \"error\" -- falling back to \"off\""
+                ),
+                Location::point(base_dir.join("wlwl.toml").to_string_lossy(), 0, 0),
+            )
+            .with_severity(Severity::Warning),
         );
-        let d = d.with_severity(Severity::Warning);
-        match format {
-            OutputFormat::Human => eprintln!("{}", d.render_human()),
-            OutputFormat::Json => eprintln!("{}", d.render_json()),
-            OutputFormat::Jsonl => eprintln!("{}", d.render_jsonl()),
-        }
+    }
+    if let Some(raw) = match_setting.invalid_value() {
+        out.push(
+            WlwlDiagnostic::new(
+                ErrorCode::W0001,
+                format!(
+                    "invalid [features] match_exhaustiveness value `{raw}`; \
+                     expected \"off\" | \"warn\" | \"error\" -- falling back to gradual_typing"
+                ),
+                Location::point(base_dir.join("wlwl.toml").to_string_lossy(), 0, 0),
+            )
+            .with_severity(Severity::Warning),
+        );
     }
 
     // 两个开关都关 → 整条静态链路都不跑。这是「零开销」的落点,而且两个
     // 开关是**独立**的:只关 MATCH 不影响类型检查。
     if !setting.is_enabled() && !match_setting.is_enabled() {
-        return None;
+        return out;
     }
 
     let severity = match setting.mode() {
@@ -787,7 +843,6 @@ fn static_check_gate(
     // **按子系统分档渲染**:`gradual_typing` 管类型/契约诊断,
     // `match_exhaustiveness` 管 MATCH 诊断。两个开关独立,所以渲染阶段
     // 也得分流 —— `W0117` 恒为警告(见 `TypeDiag::to_diagnostic`)。
-    let mut rendered: Vec<WlwlDiagnostic> = Vec::new();
     for d in &checked.diags {
         let (enabled, level) = match d.kind.subsystem() {
             wlwl_types::Subsystem::Types => (setting.is_enabled(), severity),
@@ -796,7 +851,7 @@ fn static_check_gate(
         if !enabled {
             continue;
         }
-        rendered.extend(d.to_diagnostic(level));
+        out.extend(d.to_diagnostic(level));
     }
 
     // [v0.10 Step 6 / plan §4.1 C1 + §4.2 C2] 模块契约:签名文件与
@@ -809,36 +864,20 @@ fn static_check_gate(
     // 文件失败。
     // [Step 6] 契约扫描里也要用同一份绑定表算依赖模块的类型,所以
     // 传的是刚刚那份「已经算好的」结果,不再重算一遍。
-    let contracts = if setting.is_enabled() {
-        scan_module_contracts(file, ast, &checked.declared, &builtins, severity)
-    } else {
-        Vec::new()
-    };
-    rendered.extend(contracts);
-    if rendered.is_empty() {
-        return None;
+    if setting.is_enabled() {
+        out.extend(scan_module_contracts(
+            file,
+            ast,
+            &checked.declared,
+            &builtins,
+            severity,
+        ));
     }
     // Deterministic order: source order. The checker already discovers
     // in walk order, so a stable sort by (line, col) is enough to make
     // multi-diagnostic output byte-stable across runs.
-    rendered.sort_by_key(|d| (d.location.line, d.location.col));
-
-    // 阻塞与否看**实际渲染出来的诊断**:只有硬诊断挡退出码。这条比
-    // 「看档位」更准 —— `error` 档下也可能一条硬错都没有(比如只报了恒
-    // 警告的 `W0117`),那就不该拦。
-    let blocking = rendered.iter().any(|d| d.severity == Severity::Error);
-    for d in &rendered {
-        match format {
-            OutputFormat::Human => eprintln!("{}", d.render_human()),
-            OutputFormat::Json => eprintln!("{}", d.render_json()),
-            OutputFormat::Jsonl => eprintln!("{}", d.render_jsonl()),
-        }
-    }
-    if blocking {
-        Some(ExitCode::from(1))
-    } else {
-        None
-    }
+    out.sort_by_key(|d| (d.location.line, d.location.col));
+    out
 }
 
 // ── v0.10 Step 6 (P0-2 C1 / C2): 模块契约 ─────────────────────
@@ -2214,6 +2253,34 @@ EXPORT([\"add\", \"PI\"]);
             "p2_fmt_nc.wll",
         );
         assert_eq!(fmt_file(&q, false), ExitCode::SUCCESS);
+    }
+
+    // -- v0.10 Step 10 (P1-3): 工具链薄壳(interface / schema) -----------
+
+    /// `interface` / `schema` 的产物必须是**合法 JSON** —— 工具的第一道
+    /// 门槛就是「能不能解析」,所以这里真的解析一遍。
+    #[test]
+    fn p3_interface_and_schema_emit_parseable_json() {
+        let p = write_module(
+            "p3_interface",
+            "math.wll",
+            "SEALED([\"add\"]);\n\
+             LET(add, FUN((a: T: Comparable, b: T: Comparable) : T: Comparable, a));\n\
+             LET(PI, 3);\n\
+             EXPORT([\"add\", \"PI\"]);\n",
+        );
+        assert_eq!(tooling::interface_file(&p), ExitCode::SUCCESS);
+        assert_eq!(tooling::schema_command(), ExitCode::SUCCESS);
+        // 解析层已经各自锁了字段;这里锁「命令不崩且退出码为 0」。
+    }
+
+    #[test]
+    fn p3_interface_on_a_missing_file_fails_without_a_panic() {
+        let missing = std::env::temp_dir()
+            .join("wlwl-cli-tests")
+            .join("p3_nope.wll");
+        let _ = fs::remove_file(&missing);
+        assert_eq!(tooling::interface_file(&missing), ExitCode::from(1));
     }
 
     #[test]
