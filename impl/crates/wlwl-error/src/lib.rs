@@ -2339,4 +2339,291 @@ mod tests {
             );
         }
     }
+
+    // ---- v0.10 Step 12:规范的错误码表 ↔ 注册表 ----
+    //
+    // §11.2 / §11.3 的码表是**手维护**的,而注册表是**代码**。两者不同步时
+    // 规范就开始说谎 —— 而规范是外部读者唯一的依据。
+    //
+    // 关键设计:码清单**从规范正文抽取**,不在测试里再手抄一份。手抄的清单
+    // 只能证明「测试自己没写错」,证明不了「规范没写错」—— 而后者才是这条
+    // 测试存在的理由。第一版就是这么写的,结果它自己漂了(W0014 手抄进来了,
+    // 注册表里根本没有)。
+
+    /// 规范文件路径。CARGO_MANIFEST_DIR = impl/crates/wlwl-error,所以
+    /// `../../..` 回到仓库根。
+    fn spec_path() -> std::path::PathBuf {
+        std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
+            .join("..")
+            .join("..")
+            .join("..")
+            .join("docs")
+            .join("standard")
+            .join("wlwl-spec-v0.10.md")
+    }
+
+    /// 规范 §11.2 / §11.3 两节的正文。
+    fn spec_diagnostics_sections() -> String {
+        let path = spec_path();
+        let text = std::fs::read_to_string(&path).unwrap_or_else(|e| {
+            panic!(
+                "cannot read the spec at {}: {}; if it was renamed, this lock \
+                 test's path needs updating too",
+                path.display(),
+                e
+            )
+        });
+        let start = text
+            .find("### 11.2 错误码")
+            .expect("the spec must have a §11.2 diagnostics section");
+        let end = text[start..]
+            .find("### 11.4")
+            .map(|i| start + i)
+            .unwrap_or(text.len());
+        text[start..end].to_string()
+    }
+
+    /// 抽出正文里提到的所有码,**含** `A`–`B` 形式的区间展开。
+    fn codes_mentioned(section: &str) -> Vec<String> {
+        let mut out: Vec<String> = Vec::new();
+        let chars: Vec<char> = section.chars().collect();
+        let mut i = 0;
+        while i < chars.len() {
+            let is_code = |c: char| c.is_ascii_uppercase() && (c == 'E' || c == 'W');
+            if is_code(chars[i])
+                && i + 5 <= chars.len()
+                && chars[i + 1..i + 5].iter().all(|c| c.is_ascii_digit())
+            {
+                let code: String = chars[i..i + 5].iter().collect();
+                // `A`–`B` 区间:展开成逐个码。注意规范里写的是
+                // `` `E0010`–`E0013` `` —— 破折号前面还有一个反引号,
+                // 所以要跳过最多一个反引号再找它。
+                let mut k = i + 5;
+                if chars.get(k) == Some(&'`') {
+                    k += 1;
+                }
+                let range = chars.get(k) == Some(&'–') || chars.get(k) == Some(&'-');
+                if range {
+                    // 破折号后面紧跟的是下一个码的**开引号**,先跳过。
+                    let mut j = k + 1;
+                    if chars.get(j) == Some(&'`') {
+                        j += 1;
+                    }
+                    let end_code: String = chars[j..j + 5.min(chars.len() - j)].iter().collect();
+                    if end_code.len() == 5 && is_code(end_code.chars().next().unwrap()) {
+                        let from: u32 = code[1..].parse().unwrap_or(0);
+                        let to: u32 = end_code[1..].parse().unwrap_or(0);
+                        if to >= from && to - from <= 64 {
+                            for n in from..=to {
+                                // 码是字母 + **4 位**数字,故 `{:04}`。
+                                let expanded = format!("{}{:04}", &code[..1], n);
+                                if !out.contains(&expanded) {
+                                    out.push(expanded);
+                                }
+                            }
+                        }
+                    }
+                }
+                if !out.contains(&code) {
+                    out.push(code);
+                }
+                i += 5;
+            } else {
+                i += 1;
+            }
+        }
+        out
+    }
+
+    /// 注册表里的**全部**码。权威来源就是这个 enum;本测试保证规范文档
+    /// 覆盖了每一个,而不是反过来让文档决定注册表该有什么。
+    const REGISTRY_CODES: &[ErrorCode] = &[
+        ErrorCode::E0001,
+        ErrorCode::E0002,
+        ErrorCode::E0003,
+        ErrorCode::E0010,
+        ErrorCode::E0011,
+        ErrorCode::E0012,
+        ErrorCode::E0013,
+        ErrorCode::E0014,
+        ErrorCode::E0020,
+        ErrorCode::E0021,
+        ErrorCode::E0022,
+        ErrorCode::E0023,
+        ErrorCode::E0024,
+        ErrorCode::E0025,
+        ErrorCode::E0026,
+        ErrorCode::E0027,
+        ErrorCode::E0030,
+        ErrorCode::E0031,
+        ErrorCode::E0032,
+        ErrorCode::E0033,
+        ErrorCode::E0034,
+        ErrorCode::E0035,
+        ErrorCode::E0036,
+        ErrorCode::E0037,
+        ErrorCode::E0038,
+        ErrorCode::E0039,
+        ErrorCode::E0040,
+        ErrorCode::E0041,
+        ErrorCode::E0042,
+        ErrorCode::E0043,
+        ErrorCode::E0044,
+        ErrorCode::E0045,
+        ErrorCode::E0046,
+        ErrorCode::E0047,
+        ErrorCode::E0048,
+        ErrorCode::E0049,
+        ErrorCode::E0050,
+        ErrorCode::E0051,
+        ErrorCode::E0052,
+        ErrorCode::E0053,
+        ErrorCode::E0054,
+        ErrorCode::E0056,
+        ErrorCode::E0058,
+        ErrorCode::E0060,
+        ErrorCode::E0061,
+        ErrorCode::E0062,
+        ErrorCode::E0063,
+        ErrorCode::E0065,
+        ErrorCode::E0066,
+        ErrorCode::E0070,
+        ErrorCode::E0071,
+        ErrorCode::E0080,
+        ErrorCode::E0081,
+        ErrorCode::E0082,
+        ErrorCode::E0083,
+        ErrorCode::E0090,
+        ErrorCode::E0091,
+        ErrorCode::E0092,
+        ErrorCode::E0093,
+        ErrorCode::E0094,
+        ErrorCode::E0095,
+        ErrorCode::E0096,
+        ErrorCode::E0099,
+        ErrorCode::E0100,
+        ErrorCode::E0101,
+        ErrorCode::E0102,
+        ErrorCode::E1003,
+        ErrorCode::E0110,
+        ErrorCode::E0111,
+        ErrorCode::E0112,
+        ErrorCode::E0113,
+        ErrorCode::E0114,
+        ErrorCode::E0115,
+        ErrorCode::E0116,
+        ErrorCode::W0001,
+        ErrorCode::W0010,
+        ErrorCode::W0011,
+        ErrorCode::W0012,
+        ErrorCode::W0013,
+        ErrorCode::W0015,
+        ErrorCode::W0020,
+        ErrorCode::W0030,
+        ErrorCode::W0040,
+        ErrorCode::W0051,
+        ErrorCode::W0052,
+        ErrorCode::W0053,
+        ErrorCode::W0054,
+        ErrorCode::W0065,
+        ErrorCode::W0066,
+        ErrorCode::W0110,
+        ErrorCode::W0111,
+        ErrorCode::W0112,
+        ErrorCode::W0113,
+        ErrorCode::W0114,
+        ErrorCode::W0115,
+        ErrorCode::W0116,
+        ErrorCode::W0117,
+    ];
+
+    /// 规范**正因为它不存在**才提到它的码。列出来是为了让豁免有据可查,
+    /// 而不是「测试里悄悄跳过了几个」:
+    ///
+    /// - `E0055` / `E0057` —— v0.9 起移除并取消注册位(通道关闭后的读取走
+    ///   `ERR(kind="ChannelClosed")` 载荷;不可变单元格统一 `E0024`)。既有
+    ///   锁测试 `registry_no_e0055_no_e0057_after_v09_step_6` 盯这条。
+    /// - `E0117` —— 不可达子句恒为 `W0117`,不设错误码配对(规范 §7.4)。
+    const DELIBERATELY_UNREGISTERED: &[&str] = &["E0055", "E0057", "E0117"];
+
+    /// 规范里列出的码必须都在注册表里(方向一:文档 -> 代码)。
+    ///
+    /// 这条抓的就是「规范写了 `W0014` 而注册表里没有」那类漂移 —— v0.10
+    /// 派生时它真的存在过(规范漏列 6 个 W 码、又多列了 `W0014`)。
+    #[test]
+    fn every_code_the_spec_lists_exists_in_the_registry() {
+        let section = spec_diagnostics_sections();
+        let mentioned = codes_mentioned(&section);
+        assert!(
+            mentioned.len() > 40,
+            "the extraction found only {} codes — the spec layout probably changed",
+            mentioned.len()
+        );
+        for code in &mentioned {
+            if DELIBERATELY_UNREGISTERED.contains(&code.as_str()) {
+                continue;
+            }
+            let known = REGISTRY_CODES.iter().any(|c| c.as_str() == *code);
+            assert!(
+                known,
+                "the spec's §11.2/§11.3 mention {} but the registry has no such code",
+                code
+            );
+        }
+        // 豁免的码确实**没有**被注册(否则这条豁免就是在掩盖一次注册)。
+        for code in DELIBERATELY_UNREGISTERED {
+            assert!(
+                REGISTRY_CODES.iter().all(|c| c.as_str() != *code),
+                "{} must stay unregistered",
+                code
+            );
+        }
+    }
+
+    /// 注册表里的每个码都必须在规范里有归属(方向二:代码 -> 文档)。
+    ///
+    /// 「有归属」= 在 §11.2 / §11.3 的正文里被提到(含 `A`–`B` 区间展开),
+    /// 无论它是逐条列出的、落在「其余注册码」那组里、还是被声明为
+    /// 「已注册但无触发路径」。注册表新加一个码而规范忘了提,这里就红。
+    #[test]
+    fn every_registered_code_is_covered_by_the_spec() {
+        let section = spec_diagnostics_sections();
+        let mentioned = codes_mentioned(&section);
+        for code in REGISTRY_CODES {
+            let s = code.as_str();
+            assert!(
+                mentioned.iter().any(|m| m == s),
+                "{} is registered but the spec's §11.2/§11.3 never mention it",
+                s
+            );
+        }
+    }
+
+    /// v0.10 的静态契约段必须在规范里**逐个**列全,且 `E0117` 的「故意
+    /// 不存在」这件事必须**写出来** —— 否则「没提到」会被读成「漏写了」。
+    #[test]
+    fn the_spec_states_the_static_contract_codes_and_the_absent_one() {
+        let section = spec_diagnostics_sections();
+        // 规范里 `W0110`–`W0112` 这类是**区间**写法,所以按抽取后的集合
+        // 断言,而不是 `contains`。
+        let mentioned = codes_mentioned(&section);
+        for code in [
+            "E0110", "E0111", "E0112", "E0113", "E0114", "E0115", "E0116", "W0110", "W0111",
+            "W0112", "W0113", "W0114", "W0115", "W0116", "W0117",
+        ] {
+            assert!(
+                mentioned.iter().any(|m| m == code),
+                "the spec does not list {}",
+                code
+            );
+        }
+        assert!(
+            section.contains("E0117"),
+            "the spec must state that E0117 is deliberately absent"
+        );
+        assert!(
+            REGISTRY_CODES.iter().all(|c| c.as_str() != "E0117"),
+            "E0117 must not be registered: unreachable clauses are W0117 only"
+        );
+    }
 }
