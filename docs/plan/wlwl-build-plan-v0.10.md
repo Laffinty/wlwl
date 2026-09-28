@@ -1368,14 +1368,39 @@ cargo test -p wlwl-types
 
 ### 12.3 文档验收
 
-- `docs/plan/wlwl-build-plan-v0.10.md`(本文件)批准;
-- `docs/adr/0020-gradual-static-contracts.md` Accepted;
-- `docs/plan/deviations.md` 重置为 **v0.10 / D10-NNN** 流水;
-- `docs/standard/wlwl-spec-v0.10.md` 派生(v0.9 归档至 `docs/history/`);
-- `CHANGELOG.md` v0.10.0 段(兼容句 + 零可观察变化声明);
-- `README.md` §0.4 一致性表更新;
-- `docs/appendix_G.md` 重生成(A6′);
-- `wlwl-skill` 同步(新开关/诊断码/示例)。
+发版收口实测(2026-09-28),逐条对照参考实现核过:
+
+| 项 | 状态 | 证据 |
+|---|---|---|
+| `docs/plan/wlwl-build-plan-v0.10.md`(本文件)批准 | ✅ | Step 0 `c535818` |
+| `docs/adr/0020-gradual-static-contracts.md` Accepted | ✅ | Step 0 |
+| `docs/plan/deviations.md` 重置为 **v0.10 / D10-NNN** 流水 | ✅ | Step 13 `b65ebfd`;D10-001…D10-011 |
+| `docs/standard/wlwl-spec-v0.10.md` 派生(v0.9 归档至 `docs/history/`) | ✅ | Step 12 `bff3cfe` |
+| `CHANGELOG.md` v0.10.0 段(兼容句 + 零可观察变化声明) | ✅ | Step 14 `852e449` |
+| `README.md` §0.4 一致性表更新 | ✅ | Step 14 `852e449` |
+| `docs/appendix_G.md` 重生成(A6′) | ✅ | Step 5 `46586a8`(A6′ 首批 60 条为加法,附录 G 逐字节不变;`appendix_g_regen_is_stable_and_ignores_the_structured_field` 锁测试守住) |
+| `impl/Cargo.toml` 版本号 → `0.10.0` | ✅ | **发版收口 commit**(v0.9.0 遗留未改,Step 0–15 全程未 bump) |
+| `wlwl-skill` 同步(新开关/诊断码/示例) | ✅ | **发版收口 commit**:`SKILL.md` / `reference.md`(新增 §24)/ `README.md` / `CHANGELOG.md` + 新增 `examples/static_contracts.wll`;**10/10 `examples/*.wll` 真二进制 exit 0** |
+
+> **收口期发现两处「规范 ↔ 实现」背离(既有,非 v0.10 引入)**,已按
+> **实测行为**写入 `wlwl-skill`(并标注规范文本为 stale),**未改规范、未改实现**,
+> 待用户裁决是否登记 D10-NNN:
+>
+> 1. **非末条顶层语句的 `ERR` 被静默丢弃。** 复现:
+>    ```wlwl
+>    LET(r, ERR("x"));
+>    PRINT(r);
+>    PRINT("after");
+>    ```
+>    实测输出 `after`、退出码 `0`;删掉第三行则 `E0102` 逃逸。规范 §8.2 示例二
+>    要求「表达式值被丢弃 → ERR 无消费者 → E0102,程序终止」。
+> 2. **§5.2.1「三条实测事实」第 2、3 条已过时:**
+>    `DICT<STRING, INTEGER>` 实为 `E0011`(`expected ')', got Gt`),
+>    `FUN(INTEGER) -> STRING` 实为 `E0012`(`expected ',', got Minus`)——
+>    两者都是**响亮的解析错**,而非规范所述「静默解析成不透明类型名」;
+>    `ARRAY[INTEGER]: Comparable` 实为 `E0010` 而非规范所述 `E0012`
+>    (`E0012` 是返回类型失配码,与之无关)。裸 `ARRAY` → `E0010`、裸 `DICT` →
+>    静默通过,这两条规范是对的。
 
 ### 12.4 出口条件(发版门禁)
 

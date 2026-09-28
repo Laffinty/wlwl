@@ -1,0 +1,47 @@
+// examples/static_contracts.wll — v0.10 static contracts (spec §5.2 / §5.2.1)
+//
+// All of this is DEFAULT-OFF. Running this file with no wlwl.toml produces
+// exactly the v0.9 output: the annotations are inert, and nothing below
+// changes a single runtime behaviour.
+
+// ── §5.2 annotations on a LET binding and on FUN parameters ────────────
+LET(width: INTEGER, 3);
+LET(area, FUN((w: INTEGER, h: INTEGER) : INTEGER, *(w, h)));
+PRINT(width, area(2, 5));          // 3 10
+
+// ── §5.2 container types ───────────────────────────────────────────────
+LET(first, FUN((xs: ARRAY[INTEGER]) : INTEGER, INDEX_GET(xs, 0)));
+PRINT(first([10, 20, 30]));        // 10
+
+LET(lookup, FUN((d: DICT[STRING, INTEGER]) : INTEGER, AT_K(d, "k", -1)));
+PRINT(lookup(["k": 42, "j": 7]));  // 42
+
+// OPTION[T] is annotation sugar for RESULT[T, NULL] — there is no runtime
+// OPTION type (spec §2.1). Both spellings are checked the same way.
+LET(some, FUN((o: OPTION[INTEGER]) : BOOLEAN, IS_OK(o)));
+PRINT(some(OK(1)));                // TRUE
+
+LET(ok, FUN((r: RESULT[INTEGER, STRING]) : BOOLEAN, IS_OK(r)));
+PRINT(ok(OK(1)));                  // TRUE
+
+// ── §5.2.1 bounded type variables (erased at runtime) ──────────────────
+// The constraint sits on a BARE IDENTIFIER. T is resolved at the call site
+// against the actual argument types; the type variable itself disappears at
+// runtime, so Value is unchanged.
+LET(max, FUN((a: T: Comparable, b: T: Comparable) : T: Comparable, IF(<(a, b), a, b)));
+PRINT(max(3, 9));                  // 3
+PRINT(max("a", "b"));              // a
+
+// ── Traps worth remembering (spec §5.2; behaviour measured) ───────────
+// 1. ARRAY REQUIRES brackets: a bare ARRAY is E0010, but a bare DICT /
+//    OPTION / RESULT parses as an opaque named type — silently, no error.
+// 2. Angle-bracket and arrow forms are PARSE ERRORS (measured):
+//        DICT<STRING, INTEGER>       -> E0011 expected ')', got Gt
+//        FUN(INTEGER) -> STRING      -> E0012 expected ',', got Minus
+//    Spec §5.2.1 still claims these parse silently into an opaque type
+//    name. That sentence is STALE; the parser rejects both today.
+// 3. A constraint may only follow a bare identifier. This is E0010, not a
+//    no-op:
+//        ARRAY[INTEGER]: Comparable  -> E0010
+//    (Spec §5.2.1 says E0012 there; that code is return-type mismatch and
+//    is unrelated. The implementation is the source of truth.)

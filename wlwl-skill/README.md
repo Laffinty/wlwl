@@ -27,8 +27,8 @@ The skill is loaded when the task matches the `description` in
 
 ## Target version
 
-This skill targets **wlwl-spec-v0.9** (file at
-`../docs/standard/wlwl-spec-v0.9.md`).
+This skill targets **wlwl-spec-v0.10** (file at
+`../docs/standard/wlwl-spec-v0.10.md`).
 
 - **v0.6 core** (truthiness overhaul, `&&/||` short-circuit, `IF` ERR-routing,
   `!` canonical, `AT_K` rename, string subscript, `LET MUT`, overflow→`E0035`,
@@ -53,11 +53,28 @@ This skill targets **wlwl-spec-v0.9** (file at
   - **Types** `CLASS` / `INSTANCE`; object-identity equality.
   - **Error codes** — `E0055`/`E0057` removed; `E0065`/`E0066`/`W0065`/`W0066`
     added; `E0014`/`E0032`/`E0050`/`E0051` redefined.
+- **v0.10** is the current standard — **static contracts, all default-off**.
+  Its runtime is identical to v0.9's; nothing below changes behaviour unless a
+  `wlwl.toml` opts in.
+  - **Type annotations enter the spec** — `LET(x: INTEGER, 1)`,
+    `FUN((a: INTEGER, b: INTEGER) : INTEGER, +(a, b))`.
+  - **Container/function types** — `ARRAY[T]`, `DICT[K,V]`, `OPTION[T]`
+    (annotation sugar for `RESULT[T, NULL]`), `RESULT[T,E]`, `FUN`.
+  - **Bounded type variables** — `FUN((a: T: Comparable, b: T: Comparable) :
+    T: Comparable, …)`; erased at runtime, so `Value` is unchanged.
+  - **`[features] gradual_typing`** = `off` (default) / `warn` / `error`, plus
+    `match_exhaustiveness` for the `MATCH` checks.
+  - **Module contracts** — `foo.wll.sig` sidecar signatures and
+    `SEALED([...])` public faces; both absent by default.
+  - **Error codes** — `E0110`–`E0116` / `W0110`–`W0117`, all compile-time only;
+    `W0117` deliberately has no `E0117`.
+  - **New CLI** — `wlwl sig`, `wlwl sig-gen`, `wlwl interface`, `wlwl schema`,
+    `wlwl lsp`.
 
 Spec archives: `../docs/history/wlwl-spec-v0.6.md`,
-`../docs/history/wlwl-spec-v0.7.md`, `../docs/history/wlwl-spec-v0.8.md`
-(each version additive on the previous; v0.9 is the current normative
-source).
+`../docs/history/wlwl-spec-v0.7.md`, `../docs/history/wlwl-spec-v0.8.md`,
+`../docs/history/wlwl-spec-v0.9.md` (each version additive on the previous;
+v0.10 is the current normative source).
 
 Compiler version is independent of the spec version (see root
 `CHANGELOG.md`). `wlwl run` is always the source of truth.
@@ -66,8 +83,8 @@ Compiler version is independent of the spec version (see root
 
 | File | Use |
 |---|---|
-| `SKILL.md` | Writing flow, antipatterns (24 rows: v0.6–v0.9) |
-| `reference.md` | Operators, type/`TYPE` names, error codes, §8.3 consumers (14), OOP (§14–§16), concurrency matrix (§21), v0.9 增量备忘 (§23) |
+| `SKILL.md` | Writing flow, static contracts (§2.6/§5.2/§9.1/§9.6), antipatterns (24 rows: v0.6–v0.9) |
+| `reference.md` | Operators, type/`TYPE` names, error codes, §8.3 consumers (14), OOP (§14–§16), concurrency matrix (§21), v0.9 增量备忘 (§23), v0.10 增量备忘 (§24) |
 | `interp.wll` | String-interpolation gold example |
 | `examples/truthiness.wll` | §2.3 falsy table |
 | `examples/control_flow.wll` | `IF` / `WHILE` / `FOR` / `MATCH` |
@@ -78,6 +95,7 @@ Compiler version is independent of the spec version (see root
 | `examples/concurrency.wll` | §17 SCOPE / SPAWN / AWAIT / YIELD + channel fan-in |
 | `examples/concurrency_cancel.wll` | SHIELD / cancel with reason / `ChannelClosed` kind |
 | `examples/oop.wll` | §13–§15 CLASS / NEW / methods / protocol / linear THIS |
+| `examples/static_contracts.wll` | v0.10 §5.2 type annotations, container types, `T: Comparable` |
 
 Run any example:
 
@@ -88,8 +106,9 @@ wlwl run wlwl-skill/examples/oop.wll
 ## Scope
 
 - **In scope**: writing and reviewing `.wll` programs against
-  wlwl-spec-v0.9 — v0.6 core + v0.7 §17 concurrency + v0.8 clarifications
-  + v0.9 true-suspension / OOP / session types / linear THIS.
+  wlwl-spec-v0.10 — v0.6 core + v0.7 §17 concurrency + v0.8 clarifications
+  + v0.9 true-suspension / OOP / session types / linear THIS
+  + v0.10 static contracts (annotations, module signatures, MATCH checks).
 - **Out of scope**: the Rust implementation (`impl/`), formatter design,
   ADRs, release engineering. For those, read the repo docs directly.
 
@@ -115,6 +134,31 @@ wlwl run wlwl-skill/examples/oop.wll
 4. Declare a session protocol in `CLASS`'s second arg to enforce call
    order; violations raise `E0051` / `E0050`.
 
+## Static contracts quick rules (v0.10 §2.6 / §5.2 / §5.2.1 / §9.1 / §9.6)
+
+Everything here is **default-off** — the runtime is v0.9's until a `wlwl.toml`
+opts in.
+
+1. Annotations go on the `LET` binding and on each `FUN` parameter, with the
+   return type after the closing paren:
+   `LET(f, FUN((a: INTEGER, b: INTEGER) : INTEGER, +(a, b)));`
+2. **Square brackets only.** `ARRAY[T]` / `DICT[K,V]` / `OPTION[T]` /
+   `RESULT[T,E]`. The angle-bracket and arrow forms are parse errors
+   (`E0011` / `E0012`) — note the spec still describes them as silent no-ops,
+   which is stale.
+3. `OPTION[T]` is annotation sugar for `RESULT[T, NULL]`; there is no runtime
+   `OPTION` type.
+4. Type variables take an explicit bound: `T: Comparable`, resolved at the
+   call site, erased at runtime. Constraining a concrete type
+   (`ARRAY[INTEGER]: Comparable`) is `E0010` (the spec says `E0012` — stale).
+5. Turn the gate on in `wlwl.toml`:
+   `[features]` `gradual_typing = "off" | "warn" | "error"`, plus
+   `match_exhaustiveness`.
+6. `E0110`–`E0116` / `W0110`–`W0117` are **compile-time only** — never `ERR`,
+   so no §8.3 consumer can catch them. `W0117` has no `E0117` by design.
+7. Library modules can publish a `foo.wll.sig` sidecar or a `SEALED([...])`
+   face. Without either, module loading is exactly as in v0.9.
+
 ## Maintaining the skill
 
 - When the **spec** gains a section, update `SKILL.md` + `reference.md`
@@ -126,8 +170,9 @@ wlwl run wlwl-skill/examples/oop.wll
 
 ## See also
 
-- Language spec: `../docs/standard/wlwl-spec-v0.9.md`
-- Spec archives: `../docs/history/wlwl-spec-v0.8.md`,
+- Language spec: `../docs/standard/wlwl-spec-v0.10.md`
+- Spec archives: `../docs/history/wlwl-spec-v0.9.md`,
+  `../docs/history/wlwl-spec-v0.8.md`,
   `../docs/history/wlwl-spec-v0.7.md`, `../docs/history/wlwl-spec-v0.6.md`
 - Builtin registry (Appendix G): `../docs/appendix_G.md`
 - Concurrency fixtures: `../impl/tests/concurrency/`

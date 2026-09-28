@@ -1,7 +1,54 @@
 # wlwl-skill CHANGELOG
 
-Skill-bundle changes (spec lives at `../docs/standard/wlwl-spec-v0.9.md`
+Skill-bundle changes (spec lives at `../docs/standard/wlwl-spec-v0.10.md`
 and is authoritative).
+
+## [0.10.0] — 2026-09-28
+
+### Changed
+
+- **Target spec** bumped from `wlwl-spec-v0.9.md` (archived at
+  `docs/history/`) to **`wlwl-spec-v0.10.md`** (current). v0.10 is a
+  *static-contracts* release: its **runtime is identical to v0.9's**, and every
+  new feature is **default-off**. A program that adds no annotation and ships
+  no `.sig` behaves exactly as before.
+
+### Added
+
+- `SKILL.md`: new section **"Static contracts — spec §2.6, §5.2, §5.2.1, §7.4,
+  §9.1, §9.6 (v0.10)"** covering type annotations, container/function types,
+  bounded type variables, the `gradual_typing` switch, module signature
+  sidecars + `SEALED`, and the v0.10 diagnostic table.
+- `SKILL.md`: writing-flow step 7 for opting into static contracts.
+- `SKILL.md`: "When to load" now lists v0.10; the frontmatter `description`
+  covers the v0.10 surface.
+- `reference.md`: **§24 v0.10 增量备忘 — 静态契约** with the 附录 D delta, the
+  annotation-grammar traps, the two new `[features]` keys, and the five new
+  CLI subcommands (`sig`, `sig-gen`, `interface`, `schema`, `lsp`).
+- `reference.md` §10: `E0110`–`E0116` added to the error table; `W0110`–`W0117`
+  added to the warning list, with the "there is deliberately no `E0117`" note.
+- `reference.md` §2: v0.10 row in the version-decisions table.
+- `README.md`: target version, scope, contents, and a new **"Static contracts
+  quick rules (v0.10)"** section.
+- `examples/static_contracts.wll` — runnable demo of annotations, container
+  types, and `T: Comparable`. Verified output: `3 10 / 10 / 42 / TRUE / TRUE /
+  3 / a`.
+
+### Fixed
+
+- **Annotation-grammar traps now state measured behaviour, not the spec's stale
+  claim.** Spec §5.2.1's "三条实测事实" facts #2 and #3 no longer match the
+  reference implementation; the bundle documents what the compiler actually
+  does and flags the spec text as stale:
+  - `DICT<STRING, INTEGER>` → **`E0011` expected `')'`, got `Gt`** — a parse
+    error. The spec says it parses silently into an opaque type name.
+  - `FUN(INTEGER) -> STRING` → **`E0012` expected `','`, got `Minus`** — a
+    parse error. Same stale claim.
+  - `ARRAY[INTEGER]: Comparable` → **`E0010`** ("a type constraint may only
+    follow a bare type variable"). The spec says `E0012`, which is the
+    return-type-mismatch code and unrelated.
+  - Still accurate, and kept: bare `ARRAY` is `E0010`; bare `DICT` / `OPTION` /
+    `RESULT` parse as opaque named types with no error.
 
 ## [0.9.0] — 2026-09-25
 

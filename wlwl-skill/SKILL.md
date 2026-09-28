@@ -1,16 +1,16 @@
 ---
 name: writing-wlwl
-description: "Writes WLWL v0.9 .wll source files (spec docs/standard/wlwl-spec-v0.9.md). Covers v0.6 core (truthy overhaul, &&/|| short-circuit, IF ERR-routing, ! canonical, AT_K rename, string subscript, LET MUT, overflow->E0035, ${} interpolation), v0.7 §17 concurrency, v0.8 clarifications (EXPECT_ERR, = triple-identity, LET/FUN asymmetry, SUB length, float exponents, MUT as identifier, string-literal subscript), and v0.9 (true-suspension concurrency: YIELD at any expression position in task bodies, blocking CHANNEL_SEND/RECV suspend, no ChannelWouldBlock; TASK_CANCEL(task, reason?) structured cancellation; deadlock L1 E0065/W0065; OOP §13-§16: CLASS/NEW/THIS/GET_PROP/SET_PROP/CALL_METHOD with session-type protocols and linear THIS; CLASS/INSTANCE types; error codes E0055/E0057 removed, E0065/E0066/W0065/W0066 added). Use when the user asks for WLWL code, a .wll file, or anything targeting wlwl-spec-v0.9 (or v0.6/v0.7/v0.8 core). Do NOT use for v0.5 or earlier (POP-not-AT_K, no LET MUT), the Rust implementation, or the formatter."
+description: "Writes WLWL v0.10 .wll source files (spec docs/standard/wlwl-spec-v0.10.md). Covers v0.6 core (truthy overhaul, &&/|| short-circuit, IF ERR-routing, ! canonical, AT_K rename, string subscript, LET MUT, overflow->E0035, ${} interpolation), v0.7 §17 concurrency, v0.8 clarifications, v0.9 (true-suspension concurrency + OOP §13-§16 with session-type protocols and linear THIS), and v0.10 static contracts (all DEFAULT-OFF, runtime semantics unchanged): type annotations FUN((a: INTEGER) : INTEGER, ...) plus container types ARRAY[T]/DICT[K,V]/OPTION[T]/RESULT[T,E] and bounded type variables `T: Comparable`; [features] gradual_typing = off|warn|error; module signature sidecars `foo.wll.sig` and `SEALED([...])`; MATCH exhaustiveness. New codes E0110-E0116 / W0110-W0117, all compile-time only. Use when the user asks for WLWL code, a .wll file, or anything targeting wlwl-spec-v0.10 (or v0.6/v0.7/v0.8/v0.9 core). Do NOT use for v0.5 or earlier (POP-not-AT_K, no LET MUT), the Rust implementation, or the formatter."
 ---
 
-# Writing WLWL (v0.9)
+# Writing WLWL (v0.10)
 
 ## When to load / NOT to use
 
 **Use when:**
-- The user asks for a `.wll` source file, a WLWL program, or a v0.6 / v0.7 / v0.8 / v0.9 idiom.
-- A task targets `wlwl-spec-v0.9.md` (current) or `wlwl-spec-v0.6.md` / `wlwl-spec-v0.7.md` / `wlwl-spec-v0.8.md` (archived).
-- Reviewing or debugging v0.6–v0.9 source (concurrency, OOP, session protocols included).
+- The user asks for a `.wll` source file, a WLWL program, or a v0.6 / v0.7 / v0.8 / v0.9 / v0.10 idiom.
+- A task targets `wlwl-spec-v0.10.md` (current) or `wlwl-spec-v0.6.md` / `wlwl-spec-v0.7.md` / `wlwl-spec-v0.8.md` / `wlwl-spec-v0.9.md` (archived).
+- Reviewing or debugging v0.6–v0.10 source (concurrency, OOP, session protocols, static contracts included).
 
 **Don't use when:**
 - The source targets WLWL v0.5 or earlier (different truthy rules, `POP`-not-`AT_K`, no `LET MUT`).
@@ -23,7 +23,7 @@ description: "Writes WLWL v0.9 .wll source files (spec docs/standard/wlwl-spec-v
 Tick these as you go:
 
 ```
-WLWL writing progress (v0.9):
+WLWL writing progress (v0.10):
 - [ ] 1. Sketch the AST shape (use the operators/builtins section below)
 - [ ] 2. Decide mutation — any SET later means LET MUT(name, value) now
        (MUT itself can also be the binding name, e.g. LET(MUT, "x"))
@@ -37,12 +37,16 @@ WLWL writing progress (v0.9):
        store it in containers/closures/SPAWN/AWAIT/return (E0032).
 - [ ] 6. SUB uses length semantics: SUB(s, start, len) where len is
        LENGTH (codepoint count)
-- [ ] 7. Write the .wll file (one stmt per line, semicolons, no leading indent)
-- [ ] 8. Run `wlwl run <file>` — MUST exit 0 with expected stdout
-- [ ] 9. If 8 fails: consult reference.md for the failing token/operator
+- [ ] 7. Static contracts wanted? (v0.10, ALL DEFAULT-OFF — runtime is
+       unchanged either way). Annotate `LET(x: T, …)` / `FUN((a: T) : R, …)`,
+       and flip `[features] gradual_typing = "warn" | "error"` in wlwl.toml.
+       Use `SEALED([...])` + a `foo.wll.sig` sidecar only for library modules.
+- [ ] 8. Write the .wll file (one stmt per line, semicolons, no leading indent)
+- [ ] 9. Run `wlwl run <file>` — MUST exit 0 with expected stdout
+- [ ] 10. If 9 fails: consult reference.md for the failing token/operator
 ```
 
-Do not skip step 8. `wlwl run` is the source of truth. `wlwl fmt --check` is best-effort (see Verification loop).
+Do not skip step 9. `wlwl run` is the source of truth. `wlwl fmt --check` is best-effort (see Verification loop).
 
 ## Truthy / falsy — spec §2.3
 
@@ -115,6 +119,132 @@ SUB("Hello", -1, 1)         → "o"         // negative start counts from tail
 - Variant: `OK(p)` / `ERR(p)` — match `RESULT` variants, then match the payload.
 
 Clauses are tried in order; first hit wins. No match and no default → `NULL` (not an error). Pattern mismatch in a `LET` destructuring IS an error (`E0026`).
+
+## Static contracts — spec §2.6, §5.2, §5.2.1, §7.4, §9.1, §9.6 (v0.10)
+
+**Everything in this section is default-OFF.** v0.10's runtime is byte-for-byte
+v0.9's; you only see these diagnostics when a `wlwl.toml` opts in. A program that
+does not use annotations and does not ship a `.sig` behaves exactly as before.
+
+### Type annotations
+
+Type annotation grammar enters the spec for the first time in v0.10 (v0.9 had
+`name: Type` only as a table metavariable).
+
+```wlwl
+LET(x: INTEGER, 1);
+LET(name: STRING, "wlwl");
+LET(f, FUN((a: INTEGER, b: INTEGER) : INTEGER, +(a, b)));
+```
+
+`LET(name, value)` takes the annotation on the **binding**; `FUN` takes it on
+each **parameter** and after the closing paren for the **return** type.
+
+Type names: `INTEGER`, `FLOAT`, `BOOLEAN`, `STRING`, `CHAR`, `NULL`, plus the
+container/function forms below. `CLASS` / `INSTANCE` name user classes.
+
+**Containers** (§5.2):
+
+```wlwl
+FUN((xs: ARRAY[INTEGER]) : INTEGER, INDEX_GET(xs, 0))
+FUN((d: DICT[STRING, INTEGER]) : INTEGER, AT_K(d, "k", 0))
+FUN((o: OPTION[INTEGER]) : BOOLEAN, IS_OK(o))
+FUN((r: RESULT[INTEGER, STRING]) : BOOLEAN, IS_OK(r))
+```
+
+`OPTION[T]` is **annotation sugar only** — there is no runtime `OPTION` type
+(spec §2.1 has no such builtin); it desugars to `RESULT[T, NULL]`.
+
+Note when writing `RESULT`-typed functions: an `ERR` reaching a **non-consumer**
+parameter propagates transparently (§8.2), so a predicate like the one above
+works on values that are already in hand, but `f(ERR("e"))` propagates rather
+than returning `FALSE`. Consume with `IS_OK`/`IS_ERR` first.
+
+**Bounded type variables** (§5.2.1, erased at runtime — `Value` is unchanged):
+
+```wlwl
+LET(max, FUN((a: T: Comparable, b: T: Comparable) : T: Comparable, IF(<(a, b), a, b)));
+```
+
+The constraint is written as `T: Comparable` — a **bare identifier** followed by
+`:` and a bound name. `Comparable` is the only bound in v0.10. The variable is
+resolved at the **call site**, where it is instantiated against the actual
+argument types. Because the variable is erased at runtime, this changes no
+runtime behaviour.
+
+Attaching a constraint to a concrete type is an error, not a no-op:
+`ARRAY[INTEGER]: Comparable` raises **`E0010`** ("a type constraint may only
+follow a bare type variable … not a type like ARRAY[…] or DICT[…]") —
+constraints constrain *variables*, not types. (Spec §5.2.1 fact #3 says `E0012`
+here; that is stale — `E0012` is the return-type-mismatch code and unrelated.)
+
+**Do not** use the arrow form `FUN(INTEGER) -> STRING` or the angle-bracket
+form `DICT<STRING, INTEGER>`. Both are **parse errors**: `E0012 expected ',',
+got Minus` and `E0011 expected ')', got Gt`. (Spec §5.2.1 fact #2 still
+describes them as silently absorbing into an opaque type name — stale.) Note
+the asymmetry that does remain: a bare `ARRAY` without brackets is `E0010`,
+while a bare `DICT` / `OPTION` / `RESULT` still parses as an opaque named type
+with no error at all.
+
+### The `gradual_typing` switch (§2.6)
+
+`wlwl.toml` `[features]`, default `off`:
+
+| Value | Effect |
+|-------|--------|
+| `off` (default) | no static diagnostics at all |
+| `warn` | violations become `W0110`–`W0116` |
+| `error` | violations become `E0110`–`E0116` |
+
+`E0110`/`E0111`/`E0112` (and their `W` twins) are the annotation mismatches;
+`E0113`/`E0114`/`E0115` are module-contract mismatches; `E0116` is
+non-exhaustive `MATCH`. **All of them are compile-time only** — none can be
+raised at runtime, and none is an `ERR`, so `EXPECT_ERR` / `TRY` / `UNWRAP_OR`
+never catch them.
+
+`match_exhaustiveness` is a separate `[features]` key for the `MATCH` checks
+(§7.4), also default-off.
+
+### Module signatures + `SEALED` (§9.1, §9.6)
+
+A module may publish a **sidecar** signature file next to the source, named
+`<module>.wll.sig`. One declaration per line:
+
+```
+EXPORT add (INTEGER, INTEGER) : INTEGER
+EXPORT PI : INTEGER
+```
+
+The signature is the module's **whole public surface**. Two violation shapes,
+both caught statically:
+
+- `E0113` — `EXPORT`/`IMPORT` names a symbol the signature does not declare
+  (or that `SEALED` does not include)
+- `E0114` — the signature (or `SEALED`) declares a symbol the module does not
+  `EXPORT`
+- `E0115` — the signature's type disagrees with the implementation's annotation
+
+`SEALED([...])` is a module-top-level declaration of the same idea without a
+sidecar file. It is **not a keyword** — it is written in prefix-call form like
+`CLASS(...)` / `NEW(...)`, so the spec's keyword table does not change in
+v0.10 and the reserved-form set stays empty.
+
+A module with **no** `.sig` and **no** `SEALED` behaves exactly as in v0.9.
+
+### New diagnostics — v0.10
+
+| Code | Meaning | Pair |
+|------|---------|------|
+| `E0110` | annotation mismatch (parameter / `LET` annotation vs actual type) | `W0110` |
+| `E0111` | call mismatch (argument count, or the n-th argument's type) | `W0111` |
+| `E0112` | return mismatch (`RETURN` value vs return annotation) | `W0112` |
+| `E0113` | module contract: extra export/import not in the signature | `W0113` |
+| `E0114` | module contract: declared but not exported | `W0114` |
+| `E0115` | signature type conflicts with the implementation annotation | `W0115` |
+| `E0116` | `MATCH` non-exhaustive (missing constructor, no default arm) | `W0116` |
+| `W0117` | `MATCH` unreachable clause / dead default arm | **none — warning only, by design** |
+
+`W0117` is **always** a warning and deliberately has **no** `E0117` partner.
 
 ## OOP — spec §13–§16 (v0.9)
 
@@ -381,7 +511,8 @@ wlwl run --format jsonl path/to/file.wll
 
 ## References
 
-- **Authoritative spec**: `../docs/standard/wlwl-spec-v0.9.md` — defer to this on any disagreement (§13–§16 = OOP + session types + linear THIS; §17 = concurrency).
+- **Authoritative spec**: `../docs/standard/wlwl-spec-v0.10.md` — defer to this on any disagreement (§13–§16 = OOP + session types + linear THIS; §17 = concurrency; §2.6/§5.2/§9.1/§9.6 = static contracts). Where §5.2.1's "三条实测事实" disagrees with the compiler (the angle-bracket / arrow forms, and the constraint-on-a-concrete-type code), **the compiler wins** — this bundle records the measured values.
+- **v0.9 (archived)**: `../docs/history/wlwl-spec-v0.9.md` — §0–§17 still valid (v0.10 is additive + static contracts on top, runtime unchanged).
 - **v0.8 (archived)**: `../docs/history/wlwl-spec-v0.8.md` — §0–§12 core still valid (v0.9 is additive + concurrency/OOP upgrade over v0.8).
 - **v0.7 (archived)**: `../docs/history/wlwl-spec-v0.7.md` — §0–§17 core still valid.
 - **v0.6 (archived)**: `../docs/history/wlwl-spec-v0.6.md` — §0–§12 core still valid.

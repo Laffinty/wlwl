@@ -1,9 +1,10 @@
-# WLWL v0.9 Reference (on-demand)
+# WLWL v0.10 Reference (on-demand)
 
 > Loaded only when `SKILL.md` points here. This is a lookup catalogue,
 > not a tutorial. Section numbers (`§1.5`, `§8.3`, `§10.4`, `§13`, `§17`, etc.)
-> refer to `docs/standard/wlwl-spec-v0.9.md` (v0.8 archived at
-> `docs/history/wlwl-spec-v0.8.md`; v0.7 at `docs/history/wlwl-spec-v0.7.md`;
+> refer to `docs/standard/wlwl-spec-v0.10.md` (v0.9 archived at
+> `docs/history/wlwl-spec-v0.9.md`; v0.8 at `docs/history/wlwl-spec-v0.8.md`;
+> v0.7 at `docs/history/wlwl-spec-v0.7.md`;
 > v0.6 at `docs/history/wlwl-spec-v0.6.md`).
 
 ## Contents
@@ -31,6 +32,7 @@
 - [§21. Concurrency (§17)](#21-concurrency-17)
 - [§22. Notes on `interp.wll`](#22-notes-on-interpwll)
 - [§23. v0.9 增量备忘](#23-v09-)
+- [§24. v0.10 增量备忘 — 静态契约](#24-v010-)
 
 ---
 
@@ -64,6 +66,7 @@ because the array is non-empty), `TASK` / `CHANNEL` handles, and
 | v0.7 | §17 concurrency: `SCOPE`/`SPAWN`/`AWAIT`/`YIELD`/`TASK_*`/`SHIELD`/`CHANNEL_*`; types `TASK`/`CHANNEL`; codes `E0052`–`E0058` |
 | v0.8 | Clarifications: `EXPECT_ERR` in §8.3; `=` triple-identity; `LET`/`FUN` asymmetry; `%` float `E0030`; SHIELD/SCOPE(ERR)/AWAIT host-diagnostic notes; literal subscripts; `SUB` length semantics; float exponents; `MUT` as identifier; string-literal subscript |
 | **v0.9** | **True-suspension concurrency** (YIELD anywhere in task bodies; blocking SEND/RECV suspend; no `ChannelWouldBlock`); **structured cancellation** (`reason` DICT); **deadlock L1** (`E0065`/`W0065`); **OOP §13–§16** (`CLASS`/`NEW`/`THIS`/`GET_PROP`/`SET_PROP`/`CALL_METHOD`, session protocols, linear THIS); types `CLASS`/`INSTANCE`; codes `E0055`/`E0057` removed, `E0065`/`E0066`/`W0065`/`W0066` added |
+| **v0.10** | **Static contracts — all default-off, runtime unchanged from v0.9**: type annotation grammar enters the spec (`LET(x: INTEGER, …)`, `FUN((a: INTEGER, b: INTEGER) : INTEGER, …)`); container/function types `ARRAY[T]` / `DICT[K,V]` / `OPTION[T]` / `RESULT[T,E]`; bounded type variables `T: Comparable` (erased at runtime); `[features] gradual_typing = off\|warn\|error`; module signature sidecars `foo.wll.sig` + `SEALED([...])`; `MATCH` exhaustiveness behind `match_exhaustiveness`; codes `E0110`–`E0116` / `W0110`–`W0117` added (compile-time only) |
 
 ## §3. AST shapes (§A.2)
 
@@ -207,6 +210,13 @@ See `SKILL.md` pointers. Highlights: `wlwl:std.collection` (MAP/FILTER/…),
 | `E0058` | top-level SPAWN without SCOPE |
 | `E0065` | **[v0.9]** structured-concurrency deadlock L1 (default strict mode) |
 | `E0066` | **[v0.9]** `TASK_CANCEL`/`TASK_CANCEL_PARENT` reason not DICT |
+| `E0110` | **[v0.10]** annotation mismatch (parameter / `LET` annotation vs actual type) — compile-time only |
+| `E0111` | **[v0.10]** call mismatch (argument count, or the n-th argument's type) — compile-time only |
+| `E0112` | **[v0.10]** return mismatch (`RETURN` value vs return annotation) — compile-time only |
+| `E0113` | **[v0.10]** module contract: `EXPORT`/`IMPORT` a name the signature or `SEALED` face does not declare |
+| `E0114` | **[v0.10]** module contract: signature/`SEALED` declares a name the module does not `EXPORT` |
+| `E0115` | **[v0.10]** signature type conflicts with the implementation's annotation |
+| `E0116` | **[v0.10]** `MATCH` non-exhaustive (missing constructor, default arm omitted) — needs `match_exhaustiveness` |
 | `E0100` | PANIC |
 | `E0102` | ERR escaped to top level |
 | `E1003` | divide/mod by zero |
@@ -215,13 +225,18 @@ See `SKILL.md` pointers. Highlights: `wlwl:std.collection` (MAP/FILTER/…),
 
 Full table: spec §11.2.
 
+**There is deliberately no `E0117`.** `W0117` (unreachable `MATCH` clause / dead
+default arm) is a warning in every configuration — see spec §11.3.
+
 ### Warnings (W-codes)
 
 `W0010` unused LET · `W0011` unused param · `W0014` non-ASCII case ·
 `W0020` mixed dict literal · `W0030` shadow · `W0040` TODO(agent) ·
 `W0051` deprecated alias · `W0053` formatter drift ·
 **`W0065`** deadlock L1 soft warning (`strict_deadlock_detect = false`) ·
-**`W0066`** `CHANNEL_NEW` large buf (above `channel_large_buf_threshold`).
+**`W0066`** `CHANNEL_NEW` large buf (above `channel_large_buf_threshold`) ·
+**`W0110`–`W0116`** the `gradual_typing = "warn"` tier of `E0110`–`E0116` ·
+**`W0117`** `MATCH` unreachable clause / dead default arm (**no `E` twin, ever**).
 
 ### Exit codes (§11.4)
 
@@ -497,11 +512,69 @@ Every v0.9 item that affects writing `.wll` source — pulled from
 | 9 | §2.1 | **Types** `CLASS` / `INSTANCE`; object-identity equality |
 | 10 | §9.2 / §9.4 | `MODULE_REF` defined; features `strict_deadlock_detect` / `native_channel_close` / `channel_large_buf_threshold` |
 
-### Spec / impl / docs 三处引用
+## §24. v0.10 增量备忘 — 静态契约
+
+Every v0.10 item that affects writing `.wll` source — pulled from
+`docs/standard/wlwl-spec-v0.10.md` 附录 D.
+
+**v0.10's runtime is identical to v0.9's.** Everything below is opt-in; a
+program that adds no annotation and ships no `.sig` behaves exactly as before.
+
+| # | § | Change |
+|---|---|--------|
+| 1 | §5.2 / 附录 A | **Type annotation grammar enters the spec** for the first time (v0.9 had `name: Type` only as a table metavariable) |
+| 2 | §5.2 | **Container/function types**: `ARRAY[T]`, `DICT[K,V]`, `OPTION[T]`, `RESULT[T,E]`, `FUN` |
+| 3 | §5.2.1 | **Bounded type variables** `T: Comparable`; erased at runtime, so `Value` is unchanged |
+| 4 | §2.6 | **`[features] gradual_typing` = `off`(default) / `warn` / `error`** |
+| 5 | §9.1 / §9.6 | **Module signature sidecars** `foo.wll.sig` and `SEALED([...])`; both default to absent |
+| 6 | §7.4 | **`MATCH` exhaustiveness** behind `[features] match_exhaustiveness` |
+| 7 | §11.2 / §11.3 | **Codes**: `E0110`–`E0116` / `W0110`–`W0117` added, all compile-time only; `W0117` has **no** `E0117` |
+| 8 | §1.4 | **Keyword table unchanged** — `SEALED` is prefix-call form, not a keyword, so the reserved-form set stays empty |
+
+### §24.1 Annotation grammar traps (measured against the reference impl)
+
+1. **`ARRAY` requires brackets.** A bare `ARRAY` is `E0010`. But a bare
+   `DICT` / `OPTION` / `RESULT` parses as an *opaque named type* with **no
+   error** — verified: `LET(d, FUN((x: DICT) : INTEGER, 1))` runs clean.
+2. **Angle-bracket and arrow forms are parse errors.** `DICT<STRING, INTEGER>`
+   → `E0011 expected ')', got Gt`; `FUN(INTEGER) -> STRING` → `E0012
+   expected ',', got Minus`.
+   > ⚠ Spec §5.2.1 fact #2 still says these parse "into a single opaque type"
+   > **without an error**. That is **stale** — the parser now rejects both.
+   > Treat this table as authoritative over that sentence.
+3. **A constraint may only follow a bare identifier.** `T: Comparable` is
+   legal; `ARRAY[INTEGER]: Comparable` is **`E0010`**
+   ("a type constraint may only follow a bare type variable … not a type like
+   `ARRAY[…]` or `DICT[…]`").
+   > ⚠ Spec §5.2.1 fact #3 says `E0012` for this; the implementation says
+   > `E0010`. `E0012` is the return-type-mismatch code and is unrelated.
+
+### §24.2 `wlwl.toml` `[features]` — the two v0.10 keys
+
+| Feature | Default | Effect |
+|---------|---------|--------|
+| `gradual_typing` | `off` | `warn` → `W0110`–`W0116`; `error` → `E0110`–`E0116` |
+| `match_exhaustiveness` | `off` | `E0116`/`W0116` non-exhaustive + `W0117` unreachable clauses |
+
+`E0110`–`E0116` are **compile-time only**. None is an `ERR`, so `EXPECT_ERR` /
+`TRY` / `UNWRAP_OR` cannot catch them.
+
+### §24.3 CLI additions (v0.10)
+
+| Command | What it does |
+|---------|--------------|
+| `wlwl sig <file>` | print the module's signature (text or JSON) |
+| `wlwl sig-gen <file>` | write/refresh the `*.wll.sig` sidecar |
+| `wlwl interface <file>` | export the public surface as JSON |
+| `wlwl schema` | type system + constraints + static-contract codes as JSON |
+| `wlwl lsp` | stdio JSON-RPC thin shell: `diagnostics` / `definition` / `hover` + registry-driven completion (no `rename`, no `format`) |
+
+### §24.4 Spec / impl / docs 三处引用 (v0.10 current)
 
 | 文档 | 路径 | 用途 |
 |------|------|------|
-| 权威规范 | `../docs/standard/wlwl-spec-v0.9.md` | 唯一真相源 |
+| 权威规范 | `../docs/standard/wlwl-spec-v0.10.md` | 唯一真相源 |
+| v0.9 归档 | `../docs/history/wlwl-spec-v0.9.md` | 历史 §0–§17 上下文 |
 | v0.8 归档 | `../docs/history/wlwl-spec-v0.8.md` | 历史 §0–§12 上下文 |
 | v0.7 归档 | `../docs/history/wlwl-spec-v0.7.md` | 历史 §17 上下文 |
 | v0.6 归档 | `../docs/history/wlwl-spec-v0.6.md` | §0–§12 核心 |
