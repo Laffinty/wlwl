@@ -8,8 +8,128 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 > **Note.** The compiler version is **independent of the language spec version**.
 > The language spec lives in `docs/standard/` and is identified by version + name.
 > This file tracks the **compiler / tooling** releases. The current spec is
-> **v0.9** (`docs/standard/wlwl-spec-v0.9.md`); archived specs live under
-> `docs/history/` (`wlwl-spec-v0.8.md`, `wlwl-spec-v0.7.md`, `wlwl-spec-v0.6.md`).
+> **v0.10** (`docs/standard/wlwl-spec-v0.10.md`); archived specs live under
+> `docs/history/` (`wlwl-spec-v0.9.md`, `wlwl-spec-v0.8.md`,
+> `wlwl-spec-v0.7.md`, `wlwl-spec-v0.6.md`).
+
+## [v0.10.0] — 2026-09-28
+
+Spec: **wlwl-spec-v0.10** (`docs/standard/wlwl-spec-v0.10.md`).
+v0.9 archived at `docs/history/wlwl-spec-v0.9.md`.
+
+**本版是「静态契约」版:运行期语义与 v0.9 逐条一致。** 新增能力全部**默认关闭**
+(`[features] gradual_typing` 缺省 `off`,`off` 时整条静态链路不执行);唯一的
+**语法面**扩张是类型注解里的显式约束 `T: Comparable` 与 `SEALED([...])` 公开面
+声明,两者都不改变既有程序的行为。下面每条都标了「默认关 / 常开」。
+
+### Added
+
+- **编译期静态契约层**(默认关):`[features] gradual_typing = "off" | "warn" |
+  "error"`。注解失配 / 调用失配 / 返回失配分别发 `E0110`–`E0112`(warn 档
+  `W0110`–`W0112`)。与运行期 `strict_types`(默认 `false`,`E0033`)**正交**:
+  可同时开启,先静态拦、再运行时兜底。覆盖边界如实声明:**只**检查用户定义的、
+  带注解的函数边界;未结构化内建的返回类型落 `DYNAMIC` 而不报。
+- **模块契约**(默认无):可选旁路签名文件 `<module>.wll.sig` 记录对外承诺的
+  名字与类型,三向检查 —— 导出 / 导入了签名没声明的名字(`E0113`)、签名声明了
+  实现没导出的名字(`E0114`)、签名类型与实现注解冲突(`E0115`)。**无签名 =
+  v0.9 行为**,且这是结构性保证:签名是旁路文件,语言里没有内嵌的「这是签名」
+  标记语法,不存在「忘了写标记」这回事。
+- **`SEALED([...])` 公开面声明**:前缀调用形式(与 `CLASS(...)` 同形),
+  **不进入关键字表**,§12 保留集合仍为空。列出的名字就是全部对外可见的名字;
+  多导出 / 声明却不导出分别报 `E0113` / `E0114`。运行期是 no-op —— 与 `EXPORT`
+  一样,接受 / 拒绝判定不变,只是过期密封面会在编译期被报出来。
+- **`wlwl sig` / `wlwl sig-gen`**:从模块反推签名骨架 / 打印签名。
+  三处渲染(stdout、JSON 的 `text` 字段、写盘内容)**同源**;`sig-gen`
+  **默认不覆盖**已有签名(`--force` 才覆盖);零导出的模块不写文件。
+- **`MATCH` 穷尽性 / 可达性诊断**(默认跟随 `gradual_typing`,可单独关):
+  非穷尽 `E0116`(warn 档 `W0116`)、不可达子句与永不执行的 default 臂
+  `W0117`。`W0117` **恒为警告**且**故意没有** `E0117` 配对 —— 不可达子句通常
+  出现在渐进重构的中间态,当硬错会拦下正在写的代码。非穷尽只在
+  **default 臂被省略**时报:那种情况下漏掉的分支会**静默得到 `NULL`**。
+  可枚举的构造子空间只有 `BOOLEAN` / `NULL` / `RESULT` 三种;整数 / 浮点 /
+  字符串 / 数组 / 字典**不报**(报了就是误报)。
+- **带显式约束的类型变量 `T: Comparable`**:调用点实例化,**运行期完全擦除**
+  (`Value` 模型一个字节没动,变量在运行期不存在)。约束违反在**编译期**报
+  `E0111` / `E0110`(复用既有码,本版不新增);运行期不拦 —— 没有
+  monomorphization 就没有运行期类型检查器。`Comparable` 的成员集合对着运行期
+  比较算子**量出来**:`INTEGER` / `FLOAT` / `STRING`,与 `cmp_op` 逐项一致。
+  裸的未知类型名(`x: Foo`)**不是**变量而是不透明类型,所以拼错类型名的
+  `E0110` 诊断没有被削弱。
+- **`wlwl lsp`**(语言服务器薄壳,零新依赖):`diagnostics` / `definition` /
+  `hover` + 由内建注册表驱动的补全。诊断口径与 `wlwl check` **共用同一个
+  函数**,编辑器里的划线不会比命令行少。能力只承诺这几项 ——
+  `initialize` 的 capabilities 里**没有** `renameProvider` /
+  `documentFormattingProvider`。
+- **`wlwl interface` / `wlwl schema`**:模块公开面与类型系统的机器可读 JSON
+  (spec 附录 E.2 / E.3)。工具据此认识 WLWL 的类型与静态契约诊断码,不必把
+  清单硬编码在自己代码里。
+- **spec v0.10**:**类型注解文法第一次进入规范**(附录 A 的 `Type` /
+  `TypeArg` / `BoundedVar` / `ModuleDecl` 产生式)—— 此前它只存在于实现。
+  新增 §2.6 静态类型词汇、§5.2.1 注解的静态解释、§7.4 `MATCH` 静态诊断、
+  §9.6 模块契约、附录 E 签名文件与 JSON 契约。
+- 偏差登记 `D10-NNN`(`docs/history/deviations-v0.10.md`)。
+
+### Changed
+
+- `wlwl fmt` 不再把**省略的** `MATCH` default 臂补写成 `, NULL` —— 补出来会让
+  「作者兜了底」与「作者漏了分支」在源码里长得一模一样,而后者正是
+  `E0116` 要报的东西。语义不变(spec §7.1:省略时值为 `NULL`)。
+- 签名文件里「`parse_braced` 之后残余记号中出现 `:`」现在报 `E0010`,
+  不再被静默吸收成一个名字里含括号的不透明类型。
+
+### Fixed
+
+- **spec §11.3 警告表与实现的码注册表漂移**:表里漏列 6 个会真发出去的 W 码
+  (`W0001` / `W0012` / `W0013` / `W0015` / `W0052` / `W0054`),并多列了一个
+  注册表里**根本不存在**的 `W0014`(该码位早已被 `W0015` 取代);§10.3 对
+  `W0014` 的交叉引用一并更正(实测 `UPPER` / `LOWER` 只转 ASCII,非 ASCII
+  原样保留且不发诊断)。
+- **规范 ↔ 注册表双向锁测试**:码清单**从规范正文抽取**而非在测试里手抄,
+  任何一侧漏改都让 `cargo test` 失败。
+- `docs/site/spec.md` 此前还写着「当前规范 = v0.7」(实际已是 v0.9),归档表
+  也缺 v0.8 / v0.9。
+- 附录 G 生成器里硬编码的规范指针停在 v0.8(改**生成器**,不改产物)。
+- `wlwl-std` 的模块目录漏了 `wlwl:std.agent`;并落定 `## Naming` 四条约定 +
+  守门测试。
+
+### Known limitations
+
+- **`Effect::MethodCall` / `Effect::ProtocolViolation` 仍是悬空承诺**:两个
+  变体在 `Effect` 枚举里,但 `CALL_METHOD` 路径**从不 raise**。收口需要
+  决策点 **D-4**(真 raise / 规范降级 / 维持),**尚未拍板** —— 见
+  `D10-010`。故计划书的成功标准 **S4 在 v0.10 发版时仍为部分开放**。
+- 类型注解的**箭头形式 `FUN(...) -> U` 与尖括号形式都不可达**:会被解析成
+  一个名字里含括号的不透明类型,不报错也不生效。spec §2.6 已如实写明
+  「本规范不承认这两种形式」—— `D10-005`。
+- 数组 / 字典的**穷尽性不判定**:`[1, _]` 与 `[_ , 2]` 的并集能盖住
+  `[_, _]`,而任一行单独都盖不住,需要完整的元数分解 —— `D10-006`。
+- 泛型**没有量词语法**,同一个变量在每个出现位置都要重写 `T: Comparable`
+  —— `D10-008`。
+- `wlwl fmt --check` 与句末分号:规范形式对单语句程序不输出 `;`,所以任何带
+  `;` 的单语句文件都会报 `W0053`(既有行为,无泛型的普通程序同样)。
+  —— `D10-009`。
+- 静态层抓不到未结构化内建的返回类型(首批覆盖 60 / 110 条),这些调用
+  落 `DYNAMIC` 因而不报 —— 范围裁剪,不是缺陷。
+
+### §0.4 Consistency (v0.9.0 → v0.10.0)
+
+| 一致性项 | v0.9.0 | v0.10.0 |
+|---|---|---|
+| 错误码 | 67 激活 | **74 激活**(`+E0110`–`E0116`;运行时码**逐个不变**,包管理码零新增) |
+| 警告码 | 15 | **23**(`+W0110`–`W0117`;`W0117` 恒警告,无 `E0117`) |
+| 内建数 | 110 | **110**(零新增;签名结构化不改内建集合,附录 G 表体逐字节不变) |
+| `wlwl-toml` | manifest / lock / MVS | **冻结**;至多 `[features]` 下的**只读**键 `gradual_typing` / `match_exhaustiveness`,零 schema 变更 |
+| spec 章节 | §1–§17 + 附录 A–G | §2.6 / §5.2.1 / §7.4 / §9.1 / §9.6 增补 + **新附录 E**;附录 G 重生成 |
+| 锁测试 | 1517 | **1656**(`+139`;C1/C2/C3/P1-1/P1-2/P1-3) |
+| 关键词表 | 14 | **14 不变**(`SEALED` 走前缀声明,词法面零扩张) |
+
+> 计划书 §12.2 预估的是「67 激活 + 18 警告」;实测 **74 + 23** —— Step 6 / Step 8
+> 在其后又分配了 `W0113`–`W0117` 与 `E0116`。数字变化本身**不违反**兼容承诺:
+> 新增码对 v0.9 程序**不可观察**(默认 `off`,`off` 档不调用 checker)。
+> 锁测试总数此处记 1656,为 **Step 10 收尾**的数;Step 12 的规范锁测试
+> (+3)使全量达到 1731。
+
+---
 
 ## [v0.9.0] — 2026-09-25
 
