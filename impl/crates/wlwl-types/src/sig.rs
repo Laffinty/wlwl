@@ -347,6 +347,76 @@ impl fmt::Display for ModuleSig {
     }
 }
 
+// ── 生成(sig-gen 的地基) ────────────────────────────────────
+
+/// 从模块实现**反推**一份签名骨架(计划书 §4.3 C3 的生成侧)。
+///
+/// 导出名来自 `EXPORT` 节点,类型来自根作用域绑定表 —— 也就是同一次
+/// 类型遍历的产物,不另写一套推导。查不到绑定(理论上不该发生:`EXPORT`
+/// 一个未绑定的名运行期就会 `E0020`)一律落 `DYNAMIC`,即「我不表态」。
+///
+/// **生成物必须永远可解析**,这是硬约束:`sig-gen` 产出的文件要能被
+/// `check` 读回来(锁测试 `sig_gen_roundtrip_parse_check`)。签名文法
+/// 能表达的类型比实现侧的类型 IR 窄 —— 嵌套位置**写不出函数类型**
+/// (方括号形式的 `FUN[…]` 解析后返回类型恒为 `DYNAMIC`,渲染它等于
+/// 悄悄丢掉返回类型),所以那种位置一律降级为 `DYNAMIC`,而不是渲染成
+/// 一个「看起来精确、实际更弱」的类型。顶层函数类型照常渲染成
+/// `名字(形参) : 返回`。
+///
+/// 降级规则集中在 [`sig_safe_ty`],改签名文法时它和
+/// [`ModuleSig`]'s `Display` 必须一起改。
+pub fn sig_from_module(program: &Expr, declared: &[DeclaredBinding]) -> ModuleSig {
+    let mut entries = BTreeMap::new();
+    for (name, _) in exported_names(program) {
+        let ty = declared
+            .iter()
+            .find(|b| b.name == name)
+            .map(|b| b.ty.clone())
+            .unwrap_or(Ty::Dynamic);
+        entries.insert(
+            name.clone(),
+            SigEntry {
+                name,
+                // line = 0:生成物没有「签名文件里的行」可言,渲染也不
+                // 打印行号,只用于回显解析结果的来源。
+                ty: sig_safe_ty(ty, true),
+                line: 0,
+            },
+        );
+    }
+    ModuleSig { entries }
+}
+
+/// 把类型收敛到签名文法表达得了的形状。`top_level` 为真时函数类型照旧
+/// 保留(渲染成 `名字(形参) : 返回`),否则降级为 `DYNAMIC`。
+fn sig_safe_ty(ty: Ty, top_level: bool) -> Ty {
+    match ty {
+        Ty::Fun { .. } if !top_level => Ty::Dynamic,
+        Ty::Fun { params, ret } => Ty::Fun {
+            params: params
+                .iter()
+                .map(|p| sig_safe_ty(p.clone(), false))
+                .collect(),
+            ret: Box::new(sig_safe_ty(*ret, false)),
+        },
+        Ty::Array(e) => Ty::Array(Box::new(sig_safe_ty(*e, false))),
+        Ty::Dict(k, v) => Ty::Dict(
+            Box::new(sig_safe_ty(*k, false)),
+            Box::new(sig_safe_ty(*v, false)),
+        ),
+        Ty::Option(t) => Ty::Option(Box::new(sig_safe_ty(*t, false))),
+        Ty::Result(t, e) => Ty::Result(
+            Box::new(sig_safe_ty(*t, false)),
+            Box::new(sig_safe_ty(*e, false)),
+        ),
+        Ty::Named { name, args } => Ty::Named {
+            name,
+            args: args.iter().map(|a| sig_safe_ty(a.clone(), false)).collect(),
+        },
+        other => other,
+    }
+}
+
 // ── 契约检查 ──────────────────────────────────────────────────
 
 /// 一个模块对外的契约:签名文件(可选)+ 密封面(可选)。
@@ -1063,5 +1133,112 @@ EXPORT either : OPTION[INTEGER]
         let diags = check_imports(&ast, &modules);
         assert_eq!(diags.len(), 1);
         assert_eq!(diags[0].kind.codes().unwrap().0.as_str(), "E0113");
+    }
+
+    // ---- 生成侧(sig-gen 的地基) ----
+
+    fn generated(module_src: &str) -> String {
+        let module = parse(module_src, "m.wll").expect("module must parse");
+        let out = check_program_detailed(&module, &HashMap::new());
+        sig_from_module(&module, &out.declared).to_string()
+    }
+
+    /// 计划书点名的验收项:**生成物可被解析回来**,且来回一致。
+    #[test]
+    fn sig_gen_roundtrip_parse_check() {
+        let text = generated(
+            "LET(add, FUN((a: INTEGER, b: INTEGER) : INTEGER, +(a, b)));\n\
+             LET(PI, 3);\n\
+             LET(names, [\"x\"]);\n\
+             EXPORT([\"add\", \"PI\", \"names\"]);\n",
+        );
+        assert_eq!(
+            text,
+            "EXPORT PI : INTEGER\n\
+             EXPORT add (INTEGER, INTEGER) : INTEGER\n\
+             EXPORT names : ARRAY[STRING]\n"
+        );
+        // 解析回来 → 再渲染,逐字节相同。
+        let reparsed = parse_module_sig(&text, "m.wll.sig").expect("generated text parses");
+        assert_eq!(reparsed.to_string(), text);
+    }
+
+    /// 生成物**必须**永远可解析。降级规则就是为此存在的:方括号形式的
+    /// `FUN[…]` 解析后返回类型恒为 `DYNAMIC`(源码里还没有箭头形式,
+    /// 见模块文档),所以在**非顶层**位置渲染函数类型等于悄悄丢掉返回
+    /// 类型 —— 那里只能落 `DYNAMIC`。
+    #[test]
+    fn unrenderable_nested_function_types_degrade_to_dynamic() {
+        // 形参注解写成 `FUN[INTEGER]` 是源码里**能到达**的函数类型形状,
+        // 也是签名文法表达不了的形状。
+        let text = generated(
+            "LET(apply, FUN((f: FUN[INTEGER]) : STRING, \"\"));\n\
+             EXPORT([\"apply\"]);\n",
+        );
+        assert_eq!(text, "EXPORT apply (DYNAMIC) : STRING\n");
+        assert!(parse_module_sig(&text, "m.wll.sig").is_ok());
+    }
+
+    #[test]
+    fn a_container_of_functions_degrades_only_the_inner_slot() {
+        let text = generated(
+            "LET(table, [FUN((x: INTEGER) : INTEGER, x)]);\n\
+             LET(ok, 1);\n\
+             EXPORT([\"table\", \"ok\"]);\n",
+        );
+        assert_eq!(text, "EXPORT ok : INTEGER\nEXPORT table : ARRAY[DYNAMIC]\n");
+        assert!(parse_module_sig(&text, "m.wll.sig").is_ok());
+    }
+
+    /// 没导出的绑定不进签名 —— 签名描述的是公开面。
+    #[test]
+    fn only_exported_bindings_reach_the_signature() {
+        let text = generated("LET(internal, 1); LET(public, 2); EXPORT([\"public\"]);\n");
+        assert_eq!(text, "EXPORT public : INTEGER\n");
+    }
+
+    /// 导出了却没有根作用域绑定(理论上运行期会先 `E0020`)时,签名落
+    /// `DYNAMIC` —— 生成器不猜,也不报错。
+    #[test]
+    fn an_unbound_export_falls_back_to_dynamic() {
+        let module = parse("EXPORT([\"ghost\"]);", "m.wll").expect("parses");
+        let out = check_program_detailed(&module, &HashMap::new());
+        let sig = sig_from_module(&module, &out.declared);
+        assert_eq!(sig.entries["ghost"].ty, Ty::Dynamic);
+        assert_eq!(sig.to_string(), "EXPORT ghost : DYNAMIC\n");
+    }
+
+    /// 零导出的模块生成**空**签名(而不是编造一个)。
+    #[test]
+    fn a_module_without_exports_generates_an_empty_signature() {
+        assert_eq!(generated("LET(a, 1);\n"), "");
+    }
+
+    /// 零参函数是合法签名条目,往返得回来。
+    #[test]
+    fn a_zero_parameter_function_round_trips() {
+        let text = generated("LET(answer, FUN(() : INTEGER, 42));\nEXPORT([\"answer\"]);\n");
+        assert_eq!(text, "EXPORT answer () : INTEGER\n");
+        let reparsed = parse_module_sig(&text, "m.wll.sig").expect("parses");
+        assert_eq!(reparsed.to_string(), text);
+    }
+
+    /// 生成的签名**必须**能让 `check` 静默通过 —— 契约自洽是 sig-gen
+    /// 的基本承诺,不是加分项。
+    #[test]
+    fn a_generated_signature_satisfies_its_own_module() {
+        let module_src = "LET(add, FUN((a: INTEGER, b: INTEGER) : INTEGER, +(a, b)));\n\
+                          LET(PI, 3);\n\
+                          EXPORT([\"add\", \"PI\"]);\n";
+        let module = parse(module_src, "m.wll").expect("parses");
+        let out = check_program_detailed(&module, &HashMap::new());
+        let sig = sig_from_module(&module, &out.declared);
+        let contract = ModuleContract::from_module(&module, "m.wll", Some(sig));
+        let check = check_exports(&module, &out.declared, &contract);
+        assert!(
+            check.diags.is_empty(),
+            "a generated signature must not condemn its own module: {:?}",
+            check.diags
+        );
     }
 }

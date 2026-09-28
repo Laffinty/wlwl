@@ -5,6 +5,8 @@
 //!   - `wlwl:std.fs`     — `READ_FILE`, `WRITE_FILE`, `EXISTS` (§15.3)
 //!   - `wlwl:std.json`   — `PARSE`, `STRINGIFY` (§15.3 + E0070/E0071)
 //!   - `wlwl:std.ai`     — ASK / ASK_STREAM stubs (§15.13, Phase 4 batch 3)
+//!   - `wlwl:std.agent`  — agent-shaped helpers over `std.ai`
+//!     (`TASK`, `TOOL`, `CALL_TOOL`, `MODEL`, `CONTEXT`; §15.14, Phase D3)
 //!   - `wlwl:std.format` — `FORMAT` + the shared template grammar (§15.8 / §10.6, Phase B5)
 //!   - `wlwl:std.collection` — **name catalog only** for the 17 higher-order
 //!     collection functions (§15.7 / §10.5, Phase B6). The real callback-aware
@@ -13,6 +15,28 @@
 //!   - `wlwl:std.test`   — **name catalog only** for the in-process test
 //!     framework (§15.9, Phase B7). Real impls live in
 //!     `wlwl-eval::test`; same std-boundary rationale as collection.
+//!
+//! This list is **locked by a test** against [`resolve`] — a std module
+//! that is reachable but unlisted is a documentation bug, and the test
+//! says so out loud.
+//!
+//! ## Naming
+//!
+//! Four conventions, applied everywhere (C5′, v0.10 Step 7). Renaming is
+//! a **breaking change** for every `IMPORT("wlwl:std.X", ["…"])` in the
+//! wild, so this section exists to make "no, that name is the API".
+//!
+//! | Thing | Convention | Example |
+//! |---|---|---|
+//! | Module path | `wlwl:std.<domain>`, lowercase, one word per domain | `wlwl:std.collection` |
+//! | Exported function | `UPPER_SNAKE` (a *name*, not a keyword) | `READ_FILE` |
+//! | Rust-side shim | `std_<lowercase name>` | `std_read_file` |
+//! | Binding table | `pub static SPEC: ModuleSpec` | — |
+//!
+//! `SPEC.functions` is the single source of truth for what a module
+//! exports: the eval side binds names from that slice and nothing else
+//! (the two catalog-only modules — `collection`, `test` — are the
+//! documented exceptions, and their own files explain why).
 //!
 //! ## Design boundary
 //!
@@ -390,5 +414,105 @@ mod tests {
         let args = vec![StdValue::Number(serde_json::Number::from(1))];
         let err = expect_string("F", &args, 0, 1).unwrap_err();
         assert_eq!(err.code, ErrorCode::E0030);
+    }
+
+    // ---- C5′(v0.10 Step 7):文档与命名约定的守门测试 ----
+    //
+    // 这些测试不检查行为(行为由各模块自己的单测负责),它们检查**文档
+    // 没撒谎**:能被 `IMPORT` 到的模块必须出现在 crate 级目录里,而且
+    // `SPEC.path` 必须与文件名对得上。v0.10 Step 7 之前 `wlwl:std.agent`
+    // 就是「`resolve()` 里有、目录里没有」—— 这类漂移靠人眼是看不住的。
+
+    /// 每个 std 模块的 `SPEC`。这里引用 **SPEC 本体**而不是手抄路径
+    /// 字符串,所以下面前两条测试永远对着真实路径说话。
+    const ALL_SPECS: &[&ModuleSpec] = &[
+        &io::SPEC,
+        &fs::SPEC,
+        &json::SPEC,
+        &ai::SPEC,
+        &agent::SPEC,
+        &format::SPEC,
+        &collection::SPEC,
+        &test::SPEC,
+    ];
+
+    /// crate 级目录(`//! Modules exposed:` 段)必须列出每个模块。
+    #[test]
+    fn every_module_is_listed_in_the_crate_catalog() {
+        let catalog = include_str!("lib.rs");
+        for spec in ALL_SPECS {
+            assert!(
+                catalog.contains(spec.path),
+                "`{}` is a std module but missing from the crate-level \
+                 module catalog in lib.rs",
+                spec.path
+            );
+        }
+    }
+
+    /// `src/` 下每个模块文件都必须在自己的文档头里写清自己的路径,且
+    /// **必须已登记进 `ALL_SPECS`**。
+    ///
+    /// 这一条是整套守门的关键:新增 std 模块时,忘了登记就会在这里被
+    /// 抓出来,而不是等到某人 `IMPORT` 了一个目录里查不到的名字。
+    #[test]
+    fn every_module_file_documents_and_registers_its_own_path() {
+        let mut files: Vec<String> = std::fs::read_dir("src")
+            .expect("unit tests run with the package root as cwd")
+            .filter_map(|e| e.ok())
+            .map(|e| e.file_name().to_string_lossy().to_string())
+            .filter(|n| n.ends_with(".rs") && n != "lib.rs")
+            .collect();
+        files.sort();
+        assert_eq!(
+            files.len(),
+            ALL_SPECS.len(),
+            "src/ has {} module file(s) but ALL_SPECS registers {} — \
+             every std module needs a SPEC and an ALL_SPECS entry",
+            files.len(),
+            ALL_SPECS.len()
+        );
+        for name in &files {
+            let source =
+                std::fs::read_to_string(format!("src/{name}")).expect("module source is readable");
+            let spec = ALL_SPECS
+                .iter()
+                .find(|s| source.contains(&format!("path: \"{}\"", s.path)))
+                .unwrap_or_else(|| {
+                    panic!("{name}: no registered SPEC.path matches — add its SPEC to ALL_SPECS")
+                });
+            assert!(
+                source.contains(spec.path),
+                "{name} must name its own module path `{}` in its doc header",
+                spec.path
+            );
+        }
+    }
+
+    /// 命名约定(C5′):`SPEC.path` 与 `resolve()` 的键一致,导出的名字
+    /// 全是 `UPPER_SNAKE`,且没有重复。改名对每个
+    /// `IMPORT("wlwl:std.X", ["…"])` 都是破坏性变更,所以形状用测试
+    /// 钉住,而不是靠 code review 记得。
+    #[test]
+    fn module_paths_and_export_names_follow_the_naming_convention() {
+        for spec in ALL_SPECS {
+            let resolved = resolve(spec.path)
+                .unwrap_or_else(|| panic!("{} must resolve to a SPEC", spec.path));
+            assert_eq!(
+                resolved.path, spec.path,
+                "SPEC.path must match its resolve() key"
+            );
+            let mut seen = std::collections::HashSet::new();
+            for (name, _) in spec.functions {
+                assert!(
+                    name.chars()
+                        .all(|c| c.is_ascii_uppercase() || c == '_' || c.is_ascii_digit()),
+                    "{} exports `{name}`, which is not UPPER_SNAKE",
+                    spec.path
+                );
+                assert!(!name.is_empty(), "{} exports an empty name", spec.path);
+                assert!(seen.insert(*name), "{} exports `{name}` twice", spec.path);
+            }
+        }
     }
 }

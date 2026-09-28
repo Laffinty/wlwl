@@ -575,23 +575,95 @@ C2 在 v0.10 的可执行语义收敛为:
 
 ### 4.3 C3 — 签名校验 + `sig-gen`
 
+> **状态:已完成(Step 7)。** 目标里的「编译期实现满足签名」**在 Step 6
+> 就已交付**(§4.1 的契约检查),Step 7 只做**生成侧**。因此本 Step 的
+> 实际落点比原计划小一档,人日也落在下限。
+
 | 项 | 内容 |
 |----|------|
-| **目标** | 编译期「实现满足签名」;自动生成签名骨架 |
-| **挂载点** | 与 `wlwl ast --json` 同风格 CLI:`wlwl sig-gen <file>` / `wlwl sig <file>` |
-| **变更面** | `wlwl-cli/src/main.rs` 子命令 +1~2;复用 C1 签名 IO;生成骨架**可 parse/check** |
+| **目标** | 自动生成签名骨架;生成物必须可被 `check` 读回来 |
+| **挂载点** | 与 `wlwl ast --json` 同风格的 CLI |
+| **变更面** | `wlwl-types/src/sig.rs` 加 `sig_from_module`(生成器);`wlwl-cli` 加 `sig` / `sig-gen` 两个子命令 + `SigFormat` + `SigOutput` |
 | **预估人日** | **3–4 人日**(E4) |
-| **验收** | `sig-gen` 产物可被 `check` 通过;桩测试锁 JSON/文本格式 |
+| **验收** | ✅ `sig-gen` 产物可被 `check` 通过(`c3_sig_gen_output_passes_check`);✅ 文本/JSON 两形态被锁测试固定(`c3_sig_json_shape_is_stable`) |
+| **实测** | wlwl-types 7 项 + wlwl-cli 6 项 |
+
+**子命令形态**(与既有 `ast` / `fmt` 保持同一套约定):
+
+| 子命令 | 行为 | 写盘? |
+|---|---|---|
+| `wlwl sig <file>` | 把签名打到 stdout(`--format=text\|json`) | ❌ 从不 |
+| `wlwl sig-gen <file>` | 写 `<file>.wll.sig`(`--force` 才覆盖) | ✅ 只写这一个新文件 |
+
+**三条纪律**:
+
+1. **默认不覆盖**已有签名。手调过的签名是手调的理由。这是 **CLI 用法
+   错误,故意不占用语言错误码** —— 码表纪律要求「一个码号只对应一种
+   条件」,而「会不会覆盖」不是语言问题,所以走 stderr + exit 1。
+2. **零导出的模块不写文件**。「不导出任何名字」的诚实契约就是**没有**
+   签名文件(与 v0.9 行为同解);留一个 0 字节文件只污染仓库。
+3. **生成物必须永远可解析**(`sig_gen_roundtrip_parse_check`)。这逼出了
+   下面那条降级规则。
+
+**降级规则 —— 签名文法比实现侧的类型 IR 窄**。顶层函数类型照常渲染成
+`名字(形参) : 返回`;但**非顶层**位置(容器元素、形参、返回类型内部)
+**写不出函数类型**:方括号形式的 `FUN[…]` 解析后返回类型恒为
+`DYNAMIC`(源码里还没有箭头形式,见 §3.3 陷阱),渲染它等于**悄悄丢掉
+返回类型**,生成出一份「看起来精确、实际更弱」的契约。故那一律降级为
+`DYNAMIC` —— 说「我不表态」比说一个假精确的类型诚实。规则集中在
+`sig_safe_ty`,等 **D-5** 箭头语法落地后可解除。锁测试
+`unrenderable_nested_function_types_degrade_to_dynamic` /
+`a_container_of_functions_degrades_only_the_inner_slot`。
+
+**三处渲染同源**:`wlwl sig` 的 stdout、`wlwl sig --format=json` 的
+`text` 字段、`sig-gen` 写盘的内容,全部走 `ModuleSig` 的同一个
+`Display`,不各自渲染 —— 所以不存在「JSON 说一套、文本说另一套」。
+JSON 带 `sig_schema_version`(照 `ast --json` 的先例),函数条目用
+`params` + `returns`、值条目用 `type`,两组字段互斥且缺省不出现在
+JSON 里。
+
+**`gradual_typing` 不参与本 Step**:显式的工具调用,用户要的就是签名,
+与门禁开关无关。类型推导**带内建签名表**,所以 `LET(n, LEN([1, 2]))`
+定成 `INTEGER` 而不是笼统的 `DYNAMIC`(A6′ 的结构化签名在这里直接
+见效,锁测试 `c3_generated_signatures_use_builtin_return_types`)。
 
 ### 4.4 C5′ — std 命名整理(**仅命名/文档**)
+
+> **状态:已完成(Step 7)。** 审计发现的**真实缺口只有一个**,其余是
+> 把「本来就是惯例、只是没写下来」的东西落成文 + 用测试钉住。
 
 | 项 | 内容 |
 |----|------|
 | **目标** | 仅命名/文档整理(分层已存在);**无行为变化** |
-| **挂载点** | `wlwl-std` 文档注释 / README / 附录表 |
-| **变更面** | docs only(或纯 rename 的 `#[doc]`);**禁止**改函数语义/导出名 |
+| **变更面** | docs only + **三条守门测试**;**未新增任何 std 导出名,未改任何函数语义** |
 | **预估人日** | **1 人日**(E4) |
-| **验收** | 锁测试全绿;`git diff` 无 `wlwl-std` 语义改动 |
+| **验收** | ✅ 锁测试全绿;✅ `git diff` 对 `wlwl-std` 只有 `lib.rs` 的注释与测试块 |
+
+**审计发现的真缺口**:`wlwl-std/src/lib.rs` 的 crate 级模块目录
+(`//! Modules exposed:`)**漏了 `wlwl:std.agent`** —— `pub mod agent;`
+有、`resolve()` 里有、文件文档头有,唯独目录里没有。这类漂移靠人眼看
+不住,所以补条目之外还要有测试。
+
+**交付**:
+
+- 补齐目录条目,并加一句「本目录被测试锁住」的说明;
+- 新增 `## Naming` 段,把四条约定写成表:模块路径
+  `wlwl:std.<domain>`、导出名 `UPPER_SNAKE`、Rust 侧 shim
+  `std_<小写>`、绑定表 `pub static SPEC`。**改名对每个
+  `IMPORT("wlwl:std.X", ["…"])` 都是破坏性变更**,所以这段存在的意义
+  是让「不,那个名字就是 API」有据可依;
+- **三条守门测试**(`wlwl-std/src/lib.rs` 测试块):目录列出每个模块 /
+  `src/` 下每个模块文件都写清自己的路径且已登记 / `SPEC.path` 与
+  `resolve()` 键一致、导出名全 `UPPER_SNAKE` 且无重复。
+
+守门测试的关键在第二条:它用 `read_dir("src")` 扫真实文件,与测试内的
+`ALL_SPECS`(引用 **SPEC 本体**而非手抄路径串)交叉验证 —— **新增
+std 模块忘了登记,会在 `cargo test` 里当场失败**,而不是等到某人
+`IMPORT` 了一个目录里查不到的名字。
+
+**已知小洞(留痕)**:若有人只往 `resolve()` 里加一条、连模块文件都不
+建,上面三条测试都抓不到(没有反射可用)。那本来也是坏提交。
+
 
 ### 4.5 P0-2 立项单汇总
 
@@ -814,9 +886,15 @@ C2 在 v0.10 的可执行语义收敛为:
       / no_sig_behaves_as_v09 / c1_* / c2_*
       / resolve_module_file_agrees_with_the_loader
       / a_stale_seal_does_not_break_a_running_program
-[Step 7] impl:sig-gen / sig 校验 CLI(C3) + std 命名整理(C5′)
-   ├─ wlwl sig-gen / wlwl sig
-   └─ 锁测试:sig_gen_roundtrip_parse_check
+[Step 7] impl:sig-gen / sig 校验 CLI(C3) + std 命名整理(C5′)  ✅ 完成
+   ├─ `wlwl sig <file>` 只读(stdout,text|json) + `wlwl sig-gen <file>`(--force 才覆盖)
+   ├─ wlwl-types 加 sig_from_module:签名文法表达不了的位置一律降级 DYNAMIC
+   ├─ 三处渲染同源(一个 Display):stdout / JSON 的 text 字段 / 写盘内容
+   ├─ C5′:补 lib.rs 目录漏掉的 wlwl:std.agent + 落 `## Naming` 四条约定
+   └─ 锁测试:sig_gen_roundtrip_parse_check / unrenderable_nested_function_
+      types_degrade_to_dynamic / c3_* 端到端 6 项
+      / every_module_file_documents_and_registers_its_own_path(C5′ 守门)
+      (C3 的「编译期实现满足签名」Step 6 已交付,本 Step 只做生成侧)
 [Step 8] impl:MATCH 穷尽性 / 冗余(P1-1)
    ├─ 6 形态 usefulness / Maranget
    ├─ 诊断 E0116 / W0116 / W0117
@@ -867,7 +945,7 @@ C2 在 v0.10 的可执行语义收敛为:
 > **D-2 附带效果**:`*.wll.sig` 是旁路文件,「无签名 = v0.9 行为」因此是
 > 结构性保证,不是约定。
 
-### 10.3 锁测试预期增量(**Step 0–6 已实测,其余仍为估计**)
+### 10.3 锁测试预期增量(**Step 0–7 已实测,其余仍为估计**)
 
 | 时点 | 实测总数 | 增量 |
 |------|---------|------|
@@ -875,11 +953,13 @@ C2 在 v0.10 的可执行语义收敛为:
 | Step 1 收尾 | 1536 / 0 | +19(A1) |
 | Step 2 收尾 | 1568 / 0 | +32(A3:wlwl-types 20 + wlwl-toml 6 + wlwl-cli 6) |
 | Step 3–5 收尾 | 1590 / 0 | +22(A4 8 + A2′ 6 + A6′ 8) |
-| Step 6 收尾 | **1639 / 0** | **+49**(C1/C2:error 1 + parser 4 + eval 6 + types 20 + cli 10 + 其余跨 crate 8) |
+| Step 6 收尾 | 1639 / 0 | +49(C1/C2) |
+| Step 7 收尾 | **1656 / 0** | **+17**(C3:wlwl-types 8 + wlwl-cli 6;C5′:wlwl-std 3 守门测试) |
 
-> 目标 ≈1600±30 **已达成且略超**。**不虚报**:每项以实测为准,`off` 档
+> 目标 ≈1600±30 **已达成**。**不虚报**:每项以实测为准,`off` 档
 > 的零破坏由 `c1_respects_the_three_gradual_typing_levels` 反证(用一份
 > 「开启时必报」的签名文件证明门禁确实没跑)。
+
 
 
 - v0.9.0 基线 ≈**1517 passed** + 0 failed(保留,只增不减)

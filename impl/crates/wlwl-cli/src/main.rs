@@ -80,6 +80,41 @@ enum Cmd {
         #[arg(long)]
         check: bool,
     },
+    /// Print the module signature implied by a .wll file (v0.10 Step 7 /
+    /// plan §4.3 C3). Writes nothing -- pipe it yourself.
+    Sig {
+        /// Path to the .wll file
+        file: PathBuf,
+        /// Signature rendering: canonical text (default) or machine-readable JSON
+        #[arg(long, value_enum, default_value_t = SigFormat::Text)]
+        format: SigFormat,
+    },
+    /// Write the module signature to `<file>.wll.sig` (v0.10 Step 7 /
+    /// plan §4.3 C3).
+    ///
+    /// Never overwrites an existing signature unless `--force`: a
+    /// hand-tuned signature is hand-tuned for a reason.
+    SigGen {
+        /// Path to the .wll file
+        file: PathBuf,
+        /// Overwrite an existing `<file>.wll.sig`
+        #[arg(long)]
+        force: bool,
+    },
+}
+
+/// `wlwl sig` output shape.
+///
+/// Deliberately **not** the shared [`OutputFormat`]: there is no meaningful
+/// JSONL form for a single module's signature, and pretending otherwise
+/// would push that decision onto whoever wires the tool up later.
+#[derive(ValueEnum, Debug, Clone, Copy, Default)]
+enum SigFormat {
+    /// Canonical signature text -- byte-identical to what `sig-gen` writes
+    #[default]
+    Text,
+    /// Machine-readable JSON (AI tools / future `wlwl lsp` diagnostics)
+    Json,
 }
 
 fn main() -> ExitCode {
@@ -89,6 +124,8 @@ fn main() -> ExitCode {
         Cmd::Check { file, format } => run_file(&file, format, false),
         Cmd::Ast { file, format } => ast_file(&file, format),
         Cmd::Fmt { file, check } => fmt_file(&file, check),
+        Cmd::Sig { file, format } => sig_file(&file, format),
+        Cmd::SigGen { file, force } => sig_gen_file(&file, force),
     }
 }
 
@@ -902,6 +939,173 @@ fn normalize_path(p: &std::path::Path) -> PathBuf {
     out
 }
 
+// ── v0.10 Step 7 (P0-2 C3): sig / sig-gen ─────────────────────
+
+/// 从一个 `.wll` 文件反推签名 —— `sig` 与 `sig-gen` 的共用前半段。
+///
+/// 类型来自同一次类型遍历的根作用域绑定表(带内建签名表,所以
+/// `LET(n, LEN([1, 2]))` 能定成 `INTEGER` 而不是 `DYNAMIC`)。
+/// `gradual_typing` 在这里**不参与**:显式的工具调用,用户要的就是签名,
+/// 跟门禁开关无关。
+fn derive_signature(file: &std::path::Path) -> Result<wlwl_types::ModuleSig, WlwlError> {
+    let source = fs::read_to_string(file).map_err(|e| {
+        WlwlDiagnostic::new(
+            ErrorCode::E0042,
+            format!("cannot read file ''{}'': {}", file.display(), e),
+            Location::point(file.to_string_lossy().to_string(), 0, 0),
+        )
+    })?;
+    let ast = parse(&source, &file.to_string_lossy())?;
+    let builtins = builtin_sig_table();
+    let checked = wlwl_types::check_program_detailed(&ast, &builtins);
+    Ok(wlwl_types::sig_from_module(&ast, &checked.declared))
+}
+
+/// `wlwl sig <file>` —— 把签名打到 stdout,一个字节都不写盘。
+///
+/// 与 `wlwl ast --json` 同一形态的只读子命令:想落盘用 `sig-gen`。
+fn sig_file(file: &std::path::Path, format: SigFormat) -> ExitCode {
+    let sig = match derive_signature(file) {
+        Ok(s) => s,
+        // 诊断渲染固定走 human:本子命令的 `--format` 只管签名本身。
+        Err(e) => return report_error(e, OutputFormat::Human),
+    };
+    match format {
+        SigFormat::Text => {
+            print!("{}", sig);
+            ExitCode::SUCCESS
+        }
+        SigFormat::Json => {
+            let out = SigOutput::new(file, &sig);
+            match serde_json::to_string_pretty(&out) {
+                Ok(s) => {
+                    println!("{}", s);
+                    ExitCode::SUCCESS
+                }
+                Err(e) => {
+                    eprintln!("internal: signature serialize failed: {}", e);
+                    ExitCode::from(2)
+                }
+            }
+        }
+    }
+}
+
+/// `wlwl sig-gen <file>` —— 把签名写进 `<file>.wll.sig`。
+///
+/// 三条纪律:
+/// 1. **默认不覆盖**已有签名(`--force` 才覆盖)—— 手调过的签名是手调
+///    的理由;这是 CLI 用法错误,所以走 stderr + exit 1 而**不占用一个
+///    语言错误码**(码表纪律:一个码号只对应一种条件,「会不会覆盖」不是
+///    语言问题)。
+/// 2. **零导出就不写文件**。「不导出任何名字」的诚实契约就是**没有**
+///    签名文件(与 v0.9 行为同解),留一个 0 字节文件只会污染仓库。
+/// 3. 写进去的内容必须能被 `check` 读回来 —— 生成侧的这条不变量由
+///    `wlwl-types` 的 `sig_gen_roundtrip_parse_check` 守住。
+fn sig_gen_file(file: &std::path::Path, force: bool) -> ExitCode {
+    let sig = match derive_signature(file) {
+        Ok(s) => s,
+        Err(e) => return report_error(e, OutputFormat::Human),
+    };
+    let target = sig_path_for(file);
+    if target.exists() && !force {
+        eprintln!(
+            "{}: signature file already exists; pass --force to overwrite",
+            target.display()
+        );
+        return ExitCode::from(1);
+    }
+    if sig.entries.is_empty() {
+        eprintln!(
+            "note: '{}' exports nothing; not writing a signature file",
+            file.display()
+        );
+        return ExitCode::SUCCESS;
+    }
+    let text = sig.to_string();
+    match fs::write(&target, &text) {
+        Ok(()) => {
+            println!(
+                "wrote {} ({} exports, {} bytes)",
+                target.display(),
+                sig.entries.len(),
+                text.len()
+            );
+            ExitCode::SUCCESS
+        }
+        Err(e) => {
+            eprintln!("cannot write '{}': {}", target.display(), e);
+            ExitCode::from(1)
+        }
+    }
+}
+
+/// `wlwl sig --format=json` 的输出形状(AI 工具 / 未来 `wlwl lsp` 消费)。
+///
+/// `text` 字段与 `wlwl sig <file>` 的 stdout、与 `sig-gen` 写盘的内容
+/// **逐字节相同** —— 三者共用 `ModuleSig` 的 `Display`,不各自渲染,
+/// 所以不存在「JSON 说一套、文本说另一套」。
+#[derive(serde::Serialize)]
+struct SigOutput {
+    /// 签名 schema 版本(照 `wlwl ast --json` 的先例带版本号)
+    sig_schema_version: &'static str,
+    /// 签名来源的 `.wll`
+    module: String,
+    /// 签名在磁盘上的位置(尚未写盘时它就是「将要写到哪」)
+    signature_file: String,
+    /// 规范文本,与文本输出逐字节相同
+    text: String,
+    /// 每条导出声明,按渲染顺序(名字升序)
+    entries: Vec<SigEntryOutput>,
+}
+
+/// 一条签名声明的 JSON 形态。函数用 `params` + `returns`,值用 `type`,
+/// 两组字段互斥(不出现的那组直接不出现在 JSON 里)。
+#[derive(serde::Serialize)]
+struct SigEntryOutput {
+    name: String,
+    /// `"function"` 或 `"value"`
+    kind: &'static str,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    r#type: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    params: Option<Vec<String>>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    returns: Option<String>,
+}
+
+impl SigOutput {
+    fn new(file: &std::path::Path, sig: &wlwl_types::ModuleSig) -> Self {
+        let entries = sig
+            .entries
+            .values()
+            .map(|e| match &e.ty {
+                Ty::Fun { params, ret } => SigEntryOutput {
+                    name: e.name.clone(),
+                    kind: "function",
+                    r#type: None,
+                    params: Some(params.iter().map(Ty::to_string).collect()),
+                    returns: Some(ret.to_string()),
+                },
+                other => SigEntryOutput {
+                    name: e.name.clone(),
+                    kind: "value",
+                    r#type: Some(other.to_string()),
+                    params: None,
+                    returns: None,
+                },
+            })
+            .collect();
+        SigOutput {
+            sig_schema_version: "1.0.0",
+            module: file.to_string_lossy().to_string(),
+            signature_file: sig_path_for(file).to_string_lossy().to_string(),
+            text: sig.to_string(),
+            entries,
+        }
+    }
+}
+
 /// 队列里要带 AST,而调用方只借给我们一份 —— `Expr` 是 `Clone` 的,复制
 /// 一份比把它改成 `Rc` 划算(模块文件都很小,而且整棵 AST 只复制一次)。
 fn clone_expr(e: &Expr) -> Expr {
@@ -1557,6 +1761,136 @@ mod tests {
             run_file(&root.join("main.wll"), OutputFormat::Human, true),
             ExitCode::SUCCESS
         );
+    }
+
+    // -- v0.10 Step 7 (P0-2 C3): wlwl sig / wlwl sig-gen ---------------
+
+    /// 写一个带 `EXPORT` 的模块,返回路径。
+    fn write_module(dir: &str, name: &str, source: &str) -> PathBuf {
+        let root = std::env::temp_dir().join("wlwl-cli-tests").join(dir);
+        let _ = fs::remove_dir_all(&root);
+        fs::create_dir_all(&root).unwrap();
+        let p = root.join(name);
+        fs::write(&p, source).unwrap();
+        p
+    }
+
+    const SIG_MODULE: &str = "\
+LET(add, FUN((a: INTEGER, b: INTEGER) : INTEGER, +(a, b)));
+LET(PI, 3);
+EXPORT([\"add\", \"PI\"]);
+";
+
+    /// `wlwl sig` 只打到 stdout,一个字节都不写盘。
+    #[test]
+    fn c3_sig_prints_the_signature_and_writes_nothing() {
+        let p = write_module("c3_sig", "math.wll", SIG_MODULE);
+        assert_eq!(sig_file(&p, SigFormat::Text), ExitCode::SUCCESS);
+        assert!(!sig_path_for(&p).exists(), "sig must not write anything");
+    }
+
+    /// 计划书点名的验收项:`sig-gen` 的产物能被 `check` 读回来(且
+    /// 契约自洽 —— 一份生成出来的签名不该反过来指控自己的模块)。
+    #[test]
+    fn c3_sig_gen_output_passes_check() {
+        let root = std::env::temp_dir()
+            .join("wlwl-cli-tests")
+            .join("c3_roundtrip");
+        let _ = fs::remove_dir_all(&root);
+        fs::create_dir_all(&root).unwrap();
+        // 工程开着 `error` 档:生成 → check,必须过。
+        fs::write(
+            root.join("wlwl.toml"),
+            "[package]\nname = \"p\"\nversion = \"0.0.1\"\nentry = \"math.wll\"\n\n[features]\ngradual_typing = \"error\"\n",
+        )
+        .unwrap();
+        let module = root.join("math.wll");
+        fs::write(&module, SIG_MODULE).unwrap();
+
+        assert_eq!(sig_gen_file(&module, false), ExitCode::SUCCESS);
+        let sig = sig_path_for(&module);
+        assert!(sig.is_file(), "sig-gen must write {}", sig.display());
+
+        // 产物能解析回来,且内容与文本输出逐字节相同。
+        let parsed = wlwl_types::parse_module_sig(
+            &fs::read_to_string(&sig).unwrap(),
+            &sig.to_string_lossy(),
+        )
+        .expect("generated signature parses");
+        assert_eq!(parsed.to_string(), fs::read_to_string(&sig).unwrap());
+
+        // 自查:生成的签名不判自己有罪。
+        assert_eq!(
+            run_file(&module, OutputFormat::Human, false),
+            ExitCode::SUCCESS
+        );
+    }
+
+    /// `sig-gen` 默认**不覆盖**:手调过的签名是手调的理由。
+    #[test]
+    fn c3_sig_gen_refuses_to_overwrite_without_force() {
+        let p = write_module("c3_refuse", "math.wll", SIG_MODULE);
+        assert_eq!(sig_gen_file(&p, false), ExitCode::SUCCESS);
+        let sig = sig_path_for(&p);
+        let first = fs::read_to_string(&sig).unwrap();
+        // 改模块但不改签名 → 拒绝,且**原文件一个字节都没动**。
+        fs::write(&p, "LET(add, 1);\nEXPORT([\"add\"]);\n").unwrap();
+        assert_eq!(sig_gen_file(&p, false), ExitCode::from(1));
+        assert_eq!(fs::read_to_string(&sig).unwrap(), first);
+        // `--force` 才覆盖。
+        assert_eq!(sig_gen_file(&p, true), ExitCode::SUCCESS);
+        assert_eq!(fs::read_to_string(&sig).unwrap(), "EXPORT add : INTEGER\n");
+    }
+
+    /// 零导出的模块不写签名文件:「不导出任何名字」的诚实契约就是**没有**
+    /// 签名文件(与 v0.9 行为同解),留个 0 字节文件只污染仓库。
+    #[test]
+    fn c3_sig_gen_skips_modules_without_exports() {
+        let p = write_module("c3_no_exports", "script.wll", "LET(a, 1);\nPRINT(a);\n");
+        assert_eq!(sig_gen_file(&p, false), ExitCode::SUCCESS);
+        assert!(!sig_path_for(&p).exists());
+    }
+
+    /// 生成的签名带内建返回类型(A6′ 的结构化签名在推导里生效):
+    /// `LEN([1, 2])` 返回 INTEGER 而不是笼统的 DYNAMIC。
+    #[test]
+    fn c3_generated_signatures_use_builtin_return_types() {
+        let p = write_module(
+            "c3_builtins",
+            "b.wll",
+            "LET(n, LEN([1, 2]));\nEXPORT([\"n\"]);\n",
+        );
+        let sig = derive_signature(&p).expect("signature derives");
+        assert_eq!(sig.to_string(), "EXPORT n : INTEGER\n");
+    }
+
+    /// JSON 形态:与文本逐字节同源,函数/值两组字段互斥。
+    #[test]
+    fn c3_sig_json_shape_is_stable() {
+        let p = write_module("c3_json", "math.wll", SIG_MODULE);
+        assert_eq!(sig_file(&p, SigFormat::Json), ExitCode::SUCCESS);
+        let sig = derive_signature(&p).expect("signature derives");
+        let json = serde_json::to_value(SigOutput::new(&p, &sig)).expect("serializes");
+        assert_eq!(json["sig_schema_version"], "1.0.0");
+        assert_eq!(json["module"], p.to_string_lossy().as_ref());
+        assert_eq!(
+            json["signature_file"],
+            sig_path_for(&p).to_string_lossy().as_ref()
+        );
+        // text 字段必须与文本输出逐字节相同 —— 三处渲染同源。
+        assert_eq!(json["text"], sig.to_string());
+        let entries = json["entries"].as_array().expect("entries array");
+        // 渲染顺序 = `BTreeMap` 的字节序,所以大写名排在小写名前面
+        // (`PI` < `add`)。确定即可,不必是好读序。
+        assert_eq!(entries[0]["name"], "PI");
+        assert_eq!(entries[0]["kind"], "value");
+        assert_eq!(entries[0]["type"], "INTEGER");
+        assert!(entries[0].get("params").is_none(), "值条目不带 params");
+        assert_eq!(entries[1]["name"], "add");
+        assert_eq!(entries[1]["kind"], "function");
+        assert_eq!(entries[1]["params"][0], "INTEGER");
+        assert_eq!(entries[1]["returns"], "INTEGER");
+        assert!(entries[1].get("type").is_none(), "函数条目不带 type");
     }
 
     #[test]
