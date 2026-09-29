@@ -2501,6 +2501,11 @@ mod tests {
         ErrorCode::E0061,
         ErrorCode::E0062,
         ErrorCode::E0063,
+        // [v0.10.1 / R10-014] 无缓冲通道的活锁护栏。加进来之前,这个码处在
+        // 「规范正文没写 + 这份手抄清单也没抄」的**双重盲区**里 —— 而下面那条
+        // `every_registered_code_is_covered_by_the_spec` 遍历的是**本清单**,
+        // 不是 enum,所以它在结构上就抓不到「新增一个码却忘了登记」这类漏改。
+        ErrorCode::E0064,
         ErrorCode::E0065,
         ErrorCode::E0066,
         ErrorCode::E0070,
