@@ -1,0 +1,7 @@
+// 密封面只写了 add,实现却把 secret 也导出了 —— 主角是这一行。
+// 注意 mod.wll.sig **声明了** secret:签名这一路是干净的,所以这份夹具
+// 验的只能是 SEALED 自己。
+LET(add, FUN((a: INTEGER, b: INTEGER) : INTEGER, +(a, b)));
+LET(secret, 42);
+SEALED(["add"]);
+EXPORT(["add", "secret"]);

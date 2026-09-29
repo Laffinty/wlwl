@@ -463,3 +463,227 @@ fn breaking_the_signature_is_reported_in_both_directions() {
         "a signature type that conflicts with the annotation must be E0115:\n{out}"
     );
 }
+
+// ─────────────────────────────────────────────────────────────────────
+// R10-073 · `SEALED` 密封面的端到端夹具
+// ─────────────────────────────────────────────────────────────────────
+
+/// [R10-073] `SEALED` 只有 `wlwl-types/src/sig.rs` 里的 **Rust 单测**,
+/// 没有任何一份走 CLI 的夹具。
+///
+/// `sealed_surface/` 刻意做成**只有 SEALED 能逮到**的形状:签名里
+/// **声明了** `secret`,密封面里没有。所以这一条验的不是「签名有没有覆盖
+/// 导出面」(那是 `the_module_contract_violations_are_all_reported` 的活,
+/// E0113 / E0114 / E0115 都归它),而是**密封面自己**有没有被强制执行。
+///
+/// 四个格子,少一个都不能证明「是 SEALED 抓的」:
+///
+/// | 格子 | 期望 | 证明什么 |
+/// |---|---|---|
+/// | 开档 + 密封面缺 `secret` | `E0113` | 密封面**被**执行 |
+/// | 开档 + 密封面补上 `secret` | 零诊断 | 不是「见 SEALED 就报」 |
+/// | 开档 + **删掉** `SEALED` 那一行 | 零诊断 | 不是签名抓的 |
+/// | 默认档(无清单) | 零诊断 | ADR-0020 S1 |
+#[test]
+fn r10_073_a_sealed_surface_that_undershoots_the_real_exports_is_reported() {
+    let bin = wlwl_binary();
+    let fixture = fixture_root().join("sealed_surface");
+    assert!(
+        fixture.is_dir(),
+        "conformance/sealed_surface must exist — without it `SEALED` has no \
+         CLI-level coverage at all, only Rust unit tests"
+    );
+    let mod_wll = std::fs::read_to_string(fixture.join("mod.wll")).expect("read mod.wll");
+    let sealed_line = "SEALED([\"add\"]);\n";
+    assert!(
+        mod_wll.contains(sealed_line),
+        "the fixture must keep its undershooting SEALED line; got:\n{mod_wll}"
+    );
+
+    // ① 开档:密封面缺 secret → E0113。
+    let on = stage(&fixture, "sealed_surface-on", Some("error"));
+    let (ok, out) = run_check(&bin, &on, "main.wll");
+    assert!(
+        !ok && out.contains("E0113"),
+        "an export missing from the SEALED surface must be E0113:\n{out}"
+    );
+    assert!(
+        out.contains("SEALED surface"),
+        "the diagnostic must name the SEALED surface specifically, otherwise we \
+         cannot tell it apart from the signature-side E0113:\n{out}"
+    );
+
+    // ② 密封面补上 secret → 零诊断(否则这条只是「见 SEALED 就报」)。
+    std::fs::write(
+        on.join("mod.wll"),
+        mod_wll.replace(sealed_line, "SEALED([\"add\", \"secret\"]);\n"),
+    )
+    .expect("widen the seal");
+    let (ok, out) = run_check(&bin, &on, "main.wll");
+    assert!(
+        ok,
+        "a SEALED surface that covers every export must be silent:\n{out}"
+    );
+
+    // ③ 删掉 SEALED 那一行 → 零诊断。签名声明了 secret,所以签名这一路是
+    //    干净的;不干净就说明这条 E0113 其实另有来源。
+    std::fs::write(on.join("mod.wll"), mod_wll.replace(sealed_line, "")).expect("drop the seal");
+    let (ok, out) = run_check(&bin, &on, "main.wll");
+    assert!(
+        ok,
+        "the same code without SEALED must be silent — the fixture only proves \
+         something if the seal is the sole cause:\n{out}"
+    );
+
+    // ④ 默认档:零诊断且程序能跑(ADR-0020 S1)。
+    let off = stage(&fixture, "sealed_surface-off", None);
+    let (ok, out) = run_check(&bin, &off, "main.wll");
+    assert!(ok, "the default tier must stay clean:\n{out}");
+    let (ok, out) = run_program(&bin, &off, "main.wll");
+    assert!(ok, "the sealed_surface fixture must also run:\n{out}");
+}
+
+// ─────────────────────────────────────────────────────────────────────
+// R10-074 · `match_exhaustiveness` 开关的**独立性**
+// ─────────────────────────────────────────────────────────────────────
+
+/// [R10-074] `match_exhaustiveness` **缺省跟随** `gradual_typing`(spec §9.4),
+/// 而 `static_types/` 全部夹具走的都是「只写 `gradual_typing = "error"`」
+/// 那一条路 —— 于是「这个开关自己开着的时候管不管用」**从未被验过**。
+///
+/// 实测行为是对的(下面这张表就是实测值),缺的是把它钉住。
+///
+/// 判据用**一份同时踩两个头**的程序:非穷尽 `MATCH`(该 `E0116`)+
+/// 注解不匹配(该 `E0110`)。两个码在同一个输出里,才能证明两个开关
+/// **互相独立**,而不是「一起被同一个总开关带着走」。
+#[test]
+fn r10_074_match_exhaustiveness_is_independent_of_gradual_typing() {
+    const PROG: &str = "LET(r, ERR(\"boom\"));\n\
+                         LET(out, MATCH(r, [[OK(v), \"ok\"]]));\n\
+                         PRINT(out);\n\
+                         LET(flag: BOOLEAN, \"yes\");\n\
+                         PRINT(flag);\n";
+
+    fn codes(text: &str) -> Vec<String> {
+        let mut v: Vec<String> = text
+            .lines()
+            .filter_map(|l| {
+                let i = l.find('[')?;
+                let j = l[i..].find(']')? + i;
+                Some(l[i + 1..j].to_string())
+            })
+            .filter(|c| c.starts_with('E') || c.starts_with('W'))
+            .collect();
+        v.sort();
+        v.dedup();
+        v
+    }
+
+    fn check(features: Option<&'static str>) -> (bool, String) {
+        let bin = wlwl_binary();
+        let dir = std::env::temp_dir().join("wlwl-switch-matrix");
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&dir).expect("staging dir");
+        std::fs::write(dir.join("main.wll"), PROG).expect("write program");
+        if let Some(features) = features {
+            std::fs::write(
+                dir.join("wlwl.toml"),
+                format!(
+                    "[package]\nname = \"sw\"\nversion = \"0.0.1\"\nentry = \"main.wll\"\n{features}"
+                ),
+            )
+            .expect("write manifest");
+        }
+        // 无清单时**不写** wlwl.toml —— 写一个只有 [package] 的也行,但那样
+        // 测的就不是「没有清单」这条路径了。
+        run_check(&bin, &dir, "main.wll")
+    }
+
+    /// 矩阵的一格。四元组太长,clippy 会叫 —— 拆成具名字段,失败信息才读得懂。
+    struct Cell {
+        /// `[features]` 段的内容;`None` = 不写清单。
+        features: Option<&'static str>,
+        /// 必须出现的码
+        want: &'static [&'static str],
+        /// 必须**不**出现的码
+        unwanted: &'static [&'static str],
+        /// 这一格证明什么(进失败信息)
+        why: &'static str,
+    }
+
+    const E0110: &str = "E0110";
+    const E0116: &str = "E0116";
+
+    let cells = [
+        Cell {
+            features: None,
+            want: &[],
+            unwanted: &[E0110, E0116],
+            why: "没有清单 = 静态层整条不执行(ADR-0020 S1)",
+        },
+        Cell {
+            features: Some("[features]\ngradual_typing = \"error\"\n"),
+            want: &[E0110, E0116],
+            unwanted: &[],
+            why: "只开 gradual:MATCH 头靠缺省跟随一起开",
+        },
+        Cell {
+            features: Some("[features]\nmatch_exhaustiveness = \"error\"\n"),
+            want: &[E0116],
+            unwanted: &[E0110],
+            why: "**只开 match**:E0116 独立生效,且没有顺手带上 E0110",
+        },
+        Cell {
+            features: Some(
+                "[features]\ngradual_typing = \"error\"\nmatch_exhaustiveness = \"off\"\n",
+            ),
+            want: &[E0110],
+            unwanted: &[E0116],
+            why: "**显式关掉 match**:E0116 必须消失,E0110 留着",
+        },
+        Cell {
+            features: Some(
+                "[features]\ngradual_typing = \"off\"\nmatch_exhaustiveness = \"error\"\n",
+            ),
+            want: &[E0116],
+            unwanted: &[E0110],
+            why: "反向:gradual 关、match 开,只剩 E0116",
+        },
+        Cell {
+            features: Some(
+                "[features]\ngradual_typing = \"off\"\nmatch_exhaustiveness = \"off\"\n",
+            ),
+            want: &[],
+            unwanted: &[E0110, E0116],
+            why: "两个都关 = 干净",
+        },
+    ];
+
+    for cell in &cells {
+        let label = cell.features.unwrap_or("(无清单)").replace('\n', " ");
+        let (ok, out) = check(cell.features);
+        for code in cell.want {
+            assert!(
+                out.contains(code),
+                "[{label}] expected {code} — {}\n{out}",
+                cell.why
+            );
+        }
+        for code in cell.unwanted {
+            assert!(
+                !out.contains(code),
+                "[{label}] must NOT report {code} — {}\n{out}",
+                cell.why
+            );
+        }
+        // 只要这一格期望零诊断,就必须真的 rc=0;期望有码就必须 rc!=0。
+        let expect_clean = cell.want.is_empty();
+        assert_eq!(
+            ok,
+            expect_clean,
+            "[{label}] rc mismatch (clean={expect_clean}) — {}; codes={:?}\n{out}",
+            cell.why,
+            codes(&out)
+        );
+    }
+}

@@ -1,0 +1,20 @@
+// conformance/sealed_surface/main.wll
+// [v0.10.1 / R10-073] `SEALED` 此前**只有 wlwl-types 的 Rust 单测**,没有任何
+// 一份走 CLI 的端到端夹具 —— 「密封面与实际导出不一致会不会被报出来」这件事,
+// 从来没在真实调用链上验过。
+//
+// 这份夹具刻意做成**只能由 SEALED 逮到**的形状:
+//
+//   mod.wll.sig  —— **声明了** add 与 secret(签名这一路是干净的)
+//   mod.wll      —— SEALED(["add"]) 却实际 EXPORT 了 secret
+//
+// 于是:去掉 SEALED,同一份代码零诊断;签名里也去掉 secret,同样零诊断。
+// 唯一的差别就是那行 SEALED,所以报出来的 E0113 只能来自密封面检查。
+// 诊断消息也不同 —— 写的是 "not declared in the SEALED surface",
+// 而不是签名那条 "not declared in the module signature or the SEALED surface"。
+//
+// main.wll 本身完全合法:只导入密封面上的 add,不碰 secret。
+// 期望:开档报 E0113;默认档(ADR-0020 S1)零诊断,且程序能跑。
+
+IMPORT("mod", ["add"]);
+PRINT(add(1, 2));
