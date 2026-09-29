@@ -175,16 +175,30 @@ runtime behaviour.
 Attaching a constraint to a concrete type is an error, not a no-op:
 `ARRAY[INTEGER]: Comparable` raises **`E0010`** ("a type constraint may only
 follow a bare type variable … not a type like ARRAY[…] or DICT[…]") —
-constraints constrain *variables*, not types. (Spec §5.2.1 fact #3 says `E0012`
-here; that is stale — `E0012` is the return-type-mismatch code and unrelated.)
+constraints constrain *variables*, not types. (Spec **§2.6** fact #3 said
+`E0012` here; `E0012` is the return-type-mismatch code and unrelated. Fixed in
+v0.10.1.)
+
+A constraint may not be **nested** either: `T: Comparable: Integer` raises
+**`E0010`** ("a type constraint may not be nested"). The grammar allows at
+most one constraint per type variable.
 
 **Do not** use the arrow form `FUN(INTEGER) -> STRING` or the angle-bracket
-form `DICT<STRING, INTEGER>`. Both are **parse errors**: `E0012 expected ',',
-got Minus` and `E0011 expected ')', got Gt`. (Spec §5.2.1 fact #2 still
-describes them as silently absorbing into an opaque type name — stale.) Note
-the asymmetry that does remain: a bare `ARRAY` without brackets is `E0010`,
-while a bare `DICT` / `OPTION` / `RESULT` still parses as an opaque named type
-with no error at all.
+form `DICT<STRING, INTEGER>`.
+
+The two are **not** equally bad, which is worth knowing before you guess:
+
+| Form | Result |
+|---|---|
+| `DICT<STRING, INTEGER>` | **parse error** `E0011 expected ')', got Gt` |
+| `DICT<STRING>` (one arg) | **silently absorbed** into the type name `DICT < STRING >` |
+| `FUN(INTEGER) -> STRING` | **silently absorbed** into `FUN ( INTEGER ) - > STRING` |
+| bare `ARRAY` | **parse error** `E0010` |
+| bare `DICT` / `OPTION` / `RESULT` | parses as a `Dynamic`-parameterised form, no error |
+
+The silently-absorbed rows are the trap: no error, no check, and a type name
+nobody defined. (Spec **§2.6** fact #2 used to claim all of them were silent;
+it is not, and §2.6 has been corrected in v0.10.1.)
 
 ### The `gradual_typing` switch (§2.6)
 

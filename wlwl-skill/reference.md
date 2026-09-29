@@ -230,7 +230,8 @@ default arm) is a warning in every configuration — see spec §11.3.
 
 ### Warnings (W-codes)
 
-`W0010` unused LET · `W0011` unused param · `W0014` non-ASCII case ·
+`W0010` unused LET · `W0011` unused param · `W0012` duplicate LET ·
+`W0013` IF branches inconsistent · `W0015` integer overflow (saturated) ·
 `W0020` mixed dict literal · `W0030` shadow · `W0040` TODO(agent) ·
 `W0051` deprecated alias · `W0053` formatter drift ·
 **`W0065`** deadlock L1 soft warning (`strict_deadlock_detect = false`) ·
