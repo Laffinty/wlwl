@@ -1,0 +1,14 @@
+// 密封面与实际导出一致的模块,供 sealed.wll 演示。
+//
+//   SEALED(["ping", "secret"])   <- 与 EXPORT 一致
+//   EXPORT(["ping", "secret"])
+//
+// 把 SEALED 那一行改成只写 `SEALED(["ping"])`,`wlwl check` 就会报
+// `E0113: export 'secret' is not declared in the SEALED surface`
+// —— 而 sealed_svc.wll.sig 声明了两个,所以签名那一路仍然是干净的。
+
+LET(ping, FUN(() : STRING, "pong"));
+LET(secret, 99);
+
+SEALED(["ping", "secret"]);
+EXPORT(["ping", "secret"]);

@@ -1,0 +1,31 @@
+// SEALED([...]) — 声明这个模块的**全部**对外可见名字。
+//
+// 规则:
+//   * `SEALED(["a", "b"])` 写在模块顶层,前缀调用形式,**不进关键字表**
+//     (§12 保留集合仍为空)。
+//   * 它**不是** `EXPORT` 的替代品:`EXPORT` 决定「实际导出什么」,
+//     `SEALED` 决定「允许对外可见什么」。两者不一致会在编译期被报出来。
+//   * `SEALED` **不是表达式** —— 写在表达式位置会被回退成普通调用,于是
+//     `E0020: undefined name`。(规范 §9.1 / 附录 A 的 `ModuleDecl`
+//     = Import | Export | SealedDecl,注意**没有** MODULE 那一支。)
+//   * 运行期是 no-op:接受 / 拒绝的判定不变,只是**过期的密封面在编译期
+//     被报出来**。
+//
+// 本例的密封面与 `EXPORT` **一致**,所以能跑通。把它改成不一致就会看到那条
+// 诊断 —— 把 sealed_svc.wll 的 SEALED 行改成只写 `SEALED(["ping"])`
+// (而 EXPORT 仍导出两个),`wlwl check` 会报:
+//
+//   E0113: export `secret` is not declared in the SEALED surface
+//
+// 注意 `sealed_svc.wll.sig` 声明了 `ping` **和** `secret` —— 所以签名
+// 检查那一路是干净的,唯一能报出问题的就是密封面本身。
+//
+// 运行:`wlwl run sealed.wll`(工作目录必须是 examples/)
+
+IMPORT("sealed_svc", ["ping"]);
+PRINT("ping = ${ping()}");
+
+// 消费侧也要在密封面上。下面这行是合法的;若 `secret` 不在密封面上,
+// `wlwl check` 会报 E0113。
+IMPORT("sealed_svc", ["secret"]);
+PRINT("secret = ${secret}");

@@ -1,0 +1,2 @@
+EXPORT ping () : STRING
+EXPORT secret : INTEGER

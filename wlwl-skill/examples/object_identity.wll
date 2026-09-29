@@ -1,0 +1,68 @@
+// CLASS / NEW 的**身份语义**,以及 `obj.method()` 语法糖。
+//
+// [v0.10.1 / R10-012] 修之前 `==` 作用在 CLASS / INSTANCE 上**恒为 FALSE**
+// —— 包括拿一个对象和它自己比。这破坏自反律(`x == x` 对任何值都应当为真)。
+// 现在按**对象身份**判:`CLASS` 比类身份,`INSTANCE` 比对象身份。
+//
+// 后果:两次 `NEW` 产生**永远不相等**的实例,哪怕字段一模一样。比较实例要
+// 比身份,不是比值。
+//
+// 语法糖:`a.b` 是 `GET_PROP(a, "b")`,`a.b(args...)` 是
+// `CALL_METHOD(a, "b", args...)`。当被调成员是闭包且**第一个形参名为
+// `self`** 时,接收者自动注入为第一个实参。
+
+// 成员的分类规则(§13.4):`"init"` 是构造器;首形参名为 `self` 的闭包是
+// 方法;**其余一律是只读类字段**。所以 `["x", 0]` 会让 `x` 变成**不可变**
+// 的类字段,方法里 `SET_PROP(self, "x", ...)` 报
+// `E0032: property 'x' is a class member and is immutable`。
+// 可变实例字段只能通过 `"init"` 建立。
+LET(Point, CLASS("Point", NULL, [
+  ["init", FUN((self), [
+    SET_PROP(self, "x", 0),
+    SET_PROP(self, "y", 0)
+  ])],
+  ["moved", FUN((self, dx, dy), [
+    SET_PROP(self, "x", +(GET_PROP(self, "x"), dx)),
+    SET_PROP(self, "y", +(GET_PROP(self, "y"), dy))
+  ])]
+]));
+
+LET(a, NEW(Point));
+LET(b, NEW(Point));
+
+PRINT("a == a       -> ${==(a, a)}");            // TRUE  (自反律)
+PRINT("a == b       -> ${==(a, b)}");            // FALSE (两次 NEW 是两个对象)
+PRINT("Point==Point -> ${==(Point, Point)}");    // TRUE (类身份)
+
+// 注意:`SET_PROP(a, "x", 3)` 从方法外调用会报
+// `E0032: external reference without THIS` —— 写实例字段必须经由带 `self`
+// 首形参的方法(线性 THIS 纪律,§15)。所以用 `moved` 改 x。
+a.moved(3, 0);
+LET(ax, GET_PROP(a, "x"));
+LET(bx, GET_PROP(b, "x"));
+PRINT("fields ${ax} vs ${bx} equal? -> ${==(ax, bx)}");  // FALSE: 3 vs 0
+PRINT("identity is about the object, not the fields -> ${==(a, a)}");
+
+// 语法糖 vs 显式调用
+// 注意 `${...}` 里**不能**再嵌字符串字面量(那是 E0001),所以先把
+// `GET_PROP(a, "x")` 取进变量再插值。
+a.moved(2, 5);
+LET(after_sugar, GET_PROP(a, "x"));
+PRINT("sugar    x = ${after_sugar}");
+CALL_METHOD(a, "moved", 10, 20);
+LET(after_explicit, GET_PROP(a, "x"));
+PRINT("explicit x = ${after_explicit}");
+
+// THIS 线性(§15):`THIS()` 只在**类方法体**里有接收者。放进一个普通
+// `FUN` 里调用会报 `E0032: THIS used outside a method body (no active
+// receiver)` —— 所以 `whoami` 必须是类的一个方法,经 `CALL_METHOD` /
+// `a.whoami()` 进入。
+LET(withWhoami, CLASS("Tagged", NULL, [
+  ["init", FUN((self), SET_PROP(self, "tag", "t"))],
+  ["whoami", FUN((self),
+    LET(me, THIS());
+    PRINT("THIS() identity == receiver -> ${==(me, self)}")
+  )]
+]));
+LET(t1, NEW(withWhoami));
+t1.whoami();

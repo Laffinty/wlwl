@@ -1,0 +1,32 @@
+// MATCH 的穷尽性由编译期检查(E0116),开关是 [features] match_exhaustiveness。
+//
+// **该开关缺省跟随 `gradual_typing`**,不是缺省 off。
+// 本目录的 wlwl.toml 两个都写成了 "error",所以穷尽性检查是开着的 ——
+// 而下面这份程序是**穷尽**的,因此能跑通。
+//
+// 穷尽判据(§7.4):可枚举的构造子空间只有三种 ——
+//   BOOLEAN -> {TRUE, FALSE}
+//   NULL    -> {NULL}
+//   RESULT  -> {OK(_), ERR(_)}
+// 整数 / 浮点 / 字符串是无限域,ARRAY / DICT 按元数与键集无限展开,
+// **都不判**穷尽(报了就是误报)。
+//
+// 关键:**只在 default 臂被省略时报**。省略 default 时漏掉的分支会**静默
+// 得到 NULL**(§7.1),那才是真正的陷阱。
+//
+// 不可达子句恒为 W0117,且**故意没有** E0117 配对。
+
+LET(ok, MATCH(OK(1), [[OK(v), "one"], [ERR(e), "failed"]]));
+PRINT("OK branch  = ${ok}");
+
+LET(bad, MATCH(ERR("boom"), [[OK(v), "one"], [ERR(e), "failed"]]));
+PRINT("ERR branch = ${bad}");
+
+// 下面的形态是非穷尽(缺 ERR 分支又省略了 default),`wlwl check` 会报:
+//   E0116: non-exhaustive match: missing ERR(_); the omitted default arm
+//          yields NULL for those values
+//   LET(oops, MATCH(ERR("boom"), [[OK(v), "one"]]));
+
+// 补上 default 之后不再报,但漏掉的分支**静默得到 NULL** —— 这也是不推荐
+// 靠 default 兜底的原因:
+//   LET(quiet, MATCH(ERR("boom"), [[OK(v), "one"]], "fallback"));

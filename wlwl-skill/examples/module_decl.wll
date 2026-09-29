@@ -1,0 +1,24 @@
+// MODULE / IMPORT / EXPORT — a module is a FILE.
+//
+// [v0.10.1] 澄清一个容易查错的名字:附录 G 登记了 `MODULE(name?, body)`,但
+// 规范文法的 `ModuleDecl = Import | Export | SealedDecl` 里**没有** MODULE
+// 这一支,实测 `MODULE("x", 1)` 报 `E0020: undefined name 'MODULE'`。
+// 所以本文件演示的是**真正可用**的模块形态:一个 .wll 文件就是一个模块,
+// 跨文件复用靠 `IMPORT` / `EXPORT`。
+//
+// 机制:
+//   * `EXPORT([...])` 出现在模块顶层,列出的名字对外可见;未导出��绑定外部看不见。
+//   * `IMPORT("name", [...])` 把别的模块的导出绑进当前作用域。
+//   * `IMPORT("path/to/x", [...])` 是相对路径形态,按 CWD 向上找 `x.wll`。
+//   * `MODULE_REF("name")` 加载并返回模块字典,**不绑定任何名字**。
+//   * 重复导入同一个名字 -> `E0021`;导入了对方没导出的名字 -> `E0023`。
+//
+// 运行:`wlwl run module_decl.wll`(工作目录必须是 examples/)
+
+IMPORT("module_decl_dep", ["triple", "NAME"]);
+PRINT("triple(7) = ${triple(7)}");
+PRINT("NAME = ${NAME}");
+
+// 名字只能来自 EXPORT
+LET(m, MODULE_REF("module_decl_dep"));
+PRINT("MODULE_REF 不绑定名字,只返回字典 = ${TYPE(m)}");

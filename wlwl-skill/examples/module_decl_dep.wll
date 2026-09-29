@@ -1,0 +1,11 @@
+// 被 module_decl.wll 导入的模块。
+//
+// 注意:只有 EXPORT 列出的 `triple` / `NAME` 对外可见;`helper` 没有导出,
+// 从 module_decl.wll 里引用它会报 `E0023`。
+
+LET(helper, FUN((n: INTEGER) : INTEGER, *(n, 2)));
+LET(triple, FUN((n: INTEGER) : INTEGER, +(helper(n), n)));
+LET(NAME, "module_decl_dep");
+LET(hidden, 42);
+
+EXPORT(["triple", "NAME"]);

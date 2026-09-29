@@ -1,0 +1,27 @@
+// <module>.wll.sig —— 旁路签名文件,模块对外的类型承诺。
+//
+// 为什么需要它:签名是**旁路文件**而不是语言内的标记,所以「忘了写签名」
+// 这种事在语言层面不存在 —— 要么有 `.wll.sig` 文件,要么没有。
+// **无签名 = v0.9 行为**,这是结构性保证,不是默认值。
+//
+// 语法(附录 E.1,行导向):
+//   EXPORT name (TYPE, ...) : RETURN_TYPE
+//   EXPORT name : VALUE_TYPE
+// 零参函数写 `EXPORT name () : T`。
+//
+// 三向检查(v0.10 起,默认打开,与 `gradual_typing` 正交):
+//   E0113  导出 / 导入了签名没声明的名字
+//   E0114  签名声明了实现没导出的名字
+//   E0115  签名类型与实现注解冲突
+//
+// **v0.10.1 起签名里的类型真正参与检查**:从带签名的模块 IMPORT 进来的名字,
+// 在调用点按签名检查实参。本例的 `add` 签名是 `(INTEGER, INTEGER) : INTEGER`,
+// 所以下面两行分别是「对得上」与「对不上」—— 注释里那行在编译期报 E0111。
+
+IMPORT("module_signature_math", ["add"]);
+
+LET(ok, add(1, 2));
+PRINT("typed call = ${ok}");
+
+// 下面这行会让 `wlwl check` 报 E0111 x2(实参是 STRING,签名要 INTEGER):
+// PRINT(add("a", "b"));
