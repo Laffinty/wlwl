@@ -78,6 +78,15 @@ Spec: **wlwl-spec-v0.10**(`docs/standard/wlwl-spec-v0.10.md`)——
   改成实测五行对照表。
 
 - **`cargo doc` 两处告警清零**(`manifest.rs` / `main.rs` 的 doc 链接指向私有项)。
+- **`wlwl fmt --check` 不再把 CRLF 判成规范偏离**(D10-018)。实测
+  `PRINT("x")\n` → rc=0,而同样的内容写成 `PRINT("x")\r\n` → rc=1 + `W0053`。
+  仓库的 `.gitattributes` 只给 `*.rs` 定了 `eol=lf`,`.wll` 夹具没有规则,
+  于是 **Windows 检出的工作区里每一个 `.wll` 都过不了 `--check`**,Linux 上
+  全过 —— 同一个 commit 在两台机器上结论相反。由 CI 的 Windows job 抓出
+  (ubuntu / macOS 看不见)。「CRLF 文件偏离 §16.3」这句话本身是错的:规范
+  规定的是 token 之间的空白与换行**布局**,没规定换行用哪个字节表示。
+  修法是比较前把两侧 EOL 归一化成 LF,裸 CR 一并归一。
+  `wlwl fmt <file>` 的 stdout 输出仍恒为 LF,未改。
 
 ### Changed
 

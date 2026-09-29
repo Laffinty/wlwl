@@ -342,3 +342,47 @@
 - **R10-021 的不变式**:收紧的是**位置**约束而不是**语法**约束,「没有任何
   `SEALED` 形态会让 parser 硬失败」仍然成立 —— 不在声明位就**回退成普通调用**,
   程序照样解析成功。
+
+### D10-018 · `wlwl fmt --check` 把 CRLF 判成规范偏离(Windows CI 抓出来)
+
+- **状态**:**已修复(2026-09-29)** —— 用户裁决:比较前归一化行尾
+- **发现时机**:v0.10.1 推送后 CI **run #156** 的 Windows job 在 `cargo test`
+  红了(ubuntu / macOS 同一步都过)。日志需鉴权取不到,改用「把夹具强制转成
+  CRLF 再跑」在本地精确复现。
+- **影响范围**:`wlwl fmt --check` 的判定口径(`wlwl-cli/src/main.rs`)
+- **现象**:规范形式由 `wlwl_formatter::format` 生成,行尾恒为 `\n`;源码那一侧
+  原样保留磁盘上的 `\r\n`,于是逐字节不等:
+
+  | 输入 | 修之前 |
+  |---|---|
+  | `PRINT("x")\n` | rc=0 |
+  | `PRINT("x")\r\n` | **rc=1 + `W0053`** |
+
+- **为什么会漏到发布**:仓库的 `.gitattributes` **只给 `*.rs` 定了 `eol=lf`**,
+  `.wll` 夹具没有任何规则。Linux 检出恒为 LF,Windows 检出(`core.autocrlf`
+  生效)恒为 CRLF ⇒ **同一个 commit 在两台机器上结论相反**。格式化器从来没
+  考虑过行尾,这个洞一直开着;是 D-5(97 个 probe 进 CI)把它**暴露**出来的 ——
+  `G3_fmt_check_clean` / `G4_fmt_idempotent` 两条正是干这件事的。
+- **定性**:「CRLF 文件偏离 §16.3 规范形式」这句话**本身是错的**。规范规定的
+  是 token 之间的空白与换行**布局**(一条语句一行、无缩进、无句末分号),
+  **没有规定换行用哪个字节表示**。所以要改的是判据,不是文件。
+- **修法**:比较前把两侧的 EOL 统一成 LF(`normalize_eol`),顺序上**先归一化
+  再剥注释**,这样 `strip_comments` 看到的是干净的 `\n`。裸 CR 一并归一 ——
+  它在 lexer 能过、在 formatter 不该过,留着就是另一个同类洞。
+- **行为变更**:`--check` 从「拒绝 CRLF」变成「接受 LF 与 CRLF」。
+
+  | 场景 | 之前 | 现在 |
+  |---|---|---|
+  | 规范源码 + LF | rc=0 | rc=0 |
+  | 规范源码 + CRLF | rc=1 `W0053` | **rc=0** |
+  | 规范源码 + 裸 CR | rc=1 `W0053` | **rc=0** |
+  | **真**偏离(多余空格)+ CRLF | rc=1 | **rc=1**(不变) |
+
+  最后一行是反向守卫:归一化**不能**把真正的偏离一起放过去。
+- **不在本次范围**:`wlwl fmt <file>` 的 **stdout 输出仍恒为 LF** —— 那是
+  `wlwl-formatter` 的渲染结果,改动面在那个 crate。
+- **未处理(已与用户确认本轮不动)**:`impl/examples/showcase.wll`、
+  `impl/examples/phase2_demo.wll`、`wlwl-skill/interp.wll` 这 **3 个文件的
+  blob 本身就是 CRLF**,而其余 178 个 `.wll` / `.sig` 全是 LF。恰好前两个是
+  R10-070 刚接进 CI 的示例。归一化它们会在下一次 checkout 时产生一次真实
+  diff,本轮不扩大。

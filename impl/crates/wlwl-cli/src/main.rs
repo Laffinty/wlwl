@@ -315,6 +315,40 @@ impl AstOutput {
 /// matching. Strips `// line` comments and `/* block */` comments
 /// (nested block comments supported, matching the lexer).
 ///
+/// 把 CRLF / 裸 CR 归一化成 LF,供 `--check` 的逐字节比较使用。
+///
+/// [v0.10.1] `wlwl fmt --check` 此前把**任何**带 CRLF 的文件判为偏离(`W0053`)。
+/// 成因很浅:规范形式由 `wlwl_formatter::format` 生成,行尾恒为 `\n`;而源码
+/// 那一侧原样保留磁盘上的 `\r\n`,两者逐字节不等。
+///
+/// 后果是**跨平台不可复现**,而且是最坏的那种形态:
+///
+/// | 输入 | 修之前 |
+/// |---|---|
+/// | `PRINT("x")\n` | rc=0 |
+/// | `PRINT("x")\r\n` | **rc=1 + W0053** |
+///
+/// Windows 检出(`.gitattributes` 只给 `*.rs` 定了 `eol=lf`,`.wll` 没有规则,
+/// `core.autocrlf` 生效)的工作区里**每一个** `.wll` 都过不了 `--check`;
+/// Linux 上全过。CI 的 ubuntu / macOS job 看不见这个洞,只有 Windows 看得见。
+///
+/// **行尾不是 §16.3 规范形式的一部分。** 规范规定的是 token 之间的空白与
+/// 换行**布局**(一条语句一行、无缩进、无句末分号),没有规定换行用哪个字节
+/// 表示。所以「CRLF 文件偏离规范形式」这句话本身是错的,判据要改,不是
+/// 文件要改。
+///
+/// 裸 CR(老 Mac 风格)一并归一:它在 lexer 那边能过,在 formatter 那边
+/// 不该过 —— 留着它就是另一个更难查的同类洞。
+///
+/// **只影响 `--check` 的比较**。`wlwl fmt <file>` 的 stdout 输出仍恒为 LF ——
+/// 那是 `wlwl-formatter` 的渲染结果,不在本次范围内。
+fn normalize_eol(src: &str) -> String {
+    if !src.contains('\r') {
+        return src.to_string();
+    }
+    src.replace("\r\n", "\n").replace('\r', "\n")
+}
+
 /// Line-aware: a line whose only content is comments is removed
 /// entirely (along with its trailing `\n`). This matches the
 /// canonical layout where comments contribute zero characters.
@@ -509,8 +543,12 @@ fn fmt_file(file: &PathBuf, check: bool) -> ExitCode {
         // v0.6 §A.3: canonical form drops comments; compare comment-
         // stripped source against canonical. Also tolerate a missing
         // trailing newline.
-        let src_for_compare = strip_comments(&source);
-        let canon_for_compare = strip_comments(&canonical);
+        //
+        // [v0.10.1] 行尾先归一化,再剥注释。顺序也是刻意的:归一化在前,
+        // `strip_comments` 看到的就是干净的 `\n`,不必去猜 `\r` 算不算
+        // 行的一部分。
+        let src_for_compare = strip_comments(&normalize_eol(&source));
+        let canon_for_compare = strip_comments(&normalize_eol(&canonical));
         if src_for_compare == canon_for_compare {
             ExitCode::SUCCESS
         } else {
@@ -3221,6 +3259,61 @@ entry = "main.wll"
             code,
             ExitCode::from(1),
             "non-canonical whitespace must still fail fmt --check"
+        );
+    }
+
+    // ---- [v0.10.1] 行尾不是规范形式的一部分 -------------------------
+
+    #[test]
+    fn fmt_check_treats_crlf_source_as_canonical() {
+        // [v0.10.1] 这是 Windows CI 抓出来的:仓库的 `.gitattributes` 只给
+        // `*.rs` 定了 `eol=lf`,`.wll` 夹具没有规则,`core.autocrlf` 生效后
+        // Windows 检出的工作区全是 CRLF —— 而 `--check` 逐字节比较,于是
+        // **每一个** `.wll` 都报 W0053。ubuntu / macOS 看不见,只有
+        // Windows 看得见。
+        let p = write_tmp("LET(x, 1);\r\nPRINT(x)\r\n", "fmt_crlf.wll");
+        assert_eq!(
+            fmt_file(&p, true),
+            ExitCode::SUCCESS,
+            "CRLF is a line-ending choice, not a §16.3 layout deviation"
+        );
+    }
+
+    #[test]
+    fn fmt_check_treats_bare_cr_source_as_canonical() {
+        // 老 Mac 风格的单 CR 换行:lexer 能过,formatter 也不该把它当成
+        // 偏离 —— 留着它就是另一个更难查的同类洞。
+        let p = write_tmp("LET(x, 1);\rPRINT(x)\r", "fmt_barecr.wll");
+        assert_eq!(
+            fmt_file(&p, true),
+            ExitCode::SUCCESS,
+            "a bare CR is a line-ending choice too"
+        );
+    }
+
+    #[test]
+    fn fmt_check_still_rejects_a_crlf_source_that_really_is_deviating() {
+        // 反向守卫:归一化**不能**把真正的偏离一起放过去。把一个确实不合
+        // 规范的文件写成 CRLF,必须照样红 —— 否则这条测试就只证明了
+        // 「--check 变瞎了」。
+        let p = write_tmp("LET( x ,1 );\r\nPRINT( x )\r\n", "fmt_crlf_dev.wll");
+        assert_eq!(
+            fmt_file(&p, true),
+            ExitCode::from(1),
+            "normalising EOL must not launder a genuine layout deviation"
+        );
+    }
+
+    #[test]
+    fn fmt_check_crlf_and_lf_of_the_same_source_agree() {
+        // 判据的直接陈述:同一份源码,两种行尾,`--check` 必须给同一个答案。
+        // 这一条比上面三条加起来更接近「问题本身」。
+        let lf = write_tmp("LET(x, 1);\nPRINT(x)\n", "fmt_agree_lf.wll");
+        let crlf = write_tmp("LET(x, 1);\r\nPRINT(x)\r\n", "fmt_agree_crlf.wll");
+        assert_eq!(
+            fmt_file(&lf, true),
+            fmt_file(&crlf, true),
+            "line endings must not change what --check concludes"
         );
     }
 
