@@ -200,10 +200,12 @@ impl<'a> Checker<'a> {
         found: &Ty,
         kind_of: impl Fn(Ty, Ty) -> TypeDiagKind,
         span: &Span,
-    ) {
+    ) -> bool {
         if !found.satisfies_annotation(expected) {
             self.report(kind_of(expected.clone(), found.clone()), span);
+            return false;
         }
+        true
     }
 
     /// 遍历并检查一个表达式,返回它推导出的类型。
@@ -319,16 +321,30 @@ impl<'a> Checker<'a> {
                     .as_ref()
                     .map(|a| Ty::from_type_expr(&a.expr));
                 let actual = self.check_expr(value, declared.as_ref());
+                // [v0.10.1 / R10-086] 注解**不符**时,绑定必须取**实际**类型。
+                //
+                // 旧写法 `declared.unwrap_or(actual)` 无条件按注解绑定,于是
+                // `LET(max: INTEGER, FUN((a: INTEGER, b: INTEGER) : INTEGER, …))`
+                // 报完 E0110 之后,`max` 在作用域里是 INTEGER —— 一个**谎言**。
+                // 后面 `max("a", "b")` 的调用检查拿 INTEGER 当被调方,当然
+                // 发不出 E0111:实测该文件只报一条 E0110,两处错实参调用
+                // 全部沉默。
+                //
+                // 一个绑定该记的是**这个值实际是什么**。注解不符时如实记
+                // 实际类型,下游每一次使用才对得上真相。符不改 —— 保持原样。
+                let mut bound = declared.clone().unwrap_or_else(|| actual.clone());
                 if let Some(d) = &declared {
                     let at = type_annotation.as_ref().map(|a| &a.span).unwrap_or(span);
-                    self.require(
+                    let ok = self.require(
                         d,
                         &actual,
                         |expected, found| TypeDiagKind::AnnotationMismatch { expected, found },
                         at,
                     );
+                    if !ok {
+                        bound = actual.clone();
+                    }
                 }
-                let bound = declared.unwrap_or(actual);
                 // [REVIEW P0-2] 形参表的元数形状挂在**绑定名**上,不是
                 // `FUN` 自己的可选 name —— 绝大多数函数是匿名的
                 // (`LET(f, FUN(…))`),名字来自这里的 `LET`。挂在 `FUN`
@@ -1768,6 +1784,57 @@ count([1, TRUE]);
                 "{base}: Comparable must stay the concrete base type, not a wildcard"
             );
         }
+    }
+
+    /// [R10-086] 注解与推断类型冲突时,一条 E0110 **不能**掩盖下游的错配。
+    ///
+    /// 旧实现无条件按**注解**绑定,所以
+    /// `LET(max: INTEGER, FUN((a: INTEGER, b: INTEGER) : INTEGER, …))`
+    /// 报完 E0110 之后,`max` 在作用域里是个假的 INTEGER;后面
+    /// `max("a", "b")` 的调用检查拿 INTEGER 当被调方,发不出 E0111 ——
+    /// 实测整份文件只有一条 E0110,三处真实错配里两处沉默。
+    ///
+    /// 绑定改为取**实际**类型之后,三个码一起出现。
+    #[test]
+    fn r10_086_an_annotation_mismatch_does_not_mask_downstream_errors() {
+        let src = r#"
+LET(max: INTEGER, FUN((a: INTEGER, b: INTEGER) : INTEGER, IF(<(a, b), a, b)));
+LET(wrong: STRING, max("a", "b"));
+max(1, "b");
+"#;
+        let mut got = codes(src);
+        got.sort();
+        got.dedup();
+        assert_eq!(
+            got,
+            vec!["E0110".to_string(), "E0111".to_string()],
+            "the E0110 must not swallow the call-argument mismatches"
+        );
+    }
+
+    /// [R10-086] 对照组:注解**相符**时绑定不变,行为与之前完全一致。
+    #[test]
+    fn r10_086_a_matching_annotation_keeps_binding_the_declared_type() {
+        // 符的时候绑定取声明类型,一切照旧。
+        assert_eq!(
+            codes("LET(x: INTEGER, 1); PRINT(x);"),
+            Vec::<String>::new(),
+            "a clean annotated binding must stay clean"
+        );
+        // 声明类型仍然被下推给值侧:注解是 STRING,喂进去的 INTEGER 字面量
+        // 会被按期望定型,于是不报。
+        assert_eq!(
+            codes("LET(s: STRING, \"hi\"); PRINT(s);"),
+            Vec::<String>::new(),
+            "a matching annotation must still type the value from the declaration"
+        );
+        // 真正失配时照旧报 E0110(这条走的是 `require` 原本就报的那条分支,
+        // 与 R10-086 改的分支互为对照)。
+        assert_eq!(
+            codes("LET(x: INTEGER, \"s\");"),
+            vec!["E0110".to_string()],
+            "a genuine annotation mismatch must still be reported"
+        );
     }
 
     /// [R10-027] 对照:真正的类型变量仍然可绑。
