@@ -105,7 +105,7 @@
 <!-- 格式化 (1 条) -->
 | `FORMAT` | `FORMAT(template, args...) -> STRING` | ❌ | ❌ | v0.4 | ✓ builtin | `resolve_builtin` (§10.7) |
 <!-- 模块系统 (4 条) -->
-| `MODULE_REF` | `MODULE_REF(path) -> MODULE` | ❌ | ❌ | v0.4 | ✓ builtin | `resolve_builtin` (§9) |
+| `MODULE_REF` | `MODULE_REF(path) -> DICT` | ❌ | ❌ | v0.4 | ✓ builtin | `resolve_builtin` (§9) |
 | `EXPORT` | `EXPORT(names) -> NULL` | n/a | ✔ | v0.2 | ✓ macro | parser -> `Expr::*` (§9) |
 | `IMPORT` | `IMPORT(path, names, opts?) -> NULL` | n/a | ✔ | v0.2 | ✓ macro | parser -> `Expr::*` (§9) |
 | `MODULE` | `MODULE(name?, body) -> NULL` | n/a | ✔ | v0.2 | ✓ macro | parser -> `Expr::*` (§9) |
