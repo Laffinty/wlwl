@@ -9,7 +9,7 @@
 > **不在范围**:包管理器一切扩展;宏/用户元编程;ADT Variant 新值形态;类型收窄;用户代数效果处理器;ownership/lifetime;Wasm/字节码后端交付;会话 `par`/多线程(ADR-0016);调试器全量/HAMT/依赖类型/AI 专用语法
 >
 > **源材料**:
-> - 仓库内:`docs/plan/wlwl-v0.10.0-迭代技术路线建议.md`、`docs/adr/0010-strict-types-behavior.md`、`0011-mvs-dependency-resolution.md`、`0016-scheduler-single-thread-boundary.md`、`docs/standard/wlwl-spec-v0.9.md`、`CHANGELOG.md` v0.9.0 段
+> - 仓库内:`docs/history/wlwl-v0.10.0-迭代技术路线建议.md`、`docs/adr/0010-strict-types-behavior.md`、`0011-mvs-dependency-resolution.md`、`0016-scheduler-single-thread-boundary.md`、`docs/standard/wlwl-spec-v0.9.md`、`CHANGELOG.md` v0.9.0 段
 > - 证据锚点:`impl/crates/wlwl-ast/src/lib.rs`(TypeAnnotation / Pattern)、`wlwl-eval/src/lib.rs`(ModuleLoader / strict_types / E0033)、`wlwl-eval/src/registry.rs`(BuiltinSpec.signature)、`wlwl-eval/src/runtime.rs`(Effect 半落地)、`wlwl-cli/src/main.rs`(Check / ast --json)、`wlwl-toml/src/{manifest,lock,mvs}.rs`
 >
 > **立场**:v0.9 把控制与运行时前沿做完了;v0.10 **不再横向加能力**,而是给已有能力补上**静态契约层**。默认关闭时零破坏,开启后抓住注解/签名/MATCH 错误。
@@ -1372,9 +1372,9 @@ cargo test -p wlwl-types
 
 | 项 | 状态 | 证据 |
 |---|---|---|
-| `docs/plan/wlwl-build-plan-v0.10.md`(本文件)批准 | ✅ | Step 0 `c535818` |
+| `docs/history/wlwl-build-plan-v0.10-COMPLETED.md`(本文件)批准 | ✅ | Step 0 `c535818` |
 | `docs/adr/0020-gradual-static-contracts.md` Accepted | ✅ | Step 0 |
-| `docs/plan/deviations.md` 重置为 **v0.10 / D10-NNN** 流水 | ✅ | Step 13 `b65ebfd`;D10-001…D10-011 |
+| 当时的 `docs/plan/deviations.md`(2026-09-29 已归档,流水见 `docs/history/deviations-v0.10.md`)重置为 **v0.10 / D10-NNN** 流水 | ✅ | Step 13 `b65ebfd`;D10-001…D10-011 |
 | `docs/standard/wlwl-spec-v0.10.md` 派生(v0.9 归档至 `docs/history/`) | ✅ | Step 12 `bff3cfe` |
 | `CHANGELOG.md` v0.10.0 段(兼容句 + 零可观察变化声明) | ✅ | Step 14 `852e449` |
 | `README.md` §0.4 一致性表更新 | ✅ | Step 14 `852e449` |
@@ -1457,7 +1457,7 @@ cargo test -p wlwl-types
 | 否决 PubGrub | `docs/adr/0011-mvs-dependency-resolution.md` |
 | 否决全程序静态类型(历史) | `docs/adr/0010-strict-types-behavior.md` |
 | 调度单线程边界 | `docs/adr/0016-scheduler-single-thread-boundary.md` |
-| 正式技术路线 | `docs/plan/wlwl-v0.10.0-迭代技术路线建议.md` |
+| 正式技术路线 | `docs/history/wlwl-v0.10.0-迭代技术路线建议.md` |
 | 错误码注册 | `wlwl-error/src/lib.rs` |
 
 ## 附录 C · 术语表

@@ -196,7 +196,7 @@ and is authoritative).
   path: `../docs/standard/wlwl-spec-v0.7.md`; v0.6 archived at
   `../docs/history/wlwl-spec-v0.6.md`.
 - Deviations pointer → `../docs/history/deviations-v0.7.md`
-  (former `docs/plan/deviations.md`).
+  (former `docs/history/deviations-v0.10.md`).
 - `SKILL.md` description + title cover v0.7 concurrency; writing flow
   checklist gains a concurrency step.
 - Equality note: `==(f, f)` / `==(h, h)` are TRUE (handle identity).

@@ -11,7 +11,7 @@
 > **阅读须知（2026-09-27 实施回填）**
 >
 > 本文件是**路线辩论的输入记录**，其结论已被
-> `docs/plan/wlwl-build-plan-v0.10.md` 修订并取代（见下表 §0 效力声明）。
+> `docs/history/wlwl-build-plan-v0.10-COMPLETED.md` 修订并取代（见下表 §0 效力声明）。
 > 实施中发现两处与实际不符，**以 build plan 与 `docs/adr/0020-gradual-static-contracts.md` 为准**：
 >
 > 1. **记法**：本文件正文用尖括号 `ARRAY<T>` / `DICT<K,V>`，

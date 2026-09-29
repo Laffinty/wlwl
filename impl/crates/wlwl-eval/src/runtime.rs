@@ -160,7 +160,7 @@ impl YieldReason {
 // cancel, ADR-0019 §4.4.3 MethodCall / PropAccess / ProtocolViolation)
 // builds on `Effect` directly.
 //
-// See `wlwl-build-plan-v0.9.md` §0.5 + §3.1 + §3.2 + §4.4.1 +
+// See `docs/history/wlwl-build-plan-v0.9-COMPLETED.md` §0.5 + §3.1 + §3.2 + §4.4.1 +
 // §4.4.4 for the design rationale.
 // ───────────────────────────────────────────────────────────────────
 

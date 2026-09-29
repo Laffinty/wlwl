@@ -324,7 +324,7 @@ for line in source.lines() {
 |---|---|---|
 | `CHANGELOG.md:125` §0.4 一致性表 | **1656** | 表格里作为 v0.10 的正式一致性承诺 |
 | `CHANGELOG.md:131-132` | **1731** | 正文注明「Step 12 使全量达到 1731」 |
-| `wlwl-build-plan-v0.10.md:1218-1219` | **1736** | 计划书的最终值 |
+| `docs/history/wlwl-build-plan-v0.10-COMPLETED.md:1218-1219` | **1736** | 计划书的最终值 |
 | **实测 `cargo test --workspace`** | **1744 passed / 0 failed / 2 ignored** | 2026-09-29 |
 
 §0.4 是一张**兼容性承诺表**，其中的数字一项都没对上。基线 1517 → 实测 1744 是 **+227**，表里写的是 **+139**。

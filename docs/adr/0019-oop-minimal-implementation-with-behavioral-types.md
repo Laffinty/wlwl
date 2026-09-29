@@ -508,7 +508,7 @@ Chosen option **D** (α + pioneering). Concretely, v0.9 commits to:
 
 ## References
 
-- `docs/plan/wlwl-build-plan-v0.9.md` §0.5 (pioneering table) /
+- `docs/history/wlwl-build-plan-v0.9-COMPLETED.md` §0.5 (pioneering table) /
   §4 (P1 OOP) / §4.3 (real impl path) / §4.4.1 (algebraic-effect
   framing) / §4.4.2 (tag/payload cancellation) / §4.4.3
   (session-typed methods) / §4.4.4 (WasmFX-style tag dispatch) /

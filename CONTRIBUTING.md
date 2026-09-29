@@ -11,7 +11,10 @@ contribution workflow. For deeper design context, read:
 
 1. **The spec is authoritative.** If your change conflicts with the spec,
    the spec wins — open a spec revision issue first. Implementation-only
-   deviations must be added to `docs/plan/deviations.md` (next iteration) or the active register per build plan §8.
+   deviations must be added to the **active cycle's** register under
+   `docs/history/deviations-v0.NN.md` (create it when the cycle starts);
+   during v0.10 that was `docs/history/deviations-v0.10.md`. The current
+   pointer lives in `docs/plan/README.md`.
 2. **The compiler is GPL v2.** By contributing, you agree your contribution
    is licensed under GPL v2. Your `.wll` programs are not affected.
 3. **Small PRs.** One concern per PR. If a change touches the parser and

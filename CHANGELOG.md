@@ -300,7 +300,7 @@ v0.9 archived at `docs/history/wlwl-spec-v0.9.md`.
 >
 > [v0.10.1 / R10-049] v0.10.0 发布时的实测全量是 **1744 passed / 0 failed**
 > (基线 1517,`+227`);上面的 `+139` 只算到 Step 10,后面四步的增量没进这张表。
-> 需要逐 Step 明细请看 `docs/plan/wlwl-build-plan-v0.10.md` 的收尾表。
+> 需要逐 Step 明细请看 `docs/history/wlwl-build-plan-v0.10-COMPLETED.md` 的收尾表。
 > v0.10.1 的数字见本版本自己的小节。
 
 ---

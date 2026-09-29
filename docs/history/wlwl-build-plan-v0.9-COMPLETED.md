@@ -384,7 +384,7 @@ spec §17.1 行 879:**"该限制是 v0.7 / v0.8 实现路径的产物,不是语�
 
 ### 3.7 偏差登记(D9-NNN)
 
-`docs/history/deviations-v0.8.md` 归档后,`docs/plan/deviations.md` 启动空白 D9-NNN 流水。每条偏差必须有:
+`docs/history/deviations-v0.8.md` 归档后,当时的 `docs/plan/deviations.md`(2026-09-29 已归档,流水见 `docs/history/deviations-v0.9.md`)启动空白 D9-NNN 流水。每条偏差必须有:
 - **状态**:待修复 / 已修复 / 接受保留;
 - **spec 段**:行号 + 章节;
 - **impl 段**:文件 + 行号;
@@ -941,7 +941,7 @@ cargo doc --workspace      # 0 warnings
 - `docs/adr/0017-cooperative-suspension-scheduler.md` Accepted;
 - `docs/adr/0018-e0055-e0057-retention-decision.md` Accepted;
 - `docs/adr/0019-oop-minimal-implementation-with-behavioral-types.md` Accepted(α + 先锋);
-- `docs/plan/deviations.md` 启动 + D9-NNN 流水;
+- `docs/plan/deviations.md` 启动 + D9-NNN 流水(该文件已于 2026-09-29 归档,流水在 `docs/history/deviations-v0.9.md`);
 - `CHANGELOG.md` v0.9 段;
 - `README.md` §0.4 一致性表更新;
 - `docs/standard/wlwl-spec-v0.9.md §13-§16` 填充(OOP 关键字、对象模型、行为类型、THIS 线性、OOP-并发交互);

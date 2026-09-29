@@ -283,7 +283,7 @@ to:
 
 ## References
 
-- `docs/plan/wlwl-build-plan-v0.9.md` §3.6 (E0055/E0057 决议) /
+- `docs/history/wlwl-build-plan-v0.9-COMPLETED.md` §3.6 (E0055/E0057 决议) /
   §5.3 / §9.2 (decision points) / §10 (risk table) / §11.2
   (consistency table) / §11.4 (3 small problems deferred to
   Step 11/12 spec derivation)

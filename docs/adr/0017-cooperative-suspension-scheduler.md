@@ -375,7 +375,7 @@ Chosen option **A**. Concretely, v0.9 commits to:
 
 ## References
 
-- `docs/plan/wlwl-build-plan-v0.9.md` §3 (P0 并发语义收口) / §9.1
+- `docs/history/wlwl-build-plan-v0.9-COMPLETED.md` §3 (P0 并发语义收口) / §9.1
   Step 1-7 / §10 risk table / §11.2 consistency table / §11.3 doc
   acceptance
 - `docs/standard/wlwl-spec-v0.8.md` §17.1 (line 879) / §17.2 /
