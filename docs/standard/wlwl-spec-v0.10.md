@@ -2268,7 +2268,7 @@ sig_name    = identifier .
 | `TRY` | `TRY(e) -> v / early-RETURN` | ✔ | ✔ | ✔ | v0.2 | 已定义 | §8.3 |
 | `PANIC` | `PANIC(msg) -> 终止` | ✔ | n/a | ✔ | v0.2 | 已定义 | §8.4 |
 | `OK` | `OK(v) -> RESULT` | ✔ | ❌ | ✔ | v0.4 | 已定义 | §8.1 |
-| `EXPECT_ERR` | `EXPECT_ERR(expr) -> OK(payload) / ERR(E0049)` | ✔ | ✔ | ✔ | v0.4 | 已定义 | §8.3 |
+| `EXPECT_ERR` | `EXPECT_ERR(expr) -> OK(payload) / ERR(E0049)` | ✔ | ✔ | ✔ | v0.4 | ⚠️ **全局调不通**;同名的是 `wlwl:std.test` 的导出(1 参,见 §10.10) | §8.3 |
 | `ERR` | `ERR(e) -> RESULT` | ✔ | ❌ | ✔ | v0.4 | 已定义 | §8.1 |
 <!-- 控制流 / 逻辑 (10 条) -->
 | `IF` | `IF(cond, t, e?) -> v` | ✔ | ✔ | ✔ | v0.2 | 已定义 | §6.1 |
@@ -2339,7 +2339,7 @@ sig_name    = identifier .
 | `MODULE_REF` | `MODULE_REF(path) -> DICT` | ✔ | ❌ | ❌ | v0.4 | 已定义 | §9.2 |
 | `EXPORT` | `EXPORT(names) -> NULL` | ✔ | n/a | ✔ | v0.2 | 已定义 | §9.1 |
 | `IMPORT` | `IMPORT(path, names) -> NULL` | ✔ | n/a | ✔ | v0.2 | 已定义 | §9.2 |
-| `MODULE` | `MODULE(name?, body) -> NULL` | ❌ 声明式 | n/a | ✔ | v0.2 | 已定义 | §9 |
+| `MODULE` | `MODULE(name?, body) -> NULL` | ❌ 声明式 | n/a | ✔ | v0.2 | ⚠️ **调不通**(见 §9.1) | §9 |
 <!-- OOP (3 条) -->
 | `CLASS` | `CLASS(name, parent, members) -> CLASS (name 传 NULL = 匿名类)` | ✔ | n/a | ✔ | v0.9 | 已定义 | §13.2 |
 | `NEW` | `NEW(cls, args...) -> INSTANCE` | ✔ | n/a | ✔ | v0.9 | 已定义 | §13.3 |

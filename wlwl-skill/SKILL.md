@@ -551,7 +551,14 @@ Concurrency and OOP names **are** global (Appendix G) — do not import them.
 
 **§8.2 transparent propagation**: any function call whose argument evaluates to `ERR` does not run the body; the `ERR` is forwarded. Pass plain values to non-consumer functions; consume `ERR` only via §8.3.
 
-**§8.3 ERR consumers** (14 entries): `IS_OK`, `IS_ERR`, `UNWRAP_OR`, `OR_DIE` (deprecated — `W0051`), `TRY` (function-body only), `UNWRAP` (PANICs on ERR — `E0100`), `ERR_PAYLOAD`, `WRAP`, `TYPE`, `==`/`!=`, `IF` (condition position), `&&`/`||` (left side), `BOOL`, `EXPECT_ERR` (test-only — returns `OK(载荷)` on `ERR` input, `ERR(E0049)` on non-ERR input). v0.9 adds **no** new consumers — OOP and concurrency builtins all propagate.
+**§8.3 ERR consumers** (13 **global** entries): `IS_OK`, `IS_ERR`, `UNWRAP_OR`, `OR_DIE` (deprecated — `W0051`), `TRY` (function-body only), `UNWRAP` (PANICs on ERR — `E0100`), `ERR_PAYLOAD`, `WRAP`, `TYPE`, `==`/`!=`, `IF` (condition position), `&&`/`||` (left side), `BOOL`. v0.9 adds **no** new consumers — OOP and concurrency builtins all propagate.
+
+> **`EXPECT_ERR` is not a global.** It is an export of the standard-library
+> test module: `IMPORT("wlwl:std.test", ["EXPECT_ERR"])`. It takes **one**
+> argument, and it does **not** catch native codes — `E1003` divide-by-zero
+> still escapes. Measured on v0.10.1: the bare global name → `E0020:
+> undefined name EXPECT_ERR`; `EXPECT_ERR(1, 2)` → `E0022: expects 1
+> argument(s), got 2`; `EXPECT_ERR(/(1, 0))` → `E1003` uncaught.
 
 **§8.4 PANIC**: `PANIC(msg)` (msg must be STRING or DICT) terminates with `E0100`. Bypasses propagation entirely. `UNWRAP` on ERR and `NEG(i64::MIN)` also PANIC.
 
@@ -569,7 +576,7 @@ For the full ~70-name catalogue see `reference.md` §9. Categories:
 - **`wlwl:std.collection`** (§10.6): `MAP`, `FILTER`, `REDUCE`, `SORT`, `SORT_BY`, `RANGE`, `ZIP`, `ENUMERATE`, `TAKE`, `DROP`, `FLAT`, `UNIQ`, `GROUP_BY`, `ANY`, `ALL`, `FIND`, `JOIN`.
 - **`wlwl:std.json`** (§10.8): `STRINGIFY`, `PARSE`.
 - **`wlwl:std.fs`** (§10.8): `WRITE_FILE`, `READ_FILE`, `EXISTS`.
-- **`wlwl:std.test`** (§10.10): `TEST`, `ASSERT`, `ASSERT_EQ`, `ASSERT_NEQ`, `EXPECT_ERR`, `RUN_TESTS`.
+- **`wlwl:std.test`** (§10.10): `TEST`, `ASSERT`, `ASSERT_EQ`, `ASSERT_NEQ`, `EXPECT_ERR` (**1 argument**), `RUN_TESTS` — all import-gated, none is a global.
 - **`wlwl:std.ai` / `wlwl:std.agent`** (§10.11): `TASK`, `MODEL`, `TOOL`, `CALL_TOOL`, `CONTEXT`.
 
 ## Build & runtime config — spec §9.1, §9.4

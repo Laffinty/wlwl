@@ -172,8 +172,11 @@ applies to **all** concurrency and OOP builtins (they are not consumers).
 
 `IS_OK`, `IS_ERR`, `UNWRAP_OR`, `OR_DIE` (deprecated), `TRY`, `UNWRAP`,
 `ERR_PAYLOAD`, `WRAP`, `TYPE`, `==`/`!=`, `IF` condition, `&&`/`||`
-left, `BOOL`, `EXPECT_ERR` (test-only: `x` is `ERR` → `OK(载荷)`;
-non-`ERR` → `ERR(E0049)`). v0.9 adds no new consumers.
+left, `BOOL`. v0.9 adds no new consumers.
+
+`EXPECT_ERR` is **not** in this list: it is a `wlwl:std.test` export, not a global
+builtin. Measured v0.10.1 — import it, it takes **one** argument, and it does **not**
+catch native codes:
 
 None of these can intercept native codes (`E0034`, `E0035`, `E1003`,
 `E0100` PANIC, `E0102` top-level ERR escape, `E0052`–`E0066` host
