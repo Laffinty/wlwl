@@ -44,8 +44,8 @@ pub use check::{
 pub use diag::{ArmSite, ContractCarrier, Subsystem, TypeDiag, TypeDiagKind};
 pub use env::TypeEnv;
 pub use sig::{
-    check_exports, check_imports, import_specs, parse_module_sig, sig_from_module, ImportedModule,
-    ModuleCheck, ModuleContract, ModuleSig, SigEntry,
+    check_exports, check_imports, import_specs, imported_sig_types, parse_module_sig,
+    sig_from_module, ImportedModule, ModuleCheck, ModuleContract, ModuleSig, SigEntry,
 };
 pub use ty::Ty;
 

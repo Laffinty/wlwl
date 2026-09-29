@@ -1,0 +1,17 @@
+// conformance/module_sig/import_type_mismatch/main.wll
+// [v0.10.1 / R10-023] 跨模块调用的实参必须按**旁路签名**检查。
+//
+// 配套文件:
+//   main.wll        —— 导入 math,却给 add 传字符串
+//   math.wll        —— `add` 收两个 INTEGER
+//   math.wll.sig    —— 声明 `add (INTEGER, INTEGER) : INTEGER`
+//
+// 修之前这个目录**根本不存在**,而 `static_types` 那批夹具全是单文件的,
+// 于是「签名的类型只被解析、从不被消费」这件事零覆盖:`math.wll.sig`
+// 明明写着形参是两个 INTEGER,`add("a", "b")` 却零诊断(rc=0)。
+//
+// 这份夹具验的是**签名的类型进入了类型检查**,不是名字在不在声明面里
+// —— 后者由 `module_sig` 目录原有的用例覆盖(E0113)。
+
+IMPORT("math", ["add"]);
+PRINT(add("a", "b"));

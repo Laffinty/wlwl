@@ -306,6 +306,74 @@ fn static_types_fixtures_cover_every_diagnostic_they_claim_to() {
     }
 }
 
+/// [R10-023] 跨模块调用的实参必须按**旁路签名**检查。
+///
+/// 修之前导入的名字一律落 `Dynamic`(`Expr::Import` 那条臂直接返回
+/// `Ty::Dynamic`),签名的**类型**只被解析、被展示,从不参与判定:
+/// `math.wll.sig` 写着 `add (INTEGER, INTEGER) : INTEGER`,消费方
+/// `add("a", "b")` 却零诊断。`module_sig` 原有的用例只验「名字在不在声明面里」
+/// (E0113),签名**类型**这一面零覆盖。
+#[test]
+fn an_imported_signature_type_is_enforced_at_the_call_site() {
+    let bin = wlwl_binary();
+
+    // 开档:错实参必须报 E0111。
+    let on = stage(
+        &fixture_root().join("module_sig_import_type"),
+        "module_sig_import_type-on",
+        Some("error"),
+    );
+    let (ok, out) = run_check(&bin, &on, "main.wll");
+    assert!(
+        !ok,
+        "a wrong argument at an imported call site must fail the gate:\n{out}"
+    );
+    assert!(
+        out.contains("E0111"),
+        "expected E0111 from the imported signature, got:\n{out}"
+    );
+
+    // 默认档:一条静态诊断都不许有(ADR-0020 S1)。
+    let off = stage(
+        &fixture_root().join("module_sig_import_type"),
+        "module_sig_import_type-off",
+        None,
+    );
+    let (ok, out) = run_check(&bin, &off, "main.wll");
+    assert!(
+        ok,
+        "the default configuration must stay silent for this fixture:\n{out}"
+    );
+    assert!(
+        !out.contains("E0111"),
+        "an imported signature type must not leak into the default tier:\n{out}"
+    );
+}
+
+/// [R10-023] 正面用例:实参**对得上**时跨模块调用必须干净。
+///
+/// 少了这条,R10-023 可能退化成「模块调用一律报错」—— 那同样是一种不可用。
+#[test]
+fn a_matching_argument_at_an_imported_call_site_stays_clean() {
+    let bin = wlwl_binary();
+    let on = stage(
+        &fixture_root().join("module_sig_import_type"),
+        "module_sig_import_type-good-on",
+        Some("error"),
+    );
+    // 改入口文件(在**暂存副本**上,夹具目录不动):实参换成 INTEGER。
+    std::fs::write(
+        on.join("main.wll"),
+        "IMPORT(\"math\", [\"add\"]);\nPRINT(add(1, 2));\n",
+    )
+    .expect("rewrite staged entry");
+    let (ok, out) = run_check(&bin, &on, "main.wll");
+    assert!(
+        ok,
+        "matching arguments at an imported call site must stay clean:\n{out}"
+    );
+}
+
 /// [R10-011] **负向守卫**:契约写在代码之后,必须被判定为「什么都没断言」。
 ///
 /// 这条是给守卫本身上锁。v0.10 的 `contract_of` 有注释说「不猜:解析不出契约

@@ -667,6 +667,47 @@ pub fn import_specs(program: &Expr) -> Vec<String> {
     out
 }
 
+/// [v0.10.1 / R10-023] 一份程序**直接导入**的名字 → 它们在签名里声明的类型。
+///
+/// 入口: [`check_imports`] 只比**名字集合** —— 签名里的**类型**从来没进过
+/// 类型检查。所以 `math.wll.sig` 明明写着
+/// `EXPORT add (INTEGER, INTEGER) : INTEGER`,消费方的 `add("a", "b")`
+/// 零诊断(rc=0)。签名的类型**只被解析、被展示,从不被消费**。
+///
+/// 这里把类型取出来交给检查器。调用方负责把 `module spec -> ModuleSig`
+/// 解析好传进来(文件定位是 CLI 的事,这一层不该碰磁盘)。
+///
+/// **只取直接导入**:嵌套模块的导入不在这里返回。各层模块的类型诊断由
+/// `check` 各自负责(见 `scan_module_contracts` 的函数文档),入口只需要
+/// 知道自己直接依赖的契约。
+///
+/// 签名里没声明的名字**不出现**在结果里 —— 那是 `check_imports` 的
+/// `E0113` 地盘,两件事分开报。
+pub fn imported_sig_types(
+    program: &Expr,
+    sigs_by_spec: &BTreeMap<String, ModuleSig>,
+) -> BTreeMap<String, Ty> {
+    let mut out: BTreeMap<String, Ty> = BTreeMap::new();
+    for node in import_nodes(program) {
+        let Expr::Import { path, names, .. } = node else {
+            continue;
+        };
+        let Some(sig) = sigs_by_spec.get(path) else {
+            continue;
+        };
+        for n in names {
+            // 同一模块里没声明的名字跳过(E0113 归 `check_imports`)。
+            let Some(entry) = sig.entries.get(&n.name) else {
+                continue;
+            };
+            // `Dynamic` = 签名不表态,不参与检查;`E0111` 的 E0111 判定对
+            // Dynamic 天然不成立,绑上去也不会误报。
+            out.insert(n.name.clone(), entry.ty.clone());
+        }
+    }
+    out
+}
+
 /// 一个被 import 的模块,连同「自查已经报过什么」。
 #[derive(Debug, Clone, Default)]
 pub struct ImportedModule {

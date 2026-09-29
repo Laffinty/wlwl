@@ -923,6 +923,22 @@ pub(crate) fn collect_static_diagnostics(
     // 那一层,所以它是唯一能同时看见 `SigTy` 与 `Ty` 的地方。
     let builtins = builtin_sig_table();
 
+    // [v0.10.1 / R10-023] 先算入口文件**直接导入**的签名类型,再跑类型检查。
+    //
+    // 顺序是被迫的:导入名的类型来自旁路签名文件,而类型检查要用它 ——
+    // 所以签名必须在 `check_program_with_options` **之前**就位。契约扫描
+    // (`scan_module_contracts`)仍然在后面:它要的是类型检查的产物
+    // `declared`,方向相反,两者不构成环。
+    //
+    // 只需要**直接**导入:各层模块自己的类型诊断由各自的 `wlwl check`
+    // 负责(见 `scan_module_contracts` 的函数文档),入口只管自己直接依赖
+    // 的那几份签名。
+    let imported_owned = collect_imported_sig_types(ast, file);
+    let imported: &std::collections::BTreeMap<String, Ty> = match &imported_owned {
+        Some(m) => m,
+        None => default_empty_sig_types(),
+    };
+
     // [v0.10 Step 6 / plan §4] 一次遍历同时拿到两样东西:类型诊断,以及
     // 根作用域的绑定类型(模块契约要比的就是这份表)。
     let checked = wlwl_types::check_program_with_options(
@@ -930,6 +946,7 @@ pub(crate) fn collect_static_diagnostics(
         &wlwl_types::CheckOptions {
             builtins: &builtins,
             match_exhaustiveness: match_setting.is_enabled(),
+            imported,
         },
     );
     // **按子系统分档渲染**:`gradual_typing` 管类型/契约诊断,
@@ -1130,6 +1147,46 @@ fn scan_module_contracts(
     }
 
     out
+}
+
+/// [v0.10.1 / R10-023] 入口文件**直接导入**的名字 → 旁路签名里声明的类型。
+///
+/// 只做一次轻量预扫:解析每个 `IMPORT` spec 到文件、读它的 `.sig`,把签名
+/// 按 spec 索引起来。解析不到模块 / 没有签名文件 / 签名读不出来,一律
+/// **静默跳过** —— 这些问题由 `scan_module_contracts` 与 `run` 各按自己的
+/// 职责报一遍,这里重报只会让同一条消息出现两次。
+fn collect_imported_sig_types(
+    ast: &Expr,
+    file: &std::path::Path,
+) -> Option<std::collections::BTreeMap<String, Ty>> {
+    let base = file.parent().map(|p| p.to_path_buf()).unwrap_or_default();
+    let specs = wlwl_types::import_specs(ast);
+    if specs.is_empty() {
+        return None;
+    }
+    let mut by_spec: std::collections::BTreeMap<String, wlwl_types::ModuleSig> =
+        std::collections::BTreeMap::new();
+    for spec in specs {
+        // std 模块没有磁盘源,也就没有旁路签名。
+        let Ok(Some(dep)) = wlwl_eval::resolve_module_file(&spec, &base) else {
+            continue;
+        };
+        if let Ok(Some(sig)) = load_module_sig(&dep) {
+            by_spec.insert(spec, sig);
+        }
+    }
+    if by_spec.is_empty() {
+        return None;
+    }
+    Some(wlwl_types::imported_sig_types(ast, &by_spec))
+}
+
+/// 「没有导入签名」时的空表。`&'static` 是因为
+/// [`wlwl_types::CheckOptions`] 持有一个引用。
+fn default_empty_sig_types() -> &'static std::collections::BTreeMap<String, Ty> {
+    static EMPTY: std::sync::OnceLock<std::collections::BTreeMap<String, Ty>> =
+        std::sync::OnceLock::new();
+    EMPTY.get_or_init(Default::default)
 }
 
 /// 组装一个模块的契约载体(签名文件 + `SEALED`),并把签名文件的问题

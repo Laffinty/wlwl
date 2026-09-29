@@ -89,6 +89,10 @@ pub fn check_program_detailed(expr: &Expr, builtins: &HashMap<String, Ty>) -> Ch
             builtins,
             // Step 8 之前 MATCH 检查不存在,所以历史调用方式等价于「开着」。
             match_exhaustiveness: true,
+            // [v0.10.1 / R10-023] 这个历史入口不涉及跨模块调用,给空表
+            // —— 行为与 v0.10 一致。要接上导入签名走
+            // `check_program_with_options` 并显式给 `imported`。
+            imported: default_imported(),
         },
     )
 }
@@ -102,11 +106,24 @@ pub struct CheckOptions<'a> {
     /// Step 8:是否跑 MATCH 穷尽性 / 可达性检查。`false` = **完全不跑**
     /// —— 这是「零开销」在 MATCH 侧的落点。
     pub match_exhaustiveness: bool,
+    /// [v0.10.1 / R10-023] 直接 `IMPORT` 进来的名字 → 签名里声明的类型。
+    ///
+    /// 空表 = 跨模块调用不参与类型检查(v0.10 的行为)。由
+    /// [`crate::imported_sig_types`] 从入口文件的直接依赖签名算出。
+    pub imported: &'a std::collections::BTreeMap<String, Ty>,
+}
+
+/// `CheckOptions` 的默认:无内建、无导入、跑 MATCH。
+fn default_imported() -> &'static std::collections::BTreeMap<String, Ty> {
+    static EMPTY: std::sync::OnceLock<std::collections::BTreeMap<String, Ty>> =
+        std::sync::OnceLock::new();
+    EMPTY.get_or_init(Default::default)
 }
 
 /// [`check_program_detailed`] 的开关版。
 pub fn check_program_with_options(expr: &Expr, opts: &CheckOptions<'_>) -> CheckOutput {
     let mut checker = Checker::new(opts.builtins);
+    checker.imported = opts.imported;
     checker.match_exhaustiveness = opts.match_exhaustiveness;
     checker.check_expr(expr, None);
     CheckOutput {
@@ -137,6 +154,9 @@ struct Checker<'a> {
     returns: Vec<Ty>,
     /// 内建签名表(Step 5 · A6′)。查不到 = 没有签名。
     builtins: &'a HashMap<String, Ty>,
+    /// [v0.10.1 / R10-023] 直接导入的名字 → 签名声明的类型。见
+    /// [`CheckOptions::imported`]。
+    imported: &'a std::collections::BTreeMap<String, Ty>,
     /// 根作用域绑定(Step 6)。见 [`DeclaredBinding`]。
     declared: Vec<DeclaredBinding>,
     /// Step 8:是否跑 MATCH 检查。关掉时那条 pass **完全不执行**。
@@ -165,6 +185,7 @@ impl<'a> Checker<'a> {
             diags: Vec::new(),
             returns: Vec::new(),
             builtins,
+            imported: default_imported(),
             declared: Vec::new(),
             // 由 `check_program_with_options` 覆写;默认值等于「关」——
             // 构造器本身不该顺手把一条新 pass 打开。
@@ -561,7 +582,31 @@ impl<'a> Checker<'a> {
             // 模块签名与密封面),但它们的名字面契约不需要类型:
             // 导出集与声明集的差集是纯名字比较,走 [`crate::sig`]。
             // 这里一律落 `Dynamic`,不预判。
-            Expr::Import { .. } | Expr::Export { .. } | Expr::Sealed { .. } => Ty::Dynamic,
+            // [v0.10.1 / R10-023] `IMPORT` 把名字连同**签名里声明的类型**
+            // 绑进当前作用域。
+            //
+            // 修之前这一臂直接返回 `Ty::Dynamic`,导入的名字**不参与任何
+            // 类型检查**:`math.wll.sig` 写着
+            // `EXPORT add (INTEGER, INTEGER) : INTEGER`,消费方的
+            // `add("a", "b")` 零诊断。签名的类型只被解析、被展示,从不
+            // 被消费。
+            //
+            // 绑进 `env` 而不是塞进 `builtins`,是为了让 `check_call` 走
+            // 「局部作用域优先」那条路的**完整**参数检查 —— `builtins` 那一
+            // 路的 `params` 通常是空的(只给返回类型),那样形参根本不比对。
+            //
+            // 签名里没声明的名字不绑(那是 `E0113` 的地盘,`check_imports`
+            // 报);`Dynamic` 绑上去也不误报(`satisfies_annotation` 对
+            // Dynamic 恒真)。
+            Expr::Import { names, .. } => {
+                for n in names {
+                    if let Some(ty) = self.imported.get(&n.name) {
+                        self.env.bind(n.name.clone(), ty.clone());
+                    }
+                }
+                Ty::Dynamic
+            }
+            Expr::Export { .. } | Expr::Sealed { .. } => Ty::Dynamic,
         }
     }
 
