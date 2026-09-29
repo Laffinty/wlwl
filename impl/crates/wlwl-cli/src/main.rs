@@ -821,6 +821,13 @@ struct FeaturesLoad {
     match_setting: MatchExhaustivenessSetting,
     strict_types: bool,
     unusable_manifest: Option<String>,
+    /// [v0.10.2] `[features]` 里的未知键 / 值形状不对的键。
+    /// 每项是已经写好的 `W0001` 文案。
+    ///
+    /// 必须**在加载时**存下来:`FeaturesLoad` 只保留三个解析后的开关,
+    /// 原始 feature 表用完即丢,下游根本拿不到做键比对所需的数据。
+    /// `unusable_manifest` / 两个 `invalid_value()` 走的都是同一个道理。
+    feature_problems: Vec<String>,
 }
 
 impl FeaturesLoad {
@@ -831,6 +838,7 @@ impl FeaturesLoad {
             match_setting: MatchExhaustivenessSetting::following(GradualTypingSetting::default()),
             strict_types: false,
             unusable_manifest: None,
+            feature_problems: Vec::new(),
         }
     }
 }
@@ -858,6 +866,7 @@ fn load_features(base_dir: &std::path::Path) -> FeaturesLoad {
                  both static switches fall back to \"off\""
                     .to_string(),
             ),
+            feature_problems: Vec::new(),
         };
     };
 
@@ -881,16 +890,20 @@ fn load_features(base_dir: &std::path::Path) -> FeaturesLoad {
         }),
     };
 
-    let (gradual, match_setting, strict_types) = match loose {
+    let (gradual, match_setting, strict_types, feature_problems) = match loose {
         Ok(f) => (
             f.gradual_typing(),
             f.match_exhaustiveness(),
             f.strict_types(),
+            // [v0.10.2] 键名与值形状的体检。解析失败时无从体检 —— 那种情况
+            // 已经由 `unusable_manifest` 报过了,不在这里重复。
+            f.problems().into_iter().map(|(_k, msg)| msg).collect(),
         ),
         Err(_) => (
             GradualTypingSetting::default(),
             MatchExhaustivenessSetting::following(GradualTypingSetting::default()),
             false,
+            Vec::new(),
         ),
     };
 
@@ -899,6 +912,7 @@ fn load_features(base_dir: &std::path::Path) -> FeaturesLoad {
         match_setting,
         strict_types,
         unusable_manifest,
+        feature_problems,
     }
 }
 
@@ -1071,6 +1085,25 @@ pub(crate) fn collect_static_diagnostics(
             WlwlDiagnostic::new(
                 ErrorCode::W0001,
                 reason.clone(),
+                Location::point(base_dir.join("wlwl.toml").to_string_lossy(), 0, 0),
+            )
+            .with_severity(Severity::Warning),
+        );
+    }
+
+    // [v0.10.2] 键名拼错 / 值形状不对。`W0001` 此前只覆盖「已知键 + 非法值」
+    // 三种情形(清单不合法、`gradual_typing` 值非法、`match_exhaustiveness`
+    // 值非法),**没有一条管键名**。于是 `native_channel_clsoe = true` 被正常
+    // 收下、读不到、回落 `false`,零提示 —— 用户写对了语义、拼错了键、
+    // 拿到了相反的行为。
+    //
+    // 与上面三条同处一个 early-return 之前:两个开关都关时清单照样该被体检,
+    // 否则「`off` 档静默」会把笔误重新藏起来。
+    for msg in &features.feature_problems {
+        out.push(
+            WlwlDiagnostic::new(
+                ErrorCode::W0001,
+                msg.clone(),
                 Location::point(base_dir.join("wlwl.toml").to_string_lossy(), 0, 0),
             )
             .with_severity(Severity::Warning),

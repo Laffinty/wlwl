@@ -827,12 +827,16 @@ pub const BUILTIN_REGISTRY: &[BuiltinSpec] = &[
         sig: Some(BuiltinSig::ret_only(SigTy::Dynamic)),
         group: BuiltinGroup::Dict,
         // v0.8 D8-001 deviation (was P4-B12-002): registry entry now
-        // documents the actual 3-arg DICT semantics. Dispatch still routes
-        // to `builtin_at_k` (`lib.rs:4092`) for source-compat with v0.5
-        // programs that called POP(arr) on DICTs. `AT_K` is the canonical
-        // name; `POP` survives as a compat alias emitting no warning
-        // (unlike ResolvedCompat aliases, since the rename path predates
-        // the W0051 machinery).
+        // documents the actual 3-arg DICT semantics. Dispatch routes to
+        // `builtin_at_k` for source-compat with v0.5 programs that called
+        // POP(arr) on DICTs. `AT_K` is the canonical name.
+        //
+        // [v0.10.2] **本条「emitting no warning」的记录已被推翻。**
+        // 原注释的理由是「重命名路径早于 W0051 机制」,但 §11.3 与附录 G
+        // 都把 `POP` 标成「弃用别名 (W0051)」—— 别名既然还在可用,迁移引导
+        // 就是必要的。发警告**不改变语义**,因此不影响 D8-001 记录的那条
+        // 兼容事实(旧程序照跑,只是多一行提示)。现 dispatch 走
+        // `builtin_at_k_compat`,与 `DEL` / `OR_DIE` 两条别名同构。
         err_consumer: ErrConsumerStatus::No,
         macro_fn: false,
         version: Version::V06,

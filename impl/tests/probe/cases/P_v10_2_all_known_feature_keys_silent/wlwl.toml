@@ -1,0 +1,13 @@
+[package]
+name = "p"
+version = "0.1.0"
+entry = "main.wll"
+
+[features]
+allow_builtin_shadow = true
+strict_types = false
+strict_deadlock_detect = true
+native_channel_close = false
+gradual_typing = "off"
+match_exhaustiveness = "off"
+channel_large_buf_threshold = 10

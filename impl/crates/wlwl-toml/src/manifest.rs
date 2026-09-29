@@ -234,6 +234,106 @@ pub fn parse_features(s: &str) -> Result<FeaturesOnly, ManifestError> {
     Ok(toml::from_str::<FeaturesOnly>(s)?)
 }
 
+/// The value shape a `[features]` key is expected to have.
+///
+/// A key that exists but carries the wrong shape is as broken as a key that
+/// doesn't exist at all: `strict_types = "yes"` reads as `false` and
+/// `channel_large_buf_threshold = "big"` reads as the default, both with zero
+/// diagnostics. So both failure modes are reported together.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum FeatureShape {
+    Boolean,
+    /// One of the three string tiers; the exact set is per-key.
+    Tier,
+    /// A non-negative integer.
+    NonNegativeInt,
+}
+
+impl FeatureShape {
+    /// Human-readable form used in the `W0001` message.
+    pub fn describe(self) -> &'static str {
+        match self {
+            FeatureShape::Boolean => "BOOLEAN (`true` / `false`)",
+            FeatureShape::Tier => "STRING (`\"off\"` | `\"warn\"` | `\"error\"`)",
+            FeatureShape::NonNegativeInt => "non-negative INTEGER",
+        }
+    }
+
+    fn matches(self, v: &toml::Value) -> bool {
+        match self {
+            FeatureShape::Boolean => matches!(v, toml::Value::Boolean(_)),
+            FeatureShape::Tier => matches!(v, toml::Value::String(_)),
+            FeatureShape::NonNegativeInt => matches!(v, toml::Value::Integer(n) if *n >= 0),
+        }
+    }
+}
+
+/// Every `[features]` key the implementation actually reads, with its shape.
+///
+/// [v0.10.2] This table is the single source of truth for "is this key real?".
+/// It had to exist because the seven accessors each did their own
+/// `features.get("…")` and **none of them ever looked at the leftovers**: a
+/// misspelled key was accepted, unread, and silently fell back to the default
+/// — the user wrote the right semantics, misspelled the key, got the opposite
+/// behaviour, and was told nothing.
+///
+/// The `gradual_typing` / `match_exhaustiveness` *value* checks already exist
+/// (`GradualTypingSetting::invalid_value` and its twin), so this table covers
+/// them at the shape level only — the tier vocabulary is still validated where
+/// it already was, to keep one implementation of "which value means which tier".
+pub const KNOWN_FEATURE_KEYS: [(&str, FeatureShape); 7] = [
+    ("allow_builtin_shadow", FeatureShape::Boolean),
+    ("strict_types", FeatureShape::Boolean),
+    ("strict_deadlock_detect", FeatureShape::Boolean),
+    ("native_channel_close", FeatureShape::Boolean),
+    ("gradual_typing", FeatureShape::Tier),
+    ("match_exhaustiveness", FeatureShape::Tier),
+    ("channel_large_buf_threshold", FeatureShape::NonNegativeInt),
+];
+
+/// Problems found in a `[features]` table, as `(key, reason)` pairs.
+///
+/// `reason` is already user-facing prose — callers render it into `W0001`
+/// directly rather than re-deriving the wording, so the message can never
+/// drift from the check that produced it.
+pub type FeatureProblems = Vec<(String, String)>;
+
+/// Check a raw feature table against [`KNOWN_FEATURE_KEYS`].
+///
+/// Shared by [`Manifest`] and [`FeaturesOnly`] so the two can't drift — the
+/// same discipline as `resolve_gradual_typing` (R10-010).
+pub fn check_feature_table(features: &FeaturesTable) -> FeatureProblems {
+    let mut out = FeatureProblems::new();
+    // BTreeMap iteration is already sorted, so output order is deterministic.
+    for (key, value) in features {
+        match KNOWN_FEATURE_KEYS.iter().find(|(k, _)| k == key) {
+            None => {
+                let known: Vec<&str> = KNOWN_FEATURE_KEYS.iter().map(|(k, _)| *k).collect();
+                out.push((
+                    key.clone(),
+                    format!(
+                        "unknown [features] key `{key}` (no such key is read by wlwl); \
+                         known keys: {}",
+                        known.join(" / ")
+                    ),
+                ));
+            }
+            Some((_, shape)) if !shape.matches(value) => {
+                out.push((
+                    key.clone(),
+                    format!(
+                        "[features] key `{key}` expects {}, got {}",
+                        shape.describe(),
+                        value.type_str()
+                    ),
+                ));
+            }
+            Some(_) => {}
+        }
+    }
+    out
+}
+
 impl FeaturesOnly {
     /// Same three-level resolution as [`Manifest::gradual_typing`].
     pub fn gradual_typing(&self) -> GradualTypingSetting {
@@ -254,6 +354,11 @@ impl FeaturesOnly {
             self.features.get("strict_types"),
             Some(toml::Value::Boolean(true))
         )
+    }
+
+    /// [v0.10.2] Unknown keys / wrong value shapes in `[features]`.
+    pub fn problems(&self) -> FeatureProblems {
+        check_feature_table(&self.features)
     }
 }
 
@@ -688,6 +793,17 @@ impl Manifest {
             _ => DEFAULT_LARGE_BUF_THRESHOLD,
         }
     }
+
+    /// [v0.10.2] Unknown keys / wrong value shapes in `[features]`.
+    ///
+    /// The evaluator reads four of these keys (`allow_builtin_shadow`,
+    /// `strict_deadlock_detect`, `native_channel_close`,
+    /// `channel_large_buf_threshold`) and `wlwl-cli` reads the rest. Neither
+    /// side used to validate the key *names*, so a typo silently disabled
+    /// whatever it was meant to enable. The CLI surfaces this as `W0001`.
+    pub fn problems(&self) -> FeatureProblems {
+        check_feature_table(&self.features)
+    }
 }
 
 /// Default `CHANNEL_NEW` buffer size above which `W0066` fires.
@@ -719,6 +835,104 @@ pub fn resolve_namespace(manifest: &Manifest, ns: &str, name: &str) -> Option<Pa
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    // ---- [v0.10.2] unknown-key / wrong-shape detection --------------
+    //
+    // The bug these lock: every accessor did its own `features.get("…")`
+    // and none of them looked at the leftovers, so a misspelled key was
+    // accepted, unread, and silently fell back to the default.
+
+    #[test]
+    fn all_known_keys_produce_no_problems() {
+        // Regression guard for the table itself: if `KNOWN_FEATURE_KEYS`
+        // ever drops an entry, a *correct* manifest starts warning.
+        for (key, shape) in KNOWN_FEATURE_KEYS {
+            let value = match shape {
+                FeatureShape::Boolean => "true",
+                FeatureShape::Tier => "\"off\"",
+                FeatureShape::NonNegativeInt => "10",
+            };
+            let src = format!("[features]\n{key} = {value}\n");
+            let f = parse_features(&src).expect("parses");
+            assert_eq!(
+                f.problems(),
+                Vec::new(),
+                "a valid `{key}` must not be reported"
+            );
+        }
+    }
+
+    #[test]
+    fn misspelled_key_is_reported() {
+        // The exact shape that used to be silent: right semantics,
+        // misspelled key, opposite behaviour, no diagnostics.
+        let f = parse_features("[features]\nnative_channel_clsoe = true\n").expect("parses");
+        let problems = f.problems();
+        assert_eq!(problems.len(), 1, "expected exactly one problem");
+        assert!(
+            problems[0].1.contains("native_channel_clsoe"),
+            "{}",
+            problems[0].1
+        );
+        assert!(problems[0].1.contains("unknown"), "{}", problems[0].1);
+    }
+
+    #[test]
+    fn wrong_value_shape_is_reported() {
+        for (src, expect_in_msg) in [
+            ("[features]\nnative_channel_close = \"yes\"\n", "BOOLEAN"),
+            (
+                "[features]\nchannel_large_buf_threshold = \"big\"\n",
+                "non-negative",
+            ),
+            (
+                "[features]\nchannel_large_buf_threshold = -1\n",
+                "non-negative",
+            ),
+            ("[features]\ngradual_typing = true\n", "STRING"),
+        ] {
+            let f = parse_features(src).expect("parses");
+            let problems = f.problems();
+            assert_eq!(problems.len(), 1, "expected one problem for {src:?}");
+            assert!(
+                problems[0].1.contains(expect_in_msg),
+                "{:?} should mention {expect_in_msg}, got {}",
+                src,
+                problems[0].1
+            );
+        }
+    }
+
+    #[test]
+    fn several_bad_keys_are_all_reported_in_sorted_order() {
+        let f = parse_features("[features]\nzzz = 1\naaa = 2\n").expect("parses");
+        let problems = f.problems();
+        assert_eq!(
+            problems.len(),
+            2,
+            "both must be reported, not just the first"
+        );
+        // BTreeMap order -> deterministic output.
+        assert!(problems[0].1.starts_with("unknown [features] key `aaa`"));
+        assert!(problems[1].1.starts_with("unknown [features] key `zzz`"));
+    }
+
+    #[test]
+    fn no_features_table_is_clean() {
+        let f = parse_features("[package]\nname = \"p\"\n").expect("parses");
+        assert!(f.problems().is_empty());
+    }
+
+    #[test]
+    fn manifest_problems_matches_features_only() {
+        // The two entry points must not drift (same discipline as
+        // `resolve_gradual_typing`).
+        let src = "[package]\nname = \"p\"\nversion = \"0.1.0\"\nentry = \"m.wll\"\n\n\
+                   [features]\ntypo_key = true\n";
+        let m = parse(src).expect("valid manifest");
+        let f = parse_features(src).expect("valid features");
+        assert_eq!(m.problems(), f.problems());
+    }
 
     const SAMPLE: &str = r#"
 [package]

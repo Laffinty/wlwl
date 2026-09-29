@@ -2311,6 +2311,25 @@ fn builtin_remove_key_compat(ev: &mut Evaluator, args: Vec<Value>) -> WlwlResult
 
 /// v0.6 §10.4 — `AT_K(d, key, default)` (dict variant — safe lookup).
 ///
+/// [v0.10.2] `POP(d, k, default)` 是 `AT_K` 的 v0.6 兼容别名,按 §11.3
+/// 每次使用都应发 `W0051`。此前 `POP` 直接映射到 `builtin_at_k`、
+/// **不发警告** —— `registry.rs` 里有一段记载在案的有意省略(援引 D8-001
+/// 偏差,理由是「重命名早于 W0051 机制」)。那条省略已被推翻:别名既然
+/// 还在可用,迁移引导就是必要的,而**警告不改变语义**,所以发警告不影响
+/// 任何 v0.5/v0.6 程序的兼容 —— 它们只是多看到一行提示。
+///
+/// D8-001 记录的那条兼容事实(「`POP` 仍可对 ARRAY 调用」)不受影响:
+/// 本包装只加一条警告,`builtin_at_k` 的分派与元数检查一字未改。
+fn builtin_at_k_compat(ev: &mut Evaluator, args: Vec<Value>) -> WlwlResult<Outcome> {
+    ev.emit_warning(
+        ErrorCode::W0051,
+        "`POP` is a v0.6-compat alias; use `AT_K` instead (will be removed in v0.5)",
+    );
+    builtin_at_k(ev, args)
+}
+
+/// v0.6 §10.4 — `AT_K(d, key, default)` (dict variant — safe lookup).
+///
 /// v0.6 E decision: renamed from v0.5's `POP` to clarify semantics.
 /// `POP` previously removed the entry (Python-style `dict.pop`);
 /// v0.6 separates the two concerns:
@@ -5669,9 +5688,11 @@ fn resolve_builtin(name: &str) -> Option<BuiltinFn> {
         // Spec §14.5 mandates W0051 on every legacy use; v0.5 removes
         // the alias. Added Phase B2.
         "DEL" => Some(builtin_remove_key_compat),
-        "POP" => Some(builtin_at_k),
         // v0.6 §10.4: `AT_K` is the canonical dict lookup-with-default.
-        // `POP` is now an alias (still routes to the same function).
+        // `POP` is its v0.6-compat alias and, per §11.3, every use emits
+        // `W0051` (added v0.10.2; the earlier "deliberately silent" record
+        // in `registry.rs` is superseded — see that file for why).
+        "POP" => Some(builtin_at_k_compat),
         "AT_K" => Some(builtin_at_k),
 
         // Phase B15 (spec 附录 G): misc 8 项从 Deferred 转到 ResolvedBuiltin。

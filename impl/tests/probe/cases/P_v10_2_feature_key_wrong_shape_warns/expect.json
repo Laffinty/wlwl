@@ -1,0 +1,8 @@
+{
+ "exit": 0,
+ "contains": [
+  "W0001",
+  "non-negative INTEGER"
+ ],
+ "_why": "键名对了但值形状错,同样等于没生效(threshold 回落 1024)。现有 W0001 只覆盖 gradual_typing / match_exhaustiveness 的**值**,布尔与整型键从未校验类型。表里的 FeatureShape 三档就是补这一段。"
+}
