@@ -231,9 +231,32 @@ WLWL 是动态类型语言:类型属于值而非名字。值的论域由以下**
 
 **三条实测事实(规范性,来自参考实现的实际行为)**:
 
-1. **容器类型用方括号,不用尖括号。** `ARRAY` **要求**方括号,裸写 `ARRAY` 报 `E0010`;`DICT` / `OPTION` / `RESULT` 裸写则能解析成一个不透明具名类型(不报语法错)。
-2. **尖括号形式与箭头形式都不可达。** `DICT<STRING, INTEGER>` 与 `FUN(INTEGER) -> STRING` 都不会报错,但会被解析成一个**名字里含括号的单个不透明类型** —— 用户看不到任何错误,却也得不到任何检查。根因是词法层没有 `->` 终结符(`-` 与 `>` 是两个独立记号),残余记号被当作类型名的一部分吸收。**本规范不承认这两种形式**。
-3. **显式约束只跟在裸标识符后**:`T: Comparable` 合法,`ARRAY[INTEGER]: Comparable` 报 `E0012`(约束的是变量,不是类型)。
+> [v0.10.1 / R10-040] 本节三条在 v0.10 写错了两处码号与一处结论。下文按
+> `v0.10.1` 参考实现的实测结果重写;每条都可用 `wlwl check` 复现。
+
+1. **容器类型用方括号,不用尖括号。** `ARRAY` **要求**方括号,裸写 `ARRAY` 报 `E0010: expected '[' after 'ARRAY' in type expression`。`DICT` / `OPTION` / `RESULT` 裸写**不报语法错**,映射成带 `DYNAMIC` 参数的正式变体(`DICT[DYNAMIC, DYNAMIC]` / `OPTION[DYNAMIC]` / `RESULT[DYNAMIC, DYNAMIC]`),不是「不透明具名类型」。
+
+2. **尖括号形式与箭头形式的命运不同 —— 这一条 v0.10 写反了。**
+   - `DICT<STRING, INTEGER>` 是**响亮的语法错**:`E0011: expected ')', got Gt`。
+   - `FUN(INTEGER) -> STRING` 才是**静默吸收**:词法层没有 `->` 终结符
+     (`-` 与 `>` 是两个独立记号),残余记号被并进类型名,得到
+     `FUN ( INTEGER ) - > STRING` 这个谁也不认识的类型 —— 用户看不到任何
+     错误,却也得不到任何检查。**本规范不承认这两种形式**。
+   - 单个类型参数的 `DICT<STRING>` 同样被静默吸收成 `DICT < STRING >`。
+     [v0.10.1 / R10-020] 吸收时会保留**整个**类型头,所以 `wlwl fmt` 能把
+     这样的源码写回去;早先的实现在这里把头丢掉了,导致 `fmt` 产出不可重解析
+     的源码。
+
+3. **显式约束只跟在裸标识符后,且不可嵌套。** `T: Comparable` 合法;
+   `ARRAY[INTEGER]: Comparable` 报 **`E0010`**(不是 v0.10 写的 `E0012` ——
+   那条是返回类型失配,与这里无关):`a type constraint may only follow a bare
+   type variable`。约束**不可右嵌套**:`T: Comparable: Integer` 报
+   `E0010: a type constraint may not be nested`([v0.10.1 / R10-025];
+   v0.10 对此静默通过,造出约束套约束的伪类型)。
+   给**已知基类型**加约束是无意义的废话,约束被丢弃、类型不变:
+   `INTEGER: Comparable` 就是 `INTEGER`([v0.10.1 / R10-027];v0.10 把它落成
+   一个谁都能绑的类型变量)。
+
 
 ---
 
