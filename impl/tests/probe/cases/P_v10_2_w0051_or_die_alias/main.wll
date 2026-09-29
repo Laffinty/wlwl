@@ -1,0 +1,1 @@
+PRINT(OR_DIE(OK(1), 0))

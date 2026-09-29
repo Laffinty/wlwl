@@ -1,0 +1,7 @@
+{
+ "exit": 0,
+ "contains": [
+  "2"
+ ],
+ "_why": "第三方合规审查 P0-4。§10.3 与附录 G 都承诺 CALL 做动态分发;此前 builtin_call 是个恒返回错误的空壳,消息里自陈「this path is reserved for dynamic dispatch」。附录 G 的「可调用 ✔」列对这条不成立。"
+}

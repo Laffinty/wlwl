@@ -1,0 +1,8 @@
+{
+ "exit": 0,
+ "contains": [
+  "3",
+  "TRUE"
+ ],
+ "_why": "第三方合规审查 P0-2。§6.2「体产生的 ERR 终止循环并传播」;此前 eval_while 把 Signal::None 一律 continue,ERR 被静默吞掉 —— 循环跑满 100 轮、n=100、r 不含 ERR、退出码 0。静默错误,CI 看不见。修好后应停在第 3 轮。"
+}

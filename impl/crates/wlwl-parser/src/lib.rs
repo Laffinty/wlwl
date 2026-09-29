@@ -141,6 +141,31 @@ pub fn lint(expr: &Expr) -> Vec<Warning> {
     l.warnings
 }
 
+/// [v0.10.2 / §11.3] `W0013` 用的字面量形态标签。
+///
+/// 返回 `None` 表示「判不了」——非字面量表达式一律返回 `None`,于是
+/// `W0013` 永远不会因为需要类型推断而误报。
+///
+/// 两处刻意的合并:
+/// - `Integer` 与 `Float` 同归 `number`:规范 §2.2 / 附录 B 第 9 条规定
+///   `=(1, 1.0)` 为真、数值跨类型相等,`IF(c, 1, 2.5)` 推断为 `FLOAT`
+///   而非「不一致」,所以不报。
+/// - `Ok` 与 `Err` 同归 `result`:`TYPE()` 对两者都返回 `"RESULT"`(§2.1)。
+fn literal_shape(e: &Expr) -> Option<&'static str> {
+    match e {
+        Expr::Literal(lit, _) => Some(match lit {
+            Literal::Integer(_) | Literal::Float(_) => "number",
+            Literal::String(_) | Literal::Interpolated(_) => "string",
+            Literal::Boolean(_) => "boolean",
+            Literal::Null => "null",
+        }),
+        Expr::Array { .. } => Some("array"),
+        Expr::Dict { .. } => Some("dict"),
+        Expr::Ok { .. } | Expr::Err { .. } => Some("result"),
+        _ => None,
+    }
+}
+
 /// One lexical scope: bindings created here, in source order, with
 /// the span each would be reported at.
 struct Binding {
@@ -220,12 +245,34 @@ impl Linter {
                 cond,
                 then_branch,
                 else_branch,
-                ..
+                span,
             } => {
                 self.walk(cond);
                 self.walk(then_branch);
                 if let Some(el) = else_branch {
                     self.walk(el);
+                    // [v0.10.2 / §11.3] `W0013` = 「`IF` 两支类型不一致」,
+                    // 此前**完全没有构造点**(第三方合规审查 P2-2 实测
+                    // `IF(TRUE, 1, "s")` 在 `check` 下零诊断)。
+                    //
+                    // 判据刻意保守:只在**两支都是字面量**且字面量形态**互斥**
+                    // 时才报。理由是 `IF` 惰性 —— 运行期要比较两支类型就必须
+                    // 强行求值未选中的那支,那会破坏副作用语义,所以这条只能
+                    // 落在静态层;而静态层要对任意表达式推断类型,误报会淹没
+                    // 真信号。字面量对字面量是我们能**零误报**判定的那一类,
+                    // 其余交给开启 `gradual_typing` 后的类型层。
+                    if let (Some(a), Some(b)) = (literal_shape(then_branch), literal_shape(el)) {
+                        if a != b {
+                            self.warnings.push(Warning::new(
+                                EC::W0013,
+                                format!(
+                                    "IF branches have inconsistent literal shapes: \
+                                     then is {a}, else is {b}"
+                                ),
+                                (span.line_start, span.col_start, span.line_end, span.col_end),
+                            ));
+                        }
+                    }
                 }
             }
             Expr::While { cond, body, .. } => {

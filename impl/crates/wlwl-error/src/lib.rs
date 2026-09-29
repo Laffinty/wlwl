@@ -505,10 +505,11 @@ impl ErrorCode {
             // unbuffered channel cannot make progress. Same bucket as
             // the other concurrent codes.
             ErrorCode::E0064 => ErrorCategory::Concurrent,
-            // [v0.9 Step 5 / ADR-0017 §3.4] structured-concurrency
-            // deadlock (L1 strict). Same bucket as the other
-            // concurrent codes (E0050..E0058 group).
-            ErrorCode::E0065 => ErrorCategory::Concurrent,
+            // [v0.10.2 / §11.1] 「死锁检测产生的 `E0065` 的
+            // `error_category` 字段值为 `"deadlock"`」—— 此前落在
+            // `Concurrent` 桶,按 `== "deadlock"` 分类死锁的工具全部漏判。
+            // 与 `W0065` 同桶:§11.3 说两者「触发形状」相同。
+            ErrorCode::E0065 => ErrorCategory::Deadlock,
             // [v0.9 Step 8 / plan §4.4.2 / ADR-0019 §4.4.2] cancel
             // reason type error: TASK_CANCEL(task, reason) /
             // TASK_CANCEL_PARENT(reason) require reason to be a
@@ -577,8 +578,9 @@ impl ErrorCode {
             ErrorCode::W0053 => ErrorCategory::Syntax,
             // [v0.9 Step 5 / ADR-0017 §3.4] Dev-mode soft warning
             // for the structured-concurrency deadlock shape (L1).
-            // Bucket as Concurrent (same as the matching E0065).
-            ErrorCode::W0065 => ErrorCategory::Concurrent,
+            // [v0.10.2] 与 `E0065` 同桶(`Deadlock`):§11.3 说两者触发
+            // 形状相同,分成两桶会让同一个死锁因开关不同而分类不同。
+            ErrorCode::W0065 => ErrorCategory::Deadlock,
             // [v0.9 Step 5 / §5.3] Large buf soft warning emitted
             // by CHANNEL_NEW. Bucket as Runtime.
             ErrorCode::W0066 => ErrorCategory::Runtime,
@@ -701,6 +703,22 @@ pub enum ErrorCategory {
     /// top-level SPAWN outside a SCOPE) or a hard architectural
     /// invariant violation (stale TASK handle, SEND-on-closed).
     Concurrent,
+    /// [v0.10.2 / §11.1] Structured-concurrency deadlock detected
+    /// (`E0065`, and its `strict_deadlock_detect = false` soft twin
+    /// `W0065`). Spec §11.1 states in normative prose that the
+    /// `error_category` field of a deadlock-detected `E0065` is
+    /// `"deadlock"` — it was in fact `"concurrent"`, so a tool
+    /// routing on `error_category == "deadlock"` silently missed
+    /// every deadlock.
+    ///
+    /// Split out from `Concurrent` because a deadlock is a
+    /// *distinct, actionable* condition: it never resolves on its
+    /// own and always needs a program change, whereas the other
+    /// `Concurrent` codes (stale handle, SEND-on-closed, SPAWN
+    /// outside SCOPE) are caller misuse or transient scheduling
+    /// facts. `E0065` / `W0065` share this bucket because §11.3
+    /// gives them the same trigger shape.
+    Deadlock,
     Io,
     /// v0.4 spec 搂14.4 鈥?network errors (E0090-E0094).
     /// Separate from Io because AI tools apply different retry
@@ -734,6 +752,7 @@ impl ErrorCategory {
             ErrorCategory::Module => "module",
             ErrorCategory::Oop => "oop",
             ErrorCategory::Concurrent => "concurrent",
+            ErrorCategory::Deadlock => "deadlock",
             ErrorCategory::Io => "io",
             ErrorCategory::Network => "network",
             ErrorCategory::Json => "json",

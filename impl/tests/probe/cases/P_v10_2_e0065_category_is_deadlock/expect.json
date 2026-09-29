@@ -1,0 +1,11 @@
+{
+ "exit": 1,
+ "contains": [
+  "E0065",
+  "deadlock"
+ ],
+ "not_contains": [
+  "\"concurrent\""
+ ],
+ "_why": "第三方合规审查 P1-2。§11.1 明文:「死锁检测产生的 E0065 的 error_category 字段值为 \"deadlock\"」。此前是 concurrent,按 error_category == \"deadlock\" 分类死锁的编辑器 / CI 全部漏判。程序体沿用已通过的 I10_deadlock(两个 SPAWN 停在通道操作上无对端唤醒),只把 argv 换成 --format json 以便观测分类字段。W0065 同步改同桶。"
+}

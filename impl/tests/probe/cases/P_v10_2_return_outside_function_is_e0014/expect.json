@@ -1,0 +1,10 @@
+{
+ "exit": 1,
+ "contains": [
+  "E0014"
+ ],
+ "not_contains": [
+  "Ok("
+ ],
+ "_why": "第三方合规审查 P0-3。§6.4「三者出现在函数或循环体之外时产生 E0014」。此前顶层 RETURN 走 `Signal::Return(v) => Ok(v)`,rc=0、程序静默少跑一半。BREAK / CONTINUE 当时已经正确 —— 正是这个对照证明不是检查器整体缺失。"
+}

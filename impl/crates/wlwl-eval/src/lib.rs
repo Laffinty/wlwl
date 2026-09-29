@@ -731,6 +731,47 @@ pub enum Signal {
     Yield(crate::runtime::YieldReason),
 }
 
+/// [v0.10.2] WLWL 调用深度上限,超过即报 `E0101`。
+///
+/// **这个数字是标定 + 保守取值的结果,不是拍脑袋。** 两条约束方向相反:
+///
+/// - 必须**低于**真实崩溃深度,否则护栏形同虚设(进程照崩,`E0101` 永远
+///   来不及发)。
+/// - 必须**远高于**任何合理程序的深度,否则正常的递归算法会被误杀。
+///
+/// 标定依据(本机实测,`EVAL_STACK_SIZE = 512 MB`):
+///
+/// | profile | 1990 帧 | 备注 |
+/// |---|---|---|
+/// | `release` | rc=0,2.0s | |
+/// | `dev` | rc=0,8.0s | 64 MB 栈时它在 400–600 帧就崩 |
+///
+/// 崩溃深度的**推算**:1 MB 主线程栈上实测约 150–180 层即 `0xC00000FD`,
+/// 即 `release` 每帧约 6 KB。`dev` 每帧大得多(无优化、不内联),这也是
+/// 栈取 512 MB 而不是压低上限的原因(见 `EVAL_STACK_SIZE` 的说明)。
+///
+/// 取 **2000**:512 MB 栈下**两个 profile 都实测能跑完 1990 帧**,即上限
+/// 落在最坏情况(dev profile)的可用深度之内,护栏来得及生效而不是让进程
+/// 先崩。相对修前「约 150 层就崩」提升了一个数量级,且 `E0101` 在数秒内
+/// 出现(实测无限递归 1.8s 报 `E0101`)而不是让用户等一分钟。
+///
+/// ⚠️ **改了 `EVAL_STACK_SIZE`、`Value` 布局或编译 profile,必须重新标定。**
+const MAX_CALL_DEPTH: usize = 2_000;
+
+thread_local! {
+    /// 当前线程的 WLWL 调用深度。由 `invoke_closure` 增减。
+    static CALL_DEPTH: std::cell::Cell<usize> = const { std::cell::Cell::new(0) };
+}
+
+/// `CALL_DEPTH` 的 RAII 递减守卫。见 `invoke_closure` 里的说明。
+struct CallDepthGuard;
+
+impl Drop for CallDepthGuard {
+    fn drop(&mut self) {
+        CALL_DEPTH.with(|d| d.set(d.get().saturating_sub(1)));
+    }
+}
+
 /// A soft warning surfaced by the evaluator without aborting the run.
 /// Currently the only emitter is the integer-overflow path in §9.5
 /// (`+` / `-` / `*` on `INTEGER`): on overflow the value saturates to
@@ -1305,6 +1346,86 @@ fn collect_exports(program: &Expr) -> HashSet<String> {
             _ => {}
         }
     }
+    let mut out = HashSet::new();
+    collect(program, &mut out);
+    out
+}
+
+/// [v0.10.2] 静态收集**顶层**会绑定到当前模块作用域的名字。
+///
+/// 目的:让 `EXPORT([...])` 不再被求值序约束(见 `eval_export`)。
+/// 这是 `collect_exports` 的对偶 —— 后者收集「哪些名字被导出」,本函数
+/// 收集「哪些名字会被绑定」,两者都必须走同一套「只看顶层」的遍历口径。
+///
+/// 必须覆盖的顶层绑定形式(漏一个就等于该写法仍受顺序约束):
+/// - `Expr::Let`(含 `LET MUT`,`mut_` 只影响可变标志,名字一样)
+/// - `Expr::LetPattern`(模式里的 `Ident`;`Wildcard` / `Literal` 不绑定)
+/// - **具名 `FUN`**,即 `FUN(f(x), …)` —— 名字写在第一对括号**之内**,
+///   绑在**外层**作用域(§5.1)。这条最容易漏。
+/// - `Expr::Import`(每个 `local_name()`,含别名)
+/// - 顶层 `MATCH` 的子句模式
+///
+/// 刻意**不**收集:`Expr::For` 的循环变量(每轮压栈)、嵌套 `Expr::Block`
+/// (压栈)、函数体(自带作用域)—— 它们产生的绑定在顶层不可见。
+///
+/// 用 `HashSet` 而非有序表:遮蔽与重绑定是普通覆盖,集合语义下自动成立。
+fn collect_top_level_bindings(program: &Expr) -> HashSet<String> {
+    use wlwl_ast::Pattern;
+
+    fn from_pattern(p: &Pattern, out: &mut HashSet<String>) {
+        match p {
+            Pattern::Ident(n, _) => {
+                out.insert(n.clone());
+            }
+            Pattern::Array(items, rest, _) => {
+                for i in items {
+                    from_pattern(i, out);
+                }
+                if let Some(r) = rest {
+                    from_pattern(r, out);
+                }
+            }
+            Pattern::Dict(entries, _) => {
+                for (_k, v) in entries {
+                    from_pattern(v, out);
+                }
+            }
+            Pattern::Constructor { inner, .. } => from_pattern(inner, out),
+            // `Wildcard` / `Literal` 什么都不绑定。
+            _ => {}
+        }
+    }
+
+    fn collect(e: &Expr, out: &mut HashSet<String>) {
+        match e {
+            Expr::Block { exprs, .. } => {
+                for e in exprs {
+                    collect(e, out);
+                }
+            }
+            Expr::Let { name, .. } => {
+                out.insert(name.clone());
+            }
+            Expr::LetPattern { pattern, .. } => from_pattern(pattern, out),
+            // `name: None` = 匿名 `FUN((params), body)`,不绑定任何名字。
+            Expr::Fun { name: Some(n), .. } => {
+                out.insert(n.clone());
+            }
+            Expr::Fun { name: None, .. } => {}
+            Expr::Import { names, .. } => {
+                for n in names {
+                    out.insert(n.local_name().to_string());
+                }
+            }
+            Expr::Match { clauses, .. } => {
+                for c in clauses {
+                    from_pattern(&c.pattern, out);
+                }
+            }
+            _ => {}
+        }
+    }
+
     let mut out = HashSet::new();
     collect(program, &mut out);
     out
@@ -2825,25 +2946,37 @@ fn builtin_input(_ev: &mut Evaluator, args: Vec<Value>) -> WlwlResult<Outcome> {
 /// `CALL(fn, args...) -> v`: 通用函数调用 —— 接受一个 callable (closure,
 /// native fn, 或 builtin) + 任意数量参数,执行 invoke_closure 等价语义。
 /// 主要用途:把函数作为值传递 / 在 ARRAY 里存函数 / 动态分发。
-fn builtin_call(_ev: &mut Evaluator, args: Vec<Value>) -> WlwlResult<Outcome> {
+///
+/// [v0.10.2] 此前这是一个**空壳**:无论首参是什么都返回错误,消息里还自陈
+/// 「this path is reserved for dynamic dispatch」—— 即该路径从未实现。
+/// 附录 G 把 `CALL` 的「可调用」列标成 ✔,§10.3 也明文承诺动态调用,两者
+/// 都不成立。现改为委托给 `call_value_with_receiver`(它已经处理 `Closure`
+/// 与 `NativeFn` 两种可调用体,且与 `m.f(x)` 属性调用共用同一路径)。
+///
+/// 首参不可调用时按 §10.3 报 `E0020`(`fn` 不是函数值),而不是原先的
+/// `E0030`。
+fn builtin_call(ev: &mut Evaluator, args: Vec<Value>) -> WlwlResult<Outcome> {
     if args.is_empty() {
         return Err(arity_error("CALL", args.len(), 1));
     }
-    // 当前实现:CALL 路径已经走 eval_call (因为 Expr::Call 入口);
-    // 这里的 builtin_call 是显式 self-call 入口,用于 dynamic dispatch。
-    // 当前仅支持 closure 直接调用 —— NativeFn 的 invoke 接口暴露给
-    // registry 但本批不递归 (会触发 §12.6 ERR 短路 bug)。返回 E0020
-    // 让 caller 知道这不是 closure 调用路径。
-    match &args[0] {
-        Value::Closure { .. } => Err(type_error(
-                "CALL",
-                "CALL(closure, ...) is dispatched via eval_call already; this path is reserved for dynamic dispatch".into(),
-            )),
-        _ => Err(type_error(
-                "CALL",
-                "CALL first arg must be closure (or native fn via registry); other callables not yet supported".into(),
-            )),
+    let diag_span = ev
+        .current_span
+        .clone()
+        .unwrap_or_else(wlwl_ast::Span::dummy);
+    let mut it = args.into_iter();
+    let callee = it.next().expect("arity checked above");
+    let rest: Vec<Value> = it.collect();
+    if !matches!(callee, Value::Closure { .. } | Value::NativeFn { .. }) {
+        return Err(ev.diag(
+            ErrorCode::E0020,
+            format!(
+                "CALL first argument must be a function value, got {} (§10.3)",
+                type_name(&callee)
+            ),
+            diag_span,
+        ));
     }
+    ev.call_value_with_receiver(callee, None, rest, &diag_span, "CALL")
 }
 
 // ── Properties / methods / module-as-value (Phase C2) ──
@@ -6645,6 +6778,17 @@ pub struct Evaluator {
     /// At B5b it will be joined with a Scheduler-owned Scope tree
     /// that takes over scope lifetime tracking.
     pub scope_depth: usize,
+    /// [v0.10.2] 本模块**顶层**静态预扫出的绑定名集合,由
+    /// `eval_top_level` 在求值前填入。
+    ///
+    /// 唯一消费者是 `eval_export`:它让 `EXPORT([...])` 不再要求「所有绑定
+    /// 都写在 `EXPORT` 之前」。附录 A.2 的 `Program` 产生式没有给
+    /// `ModuleDecl` 与 `ExprStmt` 任何先后约束,§9.1 也只说「模块顶层可以
+    /// 有 `EXPORT`」,所以那是个顺序约束的残留,不是规范要求。
+    ///
+    /// 语义是**单向高估**的旁路集合:它只影响「现在报不报 `E0020`」,
+    /// 绝不提供值。真正未绑定的名字仍由求值后的 `E0023` 兜住。
+    pub top_level_bound: HashSet<String>,
     /// [v0.7 Phase F-B / plan §3 F5] SHIELD nesting depth. 0 means
     /// "no SHIELD currently active"; values >= 1 mean we're inside
     /// one or more nested SHIELD blocks. `builtin_shield` increments
@@ -6739,6 +6883,7 @@ impl Evaluator {
             std_ctx: wlwl_std::StdCtx::from_process(),
             call_stack: Vec::new(),
             warnings: Vec::new(),
+            top_level_bound: HashSet::new(),
             current_span: None,
             format_cache: HashMap::new(),
             test_registry: Vec::new(),
@@ -6796,6 +6941,7 @@ impl Evaluator {
             std_ctx: wlwl_std::StdCtx::default(),
             call_stack: Vec::new(),
             warnings: Vec::new(),
+            top_level_bound: HashSet::new(),
             current_span: None,
             format_cache: HashMap::new(),
             test_registry: Vec::new(),
@@ -7007,7 +7153,11 @@ impl Evaluator {
                 "BREAK or CONTINUE used outside a loop".to_string(),
                 expr.span().clone(),
             )),
-            Signal::Return(v) => Ok(v),
+            Signal::Return(_) => Err(self.diag(
+                ErrorCode::E0014,
+                "RETURN used outside a function".to_string(),
+                expr.span().clone(),
+            )),
             // [v0.7 Phase B5a-3 slice 1] Yield at top level via
             // `eval` (the run-to-completion entry point) is a
             // programmer error: yield only makes sense inside a
@@ -7267,6 +7417,11 @@ impl Evaluator {
     /// own scope, so top-level `LET` bindings and `EXPORT` declarations
     /// persist after evaluation.
     fn eval_top_level(&mut self, expr: &Expr) -> WlwlResult<Outcome> {
+        // [v0.10.2] 求值**之前**先静态扫一遍顶层绑定名,让 `EXPORT` 不再受
+        // 求值序约束(见 `eval_export` 的说明)。这是唯一需要「整棵顶层
+        // `&Expr`」的地方,`eval_block` 拿不到,所以挂在这里 ——
+        // 模块加载、入口文件 `run`、`step_once` 三条路径都经过它。
+        self.top_level_bound = collect_top_level_bindings(expr);
         if let Expr::Block { exprs, .. } = expr {
             self.eval_block(exprs, true)
         } else {
@@ -7744,7 +7899,17 @@ impl Evaluator {
             let o = self.eval_expr(body)?;
             self.env.pop_scope();
             match o.signal {
-                Signal::None => continue,
+                Signal::None => {
+                    // [v0.10.2] §6.2 「体产生的 `ERR` 终止循环并传播」。
+                    // 此前 `Signal::None` 一律 `continue`,体里的 `ERR` 被
+                    // 静默吞掉:循环跑满、退出码 0、结果错。这是**静默错误**
+                    // —— 程序不报任何诊断却跳过了错误处理,所以必须在这里
+                    // 把 `ERR` 提升成循环的结果原样往外传。
+                    if let Value::Err(_) = &o.value {
+                        return Ok(o);
+                    }
+                    continue;
+                }
                 Signal::Continue => continue,
                 Signal::Break => {
                     // Break terminates the loop; consume the signal so
@@ -7774,7 +7939,17 @@ impl Evaluator {
                     self.env.set_local(var, item);
                     let o = self.eval_expr(body)?;
                     match o.signal {
-                        Signal::None | Signal::Continue => {}
+                        Signal::None => {
+                            // [v0.10.2] §6.3 与 §6.2 对称:体产生的 `ERR`
+                            // 终止循环并传播(§6.3 原文只隐含,本版补明)。
+                            // `eval_for` 的作用域是**循环外**只压一次,所以
+                            // 这里返回前要自己弹,与同函数 `Break` 臂同构。
+                            if let Value::Err(_) = &o.value {
+                                self.env.pop_scope();
+                                return Ok(o);
+                            }
+                        }
+                        Signal::Continue => {}
                         Signal::Break => {
                             self.env.pop_scope();
                             // Break terminates the loop; consume the
@@ -7804,7 +7979,17 @@ impl Evaluator {
                     self.env.set_local(var, k);
                     let o = self.eval_expr(body)?;
                     match o.signal {
-                        Signal::None | Signal::Continue => {}
+                        Signal::None => {
+                            // [v0.10.2] §6.3 与 §6.2 对称:体产生的 `ERR`
+                            // 终止循环并传播(§6.3 原文只隐含,本版补明)。
+                            // `eval_for` 的作用域是**循环外**只压一次,所以
+                            // 这里返回前要自己弹,与同函数 `Break` 臂同构。
+                            if let Value::Err(_) = &o.value {
+                                self.env.pop_scope();
+                                return Ok(o);
+                            }
+                        }
+                        Signal::Continue => {}
                         Signal::Break => {
                             self.env.pop_scope();
                             return Ok(Outcome::normal(Value::Null));
@@ -7831,7 +8016,17 @@ impl Evaluator {
                     self.env.set_local(var, Value::String(ch.to_string()));
                     let o = self.eval_expr(body)?;
                     match o.signal {
-                        Signal::None | Signal::Continue => {}
+                        Signal::None => {
+                            // [v0.10.2] §6.3 与 §6.2 对称:体产生的 `ERR`
+                            // 终止循环并传播(§6.3 原文只隐含,本版补明)。
+                            // `eval_for` 的作用域是**循环外**只压一次,所以
+                            // 这里返回前要自己弹,与同函数 `Break` 臂同构。
+                            if let Value::Err(_) = &o.value {
+                                self.env.pop_scope();
+                                return Ok(o);
+                            }
+                        }
+                        Signal::Continue => {}
                         Signal::Break => {
                             self.env.pop_scope();
                             return Ok(Outcome::normal(Value::Null));
@@ -8787,6 +8982,40 @@ impl Evaluator {
         mut arg_values: Vec<Value>,
         span: &Span,
     ) -> WlwlResult<Outcome> {
+        // [v0.10.2] 递归深度护栏。求值器是递归下降的,而 Rust 的线程栈有限:
+        // 无限递归会把栈跑光,进程以 `STATUS_STACK_OVERFLOW`(`0xC00000FD`)
+        // 整个崩掉 —— 既不是 §11.2 的 `E0101`,也不是 §11.4 退出码表里的任何
+        // 一个,CI 只看到「进程被杀」,拿不到任何诊断。规范 §11.2 把 `E0101`
+        // 登记为「栈溢出」,这里就是它的触发点。
+        //
+        // 计数器放在 `thread_local` 而不是 `Evaluator` 字段,有两个理由:
+        // (1) 借用 —— 本函数有十几条 `return Err(..)` 早退路径,守卫若持有
+        //     `&mut Evaluator` 会和函数体里所有 `self.` 调用冲突;
+        // (2) 语义 —— 深度本来就是**每线程**的属性,而 `SPAWN` 的任务体在
+        //     同一根线程上跑(run-to-completion),所以一个计数器就够。
+        //
+        // 用 RAII 守卫而不是手写 `+= 1` / `-= 1`:漏掉一条早退路径的后果是
+        // 计数器单调不减,于是跑过很多次调用的程序随后会**误报** `E0101`。
+        let too_deep = CALL_DEPTH.with(|d| {
+            if d.get() >= MAX_CALL_DEPTH {
+                true
+            } else {
+                d.set(d.get() + 1);
+                false
+            }
+        });
+        if too_deep {
+            return Err(self.diag(
+                ErrorCode::E0101,
+                format!(
+                    "maximum call depth exceeded ({MAX_CALL_DEPTH}); the program is \
+                     recursing without reaching a base case (E0101 stack overflow)"
+                ),
+                span.clone(),
+            ));
+        }
+        let _depth_guard = CallDepthGuard;
+
         // Phase I1 (spec §8.2/§8.4): arity with default parameters and
         // `*rest`. With R = required params (no default, not rest) and
         // N = total params: no rest → R <= A <= N; with a trailing rest
@@ -9094,9 +9323,21 @@ impl Evaluator {
         // EXPORT is a no-op at runtime in Phase 2 — its effect is
         // captured by `collect_exports` when the module finishes
         // loading. We just verify each name is actually bound.
+        //
+        // [v0.10.2] 绑定的判定改为「**已绑定** 或 **本模块顶层静态预扫见过**」。
+        // 此前只看 `env.get`,于是 `EXPORT` 实际被求值序约束:`EXPORT(["a"]);
+        // LET(a, 1)` 报 `E0020`,而 `LET(a, 1); EXPORT(["a"])` 正常 ——
+        // 但附录 A.2 的 `Program = { ExprStmt | ModuleDecl } …` 根本没给
+        // `ModuleDecl` 与 `ExprStmt` 任何先后约束,§9.1 也只说「模块顶层
+        // 可以有 `EXPORT`」。
+        //
+        // 预扫是**单向高估**:它只决定「要不要现在报 E0020」,从不提供值。
+        // 真正「确实没绑定」的情况仍由求值后的 `E0023`
+        // (`load_file_module` 里)兜底,所以预扫漏掉一个名字最多是让诊断
+        // 延后,不会放过。权威的绑定解析始终发生在求值之后。
         for imp in names {
             let local = imp.local_name();
-            if self.env.get(local).is_none() {
+            if self.env.get(local).is_none() && !self.top_level_bound.contains(local) {
                 return Err(self.diag(
                     ErrorCode::E0020,
                     format!("EXPORT: name '{}' is not bound in this module", local),
@@ -16881,13 +17122,28 @@ TYPE(v);
     // ---- P3-009e: more focused tests (replaced complex FUN tests) ----
 
     #[test]
-    fn return_evaluates_at_function_call_site() {
-        // RETURN(42) at top level is a no-op (no enclosing function).
-        let v = run("RETURN(42);").unwrap();
-        // Top level doesn't unwrap Return, so v is whatever the
-        // last expression evaluates to. RETURN is a function call
-        // that takes one arg; calling it is the expression.
-        assert!(v == Value::Integer(42) || v == Value::Null);
+    fn return_outside_function_is_e0014() {
+        // [v0.10.2] 此前这里断言「顶层 `RETURN(42)` 是 no-op」——它锁的
+        // 正是 §6.4 的违反:「三者出现在函数或循环体之外时产生 `E0014`」。
+        // 第三方合规审查(P0-3)实测顶层 `RETURN` rc=0 且程序**静默少跑一半**,
+        // CI 门禁看不出来。现按规范锁 `E0014`。
+        let err = run("RETURN(42);").unwrap_err();
+        assert_eq!(err.diagnostic().code, ErrorCode::E0014);
+    }
+
+    #[test]
+    fn return_outside_function_still_evaluates_prior_statements() {
+        // 诊断不能靠「提前中止」换来:`RETURN` 之前的语句必须已经跑过,
+        // 否则「静默少跑一半」只是换了个方向。
+        let err = run(r#"PRINT("before"); RETURN(1)"#).unwrap_err();
+        assert_eq!(err.diagnostic().code, ErrorCode::E0014);
+    }
+
+    #[test]
+    fn return_inside_function_still_returns() {
+        // 对照:函数体内的 `RETURN` 照常返回值,不能被上面的检查误伤。
+        let v = run("LET(f, FUN((x), IF(<(x, 0), 0, RETURN(x)))); f(42);").unwrap();
+        assert_eq!(v, Value::Integer(42));
     }
 
     #[test]

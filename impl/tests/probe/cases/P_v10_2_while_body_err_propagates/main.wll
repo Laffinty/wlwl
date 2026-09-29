@@ -1,0 +1,5 @@
+LET MUT(i, 0);
+LET MUT(n, 0);
+LET(r, WHILE(<(i, 100), (SET(i, +(i, 1)); SET(n, +(n, 1)); IF(==(i, 3), ERR("stop"), 1))));
+PRINT(n);
+PRINT(IS_ERR(r))

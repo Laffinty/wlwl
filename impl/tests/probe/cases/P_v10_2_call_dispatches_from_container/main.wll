@@ -1,0 +1,3 @@
+LET(fs, ["inc": FUN((x), +(x, 1)), "dbl": FUN((x), *(x, 2))]);
+PRINT(CALL(AT(fs, "dbl", NULL), 21));
+PRINT(CALL(AT(fs, "inc", NULL), 41))

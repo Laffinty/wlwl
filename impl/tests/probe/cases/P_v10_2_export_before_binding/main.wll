@@ -1,0 +1,3 @@
+EXPORT(["add"]);
+LET(add, FUN((a, b), +(a, b)));
+PRINT(add(1, 2))

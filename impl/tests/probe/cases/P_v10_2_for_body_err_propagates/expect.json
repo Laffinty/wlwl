@@ -1,0 +1,8 @@
+{
+ "exit": 0,
+ "contains": [
+  "2",
+  "TRUE"
+ ],
+ "_why": "P0-2 的 FOR 侧。eval_for 有**三处**独立代码点(Array/Dict/String),此前都漏。"
+}

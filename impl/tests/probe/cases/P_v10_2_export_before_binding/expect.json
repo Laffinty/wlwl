@@ -1,0 +1,7 @@
+{
+ "exit": 0,
+ "contains": [
+  "3"
+ ],
+ "_why": "第三方合规审查 P1-4。附录 A.2 的 Program = { ExprStmt | ModuleDecl } … 没给两者任何先后约束,§9.1 也只说「模块顶层可以有 EXPORT」;实现却按求值序校验,于是前置 EXPORT 直接 E0020。修法是求值前静态预扫顶层绑定名。"
+}

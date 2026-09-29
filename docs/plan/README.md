@@ -2,17 +2,19 @@
 
 本目录留给**当前迭代**的构建计划与偏差登记。
 
-**当前没有进行中的迭代。** v0.10.0 与 v0.10.1 都已收口,它们的材料已全部移入
-`docs/history/`;下一次迭代(v0.11)开工时,新的构建计划与偏差分册放回本目录。
+**当前进行中:v0.10.2 规范符合性修复批次**(第三方黑盒合规审查的核验与修复)。
+来源报告 [`../reviews/v0.10.1审查/wlwl-spec-v0.10-合规审查报告.md`](../reviews/v0.10.1审查/wlwl-spec-v0.10-合规审查报告.md)、
+计划书 [`wlwl-spec-compliance-修复计划.md`](wlwl-spec-compliance-修复计划.md)。
+v0.10.0 与 v0.10.1 已收口,材料全部在 `docs/history/`。
 
-## 当前状态(2026-09-29)
+## 当前状态(2026-09-30)
 
 | 项 | 状态 |
 |---|---|
 | 现行规范 | [`../standard/wlwl-spec-v0.10.md`](../standard/wlwl-spec-v0.10.md)(v0.10) |
-| 最新实现 | v0.10.1 —— 规范**版本号不变**,改的是规范文本与实现对齐 |
-| 已发布 | v0.10.0(`v0.10.0_rc1` 为 pre-release)/ v0.9.0 / v0.8.1 / v0.8.0 / v0.7.0 / v0.6.0 |
-| 门禁 | `cargo test --workspace` 1809 passed / 0 failed(CI 三平台 1817,`--all-targets` 含 bench target) |
+| 最新实现 | v0.10.1 已发布;**v0.10.2 批次进行中** —— 规范**版本号不变**,改的是规范文本与实现对齐 |
+| 进行中的计划 | [`wlwl-spec-compliance-修复计划.md`](wlwl-spec-compliance-修复计划.md) |
+| 门禁 | `cargo fmt --check` 0 diff;`clippy -D warnings` 0;`cargo test --workspace` 全绿;probe 123 条(本次 +22) |
 | 下一迭代 | v0.11 —— 唯一已立项的是 **`YIELD` 的续体保存**(裁决 D-3 = 拆两半,规范侧已在 v0.10.1 降级为已知限制) |
 
 ## v0.10 / v0.10.1 归档件

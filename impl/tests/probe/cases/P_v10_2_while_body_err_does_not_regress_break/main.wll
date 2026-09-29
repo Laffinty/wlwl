@@ -1,0 +1,4 @@
+LET MUT(i, 0);
+LET MUT(n, 0);
+WHILE(<(i, 100), (SET(i, +(i, 1)); SET(n, +(n, 1)); IF(==(i, 5), BREAK(), 1)));
+PRINT(n)

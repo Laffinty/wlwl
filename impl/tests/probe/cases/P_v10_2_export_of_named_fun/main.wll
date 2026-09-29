@@ -1,0 +1,3 @@
+EXPORT(["mul"]);
+FUN(mul(a, b), *(a, b));
+PRINT(mul(3, 4))

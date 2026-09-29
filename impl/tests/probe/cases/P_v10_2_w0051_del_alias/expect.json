@@ -1,0 +1,8 @@
+{
+ "exit": 0,
+ "contains": [
+  "W0051",
+  "REMOVE_KEY"
+ ],
+ "_why": "第三方合规审查 P1-3 判「W0051 完全未实现」——**根因判错**。emit 点一直都在(wlwl-eval builtin_remove_key_compat),单元测试也锁着;真正断的是出口:wlwl-cli 全仓零处调用 take_warnings(),警告生成了却被丢进黑洞。本 case 锁的是「用户真的看得到」这件事。"
+}

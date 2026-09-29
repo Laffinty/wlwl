@@ -170,9 +170,53 @@ enum SigFormat {
     Json,
 }
 
+/// [v0.10.2] 求值用的线程栈大小。
+///
+/// WLWL 的求值器是**递归下降**的:每个 WLWL 调用帧会展开若干层 Rust 帧,
+/// 而 `Value` 是个大枚举,所以每帧吃掉的栈远超一个普通函数。实测在
+/// Windows 默认的**主线程 1 MB 栈**上,递归到 **~150 层**就
+/// `STATUS_STACK_OVERFLOW`(`0xC00000FD`)整个进程崩掉 —— 普通递归算法在
+/// 这个语言里根本写不出来,而这既不是 `E0101` 也不是规范 §11.4 的任何一个
+/// 退出码,CI 只能看到「进程被杀」。
+///
+/// **为什么是 512 MB 而不是「差不多够」**:每帧栈开销**强烈依赖编译
+/// profile**。实测同一份源码、同样 64 MB 栈:
+///
+/// | profile | 崩溃深度 |
+/// |---|---|
+/// | `release`(开优化,跨函数内联) | >20000 帧未崩 |
+/// | `dev`(无优化) | **400–600 帧即崩** |
+///
+/// 差约 40 倍。取 64 MB 时 `dev` profile 下 `MAX_CALL_DEPTH`(2000)远在
+/// 崩溃点之下 —— 护栏形同虚设,进程照崩。而 `dev` profile 正是
+/// `cargo test` 与 probe 夹具跑的那一个,所以这不是理论问题。
+///
+/// 512 MB 是**线程栈保留区**,不是提交量:按需提交,深递归程序实际占用
+/// 远小于此。这也是取大值而不是压低深度上限的原因 —— 压低上限会连带
+/// 削掉 `release` 下合法的递归深度,而递归是这门语言的基本能力。
+const EVAL_STACK_SIZE: usize = 512 * 1024 * 1024;
+
 fn main() -> ExitCode {
-    let cli = Cli::parse();
-    match cli.cmd {
+    // 在大栈线程上跑整个命令分发。`Cli::parse()` 也放进去,这样
+    // `spawn` 失败时可以在主线程上原样重来一次,不必把 `Cmd` 拆成两份
+    // (它是 move-only 的)。
+    //
+    // `spawn` 失败(系统拒绝建线程)时退回主线程:退化行为是「回到原来的
+    // 栈溢出崩溃」,不能反过来变成「命令根本跑不起来」。
+    let attempt = || Cli::parse().cmd;
+    match std::thread::Builder::new()
+        .name("wlwl-eval".to_string())
+        .stack_size(EVAL_STACK_SIZE)
+        .spawn(move || dispatch(attempt()))
+    {
+        // spec §11.4:实现内部崩溃 = 101
+        Ok(handle) => handle.join().unwrap_or_else(|_| ExitCode::from(101)),
+        Err(_) => dispatch(attempt()),
+    }
+}
+
+fn dispatch(cmd: Cmd) -> ExitCode {
+    match cmd {
         Cmd::Run { file, format } => run_file(&file, format, true),
         Cmd::Check { file, format } => run_file(&file, format, false),
         Cmd::Ast { file, format } => ast_file(&file, format),
@@ -254,9 +298,44 @@ fn run_file(file: &PathBuf, format: OutputFormat, execute: bool) -> ExitCode {
     match ev.eval(&ast) {
         Ok(_v) => {
             try_write_lock(&base_dir);
+            // [v0.10.2] 求值期软警告此前**没有任何出口**:`Evaluator` 把它们
+            // 攒在 `warnings` 里,而本函数在 `eval` 返回后直接 SUCCESS,
+            // `take_warnings()` 在 `wlwl-cli` 全仓零调用 —— 于是 `W0051`
+            // (`DEL` / `OR_DIE` 弃用别名)、`W0066`(`CHANNEL_NEW` 大缓冲)、
+            // `W0030`(遮蔽内建)、`W0065`(死锁软警告)**全部被静默丢弃**。
+            // 它们的 emit 点一直都在、也一直被单元测试锁着,所以缺陷不在
+            // 实现,在这一行出口。警告永不改变程序语义,因此既不拦退出码,
+            // 也在 `Err` 分支之前先排空(失败的运行同样值得看到它的警告)。
+            report_eval_warnings(&mut ev, &file_name, format);
             ExitCode::SUCCESS
         }
-        Err(e) => report_error(e, format),
+        Err(e) => {
+            report_eval_warnings(&mut ev, &file_name, format);
+            report_error(e, format)
+        }
+    }
+}
+
+/// 把 `Evaluator` 攒下的软警告按当前 `--format` 排空。
+///
+/// 走 `WlwlDiagnostic` 而不是自己拼字符串,是为了让 `run` 的警告与
+/// `check` 路径已有的警告(`static_check_gate` → `collect_static_diagnostics`)**共用
+/// 同一套渲染器** —— `--format json` / `jsonl` 因此自动带上
+/// `error_schema_version` / `error_category` / `severity` 等字段,不必在这里
+/// 手工维护第二份 JSON 形状。
+///
+/// 警告没有源码位置(`Warning` 只有 `code` + `message`),统一挂在入口文件上,
+/// 渲染出来是一条带文件名、不带行列的诊断 —— 与 parser 警告在 `check`
+/// 路径上的既有形态一致(`main.rs` 的 `println!("warning {}: ...")` 口径)。
+fn report_eval_warnings(ev: &mut wlwl_eval::Evaluator, file: &str, format: OutputFormat) {
+    for w in ev.take_warnings() {
+        let d = WlwlDiagnostic::new(w.code, w.message, Location::point(file.to_string(), 0, 0))
+            .with_severity(Severity::Warning);
+        match format {
+            OutputFormat::Human => eprintln!("{}", d.render_human()),
+            OutputFormat::Json => eprintln!("{}", d.render_json()),
+            OutputFormat::Jsonl => eprintln!("{}", d.render_jsonl()),
+        }
     }
 }
 

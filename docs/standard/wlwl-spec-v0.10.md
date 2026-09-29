@@ -458,11 +458,13 @@ Key      = Expression .
 ### 5.1 定义
 
 ```
-Function = "FUN" [ identifier ] "(" ParameterList ")" Expression .
+Function = "FUN" "(" [ identifier ] "(" ParameterList ")" Expression .
 ```
 
 - `FUN((params), body)` 产生一个**匿名函数值**。
 - `FUN(name(params), body)` 产生同样的函数值,**并**在当前作用域将 `name` 绑定到它——与 `LET(name, FUN(...))` 等价。两种形式的函数值相同,表达式的值都是该函数值。
+
+> **[v0.10.2]** 具名形式的 `name` 写在**第一对括号之内**,不是括号之前。`FUN f(x) x` **不是**合法语法(解析报 `E0011`)。本节早期版本与附录 A.2 的产生式都写成 `"FUN" [ identifier ] "(" ...`,与本节正文、附录 B 第 11 条以及实现三方矛盾;两处已按正文更正为 `"FUN" "(" [ identifier ] "(" ...`。
 
 **规范性澄清**:`FUN(name(params), body)` 与 `LET(name, FUN(...))` 等价,二者表达式的值都是该函数值;`LET(name, value)` 的值是 `NULL`(绑定动作已完成,无值可传递)。`LET` 因此**不得**作为实参或运算符操作数(语义上是"声明"而非"值表达式")。如需在表达式位置产生绑定效果,请用 `LET MUT` + `SET` 序列或将值绑定到一个 `FUN` 表达式。
 
@@ -565,7 +567,9 @@ While = "WHILE" "(" Expression "," Expression ")" .
 For = "FOR" "(" identifier "," Expression "," Expression ")" .
 ```
 
-对可迭代对象逐项求值体。可迭代对象是:数组(逐元素)、字典(按**插入序**逐键)、字符串(逐码点,绑定单字符字符串)。循环变量在每次迭代是**新绑定**,体结束后即不可见。`FOR` 表达式的值是 `NULL`。
+对可迭代对象逐项求值体。可迭代对象是:数组(逐元素)、字典(按**插入序**逐键)、字符串(逐码点,绑定单字符字符串)。循环变量在每次迭代是**新绑定**,体结束后即不可见。`FOR` 表达式的值是 `NULL`。体产生的 `ERR` 终止循环并传播。
+
+> **[v0.10.2]** 末句与 §6.2 的 `WHILE` 条款对称。本版补明,是因为此前只有 `WHILE` 写了这条规则,实现也就只在 `WHILE` 上落地了 —— `FOR` 体里的 `ERR` 曾被静默吞掉(循环跑满、退出码 0、结果错)。
 
 ### 6.4 提前退出
 
@@ -729,7 +733,9 @@ show(OK(r));              // "O" — OK 包装后不再是 ERR 实参
 
 > 根因:`Evaluator::eval_block` 只保留最后一个 `ExprStmt` 的 `Outcome`;前面各条的值被覆盖。`E0102` 仅在最终 signal 上触发(`crates/wlwl-eval/src/lib.rs` 的 `eval_block` / `E0102` 分支),中途的 `Value::Err` 没有任何检查点。
 >
-> **本规范据此如实声明现状**:顶层**非末条**语句的 `ERR` 被**静默丢弃**,不产生 `E0102`、不产生任何诊断。只有成为程序值的**末条**语句的 `ERR` 才走顶层逃逸。
+> **本规范据此如实声明现状**:未成为**末条语句之值**的 `ERR` 被**静默丢弃**,不产生 `E0102`、不产生任何诊断。只有成为程序值的**末条**语句的 `ERR` 才走顶层逃逸。「成为末条之值」排除两类把 `ERR` 收进别处的构造:`LET` / `SET`(其表达式值按 §3.3 / §3.4 是 `NULL`,`ERR` 进了单元格)与 `WHILE` / `FOR`(体产出的 `ERR` 按 §6.2 / §6.3 终止循环并传播)。
+>
+> **`LET` / `SET` 绑定算不算「消费」?——不算。** 依据 §8.2 自身的规范性示例:`LET(r, risky())` 里 `r` **就是** `ERR`,随后由 `LET(p, ERR_PAYLOAD(r))` 消费;若绑定触发传播,该示例直接不成立。§8.2 另有明文:「将 `ERR` 装入数组或字典能通过**当前**求值……**装盛不是消费**」。绑定与装盛同属装盛。详见附录 D-19。
 >
 > **这是已知限制**,在附录 D 申报。**为什么保留**:`ERR` 是值、不是异常,把它变成控制流需要给 `ExprStmt` 定一条「未消费 `ERR` 即为无消费者」的**可判定**规则(哪些构造算「消费」?`LET` 绑定算不算?),那是独立的设计工作,不是一条补丁。
 >
@@ -967,12 +973,16 @@ NameItem = string_lit | string_lit ":" string_lit | identifier .
 
 | 签名 | 说明 | 失败 |
 |------|------|------|
-| `wlwl:std.ai.TASK(name, prompt, ...) -> TASK` | 构造异步 AI 请求任务,返回任务句柄 | `E0080`–`E0083` |
-| `wlwl:std.ai.MODEL(name) -> DICT` | 选择模型,返回模型描述字典 | `E0080` |
-| `wlwl:std.ai.TOOL(name, schema, fn) -> NULL` | 注册工具 | `E0081`(重复注册或协议不符) |
-| `wlwl:std.ai.CALL_TOOL(name, args) -> v` | 同步调用已注册工具 | `E0082` |
-| `wlwl:std.ai.CONTEXT(set, get, ...) -> v` | 上下文存取 | `E0083` |
-| `wlwl:std.agent.TASK(...) -> TASK` | 高级代理任务 | `E0090`–`E0094` |
+| `wlwl:std.ai.ASK(model, prompt, opts?) -> STRING` | 单次推理 | `E0080`–`E0083` |
+| `wlwl:std.ai.ASK_STREAM(model, prompt, callback, opts?) -> ARRAY` | 流式推理(实现侧当前整收集为单块) | `E0080`–`E0083` |
+| `wlwl:std.ai.ASK_ALL(models, prompt, opts?) -> ARRAY` | 多模型批量 | `E0080`–`E0083` |
+| `wlwl:std.ai.EMBED(model, text) -> ARRAY` | 嵌入向量(四维,实现侧固定) | `E0080` |
+| `wlwl:std.ai.COMPLETE(model, context) -> STRING` | 代码补全 | `E0080` |
+| `wlwl:std.agent.MODEL(name) -> DICT` | 选择模型,返回模型描述字典 | `E0080` |
+| `wlwl:std.agent.TASK(name, prompt, ...) -> TASK` | 构造异步代理任务,返回任务句柄 | `E0090`–`E0094` |
+| `wlwl:std.agent.TOOL(name, schema, fn) -> NULL` | 注册工具 | `E0081`(重复注册或协议不符) |
+| `wlwl:std.agent.CALL_TOOL(name, args) -> v` | 同步调用已注册工具 | `E0082` |
+| `wlwl:std.agent.CONTEXT(set, get, ...) -> v` | 上下文存取 | `E0083` |
 
 错误码语义:`E0080` 请求失败;`E0081` 协议错误;`E0082` 工具错误;`E0083` 上下文错误;`E0090` 网络不可达、`E0091` DNS 失败、`E0092` TLS 错误、`E0093` HTTP 4xx、`E0094` HTTP 5xx。
 
@@ -981,11 +991,13 @@ NameItem = string_lit | string_lit ":" string_lit | identifier .
 **示例**(推荐全限定以避免与类型名 `TASK` 混淆):
 
 ```wlwl
-IMPORT("wlwl:std.ai", ["TASK", "MODEL"]);
-LET(handle, wlwl:std.ai.TASK("summarize", "long text..."));
+IMPORT("wlwl:std.agent", ["TASK", "MODEL"]);
+LET(handle, wlwl:std.agent.TASK("summarize", "long text..."));
 ```
 
 用户作用域内裸名 `TASK` 也合法(若 `IMPORT` 引入了同名函子);全限定写法仅为阅读清晰度,与同名类型名 `TASK` 不构成运行时冲突(§2.1)。
+
+> **[v0.10.2] 本表此前把两个模块的导出面写反了**:原文把 `TASK` / `MODEL` / `TOOL` / `CALL_TOOL` / `CONTEXT` 全部列在 `wlwl:std.ai` 名下,只给 `std.agent` 留了一条 `TASK`,并且本节的示例 `IMPORT("wlwl:std.ai", ["TASK", "MODEL"])` **直接报 `E0023`**。实现一直是「`std.ai` 提供推理原语(`ASK` 家族 / `EMBED` / `COMPLETE`),`std.agent` 在其上提供代理形状(`TASK` / `TOOL` / `CALL_TOOL` / `MODEL` / `CONTEXT`)」,与 `impl/crates/wlwl-std/src/lib.rs` 的模块导览一致。上表按实现更正。
 
 ### 10.12 对象模型内建
 
@@ -1923,7 +1935,7 @@ name_array  = "[" [ NameItem { "," NameItem } ] "]" .
 NameItem    = string_lit | string_lit ":" string_lit | identifier .
 
 LetExpr     = "LET" [ "MUT" ] identifier [ ":" TypePos ] "," Expression .
-FunExpr     = "FUN" [ identifier ] "(" [ Param { "," Param } ] ")" [ ":" TypePos ] Expression .
+FunExpr     = "FUN" "(" [ identifier ] "(" [ Param { "," Param } ] ")" [ ":" TypePos ] Expression .
 IfExpr      = "IF" "(" Expression "," Expression [ "," Expression ] ")" .
 WhileExpr   = "WHILE" "(" Expression "," Expression ")" .
 ForExpr     = "FOR" "(" identifier "," Expression "," Expression ")" .
@@ -2138,7 +2150,7 @@ v0.8 是澄清性补丁 + 一项语法放宽(字面量下标)。详见 v0.8 规�
    依赖 `LET(x, YIELD())` 之后 `x` 可用、或依赖 `IF(c, YIELD(), v)` 得到 `v`
    的程序,在 v0.9 起就**从未**按规范描述的方式工作过;现在规范承认这一点。
 
-10. **[v0.10.1 / R10-019] 已知限制申报:顶层**非末条**语句的 `ERR` 被静默丢弃。**
+10. **[v0.10.1 / R10-019] 已知限制申报:未成为程序值的 `ERR` 被静默丢弃。**
     §8.5 此前断言这类 `ERR` 同样走顶层逃逸(报 `E0102`)。**实测相反**:
     `eval_block` 只保留最后一个 `ExprStmt` 的值,前面各条被覆盖;`E0102` 仅在
     最终 signal 上触发。
@@ -2147,13 +2159,35 @@ v0.8 是澄清性补丁 + 一项语法放宽(字面量下标)。详见 v0.8 规�
     |---|---|
     | 末条是 `ERR(...)` | `E0102`,rc=1 ✅ |
     | 首条 / 中间是 `ERR(...)` | **rc=0,静默丢弃,零诊断** |
+    | 末条是 `LET(r, ERR(...))` / `SET(z, ERR(...))` | **rc=0,`ERR` 进了单元格,不外泄** |
+    | 末条是 `WHILE(...)` / `FOR(...)`,体产出 `ERR` | **`E0102`,rc=1 ✅**(v0.10.2 修复) |
 
     **本版只让规范说真话,不动实现**(裁决:接受保留)。把「未消费 `ERR` 即为
     无消费者」变成可判定规则需要先定义「哪些构造算消费」,是独立的设计工作。
 
+    > **[v0.10.2 / R11-001] 申报边界订正 + 悬置问题结案。**
+    >
+    > 第三方合规审查指出本条**只申报了「非末条语句」,实际范围更宽**。核对后:
+    > `LET(r, ERR(...))` / `SET(z, ERR(...))` 即使作为**末条**语句也不外泄 ——
+    > 因为 §3.3 / §3.4 规定 `LET` / `SET` 表达式的值是 `NULL`,`ERR` 进了单元格
+    > 而没有成为程序值。上表的申报边界据此订正为「**任何未成为末条语句之值的
+    > `ERR`**」。
+    >
+    > 同时把本条一直悬着的「**`LET` 绑定算不算消费?**」在规范里结案:**不算**。
+    > 依据是 §8.2 自身的规范性示例 —— `LET(r, risky())` 里 `r` **就是** `ERR`,
+    > 随后由 `LET(p, ERR_PAYLOAD(r))` 消费;若 `LET` 绑定触发传播,示例一
+    > (`spec` §8.2 示例一)直接不成立。§8.2 另有明文:「将 `ERR` 装入数组或字典
+    > 能通过求值……**装盛不是消费**」。绑定与装盛同属装盛,故不触发逃逸。
+    > **实现现状正确,不改**;此前 `impl/tests/probe/cases/H1_err_not_final_stmt`
+    > 已经把 `LET(r, ERR("x"))` 的退出码 0 锁住。
+    >
+    > `WHILE` / `FOR` 体那一行**不属**本限制 —— §6.2 / §6.3 要求体产出的 `ERR`
+    > **终止循环并传播**,那是硬规则不是边界,已在 v0.10.2 修好。
+
     **对兼容承诺的影响**:无。v0.9 / v0.10 程序的可观察行为**一直**如此 ——
     变的是规范承诺过它能做到什么。依赖顶层逃逸的错误处理必须把会失败的表达式
-    放在**末条**,或显式用 `IS_ERR` / `UNWRAP_OR` / `TRY` 消费。
+    放在**末条**,或显式用 `IS_ERR` / `UNWRAP_OR` / `TRY` 消费,或用 `LET` /
+    `SET` 把 `ERR` 收进单元格后再检查。
 
 11. **[v0.10.1 / R10-064] `E0064` 无缓冲通道活锁护栏**(§11.2 / §17.2.4)。
     新增错误码;E 码 74 → **75**。同一对任务在同一条无缓冲通道上第二次

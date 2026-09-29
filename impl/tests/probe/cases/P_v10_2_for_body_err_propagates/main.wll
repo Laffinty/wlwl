@@ -1,0 +1,4 @@
+LET MUT(n, 0);
+LET(r, FOR(i, [1, 2, 3], (SET(n, +(n, 1)); IF(==(i, 2), ERR("stop"), 1))));
+PRINT(n);
+PRINT(IS_ERR(r))
