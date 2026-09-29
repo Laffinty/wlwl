@@ -294,6 +294,28 @@ fn parse_type_text(text: &str, file: &str, line_no: u32) -> Result<Ty, WlwlError
             ))
         }
     };
+    // [v0.10.1 / R10-030] 拒绝尾随垃圾。
+    //
+    // 解析器对「类型表达式后面还有 token」有一条**兜底吸收**路径:收成
+    // `Generic { name: <整段原文>, args: [] }`(`wlwl-parser` 的
+    // `parse_type_expr_from_pieces`)。在 `.wll` 源里那条路径是可接受的
+    // 宽容 —— 标注本来就是给人看的;但在**签名文件**里它是危险的:签名是
+    // 契约,`EXPORT add : INTEGER oops` 里的 `oops` 被并进类型名,签名于是
+    // 悄悄变成了一个**谁也不认识**的类型,消费方拿到的是无声的错配。
+    // 实测:rc=0 且程序正常运行。
+    //
+    // 判据是「空 `args` 的 `Generic`」:合法路径 `parse_braced` 永远给出
+    // 至少一个类型参数,空 `args` 只有兜底吸收这一条产路。所以这个形状
+    // 等价于「有 token 没被吃掉」。
+    if let wlwl_ast::TypeExpr::Generic { args, .. } = &annotation.expr {
+        if args.is_empty() {
+            return Err(sig_syntax_error(
+                file,
+                line_no,
+                format!("trailing tokens after the type in `{text}`"),
+            ));
+        }
+    }
     Ok(Ty::from_type_expr(&annotation.expr))
 }
 
@@ -1265,5 +1287,48 @@ EXPORT either : OPTION[INTEGER]
             "a generated signature must not condemn its own module: {:?}",
             check.diags
         );
+    }
+
+    /// [R10-030] `.wll.sig` 的类型**不允许有尾随垃圾**。
+    ///
+    /// 签名是契约。`EXPORT add : INTEGER oops` 里的 `oops` 之前被解析器的
+    /// 兜底吸收并进类型名,签名于是变成一个谁也不认识的类型,而消费方拿到
+    /// 的是**无声**的错配 —— rc=0,程序照跑。
+    #[test]
+    fn r10_030_trailing_tokens_after_a_sig_type_are_rejected() {
+        for bad in [
+            "EXPORT add : INTEGER oops\n",
+            "EXPORT add (INTEGER, oops INTEGER) : INTEGER\n",
+            "EXPORT PI : INTEGER 42\n",
+        ] {
+            let err = parse_module_sig(bad, "math.wll.sig")
+                .expect_err("trailing tokens in a signature must be rejected");
+            let text = format!("{err:?}");
+            assert!(
+                text.contains("trailing tokens"),
+                "the message must name the problem, got: {text}"
+            );
+        }
+    }
+
+    /// [R10-030] 对照组:合法签名一条都不能被误伤。
+    #[test]
+    fn r10_030_well_formed_signatures_still_parse() {
+        for ok in [
+            "EXPORT add (INTEGER, INTEGER) : INTEGER\n",
+            "EXPORT PI : INTEGER\n",
+            "EXPORT name : STRING\n",
+            "EXPORT pairs : DICT[STRING, INTEGER]\n",
+            "EXPORT maybe : OPTION[INTEGER]\n",
+            "EXPORT either : RESULT[INTEGER, STRING]\n",
+            "EXPORT xs : ARRAY[INTEGER]\n",
+            // 裸 `DICT` 是不透明具名类型,合法。
+            "EXPORT any : DICT\n",
+            // 注释与空行照旧忽略。
+            "# a comment\n\nEXPORT PI : INTEGER\n",
+        ] {
+            parse_module_sig(ok, "math.wll.sig")
+                .unwrap_or_else(|e| panic!("must still parse: {ok:?} -> {:?}", e));
+        }
     }
 }

@@ -22,9 +22,9 @@
 //!
 //! # 尚未分配码的条件
 //!
-//! [`TypeDiagKind::UnresolvedTypeName`] / [`TypeDiagKind::TypeArityMismatch`]
-//! 归 A4 引入,但 A4 未落地前**不预分配码号** —— [`TypeDiagKind::codes`]
-//! 对它们返回 `None`。宁可不给码,也不猜一个:猜错的码会进 spec §11.2 码表
+//! [`TypeDiagKind::UnresolvedTypeName`] 归 A4 引入,但 A4 未落地前**不预分配
+//! 码号** —— [`TypeDiagKind::codes`] 对它返回 `None`。宁可不给码,也不猜一个:
+//! 猜错的码会进 spec §11.2 码表
 //! 并被锁测试固定下来,事后改号是破坏性变更。
 //!
 //! [`TypeDiagKind::UndefinedName`] 同样无码:未定义名字由 parser 的
@@ -91,16 +91,6 @@ pub enum TypeDiagKind {
     UnresolvedTypeName {
         /// 源码里写的类型名
         name: String,
-    },
-    /// 泛型头元数不对(如 `DICT[INTEGER]`)—— `Ty::from_type_expr`
-    /// 把它保留为 `Ty::Named`,本诊断负责把它讲清楚。
-    TypeArityMismatch {
-        /// 泛型头名
-        name: String,
-        /// 该头要求的元数
-        expected: usize,
-        /// 注解里实际写了几个
-        found: usize,
     },
     /// [v0.10 Step 6 / plan §4.1 C1、`§4.2` C2] 实现 `EXPORT` 了
     /// (或外部 `IMPORT` 了)契约**没有声明**的名字。
@@ -277,9 +267,7 @@ impl TypeDiagKind {
             // 不可达子句是**恒警告**,不参与升/降配对 ——
             // 见 [`TypeDiagKind::always_warning_code`]。
             TypeDiagKind::UnreachableArm { .. } => None,
-            TypeDiagKind::UndefinedName { .. }
-            | TypeDiagKind::UnresolvedTypeName { .. }
-            | TypeDiagKind::TypeArityMismatch { .. } => None,
+            TypeDiagKind::UndefinedName { .. } | TypeDiagKind::UnresolvedTypeName { .. } => None,
         }
     }
 }
@@ -388,11 +376,6 @@ impl TypeDiag {
             TypeDiagKind::UnresolvedTypeName { name } => {
                 format!("unresolved type name `{name}`")
             }
-            TypeDiagKind::TypeArityMismatch {
-                name,
-                expected,
-                found,
-            } => format!("type `{name}` takes {expected} type argument(s), found {found}"),
             TypeDiagKind::ExportNotDeclared { name, carriers } => {
                 format!(
                     "export `{name}` is not declared in {}",
@@ -496,10 +479,8 @@ mod tests {
                 dummy(),
             ),
             TypeDiag::new(
-                TypeDiagKind::TypeArityMismatch {
-                    name: "DICT".into(),
-                    expected: 2,
-                    found: 1,
+                TypeDiagKind::UnresolvedTypeName {
+                    name: "DICT[INTEGER]".into(),
                 },
                 dummy(),
             ),
@@ -518,7 +499,11 @@ mod tests {
                 "3:7 return type mismatch: expected `BOOLEAN`, found `NULL`",
                 "3:7 undefined name `missing`",
                 "3:7 unresolved type name `NOPE`",
-                "3:7 type `DICT` takes 2 type argument(s), found 1",
+                // [v0.10.1 / R10-029] `TypeArityMismatch` 变体已删除(从来没有
+                // 生产构造点,`codes()` 也返回 `None`)。这个位置原本是
+                // `type DICT takes 2 type argument(s), found 1`,现在换成
+                // 同属「未分配码」的 `UnresolvedTypeName`。
+                "3:7 unresolved type name `DICT[INTEGER]`",
             ]
         );
     }

@@ -93,14 +93,37 @@ pub enum Ty {
 impl Ty {
     /// 从 `wlwl-ast::TypeExpr` 映射到静态类型。
     ///
-    /// 大小写不敏感 —— 与运行时 `E0033` 路径的既有行为一致
+    /// **内建头名的匹配大小写不敏感**(`integer` 与 `INTEGER` 都映射到
+    /// `Ty::Integer`)—— 与运行时 `E0033` 路径的既有行为一致
     /// (`wlwl-eval/src/lib.rs:8587` 注释:case-insensitive, top-level
     /// shape only)。
     ///
+    /// [v0.10.1 / R10-031] 但**未知的类型名是大小写敏感的**:`Foo` 与
+    /// `FOO` 是两个不同的 `Ty::Named`,不相等。
+    ///
+    /// 这不是「文档与实现不一致」,是**文档之前写错了** —— 原来这里笼统地
+    /// 写「大小写不敏感」,让人以为 `Foo` 与 `FOO` 会相等。实测:运行期
+    /// 标识符**本来就大小写敏感**(`LET(foo, 1); LET(FOO, 2);` 是两个绑定,
+    /// 输出 `1 2`),类型名由标识符派生,跟着敏感才是对的。签名文件是契约,
+    /// `Foo` 与 `FOO` 更不该被当成同一个类型。
+    ///
+    /// 另一头:内建的**顶层形状**比较走运行期那条大小写不敏感的路径。
+    /// 两者作用域不同,不矛盾。
+    ///
     /// **不 panic、不返回 Result**:映射是全函数。识别得出的头 + 正确元数
     /// 落到具体变体;裸头(无类型参数)落到该头的 `Dynamic` 参数形式;
-    /// 识别得出但**元数错误**的头**保留为 [`Ty::Named`]** 而非丢弃
-    /// 参数,让 A4 能报出「元数不对」而不是「类型不认识」。
+    /// 识别得出但**元数错误**的头(`DICT[INTEGER]`)保留为
+    /// [`Ty::Named`] 而不是丢弃参数。
+    ///
+    /// [v0.10.1 / R10-029] 保留下来**不等于会被报出来**。原来的文档在这里
+    /// 承诺「让 A4 能报出元数不对」,但那个诊断变体从来没有生产代码构造点,
+    /// `codes()` 还返回 `None` —— 承诺是空的。变体已删除,承诺一并撤掉。
+    ///
+    /// **现状**:`DICT[INTEGER]` 解析通过,映射成
+    /// `Ty::Named{name:"DICT", args:[INTEGER]}`,随后在调用点以
+    /// `E0110 annotation mismatch: expected DICT[INTEGER], found …` 的形式
+    /// 露出来 —— 消息不理想(说的是注解失配,不是元数),但至少**不静默**。
+    /// 要一条专门的元数诊断,得先给它分配码号;那是独立立项的事。
     pub fn from_type_expr(expr: &TypeExpr) -> Ty {
         match expr {
             TypeExpr::Array { element, .. } => Ty::Array(Box::new(Ty::from_type_expr(element))),
@@ -1002,6 +1025,49 @@ mod tests {
         assert_eq!(
             Ty::Array(Box::new(bounded("T", "Comparable"))).to_string(),
             "ARRAY[T: Comparable]"
+        );
+    }
+
+    // ---- v0.10.1 / R10-031 ---------------------------------------------
+
+    /// [R10-031] 内建头名**大小写不敏感**。
+    #[test]
+    fn r10_031_builtin_head_names_are_case_insensitive() {
+        for (a, b) in [
+            ("INTEGER", "integer"),
+            ("STRING", "String"),
+            ("BOOLEAN", "boolean"),
+            ("FLOAT", "float"),
+            ("DICT[STRING, INTEGER]", "dict[string, integer]"),
+        ] {
+            assert_eq!(
+                ty_of_annotation(a),
+                ty_of_annotation(b),
+                "builtin head `{a}` and `{b}` must be the same type"
+            );
+        }
+    }
+
+    /// [R10-031] 未知类型名**大小写敏感** —— `Foo` 与 `FOO` 不是同一个。
+    ///
+    /// 文档原来笼统写「大小写不敏感」,让人以为它们相等。实测运行期标识符
+    /// 本来就大小写敏感(`LET(foo, 1); LET(FOO, 2);` 输出 `1 2`),类型名
+    /// 由标识符派生,跟着敏感才对。签名文件是契约,更不该把两个拼写不同的
+    /// 名字当成同一个类型。
+    #[test]
+    fn r10_031_unknown_type_names_are_case_sensitive() {
+        assert_ne!(
+            ty_of_annotation("Foo"),
+            ty_of_annotation("FOO"),
+            "unknown type names must not fold by case"
+        );
+        // 同一个拼写仍然相等(这条守住的是「敏感」而不是「全都不同」)。
+        assert_eq!(ty_of_annotation("Foo"), ty_of_annotation("Foo"));
+        // 带参数的也一样。
+        assert_ne!(
+            ty_of_annotation("Box[INTEGER]"),
+            ty_of_annotation("box[INTEGER]"),
+            "unknown generic heads must not fold by case either"
         );
     }
 }

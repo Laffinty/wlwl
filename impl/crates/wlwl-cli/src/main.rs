@@ -935,6 +935,17 @@ pub(crate) fn collect_static_diagnostics(
     // **按子系统分档渲染**:`gradual_typing` 管类型/契约诊断,
     // `match_exhaustiveness` 管 MATCH 诊断。两个开关独立,所以渲染阶段
     // 也得分流 —— `W0117` 恒为警告(见 `TypeDiag::to_diagnostic`)。
+    //
+    // [v0.10.1 / R10-028] 补源码行。`TypeDiag::to_diagnostic` 只拿得到
+    // `Span`,拿不到源文本,所以类型诊断一直**没有** `source_line` ——
+    // 渲染出来是 `--> file:1:9` 后面光秃秃,没有运行期诊断那种
+    // `| 1 | LET(flag: BOOLEAN, "yes");` 行。运行期的 `Evaluator::diag`
+    // 一直在补(`wlwl-eval` 里 `extract_line` 那一处),静态层是唯一漏掉的。
+    //
+    // 在这里统一补,而不是去改 `to_diagnostic`:`wlwl-types` 不持有源文本
+    // (它只吃 AST),把文本塞进去要么改签名、要么依赖 CLI。CLI 是唯一同时
+    // 持有 AST 与源文本的那一层,补在这里最自然。
+    let source = std::fs::read_to_string(file).ok();
     for d in &checked.diags {
         let (enabled, level) = match d.kind.subsystem() {
             wlwl_types::Subsystem::Types => (setting.is_enabled(), severity),
@@ -943,7 +954,14 @@ pub(crate) fn collect_static_diagnostics(
         if !enabled {
             continue;
         }
-        out.extend(d.to_diagnostic(level));
+        if let Some(mut diag) = d.to_diagnostic(level) {
+            if let Some(src) = source.as_deref() {
+                if let Some(line_text) = wlwl_error::extract_line(src, d.span.line_start) {
+                    diag = diag.with_source_line(line_text);
+                }
+            }
+            out.push(diag);
+        }
     }
 
     // [v0.10 Step 6 / plan §4.1 C1 + §4.2 C2] 模块契约:签名文件与
@@ -1554,6 +1572,54 @@ mod tests {
     /// 只写 `[features]` 的清单模板 —— v0.10 的静默失效正是这个形状。
     fn features_only_manifest(features: &str) -> String {
         format!("[features]\n{features}")
+    }
+
+    /// [R10-028] 静态诊断必须带**源码行**。
+    ///
+    /// 运行期诊断一直有(`| 1 | LET(flag: BOOLEAN, "yes");`),静态层是唯一
+    /// 漏掉的 —— `TypeDiag::to_diagnostic` 只拿得到 `Span`,拿不到源文本。
+    /// 缺了它,诊断在编辑器里划线处显示不出那一行。
+    #[test]
+    fn r10_028_static_diagnostics_carry_the_source_line() {
+        // 门必须开着才有静态诊断 —— 完整清单(含 `[package]` 三件套)。
+        let p = write_raw_manifest_project(
+            "r10_028_src",
+            &full_manifest("gradual_typing = \"error\"\n"),
+            "LET(flag: BOOLEAN, \"yes\");\nPRINT(flag);\n",
+        );
+        let src = fs::read_to_string(&p).unwrap();
+        let ast = wlwl_parser::parse(&src, &p.to_string_lossy()).expect("fixture must parse");
+        let diags = collect_static_diagnostics(&ast, &p, p.parent().unwrap());
+        let e0110 = diags
+            .iter()
+            .find(|d| d.code.as_str() == "E0110")
+            .expect("the fixture must produce E0110");
+        let line = e0110
+            .source_line
+            .as_deref()
+            .expect("a static diagnostic must carry its source line");
+        assert!(
+            line.contains("BOOLEAN") && line.contains("yes"),
+            "the source line must be the offending one, got: {line}"
+        );
+        assert_eq!(
+            e0110.location.line, 1,
+            "and it must point at the right line"
+        );
+    }
+
+    /// [R10-028] 干净程序不因为补源码行而多出诊断(守住「补全」不是「多报」)。
+    #[test]
+    fn r10_028_a_clean_program_stays_clean() {
+        let p = write_tmp("LET(x: INTEGER, 1); PRINT(x);", "r10_028_clean.wll");
+        let src = fs::read_to_string(&p).unwrap();
+        let ast = wlwl_parser::parse(&src, &p.to_string_lossy()).expect("fixture must parse");
+        let diags = collect_static_diagnostics(&ast, &p, p.parent().unwrap());
+        assert!(
+            diags.is_empty(),
+            "no diagnostic should be produced, got {:?}",
+            diags.iter().map(|d| d.code.as_str()).collect::<Vec<_>>()
+        );
     }
 
     /// **修法 b**:`[features]` 单独成立时开关必须真的生效。

@@ -1458,10 +1458,15 @@ mod tests {
     #[test]
     fn unmapped_kinds_decline_to_invent_a_code() {
         // A4 未落地前不预分配码号。
-        let d = TypeDiag::synthetic(TypeDiagKind::TypeArityMismatch {
-            name: "DICT".into(),
-            expected: 2,
-            found: 1,
+        //
+        // [v0.10.1 / R10-029] 这里原本用的是 `TypeArityMismatch`,那个变体
+        // 已被删除:它**从来没有生产代码构造点**(唯一的构造在 `mod tests`
+        // 里),而且 `codes()` 还返回 `None` —— 就算构造出来也发不出码。
+        // 一个既不会被发出、也没有码号的变体只是「看起来有这条检查」,比
+        // 没有更坏。`ty.rs` 里那句「让 A4 能报出元数不对」的承诺一并撤掉,
+        // 现状是元数错误**不**被单独报告(见 `from_type_expr` 的文档)。
+        let d = TypeDiag::synthetic(TypeDiagKind::UnresolvedTypeName {
+            name: "DICT[INTEGER]".into(),
         });
         assert!(d.to_error().is_none());
         assert!(d.to_warning().is_none());
