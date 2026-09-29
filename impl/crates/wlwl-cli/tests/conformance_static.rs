@@ -100,9 +100,17 @@ fn static_type_fixture_dirs() -> Vec<String> {
 /// `static_types/` 下的夹具目录数。
 ///
 /// 这条常量是**元数据守卫**:加了夹具目录却忘了让它进断言覆盖面,这里就红。
-/// v0.10 的整套静态契约 conformance 实际只有**一条**断言在跑(8 个 `// expects:`
-/// 块里只读到第一个),正因为夹具数与「被验了几个」之间没有任何绑定。
-const EXPECTED_STATIC_FIXTURE_DIRS: usize = 10;
+///
+/// 9 = 8 份 `expects:` 夹具 + `clean_baseline` / `exhaustive_result` 两个
+/// `mode: both` 控制组。
+///
+/// [v0.10.1] 原先是 10,多出来的 `bounded_var_violation` 是 R10-025 的哨兵
+/// (`T: A: B` 右嵌套)。它在这里待到了 R10-025 修完的那天,然后按设计
+/// **变红** —— 因为修完之后 `T: Comparable: Integer` 成了 E0010 **解析错**,
+/// 而本目录的夹具必须解析干净(见 README「为什么夹具必须解析干净」)。
+/// 于是它移去了 probe 套件(`P_r10_025_nested_type_constraint`),那里才能
+/// 断言解析错。
+const EXPECTED_STATIC_FIXTURE_DIRS: usize = 9;
 
 /// 把一份夹具复制成独立工程(`gradual_typing` 可选),返回入口路径。
 ///

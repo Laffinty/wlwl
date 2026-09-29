@@ -36,7 +36,9 @@ use std::time::{Duration, Instant};
 /// 97 是 v0.10.0 动态 REVIEW 迁进来的原始套件;第 98 条
 /// (`M5_features_only_manifest_clean_program`)是 v0.10.1 修完 R10-010
 /// 后补的正面用例 —— 原套件只有「坏程序被拦」,没有「好程序照常跑通」。
-const EXPECTED_CASE_COUNT: usize = 98;
+/// 第 99 条(`P_r10_025_nested_type_constraint`)是修 R10-025 时补的:
+/// 嵌套类型约束是**解析错**,static_types 夹具要求解析干净,住不了那里。
+const EXPECTED_CASE_COUNT: usize = 99;
 
 /// 单个 case 的上限,与 `probe.py` 的 `timeout=60` 同义。
 const CASE_TIMEOUT: Duration = Duration::from_secs(60);

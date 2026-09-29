@@ -15,7 +15,6 @@ static_types/
   arg_type_mismatch/main.wll              // expects: E0111
   return_type_mismatch/main.wll           // expects: E0112
   comparable_violation/main.wll           // expects: E0111
-  bounded_var_violation/main.wll          // mode: both  (R10-025 哨兵)
   non_exhaustive_result/main.wll          // expects: E0116
   unreachable_clause/main.wll             // expects: W0117
   clean_baseline/main.wll                 // mode: both  (控制组 1)
@@ -49,7 +48,24 @@ static_types/
 |---|---|---|---|
 | `annotation_and_arg_mismatch` | `E0110 E0111` | 只有 `E0110` | 如实改成 `E0110`,并在注释里记下 R10-086 |
 | `return_type_mismatch` | `E0112` | 先撞 `E0110`,`E0112` 被吞 | 去掉 `LET` 注解,让 `E0112` 真正可达 |
-| `bounded_var_violation` | `E0110` | 一条诊断都没有 | 改成 `mode: both`,转成 R10-025 哨兵 |
+| `bounded_var_violation` | `E0110` | 一条诊断都没有 | 转成 R10-025 哨兵 → R10-025 修完后移出本目录(见下) |
+
+前两条的共同根因是一个**新发现的实现缺口**(登记 R10-086,未修):
+`LET` 注解与推断类型冲突报出 E0110 之后,**同一绑定**后续的调用检查
+(E0111 / E0112)会被一并吞掉。去掉注解后同样的调用各自都正常报。
+
+## R10-025 哨兵的去向(一个自我实现的预测)
+
+`bounded_var_violation` 当初被转成 `mode: both`(现状 = 干净)而不是
+`expects:`,理由写在夹具注释里:**断言不能声称还不存在的行为**。钉成现状,
+等 R10-025 修完那天它会**自动变红**,逼着改的人明确决定「现在该报什么码」。
+
+v0.10.1 修完 R10-025,这条真的红了 —— 原因是修完之后
+`T: Comparable: Integer` 成了 **E0010 解析错**,而本目录的夹具**必须解析
+干净**(见下节)。解析错不属于静态层,于是它移去了 probe 套件:
+`P_r10_025_nested_type_constraint`。
+
+哨兵到站即退场,一次往返完成 —— 这也正是当初不写 `expects:` 的回报。
 
 ## 三条守卫
 
@@ -57,7 +73,7 @@ static_types/
 「夹具加了但没被验」:
 
 1. `static_types_fixtures_diagnose_only_when_the_gate_is_on` —— 枚举**全部**
-   子目录并断言目录数等于 `EXPECTED_STATIC_FIXTURE_DIRS`(10)。加了夹具
+   子目录并断言目录数等于 `EXPECTED_STATIC_FIXTURE_DIRS`(9)。加了夹具
    目录却没让它进覆盖,这里就红。
 2. `static_types_fixtures_cover_every_diagnostic_they_claim_to` —— 断言
    `E0110` / `E0111` / `E0112` / `E0116` / `W0117` 每个码都至少被一份夹具
@@ -80,20 +96,23 @@ static_types/
 **故意违例的夹具不要求 `wlwl run` 跑通**:静态类型违例在运行期多半**也**是
 `E0030` 类型错误,那正是 `E0030` 存在的意义,不是夹具坏了。
 
-`mode: both` 的控制组承担另一半责任:声明「两种模式都干净」的那几份
-(`clean_baseline` / `exhaustive_result` / `bounded_var_violation`)**必须**
-`wlwl run` 一次跑通 —— 否则这套夹具与这套断言都可能只是摆设。
+`mode: both` 的控制组承担另一半责任:声明「两种模式都干净」的那两份
+(`clean_baseline` / `exhaustive_result`)**必须** `wlwl run` 一次跑通 ——
+否则这套夹具与这套断言都可能只是摆设。
 
 ## `mode: both` 也可以是「已知的漏」
 
-`bounded_var_violation` 是 R10-025 的哨兵:规范文法
-`BoundedVar = identifier ":" Type` 不允许右嵌套,可今天
-`T: Comparable : Integer` 静默通过。
+这里记一条方法论,因为本目录真的用到过一次。R10-025(嵌套类型约束
+`T: A: B` 应当报 E0010)在被修之前,它在本目录里是一份 `mode: both`
+夹具 —— 钉的是**现状(干净)**,而不是 `expects:`(声称会有诊断)。
 
-断言**不能声称还不存在的行为**,所以这条先钉成 `mode: both`(现状 = 干净),
-而不是 `expects:`(声称会有诊断)。修 R10-025 的那天它会**自动变红** ——
-那正是它该干的事:逼着改的人明确决定「现在该报什么码」。同理,把一条早就
-写好的期望悄悄放任变成真话,是这套夹具最需要防的失败模式。
+理由:断言不能声称还不存在的行为。但这样钉有个额外好处 —— 修好那天它会
+**自动变红**,逼着改的人明确决定「现在该报什么码」,而不是让一条早就写好、
+然后被放任变成真话的期望悄悄溜过去。R10-025 修完后它确实红了(因为答案
+是 E0010 解析错,不属于本目录),于是转场到 probe 套件。
+
+「已知的漏」要放在**能断言它的层**:静态层夹具不能解析出错,解析层的
+事实归 probe 套件。
 
 ## 跑法
 

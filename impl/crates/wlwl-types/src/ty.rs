@@ -112,9 +112,11 @@ impl Ty {
             // [v0.10 Step 9] 带约束的类型变量。
             //
             // 头名是**已知类型**时约束被丢弃:给具体类型加约束是无意义的
-            // 废话(`INTEGER: Comparable` —— INTEGER 本来就可比较),parser
-            // 层其实已经挡掉了,但这里仍按「丢弃」处理,免得将来放宽语法时
-            // 凭空造出一个假的类型变量。
+            // 废话(`INTEGER: Comparable` —— INTEGER 本来就可比较)。
+            //
+            // [v0.10.1 / R10-027] 注意这里**不是**「parser 层挡住了所以
+            // 这条分支不可达」——实测 `INTEGER: Comparable` 能解析。它能不能
+            // 走对,全靠 `is_known_head` 里有没有基类型。
             TypeExpr::Bounded { name, bound, .. } => {
                 if is_known_head(&name.to_ascii_uppercase()) {
                     return Ty::from_head(name, &[]);
@@ -501,7 +503,24 @@ pub fn instantiate(declared: &Ty, actual: &Ty, bindings: &mut Vec<(String, Ty)>)
             // 「不知道」—— 不绑,让它自然落回 `Dynamic`。
             if !actual.is_dynamic() {
                 match bindings.iter_mut().find(|(n, _)| n == name) {
-                    Some((_, prev)) => *prev = Ty::lub(prev, actual),
+                    // [v0.10.1 / R10-024] 变量在**本次调用**里已经绑过了。
+                    //
+                    // 旧写法无条件 `Ty::lub(prev, actual)`,于是
+                    // `FUN((a: T: Comparable, b: T: Comparable))` 被
+                    // `f(1, "s")` 调用时 T 悄悄 lub 成 INTEGER|STRING ——
+                    // **不报错**。实测混类型调用 rc=0,这是静默的类型漏洞。
+                    //
+                    // 一个类型变量必须落到**同一个**具体类型上。第二次出现的
+                    // 实参落不进第一次的绑定,就是调用点签名不符,应当报
+                    // E0111。这同时就是「泛型变量跨形参统一」的实现点:两处
+                    // 出现的是同一个变量,不是各自独立的新变量。
+                    Some((_, prev)) => {
+                        if actual.satisfies_annotation(prev) {
+                            *prev = Ty::lub(prev, actual);
+                        } else {
+                            return false;
+                        }
+                    }
                     None => bindings.push((name.clone(), actual.clone())),
                 }
             }
@@ -571,7 +590,30 @@ pub fn substitute(ty: &Ty, bindings: &[(String, Ty)]) -> Ty {
 fn is_known_head(upper: &str) -> bool {
     matches!(
         upper,
-        "TASK"
+        // [v0.10.1 / R10-027] 基类型必须在内。
+        //
+        // 漏掉它们的后果很具体:`INTEGER: Comparable` 的 `Bounded` 分支问
+        // `is_known_head("INTEGER")` 拿到 false,于是走进 `Ty::Var{name:
+        // "INTEGER"}` —— 一个**谁都能绑的类型变量**。实测
+        // `LET(x: INTEGER: Comparable, "s")` rc=0:给 INTEGER 加个约束就把
+        // 它变成了通配符。
+        //
+        // 顺带修掉一句失实注释:原注释写「parser 层其实已经挡掉了」——
+        // 实测没挡,`INTEGER: Comparable` 解析得好好的(见 conformance 夹具
+        // `bounded_var_violation` 的姊妹条目)。
+        "INTEGER"
+            | "INT"
+            | "FLOAT"
+            | "DOUBLE"
+            | "STRING"
+            | "STR"
+            | "BOOLEAN"
+            | "BOOL"
+            | "NULL"
+            | "NONE"
+            | "DYNAMIC"
+            | "ANY"
+            | "TASK"
             | "CHANNEL"
             | "CLASS"
             | "INSTANCE"

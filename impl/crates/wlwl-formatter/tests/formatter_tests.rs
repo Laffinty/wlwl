@@ -496,3 +496,74 @@ PRINT(MATCH(n, [
     );
     assert_idempotent(src);
 }
+
+// ── [v0.10.1 / R10-020] 类型标注的 fmt 往返 ────────────────────────────
+//
+// v0.10 的 `fmt_idempotent_over_100_fixtures` 覆盖了 100 多份程序,但**没有
+// 一份带「解析器兜底吸收」形态的类型标注**,于是「`wlwl fmt` 产出不可重解析
+// 源码」这件事从 CI 漏了过去。
+//
+// 契约很硬:**凡是能 parse 出来的 `TypeExpr`,都必须能被 fmt 写回去并再次
+// parse 成功**。下面每条对应一种形态,少一条就有一个变体没人验。
+
+/// [R10-020] fmt 的输出必须能被 parse 回去 —— 类型标注每种形态各一条。
+#[test]
+fn r10_020_every_type_expr_shape_survives_a_fmt_round_trip() {
+    let cases: &[(&str, &str)] = &[
+        // Ident
+        ("裸标识符", "LET(x: INTEGER, 1);"),
+        // Array
+        ("ARRAY 单层", "LET(x: ARRAY[INTEGER], [1, 2]);"),
+        ("ARRAY 嵌套", "LET(x: ARRAY[ARRAY[INTEGER]], [[1]]);"),
+        // Generic with args
+        ("DICT[k, v]", r#"LET(x: DICT[STRING, INTEGER], ["k": 1]);"#),
+        ("OPTION[T]", "LET(x: OPTION[INTEGER], OK(1));"),
+        ("RESULT[T, E]", r#"LET(x: RESULT[INTEGER, STRING], OK(1));"#),
+        // Bounded
+        ("T: Comparable", "LET(x: T: Comparable, 1);"),
+        // 下面两条是 R10-020 的正主:解析器把 `DICT<STRING>` 收成
+        // `Generic { name: "< STRING >", args: [] }`,旧渲染无条件输出
+        // `name[]` → `< STRING >[]`,再 parse 直接 E0010。
+        (
+            "尖括号(兜底成空 args Generic)",
+            r#"LET(d: DICT<STRING>, 1);"#,
+        ),
+        (
+            "箭头(兜底成空 args Generic)",
+            "LET(f: FUN(INTEGER) -> STRING, 1);",
+        ),
+        ("裸 DICT(不透明具名类型)", r#"LET(d: DICT, ["k": 1]);"#),
+    ];
+    for (label, src) in cases {
+        let out = format(
+            &parse(src, "t.wll")
+                .unwrap_or_else(|e| panic!("[{label}] fixture must parse first: {e:?}")),
+        );
+        if let Err(e) = parse(&out, "t.wll") {
+            panic!(
+                "[{label}] `wlwl fmt` produced source that no longer parses: {e:?}\n\
+                 input : {src}\noutput: {out}"
+            );
+        }
+        // 往返不止要「能 parse」,还要稳定。
+        let twice = format(&parse(&out, "t.wll").expect("re-parse of fmt output failed"));
+        assert_eq!(out, twice, "[{label}] fmt is not idempotent");
+    }
+}
+
+/// [R10-020] 空 `args` 的 Generic 按 `Named` 形态渲染,不留悬空的 `[]`。
+///
+/// 这条把「为什么」钉住,免得将来有人觉得「多个方括号更统一」又加回去。
+#[test]
+fn r10_020_empty_generic_args_render_without_brackets() {
+    let out = fmt_src(r#"LET(d: DICT<STRING>, 1); PRINT(d);"#);
+    assert!(
+        !out.contains("[]"),
+        "an empty-args Generic must not render a dangling `[]`:\n{out}"
+    );
+    // 兜底吸收保留的是原始 token 文本,所以 `STRING` 仍在。
+    assert!(
+        out.contains("STRING"),
+        "the absorbed name text must survive:\n{out}"
+    );
+}

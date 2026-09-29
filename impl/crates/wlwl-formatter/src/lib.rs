@@ -422,6 +422,18 @@ fn type_expr_text(t: &TypeExpr) -> String {
             format!("ARRAY[{}]", type_expr_text(element))
         }
         TypeExpr::Generic { name, args, .. } => {
+            // [v0.10.1 / R10-020] 空 `args` 必须按 `Named` 的形态渲染。
+            //
+            // 解析器会把「解析完还有剩余 token」的标注收成
+            // `Generic { name: "<剩余 token>", args: [] }` —— 兜底吸收路径。
+            // 旧渲染无条件输出 `name[...]`,于是 `DICT<STRING>`(解析成
+            // `Generic { name: "< STRING >", args: [] }`)被写成
+            // `< STRING >[]`,再解析就是 `E0010: expected type expression,
+            // got '<'`。这是**输出非法输入的唯一路径**:能被 parse 出来的
+            // `TypeExpr` 一定能被 fmt 写回去。
+            if args.is_empty() {
+                return name.clone();
+            }
             let parts: Vec<String> = args.iter().map(type_expr_text).collect();
             format!("{}[{}]", name, parts.join(", "))
         }

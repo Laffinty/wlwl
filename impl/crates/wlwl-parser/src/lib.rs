@@ -2480,7 +2480,22 @@ impl Parser {
                 .into());
             }
             return Ok(TypeExpr::Generic {
-                name: rest.join(" "),
+                // [v0.10.1 / R10-020] 保留**整条**标注的原文,而不是只留
+                // 剩余 token。
+                //
+                // 旧写法 `rest.join(" ")` 把 `parse_expr` 已经消费掉的头扔了:
+                // `DICT<STRING>` 先解析出 `Ident{name:"DICT"}`,剩下
+                // `< STRING >`,于是 name 变成 `"< STRING >"` —— 头没了。
+                // formatter 写回去时输出 `< STRING >`,而 `<` 开头的类型根本
+                // 不是合法类型表达式,再 parse 直接 E0010。也就是说
+                // 「fmt 产出不可重解析源码」这条路的**源头在解析器**,
+                // 渲染层再怎么改都补不回来一个已经被丢掉的 `DICT`。
+                //
+                // 带上头之后,`DICT<STRING>` → name `"DICT < STRING >"` →
+                // fmt 写回 `DICT < STRING >` → 再 parse 又回到同一个 name,
+                // 往返闭合且 fmt 幂等。解析的**判定**没有任何变化(仍然是
+                // 静默吸收),改变的只是被保留下来的文本。
+                name: pieces.join(" "),
                 args: vec![],
                 span: Span {
                     file: self.file.clone(),
@@ -2530,6 +2545,28 @@ impl<'a> TypeExprParser<'a> {
         if self.peek() == ":" {
             self.pos += 1;
             let bound = self.parse_expr(sl, sc)?;
+            // [v0.10.1 / R10-025] 约束**只允许一层**。
+            //
+            // 规范文法(附录 A)`BoundedVar = identifier ":" Type`,`Type`
+            // 本身不含 `:`。旧实现递归调用 `parse_expr` 解析 bound,于是
+            // `T: A: B` 里的第二个 `:` 又被内层当成又一个 `Bounded`,
+            // 一路递归**静默通过** —— 造出一个约束套约束的伪类型。实测
+            // `T: Comparable: Integer` rc=0,静态层一条诊断都不发。
+            //
+            // 判据查的是**结果**而不是「后面还有没有 `:`」:内层递归会把那个
+            // `:` 一起吃掉,查 token 永远查不到。`Bounded` 的 bound 又是
+            // `Bounded`,就是嵌套,如实报告。
+            if matches!(bound, TypeExpr::Bounded { .. }) {
+                return Err(WlwlDiagnostic::new(
+                    EC::E0010,
+                    "a type constraint may not be nested \
+                     (`T: Comparable: Integer` is not a type); \
+                     the grammar allows at most one constraint per type variable"
+                        .to_string(),
+                    Location::point(&self.file, sl, sc),
+                )
+                .into());
+            }
             return Ok(TypeExpr::Bounded {
                 name: head,
                 bound: Box::new(bound),
@@ -2614,10 +2651,20 @@ impl<'a> TypeExprParser<'a> {
 fn is_ident(s: &str) -> bool {
     let mut chars = s.chars();
     match chars.next() {
-        Some(c) if c.is_ascii_alphabetic() || c == '_' => {}
+        // [v0.10.1 / R10-026] 与 **lexer** 的标识符判定对齐。
+        //
+        // lexer 侧 P3-011 §3.1 早就明确支持非 ASCII 字母(中文标识符),
+        // `c >= 0xC0` 那条分支专门把多字节码点送进同一个标识符读取器。
+        // 但类型层这个 `is_ident` 只认 ASCII,于是 `LET(x: 整数, 1)` 报
+        // `E0010: expected type expression, got '整数'` —— **同一个 token,
+        // 值表达式的位置认得,类型注解的位置不认**。
+        //
+        // 用 Unicode 属性而不是 `is_ascii_*`:汉字是 alphabetic;首字符与
+        // 后续字符的规则保持不变(首字符不能是数字)。
+        Some(c) if c.is_alphabetic() || c == '_' => {}
         _ => return false,
     }
-    chars.all(|c| c.is_ascii_alphanumeric() || c == '_')
+    chars.all(|c| c.is_alphanumeric() || c == '_')
 }
 
 #[cfg(test)]
@@ -3816,6 +3863,80 @@ mod tests {
         match e {
             Expr::Sealed { names, .. } => assert_eq!(names.len(), 2),
             other => panic!("expected SEALED, got {:?}", other),
+        }
+    }
+
+    // ---- v0.10.1 / R10-025 · R10-026 -----------------------------------
+
+    /// [R10-025] 类型约束**不可右嵌套**。
+    ///
+    /// 规范文法(附录 A)`BoundedVar = identifier ":" Type`,`Type` 本身不含
+    /// `:`。旧实现递归解析 bound,`T: A: B` 一路递归**静默通过**,造出一个
+    /// 约束套约束的伪类型。
+    #[test]
+    fn r10_025_a_type_constraint_may_not_be_nested() {
+        for bad in [
+            "LET(f, FUN((a: T: Comparable: Integer) : INTEGER, 0));",
+            "LET(x: T: A: B, 1);",
+            // 嵌套藏在方括号里也照样拒绝。
+            "LET(f, FUN((a: ARRAY[T: Comparable: Integer]) : INTEGER, 0));",
+        ] {
+            let err = parse(bad, "t.wll").expect_err("a nested constraint must be rejected");
+            let text = format!("{err:?}");
+            assert!(
+                text.contains("E0010"),
+                "nested constraint must be E0010, got: {text}"
+            );
+            assert!(
+                text.contains("may not be nested"),
+                "the message must say what is wrong: {text}"
+            );
+        }
+    }
+
+    /// [R10-025] 单层约束不受影响 —— 对照组,守住上面那条不是「一刀切」。
+    #[test]
+    fn r10_025_a_single_constraint_still_parses() {
+        for ok in [
+            "LET(f, FUN((a: T: Comparable) : INTEGER, 0));",
+            "LET(f, FUN((a: ARRAY[T: Comparable]) : INTEGER, 0));",
+            "LET(x: T: Comparable, 1);",
+        ] {
+            parse(ok, "t.wll")
+                .unwrap_or_else(|e| panic!("a single constraint must still parse: {ok} -> {e:?}"));
+        }
+    }
+
+    /// [R10-026] 类型注解里的**非 ASCII** 标识符。
+    ///
+    /// lexer 侧 P3-011 §3.1 早就支持中文标识符,但类型层这个 `is_ident`
+    /// 只认 ASCII,于是同一个 token 在值位置认得、在类型注解位置报
+    /// `E0010: expected type expression`。
+    #[test]
+    fn r10_026_type_annotations_accept_non_ascii_identifiers() {
+        for src in [
+            "LET(x: 整数, 1); PRINT(x);",
+            "LET(f, FUN((名字: 整数) : 整数, 名字)); PRINT(f(1));",
+            "LET(x: Ω, 1);",
+        ] {
+            parse(src, "t.wll").unwrap_or_else(|e| {
+                panic!("non-ASCII type annotation must parse: {src}\n  got: {e:?}")
+            });
+        }
+    }
+
+    /// [R10-026] 仍然要拒绝的不是标识符的东西 —— 对照组。
+    ///
+    /// 只覆盖**首 token 就不是标识符**的情形。`LET(x: 整数 + 1, 1)` 这种
+    /// 「合法头 + 尾随垃圾」走的是解析器既有的兜底吸收(收成空 args 的
+    /// `Generic`),那是 R10-040 记录的规范 / 实现漂移,不属于本条。
+    #[test]
+    fn r10_026_non_identifiers_are_still_rejected_in_type_position() {
+        for bad in ["LET(x: 1, 1);", "LET(x: , 1);", "LET(x: +, 1);"] {
+            assert!(
+                parse(bad, "t.wll").is_err(),
+                "this is not a type name and must stay rejected: {bad}"
+            );
         }
     }
 }

@@ -663,6 +663,12 @@ impl<'a> Checker<'a> {
                 return ret;
             }
         }
+        // [v0.10.1 / R10-024] 泛型绑定表建在**形参循环之外**。
+        //
+        // 旧写法在循环体内每次 `Vec::new()`,于是 `FUN((a: T, b: T))` 的两个
+        // `T` 各自独立实例化 —— 同一个变量名在两处出现被当成两个无关的变量。
+        // 提到循环外之后,第二次出现会看到第一次的绑定,这才是「同一个变量」。
+        let mut bindings: Vec<(String, Ty)> = Vec::new();
         for (position, (expected_t, found_t)) in params.iter().zip(&arg_tys).enumerate() {
             // [v0.10 Step 9 / P1-2] 泛型实例化:声明类型里带类型变量时,
             // 先按实参把变量绑定起来(顺带验约束),再判实参填不填得进。
@@ -684,7 +690,6 @@ impl<'a> Checker<'a> {
                 }
                 continue;
             }
-            let mut bindings: Vec<(String, Ty)> = Vec::new();
             let ok = crate::ty::instantiate(expected_t, found_t, &mut bindings);
             if !ok {
                 self.report(
@@ -696,9 +701,9 @@ impl<'a> Checker<'a> {
                     span,
                 );
             }
-            // 记下这次实例化,返回类型要用它代入(见下面)。
-            self.pending_substitutions.extend(bindings);
         }
+        // 记下这次调用的全部实例化,返回类型要用它代入。
+        self.pending_substitutions.extend(bindings);
         crate::ty::substitute(&ret, &self.pending_substitutions)
     }
 
@@ -1293,13 +1298,20 @@ mod tests {
         let ann = params[0].type_annotation.as_ref().expect("annotation");
         let ty = Ty::from_type_expr(&ann.expr);
         // 它落成了一个将整段原文拼进去的无意义名。
+        //
+        // [v0.10.1 / R10-020] name 里现在**带着头** `FUN` 了。旧写法只拼
+        // 剩余 token(`( INTEGER ) - > STRING`),把 `parse_expr` 已消费的
+        // 类型头扔掉 —— 头一丢,formatter 就再也写不回能解析的源码(见
+        // `wlwl-parser` 里 `parse_type_expr_from_pieces` 的注释)。
+        // 本测试的**意图**没变:箭头形式仍然是被静默吸收,不是被拒绝。
         assert_eq!(
             ty,
             Ty::Named {
-                name: "( INTEGER ) - > STRING".into(),
+                name: "FUN ( INTEGER ) - > STRING".into(),
                 args: vec![]
             },
-            "arrow form must keep degrading silently until D-5 adds `->`"
+            "arrow form must keep degrading silently until D-5 adds `->`, \
+             and the absorbed name must keep the head so fmt can round-trip it"
         );
         // 对照:方括号形式 `FUN[T, ...]` 是**能解析**的,并映射到
         // `Ty::Fun`(形参取全部类型参数,返回类型为 Dynamic)。
@@ -1694,6 +1706,77 @@ count([1, TRUE]);
             codes("LET(f, FUN((a, b), a)); f(1, 2);"),
             Vec::<String>::new(),
             "exactly the declared count must stay clean"
+        );
+    }
+
+    // ---- v0.10.1 / R10-024 · R10-027 -----------------------------------
+
+    /// [R10-024] 同一个类型变量在两处形参上出现,必须**统一**实例化。
+    ///
+    /// 修之前两个 `T` 各自独立绑定,`f(1, "s")` 悄悄把 T lub 成
+    /// INTEGER|STRING,rc=0 —— 一条静默的类型漏洞。现在第二个实参落不进
+    /// 第一次的绑定就报 E0111。
+    #[test]
+    fn r10_024_a_type_variable_is_unified_across_parameters() {
+        // 混类型实参 → 必须报错。
+        assert_eq!(
+            codes(r#"LET(f, FUN((a: T: Comparable, b: T: Comparable) : INTEGER, 0)); f(1, "s");"#),
+            vec!["E0111".to_string()],
+            "one type variable must not bind to two different types"
+        );
+        // 同类型实参 → 必须干净(别把「统一」做成「一律拒绝」)。
+        assert_eq!(
+            codes(r#"LET(f, FUN((a: T: Comparable, b: T: Comparable) : INTEGER, 0)); f(1, 2);"#),
+            Vec::<String>::new(),
+            "matching arguments must still unify cleanly"
+        );
+    }
+
+    /// [R10-024] 独立变量不受影响 —— 对照组,守住上面那条不是「一刀切」。
+    #[test]
+    fn r10_024_distinct_type_variables_stay_independent() {
+        assert_eq!(
+            codes(r#"LET(f, FUN((a: T: Comparable, b: U: Comparable) : INTEGER, 0)); f(1, "s");"#),
+            Vec::<String>::new(),
+            "two *different* variables must each bind to their own argument"
+        );
+    }
+
+    /// [R10-027] 给基类型加约束,不允许把它变成通配符类型变量。
+    ///
+    /// `INTEGER: Comparable` 之前落进 `Ty::Var{name:"INTEGER"}` —— 一个谁
+    /// 都能绑的类型变量,于是 `LET(x: INTEGER: Comparable, "s")` rc=0。
+    /// 约束是废话,应当被丢弃,类型仍然是 INTEGER。
+    #[test]
+    fn r10_027_a_constraint_on_a_base_type_does_not_make_it_a_variable() {
+        // 每个基类型配一个**明确不符**的值 —— 配相符的值证明不了任何事
+        // (`STRING: Comparable` 赋 `"s"` 本来就该过)。
+        for (base, wrong) in [
+            ("INTEGER", "\"s\""),
+            ("STRING", "1"),
+            ("BOOLEAN", "1"),
+            ("FLOAT", "\"s\""),
+        ] {
+            assert_eq!(
+                codes(&format!(r#"LET(x: {base}: Comparable, {wrong});"#)),
+                vec!["E0110".to_string()],
+                "{base}: Comparable must stay the concrete base type, not a wildcard"
+            );
+        }
+    }
+
+    /// [R10-027] 对照:真正的类型变量仍然可绑。
+    #[test]
+    fn r10_027_a_real_type_variable_still_binds() {
+        assert_eq!(
+            codes("LET(f, FUN((a: T: Comparable) : INTEGER, 0)); f(1);"),
+            Vec::<String>::new(),
+            "T: Comparable must still accept a satisfying argument"
+        );
+        assert_eq!(
+            codes("LET(f, FUN((a: T: Comparable) : INTEGER, 0)); f(\"s\");"),
+            Vec::<String>::new(),
+            "STRING satisfies Comparable"
         );
     }
 }
