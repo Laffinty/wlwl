@@ -105,6 +105,8 @@ pub fn parse_with_warnings(input: &str, file: &str) -> WlwlResult<(Expr, Vec<War
         file: file.to_string(),
         source: input.to_string(),
         warnings: Vec::new(),
+        // [v0.10.1 / R10-021] 入口块由 `parse_block(false)` 置真。
+        module_top: false,
     };
     let block = p.parse_block(false)?;
     p.expect(TokenKind::Eof)?;
@@ -446,6 +448,12 @@ struct Parser {
     /// Non-fatal diagnostics collected during parsing. Currently
     /// populated by the array/dict literal check (W0020, v0.3 §4.5).
     warnings: Vec<Warning>,
+    /// [v0.10.1 / R10-021] 正在解析**模块顶层块**(spec §9.1:
+    /// 「`ModuleDecl` 只出现在模块顶层,不作为 `Expression`」)。
+    ///
+    /// 程序入口的 `parse_block(false)` 置真,任何嵌套块(`IF` 分支、
+    /// 函数体……全是 `parse_block(true)`)置假。
+    module_top: bool,
 }
 
 impl Parser {
@@ -623,6 +631,16 @@ impl Parser {
 
     /// Parse a block. If `require_semi` is true, expects ';' after each statement.
     fn parse_block(&mut self, in_paren: bool) -> WlwlResult<Expr> {
+        // [v0.10.1 / R10-021] `parse_block(false)` 只在程序入口被调用一次,
+        // 嵌套块一律是 `true` —— 这就是「模块顶层」的天然判据。
+        let saved_module_top = self.module_top;
+        self.module_top = !in_paren;
+        let block = self.parse_block_inner(in_paren);
+        self.module_top = saved_module_top;
+        block
+    }
+
+    fn parse_block_inner(&mut self, in_paren: bool) -> WlwlResult<Expr> {
         let start_span = self.span_here();
         let mut stmts = Vec::new();
 
@@ -1949,14 +1967,40 @@ impl Parser {
         // of strings/identifiers. That is the price of declaring it in
         // identifier form rather than as a keyword, and it is now stated
         // in spec §9.1 instead of being a silent trap.
-        if name == "SEALED"
+        // [v0.10.1 / R10-021] 位置校验:spec §9.1 明写「`ModuleDecl` 只
+        // 出现在模块顶层,不作为 `Expression`」。
+        //
+        // 修之前这里**不看位置**,所以 `PRINT(SEALED(["x"]))` 与
+        // `LET(v, SEALED(["x"]))` 都被当成模块声明接受,求值为 `NULL` ——
+        // 实测 rc=0,程序里那条声明凭空消失。
+        //
+        // 收紧的是**位置**约束而不是**语法**约束,所以不破坏 c0d8652 定的
+        // 「没有任何 `SEALED` 形态会让 parser 硬失败」:不在声明位就回退成
+        // 普通调用(与解析失败时同一条回退路径),不变式仍是
+        // 「要么是声明,要么是普通调用」。
+        //
+        // 「声明位」的判据是**后面紧跟语句终止符**(`;` 或文件末尾):
+        // 一条模块声明自己占一条语句,后面不会再有别的 token。这一条把
+        // 实参位、逗号后、函数体内部全部排除,而且**不需要任何解析器状态** ——
+        // 每个构造都自带自己的实参表,给它们逐个加深度记账既漏得掉又难维护。
+        //   PRINT(SEALED([...]))   → 后面是 `)` → 回退
+        //   LET(v, SEALED([...]))   → 后面是 `)` → 回退
+        //   IF(c, SEALED([...]), 0) → 后面是 `,` → 回退
+        //   SEALED([...]);          → 后面是 `;` → 声明
+        //   SEALED([...])           → 文件末尾 → 声明
+        if self.module_top
+            && name == "SEALED"
             && matches!(self.peek(), TokenKind::LParen)
             && matches!(self.peek_at(1), TokenKind::LBracket)
         {
             let rewind = self.pos;
+            // 判据在**解析成功之后**才算:那一刻 `peek()` 才是 `SEALED(...)`
+            // 后面那个 token。提前算的话看到的还是 `(` —— 声明自己也会被拒。
             match self.parse_sealed(line, col) {
-                Ok(sealed) => return Ok(sealed),
-                Err(_) => self.pos = rewind,
+                Ok(sealed) if matches!(self.peek(), TokenKind::Semicolon | TokenKind::Eof) => {
+                    return Ok(sealed);
+                }
+                _ => self.pos = rewind,
             }
         }
 
@@ -3460,6 +3504,9 @@ mod tests {
             file: file.to_string(),
             source: String::new(),
             warnings: Vec::new(),
+            // [v0.10.1 / R10-021] 这条测试只调 `parse_type_expr_from_pieces`,
+            // 走不到 SEALED 的位置判据;给个安全的默认值。
+            module_top: false,
         }
     }
 
@@ -3863,6 +3910,83 @@ mod tests {
         match e {
             Expr::Sealed { names, .. } => assert_eq!(names.len(), 2),
             other => panic!("expected SEALED, got {:?}", other),
+        }
+    }
+
+    // ---- v0.10.1 / R10-021 ---------------------------------------------
+
+    /// [R10-021] `SEALED` 出现在**表达式位置**必须回退成普通调用。
+    ///
+    /// spec §9.1:「`ModuleDecl` 只出现在模块顶层,不作为 `Expression`」。
+    /// 修之前完全不看位置,于是下面这四种全被当成模块声明接受并求值为
+    /// `NULL` —— 程序里那条声明凭空消失,rc 还是 0。
+    ///
+    /// 回退的落点是「普通调用」而不是硬失败,这是 c0d8652(R10-003)定的
+    /// 不变式:「没有任何 `SEALED` 形态会让 parser 硬失败」。所以这里
+    /// 解析**成功**,只是产出的不是 `Expr::Sealed`。
+    #[test]
+    fn r10_021_sealed_in_an_expression_position_is_not_a_declaration() {
+        for src in [
+            r#"PRINT(SEALED(["x"]));"#,
+            r#"LET(v, SEALED(["x"]));"#,
+            r#"IF(TRUE, SEALED(["x"]), 0);"#,
+            r#"LET(f, FUN((), SEALED(["x"])));"#,
+            r#"[SEALED(["x"])];"#,
+        ] {
+            let e = parse(src, "t.wll").unwrap_or_else(|err| {
+                panic!("must still parse (fall back, not fail): {src} -> {err:?}")
+            });
+            // 整棵树里不许出现 `Sealed`。
+            fn has_sealed(e: &Expr) -> bool {
+                match e {
+                    Expr::Sealed { .. } => true,
+                    Expr::Block { exprs, .. } => exprs.iter().any(has_sealed),
+                    Expr::Call { args, .. } => args.iter().any(has_sealed),
+                    Expr::Let { value, .. } => has_sealed(value),
+                    Expr::LetPattern { value, .. } => has_sealed(value),
+                    Expr::Fun { body, .. } => has_sealed(body),
+                    Expr::If {
+                        then_branch,
+                        else_branch,
+                        ..
+                    } => has_sealed(then_branch) || else_branch.as_deref().is_some_and(has_sealed),
+                    Expr::Array { items, .. } => items.iter().any(has_sealed),
+                    _ => false,
+                }
+            }
+            assert!(
+                !has_sealed(&e),
+                "a SEALED in expression position must not become a declaration: {src}"
+            );
+        }
+    }
+
+    /// [R10-021] 对照组:真正的声明在各种位置都**仍是**声明。
+    #[test]
+    fn r10_021_sealed_at_statement_level_is_still_a_declaration() {
+        fn has_sealed(e: &Expr) -> bool {
+            match e {
+                Expr::Sealed { .. } => true,
+                Expr::Block { exprs, .. } => exprs.iter().any(has_sealed),
+                Expr::Call { args, .. } => args.iter().any(has_sealed),
+                Expr::Let { value, .. } => has_sealed(value),
+                Expr::Fun { body, .. } => has_sealed(body),
+                _ => false,
+            }
+        }
+        for src in [
+            r#"SEALED(["add"]);"#,
+            r#"SEALED(["add"])"#, // 文件末尾,没有收尾分号
+            r#"PRINT(1); SEALED(["add"]); PRINT(2);"#,
+        ] {
+            let e = parse(src, "t.wll").unwrap_or_else(|err| {
+                panic!("a statement-level SEALED must parse: {src} -> {err:?}")
+            });
+            // 单语句程序不会包成 `Block`,所以递归找而不是匹配顶层形状。
+            assert!(
+                has_sealed(&e),
+                "a statement-level SEALED must stay a declaration: {src}"
+            );
         }
     }
 

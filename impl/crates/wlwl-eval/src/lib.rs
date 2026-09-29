@@ -9029,21 +9029,32 @@ impl Evaluator {
                 // accept/reject decision as v0.9 — only the message and the
                 // hint get sharper, so a sealed module breaks nothing that
                 // worked before.
+
+                // [v0.10.1 / R10-022] 密封分支改走 `self.diag()`。
+                //
+                // `self.diag()` 多做两件事,而这一条当时**都**没拿到:
+                // `extract_line` 补源码行、`call_stack` 补 trace。实测:
+                //
+                //   SEALED 模块 : --> main.wll:1:16          ← 没有源码行
+                //   非 SEALED   : --> main.wll:1:16
+                //                 | 1 | IMPORT("./m", ["PI"]);
+                //
+                // 同一个码、同一句话,只因为走了哪条分支就少一半信息。
+                // `suggestion` 当时是手工 `with_suggestion` 挂上去的,所以
+                // suggestion 一直都在,缺的只是源码行与 trace。
                 let d = if module.sealed {
-                    WlwlDiagnostic::new(
+                    self.diag(
                         ErrorCode::E0023,
                         format!(
                             "'{}' is outside the sealed surface of module '{}'",
                             imp.name, module_name
                         ),
-                        Location::range(
-                            imp.span.file.clone(),
-                            imp.span.line_start,
-                            imp.span.col_start,
-                            imp.span.line_end,
-                            imp.span.col_end,
-                        ),
+                        imp.span.clone(),
                     )
+                    // `diag()` 给的是 `WlwlError`,而 `with_suggestion` 住在
+                    // `WlwlDiagnostic` 上 —— 取出来挂完再放回去。
+                    .diagnostic()
+                    .clone()
                     .with_suggestion(Suggestion::Note {
                         description: format!(
                             "module '{}' declares SEALED([...]); add '{}' to that list (and to its EXPORT) if it is meant to be public",
@@ -23662,5 +23673,60 @@ entry = "main.wll"
                 op_name
             );
         }
+    }
+    /// [R10-022] 密封分支的 `E0023` 必须带**源码行**。
+    ///
+    /// 修之前密封分支直接 `WlwlDiagnostic::new(...)`,绕过了 `self.diag()`
+    /// ——而 `diag()` 里的 `extract_line` 正是补源码行的地方。同一个码、
+    /// 同一句话,只因为走了哪条分支就少一半信息:
+    ///
+    /// ```text
+    /// SEALED 模块 : --> main.wll:1:16            (没有源码行)
+    /// 非 SEALED   : --> main.wll:1:16
+    ///               | 1 | IMPORT("./m", ["PI"]);
+    /// ```
+    ///
+    /// 既有两条测试只断言 `.code` 与 `.message`,所以这条差异一直没人看见。
+    #[test]
+    fn r10_022_the_sealed_branch_of_e0023_carries_a_source_line() {
+        let dir = std::env::temp_dir().join("wlwl-eval-tests").join("r10_022");
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&dir).unwrap();
+        // 模块只 SEALED 一个名字,`PI` 在密封面之外 -> 走密封分支。
+        std::fs::write(
+            dir.join("m.wll"),
+            "SEALED([\"add\"]);\n\
+             LET(add, FUN((a: INTEGER) : INTEGER, a));\n\
+             LET(PI, 3);\n",
+        )
+        .unwrap();
+        let entry = dir.join("main.wll");
+        std::fs::write(
+            &entry,
+            "IMPORT(\"./m\", [\"PI\"]);\n\
+             PRINT(PI);\n",
+        )
+        .unwrap();
+
+        let src = std::fs::read_to_string(&entry).unwrap();
+        let ast = parse(&src, "main.wll").expect("entry must parse");
+        let mut ev = Evaluator::new()
+            .with_source(&src, "main.wll")
+            .with_base_dir(dir.clone());
+        let err = ev.eval(&ast).expect_err("PI is outside the sealed surface");
+        let d = err.diagnostic();
+        assert_eq!(d.code, ErrorCode::E0023, "wrong code: {d:?}");
+        assert!(
+            d.message.contains("outside the sealed surface"),
+            "wrong branch taken -- this must be the sealed path: {d:?}"
+        );
+        let line = d
+            .source_line
+            .as_deref()
+            .unwrap_or_else(|| panic!("a sealed-surface E0023 must carry its source line: {d:?}"));
+        assert!(
+            line.contains("IMPORT"),
+            "the source line must be the offending one, got: {line}"
+        );
     }
 }
