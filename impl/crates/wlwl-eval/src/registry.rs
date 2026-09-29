@@ -28,6 +28,25 @@
 //!    `UNWRAP_OR` / `OR_DIE` 这三个特例 —— spec 标 macro,但实现走 builtin)
 //! 5. `b11_registry_count_matches_spec_table` — 总条目数 ≥ 88 (spec 附录 G)
 //!
+//! ## [v0.10.1 / R10-064] 签名分叉:注册表也曾经是漂移的一方
+//!
+//! 6. `spec_appendix_g_sync.rs`(集成测试,不在本文件)—— spec 附录 G 与
+//!    `BUILTIN_REGISTRY` 的**签名逐条字节相等**。
+//!
+//! 上一条只查**条目数**,不查**签名**,所以两份副本能悄悄分叉。实测
+//! 110 条里有 **37 条**写法不同。乍看像是 spec 漂移,逐条对着
+//! `wlwl-eval` 的 dispatch 实现核实之后的结论**正好相反**:注册表在
+//! **11 处**说的与实现相反 —— `SUB` 第三参是 `len` 不是 `end`
+//! (v0.8.1 D8-010 推翻了 v0.8.0 的 end-index 语义)、`INT` / `FLOAT`
+//! 成功返回**裸** INTEGER / FLOAT 而不是 `OK(...)` 包一层、
+//! `INDEX_SET` 返回新容器而不是 `NULL`、`WHILE` 恒返回 `NULL`、
+//! `AT` 强制 3 参、`IMPORT` 只接 2 参、`THIS` 必须是 `THIS()`、
+//! `==` / `!=` 的签名列各掉了一个字符,以及 `ARRAY(items...)` /
+//! `DICT(pairs...)` 这两个**根本不存在**的带参形式。
+//!
+//! 所以本轮是**先修注册表,再让 spec 跟上**,不是反过来。方向永远以
+//! 实现为准:注册表驱动运行期行为,但它自己也会写错。
+//!
 //! ## 附录 G markdown 生成
 //!
 //! `generate_appendix_g_md()` 把注册表渲染成 markdown。Phase B11 把它写
@@ -346,7 +365,18 @@ pub const BUILTIN_REGISTRY: &[BuiltinSpec] = &[
     },
     BuiltinSpec {
         name: "INT",
-        signature: "INT(s) -> OK(INTEGER) / ERR(ParseError)",
+        // [v0.10.1 / R10-064] 签名列描述**运行期**契约:成功返回裸
+        // INTEGER,失败返回 ERR(ParseError) —— 外面没有 OK(...) 包一层。
+        // 实测 `PRINT(INT("42"))` -> `42`。
+        //
+        // 下面的 `sig.ret` 仍是 `Result`,这是**刻意的静态近似**,不是
+        // 笔误:成功路径的类型就是 INTEGER,再套一层 RESULT 反而是
+        // 错的。之所以不改,是 `sig.ret` 经 `check.rs:684`
+        // (`check_call_with_sig`) 参与静态层判定,改它是一次行为变更,
+        // 不该混在文档同步里。实测当前静态层不拿内建返回类型去卡
+        // `LET` 注解(`LET(i: STRING, INT("42"))` 零诊断),所以这个
+        // 偏差今天不产生任何错误诊断,只影响 LSP hover 的显示文本。
+        signature: "INT(x) -> INTEGER / ERR(ParseError)",
         sig: Some(BuiltinSig::ret_only(SigTy::Result)),
         group: BuiltinGroup::Conv,
         err_consumer: ErrConsumerStatus::No,
@@ -357,7 +387,7 @@ pub const BUILTIN_REGISTRY: &[BuiltinSpec] = &[
     },
     BuiltinSpec {
         name: "FLOAT",
-        signature: "FLOAT(s) -> OK(FLOAT) / ERR(ParseError)",
+        signature: "FLOAT(x) -> FLOAT / ERR(ParseError)",
         sig: Some(BuiltinSig::ret_only(SigTy::Result)),
         group: BuiltinGroup::Conv,
         err_consumer: ErrConsumerStatus::No,
@@ -449,7 +479,7 @@ pub const BUILTIN_REGISTRY: &[BuiltinSpec] = &[
     },
     BuiltinSpec {
         name: "UNWRAP",
-        signature: "UNWRAP(x) -> v / PANIC",
+        signature: "UNWRAP(x) -> v / E0100 (不可捕获)",
         sig: None,
         group: BuiltinGroup::Result,
         err_consumer: ErrConsumerStatus::Yes,
@@ -553,7 +583,7 @@ pub const BUILTIN_REGISTRY: &[BuiltinSpec] = &[
     },
     BuiltinSpec {
         name: "WHILE",
-        signature: "WHILE(cond, body) -> v",
+        signature: "WHILE(cond, body) -> NULL",
         sig: None,
         group: BuiltinGroup::Control,
         err_consumer: ErrConsumerStatus::No,
@@ -653,7 +683,7 @@ pub const BUILTIN_REGISTRY: &[BuiltinSpec] = &[
     // ── 运算符 (12) ─────────────────────────────────────────────
     BuiltinSpec {
         name: "==",
-        signature: "=(a, b) -> BOOLEAN / ERR 透传",
+        signature: "==(a, b) -> BOOLEAN / ERR 透传",
         sig: Some(BuiltinSig::ret_only(SigTy::Boolean)),
         group: BuiltinGroup::Op,
         err_consumer: ErrConsumerStatus::No,
@@ -664,7 +694,7 @@ pub const BUILTIN_REGISTRY: &[BuiltinSpec] = &[
     },
     BuiltinSpec {
         name: "!=",
-        signature: "!(a, b) -> BOOLEAN / ERR 透传",
+        signature: "!=(a, b) -> BOOLEAN / ERR 透传",
         sig: Some(BuiltinSig::ret_only(SigTy::Boolean)),
         group: BuiltinGroup::Op,
         err_consumer: ErrConsumerStatus::No,
@@ -719,7 +749,7 @@ pub const BUILTIN_REGISTRY: &[BuiltinSpec] = &[
     },
     BuiltinSpec {
         name: "+",
-        signature: "+(a, b) -> INTEGER / FLOAT",
+        signature: "+(a, b) -> INTEGER / FLOAT / STRING / ARRAY",
         sig: Some(BuiltinSig::ret_only(SigTy::Dynamic)),
         group: BuiltinGroup::Op,
         err_consumer: ErrConsumerStatus::No,
@@ -910,7 +940,7 @@ pub const BUILTIN_REGISTRY: &[BuiltinSpec] = &[
     },
     BuiltinSpec {
         name: "INDEX",
-        signature: "INDEX(arr, x) -> INTEGER / -1",
+        signature: "INDEX(arr, x) -> INTEGER (1-based) / -1",
         sig: Some(BuiltinSig::ret_only(SigTy::Integer)),
         group: BuiltinGroup::Array,
         err_consumer: ErrConsumerStatus::No,
@@ -1000,7 +1030,7 @@ pub const BUILTIN_REGISTRY: &[BuiltinSpec] = &[
     // ── 下标 (3) ───────────────────────────────────────────────
     BuiltinSpec {
         name: "INDEX_GET",
-        signature: "INDEX_GET(coll, k) -> v / E0031",
+        signature: "INDEX_GET(coll, k) -> v / E0031, E0036, E0037",
         sig: None,
         group: BuiltinGroup::Subscript,
         err_consumer: ErrConsumerStatus::No,
@@ -1011,7 +1041,7 @@ pub const BUILTIN_REGISTRY: &[BuiltinSpec] = &[
     },
     BuiltinSpec {
         name: "INDEX_SET",
-        signature: "INDEX_SET(coll, k, v) -> NULL",
+        signature: "INDEX_SET(coll, k, v) -> ARRAY / DICT",
         sig: None,
         group: BuiltinGroup::Subscript,
         err_consumer: ErrConsumerStatus::No,
@@ -1022,7 +1052,7 @@ pub const BUILTIN_REGISTRY: &[BuiltinSpec] = &[
     },
     BuiltinSpec {
         name: "AT",
-        signature: "AT(coll, i) -> v",
+        signature: "AT(coll, k, default) -> v",
         sig: None,
         group: BuiltinGroup::Subscript,
         err_consumer: ErrConsumerStatus::No,
@@ -1056,7 +1086,7 @@ pub const BUILTIN_REGISTRY: &[BuiltinSpec] = &[
     },
     BuiltinSpec {
         name: "SUB",
-        signature: "SUB(s, start, end?) -> STRING",
+        signature: "SUB(s, start, len?) -> STRING",
         sig: Some(BuiltinSig::ret_only(SigTy::String)),
         group: BuiltinGroup::String,
         err_consumer: ErrConsumerStatus::No,
@@ -1212,7 +1242,11 @@ pub const BUILTIN_REGISTRY: &[BuiltinSpec] = &[
     // ── 模块系统 (4) ───────────────────────────────────────────
     BuiltinSpec {
         name: "MODULE_REF",
-        signature: "MODULE_REF(path) -> MODULE",
+        // [v0.10.1 / R10-064] 此前这里写 `-> MODULE`,而 `MODULE` 根本不是
+        // 一个类型构造子。R10-046 当初只改了 spec 正文与附录 G,**漏了注册表**,
+        // 于是自动生成的 mirror 一直在跟着说这句假话。实测
+        // `TYPE(MODULE_REF("wlwl:std.json"))` 返回 `DICT`。
+        signature: "MODULE_REF(path) -> DICT",
         sig: None,
         group: BuiltinGroup::Module,
         err_consumer: ErrConsumerStatus::No,
@@ -1234,7 +1268,7 @@ pub const BUILTIN_REGISTRY: &[BuiltinSpec] = &[
     },
     BuiltinSpec {
         name: "IMPORT",
-        signature: "IMPORT(path, names, opts?) -> NULL",
+        signature: "IMPORT(path, names) -> NULL",
         sig: None,
         group: BuiltinGroup::Module,
         err_consumer: ErrConsumerStatus::Na,
@@ -1266,7 +1300,7 @@ pub const BUILTIN_REGISTRY: &[BuiltinSpec] = &[
     // / §16 so the snapshot test can recognise them.
     BuiltinSpec {
         name: "CLASS",
-        signature: "CLASS(name?, parent, members) -> CLASS",
+        signature: "CLASS(name, parent, members) -> CLASS (name 传 NULL = 匿名类)",
         sig: None,
         group: BuiltinGroup::Oop,
         err_consumer: ErrConsumerStatus::Na,
@@ -1288,7 +1322,7 @@ pub const BUILTIN_REGISTRY: &[BuiltinSpec] = &[
     },
     BuiltinSpec {
         name: "THIS",
-        signature: "THIS -> 当前实例",
+        signature: "THIS() -> INSTANCE",
         sig: None,
         group: BuiltinGroup::Oop,
         err_consumer: ErrConsumerStatus::Na,
@@ -1334,7 +1368,7 @@ pub const BUILTIN_REGISTRY: &[BuiltinSpec] = &[
     // ── 构造器 (2) ─────────────────────────────────────────────
     BuiltinSpec {
         name: "ARRAY",
-        signature: "ARRAY(items...) / ARRAY()",
+        signature: "ARRAY() -> ARRAY",
         sig: Some(BuiltinSig::ret_only(SigTy::Array)),
         group: BuiltinGroup::Ctor,
         err_consumer: ErrConsumerStatus::No,
@@ -1345,7 +1379,7 @@ pub const BUILTIN_REGISTRY: &[BuiltinSpec] = &[
     },
     BuiltinSpec {
         name: "DICT",
-        signature: "DICT(pairs...) / DICT()",
+        signature: "DICT() -> DICT",
         sig: Some(BuiltinSig::ret_only(SigTy::Dict)),
         group: BuiltinGroup::Ctor,
         err_consumer: ErrConsumerStatus::No,
@@ -1614,6 +1648,24 @@ pub fn deferred_names() -> Vec<&'static str> {
 // Markdown generator
 // ──────────────────────────────────────────────────────────────────────
 
+/// 把单元格里的 `|` 转义成 `\|`,否则 markdown 表格会被竖线劈开。
+///
+/// [v0.10.1 / R10-065] 修之前 `generate_appendix_g_md()` 直接把
+/// `spec.name` / `spec.signature` 插进 `| ... |`,于是 `||` 这个运算符
+/// 在 `docs/appendix_G.md` 里生成成
+///
+/// ```text
+/// | `||` | `||(a, b) -> BOOLEAN (v0.6 §4.3 short-circuit)` | ✔ | ... |
+/// ```
+///
+/// 这一行对任何 markdown 表格解析器来说都是 **9 列而不是 8 列** ——
+/// `||` 把签名格劈成了两半。spec 自己那一份一直是转义过的
+/// (`docs/standard/wlwl-spec-v0.10.md` 写 `\|\|`),只有这个生成器
+/// 忘了。名字和签名两列都过一遍:`name` 同样可能是运算符。
+fn escape_cell(s: &str) -> String {
+    s.replace('|', "\\|")
+}
+
 /// 把注册表渲染成 spec 附录 G 风格的 markdown 表格。
 ///
 /// 用法:在 B11 实施时手工调用一次写到 `docs/appendix_G.md`。之后
@@ -1663,14 +1715,27 @@ pub fn generate_appendix_g_md() -> String {
     out.push_str("| 名称 | 签名 | ERR 消费者 (§8.3) | 宏函数 (§1.4) | 引入 | 状态 | 实现位置 |\n");
     out.push_str("|------|------|--------------------|---------------|------|------|----------|\n");
 
-    // body (already sorted by group in BUILTIN_REGISTRY)
+    // body
+    //
+    // [v0.10.1 / R10-065] 修之前这里写的是 `for spec in BUILTIN_REGISTRY`,
+    // 注释声称「already sorted by group」—— **但注册表本身没排**。
+    // `PUSH` 是 `Array`、紧随其后的 `POP` / `AT_K` 是 `Dict`、再往下
+    // `SHIFT` 又回到 `Array`,于是 `current_group != Some(spec.group)`
+    // 在相邻行反复成立,同一个分组表头在 `docs/appendix_G.md` 里
+    // 重复出现七八次,并且 ARRAY 操作下面挂着 DICT 的条目。实测原文件
+    // 65 / 67 / 70 / 78 行连着写了两次「ARRAY 操作 (8 条)」和两次
+    // 「DICT 操作 (8 条)」。
+    //
+    // 修法:生成前按 group 稳定排序,让每个分组表头**恰好出现一次**。
+    // `BuiltinGroup` 的声明序(`Io -> Conv -> Result -> ... -> Concurrent`)
+    // 就是 `Ord` 的顺序,也与 spec 表格的行序一致,不需要额外映射表。
+    let mut rows: Vec<&BuiltinSpec> = BUILTIN_REGISTRY.iter().collect();
+    rows.sort_by_key(|s| s.group);
+
     let mut current_group: Option<BuiltinGroup> = None;
-    for spec in BUILTIN_REGISTRY {
+    for spec in &rows {
         if current_group != Some(spec.group) {
-            let count = BUILTIN_REGISTRY
-                .iter()
-                .filter(|s| s.group == spec.group)
-                .count();
+            let count = rows.iter().filter(|s| s.group == spec.group).count();
             let _ = writeln!(out, "<!-- {} ({} 条) -->", spec.group.label(), count);
             current_group = Some(spec.group);
         }
@@ -1686,8 +1751,8 @@ pub fn generate_appendix_g_md() -> String {
         let _ = writeln!(
             out,
             "| `{}` | `{}` | {} | {} | {} | {} | {} |",
-            spec.name,
-            spec.signature,
+            escape_cell(spec.name),
+            escape_cell(spec.signature),
             spec.err_consumer.glyph(),
             macro_glyph,
             spec.version.as_str(),
@@ -1745,8 +1810,17 @@ mod tests {
         assert_eq!(a, b, "generate_appendix_g_md must be deterministic");
 
         // 每一行都带文档签名;结构化字段不参与渲染。
+        //
+        // [v0.10.1 / R10-065] 比较的是**转义后**的名字。生成器现在会把
+        // 单元格里的 `|` 写成 `\|`,所以 `||` 这个运算符在输出里是
+        // `\|\|`,用裸 `s.name` 去 `contains` 会对它假性失败 —— 这正是
+        // 修转义时这条测试转红的原因。行的存在性判据要用同一个渲染口径。
         for s in BUILTIN_REGISTRY {
-            assert!(a.contains(s.name), "appendix G lost the row for {}", s.name);
+            assert!(
+                a.contains(&escape_cell(s.name)),
+                "appendix G lost the row for {}",
+                s.name
+            );
         }
         // 首批里带结构化签名的那条,文档签名原样出现在附录里。
         assert!(a.contains("LEN(coll) -> INTEGER"));

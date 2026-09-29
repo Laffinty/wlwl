@@ -1,0 +1,96 @@
+fix(registry): R10-064 / R10-065 — 18 处签名事实错误 + 生成器排序与转义
+
+计划书把 R10-064 写成「spec 与注册表 37 条签名分叉，同步即可」。**方向是反的。**
+
+## 关键反转：漂移的一方是注册表，不是 spec
+
+「三份副本（spec 附录 G / `BUILTIN_REGISTRY` / 自动生成的 mirror）+ 两份锁
+（只锁条目数、不锁签名）」这个结构，默认会让人认定手维护的 spec 是漂移方。
+逐条对着 `wlwl-eval` 的 dispatch 实现核实之后，结论相反 ——
+**`BUILTIN_REGISTRY` 在 12 处说的与实现相反**：
+
+| 条目 | 注册表原写法 | 实现实测 |
+|---|---|---|
+| `SUB` | `end?` | 第三参是**长度**：`SUB("hello world", 0, 3)` → `hel` |
+| `INT` / `FLOAT` | `-> OK(...)` | 返回**裸**值：`INT("42")` → `42` |
+| `INDEX_SET` | `-> NULL` | 返回新容器：`→ [99, 2, 3]` |
+| `WHILE` | `-> v` | 恒返回 `NULL` |
+| `AT` | `AT(coll, i)` | 强制 3 参，2 参报 `E0022 expects 3 argument(s)` |
+| `IMPORT` | 3 参 | 只接 2 参，3 参报 `E0011 expected ')' got Comma` |
+| `THIS` | 裸 `THIS` | 裸写报 `undefined name`，必须 `THIS()` |
+| `==` / `!=` | `=(a, b)` / `!(a, b)` | 签名列各掉了一个字符 |
+| `MODULE_REF` | `-> MODULE` | `MODULE` 不是类型；实测 `TYPE(...)` → `DICT` |
+| `+` | `INTEGER / FLOAT` | 漏了 STRING 拼接与 ARRAY 合并 |
+| `INDEX` | 缺 1-based | `INDEX([7,8,9], 8)` → `2` |
+| `INDEX_GET` | 只有 `E0031` | 实为三码：`E0031` / `E0036` / `E0037` |
+
+按原计划「以注册表为准覆盖 spec」，这 12 处假话会被原样抄进规范。
+
+为什么注册表会漂移，两条不同的成因：
+
+- `SUB` 记的是 **v0.8.0** 的 end-index 语义，而 **v0.8.1 D8-010 已经推翻了它**
+  （`builtin_substr` 的 doc 明写「不再支持」）。实现改了，文档串没人回来改。
+- `MODULE_REF` 是 **R10-046 只改了 spec、漏了注册表**，于是自动生成的 mirror
+  一直在跟着说假话 —— 而 mirror 本该是最不可能出错的那一份。
+
+## D10-013 · `ARRAY(items...)` / `DICT(pairs...)` 是三份副本**共同**虚报的幻影
+
+实测 `ARRAY(1, 2)` 与 `DICT("a", 1)` 都报 `E0020: undefined name`。零参
+`ARRAY()` / `DICT()` 由 `eval_call` 直接拦截返回空容器，根本不走
+`resolve_builtin`；带参形式落到未定义名分支。
+
+这正是「多份副本 + 只锁数目」的典型失效：**三份同样错，于是彼此"一致"，
+条目数锁照样绿。** spec §10.9 也写了 `ARRAY(items...)` 构造数组，一并改。
+
+## R10-065 · 生成器两个缺陷
+
+**(a) 分组表头重复刷屏。** `generate_appendix_g_md()` 的注释声称注册表
+「already sorted by group」—— **但注册表本身没排**。`PUSH` 是 `Array`、
+紧随的 `POP` / `AT_K` 是 `Dict`、再往下 `SHIFT` 又回到 `Array`，于是
+「组变化」的判断在相邻行反复成立。实测 mirror 65 / 67 / 70 / 78 行连着写了
+两次「ARRAY 操作 (8 条)」和两次「DICT 操作 (8 条)」，且 ARRAY 表头下面
+挂着 DICT 的条目。修法：生成前按 group **稳定排序**。
+
+**(b) 竖线不转义。** `||` 这个运算符的名字与签名里各含一个竖线，生成器直接
+插进 `| ... |`，于是那一行对任何 markdown 表格解析器都是 **9 列而不是 8 列**。
+spec 自己那一份一直是转义过的（写 `\|\|`），只有这个生成器忘了。
+新增 `escape_cell()`，名字与签名两列都过一遍。
+
+## 新锁：`tests/spec_appendix_g_sync.rs` 三条
+
+| 测试 | 抓什么 |
+|---|---|
+| `spec_appendix_g_signatures_match_the_registry` | 签名**逐条相等**。只剥 markdown 脚手架（反引号、`\|` 转义、空白）；参数名 / 参数个数 / `?` / `...` / 返回类型 / 错误码 / 括号注解**全锁** |
+| `spec_appendix_g_has_one_row_per_registry_entry` | 条目数相等 **且无重名**（`BTreeMap::insert` 对重名是覆盖，行数不变、签名却来自后一行） |
+| `the_or_operator_row_parses_as_eight_columns` | `\|\|` 行必须切出恰好 8 列 |
+
+第三条是**解析器自身的回归锁**，存在的理由很具体：第一版切分器只认引号、
+不认 `\|` 转义，于是 spec 侧与注册表侧**同样被切坏**、比出来"相同" ——
+最初那份 37 条清单**恰恰漏掉了 `||` 这一行**。锁在最容易漂的一行上恰好放行。
+
+## 变异验证：四处全部转红
+
+| 变异 | 结果 |
+|---|---|
+| `SUB` 改回 `end?`（v0.8.0 语义） | **CAUGHT** |
+| 抹掉 spec 里 `\|\|` 的转义 | **CAUGHT**（三条锁同时转红） |
+| 把幻影 `ARRAY(items...)` 放回注册表 | **CAUGHT** |
+| 从 spec 删掉 `GET_PROP` 的 `E0037` | **CAUGHT** |
+
+## 顺带
+
+- spec §4.5 补 `INDEX`：**它不是下标的反操作**，是值→位置查找，且返回
+  **1-based**；与 `INDEX_GET` 的 0-based **相反**。这件事此前附录 G 与 §10.4
+  两处都没写，§4.5 更是完全没提 `INDEX`。
+- spec §10.4 / §4.6 补 `GET_PROP` 的 `E0037` 与 `INDEX_GET` 的三码。
+- `cargo doc` 两处告警清零（`manifest.rs` 与 `main.rs` 的 doc 链接指向私有项）。
+- `INT` / `FLOAT` 的 `sig.ret` **保持 `SigTy::Result` 不变** —— 它经
+  `check.rs:684` 参与静态判定，改它是一次行为变更，不该混在文档同步里。
+  实测当前静态层不拿内建返回类型去卡 `LET` 注解（`LET(i: STRING, INT("42"))`
+  零诊断），所以这个偏差今天不产生错误诊断，只影响 LSP hover 文本。已在
+  注册表里写明这是刻意的静态近似。
+
+**无运行期行为变化**：`signature` 是文档串，只被 markdown 生成器与 LSP hover 读；
+`sig` 结构化字段一个都没动。登记 D10-012 / D10-013。
+
+门禁全绿，**1807 passed / 0 failed**（上一步 1804，+3）。

@@ -611,7 +611,7 @@ fn load_manifest_strict_types(base_dir: &std::path::Path) -> bool {
 ///   (fix **a**) rather than dropped. Package validation is unchanged; this
 ///   only stops the failure from being invisible.
 ///
-/// [`unusable_manifest`]: `Some(reason)` whenever a `wlwl.toml` exists but
+/// `unusable_manifest` is `Some(reason)` whenever a `wlwl.toml` exists but
 /// is not a valid manifest. `None` when there is no manifest at all, which
 /// keeps ADR-0020 S1 intact (a bare `.wll` produces zero diagnostics).
 #[derive(Debug, Clone)]

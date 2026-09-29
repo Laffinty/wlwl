@@ -383,6 +383,10 @@ Index = Expression "[" Expression "]" | Expression "[" Expression "]" "=" Expres
 - `INDEX_GET(coll, k)`:数组接受整数索引(负数自尾部计数,`-1` 为末元素),越界产生 `E0036`;字典按键取值,键类型不符产生 `E0031`,键不存在产生 `E0037`;**字符串接受整数索引**,按码点返回单字符字符串,越界产生 `E0036`。
 - `INDEX_SET(coll, k, v)`:接受数组或字典,返回**插入或更新后的新容器**;接收者不变(见 2.1 不可变性与附录 B)。`INDEX_SET` 不接受字符串(`E0030`)。
 - 下标链可挂在变量、调用、属性访问、**或数组/字典字面量之后**。`[1, 2, 3][0]` 与 `["a": 1]["a"]` 都是合法表达式,等价于 `INDEX_GET` 对字面量直接求值;`[[1,2][0], 3]` 同样合法。
+- `INDEX(arr, x)` **不是**下标的反操作,它是**值 → 位置**的查找(`x` 是待找的**值**,不是下标),且返回的是 **1-based** 位置;`x` 不在 `arr` 中返回 `-1`(不报错)。因此它与 `INDEX_GET` 的基数**相反**:`INDEX([7, 8, 9], 8)` 得 `2`,而 `INDEX_GET([7, 8, 9], 1)` 取的是**第 2 个**元素(0-based 的下标 `1`)。两者混用是本节最容易踩的坑。
+  > [v0.10.1 / R10-064] 1-based 这件事此前**附录 G 与 §10.4 两处都没写**,
+  > §4.5 更是完全没提 `INDEX`。实测 `INDEX([7, 8, 9], 8)` → `2`、
+  > `INDEX([7, 8, 9], 99)` → `-1`。
 
 ### 4.6 属性与方法
 
@@ -811,7 +815,7 @@ NameItem = string_lit | string_lit ":" string_lit | identifier .
 | `SLICE(arr, start, end?) -> ARRAY` | 区间 `[start, end)`;负索引自尾部计数;缺省 `end` 到末尾;越界部分截为空 |
 | `CONCAT(a, b) -> ARRAY` | 两数组连接 |
 | `CONTAINS(coll, x) -> BOOLEAN` | 成员测试;亦接受字符串(子串) |
-| `INDEX(arr, x) -> INTEGER` | 首次出现索引,无则 `-1` |
+| `INDEX(arr, x) -> INTEGER` | **值 → 位置**查找,返回 `x` 首次出现的**1-based** 位置;无则 `-1` |
 | `REVERSE(arr) -> ARRAY` | 逆序副本 |
 | `INDEX_GET(coll, k) -> v` | 见 4.5 |
 | `INDEX_SET(coll, k, v) -> ARRAY/DICT` | 见 4.5;返回更新后的新容器 |
@@ -886,7 +890,13 @@ NameItem = string_lit | string_lit ":" string_lit | identifier .
 
 ### 10.9 构造器
 
-`DICT() -> DICT`:空字典(唯一写法)。`ARRAY(items...)` 构造数组;`ARRAY()` 是空数组的构造器写法,与字面量 `[]` 等价。非空数组亦可用字面量(4.8)。
+`DICT() -> DICT`:空字典(唯一写法)。`ARRAY() -> ARRAY`:空数组的构造器写法,与字面量 `[]` 等价。非空数组只能用字面量(4.8)。
+
+> [v0.10.1 / R10-064] 本节此前写 `ARRAY(items...)` 构造数组,**这个带参形式不存在**:
+> 实测 `ARRAY(1, 2)` 报 `E0020: undefined name ARRAY`。三份副本(spec 附录 G、
+> `BUILTIN_REGISTRY`、自动生成的 `docs/appendix_G.md`)当时**一起**写着这句假话,
+> 于是彼此"一致"、谁也没被锁住。零参 `ARRAY()` / `DICT()` 由 `wlwl-eval` 的
+> `eval_call` 直接拦截并返回空容器,不走 `resolve_builtin`。
 
 ### 10.10 测试 — `wlwl:std.test`
 
@@ -2050,6 +2060,24 @@ sig_name    = identifier .
 > 差的 4 条正是 `AND` / `OR` / `NOT` / `ARRAY` 这类此前被记成「函数」的构造 ——
 > 它们同时也是词法形式,归到宏构造一侧。
 
+> [v0.10.1 / R10-064] 「签名」列此前只被**数目**锁住(`b11_registry_count_matches_spec_table`),
+> 锁不住**内容**,于是它与 `BUILTIN_REGISTRY` 悄悄分叉:实测 110 条里 **37 条**写法不同。
+> 乍看是本表漂移,逐条对着 `wlwl-eval` 的 dispatch 实现核实之后结论**正好相反** ——
+> **`BUILTIN_REGISTRY` 在 12 处说的与实现相反**:`SUB` 第三参是 `len` 不是 `end`
+> (v0.8.1 D8-010 推翻了 v0.8.0 的 end-index 语义)、`INT` / `FLOAT` 成功返回**裸**
+> `INTEGER` / `FLOAT` 而非 `OK(...)` 包一层、`INDEX_SET` 返回新容器而非 `NULL`、
+> `WHILE` 恒返回 `NULL`、`AT` 强制 3 参、`IMPORT` 只接 2 参、`THIS` 必须写 `THIS()`、
+> `==` / `!=` 的签名列各掉了一个字符、`MODULE_REF` 返回 `DICT` 而非 `MODULE`
+> (R10-046 只改了本表,漏了注册表),以及 `ARRAY(items...)` / `DICT(pairs...)`
+> 这两个**根本不存在**的带参形式。
+>
+> 本轮据此**先修注册表、再让本表跟上**,并新增
+> `impl/crates/wlwl-eval/tests/spec_appendix_g_sync.rs` 断言两边的**签名逐条字节相等**。
+> 方向永远以实现为准 —— 注册表驱动运行期行为,但它自己也会写错。
+>
+> 本表与 `BUILTIN_REGISTRY` 的**差异为零**;确有需要区分时,在两侧签名串里
+> 写同一句括号注解,而不是各写各的。
+
 | 名称 | 签名 | 可调用 | ERR 消费者 (§8.3) | 宏构造 (§1.4) | 引入 | 状态 | 语义位置 |
 |------|------|------|--------------------|---------------|------|------|----------|
 <!-- I/O (3 条) -->
@@ -2061,21 +2089,21 @@ sig_name    = identifier .
 | `STR` | `STR(x) -> STRING` | ✔ | ❌ | ❌ | v0.2 | 已定义 | §10.3 |
 | `INT` | `INT(x) -> INTEGER / ERR(ParseError)` | ✔ | ❌ | ❌ | v0.2 | 已定义 | §10.3 |
 | `FLOAT` | `FLOAT(x) -> FLOAT / ERR(ParseError)` | ✔ | ❌ | ❌ | v0.4 | 已定义 | §10.3 |
-| `TYPE` | `TYPE(x) -> STRING` | ✔ | ✔ | ✔ | v0.2 | 已定义 | §2.1 / §8.3 |
+| `TYPE` | `TYPE(x) -> STRING (RESULT -> "RESULT")` | ✔ | ✔ | ✔ | v0.2 | 已定义 | §2.1 / §8.3 |
 | `BOOL` | `BOOL(x) -> BOOLEAN` | ✔ | ✔ | ❌ | v0.2 | 已定义 | §2.3 / §8.3 |
 | `CALL` | `CALL(fn, args...) -> v` | ✔ | ❌ | ❌ | v0.2 | 已定义 | §10.3 |
 <!-- RESULT 处理 (12 条) -->
 | `IS_OK` | `IS_OK(x) -> BOOLEAN` | ✔ | ✔ | ✔ | v0.2 | 已定义 | §8.3 |
 | `IS_ERR` | `IS_ERR(x) -> BOOLEAN` | ✔ | ✔ | ✔ | v0.2 | 已定义 | §8.3 |
-| `OR_DIE` | `OR_DIE(x, default) -> v` | ✔ | ✔ | ✔ | v0.2 | 弃用别名 (W0051) | §8.3 |
+| `OR_DIE` | `OR_DIE(x, default) -> v (v0.3 alias)` | ✔ | ✔ | ✔ | v0.2 | 弃用别名 (W0051) | §8.3 |
 | `UNWRAP_OR` | `UNWRAP_OR(x, default) -> v` | ✔ | ✔ | ✔ | v0.4 | 已定义 | §8.3 |
-| `UNWRAP` | `UNWRAP(x) -> v / E0100` | ✔ | ✔ | ❌ | v0.4 | 已定义 | §8.3 |
+| `UNWRAP` | `UNWRAP(x) -> v / E0100 (不可捕获)` | ✔ | ✔ | ❌ | v0.4 | 已定义 | §8.3 |
 | `ERR_PAYLOAD` | `ERR_PAYLOAD(x) -> e / E0030` | ✔ | ✔ | ❌ | v0.4 | 已定义 | §8.3 |
-| `WRAP` | `WRAP(x, ctx) -> RESULT` | ✔ | ✔ | ❌ | v0.4 | 已定义 | §8.3 |
-| `TRY` | `TRY(x) -> v / early-RETURN` | ✔ | ✔ | ✔ | v0.2 | 已定义 | §8.3 |
+| `WRAP` | `WRAP(err, ctx) -> ERR / OK` | ✔ | ✔ | ❌ | v0.4 | 已定义 | §8.3 |
+| `TRY` | `TRY(e) -> v / early-RETURN` | ✔ | ✔ | ✔ | v0.2 | 已定义 | §8.3 |
 | `PANIC` | `PANIC(msg) -> 终止` | ✔ | n/a | ✔ | v0.2 | 已定义 | §8.4 |
 | `OK` | `OK(v) -> RESULT` | ✔ | ❌ | ✔ | v0.4 | 已定义 | §8.1 |
-| `EXPECT_ERR` | `EXPECT_ERR(x) -> OK(payload) / ERR(E0049)` | ✔ | ✔ | ✔ | v0.4 | 已定义 | §8.3 |
+| `EXPECT_ERR` | `EXPECT_ERR(expr) -> OK(payload) / ERR(E0049)` | ✔ | ✔ | ✔ | v0.4 | 已定义 | §8.3 |
 | `ERR` | `ERR(e) -> RESULT` | ✔ | ❌ | ✔ | v0.4 | 已定义 | §8.1 |
 <!-- 控制流 / 逻辑 (10 条) -->
 | `IF` | `IF(cond, t, e?) -> v` | ✔ | ✔ | ✔ | v0.2 | 已定义 | §6.1 |
@@ -2085,9 +2113,9 @@ sig_name    = identifier .
 | `RETURN` | `RETURN(v?) -> 早返` | ✔ | n/a | ✔ | v0.2 | 已定义 | §6.4 |
 | `BREAK` | `BREAK() -> 跳出` | ✔ | n/a | ✔ | v0.2 | 已定义 | §6.4 |
 | `CONTINUE` | `CONTINUE() -> 跳到下轮` | ✔ | n/a | ✔ | v0.2 | 已定义 | §6.4 |
-| `AND` | `AND(a, b) -> BOOLEAN` | ✔ | ❌ | ✔ | v0.2 | 已定义 | §4.3 |
-| `OR` | `OR(a, b) -> BOOLEAN` | ✔ | ❌ | ✔ | v0.2 | 已定义 | §4.3 |
-| `NOT` | `NOT(a) -> BOOLEAN` | ✔ | ❌ | ✔ | v0.2 | 已定义 | §4.3 |
+| `AND` | `AND(a, b) -> BOOLEAN (short-circuit)` | ✔ | ❌ | ✔ | v0.2 | 已定义 | §4.3 |
+| `OR` | `OR(a, b) -> BOOLEAN (short-circuit)` | ✔ | ❌ | ✔ | v0.2 | 已定义 | §4.3 |
+| `NOT` | `NOT(a) -> BOOLEAN (取反)` | ✔ | ❌ | ✔ | v0.2 | 已定义 | §4.3 |
 <!-- 运算符 (14 条) -->
 | `==` | `==(a, b) -> BOOLEAN / ERR 透传` | ✔ | ❌ | ❌ | v0.2 | 已定义 | §4.3 |
 | `!=` | `!=(a, b) -> BOOLEAN / ERR 透传` | ✔ | ❌ | ❌ | v0.2 | 已定义 | §4.3 |
@@ -2100,28 +2128,28 @@ sig_name    = identifier .
 | `*` | `*(a, b) -> INTEGER / FLOAT` | ✔ | ❌ | ❌ | v0.2 | 已定义 | §4.3 |
 | `/` | `/(a, b) -> INTEGER / FLOAT` | ✔ | ❌ | ❌ | v0.2 | 已定义 | §4.3 |
 | `%` | `%(a, b) -> INTEGER` | ✔ | ❌ | ❌ | v0.2 | 已定义 | §4.3 |
-| `&&` | `&&(a, b) -> BOOLEAN` | ✔ | ✔ | ❌ | v0.6 | 已定义 | §4.3 |
-| `\|\|` | `\|\|(a, b) -> BOOLEAN` | ✔ | ✔ | ❌ | v0.6 | 已定义 | §4.3 |
+| `&&` | `&&(a, b) -> BOOLEAN (v0.6 §4.3 short-circuit)` | ✔ | ✔ | ❌ | v0.6 | 已定义 | §4.3 |
+| `\|\|` | `\|\|(a, b) -> BOOLEAN (v0.6 §4.3 short-circuit)` | ✔ | ✔ | ❌ | v0.6 | 已定义 | §4.3 |
 | `NEG` | `NEG(a) -> -a` | ✔ | ❌ | ❌ | v0.2 | 已定义 | §4.3 |
 <!-- ARRAY / DICT 操作 -->
 | `PUSH` | `PUSH(arr, x) -> ARRAY` | ✔ | ❌ | ❌ | v0.2 | 已定义 | §10.4 |
-| `POP` | `POP(d, k, default) -> v` | ✔ | ❌ | ❌ | v0.6 | 弃用别名 (W0051) | §10.4 |
-| `AT_K` | `AT_K(d, k, default) -> v` | ✔ | ❌ | ❌ | v0.6 | 已定义 | §10.4 |
+| `POP` | `POP(d, k, default) -> v (v0.6 compat alias for AT_K; signature kept 3-arg)` | ✔ | ❌ | ❌ | v0.6 | 弃用别名 (W0051) | §10.4 |
+| `AT_K` | `AT_K(d, k, default) -> v (v0.6 §10.4)` | ✔ | ❌ | ❌ | v0.6 | 已定义 | §10.4 |
 | `SHIFT` | `SHIFT(arr) -> ARRAY` | ✔ | ❌ | ❌ | v0.2 | 已定义 | §10.4 |
 | `UNSHIFT` | `UNSHIFT(arr, x) -> ARRAY` | ✔ | ❌ | ❌ | v0.2 | 已定义 | §10.4 |
 | `SLICE` | `SLICE(arr, start, end?) -> ARRAY` | ✔ | ❌ | ❌ | v0.2 | 已定义 | §10.4 |
 | `CONCAT` | `CONCAT(a, b) -> ARRAY` | ✔ | ❌ | ❌ | v0.2 | 已定义 | §10.4 |
-| `CONTAINS` | `CONTAINS(coll, x) -> BOOLEAN` | ✔ | ❌ | ❌ | v0.2 | 已定义 | §10.4 |
-| `INDEX` | `INDEX(arr, x) -> INTEGER` | ✔ | ❌ | ❌ | v0.2 | 已定义 | §10.4 |
+| `CONTAINS` | `CONTAINS(arr, x) -> BOOLEAN` | ✔ | ❌ | ❌ | v0.2 | 已定义 | §10.4 |
+| `INDEX` | `INDEX(arr, x) -> INTEGER (1-based) / -1` | ✔ | ❌ | ❌ | v0.2 | 已定义 | §10.4 |
 | `REVERSE` | `REVERSE(arr) -> ARRAY` | ✔ | ❌ | ❌ | v0.2 | 已定义 | §10.4 |
-| `REMOVE_KEY` | `REMOVE_KEY(d, k) -> DICT` | ✔ | ❌ | ❌ | v0.4 | 已定义 | §10.4 |
-| `DEL` | `DEL(d, k) -> DICT` | ✔ | ❌ | ❌ | v0.2 | 弃用别名 (W0051) | §10.4 |
-| `KEYS` | `KEYS(d) -> ARRAY` | ✔ | ❌ | ❌ | v0.2 | 已定义 | §10.4 |
-| `VALUES` | `VALUES(d) -> ARRAY` | ✔ | ❌ | ❌ | v0.2 | 已定义 | §10.4 |
-| `HAS` | `HAS(d, k) -> BOOLEAN` | ✔ | ❌ | ❌ | v0.2 | 已定义 | §10.4 |
+| `REMOVE_KEY` | `REMOVE_KEY(dict, k) -> DICT` | ✔ | ❌ | ❌ | v0.4 | 已定义 | §10.4 |
+| `DEL` | `DEL(dict, k) -> DICT (v0.3 alias, W0051)` | ✔ | ❌ | ❌ | v0.2 | 弃用别名 (W0051) | §10.4 |
+| `KEYS` | `KEYS(dict) -> ARRAY` | ✔ | ❌ | ❌ | v0.2 | 已定义 | §10.4 |
+| `VALUES` | `VALUES(dict) -> ARRAY` | ✔ | ❌ | ❌ | v0.2 | 已定义 | §10.4 |
+| `HAS` | `HAS(dict, k) -> BOOLEAN` | ✔ | ❌ | ❌ | v0.2 | 已定义 | §10.4 |
 | `MERGE` | `MERGE(a, b) -> DICT` | ✔ | ❌ | ❌ | v0.2 | 已定义 | §10.4 |
 <!-- 下标 (3 条) -->
-| `INDEX_GET` | `INDEX_GET(coll, k) -> v` | ✔ | ❌ | ❌ | v0.4 | 已定义 | §4.5 |
+| `INDEX_GET` | `INDEX_GET(coll, k) -> v / E0031, E0036, E0037` | ✔ | ❌ | ❌ | v0.4 | 已定义 | §4.5 |
 | `INDEX_SET` | `INDEX_SET(coll, k, v) -> ARRAY / DICT` | ✔ | ❌ | ❌ | v0.4 | 已定义 | §4.5 |
 | `AT` | `AT(coll, k, default) -> v` | ✔ | ❌ | ❌ | v0.4 | 已定义 | §4.5 |
 <!-- STRING 操作 (15 条) -->
@@ -2148,15 +2176,15 @@ sig_name    = identifier .
 | `IMPORT` | `IMPORT(path, names) -> NULL` | ✔ | n/a | ✔ | v0.2 | 已定义 | §9.2 |
 | `MODULE` | `MODULE(name?, body) -> NULL` | ❌ 声明式 | n/a | ✔ | v0.2 | 已定义 | §9 |
 <!-- OOP (3 条) -->
-| `CLASS` | `CLASS(name, parent, members) -> CLASS` | ✔ | n/a | ✔ | v0.9 | 已定义 | §13.2 |
+| `CLASS` | `CLASS(name, parent, members) -> CLASS (name 传 NULL = 匿名类)` | ✔ | n/a | ✔ | v0.9 | 已定义 | §13.2 |
 | `NEW` | `NEW(cls, args...) -> INSTANCE` | ✔ | n/a | ✔ | v0.9 | 已定义 | §13.3 |
 | `THIS` | `THIS() -> INSTANCE` | ✔ | n/a | ✔ | v0.9 | 已定义 | §15 |
 <!-- 属性 / 方法 (3 条) -->
-| `GET_PROP` | `GET_PROP(obj, key) -> v` | ✔ | ❌ | ❌ | v0.9 | 已定义 | §13.4 |
-| `SET_PROP` | `SET_PROP(obj, key, value) -> NULL` | ✔ | ❌ | ❌ | v0.9 | 已定义 | §13.4 |
-| `CALL_METHOD` | `CALL_METHOD(obj, method, args...) -> v` | ✔ | ❌ | ❌ | v0.9 | 已定义 | §13.5 / §14.3 |
+| `GET_PROP` | `GET_PROP(obj, k) -> v / E0037` | ✔ | ❌ | ❌ | v0.9 | 已定义 | §13.4 |
+| `SET_PROP` | `SET_PROP(obj, k, v) -> NULL` | ✔ | ❌ | ❌ | v0.9 | 已定义 | §13.4 |
+| `CALL_METHOD` | `CALL_METHOD(obj, m, args...) -> v` | ✔ | ❌ | ❌ | v0.9 | 已定义 | §13.5 / §14.3 |
 <!-- 构造器 (2 条) -->
-| `ARRAY` | `ARRAY(items...) -> ARRAY` | ✔ | ❌ | ✔ | v0.2 | 已定义 | §10.9 |
+| `ARRAY` | `ARRAY() -> ARRAY` | ✔ | ❌ | ✔ | v0.2 | 已定义 | §10.9 |
 | `DICT` | `DICT() -> DICT` | ✔ | ❌ | ✔ | v0.2 | 已定义 | §10.9 |
 <!-- 并发 / 通道 (17 条) -->
 | `SCOPE` | `SCOPE(fn) -> v` | ✔ | ❌ | ❌ | v0.7 | 已定义 | §17.1 |

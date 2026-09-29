@@ -207,7 +207,7 @@ pub type FeaturesTable = BTreeMap<String, toml::Value>;
 ///
 /// [v0.10.1 / R10-010] Why this exists: [`Package`]'s `name` / `version` /
 /// `entry` carry no `#[serde(default)]`, so a `[features]`-only manifest
-/// fails inside `toml::from_str` -- *before* [`validate`] ever runs. The
+/// fails inside `toml::from_str` -- *before* `validate` ever runs. The
 /// two feature loaders in `wlwl-cli` swallowed that `Err` and fell back to
 /// `Off`, which made `gradual_typing = "error"` a silent no-op: the static
 /// pass never ran, the exit code stayed `0`, and nothing was printed. The
