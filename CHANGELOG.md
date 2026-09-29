@@ -307,7 +307,7 @@ v0.9 archived at `docs/history/wlwl-spec-v0.9.md`.
 
 ## [v0.9.0] — 2026-09-25
 
-Spec: **wlwl-spec-v0.9** (`docs/standard/wlwl-spec-v0.9.md`).
+Spec: **wlwl-spec-v0.9** (`docs/history/wlwl-spec-v0.9.md`).
 v0.8 archived at `docs/history/wlwl-spec-v0.8.md`.
 
 ### Added
@@ -351,7 +351,7 @@ v0.8 archived at `docs/history/wlwl-spec-v0.8.md`.
 
 ### Spec
 
-- 语言规范 v0.9 定稿(`docs/standard/wlwl-spec-v0.9.md`):§17 整体重写,
+- 语言规范 v0.9 定稿(`docs/history/wlwl-spec-v0.9.md`):§17 整体重写,
   §11.2 / §11.3 字面修订,§13 / §14 / §15 / §16 OOP 与会话类型落地;
   v0.8 规范归档至 `docs/history/wlwl-spec-v0.8.md`。
 - 附录 G 镜像(`docs/appendix_G.md`)由 `gen-appendix-g` 重生成;
@@ -786,11 +786,11 @@ semantic changes (per the spec's Appendix B) are now in force:
 
 ### Note on the spec filename
 
-- Renamed docs/standard/wlwl-spec-v0.6(SHA1_cdb548cb5161e61d836aad2208fd33adc0917861).md to docs/standard/wlwl-spec-v0.6.md. The SHA1 in the old filename never matched the file's content (the v0.5 spec had the same issue), so the content-address fiction is dropped entirely. Specs are now identified by version + name only; git history (git log -p --follow) is the source of truth for content changes.
+- Renamed docs/standard/wlwl-spec-v0.6(SHA1_cdb548cb5161e61d836aad2208fd33adc0917861).md to docs/history/wlwl-spec-v0.6.md. The SHA1 in the old filename never matched the file's content (the v0.5 spec had the same issue), so the content-address fiction is dropped entirely. Specs are now identified by version + name only; git history (git log -p --follow) is the source of truth for content changes.
 
 ## [Docs archival] — 2026-09-22
 
-- `docs/standard/wlwl-spec-v0.6.md` → `docs/history/wlwl-spec-v0.6.md`
+- `docs/history/wlwl-spec-v0.6.md` → `docs/history/wlwl-spec-v0.6.md`
 - `docs/plan/*` → `docs/history/` (`wlwl-build-plan-v0.7-COMPLETED.md`,
   `wlwl-phase-b-implementation-plan.md`, `deviations-v0.7.md`)
 - `docs/plan/` now holds only a README pointing at the archive;

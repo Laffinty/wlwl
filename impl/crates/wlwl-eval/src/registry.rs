@@ -180,7 +180,7 @@ impl BuiltinGroup {
     /// `generate_appendix_g_md()` 的 match spec.dispatch)。`anchor()` 暂
     /// 保留为对外表面以避免破坏外部 crate 引用;v0.8 §2.3 实际工作转向
     /// 更新 31 个 `BuiltinSpec.section` 字段,详见
-    /// `docs/plan/wlwl-build-plan-v0.8.md` §2.3 (deviation D8-002)。
+    /// `docs/history/wlwl-build-plan-v0.8-COMPLETED.md` §2.3 (deviation D8-002)。
     pub fn anchor(self) -> &'static str {
         match self {
             BuiltinGroup::Io => "§15.1",

@@ -3,7 +3,7 @@
 Thanks for your interest in WLWL. This document covers the day-to-day
 contribution workflow. For deeper design context, read:
 
-- [`docs/standard/wlwl-spec-v0.8.md`](docs/standard/wlwl-spec-v0.8.md) — the language spec (version + name)
+- [`docs/history/wlwl-spec-v0.8.md`](docs/history/wlwl-spec-v0.8.md) — the language spec (version + name)
 - [`docs/history/wlwl-build-plan-v0.8-COMPLETED.md`](docs/history/wlwl-build-plan-v0.8-COMPLETED.md) — latest build plan (archived)
 - [`docs/history/deviations-v0.8.md`](docs/history/deviations-v0.8.md) — known deviations (v0.8 register; v0.7 register at `docs/history/deviations-v0.7.md`)
 
