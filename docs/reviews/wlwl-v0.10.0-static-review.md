@@ -739,7 +739,7 @@ PRINT(MATCH(r, [
 ### 13.4 关键字表 / 保留形式零变化
 
 ```powershell
-git show v0.9.0:docs/standard/wlwl-spec-v0.9.md   # vs 现 docs/standard/wlwl-spec-v0.10.md
+git show v0.9.0:docs/history/wlwl-spec-v0.9.md   # vs 现 docs/standard/wlwl-spec-v0.10.md
 ```
 逐行比对 §1.4 / §1.5 / §12:**仅新增说明性文字,无表格行增删**。
 

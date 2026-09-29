@@ -287,7 +287,7 @@ to:
   §5.3 / §9.2 (decision points) / §10 (risk table) / §11.2
   (consistency table) / §11.4 (3 small problems deferred to
   Step 11/12 spec derivation)
-- `docs/standard/wlwl-spec-v0.8.md` §11.2 (E0055 / E0057 reservation
+- `docs/history/wlwl-spec-v0.8.md` §11.2 (E0055 / E0057 reservation
   rows) / §8.2 (ERR transparency)
 - `docs/history/deviations-v0.8.md` D8-003 (E0055 / E0057 reservation
   rationale)
@@ -296,7 +296,7 @@ to:
 - `docs/adr/0019-oop-minimal-implementation-with-behavioral-types.md`
   (algebraic-effect runtime naming; spec §11.2 E0065 / E0066
   additions)
-- `docs/standard/wlwl-spec-v0.8.md` §17.2 (channel close protocol) /
+- `docs/history/wlwl-spec-v0.8.md` §17.2 (channel close protocol) /
   §17.3 (cancellation protocol)
 - spec v0.9 §17 (algebraic-effect framing normative 段, added in
   Step 11) — the framing context under which this decision is made.

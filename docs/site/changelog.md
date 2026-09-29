@@ -108,7 +108,7 @@ work (Phases D / E / F) is still pending — see the plan.
 - Phase G quality gates (clippy 0-warning, rustdoc 100%,
   fuzz 24h, cargo-deny 0, single-task perf ≤ 10% regression,
   spec-file freeze)
-- Phase H `docs/standard/wlwl-spec-v0.7.md` + `v0.7.0` tag
+- Phase H `docs/history/wlwl-spec-v0.7.md` + `v0.7.0` tag
   + plan-file rename with COMPLETED banner
 
 ## [v0.6.0] {#v060}

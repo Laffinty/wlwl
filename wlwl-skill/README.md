@@ -1,6 +1,7 @@
 # writing-wlwl skill bundle
 
-Claude Skills-format bundle for authoring **WLWL v0.9** `.wll` sources.
+Claude Skills-format bundle for authoring **WLWL v0.10** `.wll` sources
+(v0.10.1 implementation; the spec version is still **v0.10**).
 
 ```
 wlwl-skill/
@@ -40,7 +41,7 @@ This skill targets **wlwl-spec-v0.10** (file at
   behaviour): `EXPECT_ERR` consumer, `=` triple-identity, `LET`/`FUN`
   asymmetry, `SUB` length semantics, float exponents, `MUT` as identifier,
   string-literal subscript, and related prose fixes.
-- **v0.9** is the current standard:
+- **v0.9** (archived, `../docs/history/wlwl-spec-v0.9.md`) contributed:
   - **True-suspension concurrency** — `YIELD` legal at any expression
     position inside task bodies; blocking `CHANNEL_SEND`/`RECV` suspend
     (no `ChannelWouldBlock`).
@@ -53,7 +54,8 @@ This skill targets **wlwl-spec-v0.10** (file at
   - **Types** `CLASS` / `INSTANCE`; object-identity equality.
   - **Error codes** — `E0055`/`E0057` removed; `E0065`/`E0066`/`W0065`/`W0066`
     added; `E0014`/`E0032`/`E0050`/`E0051` redefined.
-- **v0.10** is the current standard — **static contracts, all default-off**.
+- **v0.10** is the current standard — **static contracts, all default-off**
+  (this bundle tracks the v0.10.1 implementation of it).
   Its runtime is identical to v0.9's; nothing below changes behaviour unless a
   `wlwl.toml` opts in.
   - **Type annotations enter the spec** — `LET(x: INTEGER, 1)`,
@@ -83,8 +85,8 @@ Compiler version is independent of the spec version (see root
 
 | File | Use |
 |---|---|
-| `SKILL.md` | Writing flow, static contracts (§2.6/§5.2/§9.1/§9.6), antipatterns (24 rows: v0.6–v0.9) |
-| `reference.md` | Operators, type/`TYPE` names, error codes, §8.3 consumers (14), OOP (§14–§16), concurrency matrix (§21), v0.9 增量备忘 (§23), v0.10 增量备忘 (§24) |
+| `SKILL.md` | Writing flow, static contracts (§2.6/§5.2/§9.1/§9.6), concurrency hard rules, antipatterns (24 rows: v0.6–v0.9) |
+| `reference.md` | Operators, type/`TYPE` names, error codes (incl. `E0064` / `W0001` / `E0010`–`E0025`), §8.3 consumers (13 global), OOP (§14–§16), concurrency matrix (§21), v0.9 增量备忘 (§23), v0.10 增量备忘 (§24) |
 | `interp.wll` | String-interpolation gold example |
 | `examples/truthiness.wll` | §2.3 falsy table |
 | `examples/control_flow.wll` | `IF` / `WHILE` / `FOR` / `MATCH` |

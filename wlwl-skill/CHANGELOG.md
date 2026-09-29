@@ -3,6 +3,54 @@
 Skill-bundle changes (spec lives at `../docs/standard/wlwl-spec-v0.10.md`
 and is authoritative).
 
+## [0.10.1] — 2026-09-30
+
+对齐 v0.10.1 实现。此前本包停在 0.10.0,而规范与实现已走了 13 个 Step。
+
+### Fixed — 这些会让 agent 写出**跑不通或跑错**的程序
+
+- **`YIELD` 5 条形态全部与实测相反**(最高危)。规范 §17.1 已在 R10-015 逐条改正,
+  本包此前仍称「挂起后继续 / `[1, YIELD(), 3]` → `[1, NULL, 3]` / 循环恢复嵌套体
+  剩余 / 间接调用也挂起」。实测:`LET(x, YIELD())` 里 **`x` 根本没绑定**(`E0020`)、
+  `IF(TRUE, YIELD(), 42)` → `NULL`、数组字面量 → `NULL`、`WHILE` / `FOR`
+  体内**只跑一轮**、`LET(y, YIELD); y()` → `E0020`。**全部零诊断。**
+  补上可用的规律:塌掉的是**整个最外层表达式**;挂起点**之前**的绑定仍可见。
+- **把中缀运算写成了合法示例**。本包两处把 `FUN((MUT), MUT + 1)` 列为
+  "all valid / all parse" —— 实现**根本没有中缀解析路径**,`LET(x, a + b)` 是
+  `E0011`。补上「一切运算皆前缀调用」这条根本规则(此前全包零命中)。
+- **`match_exhaustiveness` 默认值说反**。此前两处说 default-off,实际是
+  **缺省跟随 `gradual_typing`**。本包自己的 `examples/wlwl.toml` 只写了
+  `gradual_typing = "error"`,按旧文档理解 `E0116` 是关的,实际开着。
+- **`gradual_typing` 的码段说宽了**。此前说管到 `…116`,实际只管 `…112`。
+- **裸 `THIS` 说成「零参引用」**。实际 `E0020: undefined name`,必须 `THIS()` ——
+  且本包另一处还说它不是 `self` 的别名,自相矛盾。
+- **`fmt --check` 被授权「一律忽略」**。补上可判定规则:**末句不带 `;`**(内层语句
+  保留)、注释与缩进已被处理、**行尾自 v0.10.1 起无关**。并写明
+  `examples/` 下 10 个 `.wll` 全部不过 `--check`,是手写教学材料。
+- **`[package]` 三件套与 `W0001` 零覆盖**。R10-010 的教训只躺在示例注释里,
+  `W0001` 也不在 W 码表。agent 照文档只写 `[features]` 会拿到看不懂的诊断;
+  在 v0.10 上更是**静默拿到绿构建**。
+- **`AND` / `OR` / `MODULE` / `EXPECT_ERR`(全局)已从注册表与附录 G 移除**
+  (D10-019)—— 它们实测 `E0020`,从来就调不通。`EXPECT_ERR` 可用的是
+  `wlwl:std.test` 的导出,**1 个参数**,且捕不到原生码。
+
+### Added
+
+- **示例接进 CI**:此前 `wlwl-skill/examples/` **不在任何测试覆盖面里**,
+  与 R10-070 修掉的 `impl/examples/` 同一个洞。新增
+  `crates/wlwl-cli/tests/skill_examples.rs`(3 条:全跑 / 主题守卫 / 清单三件套)。
+- **五份新示例**,每份都实跑验证:`module_decl`(+依赖)、`sealed`(+svc+sig)、
+  `module_signature`(+math+sig)、`match_exhaustiveness`、`object_identity`。
+  覆盖的全是零示例特性:`MODULE` 形态、`SEALED` 面、`.wll.sig` 三向检查、
+  `E0116`、对象身份 `==` 与 `obj.m()` 语法糖。
+
+### Changed
+
+- 查表补齐:`E0010`–`E0013` / `E0020` / `E0022` / `E0025` / `E0064` / `W0001`
+  (此前被引用多次却查不到);§8.3 消费者 14 → **13 全局**(减去已移除的)。
+- 补 `;` 规则、**没有 `{}` 块**、容器不可变与 `MERGE`(此前 `MERGE` 全包零命中)。
+- 修正 v0.9 / v0.10 两处都被称作「the current standard」的自述矛盾。
+
 ## [0.10.0] — 2026-09-28
 
 ### Changed
@@ -193,7 +241,7 @@ and is authoritative).
 ### Changed
 
 - Target spec **wlwl-spec-v0.7** (additive over v0.6). Authoritative
-  path: `../docs/standard/wlwl-spec-v0.7.md`; v0.6 archived at
+  path: `../docs/history/wlwl-spec-v0.7.md`; v0.6 archived at
   `../docs/history/wlwl-spec-v0.6.md`.
 - Deviations pointer → `../docs/history/deviations-v0.7.md`
   (former `docs/history/deviations-v0.10.md`).
@@ -206,7 +254,7 @@ and is authoritative).
 ### Changed
 
 - Extension notes for `.wll` (was `.wl`).
-- Authoritative spec path → `../docs/standard/wlwl-spec-v0.6.md`.
+- Authoritative spec path → `../docs/history/wlwl-spec-v0.6.md`.
 
 ### Known impl/spec deviations (not skill bugs)
 

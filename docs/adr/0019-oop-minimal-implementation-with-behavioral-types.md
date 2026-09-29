@@ -514,7 +514,7 @@ Chosen option **D** (α + pioneering). Concretely, v0.9 commits to:
   (session-typed methods) / §4.4.4 (WasmFX-style tag dispatch) /
   §9.1 Step 8-12 / §10 (risk table) / §11.2 (consistency table) /
   §11.3 (doc acceptance)
-- `docs/standard/wlwl-spec-v0.8.md` §12 (形式表 with OOP rows) /
+- `docs/history/wlwl-spec-v0.8.md` §12 (形式表 with OOP rows) /
   §13-§16 (currently empty; v0.9 fills) / 附录 G (rows 1223-1233
   marked "OOP 未实现" in v0.8.1)
 - `docs/adr/0017-cooperative-suspension-scheduler.md` (algebraic-

@@ -91,6 +91,13 @@ v0.7 adds **no** new AST node kinds — concurrency is all ordinary `Call` nodes
 ## §4. Lexer traps (§1)
 
 - `//` line comments and `/* */` block comments (nestable).
+- **Semicolons**: every statement needs one, `PRINT("a")` on its own line is not a
+  statement until it is followed by `;` or end-of-file. The *last* expression of a
+  `Program` or a `Block` may omit it (that is the block's value). So
+  `LET(x, 1); PRINT(x)` is canonical and `LET(x, 1); PRINT(x);` is not.
+- **No `{}` blocks.** A multi-statement body is a parenthesised sequence:
+  `FUN((a), ( LET(b, 1); PRINT(b) ))`. Writing `{` gives `E0001: illegal
+  character '{'`.
 - **Everything is a prefix call — there is no infix syntax.** `+(a, b)`, not
   `a + b`; `&&(a, b)`, not `a && b`. The parser has no binary-expression
   production at all (spec §4.3), so `LET(x, a + b)` is a hard `E0011`
@@ -205,8 +212,15 @@ See `SKILL.md` pointers. Highlights: `wlwl:std.collection` (MAP/FILTER/…),
 
 | Code | Meaning |
 |------|---------|
+| `E0010` | type-annotation grammar error (`ARRAY` without `[...]`, `a type constraint may only follow a bare type variable`) |
+| `E0011` | **parse** error — expected `)` / `,` / `;` and got something else |
+| `E0012` | **parse** error — the `,` after a closure's parameter list is missing (`FUN((a, b) ...)` is fine; `FUN (a, b),` is not) |
+| `E0013` | expected `;` after a statement (single-statement programs also need one, see §1) |
 | `E0014` | illegal RETURN/BREAK/CONTINUE **or YIELD outside a task** (v0.9: YIELD-Block-direct-child restriction removed) |
+| `E0020` | **undefined name** — a name is not bound. The one to read first when a program "should" work |
+| `E0022` | arity mismatch (too many/few arguments) |
 | `E0024` | SET on immutable binding (single-task and cross-task alike) |
+| `E0025` | cannot shadow a built-in that is not a context keyword |
 | `E0030` | type error (incl. ERR payload not STRING/DICT; OOP receiver type) |
 | `E0031` | subscript/key type error; NaN key; `CHANNEL_NEW` buf not non-negative integer |
 | `E0032` | **[v0.9]** linear `THIS` violation or read-only field write (see §16) |
@@ -219,6 +233,7 @@ See `SKILL.md` pointers. Highlights: `wlwl:std.collection` (MAP/FILTER/…),
 | `E0056` | SPAWN arity (including non-zero-param `fn`) |
 | `E0058` | top-level SPAWN without SCOPE |
 | `E0065` | **[v0.9]** structured-concurrency deadlock L1 (default strict mode) |
+| `E0064` | **[v0.10.1]** **livelock guard** on an unbuffered channel: the same task pair rendezvoused a second time. Distinct from `E0065` — the peer *is* there, but a parked task is restarted from the top of its body, so the replay can never make progress. Use a buffered channel (`CHANNEL_NEW` with n > 0) or hand off exactly once |
 | `E0066` | **[v0.9]** `TASK_CANCEL`/`TASK_CANCEL_PARENT` reason not DICT |
 | `E0110` | **[v0.10]** annotation mismatch (parameter / `LET` annotation vs actual type) — compile-time only |
 | `E0111` | **[v0.10]** call mismatch (argument count, or the n-th argument's type) — compile-time only |
@@ -240,6 +255,7 @@ default arm) is a warning in every configuration — see spec §11.3.
 
 ### Warnings (W-codes)
 
+`W0001` **manifest problem** — `wlwl.toml` is malformed (typically a missing `version` or `entry` in `[package]`). v0.10 swallowed this silently; v0.10.1 reports it. The `[features]` table is still applied if it parsed, so a `[features]`-only manifest both works *and* warns |
 `W0010` unused LET · `W0011` unused param · `W0012` duplicate LET ·
 `W0013` IF branches inconsistent · `W0015` integer overflow (saturated) ·
 `W0020` mixed dict literal · `W0030` shadow · `W0040` TODO(agent) ·
@@ -303,8 +319,13 @@ single-list arg.
 
 ## §13. Container immutability (§3.3, §10.4)
 
-`PUSH`/`INDEX_SET`/… return **new** containers. Mutate only via `SET` on
-`LET MUT` bindings. (Instance fields are the second mutation path — see §14.)
+`PUSH` / `POP` / `UNSHIFT` / `SHIFT` / `CONCAT` / `SLICE` / `REVERSE` /
+`INDEX_SET` / `REMOVE_KEY` / `DEL` / `MERGE` all return a **new** container and
+leave the receiver untouched — rebind it: `LET(xs, PUSH(xs, 1));`.
+
+The only in-place mutation in the language is `SET` on a `LET MUT` binding.
+(Instance fields are the second path, and only from inside a method with a `self`
+first parameter — see §14.)
 
 ## §14. OOP (§13–§16)
 
@@ -525,7 +546,7 @@ ERR; cannot be caught by §8.3 consumers — see §20 anti-patterns).
 ## §23. v0.9 增量备忘
 
 Every v0.9 item that affects writing `.wll` source — pulled from
-`docs/standard/wlwl-spec-v0.9.md` 附录 D.
+`docs/history/wlwl-spec-v0.9.md` 附录 D.
 
 | # | § | Change |
 |---|---|--------|

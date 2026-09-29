@@ -2194,6 +2194,46 @@ sig_name    = identifier .
 
 工具按 `diagnostics[]` 决定是否把某条诊断当硬错:`always_warning` 为真的项**不得**被升级。
 
+### E.4 `wlwl sig` / `wlwl sig-gen`
+
+**[v0.10.1 / R10-064 补]** 本节此前不存在 —— 附录 E 只覆盖了 `interface` 与
+`schema` 两份 JSON 契约,`wlwl sig` 这条 v0.10 新增能力在规范里**零承载**
+(唯一提及是 §9.6 顺带的一句 `sig-gen`)。
+
+| 子命令 | 行为 |
+|---|---|
+| `wlwl sig <file>` | 打印该模块的签名。`--format text`(默认)/ `--format json` |
+| `wlwl sig-gen <file>` | 从实现**反推**签名骨架并写进 `<file>.wll.sig`。**默认不覆盖**已有文件(`--force` 才覆盖);零导出的模块**不写盘** |
+
+**三处渲染同源**:stdout 的文本、`--format json` 的 `text` 字段、落盘内容,
+都出自同一个渲染函数,不允许三者分叉。
+
+`--format json` 的契约(此前也没有规范面):
+
+| 字段 | 含义 |
+|---|---|
+| `sig_schema_version` | 这份 JSON 契约的版本;字段增删时必须递增 |
+| `module` | 被检查的 `.wll` 路径 |
+| `text` | 与 `sig` 文本模式、与落盘内容**逐字相同**的签名文本 |
+| `exports[]` | 与 E.2 同构(见 E.2 的字段说明) |
+
+### E.5 `wlwl lsp`
+
+**[v0.10.1 / R10-064 补]** 同样此前零承载。
+
+`wlwl lsp` 是走 stdio 的 JSON-RPC 薄壳,提供 `diagnostics` / `definition` /
+`hover` 三项能力,外加由 `BUILTIN_REGISTRY` 驱动的补全。
+
+**能力边界是规范性的**:`initialize` 的 capabilities 里**没有**
+`renameProvider`,也**没有** `documentFormattingProvider`。工具**不得**假设
+这两项存在。
+
+**诊断口径**:`lsp` 的 `diagnostics` 与 `wlwl check` **共用同一个收集函数**
+(§11),所以编辑器里的划线**不会比命令行少**。这是本节唯一的功能性要求 ——
+工具链各走各的判据会让「编辑器不报、CI 报」这种最难查的分裂。
+
+零新依赖:LSP 侧不引入任何 crate。
+
 ## 附录 F(保留)
 
 附录 F 为将来预留(本版不定义)。规范性内建全表见附录 G。
