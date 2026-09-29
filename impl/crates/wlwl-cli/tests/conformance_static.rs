@@ -486,6 +486,38 @@ fn breaking_the_signature_is_reported_in_both_directions() {
 /// | 默认档(无清单) | 零诊断 | ADR-0020 S1 |
 #[test]
 fn r10_073_a_sealed_surface_that_undershoots_the_real_exports_is_reported() {
+    const SEAL_NARROW: &str = "SEALED([\"add\"]);";
+    const SEAL_WIDE: &str = "SEALED([\"add\", \"secret\"]);";
+
+    /// 行尾无关地判断文件里有没有那一行密封声明。
+    ///
+    /// [v0.10.1] 修之前这里是 `mod_wll.contains("SEALED([\"add\"]);\n")` ——
+    /// **裸子串匹配带 `\n`**。仓库的 `.gitattributes` 只给 `*.rs` 定了
+    /// `eol=lf`,夹具 `.wll` 没有规则,于是 **Windows runner 检出的工作区是
+    /// CRLF**(`core.autocrlf` 生效),那一行实际是 `...;\r\n`,`contains`
+    /// 假性失败。本地工作区是 LF,所以本地绿、CI 红 —— 同一个 commit 在两台
+    /// 机器上结论相反。判据改成「按行比较」,两种行尾下都成立。
+    fn has_seal(src: &str) -> bool {
+        src.lines().any(|l| l.trim() == SEAL_NARROW)
+    }
+
+    /// 把那行换成 `replacement`(`None` = 删掉),保留原文件的行尾风格。
+    fn rewrite_seal(src: &str, replacement: Option<&str>) -> String {
+        let mut out = String::new();
+        for line in src.split_inclusive('\n') {
+            let body = line.trim_end().trim_end_matches('\r');
+            if body == SEAL_NARROW {
+                if let Some(r) = replacement {
+                    out.push_str(r);
+                    out.push('\n');
+                }
+            } else {
+                out.push_str(line);
+            }
+        }
+        out
+    }
+
     let bin = wlwl_binary();
     let fixture = fixture_root().join("sealed_surface");
     assert!(
@@ -494,9 +526,8 @@ fn r10_073_a_sealed_surface_that_undershoots_the_real_exports_is_reported() {
          CLI-level coverage at all, only Rust unit tests"
     );
     let mod_wll = std::fs::read_to_string(fixture.join("mod.wll")).expect("read mod.wll");
-    let sealed_line = "SEALED([\"add\"]);\n";
     assert!(
-        mod_wll.contains(sealed_line),
+        has_seal(&mod_wll),
         "the fixture must keep its undershooting SEALED line; got:\n{mod_wll}"
     );
 
@@ -514,11 +545,8 @@ fn r10_073_a_sealed_surface_that_undershoots_the_real_exports_is_reported() {
     );
 
     // ② 密封面补上 secret → 零诊断(否则这条只是「见 SEALED 就报」)。
-    std::fs::write(
-        on.join("mod.wll"),
-        mod_wll.replace(sealed_line, "SEALED([\"add\", \"secret\"]);\n"),
-    )
-    .expect("widen the seal");
+    std::fs::write(on.join("mod.wll"), rewrite_seal(&mod_wll, Some(SEAL_WIDE)))
+        .expect("widen the seal");
     let (ok, out) = run_check(&bin, &on, "main.wll");
     assert!(
         ok,
@@ -527,7 +555,7 @@ fn r10_073_a_sealed_surface_that_undershoots_the_real_exports_is_reported() {
 
     // ③ 删掉 SEALED 那一行 → 零诊断。签名声明了 secret,所以签名这一路是
     //    干净的;不干净就说明这条 E0113 其实另有来源。
-    std::fs::write(on.join("mod.wll"), mod_wll.replace(sealed_line, "")).expect("drop the seal");
+    std::fs::write(on.join("mod.wll"), rewrite_seal(&mod_wll, None)).expect("drop the seal");
     let (ok, out) = run_check(&bin, &on, "main.wll");
     assert!(
         ok,
