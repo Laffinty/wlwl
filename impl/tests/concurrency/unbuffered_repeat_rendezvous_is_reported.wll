@@ -1,0 +1,33 @@
+// concurrency/unbuffered_repeat_rendezvous_is_reported.wll - R10-014 guard fixture
+//
+// 同一对任务在同一条**无缓冲**通道上第二次 rendezvous。
+//
+// [v0.10.1 / R10-014] 补上配对逻辑之后,这类程序会**静默挂死**:通道操作挂起
+// 时任务的 `running_env` 被丢弃,被唤醒的任务从段首重跑,循环里的计数器回到
+// 初值,投出去的还是同一个值 —— 第二轮与第一轮状态完全相同,永远循环。
+//
+// 本夹具把那个挂起换成一条可读的诊断(E0064)。它**预期失败**:退出码 1,
+// stderr 里有 E0064。守的是「别把挂起还给用户」,不是「这类程序能跑」。
+//
+// Expected: exit 1, stderr contains E0064.
+
+SCOPE(FUN(() ,
+    LET(ch, CHANNEL_NEW(0));
+    LET(p, SPAWN(FUN(() ,
+        LET MUT(i, 0);
+        WHILE(<(i, 3), (CHANNEL_SEND(ch, i); SET(i, +(i, 1))));
+        CHANNEL_CLOSE(ch);
+        0
+    )));
+    LET(c, SPAWN(FUN(() ,
+        LET MUT(n, 0);
+        LET(v, CHANNEL_RECV(ch));
+        WHILE(!(IS_ERR(v)), (
+            SET(n, +(n, 1));
+            LET(v, CHANNEL_RECV(ch))
+        ));
+        n
+    )));
+    AWAIT(c);
+    AWAIT(p)
+))

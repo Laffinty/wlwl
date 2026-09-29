@@ -1,0 +1,28 @@
+// concurrency/unbuffered_consumer_first.wll - R10-014 golden fixture (mirror)
+//
+// 与 `unbuffered_producer_first.wll` 是同一条通道的镜像顺序。
+//
+// [v0.10.1 / R10-014] 这一条在 v0.9 起就能跑通 —— CHANNEL_SEND 有 pair-first
+// (`try_pair_send`),消费者先停泊时直接交接。它一直**没有**任何夹具覆盖,
+// 于是「生产者先」那条坏掉时没人对比得出问题。
+//
+// 两条夹具必须同时存在且同时通过:单条能过证明不了「顺序无关」,只测一条
+// 顺序等于没测。
+//
+// Expected stdout (1 line):
+//   1
+
+LET(out,
+    SCOPE(FUN(() ,
+        LET(ch, CHANNEL_NEW(0));
+        // 消费者**先** SPAWN。
+        LET(c, SPAWN(FUN(() , CHANNEL_RECV(ch))));
+        LET(p, SPAWN(FUN(() ,
+            CHANNEL_SEND(ch, 1);
+            CHANNEL_CLOSE(ch);
+            0
+        )));
+        AWAIT(c)
+    ))
+);
+PRINT(out)

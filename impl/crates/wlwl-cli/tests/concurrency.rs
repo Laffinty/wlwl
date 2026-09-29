@@ -82,6 +82,16 @@ const WLT_FILES: &[&str] = &[
     "shield_basic.wll",
     "shield_nested.wll",
     "shield_then_error.wll",
+    // [v0.10.1 / R10-014] 无缓冲通道的两种 spawn 顺序。
+    //
+    // 两条必须同时在列表里:之前只有「消费者先」能跑通,而它**没有**夹具
+    // 覆盖 —— 于是「生产者先」坏掉时没有对照,没人看得出那是个 bug。
+    // 补上配对逻辑之后,顺序才真的与结果无关,这两条一起把这件事钉死。
+    "unbuffered_producer_first.wll",
+    "unbuffered_consumer_first.wll",
+    // 活锁护栏:`unbuffered_repeat_rendezvous_is_reported.wll` **预期失败**
+    // (exit 1 + E0064),所以它由下面那条专门的测试驱动,不放进
+    // `all_concurrency_fixtures_run_clean` 这类「必须跑通」的循环。
 ];
 
 #[test]
@@ -142,6 +152,140 @@ fn channel_basic_producer_consumer_round_trip() {
     assert_eq!(
         stdout, expected,
         "stdout mismatch:\n  got:      {stdout:?}\n  expected: {expected:?}"
+    );
+}
+
+/// 把一段 WLWL 源码写进临时目录,返回它的路径。
+///
+/// 用系统临时目录而不是夹具目录:夹具目录是**被跟踪**的,测试往里写文件会
+/// 弄脏工作区,而且下一次跑会撞上上一次的残留。
+fn scratch_program(name: &str, source: &str) -> PathBuf {
+    let dir = std::env::temp_dir().join("wlwl-concurrency-scratch");
+    std::fs::create_dir_all(&dir).expect("scratch dir");
+    let p = dir.join(name);
+    std::fs::write(&p, source).expect("scratch fixture written");
+    p
+}
+
+/// [v0.10.1 / R10-014] 无缓冲通道上，**两种** spawn 顺序都必须跑通。
+///
+/// spec §17.2.1：「同一通道上互为对端的挂起收发双方**不**构成死锁」。
+///
+/// 修之前只有消费者先那条能过（`CHANNEL_SEND` 有 pair-first，`CHANNEL_RECV`
+/// 缺对偶），生产者先会撞上 E0065 假死锁。这里同时跑两份夹具：只跑一条顺序
+/// 等于没测——「能跑」的那条本来就一直能跑。
+#[test]
+fn unbuffered_rendezvous_is_independent_of_spawn_order() {
+    for (fixture_name, order) in [
+        ("unbuffered_producer_first.wll", "producer spawned first"),
+        ("unbuffered_consumer_first.wll", "consumer spawned first"),
+    ] {
+        let path = fixture(fixture_name);
+        assert!(path.exists(), "missing fixture: {}", path.display());
+        let out = run_wlwl(&path);
+        let code = out.status.code().unwrap_or(-1);
+        let stdout = String::from_utf8_lossy(&out.stdout).into_owned();
+        let stderr = String::from_utf8_lossy(&out.stderr).into_owned();
+        assert_eq!(
+            code, 0,
+            "{fixture_name} ({order}) must run clean, got exit {code}:\n  stderr={stderr}"
+        );
+        assert_eq!(
+            stdout, "1\n",
+            "{fixture_name} ({order}) printed the wrong value"
+        );
+    }
+}
+
+/// [v0.10.1 / R10-014] 活锁护栏：同一对任务在无缓冲通道上第二次 rendezvous
+/// 必须报 `E0064`，**不能挂住**。
+///
+/// 这条守的是失败模式本身。补上配对逻辑之后这类程序会无限循环：通道操作挂起
+/// 时 `running_env` 被丢弃，任务从段首重跑，循环计数回到初值。没有护栏时它
+/// 静默挂死——而挂死比报错糟得多。
+///
+/// 顺带把两个**真死锁**也钉住，确保护栏没有把该报的吞掉、也没有抢在它们
+/// 前面误报。
+#[test]
+fn r10_014_livelock_guard_reports_instead_of_hanging() {
+    let path = fixture("unbuffered_repeat_rendezvous_is_reported.wll");
+    let out = run_wlwl(&path);
+    let stderr = String::from_utf8_lossy(&out.stderr).into_owned();
+    assert_eq!(
+        out.status.code(),
+        Some(1),
+        "a repeated rendezvous must exit 1 with a diagnostic, not hang:\n  stderr={stderr}"
+    );
+    assert!(
+        stderr.contains("E0064"),
+        "expected the E0064 livelock guard, got:\n  stderr={stderr}"
+    );
+}
+
+/// [v0.10.1 / R10-014] 护栏**不得**误伤真死锁。
+///
+/// 一个挂在通道上、没有对端可唤醒的任务是货真价实的死锁，仍然报 E0053；
+/// 两个互相排队的发送者仍然报 E0065。护栏只管「配上了但推不动」，
+/// 不许伸手去管「压根没人来」。
+#[test]
+fn r10_014_guard_does_not_swallow_real_deadlocks() {
+    // 单发送者、无人接收 -> E0053（legacy no-peer）。
+    let single = scratch_program(
+        "single_sender.wll",
+        "SCOPE(FUN(() , LET(ch, CHANNEL_NEW(0)); \
+         LET(a, SPAWN(FUN(() , CHANNEL_SEND(ch, 1)))); AWAIT(a)));\n",
+    );
+    let out = run_wlwl(&single);
+    let stderr = String::from_utf8_lossy(&out.stderr).into_owned();
+    assert_eq!(out.status.code(), Some(1), "stderr={stderr}");
+    assert!(
+        stderr.contains("E0053"),
+        "a lone parked sender is a real deadlock and must stay E0053:\n  stderr={stderr}"
+    );
+
+    // 两个发送者互相排队 -> E0065（L1 死锁环）。
+    let pair = scratch_program(
+        "two_senders.wll",
+        "SCOPE(FUN(() , LET(ch, CHANNEL_NEW(0)); \
+         LET(a, SPAWN(FUN(() , CHANNEL_SEND(ch, 1)))); \
+         LET(b, SPAWN(FUN(() , CHANNEL_SEND(ch, 2)))); \
+         AWAIT(a); AWAIT(b)));\n",
+    );
+    let out = run_wlwl(&pair);
+    let stderr = String::from_utf8_lossy(&out.stderr).into_owned();
+    assert_eq!(out.status.code(), Some(1), "stderr={stderr}");
+    assert!(
+        stderr.contains("E0065"),
+        "two queued senders are a real L1 deadlock and must stay E0065:\n  stderr={stderr}"
+    );
+}
+
+/// [v0.10.1 / R10-014] 护栏只对**无缓冲**通道生效。
+///
+/// 缓冲通道上的 park/wake 循环是正常用法：满缓冲时发送者停泊、接收者取走
+/// 腾位，一次流水线里可以发生任意多次。要是护栏不分青红皂白，连合法的
+/// 缓冲流水线都会被误报。
+#[test]
+fn r10_014_guard_does_not_apply_to_buffered_channels() {
+    let path = scratch_program(
+        "buffered_many.wll",
+        // 缓冲足够大时 SEND 不会停泊，两轮都不会进护栏。
+        "SCOPE(FUN(() , LET(ch, CHANNEL_NEW(8)); \
+         LET(p, SPAWN(FUN(() , CHANNEL_SEND(ch, 1); CHANNEL_SEND(ch, 2); \
+         CHANNEL_CLOSE(ch); 0))); \
+         LET(c, SPAWN(FUN(() , [CHANNEL_RECV(ch), CHANNEL_RECV(ch)]))); \
+         PRINT(AWAIT(c)); AWAIT(p)));\n",
+    );
+    let out = run_wlwl(&path);
+    let stderr = String::from_utf8_lossy(&out.stderr).into_owned();
+    assert_eq!(
+        out.status.code(),
+        Some(0),
+        "a buffered channel must not trip the unbuffered-rendezvous guard:\n  stderr={stderr}"
+    );
+    assert!(
+        !stderr.contains("E0064"),
+        "E0064 fired on a buffered channel:\n  stderr={stderr}"
     );
 }
 

@@ -5167,6 +5167,48 @@ fn builtin_channel_send(ev: &mut Evaluator, args: Vec<Value>) -> WlwlResult<Outc
 ///
 /// `CHANNEL_TRY_RECV` is unaffected — it remains strictly
 /// synchronous and surfaces `WouldBlock` as `Value::Null`.
+/// [v0.10.1 / R10-014] 记一次无缓冲 rendezvous;**同一对任务第二次**配对时
+/// 返回次数(调用方据此发 `E0064`),否则返回 `None`。
+///
+/// `CHANNEL_RECV` 的两条臂共用。写成自由函数而不是 `&mut self` 方法:
+/// 调用点同时持有 `ev` 与 `ev.scheduler.channels[slot]` 的可变借用,
+/// `ev.method(&mut ev.scheduler...)` 过不了借用检查。
+///
+/// **只对无缓冲通道生效**:缓冲通道上的 park/wake 循环是**正常**用法 ——
+/// 满缓冲时发送者停泊、接收者取走腾位,一次流水线里可以发生任意多次。
+/// 只有 `capacity == 0` 的 rendezvous 才有「第二次必然推不动」的性质。
+///
+/// 阈值为什么是 2:见 [`crate::channel::Channel::record_rendezvous`] 的
+/// 文档。那不是调出来的经验值,是段重跑模型的硬边界。
+fn note_channel_rendezvous(
+    ch: &mut crate::channel::Channel,
+    receiver: Option<crate::runtime::TaskId>,
+    sender: crate::runtime::TaskId,
+) -> Option<u32> {
+    if ch.cap() != 0 {
+        return None;
+    }
+    let receiver = receiver?;
+    let times = ch.record_rendezvous(sender, receiver);
+    (times > 1).then_some(times)
+}
+
+/// [v0.10.1 / R10-014] 活锁护栏的诊断文本(与 [`note_channel_rendezvous`] 配套)。
+fn channel_rendezvous_stall_message(
+    times: u32,
+    sender: crate::runtime::TaskId,
+    receiver: crate::runtime::TaskId,
+) -> String {
+    format!(
+        "tasks #{} and #{} rendezvoused {times} times on this unbuffered channel; \
+         a parked task is restarted from the beginning of its body, so the second \
+         rendezvous replays the same state and can never make progress. Use a buffered \
+         channel (CHANNEL_NEW with n > 0), or structure the program so each task pair \
+         hands off exactly once.",
+        sender.0, receiver.0
+    )
+}
+
 fn builtin_channel_recv(ev: &mut Evaluator, args: Vec<Value>) -> WlwlResult<Outcome> {
     use crate::channel::TryResult;
     use crate::runtime::{Direction, YieldReason};
@@ -5189,6 +5231,22 @@ fn builtin_channel_recv(ev: &mut Evaluator, args: Vec<Value>) -> WlwlResult<Outc
         TryResult::Ok(value) => {
             let woken = ev.scheduler.channels[slot].pop_sender_waiter();
             if let Some(tid) = woken {
+                // [v0.10.1 / R10-014] 与下面 WouldBlock 那条臂同款的活锁护栏。
+                //
+                // 这一处必须也守:buf 里有值意味着上一次是「发送者先到、被停泊的
+                // 接收者取走」完成的。取走腾出的位置会让下一个发送者继续 —— 但在
+                // 无缓冲通道上,那个发送者重跑时循环状态已经回到初值,投出去的
+                // 还是同一个值。多轮传递的**第二次** rendezvous 就是从这里开始的,
+                // 只守 WouldBlock 那条臂会漏掉它。
+                let rx = ev.current_task;
+                let stall = note_channel_rendezvous(&mut ev.scheduler.channels[slot], rx, tid);
+                if let (Some(times), Some(rx)) = (stall, rx) {
+                    return Err(ev.diag(
+                        ErrorCode::E0064,
+                        channel_rendezvous_stall_message(times, tid, rx),
+                        diag_span.clone(),
+                    ));
+                }
                 ev.scheduler.wake_channel_op_waiter(tid);
             }
             Ok(Outcome::normal(value))
@@ -5232,6 +5290,44 @@ fn builtin_channel_recv(ev: &mut Evaluator, args: Vec<Value>) -> WlwlResult<Outc
                     diag_span.clone(),
                 )
             })?;
+
+            // [v0.10.1 / R10-014] 无缓冲通道上的生产者先挂起。
+            //
+            // 修之前的局面:`CHANNEL_SEND` 有 pair-first(`try_pair_send`,
+            // 消费者先停泊时直接交接,所以那条顺序能跑通),而 `CHANNEL_RECV`
+            // **没有**对偶的那一半。于是生产者先跑时:它把值存在
+            // `sender_waiter_values` 里(无缓冲通道没有别的地方放),随后
+            // 停泊;接收者醒来 `try_recv()` 只看 `buf` —— 空的 —— 于是它也
+            // 停泊。两个任务同时挂在同一通道上,L1 判定为死锁,E0065。
+            // 规范 §17.2.1 明写「互为对端的挂起收发双方**不**构成死锁」。
+            //
+            // 为什么不能直接取走发送者暂存的值:停泊的任务被唤醒后会
+            // **重跑自己的段**,于是 `CHANNEL_SEND(ch, v)` 会再执行一次
+            // 并把值再投一次 —— 直接取走等于双投递。
+            //
+            // 所以走与发送侧完全对称的路子:唤醒那个发送者,然后自己作为
+            // 它的接收方停泊。发送者重跑时 `try_pair_send` 看到有停泊的
+            // 接收者,直接把值交进 buf 并完成 —— 它的 SEND 正常结束。
+            // 我们随后被唤醒重跑,`try_recv()` 拿到值。整条路径不产生双投递。
+            if let Some(sender_tid) = ev.scheduler.channels[slot].pop_sender_waiter() {
+                // 活锁护栏:同一对任务第二次在这条通道上 rendezvous,在当前的
+                // 段重跑模型下必然推不动(循环状态每次都回到初值)。这里给它
+                // 一条能照着改的诊断,而不是让它静默挂死。阈值与理由见
+                // `Channel::record_rendezvous` —— 2 是架构硬边界。
+                let rx = ev.current_task;
+                let stall =
+                    note_channel_rendezvous(&mut ev.scheduler.channels[slot], rx, sender_tid);
+                if let (Some(times), Some(rx)) = (stall, rx) {
+                    return Err(ev.diag(
+                        ErrorCode::E0064,
+                        channel_rendezvous_stall_message(times, sender_tid, rx),
+                        diag_span.clone(),
+                    ));
+                }
+                // 丢弃发送者暂存的值:它重跑时会自己再投一次。
+                ev.scheduler.wake_channel_op_waiter(sender_tid);
+            }
+
             ev.scheduler
                 .park_for_channel_op(task_id, ch_id, Direction::Recv, None);
             Ok(Outcome {

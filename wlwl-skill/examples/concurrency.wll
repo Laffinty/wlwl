@@ -1,14 +1,22 @@
-// examples/concurrency.wll — spec v0.7 §17 golden shape
-// SCOPE + SPAWN + AWAIT + channel fan-in (TRY_* only).
+// examples/concurrency.wll — spec §17 golden shapes
+// SCOPE + SPAWN + AWAIT + channel fan-in.
 // Expected stdout:
 //   142
+//   3
 //   PASS:concurrency
 //
 // Rules locked here:
 //  * SPAWN only inside SCOPE (else E0058)
 //  * YIELD only as a direct child of a multi-statement block
 //  * close signal is ERR(kind="ChannelClosed"), never NULL
-//  * v0.7.0: use CHANNEL_TRY_* (SEND/RECV do not suspend)
+//
+// [v0.10.1 / R10-014] 下面加了一段**阻塞式**收发。v0.7–v0.10 这里只用
+// TRY_*,因为阻塞式 SEND/RECV 实测顺序敏感 —— 无缓冲通道上生产者先 SPAWN
+// 会假死锁。现在两种顺序都能跑通了,示例才敢示范阻塞式写法。
+//
+// 两个要点照 `SKILL.md` 的 canonical shape:接收侧必须 SPAWN 成任务
+// (SCOPE 主体里直接 CHANNEL_RECV 是 E0053);要传多条就给缓冲
+// (`CHANNEL_NEW(0)` 的无缓冲通道上,同一对任务只能交接一次)。
 
 LET(v, SCOPE(FUN(() ,
     LET(ch, CHANNEL_NEW(4));
@@ -34,4 +42,31 @@ LET(v, SCOPE(FUN(() ,
     sum
 )));
 PRINT(v);
-IF(==(v, 142), PRINT("PASS:concurrency"), PRINT("FAIL:concurrency"))
+
+// 阻塞式 fan-in:缓冲通道 + 接收方自己 SPAWN。
+LET(w, SCOPE(FUN(() ,
+    LET(ch, CHANNEL_NEW(8));
+    LET(p, SPAWN(FUN(() ,
+        CHANNEL_SEND(ch, 1);
+        CHANNEL_SEND(ch, 2);
+        CHANNEL_CLOSE(ch);
+        0
+    )));
+    LET(c, SPAWN(FUN(() ,
+        LET MUT(acc, 0);
+        LET MUT(done, FALSE);
+        WHILE(NOT(done),
+            LET(v, CHANNEL_RECV(ch));
+            IF(IS_ERR(v),
+                SET(done, TRUE),
+                SET(acc, +(acc, v)))
+        );
+        acc
+    )));
+    LET(total, AWAIT(c));
+    AWAIT(p);
+    total
+)));
+PRINT(w);
+
+IF(&&(==(v, 142), ==(w, 3)), PRINT("PASS:concurrency"), PRINT("FAIL:concurrency"))

@@ -380,24 +380,38 @@ LET(v, SCOPE(FUN(() ,
 
 ```wlwl
 // Producer / consumer with true suspension (v0.9)
+// [v0.10.1 / R10-014] 两个要点,缺一不可:
+//
+//   1. `CHANNEL_RECV` **必须在任务里**。SCOPE 主体不是任务,在那里直接
+//      `CHANNEL_RECV` 会报 `E0053: CHANNEL_RECV requires an active task`。
+//      消费逻辑要自己 SPAWN 出来。
+//   2. 通道**给缓冲**(`CHANNEL_NEW(8)` 这种),不要用 0。运行期把停泊的
+//      任务从段首重跑,所以同一对任务在一条无缓冲通道上只能交接一次 ——
+//      第二次会得到 `E0064`(详见下面的「无缓冲通道」小节)。
+//
+// 缓冲给够条数,发送侧就不会停泊,消费侧一次跑完循环。
 SCOPE(FUN(() ,
-    LET(ch, CHANNEL_NEW(0));
+    LET(ch, CHANNEL_NEW(8));
     LET(p, SPAWN(FUN(() ,
         CHANNEL_SEND(ch, 1);
         CHANNEL_SEND(ch, 2);
         CHANNEL_CLOSE(ch);
         0
     )));
-    LET MUT(acc, 0);
-    LET MUT(done, FALSE);
-    WHILE(NOT(done),
-        LET(x, CHANNEL_RECV(ch));
-        IF(IS_ERR(x),
-            SET(done, TRUE),
-            SET(acc, +(acc, x)))
-    );
+    LET(c, SPAWN(FUN(() ,
+        LET MUT(acc, 0);
+        LET MUT(done, FALSE);
+        WHILE(NOT(done),
+            LET(x, CHANNEL_RECV(ch));
+            IF(IS_ERR(x),
+                SET(done, TRUE),
+                SET(acc, +(acc, x)))
+        );
+        acc
+    )));
+    LET(total, AWAIT(c));
     AWAIT(p);
-    acc
+    total                        // → 3
 ))
 
 // Structured cancellation with reason
@@ -408,6 +422,31 @@ SCOPE(FUN(() ,
     IF(IS_ERR(r), ERR_PAYLOAD(r), r)
 ))
 ```
+
+### 无缓冲通道(`CHANNEL_NEW(0)`)能做什么
+
+无缓冲通道是真正的 rendezvous:**交接成功之前,两边都挂起**。v0.10.1 起
+两种 spawn 顺序都跑得通(v0.9–v0.10 只有消费者先那条能跑),但有一硬限制:
+
+> **同一对任务在一条无缓冲通道上只能交接一次。**
+> 第二次会报 `E0064`。
+
+原因值得知道,因为它决定了怎么写代码:运行期把停泊的任务从**段首重跑**,
+不是从挂起点继续。循环里的计数器回到初值,投出去的还是同一个值 —— 状态
+和上一轮完全相同,永远推不动。与其让用户拿到一个挂死的进程,不如给一条
+能照着改的诊断。
+
+于是:
+
+| 想要的效果 | 怎么写 |
+|---|---|
+| 传若干条数据 | **缓冲通道**,容量给够条数(`CHANNEL_NEW(8)`),发送侧不挂起 |
+| 严格的一次交接同步点 | 无缓冲通道 + 一对任务,各跑一次 |
+| 「发 N 条收 N 条」走无缓冲 | 做不到,用缓冲通道 |
+
+需要真正的多轮无缓冲传递,那是运行期的段内恢复,本版没有 —— 一旦要改
+那个模型,§0.1「运行期语义与 v0.9 逐条一致」就不成立了。
+
 
 ## Imports — spec §9.2
 

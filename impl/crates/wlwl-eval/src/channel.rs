@@ -69,6 +69,10 @@ pub enum TryResult<T> {
 ///   pop together (FIFO).
 /// - `receiver_waiters`: task ids parked because RECV found buf
 ///   empty (`ReceivingOn`). Filled by the runtime, not user code.
+/// - `rendezvous`: `(sender, receiver)` task-id pairs that have already
+///   completed a rendezvous on this channel, with how many times. Backs
+///   the [v0.10.1 / R10-014] livelock guard — see
+///   [`Channel::record_rendezvous`].
 #[derive(Debug)]
 pub struct Channel {
     pub id: ChannelId,
@@ -79,6 +83,7 @@ pub struct Channel {
     pub sender_waiters: Vec<crate::runtime::TaskId>,
     pub sender_waiter_values: Vec<Value>,
     pub receiver_waiters: Vec<crate::runtime::TaskId>,
+    pub rendezvous: Vec<(crate::runtime::TaskId, crate::runtime::TaskId, u32)>,
 }
 
 impl Channel {
@@ -94,6 +99,7 @@ impl Channel {
             sender_waiters: Vec::new(),
             sender_waiter_values: Vec::new(),
             receiver_waiters: Vec::new(),
+            rendezvous: Vec::new(),
         }
     }
 
@@ -294,6 +300,55 @@ impl Channel {
     /// hand off directly or park the sender.
     pub fn has_receiver_waiter(&self) -> bool {
         !self.receiver_waiters.is_empty()
+    }
+
+    /// [v0.10.1 / R10-014] 记录一次 rendezvous,返回这是同一对任务的第几次。
+    ///
+    /// **为什么按「任务对」而不是按「通道」计数**:同一个通道上先后跑
+    /// 两组互不相干的生产者/消费者(`p1`/`c1` 收工后再 `p2`/`c2`)是完全合法的,
+    /// 按通道累计会把它误判。按任务对累计只抓「同一对任务在同一通道上
+    /// rendezvous 了第二次」—— 而在当前的段重跑模型下,这**必然**是活锁。
+    ///
+    /// **为什么阈值是 2 而不是某个经验值**:通道操作挂起时任务的
+    /// `running_env` 被丢弃,被唤醒的任务从段首重跑(见
+    /// `Evaluator::run_task_segments` 第 4 步:只有 `Yield(Explicit)`
+    /// 才保存 env,其它 signal 一律丢弃)。于是:
+    ///
+    /// - 第一次 rendezvous:接收方停泊、发送方被唤醒后重跑,此时它看到有
+    ///   停泊的接收者,`try_pair_send` 交接成功,SEND 正常结束 —— 能推进;
+    /// - 第二次 rendezvous:发送方的循环变量已经回到初值,投出去的还是同一个
+    ///   值,接收方重跑后又回到初值 —— 两边的状态与第一次**完全相同**,
+    ///   永远不会推进。
+    ///
+    /// 所以「第二次」不是调出来的阈值,是当前架构的硬边界。真正修它需要
+    /// 段内恢复(保留 env 并从挂起点之后继续),那是独立立项的事。
+    pub fn record_rendezvous(
+        &mut self,
+        sender: crate::runtime::TaskId,
+        receiver: crate::runtime::TaskId,
+    ) -> u32 {
+        if let Some(slot) = self
+            .rendezvous
+            .iter_mut()
+            .find(|(s, r, _)| *s == sender && *r == receiver)
+        {
+            slot.2 += 1;
+            slot.2
+        } else {
+            self.rendezvous.push((sender, receiver, 1));
+            1
+        }
+    }
+
+    /// 这一对任务之前是否已经在这条通道上 rendezvous 过。
+    pub fn has_rendezvoused(
+        &self,
+        sender: crate::runtime::TaskId,
+        receiver: crate::runtime::TaskId,
+    ) -> bool {
+        self.rendezvous
+            .iter()
+            .any(|(s, r, _)| *s == sender && *r == receiver)
     }
 }
 

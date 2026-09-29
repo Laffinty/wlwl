@@ -1,7 +1,7 @@
 {
- "exit": 1,
+ "exit": 0,
  "contains": [
-  "E0065"
+  "1"
  ],
- "deviation": true
+ "_why": "[v0.10.1 / R10-014] 这一份原本锁的是 BUG:无缓冲通道上生产者先 SPAWN 会假死锁(E0065)。根因不是「唤醒与死锁判定先后」,而是 CHANNEL_RECV 缺了 CHANNEL_SEND 已经有的对偶那一半 —— 它只查 buf,而无缓冲通道上发送者把值暂存在 sender_waiter_values 里,接收者根本看不到。spec 17.2.1 明写「互为对端的挂起收发双方不构成死锁」。现在它正常跑通并输出 1。"
 }

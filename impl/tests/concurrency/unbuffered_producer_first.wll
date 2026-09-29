@@ -1,0 +1,34 @@
+// concurrency/unbuffered_producer_first.wll - R10-014 golden fixture
+//
+// spec §17.2.1:「同一通道上互为对端的挂起收发双方**不**构成死锁」。
+//
+// [v0.10.1 / R10-014] v0.9-v0.10 里这一份**跑不通**:生产者先被调度,
+// CHANNEL_SEND 在无缓冲通道上找不到等待中的接收者而挂起,把值存在
+// sender_waiter_values 里;接收者醒来只查 buf(空的)于是也挂起。两个任务
+// 同挂一条通道 -> L1 判定死锁 -> E0065。也就是说阻塞型 CHANNEL_SEND /
+// CHANNEL_RECV 实际上**顺序敏感**,而文档里没有任何地方提示这一点。
+//
+// 根因不在「唤醒与死锁判定的先后」,而是 CHANNEL_RECV 缺了 CHANNEL_SEND
+// 已经有的对偶那一半(`try_pair_send` / `try_pair_recv`)。
+//
+// 这份夹具是**金标准**:无缓冲 + 生产者先跑,必须正常完成。
+// 配套的 `unbuffered_consumer_first.wll` 是同一条通道的镜像顺序,
+// 两个夹具一起把「顺序无关」钉死 —— 之前只有消费者先那条能过。
+//
+// Expected stdout (1 line):
+//   1
+
+LET(out,
+    SCOPE(FUN(() ,
+        LET(ch, CHANNEL_NEW(0));
+        // 生产者**先** SPAWN。它会先跑、先挂起。
+        LET(p, SPAWN(FUN(() ,
+            CHANNEL_SEND(ch, 1);
+            CHANNEL_CLOSE(ch);
+            0
+        )));
+        LET(c, SPAWN(FUN(() , CHANNEL_RECV(ch))));
+        AWAIT(c)
+    ))
+);
+PRINT(out)

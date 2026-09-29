@@ -124,6 +124,17 @@ pub enum ErrorCode {
     E0061, // file not found
     E0062, // file permission denied
     E0063, // network error (general)
+    // [v0.10.1 / R10-014] 无缓冲通道上同一对任务**第二次** rendezvous。
+    //
+    // 刻意与 E0065(死锁)分开:规范 §17.2.1 明写「同一通道上互为对端的挂起
+    // 收发双方**不**构成死锁」。这条报的是另一个事实 —— 运行时确实配上了对,
+    // 但它**推进不了**:通道操作挂起时任务的 `running_env` 被丢弃,被唤醒的
+    // 任务从段首重跑,于是循环里的状态回到初值,同样的值被再投一次,
+    // 下一轮 rendezvous 与这一轮完全相同,永远循环。
+    //
+    // 不加这条护栏,补上配对逻辑后这类程序会**静默挂起**;加了它,用户得到
+    // 一条能照着改的诊断,而不是一个跑不完的进程。
+    E0064,
     E0065, // [v0.9 Step 5 / ADR-0017 §3.4] structured-concurrency deadlock detected:
     //   L1 strict — same scope, ≥ 2 tasks parked on Suspended(ChannelOp),
     //   no peer task available to wake them. Payload carries
@@ -305,6 +316,7 @@ impl ErrorCode {
             ErrorCode::E0061 => "E0061",
             ErrorCode::E0062 => "E0062",
             ErrorCode::E0063 => "E0063",
+            ErrorCode::E0064 => "E0064",
             ErrorCode::E0065 => "E0065",
             ErrorCode::E0066 => "E0066",
             ErrorCode::E0070 => "E0070",
@@ -467,6 +479,10 @@ impl ErrorCode {
             | ErrorCode::E0056
             // E0057 removed v0.9 Step 6 (ADR-0018)
             | ErrorCode::E0058 => ErrorCategory::Concurrent,
+            // [v0.10.1 / R10-014] repeated rendezvous on the same
+            // unbuffered channel cannot make progress. Same bucket as
+            // the other concurrent codes.
+            ErrorCode::E0064 => ErrorCategory::Concurrent,
             // [v0.9 Step 5 / ADR-0017 §3.4] structured-concurrency
             // deadlock (L1 strict). Same bucket as the other
             // concurrent codes (E0050..E0058 group).
