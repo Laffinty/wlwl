@@ -37,7 +37,12 @@ enum OutputFormat {
 }
 
 #[derive(Parser, Debug)]
-#[command(name = "wlwl", version, about = "WLWL language interpreter")]
+#[command(
+    name = "wlwl",
+    version,
+    about = "WLWL language toolchain",
+    after_help = "Run 'wlwl <COMMAND> --help' for more information about a command."
+)]
 struct Cli {
     #[command(subcommand)]
     cmd: Cmd,
@@ -45,7 +50,7 @@ struct Cli {
 
 #[derive(clap::Subcommand, Debug)]
 enum Cmd {
-    /// Run a .wll source file
+    /// Run a .wll file
     Run {
         /// Path to the .wll file
         file: PathBuf,
@@ -53,16 +58,30 @@ enum Cmd {
         #[arg(long, value_enum, default_value_t = OutputFormat::Human)]
         format: OutputFormat,
     },
-    /// Only check (parse) without execution
+    /// Parse a .wll file without running it
+    #[command(long_about = "\
+Parse a .wll file without running it.
+
+Reports syntax errors, plus unused-binding warnings (W0010 / W0011 /
+W0012) and, when a wlwl.toml enables them, the static-contract
+diagnostics E0110-E0116.
+
+It does not resolve names. Failures that only surface at run time are
+not reported here:
+
+  PRINT(NOPE);            E0020 undefined name
+  PRINT(/(1, 0));          E1003 division by zero
+  LET(x: BOOLEAN, \"yes\");  needs a wlwl.toml to be checked
+
+`run` finds those; `check` does not.")]
     Check {
         /// Path to the .wll file
         file: PathBuf,
-        /// Output format for errors
+        /// Output format for diagnostics
         #[arg(long, value_enum, default_value_t = OutputFormat::Human)]
         format: OutputFormat,
     },
-    /// Emit the AST of a .wll source file as JSON (AI-friendly).
-    /// Implemented per D015 from the Phase 2 deviations log.
+    /// Print the parse tree as JSON
     Ast {
         /// Path to the .wll file
         file: PathBuf,
@@ -71,19 +90,38 @@ enum Cmd {
         #[arg(long, value_enum, default_value_t = OutputFormat::Json)]
         format: OutputFormat,
     },
-    /// Print the canonical formatter output (spec v0.4 §16.3) to
-    /// stdout. Never writes the file in place (comments are not
-    /// preserved by the AST rebuild -- see deviations P4-E2-001).
+    /// Print the canonical formatter output to stdout
+    #[command(
+        long_about = "\
+Print the canonical formatter output to stdout.
+
+The canonical form carries no trailing `;` on the last statement, and
+the formatter does not preserve comments -- it rebuilds the file from
+the parse tree. `-w` therefore refuses to write a file that contains
+comments rather than deleting them.
+
+Without `-w` nothing is written; redirect the output yourself if the
+file is comment-free.",
+        after_help = "\
+Examples:
+  wlwl fmt x.wll           print the canonical form
+  wlwl fmt --check x.wll   exit 1 if the file is not canonical
+  wlwl fmt -w x.wll        rewrite in place (refuses if it has comments)"
+    )]
     Fmt {
         /// Path to the .wll file
         file: PathBuf,
-        /// Check mode: print nothing; exit 1 with a W0053 diagnostic
-        /// when the source deviates from the canonical form.
-        #[arg(long)]
+        /// Report non-canonical source instead of printing it: exit 1
+        /// with a W0053 diagnostic, print nothing.
+        #[arg(long, conflicts_with = "write")]
         check: bool,
+        /// Rewrite the file in place. Refuses when the file contains
+        /// comments: the canonical form is rebuilt from the parse tree,
+        /// so writing would delete them.
+        #[arg(long, short = 'w')]
+        write: bool,
     },
-    /// Print the module signature implied by a .wll file (v0.10 Step 7 /
-    /// plan §4.3 C3). Writes nothing -- pipe it yourself.
+    /// Print the module signature implied by a .wll file
     Sig {
         /// Path to the .wll file
         file: PathBuf,
@@ -91,8 +129,7 @@ enum Cmd {
         #[arg(long, value_enum, default_value_t = SigFormat::Text)]
         format: SigFormat,
     },
-    /// Write the module signature to `<file>.wll.sig` (v0.10 Step 7 /
-    /// plan §4.3 C3).
+    /// Write the module signature to `<file>.wll.sig`
     ///
     /// Never overwrites an existing signature unless `--force`: a
     /// hand-tuned signature is hand-tuned for a reason.
@@ -103,25 +140,19 @@ enum Cmd {
         #[arg(long)]
         force: bool,
     },
-    /// Run a language server on stdio (v0.10 Step 10 / plan §5.3 P1-3).
+    /// Run a language server on stdio
     ///
     /// A thin shell over the existing parser + static diagnostics +
     /// builtin registry — no LSP framework, no new dependencies. Editors
     /// normally launch it themselves; run it by hand to check the
     /// handshake.
     Lsp,
-    /// Print the module's public interface as JSON (v0.10 Step 10 /
-    /// plan §5.3): exports, their declared types, the `SEALED` surface
-    /// and the signature file path. The same shape a `.wll.sig` file
-    /// describes, in machine-readable form.
+    /// Print the module's public surface as JSON
     Interface {
         /// Path to the .wll file
         file: PathBuf,
     },
-    /// Print the type-system schema as JSON (v0.10 Step 10 / plan §5.3):
-    /// every type the static layer understands, the `Comparable` bound,
-    /// and the static-contract diagnostic codes. For tools that need to
-    /// reason about WLWL types without hard-coding this list.
+    /// Print the type system and static-contract codes as JSON
     Schema,
 }
 
@@ -145,7 +176,7 @@ fn main() -> ExitCode {
         Cmd::Run { file, format } => run_file(&file, format, true),
         Cmd::Check { file, format } => run_file(&file, format, false),
         Cmd::Ast { file, format } => ast_file(&file, format),
-        Cmd::Fmt { file, check } => fmt_file(&file, check),
+        Cmd::Fmt { file, check, write } => fmt_file(&file, check, write),
         Cmd::Sig { file, format } => sig_file(&file, format),
         Cmd::SigGen { file, force } => sig_gen_file(&file, force),
         Cmd::Lsp => lsp::Server::run(),
@@ -521,7 +552,7 @@ fn strip_comments(src: &str) -> String {
     String::from_utf8(out).unwrap_or_default()
 }
 
-fn fmt_file(file: &PathBuf, check: bool) -> ExitCode {
+fn fmt_file(file: &PathBuf, check: bool, write: bool) -> ExitCode {
     let source = match fs::read_to_string(file) {
         Ok(s) => s,
         Err(e) => {
@@ -567,6 +598,41 @@ fn fmt_file(file: &PathBuf, check: bool) -> ExitCode {
                 ExitCode::from(1)
             }
         }
+    } else if write {
+        // [v0.10.1] `-w` 加了护栏:文件里有注释就**拒写**。
+        //
+        // 格式化器从 AST 重建,**保不住注释**(偏差 P4-E2-001)。无护栏的
+        // `-w` 会把「删光你所有注释」变成一个开关的事 —— 那是本 CLI 里最容易
+        // 造成不可逆损失的操作。所以这里宁可不给,也不给一个会毁文件的开关。
+        //
+        // 判据用 `strip_comments`:它对字符串字面量里的 `//` 是有状态的,
+        // 不会把 `"http://x"` 当注释。源文本与剥完的结果不等 = 文件里有注释。
+        let stripped = strip_comments(&source);
+        if stripped != source {
+            let d = WlwlDiagnostic::new(
+                ErrorCode::E0042,
+                format!(
+                    "refusing to rewrite {}: it contains comments, and the canonical \
+                     form is rebuilt from the parse tree so comments would be lost",
+                    file.display()
+                ),
+                Location::point(file_name, 1, 1),
+            )
+            .with_hint(
+                "run `wlwl fmt <file>` and review the output by hand, or strip the \
+                 comments first",
+            );
+            return report_diag(d, OutputFormat::Human);
+        }
+        if let Err(e) = fs::write(file, &canonical) {
+            let d = WlwlDiagnostic::new(
+                ErrorCode::E0042,
+                format!("cannot write ''{}'': {}", file.display(), e),
+                Location::point(file_name, 0, 0),
+            );
+            return report_diag(d, OutputFormat::Human);
+        }
+        ExitCode::SUCCESS
     } else {
         print!("{}", canonical);
         ExitCode::SUCCESS
@@ -577,13 +643,31 @@ fn report_error(err: WlwlError, format: OutputFormat) -> ExitCode {
     report_diag(err.diagnostic().clone(), format)
 }
 
+/// 退出码契约(见 spec §11.5)。
+///
+/// - `0` 成功
+/// - `1` 程序不对:运行期诊断,或静态层拦下的类型 / 契约诊断
+/// - `2` 命令行用法错误(clap 自己定的,未改)
+/// - `3` **源文件没能解析出来**
+///
+/// [v0.10.1] 改之前只有 `0` / `1` / `2`,而 `1` 同时表示「语法错」「类型错」
+/// 「未定义名」「除零」…… 脚本拿到 `1` 无法判断该回去改代码还是改逻辑。
+/// 只加**一个**码,不加一串:能解析出来但不对的,都还是「程序不对」,归 `1`。
+fn exit_code_for(d: &WlwlDiagnostic) -> ExitCode {
+    if d.code.is_parse_failure() {
+        ExitCode::from(3)
+    } else {
+        ExitCode::from(1)
+    }
+}
+
 fn report_diag(d: WlwlDiagnostic, format: OutputFormat) -> ExitCode {
     match format {
         OutputFormat::Human => eprintln!("{}", d.render_human()),
         OutputFormat::Json => eprintln!("{}", d.render_json()),
         OutputFormat::Jsonl => eprintln!("{}", d.render_jsonl()),
     }
-    ExitCode::from(1)
+    exit_code_for(&d)
 }
 
 // Suppress unused-import warning for Severity when no human rendering
@@ -868,7 +952,13 @@ fn static_check_gate(
         }
     }
     if blocking {
-        Some(ExitCode::from(1))
+        // [v0.10.1] 走同一条退出码契约。静态层也会产出 parser 的码 ——
+        // 签名文件里写 `EXPORT add (ARRAY[INTEGER]: Comparable)` 报的就是
+        // `E0010`(签名文法错误)。它此前在这里硬编码 `1`,于是同一种「读不
+        // 出来的文本」会因为走哪条路而拿到不同的退出码。
+        Some(exit_code_for(
+            rendered.first().expect("blocking implies non-empty"),
+        ))
     } else {
         None
     }
@@ -1508,6 +1598,110 @@ mod tests {
         p
     }
 
+    // ---- [v0.10.1] 退出码契约(spec §11.5)------------------------
+
+    /// 契约的全部四格。每一格都用**真实子进程**验,不经 `run_file` 内部 ——
+    /// 因为契约的意义就是「外面那个 shell 看到什么」。
+    #[test]
+    fn the_exit_code_contract_is_four_distinguishable_values() {
+        let syntax = write_tmp("PRINT(1) PRINT(2)\n", "ec_syntax.wll");
+        let undef = write_tmp("PRINT(NOPE);\n", "ec_undef.wll");
+        let divzero = write_tmp("PRINT(/(1, 0));\n", "ec_divzero.wll");
+        let ok = write_tmp("PRINT(\"hi\");\n", "ec_ok.wll");
+
+        // 3 = 源文件没解析出来
+        assert_eq!(
+            run_file(&syntax, OutputFormat::Human, true),
+            ExitCode::from(3),
+            "a source that does not parse must exit 3"
+        );
+        // 1 = 程序不对(运行期)
+        assert_eq!(
+            run_file(&undef, OutputFormat::Human, true),
+            ExitCode::from(1),
+            "an undefined name is a runtime failure, not a parse failure"
+        );
+        assert_eq!(
+            run_file(&divzero, OutputFormat::Human, true),
+            ExitCode::from(1)
+        );
+        // 0
+        assert_eq!(run_file(&ok, OutputFormat::Human, true), ExitCode::SUCCESS);
+
+        // check 走同一条路:解析错也是 3
+        assert_eq!(
+            run_file(&syntax, OutputFormat::Human, false),
+            ExitCode::from(3),
+            "`check` and `run` must never disagree on a parse failure"
+        );
+    }
+
+    /// 静态契约那 6 个码也是退出码 1,不是 3 —— 源文件能解析,只是类型/契约不对。
+    #[test]
+    fn static_contract_failures_exit_one_not_three() {
+        for code in [
+            ErrorCode::E0110,
+            ErrorCode::E0111,
+            ErrorCode::E0112,
+            ErrorCode::E0113,
+            ErrorCode::E0114,
+            ErrorCode::E0115,
+            ErrorCode::E0116,
+        ] {
+            assert!(
+                !code.is_parse_failure(),
+                "{code:?} must not be classified as a parse failure"
+            );
+        }
+    }
+
+    // ---- [v0.10.1] `fmt -w` 的护栏 --------------------------------
+
+    /// 无注释的文件:`-w` 真的改写它。
+    #[test]
+    fn fmt_write_rewrites_a_comment_free_file() {
+        let p = write_tmp("LET( x ,1 );\n", "fmt_w_plain.wll");
+        assert_eq!(fmt_file(&p, false, true), ExitCode::SUCCESS);
+        assert_eq!(fs::read_to_string(&p).unwrap(), "LET(x, 1)\n");
+    }
+
+    /// **有注释的文件:`-w` 拒写,文件一字不动。**
+    ///
+    /// 格式化器从 AST 重建,保不住注释。无护栏的 `-w` 会把「删光所有注释」
+    /// 变成一个开关的事 —— 宁可不给这个开关,也不给一个会毁文件的开关。
+    #[test]
+    fn fmt_write_refuses_a_file_with_comments_and_leaves_it_untouched() {
+        let original = "// keep me\nLET( x ,1 );\n";
+        let p = write_tmp(original, "fmt_w_commented.wll");
+        let code = fmt_file(&p, false, true);
+        assert_eq!(code, ExitCode::from(1), "must refuse, not write");
+        assert_eq!(
+            fs::read_to_string(&p).unwrap(),
+            original,
+            "a refused rewrite must leave the file byte-identical"
+        );
+    }
+
+    /// 字符串字面量里的 `//` 不是注释,不能因此误判为「有注释」。
+    #[test]
+    fn fmt_write_does_not_mistake_a_url_inside_a_string_for_a_comment() {
+        let p = write_tmp("PRINT(\"http://example.com\");\n", "fmt_w_url.wll");
+        assert_eq!(fmt_file(&p, false, true), ExitCode::SUCCESS);
+        assert_eq!(
+            fs::read_to_string(&p).unwrap(),
+            "PRINT(\"http://example.com\")\n"
+        );
+    }
+
+    /// 不带 `-w` 时行为不变:只输出,一个字都不写。
+    #[test]
+    fn fmt_without_write_still_prints_and_leaves_the_file_alone() {
+        let original = "LET( x ,1 );\n";
+        let p = write_tmp(original, "fmt_nowrite.wll");
+        assert_eq!(fmt_file(&p, false, false), ExitCode::SUCCESS);
+        assert_eq!(fs::read_to_string(&p).unwrap(), original);
+    }
+
     #[test]
     fn run_hello() {
         let p = write_tmp("LET(x, 1); PRINT(x);", "hello.wll");
@@ -1519,7 +1713,9 @@ mod tests {
     fn run_parse_error_reports_diagnostic() {
         let p = write_tmp("LET(x, 1) LET(y, 2);", "bad.wll");
         let code = run_file(&p, OutputFormat::Human, true);
-        assert_eq!(code, ExitCode::from(1));
+        // [v0.10.1] 退出码契约(spec §11.5):源文件没解析出来 -> 3。
+        // 此前一律 1,与运行期失败无法区分。
+        assert_eq!(code, ExitCode::from(3));
     }
 
     #[test]
@@ -1885,11 +2081,12 @@ mod tests {
     /// - 层 3 run:同一份源码,`run` 也走同一道门禁。
     #[test]
     fn check_is_layered_parse_static_run() {
-        // 层 1 —— parse。
+        // 层 1 —— parse。退出码 3(源没解析出来)。
+        // [v0.10.1] 层 2 仍是 1:静态诊断不改变「源文件读得出来」这个事实。
         let bad = write_tmp("LET(x, 1) LET(y, 2);", "layer_parse_err.wll");
         assert_eq!(
             run_file(&bad, OutputFormat::Human, false),
-            ExitCode::from(1)
+            ExitCode::from(3)
         );
 
         // 层 2 —— static。
@@ -2201,9 +2398,12 @@ mod tests {
             "\"error\"",
             "EXPORT add (INTEGER, INTEGER) : INTEGER\nMODULE nonsense\n",
         );
+        // [v0.10.1] 签名文件自己写错,报的是语法码 E0010 -> 退出码 3。
+        // 「读不出来的文本」不管出现在主源还是旁路签名文件里,结论必须一致,
+        // 否则同一种故障会因为走哪条路而拿到不同的退出码。
         assert_eq!(
             run_file(&root.join("main.wll"), OutputFormat::Human, false),
-            ExitCode::from(1)
+            ExitCode::from(3)
         );
     }
 
@@ -2636,10 +2836,10 @@ EXPORT([\"add\", \"PI\"]);
     #[test]
     fn p1_fmt_preserves_an_omitted_default_arm() {
         let p = write_tmp("MATCH(1, [[1, 1]]);\n", "p1_fmt.wll");
-        assert_eq!(fmt_file(&p, false), ExitCode::SUCCESS);
+        assert_eq!(fmt_file(&p, false, false), ExitCode::SUCCESS);
         // 显式写了 default 的照常渲染出来。
         let p2 = write_tmp("MATCH(1, [[1, 1]], 0);\n", "p1_fmt2.wll");
-        assert_eq!(fmt_file(&p2, false), ExitCode::SUCCESS);
+        assert_eq!(fmt_file(&p2, false, false), ExitCode::SUCCESS);
     }
 
     // -- v0.10 Step 9 (P1-2): 泛型限形(擦除) -----------------------------
@@ -2708,14 +2908,14 @@ EXPORT([\"add\", \"PI\"]);
     fn p2_fmt_round_trips_a_bounded_annotation() {
         let canonical = "LET(max, FUN((a: T: Comparable, b: T: Comparable): T: Comparable, a))";
         let p = write_tmp(&format!("{canonical}\n"), "p2_fmt.wll");
-        assert_eq!(fmt_file(&p, true), ExitCode::SUCCESS);
+        assert_eq!(fmt_file(&p, true, false), ExitCode::SUCCESS);
         // 非规范拼写(返回注解冒号前多一个空格)会被 fmt 纠正,说明它确实
         // 认识这个形状而不是把它当噪声吞掉。
         let q = write_tmp(
             "LET(max, FUN((a: T: Comparable, b: T: Comparable) : T: Comparable, a));\n",
             "p2_fmt_nc.wll",
         );
-        assert_eq!(fmt_file(&q, false), ExitCode::SUCCESS);
+        assert_eq!(fmt_file(&q, false, false), ExitCode::SUCCESS);
     }
 
     // -- v0.10 Step 10 (P1-3): 工具链薄壳(interface / schema) -----------
@@ -2760,7 +2960,9 @@ EXPORT([\"add\", \"PI\"]);
         let p = write_tmp("LET(x, 1) LET(y, 2);", "bad-json.wll");
         // Capture stderr.
         let code = run_file(&p, OutputFormat::Json, true);
-        assert_eq!(code, ExitCode::from(1));
+        // [v0.10.1] 退出码契约(spec §11.5):源文件没解析出来 -> 3。
+        // 此前一律 1,与运行期失败无法区分。
+        assert_eq!(code, ExitCode::from(3));
     }
 
     #[test]
@@ -2785,7 +2987,9 @@ EXPORT([\"add\", \"PI\"]);
     fn ast_reports_parse_error() {
         let p = write_tmp("LET(x, 1", "ast-bad.wll");
         let code = ast_file(&p, OutputFormat::Json);
-        assert_eq!(code, ExitCode::from(1));
+        // [v0.10.1] 退出码契约(spec §11.5):源文件没解析出来 -> 3。
+        // 此前一律 1,与运行期失败无法区分。
+        assert_eq!(code, ExitCode::from(3));
     }
 
     #[test]
@@ -3150,7 +3354,7 @@ entry = "main.wll"
     #[test]
     fn fmt_prints_canonical_output_successfully() {
         let p = write_tmp("LET( x ,1 );PRINT( x );", "fmt_print.wll");
-        let code = fmt_file(&p, false);
+        let code = fmt_file(&p, false, false);
         assert_eq!(code, ExitCode::SUCCESS);
     }
 
@@ -3159,7 +3363,7 @@ entry = "main.wll"
         // Already-canonical source (including the trailing newline
         // convention) must pass --check.
         let p = write_tmp("LET(x, 1);\nPRINT(x)\n", "fmt_ok.wll");
-        let code = fmt_file(&p, true);
+        let code = fmt_file(&p, true, false);
         assert_eq!(code, ExitCode::SUCCESS);
     }
 
@@ -3167,7 +3371,7 @@ entry = "main.wll"
     fn fmt_check_canonical_source_without_trailing_newline_succeeds() {
         // A missing final newline is not a §16.3 deviation.
         let p = write_tmp("LET(x, 1);\nPRINT(x)", "fmt_ok_nonl.wll");
-        let code = fmt_file(&p, true);
+        let code = fmt_file(&p, true, false);
         assert_eq!(code, ExitCode::SUCCESS);
     }
 
@@ -3175,22 +3379,24 @@ entry = "main.wll"
     fn fmt_check_deviating_source_fails_with_w0053() {
         // Non-canonical whitespace => --check exits 1 (W0053).
         let p = write_tmp("LET( x ,1 );", "fmt_dev.wll");
-        let code = fmt_file(&p, true);
+        let code = fmt_file(&p, true, false);
         assert_eq!(code, ExitCode::from(1));
     }
 
     #[test]
     fn fmt_check_missing_file_reports_error() {
         let p = std::path::PathBuf::from("/nonexistent/fmt_target.wll");
-        let code = fmt_file(&p, true);
+        let code = fmt_file(&p, true, false);
         assert_eq!(code, ExitCode::from(1));
     }
 
     #[test]
     fn fmt_check_parse_error_reports_diagnostic() {
         let p = write_tmp("LET(x, 1", "fmt_bad.wll");
-        let code = fmt_file(&p, true);
-        assert_eq!(code, ExitCode::from(1));
+        let code = fmt_file(&p, true, false);
+        // [v0.10.1] 退出码契约(spec §11.5):源文件没解析出来 -> 3。
+        // 此前一律 1,与运行期失败无法区分。
+        assert_eq!(code, ExitCode::from(3));
     }
 
     // ---- P5-V06-003: fmt --check strips comments from source --------
@@ -3206,7 +3412,7 @@ entry = "main.wll"
                     // trailing\n\
                     PRINT(x)\n";
         let p = write_tmp(src, "fmt_with_line_comments.wll");
-        let code = fmt_file(&p, true);
+        let code = fmt_file(&p, true, false);
         assert_eq!(
             code,
             ExitCode::SUCCESS,
@@ -3225,7 +3431,7 @@ entry = "main.wll"
                    PRINT(x)\n\
                    /* tail */\n";
         let p = write_tmp(src, "fmt_with_block_comments.wll");
-        let code = fmt_file(&p, true);
+        let code = fmt_file(&p, true, false);
         assert_eq!(
             code,
             ExitCode::SUCCESS,
@@ -3239,7 +3445,7 @@ entry = "main.wll"
                    LET(x, 1);\n\
                    PRINT(x)\n";
         let p = write_tmp(src, "fmt_nested_comments.wll");
-        let code = fmt_file(&p, true);
+        let code = fmt_file(&p, true, false);
         assert_eq!(
             code,
             ExitCode::SUCCESS,
@@ -3254,7 +3460,7 @@ entry = "main.wll"
         // still trip W0053.
         let src = "LET(x, 1);PRINT(x);\n";
         let p = write_tmp(src, "fmt_non_canonical.wll");
-        let code = fmt_file(&p, true);
+        let code = fmt_file(&p, true, false);
         assert_eq!(
             code,
             ExitCode::from(1),
@@ -3273,7 +3479,7 @@ entry = "main.wll"
         // Windows 看得见。
         let p = write_tmp("LET(x, 1);\r\nPRINT(x)\r\n", "fmt_crlf.wll");
         assert_eq!(
-            fmt_file(&p, true),
+            fmt_file(&p, true, false),
             ExitCode::SUCCESS,
             "CRLF is a line-ending choice, not a §16.3 layout deviation"
         );
@@ -3285,7 +3491,7 @@ entry = "main.wll"
         // 偏离 —— 留着它就是另一个更难查的同类洞。
         let p = write_tmp("LET(x, 1);\rPRINT(x)\r", "fmt_barecr.wll");
         assert_eq!(
-            fmt_file(&p, true),
+            fmt_file(&p, true, false),
             ExitCode::SUCCESS,
             "a bare CR is a line-ending choice too"
         );
@@ -3298,7 +3504,7 @@ entry = "main.wll"
         // 「--check 变瞎了」。
         let p = write_tmp("LET( x ,1 );\r\nPRINT( x )\r\n", "fmt_crlf_dev.wll");
         assert_eq!(
-            fmt_file(&p, true),
+            fmt_file(&p, true, false),
             ExitCode::from(1),
             "normalising EOL must not launder a genuine layout deviation"
         );
@@ -3311,8 +3517,8 @@ entry = "main.wll"
         let lf = write_tmp("LET(x, 1);\nPRINT(x)\n", "fmt_agree_lf.wll");
         let crlf = write_tmp("LET(x, 1);\r\nPRINT(x)\r\n", "fmt_agree_crlf.wll");
         assert_eq!(
-            fmt_file(&lf, true),
-            fmt_file(&crlf, true),
+            fmt_file(&lf, true, false),
+            fmt_file(&crlf, true, false),
             "line endings must not change what --check concludes"
         );
     }

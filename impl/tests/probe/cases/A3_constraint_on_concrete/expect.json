@@ -1,7 +1,8 @@
 {
- "exit": 1,
+ "exit": 3,
  "contains": [
   "E0010"
  ],
- "deviation": true
+ "deviation": true,
+ "_exit_note": "[v0.10.1] 退出码契约(spec §11.5):`E0010` 是 parser 产出的码,源文件没能解析出来 -> 退出码 3。此前一律 1,与运行期失败无法区分。"
 }

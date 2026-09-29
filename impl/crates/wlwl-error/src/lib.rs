@@ -417,6 +417,28 @@ impl ErrorCode {
         )
     }
 
+    /// **源文件没能解析出来** —— 退出码契约据此分派(见 CLI §11.5)。
+    ///
+    /// [v0.10.1] 刻意**不用** `category()` 判:那条路会把 `E0014` 也算进来
+    /// (`Syntax` 类),而 `E0014`(`YIELD` / `RETURN` 位置错)是**求值期**由
+    /// evaluator 抛出的,源文件本身完全合法。把它算成「解析失败」会让脚本
+    /// 把一个运行期错误误判成源码错误 —— 那正是这个码要消除的歧义。
+    ///
+    /// 这里列的是 parser 真正会产出的那 7 个码。少一个、多一个都会让退出码
+    /// 契约说谎,所以下面有测试把两头的边界都钉住。
+    pub fn is_parse_failure(&self) -> bool {
+        matches!(
+            self,
+            ErrorCode::E0001 // illegal character
+                | ErrorCode::E0002 // unterminated string
+                | ErrorCode::E0003 // unterminated block comment
+                | ErrorCode::E0010 // expected expression
+                | ErrorCode::E0011 // expected ')'
+                | ErrorCode::E0012 // expected ','
+                | ErrorCode::E0013 // expected ';'
+        )
+    }
+
     /// High-level error category (v0.3 `Sec. 14.4` -- 13 buckets).
     pub fn category(&self) -> ErrorCategory {
         match self {
@@ -1143,6 +1165,80 @@ mod tests {
         assert_eq!(ErrorCode::E0100.as_str(), "E0100");
         assert_eq!(ErrorCode::E0060.as_str(), "E0060");
         assert_eq!(ErrorCode::E0083.as_str(), "E0083");
+    }
+
+    /// [v0.10.1] 退出码契约的判据。把两头都钉住 —— 少一个会让脚本把
+    /// 运行期错误当成源码错误,多一个会让源码错误混进「程序跑挂了」。
+    #[test]
+    fn parse_failure_set_is_exactly_the_seven_parser_codes() {
+        for code in [
+            ErrorCode::E0001,
+            ErrorCode::E0002,
+            ErrorCode::E0003,
+            ErrorCode::E0010,
+            ErrorCode::E0011,
+            ErrorCode::E0012,
+            ErrorCode::E0013,
+        ] {
+            assert!(
+                code.is_parse_failure(),
+                "{} should be a parse failure",
+                code.as_str()
+            );
+        }
+
+        // E0014 归 `Syntax` 类,但它是**求值期**位置错(`YIELD` / `RETURN`
+        // 放错地方),源文件本身合法 —— 混进来会让退出码 3 说谎。
+        assert_eq!(
+            ErrorCode::E0014.category(),
+            ErrorCategory::Syntax,
+            "E0014 is in the Syntax category"
+        );
+        assert!(
+            !ErrorCode::E0014.is_parse_failure(),
+            "E0014 must NOT be a parse failure despite its category"
+        );
+
+        // 运行期那一族一律不是。
+        for code in [
+            ErrorCode::E0020, // undefined name
+            ErrorCode::E0022, // arity
+            ErrorCode::E0024, // immutable SET
+            ErrorCode::E0032, // linear THIS
+            ErrorCode::E0050,
+            ErrorCode::E0058,
+            ErrorCode::E0100, // PANIC
+            ErrorCode::E0102, // ERR escaped
+            ErrorCode::E1003, // divide by zero
+        ] {
+            assert!(
+                !code.is_parse_failure(),
+                "{} must not be a parse failure",
+                code.as_str()
+            );
+        }
+    }
+
+    /// [v0.10.1] 静态契约那 6 个码也不是解析失败 —— 它们是编译期**类型/
+    /// 契约**诊断,源文件照样能解析。退出码 1 覆盖它们(「程序不对」),
+    /// 退出码 3 专指「源码读不出来」。
+    #[test]
+    fn static_contract_codes_are_not_parse_failures() {
+        for code in [
+            ErrorCode::E0110,
+            ErrorCode::E0111,
+            ErrorCode::E0112,
+            ErrorCode::E0113,
+            ErrorCode::E0114,
+            ErrorCode::E0115,
+            ErrorCode::E0116,
+        ] {
+            assert!(
+                !code.is_parse_failure(),
+                "{} is a static diagnostic",
+                code.as_str()
+            );
+        }
     }
 
     #[test]

@@ -172,6 +172,10 @@ jobs:
         working-directory: impl
         run: ./target/release/wlwl run examples/phase2_demo.wll
 
-      - name: wlwl check (parse + name-check only)
+      # [v0.10.1] step 名此前写 "parse + name-check only",但 `check` 并不做
+      # name-check:实测 `PRINT(NOPE)` 在 `check` 下是 `OK: parsed`(`E0020` 是
+      # 运行期诊断)。名字改成它实际做的事,免得下一个人以为这里挡住了
+      # 未定义名。完整边界见 `wlwl check --help`。
+      - name: wlwl check (parse + lint; no name resolution)
         working-directory: impl
         run: ./target/release/wlwl check examples/phase2_demo.wll
