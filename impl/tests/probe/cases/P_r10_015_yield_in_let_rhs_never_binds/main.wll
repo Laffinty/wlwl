@@ -1,0 +1,13 @@
+// R10-015 · LET(x, YIELD()) 里的 x 根本没绑定
+//
+// 规范 §17.1 声称「挂起后继续;x 取 YIELD 的值 NULL」。实测:整条 LET 不完成,
+// x **从未**建立,后续引用 x 直接 E0020。这比「x 是 NULL」更严重 ——
+// NULL 至少是可用的值,未绑定是硬错。
+//
+// 顺带钉住间接调用那行:`LET(y, YIELD)` 报 undefined name 'YIELD',
+// 所以规范说的「间接调用与直接 YIELD() 等价」也不成立。
+
+SCOPE(FUN(() ,
+  LET(h, SPAWN(FUN(() , LET(x, YIELD()); x)));
+  PRINT(AWAIT(h))
+))

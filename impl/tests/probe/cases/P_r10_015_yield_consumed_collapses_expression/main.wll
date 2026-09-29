@@ -1,0 +1,27 @@
+// R10-015 · YIELD 的值被外层表达式消费时,最外层表达式整体塌成 NULL
+//
+// 规范 §17.1 的表此前声称:
+//   IF(cond, YIELD(), 42)  -> 走分支后继续,结果 42
+//   [1, YIELD(), 3]        -> 字面量为 [1, NULL, 3]
+//   WHILE / FOR 体内的 YIELD -> 恢复嵌套体的剩余部分
+// 三条**实测全部相反**:塌掉的是**整个最外层表达式**,不只是 YIELD 所在位置。
+//
+// D_ stmt 行是**对照组**:YIELD 在语句位(值被丢弃)时剩余部分照常执行,
+// 挂起前建立的绑定在恢复后可见 —— 这一条是兑现的。
+//
+// 这条 case 断言的是**当前实现**(与规范文本矛盾),故标 deviation。
+// v0.11 真正实现续体保存时它会转红 —— 那正是要看的信号。
+
+SCOPE(FUN(() ,
+  LET(a, SPAWN(FUN(() , IF(TRUE, YIELD(), 42))));
+  PRINT("A_if=", AWAIT(a));
+  LET(b, SPAWN(FUN(() , [1, YIELD(), 3])));
+  PRINT("B_arr=", AWAIT(b));
+  LET(c, SPAWN(FUN(() , +(YIELD(), 100))));
+  PRINT("C_add=", AWAIT(c));
+  LET(d, SPAWN(FUN(() , LET(x, 7); YIELD(); x)));
+  PRINT("D_stmt=", AWAIT(d));
+  LET(e, SPAWN(FUN(() , LET MUT(n, 0); LET MUT(k, 0); WHILE(<(k, 3), SET(k, +(k, 1)); SET(n, +(n, 1)); YIELD()); n)));
+  PRINT("E_loop=", AWAIT(e));
+  0
+))

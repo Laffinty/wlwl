@@ -1,0 +1,10 @@
+{
+ "exit": 1,
+ "deviation": true,
+ "contains": [
+  "E0020",
+  "undefined name",
+  "`x`"
+ ],
+ "_why": "[v0.10.1 / R10-015] 规范 §17.1 写「LET(x, YIELD()) 挂起后继续;x 取 YIELD 的值 NULL」。实测不是 x 为 NULL,而是整条 LET **不完成**、x 根本没绑定 —— 引用它是硬错 E0020。这条比同行其余四条更值得单独钉:「值是 NULL」与「绑定不存在」对写程序的人是完全不同的两种后果。配套的间接调用行(LET(y, YIELD); y()) 报 undefined name `YIELD`,已写进本 case 的 main.wll 注释与规范 §17.1 表。"
+}
