@@ -386,3 +386,45 @@
   blob 本身就是 CRLF**,而其余 178 个 `.wll` / `.sig` 全是 LF。恰好前两个是
   R10-070 刚接进 CI 的示例。归一化它们会在下一次 checkout 时产生一次真实
   diff,本轮不扩大。
+
+### D10-019 · 4 个「已注册但调不通」的幽灵条目已从注册表与附录 G 移除
+
+- **状态**:**已修复(2026-09-30)**
+- **发现时机**:收尾复核。两份只读审计各报出「`AND` / `OR` / `MODULE` 缺文档 /
+  缺示例」,实跑后发现**比缺文档严重**:它们**根本调不通**。
+- **现象**(全部实测):
+
+  | 条目 | 实测 | 根因 |
+  |---|---|---|
+  | `AND` / `OR` | `E0020: undefined name` | 注册表标 `LexerMacro`,但 **lexer 里没有这两个记号**(零命中) |
+  | `MODULE(name?, body)` | `E0020: undefined name` | 规范文法的 `ModuleDecl = Import \| Export \| SealedDecl` **本就没有它** |
+  | `EXPECT_ERR`(全局) | `E0020: undefined name`(正确元数也一样) | 同名可用的只有 `wlwl:std.test` 的导出(1 参) |
+
+  `AND(FALSE, /(1, 0))` 报的是 `E1003` 除零而不是 `undefined name` —— 实参
+  **先被求值**,才轮到解析名字;这个顺序最能说明问题:名字压根没被认出来。
+
+- **结构性根因**:`b11_registry_covers_resolve_builtin` 只对
+  `ResolvedBuiltin` / `ResolvedCompat` 断言「能解析到」。`LexerMacro` 的语义是
+  「lexer 产生记号、parser 降级」—— **没有任何一条测试检查 lexer 真的会
+  产生那个记号**。这一整类结构性裸奔,四个条目因此一路走到发布。
+  (加上此前已处置的 `ARRAY(items...)` / `DICT(pairs...)`,同类共 5 个。)
+- **处置(与 D10-013 一致)**:**移除**,不补实现。补 `AND` / `OR` 看着只差一步,
+  但那是**在 patch 版里新增能力**;`MODULE` 更是要动文法。三份副本一起说能用
+  而实现没有,最诚实的处理是让注册表和附录 G **不再声称它们存在**。
+- **连带改动**:附录 G 110 → **106** 条,词法宏构造 28 → **20**;
+  结构化签名首批 60 → **58**(`AND` / `OR` 带签名),未结构化面 50 → **48**
+  (`MODULE` / `EXPECT_ERR` 本就没有)。
+- **锁测试**:新增 `crates/wlwl-cli/tests/lexer_macro_coverage.rs`,对每个
+  `LexerMacro` 条目**实跑** `wlwl run` 算出「调不通的」集合,而不是手抄名单 ——
+  下一个幽灵出现就红。`KNOWN_NOT_LOWERED` 现在是**空的**。
+  它自己踩了两个坑并写进注释:`wlwl check` 报不出运行期的 `undefined name`
+  (第一版主测试**假通过**,靠反向棘轮才暴露);两条测试并行共用临时目录互相
+  读走对方的探针文件。
+- **`EXPECT_ERR` 的两面**:全局注册表条目已移除,但 `ERR_CONSUMER_REGISTRY`
+  里的**同名项必须留** —— `wlwl:std.test` 导出的那个是真 ERR 消费者(Phase B7),
+  走同一条运行时 short-circuit 路径。`b11_err_consumer_registry_consistent`
+  因此新增 `STDLIB_ONLY` 豁免表,并**反向钉一句**:被豁免的名字若哪天回到注册表,
+  这条测试会红,提醒把豁免撤掉 —— 否则真实断言会永久失去对它的覆盖。
+  「不是全局内建」与「不是 ERR 消费者」是两回事。
+- **与 v0.9 / v0.10 兼容性**:**无行为变化**。这些名字从来就调不通,不存在依赖
+  它们的可运行程序;变的是注册表与附录 G 不再声称它们能用。

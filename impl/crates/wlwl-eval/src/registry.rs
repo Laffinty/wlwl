@@ -544,17 +544,6 @@ pub const BUILTIN_REGISTRY: &[BuiltinSpec] = &[
         section: "§8.1",
     },
     BuiltinSpec {
-        name: "EXPECT_ERR",
-        signature: "EXPECT_ERR(expr) -> OK(payload) / ERR(E0049)",
-        sig: None,
-        group: BuiltinGroup::Result,
-        err_consumer: ErrConsumerStatus::Yes,
-        macro_fn: true,
-        version: Version::V04,
-        dispatch: DispatchStatus::LexerMacro,
-        section: "§8.3",
-    },
-    BuiltinSpec {
         name: "ERR",
         signature: "ERR(e) -> RESULT",
         sig: None,
@@ -646,28 +635,6 @@ pub const BUILTIN_REGISTRY: &[BuiltinSpec] = &[
         version: Version::V02,
         dispatch: DispatchStatus::LexerMacro,
         section: "§6",
-    },
-    BuiltinSpec {
-        name: "AND",
-        signature: "AND(a, b) -> BOOLEAN (short-circuit)",
-        sig: Some(BuiltinSig::ret_only(SigTy::Boolean)),
-        group: BuiltinGroup::Control,
-        err_consumer: ErrConsumerStatus::No,
-        macro_fn: true,
-        version: Version::V02,
-        dispatch: DispatchStatus::LexerMacro,
-        section: "§4.3",
-    },
-    BuiltinSpec {
-        name: "OR",
-        signature: "OR(a, b) -> BOOLEAN (short-circuit)",
-        sig: Some(BuiltinSig::ret_only(SigTy::Boolean)),
-        group: BuiltinGroup::Control,
-        err_consumer: ErrConsumerStatus::No,
-        macro_fn: true,
-        version: Version::V02,
-        dispatch: DispatchStatus::LexerMacro,
-        section: "§4.3",
     },
     BuiltinSpec {
         name: "NOT",
@@ -1277,17 +1244,6 @@ pub const BUILTIN_REGISTRY: &[BuiltinSpec] = &[
         dispatch: DispatchStatus::LexerMacro,
         section: "§9",
     },
-    BuiltinSpec {
-        name: "MODULE",
-        signature: "MODULE(name?, body) -> NULL",
-        sig: None,
-        group: BuiltinGroup::Module,
-        err_consumer: ErrConsumerStatus::Na,
-        macro_fn: true,
-        version: Version::V02,
-        dispatch: DispatchStatus::LexerMacro,
-        section: "§9",
-    },
     // ── OOP (3) ────────────────────────────────────────────────
     // [v0.9 Step 9a-6 / plan §4.3 / ADR-0019 §4.3] Section
     // anchors for the OOP keywords. Plan §4.3 "spec §13
@@ -1829,9 +1785,13 @@ mod tests {
 
     #[test]
     fn builtin_sig_batch1_covers_exactly_the_planned_entries() {
-        // 首批 = 60 条。**数字本身是锁**:计划 §3.5 定的是 ~40-60,
-        // 超 5 人日就削条目。锁定 60 意味着任何人扩到 61 条时,必须先
-        // 改这条断言并说明理由 —— 而不是悄悄扩大首批覆盖面。
+        // 首批 = 58 条。**数字本身是锁**:计划 §3.5 定的是 ~40-60,
+        // 超 5 人日就削条目。锁定它意味着任何人扩/减一条时,必须先
+        // 改这条断言并说明理由 —— 而不是悄悄改变首批覆盖面。
+        //
+        // [v0.10.1 / R10-064] 60 → 58:`AND` / `OR` 此前带结构化签名,实测
+        // **调不通**(`E0020: undefined name`),已从注册表移除。
+        // 这不是「范围裁剪」,是把一个假的覆盖面改回真的。
         let with_sig: Vec<&str> = BUILTIN_REGISTRY
             .iter()
             .filter(|s| s.sig.is_some())
@@ -1839,8 +1799,8 @@ mod tests {
             .collect();
         assert_eq!(
             with_sig.len(),
-            60,
-            "batch 1 must stay at 60 entries; got {:?}",
+            58,
+            "batch 1 must stay at 58 entries; got {:?}",
             with_sig
         );
         // 反向:未结构化的条目必须显式是 `None`,不能靠「忘了写」。
@@ -1849,7 +1809,9 @@ mod tests {
             .filter(|s| s.sig.is_none())
             .map(|s| s.name)
             .collect();
-        assert_eq!(without.len(), 50);
+        // [v0.10.1 / R10-064] 50 → 48:`MODULE` / `EXPECT_ERR` 此前就没有
+        // 结构化签名(与 `AND` / `OR` 那两条不同),移除后未结构化面少了 2 条。
+        assert_eq!(without.len(), 48);
     }
 
     #[test]
@@ -1900,7 +1862,14 @@ mod tests {
         for n in ["LEN", "STR", "INT", "FLOAT", "BOOL", "CALL"] {
             assert!(covered(n), "Conv group member {n} must be in batch 1");
         }
-        for n in ["AND", "OR", "NOT"] {
+        // [v0.10.1 / R10-064] `AND` / `OR` 此前在这里,已随它们从注册表
+        // 移除而删去 —— 留着会断言一个不存在的条目必须有结构化签名。
+        //
+        // 保留循环形态:这是一张「Control 组的布尔成员」名单,下一批结构化签名
+        // 加进来时直接加一行即可。clippy 的 `single_element_loop` 在这里是
+        // 误报(它不知道这张名单还会长),故显式豁免并说明。
+        #[allow(clippy::single_element_loop)]
+        for n in ["NOT"] {
             assert!(covered(n), "Control boolean member {n} must be in batch 1");
         }
     }
@@ -1931,7 +1900,8 @@ mod tests {
             (">=", SigTy::Boolean),
             ("%", SigTy::Integer),
             ("&&", SigTy::Boolean),
-            ("AND", SigTy::Boolean),
+            // [v0.10.1 / R10-064] `AND` 此前在这里;它实测调不通,已随
+            // 注册表条目一起移除。`OR` 同理,原本就不在这张表里。
             ("NOT", SigTy::Boolean),
             ("FORMAT", SigTy::String),
             ("ARRAY", SigTy::Array),
@@ -2069,8 +2039,10 @@ mod tests {
         );
         assert_eq!(
             BUILTIN_REGISTRY.len(),
-            110,
-            "expected 110 entries: 93 (v0.6) + 17 concurrent builtins (v0.7 §17)"
+            106,
+            "expected 106 entries: 93 (v0.6) + 17 concurrent (v0.7 §17) \
+             - 4 removed in v0.10.1 (AND / OR / MODULE / EXPECT_ERR: \
+             registered but unreachable, see tests/lexer_macro_coverage.rs)"
         );
     }
 

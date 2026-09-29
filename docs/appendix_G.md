@@ -6,7 +6,7 @@
 
 > 对照规范:`docs/standard/wlwl-spec-v0.10.md` 附录 G (规范性)。
 
-总条目数:**110** | 已实现:**86** | LexerMacro:**24** | Deferred:**0**
+总条目数:**106** | 已实现:**86** | LexerMacro:**20** | Deferred:**0**
 
 
 | 名称 | 签名 | ERR 消费者 (§8.3) | 宏函数 (§1.4) | 引入 | 状态 | 实现位置 |
@@ -23,7 +23,7 @@
 | `TYPE` | `TYPE(x) -> STRING (RESULT -> "RESULT")` | ✔ | ✔ | v0.2 | ✓ builtin | `resolve_builtin` (§2.5) |
 | `BOOL` | `BOOL(x) -> BOOLEAN` | ✔ | ❌ | v0.2 | ✓ builtin | `resolve_builtin` (§2.2) |
 | `CALL` | `CALL(fn, args...) -> v` | ❌ | ❌ | v0.2 | ✓ builtin | `resolve_builtin` (§8.3) |
-<!-- RESULT 处理 (12 条) -->
+<!-- RESULT 处理 (11 条) -->
 | `IS_OK` | `IS_OK(x) -> BOOLEAN` | ✔ | ✔ | v0.2 | ✓ macro | parser -> `Expr::*` (§8.3) |
 | `IS_ERR` | `IS_ERR(x) -> BOOLEAN` | ✔ | ✔ | v0.2 | ✓ macro | parser -> `Expr::*` (§8.3) |
 | `OR_DIE` | `OR_DIE(x, default) -> v (v0.3 alias)` | ✔ | ✔ | v0.2 | ✓ compat (W0051/W0054) | `resolve_builtin` (compat, §8.3) |
@@ -34,9 +34,8 @@
 | `TRY` | `TRY(e) -> v / early-RETURN` | ✔ | ✔ | v0.2 | ✓ macro | parser -> `Expr::*` (§6) |
 | `PANIC` | `PANIC(msg) -> 终止` | n/a | ✔ | v0.2 | ✓ macro | parser -> `Expr::*` (§8.4) |
 | `OK` | `OK(v) -> RESULT` | ❌ | ✔ | v0.4 | ✓ macro | parser -> `Expr::*` (§8.1) |
-| `EXPECT_ERR` | `EXPECT_ERR(expr) -> OK(payload) / ERR(E0049)` | ✔ | ✔ | v0.4 | ✓ macro | parser -> `Expr::*` (§8.3) |
 | `ERR` | `ERR(e) -> RESULT` | ❌ | ✔ | v0.4 | ✓ macro | parser -> `Expr::*` (§8.1) |
-<!-- 控制流 / 逻辑 (10 条) -->
+<!-- 控制流 / 逻辑 (8 条) -->
 | `IF` | `IF(cond, t, e?) -> v` | ✔ | ✔ | v0.2 | ✓ macro | parser -> `Expr::*` (§6) |
 | `WHILE` | `WHILE(cond, body) -> NULL` | ❌ | ✔ | v0.2 | ✓ macro | parser -> `Expr::*` (§6) |
 | `FOR` | `FOR(var, iter, body) -> NULL` | ❌ | ✔ | v0.2 | ✓ macro | parser -> `Expr::*` (§6) |
@@ -44,8 +43,6 @@
 | `RETURN` | `RETURN(v?) -> 早返` | n/a | ✔ | v0.2 | ✓ macro | parser -> `Expr::*` (§6) |
 | `BREAK` | `BREAK() -> 跳出` | n/a | ✔ | v0.2 | ✓ macro | parser -> `Expr::*` (§6) |
 | `CONTINUE` | `CONTINUE() -> 跳到下轮` | n/a | ✔ | v0.2 | ✓ macro | parser -> `Expr::*` (§6) |
-| `AND` | `AND(a, b) -> BOOLEAN (short-circuit)` | ❌ | ✔ | v0.2 | ✓ macro | parser -> `Expr::*` (§4.3) |
-| `OR` | `OR(a, b) -> BOOLEAN (short-circuit)` | ❌ | ✔ | v0.2 | ✓ macro | parser -> `Expr::*` (§4.3) |
 | `NOT` | `NOT(a) -> BOOLEAN (取反)` | ❌ | ✔ | v0.2 | ✓ builtin | `resolve_builtin` (§4.3) |
 <!-- 运算符 (14 条) -->
 | `==` | `==(a, b) -> BOOLEAN / ERR 透传` | ❌ | ❌ | v0.2 | ✓ builtin | `resolve_builtin` (§4.3) |
@@ -102,11 +99,10 @@
 | `FROM_CODEPOINTS` | `FROM_CODEPOINTS(arr) -> STRING` | ❌ | ❌ | v0.2 | ✓ builtin | `resolve_builtin` (§10.5) |
 <!-- 格式化 (1 条) -->
 | `FORMAT` | `FORMAT(template, args...) -> STRING` | ❌ | ❌ | v0.4 | ✓ builtin | `resolve_builtin` (§10.7) |
-<!-- 模块系统 (4 条) -->
-| `MODULE_REF` | `MODULE_REF(path) -> MODULE` | ❌ | ❌ | v0.4 | ✓ builtin | `resolve_builtin` (§9) |
+<!-- 模块系统 (3 条) -->
+| `MODULE_REF` | `MODULE_REF(path) -> DICT` | ❌ | ❌ | v0.4 | ✓ builtin | `resolve_builtin` (§9) |
 | `EXPORT` | `EXPORT(names) -> NULL` | n/a | ✔ | v0.2 | ✓ macro | parser -> `Expr::*` (§9) |
 | `IMPORT` | `IMPORT(path, names) -> NULL` | n/a | ✔ | v0.2 | ✓ macro | parser -> `Expr::*` (§9) |
-| `MODULE` | `MODULE(name?, body) -> NULL` | n/a | ✔ | v0.2 | ✓ macro | parser -> `Expr::*` (§9) |
 <!-- OOP (3 条) -->
 | `CLASS` | `CLASS(name, parent, members) -> CLASS (name 传 NULL = 匿名类)` | n/a | ✔ | v0.2 | ✓ macro | parser -> `Expr::*` (§13) |
 | `NEW` | `NEW(cls, args...) -> INSTANCE` | n/a | ✔ | v0.2 | ✓ macro | parser -> `Expr::*` (§13) |

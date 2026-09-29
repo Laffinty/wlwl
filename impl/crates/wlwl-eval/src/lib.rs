@@ -20403,7 +20403,39 @@ TYPE(v);
         // 也不应在注册表里标 ResolvedBuiltin —— 它们是 LexerMacro 且
         // err_consumer = Yes,逻辑上"算 ERR 消费者"。
         // 双向断言:ERR_CONSUMER_REGISTRY ⊆ {err_consumer=Yes 且 ResolvedBuiltin/Compat}
+        //
+        // [v0.10.1 / R10-064] 例外表新增 `EXPECT_ERR`。全局注册表里那个
+        // `EXPECT_ERR` 条目实测调不通(`E0020: undefined name`),已移除;
+        // 但 **`wlwl:std.test` 导出的那个是真 ERR 消费者**(Phase B7 加的),
+        // 它走同一条运行时 short-circuit 路径,所以**必须留在这张表里**。
+        //
+        // 「不是全局内建」与「不是 ERR 消费者」是两回事 —— 这正是本条断言
+        // 第一次要显式区分它们的原因。
+        const STDLIB_ONLY: &[&str] = &["EXPECT_ERR"];
+        // [v0.10.1 / R10-064] `STDLIB_ONLY` 里的名字在 ERR_CONSUMER_REGISTRY
+        // 而不在注册表，所以 `from_const` 会比 `from_registry` 多出它们 ——
+        // 这正是「全局条目已移除、stdlib 导出仍是消费者」的正确形状。
+        //
+        // 反向也钉一句:被豁免的名字**不许**偷偷回到注册表里。哪天有人给
+        // 全局 `EXPECT_ERR` 补上实现,这条会红,提醒把它从豁免表里拿掉 ——
+        // 否则下面那条真实断言会**永久失去**对它的覆盖。
+        //
+        // 写成循环而不是直接 `EXPECT_ERR` 断言:这张表**会长**(下一个
+        // stdlib-only 的 ERR 消费者出现时直接加一行)。clippy 的
+        // `single_element_loop` 在这里是个误报,故显式豁免并说明。
+        #[allow(clippy::single_element_loop)]
+        for name in STDLIB_ONLY {
+            assert!(
+                crate::registry::lookup(name).is_none(),
+                "{name} is carved out as a wlwl:std.test export, so it must NOT be back \
+                 in BUILTIN_REGISTRY — if it became reachable, drop it from STDLIB_ONLY \
+                 so the real assertion below starts covering it again"
+            );
+        }
         for name in ERR_CONSUMER_REGISTRY.iter() {
+            if STDLIB_ONLY.contains(name) {
+                continue;
+            }
             let spec = crate::registry::lookup(name).unwrap_or_else(|| {
                 panic!(
                     "ERR_CONSUMER_REGISTRY entry {:?} not in BUILTIN_REGISTRY",
@@ -20460,12 +20492,18 @@ TYPE(v);
                 spec.name,
             );
         }
-        // sanity:双方条数大致接近 (LexerMacro 例外决定差异)
+        // sanity:双方条数大致接近 (LexerMacro 例外决定差异)。
+        //
+        // [v0.10.1 / R10-064] `STDLIB_ONLY` 里的名字在 ERR_CONSUMER_REGISTRY
+        // 而不在注册表,所以 `from_const` 会比 `from_registry` 多出它们 ——
+        // 这正是「全局条目已移除、stdlib 导出仍是消费者」的正确形状。
         assert!(
-            from_registry.len() >= from_const.len(),
-            "registry has fewer err_consumers ({}) than ERR_CONSUMER_REGISTRY ({})",
+            from_registry.len() + STDLIB_ONLY.len() >= from_const.len(),
+            "registry has fewer err_consumers ({}) than ERR_CONSUMER_REGISTRY ({}) \
+             even after the {}-entry stdlib carve-out",
             from_registry.len(),
             from_const.len(),
+            STDLIB_ONLY.len(),
         );
     }
 
@@ -20510,7 +20548,7 @@ TYPE(v);
         // v0.7 §17 appends 17 concurrent builtins → 110.
         assert_eq!(
             crate::registry::BUILTIN_REGISTRY.len(),
-            110,
+            106,
             "BUILTIN_REGISTRY size changed (now {}); if spec 附录 G bumped, update this lock",
             crate::registry::BUILTIN_REGISTRY.len(),
         );
@@ -21699,11 +21737,15 @@ entry = "main.wll"
     #[test]
     fn c5_shadow_macro_fn_is_w0030_allowed() {
         // 遮蔽宏函数(spec §14.5 W0030)默认允许,发警告。
-        // 用 AND(LexerMacro 注册表条目,词法上是 Ident,可作 LET 名;
-        // IF/WHILE 等真关键字在 parser 层就拒绝作绑定名,到不了 eval)。
+        // [v0.10.1 / R10-064] 原用 `AND`,已随它从注册表移除而换成 `ARRAY`
+        // —— 同样是 LexerMacro 条目、词法上是 Ident、可作 LET 名。
+        // 逐个试过:IS_OK / IS_ERR / OK / ERR / PANIC 在词法层就是关键字
+        // (`E0010: expected identifier in LET, got IsOk`),CHANNEL_CAP 走
+        // 另一条路(`E0025: cannot shadow built-in`)—— 只有 ARRAY / DICT 可用。
+        // IF/WHILE 等真关键字同理,在 parser 层就拒绝作绑定名,到不了 eval。
         let dir = unique_test_dir("c5_shadow_macro");
         write_manifest(&dir, None, "");
-        let (r, warnings) = run_in_with_warnings(&dir, r#"LET(AND, 1); AND;"#);
+        let (r, warnings) = run_in_with_warnings(&dir, r#"LET(ARRAY, 1); ARRAY;"#);
         assert_eq!(r.unwrap(), Value::Integer(1));
         assert!(
             warnings.iter().any(|w| w.code == ErrorCode::W0030),

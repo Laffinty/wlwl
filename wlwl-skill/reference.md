@@ -174,9 +174,10 @@ applies to **all** concurrency and OOP builtins (they are not consumers).
 `ERR_PAYLOAD`, `WRAP`, `TYPE`, `==`/`!=`, `IF` condition, `&&`/`||`
 left, `BOOL`. v0.9 adds no new consumers.
 
-`EXPECT_ERR` is **not** in this list: it is a `wlwl:std.test` export, not a global
-builtin. Measured v0.10.1 — import it, it takes **one** argument, and it does **not**
-catch native codes:
+`EXPECT_ERR` is **not** in this list, and (as of v0.10.1) the **global** entry has
+been **removed** from the registry for being unreachable. What remains is the
+`wlwl:std.test` export — import it, it takes **one** argument, and it does
+**not** catch native codes:
 
 None of these can intercept native codes (`E0034`, `E0035`, `E1003`,
 `E0100` PANIC, `E0102` top-level ERR escape, `E0052`–`E0066` host

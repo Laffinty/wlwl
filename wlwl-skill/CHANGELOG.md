@@ -122,8 +122,8 @@ and is authoritative).
   reference.md / README.md to point at v0.8; `docs/history/` archive path
   preserved.
 - **§12 reserved forms** rewritten in SKILL.md and reference.md:
-  `CLASS` / `NEW` / `THIS` / `MODULE` / `MODULE_REF` / `CALL` /
-  `ARRAY(items...)` / `AND` / `OR` are NOT reserved — all have working
+  `CLASS` / `NEW` / `THIS` / `MODULE_REF` / `CALL` /
+  (`AND` / `OR` / `MODULE` have since been **removed** as unreachable)
   `BuiltinSpec` records in `BUILTIN_REGISTRY`. The registry
   (`docs/appendix_G.md`) is the single source of truth; section §12 now
   points to it. Audit-driven (see `docs/history/audit-report-v0.8.1.md`
