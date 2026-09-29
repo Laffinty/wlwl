@@ -6393,6 +6393,27 @@ fn values_equal(a: &Value, b: &Value) -> bool {
                 env: e2,
             },
         ) => p1 == p2 && b1 == b2 && e1 == e2,
+        // [v0.10.1 / R10-012] OOP 身份(spec §2.4,v0.9 起规范性):
+        // 「`CLASS`/`INSTANCE` 按**对象身份**恒等 …… 同一实例与其别名相等」。
+        //
+        // v0.9–v0.10 这两种值落到 `_ => false`,于是连自反律都不成立:
+        // `==(a, a)` 与 `==(C, C)` 都返回 FALSE。身份比较的机制本来就有
+        // (TaskHandle / ChannelHandle / Closure 三条臂都在),只是这两个类型
+        // 漏接了。
+        //
+        // 身份载体就是各自的 `Rc`:
+        // - `Class` 的 `Rc<RefCell<ClassEntry>>` 每次 `CLASS(...)` 新建一个,
+        //   别名共享同一个;
+        // - `Instance` 的 `fields: Rc<RefCell<Vec<..>>>` 是**每实例**新建的,
+        //   `LET(b, a)` 与所有下游引用共享同一个(这正是 v0.9 Step 9a-5 把
+        //   `fields` 包进 Rc 的目的 —— `SET_PROP` 要让所有引用都看得到)。
+        //
+        // 所以 `Rc::ptr_eq` 就是规范说的「对象身份」:同实例相等(含别名),
+        // 两次 `NEW` 不等,两次 `CLASS(...)` 不等。
+        (Value::Class(x), Value::Class(y)) => std::rc::Rc::ptr_eq(x, y),
+        (Value::Instance { fields: fx, .. }, Value::Instance { fields: fy, .. }) => {
+            std::rc::Rc::ptr_eq(fx, fy)
+        }
         _ => false,
     }
 }
@@ -22257,6 +22278,103 @@ entry = "main.wll"
         let v = run(src).expect("CLASS(\"Rect\", NULL, []) must succeed");
         assert_eq!(v.display(), "<class Rect>");
         assert_eq!(type_name(&v), "class");
+    }
+
+    // -- v0.10.1 (R10-012): OOP 身份比较 ------------------------------
+    //
+    // spec §2.4(v0.9 起规范性):「`CLASS`/`INSTANCE` 按**对象身份**恒等……
+    // 同一实例与其别名相等」。v0.9–v0.10 这两种值落到 `values_equal` 的
+    // `_ => false`,连自反律都不成立:`==(a, a)` 返回 FALSE。
+    //
+    // 下面这组断言把规范 §2.4 的每一条都拆成可判定的形式。
+
+    /// 求值一个布尔表达式片段,便于单点断言。
+    fn bool_of(body: &str) -> bool {
+        let v = run(&format!("{body};")).unwrap_or_else(|e| panic!("{body} must evaluate: {e:?}"));
+        match v {
+            Value::Boolean(b) => b,
+            other => panic!("{body} must yield BOOLEAN, got {}", other.display()),
+        }
+    }
+
+    /// 自反律:`==(a, a)` 必须 TRUE。修之前返回 FALSE。
+    #[test]
+    fn r10_012_instance_is_equal_to_itself() {
+        assert!(bool_of(
+            r#"LET(C, CLASS("C", NULL, [])); LET(a, NEW(C)); ==(a, a)"#
+        ));
+    }
+
+    /// 别名相等:`LET(b, a)` 之后 `==(a, b)` 必须 TRUE。
+    #[test]
+    fn r10_012_instance_alias_is_equal_to_the_original() {
+        assert!(bool_of(
+            r#"LET(C, CLASS("C", NULL, [])); LET(a, NEW(C)); LET(b, a); ==(a, b)"#
+        ));
+    }
+
+    /// 两次 `NEW` 必须是**不同**对象 —— 身份语义不等于结构语义。
+    #[test]
+    fn r10_012_two_new_calls_are_distinct_instances() {
+        assert!(!bool_of(
+            r#"LET(C, CLASS("C", NULL, [])); ==(NEW(C), NEW(C))"#
+        ));
+    }
+
+    /// Class 的自反律 + 两次 `CLASS(...)` 不等。
+    ///
+    /// 类这一侧比实例更容易被实现漏掉:规范说的是「`CLASS`/`INSTANCE`」两者,
+    /// 不是只有实例。
+    #[test]
+    fn r10_012_class_identity_follows_the_same_rule() {
+        assert!(bool_of(r#"LET(C, CLASS("C", NULL, [])); ==(C, C)"#));
+        assert!(!bool_of(
+            r#"==(CLASS("C", NULL, []), CLASS("C", NULL, []))"#
+        ));
+    }
+
+    /// 身份要能穿过**容器**:`DICT` 用实例当键时,同实例命中、异实例不命中。
+    ///
+    /// 这条比 `==(a, a)` 更有杀伤力 —— 它验的是 `dict_lookup` 也走同一套
+    /// 身份判定,而不是只有 `==` 走了。如果将来有人给 `==` 单开一条捷径,
+    /// 这条会红。
+    #[test]
+    fn r10_012_instances_work_as_dict_keys() {
+        assert!(bool_of(
+            r#"LET(C, CLASS("C", NULL, [])); LET(a, NEW(C)); LET(b, a);
+               LET(d, INDEX_SET(DICT(), a, "hit")); ==(AT_K(d, b, "miss"), "hit")"#
+        ));
+        assert!(bool_of(
+            r#"LET(C, CLASS("C", NULL, [])); LET(a, NEW(C));
+               LET(d, INDEX_SET(DICT(), a, "hit")); ==(AT_K(d, NEW(C), "miss"), "miss")"#
+        ));
+    }
+
+    /// `CONTAINS` / `INDEX` 同样按身份判。
+    #[test]
+    fn r10_012_containers_find_instances_by_identity() {
+        assert!(bool_of(
+            r#"LET(C, CLASS("C", NULL, [])); LET(a, NEW(C)); LET(b, a);
+               CONTAINS([a, b], b)"#
+        ));
+        assert!(bool_of(
+            r#"LET(C, CLASS("C", NULL, [])); LET(a, NEW(C));
+               !(CONTAINS([a], NEW(C)))"#
+        ));
+    }
+
+    /// 实例与其它类型的比较仍然为假 —— 身份语义不得外溢。
+    #[test]
+    fn r10_012_instance_never_equals_a_non_instance() {
+        assert!(bool_of(
+            r#"LET(C, CLASS("C", NULL, [])); LET(a, NEW(C)); !(==(a, C))"#
+        ));
+        assert!(bool_of(
+            r#"LET(C, CLASS("C", NULL, [])); LET(a, NEW(C)); !(==(a, 1))"#
+        ));
+        assert!(bool_of(
+            r#"LET(C, CLASS("C", NULL, [])); LET(a, NEW(C)); !(==(a, NULL))"#
+        ));
     }
 
     #[test]

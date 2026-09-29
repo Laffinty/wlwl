@@ -1,7 +1,8 @@
 {
  "exit": 0,
  "contains": [
-  "FALSE"
+  "class self: TRUE",
+  "two CLASS: FALSE"
  ],
- "deviation": true
+ "_why": "[v0.10.1 / R10-012] 与 D1b 对照:规范说的是 CLASS/INSTANCE 两者,类这一侧一样有自反律。修之前 ==(C, C) 返回 FALSE(连自反律都不成立),两次 CLASS(...) 倒是真的不等。Class 与 Instance 都走 Rc::ptr_eq,但身份载体不同 —— Instance 用 fields(每实例新建),不能用 class(那个与 Value::Class 共享,会把同一个类的两个实例判成相等)。"
 }

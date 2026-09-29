@@ -1,0 +1,37 @@
+// conformance/oop_identity.wll - section 2.4 object identity (v0.9+, normative)
+//
+// spec §2.4: 「`CLASS`/`INSTANCE` 按**对象身份**恒等 …… 同一实例与其别名相等」。
+//
+// [v0.10.1 / R10-071] 这份夹具是 R10-012 的回归网。v0.9–v0.10 里这两种值
+// 落到 `values_equal` 的 `_ => false`,于是下面每一行都会印 `FALSE` ——
+// 但**退出码照样是 0**,程序看起来一切正常。所以只验「跑得通」的夹具抓不住
+// 它:配套的测试必须断言 `conformance.rs` 里 `EXPECTED_OOP_IDENTITY` 那份逐行
+// 输出。
+//
+// 打印的是一张判定表,不是装饰。读法:`label: 结果`。
+
+LET(C, CLASS("C", NULL, []));
+
+// ── 自反律 ───────────────────────────────────────────────────────
+LET(a, NEW(C));
+PRINT("self:", ==(a, a));
+
+// ── 别名相等:同实例的另一个引用 ──────────────────────────────────
+LET(b, a);
+PRINT("alias:", ==(a, b));
+
+// ── 两次 NEW 是两个对象 ──────────────────────────────────────────
+PRINT("two NEW:", ==(NEW(C), NEW(C)));
+
+// ── Class 走同一条规则 ───────────────────────────────────────────
+PRINT("class self:", ==(C, C));
+PRINT("two CLASS:", ==(CLASS("C", NULL, []), CLASS("C", NULL, [])));
+
+// ── 身份要能穿过容器:DICT 用实例当键 ─────────────────────────────
+LET(d, INDEX_SET(DICT(), a, "hit"));
+PRINT("dict alias:", AT_K(d, b, "miss"));
+PRINT("dict other:", AT_K(d, NEW(C), "miss"));
+
+// ── CONTAINS 同样按身份判 ────────────────────────────────────────
+PRINT("contains alias:", CONTAINS([a, b], b));
+PRINT("contains other:", CONTAINS([a], NEW(C)));

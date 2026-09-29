@@ -1,2 +1,3 @@
 LET(C, CLASS("C", NULL, []));
-PRINT(==(C, C));
+PRINT("class self:", ==(C, C));
+PRINT("two CLASS:", ==(CLASS("C", NULL, []), CLASS("C", NULL, [])));

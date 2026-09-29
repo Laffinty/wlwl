@@ -1,4 +1,6 @@
 LET(C, CLASS("C", NULL, []));
 LET(a, NEW(C));
 LET(b, a);
-PRINT(==(a, b), ==(a, a), ==(NEW(C), NEW(C)));
+PRINT("alias:", ==(a, b));
+PRINT("self:", ==(a, a));
+PRINT("two NEW:", ==(NEW(C), NEW(C)));

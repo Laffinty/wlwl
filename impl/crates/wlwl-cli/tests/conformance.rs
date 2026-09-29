@@ -194,6 +194,60 @@ fn error_schema_jsonl_is_one_line_per_error() {
     );
 }
 
+/// [v0.10.1 / R10-071] `oop_identity.wll` 的逐行期望输出。
+///
+/// 规范 §2.4(v0.9 起规范性)「`CLASS`/`INSTANCE` 按对象身份恒等」。
+const EXPECTED_OOP_IDENTITY: &[(&str, &str)] = &[
+    ("self:", "TRUE"),
+    ("alias:", "TRUE"),
+    ("two NEW:", "FALSE"),
+    ("class self:", "TRUE"),
+    ("two CLASS:", "FALSE"),
+    ("dict alias:", "hit"),
+    ("dict other:", "miss"),
+    ("contains alias:", "TRUE"),
+    ("contains other:", "FALSE"),
+];
+
+/// R10-012 的 conformance 夹具:断言**实际输出**,不只是退出码。
+///
+/// 为什么这条必须单独写而不并进上面的 `all_conformance_fixtures_run_or_emit_error`:
+/// 那个测试只验「退出码 0 或报规范错误」。而 R10-012 的 bug 恰恰是
+/// `==(a, a)` 恒 FALSE —— **退出码一直是 0**,程序看起来完全正常。
+/// 一条只验「跑得通」的断言永远抓不到它。
+///
+/// 所以这里逐行比对 `label: 结果`,任何一条身份规则退化都会立刻红。
+#[test]
+fn oop_identity_matches_the_normative_rule() {
+    let path = fixture("oop_identity.wll");
+    let out = run_wlwl(&path);
+    assert_eq!(
+        out.status.code(),
+        Some(0),
+        "oop_identity.wll must run clean:\n{}",
+        String::from_utf8_lossy(&out.stderr)
+    );
+    let stdout = String::from_utf8_lossy(&out.stdout);
+
+    for (label, expected) in EXPECTED_OOP_IDENTITY {
+        let wanted = format!("{label} {expected}");
+        assert!(
+            stdout.lines().any(|l| l.trim() == wanted),
+            "spec §2.4 identity rule violated: expected a line `{wanted}`, got:\n{stdout}"
+        );
+    }
+    // 行数也要对上:少印说明有分支没走到,多印说明夹具改了但期望没改。
+    let printed = stdout.lines().filter(|l| !l.trim().is_empty()).count();
+    assert_eq!(
+        printed,
+        EXPECTED_OOP_IDENTITY.len(),
+        "oop_identity.wll printed {printed} line(s), expected {} — \
+         a new assertion was added to the fixture but not to \
+         EXPECTED_OOP_IDENTITY:\n{stdout}",
+        EXPECTED_OOP_IDENTITY.len()
+    );
+}
+
 // (spec_sha_anchored removed: the SHA-1-in-filename convention was
 // dropped along with the rename to `wlwl-spec-v0.6.md` -- see
 // CHANGELOG "Note on the spec filename". The plain filename is now

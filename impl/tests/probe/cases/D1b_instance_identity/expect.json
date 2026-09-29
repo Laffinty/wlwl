@@ -1,7 +1,9 @@
 {
  "exit": 0,
  "contains": [
-  "FALSE"
+  "alias: TRUE",
+  "self: TRUE",
+  "two NEW: FALSE"
  ],
- "deviation": true
+ "_why": "[v0.10.1 / R10-012] spec 2.4 规定 CLASS/INSTANCE 按对象身份恒等。修之前这一份断言的是 contains 一个字符串 FALSE —— 输出是 FALSE FALSE FALSE,含 FALSE 就算过。修完之后输出变成 TRUE TRUE FALSE,那条弱断言**恰好还能蒙混过关**:整段文本里仍然有 FALSE 子串。所以改成逐行标签精确断言。别再写回只断言 FALSE 的形式 —— 它证明不了任何事。"
 }
