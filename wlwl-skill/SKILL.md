@@ -46,7 +46,7 @@ WLWL writing progress (v0.10):
 - [ ] 10. If 9 fails: consult reference.md for the failing token/operator
 ```
 
-Do not skip step 9. `wlwl run` is the source of truth. `wlwl fmt --check` is best-effort (see Verification loop).
+Do not skip step 9. `wlwl run` is the source of truth. `wlwl fmt --check` checks canonical layout — read the W0053 rules in the Verification loop before dismissing it.
 
 ## Truthy / falsy — spec §2.3
 
@@ -88,7 +88,12 @@ Bare `1e` (no digits after) raises `E0001`.
 **Identifier names** (spec §1.4): `MUT` is a **context keyword** — only after `LET` modifier slot. Other positions can use `MUT` as a regular identifier:
 - `LET(MUT, "x")` — binding name = `"MUT"`, immutable
 - `LET MUT(MUT, 1)` — first `MUT` is modifier, second is binding name, mutable
-- `FUN((MUT), MUT + 1)` / `PRINT(MUT)` / `${MUT}` — all valid
+- `FUN((MUT), +(MUT, 1))` / `PRINT(MUT)` / `${MUT}` — all valid
+
+**Everything is a prefix call — there is no infix syntax** (spec §4.3):
+`+(a, b)`, never `a + b`. There is no binary-expression production in the grammar
+at all, so `LET(x, a + b)` is a hard `E0011`. The only place `+` appears infix-like
+is inside a string interpolation, and it desugars to a call.
 
 **SUB(s, start, len?) — length semantics** (spec §10.5):
 The third arg is **length** (codepoint count), not end-index.
@@ -202,22 +207,57 @@ it is not, and §2.6 has been corrected in v0.10.1.)
 
 ### The `gradual_typing` switch (§2.6)
 
-`wlwl.toml` `[features]`, default `off`:
+**A `wlwl.toml` needs BOTH halves, and the `[package]` half is not optional
+decoration.** Since v0.10.1 a `[features]`-only manifest is honoured (the loader
+reads the feature table independently of `[package]`) — but if the manifest is
+*malformed* you get `W0001`, and the static layer is easy to lose track of:
+
+```toml
+[package]          # ← all three, or this is not a manifest
+name = "myapp"
+version = "0.1.0"
+entry = "main.wll"
+
+[features]
+gradual_typing = "error"        # "off" | "warn" | "error"
+```
+
+| What you wrote | What happens |
+|---|---|
+| No `wlwl.toml` at all | Static layer **never runs**. Zero diagnostics. This is the v0.9 behaviour and it is guaranteed (ADR-0020 S1) |
+| `[features]` only, no `[package]` | **v0.10.1: honoured** — the switch still takes effect, *and* you get `W0001` saying the manifest isn't valid |
+| Bad feature *value* (e.g. `"sideways"`) | `W0001` naming the bad key; switch falls back to `off` |
+| Valid manifest | Switch takes effect |
+
+> **v0.10 and earlier:** a `[features]`-only manifest was **silently swallowed** —
+> the whole manifest layer went quiet, no `W0001`, exit code 0. The documented
+> incantation produced a green build that checked nothing. Fixed in v0.10.1. If you
+> hit `W0001` on a manifest you thought was fine, you are almost certainly missing
+> `version` or `entry`.
+
+Values:
 
 | Value | Effect |
 |-------|--------|
 | `off` (default) | no static diagnostics at all |
-| `warn` | violations become `W0110`–`W0116` |
-| `error` | violations become `E0110`–`E0116` |
+| `warn` | annotation / call / return mismatches become `W0110`–`W0112` |
+| `error` | annotation / call / return mismatches become `E0110`–`E0112` (blocking exit code) |
 
-`E0110`/`E0111`/`E0112` (and their `W` twins) are the annotation mismatches;
-`E0113`/`E0114`/`E0115` are module-contract mismatches; `E0116` is
-non-exhaustive `MATCH`. **All of them are compile-time only** — none can be
-raised at runtime, and none is an `ERR`, so `EXPECT_ERR` / `TRY` / `UNWRAP_OR`
-never catch them.
+**`gradual_typing` governs `E0110`–`E0112` only** (and their `W` twins). It does
+**not** govern `E0113`–`E0115` (module contract, §9.6) or `E0116` (`MATCH`
+exhaustiveness, §7.4) — those have their own switches below, and
+`E0113`–`E0115` fire whenever a signature file exists, independent of
+`gradual_typing`.
+
+`E0110`/`E0111`/`E0112` are the annotation mismatches; `E0113`/`E0114`/`E0115` are
+module-contract mismatches; `E0116` is non-exhaustive `MATCH`. **All of them are
+compile-time only** — none can be raised at runtime, and none is an `ERR`, so
+`EXPECT_ERR` / `TRY` / `UNWRAP_OR` never catch them.
 
 `match_exhaustiveness` is a separate `[features]` key for the `MATCH` checks
-(§7.4), also default-off.
+(§7.4). **Its default is "follow `gradual_typing`", not `off`** — with the key
+absent it inherits whatever `gradual_typing` is set to. Write it explicitly if you
+want it independent.
 
 ### Module signatures + `SEALED` (§9.1, §9.6)
 
@@ -367,7 +407,34 @@ LET(v, SCOPE(FUN(() ,
 ### Hard rules
 
 1. **Explicit SCOPE only.** `SPAWN` outside any `SCOPE` → `E0058`. No free-floating tasks.
-2. **`YIELD` anywhere in a task body (v0.9).** The v0.7/v0.8 "direct child of a Block" restriction is **gone**. `LET(x, YIELD())`, `IF(c, YIELD(), 1)`, `[1, YIELD(), 3]`, nested `WHILE`/`FOR`/`IF` bodies — all legal. Suspension resumes the nested remainder. `YIELD` **outside** any task (top level, `SCOPE` body) → `E0014`. Indirect `LET(y, YIELD); y()` also suspends.
+2. **`YIELD` must be a statement in a task body — its value cannot be consumed.**
+   The v0.7/v0.8 "direct child of a Block" restriction is **gone** (§17.1): `YIELD`
+   is legal in any expression position *syntactically*. **But there is no
+   continuation capture**, so what happens depends entirely on whether an outer
+   expression *uses* its value. Measured on v0.10.1:
+
+   | Form | Actual result |
+   |---|---|
+   | `LET(x, 7); YIELD(); x` — **`YIELD` as a statement** | ✅ `7`. The rest of the sequence runs; bindings made before the suspend point survive |
+   | `LET(x, YIELD())` | ❌ the whole `LET` **never completes** — `x` is **not bound at all**; referencing `x` later → `E0020: undefined name` |
+   | `IF(TRUE, YIELD(), 42)` | ❌ the whole `IF` collapses to **`NULL`**, *not* `42` |
+   | `[1, YIELD(), 3]` | ❌ the whole literal collapses to **`NULL`**, *not* `[1, NULL, 3]` |
+   | `+(YIELD(), 100)` | ❌ the whole call collapses to **`NULL`**, *not* `100` |
+   | `YIELD()` inside a `WHILE` / `FOR` body | ❌ the loop runs **one round only** (counter ends at `1`, not `3`); statements after `YIELD` in the body do not run |
+   | `LET(y, YIELD); y()` | ❌ `E0020: undefined name 'YIELD'` — `YIELD` is not a bindable value; there is no indirect form |
+
+   **The rule:** *the expression containing a consumed `YIELD` does not complete —
+   the whole outermost expression collapses to `NULL`.* It is the **outermost**
+   expression that dies, not just the `YIELD` sub-position. Suspension happens,
+   but the in-progress state at the suspend point (argument lists, branch choice,
+   loop counter) is not captured, so there is nothing to resume into.
+
+   **This produces no diagnostic at all** — a loop that runs one round and returns
+   a plausible-looking number is the single easiest way to ship a silently wrong
+   concurrent program. **Put `YIELD()` in statement position**, never inside an
+   expression whose value you need.
+
+   `YIELD` **outside** any task (top level, `SCOPE` body) → `E0014`.
 
 3. **Close signal is ERR, not NULL.**
 
@@ -553,14 +620,41 @@ For the full ~70-name catalogue see `reference.md` §9. Categories:
 # 1. PRIMARY: does it run and produce expected output?
 wlwl run path/to/file.wll
 
-# 2. SECONDARY (best-effort): is the source already canonical?
+# 2. SECONDARY: is the source already in canonical form?
+#    Read W0053 before dismissing it — see below.
 wlwl fmt --check path/to/file.wll
 
 # 3. For AI agents: machine-readable diagnostics.
 wlwl run --format jsonl path/to/file.wll
 ```
 
-`wlwl run` is the source of truth. `wlwl fmt --check` has known idempotency drift — failures on syntactically valid source are formatter quirks, not bugs in your code.
+**What `W0053` actually means, and when you may ignore it.**
+
+`wlwl fmt --check` compares your source against the canonical form produced by
+rebuilding the AST. Two rules decide whether a `W0053` is *yours* or the
+formatter's:
+
+- **Canonical form has no trailing `;` on the last statement** (spec §16.3).
+  A one-statement file must be `PRINT("x")`, not `PRINT("x");`. Verified:
+  `LET( x ,1 );PRINT( x );` normalises to `LET(x, 1);` + `PRINT(x)` — the first
+  statement keeps its `;`, the last one loses it.
+- **`fmt` drops comments** (the AST rebuild does not preserve them) and
+  tolerates them in `--check` mode, so a comment-heavy file usually still passes.
+- **Line endings are irrelevant** since v0.10.1: CRLF and LF compare equal.
+
+So: `W0053` on a file you wrote means the layout is off (usually a stray `;`, a
+stray space, or two statements on one line) and is worth fixing. It is *not*
+noise. The one case that is genuinely the formatter's fault is exotic whitespace
+inside expressions; the fix there is still to let `wlwl fmt` rewrite the file and
+read the result.
+
+**Every `.wll` in `examples/` currently fails `fmt --check`.** They are readable
+teaching material written by hand, not canonical files — `wlwl run` is what
+matters for them. Do not use them as a style reference.
+
+`wlwl run` remains the source of truth. `wlwl fmt --check` reports canonical
+layout per the rules above — it is not "best-effort", and a `W0053` on your own
+file is a real (if cosmetic) deviation.
 
 ## References
 

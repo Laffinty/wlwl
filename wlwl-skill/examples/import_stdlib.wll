@@ -22,11 +22,15 @@ PRINT("parsed = ${parsed}");
 
 // (3) Filesystem namespace — also import-gated
 IMPORT("wlwl:std.fs", ["EXISTS"]);
-// EXISTS takes a literal path; relative paths resolve against the
-// process CWD. Pass an absolute path so the demo is CWD-independent.
+// EXISTS takes a literal path; relative paths resolve against the process CWD.
+// The path below is written for the machine this bundle was authored on
+// (Z:/Project/wlwl/...). On any other checkout EXISTS returns FALSE — that is
+// the *path* being wrong, not EXISTS being broken. Point it at any file that
+// exists on your machine, or drop this block entirely; it is not part of the
+// IMPORT lesson.
 LET(self_path, "Z:/Project/wlwl/wlwl-skill/examples/import_stdlib.wll");
 LET(fs_check, EXISTS(self_path));
-PRINT("this file exists: ${fs_check}");
+PRINT("this file exists (machine-specific path, expect FALSE off Z:) = ${fs_check}");
 
 // (4) Test namespace — used by the conformance suite
 IMPORT("wlwl:std.test", ["ASSERT", "ASSERT_EQ"]);

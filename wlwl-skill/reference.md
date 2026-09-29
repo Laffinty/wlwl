@@ -91,13 +91,19 @@ v0.7 adds **no** new AST node kinds — concurrency is all ordinary `Call` nodes
 ## §4. Lexer traps (§1)
 
 - `//` line comments and `/* */` block comments (nestable).
+- **Everything is a prefix call — there is no infix syntax.** `+(a, b)`, not
+  `a + b`; `&&(a, b)`, not `a && b`. The parser has no binary-expression
+  production at all (spec §4.3), so `LET(x, a + b)` is a hard `E0011`
+  (it parses `a` then hits `+` and expects `,` or `)`). `${a + b}` inside a
+  string literal is the one place addition appears, and it desugars to a call.
 - `MUT` is a **contextual** keyword — **only** between `LET` and `(`.
   Elsewhere it is a normal identifier: `LET(MUT, "x")`,
-  `LET MUT(MUT, 1)`, `FUN((MUT), MUT + 1)`, `PRINT(MUT)`, `+(MUT, 1)`
+  `LET MUT(MUT, 1)`, `FUN((MUT), +(MUT, 1))`, `PRINT(MUT)`, `${MUT}`
   all parse.
 - `CLASS` / `NEW` / `THIS` / `NOT` are keywords (§1.4). `CLASS(...)` /
-  `NEW(...)` / `THIS()` parse as keyword-calls; `THIS` alone is a
-  zero-arg reference (§15).
+  `NEW(...)` / `THIS()` parse as keyword-calls. **`THIS` alone does not work** —
+  bare `THIS` is resolved as a plain name and → `E0020: undefined name 'THIS'`.
+  Always write `THIS()`. (A bare `THIS` is also not an alias for `self`.)
 - `${` starts interpolation inside `"..."`; nested string literals inside `${...}` are `E0001`.
 - Escapes: `\$`, `\n`, `\t`, `\r`, `\\`, `\"`, `\/`, `\0`, `\b`, `\f`.
 - `=` is the equality alias (not assignment). Three roles per §1.5:
@@ -233,7 +239,7 @@ default arm) is a warning in every configuration — see spec §11.3.
 `W0010` unused LET · `W0011` unused param · `W0012` duplicate LET ·
 `W0013` IF branches inconsistent · `W0015` integer overflow (saturated) ·
 `W0020` mixed dict literal · `W0030` shadow · `W0040` TODO(agent) ·
-`W0051` deprecated alias · `W0053` formatter drift ·
+`W0051` deprecated alias · `W0053` canonical-form deviation (see §24.4) ·
 **`W0065`** deadlock L1 soft warning (`strict_deadlock_detect = false`) ·
 **`W0066`** `CHANNEL_NEW` large buf (above `channel_large_buf_threshold`) ·
 **`W0110`–`W0116`** the `gradual_typing = "warn"` tier of `E0110`–`E0116` ·
@@ -446,18 +452,35 @@ Beyond the top-24 in `SKILL.md`:
 
 `==(h, h)` is `TRUE`. Handles/objects are truthy (§2.3).
 
-### YIELD placement (v0.9 — true suspension)
+### YIELD placement — legal everywhere, but only usable in statement position
+
+Syntactically, `YIELD` may appear in any expression position inside a task body
+(the v0.7/v0.8 "direct child of a Block" restriction is gone). **There is no
+continuation capture**, so an outer expression that *consumes* `YIELD`'s value
+does not complete. Measured on v0.10.1:
 
 ```wlwl
-FUN(() , a; YIELD(); b)       // OK
-IF(TRUE, YIELD(), 1)          // OK (v0.9 — was E0014 in v0.7/v0.8)
-LET(x, YIELD())               // OK (v0.9)
-[1, YIELD(), 3]               // OK → [1, NULL, 3]
-WHILE(c, ...YIELD()...)       // OK — resumes nested remainder
+FUN(() , a; YIELD(); b)   // OK — statement position, `b` runs afterwards
+IF(TRUE, YIELD(), 1)      // → NULL      (NOT 1)
+LET(x, YIELD())           // → x NEVER BOUND; using x → E0020: undefined name
+[1, YIELD(), 3]           // → NULL      (NOT [1, NULL, 3])
++(YIELD(), 100)           // → NULL      (NOT 100)
+WHILE(c, ...YIELD()...)   // → loop runs ONE round; the counter never advances
+LET(y, YIELD); y()        // → E0020: undefined name 'YIELD'
 ```
 
+Note *what* dies: it is the **outermost** expression that collapses, not just the
+`YIELD` sub-position — which is why `IF(TRUE, YIELD(), 1)` loses the whole `IF`
+rather than yielding `1` from the untaken branch.
+
 `YIELD` outside any task (top level / `SCOPE` body) → `E0014`.
-Indirect `LET(y, YIELD); y()` suspends like direct `YIELD()`.
+
+**There is no indirect form**: `YIELD` is a statement keyword, not a value you
+can bind. `LET(y, YIELD)` → `E0020`.
+
+**None of this produces a diagnostic.** A loop that runs one round and returns a
+plausible number is the easiest silently-wrong concurrent program to ship.
+Keep `YIELD()` in statement position.
 
 ### Channel close protocol
 
@@ -550,27 +573,77 @@ program that adds no annotation and ships no `.sig` behaves exactly as before.
    > ⚠ Spec §5.2.1 fact #3 says `E0012` for this; the implementation says
    > `E0010`. `E0012` is the return-type-mismatch code and is unrelated.
 
-### §24.2 `wlwl.toml` `[features]` — the two v0.10 keys
+### §24.2 `wlwl.toml` — the two v0.10 feature keys
+
+`[package]` is **required** for a manifest to be a manifest — all three of
+`name` / `version` / `entry`. Since v0.10.1 the `[features]` table is read
+independently of `[package]`, so a `[features]`-only file still switches things
+on **and** emits `W0001`; before v0.10.1 it was swallowed silently and the
+static layer never ran at all (that was the bug R10-010 fixed).
+
+```toml
+[package]
+name = "myapp"
+version = "0.1.0"
+entry = "main.wll"
+
+[features]
+gradual_typing = "error"          # "off" | "warn" | "error"
+match_exhaustiveness = "error"   # "off" | "warn" | "error"
+```
 
 | Feature | Default | Effect |
 |---------|---------|--------|
-| `gradual_typing` | `off` | `warn` → `W0110`–`W0116`; `error` → `E0110`–`E0116` |
-| `match_exhaustiveness` | `off` | `E0116`/`W0116` non-exhaustive + `W0117` unreachable clauses |
+| `gradual_typing` | `off` | `warn` → `W0110`–`W0112`; `error` → `E0110`–`E0112` (blocking) |
+| `match_exhaustiveness` | **follows `gradual_typing`** | `E0116`/`W0116` non-exhaustive + `W0117` unreachable clauses |
 
-`E0110`–`E0116` are **compile-time only**. None is an `ERR`, so `EXPECT_ERR` /
+**`gradual_typing` governs `E0110`–`E0112` only** — *not* `E0113`–`E0116`. Verified
+against the implementation: `main.rs` documents `warn` as "report `W0110`-`W0112`"
+and `error` as "report `E0110`-`E0112`, block with exit 1"; the key is absent →
+`MatchExhaustivenessSetting::following(gradual)`, with a lock test
+(`match_exhaustiveness_follows_gradual_typing_when_absent`) on that default.
+
+Practical consequence: a manifest that writes only
+`gradual_typing = "error"` has **`E0116` switched on as well**, whether or not
+you intended it. Write both keys explicitly when you care about the difference.
+
+`E0113`–`E0116` are **compile-time only**. None is an `ERR`, so `EXPECT_ERR` /
 `TRY` / `UNWRAP_OR` cannot catch them.
 
 ### §24.3 CLI additions (v0.10)
 
 | Command | What it does |
 |---------|--------------|
+| `wlwl check <file>` | parse + name resolution + static-contract diagnostics; **walks the import graph**, so it is where module signatures (`E0113`–`E0115`) actually surface. Not to be confused with `wlwl run` |
+| `wlwl ast <file>` | dump the parsed AST (text or jsonl) — useful when a parse error points somewhere surprising |
 | `wlwl sig <file>` | print the module's signature (text or JSON) |
 | `wlwl sig-gen <file>` | write/refresh the `*.wll.sig` sidecar |
 | `wlwl interface <file>` | export the public surface as JSON |
 | `wlwl schema` | type system + constraints + static-contract codes as JSON |
 | `wlwl lsp` | stdio JSON-RPC thin shell: `diagnostics` / `definition` / `hover` + registry-driven completion (no `rename`, no `format`) |
 
-### §24.4 Spec / impl / docs 三处引用 (v0.10 current)
+`wlwl fmt` / `wlwl fmt --check`: canonical form per spec §16.3. **`--check`
+exits 1 with `W0053` when the source is not canonical.** Two things to know:
+
+- **The canonical form has no trailing `;` on the last statement.**
+  `PRINT("x")` is canonical; `PRINT("x");` is not. Interior statements keep
+  theirs. Comments and indentation are handled (comments are stripped before
+  comparison, leading whitespace dropped).
+- **Line endings do not matter** since v0.10.1 — CRLF and LF compare equal
+  (v0.10 and earlier reported `W0053` for *any* CRLF file, which made the gate
+  unusable on Windows checkouts).
+
+### §24.4 `W0053` in one paragraph
+
+`W0053` means "this file is not in canonical layout". It is about **layout**, not
+correctness: a file that trips it usually still runs fine. The usual causes are a
+trailing `;` on the last statement, stray spaces inside a call, or two statements
+on one line. Fix it by running `wlwl fmt <file>` and reading the output — the
+formatter is the authority on canonical form, not this document. The `.wll` files
+under `examples/` are hand-written teaching material and are **not** canonical;
+`wlwl run` is what matters for them.
+
+### §24.5 Spec / impl / docs 三处引用 (v0.10 current)
 
 | 文档 | 路径 | 用途 |
 |------|------|------|

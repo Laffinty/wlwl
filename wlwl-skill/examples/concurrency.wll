@@ -7,7 +7,9 @@
 //
 // Rules locked here:
 //  * SPAWN only inside SCOPE (else E0058)
-//  * YIELD only as a direct child of a multi-statement block
+//  * YIELD in **statement position** — legal in any expression position since
+//    v0.9, but a consumed YIELD collapses its whole outermost expression to
+//    NULL and a loop containing one runs a single round. See SKILL.md.
 //  * close signal is ERR(kind="ChannelClosed"), never NULL
 //
 // [v0.10.1 / R10-014] 下面加了一段**阻塞式**收发。v0.7–v0.10 这里只用
