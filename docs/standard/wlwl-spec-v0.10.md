@@ -3,7 +3,7 @@
 > 版本 0.10 · 2026-09-28
 > 本规范以参考实现 wlwl(命令行可执行文件 `wlwl.exe`)的可观察行为为依据写成,是 WLWL 程序设计语言的完整定义。文中所有语义均经参考实现验证。
 >
-> **对 v0.9 的关系**:v0.10 是**静态契约版**。运行期语义与 v0.9 逐条一致(§1–§17 只有 §5.2 的注解解释与 §7.3 的静态诊断被扩写,新增内容**默认关闭**)。本版做五件事:①**类型注解文法第一次进入规范**(附录 A 的 `Type` 产生式 —— v0.9 全文只有 §5.2 表格里的 `name: Type` 元符号,注解文法此前只存在于实现);②编译期静态契约层(§2.6 / §5.2.1,开关 `[features] gradual_typing`,默认 `off`);③模块契约:旁路签名文件与 `SEALED` 公开面(§9.1 / §9.6,缺省无);④`MATCH` 穷尽性与不可达子句的静态诊断(§7.4,开关 `match_exhaustiveness`);⑤带显式约束的类型变量 `T: Comparable`(§5.2.1,运行期擦除)。新增诊断码 `E0110`–`E0116` / `W0110`–`W0117`(§11.2 / §11.3),全部**仅由编译期发出**;`W0117` 恒为警告且**故意没有** `E0117` 配对。附录 D 汇总相对 v0.9 的可观察行为变更与兼容承诺。
+> **对 v0.9 的关系**:v0.10 是**静态契约版**。运行期语义与 v0.9 逐条一致,新增内容**默认关闭**。本版做五件事:①**类型注解文法第一次进入规范**(附录 A 的 `Type` 产生式 —— v0.9 全文只有 §5.2 表格里的 `name: Type` 元符号,注解文法此前只存在于实现);②编译期静态契约层(§2.6 / §5.2.1,开关 `[features] gradual_typing`,默认 `off`);③模块契约:旁路签名文件与 `SEALED` 公开面(§9.1 / §9.6,缺省无);④`MATCH` 穷尽性与不可达子句的静态诊断(§7.4,开关 `match_exhaustiveness`);⑤带显式约束的类型变量 `T: Comparable`(§5.2.1,运行期擦除)。新增诊断码 `E0110`–`E0116` / `W0110`–`W0117`(§11.2 / §11.3),全部**仅由编译期发出**;`W0117` 恒为警告且**故意没有** `E0117` 配对。附录 D 汇总相对 v0.9 的可观察行为变更与兼容承诺。
 >
 > **对 v0.8 的关系**:v0.9 在 **wlwl-spec-v0.8** 之上做以下变更 —— 并发运行时由静态切段升级为**真挂起**(§17.1 / §17.2),取消携带结构化 `reason` 载荷(§17.3),新增代数效果执行模型(§17.4)与公平性 / 可观测性承诺(§17.8),引入死锁检测 L1(§11.2 `E0065` / §11.3 `W0065`),移除 `ERR(kind="ChannelWouldBlock")` 触发路径,移除错误码 `E0055` / `E0057`,新增 `E0065` / `E0066` / `W0065` / `W0066`,正式定义面向对象构造(§13–§16:`CLASS` / `NEW` / `THIS` / `GET_PROP` / `SET_PROP` / `CALL_METHOD` 与会话类型协议),更新 `E0014` / `E0032` / `E0050` / `E0051` 的触发条件。附录 D 汇总相对 v0.8 的可观察行为变更与兼容承诺。
 
@@ -164,7 +164,7 @@ WLWL 是动态类型语言:类型属于值而非名字。值的论域由以下**
 | `STRING` | Unicode 码点的不可变序列 |
 | `ARRAY` | 值的不可变有序序列 |
 | `DICT` | 从键(STRING 或 INTEGER)到值的插入序映射,不可变 |
-| `FUNCTION` | 闭包(5.5) |
+| `FUNCTION` | 闭包(§5.4) |
 | `RESULT` | `OK(v)` 或 `ERR(e)` 变体(第 8 章) |
 | `TASK` | **[v0.7 追加]** 任务句柄;`SPAWN`/`TASK_CURRENT` 返回(§17.1) |
 | `CHANNEL` | **[v0.7 追加]** 通道句柄;`CHANNEL_NEW` 返回(§17.2) |
@@ -438,7 +438,7 @@ Function = "FUN" [ identifier ] "(" ParameterList ")" Expression .
 | `*name` | 剩余参数;收集多余的实参为**新数组**。只**可以**出现在末位 |
 | `name: Type`、`name: Type = Expression` | 类型注解。运行时忽略,除非模块清单开启 `strict_types`(9.4),此时在调用边界按 `TYPE` 名做顶层形状检查,失配产生 `E0033` |
 
-方法约定:实例方法(§13.2.4)的第一个形参**应当**命名为 `self`;该名字是接收者注入(4.6)的触发条件。
+方法约定:实例方法(§13.2)的第一个形参**应当**命名为 `self`;该名字是接收者注入(§4.6)的触发条件。
 
 ### 5.2.1 类型注解的静态解释
 
@@ -462,9 +462,25 @@ Function = "FUN" [ identifier ] "(" ParameterList ")" Expression .
 - 语法是**裸标识符 + 显式约束**,在**顶层注解与方括号内的类型参数**两处都认(附录 A 的 `BoundedVar`)。本版**没有量词语法**(`FUN[T](…)` 不存在),同一个变量在每个出现位置都要重写约束;
 - 裸的未知类型名(`x: Foo`)**不是**变量,而是不透明类型:语言没有声明名义类型的语法,没人认识的名字要么是拼错了、要么是某个运行期类型。`LET(x: Foo, 1)` 因此报 `E0110` —— 泛型语法**没有**削弱这条诊断;
 - 变量在**调用点**被实参实例化,返回类型里的同名变量随之代入;**运行期完全擦除**:`Value` 模型没有增加任何东西,变量在运行期不存在。违反约束的调用在运行期**不被拦截**(没有 monomorphization 就没有运行期类型检查器),它只在 `gradual_typing` 开启时被静态层抓住;
-- 本版唯一的约束是 `Comparable`,成员集合**对着运行期比较算子量出来**:`INTEGER` / `FLOAT` / `STRING`。比较算子对 `BOOLEAN` / `NULL` / 容器 / 函数值一律 `E0030`,所以静态层也**不**认为它们可比 —— 两层必须逐项一致,否则会出现「check 说行、run 抛错」。
+- 本版唯一的约束是 `Comparable`。成员集合**对着运行期比较算子量出来**,下表即「成员」的可判定形式:
+
+  | 类型 | 运行期比较算子 | 静态层 `Comparable` |
+  |---|---|---|
+  | `INTEGER` | 支持 | ✅ 成员 |
+  | `FLOAT` | 支持 | ✅ 成员 |
+  | `STRING` | 支持 | ✅ 成员 |
+  | `BOOLEAN` | `E0030` | ❌ 非成员 |
+  | `NULL` | `E0030` | ❌ 非成员 |
+  | `ARRAY` / `DICT` | `E0030` | ❌ 非成员 |
+  | 函数 / 闭包值 | `E0030` | ❌ 非成员 |
+  | `CLASS` / `INSTANCE` | `E0030` | ❌ 非成员 |
+  | `RESULT` | `E0030` | ❌ 非成员 |
+
+  两层必须**逐项一致**,否则会出现「check 说行、run 抛错」。这张表就是一致性的验收形式:比较算子每新增一个成员,必须同时出现在两列。
 
 **覆盖率边界(必须如实声明)**:编译期静态层**只**检查**用户定义的、带注解的**函数边界与模块契约;内建调用的返回类型只在注册表**已结构化**的条目上可知,其余落 `DYNAMIC` 而不产生诊断。
+
+> [v0.10.1 / R10-052] 「已结构化」原来是一个无法验收的词 —— 无法判断某个内建到底算不算。**已结构化 = 注册表条目的形参表非空**(`SigTy::Params` 至少一个形参)。本版 110 条里只有首批一小撮满足;其余的形参不可知,调用点不做实参比对。附录 G 的「ERR 消费者 / 宏构造」两列记录每个内建消费的 `ERR` 面,与本条正交。
 
 ### 5.3 调用与元数
 
@@ -569,7 +585,13 @@ VariantPattern = "OK" "(" Pattern ")" | "ERR" "(" Pattern ")" .
 2. **可枚举的构造子空间只有三种**:`BOOLEAN` → `{TRUE, FALSE}`;`NULL` → `{NULL}`;`RESULT` → `{OK(_), ERR(_)}`。整数 / 浮点 / 字符串是无限域,`ARRAY` / `DICT` 按元数 / 键集无限展开 —— 这几类**不报非穷尽**,报了就是误报。
 3. **`W0117` 恒为警告,并且没有 `E0117`。** 不可达子句通常出现在渐进重构的中间态(先留兜底臂、再逐条细分),当成硬错会拦下正在写的代码。`E0117` 是**故意不存在**的码号(§11.2),不是保留名。
 
-可达性判定只对**可判定**的情况给结论:子句被前面的子句盖住、通配之后还有子句、重复字面量、闭合容器下的死 default 臂。数组 / 字典的**穷尽性不判定**(`[1, _]` 与 `[_ , 2]` 的并集可盖住 `[_, _]`,而任一行单独都盖不住)。
+可达性判定只对**可判定**的情况给结论:子句被前面的子句盖住、通配之后还有子句、重复字面量、闭合容器下的死 default 臂。
+
+> [v0.10.1 / R10-052] 原文的「可盖住」没有形式定义,无法写成验收测试。本版给它一个:**子句 `C` 被子句 `P` 盖住 ⟺ `P` 的模式与 `C` 的模式有交集**。可判定的两类:
+> - **字面量子句**:`P` 与 `C` 都是闭合字面量集合时,交集非空即盖住;
+> - **通配子句**:`P` 含 `_` 时盖住其后的**任何**子句。
+
+> 数组 / 字典的穷尽性**不判定**:`[1, _]` 与 `[_ , 2]` 的并集可盖住 `[_ , _]`,而任一行单独都盖不住 —— 交集非空但并集才构成覆盖,判不了。
 
 ---
 
@@ -681,8 +703,13 @@ SealedDecl = "SEALED" "(" name_array ")" .
 ```
 Import = 'IMPORT' "(" string_lit "," name_array ")" .
 name_array = "[" [ NameItem { "," NameItem } ] "]" .
-NameItem = string_lit | string_lit ":" string_lit .
+NameItem = string_lit | string_lit ":" string_lit | identifier .
 ```
+
+> [v0.10.1 / R10-051] 本节原来漏了 `| identifier` 分支,与附录 A 的
+> `NameItem` 定义不一致 —— 两处对同一个非终结符给了两个文法。**附录 A 是
+> 规范面**,此处与之对齐:实现确实接受裸标识符作为名字项
+> (`IMPORT("./m", [add])` 可运行),所以漏掉的那一支才是错的。
 
 - `IMPORT(path, ["a", "b"])` 将模块 `path` 的导出名 `a`、`b` 绑定到当前作用域。
 - `["orig": "alias"]` 将导出名 `orig` 绑定为本地名 `alias`(重命名)。
@@ -1007,7 +1034,7 @@ LET(handle, wlwl:std.ai.TASK("summarize", "long text..."));
 | `W0040` | 注释中未处理的 `TODO(agent):` |
 | `W0051` | 使用弃用别名(`OR_DIE`、`DEL` 等) |
 | `W0052` | LLM 模型名缺少 `provider/` 前缀(§10.11) |
-| `W0053` | 源文件偏离规范格式化器(§附录 A.3)输出 |
+| `W0053` | 源文件偏离规范格式化器(附录 A.3)输出 |
 | `W0054` | 使用 v0.3 兼容的 `!` 运算符形式 |
 | `W0065` | **[v0.9 新增]** 死锁检测 L1 软警告:与 `E0065` 相同的触发形状,但在 `[features] strict_deadlock_detect = false` 下仅警告,随后相关 `AWAIT` 以 `E0053` 报告无对端唤醒。警告不改变程序语义 |
 | `W0066` | **[v0.9 新增]** `CHANNEL_NEW(buf)` 的 `buf` 超过软阈值(`channel_large_buf_threshold`,默认 1024)。`buf` 分配照常进行;警告不改变程序语义 |
@@ -1413,11 +1440,19 @@ CALL_METHOD(NEW(C), "m");   // E0032 — 第二次 THIS
 
 ### 16.1 挂起与协议状态机
 
-`CALL_METHOD` 执行期间,方法体可以触发挂起(`YIELD`、阻塞型通道操作、`AWAIT`,§17.4)。挂起时:
+`CALL_METHOD` 执行期间,方法体**同步直落**:它不获得 step context,因此方法体里的
+`YIELD` 与阻塞型通道操作**不能**挂起。
 
-- 实例的协议状态机位置**保持不变**;恢复后从挂起点继续,协议不因挂起而推进或回退;
+> [v0.10.1 / R10-048] 原文此处写「方法体**可以**触发挂起(`YIELD`、阻塞型
+> 通道操作、`AWAIT`)」,与 §17.4 的「方法调用同步直落」直接矛盾。**以实现
+> 为准**:实测方法体含 `YIELD` 时报 `E0014: YIELD used outside a step
+> context`。§17.4 的说法是对的,本节改过来。
+
+在**不含**挂起的前提下,方法体执行期间的协议与 `THIS` 状态:
+
+- 实例的协议状态机位置在方法体**执行期间不推进也不回退**;
 - 协议状态机是每实例私有(§14.5),其他任务**不能**经由该实例推进协议;
-- `THIS` 的消费记号在挂起期间保持;恢复后仍按 §15.2 规则。
+- `THIS` 的消费记号在方法体执行期间保持,方法体返回后仍按 §15.2 规则。
 
 ### 16.2 `THIS` 与 `SPAWN` / `AWAIT`
 
@@ -1667,15 +1702,31 @@ v0.9 **不**新增 `wlwl:std.*` 并发模块。并发原语全部为全局内建
 | 项 | 说明 |
 |----|------|
 | 线程模型 | **单线程协作调度**。CPU 密集任务**不**获得并行加速 |
-| 性能 | 保证单任务路径相对 v0.6 退化 < 10%;并发路径**只保证正确性与无泄漏** |
+| 性能 | **非规范性观察**(见下),不是承诺 |
 | 延迟 / 吞吐 | **不**承诺延迟上界或吞吐提升 |
 | 阻塞挂起 | **真挂起**:阻塞型 `CHANNEL_SEND` / `CHANNEL_RECV` 在满 / 空且无对端时挂起;`TRY_*` 保持非阻塞 |
 | 死锁检测 | **L1**,见下 |
 | 隐式 scope | **不提供**(§17.1) |
-| 通道关闭唤醒次序 | **未定义**(实现可任选) |
+| 通道关闭唤醒次序 | **未定义**(实现可任选)。<br>**[v0.10.1 / R10-052]** 注意这一行是「实现可选」,**不是「缺陷」** —— 与「漏报」性质不同,验收时不能把它和「未实现」混为一谈。可观察的**硬要求**只有一条:关闭后被唤醒的接收方**必须**拿到 `ERR(kind="ChannelClosed")`(§8.1),被唤醒的发送方**必须**得到 `E0054`;两者在**哪个**次序被唤醒,规范不管。<br>**[v0.10.1]** 参考实现实测:同一次关闭唤醒多个等待方时,按**停泊先后 FIFO** 依次唤醒。规范不承诺,记录在此仅为可复现。 |
 | 效果处理器 | **不**暴露用户自定义效果处理器 |
 
 公平性与在飞兄弟取消的承诺见 §17.8。
+
+**关于「性能」一行([v0.10.1 / R10-045])**
+
+原文写「保证单任务路径相对 v0.6 退化 < 10%」—— 这句话**无法验收**:没有口径、
+没有环境、没有基准,任何实现都能宣称满足或违反它。本版把它**降级为非规范性
+观察**并写清口径:
+
+| 项 | 内容 |
+|---|---|
+| 测什么 | 单任务、纯计算、不触通道的微基准(不含解析 / IO / 分配抖动) |
+| 相对谁 | 同机同编译档,与 **v0.9** 同基准比(不是 v0.6 —— v0.6 还没有真挂起,比它没有意义) |
+| 环境 | 需记录 CPU 型号、`rustc` 版本、`--release` 档、是否开 LTO |
+| 重复 | ≥ 20 次取中位数,并报标准差 |
+| 阈值 | **不写进规范**。回归由仓库自己的基准门禁承担,规范不背这个数字 |
+
+并发路径**只保证正确性与无泄漏**,这一条是承诺,不受上表影响。
 
 **死锁检测 L1**
 
@@ -1711,8 +1762,8 @@ v0.9 **不**新增 `wlwl:std.*` 并发模块。并发原语全部为全局内建
 ### A.2 语法
 
 ```
-Program     = { ExprStmt } [ Expression ] .
-Block       = "(" { ExprStmt } [ Expression ] ")" .
+Program     = { ExprStmt | ModuleDecl } [ Expression ] .
+Block       = "(" { ExprStmt | ModuleDecl } [ Expression ] ")" .
 ExprStmt    = Expression ";" .
 
 Expression  = LetExpr | FunExpr | IfExpr | WhileExpr | ForExpr | MatchExpr
@@ -1903,12 +1954,26 @@ v0.8 是澄清性补丁 + 一项语法放宽(字面量下标)。详见 v0.8 规�
 5. **带显式约束的类型变量**:`T: Comparable`,调用点实例化、运行期擦除(§5.2.1)。本版无 monomorphization、无量词语法、无 trait 求解。
 6. **诊断码**:`E0110`–`E0116` / `W0110`–`W0117` 全部**仅由编译期发出**;`E0117` 故意不存在。
 7. **新增附录 E**:签名文件文法与 `wlwl interface` / `wlwl schema` 的 JSON 契约。
+8. **[v0.10.1 / R10-044] 相对 v0.9 的就地改写(此前未申报)** —— §0.1 曾声明
+   「§1–§17 逐条未改」,实际有 5 处就地改写,逐条列在这里:
+
+   | 位置 | 改写内容 | 性质 |
+   |---|---|---|
+   | §2.6 | 三条实测事实改写(码号与结论已按 v0.10.1 实测校正) | 事实校正 |
+   | §5.2.1 | 类型注解的静态解释扩写 | 已在 §0.1 声明 |
+   | §7.4 | `MATCH` 穷尽性 / 不可达子句的静态诊断(新增) | 已在 §0.1 声明 |
+   | **§11.2** | 「已注册但无触发路径」条目表(新增) | **新增,默认关闭** |
+   | **§16.1** | `CALL_METHOD` 同步直落(纠正原「可以触发挂起」的说法) | **落在冻结范围 §13–§16 内** |
+   | **§16.4** | `CALL_METHOD` 的控制流形态(新增 `[规范性]` 段落) | **落在冻结范围 §13–§16 内** |
+   | **§17.4** | 保留的 tag 面(新增 `[规范性]` 段落) | 落在冻结范围外 |
+
+   冻结范围(§13–§16)内的改写共 2 处(§16.1 / §16.4),都**不新增内建、不改签名、不改求值** —— v0.9 程序在这两条路径上的可观察行为不变。
 
 ### D.v0.10 与 v0.9 的兼容承诺
 
 下列 v0.9 程序在 v0.10 上**可观察行为完全不变**:
 
-- 一切运行期语义:§1–§17 逐条未改(唯一被扩写的是 §5.2 的注解解释与 §7.3 的语义小节,新增内容**默认关闭**);
+- 一切运行期语义:§1–§17 除上表申报的就地改写外逐条未改,且那些新增内容**默认关闭**或只做事实校正;
 - 不写 `[features] gradual_typing`(或不写 `wlwl.toml`)的工程:静态层**整条不执行**,连内建签名表都不构建;
 - 不使用类型注解的程序:静态层对它们不产生任何诊断(无注解处落 `DYNAMIC`,而 `DYNAMIC` 与任何类型可赋值);
 - 写裸的未知类型名(如 `LET(x: Foo, 1)`)的程序:行为不变 —— 裸名字**不是**类型变量,泛型语法没有削弱 `E0110` 这条拼错诊断(§5.2.1);
@@ -1970,6 +2035,14 @@ sig_name    = identifier .
 
 本表是具名构造的单一真相源:遮蔽保护(3.5)以本表登记名为准;签名与正文(§4 / §10 / §13–§17)一致;`ERR 消费者` 列与 §8.3 注册表一致;`引入` 列给出该构造语义首次定义的规范版本。
 
+> [v0.10.1 / R10-047] 新增「可调用」一列。此前本表把「**已注册**」与
+> 「**可调用**」混在一列:两者都是 ✔,但含义完全不同。`MODULE` 就是这样一个
+> 例子 —— 它在表里,却**不能**当函数调用(实测 `MODULE(1)` 报
+> `E0020: undefined name`),它只是模块顶层的声明形式。混列的代价是读者
+> 以为表里 ✔ 的都能写进括号里。
+> 本列的判据:**可调用** = 可以写成 `NAME(...)` 的内建或构造;**声明式** =
+> 只能在模块顶层作为声明出现,括号形式必然 `E0020`。
+
 总条目数:**110** | 函数类内建:**82** | 词法宏构造:**28** | 保留未实现:**0**
 
 > [v0.10.1 / R10-043] 分栏数原来写 `86 / 24`,总数 110 是对的但**分栏错了 4 条**。
@@ -1977,132 +2050,132 @@ sig_name    = identifier .
 > 差的 4 条正是 `AND` / `OR` / `NOT` / `ARRAY` 这类此前被记成「函数」的构造 ——
 > 它们同时也是词法形式,归到宏构造一侧。
 
-| 名称 | 签名 | ERR 消费者 (§8.3) | 宏构造 (§1.4) | 引入 | 状态 | 语义位置 |
-|------|------|--------------------|---------------|------|------|----------|
+| 名称 | 签名 | 可调用 | ERR 消费者 (§8.3) | 宏构造 (§1.4) | 引入 | 状态 | 语义位置 |
+|------|------|------|--------------------|---------------|------|------|----------|
 <!-- I/O (3 条) -->
-| `PRINT` | `PRINT(args...) -> NULL` | ❌ | ❌ | v0.2 | 已定义 | §10.2 |
-| `PRINT_ERR` | `PRINT_ERR(args...) -> NULL` | ❌ | ❌ | v0.4 | 已定义 | §10.2 |
-| `INPUT` | `INPUT(prompt?) -> STRING` | ❌ | ❌ | v0.2 | 已定义 | §10.2 |
+| `PRINT` | `PRINT(args...) -> NULL` | ✔ | ❌ | ❌ | v0.2 | 已定义 | §10.2 |
+| `PRINT_ERR` | `PRINT_ERR(args...) -> NULL` | ✔ | ❌ | ❌ | v0.4 | 已定义 | §10.2 |
+| `INPUT` | `INPUT(prompt?) -> STRING` | ✔ | ❌ | ❌ | v0.2 | 已定义 | §10.2 |
 <!-- 类型 / 转换 (7 条) -->
-| `LEN` | `LEN(coll) -> INTEGER` | ❌ | ❌ | v0.2 | 已定义 | §10.3 |
-| `STR` | `STR(x) -> STRING` | ❌ | ❌ | v0.2 | 已定义 | §10.3 |
-| `INT` | `INT(x) -> INTEGER / ERR(ParseError)` | ❌ | ❌ | v0.2 | 已定义 | §10.3 |
-| `FLOAT` | `FLOAT(x) -> FLOAT / ERR(ParseError)` | ❌ | ❌ | v0.4 | 已定义 | §10.3 |
-| `TYPE` | `TYPE(x) -> STRING` | ✔ | ✔ | v0.2 | 已定义 | §2.1 / §8.3 |
-| `BOOL` | `BOOL(x) -> BOOLEAN` | ✔ | ❌ | v0.2 | 已定义 | §2.3 / §8.3 |
-| `CALL` | `CALL(fn, args...) -> v` | ❌ | ❌ | v0.2 | 已定义 | §10.3 |
+| `LEN` | `LEN(coll) -> INTEGER` | ✔ | ❌ | ❌ | v0.2 | 已定义 | §10.3 |
+| `STR` | `STR(x) -> STRING` | ✔ | ❌ | ❌ | v0.2 | 已定义 | §10.3 |
+| `INT` | `INT(x) -> INTEGER / ERR(ParseError)` | ✔ | ❌ | ❌ | v0.2 | 已定义 | §10.3 |
+| `FLOAT` | `FLOAT(x) -> FLOAT / ERR(ParseError)` | ✔ | ❌ | ❌ | v0.4 | 已定义 | §10.3 |
+| `TYPE` | `TYPE(x) -> STRING` | ✔ | ✔ | ✔ | v0.2 | 已定义 | §2.1 / §8.3 |
+| `BOOL` | `BOOL(x) -> BOOLEAN` | ✔ | ✔ | ❌ | v0.2 | 已定义 | §2.3 / §8.3 |
+| `CALL` | `CALL(fn, args...) -> v` | ✔ | ❌ | ❌ | v0.2 | 已定义 | §10.3 |
 <!-- RESULT 处理 (12 条) -->
-| `IS_OK` | `IS_OK(x) -> BOOLEAN` | ✔ | ✔ | v0.2 | 已定义 | §8.3 |
-| `IS_ERR` | `IS_ERR(x) -> BOOLEAN` | ✔ | ✔ | v0.2 | 已定义 | §8.3 |
-| `OR_DIE` | `OR_DIE(x, default) -> v` | ✔ | ✔ | v0.2 | 弃用别名 (W0051) | §8.3 |
-| `UNWRAP_OR` | `UNWRAP_OR(x, default) -> v` | ✔ | ✔ | v0.4 | 已定义 | §8.3 |
-| `UNWRAP` | `UNWRAP(x) -> v / E0100` | ✔ | ❌ | v0.4 | 已定义 | §8.3 |
-| `ERR_PAYLOAD` | `ERR_PAYLOAD(x) -> e / E0030` | ✔ | ❌ | v0.4 | 已定义 | §8.3 |
-| `WRAP` | `WRAP(x, ctx) -> RESULT` | ✔ | ❌ | v0.4 | 已定义 | §8.3 |
-| `TRY` | `TRY(x) -> v / early-RETURN` | ✔ | ✔ | v0.2 | 已定义 | §8.3 |
-| `PANIC` | `PANIC(msg) -> 终止` | n/a | ✔ | v0.2 | 已定义 | §8.4 |
-| `OK` | `OK(v) -> RESULT` | ❌ | ✔ | v0.4 | 已定义 | §8.1 |
-| `EXPECT_ERR` | `EXPECT_ERR(x) -> OK(payload) / ERR(E0049)` | ✔ | ✔ | v0.4 | 已定义 | §8.3 |
-| `ERR` | `ERR(e) -> RESULT` | ❌ | ✔ | v0.4 | 已定义 | §8.1 |
+| `IS_OK` | `IS_OK(x) -> BOOLEAN` | ✔ | ✔ | ✔ | v0.2 | 已定义 | §8.3 |
+| `IS_ERR` | `IS_ERR(x) -> BOOLEAN` | ✔ | ✔ | ✔ | v0.2 | 已定义 | §8.3 |
+| `OR_DIE` | `OR_DIE(x, default) -> v` | ✔ | ✔ | ✔ | v0.2 | 弃用别名 (W0051) | §8.3 |
+| `UNWRAP_OR` | `UNWRAP_OR(x, default) -> v` | ✔ | ✔ | ✔ | v0.4 | 已定义 | §8.3 |
+| `UNWRAP` | `UNWRAP(x) -> v / E0100` | ✔ | ✔ | ❌ | v0.4 | 已定义 | §8.3 |
+| `ERR_PAYLOAD` | `ERR_PAYLOAD(x) -> e / E0030` | ✔ | ✔ | ❌ | v0.4 | 已定义 | §8.3 |
+| `WRAP` | `WRAP(x, ctx) -> RESULT` | ✔ | ✔ | ❌ | v0.4 | 已定义 | §8.3 |
+| `TRY` | `TRY(x) -> v / early-RETURN` | ✔ | ✔ | ✔ | v0.2 | 已定义 | §8.3 |
+| `PANIC` | `PANIC(msg) -> 终止` | ✔ | n/a | ✔ | v0.2 | 已定义 | §8.4 |
+| `OK` | `OK(v) -> RESULT` | ✔ | ❌ | ✔ | v0.4 | 已定义 | §8.1 |
+| `EXPECT_ERR` | `EXPECT_ERR(x) -> OK(payload) / ERR(E0049)` | ✔ | ✔ | ✔ | v0.4 | 已定义 | §8.3 |
+| `ERR` | `ERR(e) -> RESULT` | ✔ | ❌ | ✔ | v0.4 | 已定义 | §8.1 |
 <!-- 控制流 / 逻辑 (10 条) -->
-| `IF` | `IF(cond, t, e?) -> v` | ✔ | ✔ | v0.2 | 已定义 | §6.1 |
-| `WHILE` | `WHILE(cond, body) -> NULL` | ❌ | ✔ | v0.2 | 已定义 | §6.2 |
-| `FOR` | `FOR(var, iter, body) -> NULL` | ❌ | ✔ | v0.2 | 已定义 | §6.3 |
-| `MATCH` | `MATCH(v, clauses, default?) -> v` | ❌ | ✔ | v0.4 | 已定义 | §7 |
-| `RETURN` | `RETURN(v?) -> 早返` | n/a | ✔ | v0.2 | 已定义 | §6.4 |
-| `BREAK` | `BREAK() -> 跳出` | n/a | ✔ | v0.2 | 已定义 | §6.4 |
-| `CONTINUE` | `CONTINUE() -> 跳到下轮` | n/a | ✔ | v0.2 | 已定义 | §6.4 |
-| `AND` | `AND(a, b) -> BOOLEAN` | ❌ | ✔ | v0.2 | 已定义 | §4.3 |
-| `OR` | `OR(a, b) -> BOOLEAN` | ❌ | ✔ | v0.2 | 已定义 | §4.3 |
-| `NOT` | `NOT(a) -> BOOLEAN` | ❌ | ✔ | v0.2 | 已定义 | §4.3 |
+| `IF` | `IF(cond, t, e?) -> v` | ✔ | ✔ | ✔ | v0.2 | 已定义 | §6.1 |
+| `WHILE` | `WHILE(cond, body) -> NULL` | ✔ | ❌ | ✔ | v0.2 | 已定义 | §6.2 |
+| `FOR` | `FOR(var, iter, body) -> NULL` | ✔ | ❌ | ✔ | v0.2 | 已定义 | §6.3 |
+| `MATCH` | `MATCH(v, clauses, default?) -> v` | ✔ | ❌ | ✔ | v0.4 | 已定义 | §7 |
+| `RETURN` | `RETURN(v?) -> 早返` | ✔ | n/a | ✔ | v0.2 | 已定义 | §6.4 |
+| `BREAK` | `BREAK() -> 跳出` | ✔ | n/a | ✔ | v0.2 | 已定义 | §6.4 |
+| `CONTINUE` | `CONTINUE() -> 跳到下轮` | ✔ | n/a | ✔ | v0.2 | 已定义 | §6.4 |
+| `AND` | `AND(a, b) -> BOOLEAN` | ✔ | ❌ | ✔ | v0.2 | 已定义 | §4.3 |
+| `OR` | `OR(a, b) -> BOOLEAN` | ✔ | ❌ | ✔ | v0.2 | 已定义 | §4.3 |
+| `NOT` | `NOT(a) -> BOOLEAN` | ✔ | ❌ | ✔ | v0.2 | 已定义 | §4.3 |
 <!-- 运算符 (14 条) -->
-| `==` | `==(a, b) -> BOOLEAN / ERR 透传` | ❌ | ❌ | v0.2 | 已定义 | §4.3 |
-| `!=` | `!=(a, b) -> BOOLEAN / ERR 透传` | ❌ | ❌ | v0.2 | 已定义 | §4.3 |
-| `>` | `>(a, b) -> BOOLEAN / ERR 透传` | ❌ | ❌ | v0.2 | 已定义 | §4.3 |
-| `<` | `<(a, b) -> BOOLEAN / ERR 透传` | ❌ | ❌ | v0.2 | 已定义 | §4.3 |
-| `>=` | `>=(a, b) -> BOOLEAN / ERR 透传` | ❌ | ❌ | v0.2 | 已定义 | §4.3 |
-| `<=` | `<=(a, b) -> BOOLEAN / ERR 透传` | ❌ | ❌ | v0.2 | 已定义 | §4.3 |
-| `+` | `+(a, b) -> INTEGER / FLOAT / STRING / ARRAY` | ❌ | ❌ | v0.2 | 已定义 | §4.3 |
-| `-` | `-(a, b) -> INTEGER / FLOAT` | ❌ | ❌ | v0.2 | 已定义 | §4.3 |
-| `*` | `*(a, b) -> INTEGER / FLOAT` | ❌ | ❌ | v0.2 | 已定义 | §4.3 |
-| `/` | `/(a, b) -> INTEGER / FLOAT` | ❌ | ❌ | v0.2 | 已定义 | §4.3 |
-| `%` | `%(a, b) -> INTEGER` | ❌ | ❌ | v0.2 | 已定义 | §4.3 |
-| `&&` | `&&(a, b) -> BOOLEAN` | ✔ | ❌ | v0.6 | 已定义 | §4.3 |
-| `\|\|` | `\|\|(a, b) -> BOOLEAN` | ✔ | ❌ | v0.6 | 已定义 | §4.3 |
-| `NEG` | `NEG(a) -> -a` | ❌ | ❌ | v0.2 | 已定义 | §4.3 |
+| `==` | `==(a, b) -> BOOLEAN / ERR 透传` | ✔ | ❌ | ❌ | v0.2 | 已定义 | §4.3 |
+| `!=` | `!=(a, b) -> BOOLEAN / ERR 透传` | ✔ | ❌ | ❌ | v0.2 | 已定义 | §4.3 |
+| `>` | `>(a, b) -> BOOLEAN / ERR 透传` | ✔ | ❌ | ❌ | v0.2 | 已定义 | §4.3 |
+| `<` | `<(a, b) -> BOOLEAN / ERR 透传` | ✔ | ❌ | ❌ | v0.2 | 已定义 | §4.3 |
+| `>=` | `>=(a, b) -> BOOLEAN / ERR 透传` | ✔ | ❌ | ❌ | v0.2 | 已定义 | §4.3 |
+| `<=` | `<=(a, b) -> BOOLEAN / ERR 透传` | ✔ | ❌ | ❌ | v0.2 | 已定义 | §4.3 |
+| `+` | `+(a, b) -> INTEGER / FLOAT / STRING / ARRAY` | ✔ | ❌ | ❌ | v0.2 | 已定义 | §4.3 |
+| `-` | `-(a, b) -> INTEGER / FLOAT` | ✔ | ❌ | ❌ | v0.2 | 已定义 | §4.3 |
+| `*` | `*(a, b) -> INTEGER / FLOAT` | ✔ | ❌ | ❌ | v0.2 | 已定义 | §4.3 |
+| `/` | `/(a, b) -> INTEGER / FLOAT` | ✔ | ❌ | ❌ | v0.2 | 已定义 | §4.3 |
+| `%` | `%(a, b) -> INTEGER` | ✔ | ❌ | ❌ | v0.2 | 已定义 | §4.3 |
+| `&&` | `&&(a, b) -> BOOLEAN` | ✔ | ✔ | ❌ | v0.6 | 已定义 | §4.3 |
+| `\|\|` | `\|\|(a, b) -> BOOLEAN` | ✔ | ✔ | ❌ | v0.6 | 已定义 | §4.3 |
+| `NEG` | `NEG(a) -> -a` | ✔ | ❌ | ❌ | v0.2 | 已定义 | §4.3 |
 <!-- ARRAY / DICT 操作 -->
-| `PUSH` | `PUSH(arr, x) -> ARRAY` | ❌ | ❌ | v0.2 | 已定义 | §10.4 |
-| `POP` | `POP(d, k, default) -> v` | ❌ | ❌ | v0.6 | 弃用别名 (W0051) | §10.4 |
-| `AT_K` | `AT_K(d, k, default) -> v` | ❌ | ❌ | v0.6 | 已定义 | §10.4 |
-| `SHIFT` | `SHIFT(arr) -> ARRAY` | ❌ | ❌ | v0.2 | 已定义 | §10.4 |
-| `UNSHIFT` | `UNSHIFT(arr, x) -> ARRAY` | ❌ | ❌ | v0.2 | 已定义 | §10.4 |
-| `SLICE` | `SLICE(arr, start, end?) -> ARRAY` | ❌ | ❌ | v0.2 | 已定义 | §10.4 |
-| `CONCAT` | `CONCAT(a, b) -> ARRAY` | ❌ | ❌ | v0.2 | 已定义 | §10.4 |
-| `CONTAINS` | `CONTAINS(coll, x) -> BOOLEAN` | ❌ | ❌ | v0.2 | 已定义 | §10.4 |
-| `INDEX` | `INDEX(arr, x) -> INTEGER` | ❌ | ❌ | v0.2 | 已定义 | §10.4 |
-| `REVERSE` | `REVERSE(arr) -> ARRAY` | ❌ | ❌ | v0.2 | 已定义 | §10.4 |
-| `REMOVE_KEY` | `REMOVE_KEY(d, k) -> DICT` | ❌ | ❌ | v0.4 | 已定义 | §10.4 |
-| `DEL` | `DEL(d, k) -> DICT` | ❌ | ❌ | v0.2 | 弃用别名 (W0051) | §10.4 |
-| `KEYS` | `KEYS(d) -> ARRAY` | ❌ | ❌ | v0.2 | 已定义 | §10.4 |
-| `VALUES` | `VALUES(d) -> ARRAY` | ❌ | ❌ | v0.2 | 已定义 | §10.4 |
-| `HAS` | `HAS(d, k) -> BOOLEAN` | ❌ | ❌ | v0.2 | 已定义 | §10.4 |
-| `MERGE` | `MERGE(a, b) -> DICT` | ❌ | ❌ | v0.2 | 已定义 | §10.4 |
+| `PUSH` | `PUSH(arr, x) -> ARRAY` | ✔ | ❌ | ❌ | v0.2 | 已定义 | §10.4 |
+| `POP` | `POP(d, k, default) -> v` | ✔ | ❌ | ❌ | v0.6 | 弃用别名 (W0051) | §10.4 |
+| `AT_K` | `AT_K(d, k, default) -> v` | ✔ | ❌ | ❌ | v0.6 | 已定义 | §10.4 |
+| `SHIFT` | `SHIFT(arr) -> ARRAY` | ✔ | ❌ | ❌ | v0.2 | 已定义 | §10.4 |
+| `UNSHIFT` | `UNSHIFT(arr, x) -> ARRAY` | ✔ | ❌ | ❌ | v0.2 | 已定义 | §10.4 |
+| `SLICE` | `SLICE(arr, start, end?) -> ARRAY` | ✔ | ❌ | ❌ | v0.2 | 已定义 | §10.4 |
+| `CONCAT` | `CONCAT(a, b) -> ARRAY` | ✔ | ❌ | ❌ | v0.2 | 已定义 | §10.4 |
+| `CONTAINS` | `CONTAINS(coll, x) -> BOOLEAN` | ✔ | ❌ | ❌ | v0.2 | 已定义 | §10.4 |
+| `INDEX` | `INDEX(arr, x) -> INTEGER` | ✔ | ❌ | ❌ | v0.2 | 已定义 | §10.4 |
+| `REVERSE` | `REVERSE(arr) -> ARRAY` | ✔ | ❌ | ❌ | v0.2 | 已定义 | §10.4 |
+| `REMOVE_KEY` | `REMOVE_KEY(d, k) -> DICT` | ✔ | ❌ | ❌ | v0.4 | 已定义 | §10.4 |
+| `DEL` | `DEL(d, k) -> DICT` | ✔ | ❌ | ❌ | v0.2 | 弃用别名 (W0051) | §10.4 |
+| `KEYS` | `KEYS(d) -> ARRAY` | ✔ | ❌ | ❌ | v0.2 | 已定义 | §10.4 |
+| `VALUES` | `VALUES(d) -> ARRAY` | ✔ | ❌ | ❌ | v0.2 | 已定义 | §10.4 |
+| `HAS` | `HAS(d, k) -> BOOLEAN` | ✔ | ❌ | ❌ | v0.2 | 已定义 | §10.4 |
+| `MERGE` | `MERGE(a, b) -> DICT` | ✔ | ❌ | ❌ | v0.2 | 已定义 | §10.4 |
 <!-- 下标 (3 条) -->
-| `INDEX_GET` | `INDEX_GET(coll, k) -> v` | ❌ | ❌ | v0.4 | 已定义 | §4.5 |
-| `INDEX_SET` | `INDEX_SET(coll, k, v) -> ARRAY / DICT` | ❌ | ❌ | v0.4 | 已定义 | §4.5 |
-| `AT` | `AT(coll, k, default) -> v` | ❌ | ❌ | v0.4 | 已定义 | §4.5 |
+| `INDEX_GET` | `INDEX_GET(coll, k) -> v` | ✔ | ❌ | ❌ | v0.4 | 已定义 | §4.5 |
+| `INDEX_SET` | `INDEX_SET(coll, k, v) -> ARRAY / DICT` | ✔ | ❌ | ❌ | v0.4 | 已定义 | §4.5 |
+| `AT` | `AT(coll, k, default) -> v` | ✔ | ❌ | ❌ | v0.4 | 已定义 | §4.5 |
 <!-- STRING 操作 (15 条) -->
-| `UPPER` | `UPPER(s) -> STRING` | ❌ | ❌ | v0.2 | 已定义 | §10.5 |
-| `LOWER` | `LOWER(s) -> STRING` | ❌ | ❌ | v0.2 | 已定义 | §10.5 |
-| `SUB` | `SUB(s, start, len?) -> STRING` | ❌ | ❌ | v0.2 | 已定义 | §10.5 |
-| `REPLACE` | `REPLACE(s, old, new) -> STRING` | ❌ | ❌ | v0.2 | 已定义 | §10.5 |
-| `SPLIT` | `SPLIT(s, sep) -> ARRAY` | ❌ | ❌ | v0.2 | 已定义 | §10.5 |
-| `TRIM` | `TRIM(s) -> STRING` | ❌ | ❌ | v0.2 | 已定义 | §10.5 |
-| `TRIM_START` | `TRIM_START(s) -> STRING` | ❌ | ❌ | v0.2 | 已定义 | §10.5 |
-| `TRIM_END` | `TRIM_END(s) -> STRING` | ❌ | ❌ | v0.2 | 已定义 | §10.5 |
-| `STARTS_WITH` | `STARTS_WITH(s, pre) -> BOOLEAN` | ❌ | ❌ | v0.2 | 已定义 | §10.5 |
-| `ENDS_WITH` | `ENDS_WITH(s, suf) -> BOOLEAN` | ❌ | ❌ | v0.2 | 已定义 | §10.5 |
-| `REPEAT` | `REPEAT(s, n) -> STRING` | ❌ | ❌ | v0.2 | 已定义 | §10.5 |
-| `PAD_START` | `PAD_START(s, n, c?) -> STRING` | ❌ | ❌ | v0.2 | 已定义 | §10.5 |
-| `PAD_END` | `PAD_END(s, n, c?) -> STRING` | ❌ | ❌ | v0.2 | 已定义 | §10.5 |
-| `CODEPOINTS` | `CODEPOINTS(s) -> ARRAY` | ❌ | ❌ | v0.2 | 已定义 | §10.5 |
-| `FROM_CODEPOINTS` | `FROM_CODEPOINTS(arr) -> STRING` | ❌ | ❌ | v0.2 | 已定义 | §10.5 |
+| `UPPER` | `UPPER(s) -> STRING` | ✔ | ❌ | ❌ | v0.2 | 已定义 | §10.5 |
+| `LOWER` | `LOWER(s) -> STRING` | ✔ | ❌ | ❌ | v0.2 | 已定义 | §10.5 |
+| `SUB` | `SUB(s, start, len?) -> STRING` | ✔ | ❌ | ❌ | v0.2 | 已定义 | §10.5 |
+| `REPLACE` | `REPLACE(s, old, new) -> STRING` | ✔ | ❌ | ❌ | v0.2 | 已定义 | §10.5 |
+| `SPLIT` | `SPLIT(s, sep) -> ARRAY` | ✔ | ❌ | ❌ | v0.2 | 已定义 | §10.5 |
+| `TRIM` | `TRIM(s) -> STRING` | ✔ | ❌ | ❌ | v0.2 | 已定义 | §10.5 |
+| `TRIM_START` | `TRIM_START(s) -> STRING` | ✔ | ❌ | ❌ | v0.2 | 已定义 | §10.5 |
+| `TRIM_END` | `TRIM_END(s) -> STRING` | ✔ | ❌ | ❌ | v0.2 | 已定义 | §10.5 |
+| `STARTS_WITH` | `STARTS_WITH(s, pre) -> BOOLEAN` | ✔ | ❌ | ❌ | v0.2 | 已定义 | §10.5 |
+| `ENDS_WITH` | `ENDS_WITH(s, suf) -> BOOLEAN` | ✔ | ❌ | ❌ | v0.2 | 已定义 | §10.5 |
+| `REPEAT` | `REPEAT(s, n) -> STRING` | ✔ | ❌ | ❌ | v0.2 | 已定义 | §10.5 |
+| `PAD_START` | `PAD_START(s, n, c?) -> STRING` | ✔ | ❌ | ❌ | v0.2 | 已定义 | §10.5 |
+| `PAD_END` | `PAD_END(s, n, c?) -> STRING` | ✔ | ❌ | ❌ | v0.2 | 已定义 | §10.5 |
+| `CODEPOINTS` | `CODEPOINTS(s) -> ARRAY` | ✔ | ❌ | ❌ | v0.2 | 已定义 | §10.5 |
+| `FROM_CODEPOINTS` | `FROM_CODEPOINTS(arr) -> STRING` | ✔ | ❌ | ❌ | v0.2 | 已定义 | §10.5 |
 <!-- 格式化 (1 条) -->
-| `FORMAT` | `FORMAT(template, args...) -> STRING` | ❌ | ❌ | v0.4 | 已定义 | §10.7 |
+| `FORMAT` | `FORMAT(template, args...) -> STRING` | ✔ | ❌ | ❌ | v0.4 | 已定义 | §10.7 |
 <!-- 模块系统 (4 条) -->
-| `MODULE_REF` | `MODULE_REF(path) -> DICT` | ❌ | ❌ | v0.4 | 已定义 | §9.2 |
-| `EXPORT` | `EXPORT(names) -> NULL` | n/a | ✔ | v0.2 | 已定义 | §9.1 |
-| `IMPORT` | `IMPORT(path, names) -> NULL` | n/a | ✔ | v0.2 | 已定义 | §9.2 |
-| `MODULE` | `MODULE(name?, body) -> NULL` | n/a | ✔ | v0.2 | 已定义 | §9 |
+| `MODULE_REF` | `MODULE_REF(path) -> DICT` | ✔ | ❌ | ❌ | v0.4 | 已定义 | §9.2 |
+| `EXPORT` | `EXPORT(names) -> NULL` | ✔ | n/a | ✔ | v0.2 | 已定义 | §9.1 |
+| `IMPORT` | `IMPORT(path, names) -> NULL` | ✔ | n/a | ✔ | v0.2 | 已定义 | §9.2 |
+| `MODULE` | `MODULE(name?, body) -> NULL` | ❌ 声明式 | n/a | ✔ | v0.2 | 已定义 | §9 |
 <!-- OOP (3 条) -->
-| `CLASS` | `CLASS(name, parent, members) -> CLASS` | n/a | ✔ | v0.9 | 已定义 | §13.2 |
-| `NEW` | `NEW(cls, args...) -> INSTANCE` | n/a | ✔ | v0.9 | 已定义 | §13.3 |
-| `THIS` | `THIS() -> INSTANCE` | n/a | ✔ | v0.9 | 已定义 | §15 |
+| `CLASS` | `CLASS(name, parent, members) -> CLASS` | ✔ | n/a | ✔ | v0.9 | 已定义 | §13.2 |
+| `NEW` | `NEW(cls, args...) -> INSTANCE` | ✔ | n/a | ✔ | v0.9 | 已定义 | §13.3 |
+| `THIS` | `THIS() -> INSTANCE` | ✔ | n/a | ✔ | v0.9 | 已定义 | §15 |
 <!-- 属性 / 方法 (3 条) -->
-| `GET_PROP` | `GET_PROP(obj, key) -> v` | ❌ | ❌ | v0.9 | 已定义 | §13.4 |
-| `SET_PROP` | `SET_PROP(obj, key, value) -> NULL` | ❌ | ❌ | v0.9 | 已定义 | §13.4 |
-| `CALL_METHOD` | `CALL_METHOD(obj, method, args...) -> v` | ❌ | ❌ | v0.9 | 已定义 | §13.5 / §14.3 |
+| `GET_PROP` | `GET_PROP(obj, key) -> v` | ✔ | ❌ | ❌ | v0.9 | 已定义 | §13.4 |
+| `SET_PROP` | `SET_PROP(obj, key, value) -> NULL` | ✔ | ❌ | ❌ | v0.9 | 已定义 | §13.4 |
+| `CALL_METHOD` | `CALL_METHOD(obj, method, args...) -> v` | ✔ | ❌ | ❌ | v0.9 | 已定义 | §13.5 / §14.3 |
 <!-- 构造器 (2 条) -->
-| `ARRAY` | `ARRAY(items...) -> ARRAY` | ❌ | ✔ | v0.2 | 已定义 | §10.9 |
-| `DICT` | `DICT() -> DICT` | ❌ | ✔ | v0.2 | 已定义 | §10.9 |
+| `ARRAY` | `ARRAY(items...) -> ARRAY` | ✔ | ❌ | ✔ | v0.2 | 已定义 | §10.9 |
+| `DICT` | `DICT() -> DICT` | ✔ | ❌ | ✔ | v0.2 | 已定义 | §10.9 |
 <!-- 并发 / 通道 (17 条) -->
-| `SCOPE` | `SCOPE(fn) -> v` | ❌ | ❌ | v0.7 | 已定义 | §17.1 |
-| `SPAWN` | `SPAWN(fn) -> TASK` | ❌ | ❌ | v0.7 | 已定义 | §17.1 |
-| `AWAIT` | `AWAIT(task) -> v` | ❌ | ❌ | v0.7 | 已定义 | §17.1 |
-| `YIELD` | `YIELD() -> NULL` | ❌ | ❌ | v0.7 | 已定义 | §17.1 |
-| `TASK_CURRENT` | `TASK_CURRENT() -> TASK` | ❌ | ❌ | v0.7 | 已定义 | §17.1 |
-| `TASK_IS_CANCELLED` | `TASK_IS_CANCELLED() -> BOOLEAN` | ❌ | ❌ | v0.7 | 已定义 | §17.1 |
-| `TASK_CANCEL` | `TASK_CANCEL(task, reason?) -> NULL` | ❌ | ❌ | v0.7 | 已定义 | §17.3 |
-| `TASK_CANCEL_PARENT` | `TASK_CANCEL_PARENT(reason?) -> NULL` | ❌ | ❌ | v0.7 | 已定义 | §17.3 |
-| `SHIELD` | `SHIELD(fn) -> v` | ❌ | ❌ | v0.7 | 已定义 | §17.3 |
-| `CHANNEL_NEW` | `CHANNEL_NEW(buf) -> CHANNEL` | ❌ | ❌ | v0.7 | 已定义 | §17.2 |
-| `CHANNEL_CLOSE` | `CHANNEL_CLOSE(ch) -> NULL` | ❌ | ❌ | v0.7 | 已定义 | §17.2 |
-| `CHANNEL_SEND` | `CHANNEL_SEND(ch, v) -> NULL` | ❌ | ❌ | v0.7 | 已定义 | §17.2 |
-| `CHANNEL_RECV` | `CHANNEL_RECV(ch) -> v / ERR(ChannelClosed)` | ❌ | ❌ | v0.7 | 已定义 | §17.2 |
-| `CHANNEL_TRY_SEND` | `CHANNEL_TRY_SEND(ch, v) -> BOOLEAN` | ❌ | ❌ | v0.7 | 已定义 | §17.2 |
-| `CHANNEL_TRY_RECV` | `CHANNEL_TRY_RECV(ch) -> v / NULL / ERR(ChannelClosed)` | ❌ | ❌ | v0.7 | 已定义 | §17.2 |
-| `CHANNEL_LEN` | `CHANNEL_LEN(ch) -> INTEGER` | ❌ | ❌ | v0.7 | 已定义 | §17.2 |
-| `CHANNEL_CAP` | `CHANNEL_CAP(ch) -> INTEGER` | ❌ | ❌ | v0.7 | 已定义 | §17.2 |
+| `SCOPE` | `SCOPE(fn) -> v` | ✔ | ❌ | ❌ | v0.7 | 已定义 | §17.1 |
+| `SPAWN` | `SPAWN(fn) -> TASK` | ✔ | ❌ | ❌ | v0.7 | 已定义 | §17.1 |
+| `AWAIT` | `AWAIT(task) -> v` | ✔ | ❌ | ❌ | v0.7 | 已定义 | §17.1 |
+| `YIELD` | `YIELD() -> NULL` | ✔ | ❌ | ❌ | v0.7 | 已定义 | §17.1 |
+| `TASK_CURRENT` | `TASK_CURRENT() -> TASK` | ✔ | ❌ | ❌ | v0.7 | 已定义 | §17.1 |
+| `TASK_IS_CANCELLED` | `TASK_IS_CANCELLED() -> BOOLEAN` | ✔ | ❌ | ❌ | v0.7 | 已定义 | §17.1 |
+| `TASK_CANCEL` | `TASK_CANCEL(task, reason?) -> NULL` | ✔ | ❌ | ❌ | v0.7 | 已定义 | §17.3 |
+| `TASK_CANCEL_PARENT` | `TASK_CANCEL_PARENT(reason?) -> NULL` | ✔ | ❌ | ❌ | v0.7 | 已定义 | §17.3 |
+| `SHIELD` | `SHIELD(fn) -> v` | ✔ | ❌ | ❌ | v0.7 | 已定义 | §17.3 |
+| `CHANNEL_NEW` | `CHANNEL_NEW(buf) -> CHANNEL` | ✔ | ❌ | ❌ | v0.7 | 已定义 | §17.2 |
+| `CHANNEL_CLOSE` | `CHANNEL_CLOSE(ch) -> NULL` | ✔ | ❌ | ❌ | v0.7 | 已定义 | §17.2 |
+| `CHANNEL_SEND` | `CHANNEL_SEND(ch, v) -> NULL` | ✔ | ❌ | ❌ | v0.7 | 已定义 | §17.2 |
+| `CHANNEL_RECV` | `CHANNEL_RECV(ch) -> v / ERR(ChannelClosed)` | ✔ | ❌ | ❌ | v0.7 | 已定义 | §17.2 |
+| `CHANNEL_TRY_SEND` | `CHANNEL_TRY_SEND(ch, v) -> BOOLEAN` | ✔ | ❌ | ❌ | v0.7 | 已定义 | §17.2 |
+| `CHANNEL_TRY_RECV` | `CHANNEL_TRY_RECV(ch) -> v / NULL / ERR(ChannelClosed)` | ✔ | ❌ | ❌ | v0.7 | 已定义 | §17.2 |
+| `CHANNEL_LEN` | `CHANNEL_LEN(ch) -> INTEGER` | ✔ | ❌ | ❌ | v0.7 | 已定义 | §17.2 |
+| `CHANNEL_CAP` | `CHANNEL_CAP(ch) -> INTEGER` | ✔ | ❌ | ❌ | v0.7 | 已定义 | §17.2 |
 
 **说明**
 
