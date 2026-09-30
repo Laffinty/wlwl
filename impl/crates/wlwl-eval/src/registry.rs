@@ -275,7 +275,13 @@ pub enum DispatchStatus {
     /// `resolve_builtin(name)` 返回 `Some(clean_fn)`,无 warning
     ResolvedBuiltin,
     /// `resolve_builtin(name)` 返回 `Some(_compat_fn)`,会先 emit
-    /// `W0051` (deprecated_alias) 或 `W0054` (deprecated_op_form)
+    /// `W0051` (deprecated_alias)。
+    ///
+    /// [v0.10.3] 原文还写了「或 `W0054` (deprecated_op_form)」——
+    /// **没有任何 compat 分派发 W0054**,而 `W0054` 本身已于 v0.6 从注册表
+    /// 撤下、只剩占位(见规范 §11.3.1)。`label()` 里的 `(W0051/W0054)`
+    /// 同理,是会误导人的残留串。三个 compat 条目(`DEL` / `POP` / `OR_DIE`)
+    /// 全部只发 `W0051`。
     ResolvedCompat,
     /// 词法层关键字 → parser 降为 `Expr::*`,不经过 `resolve_builtin`
     LexerMacro,
@@ -287,7 +293,9 @@ impl DispatchStatus {
     pub fn label(self) -> &'static str {
         match self {
             DispatchStatus::ResolvedBuiltin => "✓ builtin",
-            DispatchStatus::ResolvedCompat => "✓ compat (W0051/W0054)",
+            // [v0.10.3] 原文是 "(W0051/W0054)"。W0054 已于 v0.6 撤下,
+            // 没有任何 compat 分派发它 —— 留着会让人以为还有第二条警告路径。
+            DispatchStatus::ResolvedCompat => "✓ compat (W0051)",
             DispatchStatus::LexerMacro => "✓ macro",
             DispatchStatus::Deferred => "⏳ deferred",
         }

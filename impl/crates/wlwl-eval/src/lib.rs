@@ -773,9 +773,15 @@ impl Drop for CallDepthGuard {
 }
 
 /// A soft warning surfaced by the evaluator without aborting the run.
-/// Currently the only emitter is the integer-overflow path in §9.5
-/// (`+` / `-` / `*` on `INTEGER`): on overflow the value saturates to
-/// `INT64_MAX` / `INT64_MIN` and a `W0015` warning is appended.
+///
+/// [v0.10.3] 原文写着「唯一的发射点是 §9.5 的整数溢出路径:溢出时饱和到
+/// `INT64_MAX` / `INT64_MIN` 并追加一条 `W0015`」—— **那是从 v0.6 起就不
+/// 成立的说法**:溢出改为**抛错 `E0035`**(§2.2 / 附录 B 第 14 条),根本走不到
+/// 这里。同一批还有两处同源的过期注释(`Evaluator::warnings` 与
+/// `emit_warning`),一并更正。
+///
+/// 现存的实际发射点:`W0051`(弃用别名 `DEL` / `POP` / `OR_DIE`)、`W0066`
+/// (`CHANNEL_NEW` 大缓冲)、`W0030`(遮蔽内建)、`W0065`(死锁软警告)。
 #[derive(Debug, Clone, PartialEq)]
 pub struct Warning {
     pub code: ErrorCode,
@@ -6784,9 +6790,10 @@ pub struct Evaluator {
     /// the diagnostic's `trace` field on error.
     call_stack: Vec<TraceFrame>,
     /// Soft warnings (v0.4 spec §14.5) accumulated during the run.
-    /// Numeric overflow saturates + emits `W0015` here without
-    /// aborting evaluation; callers can drain via `take_warnings()`
-    /// or the `run_with_warnings` test helper.
+    /// [v0.10.3] 原文说「整数溢出饱和 + 发 `W0015`,不中止求值」——
+    /// 那是 v0.6 之前的行为,现已改为**抛错 `E0035`**。现存的发射点见
+    /// `Warning` 的文档注释。
+    /// 调用方可用 `take_warnings()` 排空,或用 `run_with_warnings` 测试辅助。
     pub warnings: Vec<Warning>,
     /// [v0.4 Phase B4] Source span of the **current builtin call site**.
     /// Set by `eval_call` before dispatching into a builtin function
@@ -7034,10 +7041,12 @@ impl Evaluator {
         self
     }
 
-    /// Append a soft warning to the evaluator's warning log. Currently
-    /// only `W0015` (integer overflow saturated) is emitted by builtin
-    /// arithmetic; the channel is open for future warnings
-    /// (e.g. `W0014` non-ASCII case-fold ambiguity).
+    /// Append a soft warning to the evaluator's warning log.
+    /// [v0.10.3] 原文说「目前只有 `W0015`(整数溢出饱和)由内建算术发射」——
+    /// 溢出早已改为抛错 `E0035`(§2.2)。现在的发射点:`W0051` / `W0066` /
+    /// `W0030` / `W0065`。通道对后续警告仍然是开的
+    /// (例如 `W0014` 非 ASCII 大小写歧义 —— 那条同样已从注册表撤下,
+    /// 见 `wlwl-error`)。
     pub fn emit_warning(&mut self, code: ErrorCode, message: impl Into<String>) {
         debug_assert!(
             code.is_warning(),

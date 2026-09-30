@@ -2493,6 +2493,149 @@ mod tests {
             .join("wlwl-spec-v0.10.md")
     }
 
+    /// [v0.10.3] 规范 §11.3.1 申报「已注册但无触发路径」的警告码。
+    ///
+    /// 这份清单**与规范里那张表成对**:任一侧单独改动都会被
+    /// `unused_warning_codes_are_declared` 逮到。
+    const UNEMITTABLE_WARNINGS: [&str; 3] = ["W0015", "W0054", "W0040"];
+
+    /// [v0.10.3] `impl/crates/` 下除 `wlwl-error` 与测试代码之外的源码。
+    ///
+    /// 排除 `wlwl-error` 是因为**每个**码都在那里(as_str / category /
+    /// 快照),把它算进去等于这条检查恒成立。排除测试代码是因为
+    /// `wlwl-eval` 里有几处**故意**构造某个码的测试(比如验证
+    /// `W0015` 通道畅通的那种 plumbing 测试)。
+    fn workspace_source_text() -> String {
+        let crates = std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
+            .join("..")
+            .to_path_buf();
+        let mut out = String::new();
+        for entry in std::fs::read_dir(&crates).expect("impl/crates is readable") {
+            let dir = entry.expect("dir entry").path();
+            let name = dir
+                .file_name()
+                .unwrap_or_default()
+                .to_string_lossy()
+                .to_string();
+            if !dir.is_dir() || name == "wlwl-error" {
+                continue;
+            }
+            collect_rs_excluding_tests(&dir.join("src"), &mut out);
+            collect_rs_excluding_tests(&dir.join("tests"), &mut out);
+        }
+        out
+    }
+
+    /// 递归收集 `.rs`;`#[cfg(test)]` 之后的内容截断,**并剥掉注释**。
+    ///
+    /// 剥注释是必须的:一条「本码已于 v0.6 移除」的历史说明里当然会出现该码的
+    /// 名字,而那**不是**「实现能产生它」。不剥的话,任何诚实的更正注释都会
+    /// 让检查恒失败 —— 于是检查会被加豁免、或者被悄悄删掉,两种都更糟。
+    ///
+    /// **已知局限**:这是一个手写的小状态机,处理 `"` / `'` 与反斜杠转义,
+    /// 但不解析 raw string(`r#"…"#`)。所以一个 raw string 里若含 `//`,
+    /// 之后到行尾的内容会被当成注释丢掉。对本检查而言这是**安全方向**的
+    /// 误判(只会少算引用,不会多算),而多算才是会误报的那种。
+    fn collect_rs_excluding_tests(dir: &std::path::Path, out: &mut String) {
+        let Ok(entries) = std::fs::read_dir(dir) else {
+            return;
+        };
+        for entry in entries.flatten() {
+            let p = entry.path();
+            if p.is_dir() {
+                collect_rs_excluding_tests(&p, out);
+                continue;
+            }
+            if p.extension().and_then(|e| e.to_str()) != Some("rs") {
+                continue;
+            }
+            let Ok(text) = std::fs::read_to_string(&p) else {
+                continue;
+            };
+            let head = match text.find("#[cfg(test)]") {
+                Some(i) => &text[..i],
+                None => &text[..],
+            };
+            out.push_str(&strip_rust_comments(head));
+            out.push('\n');
+        }
+    }
+
+    /// 去掉 `//` 行注释与 `/* */` 块注释,保留字符串字面量内容。
+    ///
+    /// `'` 的处理是这个函数里唯一需要小心的地方:Rust 里 `&'static str`
+    /// 的生命周期撇号**不是**字符字面量的开始。若一律按「`'` 开引号」处理,
+    /// 状态机会一直错位到几百行之后 —— 实测 `registry.rs` 里
+    /// `pub fn label(self) -> &'static str` 这一处就足以让后面 1200 行
+    /// 全被当成字符串,于是真实的代码引用反而看不见。
+    ///
+    /// 判据(与常见轻量实现一致):`'` 之后**不是** `\`、且**不是**「一个字
+    /// 符紧跟一个 `'`」时,当作撇号(生命周期)放行,不开引号态。
+    fn strip_rust_comments(src: &str) -> String {
+        let chars: Vec<char> = src.chars().collect();
+        let mut out = String::with_capacity(src.len());
+        let mut i = 0;
+        let mut quote: Option<char> = None;
+        let mut escaped = false;
+        while i < chars.len() {
+            let c = chars[i];
+            if let Some(q) = quote {
+                out.push(c);
+                if escaped {
+                    escaped = false;
+                } else if c == '\\' {
+                    escaped = true;
+                } else if c == q {
+                    quote = None;
+                }
+                i += 1;
+                continue;
+            }
+            if c == '\'' {
+                let next = chars.get(i + 1);
+                let is_escape = next == Some(&'\\');
+                let is_char_lit = next.is_some() && chars.get(i + 2) == Some(&'\'');
+                if is_escape || is_char_lit {
+                    quote = Some('\'');
+                }
+                out.push(c);
+                i += 1;
+                continue;
+            }
+            if c == '"' {
+                quote = Some('"');
+                out.push(c);
+                i += 1;
+                continue;
+            }
+            if c == '/' && chars.get(i + 1) == Some(&'/') {
+                while i < chars.len() && chars[i] != '\n' {
+                    i += 1;
+                }
+                continue;
+            }
+            if c == '/' && chars.get(i + 1) == Some(&'*') {
+                i += 2;
+                let mut depth = 1;
+                while i < chars.len() && depth > 0 {
+                    if chars[i] == '/' && chars.get(i + 1) == Some(&'*') {
+                        depth += 1;
+                        i += 2;
+                    } else if chars[i] == '*' && chars.get(i + 1) == Some(&'/') {
+                        depth -= 1;
+                        i += 2;
+                    } else {
+                        i += 1;
+                    }
+                }
+                continue;
+            }
+            out.push(c);
+            i += 1;
+        }
+        out
+    }
+
     /// 规范 §11.2 / §11.3 两节的正文。
     fn spec_diagnostics_sections() -> String {
         let path = spec_path();
@@ -2735,8 +2878,105 @@ mod tests {
         }
     }
 
-    /// v0.10 的静态契约段必须在规范里**逐个**列全,且 `E0117` 的「故意
-    /// 不存在」这件事必须**写出来** —— 否则「没提到」会被读成「漏写了」。
+    /// [v0.10.3] 方向三(此前**没有**这个方向):规范 §11.3 主表里列出的
+    /// 警告码,必须**发得出来**。
+    ///
+    /// 为什么要有:本文件原先只有两个方向 —— 「规范提到的 ⊆ 注册表」和
+    /// 「注册表 ⊆ 规范提到的」。两个方向都**不查**「规范主表列的这个码,
+    /// 实现到底能不能产生」。于是 `W0015` / `W0054` 在 §11.3 主表里躺了好
+    /// 几个版本,实现里**一个 emit 点都没有**,而且它们各自还与规范正文
+    /// 直接矛盾(§2.2 说溢出抛 `E0035`、§1.5 说 `!` 无警告)。读规范的人
+    /// 会得到与实现相反的结论。
+    ///
+    /// 判据:主表(§11.3 到 §11.3.1 之前)里出现的 `W` 码,必须能在实现
+    /// 里找到**生产**引用 —— 即引用出现在 `wlwl-error` 之外、且不在
+    /// `#[cfg(test)]` 之后。`§11.3.1`(已注册但无触发路径)那三个豁免,
+    /// 由 `unused_warning_codes_are_declared` 单独钉。
+    ///
+    /// 判据的**已知局限**:`wlwl-eval` / `wlwl-cli` 里那些提到某码的**注释**
+    /// 也算引用。所以这不是「能否产生」的证明,而是「有人在生产代码里提到
+    /// 它」的门槛 —— 足以抓住「整个 crate 里连提都没人提」这一类
+    /// (比如 `W0040`),而 `W0015` / `W0054` 那种「注释里还在说旧行为」
+    /// 要靠人读注释发现,已由本次一并清理那些注释来收口。
+    #[test]
+    fn every_spec_listed_warning_code_is_produced_by_the_implementation() {
+        let path = spec_path();
+        let text = std::fs::read_to_string(&path)
+            .unwrap_or_else(|e| panic!("cannot read {}: {e}", path.display()));
+        // 主表 = §11.3 标题之后、§11.3.1 之前。
+        let start = text.find("### 11.3 警告码").expect("spec must have §11.3");
+        let end = text[start..]
+            .find("#### 11.3.1")
+            .map(|i| start + i)
+            .unwrap_or(text.len());
+        let main_table = &text[start..end];
+        let declared = codes_mentioned(main_table);
+
+        let sources = workspace_source_text();
+        for code in declared.iter().filter(|c| c.starts_with('W')) {
+            // 豁免的三个:它们在 §11.3.1 里被显式申报,不该出现在主表。
+            assert!(
+                !UNEMITTABLE_WARNINGS.contains(&code.as_str()),
+                "{code} is listed in the spec's §11.3 main table but is declared \
+                 unemittable in §11.3.1 — pick one: implement it, or move the row"
+            );
+            assert!(
+                sources.contains(code.as_str()),
+                "{code} is listed in the spec's §11.3 main table but nothing in \
+                 the implementation (outside wlwl-error, outside tests) mentions it"
+            );
+        }
+    }
+
+    /// [v0.10.3] 与上一条配对:`§11.3.1` 申报的每个码,必须**真的**没有
+    /// 生产实现,而且必须**仍然注册**在枚举里。
+    ///
+    /// 「真的没有」用「在实现里找不到非测试引用」判定 —— 所以一旦有人真去
+    /// 实现了 `W0040`,这条会红,提示把行从 §11.3.1 挪回主表。**申报本身
+    /// 因此是有保质期的,不会变成永久垃圾桶。**
+    #[test]
+    fn unused_warning_codes_are_declared() {
+        let path = spec_path();
+        let text = std::fs::read_to_string(&path)
+            .unwrap_or_else(|e| panic!("cannot read {}: {e}", path.display()));
+        let start = text.find("#### 11.3.1").expect("spec must have §11.3.1");
+        let end = text[start..]
+            .find("### 11.4")
+            .map(|i| start + i)
+            .unwrap_or(text.len());
+        // [v0.10.3] 只认**表格行**(`| ` 开头的行里出现该码),不认正文提及。
+        //
+        // 为什么不认正文:§11.3.1 的收尾段为了说明「为什么要把这张表写出来」,
+        // 必然要在正文里点名 `W0015` 与 `W0054` —— 那是**叙述**,不是申报。
+        // 按整节扫描的话,哪怕把表格行整行删掉,正文里的名字仍然让检查通过
+        // (这正是第一版变异测试里那个「存活」的变异:它删了行、留下了叙述)。
+        // 申报必须是**一条可点的行**,否则它随时可以被叙述掩盖。
+        let rows: Vec<&str> = text[start..end]
+            .lines()
+            .filter(|l| {
+                let t = l.trim();
+                t.starts_with('|') && !t.starts_with("|---") && !t.starts_with("| ---")
+            })
+            .collect();
+        let sources = workspace_source_text();
+        for code in UNEMITTABLE_WARNINGS {
+            assert!(
+                rows.iter().any(|r| r.contains(code)),
+                "{code} is declared unemittable in the test but §11.3.1 has no \
+                 table row for it — keep the spec and the lock test in sync"
+            );
+            assert!(
+                REGISTRY_CODES.iter().any(|c| c.as_str() == code),
+                "{code} must stay registered in the ErrorCode enum"
+            );
+            assert!(
+                !sources.contains(code),
+                "{code} is declared unemittable but the implementation now \
+                 references it — implement it and move the row back to §11.3"
+            );
+        }
+    }
+
     #[test]
     fn the_spec_states_the_static_contract_codes_and_the_absent_one() {
         let section = spec_diagnostics_sections();
