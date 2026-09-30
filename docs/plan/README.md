@@ -13,9 +13,12 @@ v0.10.0 与 v0.10.1 已收口,材料全部在 `docs/history/`。
 |---|---|
 | 现行规范 | [`../standard/wlwl-spec-v0.10.md`](../standard/wlwl-spec-v0.10.md)(v0.10) |
 | 最新实现 | v0.10.1 已发布;**v0.10.2 批次进行中** —— 规范**版本号不变**,改的是规范文本与实现对齐 |
-| 进行中的计划 | [`wlwl-spec-compliance-修复计划.md`](wlwl-spec-compliance-修复计划.md) |
-| 门禁 | `cargo fmt --check` 0 diff;`clippy -D warnings` 0;`cargo test --workspace` 全绿;probe 123 条(本次 +22) |
+| 进行中的计划 | [`wlwl-spec-compliance-修复计划.md`](wlwl-spec-compliance-修复计划.md) —— **已完成**,已发布为 `v0.10.2` |
+| 门禁 | `cargo fmt --check` 0 diff;`clippy -D warnings` 0;`cargo test --workspace` 全绿;probe **129** 条(本轮 +28) |
 | 下一迭代 | v0.11 —— 唯一已立项的是 **`YIELD` 的续体保存**(裁决 D-3 = 拆两半,规范侧已在 v0.10.1 降级为已知限制) |
+
+v0.10.2 收口后本目录**没有进行中的迭代**;下一次迭代(v0.11)开工时,新的构建计划
+与偏差分册(`deviations-v0.11.md`,编号从 **D11-001** 起)放回本目录。
 
 ## v0.10 / v0.10.1 归档件
 

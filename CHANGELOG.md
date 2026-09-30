@@ -12,10 +12,15 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 > `docs/history/` (`wlwl-spec-v0.9.md`, `wlwl-spec-v0.8.md`,
 > `wlwl-spec-v0.7.md`, `wlwl-spec-v0.6.md`).
 
-## [Unreleased] — v0.10.2 规范符合性修复批次
+## [v0.10.2] — 2026-09-30
 
 Spec: **wlwl-spec-v0.10**(`docs/standard/wlwl-spec-v0.10.md`)——
 规范版本号不变,改的是「实现 ↔ 规范文本」对齐,与 v0.10.1 同性质。
+
+> **版本号口径**:`impl/Cargo.toml` 的 `version` 本版**不动**(仍为 `0.10.0`),
+> 与 v0.10.1 一致 —— 该字段只在 **minor** 版 bump(见 `306532b`:
+> v0.9.0 → v0.10.0)。规范版本与编译器版本是两条独立的线,详见本文件开头的
+> Note。因此 `wlwl --version` 报 `0.10.0`,而 tag 是 `v0.10.2`。
 
 来源:第三方黑盒合规审查(`docs/reviews/v0.10.1审查/`,761 个用例)。
 逐条核验后:13 条里 **8 条属实、2 条根因判错、3 条不成立**;
