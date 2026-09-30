@@ -24,6 +24,18 @@ version = "0.1.0"
 edition = "2021"
 publish = false
 
+# [v0.10.3] 空的 `[workspace]` 表 —— cargo-fuzz 的标准约定,用来把本 crate
+# 排除在 `impl/Cargo.toml` 的 workspace 之外。
+#
+# 缺了它 cargo 会直接拒绝:「current package believes it's in a workspace
+# when it's not」。也就是说在本批之前,这个 crate 有**第四处**无法编译的
+# 原因(前四处:缺 `libfuzzer-sys`、`tokenize` 不存在、`parse` 签名不对、
+# `set_max_steps` / `run_program` 不存在)。
+#
+# 本表同时也是「本 crate 不继承 workspace 的 `[lints] workspace = true` 严格性」
+# 这一说法的兑现 —— 上面注释里那句「Sanitizer 构建与常规 lints 互斥」正靠它成立。
+[workspace]
+
 [[bin]]
 name = "fuzz_target_lexer"
 path = "fuzz_targets/lexer.rs"
@@ -45,15 +57,17 @@ serde = { version = "1.0", features = ["derive"] }
 serde_json = "1.0"
 thiserror = "1.0"
 
+# [v0.10.3] **这一条以前是缺的。** 三个 target 全部 `use libfuzzer_sys::…`,
+# 而依赖表里没有它 —— 注释写着「首次 `cargo fuzz init` 时会自动加上」,
+# 而那次 init 从没发生过。也就是说 `impl/fuzz` **从来编译不过**,
+# 「我们有 fuzz」是不成立的。显式声明之后这个 crate 才真的能用。
+libfuzzer-sys = "0.4"
+
 wlwl-ast = { path = "../crates/wlwl-ast" }
 wlwl-error = { path = "../crates/wlwl-error" }
 wlwl-eval = { path = "../crates/wlwl-eval" }
 wlwl-lexer = { path = "../crates/wlwl-lexer" }
 wlwl-parser = { path = "../crates/wlwl-parser" }
 
-# cargo-fuzz pulls in `libfuzzer-sys` automatically when invoked
-# (`cargo +nightly fuzz init` would generate this). For the static
-# scaffold we declare just the noop harness function; the actual
-# `libfuzzer-sys` dep is added at first `cargo fuzz init`.
 [profile.release]
 debug = 1   # symbol info for crash triage and coverage reports
