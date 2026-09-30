@@ -12,9 +12,13 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 > `docs/history/` (`wlwl-spec-v0.9.md`, `wlwl-spec-v0.8.md`,
 > `wlwl-spec-v0.7.md`, `wlwl-spec-v0.6.md`).
 
-## [Unreleased] — v0.10.3 健壮性批次
+## [v0.10.3] — 2026-09-30
 
 Spec: **wlwl-spec-v0.10** —— 规范版本号不变,改的是「实现 ↔ 规范文本」对齐。
+
+> **版本号口径**:`impl/Cargo.toml` 的 `version` 本版**不动**(仍为 `0.10.0`),
+> 与 v0.10.1 / v0.10.2 一致 —— 该字段只在 **minor** 版 bump(见 `306532b`)。
+> 故 `wlwl --version` 报 `0.10.0`,而 tag 是 `v0.10.3`。
 
 起点是一轮排查:规范对齐那条线基本到头(偏差台账 0 条待修、106 个内建零幽灵、
 7 个 `[features]` 键全部接线),而**健壮性这条线刚开头** —— 而且 v0.10.2 修的
@@ -202,7 +206,10 @@ Rust 里 `&'static str` 的生命周期撇号**不是**字符字面量的开始�
 - **变异验证**:A1 一条、A2 三条(其中两条先存活、据此改掉一处重复实现)、
   A3 六条、A4 三条 —— 合计 13 条,最终全部 RED。
 - 门禁:`cargo fmt --check` 0 diff;`clippy -D warnings` 0;
-  `cargo test --workspace` 全绿。
+  `cargo test --workspace` 全绿;**CI 三平台 + smoke run examples 四个 job
+  全绿**(`fb1d589`)。三平台都跑完整的 `cargo test --locked --all-targets`,
+  所以 A4 的两个新锁测试是在**干净 checkout** 上验证的 —— 这类读规范文件 +
+  扫 `impl/crates/` 源码的测试,本地过不算数,路径推导错了只有干净环境能逮到。
 
 ### 已知缺口(本批次不做,已记录)
 
