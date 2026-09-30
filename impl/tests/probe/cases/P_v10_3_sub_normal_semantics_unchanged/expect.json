@@ -1,0 +1,15 @@
+{
+ "exit": 0,
+ "contains": [
+  "hello",
+  "ell",
+  "",
+  "llo",
+  "lo",
+  "hé"
+ ],
+ "not_contains": [
+  "panicked"
+ ],
+ "_why": "回归守卫:`saturating_add` 只应影响溢出的那条路径。含 codepoint 感知(é 算一个字符)与负 start 的 clamp 语义,一并钉死。"
+}

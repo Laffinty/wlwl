@@ -12,6 +12,61 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 > `docs/history/` (`wlwl-spec-v0.9.md`, `wlwl-spec-v0.8.md`,
 > `wlwl-spec-v0.7.md`, `wlwl-spec-v0.6.md`).
 
+## [Unreleased] — v0.10.3 健壮性批次(第 1 项 / 共 4 项)
+
+Spec: **wlwl-spec-v0.10** —— 规范版本号不变。本版不碰规范,只修实现。
+
+### Fixed
+
+- **`SUB` 的整数溢出 panic:一句 `.wll` 就能崩掉宿主进程。**
+  `impl/crates/wlwl-eval/src/lib.rs` 里 `SUB` 计算切片上界用的是裸 `+`:
+  `norm_start + norm_len`。而 `norm_len` 是用户给的 `INTEGER`,**只在下界
+  被 clamp 到 0,上界没有任何限制**,下游又是 `chars[start..end]` 的**切片
+  下标** —— 于是溢出不��「算错一个数」而是直接 panic:
+
+  ```wlwl
+  PRINT(SUB("abc", 1, 9223372036854775807))   // 两种 profile 都以 101 崩掉
+  ```
+
+  - `debug` :加法溢出 panic
+  - `release`:回绕成 `i64::MIN` → `.min(len)` 仍是负 → `as usize` 变成
+    ~9.2×10¹⁸ → 切片越界 panic
+
+  `SUB` 是**全局内建**(不需要 `IMPORT`),所以任何用户程序一句就能触发。而且
+  `--format jsonl` 下**不产出任何 schema 1.1.0 诊断**,只有裸 Rust backtrace ——
+  这与「v0.10.2 修掉的警告无出口」是同一类病:诊断根本没走到能被消费的地方。
+
+  修法:`saturating_add`。语义也比原来更正确 ——「取 len 个字符」本来就该在
+  串尾截断,而不是因为溢出跳到别的分支。
+
+  顺带核了同函数另外两处算术:`start_raw + len` 有 `len ≥ 0` 兜底不会下溢,
+  `len - norm_start` 有 `norm_start ≤ len` 兜底,**两处都安全,不动**。
+
+### 测试
+
+probe 夹具 +3 条(`P_v10_3_*`),`EXPECTED_CASE_COUNT` 129 → **132**:
+
+- 崩溃最小复现(锁「不能再退回 panic」)
+- 极值形状矩阵(`i64::MAX` / 极大负 start / 空串 / len 超串长)
+- `SUB` 正常语义回归(含 codepoint 感知与负 start clamp)
+
+**变异验证**:把 `saturating_add` 改回裸 `+` 后,第一条 case 转红
+(`exit=101`、`unexpected:"panicked"`),确认夹具真的在锁这条线。
+
+两处记录在案的过程教训:
+
+- 复核时把 `contains` 写成 `[""]` —— 空串是任何输出的子串,那条断言**永远成立**,
+  等于没断言。改成每行套 `FORMAT("x=[{0}]", …)` 加标记,空串结果才判得出来。
+- 期望值我一开始写错(`SUB("abc", -i64::MAX, 1)` 我以为得整串 `abc`)。实际极大
+  负 start 被 clamp 到 0、再取 1 个字符,得 `a`。**是测试纠正了我的心智模型,
+  不是代码错了** —— 已在 `expect.json` 的 `_why` 里记下这条边界。
+
+**另一个既有坑**(不在本批范围,记一笔):`impl/fuzz/fuzz_targets/eval.rs` 调用
+`Evaluator::set_max_steps` 与 `Evaluator::run_program`,**两个方法在仓库里都不
+存在**,且 `libfuzzer-sys` 不在 `fuzz/Cargo.toml` 的依赖里(注释写着「首次
+`cargo fuzz init` 时加」)。也就是说**这个 fuzz crate 编译不过**,「我们有
+fuzz」是不成立的。列为本批第 5 项。
+
 ## [v0.10.2] — 2026-09-30
 
 Spec: **wlwl-spec-v0.10**(`docs/standard/wlwl-spec-v0.10.md`)——

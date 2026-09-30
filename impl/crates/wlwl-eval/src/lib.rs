@@ -2705,7 +2705,19 @@ fn builtin_substr(_ev: &mut Evaluator, args: Vec<Value>) -> WlwlResult<Outcome> 
     // 用 chars() 处理 codepoint-aware 切片
     let chars: Vec<char> = s.chars().collect();
     let start = norm_start as usize;
-    let end = (norm_start + norm_len).min(len) as usize;
+    // [v0.10.3] `saturating_add`,不是裸 `+`。
+    //
+    // `norm_len` 是用户给的 INTEGER,只在下界被 clamp 到 0(上面),**上界没有
+    // 任何限制** —— `SUB("abc", 1, 9223372036854775807)` 会让
+    // `norm_start + norm_len` 溢出 i64。而这一行的下游是 `chars[start..end]`
+    // 的**切片下标**,所以溢出不是「算错一个数」而是直接 panic:
+    //   - debug  :加法溢出 panic
+    //   - release:回绕成 i64::MIN → `.min(len)` 仍是负 → `as usize` 变成
+    //             ~9.2e18 → 切片越界 panic
+    // 两种 profile 都崩,退出码 101,`--format jsonl` 下不产出任何 schema 诊断。
+    // `saturating_add` 之后 `.min(len)` 把结果收敛回字符串长度,语义也更正确:
+    // 「取 len 个字符」本来就该在串尾截断。
+    let end = norm_start.saturating_add(norm_len).min(len) as usize;
     Ok(Outcome::normal(Value::String(
         chars[start..end].iter().collect(),
     )))

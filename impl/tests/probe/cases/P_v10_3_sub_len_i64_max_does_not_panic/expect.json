@@ -1,0 +1,11 @@
+{
+ "exit": 0,
+ "contains": [
+  "bc"
+ ],
+ "not_contains": [
+  "panicked",
+  "range end index"
+ ],
+ "_why": "lib.rs:2708 的 `norm_start + norm_len` 溢出。`norm_len` 是用户INTEGER,只 clamp 下界、**上界无限制**,而下游是 `chars[start..end]` 切片下标:debug 加法溢出 panic,release 回绕成 i64::MIN → `as usize` 变成 ~9.2e18 → 切片越界 panic。两种 profile 都以 101 崩掉,且 `--format jsonl` 下不产出任何 schema 诊断。`SUB` 是全局内建,一句就够。修法 `saturating_add`。`not_contains` 锁住「不能再退回 panic」。期望值 `bc`:start=1 取到底,len 再大也在串尾截断。"
+}

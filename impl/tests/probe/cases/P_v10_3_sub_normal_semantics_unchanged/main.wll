@@ -1,0 +1,6 @@
+PRINT(SUB("hello world", 0, 5));
+PRINT(SUB("hello", 1, 3));
+PRINT(SUB("hello", 0, 0));
+PRINT(SUB("hello", 2));
+PRINT(SUB("hello", -2, 2));
+PRINT(SUB("héllo", 0, 2))
