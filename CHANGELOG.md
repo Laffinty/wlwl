@@ -12,7 +12,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 > `docs/history/` (`wlwl-spec-v0.9.md`, `wlwl-spec-v0.8.md`,
 > `wlwl-spec-v0.7.md`, `wlwl-spec-v0.6.md`).
 
-## [Unreleased] — v0.10.4 版本号跟随发布版本
+## [v0.10.4] — 2026-09-30
 
 Spec: **wlwl-spec-v0.10** —— 规范版本号不变。本版只改**版本号口径**,
 不改任何行为。
@@ -58,10 +58,11 @@ Spec: **wlwl-spec-v0.10** —— 规范版本号不变。本版只改**版本号
   input;两者都没有就**跳过并提示**,不阻塞一次合法的手动触发。(手动触发
   本来就会把产物名标错,那是既有问题,本版不动。)
 
-### Note
+### 与 tag 的关系
 
-`v0.10.4` 的 tag 尚未打。若发布,**Cargo 版本已是 `0.10.4`,与 tag 一致**,
-守卫会放行。
+发 `v0.10.4` 时 `impl/Cargo.toml` 已是 `0.10.4`,两者一致,`version-check`
+放行。此后每发一版都按同一条规则:**先改 Cargo 版本,再打同名 tag**;
+忘了改就会被守卫挡在打包之前,而不是产出一个说谎的二进制。
 
 ## [v0.10.3] — 2026-09-30
 
