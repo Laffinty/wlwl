@@ -5,7 +5,7 @@
 | **Status** | Accepted(2026-09-27;Step 0 定稿 → Step 1/2 落地后转正) |
 | **Date** | 2026-09-27 |
 | **Deciders** | Li (project lead) |
-| **Related** | **ADR-0010**(本 ADR 有意推翻其「不做静态检查」方向,限缩范围)、ADR-0011(人日纪律先例)、`docs/history/wlwl-build-plan-v0.10-COMPLETED.md` §3 / §6.1、`docs/history/wlwl-v0.10.0-迭代技术路线建议.md` §4.1 P0-1、spec v0.9 §2.4 / §2.7 / §5.2 / §9.4 |
+| **Related** | **ADR-0010**(本 ADR 有意推翻其「不做静态检查」方向,限缩范围)、ADR-0011(人日纪律先例)、`docs/history/20260915-22.md` §3 / §6.1、`docs/history/20260915-22.md` §4.1 P0-1、spec v0.9 §2.4 / §2.7 / §5.2 / §9.4 |
 
 ## Context and Problem Statement
 
@@ -215,8 +215,8 @@ Step 11(余力项)与 Step 10,不阻塞 P0 主线。
 
 ## References
 
-- `docs/history/wlwl-build-plan-v0.10-COMPLETED.md` §3(P0-1 立项单)/ §6.1(本 ADR 草案)/ §10.1(Step 0–15)/ §10.2(决策点)/ §11.1(人日)
-- `docs/history/wlwl-v0.10.0-迭代技术路线建议.md` §2.2(真缺口)/ §4.1 P0-1 / §5(明确不做)/ §9(六方对照)
+- `docs/history/20260915-22.md` §3(P0-1 立项单)/ §6.1(本 ADR 草案)/ §10.1(Step 0–15)/ §10.2(决策点)/ §11.1(人日)
+- `docs/history/20260915-22.md` §2.2(真缺口)/ §4.1 P0-1 / §5(明确不做)/ §9(六方对照)
 - ADR-0010(`strict_types` runtime check via transient cast)—— 方向被本 ADR 限缩推翻,运行时决策继续有效
 - ADR-0011(MVS over PubGrub)—— 人日否决纪律先例
 - spec v0.9 §2.1(值域)/ §2.4(类型注解)/ §2.7(`strict_types`)/ §5.2(形参注解)/ §9.4(清单特性表)

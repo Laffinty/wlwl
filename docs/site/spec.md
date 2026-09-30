@@ -3,7 +3,7 @@
 The current WLWL language spec lives in `docs/standard/`.
 Specs are identified by **version + name** (content-address filenames
 were dropped); `git log --follow` is the source of truth for content
-changes. Superseded specs are archived under `docs/history/`.
+changes. Superseded specs are archived in condensed form under `docs/history/`.
 
 ## Current spec
 
@@ -30,18 +30,23 @@ deliberately not a code (see the spec's §7.4 / §11.2).
 
 ## Archived revisions
 
-| Version | Location | Status |
-|---|---|---|
-| v0.10 | [`docs/history/wlwl-spec-v0.10.md`](../history/wlwl-spec-v0.10.md) | superseded by v0.11 (2026-09-30) |
-| v0.9 | [`docs/history/wlwl-spec-v0.9.md`](../history/wlwl-spec-v0.9.md) | superseded by v0.10 (2026-09-28) |
-| v0.8 | [`docs/history/wlwl-spec-v0.8.md`](../history/wlwl-spec-v0.8.md) | superseded by v0.9 (2026-09-25) |
-| v0.7 | [`docs/history/wlwl-spec-v0.7.md`](../history/wlwl-spec-v0.7.md) | superseded by v0.8 (2026-09-23) |
-| v0.6 | [`docs/history/wlwl-spec-v0.6.md`](../history/wlwl-spec-v0.6.md) | superseded by v0.7 (2026-09-22) |
-| v0.5 | (never published) | superseded |
-| v0.4 | (SHA-1 `97524ced037b5ef0a5820a2ebd5bafb4ba4e239b`) | superseded |
-| v0.3 | (MD5 `4308b3d2071ebed5cb52eba61272b1ea`) | superseded |
-| v0.2.x | (planned) | superseded |
-| v0.1 | (planned) | history only |
+| Version | Status |
+|---|---|
+| v0.10 | superseded by v0.11 (2026-09-30) |
+| v0.9 | superseded by v0.10 (2026-09-28) |
+| v0.8 | superseded by v0.9 (2026-09-25) |
+| v0.7 | superseded by v0.8 (2026-09-23) |
+| v0.6 | superseded by v0.7 (2026-09-22) |
+| v0.5 | (never published) |
+| v0.4 | (SHA-1 `97524ced037b5ef0a5820a2ebd5bafb4ba4e239b`) |
+| v0.3 | (MD5 `4308b3d2071ebed5cb52eba61272b1ea`) |
+| v0.2.x | (planned) |
+| v0.1 | (planned) |
+
+Archived specs v0.6 – v0.10 (with their build plans, deviation ledgers,
+reviews and daily logs) are condensed in
+[`20260902-09.md`](../history/20260902-09.md) and
+[`20260915-22.md`](../history/20260915-22.md); full text via git history.
 
 > **v0.5 was never published** — the spec was drafted but not tagged,
 > and the implementation never claimed compliance with it. v0.6 was the
@@ -84,8 +89,8 @@ partial conformance harness for error-schema stability. See
 real symbols (no broken-intra-doc-link warnings).
 
 `cargo deny --locked --all-features check` enforces the licenses of
-all transitive dependencies; see
-[`docs/history/deviations-v0.7.md`](../history/deviations-v0.7.md).
+all transitive dependencies; see the deviation-ledger digests in
+[`docs/history/20260915-22.md`](../history/20260915-22.md).
 
 `cargo run --bin gen-appendix-g` regenerates `docs/appendix_G.md`
 (appendix G's impl-view mirror) from the builtin registry; the

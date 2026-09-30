@@ -5237,7 +5237,7 @@ fn channel_reenqueue_woken(
 /// onto the channel buffer (or hand off directly to a parked
 /// receiver on a sync channel). When the buffer is full the calling
 /// task **really suspends** via `Signal::Yield(SendingOn)` per
-/// `docs/history/wlwl-build-plan-v0.9-COMPLETED.md` §3.2 / ADR-0017 §3.2 / Step 4: the
+/// `docs/history/20260915-22.md` §3.2 / ADR-0017 §3.2 / Step 4: the
 /// scheduler-driven task runner catches the signal, marks the task
 /// `Suspended(SendingOn)`, registers it on the channel's
 /// `sender_waiters` list, and the next state change (a
@@ -5324,7 +5324,7 @@ fn builtin_channel_send(ev: &mut Evaluator, args: Vec<Value>) -> WlwlResult<Outc
 /// `Value::Err(kind="ChannelClosed")` when the channel is closed
 /// and drained). On an empty buf the calling task **really
 /// suspends** via `Signal::Yield(ReceivingOn)` per
-/// `docs/history/wlwl-build-plan-v0.9-COMPLETED.md` §3.2 / ADR-0017 §3.2 / Step 4.
+/// `docs/history/20260915-22.md` §3.2 / ADR-0017 §3.2 / Step 4.
 ///
 /// **v0.9 Step 4 changes** (replacing v0.7.0 deviation P7-D2-001):
 /// - `WouldBlock` no longer surfaces as `ERR(kind="ChannelWouldBlock")`

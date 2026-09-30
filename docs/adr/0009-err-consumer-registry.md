@@ -109,7 +109,7 @@ Negative:
 ## References
 
 - spec v0.4 §12.7 (ERR consumer registration)
-- docs/history/wlwl-build-plan-v0.2.md §A6 (Phase A plan)
+- docs/history/20260902-09.md(含 v0.2 构建计划归档精简)§A6 (Phase A plan)
 - docs/history/20260902-09.md (Phase A6 implementation report; 2026-09-30 起日次日志按 5~10 日窗口合并精简)
 - Phase B7 (`std_test` test framework) consumes this registry
 - Phase D2 (warnings sink) is the architectural template

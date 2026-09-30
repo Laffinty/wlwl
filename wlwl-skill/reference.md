@@ -2,11 +2,9 @@
 
 > Loaded only when `SKILL.md` points here. This is a lookup catalogue,
 > not a tutorial. Section numbers (`§1.5`, `§8.3`, `§10.4`, `§13`, `§17`, etc.)
-> refer to `docs/standard/wlwl-spec-v0.11.md` (v0.10 archived at
-> `docs/history/wlwl-spec-v0.10.md`; v0.9 at
-> `docs/history/wlwl-spec-v0.9.md`; v0.8 at `docs/history/wlwl-spec-v0.8.md`;
-> v0.7 at `docs/history/wlwl-spec-v0.7.md`;
-> v0.6 at `docs/history/wlwl-spec-v0.6.md`).
+> refer to `docs/standard/wlwl-spec-v0.11.md` (superseded specs v0.6–v0.10
+> archived in condensed form in `docs/history/20260902-09.md` /
+> `docs/history/20260915-22.md`; full text via git history).
 
 ## Contents
 
@@ -546,8 +544,9 @@ ERR; cannot be caught by §8.3 consumers — see §20 anti-patterns).
 
 ## §23. v0.9 增量备忘
 
-Every v0.9 item that affects writing `.wll` source — pulled from
-`docs/history/wlwl-spec-v0.9.md` 附录 D.
+Every v0.9 item that affects writing `.wll` source — pulled from the
+v0.9 spec's 附录 D (archived in condensed form in
+`docs/history/20260915-22.md`; full text via git history).
 
 | # | § | Change |
 |---|---|--------|
@@ -674,9 +673,5 @@ under `examples/` are hand-written teaching material and are **not** canonical;
 | 文档 | 路径 | 用途 |
 |------|------|------|
 | 权威规范 | `../docs/standard/wlwl-spec-v0.11.md` | 唯一真相源 |
-| v0.10 归档 | `../docs/history/wlwl-spec-v0.10.md` | 静态契约最初定稿版(v0.11 同语义) |
-| v0.9 归档 | `../docs/history/wlwl-spec-v0.9.md` | 历史 §0–§17 上下文 |
-| v0.8 归档 | `../docs/history/wlwl-spec-v0.8.md` | 历史 §0–§12 上下文 |
-| v0.7 归档 | `../docs/history/wlwl-spec-v0.7.md` | 历史 §17 上下文 |
-| v0.6 归档 | `../docs/history/wlwl-spec-v0.6.md` | §0–§12 核心 |
+| 历史归档(v0.6–v0.10 精简) | `../docs/history/20260902-09.md` / `20260915-22.md` | 旧版上下文(原文在 git 历史) |
 | 内建注册表 | `../docs/appendix_G.md` | 110 条内建单一真相源 |

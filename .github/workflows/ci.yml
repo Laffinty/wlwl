@@ -57,7 +57,7 @@ jobs:
       # to `RUSTFLAGS: -D warnings` (which only catches rustc lints)
       # and `cargo fmt --check` (style only). Clippy enforces the
       # idiomatic Rust lints documented in
-      # `docs/history/wlwl-build-plan-v0.2.md` 闁? G1.
+      # `docs/history/20260902-09.md` 闁? G1.
       - name: cargo clippy -D warnings
 
 

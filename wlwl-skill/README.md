@@ -41,7 +41,7 @@ This skill targets **wlwl-spec-v0.11** (file at
   behaviour): `EXPECT_ERR` consumer, `=` triple-identity, `LET`/`FUN`
   asymmetry, `SUB` length semantics, float exponents, `MUT` as identifier,
   string-literal subscript, and related prose fixes.
-- **v0.9** (archived, `../docs/history/wlwl-spec-v0.9.md`) contributed:
+- **v0.9** (archived) contributed:
   - **True-suspension concurrency** — `YIELD` legal at any expression
     position inside task bodies; blocking `CHANNEL_SEND`/`RECV` suspend
     (no `ChannelWouldBlock`).
@@ -73,9 +73,9 @@ This skill targets **wlwl-spec-v0.11** (file at
   - **New CLI** — `wlwl sig`, `wlwl sig-gen`, `wlwl interface`, `wlwl schema`,
     `wlwl lsp`.
 
-Spec archives: `../docs/history/wlwl-spec-v0.6.md`,
-`../docs/history/wlwl-spec-v0.7.md`, `../docs/history/wlwl-spec-v0.8.md`,
-`../docs/history/wlwl-spec-v0.9.md` (each version additive on the previous;
+Superseded specs (v0.6–v0.10) are archived in condensed form in
+`../docs/history/20260902-09.md` / `../docs/history/20260915-22.md`
+(full text via git history; each version additive on the previous;
 v0.11 — the renumbered v0.10 "v2 cleaned" edition, semantics unchanged —
 is the current normative source).
 
@@ -175,9 +175,7 @@ opts in.
 ## See also
 
 - Language spec: `../docs/standard/wlwl-spec-v0.11.md`
-- Spec archives: `../docs/history/wlwl-spec-v0.10.md`,
-  `../docs/history/wlwl-spec-v0.9.md`,
-  `../docs/history/wlwl-spec-v0.8.md`,
-  `../docs/history/wlwl-spec-v0.7.md`, `../docs/history/wlwl-spec-v0.6.md`
+- Spec archives (condensed): `../docs/history/20260902-09.md`,
+  `../docs/history/20260915-22.md`
 - Builtin registry (Appendix G): `../docs/appendix_G.md`
 - Concurrency fixtures: `../impl/tests/concurrency/`

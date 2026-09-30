@@ -508,20 +508,20 @@ Chosen option **D** (α + pioneering). Concretely, v0.9 commits to:
 
 ## References
 
-- `docs/history/wlwl-build-plan-v0.9-COMPLETED.md` §0.5 (pioneering table) /
+- `docs/history/20260915-22.md` §0.5 (pioneering table) /
   §4 (P1 OOP) / §4.3 (real impl path) / §4.4.1 (algebraic-effect
   framing) / §4.4.2 (tag/payload cancellation) / §4.4.3
   (session-typed methods) / §4.4.4 (WasmFX-style tag dispatch) /
   §9.1 Step 8-12 / §10 (risk table) / §11.2 (consistency table) /
   §11.3 (doc acceptance)
-- `docs/history/wlwl-spec-v0.8.md` §12 (形式表 with OOP rows) /
+- `docs/history/20260915-22.md` §12 (形式表 with OOP rows) /
   §13-§16 (currently empty; v0.9 fills) / 附录 G (rows 1223-1233
   marked "OOP 未实现" in v0.8.1)
 - `docs/adr/0017-cooperative-suspension-scheduler.md` (algebraic-
   effect framing context, `Effect` enum foundation)
 - `docs/adr/0018-e0055-e0057-retention-decision.md` (sibling
   spec-debt-closure ADR)
-- `docs/history/deviations-v0.8.md` (E0032 / E0050 / E0051
+- `docs/history/20260915-22.md` (E0032 / E0050 / E0051
   reservation rationale)
 - Lindley, S. *Lightweight Functional Session Types* (Links,
   Edinburgh) — session-typed-methods reference.

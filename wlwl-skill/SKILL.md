@@ -9,7 +9,7 @@ description: "Writes WLWL v0.11 .wll source files (spec docs/standard/wlwl-spec-
 
 **Use when:**
 - The user asks for a `.wll` source file, a WLWL program, or a v0.6 / v0.7 / v0.8 / v0.9 / v0.10 / v0.11 idiom.
-- A task targets `wlwl-spec-v0.11.md` (current) or `wlwl-spec-v0.6.md` / `wlwl-spec-v0.7.md` / `wlwl-spec-v0.8.md` / `wlwl-spec-v0.9.md` / `wlwl-spec-v0.10.md` (archived).
+- A task targets `wlwl-spec-v0.11.md` (current) or any superseded spec (v0.6–v0.10, archived in condensed form under `../docs/history/`).
 - Reviewing or debugging v0.6–v0.11 source (concurrency, OOP, session protocols, static contracts included).
 
 **Don't use when:**
@@ -666,11 +666,7 @@ file is a real (if cosmetic) deviation.
 ## References
 
 - **Authoritative spec**: `../docs/standard/wlwl-spec-v0.11.md` — defer to this on any disagreement (§13–§16 = OOP + session types + linear THIS; §17 = concurrency; §2.6/§5.2/§9.1/§9.6 = static contracts). Where §5.2.1's "三条实测事实" disagrees with the compiler (the angle-bracket / arrow forms, and the constraint-on-a-concrete-type code), **the compiler wins** — this bundle records the measured values.
-- **v0.10 (archived)**: `../docs/history/wlwl-spec-v0.10.md` — v0.11 is its "v2 cleaned" renumbering; the semantics are identical, so the v0.10 archive's §2.6/§5.2/§7.4/§9.1/§9.6 static-contract prose is still valid context.
-- **v0.9 (archived)**: `../docs/history/wlwl-spec-v0.9.md` — §0–§17 still valid (v0.10 is additive + static contracts on top, runtime unchanged).
-- **v0.8 (archived)**: `../docs/history/wlwl-spec-v0.8.md` — §0–§12 core still valid (v0.9 is additive + concurrency/OOP upgrade over v0.8).
-- **v0.7 (archived)**: `../docs/history/wlwl-spec-v0.7.md` — §0–§17 core still valid.
-- **v0.6 (archived)**: `../docs/history/wlwl-spec-v0.6.md` — §0–§12 core still valid.
+- **Superseded specs (archived)**: v0.6–v0.10, condensed in `../docs/history/20260902-09.md` / `../docs/history/20260915-22.md` (full text via git history) — v0.11 is the v0.10 "v2 cleaned" renumbering with identical semantics; v0.10 added static contracts on top of v0.9's runtime; v0.9 added true-suspension concurrency + OOP §13–§16; the older archives' §0–§17 remain valid as history.
 - **Lookup tables** (operators, error codes, AST shapes, OOP, concurrency): `reference.md` in this folder.
 - **Built-in registry (single source of truth)**: `../docs/appendix_G.md`.
 - **Gold concurrency fixtures**: `../impl/tests/concurrency/*.wll`.

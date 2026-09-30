@@ -129,7 +129,7 @@ Negative:
 
 - spec v0.4 §13.9 (Module Version Solver)
 - ADR-006 (lock-file shape; previous decision basis)
-- docs/history/wlwl-build-plan-v0.2.md §C4 (Phase C plan)
+- docs/history/20260902-09.md(含 v0.2 构建计划归档精简)§C4 (Phase C plan)
 - docs/history/20260915-22.md (Phase C5-C7 implementation; 2026-09-30 起日次日志按 5~10 日窗口合并精简)
 - Phase E1 alternative: §13.9 could be retro-fitted with PubGrub
   if user demand shifts

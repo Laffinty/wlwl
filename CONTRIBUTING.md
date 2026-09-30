@@ -3,18 +3,21 @@
 Thanks for your interest in WLWL. This document covers the day-to-day
 contribution workflow. For deeper design context, read:
 
-- [`docs/history/wlwl-spec-v0.8.md`](docs/history/wlwl-spec-v0.8.md) — the language spec (version + name)
-- [`docs/history/wlwl-build-plan-v0.8-COMPLETED.md`](docs/history/wlwl-build-plan-v0.8-COMPLETED.md) — latest build plan (archived)
-- [`docs/history/deviations-v0.8.md`](docs/history/deviations-v0.8.md) — known deviations (v0.8 register; v0.7 register at `docs/history/deviations-v0.7.md`)
+- [`docs/standard/wlwl-spec-v0.11.md`](docs/standard/wlwl-spec-v0.11.md) — the language spec (version + name)
+- [`docs/plan/README.md`](docs/plan/README.md) — current iteration status
+- [`docs/history/20260902-09.md`](docs/history/20260902-09.md) /
+  [`docs/history/20260915-22.md`](docs/history/20260915-22.md) — all
+  historical material (archived specs v0.6–v0.10, build plans, deviation
+  registers, reviews, daily logs) condensed; full text via git history
 
 ## Ground rules
 
 1. **The spec is authoritative.** If your change conflicts with the spec,
    the spec wins — open a spec revision issue first. Implementation-only
-   deviations must be added to the **active cycle's** register under
-   `docs/history/deviations-v0.NN.md` (create it when the cycle starts);
-   during v0.10 that was `docs/history/deviations-v0.10.md`. The current
-   pointer lives in `docs/plan/README.md`.
+   deviations must be added to the **active cycle's** register
+   (`docs/plan/deviations-v0.NN.md`, created when the cycle starts;
+   closed registers are condensed into `docs/history/20260902-09.md` /
+   `20260915-22.md`). The current pointer lives in `docs/plan/README.md`.
 2. **The compiler is GPL v2.** By contributing, you agree your contribution
    is licensed under GPL v2. Your `.wll` programs are not affected.
 3. **Small PRs.** One concern per PR. If a change touches the parser and
@@ -49,7 +52,7 @@ cargo run -- ast   examples/phase2_demo.wll --format=json | head
 ```
 wlwl/
 ├── docs/
-│   ├── standard/   # current language spec (wlwl-spec-v0.8.md)
+│   ├── standard/   # current language spec (wlwl-spec-v0.11.md)
 │   ├── plan/       # next-iteration plan home (see README)
 │   └── history/    # archived specs, completed plans, deviations, day notes
 ├── impl/

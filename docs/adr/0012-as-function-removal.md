@@ -118,7 +118,7 @@ Negative:
 ## References
 
 - spec v0.4 §13.4 (AS removal)
-- docs/history/wlwl-build-plan-v0.2.md §C1 + §0.3 Decision #6
+- docs/history/20260902-09.md(含 v0.2 构建计划归档精简)§C1 + §0.3 Decision #6
 - docs/history/20260915-22.md (Phase C1 implementation report; 2026-09-30 起日次日志按 5~10 日窗口合并精简)
 - Phase E3 AST-stable node ID API verifies that E0011 surfaces for
   tools expecting E0011 (i.e., no surprise E-code added)
