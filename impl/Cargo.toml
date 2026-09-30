@@ -14,7 +14,17 @@ members = [
 ]
 
 [workspace.package]
-version = "0.10.0"
+# [v0.10.4] `wlwl -V` 报的就是这个值(clap 的 `#[command(version)]` 取
+# `CARGO_PKG_VERSION`)。它必须**跟着发布版本走**。
+#
+# 此前这里停在 `0.10.0`,于是 v0.10.1 / v0.10.2 / v0.10.3 三个发布物全都报
+# `wlwl 0.10.0` —— 连续三次。靠「文档里写清口径」拦不住:那条口径本身写的
+# 就是「本版不动」,等于把错版正式追认了。
+#
+# 规则:**发 vN.M.P 之前先把这个数改成 N.M.P**。`.github/workflows/release.yml`
+# 的 `version-check` job 会在**打包之前**验证 tag 与本值一致,不一致直接失败 ——
+# 所以现在漏改的后果是「发不出去」,而不是「发出去一个说谎的二进制」。
+version = "0.10.4"
 edition = "2021"
 license = "GPL-2.0-only"
 repository = "https://github.com/Laffinty/wlwl"

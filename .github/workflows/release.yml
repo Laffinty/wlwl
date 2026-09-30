@@ -14,8 +14,73 @@ permissions:
   contents: write
 
 jobs:
+  # [v0.10.4] 版本号守卫。**必须排在 build 之前**:build 会编出二进制、
+  # sign 会签、release 会发布 —— 一旦错版发布出去,就是撤不回来的既成事实。
+  #
+  # 为什么需要它:`wlwl -V` 报的是 `CARGO_PKG_VERSION`(即
+  # `impl/Cargo.toml` 的 `[workspace.package] version`),而不是 git tag。
+  # 两者靠人记得同步,而这已经**连续漏了三次**:v0.10.1 / v0.10.2 / v0.10.3
+  # 的产物全都报 `wlwl 0.10.0`。文档里写几遍口径都没用 —— 写口径的那句本身
+  # 就写着「本版不动」,于是它变成了一种**被正式追认的错版**。
+  #
+  # 规则:**tag 就是权威**。发 `vN.M.P` 之前先把 Cargo 版本改成 `N.M.P`,
+  # 本 job 会验证两者一致;不一致直接失败,错版无法发布。
+  version-check:
+    name: version guard (tag == Cargo version)
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          # 需要 tag 本身,`ref` 默认就是被推的那个 tag。
+          ref: ${{ github.ref }}
+
+      - name: Compare tag against impl/Cargo.toml [workspace.package] version
+        env:
+          DISPATCH_TAG: ${{ inputs.tag }}
+        run: |
+          set -euo pipefail
+          CARGO="$(grep -E '^version[[:space:]]*=' impl/Cargo.toml \
+                   | head -1 \
+                   | sed -E 's/.*=[[:space:]]*"([^"]+)".*/\1/')"
+          echo "cargo : $CARGO"
+          if [ -z "$CARGO" ]; then
+            echo "::error::could not read version from impl/Cargo.toml"
+            exit 1
+          fi
+
+          # tag 来自三个可能的来源,按可靠性排序。
+          # 注意 `workflow_dispatch` 分支下 GITHUB_REF_NAME 是**分支名**而不是
+          # tag —— 所以那条路径必须用 input,否则本守卫会把一次合法的手动
+          # 触发也判成错版。(顺带说明:该路径下 build/sign 用的仍是
+          # GITHUB_REF_NAME,手动触发本来就会把产物名标错,那是既有问题。)
+          TAG=""
+          if [ "${{ github.event_name }}" = "push" ]; then
+            TAG="${GITHUB_REF_NAME}"
+          elif [ -n "${DISPATCH_TAG}" ]; then
+            TAG="${DISPATCH_TAG}"
+          else
+            echo "::notice::workflow_dispatch without a 'tag' input — skipping the version guard (an explicit operator override)."
+            exit 0
+          fi
+          echo "tag   : $TAG"
+
+          case "$TAG" in
+            v[0-9]*.[0-9]*.[0-9]*) ;;
+            *)
+              echo "::notice::'$TAG' is not a vX.Y.Z tag — skipping the version guard."
+              exit 0
+              ;;
+          esac
+
+          if [ "v$CARGO" != "$TAG" ]; then
+            echo "::error::tag $TAG does not match impl/Cargo.toml version $CARGO — the binary would report 'wlwl $CARGO' while being published as $TAG. Set [workspace.package] version = \"${TAG#v}\" in impl/Cargo.toml, commit, and re-tag."
+            exit 1
+          fi
+          echo "ok: $TAG matches Cargo version $CARGO"
+
   build:
     name: build (${{ matrix.target }})
+    needs: version-check
     runs-on: ${{ matrix.os }}
     strategy:
       fail-fast: false
