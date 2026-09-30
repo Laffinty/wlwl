@@ -2419,7 +2419,7 @@ fn builtin_unshift(_ev: &mut Evaluator, args: Vec<Value>) -> WlwlResult<Outcome>
 /// start/end 负数从尾部数 (类似 Python);end 缺省 -> 切到末尾。
 fn builtin_slice(_ev: &mut Evaluator, args: Vec<Value>) -> WlwlResult<Outcome> {
     if args.len() < 2 || args.len() > 3 {
-        return Err(arity_error("SLICE", 2, args.len()));
+        return Err(arity_range_error("SLICE", args.len(), 2, 3));
     }
     let arr = match &args[0] {
         Value::Array(a) => a,
@@ -2655,7 +2655,7 @@ fn builtin_lower(_ev: &mut Evaluator, args: Vec<Value>) -> WlwlResult<Outcome> {
 /// (视为 0);SLICE 的负 end "从尾数"语义不延伸到 SUB。
 fn builtin_substr(_ev: &mut Evaluator, args: Vec<Value>) -> WlwlResult<Outcome> {
     if args.len() < 2 || args.len() > 3 {
-        return Err(arity_error("SUB", 2, args.len()));
+        return Err(arity_range_error("SUB", args.len(), 2, 3));
     }
     let s = match &args[0] {
         Value::String(s) => s,
@@ -5925,6 +5925,42 @@ fn arity_error(name: &str, got: usize, want: usize) -> WlwlError {
             "function `{}` expects {} argument(s), got {}",
             name, want, got
         ),
+        Location::point("<runtime>", 0, 0),
+    )
+    .with_suggestion(Suggestion::Note { description: fix })
+    .into()
+}
+
+/// [v0.10.3] 区间元数的版本:实参个数须落在 `lo..=hi`。
+///
+/// 为什么要有这个:`SLICE` / `SUB` 都是 `2..=3`(末参可省),而 `arity_error`
+/// 只能表达**一个**想要的个数。原先这两处为了套它,把参数**写反**了 ——
+/// `arity_error("SLICE", 2, args.len())` 把 `2` 当成 got、把实际实参数当成
+/// want。于是 `SLICE()`(0 个实参)报的是「expects 0 argument(s), got 2」:
+/// **两个数字都是错的,而且自相矛盾**。
+///
+/// 简单对调也不是好修法:`want` 只接受一个值,对 2..=3 的区间仍然说不清
+/// 「想要几个」。所以另开一个显式说区间的。
+fn arity_range_error(name: &str, got: usize, lo: usize, hi: usize) -> WlwlError {
+    let want = if lo == hi {
+        format!("{lo}")
+    } else {
+        format!("{lo} to {hi}")
+    };
+    let fix = if got > hi {
+        format!(
+            "too many arguments: pass {} fewer (got {got}, want {want})",
+            got - hi
+        )
+    } else {
+        format!(
+            "too few arguments: add {} more (got {got}, want {want})",
+            lo - got
+        )
+    };
+    WlwlDiagnostic::new(
+        ErrorCode::E0022,
+        format!("function `{name}` expects {want} argument(s), got {got}"),
         Location::point("<runtime>", 0, 0),
     )
     .with_suggestion(Suggestion::Note { description: fix })

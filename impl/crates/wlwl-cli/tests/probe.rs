@@ -43,11 +43,11 @@ use std::time::{Duration, Instant};
 /// static_types 夹具。两条都标 `deviation` —— 它们断言的是当前实现的真实
 /// 行为;v0.11 实现续体保存时它们会转红,那正是要看的信号。
 ///
-/// 最后 31 条(`P_v10_2_*` / `P_v10_3_*`)是 v0.10.2 第三方合规审查修复批次
+/// 最后 35 条(`P_v10_2_*` / `P_v10_3_*`)是 v0.10.2 第三方合规审查修复批次
 /// 与 v0.10.3 健壮性批次补的,一条缺陷至少一条 case,且**每条都配一条反向
 /// 守卫**(对照组 / 误报守卫 / 仍须被拒的负例):只锁「修好了」而没有锁
 /// 「没改坏别的」,等于把回归放进门禁之外。
-const EXPECTED_CASE_COUNT: usize = 132;
+const EXPECTED_CASE_COUNT: usize = 136;
 
 /// 单个 case 的上限,与 `probe.py` 的 `timeout=60` 同义。
 const CASE_TIMEOUT: Duration = Duration::from_secs(60);

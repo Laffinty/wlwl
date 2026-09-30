@@ -1,0 +1,5 @@
+IMPORT("wlwl:std.collection", ["FLAT", "ENUMERATE", "UNIQ"]);
+PRINT(FLAT(5));
+PRINT(ENUMERATE(5));
+PRINT(UNIQ(5));
+PRINT(FLAT("s"))

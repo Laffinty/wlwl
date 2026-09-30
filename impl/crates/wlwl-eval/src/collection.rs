@@ -767,24 +767,19 @@ pub fn builtin_find(ev: &mut Evaluator, args: Vec<Value>) -> WlwlResult<Outcome>
 // 11. ENUMERATE(arr)  →  [[0, v0], [1, v1], ...]
 // ─────────────────────────────────────────────────────────────────────
 
-pub fn builtin_enumerate(_ev: &mut Evaluator, args: Vec<Value>) -> WlwlResult<Outcome> {
+pub fn builtin_enumerate(ev: &mut Evaluator, args: Vec<Value>) -> WlwlResult<Outcome> {
     if let Some(e) = short_circuit_err(&args) {
         return Ok(Outcome::normal(e));
     }
     if args.len() != 1 {
         return Err(arity("ENUMERATE", args.len(), 1));
     }
+    // [v0.10.3] 与同文件的 MAP / FILTER 等统一:type_err 要 span,
+    // 所以这里取一次(eval_call 在派发前设过 current_span)。
+    let span = ev.current_span.clone().unwrap_or_else(Span::dummy);
     let arr = match &args[0] {
         Value::Array(items) => items.clone(),
-        _ => return Err(arity("ENUMERATE", 1, 1)), // placeholder, replaced below
-    };
-    let _ = arr;
-    // The placeholder pattern above is awkward; do the actual work
-    // here so we get a proper E0030 on non-arrays. (Rust's borrow
-    // checker doesn't like moving `arr` while still borrowing `args`.)
-    let arr = match &args[0] {
-        Value::Array(items) => items.clone(),
-        _ => unreachable!("guarded above"),
+        other => return Err(type_err(ev, "ENUMERATE", "array", other, &span)),
     };
     let mut out = Vec::with_capacity(arr.len());
     for (i, v) in arr.into_iter().enumerate() {
@@ -847,21 +842,19 @@ pub fn builtin_drop(ev: &mut Evaluator, args: Vec<Value>) -> WlwlResult<Outcome>
 // 14. FLAT(arr)  →  flatten one level
 // ─────────────────────────────────────────────────────────────────────
 
-pub fn builtin_flat(_ev: &mut Evaluator, args: Vec<Value>) -> WlwlResult<Outcome> {
+pub fn builtin_flat(ev: &mut Evaluator, args: Vec<Value>) -> WlwlResult<Outcome> {
     if let Some(e) = short_circuit_err(&args) {
         return Ok(Outcome::normal(e));
     }
     if args.len() != 1 {
         return Err(arity("FLAT", args.len(), 1));
     }
+    // [v0.10.3] 与同文件的 MAP / FILTER 等统一:type_err 要 span,
+    // 所以这里取一次(eval_call 在派发前设过 current_span)。
+    let span = ev.current_span.clone().unwrap_or_else(Span::dummy);
     let arr = match &args[0] {
         Value::Array(items) => items.clone(),
-        _ => return Err(arity("FLAT", 1, 1)), // placeholder; replaced below
-    };
-    let _ = arr;
-    let arr = match &args[0] {
-        Value::Array(items) => items.clone(),
-        _ => unreachable!("guarded above"),
+        other => return Err(type_err(ev, "FLAT", "array", other, &span)),
     };
     let mut out: Vec<Value> = Vec::new();
     for v in arr {
@@ -877,21 +870,19 @@ pub fn builtin_flat(_ev: &mut Evaluator, args: Vec<Value>) -> WlwlResult<Outcome
 // 15. UNIQ(arr)  →  dedup by `=` (= semantics from v0.3 §10.4)
 // ─────────────────────────────────────────────────────────────────────
 
-pub fn builtin_uniq(_ev: &mut Evaluator, args: Vec<Value>) -> WlwlResult<Outcome> {
+pub fn builtin_uniq(ev: &mut Evaluator, args: Vec<Value>) -> WlwlResult<Outcome> {
     if let Some(e) = short_circuit_err(&args) {
         return Ok(Outcome::normal(e));
     }
     if args.len() != 1 {
         return Err(arity("UNIQ", args.len(), 1));
     }
+    // [v0.10.3] 与同文件的 MAP / FILTER 等统一:type_err 要 span,
+    // 所以这里取一次(eval_call 在派发前设过 current_span)。
+    let span = ev.current_span.clone().unwrap_or_else(Span::dummy);
     let arr = match &args[0] {
         Value::Array(items) => items.clone(),
-        _ => return Err(arity("UNIQ", 1, 1)), // placeholder
-    };
-    let _ = arr;
-    let arr = match &args[0] {
-        Value::Array(items) => items.clone(),
-        _ => unreachable!("guarded above"),
+        other => return Err(type_err(ev, "UNIQ", "array", other, &span)),
     };
     let mut seen: Vec<Value> = Vec::new();
     for v in arr {

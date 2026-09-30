@@ -1,0 +1,11 @@
+{
+ "exit": 1,
+ "contains": [
+  "E0030",
+  "expected array"
+ ],
+ "not_contains": [
+  "E0022"
+ ],
+ "_why": "FLAT / ENUMERATE / UNIQ 三处的类型守卫原本是同一段「占位」写法:第一个 match 的 `_` 臂 `return arity(name, 1, 1)` —— 报的是**元数错**(E0022),而且是自相矛盾的「expects 1 argument(s), got 1」。第二个 match(真正干活的那个)用 `unreachable!` 兜着,注释还写着「replaced below」—— 但第一个 match 已经 return 了,那句注释是假的。类型错就该是 E0030。同文件的 MAP 等一直是对的,这三处是没跟上。"
+}

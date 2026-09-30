@@ -1,0 +1,7 @@
+IMPORT("wlwl:std.collection", ["FLAT", "ENUMERATE", "UNIQ"]);
+PRINT(FLAT([1, [2, [3]]]));
+PRINT(ENUMERATE(["a", "b"]));
+PRINT(UNIQ([1, 1, 2]));
+PRINT(SLICE([1, 2, 3, 4], 1, 3));
+PRINT(SUB("hello", 1));
+PRINT(SUB("hello", 0, 3))

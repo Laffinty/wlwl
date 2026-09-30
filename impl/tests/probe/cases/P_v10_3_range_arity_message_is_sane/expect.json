@@ -1,0 +1,10 @@
+{
+ "exit": 1,
+ "contains": [
+  "E0022",
+  "SLICE",
+  "2 to 3",
+  "got 0"
+ ],
+ "_why": "`SLICE` / `SUB` 都是 2..=3 的区间元数,而 `arity_error` 只能表达一个想要的个数 —— 原先为了套它把参数**写反**了:`arity_error(\"SLICE\", 2, args.len())` 把 2 当 got、把实际实参数当 want,于是 `SLICE()` 报「expects 0 argument(s), got 2」,两个数字都错且自相矛盾。简单对调也不是好修法(want 说不清区间),所以新开 `arity_range_error`。"
+}
