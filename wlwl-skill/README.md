@@ -29,7 +29,7 @@ The skill is loaded when the task matches the `description` in
 ## Target version
 
 This skill targets **wlwl-spec-v0.11** (file at
-`../docs/standard/wlwl-spec-v0.11.md`).
+`../docs/spec/wlwl-spec-v0.11.md`).
 
 - **v0.6 core** (truthiness overhaul, `&&/||` short-circuit, `IF` ERR-routing,
   `!` canonical, `AT_K` rename, string subscript, `LET MUT`, overflow→`E0035`,
@@ -174,7 +174,7 @@ opts in.
 
 ## See also
 
-- Language spec: `../docs/standard/wlwl-spec-v0.11.md`
+- Language spec: `../docs/spec/wlwl-spec-v0.11.md`
 - Spec archives (condensed): `../docs/history/20260902-09.md`,
   `../docs/history/20260915-22.md`
 - Builtin registry (Appendix G): `../docs/appendix_G.md`

@@ -6,9 +6,9 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 > **Note.** The compiler version is **independent of the language spec version**.
-> The language spec lives in `docs/standard/` and is identified by version + name.
+> The language spec lives in `docs/spec/` and is identified by version + name.
 > This file tracks the **compiler / tooling** releases. The current spec is
-> **v0.11** (`docs/standard/wlwl-spec-v0.11.md`). Archived specs and all
+> **v0.11** (`docs/spec/wlwl-spec-v0.11.md`). Archived specs and all
 > historical material (build plans, deviation ledgers, reviews, daily logs)
 > are condensed in `docs/history/` (`20260902-09.md`, `20260915-22.md`);
 > full text is available via git history.

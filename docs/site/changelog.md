@@ -1,7 +1,7 @@
 # Changelog
 
 > **Note.** The compiler version is **independent of the language
-> spec version**. The language spec lives in `docs/standard/` and
+> spec version**. The language spec lives in `docs/spec/` and
 > is content-addressed. This page tracks the **compiler / tooling**
 > releases.
 

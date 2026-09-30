@@ -2,7 +2,7 @@
 
 > Loaded only when `SKILL.md` points here. This is a lookup catalogue,
 > not a tutorial. Section numbers (`§1.5`, `§8.3`, `§10.4`, `§13`, `§17`, etc.)
-> refer to `docs/standard/wlwl-spec-v0.11.md` (superseded specs v0.6–v0.10
+> refer to `docs/spec/wlwl-spec-v0.11.md` (superseded specs v0.6–v0.10
 > archived in condensed form in `docs/history/20260902-09.md` /
 > `docs/history/20260915-22.md`; full text via git history).
 
@@ -564,7 +564,7 @@ v0.9 spec's 附录 D (archived in condensed form in
 ## §24. v0.10 增量备忘 — 静态契约
 
 Every v0.10 item that affects writing `.wll` source — pulled from
-`docs/standard/wlwl-spec-v0.11.md` 附录 D (unchanged from the v0.10 edition).
+`docs/spec/wlwl-spec-v0.11.md` 附录 D (unchanged from the v0.10 edition).
 
 **v0.10's runtime is identical to v0.9's.** Everything below is opt-in; a
 program that adds no annotation and ships no `.sig` behaves exactly as before.
@@ -672,6 +672,6 @@ under `examples/` are hand-written teaching material and are **not** canonical;
 
 | 文档 | 路径 | 用途 |
 |------|------|------|
-| 权威规范 | `../docs/standard/wlwl-spec-v0.11.md` | 唯一真相源 |
+| 权威规范 | `../docs/spec/wlwl-spec-v0.11.md` | 唯一真相源 |
 | 历史归档(v0.6–v0.10 精简) | `../docs/history/20260902-09.md` / `20260915-22.md` | 旧版上下文(原文在 git 历史) |
 | 内建注册表 | `../docs/appendix_G.md` | 110 条内建单一真相源 |

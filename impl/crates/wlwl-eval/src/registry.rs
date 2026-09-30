@@ -1628,7 +1628,7 @@ pub fn deferred_names() -> Vec<&'static str> {
 ///
 /// 这一行对任何 markdown 表格解析器来说都是 **9 列而不是 8 列** ——
 /// `||` 把签名格劈成了两半。spec 自己那一份一直是转义过的
-/// (`docs/standard/wlwl-spec-v0.11.md` 写 `\|\|`),只有这个生成器
+/// (`docs/spec/wlwl-spec-v0.11.md` 写 `\|\|`),只有这个生成器
 /// 忘了。名字和签名两列都过一遍:`name` 同样可能是运算符。
 fn escape_cell(s: &str) -> String {
     s.replace('|', "\\|")
@@ -1655,7 +1655,7 @@ pub fn generate_appendix_g_md() -> String {
     out.push_str(
         "> 修改流程:改注册表 -> 跑本函数重写本文件 -> 跑 `cargo test` 验证 lock test。\n\n",
     );
-    out.push_str("> 对照规范:`docs/standard/wlwl-spec-v0.11.md` 附录 G (规范性)。\n\n");
+    out.push_str("> 对照规范:`docs/spec/wlwl-spec-v0.11.md` 附录 G (规范性)。\n\n");
     let n_resolved = BUILTIN_REGISTRY
         .iter()
         .filter(|s| {

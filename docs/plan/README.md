@@ -11,7 +11,7 @@
 
 | 项 | 状态 |
 |---|---|
-| 现行规范 | [`../standard/wlwl-spec-v0.11.md`](../standard/wlwl-spec-v0.11.md)(v0.11 —— 由 v0.10 的 v2 清洗版改号而来,规范内容不变) |
+| 现行规范 | [`../spec/wlwl-spec-v0.11.md`](../spec/wlwl-spec-v0.11.md)(v0.11 —— 由 v0.10 的 v2 清洗版改号而来,规范内容不变) |
 | 最新实现 | v0.10.4 已发布 |
 | 进行中的计划 | 无;v0.11 的构建计划与偏差分册(`deviations-v0.11.md`,编号从 **D11-001** 起)开工时建在本目录 |
 | 门禁 | `cargo fmt --check` 0 diff;`clippy -D warnings` 0;`cargo test --workspace` 全绿;probe **129** 条 |

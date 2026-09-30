@@ -37,7 +37,7 @@ fn spec_path() -> std::path::PathBuf {
         .join("..")
         .join("..")
         .join("docs")
-        .join("standard")
+        .join("spec")
         .join("wlwl-spec-v0.11.md")
 }
 

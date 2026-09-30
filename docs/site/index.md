@@ -46,7 +46,7 @@ cosign verify steps.
 
 | Component | Version | Notes |
 |---|---|---|
-| Language spec | v0.7 | version + name in `docs/standard/` (v0.6 archived to `docs/history/`) |
+| Language spec | v0.7 | version + name in `docs/spec/` (v0.6 archived to `docs/history/`) |
 | Compiler (this repo) | v0.7 | structured concurrency + channels |
 | Standard library | v0.6 | `wlwl:std.{io, fs, json, format, ai, agent, test, collection}` |
 | Error schema | 1.1.0 | 58 error codes + 13 warning codes |

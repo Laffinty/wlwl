@@ -11,7 +11,7 @@
 //!
 //! 这两条都是人眼看出来的。本文件把「人眼看」变成「CI 拦」。
 //!
-//! 读的是 `docs/standard/wlwl-spec-v0.11.md` 本体,不是它的副本 —— 规范
+//! 读的是 `docs/spec/wlwl-spec-v0.11.md` 本体,不是它的副本 —— 规范
 //! 只有一份,校验必须对着它做。
 //!
 //! **故意不做**的事:不把 EBNF 展开成真正的文法分析器。这里只抓三类漂移
@@ -28,7 +28,7 @@ fn spec_path() -> PathBuf {
         .join("..")
         .join("..")
         .join("docs")
-        .join("standard")
+        .join("spec")
         .join("wlwl-spec-v0.11.md")
 }
 

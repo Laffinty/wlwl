@@ -1,13 +1,13 @@
 # Spec & conformance
 
-The current WLWL language spec lives in `docs/standard/`.
+The current WLWL language spec lives in `docs/spec/`.
 Specs are identified by **version + name** (content-address filenames
 were dropped); `git log --follow` is the source of truth for content
 changes. Superseded specs are archived in condensed form under `docs/history/`.
 
 ## Current spec
 
-**[v0.11](../standard/wlwl-spec-v0.11.md)** — the "v2 cleaned" edition of
+**[v0.11](../spec/wlwl-spec-v0.11.md)** — the "v2 cleaned" edition of
 the v0.10 spec, renumbered with **zero semantic change**; everything
 introduced in v0.10 carries over:
 
