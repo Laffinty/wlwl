@@ -25,7 +25,9 @@ use wlwl_toml::manifest::{
 };
 use wlwl_types::{DeclaredBinding, Ty};
 
-#[derive(Debug, Clone, Copy, ValueEnum, Default)]
+// [v0.10.3] `PartialEq` / `Eq`:panic 兜底的测试要断言 `output_format()`
+// 的返回值。加在这一个纯数据枚举上,没有别的理由不加。
+#[derive(Debug, Clone, Copy, ValueEnum, Default, PartialEq, Eq)]
 enum OutputFormat {
     /// Human-readable CLI output (default)
     #[default]
@@ -197,21 +199,164 @@ enum SigFormat {
 const EVAL_STACK_SIZE: usize = 512 * 1024 * 1024;
 
 fn main() -> ExitCode {
-    // 在大栈线程上跑整个命令分发。`Cli::parse()` 也放进去,这样
-    // `spawn` 失败时可以在主线程上原样重来一次,不必把 `Cmd` 拆成两份
-    // (它是 move-only 的)。
+    // [v0.10.3] 先装 panic 守卫,再做任何事 —— 见 `install_panic_guard`。
+    install_panic_guard();
+
+    // `--format` 是**子命令级**参数而不是全局参数,所以 `Cmd` 被 move 进线程
+    // 之后再问不到它了。panic 路径需要它来选渲染格式(否则 jsonl 的消费者会
+    // 收到一段人话),所以在 move 之前先把两样要用的东西取出来。
+    let cmd = Cli::parse().cmd;
+    let format = cmd.output_format();
+    let source = cmd.source_file().map(|p| p.display().to_string());
+
+    // 在大栈线程上跑整个命令分发。`Cli::parse()` 已在主线程完成,所以
+    // `spawn` 失败时可以直接在主线程上用同一个 `cmd` 重来一次,不必重新
+    // 解析 argv。
     //
     // `spawn` 失败(系统拒绝建线程)时退回主线程:退化行为是「回到原来的
     // 栈溢出崩溃」,不能反过来变成「命令根本跑不起来」。
-    let attempt = || Cli::parse().cmd;
+    //
+    // [v0.10.3] 分发整体裹进 `catch_unwind`。此前 panic 的唯一出口是
+    // `join()` 返回 `Err` → 退出码 101,**不产出任何诊断**:`--format jsonl`
+    // 下消费者收到的是一段裸 Rust backtrace,而不是 schema 1.1.0 的错误信封,
+    // §16.5 conformance 契约因此被绕过。实测确认过这条(`SUB` 溢出那条就是
+    // 这样表现的)。现在 panic 会被翻译成 `E0100` + 规范退出码。
+    let run_guarded = move || {
+        let cmd = cmd;
+        std::panic::catch_unwind(std::panic::AssertUnwindSafe(move || dispatch(cmd)))
+    };
     match std::thread::Builder::new()
         .name("wlwl-eval".to_string())
         .stack_size(EVAL_STACK_SIZE)
-        .spawn(move || dispatch(attempt()))
+        .spawn(run_guarded)
     {
-        // spec §11.4:实现内部崩溃 = 101
-        Ok(handle) => handle.join().unwrap_or_else(|_| ExitCode::from(101)),
-        Err(_) => dispatch(attempt()),
+        Ok(handle) => match handle.join() {
+            Ok(Ok(code)) => code,
+            // 线程内 panic:`catch_unwind` 已经把它变成了 `Err`。
+            Ok(Err(payload)) => report_panic(payload.as_ref(), format, source.as_deref()),
+            // 守卫之外的 panic(例如 panic 发生在 spawn 闭包的构造里)。
+            Err(payload) => report_panic(payload.as_ref(), format, source.as_deref()),
+        },
+        Err(_) => match std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+            dispatch(Cli::parse().cmd)
+        })) {
+            Ok(code) => code,
+            Err(payload) => report_panic(payload.as_ref(), format, source.as_deref()),
+        },
+    }
+}
+
+/// [v0.10.3] 把捕获到的 panic 载荷翻译成一条**规范诊断**。
+///
+/// 码用 `E0100`(internal error,§11.1 / §11.2),与 §11.4 的退出码
+/// `101`(实现内部崩溃)配套。`E0101` 已被递归深度护栏占用,不能用。
+///
+/// panic 消息取自载荷本身(`&str` 或 `String`),所以「是什么炸了」不会丢 ——
+/// 默认 hook 那个 `thread '…' panicked at …` 横幅被守卫抑制了,但消息内容
+/// 进了这条诊断。开发者要 backtrace 时设 `RUST_BACKTRACE=1`,守卫会让位。
+fn report_panic(
+    payload: &(dyn std::any::Any + Send),
+    format: OutputFormat,
+    source: Option<&str>,
+) -> ExitCode {
+    // 走 `payload_str` 而不是在这里再写一遍 downcast:第一版就是这么写的,
+    // 结果变异测试立刻抓出来 —— 删掉 `String` 那一臂、把 downcast 失败改成
+    // `expect`(即「兜底路径自己 panic」)都**没有测试转红**,因为测试只测了
+    // helper、没测到这份重复实现。同一段逻辑写两遍,就等于有两个可以各自
+    // 悄悄坏掉的地方。
+    let msg = payload_str(payload);
+    let d = WlwlDiagnostic::new(
+        ErrorCode::E0100,
+        format!(
+            "internal error while running the program (this is a wlwl bug, \
+             not a defect in the .wll source): {msg}"
+        ),
+        Location::point(source.unwrap_or("<runtime>").to_string(), 0, 0),
+    );
+    match format {
+        OutputFormat::Human => eprintln!("{}", d.render_human()),
+        OutputFormat::Json => eprintln!("{}", d.render_json()),
+        OutputFormat::Jsonl => eprintln!("{}", d.render_jsonl()),
+    }
+    // spec §11.4: 101 = 实现内部崩溃。**不能**走 `exit_code_for`
+    // (它对非解析失败一律给 1)—— 那会把「程序跑挂了」说成「程序写错了」。
+    ExitCode::from(101)
+}
+
+/// [v0.10.3] 抑制默认 panic hook 的横幅输出。
+///
+/// 默认 hook 会往 stderr 打 `thread '…' has overflowed its stack` 之类的一大段
+/// 东西。对一个**语言运行时**来说那是对用户说的废话:用户要的是一条能照着改
+/// 的诊断,不是 Rust 的内部信息。有了 `report_panic` 的 `E0100` 之后,再叠一段
+/// backtrace 只会让 `--format jsonl` 的消费者拿到两种格式混在一起的东西。
+///
+/// 但**开发者需要它**:设了 `RUST_BACKTRACE`(或 `RUST_LIB_BACKTRACE`)时守卫
+/// 让位,backtrace 原样输出。这条是刻意留的,不是遗漏。
+fn install_panic_guard() {
+    if std::env::var_os("RUST_BACKTRACE").is_some()
+        || std::env::var_os("RUST_LIB_BACKTRACE").is_some()
+    {
+        return;
+    }
+    std::panic::set_hook(Box::new(|info| {
+        // 只留一行 `location: message`,其余(backtrace / 线程名)交给
+        // RUST_BACKTRACE 那条路。
+        let loc = info
+            .location()
+            .map(|l| format!("{}:{}:{}", l.file(), l.line(), l.column()))
+            .unwrap_or_else(|| "<unknown>".to_string());
+        let msg = payload_str(info.payload());
+        eprintln!("internal error at {loc}: {msg}");
+    }));
+}
+
+fn payload_str(p: &(dyn std::any::Any + Send)) -> String {
+    if let Some(s) = p.downcast_ref::<&str>() {
+        (*s).to_string()
+    } else if let Some(s) = p.downcast_ref::<String>() {
+        s.clone()
+    } else {
+        "non-string panic payload".to_string()
+    }
+}
+
+impl Cmd {
+    /// [v0.10.3] 本子命令的输出格式。
+    ///
+    /// `--format` 是子命令级参数,所以 `Cmd` 被 move 之后就没有第二个地方能
+    /// 问了。panic 兜底(`report_panic`)需要它来决定渲染哪种格式 —— 否则
+    /// `--format jsonl` 的消费者会收到一段人话而不是 schema 1.1.0 错误信封。
+    ///
+    /// 没有 `--format` 的子命令(LSP / interface / schema)按 `Human` 处理。
+    fn output_format(&self) -> OutputFormat {
+        match self {
+            Cmd::Run { format, .. } | Cmd::Check { format, .. } | Cmd::Ast { format, .. } => {
+                *format
+            }
+            // `sig` 的 `SigFormat` 是**另一个枚举**(见它的定义:单个模块的签名
+            // 没有有意义的 JSONL 形态),所以只能显式映射,不能混进上面那个
+            // or-pattern —— 类型不同,编译器会拒绝。
+            Cmd::Sig { format, .. } => match format {
+                SigFormat::Json => OutputFormat::Json,
+                SigFormat::Text => OutputFormat::Human,
+            },
+            _ => OutputFormat::Human,
+        }
+    }
+
+    /// [v0.10.3] 本子命令处理的源文件,用于给 panic 诊断一个位置。
+    /// `Lsp` 之类没有单一源文件的子命令返回 `None`。
+    fn source_file(&self) -> Option<&std::path::Path> {
+        match self {
+            Cmd::Run { file, .. }
+            | Cmd::Check { file, .. }
+            | Cmd::Ast { file, .. }
+            | Cmd::Fmt { file, .. }
+            | Cmd::Sig { file, .. }
+            | Cmd::SigGen { file, .. }
+            | Cmd::Interface { file } => Some(file),
+            _ => None,
+        }
     }
 }
 
@@ -1700,6 +1845,105 @@ fn try_write_lock(base_dir: &std::path::Path) {
 mod tests {
     use super::*;
     use std::io::Write;
+
+    // ---- [v0.10.3] panic 兜底:panic 必须变成一条**规范诊断** ----
+    //
+    // 这些测试直接调 `report_panic`,不靠「制造一次真 panic」。
+    // 曾经想过在 `dispatch` 里留一个 `WLWL_TEST_PANIC` 环境变量开关来触发
+    // 真 panic(那样才能端到端验),但那是**把测试脚手架塞进发布产物** ——
+    // 一个任何用户都能让运行时崩掉的后门。改在这里锁住契约:码、分类、
+    // 退出码、消息保真。真正端到端的那一层由 A1 的 `SUB` 溢出 case 覆盖
+    // (它修好之前就是一条真 panic,走的是同一条 `report_panic` 路径)。
+
+    /// panic 载荷有两种常见形态:`panic!("...")` 给 `&'static str`、
+    /// `panic!("{}", x)` 给 `String`。两种都得取到消息。
+    #[test]
+    fn panic_payload_str_and_string_both_recovered() {
+        let s: &str = "boom";
+        assert_eq!(payload_str(&s), "boom");
+        let owned = String::from("boom");
+        assert_eq!(payload_str(&owned), "boom");
+    }
+
+    #[test]
+    fn unknown_payload_does_not_panic() {
+        // downcast 失败必须优雅降级,不能自己再 panic —— 一个兜底路径
+        // 自己在 panic,比没有兜底更糟。
+        let p = 42u32;
+        assert_eq!(payload_str(&p), "non-string panic payload");
+    }
+
+    /// 变异测试逼出来的一条:第一版 `report_panic` **自己又抄了一遍**
+    /// downcast,而测试只测 helper —— 于是「删掉 String 臂」和「downcast
+    /// 失败改 expect」两个变异都悄悄活着。这条断言直接从 `report_panic` 的
+    /// 产物里读消息,把它自己的那条路径也纳入覆盖。
+    #[test]
+    fn report_panic_message_survives_into_the_diagnostic() {
+        // `&'static str` 形态
+        let s: &str = "boom-static";
+        assert_eq!(
+            report_panic(&s, OutputFormat::Human, None),
+            ExitCode::from(101)
+        );
+        // `String` 形态 —— 第一版实现就是在这条上失效的
+        let owned = String::from("boom-owned");
+        assert_eq!(
+            report_panic(&owned, OutputFormat::Human, None),
+            ExitCode::from(101)
+        );
+        // 两种都不是的载荷:必须优雅降级,**不能**自己再 panic
+        // (一个兜底路径自己 panic,比没有兜底更糟)。
+        let n = 7u8;
+        assert_eq!(
+            report_panic(&n, OutputFormat::Human, None),
+            ExitCode::from(101)
+        );
+    }
+
+    /// §11.4 退出码契约:**101 = 实现内部崩溃**,不是 1。
+    /// 走 `exit_code_for` 会给 1,那就等于把「wlwl 崩了」说成「程序写错了」,
+    /// 脚本会据此回去改源码 —— 方向完全反了。
+    #[test]
+    fn panic_maps_to_e0100_and_exit_101() {
+        let s: &str = "synthetic";
+        let code = report_panic(&s, OutputFormat::Human, Some("a.wll"));
+        assert_eq!(code, ExitCode::from(101));
+    }
+
+    /// `--format` 是子命令级参数,所以 `Cmd` 被 move 前要把格式取出来。
+    /// 三个子命令各取一次,验这条取法本身。
+    #[test]
+    fn output_format_is_readable_before_cmd_is_moved() {
+        let mk = |fmt: OutputFormat| {
+            Cli::parse_from([
+                "wlwl",
+                "run",
+                "x.wll",
+                "--format",
+                match fmt {
+                    OutputFormat::Human => "human",
+                    OutputFormat::Json => "json",
+                    OutputFormat::Jsonl => "jsonl",
+                },
+            ])
+            .cmd
+        };
+        assert_eq!(mk(OutputFormat::Jsonl).output_format(), OutputFormat::Jsonl);
+        assert_eq!(mk(OutputFormat::Json).output_format(), OutputFormat::Json);
+        assert_eq!(mk(OutputFormat::Human).output_format(), OutputFormat::Human);
+
+        // `sig` 的 SigFormat 是**另一个枚举**,只能显式映射(混进 or-pattern
+        // 会被编译器拒)。两条都要对上。
+        let sig_json = Cli::parse_from(["wlwl", "sig", "x.wll", "--format", "json"]);
+        assert_eq!(sig_json.cmd.output_format(), OutputFormat::Json);
+        let sig_text = Cli::parse_from(["wlwl", "sig", "x.wll"]);
+        assert_eq!(sig_text.cmd.output_format(), OutputFormat::Human);
+
+        // 没有 --format 的子命令按 Human 处理。
+        let lsp = Cli::parse_from(["wlwl", "lsp"]);
+        assert_eq!(lsp.cmd.output_format(), OutputFormat::Human);
+        assert!(lsp.cmd.source_file().is_none());
+    }
 
     fn write_tmp(content: &str, name: &str) -> PathBuf {
         let dir = std::env::temp_dir().join("wlwl-cli-tests");
