@@ -12,9 +12,21 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 > `docs/history/` (`wlwl-spec-v0.9.md`, `wlwl-spec-v0.8.md`,
 > `wlwl-spec-v0.7.md`, `wlwl-spec-v0.6.md`).
 
-## [Unreleased] — v0.10.3 健壮性批次(第 1 项 / 共 4 项)
+## [Unreleased] — v0.10.3 健壮性批次
 
-Spec: **wlwl-spec-v0.10** —— 规范版本号不变。本版不碰规范,只修实现。
+Spec: **wlwl-spec-v0.10** —— 规范版本号不变,改的是「实现 ↔ 规范文本」对齐。
+
+起点是一轮排查:规范对齐那条线基本到头(偏差台账 0 条待修、106 个内建零幽灵、
+7 个 `[features]` 键全部接线),而**健壮性这条线刚开头** —— 而且 v0.10.2 修的
+那批缺陷本身就属于后者。本批次 5 项,每项独立提交。
+
+| # | 项 | 性质 |
+|---|---|---|
+| A1 | `SUB` 整数溢出 panic(一句 `.wll` 崩掉宿主进程) | 改实现 |
+| A2 | CLI panic 兜底:任何 panic → `E0100` + 退出码 101 | 改实现 |
+| A3 | 类型错报成元数错 + 区间元数消息两个数字都错 | 改实现 |
+| A4 | 4 个「规范登记、实现从未有」的警告码 + 第三个方向的锁测试 | 改规范为主 |
+| A5 | `impl/fuzz` 从未编译过 —— 五处原因 | 改脚手架 |
 
 ### Fixed
 
@@ -67,6 +79,140 @@ probe 夹具 +3 条(`P_v10_3_*`),`EXPECTED_CASE_COUNT` 129 → **132**:
 `cargo fuzz init` 时加」)。也就是说**这个 fuzz crate 编译不过**,「我们有
 fuzz」是不成立的。列为本批第 5 项。
 
+
+### A2 · CLI panic 兜底:任何 panic 变成 `E0100` 规范诊断 + 退出码 101
+
+`wlwl-cli` 全仓**没有 `catch_unwind`、也没有 panic hook**。panic 的唯一出口是
+`handle.join().unwrap_or_else(|_| ExitCode::from(101))` —— 退出码对,但
+**不产出任何诊断**。于是 `--format jsonl` 下消费者收到的是一段裸 Rust
+backtrace,而不是 schema 1.1.0 错误信封,§16.5 conformance 契约因此被绕过。
+A1 修之前那个 `SUB` 溢出就是这条路径的活样本。
+
+改法:`dispatch` 裹进 `catch_unwind`;捕获到的载荷翻译成 `E0100`
+(internal error)+ **退出码 101**。刻意**不走 `exit_code_for`** —— 它对非解析
+失败一律给 1,那会把「wlwl 崩了」说成「程序写错了」,脚本会据此回去改源码,
+方向完全反了。装一个 panic hook 抑制默认横幅(留一行
+`internal error at <loc>: <msg>`),但**设了 `RUST_BACKTRACE` 时让位** ——
+开发者要 backtrace 时照常拿得到。
+
+`--format` 是子命令级参数,`Cmd` 被 move 进线程后就问不到了,所以加
+`Cmd::output_format()` / `Cmd::source_file()` 在 move 之前取出来。
+
+**一个刻意不做的选择**:为了端到端验证,先临时加了个 `WLWL_TEST_PANIC`
+环境变量开关(验证 10/10 全过),但**没有留下** —— 那是把测试脚手架塞进发布
+产物,等于给每个用户装一个「设个环境变量就能让运行时崩掉」的后门。改为在
+单测里直接调 `report_panic` 锁契约;端到端那一层由 A1 的 case 覆盖。
+
+**变异测试抓出一处真 bug**:三个变异里**两个当场存活**。根因是
+`report_panic` 自己又抄了一遍 downcast 而没调 `payload_str` —— 同一段逻辑
+两份实现,而测试只测了 helper。改成单点实现后两个变异都转红。
+**同一段逻辑写两遍,就等于有两个可以各自悄悄坏掉的地方。**
+
+### A3 · 类型错报成元数错 + 区间元数的消息两个数字都错
+
+`collection.rs` 的 `FLAT` / `ENUMERATE` / `UNIQ` 三处是同一段「占位」写法:
+第一个 `match` 的 `_` 臂 `return arity(name, 1, 1)`,把**类型错**报成
+**E0022 元数错**,而且是自相矛盾的「expects 1 argument(s), got 1」;第二个
+`match`(真正干活的那个)用 `unreachable!` 兜着,注释里那句
+「replaced below」是假的 —— 第一个 match 已经 return 了。**同一件事写两遍。**
+删掉占位段、三个 `unreachable!` 与死存储,单点返回 `type_err`,与同文件一直
+是对的 `MAP` / `FILTER` 统一。
+
+另一处:`arity_error(name, got, want)` 的 35 个调用点里**有两处写反了**
+(`SLICE` / `SUB`),把 2 当 got、把实际实参数当 want,于是 `SLICE()` 报
+「expects 0 argument(s), got 2」—— 两个数字都错且自相矛盾。简单对调也不是
+好修法:这两处是 `2..=3` 的**区间**元数,`want` 只接受单个值说不清,故另开
+`arity_range_error`,消息形如「expects 2 to 3 argument(s), got 0」。
+顺带核了全部 35 个调用点,只有这两处反了。
+
+**变异验证 6 个,全部 RED**(三处类型错各自退回 arity 错、两处区间元数各自
+退回写反的实参、区间元数退回单值 want)。
+
+### A4 · 4 个「规范登记、实现从未有」的警告码 + 第三个方向的锁测试
+
+| 码 | 规范 §11.3 原来写 | 实际 |
+|---|---|---|
+| `W0015` | 「整数溢出饱和到 INT64_MAX/MIN(**§2.2**)」 | §2.2 与附录 B.14 都明写溢出**抛错 E0035**;实现也发 E0035。**引用 §2.2 当依据,而 §2.2 说的正是反面** |
+| `W0054` | 「使用 v0.3 兼容的 `!` 运算符形式」 | §1.5 明写两种形式**均无警告**;实现如此,并有锁测试 `b9_w0054_removed_in_v06` 钉住 |
+| `W0040` | 「注释中未处理的 `TODO(agent):`」 | 无实现,且**不是加一条 lint 就能补**:词法器**丢弃注释文本**,要先改词法器契约并把文本传到 lint pass |
+| `W0001` | 「**未定义名字(读)**;……」 | 「未定义名字(读)」是**硬错误 E0020**,不是警告;活着的 4 个发射点全是清单类 |
+
+做法:§11.3 主表删三行、`W0001` 改写成它实际做的事;新增 **§11.3.1
+「已注册但本规范不定义触发条件的警告码」**(与 §11.2 同类表对称);
+清掉实现里同源的过期注释 —— `Warning` / `Evaluator::warnings` /
+`emit_warning` 三处还在描述 v0.6 移除的「饱和 + W0015」,
+`DispatchStatus::ResolvedCompat` 的文档**和 label 字符串**
+`"(W0051/W0054)"` 声称会发 W0054(实际三个 compat 条目只发 W0051),
+`wlwl-types` 三处注释声称「未定义名字由 parser 的 `lint` pass 负责(W0001)」
+(`lint` 实际只发 W0010/W0011/W0012/W0013/W0020)。
+
+**本项真正的产出是第三个方向的锁测试。** 原先只锁「规范提到的 ⊆ 注册表」和
+「注册表 ⊆ 规范提到的」,两个方向都**不查**「规范主表列的码实现发不发得出来」
+—— 于是 `W0015` / `W0054` 在主表里躺了好几个版本,还各自与规范正文矛盾。
+新增两条(`wlwl-error`):
+
+- `every_spec_listed_warning_code_is_produced_by_the_implementation`
+- `unused_warning_codes_are_declared` —— 豁免的三个必须 (a) 在 §11.3.1 有
+  **一行表格行**、(b) 仍注册、(c) 实现里**确实**没有引用。**申报因此有保质期**:
+  一旦有人真去实现,这条会红并提示把行挪回主表,申报不会变成永久垃圾桶。
+
+两条实现细节都是变异测试逼出来的:判据必须**剥掉注释**(否则任何诚实的更正
+注释都让检查恒失败,而恒失败的检查只会被加豁免或悄悄删掉);必须**只认表格
+行、不认正文提及**(第一版按整节扫描,出现一个「存活」的变异:删了行、正文
+里的名字还在)。
+
+**一个值得记的坑**:剥注释的小状态机里,`'` 的处理是唯一需要小心的地方 ——
+Rust 里 `&'static str` 的生命周期撇号**不是**字符字面量的开始。一律按
+「`'` 开引号」处理会让状态机错位到几百行之后,实测 `registry.rs` 里
+`pub fn label(self) -> &'static str` 这一处就足以让后面 1200 行全被当成
+字符串,于是**真实的代码引用反而看不见**。
+
+### A5 · `impl/fuzz` 从未编译过 —— 五处原因
+
+复核时顺手撞出来的:「我们有 fuzz」是不成立的,`impl/fuzz` 一次都没编译
+成功过。三个 target 都带 `[v0.2 Phase G6]` 注释、manifest 顶头写着
+「To run (nightly required; libFuzzer backend)」,读起来像一套在用的设施;
+而 CI 按 `P4-G6-001` **不跑 fuzz** —— 于是「不跑」与「跑不了」在门禁上
+长得一模一样。
+
+| # | 原因 | 修法 |
+|---|---|---|
+| 1 | 缺空的 `[workspace]` 表 —— 声称在 workspace 之外却没声明,cargo 直接拒绝 | 加上(cargo-fuzz 标准约定) |
+| 2 | `libfuzzer-sys` 不在依赖表(注释说「首次 `cargo fuzz init` 时会自动加」,那次 init 从没发生) | 显式声明 |
+| 3 | 三个 target 全调 `wlwl_lexer::tokenize` —— **不存在**,真名 `lex(&str, &str)` | 改名 + 先 `from_utf8` |
+| 4 | `wlwl_parser::parse(&tokens, …)` —— 真实签名吃 `&str`,**自己跑词法** | 直接喂 `&str` |
+| 5 | `Evaluator::set_max_steps` / `run_program` —— **两个方法都不存在** | 改用 `eval(&Expr)` |
+
+**关于 `set_max_steps`**:原文靠它给每轮求值限时,但**步数预算这个特性本身
+从未实现**。本批次**不补**它(那是运行期新功能),改由 libFuzzer 自己的
+`-timeout` / `-max_total_time` 兜底。
+
+**验证边界(如实说)**:`cargo clean`(清 178 MB)后 `cargo check --bins`
+**从零重建通过**,零 error 零 warning —— 证明不是缓存命中。但**没有真的跑过
+一轮 fuzz**(本机未装 `cargo fuzz`;需 `cargo +nightly install cargo-fuzz`)。
+「能编译」已验证,「能跑」未验证。
+
+这五条里没有一条是「逻辑写错」,全是**脚手架从没跑过** —— 所以本项同时也是
+对「不跑的门禁」本身的提醒:**排除某样东西进 CI 之前,先确认它能跑。**
+
+### 测试
+
+- probe 夹具 **129 → 136**(+7,每条修复至少一条 + 每条配反向守卫)。
+- `wlwl-cli` 单测 112 → 117;`wlwl-error` 54 → 56。
+- **变异验证**:A1 一条、A2 三条(其中两条先存活、据此改掉一处重复实现)、
+  A3 六条、A4 三条 —— 合计 13 条,最终全部 RED。
+- 门禁:`cargo fmt --check` 0 diff;`clippy -D warnings` 0;
+  `cargo test --workspace` 全绿。
+
+### 已知缺口(本批次不做,已记录)
+
+- **步数 / 内存预算不存在**。`RANGE` 之类无界物化与深递归目前没有运行期上限
+  兜底(A1 的栈深度上限只管调用深度)。本批次未复现出 `RANGE` 的 OOM
+  (`RANGE(0, 100000000)` 实测 rc=0 秒回),但缺一个预算机制这件事本身是真的。
+- **fuzz 未实际运行**,且仍不在 CI(维持 `P4-G6-001` 的决定)。
+- **值嵌套深度无护栏**:`CALL_DEPTH` 只管调用深度,`display()` /
+  `values_equal()` / 递归 `Drop` 三处理论上无界。实测 2 万层嵌套值正常,
+  未复现崩溃,故未动。
 ## [v0.10.2] — 2026-09-30
 
 Spec: **wlwl-spec-v0.10**(`docs/standard/wlwl-spec-v0.10.md`)——

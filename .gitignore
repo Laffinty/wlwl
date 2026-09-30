@@ -1,6 +1,11 @@
 # Build artifacts
 impl/target/
 impl/Cargo.lock
+# [v0.10.3] `impl/fuzz` 自成一个 workspace(空 `[workspace]` 表),所以 cargo
+# 为它单独生成一份锁文件。与 `impl/Cargo.lock` 同一条政策:不入库。
+# 注意这条以前**不需要** —— `impl/fuzz` 从没编译成功过(v0.10.3 修好),
+# 那份锁文件也就不存在。
+impl/fuzz/Cargo.lock
 impl/llvm-cov-target/
 impl/fuzz/target/
 impl/fuzz/corpus/
