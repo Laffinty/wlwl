@@ -7,8 +7,9 @@ changes. Superseded specs are archived under `docs/history/`.
 
 ## Current spec
 
-**[v0.10](../standard/wlwl-spec-v0.10.md)** — additive over v0.9, and
-**zero observable runtime change**:
+**[v0.11](../standard/wlwl-spec-v0.11.md)** — the "v2 cleaned" edition of
+the v0.10 spec, renumbered with **zero semantic change**; everything
+introduced in v0.10 carries over:
 
 - the `Type` annotation grammar enters the spec for the first time
   (Appendix A) — until v0.9 it existed only in the implementation;
@@ -31,6 +32,7 @@ deliberately not a code (see the spec's §7.4 / §11.2).
 
 | Version | Location | Status |
 |---|---|---|
+| v0.10 | [`docs/history/wlwl-spec-v0.10.md`](../history/wlwl-spec-v0.10.md) | superseded by v0.11 (2026-09-30) |
 | v0.9 | [`docs/history/wlwl-spec-v0.9.md`](../history/wlwl-spec-v0.9.md) | superseded by v0.10 (2026-09-28) |
 | v0.8 | [`docs/history/wlwl-spec-v0.8.md`](../history/wlwl-spec-v0.8.md) | superseded by v0.9 (2026-09-25) |
 | v0.7 | [`docs/history/wlwl-spec-v0.7.md`](../history/wlwl-spec-v0.7.md) | superseded by v0.8 (2026-09-23) |
@@ -53,7 +55,7 @@ deliberately not a code (see the spec's §7.4 / §11.2).
 ## Compiler vs spec version
 
 The compiler release **does not have to match** the spec version.
-The current compiler implements the **v0.10 spec** in full. CI tracks
+The current compiler implements the **v0.11 spec** in full. CI tracks
 `wlwl --version` (compiler) and spec anchors via
 `impl/crates/wlwl-cli/tests/conformance.rs` plus the spec-consistency
 lock tests in `crates/wlwl-error` (error-code table) and

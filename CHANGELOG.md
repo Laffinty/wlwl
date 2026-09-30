@@ -8,9 +8,9 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 > **Note.** The compiler version is **independent of the language spec version**.
 > The language spec lives in `docs/standard/` and is identified by version + name.
 > This file tracks the **compiler / tooling** releases. The current spec is
-> **v0.10** (`docs/standard/wlwl-spec-v0.10.md`); archived specs live under
-> `docs/history/` (`wlwl-spec-v0.9.md`, `wlwl-spec-v0.8.md`,
-> `wlwl-spec-v0.7.md`, `wlwl-spec-v0.6.md`).
+> **v0.11** (`docs/standard/wlwl-spec-v0.11.md`); archived specs live under
+> `docs/history/` (`wlwl-spec-v0.10.md`, `wlwl-spec-v0.9.md`,
+> `wlwl-spec-v0.8.md`, `wlwl-spec-v0.7.md`, `wlwl-spec-v0.6.md`).
 
 ## [v0.10.4] — 2026-09-30
 
@@ -278,7 +278,7 @@ Rust 里 `&'static str` 的生命周期撇号**不是**字符字面量的开始�
   未复现崩溃,故未动。
 ## [v0.10.2] — 2026-09-30
 
-Spec: **wlwl-spec-v0.10**(`docs/standard/wlwl-spec-v0.10.md`)——
+Spec: **wlwl-spec-v0.10**(`docs/history/wlwl-spec-v0.10.md`)——
 规范版本号不变,改的是「实现 ↔ 规范文本」对齐,与 v0.10.1 同性质。
 
 > **版本号口径(已于 v0.10.4 作废,保留为记录)**:`impl/Cargo.toml` 的 `version`
@@ -290,10 +290,10 @@ Spec: **wlwl-spec-v0.10**(`docs/standard/wlwl-spec-v0.10.md`)——
 > v0.10.2 / v0.10.3 三个发布物**全部**报 `wlwl 0.10.0`。v0.10.4 起改为
 > **版本号跟随发布版本**,并由 `release.yml` 的 `version-check` 守卫强制。
 
-来源:第三方黑盒合规审查(`docs/reviews/v0.10.1审查/`,761 个用例)。
+来源:第三方黑盒合规审查(`docs/history/v0.10.1审查/`,761 个用例)。
 逐条核验后:13 条里 **8 条属实、2 条根因判错、3 条不成立**;
 另发现 2 条报告漏掉的真缺陷。计划书见
-[`docs/plan/wlwl-spec-compliance-修复计划.md`](docs/plan/wlwl-spec-compliance-修复计划.md)。
+[`docs/history/wlwl-spec-compliance-修复计划.md`](docs/history/wlwl-spec-compliance-修复计划.md)。
 
 ### Fixed
 
@@ -441,7 +441,7 @@ Spec: **wlwl-spec-v0.10**(`docs/standard/wlwl-spec-v0.10.md`)——
 
 ## [v0.10.1] — 2026-09-29
 
-Spec: **wlwl-spec-v0.10**(`docs/standard/wlwl-spec-v0.10.md`)——
+Spec: **wlwl-spec-v0.10**(`docs/history/wlwl-spec-v0.10.md`)——
 本版**不改规范版本号**,改的是规范文本与实现对齐。
 
 **本版是一次「让文档与实现说同一句话」的版本**:13 个 Step、60 余条修复,
@@ -639,7 +639,7 @@ Spec: **wlwl-spec-v0.10**(`docs/standard/wlwl-spec-v0.10.md`)——
 
 ## [v0.10.0] — 2026-09-28
 
-Spec: **wlwl-spec-v0.10** (`docs/standard/wlwl-spec-v0.10.md`).
+Spec: **wlwl-spec-v0.10** (`docs/history/wlwl-spec-v0.10.md`).
 v0.9 archived at `docs/history/wlwl-spec-v0.9.md`.
 
 **本版是「静态契约」版:运行期语义与 v0.9 逐条一致。** 新增能力全部**默认关闭**

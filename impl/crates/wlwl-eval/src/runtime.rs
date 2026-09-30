@@ -1790,7 +1790,7 @@ mod tests {
         assert_eq!(p.tag(), Tag::ProtocolViolation);
     }
 
-    /// 规范必须**明文**写出「本版不产生」。这是 D-4 落到纸面的唯一凭据:
+    /// 规范必须**明文**写出「不由运行期产生」。这是 D-4 落到纸面的唯一凭据:
     /// 枚举里有 tag 是一半,规范承认它不被 raise 是另一半。
     #[test]
     fn the_spec_states_the_oop_effect_tags_are_not_raised() {
@@ -1800,7 +1800,7 @@ mod tests {
             .join("..")
             .join("docs")
             .join("standard")
-            .join("wlwl-spec-v0.10.md");
+            .join("wlwl-spec-v0.11.md");
         let spec = std::fs::read_to_string(&path)
             .unwrap_or_else(|e| panic!("cannot read the spec at {}: {}", path.display(), e));
         for tag in ["MethodCall", "ProtocolViolation"] {
@@ -1810,9 +1810,9 @@ mod tests {
                 tag
             );
         }
-        // 「本版不由运行期产生」这句必须在场,否则规范等于没裁决 D-4。
+        // 「不由运行期产生」这句必须在场,否则规范等于没裁决 D-4。
         assert!(
-            spec.contains("本版不由运行期产生"),
+            spec.contains("不由运行期产生"),
             "the spec must state that the reserved OOP tags are not produced \
              by the runtime (decision D-4)"
         );

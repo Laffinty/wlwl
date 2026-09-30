@@ -1,16 +1,16 @@
 ---
 name: writing-wlwl
-description: "Writes WLWL v0.10 .wll source files (spec docs/standard/wlwl-spec-v0.10.md). Covers v0.6 core (truthy overhaul, &&/|| short-circuit, IF ERR-routing, ! canonical, AT_K rename, string subscript, LET MUT, overflow->E0035, ${} interpolation), v0.7 §17 concurrency, v0.8 clarifications, v0.9 (true-suspension concurrency + OOP §13-§16 with session-type protocols and linear THIS), and v0.10 static contracts (all DEFAULT-OFF, runtime semantics unchanged): type annotations FUN((a: INTEGER) : INTEGER, ...) plus container types ARRAY[T]/DICT[K,V]/OPTION[T]/RESULT[T,E] and bounded type variables `T: Comparable`; [features] gradual_typing = off|warn|error; module signature sidecars `foo.wll.sig` and `SEALED([...])`; MATCH exhaustiveness. New codes E0110-E0116 / W0110-W0117, all compile-time only. Use when the user asks for WLWL code, a .wll file, or anything targeting wlwl-spec-v0.10 (or v0.6/v0.7/v0.8/v0.9 core). Do NOT use for v0.5 or earlier (POP-not-AT_K, no LET MUT), the Rust implementation, or the formatter."
+description: "Writes WLWL v0.11 .wll source files (spec docs/standard/wlwl-spec-v0.11.md). Covers v0.6 core (truthy overhaul, &&/|| short-circuit, IF ERR-routing, ! canonical, AT_K rename, string subscript, LET MUT, overflow->E0035, ${} interpolation), v0.7 §17 concurrency, v0.8 clarifications, v0.9 (true-suspension concurrency + OOP §13-§16 with session-type protocols and linear THIS), and v0.10 static contracts (all DEFAULT-OFF, runtime semantics unchanged; carried over unchanged into v0.11): type annotations FUN((a: INTEGER) : INTEGER, ...) plus container types ARRAY[T]/DICT[K,V]/OPTION[T]/RESULT[T,E] and bounded type variables `T: Comparable`; [features] gradual_typing = off|warn|error; module signature sidecars `foo.wll.sig` and `SEALED([...])`; MATCH exhaustiveness. New codes E0110-E0116 / W0110-W0117, all compile-time only. Use when the user asks for WLWL code, a .wll file, or anything targeting wlwl-spec-v0.11 (or v0.6/v0.7/v0.8/v0.9/v0.10 core). Do NOT use for v0.5 or earlier (POP-not-AT_K, no LET MUT), the Rust implementation, or the formatter."
 ---
 
-# Writing WLWL (v0.10)
+# Writing WLWL (v0.11)
 
 ## When to load / NOT to use
 
 **Use when:**
-- The user asks for a `.wll` source file, a WLWL program, or a v0.6 / v0.7 / v0.8 / v0.9 / v0.10 idiom.
-- A task targets `wlwl-spec-v0.10.md` (current) or `wlwl-spec-v0.6.md` / `wlwl-spec-v0.7.md` / `wlwl-spec-v0.8.md` / `wlwl-spec-v0.9.md` (archived).
-- Reviewing or debugging v0.6–v0.10 source (concurrency, OOP, session protocols, static contracts included).
+- The user asks for a `.wll` source file, a WLWL program, or a v0.6 / v0.7 / v0.8 / v0.9 / v0.10 / v0.11 idiom.
+- A task targets `wlwl-spec-v0.11.md` (current) or `wlwl-spec-v0.6.md` / `wlwl-spec-v0.7.md` / `wlwl-spec-v0.8.md` / `wlwl-spec-v0.9.md` / `wlwl-spec-v0.10.md` (archived).
+- Reviewing or debugging v0.6–v0.11 source (concurrency, OOP, session protocols, static contracts included).
 
 **Don't use when:**
 - The source targets WLWL v0.5 or earlier (different truthy rules, `POP`-not-`AT_K`, no `LET MUT`).
@@ -665,7 +665,8 @@ file is a real (if cosmetic) deviation.
 
 ## References
 
-- **Authoritative spec**: `../docs/standard/wlwl-spec-v0.10.md` — defer to this on any disagreement (§13–§16 = OOP + session types + linear THIS; §17 = concurrency; §2.6/§5.2/§9.1/§9.6 = static contracts). Where §5.2.1's "三条实测事实" disagrees with the compiler (the angle-bracket / arrow forms, and the constraint-on-a-concrete-type code), **the compiler wins** — this bundle records the measured values.
+- **Authoritative spec**: `../docs/standard/wlwl-spec-v0.11.md` — defer to this on any disagreement (§13–§16 = OOP + session types + linear THIS; §17 = concurrency; §2.6/§5.2/§9.1/§9.6 = static contracts). Where §5.2.1's "三条实测事实" disagrees with the compiler (the angle-bracket / arrow forms, and the constraint-on-a-concrete-type code), **the compiler wins** — this bundle records the measured values.
+- **v0.10 (archived)**: `../docs/history/wlwl-spec-v0.10.md` — v0.11 is its "v2 cleaned" renumbering; the semantics are identical, so the v0.10 archive's §2.6/§5.2/§7.4/§9.1/§9.6 static-contract prose is still valid context.
 - **v0.9 (archived)**: `../docs/history/wlwl-spec-v0.9.md` — §0–§17 still valid (v0.10 is additive + static contracts on top, runtime unchanged).
 - **v0.8 (archived)**: `../docs/history/wlwl-spec-v0.8.md` — §0–§12 core still valid (v0.9 is additive + concurrency/OOP upgrade over v0.8).
 - **v0.7 (archived)**: `../docs/history/wlwl-spec-v0.7.md` — §0–§17 core still valid.

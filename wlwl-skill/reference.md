@@ -1,8 +1,9 @@
-# WLWL v0.10 Reference (on-demand)
+# WLWL v0.11 Reference (on-demand)
 
 > Loaded only when `SKILL.md` points here. This is a lookup catalogue,
 > not a tutorial. Section numbers (`§1.5`, `§8.3`, `§10.4`, `§13`, `§17`, etc.)
-> refer to `docs/standard/wlwl-spec-v0.10.md` (v0.9 archived at
+> refer to `docs/standard/wlwl-spec-v0.11.md` (v0.10 archived at
+> `docs/history/wlwl-spec-v0.10.md`; v0.9 at
 > `docs/history/wlwl-spec-v0.9.md`; v0.8 at `docs/history/wlwl-spec-v0.8.md`;
 > v0.7 at `docs/history/wlwl-spec-v0.7.md`;
 > v0.6 at `docs/history/wlwl-spec-v0.6.md`).
@@ -564,7 +565,7 @@ Every v0.9 item that affects writing `.wll` source — pulled from
 ## §24. v0.10 增量备忘 — 静态契约
 
 Every v0.10 item that affects writing `.wll` source — pulled from
-`docs/standard/wlwl-spec-v0.10.md` 附录 D.
+`docs/standard/wlwl-spec-v0.11.md` 附录 D (unchanged from the v0.10 edition).
 
 **v0.10's runtime is identical to v0.9's.** Everything below is opt-in; a
 program that adds no annotation and ships no `.sig` behaves exactly as before.
@@ -668,11 +669,12 @@ formatter is the authority on canonical form, not this document. The `.wll` file
 under `examples/` are hand-written teaching material and are **not** canonical;
 `wlwl run` is what matters for them.
 
-### §24.5 Spec / impl / docs 三处引用 (v0.10 current)
+### §24.5 Spec / impl / docs 三处引用 (v0.11 current)
 
 | 文档 | 路径 | 用途 |
 |------|------|------|
-| 权威规范 | `../docs/standard/wlwl-spec-v0.10.md` | 唯一真相源 |
+| 权威规范 | `../docs/standard/wlwl-spec-v0.11.md` | 唯一真相源 |
+| v0.10 归档 | `../docs/history/wlwl-spec-v0.10.md` | 静态契约最初定稿版(v0.11 同语义) |
 | v0.9 归档 | `../docs/history/wlwl-spec-v0.9.md` | 历史 §0–§17 上下文 |
 | v0.8 归档 | `../docs/history/wlwl-spec-v0.8.md` | 历史 §0–§12 上下文 |
 | v0.7 归档 | `../docs/history/wlwl-spec-v0.7.md` | 历史 §17 上下文 |

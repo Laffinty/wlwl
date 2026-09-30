@@ -127,5 +127,5 @@ Negative:
 
 - spec v0.4 §2.7 (strict_types flag)
 - docs/history/wlwl-build-plan-v0.2.md §E1 (Phase E plan)
-- docs/history/20260919e1.md (Phase E1 implementation report)
+- docs/history/20260915-22.md (Phase E1 implementation report; 2026-09-30 起日次日志按 5~10 日窗口合并精简)
 - Phase G3 P4-G3-001 covers leftover missing_docs in this subsystem
