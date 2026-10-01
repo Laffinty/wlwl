@@ -214,7 +214,14 @@ pub fn read(path: &Path) -> Result<Option<Lockfile>, LockError> {
         Err(e) if e.kind() == std::io::ErrorKind::NotFound => return Ok(None),
         Err(e) => return Err(LockError::Io(e)),
     };
-    let lf: Lockfile = serde_json::from_str(&s)?;
+    // D11-026: `serde_json` reports a leading BOM as "expected value at line
+    // 1 column 1", which surfaces as E0042 and takes the whole run down.
+    //
+    // Spec §1.1 explicitly does **not** cover `wlwl.lock` (§9.4 puts the
+    // lock file outside the language spec), so this leniency is a *tool*
+    // choice, not a spec promise — the spec text says so, and a future
+    // implementation is free to reject a BOM'd lock instead.
+    let lf: Lockfile = serde_json::from_str(crate::strip_bom(&s))?;
     if lf.schema_version != CURRENT_SCHEMA_VERSION {
         return Err(LockError::UnsupportedSchemaVersion(lf.schema_version));
     }
@@ -608,6 +615,90 @@ entry = "main.wll"
             .unwrap();
         assert_eq!(e.path.as_deref(), Some("vendor/utils"));
         assert!(e.hash.is_some(), "path dep should carry a source hash");
+        let _ = fs::remove_dir_all(&dir);
+    }
+
+    // ---------------------------------------------------------------------
+    // D11-026 —— `serde_json` 遇到前导 BOM 报 "expected value at line 1
+    // column 1",对上就是 E0042 打断整次 run。规范 §1.1 **不**约束 lock
+    // (§9.4 把锁文件划出规范外),所以这条宽容是**工具选择**而非规范承诺。
+    //
+    // BOM 在测试内拼接,不提交带 BOM 的文件 —— U+FEFF 在 review 里不可见。
+    // ---------------------------------------------------------------------
+
+    const BOM: &str = "\u{FEFF}";
+
+    fn d11_026_lock_json() -> String {
+        to_string_pretty(&Lockfile {
+            schema_version: CURRENT_SCHEMA_VERSION.to_string(),
+            entries: Vec::new(),
+        })
+        .unwrap()
+    }
+
+    /// 带 BOM 与不带 BOM 的 lock 读出**完全相同**的值。
+    #[test]
+    fn d11_026_bom_lock_reads_identically() {
+        let dir = tempdir(".bom");
+        let plain = dir.join("plain.lock");
+        let bommed = dir.join("bom.lock");
+        write_file(&dir, "plain.lock", &d11_026_lock_json());
+        write_file(&dir, "bom.lock", &format!("{BOM}{}", d11_026_lock_json()));
+
+        let a = read(&plain).unwrap().expect("plain lock must load");
+        let b = read(&bommed).unwrap().expect("BOM'd lock must load");
+        assert_eq!(a, b);
+        assert_eq!(a.schema_version, CURRENT_SCHEMA_VERSION);
+        let _ = fs::remove_dir_all(&dir);
+    }
+
+    /// **恰好一个 —— 这条路径上可判别。**`serde_json` 是严格的:剥掉第一个
+    /// BOM 之后,第二个 `U+FEFF` 让 `{` 不在首字节,仍应报解析错。
+    /// 若实现误用 `trim_start_matches`,两个 BOM 会被一起吃掉而变成成功 ——
+    /// 这就是本条的判别力所在。
+    ///
+    /// 对照:`manifest` 那条路径**做不到**这个判别,因为 `toml` 把多余的
+    /// U+FEFF 当空白(见 `manifest.rs` 里同名注记),那边只能测「不带 BOM
+    /// 也能解析」,测不出「剥一个还是剥全部」。
+    #[test]
+    fn d11_026_only_one_leading_bom_is_stripped() {
+        let dir = tempdir(".bom2");
+        let two = dir.join("two.lock");
+        write_file(
+            &dir,
+            "two.lock",
+            &format!("{BOM}{BOM}{}", d11_026_lock_json()),
+        );
+        assert!(
+            read(&two).is_err(),
+            "第二个 U+FEFF 必须留下,并让 lock 仍然解析失败"
+        );
+        let _ = fs::remove_dir_all(&dir);
+    }
+
+    /// lock 内一个普通字符串里的 U+FEFF 必须原样保留(剥除只发生在偏移 0,
+    /// 不是全局替换)。
+    ///
+    /// 放在 `entries[].name` 而不是 `schema_version` 上是有意的:改了
+    /// `schema_version` 会先撞上 `read` 里的版本守卫而报
+    /// `UnsupportedSchemaVersion`,那测的就不是 BOM 了。
+    #[test]
+    fn d11_026_bom_inside_a_lock_string_is_left_alone() {
+        let dir = tempdir(".bom3");
+        let p = dir.join("in.lock");
+        let body = to_string_pretty(&Lockfile {
+            schema_version: CURRENT_SCHEMA_VERSION.to_string(),
+            entries: vec![LockEntry {
+                name: "myteam:u\u{FEFF}til".into(),
+                path: Some("vendor/utils".into()),
+                version: None,
+                hash: None,
+            }],
+        })
+        .unwrap();
+        write_file(&dir, "in.lock", &body);
+        let lf = read(&p).unwrap().expect("must load");
+        assert_eq!(lf.entries[0].name, "myteam:u\u{FEFF}til");
         let _ = fs::remove_dir_all(&dir);
     }
 }

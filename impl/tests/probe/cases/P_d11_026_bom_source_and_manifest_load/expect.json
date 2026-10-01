@@ -1,0 +1,7 @@
+{
+ "exit": 0,
+ "contains": ["bom-ok", "42"],
+ "not_contains": ["W0001", "E0020", "undefined name", "not a valid manifest"],
+ "bom": ["main.wll", "wlwl.toml"],
+ "_why": "[D11-026 / 规范 §1.1]「文本输入**不得**因带 BOM 而被拒绝」。本条同时钉住 §1.1 表里的源文件与 `wlwl.toml` 两行,逐条对应: `contains` 钉住**源文件**那一行 —— 带 BOM 时首 token 曾是 `﻿LET`,报 `E0020: undefined name`,现在程序必须真的跑出输出; `not_contains` 里的 `W0001` / `not a valid manifest` 钉住**清单**那一行 —— 修复前 BOM 清单让严格路径 `manifest::parse` 失败并降级成这条警告,而宽松路径 `parse_features` 仍读到了 `[features]`,是分裂行为。夹具字节保持干净,BOM 由驱动按 `bom` 键注入**暂存副本**,所以这个不可见字节在仓库里是可审的一条声明,不是藏在源文件里的暗改(规范 §1.1 另有「至多一个前导 BOM 被剥除」的细则,由 lexer / manifest / lock / sig 四处的 crate 内锁测试逐条钉,包括 manifest 路径上「剥一个 vs 剥全部**不可观测**」这一事实的显式记录)。`wlwl.lock` 不在本条内 —— §9.4 把它划在规范外,它的 BOM 宽容是工具选择,只有 crate 内锁测试。"
+}

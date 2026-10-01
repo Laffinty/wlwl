@@ -190,7 +190,9 @@ impl From<toml::de::Error> for ManifestError {
 /// - each namespace key matches `^[a-z][a-z0-9-]*$`
 /// - each dependency has at least one of `path` / `version`
 pub fn parse(s: &str) -> Result<Manifest, ManifestError> {
-    let m: Manifest = toml::from_str(s)?;
+    // D11-026 / spec §1.1: `toml` rejects a leading BOM outright, and a
+    // rejected manifest means the `[package]` block is silently dropped.
+    let m: Manifest = toml::from_str(crate::strip_bom(s))?;
     validate(&m)?;
     Ok(m)
 }
@@ -231,7 +233,12 @@ pub struct FeaturesOnly {
 /// Returns `Err` only when the TOML itself is malformed, in which case the
 /// feature table cannot be recovered at all.
 pub fn parse_features(s: &str) -> Result<FeaturesOnly, ManifestError> {
-    Ok(toml::from_str::<FeaturesOnly>(s)?)
+    // D11-026: same strip as `parse`. These are **two** entry points onto
+    // the same file, and the pre-fix failure mode was split-brained: the
+    // lenient path still applied `[features]` while the strict path
+    // reported the manifest as unloadable. Fixing only one would have left
+    // that inconsistency in place.
+    Ok(toml::from_str::<FeaturesOnly>(crate::strip_bom(s))?)
 }
 
 /// The value shape a `[features]` key is expected to have.
@@ -1740,5 +1747,93 @@ match_exhaustiveness = {match_exh}
                     .match_exhaustiveness();
             assert_eq!(setting.mode(), level);
         }
+    }
+
+    // ---------------------------------------------------------------------
+    // D11-026 / spec §1.1 — text inputs must not be rejected for a leading
+    // UTF-8 BOM. `toml` refuses one outright, so before the fix a BOM'd
+    // `wlwl.toml` lost its `[package]` block *silently*: the lenient
+    // `parse_features` path still applied `[features]` while the strict
+    // `parse` path reported the manifest as unloadable (W0001).
+    //
+    // BOM fixtures are concatenated here rather than committed, because a
+    // U+FEFF is an invisible byte in review.
+    // ---------------------------------------------------------------------
+
+    const BOM: &str = "\u{FEFF}";
+
+    const D11_026_GOOD: &str = r#"
+[package]
+name = "myapp"
+version = "0.1.0"
+entry = "main.wll"
+
+[features]
+gradual_typing = "error"
+"#;
+
+    /// A BOM'd manifest parses to exactly the same value.
+    #[test]
+    fn d11_026_bom_manifest_parses_identically() {
+        let with_bom = format!("{BOM}{D11_026_GOOD}");
+        assert_eq!(parse(D11_026_GOOD).unwrap(), parse(&with_bom).unwrap());
+    }
+
+    /// Same for the lenient features-only path.
+    #[test]
+    fn d11_026_bom_features_table_parses_identically() {
+        let with_bom = format!("{BOM}{D11_026_GOOD}");
+        assert_eq!(
+            parse_features(D11_026_GOOD).unwrap(),
+            parse_features(&with_bom).unwrap()
+        );
+    }
+
+    /// **The split-brain guard.** Pre-fix, a BOM'd manifest made
+    /// `parse_features` succeed and `parse` fail — the two entry points
+    /// onto the same file disagreed. They must now agree *both* ways.
+    /// Fixing only one of them would still pass the two tests above in
+    /// isolation, so this is the assertion that actually pins the bug.
+    #[test]
+    fn d11_026_both_entry_points_agree_on_a_bom_manifest() {
+        let with_bom = format!("{BOM}{D11_026_GOOD}");
+        assert!(
+            parse(&with_bom).is_ok() && parse_features(&with_bom).is_ok(),
+            "both parse and parse_features must accept a BOM'd manifest"
+        );
+        assert!(
+            parse(D11_026_GOOD).is_ok() && parse_features(D11_026_GOOD).is_ok(),
+            "and must agree on the BOM-free original too"
+        );
+    }
+
+    /// A second leading U+FEFF is **not** observable here, and this test
+    /// says so on purpose rather than pretending otherwise.
+    ///
+    /// `strip_prefix` vs `trim_start_matches` is only distinguishable if the
+    /// underlying parser reacts to a stray U+FEFF. The `toml` crate treats
+    /// one as whitespace, so a two-BOM manifest parses to the same value as
+    /// a one-BOM one and **no assertion on this path can tell the two
+    /// implementations apart**. Writing a test that claims otherwise would be
+    /// the恒真断言 shape that D11-006 was filed for.
+    ///
+    /// The "exactly one" property is therefore pinned where it *is*
+    /// observable: `lock::read` (serde_json is strict — see
+    /// `d11_026_only_one_leading_bom_is_stripped` in `lock.rs`) and
+    /// `parse_module_sig` (our own parser, in `wlwl-types`).
+    #[test]
+    fn d11_026_toml_treats_a_stray_bom_as_whitespace_so_one_vs_all_is_unobservable() {
+        let two = format!("{BOM}{BOM}{D11_026_GOOD}");
+        let one = format!("{BOM}{D11_026_GOOD}");
+        assert_eq!(parse(&two).unwrap(), parse(&one).unwrap());
+        assert_eq!(parse(&two).unwrap(), parse(D11_026_GOOD).unwrap());
+    }
+
+    /// A non-BOM manifest is untouched, and a U+FEFF *inside a value* still
+    /// round-trips — the strip is position-0 only, never a global replace.
+    #[test]
+    fn d11_026_bom_inside_a_value_is_left_alone() {
+        let src = D11_026_GOOD.replace("\"0.1.0\"", "\"\u{FEFF}0.1.0\"");
+        assert_eq!(parse(&src).unwrap().package.version, "\u{FEFF}0.1.0");
     }
 }

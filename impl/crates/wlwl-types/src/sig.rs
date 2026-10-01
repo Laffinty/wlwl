@@ -108,7 +108,20 @@ impl ModuleSig {
 /// 失败一律是**语法错误**:签名文件是文本格式,报的是既有语法码
 /// (`E0010` / `E0011` / `E0012`),不新增码号 —— 一个码号只对应一种条件,
 /// 而「`.sig` 写错了」就是语法错误。
+///
+/// **D11-026 / 规范 §1.1 与附录 E.1**:剥除**至多一个**前导 `U+FEFF`。此前
+/// BOM 会粘进 `EXPORT` 的名字,报 `E0010: found "﻿EXPORT x : INTEGER"` ——
+/// 而 §1.1 规定文本输入「不得因带 BOM 而被拒绝」。
+///
+/// 只剥一个(`strip_prefix` 而非 `trim_start_matches`):第二个 `U+FEFF` 是普通
+/// 字符,不是 BOM。对 `.sig` 而言剥前导是无条件正确的 —— `sig_line` 只以
+/// `EXPORT` / `#` / 空起头(附录 E.1),前导 `U+FEFF` 不可能是合法内容。
+///
+/// 这里**内联**这一行而不复用 `wlwl-toml` 的 `strip_bom`:`wlwl-types` 不依赖
+/// `wlwl-toml`(依赖方向是 ast/error/parser),为一行的 `strip_prefix` 引入一条
+/// 跨 crate 边是更差的代价。
 pub fn parse_module_sig(text: &str, file: &str) -> Result<ModuleSig, WlwlError> {
+    let text = text.strip_prefix('\u{FEFF}').unwrap_or(text);
     let mut entries = BTreeMap::new();
     for (idx, raw) in text.lines().enumerate() {
         let line_no = idx as u32 + 1;
@@ -1371,5 +1384,51 @@ EXPORT either : OPTION[INTEGER]
             parse_module_sig(ok, "math.wll.sig")
                 .unwrap_or_else(|e| panic!("must still parse: {ok:?} -> {:?}", e));
         }
+    }
+
+    // ---- D11-026 / 规范 §1.1 与附录 E.1:带 BOM 的签名文件必须照常解析 ----
+    //
+    // 夹具在测试内拼接,不提交带 BOM 的文件 —— U+FEFF 在 review 里不可见。
+    // 端到端那一侧由 probe 用例 `P_d11_026_bom_module_signature_loads` 钉住。
+
+    const BOM: &str = "\u{FEFF}";
+
+    const D11_026_SIG: &str = "EXPORT add (INTEGER, INTEGER) : INTEGER\n";
+
+    fn d11_026_want_add() -> std::collections::BTreeSet<String> {
+        std::collections::BTreeSet::from(["add".to_string()])
+    }
+
+    /// 带 BOM 与不带 BOM 解析出**完全相同**的签名。
+    #[test]
+    fn d11_026_bom_signature_parses_identically() {
+        let a = parse_module_sig(D11_026_SIG, "math.wll.sig").unwrap();
+        let b = parse_module_sig(&format!("{BOM}{D11_026_SIG}"), "math.wll.sig").unwrap();
+        assert_eq!(a, b);
+        assert_eq!(a.names(), d11_026_want_add());
+    }
+
+    /// **恰好一个 —— 这条路径上可判别。**剥掉第一个 BOM 之后,第二个
+    /// `U+FEFF` 让首行不再以 `EXPORT` 起头,仍应报既有语法码 `E0010`。
+    /// 若误用 `trim_start_matches`,两个 BOM 会被一起吃掉而变成成功。
+    #[test]
+    fn d11_026_only_one_leading_bom_is_stripped() {
+        let two = format!("{BOM}{BOM}{D11_026_SIG}");
+        let err = parse_module_sig(&two, "math.wll.sig")
+            .expect_err("第二个 U+FEFF 必须留下,并让签名仍然解析失败");
+        assert!(
+            err.to_string().contains("E0010"),
+            "应报既有语法码 E0010,实得: {err}"
+        );
+    }
+
+    /// 剥除只发生在偏移 0:签名里非前导位置的 `U+FEFF` 不影响解析
+    /// (这里放在注释行 —— 整行按附录 E.1 丢弃)。
+    #[test]
+    fn d11_026_non_leading_bom_in_a_signature_is_harmless() {
+        let with_note = format!("# note\u{FEFF}tail\n{D11_026_SIG}");
+        let sig =
+            parse_module_sig(&with_note, "math.wll.sig").expect("注释里的 U+FEFF 不该让解析失败");
+        assert_eq!(sig.names(), d11_026_want_add());
     }
 }

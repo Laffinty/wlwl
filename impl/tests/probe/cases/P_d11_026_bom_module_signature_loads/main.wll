@@ -1,0 +1,2 @@
+LET(add, FUN((a: INTEGER, b: INTEGER), +(a, b)));
+EXPORT(["add"]);

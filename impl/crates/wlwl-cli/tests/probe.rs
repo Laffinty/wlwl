@@ -57,7 +57,13 @@ use std::time::{Duration, Instant};
 /// 纯 wlwl 终态、`std.str` §6、`std.math` §7 混合)与 `std.test` 混合门面的
 /// 端到端冒烟,外加 `E0038`(RANGE 步长为零)的存在性 —— 那条诊断在 M3 之前
 /// 的唯一发射点是被删掉的 R2 实现,删掉之后只剩 M3-0 立起的注入通道。
-const EXPECTED_CASE_COUNT: usize = 142;
+///
+/// 第 143–144 条(`P_d11_026_*`)是 D11-026 补的:规范 §1.1「文本输入**不得**因
+/// 带 BOM 而被拒绝」。它们是头两条用 `bom` 键把 BOM 注入暂存副本的用例 ——
+/// 驱动据此把不可见字节变成夹具里一个可审的声明。两条合起来覆盖 §1.1 表里
+/// 规范所辖的三个文件(源文件 / `wlwl.toml` / `main.wll.sig`);`wlwl.lock` 不在
+/// 其中,理由见 §9.4(锁文件在规范外)。
+const EXPECTED_CASE_COUNT: usize = 144;
 
 /// 单个 case 的上限,与 `probe.py` 的 `timeout=60` 同义。
 const CASE_TIMEOUT: Duration = Duration::from_secs(60);
@@ -68,13 +74,14 @@ const CASE_TIMEOUT: Duration = Duration::from_secs(60);
 /// **例外**:下划线开头的键(`_why` / `_note`)是纯文档,驱动跳过不读。
 /// 这批 case 里有 13 条断言的是「实测行为与规范矛盾」,不写清楚原因,
 /// 下一个人只会把它们当成随手写的期望值删掉。JSON 没有注释语法,只能借键。
-const KNOWN_KEYS: [&str; 6] = [
+const KNOWN_KEYS: [&str; 7] = [
     "exit",
     "contains",
     "not_contains",
     "present",
     "absent",
     "deviation",
+    "bom",
 ];
 
 // ---------------------------------------------------------------- 夹具定位
@@ -143,7 +150,11 @@ fn assert_case_inventory(ids: &[String]) {
 // ---------------------------------------------------------------- 暂存
 
 /// 把一份 case 整目录复制到 `temp_dir()/wlwl-probe/<id>`(先清后建)。
-fn stage(case_id: &str) -> PathBuf {
+///
+/// `bom_files` 里的每个文件名会在**暂存副本**上前置一个 UTF-8 BOM
+/// (规范 §1.1;见 [`Expect::bom`])。前置只发生在暂存副本上,仓库里的
+/// 夹具字节不变 —— 所以 `git diff` 看不到的字节不会藏在夹具里。
+fn stage(case_id: &str, bom_files: &[String]) -> PathBuf {
     let dir = std::env::temp_dir().join("wlwl-probe").join(case_id);
     let _ = std::fs::remove_dir_all(&dir);
     std::fs::create_dir_all(&dir).expect("staging dir");
@@ -160,6 +171,21 @@ fn stage(case_id: &str) -> PathBuf {
         } else {
             std::fs::copy(&path, &target).expect("case file staged");
         }
+    }
+    for name in bom_files {
+        let target = dir.join(name);
+        assert!(
+            target.is_file(),
+            "expect.json 的 `bom` 列了 `{name}`,但 case 目录里没有这个文件"
+        );
+        let body = std::fs::read(&target).expect("staged file readable");
+        assert!(
+            !body.starts_with(&[0xEF, 0xBB, 0xBF]),
+            "`{name}` 夹具已经自带 BOM,会与 `bom` 键重复前置"
+        );
+        let mut with_bom = vec![0xEFu8, 0xBB, 0xBF];
+        with_bom.extend_from_slice(&body);
+        std::fs::write(&target, with_bom).expect("BOM written to staged copy");
     }
     dir
 }
@@ -267,6 +293,13 @@ struct Expect {
     absent: Vec<String>,
     /// **仅标记**:不改断言。失败消息里加 `[deviation]` 提示。
     deviation: bool,
+    /// 暂存时给这些文件前置一个 UTF-8 BOM(规范 §1.1)。
+    ///
+    /// 为什么在夹具里做而不是提交一个带 BOM 的源文件:`.gitattributes` 的
+    /// `*.wll text eol=lf` 会把提交的 CRLF 规范化,而 BOM 在 code review
+    /// 里是**不可见字节** —— 提交它等于提交一个没人看得见的东西。写成
+    /// 期望里的一个显式键,这个字节就变成可审、可 diff 的声明。
+    bom: Vec<String>,
 }
 
 fn load_expect(case_id: &str) -> Expect {
@@ -287,6 +320,7 @@ fn load_expect(case_id: &str) -> Expect {
             .get("deviation")
             .and_then(|v| v.as_bool())
             .unwrap_or(false),
+        bom: strings_of(case_id, &value, "bom"),
     }
 }
 
@@ -329,7 +363,7 @@ fn run_case(id: &str) -> CaseOutcome {
     let argv: Vec<String> = tail.split_whitespace().map(str::to_string).collect();
 
     let expect = load_expect(id);
-    let staged = stage(id);
+    let staged = stage(id, &expect.bom);
     let capture = run_capture(&wlwl_binary(), &argv, &staged);
 
     let code = match capture.end {

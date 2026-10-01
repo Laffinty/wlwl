@@ -24,3 +24,20 @@
 pub mod lock;
 pub mod manifest;
 pub mod mvs;
+
+/// Strip **at most one** leading UTF-8 BOM (`U+FEFF`).
+///
+/// D11-026, spec §1.1: both the manifest and the lock are text inputs, and
+/// neither `toml` nor `serde_json` accepts a leading BOM — on a Windows host
+/// that is the difference between "your project loads" and "your project
+/// silently loses its `[package]` block".
+///
+/// Exactly one, not `trim_start_matches`: a second `U+FEFF` is not a BOM, it
+/// is an ordinary character, and silently eating it would change what the file
+/// means. See §1.1 for why one is the only rule the source file can support
+/// (P3-011 lets identifiers start with any non-ASCII letter, so the lexer
+/// cannot tell a BOM from identifier content) — and why it is unconditionally
+/// correct for the manifest and lock, whose first character is grammar-locked.
+pub(crate) fn strip_bom(s: &str) -> &str {
+    s.strip_prefix('\u{FEFF}').unwrap_or(s)
+}

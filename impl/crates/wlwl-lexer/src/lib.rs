@@ -1535,4 +1535,50 @@ mod tests {
         let bommed = lex(&format!("{BOM}// c\nPRINT(1);"), "t.wll").unwrap();
         assert_eq!(leading_comment, bommed);
     }
+
+    // ---------------------------------------------------------------------
+    // Spec §1.1, the *other* normative clause: "换行可以是 `\n`、`\r\n` 或
+    // `\r`,三者等价".
+    //
+    // This clause has been satisfied by the implementation for the whole
+    // project and had **no** test pinning it (D11-026). It is pinned here
+    // at the lexer level rather than as a probe case, and the reason is
+    // worth recording: `.gitattributes` sets `*.wll text eol=lf`, so a
+    // committed fixture containing CRLF would be normalised to LF by git
+    // and the test would silently stop testing anything. Making it a probe
+    // case would require a second byte-injection feature in the harness
+    // (`eol`, alongside the `bom` key added by D11-026) that nothing else
+    // needs. A lexer-level test cannot be defeated by line-ending
+    // normalisation, so it is the honest place for this clause.
+    // ---------------------------------------------------------------------
+
+    /// 7. All three line terminators are equivalent. Only the *line/column*
+    ///    bookkeeping is allowed to differ, so the comparison drops spans.
+    fn kinds_of(src: &str) -> Vec<TokenKind> {
+        lex(src, "t.wll")
+            .unwrap()
+            .into_iter()
+            .map(|t| t.kind)
+            .collect()
+    }
+
+    #[test]
+    fn d11_026_lf_crlf_and_cr_are_equivalent() {
+        let lf = kinds_of("LET a 1\nPRINT a\n");
+        let crlf = kinds_of("LET a 1\r\nPRINT a\r\n");
+        let cr = kinds_of("LET a 1\rPRINT a\r");
+        assert_eq!(lf, crlf, "CRLF must lex identically to LF");
+        assert_eq!(lf, cr, "a bare CR must lex identically to LF");
+    }
+
+    /// 8. The terminator inside a **string literal** is normalised too:
+    ///    `SPLIT_LINES` (spec §10.5, R1 `std.str`) strips the trailing CR.
+    ///    Without this, a CRLF checkout would leak `\r` into string values.
+    #[test]
+    fn d11_026_crlf_inside_a_block_comment_is_absorbed() {
+        assert_eq!(
+            kinds_of("/* a\r\nb */ PRINT 1"),
+            kinds_of("/* a\nb */ PRINT 1")
+        );
+    }
 }

@@ -1,0 +1,7 @@
+[package]
+name = "probesig"
+version = "0.1.0"
+entry = "main.wll"
+
+[features]
+gradual_typing = "error"

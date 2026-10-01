@@ -1,0 +1,7 @@
+{
+ "exit": 0,
+ "contains": ["OK"],
+ "not_contains": ["E0010", "E0011", "E0012", "﻿"],
+ "bom": ["main.wll", "main.wll.sig", "wlwl.toml"],
+ "_why": "[D11-026 / 规范 §1.1 + 附录 E.1] 钉住 §1.1 表里的**旁路签名文件**那一行。附录 E.1 原文只说「行导向的 UTF-8 文本」而未提 BOM,D11-026 把它改为指向 §1.1,所以这里必须有强制它的机制。修复前 BOM 会粘进 `EXPORT` 的名字,报 `E0010: invalid module signature: found \"﻿EXPORT add (INTEGER, INTEGER) : INTEGER\"`。`not_contains` 里的裸 BOM 字符是刻意加的:即使码号被改掉,只要 BOM 泄漏进任何输出就仍然变红。`gradual_typing = \"error\"` 是必需的 —— 签名文件**仅在**该特性开启时才被读取(规范 §9.6);D11-026 调查时第一轮测这一条曾因默认档下签名根本没被读而误判成「没坏」。`exit 0` 同时钉住清单(BOM 清单曾让 W0001 降级)。"
+}
