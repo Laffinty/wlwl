@@ -142,9 +142,12 @@
 ## 6 `std.str` — 字符串扩展(R1,v0.11 新增)
 
 纯 wlwl 实现。只补全局内建(语言规范 §10.5)没有的能力;**不重导出**任何
-全局内建。索引口径与 `SUB` 一致(码点;起点同 `SUB` 的 `start`)。
-落地状态:本章为 v0.11 契约定稿;M1 已落地 `QUOTE`(双轨通道冒烟成员),
-其余随 M3 落齐,已落地成员以附录 A 镜像为准。
+全局内建。索引口径与 `SUB` 一致(码点;起点同 `SUB` 的 `start` —— 含
+**负索引自尾部计数**,所以 `CHAR_AT("abc", -1)` 是 `"c"`,不是越界)。
+落地状态:本章成员已随 M3-2 全部落地(§6 表格即当前成员面;附录 A 镜像
+由 `gen-appendix-a` 从实现生成并由 `stdlib_appendix_a_sync` 锁)。
+`SPLIT_LINES` 的四条边界逐条见下表;`COUNT` 的非重叠口径用一次
+`SPLIT(s, sub)` 实现 —— 切成 n+1 段则非重叠出现次数正是 n。
 
 | 签名 | 说明 | 失败 |
 |------|------|------|
@@ -163,13 +166,17 @@
 
 约定:算术提升与溢出行为沿语言规范 §2.2;域违例返回
 `ERR(["kind": "DomainError", ...])`;实参类型错按语言规范报 `E0030`。
-落地状态:本章为 v0.11 契约定稿;M1 已落地 `ABS`(R1 门面冒烟成员),
-`SQRT`/`POW` 的 R2 浮点内核与其余门面成员随 M3 接线,已落地成员以
-附录 A 镜像为准。
+`MIN` / `MAX` / `CLAMP` 的**返回值类型**也按 §2.2 提升:实参中有任一
+`FLOAT` 则返回 `FLOAT`(`CLAMP` 看**三个**实参)。
+落地状态:本章成员已随 M3-2 全部落地(§7 表格即当前成员面;附录 A 镜像
+由 `gen-appendix-a` 从实现生成并由 `stdlib_appendix_a_sync` 锁)。
+`FLOOR` / `CEIL` / `ROUND` 归门面但**不是** `INT`:`INT` 按 §2.2 向零截断,
+而下/上取整与「半数远离零」都不同于它,故实现走 `INT` + 符号修正,超出
+`±2^53` 的 `FLOAT`(本身已是整数)与 `NaN` / `±inf` 原样返回。
 
 | 签名 | 说明 | 失败 |
 |------|------|------|
-| `ABS(x)` | 绝对值,返回与实参同类型 | `INTEGER` 下界(`-ABS(INT_MIN)` 形):`E0035` |
+| `ABS(x)` | 绝对值,返回与实参同类型 | `INTEGER` 下界(`-ABS(INT_MIN)` 形):`E0034` |
 | `MIN(a, b)` / `MAX(a, b)` | 二元最值;混合整浮按 §2.2 提升 | — |
 | `FLOOR(x)` / `CEIL(x)` | 下/上取整;`INTEGER` 恒等;`FLOAT` 返回 `FLOAT`;`NaN`/`±inf` 原样 | — |
 | `ROUND(x)` | 四舍五入(半数远离零);其余同上 | — |
@@ -261,8 +268,8 @@ LET(handle, wlwl:std.agent.TASK("summarize", "long text..."));
 | `std.json` | `PARSE` `STRINGIFY` | R2 | v0.10 及以前 |
 | `std.format` | `FORMAT` | R2 | v0.10 及以前 |
 | `std.collection` | `MAP` `FILTER` `REDUCE` `SORT` `SORT_BY` `ZIP` `RANGE` `ANY` `ALL` `FIND` `ENUMERATE` `TAKE` `DROP` `FLAT` `UNIQ` `GROUP_BY` `JOIN` | R1 | v0.10 及以前(成员)/ v0.11(R1 重写) |
-| `std.str` | `QUOTE` | R1 | v0.11 |
-| `std.math` | `ABS` | 混合 | v0.11 |
+| `std.str` | `JOIN` `SPLIT_LINES` `CHAR_AT` `COUNT` `QUOTE` | R1 | v0.11 |
+| `std.math` | `ABS` `MIN` `MAX` `FLOOR` `CEIL` `ROUND` `SQRT` `POW` `CLAMP` `PI` `E` | 混合 | v0.11 |
 | `std.test` | `TEST` `ASSERT` `ASSERT_EQ` `ASSERT_NEQ` `EXPECT_ERR` `RUN_TESTS` | 混合 | v0.10 及以前(成员)/ v0.11(混合化) |
 | `std.ai` | `ASK` `EMBED` `COMPLETE` `ASK_STREAM` `ASK_ALL` | R2 | v0.10 及以前 |
 | `std.agent` | `TASK` `TOOL` `CALL_TOOL` `MODEL` `CONTEXT` | R2 | v0.10 及以前 |

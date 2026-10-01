@@ -125,13 +125,19 @@ pub static LANG_SOURCES: &[StdSource] = &[
     StdSource {
         path: "wlwl:std.str",
         source: include_str!("../wl/std/str.wll"),
-        kernels: &[],
+        kernels: &[
+            ("_KIND", kernels::kernel_kind as StdFn),
+            ("_DIAG_E0030", kernels::kernel_diag_e0030 as StdFn),
+        ],
     },
     StdSource {
         path: "wlwl:std.math",
         source: include_str!("../wl/std/math.wll"),
-        // 混合模块(规范 §7):门面在 wlwl 侧,浮点内核在这里。
+        // 混合模块(规范 §7):门面在 wlwl 侧,浮点内核在这里;另加诊断
+        // 发射器与种类措辞,好让诊断指名 `SQRT` / `POW` 而不是 kernel 名。
         kernels: &[
+            ("_KIND", kernels::kernel_kind as StdFn),
+            ("_DIAG_E0030", kernels::kernel_diag_e0030 as StdFn),
             ("_SQRT", kernels::kernel_sqrt as StdFn),
             ("_POW", kernels::kernel_pow as StdFn),
         ],

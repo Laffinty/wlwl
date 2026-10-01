@@ -159,17 +159,23 @@ mod tests {
     // ── 3. M1 零回归 ────────────────────────────────────────────────
 
     #[test]
-    fn a_module_without_kernels_is_unchanged() {
-        // `std.str` 声明 `kernels: &[]` —— 这条守住 M1:注入槽为空时,
-        // 加载路径与注入槽存在之前完全一致。
+    fn a_module_without_float_kernels_is_unchanged() {
+        // M1 零回归:`std.str` 的 `QUOTE` 行为与 M1 落地时逐字一致。
+        // (这条原先还断言 `std.str` 的 kernel 表为空 —— M3-2 给它加了诊断
+        // 发射器之后就不成立了。改成钉规范真正承诺的不变量:**纯 R1 的模块
+        // 不得拿到浮点内核**。§6 说 std.str 是纯 wlwl 实现,一旦有人给它
+        // 挂上 `_SQRT` / `_POW`,那就已经不是纯 R1 了。)
         let str_src = wlwl_std::LANG_SOURCES
             .iter()
             .find(|s| s.path == "wlwl:std.str")
             .expect("std.str is an R1 module");
-        assert!(
-            str_src.kernels.is_empty(),
-            "std.str is pure R1 (stdlib spec §6) and must declare no kernels"
-        );
+        for (name, _) in str_src.kernels {
+            assert!(
+                !matches!(*name, "_SQRT" | "_POW"),
+                "stdlib spec §6 declares std.str a pure R1 module, but it now \
+                 borrows the float kernel `{name}`"
+            );
+        }
         let base = unique_dir("m1");
         let v = run(
             &base,
@@ -181,18 +187,32 @@ mod tests {
     }
 
     #[test]
-    fn the_math_module_actually_declares_kernels() {
-        // 反向守卫:上面前两条断言以「kernel 列表」为输入。哪天有人把
-        // `std.math` 的 kernel 摘掉,它们会退化成检查零件事的空断言。
+    fn the_math_module_actually_declares_the_float_kernels() {
+        // 反向守卫:上面那些以 kernel 列表为输入的断言,在列表被清空时会退化成
+        // 检查零件事。这条钉住标准库规范 §7 承诺的那两个。
+        //
+        // **刻意不钉整个列表**:那份清单是手写的「应然」侧,每加一个诊断发射
+        // 器就得改它一次,而这类改动本身完全无害 —— 钉死只会制造无谓的
+        // 红灯。规范承诺的是「SQRT/POW 走 R2 内核」,那就只钉这个。
         let math_src = wlwl_std::LANG_SOURCES
             .iter()
             .find(|s| s.path == "wlwl:std.math")
             .expect("std.math is an R1 module");
         let names: Vec<&str> = math_src.kernels.iter().map(|(n, _)| *n).collect();
-        assert_eq!(
-            names,
-            vec!["_SQRT", "_POW"],
-            "stdlib spec §7 pins std.math to the SQRT/POW float kernels"
-        );
+        for required in ["_SQRT", "_POW"] {
+            assert!(
+                names.contains(&required),
+                "stdlib spec §7 pins std.math to the `{required}` float kernel; \
+                 declared: {names:?}"
+            );
+        }
+        let table: std::collections::HashSet<&str> =
+            wlwl_std::kernels::KERNELS.iter().map(|(n, _)| *n).collect();
+        for n in &names {
+            assert!(
+                table.contains(n),
+                "`{n}` is injected but missing from `kernels::KERNELS`"
+            );
+        }
     }
 }
