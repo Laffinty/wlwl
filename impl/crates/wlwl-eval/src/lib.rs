@@ -20,10 +20,10 @@
 
 #![allow(unpredictable_function_pointer_comparisons)]
 
-use std::cell::{Ref, RefCell};
+use std::borrow::Cow;
+use std::cell::RefCell;
 use std::collections::{HashMap, HashSet};
-use std::path::Path;
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 use std::rc::Rc;
 use std::sync::Arc;
 
@@ -33,204 +33,14 @@ use wlwl_error::{
     WlwlDiagnostic, WlwlError, WlwlResult,
 };
 
-// ──────────────────────────────────────────────────────────────────────
-// Runtime values
-// ──────────────────────────────────────────────────────────────────────
-
-/// Runtime value (v0.3 §2.2 — Phase 2).
-///
-/// [v0.9 Step 9a-1 / plan §4.3 / ADR-0019 §4.3] PartialEq is hand-
-/// implemented (rather than `#[derive]`d) starting this commit:
-/// the new `Class` / `Instance` variants wrap `Rc<RefCell<_>>`,
-/// which doesn't auto-derive `PartialEq`. Class / Instance equality
-/// is by **identity** (`Rc::ptr_eq`), consistent with how the
-/// existing handle variants (`TaskHandle`, `ChannelHandle`) compare
-/// by their `id` + `generation` fields rather than by deep value.
-#[derive(Debug, Clone)]
-pub enum Value {
-    Integer(i64),
-    Float(f64),
-    String(String),
-    Boolean(bool),
-    Null,
-    Array(Vec<Value>),
-    Dict(Vec<(Value, Value)>),
-    /// §8.2 function literal with captured environment (clone-based closure).
-    Closure {
-        params: Vec<FunParam>,
-        body: Box<Expr>,
-        env: Env,
-    },
-    /// §15 std library function (Phase 4): body is a native Rust impl,
-    /// dispatchable like a closure but without a parseable `Expr`. Bound
-    /// in the env by `IMPORT("wlwl:std.X", …)` so that the user-supplied
-    /// IMPORT takes priority over the `resolve_builtin` fallback.
-    NativeFn {
-        name: String,
-        invoke: NativeInvoke,
-    },
-    /// §12 OK(value)
-    /// §12 OK(value)
-    Ok(Box<Value>),
-    /// §12 ERR(value)
-    Err(Box<Value>),
-    /// [v0.7 Phase C2] Handle returned to user code by `SPAWN(fn)`.
-    /// AWAIT (C3) takes this value and dereferences it to read
-    /// the spawned task's terminal value or error. At C2 the
-    /// referenced task has always already finished (synchronous
-    /// execution); B5b will let back-pointers capture still-running
-    /// tasks and AWAIT will actually wait on them.
-    TaskHandle(crate::runtime::TaskHandle),
-    /// [v0.7 Phase D-A] Handle returned to user code by
-    /// `CHANNEL_NEW(buf)`. SEND / RECV / CLOSE / TRY_SEND / TRY_RECV
-    /// / LEN / CAP all take this value. Generation-tracked: a slot
-    /// recycled by the D-D leak detector bumps the generation so a
-    /// stale handle fails E0053-style validation rather than
-    /// operating on a different channel than the one the user
-    /// originally opened.
-    ChannelHandle(crate::channel::ChannelHandle),
-    /// [v0.9 Step 9a-1 / plan §4.3 / ADR-0019 §4.3] Class value
-    /// produced by `CLASS(name?, parent, members)`. Wrapped in
-    /// `Rc<RefCell<_>>` so closure capture (`Env::clone`) can share
-    /// the same class entry between the defining scope and any
-    /// downstream `NEW` call — parallel to the cell-sharing rule
-    /// for `LET MUT` (v0.6 §3.4). Step 9a-2 wires `builtin_class`
-    /// to populate the entry; Step 9a-3 will add `init` tracking
-    /// (currently a placeholder `Option<Value>`).
-    Class(std::rc::Rc<std::cell::RefCell<ClassEntry>>),
-    /// [v0.9 Step 9a-1 / plan §4.3 / ADR-0019 §4.3] Instance value
-    /// produced by `NEW(cls, args...)`. The `class` field is shared
-    /// with the `Value::Class` that created it (same `Rc`); `fields`
-    /// is the per-instance `(name → value)` table that `GET_PROP` /
-    /// `SET_PROP` read / write (Step 9a-5 wires these). `this_token`
-    /// is the placeholder for the linear `THIS` capability (Step
-    /// 9a-3 fleshes it out to a runtime-checked `Rc<RefCell<_>>`).
-    ///
-    /// [v0.9 Step 9a-5] `fields` is wrapped in `Rc<RefCell<_>>`
-    /// (rather than the plain `Vec` that 9a-1 used) so that
-    /// `SET_PROP` mutations propagate to every reference that
-    /// shares the instance. The plain-`Vec` shape meant the
-    /// caller had to rebind `LET inst = SET_PROP(inst, "k", v)`
-    /// after every mutation — a footgun the §13 ergonomics
-    /// call out as a deviation. With the Rc-wrapped shape,
-    /// any future `inst.foo` reference observes the new
-    /// field automatically, mirroring how closures already
-    /// share cells via `Env::clone`.
-    Instance {
-        class: std::rc::Rc<std::cell::RefCell<ClassEntry>>,
-        fields: std::rc::Rc<std::cell::RefCell<Vec<(Value, Value)>>>,
-        this_token: std::rc::Rc<std::cell::RefCell<ThisToken>>,
-        /// [v0.9 Step 9b] Per-instance session-protocol cursor.
-        protocol_state: std::rc::Rc<std::cell::RefCell<crate::protocol::ProtocolCursor>>,
-    },
-}
-
-/// [v0.9 Step 9a-1 / plan §4.3 / ADR-0019 §4.3] Class entry — the
-/// shared backing store for `Value::Class` and `Value::Instance`.
-/// All fields are public + `Clone`-able so the `Rc<RefCell<_>>`
-/// wrapper can be cheaply cloned through `Env::clone` (closure
-/// capture). Mutation goes through `RefCell::borrow_mut`; cycle
-/// detection in the parent chain lives in `builtin_class` /
-/// `builtin_new` (Step 9a-2) — see `E0050` ("class inheritance
-/// chain error") for the canonical error path.
-///
-/// `init` is the optional constructor closure (first parameter
-/// named `self` by spec §13 convention); Step 9a-2 populates it
-/// when the user passes a closure inside the members array.
-#[derive(Debug, Clone)]
-pub struct ClassEntry {
-    /// Optional class name (user-supplied via the first arg of
-    /// `CLASS`). `None` means an anonymous class — useful for
-    /// one-shot closures but otherwise discouraged by §13.
-    pub name: Option<String>,
-    /// Optional parent class (second arg of `CLASS`). Stored via
-    /// `Rc<RefCell<_>>` so a class with a parent can outlive its
-    /// parent's scope (e.g. when both are top-level lets in the
-    /// same module).
-    pub parent: Option<std::rc::Rc<std::cell::RefCell<ClassEntry>>>,
-    /// Member table: `(name → Value::Closure)` for methods, or
-    /// `(name → any)` for static fields. The spec §13 convention
-    /// is "first parameter named `self` = instance method; no
-    /// `self` parameter = static". Step 9a-4 / 9a-5 walk this
-    /// table for method / property dispatch.
-    pub members: Vec<(Value, Value)>,
-    /// Optional constructor closure. `builtin_new` (Step 9a-2)
-    /// reads the first parameter (must be named `self` per §13
-    /// convention) and binds it to the freshly-allocated instance.
-    pub init: Option<Value>,
-    /// [v0.9 Step 9b / plan §4.4.3 / ADR-0019 §14] Session-type
-    /// protocol constraining method-call order. `None` = unrestricted.
-    pub protocol: Option<crate::protocol::Proto>,
-}
-
-/// [v0.9 Step 9a-3 / plan §4.3 / ADR-0019 §4.3] Linear `THIS`
-/// capability (runtime check).
-///
-/// `ThisToken` is the per-instance bookkeeping for the spec §15
-/// "linear capability" rule: each method body has exactly ONE
-/// opportunity to call `THIS`. The first call flips `moved`
-/// from `false` to `true`; the second call observes `moved ==
-/// true` and raises E0095 ("linear value used after move").
-///
-/// This is the v0.9.0 minimal "linear" model — stronger than
-/// "freely aliasable" but weaker than Rust's compile-time
-/// linear typing. The runtime cost is one bool flip per
-/// method invocation; spec §15 leaves stronger enforcement
-/// (move / discard tracking) as a v0.9.1+ extension.
-#[derive(Debug, Clone)]
-pub struct ThisToken {
-    /// `false` until the first `THIS()` read inside the current
-    /// method body, then `true` for the rest of that body's
-    /// lifetime. Reset to `false` when the body returns (the
-    /// owning instance outlives any single method call, so a
-    /// later method invocation on the same instance starts
-    /// fresh).
-    pub moved: bool,
-}
-
-impl ThisToken {
-    /// [v0.9 Step 9a-3] Consume the capability: succeed (and
-    /// flip `moved = true`) on the first call, fail on any
-    /// subsequent call within the same method body. Used by
-    /// `builtin_this` to gate the `moved` flag atomically
-    /// under the `RefCell::borrow_mut`.
-    ///
-    /// Returns `Ok(())` for the first call (caller may now
-    /// bind / forward the linear reference), `Err(AlreadyMoved)`
-    /// for any subsequent call (caller raises E0095 with the
-    /// `AlreadyMoved` variant as the source of truth — the
-    /// `Result<(), ()>` shape would otherwise trip clippy's
-    /// `result_unit_err` lint, and using a named enum keeps
-    /// the future direction open if 9a-4+ adds more failure
-    /// modes to the linear capability contract).
-    pub fn try_consume(&mut self) -> Result<(), ThisTokenError> {
-        if self.moved {
-            Err(ThisTokenError::AlreadyMoved)
-        } else {
-            self.moved = true;
-            Ok(())
-        }
-    }
-}
-
-/// [v0.9 Step 9a-3] Failure modes for `ThisToken::try_consume`.
-/// Currently a single variant (`AlreadyMoved`); the enum
-/// exists so the `try_consume` return type isn't
-/// `Result<(), ()>` (which clippy flags) and to leave room for
-/// additional linear-capability violations in 9a-4 / 9a-5
-/// (e.g. `ReadAfterDiscard` for E0096, which is reserved but
-/// not yet emitted by the runtime).
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum ThisTokenError {
-    /// First `THIS()` call within the method body already
-    /// consumed the capability; subsequent reads raise E0095.
-    AlreadyMoved,
-}
-
-/// [v0.9 P1-M2] Shared fields table of one `Value::Instance`.
-pub type LinearThis = std::rc::Rc<std::cell::RefCell<Vec<(Value, Value)>>>;
-
-/// [v0.9 D9-001] Walk `e` looking for a free `THIS` reference
+// [v0.11 M2 / ADR-0022] 值层单源在 wlwl-value;这里 pub use 保持
+// `crate::Value` 等既有路径对子模块与外部消费者不变。
+pub use wlwl_value::{
+    new_cell, subst, type_name, value_type_name, values_equal, Binding, Cell, ChannelHandle,
+    ChannelId, ClassEntry, Env, LinearThis, Outcome, Proto, ProtocolCursor, ProtocolError,
+    RcHandle, Signal, Tag, TaskHandle, TaskId, TestEntry, ThisToken, ThisTokenError, Value,
+    YieldReason,
+};
 /// (`Var("THIS")` or `Call { name: "THIS" }`). Used to reject
 /// closures / SPAWN bodies that would carry the linear capability
 /// out of the method frame (spec §15.1 容器 / 闭包 / SPAWN 边界).
@@ -280,455 +90,6 @@ fn expr_mentions_this(e: &Expr) -> bool {
         }
         E::Import { .. } | E::Export { .. } | E::Sealed { .. } => false,
     }
-}
-
-/// Tag for native-function implementations. A `Value::NativeFn`
-/// carries one of these alongside its name; the dispatch in
-/// `eval_call` matches on the tag to call the right wrapper.
-///
-/// Adding a new std module (e.g. `std.ai` in batch 3) means adding
-/// a new variant here and a new dispatch arm in `eval_call`.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
-pub enum NativeInvoke {
-    /// §15 standard library: a `wlwl_std::StdFn` that takes a
-    /// `&mut wlwl_std::StdCtx` and `Vec<serde_json::Value>`.
-    Std(wlwl_std::StdFn),
-    /// §15 standard library "callback-aware" variant: an eval-internal
-    /// `BuiltinFn` that takes a `&mut Evaluator` and `Vec<Value>`. Used
-    /// by modules that need to invoke user closures (which can't cross
-    /// the `serde_json::Value` std boundary — see B5 P4-B5-006 and
-    /// `wlwl-std::collection` for the full rationale). Phase B6 binds
-    /// `wlwl:std.collection` to a table of these via
-    /// `wlwl_eval::collection::BUILTINS`.
-    Builtin(crate::BuiltinFn),
-}
-
-impl Value {
-    pub fn display(&self) -> String {
-        match self {
-            Value::Integer(v) => v.to_string(),
-            Value::Float(v) => {
-                if v.fract() == 0.0 {
-                    format!("{:.1}", v)
-                } else {
-                    v.to_string()
-                }
-            }
-            Value::String(s) => s.clone(),
-            Value::Boolean(b) => if *b { "TRUE" } else { "FALSE" }.to_string(),
-            Value::Null => "NULL".to_string(),
-            Value::Array(items) => {
-                let parts: Vec<String> = items.iter().map(|v| v.display()).collect();
-                format!("[{}]", parts.join(", "))
-            }
-            Value::Dict(entries) => {
-                let parts: Vec<String> = entries
-                    .iter()
-                    .map(|(k, v)| format!("{}: {}", k.display(), v.display()))
-                    .collect();
-                format!("[{}]", parts.join(", "))
-            }
-            Value::Closure { params, .. } => {
-                format!(
-                    "<fun({})>",
-                    params
-                        .iter()
-                        .map(|p| p.name.as_str())
-                        .collect::<Vec<_>>()
-                        .join(", ")
-                )
-            }
-            Value::NativeFn { name, .. } => {
-                format!("<native fun {}>", name)
-            }
-            Value::Ok(v) => format!("OK({})", v.display()),
-            Value::Err(v) => format!("ERR({})", v.display()),
-            // [v0.7 Phase C2] AWAIT (C3) dereferences a TaskHandle;
-            // until then, displaying one shows the underlying id
-            // + generation so users can recognise stale handles
-            // (the v0.6 §3.x trait 'use-after-cancel' analogue).
-            Value::TaskHandle(h) => format!("<task handle id={} gen={}>", h.id.0, h.generation),
-            // [v0.7 Phase D-A] Channel handles display the same way
-            // as task handles for symmetry; the runtime can
-            // distinguish via type_name at type-check time.
-            Value::ChannelHandle(h) => {
-                format!("<channel handle id={} gen={}>", h.id.0, h.generation)
-            }
-            // [v0.9 Step 9a-1 / plan §4.3] Class display uses the
-            // optional user-supplied name when present, otherwise
-            // `<class>` for anonymous classes. The address-style
-            // disambiguation (`@0x...`) is intentionally omitted
-            // because class identity is `Rc::ptr_eq`-based and
-            // raw pointer addresses aren't stable across
-            // pretty-print passes; the spec §13 prose leaves the
-            // exact format open ("the runtime chooses a self-
-            // describing label").
-            Value::Class(entry) => {
-                let b = entry.borrow();
-                match &b.name {
-                    Some(n) => format!("<class {}>", n),
-                    None => "<class>".to_string(),
-                }
-            }
-            // [v0.9 Step 9a-1 / plan §4.3] Instance display shows
-            // the class name (when present) plus the field count
-            // so two NEW() calls of the same class print distinctly
-            // — the field count isn't a stable identity (mutating
-            // via SET_PROP doesn't change the display label) but
-            // it gives the user a hint at the instance's shape.
-            Value::Instance {
-                class,
-                fields,
-                this_token: _,
-                protocol_state: _,
-            } => {
-                let b = class.borrow();
-                let label = match &b.name {
-                    Some(n) => format!("<{} instance>", n),
-                    None => "<instance>".to_string(),
-                };
-                format!("{}[{} fields]", label, fields.borrow().len())
-            }
-        }
-    }
-}
-
-// [v0.9 Step 9a-1 / plan §4.3 / ADR-0019 §4.3] Manual `PartialEq`
-// for `Value`. The `#[derive(PartialEq)]` is intentionally NOT used
-// (see top-level enum doc) because the new `Class` / `Instance`
-// variants wrap `Rc<RefCell<_>>` which doesn't auto-derive
-// `PartialEq`. Existing variants keep their original semantics:
-// integers / floats / strings / bools by value; arrays / dicts
-// element-wise; closures / native-fns by field-wise closure
-// equality (params + body + env); result wrappers by inner value;
-// handles by their `id` + `generation` fields.
-//
-// New variants are compared by **identity**:
-//   * `Value::Class(a) == Value::Class(b)` iff the two `Rc` point
-//     at the same allocation (`Rc::ptr_eq`). Two CLASS() calls in
-//     the same scope that produce different classes are NOT equal,
-//     even when their members line up — class identity is the
-//     user-meaningful comparison (`==` on classes is rare; spec
-//     §13 leaves it open).
-//   * `Value::Instance` identity is the per-instance state cell
-//     (`fields` `Rc::ptr_eq`). Two `NEW()` calls from the same
-//     class are distinct objects even when field values line up;
-//     `Value::clone` shares the same `fields` allocation and so
-//     compares equal (alias of the same object).
-impl PartialEq for Value {
-    fn eq(&self, other: &Self) -> bool {
-        match (self, other) {
-            (Value::Integer(a), Value::Integer(b)) => a == b,
-            (Value::Float(a), Value::Float(b)) => a == b,
-            (Value::String(a), Value::String(b)) => a == b,
-            (Value::Boolean(a), Value::Boolean(b)) => a == b,
-            (Value::Null, Value::Null) => true,
-            (Value::Array(a), Value::Array(b)) => a == b,
-            (Value::Dict(a), Value::Dict(b)) => a == b,
-            (
-                Value::Closure {
-                    params: pa,
-                    body: ba,
-                    env: ea,
-                },
-                Value::Closure {
-                    params: pb,
-                    body: bb,
-                    env: eb,
-                },
-            ) => pa == pb && ba == bb && ea == eb,
-            (Value::NativeFn { name: na, .. }, Value::NativeFn { name: nb, .. }) => na == nb,
-            (Value::Ok(a), Value::Ok(b)) => a == b,
-            (Value::Err(a), Value::Err(b)) => a == b,
-            (Value::TaskHandle(a), Value::TaskHandle(b)) => a == b,
-            (Value::ChannelHandle(a), Value::ChannelHandle(b)) => a == b,
-            (Value::Class(a), Value::Class(b)) => std::rc::Rc::ptr_eq(a, b),
-            (
-                Value::Instance {
-                    class: _ca,
-                    fields: fa,
-                    this_token: _ta,
-                    protocol_state: _pa,
-                },
-                Value::Instance {
-                    class: _cb,
-                    fields: fb,
-                    this_token: _tb,
-                    protocol_state: _pb,
-                },
-            ) => std::rc::Rc::ptr_eq(fa, fb),
-            _ => false,
-        }
-    }
-}
-
-impl From<Literal> for Value {
-    fn from(l: Literal) -> Self {
-        match l {
-            Literal::Integer(v) => Value::Integer(v),
-            Literal::Float(v) => Value::Float(v),
-            Literal::String(s) => Value::String(s),
-            Literal::Boolean(b) => Value::Boolean(b),
-            Literal::Null => Value::Null,
-            // v0.6 §1.8: a literal interpolation cannot appear in a
-            // pure `Literal → Value` conversion (interpolation requires
-            // evaluating inner expressions, which lives outside
-            // `From`). The parser keeps interpolation in a dedicated
-            // `Expr::Literal(Interpolated)` AST node that the
-            // evaluator handles separately. Map it to a temporary
-            // sentinel so the eval layer doesn't accidentally render
-            // it as an empty string; full evaluation is implemented
-            // in batch 2.
-            Literal::Interpolated(_) => Value::String(String::new()),
-        }
-    }
-}
-
-// ──────────────────────────────────────────────────────────────────────
-// Lexical environment (chain of scopes; v0.3 §6.3)
-// ──────────────────────────────────────────────────────────────────────
-
-/// Cell payload: a single binding's value plus its mutability flag.
-///
-/// `mutable` is `false` (IMMUTABLE) when the cell is first created by a
-/// `LET` (v0.4 spec 搂6.4 cell model). It is upgraded to `true` when
-/// the binding is captured by a closure, per the formal rule
-/// `E-CloCap` in 附录 E.4.6:
-///
-///   "闭包捕获的 cell 全部升级为 MUTABLE"
-///
-/// `SET` checks the flag and raises E0024 if the cell is still
-/// IMMUTABLE.
-#[derive(Debug, Clone)]
-pub struct Binding {
-    pub value: Value,
-    pub mutable: bool,
-}
-
-/// A heap-allocated cell. Cloning the `Rc` is cheap and is what
-/// `Env::clone` does when capturing into a closure's environment --
-/// this is exactly the spec's "闭包捕获 cell 引用" rule (single layer,
-/// no chain; multiple closures sharing the same lexical `LET` see the
-/// same cell).
-pub type Cell = Rc<RefCell<Binding>>;
-
-/// Make a new immutable cell wrapping `value`.
-pub fn new_cell(value: Value) -> Cell {
-    Rc::new(RefCell::new(Binding {
-        value,
-        mutable: false,
-    }))
-}
-
-/// Lexical environment. v0.4 搂6.4: stores `HashMap<String, Cell>` so
-/// that closures can share the same cell with the lexical scope that
-/// defined the binding. Scope chain layout is unchanged from v0.3:
-/// index 0 is the innermost scope; lookups walk from inside out.
-#[derive(Debug, Clone, Default)]
-pub struct Env {
-    scopes: Vec<HashMap<String, Cell>>,
-}
-
-// Manual `PartialEq` because `Rc<RefCell<_>>` doesn't derive it well;
-// we compare the *value* snapshot for tests that need it.
-impl PartialEq for Env {
-    fn eq(&self, other: &Self) -> bool {
-        if self.scopes.len() != other.scopes.len() {
-            return false;
-        }
-        for (a, b) in self.scopes.iter().zip(other.scopes.iter()) {
-            if a.len() != b.len() {
-                return false;
-            }
-            for (k, va) in a {
-                match b.get(k) {
-                    Some(vb) => {
-                        // Compare Rc pointer + value snapshot. We borrow
-                        // immutably and compare the inner `Binding` via
-                        // `borrow()` snapshots. If either is borrowed
-                        // mutably elsewhere this would panic; tests
-                        // only call this on quiescent envs.
-                        let ba = va.borrow();
-                        let bb = vb.borrow();
-                        if ba.value != bb.value || ba.mutable != bb.mutable {
-                            return false;
-                        }
-                    }
-                    None => return false,
-                }
-            }
-        }
-        true
-    }
-}
-
-impl Env {
-    pub fn new() -> Self {
-        Self {
-            scopes: vec![HashMap::new()],
-        }
-    }
-
-    pub fn push_scope(&mut self) {
-        self.scopes.push(HashMap::new());
-    }
-
-    pub fn pop_scope(&mut self) {
-        // Never pop the global scope.
-        if self.scopes.len() > 1 {
-            self.scopes.pop();
-        }
-    }
-
-    /// Take the entire scope stack out of the Env, leaving it in an
-    /// empty-but-valid state (a single empty scope so subsequent
-    /// `get`/`set_local` calls don't panic). Used by the segmented
-    /// task runner (Phase B5a-3 Path B) to install / save per-segment
-    /// env state around mid-body suspension.
-    pub fn take_scopes(&mut self) -> Vec<HashMap<String, Cell>> {
-        std::mem::take(&mut self.scopes)
-    }
-
-    /// Replace the scope stack wholesale. The caller must pass at
-    /// least one scope; if `new_scopes` is empty we re-seed with a
-    /// single empty scope so the invariant holds.
-    pub fn replace_scopes(&mut self, mut new_scopes: Vec<HashMap<String, Cell>>) {
-        if new_scopes.is_empty() {
-            new_scopes.push(HashMap::new());
-        }
-        self.scopes = new_scopes;
-    }
-
-    /// Walk the scope chain from innermost to outermost; return the
-    /// first match as a borrow guard on the inner value. Used for
-    /// variable reads. The returned `Ref` is tied to `&self`'s
-    /// lifetime; callers typically `.clone()` the inner value or use
-    /// the ref briefly within a single expression.
-    ///
-    /// v0.4 (搂6.4 cell model): the value lives behind an
-    /// `Rc<RefCell<Binding>>`; we use `Ref::map` to project a
-    /// `Ref<Value>` out of the cell borrow.
-    pub fn get(&self, name: &str) -> Option<Ref<'_, Value>> {
-        for scope in self.scopes.iter().rev() {
-            if let Some(cell) = scope.get(name) {
-                return Some(Ref::map(cell.borrow(), |b| &b.value));
-            }
-        }
-        None
-    }
-
-    /// Look up the cell (not just the value) for `name`. Used by `SET`
-    /// to mutate the cell in place, and by the cell-upgrade path.
-    pub fn get_cell(&self, name: &str) -> Option<Cell> {
-        for scope in self.scopes.iter().rev() {
-            if let Some(cell) = scope.get(name) {
-                return Some(cell.clone());
-            }
-        }
-        None
-    }
-
-    /// Bind in the current (innermost) scope. The value is wrapped in a
-    /// fresh IMMUTABLE cell (per v0.6 §3.1: `LET(name, value)` creates
-    /// an immutable binding; use `LET MUT(name, value)` for a mutable
-    /// one, via `set_local_mut`).
-    pub fn set_local(&mut self, name: impl Into<String>, value: Value) {
-        if let Some(scope) = self.scopes.last_mut() {
-            scope.insert(name.into(), new_cell(value));
-        }
-    }
-
-    /// v0.6 §3.1: `LET MUT(name, value)` binds a mutable cell. The
-    /// mutability flag is set at binding creation time and **never**
-    /// changes — there is no closure-capture upgrade (removed from
-    /// v0.6; the v0.4/v0.5 "first closure call upgrades cell" rule
-    /// was deemed too magical and removed).
-    pub fn set_local_mut(&mut self, name: impl Into<String>, value: Value) {
-        if let Some(scope) = self.scopes.last_mut() {
-            scope.insert(
-                name.into(),
-                Rc::new(RefCell::new(Binding {
-                    value,
-                    mutable: true,
-                })),
-            );
-        }
-    }
-
-    /// Set the cell value if the cell is `mutable` (per spec 搂6.4
-    /// mutability rule). Returns:
-    ///   * `Ok(true)`  -- cell found and updated
-    ///   * `Ok(false)` -- cell found but IMMUTABLE (caller raises E0024)
-    ///   * `Err(())`   -- cell not found at all (caller raises E0020)
-    #[allow(clippy::result_unit_err)] // bool tri-state (Ok/Err-not-found) — see Phase A2 cell semantics
-    pub fn set_cell_value(&self, name: &str, value: Value) -> Result<bool, ()> {
-        for scope in self.scopes.iter().rev() {
-            if let Some(cell) = scope.get(name) {
-                let mut b = cell.borrow_mut();
-                if !b.mutable {
-                    return Ok(false);
-                }
-                b.value = value;
-                return Ok(true);
-            }
-        }
-        Err(())
-    }
-
-    /// [v0.9 P1-M2] True when any binding in any scope matches `pred`.
-    pub fn any_binding_matches(&self, pred: impl Fn(&Value) -> bool) -> bool {
-        for scope in &self.scopes {
-            for cell in scope.values() {
-                if pred(&cell.borrow().value) {
-                    return true;
-                }
-            }
-        }
-        false
-    }
-
-    /// Snapshot all currently-bound names (for module exports).
-    pub fn names(&self) -> HashSet<String> {
-        let mut out = HashSet::new();
-        for scope in &self.scopes {
-            for k in scope.keys() {
-                out.insert(k.clone());
-            }
-        }
-        out
-    }
-}
-
-// ──────────────────────────────────────────────────────────────────────
-// Control-flow signals
-// ──────────────────────────────────────────────────────────────────────
-
-/// Control-flow signal (separate from `Value`). Propagated up through
-/// nested expressions and converted back to a value at the matching
-/// frame boundary:
-///   * `Return(v)`  — at a function call frame, becomes the function's
-///                    return value; at top level, becomes E0102 if v is
-///                    `Value::Err(_)`, otherwise the program's result.
-///   * `Break` / `Continue` — at a loop frame, become loop control;
-///                    outside any loop, become E0014.
-///   * `Yield(reason)` — [v0.7 Phase B5a-3 slice 1] user-defined yield
-///                    point. Propagates up the eval stack exactly like
-///                    `Break` / `Continue` / `Return`; the
-///                    state-machine entry point `Evaluator::step_once`
-///                    translates it into
-///                    [`crate::runtime::StepResult::Yield`], while the
-///                    run-to-completion `Evaluator::eval` rejects it
-///                    with E0014 (yield is only valid inside a
-///                    scheduler step loop, not at a bare top-level
-///                    call). No v0.6 builtin produces this variant, so
-///                    v0.6 programs are observably unaffected.
-#[derive(Debug, Clone, PartialEq)]
-pub enum Signal {
-    None,
-    Break,
-    Continue,
-    Return(Value),
-    Yield(crate::runtime::YieldReason),
 }
 
 /// [v0.10.2] WLWL 调用深度上限,超过即报 `E0101`。
@@ -788,28 +149,6 @@ pub struct Warning {
     pub message: String,
 }
 
-/// A single evaluation result: a value plus an optional control-flow
-/// signal. `Err(...)` from this layer is a hard error (E0020, E0022,
-/// E0030, E0100, etc.), not a value-level error.
-#[derive(Debug, Clone)]
-pub struct Outcome {
-    pub value: Value,
-    pub signal: Signal,
-}
-
-impl Outcome {
-    fn normal(v: Value) -> Self {
-        Outcome {
-            value: v,
-            signal: Signal::None,
-        }
-    }
-}
-
-// ──────────────────────────────────────────────────────────────────────
-// Module loader (v0.3 §13 — Phase 4 batch 1 + batch 2)
-// ──────────────────────────────────────────────────────────────────────
-
 /// Result of loading a module: a fresh `Env` containing all top-level
 /// bindings, plus the set of names that were `EXPORT`ed.
 #[derive(Debug, Clone)]
@@ -831,8 +170,10 @@ struct LoadedModule {
 /// root containment, manifest namespaces, relative walking) instead of
 /// keeping a second copy that would drift.
 enum ResolvedSource {
-    /// Built-in std module: no on-disk source, hence no sidecar signature.
-    Std(&'static wlwl_std::ModuleSpec),
+    /// Built-in std module backend: a native binding table (R2) or an
+    /// embedded pure-wlwl source (R1 — stdlib foundation v0.11, ADR-0021).
+    /// No on-disk source for either, hence no sidecar signature.
+    Std(wlwl_std::StdBackend),
     /// A `.wll` file plus the module name used for cache keys and messages.
     File { path: PathBuf, name: String },
 }
@@ -857,6 +198,12 @@ struct ProjectContext {
     /// Shared with sub-loaders so a cycle anywhere in the import
     /// graph is detected.
     loading: Rc<RefCell<Vec<String>>>,
+    /// Dev-only override directory for R1 std module loading (stdlib
+    /// foundation v0.11 / ADR-0021): when set, language-layer sources
+    /// load from `<dir>/<name>.wll` instead of the embedded copy. Set
+    /// once at entry-point construction (`--std-src` / `WLWL_STD_SRC`);
+    /// must not change the export surface.
+    std_src: Option<PathBuf>,
 }
 
 #[derive(Debug, Clone)]
@@ -882,21 +229,23 @@ impl ModuleLoader {
                 project_root,
                 manifest,
                 loading: Rc::new(RefCell::new(Vec::new())),
+                std_src: None,
             },
         }
     }
 
     /// Load a module referenced by `path`: resolve it (see
     /// [`ModuleLoader::resolve_source`] for the four accepted forms and
-    /// their resolution order), then load std catalogs or parse +
-    /// evaluate a `.wll` file. Results are cached under the spec string,
-    /// so a second `IMPORT` of the same spec reuses the same env.
+    /// their resolution order), then load std modules (native or
+    /// language-layer) or parse + evaluate a `.wll` file. Results are
+    /// cached under the spec string, so a second `IMPORT` of the same
+    /// spec reuses the same env.
     fn load(&mut self, path: &str) -> WlwlResult<LoadedModule> {
         if let Some(cached) = self.cache.get(path) {
             return Ok(cached.clone());
         }
         match self.resolve_source(path)? {
-            ResolvedSource::Std(spec) => self.load_std(spec, path),
+            ResolvedSource::Std(backend) => self.load_std(backend, path),
             ResolvedSource::File { path, name } => self.load_file_module(&path, &name),
         }
     }
@@ -905,7 +254,9 @@ impl ModuleLoader {
     /// read from the module body, nothing is evaluated, no cache entry is
     /// created. Four forms, in resolution order:
     ///
-    /// - `wlwl:std.X`: built-in std module (`wlwl_std::resolve`).
+    /// - `wlwl:std.X`: built-in std module — native binding table (R2) or
+    ///   embedded pure-wlwl source (R1, stdlib foundation v0.11 / ADR-0021;
+    ///   `wlwl_std::resolve` returns the backend).
     /// - `myteam:utils`: resolved against the project manifest; an unknown
     ///   namespace or dependency is E0043.
     /// - `./foo` / `../bar`: relative to this loader's `base_dir`, then
@@ -915,9 +266,9 @@ impl ModuleLoader {
     /// Mirrors the v0.2 single-directory behaviour so old programs keep
     /// working.
     fn resolve_source(&self, path: &str) -> WlwlResult<ResolvedSource> {
-        // 1. `wlwl:std.X` — std library.
-        if let Some(spec) = wlwl_std::resolve(path) {
-            return Ok(ResolvedSource::Std(spec));
+        // 1. `wlwl:std.X` — std library (R2 native or R1 language-layer).
+        if let Some(backend) = wlwl_std::resolve(path) {
+            return Ok(ResolvedSource::Std(backend));
         }
 
         // 2. `ns:name` — third-party / user namespace.
@@ -1018,10 +369,20 @@ impl ModuleLoader {
         Err(self.diag_module_not_found(path, &in_module))
     }
 
-    /// Load a std module by its `ModuleSpec` without consulting the
-    /// cache. Caches the result under the original path so a second
-    /// IMPORT of the same std module reuses the same env.
-    fn load_std(
+    /// Load a std module by its backend. Dispatches to the native
+    /// binding-table path (R2) or the embedded-source path (R1).
+    /// Results are cached under the full namespace path either way.
+    fn load_std(&mut self, backend: wlwl_std::StdBackend, path: &str) -> WlwlResult<LoadedModule> {
+        match backend {
+            wlwl_std::StdBackend::Native(spec) => self.load_std_native(spec, path),
+            wlwl_std::StdBackend::Lang(src) => self.load_std_lang(src, path),
+        }
+    }
+
+    /// Load an R2 (native) std module by its `ModuleSpec` without
+    /// consulting the cache. Caches the result under the original path
+    /// so a second IMPORT of the same std module reuses the same env.
+    fn load_std_native(
         &mut self,
         spec: &'static wlwl_std::ModuleSpec,
         path: &str,
@@ -1035,39 +396,15 @@ impl ModuleLoader {
         // `wlwl_eval::collection::BUILTINS` and are bound here. The
         // path check is the only route in: any rename of this
         // constant is a breaking change for IMPORT("wlwl:std.collection").
-        if path == "wlwl:std.collection" {
-            for (name, builtin) in collection::BUILTINS {
-                env.set_local(
-                    (*name).to_string(),
-                    Value::NativeFn {
-                        name: (*name).to_string(),
-                        invoke: NativeInvoke::Builtin(*builtin),
-                    },
-                );
-                exports.insert((*name).to_string());
-            }
-        } else if path == "wlwl:std.test" {
-            // Phase B7 (spec §15.9): `wlwl:std.test` follows the
-            // same name-catalog pattern (see B6 P4-B6-001). The
-            // module-level docs in `wlwl_std::test` spell out why
-            // (`TEST` body is a closure; `RUN_TESTS` must invoke it).
-            for (name, builtin) in test::BUILTINS {
-                env.set_local(
-                    (*name).to_string(),
-                    Value::NativeFn {
-                        name: (*name).to_string(),
-                        invoke: NativeInvoke::Builtin(*builtin),
-                    },
-                );
-                exports.insert((*name).to_string());
-            }
-        } else {
+        // [v0.11 M2 / ADR-0022] collection/test 名录特判废止:
+        // 真实现住 wlwl-std,与其它 R2 模块同一绑定路径。
+        {
             for (name, func) in spec.functions {
                 env.set_local(
                     (*name).to_string(),
                     Value::NativeFn {
                         name: (*name).to_string(),
-                        invoke: NativeInvoke::Std(*func),
+                        invoke: *func,
                     },
                 );
                 exports.insert((*name).to_string());
@@ -1080,6 +417,111 @@ impl ModuleLoader {
             // there is no `SEALED` node to read, and no file to hang a
             // sidecar signature on.
             sealed: false,
+        };
+        self.cache.insert(path.to_string(), result.clone());
+        Ok(result)
+    }
+
+    /// Load an R1 (pure-wlwl) std module — stdlib foundation v0.11
+    /// (ADR-0021). The embedded source is parsed and evaluated in a
+    /// sub-evaluator exactly like a file module; only `EXPORT`ed names
+    /// land in the module env, so R1 members can be closures and can
+    /// call global builtins (R0) and other std namespaces.
+    ///
+    /// Mixed modules (stdlib spec §7 `std.math` / §8 `std.test`) also
+    /// get their R2 kernels bound here — see [`StdSource::kernels`].
+    /// The injection happens **before** `eval_module` and lands in the
+    /// *sub*-evaluator's env; the module env handed back to `IMPORT`
+    /// callers is built from `EXPORT` alone, so kernels never leak
+    /// onto the import surface. A gate test
+    /// (`stdlib_mirror::tests::r1_kernels_never_leak_to_the_export_surface`)
+    /// asserts the two name sets stay disjoint.
+    ///
+    /// The dev-only override channel (`--std-src <dir>` / env
+    /// `WLWL_STD_SRC`, stored in `ProjectContext::std_src`) swaps the
+    /// embedded source for `<dir>/<name>.wll`. It must not change the
+    /// export surface — locked by `wlwl-cli/tests/stdlib_dual_track.rs`.
+    fn load_std_lang(
+        &mut self,
+        src: &'static wlwl_std::StdSource,
+        path: &str,
+    ) -> WlwlResult<LoadedModule> {
+        // Override file name: the last dot-segment of the namespace path
+        // ("wlwl:std.str" -> "str.wll").
+        let module_name = path.rsplit('.').next().unwrap_or(path).to_string();
+        // Cycle guard shaped like load_file_module: an R1 std source may
+        // IMPORT other modules (including sibling std namespaces).
+        if self.project.loading.borrow().iter().any(|m| m == path) {
+            return Err(self.diag_circular(path));
+        }
+        self.project.loading.borrow_mut().push(path.to_string());
+        // Dev override: same export surface, source taken from disk.
+        let (source, display): (Cow<'_, str>, String) = match &self.project.std_src {
+            Some(dir) => {
+                let file = dir.join(format!("{module_name}.wll"));
+                match std::fs::read_to_string(&file) {
+                    Ok(s) => (Cow::Owned(s), file.display().to_string()),
+                    Err(_) => {
+                        self.project.loading.borrow_mut().pop();
+                        return Err(self.diag_module_not_found(path, &file));
+                    }
+                }
+            }
+            None => (Cow::Borrowed(src.source), path.to_string()),
+        };
+        let ast = match wlwl_parser::parse(&source, &display) {
+            Ok(a) => a,
+            Err(e) => {
+                self.project.loading.borrow_mut().pop();
+                return Err(e);
+            }
+        };
+        // Sub-loader shares the project context (cycle detection across
+        // the whole graph) and keeps this loader's base_dir so relative
+        // imports inside an R1 module resolve next to the importing file.
+        let sub_loader = ModuleLoader {
+            base_dir: self.base_dir.clone(),
+            cache: HashMap::new(),
+            project: self.project.clone(),
+        };
+        let mut sub = Evaluator::new_with_loader(sub_loader);
+        // [v0.11 M3-0 / ADR-0021 §层间规则] Bind the module's R2 kernels
+        // into the sub-evaluator *before* its body runs, so a mixed
+        // module's facade can call them. Only `EXPORT`ed names are
+        // collected into the module env below, so these stay private.
+        for (name, func) in src.kernels {
+            sub.env.set_local(
+                (*name).to_string(),
+                Value::NativeFn {
+                    name: (*name).to_string(),
+                    invoke: *func,
+                },
+            );
+        }
+        if let Err(e) = sub.eval_module(&ast) {
+            self.project.loading.borrow_mut().pop();
+            return Err(e);
+        }
+        let exports = collect_exports(&ast);
+        let mut env = Env::new();
+        for n in &exports {
+            if let Some(v) = sub.env.get(n) {
+                env.set_local(n.clone(), v.clone());
+            } else {
+                self.project.loading.borrow_mut().pop();
+                return Err(WlwlDiagnostic::new(
+                    ErrorCode::E0023,
+                    format!("EXPORT name '{}' is not bound in module '{}'", n, path),
+                    Location::point("<module>", 0, 0),
+                )
+                .into());
+            }
+        }
+        self.project.loading.borrow_mut().pop();
+        let result = LoadedModule {
+            env,
+            exports,
+            sealed: collect_sealed(&ast).is_some(),
         };
         self.cache.insert(path.to_string(), result.clone());
         Ok(result)
@@ -1490,168 +932,20 @@ fn invoke_std(
     args: Vec<Value>,
     span: &Span,
 ) -> WlwlResult<Outcome> {
-    // 1. Convert Value -> StdValue for each arg.
-    let mut std_args = Vec::with_capacity(args.len());
-    for a in &args {
-        std_args.push(value_to_std_value(a).map_err(|e| match e {
-            StdValueConvError::Type { expected, got } => ev.diag(
-                ErrorCode::E0030,
-                format!("std argument: expected {}, got {}", expected, got),
-                span.clone(),
-            ),
-        })?);
-    }
-    // 2. Call the std fn.
-    let result = std_fn(&mut ev.std_ctx, std_args);
-    // 3. Convert result.
-    match result {
-        Ok(v) => Ok(Outcome::normal(std_value_to_value(v))),
-        Err(e) => {
-            let loc = Location::point(ev.file.as_deref().unwrap_or("<runtime>"), 0, 0);
-            let diag = WlwlDiagnostic::new(e.code, e.message, loc);
-            Err(diag.into())
-        }
-    }
+    // [v0.11 M2 / ADR-0022] 直通边界:无 Value↔serde_json 转换。
+    // 回调经 StdHost 注入;ctx.err 的定位取入口文件(与旧 invoke_std
+    // 的 Location::point(ev.file, 0, 0) 一致)。
+    let prev_span = ev.current_span.take();
+    ev.current_span = Some(span.clone());
+    let prev_file = ev.std_ctx.source_file.clone();
+    ev.std_ctx.source_file = ev.file.clone().unwrap_or_else(|| "<runtime>".into());
+    let host: &mut dyn wlwl_std::StdHost = ev;
+    let result = std_fn(host, args);
+    ev.current_span = prev_span;
+    ev.std_ctx.source_file = prev_file;
+    result
 }
 
-/// Convert a `Value` to a `serde_json::Value` for the std boundary.
-/// Errors out via `E0030` when the source value carries a type that
-/// has no JSON equivalent (closures, native fns).
-fn value_to_std_value(v: &Value) -> Result<wlwl_std::StdValue, StdValueConvError> {
-    use wlwl_std::StdValue;
-    Ok(match v {
-        Value::Null => StdValue::Null,
-        Value::Boolean(b) => StdValue::Bool(*b),
-        Value::Integer(i) => StdValue::Number(serde_json::Number::from(*i)),
-        Value::Float(f) => serde_json::Number::from_f64(*f)
-            .map(StdValue::Number)
-            .ok_or_else(|| StdValueConvError::Type {
-                expected: "finite number".into(),
-                got: "NaN/Inf float".into(),
-            })?,
-        Value::String(s) => StdValue::String(s.clone()),
-        Value::Array(items) => {
-            let mut out = Vec::with_capacity(items.len());
-            for item in items {
-                out.push(value_to_std_value(item)?);
-            }
-            StdValue::Array(out)
-        }
-        Value::Dict(entries) => {
-            let mut obj = serde_json::Map::new();
-            for (k, v) in entries {
-                let key = match k {
-                    Value::String(s) => s.clone(),
-                    other => {
-                        return Err(StdValueConvError::Type {
-                            expected: "string dict key".into(),
-                            got: type_name(other).into(),
-                        });
-                    }
-                };
-                obj.insert(key, value_to_std_value(v)?);
-            }
-            StdValue::Object(obj)
-        }
-        Value::Ok(inner) => {
-            // §12 OK wraps a value; pass the inner value through.
-            value_to_std_value(inner)?
-        }
-        Value::Err(_inner) => {
-            return Err(StdValueConvError::Type {
-                expected: "OK/primitives at std boundary".into(),
-                got: "ERR(...)".into(),
-            });
-        }
-        Value::Closure { .. } => {
-            return Err(StdValueConvError::Type {
-                expected: "data value at std boundary".into(),
-                got: "function closure".into(),
-            });
-        }
-        Value::NativeFn { name, .. } => {
-            return Err(StdValueConvError::Type {
-                expected: "data value at std boundary".into(),
-                got: format!("native fn `{}`", name),
-            });
-        }
-        // [v0.7 Phase C2] SPAWN handles have no JSON analogue --
-        // surfacing them at the std boundary would lose the
-        // generation-tracked identity. Same handling as Closure
-        // / NativeFn (reject as Type error).
-        Value::TaskHandle(_) => {
-            return Err(StdValueConvError::Type {
-                expected: "data value at std boundary".into(),
-                got: "task handle".into(),
-            });
-        }
-        // [v0.7 Phase D-A] Channel handles likewise have no JSON
-        // analogue; reject them at the std boundary the same way as
-        // task handles. (D-B builtin wiring lands later in the same
-        // Phase D; at D-A the only path that produces one is the
-        // direct runtime API.)
-        Value::ChannelHandle(_) => {
-            return Err(StdValueConvError::Type {
-                expected: "data value at std boundary".into(),
-                got: "channel handle".into(),
-            });
-        }
-        // [v0.9 Step 9a-1 / plan §4.3] OOP values cross the std
-        // boundary as opaque data — classes / instances are
-        // runtime state, not portable values, so we refuse with
-        // the same `Type` mapping used by closures / native fns.
-        Value::Class(_) => {
-            return Err(StdValueConvError::Type {
-                expected: "data value at std boundary".into(),
-                got: "class".into(),
-            });
-        }
-        Value::Instance { .. } => {
-            return Err(StdValueConvError::Type {
-                expected: "data value at std boundary".into(),
-                got: "instance".into(),
-            });
-        }
-    })
-}
-
-#[derive(Debug)]
-enum StdValueConvError {
-    Type { expected: String, got: String },
-}
-
-fn std_value_to_value(v: wlwl_std::StdValue) -> Value {
-    use wlwl_std::StdValue;
-    match v {
-        StdValue::Null => Value::Null,
-        StdValue::Bool(b) => Value::Boolean(b),
-        StdValue::Number(n) => {
-            if let Some(i) = n.as_i64() {
-                Value::Integer(i)
-            } else if let Some(f) = n.as_f64() {
-                Value::Float(f)
-            } else {
-                // Shouldn't happen: serde_json::Number is always
-                // either int or float. Fall back to Null defensively.
-                Value::Null
-            }
-        }
-        StdValue::String(s) => Value::String(s),
-        StdValue::Array(items) => Value::Array(items.into_iter().map(std_value_to_value).collect()),
-        StdValue::Object(obj) => {
-            let mut entries = Vec::with_capacity(obj.len());
-            // Preserve insertion order via serde_json's BTreeMap-free
-            // ordering: serde_json::Map preserves insertion order when
-            // `preserve_order` feature is enabled, but the default
-            // uses BTreeMap. We collect into Vec<(Value, Value)> to
-            // keep the v0.3 DICT insertion-order guarantee from §10.
-            for (k, v) in obj {
-                entries.push((Value::String(k), std_value_to_value(v)));
-            }
-            Value::Dict(entries)
-        }
-    }
-}
 // ──────────────────────────────────────────────────────────────────────
 // Built-in functions
 // ──────────────────────────────────────────────────────────────────────
@@ -1667,10 +961,6 @@ fn std_value_to_value(v: wlwl_std::StdValue) -> Value {
 /// - the callback-aware std modules bound through `NativeInvoke::Builtin`
 ///   (Phase B6: `wlwl:std.collection`).
 ///
-/// `pub(crate)` so `wlwl_eval::collection` can name the type when it
-/// enumerates its `BUILTINS` table.
-pub(crate) type BuiltinFn = fn(&mut Evaluator, Vec<Value>) -> WlwlResult<Outcome>;
-
 fn builtin_print(_ev: &mut Evaluator, args: Vec<Value>) -> WlwlResult<Outcome> {
     let parts: Vec<String> = args.iter().map(|v| v.display()).collect();
     println!("{}", parts.join(" "));
@@ -5237,7 +4527,7 @@ fn channel_reenqueue_woken(
 /// onto the channel buffer (or hand off directly to a parked
 /// receiver on a sync channel). When the buffer is full the calling
 /// task **really suspends** via `Signal::Yield(SendingOn)` per
-/// `docs/history/wlwl-build-plan-v0.9-COMPLETED.md` §3.2 / ADR-0017 §3.2 / Step 4: the
+/// `docs/history/20260915-22.md` §3.2 / ADR-0017 §3.2 / Step 4: the
 /// scheduler-driven task runner catches the signal, marks the task
 /// `Suspended(SendingOn)`, registers it on the channel's
 /// `sender_waiters` list, and the next state change (a
@@ -5324,7 +4614,7 @@ fn builtin_channel_send(ev: &mut Evaluator, args: Vec<Value>) -> WlwlResult<Outc
 /// `Value::Err(kind="ChannelClosed")` when the channel is closed
 /// and drained). On an empty buf the calling task **really
 /// suspends** via `Signal::Yield(ReceivingOn)` per
-/// `docs/history/wlwl-build-plan-v0.9-COMPLETED.md` §3.2 / ADR-0017 §3.2 / Step 4.
+/// `docs/history/20260915-22.md` §3.2 / ADR-0017 §3.2 / Step 4.
 ///
 /// **v0.9 Step 4 changes** (replacing v0.7.0 deviation P7-D2-001):
 /// - `WouldBlock` no longer surfaces as `ERR(kind="ChannelWouldBlock")`
@@ -5581,6 +4871,8 @@ fn builtin_channel_try_recv(ev: &mut Evaluator, args: Vec<Value>) -> WlwlResult<
 /// The single dispatch table: maps a built-in name to its implementation.
 /// Operators (`+`, `==`, …) live here too — the parser turns `+(1, 2)`
 /// into `Call { name: "+", … }`, and we dispatch on the operator name.
+pub(crate) type BuiltinFn = fn(&mut Evaluator, Vec<Value>) -> WlwlResult<Outcome>;
+
 fn resolve_builtin(name: &str) -> Option<BuiltinFn> {
     match name {
         "PRINT" => Some(builtin_print),
@@ -6030,38 +5322,6 @@ fn runtime_span() -> Span {
     }
 }
 
-fn type_name(v: &Value) -> &'static str {
-    match v {
-        Value::Integer(_) => "integer",
-        Value::Float(_) => "float",
-        Value::String(_) => "string",
-        Value::Boolean(_) => "boolean",
-        Value::Null => "null",
-        Value::Array(_) => "array",
-        Value::Dict(_) => "dict",
-        Value::Closure { .. } => "function",
-        Value::NativeFn { .. } => "native-function",
-        Value::Ok(_) => "ok",
-        Value::Err(_) => "err",
-        // [v0.7 Phase C2] user-facing type name for SPAWN handles;
-        // AWAIT (C3) is the only consumer at C2 (where the value
-        // never escapes from SPAWN's call site without being
-        // dereferenced), so this name is rarely seen. Kept distinct
-        // from `function` so a misuse like `+`(handle, 1) gives a
-        // readable diagnostic.
-        Value::TaskHandle(_) => "task-handle",
-        // [v0.7 Phase D-A] user-facing type name for channel handles.
-        Value::ChannelHandle(_) => "channel-handle",
-        // [v0.9 Step 9a-1 / plan §4.3] OOP type names. Class and
-        // Instance are distinct user-visible types so a misuse
-        // like `+(class, 1)` produces a readable diagnostic that
-        // distinguishes "you gave me a class, expected an
-        // instance" from the reverse.
-        Value::Class(_) => "class",
-        Value::Instance { .. } => "instance",
-    }
-}
-
 /// v0.4 spec §2.2.1 — uppercase type names for the user-facing `TYPE(x)`
 /// builtin. Note that both `Value::Ok(_)` and `Value::Err(_)` collapse to
 /// `"RESULT"` per spec §2.2.1 (the two variants share one type name).
@@ -6070,38 +5330,6 @@ fn type_name(v: &Value) -> &'static str {
 /// messages) so that adding `TYPE` does not ripple through every
 /// `type_error` / `arity_error` diagnostic string.
 ///
-/// `Value::NativeFn { .. }` is folded into `"FUNCTION"` (spec §2.2 lists
-/// one `FUNCTION` type; `NativeFn` is a std-injection mechanism, not a
-/// separate user-visible type). This is a known simplification — see
-/// deviations P4-A5-001.
-fn value_type_name(v: &Value) -> &'static str {
-    match v {
-        Value::Integer(_) => "INTEGER",
-        Value::Float(_) => "FLOAT",
-        Value::String(_) => "STRING",
-        Value::Boolean(_) => "BOOLEAN",
-        Value::Null => "NULL",
-        Value::Array(_) => "ARRAY",
-        Value::Dict(_) => "DICT",
-        Value::Closure { .. } | Value::NativeFn { .. } => "FUNCTION",
-        Value::Ok(_) | Value::Err(_) => "RESULT",
-        // [v0.7 Phase C2] distinct user-visible type for SPAWN
-        // handles (parallel to function / result).
-        Value::TaskHandle(_) => "TASK",
-        // [v0.7 Phase D-A] distinct user-visible type for channel
-        // handles, parallel to TASK. Spec doesn't fix the name; we
-        // use CHANNEL so a `TYPE(ch)` prints a self-describing
-        // label without colliding with TASK.
-        Value::ChannelHandle(_) => "CHANNEL",
-        // [v0.9 Step 9a-1 / plan §4.3] OOP types exposed by TYPE().
-        // CLASS / INSTANCE mirror the spec §2.2.1 conventions
-        // (parallel to FUNCTION / TASK / CHANNEL — one entry per
-        // runtime value kind).
-        Value::Class(_) => "CLASS",
-        Value::Instance { .. } => "INSTANCE",
-    }
-}
-
 /// v0.4 spec §2.2.1 — `TYPE(x)` builtin.
 ///
 /// Returns the **uppercase** type name of `x` (per spec §2.2 table).
@@ -6648,80 +5876,6 @@ fn is_truthy(v: &Value) -> bool {
     }
 }
 
-/// Structural equality (v0.3 §10.4). Dict key ordering does not matter.
-fn values_equal(a: &Value, b: &Value) -> bool {
-    match (a, b) {
-        (Value::Integer(x), Value::Integer(y)) => x == y,
-        (Value::Float(x), Value::Float(y)) => x == y,
-        (Value::Integer(x), Value::Float(y)) => (*x as f64) == *y,
-        (Value::Float(x), Value::Integer(y)) => *x == (*y as f64),
-        (Value::String(x), Value::String(y)) => x == y,
-        (Value::Boolean(x), Value::Boolean(y)) => x == y,
-        (Value::Null, Value::Null) => true,
-        (Value::Array(x), Value::Array(y)) => {
-            x.len() == y.len() && x.iter().zip(y.iter()).all(|(a, b)| values_equal(a, b))
-        }
-        (Value::Dict(x), Value::Dict(y)) => {
-            if x.len() != y.len() {
-                return false;
-            }
-            x.iter().all(|(xk, xv)| {
-                y.iter()
-                    .any(|(yk, yv)| values_equal(xk, yk) && values_equal(xv, yv))
-            })
-        }
-        (Value::Ok(x), Value::Ok(y)) => values_equal(x, y),
-        (Value::Err(x), Value::Err(y)) => values_equal(x, y),
-        // v0.7 additive identity for generation-tracked handles
-        // (same shape as v0.6 §2.4 function instance identity).
-        // Without this arm `==(h, h)` fell through to `false`.
-        (Value::TaskHandle(x), Value::TaskHandle(y)) => x == y,
-        (Value::ChannelHandle(x), Value::ChannelHandle(y)) => x == y,
-        // Native std functions compare by bound name (unique per import).
-        (Value::NativeFn { name: x, .. }, Value::NativeFn { name: y, .. }) => x == y,
-        // Closures: v0.6 §2.4 requires instance reference equality.
-        // `Value::Closure` is cloned by value (no Rc), so we cannot
-        // recover pointer identity after `LET(g, f)`. Two closures are
-        // equal only when every structural field matches (body, params,
-        // and Env's PartialEq value-snapshot). This is weaker than §2.4
-        // "引用相等" — pre-existing gap, not introduced by v0.7.
-        (
-            Value::Closure {
-                params: p1,
-                body: b1,
-                env: e1,
-            },
-            Value::Closure {
-                params: p2,
-                body: b2,
-                env: e2,
-            },
-        ) => p1 == p2 && b1 == b2 && e1 == e2,
-        // [v0.10.1 / R10-012] OOP 身份(spec §2.4,v0.9 起规范性):
-        // 「`CLASS`/`INSTANCE` 按**对象身份**恒等 …… 同一实例与其别名相等」。
-        //
-        // v0.9–v0.10 这两种值落到 `_ => false`,于是连自反律都不成立:
-        // `==(a, a)` 与 `==(C, C)` 都返回 FALSE。身份比较的机制本来就有
-        // (TaskHandle / ChannelHandle / Closure 三条臂都在),只是这两个类型
-        // 漏接了。
-        //
-        // 身份载体就是各自的 `Rc`:
-        // - `Class` 的 `Rc<RefCell<ClassEntry>>` 每次 `CLASS(...)` 新建一个,
-        //   别名共享同一个;
-        // - `Instance` 的 `fields: Rc<RefCell<Vec<..>>>` 是**每实例**新建的,
-        //   `LET(b, a)` 与所有下游引用共享同一个(这正是 v0.9 Step 9a-5 把
-        //   `fields` 包进 Rc 的目的 —— `SET_PROP` 要让所有引用都看得到)。
-        //
-        // 所以 `Rc::ptr_eq` 就是规范说的「对象身份」:同实例相等(含别名),
-        // 两次 `NEW` 不等,两次 `CLASS(...)` 不等。
-        (Value::Class(x), Value::Class(y)) => std::rc::Rc::ptr_eq(x, y),
-        (Value::Instance { fields: fx, .. }, Value::Instance { fields: fy, .. }) => {
-            std::rc::Rc::ptr_eq(fx, fy)
-        }
-        _ => false,
-    }
-}
-
 // ──────────────────────────────────────────────────────────────────────
 // Evaluator
 // ──────────────────────────────────────────────────────────────────────
@@ -6731,8 +5885,6 @@ fn values_equal(a: &Value, b: &Value) -> bool {
 /// these because `value_to_std_value` rejects closures (B5 P4-B5-006);
 /// `Evaluator::load_std` detects the path and binds from
 /// `collection::BUILTINS` instead of `spec.functions`.
-pub mod collection;
-
 pub mod registry;
 
 /// [v0.7 Phase B1] cooperative coroutine runtime skeleton. Types only
@@ -6746,13 +5898,6 @@ pub mod runtime;
 /// `runtime::Scheduler`; this module is data shape only. See plan
 /// §5.2.
 pub mod task;
-/// `wlwl:std.test` — in-process test framework (spec v0.4 §15.9,
-/// Phase B7). Same std-boundary rationale as collection: `TEST` /
-/// `RUN_TESTS` need callback invocation, `ASSERT` / friends need
-/// rich-Value inspection. Real impls in this crate, bound via
-/// `test::BUILTINS` through `NativeInvoke::Builtin`.
-pub mod test;
-
 /// [v0.7 Phase B5a-3] Body segmentation at YIELD checkpoints (Path B).
 /// See `yield_split.rs` for the rationale; this module splits a task
 /// closure body into a list of segments that the scheduler can run
@@ -6768,6 +5913,54 @@ pub mod yield_split;
 pub mod channel;
 
 pub mod protocol;
+
+/// [v0.11 M1-3 / ADR-0021] stdlib 规范附录 A 镜像生成器:R2 取
+/// `ModuleSpec` 绑定表、R1 取嵌入源码 `EXPORT` 声明,层归属登记在
+/// `NAMESPACE_META`。bin `gen-appendix-a` 把产出拼回 stdlib 规范,
+/// 锁测试 `stdlib_appendix_a_sync` 双向对账。
+pub mod stdlib_mirror;
+
+impl wlwl_std::StdHost for Evaluator {
+    fn ctx(&mut self) -> &mut wlwl_std::StdCtx {
+        &mut self.std_ctx
+    }
+
+    fn call(&mut self, f: &Value, args: Vec<Value>, name: &str) -> WlwlResult<Outcome> {
+        // 与 eval_call 的函数分派同构;span 取 invoke_std 存好的当前调用点。
+        let span = self
+            .current_span
+            .clone()
+            .unwrap_or_else(|| Span::new("<runtime>", 0, 0));
+        match f {
+            Value::Closure { params, body, env } => {
+                self.invoke_closure(name, params.clone(), body.clone(), env.clone(), args, &span)
+            }
+            Value::NativeFn { invoke, .. } => invoke_std(self, *invoke, args, &span),
+            other => Err(WlwlDiagnostic::new(
+                ErrorCode::E0020,
+                format!(
+                    "{}: callback is not callable (got {})",
+                    name,
+                    type_name(other)
+                ),
+                Location::point(
+                    self.file.as_deref().unwrap_or("<runtime>"),
+                    span.line_start,
+                    span.col_start,
+                ),
+            )
+            .into()),
+        }
+    }
+
+    fn diag(&mut self, code: ErrorCode, message: String) -> WlwlError {
+        let span = self
+            .current_span
+            .clone()
+            .unwrap_or_else(|| Span::new("<runtime>", 0, 0));
+        self.diag(code, message, span)
+    }
+}
 
 pub struct Evaluator {
     env: Env,
@@ -6817,7 +6010,6 @@ pub struct Evaluator {
     /// `["name", "passed", "duration_ms", "error"?]`). Evaluator-local
     /// so each run starts with an empty registry — there's no
     /// static-state leak across `Evaluator::new()` calls.
-    pub(crate) test_registry: Vec<crate::test::TestEntry>,
     /// [v0.4 Phase E1] Boundary-check flag from `wlwl.toml` `[features]
     /// strict_types = true` (spec §2.7). When `true`, `invoke_closure`
     /// validates each call's actual argument `TYPE(...)` against the
@@ -6962,7 +6154,6 @@ impl Evaluator {
             top_level_bound: HashSet::new(),
             current_span: None,
             format_cache: HashMap::new(),
-            test_registry: Vec::new(),
             strict_types: false,
             current_task: None,
             scope_depth: 0,
@@ -7000,11 +6191,25 @@ impl Evaluator {
         self.strict_types
     }
 
+    /// Dev-only override for R1 std module loading (stdlib foundation
+    /// v0.11 / ADR-0021): language-layer sources load from
+    /// `<dir>/<name>.wll` instead of the embedded copy. Non-stable
+    /// interface; must not change the export surface (locked by
+    /// `wlwl-cli/tests/stdlib_dual_track.rs`). Order-independent with
+    /// [`Evaluator::with_base_dir`].
+    pub fn with_std_src(self, dir: PathBuf) -> Self {
+        self.loader.borrow_mut().project.std_src = Some(dir);
+        self
+    }
+
     /// Set the base directory used to resolve `IMPORT` paths. Must be
     /// called before `eval` when the program uses `IMPORT`.
     pub fn with_base_dir(mut self, dir: PathBuf) -> Self {
-        // Rebuild the loader with the new base_dir.
+        // Rebuild the loader with the new base_dir, preserving any
+        // std-source override set via `with_std_src`.
+        let std_src = self.loader.borrow().project.std_src.clone();
         self.loader = Rc::new(RefCell::new(ModuleLoader::new(dir)));
+        self.loader.borrow_mut().project.std_src = std_src;
         self
     }
 
@@ -7020,7 +6225,6 @@ impl Evaluator {
             top_level_bound: HashSet::new(),
             current_span: None,
             format_cache: HashMap::new(),
-            test_registry: Vec::new(),
             strict_types: false,
             current_task: None,
             scope_depth: 0,
@@ -7166,16 +6370,7 @@ impl Evaluator {
                 self.current_method_instance = prev_method;
                 result
             }
-            Value::NativeFn { invoke, .. } => match invoke {
-                NativeInvoke::Std(f) => invoke_std(self, f, args, span),
-                NativeInvoke::Builtin(b) => {
-                    let prev_span = self.current_span.take();
-                    self.current_span = Some(span.clone());
-                    let result = b(self, args);
-                    self.current_span = prev_span;
-                    result
-                }
-            },
+            Value::NativeFn { invoke, .. } => invoke_std(self, invoke, args, span),
             other => Err(type_error(
                 name,
                 format!("member is not callable ({} value)", type_name(&other)),
@@ -8216,22 +7411,7 @@ impl Evaluator {
                 return self.invoke_closure(name, params, body, env, accum, span);
             }
             if let Value::NativeFn { invoke, .. } = v {
-                return match invoke {
-                    NativeInvoke::Std(f) => invoke_std(self, f, accum, span),
-                    NativeInvoke::Builtin(b) => {
-                        // Phase B6: callback-aware std modules (notably
-                        // `wlwl:std.collection`) bind eval-internal builtins
-                        // through this variant. Same save/restore span
-                        // contract as the global builtin dispatch so any
-                        // E0102 / E0038 etc. emitted from inside points
-                        // at the call site, not the outer scope.
-                        let prev_span = self.current_span.take();
-                        self.current_span = Some(span.clone());
-                        let result = b(self, accum);
-                        self.current_span = prev_span;
-                        result
-                    }
-                };
+                return invoke_std(self, invoke, accum, span);
             }
             // If the name resolves to a non-Closure value, treat as
             // E0020 (the user is trying to call a non-callable).
@@ -16421,159 +15601,9 @@ entry = "main.wll"
 
         let nf = Value::NativeFn {
             name: "PRINT".into(),
-            invoke: NativeInvoke::Std(wlwl_std::io::std_print as wlwl_std::StdFn),
+            invoke: wlwl_std::io::std_print as wlwl_std::StdFn,
         };
         assert_eq!(nf.display(), "<native fun PRINT>");
-    }
-
-    #[test]
-    fn value_to_std_value_primitives() {
-        assert_eq!(
-            value_to_std_value(&Value::Null).unwrap(),
-            wlwl_std::StdValue::Null
-        );
-        assert_eq!(
-            value_to_std_value(&Value::Boolean(true)).unwrap(),
-            wlwl_std::StdValue::Bool(true)
-        );
-        assert_eq!(
-            value_to_std_value(&Value::Integer(123)).unwrap(),
-            wlwl_std::StdValue::Number(serde_json::Number::from(123))
-        );
-        assert_eq!(
-            value_to_std_value(&Value::String("x".into())).unwrap(),
-            wlwl_std::StdValue::String("x".into())
-        );
-        assert_eq!(
-            value_to_std_value(&Value::Float(1.5)).unwrap(),
-            wlwl_std::StdValue::Number(serde_json::Number::from_f64(1.5).unwrap())
-        );
-    }
-
-    #[test]
-    fn value_to_std_value_nan_errors() {
-        let err = value_to_std_value(&Value::Float(f64::NAN)).unwrap_err();
-        match err {
-            StdValueConvError::Type { expected, got } => {
-                assert!(expected.contains("finite"), "got {:?}", expected);
-                assert!(got.contains("NaN"), "got {:?}", got);
-            }
-        }
-    }
-
-    #[test]
-    fn value_to_std_value_nested_array_and_dict() {
-        let arr = Value::Array(vec![
-            Value::Integer(1),
-            Value::Array(vec![Value::Integer(2), Value::Integer(3)]),
-        ]);
-        let out = value_to_std_value(&arr).unwrap();
-        assert!(matches!(out, wlwl_std::StdValue::Array(_)));
-
-        let dict = Value::Dict(vec![(Value::String("k".into()), Value::Integer(7))]);
-        let out = value_to_std_value(&dict).unwrap();
-        match out {
-            wlwl_std::StdValue::Object(o) => {
-                assert_eq!(
-                    o.get("k").unwrap(),
-                    &wlwl_std::StdValue::Number(serde_json::Number::from(7))
-                );
-            }
-            other => panic!("expected Object, got {:?}", other),
-        }
-    }
-
-    #[test]
-    fn value_to_std_value_non_string_dict_key_errors() {
-        let dict = Value::Dict(vec![(Value::Integer(1), Value::Integer(2))]);
-        let err = value_to_std_value(&dict).unwrap_err();
-        match err {
-            StdValueConvError::Type { expected, .. } => {
-                assert!(expected.contains("string dict key"), "got {:?}", expected);
-            }
-        }
-    }
-
-    #[test]
-    fn value_to_std_value_ok_unwraps() {
-        let v = Value::Ok(Box::new(Value::Integer(42)));
-        let out = value_to_std_value(&v).unwrap();
-        assert_eq!(
-            out,
-            wlwl_std::StdValue::Number(serde_json::Number::from(42))
-        );
-    }
-
-    #[test]
-    fn value_to_std_value_err_errors() {
-        let v = Value::Err(Box::new(Value::String("oops".into())));
-        let err = value_to_std_value(&v).unwrap_err();
-        match err {
-            StdValueConvError::Type { expected, .. } => {
-                assert!(expected.contains("OK"), "got {:?}", expected);
-            }
-        }
-    }
-
-    #[test]
-    fn value_to_std_value_closure_and_nativefn_error() {
-        let c = Value::Closure {
-            params: vec![],
-            body: Box::new(Expr::Literal(Literal::Integer(0), Span::dummy())),
-            env: Env::new(),
-        };
-        let err = value_to_std_value(&c).unwrap_err();
-        match err {
-            StdValueConvError::Type { got, .. } => {
-                assert!(got.contains("function closure"), "got {:?}", got);
-            }
-        }
-        let nf = Value::NativeFn {
-            name: "PRINT".into(),
-            invoke: NativeInvoke::Std(wlwl_std::io::std_print as wlwl_std::StdFn),
-        };
-        let err = value_to_std_value(&nf).unwrap_err();
-        match err {
-            StdValueConvError::Type { got, .. } => {
-                assert!(got.contains("native fn"), "got {:?}", got);
-            }
-        }
-    }
-
-    #[test]
-    fn std_value_to_value_roundtrip_all_variants() {
-        assert_eq!(std_value_to_value(wlwl_std::StdValue::Null), Value::Null);
-        assert_eq!(
-            std_value_to_value(wlwl_std::StdValue::Bool(true)),
-            Value::Boolean(true)
-        );
-        assert_eq!(
-            std_value_to_value(wlwl_std::StdValue::Number(serde_json::Number::from(1))),
-            Value::Integer(1)
-        );
-        assert_eq!(
-            std_value_to_value(wlwl_std::StdValue::Number(
-                serde_json::Number::from_f64(1.5).unwrap()
-            )),
-            Value::Float(1.5)
-        );
-        assert_eq!(
-            std_value_to_value(wlwl_std::StdValue::String("x".into())),
-            Value::String("x".into())
-        );
-        assert_eq!(
-            std_value_to_value(wlwl_std::StdValue::Array(vec![wlwl_std::StdValue::Null])),
-            Value::Array(vec![Value::Null])
-        );
-        let mut obj = serde_json::Map::new();
-        obj.insert(
-            "k".to_string(),
-            wlwl_std::StdValue::Number(serde_json::Number::from(7)),
-        );
-        assert_eq!(
-            std_value_to_value(wlwl_std::StdValue::Object(obj)),
-            Value::Dict(vec![(Value::String("k".into()), Value::Integer(7))])
-        );
     }
 
     // ---- P3-009d: more module loader + std call paths ----
@@ -24106,3 +23136,13 @@ entry = "main.wll"
         );
     }
 }
+
+// [v0.11 M2] std.test 行为测试(随实现自 eval 内部模块迁来);
+// 放在文件末尾,避免首个 #[cfg(test)] 截断 wlwl-error 的实现面扫描)。
+// [v0.11 M3-1] collection_tests 已删:R2 原生实现随 M3-1 移除,它的用例锁的
+// 是被删掉的 R2 助手;collection 的成员契约改由
+// `tests/collection_contract.rs` 对标准库规范 §5 逐条对拍(75 条冻结用例)。
+#[cfg(test)]
+mod kernel_injection_tests;
+#[cfg(test)]
+mod test_native_tests;

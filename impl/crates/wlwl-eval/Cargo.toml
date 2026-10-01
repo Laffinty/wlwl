@@ -7,6 +7,7 @@ description = "WLWL tree-walking interpreter (Phase 3: full v0.3 with type-annot
 
 [dependencies]
 wlwl-ast = { workspace = true }
+wlwl-value = { workspace = true }
 wlwl-error = { workspace = true }
 wlwl-parser = { workspace = true }
 wlwl-std = { workspace = true }
@@ -26,5 +27,8 @@ path = "benches/eval_hot_paths.rs"
 [[bin]]
 name = "gen-appendix-g"
 path = "src/bin/gen_appendix_g.rs"
+[[bin]]
+name = "gen-appendix-a"
+path = "src/bin/gen_appendix_a.rs"
 [lints]
 workspace = true

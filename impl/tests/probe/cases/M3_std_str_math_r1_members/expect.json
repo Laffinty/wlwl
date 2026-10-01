@@ -1,0 +1,10 @@
+{
+ "exit": 0,
+ "contains": [
+  "[a, b]",
+  "2",
+  "3.0",
+  "-2.0"
+ ],
+ "_why": "[v0.11 M3-2] std.str 落齐 §6、std.math 落齐 §7(SQRT/POW 经 M3-0 注入的 R2 浮点内核)。三处口径是实现里才看清的:SPLIT_LINES 去行尾 \\r 且尾随换行不产生空尾元素、COUNT 的非重叠口径、FLOOR 不等于 INT(§2.2 的 INT 向零截断,故 FLOOR(-1.5) 是 -2.0)。逐条锁在 wlwl-eval/tests/str_math_contract.rs。"
+}

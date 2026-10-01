@@ -1,0 +1,5 @@
+// std.collection 是纯 wlwl(R1)实现(M3-1 终态,ADR-0021 判定准则 3)。
+// 这条探针盯的是「R1 模块经 IMPORT 加载 -> 闭包回调 -> 结果」这条完整链路。
+IMPORT("wlwl:std.collection", ["MAP", "REDUCE"]);
+PRINT(MAP([1, 2, 3], FUN((x), *(x, 10))));
+PRINT(REDUCE([1, 2, 3, 4], FUN((a, b), +(a, b)), 0));

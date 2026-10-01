@@ -40,7 +40,7 @@ For development setup, quality gates, and the workspace layout, see
 
 ## Docs
 
-- Language spec: [`docs/standard/wlwl-spec-v0.10.md`](./docs/standard/wlwl-spec-v0.10.md)
+- Language spec: [`docs/spec/wlwl-spec-v0.11.md`](./docs/spec/wlwl-spec-v0.11.md)
 - Changelog: [`CHANGELOG.md`](./CHANGELOG.md) — version history and the
   per-version consistency table (codes, builtins, lock-test counts)
 - Builtin registry (Appendix G mirror): [`docs/appendix_G.md`](./docs/appendix_G.md)

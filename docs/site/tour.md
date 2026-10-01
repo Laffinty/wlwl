@@ -2,8 +2,9 @@
 
 A whirlwind tour of WLWL — by example. For the canonical
 reference, see
-[docs/history/wlwl-spec-v0.7.md](../standard/wlwl-spec-v0.7.md)
-(v0.6 archived at [`docs/history/wlwl-spec-v0.6.md`](../history/wlwl-spec-v0.6.md)).
+[docs/spec/wlwl-spec-v0.11.md](../spec/wlwl-spec-v0.11.md)
+(v0.10 / v0.9 / v0.8 / v0.7 / v0.6 archived under
+[`docs/history/`](../history/)).
 
 ## 1. Every form is a call
 

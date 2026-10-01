@@ -38,7 +38,7 @@
 //!    appends to the current segment. The outer Block itself is
 //!    unwrapped — segments are sequences of top-level statements.
 //!
-//! See ADR-0017 §3.1 + `docs/history/wlwl-build-plan-v0.9-COMPLETED.md` §3.1 for
+//! See ADR-0017 §3.1 + `docs/history/20260915-22.md` §3.1 for
 //! the full design rationale and the Step 3 / state-machine
 //! followup that closes the "YIELD inside LET RHS resumes the LET
 //! binding" gap.

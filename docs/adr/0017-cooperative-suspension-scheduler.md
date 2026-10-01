@@ -375,12 +375,12 @@ Chosen option **A**. Concretely, v0.9 commits to:
 
 ## References
 
-- `docs/history/wlwl-build-plan-v0.9-COMPLETED.md` §3 (P0 并发语义收口) / §9.1
+- `docs/history/20260915-22.md` §3 (P0 并发语义收口) / §9.1
   Step 1-7 / §10 risk table / §11.2 consistency table / §11.3 doc
   acceptance
-- `docs/history/wlwl-spec-v0.8.md` §17.1 (line 879) / §17.2 /
+- `docs/history/20260915-22.md` §17.1 (line 879) / §17.2 /
   §17.3 / §17.7 / §11.2 (E0055/E0057 保留位)
-- `docs/history/deviations-v0.8.md` D8-003 (E0055/E0057 reservation)
+- `docs/history/20260915-22.md` D8-003 (E0055/E0057 reservation)
 - `docs/adr/0014-structured-concurrency-v0.7.md`
 - `docs/adr/0015-brown-9-dimension-decision.md`
 - `docs/adr/0016-scheduler-single-thread-boundary.md`

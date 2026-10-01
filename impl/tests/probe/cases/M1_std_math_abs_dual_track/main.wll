@@ -1,0 +1,2 @@
+IMPORT("wlwl:std.math", ["ABS"]);
+PRINT(ABS(NEG(5)));

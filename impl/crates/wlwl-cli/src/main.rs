@@ -59,6 +59,11 @@ enum Cmd {
         /// Output format for errors
         #[arg(long, value_enum, default_value_t = OutputFormat::Human)]
         format: OutputFormat,
+        /// 开发覆盖(非稳定接口,stdlib 底座 v0.11 / ADR-0021):R1 语言层
+        /// 标准库模块改从该目录加载(`<name>.wll`),优先级高于环境变量
+        /// `WLWL_STD_SRC`。不得改变任何成员的名字与语义(锁测试守护)。
+        #[arg(long, value_name = "DIR")]
+        std_src: Option<PathBuf>,
     },
     /// Parse a .wll file without running it
     #[command(long_about = "\
@@ -362,8 +367,17 @@ impl Cmd {
 
 fn dispatch(cmd: Cmd) -> ExitCode {
     match cmd {
-        Cmd::Run { file, format } => run_file(&file, format, true),
-        Cmd::Check { file, format } => run_file(&file, format, false),
+        Cmd::Run {
+            file,
+            format,
+            std_src,
+        } => {
+            // 显式 flag 优先于 debug 环境变量(两者都缺省 = 纯嵌入加载)。
+            let std_src =
+                std_src.or_else(|| std::env::var_os("WLWL_STD_SRC").map(std::path::PathBuf::from));
+            run_file(&file, format, true, std_src)
+        }
+        Cmd::Check { file, format } => run_file(&file, format, false, None),
         Cmd::Ast { file, format } => ast_file(&file, format),
         Cmd::Fmt { file, check, write } => fmt_file(&file, check, write),
         Cmd::Sig { file, format } => sig_file(&file, format),
@@ -378,7 +392,12 @@ mod lsp;
 mod tooling;
 
 /// Top-level entry: parse, optionally execute, report errors.
-fn run_file(file: &PathBuf, format: OutputFormat, execute: bool) -> ExitCode {
+fn run_file(
+    file: &PathBuf,
+    format: OutputFormat,
+    execute: bool,
+    std_src: Option<std::path::PathBuf>,
+) -> ExitCode {
     let source = match fs::read_to_string(file) {
         Ok(s) => s,
         Err(e) => {
@@ -440,6 +459,11 @@ fn run_file(file: &PathBuf, format: OutputFormat, execute: bool) -> ExitCode {
         .with_source(&source, &file_name)
         .with_base_dir(base_dir.clone())
         .with_strict_types(strict_types);
+    if let Some(dir) = std_src {
+        // R1 标准库源码覆盖(开发期):仅影响 run(执行会加载模块);
+        // check 不做名字解析,不需要。
+        ev = ev.with_std_src(dir);
+    }
     match ev.eval(&ast) {
         Ok(_v) => {
             try_write_lock(&base_dir);
@@ -1967,26 +1991,29 @@ mod tests {
 
         // 3 = 源文件没解析出来
         assert_eq!(
-            run_file(&syntax, OutputFormat::Human, true),
+            run_file(&syntax, OutputFormat::Human, true, None),
             ExitCode::from(3),
             "a source that does not parse must exit 3"
         );
         // 1 = 程序不对(运行期)
         assert_eq!(
-            run_file(&undef, OutputFormat::Human, true),
+            run_file(&undef, OutputFormat::Human, true, None),
             ExitCode::from(1),
             "an undefined name is a runtime failure, not a parse failure"
         );
         assert_eq!(
-            run_file(&divzero, OutputFormat::Human, true),
+            run_file(&divzero, OutputFormat::Human, true, None),
             ExitCode::from(1)
         );
         // 0
-        assert_eq!(run_file(&ok, OutputFormat::Human, true), ExitCode::SUCCESS);
+        assert_eq!(
+            run_file(&ok, OutputFormat::Human, true, None),
+            ExitCode::SUCCESS
+        );
 
         // check 走同一条路:解析错也是 3
         assert_eq!(
-            run_file(&syntax, OutputFormat::Human, false),
+            run_file(&syntax, OutputFormat::Human, false, None),
             ExitCode::from(3),
             "`check` and `run` must never disagree on a parse failure"
         );
@@ -2061,14 +2088,14 @@ mod tests {
     #[test]
     fn run_hello() {
         let p = write_tmp("LET(x, 1); PRINT(x);", "hello.wll");
-        let code = run_file(&p, OutputFormat::Human, true);
+        let code = run_file(&p, OutputFormat::Human, true, None);
         assert_eq!(code, ExitCode::SUCCESS);
     }
 
     #[test]
     fn run_parse_error_reports_diagnostic() {
         let p = write_tmp("LET(x, 1) LET(y, 2);", "bad.wll");
-        let code = run_file(&p, OutputFormat::Human, true);
+        let code = run_file(&p, OutputFormat::Human, true, None);
         // [v0.10.1] 退出码契约(spec §11.5):源文件没解析出来 -> 3。
         // 此前一律 1,与运行期失败无法区分。
         assert_eq!(code, ExitCode::from(3));
@@ -2077,7 +2104,7 @@ mod tests {
     #[test]
     fn run_undefined_name() {
         let p = write_tmp("PRINT(zzz);", "undef.wll");
-        let code = run_file(&p, OutputFormat::Human, true);
+        let code = run_file(&p, OutputFormat::Human, true, None);
         assert_eq!(code, ExitCode::from(1));
     }
 
@@ -2117,21 +2144,24 @@ mod tests {
         // 无清单 —— 裸 .wll 文件照旧能过。
         let bare = write_tmp(MISMATCH, "gradual_bare.wll");
         assert_eq!(
-            run_file(&bare, OutputFormat::Human, false),
+            run_file(&bare, OutputFormat::Human, false, None),
             ExitCode::SUCCESS
         );
         assert_eq!(
-            run_file(&bare, OutputFormat::Human, true),
+            run_file(&bare, OutputFormat::Human, true, None),
             ExitCode::SUCCESS
         );
 
         // 显式 off。
         let off = write_project("gradual_off", "\"off\"", MISMATCH);
         assert_eq!(
-            run_file(&off, OutputFormat::Human, false),
+            run_file(&off, OutputFormat::Human, false, None),
             ExitCode::SUCCESS
         );
-        assert_eq!(run_file(&off, OutputFormat::Human, true), ExitCode::SUCCESS);
+        assert_eq!(
+            run_file(&off, OutputFormat::Human, true, None),
+            ExitCode::SUCCESS
+        );
     }
 
     /// 锁测试:`warn` 档发 `W0110`-`W0112` 但**不阻塞**退出码。
@@ -2139,8 +2169,14 @@ mod tests {
     fn warn_mode_soft() {
         let p = write_project("gradual_warn", "\"warn\"", MISMATCH);
         // check 与 run 都只发软诊断,退出码保持 0。
-        assert_eq!(run_file(&p, OutputFormat::Human, false), ExitCode::SUCCESS);
-        assert_eq!(run_file(&p, OutputFormat::Human, true), ExitCode::SUCCESS);
+        assert_eq!(
+            run_file(&p, OutputFormat::Human, false, None),
+            ExitCode::SUCCESS
+        );
+        assert_eq!(
+            run_file(&p, OutputFormat::Human, true, None),
+            ExitCode::SUCCESS
+        );
     }
 
     /// 锁测试:`error` 档发 `E0110`-`E0112` 并**硬拦**退出码。
@@ -2150,24 +2186,42 @@ mod tests {
     #[test]
     fn error_mode_hard() {
         let p = write_project("gradual_error", "\"error\"", MISMATCH);
-        assert_eq!(run_file(&p, OutputFormat::Human, false), ExitCode::from(1));
-        assert_eq!(run_file(&p, OutputFormat::Human, true), ExitCode::from(1));
+        assert_eq!(
+            run_file(&p, OutputFormat::Human, false, None),
+            ExitCode::from(1)
+        );
+        assert_eq!(
+            run_file(&p, OutputFormat::Human, true, None),
+            ExitCode::from(1)
+        );
     }
 
     /// 合法源码在 `error` 档下必须照常通过 —— 门禁不许变成「见注解就拦」。
     #[test]
     fn error_mode_does_not_reject_clean_programs() {
         let p = write_project("gradual_clean", "\"error\"", CLEAN);
-        assert_eq!(run_file(&p, OutputFormat::Human, false), ExitCode::SUCCESS);
-        assert_eq!(run_file(&p, OutputFormat::Human, true), ExitCode::SUCCESS);
+        assert_eq!(
+            run_file(&p, OutputFormat::Human, false, None),
+            ExitCode::SUCCESS
+        );
+        assert_eq!(
+            run_file(&p, OutputFormat::Human, true, None),
+            ExitCode::SUCCESS
+        );
     }
 
     /// 非法取值回落 `off`,并把笔误报出来而不是静默吞掉。
     #[test]
     fn invalid_value_falls_back_to_off_and_is_reported() {
         let p = write_project("gradual_invalid", "\"loud\"", MISMATCH);
-        assert_eq!(run_file(&p, OutputFormat::Human, false), ExitCode::SUCCESS);
-        assert_eq!(run_file(&p, OutputFormat::Human, true), ExitCode::SUCCESS);
+        assert_eq!(
+            run_file(&p, OutputFormat::Human, false, None),
+            ExitCode::SUCCESS
+        );
+        assert_eq!(
+            run_file(&p, OutputFormat::Human, true, None),
+            ExitCode::SUCCESS
+        );
     }
 
     // -- v0.10.1 (R10-010): 清单缺 [package] 时静态层不再静默 -----------
@@ -2289,7 +2343,10 @@ mod tests {
         );
         // 退出码也必须跟着变 —— 这是「用户以为在检查、其实没检查」的
         // 原始症状,只看诊断码不够。
-        assert_eq!(run_file(&p, OutputFormat::Human, false), ExitCode::from(1));
+        assert_eq!(
+            run_file(&p, OutputFormat::Human, false, None),
+            ExitCode::from(1)
+        );
     }
 
     /// **修法 a**:`[features]` 单独成立但 `[package]` 残缺时必须发 `W0001`。
@@ -2310,7 +2367,10 @@ mod tests {
             "an incomplete manifest must not be silent, got {codes:?}"
         );
         // 警告不挡退出码:挡住的是 E0110 自己。
-        assert_eq!(run_file(&p, OutputFormat::Human, false), ExitCode::from(1));
+        assert_eq!(
+            run_file(&p, OutputFormat::Human, false, None),
+            ExitCode::from(1)
+        );
     }
 
     /// 清单既缺 `[package]`、特性值又写错时,**恰好两条** `W0001`。
@@ -2441,26 +2501,26 @@ mod tests {
         // [v0.10.1] 层 2 仍是 1:静态诊断不改变「源文件读得出来」这个事实。
         let bad = write_tmp("LET(x, 1) LET(y, 2);", "layer_parse_err.wll");
         assert_eq!(
-            run_file(&bad, OutputFormat::Human, false),
+            run_file(&bad, OutputFormat::Human, false, None),
             ExitCode::from(3)
         );
 
         // 层 2 —— static。
         let errored = write_project("layered_error", "\"error\"", MISMATCH);
         assert_eq!(
-            run_file(&errored, OutputFormat::Human, false),
+            run_file(&errored, OutputFormat::Human, false, None),
             ExitCode::from(1)
         );
         let warned = write_project("layered_warn", "\"warn\"", MISMATCH);
         assert_eq!(
-            run_file(&warned, OutputFormat::Human, false),
+            run_file(&warned, OutputFormat::Human, false, None),
             ExitCode::SUCCESS
         );
 
         // 层 3 —— run。
         let run_errored = write_project("layered_run_error", "\"error\"", MISMATCH);
         assert_eq!(
-            run_file(&run_errored, OutputFormat::Human, true),
+            run_file(&run_errored, OutputFormat::Human, true, None),
             ExitCode::from(1)
         );
     }
@@ -2468,7 +2528,7 @@ mod tests {
     #[test]
     fn check_only_parses() {
         let p = write_tmp("LET(x, 1);", "check.wll");
-        let code = run_file(&p, OutputFormat::Human, false);
+        let code = run_file(&p, OutputFormat::Human, false, None);
         assert_eq!(code, ExitCode::SUCCESS);
     }
 
@@ -2483,14 +2543,20 @@ mod tests {
             "\"error\"",
             "LET(x: STRING, LEN([1, 2]));",
         );
-        assert_eq!(run_file(&p, OutputFormat::Human, false), ExitCode::from(1));
+        assert_eq!(
+            run_file(&p, OutputFormat::Human, false, None),
+            ExitCode::from(1)
+        );
         // 匹配的注解照常通过。
         let ok = write_project(
             "a6p_takes_effect_ok",
             "\"error\"",
             "LET(x: INTEGER, LEN([1, 2]));",
         );
-        assert_eq!(run_file(&ok, OutputFormat::Human, false), ExitCode::SUCCESS);
+        assert_eq!(
+            run_file(&ok, OutputFormat::Human, false, None),
+            ExitCode::SUCCESS
+        );
     }
 
     /// 首批未覆盖的内建(这里取 `CHANNEL_LEN` —— Concurrent 组 17 条
@@ -2505,7 +2571,7 @@ mod tests {
         ] {
             let p = write_project("a6p_uncovered", "\"error\"", src);
             assert_eq!(
-                run_file(&p, OutputFormat::Human, false),
+                run_file(&p, OutputFormat::Human, false, None),
                 ExitCode::SUCCESS,
                 "uncovered builtin must not be judged: {src}"
             );
@@ -2521,14 +2587,20 @@ mod tests {
             "LET(y: STRING, LEN(\"abc\"));"
         );
         let p = write_project("a6p_shadow_ok", "\"error\"", src);
-        assert_eq!(run_file(&p, OutputFormat::Human, false), ExitCode::SUCCESS);
+        assert_eq!(
+            run_file(&p, OutputFormat::Human, false, None),
+            ExitCode::SUCCESS
+        );
         // 用户的签名确实生效:传 INTEGER 就该报,尽管内建 `LEN` 收容器。
         let bad = concat!(
             "LET(LEN, FUN((x: STRING) : STRING, x)); ",
             "LET(y: STRING, LEN(1));"
         );
         let p2 = write_project("a6p_shadow_bad", "\"error\"", bad);
-        assert_eq!(run_file(&p2, OutputFormat::Human, false), ExitCode::from(1));
+        assert_eq!(
+            run_file(&p2, OutputFormat::Human, false, None),
+            ExitCode::from(1)
+        );
     }
 
     /// 首批不检查内建元数 —— 可选形参(`SUB(s, start, end?)`)与变长
@@ -2544,7 +2616,7 @@ mod tests {
         ] {
             let p = write_project("a6p_arity", "\"error\"", src);
             assert_eq!(
-                run_file(&p, OutputFormat::Human, false),
+                run_file(&p, OutputFormat::Human, false, None),
                 ExitCode::SUCCESS,
                 "builtin arity must not be judged in batch 1: {src}"
             );
@@ -2563,7 +2635,7 @@ mod tests {
                 write_project("a6p_off", setting, src)
             };
             assert_eq!(
-                run_file(&p, OutputFormat::Human, false),
+                run_file(&p, OutputFormat::Human, false, None),
                 ExitCode::SUCCESS,
                 "off mode must not judge: {setting}"
             );
@@ -2624,12 +2696,12 @@ mod tests {
             "EXPORT add (INTEGER, INTEGER) : INTEGER\nEXPORT PI : INTEGER\n",
         );
         assert_eq!(
-            run_file(&root.join("main.wll"), OutputFormat::Human, false),
+            run_file(&root.join("main.wll"), OutputFormat::Human, false, None),
             ExitCode::SUCCESS
         );
         // `run` 也照常(契约层是编译期的,不改变求值语义)。
         assert_eq!(
-            run_file(&root.join("main.wll"), OutputFormat::Human, true),
+            run_file(&root.join("main.wll"), OutputFormat::Human, true, None),
             ExitCode::SUCCESS
         );
     }
@@ -2645,7 +2717,7 @@ mod tests {
         );
         let _ = fs::remove_file(root.join("math.wll.sig"));
         assert_eq!(
-            run_file(&root.join("main.wll"), OutputFormat::Human, false),
+            run_file(&root.join("main.wll"), OutputFormat::Human, false, None),
             ExitCode::SUCCESS
         );
     }
@@ -2661,7 +2733,7 @@ mod tests {
             "EXPORT add (INTEGER, INTEGER) : INTEGER\n",
         );
         assert_eq!(
-            run_file(&root.join("main.wll"), OutputFormat::Human, false),
+            run_file(&root.join("main.wll"), OutputFormat::Human, false, None),
             ExitCode::from(1)
         );
         // E0114:签名声明了实现没导出的 `sub`。
@@ -2671,7 +2743,7 @@ mod tests {
             "EXPORT add (INTEGER, INTEGER) : INTEGER\nEXPORT sub (INTEGER, INTEGER) : INTEGER\n",
         );
         assert_eq!(
-            run_file(&root.join("main.wll"), OutputFormat::Human, false),
+            run_file(&root.join("main.wll"), OutputFormat::Human, false, None),
             ExitCode::from(1)
         );
         // E0115:签名说 `add` 返回 STRING,实现注解是 INTEGER。
@@ -2681,7 +2753,7 @@ mod tests {
             "EXPORT add (INTEGER, INTEGER) : STRING\nEXPORT PI : INTEGER\n",
         );
         assert_eq!(
-            run_file(&root.join("main.wll"), OutputFormat::Human, false),
+            run_file(&root.join("main.wll"), OutputFormat::Human, false, None),
             ExitCode::from(1)
         );
     }
@@ -2702,7 +2774,7 @@ mod tests {
         )
         .unwrap();
         assert_eq!(
-            run_file(&root.join("main.wll"), OutputFormat::Human, false),
+            run_file(&root.join("main.wll"), OutputFormat::Human, false, None),
             ExitCode::from(1)
         );
         // 声明过就静默。
@@ -2717,7 +2789,7 @@ mod tests {
         )
         .unwrap();
         assert_eq!(
-            run_file(&root.join("main.wll"), OutputFormat::Human, false),
+            run_file(&root.join("main.wll"), OutputFormat::Human, false, None),
             ExitCode::SUCCESS
         );
     }
@@ -2741,7 +2813,7 @@ mod tests {
         )
         .unwrap();
         assert_eq!(
-            run_file(&root.join("main.wll"), OutputFormat::Human, false),
+            run_file(&root.join("main.wll"), OutputFormat::Human, false, None),
             ExitCode::from(1)
         );
     }
@@ -2758,7 +2830,7 @@ mod tests {
         // 「读不出来的文本」不管出现在主源还是旁路签名文件里,结论必须一致,
         // 否则同一种故障会因为走哪条路而拿到不同的退出码。
         assert_eq!(
-            run_file(&root.join("main.wll"), OutputFormat::Human, false),
+            run_file(&root.join("main.wll"), OutputFormat::Human, false, None),
             ExitCode::from(3)
         );
     }
@@ -2769,7 +2841,7 @@ mod tests {
         let sig = "EXPORT nothing_like_this : INTEGER\n";
         let warn = signed_math_project("c1_warn", "\"warn\"", sig);
         assert_eq!(
-            run_file(&warn.join("main.wll"), OutputFormat::Human, false),
+            run_file(&warn.join("main.wll"), OutputFormat::Human, false, None),
             ExitCode::SUCCESS
         );
         for setting in ["\"off\"", "DEFAULT_NO_KEY"] {
@@ -2788,7 +2860,7 @@ mod tests {
                 signed_math_project("c1_off", setting, sig)
             };
             assert_eq!(
-                run_file(&root.join("main.wll"), OutputFormat::Human, false),
+                run_file(&root.join("main.wll"), OutputFormat::Human, false, None),
                 ExitCode::SUCCESS,
                 "off mode must not judge the signature: {setting}"
             );
@@ -2816,7 +2888,7 @@ mod tests {
         )
         .unwrap();
         assert_eq!(
-            run_file(&root.join("main.wll"), OutputFormat::Human, false),
+            run_file(&root.join("main.wll"), OutputFormat::Human, false, None),
             ExitCode::from(1)
         );
         // 密封面与导出面一致 → 静默。
@@ -2826,7 +2898,7 @@ mod tests {
         )
         .unwrap();
         assert_eq!(
-            run_file(&root.join("main.wll"), OutputFormat::Human, false),
+            run_file(&root.join("main.wll"), OutputFormat::Human, false, None),
             ExitCode::SUCCESS
         );
     }
@@ -2856,7 +2928,7 @@ mod tests {
         )
         .unwrap();
         assert_eq!(
-            run_file(&root.join("main.wll"), OutputFormat::Human, false),
+            run_file(&root.join("main.wll"), OutputFormat::Human, false, None),
             ExitCode::from(1)
         );
         // 把 `secret` 也封进去,整条链就干净了。
@@ -2869,7 +2941,7 @@ mod tests {
         )
         .unwrap();
         assert_eq!(
-            run_file(&root.join("main.wll"), OutputFormat::Human, false),
+            run_file(&root.join("main.wll"), OutputFormat::Human, false, None),
             ExitCode::SUCCESS
         );
     }
@@ -2889,7 +2961,7 @@ mod tests {
         )
         .unwrap();
         assert_eq!(
-            run_file(&root.join("main.wll"), OutputFormat::Human, true),
+            run_file(&root.join("main.wll"), OutputFormat::Human, true, None),
             ExitCode::SUCCESS
         );
     }
@@ -2952,7 +3024,7 @@ EXPORT([\"add\", \"PI\"]);
 
         // 自查:生成的签名不判自己有罪。
         assert_eq!(
-            run_file(&module, OutputFormat::Human, false),
+            run_file(&module, OutputFormat::Human, false, None),
             ExitCode::SUCCESS
         );
     }
@@ -3051,7 +3123,7 @@ EXPORT([\"add\", \"PI\"]);
     fn p1_non_exhaustive_match_blocks_in_error_mode() {
         let root = match_project("p1_e0116", "\"error\"", None, "MATCH(OK(1), [[OK(n), n]]);");
         assert_eq!(
-            run_file(&root.join("main.wll"), OutputFormat::Human, false),
+            run_file(&root.join("main.wll"), OutputFormat::Human, false, None),
             ExitCode::from(1)
         );
     }
@@ -3061,7 +3133,7 @@ EXPORT([\"add\", \"PI\"]);
     fn p1_unreachable_clause_never_blocks() {
         let root = match_project("p1_w0117", "\"error\"", None, "MATCH(1, [[_, 1], [2, 2]]);");
         assert_eq!(
-            run_file(&root.join("main.wll"), OutputFormat::Human, false),
+            run_file(&root.join("main.wll"), OutputFormat::Human, false, None),
             ExitCode::SUCCESS
         );
     }
@@ -3071,7 +3143,7 @@ EXPORT([\"add\", \"PI\"]);
     fn p1_warn_mode_reports_without_blocking() {
         let root = match_project("p1_warn", "\"warn\"", None, "MATCH(OK(1), [[OK(n), n]]);");
         assert_eq!(
-            run_file(&root.join("main.wll"), OutputFormat::Human, false),
+            run_file(&root.join("main.wll"), OutputFormat::Human, false, None),
             ExitCode::SUCCESS
         );
     }
@@ -3087,7 +3159,7 @@ EXPORT([\"add\", \"PI\"]);
             src,
         );
         assert_eq!(
-            run_file(&off.join("main.wll"), OutputFormat::Human, false),
+            run_file(&off.join("main.wll"), OutputFormat::Human, false, None),
             ExitCode::SUCCESS,
             "match_exhaustiveness = off must silence the MATCH pass"
         );
@@ -3099,7 +3171,7 @@ EXPORT([\"add\", \"PI\"]);
             "LET(x: INTEGER, \"s\");",
         );
         assert_eq!(
-            run_file(&still_on.join("main.wll"), OutputFormat::Human, false),
+            run_file(&still_on.join("main.wll"), OutputFormat::Human, false, None),
             ExitCode::from(1)
         );
     }
@@ -3114,7 +3186,7 @@ EXPORT([\"add\", \"PI\"]);
             "MATCH(OK(1), [[OK(n), n]]);",
         );
         assert_eq!(
-            run_file(&root.join("main.wll"), OutputFormat::Human, false),
+            run_file(&root.join("main.wll"), OutputFormat::Human, false, None),
             ExitCode::from(1)
         );
     }
@@ -3129,7 +3201,7 @@ EXPORT([\"add\", \"PI\"]);
             "MATCH(OK(1), [[OK(n), n]]);",
         );
         assert_eq!(
-            run_file(&off.join("main.wll"), OutputFormat::Human, false),
+            run_file(&off.join("main.wll"), OutputFormat::Human, false, None),
             ExitCode::SUCCESS
         );
         let on = match_project(
@@ -3139,7 +3211,7 @@ EXPORT([\"add\", \"PI\"]);
             "MATCH(OK(1), [[OK(n), n]]);",
         );
         assert_eq!(
-            run_file(&on.join("main.wll"), OutputFormat::Human, false),
+            run_file(&on.join("main.wll"), OutputFormat::Human, false, None),
             ExitCode::from(1)
         );
     }
@@ -3155,7 +3227,7 @@ EXPORT([\"add\", \"PI\"]);
         );
         // 回落到跟随 `error` → 无诊断 → 退出 0(回执走 stderr 的警告)。
         assert_eq!(
-            run_file(&root.join("main.wll"), OutputFormat::Human, false),
+            run_file(&root.join("main.wll"), OutputFormat::Human, false, None),
             ExitCode::SUCCESS
         );
     }
@@ -3170,13 +3242,13 @@ EXPORT([\"add\", \"PI\"]);
         ] {
             let bare = write_tmp(src, "p1_off.wll");
             assert_eq!(
-                run_file(&bare, OutputFormat::Human, false),
+                run_file(&bare, OutputFormat::Human, false, None),
                 ExitCode::SUCCESS,
                 "default off must stay silent: {src}"
             );
             let root = match_project("p1_off_proj", "\"off\"", None, src);
             assert_eq!(
-                run_file(&root.join("main.wll"), OutputFormat::Human, false),
+                run_file(&root.join("main.wll"), OutputFormat::Human, false, None),
                 ExitCode::SUCCESS,
                 "off must stay silent: {src}"
             );
@@ -3211,7 +3283,7 @@ EXPORT([\"add\", \"PI\"]);
              PRINT(max(1, TRUE));",
         );
         assert_eq!(
-            run_file(&root.join("main.wll"), OutputFormat::Human, false),
+            run_file(&root.join("main.wll"), OutputFormat::Human, false, None),
             ExitCode::from(1)
         );
         // 满足约束 → 静默通过。
@@ -3223,7 +3295,7 @@ EXPORT([\"add\", \"PI\"]);
              PRINT(max(1, 2));",
         );
         assert_eq!(
-            run_file(&ok.join("main.wll"), OutputFormat::Human, false),
+            run_file(&ok.join("main.wll"), OutputFormat::Human, false, None),
             ExitCode::SUCCESS
         );
     }
@@ -3242,13 +3314,13 @@ EXPORT([\"add\", \"PI\"]);
                 match_project("p2_off", setting, None, src)
             };
             assert_eq!(
-                run_file(&root.join("main.wll"), OutputFormat::Human, false),
+                run_file(&root.join("main.wll"), OutputFormat::Human, false, None),
                 ExitCode::SUCCESS,
                 "off mode must not judge generics: {setting}"
             );
             // 运行期一样能跑(擦除,零语义变化)。
             assert_eq!(
-                run_file(&root.join("main.wll"), OutputFormat::Human, true),
+                run_file(&root.join("main.wll"), OutputFormat::Human, true, None),
                 ExitCode::SUCCESS
             );
             // 同上:共用测试根目录,不在用例里清。
@@ -3305,7 +3377,7 @@ EXPORT([\"add\", \"PI\"]);
     #[test]
     fn run_if_control_flow() {
         let p = write_tmp(r#"IF(==(1, 1), PRINT("yes"), PRINT("no"));"#, "if.wll");
-        let code = run_file(&p, OutputFormat::Human, true);
+        let code = run_file(&p, OutputFormat::Human, true, None);
         assert_eq!(code, ExitCode::SUCCESS);
     }
 
@@ -3315,7 +3387,7 @@ EXPORT([\"add\", \"PI\"]);
     fn run_json_format_on_parse_error() {
         let p = write_tmp("LET(x, 1) LET(y, 2);", "bad-json.wll");
         // Capture stderr.
-        let code = run_file(&p, OutputFormat::Json, true);
+        let code = run_file(&p, OutputFormat::Json, true, None);
         // [v0.10.1] 退出码契约(spec §11.5):源文件没解析出来 -> 3。
         // 此前一律 1,与运行期失败无法区分。
         assert_eq!(code, ExitCode::from(3));
@@ -3326,7 +3398,7 @@ EXPORT([\"add\", \"PI\"]);
         // The Phase 3 JSONL output must contain the new schema fields:
         // error_category, retryable, suggestion_code, related.
         let p = write_tmp("PRINT(zzz);", "undef-jsonl.wll");
-        let code = run_file(&p, OutputFormat::Jsonl, true);
+        let code = run_file(&p, OutputFormat::Jsonl, true, None);
         assert_eq!(code, ExitCode::from(1));
     }
 
@@ -3392,7 +3464,7 @@ entry = "main.wll"
         .unwrap();
         // Run the program via run_file.
         let main_path = dir.join("main.wll");
-        let code = run_file(&main_path, OutputFormat::Human, true);
+        let code = run_file(&main_path, OutputFormat::Human, true, None);
         assert_eq!(code, ExitCode::SUCCESS);
         // The lock should now exist and have one entry.
         let lock_path = dir.join("wlwl.lock");
@@ -3426,7 +3498,7 @@ entry = "main.wll"
         let _ = fs::remove_dir_all(&dir);
         fs::create_dir_all(&dir).unwrap();
         fs::write(dir.join("hello.wll"), "PRINT(\"hi\");\n").unwrap();
-        let code = run_file(&dir.join("hello.wll"), OutputFormat::Human, true);
+        let code = run_file(&dir.join("hello.wll"), OutputFormat::Human, true, None);
         assert_eq!(code, ExitCode::SUCCESS);
         assert!(!dir.join("wlwl.lock").exists());
         let _ = fs::remove_dir_all(&dir);
@@ -3577,7 +3649,7 @@ entry = "main.wll"
         fs::create_dir_all(&dir).unwrap();
         let p = dir.join("main.wll");
         fs::write(&p, "LET(f, FUN((x: INTEGER), x)); f(\"hi\");").unwrap();
-        let code = run_file(&p, OutputFormat::Human, true);
+        let code = run_file(&p, OutputFormat::Human, true, None);
         assert_eq!(code, ExitCode::SUCCESS);
         let _ = fs::remove_dir_all(&dir);
     }
@@ -3603,7 +3675,7 @@ entry = "main.wll"
         .unwrap();
         let p = dir.join("main.wll");
         fs::write(&p, "LET(f, FUN((x: INTEGER), x)); f(\"hi\");").unwrap();
-        let code = run_file(&p, OutputFormat::Human, true);
+        let code = run_file(&p, OutputFormat::Human, true, None);
         assert_ne!(code, ExitCode::SUCCESS, "E0033 should fail the run");
         let _ = fs::remove_dir_all(&dir);
     }
@@ -3633,7 +3705,7 @@ entry = "main.wll"
         // indicates failure -- the diagnostic surface is tested
         // elsewhere (wlwl-error tests); here we only need to prove
         // the CLI honors the manifest flag end-to-end.
-        let code = run_file(&p, OutputFormat::Human, true);
+        let code = run_file(&p, OutputFormat::Human, true, None);
         assert_ne!(code, ExitCode::SUCCESS);
         let _ = fs::remove_dir_all(&dir);
     }
@@ -3655,7 +3727,7 @@ entry = "main.wll"
         fs::create_dir_all(&dir).unwrap();
         let p = dir.join("orphan.wll");
         fs::write(&p, "LET(f, FUN((x: INTEGER), x)); f(\"hi\");").unwrap();
-        let code = run_file(&p, OutputFormat::Human, true);
+        let code = run_file(&p, OutputFormat::Human, true, None);
         assert_eq!(code, ExitCode::SUCCESS);
         let _ = fs::remove_dir_all(&dir);
     }
@@ -3677,7 +3749,7 @@ entry = "main.wll"
         fs::write(dir.join("wlwl.toml"), "not = [valid toml").unwrap();
         let p = dir.join("main.wll");
         fs::write(&p, "LET(f, FUN((x: INTEGER), x)); f(\"hi\");").unwrap();
-        let code = run_file(&p, OutputFormat::Human, true);
+        let code = run_file(&p, OutputFormat::Human, true, None);
         // Even though wlwl.toml is malformed, the program itself is
         // valid and must run successfully (strict_types defaults to
         // false on parse failure).

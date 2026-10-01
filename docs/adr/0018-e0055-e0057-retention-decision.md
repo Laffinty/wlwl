@@ -5,7 +5,7 @@
 | **Status** | Accepted |
 | **Date** | 2026-09-24 (proposed) / 2026-09-25 (accepted, plan §9.2 默认 Approved) |
 | **Deciders** | Li (project lead) |
-| **Related** | spec v0.8.1 §11.2 (E0055 / E0057 reservation rows), spec v0.9 §11.2 / §17.3 (algebraic-effect framing), `docs/history/deviations-v0.8.md` D8-003, ADR-0017 (cooperative suspension scheduler), ADR-0019 (OOP), `wlwl-build-plan-v0.9` §3.6 / §5.3 / §9.2 |
+| **Related** | spec v0.8.1 §11.2 (E0055 / E0057 reservation rows), spec v0.9 §11.2 / §17.3 (algebraic-effect framing), `docs/history/20260915-22.md` D8-003, ADR-0017 (cooperative suspension scheduler), ADR-0019 (OOP), `wlwl-build-plan-v0.9` §3.6 / §5.3 / §9.2 |
 
 ## Context and Problem Statement
 
@@ -283,20 +283,20 @@ to:
 
 ## References
 
-- `docs/history/wlwl-build-plan-v0.9-COMPLETED.md` §3.6 (E0055/E0057 决议) /
+- `docs/history/20260915-22.md` §3.6 (E0055/E0057 决议) /
   §5.3 / §9.2 (decision points) / §10 (risk table) / §11.2
   (consistency table) / §11.4 (3 small problems deferred to
   Step 11/12 spec derivation)
-- `docs/history/wlwl-spec-v0.8.md` §11.2 (E0055 / E0057 reservation
+- `docs/history/20260915-22.md` §11.2 (E0055 / E0057 reservation
   rows) / §8.2 (ERR transparency)
-- `docs/history/deviations-v0.8.md` D8-003 (E0055 / E0057 reservation
+- `docs/history/20260915-22.md` D8-003 (E0055 / E0057 reservation
   rationale)
 - `docs/adr/0017-cooperative-suspension-scheduler.md` (algebraic-
   effect framing; §17 → Effect { tag, payload })
 - `docs/adr/0019-oop-minimal-implementation-with-behavioral-types.md`
   (algebraic-effect runtime naming; spec §11.2 E0065 / E0066
   additions)
-- `docs/history/wlwl-spec-v0.8.md` §17.2 (channel close protocol) /
+- `docs/history/20260915-22.md` §17.2 (channel close protocol) /
   §17.3 (cancellation protocol)
 - spec v0.9 §17 (algebraic-effect framing normative 段, added in
   Step 11) — the framing context under which this decision is made.

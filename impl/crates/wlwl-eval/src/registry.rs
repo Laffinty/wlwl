@@ -180,7 +180,7 @@ impl BuiltinGroup {
     /// `generate_appendix_g_md()` 的 match spec.dispatch)。`anchor()` 暂
     /// 保留为对外表面以避免破坏外部 crate 引用;v0.8 §2.3 实际工作转向
     /// 更新 31 个 `BuiltinSpec.section` 字段,详见
-    /// `docs/history/wlwl-build-plan-v0.8-COMPLETED.md` §2.3 (deviation D8-002)。
+    /// `docs/history/20260915-22.md` §2.3 (deviation D8-002)。
     pub fn anchor(self) -> &'static str {
         match self {
             BuiltinGroup::Io => "§15.1",
@@ -465,7 +465,7 @@ pub const BUILTIN_REGISTRY: &[BuiltinSpec] = &[
     },
     BuiltinSpec {
         name: "OR_DIE",
-        signature: "OR_DIE(x, default) -> v (v0.3 alias)",
+        signature: "OR_DIE(x, default) -> v",
         sig: None,
         group: BuiltinGroup::Result,
         err_consumer: ErrConsumerStatus::Yes,
@@ -779,7 +779,7 @@ pub const BUILTIN_REGISTRY: &[BuiltinSpec] = &[
     },
     BuiltinSpec {
         name: "&&",
-        signature: "&&(a, b) -> BOOLEAN (v0.6 §4.3 short-circuit)",
+        signature: "&&(a, b) -> BOOLEAN (short-circuit)",
         sig: Some(BuiltinSig::ret_only(SigTy::Boolean)),
         group: BuiltinGroup::Op,
         // v0.6 §8.3: short-circuit `&&` consumes ERR — left-side
@@ -794,7 +794,7 @@ pub const BUILTIN_REGISTRY: &[BuiltinSpec] = &[
     },
     BuiltinSpec {
         name: "||",
-        signature: "||(a, b) -> BOOLEAN (v0.6 §4.3 short-circuit)",
+        signature: "||(a, b) -> BOOLEAN (short-circuit)",
         sig: Some(BuiltinSig::ret_only(SigTy::Boolean)),
         group: BuiltinGroup::Op,
         // v0.6 §8.3: short-circuit `||` consumes ERR — left-side
@@ -831,7 +831,7 @@ pub const BUILTIN_REGISTRY: &[BuiltinSpec] = &[
     },
     BuiltinSpec {
         name: "POP",
-        signature: "POP(d, k, default) -> v (v0.6 compat alias for AT_K; signature kept 3-arg)",
+        signature: "POP(d, k, default) -> v (AT_K 的兼容别名;签名保持 3 参)",
         sig: Some(BuiltinSig::ret_only(SigTy::Dynamic)),
         group: BuiltinGroup::Dict,
         // v0.8 D8-001 deviation (was P4-B12-002): registry entry now
@@ -853,7 +853,7 @@ pub const BUILTIN_REGISTRY: &[BuiltinSpec] = &[
     },
     BuiltinSpec {
         name: "AT_K",
-        signature: "AT_K(d, k, default) -> v (v0.6 §10.4)",
+        signature: "AT_K(d, k, default) -> v",
         sig: Some(BuiltinSig::ret_only(SigTy::Dynamic)),
         group: BuiltinGroup::Dict,
         err_consumer: ErrConsumerStatus::No,
@@ -953,7 +953,7 @@ pub const BUILTIN_REGISTRY: &[BuiltinSpec] = &[
     },
     BuiltinSpec {
         name: "DEL",
-        signature: "DEL(dict, k) -> DICT (v0.3 alias, W0051)",
+        signature: "DEL(dict, k) -> DICT",
         sig: Some(BuiltinSig::ret_only(SigTy::Dict)),
         group: BuiltinGroup::Dict,
         err_consumer: ErrConsumerStatus::No,
@@ -1623,12 +1623,12 @@ pub fn deferred_names() -> Vec<&'static str> {
 /// 在 `docs/appendix_G.md` 里生成成
 ///
 /// ```text
-/// | `||` | `||(a, b) -> BOOLEAN (v0.6 §4.3 short-circuit)` | ✔ | ... |
+/// | `||` | `||(a, b) -> BOOLEAN (short-circuit)` | ✔ | ... |
 /// ```
 ///
 /// 这一行对任何 markdown 表格解析器来说都是 **9 列而不是 8 列** ——
 /// `||` 把签名格劈成了两半。spec 自己那一份一直是转义过的
-/// (`docs/standard/wlwl-spec-v0.10.md` 写 `\|\|`),只有这个生成器
+/// (`docs/spec/wlwl-spec-v0.11.md` 写 `\|\|`),只有这个生成器
 /// 忘了。名字和签名两列都过一遍:`name` 同样可能是运算符。
 fn escape_cell(s: &str) -> String {
     s.replace('|', "\\|")
@@ -1655,7 +1655,7 @@ pub fn generate_appendix_g_md() -> String {
     out.push_str(
         "> 修改流程:改注册表 -> 跑本函数重写本文件 -> 跑 `cargo test` 验证 lock test。\n\n",
     );
-    out.push_str("> 对照规范:`docs/standard/wlwl-spec-v0.10.md` 附录 G (规范性)。\n\n");
+    out.push_str("> 对照规范:`docs/spec/wlwl-spec-v0.11.md` 附录 G (规范性)。\n\n");
     let n_resolved = BUILTIN_REGISTRY
         .iter()
         .filter(|s| {

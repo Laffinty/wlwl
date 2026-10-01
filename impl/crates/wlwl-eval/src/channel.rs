@@ -5,6 +5,7 @@
 //! See also `runtime::YieldReason::ReceivingOn` / `SendingOn` which
 //! carry a `ChannelId` that addresses a slot in
 //! `Scheduler::channels`.
+pub use wlwl_value::{ChannelHandle, ChannelId};
 
 use std::collections::VecDeque;
 
@@ -14,23 +15,9 @@ use crate::Value;
 ///
 /// Cheap to copy; not a handle (see [`ChannelHandle`] for what
 /// `CHANNEL_NEW` returns to user code).
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
-pub struct ChannelId(pub usize);
-
-/// Generation-tracked channel handle returned to user code by
 /// `CHANNEL_NEW(buf)`.
 ///
 /// Detecting use-after-scope-exit: a channel slot is recycled when
-/// the scope that owns it exits and the leak detector force-closes
-/// the channel. The generation bumps on each recycle so a stale
-/// handle fails E0053-style validation rather than operating on a
-/// different channel than the one the user originally opened.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
-pub struct ChannelHandle {
-    pub id: ChannelId,
-    pub generation: u64,
-}
-
 /// Result of attempting a synchronous (non-suspending) channel op.
 ///
 /// Distinct from `Yield` because TRY_* never yields — they only return

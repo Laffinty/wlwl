@@ -6,6 +6,8 @@ license.workspace = true  # SPDX canonical: "GPL-2.0-only"
 description = "WLWL standard library (Phase 4 搂15: std.io / std.fs / std.json / std.ai / std.format / std.agent)"
 
 [dependencies]
+wlwl-ast = { workspace = true }
+wlwl-value = { workspace = true }
 wlwl-error = { workspace = true }
 serde_json = { workspace = true }
 

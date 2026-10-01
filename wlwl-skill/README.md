@@ -28,8 +28,8 @@ The skill is loaded when the task matches the `description` in
 
 ## Target version
 
-This skill targets **wlwl-spec-v0.10** (file at
-`../docs/standard/wlwl-spec-v0.10.md`).
+This skill targets **wlwl-spec-v0.11** (file at
+`../docs/spec/wlwl-spec-v0.11.md`).
 
 - **v0.6 core** (truthiness overhaul, `&&/||` short-circuit, `IF` ERR-routing,
   `!` canonical, `AT_K` rename, string subscript, `LET MUT`, overflow→`E0035`,
@@ -41,7 +41,7 @@ This skill targets **wlwl-spec-v0.10** (file at
   behaviour): `EXPECT_ERR` consumer, `=` triple-identity, `LET`/`FUN`
   asymmetry, `SUB` length semantics, float exponents, `MUT` as identifier,
   string-literal subscript, and related prose fixes.
-- **v0.9** (archived, `../docs/history/wlwl-spec-v0.9.md`) contributed:
+- **v0.9** (archived) contributed:
   - **True-suspension concurrency** — `YIELD` legal at any expression
     position inside task bodies; blocking `CHANNEL_SEND`/`RECV` suspend
     (no `ChannelWouldBlock`).
@@ -54,8 +54,8 @@ This skill targets **wlwl-spec-v0.10** (file at
   - **Types** `CLASS` / `INSTANCE`; object-identity equality.
   - **Error codes** — `E0055`/`E0057` removed; `E0065`/`E0066`/`W0065`/`W0066`
     added; `E0014`/`E0032`/`E0050`/`E0051` redefined.
-- **v0.10** is the current standard — **static contracts, all default-off**
-  (this bundle tracks the v0.10.1 implementation of it).
+- **v0.10** added **static contracts, all default-off** (this bundle tracks
+  the v0.10.1+ implementation of it).
   Its runtime is identical to v0.9's; nothing below changes behaviour unless a
   `wlwl.toml` opts in.
   - **Type annotations enter the spec** — `LET(x: INTEGER, 1)`,
@@ -73,10 +73,11 @@ This skill targets **wlwl-spec-v0.10** (file at
   - **New CLI** — `wlwl sig`, `wlwl sig-gen`, `wlwl interface`, `wlwl schema`,
     `wlwl lsp`.
 
-Spec archives: `../docs/history/wlwl-spec-v0.6.md`,
-`../docs/history/wlwl-spec-v0.7.md`, `../docs/history/wlwl-spec-v0.8.md`,
-`../docs/history/wlwl-spec-v0.9.md` (each version additive on the previous;
-v0.10 is the current normative source).
+Superseded specs (v0.6–v0.10) are archived in condensed form in
+`../docs/history/20260902-09.md` / `../docs/history/20260915-22.md`
+(full text via git history; each version additive on the previous;
+v0.11 — the renumbered v0.10 "v2 cleaned" edition, semantics unchanged —
+is the current normative source).
 
 Compiler version is independent of the spec version (see root
 `CHANGELOG.md`). `wlwl run` is always the source of truth.
@@ -108,9 +109,10 @@ wlwl run wlwl-skill/examples/oop.wll
 ## Scope
 
 - **In scope**: writing and reviewing `.wll` programs against
-  wlwl-spec-v0.10 — v0.6 core + v0.7 §17 concurrency + v0.8 clarifications
+  wlwl-spec-v0.11 — v0.6 core + v0.7 §17 concurrency + v0.8 clarifications
   + v0.9 true-suspension / OOP / session types / linear THIS
-  + v0.10 static contracts (annotations, module signatures, MATCH checks).
+  + v0.10 static contracts (annotations, module signatures, MATCH checks)
+  carried over unchanged into v0.11.
 - **Out of scope**: the Rust implementation (`impl/`), formatter design,
   ADRs, release engineering. For those, read the repo docs directly.
 
@@ -172,9 +174,8 @@ opts in.
 
 ## See also
 
-- Language spec: `../docs/standard/wlwl-spec-v0.10.md`
-- Spec archives: `../docs/history/wlwl-spec-v0.9.md`,
-  `../docs/history/wlwl-spec-v0.8.md`,
-  `../docs/history/wlwl-spec-v0.7.md`, `../docs/history/wlwl-spec-v0.6.md`
+- Language spec: `../docs/spec/wlwl-spec-v0.11.md`
+- Spec archives (condensed): `../docs/history/20260902-09.md`,
+  `../docs/history/20260915-22.md`
 - Builtin registry (Appendix G): `../docs/appendix_G.md`
 - Concurrency fixtures: `../impl/tests/concurrency/`

@@ -1,6 +1,6 @@
 # wlwl-skill CHANGELOG
 
-Skill-bundle changes (spec lives at `../docs/standard/wlwl-spec-v0.10.md`
+Skill-bundle changes (spec lives at `../docs/spec/wlwl-spec-v0.11.md`
 and is authoritative).
 
 ## [0.10.1] — 2026-09-30

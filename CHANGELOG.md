@@ -6,11 +6,66 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 > **Note.** The compiler version is **independent of the language spec version**.
-> The language spec lives in `docs/standard/` and is identified by version + name.
+> The language spec lives in `docs/spec/` and is identified by version + name.
 > This file tracks the **compiler / tooling** releases. The current spec is
-> **v0.10** (`docs/standard/wlwl-spec-v0.10.md`); archived specs live under
-> `docs/history/` (`wlwl-spec-v0.9.md`, `wlwl-spec-v0.8.md`,
-> `wlwl-spec-v0.7.md`, `wlwl-spec-v0.6.md`).
+> **v0.11** (`docs/spec/wlwl-spec-v0.11.md`). Archived specs and all
+> historical material (build plans, deviation ledgers, reviews, daily logs)
+> are condensed in `docs/history/` (`20260902-09.md`, `20260915-22.md`);
+> full text is available via git history.
+
+## [Unreleased]
+
+### Added
+- **标准库底座 M3:R1 首批 + 混合 test(ADR-0021)**。`std.collection` 以纯 wlwl
+  重写为终态(17 成员;`RANGE` 因基准实测的规模问题于 M5 单独沉回 R2,见下方
+  Fixed);新增 `std.str`(§6,5 成员)与 `std.math`(§7,11 成员,R1 门面 + R2 浮点
+  内核);`std.test`(§8)混合化(门面导出 6 成员,R2 内核负责注册表 / 计时 /
+  测试体调用)。成员面由 R1 门面的 `EXPORT` 声明,附录 A 镜像随之生成。
+- **BREAKING:`std.test` 的 `ASSERT(cond)` 真值口径按语言规范 §2.3 对齐**。假值
+  恰为八个(`FALSE` / `NULL` / `0` / `0.0` / `""` / 空数组 / 空字典 / `NaN`),
+  其余一切为真。**`ASSERT(0)` / `ASSERT("")` / `ASSERT([])` 从「通过」变成
+  「失败」** —— 此前只把 `BOOLEAN(false)` 与 `NULL` 当假,与 `IF` / `BOOL` /
+  `&&` / `\|\|` 的口径不一致(§2.3 明写真值也由「模式匹配以外的谓词位置」
+  消费,`ASSERT(cond)` 正是谓词位置)。仓内无任何调用点依赖旧口径(208 个
+  `.wll` + 26 处内嵌源码查证)。偏差 D11-010。
+- **BREAKING(可观察面不变):`std.collection` 的 `RANGE` 实现层由 R1 改为 R2**。
+  成员面、签名、语义与诊断**一字未变**(75 条冻结契约用例逐字比对全绿),只是
+  实现语言变了 —— ADR-0021 §0.2:层归属变更不算破坏性变更。依据是 M5 基准
+  实测:R1 版 `RANGE` 每元素成本超线性(10 000 元素 3.6 s、40 000 元素 86 s),
+  使语言规范 §6.6 的「100 万次简单循环 < 30 s」符合性负载跑不完。局限:同一
+  成本剖面适用于所有建数组的成员(`MAP` / `FILTER` / `FLAT` / `UNIQ` /
+  `ENUMERATE` / `GROUP_BY` / `JOIN` 都走 `PUSH`),根因修复超本版范围。
+  偏差 D11-012。
+- **标准库诊断能力**:`RANGE` 步长为零的 `E0038` 现在有一个**注入的**发射器
+  承担(此前全仓唯一发射点是被 M3-1 删掉的 R2 实现)。`std.test` 的 `ASSERT` 族
+  失败码 `E0046`–`E0049` 的载荷构造搬进 R1 门面。
+
+- **标准库底座 M2:值直通(ADR-0022)**。新 crate **`wlwl-value`** 成为值层单源:
+  十三类运行时值、`Env`/`Cell`、类与实例(`ClassEntry`/`ThisToken`)、
+  `TaskHandle`/`ChannelHandle`、会话协议(`Proto`/`ProtocolCursor`)、
+  `Outcome`+`Signal`,以及 std 调用契约(`StdFn`/`StdHost`/`StdCtx`);
+  依赖方向 `wlwl-eval → wlwl-value ← wlwl-std` 单向。
+- **serde_json 边界废止**:std 原生函数直接收发真 `Value`(含闭包);
+  io/fs/json/format/ai/agent 的 serde_json 降为各模块**内部**表示
+  (`compat` 兼容层保持函数体与测试零改动),`wrap` 在边界统一转换。
+- **宿主归位**:`std.collection`(17 成员)与 `std.test` 内核迁入
+  `wlwl-std`;「名录特判」与「std 边界拒绝闭包值」既有契约废止;
+  `std.test` 注册表移入 `StdCtx::tests`。回调经 `StdHost::call` 注入,
+  挂起(`Signal::Yield`)原样穿透。
+
+- **标准库底座 M1:双轨实现机制**(ADR-0021/0022/0023)。`wlwl:std.*` 分
+  R1 语言层(纯 wlwl 源码,`include_str!` 嵌入二进制)与 R2 原生层(Rust
+  绑定表),经单一清单(`wlwl_std::resolve` → `StdBackend`)路由;调用面
+  不变。R1 首批成员:`std.str.QUOTE`、`std.math.ABS`(stdlib 规范 §6/§7
+  契约,其余成员随 M3 落齐,附录 A 镜像始终反映实现真相)。
+- **开发覆盖通道**(非稳定接口):`wlwl run --std-src <dir>` / 环境变量
+  `WLWL_STD_SRC`,R1 模块改从源码目录加载;导出面不变性由
+  `stdlib_dual_track` 锁测试守护(漂移必须 `E0023`,不得静默回退嵌入版)。
+- **stdlib 规范附录 A 镜像生成器**:`gen-appendix-a` bin 从实现清单生成
+  `docs/stdlib/wlwl-stdlib-spec-v0.11.md` 附录 A,`stdlib_appendix_a_sync`
+  锁测试双向对账。
+- release 产物增附 `stdlib/`(R1 源码参考副本,运行时不读取)与
+  `docs/stdlib/`;probe 136 → 138。
 
 ## [v0.10.4] — 2026-09-30
 
@@ -278,7 +333,7 @@ Rust 里 `&'static str` 的生命周期撇号**不是**字符字面量的开始�
   未复现崩溃,故未动。
 ## [v0.10.2] — 2026-09-30
 
-Spec: **wlwl-spec-v0.10**(`docs/standard/wlwl-spec-v0.10.md`)——
+Spec: **wlwl-spec-v0.10**(`docs/history/20260915-22.md`)——
 规范版本号不变,改的是「实现 ↔ 规范文本」对齐,与 v0.10.1 同性质。
 
 > **版本号口径(已于 v0.10.4 作废,保留为记录)**:`impl/Cargo.toml` 的 `version`
@@ -290,10 +345,11 @@ Spec: **wlwl-spec-v0.10**(`docs/standard/wlwl-spec-v0.10.md`)——
 > v0.10.2 / v0.10.3 三个发布物**全部**报 `wlwl 0.10.0`。v0.10.4 起改为
 > **版本号跟随发布版本**,并由 `release.yml` 的 `version-check` 守卫强制。
 
-来源:第三方黑盒合规审查(`docs/reviews/v0.10.1审查/`,761 个用例)。
+来源:第三方黑盒合规审查(761 个用例;归档精简见
+`docs/history/20260915-22.md`)。
 逐条核验后:13 条里 **8 条属实、2 条根因判错、3 条不成立**;
-另发现 2 条报告漏掉的真缺陷。计划书见
-[`docs/plan/wlwl-spec-compliance-修复计划.md`](docs/plan/wlwl-spec-compliance-修复计划.md)。
+另发现 2 条报告漏掉的真缺陷。计划书归档精简亦见
+[`docs/history/20260915-22.md`](docs/history/20260915-22.md)。
 
 ### Fixed
 
@@ -441,7 +497,7 @@ Spec: **wlwl-spec-v0.10**(`docs/standard/wlwl-spec-v0.10.md`)——
 
 ## [v0.10.1] — 2026-09-29
 
-Spec: **wlwl-spec-v0.10**(`docs/standard/wlwl-spec-v0.10.md`)——
+Spec: **wlwl-spec-v0.10**(`docs/history/20260915-22.md`)——
 本版**不改规范版本号**,改的是规范文本与实现对齐。
 
 **本版是一次「让文档与实现说同一句话」的版本**:13 个 Step、60 余条修复,
@@ -639,8 +695,8 @@ Spec: **wlwl-spec-v0.10**(`docs/standard/wlwl-spec-v0.10.md`)——
 
 ## [v0.10.0] — 2026-09-28
 
-Spec: **wlwl-spec-v0.10** (`docs/standard/wlwl-spec-v0.10.md`).
-v0.9 archived at `docs/history/wlwl-spec-v0.9.md`.
+Spec: **wlwl-spec-v0.10** (`docs/history/20260915-22.md`).
+v0.9 archived (condensed in `docs/history/20260915-22.md`).
 
 **本版是「静态契约」版:运行期语义与 v0.9 逐条一致。** 新增能力全部**默认关闭**
 (`[features] gradual_typing` 缺省 `off`,`off` 时整条静态链路不执行);唯一的

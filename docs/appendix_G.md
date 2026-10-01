@@ -4,7 +4,7 @@
 > 单源真相是 `crates/wlwl-eval/src/registry.rs::BUILTIN_REGISTRY`,本 markdown 是镜像。
 > 修改流程:改注册表 -> 跑本函数重写本文件 -> 跑 `cargo test` 验证 lock test。
 
-> 对照规范:`docs/standard/wlwl-spec-v0.10.md` 附录 G (规范性)。
+> 对照规范:`docs/spec/wlwl-spec-v0.11.md` 附录 G (规范性)。
 
 总条目数:**106** | 已实现:**86** | LexerMacro:**20** | Deferred:**0**
 
@@ -26,7 +26,7 @@
 <!-- RESULT 处理 (11 条) -->
 | `IS_OK` | `IS_OK(x) -> BOOLEAN` | ✔ | ✔ | v0.2 | ✓ macro | parser -> `Expr::*` (§8.3) |
 | `IS_ERR` | `IS_ERR(x) -> BOOLEAN` | ✔ | ✔ | v0.2 | ✓ macro | parser -> `Expr::*` (§8.3) |
-| `OR_DIE` | `OR_DIE(x, default) -> v (v0.3 alias)` | ✔ | ✔ | v0.2 | ✓ compat (W0051/W0054) | `resolve_builtin` (compat, §8.3) |
+| `OR_DIE` | `OR_DIE(x, default) -> v` | ✔ | ✔ | v0.2 | ✓ compat (W0051) | `resolve_builtin` (compat, §8.3) |
 | `UNWRAP_OR` | `UNWRAP_OR(x, default) -> v` | ✔ | ✔ | v0.4 | ✓ builtin | `resolve_builtin` (§8.3) |
 | `UNWRAP` | `UNWRAP(x) -> v / E0100 (不可捕获)` | ✔ | ❌ | v0.4 | ✓ builtin | `resolve_builtin` (§8.3) |
 | `ERR_PAYLOAD` | `ERR_PAYLOAD(x) -> e / E0030` | ✔ | ❌ | v0.4 | ✓ builtin | `resolve_builtin` (§8.3) |
@@ -56,8 +56,8 @@
 | `*` | `*(a, b) -> INTEGER / FLOAT` | ❌ | ❌ | v0.2 | ✓ builtin | `resolve_builtin` (§4.3) |
 | `/` | `/(a, b) -> INTEGER / FLOAT` | ❌ | ❌ | v0.2 | ✓ builtin | `resolve_builtin` (§4.3) |
 | `%` | `%(a, b) -> INTEGER` | ❌ | ❌ | v0.2 | ✓ builtin | `resolve_builtin` (§4.3) |
-| `&&` | `&&(a, b) -> BOOLEAN (v0.6 §4.3 short-circuit)` | ✔ | ❌ | v0.6 | ✓ builtin | `resolve_builtin` (§4.3) |
-| `\|\|` | `\|\|(a, b) -> BOOLEAN (v0.6 §4.3 short-circuit)` | ✔ | ❌ | v0.6 | ✓ builtin | `resolve_builtin` (§4.3) |
+| `&&` | `&&(a, b) -> BOOLEAN (short-circuit)` | ✔ | ❌ | v0.6 | ✓ builtin | `resolve_builtin` (§4.3) |
+| `\|\|` | `\|\|(a, b) -> BOOLEAN (short-circuit)` | ✔ | ❌ | v0.6 | ✓ builtin | `resolve_builtin` (§4.3) |
 | `NEG` | `NEG(a) -> -a` | ❌ | ❌ | v0.2 | ✓ builtin | `resolve_builtin` (§4.3) |
 <!-- ARRAY 操作 (8 条) -->
 | `PUSH` | `PUSH(arr, x) -> ARRAY` | ❌ | ❌ | v0.2 | ✓ builtin | `resolve_builtin` (§10.4) |
@@ -69,10 +69,10 @@
 | `INDEX` | `INDEX(arr, x) -> INTEGER (1-based) / -1` | ❌ | ❌ | v0.2 | ✓ builtin | `resolve_builtin` (§10.4) |
 | `REVERSE` | `REVERSE(arr) -> ARRAY` | ❌ | ❌ | v0.2 | ✓ builtin | `resolve_builtin` (§10.4) |
 <!-- DICT 操作 (8 条) -->
-| `POP` | `POP(d, k, default) -> v (v0.6 compat alias for AT_K; signature kept 3-arg)` | ❌ | ❌ | v0.6 | ✓ compat (W0051/W0054) | `resolve_builtin` (compat, §10.4) |
-| `AT_K` | `AT_K(d, k, default) -> v (v0.6 §10.4)` | ❌ | ❌ | v0.6 | ✓ builtin | `resolve_builtin` (§10.4) |
+| `POP` | `POP(d, k, default) -> v (AT_K 的兼容别名;签名保持 3 参)` | ❌ | ❌ | v0.6 | ✓ compat (W0051) | `resolve_builtin` (compat, §10.4) |
+| `AT_K` | `AT_K(d, k, default) -> v` | ❌ | ❌ | v0.6 | ✓ builtin | `resolve_builtin` (§10.4) |
 | `REMOVE_KEY` | `REMOVE_KEY(dict, k) -> DICT` | ❌ | ❌ | v0.4 | ✓ builtin | `resolve_builtin` (§10.4) |
-| `DEL` | `DEL(dict, k) -> DICT (v0.3 alias, W0051)` | ❌ | ❌ | v0.2 | ✓ compat (W0051/W0054) | `resolve_builtin` (compat, §10.4) |
+| `DEL` | `DEL(dict, k) -> DICT` | ❌ | ❌ | v0.2 | ✓ compat (W0051) | `resolve_builtin` (compat, §10.4) |
 | `KEYS` | `KEYS(dict) -> ARRAY` | ❌ | ❌ | v0.2 | ✓ builtin | `resolve_builtin` (§10.4) |
 | `VALUES` | `VALUES(dict) -> ARRAY` | ❌ | ❌ | v0.2 | ✓ builtin | `resolve_builtin` (§10.4) |
 | `HAS` | `HAS(dict, k) -> BOOLEAN` | ❌ | ❌ | v0.2 | ✓ builtin | `resolve_builtin` (§10.4) |

@@ -1,0 +1,5 @@
+// E0038(RANGE 步长为零,标准库规范 §5 / 语言规范 §11)在 M3 之前全仓唯一
+// 发射点是 R2 collection.rs 里的 Rust 代码。删掉 R2 之后这条诊断只剩注入
+// 的 _DIAG_E0038 一个来源 —— 本条探针守住它没被顺手删掉。
+IMPORT("wlwl:std.collection", ["RANGE"]);
+PRINT(RANGE(0, 0, 0));

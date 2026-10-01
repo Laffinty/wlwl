@@ -19,7 +19,7 @@ wlwl-error = { workspace = true }
 wlwl-parser = { workspace = true }
 
 [dev-dependencies]
-wlwl-parser = { path = "../wlwl-parser" }
+wlwl-parser = { workspace = true }
 
 [lints]
 workspace = true

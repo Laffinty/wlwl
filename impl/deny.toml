@@ -1,7 +1,7 @@
 # [v0.2 Phase G2] cargo-deny configuration.
 #
 # Hard quality gate that must pass before Phase H can tag v0.4.0.
-# See `docs/history/wlwl-build-plan-v0.2.md` 闂?.1 decision #8 + 闂傚倸鍊搁崐鎼佸磹妞嬪海鐭嗗ù锝堟缁€濠傗攽閻樿弓杩规繛鎴欏灩闁裤倖淇婇妶鍌氫壕闂?.
+# See `docs/history/20260902-09.md` 闂?.1 decision #8 + 闂傚倸鍊搁崐鎼佸磹妞嬪海鐭嗗ù锝堟缁€濠傗攽閻樿弓杩规繛鎴欏灩闁裤倖淇婇妶鍌氫壕闂?.
 # CI runs `cargo deny --locked check` on every push and PR; local
 # runs use the same config file (this one). cargo-deny version:
 # ^0.20 (installed 2026-09-19 闂?older 0.16 fails to parse CVSS v4.0
@@ -26,7 +26,7 @@
 #
 # Surveys 2026-09-19 (--all-features, 200 registry crates, 20
 # distinct license strings). All covered; documented in
-# `docs/history/deviations-v0.7.md` P4-G2-* and `docs/history/20260919g2.md`.
+# `docs/history/20260915-22.md` P4-G2-* and `docs/history/20260915-22.md`.
 
 [graph]
 # `targets = []` 闂?analyze every triple Cargo.lock has a node for
@@ -117,23 +117,22 @@ allow-workspace = true  # ours: 9 workspace path crates use `workspace = true` �
 allow = []
 deny = []
 skip-tree = []
-skip = [
-    { crate = "wlwl-std", reason = "workspace = true internal dep" },
-    { crate = "wlwl-toml", reason = "workspace = true internal dep" },
-    { crate = "wlwl-ast", reason = "workspace = true internal dep" },
-    { crate = "wlwl-lexer", reason = "workspace = true internal dep" },
-    { crate = "wlwl-parser", reason = "workspace = true internal dep" },
-    { crate = "wlwl-error", reason = "workspace = true internal dep" },
-    { crate = "wlwl-eval", reason = "workspace = true internal dep" },
-    { crate = "wlwl-formatter", reason = "workspace = true internal dep" },
-    { crate = "wlwl-cli", reason = "workspace = true internal dep" },
-    # [v0.10] Step 1 新增的 crate。漏了它会让 CI 直接红:
-    # `error[wildcard]: found 7 wildcard dependencies for crate 'wlwl-types'`
-    # —— `allow-workspace = true` 只覆盖 `workspace = true` 的依赖,而本 crate
-    # 另有一条 dev-dependency 走 `path =`,两条路径都要靠 skip 兜住。
-    # 与上面 9 条同理由,故同列表。
-    { crate = "wlwl-types", reason = "workspace = true internal dep" },
-]
+# [v0.11 / D10-011] 这张 skip 名单**已清空**,而且它本来就不该存在。
+#
+# 它是 [v0.10] Step 1 加 `wlwl-types` 时为绕开 `error[wildcard]` 建的:`[bans]
+# 的 `wildcards = "deny"` 会把「版本要求是通配 `*`」的依赖判红,而 workspace
+# 内部的 path 依赖只写 `path` 不写 `version` 时,cargo 解析出的要求**就是** `*`。
+# 当时两条路都能救火:`skip` 列表,或者把 `version` 补上。选了前者。
+#
+# 它的代价在 v0.11 兑现了:每新增一个内部 crate 就要记得往这张表里加一行,
+# 忘了就红。`wlwl-value`(M2 新增)就被忘了 —— 而 CI 此前只触发 `main`,
+# cargo-deny 一步都没被跑到,直到 wip0.11 纳入触发列表才暴露(run #167)。
+#
+# 现在改成根治:10 条内部依赖全部补上 `version`(见 `Cargo.toml`
+# `[workspace.dependencies]`),`wlwl-types` 那条 dev-dependency 改走
+# `workspace = true`。通配要求消失,这张表自然空掉 —— 顺带把「新增 crate
+# 忘了加一行」这类人为陷阱也一起去除了。
+skip = []
 
 [sources]
 unknown-registry = "deny"

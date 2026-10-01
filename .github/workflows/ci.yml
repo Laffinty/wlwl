@@ -1,10 +1,17 @@
 name: CI
 
+# `wip0.11` 列入自动触发(v0.11 标准库底座批次 A 的工作分支)。此前这里只
+# 有 `main`,而 wip 分支的推送**不触发任何 workflow** —— 也就是说 wip 期间
+# 的 fmt / clippy / cargo-deny / test / conformance 门禁全部处于「没人跑」
+# 的状态,只有开 PR 才走一遍。
+#
+# 触发条件随工作分支同步更新;若将来还有别的 wip 分支,同样加进这两个列表
+# (push 侧按**被推**的分支过滤,pull_request 侧按**基**分支过滤)。
 on:
   push:
-    branches: [main]
+    branches: [main, wip0.11]
   pull_request:
-    branches: [main]
+    branches: [main, wip0.11]
 
 env:
   CARGO_TERM_COLOR: always
@@ -57,7 +64,7 @@ jobs:
       # to `RUSTFLAGS: -D warnings` (which only catches rustc lints)
       # and `cargo fmt --check` (style only). Clippy enforces the
       # idiomatic Rust lints documented in
-      # `docs/history/wlwl-build-plan-v0.2.md` 闁? G1.
+      # `docs/history/20260902-09.md` 闁? G1.
       - name: cargo clippy -D warnings
 
 

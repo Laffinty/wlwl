@@ -2489,8 +2489,8 @@ mod tests {
             .join("..")
             .join("..")
             .join("docs")
-            .join("standard")
-            .join("wlwl-spec-v0.10.md")
+            .join("spec")
+            .join("wlwl-spec-v0.11.md")
     }
 
     /// [v0.10.3] 规范 §11.3.1 申报「已注册但无触发路径」的警告码。

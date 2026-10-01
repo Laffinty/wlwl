@@ -1,0 +1,10 @@
+// std.str(§6)与 std.math(§7,混合模块:R1 门面 + R2 浮点内核)在 v0.11 落齐。
+// 一条探针同时覆盖两个 R1 模块,其中 SQRT 走注入的 R2 内核。
+IMPORT("wlwl:std.str", ["SPLIT_LINES", "COUNT", "QUOTE"]);
+IMPORT("wlwl:std.math", ["SQRT", "ROUND", "PI", "FLOOR"]);
+PRINT(SPLIT_LINES("a\r\nb\r\n"));
+PRINT(COUNT("aaaa", "aa"));
+PRINT(QUOTE("q"));
+PRINT(SQRT(2.25));
+PRINT(ROUND(PI));
+PRINT(FLOOR(-1.5));

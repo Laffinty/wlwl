@@ -117,6 +117,6 @@ Negative:
 ## References
 
 - spec v0.4 §6.4 (Closure capture)
-- docs/history/wlwl-build-plan-v0.2.md §A2 + §3
+- docs/history/20260902-09.md §A2 + §3
 - docs/history/20260907.md (Phase A2 implementation report)
 - specs/history/20260906.md (precursor discussion on cell costs)

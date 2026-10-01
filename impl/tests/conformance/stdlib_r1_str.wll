@@ -1,0 +1,63 @@
+// [v0.11 M3-4] stdlib R1 符合性自测 —— std.str(标准库规范 §6)
+//
+// 端到端:走真实 `wlwl run`、经 IMPORT 解析嵌入式 .wll、在 R1 门面上求值。
+// 逐条行为(含诊断码与措辞)由 `wlwl-eval/tests/str_math_contract.rs` 锁;
+// 这里锁「从命令行跑起来也是对的」——加载 / 导出 / 内核注入那一段。
+// 失败即 PANIC;`conformance.rs` 的 `r1_stdlib_self_tests_pass` 要求 exit 0。
+IMPORT("wlwl:std.str", ["JOIN", "SPLIT_LINES", "CHAR_AT", "COUNT", "QUOTE"]);
+IMPORT("wlwl:std.test", ["TEST", "ASSERT_EQ", "ASSERT", "RUN_TESTS"]);
+
+// ── JOIN ──
+TEST("join_strings", FUN((), ASSERT_EQ(JOIN(["a", "b", "c"], "-"), "a-b-c")));
+TEST("join_renders_non_strings", FUN((), ASSERT_EQ(JOIN([1, TRUE, NULL], "|"), "1|TRUE|NULL")));
+TEST("join_empty_array_is_empty_string", FUN((), ASSERT_EQ(JOIN([], "-"), "")));
+TEST("join_empty_separator", FUN((), ASSERT_EQ(JOIN(["a", "b"], ""), "ab")));
+
+// ── SPLIT_LINES:§6 的四条边界逐条 ──
+TEST("split_lines_empty_string", FUN((), ASSERT_EQ(SPLIT_LINES(""), [])));
+TEST("split_lines_no_newline", FUN((), ASSERT_EQ(SPLIT_LINES("abc"), ["abc"])));
+TEST("split_lines_basic", FUN((), ASSERT_EQ(SPLIT_LINES("a\nb\nc"), ["a", "b", "c"])));
+TEST("split_lines_trailing_newline_makes_no_empty_tail", FUN((), ASSERT_EQ(SPLIT_LINES("a\nb\n"), ["a", "b"])));
+TEST("split_lines_strips_carriage_return", FUN((), ASSERT_EQ(SPLIT_LINES("a\r\nb\r\n"), ["a", "b"])));
+TEST("split_lines_keeps_interior_blank_line", FUN((), ASSERT_EQ(SPLIT_LINES("a\n\nb"), ["a", "", "b"])));
+TEST("split_lines_lone_newline_is_one_blank_line", FUN((), ASSERT_EQ(LEN(SPLIT_LINES("\n")), 1)));
+
+// ── CHAR_AT:等价于 SUB(s, i, 1),负索引自尾部计数 ──
+TEST("char_at_first", FUN((), ASSERT_EQ(CHAR_AT("abc", 0), "a")));
+TEST("char_at_middle", FUN((), ASSERT_EQ(CHAR_AT("abc", 1), "b")));
+TEST("char_at_is_codepoint_not_byte", FUN((), ASSERT_EQ(CHAR_AT("héllo", 1), "é")));
+TEST("char_at_negative_index", FUN((), ASSERT_EQ(CHAR_AT("abc", -1), "c")));
+TEST("char_at_matches_sub", FUN((), ASSERT(==(CHAR_AT("abc", 2), SUB("abc", 2, 1)))));
+
+// ── COUNT:非重叠出现次数 ──
+TEST("count_none", FUN((), ASSERT_EQ(COUNT("abc", "z"), 0)));
+TEST("count_adjacent", FUN((), ASSERT_EQ(COUNT("aaa", "a"), 3)));
+TEST("count_is_non_overlapping", FUN((), ASSERT_EQ(COUNT("aaaa", "aa"), 2)));
+TEST("count_tricky_non_overlapping", FUN((), ASSERT_EQ(COUNT("abababa", "aba"), 2)));
+// `COUNT` 的两处 E0030(空 sub / 非字符串)不在这里断言:那是**硬诊断**不是
+// ERR 值,wlwl 侧抓不到 —— 调用当场就把诊断抛出去了。诊断码与措辞由
+// `str_math_contract.rs` 的 `count_empty_needle_is_e0030` /
+// `count_non_string_subject` 逐字锁。
+
+// ── QUOTE(M1 落地,M3-2 一字未动)──
+TEST("quote_plain", FUN((), ASSERT_EQ(QUOTE("ab"), "\"ab\"")));
+TEST("quote_escapes_backslash", FUN((), ASSERT_EQ(QUOTE("a\\b"), "\"a\\\\b\"")));
+TEST("quote_escapes_newline", FUN((), ASSERT_EQ(QUOTE("a\nb"), "\"a\\nb\"")));
+
+// §6 明文「不重导出任何全局内建」由 Rust 侧的
+// `str_and_math_reexport_no_global_builtin` 对全局内建注册表逐条查;
+// 这里从脚本侧只能确认门面确实导出了 §6 的 5 个成员。
+TEST("all_five_members_import", FUN((),
+  ASSERT_EQ(LEN([JOIN, SPLIT_LINES, CHAR_AT, COUNT, QUOTE]), 5)));
+
+LET(results, RUN_TESTS());
+LET MUT(failed, 0);
+FOR(r, results,
+    IF(INDEX_GET(r, "passed"),
+       NULL,
+       (SET(failed, +(failed, 1));
+        PRINT("FAIL ", INDEX_GET(r, "name"), ": ", INDEX_GET(r, "error")))));
+IF(>(failed, 0),
+   PANIC(+("stdlib_r1_str: ", +(STR(failed), " case(s) failed"))),
+   NULL);
+PRINT("stdlib_r1_str: ", LEN(results), " case(s) passed");

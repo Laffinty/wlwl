@@ -128,7 +128,7 @@ Negative:
 ## References
 
 - spec v0.4 §16.3 (canonical formatter)
-- docs/history/wlwl-build-plan-v0.2.md §E2 + §16.3 (formality rules)
-- docs/history/20260919e2-e4.md (Phase E2-E4 implementation report)
+- docs/history/20260902-09.md(含 v0.2 构建计划归档精简)§E2 + §16.3 (formality rules)
+- docs/history/20260915-22.md (Phase E2-E4 implementation report; 2026-09-30 起日次日志按 5~10 日窗口合并精简)
 - `crates/wlwl-formatter/src/lib.rs` — rule implementations
 - `tools/canon-idempotency-test` — round-trip verification

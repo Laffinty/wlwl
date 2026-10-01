@@ -1,0 +1,11 @@
+{
+ "exit": 0,
+ "contains": [
+  "2",
+  "passes",
+  "TRUE",
+  "FALSE",
+  "E0046"
+ ],
+ "_why": "[v0.11 M3-3] std.test 的对外契约层换成 R1 门面。这条盯的是**混合形态特有的失效面**:门面在 wlwl 侧、注册表与计时在 R2 侧,两者接错时(比如门面忘了注入 kernel)表现为 E0020 undefined name,或 RUN_TESTS 拿到空注册表。断言失败码 E0046 与结果字典的 name/passed 字段是 §8 的契约面。逐条行为由 wlwl-eval/tests/test_contract.rs 的 52 条冻结用例锁。"
+}

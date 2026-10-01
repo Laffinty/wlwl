@@ -1,7 +1,7 @@
 # Changelog
 
 > **Note.** The compiler version is **independent of the language
-> spec version**. The language spec lives in `docs/standard/` and
+> spec version**. The language spec lives in `docs/spec/` and
 > is content-addressed. This page tracks the **compiler / tooling**
 > releases.
 
@@ -13,7 +13,7 @@
 
 ## [Unreleased — v0.7.0] {#unreleased--v070}
 
-> **WIP.** `wip0.7` branch. Plan: `docs/history/wlwl-build-plan-v0.7-COMPLETED.md`.
+> **WIP.** `wip0.7` branch. Plan: `docs/history/20260915-22.md`.
 > Spec file (Phase H1) is **not** yet cut.
 
 This release introduces the **structured-concurrency runtime**: a
@@ -24,7 +24,7 @@ work (Phases D / E / F) is still pending — see the plan.
 
 ### Added
 
-- **Phase A (research + design landed)** — `docs/history/wlwl-build-plan-v0.7-COMPLETED.md`
+- **Phase A (research + design landed)** — `docs/history/20260915-22.md`
   (commit `01ff9d6`), ADR-0014 / 0015 / 0016 (commit `0d463ad`),
   `deviations.md` v0.7 section marker (commit `e9d2106`).
 - **Phase B (coroutine runtime skeleton)** — error codes
@@ -108,7 +108,7 @@ work (Phases D / E / F) is still pending — see the plan.
 - Phase G quality gates (clippy 0-warning, rustdoc 100%,
   fuzz 24h, cargo-deny 0, single-task perf ≤ 10% regression,
   spec-file freeze)
-- Phase H `docs/history/wlwl-spec-v0.7.md` + `v0.7.0` tag
+- Phase H `docs/history/20260915-22.md` + `v0.7.0` tag
   + plan-file rename with COMPLETED banner
 
 ## [v0.6.0] {#v060}

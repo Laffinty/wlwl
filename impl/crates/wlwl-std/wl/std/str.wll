@@ -1,0 +1,108 @@
+// wlwl:std.str — R1 语言层(标准库底座 v0.11,ADR-0021)
+// 成员契约:docs/stdlib/wlwl-stdlib-spec-v0.11.md §6;注册镜像:附录 A。
+// M1 只落地 QUOTE 一项证明双轨通道;M3 落齐 §6 全部成员。
+//
+// 本模块只**补**全局内建(语言规范 §10.5)没有的能力,不重导出任何全局内建
+// —— §6 明文要求。`SPLIT` / `SUB` / `ENDS_WITH` / `LEN` 是全局内建,在这里
+// 只是被**调用**,不是被导出。
+//
+// 诊断走 M3-0 的注入 kernel(`_KIND` / `_DIAG_E0030`);元数错由解释器自己
+// 报(固定元数的成员拿到的是 `function expects 1..1 argument(s)` 这条无名前缀
+// 的 E0022 —— 见 std/collection.wll 头部同款说明)。
+
+// ── 助手(不导出)────────────────────────────────────────────────────
+
+// 拼消息。
+LET(_CAT, FUN((*parts), (LET MUT(s, ""); FOR(p, parts, SET(s, +(s, p))); s)));
+
+// `NAME: expected <what>, got <kind>`
+LET(_NEED, FUN((name, what, ty, v),
+    IF(==(TYPE(v), ty), v, _DIAG_E0030(_CAT(name, ": expected ", what, ", got ", _KIND(v))))));
+
+LET(_NEED_ARR, FUN((name, v), _NEED(name, "array", "ARRAY", v)));
+LET(_NEED_STR, FUN((name, v), _NEED(name, "string", "STRING", v)));
+LET(_NEED_INT, FUN((name, v), _NEED(name, "integer", "INTEGER", v)));
+
+// ── JOIN(arr, sep) -> STRING ────────────────────────────────────────
+// 元素经 STR 渲染后以 sep 连接;空数组得 ""。
+// 与 collection.JOIN 同语义(那边 §5 有同名成员),但 `std.str` 的契约在
+// §6 —— 两个命名空间各有一份是规范有意为之(§6/§5 各自的表),调用面不同。
+LET(JOIN, FUN((arr, sep),
+    (LET(xs, _NEED_ARR("JOIN", arr));
+     LET(sp, _NEED_STR("JOIN", sep));
+     LET MUT(s, "");
+     LET MUT(first, TRUE);
+     FOR(v, xs,
+         (IF(first, SET(first, FALSE), SET(s, +(s, sp)));
+          SET(s, +(s, STR(v)))));
+     s)));
+
+// ── SPLIT_LINES(s) -> ARRAY ─────────────────────────────────────────
+// 按 \n 切分并去除行尾 \r;尾随换行不产生空尾元素;空串得 [];无换行得 [s]。
+//
+// 四条边界逐条对:
+//   ""          → []        (SPLIT("", "\n") 给 [""],所以必须特判)
+//   "a"         → ["a"]
+//   "a\n"       → ["a"]     (末尾空元素不算一行)
+//   "a\n\nb"    → ["a", "", "b"]  ← 中间的空行**要**保留,只丢末尾那个
+//   "a\r\nb"    → ["a", "b"] (逐元素去行尾 \r)
+LET(SPLIT_LINES, FUN((s),
+    (LET(str, _NEED_STR("SPLIT_LINES", s));
+     IF(==(str, ""),
+        [],
+        (LET MUT(out, []);
+         FOR(p, SPLIT(str, "\n"),
+             SET(out, PUSH(out, IF(ENDS_WITH(p, "\r"), SUB(p, 0, -(LEN(p), 1)), p))));
+         // 尾随换行:只丢**末尾**那个空元素。用 AT 取末位而不是 INDEX ——
+         // INDEX 找的是**首**个匹配,`"\n"` 切出的 ["", ""] 里首尾都是空串,
+         // 按 INDEX 判会一个都不丢,结果成了两个空行而不是一个。
+         IF(==(AT(out, -(LEN(out), 1), NULL), ""),
+            SLICE(out, 0, -(LEN(out), 1)),
+            out))))));
+
+// ── CHAR_AT(s, i) -> STRING ─────────────────────────────────────────
+// 取第 i 个码点,等价于 SUB(s, i, 1);越界口径同 SUB(实测 SUB 越界返回
+// "" 而不报错,这里不额外发明行为)。
+LET(CHAR_AT, FUN((s, i),
+    (LET(str, _NEED_STR("CHAR_AT", s));
+     LET(idx, _NEED_INT("CHAR_AT", i));
+     SUB(str, idx, 1))));
+
+// ── COUNT(s, sub) -> INTEGER ────────────────────────────────────────
+// sub 的非重叠出现次数。
+//
+// 一次 SPLIT 就够:SPLIT 按分隔符切成 n+1 段,非重叠出现次数正是 n。这比
+// 「逐位置试子串」既短又与非重叠口径天然对齐 ——
+//   COUNT("aaa", "a")   → SPLIT 得 4 段 → 3(重叠实现会给 3,但 "aaaa" 就会分成 2)
+//   COUNT("aaaa", "aa") → SPLIT 得 3 段 → 2(重叠实现会给 3)✓
+LET(COUNT, FUN((s, sub),
+    (LET(str, _NEED_STR("COUNT", s));
+     LET(needle, _NEED_STR("COUNT", sub));
+     IF(==(needle, ""),
+        _DIAG_E0030("COUNT: sub must not be an empty string"),
+        NULL);
+     -(LEN(SPLIT(str, needle)), 1))));
+
+// ── QUOTE(s) -> STRING(M1 落地,M3 不动)─────────────────────────────
+LET(QUOTE, FUN((s), (
+    LET(cps, CODEPOINTS(s));
+    LET MUT(out, [34]);
+    FOR(c, cps,
+        IF(=(c, 34),
+           (SET(out, PUSH(out, 92)); SET(out, PUSH(out, 34))),
+           IF(=(c, 92),
+              (SET(out, PUSH(out, 92)); SET(out, PUSH(out, 92))),
+              IF(=(c, 10),
+                 (SET(out, PUSH(out, 92)); SET(out, PUSH(out, 110))),
+                 IF(=(c, 9),
+                    (SET(out, PUSH(out, 92)); SET(out, PUSH(out, 116))),
+                    IF(=(c, 13),
+                       (SET(out, PUSH(out, 92)); SET(out, PUSH(out, 114))),
+                       SET(out, PUSH(out, c))))))));
+    FROM_CODEPOINTS(CONCAT(out, [34]))
+)));
+
+// EXPORT 顺序跟随标准库规范 §6 表格的行序(JOIN / SPLIT_LINES / CHAR_AT /
+// COUNT / QUOTE);附录 A 镜像跟随本顺序。成员**集合**由
+// `wlwl-eval/tests/str_contract.rs` 对 §6 表格做外部对照。
+EXPORT(["JOIN", "SPLIT_LINES", "CHAR_AT", "COUNT", "QUOTE"]);

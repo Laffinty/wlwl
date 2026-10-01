@@ -77,6 +77,25 @@ const WLT_FILES: &[&str] = &[
     "module_paths.wll",
     "format_template.wll",
     "error_schema.wll",
+    "stdlib_r1_collection.wll",
+    "stdlib_r1_str.wll",
+    "stdlib_r1_math.wll",
+];
+
+/// [v0.11 M3-4] stdlib R1 模块的**符合性自测脚本**。
+///
+/// 与上面 10 个「规范 §16.5 类别覆盖」脚本性质不同:那十个是「跑起来不
+/// 崩就算过」(`all_conformance_fixtures_run_or_emit_error` 接受 exit 0
+/// **或** exit 1 + 合法 JSONL)。这三个是**自测**:脚本内部用 `std.test`
+/// 的 `ASSERT_EQ` 逐条断言成员行为,失败即 `PANIC`。
+///
+/// 所以它们**不能**享受上面那条宽松条款 —— 一个失败的 R1 自测恰好就是
+/// 「exit 1 + 合法 JSONL」,会被 `all_conformance_fixtures_run_or_emit_error`
+/// 当成通过。必须单独要求 exit 0,否则这套自测就是自欺欺人。
+const R1_SELF_TEST_FILES: &[&str] = &[
+    "stdlib_r1_collection.wll",
+    "stdlib_r1_str.wll",
+    "stdlib_r1_math.wll",
 ];
 
 // P4-H1-003: v0.4.0 emitter writes 12 schema-1.1.0 fields; `cause` is
@@ -101,10 +120,56 @@ fn all_conformance_fixtures_present() {
     // Spec section 16.5 mandates each of these 10 fixtures. The list
     // itself is the constraint; cargo test will fail if any
     // `impl/tests/conformance/*.wll` is removed.
-    assert_eq!(WLT_FILES.len(), 10);
+    assert_eq!(WLT_FILES.len(), 13);
     for f in WLT_FILES {
         let p = fixture(f);
         assert!(p.exists(), "missing conformance fixture: {}", p.display());
+    }
+}
+
+/// [v0.11 M3-4] R1 模块自测脚本必须**退出码 0**。
+///
+/// 这三个脚本用 `std.test` 逐条断言成员行为,失败即 `PANIC`;若某条断言
+/// 不成立,进程退出码是 1 且 stderr 是合法的 JSONL 诊断 —— 正好落在
+/// `all_conformance_fixtures_run_or_emit_error` 接受的「exit 1 + 合法
+/// JSONL」分支里。所以那一条宽松测试**不能**用来判它们,必须有这条要求
+/// exit 0 的独立门禁。
+#[test]
+fn r1_stdlib_self_tests_pass() {
+    assert_eq!(
+        R1_SELF_TEST_FILES.len(),
+        3,
+        "collection / str / math 三个 R1 模块各一份自测脚本"
+    );
+    for f in R1_SELF_TEST_FILES {
+        let path = fixture(f);
+        assert!(
+            path.exists(),
+            "missing R1 self-test fixture: {}",
+            path.display()
+        );
+        let out = run_wlwl(&path);
+        let code = out.status.code().unwrap_or(-1);
+        let stdout = String::from_utf8_lossy(&out.stdout);
+        let stderr = String::from_utf8_lossy(&out.stderr);
+        assert_eq!(
+            code, 0,
+            "R1 self-test `{f}` failed (exit {code}):\n  stdout={stdout}\n  stderr={stderr}"
+        );
+    }
+}
+
+/// 反向守卫:`r1_stdlib_self_tests_pass` 的输入是 `R1_SELF_TEST_FILES`。
+/// 它被清空时上面那条会** vacuously 通过** —— 而这恰恰是最需要它报警的
+/// 情况(自测脚本被误删)。所以名单必须恰好覆盖三个 R1 模块且都在
+/// `WLT_FILES` 里。
+#[test]
+fn r1_self_test_list_is_not_vacuously_satisfied() {
+    for f in R1_SELF_TEST_FILES {
+        assert!(
+            WLT_FILES.contains(f),
+            "`{f}` must also be in WLT_FILES so the fixture-presence test covers it"
+        );
     }
 }
 

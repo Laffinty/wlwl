@@ -1,0 +1,7 @@
+{
+ "exit": 0,
+ "contains": [
+  "\"ab\""
+ ],
+ "_why": "[v0.11 M1] R1 语言层(std.str)经嵌入 .wll 源码加载的冒烟用例:QUOTE 按 §6 契约给字符串加双引号并转义。断言的是嵌入轨默认行为;开发覆盖(--std-src / WLWL_STD_SRC)的导出面不变性由 wlwl-cli/tests/stdlib_dual_track.rs 锁定。"
+}

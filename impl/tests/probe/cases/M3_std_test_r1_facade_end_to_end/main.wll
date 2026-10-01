@@ -1,0 +1,11 @@
+// std.test 混合化(M3-3):R1 门面导出 6 个成员,R2 内核负责注册表 / 计时 /
+// 测试体调用 / EXPECT_ERR。RUN_TESTS 的结果字典是 §8 的契约面。
+IMPORT("wlwl:std.test", ["TEST", "ASSERT_EQ", "ASSERT", "RUN_TESTS"]);
+TEST("passes", FUN((), ASSERT_EQ(1, 1)));
+TEST("fails", FUN((), ASSERT(FALSE)));
+LET(results, RUN_TESTS());
+PRINT(LEN(results));
+PRINT(INDEX_GET(INDEX_GET(results, 0), "name"));
+PRINT(INDEX_GET(INDEX_GET(results, 0), "passed"));
+PRINT(INDEX_GET(INDEX_GET(results, 1), "passed"));
+PRINT(INDEX_GET(INDEX_GET(results, 1), "error")["code"]);

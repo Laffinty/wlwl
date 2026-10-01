@@ -47,7 +47,17 @@ use std::time::{Duration, Instant};
 /// 与 v0.10.3 健壮性批次补的,一条缺陷至少一条 case,且**每条都配一条反向
 /// 守卫**(对照组 / 误报守卫 / 仍须被拒的负例):只锁「修好了」而没有锁
 /// 「没改坏别的」,等于把回归放进门禁之外。
-const EXPECTED_CASE_COUNT: usize = 136;
+///
+/// 第 137 / 138 条(`M1_std_*_dual_track`)是 v0.11 标准库底座 M1 补的:
+/// R1 语言层(`std.str` / `std.math`)嵌入加载的冒烟用例;开发覆盖
+/// (`--std-src` / `WLWL_STD_SRC`)的导出面不变性由
+/// `stdlib_dual_track.rs` 锁定。
+///
+/// 第 139–142 条(`M3_std_*`)是 M3 补的:三个 R1 模块(`std.collection`
+/// 纯 wlwl 终态、`std.str` §6、`std.math` §7 混合)与 `std.test` 混合门面的
+/// 端到端冒烟,外加 `E0038`(RANGE 步长为零)的存在性 —— 那条诊断在 M3 之前
+/// 的唯一发射点是被删掉的 R2 实现,删掉之后只剩 M3-0 立起的注入通道。
+const EXPECTED_CASE_COUNT: usize = 142;
 
 /// 单个 case 的上限,与 `probe.py` 的 `timeout=60` 同义。
 const CASE_TIMEOUT: Duration = Duration::from_secs(60);

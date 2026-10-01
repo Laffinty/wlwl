@@ -1,0 +1,145 @@
+// wlwl:std.math — R1 门面 + R2 浮点内核(标准库底座 v0.11,ADR-0021)
+// 成员契约:docs/stdlib/wlwl-stdlib-spec-v0.11.md §7;注册镜像:附录 A。
+//
+// 混合形态:门面在 wlwl 侧,`_SQRT` / `_POW` 是 M3-0 的注入 kernel
+// (纯 wlwl 表达不出浮点指令,ADR-0021:84 已预告)。**门面是唯一对外契约
+// 层** —— kernel 名不进 EXPORT,故不在附录 A、不在 IMPORT 面。
+//
+// FLOOR / CEIL / ROUND 归门面(§7 的归属裁决),但它们**不是** `INT`:§2.2
+// 的 `INT` 是向零截断,而下/上取整与「半数远离零」都不同于它
+// (INT(-1.5) = -1 而 FLOOR(-1.5) = -2)。做法是 `INT` + 符号修正,见
+// 下面的 _SAFE 说明。
+//
+// 元数错由解释器自己报(本模块全是固定元数成员);类型错与域违例:
+// 类型错 → `_DIAG_E0030` 发原生诊断(§7「实参类型错按语言规范报 E0030」);
+// 域违例 → **返回值** `ERR(["kind": "DomainError", ...])`(§7 明文,是值不是
+// 诊断 —— 与 collection 的类型错分属两类,别混)。
+//
+// 浮点字面量按 Rust f64 解析(正确舍入),故 PI / E 用字面量即可,不必内核。
+
+// ── 助手(不导出)────────────────────────────────────────────────────
+
+LET(_CAT, FUN((*parts), (LET MUT(s, ""); FOR(p, parts, SET(s, +(s, p))); s)));
+
+LET(_NUM, FUN((v), ||(==(TYPE(v), "INTEGER"), ==(TYPE(v), "FLOAT"))));
+
+LET(_NEED_NUM, FUN((name, v),
+    IF(_NUM(v), v, _DIAG_E0030(_CAT(name, ": expected number, got ", _KIND(v))))));
+
+// 2^53 = 9007199254740992。FLOAT 超过它就已经全是整数(尾数 53 位),于是
+// FLOOR / CEIL / ROUND 必然等于自身;而 `INT(x)` 在 |x| ≥ 2^63 会 E0035,
+// 在 2^52…2^63 之间虽不报错但 `INT(x) ± 1` 有溢出风险。用 2^53 做界:
+// 界外的输入直接原样返回,既避溢出又符合 §7 的「NaN/±inf 原样」。
+//
+// `_SAFE` 的语义是「**可以**安全地 INT 它」,即 x 落在 (-2^53, 2^53) 内。
+// 「落在区间内」是 `&&` 不是 `||`:写成 `||` 时任何正数都算「在范围内」,
+// 于是 1e20 也会走进 `INT` 然后炸 E0035 —— 这条是实测踩出来的。
+// 反过来全写成 `&&` 之外的形状也一样要命:任何一处搞反,FLOOR/CEIL/ROUND
+// 要么退化成恒等函数,要么在边界上 E0035,而恒等那种在 0.5 / -0.5 上才暴露。
+LET(_SAFE, FUN((x),
+    &&(<(x, FLOAT(9007199254740992)), <(-(0, FLOAT(9007199254740992)), x))));
+
+// 域外(NaN / ±inf / |x| ≥ 2^53)原样返回。`NOT(==(x, x))` 是 NaN 的判据。
+LET(_RAW_OR, FUN((x), ||(NOT(==(x, x)), NOT(_SAFE(x)))));
+
+LET(_FLOOR_F, FUN((x),
+    IF(_RAW_OR(x),
+       x,
+       (LET(i, INT(x));
+        IF(==(x, FLOAT(i)), x, IF(>(x, 0), FLOAT(i), FLOAT(-(i, 1))))))));
+
+LET(_CEIL_F, FUN((x),
+    IF(_RAW_OR(x),
+       x,
+       (LET(i, INT(x));
+        IF(==(x, FLOAT(i)), x, IF(<(x, 0), FLOAT(i), FLOAT(+(i, 1))))))));
+
+// ROUND:四舍五入,半数远离零(§7)。t 是带符号的小数部分。
+LET(_ROUND_F, FUN((x),
+    IF(_RAW_OR(x),
+       x,
+       (LET(i, INT(x));
+        IF(==(x, FLOAT(i)),
+           x,
+           (LET(t, -(x, FLOAT(i)));
+            IF(||(&&(>(x, 0), >=(t, 0.5)),
+                  &&(<(x, 0), <=(t, -0.5))),
+               IF(>(x, 0), FLOAT(+(i, 1)), FLOAT(-(i, 1))),
+               FLOAT(i))))))));
+
+// MIN / MAX 的返回类型按 §2.2 提升:两参有任一 FLOAT 就返回 FLOAT。
+// (比较本身 `<` 已按 §2.2 跨类型提升;提升的是**返回值类型**。)
+LET(_LIFT2, FUN((a, b, picked),
+    IF(||(==(TYPE(a), "FLOAT"), ==(TYPE(b), "FLOAT")), FLOAT(picked), picked)));
+
+// CLAMP 有三个实参,提升看**三参**:只看前两个会漏掉 `CLAMP(5, 0, 10.0)`
+// 这种「上界是浮点」的情形,于是返回 INTEGER,与 §7「类型提升同 MIN/MAX」
+// 的意图不符(§7 的 MIN/MAX 提到「两参」是因为它们只有两个实参)。
+LET(_LIFT3, FUN((a, b, c, picked),
+    IF(||(||(==(TYPE(a), "FLOAT"), ==(TYPE(b), "FLOAT")),
+          ==(TYPE(c), "FLOAT")),
+       FLOAT(picked),
+       picked)));
+
+LET(_PICK, FUN((op, a, b),
+    IF(==(op, "MIN"),
+       IF(<(a, b), a, b),
+       IF(<(b, a), a, b))));
+
+// ── ABS(x) ──────────────────────────────────────────────────────────
+// 绝对值,返回与实参同类型。`INTEGER` 下界取负按语言规范 §2.2 抛 **E0034**
+// (NEG 于下界取负),不是 E0035 —— stdlib 规范 §7 该格原写 E0035,与语言
+// 规范冲突;两册冲突以语言规范为准,已当场更正(偏差 D11-007)。
+LET(ABS, FUN((x), IF(<(x, 0), NEG(x), x)));
+
+// ── MIN(a, b) / MAX(a, b) ───────────────────────────────────────────
+LET(MIN, FUN((a, b),
+    (LET(x, _NEED_NUM("MIN", a));
+     LET(y, _NEED_NUM("MIN", b));
+     _LIFT2(x, y, _PICK("MIN", x, y)))));
+
+LET(MAX, FUN((a, b),
+    (LET(x, _NEED_NUM("MAX", a));
+     LET(y, _NEED_NUM("MAX", b));
+     _LIFT2(x, y, _PICK("MAX", x, y)))));
+
+// ── FLOOR(x) / CEIL(x) / ROUND(x) ───────────────────────────────────
+// INTEGER 恒等;FLOAT 返回 FLOAT;NaN/±inf 原样。
+LET(FLOOR, FUN((x),
+    IF(==(TYPE(x), "INTEGER"), x, _FLOOR_F(_NEED_NUM("FLOOR", x)))));
+
+LET(CEIL, FUN((x),
+    IF(==(TYPE(x), "INTEGER"), x, _CEIL_F(_NEED_NUM("CEIL", x)))));
+
+LET(ROUND, FUN((x),
+    IF(==(TYPE(x), "INTEGER"), x, _ROUND_F(_NEED_NUM("ROUND", x)))));
+
+// ── SQRT(x) -> FLOAT / POW(a, b) -> FLOAT(R2 浮点内核)──────────────
+// 类型检查放在门面,好让诊断指名 `SQRT` / `POW` 而不是私有 kernel 名。
+// 域违例由内核返回 ERR 值,门面原样透出。
+LET(SQRT, FUN((x), _SQRT(_NEED_NUM("SQRT", x))));
+LET(POW, FUN((a, b), _POW(_NEED_NUM("POW", a), _NEED_NUM("POW", b))));
+
+// ── CLAMP(x, lo, hi) ────────────────────────────────────────────────
+// 夹取到 [lo, hi];类型提升同 MIN/MAX;lo > hi → ERR(kind=DomainError)。
+// 判据是 `<=` 而不是 `<`:`lo == hi` 不是域违例(§7 写的是 `lo > hi`),
+// 区间退化成单点,结果是那个点。
+LET(CLAMP, FUN((x, lo, hi),
+    (LET(v, _NEED_NUM("CLAMP", x));
+     LET(l, _NEED_NUM("CLAMP", lo));
+     LET(h, _NEED_NUM("CLAMP", hi));
+     IF(<=(l, h),
+        _LIFT3(v, l, h, (LET MUT(r, v);
+                          IF(>(l, r), SET(r, l), NULL);
+                          IF(<(h, r), SET(r, h), NULL);
+                          r)),
+        ERR(["kind": "DomainError", "op": "CLAMP", "reason": "CLAMP: lo > hi"])))));
+
+// ── PI / E:FLOAT 常量 ───────────────────────────────────────────────
+// f64 字面量由 Rust 正确舍入解析,故这里就是数学常数的双精度最近值。
+LET(PI, 3.141592653589793);
+LET(E, 2.718281828459045);
+
+// EXPORT 顺序跟随标准库规范 §7 表格的行序;附录 A 镜像跟随本顺序。成员
+// **集合**由 `wlwl-eval/tests/math_contract.rs` 对 §7 表格做外部对照。
+EXPORT(["ABS", "MIN", "MAX", "FLOOR", "CEIL", "ROUND", "SQRT", "POW", "CLAMP", "PI", "E"]);

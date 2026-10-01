@@ -37,8 +37,8 @@ fn spec_path() -> std::path::PathBuf {
         .join("..")
         .join("..")
         .join("docs")
-        .join("standard")
-        .join("wlwl-spec-v0.10.md")
+        .join("spec")
+        .join("wlwl-spec-v0.11.md")
 }
 
 /// 切一行表格,尊重 `"..."` / `'...'` 里的竖线**和** `\|` 转义竖线。
@@ -216,36 +216,36 @@ fn spec_appendix_g_has_one_row_per_registry_entry() {
     );
 }
 
-/// [R10-064] `||` 这一行必须能被切出**恰好 8 列**。
+/// [R10-064] `||` 这一行必须能被切出**恰好 7 列**。
 ///
 /// 这一条是**解析器自身的回归锁**,存在的理由很具体:`||` 的名字与签名里各含
-/// 一个竖线。不认 `\|` 转义时,`cells()` 会把这一行切成 11 段,而 `normalize()`
+/// 两个竖线。不认 `\|` 转义时,`cells()` 会把这一行切成 13 段,而 `normalize()`
 /// 再把碎片拼回去 —— spec 侧与注册表侧**同样被切坏**,比出来"相同",锁恰好在
 /// 最容易漂的一行上放行。签名相等那条测试看不见这个洞,只有数列能看见。
 #[test]
-fn the_or_operator_row_parses_as_eight_columns() {
+fn the_or_operator_row_parses_as_seven_columns() {
     let p = spec_path();
     let text = std::fs::read_to_string(&p).expect("spec readable");
     let line = text
         .lines()
-        .find(|l| l.starts_with('|') && cells(l).len() == 10 && normalize(&cells(l)[1]) == "||")
+        .find(|l| l.starts_with('|') && cells(l).len() == 9 && normalize(&cells(l)[1]) == "||")
         .unwrap_or_else(|| {
             panic!(
                 "no `||` row in spec 附录 G with 9 cells (leading+trailing empty included). \
-                 A row that needs \\| escaping parses to 11 cells without it."
+                 A row that needs \\| escaping parses to 13 cells without it."
             )
         });
     let c = cells(line);
     assert_eq!(
         normalize(&c[2]),
-        "||(a, b) -> BOOLEAN (v0.6 §4.3 short-circuit)",
+        "||(a, b) -> BOOLEAN (short-circuit)",
         "`||` signature cell must survive escaping intact, got {:?}",
         c[2]
     );
     assert!(
         line.contains(r"\|\|"),
         "the `||` row must escape its pipes as `\\|\\|`, otherwise every markdown \
-         table parser sees {n} columns instead of 8:\n  {line}",
+         table parser sees {n} columns instead of 7:\n  {line}",
         n = c.len() - 2,
     );
 }

@@ -5,13 +5,17 @@
 //!   - E0062 — permission denied
 //!   - E0060 — other I/O error (retryable)
 
-use crate::{
-    arity_error, expect_string, type_error, ModuleSpec, StdCtx, StdError, StdFn, StdValue,
-};
+use crate::compat::*;
+use crate::{ModuleSpec, StdCtx, StdFn};
 use std::io::ErrorKind;
 use wlwl_error::ErrorCode;
+use wlwl_error::WlwlError;
+use wlwl_value::{Outcome, StdHost, Value};
 
-pub fn std_read_file(_ctx: &mut StdCtx, args: Vec<StdValue>) -> Result<StdValue, StdError> {
+pub(super) fn std_read_file_inner(
+    _ctx: &mut StdCtx,
+    args: Vec<StdValue>,
+) -> Result<StdValue, StdError> {
     let path = expect_string("READ_FILE", &args, 0, 1)?;
     match std::fs::read_to_string(path) {
         Ok(content) => Ok(StdValue::String(content)),
@@ -19,7 +23,10 @@ pub fn std_read_file(_ctx: &mut StdCtx, args: Vec<StdValue>) -> Result<StdValue,
     }
 }
 
-pub fn std_write_file(_ctx: &mut StdCtx, args: Vec<StdValue>) -> Result<StdValue, StdError> {
+pub(super) fn std_write_file_inner(
+    _ctx: &mut StdCtx,
+    args: Vec<StdValue>,
+) -> Result<StdValue, StdError> {
     if args.len() != 2 {
         return Err(arity_error("WRITE_FILE", args.len(), 2));
     }
@@ -34,7 +41,10 @@ pub fn std_write_file(_ctx: &mut StdCtx, args: Vec<StdValue>) -> Result<StdValue
     }
 }
 
-pub fn std_exists(_ctx: &mut StdCtx, args: Vec<StdValue>) -> Result<StdValue, StdError> {
+pub(super) fn std_exists_inner(
+    _ctx: &mut StdCtx,
+    args: Vec<StdValue>,
+) -> Result<StdValue, StdError> {
     let path = expect_string("EXISTS", &args, 0, 1)?;
     Ok(StdValue::Bool(std::fs::metadata(path).is_ok()))
 }
@@ -62,6 +72,21 @@ pub static SPEC: ModuleSpec = ModuleSpec {
     ],
 };
 
+/// [v0.11 M2 / ADR-0022] 直通边界包装:Value→内部表示→Value。
+pub fn std_read_file(host: &mut dyn StdHost, args: Vec<Value>) -> Result<Outcome, WlwlError> {
+    crate::wrap(host, "std_read_file", std_read_file_inner, args)
+}
+
+/// [v0.11 M2 / ADR-0022] 直通边界包装:Value→内部表示→Value。
+pub fn std_write_file(host: &mut dyn StdHost, args: Vec<Value>) -> Result<Outcome, WlwlError> {
+    crate::wrap(host, "std_write_file", std_write_file_inner, args)
+}
+
+/// [v0.11 M2 / ADR-0022] 直通边界包装:Value→内部表示→Value。
+pub fn std_exists(host: &mut dyn StdHost, args: Vec<Value>) -> Result<Outcome, WlwlError> {
+    crate::wrap(host, "std_exists", std_exists_inner, args)
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -87,7 +112,7 @@ mod tests {
         let path = tmpfile(".txt");
         let p_str = path.to_string_lossy().into_owned();
 
-        std_write_file(
+        std_write_file_inner(
             &mut ctx,
             vec![
                 StdValue::String(p_str.clone()),
@@ -96,7 +121,7 @@ mod tests {
         )
         .unwrap();
 
-        let v = std_read_file(&mut ctx, vec![StdValue::String(p_str.clone())]).unwrap();
+        let v = std_read_file_inner(&mut ctx, vec![StdValue::String(p_str.clone())]).unwrap();
         assert_eq!(v, StdValue::String("hello\nworld".into()));
 
         let _ = std::fs::remove_file(&path);
@@ -105,7 +130,7 @@ mod tests {
     #[test]
     fn read_nonexistent_is_e0061() {
         let mut ctx = StdCtx::default();
-        let err = std_read_file(
+        let err = std_read_file_inner(
             &mut ctx,
             vec![StdValue::String(
                 "Z:/this/path/should/definitely/not/exist/abc_xyz_123".into(),
@@ -122,18 +147,18 @@ mod tests {
         std::fs::write(&path, b"x").unwrap();
         let p_str = path.to_string_lossy().into_owned();
 
-        let v_true = std_exists(&mut ctx, vec![StdValue::String(p_str.clone())]).unwrap();
+        let v_true = std_exists_inner(&mut ctx, vec![StdValue::String(p_str.clone())]).unwrap();
         assert_eq!(v_true, StdValue::Bool(true));
 
         let _ = std::fs::remove_file(&path);
-        let v_false = std_exists(&mut ctx, vec![StdValue::String(p_str)]).unwrap();
+        let v_false = std_exists_inner(&mut ctx, vec![StdValue::String(p_str)]).unwrap();
         assert_eq!(v_false, StdValue::Bool(false));
     }
 
     #[test]
     fn arity_mismatch_is_e0022() {
         let mut ctx = StdCtx::default();
-        let err = std_read_file(&mut ctx, vec![]).unwrap_err();
+        let err = std_read_file_inner(&mut ctx, vec![]).unwrap_err();
         assert_eq!(err.code, ErrorCode::E0022);
     }
 
