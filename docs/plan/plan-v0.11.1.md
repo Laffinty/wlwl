@@ -31,10 +31,12 @@
 (生成器 + 锁测试)/ 从规范 markdown 表格解析出成员面与实现对拍的外部对照测试 /
 ERR 消费者注册(`std.web` 为纯 R1,第四条由语言语义 §8.2 天然承担,登记为豁免)。
 
-> **范围警示(业主需裁决)**:`CHANGELOG.md` 的 `## [v0.11.1]` 段现有内容是
-> v0.11.0 审查后的**四个行为缺陷 + 两处构建/门禁漏洞修复**(commit `8b313fd`),
-> 属补丁级。把 `std.web` 塞进同一个版本号,会让一个补丁版本变成功能版本。
-> 两个选项见 §9 未决问题 Q1。**在业主裁决前不动 `Cargo.toml` 版本号、不打 tag。**
+> **版本与 tag 门禁(业主 2026-10-01 裁决)**:v0.11.1 **尚未完工,当前所有工作
+> (含本计划)都属 v0.11.1**。`std.web` 落 v0.11.1,不另开版本号。
+> **TAG 由业主下令后才能打** —— 在此之前 `impl/Cargo.toml` 的
+> `[workspace.package] version` 可以按 release workflow 的 `version-check` job
+> 要求随发布推进,但**不得 `git tag`、不得推 tag**。原「落 v0.11.2 还是 v0.12」
+> 的选项作废(原 §9 Q1 已裁决,见 §9.1)。
 
 ---
 
@@ -63,7 +65,7 @@ ERR 消费者注册(`std.web` 为纯 R1,第四条由语言语义 §8.2 天然承
 | 任意 CSS / JS 的解析与重写 | `<style>` / `<script>` 内容**逐字透传**,零解析 |
 | 正则引擎 | §3.5 否决 |
 | minify / 资源指纹 / autoprefixer | R2 + 成熟 crate(ADR-0021 §0.1 规则 1) |
-| 响应式运行时(signal / effect 传播) | 留 v0.12+;§3.6 只**声明**效果面,本版不实现分析 |
+| 响应式运行时(signal / effect 传播) | 留后续版本;§3.3 裁决 D 只**声明**效果面,本版不实现分析(§2.5) |
 | 拆分成 `std.html` / `std.css` / `std.template` 三个命名空间 | §9 Q2 |
 
 ---
@@ -76,7 +78,7 @@ ERR 消费者注册(`std.web` 为纯 R1,第四条由语言语义 §8.2 天然承
 
 | 能力 | 状态(2025–2026) | 对本计划的意义 | 来源 | 强度 |
 |---|---|---|---|---|
-| `@scope` | 2025-12 进入 Baseline;Chrome 118+ / Safari 17.4+ / **Firefox 146+** | **组件样式隔离的原生解法,不需要 shadow root**。这是本计划的旗舰裁决 | [lambdatest](https://www.lambdatest.com/web-technologies/css-cascade-scope-safari) · [plainenglish](https://javascript.plainenglish.io/baseline-quietly-fixed-the-hardest-parts-of-css-and-most-devs-missed-it-464dbe93e5b7) | 多方 |
+| `@scope` | 2025-12 进入 Baseline;Chrome 118+ / Safari 17.4+ / **Firefox 146+** | **组件样式隔离的原生解法,不需要 shadow root**。这是本计划的旗舰裁决 | **W3C CSS Cascade 6 §2.5**([w3.org/TR/css-cascade-6](https://www.w3.org/TR/2021/WD-css-cascade-6-20211221))· [lambdatest](https://www.lambdatest.com/web-technologies/css-cascade-scope-safari) · [MDN @scope](https://developer.mozilla.org/en-us/docs/Web/CSS/@scope) | **一手 + 多方** |
 | `@layer` | 稳定(Chrome 99+/Safari 15.4+/FF 97+) | 层叠顺序显式化,消灭 specificity 战争 | [frontend-hero](https://frontend-hero.com/modern-css-features) | 多方 |
 | `@property` | Chromium + Safari,部分支持 | 自定义属性**带类型** ⇒ 可过渡 / 可动画。设计 token 的原生载体 | [codeboxr](https://codeboxr.com/ultimate-guide-to-modern-css-tricks-additions/) | 单一 |
 | View Transitions + `view-transition-class` | 2025-10 进入 Baseline | 列表重排动画可自动生成 transition name | [plainenglish](https://javascript.plainenglish.io/baseline-quietly-fixed-the-hardest-parts-of-css-and-most-devs-missed-it-464dbe93e5b7) | 单一 |
@@ -85,10 +87,39 @@ ERR 消费者注册(`std.web` 为纯 R1,第四条由语言语义 §8.2 天然承
 | `color-mix()` / `oklch()` / 相对颜色 / `light-dark()` | 稳定 | 主题派生在 CSS 内完成 | [naeemnur](https://naeemnur.com/modern-css-features-you-should-know-in-2025) | 单一 |
 | Declarative Shadow DOM | 全 evergreen 落地,支持 SSR | 可选的强封装路径(**不作为默认**,§3.3 裁决 B) | [datafmt](https://datafmt.com/de/blog/en-web-components-state-2025) | 单一 |
 
-> ⚠ **实施前须复核**:上表 Baseline 日期来自二手技术博客,非 web-platforms
-> `webstatus.dev` 权威源。W1 的第一件事是逐条核对 `@scope` / `@property` /
-> `light-dark()` 的当前 Baseline 状态与 `@scope` 样式是否匹配 scope root
-> 自身(见 §9 Q3 —— 这是本计划**唯一未验证的语法级假设**)。
+> ⚠ **实施前须复核**:上表 Baseline 日期来自二手技术博客,非 `webstatus.dev`
+> 权威源。W1 仍需逐条核对 `@scope` / `@property` / `light-dark()` 的当前状态。
+
+### 2.1.1 `@scope` 语义定案(原 Q3,已查实)
+
+**已用一手规范来源结清**,不再作为 W1 的未验证假设。一手来源:
+**W3C CSS Cascading and Inheritance Level 6 §2.5「Scoped Styles」**
+([WD-css-cascade-6-20211221](https://www.w3.org/TR/2021/WD-css-cascade-6-20211221)),
+辅以 [MDN `@scope`](https://developer.mozilla.org/en-us/docs/Web/CSS/@scope) 与
+[MDN `:scope`](https://developer.mozilla.org/docs/Web/CSS/Reference/Selectors/:scope)。
+
+四条定案事实:
+
+| # | 事实 | 规范依据 |
+|---|---|---|
+| S-1 | **scope 根在作用域内**。「Each resulting scope includes a scoping root and all its descendants」;上界 **inclusive** | CSS Cascade 6 §2.5 |
+| S-2 | **但裸选择器仍匹配不到根**。块内裸选择器与 `&` 行为等价于前置 `:where(:scope)`,即**后代**关系,而 `:scope` 不是自身的后代 ⇒ 要命中根必须显式写 `:scope`(或 `&`) | MDN `@scope`「both bare selectors and `&` behave as if `:where(:scope)` were prepended」 |
+| S-3 | **`@scope` 前置选择器不增加内层特异性**。「Unlike Nesting, selectors within an `@scope` rule do not acquire the specificity of any parent selector(s) in the `@scope` prelude」——`@scope (#hero) { img {} }` 与 `:where(#hero) img` 同为 `(0,0,1)` | CSS Cascade 6 §2.5.1(**一手,无争议**) |
+| S-4 | **无前置子的 `@scope { }` 只在 `<style>` 元素内生效**,绑定到该 `<style>` 的父元素;放进外部 CSS 文件则无根可绑、什么都不匹配 | [lambdatest](https://www.lambdatest.com/web-technologies/css-cascade-scope-safari) · [MDN `@scope` prelude-less] |
+
+> 🔺 **来源冲突(已记录,不静默取舍)**:`&` 的特异性,一手规范说
+> `&` 表示「the selector representing the scoping root」⇒ 应脱糖为
+> `:is(.card)`,携带该选择器的特异性 `(0,1,0)`(seo-guider 的实测描述与规范一致);
+> 而 MDN 写「`&` behaves as if `:where(:scope)` were prepended」⇒ 特异性为 0。
+> **两者不能同时成立。** 裁决:**`std.web` 的发射器不使用 `&`,也不依赖 `&` 的
+> 特异性语义**;面向用户的根元素样式一律用 `:scope`(其行为 S-2 已定,且
+> `:scope` 作为伪类 `(0,1,0)` 在规范与 MDN 上一致)。**W4 门禁里加一条负向用例:
+> 模板中出现 `&` 时给构建期警告**,把它挡在语义分歧之外。
+
+**S-1 + S-2 + S-4 合起来给出一个比「属性哈希」更好的方案** —— 见 §3.3 裁决 B。
+关键洞察:**无前置子的 `@scope` 绑定到 `<style>` 的父元素**,所以只要把组件的
+`<style>` 放进组件根元素内部,**作用域根就是组件根本身**,既不需要注入
+`data-wc` 属性,也不需要知道根元素是什么标签。
 
 ### 2.2 组件与产物形态:islands
 
@@ -236,18 +267,66 @@ wlwl 的 `${...}` 是**立即求值**的(语言规范 §1.2:插值内表达式�
 「统一」不指「一个文件写三种语言」(那是普通 HTML)。统一指**三条推导** ——
 它们需要三份独立源码里不存在的全局视野。
 
-**裁决 B:作用域共推导**
+**裁决 B:作用域共推导(依 §2.1.1 的 S-1/S-2/S-4 定案)**
 
-`{{#component "card"}}` 同时驱动两个发射器:
+`{{#component "card"}}` 同时驱动两个发射器,但**机制比"注入属性 + 带前置子的
+`@scope`"更省**:
 
-- HTML 发射器在组件根元素注入 `data-wc~="card"`
-- CSS 发射器把该组件的 `<style>` 体包进
-  `@scope ([data-wc~="card"]) { ... }`
+1. **HTML 发射器**把组件的 `<style>` 块**移入组件根元素内部**(作为其第一个子节点)。
+   若用户原本就把它写在组件块内,这一步是恒等变换。
+2. **CSS/HTML 发射器**把该 `<style>` 体包进**无前置子的** `@scope { ... }`。
 
-用户**从不写 scope root,从不写哈希类名**。这是 `@scope` 成为 Baseline 之后才
-possible 的事 —— Svelte / Vue 至今仍在用编译期加类名后缀的做法。
-默认**不**用 Shadow DOM(裁决:Shadow DOM 有「CSS 不穿透边界」的坑,且
-Declarative Shadow DOM 只在真需要强封装时才是对的答案;作为可选路径保留)。
+由 **S-4**,无前置子的 `@scope` 绑定到**该 `<style>` 的父元素** —— 也就是组件
+根本身。⇒ **作用域根自动就是组件根**:
+
+- **不需要**注入 `data-wc` / `data-scope` 之类属性;
+- **不需要**知道组件根是哪个标签或哪个类(所以**零 CSS 解析**成立);
+- **不需要**类名哈希(这是 Svelte / Vue 至今仍在做的事)。
+
+用户写:
+
+```html
+{{#component}}
+  <style>
+    :scope { padding: 1rem; border-radius: .5rem; }   /* 根元素(S-2:必须显式) */
+    h2 { margin: 0; }                                 /* 后代 */
+  </style>
+  <section>
+    <h2>{{ title }}</h2>
+  </section>
+{{/component}}
+```
+
+发射成:
+
+```html
+<section>
+  <style>
+    @scope {
+      :scope { padding: 1rem; border-radius: .5rem; }
+      h2 { margin: 0; }
+    }
+  </style>
+  <h2>…</h2>
+</section>
+```
+
+**特异性是平的**(S-3,一手规范):块内 `h2` 仍是 `(0,0,1)`,与
+`@scope (#hero) { img {} }` 同权。单个工具类仍能覆盖组件样式,不需要 specificity
+升级竞赛。
+
+**渐进增强(S-4 的直接推论)**:外部 CSS 文件里放无前置子的 `@scope` 会**完全失效**。
+所以组件样式**必须**是 HTML 内的行内 `<style>`。发射器同时输出一份
+`@supports (at-rule: @scope)` 守卫的未作用域副本,老浏览器拿到的是**不隔离但
+能看**的页面 —— 而不是哈希类名那种需要解析 CSS 才能生成的降级方案。**这消掉了
+原风险 R-1 的整个降级分支。**
+
+**代价(须写进规范)**:组件样式进 HTML ⇒ 无法独立缓存。这是与 Svelte / Vue 组件
+样式相同的取舍,可接受;外部 CSS 文件只承载 token / reset / 页面级规则。
+
+默认**不**用 Shadow DOM(它有「CSS 不穿透边界」的坑,且 Declarative Shadow DOM
+只在真需要强封装时才是对的答案);作为**可选发射目标**保留 —— 开启时改发
+`@scope ([data-wc~="card"])` 并回到属性注入路径,与本裁决共用同一棵节点树。
 
 **裁决 C:行为最小化共推导(最前沿的一条)**
 
@@ -353,13 +432,15 @@ JS-1 / JS-3 的处理方式是把 codepoint 敏感的计算**在 R1 里做完**,
 
 ### W1 平台状态复核 + 契约骨架(约 1.5 人日)
 
-- 逐条复核 §2.1 的 Baseline 状态,改用 `webstatus.dev` 等权威源;
-  修正本表里任何二手来源带来的偏差(**先修文档再写码** —— 避免照着
-  二手博客的过期状态实现)。
-- 验证 §9 Q3 那个唯一的语法级假设:`@scope` 内的样式是否匹配 scope root 自身。
+- 逐条复核 §2.1 表里 `@property` / `light-dark()` / View Transitions 的 Baseline
+  状态,改用 `webstatus.dev` 等权威源;修正任何二手来源带来的偏差
+  (**先修文档再写码** —— 避免照着二手博客的过期状态实现)。
+  (`@scope` 的**语义**已由 §2.1.1 用一手规范结清,不再复核;这里只复核其
+  Baseline **日期**。)
 - 写 `docs/stdlib/wlwl-stdlib-spec-v0.11.md` 的 `std.web` 条目骨架
   (成员表 + 语义 + 失败行为)。**此时不写实现** —— 规范先行是本仓既有纪律。
-- 裁定 §9 Q1(版本号归属)。
+- 在规范里写死 §3.3 裁决 B 的**产物形状契约**:组件样式为行内 `<style>` +
+  无前置子 `@scope` + `@supports` 守卫副本;根元素样式必须显式 `:scope`。
 
 ### W2 词法 + 语法 + 节点树(约 3 人日)
 
@@ -372,13 +453,16 @@ JS-1 / JS-3 的处理方式是把 codepoint 敏感的计算**在 R1 里做完**,
 ### W3 HTML 发射器 + 上下文敏感转义(约 2.5 人日)
 
 - HTML 发射器 + 四上下文转义。
-- 裁决 B 的作用域注入(`data-wc~=`)。
+- 裁决 B 的**样式重定位**:把组件 `<style>` 移入组件根元素内部(裁决 B 第 1 步)。
 - 门禁:转义的四上下文各一组用例,含码点边界(代理对、组合字符、裸 `&`)。
 
 ### W4 CSS 发射器 + token + 行为最小化(约 4 人日)
 
-- `@scope` 包裹、`@layer` 分层、`@property` token 发射。
+- 无前置子 `@scope { }` 包裹、`@supports` 守卫副本、`@layer` 分层、
+  `@property` token 发射。
 - 裁决 C 的判定表 + 降级路径(判不了就走 JS,并在构建期计数上报)。
+- **负向门禁**:模板组件 `<style>` 里出现 `&` ⇒ 构建期警告
+  (§2.1.1 的来源冲突;发射器不依赖 `&` 的特异性语义)。
 - 门禁:判定表的**表驱动用例**,每条 CSS 原语一行;
   「判不了时必须降级」的负向用例。
 
@@ -402,7 +486,7 @@ JS-1 / JS-3 的处理方式是把 codepoint 敏感的计算**在 R1 里做完**,
 
 | # | 风险 | 触发条件 | **预置裁决**(业主可推翻) |
 |---|---|---|---|
-| R-1 | `@scope` Baseline 状态或语义与 §2.1 不符 | W1 复核发现 | 降级到类名哈希方案(编译器生成 `data-wc-<hash>`),`@scope` 作为可选发射目标。**接口不变** |
+| R-1 | `@scope` 的 Baseline **日期**与 §2.1 不符(**语义已定案,不再是风险**) | W1 复核发现 | 语义侧无分支可走(S-1..S-4 有一手规范支撑);仅需调整 §2.1 表格与兼容性说明。`@supports` 守卫副本已覆盖老浏览器 |
 | R-2 | 行为最小化判定表爆炸式增长(判定逻辑比写 JS 还复杂) | W4 判定表超过约 12 条 | 收缩到 Top-N 原语,其余一律进 JS。**宁可 JS 多,不要编译器复杂** |
 | R-3 | `.wlwt` 语法与 wlwl 表达式求值脱节(模板里写不了 wlwl 就算) | W2 出现 | 引入 `{{#let}}` 局部绑定块;不改求值器 |
 | R-4 | 纯 R1 解释器在真实页面上超时 | 端到端 > 5 s | 先查数组累积(§3.6);根因是解释器写时复制则登记为新偏差,**不在本计划内修解释器** |
@@ -435,10 +519,15 @@ JS-1 / JS-3 的处理方式是把 codepoint 敏感的计算**在 R1 里做完**,
 2. `std.web` 治理四件套齐备,且附录 A 由生成器产出(锁测试双向守护)。
 3. **产物不变量 JS-1..JS-4 四条锁测试全绿**;每条配**反向守卫**
    (故意让发射器产出违规产物 → 必须变红 → 还原后全绿)。
-4. 3 个端到端页面产物经**人工审阅**并把审阅结论写进 `docs/site/examples.md`。
-5. §3.6 的性能实测在真实端到端页面上复跑一次,数字写进规范落地状态段。
-6. `cargo doc` 无断链(v0.11.0 首次实跑 `cargo doc` 曾红,见 D11-015)。
-7. **不新增**任何未经单独立项的 R0 内建。
+4. **裁决 B 产物形状锁**:组件 `<style>` 落在组件根元素内、体被无前置子
+   `@scope { }` 包裹、含 `@supports` 守卫副本 —— 以 **golden file** 逐字节对拍;
+   并配一条负向守卫(把 `<style>` 移到根元素外 ⇒ 必须变红)。
+5. **`&` 负向门禁**:组件 `<style>` 中出现 `&` 时给构建期警告
+   (§2.1.1 记录了 `&` 特异性的来源冲突,发射器不依赖它)。
+6. 3 个端到端页面产物经**人工审阅**并把审阅结论写进 `docs/site/examples.md`。
+7. §3.6 的性能实测在真实端到端页面上复跑一次,数字写进规范落地状态段。
+8. `cargo doc` 无断链(v0.11.0 首次实跑 `cargo doc` 曾红,见 D11-015)。
+9. **不新增**任何未经单独立项的 R0 内建。
 
 ---
 
@@ -456,16 +545,10 @@ JS-1 / JS-3 的处理方式是把 codepoint 敏感的计算**在 R1 里做完**,
 
 ---
 
-## 9 未决问题(需业主裁决)
+## 9 未决问题
 
-**Q1(阻塞 W6,建议 W1 裁决)—— `std.web` 落哪个版本号?**
-
-- **选项 A(推荐)**:`std.web` 进 **v0.12**,v0.11.1 保持补丁版(4 bug 修复
-  + 门禁漏洞)。代价:发版节奏多一次。
-- 选项 B:并入 v0.11.1,则 v0.11.1 从补丁版变功能版,`Cargo.toml` 需提版本号
-  并打 tag。
-- 选项 C:`std.web` 只出 W1–W3(契约 + 解析 + HTML 发射),作为 **v0.11.2**
-  预览,后续里程碑移到 v0.12。最小风险,但演示不出核心卖点(裁决 C)。
+**Q1 —— ~~`std.web` 落哪个版本号?~~ ✅ 已裁决**:落 v0.11.1,TAG 由业主下令
+(见 §9.1)。原选项作废。
 
 **Q2 —— 命名空间是一个还是三个?**
 
@@ -476,11 +559,22 @@ JS-1 / JS-3 的处理方式是把 codepoint 敏感的计算**在 R1 里做完**,
 `EMIT_HTML` / `EMIT_CSS` / `EMIT_JS` / `RENDER`),且不与全局内建重名(§0 纪律)。
 若成员面后续膨胀,再按 §0.4 的 1.0 段规则拆分(「新增命名空间不受限」)。
 
-**Q3 —— `@scope` 的 scope root 自身是否被其内部样式匹配?**
+**Q3 —— ~~`@scope` 的 scope root 自身是否被其内部样式匹配?~~ ✅ 已裁决**
 
-这是本计划**唯一未验证的语法级假设**。若 scope root 自身不被匹配,
-组件根元素的样式需要额外一条 `:scope` 显式规则。W1 必须实测确认,
-不能照博客实现。
+**业主 2026-10-01 裁决:按最优解执行。已查实并落定** —— 详见 §2.1.1。
+答案:**scope root 在作用域内(S-1),但裸选择器匹配不到它(S-2)**,必须显式
+写 `:scope`。由此 §3.3 裁决 B 从「属性注入 + 带前置子的 `@scope`」改为
+**「`<style>` 行内重定位 + 无前置子 `@scope`」** —— 少注入一个属性、少解析一次
+CSS,并连带消掉了原风险 R-1 的整个降级分支。
+
+---
+
+## 9.1 已裁决事项(留档)
+
+| 原编号 | 裁决 | 日期 | 落点 |
+|---|---|---|---|
+| Q1 | `std.web` 落 **v0.11.1**;v0.11.1 未完工,**TAG 由业主下令后才能打** | 2026-10-01 | §0 版本与 tag 门禁 |
+| Q3 | 按最优解执行,已用 W3C 一手规范结清 | 2026-10-01 | §2.1.1 + §3.3 裁决 B |
 
 **Q4 —— 是否要进一步做 resumability(§2.2 Qwik 路线)?**
 
