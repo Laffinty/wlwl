@@ -18,12 +18,12 @@
 //!   - `wlwl:std.format` — `FORMAT` + the shared template grammar (§15.8 / §10.6, Phase B5)
 //!
 //! R1 语言层(纯 wlwl,`include_str!` 嵌入,eval 侧求值并缓存):
-//!   - `wlwl:std.collection` — 17 个高阶集合函数(M3-1 起纯 wlwl 终态)
-//!   - `wlwl:std.str`    — string extensions (stdlib spec §6; M1 placeholder
-//!     member `QUOTE`, full member set lands in M3)
-//!   - `wlwl:std.math`   — math basics (stdlib spec §7; M1 placeholder member
-//!     `ABS`; `SQRT`/`POW` will be R2 kernels behind the facade)
-//!   - `wlwl:std.test`   — test framework facade (§8; M3-3 混合化,R2 内核
+//!   - `wlwl:std.collection` — 集合套件(§5;M3-1 起 16 成员纯 wlwl,M5 起
+//!     `RANGE` 归 R2 → 本模块是**混合**模块,见 [`collection`])
+//!   - `wlwl:std.str`    — string extensions (§6,5 成员:M3-2 落齐)
+//!   - `wlwl:std.math`   — math basics (§7,11 成员:M3-2 落齐;`SQRT`/`POW`
+//!     走注入的 R2 浮点内核,故本模块是**混合**模块)
+//!   - `wlwl:std.test`   — test framework facade (§8;M3-3 混合化,R2 内核
 //!     见 [`test_native`] —— 注册表 / 计时 / 测试体调用 / `EXPECT_ERR`)
 //!
 //! This list is **locked by a test** against [`resolve`] — a std module

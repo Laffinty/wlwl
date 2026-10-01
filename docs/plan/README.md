@@ -14,8 +14,8 @@
 | 现行规范 | [`../spec/wlwl-spec-v0.11.md`](../spec/wlwl-spec-v0.11.md)(v0.11;§10 已机制化,命名空间成员契约外迁) |
 | 现行标准库规范 | [`../stdlib/wlwl-stdlib-spec-v0.11.md`](../stdlib/wlwl-stdlib-spec-v0.11.md)(v0.11,与语言规范相互独立、分别版本化) |
 | 最新实现 | v0.10.4 已发布 |
-| 进行中的计划 | [`plan-v0.11.md`](plan-v0.11.md) —— 批次 A 标准库底座(M1–M5);偏差分册 [`deviations-v0.11.md`](deviations-v0.11.md) 已建(空册,D11-001 起) |
-| 门禁 | `cargo fmt --check` 0 diff;`clippy -D warnings` 0;`cargo test --workspace` 全绿;probe **138** 用例(M1 后,2026-10-01) |
+| 进行中的计划 | [`plan-v0.11.md`](plan-v0.11.md) —— **批次 A 已收口**(标准库底座 M1–M5,2026-10-01);偏差分册 [`deviations-v0.11.md`](deviations-v0.11.md) 共 **13 条**(D11-001 – D11-013),**仅 D11-004 挂账** |
+| 门禁 | `cargo fmt --check` 0 diff;`clippy -D warnings` 0;`cargo test --workspace` 47 套件 **1860 passed / 0 failed**;probe **142** 用例(136 立项 → 138 M1 → 142 M3-4);附录 G 逐字节不变;批次 A 门禁自检见 plan §8 |
 | v0.11 已立项范围 | **批次 A:标准库底座**(ADR-0021/0022/0023);**批次 B:`YIELD` 的续体保存**(裁决 D-3 = 拆两半,规范侧已在 v0.10.1 降级为已知限制) |
 
 ## 历史归档去哪找

@@ -869,7 +869,9 @@ NameItem = string_lit | string_lit ":" string_lit | identifier .
 
 ### 10.6 集合套件 — `wlwl:std.collection`
 
-归属**语言层**(R1,纯 wlwl 实现)。成员契约 —— `MAP` / `FILTER` / `REDUCE` / `SORT` / `SORT_BY` / `RANGE` / `ZIP` / `ENUMERATE` / `TAKE` / `DROP` / `FLAT` / `UNIQ` / `GROUP_BY` / `ANY` / `ALL` / `FIND` / `JOIN` 的签名、语义与失败行为(含 `RANGE` 步长为零的 `E0038`)见标准库规范;回调的 `ERR` 传播按 10.1 / 8.2 执行。
+归属**混合实现**(R1 门面 + R2 `RANGE`;其余 16 成员为纯 wlwl)。成员契约 —— `MAP` / `FILTER` / `REDUCE` / `SORT` / `SORT_BY` / `RANGE` / `ZIP` / `ENUMERATE` / `TAKE` / `DROP` / `FLAT` / `UNIQ` / `GROUP_BY` / `ANY` / `ALL` / `FIND` / `JOIN` 的签名、语义与失败行为(含 `RANGE` 步长为零的 `E0038`)见标准库规范;回调的 `ERR` 传播按 10.1 / 8.2 执行。
+
+> `RANGE` 单独归 R2 是 v0.11 M5 的**实测裁决**(基准数据见 `impl/crates/wlwl-eval/benches/baseline.txt` 的 M5 段):R1 版每元素成本超线性(10 000 元素 3.6 s、40 000 元素 86 s),使本节 §6.6 的「100 万次简单循环 < 30 s」符合性负载跑不完,且时间全消耗在循环开始**之前**。层归属变更不算破坏性变更(ADR-0021 §0.2)—— 成员面、签名、语义、诊断一字未变。偏差 D11-012。
 
 ### 10.7 格式化 — `FORMAT`(全局)
 
