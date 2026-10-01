@@ -50,12 +50,12 @@ pub static SPEC: ModuleSpec = ModuleSpec {
 
 /// [v0.11 M2 / ADR-0022] 直通边界包装:Value→内部表示→Value。
 pub fn std_parse(host: &mut dyn StdHost, args: Vec<Value>) -> Result<Outcome, WlwlError> {
-    crate::wrap(host, "std_parse", std_parse_inner, args)
+    crate::wrap(host, std_parse_inner, args)
 }
 
 /// [v0.11 M2 / ADR-0022] 直通边界包装:Value→内部表示→Value。
 pub fn std_stringify(host: &mut dyn StdHost, args: Vec<Value>) -> Result<Outcome, WlwlError> {
-    crate::wrap(host, "std_stringify", std_stringify_inner, args)
+    crate::wrap(host, std_stringify_inner, args)
 }
 
 // ── Value ↔ serde_json(仅作内部表示转换;ADR-0022 §4)──

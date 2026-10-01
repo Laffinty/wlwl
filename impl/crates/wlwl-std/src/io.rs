@@ -112,17 +112,17 @@ pub static SPEC: ModuleSpec = ModuleSpec {
 
 /// [v0.11 M2 / ADR-0022] 直通边界包装:Value→内部表示→Value。
 pub fn std_print(host: &mut dyn StdHost, args: Vec<Value>) -> Result<Outcome, WlwlError> {
-    crate::wrap(host, "std_print", std_print_inner, args)
+    crate::wrap(host, std_print_inner, args)
 }
 
 /// [v0.11 M2 / ADR-0022] 直通边界包装:Value→内部表示→Value。
 pub fn std_print_err(host: &mut dyn StdHost, args: Vec<Value>) -> Result<Outcome, WlwlError> {
-    crate::wrap(host, "std_print_err", std_print_err_inner, args)
+    crate::wrap(host, std_print_err_inner, args)
 }
 
 /// [v0.11 M2 / ADR-0022] 直通边界包装:Value→内部表示→Value。
 pub fn std_input(host: &mut dyn StdHost, args: Vec<Value>) -> Result<Outcome, WlwlError> {
-    crate::wrap(host, "std_input", std_input_inner, args)
+    crate::wrap(host, std_input_inner, args)
 }
 
 #[cfg(test)]

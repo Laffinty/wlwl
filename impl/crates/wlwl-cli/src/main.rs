@@ -856,7 +856,12 @@ fn fmt_file(file: &PathBuf, check: bool, write: bool) -> ExitCode {
             } else {
                 let d = WlwlDiagnostic::new(
                     ErrorCode::W0053,
-                    "source deviates from the §16.3 canonical formatter contract",
+                    // [D11-019] 原文写「§16.3 canonical formatter contract」。
+                    // 那是 **v0.4** 的编号:本规范(v0.11)的格式化器在附录 A.3,
+                    // 而这是**给用户看的消息** —— 照 v0.11 规范去查 §16.3 会
+                    // 查不到。代码里那些写「spec v0.4 §16.3」的注释是带版本
+                    // 的引证,保持原样;面向用户的一律按现行编号。
+                    "source deviates from the canonical formatter contract (spec appendix A.3)",
                     Location::point(file_name, 1, 1),
                 )
                 .with_hint("run `wlwl fmt <file>` and apply its output");

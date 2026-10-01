@@ -629,27 +629,27 @@ pub static SPEC: ModuleSpec = ModuleSpec {
 
 /// [v0.11 M2 / ADR-0022] 直通边界包装:Value→内部表示→Value。
 pub fn std_ask(host: &mut dyn StdHost, args: Vec<Value>) -> Result<Outcome, WlwlError> {
-    crate::wrap(host, "std_ask", std_ask_inner, args)
+    crate::wrap(host, std_ask_inner, args)
 }
 
 /// [v0.11 M2 / ADR-0022] 直通边界包装:Value→内部表示→Value。
 pub fn std_embed(host: &mut dyn StdHost, args: Vec<Value>) -> Result<Outcome, WlwlError> {
-    crate::wrap(host, "std_embed", std_embed_inner, args)
+    crate::wrap(host, std_embed_inner, args)
 }
 
 /// [v0.11 M2 / ADR-0022] 直通边界包装:Value→内部表示→Value。
 pub fn std_complete(host: &mut dyn StdHost, args: Vec<Value>) -> Result<Outcome, WlwlError> {
-    crate::wrap(host, "std_complete", std_complete_inner, args)
+    crate::wrap(host, std_complete_inner, args)
 }
 
 /// [v0.11 M2 / ADR-0022] 直通边界包装:Value→内部表示→Value。
 pub fn std_ask_stream(host: &mut dyn StdHost, args: Vec<Value>) -> Result<Outcome, WlwlError> {
-    crate::wrap(host, "std_ask_stream", std_ask_stream_inner, args)
+    crate::wrap(host, std_ask_stream_inner, args)
 }
 
 /// [v0.11 M2 / ADR-0022] 直通边界包装:Value→内部表示→Value。
 pub fn std_ask_all(host: &mut dyn StdHost, args: Vec<Value>) -> Result<Outcome, WlwlError> {
-    crate::wrap(host, "std_ask_all", std_ask_all_inner, args)
+    crate::wrap(host, std_ask_all_inner, args)
 }
 
 #[cfg(test)]

@@ -9,7 +9,7 @@
 //! Modules exposed (dual-track, ADR-0021):
 //!
 //! R2 原生层(Rust 绑定表):
-//!   - `wlwl:std.io`     — `PRINT`, `INPUT` (§15.1)
+//!   - `wlwl:std.io`     — `PRINT`, `PRINT_ERR`, `INPUT` (§15.1)
 //!   - `wlwl:std.fs`     — `READ_FILE`, `WRITE_FILE`, `EXISTS` (§15.3)
 //!   - `wlwl:std.json`   — `PARSE`, `STRINGIFY` (§15.3 + E0070/E0071)
 //!   - `wlwl:std.ai`     — ASK / ASK_STREAM stubs (§15.13, Phase 4 batch 3)
@@ -70,12 +70,17 @@ pub struct StdSource {
     ///
     /// eval 侧在求值本模块源码**之前**把它们绑进子求值器的局部环境;返回
     /// 给 `IMPORT` 方的模块 env 只收 `EXPORT` 名单,所以这些名字**不外泄**
-    /// —— 门面仍是唯一对外契约层。取值见 [`kernels::KERNELS`]。
+    /// —— 门面仍是唯一对外契约层。
+    ///
+    /// 清单是**逐条手写**的,不引用 [`kernels::KERNELS`]:模块可以带自己的
+    /// kernel(如 `std.test` 的 `_TEST` / `_EXPECT_ERR` / `_RUN_TESTS` 在
+    /// `test_native.rs` 而非 `kernels.rs`),一张共表表达不了这种混合。
+    /// `KERNELS` 的身份是「模块无关的共享 kernel 名册」,供守卫当基准。
     ///
     /// 为什么需要这条通道:浮点指令(`SQRT` / `POW`)纯 wlwl 表达不出来;
     /// 诊断码表同理 —— wlwl 源码无法指定原生诊断码(实测 `PANIC` → `E0100`),
-    /// 而 `E0038`(`RANGE` 步长为零)在 M3 之前的唯一发射点是被删掉的 R2
-    /// `RANGE` 实现。详见 [`kernels`] 的模块文档。
+    /// 而带函数名前缀的 `E0020` / `E0022` / `E0030` 只能从 Rust 侧发。
+    /// 详见 [`kernels`] 的模块文档与 ADR-0021 §层间规则。
     pub kernels: &'static [(&'static str, StdFn)],
 }
 
@@ -120,7 +125,9 @@ pub static LANG_SOURCES: &[StdSource] = &[
             ("_DIAG_E0020", kernels::kernel_diag_e0020 as StdFn),
             ("_DIAG_E0022", kernels::kernel_diag_e0022 as StdFn),
             ("_DIAG_E0030", kernels::kernel_diag_e0030 as StdFn),
-            ("_DIAG_E0038", kernels::kernel_diag_e0038 as StdFn),
+            // [D11-019] 原先这里还注入 `_DIAG_E0038`,M5 把 `RANGE` 沉回
+            // R2 后门面不再有 `E0038` 发射点(唯一发射点是
+            // `collection::kernel_range`)⇒ 死注入,已删。
             // [v0.11 M5] `RANGE` 单独沉回 R2 —— 基准实测 10 000 元素
             // 3.6 s、40 000 元素 86 s,每元素成本超线性(根因:wlwl 数组
             // 不可变,`PUSH` 每次复制整个数组),使语言规范 §6.6 的「100 万次
@@ -168,16 +175,42 @@ pub static LANG_SOURCES: &[StdSource] = &[
     },
 ];
 
-/// 从 R1 源码提取导出名:扫描 `EXPORT([...])` 声明中的字符串字面量。
+/// From an R1 source file, extract the exported names: the string literals
+/// inside an `EXPORT([...])` declaration.
 ///
-/// 这是镜像生成器(附录 A)与测试的对账口径;运行期加载不走这里 ——
-/// eval 侧由 AST 的 `collect_exports` 提取(权威口径),两边不一致会
-/// 被 `stdlib_appendix_a_sync` 锁测试抓出来。只对随本 crate 分发的
-/// 受控格式负责:每条声明一行、双引号名字。
+/// This is the reconciliation surface for the appendix-A mirror generator and
+/// the tests; **runtime loading does not go through it** — eval extracts
+/// exports from the AST via `collect_exports` (the authoritative path), and the
+/// `stdlib_appendix_a_sync` lock test catches the two sides disagreeing.
+///
+/// [D11-019] Trailing comments are truncated before the `[`/`]` are located.
+/// Previously the slice ran to the **last** `]` on the line, so a comment
+/// containing both a bracket and a quote leaked phantom exports
+/// (`EXPORT(["A"]); // see "B" in [notes]` parsed as `A`, `B`). The review's
+/// example (`// don't touch "C"`, no bracket) happened *not* to trigger — the
+/// bracket is what widens the slice.
+///
+/// This is a scanner over a controlled format, so it is deliberately dumb: it
+/// understands one declaration per line, double-quoted names, and nothing else.
+/// `wlwl-eval` keeps a cross-check test asserting
+/// `lang_exports(src) == collect_exports(parse(src))` for every shipped R1
+/// module, because this function and the appendix-A mirror share one source —
+/// a scanner bug would otherwise be self-consistently green.
 pub fn lang_exports(source: &str) -> Vec<String> {
     let mut out = Vec::new();
     for line in source.lines() {
+        // Truncate at the first `;` or `//` — the declaration ends there, and
+        // anything past it is prose that may contain brackets and quotes.
         let t = line.trim();
+        let t = match t.find(";") {
+            Some(i) => &t[..i],
+            None => t,
+        };
+        let t = match t.find("//") {
+            Some(i) => &t[..i],
+            None => t,
+        };
+        let t = t.trim();
         let Some(rest) = t.strip_prefix("EXPORT(") else {
             continue;
         };
@@ -249,10 +282,13 @@ pub(crate) fn call_callable(
 
 /// 把「serde_json 内部表示」的旧式函数包成直通 StdFn:
 /// Value →(values_to_json)→ 内部表示 →(f)→ json_to_value → Value。
-/// 转换失败(闭包/NaN 等不可表示)与旧边界一致地报 E0030。
+/// 转换失败(闭包/NaN/整数键等不可表示)与旧边界一致地报 E0030。
+///
+/// [D11-019] 原先还有一个 `_name: &str` 形参,18 个调用点全都传了函数名
+/// 而**没有任何一处读它** —— 诊断消息的措辞来自内层函数自己(`wrap` 无法
+/// 把名字塞进 serde_json 侧的消息)。已删,免得下一个人以为它有用。
 pub(crate) fn wrap(
     host: &mut dyn StdHost,
-    _name: &str,
     f: fn(&mut StdCtx, Vec<serde_json::Value>) -> Result<serde_json::Value, compat::StdError>,
     args: Vec<Value>,
 ) -> Result<Outcome, WlwlError> {
@@ -363,6 +399,32 @@ mod tests {
         let md = lang_exports("LET(A, 1);\nEXPORT([\"A\", \"B_2\"]);\n");
         assert_eq!(md, vec!["A".to_string(), "B_2".to_string()]);
         assert!(lang_exports("LET(A, 1);\n").is_empty());
+    }
+
+    // [D11-019] 行尾注释里的括号 + 引号会撑大扫描区间,产出幻影导出。
+    // 触发条件是**括号**(`rfind(']')` 取的是行内最后一个 `]`),引号单独
+    // 不触发 —— 审查报告给的例子(`// don't touch "C"`)实测不触发,这里
+    // 两个形态都钉住,免得「修好了」只是换了个触发条件。
+    #[test]
+    fn lang_exports_ignores_quotes_in_a_trailing_comment() {
+        assert_eq!(
+            lang_exports("EXPORT([\"A\"]); // don't touch \"C\""),
+            vec!["A"]
+        );
+    }
+
+    #[test]
+    fn lang_exports_ignores_brackets_and_quotes_in_a_trailing_comment() {
+        assert_eq!(
+            lang_exports("EXPORT([\"A\"]); // see \"B\" in [notes]"),
+            vec!["A"]
+        );
+        assert_eq!(
+            lang_exports("EXPORT([\"A\", \"B\"]); /* keep \"NAMES\" order */"),
+            vec!["A", "B"]
+        );
+        // 注释里有 `]` 但没引号:同样不得改变结果。
+        assert_eq!(lang_exports("EXPORT([\"A\"]); // see [D11-012]"), vec!["A"]);
     }
 
     // ---- 文档与命名约定的守门测试(C5′)----

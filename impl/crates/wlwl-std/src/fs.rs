@@ -74,17 +74,17 @@ pub static SPEC: ModuleSpec = ModuleSpec {
 
 /// [v0.11 M2 / ADR-0022] 直通边界包装:Value→内部表示→Value。
 pub fn std_read_file(host: &mut dyn StdHost, args: Vec<Value>) -> Result<Outcome, WlwlError> {
-    crate::wrap(host, "std_read_file", std_read_file_inner, args)
+    crate::wrap(host, std_read_file_inner, args)
 }
 
 /// [v0.11 M2 / ADR-0022] 直通边界包装:Value→内部表示→Value。
 pub fn std_write_file(host: &mut dyn StdHost, args: Vec<Value>) -> Result<Outcome, WlwlError> {
-    crate::wrap(host, "std_write_file", std_write_file_inner, args)
+    crate::wrap(host, std_write_file_inner, args)
 }
 
 /// [v0.11 M2 / ADR-0022] 直通边界包装:Value→内部表示→Value。
 pub fn std_exists(host: &mut dyn StdHost, args: Vec<Value>) -> Result<Outcome, WlwlError> {
-    crate::wrap(host, "std_exists", std_exists_inner, args)
+    crate::wrap(host, std_exists_inner, args)
 }
 
 #[cfg(test)]

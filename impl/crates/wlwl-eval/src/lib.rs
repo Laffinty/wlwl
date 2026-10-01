@@ -778,7 +778,14 @@ fn parse_ns_path(path: &str) -> Option<(&str, &str)> {
 
 /// Walk the top-level expressions of a module program and return the
 /// union of names listed in any `EXPORT(...)` node.
-fn collect_exports(program: &Expr) -> HashSet<String> {
+///
+/// This is the **authoritative** export extractor: it is what the runtime
+/// binds into the module env handed to `IMPORT`. `wlwl_std::lang_exports`
+/// is a cheaper line scanner used by the appendix-A mirror and the guards;
+/// `stdlib_mirror::tests` asserts the two agree, because the scanner shares a
+/// source with the mirror and a scanner bug would otherwise be self-consistently
+/// green. `pub(crate)` for that test only.
+pub(crate) fn collect_exports(program: &Expr) -> HashSet<String> {
     fn collect(e: &Expr, out: &mut HashSet<String>) {
         match e {
             Expr::Block { exprs, .. } => {
@@ -922,10 +929,15 @@ fn collect_sealed(program: &Expr) -> Option<HashSet<String>> {
 // std library dispatch (v0.3 §15) — Phase 4
 // ──────────────────────────────────────────────────────────────────────
 
-/// Wrap a `wlwl_std::StdFn` invocation: convert `Value` args to
-/// `serde_json::Value`, call the std fn against `ev.std_ctx`, then
-/// convert the result back. Translates `wlwl_std::StdError` to
-/// `WlwlDiagnostic` using the call site's `span`.
+/// Invoke a `wlwl_std::StdFn`: hand it the call's `Value` args and return
+/// its `Outcome` untouched.
+///
+/// [v0.11 M2 / ADR-0022] There is **no** `Value`↔`serde_json` conversion at
+/// this boundary any more — the doc comment that used to describe one
+/// (together with the `StdValueConvError` arms it fed) was left behind by M2.
+/// Callbacks are injected through [`wlwl_std::StdHost`] instead, and
+/// `ctx.err` takes its location from the entry file, matching the old
+/// `Location::point(ev.file, 0, 0)` behavior.
 fn invoke_std(
     ev: &mut Evaluator,
     std_fn: wlwl_std::StdFn,
@@ -952,14 +964,19 @@ fn invoke_std(
 
 /// Function signature for every eval-internal builtin. Same shape as
 /// `wlwl_std::StdFn` but operates on the rich `Value` type so it can
-/// invoke user closures (which can't cross the `serde_json::Value`
-/// std boundary — see B5 `P4-B5-006`).
+/// invoke user closures — which cannot cross the **legacy** std boundary
+/// that rejected closures (B5 `P4-B5-006`).
+///
+/// [v0.11 / ADR-0022] That boundary is gone: std functions now receive
+/// real `Value`s, and closures reach them through [`wlwl_std::StdHost::call`]
+/// (the language's own `CALL` / `CALL_METHOD` path), so the two signatures
+/// now differ only in how the host is reached.
 ///
 /// Used by:
 /// - the global builtin dispatch table (`resolve_builtin`), reached
 ///   when the user calls a builtin by its bare name (e.g. `PRINT(...)`);
-/// - the callback-aware std modules bound through `NativeInvoke::Builtin`
-///   (Phase B6: `wlwl:std.collection`).
+/// - [`invoke_std`]'s caller side, i.e. every R2 `StdFn` reached through a
+///   module `IMPORT` (`wlwl:std.collection` / `str` / `math` / `test`).
 ///
 fn builtin_print(_ev: &mut Evaluator, args: Vec<Value>) -> WlwlResult<Outcome> {
     let parts: Vec<String> = args.iter().map(|v| v.display()).collect();
@@ -1590,8 +1607,10 @@ fn builtin_remove_key(_ev: &mut Evaluator, args: Vec<Value>) -> WlwlResult<Outco
 }
 
 /// v0.4 §10.2 + §14.5 — `DEL(d, key)` is the v0.3-compat alias for
-/// `REMOVE_KEY`. Per spec §14.5, every call emits `W0051`. v0.5 will
-/// drop this alias entirely.
+/// `REMOVE_KEY`. Per spec §14.5, every call emits `W0051`.
+/// [D11-019] 原文此处写「v0.5 will drop this alias entirely」—— v0.5 从未
+/// 发生(本版是 v0.11),别名仍在。移除时点规范没有定,只记为演进方向
+/// (标准库 §11),故此处不再承诺版本号。
 ///
 /// Note: the warning fires **after** `eval_call`'s ERR short-circuit
 /// (see line ~1935 region), so `DEL(ERR("e"), "k")` propagates the
@@ -1600,7 +1619,7 @@ fn builtin_remove_key(_ev: &mut Evaluator, args: Vec<Value>) -> WlwlResult<Outco
 fn builtin_remove_key_compat(ev: &mut Evaluator, args: Vec<Value>) -> WlwlResult<Outcome> {
     ev.emit_warning(
         ErrorCode::W0051,
-        "`DEL` is a v0.3-compat alias; use `REMOVE_KEY` instead (will be removed in v0.5)",
+        "`DEL` is a v0.3-compat alias; use `REMOVE_KEY` instead (W0051; deprecated alias — removal is an open evolution item, no version is scheduled)",
     );
     builtin_remove_key(ev, args)
 }
@@ -1619,7 +1638,7 @@ fn builtin_remove_key_compat(ev: &mut Evaluator, args: Vec<Value>) -> WlwlResult
 fn builtin_at_k_compat(ev: &mut Evaluator, args: Vec<Value>) -> WlwlResult<Outcome> {
     ev.emit_warning(
         ErrorCode::W0051,
-        "`POP` is a v0.6-compat alias; use `AT_K` instead (will be removed in v0.5)",
+        "`POP` is a v0.6-compat alias; use `AT_K` instead (W0051; deprecated alias — removal is an open evolution item, no version is scheduled)",
     );
     builtin_at_k(ev, args)
 }
@@ -5011,8 +5030,8 @@ fn resolve_builtin(name: &str) -> Option<BuiltinFn> {
         "AT" => Some(builtin_at),
         "REMOVE_KEY" => Some(builtin_remove_key),
         // v0.4 §10.2 — `DEL` is the v0.3-compat alias for `REMOVE_KEY`.
-        // Spec §14.5 mandates W0051 on every legacy use; v0.5 removes
-        // the alias. Added Phase B2.
+        // Spec §14.5 mandates W0051 on every legacy use; removal is an open
+        // evolution item with no scheduled version (D11-019). Phase B2.
         "DEL" => Some(builtin_remove_key_compat),
         // v0.6 §10.4: `AT_K` is the canonical dict lookup-with-default.
         // `POP` is its v0.6-compat alias and, per §11.3, every use emits
@@ -5093,7 +5112,8 @@ fn resolve_builtin(name: &str) -> Option<BuiltinFn> {
         "NOT" => Some(builtin_not),
         // v0.4 §12.7 + §14.5 — `OR_DIE` is the v0.3-compat alias for
         // `UNWRAP_OR`. Spec §14.5 mandates W0051 on every legacy use;
-        // v0.5 removes the alias. Renamed dispatch target from
+        // removal is an open evolution item, no version scheduled
+        // (D11-019). Renamed dispatch target from
         // `builtin_or_die` → `builtin_unwrap_or` in Phase B3 to match
         // the canonical name.
         "OR_DIE" => Some(builtin_unwrap_or_compat),
@@ -5654,7 +5674,8 @@ fn builtin_unwrap_or(_ev: &mut Evaluator, args: Vec<Value>) -> WlwlResult<Outcom
 
 /// v0.4 §12.7 + §14.5 — `OR_DIE(value, default)` is the v0.3-compat
 /// alias for `UNWRAP_OR`. Per spec §14.5, every call emits `W0051`.
-/// v0.5 will drop this alias entirely.
+/// [D11-019] 原文此处写「v0.5 will drop this alias entirely」—— 未发生,
+/// 见上面 `builtin_remove_key_compat` 的同批更正。
 ///
 /// This wrapper handles the **runtime-call** path:
 ///   `OR_DIE` reaches `eval_call` only when called as an ordinary
@@ -5666,7 +5687,7 @@ fn builtin_unwrap_or(_ev: &mut Evaluator, args: Vec<Value>) -> WlwlResult<Outcom
 fn builtin_unwrap_or_compat(ev: &mut Evaluator, args: Vec<Value>) -> WlwlResult<Outcome> {
     ev.emit_warning(
         ErrorCode::W0051,
-        "`OR_DIE` is a v0.3-compat alias; use `UNWRAP_OR` instead (will be removed in v0.5)",
+        "`OR_DIE` is a v0.3-compat alias; use `UNWRAP_OR` instead (W0051; deprecated alias — removal is an open evolution item, no version is scheduled)",
     );
     builtin_unwrap_or(ev, args)
 }
@@ -5896,11 +5917,17 @@ fn is_truthy(v: &Value) -> bool {
 // Evaluator
 // ──────────────────────────────────────────────────────────────────────
 
-/// `wlwl:std.collection` — callback-aware higher-order collection
-/// functions (spec v0.4 §15.7 / §10.5). The std boundary can't host
-/// these because `value_to_std_value` rejects closures (B5 P4-B5-006);
-/// `Evaluator::load_std` detects the path and binds from
-/// `collection::BUILTINS` instead of `spec.functions`.
+/// [v0.3 Phase B1] The global builtin registry: name → metadata (arity,
+/// signature, ERR-consumer status, macro flag, since-version, spec section)
+/// plus the dispatch resolver. The **table** lives here; the builtin
+/// *implementations* are the `fn builtin_*` bodies in this file.
+///
+/// [D11-019] This `mod` used to carry a doc block describing the deleted R2
+/// `wlwl:std.collection` module (`collection::BUILTINS`, `load_std`,
+/// `value_to_std_value`) — a module removed in v0.11 M3-1, whose text was
+/// left stranded on the `pub mod registry;` line below. Anyone reading
+/// `mod registry` in rustdoc got a description of a module that no longer
+/// exists.
 pub mod registry;
 
 /// [v0.7 Phase B1] cooperative coroutine runtime skeleton. Types only
@@ -7015,7 +7042,7 @@ impl Evaluator {
                 // path and never emits here.
                 self.emit_warning(
                     ErrorCode::W0051,
-                    "`OR_DIE` is a v0.3-compat alias; use `UNWRAP_OR` instead (will be removed in v0.5)",
+                    "`OR_DIE` is a v0.3-compat alias; use `UNWRAP_OR` instead (W0051; deprecated alias — removal is an open evolution item, no version is scheduled)",
                 );
                 let o = self.eval_expr(value)?;
                 if o.signal != Signal::None {
@@ -16810,9 +16837,13 @@ TYPE(v);
             "should suggest `UNWRAP_OR`: {}",
             msg
         );
+        // [D11-019] 原先这里断言消息含 "v0.5" —— 那条锁把「v0.5 移除」
+        // 这个从未发生(v0.11 早已越过它)的事实钉成了契约。弃用警告的
+        // 可断言部分是**指名道姓**:用了哪个别名、替代者是谁;移除时点
+        // 规范没有定(标准库 §11 只把它记为演进方向),故不再断言版本号。
         assert!(
-            msg.contains("v0.5"),
-            "should mention v0.5 removal deadline: {}",
+            !msg.contains("v0.5"),
+            "the message must not promise a removal version that never arrived: {}",
             msg
         );
     }

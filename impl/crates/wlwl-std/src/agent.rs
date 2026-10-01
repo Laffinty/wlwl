@@ -311,27 +311,27 @@ pub static SPEC: ModuleSpec = ModuleSpec {
 
 /// [v0.11 M2 / ADR-0022] 直通边界包装:Value→内部表示→Value。
 pub fn std_task(host: &mut dyn StdHost, args: Vec<Value>) -> Result<Outcome, WlwlError> {
-    crate::wrap(host, "std_task", std_task_inner, args)
+    crate::wrap(host, std_task_inner, args)
 }
 
 /// [v0.11 M2 / ADR-0022] 直通边界包装:Value→内部表示→Value。
 pub fn std_tool(host: &mut dyn StdHost, args: Vec<Value>) -> Result<Outcome, WlwlError> {
-    crate::wrap(host, "std_tool", std_tool_inner, args)
+    crate::wrap(host, std_tool_inner, args)
 }
 
 /// [v0.11 M2 / ADR-0022] 直通边界包装:Value→内部表示→Value。
 pub fn std_call_tool(host: &mut dyn StdHost, args: Vec<Value>) -> Result<Outcome, WlwlError> {
-    crate::wrap(host, "std_call_tool", std_call_tool_inner, args)
+    crate::wrap(host, std_call_tool_inner, args)
 }
 
 /// [v0.11 M2 / ADR-0022] 直通边界包装:Value→内部表示→Value。
 pub fn std_model(host: &mut dyn StdHost, args: Vec<Value>) -> Result<Outcome, WlwlError> {
-    crate::wrap(host, "std_model", std_model_inner, args)
+    crate::wrap(host, std_model_inner, args)
 }
 
 /// [v0.11 M2 / ADR-0022] 直通边界包装:Value→内部表示→Value。
 pub fn std_context(host: &mut dyn StdHost, args: Vec<Value>) -> Result<Outcome, WlwlError> {
-    crate::wrap(host, "std_context", std_context_inner, args)
+    crate::wrap(host, std_context_inner, args)
 }
 
 #[cfg(test)]

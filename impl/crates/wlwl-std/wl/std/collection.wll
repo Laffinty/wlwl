@@ -1,15 +1,20 @@
 // wlwl:std.collection — R1 语言层(标准库底座 v0.11,ADR-0021)
 // 成员契约:docs/stdlib/wlwl-stdlib-spec-v0.11.md §5;注册镜像:附录 A。
 //
-// M3-1 起本模块是 std.collection 的**终态实现**(原 R2 Rust 实现已删)。
-// 算法、循环、比较全部是 wlwl;只有三样东西走注入的 R2 内核(ADR-0021
+// M3-1 起本模块是 std.collection 的**门面实现**(原 R2 Rust 实现已删)。
+// 算法、循环、比较全部是 wlwl;只有四样东西走注入的 R2 内核(ADR-0021
 // §层间规则,见 wlwl-std/src/kernels.rs):
 //
 //   _KIND(x)          值种类的诊断措辞(与 R2 的消息逐字对齐)
 //   _DIAG_E0020(msg)  回调不可调用
 //   _DIAG_E0022(msg)  元数不符(仅变长元数成员需要)
 //   _DIAG_E0030(msg)  类型错
-//   _DIAG_E0038(msg)  RANGE 步长为零 —— E0038 全仓唯一的发射点就在这里
+//   _RANGE(...)       RANGE 本身 —— M5 裁决单独沉回 R2(基准实测 R1 版每元素
+//                     成本超线性,见 D11-012),门面只改名导出
+//
+// [D11-019] 原先这里还列着 `_DIAG_E0038(msg)`,并称「E0038 全仓唯一的发射点
+// 就在这里」—— M5 之后不成立:唯一发射点是 `collection.rs` 的
+// `kernel_range`。该注入已作为死注入删除。
 //
 // 为什么要自己发诊断码:wlwl 源码**发不出**指定码的原生诊断(实测
 // PANIC → E0100;LEN(1) → E0030 但消息被 LEN 固定;闭包元数错 → E0022 但
@@ -34,7 +39,8 @@ LET(_NEED, FUN((name, what, ty, v),
     IF(==(TYPE(v), ty), v, _DIAG_E0030(_CAT(name, ": expected ", what, ", got ", _KIND(v))))));
 
 LET(_NEED_ARR, FUN((name, v), _NEED(name, "array", "ARRAY", v)));
-LET(_NEED_INT, FUN((name, v), _NEED(name, "integer", "INTEGER", v)));
+// [D11-019] 原有 `_NEED_INT`,全模块无调用点(RANGE 沉 R2 后元数与元素
+// 类型检查一并归 R2),已删。
 
 LET(_NEED_FN, FUN((name, v),
     IF(==(TYPE(v), "FUNCTION"),
@@ -368,6 +374,8 @@ LET(JOIN, FUN((*args),
           SET(s, +(s, STR(v)))));
      s)));
 
-// EXPORT 顺序对齐 R2 的 `NAMES` 常量(锁测试 `names_match_catalog` 对拍);
-// 附录 A 镜像跟随本顺序。改这里之前先改那个常量。
+// EXPORT 顺序跟随标准库规范 §5 表格的行序;附录 A 镜像跟随本顺序。成员
+// **集合**由 `wlwl-eval/tests/collection_contract.rs` 对 §5 表格做外部对照。
+// [D11-019] 原文写「对齐 R2 的 `NAMES` 常量(锁测试 `names_match_catalog`
+// 对拍)」—— R2 实现删除后那两个东西都不存在了(该恒真锁已在 D11-006 拆除)。
 EXPORT(["MAP", "FILTER", "REDUCE", "SORT", "SORT_BY", "ZIP", "RANGE", "ANY", "ALL", "FIND", "ENUMERATE", "TAKE", "DROP", "FLAT", "UNIQ", "GROUP_BY", "JOIN"]);

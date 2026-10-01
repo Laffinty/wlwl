@@ -193,12 +193,15 @@ fn std_math_mixed_override_keeps_the_export_surface_and_reaches_kernels() {
     );
 
     // 漂移守卫:覆盖模块把成员改名 → E0023。
+    // 覆盖文件用 raw string:原文里混进了字面量 `` `n ``(反引号 n),
+    // 拼进 .wll 源里会让「注释跨两行」这件事只存在于人的想象里。
     let bad = tmp.path().join("bad");
     fs::create_dir_all(&bad).unwrap();
     seed_override_dir(&bad);
     fs::write(
         bad.join("math.wll"),
-        "// override module with no exports at all: the importer asks for ROOT4,`n        //   the module exports nothing -> E0023 (never a silent fallback).`n",
+        "// override module with no exports at all: the importer asks for ROOT4,\n\
+         //   the module exports nothing -> E0023 (never a silent fallback).\n",
     )
     .unwrap();
     let (code, out) = run(

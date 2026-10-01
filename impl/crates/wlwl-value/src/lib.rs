@@ -731,7 +731,13 @@ impl YieldReason {
     }
 }
 
-/// the payload.
+/// The algebraic-effect **tag** of a control-flow event: which handler
+/// family routes it. The **payload** lives beside the tag, in the
+/// `{ tag, payload }` pair the runtime builds (WasmFX Phase 3 /
+/// Pretnar & Bauer 2015 shape; the rationale and the tag list live in
+/// `wlwl-eval::runtime`). Written as prose, not an intra-doc link: the
+/// payload type is declared in `wlwl-eval`, and this crate must not depend
+/// on it (dependency direction is `eval → wlwl-value ← std`).
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 pub enum Tag {
     /// `perform Yield` — collaborative yield point. Equivalent to
@@ -1030,7 +1036,16 @@ pub struct TestEntry {
 pub struct StdCtx {
     pub argv: Vec<String>,
     pub env: HashMap<String, String>,
-    /// std 函数产生的软警告(如 W0052),eval 侧在调用后排空。
+    /// Soft warnings produced by std functions (e.g. `W0052`).
+    ///
+    /// [D11-019] The comment here used to claim "eval drains it after each
+    /// call" — **nothing drains it**. The only readers in the tree are
+    /// `wlwl-std`'s own unit tests, so a `W0052` raised by `std.ai` /
+    /// `std.agent` is written and never surfaces to the user. Fixing that
+    /// means making `invoke_std` drain and re-emit, which is a new
+    /// observable behavior (warnings that never appeared would start
+    /// appearing) and therefore its own decision, not a doc fix; recorded
+    /// in the ledger as D11-022. Until then this field is a write-only sink.
     pub warnings: Vec<(ErrorCode, String)>,
     /// 入口源文件名(诊断定位用),由 eval 在调用前写入。
     pub source_file: String,

@@ -170,14 +170,21 @@ jobs:
           cp "$GITHUB_WORKSPACE/CHANGELOG.md" staging/
           mkdir -p staging/examples staging/docs
           cp -r "$GITHUB_WORKSPACE/impl/examples/." staging/examples/
-          cp -r "$GITHUB_WORKSPACE/docs/spec" staging/docs/ || true
+          # [D11-019] 三处 `|| true` 去掉。此前规范手册 / 标准库手册 /
+          # skill 包任一缺席都会**静默**打出缺件的发布包,而
+          # 「发布产物含两目录」是 M1-4 的硬承诺 —— 软失败让这条承诺只有
+          # 一半成立(实测:这正是审查发现的方式)。三个目录都在仓里,
+          # `cp` 失败即 workflow 失败,正是想要的。
+          cp -r "$GITHUB_WORKSPACE/docs/spec" staging/docs/
           # [v0.11 M1-4 / ADR-0021] 标准库文档独立成册随包分发;R1 语言层
           # 源码以参考副本随包发布(运行时不读取 —— 已嵌入二进制;副本供
-          # 阅读学习与 --std-src / WLWL_STD_SRC 开发覆盖使用)。
-          cp -r "$GITHUB_WORKSPACE/docs/stdlib" staging/docs/ || true
+          # 阅读学习与 `--std-src` 开发覆盖使用)。
+          # 注意:随包副本的用途只剩阅读与显式 `--std-src`;
+          # `WLWL_STD_SRC` 自 v0.11.1 起只在 debug 构建下生效(D11-021)。
+          cp -r "$GITHUB_WORKSPACE/docs/stdlib" staging/docs/
           mkdir -p staging/stdlib
           cp -r "$GITHUB_WORKSPACE/impl/crates/wlwl-std/wl/std/." staging/stdlib/
-          cp -r "$GITHUB_WORKSPACE/wlwl-skill" staging/wlwl-skill/ || true
+          cp -r "$GITHUB_WORKSPACE/wlwl-skill" staging/wlwl-skill/
 
       - name: Create tar.xz (linux/macos)
         if: matrix.archive == 'tar.xz'

@@ -20,6 +20,13 @@
 //!    全仓唯一发射点就是 `collection.rs` 里的 Rust 代码 —— 删掉它就没有
 //!    任何发射点了。
 //!
+//! > **[D11-019] 补记**:`E0038` 当初正是这条通道的**第一个用例**,但 M5
+//! > 裁决把 `RANGE` 沉回 R2 之后,它的唯一发射点回到了 Rust 侧
+//! > (`collection.rs` 的 `kernel_range`),门面里的 `_DIAG_E0038` 注入与
+//! > 本表的对应条目一起删除 —— 它已无发射点,留着就是「注入了没人用」的
+//! > 死代码,而那正是 D11-011 的反向守卫要防的东西。其余发射器仍有门面
+//! > 发射点(元数 / 类型 / 回调三类),留在表内。
+//!
 //! 被否决的替代方案:让 R1 靠「误撞」一个恰好会发 `E0030` 的内建来报类型
 //! 错。码对了,但消息指向 `LEN` 而不是 `MAP`,诊断反而更糟 —— 用一条私有
 //! 通道换一个**指名道姓**的消息,是划算的。
@@ -124,13 +131,10 @@ diag_kernel!(
     "发射 `E0030`(类型错误)。R1 门面用它报实参形态不符(`arr` 非 `ARRAY` 等)。"
 );
 
-diag_kernel!(
-    kernel_diag_e0038,
-    "_DIAG_E0038",
-    ErrorCode::E0038,
-    "step must be non-zero",
-    "发射 `E0038`(步长)。仅 `RANGE` 的 `step = 0` 一处使用(语言规范 §11 码表)。"
-);
+// [D11-019] 这里原有第四个发射器 `_DIAG_E0038`(步长为零),是这条通道的
+// 第一个用例。M5 把 `RANGE` 沉回 R2 之后,`E0038` 的唯一发射点回到
+// `collection.rs` 的 `kernel_range`,门面不再有发射点 ⇒ kernel、注入条目与
+// KERNELS 表项一并删除(留着就是死注入,而 D11-011 的反向守卫正是为防这个)。
 
 // ─────────────────────────────────────────────────────────────────────
 // 3. _SQRT(x) / _POW(a, b)  ——  std.math 浮点内核
@@ -209,17 +213,20 @@ pub fn kernel_pow(host: &mut dyn StdHost, args: Vec<Value>) -> WlwlResult<Outcom
 // 4. 注入表
 // ─────────────────────────────────────────────────────────────────────
 
-/// 全部注入 kernel。`StdSource::kernels` 直接引用本表。
+/// 全部注入 kernel。**`StdSource::kernels` 并不引用本表** —— 每个模块在
+/// 自己的 `StdSource` 里逐条手写注入清单(模块无关的共享 kernel 与模块
+/// 专属 kernel 混在一起时,表无法表达)。本表的身份是「模块无关的共享
+/// kernel 名册」,作用是给守卫当反方向的事实基准。
 ///
-/// 顺序即注入顺序,不承载语义。`wlwl-eval` 侧的守卫测试断言表里的名字既
-/// 不与全局内建重名,也不出现在任一 R1 模块的 `EXPORT` 里(见
-/// `wlwl-eval/src/stdlib_mirror.rs` 的 `r1_kernels_never_leak_to_the_export_surface`)。
+/// 顺序不承载语义。`wlwl-eval` 侧的守卫测试断言表里的名字既不与全局内建
+/// 重名,也不出现在任一 R1 模块的 `EXPORT` 里(见
+/// `wlwl-eval/src/stdlib_mirror.rs` 的 `r1_kernels_never_leak_to_the_export_surface`),
+/// 另一条反向守卫断言「表里每个 kernel 都真的有人注入」(防死注入)。
 pub static KERNELS: &[(&str, StdFn)] = &[
     ("_KIND", kernel_kind as StdFn),
     ("_DIAG_E0020", kernel_diag_e0020 as StdFn),
     ("_DIAG_E0022", kernel_diag_e0022 as StdFn),
     ("_DIAG_E0030", kernel_diag_e0030 as StdFn),
-    ("_DIAG_E0038", kernel_diag_e0038 as StdFn),
     ("_SQRT", kernel_sqrt as StdFn),
     ("_POW", kernel_pow as StdFn),
 ];
@@ -285,15 +292,17 @@ mod tests {
         assert_eq!(err.diagnostic().code, ErrorCode::E0022);
     }
 
-    /// 三个发射器(E0020 / E0030 / E0038)共用一个宏,写串一个编译器不会
+    /// 三个发射器(E0020 / E0022 / E0030)共用一个宏,写串一个编译器不会
     /// 报;这条把三个码各自钉住。
+    ///
+    /// [D11-019] 原先这里还有第四个 `E0038` —— M5 把 `RANGE` 沉回 R2 后它
+    /// 成了死 kernel,已随注入条目一并删除,故本表随之少一项。
     #[test]
     fn each_diag_kernel_carries_its_own_code() {
         for (f, want) in [
             (kernel_diag_e0020 as StdFn, ErrorCode::E0020),
             (kernel_diag_e0022 as StdFn, ErrorCode::E0022),
             (kernel_diag_e0030 as StdFn, ErrorCode::E0030),
-            (kernel_diag_e0038 as StdFn, ErrorCode::E0038),
         ] {
             let err = run(f, vec![Value::String("msg".into())]).expect_err("always a diagnostic");
             assert_eq!(err.diagnostic().code, want);

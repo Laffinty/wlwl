@@ -258,4 +258,35 @@ mod tests {
             all.len()
         );
     }
+
+    /// [D11-019] 行扫描器与 AST 权威口径必须看到**同一组**名字。
+    ///
+    /// 为什么需要这条:附录 A 镜像生成器、三份契约测试的「实际」侧、
+    /// 以及 kernel 不外泄守卫,全都走 `wlwl_std::lang_exports` 这一个扫描器
+    /// —— 它们彼此对账时是**同源**的,所以扫描器自身的偏差会自洽地全绿。
+    /// 运行期真正生效的是 AST 的 `collect_exports`,故拿它当基准。
+    ///
+    /// 比较集合而非序列:顺序由「成员面 == 规范表格行序」那几条锁负责,
+    /// 这里只管**成员是谁**。
+    #[test]
+    fn the_line_scanner_agrees_with_the_ast_export_walker() {
+        for src in wlwl_std::LANG_SOURCES {
+            let ast = wlwl_parser::parse(src.source, "std.wll")
+                .unwrap_or_else(|e| panic!("{} must parse as a module: {e}", src.path));
+            let from_ast: std::collections::HashSet<String> = crate::collect_exports(&ast);
+            let from_scan: std::collections::HashSet<String> =
+                wlwl_std::lang_exports(src.source).into_iter().collect();
+            assert_eq!(
+                from_scan, from_ast,
+                "{}: the line scanner and the AST walker disagree — one of them is \
+                 wrong, and the appendix-A mirror follows the scanner",
+                src.path
+            );
+            assert!(
+                !from_ast.is_empty(),
+                "{}: no EXPORT found at all — this guard would pass vacuously",
+                src.path
+            );
+        }
+    }
 }
