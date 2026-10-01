@@ -131,7 +131,7 @@ ADR-0021:89 已定「R1 可以调用 R0 与 R2」,M1 只落了 R1→R0 一半(�
 
 | # | 挂载点 | 变更面 | 验收 |
 |---|---|---|---|
-| M5-1 | `wlwl-eval/benches/eval_hot_paths.rs:59-68`(`simple_loop_1m`,驱动是 `RANGE(1, 1000001, 1)`)、`:129-143`(`array_higher_order`)、criterion 组;`wlwl-eval/benches/baseline.txt`(新增 M5 段) | 新增 5 个 R1 热成员 bench(`r1_range_build` / `r1_collection_map` / `r1_collection_sort` / `r1_str_join` / `r1_math_facade`);`baseline.txt` 增 M5 段,记 §17.7 口径(CPU / rustc / 档位 / LTO / 样本数)与**结论** | ⚠️ **已实测出决定性结论,待业主裁决**:`RANGE` 的 R1 化在规模上不可用(10k 元素 3.6 s、40k 元素 86 s,每元素成本超线性),`simple_loop_1m` 的 100 万元素工作负载跑不完 —— 时间全消耗在**循环开始之前**。根因:R1 用 `PUSH` 建数组而 wlwl 数组不可变,每次 `PUSH` 复制整个数组。详见 `baseline.txt` M5 段与偏差 D11-012 |
+| M5-1 | `wlwl-eval/benches/eval_hot_paths.rs:59-68`(`simple_loop_1m`,驱动是 `RANGE(1, 1000001, 1)`)、`:129-143`(`array_higher_order`)、criterion 组;`wlwl-eval/benches/baseline.txt`(新增 M5 段) | 新增 5 个 R1 热成员 bench(`r1_range_build` / `r1_collection_map` / `r1_collection_sort` / `r1_str_join` / `r1_math_facade`);`baseline.txt` 增 M5 段,记 §17.7 口径(CPU / rustc / 档位 / LTO / 样本数)与**结论** | ⚠️ **已实测出决定性结论,待业主裁决**:`RANGE` 的 R1 化在规模上不可用(10k 元素 3.6 s、40k 元素 86 s,每元素成本超线性),`simple_loop_1m` 的 100 万元素工作负载跑不完 —— 时间全消耗在**循环开始之前**。根因:R1 用 `PUSH` 建数组而 wlwl 数组不可变,每次 `PUSH` 复制整个数组。详见 `baseline.txt` M5 段与偏差 D11-012。**业主 2026-10-01 裁决:`RANGE` 单独沉回 R2,其余 16 成员仍 R1**(已落地,75 条冻结用例复跑全绿) | ✅ |
 
 ### M4 稳定性政策成文(约 1 人日,收尾)
 

@@ -41,7 +41,7 @@
 | `std.fs` | R2 | §2 |
 | `std.json` | R2 | §3 |
 | `std.format` | R2 | §4 |
-| `std.collection` | R1 | §5 |
+| `std.collection` | 混合(R1 门面 + R2 `RANGE`) | §5 |
 | `std.str` | R1 | §6 |
 | `std.math` | 混合(R1 门面 + R2 浮点内核) | §7 |
 | `std.test` | 混合(R1 门面 + R2 原生内核) | §8 |
@@ -115,12 +115,30 @@
 `{N}`/`{name}` 混用规则与 `E0039` 见语言规范 §10.7 —— 本成员是全局内建的
 命名空间视图,语义以语言规范为准。
 
-## 5 `std.collection` — 集合套件(R1)
+## 5 `std.collection` — 集合套件(混合:16 成员 R1 + `RANGE` 归 R2)
 
-纯 wlwl 实现。除注明外成员都是**非破坏性**的(语言规范 §10.1);成员回调
-抛出的 `ERR` 使整个调用按 8.2 传播;`arr` 实参须为 `ARRAY`、回调 `f` 须为
-函数值(违者 `E0030`)。落地状态:本章为 v0.11 契约定稿,成员随 M3 落齐;
-已落地成员以附录 A 镜像为准。
+除注明外成员都是**非破坏性**的(语言规范 §10.1);成员回调抛出的 `ERR` 使
+整个调用按 8.2 传播;`arr` 实参须为 `ARRAY`、回调 `f` 须为函数值(违者
+`E0030`)。
+
+**落地状态**:17 个成员全部落地。**16 个是纯 wlwl(R1)**;**`RANGE` 的实现
+归 R2**,门面只改名导出 —— 层归属变更不算破坏性变更(ADR-0021 §0.2),故
+导出面 / 签名 / 语义 / 诊断一字未变,75 条冻结行为用例(诊断码与消息逐字)
+全绿。
+
+**为什么 `RANGE` 单独沉回 R2**(M5 基准实测,release 档、单线程):R1 版
+`RANGE(0, 10 000)` 3 623 ms、`RANGE(0, 40 000)` 86 036 ms,每元素成本
+**超线性**;对照 R2 时代 `RANGE(1, 1 000 001, 1)` 加上 100 万次 `FOR`
+整体只要 536–551 ms。根因不是解释器慢,而是语言层**无法线性建数组**:
+wlwl 数组不可变,`PUSH` 每次复制整个数组。于是语言规范 §6.6 的
+「100 万次简单循环 < 30 s」符合性负载跑不完,且时间全部消耗在**循环开始
+之前**。数据见 `impl/crates/wlwl-eval/benches/baseline.txt` 的 M5 段,
+偏差 D11-012。
+
+**局限(明写,不掩盖)**:同一成本剖面适用于**所有**建数组的成员 —— `MAP` /
+`FILTER` / `FLAT` / `UNIQ` / `ENUMERATE` / `GROUP_BY` / `JOIN` 都走
+`PUSH`,故它们在 1000+ 元素上仍是平方级。只沉 `RANGE` 是**治标**;根因
+修复(解释器侧写时复制 / 结构共享)超出本版范围,记为演进项。
 
 | 签名 | 说明 |
 |------|------|
@@ -128,7 +146,7 @@
 | `FILTER(arr, f)` | 保留 `f(v)` 为真的元素 |
 | `REDUCE(arr, f, init)` | 左折叠;空数组返回 `init` |
 | `SORT(arr)` / `SORT_BY(arr, key)` | 升序排序;`SORT_BY` 以 `key(v)` 为排序键 |
-| `RANGE(n)` / `RANGE(start, end)` / `RANGE(start, end, step)` | 整数区间 `[start, end)`,步长 `step`;`step = 0` 产生 `E0038` |
+| `RANGE(n)` / `RANGE(start, end)` / `RANGE(start, end, step)` | 整数区间 `[start, end)`,步长 `step`;`step = 0` 产生 `E0038`。**实现归 R2**(见本章落地状态)|
 | `ZIP(a, b) -> ARRAY` | 配对至较短者:`[[a0, b0], ...]` |
 | `ENUMERATE(arr) -> ARRAY` | `[[0, v0], [1, v1], ...]` |
 | `TAKE(arr, n)` / `DROP(arr, n)` | 前 n / 去前 n |
@@ -267,7 +285,7 @@ LET(handle, wlwl:std.agent.TASK("summarize", "long text..."));
 | `std.fs` | `READ_FILE` `WRITE_FILE` `EXISTS` | R2 | v0.10 及以前 |
 | `std.json` | `PARSE` `STRINGIFY` | R2 | v0.10 及以前 |
 | `std.format` | `FORMAT` | R2 | v0.10 及以前 |
-| `std.collection` | `MAP` `FILTER` `REDUCE` `SORT` `SORT_BY` `ZIP` `RANGE` `ANY` `ALL` `FIND` `ENUMERATE` `TAKE` `DROP` `FLAT` `UNIQ` `GROUP_BY` `JOIN` | R1 | v0.10 及以前(成员)/ v0.11(R1 重写) |
+| `std.collection` | `MAP` `FILTER` `REDUCE` `SORT` `SORT_BY` `ZIP` `RANGE` `ANY` `ALL` `FIND` `ENUMERATE` `TAKE` `DROP` `FLAT` `UNIQ` `GROUP_BY` `JOIN` | 混合(R1 门面 + R2 `RANGE`) | v0.10 及以前(成员)/ v0.11(R1 重写,M5 起 RANGE 沉 R2) |
 | `std.str` | `JOIN` `SPLIT_LINES` `CHAR_AT` `COUNT` `QUOTE` | R1 | v0.11 |
 | `std.math` | `ABS` `MIN` `MAX` `FLOOR` `CEIL` `ROUND` `SQRT` `POW` `CLAMP` `PI` `E` | 混合 | v0.11 |
 | `std.test` | `TEST` `ASSERT` `ASSERT_EQ` `ASSERT_NEQ` `EXPECT_ERR` `RUN_TESTS` | 混合 | v0.10 及以前(成员)/ v0.11(混合化) |

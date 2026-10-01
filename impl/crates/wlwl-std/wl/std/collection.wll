@@ -186,26 +186,25 @@ LET(ZIP, FUN((*args),
           SET(i, +(i, 1))));
      out)));
 
-// 7. RANGE(n) / RANGE(start, end) / RANGE(start, end, step)  →  [start, end)
-LET(RANGE, FUN((*args),
-    (_NEED_ARITY("RANGE", args, 1, 3);
-     LET MUT(start, 0);
-     LET MUT(end, 0);
-     LET MUT(step, 1);
-     IF(==(LEN(args), 1),
-        SET(end, _NEED_INT("RANGE", AT(args, 0, NULL))),
-        (SET(start, _NEED_INT("RANGE", AT(args, 0, NULL)));
-         SET(end, _NEED_INT("RANGE", AT(args, 1, NULL)));
-         IF(>(LEN(args), 2), SET(step, _NEED_INT("RANGE", AT(args, 2, NULL))), NULL)));
-     IF(==(step, 0),
-        _DIAG_E0038(_CAT("RANGE", ": step must be non-zero (got ", STR(step), ")")),
-        NULL);
-     LET MUT(out, []);
-     LET MUT(i, start);
-     IF(>(step, 0),
-        WHILE(<(i, end), (SET(out, PUSH(out, i)); SET(i, +(i, step)))),
-        WHILE(>(i, end), (SET(out, PUSH(out, i)); SET(i, +(i, step)))));
-     out)));
+
+// ── 7. RANGE(n) / RANGE(start, end) / RANGE(start, end, step)  →  [start, end)
+//
+// [v0.11 M5] **本成员已沉回 R2 实现**,门面只改名导出。层归属变更不算
+// 破坏性变更(ADR-0021 §0.2),故导出面 / 签名 / 语义 / 诊断一字未变。
+//
+// 依据是基准实测(release 档、单线程):R1 版 `RANGE(0, 10 000)` 3 623 ms、
+// `RANGE(0, 40 000)` 86 036 ms,每元素成本**超线性**;对照 R2 时代
+// `RANGE(1, 1 000 001, 1)` 加上 100 万次 FOR 整体只要 536–551 ms。根因不是
+// 解释器慢,而是语言层**无法线性建数组**:wlwl 数组不可变,`PUSH` 每次复制
+// 整个数组。于是语言规范 §6.6 的「100 万次简单循环 < 30 s」负载跑不完,
+// 时间还全花在**循环开始之前**。
+//
+// 局限要说清:同一成本剖面适用于**所有**建数组的成员(`MAP` / `FILTER` /
+// `FLAT` / `UNIQ` / `ENUMERATE` / `GROUP_BY` / `JOIN` 都走 `PUSH`),所以
+// 只沉 `RANGE` 是治标。根因修复(解释器侧写时复制 / 结构共享)超批次 A 范围。
+// 详见偏差 D11-012 与 `wlwl-std/benches/baseline.txt` 的 M5 段。
+LET(RANGE, _RANGE);
+
 
 // 8/9. ANY(arr, f?) / ALL(arr, f?)  —— 缺省 f 时按真值(§2.3)
 LET(ANY, FUN((*args),

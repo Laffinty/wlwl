@@ -32,6 +32,7 @@
 
 pub mod agent;
 pub mod ai;
+pub mod collection;
 pub(crate) mod compat;
 pub mod format;
 pub mod fs;
@@ -112,14 +113,21 @@ pub static LANG_SOURCES: &[StdSource] = &[
     StdSource {
         path: "wlwl:std.collection",
         source: include_str!("../wl/std/collection.wll"),
-        // 诊断发射器 + 值种类措辞;算法部分纯 wlwl(§5 是「非敏感库的
-        // 默认归宿」R1,归属见 ADR-0021 判定准则 3)。
+        // 混合模块:诊断发射器 + 值种类措辞 + `RANGE` 的 R2 实现;其余 16
+        // 个成员的算法是纯 wlwl。
         kernels: &[
             ("_KIND", kernels::kernel_kind as StdFn),
             ("_DIAG_E0020", kernels::kernel_diag_e0020 as StdFn),
             ("_DIAG_E0022", kernels::kernel_diag_e0022 as StdFn),
             ("_DIAG_E0030", kernels::kernel_diag_e0030 as StdFn),
             ("_DIAG_E0038", kernels::kernel_diag_e0038 as StdFn),
+            // [v0.11 M5] `RANGE` 单独沉回 R2 —— 基准实测 10 000 元素
+            // 3.6 s、40 000 元素 86 s,每元素成本超线性(根因:wlwl 数组
+            // 不可变,`PUSH` 每次复制整个数组),使语言规范 §6.6 的「100 万次
+            // 简单循环 < 30 s」负载跑不完。门面只改名导出,导出面 / 签名 /
+            // 语义 / 诊断一字未变 —— ADR-0021 §0.2:层归属变更不算破坏性变更。
+            // 详见 `wl/std/collection.wll` 文件头与偏差 D11-012。
+            ("_RANGE", collection::kernel_range as StdFn),
         ],
     },
     StdSource {
@@ -214,11 +222,14 @@ pub fn value_kind(v: &Value) -> &'static str {
 
 /// 调用任意可调用值(闭包 / `NativeFn`)并取回 `Outcome::value`。
 ///
-/// [v0.11 M3-1] 原住在 `collection.rs`,随该文件的 R2 实现一起删除后上移
-/// 到这里 —— `std.test` 的 `RUN_TESTS` 调测试体走的是同一条路。挂起
-/// (`Signal::Yield`)由更上层消费,这里只取值。
+/// [v0.11 M3-1] 原本是 `collection.rs` 里 R2 `RANGE` 那一组助手的一分子;
+/// M3-1 删掉那份 R2 实现时上移到此处(`std.test` 的 `RUN_TESTS` 调测试体
+/// 走的是同一条路)。M5 裁决让 `RANGE` 沉回 R2,`collection.rs` 以只含
+/// `kernel_range` 的形式回来,但**不**带回这组助手 —— `call_callable` 已
+/// 在此处,R2 那份用不上。
+/// 挂起(`Signal::Yield`)由更上层消费,这里只取值。
 ///
-/// 曾经同处 `collection.rs` 的 `arity` / `type_err` / `not_callable` /
+/// 同处 `collection.rs` 的 `arity` / `type_err` / `not_callable` /
 /// `short_circuit_err` **没有**上移:R1 门面把元数/类型/回调检查改由注入
 /// kernel 发射(见 [`kernels`]),这些助手随 R2 实现一起消失,搬上来就是死代码。
 pub(crate) fn call_callable(
@@ -462,7 +473,16 @@ mod tests {
     /// 命名空间。豁免是**显式列举**的:新增文件默认要被这条守卫拦住。
     #[test]
     fn every_module_file_documents_and_registers_its_own_path() {
-        const NOT_A_NAMESPACE: &[&str] = &["lib.rs", "compat.rs", "kernels.rs", "test_native.rs"];
+        const NOT_A_NAMESPACE: &[&str] = &[
+            "lib.rs",
+            "compat.rs",
+            "kernels.rs",
+            "test_native.rs",
+            // [v0.11 M5] std.collection 的 R2 内核(M5 裁决:`RANGE` 单独
+            // 沉回 R2,其余 16 成员仍 R1)。同 test_native.rs:内核代码跟它
+            // 服务的模块放一起,故不持 SPEC。
+            "collection.rs",
+        ];
         let mut files: Vec<String> = std::fs::read_dir("src")
             .expect("unit tests run with the package root as cwd")
             .filter_map(|e| e.ok())

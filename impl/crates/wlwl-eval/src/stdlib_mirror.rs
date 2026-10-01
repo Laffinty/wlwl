@@ -31,8 +31,12 @@ const NAMESPACE_META: &[(&str, &str, &str)] = &[
     ("wlwl:std.format", "R2", "v0.10 及以前"),
     (
         "wlwl:std.collection",
-        "R1",
-        "v0.10 及以前(成员)/ v0.11(R1 重写)",
+        // [v0.11 M5] 16 成员 R1 + `RANGE` 归 R2。层归属变更不算破坏性变更
+        // (ADR-0021 §0.2),故「引入」列仍写 v0.10 及以前(成员)——
+        // 变的是实现语言,不是成员面。依据见 baseline.txt 的 M5 段与
+        // 偏差 D11-012。
+        "混合(R1 门面 + R2 `RANGE`)",
+        "v0.10 及以前(成员)/ v0.11(R1 重写,M5 起 RANGE 沉 R2)",
     ),
     ("wlwl:std.str", "R1", "v0.11"),
     ("wlwl:std.math", "混合", "v0.11"),

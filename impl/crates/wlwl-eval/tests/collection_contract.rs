@@ -673,3 +673,39 @@ fn collection_is_not_a_global_builtin() {
 
 #[allow(dead_code)]
 const _UNUSED_I: &str = I;
+
+/// [v0.11 M5] `RANGE` 的**层归属**:实现归 R2,门面只改名导出。
+///
+/// 行为层面由 `collection_matches_the_frozen_r2_contract` 守着(75 条冻结
+/// 用例,含 RANGE 的元数 / 类型 / `E0038`);这条守的是**形态** —— 有人
+/// 哪天把 `LET(RANGE, _RANGE)` 改回一个 wlwl 闭包,行为测试照样全绿
+/// (闭包也能算对),但层归属就悄悄回到了 R1,而那个 R1 实测慢到 §6.6 的
+/// 百万次循环负载跑不完。
+///
+/// 判据:门面里 `RANGE` 绑的是内核值,不是 `FUN(...)` 闭包;且 R2 那份实现在
+/// `wlwl_std::collection` 里真实存在(按名字引用,少一个则编译失败)。
+#[test]
+fn range_is_bound_straight_to_the_r2_kernel() {
+    let src = wlwl_std::LANG_SOURCES
+        .iter()
+        .find(|s| s.path == "wlwl:std.collection")
+        .expect("std.collection is a module");
+    let line = src
+        .source
+        .lines()
+        .map(str::trim)
+        .find(|l| l.starts_with("LET(RANGE,"))
+        .expect("the facade binds RANGE");
+    assert!(
+        line.contains("_RANGE"),
+        "RANGE must be bound straight to the R2 kernel: {line}"
+    );
+    assert!(
+        !line.contains("FUN("),
+        "RANGE must NOT be a wlwl closure again — the M1 R1 version is \
+         super-linear (10k elements 3.6 s, 40k 86 s) and makes the §6.6 \
+         million-iteration workload unrunnable: {line}"
+    );
+    // R2 实现真实存在(按名字引用)。
+    let _f: wlwl_value::StdFn = wlwl_std::collection::kernel_range;
+}
