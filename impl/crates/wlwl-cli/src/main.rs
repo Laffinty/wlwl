@@ -373,8 +373,26 @@ fn dispatch(cmd: Cmd) -> ExitCode {
             std_src,
         } => {
             // 显式 flag 优先于 debug 环境变量(两者都缺省 = 纯嵌入加载)。
-            let std_src =
-                std_src.or_else(|| std::env::var_os("WLWL_STD_SRC").map(std::path::PathBuf::from));
+            //
+            // [D11-019] 环境变量加 debug 门控:ADR-0021 / stdlib 规范
+            // §0.5 / 本文件三处一直写它是「debug 环境变量」,而实现是
+            // 无条件生效 —— 于是**发布版二进制可被环境变量重定向**去加载
+            // 任意 R1 源码目录(供应链面:覆盖轨只保证导出面漂移会报
+            // `E0023`,但同名同签名下塞什么代码都拦不住)。现在实现回到
+            // 文档写的样子:release 构建忽略该变量。
+            //
+            // release 下要覆盖轨仍可用显式的 `--std-src` 旗标(它本来就
+            // 标着「非稳定接口」,且需要人主动敲),所以开发流程不受影响。
+            let std_src = std_src.or_else(|| {
+                #[cfg(debug_assertions)]
+                {
+                    std::env::var_os("WLWL_STD_SRC").map(std::path::PathBuf::from)
+                }
+                #[cfg(not(debug_assertions))]
+                {
+                    None
+                }
+            });
             run_file(&file, format, true, std_src)
         }
         Cmd::Check { file, format } => run_file(&file, format, false, None),

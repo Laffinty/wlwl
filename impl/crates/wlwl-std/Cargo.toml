@@ -22,6 +22,14 @@ reqwest = { version = "0.12", optional = true, default-features = false, feature
 # Default: mock-only build (offline, no reqwest). Tests + CI use this.
 default = []
 # `cargo build --features wlwl-std/real-ai` to enable real HTTP.
+#
+# [D11-019] 这条路径从 v0.4 起就没被编译过 —— M2 把 `StdCtx` 搬进
+# `wlwl-value` 时静默丢掉了 `#[cfg(feature = "real-ai")] http_client`,
+# 同一处还藏着一个 E0502 借用冲突。默认构建不带该 feature,所以 1824 项
+# 测试全绿也照不出来。两处均已修好,client 缓存改放进程内 `OnceLock`
+# (见 `src/ai.rs` 的 `real` 模块);`ci.yml` 现有一道
+# `cargo check --features wlwl-std/real-ai` 专门守它 —— 改这条路径时
+# 别只跑默认构建。
 real-ai = ["dep:reqwest"]
 
 [lints]

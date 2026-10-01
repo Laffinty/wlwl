@@ -220,14 +220,18 @@ pub fn value_kind(v: &Value) -> &'static str {
     type_name(v)
 }
 
-/// 调用任意可调用值(闭包 / `NativeFn`)并取回 `Outcome::value`。
+/// 调用任意可调用值(闭包 / `NativeFn`),**原样回传 `Outcome`**。
 ///
-/// [v0.11 M3-1] 原本是 `collection.rs` 里 R2 `RANGE` 那一组助手的一分子;
-/// M3-1 删掉那份 R2 实现时上移到此处(`std.test` 的 `RUN_TESTS` 调测试体
-/// 走的是同一条路)。M5 裁决让 `RANGE` 沉回 R2,`collection.rs` 以只含
-/// `kernel_range` 的形式回来,但**不**带回这组助手 —— `call_callable` 已
-/// 在此处,R2 那份用不上。
-/// 挂起(`Signal::Yield`)由更上层消费,这里只取值。
+/// 挂起(`Signal::Yield`)不在这里消费 —— `wlwl_value::StdFn` 的契约
+/// (结构化并发,spec §17)要求 std 层把回调的挂起信号原样穿透,交回调度器。
+///
+/// [D11-019] 此前本函数只取 `Outcome::value`,信号被就地丢弃,而它当时
+/// 唯一的消费者是 `std.test` 的 `RUN_TESTS`。后果不是「少传一个信号」
+/// 而是一条**假通过**:测试体里一旦出现 `YIELD()`,回调在该点被截断,
+/// `RUN_TESTS` 拿到的是挂起点的值(`NULL`),按 §8「非 `ERR` 即通过」
+/// 记成 `passed = TRUE` —— 体里后面的断言一次都没跑。实测(release 包):
+/// `TEST("t", FUN(() → YIELD(); ASSERT(FALSE)))` 判为通过。
+/// 调用方现在必须显式处理 `Outcome.signal`。
 ///
 /// 同处 `collection.rs` 的 `arity` / `type_err` / `not_callable` /
 /// `short_circuit_err` **没有**上移:R1 门面把元数/类型/回调检查改由注入
@@ -237,9 +241,8 @@ pub(crate) fn call_callable(
     fn_name: &str,
     callable: &Value,
     args: Vec<Value>,
-) -> WlwlResult<Value> {
-    let outcome = host.call(callable, args, fn_name)?;
-    Ok(outcome.value)
+) -> WlwlResult<Outcome> {
+    host.call(callable, args, fn_name)
 }
 
 // ── 直通边界包装(内部表示模块共用,ADR-0022 §4)──

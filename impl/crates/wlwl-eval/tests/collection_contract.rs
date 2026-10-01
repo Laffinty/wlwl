@@ -154,6 +154,34 @@ const CASES: &[Case] = &[
         src: r#"IMPORT("wlwl:std.collection", ["SORT"]); SORT([3, 1], FUN((a, b), "x"))"#,
         expect: "!E0030 SORT: comparator must return BOOLEAN, got string",
     },
+    // [D11-019] 比较器抛 ERR:stdlib §5「成员回调抛出的 ERR 使整个调用按 8.2
+    // 传播」。此前 `_SORT_LT` 的 else 分支里 `_KIND(lt)` 不是 ERR 消费者,
+    // ERR 在算实参时就传播掉,`_DIAG_E0030` 从未被调用;那个 ERR 又落在
+    // `||` / `IF` 的条件位上被 §8.5 静默丢弃 ⇒ 排序退化成「每轮取剩余
+    // 首个」,**原序返回且零诊断**(实测 `SORT([2,1], cmp_err)` → `[2, 1]`、
+    // `IS_ERR` 为 FALSE、rc=0)。这一条与 `sort_by_key_err` 配对:17 个成员
+    // 里最后一个不传播的回调 ERR 出口。
+    Case {
+        name: "sort_comparator_err_propagates",
+        src: r#"IMPORT("wlwl:std.collection", ["SORT"]); LET(g, FUN((a, b), ERR("boom"))); LET(r, SORT([2, 1], g)); IS_ERR(r)"#,
+        expect: "TRUE",
+    },
+    // 载荷原样交回(§8.2「传播不消耗、不改写 ERR」),不是被拆成内层值。
+    // 用 `ERR_PAYLOAD` 而不是 `UNWRAP`:后者对 `ERR` 值是 `E0100`。
+    Case {
+        name: "sort_comparator_err_payload_is_intact",
+        src: r#"IMPORT("wlwl:std.collection", ["SORT"]); LET(g, FUN((a, b), ERR("boom"))); LET(r, SORT([2, 1], g)); ERR_PAYLOAD(r)"#,
+        expect: "boom",
+    },
+    // 反向守卫:比较器**不会**在首轮被调用(首轮没有前驱可比)。这条钉住
+    // 「比较结果先落变量」时没有把 `||` 左侧的短路改掉 —— 短路一旦丢失,
+    // 比较器就会收到 `(首元素, NULL)`,这里让它对 `NULL` 直接抛 ERR:
+    // 结果仍是排好的数组,说明它一次都没被那样调用过。
+    Case {
+        name: "sort_comparator_is_not_called_with_a_null_predecessor",
+        src: r#"IMPORT("wlwl:std.collection", ["SORT"]); LET(g, FUN((a, b), IF(==(b, NULL), ERR("null-predecessor"), <(a, b)))); SORT([3, 1, 2], g)"#,
+        expect: "[1, 2, 3]",
+    },
     Case {
         name: "sort_arity_zero",
         src: r#"IMPORT("wlwl:std.collection", ["SORT"]); SORT()"#,

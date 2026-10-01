@@ -244,6 +244,34 @@ const MATH_CASES: &[Case] = &[
         src: r#"IMPORT("wlwl:std.math", ["ABS"]); TYPE(ABS(-1.5))"#,
         expect: "FLOAT",
     },
+    // [D11-019] `INTEGER` 下界取负是语言规范 §2.2 的 `E0034`,stdlib §7 的
+    // `ABS` 失败格也是 `E0034`(D11-007 更正过)。此前 `NEG` 用裸 `-i`,
+    // release 档溢出检查关闭 ⇒ `ABS(INT_MIN)` 静默回绕返回**负数**,而
+    // `-(0, INT_MIN)`(同一取负的运算符路径)正确抛 `E0034`。
+    // 这三条把两条路径钉在同一口径上:门面的 ABS、名为 NEG 的内建、
+    // 以及运算符路径。
+    Case {
+        name: "abs_integer_min_is_e0034",
+        src: r#"IMPORT("wlwl:std.math", ["ABS"]); LET(m, -(0, 9223372036854775807)); ABS(-(m, 1))"#,
+        expect: "!E0034 NEG: cannot negate INTEGER_MIN (-9223372036854775808); use -INTEGER_MIN+1 or special-case",
+    },
+    Case {
+        name: "neg_builtin_integer_min_is_e0034",
+        src: r#"LET(m, -(0, 9223372036854775807)); NEG(-(m, 1))"#,
+        expect: "!E0034 NEG: cannot negate INTEGER_MIN (-9223372036854775808); use -INTEGER_MIN+1 or special-case",
+    },
+    Case {
+        name: "neg_operator_integer_min_is_e0034",
+        src: r#"LET(m, -(0, 9223372036854775807)); -(0, -(m, 1))"#,
+        expect: "!E0034 NEG: cannot negate INTEGER_MIN (-9223372036854775808); use -INTEGER_MIN+1 or special-case",
+    },
+    // 边界内侧一步:INT_MIN+1(即 `-(0, 2^63-1)`)取负必须正常,证明上面
+    // 不是「一律拒绝」。
+    Case {
+        name: "neg_one_above_integer_min_is_fine",
+        src: r#"NEG(-(0, 9223372036854775807))"#,
+        expect: "9223372036854775807",
+    },
     // ── MIN / MAX(含 §2.2 提升)──
     Case {
         name: "min_integers",

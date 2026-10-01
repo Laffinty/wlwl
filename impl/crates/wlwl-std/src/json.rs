@@ -97,24 +97,30 @@ pub(crate) fn value_to_json(
         Value::Dict(entries) => {
             let mut obj = serde_json::Map::new();
             for (k, val) in entries {
+                // [D11-019] 键只接受 `STRING`。整数键是被 M2 的边界转换
+                // 顺手放开的(M2 的目标是「搬移」,不是「放宽」),会让
+                // `FORMAT("{0}", ["a":1]` 之后 INDEX_SET 出来的整数键字典
+                // 悄悄变成字符串键 `{"2": …}`;旧边界一律 `E0030`。
                 let key = match k {
                     Value::String(s) => s.clone(),
-                    Value::Integer(i) => i.to_string(),
-                    other => return Err(bad("string/integer dict key", type_name(other))),
+                    other => return Err(bad("string dict key", type_name(other))),
                 };
                 obj.insert(key, value_to_json(val)?);
             }
             serde_json::Value::Object(obj)
         }
-        Value::Ok(inner) => {
-            let mut obj = serde_json::Map::new();
-            obj.insert("Ok".into(), value_to_json(inner)?);
-            serde_json::Value::Object(obj)
-        }
-        Value::Err(inner) => {
-            let mut obj = serde_json::Map::new();
-            obj.insert("Err".into(), value_to_json(inner)?);
-            serde_json::Value::Object(obj)
+        // [D11-019] `OK(v)` 传**内层**,不是 `{"Ok": v}`。§12 的 `OK` 只是
+        // 值的一层包装,跨界时拆掉(旧边界 `value_to_std_value` 就是这么写的,
+        // M2 的「纯搬移」纪律要求逐字保持)。包成对象会让
+        // `FORMAT("{0}", OK(1))` 从 `1` 变成 `Ok: 1`。
+        Value::Ok(inner) => value_to_json(inner)?,
+        // [D11-019] `ERR` 仍然拒绝(旧边界同)。语言层面它**到不了这里**:
+        // §12.6 的 ERR 透明传播在调用边界就短路了(实测 `FORMAT("{0}",
+        // ERR("e"))` 直接返回那个 ERR,成员体根本不执行),所以这一臂是
+        // 给「本函数被直接调用」兜底的 —— 留着是为了不让它变成一个
+        // 永远走不到、却把 ERR 变成 `{"Err": …}` 的地雷。
+        Value::Err(_) => {
+            return Err(bad("OK/primitives at std boundary", "ERR(...)"));
         }
         other => return Err(bad("json-representable value", type_name(other))),
     })
@@ -202,5 +208,67 @@ mod tests {
         assert_eq!(SPEC.path, "wlwl:std.json");
         let names: Vec<&str> = SPEC.functions.iter().map(|(n, _)| *n).collect();
         assert_eq!(names, vec!["PARSE", "STRINGIFY"]);
+    }
+
+    // ── [D11-019] 边界转换的语义锁 ──
+    //
+    // M2 把边界从 eval 侧的 `value_to_std_value` 搬进本文件时,三处
+    // 可观察行为被顺手改了(报「纯搬移」,实际是搬移 + 放宽)。这三条
+    // 逐条钉回 M2 之前的口径;`wrap` 由 io / fs / json / format / ai /
+    // agent 六个模块共用,所以这里是唯一的收口点。
+
+    #[test]
+    fn boundary_unwraps_ok_to_its_inner_value() {
+        let got = values_to_json(&[Value::Ok(Box::new(Value::Integer(1)))]).unwrap();
+        assert_eq!(got, vec![serde_json::json!(1)]);
+        // 嵌套也要拆(旧边界递归下去)。
+        let nested = values_to_json(&[Value::Ok(Box::new(Value::Ok(Box::new(Value::String(
+            "x".into(),
+        )))))])
+        .unwrap();
+        assert_eq!(nested, vec![serde_json::json!("x")]);
+    }
+
+    #[test]
+    fn boundary_rejects_err() {
+        let err = values_to_json(&[Value::Err(Box::new(Value::String("e".into())))]).unwrap_err();
+        assert_eq!(err.0, wlwl_error::ErrorCode::E0030);
+    }
+
+    #[test]
+    fn boundary_rejects_integer_dict_keys() {
+        let d = Value::Dict(vec![(Value::Integer(2), Value::String("v".into()))]);
+        let err = values_to_json(&[d]).unwrap_err();
+        assert_eq!(err.0, wlwl_error::ErrorCode::E0030);
+        assert!(
+            err.1.contains("string dict key"),
+            "message should name the old expectation, got: {}",
+            err.1
+        );
+    }
+
+    #[test]
+    fn boundary_accepts_string_dict_keys() {
+        let d = Value::Dict(vec![(Value::String("a".into()), Value::Integer(1))]);
+        assert_eq!(
+            values_to_json(&[d]).unwrap(),
+            vec![serde_json::json!({"a": 1})]
+        );
+    }
+
+    /// ADR-0022 §4 明确保留的唯一一条跨模块契约:闭包跨界一律 `E0030`。
+    /// 它与上面三条同属「边界不许悄悄放宽」这一族,故放在一起钉。
+    #[test]
+    fn boundary_still_rejects_closures() {
+        let f = Value::Closure {
+            params: vec![],
+            body: Box::new(wlwl_ast::Expr::Literal(
+                wlwl_ast::Literal::Null,
+                wlwl_ast::Span::new("t.wll", 0, 0),
+            )),
+            env: wlwl_value::Env::new(),
+        };
+        let err = values_to_json(&[f]).unwrap_err();
+        assert_eq!(err.0, wlwl_error::ErrorCode::E0030);
     }
 }

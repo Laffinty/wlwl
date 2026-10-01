@@ -407,6 +407,63 @@ fn dump_actuals() {
     }
 }
 
+/// [D11-019] 测试体里出现 `YIELD()` **不得**产生假通过。
+///
+/// 这条不是契约表的一行,因为要钉的是「结果里**不出现**某个东西」——
+/// 表格只能比一个值。历史缺陷:测试体里的 `YIELD()` 在
+/// `wlwl_std::call_callable` 里被吞掉,回调在挂起点被截断,
+/// `RUN_TESTS` 拿到挂起点的 `NULL`,按 §8「非 `ERR` 即通过」记成
+/// `passed = TRUE`,体里 `YIELD()` 之后的断言**一次都没跑**。
+/// 挂起信号必须原样交回调度器(见 `wlwl_value::StdFn` 契约)。
+#[test]
+fn a_yielding_test_body_is_never_recorded_as_passed() {
+    // `YIELD` 只能出现在调度驱动的上下文(任务体)里,故整段包在
+    // SCOPE/SPAWN 内,并用 `AWAIT` 取回任务终值(`SCOPE` 自己返回的是
+    // `SPAWN` 的句柄,不是子任务的值)。
+    let src = r#"IMPORT("wlwl:std.test", ["TEST", "ASSERT", "RUN_TESTS"]);
+LET(r, SCOPE(FUN(() , AWAIT(SPAWN(FUN(() ,
+    TEST("must-fail", FUN(() , YIELD(); ASSERT(FALSE)));
+    RUN_TESTS()
+))))));
+r"#;
+    let got = actual(&Case {
+        name: "unused",
+        src,
+        expect: UNFROZEN,
+    });
+    assert!(
+        !got.contains("passed: TRUE"),
+        "a test body that suspended must not be recorded as passed: {got}"
+    );
+    assert!(
+        !got.contains("must-fail"),
+        "a suspended test body must not produce a record at all: {got}"
+    );
+}
+
+/// 反向守卫:上面那条以「结果里没有 `passed: TRUE`」为断言,若整段程序
+/// 因为任何原因没跑起来(解析错 / 立即失败),断言会**空洞地**通过。
+/// 这条把「同一段程序在测试体不挂起时确实产出 `passed: FALSE` 记录」
+/// 钉住 —— 即上面的守卫不是靠「什么都没发生」满足的。
+#[test]
+fn the_guarding_case_above_would_have_caught_the_false_pass() {
+    let src = r#"IMPORT("wlwl:std.test", ["TEST", "ASSERT", "RUN_TESTS"]);
+LET(r, SCOPE(FUN(() , AWAIT(SPAWN(FUN(() ,
+    TEST("must-fail", FUN(() , ASSERT(FALSE)));
+    RUN_TESTS()
+))))));
+r"#;
+    let got = actual(&Case {
+        name: "unused",
+        src,
+        expect: UNFROZEN,
+    });
+    assert!(
+        got.contains("must-fail") && got.contains("passed: FALSE"),
+        "the non-suspending twin must fail loudly, else the guard above is vacuous: {got}"
+    );
+}
+
 /// 反向守卫:表本身不能塌掉。
 #[test]
 fn the_contract_table_is_not_empty() {

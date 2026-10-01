@@ -130,26 +130,39 @@ fn env_lookup<'a>(ctx: &'a StdCtx, key: &str) -> Option<&'a str> {
 #[cfg(feature = "real-ai")]
 mod real {
     use super::*;
-    use std::sync::Arc;
+    use std::sync::OnceLock;
     use std::time::Duration;
 
-    /// Build (or reuse) a blocking reqwest client. The client is
-    /// stored in `StdCtx.http_client` so HTTPS handshakes /
-    /// connection pools are amortized across many calls.
-    pub fn ensure_client(ctx: &mut StdCtx) -> Result<Arc<reqwest::blocking::Client>, StdError> {
-        if let Some(c) = &ctx.http_client {
-            return Ok(Arc::clone(c));
-        }
-        let client = reqwest::blocking::Client::builder()
-            .timeout(Duration::from_secs(60))
-            .build()
-            .map_err(|e| StdError {
-                code: ErrorCode::E0092,
-                message: format!("failed to build HTTP client: {}", e),
-            })?;
-        let arc = Arc::new(client);
-        ctx.http_client = Some(Arc::clone(&arc));
-        Ok(arc)
+    /// [D11-019] 进程级 client 缓存(原来是 `StdCtx.http_client` 字段)。
+    ///
+    /// M2 把 `StdCtx` 搬进 `wlwl-value` 时只搬了 argv / env / warnings /
+    /// source_file / tests 五个字段,`#[cfg(feature = "real-ai")] http_client`
+    /// 被静默丢掉 —— 而 `wlwl-value` 不该依赖 reqwest,所以那个字段**也
+    /// 不该补回去**。改用 `OnceLock` 缓存到进程里:`reqwest::Client` 本身
+    /// 就是为跨线程共享设计的,进程级缓存比「每调用级 ctx 各建一个」在
+    /// 池复用上只强不弱(每次调用本来就在同一个 ctx 上,现在跨 ctx 也共享)。
+    ///
+    /// 之前这条路径**从来没编译过**(D11-004 同期发现的另两处错误之一是
+    /// `http_chat` 里的 E0502 借用冲突),所以 CI 不带该 feature 时无人
+    /// 发现;`ci.yml` 现已加一道 `cargo check --features wlwl-std/real-ai`。
+    static CLIENT: OnceLock<Result<reqwest::blocking::Client, String>> = OnceLock::new();
+
+    /// Build (or reuse) a blocking reqwest client. HTTPS handshakes /
+    /// connection pools are amortized across all calls in the process.
+    ///
+    /// `reqwest::blocking::Client` 的 `Clone` 是浅拷贝(内部池共享),
+    /// 所以这里每次交一个句柄副本即可,不需要额外的 `Arc`。
+    pub fn ensure_client() -> Result<reqwest::blocking::Client, StdError> {
+        let cell = CLIENT.get_or_init(|| {
+            reqwest::blocking::Client::builder()
+                .timeout(Duration::from_secs(60))
+                .build()
+                .map_err(|e| e.to_string())
+        });
+        cell.clone().map_err(|msg| StdError {
+            code: ErrorCode::E0092,
+            message: format!("failed to build HTTP client: {msg}"),
+        })
     }
 
     /// POST to `${WLWL_AI_ENDPOINT}/v1/chat/completions` with an
@@ -163,15 +176,23 @@ mod real {
         max_tokens: u32,
         temperature: f32,
     ) -> Result<String, StdError> {
-        let endpoint = env_lookup(ctx, "WLWL_AI_ENDPOINT").ok_or_else(|| StdError {
-            code: ErrorCode::E0082,
-            message: "WLWL_AI_ENDPOINT not set".into(),
-        })?;
-        let api_key = env_lookup(ctx, "WLWL_AI_API_KEY").ok_or_else(|| StdError {
-            code: ErrorCode::E0082,
-            message: "WLWL_AI_API_KEY not set".into(),
-        })?;
-        let client = ensure_client(ctx)?;
+        // [D11-019] 先把 env 读成**自有** `String` 再去动 client:原先
+        // `env_lookup(ctx, …)` 借用了 `ctx`,而下一行 `ensure_client(ctx)`
+        // 要 `&mut ctx` ⇒ E0502(即便把 http_client 字段补回去也一样炸)。
+        // 现在 client 缓存不再需要 `ctx`,这条借用冲突自然消失。
+        let endpoint = env_lookup(ctx, "WLWL_AI_ENDPOINT")
+            .ok_or_else(|| StdError {
+                code: ErrorCode::E0082,
+                message: "WLWL_AI_ENDPOINT not set".into(),
+            })?
+            .to_string();
+        let api_key = env_lookup(ctx, "WLWL_AI_API_KEY")
+            .ok_or_else(|| StdError {
+                code: ErrorCode::E0082,
+                message: "WLWL_AI_API_KEY not set".into(),
+            })?
+            .to_string();
+        let client = ensure_client()?;
         let url = format!("{}/v1/chat/completions", endpoint.trim_end_matches('/'));
 
         let mut messages = Vec::new();

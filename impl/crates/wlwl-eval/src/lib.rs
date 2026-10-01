@@ -2217,7 +2217,23 @@ fn builtin_bool(_ev: &mut Evaluator, args: Vec<Value>) -> WlwlResult<Outcome> {
 fn builtin_neg(_ev: &mut Evaluator, args: Vec<Value>) -> WlwlResult<Outcome> {
     let v = expect_arity("NEG", &args, 1)?;
     match v {
-        Value::Integer(i) => Ok(Outcome::normal(Value::Integer(-i))),
+        // [D11-019] 语言规范 §2.2:「`NEG` 于 `INTEGER` 下界取负产生 `E0034`」。
+        // 此前这里直接 `-i`,release 档关掉溢出检查 ⇒ **静默回绕**
+        // (`NEG(INT_MIN)` 打出 INT_MIN 自己)。`-` 运算符那条路径
+        // (`builtin_sub`)一直有 checked 判定,两条路径对同一次取负给出
+        // 不同结果,连带把 `std.math` 的 `ABS(INT_MIN)` 也变成静默返回负数
+        // (stdlib §7 该格是 `E0034`)。此处改为与 `-` 同一判定与同一消息。
+        Value::Integer(i) => match i.checked_neg() {
+            Some(r) => Ok(Outcome::normal(Value::Integer(r))),
+            None => Err(builtin_error(
+                ErrorCode::E0034,
+                "NEG",
+                format!(
+                    "cannot negate INTEGER_MIN ({}); use -INTEGER_MIN+1 or special-case",
+                    i64::MIN
+                ),
+            )),
+        },
         Value::Float(f) => Ok(Outcome::normal(Value::Float(-f))),
         other => Err(type_error(
             "NEG",

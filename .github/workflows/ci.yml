@@ -125,6 +125,19 @@ jobs:
         working-directory: impl
         run: cargo test --locked --all-targets
 
+      # [D11-019] `real-ai` 特性编译门禁。
+      #
+      # 这条路径从 v0.4 起就没人编译过:M2 把 `StdCtx` 搬进 `wlwl-value`
+      # 时静默丢掉了 `#[cfg(feature = "real-ai")] http_client` 字段,而默认
+      # 构建不带该 feature ⇒ 1824 项测试全绿也照不出来。同一处还藏着一
+      # 个 E0502 借用冲突(即便把字段补回去也编不过)。默认门禁永远碰不到
+      # 这条路径,所以这里显式编一次:它不需要网络,只需要 `cargo check`。
+      # 注:上面那道 `cargo deny --all-features` 已经把这个 feature 的依赖
+      # 拉进解析图,这里只做类型检查,不建 reqwest 的 TLS 栈。
+      - name: cargo check --features wlwl-std/real-ai
+        working-directory: impl
+        run: cargo check --locked -p wlwl-std --features real-ai
+
       # [v0.2 Phase G8] perf regression smoke. The full benchmark suite
       # is exercised against `benches/baseline.txt` (Phase F1) on a
       # longer schedule (weekly supply-chain.yml runs in parallel);

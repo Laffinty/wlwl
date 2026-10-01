@@ -32,8 +32,16 @@
 //! 断言失败是**值**不是诊断:`ASSERT_*` 返回 `ERR(载荷)`,由 `RUN_TESTS`
 //! 捕获并记进结果字典的 `error` 字段(标准库规范 §8)。测试体求值期间
 //! 逃逸的 `ERR` 同样被捕获,该项 `passed = FALSE`。
+//!
+//! ## 挂起约定(D11-019)
+//!
+//! `ERR` 是**值**,可以被 `RUN_TESTS` 捕获;**挂起不是值**。`StdFn` 的
+//! 契约要求 std 层把回调的 `Signal::Yield` 原样穿透,所以测试体挂起时
+//! `RUN_TESTS` 不记账、不产出结果数组,把信号原样交回调度器 —— 绝不能把
+//! 挂起点的值当成测试结果(那正是此前「`YIELD()` 之后的断言没跑却判通过」
+//! 的成因,见 `crate::call_callable` 的文档)。
 
-use wlwl_value::{Outcome, StdHost, TestEntry, Value};
+use wlwl_value::{Outcome, Signal, StdHost, TestEntry, Value};
 
 use std::time::Instant;
 
@@ -113,8 +121,26 @@ pub fn kernel_run_tests(host: &mut dyn StdHost, args: Vec<Value>) -> WlwlResult<
         // returns OK(TRUE) on pass or an ERR value from ASSERT/ASSERT_EQ
         // on fail; the latter returns through Outcome::normal(err) from
         // the facade, which we read off the Outcome.value below.
-        let outcome = match crate::call_callable(host, "RUN_TESTS", &entry.body, vec![]) {
-            Ok(v) => Ok(v),
+        //
+        // [D11-019] `call_callable` 现在原样回传 `Outcome`,所以这里必须
+        // 显式处理**挂起**:测试体里出现 `YIELD()`(或落空的
+        // `CHANNEL_RECV`)时,信号要交回调度器,本轮已攒的结果作废。
+        // 此前信号在 `call_callable` 里被丢弃,挂起点传回的 `NULL` 被
+        // 当作「非 ERR ⇒ 通过」,于是体里 `YIELD()` 之后的断言一次都没跑
+        // 却记成 `passed = TRUE`(实测:`ASSERT(FALSE)` 的用例判通过)。
+        let called = crate::call_callable(host, "RUN_TESTS", &entry.body, vec![]);
+        if let Ok(o) = &called {
+            if o.signal != Signal::None {
+                // 挂起优先于记账:原样把信号带回,值无意义(调度器在
+                // 段边界丢弃它,或在最后一段把它当作任务终值)。
+                return Ok(Outcome {
+                    value: Value::Null,
+                    signal: o.signal.clone(),
+                });
+            }
+        }
+        let outcome = match called {
+            Ok(o) => Ok(o.value),
             Err(_e) => {
                 // Diagnostic surfaced during the test (e.g. uncaught
                 // E0102 from an unexpected ERR escape). Record the

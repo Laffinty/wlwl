@@ -114,10 +114,22 @@ LET(_SORT_LT, FUN((cmp, a, b),
           FALSE),
        // 给了比较器就用它。顺带把「比较器必须返回 BOOLEAN」这条 R2 契约
        // 守住 —— 不然 `IF` 会按真值(§2.3)把非布尔当真,静默改变排序结果。
+       //
+       // [D11-019] 比较器返 `ERR` 必须**先**用 `IS_ERR` 拦住,原样交回调用方
+       // (stdlib §5:成员回调抛出的 ERR 使整个调用按 8.2 传播)。
+       // 原先这里是 `IF(==(TYPE(lt), "BOOLEAN"), lt, _DIAG_E0030(...))`:
+       // `TYPE` 是 ERR 消费者,把 ERR 变成字符串 `"RESULT"` ⇒ 判假进 else 分支;
+       // 而 else 的实参 `_KIND(lt)` **不是** ERR 消费者,ERR 在算实参时就
+       // 透明传播掉了,`_DIAG_E0030` 一次都没被调用,整条表达式成了那个 ERR。
+       // 那个 ERR 再经 `||` / `IF` 的**条件位**传到语句位被 §8.5 静默丢弃 ⇒
+       // `SORT` 退化成「每轮取剩余首个」,原序返回、零诊断。
+       // `IS_ERR` 是消费者,接得住。
        (LET(lt, CALL(cmp, a, b));
-        IF(==(TYPE(lt), "BOOLEAN"),
+        IF(IS_ERR(lt),
            lt,
-           _DIAG_E0030(_CAT("SORT", ": comparator must return BOOLEAN, got ", _KIND(lt)))))))));
+           IF(==(TYPE(lt), "BOOLEAN"),
+              lt,
+              _DIAG_E0030(_CAT("SORT", ": comparator must return BOOLEAN, got ", _KIND(lt))))))))));
 
 // 4. SORT(arr) / SORT(arr, cmp)  →  升序;稳定
 //
@@ -126,6 +138,13 @@ LET(_SORT_LT, FUN((cmp, a, b),
 // PUSH,总拷贝量 O(n) 而不是 O(n²)。取**第一个**最小值 ⇒ 稳定,与 R2 的
 // `Vec::sort_by`(稳定)一致 —— 混合类型不可比时 R2 全部判 Equal 从而
 // 保留原序,本实现同样如此。
+//
+// [D11-019] `err` 累加器:比较器返 `ERR` 时**终止整个调用**并把 ERR 交回
+// 调用方(与 MAP / FILTER / REDUCE / SORT_BY 同一套写法,见上方各成员)。
+// 此前 `_SORT_LT` 的结果直接落在 `||` / `IF` 的条件位上,ERR 在那里被
+// §8.5 静默丢弃,排序循环照跑完 ⇒ 零诊断 + 原序返回。
+// `_SORT_LT` 也**不能**直接落在条件位上,理由同上;而比较结果必须先落
+// 变量再判 `IS_ERR`,与 §8.2「传播不消耗、不改写 ERR」一致。
 LET(SORT, FUN((*args),
     (_NEED_ARITY("SORT", args, 1, 2);
      LET(arr, _NEED_ARR("SORT", AT(args, 0, NULL)));
@@ -133,19 +152,28 @@ LET(SORT, FUN((*args),
      IF(==(TYPE(cmp), "NULL"), NULL, _NEED_FN("SORT", cmp));
      LET MUT(rest, SLICE(arr, 0));
      LET MUT(out, []);
+     LET MUT(err, NULL);
      WHILE(>(LEN(rest), 0),
          (LET MUT(best, -1);
           LET MUT(bestv, NULL);
           LET MUT(i, 0);
           WHILE(<(i, LEN(rest)),
               (LET(v, AT(rest, i, NULL));
-               IF(||(==(best, -1), _SORT_LT(cmp, v, bestv)),
-                  (SET(best, i); SET(bestv, v)),
-                  NULL));
-              SET(i, +(i, 1)));
-          SET(out, PUSH(out, bestv));
-          SET(rest, CONCAT(SLICE(rest, 0, best), SLICE(rest, +(best, 1))))));
-     out)));
+               // `==(best, -1)` 为真时**不调**比较器(首轮没有前驱可比)。
+               // 原先这个短路发生在 `||` 的左操作数上;比较结果要落变量
+               // 才能判 `IS_ERR`,故在此显式写出同一短路,别把它改回调用。
+               LET(less, IF(==(best, -1), FALSE, _SORT_LT(cmp, v, bestv)));
+               IF(IS_ERR(less),
+                  (SET(err, less); SET(i, LEN(rest))),
+                  IF(||(==(best, -1), less),
+                     (SET(best, i); SET(bestv, v)),
+                     NULL));
+               SET(i, +(i, 1))));
+          IF(IS_ERR(err),
+             SET(rest, []),
+             (SET(out, PUSH(out, bestv));
+              SET(rest, CONCAT(SLICE(rest, 0, best), SLICE(rest, +(best, 1))))))));
+     IF(IS_ERR(err), err, out))));
 
 // 5. SORT_BY(arr, key)  →  以 key(v) 升序
 // 投影一次、连同原值一起排,再把原值取回来(与 R2 的 decorate-sort-
