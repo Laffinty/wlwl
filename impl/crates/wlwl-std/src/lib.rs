@@ -16,12 +16,11 @@
 //!   - `wlwl:std.agent`  — agent-shaped helpers over `std.ai`
 //!     (`TASK`, `TOOL`, `CALL_TOOL`, `MODEL`, `CONTEXT`; §15.14, Phase D3)
 //!   - `wlwl:std.format` — `FORMAT` + the shared template grammar (§15.8 / §10.6, Phase B5)
-//!   - `wlwl:std.collection` — 17 个高阶集合函数(M2 起真实现住在这里,
-//!     「名录特判」与「std 边界拒绝闭包值」契约一并废止,ADR-0022)
 //!   - `wlwl:std.test`   — 进程内测试框架内核(`TEST`/`ASSERT` 族/
 //!     `RUN_TESTS`;注册表在 [`StdCtx::tests`])
 //!
 //! R1 语言层(纯 wlwl,`include_str!` 嵌入,eval 侧求值并缓存):
+//!   - `wlwl:std.collection` — 17 个高阶集合函数(M3-1 起纯 wlwl 终态)
 //!   - `wlwl:std.str`    — string extensions (stdlib spec §6; M1 placeholder
 //!     member `QUOTE`, full member set lands in M3)
 //!   - `wlwl:std.math`   — math basics (stdlib spec §7; M1 placeholder member
@@ -33,7 +32,6 @@
 
 pub mod agent;
 pub mod ai;
-pub mod collection;
 pub(crate) mod compat;
 pub mod format;
 pub mod fs;
@@ -42,7 +40,7 @@ pub mod json;
 pub mod kernels;
 pub mod test_native;
 
-use wlwl_error::WlwlError;
+use wlwl_error::{WlwlError, WlwlResult};
 use wlwl_value::type_name;
 
 // [v0.11 M2 / ADR-0022] 调用契约单源在 wlwl-value;这里再导出保持
@@ -112,6 +110,19 @@ impl StdBackend {
 /// 更新 crate 目录注释 + 通过守门测试。
 pub static LANG_SOURCES: &[StdSource] = &[
     StdSource {
+        path: "wlwl:std.collection",
+        source: include_str!("../wl/std/collection.wll"),
+        // 诊断发射器 + 值种类措辞;算法部分纯 wlwl(§5 是「非敏感库的
+        // 默认归宿」R1,归属见 ADR-0021 判定准则 3)。
+        kernels: &[
+            ("_KIND", kernels::kernel_kind as StdFn),
+            ("_DIAG_E0020", kernels::kernel_diag_e0020 as StdFn),
+            ("_DIAG_E0022", kernels::kernel_diag_e0022 as StdFn),
+            ("_DIAG_E0030", kernels::kernel_diag_e0030 as StdFn),
+            ("_DIAG_E0038", kernels::kernel_diag_e0038 as StdFn),
+        ],
+    },
+    StdSource {
         path: "wlwl:std.str",
         source: include_str!("../wl/std/str.wll"),
         kernels: &[],
@@ -167,7 +178,6 @@ pub fn resolve(path: &str) -> Option<StdBackend> {
         "wlwl:std.ai" => &ai::SPEC,
         "wlwl:std.agent" => &agent::SPEC,
         "wlwl:std.format" => &format::SPEC,
-        "wlwl:std.collection" => &collection::SPEC,
         "wlwl:std.test" => &test_native::SPEC,
         _ => return None,
     };
@@ -179,6 +189,25 @@ pub fn resolve(path: &str) -> Option<StdBackend> {
 /// 值的种类名(诊断措辞用)。
 pub fn value_kind(v: &Value) -> &'static str {
     type_name(v)
+}
+
+/// 调用任意可调用值(闭包 / `NativeFn`)并取回 `Outcome::value`。
+///
+/// [v0.11 M3-1] 原住在 `collection.rs`,随该文件的 R2 实现一起删除后上移
+/// 到这里 —— `std.test` 的 `RUN_TESTS` 调测试体走的是同一条路。挂起
+/// (`Signal::Yield`)由更上层消费,这里只取值。
+///
+/// 曾经同处 `collection.rs` 的 `arity` / `type_err` / `not_callable` /
+/// `short_circuit_err` **没有**上移:R1 门面把元数/类型/回调检查改由注入
+/// kernel 发射(见 [`kernels`]),这些助手随 R2 实现一起消失,搬上来就是死代码。
+pub(crate) fn call_callable(
+    host: &mut dyn StdHost,
+    fn_name: &str,
+    callable: &Value,
+    args: Vec<Value>,
+) -> WlwlResult<Value> {
+    let outcome = host.call(callable, args, fn_name)?;
+    Ok(outcome.value)
 }
 
 // ── 直通边界包装(内部表示模块共用,ADR-0022 §4)──
@@ -259,11 +288,16 @@ mod tests {
     }
     #[test]
     fn resolve_collection() {
-        // [v0.11 M2 / ADR-0022] collection 的真实现迁入本 crate;
-        // 「名录模块」特判废止,17 个成员直接登记在 SPEC。
+        // [v0.11 M3-1] collection 以纯 wlwl 重写为终态(ADR-0021 判定准则
+        // 3:非敏感库默认归宿 R1)。R2 原生实现已删,成员面改由嵌入源码的
+        // `EXPORT` 声明;17 条的**内容**对拍由
+        // `wlwl-eval/tests/collection_contract.rs` 对标准库规范 §5 逐条做,
+        // 这里只锁「解析到 Lang 后端 + 成员数」。
         let s = resolve("wlwl:std.collection").expect("collection resolves");
-        assert_eq!(s.path(), "wlwl:std.collection");
-        let names: Vec<&str> = s.functions().iter().map(|(n, _)| *n).collect();
+        let StdBackend::Lang(src) = s else {
+            panic!("collection must be R1 now, got a native backend")
+        };
+        let names = lang_exports(src.source);
         assert_eq!(names.len(), 17, "collection member set: {names:?}");
     }
     #[test]
@@ -311,7 +345,6 @@ mod tests {
         &ai::SPEC,
         &agent::SPEC,
         &format::SPEC,
-        &collection::SPEC,
         &test_native::SPEC,
     ];
 

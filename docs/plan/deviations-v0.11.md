@@ -1,10 +1,15 @@
-# v0.11 偏差登记
+# v0.11 偏差台账
 
-> 台账规则(沿 v0.10 先例):实现与规范/计划发生偏离时**当场**登记,编号
-> **D11-001** 起递增,**不得**接续 D10 —— 台账按周期分册,跨周期续号会让
-> 「这个偏差属于哪个版本」不可查。每条必须含:编号、日期、发现批次、内容、
-> 影响面、处置(当场修 / 转正为规范 / 挂账推后)、状态。
+> 记账规则(承 v0.10 先例):实现与「规范 / 计划」发生偏离时**当场**登记,编号
+> **D11-001** 起递增,**不得**接着 D10 续号。台账按里程碑分卷,跨卷连续编号。
+> 这批偏差属于哪个发布层不可知。每条必须含:编号、日期、发现批次、内容、
+> 影响面、处置(当场修 / 转为规范 / 挂账)、状态。
 
 | 编号 | 日期 | 发现批次 | 内容 | 影响面 | 处置 | 状态 |
 |---|---|---|---|---|---|---|
-| (暂无条目) | | | | | | |
+| D11-001 | 2026-10-01 | M3-0 | **新增 R1→R2 私有注入通道**(`StdSource::kernels`)。ADR-0021:89 只说「R1 可以调用 R0 与 R2」,没给机制;M1 只落了 R1→R0 一半。M3 遇到两类纯 wlwl 表达不出的东西:浮点指令(`SQRT`/`POW`,ADR-0021:84 已预告),以及**指定码的原生诊断** —— 实测 `PANIC` → `E0100`;`LEN(1)` → `E0030` 但消息被 `LEN` 固定;wlwl 闭包元数错 → `E0022` 但消息无函数名前缀;`E0038`(`RANGE` 步长为零)在 M3 之前全仓唯一发射点就是待删的 `collection.rs:528`。 | 规范 §0.2 / §0.3「治理四件套」的机械形态变了:混合模块多了一条**私有**接线,导出面不变(kernel 不进 `EXPORT`,故不进附录 A、不进 `IMPORT` 面;守卫 `r1_kernels_never_leak_to_the_export_surface` + 反向守卫 `kernel_collection_actually_finds_something`)。ADR-0021 §层间规则下补一段机制说明。 | 转为规范:ADR-0021 §层间规则补机制说明 + stdlib 规范 §0.2 增「kernel 不外泄」一句。**不改任何成员的契约面。** | 已处置(M3-0) |
+| D11-002 | 2026-10-01 | M3-1 | **`value_kind` 的两套措辞收敛为单一来源。** 仓里长期并存两套 E0030 措辞:`collection::value_kind`(手写全匹配,`"function closure"` / `"native fn"` / `"RESULT ok"` / `"RESULT err"` / `"task handle"` / `"channel handle"`)与 `wlwl_value::type_name`(`"function"` / `"native-function"` / `"ok"` / `"err"` / `"task-handle"` / `"channel-handle"`)。同一个 `E0030` 在 `std.collection` 与 `std.test` 里读起来不一样。 | `std.collection` 的 E0030 / E0020 消息里,「回调值是函数」与「值是 `RESULT`」这两类的措辞变了(例:`MAP: callback is not callable (got function)` 取代 `(got function closure)`)。`std.test` 不受影响。 | 收敛到 `wlwl_value::type_name`(既有单源,手写全匹配那份随 R2 实现一起删)。诊断**码**不变。75 条冻结契约用例逐字比对通过,说明除本项外无其他措辞漂移。 | 已处置(M3-1) |
+| D11-003 | 2026-10-01 | M3-1 | **`RANGE` 的整数溢出从「饱和」变成 `E0035`。** R2 版用 `i64::checked_add`,`None` 就 `break`(注释自陈是为了让 `RANGE(0, MAX, 1)` 不死循环);R1 版走 `+(i, step)`,按 §2.2 抛 `E0035`。 | 只在 `i + step` 溢出 `i64` 时可达,即需要循环约 9.2×10^18 次 —— 实际不可达(R2 版在该点之前早已耗尽内存/时间)。 | 保留 R1 行为(§2.2 的整数溢出抛错是语言层契约,「饱和」是实现层私货)。75 条契约用例不含此边界;若将来有人真去跑那个区间,拿到 `E0035` 比拿到一个跑不完的循环更诚实。 | 已处置(M3-1) |
+| D11-004 | 2026-10-01 | M3-1 | **`SORT` 比较器返回 `ERR` 时,返回值被拆成载荷(既有的 R2 行为,原样保留)。** R2 `compare_with` 里 `Ok(Value::Err(e)) => { pending = Ok(normal(*e)) }` —— 解包一层,调用方拿到的是**载荷**而不是 `ERR`。所以 `LET(r, SORT([2,1], g)); IS_ERR(r)` 是 `FALSE`,而 `TRY(OK(r))` 打出 `boom`。R1 门面走 §8.2 的 ERR 透传,实测同样得到载荷(两条轨逐字一致)。 | 病态用法(比较器永远不返回布尔)下的返回值形状。规范 §5 只说「升序排序」,未规定。 | 保留:「规范沉默处保留既有实现」,不借 M3 顺手改语义(那是独立的一次裁决)。若要修,应作为独立条目并在 CHANGELOG 明标 breaking。 | 挂账(不在批次 A 范围) |
+| D11-005 | 2026-10-01 | M3-1 | **plan §3 M3-1 立项单的「助手上移」清单收缩。** 原计划把 `call_callable` / `arity` / `type_err` / `not_callable` / `short_circuit_err` 一并上移到 `wlwl-std/src/lib.rs`;实际只有 `call_callable` 搬了(`std.test` 的 `RUN_TESTS` 还在用),其余四个随 R2 实现一起消失 —— 元数/类型/回调检查已改由注入 kernel 发射(`_DIAG_E0020` / `_DIAG_E0022` / `_DIAG_E0030`),搬上来就是死代码。 | 仅 plan 文本与实现不一致,无运行时影响。 | 当场更正 plan §3 M3-1 的变更面描述。 | 已处置(M3-1) |
+| D11-006 | 2026-10-01 | M3-1 | **`names_match_catalog` 此前是恒真断言。** 旧文写作 `assert_eq!(NAMES, collection::NAMES.chunks(2).next().map(|_| NAMES).unwrap_or(NAMES))` —— 右边恒等于 `NAMES`,所以它从未锁住任何东西。R2 collection 实现删除后该式连编译都过不了,顺势换成真锁:`std.test` 的 `NAMES` ↔ `SPEC` 逐位同序 + §8 六成员清单 + 与 R1 collection 无重名。 | 无运行时影响;属**守卫失效**(绿了但什么都没查)。 | 拆掉恒真式,换成四条真锁,并各配反向守卫(`member_set_is_not_trivially_satisfied`)。collection 侧的成员面锁另立 `collection_contract.rs`,其「应然」侧是**标准库规范 §5 表格**(从 markdown 解析,与实现不同源 —— 这正是恒真式缺的那一维)。 | 已处置(M3-1) |

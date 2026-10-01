@@ -109,6 +109,14 @@ diag_kernel!(
 );
 
 diag_kernel!(
+    kernel_diag_e0022,
+    "_DIAG_E0022",
+    ErrorCode::E0022,
+    "arity mismatch",
+    "发射 `E0022`(元数不符)。给**变长**元数的成员用(`SORT` 1–2 参、`RANGE`\n    1–3 参、`ZIP` ≥1 参):`FUN((*args), ..)` 接受任意元数,解释器自己的\n    元数检查永远不会触发,所以元数检查必须由门面自己做 —— 而 wlwl\n    源码发不出指定码的诊断,只能走这里。固定元数的成员不需要它:\n    解释器的 `E0022` 码相同,只是消息里没有函数名前缀。"
+);
+
+diag_kernel!(
     kernel_diag_e0030,
     "_DIAG_E0030",
     ErrorCode::E0030,
@@ -209,6 +217,7 @@ pub fn kernel_pow(host: &mut dyn StdHost, args: Vec<Value>) -> WlwlResult<Outcom
 pub static KERNELS: &[(&str, StdFn)] = &[
     ("_KIND", kernel_kind as StdFn),
     ("_DIAG_E0020", kernel_diag_e0020 as StdFn),
+    ("_DIAG_E0022", kernel_diag_e0022 as StdFn),
     ("_DIAG_E0030", kernel_diag_e0030 as StdFn),
     ("_DIAG_E0038", kernel_diag_e0038 as StdFn),
     ("_SQRT", kernel_sqrt as StdFn),
@@ -276,12 +285,13 @@ mod tests {
         assert_eq!(err.diagnostic().code, ErrorCode::E0022);
     }
 
-    /// 变异验证:把三个发射器的码对调,断言必须转红 —— 否则「码守恒」这条
-    /// 契约就没有被锁住(三个 kernel 共用一个宏,写串一个编译器不会报)。
+    /// 三个发射器(E0020 / E0030 / E0038)共用一个宏,写串一个编译器不会
+    /// 报;这条把三个码各自钉住。
     #[test]
     fn each_diag_kernel_carries_its_own_code() {
         for (f, want) in [
             (kernel_diag_e0020 as StdFn, ErrorCode::E0020),
+            (kernel_diag_e0022 as StdFn, ErrorCode::E0022),
             (kernel_diag_e0030 as StdFn, ErrorCode::E0030),
             (kernel_diag_e0038 as StdFn, ErrorCode::E0038),
         ] {

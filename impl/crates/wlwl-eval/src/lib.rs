@@ -23137,10 +23137,11 @@ entry = "main.wll"
     }
 }
 
-// [v0.11 M2] std.collection / std.test 行为测试(随实现自 eval 内部模块迁来;
+// [v0.11 M2] std.test 行为测试(随实现自 eval 内部模块迁来);
 // 放在文件末尾,避免首个 #[cfg(test)] 截断 wlwl-error 的实现面扫描)。
-#[cfg(test)]
-mod collection_tests;
+// [v0.11 M3-1] collection_tests 已删:R2 原生实现随 M3-1 移除,它的用例锁的
+// 是被删掉的 R2 助手;collection 的成员契约改由
+// `tests/collection_contract.rs` 对标准库规范 §5 逐条对拍(75 条冻结用例)。
 #[cfg(test)]
 mod kernel_injection_tests;
 #[cfg(test)]

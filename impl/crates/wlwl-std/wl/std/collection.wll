@@ -1,0 +1,346 @@
+// wlwl:std.collection — R1 语言层(标准库底座 v0.11,ADR-0021)
+// 成员契约:docs/stdlib/wlwl-stdlib-spec-v0.11.md §5;注册镜像:附录 A。
+//
+// M3-1 起本模块是 std.collection 的**终态实现**(原 R2 Rust 实现已删)。
+// 算法、循环、比较全部是 wlwl;只有三样东西走注入的 R2 内核(ADR-0021
+// §层间规则,见 wlwl-std/src/kernels.rs):
+//
+//   _KIND(x)          值种类的诊断措辞(与 R2 的消息逐字对齐)
+//   _DIAG_E0020(msg)  回调不可调用
+//   _DIAG_E0022(msg)  元数不符(仅变长元数成员需要)
+//   _DIAG_E0030(msg)  类型错
+//   _DIAG_E0038(msg)  RANGE 步长为零 —— E0038 全仓唯一的发射点就在这里
+//
+// 为什么要自己发诊断码:wlwl 源码**发不出**指定码的原生诊断(实测
+// PANIC → E0100;LEN(1) → E0030 但消息被 LEN 固定;闭包元数错 → E0022 但
+// 消息无函数名前缀)。
+//
+// 两条 ERR 语义在本模块是**语言给的**,不是本模块写的:
+//   · 实参里的 ERR —— 闭包调用边界直接透传(§8.2),成员体根本看不到它;
+//   · 回调返回的 ERR —— 必须显式判 `IS_ERR` 后原样返回,否则会被当成
+//     普通值 PUSH 进结果里(R2 走的是同一条路)。
+//
+// 元数写法:全部用 `FUN((*args), ..)`。这样变长成员(SORT 1–2 / RANGE 1–3 /
+// ZIP ≥1 / ANY·ALL 1–2)的元数检查由门面自己做,消息能指名道姓;固定元数
+// 成员则由 `_NEED_ARITY` 统一把关。
+
+// ── 助手(不导出;`_` 前缀既不撞全局内建也不进附录 A)────────────────
+
+// 拼消息。R2 的诊断文案逐字照抄,免得 M3 的措辞变化被人当成回归。
+LET(_CAT, FUN((*parts), (LET MUT(s, ""); FOR(p, parts, SET(s, +(s, p))); s)));
+
+// `NAME: expected <what>, got <kind>`
+LET(_NEED, FUN((name, what, ty, v),
+    IF(==(TYPE(v), ty), v, _DIAG_E0030(_CAT(name, ": expected ", what, ", got ", _KIND(v))))));
+
+LET(_NEED_ARR, FUN((name, v), _NEED(name, "array", "ARRAY", v)));
+LET(_NEED_INT, FUN((name, v), _NEED(name, "integer", "INTEGER", v)));
+
+LET(_NEED_FN, FUN((name, v),
+    IF(==(TYPE(v), "FUNCTION"),
+       v,
+       _DIAG_E0020(_CAT(name, ": callback is not callable (got ", _KIND(v), ")")))));
+
+// 元数窗口 [lo, hi]。R2 的措辞只报上限(`SORT: function expects 2
+// argument(s), got 3`),这里照抄。
+LET(_NEED_ARITY, FUN((name, args, lo, hi),
+    IF(||(<(LEN(args), lo), >(LEN(args), hi)),
+       _DIAG_E0022(_CAT(name, ": function expects ", STR(hi), " argument(s), got ", STR(LEN(args)))),
+       NULL)));
+
+// 1. MAP(arr, f)  →  [f(v), ...]
+LET(MAP, FUN((*args),
+    (_NEED_ARITY("MAP", args, 2, 2);
+     LET(arr, _NEED_ARR("MAP", AT(args, 0, NULL)));
+     LET(f, _NEED_FN("MAP", AT(args, 1, NULL)));
+     LET MUT(out, []);
+     LET MUT(err, NULL);
+     LET MUT(i, 0);
+     WHILE(<(i, LEN(arr)),
+         (LET(r, CALL(f, AT(arr, i, NULL)));
+          IF(IS_ERR(r), SET(err, r), SET(out, PUSH(out, r)));
+          SET(i, +(i, 1))));
+     IF(IS_ERR(err), err, out))));
+
+// 2. FILTER(arr, f)  →  [v for v in arr if f(v)]
+LET(FILTER, FUN((*args),
+    (_NEED_ARITY("FILTER", args, 2, 2);
+     LET(arr, _NEED_ARR("FILTER", AT(args, 0, NULL)));
+     LET(f, _NEED_FN("FILTER", AT(args, 1, NULL)));
+     LET MUT(out, []);
+     LET MUT(err, NULL);
+     LET MUT(i, 0);
+     WHILE(<(i, LEN(arr)),
+         (LET(v, AT(arr, i, NULL));
+          LET(r, CALL(f, v));
+          IF(IS_ERR(r),
+             SET(err, r),
+             IF(==(TYPE(r), "BOOLEAN"),
+                IF(r, SET(out, PUSH(out, v)), NULL),
+                _DIAG_E0030(_CAT("FILTER", ": predicate must return BOOLEAN, got ", _KIND(r)))));
+          SET(i, +(i, 1))));
+     IF(IS_ERR(err), err, out))));
+
+// 3. REDUCE(arr, f, init)  →  左折叠;空数组返回 init
+LET(REDUCE, FUN((*args),
+    (_NEED_ARITY("REDUCE", args, 3, 3);
+     LET(arr, _NEED_ARR("REDUCE", AT(args, 0, NULL)));
+     LET(f, _NEED_FN("REDUCE", AT(args, 1, NULL)));
+     LET MUT(acc, AT(args, 2, NULL));
+     LET MUT(err, NULL);
+     LET MUT(i, 0);
+     WHILE(<(i, LEN(arr)),
+         (LET(r, CALL(f, acc, AT(arr, i, NULL)));
+          IF(IS_ERR(r), (SET(err, r); SET(i, LEN(arr))), SET(acc, r));
+          IF(IS_ERR(err), NULL, SET(i, +(i, 1)))));
+     IF(IS_ERR(err), err, acc))));
+
+// 数值?(`INTEGER` 与 `FLOAT` 跨类型按 §2.2 提升后比大小)
+LET(_NUM, FUN((v), ||(==(TYPE(v), "INTEGER"), ==(TYPE(v), "FLOAT"))));
+
+// 缺省排序键:a 排在 b 前面吗。
+//
+// **不可比返回 FALSE,而不是让 `<` 抛 E0030。** 这是 R2 `default_less` 的
+// 契约(混合类型排序保持原序,`SORT([1, "a", 2])` → `[1, a, 2]`),而语言的
+// `<` 对不可比操作数是**严格**的。规范 §5 只说「升序排序」没规定混合类型,
+// 故按「规范沉默处保留既有实现」处理,把这条行为原样搬过来 —— 改用 `<`
+// 会让原本能跑的排序变成 E0030,那是破坏性变更。
+LET(_SORT_LT, FUN((cmp, a, b),
+    (IF(==(TYPE(cmp), "NULL"),
+       IF(||(&&(_NUM(a), _NUM(b)),
+             ||(&&(==(TYPE(a), "STRING"), ==(TYPE(b), "STRING")),
+                &&(==(TYPE(a), "BOOLEAN"), ==(TYPE(b), "BOOLEAN")))),
+          <(a, b),
+          FALSE),
+       // 给了比较器就用它。顺带把「比较器必须返回 BOOLEAN」这条 R2 契约
+       // 守住 —— 不然 `IF` 会按真值(§2.3)把非布尔当真,静默改变排序结果。
+       (LET(lt, CALL(cmp, a, b));
+        IF(==(TYPE(lt), "BOOLEAN"),
+           lt,
+           _DIAG_E0030(_CAT("SORT", ": comparator must return BOOLEAN, got ", _KIND(lt)))))))));
+
+// 4. SORT(arr) / SORT(arr, cmp)  →  升序;稳定
+//
+// 选择排序(每轮取剩余里最靠前者)而不是插入排序:wlwl 数组不可变,元素搬移
+// 要一次 INDEX_SET = 一次 O(n) 拷贝;选择排序每轮只有一次 SLICE + 一次
+// PUSH,总拷贝量 O(n) 而不是 O(n²)。取**第一个**最小值 ⇒ 稳定,与 R2 的
+// `Vec::sort_by`(稳定)一致 —— 混合类型不可比时 R2 全部判 Equal 从而
+// 保留原序,本实现同样如此。
+LET(SORT, FUN((*args),
+    (_NEED_ARITY("SORT", args, 1, 2);
+     LET(arr, _NEED_ARR("SORT", AT(args, 0, NULL)));
+     LET(cmp, AT(args, 1, NULL));
+     IF(==(TYPE(cmp), "NULL"), NULL, _NEED_FN("SORT", cmp));
+     LET MUT(rest, SLICE(arr, 0));
+     LET MUT(out, []);
+     WHILE(>(LEN(rest), 0),
+         (LET MUT(best, -1);
+          LET MUT(bestv, NULL);
+          LET MUT(i, 0);
+          WHILE(<(i, LEN(rest)),
+              (LET(v, AT(rest, i, NULL));
+               IF(||(==(best, -1), _SORT_LT(cmp, v, bestv)),
+                  (SET(best, i); SET(bestv, v)),
+                  NULL));
+              SET(i, +(i, 1)));
+          SET(out, PUSH(out, bestv));
+          SET(rest, CONCAT(SLICE(rest, 0, best), SLICE(rest, +(best, 1))))));
+     out)));
+
+// 5. SORT_BY(arr, key)  →  以 key(v) 升序
+// 投影一次、连同原值一起排,再把原值取回来(与 R2 的 decorate-sort-
+// undecorate 同构)。
+LET(SORT_BY, FUN((*args),
+    (_NEED_ARITY("SORT_BY", args, 2, 2);
+     LET(arr, _NEED_ARR("SORT_BY", AT(args, 0, NULL)));
+     LET(key, _NEED_FN("SORT_BY", AT(args, 1, NULL)));
+     LET MUT(pairs, []);
+     LET MUT(err, NULL);
+     LET MUT(i, 0);
+     WHILE(<(i, LEN(arr)),
+         (LET(v, AT(arr, i, NULL));
+          LET(k, CALL(key, v));
+          IF(IS_ERR(k), (SET(err, k); SET(i, LEN(arr))), SET(pairs, PUSH(pairs, [k, v])));
+          IF(IS_ERR(err), NULL, SET(i, +(i, 1)))));
+     IF(IS_ERR(err),
+        err,
+        MAP(SORT(pairs, FUN((p, q), _SORT_LT(NULL, AT(p, 0, NULL), AT(q, 0, NULL)))),
+            FUN((p), AT(p, 1, NULL)))))));
+
+// 6. ZIP(a, b, ...)  →  配对至较短者
+// 非数组实参按单列处理(R2 同款:规范没写,沿用既有实现以免行为漂移)。
+LET(ZIP, FUN((*args),
+    (IF(<(LEN(args), 1),
+        _DIAG_E0022(_CAT("ZIP", ": function expects 1 argument(s), got ", STR(LEN(args)))),
+        NULL);
+     LET MUT(cols, []);
+     FOR(a, args, SET(cols, PUSH(cols, IF(==(TYPE(a), "ARRAY"), a, [a]))));
+     LET MUT(minlen, -1);
+     FOR(c, cols, SET(minlen, IF(==(minlen, -1), LEN(c), IF(<(minlen, LEN(c)), minlen, LEN(c)))));
+     LET MUT(out, []);
+     LET MUT(i, 0);
+     WHILE(<(i, minlen),
+         (LET MUT(row, []);
+          FOR(c, cols, SET(row, PUSH(row, AT(c, i, NULL))));
+          SET(out, PUSH(out, row));
+          SET(i, +(i, 1))));
+     out)));
+
+// 7. RANGE(n) / RANGE(start, end) / RANGE(start, end, step)  →  [start, end)
+LET(RANGE, FUN((*args),
+    (_NEED_ARITY("RANGE", args, 1, 3);
+     LET MUT(start, 0);
+     LET MUT(end, 0);
+     LET MUT(step, 1);
+     IF(==(LEN(args), 1),
+        SET(end, _NEED_INT("RANGE", AT(args, 0, NULL))),
+        (SET(start, _NEED_INT("RANGE", AT(args, 0, NULL)));
+         SET(end, _NEED_INT("RANGE", AT(args, 1, NULL)));
+         IF(>(LEN(args), 2), SET(step, _NEED_INT("RANGE", AT(args, 2, NULL))), NULL)));
+     IF(==(step, 0),
+        _DIAG_E0038(_CAT("RANGE", ": step must be non-zero (got ", STR(step), ")")),
+        NULL);
+     LET MUT(out, []);
+     LET MUT(i, start);
+     IF(>(step, 0),
+        WHILE(<(i, end), (SET(out, PUSH(out, i)); SET(i, +(i, step)))),
+        WHILE(>(i, end), (SET(out, PUSH(out, i)); SET(i, +(i, step)))));
+     out)));
+
+// 8/9. ANY(arr, f?) / ALL(arr, f?)  —— 缺省 f 时按真值(§2.3)
+LET(ANY, FUN((*args),
+    (_NEED_ARITY("ANY", args, 1, 2);
+     LET(arr, _NEED_ARR("ANY", AT(args, 0, NULL)));
+     LET(f, AT(args, 1, NULL));
+     IF(==(TYPE(f), "NULL"), NULL, _NEED_FN("ANY", f));
+     LET MUT(found, FALSE);
+     LET MUT(err, NULL);
+     LET MUT(i, 0);
+     WHILE(<(i, LEN(arr)),
+         (LET(v, AT(arr, i, NULL));
+          LET(x, IF(==(TYPE(f), "NULL"), v, CALL(f, v)));
+          IF(IS_ERR(x),
+             (SET(err, x); SET(i, LEN(arr))),
+             IF(BOOL(x), (SET(found, TRUE); SET(i, LEN(arr))), SET(i, +(i, 1))))));
+     IF(IS_ERR(err), err, found))));
+
+LET(ALL, FUN((*args),
+    (_NEED_ARITY("ALL", args, 1, 2);
+     LET(arr, _NEED_ARR("ALL", AT(args, 0, NULL)));
+     LET(f, AT(args, 1, NULL));
+     IF(==(TYPE(f), "NULL"), NULL, _NEED_FN("ALL", f));
+     LET MUT(ok, TRUE);
+     LET MUT(err, NULL);
+     LET MUT(i, 0);
+     WHILE(<(i, LEN(arr)),
+         (LET(v, AT(arr, i, NULL));
+          LET(x, IF(==(TYPE(f), "NULL"), v, CALL(f, v)));
+          IF(IS_ERR(x),
+             (SET(err, x); SET(i, LEN(arr))),
+             IF(BOOL(x), SET(i, +(i, 1)), (SET(ok, FALSE); SET(i, LEN(arr)))))));
+     IF(IS_ERR(err), err, ok))));
+
+// 10. FIND(arr, f)  →  首个满足者,无则 NULL
+LET(FIND, FUN((*args),
+    (_NEED_ARITY("FIND", args, 2, 2);
+     LET(arr, _NEED_ARR("FIND", AT(args, 0, NULL)));
+     LET(f, _NEED_FN("FIND", AT(args, 1, NULL)));
+     LET MUT(hit, NULL);
+     LET MUT(err, NULL);
+     LET MUT(i, 0);
+     WHILE(<(i, LEN(arr)),
+         (LET(r, CALL(f, AT(arr, i, NULL)));
+          IF(IS_ERR(r),
+             (SET(err, r); SET(i, LEN(arr))),
+             IF(==(TYPE(r), "BOOLEAN"),
+                IF(r, (SET(hit, AT(arr, i, NULL)); SET(i, LEN(arr))), SET(i, +(i, 1))),
+                _DIAG_E0030(_CAT("FIND", ": predicate must return BOOLEAN, got ", _KIND(r)))))));
+     IF(IS_ERR(err), err, hit))));
+
+// 11. ENUMERATE(arr)  →  [[0, v0], [1, v1], ...]
+LET(ENUMERATE, FUN((*args),
+    (_NEED_ARITY("ENUMERATE", args, 1, 1);
+     LET(arr, _NEED_ARR("ENUMERATE", AT(args, 0, NULL)));
+     LET MUT(out, []);
+     LET MUT(i, 0);
+     WHILE(<(i, LEN(arr)),
+         (SET(out, PUSH(out, [i, AT(arr, i, NULL)]));
+          SET(i, +(i, 1))));
+     out)));
+
+// 12/13. TAKE(arr, n) / DROP(arr, n)  —— n < 0 时 TAKE 得 []、DROP 是 no-op
+LET(TAKE, FUN((*args),
+    (_NEED_ARITY("TAKE", args, 2, 2);
+     LET(arr, _NEED_ARR("TAKE", AT(args, 0, NULL)));
+     LET(n, AT(args, 1, NULL));
+     IF(==(TYPE(n), "INTEGER"),
+        NULL,
+        _DIAG_E0030(_CAT("TAKE", ": expected non-negative integer, got ", _KIND(n))));
+     IF(<(n, 0), [], SLICE(arr, 0, n)))));
+
+LET(DROP, FUN((*args),
+    (_NEED_ARITY("DROP", args, 2, 2);
+     LET(arr, _NEED_ARR("DROP", AT(args, 0, NULL)));
+     LET(n, AT(args, 1, NULL));
+     IF(==(TYPE(n), "INTEGER"),
+        NULL,
+        _DIAG_E0030(_CAT("DROP", ": expected non-negative integer, got ", _KIND(n))));
+     IF(<(n, 0), arr, SLICE(arr, n)))));
+
+// 14. FLAT(arr)  →  展平一层
+LET(FLAT, FUN((*args),
+    (_NEED_ARITY("FLAT", args, 1, 1);
+     LET(arr, _NEED_ARR("FLAT", AT(args, 0, NULL)));
+     LET MUT(out, []);
+     FOR(v, arr, SET(out, IF(==(TYPE(v), "ARRAY"), CONCAT(out, v), PUSH(out, v))));
+     out)));
+
+// 15. UNIQ(arr)  →  按 == 去重,保留首现
+// `INDEX` 的 1-based 查找用的就是值相等语义(与 R2 的 `values_equal`
+// 同一条:1 与 1.0 互等),所以 -1 就是没见过的判据。
+LET(UNIQ, FUN((*args),
+    (_NEED_ARITY("UNIQ", args, 1, 1);
+     LET(arr, _NEED_ARR("UNIQ", AT(args, 0, NULL)));
+     LET MUT(out, []);
+     FOR(v, arr, IF(==(INDEX(out, v), -1), SET(out, PUSH(out, v)), NULL));
+     out)));
+
+// 16. GROUP_BY(arr, key)  →  DICT;键按 §5 走 STR 渲染(与 R2 的
+//     `display()` 一致),组内保持首现序。
+LET(GROUP_BY, FUN((*args),
+    (_NEED_ARITY("GROUP_BY", args, 2, 2);
+     LET(arr, _NEED_ARR("GROUP_BY", AT(args, 0, NULL)));
+     LET(f, _NEED_FN("GROUP_BY", AT(args, 1, NULL)));
+     LET MUT(d, DICT());
+     LET MUT(err, NULL);
+     LET MUT(i, 0);
+     WHILE(<(i, LEN(arr)),
+         (LET(v, AT(arr, i, NULL));
+          LET(k, CALL(f, v));
+          IF(IS_ERR(k),
+             (SET(err, k); SET(i, LEN(arr))),
+             (LET(ks, STR(k));
+              SET(d, IF(HAS(d, ks),
+                        INDEX_SET(d, ks, PUSH(AT_K(d, ks, []), v)),
+                        INDEX_SET(d, ks, [v])))));
+          IF(IS_ERR(err), NULL, SET(i, +(i, 1)))));
+     IF(IS_ERR(err), err, d))));
+
+// 17. JOIN(arr, sep)  →  元素经 STR 渲染后以 sep 连接
+LET(JOIN, FUN((*args),
+    (_NEED_ARITY("JOIN", args, 2, 2);
+     LET(arr, _NEED_ARR("JOIN", AT(args, 0, NULL)));
+     LET(sep, AT(args, 1, NULL));
+     IF(==(TYPE(sep), "STRING"),
+        NULL,
+        _DIAG_E0030(_CAT("JOIN", ": expected string (separator), got ", _KIND(sep))));
+     LET MUT(s, "");
+     LET MUT(first, TRUE);
+     FOR(v, arr,
+         (IF(first, SET(first, FALSE), SET(s, +(s, sep)));
+          SET(s, +(s, STR(v)))));
+     s)));
+
+// EXPORT 顺序对齐 R2 的 `NAMES` 常量(锁测试 `names_match_catalog` 对拍);
+// 附录 A 镜像跟随本顺序。改这里之前先改那个常量。
+EXPORT(["MAP", "FILTER", "REDUCE", "SORT", "SORT_BY", "ZIP", "RANGE", "ANY", "ALL", "FIND", "ENUMERATE", "TAKE", "DROP", "FLAT", "UNIQ", "GROUP_BY", "JOIN"]);

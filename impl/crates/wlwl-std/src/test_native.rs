@@ -1,7 +1,7 @@
 //! `wlwl:std.test` — in-process test framework (spec v0.4 §15.9).
-//! Bound through `NativeInvoke::Builtin` (same std-boundary
-//! rationale as `wlwl_eval::collection` — see B6 P4-B6-001 and
-//! `wlwl_std::test` for the full story).
+//!
+//! [v0.11 M3-3] 本文件是 `std.test` 的 **R2 原生内核**(注册与计时),R1
+//! 门面 `wl/std/test.wll` 导出同一组 6 个成员。断言载荷的构造在门面侧。
 //!
 //! ## Surface
 //!
@@ -277,8 +277,7 @@ pub fn builtin_run_tests(host: &mut dyn StdHost, args: Vec<Value>) -> WlwlResult
         // ASSERT/ASSERT_EQ on fail. The latter returns through
         // Outcome::normal(err) from the assertion builtin, which
         // we read off the Outcome.value below.
-        let outcome = match crate::collection::call_callable(host, "RUN_TESTS", &entry.body, vec![])
-        {
+        let outcome = match crate::call_callable(host, "RUN_TESTS", &entry.body, vec![]) {
             Ok(v) => Ok(v),
             Err(_e) => {
                 // Diagnostic surfaced during the test (e.g. uncaught
