@@ -58,9 +58,10 @@ use std::time::{Duration, Instant};
 /// 端到端冒烟,外加 `E0038`(RANGE 步长为零)的存在性 —— 那条诊断在 M3 之前
 /// 的唯一发射点是被删掉的 R2 实现,删掉之后只剩 M3-0 立起的注入通道。
 ///
-/// 第 143–144 条(`P_d11_026_*`)是 D11-026 补的:规范 §1.1「文本输入**不得**因
-/// 带 BOM 而被拒绝」。它们是头两条用 `bom` 键把 BOM 注入暂存副本的用例 ——
-/// 驱动据此把不可见字节变成夹具里一个可审的声明。两条合起来覆盖 §1.1 表里
+/// 第 143–144 条(`P_d11_026_*`)是 D11-026 补的:文本输入**不得**因带 BOM 而被
+/// 拒绝(工具约定,见 `docs/spec/wlwl-agent-spec-v0.11.md` §2 —— 语言规范的
+/// BOM 条款只覆盖 `.wll`)。它们是头两条用 `bom` 键把 BOM 注入暂存副本的用例 ——
+/// 驱动据此把不可见字节变成夹具里一个可审的声明。两条合起来覆盖那三类输入
 /// 规范所辖的三个文件(源文件 / `wlwl.toml` / `main.wll.sig`);`wlwl.lock` 不在
 /// 其中,理由见 §9.4(锁文件在规范外)。
 const EXPECTED_CASE_COUNT: usize = 144;
@@ -152,7 +153,7 @@ fn assert_case_inventory(ids: &[String]) {
 /// 把一份 case 整目录复制到 `temp_dir()/wlwl-probe/<id>`(先清后建)。
 ///
 /// `bom_files` 里的每个文件名会在**暂存副本**上前置一个 UTF-8 BOM
-/// (规范 §1.1;见 [`Expect::bom`])。前置只发生在暂存副本上,仓库里的
+/// (见 [`Expect::bom`])。前置只发生在暂存副本上,仓库里的
 /// 夹具字节不变 —— 所以 `git diff` 看不到的字节不会藏在夹具里。
 fn stage(case_id: &str, bom_files: &[String]) -> PathBuf {
     let dir = std::env::temp_dir().join("wlwl-probe").join(case_id);
@@ -293,7 +294,7 @@ struct Expect {
     absent: Vec<String>,
     /// **仅标记**:不改断言。失败消息里加 `[deviation]` 提示。
     deviation: bool,
-    /// 暂存时给这些文件前置一个 UTF-8 BOM(规范 §1.1)。
+    /// 暂存时给这些文件前置一个 UTF-8 BOM。
     ///
     /// 为什么在夹具里做而不是提交一个带 BOM 的源文件:`.gitattributes` 的
     /// `*.wll text eol=lf` 会把提交的 CRLF 规范化,而 BOM 在 code review

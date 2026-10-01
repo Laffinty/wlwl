@@ -109,9 +109,12 @@ impl ModuleSig {
 /// (`E0010` / `E0011` / `E0012`),不新增码号 —— 一个码号只对应一种条件,
 /// 而「`.sig` 写错了」就是语法错误。
 ///
-/// **D11-026 / 规范 §1.1 与附录 E.1**:剥除**至多一个**前导 `U+FEFF`。此前
-/// BOM 会粘进 `EXPORT` 的名字,报 `E0010: found "﻿EXPORT x : INTEGER"` ——
-/// 而 §1.1 规定文本输入「不得因带 BOM 而被拒绝」。
+/// **D11-026**:剥除**恰好一个**前导 `U+FEFF`。此前 BOM 会粘进 `EXPORT` 的
+/// 名字,报 `E0010: found "﻿EXPORT x : INTEGER"`。
+///
+/// 规范依据:附录 E.1 只说签名文件是「行导向的 UTF-8 文本」,**未提 BOM**;
+/// §1.1 的 BOM 条款只覆盖 `.wll`。所以这条宽容**没有规范背书**,它是工具选择,
+/// 记在 `docs/spec/wlwl-agent-spec-v0.11.md` §2。
 ///
 /// 只剥一个(`strip_prefix` 而非 `trim_start_matches`):第二个 `U+FEFF` 是普通
 /// 字符,不是 BOM。对 `.sig` 而言剥前导是无条件正确的 —— `sig_line` 只以
@@ -1386,7 +1389,8 @@ EXPORT either : OPTION[INTEGER]
         }
     }
 
-    // ---- D11-026 / 规范 §1.1 与附录 E.1:带 BOM 的签名文件必须照常解析 ----
+    // ---- D11-026:带 BOM 的签名文件必须照常解析(工具选择,无规范背书;
+    //      依据与理由见 docs/spec/wlwl-agent-spec-v0.11.md §2)----
     //
     // 夹具在测试内拼接,不提交带 BOM 的文件 —— U+FEFF 在 review 里不可见。
     // 端到端那一侧由 probe 用例 `P_d11_026_bom_module_signature_loads` 钉住。

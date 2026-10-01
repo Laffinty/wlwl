@@ -190,7 +190,7 @@ impl From<toml::de::Error> for ManifestError {
 /// - each namespace key matches `^[a-z][a-z0-9-]*$`
 /// - each dependency has at least one of `path` / `version`
 pub fn parse(s: &str) -> Result<Manifest, ManifestError> {
-    // D11-026 / spec §1.1: `toml` rejects a leading BOM outright, and a
+    // D11-026: `toml` rejects a leading BOM outright, and a
     // rejected manifest means the `[package]` block is silently dropped.
     let m: Manifest = toml::from_str(crate::strip_bom(s))?;
     validate(&m)?;
@@ -1750,11 +1750,15 @@ match_exhaustiveness = {match_exh}
     }
 
     // ---------------------------------------------------------------------
-    // D11-026 / spec §1.1 — text inputs must not be rejected for a leading
-    // UTF-8 BOM. `toml` refuses one outright, so before the fix a BOM'd
-    // `wlwl.toml` lost its `[package]` block *silently*: the lenient
+    // D11-026 — the manifest is a text input that must not be rejected for a
+    // leading UTF-8 BOM. `toml` refuses one outright, so before the fix a
+    // BOM'd `wlwl.toml` lost its `[package]` block *silently*: the lenient
     // `parse_features` path still applied `[features]` while the strict
     // `parse` path reported the manifest as unloadable (W0001).
+    //
+    // No normative backing — the language spec's BOM clause (§1.1) covers only
+    // `.wll`, and §9.4 does not state an encoding for the manifest at all.
+    // Tool choice; see `docs/spec/wlwl-agent-spec-v0.11.md` §2.
     //
     // BOM fixtures are concatenated here rather than committed, because a
     // U+FEFF is an invisible byte in review.
