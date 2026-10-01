@@ -11,3 +11,21 @@ docs/plan/deviations.md text working-tree-encoding=UTF-8
 # rustfmt always normalises to LF regardless of input, so any CRLF
 # file would silently fail the fmt gate on the next CI run.
 *.rs text eol=lf
+
+# [v0.11 / D11-017] 其余文本类型同样钉 LF:md / wll / json / toml / yml。
+#
+# 起因是 GitHub Actions run #168(2026-10-01)只在 **windows-latest** 上红,
+# ubuntu 与 macos 全绿:Windows runner 的 git 默认 `core.autocrlf=true`,那里
+# 检出的 `docs/**.md` 是 `\r\n`,而生成器产出 `\n`,于是
+# `stdlib_appendix_a_sync` 的逐字节比对不等(内容其实完全一样)。
+#
+# 同一根源还让 `wl/std/*.wll` 在仓里混了行尾 —— HEAD 上 `collection.wll` /
+# `math.wll` / `str.wll` 是 CRLF 而 `test.wll` 是 LF,同一组文件的两种
+# 形态,谁改动谁在 diff 里看起来像整文件重写。
+#
+# 只影响 checkout,不影响仓里存的内容(仓里统一是 LF)。
+*.md text eol=lf
+*.wll text eol=lf
+*.json text eol=lf
+*.toml text eol=lf
+*.yml text eol=lf
