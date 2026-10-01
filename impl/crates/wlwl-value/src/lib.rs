@@ -707,8 +707,17 @@ pub enum YieldReason {
 
 impl YieldReason {
     /// v0.9 Step 10: derive the WasmFX-style [`Tag`] for this reason.
-    /// Single source of truth used by [`TaskState::suspended`] to
+    /// Single source of truth used by `TaskState::Suspended` to
     /// keep `Suspended { tag, reason }` consistent.
+    ///
+    /// `TaskState` lives in `wlwl-eval::runtime`, i.e. **outside this
+    /// crate** — which is why the mention above is plain code and not an
+    /// intra-doc link, and why the variant is spelled `Suspended` (an
+    /// earlier draft said `suspended`, a name that no longer exists).
+    /// [v0.11 M2] `YieldReason` was moved here from `wlwl-eval`; the
+    /// reference crossed the crate boundary with it and CI never ran on
+    /// the wip branch, so `cargo doc -D warnings` stayed broken until
+    /// the branch was added to the trigger list.
     ///
     /// Mapping (plan §3.1 + ADR-0017 §3.1 + ADR-0019 §4.4.1):
     /// - `Explicit` / `AwaitingChild` — the effect is `perform Yield`;
@@ -993,7 +1002,7 @@ pub fn values_equal(a: &Value, b: &Value) -> bool {
 // std 调用契约(标准库底座 v0.11 / ADR-0022)
 // ──────────────────────────────────────────────────────────────────────
 
-/// std 原生函数签名:直接收发真 [`Value`](含闭包),回调经 [`StdHost`]
+/// std 原生函数签名:直接收发真 [`Value`]`(含闭包),回调经 [`StdHost`]
 /// 注入;`Outcome.signal == Signal::Yield(_)` 表示回调挂起,std 层必须
 /// 原样穿透,不得消费(结构化并发,spec §17)。
 pub type StdFn = fn(&mut dyn StdHost, Vec<Value>) -> Result<Outcome, WlwlError>;

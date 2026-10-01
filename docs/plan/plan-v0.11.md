@@ -221,6 +221,7 @@ v0.10 收口时降级为已知限制(语言规范 §17.1/§17.4 的 YIELD「挂�
 |---|---|
 | `cargo fmt --check` | 0 diff |
 | `cargo clippy --workspace --all-targets -- -D warnings` | 0 warning |
+| `cargo doc --no-deps -D warnings` | 0 error(**2026-10-01 CI 首次实跑后才补进本地门禁**;此前漏跑,4 处 rustdoc 断裂潜伏了两个里程碑 —— 偏差 D11-015) |
 | `cargo test --workspace` | 47 套件 **1860 passed / 0 failed** |
 | probe 用例数 | 136(立项)→ 138(M1)→ **142**(M3-4),只增不减 |
 | 附录 G 逐字节不变 | 未触碰 `registry.rs` 与 `docs/appendix_G.md`;`spec_appendix_g_sync` 绿 |

@@ -8,7 +8,8 @@
 //!   `wlwl_std::lang_exports` 提取;运行期加载由 AST 的
 //!   `collect_exports` 权威提取,两者不一致会被锁测试抓出来)。
 //!
-//! 层归属与引入版本登记在 [`NAMESPACE_META`],与
+//! 层归属与引入版本登记在 `NAMESPACE_META`(私有 const —— 公开的模块级
+//! 文档链不到私有项,故写代码而非 intra-doc 链接),与
 //! `docs/stdlib/wlwl-stdlib-spec-v0.11.md` §0.2 归属总表一致。
 //!
 //! 产出写进 stdlib 规范的附录 A 标记区(`<!-- appendix-a:begin -->`

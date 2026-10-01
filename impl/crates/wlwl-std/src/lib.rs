@@ -2,7 +2,7 @@
 //! boundary (ADR-0022).
 //!
 //! 自 M2 起本 crate 与 eval 之间**不再有 serde_json 转换边界**:原生函数
-//! 直接收发真 [`Value`](含闭包),回调经 [`StdHost`] 注入,挂起
+//! 直接收发真 [`Value`]`(含闭包),回调经 [`StdHost`] 注入,挂起
 //! ([`Outcome::signal`] 携带 `Signal::Yield`)原样穿透。依赖方向单向:
 //! `wlwl-eval → wlwl-value ← wlwl-std`。
 //!
