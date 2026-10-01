@@ -15,6 +15,13 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [v0.11.0] — 2026-10-01
+
+Spec: **wlwl-spec-v0.11** —— 语言规范升到 v0.11,并首次随包发布独立成册的
+[标准库规范](docs/stdlib/wlwl-stdlib-spec-v0.11.md)(两册相互独立、分别版本化;
+三层归属见 ADR-0021)。本版是 v0.11 的**批次 A(标准库底座)**,批次 B(`YIELD`
+续体保存)已立项未开工。
+
 ### Added
 - **标准库底座 M3:R1 首批 + 混合 test(ADR-0021)**。`std.collection` 以纯 wlwl
   重写为终态(17 成员;`RANGE` 因基准实测的规模问题于 M5 单独沉回 R2,见下方

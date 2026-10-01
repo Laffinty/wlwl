@@ -1,17 +1,17 @@
 name: CI
 
-# `wip0.11` 列入自动触发(v0.11 标准库底座批次 A 的工作分支)。此前这里只
-# 有 `main`,而 wip 分支的推送**不触发任何 workflow** —— 也就是说 wip 期间
-# 的 fmt / clippy / cargo-deny / test / conformance 门禁全部处于「没人跑」
-# 的状态,只有开 PR 才走一遍。
+# 触发条件随工作分支同步更新。此前这里只有 `main`,而 wip 分支的推送**不触发
+# 任何 workflow** —— 也就是说 wip 期间的 fmt / clippy / cargo-deny / test /
+# conformance 门禁全部处于「没人跑」的状态,只有开 PR 才走一遍。v0.11 期间曾
+# 临时把 `wip0.11` 加进下面两个列表,该分支已并入 main 并删除,规则随之撤除。
 #
-# 触发条件随工作分支同步更新;若将来还有别的 wip 分支,同样加进这两个列表
-# (push 侧按**被推**的分支过滤,pull_request 侧按**基**分支过滤)。
+# 若将来还有 wip 分支,同样加进这两个列表(push 侧按**被推**的分支过滤,
+# pull_request 侧按**基**分支过滤),收工时记得撤掉。
 on:
   push:
-    branches: [main, wip0.11]
+    branches: [main]
   pull_request:
-    branches: [main, wip0.11]
+    branches: [main]
 
 env:
   CARGO_TERM_COLOR: always
