@@ -16,6 +16,29 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ## [Unreleased]
 
 ### Added
+- **标准库底座 M3:R1 首批 + 混合 test(ADR-0021)**。`std.collection` 以纯 wlwl
+  重写为终态(17 成员;`RANGE` 因基准实测的规模问题于 M5 单独沉回 R2,见下方
+  Fixed);新增 `std.str`(§6,5 成员)与 `std.math`(§7,11 成员,R1 门面 + R2 浮点
+  内核);`std.test`(§8)混合化(门面导出 6 成员,R2 内核负责注册表 / 计时 /
+  测试体调用)。成员面由 R1 门面的 `EXPORT` 声明,附录 A 镜像随之生成。
+- **BREAKING:`std.test` 的 `ASSERT(cond)` 真值口径按语言规范 §2.3 对齐**。假值
+  恰为八个(`FALSE` / `NULL` / `0` / `0.0` / `""` / 空数组 / 空字典 / `NaN`),
+  其余一切为真。**`ASSERT(0)` / `ASSERT("")` / `ASSERT([])` 从「通过」变成
+  「失败」** —— 此前只把 `BOOLEAN(false)` 与 `NULL` 当假,与 `IF` / `BOOL` /
+  `&&` / `\|\|` 的口径不一致(§2.3 明写真值也由「模式匹配以外的谓词位置」
+  消费,`ASSERT(cond)` 正是谓词位置)。仓内无任何调用点依赖旧口径(208 个
+  `.wll` + 26 处内嵌源码查证)。偏差 D11-010。
+- **BREAKING(可观察面不变):`std.collection` 的 `RANGE` 实现层由 R1 改为 R2**。
+  成员面、签名、语义与诊断**一字未变**(75 条冻结契约用例逐字比对全绿),只是
+  实现语言变了 —— ADR-0021 §0.2:层归属变更不算破坏性变更。依据是 M5 基准
+  实测:R1 版 `RANGE` 每元素成本超线性(10 000 元素 3.6 s、40 000 元素 86 s),
+  使语言规范 §6.6 的「100 万次简单循环 < 30 s」符合性负载跑不完。局限:同一
+  成本剖面适用于所有建数组的成员(`MAP` / `FILTER` / `FLAT` / `UNIQ` /
+  `ENUMERATE` / `GROUP_BY` / `JOIN` 都走 `PUSH`),根因修复超本版范围。
+  偏差 D11-012。
+- **标准库诊断能力**:`RANGE` 步长为零的 `E0038` 现在有一个**注入的**发射器
+  承担(此前全仓唯一发射点是被 M3-1 删掉的 R2 实现)。`std.test` 的 `ASSERT` 族
+  失败码 `E0046`–`E0049` 的载荷构造搬进 R1 门面。
 
 - **标准库底座 M2:值直通(ADR-0022)**。新 crate **`wlwl-value`** 成为值层单源:
   十三类运行时值、`Env`/`Cell`、类与实例(`ClassEntry`/`ThisToken`)、

@@ -84,10 +84,45 @@ const CASES: &[Case] = &[
         src: r#"IMPORT("wlwl:std.test", ["ASSERT"]); LET(r, ASSERT(NULL)); ERR_PAYLOAD(r)"#,
         expect: "[code: E0046, kind: test_assertion_failed]",
     },
+    // [v0.11 M3-3 + 业主 2026-10-01 裁决] `ASSERT` 的真值口径按语言规范 §2.3
+    // 的**八个**假值(此前只把 `BOOLEAN(false)` / `NULL` 当假,于是 `ASSERT(0)`
+    // 之类会通过)。这一组是该次变更的**探测器**:口径一旦被改回「只认
+    // BOOLEAN / NULL」,它们立刻变红。改动前查过全仓 208 个 .wll 与 26 处
+    // 内嵌源码,除本表外没有任何调用点依赖旧口径。
+    //
+    // 注意别把「假值」与「载荷里带不带 `cond` 键」混为一谈:后者的规则是
+    // 「`cond` 是 `NULL` 或 `BOOLEAN(false)` 才省掉」(R2 `build_payload` 的原口径),
+    // 与真值判定无关。所以 `ASSERT("")` / `ASSERT([])` 的载荷里**带着**
+    // `cond`,只是断言失败。
     Case {
-        name: "assert_zero_payload_keeps_cond",
+        name: "assert_zero_is_falsy_per_2_3",
         src: r#"IMPORT("wlwl:std.test", ["ASSERT"]); LET(r, ASSERT(0)); ERR_PAYLOAD(r)"#,
-        expect: "!E0030 ERR_PAYLOAD: expected ERR, got OK",
+        expect: "[code: E0046, kind: test_assertion_failed, cond: 0]",
+    },
+    Case {
+        name: "assert_zero_float_is_falsy_per_2_3",
+        src: r#"IMPORT("wlwl:std.test", ["ASSERT"]); LET(r, ASSERT(0.0)); ERR_PAYLOAD(r)"#,
+        expect: "[code: E0046, kind: test_assertion_failed, cond: 0.0]",
+    },
+    Case {
+        name: "assert_empty_string_is_falsy_per_2_3",
+        src: r#"IMPORT("wlwl:std.test", ["ASSERT"]); LET(r, ASSERT("")); ERR_PAYLOAD(r)"#,
+        expect: "[code: E0046, kind: test_assertion_failed, cond: ]",
+    },
+    Case {
+        name: "assert_empty_array_is_falsy_per_2_3",
+        src: r#"IMPORT("wlwl:std.test", ["ASSERT"]); LET(r, ASSERT([])); ERR_PAYLOAD(r)"#,
+        expect: "[code: E0046, kind: test_assertion_failed, cond: []]",
+    },
+    Case {
+        name: "assert_empty_dict_is_falsy_per_2_3",
+        src: r#"IMPORT("wlwl:std.test", ["ASSERT"]); LET(r, ASSERT(DICT())); ERR_PAYLOAD(r)"#,
+        expect: "[code: E0046, kind: test_assertion_failed, cond: []]",
+    },
+    Case {
+        name: "assert_non_falsy_values_still_pass",
+        src: r#"IMPORT("wlwl:std.test", ["ASSERT"]); ASSERT(1); ASSERT("x"); ASSERT([0]); ASSERT(["a": 0])"#,
+        expect: "OK(TRUE)",
     },
     Case {
         name: "assert_with_message",

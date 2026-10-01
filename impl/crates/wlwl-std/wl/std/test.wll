@@ -30,14 +30,19 @@
 // stdlib 规范 §0.3 治理四件套隐含的要求:错误信息得能定位到成员)。
 // 各成员的元数窗口见下,与 R2 的 `arity(...)` 调用一一对应。
 //
-// ## ASSERT 的真值口径(不是 §2.3 的八个假值)
+// ## ASSERT 的真值口径(§2.3 的八个假值)
 //
-// R2 旧实现只把 `BOOLEAN(false)` 与 `NULL` 当假,其余一律为真 —— 即
-// `ASSERT(0)` / `ASSERT("")` / `ASSERT([])` 都**通过**。而 §2.3 的真值
-// 定义把 `0` / `0.0` / `""` / 空数组 / 空字典 / `NaN` 都算假。两者冲突。
-// 本门面**照旧保留 R2 口径**(M3 不改行为;偏差 D11-010),故不能用 `BOOL(cond)`。
-// 口径一旦裁决,这里改成 `BOOL(cond)` 即可,`assert_zero_passes` 一条用例
-// 会同步变红提醒。
+// M3-3 起本门面一度照抄 R2 旧口径(只 `BOOLEAN(false)` 与 `NULL` 为假,于是
+// `ASSERT(0)` / `ASSERT("")` / `ASSERT([])` 都通过)。业主 2026-10-01 裁决
+// 改为按语言规范 §2.3:假值恰为八个 —— FALSE / NULL / 0 / 0.0 / "" / 空数组 /
+// 空字典 / NaN,其余一切为真。§2.3 并明写「真值仅由 6.1 的 IF、6.2 的
+// WHILE、&&、||、NOT、BOOL 以及**模式匹配以外的谓词位置**消费」——
+// `ASSERT(cond)` 正是谓词位置,故 §2.3 是规范的读法,R2 旧实现才是偏离方。
+//
+// 所以这里就是 `BOOL(cond)`,与 `IF` / `BOOL` / `&&` / `||` 同一口径。
+// 改动前查过全仓 208 个 .wll 与 26 处内嵌源码:`ASSERT([])` / `ASSERT("")`
+// 一个都没有,`ASSERT(0)` 只出现在契约表里(那行本就是用来探测这次变更的),
+// 故可观察面除该行外不变;仍按 v0.x 政策在 CHANGELOG 明标 breaking。
 
 // ── 助手(不导出)────────────────────────────────────────────────────
 
@@ -55,11 +60,6 @@ LET(_NEED_ARITY, FUN((name, args, lo, hi),
        _DIAG_E0022(_CAT(name, ": function expects ", STR(hi), " argument(s), got ", STR(LEN(args)))),
        NULL)));
 
-// 「R2 口径」的真值:`BOOLEAN` 取自身,`NULL` 假,其余一律真。
-// (注意结尾是 `NOT(...)` —— 写成 `==(TYPE(v), "NULL")` 会把 `1` / `""` / `[]`
-//  全判成假,与 R2 相反。)
-LET(_TRUTHY_R2, FUN((v),
-    IF(==(TYPE(v), "BOOLEAN"), v, NOT(==(TYPE(v), "NULL")))));
 
 // R2 的 `build_payload`:`cond` 为 NULL 或 `FALSE` 时**不带** `cond` 键。
 LET(_PUT_IF_PRESENT, FUN((p, key, v),
@@ -80,7 +80,7 @@ LET(ASSERT, FUN((*args),
     (_NEED_ARITY("ASSERT", args, 1, 2);
      LET(cond, AT(args, 0, NULL));
      LET(msg, AT(args, 1, NULL));
-     IF(_TRUTHY_R2(cond),
+     IF(BOOL(cond),
         OK(TRUE),
         (LET MUT(p, ["code": "E0046", "kind": "test_assertion_failed"]);
          SET(p, _PUT_IF_PRESENT(p, "cond", cond));
