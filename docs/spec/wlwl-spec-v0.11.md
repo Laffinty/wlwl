@@ -11,7 +11,7 @@ WLWL 是一门**动态类型、前缀函数式**的编程语言:一切都是表�
 
 ### 0.1 本规范的构成
 
-本规范定义 WLWL 程序设计语言:词法、语法、类型与值、求值规则、错误模型、模块系统、面向对象与行为类型(§13–§16)、并发(§17)、标准库与诊断。
+本规范定义 WLWL 程序设计语言:词法、语法、类型与值、求值规则、错误模型、模块系统、面向对象与行为类型(§13–§16)、并发(§17)、标准库机制(§10)与诊断(§11)。标准库各命名空间的成员契约独立成册,见标准库规范 `docs/stdlib/wlwl-stdlib-spec-v0.11.md`(10.1)。
 
 ### 0.2 读者
 
@@ -291,7 +291,7 @@ c();   // 1
 c();   // 2 — count 的单元格在闭包间共享
 ```
 
-这是 WLWL 中唯一的原位状态突变机制(对象字段的突变是第二条显式路径,见 §13.4)。循环累加等命令式惯用法应当经由 `LET MUT` 与 `SET` 表达,或 `REDUCE`(10.6)。
+这是 WLWL 中唯一的原位状态突变机制(对象字段的突变是第二条显式路径,见 §13.4)。循环累加等命令式惯用法应当经由 `LET MUT` 与 `SET` 表达,或 `REDUCE`(`wlwl:std.collection`,标准库规范)。
 
 ### 3.4 SET
 
@@ -753,7 +753,9 @@ NameItem = string_lit | string_lit ":" string_lit | identifier .
 
 ### 9.3 标准库命名空间
 
-`wlwl:std.` 前缀的路径由实现直接提供,不经文件系统:`wlwl:std.io`、`wlwl:std.fs`、`wlwl:std.json`、`wlwl:std.collection`、`wlwl:std.format`、`wlwl:std.test`、`wlwl:std.ai`、`wlwl:std.agent`。各命名空间的成员见第 10 章。
+`wlwl:std.` 前缀的路径由实现直接提供,不经文件系统:`wlwl:std.io`、`wlwl:std.fs`、`wlwl:std.json`、`wlwl:std.collection`、`wlwl:std.format`、`wlwl:std.test`、`wlwl:std.ai`、`wlwl:std.agent`、`wlwl:std.str`、`wlwl:std.math`。
+
+各命名空间按**实现分层**归入语言层(纯 wlwl)、原生层(Rust)或混合实现;无论归属哪一层,同一成员的名字、签名与语义**必须**一致,调用方式不因实现层而异。分层归属表与各命名空间的成员契约见标准库规范 `docs/stdlib/wlwl-stdlib-spec-v0.11.md`(与本规范相互独立、分别版本化)。实现**可以**提供开发期加载覆盖,这是非规范性的实现自由度,**不得**改变任何成员的名字与语义。
 
 ### 9.4 清单文件
 
@@ -802,7 +804,9 @@ NameItem = string_lit | string_lit ":" string_lit | identifier .
 - **全局内建**:10.2–10.5、10.7(`FORMAT`)、10.9、10.12 的名字无须导入即可调用。
 - **命名空间成员**:10.6、10.8、10.10、10.11 的名字**必须**经 `IMPORT` 导入。
 - 除注明外,容器操作都是**非破坏性**的:返回新容器,接收者不变;更新绑定用 `SET`(3.4)。
-- 对 `ERR` 实参:全局内建按 8.2 透明传播;集合套件(10.6)的回调抛出的 `ERR` 同样使整个调用传播。
+- 对 `ERR` 实参:全局内建按 8.2 透明传播;接受回调的命名空间成员,其回调抛出的 `ERR` 同样使整个调用传播。
+
+**实现分层与成员契约**。第 10 章只保留语言表面(全局内建)与命名空间的机制性条目;各命名空间的成员表、语义细节与错误码的触发归属移入标准库规范 `docs/stdlib/wlwl-stdlib-spec-v0.11.md`。分层模型(ADR-0021):全局内建属**内建层**(R0);命名空间按实现归**语言层**(R1,纯 wlwl)、**原生层**(R2,Rust)或**混合实现**(R1 门面 + R2 内核);层间依赖单向,归属变更(下沉/上浮)不得改变成员的名字与语义(ADR-0023)。
 
 ### 10.2 I/O
 
@@ -865,22 +869,7 @@ NameItem = string_lit | string_lit ":" string_lit | identifier .
 
 ### 10.6 集合套件 — `wlwl:std.collection`
 
-| 签名 | 说明 |
-|------|------|
-| `MAP(arr, f)` | `[f(v), ...]`;`f(v)` 抛 `ERR` 则整体传播 |
-| `FILTER(arr, f)` | 保留 `f(v)` 为真的元素 |
-| `REDUCE(arr, f, init)` | 左折叠;空数组返回 `init` |
-| `SORT(arr)` / `SORT_BY(arr, key)` | 升序排序;`SORT_BY` 以 `key(v)` 为排序键 |
-| `RANGE(n)` / `RANGE(start, end)` / `RANGE(start, end, step)` | 整数区间 `[start, end)`,步长 `step`;`step = 0` 产生 `E0038` |
-| `ZIP(a, b) -> ARRAY` | 配对至较短者:`[[a0, b0], ...]` |
-| `ENUMERATE(arr) -> ARRAY` | `[[0, v0], [1, v1], ...]` |
-| `TAKE(arr, n)` / `DROP(arr, n)` | 前 n / 去前 n |
-| `FLAT(arr) -> ARRAY` | 展平一层 |
-| `UNIQ(arr) -> ARRAY` | 按 `==` 去重,保留首现 |
-| `GROUP_BY(arr, key) -> DICT` | 按 `key(v)` 分组,组为按首现序的字典 |
-| `ANY(arr, f?)` / `ALL(arr, f?)` | 任一/全部为真(缺省 `f` 时按真值) |
-| `FIND(arr, f)` | 首个满足者,无则 `NULL` |
-| `JOIN(arr, sep) -> STRING` | 字符串化后以 `sep` 连接 |
+归属**语言层**(R1,纯 wlwl 实现)。成员契约 —— `MAP` / `FILTER` / `REDUCE` / `SORT` / `SORT_BY` / `RANGE` / `ZIP` / `ENUMERATE` / `TAKE` / `DROP` / `FLAT` / `UNIQ` / `GROUP_BY` / `ANY` / `ALL` / `FIND` / `JOIN` 的签名、语义与失败行为(含 `RANGE` 步长为零的 `E0038`)见标准库规范;回调的 `ERR` 传播按 10.1 / 8.2 执行。
 
 ### 10.7 格式化 — `FORMAT`(全局)
 
@@ -894,20 +883,7 @@ NameItem = string_lit | string_lit ":" string_lit | identifier .
 
 ### 10.8 JSON 与文件系统
 
-`wlwl:std.json`:
-
-| 签名 | 说明 |
-|------|------|
-| `STRINGIFY(x) -> STRING` | 序列化为 JSON;字典键按字典序输出;`NULL`/布尔/数字/字符串/数组/字典自然映射 |
-| `PARSE(s)` | 解析 JSON;对象保持文档序的字典 |
-
-`wlwl:std.fs`:
-
-| 签名 | 说明 |
-|------|------|
-| `WRITE_FILE(path, text) -> NULL` | 写 UTF-8 文本;父目录必须已存在 |
-| `READ_FILE(path) -> STRING` | 读文件;不存在产生 `E0061` |
-| `EXISTS(path) -> BOOLEAN` | 存在测试 |
+`wlwl:std.json`(`STRINGIFY` / `PARSE`)与 `wlwl:std.fs`(`WRITE_FILE` / `READ_FILE` / `EXISTS`)归属**原生层**(R2)。成员契约 —— 含 JSON 与字典/数组/标量的映射规则(字典键序、文档序)、文件不存在时的 `E0061` 与解析/序列化失败的 `E0070` / `E0071` —— 见标准库规范。
 
 ### 10.9 构造器
 
@@ -919,45 +895,13 @@ NameItem = string_lit | string_lit ":" string_lit | identifier .
 
 ### 10.10 测试 — `wlwl:std.test`
 
-| 签名 | 说明 |
-|------|------|
-| `TEST(name, body) -> NULL` | 注册零参测试体 |
-| `ASSERT(cond, msg?)` | `cond` 为真 → `OK(TRUE)`;否则 `ERR(E0046)` |
-| `ASSERT_EQ(a, b)` / `ASSERT_NEQ(a, b)` | 相等/不等断言,失败为 `E0047`/`E0048` |
-| `EXPECT_ERR(x)` | `x` 为 `ERR` → `OK(载荷)`;否则 `ERR(E0049)` |
-| `RUN_TESTS() -> ARRAY` | 调用所有已注册体,返回记录数组;每条记录是字典,至少含 `name`(STRING)、`passed`(BOOLEAN)、`duration_ms`(INTEGER),并按结果附 `return_value` 或 `error` |
-
-**约定**:测试体应当以 `ASSERT` 族断言收尾并以 `TRUE` 结束;体求值期间逃逸的 `ERR` 使该项 `passed = FALSE`。
+归属**混合实现**(R1 门面 + R2 原生内核)。成员契约 —— `TEST` / `ASSERT` / `ASSERT_EQ` / `ASSERT_NEQ` / `EXPECT_ERR` / `RUN_TESTS` 的签名、语义与断言失败码 `E0046`–`E0049` —— 见标准库规范;测试体应当以 `ASSERT` 族断言收尾并以 `TRUE` 结束、体求值期间逃逸的 `ERR` 使该项 `passed = FALSE` 的约定同样登记于彼处。
 
 ### 10.11 AI 与代理 — `wlwl:std.ai` / `wlwl:std.agent`
 
-下列最小契约是规范性的;各函数依赖外部服务,传输与供应商细节属于实现文档,不在本规范内。
+归属**原生层**(R2)。成员契约 —— `ASK` / `ASK_STREAM` / `ASK_ALL` / `EMBED` / `COMPLETE` 与 `MODEL` / `TASK` / `TOOL` / `CALL_TOOL` / `CONTEXT` 的签名、语义、错误码语义(`E0080`–`E0083`、`E0090`–`E0094`)与 `W0052` 的触发条件 —— 见标准库规范;传输与供应商细节属实现文档,不在规范内。
 
-| 签名 | 说明 | 失败 |
-|------|------|------|
-| `wlwl:std.ai.ASK(model, prompt, opts?) -> STRING` | 单次推理 | `E0080`–`E0083` |
-| `wlwl:std.ai.ASK_STREAM(model, prompt, callback, opts?) -> ARRAY` | 流式推理(实现侧当前整收集为单块) | `E0080`–`E0083` |
-| `wlwl:std.ai.ASK_ALL(models, prompt, opts?) -> ARRAY` | 多模型批量 | `E0080`–`E0083` |
-| `wlwl:std.ai.EMBED(model, text) -> ARRAY` | 嵌入向量(四维,实现侧固定) | `E0080` |
-| `wlwl:std.ai.COMPLETE(model, context) -> STRING` | 代码补全 | `E0080` |
-| `wlwl:std.agent.MODEL(name) -> DICT` | 选择模型,返回模型描述字典 | `E0080` |
-| `wlwl:std.agent.TASK(name, prompt, ...) -> TASK` | 构造异步代理任务,返回任务句柄 | `E0090`–`E0094` |
-| `wlwl:std.agent.TOOL(name, schema, fn) -> NULL` | 注册工具 | `E0081`(重复注册或协议不符) |
-| `wlwl:std.agent.CALL_TOOL(name, args) -> v` | 同步调用已注册工具 | `E0082` |
-| `wlwl:std.agent.CONTEXT(set, get, ...) -> v` | 上下文存取 | `E0083` |
-
-错误码语义:`E0080` 请求失败;`E0081` 协议错误;`E0082` 工具错误;`E0083` 上下文错误;`E0090` 网络不可达、`E0091` DNS 失败、`E0092` TLS 错误、`E0093` HTTP 4xx、`E0094` HTTP 5xx。
-
-返回的 `TASK` 句柄按 §17.1 使用 `AWAIT` 取值;已取消任务的 `AWAIT` 按 §17.3 返回 `ERR(kind="Cancelled", reason: ...)`。
-
-**示例**(推荐全限定以避免与类型名 `TASK` 混淆):
-
-```wlwl
-IMPORT("wlwl:std.agent", ["TASK", "MODEL"]);
-LET(handle, wlwl:std.agent.TASK("summarize", "long text..."));
-```
-
-用户作用域内裸名 `TASK` 也合法(若 `IMPORT` 引入了同名函子);全限定写法仅为阅读清晰度,与同名类型名 `TASK` 不构成运行时冲突(§2.1)。
+规范层面的两条对接点:`TASK` 返回的任务句柄按 §17.1 经 `AWAIT` 取值,已取消任务的 `AWAIT` 按 §17.3 返回 `ERR(kind="Cancelled", reason: ...)`;用户作用域内裸名 `TASK`(若 `IMPORT` 引入了同名函子)与类型名 `TASK`(§2.1)不构成运行时冲突。
 
 ### 10.12 对象模型内建
 
@@ -1037,7 +981,7 @@ LET(handle, wlwl:std.agent.TASK("summarize", "long text..."));
 | `E0027` | 「`MATCH` 全部子句失配且无 default」。default 臂恒存在(§7.1),本规范**不定义**这一情形 |
 | `E0095` | 线性值在 move 之后使用;运行期以 `E0032` 报告(§15) |
 | `E0096` | 线性值被隐式丢弃;检查推迟,运行期以 `E0032` 报告(§15) |
-| 其余注册码 | `E0042`–`E0044`(清单与依赖,**有触发路径**)、`E0060`/`E0062`/`E0063`、`E0080`–`E0083`/`E0090`–`E0094`(AI/网络子系统,§10.11)、`E0099`(用户错误)、`E0101`(栈溢出)随对应子系统定义 |
+| 其余注册码 | `E0042`–`E0044`(清单与依赖,**有触发路径**)、`E0060`/`E0062`/`E0063`、`E0080`–`E0083`/`E0090`–`E0094`(AI/网络子系统,标准库规范 `std.ai`/`std.agent`)、`E0099`(用户错误)、`E0101`(栈溢出)随对应子系统定义 |
 
 `E0055` 与 `E0057` 是**不存在的码号**,不得出现在诊断流中。它们被排除的原因:
 - 通道关闭后的读取结果由 `ERR(kind="ChannelClosed")` 载荷承担(§8.1 / §17.2);需要硬诊断时由 `native_channel_close` 特性改用 `E0054`。
@@ -1068,7 +1012,7 @@ LET(handle, wlwl:std.agent.TASK("summarize", "long text..."));
 | `W0020` | 字面量混用 | 字面量混用裸值与键值对 | 警告 |
 | `W0030` | 遮蔽 | 遮蔽保留关键字 / 经许可遮蔽内建 | 警告 |
 | `W0051` | 弃用别名 | 使用 `OR_DIE` / `DEL` / `POP` | 警告 |
-| `W0052` | 模型名前缀 | LLM 模型名缺少 `provider/` 前缀(§10.11) | 警告 |
+| `W0052` | 模型名前缀 | LLM 模型名缺少 `provider/` 前缀(标准库规范 `std.ai`) | 警告 |
 | `W0053` | 格式偏离 | 源文件偏离规范格式化器(附录 A.3)输出 | 警告 |
 | `W0065` | 死锁软警告 | 与 `E0065` 相同的触发形状,但在 `[features] strict_deadlock_detect = false` 下仅警告,随后相关 `AWAIT` 以 `E0053` 报告无对端唤醒。警告不改变程序语义 | 警告 |
 | `W0066` | 大缓冲 | `CHANNEL_NEW(buf)` 的 `buf` 超过软阈值(`channel_large_buf_threshold`,默认 1024)。`buf` 分配照常进行;警告不改变程序语义 | 警告 |
