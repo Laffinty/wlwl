@@ -45,9 +45,12 @@
 //! 用户代码内直接 `TASK(...)` 也合法(取决于 `IMPORT` 是否引入同名函子)。
 //! 函数签名表格里的"显示形式"沿用裸名 `TASK` — 不动 §10.11 实际签名表。
 
-use crate::{arity_error, type_error, ModuleSpec, StdCtx, StdError, StdFn, StdValue};
+use crate::compat::*;
+use crate::{ModuleSpec, StdCtx, StdFn};
 use serde_json;
 use wlwl_error::ErrorCode;
+use wlwl_error::WlwlError;
+use wlwl_value::{Outcome, StdHost, Value};
 // use std::collections::BTreeMap; // StdValue = serde_json::Value uses serde_json::Map
 
 /// Built-in TASK system prompts.
@@ -84,7 +87,7 @@ fn lookup_task_prompt(name: &str) -> Option<&'static str> {
 
 // \u2500\u2500 TASK \u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500
 
-pub fn std_task(ctx: &mut StdCtx, args: Vec<StdValue>) -> Result<StdValue, StdError> {
+pub(super) fn std_task_inner(ctx: &mut StdCtx, args: Vec<StdValue>) -> Result<StdValue, StdError> {
     if args.len() < 2 || args.len() > 3 {
         return Err(arity_error("TASK", args.len(), 3));
     }
@@ -125,7 +128,7 @@ pub fn std_task(ctx: &mut StdCtx, args: Vec<StdValue>) -> Result<StdValue, StdEr
 
 // \u2500\u2500 TOOL \u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500
 
-pub fn std_tool(ctx: &mut StdCtx, args: Vec<StdValue>) -> Result<StdValue, StdError> {
+pub(super) fn std_tool_inner(ctx: &mut StdCtx, args: Vec<StdValue>) -> Result<StdValue, StdError> {
     if args.len() < 2 || args.len() > 4 {
         return Err(arity_error("TOOL", args.len(), 4));
     }
@@ -172,7 +175,10 @@ pub fn std_tool(ctx: &mut StdCtx, args: Vec<StdValue>) -> Result<StdValue, StdEr
 
 // \u2500\u2500 CALL_TOOL \u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500
 
-pub fn std_call_tool(ctx: &mut StdCtx, args: Vec<StdValue>) -> Result<StdValue, StdError> {
+pub(super) fn std_call_tool_inner(
+    ctx: &mut StdCtx,
+    args: Vec<StdValue>,
+) -> Result<StdValue, StdError> {
     if args.len() != 2 {
         return Err(arity_error("CALL_TOOL", args.len(), 2));
     }
@@ -211,7 +217,7 @@ pub fn std_call_tool(ctx: &mut StdCtx, args: Vec<StdValue>) -> Result<StdValue, 
 
 // \u2500\u2500 MODEL \u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500
 
-pub fn std_model(ctx: &mut StdCtx, args: Vec<StdValue>) -> Result<StdValue, StdError> {
+pub(super) fn std_model_inner(ctx: &mut StdCtx, args: Vec<StdValue>) -> Result<StdValue, StdError> {
     if args.len() != 1 {
         return Err(arity_error("MODEL", args.len(), 1));
     }
@@ -262,7 +268,10 @@ pub fn std_model(ctx: &mut StdCtx, args: Vec<StdValue>) -> Result<StdValue, StdE
 
 // \u2500\u2500 CONTEXT \u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500
 
-pub fn std_context(ctx: &mut StdCtx, args: Vec<StdValue>) -> Result<StdValue, StdError> {
+pub(super) fn std_context_inner(
+    ctx: &mut StdCtx,
+    args: Vec<StdValue>,
+) -> Result<StdValue, StdError> {
     if args.is_empty() || args.len() > 2 {
         return Err(arity_error("CONTEXT", args.len(), 2));
     }
@@ -300,6 +309,31 @@ pub static SPEC: ModuleSpec = ModuleSpec {
     ],
 };
 
+/// [v0.11 M2 / ADR-0022] 直通边界包装:Value→内部表示→Value。
+pub fn std_task(host: &mut dyn StdHost, args: Vec<Value>) -> Result<Outcome, WlwlError> {
+    crate::wrap(host, "std_task", std_task_inner, args)
+}
+
+/// [v0.11 M2 / ADR-0022] 直通边界包装:Value→内部表示→Value。
+pub fn std_tool(host: &mut dyn StdHost, args: Vec<Value>) -> Result<Outcome, WlwlError> {
+    crate::wrap(host, "std_tool", std_tool_inner, args)
+}
+
+/// [v0.11 M2 / ADR-0022] 直通边界包装:Value→内部表示→Value。
+pub fn std_call_tool(host: &mut dyn StdHost, args: Vec<Value>) -> Result<Outcome, WlwlError> {
+    crate::wrap(host, "std_call_tool", std_call_tool_inner, args)
+}
+
+/// [v0.11 M2 / ADR-0022] 直通边界包装:Value→内部表示→Value。
+pub fn std_model(host: &mut dyn StdHost, args: Vec<Value>) -> Result<Outcome, WlwlError> {
+    crate::wrap(host, "std_model", std_model_inner, args)
+}
+
+/// [v0.11 M2 / ADR-0022] 直通边界包装:Value→内部表示→Value。
+pub fn std_context(host: &mut dyn StdHost, args: Vec<Value>) -> Result<Outcome, WlwlError> {
+    crate::wrap(host, "std_context", std_context_inner, args)
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -311,7 +345,7 @@ mod tests {
     #[test]
     fn task_known_name_returns_mock_payload() {
         let mut c = ctx();
-        let v = std_task(
+        let v = std_task_inner(
             &mut c,
             vec![
                 StdValue::String("summarize".into()),
@@ -331,7 +365,7 @@ mod tests {
     #[test]
     fn task_unknown_name_emits_w0052_and_uses_generic() {
         let mut c = ctx();
-        let v = std_task(
+        let v = std_task_inner(
             &mut c,
             vec![
                 StdValue::String("not-a-real-task".into()),
@@ -353,14 +387,14 @@ mod tests {
     #[test]
     fn task_arity_wrong_is_e0022() {
         let mut c = ctx();
-        let err = std_task(&mut c, vec![StdValue::String("summarize".into())]).unwrap_err();
+        let err = std_task_inner(&mut c, vec![StdValue::String("summarize".into())]).unwrap_err();
         assert_eq!(err.code, ErrorCode::E0022);
     }
 
     #[test]
     fn task_non_string_name_is_e0030() {
         let mut c = ctx();
-        let err = std_task(
+        let err = std_task_inner(
             &mut c,
             vec![
                 StdValue::Number(serde_json::Number::from(1)),
@@ -375,7 +409,7 @@ mod tests {
     fn tool_returns_dict_with_all_fields() {
         let mut c = ctx();
         let schema = serde_json::json!({"type": "object"});
-        let v = std_tool(
+        let v = std_tool_inner(
             &mut c,
             vec![
                 StdValue::String("weather_lookup".into()),
@@ -400,7 +434,7 @@ mod tests {
     #[test]
     fn tool_no_schema_defaults_null() {
         let mut c = ctx();
-        let v = std_tool(
+        let v = std_tool_inner(
             &mut c,
             vec![
                 StdValue::String("noop".into()),
@@ -419,14 +453,14 @@ mod tests {
     #[test]
     fn tool_arity_wrong_is_e0022() {
         let mut c = ctx();
-        let err = std_tool(&mut c, vec![StdValue::String("x".into())]).unwrap_err();
+        let err = std_tool_inner(&mut c, vec![StdValue::String("x".into())]).unwrap_err();
         assert_eq!(err.code, ErrorCode::E0022);
     }
 
     #[test]
     fn tool_non_string_name_is_e0030() {
         let mut c = ctx();
-        let err = std_tool(
+        let err = std_tool_inner(
             &mut c,
             vec![
                 StdValue::Number(serde_json::Number::from(1)),
@@ -448,7 +482,7 @@ mod tests {
             "v": "0.4.0",
         });
         let params = serde_json::json!({"city": "Beijing"});
-        let v = std_call_tool(&mut c, vec![tool, params]).unwrap();
+        let v = std_call_tool_inner(&mut c, vec![tool, params]).unwrap();
         let m = match v {
             StdValue::Object(m) => m,
             other => panic!("expected dict, got {:?}", other),
@@ -461,7 +495,7 @@ mod tests {
     #[test]
     fn call_tool_non_dict_first_arg_is_e0030() {
         let mut c = ctx();
-        let err = std_call_tool(
+        let err = std_call_tool_inner(
             &mut c,
             vec![StdValue::String("not-a-dict".into()), StdValue::Null],
         )
@@ -472,14 +506,14 @@ mod tests {
     #[test]
     fn call_tool_arity_wrong_is_e0022() {
         let mut c = ctx();
-        let err = std_call_tool(&mut c, vec![StdValue::Null]).unwrap_err();
+        let err = std_call_tool_inner(&mut c, vec![StdValue::Null]).unwrap_err();
         assert_eq!(err.code, ErrorCode::E0022);
     }
 
     #[test]
     fn model_namespaced_returns_provider_and_caps() {
         let mut c = ctx();
-        let v = std_model(&mut c, vec![StdValue::String("openai/gpt-4".into())]).unwrap();
+        let v = std_model_inner(&mut c, vec![StdValue::String("openai/gpt-4".into())]).unwrap();
         let m = match v {
             StdValue::Object(m) => m,
             other => panic!("expected dict, got {:?}", other),
@@ -500,7 +534,7 @@ mod tests {
     #[test]
     fn model_bare_emits_w0052() {
         let mut c = ctx();
-        let v = std_model(&mut c, vec![StdValue::String("gpt-4".into())]).unwrap();
+        let v = std_model_inner(&mut c, vec![StdValue::String("gpt-4".into())]).unwrap();
         let m = match v {
             StdValue::Object(m) => m,
             other => panic!("got {:?}", other),
@@ -513,7 +547,7 @@ mod tests {
     #[test]
     fn model_anthropic_includes_tool_use_cap() {
         let mut c = ctx();
-        let v = std_model(
+        let v = std_model_inner(
             &mut c,
             vec![StdValue::String("anthropic/claude-3-opus".into())],
         )
@@ -535,22 +569,22 @@ mod tests {
     #[test]
     fn model_arity_wrong_is_e0022() {
         let mut c = ctx();
-        let err = std_model(&mut c, vec![]).unwrap_err();
+        let err = std_model_inner(&mut c, vec![]).unwrap_err();
         assert_eq!(err.code, ErrorCode::E0022);
     }
 
     #[test]
     fn model_non_string_name_is_e0030() {
         let mut c = ctx();
-        let err =
-            std_model(&mut c, vec![StdValue::Number(serde_json::Number::from(1))]).unwrap_err();
+        let err = std_model_inner(&mut c, vec![StdValue::Number(serde_json::Number::from(1))])
+            .unwrap_err();
         assert_eq!(err.code, ErrorCode::E0030);
     }
 
     #[test]
     fn context_set_then_get_roundtrips_via_env() {
         let mut c = ctx();
-        std_context(
+        std_context_inner(
             &mut c,
             vec![
                 StdValue::String("language".into()),
@@ -558,29 +592,29 @@ mod tests {
             ],
         )
         .unwrap();
-        let got = std_context(&mut c, vec![StdValue::String("language".into())]).unwrap();
+        let got = std_context_inner(&mut c, vec![StdValue::String("language".into())]).unwrap();
         assert_eq!(got, StdValue::String("zh".into()));
     }
 
     #[test]
     fn context_missing_returns_null() {
         let mut c = ctx();
-        let got = std_context(&mut c, vec![StdValue::String("not-set".into())]).unwrap();
+        let got = std_context_inner(&mut c, vec![StdValue::String("not-set".into())]).unwrap();
         assert_eq!(got, StdValue::Null);
     }
 
     #[test]
     fn context_arity_wrong_is_e0022() {
         let mut c = ctx();
-        let err = std_context(&mut c, vec![]).unwrap_err();
+        let err = std_context_inner(&mut c, vec![]).unwrap_err();
         assert_eq!(err.code, ErrorCode::E0022);
     }
 
     #[test]
     fn context_non_string_key_is_e0030() {
         let mut c = ctx();
-        let err =
-            std_context(&mut c, vec![StdValue::Number(serde_json::Number::from(1))]).unwrap_err();
+        let err = std_context_inner(&mut c, vec![StdValue::Number(serde_json::Number::from(1))])
+            .unwrap_err();
         assert_eq!(err.code, ErrorCode::E0030);
     }
 

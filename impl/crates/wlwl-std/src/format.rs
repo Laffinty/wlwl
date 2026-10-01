@@ -19,8 +19,11 @@
 //! renders dict keys in `serde_json::Map` order (BTreeMap unless
 //! `preserve_order` is enabled), the eval side in insertion order.
 
-use crate::{type_error, ModuleSpec, StdCtx, StdError, StdFn, StdValue};
+use crate::compat::*;
+use crate::{ModuleSpec, StdCtx, StdFn};
 use wlwl_error::ErrorCode;
+use wlwl_error::WlwlError;
+use wlwl_value::{Outcome, StdHost, Value};
 
 /// One parsed piece of a FORMAT template (v0.4 §10.6).
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -157,7 +160,10 @@ fn std_display(v: &StdValue) -> String {
 /// - `{name}` looks up the first DICT among the format args; missing
 ///   key / no DICT arg → kept as-is;
 /// - template parse failure → E0039.
-pub fn std_format(_ctx: &mut StdCtx, args: Vec<StdValue>) -> Result<StdValue, StdError> {
+pub(super) fn std_format_inner(
+    _ctx: &mut StdCtx,
+    args: Vec<StdValue>,
+) -> Result<StdValue, StdError> {
     if args.is_empty() {
         return Err(StdError {
             code: ErrorCode::E0022,
@@ -217,6 +223,11 @@ pub static SPEC: ModuleSpec = ModuleSpec {
     functions: &[("FORMAT", std_format as StdFn)],
 };
 
+/// [v0.11 M2 / ADR-0022] 直通边界包装:Value→内部表示→Value。
+pub fn std_format(host: &mut dyn StdHost, args: Vec<Value>) -> Result<Outcome, WlwlError> {
+    crate::wrap(host, "std_format", std_format_inner, args)
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -227,7 +238,7 @@ mod tests {
 
     fn fmt(args: Vec<StdValue>) -> Result<String, StdError> {
         let mut ctx = StdCtx::default();
-        std_format(&mut ctx, args).map(|v| match v {
+        std_format_inner(&mut ctx, args).map(|v| match v {
             StdValue::String(s) => s,
             other => panic!("FORMAT must return a string, got {:?}", other),
         })
@@ -445,7 +456,7 @@ mod tests {
     #[test]
     fn format_zero_args_is_e0022() {
         let mut ctx = StdCtx::default();
-        let err = std_format(&mut ctx, vec![]).unwrap_err();
+        let err = std_format_inner(&mut ctx, vec![]).unwrap_err();
         assert_eq!(err.code, ErrorCode::E0022);
         assert!(err.message.contains("at least 1"), "{}", err.message);
     }

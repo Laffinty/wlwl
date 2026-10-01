@@ -35,13 +35,12 @@
 //! `passed` flag is `TRUE` and `error` is absent. This matches
 //! spec §15.9's permissive `RUN_TESTS` contract (TEST body just
 //! "runs" — assertions are explicit).
+use crate::{ModuleSpec, StdFn};
+use wlwl_value::{values_equal, Outcome, StdHost, TestEntry, Value};
 
 use std::time::Instant;
 
-use wlwl_ast::Span;
-use wlwl_error::ErrorCode;
-
-use crate::{BuiltinFn, Evaluator, Outcome, Value, WlwlError, WlwlResult};
+use wlwl_error::{ErrorCode, WlwlError, WlwlResult};
 
 // ─────────────────────────────────────────────────────────────────────
 // 6-name table — must match `wlwl_std::test::NAMES` exactly
@@ -57,70 +56,42 @@ pub const NAMES: &[&str] = &[
     "RUN_TESTS",
 ];
 
-pub const BUILTINS: &[(&str, BuiltinFn)] = &[
-    ("TEST", builtin_test as BuiltinFn),
-    ("ASSERT", builtin_assert as BuiltinFn),
-    ("ASSERT_EQ", builtin_assert_eq as BuiltinFn),
-    ("ASSERT_NEQ", builtin_assert_neq as BuiltinFn),
-    ("EXPECT_ERR", builtin_expect_err as BuiltinFn),
-    ("RUN_TESTS", builtin_run_tests as BuiltinFn),
-];
-
 // ─────────────────────────────────────────────────────────────────────
 // Registry entry type — exposed so `Evaluator` can hold a
 // `Vec<TestEntry>` in its `test_registry` field.
 // ─────────────────────────────────────────────────────────────────────
 
-/// One `TEST(name, body)` registration. Body is the user's closure
-/// (kept as `Value` for cloning into the vec); `RUN_TESTS` invokes
-/// it via `Evaluator::invoke_closure`.
-#[derive(Debug, Clone)]
-pub struct TestEntry {
-    pub name: String,
-    pub body: Value,
-}
-
 // ─────────────────────────────────────────────────────────────────────
 // Shared helpers
 // ─────────────────────────────────────────────────────────────────────
 
-fn arity(fn_name: &str, got: usize, want: usize) -> WlwlError {
-    crate::arity_error(fn_name, got, want)
+fn arity(host: &mut dyn StdHost, fn_name: &str, got: usize, want: usize) -> WlwlError {
+    host.diag(
+        ErrorCode::E0022,
+        format!("{fn_name}: function expects {want} argument(s), got {got}"),
+    )
 }
 
-fn type_err(
-    ev: &mut Evaluator,
-    fn_name: &str,
-    expected: &str,
-    got: &Value,
-    span: &Span,
-) -> WlwlError {
-    ev.diag(
+fn type_err(host: &mut dyn StdHost, fn_name: &str, expected: &str, got: &Value) -> WlwlError {
+    host.diag(
         ErrorCode::E0030,
         format!(
             "{}: expected {}, got {}",
             fn_name,
             expected,
-            crate::collection::value_kind(got),
+            crate::value_kind(got),
         ),
-        span.clone(),
     )
 }
 
-fn make_err(
-    ev: &mut Evaluator,
-    code: ErrorCode,
-    msg: String,
-    payload: Value,
-    span: &Span,
-) -> Value {
-    // Build an `Err(payload)` Value. `ev.diag` would make a
+fn make_err(host: &mut dyn StdHost, code: ErrorCode, msg: String, payload: Value) -> Value {
+    // Build an `Err(payload)` Value. `host.diag` would make a
     // `WlwlError` (a Rust Err), which would propagate up via `?`
     // — but we want the ERR to be a *value* that the calling
     // TEST body sees and that `TRY` catches. So we use the diag
     // machinery for the canonical message format, then recover
     // the `Value::Err(payload)` the caller expects.
-    let diag = ev.diag(code, msg, span.clone());
+    let diag = host.diag(code, msg);
     // Lock the message on the diag so the err payload's `display`
     // stays in sync; we don't ship the whole diagnostic, just the
     // code + payload (matching spec §15.9 row 2-5 schema: ERR has
@@ -140,22 +111,21 @@ fn short_circuit_err(args: &[Value]) -> Option<Value> {
 // 1. TEST(name, body)  →  NULL; pushes into evaluator's test_registry
 // ─────────────────────────────────────────────────────────────────────
 
-pub fn builtin_test(ev: &mut Evaluator, args: Vec<Value>) -> WlwlResult<Outcome> {
+pub fn builtin_test(host: &mut dyn StdHost, args: Vec<Value>) -> WlwlResult<Outcome> {
     if let Some(e) = short_circuit_err(&args) {
         return Ok(Outcome::normal(e));
     }
     if args.len() != 2 {
-        return Err(arity("TEST", args.len(), 2));
+        return Err(arity(host, "TEST", args.len(), 2));
     }
-    let span = ev.current_span.clone().unwrap_or_else(Span::dummy);
     let name = match &args[0] {
         Value::String(s) => s.clone(),
-        other => return Err(type_err(ev, "TEST", "string", other, &span)),
+        other => return Err(type_err(host, "TEST", "string", other)),
     };
     if !matches!(args[1], Value::Closure { .. } | Value::NativeFn { .. }) {
-        return Err(type_err(ev, "TEST", "function", &args[1], &span));
+        return Err(type_err(host, "TEST", "function", &args[1]));
     }
-    ev.test_registry.push(TestEntry {
+    host.ctx().tests.push(TestEntry {
         name,
         body: args[1].clone(),
     });
@@ -166,14 +136,13 @@ pub fn builtin_test(ev: &mut Evaluator, args: Vec<Value>) -> WlwlResult<Outcome>
 // 2. ASSERT(cond, msg?)  →  OK(TRUE) on truthy; ERR(E0046) on falsy
 // ─────────────────────────────────────────────────────────────────────
 
-pub fn builtin_assert(ev: &mut Evaluator, args: Vec<Value>) -> WlwlResult<Outcome> {
+pub fn builtin_assert(host: &mut dyn StdHost, args: Vec<Value>) -> WlwlResult<Outcome> {
     if let Some(e) = short_circuit_err(&args) {
         return Ok(Outcome::normal(e));
     }
     if !(1..=2).contains(&args.len()) {
-        return Err(arity("ASSERT", args.len(), 2));
+        return Err(arity(host, "ASSERT", args.len(), 2));
     }
-    let span = ev.current_span.clone().unwrap_or_else(Span::dummy);
     let cond = &args[0];
     let truthy = match cond {
         Value::Boolean(b) => *b,
@@ -191,11 +160,10 @@ pub fn builtin_assert(ev: &mut Evaluator, args: Vec<Value>) -> WlwlResult<Outcom
     };
     let payload = build_payload("E0046", cond, msg, "test_assertion_failed");
     Ok(Outcome::normal(make_err(
-        ev,
+        host,
         ErrorCode::E0046,
         format!("ASSERT failed: cond = {}", cond.display()),
         payload,
-        &span,
     )))
 }
 
@@ -203,16 +171,15 @@ pub fn builtin_assert(ev: &mut Evaluator, args: Vec<Value>) -> WlwlResult<Outcom
 // 3. ASSERT_EQ(a, b, msg?)  →  OK(TRUE) on equal; ERR(E0047) on !=
 // ─────────────────────────────────────────────────────────────────────
 
-pub fn builtin_assert_eq(ev: &mut Evaluator, args: Vec<Value>) -> WlwlResult<Outcome> {
+pub fn builtin_assert_eq(host: &mut dyn StdHost, args: Vec<Value>) -> WlwlResult<Outcome> {
     if let Some(e) = short_circuit_err(&args) {
         return Ok(Outcome::normal(e));
     }
     if !(2..=3).contains(&args.len()) {
-        return Err(arity("ASSERT_EQ", args.len(), 3));
+        return Err(arity(host, "ASSERT_EQ", args.len(), 3));
     }
-    let span = ev.current_span.clone().unwrap_or_else(Span::dummy);
     let (a, b) = (&args[0], &args[1]);
-    if crate::values_equal(a, b) {
+    if values_equal(a, b) {
         return Ok(Outcome::normal(Value::Ok(Box::new(Value::Boolean(true)))));
     }
     let msg = if args.len() == 3 {
@@ -222,11 +189,10 @@ pub fn builtin_assert_eq(ev: &mut Evaluator, args: Vec<Value>) -> WlwlResult<Out
     };
     let payload = build_payload_with_actual("E0047", a, b, msg, "test_assertion_eq_failed");
     Ok(Outcome::normal(make_err(
-        ev,
+        host,
         ErrorCode::E0047,
         format!("ASSERT_EQ failed: {} != {}", a.display(), b.display()),
         payload,
-        &span,
     )))
 }
 
@@ -234,16 +200,15 @@ pub fn builtin_assert_eq(ev: &mut Evaluator, args: Vec<Value>) -> WlwlResult<Out
 // 4. ASSERT_NEQ(a, b, msg?)  →  OK(TRUE) on !equal; ERR(E0048) on =
 // ─────────────────────────────────────────────────────────────────────
 
-pub fn builtin_assert_neq(ev: &mut Evaluator, args: Vec<Value>) -> WlwlResult<Outcome> {
+pub fn builtin_assert_neq(host: &mut dyn StdHost, args: Vec<Value>) -> WlwlResult<Outcome> {
     if let Some(e) = short_circuit_err(&args) {
         return Ok(Outcome::normal(e));
     }
     if !(2..=3).contains(&args.len()) {
-        return Err(arity("ASSERT_NEQ", args.len(), 3));
+        return Err(arity(host, "ASSERT_NEQ", args.len(), 3));
     }
-    let span = ev.current_span.clone().unwrap_or_else(Span::dummy);
     let (a, b) = (&args[0], &args[1]);
-    if !crate::values_equal(a, b) {
+    if !values_equal(a, b) {
         return Ok(Outcome::normal(Value::Ok(Box::new(Value::Boolean(true)))));
     }
     let msg = if args.len() == 3 {
@@ -253,11 +218,10 @@ pub fn builtin_assert_neq(ev: &mut Evaluator, args: Vec<Value>) -> WlwlResult<Ou
     };
     let payload = build_payload_with_actual("E0048", a, b, msg, "test_assertion_neq_failed");
     Ok(Outcome::normal(make_err(
-        ev,
+        host,
         ErrorCode::E0048,
         format!("ASSERT_NEQ failed: {} == {}", a.display(), b.display()),
         payload,
-        &span,
     )))
 }
 
@@ -265,26 +229,24 @@ pub fn builtin_assert_neq(ev: &mut Evaluator, args: Vec<Value>) -> WlwlResult<Ou
 // 5. EXPECT_ERR(expr)  →  OK(payload) if expr is ERR; else ERR(E0049)
 // ─────────────────────────────────────────────────────────────────────
 
-pub fn builtin_expect_err(ev: &mut Evaluator, args: Vec<Value>) -> WlwlResult<Outcome> {
+pub fn builtin_expect_err(host: &mut dyn StdHost, args: Vec<Value>) -> WlwlResult<Outcome> {
     if let Some(e) = short_circuit_err(&args) {
         // Short-circuit: input was ERR — that IS the expected case.
         return Ok(Outcome::normal(Value::Ok(Box::new(e))));
     }
     if args.len() != 1 {
-        return Err(arity("EXPECT_ERR", args.len(), 1));
+        return Err(arity(host, "EXPECT_ERR", args.len(), 1));
     }
-    let span = ev.current_span.clone().unwrap_or_else(Span::dummy);
     // Input is not ERR — that's the failure mode for EXPECT_ERR.
     let payload = build_payload("E0049", &args[0], None, "test_expect_err_failed");
     Ok(Outcome::normal(make_err(
-        ev,
+        host,
         ErrorCode::E0049,
         format!(
             "EXPECT_ERR failed: input was not ERR (got {})",
             args[0].display()
         ),
         payload,
-        &span,
     )))
 }
 
@@ -292,18 +254,17 @@ pub fn builtin_expect_err(ev: &mut Evaluator, args: Vec<Value>) -> WlwlResult<Ou
 // 6. RUN_TESTS()  →  ARRAY of DICT (per §15.9 schema)
 // ─────────────────────────────────────────────────────────────────────
 
-pub fn builtin_run_tests(ev: &mut Evaluator, args: Vec<Value>) -> WlwlResult<Outcome> {
+pub fn builtin_run_tests(host: &mut dyn StdHost, args: Vec<Value>) -> WlwlResult<Outcome> {
     if let Some(e) = short_circuit_err(&args) {
         return Ok(Outcome::normal(e));
     }
     if !args.is_empty() {
-        return Err(arity("RUN_TESTS", args.len(), 0));
+        return Err(arity(host, "RUN_TESTS", args.len(), 0));
     }
-    let span = ev.current_span.clone().unwrap_or_else(Span::dummy);
     // Drain the registry. We swap with a new empty Vec so a TEST
     // that registers more tests inside its body (unusual but
     // legitimate) doesn't deadlock.
-    let entries = std::mem::take(&mut ev.test_registry);
+    let entries = std::mem::take(&mut host.ctx().tests);
     let mut results: Vec<Value> = Vec::with_capacity(entries.len());
     for entry in entries {
         let started = Instant::now();
@@ -316,16 +277,16 @@ pub fn builtin_run_tests(ev: &mut Evaluator, args: Vec<Value>) -> WlwlResult<Out
         // ASSERT/ASSERT_EQ on fail. The latter returns through
         // Outcome::normal(err) from the assertion builtin, which
         // we read off the Outcome.value below.
-        let outcome =
-            match crate::collection::call_callable(ev, "RUN_TESTS", &entry.body, vec![], &span) {
-                Ok(v) => Ok(v),
-                Err(_e) => {
-                    // Diagnostic surfaced during the test (e.g. uncaught
-                    // E0102 from an unexpected ERR escape). Record the
-                    // failure as a generic ERR.
-                    Err(())
-                }
-            };
+        let outcome = match crate::collection::call_callable(host, "RUN_TESTS", &entry.body, vec![])
+        {
+            Ok(v) => Ok(v),
+            Err(_e) => {
+                // Diagnostic surfaced during the test (e.g. uncaught
+                // E0102 from an unexpected ERR escape). Record the
+                // failure as a generic ERR.
+                Err(())
+            }
+        };
         let duration_ms = started.elapsed().as_millis() as i64;
         let dict = match outcome {
             Ok(Value::Err(payload)) => {
@@ -464,26 +425,14 @@ fn build_payload_with_actual(
 // Tests
 // ─────────────────────────────────────────────────────────────────────
 
-#[cfg(test)]
-mod tests {
-    use super::*;
-
-    #[test]
-    fn names_match_catalog() {
-        // Same cross-file lock pattern as `wlwl_eval::collection`.
-        assert_eq!(
-            NAMES,
-            crate::collection::NAMES
-                .chunks(2)
-                .next()
-                .map(|_| NAMES)
-                .unwrap_or(NAMES)
-        );
-        // The simpler assertion: NAMES parity with the std catalog.
-        assert_eq!(NAMES, wlwl_std::test::NAMES);
-        assert_eq!(BUILTINS.len(), NAMES.len());
-        for (i, (name, _)) in BUILTINS.iter().enumerate() {
-            assert_eq!(*name, NAMES[i], "BUILTINS order must match NAMES");
-        }
-    }
-}
+pub static SPEC: ModuleSpec = ModuleSpec {
+    path: "wlwl:std.test",
+    functions: &[
+        ("TEST", builtin_test as StdFn),
+        ("ASSERT", builtin_assert as StdFn),
+        ("ASSERT_EQ", builtin_assert_eq as StdFn),
+        ("ASSERT_NEQ", builtin_assert_neq as StdFn),
+        ("EXPECT_ERR", builtin_expect_err as StdFn),
+        ("RUN_TESTS", builtin_run_tests as StdFn),
+    ],
+};

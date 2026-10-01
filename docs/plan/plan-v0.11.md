@@ -78,7 +78,7 @@
 | M1-4 | `.github/workflows/release.yml` staging 段 | release 产物增附 `stdlib/`(R1 源码参考副本)+ `docs/stdlib/` | 发布产物含两目录(本地 staging 逻辑同源) | ✅ |
 | M1-5 | spec §0.1/§9.3/§10 机制化 | 上一批成文完成 | 规范交叉引用完整;附录 G 锁测试全绿 | ✅ |
 
-### M2 值直通(约 4 人日)—— 待执行(挂载点已钉,行号为 M1 落地后实测)
+### M2 值直通(约 4 人日)—— **已完成(2026-10-01;wlwl-value 全量落地,collection/test 宿主归位,名录特判与 serde_json 边界废止)**
 
 | # | 挂载点 | 变更面 | 验收 |
 |---|---|---|---|

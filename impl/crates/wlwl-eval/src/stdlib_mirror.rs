@@ -46,23 +46,8 @@ fn members(path: &str) -> Vec<String> {
     match wlwl_std::resolve(path) {
         Some(StdBackend::Lang(src)) => wlwl_std::lang_exports(src.source),
         Some(StdBackend::Native(spec)) => {
-            if !spec.functions.is_empty() {
-                spec.functions.iter().map(|(n, _)| n.to_string()).collect()
-            } else {
-                // 名录模块(collection / test):SPEC 只登记路径,真名册
-                // 在 eval 侧的 BUILTINS 表(见 load_std_native 的特判)。
-                match path {
-                    "wlwl:std.collection" => crate::collection::BUILTINS
-                        .iter()
-                        .map(|(n, _)| n.to_string())
-                        .collect(),
-                    "wlwl:std.test" => crate::test::BUILTINS
-                        .iter()
-                        .map(|(n, _)| n.to_string())
-                        .collect(),
-                    _ => Vec::new(),
-                }
-            }
+            // [v0.11 M2 / ADR-0022] 名录特判废止,成员直接来自 SPEC。
+            spec.functions.iter().map(|(n, _)| n.to_string()).collect()
         }
         None => Vec::new(),
     }

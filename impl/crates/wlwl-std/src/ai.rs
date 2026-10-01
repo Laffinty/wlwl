@@ -53,8 +53,11 @@
 //! `wlwl:std.agent.TASK` 全限定以避免阅读混淆;用户作用域内裸名 `TASK`
 //! 也合法(取决于 `IMPORT` 是否引入)。
 
-use crate::{arity_error, type_error, ModuleSpec, StdCtx, StdError, StdFn, StdValue};
+use crate::compat::*;
+use crate::{ModuleSpec, StdCtx, StdFn};
 use wlwl_error::ErrorCode;
+use wlwl_error::WlwlError;
+use wlwl_value::{Outcome, StdHost, Value};
 
 /// Try to match `model` against the v0.3 reserved failure tokens.
 /// Used by the mock path so unit tests do not have to mutate env
@@ -263,7 +266,7 @@ mod real {
 
 // ── ASK ───────────────────────────────────────────────────────────
 
-pub fn std_ask(ctx: &mut StdCtx, args: Vec<StdValue>) -> Result<StdValue, StdError> {
+pub(super) fn std_ask_inner(ctx: &mut StdCtx, args: Vec<StdValue>) -> Result<StdValue, StdError> {
     if args.len() < 2 || args.len() > 3 {
         return Err(arity_error("ASK", args.len(), 3));
     }
@@ -349,7 +352,7 @@ fn parse_opts(opts: &StdValue) -> Result<(Option<String>, u32, f32), StdError> {
 
 // ── EMBED ─────────────────────────────────────────────────────────
 
-pub fn std_embed(ctx: &mut StdCtx, args: Vec<StdValue>) -> Result<StdValue, StdError> {
+pub(super) fn std_embed_inner(ctx: &mut StdCtx, args: Vec<StdValue>) -> Result<StdValue, StdError> {
     if args.is_empty() || args.len() > 2 {
         return Err(arity_error("EMBED", args.len(), 2));
     }
@@ -399,7 +402,10 @@ pub fn std_embed(ctx: &mut StdCtx, args: Vec<StdValue>) -> Result<StdValue, StdE
 
 // ── COMPLETE ──────────────────────────────────────────────────────
 
-pub fn std_complete(ctx: &mut StdCtx, args: Vec<StdValue>) -> Result<StdValue, StdError> {
+pub(super) fn std_complete_inner(
+    ctx: &mut StdCtx,
+    args: Vec<StdValue>,
+) -> Result<StdValue, StdError> {
     if args.is_empty() || args.len() > 3 {
         return Err(arity_error("COMPLETE", args.len(), 3));
     }
@@ -433,7 +439,10 @@ pub fn std_complete(ctx: &mut StdCtx, args: Vec<StdValue>) -> Result<StdValue, S
 // ── ASK_STREAM (Phase D1b — real streaming lands with eval
 // dispatch; here we keep the mock signature) ────────────────
 
-pub fn std_ask_stream(ctx: &mut StdCtx, args: Vec<StdValue>) -> Result<StdValue, StdError> {
+pub(super) fn std_ask_stream_inner(
+    ctx: &mut StdCtx,
+    args: Vec<StdValue>,
+) -> Result<StdValue, StdError> {
     if args.len() < 2 || args.len() > 4 {
         return Err(arity_error("ASK_STREAM", args.len(), 4));
     }
@@ -499,7 +508,10 @@ pub fn std_ask_stream(ctx: &mut StdCtx, args: Vec<StdValue>) -> Result<StdValue,
 
 // ── ASK_ALL (Phase D2 — per-element OK/ERR via interpreter) ─────────────────
 
-pub fn std_ask_all(ctx: &mut StdCtx, args: Vec<StdValue>) -> Result<StdValue, StdError> {
+pub(super) fn std_ask_all_inner(
+    ctx: &mut StdCtx,
+    args: Vec<StdValue>,
+) -> Result<StdValue, StdError> {
     if args.is_empty() || args.len() > 2 {
         return Err(arity_error("ASK_ALL", args.len(), 2));
     }
@@ -594,6 +606,31 @@ pub static SPEC: ModuleSpec = ModuleSpec {
     ],
 };
 
+/// [v0.11 M2 / ADR-0022] 直通边界包装:Value→内部表示→Value。
+pub fn std_ask(host: &mut dyn StdHost, args: Vec<Value>) -> Result<Outcome, WlwlError> {
+    crate::wrap(host, "std_ask", std_ask_inner, args)
+}
+
+/// [v0.11 M2 / ADR-0022] 直通边界包装:Value→内部表示→Value。
+pub fn std_embed(host: &mut dyn StdHost, args: Vec<Value>) -> Result<Outcome, WlwlError> {
+    crate::wrap(host, "std_embed", std_embed_inner, args)
+}
+
+/// [v0.11 M2 / ADR-0022] 直通边界包装:Value→内部表示→Value。
+pub fn std_complete(host: &mut dyn StdHost, args: Vec<Value>) -> Result<Outcome, WlwlError> {
+    crate::wrap(host, "std_complete", std_complete_inner, args)
+}
+
+/// [v0.11 M2 / ADR-0022] 直通边界包装:Value→内部表示→Value。
+pub fn std_ask_stream(host: &mut dyn StdHost, args: Vec<Value>) -> Result<Outcome, WlwlError> {
+    crate::wrap(host, "std_ask_stream", std_ask_stream_inner, args)
+}
+
+/// [v0.11 M2 / ADR-0022] 直通边界包装:Value→内部表示→Value。
+pub fn std_ask_all(host: &mut dyn StdHost, args: Vec<Value>) -> Result<Outcome, WlwlError> {
+    crate::wrap(host, "std_ask_all", std_ask_all_inner, args)
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -605,7 +642,7 @@ mod tests {
     #[test]
     fn ask_mock_response() {
         let mut c = ctx();
-        let v = std_ask(
+        let v = std_ask_inner(
             &mut c,
             vec![
                 StdValue::String("gpt-4".into()),
@@ -624,14 +661,14 @@ mod tests {
 
     #[test]
     fn ask_arity_zero_is_e0022() {
-        let err = std_ask(&mut ctx(), vec![]).unwrap_err();
+        let err = std_ask_inner(&mut ctx(), vec![]).unwrap_err();
         assert_eq!(err.code, ErrorCode::E0022);
     }
 
     #[test]
     fn ask_arity_too_many_is_e0022() {
         // 4+ args (model + prompt + opts + extra) is out of [2,3].
-        let err = std_ask(
+        let err = std_ask_inner(
             &mut ctx(),
             vec![
                 StdValue::String("gpt-4".into()),
@@ -646,7 +683,7 @@ mod tests {
 
     #[test]
     fn ask_non_string_model_is_e0030() {
-        let err = std_ask(
+        let err = std_ask_inner(
             &mut ctx(),
             vec![StdValue::Number(42.into()), StdValue::String("hi".into())],
         )
@@ -668,7 +705,7 @@ mod tests {
             ("_fail_E0093", ErrorCode::E0093),
             ("_fail_E0094", ErrorCode::E0094),
         ] {
-            let err = std_ask(
+            let err = std_ask_inner(
                 &mut ctx(),
                 vec![StdValue::String(token.into()), StdValue::String("x".into())],
             )
@@ -682,7 +719,7 @@ mod tests {
     #[test]
     fn ask_bare_model_emits_w0052() {
         let mut c = ctx();
-        std_ask(
+        std_ask_inner(
             &mut c,
             vec![
                 StdValue::String("gpt-4".into()),
@@ -703,7 +740,7 @@ mod tests {
     #[test]
     fn ask_namespaced_model_no_warning() {
         let mut c = ctx();
-        std_ask(
+        std_ask_inner(
             &mut c,
             vec![
                 StdValue::String("openai/gpt-4".into()),
@@ -719,7 +756,7 @@ mod tests {
         // Failure tokens are explicit user intent to trigger an
         // error; we don't also emit a style warning.
         let mut c = ctx();
-        let _ = std_ask(
+        let _ = std_ask_inner(
             &mut c,
             vec![
                 StdValue::String("_fail_E0090".into()),
@@ -732,7 +769,7 @@ mod tests {
 
     #[test]
     fn embed_returns_deterministic_vector() {
-        let v = std_embed(
+        let v = std_embed_inner(
             &mut ctx(),
             vec![
                 StdValue::String("hello".into()),
@@ -740,7 +777,7 @@ mod tests {
             ],
         )
         .unwrap();
-        let v2 = std_embed(
+        let v2 = std_embed_inner(
             &mut ctx(),
             vec![
                 StdValue::String("hello".into()),
@@ -762,7 +799,7 @@ mod tests {
 
     #[test]
     fn embed_default_model_when_omitted() {
-        let v = std_embed(&mut ctx(), vec![StdValue::String("x".into())]).unwrap();
+        let v = std_embed_inner(&mut ctx(), vec![StdValue::String("x".into())]).unwrap();
         match v {
             StdValue::Array(items) => assert_eq!(items.len(), 4),
             _ => panic!(),
@@ -771,7 +808,7 @@ mod tests {
 
     #[test]
     fn embed_failure_token() {
-        let err = std_embed(
+        let err = std_embed_inner(
             &mut ctx(),
             vec![
                 StdValue::String("x".into()),
@@ -784,7 +821,7 @@ mod tests {
 
     #[test]
     fn complete_mock_response_includes_language() {
-        let v = std_complete(
+        let v = std_complete_inner(
             &mut ctx(),
             vec![
                 StdValue::String("fun fib(n) {".into()),
@@ -803,7 +840,8 @@ mod tests {
 
     #[test]
     fn complete_default_language_is_wlwl() {
-        let v = std_complete(&mut ctx(), vec![StdValue::String("LET(x, 1);".into())]).unwrap();
+        let v =
+            std_complete_inner(&mut ctx(), vec![StdValue::String("LET(x, 1);".into())]).unwrap();
         match v {
             StdValue::String(s) => assert!(s.contains("(wlwl)")),
             other => panic!("got {:?}", other),
@@ -812,7 +850,7 @@ mod tests {
 
     #[test]
     fn complete_failure_via_language() {
-        let err = std_complete(
+        let err = std_complete_inner(
             &mut ctx(),
             vec![
                 StdValue::String("ctx".into()),
@@ -845,7 +883,7 @@ mod tests {
     #[test]
     fn ask_stream_returns_mock_payload() {
         let mut c = ctx();
-        let v = std_ask_stream(
+        let v = std_ask_stream_inner(
             &mut c,
             vec![
                 StdValue::String("gpt-4".into()),
@@ -867,7 +905,7 @@ mod tests {
     #[test]
     fn ask_stream_arity_error() {
         let mut c = ctx();
-        let err = std_ask_stream(&mut c, vec![StdValue::String("m".into())]).unwrap_err();
+        let err = std_ask_stream_inner(&mut c, vec![StdValue::String("m".into())]).unwrap_err();
         assert_eq!(err.code, ErrorCode::E0022);
         assert!(err.message.contains("ASK_STREAM"));
     }
@@ -875,7 +913,7 @@ mod tests {
     #[test]
     fn ask_stream_type_error_on_non_string_model() {
         let mut c = ctx();
-        let err = std_ask_stream(
+        let err = std_ask_stream_inner(
             &mut c,
             vec![
                 StdValue::Number(serde_json::Number::from(1)),
@@ -891,7 +929,7 @@ mod tests {
     #[test]
     fn ask_all_returns_array_of_results() {
         let mut c = ctx();
-        let v = std_ask_all(
+        let v = std_ask_all_inner(
             &mut c,
             vec![StdValue::Array(vec![
                 StdValue::String("a".into()),
@@ -918,7 +956,7 @@ mod tests {
     #[test]
     fn ask_all_arity_error() {
         let mut c = ctx();
-        let err = std_ask_all(&mut c, vec![]).unwrap_err();
+        let err = std_ask_all_inner(&mut c, vec![]).unwrap_err();
         assert_eq!(err.code, ErrorCode::E0022);
         assert!(err.message.contains("ASK_ALL"));
     }
@@ -926,7 +964,7 @@ mod tests {
     #[test]
     fn ask_all_type_error_on_non_string_prompt() {
         let mut c = ctx();
-        let err = std_ask_all(
+        let err = std_ask_all_inner(
             &mut c,
             vec![StdValue::Array(vec![
                 StdValue::String("ok".into()),
@@ -940,7 +978,7 @@ mod tests {
 
     #[test]
     fn ask_prompt_not_string_is_e0030() {
-        let err = std_ask(
+        let err = std_ask_inner(
             &mut ctx(),
             vec![
                 StdValue::String("gpt-4".into()),
@@ -954,7 +992,7 @@ mod tests {
 
     #[test]
     fn embed_arity_wrong_is_e0022() {
-        let err = std_embed(
+        let err = std_embed_inner(
             &mut ctx(),
             vec![
                 StdValue::String("x".into()),
@@ -968,7 +1006,7 @@ mod tests {
 
     #[test]
     fn embed_text_not_string_is_e0030() {
-        let err = std_embed(
+        let err = std_embed_inner(
             &mut ctx(),
             vec![StdValue::Number(serde_json::Number::from(1))],
         )
@@ -978,7 +1016,7 @@ mod tests {
 
     #[test]
     fn embed_model_not_string_is_e0030() {
-        let err = std_embed(
+        let err = std_embed_inner(
             &mut ctx(),
             vec![StdValue::String("x".into()), StdValue::Bool(true)],
         )
@@ -988,7 +1026,7 @@ mod tests {
 
     #[test]
     fn complete_arity_wrong_is_e0022() {
-        let err = std_complete(
+        let err = std_complete_inner(
             &mut ctx(),
             vec![
                 StdValue::String("ctx".into()),
@@ -1003,7 +1041,7 @@ mod tests {
 
     #[test]
     fn complete_context_not_string_is_e0030() {
-        let err = std_complete(
+        let err = std_complete_inner(
             &mut ctx(),
             vec![StdValue::Number(serde_json::Number::from(1))],
         )
@@ -1013,7 +1051,7 @@ mod tests {
 
     #[test]
     fn complete_language_not_string_is_e0030() {
-        let err = std_complete(
+        let err = std_complete_inner(
             &mut ctx(),
             vec![StdValue::String("ctx".into()), StdValue::Bool(false)],
         )
@@ -1069,7 +1107,7 @@ mod tests {
         // hit a live endpoint in unit tests, but the mock path
         // mirrors the per-element shape so the contract holds.
         let mut c = ctx();
-        let v = std_ask_all(
+        let v = std_ask_all_inner(
             &mut c,
             vec![StdValue::Array(vec![
                 StdValue::String("alpha".into()),
@@ -1103,7 +1141,7 @@ mod tests {
         // exactly one W0052 (not N warnings).
         let mut c = ctx();
         let opts = serde_json::json!({"model": "gpt-4"});
-        let _ = std_ask_all(
+        let _ = std_ask_all_inner(
             &mut c,
             vec![
                 StdValue::Array(vec![
@@ -1132,7 +1170,7 @@ mod tests {
         // out of the [2, 4] window. ASK_STREAM accepts 2 (mock
         // 2-arg), 3 (+callback), or 4 (+callback + opts).
         let mut c = ctx();
-        let err = std_ask_stream(
+        let err = std_ask_stream_inner(
             &mut c,
             vec![
                 StdValue::String("gpt-4".into()),
@@ -1149,7 +1187,7 @@ mod tests {
     #[test]
     fn ask_stream_w0052_for_bare_model() {
         let mut c = ctx();
-        let _ = std_ask_stream(
+        let _ = std_ask_stream_inner(
             &mut c,
             vec![
                 StdValue::String("claude-3".into()),
@@ -1166,7 +1204,7 @@ mod tests {
     #[test]
     fn ask_stream_w0052_suppressed_for_namespaced() {
         let mut c = ctx();
-        let _ = std_ask_stream(
+        let _ = std_ask_stream_inner(
             &mut c,
             vec![
                 StdValue::String("anthropic/claude-3".into()),
@@ -1182,7 +1220,7 @@ mod tests {
     #[test]
     fn embed_w0052_for_bare_model() {
         let mut c = ctx();
-        let _ = std_embed(
+        let _ = std_embed_inner(
             &mut c,
             vec![
                 StdValue::String("text".into()),
@@ -1197,7 +1235,7 @@ mod tests {
     #[test]
     fn complete_w0052_for_bare_language() {
         let mut c = ctx();
-        let _ = std_complete(
+        let _ = std_complete_inner(
             &mut c,
             vec![
                 StdValue::String("ctx".into()),

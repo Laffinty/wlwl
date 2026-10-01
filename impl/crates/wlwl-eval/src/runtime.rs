@@ -6,6 +6,7 @@
 //! conversion) can build on it without forward-declaration gymnastics.
 //!
 //! See plan §5.1, §5.1.1, §5.2, ADR-0014, ADR-0016 for the full design.
+pub use wlwl_value::{RcHandle, Tag, TaskHandle, TaskId, YieldReason};
 
 use std::collections::VecDeque;
 use std::rc::Rc;
@@ -19,32 +20,11 @@ use crate::{Expr, Value};
 /// Cheap to copy; not a handle (see [`TaskHandle`] for what `SPAWN`
 /// returns to user code).
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
-pub struct TaskId(pub usize);
-
-/// Generation-tracked task handle returned to user code by `SPAWN`.
-///
-/// Detecting `use-after-cancel` / `use-after-recycle`: a slot can be
-/// reused after a task finishes, but its generation bumps. A handle
-/// that doesn't match the current generation is stale (E0053).
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
-pub struct TaskHandle {
-    pub id: TaskId,
-    pub generation: u64,
-}
-
-/// Identifies a scope slot within a single [`Scheduler`].
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 pub struct ScopeId(pub usize);
 
 /// Identifies a channel slot within a single [`Scheduler`].
 ///
 /// Re-exported alias to the full [`crate::channel::ChannelId`] type;
-/// same migration rationale as [`TaskEntry`]. D-A unified this
-/// with the proper `ChannelId`; the previous `RcHandle(pub usize)`
-/// placeholder was kept around so D-A could land without churning
-/// every call site in the same commit.
-pub type RcHandle = crate::channel::ChannelId;
-
 /// Task lifecycle state (plan §5.1.1).
 ///
 /// Transitions:
@@ -106,46 +86,6 @@ pub enum TaskResult {
     Failed(Box<WlwlError>),
 }
 
-/// Reasons a task may yield at a checkpoint (plan §5.1.1 row
-/// "Suspended(*)" + "协作式让步点").
-///
-/// Each variant carries enough information for [`Scheduler`] to route
-/// the task to the correct wait list (or to wake it when an event
-/// becomes ready). `Explicit` corresponds to user `YIELD()`.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
-pub enum YieldReason {
-    /// User-invoked `YIELD()`. No wait condition; the task is
-    /// immediately re-eligible (added back to `run_queue`).
-    Explicit,
-    /// `AWAIT(child)` and `child` has not finished yet. The task is
-    /// parked until `child` transitions to `Done` or `Cancelled`,
-    /// at which point `Scheduler::wake_dependents` re-enqueues it.
-    AwaitingChild(TaskId),
-    /// `CHANNEL_RECV(ch)` and `buf` is empty. The task is parked
-    /// on `ch`'s receiver wait list until a sender wakes it.
-    ReceivingOn(RcHandle),
-    /// `CHANNEL_SEND(ch)` and `buf` is full. The task is parked on
-    /// `ch`'s sender wait list until a receiver drains a slot.
-    SendingOn(RcHandle),
-}
-
-impl YieldReason {
-    /// v0.9 Step 10: derive the WasmFX-style [`Tag`] for this reason.
-    /// Single source of truth used by [`TaskState::suspended`] to
-    /// keep `Suspended { tag, reason }` consistent.
-    ///
-    /// Mapping (plan §3.1 + ADR-0017 §3.1 + ADR-0019 §4.4.1):
-    /// - `Explicit` / `AwaitingChild` — the effect is `perform Yield`;
-    /// - `ReceivingOn` / `SendingOn` — the effect is
-    ///   `perform ChannelOp` (synchronous channel SEND/RECV).
-    pub fn tag(self) -> Tag {
-        match self {
-            YieldReason::Explicit | YieldReason::AwaitingChild(_) => Tag::Yield,
-            YieldReason::ReceivingOn(_) | YieldReason::SendingOn(_) => Tag::ChannelOp,
-        }
-    }
-}
-
 // ───────────────────────────────────────────────────────────────────
 // v0.9 Step 3 / ADR-0017 §3.1 / ADR-0019 §4.4.1 — WasmFX-style
 // algebraic-effect tag dispatch.
@@ -163,40 +103,6 @@ impl YieldReason {
 // See `docs/history/20260915-22.md` §0.5 + §3.1 + §3.2 + §4.4.1 +
 // §4.4.4 for the design rationale.
 // ───────────────────────────────────────────────────────────────────
-
-/// WasmFX-style dispatch tag for an [`Effect`]. Used by the effect
-/// handler loop to route an effect to its handler without inspecting
-/// the payload.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
-pub enum Tag {
-    /// `perform Yield` — collaborative yield point. Equivalent to
-    /// `Signal::Yield(YieldReason::Explicit)` in the legacy plumbing.
-    Yield,
-    /// `perform ChannelOp` — synchronous SEND / RECV blocking on a
-    /// channel's buf or wait list. Maps to
-    /// `Signal::Yield(YieldReason::ReceivingOn | SendingOn)` in the
-    /// legacy plumbing; the runtime routes to the channel's
-    /// sender_waiters / receiver_waiters list.
-    ChannelOp,
-    /// `raise Cancelled` — task was cancelled (with optional reason
-    /// payload per ADR-0019 §4.4.2). Maps to `TaskState::Cancelled`
-    /// transition; no legacy `Signal` equivalent (cancellation was
-    /// previously advisory-only via `cancel_requested` flag).
-    Cancelled,
-    /// `perform MethodCall` — OOP `CALL_METHOD` control-flow event
-    /// (ADR-0019 §4.4.3 / spec §16.4).
-    ///
-    /// **保留 tag,本版不产生**(D-4 裁决 = 规范明文化;见 spec §17.4 末段)。
-    /// 方法调用同步直落,协议违规当场报 `E0050` / `E0051`。保留本变体是为
-    /// 了让代数效果后端迁移时 tag 面已就位;实现不得依赖它产生任何可观察行为。
-    MethodCall,
-    /// `raise ProtocolViolation` — session-type state-machine miss
-    /// (保留 tag,本版不产生 —— D-4;见 `MethodCall` 的说明)
-    /// (ADR-0019 §4.4.3 / spec §16.4). Reserved naming; surfaced
-    /// today as `E0050` / `E0051` diagnostics rather than a handled
-    /// effect.
-    ProtocolViolation,
-}
 
 /// Direction of a channel operation. Used by [`Effect::ChannelOp`]
 /// and [`ChannelWaiter`].

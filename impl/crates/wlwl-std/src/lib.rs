@@ -1,4 +1,10 @@
-//! WLWL standard library (v0.4 §15 → v0.11 §10) — stdlib foundation.
+//! WLWL standard library (v0.11 §10) — stdlib foundation, direct-value
+//! boundary (ADR-0022).
+//!
+//! 自 M2 起本 crate 与 eval 之间**不再有 serde_json 转换边界**:原生函数
+//! 直接收发真 [`Value`](含闭包),回调经 [`StdHost`] 注入,挂起
+//! ([`Outcome::signal`] 携带 `Signal::Yield`)原样穿透。依赖方向单向:
+//! `wlwl-eval → wlwl-value ← wlwl-std`。
 //!
 //! Modules exposed (dual-track, ADR-0021):
 //!
@@ -10,13 +16,10 @@
 //!   - `wlwl:std.agent`  — agent-shaped helpers over `std.ai`
 //!     (`TASK`, `TOOL`, `CALL_TOOL`, `MODEL`, `CONTEXT`; §15.14, Phase D3)
 //!   - `wlwl:std.format` — `FORMAT` + the shared template grammar (§15.8 / §10.6, Phase B5)
-//!   - `wlwl:std.collection` — **name catalog only** for the 17 higher-order
-//!     collection functions (§15.7 / §10.5, Phase B6). The real callback-aware
-//!     implementations live in `wlwl-eval::collection` because the std
-//!     boundary rejects `Value::Closure` (existing contract — see B5 P4-B5-006).
-//!   - `wlwl:std.test`   — **name catalog only** for the in-process test
-//!     framework (§15.9, Phase B7). Real impls live in
-//!     `wlwl-eval::test`; same std-boundary rationale as collection.
+//!   - `wlwl:std.collection` — 17 个高阶集合函数(M2 起真实现住在这里,
+//!     「名录特判」与「std 边界拒绝闭包值」契约一并废止,ADR-0022)
+//!   - `wlwl:std.test`   — 进程内测试框架内核(`TEST`/`ASSERT` 族/
+//!     `RUN_TESTS`;注册表在 [`StdCtx::tests`])
 //!
 //! R1 语言层(纯 wlwl,`include_str!` 嵌入,eval 侧求值并缓存):
 //!   - `wlwl:std.str`    — string extensions (stdlib spec §6; M1 placeholder
@@ -27,116 +30,28 @@
 //! This list is **locked by a test** against [`resolve`] — a std module
 //! that is reachable but unlisted is a documentation bug, and the test
 //! says so out loud.
-//!
-//! ## Naming
-//!
-//! Four conventions, applied everywhere (C5′, v0.10 Step 7). Renaming is
-//! a **breaking change** for every `IMPORT("wlwl:std.X", ["…"])` in the
-//! wild, so this section exists to make "no, that name is the API".
-//!
-//! | Thing | Convention | Example |
-//! |---|---|---|
-//! | Module path | `wlwl:std.<domain>`, lowercase, one word per domain | `wlwl:std.collection` |
-//! | Exported function | `UPPER_SNAKE` (a *name*, not a keyword) | `READ_FILE` |
-//! | Rust-side shim | `std_<lowercase name>` | `std_read_file` |
-//! | Binding table | `pub static SPEC: ModuleSpec` | — |
-//!
-//! `SPEC.functions` is the single source of truth for what a module
-//! exports: the eval side binds names from that slice and nothing else
-//! (the two catalog-only modules — `collection`, `test` — are the
-//! documented exceptions, and their own files explain why).
-//!
-//! ## Design boundary
-//!
-//! `wlwl-std` does **not** depend on `wlwl-eval` (would be a cycle, since
-//! `wlwl-eval` calls into us for `IMPORT("wlwl:std.X", …)`). Instead,
-//! every standard function operates on `serde_json::Value` — the eval
-//! side converts `Value` ↔ `serde_json::Value` at the call boundary.
-//!
-//! This keeps `wlwl-std` pure-Rust, fast to test in isolation, and
-//! trivially reusable from non-eval entry points (e.g. a future
-//! `wlwl-repl`).
 
 pub mod agent;
 pub mod ai;
 pub mod collection;
+pub(crate) mod compat;
 pub mod format;
 pub mod fs;
 pub mod io;
 pub mod json;
-pub mod test;
+pub mod test_native;
 
-use std::collections::HashMap;
-use wlwl_error::ErrorCode;
+use wlwl_error::WlwlError;
+use wlwl_value::type_name;
 
-/// Common value type used at the std / eval boundary.
-///
-/// Alias for `serde_json::Value` so we can keep `wlwl-std` free of the
-/// `wlwl-eval` dependency (which would create a cycle: `wlwl-eval`
-/// imports this crate for `IMPORT("wlwl:std.X", …)`).
-pub type StdValue = serde_json::Value;
-
-/// Per-call context passed to every std function. Holds process-level
-/// state that doesn't belong to any one call (argv, env vars) plus
-/// the Phase D additions: a warnings sink and an optional HTTP
-/// client for `wlwl:std.ai` real-mode.
-///
-/// ## Warnings
-///
-/// Std functions that produce *warnings* (not errors) push
-/// `(ErrorCode, message)` tuples into `warnings`. The eval side
-/// drains the sink after the call and emits each entry through the
-/// standard `WlwlDiagnostic` channel with `severity = Warning`. Phase
-/// D5 uses this to emit `W0052` when an LLM model name lacks the
-/// `provider/` prefix.
-///
-/// ## HTTP client
-///
-/// The `http_client` field is set up lazily by `ai::ensure_http_client`
-/// when `real-ai` is enabled and `WLWL_AI_ENDPOINT` is in env. The
-/// default (offline / mock) build leaves it `None`; the mock path in
-/// `ai.rs` checks `is_none()` and returns a deterministic payload
-/// without touching the network.
-#[derive(Debug, Clone, Default)]
-pub struct StdCtx {
-    pub argv: Vec<String>,
-    pub env: HashMap<String, String>,
-    /// Phase D5: warnings emitted by std functions (e.g. W0052 for
-    /// bare model names). The eval side drains after each call.
-    pub warnings: Vec<(wlwl_error::ErrorCode, String)>,
-    /// Phase D1: lazily-initialized reqwest blocking client when
-    /// `real-ai` feature is enabled. `None` for offline/mock builds.
-    #[cfg(feature = "real-ai")]
-    pub http_client: Option<std::sync::Arc<reqwest::blocking::Client>>,
-}
-
-impl StdCtx {
-    pub fn from_process() -> Self {
-        Self {
-            argv: std::env::args().collect(),
-            env: std::env::vars().collect(),
-            warnings: Vec::new(),
-            #[cfg(feature = "real-ai")]
-            http_client: None,
-        }
-    }
-
-    /// Push a warning. Std functions call this when they want to
-    /// produce a non-fatal diagnostic (e.g. W0052).
-    pub fn warn(&mut self, code: wlwl_error::ErrorCode, message: impl Into<String>) {
-        self.warnings.push((code, message.into()));
-    }
-}
-
-/// Function signature every std function conforms to. Errors are
-/// reported via `StdError` and translated into `WlwlError` on the
-/// eval side.
-pub type StdFn = fn(&mut StdCtx, Vec<StdValue>) -> Result<StdValue, StdError>;
+// [v0.11 M2 / ADR-0022] 调用契约单源在 wlwl-value;这里再导出保持
+// `wlwl_std::StdCtx` / `StdFn` 等既有路径对 eval 与测试不变。
+pub use wlwl_value::{Outcome, Signal, StdCtx, StdFn, StdHost, TestEntry, Value};
 
 /// A std module: a stable path + a static list of (name, function)
 /// pairs. The list is the contract with the eval side: the IMPORT
 /// `names` field is checked against this list, and each requested
-/// name is bound as a `Value::NativeFn` wrapping the `StdFn`.
+/// name is bound as a `Value::NativeFn`.
 pub struct ModuleSpec {
     pub path: &'static str,
     pub functions: &'static [(&'static str, StdFn)],
@@ -156,7 +71,7 @@ pub struct StdSource {
 /// std 命名空间的实现后端(单一清单的两轨,ADR-0021 §分发)。
 #[derive(Clone, Copy)]
 pub enum StdBackend {
-    /// R2 原生层:Rust 绑定表(collection/test 是其中的名录特例)。
+    /// R2 原生层:Rust 绑定表。
     Native(&'static ModuleSpec),
     /// R1 语言层:嵌入的纯 wlwl 源码,由 eval 侧解析、求值并缓存模块值。
     Lang(&'static StdSource),
@@ -235,95 +150,42 @@ pub fn resolve(path: &str) -> Option<StdBackend> {
         "wlwl:std.agent" => &agent::SPEC,
         "wlwl:std.format" => &format::SPEC,
         "wlwl:std.collection" => &collection::SPEC,
-        "wlwl:std.test" => &test::SPEC,
+        "wlwl:std.test" => &test_native::SPEC,
         _ => return None,
     };
     Some(StdBackend::Native(spec))
 }
 
-/// Error type used at the std / eval boundary. Carries the spec's
-/// stable error code + a human message; the eval side wraps this into
-/// a `WlwlDiagnostic` with appropriate location info.
-#[derive(Debug, Clone)]
-pub struct StdError {
-    pub code: ErrorCode,
-    pub message: String,
+// ── 诊断助手(边界直通后错误直接构造为 WlwlError,定位取入口文件)──
+
+/// 值的种类名(诊断措辞用)。
+pub fn value_kind(v: &Value) -> &'static str {
+    type_name(v)
 }
 
-impl std::fmt::Display for StdError {
-    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        write!(f, "{}: {}", self.code.as_str(), self.message)
-    }
-}
+// ── 直通边界包装(内部表示模块共用,ADR-0022 §4)──
 
-impl std::error::Error for StdError {}
-
-/// Helper used by every std function: build a `StdError` for an
-/// arity mismatch with the standard message format. P3-012:
-/// include `fn_name` in the message so callers (and tests) can
-/// attribute the error to a specific function — the old format
-/// `function expects N argument(s), got M` dropped this info.
-pub(crate) fn arity_error(fn_name: &str, got: usize, want: usize) -> StdError {
-    StdError {
-        code: ErrorCode::E0022,
-        message: format!(
-            "{fn_name}: function expects {} argument(s), got {}",
-            want, got
-        ),
-    }
-}
-
-/// Helper for type-mismatch errors (E0030).
-pub(crate) fn type_error(fn_name: &str, expected: &str, got: &StdValue) -> StdError {
-    StdError {
-        code: ErrorCode::E0030,
-        message: format!(
-            "{}: expected {}, got {}",
-            fn_name,
-            expected,
-            json_type_name(got)
-        ),
-    }
-}
-
-pub(crate) fn json_type_name(v: &StdValue) -> &'static str {
-    match v {
-        StdValue::Null => "null",
-        StdValue::Bool(_) => "boolean",
-        StdValue::Number(_) => "number",
-        StdValue::String(_) => "string",
-        StdValue::Array(_) => "array",
-        StdValue::Object(_) => "dict",
-    }
-}
-
-/// Helper: extract a string argument at position `i`, or return an
-/// `E0022` / `E0030` error with the right framing.
-pub(crate) fn expect_string<'a>(
-    fn_name: &str,
-    args: &'a [StdValue],
-    i: usize,
-    want_arity: usize,
-) -> Result<&'a str, StdError> {
-    if args.len() != want_arity {
-        return Err(arity_error(fn_name, args.len(), want_arity));
-    }
-    match &args[i] {
-        StdValue::String(s) => Ok(s.as_str()),
-        other => Err(type_error(fn_name, "string", other)),
+/// 把「serde_json 内部表示」的旧式函数包成直通 StdFn:
+/// Value →(values_to_json)→ 内部表示 →(f)→ json_to_value → Value。
+/// 转换失败(闭包/NaN 等不可表示)与旧边界一致地报 E0030。
+pub(crate) fn wrap(
+    host: &mut dyn StdHost,
+    _name: &str,
+    f: fn(&mut StdCtx, Vec<serde_json::Value>) -> Result<serde_json::Value, compat::StdError>,
+    args: Vec<Value>,
+) -> Result<Outcome, WlwlError> {
+    let jargs = match crate::json::values_to_json(&args) {
+        Ok(v) => v,
+        Err((code, msg)) => return Err(host.ctx().err(code, msg)),
+    };
+    match f(host.ctx(), jargs) {
+        Ok(v) => Ok(Outcome::normal(crate::json::json_to_value(v))),
+        Err(e) => Err(host.ctx().err(e.code, e.message)),
     }
 }
 
 #[cfg(test)]
 mod tests {
-    //! P3-009c: surface tests for the public helpers in `wlwl-std`
-    //! that were never directly exercised (only reached indirectly
-    //! through the per-module SPEC functions). The `resolve` /
-    //! `expect_string` / `json_type_name` / `arity_error` /
-    //! `type_error` / `StdError` `Display` paths now have explicit
-    //! coverage so coverage instrumentation can report on them
-    //! without depending on a particular std module's tests.
-
     use super::*;
 
     #[test]
@@ -331,13 +193,11 @@ mod tests {
         let ctx = StdCtx::default();
         assert!(ctx.argv.is_empty());
         assert!(ctx.env.is_empty());
+        assert!(ctx.tests.is_empty());
     }
 
     #[test]
     fn std_ctx_from_process_sees_argv() {
-        // `cargo test` always passes at least the program path as
-        // argv[0]. The env snapshot is not asserted because it
-        // varies by host.
         let ctx = StdCtx::from_process();
         assert!(!ctx.argv.is_empty());
     }
@@ -374,7 +234,6 @@ mod tests {
 
     #[test]
     fn resolve_format() {
-        // Phase B5 (spec v0.4 §15.8): wlwl:std.format exposes FORMAT.
         let s = resolve("wlwl:std.format").expect("format resolves");
         assert_eq!(s.path(), "wlwl:std.format");
         let names: Vec<&str> = s.functions().iter().map(|(n, _)| *n).collect();
@@ -382,33 +241,29 @@ mod tests {
     }
     #[test]
     fn resolve_collection() {
-        // Phase B6 (spec v0.4 §15.7): wlwl:std.collection is a name catalog
-        // — it advertises the 17 higher-order function names (so IMPORT
-        // passes the path check) but its `functions` slice is empty,
-        // because the real callback-aware implementations live in
-        // `wlwl-eval::collection` and are bound to the imported env by
-        // `Evaluator::load_std` (which detects this path).
+        // [v0.11 M2 / ADR-0022] collection 的真实现迁入本 crate;
+        // 「名录模块」特判废止,17 个成员直接登记在 SPEC。
         let s = resolve("wlwl:std.collection").expect("collection resolves");
         assert_eq!(s.path(), "wlwl:std.collection");
-        assert!(
-            s.functions().is_empty(),
-            "collection SPEC must be a name catalog (functions empty); \
-             actual: {:?}",
-            s.functions().iter().map(|(n, _)| *n).collect::<Vec<_>>()
-        );
+        let names: Vec<&str> = s.functions().iter().map(|(n, _)| *n).collect();
+        assert_eq!(names.len(), 17, "collection member set: {names:?}");
     }
     #[test]
     fn resolve_test() {
-        // Phase B7 (spec v0.4 §15.9): wlwl:std.test is also a name
-        // catalog — same std-boundary rationale as collection. Real
-        // callback-aware impls in `wlwl-eval::test`.
+        // [v0.11 M2] std.test 内核迁入(6 成员),注册表走 StdCtx::tests。
         let s = resolve("wlwl:std.test").expect("test resolves");
         assert_eq!(s.path(), "wlwl:std.test");
-        assert!(
-            s.functions().is_empty(),
-            "test SPEC must be a name catalog (functions empty); \
-             actual: {:?}",
-            s.functions().iter().map(|(n, _)| *n).collect::<Vec<_>>()
+        let names: Vec<&str> = s.functions().iter().map(|(n, _)| *n).collect();
+        assert_eq!(
+            names,
+            vec![
+                "TEST",
+                "ASSERT",
+                "ASSERT_EQ",
+                "ASSERT_NEQ",
+                "EXPECT_ERR",
+                "RUN_TESTS"
+            ]
         );
     }
     #[test]
@@ -419,101 +274,18 @@ mod tests {
         assert!(resolve("std.io").is_none()); // missing namespace
     }
 
-    // ---- StdError Display ----
+    // ---- lang_exports ----
 
     #[test]
-    fn std_error_display_format() {
-        let e = StdError {
-            code: ErrorCode::E0022,
-            message: "function expects 1 argument(s), got 2".into(),
-        };
-        assert_eq!(
-            e.to_string(),
-            "E0022: function expects 1 argument(s), got 2"
-        );
+    fn lang_exports_scan_handles_multi_member_lines() {
+        let md = lang_exports("LET(A, 1);\nEXPORT([\"A\", \"B_2\"]);\n");
+        assert_eq!(md, vec!["A".to_string(), "B_2".to_string()]);
+        assert!(lang_exports("LET(A, 1);\n").is_empty());
     }
 
-    #[test]
-    fn std_error_is_std_error_trait() {
-        // Compile-time check that StdError implements std::error::Error.
-        fn assert_error<E: std::error::Error>(_: &E) {}
-        let e = StdError {
-            code: ErrorCode::E0060,
-            message: "x".into(),
-        };
-        assert_error(&e);
-    }
+    // ---- 文档与命名约定的守门测试(C5′)----
 
-    // ---- arity_error ----
-
-    #[test]
-    fn arity_error_uses_e0022() {
-        // P3-012: arity_error now includes the function name so
-        // callers can attribute the failure (mirrors type_error's
-        // `"FN: expected X, got Y"` format).
-        let e = arity_error("F", 3, 1);
-        assert_eq!(e.code, ErrorCode::E0022);
-        assert_eq!(e.message, "F: function expects 1 argument(s), got 3");
-    }
-
-    // ---- type_error ----
-
-    #[test]
-    fn type_error_uses_e0030() {
-        let got = StdValue::Number(serde_json::Number::from(1));
-        let e = type_error("F", "string", &got);
-        assert_eq!(e.code, ErrorCode::E0030);
-        assert_eq!(e.message, "F: expected string, got number");
-    }
-
-    // ---- json_type_name ----
-
-    #[test]
-    fn json_type_name_all_variants() {
-        assert_eq!(json_type_name(&StdValue::Null), "null");
-        assert_eq!(json_type_name(&StdValue::Bool(true)), "boolean");
-        assert_eq!(
-            json_type_name(&StdValue::Number(serde_json::Number::from(1))),
-            "number"
-        );
-        assert_eq!(json_type_name(&StdValue::String("s".into())), "string");
-        assert_eq!(json_type_name(&StdValue::Array(vec![])), "array");
-        let mut m = serde_json::Map::new();
-        m.insert("k".into(), StdValue::from(1));
-        assert_eq!(json_type_name(&StdValue::Object(m)), "dict");
-    }
-
-    // ---- expect_string ----
-
-    #[test]
-    fn expect_string_happy_path() {
-        let args = vec![StdValue::String("hi".into())];
-        assert_eq!(expect_string("F", &args, 0, 1).unwrap(), "hi");
-    }
-
-    #[test]
-    fn expect_string_arity_mismatch_is_e0022() {
-        let args = vec![StdValue::String("hi".into()), StdValue::Null];
-        let err = expect_string("F", &args, 0, 1).unwrap_err();
-        assert_eq!(err.code, ErrorCode::E0022);
-    }
-
-    #[test]
-    fn expect_string_type_mismatch_is_e0030() {
-        let args = vec![StdValue::Number(serde_json::Number::from(1))];
-        let err = expect_string("F", &args, 0, 1).unwrap_err();
-        assert_eq!(err.code, ErrorCode::E0030);
-    }
-
-    // ---- C5′(v0.10 Step 7):文档与命名约定的守门测试 ----
-    //
-    // 这些测试不检查行为(行为由各模块自己的单测负责),它们检查**文档
-    // 没撒谎**:能被 `IMPORT` 到的模块必须出现在 crate 级目录里,而且
-    // `SPEC.path` 必须与文件名对得上。v0.10 Step 7 之前 `wlwl:std.agent`
-    // 就是「`resolve()` 里有、目录里没有」—— 这类漂移靠人眼是看不住的。
-
-    /// 每个 std 模块的 `SPEC`。这里引用 **SPEC 本体**而不是手抄路径
-    /// 字符串,所以下面前两条测试永远对着真实路径说话。
+    /// 每个 std 模块的 `SPEC`。R2 侧引用 SPEC 本体。
     const ALL_SPECS: &[&ModuleSpec] = &[
         &io::SPEC,
         &fs::SPEC,
@@ -522,11 +294,9 @@ mod tests {
         &agent::SPEC,
         &format::SPEC,
         &collection::SPEC,
-        &test::SPEC,
+        &test_native::SPEC,
     ];
 
-    /// crate 级目录(`//! Modules exposed:` 段)必须列出每个模块
-    /// (R2 与 R1 都要登记)。
     #[test]
     fn every_module_is_listed_in_the_crate_catalog() {
         let catalog = include_str!("lib.rs");
@@ -548,8 +318,7 @@ mod tests {
         }
     }
 
-    /// R1 语言层守门:每个登记的源码模块都能被 `resolve` 命中为
-    /// `Lang` 后端、导出名符合 UPPER_SNAKE 且有对应的 `LET` 绑定。
+    /// R1 语言层守门:resolve 命中 Lang 后端、导出 UPPER_SNAKE 且有 LET 绑定。
     #[test]
     fn lang_sources_resolve_and_export_upper_snake() {
         for src in LANG_SOURCES {
@@ -564,7 +333,7 @@ mod tests {
             let exports = lang_exports(src.source);
             assert!(
                 !exports.is_empty(),
-                "{} must declare at least one EXPORT member",
+                "{} must declare EXPORT members",
                 src.path
             );
             let mut seen = std::collections::HashSet::new();
@@ -589,59 +358,8 @@ mod tests {
         }
     }
 
-    /// `lang_exports` 与 eval 侧 AST 口径的形状一致性:M1 占位成员的
-    /// 源码里每个 EXPORT 数组只含合法名字。运行期真正的对账由
-    /// `wlwl-eval::stdlib_mirror` 的附录 A 镜像 + 锁测试承担。
-    #[test]
-    fn lang_exports_scan_handles_multi_member_lines() {
-        let md = lang_exports("LET(A, 1);\nEXPORT([\"A\", \"B_2\"]);\n");
-        assert_eq!(md, vec!["A".to_string(), "B_2".to_string()]);
-        assert!(lang_exports("LET(A, 1);\n").is_empty());
-    }
-
-    /// `src/` 下每个模块文件都必须在自己的文档头里写清自己的路径,且
-    /// **必须已登记进 `ALL_SPECS`**。
-    ///
-    /// 这一条是整套守门的关键:新增 std 模块时,忘了登记就会在这里被
-    /// 抓出来,而不是等到某人 `IMPORT` 了一个目录里查不到的名字。
-    #[test]
-    fn every_module_file_documents_and_registers_its_own_path() {
-        let mut files: Vec<String> = std::fs::read_dir("src")
-            .expect("unit tests run with the package root as cwd")
-            .filter_map(|e| e.ok())
-            .map(|e| e.file_name().to_string_lossy().to_string())
-            .filter(|n| n.ends_with(".rs") && n != "lib.rs")
-            .collect();
-        files.sort();
-        assert_eq!(
-            files.len(),
-            ALL_SPECS.len(),
-            "src/ has {} module file(s) but ALL_SPECS registers {} — \
-             every std module needs a SPEC and an ALL_SPECS entry",
-            files.len(),
-            ALL_SPECS.len()
-        );
-        for name in &files {
-            let source =
-                std::fs::read_to_string(format!("src/{name}")).expect("module source is readable");
-            let spec = ALL_SPECS
-                .iter()
-                .find(|s| source.contains(&format!("path: \"{}\"", s.path)))
-                .unwrap_or_else(|| {
-                    panic!("{name}: no registered SPEC.path matches — add its SPEC to ALL_SPECS")
-                });
-            assert!(
-                source.contains(spec.path),
-                "{name} must name its own module path `{}` in its doc header",
-                spec.path
-            );
-        }
-    }
-
-    /// 命名约定(C5′):`SPEC.path` 与 `resolve()` 的键一致,导出的名字
-    /// 全是 `UPPER_SNAKE`,且没有重复。改名对每个
-    /// `IMPORT("wlwl:std.X", ["…"])` 都是破坏性变更,所以形状用测试
-    /// 钉住,而不是靠 code review 记得。
+    /// 命名约定(C5′):`SPEC.path` 与 `resolve()` 的键一致,导出名
+    /// 全是 UPPER_SNAKE,且没有重复。
     #[test]
     fn module_paths_and_export_names_follow_the_naming_convention() {
         for spec in ALL_SPECS {
@@ -663,6 +381,42 @@ mod tests {
                 assert!(!name.is_empty(), "{} exports an empty name", spec.path);
                 assert!(seen.insert(*name), "{} exports `{name}` twice", spec.path);
             }
+        }
+    }
+
+    /// src/ 下每个模块文件都必须在自己的文档头里写清自己的路径,且
+    /// **必须已登记进 `ALL_SPECS`**(含 test_native.rs 的改名;
+    /// compat.rs 是内部表示兼容层,不是模块,豁免计数)。
+    #[test]
+    fn every_module_file_documents_and_registers_its_own_path() {
+        let mut files: Vec<String> = std::fs::read_dir("src")
+            .expect("unit tests run with the package root as cwd")
+            .filter_map(|e| e.ok())
+            .map(|e| e.file_name().to_string_lossy().to_string())
+            .filter(|n| n.ends_with(".rs") && n != "lib.rs" && n != "compat.rs")
+            .collect();
+        files.sort();
+        assert_eq!(
+            files.len(),
+            ALL_SPECS.len(),
+            "src/ has {} module file(s) but ALL_SPECS registers {}",
+            files.len(),
+            ALL_SPECS.len()
+        );
+        for name in &files {
+            let source =
+                std::fs::read_to_string(format!("src/{name}")).expect("module source readable");
+            let spec = ALL_SPECS
+                .iter()
+                .find(|s| source.contains(&format!("path: \"{}\"", s.path)))
+                .unwrap_or_else(|| {
+                    panic!("{name}: no registered SPEC.path matches — add its SPEC to ALL_SPECS")
+                });
+            assert!(
+                source.contains(spec.path),
+                "{name} must name its own module path `{}` in its doc header",
+                spec.path
+            );
         }
     }
 }

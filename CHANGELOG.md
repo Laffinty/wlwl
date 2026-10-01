@@ -17,6 +17,19 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 
+- **标准库底座 M2:值直通(ADR-0022)**。新 crate **`wlwl-value`** 成为值层单源:
+  十三类运行时值、`Env`/`Cell`、类与实例(`ClassEntry`/`ThisToken`)、
+  `TaskHandle`/`ChannelHandle`、会话协议(`Proto`/`ProtocolCursor`)、
+  `Outcome`+`Signal`,以及 std 调用契约(`StdFn`/`StdHost`/`StdCtx`);
+  依赖方向 `wlwl-eval → wlwl-value ← wlwl-std` 单向。
+- **serde_json 边界废止**:std 原生函数直接收发真 `Value`(含闭包);
+  io/fs/json/format/ai/agent 的 serde_json 降为各模块**内部**表示
+  (`compat` 兼容层保持函数体与测试零改动),`wrap` 在边界统一转换。
+- **宿主归位**:`std.collection`(17 成员)与 `std.test` 内核迁入
+  `wlwl-std`;「名录特判」与「std 边界拒绝闭包值」既有契约废止;
+  `std.test` 注册表移入 `StdCtx::tests`。回调经 `StdHost::call` 注入,
+  挂起(`Signal::Yield`)原样穿透。
+
 - **标准库底座 M1:双轨实现机制**(ADR-0021/0022/0023)。`wlwl:std.*` 分
   R1 语言层(纯 wlwl 源码,`include_str!` 嵌入二进制)与 R2 原生层(Rust
   绑定表),经单一清单(`wlwl_std::resolve` → `StdBackend`)路由;调用面

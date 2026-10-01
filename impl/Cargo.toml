@@ -1,6 +1,7 @@
 [workspace]
 resolver = "2"
 members = [
+    "crates/wlwl-value",
     "crates/wlwl-std",
     "crates/wlwl-toml",
     "crates/wlwl-ast",
@@ -50,6 +51,7 @@ toml = "0.8"
 criterion = { version = "0.5", features = ["html_reports"] }
 
 # 閺堫剙浼愭担婊呪敄闂傛潙鍞撮柈?crate
+wlwl-value = { path = "crates/wlwl-value" }
 wlwl-std = { path = "crates/wlwl-std" }
 wlwl-toml = { path = "crates/wlwl-toml" }
 wlwl-ast = { path = "crates/wlwl-ast" }

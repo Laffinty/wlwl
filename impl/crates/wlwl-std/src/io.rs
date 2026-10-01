@@ -7,12 +7,17 @@
 //! `NativeFn` takes priority (per the dispatch rules in
 //! `eval_call`).
 
-use crate::ModuleSpec;
-use crate::{StdCtx, StdError, StdFn, StdValue};
+use crate::compat::*;
+use crate::{ModuleSpec, StdCtx, StdFn};
 use std::io::BufRead;
 use wlwl_error::ErrorCode;
+use wlwl_error::WlwlError;
+use wlwl_value::{Outcome, StdHost, Value};
 
-pub fn std_print(_ctx: &mut StdCtx, args: Vec<StdValue>) -> Result<StdValue, StdError> {
+pub(super) fn std_print_inner(
+    _ctx: &mut StdCtx,
+    args: Vec<StdValue>,
+) -> Result<StdValue, StdError> {
     let parts: Vec<String> = args.iter().map(json_to_print_string).collect();
     println!("{}", parts.join(" "));
     Ok(StdValue::Null)
@@ -30,15 +35,21 @@ pub fn std_print(_ctx: &mut StdCtx, args: Vec<StdValue>) -> Result<StdValue, Std
 /// to `StdCtx` is a Phase D / Phase E concern (testability of
 /// captured output across the std boundary), deferred per plan
 /// §5.10.
-pub fn std_print_err(_ctx: &mut StdCtx, args: Vec<StdValue>) -> Result<StdValue, StdError> {
+pub(super) fn std_print_err_inner(
+    _ctx: &mut StdCtx,
+    args: Vec<StdValue>,
+) -> Result<StdValue, StdError> {
     let parts: Vec<String> = args.iter().map(json_to_print_string).collect();
     eprintln!("{}", parts.join(" "));
     Ok(StdValue::Null)
 }
 
-pub fn std_input(_ctx: &mut StdCtx, args: Vec<StdValue>) -> Result<StdValue, StdError> {
+pub(super) fn std_input_inner(
+    _ctx: &mut StdCtx,
+    args: Vec<StdValue>,
+) -> Result<StdValue, StdError> {
     if !args.is_empty() {
-        return Err(crate::arity_error("INPUT", args.len(), 0));
+        return Err(arity_error("INPUT", args.len(), 0));
     }
     let stdin = std::io::stdin();
     let mut locked = stdin.lock();
@@ -99,6 +110,21 @@ pub static SPEC: ModuleSpec = ModuleSpec {
     ],
 };
 
+/// [v0.11 M2 / ADR-0022] 直通边界包装:Value→内部表示→Value。
+pub fn std_print(host: &mut dyn StdHost, args: Vec<Value>) -> Result<Outcome, WlwlError> {
+    crate::wrap(host, "std_print", std_print_inner, args)
+}
+
+/// [v0.11 M2 / ADR-0022] 直通边界包装:Value→内部表示→Value。
+pub fn std_print_err(host: &mut dyn StdHost, args: Vec<Value>) -> Result<Outcome, WlwlError> {
+    crate::wrap(host, "std_print_err", std_print_err_inner, args)
+}
+
+/// [v0.11 M2 / ADR-0022] 直通边界包装:Value→内部表示→Value。
+pub fn std_input(host: &mut dyn StdHost, args: Vec<Value>) -> Result<Outcome, WlwlError> {
+    crate::wrap(host, "std_input", std_input_inner, args)
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -107,7 +133,7 @@ mod tests {
     #[test]
     fn print_emits_space_joined() {
         let mut ctx = StdCtx::default();
-        let out = std_print(
+        let out = std_print_inner(
             &mut ctx,
             vec![
                 StdValue::String("hello".into()),
@@ -147,7 +173,7 @@ mod tests {
     #[test]
     fn input_arity_mismatch_is_e0022() {
         let mut ctx = StdCtx::default();
-        let err = std_input(&mut ctx, vec![StdValue::Null]).unwrap_err();
+        let err = std_input_inner(&mut ctx, vec![StdValue::Null]).unwrap_err();
         assert_eq!(err.code, ErrorCode::E0022);
     }
 
