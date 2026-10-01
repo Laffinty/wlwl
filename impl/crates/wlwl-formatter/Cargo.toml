@@ -7,10 +7,10 @@ repository.workspace = true
 description = "WLWL canonical formatter (spec v0.4 搂16.3, Phase E2)"
 
 [dependencies]
-wlwl-ast = { path = "../wlwl-ast" }
+wlwl-ast = { workspace = true }
 
 [dev-dependencies]
-wlwl-parser = { path = "../wlwl-parser" }
+wlwl-parser = { workspace = true }
 serde_json = { workspace = true }
 
 [lints]

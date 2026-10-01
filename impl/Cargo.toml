@@ -51,18 +51,33 @@ toml = "0.8"
 criterion = { version = "0.5", features = ["html_reports"] }
 
 # 閺堫剙浼愭担婊呪敄闂傛潙鍞撮柈?crate
-wlwl-value = { path = "crates/wlwl-value" }
-wlwl-std = { path = "crates/wlwl-std" }
-wlwl-toml = { path = "crates/wlwl-toml" }
-wlwl-ast = { path = "crates/wlwl-ast" }
-wlwl-lexer = { path = "crates/wlwl-lexer" }
-wlwl-parser = { path = "crates/wlwl-parser" }
-wlwl-error = { path = "crates/wlwl-error" }
-wlwl-eval = { path = "crates/wlwl-eval" }
-wlwl-formatter = { path = "crates/wlwl-formatter" }
+#
+# [v0.11 / D10-011] 每条都补了 `version`,与上面的 `[workspace.package]
+# version` **同值**。此前这 10 条只写 `path`,cargo 把版本要求解析成通配 `*`
+# —— 于是 `deny.toml` 的 `wildcards = "deny"` 直接报
+# `error[wildcard]`,整条 CI 的 cargo-deny 门禁从此红。`wlwl-types` 在
+# [v0.10] Step 1 撞到过同一个错、当时的处置是加一条 `skip` 兜住,而
+# `wlwl-value`(v0.11 M2 新增)漏了 —— CI 此前只触发 `main`,cargo-deny
+# 一直没被验到,直到 wip0.11 纳入触发列表。
+#
+# 补 `version` 的额外好处:**漂移会响**。`path` 与 `version` 对不上时
+# cargo 直接解析失败,而只写 `path` 时版本要求是通配的、错了也不吭声。
+#
+# 发布时这些 `version` 必须与上面 `[workspace.package] version` 一起改
+# (release.yml 的 `version-check` 已经在校后者;前者漏改会在下一次
+# `cargo build` 时立刻炸,不会静默发出去)。
+wlwl-value = { version = "0.10.4", path = "crates/wlwl-value" }
+wlwl-std = { version = "0.10.4", path = "crates/wlwl-std" }
+wlwl-toml = { version = "0.10.4", path = "crates/wlwl-toml" }
+wlwl-ast = { version = "0.10.4", path = "crates/wlwl-ast" }
+wlwl-lexer = { version = "0.10.4", path = "crates/wlwl-lexer" }
+wlwl-parser = { version = "0.10.4", path = "crates/wlwl-parser" }
+wlwl-error = { version = "0.10.4", path = "crates/wlwl-error" }
+wlwl-eval = { version = "0.10.4", path = "crates/wlwl-eval" }
+wlwl-formatter = { version = "0.10.4", path = "crates/wlwl-formatter" }
 # v0.10 Step 1 (ADR-0020 A1): static type layer. Leaf crate -- depends on
 # wlwl-ast only, and is deliberately NOT a dependency of wlwl-eval.
-wlwl-types = { path = "crates/wlwl-types" }
+wlwl-types = { version = "0.10.4", path = "crates/wlwl-types" }
 
 
 [profile.test]

@@ -183,7 +183,7 @@ v0.10 收口时降级为已知限制(语言规范 §17.1/§17.4 的 YIELD「挂�
 |---|---|---|
 | P2-6 | 非末条顶层语句的 `ERR` 被静默丢弃(既有行为,规范↔实现背离) | **维持挂账,且已不是「未登记的背离」。** 实测复现:`ERR("dropped"); PRINT("after")` → 只打 `after`,rc=0。但语言规范 **§8.5 已把它逐条写成已知限制**(「首条 / 中间一条是 `ERR(...)`,末条是 `1` → rc=0,`ERR` 静默丢弃,继续执行」),并给了风险面说明。所以它是**规范承认的现状**,不是待补的漏洞;要改语义属语言层裁决,不在 stdlib 批次。 |
 | §5.2.1 | 部分实测事实过时,未改规范待裁决 | **本次未裁决 —— 缺可核的标的。** 该条在 v0.10 收口时写的是「部分实测事实过时」,**没有点名是哪几条**;现状 §5.2.1(类型注解的静态解释)经查与 `strict_types` / `gradual_typing` 两个开关的当前实现一致,未发现过时处。若确有具体条目,需由提出者点名后另立。 |
-| D10-011 | cargo deny 配置卫生 | **升级为「在红的活项」,不是待办。** CI(`ci.yml`)以 `cargo deny --locked --all-features check` 为门禁,而本地实测 `cargo deny check` **exit 2**:`error[wildcard]: found 4 wildcard dependencies for crate 'wlwl-value'`(根因:workspace 内部 path 依赖只写 `path` 不写 `version`,cargo 视为通配版本要求 —— 该写法**早于 v0.11**,M2 只是照既有风格加了 `wlwl-value`)。另有 9 条 `unnecessary-skip` 与 3 条 `duplicate` 警告。**不在本批次修**:动 `impl/Cargo.toml` 的依赖声明会影响全部 crate 的解析,风险面超出「收口」;本次以 CI 实跑结果为准再定处置。 |
+| D10-011 | cargo deny 配置卫生 | **已根治(偏差 D11-016)。** CI run #167 证实它在三平台全红。本地复现后查明是两层根因:`impl/Cargo.toml` 里 10 条内部依赖只写 `path` 不写 `version`(cargo 解析成通配 `*`,而 `deny.toml` 的 `wildcards = "deny"` 判红),外加 4 处**直接** `path =` 的依赖(`allow-workspace = true` 覆盖不到)。按业主裁决走根治而非加 skip:补 `version` + 那 4 处改走 `workspace = true`,并**清空 `deny.toml` 的 10 条 skip**(删掉后又暴露出被它掩盖的另外 4 处 wildcard,一并改掉)。现 `cargo deny check` exit 0、四项全 ok。原表是 [v0.10] Step 1 为绕同一个错建的,代价是「每加一个内部 crate 记得补一行」,M2 加 `wlwl-value` 就忘了 —— 通配要求消失后这个人为陷阱也随之消除。 |
 | v0.10.1 其余 | R10-020/021/022/025~029/040/041/050 的核验状态逐条确认 | **本次未裁决 —— 逐条记录不在当前文档内。** `docs/history/` 只保留两份合并纪要,其中与 R10 相关的 6 处讲的是**评审过程**而非逐条核验状态;逐条记录在 v0.10.0 时期的审查报告里,已按 README 的归档规则并入 git 历史(`git log --follow`)。要逐条裁决需先取回那些报告 —— 属独立的一轮文档考古,不夹进本批次。 |
 
 **小结**:4 条里 1 条确认维持挂账(且已被规范承认为已知限制)、1 条从「待办」升级为「在红的活项」(D10-011)、2 条因**标的缺失**明确本次不裁决并写明了缺什么。前者不拖批次,后者要么等 CI 实跑、要么需先取回归档材料。
@@ -223,6 +223,7 @@ v0.10 收口时降级为已知限制(语言规范 §17.1/§17.4 的 YIELD「挂�
 | `cargo clippy --workspace --all-targets -- -D warnings` | 0 warning |
 | `cargo doc --no-deps -D warnings` | 0 error(**2026-10-01 CI 首次实跑后才补进本地门禁**;此前漏跑,4 处 rustdoc 断裂潜伏了两个里程碑 —— 偏差 D11-015) |
 | `cargo test --workspace` | 47 套件 **1860 passed / 0 failed** |
+| `cargo deny check` | **exit 0**(此前 exit 2 —— 内部 path 依赖只写 `path` 不写 `version` 被判通配;2026-10-01 根治,`deny.toml` 的 10 条 skip 同时清空。偏差 D11-016) |
 | probe 用例数 | 136(立项)→ 138(M1)→ **142**(M3-4),只增不减 |
 | 附录 G 逐字节不变 | 未触碰 `registry.rs` 与 `docs/appendix_G.md`;`spec_appendix_g_sync` 绿 |
 | 附录 A 镜像双向锁 | `stdlib_appendix_a_sync` 2/2 绿 |
