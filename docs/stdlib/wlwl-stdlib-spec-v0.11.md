@@ -63,8 +63,8 @@
 4. **ERR 消费者注册**:R2 成员按 ADR-0009 在 init 时自注册;R1 成员的
    `ERR` 处理由语言语义(8.2/8.3)自然承担,不经消费者注册表。
 
-> 状态:v0.11 文档版先行为**手写定稿**;镜像生成器与锁测试随构建计划 M1
-> 落地,落地后附录 A 改由生成器产出,手改无效(锁测试拒绝)。
+> 状态:镜像生成器与锁测试已随 M1 落地(`gen-appendix-a` bin +
+> `stdlib_appendix_a_sync` 锁测试)。附录 A 表体由生成器产出,手改无效。
 
 ### 0.4 稳定性政策(ADR-0023)
 
@@ -119,7 +119,8 @@
 
 纯 wlwl 实现。除注明外成员都是**非破坏性**的(语言规范 §10.1);成员回调
 抛出的 `ERR` 使整个调用按 8.2 传播;`arr` 实参须为 `ARRAY`、回调 `f` 须为
-函数值(违者 `E0030`)。
+函数值(违者 `E0030`)。落地状态:本章为 v0.11 契约定稿,成员随 M3 落齐;
+已落地成员以附录 A 镜像为准。
 
 | 签名 | 说明 |
 |------|------|
@@ -142,6 +143,8 @@
 
 纯 wlwl 实现。只补全局内建(语言规范 §10.5)没有的能力;**不重导出**任何
 全局内建。索引口径与 `SUB` 一致(码点;起点同 `SUB` 的 `start`)。
+落地状态:本章为 v0.11 契约定稿;M1 已落地 `QUOTE`(双轨通道冒烟成员),
+其余随 M3 落齐,已落地成员以附录 A 镜像为准。
 
 | 签名 | 说明 | 失败 |
 |------|------|------|
@@ -160,6 +163,9 @@
 
 约定:算术提升与溢出行为沿语言规范 §2.2;域违例返回
 `ERR(["kind": "DomainError", ...])`;实参类型错按语言规范报 `E0030`。
+落地状态:本章为 v0.11 契约定稿;M1 已落地 `ABS`(R1 门面冒烟成员),
+`SQRT`/`POW` 的 R2 浮点内核与其余门面成员随 M3 接线,已落地成员以
+附录 A 镜像为准。
 
 | 签名 | 说明 | 失败 |
 |------|------|------|
@@ -241,19 +247,24 @@ LET(handle, wlwl:std.agent.TASK("summarize", "long text..."));
 
 ## 附录 A 成员注册镜像(规范性)
 
-> 状态:v0.11 文档版为**手写定稿**;构建计划 M1 落地后,本附录改由生成器
-> 从 `ModuleSpec` 绑定表与 R1 源码导出清单自动产出,并以锁测试双向守护。
+> 状态:表体由生成器产出 —— 单源真相是实现(R2 取 `wlwl-std` 的
+> `ModuleSpec` 绑定表,collection/test 名录取 eval 侧 BUILTINS;R1 取嵌入
+> 源码的 `EXPORT` 声明)。手改无效,`stdlib_appendix_a_sync` 锁测试会拒绝;
+> 漂移时跑 `cargo run --bin gen-appendix-a` 重新拼接。
 > R2 成员的 ERR 消费者按 ADR-0009 在 init 时自注册。
 
+<!-- appendix-a:begin -->
 | 命名空间 | 成员 | 层 | 引入 |
 |---|---|---|---|
-| `std.io` | `PRINT` `PRINT_ERR` `INPUT` | R2 | v0.10 及以前 |
-| `std.fs` | `WRITE_FILE` `READ_FILE` `EXISTS` | R2 | v0.10 及以前 |
-| `std.json` | `STRINGIFY` `PARSE` | R2 | v0.10 及以前 |
+| `std.io` | `PRINT` `INPUT` `PRINT_ERR` | R2 | v0.10 及以前 |
+| `std.fs` | `READ_FILE` `WRITE_FILE` `EXISTS` | R2 | v0.10 及以前 |
+| `std.json` | `PARSE` `STRINGIFY` | R2 | v0.10 及以前 |
 | `std.format` | `FORMAT` | R2 | v0.10 及以前 |
-| `std.collection` | `MAP` `FILTER` `REDUCE` `SORT` `SORT_BY` `RANGE` `ZIP` `ENUMERATE` `TAKE` `DROP` `FLAT` `UNIQ` `GROUP_BY` `ANY` `ALL` `FIND` `JOIN` | R1 | v0.10 及以前(成员)/ v0.11(R1 重写) |
-| `std.str` | `JOIN` `SPLIT_LINES` `CHAR_AT` `COUNT` `QUOTE` | R1 | v0.11 |
-| `std.math` | `ABS` `MIN` `MAX` `FLOOR` `CEIL` `ROUND` `SQRT` `POW` `CLAMP` `PI` `E` | 混合 | v0.11 |
+| `std.collection` | `MAP` `FILTER` `REDUCE` `SORT` `SORT_BY` `ZIP` `RANGE` `ANY` `ALL` `FIND` `ENUMERATE` `TAKE` `DROP` `FLAT` `UNIQ` `GROUP_BY` `JOIN` | R1 | v0.10 及以前(成员)/ v0.11(R1 重写) |
+| `std.str` | `QUOTE` | R1 | v0.11 |
+| `std.math` | `ABS` | 混合 | v0.11 |
 | `std.test` | `TEST` `ASSERT` `ASSERT_EQ` `ASSERT_NEQ` `EXPECT_ERR` `RUN_TESTS` | 混合 | v0.10 及以前(成员)/ v0.11(混合化) |
-| `std.ai` | `ASK` `ASK_STREAM` `ASK_ALL` `EMBED` `COMPLETE` | R2 | v0.10 及以前 |
-| `std.agent` | `MODEL` `TASK` `TOOL` `CALL_TOOL` `CONTEXT` | R2 | v0.10 及以前 |
+| `std.ai` | `ASK` `EMBED` `COMPLETE` `ASK_STREAM` `ASK_ALL` | R2 | v0.10 及以前 |
+| `std.agent` | `TASK` `TOOL` `CALL_TOOL` `MODEL` `CONTEXT` | R2 | v0.10 及以前 |
+<!-- appendix-a:end -->
+

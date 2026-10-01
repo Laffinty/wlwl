@@ -1,0 +1,5 @@
+// wlwl:std.math — R1 语言层门面(标准库底座 v0.11,ADR-0021)
+// 成员契约:docs/stdlib/wlwl-stdlib-spec-v0.11.md §7;注册镜像:附录 A。
+// 门面成员 M1 仅 ABS;SQRT / POW 归 R2 浮点内核,随 M3 接线。
+LET(ABS, FUN((x), IF(<(x, 0), NEG(x), x)));
+EXPORT(["ABS"]);

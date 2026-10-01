@@ -26,5 +26,8 @@ path = "benches/eval_hot_paths.rs"
 [[bin]]
 name = "gen-appendix-g"
 path = "src/bin/gen_appendix_g.rs"
+[[bin]]
+name = "gen-appendix-a"
+path = "src/bin/gen_appendix_a.rs"
 [lints]
 workspace = true

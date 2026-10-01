@@ -171,6 +171,12 @@ jobs:
           mkdir -p staging/examples staging/docs
           cp -r "$GITHUB_WORKSPACE/impl/examples/." staging/examples/
           cp -r "$GITHUB_WORKSPACE/docs/spec" staging/docs/ || true
+          # [v0.11 M1-4 / ADR-0021] 标准库文档独立成册随包分发;R1 语言层
+          # 源码以参考副本随包发布(运行时不读取 —— 已嵌入二进制;副本供
+          # 阅读学习与 --std-src / WLWL_STD_SRC 开发覆盖使用)。
+          cp -r "$GITHUB_WORKSPACE/docs/stdlib" staging/docs/ || true
+          mkdir -p staging/stdlib
+          cp -r "$GITHUB_WORKSPACE/impl/crates/wlwl-std/wl/std/." staging/stdlib/
           cp -r "$GITHUB_WORKSPACE/wlwl-skill" staging/wlwl-skill/ || true
 
       - name: Create tar.xz (linux/macos)

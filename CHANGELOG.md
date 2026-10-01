@@ -13,6 +13,24 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 > are condensed in `docs/history/` (`20260902-09.md`, `20260915-22.md`);
 > full text is available via git history.
 
+## [Unreleased]
+
+### Added
+
+- **标准库底座 M1:双轨实现机制**(ADR-0021/0022/0023)。`wlwl:std.*` 分
+  R1 语言层(纯 wlwl 源码,`include_str!` 嵌入二进制)与 R2 原生层(Rust
+  绑定表),经单一清单(`wlwl_std::resolve` → `StdBackend`)路由;调用面
+  不变。R1 首批成员:`std.str.QUOTE`、`std.math.ABS`(stdlib 规范 §6/§7
+  契约,其余成员随 M3 落齐,附录 A 镜像始终反映实现真相)。
+- **开发覆盖通道**(非稳定接口):`wlwl run --std-src <dir>` / 环境变量
+  `WLWL_STD_SRC`,R1 模块改从源码目录加载;导出面不变性由
+  `stdlib_dual_track` 锁测试守护(漂移必须 `E0023`,不得静默回退嵌入版)。
+- **stdlib 规范附录 A 镜像生成器**:`gen-appendix-a` bin 从实现清单生成
+  `docs/stdlib/wlwl-stdlib-spec-v0.11.md` 附录 A,`stdlib_appendix_a_sync`
+  锁测试双向对账。
+- release 产物增附 `stdlib/`(R1 源码参考副本,运行时不读取)与
+  `docs/stdlib/`;probe 136 → 138。
+
 ## [v0.10.4] — 2026-09-30
 
 Spec: **wlwl-spec-v0.10** —— 规范版本号不变。本版只改**版本号口径**,

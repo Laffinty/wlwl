@@ -15,7 +15,7 @@
 | 现行标准库规范 | [`../stdlib/wlwl-stdlib-spec-v0.11.md`](../stdlib/wlwl-stdlib-spec-v0.11.md)(v0.11,与语言规范相互独立、分别版本化) |
 | 最新实现 | v0.10.4 已发布 |
 | 进行中的计划 | [`plan-v0.11.md`](plan-v0.11.md) —— 批次 A 标准库底座(M1–M5);偏差分册 [`deviations-v0.11.md`](deviations-v0.11.md) 已建(空册,D11-001 起) |
-| 门禁 | `cargo fmt --check` 0 diff;`clippy -D warnings` 0;`cargo test --workspace` 全绿;probe **136** 用例目录(2026-10-01 实测) |
+| 门禁 | `cargo fmt --check` 0 diff;`clippy -D warnings` 0;`cargo test --workspace` 全绿;probe **138** 用例(M1 后,2026-10-01) |
 | v0.11 已立项范围 | **批次 A:标准库底座**(ADR-0021/0022/0023);**批次 B:`YIELD` 的续体保存**(裁决 D-3 = 拆两半,规范侧已在 v0.10.1 降级为已知限制) |
 
 ## 历史归档去哪找

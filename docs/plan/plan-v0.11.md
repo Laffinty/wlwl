@@ -7,6 +7,16 @@
 | **立项** | 标准库底座设计方案 v2(2026-10-01 与业主逐条裁决);裁决落点见 §2,论证见 ADR-0021 / 0022 / 0023 |
 | **批次** | **A 标准库底座**(本计划主体,M1–M5)· **B `YIELD` 续体保存**(已立项,§5)· 承接项(§6,挂账待处置) |
 
+## 0 基线棘轮(2026-10-01 立项时点;批次 A 任何 commit 不得降低)
+
+| 指标 | 基线值 | 来源 |
+|---|---|---|
+| workspace 测试 | 全绿(v0.10.0 收口时 1736 passed;以门禁实跑输出为准) | `cargo test --workspace`;history/20260915-22.md |
+| probe 用例 | 136(立项时实测)→ M1 后 **138**,只增不减 | `impl/tests/probe/cases/` 目录数 + `EXPECTED_CASE_COUNT` 守卫 |
+| 全局内建注册表 | 106 条(86 builtin + 20 词法宏),spec 附录 G 与 `docs/appendix_G.md` 逐字节不变 | `docs/appendix_G.md` 头部 |
+| `wlwl-eval/src/lib.rs` 体量 | ≈24,100 行(M1 后 ≈24,250;M2 拆分前的对照基线) | `wc -l` |
+| fmt / clippy | 0 diff / 0 warning | CI 门禁 |
+
 ## 1 目标与非目标
 
 ### 1.1 目标
@@ -56,23 +66,26 @@
 
 执行顺序 **M1 → M2 → M3 → M5 → M4**(M4 收尾,其验收依赖全部成员面定稿)。
 
-### M1 双轨解析与治理四件套(约 3 人日)
+### M1 双轨解析与治理四件套(约 3 人日)—— **已完成(2026-10-01)**
 
-| # | 任务 | 验收 |
-|---|---|---|
-| M1-1 | R1 源码目录 `impl/crates/wlwl-std/wl/std/*.wll`,`include_str!` 嵌入;stdlib 清单把每个命名空间路由到 R1(嵌入源码求值并缓存模块值)或 R2(原生绑定表)后端 | `IMPORT("wlwl:std.X", ...)` 对两轨行为一致;probe 新增双轨用例 |
-| M1-2 | 开发覆盖:显式 CLI flag + debug 环境变量指向源码目录;仅覆盖 R1 加载路径;文档标注非稳定 | 覆盖开启/关闭,导出与签名逐字节一致的锁测试 |
-| M1-3 | stdlib 规范附录 A 镜像生成器:从 `ModuleSpec` 绑定表 + R1 源码导出提取重写;配锁测试 | 锁测试双向断言(镜像 ↔ 实现清单) |
-| M1-4 | release.yml staging 增补:`stdlib/`(R1 源码参考副本,运行时不读取)+ `docs/stdlib/` | staging 本地校验;发布产物含两目录 |
+立项单按「挂载点 → 变更面 → 预估人日 → 验收」登记(行号为落地后实测):
 
-### M2 值直通(约 4 人日)
+| # | 挂载点 | 变更面 | 验收 | 状态 |
+|---|---|---|---|---|
+| M1-1 | `wlwl-std/src/lib.rs:151-241`(StdSource / StdBackend / LANG_SOURCES / lang_exports / resolve);`wlwl-eval/src/lib.rs:834-840`(ResolvedSource::Std)、`:1037`(load_std 分派)、`:1125-1213`(load_std_lang:覆盖路由 + 子求值器 + collect_exports + 缓存) | `wlwl-std/src/lib.rs` 单一清单双轨化;新目录 `wlwl-std/wl/std/{str,math}.wll`(include_str! 嵌入);eval 模块加载区 | `IMPORT("wlwl:std.X")` 两轨行为一致(嵌入轨/覆盖轨/环境变量三通道实测通过);probe +2(M1_std_*_dual_track) | ✅ |
+| M1-2 | `wlwl-eval/src/lib.rs:868`(ProjectContext.std_src)、`:7129-7148`(with_std_src;with_base_dir 保持 std_src,装配次序无关);`wlwl-cli/src/main.rs:60-71`(Run `--std-src`)、`:373-379`(flag > env 回退)、`:400-404 / :463-466`(run_file 装配) | CLI Run 子命令 + eval 装配;check/ast 不受影响(不解析名字) | `stdlib_dual_track` 锁测试:同导出面覆盖生效、漂移必须 `E0023`、绝不静默回退嵌入版 | ✅ |
+| M1-3 | `wlwl-eval/src/stdlib_mirror.rs`(NAMESPACE_META + members + splice);`bin/gen_appendix_a.rs` + Cargo.toml `[[bin]]`;锁测试 `wlwl-eval/tests/stdlib_appendix_a_sync.rs`;spec 标记区 `<!-- appendix-a:begin/end -->` | stdlib 规范附录 A 改由生成器产出(手改无效) | 镜像逐字节对账锁测试双向通过;`cargo run --bin gen-appendix-a` 幂等 | ✅ |
+| M1-4 | `.github/workflows/release.yml` staging 段 | release 产物增附 `stdlib/`(R1 源码参考副本)+ `docs/stdlib/` | 发布产物含两目录(本地 staging 逻辑同源) | ✅ |
+| M1-5 | spec §0.1/§9.3/§10 机制化 | 上一批成文完成 | 规范交叉引用完整;附录 G 锁测试全绿 | ✅ |
 
-| # | 任务 | 验收 |
-|---|---|---|
-| M2-1 | 新 crate `wlwl-value`:`Value`(§2.1 十三类值)、`Handle`(宿主侧对象不透明句柄)、`Callable` trait;不依赖 eval/std | 独立编译;cargo-deny 通过 |
-| M2-2 | `wlwl-eval` 改依赖 `wlwl-value`(Value 定义**纯搬移**);为 wlwl 闭包实现 `Callable`(句柄 → 求值器注册表) | 纯搬移不改语义;workspace 测试全绿 |
-| M2-3 | `wlwl-std` 去 serde_json 边界:原生函数直接收发 `Value`;`StdCtx` 增 Callable 注入槽;实现内部中间表示自选(如 JSON 解析仍用 serde_json),但**跨界类型只有 Value** | 边界转换代码删除;std 各模块测试全绿 |
-| M2-4 | 宿主归位:`collection.rs` / `test.rs` 自 `wlwl-eval` 迁至 `wlwl-std`(test 原生内核落 `test_native.rs`) | 「std 边界拒绝闭包值」既有契约废止并更新;`wlwl-eval` 不再含 std 实现 |
+### M2 值直通(约 4 人日)—— 待执行(挂载点已钉,行号为 M1 落地后实测)
+
+| # | 挂载点 | 变更面 | 验收 |
+|---|---|---|---|
+| M2-1 | `wlwl-eval/src/lib.rs:51`(`pub enum Value` 十三类)、`:66-70`(NativeFn 携带名与调用标签)—— 布局**纯搬移** | 新 crate `wlwl-value`:`Value` + `Handle`(宿主侧对象不透明句柄)+ `Callable` trait(回调注入点);不依赖 eval/std | 独立编译;cargo-deny 通过 |
+| M2-2 | `wlwl-eval/src/lib.rs` 全文件对 Value 构造/匹配的引用;`value_to_std_value`(`:1520` 起,serde_json 边界实况) | eval 改依赖 `wlwl-value`,为 wlwl 闭包实现 `Callable`(句柄 → 求值器注册表) | **纯搬移不改语义**;workspace 锁测试全绿 |
+| M2-3 | `wlwl-eval/src/lib.rs:1520-1610` 的 `value_to_std_value` / `std_value_to_value` 双向转换层;`wlwl-std/src/lib.rs` StdCtx(`:105-135`) | 原生函数直接收发 `Value`;StdCtx 增 Callable 注入槽;实现内部中间表示自选(JSON 解析仍用 serde_json),**跨界类型只有 Value** | 边界转换代码删除;std 各模块测试全绿 |
+| M2-4 | `wlwl-eval/src/collection.rs` / `test.rs` 全文;`load_std_native` 的名录特判(`:1064-1089`);`wlwl-std/src/lib.rs:11-17` 既有契约注释 | collection/test 迁至 `wlwl-std`(test 原生内核落 `test_native.rs`);名录特判与「std 边界拒绝闭包值」契约废止 | eval 不再含 std 实现;混合实现可持闭包 |
 
 ### M3 R1 首批 + 混合 test(约 4 人日)
 

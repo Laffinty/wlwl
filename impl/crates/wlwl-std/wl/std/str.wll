@@ -1,0 +1,21 @@
+// wlwl:std.str — R1 语言层(标准库底座 v0.11,ADR-0021)
+// 成员契约:docs/stdlib/wlwl-stdlib-spec-v0.11.md §6;注册镜像:附录 A。
+// M1 仅落地 QUOTE 一项证明双轨通道;M3 落齐 §6 全部成员。
+LET(QUOTE, FUN((s), (
+    LET(cps, CODEPOINTS(s));
+    LET MUT(out, [34]);
+    FOR(c, cps,
+        IF(=(c, 34),
+           (SET(out, PUSH(out, 92)); SET(out, PUSH(out, 34))),
+           IF(=(c, 92),
+              (SET(out, PUSH(out, 92)); SET(out, PUSH(out, 92))),
+              IF(=(c, 10),
+                 (SET(out, PUSH(out, 92)); SET(out, PUSH(out, 110))),
+                 IF(=(c, 9),
+                    (SET(out, PUSH(out, 92)); SET(out, PUSH(out, 116))),
+                    IF(=(c, 13),
+                       (SET(out, PUSH(out, 92)); SET(out, PUSH(out, 114))),
+                       SET(out, PUSH(out, c))))))));
+    FROM_CODEPOINTS(CONCAT(out, [34]))
+)));
+EXPORT(["QUOTE"]);

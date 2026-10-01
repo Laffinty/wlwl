@@ -1,6 +1,8 @@
-//! WLWL standard library (v0.4 §15) — Phase 4.
+//! WLWL standard library (v0.4 §15 → v0.11 §10) — stdlib foundation.
 //!
-//! Modules exposed:
+//! Modules exposed (dual-track, ADR-0021):
+//!
+//! R2 原生层(Rust 绑定表):
 //!   - `wlwl:std.io`     — `PRINT`, `INPUT` (§15.1)
 //!   - `wlwl:std.fs`     — `READ_FILE`, `WRITE_FILE`, `EXISTS` (§15.3)
 //!   - `wlwl:std.json`   — `PARSE`, `STRINGIFY` (§15.3 + E0070/E0071)
@@ -15,6 +17,12 @@
 //!   - `wlwl:std.test`   — **name catalog only** for the in-process test
 //!     framework (§15.9, Phase B7). Real impls live in
 //!     `wlwl-eval::test`; same std-boundary rationale as collection.
+//!
+//! R1 语言层(纯 wlwl,`include_str!` 嵌入,eval 侧求值并缓存):
+//!   - `wlwl:std.str`    — string extensions (stdlib spec §6; M1 placeholder
+//!     member `QUOTE`, full member set lands in M3)
+//!   - `wlwl:std.math`   — math basics (stdlib spec §7; M1 placeholder member
+//!     `ABS`; `SQRT`/`POW` will be R2 kernels behind the facade)
 //!
 //! This list is **locked by a test** against [`resolve`] — a std module
 //! that is reachable but unlisted is a documentation bug, and the test
@@ -134,22 +142,103 @@ pub struct ModuleSpec {
     pub functions: &'static [(&'static str, StdFn)],
 }
 
-/// Resolve a `wlwl:std.X` path to its module spec. Returns `None` for
-/// anything that doesn't match — the eval side will then surface
-/// `E0040 module 'X' not found` (treating the namespace path as a
-/// module name).
-pub fn resolve(path: &str) -> Option<&'static ModuleSpec> {
-    match path {
-        "wlwl:std.io" => Some(&io::SPEC),
-        "wlwl:std.fs" => Some(&fs::SPEC),
-        "wlwl:std.json" => Some(&json::SPEC),
-        "wlwl:std.ai" => Some(&ai::SPEC),
-        "wlwl:std.agent" => Some(&agent::SPEC),
-        "wlwl:std.format" => Some(&format::SPEC),
-        "wlwl:std.collection" => Some(&collection::SPEC),
-        "wlwl:std.test" => Some(&test::SPEC),
-        _ => None,
+/// R1 语言层(纯 wlwl)源码模块 —— 标准库底座 v0.11(ADR-0021)。
+///
+/// 源码经 `include_str!` 嵌入二进制(release 默认形态,运行时不读外部
+/// 文件)。开发期可经 `--std-src <dir>` / 环境变量 `WLWL_STD_SRC` 指向
+/// 源码目录覆盖加载;该通道**不得**改变任何成员的名字与语义(锁测试
+/// `wlwl-cli/tests/stdlib_dual_track.rs` 守护)。
+pub struct StdSource {
+    pub path: &'static str,
+    pub source: &'static str,
+}
+
+/// std 命名空间的实现后端(单一清单的两轨,ADR-0021 §分发)。
+#[derive(Clone, Copy)]
+pub enum StdBackend {
+    /// R2 原生层:Rust 绑定表(collection/test 是其中的名录特例)。
+    Native(&'static ModuleSpec),
+    /// R1 语言层:嵌入的纯 wlwl 源码,由 eval 侧解析、求值并缓存模块值。
+    Lang(&'static StdSource),
+}
+
+impl StdBackend {
+    pub fn path(&self) -> &'static str {
+        match self {
+            StdBackend::Native(spec) => spec.path,
+            StdBackend::Lang(src) => src.path,
+        }
     }
+
+    /// 导出绑定表。语言层模块的成员由 `.wll` 源码声明、eval 侧在加载
+    /// 时绑定,这里返回空切片;名册经 [`lang_exports`] 提取(镜像生成
+    /// 器与锁测试的对账口径)。
+    pub fn functions(&self) -> &'static [(&'static str, StdFn)] {
+        match self {
+            StdBackend::Native(spec) => spec.functions,
+            StdBackend::Lang(_) => &[],
+        }
+    }
+}
+
+/// R1 源码模块登记表(单一清单的语言层半边)。新模块:在此登记 +
+/// 更新 crate 目录注释 + 通过守门测试。
+pub static LANG_SOURCES: &[StdSource] = &[
+    StdSource {
+        path: "wlwl:std.str",
+        source: include_str!("../wl/std/str.wll"),
+    },
+    StdSource {
+        path: "wlwl:std.math",
+        source: include_str!("../wl/std/math.wll"),
+    },
+];
+
+/// 从 R1 源码提取导出名:扫描 `EXPORT([...])` 声明中的字符串字面量。
+///
+/// 这是镜像生成器(附录 A)与测试的对账口径;运行期加载不走这里 ——
+/// eval 侧由 AST 的 `collect_exports` 提取(权威口径),两边不一致会
+/// 被 `stdlib_appendix_a_sync` 锁测试抓出来。只对随本 crate 分发的
+/// 受控格式负责:每条声明一行、双引号名字。
+pub fn lang_exports(source: &str) -> Vec<String> {
+    let mut out = Vec::new();
+    for line in source.lines() {
+        let t = line.trim();
+        let Some(rest) = t.strip_prefix("EXPORT(") else {
+            continue;
+        };
+        let (Some(a), Some(b)) = (rest.find('['), rest.rfind(']')) else {
+            continue;
+        };
+        for name in rest[a + 1..b].split('"').skip(1).step_by(2) {
+            if !name.is_empty() {
+                out.push(name.to_string());
+            }
+        }
+    }
+    out
+}
+
+/// Resolve a `wlwl:std.X` path to its implementation backend. Returns
+/// `None` for anything that doesn't match — the eval side will then
+/// surface `E0040 module 'X' not found` (treating the namespace path
+/// as a module name).
+pub fn resolve(path: &str) -> Option<StdBackend> {
+    if let Some(src) = LANG_SOURCES.iter().find(|s| s.path == path) {
+        return Some(StdBackend::Lang(src));
+    }
+    let spec = match path {
+        "wlwl:std.io" => &io::SPEC,
+        "wlwl:std.fs" => &fs::SPEC,
+        "wlwl:std.json" => &json::SPEC,
+        "wlwl:std.ai" => &ai::SPEC,
+        "wlwl:std.agent" => &agent::SPEC,
+        "wlwl:std.format" => &format::SPEC,
+        "wlwl:std.collection" => &collection::SPEC,
+        "wlwl:std.test" => &test::SPEC,
+        _ => return None,
+    };
+    Some(StdBackend::Native(spec))
 }
 
 /// Error type used at the std / eval boundary. Carries the spec's
@@ -258,28 +347,28 @@ mod tests {
     #[test]
     fn resolve_io() {
         let s = resolve("wlwl:std.io").expect("io resolves");
-        assert_eq!(s.path, "wlwl:std.io");
+        assert_eq!(s.path(), "wlwl:std.io");
     }
     #[test]
     fn resolve_fs() {
         let s = resolve("wlwl:std.fs").expect("fs resolves");
-        assert_eq!(s.path, "wlwl:std.fs");
+        assert_eq!(s.path(), "wlwl:std.fs");
     }
     #[test]
     fn resolve_json() {
         let s = resolve("wlwl:std.json").expect("json resolves");
-        assert_eq!(s.path, "wlwl:std.json");
+        assert_eq!(s.path(), "wlwl:std.json");
     }
     #[test]
     fn resolve_ai() {
         let s = resolve("wlwl:std.ai").expect("ai resolves");
-        assert_eq!(s.path, "wlwl:std.ai");
+        assert_eq!(s.path(), "wlwl:std.ai");
     }
     #[test]
     fn resolve_agent() {
         let s = resolve("wlwl:std.agent").expect("agent resolves");
-        assert_eq!(s.path, "wlwl:std.agent");
-        let names: Vec<&str> = s.functions.iter().map(|(n, _)| *n).collect();
+        assert_eq!(s.path(), "wlwl:std.agent");
+        let names: Vec<&str> = s.functions().iter().map(|(n, _)| *n).collect();
         assert_eq!(names, vec!["TASK", "TOOL", "CALL_TOOL", "MODEL", "CONTEXT"]);
     }
 
@@ -287,8 +376,8 @@ mod tests {
     fn resolve_format() {
         // Phase B5 (spec v0.4 §15.8): wlwl:std.format exposes FORMAT.
         let s = resolve("wlwl:std.format").expect("format resolves");
-        assert_eq!(s.path, "wlwl:std.format");
-        let names: Vec<&str> = s.functions.iter().map(|(n, _)| *n).collect();
+        assert_eq!(s.path(), "wlwl:std.format");
+        let names: Vec<&str> = s.functions().iter().map(|(n, _)| *n).collect();
         assert_eq!(names, vec!["FORMAT"]);
     }
     #[test]
@@ -300,12 +389,12 @@ mod tests {
         // `wlwl-eval::collection` and are bound to the imported env by
         // `Evaluator::load_std` (which detects this path).
         let s = resolve("wlwl:std.collection").expect("collection resolves");
-        assert_eq!(s.path, "wlwl:std.collection");
+        assert_eq!(s.path(), "wlwl:std.collection");
         assert!(
-            s.functions.is_empty(),
+            s.functions().is_empty(),
             "collection SPEC must be a name catalog (functions empty); \
              actual: {:?}",
-            s.functions.iter().map(|(n, _)| *n).collect::<Vec<_>>()
+            s.functions().iter().map(|(n, _)| *n).collect::<Vec<_>>()
         );
     }
     #[test]
@@ -314,12 +403,12 @@ mod tests {
         // catalog — same std-boundary rationale as collection. Real
         // callback-aware impls in `wlwl-eval::test`.
         let s = resolve("wlwl:std.test").expect("test resolves");
-        assert_eq!(s.path, "wlwl:std.test");
+        assert_eq!(s.path(), "wlwl:std.test");
         assert!(
-            s.functions.is_empty(),
+            s.functions().is_empty(),
             "test SPEC must be a name catalog (functions empty); \
              actual: {:?}",
-            s.functions.iter().map(|(n, _)| *n).collect::<Vec<_>>()
+            s.functions().iter().map(|(n, _)| *n).collect::<Vec<_>>()
         );
     }
     #[test]
@@ -436,7 +525,8 @@ mod tests {
         &test::SPEC,
     ];
 
-    /// crate 级目录(`//! Modules exposed:` 段)必须列出每个模块。
+    /// crate 级目录(`//! Modules exposed:` 段)必须列出每个模块
+    /// (R2 与 R1 都要登记)。
     #[test]
     fn every_module_is_listed_in_the_crate_catalog() {
         let catalog = include_str!("lib.rs");
@@ -448,6 +538,65 @@ mod tests {
                 spec.path
             );
         }
+        for src in LANG_SOURCES {
+            assert!(
+                catalog.contains(src.path),
+                "`{}` is an R1 std module but missing from the crate-level \
+                 module catalog in lib.rs",
+                src.path
+            );
+        }
+    }
+
+    /// R1 语言层守门:每个登记的源码模块都能被 `resolve` 命中为
+    /// `Lang` 后端、导出名符合 UPPER_SNAKE 且有对应的 `LET` 绑定。
+    #[test]
+    fn lang_sources_resolve_and_export_upper_snake() {
+        for src in LANG_SOURCES {
+            match resolve(src.path) {
+                Some(StdBackend::Lang(s)) => assert_eq!(s.path, src.path),
+                other => panic!(
+                    "{} must resolve to the Lang backend, got {:?}",
+                    src.path,
+                    other.map(|b| b.path())
+                ),
+            }
+            let exports = lang_exports(src.source);
+            assert!(
+                !exports.is_empty(),
+                "{} must declare at least one EXPORT member",
+                src.path
+            );
+            let mut seen = std::collections::HashSet::new();
+            for name in &exports {
+                assert!(
+                    name.chars()
+                        .all(|c| c.is_ascii_uppercase() || c == '_' || c.is_ascii_digit()),
+                    "{} exports `{name}`, which is not UPPER_SNAKE",
+                    src.path
+                );
+                assert!(
+                    seen.insert(name.as_str()),
+                    "{} exports `{name}` twice",
+                    src.path
+                );
+                assert!(
+                    src.source.contains(&format!("LET({name},")),
+                    "{} exports `{name}` but no `LET({name}, ...)` binding exists",
+                    src.path
+                );
+            }
+        }
+    }
+
+    /// `lang_exports` 与 eval 侧 AST 口径的形状一致性:M1 占位成员的
+    /// 源码里每个 EXPORT 数组只含合法名字。运行期真正的对账由
+    /// `wlwl-eval::stdlib_mirror` 的附录 A 镜像 + 锁测试承担。
+    #[test]
+    fn lang_exports_scan_handles_multi_member_lines() {
+        let md = lang_exports("LET(A, 1);\nEXPORT([\"A\", \"B_2\"]);\n");
+        assert_eq!(md, vec!["A".to_string(), "B_2".to_string()]);
+        assert!(lang_exports("LET(A, 1);\n").is_empty());
     }
 
     /// `src/` 下每个模块文件都必须在自己的文档头里写清自己的路径,且
@@ -499,7 +648,8 @@ mod tests {
             let resolved = resolve(spec.path)
                 .unwrap_or_else(|| panic!("{} must resolve to a SPEC", spec.path));
             assert_eq!(
-                resolved.path, spec.path,
+                resolved.path(),
+                spec.path,
                 "SPEC.path must match its resolve() key"
             );
             let mut seen = std::collections::HashSet::new();

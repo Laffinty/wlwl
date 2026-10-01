@@ -20,6 +20,7 @@
 
 #![allow(unpredictable_function_pointer_comparisons)]
 
+use std::borrow::Cow;
 use std::cell::{Ref, RefCell};
 use std::collections::{HashMap, HashSet};
 use std::path::Path;
@@ -831,8 +832,10 @@ struct LoadedModule {
 /// root containment, manifest namespaces, relative walking) instead of
 /// keeping a second copy that would drift.
 enum ResolvedSource {
-    /// Built-in std module: no on-disk source, hence no sidecar signature.
-    Std(&'static wlwl_std::ModuleSpec),
+    /// Built-in std module backend: a native binding table (R2) or an
+    /// embedded pure-wlwl source (R1 — stdlib foundation v0.11, ADR-0021).
+    /// No on-disk source for either, hence no sidecar signature.
+    Std(wlwl_std::StdBackend),
     /// A `.wll` file plus the module name used for cache keys and messages.
     File { path: PathBuf, name: String },
 }
@@ -857,6 +860,12 @@ struct ProjectContext {
     /// Shared with sub-loaders so a cycle anywhere in the import
     /// graph is detected.
     loading: Rc<RefCell<Vec<String>>>,
+    /// Dev-only override directory for R1 std module loading (stdlib
+    /// foundation v0.11 / ADR-0021): when set, language-layer sources
+    /// load from `<dir>/<name>.wll` instead of the embedded copy. Set
+    /// once at entry-point construction (`--std-src` / `WLWL_STD_SRC`);
+    /// must not change the export surface.
+    std_src: Option<PathBuf>,
 }
 
 #[derive(Debug, Clone)]
@@ -882,21 +891,23 @@ impl ModuleLoader {
                 project_root,
                 manifest,
                 loading: Rc::new(RefCell::new(Vec::new())),
+                std_src: None,
             },
         }
     }
 
     /// Load a module referenced by `path`: resolve it (see
     /// [`ModuleLoader::resolve_source`] for the four accepted forms and
-    /// their resolution order), then load std catalogs or parse +
-    /// evaluate a `.wll` file. Results are cached under the spec string,
-    /// so a second `IMPORT` of the same spec reuses the same env.
+    /// their resolution order), then load std modules (native or
+    /// language-layer) or parse + evaluate a `.wll` file. Results are
+    /// cached under the spec string, so a second `IMPORT` of the same
+    /// spec reuses the same env.
     fn load(&mut self, path: &str) -> WlwlResult<LoadedModule> {
         if let Some(cached) = self.cache.get(path) {
             return Ok(cached.clone());
         }
         match self.resolve_source(path)? {
-            ResolvedSource::Std(spec) => self.load_std(spec, path),
+            ResolvedSource::Std(backend) => self.load_std(backend, path),
             ResolvedSource::File { path, name } => self.load_file_module(&path, &name),
         }
     }
@@ -905,7 +916,9 @@ impl ModuleLoader {
     /// read from the module body, nothing is evaluated, no cache entry is
     /// created. Four forms, in resolution order:
     ///
-    /// - `wlwl:std.X`: built-in std module (`wlwl_std::resolve`).
+    /// - `wlwl:std.X`: built-in std module — native binding table (R2) or
+    ///   embedded pure-wlwl source (R1, stdlib foundation v0.11 / ADR-0021;
+    ///   `wlwl_std::resolve` returns the backend).
     /// - `myteam:utils`: resolved against the project manifest; an unknown
     ///   namespace or dependency is E0043.
     /// - `./foo` / `../bar`: relative to this loader's `base_dir`, then
@@ -915,9 +928,9 @@ impl ModuleLoader {
     /// Mirrors the v0.2 single-directory behaviour so old programs keep
     /// working.
     fn resolve_source(&self, path: &str) -> WlwlResult<ResolvedSource> {
-        // 1. `wlwl:std.X` — std library.
-        if let Some(spec) = wlwl_std::resolve(path) {
-            return Ok(ResolvedSource::Std(spec));
+        // 1. `wlwl:std.X` — std library (R2 native or R1 language-layer).
+        if let Some(backend) = wlwl_std::resolve(path) {
+            return Ok(ResolvedSource::Std(backend));
         }
 
         // 2. `ns:name` — third-party / user namespace.
@@ -1018,10 +1031,20 @@ impl ModuleLoader {
         Err(self.diag_module_not_found(path, &in_module))
     }
 
-    /// Load a std module by its `ModuleSpec` without consulting the
-    /// cache. Caches the result under the original path so a second
-    /// IMPORT of the same std module reuses the same env.
-    fn load_std(
+    /// Load a std module by its backend. Dispatches to the native
+    /// binding-table path (R2) or the embedded-source path (R1).
+    /// Results are cached under the full namespace path either way.
+    fn load_std(&mut self, backend: wlwl_std::StdBackend, path: &str) -> WlwlResult<LoadedModule> {
+        match backend {
+            wlwl_std::StdBackend::Native(spec) => self.load_std_native(spec, path),
+            wlwl_std::StdBackend::Lang(src) => self.load_std_lang(src, path),
+        }
+    }
+
+    /// Load an R2 (native) std module by its `ModuleSpec` without
+    /// consulting the cache. Caches the result under the original path
+    /// so a second IMPORT of the same std module reuses the same env.
+    fn load_std_native(
         &mut self,
         spec: &'static wlwl_std::ModuleSpec,
         path: &str,
@@ -1080,6 +1103,89 @@ impl ModuleLoader {
             // there is no `SEALED` node to read, and no file to hang a
             // sidecar signature on.
             sealed: false,
+        };
+        self.cache.insert(path.to_string(), result.clone());
+        Ok(result)
+    }
+
+    /// Load an R1 (pure-wlwl) std module — stdlib foundation v0.11
+    /// (ADR-0021). The embedded source is parsed and evaluated in a
+    /// sub-evaluator exactly like a file module; only `EXPORT`ed names
+    /// land in the module env, so R1 members can be closures and can
+    /// call global builtins (R0) and other std namespaces.
+    ///
+    /// The dev-only override channel (`--std-src <dir>` / env
+    /// `WLWL_STD_SRC`, stored in `ProjectContext::std_src`) swaps the
+    /// embedded source for `<dir>/<name>.wll`. It must not change the
+    /// export surface — locked by `wlwl-cli/tests/stdlib_dual_track.rs`.
+    fn load_std_lang(
+        &mut self,
+        src: &'static wlwl_std::StdSource,
+        path: &str,
+    ) -> WlwlResult<LoadedModule> {
+        // Override file name: the last dot-segment of the namespace path
+        // ("wlwl:std.str" -> "str.wll").
+        let module_name = path.rsplit('.').next().unwrap_or(path).to_string();
+        // Cycle guard shaped like load_file_module: an R1 std source may
+        // IMPORT other modules (including sibling std namespaces).
+        if self.project.loading.borrow().iter().any(|m| m == path) {
+            return Err(self.diag_circular(path));
+        }
+        self.project.loading.borrow_mut().push(path.to_string());
+        // Dev override: same export surface, source taken from disk.
+        let (source, display): (Cow<'_, str>, String) = match &self.project.std_src {
+            Some(dir) => {
+                let file = dir.join(format!("{module_name}.wll"));
+                match std::fs::read_to_string(&file) {
+                    Ok(s) => (Cow::Owned(s), file.display().to_string()),
+                    Err(_) => {
+                        self.project.loading.borrow_mut().pop();
+                        return Err(self.diag_module_not_found(path, &file));
+                    }
+                }
+            }
+            None => (Cow::Borrowed(src.source), path.to_string()),
+        };
+        let ast = match wlwl_parser::parse(&source, &display) {
+            Ok(a) => a,
+            Err(e) => {
+                self.project.loading.borrow_mut().pop();
+                return Err(e);
+            }
+        };
+        // Sub-loader shares the project context (cycle detection across
+        // the whole graph) and keeps this loader's base_dir so relative
+        // imports inside an R1 module resolve next to the importing file.
+        let sub_loader = ModuleLoader {
+            base_dir: self.base_dir.clone(),
+            cache: HashMap::new(),
+            project: self.project.clone(),
+        };
+        let mut sub = Evaluator::new_with_loader(sub_loader);
+        if let Err(e) = sub.eval_module(&ast) {
+            self.project.loading.borrow_mut().pop();
+            return Err(e);
+        }
+        let exports = collect_exports(&ast);
+        let mut env = Env::new();
+        for n in &exports {
+            if let Some(v) = sub.env.get(n) {
+                env.set_local(n.clone(), v.clone());
+            } else {
+                self.project.loading.borrow_mut().pop();
+                return Err(WlwlDiagnostic::new(
+                    ErrorCode::E0023,
+                    format!("EXPORT name '{}' is not bound in module '{}'", n, path),
+                    Location::point("<module>", 0, 0),
+                )
+                .into());
+            }
+        }
+        self.project.loading.borrow_mut().pop();
+        let result = LoadedModule {
+            env,
+            exports,
+            sealed: collect_sealed(&ast).is_some(),
         };
         self.cache.insert(path.to_string(), result.clone());
         Ok(result)
@@ -6769,6 +6875,12 @@ pub mod channel;
 
 pub mod protocol;
 
+/// [v0.11 M1-3 / ADR-0021] stdlib 规范附录 A 镜像生成器:R2 取
+/// `ModuleSpec` 绑定表、R1 取嵌入源码 `EXPORT` 声明,层归属登记在
+/// `NAMESPACE_META`。bin `gen-appendix-a` 把产出拼回 stdlib 规范,
+/// 锁测试 `stdlib_appendix_a_sync` 双向对账。
+pub mod stdlib_mirror;
+
 pub struct Evaluator {
     env: Env,
     /// Optional original source (for `source_line` in runtime diagnostics).
@@ -7000,11 +7112,25 @@ impl Evaluator {
         self.strict_types
     }
 
+    /// Dev-only override for R1 std module loading (stdlib foundation
+    /// v0.11 / ADR-0021): language-layer sources load from
+    /// `<dir>/<name>.wll` instead of the embedded copy. Non-stable
+    /// interface; must not change the export surface (locked by
+    /// `wlwl-cli/tests/stdlib_dual_track.rs`). Order-independent with
+    /// [`Evaluator::with_base_dir`].
+    pub fn with_std_src(self, dir: PathBuf) -> Self {
+        self.loader.borrow_mut().project.std_src = Some(dir);
+        self
+    }
+
     /// Set the base directory used to resolve `IMPORT` paths. Must be
     /// called before `eval` when the program uses `IMPORT`.
     pub fn with_base_dir(mut self, dir: PathBuf) -> Self {
-        // Rebuild the loader with the new base_dir.
+        // Rebuild the loader with the new base_dir, preserving any
+        // std-source override set via `with_std_src`.
+        let std_src = self.loader.borrow().project.std_src.clone();
         self.loader = Rc::new(RefCell::new(ModuleLoader::new(dir)));
+        self.loader.borrow_mut().project.std_src = std_src;
         self
     }
 
