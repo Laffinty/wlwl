@@ -3,7 +3,7 @@
 | | |
 |---|---|
 | **审查对象** | 发布包 `wlwl-v0.11.0-x86_64-pc-windows-msvc`(wlwl.exe 报 `0.11.0`)+ 仓库 `D:\Project\wlwl`(commit `84d3f89`,main) |
-| **审查标尺** | 语言规范 `docs/spec/wlwl-spec-v0.11.md` · 标准库规范 `docs/stdlib/wlwl-stdlib-spec-v0.11.md` · 构建计划 `docs/plan/plan-v0.11.md` · 偏差台账 `deviations-v0.11.md`(D11-001~018)· ADR-0021/0022/0023 · CHANGELOG v0.11.0 条目 |
+| **审查标尺** | 语言规范 `docs/spec/wlwl-spec-v0.11.md` · 标准库规范 `docs/stdlib/wlwl-stdlib-spec-v0.11.md` · 构建计划与偏差台账(2026-10-01 已归档为 `docs/history/20261001.md`;本审查当时的原文在 git 历史)· ADR-0021/0022/0023 · CHANGELOG v0.11.0 条目 |
 | **审查方式** | ① 静态:四路并行源码审查(wlwl-std + R1 源码 / wlwl-value 值直通 / 双轨机制与 CLI / wlwl-skill 文本);② 动态:基于发布包 `wlwl.exe` 撰写并执行 **25 个 `.wll` 测试程序**(含错误路径、边界值、双轨覆盖、性能),全部测试文件置于发布包 `review-tests/` 目录;③ 依据动态使用体验评价 wlwl-skill |
 | **日期** | 2026-10-01 |
 
@@ -194,7 +194,7 @@
 本节记录**本报告每条结论的复核结果**。复核原则:不采信本报告(含静态审查与
 动态实测)也不采信台账与注释,以「现搭一条最小探针 + 跑当前 release 构建」
 为准;凡只在阅读层面成立的判断一律降级。处置详见
-`docs/plan/deviations-v0.11.md` 的 D11-019 / D11-020 / D11-021 与文末补记。
+`docs/history/20261001.md` 台账段的 D11-019 / D11-020 / D11-021 与文末补记。
 
 | 编号 | 复核 | 要点 |
 |---|---|---|

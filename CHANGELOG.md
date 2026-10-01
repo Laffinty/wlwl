@@ -10,8 +10,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 > This file tracks the **compiler / tooling** releases. The current spec is
 > **v0.11** (`docs/spec/wlwl-spec-v0.11.md`). Archived specs and all
 > historical material (build plans, deviation ledgers, reviews, daily logs)
-> are condensed in `docs/history/` (`20260902-09.md`, `20260915-22.md`);
-> full text is available via git history.
+> are condensed in `docs/history/` (`20260902-09.md`, `20260915-22.md`,
+> `20261001.md`); full text is available via git history.
 
 ## [Unreleased]
 
@@ -19,10 +19,18 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 Spec: **wlwl-spec-v0.11**(未变)。本版是 v0.11.0 审查
 (`docs/review/wlwl-v0.11.0-review.md`)的处置批次:**四个行为缺陷 + 两处
-构建/门禁漏洞**,外加台账与两册规范的对齐。全部条目均经现搭探针在 release
-构建上实测,复核结论见该报告第五部分。
+构建/门禁漏洞 + BOM 缺陷族**,外加台账与两册规范的对齐。全部条目均经现搭探针
+在 release 构建上实测,复核结论见该报告第五部分。
 
 ### Fixed
+- **带 UTF-8 BOM 的文件一律无法加载(BOM 缺陷族,偏差 D11-023 / D11-026)**。BOM
+  (`U+FEFF`)被粘进第一个标识符:`PRINT` 词法化成 `﻿PRINT`,报 `E0020`。
+  **四处同源落点**——`.wll` 源文件、`.wll.sig` 旁路签名文件、`wlwl.toml` 清单、
+  `wlwl.lock` 锁文件 —— 现各自在前导位置剥一个 BOM。`wlwl.toml` 那处后果最重:
+  它**降级为 `W0001` 且清单未加载**,而同一文件的 `[features]` 仍生效 ⇒ 同一文件
+  两条解析路径**分裂**。语言规范 §1.1 已同步扩写为「恰好剥一个前导 BOM」。
+  ⚠ 四处是**同族**而非四处独立缺陷:发现第一处时若不把同族落点一次列全,余下三处
+  会拖到下一个版本(实际就拖了)。
 - **`NEG(INT_MIN)` 静默回绕(审查 D-1)**。内建用裸 `-i`,release 档关掉溢出
   检查 ⇒ 取下界的负打出下界自己,并连带让 `std.math` 的 `ABS(INT_MIN)` 返回
   **负数**,而语言规范 §2.2 与标准库规范 §7 要求的都是 `E0034`。`-` 运算符
@@ -78,6 +86,29 @@ Spec: **wlwl-spec-v0.11**(未变)。本版是 v0.11.0 审查
   补入 v0.11 全部用户可见增量(两个新命名空间 16 个成员 + `ASSERT` 八假值
   breaking),修正若干示例的输出注释与处方级错误,并为「实测结论」加上验证
   版本标注纪律。
+- **`std.web` 立项、推进与终止(业主 2026-10-01 裁决,偏差 D11-037)**。v0.11.1
+  的主线是「用 wlwl 统一描述 HTML/CSS/JS」(`std.web`,一个命名空间三个发射器 +
+  行为最小化)。推进到 W4(CSS 侧)、成员面达 4 个(`PARSE_TEMPLATE` /
+  `EMIT_HTML` / `EMIT_CSS` / `TOKEN`)、门禁**全绿**时,业主判定项目失败:
+  ① 旗舰差异化(行为最小化判定表)的**输入** `{{ }}` 绑定既未实现也未排进任何
+  里程碑,做到 W4 才发现节点树里一个绑定都没有,而它的**消费者**(JS 发射器)
+  却被排在它前一个里程碑;② 作用域共推导依赖的 `@supports` 降级副本查实**两头都
+  错** —— 语法错(`at-rule()` 是函数式,不是 `(at-rule: …)`),且 `at-rule()` 的
+  支持集与 `@scope` **恰好互补**(仅 Chrome 148+,而 Firefox / Safari 不支持它却
+  支持 `@scope`)⇒ 守卫在每个该保护的浏览器上都判反;③ 预定成员面 9 个里 6 个
+  从未有明确归属。仓库已 `reset --hard` 回滚至 `1365e4e` + `force-push`,
+  **本版不含任何 `std.web` 代码**。失败记录与复活前置条件留档于
+  `docs/history/20261001.md`。**最值得带走的一条**:终止时门禁全绿,三个致命
+  问题**没有一条能被任何自动化门禁发现** —— 门禁测「写出来的东西」,测不出
+  「计划的前提是否成立」。
+- 偏差台账**归档**:`docs/plan/` 下三份文件(构建计划 v0.11、构建计划 v0.11.1、
+  偏差台账)按 `docs/history/` 的既有规则合并精简为
+  [`docs/history/20261001.md`](docs/history/20261001.md),原文在 git 历史;
+  `docs/plan/` 只留状态表。
+- 新增 [`docs/spec/wlwl-agent-spec-v0.11.md`](docs/spec/wlwl-agent-spec-v0.11.md):
+  专供 AI agent 的工作说明(写 wlwl 的结构约定、平台事实、已知坑)。**与上面两册
+  冲突时以人读规范为准** —— 人读规范只写规范条文,「为什么这么写」这类实现机制
+  推理一律归 agent spec。
 
 ## [v0.11.0] — 2026-10-01
 
