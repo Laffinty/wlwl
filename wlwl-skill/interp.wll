@@ -3,9 +3,17 @@
 // Each labelled block exercises one feature of the v0.6 spec
 // (see the archived spec digests in docs/history/). Output is documented
 // inline at the end of each block. Total: 13 blocks (A..N).
+//
+// [re-verified against wlwl 0.11.0, 2026-10-01] Every `// comment` after a
+// PRINT below is the observed output of `wlwl run interp.wll` run from this
+// directory. Re-run it to re-check.
 
 // (A) truthiness — all 8 falsy values from §2.3.
-LET(falsy_check, FUN((label, v), IF(v, FORMAT("{0}: truthy", [label]), FORMAT("{0}: falsy", [label]))));
+// FORMAT is VARIADIC (spec §10.7): `FORMAT("{0}: falsy", label)` puts `label`
+// in `{0}`. The tempting `FORMAT("{0}: falsy", [label])` wraps it in a
+// single-element array, so `{0}` renders the WHOLE list and the output becomes
+// `[FALSE]: falsy`. That is antipattern #9.
+LET(falsy_check, FUN((label, v), IF(v, FORMAT("{0}: truthy", label), FORMAT("{0}: falsy", label))));
 PRINT(falsy_check("FALSE", FALSE));         // FALSE: falsy
 PRINT(falsy_check("NULL",  NULL));          // NULL: falsy
 PRINT(falsy_check("0",     0));             // 0: falsy
@@ -115,8 +123,14 @@ LET(r_err, ERR("boom"));
 LET(classify, FUN((r),
   MATCH(r, [[OK(x), "OK(${x})"], [ERR(e), "ERR(${e})"]])
 ));
-PRINT(classify(r_ok));                       // "OK(42)"
-PRINT(classify(r_err));                      // "ERR(boom)"
+PRINT(classify(r_ok));                       // OK(42)
+// The ERR arm does NOT print. `classify` returns an ERR, and feeding an ERR
+// straight into PRINT propagates it (§8.2) into a position where §8.5 drops it
+// at top level: no output, no diagnostic, exit 0. To see the arm, bind the
+// result and consume it explicitly.
+LET(v_err, classify(r_err));                 // v_err is an ERR RESULT
+PRINT("ERR arm: is_err=${IS_ERR(v_err)} payload=${ERR_PAYLOAD(v_err)}");
+                                       // ERR arm: is_err=TRUE payload=boom
 
 // (M) IMPORT — modules and the wlwl:std.* namespaces (§9.2).
 IMPORT("wlwl:std.json", ["STRINGIFY", "PARSE"]);

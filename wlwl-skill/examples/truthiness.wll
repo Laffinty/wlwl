@@ -10,9 +10,16 @@
 // then-branch does NOT fire — that is consumer semantics, not
 // truthiness. `BOOL(ERR("x"))` returns BOOL (FALSE) without
 // consuming the payload, per §8.3.
+//
+// [re-verified against wlwl 0.11.0, 2026-10-01] The labels below render as
+// `FALSE: falsy`, not `[FALSE]: falsy`, because FORMAT is variadic (§10.7):
+// `{0}` must receive `label` itself, not `[label]`. Passing the single-element
+// array `[label]` is antipattern #9 and brackets the output.
 
+// FORMAT is VARIADIC: the label goes in as its own argument, NOT wrapped in a
+// list. `[label]` would render the whole list at {0} -> "[FALSE]: falsy".
 LET(classify, FUN((label, v),
-  IF(v, FORMAT("{0}: truthy", [label]), FORMAT("{0}: falsy", [label]))
+  IF(v, FORMAT("{0}: truthy", label), FORMAT("{0}: falsy", label))
 ));
 
 PRINT(classify("FALSE", FALSE));

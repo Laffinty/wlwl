@@ -32,6 +32,7 @@
 - [§22. Notes on `interp.wll`](#22-notes-on-interpwll)
 - [§23. v0.9 增量备忘](#23-v09-)
 - [§24. v0.10 增量备忘 — 静态契约](#24-v010-)
+- [§25. v0.11 增量备忘 — `std.str` / `std.math` / `ASSERT` breaking](#25-v011-)
 
 ---
 
@@ -200,10 +201,13 @@ Uncaught ERR → `E0102`, exit 1.
 
 ## §9. Standard library catalogue (§10)
 
-See `SKILL.md` pointers. Highlights: `wlwl:std.collection` (MAP/FILTER/…),
-`std.json`, `std.fs`, `std.test`, `std.format`, `std.io`, `std.ai`,
-`std.agent`. Concurrent and OOP primitives are **global**, not under
-`wlwl:std.*`.
+Full member lists live with the v0.11 namespaces: `std.collection` /
+`std.json` / `std.fs` / `std.test` / `std.format` / `std.io` / `std.ai` /
+`std.agent` are listed in `SKILL.md` "Standard library pointers"; the two
+**v0.11-new** namespaces `std.str` and `std.math` have signed tables in §25
+below. Concurrent and OOP primitives are **global**, not under `wlwl:std.*`.
+The authoritative registry of every global builtin (106 entries) is
+`../docs/appendix_G.md`.
 
 ## §10. Error codes (§11.2, §11.3)
 
@@ -256,17 +260,35 @@ default arm) is a warning in every configuration — see spec §11.3.
 
 `W0001` **manifest problem** — `wlwl.toml` is malformed (typically a missing `version` or `entry` in `[package]`). v0.10 swallowed this silently; v0.10.1 reports it. The `[features]` table is still applied if it parsed, so a `[features]`-only manifest both works *and* warns |
 `W0010` unused LET · `W0011` unused param · `W0012` duplicate LET ·
-`W0013` IF branches inconsistent · `W0015` integer overflow (saturated) ·
-`W0020` mixed dict literal · `W0030` shadow · `W0040` TODO(agent) ·
+`W0013` IF branches inconsistent ·
+`W0020` mixed dict literal · `W0030` shadow ·
 `W0051` deprecated alias · `W0053` canonical-form deviation (see §24.4) ·
 **`W0065`** deadlock L1 soft warning (`strict_deadlock_detect = false`) ·
 **`W0066`** `CHANNEL_NEW` large buf (above `channel_large_buf_threshold`) ·
 **`W0110`–`W0116`** the `gradual_typing = "warn"` tier of `E0110`–`E0116` ·
 **`W0117`** `MATCH` unreachable clause / dead default arm (**no `E` twin, ever**).
 
+**Two codes that do not exist**: `W0015` (integer overflow saturated+warn) and
+`W0040` (unhandled `TODO(agent):`). The spec (§11.2) explicitly declines to
+define them — integer overflow *raises* `E0035`, there is no saturating path to
+warn about, and the lexer does not retain comment text, so there is no input to
+check. Do not expect either from the compiler.
+
 ### Exit codes (§11.4)
 
-`0` ok · `1` diagnostic (incl. `E0065`) · `101` impl crash (bug).
+| Code | Meaning |
+|------|---------|
+| `0` | ok |
+| `1` | diagnostic — runtime (`E0020` undefined name, `E0022` arity, `E0100` PANIC, `E0102` top-level `ERR`, `E0065` deadlock, …) **or** a static contract caught by the gate (`E0110`–`E0116`) |
+| `2` | command-line usage error — unknown subcommand, missing required argument, mutually exclusive options |
+| `3` | **an input file failed to parse** — exactly the 7 parser codes `E0001` `E0002` `E0003` (lexical) and `E0010` `E0011` `E0012` `E0013` (syntax). A malformed `.wll.sig` also lands here |
+| `101` | implementation crash — a bug, not a user error |
+
+`check` and `run` share this table, so they must agree on parse failures.
+`E0014` is **not** in the `3` bucket: it is an evaluation-position error
+(`YIELD`/`RETURN` misplaced) in an otherwise legal file, so the exit code is `1`.
+> *Measured on wlwl 0.11.0 (2026-10-01): `wlwl bogus` → `2`; `wlwl check` with no
+> `<FILE>` → `2`; unparsable source → `3`; `PRINT(NOPE)` under `run` → `1`.*
 
 ## §11. Display / STR quirks (§2.5)
 
@@ -286,8 +308,16 @@ default arm) is a warning in every configuration — see spec §11.3.
 ## §12. INDEX vs `xs[i]` (§10.4, §4.5)
 
 `xs[i]` is subscript read; OOB → `E0036`. `INDEX(xs, v)` is search →
-`-1` if missing (not an error). `INDEX_SET` rejects STRING receiver
+**1-based** position of `v`, or `-1` if missing (not an error). `INDEX_SET` rejects STRING receiver
 (`E0030`).
+
+**⚠ `INDEX` is 1-based; `xs[i]` and `INDEX_GET` are 0-based.** The spec
+(§4.5) calls this the easiest trap in the section: `INDEX([7, 8, 9], 8)` → `2`,
+while `INDEX_GET([7, 8, 9], 1)` → `8`. The two bases are deliberately opposite,
+so never round-trip a position from one into the other.
+> *Measured on wlwl 0.11.0 (2026-10-01):* with `xs = [10, 20, 30]` —
+> `INDEX(xs, 10)`=`1`, `INDEX(xs, 20)`=`2`, `INDEX(xs, 99)`=`-1`,
+> `INDEX_GET(xs, 0)`=`10`, `INDEX_GET(xs, 1)`=`20`, `xs[0]`=`10`, `xs[1]`=`20`.
 
 **Literal subscripts** (§A.2 grammar `PostfixExpr = Primary { Postfix }`):
 - Array literal: `[1, 2, 3][0]` → `1`
@@ -305,7 +335,8 @@ SUB("Hello, world", 0)      → "Hello, world"  // 2-arg default
 SUB("Hello", 0, -1)         → ""          // negative len → 0
 SUB("Hello", -1, 1)         → "o"         // negative start = from tail
 ```
-Third arg is **length**, not end-index. Migration: `SUB(s, start, end_old)` → `SUB(s, start, -(start, end_old))` or `SLICE(s, start, end_old)` (SLICE on arrays is start/end).
+Third arg is **length**, not end-index. Migration: `SUB(s, start, end_old)` → `SUB(s, start, NEG(-(end_old, start)))` or `SLICE(s, start, end_old)` (SLICE on arrays is start/end). The subtraction order matters: length is `end_old − start`, so `-(end_old, start)`, **not** `-(start, end_old)` — the latter yields a negative length and `SUB` returns `""`. `-` is a 2-arg builtin only (`-(5)` is an `E0022`), so negate with `NEG`.
+> *Measured on wlwl 0.11.0 (2026-10-01): `NEG(-(12, 7))` = `-5` → `SUB("Hello, world", 7, -5)` = `""`; `NEG(-(7, 12))` = `5` → `SUB("Hello, world", 7, 5)` = `"world"`.*
 
 **FORMAT templates** (§10.7): `FORMAT(template, args...)`. `{N}` is the
 `N`th variadic arg (template is index -1). `{name}` is the first DICT
@@ -580,11 +611,11 @@ program that adds no annotation and ships no `.sig` behaves exactly as before.
 | 7 | §11.2 / §11.3 | **Codes**: `E0110`–`E0116` / `W0110`–`W0117` added, all compile-time only; `W0117` has **no** `E0117` |
 | 8 | §1.4 | **Keyword table unchanged** — `SEALED` is prefix-call form, not a keyword, so the reserved-form set stays empty |
 
-### §24.1 Annotation grammar traps (measured against the reference impl)
+### §24.1 Annotation grammar traps (measured against the reference impl, re-verified on wlwl 0.11.0 / 2026-10-01)
 
 1. **`ARRAY` requires brackets.** A bare `ARRAY` is `E0010`. But a bare
    `DICT` / `OPTION` / `RESULT` parses as an *opaque named type* with **no
-   error** — verified: `LET(d, FUN((x: DICT) : INTEGER, 1))` runs clean.
+   error** — verified on wlwl 0.11.0: `LET(d, FUN((x: DICT) : INTEGER, 1))` runs clean.
 2. **Angle-bracket and arrow forms are parse errors.** `DICT<STRING, INTEGER>`
    → `E0011 expected ')', got Gt`; `FUN(INTEGER) -> STRING` → `E0012
    expected ',', got Minus`.
@@ -596,7 +627,8 @@ program that adds no annotation and ships no `.sig` behaves exactly as before.
    ("a type constraint may only follow a bare type variable … not a type like
    `ARRAY[…]` or `DICT[…]`").
    > ⚠ Spec §5.2.1 fact #3 says `E0012` for this; the implementation says
-   > `E0010`. `E0012` is the return-type-mismatch code and is unrelated.
+   > `E0010`. The spec's code is doubly wrong: `E0012` is a *syntax* error, and
+   > the return-type-mismatch code is **`E0112`** (static contract, §11.2).
 
 ### §24.2 `wlwl.toml` — the two v0.10 feature keys
 
@@ -619,14 +651,24 @@ match_exhaustiveness = "error"   # "off" | "warn" | "error"
 
 | Feature | Default | Effect |
 |---------|---------|--------|
-| `gradual_typing` | `off` | `warn` → `W0110`–`W0112`; `error` → `E0110`–`E0112` (blocking) |
+| `gradual_typing` | `off` | `warn` → `W0110`–`W0115`; `error` → `E0110`–`E0115` (blocking) — annotations **and** module contracts |
 | `match_exhaustiveness` | **follows `gradual_typing`** | `E0116`/`W0116` non-exhaustive + `W0117` unreachable clauses |
 
-**`gradual_typing` governs `E0110`–`E0112` only** — *not* `E0113`–`E0116`. Verified
-against the implementation: `main.rs` documents `warn` as "report `W0110`-`W0112`"
-and `error` as "report `E0110`-`E0112`, block with exit 1"; the key is absent →
-`MatchExhaustivenessSetting::following(gradual)`, with a lock test
-(`match_exhaustiveness_follows_gradual_typing_when_absent`) on that default.
+**`gradual_typing` governs `E0110`–`E0115`** — *not* `E0116`. The first three are
+the annotation mismatches; the second three are the module-contract mismatches
+(§9.6). `E0116` follows the other switch. Implementation note
+(`wlwl-types/src/diag.rs`): *"`gradual_typing` 管类型诊断（`E0110`-`E0112` +
+Step 6 的模块契约）"*. (An older doc comment in `main.rs` said only
+`W0110`-`W0112` / `E0110`-`E0112`; that comment undercounts and is not the
+behaviour.)
+> *Measured on wlwl 0.11.0 (2026-10-01), all three module-contract codes, each
+> with a deliberately wrong `foo.wll.sig` and no other change:*
+> - `E0113` — importer names a symbol the signature does not declare. Key
+>   absent → the unrelated **runtime** `E0023`; key on → `E0113`, exit 1.
+> - `E0114` — signature declares a name the module never exports. Key absent →
+>   **exit 0, zero output**; key on → `E0114`, exit 1.
+> - `E0115` — signature type conflicts with the implementation annotation.
+>   Key absent → **exit 0**; key on → `E0115`, exit 1.
 
 Practical consequence: a manifest that writes only
 `gradual_typing = "error"` has **`E0116` switched on as well**, whether or not
@@ -639,7 +681,7 @@ you intended it. Write both keys explicitly when you care about the difference.
 
 | Command | What it does |
 |---------|--------------|
-| `wlwl check <file>` | parse + name resolution + static-contract diagnostics; **walks the import graph**, so it is where module signatures (`E0113`–`E0115`) actually surface. Not to be confused with `wlwl run` |
+| `wlwl check <file>` | parse + unused-binding warnings (`W0010`–`W0012`) + static-contract diagnostics when the manifest enables them. It **walks the import graph**, so it is where module signatures (`E0113`–`E0115`) actually surface. **It does NOT do name resolution** (spec §11.4) — `wlwl check` on `PRINT(NOPE)` exits 0; only `wlwl run` reports `E0020`. Not to be confused with `wlwl run` |
 | `wlwl ast <file>` | dump the parsed AST (text or jsonl) — useful when a parse error points somewhere surprising |
 | `wlwl sig <file>` | print the module's signature (text or JSON) |
 | `wlwl sig-gen <file>` | write/refresh the `*.wll.sig` sidecar |
@@ -647,7 +689,9 @@ you intended it. Write both keys explicitly when you care about the difference.
 | `wlwl schema` | type system + constraints + static-contract codes as JSON |
 | `wlwl lsp` | stdio JSON-RPC thin shell: `diagnostics` / `definition` / `hover` + registry-driven completion (no `rename`, no `format`) |
 
-`wlwl fmt` / `wlwl fmt --check`: canonical form per spec §16.3. **`--check`
+`wlwl fmt` / `wlwl fmt --check`: canonical form per spec **§A.3** (v0.11 moved
+the formatter out of the old §16.3 into appendix A.3 — "§16.3" no longer
+resolves). **`--check`
 exits 1 with `W0053` when the source is not canonical.** Two things to know:
 
 - **The canonical form has no trailing `;` on the last statement.**
@@ -674,4 +718,93 @@ under `examples/` are hand-written teaching material and are **not** canonical;
 |------|------|------|
 | 权威规范 | `../docs/spec/wlwl-spec-v0.11.md` | 唯一真相源 |
 | 历史归档(v0.6–v0.10 精简) | `../docs/history/20260902-09.md` / `20260915-22.md` | 旧版上下文(原文在 git 历史) |
-| 内建注册表 | `../docs/appendix_G.md` | 110 条内建单一真相源 |
+| 内建注册表 | `../docs/appendix_G.md` | 106 条内建单一真相源 |
+
+### §24.6 Standard library spec
+
+`../docs/stdlib/wlwl-stdlib-spec-v0.11.md` — per-namespace signatures, `std.str`
+§6, `std.math` §7, `std.test` §8.
+
+---
+
+## §25. v0.11 增量备忘 — `std.str` / `std.math` / `ASSERT` breaking
+
+v0.11 renumbers the spec (the formatter moved to **§A.3**) *and* adds real
+content: two new import-gated namespaces and one **breaking** change to
+`ASSERT`. Nothing here is reachable from the v0.10 notes above.
+
+Both namespaces are `IMPORT`-gated like every other `wlwl:std.*` member — none
+is a global builtin, so an unqualified call is `E0020: undefined name`
+(that includes `MIN` / `MAX`, which are easy to assume are global; they are not).
+
+### §25.1 `wlwl:std.str` — string extensions (stdlib §6, new in v0.11)
+
+Index base is the same as `SUB`: codepoints, and **negative counts from the
+tail**, so `CHAR_AT("abc", -1)` is `"c"` rather than out-of-range.
+
+| Signature | Behaviour | Failure |
+|-----------|-----------|---------|
+| `JOIN(arr, sep) -> STRING` | each element rendered with `STR`, joined by `sep`; empty array → `""` | — |
+| `SPLIT_LINES(s) -> ARRAY` | split on `\n`, strip a trailing `\r`; a trailing newline yields no empty tail element; `""` → `[]`; no newline → `[s]` | — |
+| `CHAR_AT(s, i) -> STRING` | the `i`-th codepoint; equivalent to `SUB(s, i, 1)` | out-of-range as `SUB` |
+| `COUNT(s, sub) -> INTEGER` | **non-overlapping** occurrences of `sub` | `sub` is `""` → `E0030` |
+| `QUOTE(s) -> STRING` | wraps in double quotes; escapes inner `"` and `\` as `\"` / `\\`, and `\n` / `\t` / `\r`; everything else verbatim | — |
+
+> *Measured on wlwl 0.11.0 (2026-10-01):* `JOIN([1,2,3], "-")` → `"1-2-3"` ·
+> `SPLIT_LINES("a\nb")` → `[a, b]` · `CHAR_AT("abc", -1)` → `"c"` ·
+> `COUNT("ababab", "ab")` → `3` (non-overlapping).
+
+### §25.2 `wlwl:std.math` — math basics (stdlib §7, new in v0.11)
+
+`ABS` / `MIN` / `MAX` / `FLOOR` / `CEIL` / `ROUND` / `CLAMP` and the constants
+are pure-wlwl facades; `SQRT` / `POW` need float instructions and come from the
+R2 float kernel. Transcendental families (`sin`/`cos`/`tan`/`exp`/`log`) are
+**not** in this version. Arithmetic promotion and overflow follow spec §2.2;
+**domain violations return an `ERR`** (`["kind": "DomainError", …]`) and wrong
+argument types are `E0030`.
+
+`MIN` / `MAX` / `CLAMP` promote their **return** type too: if any argument is
+`FLOAT` the result is `FLOAT` (`CLAMP` considers **all three**).
+
+| Signature | Behaviour | Failure |
+|-----------|-----------|---------|
+| `ABS(x)` | absolute value, same type as the argument | `INTEGER` lower bound (`-ABS(INT_MIN)`) → `E0034` |
+| `MIN(a, b)` / `MAX(a, b)` | binary min / max; mixed int/float promote per §2.2 | — |
+| `FLOOR(x)` / `CEIL(x)` | round down / up; `INTEGER` is identity; `FLOAT` → `FLOAT`; `NaN` / `±inf` returned as-is | — |
+| `ROUND(x)` | half-away-from-zero rounding; otherwise as above | — |
+| `SQRT(x) -> FLOAT` | square root; `-0.0` → `-0.0` | `x < 0` → `ERR(["kind": "DomainError"])` |
+| `POW(a, b) -> FLOAT` | power; both args promoted to `FLOAT` | negative exponent of `0`, or a non-integer exponent of a negative base → `ERR(["kind": "DomainError"])` |
+| `CLAMP(x, lo, hi)` | clamp into `[lo, hi]`; promotion as `MIN`/`MAX` | `lo > hi` → `ERR(["kind": "DomainError"])` |
+| `PI` / `E` | `FLOAT` constants | — |
+
+**`FLOOR` / `CEIL` / `ROUND` are not `INT`.** `INT` truncates toward zero
+(§2.2), which differs from all three — the implementation goes `INT` + sign
+correction. `FLOAT`s beyond `±2^53` that are already integral, plus `NaN` /
+`±inf`, are returned unchanged.
+
+> *Measured on wlwl 0.11.0 (2026-10-01):* `SQRT(2)` → `1.4142135623730951` ·
+> `POW(2, 10)` → `1024.0` · `CLAMP(5, 1, 3)` → `3` · `ROUND(2.5)` → `3.0` ·
+> `MAX(3, 9)` → `9` · `PI` → `3.141592653589793`.
+
+### §25.3 ⚠ BREAKING: `ASSERT` now rejects all eight falsy values
+
+`ASSERT(cond, msg?)` (stdlib §8, `wlwl:std.test`) judges `cond` with the full
+**§2.3 falsy set** — `FALSE` / `NULL` / `0` / `0.0` / `""` / empty array / empty
+dict / `NaN`. Truthy → `OK(TRUE)`; falsy → `ERR(E0046)`.
+
+**Before v0.11 only `BOOLEAN(false)` and `NULL` counted as false.** So
+`ASSERT(0)`, `ASSERT("")`, `ASSERT([])`, `ASSERT(0.0)` and `ASSERT(DICT())`
+used to **pass** and now **fail**. Declared as a breaking change (ADR-0023).
+
+Why this bites: an assertion written as a *smell check* — "non-empty?",
+"non-zero?" — now does what it looks like, so the failure moves from runtime
+data to test time. Audit existing suites before upgrading; the intent is
+almost always right, but the failure is real and immediate.
+
+> *Measured on wlwl 0.11.0 (2026-10-01), one file per case, all via
+> `IMPORT("wlwl:std.test", ["ASSERT"])`:* `ASSERT(0)` → `E0046` (exit 1) ·
+> `ASSERT("")` → `E0046` · `ASSERT([])` → `E0046` · `ASSERT(DICT())` → `E0046` ·
+> `ASSERT(FALSE)` → `E0046` · `ASSERT(NULL)` → `E0046` · `ASSERT(42)` →
+> `OK(TRUE)` (exit 0).
+
+`ASSERT_EQ(a, b)` / `ASSERT_NEQ(a, b)` are unchanged (`E0047` / `E0048`).

@@ -1,6 +1,6 @@
 # wlwl-skill examples — 工程清单
 #
-# [v0.10.1 / R10-062] 这份清单之前不存在,后果是本目录下的示例**从不触发
+# [v0.11.0] 这份清单之前不存在,后果是本目录下的示例**从不触发
 # 任何静态检查**:`gradual_typing` 默认 off,而没有清单就没有 `[features]`
 # 可读。随包发布的旗舰特性示例 `static_contracts.wll` 因此只是一段普通代码,
 # 读者照抄也不会得到任何类型反馈。
@@ -15,7 +15,7 @@
 
 [package]
 name = "skill-examples"
-version = "0.10.1"
+version = "0.11.0"
 entry = "static_contracts.wll"
 
 [features]

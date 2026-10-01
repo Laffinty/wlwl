@@ -30,11 +30,15 @@ PRINT(ok(OK(1)));                  // TRUE
 // The constraint sits on a BARE IDENTIFIER. T is resolved at the call site
 // against the actual argument types; the type variable itself disappears at
 // runtime, so Value is unchanged.
-LET(max, FUN((a: T: Comparable, b: T: Comparable) : T: Comparable, IF(<(a, b), a, b)));
-PRINT(max(3, 9));                  // 3
-PRINT(max("a", "b"));              // a
+// Named `pick_smaller` because that is what it does — `<` returns the LOWER
+// operand. (There is no global MAX/MIN builtin; those live in `wlwl:std.math`
+// since v0.11 and must be imported.)
+LET(pick_smaller, FUN((a: T: Comparable, b: T: Comparable) : T: Comparable, IF(<(a, b), a, b)));
+PRINT(pick_smaller(3, 9));              // 3
+PRINT(pick_smaller("a", "b"));          // a
 
-// ── Traps worth remembering (spec §5.2; behaviour measured) ───────────
+// ── Traps worth remembering (spec §5.2; behaviour measured on wlwl
+//    0.11.0, 2026-10-01) ────────────────────────────────────────────────
 // 1. ARRAY REQUIRES brackets: a bare ARRAY is E0010, but a bare DICT /
 //    OPTION / RESULT parses as an opaque named type — silently, no error.
 // 2. Angle-bracket and arrow forms are PARSE ERRORS (measured):

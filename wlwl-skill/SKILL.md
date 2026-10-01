@@ -66,7 +66,8 @@ Eight falsy values: `FALSE`, `NULL`, `0`, `0.0`, `""`, `[]` (empty array), `DICT
 
 **Boolean**: `&&(a, b)` / `||(a, b)` short-circuit; right side not evaluated when left decides. `NOT(x)` and `!(x)` are equivalent. `NOT(ERR(...))` propagates ERR (§4.3); safe coercion idiom: `NOT(BOOL(ERR(...)))` (BOOL is a §8.3 consumer).
 
-**Indexing**: `xs[i]` returns one element; out-of-range array/string index raises `E0036`. `INDEX(xs, v)` returns the index of `v` in `xs`, or `-1` if not found (NOT an error).
+**Indexing**: `xs[i]` returns one element; out-of-range array/string index raises `E0036`. `INDEX(xs, v)` **searches for the value `v`** and returns its **1-based** position, or `-1` if not found (NOT an error). ⚠ `INDEX` is the one index API that is **1-based** while `xs[i]` and `INDEX_GET(xs, i)` are **0-based** — the spec calls this the single easiest trap to get wrong. So `INDEX([7, 8, 9], 8)` → `2` but `INDEX_GET([7, 8, 9], 1)` → `8`. Never feed one API's result to the other.
+> *Verified against wlwl 0.11.0 (2026-10-01): `INDEX([10,20,30], 10)` → `1`, `INDEX([10,20,30], 20)` → `2`, `INDEX([10,20,30], 99)` → `-1`, `INDEX_GET([10,20,30], 0)` → `10`, `[10,20,30][0]` → `10`.*
 
 **Literal subscripts** (spec §A.2 grammar `PostfixExpr = Primary { Postfix }`):
 - Array literal: `[1, 2, 3][0]` → `1`
@@ -181,7 +182,8 @@ Attaching a constraint to a concrete type is an error, not a no-op:
 `ARRAY[INTEGER]: Comparable` raises **`E0010`** ("a type constraint may only
 follow a bare type variable … not a type like ARRAY[…] or DICT[…]") —
 constraints constrain *variables*, not types. (Spec **§2.6** fact #3 said
-`E0012` here; `E0012` is the return-type-mismatch code and unrelated. Fixed in
+`E0012` here; that is wrong twice over — `E0012` is a *syntax* error, and the
+return-type-mismatch code is **`E0112`**. Observed `E0010`. Recorded in
 v0.10.1.)
 
 A constraint may not be **nested** either: `T: Comparable: Integer` raises
@@ -240,14 +242,25 @@ Values:
 | Value | Effect |
 |-------|--------|
 | `off` (default) | no static diagnostics at all |
-| `warn` | annotation / call / return mismatches become `W0110`–`W0112` |
-| `error` | annotation / call / return mismatches become `E0110`–`E0112` (blocking exit code) |
+| `warn` | annotation **and module-contract** mismatches become `W0110`–`W0115` |
+| `error` | annotation **and module-contract** mismatches become `E0110`–`E0115` (blocking exit code) |
 
-**`gradual_typing` governs `E0110`–`E0112` only** (and their `W` twins). It does
-**not** govern `E0113`–`E0115` (module contract, §9.6) or `E0116` (`MATCH`
-exhaustiveness, §7.4) — those have their own switches below, and
-`E0113`–`E0115` fire whenever a signature file exists, independent of
-`gradual_typing`.
+**`gradual_typing` governs `E0110`–`E0115`** (and their `W` twins `W0110`–`W0115`):
+the three annotation codes (`E0110`/`E0111`/`E0112`) **plus** the three
+module-contract codes of §9.6 (`E0113`/`E0114`/`E0115`). It does **not** govern
+`E0116` (`MATCH` exhaustiveness, §7.4), which has its own switch below.
+
+Module-contract checks need **both** a signature and the switch: a wrong
+`foo.wll.sig` is **silent** with the key absent, and reports `E0113`–`E0115` with
+`gradual_typing = "error"`. No signature = no contract = nothing to report
+either way.
+> *Verified against wlwl 0.11.0 (2026-10-01).* A `.wll.sig` declaring a name the
+> module never exports: exit 0 and zero output with the key absent; `E0114`
+> (exit 1) with `gradual_typing = "error"`. Same pattern for `E0113` (imported
+> name absent from the signature — without the switch you get the unrelated
+> runtime `E0023` instead) and `E0115` (signature type vs annotation conflict).
+> The implementation's own note is `wlwl-types/src/diag.rs`: *"`gradual_typing`
+> 管类型诊断（`E0110`-`E0112` + Step 6 的模块契约）"*.
 
 `E0110`/`E0111`/`E0112` are the annotation mismatches; `E0113`/`E0114`/`E0115` are
 module-contract mismatches; `E0116` is non-exhaustive `MATCH`. **All of them are
@@ -570,13 +583,15 @@ Concurrency and OOP names **are** global (Appendix G) — do not import them.
 
 ## Standard library pointers
 
-For the full ~70-name catalogue see `reference.md` §9. Categories:
+Categories (the per-namespace tables live in `reference.md` §9 and §25):
 
 - **Global builtins (§10.2–§10.5 + §10.7 + §10.9 + §13–§17)**: `PRINT`, `PRINT_ERR`, `INPUT`, `LEN`, `TYPE`, `STR`, `INT`, `FLOAT`, `BOOL`, container ops, string ops, `FORMAT`, `AT_K`/`POP`, OOP (`CLASS`/`NEW`/`THIS`/`GET_PROP`/`SET_PROP`/`CALL_METHOD`), and the §17 concurrency set.
 - **`wlwl:std.collection`** (§10.6): `MAP`, `FILTER`, `REDUCE`, `SORT`, `SORT_BY`, `RANGE`, `ZIP`, `ENUMERATE`, `TAKE`, `DROP`, `FLAT`, `UNIQ`, `GROUP_BY`, `ANY`, `ALL`, `FIND`, `JOIN`.
 - **`wlwl:std.json`** (§10.8): `STRINGIFY`, `PARSE`.
 - **`wlwl:std.fs`** (§10.8): `WRITE_FILE`, `READ_FILE`, `EXISTS`.
-- **`wlwl:std.test`** (§10.10): `TEST`, `ASSERT`, `ASSERT_EQ`, `ASSERT_NEQ`, `EXPECT_ERR` (**1 argument**), `RUN_TESTS` — all import-gated, none is a global.
+- **`wlwl:std.str`** (stdlib §6, **v0.11 new**): `JOIN`, `SPLIT_LINES`, `CHAR_AT`, `COUNT`, `QUOTE` — see `reference.md` §25.
+- **`wlwl:std.math`** (stdlib §7, **v0.11 new**): `ABS`, `MIN`, `MAX`, `FLOOR`, `CEIL`, `ROUND`, `SQRT`, `POW`, `CLAMP`, `PI`, `E` — see `reference.md` §25.
+- **`wlwl:std.test`** (§10.10): `TEST`, `ASSERT`, `ASSERT_EQ`, `ASSERT_NEQ`, `EXPECT_ERR` (**1 argument**), `RUN_TESTS` — all import-gated, none is a global. ⚠ **`ASSERT` changed in v0.11** — see `reference.md` §25.
 - **`wlwl:std.ai` / `wlwl:std.agent`** (§10.11): `TASK`, `MODEL`, `TOOL`, `CALL_TOOL`, `CONTEXT`.
 
 ## Build & runtime config — spec §9.1, §9.4
@@ -613,7 +628,7 @@ For the full ~70-name catalogue see `reference.md` §9. Categories:
 | 15 | `AWAIT` of cancelled task left unhandled | `E0102` at top level | `IS_ERR` / `UNWRAP_OR` / `ERR_PAYLOAD` the AWAIT result (payload now has `reason`) |
 | 16 | Builtin name as first-class value (`LET(f, +)` / `LET(f, PRINT)`) | `E0020` undefined name | User-defined functions only are first-class (§5.4). Write `FUN((a, b), +(a, b))` to get a callable. |
 | 17 | `EXPECT_ERR(/(1, 0))` to catch integer / div-by-zero | Native code `E1003` (or `E0035` for overflow); `EXPECT_ERR` returns `ERR(E0049)` — not `OK(载荷)` | These are **native** codes per §11.2, not `RESULT`-shaped ERR; cannot be caught by any §8.3 consumer. |
-| 18 | `SUB(s, 7, 5)` expected as end-index | Third arg is **length**: `SUB("Hello, world", 7, 5)` → `"world"` | Migration: `SUB(s, start, end_old)` → `SUB(s, start, -(start, end_old))` or `SLICE(s, start, end_old)` |
+| 18 | `SUB(s, 7, 5)` expected as end-index | Third arg is **length**: `SUB("Hello, world", 7, 5)` → `"world"` | Migration: `SUB(s, start, end_old)` → `SUB(s, start, NEG(-(end_old, start)))` — **length = end − start**, so the subtraction order is `end_old` first. `SLICE(s, start, end_old)` is the cleaner rewrite (arrays take start/end). Note `-` is a 2-arg builtin only: `-(5)` is an `E0022`, so negate with `NEG`. |
 | 19 | `1.5e2` (or `1e-3` / `1E3`) as a float literal | All valid per §1.7 EBNF. Bare `1e` (no digits after) raises `E0001`. | — |
 | 20 | `THIS()` twice in one method, or stored in a container/closure/return/SPAWN/AWAIT | `E0032` (linear THIS) | Consume `THIS()` once; keep it local to the method body |
 | 21 | `SET_PROP(obj, "k", v)` from outside a self method | `E0032` | Write instance fields from inside `init` or a `self` method |
@@ -641,10 +656,11 @@ wlwl run --format jsonl path/to/file.wll
 rebuilding the AST. Two rules decide whether a `W0053` is *yours* or the
 formatter's:
 
-- **Canonical form has no trailing `;` on the last statement** (spec §16.3).
-  A one-statement file must be `PRINT("x")`, not `PRINT("x");`. Verified:
-  `LET( x ,1 );PRINT( x );` normalises to `LET(x, 1);` + `PRINT(x)` — the first
-  statement keeps its `;`, the last one loses it.
+- **Canonical form has no trailing `;` on the last statement** (spec **§A.3** —
+  v0.11 moved the formatter out of the old §16.3 into the appendix).
+  A one-statement file must be `PRINT("x")`, not `PRINT("x");`. Verified on
+  wlwl 0.11.0: `LET( x ,1 );PRINT( x );` normalises to `LET(x, 1);` + `PRINT(x)`
+  — the first statement keeps its `;`, the last one loses it.
 - **`fmt` drops comments** (the AST rebuild does not preserve them) and
   tolerates them in `--check` mode, so a comment-heavy file usually still passes.
 - **Line endings are irrelevant** since v0.10.1: CRLF and LF compare equal.
@@ -666,7 +682,8 @@ file is a real (if cosmetic) deviation.
 ## References
 
 - **Authoritative spec**: `../docs/spec/wlwl-spec-v0.11.md` — defer to this on any disagreement (§13–§16 = OOP + session types + linear THIS; §17 = concurrency; §2.6/§5.2/§9.1/§9.6 = static contracts). Where §5.2.1's "三条实测事实" disagrees with the compiler (the angle-bracket / arrow forms, and the constraint-on-a-concrete-type code), **the compiler wins** — this bundle records the measured values.
-- **Superseded specs (archived)**: v0.6–v0.10, condensed in `../docs/history/20260902-09.md` / `../docs/history/20260915-22.md` (full text via git history) — v0.11 is the v0.10 "v2 cleaned" renumbering with identical semantics; v0.10 added static contracts on top of v0.9's runtime; v0.9 added true-suspension concurrency + OOP §13–§16; the older archives' §0–§17 remain valid as history.
+- **Superseded specs (archived)**: v0.6–v0.10, condensed in `../docs/history/20260902-09.md` / `../docs/history/20260915-22.md` (full text via git history) — v0.11 is a *renumbering* of the spec (the formatter moved to §A.3) **plus real content**: two new stdlib namespaces and one breaking `ASSERT` change, both in `reference.md` §25. v0.10 added static contracts on top of v0.9's runtime; v0.9 added true-suspension concurrency + OOP §13–§16; the older archives' §0–§17 remain valid as history.
+- **Validity window for "measured" claims**: anything in this bundle stated as *measured* / *实测* / *verified* carries the compiler version it was checked against (e.g. "Measured on wlwl 0.11.0 (2026-10-01)"). Those are observations of one release, not spec guarantees — when the version is not named, assume it predates v0.11 and re-run it. `wlwl run` on your own file is always the final word.
 - **Lookup tables** (operators, error codes, AST shapes, OOP, concurrency): `reference.md` in this folder.
 - **Built-in registry (single source of truth)**: `../docs/appendix_G.md`.
 - **Gold concurrency fixtures**: `../impl/tests/concurrency/*.wll`.

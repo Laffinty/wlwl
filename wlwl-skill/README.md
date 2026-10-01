@@ -1,7 +1,7 @@
 # writing-wlwl skill bundle
 
-Claude Skills-format bundle for authoring **WLWL v0.10** `.wll` sources
-(v0.10.1 implementation; the spec version is still **v0.10**).
+Claude Skills-format bundle for authoring **WLWL v0.11** `.wll` sources
+(impl 0.11.0; spec `wlwl-spec-v0.11`).
 
 ```
 wlwl-skill/
@@ -72,12 +72,23 @@ This skill targets **wlwl-spec-v0.11** (file at
     `W0117` deliberately has no `E0117`.
   - **New CLI** — `wlwl sig`, `wlwl sig-gen`, `wlwl interface`, `wlwl schema`,
     `wlwl lsp`.
+- **v0.11** renumbers the spec (the formatter moved to **§A.3**) and adds real
+  content. Full tables in `reference.md` §25.
+  - **`wlwl:std.str` (new namespace)** — `JOIN`, `SPLIT_LINES`, `CHAR_AT`,
+    `COUNT`, `QUOTE`. Codepoint indexing, negative counts from the tail.
+  - **`wlwl:std.math` (new namespace)** — `ABS`, `MIN`, `MAX`, `FLOOR`, `CEIL`,
+    `ROUND`, `SQRT`, `POW`, `CLAMP`, `PI`, `E`. Domain violations return an
+    `ERR(["kind": "DomainError", …])`. `MIN`/`MAX` are **not** globals.
+  - **⚠ BREAKING: `ASSERT` now rejects all eight falsy values.** It used to
+    treat only `BOOLEAN(false)` and `NULL` as false, so `ASSERT(0)`,
+    `ASSERT("")` and `ASSERT([])` silently passed. They now fail `E0046`.
 
 Superseded specs (v0.6–v0.10) are archived in condensed form in
 `../docs/history/20260902-09.md` / `../docs/history/20260915-22.md`
 (full text via git history; each version additive on the previous;
-v0.11 — the renumbered v0.10 "v2 cleaned" edition, semantics unchanged —
-is the current normative source).
+v0.11 is the current normative source — a renumbering of v0.10's spec
+**plus** the `std.str` / `std.math` namespaces and the breaking `ASSERT`
+change above).
 
 Compiler version is independent of the spec version (see root
 `CHANGELOG.md`). `wlwl run` is always the source of truth.
@@ -87,8 +98,10 @@ Compiler version is independent of the spec version (see root
 | File | Use |
 |---|---|
 | `SKILL.md` | Writing flow, static contracts (§2.6/§5.2/§9.1/§9.6), concurrency hard rules, antipatterns (24 rows: v0.6–v0.9) |
-| `reference.md` | Operators, type/`TYPE` names, error codes (incl. `E0064` / `W0001` / `E0010`–`E0025`), §8.3 consumers (13 global), OOP (§14–§16), concurrency matrix (§21), v0.9 增量备忘 (§23), v0.10 增量备忘 (§24) |
+| `reference.md` | Operators, type/`TYPE` names, error codes (incl. `E0064` / `W0001` / `E0010`–`E0025`), §8.3 consumers (13 global), OOP (§14–§16), concurrency matrix (§21), v0.9 增量备忘 (§23), v0.10 增量备忘 (§24), **v0.11 增量备忘 (§25 — `std.str` / `std.math` / `ASSERT` breaking)** |
 | `interp.wll` | String-interpolation gold example |
+| `examples/wlwl.toml` | Manifest for the examples. `[package]` is mandatory and `gradual_typing = "error"` turns the static gate on for every file under `examples/` — that is what makes `static_contracts.wll` demonstrate anything |
+| `examples/wlwl.lock` | The dependency lockfile belonging to that manifest. It exists so `wlwl build` / `wlwl run <dir>` on `examples/` resolve deterministically. Nothing in this bundle imports a third-party module, so it is currently trivial; you do not need to edit it by hand |
 | `examples/truthiness.wll` | §2.3 falsy table |
 | `examples/control_flow.wll` | `IF` / `WHILE` / `FOR` / `MATCH` |
 | `examples/error_propagation.wll` | §8.2 + consumers |
@@ -171,6 +184,11 @@ opts in.
   register under `../docs/history/` — do not invent fixes here.
 - Keep gold examples runnable: every `examples/*.wll` must `wlwl run`
   with exit 0.
+- **Stamp every empirical claim with the version it was measured against.**
+  Anything phrased as *measured* / *实测* / *verified* is an observation of one
+  release, not a spec guarantee. Two of this bundle's "verified" conclusions
+  were silently falsified by v0.11 precisely because nothing recorded *when*
+  they were true; a version stamp is what makes the next such drift visible.
 
 ## See also
 

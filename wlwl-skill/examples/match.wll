@@ -30,6 +30,7 @@ PRINT(MATCH(d, [
 ]));
 
 // (4) OK(p) / ERR(p) variant patterns
+// [re-verified against wlwl 0.11.0, 2026-10-01]
 LET(ok_val, OK(42));
 LET(err_val, ERR("boom"));
 LET(classify, FUN((r),
@@ -38,8 +39,13 @@ LET(classify, FUN((r),
     [ERR(e), "ERR(${e})"]
   ])
 ));
-PRINT(classify(ok_val));
-PRINT(classify(err_val));
+PRINT(classify(ok_val));                     // OK(42)
+// Do NOT wrap the ERR case in PRINT: classify returns an ERR, which propagates
+// through PRINT (§8.2) and is then dropped by §8.5 at top level — the line
+// vanishes with no output and no diagnostic. Bind it and consume it.
+LET(err_out, classify(err_val));             // an ERR RESULT
+PRINT("ERR arm: is_err=${IS_ERR(err_out)} payload=${ERR_PAYLOAD(err_out)}");
+                                    // ERR arm: is_err=TRUE payload=boom
 
 // (5) Default clause (third arg to MATCH)
 LET(score, 99);
