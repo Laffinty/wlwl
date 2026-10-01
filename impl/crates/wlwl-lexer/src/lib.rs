@@ -182,7 +182,31 @@ pub struct Token {
 }
 
 /// Lex the input source. The `file` parameter is used for diagnostic locations.
+///
+/// **D11-023 — spec §1.1: a source file is "UTF-8 encoded (with or without
+/// BOM)".** The BOM (`U+FEFF`) was previously glued onto the first
+/// identifier: the token dispatch routes any byte `>= 0xC0` to
+/// `read_ident_or_keyword` (the deliberate P3-011 relaxation that lets
+/// identifiers hold non-ASCII letters such as Chinese), and a BOM's
+/// leading byte is `0xEF`, so `PRINT` lexed as `"\u{FEFF}PRINT"` and died
+/// with `E0020: undefined name`. Stripping it in the identifier scanner
+/// instead would fight P3-011 — the lexer is byte-oriented and cannot tell
+/// a CJK letter from a zero-width no-break space.
+///
+/// Two details are load-bearing:
+///
+/// - **Exactly one**, via `strip_prefix` and *not* `trim_start_matches`.
+///   A `U+FEFF` anywhere else in the file is a ZWNBSP, which P3-011's
+///   relaxation consumes as identifier content; `trim_start_matches` would
+///   silently swallow a second one and change what that file means.
+/// - **Before `Lexer::new`**, because `Lexer` advances `col` per *byte*
+///   (U+FEFF is 3 bytes). Stripping inside the token loop would shift every
+///   column on line 1 by 3.
+///
+/// `&str` slicing is a fat-pointer adjustment, so this allocates nothing,
+/// and the signature is unchanged.
 pub fn lex(input: &str, file: &str) -> WlwlResult<Vec<Token>> {
+    let input = input.strip_prefix('\u{FEFF}').unwrap_or(input);
     let mut lx = Lexer::new(input, file);
     lx.run()
 }
@@ -1395,5 +1419,120 @@ mod tests {
         // Non-operators return None.
         assert_eq!(TokenKind::Ident("foo".into()).as_op_name(), None);
         assert_eq!(TokenKind::Let.as_op_name(), None);
+    }
+
+    // ---------------------------------------------------------------------
+    // D11-023 — spec §1.1 "UTF-8 encoded (with or without BOM)".
+    //
+    // Fixtures are built by concatenating the raw BOM at test time rather
+    // than committing a BOM'd file: `.gitattributes` sets `*.wll text
+    // eol=lf`, and although git's text filter does not touch BOMs, a
+    // committed U+FEFF is an *invisible* byte in review.
+    //
+    // Each test was checked against four wrong implementations to prove it
+    // discriminates rather than merely passing. Measured 2026-10-01:
+    //
+    //   A no strip at all .................. 5 red
+    //   B trim_start_matches (over-strip) .. 1 red  (only_one_leading_bom)
+    //   C strip after Lexer::new (col +3) .. 3 red
+    //   D replace() all U+FEFF (over-fix) .. 2 red
+    //
+    // Every test below is red under at least one of A-D, so none of them
+    // is dead weight. Note that `bom_inside_the_file_is_left_alone` is
+    // *designed* to stay green under A and B — it guards against D, not
+    // against removing the fix.
+    // ---------------------------------------------------------------------
+
+    const BOM: &str = "\u{FEFF}";
+
+    /// The exact program the D11-023 repro used.
+    const REPRO: &str = "PRINT(\"hi\", 1, 2, 3);";
+
+    /// 1. A leading BOM must not change the token stream at all — same
+    ///    kinds *and* same spans, so line/column reporting is unaffected.
+    #[test]
+    fn d11_023_bom_yields_an_identical_token_stream() {
+        let plain = lex(REPRO, "t.wll").unwrap();
+        let bommed = lex(&format!("{BOM}{REPRO}"), "t.wll").unwrap();
+        assert_eq!(plain, bommed);
+        assert!(!plain.is_empty());
+    }
+
+    /// 2. The first token must be the bare `PRINT` identifier **and** start
+    ///    at column 1. Both halves are load-bearing:
+    ///
+    ///    - the name assertion makes this test red when the strip is
+    ///      removed (without it the identifier is `"\u{FEFF}PRINT"`);
+    ///    - the column assertion catches the other plausible wrong shape —
+    ///      stripping *after* `Lexer::new` or inside the token loop. `Lexer`
+    ///      advances `col` per **byte** and `U+FEFF` is 3 bytes, so that
+    ///      variant shifts every column on line 1 by 3 while still
+    ///      producing a correctly-named identifier.
+    #[test]
+    fn d11_023_bom_yields_a_bare_first_token_at_column_one() {
+        let toks = lex(&format!("{BOM}{REPRO}"), "t.wll").unwrap();
+        match &toks[0].kind {
+            TokenKind::Ident(name) => assert_eq!(name, "PRINT", "BOM must not reach the name"),
+            other => panic!("expected an Ident, got {other:?}"),
+        }
+        let (_, col_start, _, _) = toks[0].span;
+        assert_eq!(col_start, 1, "first token must start at column 1");
+    }
+
+    /// 3. **Exactly one.** A second leading U+FEFF is *not* a BOM, it is a
+    ///    ZWNBSP, and P3-011's identifier relaxation consumes it as part of
+    ///    the identifier. This is the discriminating case between
+    ///    `strip_prefix` and `trim_start_matches`; under the latter the
+    ///    second one would vanish and this assertion would fail.
+    #[test]
+    fn d11_023_only_one_leading_bom_is_stripped() {
+        let toks = lex(&format!("{BOM}{BOM}{REPRO}"), "t.wll").unwrap();
+        match &toks[0].kind {
+            TokenKind::Ident(name) => assert_eq!(
+                name,
+                &format!("{BOM}PRINT"),
+                "the second U+FEFF must survive as identifier content"
+            ),
+            other => panic!("expected an Ident, got {other:?}"),
+        }
+    }
+
+    /// 4. A U+FEFF that is *not* at offset 0 is untouched. Two placements
+    ///    that matter in practice: inside a string literal, and mid-file
+    ///    where the permissive identifier reader will absorb it.
+    #[test]
+    fn d11_023_bom_inside_the_file_is_left_alone() {
+        let toks = lex("PRINT(\"a\u{FEFF}b\");", "t.wll").unwrap();
+        let literal = toks
+            .iter()
+            .find_map(|t| match &t.kind {
+                TokenKind::StringLit(s) => Some(s.clone()),
+                _ => None,
+            })
+            .expect("string literal token");
+        assert!(
+            literal.contains('\u{FEFF}'),
+            "U+FEFF inside a string literal must survive, got {literal:?}"
+        );
+    }
+
+    /// 5. Guards the guard: a file that is *only* a BOM must lex exactly
+    ///    like an empty file. The lexer always terminates with a single
+    ///    `Eof` token, so this asserts stream equality rather than an
+    ///    empty vec — and it catches the strip manufacturing an identifier
+    ///    or an E0001 out of a degenerate input.
+    #[test]
+    fn d11_023_bom_only_input_lexes_like_an_empty_file() {
+        assert_eq!(lex(BOM, "t.wll").unwrap(), lex("", "t.wll").unwrap());
+    }
+
+    /// 6. A file with no BOM is byte-for-byte unaffected — the common path
+    ///    must not regress. Compared against a source that starts with a
+    ///    character the lexer already had to skip past.
+    #[test]
+    fn d11_023_non_bom_input_is_unchanged() {
+        let leading_comment = lex("// c\nPRINT(1);", "t.wll").unwrap();
+        let bommed = lex(&format!("{BOM}// c\nPRINT(1);"), "t.wll").unwrap();
+        assert_eq!(leading_comment, bommed);
     }
 }

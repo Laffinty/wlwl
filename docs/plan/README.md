@@ -14,9 +14,9 @@
 | 现行规范 | [`../spec/wlwl-spec-v0.11.md`](../spec/wlwl-spec-v0.11.md)(v0.11;§10 已机制化,命名空间成员契约外迁) |
 | 现行标准库规范 | [`../stdlib/wlwl-stdlib-spec-v0.11.md`](../stdlib/wlwl-stdlib-spec-v0.11.md)(v0.11,与语言规范相互独立、分别版本化) |
 | 最新实现 | v0.11.0 已发布(`CHANGELOG.md` 的 `[v0.11.1]` 段为**尚未完工**的在制品;**TAG 由业主下令后才能打**) |
-| 进行中的计划 | [`plan-v0.11.md`](plan-v0.11.md) —— **批次 A 已收口**(标准库底座 M1–M5,2026-10-01);偏差分册 [`deviations-v0.11.md`](deviations-v0.11.md) 共 **18 条**(D11-001 – D11-018),**仅 D11-004 挂账** |
-| v0.11.1 计划 | [`plan-v0.11.1.md`](plan-v0.11.1.md) —— **初步方案,未开工**(`std.web`:用 wlwl 统一描述 HTML/CSS/JS,实现落 R1;**属 v0.11.1 范围**)。偏差从 **D11-020** 起续号。**Q1–Q5 全部已裁决**(版本号 / 单命名空间 / `@scope` 语义 / resumability 分层 / 零第三方依赖) |
-| 门禁 | `cargo fmt --check` 0 diff;`clippy -D warnings` 0;`cargo test --locked --all-targets` **37 套件** **1860 passed / 0 failed**;probe **142** 用例(136 立项 → 138 M1 → 142 M3-4);附录 G 逐字节不变;批次 A 门禁自检见 plan §8 |
+| 进行中的计划 | [`plan-v0.11.md`](plan-v0.11.md) —— **批次 A 已收口**(标准库底座 M1–M5,2026-10-01);偏差分册 [`deviations-v0.11.md`](deviations-v0.11.md) 共 **25 条**(D11-001 – D11-025),**挂账 2 条**(D11-004 / D11-022) |
+| v0.11.1 计划 | [`plan-v0.11.1.md`](plan-v0.11.1.md) —— **初步方案,未开工**(`std.web`:用 wlwl 统一描述 HTML/CSS/JS,实现落 R1;**属 v0.11.1 范围**)。偏差续号见分册末(D11-023 – D11-025 已登记,下一条 **D11-026**)。**Q1–Q5 全部已裁决**(版本号 / 单命名空间 / `@scope` 语义 / resumability 分层 / 零第三方依赖) |
+| 门禁 | `cargo fmt --check` 0 diff;`clippy -D warnings` 0;`cargo test --locked --all-targets` **37 套件** **1876 passed / 0 failed**(D11-023 前为 1870,delta +6);probe **142** 用例 —— 142 是 `impl/tests/probe/cases/` 的**用例目录数**,由单个 `probe_suite` 函数驱动并有 `probe_case_count_matches_inventory` 守卫,**不是** `#[test]` 函数数(`--test probe` 只跑 3 个函数);附录 G 逐字节不变;批次 A 门禁自检见 plan §8 |
 | v0.11 已立项范围 | **批次 A:标准库底座**(ADR-0021/0022/0023);**批次 B:`YIELD` 的续体保存**(裁决 D-3 = 拆两半,规范侧已在 v0.10.1 降级为已知限制) |
 
 ## 历史归档去哪找

@@ -4,8 +4,10 @@
 > 工单;每个里程碑落地前需按 v0.11 的格式补齐变更面清单。
 >
 > **配套分册**:偏差登记沿用 [`deviations-v0.11.md`](deviations-v0.11.md),
-> 本计划的偏差从 **D11-020** 起续号(不新开分册 —— v0.11.1 未 tag,
+> 本计划的偏差从 **D11-026** 起续号(不新开分册 —— v0.11.1 未 tag,
 > `Cargo.toml` 仍是 `0.11.0`,台账归期以「下一个 tag」为准)。
+> 分册末尾的 D11-023 – D11-025 是本计划立项**之前**的只读调查产物
+> (BOM 缺陷与两处基线数字更正),不是 `std.web` 的偏差。
 
 ---
 
@@ -18,8 +20,8 @@
 |---|---|
 | `cargo fmt --check` | 0 diff |
 | `cargo clippy -D warnings` | 0 |
-| `cargo test --locked --all-targets` | **37 套件 / 1860 passed / 0 failed** |
-| probe 用例 | 142(不得减少) |
+| `cargo test --locked --all-targets` | **37 套件 / 1876 passed / 0 failed**(D11-023 收口后的实测值) |
+| probe 用例 | 142(`impl/tests/probe/cases/` 的**用例目录数**,非 `#[test]` 函数数) |
 | 附录 G | 逐字节不变 |
 | 既有 4 个 R1 std 模块契约 | `EXPORT` 面 / 签名 / 语义 / 诊断一字不改 |
 
@@ -577,7 +579,7 @@ JS 只有 f64(§2.4 一手证据)。⇒ **客户端态按 f64 有界**,且这条
 |---|---|---|
 | `docs/stdlib/wlwl-stdlib-spec-v0.11.md` | §11 之后新增 `std.web` 章节(成员表 / 语义 / 失败行为 / 落地状态) | W1 起,逐里程碑增量 |
 | 同上 附录 A | 由 `gen-appendix-a` 生成,**手改无效** | W2 |
-| `docs/plan/deviations-v0.11.md` | D11-020 起 | 全程 |
+| `docs/plan/deviations-v0.11.md` | D11-026 起 | 全程 |
 | `docs/plan/README.md` | 状态表新增行 | W6 |
 | `CHANGELOG.md` | 按 Q1 裁决落到 `[Unreleased]` 或 `[v0.12]` | W6 |
 | `docs/site/examples.md` | 3 个端到端示例 | W6 |
@@ -591,7 +593,7 @@ JS 只有 f64(§2.4 一手证据)。⇒ **客户端态按 f64 有界**,且这条
 
 在 §0 棘轮之上追加:
 
-1. **既有 37 套件 / 1860 passed / 0 failed 保持不变**,probe 142 不减。
+1. **既有 37 套件 / 1876 passed / 0 failed 保持不变**,probe 142 个用例目录不减。
 2. `std.web` 治理四件套齐备,且附录 A 由生成器产出(锁测试双向守护)。
 3. **产物不变量 JS-1..JS-5 五条锁测试全绿**;每条配**反向守卫**
    (故意让发射器产出违规产物 → 必须变红 → 还原后全绿)。
