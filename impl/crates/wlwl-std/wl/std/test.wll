@@ -1,0 +1,131 @@
+// wlwl:std.test — R1 门面 + R2 原生内核(标准库底座 v0.11,ADR-0021)
+// 成员契约:docs/stdlib/wlwl-stdlib-spec-v0.11.md §8;注册镜像:附录 A。
+//
+// 混合形态的分工(规范 §8「R1 门面 + R2 原生内核(注册与计时)」):
+//
+//   门面(R1,本文件):ASSERT 族的**载荷构造** —— 纯 wlwl 表达得了
+//                     (`OK(TRUE)` / `ERR([...])` / `INDEX_SET` 追加可选键)。
+//   内核(R2,test_native.rs):注册表(`StdCtx::tests`)、计时、测试体调用。
+//   内核(R2,必须):EXPECT_ERR —— 见下面那条的详细理由。
+//
+// ## EXPECT_ERR 为什么不能写成带函数体的门面
+//
+// 规范 §8 要求 `x` 为 `ERR` → `OK(载荷)`。但语言自身的 ERR 透明调用语义
+// (§8.2)在**调用边界**就把 ERR 实参短路掉,成员体根本不执行 —— 实测(2026-10-01):
+// 任何 `FUN` 收到 ERR 实参,调用结果都是那个 ERR,与函数体无关;变长形参
+// (`FUN((*args), ..)`)也照样短路。所以:
+//
+//   LET(EXPECT_ERR, FUN((x), IF(IS_ERR(x), ...)))   ← x 拿不到那个 ERR
+//
+// 要拿到 `OK(载荷)`,只能**不做任何拦截**地透传内核 —— 门面在这里只做
+// 改名与导出。这也正是 §0.2「混合模块以门面(R1 侧)为对外契约层」的含义:
+// 对外只见 `EXPECT_ERR` 这个名字,实现语言不可感知。
+//
+// ## 元数全部用 `FUN((*args), ..)`
+//
+// 不是为了好看:固定形参的元数错由解释器报,消息是
+// `function expects 2..2 argument(s), got 0` —— **没有函数名前缀**,而且
+// 把「2..2」写成了区间。R2 的是 `TEST: function expects 2 argument(s),
+// got 0`。变长形参 + 门面自查才能把措辞**逐字**对齐(诊断要指名道姓,这是
+// stdlib 规范 §0.3 治理四件套隐含的要求:错误信息得能定位到成员)。
+// 各成员的元数窗口见下,与 R2 的 `arity(...)` 调用一一对应。
+//
+// ## ASSERT 的真值口径(不是 §2.3 的八个假值)
+//
+// R2 旧实现只把 `BOOLEAN(false)` 与 `NULL` 当假,其余一律为真 —— 即
+// `ASSERT(0)` / `ASSERT("")` / `ASSERT([])` 都**通过**。而 §2.3 的真值
+// 定义把 `0` / `0.0` / `""` / 空数组 / 空字典 / `NaN` 都算假。两者冲突。
+// 本门面**照旧保留 R2 口径**(M3 不改行为;偏差 D11-010),故不能用 `BOOL(cond)`。
+// 口径一旦裁决,这里改成 `BOOL(cond)` 即可,`assert_zero_passes` 一条用例
+// 会同步变红提醒。
+
+// ── 助手(不导出)────────────────────────────────────────────────────
+
+LET(_CAT, FUN((*parts), (LET MUT(s, ""); FOR(p, parts, SET(s, +(s, p))); s)));
+
+// `NAME: expected <what>, got <kind>`
+LET(_NEED, FUN((name, what, ty, v),
+    IF(==(TYPE(v), ty), v, _DIAG_E0030(_CAT(name, ": expected ", what, ", got ", _KIND(v))))));
+
+LET(_NEED_STR, FUN((name, v), _NEED(name, "string", "STRING", v)));
+
+// 元数窗口 [lo, hi]。措辞照抄 R2 的 `arity()`:只报上限,不报区间。
+LET(_NEED_ARITY, FUN((name, args, lo, hi),
+    IF(||(<(LEN(args), lo), >(LEN(args), hi)),
+       _DIAG_E0022(_CAT(name, ": function expects ", STR(hi), " argument(s), got ", STR(LEN(args)))),
+       NULL)));
+
+// 「R2 口径」的真值:`BOOLEAN` 取自身,`NULL` 假,其余一律真。
+// (注意结尾是 `NOT(...)` —— 写成 `==(TYPE(v), "NULL")` 会把 `1` / `""` / `[]`
+//  全判成假,与 R2 相反。)
+LET(_TRUTHY_R2, FUN((v),
+    IF(==(TYPE(v), "BOOLEAN"), v, NOT(==(TYPE(v), "NULL")))));
+
+// R2 的 `build_payload`:`cond` 为 NULL 或 `FALSE` 时**不带** `cond` 键。
+LET(_PUT_IF_PRESENT, FUN((p, key, v),
+    IF(||(==(TYPE(v), "NULL"), ==(v, FALSE)), p, INDEX_SET(p, key, v))));
+
+LET(_PUT_MSG, FUN((p, msg),
+    IF(==(TYPE(msg), "NULL"), p, INDEX_SET(p, "msg", msg))));
+
+// ── TEST(name, body) -> NULL ────────────────────────────────────────
+// 门面只做类型检查,注册本身在 R2 内核。
+LET(TEST, FUN((*args),
+    (_NEED_ARITY("TEST", args, 2, 2);
+     _TEST(_NEED_STR("TEST", AT(args, 0, NULL)),
+           _NEED("TEST", "function", "FUNCTION", AT(args, 1, NULL))))));
+
+// ── ASSERT(cond, msg?) ──────────────────────────────────────────────
+LET(ASSERT, FUN((*args),
+    (_NEED_ARITY("ASSERT", args, 1, 2);
+     LET(cond, AT(args, 0, NULL));
+     LET(msg, AT(args, 1, NULL));
+     IF(_TRUTHY_R2(cond),
+        OK(TRUE),
+        (LET MUT(p, ["code": "E0046", "kind": "test_assertion_failed"]);
+         SET(p, _PUT_IF_PRESENT(p, "cond", cond));
+         SET(p, _PUT_MSG(p, msg));
+         ERR(p))))));
+
+// ── ASSERT_EQ(a, b, msg?) / ASSERT_NEQ(a, b, msg?) ─────────────────
+// 载荷恒带 `actual` / `expected`(哪怕是 NULL)—— 与 ASSERT 族的可选 `cond`
+// 不同,这是 R2 旧实现的两套 payload 构造。
+LET(ASSERT_EQ, FUN((*args),
+    (_NEED_ARITY("ASSERT_EQ", args, 2, 3);
+     LET(a, AT(args, 0, NULL));
+     LET(b, AT(args, 1, NULL));
+     LET(msg, AT(args, 2, NULL));
+     IF(==(a, b),
+        OK(TRUE),
+        (LET MUT(p, ["code": "E0047", "kind": "test_assertion_eq_failed", "actual": a, "expected": b]);
+         SET(p, _PUT_MSG(p, msg));
+         ERR(p))))));
+
+// 块放在 `IF` 的 **else** 分支,与 `ASSERT` 同形:then 分支上的
+// `(LET MUT(..); ..; ERR(..)),` 解析器不收(E0011),这是实测踩出来的。
+// 条件因此写成 `NOT(==(a, b))` 而非 `==(a, b)` —— 语义等价,只为换分支。
+LET(ASSERT_NEQ, FUN((*args),
+    (_NEED_ARITY("ASSERT_NEQ", args, 2, 3);
+     LET(a, AT(args, 0, NULL));
+     LET(b, AT(args, 1, NULL));
+     LET(msg, AT(args, 2, NULL));
+     IF(NOT(==(a, b)),
+        OK(TRUE),
+        (LET MUT(p, ["code": "E0048", "kind": "test_assertion_neq_failed", "actual": a, "expected": b]);
+         SET(p, _PUT_MSG(p, msg));
+         ERR(p))))));
+
+// ── EXPECT_ERR(x) ───────────────────────────────────────────────────
+// 见文件头:只能改名导出,不能包一层 FUN。元数由内核自查,措辞已是 R2 原样。
+LET(EXPECT_ERR, _EXPECT_ERR);
+
+// ── RUN_TESTS() -> ARRAY ────────────────────────────────────────────
+// 注册表排空、计时、调用测试体都在 R2 内核;门面只守元数,好让诊断指名
+// `RUN_TESTS` 而不是内核名。
+LET(RUN_TESTS, FUN((*args),
+    (_NEED_ARITY("RUN_TESTS", args, 0, 0);
+     _RUN_TESTS())));
+
+// EXPORT 顺序跟随标准库规范 §8 表格的行序;附录 A 镜像跟随本顺序。成员
+// **集合**由 `wlwl-eval/tests/test_contract.rs` 对 §8 表格做外部对照。
+EXPORT(["TEST", "ASSERT", "ASSERT_EQ", "ASSERT_NEQ", "EXPECT_ERR", "RUN_TESTS"]);

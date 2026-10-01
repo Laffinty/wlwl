@@ -157,65 +157,100 @@ mod tests {
     // ---- R1 内核注入(M3-0)------------------------------------------------
     //
     // 「注入面不外泄」是 ADR-0021:90「混合模块以门面为对外契约层」的机械
-    // 形式。两条断言各封一种泄漏:kernel 名字**跑进 EXPORT**(= 出现在附录
-    // A 与 IMPORT 面上),以及 kernel 名字**撞上全局内建**(门面里同名的
-    // `LET` 会触发 W0030 遮蔽警告,语义上也多了一个不需要的入口)。
+    // 形式。断言各封一种泄漏:kernel 名字**跑进 EXPORT**(于是出现在附录 A
+    // 与 IMPORT 面上)、kernel 名字**撞上全局内建**(门面里同名的 `LET` 会
+    // 触发 W0030 遮蔽警告,语义上也多了一个不需要的入口)、以及共享表里躺着
+    // **没人用的** kernel(死代码,且下次有人读它会以为它在生效)。
+    //
+    // **`kernels::KERNELS` 不是全部 kernel 的单源。** M3-0 写下这条守卫时
+    // 断言的是「注入 ⊆ KERNELS」,M3-3 立刻被证伪:`std.test` 的三个 kernel
+    // (`_TEST` / `_EXPECT_ERR` / `_RUN_TESTS`)住在**它自己的 R2 模块文件**
+    // `test_native.rs` 里,不在 `kernels.rs`。这是对的 —— 内核代码该跟它服务
+    // 的模块放在一起(规范 §0.2 说 R2 成员在 `wlwl-std`,没说在哪个文件)。
+    // 于是 `KERNELS` 的真实身份是「**模块无关的共享** kernel 表」,模块
+    // 还可以声明自己的。守卫因此改成要求**反方向**:KERNELS ⊆ 注入 ——
+    // 那一条才是能防死代码的。
 
-    /// 所有已登记的 R2 kernel 名字(kernel 单源在 `wlwl_std::kernels`)。
+    /// `KERNELS` 里登记的共享 kernel 名字。
+    fn shared_kernel_names() -> Vec<&'static str> {
+        wlwl_std::kernels::KERNELS.iter().map(|(n, _)| *n).collect()
+    }
+
+    /// 全部已登记的 R2 kernel 名字(含各模块自带的)。
     fn all_kernel_names() -> Vec<&'static str> {
         wlwl_std::LANG_SOURCES
             .iter()
             .flat_map(|s| s.kernels.iter().map(|(n, _)| *n))
+            .chain(shared_kernel_names())
             .collect()
     }
 
-    /// 变体:直接从 kernel 总表取,而不是从各 `StdSource` 汇总 —— 后者
-    /// 会漏掉「已写好但没挂到任何模块」的 kernel,那样它就成了死代码而
-    /// 且守卫照样全绿。两条断言同时跑,覆盖面才是闭的。
     #[test]
     fn r1_kernels_never_leak_to_the_export_surface() {
-        let registered = wlwl_std::kernels::KERNELS;
-        let table: std::collections::HashSet<&str> = registered.iter().map(|(n, _)| *n).collect();
-        let used: std::collections::HashSet<&str> = all_kernel_names().into_iter().collect();
-        for name in &used {
-            assert!(
-                table.contains(name),
-                "{name} is injected by a module but absent from `kernels::KERNELS` — \
-                 the kernel table is the single source; add it there"
-            );
-        }
-        for (name, _) in registered {
-            assert!(
-                !crate::registry::resolved_builtin_names().contains(name),
-                "R2 kernel `{name}` collides with a global builtin — the facade's \
-                 `LET({name}, ...)` would raise W0030 (shadowing) and the kernel \
-                 would shadow a language-surface name"
-            );
-        }
         for src in wlwl_std::LANG_SOURCES {
             let names = wlwl_std::lang_exports(src.source);
             let exports: std::collections::HashSet<&str> =
                 names.iter().map(String::as_str).collect();
             for (name, _) in src.kernels {
                 assert!(
+                    name.starts_with('_'),
+                    "{} injects `{name}` without the `_` prefix — it would read \
+                     like a public member in the facade source",
+                    src.path
+                );
+                assert!(
+                    name.chars()
+                        .all(|c| c.is_ascii_uppercase() || c == '_' || c.is_ascii_digit()),
+                    "{} injects `{name}` which is not UPPER_SNAKE",
+                    src.path
+                );
+                assert!(
                     !exports.contains(*name),
                     "kernel `{name}` is EXPORTed by {} — it must stay private to the \
                      facade, or it lands in appendix A and on the IMPORT surface",
                     src.path
                 );
+                assert!(
+                    !crate::registry::resolved_builtin_names().contains(name),
+                    "R2 kernel `{name}` collides with a global builtin — the facade's \
+                     `LET({name}, ...)` would raise W0030 (shadowing) and the kernel \
+                     would shadow a language-surface name"
+                );
             }
         }
     }
 
-    /// 收集器坏掉时的反向守卫:「扫不到任何 kernel 就转绿」会让上面那条
-    /// 断言退化成检查零件事的空断言(它在两处都拿 `LANG_SOURCES` 的
-    /// 迭代结果当输入)。
+    /// 共享表里的每个 kernel 都得有人用,否则是死代码。
+    #[test]
+    fn every_shared_kernel_is_actually_injected() {
+        for (name, _) in wlwl_std::kernels::KERNELS {
+            let used = wlwl_std::LANG_SOURCES
+                .iter()
+                .any(|s| s.kernels.iter().any(|(n, _)| n == name));
+            assert!(
+                used,
+                "`{name}` is listed in `kernels::KERNELS` but no module injects it — \
+                 delete it or wire it up. (That table holds only the *shared* kernels; \
+                 module-local ones live in their own R2 file.)"
+            );
+        }
+        assert!(
+            !shared_kernel_names().is_empty(),
+            "`kernels::KERNELS` is empty — the shared-kernel table was emptied out"
+        );
+    }
+
+    /// 收集器坏掉时的反向守卫:「扫不到任何 kernel 就转绿」会让上面两条
+    /// 断言退化成检查零件事的空断言(它们都以 `LANG_SOURCES` 的迭代结果
+    /// 或 `KERNELS` 自身为输入)。
     #[test]
     fn kernel_collection_actually_finds_something() {
+        let all = all_kernel_names();
         assert!(
-            !all_kernel_names().is_empty(),
-            "no R1 module declares a kernel — the M3-0 injection path is dead and \
-             its guards would pass vacuously"
+            all.len() >= 7,
+            "found only {} kernel(s): {all:?} — the M3-0 injection path looks dead \
+             and its guards would pass vacuously",
+            all.len()
         );
     }
 }

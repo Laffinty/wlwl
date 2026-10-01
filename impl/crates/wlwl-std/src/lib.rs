@@ -16,8 +16,6 @@
 //!   - `wlwl:std.agent`  — agent-shaped helpers over `std.ai`
 //!     (`TASK`, `TOOL`, `CALL_TOOL`, `MODEL`, `CONTEXT`; §15.14, Phase D3)
 //!   - `wlwl:std.format` — `FORMAT` + the shared template grammar (§15.8 / §10.6, Phase B5)
-//!   - `wlwl:std.test`   — 进程内测试框架内核(`TEST`/`ASSERT` 族/
-//!     `RUN_TESTS`;注册表在 [`StdCtx::tests`])
 //!
 //! R1 语言层(纯 wlwl,`include_str!` 嵌入,eval 侧求值并缓存):
 //!   - `wlwl:std.collection` — 17 个高阶集合函数(M3-1 起纯 wlwl 终态)
@@ -25,6 +23,8 @@
 //!     member `QUOTE`, full member set lands in M3)
 //!   - `wlwl:std.math`   — math basics (stdlib spec §7; M1 placeholder member
 //!     `ABS`; `SQRT`/`POW` will be R2 kernels behind the facade)
+//!   - `wlwl:std.test`   — test framework facade (§8; M3-3 混合化,R2 内核
+//!     见 [`test_native`] —— 注册表 / 计时 / 测试体调用 / `EXPECT_ERR`)
 //!
 //! This list is **locked by a test** against [`resolve`] — a std module
 //! that is reachable but unlisted is a documentation bug, and the test
@@ -142,6 +142,22 @@ pub static LANG_SOURCES: &[StdSource] = &[
             ("_POW", kernels::kernel_pow as StdFn),
         ],
     },
+    StdSource {
+        path: "wlwl:std.test",
+        source: include_str!("../wl/std/test.wll"),
+        // 混合模块(规范 §8):断言载荷的构造在门面;注册表 / 计时 / 测试体
+        // 调用在 R2。`EXPECT_ERR` **必须**在内核 —— 语言的 ERR 透明调用
+        // 语义会在调用边界短路掉 ERR 实参,包一层 FUN 就拿不到 §8 要求的
+        // `OK(载荷)`(见 wl/std/test.wll 文件头与 test_native.rs 文档)。
+        kernels: &[
+            ("_KIND", kernels::kernel_kind as StdFn),
+            ("_DIAG_E0022", kernels::kernel_diag_e0022 as StdFn),
+            ("_DIAG_E0030", kernels::kernel_diag_e0030 as StdFn),
+            ("_TEST", test_native::kernel_test as StdFn),
+            ("_EXPECT_ERR", test_native::kernel_expect_err as StdFn),
+            ("_RUN_TESTS", test_native::kernel_run_tests as StdFn),
+        ],
+    },
 ];
 
 /// 从 R1 源码提取导出名:扫描 `EXPORT([...])` 声明中的字符串字面量。
@@ -184,7 +200,6 @@ pub fn resolve(path: &str) -> Option<StdBackend> {
         "wlwl:std.ai" => &ai::SPEC,
         "wlwl:std.agent" => &agent::SPEC,
         "wlwl:std.format" => &format::SPEC,
-        "wlwl:std.test" => &test_native::SPEC,
         _ => return None,
     };
     Some(StdBackend::Native(spec))
@@ -308,21 +323,16 @@ mod tests {
     }
     #[test]
     fn resolve_test() {
-        // [v0.11 M2] std.test 内核迁入(6 成员),注册表走 StdCtx::tests。
+        // [v0.11 M3-3] 混合形态:门面在 wlwl 侧(R1),注册表 / 计时 / 测试体
+        // 调用在 R2 内核(见 test_native.rs)。6 条成员面的**内容**对拍由
+        // `wlwl-eval/tests/test_contract.rs` 对标准库规范 §8 逐条做,这里只
+        // 锁「解析到 Lang 后端 + 成员数」。
         let s = resolve("wlwl:std.test").expect("test resolves");
-        assert_eq!(s.path(), "wlwl:std.test");
-        let names: Vec<&str> = s.functions().iter().map(|(n, _)| *n).collect();
-        assert_eq!(
-            names,
-            vec![
-                "TEST",
-                "ASSERT",
-                "ASSERT_EQ",
-                "ASSERT_NEQ",
-                "EXPECT_ERR",
-                "RUN_TESTS"
-            ]
-        );
+        let StdBackend::Lang(src) = s else {
+            panic!("std.test must be R1 (facade) now, got a native backend")
+        };
+        let names = lang_exports(src.source);
+        assert_eq!(names.len(), 6, "std.test member set: {names:?}");
     }
     #[test]
     fn resolve_unknown_returns_none() {
@@ -351,7 +361,6 @@ mod tests {
         &ai::SPEC,
         &agent::SPEC,
         &format::SPEC,
-        &test_native::SPEC,
     ];
 
     #[test]
@@ -442,16 +451,18 @@ mod tests {
     }
 
     /// `src/` 下每个**命名空间**文件都必须在自己的文档头里写清自己的路径,
-    /// 且**必须已登记进 `ALL_SPECS`**(含 test_native.rs 的改名)。
+    /// 且**必须已登记进 `ALL_SPECS`**。
     ///
-    /// 豁免名单(`NOT_A_NAMESPACE`)是两个**不是命名空间**的内部文件:
-    /// `compat.rs` 是 serde_json 内部表示的兼容层,`kernels.rs` 是注入
-    /// R1 门面的 R2 内核表(M3-0)—— 两者都不该有 `SPEC`,进了
-    /// `ALL_SPECS` 反而会让 `resolve()` 认得一个规范里不存在的命名空间。
-    /// 豁免是**显式列举**的:新增文件默认要被这条守卫拦住。
+    /// 豁免名单(`NOT_A_NAMESPACE`)是三个**不是命名空间**的内部文件:
+    /// `compat.rs` 是 serde_json 内部表示的兼容层;`kernels.rs` 是注入 R1
+    /// 门面的**模块无关**内核表(M3-0);`test_native.rs` 是 `std.test` 的
+    /// **R2 内核** —— M3-3 起该模块的对外契约层是 R1 门面 `wl/std/test.wll`,
+    /// 这个文件只提供内核实现,不再持有成员名册(见其文件头)。三者都不该有
+    /// `SPEC`;给它们硬造一个反而会让 `resolve()` 认得一个规范里不存在的
+    /// 命名空间。豁免是**显式列举**的:新增文件默认要被这条守卫拦住。
     #[test]
     fn every_module_file_documents_and_registers_its_own_path() {
-        const NOT_A_NAMESPACE: &[&str] = &["lib.rs", "compat.rs", "kernels.rs"];
+        const NOT_A_NAMESPACE: &[&str] = &["lib.rs", "compat.rs", "kernels.rs", "test_native.rs"];
         let mut files: Vec<String> = std::fs::read_dir("src")
             .expect("unit tests run with the package root as cwd")
             .filter_map(|e| e.ok())

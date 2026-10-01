@@ -1,117 +1,52 @@
-//! `wlwl:std.test` — in-process test framework (spec v0.4 §15.9).
+//! `wlwl:std.test` 的 **R2 原生内核** —— 标准库底座 v0.11 M3-3(ADR-0021)。
 //!
-//! [v0.11 M3-3] 本文件是 `std.test` 的 **R2 原生内核**(注册与计时),R1
-//! 门面 `wl/std/test.wll` 导出同一组 6 个成员。断言载荷的构造在门面侧。
+//! 混合形态:对外契约层是 R1 门面 `wl/std/test.wll`(6 个成员都在那里导出,
+//! 见标准库规范 §8)。本文件只留三件纯 wlwl 表达不了的事:
 //!
-//! ## Surface
+//! 1. **注册表** —— `TEST` 推入 [`StdCtx::tests`];注册表是每调用级的
+//!    宿主状态,R1 侧没有对应的存储面。
+//! 2. **计时与调用** —— `RUN_TESTS` 排空注册表、逐条计时、调用测试体、
+//!    组装结果字典。计时要 `Instant`,测试体调用要走宿主的 `call`(闭包
+//!    只能由求值器调用)。
+//! 3. **`EXPECT_ERR`** —— §8 要求「`x` 为 `ERR` → `OK(载荷)`」,而语言
+//!    自身的 ERR 透明调用语义(§8.2)在**调用边界**就把 ERR 实参短路掉,
+//!    成员体根本不执行(实测:任何 `FUN` 收到 ERR 实参,调用结果都是那个
+//!    ERR,与函数体无关;变长形参也照样短路)。所以它不能写成带函数体的
+//!    门面,只能由门面**改名导出**本文件这一份。详见 `wl/std/test.wll`
+//!    的文件头。
 //!
-//! Six functions per §15.9:
-//! - `TEST(name, body)` — registers a test case; body is a closure.
-//! - `ASSERT(cond, msg?)` — cond FALSE → `ERR(E0046)`; cond TRUE →
-//!   `OK(TRUE)`.
-//! - `ASSERT_EQ(a, b, msg?)` — uses `crate::values_equal`; on
-//!   inequality → `ERR(E0047)`.
-//! - `ASSERT_NEQ(a, b, msg?)` — on equality → `ERR(E0048)`.
-//! - `EXPECT_ERR(expr)` — if `expr` is not `Value::Err`, return
-//!   `ERR(E0049)`; otherwise return `OK(payload)`.
-//! - `RUN_TESTS()` — drain the evaluator-local `test_registry`,
-//!   run each body, catch per-test `ERR` (assertions), and return
-//!   `ARRAY` of `DICT` per §15.9 schema:
-//!   `["name", "passed", "duration_ms", "error"?]`.
+//! `ASSERT` / `ASSERT_EQ` / `ASSERT_NEQ` 的**载荷构造**已随 M3-3 搬进
+//! 门面(纯 wlwl 表达得了:`OK(TRUE)` / `ERR([...])` / `INDEX_SET` 追加可选
+//! 键),本文件不再有这三个函数。
 //!
-//! ## ERR vs OK convention
+//! ## 成员名不再由本文件决定
 //!
-//! Spec §15.9 says "断言 ERR 不透明传播(§12.6);RUN_TESTS 用 TRY
-//! 捕获每个 TEST." So the natural unit-of-work is `TRY(TEST_body)`,
-//! and `ASSERT_*` returns an `OK(TRUE)` (success) or an `ERR(...)`
-//! (failure). `RUN_TESTS` builds the DICT entries from the
-//! `TRY`-wrapped outcomes; an `OK` payload means "passed", an `ERR`
-//! means "failed" with the error attached.
+//! M3 之前这里是 `NAMES` + `SPEC.functions` 两份名单,靠 eval 侧的
+//! `names_match_catalog` 对拍。M3 起成员面由门面的 `EXPORT` 声明决定,
+//! 附录 A 镜像与 `wlwl-eval/tests/test_contract.rs`(对标准库规范 §8 表格
+//! 的外部对照)负责锁。**本文件只提供内核实现,不提供名册。**
 //!
-//! ## Non-OK non-ERR outcomes
+//! ## ERR 约定
 //!
-//! If a `TEST` body returns a bare `Value` (not wrapped in `OK`
-//! or `ERR`), we treat it as "passed with no assertion" — the
-//! `passed` flag is `TRUE` and `error` is absent. This matches
-//! spec §15.9's permissive `RUN_TESTS` contract (TEST body just
-//! "runs" — assertions are explicit).
-use crate::{ModuleSpec, StdFn};
-use wlwl_value::{values_equal, Outcome, StdHost, TestEntry, Value};
+//! 断言失败是**值**不是诊断:`ASSERT_*` 返回 `ERR(载荷)`,由 `RUN_TESTS`
+//! 捕获并记进结果字典的 `error` 字段(标准库规范 §8)。测试体求值期间
+//! 逃逸的 `ERR` 同样被捕获,该项 `passed = FALSE`。
+
+use wlwl_value::{Outcome, StdHost, TestEntry, Value};
 
 use std::time::Instant;
 
 use wlwl_error::{ErrorCode, WlwlError, WlwlResult};
 
 // ─────────────────────────────────────────────────────────────────────
-// 6-name table — must match `wlwl_std::test::NAMES` exactly
-// (locked by `names_match_catalog`).
+// R1 门面注入的三个内核
 // ─────────────────────────────────────────────────────────────────────
 
-pub const NAMES: &[&str] = &[
-    "TEST",
-    "ASSERT",
-    "ASSERT_EQ",
-    "ASSERT_NEQ",
-    "EXPECT_ERR",
-    "RUN_TESTS",
-];
-
-// ─────────────────────────────────────────────────────────────────────
-// Registry entry type — exposed so `Evaluator` can hold a
-// `Vec<TestEntry>` in its `test_registry` field.
-// ─────────────────────────────────────────────────────────────────────
-
-// ─────────────────────────────────────────────────────────────────────
-// Shared helpers
-// ─────────────────────────────────────────────────────────────────────
-
-fn arity(host: &mut dyn StdHost, fn_name: &str, got: usize, want: usize) -> WlwlError {
-    host.diag(
-        ErrorCode::E0022,
-        format!("{fn_name}: function expects {want} argument(s), got {got}"),
-    )
-}
-
-fn type_err(host: &mut dyn StdHost, fn_name: &str, expected: &str, got: &Value) -> WlwlError {
-    host.diag(
-        ErrorCode::E0030,
-        format!(
-            "{}: expected {}, got {}",
-            fn_name,
-            expected,
-            crate::value_kind(got),
-        ),
-    )
-}
-
-fn make_err(host: &mut dyn StdHost, code: ErrorCode, msg: String, payload: Value) -> Value {
-    // Build an `Err(payload)` Value. `host.diag` would make a
-    // `WlwlError` (a Rust Err), which would propagate up via `?`
-    // — but we want the ERR to be a *value* that the calling
-    // TEST body sees and that `TRY` catches. So we use the diag
-    // machinery for the canonical message format, then recover
-    // the `Value::Err(payload)` the caller expects.
-    let diag = host.diag(code, msg);
-    // Lock the message on the diag so the err payload's `display`
-    // stays in sync; we don't ship the whole diagnostic, just the
-    // code + payload (matching spec §15.9 row 2-5 schema: ERR has
-    // `{code, ...}`).
-    let _ = diag; // suppress unused-variable; future use: enrich payload
-    Value::Err(Box::new(payload))
-}
-
-fn short_circuit_err(args: &[Value]) -> Option<Value> {
-    args.iter().find_map(|v| match v {
-        Value::Err(_) => Some(v.clone()),
-        _ => None,
-    })
-}
-
-// ─────────────────────────────────────────────────────────────────────
-// 1. TEST(name, body)  →  NULL; pushes into evaluator's test_registry
-// ─────────────────────────────────────────────────────────────────────
-
-pub fn builtin_test(host: &mut dyn StdHost, args: Vec<Value>) -> WlwlResult<Outcome> {
+/// `TEST(name, body)` —— 类型检查在门面做完,这里只注册并返回 `NULL`。
+///
+/// 实参里的 `ERR` 按 §12.6 透明返回(门面是闭包,调用边界已经处理过一次;
+/// 这里保留检查是因为本函数是 `wlwl_std` 的公开 API,可能被直接调用)。
+pub fn kernel_test(host: &mut dyn StdHost, args: Vec<Value>) -> WlwlResult<Outcome> {
     if let Some(e) = short_circuit_err(&args) {
         return Ok(Outcome::normal(e));
     }
@@ -132,104 +67,11 @@ pub fn builtin_test(host: &mut dyn StdHost, args: Vec<Value>) -> WlwlResult<Outc
     Ok(Outcome::normal(Value::Null))
 }
 
-// ─────────────────────────────────────────────────────────────────────
-// 2. ASSERT(cond, msg?)  →  OK(TRUE) on truthy; ERR(E0046) on falsy
-// ─────────────────────────────────────────────────────────────────────
-
-pub fn builtin_assert(host: &mut dyn StdHost, args: Vec<Value>) -> WlwlResult<Outcome> {
-    if let Some(e) = short_circuit_err(&args) {
-        return Ok(Outcome::normal(e));
-    }
-    if !(1..=2).contains(&args.len()) {
-        return Err(arity(host, "ASSERT", args.len(), 2));
-    }
-    let cond = &args[0];
-    let truthy = match cond {
-        Value::Boolean(b) => *b,
-        Value::Null => false,
-        _ => true,
-    };
-    if truthy {
-        return Ok(Outcome::normal(Value::Ok(Box::new(Value::Boolean(true)))));
-    }
-    // Failure path: build ERR(E0046, {code: E0046, cond: <orig>, msg}).
-    let msg = if args.len() == 2 {
-        Some(args[1].clone())
-    } else {
-        None
-    };
-    let payload = build_payload("E0046", cond, msg, "test_assertion_failed");
-    Ok(Outcome::normal(make_err(
-        host,
-        ErrorCode::E0046,
-        format!("ASSERT failed: cond = {}", cond.display()),
-        payload,
-    )))
-}
-
-// ─────────────────────────────────────────────────────────────────────
-// 3. ASSERT_EQ(a, b, msg?)  →  OK(TRUE) on equal; ERR(E0047) on !=
-// ─────────────────────────────────────────────────────────────────────
-
-pub fn builtin_assert_eq(host: &mut dyn StdHost, args: Vec<Value>) -> WlwlResult<Outcome> {
-    if let Some(e) = short_circuit_err(&args) {
-        return Ok(Outcome::normal(e));
-    }
-    if !(2..=3).contains(&args.len()) {
-        return Err(arity(host, "ASSERT_EQ", args.len(), 3));
-    }
-    let (a, b) = (&args[0], &args[1]);
-    if values_equal(a, b) {
-        return Ok(Outcome::normal(Value::Ok(Box::new(Value::Boolean(true)))));
-    }
-    let msg = if args.len() == 3 {
-        Some(args[2].clone())
-    } else {
-        None
-    };
-    let payload = build_payload_with_actual("E0047", a, b, msg, "test_assertion_eq_failed");
-    Ok(Outcome::normal(make_err(
-        host,
-        ErrorCode::E0047,
-        format!("ASSERT_EQ failed: {} != {}", a.display(), b.display()),
-        payload,
-    )))
-}
-
-// ─────────────────────────────────────────────────────────────────────
-// 4. ASSERT_NEQ(a, b, msg?)  →  OK(TRUE) on !equal; ERR(E0048) on =
-// ─────────────────────────────────────────────────────────────────────
-
-pub fn builtin_assert_neq(host: &mut dyn StdHost, args: Vec<Value>) -> WlwlResult<Outcome> {
-    if let Some(e) = short_circuit_err(&args) {
-        return Ok(Outcome::normal(e));
-    }
-    if !(2..=3).contains(&args.len()) {
-        return Err(arity(host, "ASSERT_NEQ", args.len(), 3));
-    }
-    let (a, b) = (&args[0], &args[1]);
-    if !values_equal(a, b) {
-        return Ok(Outcome::normal(Value::Ok(Box::new(Value::Boolean(true)))));
-    }
-    let msg = if args.len() == 3 {
-        Some(args[2].clone())
-    } else {
-        None
-    };
-    let payload = build_payload_with_actual("E0048", a, b, msg, "test_assertion_neq_failed");
-    Ok(Outcome::normal(make_err(
-        host,
-        ErrorCode::E0048,
-        format!("ASSERT_NEQ failed: {} == {}", a.display(), b.display()),
-        payload,
-    )))
-}
-
-// ─────────────────────────────────────────────────────────────────────
-// 5. EXPECT_ERR(expr)  →  OK(payload) if expr is ERR; else ERR(E0049)
-// ─────────────────────────────────────────────────────────────────────
-
-pub fn builtin_expect_err(host: &mut dyn StdHost, args: Vec<Value>) -> WlwlResult<Outcome> {
+/// `EXPECT_ERR(x)` —— `x` 为 `ERR` → `OK(载荷)`;否则 `ERR(E0049)`。
+///
+/// 见文件头:这一份**不能**被门面包一层 `FUN`,否则 §8 的「返回 `OK(载荷)`」
+/// 会被语言的 ERR 透明调用语义吃掉。
+pub fn kernel_expect_err(host: &mut dyn StdHost, args: Vec<Value>) -> WlwlResult<Outcome> {
     if let Some(e) = short_circuit_err(&args) {
         // Short-circuit: input was ERR — that IS the expected case.
         return Ok(Outcome::normal(Value::Ok(Box::new(e))));
@@ -250,11 +92,8 @@ pub fn builtin_expect_err(host: &mut dyn StdHost, args: Vec<Value>) -> WlwlResul
     )))
 }
 
-// ─────────────────────────────────────────────────────────────────────
-// 6. RUN_TESTS()  →  ARRAY of DICT (per §15.9 schema)
-// ─────────────────────────────────────────────────────────────────────
-
-pub fn builtin_run_tests(host: &mut dyn StdHost, args: Vec<Value>) -> WlwlResult<Outcome> {
+/// `RUN_TESTS()` —— 排空注册表、逐条计时调用、组装结果字典(标准库规范 §8)。
+pub fn kernel_run_tests(host: &mut dyn StdHost, args: Vec<Value>) -> WlwlResult<Outcome> {
     if let Some(e) = short_circuit_err(&args) {
         return Ok(Outcome::normal(e));
     }
@@ -268,15 +107,11 @@ pub fn builtin_run_tests(host: &mut dyn StdHost, args: Vec<Value>) -> WlwlResult
     let mut results: Vec<Value> = Vec::with_capacity(entries.len());
     for entry in entries {
         let started = Instant::now();
-        // Per §15.9: ERR from assertions is "non-transparent" by
-        // spec rule (RUN_TESTS uses TRY to catch). We don't try to
-        // reimplement TRY here — `invoke_closure` propagates a
-        // `WlwlError` for uncaught ERRs (the top-level E0102
-        // path), and for a properly-written TEST the body
-        // either returns OK(TRUE) on pass or an ERR value from
-        // ASSERT/ASSERT_EQ on fail. The latter returns through
-        // Outcome::normal(err) from the assertion builtin, which
-        // we read off the Outcome.value below.
+        // Per §8: ERR from assertions is "non-transparent" by spec rule
+        // (RUN_TESTS catches it). A properly-written TEST body either
+        // returns OK(TRUE) on pass or an ERR value from ASSERT/ASSERT_EQ
+        // on fail; the latter returns through Outcome::normal(err) from
+        // the facade, which we read off the Outcome.value below.
         let outcome = match crate::call_callable(host, "RUN_TESTS", &entry.body, vec![]) {
             Ok(v) => Ok(v),
             Err(_e) => {
@@ -289,7 +124,7 @@ pub fn builtin_run_tests(host: &mut dyn StdHost, args: Vec<Value>) -> WlwlResult
         let duration_ms = started.elapsed().as_millis() as i64;
         let dict = match outcome {
             Ok(Value::Err(payload)) => {
-                // Spec §15.9 row 6: error field carries the payload.
+                // Spec §8: error field carries the payload.
                 let mut d = vec![
                     (
                         Value::String("name".into()),
@@ -319,7 +154,7 @@ pub fn builtin_run_tests(host: &mut dyn StdHost, args: Vec<Value>) -> WlwlResult
             Ok(other) => {
                 // Non-ERR outcome. Could be OK(TRUE) (from a passed
                 // assertion), NULL, or a bare value. All count as
-                // "passed" per §15.9's permissive contract.
+                // "passed" per §8's permissive contract.
                 let mut d = vec![
                     (
                         Value::String("name".into()),
@@ -383,11 +218,57 @@ pub fn builtin_run_tests(host: &mut dyn StdHost, args: Vec<Value>) -> WlwlResult
 }
 
 // ─────────────────────────────────────────────────────────────────────
-// Shared payload builder
+// Shared helpers
+// ─────────────────────────────────────────────────────────────────────
+
+fn arity(host: &mut dyn StdHost, fn_name: &str, got: usize, want: usize) -> WlwlError {
+    host.diag(
+        ErrorCode::E0022,
+        format!("{fn_name}: function expects {want} argument(s), got {got}"),
+    )
+}
+
+fn type_err(host: &mut dyn StdHost, fn_name: &str, expected: &str, got: &Value) -> WlwlError {
+    host.diag(
+        ErrorCode::E0030,
+        format!(
+            "{}: expected {}, got {}",
+            fn_name,
+            expected,
+            crate::value_kind(got),
+        ),
+    )
+}
+
+fn make_err(host: &mut dyn StdHost, code: ErrorCode, msg: String, payload: Value) -> Value {
+    // Build an `Err(payload)` Value. `host.diag` would make a
+    // `WlwlError` (a Rust Err), which would propagate up via
+    // `?` — but we want the ERR to be a *value* that the calling
+    // TEST body sees and that RUN_TESTS catches. So we use the diag
+    // machinery for the canonical message format, then recover
+    // the `Value::Err(payload)` the caller expects.
+    let diag = host.diag(code, msg);
+    // Lock the message on the diag so the err payload's `display`
+    // stays in sync; we don't ship the whole diagnostic, just the
+    // code + payload (matching §8 row 2-5 schema: ERR has
+    // `{code, ...}`).
+    let _ = diag; // suppress unused-variable; future use: enrich payload
+    Value::Err(Box::new(payload))
+}
+
+fn short_circuit_err(args: &[Value]) -> Option<Value> {
+    args.iter().find_map(|v| match v {
+        Value::Err(_) => Some(v.clone()),
+        _ => None,
+    })
+}
+
+// ─────────────────────────────────────────────────────────────────────
+// Shared payload builder(目前只有 EXPECT_ERR 用;ASSERT 族已搬到门面)
 // ─────────────────────────────────────────────────────────────────────
 
 fn build_payload(code: &str, cond: &Value, msg: Option<Value>, kind: &str) -> Value {
-    // Spec §15.9: ERR payload is a DICT `{code, kind, cond?, msg?}`.
+    // §8: ERR payload is a DICT `{code, kind, cond?, msg?}`.
     let mut entries = vec![
         (Value::String("code".into()), Value::String(code.into())),
         (Value::String("kind".into()), Value::String(kind.into())),
@@ -400,38 +281,3 @@ fn build_payload(code: &str, cond: &Value, msg: Option<Value>, kind: &str) -> Va
     }
     Value::Dict(entries)
 }
-
-fn build_payload_with_actual(
-    code: &str,
-    actual: &Value,
-    expected: &Value,
-    msg: Option<Value>,
-    kind: &str,
-) -> Value {
-    let mut entries = vec![
-        (Value::String("code".into()), Value::String(code.into())),
-        (Value::String("kind".into()), Value::String(kind.into())),
-        (Value::String("actual".into()), actual.clone()),
-        (Value::String("expected".into()), expected.clone()),
-    ];
-    if let Some(m) = msg {
-        entries.push((Value::String("msg".into()), m));
-    }
-    Value::Dict(entries)
-}
-
-// ─────────────────────────────────────────────────────────────────────
-// Tests
-// ─────────────────────────────────────────────────────────────────────
-
-pub static SPEC: ModuleSpec = ModuleSpec {
-    path: "wlwl:std.test",
-    functions: &[
-        ("TEST", builtin_test as StdFn),
-        ("ASSERT", builtin_assert as StdFn),
-        ("ASSERT_EQ", builtin_assert_eq as StdFn),
-        ("ASSERT_NEQ", builtin_assert_neq as StdFn),
-        ("EXPECT_ERR", builtin_expect_err as StdFn),
-        ("RUN_TESTS", builtin_run_tests as StdFn),
-    ],
-};
