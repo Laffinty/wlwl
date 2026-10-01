@@ -428,6 +428,15 @@ impl ModuleLoader {
     /// land in the module env, so R1 members can be closures and can
     /// call global builtins (R0) and other std namespaces.
     ///
+    /// Mixed modules (stdlib spec §7 `std.math` / §8 `std.test`) also
+    /// get their R2 kernels bound here — see [`StdSource::kernels`].
+    /// The injection happens **before** `eval_module` and lands in the
+    /// *sub*-evaluator's env; the module env handed back to `IMPORT`
+    /// callers is built from `EXPORT` alone, so kernels never leak
+    /// onto the import surface. A gate test
+    /// (`stdlib_mirror::tests::r1_kernels_never_leak_to_the_export_surface`)
+    /// asserts the two name sets stay disjoint.
+    ///
     /// The dev-only override channel (`--std-src <dir>` / env
     /// `WLWL_STD_SRC`, stored in `ProjectContext::std_src`) swaps the
     /// embedded source for `<dir>/<name>.wll`. It must not change the
@@ -476,6 +485,19 @@ impl ModuleLoader {
             project: self.project.clone(),
         };
         let mut sub = Evaluator::new_with_loader(sub_loader);
+        // [v0.11 M3-0 / ADR-0021 §层间规则] Bind the module's R2 kernels
+        // into the sub-evaluator *before* its body runs, so a mixed
+        // module's facade can call them. Only `EXPORT`ed names are
+        // collected into the module env below, so these stay private.
+        for (name, func) in src.kernels {
+            sub.env.set_local(
+                (*name).to_string(),
+                Value::NativeFn {
+                    name: (*name).to_string(),
+                    invoke: *func,
+                },
+            );
+        }
         if let Err(e) = sub.eval_module(&ast) {
             self.project.loading.borrow_mut().pop();
             return Err(e);
@@ -23119,5 +23141,7 @@ entry = "main.wll"
 // 放在文件末尾,避免首个 #[cfg(test)] 截断 wlwl-error 的实现面扫描)。
 #[cfg(test)]
 mod collection_tests;
+#[cfg(test)]
+mod kernel_injection_tests;
 #[cfg(test)]
 mod test_native_tests;

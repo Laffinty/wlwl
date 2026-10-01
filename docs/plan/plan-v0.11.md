@@ -87,26 +87,57 @@
 | M2-3 | `wlwl-eval/src/lib.rs:1520-1610` 的 `value_to_std_value` / `std_value_to_value` 双向转换层;`wlwl-std/src/lib.rs` StdCtx(`:105-135`) | 原生函数直接收发 `Value`;StdCtx 增 Callable 注入槽;实现内部中间表示自选(JSON 解析仍用 serde_json),**跨界类型只有 Value** | 边界转换代码删除;std 各模块测试全绿 |
 | M2-4 | `wlwl-eval/src/collection.rs` / `test.rs` 全文;`load_std_native` 的名录特判(`:1064-1089`);`wlwl-std/src/lib.rs:11-17` 既有契约注释 | collection/test 迁至 `wlwl-std`(test 原生内核落 `test_native.rs`);名录特判与「std 边界拒绝闭包值」契约废止 | eval 不再含 std 实现;混合实现可持闭包 |
 
-### M3 R1 首批 + 混合 test(约 4 人日)
+### M3 R1 首批 + 混合 test(约 5 人日;原估 4,差额见 M3-0 接线机制)
 
-| # | 任务 | 验收 |
-|---|---|---|
-| M3-1 | `std.collection` 以纯 wlwl 重写(`wl/std/collection.wll`),成员契约与 stdlib 规范 §5 逐成员对拍 | 逐成员契约测试(含 ERR 回调传播、`E0038`);原生实现删除前先双实现差分 |
-| M3-2 | `std.str`(§6 成员表)纯 wlwl 落地;`std.math`(§7 成员表)混合落地:纯 wlwl 门面 + R2 浮点内核(`SQRT`/`POW`) | 成员表逐条测试;域失败返回 `ERR(["kind": "DomainError", ...])` |
-| M3-3 | `std.test` 混合:R1 门面(`wl/std/test.wll`)+ R2 原生内核(`test_native.rs`) | 契约同 stdlib 规范 §8;probe 增用例 |
-| M3-4 | conformance / probe 扩展:R1 模块用 `.wll` 符合性脚本自测 | 类别对照表更新 |
+侦察于 2026-10-01(commit `30b70a7`),行号为**抵达时实测**;立项单格式同 M1/M2。
+
+**M3-0 前置裁决(ADR-0021 §层间规则的落地机制,不是新裁决)**
+
+ADR-0021:89 已定「R1 可以调用 R0 与 R2」,M1 只落了 R1→R0 一半(闭包调全局
+内建)。M3 的三个模块里有两类东西**纯 wlwl 表达不出来**,必须在混合门面上
+留一条到 R2 的私有通道:
+
+1. **浮点内核**(`SQRT` / `POW`)—— ADR-0021:84 已预告;
+2. **指定码的原生诊断**—— 侦察实测(临时脚本跑 `target/debug/wlwl`):
+   `PANIC(msg)` → `E0100`;`LEN(1)` → `E0030` 但消息由 `LEN` 固定;
+   wlwl 闭包元数错 → `E0022` 但消息**无函数名前缀**
+   (`function expects 1..1 argument(s), got 2`)。
+   而 `E0038`(`RANGE` 步长为零,规范 §5 / 语言规范 §11)目前**全仓唯一发射点
+   就是待删的 `wlwl-std/src/collection.rs:528`** —— 删掉 R2 实现后 wlwl 侧
+   无路可走,除非注入发射器。
+
+**机制**:`StdSource` 增私有 `kernels: &'static [(&'static str, StdFn)]`
+注入槽;`load_std_lang` 在 `eval_module` **之前**把 kernel 以局部绑定注入子
+求值器;只有 `EXPORT` 名单进入返回的模块 env(`wlwl-eval/src/lib.rs:484-497`),
+故 kernel **不外泄**到 `IMPORT` 方 —— 门面仍是唯一对外契约层
+(ADR-0021:90 / 规范 §0.2)。kernel 只在 Rust 侧固定,`--std-src` 覆盖轨同样
+注入,故覆盖不可能改变导出面(M1 的 E0023 漂移守卫不受影响)。
+
+**被否决的替代方案**:让 R1 靠「误撞」可发的原生码(如 `LEN(1)`)来报类型错 ——
+码对了但消息指向 `LEN` 而非 `MAP`,诊断反而更糟。
+
+| # | 挂载点 | 变更面 | 验收 |
+|---|---|---|---|
+| M3-0 | `wlwl-std/src/lib.rs:66-69`(`StdSource`)、`:101-110`(`LANG_SOURCES`)、`:289-298`(`ALL_SPECS`)、`:391-421`(命名空间守卫);`wlwl-eval/src/lib.rs:435-506`(`load_std_lang`,注入点落在 `:478` `new_with_loader` 之后、`eval_module` 之前) | 新增 `wlwl-std/src/kernels.rs`:R1 注入的 R2 内核表(**非命名空间** —— 无 `SPEC`、不进 `resolve()`、不进附录 A;命名空间守卫的豁免名单扩到它并写明理由)。首批 kernel:`_KIND(x)`(保 R2 消息措辞)、`_DIAG_E0020/_E0030/_E0038(msg)`、`_SQRT/_POW` | 注入面**不外泄**:一条断言「kernel 名不得出现在任一 std 模块的 `EXPORT` 里」;kernel 表为空时 `load_std_lang` 行为与 M1 等价(M1 既有两条门禁测试不改动即绿) |
+
+| # | 挂载点 | 变更面 | 验收 |
+|---|---|---|---|
+| M3-1 | 新建 `wlwl-std/wl/std/collection.wll`(17 成员,`EXPORT` 顺序对齐 R2 `NAMES`);`wlwl-std/src/collection.rs:1-925`(**删**);`wlwl-std/src/lib.rs:36`(`pub mod collection`)、`:152`(`resolve` 键)、`:19-20`(crate 目录注释)、`:296`(`ALL_SPECS`);`wlwl-eval/src/collection_tests.rs:4-5,53-65,67-85,88-108,110-135`;`wlwl-std/src/test_native.rs:280`(`collection::call_callable` 调用点) | 纯 wlwl 实现 §5 全部 17 成员;`call_callable` / `arity` / `type_err` / `not_callable` / `short_circuit_err` 上移到 `wlwl-std/src/lib.rs`(与既有 `value_kind` / `wrap` 同处);`value_kind` 与 `wlwl_value::type_name` 的措辞分叉(现 collection 用 `"function closure"`/`"RESULT err"`,test 用 `"function"`/`"err"`)**收敛为单一来源**,登记偏差;`names_match_catalog` 改为对拍 R1 `EXPORT` | ① 逐成员契约测试(§5 全表 + 回调 `ERR` 传播 + `RANGE` step=0 → `E0038`);② 删 R2 前跑双实现差分(R2 实现暂留 `collection_r2_ref.rs`,`resolve()` 不登记;同一个 `Value::Closure` 分别喂 R1 表达式与 R2 `StdFn`,逐用例对拍**码**与**值**),跑完即删,把结论固化成契约测试;③ `impl/tests/probe/cases/` 增 collection R1 用例 |
+| M3-2 | `wlwl-std/wl/std/str.wll:1-21`(补 `JOIN`/`SPLIT_LINES`/`CHAR_AT`/`COUNT`);`wlwl-std/wl/std/math.wll:1-5`(补 `MIN`/`MAX`/`FLOOR`/`CEIL`/`ROUND`/`CLAMP`/`PI`/`E` + `SQRT`/`POW` 门面);`wlwl-std/src/kernels.rs`(M3-0,新增 `_SQRT`/`_POW`);`wlwl-eval/src/stdlib_mirror.rs:27-42`(`NAMESPACE_META` 的「引入」列) | §6/§7 成员表逐条落地;`cargo run --bin gen-appendix-a` 重生成附录 A;规范 §6/§7「落地状态」行改写 | §6/§7 成员表逐条测试;`SQRT(x<0)` / `POW(0, 负)` / `POW(负底, 非整数)` / `CLAMP(lo>hi)` 返 `ERR(["kind": "DomainError", ...])`;`ABS(INT_MIN)` → `E0035`;`CHAR_AT` 越界口径 = `SUB`;`COUNT(s, "")` → `E0030`;附录 A 锁测试(`wlwl-eval/tests/stdlib_appendix_a_sync.rs:23`)绿,生成器幂等 |
+| M3-3 | 新建 `wlwl-std/wl/std/test.wll`;`wlwl-std/src/test_native.rs:50-57`(`NAMES`)、`:114-133`(`TEST`)、`:257-384`(`RUN_TESTS`)、`:428-438`(`SPEC`);`wlwl-eval/src/test_native_tests.rs:5-17`(`names_match_catalog`) | R1 门面导出 6 成员;`ASSERT` 族载荷 `DICT`(`{code, kind, cond?, msg?}` / `{code, kind, actual, expected, msg?}`)的**构造**移到门面(纯 wlwl 可表达),注册与计时留 R2(`StdCtx::tests` + `Instant`);`resolve` 改挂 `LANG_SOURCES`;`names_match_catalog` 改为对拍 R1 `EXPORT` | 契约同规范 §8:6 成员签名、`E0046`–`E0049`、`RUN_TESTS` 记录字典(至少 `name`/`passed`/`duration_ms`,按结果附 `return_value` 或 `error`)、体逃逸 `ERR` → `passed=FALSE`;eval 侧既有 `b7_*` 约 30 条测试经解释器不改动即通过;probe 增用例 |
+| M3-4 | `impl/tests/conformance/`(新增 `stdlib_r1_collection.wll` / `stdlib_r1_str.wll` / `stdlib_r1_math.wll`);`impl/crates/wlwl-cli/tests/conformance.rs:61-72`(`WLT_FILES`);`impl/crates/wlwl-cli/tests/probe.rs:51-55`(`EXPECTED_CASE_COUNT`)、`:127-135`(计数守卫);`impl/crates/wlwl-cli/tests/stdlib_dual_track.rs:67-131`(覆盖轨现只测 `std.str`) | R1 模块用 `.wll` 符合性脚本自测;probe 计数守卫同步递增;双轨锁测试扩到 `collection` / `math`(证明覆盖轨不因 kernel 注入而漂移) | 符合性脚本进 `WLT_FILES` 且跑绿;`EXPECTED_CASE_COUNT` 与目录数一致;覆盖轨对 `collection` / `math` 同导出面生效(输出切换证明真走覆盖目录) |
 
 ### M5 基准基线(约 1 人日)
 
-| # | 任务 | 验收 |
-|---|---|---|
-| M5-1 | criterion 基准:R1 模块热成员(collection `MAP`/`SORT`/`REDUCE`、str `JOIN` 等)+ 值直通迁移前后对比 | 基线存档;口径沿用语言规范 §17.7 性能口径(记录 CPU / rustc / 档位,≥ 20 次取中位数) |
+| # | 挂载点 | 变更面 | 验收 |
+|---|---|---|---|
+| M5-1 | `wlwl-eval/benches/eval_hot_paths.rs:59-68`(`simple_loop_1m`,驱动是 `RANGE(1, 1000001, 1)`)、`:129-143`(`array_higher_order`)、`:176-184`(criterion 组);`wlwl-eval/benches/baseline.txt` | 新增 R1 热成员基准(collection `MAP`/`SORT`/`REDUCE`、str `JOIN`、math 门面);`baseline.txt` 增「M3 前 / M3 后」两段;值直通前后对比用 `git worktree` 落在 `30b70a7^`(`d56cf08`,M1 末)跑**同一份**新 bench 文件 | 基线存档;口径沿语言规范 §17.7:记录 CPU 型号 / `rustc` 版本 / 档位 / 是否 LTO,≥ 20 次取中位数;**RANGE R1 化的性能影响必须显式记账**(见 §4 风险表新行) |
 
 ### M4 稳定性政策成文(约 1 人日,收尾)
 
-| # | 任务 | 验收 |
-|---|---|---|
-| M4-1 | ADR-0023 终稿核对 + stdlib 规范 §0.4 政策文本 + CHANGELOG 口径(v0.x 条目纪律) | 政策在 stdlib 规范可执行:有流程、有镜像、有锁测试 |
+| # | 挂载点 | 变更面 | 验收 |
+|---|---|---|---|
+| M4-1 | `docs/adr/0023-stdlib-stability-policy.md`;`docs/stdlib/wlwl-stdlib-spec-v0.11.md:69-77`(§0.4);`CHANGELOG.md` `[Unreleased]` | ADR-0023 终稿核对 + §0.4 政策文本复核(v0.x 四件套同步 / breaking 明标 / 弃用两步 / 不重导出同名全局内建)+ M3 各批 breaking 口径 | 政策在 stdlib 规范可执行:有流程、有镜像、有锁测试;批次 A 收口按 §8 门禁逐条过(fmt 0 diff / clippy `-D warnings` 0 / workspace 全绿 / probe ≥138 / 附录 G 逐字节不变 / M5 基线存档) |
 
 ## 4 依赖与风险
 
@@ -115,6 +146,9 @@
 | `wlwl-value` 拆分牵动 `wlwl-eval`(单文件约 2.4 万行) | 纯搬移纪律:M2-2 不夹带任何语义改动;workspace 锁测试全绿为闸 |
 | R1 性能不足 | 数据驱动:M5 基线为准,热点下沉 R2;调用面不动,记演进台账 |
 | R1 重写语义漂移 | 契约逐成员对拍 + probe;原生实现删除前先双实现差分 |
+| **`RANGE` 是 R1 化的性能放大器**(M3 新增实测风险) | `simple_loop_1m` 基准的驱动就是 `RANGE(1, 1000001, 1)`(bench `:59-68`)。R2 版一次原生循环产出 100 万元素;R1 版要由解释器跑 100 万次 `WHILE` + `PUSH`。**处置:M5 实测记账**;若越过语言规范 §6.6 的「100 万次简单循环 < 30 s」预算,按上一行「热点下沉 R2」把 `RANGE` 单独留 R2(其余 16 成员仍 R1),登记偏差 —— 归属变更按 ADR-0021 §0.2 不算破坏性变更 |
+| 诊断**码**不变但**措辞**变(M3 新增) | R1 闭包的元数检查由解释器发出,消息无函数名前缀(`function expects 1..1 argument(s), got 2` vs R2 的 `MAP: function expects 2 argument(s), got 1`)。处置:码严格守恒(差分对拍**码**与**值**),措辞变化登记偏差 + CHANGELOG 明标;不追求逐字节复刻 R2 文案 |
+| `value_kind` 措辞分叉(M3 新增实测) | 现有两套:`collection::value_kind`(`"function closure"`/`"native fn"`/`"RESULT err"`)与 `crate::value_kind` = `wlwl_value::type_name`(`"function"`/`"native-function"`/`"err"`),同仓两套 E0030 措辞。处置:M3-1 收敛为单一来源,选边登记偏差 |
 | 文档双轨失同步 | 镜像生成器 + 锁测试(M1-3);改面必须过四件套(ADR-0023) |
 | serde_json 移除后的 JSON 解析 | 解析内核仍用 serde_json(实现自由),仅边界类型改为 Value |
 
@@ -149,6 +183,9 @@ v0.10 收口时降级为已知限制(语言规范 §17.1/§17.4 的 YIELD「挂�
 | `docs/stdlib/wlwl-stdlib-spec-v0.11.md` | 新建:独立标准库规范 | 已完成 |
 | `docs/plan/README.md` | 当前状态表更新 | 已完成 |
 | `docs/appendix_G.md` | 不动(全局内建属语言表面) | — |
+| `docs/stdlib/wlwl-stdlib-spec-v0.11.md` §5/§6/§7/§8 | M3 落地后改写各章「落地状态」行;§5 补 `SORT(arr, cmp)` / `ANY`·`ALL` 缺省谓词两处**已实现未文档**的过载;附录 A 由 `gen-appendix-a` 重生成 | M3 待办 |
+| `docs/adr/0021-stdlib-layering.md` §层间规则 | M3-0 的 kernel 注入是 ADR-0021:89「R1 可以调用 R0 与 R2」的落地,不新增裁决 —— 仅在 §层间规则下补一段机制说明(注入槽 + 不外泄) | M3-0 待办 |
+| `CHANGELOG.md` `[Unreleased]` | M3 各里程碑收口补条目;诊断措辞变化按 §0.4 明标 breaking | M3 待办 |
 
 ## 8 验收门禁(批次 A 收口)
 

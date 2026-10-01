@@ -39,6 +39,7 @@ pub mod format;
 pub mod fs;
 pub mod io;
 pub mod json;
+pub mod kernels;
 pub mod test_native;
 
 use wlwl_error::WlwlError;
@@ -66,6 +67,17 @@ pub struct ModuleSpec {
 pub struct StdSource {
     pub path: &'static str,
     pub source: &'static str,
+    /// 注入本模块门面的 R2 内核(标准库底座 v0.11 M3-0,ADR-0021 §层间规则)。
+    ///
+    /// eval 侧在求值本模块源码**之前**把它们绑进子求值器的局部环境;返回
+    /// 给 `IMPORT` 方的模块 env 只收 `EXPORT` 名单,所以这些名字**不外泄**
+    /// —— 门面仍是唯一对外契约层。取值见 [`kernels::KERNELS`]。
+    ///
+    /// 为什么需要这条通道:浮点指令(`SQRT` / `POW`)纯 wlwl 表达不出来;
+    /// 诊断码表同理 —— wlwl 源码无法指定原生诊断码(实测 `PANIC` → `E0100`),
+    /// 而 `E0038`(`RANGE` 步长为零)在 M3 之前的唯一发射点是被删掉的 R2
+    /// `RANGE` 实现。详见 [`kernels`] 的模块文档。
+    pub kernels: &'static [(&'static str, StdFn)],
 }
 
 /// std 命名空间的实现后端(单一清单的两轨,ADR-0021 §分发)。
@@ -102,10 +114,16 @@ pub static LANG_SOURCES: &[StdSource] = &[
     StdSource {
         path: "wlwl:std.str",
         source: include_str!("../wl/std/str.wll"),
+        kernels: &[],
     },
     StdSource {
         path: "wlwl:std.math",
         source: include_str!("../wl/std/math.wll"),
+        // 混合模块(规范 §7):门面在 wlwl 侧,浮点内核在这里。
+        kernels: &[
+            ("_SQRT", kernels::kernel_sqrt as StdFn),
+            ("_POW", kernels::kernel_pow as StdFn),
+        ],
     },
 ];
 
@@ -384,22 +402,30 @@ mod tests {
         }
     }
 
-    /// src/ 下每个模块文件都必须在自己的文档头里写清自己的路径,且
-    /// **必须已登记进 `ALL_SPECS`**(含 test_native.rs 的改名;
-    /// compat.rs 是内部表示兼容层,不是模块,豁免计数)。
+    /// `src/` 下每个**命名空间**文件都必须在自己的文档头里写清自己的路径,
+    /// 且**必须已登记进 `ALL_SPECS`**(含 test_native.rs 的改名)。
+    ///
+    /// 豁免名单(`NOT_A_NAMESPACE`)是两个**不是命名空间**的内部文件:
+    /// `compat.rs` 是 serde_json 内部表示的兼容层,`kernels.rs` 是注入
+    /// R1 门面的 R2 内核表(M3-0)—— 两者都不该有 `SPEC`,进了
+    /// `ALL_SPECS` 反而会让 `resolve()` 认得一个规范里不存在的命名空间。
+    /// 豁免是**显式列举**的:新增文件默认要被这条守卫拦住。
     #[test]
     fn every_module_file_documents_and_registers_its_own_path() {
+        const NOT_A_NAMESPACE: &[&str] = &["lib.rs", "compat.rs", "kernels.rs"];
         let mut files: Vec<String> = std::fs::read_dir("src")
             .expect("unit tests run with the package root as cwd")
             .filter_map(|e| e.ok())
             .map(|e| e.file_name().to_string_lossy().to_string())
-            .filter(|n| n.ends_with(".rs") && n != "lib.rs" && n != "compat.rs")
+            .filter(|n| n.ends_with(".rs") && !NOT_A_NAMESPACE.contains(&n.as_str()))
             .collect();
         files.sort();
         assert_eq!(
             files.len(),
             ALL_SPECS.len(),
-            "src/ has {} module file(s) but ALL_SPECS registers {}",
+            "src/ has {} namespace file(s) but ALL_SPECS registers {}; \
+             a new src/*.rs must either register a SPEC here or be added to \
+             NOT_A_NAMESPACE with a reason",
             files.len(),
             ALL_SPECS.len()
         );
