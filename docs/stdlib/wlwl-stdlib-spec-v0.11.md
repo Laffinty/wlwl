@@ -57,14 +57,24 @@
 每个命名空间成员,无论实现层,必须齐备:
 
 1. **本规范条目**:成员表 + 语义 + 失败行为;
-2. **`.wll.sig` 签名**(R1 成员;语言规范 §9.6);
-3. **附录 A 注册镜像**:由生成器从实现清单(`ModuleSpec` 绑定表 + R1 源码
+2. **附录 A 注册镜像**:由生成器从实现清单(`ModuleSpec` 绑定表 + R1 源码
    导出)提取,锁测试双向守护;
+3. **与本规范成员表的外部对照**:测试从本规范的表格**解析**出成员面,与
+   实现清单对拍(集合相等)。这一条是第 2 条的缺口补丁 —— 第 2 条两侧都读
+   实现,规范被改坏而实现没动时它照样全绿;
 4. **ERR 消费者注册**:R2 成员按 ADR-0009 在 init 时自注册;R1 成员的
    `ERR` 处理由语言语义(8.2/8.3)自然承担,不经消费者注册表。
 
+> **`.wll.sig` 不在本清单内。** 语言规范 §9.6 写的是旁路签名文件「**可以**有」,
+> 且三个方向都只在 `gradual_typing` 开启时被检查;而 std R1 模块的加载路径
+> 是 `parse` + `eval_module`,**永不做类型检查**,所以给它们配 `.wll.sig` 只会
+> 多出第三份**永不被校验**的副本 —— 那是要漂移的,不是治理。因此 stdlib 的
+> 成员可审计性由上面第 1–3 条承担。偏差 D11-013。
+
 > 状态:镜像生成器与锁测试已随 M1 落地(`gen-appendix-a` bin +
 > `stdlib_appendix_a_sync` 锁测试)。附录 A 表体由生成器产出,手改无效。
+> 第 3 条的外部对照已随 M3 落地(`collection_contract.rs` /
+> `str_math_contract.rs` / `test_contract.rs`)。
 
 ### 0.4 稳定性政策(ADR-0023)
 
@@ -145,7 +155,7 @@ wlwl 数组不可变,`PUSH` 每次复制整个数组。于是语言规范 §6.6 
 | `MAP(arr, f)` | `[f(v), ...]` |
 | `FILTER(arr, f)` | 保留 `f(v)` 为真的元素 |
 | `REDUCE(arr, f, init)` | 左折叠;空数组返回 `init` |
-| `SORT(arr)` / `SORT_BY(arr, key)` | 升序排序;`SORT_BY` 以 `key(v)` 为排序键 |
+| `SORT(arr)` / `SORT_BY(arr, key)` | 升序排序;`SORT_BY` 以 `key(v)` 为排序键。混合类型**不可比时保留原序**(不报错) |
 | `RANGE(n)` / `RANGE(start, end)` / `RANGE(start, end, step)` | 整数区间 `[start, end)`,步长 `step`;`step = 0` 产生 `E0038`。**实现归 R2**(见本章落地状态)|
 | `ZIP(a, b) -> ARRAY` | 配对至较短者:`[[a0, b0], ...]` |
 | `ENUMERATE(arr) -> ARRAY` | `[[0, v0], [1, v1], ...]` |
@@ -210,7 +220,7 @@ R1 门面 + R2 原生内核(注册与计时)。
 | 签名 | 说明 |
 |------|------|
 | `TEST(name, body) -> NULL` | 注册零参测试体 |
-| `ASSERT(cond, msg?)` | `cond` 为真 → `OK(TRUE)`;否则 `ERR(E0046)` |
+| `ASSERT(cond, msg?)` | `cond` 按语言规范 §2.3 的**八个**假值判(`FALSE` / `NULL` / `0` / `0.0` / `""` / 空数组 / 空字典 / `NaN`);为真 → `OK(TRUE)`,否则 `ERR(E0046)`。**自 v0.11 变更**:此前只把 `BOOLEAN(false)` 与 `NULL` 当假,`ASSERT(0)` / `ASSERT("")` / `ASSERT([])` 会通过(按 ADR-0023 §v0.x 第 2 条申报的 breaking) |
 | `ASSERT_EQ(a, b)` / `ASSERT_NEQ(a, b)` | 相等/不等断言,失败为 `E0047`/`E0048` |
 | `EXPECT_ERR(x)` | `x` 为 `ERR` → `OK(载荷)`;否则 `ERR(E0049)` |
 | `RUN_TESTS() -> ARRAY` | 调用所有已注册体,返回记录数组;每条记录是字典,至少含 `name`(STRING)、`passed`(BOOLEAN)、`duration_ms`(INTEGER),并按结果附 `return_value` 或 `error` |

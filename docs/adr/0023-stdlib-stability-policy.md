@@ -46,6 +46,24 @@
 - 新增成员、新增命名空间、纯内部实现替换(含 R1↔R2 迁移)不受限;
 - 例外仅两项:安全修复;实现行为偏离规范时的 bug 修复(以规范为准绳)。
 
+## 终稿核对(2026-10-01,M4-1)
+
+政策的价值全在「可机械检查」。逐条核对下来,**没有落到某个具名测试或
+生成器上的条款,执行时就靠人记** —— 那与没有政策无异。故把每条映射到
+强制它的机制,并标出两处**当时并不成立**的前提。
+
+| 条款 | 强制它的机制 | 状态 |
+|---|---|---|
+| §v0.x 1 可见面变更同批次完成四件套 + CHANGELOG | 附录 A 由 `gen-appendix-a` 从实现生成,`stdlib_appendix_a_sync` 双向对账;成员表由 `collection_contract.rs` / `str_math_contract.rs` / `test_contract.rs` 从**本规范 markdown** 解析后对拍 | ✅ M3 起成立 |
+| §v0.x 2 breaking 必须申报 | 规范成员行标「自 vX.Y 变更」+ CHANGELOG 明标 breaking。**这一条是纪律不是机制** —— 没有测试能发现「有人改了语义却忘了标」 | ⚠️ 靠人;M3 两条 breaking 已按此申报(D11-010 / D11-012) |
+| §v0.x 3 弃用两步(警告码 + 至少一个次版本) | `W0051` 发射点(`registry` + `resolve_builtin` 的弃用别名)+ 警告消费者注册表 | ✅ 沿 v0.10 既有先例 |
+| §v0.x 4 不重导出同名全局内建 | `str_math_contract.rs::str_and_math_reexport_no_global_builtin` 逐条对全局内建注册表 | ✅ M3 起成立 |
+| §v0.x 5 层归属变更不算破坏性,但须附基准数据 | `benches/baseline.txt` 的 M5 段(§17.7 口径)+ 构建计划登记 + `collection_contract.rs::range_is_bound_straight_to_the_r2_kernel` 钉住形态 | ✅ M5 落地 |
+| §0.3 四件套含 `.wll.sig` | **当时不成立** —— §9.6 说 `.wll.sig`「可以」有且只在 `gradual_typing` 开启时检查,而 std R1 模块走 `parse`+`eval_module` 永不做类型检查。已把 stdlib §0.3 第 2 条从四件套里移出并说明理由(偏差 D11-013) | ✅ 已更正 |
+
+Context 一节称「执行机制必须已存在」——**四件套里的 `.wll.sig` 那一件当时
+并不存在对 std 成员生效的强制**,这是本 ADR 成文时的一处不准确,现已更正。
+
 ## Consequences
 
 - **正面**:变更成本显性化,「改面必须过四件套」成为可机械检查的流程;

@@ -175,17 +175,17 @@ v0.10 收口时降级为已知限制(语言规范 §17.1/§17.4 的 YIELD「挂�
 | 文件 | 动作 | 状态 |
 |---|---|---|
 | `docs/plan/plan-v0.11.md` | 新建(本文件) | 已完成 |
-| `docs/plan/deviations-v0.11.md` | 新建偏差分册,编号 D11-001 起 | 已完成(空册) |
+| `docs/plan/deviations-v0.11.md` | 新建偏差分册,编号 D11-001 起 | **已完成(D11-001 – D11-013,仅 D11-004 挂账)** |
 | `docs/adr/0021-stdlib-layering.md` | 新建:分层模型 | 已完成 |
 | `docs/adr/0022-value-passthrough.md` | 新建:值直通边界 | 已完成 |
-| `docs/adr/0023-stdlib-stability-policy.md` | 新建:稳定性政策 | 已完成 |
+| `docs/adr/0023-stdlib-stability-policy.md` | 新建:稳定性政策;M4-1 加「终稿核对」表,逐条映射到强制它的机制 | **已完成**(D11-013 更正了一处不准确的前提) |
 | `docs/spec/wlwl-spec-v0.11.md` | §0.1/§9.3/§10 机制化(10.6/10.8/10.10/10.11 成员契约外迁) | 已完成 |
 | `docs/stdlib/wlwl-stdlib-spec-v0.11.md` | 新建:独立标准库规范 | 已完成 |
 | `docs/plan/README.md` | 当前状态表更新 | 已完成 |
 | `docs/appendix_G.md` | 不动(全局内建属语言表面) | — |
-| `docs/stdlib/wlwl-stdlib-spec-v0.11.md` §5/§6/§7/§8 | M3 落地后改写各章「落地状态」行;§5 补 `SORT(arr, cmp)` / `ANY`·`ALL` 缺省谓词两处**已实现未文档**的过载;附录 A 由 `gen-appendix-a` 重生成 | M3 待办 |
-| `docs/adr/0021-stdlib-layering.md` §层间规则 | M3-0 的 kernel 注入是 ADR-0021:89「R1 可以调用 R0 与 R2」的落地,不新增裁决 —— 仅在 §层间规则下补一段机制说明(注入槽 + 不外泄) | M3-0 待办 |
-| `CHANGELOG.md` `[Unreleased]` | M3 各里程碑收口补条目;诊断措辞变化按 §0.4 明标 breaking | M3 待办 |
+| `docs/stdlib/wlwl-stdlib-spec-v0.11.md` §0.3/§5/§6/§7/§8 | 各章「落地状态」行改写;§5 补两处**已实现未文档**的过载与「混合类型不可比保留原序」;§8 `ASSERT` 标「自 v0.11 变更」;§0.3 把 `.wll.sig` 移出四件套并补第三条外部对照;附录 A 由 `gen-appendix-a` 重生成 | **已完成**(D11-007 – D11-010 / D11-013) |
+| `docs/adr/0021-stdlib-layering.md` §层间规则 | M3-0 的 kernel 注入是 ADR-0021:89「R1 可以调用 R0 与 R2」的落地,不新增裁决 —— 仅在 §层间规则下补一段机制说明(注入槽 + 不外泄) | **已完成** |
+| `CHANGELOG.md` `[Unreleased]` | M3 / M5 收口补条目;两条 breaking(`ASSERT` 真值口径、`RANGE` 层变更)明标 | **已完成** |
 
 ## 8 验收门禁(批次 A 收口)
 
@@ -196,3 +196,31 @@ v0.10 收口时降级为已知限制(语言规范 §17.1/§17.4 的 YIELD「挂�
 - stdlib 规范附录 A 镜像与实现清单锁测试双向通过(M1-3 落地后);
 - M5 基线数据存档;
 - 本文件与 `deviations-v0.11.md` 状态同步收口。
+
+### 门禁自检(2026-10-01,批次 A 收口)
+
+| 门禁 | 结果 |
+|---|---|
+| `cargo fmt --check` | 0 diff |
+| `cargo clippy --workspace --all-targets -- -D warnings` | 0 warning |
+| `cargo test --workspace` | 47 套件 **1860 passed / 0 failed** |
+| probe 用例数 | 136(立项)→ 138(M1)→ **142**(M3-4),只增不减 |
+| 附录 G 逐字节不变 | 未触碰 `registry.rs` 与 `docs/appendix_G.md`;`spec_appendix_g_sync` 绿 |
+| 附录 A 镜像双向锁 | `stdlib_appendix_a_sync` 2/2 绿 |
+| M5 基线存档 | `benches/baseline.txt` 的 M5 段(§17.7 口径 + 结论 + 局限) |
+| 偏差台账 | D11-001 – D11-013,**仅 D11-004 挂账**(`SORT` 比较器返 `ERR` 时返回值被拆成载荷 —— R2 既有行为,原样保留,修复需独立裁决) |
+| 成员面外部对照 | collection 17 / str 5 / math 11 / test 6,与规范 §5/§6/§7/§8 表格集合相等 |
+| 冻结行为契约 | collection 75 / str+math 82 / test 58 条,诊断码与消息逐字 |
+
+**未完成 / 已知局限**(不掩盖):
+
+1. **D11-004 挂账**:`SORT` 的自定义比较器返回 `ERR` 时,返回值被拆成**载荷**
+   而非 `ERR` 包装。这是 R2 既有行为,M3 按「规范沉默处保留既有实现」原样
+   搬过来了;要修属独立的语义裁决,不在批次 A。
+2. **建数组类成员的平方级成本未解**(D11-012):`RANGE` 已按业主裁决沉回
+   R2,但 `MAP` / `FILTER` / `FLAT` / `UNIQ` / `ENUMERATE` / `GROUP_BY` /
+   `JOIN` 在 1000+ 元素上仍是平方级 —— 根因是语言层的不可变数组
+   (`PUSH` 每次复制),修复属 R0 解释器工作,超批次 A 范围。
+3. **`criterion` 20 样本的完整行待补**:R1 新 bench 的单次迭代在秒级到
+   十秒级,20 样本要几十分钟;且 M5 裁决改了工作量,现在跑会作废。待
+   §1.1「批次 B」或下一个迭代按稳定工作量补齐。
