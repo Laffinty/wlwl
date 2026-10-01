@@ -1,0 +1,75 @@
+// [v0.11 M3-4] stdlib R1 符合性自测 —— std.math(标准库规范 §7,混合模块)
+//
+// 端到端:走真实 `wlwl run`、经 IMPORT 解析嵌入式 .wll、在 R1 门面上求值,
+// `_SQRT` / `_POW` 走 M3-0 注入的 R2 浮点内核。这是**混合模块**的冒烟:
+// 门面在 wlwl 侧、内核在 R2 侧,调用面却完全一致(§0.1 / §0.2)。
+// 逐条行为由 `wlwl-eval/tests/str_math_contract.rs` 锁(含诊断措辞与
+// DomainError 载荷);这里锁「从命令行跑起来也是对的」。
+// 失败即 PANIC;`conformance.rs` 的 `r1_stdlib_self_tests_pass` 要求 exit 0。
+IMPORT("wlwl:std.math", [
+  "ABS", "MIN", "MAX", "FLOOR", "CEIL", "ROUND", "SQRT", "POW", "CLAMP", "PI", "E"]);
+// `IS_ERR` 是**全局内建**(语言规范 §10.3),无须 IMPORT —— 误把它写进
+// std.test 的 IMPORT 名单会得到 E0023(实测踩到)。
+IMPORT("wlwl:std.test", ["TEST", "ASSERT_EQ", "ASSERT", "RUN_TESTS"]);
+
+// ── ABS ──
+TEST("abs_positive", FUN((), ASSERT_EQ(ABS(3), 3)));
+TEST("abs_negative", FUN((), ASSERT_EQ(ABS(-3), 3)));
+TEST("abs_keeps_float_type", FUN((), ASSERT_EQ(TYPE(ABS(-1.5)), "FLOAT")));
+
+// ── MIN / MAX(混合整浮按 §2.2 提升返回值类型)──
+TEST("min_integers", FUN((), ASSERT_EQ(MIN(2, 1), 1)));
+TEST("max_integers", FUN((), ASSERT_EQ(MAX(2, 1), 2)));
+TEST("min_mixed_promotes_to_float", FUN((), ASSERT_EQ(MIN(1, 2.5), 1.0)));
+TEST("max_mixed_promotes_to_float", FUN((), ASSERT_EQ(MAX(1, 2.5), 2.5)));
+
+// ── FLOOR / CEIL / ROUND(不是 INT:INT 按 §2.2 向零截断)──
+TEST("floor_float", FUN((), ASSERT_EQ(FLOOR(1.5), 1.0)));
+TEST("floor_negative_is_not_truncation", FUN((), ASSERT_EQ(FLOOR(-1.5), -2.0)));
+TEST("ceil_float", FUN((), ASSERT_EQ(CEIL(1.5), 2.0)));
+TEST("ceil_negative_equals_truncation", FUN((), ASSERT_EQ(CEIL(-1.5), -1.0)));
+TEST("round_half_away_from_zero_positive", FUN((), ASSERT_EQ(ROUND(0.5), 1.0)));
+TEST("round_half_away_from_zero_negative", FUN((), ASSERT_EQ(ROUND(-0.5), -1.0)));
+TEST("round_below_half", FUN((), ASSERT_EQ(ROUND(1.4), 1.0)));
+TEST("integer_is_identity", FUN((), ASSERT_EQ(FLOOR(3), 3)));
+TEST("past_2_pow_53_is_identity", FUN((), ASSERT_EQ(CEIL(1.0E20), 1.0E20)));
+
+// ── SQRT / POW:域违例是 ERR **值**(不是原生诊断)──
+TEST("sqrt_of_integer", FUN((), ASSERT_EQ(SQRT(9), 3.0)));
+TEST("sqrt_zero", FUN((), ASSERT_EQ(SQRT(0), 0.0)));
+TEST("sqrt_of_float", FUN((), ASSERT_EQ(SQRT(2.25), 1.5)));
+TEST("sqrt_negative_is_domain_error", FUN((), ASSERT(IS_ERR(SQRT(-1)))));
+TEST("pow_basic", FUN((), ASSERT_EQ(POW(2, 10), 1024.0)));
+TEST("pow_promotes_integers", FUN((), ASSERT_EQ(POW(2, 3), 8.0)));
+TEST("pow_negative_base_integer_exponent", FUN((), ASSERT_EQ(POW(-2, 3), -8.0)));
+TEST("pow_zero_to_negative_is_domain_error", FUN((), ASSERT(IS_ERR(POW(0, -1)))));
+TEST("pow_negative_base_fractional_is_domain_error", FUN((), ASSERT(IS_ERR(POW(-8, 0.5)))));
+
+// ── CLAMP ──
+TEST("clamp_below", FUN((), ASSERT_EQ(CLAMP(-5, 0, 10), 0)));
+TEST("clamp_inside", FUN((), ASSERT_EQ(CLAMP(5, 0, 10), 5)));
+TEST("clamp_above", FUN((), ASSERT_EQ(CLAMP(50, 0, 10), 10)));
+TEST("clamp_equal_bounds_is_fine", FUN((), ASSERT_EQ(CLAMP(5, 3, 3), 3)));
+TEST("clamp_promotes_like_min_max", FUN((), ASSERT_EQ(TYPE(CLAMP(5, 0, 10.0)), "FLOAT")));
+TEST("clamp_lo_gt_hi_is_domain_error", FUN((), ASSERT(IS_ERR(CLAMP(5, 10, 0)))));
+
+// ── PI / E 是 FLOAT 常量,不是函数 ──
+TEST("pi_is_float", FUN((), ASSERT_EQ(TYPE(PI), "FLOAT")));
+TEST("e_is_float", FUN((), ASSERT_EQ(TYPE(E), "FLOAT")));
+TEST("pi_usable_in_arithmetic", FUN((), ASSERT_EQ(ROUND(PI), 3.0)));
+TEST("e_usable_in_arithmetic", FUN((), ASSERT_EQ(ROUND(E), 3.0)));
+
+TEST("all_eleven_members_import", FUN((),
+  ASSERT_EQ(LEN([ABS, MIN, MAX, FLOOR, CEIL, ROUND, SQRT, POW, CLAMP, PI, E]), 11)));
+
+LET(results, RUN_TESTS());
+LET MUT(failed, 0);
+FOR(r, results,
+    IF(INDEX_GET(r, "passed"),
+       NULL,
+       (SET(failed, +(failed, 1));
+        PRINT("FAIL ", INDEX_GET(r, "name"), ": ", INDEX_GET(r, "error")))));
+IF(>(failed, 0),
+   PANIC(+("stdlib_r1_math: ", +(STR(failed), " case(s) failed"))),
+   NULL);
+PRINT("stdlib_r1_math: ", LEN(results), " case(s) passed");

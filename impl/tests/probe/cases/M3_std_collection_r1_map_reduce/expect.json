@@ -1,0 +1,8 @@
+{
+ "exit": 0,
+ "contains": [
+  "[10, 20, 30]",
+  "10"
+ ],
+ "_why": "[v0.11 M3-1] std.collection 以纯 wlwl 重写为终态。MAP 收的是用户的 wlwl 闭包 —— R2 版靠 std 边界直接调闭包,R1 版靠解释器正常调,调用面必须完全一样(规范 §0.1:实现语言不可感知)。逐成员行为由 wlwl-eval/tests/collection_contract.rs 的 75 条冻结用例锁。"
+}

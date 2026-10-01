@@ -1,0 +1,66 @@
+// [v0.11 M3-4] stdlib R1 符合性自测 —— std.collection(标准库规范 §5)
+//
+// 本脚本是**端到端**的 R1 自测:走真实 `wlwl run` 二进制、经 IMPORT 解析
+// 嵌入式 .wll 源码、在 R1 门面上求值。Rust 侧的
+// `wlwl-eval/tests/collection_contract.rs` 逐条锁行为(含 ERR 传播与元数/
+// 类型诊断),这里锁的是「从命令行跑起来也是对的」—— 前者覆盖不到
+// 加载/导出/内核注入这一段。
+//
+// 失败即 PANIC(退出码非 0);`conformance.rs` 的
+// `r1_stdlib_self_tests_pass` 要求这三个脚本退出码必须是 0,所以失败不会
+// 被「exit 1 + 合法 JSONL 就算过」的宽松条款吞掉。
+IMPORT("wlwl:std.collection", [
+  "MAP", "FILTER", "REDUCE", "SORT", "SORT_BY", "ZIP", "RANGE", "ANY", "ALL",
+  "FIND", "ENUMERATE", "TAKE", "DROP", "FLAT", "UNIQ", "GROUP_BY", "JOIN"]);
+IMPORT("wlwl:std.test", ["TEST", "ASSERT_EQ", "ASSERT_NEQ", "RUN_TESTS"]);
+
+TEST("map", FUN((), ASSERT_EQ(MAP([1, 2, 3], FUN((x), *(x, 10))), [10, 20, 30])));
+TEST("map_empty", FUN((), ASSERT_EQ(MAP([], FUN((x), x)), [])));
+// FILTER 的谓词必须返回 BOOLEAN —— §5 明写,返回 INTEGER 报 E0030。
+TEST("filter", FUN((), ASSERT_EQ(FILTER([1, 2, 3, 4], FUN((x), ==(%(x, 2), 1))), [1, 3])));
+TEST("reduce_left_fold", FUN((), ASSERT_EQ(REDUCE([1, 2, 3], FUN((a, b), +(a, b)), 0), 6)));
+TEST("reduce_empty_returns_init", FUN((), ASSERT_EQ(REDUCE([], FUN((a, b), a), 42), 42)));
+TEST("sort_ascending", FUN((), ASSERT_EQ(SORT([3, 1, 2]), [1, 2, 3])));
+TEST("sort_strings", FUN((), ASSERT_EQ(SORT(["b", "a", "c"]), ["a", "b", "c"])));
+TEST("sort_custom_comparator", FUN((), ASSERT_EQ(SORT([1, 2, 3], FUN((a, b), >(a, b))), [3, 2, 1])));
+TEST("sort_by", FUN((), ASSERT_EQ(SORT_BY([[2, "b"], [1, "a"]], FUN((p), p[0])), [[1, "a"], [2, "b"]])));
+TEST("range_one_arg", FUN((), ASSERT_EQ(RANGE(4), [0, 1, 2, 3])));
+TEST("range_two_args", FUN((), ASSERT_EQ(RANGE(2, 5), [2, 3, 4])));
+TEST("range_negative_step", FUN((), ASSERT_EQ(RANGE(5, 0, -2), [5, 3, 1])));
+TEST("zip_shortest_wins", FUN((), ASSERT_EQ(ZIP([1, 2], [3, 4, 5]), [[1, 3], [2, 4]])));
+// 缺省谓词按 §2.3 真值:`0` 与 `""` 是假值,所以这两个数组的结果相反。
+// (collection 的 ANY/ALL 用的是 §2.3,不是 std.test 的 ASSERT 口径 —— 后者
+// 见 deviations D11-010。)
+TEST("any_without_predicate", FUN((), ASSERT_EQ(ANY([FALSE, 0, ""]), FALSE)));
+TEST("any_finds_truthy", FUN((), ASSERT_EQ(ANY([FALSE, 0, "x"]), TRUE)));
+TEST("all_without_predicate", FUN((), ASSERT_EQ(ALL([TRUE, "x"]), TRUE)));
+TEST("all_rejects_falsy", FUN((), ASSERT_EQ(ALL([TRUE, ""]), FALSE)));
+TEST("find_first_match", FUN((), ASSERT_EQ(FIND([1, 2, 3], FUN((x), >(x, 1))), 2)));
+TEST("find_no_match_is_null", FUN((), ASSERT_EQ(FIND([1], FUN((x), <(x, 0))), NULL)));
+TEST("enumerate", FUN((), ASSERT_EQ(ENUMERATE(["a", "b"]), [[0, "a"], [1, "b"]])));
+TEST("take", FUN((), ASSERT_EQ(TAKE([1, 2, 3], 2), [1, 2])));
+TEST("drop", FUN((), ASSERT_EQ(DROP([1, 2, 3], 1), [2, 3])));
+TEST("flat_one_level", FUN((), ASSERT_EQ(FLAT([1, [2, [3]]]), [1, 2, [3]])));
+TEST("uniq", FUN((), ASSERT_EQ(UNIQ([1, 1, 2, "1"]), [1, 2, "1"])));
+// 分组键按 §5 走 STR 渲染,组内保持首现序:键 "1" 收到 "a" 与 "c"。
+TEST("group_by", FUN((), ASSERT_EQ(GROUP_BY(["a", "bb", "c"], FUN((x), LEN(x))), ["1": ["a", "c"], "2": ["bb"]])));
+TEST("join_renders", FUN((), ASSERT_EQ(JOIN([1, TRUE], "-"), "1-TRUE")));
+TEST("join_empty_array", FUN((), ASSERT_EQ(JOIN([], "-"), "")));
+// 成员面完整:§5 声明 17 个,一个都不能少绑(IMPORT 未列出的名字不会被绑,
+// 少一个 IMPORT 就会在这里 E0020)。
+TEST("all_seventeen_members_import", FUN((),
+  ASSERT_EQ(LEN([MAP, FILTER, REDUCE, SORT, SORT_BY, ZIP, RANGE, ANY, ALL,
+                 FIND, ENUMERATE, TAKE, DROP, FLAT, UNIQ, GROUP_BY, JOIN]), 17)));
+
+LET(results, RUN_TESTS());
+LET MUT(failed, 0);
+FOR(r, results,
+    IF(INDEX_GET(r, "passed"),
+       NULL,
+       (SET(failed, +(failed, 1));
+        PRINT("FAIL ", INDEX_GET(r, "name"), ": ", INDEX_GET(r, "error")))));
+IF(>(failed, 0),
+   PANIC(+("stdlib_r1_collection: ", +(STR(failed), " case(s) failed"))),
+   NULL);
+PRINT("stdlib_r1_collection: ", LEN(results), " case(s) passed");
+
