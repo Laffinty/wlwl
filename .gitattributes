@@ -23,7 +23,15 @@ docs/plan/deviations.md text working-tree-encoding=UTF-8
 # `math.wll` / `str.wll` 是 CRLF 而 `test.wll` 是 LF,同一组文件的两种
 # 形态,谁改动谁在 diff 里看起来像整文件重写。
 #
-# 只影响 checkout,不影响仓里存的内容(仓里统一是 LF)。
+# 加规则不等于归一历史。这 5 条规则只作用于 checkout 与**此后**的 add,
+# 不会改写已入库的 blob —— 加规则当时仓里仍有 14 个被这些规则覆盖的文件
+# 存的是 CRLF,于是它们对每个人永久显示为「已修改」(git 每次比较前先把
+# 工作区 clean 成 LF,再与 CRLF blob 比,恒不相等)。D11-018 用
+# `git add --renormalize` 把这 14 个归一,规则至此才与仓内内容一致。
+#
+# 仍未纳入:`wlwl_error__tests__codes_{module,type}.snap` 两个 insta 快照
+# 是 CRLF blob 但无规则覆盖。快照按字节比对,归一会让非 Windows 平台上的
+# 快照测试全红,故保持原样 —— 即本仓并非「全局统一 LF」。
 *.md text eol=lf
 *.wll text eol=lf
 *.json text eol=lf
