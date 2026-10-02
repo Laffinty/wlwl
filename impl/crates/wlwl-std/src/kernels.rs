@@ -210,6 +210,223 @@ pub fn kernel_pow(host: &mut dyn StdHost, args: Vec<Value>) -> WlwlResult<Outcom
 }
 
 // ─────────────────────────────────────────────────────────────────────
+// 3b. v0.11.2 M4 —— 超越函数族与 TRUNC(同一个 R2 浮点通道)
+// ─────────────────────────────────────────────────────────────────────
+//
+// 纯 wlwl 表达不出这些浮点指令(ADR-0021 §0),故与 `_SQRT` / `_POW` 同走
+// kernel 通道。**一条也不进 EXPORT**,故不落附录 A、不在 IMPORT 面上。
+//
+// 域违例的口径与 `SQRT` / `POW` 一致(§7):返回 `ERR([kind: DomainError])`
+// **值**,而不是原生诊断。类型错由门面先判(指名 `LN` 而不是 `_LN`)。
+
+/// 一元浮点 kernel 的共用收口:元数 → 类型 → 域 → 施加。
+///
+/// 写这个助手而不是手抄十五遍,是因为十五遍里只要有一遍忘了域检查或忘了
+/// `Value::Float` 包装,那一条就成了「行为与文档不符且没人发现」的成员。
+/// `domain` 返回 `Some(reason)` 时发 DomainError 值。
+fn unary_f64(
+    host: &mut dyn StdHost,
+    kernel: &str,
+    op: &str,
+    args: &[Value],
+    domain: impl Fn(f64) -> Option<String>,
+    f: impl Fn(f64) -> f64,
+) -> WlwlResult<Outcome> {
+    if args.len() != 1 {
+        return Err(arity(host, kernel, args.len(), 1));
+    }
+    let x = float_arg(host, kernel, &args[0])?;
+    if let Some(reason) = domain(x) {
+        return Ok(Outcome::normal(domain_error(op, reason)));
+    }
+    Ok(Outcome::normal(Value::Float(f(x))))
+}
+
+/// 二元浮点 kernel 的共用收口(目前只有 `ATAN2` 用)。
+fn binary_f64(
+    host: &mut dyn StdHost,
+    kernel: &str,
+    args: &[Value],
+    domain: impl Fn(f64, f64) -> Option<String>,
+    f: impl Fn(f64, f64) -> f64,
+) -> WlwlResult<Outcome> {
+    if args.len() != 2 {
+        return Err(arity(host, kernel, args.len(), 2));
+    }
+    let a = float_arg(host, kernel, &args[0])?;
+    let b = float_arg(host, kernel, &args[1])?;
+    if let Some(reason) = domain(a, b) {
+        return Ok(Outcome::normal(domain_error(kernel, reason)));
+    }
+    Ok(Outcome::normal(Value::Float(f(a, b))))
+}
+
+// 这两个域谓词捕获 `op` 字面量,所以要求 `'static`:调用点全传字符串字面量。
+fn neg_domain(op: &'static str) -> impl Fn(f64) -> Option<String> + 'static {
+    move |x| (x < 0.0).then(|| format!("{op}: expected x >= 0"))
+}
+
+fn unit_domain(op: &'static str) -> impl Fn(f64) -> Option<String> + 'static {
+    move |x| (x.abs() > 1.0).then(|| format!("{op}: expected -1 <= x <= 1, got {x}"))
+}
+
+/// `LN(x) -> FLOAT`:自然对数。`x < 0` → DomainError。
+///
+/// **`LN(0.0)` 不报错,返回 `-inf`** —— 这是数学上正确的结果(也与 C /
+/// Python / Go 一致),不是疏漏。§7 的「NaN / ±inf 原样」口径同样适用:
+/// `LN(1e300)` 正常返回一个有限的 `690.8`。
+pub fn kernel_ln(host: &mut dyn StdHost, args: Vec<Value>) -> WlwlResult<Outcome> {
+    unary_f64(host, "_LN", "LN", &args, neg_domain("LN"), f64::ln)
+}
+
+pub fn kernel_log2(host: &mut dyn StdHost, args: Vec<Value>) -> WlwlResult<Outcome> {
+    unary_f64(host, "_LOG2", "LOG2", &args, neg_domain("LOG2"), f64::log2)
+}
+
+pub fn kernel_log10(host: &mut dyn StdHost, args: Vec<Value>) -> WlwlResult<Outcome> {
+    unary_f64(
+        host,
+        "_LOG10",
+        "LOG10",
+        &args,
+        neg_domain("LOG10"),
+        f64::log10,
+    )
+}
+
+/// `EXP(x) -> FLOAT`:自然指数。**全定义域**,无 DomainError。
+/// 上溢按 IEEE-754 给 `+inf`(`EXP(1000.0)`),与「NaN/±inf 原样」一致。
+pub fn kernel_exp(host: &mut dyn StdHost, args: Vec<Value>) -> WlwlResult<Outcome> {
+    unary_f64(host, "_EXP", "EXP", &args, |_| None, f64::exp)
+}
+
+/// `TRUNC(x) -> FLOAT`:向零取整。
+///
+/// **与全局 `INT` 的唯一区别在界外**:`|x| >= 2^53` 时本成员原样返回 x,
+/// 而 `INT(1e20)` 抛 **E0035 并中止整个运行**。界内两者逐字相同
+/// (都是向零截断)。这正是 `FLOOR` / `CEIL` / `ROUND` 存在的同款理由 ——
+/// 一个取整函数因为边界而中止程序,比返回边界值难用得多。
+///
+/// 非数值实参:本成员经门面的 `_NEED_NUM` 报 **E0030 诊断**;
+/// `INT("abc")` 返的是 `ERR([kind: ParseError])` **值**。两类别混。
+pub fn kernel_trunc(host: &mut dyn StdHost, args: Vec<Value>) -> WlwlResult<Outcome> {
+    // `f64::trunc` 对 |x| >= 2^53 原样返回(那些值本来就是整数),不需要
+    // 像 FLOOR/CEIL 那样先判界再走 `INT` + 符号修正。
+    unary_f64(host, "_TRUNC", "TRUNC", &args, |_| None, f64::trunc)
+}
+
+pub fn kernel_sin(host: &mut dyn StdHost, args: Vec<Value>) -> WlwlResult<Outcome> {
+    unary_f64(host, "_SIN", "SIN", &args, |_| None, f64::sin)
+}
+
+pub fn kernel_cos(host: &mut dyn StdHost, args: Vec<Value>) -> WlwlResult<Outcome> {
+    unary_f64(host, "_COS", "COS", &args, |_| None, f64::cos)
+}
+
+pub fn kernel_tan(host: &mut dyn StdHost, args: Vec<Value>) -> WlwlResult<Outcome> {
+    unary_f64(host, "_TAN", "TAN", &args, |_| None, f64::tan)
+}
+
+/// `ASIN` / `ACOS` 的定义域是 `[-1, 1]`;域外无实值 → DomainError。
+pub fn kernel_asin(host: &mut dyn StdHost, args: Vec<Value>) -> WlwlResult<Outcome> {
+    unary_f64(host, "_ASIN", "ASIN", &args, unit_domain("ASIN"), f64::asin)
+}
+
+pub fn kernel_acos(host: &mut dyn StdHost, args: Vec<Value>) -> WlwlResult<Outcome> {
+    unary_f64(host, "_ACOS", "ACOS", &args, unit_domain("ACOS"), f64::acos)
+}
+
+pub fn kernel_atan(host: &mut dyn StdHost, args: Vec<Value>) -> WlwlResult<Outcome> {
+    unary_f64(host, "_ATAN", "ATAN", &args, |_| None, f64::atan)
+}
+
+/// `ATAN2(y, x) -> FLOAT`:按象限定义的反正切,**全定义域**。
+/// `(0, 0)` 按 IEEE 754 / Rust 的约定返回 `0.0`;实轴上的 `±0` 也因此
+/// 有确定值(不报错)。
+pub fn kernel_atan2(host: &mut dyn StdHost, args: Vec<Value>) -> WlwlResult<Outcome> {
+    binary_f64(host, "_ATAN2", &args, |_, _| None, f64::atan2)
+}
+
+pub fn kernel_sinh(host: &mut dyn StdHost, args: Vec<Value>) -> WlwlResult<Outcome> {
+    unary_f64(host, "_SINH", "SINH", &args, |_| None, f64::sinh)
+}
+
+pub fn kernel_cosh(host: &mut dyn StdHost, args: Vec<Value>) -> WlwlResult<Outcome> {
+    unary_f64(host, "_COSH", "COSH", &args, |_| None, f64::cosh)
+}
+
+pub fn kernel_tanh(host: &mut dyn StdHost, args: Vec<Value>) -> WlwlResult<Outcome> {
+    unary_f64(host, "_TANH", "TANH", &args, |_| None, f64::tanh)
+}
+
+/// `POW_MOD(base, exp, mod) -> INTEGER`:模幂,平方-乘算法,`O(log exp)`。
+///
+/// **为什么是 kernel 而不是 R1 门面**:门面算不出来又不炸的中间积。
+/// 平方-乘的中间值最大是 `m²`;`m` 可以是 `2^61 - 1` 这样的密码学素数,
+/// 那样 `m²` 在 i64 里必然溢出。R1 门面只有两条路,都不可接受:
+/// 先乘再判 ⇒ 溢出先发生(语言规范 §2.2 抛 `E0035`,整个运行中止);
+/// 或者人为把模数限制在 `sqrt(i64::MAX) ≈ 3.04e9` 以下 ⇒ 废掉大半用途。
+/// 这里用 `i128` 算中间积,溢出前就看得见,于是 DomainError 是**主动
+/// 报告**的而不是副作用。
+///
+/// 域违例:`mod = 0`、负指数(模逆不在本成员范围)、`base` 为最小整数时
+/// 取模溢出。
+pub fn kernel_pow_mod(host: &mut dyn StdHost, args: Vec<Value>) -> WlwlResult<Outcome> {
+    if args.len() != 3 {
+        return Err(arity(host, "_POW_MOD", args.len(), 3));
+    }
+    let Value::Integer(base) = args[0] else {
+        return Err(host.diag(
+            ErrorCode::E0030,
+            format!("_POW_MOD: expected number, got {}", type_name(&args[0])),
+        ));
+    };
+    let Value::Integer(exp) = args[1] else {
+        return Err(host.diag(
+            ErrorCode::E0030,
+            format!("_POW_MOD: expected number, got {}", type_name(&args[1])),
+        ));
+    };
+    let Value::Integer(m) = args[2] else {
+        return Err(host.diag(
+            ErrorCode::E0030,
+            format!("_POW_MOD: expected number, got {}", type_name(&args[2])),
+        ));
+    };
+    if m == 0 {
+        return Ok(Outcome::normal(domain_error(
+            "POW_MOD",
+            "POW_MOD: modulus must not be zero".to_string(),
+        )));
+    }
+    if exp < 0 {
+        return Ok(Outcome::normal(domain_error(
+            "POW_MOD",
+            "POW_MOD: exponent must be >= 0".to_string(),
+        )));
+    }
+    let modulus = i128::from(m);
+    // `rem_euclid` 而不是 Rust 的 `%`:后者的结果符号跟**左**操作数走,
+    // 于是 `POW_MOD(-7, 3, 5)` 会得 -1 而不是 4。取模运算的惯例是结果与
+    // 模数同号(Go / Python / C 的 `%` 在被除数为负时给出负余数,那是另一种
+    // 约定,但**这个成员的名字是 mod 而不是 rem**,所以按欧几里得余数)。
+    let mut result: i128 = 1i128.rem_euclid(modulus);
+    let mut cur: i128 = (i128::from(base)).rem_euclid(modulus);
+    let mut k = i128::from(exp);
+    while k > 0 {
+        if k % 2 == 1 {
+            result = (result * cur).rem_euclid(modulus);
+        }
+        k /= 2;
+        if k > 0 {
+            cur = (cur * cur).rem_euclid(modulus);
+        }
+    }
+    // 模数在 i64 范围内 ⇒ 余数也必然落在 i64 范围内。
+    Ok(Outcome::normal(Value::Integer(result as i64)))
+}
+
+// ─────────────────────────────────────────────────────────────────────
 // 4. 注入表
 // ─────────────────────────────────────────────────────────────────────
 
@@ -229,6 +446,25 @@ pub static KERNELS: &[(&str, StdFn)] = &[
     ("_DIAG_E0030", kernel_diag_e0030 as StdFn),
     ("_SQRT", kernel_sqrt as StdFn),
     ("_POW", kernel_pow as StdFn),
+    // [v0.11.2 M4] 超越函数族 + TRUNC。表从 6 条涨到 21 条,这是「把纯 wlwl
+    // 表达不出的东西放 R2」的记账成本,不是退化 —— 表存在的意义是给守卫
+    // 一个**共享 kernel 的名册**作为反方向的事实基准。
+    ("_LN", kernel_ln as StdFn),
+    ("_LOG2", kernel_log2 as StdFn),
+    ("_LOG10", kernel_log10 as StdFn),
+    ("_EXP", kernel_exp as StdFn),
+    ("_TRUNC", kernel_trunc as StdFn),
+    ("_SIN", kernel_sin as StdFn),
+    ("_COS", kernel_cos as StdFn),
+    ("_TAN", kernel_tan as StdFn),
+    ("_ASIN", kernel_asin as StdFn),
+    ("_ACOS", kernel_acos as StdFn),
+    ("_ATAN", kernel_atan as StdFn),
+    ("_ATAN2", kernel_atan2 as StdFn),
+    ("_SINH", kernel_sinh as StdFn),
+    ("_COSH", kernel_cosh as StdFn),
+    ("_TANH", kernel_tanh as StdFn),
+    ("_POW_MOD", kernel_pow_mod as StdFn),
 ];
 
 #[cfg(test)]

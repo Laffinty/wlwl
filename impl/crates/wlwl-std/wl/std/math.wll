@@ -140,6 +140,133 @@ LET(CLAMP, FUN((x, lo, hi),
 LET(PI, 3.141592653589793);
 LET(E, 2.718281828459045);
 
+// ── v0.11.2 M4:超越函数族(全部经 R2 浮点内核)──────────────────────
+// 类型检查放门面,好让诊断指名 `LN` 而不是私有 kernel 名;域违例由内核
+// 返回 ERR 值,门面原样透出(与 SQRT / POW 同一套分工)。
+
+LET(LN, FUN((x), _LN(_NEED_NUM("LN", x))));
+LET(LOG2, FUN((x), _LOG2(_NEED_NUM("LOG2", x))));
+LET(LOG10, FUN((x), _LOG10(_NEED_NUM("LOG10", x))));
+LET(EXP, FUN((x), _EXP(_NEED_NUM("EXP", x))));
+
+// TRUNC:INTEGER 恒等、FLOAT 向零取整,形态与 FLOOR / CEIL / ROUND 一致。
+// **它不是全局 `INT`**:界内两者相同,而 |x| >= 2^53 时本成员原样返回,
+// `INT(1e20)` 抛 E0035 并中止整个运行。
+LET(TRUNC, FUN((x),
+    IF(==(TYPE(x), "INTEGER"), x, _TRUNC(_NEED_NUM("TRUNC", x)))));
+
+LET(SIN, FUN((x), _SIN(_NEED_NUM("SIN", x))));
+LET(COS, FUN((x), _COS(_NEED_NUM("COS", x))));
+LET(TAN, FUN((x), _TAN(_NEED_NUM("TAN", x))));
+LET(ASIN, FUN((x), _ASIN(_NEED_NUM("ASIN", x))));
+LET(ACOS, FUN((x), _ACOS(_NEED_NUM("ACOS", x))));
+LET(ATAN, FUN((x), _ATAN(_NEED_NUM("ATAN", x))));
+LET(ATAN2, FUN((y, x),
+    (_ATAN2(_NEED_NUM("ATAN2", y), _NEED_NUM("ATAN2", x)))));
+LET(SINH, FUN((x), _SINH(_NEED_NUM("SINH", x))));
+LET(COSH, FUN((x), _COSH(_NEED_NUM("COSH", x))));
+LET(TANH, FUN((x), _TANH(_NEED_NUM("TANH", x))));
+
+// ── v0.11.2 M4:整数数学(纯 wlwl,不占 kernel)───────────────────────
+// 域违例一律 `ERR([kind: DomainError, ...])` 值(§7 的既定口径)。
+// 只收 INTEGER。`_NEED_NUM` 收的是「整数或浮点」,那对整数数学成员是错的:
+// `DIV_CEIL(7.0, 2)` 若悄悄提升成 `DIV_CEIL(7, 2)` 就等于替调用方做了
+// 一个它没要求的取整决定。本模块自己的助手,照 `_NEED_NUM` 的措辞形状写。
+LET(_NEED_INT, FUN((name, v),
+    IF(==(TYPE(v), "INTEGER"),
+       v,
+       _DIAG_E0030(_CAT(name, ": expected integer, got ", _KIND(v))))));
+
+LET(_DOMAIN, FUN((op, reason), ERR(["kind": "DomainError", "op": op, "reason": reason])));
+
+// SIGN(x) -> INTEGER:-1 / 0 / 1。
+//
+// 返回类型**恒为 INTEGER**,不按 §2.2 随实参提升:符号只有三种取值,
+// 给 `SIGN(1.0)` 返 `1.0` 只会让调用方多一次类型判断。`ABS` 之所以「返回
+// 与实参同类型」是因为它的取值范围同样要跟随实参;这里不一样。
+LET(SIGN, FUN((x),
+    (LET(v, _NEED_NUM("SIGN", x));
+     IF(<(v, 0), -1, IF(>(v, 0), 1, 0)))));
+
+// DIV_CEIL(a, b) -> INTEGER:向上取整的整数除法。
+//
+// 只吃整数 —— 浮点的向上取整是 `CEIL(/(a, b))`,语言自足。`b = 0` → DomainError。
+//
+// 难点是**符号**:语言的 `/` 向零截断(Rust 语义),而 ceil 是朝 +∞。
+//   DIV_CEIL(7, 2)   = 4   / 给 3,同号且有余数 → +1
+//   DIV_CEIL(-7, 2)  = -3  / 给 -3,异号 → 不动
+//   DIV_CEIL(7, -2)  = -3  / 给 -3,异号 → 不动
+//   DIV_CEIL(-7, -2) = 4   / 给 3,同号且有余数 → +1
+// 即「有余数**且两数同号**才 +1」。写成「异号才 +1」在两个负数上就反了。
+LET(DIV_CEIL, FUN((a, b),
+    (LET(x, _NEED_INT("DIV_CEIL", a));
+     LET(y, _NEED_INT("DIV_CEIL", b));
+     IF(==(y, 0),
+        _DOMAIN("DIV_CEIL", "DIV_CEIL: divisor must not be zero"),
+        (LET(q, /(x, y));
+         IF(==(%(x, y), 0),
+            q,
+            // 同号(用「非负」而不是「正」,x = 0 的情形 r 已经是 0,走上面那条)
+            IF(==(<(x, 0), <(y, 0)), +(q, 1), q)))))));
+
+// GCD(a, b) / LCM(a, b):辗转相除。**只取绝对值** ——
+// GCD(-4, 6) = 2(不是 -2),LCM(-4, 6) = 12。带符号的 gcd 几乎没有用途,
+// 而让它带符号只会逼每个调用方都写一次 ABS。
+LET(_GCD, FUN((a, b),
+    (LET MUT(x, ABS(a));
+     LET MUT(y, ABS(b));
+     WHILE(>(y, 0),
+         (LET(t, %(x, y));
+          SET(x, y);
+          SET(y, t)));
+     x)));
+
+LET(GCD, FUN((a, b),
+    (LET(x, _NEED_INT("GCD", a));
+     LET(y, _NEED_INT("GCD", b));
+     _GCD(x, y))));
+
+// 先除后乘,而不是先乘后除:`LCM(2^30, 2^31)` 先乘会溢出,先除不会。
+LET(LCM, FUN((a, b),
+    (LET(x, _NEED_INT("LCM", a));
+     LET(y, _NEED_INT("LCM", b));
+     IF(||(==(x, 0), ==(y, 0)),
+        0,
+        ABS(*(/(ABS(x), _GCD(x, y)), ABS(y)))))));
+
+// IS_SQRT(n) -> INTEGER:整数平方根(向下取整)。n < 0 → DomainError。
+//
+// `hi` 的上界取 `MIN(n, 3037000499)` 而不是 `n` 本身:二分中 `mid * mid`
+// 会溢出 i64 —— `n = 2^62` 时 `mid` 约 `2^61`,乘出来直接 `E0035` 中止。
+// `3037000499 = floor(sqrt(i64::MAX))`,它的平方
+// (9223372030926249001) 仍在 i64 内。把上界压到这个值,乘法就永远安全,
+// 而它本来就 ≥ 任何可能的平方根,所以不影响正确性。
+LET(IS_SQRT, FUN((n),
+    (LET(v, _NEED_INT("IS_SQRT", n));
+     IF(<(v, 0),
+        _DOMAIN("IS_SQRT", "IS_SQRT: expected n >= 0"),
+        (LET MUT(lo, 0);
+         LET MUT(hi, MIN(v, 3037000499));
+         WHILE(<=(lo, hi),
+             (LET MUT(mid, /(+(lo, hi), 2));
+              IF(>(*(mid, mid), v),
+                 SET(hi, -(mid, 1)),
+                 SET(lo, +(mid, 1)))));
+         -(lo, 1))))));
+
+// POW_MOD(base, exp, mod) -> INTEGER:模幂(平方-乘,O(log exp)),**R2 内核**。
+//
+// 归 R2 的理由:门面算不出「中间积会不会溢出」。平方-乘的中间值最大是 `m²`,
+// 而 `m` 可能是 `2^61 - 1` 这样的密码学素数 —— 那样 `m²` 在 i64 里必然溢出。
+// 门面只有两条路:先乘再判(溢出先发生,E0035 中止整个运行),或人为把模数
+// 限死在 `3.04e9` 以下(废掉大半用途)。内核用 i128 算中间积,于是
+// `m = 2^61 - 1` 这类大模数照常工作。
+LET(POW_MOD, FUN((base, exp, mod),
+    _POW_MOD(_NEED_INT("POW_MOD", base),
+             _NEED_INT("POW_MOD", exp),
+             _NEED_INT("POW_MOD", mod))));
+
 // EXPORT 顺序跟随标准库规范 §7 表格的行序;附录 A 镜像跟随本顺序。成员
-// **集合**由 `wlwl-eval/tests/math_contract.rs` 对 §7 表格做外部对照。
-EXPORT(["ABS", "MIN", "MAX", "FLOOR", "CEIL", "ROUND", "SQRT", "POW", "CLAMP", "PI", "E"]);
+// **集合**由 `wlwl-eval/tests/str_math_contract.rs` 对 §7 表格做外部对照。
+// [v0.11.2 M4] 后续 21 个成员按 §7 表格的追加顺序接在 `E` 之后。
+EXPORT(["ABS", "MIN", "MAX", "FLOOR", "CEIL", "ROUND", "SQRT", "POW", "CLAMP", "PI", "E", "LN", "LOG2", "LOG10", "EXP", "TRUNC", "SIN", "COS", "TAN", "ASIN", "ACOS", "ATAN", "ATAN2", "SINH", "COSH", "TANH", "SIGN", "DIV_CEIL", "GCD", "LCM", "IS_SQRT", "POW_MOD"]);

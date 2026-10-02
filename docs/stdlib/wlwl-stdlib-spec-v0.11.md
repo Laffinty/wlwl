@@ -345,8 +345,12 @@ v0.11.2 M2 追加(§6 表格即当前成员面;附录 A 镜像由 `gen-appendix-
 `ERR(["kind": "DomainError", ...])`;实参类型错按语言规范报 `E0030`。
 `MIN` / `MAX` / `CLAMP` 的**返回值类型**也按 §2.2 提升:实参中有任一
 `FLOAT` 则返回 `FLOAT`(`CLAMP` 看**三个**实参)。
-落地状态:本章成员已随 M3-2 全部落地(§7 表格即当前成员面;附录 A 镜像
-由 `gen-appendix-a` 从实现生成并由 `stdlib_appendix_a_sync` 锁)。
+落地状态:本章成员已随 M3-2 全部落地;`LN` / `LOG2` / `LOG10` / `EXP` /
+`TRUNC` / `SIN` / `COS` / `TAN` / `ASIN` / `ACOS` / `ATAN` / `ATAN2` / `SINH`
+/ `COSH` / `TANH` / `POW_MOD` 随 v0.11.2 M4 追加,走 R2 浮点内核通道(与
+`SQRT` / `POW` 同款);`SIGN` / `DIV_CEIL` / `GCD` / `LCM` / `IS_SQRT` 同批追加,
+归**纯 wlwl 门面**(§7 表格即当前成员面;附录 A 镜像由 `gen-appendix-a` 从
+实现生成并由 `stdlib_appendix_a_sync` 锁)。
 `FLOOR` / `CEIL` / `ROUND` 归门面但**不是** `INT`:`INT` 按 §2.2 向零截断,
 而下/上取整与「半数远离零」都不同于它,故实现走 `INT` + 符号修正,超出
 `±2^53` 的 `FLOAT`(本身已是整数)与 `NaN` / `±inf` 原样返回。
@@ -361,6 +365,54 @@ v0.11.2 M2 追加(§6 表格即当前成员面;附录 A 镜像由 `gen-appendix-
 | `POW(a, b) -> FLOAT` | 幂;两参提升为 `FLOAT` | `0` 的负次幂、负底的非整数指数:`ERR(["kind": "DomainError"])` |
 | `CLAMP(x, lo, hi)` | 夹取到 `[lo, hi]`;类型提升同 `MIN`/`MAX` | `lo > hi`:`ERR(["kind": "DomainError"])` |
 | `PI` / `E` | `FLOAT` 常量 | — |
+| `LN(x)` / `LOG2(x)` / `LOG10(x) -> FLOAT` | 对数。**`x = 0` 不报错,返回 `-inf`**(数学上正确,与 C / Python / Go 一致);`x < 0` 无实值 | `x < 0`:`ERR(["kind": "DomainError"])` |
+| `EXP(x) -> FLOAT` | 自然指数;全定义域;上溢给 `+inf` | — |
+| `TRUNC(x)` | 向零取整;形态同 `FLOOR` / `CEIL`(INTEGER 恒等、FLOAT 返回 FLOAT) | 非数值:`E0030` 诊断(见 §7.1) |
+| `SIN` / `COS` / `TAN(x) -> FLOAT` | 三角(弧度制);全定义域 | — |
+| `ASIN(x)` / `ACOS(x) -> FLOAT` | 反三角;定义域 `[-1, 1]` | `|x| > 1`:`ERR(["kind": "DomainError"])` |
+| `ATAN(x) -> FLOAT` | 反正切;全定义域 | — |
+| `ATAN2(y, x) -> FLOAT` | 按象限定义的反正切;**全定义域**,`(0, 0)` 得 `0.0` | — |
+| `SINH` / `COSH` / `TANH(x) -> FLOAT` | 双曲;全定义域;上溢给 `±inf` | — |
+| `SIGN(x) -> INTEGER` | 符号 `-1` / `0` / `1`。**返回类型恒为 `INTEGER`**,不随实参提升(见 §7.1) | — |
+| `DIV_CEIL(a, b) -> INTEGER` | 向上取整的整数除法;**只收整数**;`b = 0` 是域违例 | `b = 0`:`ERR(["kind": "DomainError"])` |
+| `GCD(a, b) / LCM(a, b) -> INTEGER` | 辗转相除;**只取绝对值**(`GCD(-4, 6) = 2`);任一为 0 时 `LCM` 得 0 | — |
+| `IS_SQRT(n) -> INTEGER` | 整数平方根(向下取整) | `n < 0`:`ERR(["kind": "DomainError"])` |
+| `POW_MOD(base, exp, mod) -> INTEGER` | 模幂(平方-乘,`O(log exp)`);**`mod` 可以是 `2^61-1` 这样的密码学素数** | `mod = 0` 或 `exp < 0`:`ERR(["kind": "DomainError"])` |
+
+### 7.1 M4 二十一个成员的设计取舍(v0.11.2,逐条写明)
+
+1. **`TRUNC` 不是全局 `INT` 的别名,但差别只在界外。** 界内两者逐字相同
+   (都是向零截断);`|x| >= 2^53` 时 `TRUNC` 原样返回,而 `INT(1e20)` 抛
+   **E0035 并中止整个运行**。这正是 `FLOOR` / `CEIL` / `ROUND` 存在的同款
+   理由 —— 一个取整函数因为边界中止程序,比返回边界值难用得多。
+   非数值实参两者也分属两类:`TRUNC` 经门面的类型检查报 **E0030 诊断**,
+   `INT("abc")` 返的是 `ERR([kind: ParseError])` **值**。
+2. **`SIGN` 的返回类型恒为 `INTEGER`,不按 §2.2 随实参提升。**
+   `ABS` 之所以「返回与实参同类型」,是因为它的取值范围要跟随实参;
+   符号只有三个取值,给 `SIGN(1.0)` 返 `1.0` 只会让每个调用方多一次类型判断。
+3. **`DIV_CEIL` 只收整数。** 浮点的向上取整是 `CEIL(/(a, b))`,语言自足;
+   若 `DIV_CEIL` 悄悄接受 `7.0` 并提升成 `DIV_CEIL(7, 2)`,等于替调用方
+   做了一个它没要求的取整决定。四个符号组合都必须对:
+   `DIV_CEIL(7,2)=4`、`(-7,2)=-3`、`(7,-2)=-3`、`(-7,-2)=4` ——
+   规律是「有余数**且两数同号**才 +1」(语言的 `/` 向零截断,ceil 朝 +∞)。
+4. **`GCD` / `LCM` 只取绝对值,`LCM` 先除后乘。** 带符号的 gcd 几乎无用,
+   而让调用方都写一次 `ABS` 只是把成本推出去。`LCM` 先除后乘是为了
+   `LCM(2^30, 2^31)` 不溢出。
+5. **`IS_SQRT` 的二分上界取 `MIN(n, 3037000499)` 而不是 `n`。**
+   `mid * mid` 在 `n = 2^62` 时会溢出 i64(直接 `E0035` 中止);
+   `3037000499 = floor(sqrt(i64::MAX))`,它的平方仍在 i64 内,
+   而它本来就 ≥ 任何可能的平方根,所以压上界不影响正确性。
+6. **`POW_MOD` 归 R2 而不是门面**,因为门面**算不出中间积会不会溢出**。
+   平方-乘的中间值最大是 `m²`,而 `m` 可能是 `2^61 - 1`;门面只有两条路 ——
+   先乘再判(溢出先发生,`E0035` 中止)或人为把模数限死在 `3.04e9` 以下
+   (废掉大半用途)。内核用 `i128` 算中间积,于是大模数照常工作:
+   实测 `POW_MOD(2, 61, 2305843009213693951)` = `1`。
+7. **`POW_MOD` 用欧几里得余数而不是 Rust 的 `%`。** 后者的结果符号跟
+   **左**操作数走,`POW_MOD(-7, 3, 5)` 会得 `-1`;按欧几里得余数得
+   `-7 ≡ 3 (mod 5)`,`3³ = 27 ≡ 2`。成员名是 **mod** 不是 **rem**,所以按
+   与模数同号的惯例(Go / Python 的 `math.fmod` 之外的整数路径同此)。
+8. **`LN(0) = -inf` 不是错误。** 与 C / Python / Go 一致,也与 §7 既有的
+   「`NaN` / `±inf` 原样」口径一致。同理 `EXP(1000)` 给 `+inf`。
 
 > **`-0.0` 这一格怎么写出来**(v0.11.1 补记,实测)。`SQRT` 的实现**没有**
 > 丢符号:喂一个真负零,返回的就是负零(`*(0.0, -(0, 1.0))` → `SQRT` →
@@ -575,7 +627,7 @@ CJK 或组合字符上炸。
 | `std.text` | `TO_UPPER` `TO_LOWER` | R2 | v0.11.2 |
 | `std.collection` | `MAP` `FILTER` `REDUCE` `SORT` `SORT_BY` `ZIP` `RANGE` `ANY` `ALL` `FIND` `ENUMERATE` `TAKE` `DROP` `FLAT` `UNIQ` `GROUP_BY` `JOIN` `CHUNK` `WINDOW` `DEDUP_BY` `MIN_BY` `MAX_BY` `SUM` `PRODUCT` `FOLD_RIGHT` `POSITION` `KEY_BY` | 混合(R1 门面 + R2 `RANGE`) | v0.10 及以前(成员)/ v0.11(R1 重写,M5 起 RANGE 沉 R2) |
 | `std.str` | `JOIN` `SPLIT_LINES` `CHAR_AT` `COUNT` `QUOTE` `INDEX_OF` `CONTAINS_SUB` | R1 | v0.11 / INDEX_OF、CONTAINS_SUB 于 v0.11.2 |
-| `std.math` | `ABS` `MIN` `MAX` `FLOOR` `CEIL` `ROUND` `SQRT` `POW` `CLAMP` `PI` `E` | 混合 | v0.11 |
+| `std.math` | `ABS` `MIN` `MAX` `FLOOR` `CEIL` `ROUND` `SQRT` `POW` `CLAMP` `PI` `E` `LN` `LOG2` `LOG10` `EXP` `TRUNC` `SIN` `COS` `TAN` `ASIN` `ACOS` `ATAN` `ATAN2` `SINH` `COSH` `TANH` `SIGN` `DIV_CEIL` `GCD` `LCM` `IS_SQRT` `POW_MOD` | 混合 | v0.11 |
 | `std.test` | `TEST` `ASSERT` `ASSERT_EQ` `ASSERT_NEQ` `EXPECT_ERR` `RUN_TESTS` | 混合 | v0.10 及以前(成员)/ v0.11(混合化) |
 | `std.ai` | `ASK` `EMBED` `COMPLETE` `ASK_STREAM` `ASK_ALL` | R2 | v0.10 及以前 |
 | `std.agent` | `TASK` `TOOL` `CALL_TOOL` `MODEL` `CONTEXT` | R2 | v0.10 及以前 |

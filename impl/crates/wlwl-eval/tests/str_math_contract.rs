@@ -308,8 +308,8 @@ const STR_CASES: &[Case] = &[
     },
     Case {
         name: "all_section6_members_import",
-        src: r#"IMPORT("wlwl:std.str", ["JOIN", "SPLIT_LINES", "CHAR_AT", "COUNT", "QUOTE"]); LEN([JOIN, SPLIT_LINES, CHAR_AT, COUNT, QUOTE])"#,
-        expect: "5",
+        src: r#"IMPORT("wlwl:std.str", ["JOIN", "SPLIT_LINES", "CHAR_AT", "COUNT", "QUOTE", "INDEX_OF", "CONTAINS_SUB"]); LEN([JOIN, SPLIT_LINES, CHAR_AT, COUNT, QUOTE, INDEX_OF, CONTAINS_SUB])"#,
+        expect: "7",
     },
 ];
 
@@ -589,15 +589,292 @@ const MATH_CASES: &[Case] = &[
         expect: "3.0",
     },
     // ── §7 明文:类型错报 E0030(诊断);域违例返 ERR(值)—— 两类分开 ──
+    // 导入一个**不存在**的成员名 → E0023。
+    //
+    // [v0.11.2 M4] 原文这条用的名字是 `SIN`,而 M4 把 `SIN` 变成了真成员 ——
+    // 于是导入成功、表达式求值成 `NULL`,契约表打回。同一条断言第二次被
+    // 「成员面增长」打断,故选一个**不会**被补上的名字:`LOG`。
+    // 本册刻意只发 `LN` / `LOG2` / `LOG10` 三个固定底,不发基数为参数的
+    // `LOG`(要它就得定默认底与类型提升,那是另一次裁决)。所以 `LOG` 是
+    // 最可能被误写、也确实不该存在的名字。
     Case {
         name: "math_rejects_non_member",
-        src: r#"IMPORT("wlwl:std.math", ["SIN"]); NULL"#,
+        src: r#"IMPORT("wlwl:std.math", ["LOG"]); NULL"#,
         expect: "!E0023",
     },
     Case {
         name: "all_section7_members_import",
-        src: r#"IMPORT("wlwl:std.math", ["ABS", "MIN", "MAX", "FLOOR", "CEIL", "ROUND", "SQRT", "POW", "CLAMP", "PI", "E"]); LEN([ABS, MIN, MAX, FLOOR, CEIL, ROUND, SQRT, POW, CLAMP, PI, E])"#,
-        expect: "11",
+        src: r#"IMPORT("wlwl:std.math", ["ABS", "MIN", "MAX", "FLOOR", "CEIL", "ROUND", "SQRT", "POW", "CLAMP", "PI", "E", "LN", "LOG2", "LOG10", "EXP", "TRUNC", "SIN", "COS", "TAN", "ASIN", "ACOS", "ATAN", "ATAN2", "SINH", "COSH", "TANH", "SIGN", "DIV_CEIL", "GCD", "LCM", "IS_SQRT", "POW_MOD"]); LEN([ABS, MIN, MAX, FLOOR, CEIL, ROUND, SQRT, POW, CLAMP, PI, E, LN, LOG2, LOG10, EXP, TRUNC, SIN, COS, TAN, ASIN, ACOS, ATAN, ATAN2, SINH, COSH, TANH, SIGN, DIV_CEIL, GCD, LCM, IS_SQRT, POW_MOD])"#,
+        expect: "32",
+    },
+    // ── [v0.11.2 M4] 超越函数族 ──
+    Case {
+        name: "ln_of_one_is_zero",
+        src: r#"IMPORT("wlwl:std.math", ["LN"]); LN(1.0)"#,
+        expect: "0.0",
+    },
+    Case {
+        name: "ln_of_e_is_one",
+        src: r#"IMPORT("wlwl:std.math", ["LN", "E"]); LN(E)"#,
+        expect: "1.0",
+    },
+    // §7.1-8:`LN(0)` 是 -inf,不是错误 —— 与 C / Python / Go 一致
+    Case {
+        name: "ln_of_zero_is_neg_inf_not_an_error",
+        src: r#"IMPORT("wlwl:std.math", ["LN"]); IS_ERR(LN(0.0))"#,
+        expect: "FALSE",
+    },
+    Case {
+        name: "ln_of_negative_is_domain_error",
+        src: r#"IMPORT("wlwl:std.math", ["LN"]); AT_K(ERR_PAYLOAD(LN(-1.0)), "kind", "?")"#,
+        expect: "DomainError",
+    },
+    Case {
+        name: "log2_of_eight_is_three",
+        src: r#"IMPORT("wlwl:std.math", ["LOG2"]); LOG2(8.0)"#,
+        expect: "3.0",
+    },
+    Case {
+        name: "log10_of_thousand_is_three",
+        src: r#"IMPORT("wlwl:std.math", ["LOG10"]); LOG10(1000.0)"#,
+        expect: "3.0",
+    },
+    Case {
+        name: "exp_of_one_is_e",
+        src: r#"IMPORT("wlwl:std.math", ["EXP", "E"]); EXP(1.0)"#,
+        expect: "2.718281828459045",
+    },
+    // 超越函数之间的互逆关系:比逐个记字面值更耐改
+    Case {
+        name: "exp_and_ln_are_inverses",
+        src: r#"IMPORT("wlwl:std.math", ["EXP", "LN"]); LN(EXP(2.5))"#,
+        expect: "2.5",
+    },
+    // 互逆关系要挑对:`EXP` 的逆是 `LN`,不是 `LOG2` / `LOG10`。
+    // `LOG2(EXP(3))` = 3·log2(e) ≈ 4.328,不是 3 —— 第一版把这条写错了,
+    // 而且错在**用例名字**上(叫「互逆」而表达式并不是互逆对)。
+    Case {
+        name: "exp_of_ln_is_inverse",
+        src: r#"IMPORT("wlwl:std.math", ["EXP", "LN"]); EXP(LN(2.5))"#,
+        expect: "2.5",
+    },
+    // LOG2 / LOG10 与底数幂互逆
+    Case {
+        name: "log2_and_pow2_are_inverses",
+        src: r#"IMPORT("wlwl:std.math", ["LOG2", "POW"]); LOG2(POW(2.0, 10.0))"#,
+        expect: "10.0",
+    },
+    // ── TRUNC:与全局 INT 的差别只在界外(§7.1-1)──
+    Case {
+        name: "trunc_toward_zero",
+        src: r#"IMPORT("wlwl:std.math", ["TRUNC"]); TRUNC(-1.7)"#,
+        expect: "-1.0",
+    },
+    Case {
+        name: "trunc_integer_is_identity",
+        src: r#"IMPORT("wlwl:std.math", ["TRUNC"]); TRUNC(5)"#,
+        expect: "5",
+    },
+    // 这条是 TRUNC 存在的全部理由:同一个输入,INT 中止而 TRUNC 返回
+    Case {
+        name: "trunc_survives_where_int_e0035s",
+        src: r#"IMPORT("wlwl:std.math", ["TRUNC"]); TRUNC(1e20)"#,
+        expect: "100000000000000000000.0",
+    },
+    Case {
+        name: "trunc_non_number_is_a_diagnostic",
+        src: r#"IMPORT("wlwl:std.math", ["TRUNC"]); TRUNC("x")"#,
+        expect: "!E0030 TRUNC: expected number, got string",
+    },
+    // ── 三角 / 反三角 ──
+    Case {
+        name: "sin_cos_tan_at_zero",
+        src: r#"IMPORT("wlwl:std.math", ["SIN","COS","TAN","ATAN"]); [SIN(0.0), COS(0.0), TAN(0.0), ATAN(0.0)]"#,
+        expect: "[0.0, 1.0, 0.0, 0.0]",
+    },
+    Case {
+        name: "sin_and_asin_are_inverses",
+        src: r#"IMPORT("wlwl:std.math", ["SIN", "ASIN"]); ASIN(SIN(0.5))"#,
+        expect: "0.5",
+    },
+    Case {
+        name: "asin_of_one_is_half_pi",
+        src: r#"IMPORT("wlwl:std.math", ["ASIN", "PI"]); ASIN(1.0)"#,
+        expect: "1.5707963267948966",
+    },
+    Case {
+        name: "acos_of_one_is_zero",
+        src: r#"IMPORT("wlwl:std.math", ["ACOS"]); ACOS(1.0)"#,
+        expect: "0.0",
+    },
+    Case {
+        name: "asin_outside_unit_interval_is_domain_error",
+        src: r#"IMPORT("wlwl:std.math", ["ASIN"]); AT_K(ERR_PAYLOAD(ASIN(2.0)), "kind", "?")"#,
+        expect: "DomainError",
+    },
+    Case {
+        name: "acos_outside_unit_interval_is_domain_error",
+        src: r#"IMPORT("wlwl:std.math", ["ACOS"]); AT_K(ERR_PAYLOAD(ACOS(-2.0)), "kind", "?")"#,
+        expect: "DomainError",
+    },
+    // ATAN2 全定义域 —— (0,0) 不报错(§7 表格)
+    Case {
+        name: "atan2_of_zeros_is_zero_not_an_error",
+        src: r#"IMPORT("wlwl:std.math", ["ATAN2"]); IS_ERR(ATAN2(0.0, 0.0))"#,
+        expect: "FALSE",
+    },
+    Case {
+        name: "atan2_first_quadrant",
+        src: r#"IMPORT("wlwl:std.math", ["ATAN2", "ATAN"]); ATAN2(1.0, 1.0)"#,
+        expect: "0.7853981633974483",
+    },
+    // 象限:ATAN2(y, x) 在第二象限给 > π/2
+    Case {
+        name: "atan2_respects_quadrants",
+        src: r#"IMPORT("wlwl:std.math", ["ATAN2"]); >(ATAN2(1.0, -1.0), 1.5707963267948966)"#,
+        expect: "TRUE",
+    },
+    Case {
+        name: "hyperbolic_at_zero",
+        src: r#"IMPORT("wlwl:std.math", ["SINH","COSH","TANH"]); [SINH(0.0), COSH(0.0), TANH(0.0)]"#,
+        expect: "[0.0, 1.0, 0.0]",
+    },
+    // sinh 是 exp 定义的,故 sinh(x) = (e^x - e^-x)/2
+    Case {
+        name: "sinh_matches_its_definition",
+        src: r#"IMPORT("wlwl:std.math", ["SINH", "EXP"]); SINH(1.0)"#,
+        expect: "1.1752011936438014",
+    },
+    Case {
+        name: "tan_is_sin_over_cos",
+        src: r#"IMPORT("wlwl:std.math", ["SIN","COS","TAN"]); TAN(0.5)"#,
+        expect: "0.5463024898437905",
+    },
+    // ── 整数数学(§7.1-2…5)──
+    Case {
+        name: "sign_values",
+        src: r#"IMPORT("wlwl:std.math", ["SIGN"]); [SIGN(-3), SIGN(0), SIGN(3)]"#,
+        expect: "[-1, 0, 1]",
+    },
+    // SIGN 恒为 INTEGER,`SIGN(1.0)` 不给 1.0
+    Case {
+        name: "sign_always_returns_integer",
+        src: r#"IMPORT("wlwl:std.math", ["SIGN"]); TYPE(SIGN(-3.5))"#,
+        expect: "INTEGER",
+    },
+    Case {
+        name: "sign_of_non_number_is_e0030",
+        src: r#"IMPORT("wlwl:std.math", ["SIGN"]); SIGN("x")"#,
+        expect: "!E0030 SIGN: expected number, got string",
+    },
+    // DIV_CEIL 的四个符号组合,§7.1-3
+    Case {
+        name: "div_ceil_all_sign_combinations",
+        src: r#"IMPORT("wlwl:std.math", ["DIV_CEIL"]); [DIV_CEIL(7,2), DIV_CEIL(-7,2), DIV_CEIL(7,-2), DIV_CEIL(-7,-2)]"#,
+        expect: "[4, -3, -3, 4]",
+    },
+    Case {
+        name: "div_ceil_exact_does_not_bump",
+        src: r#"IMPORT("wlwl:std.math", ["DIV_CEIL"]); DIV_CEIL(8, 2)"#,
+        expect: "4",
+    },
+    // 只收整数:浮点得 E0030,而不是悄悄提升
+    Case {
+        name: "div_ceil_rejects_float",
+        src: r#"IMPORT("wlwl:std.math", ["DIV_CEIL"]); DIV_CEIL(7.0, 2)"#,
+        expect: "!E0030 DIV_CEIL: expected integer, got float",
+    },
+    Case {
+        name: "div_ceil_zero_divisor_is_domain_error",
+        src: r#"IMPORT("wlwl:std.math", ["DIV_CEIL"]); AT_K(ERR_PAYLOAD(DIV_CEIL(1, 0)), "kind", "?")"#,
+        expect: "DomainError",
+    },
+    Case {
+        name: "gcd_and_lcm_basic",
+        src: r#"IMPORT("wlwl:std.math", ["GCD", "LCM"]); [GCD(12, 18), LCM(4, 6)]"#,
+        expect: "[6, 12]",
+    },
+    // 只取绝对值,§7.1-4
+    Case {
+        name: "gcd_takes_absolute_value",
+        src: r#"IMPORT("wlwl:std.math", ["GCD", "LCM"]); [GCD(-4, 6), LCM(-4, 6)]"#,
+        expect: "[2, 12]",
+    },
+    Case {
+        name: "gcd_with_zero_is_the_other",
+        src: r#"IMPORT("wlwl:std.math", ["GCD", "LCM"]); [GCD(0, 5), LCM(0, 5), LCM(0, 0)]"#,
+        expect: "[5, 0, 0]",
+    },
+    // 先除后乘:LCM(2^30, 2^31) 若先乘会溢出(§7.1-4)
+    Case {
+        name: "lcm_divides_before_multiplying",
+        src: r#"IMPORT("wlwl:std.math", ["LCM"]); LCM(1073741824, 2147483648)"#,
+        expect: "2147483648",
+    },
+    Case {
+        name: "is_sqrt_floors",
+        src: r#"IMPORT("wlwl:std.math", ["IS_SQRT"]); [IS_SQRT(17), IS_SQRT(16)]"#,
+        expect: "[4, 4]",
+    },
+    // 上界压到 floor(sqrt(i64::MAX)):这一条在没压上界时会 E0035 中止(§7.1-5)
+    Case {
+        name: "is_sqrt_survives_huge_input",
+        src: r#"IMPORT("wlwl:std.math", ["IS_SQRT"]); IS_SQRT(4611686018427387904)"#,
+        expect: "2147483648",
+    },
+    Case {
+        name: "is_sqrt_zero",
+        src: r#"IMPORT("wlwl:std.math", ["IS_SQRT"]); IS_SQRT(0)"#,
+        expect: "0",
+    },
+    Case {
+        name: "is_sqrt_negative_is_domain_error",
+        src: r#"IMPORT("wlwl:std.math", ["IS_SQRT"]); AT_K(ERR_PAYLOAD(IS_SQRT(-1)), "kind", "?")"#,
+        expect: "DomainError",
+    },
+    // ── POW_MOD(§7.1-6、7)──
+    Case {
+        name: "pow_mod_basic",
+        src: r#"IMPORT("wlwl:std.math", ["POW_MOD"]); POW_MOD(2, 10, 1000)"#,
+        expect: "24",
+    },
+    Case {
+        name: "pow_mod_zero_exponent_is_one",
+        src: r#"IMPORT("wlwl:std.math", ["POW_MOD"]); POW_MOD(5, 0, 7)"#,
+        expect: "1",
+    },
+    // 大模数:门面做不了这件事,必须 kernel(§7.1-6)。2^61 模 (2^61-1) = 1
+    Case {
+        name: "pow_mod_handles_cryptographic_modulus",
+        src: r#"IMPORT("wlwl:std.math", ["POW_MOD"]); POW_MOD(2, 61, 2305843009213693951)"#,
+        expect: "1",
+    },
+    // 欧几里得余数:Rust 的 % 会给 -1,这里给 2(§7.1-7)
+    Case {
+        name: "pow_mod_uses_euclidean_remainder",
+        src: r#"IMPORT("wlwl:std.math", ["POW_MOD"]); POW_MOD(-7, 3, 5)"#,
+        expect: "2",
+    },
+    Case {
+        name: "pow_mod_zero_modulus_is_domain_error",
+        src: r#"IMPORT("wlwl:std.math", ["POW_MOD"]); AT_K(ERR_PAYLOAD(POW_MOD(2, 3, 0)), "kind", "?")"#,
+        expect: "DomainError",
+    },
+    Case {
+        name: "pow_mod_negative_exponent_is_domain_error",
+        src: r#"IMPORT("wlwl:std.math", ["POW_MOD"]); AT_K(ERR_PAYLOAD(POW_MOD(2, -3, 5)), "kind", "?")"#,
+        expect: "DomainError",
+    },
+    // ── kernel 不外泄(§0.2)──
+    Case {
+        name: "float_kernels_stay_private",
+        src: r#"IMPORT("wlwl:std.math", ["_LN"]); NULL"#,
+        expect: "!E0023",
+    },
+    Case {
+        name: "pow_mod_kernel_stays_private",
+        src: r#"IMPORT("wlwl:std.math", ["_POW_MOD"]); NULL"#,
+        expect: "!E0023",
     },
 ];
 
@@ -828,9 +1105,14 @@ fn math_member_set_matches_the_spec_table() {
     let spec = members_of(&section(7, 8));
     let impls = r1_exports("wlwl:std.math");
     assert_member_set("std.math §7", &spec, &impls);
-    assert_eq!(impls.len(), 11, "§7 declares 11 members");
+    assert_eq!(impls.len(), 32, "§7 declares 32 members");
     for n in [
         "ABS", "MIN", "MAX", "FLOOR", "CEIL", "ROUND", "SQRT", "POW", "CLAMP", "PI", "E",
+        // [v0.11.2 M4] 追加的二十一个。超越函数族 + TRUNC 走 R2 浮点内核,
+        // SIGN / DIV_CEIL / GCD / LCM / IS_SQRT 是纯 wlwl 门面,POW_MOD 走
+        // R2(门面算不出中间积是否溢出 —— 见 stdlib §7.1-6)。
+        "LN", "LOG2", "LOG10", "EXP", "TRUNC", "SIN", "COS", "TAN", "ASIN", "ACOS", "ATAN", "ATAN2",
+        "SINH", "COSH", "TANH", "SIGN", "DIV_CEIL", "GCD", "LCM", "IS_SQRT", "POW_MOD",
     ] {
         assert!(
             spec.iter().any(|m| m == n),

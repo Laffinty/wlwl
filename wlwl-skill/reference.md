@@ -209,6 +209,52 @@ below. Concurrent and OOP primitives are **global**, not under `wlwl:std.*`.
 The authoritative registry of every global builtin (106 entries) is
 `../docs/appendix_G.md`.
 
+### §9.5 `wlwl:std.math` — the v0.11.2 twenty-one (stdlib §7.1)
+
+| Member | Layer | Notes |
+|---|---|---|
+| `LN` / `LOG2` / `LOG10` | R2 | Natural / base-2 / base-10 log. `x < 0` → `ERR([kind: DomainError])`. **`LN(0)` is `-inf`, not an error** (matches C / Python / Go). |
+| `EXP` | R2 | Natural exponential, total. Overflows to `+inf`. |
+| `TRUNC` | R2 | Toward zero. **Not `INT`** — see below. |
+| `SIN` `COS` `TAN` | R2 | Radians, total. |
+| `ASIN` `ACOS` | R2 | Domain `[-1, 1]`; outside → `DomainError`. |
+| `ATAN` | R2 | Total. |
+| `ATAN2(y, x)` | R2 | Quadrant-aware. **Total** — `ATAN2(0, 0)` is `0.0`, not an error. |
+| `SINH` `COSH` `TANH` | R2 | Total; overflow to `±inf`. |
+| `POW_MOD(base, exp, mod)` | R2 | Modular power, square-and-multiply. `mod = 0` or `exp < 0` → `DomainError`. |
+| `SIGN(x)` | R1 | `-1` / `0` / `1`. **Always `INTEGER`**, even for a float input. |
+| `DIV_CEIL(a, b)` | R1 | Ceiling integer division. **Integers only** — `DIV_CEIL(7.0, 2)` is `E0030`, not a silent promotion. `b = 0` → `DomainError`. |
+| `GCD(a, b)` / `LCM(a, b)` | R1 | Euclidean. **Absolute values**: `GCD(-4, 6)` is `2`. `LCM` with a zero is `0`. |
+| `IS_SQRT(n)` | R2-adjacent (R1) | Integer square root, floored. `n < 0` → `DomainError`. |
+
+Six things that are easy to get wrong:
+
+1. **`TRUNC` is not `INT`.** Inside ±2^53 they agree exactly. Outside,
+   `INT(1e20)` raises **E0035 and aborts the run**, while `TRUNC(1e20)`
+   returns the value. That is the same reason `FLOOR` / `CEIL` / `ROUND`
+   exist instead of being `INT` variants.
+2. **`LN(0) = -inf` is a result, not an error.** Same convention as
+   `EXP(1000) = +inf`.
+3. **`DIV_CEIL`'s four sign combinations**: `(7,2)→4`, `(-7,2)→-3`,
+   `(7,-2)→-3`, `(-7,-2)→4`. The rule is "+1 when there is a remainder
+   **and both operands share a sign**" — the language's `/` truncates toward
+   zero while `ceil` goes toward +∞.
+4. **`POW_MOD` uses the Euclidean remainder**, so a negative base gives a
+   non-negative result: `POW_MOD(-7, 3, 5)` is `2` (`-7 ≡ 3`, `3³ = 27 ≡ 2`),
+   **not** Rust's `%` which would give `-1`.
+5. **`POW_MOD` is a kernel, not a facade** — a facade cannot tell whether the
+   square-and-multiply intermediate `m²` overflowed `i64`. It works for
+   `mod = 2^61 - 1` (a Mersenne prime): `POW_MOD(2, 61, 2^61 - 1)` is `1`.
+6. **Watch the inverse pairs.** `EXP`'s inverse is `LN`, *not* `LOG2`:
+   `LOG2(EXP(3))` is `3·log2(e) ≈ 4.328`, not `3`.
+
+> *Measured on wlwl 0.11.2 (2026-10-02):* `LN(EXP(2.5))` = `2.5`;
+> `LOG2(1024.0)` = `10.0`; `TRUNC(1e20)` = `100000000000000000000.0`;
+> `ATAN2(1.0, -1.0)` > π/2; `ATAN2(0.0, 0.0)` = `0.0`;
+> `[DIV_CEIL(7,2), DIV_CEIL(-7,2), DIV_CEIL(7,-2), DIV_CEIL(-7,-2)]` =
+> `[4, -3, -3, 4]`; `IS_SQRT(4611686018427387904)` = `2147483648`;
+> `POW_MOD(2, 10, 1000)` = `24`; `POW_MOD(-7, 3, 5)` = `2`.
+
 ### §9.4 `wlwl:std.collection` — the v0.11.2 ten (stdlib §5.1)
 
 | Member | Notes |

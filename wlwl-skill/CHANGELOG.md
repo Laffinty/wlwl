@@ -33,6 +33,11 @@ and is authoritative).
   `DEDUP_BY` `MIN_BY` `MAX_BY` `SUM` `PRODUCT` `FOLD_RIGHT` `POSITION`
   `KEY_BY`。附**规模警告**:建数组的成员在语言层是平方级,`WINDOW` 在 5000
   元素上已经要 20 秒 —— 调这类成员前先看 stdlib §5 的实测表。
+- **`wlwl:std.math` 追加二十一个成员**(`reference.md` §9.5):超越函数族 + 整数
+  数学。六条容易记反的已逐条写进该节:`TRUNC` 不是 `INT`(界外 `INT` 会中止
+  运行)、`LN(0)` 是 `-inf` 不是错误、`DIV_CEIL` 只收整数且四个符号组合各有
+  规律、`GCD`/`LCM` 取绝对值、`POW_MOD` 用欧几里得余数(负底给正余数)且
+  走 kernel 所以支持 `2^61-1` 这种大模数、**`EXP` 的逆是 `LN` 不是 `LOG2`**。
 
 ### 纪律
 - **未跑过的代码块就是假设**:引用模块成员的片段必须自带 `IMPORT`(名字是全局

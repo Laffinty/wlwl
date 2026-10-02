@@ -159,11 +159,28 @@ pub static LANG_SOURCES: &[StdSource] = &[
         source: include_str!("../wl/std/math.wll"),
         // 混合模块(规范 §7):门面在 wlwl 侧,浮点内核在这里;另加诊断
         // 发射器与种类措辞,好让诊断指名 `SQRT` / `POW` 而不是 kernel 名。
+        // [v0.11.2 M4] 追加 15 条:超越函数族 + `TRUNC`(§7.1)。
         kernels: &[
             ("_KIND", kernels::kernel_kind as StdFn),
             ("_DIAG_E0030", kernels::kernel_diag_e0030 as StdFn),
             ("_SQRT", kernels::kernel_sqrt as StdFn),
             ("_POW", kernels::kernel_pow as StdFn),
+            ("_LN", kernels::kernel_ln as StdFn),
+            ("_LOG2", kernels::kernel_log2 as StdFn),
+            ("_LOG10", kernels::kernel_log10 as StdFn),
+            ("_EXP", kernels::kernel_exp as StdFn),
+            ("_TRUNC", kernels::kernel_trunc as StdFn),
+            ("_SIN", kernels::kernel_sin as StdFn),
+            ("_COS", kernels::kernel_cos as StdFn),
+            ("_TAN", kernels::kernel_tan as StdFn),
+            ("_ASIN", kernels::kernel_asin as StdFn),
+            ("_ACOS", kernels::kernel_acos as StdFn),
+            ("_ATAN", kernels::kernel_atan as StdFn),
+            ("_ATAN2", kernels::kernel_atan2 as StdFn),
+            ("_SINH", kernels::kernel_sinh as StdFn),
+            ("_COSH", kernels::kernel_cosh as StdFn),
+            ("_TANH", kernels::kernel_tanh as StdFn),
+            ("_POW_MOD", kernels::kernel_pow_mod as StdFn),
         ],
     },
     StdSource {

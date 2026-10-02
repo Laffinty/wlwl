@@ -1,0 +1,37 @@
+IMPORT("wlwl:std.math", ["LN", "LOG2", "LOG10", "EXP", "TRUNC", "SIN", "COS", "TAN", "ASIN", "ACOS", "ATAN", "ATAN2", "SINH", "COSH", "TANH", "SIGN", "DIV_CEIL", "GCD", "LCM", "IS_SQRT", "POW_MOD", "E", "PI"]);
+
+// 超越函数族:用**互逆关系**而不是逐个记字面值。EXP 的逆是 LN,不是 LOG2
+// —— LOG2(EXP(3)) 是 3·log2(e) ≈ 4.328,第一版把它当成互逆写错了。
+PRINT("LN(EXP(2.5))    = ", LN(EXP(2.5)));
+PRINT("LOG2(2^10)      = ", LOG2(1024.0));
+PRINT("LOG10(10^6)     = ", LOG10(1000000.0));
+PRINT("EXP(1)          = ", EXP(1.0), "  (== E)");
+
+// TRUNC 不是全局 INT:同一个输入,INT 抛 E0035 中止而 TRUNC 返回。
+// 这一行是 TRUNC 存在的全部理由。
+PRINT("TRUNC(1e20)     = ", TRUNC(1e20), "  (INT 在这里会中止整个运行)");
+PRINT("TRUNC(5)        = ", TRUNC(5), "  (INTEGER 恒等)");
+
+// 三角:ATAN2 按象限给值,第二象限 (y>0, x<0) 的结果 > π/2。
+// 注意跟 π/2 比而不是跟 π 比 —— 第一版这里写的是跟 PI 比,标签说「> π/2」
+// 而表达式比的是 π,于是输出 FALSE 而标签在骗人。
+PRINT("ATAN2(1,-1) > π/2: ", >(ATAN2(1.0, -1.0), /(PI, 2.0)));
+PRINT("ATAN2(0,0)      = ", ATAN2(0.0, 0.0), "  (全定义域,不报错)");
+
+// 域违例一律 ERR **值**,不是原生诊断
+PRINT("LN(-1) is ERR   = ", IS_ERR(LN(-1.0)));
+PRINT("ASIN(2) is ERR  = ", IS_ERR(ASIN(2.0)));
+PRINT("LN(0)           = ", LN(0.0), "  (不是错误,是 -inf)");
+
+// ── 整数数学 ──
+// DIV_CEIL 的四个符号组合,规律是「有余数且两数同号才 +1」
+PRINT("DIV_CEIL 组合   = ", [DIV_CEIL(7,2), DIV_CEIL(-7,2), DIV_CEIL(7,-2), DIV_CEIL(-7,-2)]);
+PRINT("SIGN 恒 INTEGER = ", TYPE(SIGN(-3.5)), " 值 ", SIGN(-3.5));
+PRINT("GCD/LCM 取绝对  = ", [GCD(-4,6), LCM(-4,6)]);
+PRINT("IS_SQRT 2^62    = ", IS_SQRT(4611686018427387904), "  (二分上界压过,乘法不溢出)");
+PRINT("POW_MOD 2^10    = ", POW_MOD(2, 10, 1000));
+PRINT("POW_MOD 大模数  = ", POW_MOD(2, 61, 2305843009213693951), "  (2^61 模 (2^61-1) = 1)");
+PRINT("POW_MOD 负底    = ", POW_MOD(-7, 3, 5), "  (欧几里得余数:2,不是 -1)");
+
+// kernel 不外泄
+PRINT("kernel 私有名   = 见 M1_std_math_abs_dual_track(同名断言在契约册里)");
