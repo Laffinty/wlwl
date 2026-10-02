@@ -607,6 +607,15 @@ const MATH_CASES: &[Case] = &[
         src: r#"IMPORT("wlwl:std.math", ["ABS", "MIN", "MAX", "FLOOR", "CEIL", "ROUND", "SQRT", "POW", "CLAMP", "PI", "E", "LN", "LOG2", "LOG10", "EXP", "TRUNC", "SIN", "COS", "TAN", "ASIN", "ACOS", "ATAN", "ATAN2", "SINH", "COSH", "TANH", "SIGN", "DIV_CEIL", "GCD", "LCM", "IS_SQRT", "POW_MOD"]); LEN([ABS, MIN, MAX, FLOOR, CEIL, ROUND, SQRT, POW, CLAMP, PI, E, LN, LOG2, LOG10, EXP, TRUNC, SIN, COS, TAN, ASIN, ACOS, ATAN, ATAN2, SINH, COSH, TANH, SIGN, DIV_CEIL, GCD, LCM, IS_SQRT, POW_MOD])"#,
         expect: "32",
     },
+    // 取绝对值时撞上 INTEGER 下界 → E0034 并中止整个运行。规范 §7 该行
+    // 原写失败列「—」,已更正;这条用例把更正后的行为钉住。
+    // (`imin` 只能用两步构造:字面量写不出 i64::MIN,`-x` 是 `-(0, x)` 而
+    //  `2^63` 本身已溢出。)
+    Case {
+        name: "gcd_at_integer_min_is_e0034",
+        src: r#"IMPORT("wlwl:std.math", ["GCD"]); LET(m, -(0, 9223372036854775807)); GCD(-(m, 1), 3)"#,
+        expect: "!E0034 NEG: cannot negate INTEGER_MIN (-9223372036854775808); use -INTEGER_MIN+1 or special-case",
+    },
     // ── [v0.11.2 M4] 超越函数族 ──
     Case {
         name: "ln_of_one_is_zero",

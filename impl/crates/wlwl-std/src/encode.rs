@@ -147,6 +147,7 @@ fn b64_decode_bytes(s: &str) -> Result<Vec<u8>, String> {
     let mut bits: u32 = 0;
     let mut out = Vec::with_capacity(s.len() / 4 * 3);
     let mut padding = 0usize;
+    let mut data_chars = 0usize;
     for b in s.bytes() {
         // Go 的解码器忽略 CR/LF,base64 常被折行嵌入,沿用同一口径。
         if b == b'\r' || b == b'\n' {
@@ -168,6 +169,7 @@ fn b64_decode_bytes(s: &str) -> Result<Vec<u8>, String> {
             _ => return Err(format!("illegal base64 character {:?}", b as char)),
         };
         acc = (acc << 6) | v as u32;
+        data_chars += 1;
         bits += 6;
         if bits >= 8 {
             bits -= 8;
@@ -176,6 +178,20 @@ fn b64_decode_bytes(s: &str) -> Result<Vec<u8>, String> {
     }
     if padding > 2 {
         return Err("more than two padding characters".into());
+    }
+    // **一旦出现补位,总字符数就必须是 4 的倍数。**
+    //
+    // 不加这条的话 `"Zg="`(2 数据字符 + 1 补位)会被当成 `"Zg"` 收下,解出
+    // 一个字节的 `"f"` —— 比输入**短**,而且看起来完全合法。截断或损坏的
+    // base64 因此不会报 `DecodeError`,而是悄悄给出一个错的值。
+    //
+    // 省略补位是允许的(RFC 4648 §3.2 的可选项,下面 `bits >= 6` 那条管
+    // 它的合法性),但「省略」与「补了一半」是两种不同的形态,不能混。
+    let total = data_chars + padding;
+    if padding > 0 && !total.is_multiple_of(4) {
+        return Err(format!(
+            "base64 with padding must be a multiple of 4 characters, got {total}"
+        ));
     }
     if bits >= 6 {
         return Err("input length is not a valid base64 length".into());
@@ -412,6 +428,32 @@ mod tests {
         assert!(b64_decode_bytes("Z===").is_err(), "too much padding");
         assert!(b64_decode_bytes("Zh").is_err(), "1 leftover char");
         assert!(b64_decode_bytes("Zm9vYmFyZ").is_err(), "5 leftover bits");
+    }
+
+    /// 补位数量必须与末组长度匹配。少了这条,`"Zg="` 会被当成 `"Zg"` 收下,
+    /// 解出比输入短一个字节的 `"f"` —— 截断/损坏的 base64 静默给错值,
+    /// 而不是报 `DecodeError`。
+    #[test]
+    fn half_padded_input_is_rejected() {
+        assert_eq!(b64_decode_bytes("Zg==").unwrap(), b"f".to_vec());
+        assert_eq!(b64_decode_bytes("Zm8=").unwrap(), b"fo".to_vec());
+        assert!(
+            b64_decode_bytes("Zg=").is_err(),
+            "2 data chars + 1 pad is neither padded nor unpadded"
+        );
+        assert!(
+            b64_decode_bytes("Zm8==").is_err(),
+            "3 data chars + 2 pad is 5 characters, not a multiple of 4"
+        );
+        assert!(b64_decode_bytes("Z").is_err(), "1 data char, no pad");
+    }
+
+    /// 省略补位是允许的(RFC 4648 §3.2 的可选项),与「补了一半」是两种形态。
+    #[test]
+    fn unpadded_input_is_accepted() {
+        assert_eq!(b64_decode_bytes("Zg").unwrap(), b"f".to_vec());
+        assert_eq!(b64_decode_bytes("Zm8").unwrap(), b"fo".to_vec());
+        assert_eq!(b64_decode_bytes("Zm9vYmFy").unwrap(), b"foobar".to_vec());
     }
 
     #[test]

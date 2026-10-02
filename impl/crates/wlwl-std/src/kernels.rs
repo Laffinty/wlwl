@@ -243,9 +243,15 @@ fn unary_f64(
 }
 
 /// 二元浮点 kernel 的共用收口(目前只有 `ATAN2` 用)。
+///
+/// `kernel` 与 `op` 分开,理由同 [`unary_f64`]:前者进诊断(消息要指名
+/// `_ATAN2` 这类**私有** kernel 名,因为那是解释器内部的元数/类型错),
+/// 后者进 ERR 载荷(那是要给用户看的,必须是 `ATAN2`)。合成一个参数的话,
+/// 载荷里就会漏出下划线开头的私有名。
 fn binary_f64(
     host: &mut dyn StdHost,
     kernel: &str,
+    op: &str,
     args: &[Value],
     domain: impl Fn(f64, f64) -> Option<String>,
     f: impl Fn(f64, f64) -> f64,
@@ -256,7 +262,7 @@ fn binary_f64(
     let a = float_arg(host, kernel, &args[0])?;
     let b = float_arg(host, kernel, &args[1])?;
     if let Some(reason) = domain(a, b) {
-        return Ok(Outcome::normal(domain_error(kernel, reason)));
+        return Ok(Outcome::normal(domain_error(op, reason)));
     }
     Ok(Outcome::normal(Value::Float(f(a, b))))
 }
@@ -344,7 +350,7 @@ pub fn kernel_atan(host: &mut dyn StdHost, args: Vec<Value>) -> WlwlResult<Outco
 /// `(0, 0)` 按 IEEE 754 / Rust 的约定返回 `0.0`;实轴上的 `±0` 也因此
 /// 有确定值(不报错)。
 pub fn kernel_atan2(host: &mut dyn StdHost, args: Vec<Value>) -> WlwlResult<Outcome> {
-    binary_f64(host, "_ATAN2", &args, |_, _| None, f64::atan2)
+    binary_f64(host, "_ATAN2", "ATAN2", &args, |_, _| None, f64::atan2)
 }
 
 pub fn kernel_sinh(host: &mut dyn StdHost, args: Vec<Value>) -> WlwlResult<Outcome> {

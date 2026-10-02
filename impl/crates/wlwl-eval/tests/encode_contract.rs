@@ -129,6 +129,33 @@ const CASES: &[Case] = &[
         ),
         expect: "foobar",
     },
+    // 补位数量必须与末组长度匹配(§11.2)。少了这条,`"Zg="` 会被当成 `"Zg"`
+    // 收下,解出比输入**短**一个字节的 `"f"` —— 截断的 base64 静默给错值。
+    Case {
+        name: "b64_decode_half_padded_is_decode_error",
+        src: concat!(
+            r#"IMPORT("wlwl:std.encode", ["BASE64_DECODE"]); "#,
+            r#"AT_K(ERR_PAYLOAD(BASE64_DECODE("Zg=")), "kind", "?")"#
+        ),
+        expect: "DecodeError",
+    },
+    Case {
+        name: "b64_decode_one_pad_on_three_chars_is_valid",
+        src: concat!(
+            r#"IMPORT("wlwl:std.encode", ["BASE64_DECODE"]); "#,
+            r#"BASE64_DECODE("Zm8=")"#
+        ),
+        expect: "fo",
+    },
+    // 省略补位是允许的(RFC 4648 §3.2 的可选项),与「补了一半」是两种形态
+    Case {
+        name: "b64_decode_unpadded_is_accepted",
+        src: concat!(
+            r#"IMPORT("wlwl:std.encode", ["BASE64_DECODE"]); "#,
+            r#"[BASE64_DECODE("Zg"), BASE64_DECODE("Zm9vYmFy")]"#
+        ),
+        expect: "[f, foobar]",
+    },
     // ── base64 失败格:锁形状不锁 reason 措辞(§11.1)──────────────────
     // 注意必须先过 `ERR_PAYLOAD`:`AT_K` **不是** §12.2 的 ERR 消费者,
     // 直接喂 ERR 会按透明传播把它顶到顶层变成 E0102,断言就变成在测别的东西。

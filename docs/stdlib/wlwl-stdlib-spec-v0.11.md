@@ -249,18 +249,9 @@ wlwl 数组不可变,`PUSH` 每次复制整个数组。于是语言规范 §6.6 
 
 ### 5.1 M3 十个成员的设计取舍(v0.11.2,逐条写明以免后来人重新发明)
 
-| 成员 | 签名 | 说明 | 失败 |
-|---|---|---|---|
-| `CHUNK(arr, n)` | 定长分块,**尾块可短**;`n > LEN(arr)` 时得一块;空数组得 `[]` | `n < 1`:`E0030` |
-| `WINDOW(arr, n)` | 步长 1 的滑动窗口,共 `LEN(arr) - n + 1` 个;`n > LEN(arr)` 时得 `[]` | `n < 1`:`E0030` |
-| `DEDUP_BY(arr, key)` | 按 `key(v)` 去重,**保序**(留首现);键按 `STR` 渲染 | `key` 抛 `ERR` 按 8.2 传播 |
-| `MIN_BY(arr, key)` | 最小键对应的**元素**;空数组得 `NULL` | `key` 抛 `ERR` 按 8.2 传播 |
-| `MAX_BY(arr, key)` | 同上,取最大 | 同上 |
-| `SUM(arr)` | 求和;整数 / 浮点按 §2.2 提升;空数组得 `0` | 非数值元素:`E0030` |
-| `PRODUCT(arr)` | 求积;空数组得 `1`(单位元) | 同上 |
-| `FOLD_RIGHT(arr, f, init)` | 右折叠 `f(a0, f(a1, ... f(an, init)))`;**参数顺序与 `REDUCE` 一致** | `f` 抛 `ERR` 按 8.2 传播 |
-| `POSITION(arr, pred)` | 首个满足者的 **0 起**下标,无则 `-1` | `pred` 返非 `BOOLEAN`:`E0030` |
-| `KEY_BY(arr, key)` | `DICT`,同键**后者覆盖前者** | `key` 抛 `ERR` 按 8.2 传播 |
+> 成员本身在**上面的 §5 成员表**里,与既有 17 个同表;本节只讲**为什么这么定**。
+> (v0.11.2 收尾时更正:这十个成员原先单列一张 4 列表,而 §5 主表仍是 2 列且只列
+> 17 个 —— 同一章出现两张列头不同的成员表,读主表的人会漏掉十个。已并表。)
 
 五条容易记反、故写在这里:
 
@@ -307,6 +298,14 @@ wlwl 数组不可变,`PUSH` 每次复制整个数组。于是语言规范 §6.6 
 | `ANY(arr, f?)` / `ALL(arr, f?)` | 任一/全部为真(缺省 `f` 时按真值) |
 | `FIND(arr, f)` | 首个满足者,无则 `NULL` |
 | `JOIN(arr, sep) -> STRING` | 字符串化后以 `sep` 连接 |
+| `CHUNK(arr, n) -> ARRAY` | 定长分块,**尾块可短**;`n > LEN(arr)` 时得一块;空数组得 `[]`。`n < 1`:`E0030` |
+| `WINDOW(arr, n) -> ARRAY` | 步长 1 的滑动窗口,共 `LEN(arr) - n + 1` 个;`n > LEN(arr)` 时得 `[]`(与 `CHUNK` 方向相反)。`n < 1`:`E0030` |
+| `DEDUP_BY(arr, key) -> ARRAY` | 按 `key(v)` 去重,**保序**(留首现);键按 `STR` 渲染,故 `1` 与 `"1"` 撞键。`key` 抛 `ERR` 按 8.2 传播 |
+| `MIN_BY(arr, key)` / `MAX_BY(arr, key)` | 键最小/最大对应的**元素**(不是键);空数组得 `NULL`;比较原语与 `SORT_BY` 相同(见 §5.1-1)。`key` 抛 `ERR` 按 8.2 传播 |
+| `SUM(arr)` / `PRODUCT(arr)` | 求和 / 求积;整数 / 浮点按 §2.2 提升;空数组分别得 `0` / `1`(单位元)。非数值元素:`E0030` |
+| `FOLD_RIGHT(arr, f, init)` | 右折叠 `f(a0, f(a1, ... f(an, init)))`;**参数顺序与 `REDUCE` 一致**。`f` 抛 `ERR` 按 8.2 传播 |
+| `POSITION(arr, pred)` | 首个满足者的 **0 起**下标,无则 `-1`(与 `FIND` 的「给元素」是两件事)。`pred` 返非 `BOOLEAN`:`E0030` |
+| `KEY_BY(arr, key) -> DICT` | 同键**后者覆盖前者**(`GROUP_BY` 则是收成数组);键按 `STR` 渲染。`key` 抛 `ERR` 按 8.2 传播 |
 
 > **混合类型排序的准确口径**(v0.11.1 更正,原写「不可比时保留原序」按字面
 > 读是错的)。不可比的元素**不报错**;排序分「可比组」进行,**各组内稳定**,
@@ -389,13 +388,13 @@ v0.11.2 M2 追加(§6 表格即当前成员面;附录 A 镜像由 `gen-appendix-
 | `EXP(x) -> FLOAT` | 自然指数;全定义域;上溢给 `+inf` | — |
 | `TRUNC(x)` | 向零取整;形态同 `FLOOR` / `CEIL`(INTEGER 恒等、FLOAT 返回 FLOAT) | 非数值:`E0030` 诊断(见 §7.1) |
 | `SIN` / `COS` / `TAN(x) -> FLOAT` | 三角(弧度制);全定义域 | — |
-| `ASIN(x)` / `ACOS(x) -> FLOAT` | 反三角;定义域 `[-1, 1]` | `|x| > 1`:`ERR(["kind": "DomainError"])` |
+| `ASIN(x)` / `ACOS(x) -> FLOAT` | 反三角;定义域 `[-1, 1]` | `ABS(x) > 1`:`ERR(["kind": "DomainError"])` |
 | `ATAN(x) -> FLOAT` | 反正切;全定义域 | — |
 | `ATAN2(y, x) -> FLOAT` | 按象限定义的反正切;**全定义域**,`(0, 0)` 得 `0.0` | — |
 | `SINH` / `COSH` / `TANH(x) -> FLOAT` | 双曲;全定义域;上溢给 `±inf` | — |
 | `SIGN(x) -> INTEGER` | 符号 `-1` / `0` / `1`。**返回类型恒为 `INTEGER`**,不随实参提升(见 §7.1) | — |
 | `DIV_CEIL(a, b) -> INTEGER` | 向上取整的整数除法;**只收整数**;`b = 0` 是域违例 | `b = 0`:`ERR(["kind": "DomainError"])` |
-| `GCD(a, b) / LCM(a, b) -> INTEGER` | 辗转相除;**只取绝对值**(`GCD(-4, 6) = 2`);任一为 0 时 `LCM` 得 0 | — |
+| `GCD(a, b) / LCM(a, b) -> INTEGER` | 辗转相除;**只取绝对值**(`GCD(-4, 6) = 2`);任一为 0 时 `LCM` 得 0;`LCM` 先除后乘以避溢出 | 取绝对值时实参为 `INTEGER` 下界(`ABS` 触发 `NEG` 的 `E0034`,**中止整个运行**);`LCM` 的中间乘积溢出 i64 也是 `E0035` 中止 |
 | `IS_SQRT(n) -> INTEGER` | 整数平方根(向下取整) | `n < 0`:`ERR(["kind": "DomainError"])` |
 | `POW_MOD(base, exp, mod) -> INTEGER` | 模幂(平方-乘,`O(log exp)`);**`mod` 可以是 `2^61-1` 这样的密码学素数** | `mod = 0` 或 `exp < 0`:`ERR(["kind": "DomainError"])` |
 
@@ -529,7 +528,7 @@ base64(RFC 4648 §4)、hex、percent-encoding(RFC 3986 §2)。三者都作用在
 | 签名 | 说明 | 失败 |
 |------|------|------|
 | `BASE64_ENCODE(s, url_safe?)` | RFC 4648 标准字母表 + `=` 补齐;`url_safe=TRUE` 换用 URL 字母表(`+/` → `-_`) | — |
-| `BASE64_DECODE(s)` | 忽略 `CR` / `LF`(base64 常被折行嵌入);**两张字母表都收** | 非法字符、补位错位、末组残留非零位、长度不合法 → `ERR([... "DecodeError" ...])`;解出非 UTF-8 同 |
+| `BASE64_DECODE(s)` | 忽略 `CR` / `LF`(base64 常被折行嵌入);**两张字母表都收**;**补位可省略**(RFC 4648 §3.2),但**一旦出现 `=`,总字符数必须是 4 的倍数** | 非法字符、补位后仍有数据、补位数 > 2、**补位后总长非 4 的倍数**、未补位时长度 ≡ 1 (mod 4)、末组残留非零位、解出非 UTF-8 → `ERR([... "DecodeError" ...])` |
 | `HEX_ENCODE(s)` | 小写、无分隔符 | — |
 | `HEX_DECODE(s)` | 大小写都收;不忽略任何字符 | 奇数长度、非 hex 字符、解出非 UTF-8 → `ERR([... "DecodeError" ...])` |
 | `URL_ENCODE(s)` | percent-encoding;`unreserved = ALPHA / DIGIT / "-" / "." / "_" / "~"`,其余 `%XX`(大写十六进制) | — |
