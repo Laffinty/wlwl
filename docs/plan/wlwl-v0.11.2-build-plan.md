@@ -75,7 +75,7 @@
 | 编译器版本 | 0.11.1 | `impl\target\release\wlwl.exe --version` |
 | 工具链 | cargo 1.96.0 | `cargo --version` |
 | 工作区成员 | 10 个 crate | `Get-ChildItem impl\crates -Directory` |
-| probe 用例目录数 | 144 | `(Get-ChildItem impl\tests\probe\cases -Directory).Count` |
+| probe 用例目录数 | 146 | `(Get-ChildItem impl\tests\probe\cases -Directory).Count` |
 | 附录 G 全局条目数 | 106 | `Get-Content docs\appendix_G.md \| Select-String '^\| \`'` |
 
 > **`已核实`(2026-10-02)**:`cargo --version` → `cargo 1.96.0 (30a34c682 2026-09-25)`;
@@ -183,13 +183,13 @@
 ### 3.3 完成定义
 
 ```
-cargo fmt --check                      # 0 diff
-cargo clippy --all-targets -- -D warnings   # 0 warning
-cargo test --locked --all-targets      # 0 failed
-cargo deny check                       # exit 0
-cargo doc --no-deps -D warnings        # 0 error
+cargo fmt --check                          # 0 diff
+cargo clippy --all-targets -- -D warnings  # 0 warning
+cargo test --locked --all-targets          # 0 failed
+cargo deny check                           # exit 0
+$env:RUSTDOCFLAGS='-D warnings'
+cargo doc --locked --no-deps               # 0 error
 cargo check --locked -p wlwl-std --features real-ai   # exit 0
-node script/gen_stdlib_appendix_a.js --check 2>/dev/null || echo "见 §7 门禁清单"
 ```
 
 外加:**§2 全部 5 条判定**复测通过、**§4 全部反向守卫**为绿、**§8 检查点**全部标记完成。
@@ -233,10 +233,20 @@ impl\target\release\wlwl.exe run $p
 ```
 
 ```powershell
-Select-String -Path wlwl-skill\reference.md,wlwl-skill\SKILL.md -Pattern 'NEG\(-\(end_old'
+# 注意:不要用裸模式 'NEG\(-\(end_old' 做验收 —— 它会把「不要这样写」的
+# 警示句本身也算成命中。按**迁移箭头形式**匹配才有判别力。
+Select-String -Path wlwl-skill\reference.md,wlwl-skill\SKILL.md -Pattern 'SUB\(s, start, NEG\('
 # 期望:0 命中
 Select-String -Path wlwl-skill\reference.md,wlwl-skill\SKILL.md -Pattern 'SLICE\(s, start, end_old\)'
 # 期望:0 命中
+Select-String -Path wlwl-skill\reference.md,wlwl-skill\SKILL.md -Pattern 'SUB\(s, start, -\(end_old, start\)\)'
+# 期望:2 命中(reference.md + SKILL.md 各一)
+```
+
+```powershell
+# 门禁本体:示例红了就是非零退出
+& .\impl\target\release\wlwl.exe run wlwl-skill\examples\sub_migration.wll
+echo "rc=$LASTEXITCODE"   # 期望 0
 ```
 
 **守卫**:`wlwl-skill\examples\` 下新增 `sub_migration.wll`,含上面两条断言;
@@ -415,7 +425,7 @@ impl\target\release\wlwl.exe run $p 2>&1 | Select-String '\-\->'
 | 3 | R1:`wl/std/*.wll` 的 `EXPORT([...])`;R2:`src/*.rs` 的 `SPEC.functions` | 加名字 | 同上 |
 | 4 | `impl/crates/wlwl-eval/tests/{collection,str_math,test}_contract.rs` 的**硬编码成员数与点名清单** | 改数字 + 补名字 | `assert_eq!(impls.len(), N)` 红 |
 | 5 | 新模块才需要:`wlwl-std/src/<name>.rs` + `lib.rs` 的 `ALL_SPECS` 登记 | 加文件 + 登记 | `lib.rs:558` 的「`src/` 文件数 == `ALL_SPECS` 长度」红 |
-| 6 | `impl/tests/probe/cases/<name>/` | 加用例目录 | `probe_case_count_matches_inventory` 红(现为 144) |
+| 6 | `impl/tests/probe/cases/<case>/`(目录 + `main.wll` + `expect.json`) | 加用例目录 | `probe_case_count_matches_inventory` 红(现为 146,同步 `probe.rs` 的 `EXPECTED_CASE_COUNT`) |
 | 7 | **仅当加的是全局内建**(不是模块成员) | `docs/appendix_G.md` | `spec_appendix_g_sync` 红 |
 | 8 | `wlwl-skill\reference.md` 的成员指针 | 加提及 | 无自动守卫,但 skill 会教错 |
 | 9 | `CHANGELOG.md` | 加条目 | 无人拦,但发版流程依赖它 |
@@ -700,7 +710,12 @@ cargo fmt --check
 cargo clippy --locked --all-targets -- -D warnings
 cargo test --locked --all-targets
 cargo deny check
-cargo doc --locked --no-deps -D warnings
+# `cargo doc` **不接受** `-D warnings` —— 它是 rustdoc 的选项,必须走
+# RUSTDOCFLAGS。写成 `cargo doc --no-deps -D warnings` 会得到
+# `error: unexpected argument '-D' found`,而且**退出码是 1**,
+# 看起来像门禁红,其实是命令写错。本条已在 2026-10-02 实测更正。
+$env:RUSTDOCFLAGS='-D warnings'
+cargo doc --locked --no-deps
 cargo check --locked -p wlwl-std --features real-ai
 ```
 
@@ -739,7 +754,7 @@ cargo test --locked -p wlwl-eval the_spec_table_extractor_actually_finds_the_mem
 
 | 里程碑 | 内容 | 状态 | commit |
 |---|---|---|---|
-| M0 | W-01 ~ W-07(缺陷修复) | ☐ 未开始 | — |
+| M0 | W-01 ~ W-07(缺陷修复) | 🟡 **代码完成,门禁待确认** | — |
 | M1 | `std.encode`(6 成员) | ☐ 未开始 | — |
 | M2 | `std.text`(Unicode 大小写)+ `std.str` 检索(3 成员) | ☐ 未开始 | — |
 | M3 | `std.collection` 扩展(8 成员) | ☐ 未开始 | — |
@@ -749,12 +764,15 @@ cargo test --locked -p wlwl-eval the_spec_table_extractor_actually_finds_the_mem
 
 ### 8.1 里程碑内的细粒度进度
 
-在动手过程中,**每完成一个工作项就把 §8.1 加一行**(W3 规则:必须带 commit SHA)。
-本表在起草时为空 —— 这是正常的,不是遗漏。
-
-| 工作项 | 状态 | commit | 备注 |
+| 工作项 | 状态 | 实际产出 | 备注 |
 |---|---|---|---|
-| — | — | — | — |
+| **W-01** | ✅ 完成 | `reference.md:338-346`、`SKILL.md:631`、`examples/sub_migration.wll`(新)、`README.md` 示例表 | 门禁用 `PANIC` 而非 `RUN_TESTS` —— 实测 `RUN_TESTS` 失败**退出码仍是 0**,拦不住 CI。计划里原写的验收模式是错的,已改 |
+| **W-02** | ✅ 完成 | `stdlib_mirror.rs` 新增 2 条测试 | 匹配必须**剥注释**:门面头注释逐条列 kernel 名,`collection.wll` 注释里还记着已删的 `_DIAG_E0038`;朴素 `contains()` 恰好会掩盖要防的回归。**不能要求 `(`**:`_RANGE` / `_EXPECT_ERR` 是裸标识符改名导出 |
+| **W-03** | ✅ 完成 | stdlib 规范 §4.1、新建 `tests/format_contract.rs` | 我最初把 `E0102` 消息猜成 `top-level ERR reached the top level uncaught`,实测是 `unhandled ERR escaped to top level: x` —— 又一次印证「期望值不许凭记忆写」 |
+| **W-04** | ✅ 完成 | `Evaluator::last_yield_span`、`Warning::span`、`main.rs::report_eval_warnings`、2 条守卫 | `Warning` 结构体原本**没有 span 字段**,`main.rs:519` 硬编码 `0:0`。给 `Signal` 加 span 是大改(几十处构造点),改走 `current_span` 旁路。实测 `E0014` `1:1`→`3:1`,`W0051` `0:0`→`3:1` |
+| **W-05** | ✅ 完成 | `wlwl-v0.11.1-recheck.md` 顶部新增更正节 | 正文未改(历史记录不改写) |
+| **W-06** | ✅ 完成 | `CONTRIBUTING.md`「Coding conventions」、`SKILL.md` 验证窗口条目 | — |
+| **W-07** | ✅ 完成 | 2 个 probe 用例 + `EXPECTED_CASE_COUNT` 144→146 | 任务内实测 `in-task result: NULL` ⇒ 报告 §1.2 的判定**成立**。顶层那条的 span 是 `4:24` 不是 `9:24` —— `YIELD()` 在 TEST 注册行,且**只有 RUN_TESTS 真跑起来才传播** |
 
 ---
 

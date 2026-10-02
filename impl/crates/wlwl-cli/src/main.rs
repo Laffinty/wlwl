@@ -511,13 +511,17 @@ fn run_file(
 /// `error_schema_version` / `error_category` / `severity` 等字段,不必在这里
 /// 手工维护第二份 JSON 形状。
 ///
-/// 警告没有源码位置(`Warning` 只有 `code` + `message`),统一挂在入口文件上,
-/// 渲染出来是一条带文件名、不带行列的诊断 —— 与 parser 警告在 `check`
-/// 路径上的既有形态一致(`main.rs` 的 `println!("warning {}: ...")` 口径)。
+/// 警告的源码位置在 [D12-002 / v0.11.2 W-04] 之后是**有**的:`Warning`
+/// 带 `span`,`emit_warning` 从 `eval_call` 已经设好的 `current_span` 取发射点。
+/// 只有非调用路径发射的警告才没有位置 —— 那种仍然挂在入口文件上、行列留空,
+/// 而不是编一个 `0:0` 出来(与 parser 警告在 `check` 路径上的既有形态一致)。
 fn report_eval_warnings(ev: &mut wlwl_eval::Evaluator, file: &str, format: OutputFormat) {
     for w in ev.take_warnings() {
-        let d = WlwlDiagnostic::new(w.code, w.message, Location::point(file.to_string(), 0, 0))
-            .with_severity(Severity::Warning);
+        let loc = match w.span {
+            Some(s) => Location::point(file.to_string(), s.line_start, s.col_start),
+            None => Location::point(file.to_string(), 0, 0),
+        };
+        let d = WlwlDiagnostic::new(w.code, w.message, loc).with_severity(Severity::Warning);
         match format {
             OutputFormat::Human => eprintln!("{}", d.render_human()),
             OutputFormat::Json => eprintln!("{}", d.render_json()),

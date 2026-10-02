@@ -1,0 +1,23 @@
+IMPORT("wlwl:std.test", ["TEST", "ASSERT", "RUN_TESTS"]);
+
+// A test body that suspends. YIELD() is legal in any expression position
+// since v0.9, so this registers normally and RUN_TESTS accepts it.
+TEST("yields", FUN((), YIELD()));
+TEST("passes", FUN((), TRUE));
+TEST("fails", FUN((), ASSERT(FALSE)));
+
+// Inside a task there IS a step context, so the yield is real rather than
+// an E0014. stdlib §8 requires RUN_TESTS to produce **no records at all**
+// when a body suspends: the signal travels back to the scheduler
+// untouched, and counting the suspended body as passed is the D11-019
+// disaster (ASSERT(FALSE) after the YIELD never ran, yet `passed: TRUE`).
+//
+// The in-task result must therefore be NULL — not an array. That is the
+// whole assertion: an array here (even an empty one, even one marked
+// passed) is the regression.
+LET(result, SCOPE(FUN((),
+    LET(t, SPAWN(FUN((), RUN_TESTS())));
+    AWAIT(t)
+)));
+PRINT("in-task result: ", result);
+PRINT("is null: ", ==(TYPE(result), "NULL"));

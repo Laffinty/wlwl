@@ -1,0 +1,12 @@
+{
+ "exit": 1,
+ "contains": [
+  "E0014",
+  "YIELD used outside a step context",
+  "main.wll:4:24"
+ ],
+ "not_contains": [
+  "after"
+ ],
+ "_why": "D12-003 / v0.11.2 W-04 + W-07。同一条契约的另一半:顶层调用 RUN_TESTS 时挂起信号无处可交,必须 E0014 并终止整个运行 —— 任务内那条证明信号没被吞掉,这条证明它也没被默默接受。`main.wll:4:24` 同时是 **W-04 span 修复**的动态锁定:诊断必须指向 YIELD() 的调用点(第 4 行第 24 列,位于 TEST 注册行),不是包含它的那条语句、更不是文件头。修复前报 `1:1`。`not_contains: after` 证明运行确实终止,没有继续往下走。注意:YIELD() 只在被 RUN_TESTS 真正执行时才传播,所以必须调 RUN_TESTS,光注册不会触发。"
+}

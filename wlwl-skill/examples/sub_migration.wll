@@ -1,0 +1,69 @@
+// sub_migration.wll — SUB length semantics and the two migration traps
+// (spec §10.5; wlwl-skill antipattern #18).
+//
+// SUB's third argument is a LENGTH, not an end-index. Migrating code
+// written against end-index semantics means computing a length:
+//
+//     SUB(s, start, end_old)  ->  SUB(s, start, -(end_old, start))
+//
+// This file exists because this bundle's own docs used to get that
+// formula wrong twice, in two different ways, and both mistakes shipped:
+//
+//   1. Wrapping the computed length in NEG, which re-negates the length
+//      you just computed correctly. The result is a negative third
+//      argument, and SUB returns "".
+//
+//   2. Offering SLICE(s, start, end_old) as "the cleaner rewrite".
+//      SLICE's first argument must be an ARRAY; handed a string it is
+//      rejected with E0030. E0030 is a native diagnostic and cannot be
+//      caught by any §8.3 consumer, so a program "migrated" this way
+//      does not degrade gracefully — it aborts.
+//
+// [re-verified against wlwl 0.11.1, 2026-10-02] Both traps are asserted
+// at the bottom of this file. The gate is deliberately built out of
+// PANIC rather than RUN_TESTS: a failing RUN_TESTS still exits 0 (it
+// records `passed: FALSE` in its result array and keeps going), so it
+// cannot fail a CI run. PANIC on an assertion error exits 1.
+
+// SUB is a global builtin (§10.5) — no IMPORT needed for it.
+
+// (1) Length semantics. The third argument is how MANY codepoints.
+PRINT(SUB("Hello, world", 0, 5));    // "Hello"
+PRINT(SUB("Hello, world", 7, 5));    // "world"  — chars[7..12] is 5 codepoints
+PRINT(SUB("Hello, world", 0));       // whole string, 2-arg default
+PRINT(SUB("Hello", 0, -1));          // "" — negative length clamps to 0
+PRINT(SUB("Hello", -1, 1));          // "o"  — negative start counts from the tail
+
+// (2) THE MIGRATION. End-index -> length is a subtraction, and the
+// operand order is the whole point: length = end_old - start.
+LET(s, "Hello, world");
+LET(start, 7);
+LET(end_old, 12);
+PRINT(SUB(s, start, -(end_old, start)));   // "world"  <- correct
+
+// (3) TRAP 1: NEG around the subtraction. -(12, 7) is already the
+// length 5; NEG flips it to -5, and SUB hands back "".
+PRINT(SUB(s, start, NEG(-(end_old, start))));   // ""  <- wrong, silently empty
+
+// (4) TRAP 2 is not demonstrable here: SLICE("Hello, world", 7, 12)
+// raises E0030 ("SLICE: expected ARRAY as first arg, got string"), and
+// E0030 is native — no §8.3 consumer can intercept it, so writing it
+// here would abort the example before the gate below runs. The trap is
+// recorded in reference.md and SKILL.md antipattern #18 instead.
+
+// ── Gate ────────────────────────────────────────────────────────────
+// Every assertion below is one this file used to get wrong. A failure
+// PANICs, which exits 1.
+IMPORT("wlwl:std.test", ["ASSERT_EQ"]);
+
+LET(ok_len,       ASSERT_EQ(SUB("Hello, world", 7, 5), "world"));
+LET(ok_migrate,   ASSERT_EQ(SUB(s, start, -(end_old, start)), "world"));
+LET(ok_trap_neg,  ASSERT_EQ(SUB(s, start, NEG(-(end_old, start))), ""));
+LET(ok_neg_len,   ASSERT_EQ(SUB("Hello", 0, -1), ""));
+LET(ok_tail,      ASSERT_EQ(SUB("Hello", -1, 1), "o"));
+
+IF(IS_ERR(ok_len),      PANIC("SUB length semantics regressed"), PRINT("ok  length semantics"));
+IF(IS_ERR(ok_migrate),  PANIC("SUB end-index migration regressed"), PRINT("ok  end-index migration"));
+IF(IS_ERR(ok_trap_neg), PANIC("NEG trap changed shape"), PRINT("ok  NEG trap still yields empty"));
+IF(IS_ERR(ok_neg_len),  PANIC("negative-length clamp regressed"), PRINT("ok  negative length clamps to 0"));
+IF(IS_ERR(ok_tail),     PANIC("negative-start tail indexing regressed"), PRINT("ok  negative start counts from tail"));

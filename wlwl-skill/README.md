@@ -108,6 +108,7 @@ Compiler version is independent of the spec version (see root
 | `examples/match.wll` | pattern clauses |
 | `examples/interpolation.wll` | `${...}` forms |
 | `examples/import_stdlib.wll` | `wlwl:std.*` imports |
+| `examples/sub_migration.wll` | `SUB` length semantics (§10.5) + the two end-index migration traps, gated with `PANIC` so a regression exits 1 |
 | `examples/concurrency.wll` | §17 SCOPE / SPAWN / AWAIT / YIELD + channel fan-in |
 | `examples/concurrency_cancel.wll` | SHIELD / cancel with reason / `ChannelClosed` kind |
 | `examples/oop.wll` | §13–§15 CLASS / NEW / methods / protocol / linear THIS |

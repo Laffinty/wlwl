@@ -35,7 +35,7 @@
 | 最新实现 | v0.11.1 已发布 |
 | 进行中的计划 | [**v0.11.2 构建计划**](wlwl-v0.11.2-build-plan.md)(2026-10-02 起草,M0–M6 全部未开工) |
 | 下一迭代 | v0.11.2 之后:批次 B `YIELD` 续体保存(**0 细化**,开细化前须先定三件事,见 `../history/20261001.md` §1)、`std.rand` 的全局状态裁决、NFC/NFD 的 Unicode 表成本评估、建数组类成员的平方级成本(D11-012,修复属 R0 解释器工作) |
-| 门禁 | `cargo fmt --check` 0 diff;`clippy -D warnings` 0;`cargo test --locked --all-targets` **0 failed**;`cargo deny check` exit 0;`cargo doc --no-deps -D warnings` 0 error(**D11-015 之后已并入本地门禁**);`cargo check --locked -p wlwl-std --features real-ai` exit 0(S-P1-1 之后新增);probe **144** 用例 —— 144 是 `impl/tests/probe/cases/` 的**用例目录数**,由单个 `probe_suite` 函数驱动并有 `probe_case_count_matches_inventory` 守卫,**不是** `#[test]` 函数数(`--test probe` 只跑 3 个函数);附录 G 逐字节不变 |
+| 门禁 | `cargo fmt --check` 0 diff;`clippy -D warnings` 0;`cargo test --locked --all-targets` **0 failed**;`cargo deny check` exit 0;`cargo doc --no-deps -D warnings` 0 error(**D11-015 之后已并入本地门禁**;注意 `cargo doc` 不接受 `-D`,须走 `$env:RUSTDOCFLAGS='-D warnings'`);`cargo check --locked -p wlwl-std --features real-ai` exit 0(S-P1-1 之后新增);probe **146** 用例 —— 146 是 `impl/tests/probe/cases/` 的**用例目录数**,由单个 `probe_suite` 函数驱动并有 `probe_case_count_matches_inventory` 守卫,**不是** `#[test]` 函数数(`--test probe` 只跑 3 个函数);附录 G 逐字节不变 |
 | 已立项范围 | v0.11:**批次 A 标准库底座**(ADR-0021/0022/0023)**已收口**;批次 B `YIELD` 续体保存**已立项但未细化**;v0.11.1:`std.web` **已终止并回滚**;v0.11.2:**已立项未开工**(缺陷修复 M0 + 标准库扩展 M1–M5) |
 
 ## 挂账项

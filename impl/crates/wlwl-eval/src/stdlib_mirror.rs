@@ -245,6 +245,151 @@ mod tests {
         );
     }
 
+    /// [D12-002] 注入表里的每个 kernel,都必须在门面的 `.wll` 源码里真的
+    /// 被用到 —— 否则是死注入。
+    ///
+    /// 为什么需要这条:上一条 `every_shared_kernel_is_actually_injected` 只锁
+    /// **一个方向**(`KERNELS` ⊆ 注入)。而 `CHANGELOG.md` v0.11.1 声称修死注入
+    /// 时「并补反向守卫」, 声称的正是本条。反方向一旦没人守, 有人把死内核
+    /// **同时**加回 `KERNELS` 与注入表, 全部门禁照绿 —— 这正是 v0.11.1 里
+    /// `_DIAG_E0038` 死注入当初能活下来的形状。
+    #[test]
+    fn every_injected_kernel_is_used_in_its_module_source() {
+        for src in wlwl_std::LANG_SOURCES {
+            let missing =
+                kernels_without_a_use_site(src.source, src.kernels.iter().map(|(n, _)| *n));
+            assert!(
+                missing.is_empty(),
+                "{} injects {} kernel(s) that the facade source never mentions: {missing:?} — \
+                 a dead injection. Remove it from the injection table, or wire it up.",
+                src.path,
+                missing.len()
+            );
+        }
+    }
+
+    /// [D12-002] 上面那条的**负向自检**:守卫写反、或者匹配逻辑退化成
+    /// 「什么都找得到」时,上面会变成恒真断言 —— 这正是 D11-006 踩过的坑
+    /// (当时有个 `names_match_catalog` 恒等于左右两边, 从未锁住任何东西)。
+    #[test]
+    fn the_dead_injection_guard_actually_rejects_one() {
+        let src = "LET(x, 0), SET(x, 1)";
+
+        // 真的没被用到 ⇒ 必须报出来。
+        assert_eq!(
+            kernels_without_a_use_site(src, std::iter::once("_NOT_CALLED")),
+            vec!["_NOT_CALLED".to_string()],
+            "a kernel with no use site must be reported as dead"
+        );
+        // 正向对照:出现过的名字不该被报出来(顺带证明匹配不是「一律报」)。
+        assert!(
+            kernels_without_a_use_site(src, std::iter::once("x")).is_empty(),
+            "a name that does appear must not be reported"
+        );
+        // 注释与字符串字面量里的名字**不算**使用点。
+        let prose = "// _KIND(x) 见文件头\nLET(s, \"_KIND is documented here\")";
+        assert_eq!(
+            kernels_without_a_use_site(prose, std::iter::once("_KIND")),
+            vec!["_KIND".to_string()],
+            "comment / string mentions must not count as use sites — collection.wll's header \
+             lists every injected kernel by name, and records the *deleted* `_DIAG_E0038` in \
+             prose; a naive contains() would be fooled by the very text explaining the deletion"
+        );
+        // 词边界:名字是别的标识符的一部分时不匹配。
+        assert_eq!(
+            kernels_without_a_use_site("LET(_KIND_EXTRA, 1)", std::iter::once("_KIND")),
+            vec!["_KIND".to_string()],
+            "`_KIND` must not be found inside `_KIND_EXTRA`"
+        );
+    }
+
+    /// 把 `.wll` 源码里的**注释与字符串字面量**抹成空格,只留可执行代码。
+    ///
+    /// 必须抹的理由见 `the_dead_injection_guard_actually_rejects_one`:门面文件
+    /// 的头注释会**逐条列出本模块注入的每个 kernel 名**,其中还记着已被删除的
+    /// `_DIAG_E0038`。不抹的话,那句解释删除原因的散文本身就会成为一个
+    /// 「现存的调用点」。
+    fn strip_comments_and_strings(src: &str) -> String {
+        let chars: Vec<char> = src.chars().collect();
+        let mut out = String::with_capacity(src.len());
+        let mut i = 0;
+        while i < chars.len() {
+            match chars[i] {
+                '/' if i + 1 < chars.len() && chars[i + 1] == '/' => {
+                    while i < chars.len() && chars[i] != '\n' {
+                        out.push(' ');
+                        i += 1;
+                    }
+                }
+                '"' => {
+                    out.push(' ');
+                    i += 1;
+                    while i < chars.len() {
+                        match chars[i] {
+                            // `\"` 是字面量里的一个引号,两个字符都吞掉。
+                            '\\' if i + 1 < chars.len() => {
+                                out.push(' ');
+                                out.push(' ');
+                                i += 2;
+                            }
+                            '"' => {
+                                out.push(' ');
+                                i += 1;
+                                break;
+                            }
+                            // 未闭合的串:退到行尾,别把后面整份文件都吃掉。
+                            '\n' => {
+                                out.push(' ');
+                                i += 1;
+                                break;
+                            }
+                            _ => {
+                                out.push(' ');
+                                i += 1;
+                            }
+                        }
+                    }
+                }
+                c => {
+                    out.push(c);
+                    i += 1;
+                }
+            }
+        }
+        out
+    }
+
+    fn is_identifier_char(c: char) -> bool {
+        c.is_alphanumeric() || c == '_'
+    }
+
+    /// 返回「注入了但源码里没有任何使用点」的 kernel 名。
+    ///
+    /// 匹配的是**词边界的出现**而不是 `name(`:门面有两种合法用法,`_RANGE`
+    /// 与 `_EXPECT_ERR` 都是**裸标识符改名导出**(`LET(RANGE, _RANGE);`),
+    /// 要求括号会把它们误判成死注入。
+    fn kernels_without_a_use_site<'a>(
+        source: &str,
+        kernel_names: impl Iterator<Item = &'a str>,
+    ) -> Vec<String> {
+        let code = strip_comments_and_strings(source);
+        let mut missing = Vec::new();
+        for name in kernel_names {
+            let used = code.match_indices(name).any(|(i, _)| {
+                let before_ok =
+                    i == 0 || !is_identifier_char(code[..i].chars().next_back().unwrap());
+                let after = i + name.len();
+                let after_ok = after >= code.len()
+                    || !is_identifier_char(code[after..].chars().next().unwrap());
+                before_ok && after_ok
+            });
+            if !used {
+                missing.push(name.to_string());
+            }
+        }
+        missing
+    }
+
     /// 收集器坏掉时的反向守卫:「扫不到任何 kernel 就转绿」会让上面两条
     /// 断言退化成检查零件事的空断言(它们都以 `LANG_SOURCES` 的迭代结果
     /// 或 `KERNELS` 自身为输入)。

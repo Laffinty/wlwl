@@ -1,0 +1,13 @@
+{
+ "exit": 0,
+ "contains": [
+  "in-task result:  NULL",
+  "is null:  TRUE"
+ ],
+ "not_contains": [
+  "passed: TRUE",
+  "passed: FALSE",
+  "name: yields"
+ ],
+ "_why": "D12-003 / v0.11.2 W-07。把 v0.11.1 复核报告 §1.2 后半那条「任务内调用 RUN_TESTS,挂起信号原样穿透,整个 RUN_TESTS 不产出任何记录(含正常测试也不记)」从**只有静态守卫**升格为**动态已证**。此前它只有 wlwl-eval/tests/test_contract.rs:410-436 的反向断言支撑,复核实测未能复现(卡在多语句块语法上)。not_contains 锁的是要害:挂起的测试体既不能记成通过,也不能记成失败,更不能以任何形式出现在结果数组里 —— 只要出现 name: yields,就说明信号被某个消费者吞了。"
+}

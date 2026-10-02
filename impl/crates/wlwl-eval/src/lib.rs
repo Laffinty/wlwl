@@ -147,6 +147,14 @@ impl Drop for CallDepthGuard {
 pub struct Warning {
     pub code: ErrorCode,
     pub message: String,
+    /// [D12-002 / v0.11.2 W-04] 发射点的 span。
+    ///
+    /// 此前 `Warning` 只有 `code` + `message`,于是 `wlwl-cli` 的
+    /// `report_eval_warnings` 只能硬挂 `Location::point(file, 0, 0)` ——
+    /// `W0051` / `W0030` / `W0066` / `W0065` 全部渲染成「有文件名、没有
+    /// 行列」。`emit_warning` 走的是 `eval_call` 已经设好的 `current_span`,
+    /// 拿得到就带上;拿不到(极少数非调用路径)才退化成 `None`。
+    pub span: Option<Span>,
 }
 
 /// Result of loading a module: a fresh `Env` containing all top-level
@@ -3892,6 +3900,13 @@ fn builtin_yield(ev: &mut Evaluator, args: Vec<Value>) -> WlwlResult<Outcome> {
     // B5a-3 Path B: always emit the explicit yield signal. The
     // scheduler-driven task runner catches it; bare `eval` rejects
     // it with E0014 ("yield outside a step context").
+    //
+    // [D12-002 / v0.11.2 W-04] Record where this YIELD actually fired.
+    // The signal itself carries no span, so the top-level `eval` that
+    // rejects it would otherwise report the **enclosing statement** — for
+    // a file where line 30 is `YIELD();`, that reads as line 1. Store the
+    // call site here, where `diag_span` already holds it.
+    ev.last_yield_span = Some(diag_span);
     Ok(Outcome {
         value: Value::Null,
         signal: Signal::Yield(YieldReason::Explicit),
@@ -6039,6 +6054,18 @@ pub struct Evaluator {
     /// `builtin_format` for `E0039`) see the exact call location.
     /// Most builtins don't read it.
     pub current_span: Option<Span>,
+    /// [D12-002 / v0.11.2 W-04] 最近一次**成功发射**的 `YIELD()` 调用点。
+    ///
+    /// 为什么需要它:`Signal::Yield` 只带 `YieldReason`,不带 span;而
+    /// `Signal` 有几十处构造点(通道 park、任务分段、step 循环),给整个
+    /// 枚举加 span 是大改。`YIELD` 这条路窄 —— `builtin_yield` 手里就有
+    /// `current_span`(本函数的 `diag_span`),在这里存一份即可。
+    ///
+    /// 用途:顶层 `eval` / 模块加载把逃逸上来的 `Signal::Yield` 翻译成
+    /// `E0014` 时,原来只能用**语句**的 span。于是文件里第 30 行的
+    /// `YIELD();` 会被报成第 1 行 —— 用户无从定位。取不到时降级回
+    /// 语句 span,而不是伪造一个 `0:0`。
+    pub last_yield_span: Option<Span>,
     /// [v0.4 Phase B5] Memoized FORMAT template parses (plan §5.5:
     /// "相同 template 复用解析结果"). Keyed by template text; the
     /// parsed segment list is shared via `Rc` so cache hits are a
@@ -6196,6 +6223,7 @@ impl Evaluator {
             warnings: Vec::new(),
             top_level_bound: HashSet::new(),
             current_span: None,
+            last_yield_span: None,
             format_cache: HashMap::new(),
             strict_types: false,
             current_task: None,
@@ -6267,6 +6295,7 @@ impl Evaluator {
             warnings: Vec::new(),
             top_level_bound: HashSet::new(),
             current_span: None,
+            last_yield_span: None,
             format_cache: HashMap::new(),
             strict_types: false,
             current_task: None,
@@ -6303,6 +6332,11 @@ impl Evaluator {
         self.warnings.push(Warning {
             code,
             message: message.into(),
+            // [D12-002 / v0.11.2 W-04] `eval_call` sets `current_span` right
+            // before dispatching, so for the builtin-alias warnings
+            // (`W0051` on `DEL` / `POP` / `OR_DIE`) this is the exact call
+            // site rather than the enclosing statement.
+            span: self.current_span.clone(),
         });
     }
 
@@ -6484,7 +6518,9 @@ impl Evaluator {
             Signal::Yield(_) => Err(self.diag(
                 ErrorCode::E0014,
                 "YIELD used outside a step context (yield is only valid inside a Scheduler::step loop, not at a top-level eval call)".to_string(),
-                expr.span().clone(),
+                // [D12-002 / v0.11.2 W-04] Prefer the YIELD call site over the
+                // enclosing statement. Falls back rather than fabricating.
+                self.last_yield_span.clone().unwrap_or_else(|| expr.span().clone()),
             )),
         }
     }
@@ -6766,7 +6802,9 @@ impl Evaluator {
             Signal::Yield(_) => Err(self.diag(
                 ErrorCode::E0014,
                 "YIELD used outside a step context (yield is only valid inside a Scheduler::step loop, not at a top-level module load)".to_string(),
-                expr.span().clone(),
+                // [D12-002 / v0.11.2 W-04] Same call-site preference as the
+                // `eval` arm above.
+                self.last_yield_span.clone().unwrap_or_else(|| expr.span().clone()),
             )),
         }
     }
@@ -11013,6 +11051,51 @@ mod tests {
             err.diagnostic().code,
             ErrorCode::E0014,
             "expected E0014 'YIELD used outside a step context'"
+        );
+    }
+
+    /// [D12-002 / v0.11.2 W-04] `E0014` 必须指向 **`YIELD()` 调用点**,
+    /// 不是包含它的那条语句。
+    ///
+    /// 此前诊断用的是语句 span,而语句在解析后没有独立 span,退化成文件头 ——
+    /// 实测第 3 行的 `YIELD();` 被报成 `1:1`。用户拿到这条诊断无从定位。
+    ///
+    /// 锁**行号**,不锁消息文本:消息会随措辞调整,行号才是要修的东西。
+    #[test]
+    fn yield_e0014_span_points_at_the_call_site() {
+        let src = "PRINT(\"before\");\nPRINT(\"middle\");\nYIELD();\nPRINT(\"after\");\n";
+        let ast = parse(src, "t.wll").expect("parse");
+        let mut ev = Evaluator::new();
+        let err = ev
+            .eval(&ast)
+            .expect_err("top-level YIELD via eval must be E0014");
+        assert_eq!(err.diagnostic().code, ErrorCode::E0014);
+        assert_eq!(
+            err.diagnostic().location.line,
+            3,
+            "E0014 should point at the YIELD() call on line 3, got {:?}",
+            err.diagnostic().location
+        );
+    }
+
+    /// [D12-002 / v0.11.2 W-04] 同一条链的下游:`W0051` 此前渲染成
+    /// `0:0`(无行列),因为 `Warning` 结构体没有 span 字段。
+    #[test]
+    fn deprecated_alias_warning_carries_a_span() {
+        let src = "LET(d, DICT());\nPRINT(\"x\");\nDEL(d, \"k\");\nPRINT(\"y\");\n";
+        let ast = parse(src, "t.wll").expect("parse");
+        let mut ev = Evaluator::new();
+        ev.eval(&ast).expect("run");
+        let warns = ev.take_warnings();
+        let w = warns
+            .iter()
+            .find(|w| w.code == ErrorCode::W0051)
+            .expect("DEL must emit W0051");
+        assert_eq!(
+            w.span.as_ref().map(|s| (s.line_start, s.col_start)),
+            Some((3, 1)),
+            "W0051 should point at the DEL call on line 3:1, got {:?}",
+            w.span
         );
     }
 

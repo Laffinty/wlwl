@@ -1,0 +1,18 @@
+IMPORT("wlwl:std.test", ["TEST", "ASSERT", "RUN_TESTS"]);
+
+TEST("passes", FUN((), TRUE));
+TEST("yields", FUN((), YIELD()));
+
+PRINT("before");
+
+// Top level there is no step context, so the suspension escaping this
+// RUN_TESTS has nowhere to go: E0014, and the run aborts. This is the
+// other half of D12-003 — the in-task case proves the signal is NOT
+// swallowed, this one proves it is not silently accepted either.
+//
+// YIELD() inside a registered-but-never-invoked test body is inert; the
+// signal only travels when RUN_TESTS actually runs the body. Hence the
+// call below rather than a bare registration.
+RUN_TESTS();
+
+PRINT("after");

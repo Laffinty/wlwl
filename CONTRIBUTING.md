@@ -83,6 +83,20 @@ wlwl/
 - **Tests**: every new error path needs an `insta` snapshot or an
   explicit `assert_eq!` in the corresponding `tests` module. The CI smoke
   job exercises the binary against the bundled examples.
+- **Probes and evidence blocks (v0.11.2 / D12-007)**: any `.wll` snippet
+  that ends up in a document, review report, commit message, or PR
+  description must **run as written** on the release binary, and the exit
+  code must be recorded alongside it. Two failure modes have actually
+  shipped here:
+  - **Missing `IMPORT`.** A name is a global builtin only if it is in
+    `docs/appendix_G.md`. `STRINGIFY` is `wlwl:std.json`'s; `SORT` is
+    `wlwl:std.collection`'s. A snippet that names them without importing
+    fails with `E0020` and looks like a broken compiler.
+  - **Invented expected values.** Do not write what a diagnostic *should*
+    say. Run it, copy the message. A guessed `E0102` wording cost one
+    build cycle during v0.11.2.
+  Rule of thumb: a block you have not executed is a hypothesis. Say so,
+  or run it.
 
 ## Pull request checklist
 

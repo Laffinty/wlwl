@@ -335,8 +335,20 @@ SUB("Hello, world", 0)      → "Hello, world"  // 2-arg default
 SUB("Hello", 0, -1)         → ""          // negative len → 0
 SUB("Hello", -1, 1)         → "o"         // negative start = from tail
 ```
-Third arg is **length**, not end-index. Migration: `SUB(s, start, end_old)` → `SUB(s, start, NEG(-(end_old, start)))` or `SLICE(s, start, end_old)` (SLICE on arrays is start/end). The subtraction order matters: length is `end_old − start`, so `-(end_old, start)`, **not** `-(start, end_old)` — the latter yields a negative length and `SUB` returns `""`. `-` is a 2-arg builtin only (`-(5)` is an `E0022`), so negate with `NEG`.
-> *Measured on wlwl 0.11.0 (2026-10-01): `NEG(-(12, 7))` = `-5` → `SUB("Hello, world", 7, -5)` = `""`; `NEG(-(7, 12))` = `5` → `SUB("Hello, world", 7, 5)` = `"world"`.*
+Third arg is **length**, not end-index. Migration: `SUB(s, start, end_old)` → `SUB(s, start, -(end_old, start))`. The subtraction order matters: length is `end_old − start`, so `-(end_old, start)`, **not** `-(start, end_old)` — the latter yields a negative length and `SUB` returns `""`. `-` is a 2-arg builtin only (`-(5)` is an `E0022`).
+
+Two ways to get this wrong, both of which have shipped in this file before:
+
+- **Do not wrap the result in `NEG`.** `NEG(-(end_old, start))` re-negates the length you just
+  computed correctly, so the third argument goes negative and `SUB` returns `""`.
+- **`SLICE` is not an alternative.** `SLICE(arr, start, end?)` takes an **`ARRAY`** first arg
+  and rejects a string with `E0030`. Its start/end semantics apply to arrays only; for a string
+  the only rewrite is the `SUB` form above.
+
+> *Measured on wlwl 0.11.1 (2026-10-02): `SUB("Hello, world", 7, 5)` = `"world"`;
+> `SUB("Hello, world", 7, -(12, 7))` = `"world"`; `SUB("Hello, world", 7, NEG(-(12, 7)))` = `""`;
+> `SLICE("Hello, world", 7, 12)` = `E0030: SLICE: expected ARRAY as first arg, got string`.*
+> Runnable form: [`examples/sub_migration.wll`](examples/sub_migration.wll).
 
 **FORMAT templates** (§10.7): `FORMAT(template, args...)`. `{N}` is the
 `N`th variadic arg (template is index -1). `{name}` is the first DICT
