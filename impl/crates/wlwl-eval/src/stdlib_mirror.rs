@@ -32,6 +32,11 @@ const NAMESPACE_META: &[(&str, &str, &str)] = &[
     ("wlwl:std.format", "R2", "v0.10 及以前"),
     ("wlwl:std.encode", "R2", "v0.11.2"),
     ("wlwl:std.text", "R2", "v0.11.2"),
+    // [v0.11.3 M1] 输出安全(旗舰特色功能)。**全员 R2**:转义 / 解码 / 净化
+    // 都要处理文档级输入,而解释器侧字符串与数组构建超线性(D11-012 /
+    // D12-009);归层基准见 v0.11.3 计划 W-08 与 baseline.txt M1 段。
+    // `HTML_SANITIZE` 随 M3 落地后本行成员数 2 → 3。
+    ("wlwl:std.sanitize", "R2", "v0.11.3"),
     (
         "wlwl:std.collection",
         // [v0.11 M5] 16 成员 R1 + `RANGE` 归 R2。层归属变更不算破坏性变更

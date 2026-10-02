@@ -1,0 +1,9 @@
+{
+ "exit": 0,
+ "contains": [
+  "escape =  a&lt;b&gt;&amp;&quot;&#39; &amp;copy; ⪢̸",
+  "back   =  a<b>&\"' &copy; ⪢̸",
+  "roundtrip ok =  TRUE"
+ ],
+ "_why": "v0.11.3 M1 的 std.sanitize 转义两成员。冻结的三个点:① 转义集恰为五个 ASCII 字符且 `'` 用数字引用 `&#39;`(旧渲染器兼容口径);② 非 ASCII(含多码点 ⪢̸)逐字节原样;③ roundtrip 定理 —— UNESCAPE(ESCAPE(s)) == s,含既有实体文本(`&copy;` 先被转义成 `&amp;copy;` 再解回来,不是被「认识」)。"
+}

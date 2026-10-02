@@ -1,0 +1,7 @@
+// [v0.11.3 M1] std.sanitize 转义 / 解码 roundtrip(W-06 / W-07 契约的动态面)
+IMPORT("wlwl:std.sanitize", ["HTML_ESCAPE", "HTML_UNESCAPE"]);
+LET(raw, "a<b>&\"' &copy; ⪢̸");
+LET(esc, HTML_ESCAPE(raw));
+PRINT("escape = ", esc);
+PRINT("back   = ", HTML_UNESCAPE(esc));
+PRINT("roundtrip ok = ", ==(HTML_UNESCAPE(esc), raw));

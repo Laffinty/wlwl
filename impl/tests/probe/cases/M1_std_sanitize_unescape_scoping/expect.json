@@ -1,0 +1,10 @@
+{
+ "exit": 0,
+ "contains": [
+  "full table  =  <&©AA⪢̸",
+  "legacy pref =  ©x ©z; &",
+  "numeric     =  — € � �",
+  "verbatim    =  &unknownent; &; 100% & up"
+ ],
+ "_why": "W-07 的口径钉子,四行各守一条:① **全表** —— `&copy;` / `&NotNestedGreaterGreater;`(双码点)正确解码,「只认本库转义集」的半表提案在这里变红;② **legacy 最长前缀** —— `&copyx` → `©x`、`&copyz;` → `©z;`(HTML5 文本行为),而 `&amp;` 分号形式优先;③ **数字引用的 WHATWG 映射** —— 0x80–0x9F 段走 windows-1252(`&#151;` → —、`&#128;` → €)、缺项 `&#129;` 与越界 `&#x110000;` → U+FFFD(不 panic);④ **未知实体原样保留**是 HTML5 容错,不是本库私货。"
+}

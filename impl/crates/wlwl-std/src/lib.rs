@@ -22,6 +22,11 @@
 //!     (v0.11.2 M2, stdlib §12)。全局内建 `UPPER` / `LOWER` **只做 ASCII**,
 //!     实测 `UPPER("straße")` = `STRAßE`;本模块走 Rust `char` 内置查表,
 //!     **零 Unicode 数据文件**、零第三方依赖。
+//!   - `wlwl:std.sanitize` — `HTML_ESCAPE` / `HTML_UNESCAPE` / `HTML_SANITIZE`
+//!     输出安全(旗舰特色功能,v0.11.3,stdlib §13)。**全员 R2、性能入契约**:
+//!     转义 / 解码 / 净化都要处理文档级输入,而解释器侧字符串与数组构建超线性
+//!     (D11-012/D12-009 已归档证据);实体表为 WHATWG 全表(生成器产出,
+//!     见 [`sanitize`])。`HTML_SANITIZE` 随 M3 落地。
 //!
 //! R1 语言层(纯 wlwl,`include_str!` 嵌入,eval 侧求值并缓存):
 //!   - `wlwl:std.collection` — 集合套件(§5;M3-1 起 16 成员纯 wlwl,M5 起
@@ -46,6 +51,7 @@ pub mod fs;
 pub mod io;
 pub mod json;
 pub mod kernels;
+pub mod sanitize;
 pub mod test_native;
 pub mod text;
 
@@ -269,6 +275,7 @@ pub fn resolve(path: &str) -> Option<StdBackend> {
         "wlwl:std.format" => &format::SPEC,
         "wlwl:std.encode" => &encode::SPEC,
         "wlwl:std.text" => &text::SPEC,
+        "wlwl:std.sanitize" => &sanitize::SPEC,
         _ => return None,
     };
     Some(StdBackend::Native(spec))
@@ -471,6 +478,7 @@ mod tests {
         &format::SPEC,
         &encode::SPEC,
         &text::SPEC,
+        &sanitize::SPEC,
     ];
 
     #[test]

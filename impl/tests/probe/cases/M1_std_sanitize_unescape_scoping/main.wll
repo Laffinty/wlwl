@@ -1,0 +1,6 @@
+// [v0.11.3 M1] std.sanitize 解码口径(W-07:全表 / legacy 最长前缀 / 数字引用)
+IMPORT("wlwl:std.sanitize", ["HTML_UNESCAPE"]);
+PRINT("full table  = ", HTML_UNESCAPE("&lt;&amp;&copy;&#65;&#x41;&NotNestedGreaterGreater;"));
+PRINT("legacy pref = ", HTML_UNESCAPE("&copyx &copyz; &amp"));
+PRINT("numeric     = ", HTML_UNESCAPE("&#151; &#128; &#129; &#x110000;"));
+PRINT("verbatim    = ", HTML_UNESCAPE("&unknownent; &; 100% & up"));
