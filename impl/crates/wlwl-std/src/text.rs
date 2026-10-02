@@ -21,7 +21,7 @@
 //! `Extended_Pictographic` / `UnicodeData` + `CompositionExclusions` +
 //! `EastAsianWidth`)。分批做意味着生成器要写三遍、审三遍、跟 Unicode
 //! 版本对齐三遍。合成一块做,是**一次**决定而不是四次。见
-//! `docs/plan/wlwl-v0.11.2-build-plan.md` §5.2 的裁决更新。
+//! `docs/history/20261002.md` §1(v0.11.2 构建计划归档件)§5.2 的裁决更新。
 
 use crate::{ModuleSpec, StdFn};
 use wlwl_error::ErrorCode;
