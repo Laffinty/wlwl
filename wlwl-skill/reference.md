@@ -209,6 +209,50 @@ below. Concurrent and OOP primitives are **global**, not under `wlwl:std.*`.
 The authoritative registry of every global builtin (106 entries) is
 `../docs/appendix_G.md`.
 
+### §9.2 `wlwl:std.text` (stdlib §12, v0.11.2)
+
+| Member | Notes |
+|---|---|
+| `TO_UPPER(s)` | Full-Unicode simple uppercase. **Length may change**: `ß` → `SS`. |
+| `TO_LOWER(s)` | Full-Unicode simple lowercase. Greek `Σ` → `ς` word-finally, `σ` medially. |
+
+**The global `UPPER` / `LOWER` are ASCII-only and this is not fixed** — §12
+deliberately keeps both rather than replacing a global (that would be
+breaking). `UPPER("straße")` = `STRAßE`, `UPPER("héllo")` = `HéLLO`. Pick
+`TO_UPPER` when non-ASCII must move; pick `UPPER` when you want the ASCII-only
+behaviour on purpose. There is no Unicode data file involved — the mapping
+comes from the host runtime's built-in `char` tables.
+
+Deferred and *not* stubbed: `NFC` / `NFD` / `GRAPHEME_COUNT` / `WIDTH`. They
+all need the same UCD bundle, so they are one decision, not four (§12.1). Do
+not expect `a == NFC(a)`: `"é"` as one codepoint and as `e` + U+0301 are
+**not** equal in wlwl, and that stays true until the bundle lands.
+
+### §9.3 `wlwl:std.str` string search (stdlib §6, v0.11.2)
+
+| Member | Notes |
+|---|---|
+| `INDEX_OF(s, sub, from?)` | 0-based **codepoint** index of the first `sub` at or after `from`; `-1` if none. `from` negative clamps to 0. |
+| `CONTAINS_SUB(s, sub)` | Whether `sub` occurs. |
+| `COUNT(s, sub)` | Already existed — non-overlapping occurrence count. |
+
+The index is a **codepoint** offset, same frame as `SUB` / `CHAR_AT`, so
+`SUB(s, INDEX_OF(s, x), LEN(x))` slices the hit straight back out. `from` is
+what makes "find every occurrence" a loop instead of a full rescan from 0
+each time.
+
+> **Empty `sub` is an error, not a wildcard.** All three members raise `E0030`
+> (`COUNT: sub must not be an empty string`, and likewise for the other two).
+> `CONTAINS_SUB(s, "")` is **not** `TRUE` and `INDEX_OF(s, "")` does **not**
+> return 0 — the three members share one rule, matching the pre-existing
+> `COUNT` behaviour.
+
+> *Measured on wlwl 0.11.2 (2026-10-02):* `INDEX_OF("hello","ll")` = 2;
+> `INDEX_OF("hello","zz")` = -1; `INDEX_OF("hello","l",3)` = 3;
+> `INDEX_OF("hello","l",-5)` = 2; `CONTAINS_SUB("hello","ell")` = TRUE;
+> `TO_UPPER("straße")` = `STRASSE` (length 7); `TO_UPPER("héllo")` = `HÉLLO`
+> while `UPPER("héllo")` = `HéLLO`.
+
 ### §9.1 `wlwl:std.encode` (stdlib §11, v0.11.2)
 
 All six members take/return `STRING` and work on its **UTF-8 bytes**.

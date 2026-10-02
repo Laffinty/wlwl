@@ -23,6 +23,24 @@ LET(_NEED_ARR, FUN((name, v), _NEED(name, "array", "ARRAY", v)));
 LET(_NEED_STR, FUN((name, v), _NEED(name, "string", "STRING", v)));
 LET(_NEED_INT, FUN((name, v), _NEED(name, "integer", "INTEGER", v)));
 
+// 元数窗口 [lo, hi]。与 collection.wll 同款;措辞也照抄 R2 的口径
+// (只报上限)。
+LET(_NEED_ARITY, FUN((name, args, lo, hi),
+    IF(||(<(LEN(args), lo), >(LEN(args), hi)),
+       _DIAG_E0022(_CAT(name, ": function expects ", STR(hi), " argument(s), got ", STR(LEN(args)))),
+       NULL)));
+
+// 被检索的子串。非空是**硬要求**,不是「空串退化成某种答案」——
+// 同模块的 `COUNT` 早就对空 sub 报 E0030(见下),这里必须同一个口径。
+// 两个新成员若各发明一条空串规则,`CONTAINS_SUB(s, "")` 到底是 TRUE
+// 还是报错就变成了读过哪份文档的事。
+LET(_NEED_SUB, FUN((name, v),
+    (LET(sub, _NEED_STR(name, v));
+     IF(==(sub, ""),
+        _DIAG_E0030(_CAT(name, ": sub must not be an empty string")),
+        NULL);
+     sub)));
+
 // ── JOIN(arr, sep) -> STRING ────────────────────────────────────────
 // 元素经 STR 渲染后以 sep 连接;空数组得 ""。
 // 与 collection.JOIN 同语义(那边 §5 有同名成员),但 `std.str` 的契约在
@@ -77,11 +95,52 @@ LET(CHAR_AT, FUN((s, i),
 //   COUNT("aaaa", "aa") → SPLIT 得 3 段 → 2(重叠实现会给 3)✓
 LET(COUNT, FUN((s, sub),
     (LET(str, _NEED_STR("COUNT", s));
-     LET(needle, _NEED_STR("COUNT", sub));
-     IF(==(needle, ""),
-        _DIAG_E0030("COUNT: sub must not be an empty string"),
-        NULL);
+     LET(needle, _NEED_SUB("COUNT", sub));
      -(LEN(SPLIT(str, needle)), 1))));
+
+// ── INDEX_OF(s, sub, from?) -> INTEGER ────────────────────────────────
+// sub 在 s 中**首次**出现的码点下标(0 起),无则 -1;from 把起点推到后面,
+// 于是「找出全部出现位置」可以写成反复调用的循环。
+//
+// 为什么要有 from:`COUNT` 数得出个数,却说不出**在哪** —— 这是本模块
+// v0.11.2 之前唯一真正缺的能力(全局 `INDEX` 只吃数组,`FIND` 是
+// `std.collection` 的数组成员)。没有 from 就只能从 0 开始反复扫全文,
+// 而那正是 O(n·m)。
+//
+// 下标是**码点**下标不是字节下标,与 `CHAR_AT` / `SUB` / `CODEPOINTS`
+// 同一口径;拿它去 `SUB(s, i, n)` 可以直接切出那段子串。
+//
+// 空 sub 报 E0030,与 `COUNT` 同口径(见 `_NEED_SUB`)。
+// 负 from 一律钳到 0 —— 本成员按「前向检索」定义,负下标那套是
+// `SUB` 的从尾计数,混进来会让 from 语义依赖调用方记得两件事。
+LET(INDEX_OF, FUN((*args),
+    (_NEED_ARITY("INDEX_OF", args, 2, 3);
+     LET(str, _NEED_STR("INDEX_OF", AT(args, 0, NULL)));
+     LET(needle, _NEED_SUB("INDEX_OF", AT(args, 1, NULL)));
+     LET MUT(from, 0);
+     IF(>(LEN(args), 2),
+        (LET(f, _NEED_INT("INDEX_OF", AT(args, 2, NULL)));
+         SET(from, IF(<(f, 0), 0, f))));
+     // `SUB` 越界会钳制,故 i 接近末尾时取到的短串自然 != needle,循环
+     // 不需要额外的边界判断。提前退出靠 `found` 哨兵(-1 表示还没找到)。
+     LET MUT(found, -1);
+     LET MUT(i, from);
+     WHILE(&&(<(i, LEN(str)), ==(found, -1)),
+         (IF(==(SUB(str, i, LEN(needle)), needle),
+            SET(found, i),
+            SET(i, +(i, 1)))));
+     found)));
+
+// ── CONTAINS_SUB(s, sub) -> BOOLEAN ────────────────────────────────────
+// `CONTAINS` 只吃数组(全局内建 §10.4),这里是字符串的同名能力。
+// 定义成「`INDEX_OF` 找到位置了吗」而不是另写一遍扫描:少一处口径要同步,
+// 也少一处将来要改的地方。
+//
+// 空 sub 报 E0030,与 `COUNT` / `INDEX_OF` 同口径。
+LET(CONTAINS_SUB, FUN((s, sub),
+    (LET(str, _NEED_STR("CONTAINS_SUB", s));
+     LET(needle, _NEED_SUB("CONTAINS_SUB", sub));
+     >(INDEX_OF(str, needle), -1))));
 
 // ── QUOTE(s) -> STRING(M1 落地,M3 不动)─────────────────────────────
 LET(QUOTE, FUN((s), (
@@ -103,6 +162,10 @@ LET(QUOTE, FUN((s), (
 )));
 
 // EXPORT 顺序跟随标准库规范 §6 表格的行序(JOIN / SPLIT_LINES / CHAR_AT /
-// COUNT / QUOTE);附录 A 镜像跟随本顺序。成员**集合**由
-// `wlwl-eval/tests/str_contract.rs` 对 §6 表格做外部对照。
-EXPORT(["JOIN", "SPLIT_LINES", "CHAR_AT", "COUNT", "QUOTE"]);
+// COUNT / QUOTE / INDEX_OF / CONTAINS_SUB);附录 A 镜像跟随本顺序。成员
+// **集合**由 `wlwl-eval/tests/str_math_contract.rs` 对 §6 表格做外部对照。
+//
+// v0.11.2 M2 追加的 `INDEX_OF` / `CONTAINS_SUB` 接在末尾,不插在 `COUNT`
+// 旁边 —— 插进去会让契约测试里那份「点名清单」与 §5/§7 的行序约定都要跟着
+// 挪,而顺序本身不承载语义(只承载「与规范表同序」这一条)。
+EXPORT(["JOIN", "SPLIT_LINES", "CHAR_AT", "COUNT", "QUOTE", "INDEX_OF", "CONTAINS_SUB"]);

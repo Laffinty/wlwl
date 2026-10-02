@@ -222,8 +222,9 @@ wlwl 数组不可变,`PUSH` 每次复制整个数组。于是语言规范 §6.6 
 纯 wlwl 实现。只补全局内建(语言规范 §10.5)没有的能力;**不重导出**任何
 全局内建。索引口径与 `SUB` 一致(码点;起点同 `SUB` 的 `start` —— 含
 **负索引自尾部计数**,所以 `CHAR_AT("abc", -1)` 是 `"c"`,不是越界)。
-落地状态:本章成员已随 M3-2 全部落地(§6 表格即当前成员面;附录 A 镜像
-由 `gen-appendix-a` 从实现生成并由 `stdlib_appendix_a_sync` 锁)。
+落地状态:本章成员已随 M3-2 全部落地;`INDEX_OF` / `CONTAINS_SUB` 随
+v0.11.2 M2 追加(§6 表格即当前成员面;附录 A 镜像由 `gen-appendix-a` 从实现
+生成并由 `stdlib_appendix_a_sync` 锁)。
 `SPLIT_LINES` 的四条边界逐条见下表;`COUNT` 的非重叠口径用一次
 `SPLIT(s, sub)` 实现 —— 切成 n+1 段则非重叠出现次数正是 n。
 
@@ -234,6 +235,24 @@ wlwl 数组不可变,`PUSH` 每次复制整个数组。于是语言规范 §6.6 
 | `CHAR_AT(s, i) -> STRING` | 取第 `i` 个码点,等价于 `SUB(s, i, 1)` | 越界同 `SUB` |
 | `COUNT(s, sub) -> INTEGER` | `sub` 的非重叠出现次数 | `sub` 为空串:`E0030` |
 | `QUOTE(s) -> STRING` | 双引号包裹;内部 `"` 与 `\` 转义为 `\"`、`\\`;`\n`、`\t`、`\r` 分别转义;其余字符原样 | — |
+| `INDEX_OF(s, sub, from?) -> INTEGER` | `sub` 首次出现的**码点**下标(0 起),无则 `-1`;`from` 把起点推到后面(负值钳到 0),默认 0 | `sub` 为空串:`E0030` |
+| `CONTAINS_SUB(s, sub) -> BOOLEAN` | `sub` 是否出现 | `sub` 为空串:`E0030` |
+
+> **`COUNT` 早就在,别再加一个 `COUNT_SUB`**(v0.11.2 M2 实测更正)。起草
+> v0.11.2 计划时把「标准库无字符串检索」记成 GAP-3,依据是探针
+> `PRINT(FIND("hello","el"))` 报 `E0020` —— 但 `FIND` 是 `std.collection`
+> 的**数组**成员,探的是错的名字。实测 `std.str::COUNT` 早已给出非重叠计数
+> (`COUNT("aaa","a")` = 3、`COUNT("aaaa","aa")` = 2),而且**空 `sub` 报
+> `E0030`**。真正缺的只有**位置**与**布尔判定**两件事,故本表只加两个成员。
+>
+> 空 `sub` 的口径因此统一成「报错」:`INDEX_OF` 与 `CONTAINS_SUB` 沿用
+> `COUNT` 的既有规则,而不是各自发明一条(比如「空串恒匹配」)。同一模块里
+> 三个成员对空串给三种答案,调用方只能靠「读过哪份文档」来判断。
+>
+> 下标是**码点**不是字节,与 `CHAR_AT` / `SUB` / `CODEPOINTS` 同口径,
+> 拿到后可直接 `SUB(s, i, n)` 切出那段。`from` 存在的理由:没有它就只能从 0
+> 开始反复扫全文找后续出现,那是 O(n·m);`INDEX_OF` 是本模块 v0.11.2 之前
+> 唯一真正缺的能力(全局 `INDEX` 只吃数组)。
 
 ## 7 `std.math` — 数学基础(混合,v0.11 新增)
 
@@ -403,13 +422,55 @@ base64 编码的期望值取自 RFC 4648 §10 的表,**不复制实现输出**:
 > (U+0080–U+07FF)**永远**产生不出 `+/`(首 6 位恒为 `110xxx`,落在索引
 > 48–55),必须从 3 字节起找。起草本节时手算过一次,算错了,以参考实现为准。
 
-## 12 演进方向(非规范性)
+## 12 `std.text` — Unicode 大小写(R2,v0.11.2 新增)
+
+**全局内建 `UPPER` / `LOWER` 只做 ASCII 映射**(语言规范 §10.5),实测
+`UPPER("straße")` = `STRAßE`、`UPPER("héllo")` = `HéLLO` —— 非 ASCII 字符
+原样穿过。本命名空间提供**完整 Unicode 简单大小写映射**。
+
+零 Unicode 数据文件:Rust 的 `str::to_uppercase` / `to_lowercase` 直接走
+`char` 实现内置的 `Uppercase` / `Lowercase` 查表(含 `ß` → `SS`、希腊
+final sigma、土耳其无点 i / 点上 i 这类特殊映射)。ADR-0022 的零第三方依赖
+画像因此不变。
+
+| 签名 | 说明 | 失败 |
+|------|------|------|
+| `TO_UPPER(s) -> STRING` | 完整 Unicode 大写映射;**长度可能变**(`ß` → `SS`) | — |
+| `TO_LOWER(s) -> STRING` | 完整 Unicode 小写映射;希腊 `Σ` 词尾得 `ς`、词中得 `σ` | — |
+
+**与全局 `UPPER` / `LOWER` 的关系**:两个并存,本批**不替换**全局内建。
+替换是 breaking(既有程序里非 ASCII 字符的大小写行为会变),不在本批范围。
+调用方按需要显式选:`UPPER` 快且只管 ASCII,`TO_UPPER` 全 Unicode。
+
+### 12.1 为什么只有两个成员(其余推迟的理由)
+
+原计划还有 `NFC` / `NFD` / `GRAPHEME_COUNT` / `WIDTH`,**全部推迟**。它们
+**共用同一捆 UCD 数据**:
+
+| 成员 | 需要的数据 |
+|---|---|
+| `NFC` / `NFD` | `UnicodeData`(canonical decomposition)+ `CompositionExclusions` |
+| `GRAPHEME_COUNT` | `GraphemeBreakProperty` + `Extended_Pictographic` |
+| `WIDTH` | `EastAsianWidth` |
+
+分批做意味着生成器写三遍、审三遍、跟 Unicode 版本对齐三遍。合成一块做是
+**一次**决定。§13 的演进方向里已把它们合并成一条。
+
+**明确不做半张表**:只覆盖 Latin-1 的 NFC 比没有 NFC 更糟 —— 它会让
+`==(NFC(a), NFC(b))` 在部分输入上返回 TRUE,调用方据此建索引,然后在真正的
+CJK 或组合字符上炸。
+
+## 13 演进方向(非规范性)
 
 - `std.ai` / `std.agent` 降级为官方包,移出 `wlwl:std.*`(业界先例:Rust /
   Julia 的 std 小核心原则);
 - 新 R2 候选命名空间:`std.net`、`std.process`、`std.env`、`std.time`;
 - `std.math` 超越函数族(sin/cos/tan/exp/log);
-- `std.str` 完整 Unicode case fold 与字素簇;
+- **UCD 数据依赖的成员合成一块做**(v0.11.2 M2 裁决):`std.text` 的
+  `NFC` / `NFD` / `GRAPHEME_COUNT` / `WIDTH` 共用同一捆
+  `UnicodeData` + `CompositionExclusions` + `GraphemeBreakProperty` +
+  `Extended_Pictographic` + `EastAsianWidth`,分批做要写三遍生成器。
+  随附:决定做的时候必须同时定「跟哪个 Unicode 版本」与「半张表怎么办」;
 - R1 预编译快照(替代启动解析);
 - 全局内建弃用别名(`DEL` / `POP` / `OR_DIE`)到期移除。
 
@@ -431,8 +492,9 @@ base64 编码的期望值取自 RFC 4648 §10 的表,**不复制实现输出**:
 | `std.json` | `PARSE` `STRINGIFY` | R2 | v0.10 及以前 |
 | `std.format` | `FORMAT` | R2 | v0.10 及以前 |
 | `std.encode` | `BASE64_ENCODE` `BASE64_DECODE` `HEX_ENCODE` `HEX_DECODE` `URL_ENCODE` `URL_DECODE` | R2 | v0.11.2 |
+| `std.text` | `TO_UPPER` `TO_LOWER` | R2 | v0.11.2 |
 | `std.collection` | `MAP` `FILTER` `REDUCE` `SORT` `SORT_BY` `ZIP` `RANGE` `ANY` `ALL` `FIND` `ENUMERATE` `TAKE` `DROP` `FLAT` `UNIQ` `GROUP_BY` `JOIN` | 混合(R1 门面 + R2 `RANGE`) | v0.10 及以前(成员)/ v0.11(R1 重写,M5 起 RANGE 沉 R2) |
-| `std.str` | `JOIN` `SPLIT_LINES` `CHAR_AT` `COUNT` `QUOTE` | R1 | v0.11 |
+| `std.str` | `JOIN` `SPLIT_LINES` `CHAR_AT` `COUNT` `QUOTE` `INDEX_OF` `CONTAINS_SUB` | R1 | v0.11 / INDEX_OF、CONTAINS_SUB 于 v0.11.2 |
 | `std.math` | `ABS` `MIN` `MAX` `FLOOR` `CEIL` `ROUND` `SQRT` `POW` `CLAMP` `PI` `E` | 混合 | v0.11 |
 | `std.test` | `TEST` `ASSERT` `ASSERT_EQ` `ASSERT_NEQ` `EXPECT_ERR` `RUN_TESTS` | 混合 | v0.10 及以前(成员)/ v0.11(混合化) |
 | `std.ai` | `ASK` `EMBED` `COMPLETE` `ASK_STREAM` `ASK_ALL` | R2 | v0.10 及以前 |

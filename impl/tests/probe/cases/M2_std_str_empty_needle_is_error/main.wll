@@ -1,0 +1,10 @@
+IMPORT("wlwl:std.str", ["INDEX_OF", "COUNT", "CONTAINS_SUB"]);
+
+// 空 needle 是**硬错**,不是「空串恒匹配」。
+//
+// 起草 v0.11.2 计划时本模块要加的三个成员里,`INDEX_OF` 与 `CONTAINS_SUB`
+// 的空串规则我原本打算各发明一条(一个返回 `from`、一个返回 TRUE)。
+// 实测同模块的 `COUNT` 早就报 E0030,于是改成三个成员同一口径。
+// 三条各跑一次:每一次都是独立诊断,退出码 1。
+PRINT("before");
+COUNT("abc", "");

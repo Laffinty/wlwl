@@ -215,6 +215,92 @@ const STR_CASES: &[Case] = &[
         src: r#"IMPORT("wlwl:std.str", ["SPLIT"]); NULL"#,
         expect: "!E0023",
     },
+    // ── [v0.11.2 M2] INDEX_OF ──
+    Case {
+        name: "index_of_first_occurrence",
+        src: r#"IMPORT("wlwl:std.str", ["INDEX_OF"]); INDEX_OF("hello", "ll")"#,
+        expect: "2",
+    },
+    Case {
+        name: "index_of_miss_is_minus_one",
+        src: r#"IMPORT("wlwl:std.str", ["INDEX_OF"]); INDEX_OF("hello", "zz")"#,
+        expect: "-1",
+    },
+    Case {
+        name: "index_of_respects_from",
+        src: r#"IMPORT("wlwl:std.str", ["INDEX_OF"]); INDEX_OF("hello", "l", 3)"#,
+        expect: "3",
+    },
+    // from 越过末尾:不是 0 也不是越界异常,就是「没找到」。
+    Case {
+        name: "index_of_from_past_end",
+        src: r#"IMPORT("wlwl:std.str", ["INDEX_OF"]); INDEX_OF("hello", "l", 99)"#,
+        expect: "-1",
+    },
+    // 负 from 钳到 0(本成员按前向检索定义,不继承 SUB 的从尾计数)
+    Case {
+        name: "index_of_negative_from_clamps_to_zero",
+        src: r#"IMPORT("wlwl:std.str", ["INDEX_OF"]); INDEX_OF("hello", "l", -5)"#,
+        expect: "2",
+    },
+    // needle 比 s 长:SUB 越界钳制,取到的短串自然 != needle
+    Case {
+        name: "index_of_needle_longer_than_haystack",
+        src: r#"IMPORT("wlwl:std.str", ["INDEX_OF"]); INDEX_OF("hi", "hello")"#,
+        expect: "-1",
+    },
+    // 下标是**码点**不是字节:é 算一个
+    Case {
+        name: "index_of_index_is_codepoint_based",
+        src: r#"IMPORT("wlwl:std.str", ["INDEX_OF"]); INDEX_OF("héllo", "llo")"#,
+        expect: "2",
+    },
+    // 用它切回来:证明下标与 SUB 同一坐标系
+    Case {
+        name: "index_of_round_trips_through_sub",
+        src: r#"IMPORT("wlwl:std.str", ["INDEX_OF"]); SUB("héllo", INDEX_OF("héllo", "llo"), 3)"#,
+        expect: "llo",
+    },
+    // 空 needle 是硬错,与 COUNT 同口径(§6 注)
+    Case {
+        name: "index_of_empty_needle_is_e0030",
+        src: r#"IMPORT("wlwl:std.str", ["INDEX_OF"]); INDEX_OF("abc", "")"#,
+        expect: "!E0030 INDEX_OF: sub must not be an empty string",
+    },
+    // COUNT 早就拒空串 —— 上表已有 `count_empty_needle_is_e0030` 锁住那条消息,
+    // M2 把三处内联的检查收成 `_NEED_SUB` 助手后**该用例仍绿**(消息逐字不变)。
+    // 这里不再重复一条,避免同表重名。
+    Case {
+        name: "index_of_arity_is_e0022",
+        src: r#"IMPORT("wlwl:std.str", ["INDEX_OF"]); INDEX_OF("a")"#,
+        expect: "!E0022 INDEX_OF: function expects 3 argument(s), got 1",
+    },
+    Case {
+        name: "index_of_non_string_is_e0030",
+        src: r#"IMPORT("wlwl:std.str", ["INDEX_OF"]); INDEX_OF(5, "a")"#,
+        expect: "!E0030 INDEX_OF: expected string, got integer",
+    },
+    // ── [v0.11.2 M2] CONTAINS_SUB ──
+    Case {
+        name: "contains_sub_true",
+        src: r#"IMPORT("wlwl:std.str", ["CONTAINS_SUB"]); CONTAINS_SUB("hello", "ell")"#,
+        expect: "TRUE",
+    },
+    Case {
+        name: "contains_sub_false",
+        src: r#"IMPORT("wlwl:std.str", ["CONTAINS_SUB"]); CONTAINS_SUB("hello", "xyz")"#,
+        expect: "FALSE",
+    },
+    Case {
+        name: "contains_sub_needle_longer_than_haystack",
+        src: r#"IMPORT("wlwl:std.str", ["CONTAINS_SUB"]); CONTAINS_SUB("hi", "hello")"#,
+        expect: "FALSE",
+    },
+    Case {
+        name: "contains_sub_empty_needle_is_e0030",
+        src: r#"IMPORT("wlwl:std.str", ["CONTAINS_SUB"]); CONTAINS_SUB("abc", "")"#,
+        expect: "!E0030 CONTAINS_SUB: sub must not be an empty string",
+    },
     Case {
         name: "str_does_not_re_export_sub",
         src: r#"IMPORT("wlwl:std.str", ["SUB"]); NULL"#,
@@ -717,8 +803,19 @@ fn str_member_set_matches_the_spec_table() {
     let spec = members_of(&section(6, 7));
     let impls = r1_exports("wlwl:std.str");
     assert_member_set("std.str §6", &spec, &impls);
-    assert_eq!(impls.len(), 5, "§6 declares 5 members");
-    for n in ["JOIN", "SPLIT_LINES", "CHAR_AT", "COUNT", "QUOTE"] {
+    assert_eq!(impls.len(), 7, "§6 declares 7 members");
+    for n in [
+        "JOIN",
+        "SPLIT_LINES",
+        "CHAR_AT",
+        "COUNT",
+        "QUOTE",
+        // [v0.11.2 M2] 追加这两个时,原计划还写了第三个 `COUNT_SUB`。
+        // 实测 `COUNT` 早就是非重叠子串计数(§6 表里一直有),`COUNT_SUB`
+        // 会是重复成员;真正的缺口只有**位置**与**布尔判定**。
+        "INDEX_OF",
+        "CONTAINS_SUB",
+    ] {
         assert!(
             spec.iter().any(|m| m == n),
             "§6 extractor missed `{n}`: {spec:?}"

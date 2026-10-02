@@ -38,6 +38,42 @@ Spec: **wlwl-spec-v0.11 不变**。本批**不改语言语义** —— 只加标
     `tests/encode_contract.rs` 39 条用例,**期望值取自 RFC 4648 §10 / RFC 3986 §2,
     不是实现输出**;probe +2(144 → 148)。
 
+### Added
+- **`wlwl:std.text`(新命名空间,R2,2 成员)** —— 完整 Unicode 简单大小写映射。
+  **零 Unicode 数据文件**:走 Rust `char` 实现内置的 `Uppercase` / `Lowercase`
+  查表,ADR-0022 的零第三方依赖画像不变。
+  - 修的是一个**静默错误结果**:全局 `UPPER` / `LOWER` 只做 ASCII,实测
+    `UPPER("straße")` = `STRAßE`、`UPPER("héllo")` = `HéLLO` —— 非 ASCII 原样
+    穿过。大小写折叠常被当排序键 / 去重键用,错误的折叠比可见的失败更难查。
+  - **长度会变**:`ß` → `SS`(`"straße"` 6 → 7);希腊 `Σ` 词尾得 `ς`、词中得 `σ`;
+    土耳其 `İ` 小写得 `i` + U+0307。
+  - **全局 `UPPER` / `LOWER` 不动**(stdlib §12 明写「两个并存」)。替换全局内建
+    是 breaking,不在本批范围。契约测试专门钉了它们当前仍是 ASCII-only,
+    免得下一个人看到缺陷就去改全局。
+  - `NFC` / `NFD` / `GRAPHEME_COUNT` / `WIDTH` **全部推迟**(§12.1):它们共用
+    同一捆 UCD 数据(`UnicodeData` + `CompositionExclusions` +
+    `GraphemeBreakProperty` + `Extended_Pictographic` + `EastAsianWidth`),
+    分批做要写三遍生成器、审三遍、对齐三遍。**明确不做半张表** —— 只覆盖
+    Latin-1 的 NFC 比没有 NFC 更糟,它会让 `==(NFC(a), NFC(b))` 在部分输入上
+    返回 TRUE,调用方据此建索引然后在 CJK 上炸。
+- **`wlwl:std.str` 加 `INDEX_OF` 与 `CONTAINS_SUB`** —— 补上 v0.11.2 之前
+  `std.str` 唯一真正缺的能力:**子串位置**。全局 `INDEX` 只吃数组,`FIND` 是
+  `std.collection` 的数组成员。下标是**码点**(与 `SUB` / `CHAR_AT` 同一
+  坐标系),`from` 让「找出全部出现」成为循环而非每次从 0 重扫全文。
+  - ⚠ **计划里的第三个成员 `COUNT_SUB` 是重复的,已撤**。起草 v0.11.2 计划时把
+    「标准库无字符串检索」记成 GAP-3,依据是探针 `PRINT(FIND("hello","el"))`
+    报 `E0020` —— 但 `FIND` 是**数组**成员,探错了名字。实测 `std.str::COUNT`
+    早就是非重叠子串计数(`COUNT("aaa","a")` = 3、`COUNT("aaaa","aa")` = 2)。
+  - **空 `sub` 报 `E0030`,三个成员同一口径**。原本打算给两个新成员各发明一条
+    空串规则(一个返回 `from`、一个返回 TRUE);实测 `COUNT` 早就报 E0030,故
+    统一。同一模块三个成员对空串给三种答案,调用方只能靠「读过哪份文档」判断。
+  - `str.wll` 的注入表新增 `_DIAG_E0022`(`INDEX_OF` 是变长元数成员,需要带
+    函数名的 E0022 措辞),被 v0.11.2 W-02 的新反向守卫验到确有调用点。
+
+### Changed
+- `std.str` 门面里三处内联的「空 sub」检查收进 `_NEED_SUB` 助手,`COUNT` 的
+  消息**逐字不变**(既有契约用例 `count_empty_needle_is_e0030` 仍绿)。
+
 ### Fixed
 - **`E0014`(`YIELD used outside a step context`)的 span 指向文件首**(复核 N-5):
   实测第 3 行的 `YIELD();` 被报成 `1:1`,用户无从定位。`Signal::Yield` 不带 span

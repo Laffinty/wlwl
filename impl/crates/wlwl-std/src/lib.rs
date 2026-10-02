@@ -18,6 +18,10 @@
 //!   - `wlwl:std.format` — `FORMAT` + the shared template grammar (§15.8 / §10.6, Phase B5)
 //!   - `wlwl:std.encode` — `BASE64_ENCODE` / `BASE64_DECODE` / `HEX_ENCODE` /
 //!     `HEX_DECODE` / `URL_ENCODE` / `URL_DECODE` (v0.11.2 M1, stdlib §11)
+//!   - `wlwl:std.text` — `TO_UPPER` / `TO_LOWER`,完整 Unicode 简单大小写映射
+//!     (v0.11.2 M2, stdlib §12)。全局内建 `UPPER` / `LOWER` **只做 ASCII**,
+//!     实测 `UPPER("straße")` = `STRAßE`;本模块走 Rust `char` 内置查表,
+//!     **零 Unicode 数据文件**、零第三方依赖。
 //!
 //! R1 语言层(纯 wlwl,`include_str!` 嵌入,eval 侧求值并缓存):
 //!   - `wlwl:std.collection` — 集合套件(§5;M3-1 起 16 成员纯 wlwl,M5 起
@@ -43,6 +47,7 @@ pub mod io;
 pub mod json;
 pub mod kernels;
 pub mod test_native;
+pub mod text;
 
 use wlwl_error::{WlwlError, WlwlResult};
 use wlwl_value::type_name;
@@ -145,6 +150,7 @@ pub static LANG_SOURCES: &[StdSource] = &[
         source: include_str!("../wl/std/str.wll"),
         kernels: &[
             ("_KIND", kernels::kernel_kind as StdFn),
+            ("_DIAG_E0022", kernels::kernel_diag_e0022 as StdFn),
             ("_DIAG_E0030", kernels::kernel_diag_e0030 as StdFn),
         ],
     },
@@ -245,6 +251,7 @@ pub fn resolve(path: &str) -> Option<StdBackend> {
         "wlwl:std.agent" => &agent::SPEC,
         "wlwl:std.format" => &format::SPEC,
         "wlwl:std.encode" => &encode::SPEC,
+        "wlwl:std.text" => &text::SPEC,
         _ => return None,
     };
     Some(StdBackend::Native(spec))
@@ -442,6 +449,7 @@ mod tests {
         &agent::SPEC,
         &format::SPEC,
         &encode::SPEC,
+        &text::SPEC,
     ];
 
     #[test]

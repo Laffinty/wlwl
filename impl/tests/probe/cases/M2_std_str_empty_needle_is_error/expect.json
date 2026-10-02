@@ -1,0 +1,11 @@
+{
+ "exit": 1,
+ "contains": [
+  "E0030",
+  "COUNT: sub must not be an empty string"
+ ],
+ "not_contains": [
+  "after"
+ ],
+ "_why": "v0.11.2 M2。用例只跑 COUNT,不是因为 INDEX_OF / CONTAINS_SUB 不重要,而是每次诊断都终止运行 —— 一个程序只能观察**第一条**。三条各有一条契约用例(见 tests/str_math_contract.rs 的 count_empty_needle_is_e0030 / index_of_empty_needle_is_e0030 / contains_sub_empty_needle_is_e0030),它们断言的是**消息逐字相同**,这就是「同一口径」的可执行形式。留这条在 probe 层是因为它是 v0.11.2 之前就存在、而 M2 把三处内联检查收进 _NEED_SUB 助手的行为 —— 收完之后消息必须一个字都没变。"
+}

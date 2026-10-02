@@ -590,7 +590,8 @@ Categories (the per-namespace tables live in `reference.md` §9 and §25):
 - **`wlwl:std.json`** (§10.8): `STRINGIFY`, `PARSE`.
 - **`wlwl:std.encode`** (stdlib §11, **v0.11.2 new**): `BASE64_ENCODE`, `BASE64_DECODE`, `HEX_ENCODE`, `HEX_DECODE`, `URL_ENCODE`, `URL_DECODE` — see `reference.md` §9.1. Encoding never fails; **decode failures are `ERR` values** with `kind = "DecodeError"`, not native diagnostics. Arity/type mistakes are `E0022`/`E0030`. `URL_DECODE` keeps `+` literal (RFC 3986, not form encoding); `BASE64_DECODE` accepts **both** alphabets and ignores CR/LF.
 - **`wlwl:std.fs`** (§10.8): `WRITE_FILE`, `READ_FILE`, `EXISTS`.
-- **`wlwl:std.str`** (stdlib §6, **v0.11 new**): `JOIN`, `SPLIT_LINES`, `CHAR_AT`, `COUNT`, `QUOTE` — see `reference.md` §25.
+- **`wlwl:std.str`** (stdlib §6, **v0.11 new**): `JOIN`, `SPLIT_LINES`, `CHAR_AT`, `COUNT`, `QUOTE` — see `reference.md` §25. `INDEX_OF`, `CONTAINS_SUB` added v0.11.2 (`INDEX_OF` is the only way to get a substring **position** — global `INDEX` is array-only). All three reject an **empty** `sub` with `E0030`.
+- **`wlwl:std.text`** (stdlib §12, **v0.11.2 new**): `TO_UPPER`, `TO_LOWER` — full-Unicode simple case mapping, **no Unicode data files** (Rust's `char` tables). The global `UPPER` / `LOWER` are **ASCII-only and stay that way**: `UPPER("straße")` = `STRAßE`. Use `TO_UPPER` when non-ASCII must move. Length can change (`ß` → `SS`); Greek `Σ` lowercases to `ς` word-finally and `σ` medially.
 - **`wlwl:std.math`** (stdlib §7, **v0.11 new**): `ABS`, `MIN`, `MAX`, `FLOOR`, `CEIL`, `ROUND`, `SQRT`, `POW`, `CLAMP`, `PI`, `E` — see `reference.md` §25.
 - **`wlwl:std.test`** (§10.10): `TEST`, `ASSERT`, `ASSERT_EQ`, `ASSERT_NEQ`, `EXPECT_ERR` (**1 argument**), `RUN_TESTS` — all import-gated, none is a global. ⚠ **`ASSERT` changed in v0.11** — see `reference.md` §25.
 - **`wlwl:std.ai` / `wlwl:std.agent`** (§10.11): `TASK`, `MODEL`, `TOOL`, `CALL_TOOL`, `CONTEXT`.

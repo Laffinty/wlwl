@@ -64,7 +64,7 @@ use std::time::{Duration, Instant};
 /// 驱动据此把不可见字节变成夹具里一个可审的声明。两条合起来覆盖那三类输入
 /// 规范所辖的三个文件(源文件 / `wlwl.toml` / `main.wll.sig`);`wlwl.lock` 不在
 /// 其中,理由见 §9.4(锁文件在规范外)。
-const EXPECTED_CASE_COUNT: usize = 148;
+const EXPECTED_CASE_COUNT: usize = 150;
 
 /// 单个 case 的上限,与 `probe.py` 的 `timeout=60` 同义。
 const CASE_TIMEOUT: Duration = Duration::from_secs(60);

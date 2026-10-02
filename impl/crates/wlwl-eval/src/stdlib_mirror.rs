@@ -31,6 +31,7 @@ const NAMESPACE_META: &[(&str, &str, &str)] = &[
     ("wlwl:std.json", "R2", "v0.10 及以前"),
     ("wlwl:std.format", "R2", "v0.10 及以前"),
     ("wlwl:std.encode", "R2", "v0.11.2"),
+    ("wlwl:std.text", "R2", "v0.11.2"),
     (
         "wlwl:std.collection",
         // [v0.11 M5] 16 成员 R1 + `RANGE` 归 R2。层归属变更不算破坏性变更
@@ -40,7 +41,14 @@ const NAMESPACE_META: &[(&str, &str, &str)] = &[
         "混合(R1 门面 + R2 `RANGE`)",
         "v0.10 及以前(成员)/ v0.11(R1 重写,M5 起 RANGE 沉 R2)",
     ),
-    ("wlwl:std.str", "R1", "v0.11"),
+    (
+        "wlwl:std.str",
+        "R1",
+        // [v0.11.2 M2] `INDEX_OF` / `CONTAINS_SUB` 追加。与 `std.collection`
+        // 同款口径:层与成员面不变,「引入」列记的是**命名空间**的引入版本,
+        // 新成员的版本写在成员表与 CHANGELOG 里。
+        "v0.11 / INDEX_OF、CONTAINS_SUB 于 v0.11.2",
+    ),
     ("wlwl:std.math", "混合", "v0.11"),
     ("wlwl:std.test", "混合", "v0.10 及以前(成员)/ v0.11(混合化)"),
     ("wlwl:std.ai", "R2", "v0.10 及以前"),

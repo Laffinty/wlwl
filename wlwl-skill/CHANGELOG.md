@@ -22,6 +22,13 @@ and is authoritative).
 - **`wlwl:std.encode` 收录**(`reference.md` §9.1、`SKILL.md` 指针表):六个成员、
   失败口径(`DecodeError` 的 ERR 值 vs `E0022`/`E0030` 原生诊断)、`+` 不折成
   空格、base64 解码两张字母表都收 —— 四条都是容易记反的地方。
+- **`wlwl:std.text` 收录**(`reference.md` §9.2):`TO_UPPER` / `TO_LOWER`,完整
+  Unicode 简单大小写。**全局 `UPPER` / `LOWER` 仍是 ASCII-only 且本批不动**
+  —— 替换全局内建是 breaking。`ß` → `SS` 会让长度变化;希腊 `Σ` 词尾得 `ς`。
+- **`wlwl:std.str` 的字符串检索**(`reference.md` §9.3):`INDEX_OF(s, sub, from?)`
+  与 `CONTAINS_SUB(s, sub)`。下标是**码点**,与 `SUB` 同一坐标系,拿到后可直接
+  `SUB` 切回。**空 `sub` 报 `E0030`,不是恒匹配** —— 与同模块既有的 `COUNT`
+  同一口径。
 
 ### 纪律
 - **未跑过的代码块就是假设**:引用模块成员的片段必须自带 `IMPORT`(名字是全局

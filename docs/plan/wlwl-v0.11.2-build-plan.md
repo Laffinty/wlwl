@@ -489,57 +489,76 @@ NFC vs NFD 判不相等(GAP-2)会直接咬到 macOS 文件名(底层是 NFD)与�
 
 | 成员 | 签名 | 语义 | 实现成本 |
 |---|---|---|---|
-| `TO_UPPER` | `(s) -> STRING` | **完整 Unicode** 简单大小写映射 | **近乎零** |
-| `TO_LOWER` | `(s) -> STRING` | 同上 | **近乎零** |
-| `NFC` / `NFD` | `(s) -> STRING` | 规范化 | **需要表 —— 见下方裁决** |
-| `GRAPHEME_COUNT` | `(s) -> INTEGER` | 字素簇数(用户感知的字符数) | 中 |
-| `WIDTH` | `(s) -> INTEGER` | 终端显示宽度(CJK 全角 = 2) | 中 |
+| `TO_UPPER` | `(s) -> STRING` | **完整 Unicode** 简单大小写映射 | **零** |
+| `TO_LOWER` | `(s) -> STRING` | 同上 | **零** |
+| `NFC` / `NFD` | `(s) -> STRING` | 规范化 | **需要表 —— 已裁决推迟** |
+| `GRAPHEME_COUNT` | `(s) -> INTEGER` | 字素簇数 | **需要表 —— 已裁决推迟** |
+| `WIDTH` | `(s) -> INTEGER` | 终端显示宽度 | **需要表 —— 已裁决推迟** |
 
 > **关键实现事实**:`TO_UPPER` / `TO_LOWER` **不需要任何 Unicode 表**。
 > wlwl 是 Rust 实现,`str::to_uppercase()` / `to_lowercase()` 直接就是完整 Unicode
 > 大小写映射(含 `ß`→`SS`、希腊 final sigma、土耳其无点 i)。**零依赖、零数据、一次到位。**
 
-**已裁决 · NFC/NFD**:本批**只交付 `TO_UPPER`/`TO_LOWER`/`GRAPHEME_COUNT`**。
-NFC/NFD 需要 Unicode 规范化表(约 2000 条 canonical decomposition + composition),
-在零依赖约束下要自建并逐版本跟随 —— **代价与本批其余全部工作不相称**。
-改为:在 §5.6 登记为后续批次的 spike,并在 GAP-2 处留一条显式的「已知限制」说明。
-**不要用一张只覆盖 Latin-1 的半表冒充 NFC。**
+**已裁决 · UCD 依赖成员整体推迟(实施时修订)**:原计划只推迟 `NFC` / `NFD`,
+理由是 Unicode 表成本。实施时发现 `GRAPHEME_COUNT` / `WIDTH` **同样要表**,而且
+**共用同一捆 UCD 数据**(`UnicodeData` + `CompositionExclusions` +
+`GraphemeBreakProperty` + `Extended_Pictographic` + `EastAsianWidth`)。
+分批做意味着生成器写三遍、审三遍、跟 Unicode 版本对齐三遍。
+**合成一块做是一个决定,不是四个。** 四个成员一并推迟,裁决写进 stdlib 规范 §12.1。
 
-**`std.str` 补齐(GAP-3)**
+**明确不做半张表**:只覆盖 Latin-1 的 NFC 比没有 NFC 更糟 —— 它会让
+`==(NFC(a), NFC(b))` 在部分输入上返回 TRUE,调用方据此建索引,然后在真正的
+CJK 或组合字符上炸。
+
+**`std.str` 补齐(GAP-3 —— 实施时发现原判有误)**
 
 | 成员 | 签名 | 语义 |
 |---|---|---|
-| `INDEX_OF` | `(s, sub, from?) -> INTEGER` | 首次出现的**码点下标**;无则 `-1`(与全局 `INDEX` 的 1-based / `-1` 口径一致) |
-| `COUNT_SUB` | `(s, sub) -> INTEGER` | 非重叠出现次数 |
+| `INDEX_OF` | `(s, sub, from?) -> INTEGER` | 首次出现的**码点下标**;无则 `-1`;`from` 负值钳到 0 |
 | `CONTAINS_SUB` | `(s, sub) -> BOOLEAN` | 子串判定(全局 `CONTAINS` 只吃数组) |
+| ~~`COUNT_SUB`~~ | — | **已撤**:与既有 `COUNT` 重复 |
+
+> ⚠ **GAP-3 的原始判定是错的,实施时更正**。本计划 §1.3 写「无字符串检索内建」,
+> 依据是探针 `PRINT(FIND("hello","el"))` 报 `E0020` —— 但 `FIND` 是
+> `std.collection` 的**数组**成员,**探错了名字**。实测 `std.str::COUNT` 早就是
+> 非重叠子串计数(`COUNT("aaa","a")` = 3、`COUNT("aaaa","aa")` = 2),
+> 且**空 `sub` 报 `E0030`**。真正缺的只有**位置**与**布尔判定**两件事。
+>
+> 与 N-4 同类的错:**探针探的不是被测对象**。教训已并入 W-06 的探针规范。
+>
+> **空 `sub` 统一报 `E0030`**:原计划打算给两个新成员各发明一条空串规则
+> (一个返回 `from`、一个返回 TRUE)。既然 `COUNT` 早就报错,统一成报错 ——
+> 同一模块三个成员对空串给三种答案,调用方只能靠「读过哪份文档」来判断。
 
 **实现指令**
 
-1. `text.rs` 挂 R2;`INDEX_OF`/`COUNT_SUB`/`CONTAINS_SUB` 作为 **R1 门面**加进 `wl/std/str.wll`,
-   门面内用 `CODEPOINTS` + 全局 `INDEX` 组合实现(**不新增 kernel**)——
-   这样它们不占 R2 槽位,也不用改 `kernels.rs`。
-2. 走 §5.0 九处表(`str` 的硬编码 `5` → `8`)。
+1. `text.rs` 挂 R2;`INDEX_OF` / `CONTAINS_SUB` 作为 **R1 门面**加进 `wl/std/str.wll`,
+   门面内用 `SUB` / `LEN` / `AT` 组合实现(**不新增 kernel**)。
+   `INDEX_OF` 是变长元数成员 ⇒ `str.wll` 的注入表**要加 `_DIAG_E0022`**,
+   否则拿到的是无函数名前缀的 E0022。**这条改动会被 W-02 的新反向守卫验到。**
+2. 三处内联的「空 sub」检查收进 `_NEED_SUB` 助手,`COUNT` 的消息**逐字不变**
+   (既有契约用例 `count_empty_needle_is_e0030` 继续绿)。
+3. 走 §5.0 九处表(`std.str` 的硬编码 `5` → `7`;`std.text` 新模块全套)。
 
 **验收**
 
 ```powershell
 $p = Join-Path $env:TEMP "m2.wll"
-@'
-IMPORT("wlwl:std.text", ["TO_UPPER"]);
-IMPORT("wlwl:std.str", ["INDEX_OF"]);
-PRINT(TO_UPPER("straße"));                    # STRASSE
-PRINT(TO_UPPER("héllo"), TO_UPPER("ÉÀÜ"));      # HÉLLO ÉÀÜ
-PRINT(INDEX_OF("hello", "ll"));                # 3
-PRINT(INDEX_OF("hello", "zz"));                # -1
-'@ | Set-Content $p -Encoding UTF8
-impl\target\release\wlwl.exe run $p
+# 完整源码见 impl/tests/probe/cases/M2_std_text_unicode_case/main.wll
+& .\impl\target\debug\wlwl.exe run impl\tests\probe\cases\M2_std_text_unicode_case\main.wll
+# 期望 rc=0,且 TO_UPPER 走 é/ß 而 UPPER 不走(同一行并排)
 ```
 
-**守卫**:契约用例必须覆盖 **至少 5 个非 ASCII 脚本**(Latin-1 补充、Latin 扩展 A、
-希腊、西里尔、土耳其),外加 `ß` 与 final sigma 两条特例 —— 只测 ASCII 等于没测。
+**守卫**:契约用例覆盖 **至少 5 个非 ASCII 脚本**(Latin-1 补充、Latin 扩展 A、
+希腊、西里尔)+ `ß` 与 final sigma 两条特例 —— **只测 ASCII 等于没测**。
+每条正例**同时钉 `LEN`**:`ß` → `SS` 让长度从 6 变 7,只断言内容的实现
+把 `ß` 留在原地也会骗过去。另有一条**反向**用例钉住全局 `UPPER("straße")`
+**仍然** = `STRAßE` —— §12 明写两个并存不替换,少了这条,下一个人看到
+`UPPER` 的缺陷就会去改全局内建(breaking)。
 
-**非目标**:不做 NFC/NFD(已裁决);不做正则;不改全局 `UPPER`/`LOWER` 的现有行为
-(**新增而不替换**,避免 breaking)。
+**非目标**:不做 NFC/NFD/字素/宽度(已裁决);不做正则;**不改全局 `UPPER`/`LOWER`
+的现有行为**(新增而不替换,避免 breaking);不加 `CONTAINS_SUB` 之外的
+"字符串版 `FIND`" 之类重复名。
 
 ---
 
@@ -756,7 +775,7 @@ cargo test --locked -p wlwl-eval the_spec_table_extractor_actually_finds_the_mem
 |---|---|---|---|
 | M0 | W-01 ~ W-07(缺陷修复) | ✅ 完成 | `1605f69` |
 | M1 | `std.encode`(6 成员) | ✅ 代码完成,门禁待确认 | — |
-| M2 | `std.text`(Unicode 大小写)+ `std.str` 检索(3 成员) | ☐ 未开始 | — |
+| M2 | `std.text`(Unicode 大小写)+ `std.str` 检索(**2** 成员) | ✅ 代码完成,门禁待确认 | — |
 | M3 | `std.collection` 扩展(8 成员) | ☐ 未开始 | — |
 | M4 | `std.math` 扩展(13 成员) | ☐ 未开始 | — |
 | M5 | 排序/随机数裁决 + 登记 | ☐ 未开始 | — |
@@ -801,6 +820,42 @@ cargo test --locked -p wlwl-eval the_spec_table_extractor_actually_finds_the_mem
    我第一版手算成 U+F0FF → `AAC/` —— **算错了**;用 .NET 的
    `[Convert]::ToBase64String` 枚举后得到 U+083F(E0 A0 BF)→ `4KC/`。
    §11.4 里留了「不要手算」的取码点方法。
+
+**M2 · `wlwl:std.text` + `std.str` 检索**
+
+| 落点 | 状态 |
+|---|---|
+| ① 规范 §6 表(+2 成员)与新增 §12 | ✅ 原 §12 演进方向顺延 §13 |
+| ② 附录 A 镜像 | ✅ 重生成,`stdlib_appendix_a_sync` 绿;`NAMESPACE_META` 记了 `INDEX_OF`/`CONTAINS_SUB` 的版本 |
+| ③ `src/text.rs` 的 `SPEC.functions` / `wl/std/str.wll` 的 `EXPORT` | ✅ 2 + 2 |
+| ④ 契约测试硬编码成员数 | ✅ `str_math_contract` 的 `5` → `7` + 点名清单 + 18 条新用例;新建 `text_contract.rs`(20 用例) |
+| ⑤ `ALL_SPECS` + `NAMESPACE_META` + `resolve()` + crate catalog | ✅ 四处都登记 |
+| ⑥ probe 用例 | ✅ +2(148 → 150) |
+| ⑦ 附录 G | **不适用** —— 成员不是全局内建 |
+| ⑧ skill 指针表 | ✅ `SKILL.md` 指针表 + `reference.md` §9.2/§9.3 + skill CHANGELOG |
+| ⑨ `CHANGELOG.md` | ✅ |
+
+**M2 实施中偏离计划的两处**
+
+1. **本计划 §1.3 的 GAP-3 判定错了,已更正。** 「无字符串检索内建」的依据是
+   探针 `PRINT(FIND("hello","el"))` 报 `E0020`,但 `FIND` 是 `std.collection` 的
+   **数组**成员 —— 探错了名字。实测 `std.str::COUNT` 早就是非重叠子串计数,
+   且空 `sub` 报 `E0030`。因此 **`COUNT_SUB` 已撤**(与 `COUNT` 重复),
+   只加 `INDEX_OF` + `CONTAINS_SUB`。**与 N-4 同类:探针探的不是被测对象。**
+2. **`GRAPHEME_COUNT` / `WIDTH` 一并推迟**(原计划只推迟 NFC/NFD)。
+   它们与 NFC/NFD **共用同一捆 UCD 数据**,分批做要写三遍生成器、审三遍、
+   对齐三遍 —— 合成一块是**一个**决定而不是四个。裁决写进规范 §12.1,
+   并有 `text_contract::the_ucd_deferral_rationale_is_documented` 钉住。
+
+**两处被门禁/守卫当场抓到的自造错误**(与 M0 的四处同类,记录以备对照)
+
+- `CONTAINS_SUB` 多写了一个右括号 ⇒ `E0013`,一次编不过;`str.wll` 的
+  `kernel_injection_tests` 立刻红了,报错信息直接指向 `wlwl:std.str:143:37`。
+- `str_math_contract` 里我加的 `count_empty_needle_is_e0030` 与既有同表用例
+  **重名** —— 被该文件自己的「同表不许重名」守卫拦下。删掉重复那条即可。
+- `text_contract` 的 §12 表格提取器最初把 §12.1 推迟表里的 `NFC` /
+  `GRAPHEME_COUNT` / `WIDTH` 也当成成员 ⇒ 抽出 5 个而非 2 个。已限定扫描到
+  首个 `### ` 子标题之前:规范性成员表的权威性止于它自己的小节。
 
 ---
 

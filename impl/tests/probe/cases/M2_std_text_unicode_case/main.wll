@@ -1,0 +1,30 @@
+IMPORT("wlwl:std.str", ["INDEX_OF", "CONTAINS_SUB", "COUNT"]);
+IMPORT("wlwl:std.text", ["TO_UPPER", "TO_LOWER"]);
+
+// 位置:std.str v0.11.2 之前唯一真正缺的能力。
+// 全局 INDEX 只吃数组,FIND 是 std.collection 的数组成员。
+PRINT("index_of first  = ", INDEX_OF("hello", "ll"));
+PRINT("index_of miss   = ", INDEX_OF("hello", "zz"));
+PRINT("index_of from 3 = ", INDEX_OF("hello", "l", 3));
+PRINT("index_of past   = ", INDEX_OF("hello", "l", 99));
+PRINT("index_of neg    = ", INDEX_OF("hello", "l", -5));
+
+// 下标是**码点**不是字节 —— 拿它直接 SUB 回去就是那一段。
+PRINT("index_of cp     = ", SUB("héllo", INDEX_OF("héllo", "llo"), 3));
+
+// from 的用途:找出全部出现位置。没有 from 就只能每次从 0 重扫全文。
+LET MUT(pos, 0);
+LET MUT(hits, 0);
+WHILE(>(INDEX_OF("aXbXc", "X", pos), -1),
+    (SET(hits, +(hits, 1));
+     SET(pos, +(INDEX_OF("aXbXc", "X", pos), 1))));
+PRINT("all positions   = ", hits, " (COUNT says ", COUNT("aXbXc", "X"), ")");
+
+PRINT("contains yes    = ", CONTAINS_SUB("hello", "ell"));
+PRINT("contains no     = ", CONTAINS_SUB("hello", "xyz"));
+
+// 完整 Unicode 大小写。同一行紧挨着放全局 UPPER 的结果,差别一眼可见。
+PRINT("TO_UPPER  vs UPPER : ", TO_UPPER("héllo"), " / ", UPPER("héllo"));
+PRINT("TO_LOWER  vs LOWER : ", TO_LOWER("ÉÀÜ"), " / ", LOWER("ÉÀÜ"));
+PRINT("sharp s grows     : ", TO_UPPER("straße"), " len=", LEN(TO_UPPER("straße")));
+PRINT("greek final sigma : ", TO_LOWER("ΑΣ"), " vs ", TO_LOWER("ΣΑ"));

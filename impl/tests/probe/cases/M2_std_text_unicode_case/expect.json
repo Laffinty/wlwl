@@ -1,0 +1,19 @@
+{
+ "exit": 0,
+ "contains": [
+  "index_of first  =  2",
+  "index_of miss   =  -1",
+  "index_of from 3 =  3",
+  "index_of past   =  -1",
+  "index_of neg    =  2",
+  "index_of cp     =  llo",
+  "all positions   =  2  (COUNT says  2 )",
+  "contains yes    =  TRUE",
+  "contains no     =  FALSE",
+  "TO_UPPER  vs UPPER :  HÉLLO  /  HéLLO",
+  "TO_LOWER  vs LOWER :  éàü  /  ÉÀÜ",
+  "sharp s grows     :  STRASSE  len= 7",
+  "greek final sigma :  ας  vs  σα"
+ ],
+ "_why": "v0.11.2 M2 新增 std.text + std.str 的 INDEX_OF / CONTAINS_SUB。`TO_UPPER vs UPPER` 与 `TO_LOWER vs LOWER` 两行是本用例的重点:同一行并排放新旧两个函数的结果,让「全局 UPPER/LOWER 只做 ASCII」这条事实**在输出里直接可见**,而不是只写在文档里。全局内建按 §12 不动(替换是 breaking),所以这一行将来也不该变。`sharp s grows` 同时钉内容与长度:ß → SS 让字符串从 6 变 7,只断言内容的实现把 ß 留在原地也会骗过去。`index_of cp` 证明下标是码点不是字节(é 占一个)。`all positions` 用 from 参数走一遍全部出现位置,并与 COUNT 对账 —— 这是 INDEX_OF 存在 from 的理由:没有它只能每次从 0 重扫全文。"
+}
