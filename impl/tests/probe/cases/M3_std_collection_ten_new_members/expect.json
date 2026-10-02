@@ -1,0 +1,24 @@
+{
+ "exit": 0,
+ "contains": [
+  "CHUNK 5/2  =  [[1, 2], [3, 4], [5]]",
+  "CHUNK 5/9  =  [[1, 2, 3, 4, 5]]",
+  "WINDOW 5/3 =  [[1, 2, 3], [2, 3, 4], [3, 4, 5]]",
+  "WINDOW 5/9 =  []",
+  "DEDUP_BY   =  [1, 2, 3]",
+  "DEDUP key  =  [aa, b]",
+  "MIN_BY     =  1",
+  "MAX_BY     =  5",
+  "MIN_BY []  =  NULL",
+  "same as SORT_BY head:  TRUE",
+  "SUM        =  3.5  / [] =  0",
+  "PRODUCT    =  24  / [] =  1",
+  "FOLD_RIGHT =  abc",
+  "REDUCE     =  cba",
+  "POSITION   =  3    FIND =  4",
+  "POSITION无 =  -1",
+  "KEY_BY     =  [a: a2, b: b1]",
+  "GROUP_BY   =  [a: [a1, a2], b: [b1]]"
+ ],
+ "_why": "v0.11.2 M3 追加的十个 std.collection 成员。这个用例的价值在**对照行**而不在单个值:CHUNK/WINDOW 在 n > LEN 时方向相反(一块 vs 零块);FOLD_RIGHT 与 REDUCE 用同一个函数给出相反次序(abc vs cba);POSITION 给下标而 FIND 给元素(3 vs 4);KEY_BY 后者覆盖而 GROUP_BY 收集。`same as SORT_BY head: TRUE` 钉的是 MIN_BY 换实现后语义没动 —— 它借用 SORT_BY 内部那个比较原语 _SORT_LT 做单遍扫描,而不是「照着规则再写一遍」,所以两者的首元素必须逐字相等(另有两条契约用例从两侧夹它)。规模刻意取小:WINDOW 的输出本身是 Θ(n·k) 元素,5000 元素已经要 20 秒(规范 §5 实测表),CI 里放大规模只会让它变成一条永远超时的用例。"
+}

@@ -153,12 +153,21 @@ mod tests {
 
     #[test]
     fn splice_replaces_between_markers_and_keeps_them() {
-        let spec = "head\n<!-- appendix-a:begin -->\nOLD\n<!-- appendix-a:end -->\ntail\n";
+        // 哨兵**必须**是不会出现在任何成员名 / 命名空间名里的字符串。
+        // 原文用 `"OLD"` —— v0.11.2 M3 加了 `FOLD_RIGHT`,而它**含子串
+        // `OLD`**(F-O-L-D-R-I-G-H-T),于是这条守卫在成员表里读到自己的
+        // 旧正文时判成了「替换失败」。守卫被一个**完全正确**的成员名打成
+        // 红了,而失败的提示(`assertion failed: !out.contains("OLD")`)
+        // 指向的方向完全相反。
+        let spec = "head\n<!-- appendix-a:begin -->\nZZ-OLD-BODY-SENTINEL-XYZZ\n<!-- appendix-a:end -->\ntail\n";
         let out = splice_appendix_a(spec).expect("markers present");
         assert!(out.contains("head\n"));
         assert!(out.contains("<!-- appendix-a:begin -->"));
         assert!(out.contains("<!-- appendix-a:end -->"));
-        assert!(!out.contains("OLD"));
+        assert!(
+            !out.contains("ZZ-OLD-BODY-SENTINEL-XYZZ"),
+            "the previous body must be fully replaced"
+        );
         assert!(out.contains("| 命名空间 | 成员 | 层 | 引入 |"));
         assert!(out.contains("tail\n"));
     }

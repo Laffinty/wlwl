@@ -443,17 +443,274 @@ const CASES: &[Case] = &[
         src: r#"IMPORT("wlwl:std.collection", ["JOIN"]); JOIN([1, 2], 5)"#,
         expect: "!E0030 JOIN: expected string (separator), got integer",
     },
+    // ── [v0.11.2 M3] CHUNK ──
+    Case {
+        name: "chunk_even_split",
+        src: r#"IMPORT("wlwl:std.collection", ["CHUNK"]); CHUNK([1,2,3,4], 2)"#,
+        expect: "[[1, 2], [3, 4]]",
+    },
+    // 尾块可以短 —— 这是 CHUNK 与 WINDOW 最大的形态差别
+    Case {
+        name: "chunk_tail_may_be_short",
+        src: r#"IMPORT("wlwl:std.collection", ["CHUNK"]); CHUNK([1,2,3,4,5], 2)"#,
+        expect: "[[1, 2], [3, 4], [5]]",
+    },
+    Case {
+        name: "chunk_size_exceeds_length_gives_one_chunk",
+        src: r#"IMPORT("wlwl:std.collection", ["CHUNK"]); CHUNK([1,2], 9)"#,
+        expect: "[[1, 2]]",
+    },
+    Case {
+        name: "chunk_empty_array",
+        src: r#"IMPORT("wlwl:std.collection", ["CHUNK"]); CHUNK([], 2)"#,
+        expect: "[]",
+    },
+    Case {
+        name: "chunk_zero_size_is_e0030",
+        src: r#"IMPORT("wlwl:std.collection", ["CHUNK"]); CHUNK([1,2], 0)"#,
+        expect: "!E0030 CHUNK: size must be >= 1, got 0",
+    },
+    Case {
+        name: "chunk_negative_size_is_e0030",
+        src: r#"IMPORT("wlwl:std.collection", ["CHUNK"]); CHUNK([1,2], -1)"#,
+        expect: "!E0030 CHUNK: size must be >= 1, got -1",
+    },
+    Case {
+        name: "chunk_size_type_is_e0030",
+        src: r#"IMPORT("wlwl:std.collection", ["CHUNK"]); CHUNK([1,2], "2")"#,
+        expect: "!E0030 CHUNK: expected integer, got string",
+    },
+    // ── [v0.11.2 M3] WINDOW ──
+    Case {
+        name: "window_slides_by_one",
+        src: r#"IMPORT("wlwl:std.collection", ["WINDOW"]); WINDOW([1,2,3,4], 2)"#,
+        expect: "[[1, 2], [2, 3], [3, 4]]",
+    },
+    Case {
+        name: "window_count_is_len_minus_k_plus_one",
+        src: r#"IMPORT("wlwl:std.collection", ["WINDOW"]); WINDOW([1,2,3,4,5], 3)"#,
+        expect: "[[1, 2, 3], [2, 3, 4], [3, 4, 5]]",
+    },
+    // 与 CHUNK 方向相反:n > LEN 时 CHUNK 给一块、WINDOW 给零块
+    Case {
+        name: "window_size_exceeds_length_gives_none",
+        src: r#"IMPORT("wlwl:std.collection", ["WINDOW"]); WINDOW([1,2], 9)"#,
+        expect: "[]",
+    },
+    Case {
+        name: "window_size_equal_to_length_gives_one",
+        src: r#"IMPORT("wlwl:std.collection", ["WINDOW"]); WINDOW([1,2], 2)"#,
+        expect: "[[1, 2]]",
+    },
+    Case {
+        name: "window_empty_array",
+        src: r#"IMPORT("wlwl:std.collection", ["WINDOW"]); WINDOW([], 1)"#,
+        expect: "[]",
+    },
+    Case {
+        name: "window_zero_size_is_e0030",
+        src: r#"IMPORT("wlwl:std.collection", ["WINDOW"]); WINDOW([1,2], 0)"#,
+        expect: "!E0030 WINDOW: size must be >= 1, got 0",
+    },
+    // ── [v0.11.2 M3] DEDUP_BY ──
+    Case {
+        name: "dedup_by_keeps_first_occurrence",
+        src: r#"IMPORT("wlwl:std.collection", ["DEDUP_BY"]); DEDUP_BY([1,1,2,2,3,1], FUN((x), x))"#,
+        expect: "[1, 2, 3]",
+    },
+    Case {
+        name: "dedup_by_uses_the_key_not_the_value",
+        src: r#"IMPORT("wlwl:std.collection", ["DEDUP_BY"]); DEDUP_BY(["aa","ab","b","ba"], FUN((s), SUB(s, 0, 1)))"#,
+        expect: "[aa, b]",
+    },
+    Case {
+        name: "dedup_by_empty_array",
+        src: r#"IMPORT("wlwl:std.collection", ["DEDUP_BY"]); DEDUP_BY([], FUN((x), x))"#,
+        expect: "[]",
+    },
+    Case {
+        name: "dedup_by_non_callable_is_e0020",
+        src: r#"IMPORT("wlwl:std.collection", ["DEDUP_BY"]); DEDUP_BY([1], 5)"#,
+        expect: "!E0020 DEDUP_BY: callback is not callable (got integer)",
+    },
+    // ── [v0.11.2 M3] MIN_BY / MAX_BY ──
+    Case {
+        name: "min_by_picks_smallest_key",
+        src: r#"IMPORT("wlwl:std.collection", ["MIN_BY"]); MIN_BY([1,2,3,4,5], FUN((x), -(x, 10)))"#,
+        expect: "1",
+    },
+    Case {
+        name: "max_by_picks_largest_key",
+        src: r#"IMPORT("wlwl:std.collection", ["MAX_BY"]); MAX_BY([1,2,3,4,5], FUN((x), -(x, 10)))"#,
+        expect: "5",
+    },
+    // 返**元素**而不是键 —— 键由 key 决定,值才是给的
+    Case {
+        name: "min_by_returns_the_element_not_the_key",
+        src: r#"IMPORT("wlwl:std.collection", ["MIN_BY"]); MIN_BY(["bbb","a","cc"], FUN((s), LEN(s)))"#,
+        expect: "a",
+    },
+    Case {
+        name: "min_by_empty_array_is_null",
+        src: r#"IMPORT("wlwl:std.collection", ["MIN_BY"]); MIN_BY([], FUN((x), x))"#,
+        expect: "NULL",
+    },
+    Case {
+        name: "max_by_empty_array_is_null",
+        src: r#"IMPORT("wlwl:std.collection", ["MAX_BY"]); MAX_BY([], FUN((x), x))"#,
+        expect: "NULL",
+    },
+    // MIN_BY / MAX_BY 定义成 SORT_BY 的首 / 末元素 ⇒ 与 SORT_BY 不可能打架。
+    // 注意比较要写 `==(a, b)`:本语言**没有中缀运算符**。
+    Case {
+        name: "min_by_agrees_with_sort_by_head",
+        src: r#"IMPORT("wlwl:std.collection", ["MIN_BY","SORT_BY"]); LET(k, FUN((x), -(x, 10))); ==(MIN_BY([3,1,4,1,5], k), AT(SORT_BY([3,1,4,1,5], k), 0, NULL))"#,
+        expect: "TRUE",
+    },
+    Case {
+        name: "max_by_agrees_with_sort_by_tail",
+        src: r#"IMPORT("wlwl:std.collection", ["MAX_BY","SORT_BY"]); LET(a, [3,1,4,1,5]); LET(k, FUN((x), -(x, 10))); LET(s, SORT_BY(a, k)); ==(MAX_BY(a, k), AT(s, -(LEN(s), 1), NULL))"#,
+        expect: "TRUE",
+    },
+    // ── [v0.11.2 M3] SUM / PRODUCT ──
+    Case {
+        name: "sum_integers",
+        src: r#"IMPORT("wlwl:std.collection", ["SUM"]); SUM([1,2,3])"#,
+        expect: "6",
+    },
+    // 混合整浮按 §2.2 提升
+    Case {
+        name: "sum_promotes_to_float",
+        src: r#"IMPORT("wlwl:std.collection", ["SUM"]); SUM([1, 2.5])"#,
+        expect: "3.5",
+    },
+    Case {
+        name: "sum_empty_is_zero",
+        src: r#"IMPORT("wlwl:std.collection", ["SUM"]); SUM([])"#,
+        expect: "0",
+    },
+    Case {
+        name: "sum_non_numeric_is_e0030",
+        src: r#"IMPORT("wlwl:std.collection", ["SUM"]); SUM([1, "a"])"#,
+        expect: "!E0030 SUM: expected number, got string",
+    },
+    Case {
+        name: "product_integers",
+        src: r#"IMPORT("wlwl:std.collection", ["PRODUCT"]); PRODUCT([2,3,4])"#,
+        expect: "24",
+    },
+    // 空数组给单位元 1,不是 0
+    Case {
+        name: "product_empty_is_one",
+        src: r#"IMPORT("wlwl:std.collection", ["PRODUCT"]); PRODUCT([])"#,
+        expect: "1",
+    },
+    Case {
+        name: "product_non_numeric_is_e0030",
+        src: r#"IMPORT("wlwl:std.collection", ["PRODUCT"]); PRODUCT([1, TRUE])"#,
+        expect: "!E0030 PRODUCT: expected number, got boolean",
+    },
+    // ── [v0.11.2 M3] FOLD_RIGHT ──
+    // 与 REDUCE 方向相反:同一个函数在同样输入上给出相反的拼接序
+    Case {
+        name: "fold_right_reverses_order",
+        src: r#"IMPORT("wlwl:std.collection", ["FOLD_RIGHT"]); FOLD_RIGHT(["a","b","c"], FUN((x, acc), +(x, acc)), "")"#,
+        expect: "abc",
+    },
+    Case {
+        name: "reduce_is_the_mirror_image",
+        src: r#"IMPORT("wlwl:std.collection", ["REDUCE"]); REDUCE(["a","b","c"], FUN((acc, x), +(x, acc)), "")"#,
+        expect: "cba",
+    },
+    Case {
+        name: "fold_right_empty_is_init",
+        src: r#"IMPORT("wlwl:std.collection", ["FOLD_RIGHT"]); FOLD_RIGHT([], FUN((x, acc), x), "init")"#,
+        expect: "init",
+    },
+    // 参数顺序跟随 REDUCE(arr, f, init) —— f 在 init 前
+    Case {
+        name: "fold_right_arity_is_e0022",
+        src: r#"IMPORT("wlwl:std.collection", ["FOLD_RIGHT"]); FOLD_RIGHT([1], 0)"#,
+        expect: "!E0022 FOLD_RIGHT: function expects 3 argument(s), got 2",
+    },
+    // ── [v0.11.2 M3] POSITION ──
+    Case {
+        name: "position_is_zero_based",
+        src: r#"IMPORT("wlwl:std.collection", ["POSITION"]); POSITION([10,20,30], FUN((x), >(x, 15)))"#,
+        expect: "1",
+    },
+    Case {
+        name: "position_miss_is_minus_one",
+        src: r#"IMPORT("wlwl:std.collection", ["POSITION"]); POSITION([1,2], FUN((x), >(x, 99)))"#,
+        expect: "-1",
+    },
+    Case {
+        name: "position_empty_is_minus_one",
+        src: r#"IMPORT("wlwl:std.collection", ["POSITION"]); POSITION([], FUN((x), TRUE))"#,
+        expect: "-1",
+    },
+    // 与 FIND 的分工:POSITION 给下标,FIND 给元素。同一次调用把两者并排
+    // 放进一个数组里 —— 名字相近而返回类型不同,是本模块最易混的一对。
+    Case {
+        name: "position_and_find_return_different_things",
+        src: r#"IMPORT("wlwl:std.collection", ["POSITION","FIND"]); LET(a, [10,20,30]); LET(p, FUN((x), >(x, 15))); [POSITION(a, p), FIND(a, p)]"#,
+        expect: "[1, 20]",
+    },
+    Case {
+        name: "position_non_boolean_predicate_is_e0030",
+        src: r#"IMPORT("wlwl:std.collection", ["POSITION"]); POSITION([1], FUN((x), x))"#,
+        expect: "!E0030 POSITION: predicate must return BOOLEAN, got integer",
+    },
+    // ── [v0.11.2 M3] KEY_BY ──
+    // 后者覆盖前者,与 GROUP_BY 收集成数组相反
+    Case {
+        name: "key_by_last_wins",
+        src: r#"IMPORT("wlwl:std.collection", ["KEY_BY"]); KEY_BY(["a1","b1","a2"], FUN((s), SUB(s, 0, 1)))"#,
+        expect: "[a: a2, b: b1]",
+    },
+    Case {
+        name: "group_by_collects_instead",
+        src: r#"IMPORT("wlwl:std.collection", ["GROUP_BY"]); GROUP_BY(["a1","b1","a2"], FUN((s), SUB(s, 0, 1)))"#,
+        expect: "[a: [a1, a2], b: [b1]]",
+    },
+    // 空 DICT 的 display 是 `[]`(不是 `[:]`)—— 实测口径,不是笔误
+    Case {
+        name: "key_by_empty_array_is_empty_dict",
+        src: r#"IMPORT("wlwl:std.collection", ["KEY_BY"]); KEY_BY([], FUN((x), x))"#,
+        expect: "[]",
+    },
+    Case {
+        name: "key_by_non_callable_is_e0020",
+        src: r#"IMPORT("wlwl:std.collection", ["KEY_BY"]); KEY_BY([1], 5)"#,
+        expect: "!E0020 KEY_BY: callback is not callable (got integer)",
+    },
     // ── ERR 透明性(§12.6)──
     Case {
         name: "err_arg_is_transparent",
         src: r#"IMPORT("wlwl:std.collection", ["SORT"]); LET(r, SORT(ERR("boom"), NULL)); IS_ERR(r)"#,
         expect: "TRUE",
     },
+    // M3 新成员的回调 ERR 也要按 8.2 传播(DEDUP_BY / KEY_BY / FOLD_RIGHT)
+    Case {
+        name: "dedup_by_key_err_propagates",
+        src: r#"IMPORT("wlwl:std.collection", ["DEDUP_BY"]); IS_ERR(DEDUP_BY([1], FUN((x), ERR("boom"))))"#,
+        expect: "TRUE",
+    },
+    Case {
+        name: "key_by_key_err_propagates",
+        src: r#"IMPORT("wlwl:std.collection", ["KEY_BY"]); IS_ERR(KEY_BY([1], FUN((x), ERR("boom"))))"#,
+        expect: "TRUE",
+    },
+    Case {
+        name: "fold_right_f_err_propagates",
+        src: r#"IMPORT("wlwl:std.collection", ["FOLD_RIGHT"]); IS_ERR(FOLD_RIGHT([1], FUN((x, acc), ERR("boom")), 0))"#,
+        expect: "TRUE",
+    },
     // ── 成员面(§5 全表)──
     Case {
         name: "every_member_imports",
-        src: r#"IMPORT("wlwl:std.collection", ["MAP", "FILTER", "REDUCE", "SORT", "SORT_BY", "ZIP", "RANGE", "ANY", "ALL", "FIND", "ENUMERATE", "TAKE", "DROP", "FLAT", "UNIQ", "GROUP_BY", "JOIN"]); LEN([MAP, FILTER, REDUCE, SORT, SORT_BY, ZIP, RANGE, ANY, ALL, FIND, ENUMERATE, TAKE, DROP, FLAT, UNIQ, GROUP_BY, JOIN])"#,
-        expect: "17",
+        src: r#"IMPORT("wlwl:std.collection", ["MAP", "FILTER", "REDUCE", "SORT", "SORT_BY", "ZIP", "RANGE", "ANY", "ALL", "FIND", "ENUMERATE", "TAKE", "DROP", "FLAT", "UNIQ", "GROUP_BY", "JOIN", "CHUNK", "WINDOW", "DEDUP_BY", "MIN_BY", "MAX_BY", "SUM", "PRODUCT", "FOLD_RIGHT", "POSITION", "KEY_BY"]); LEN([MAP, FILTER, REDUCE, SORT, SORT_BY, ZIP, RANGE, ANY, ALL, FIND, ENUMERATE, TAKE, DROP, FLAT, UNIQ, GROUP_BY, JOIN, CHUNK, WINDOW, DEDUP_BY, MIN_BY, MAX_BY, SUM, PRODUCT, FOLD_RIGHT, POSITION, KEY_BY])"#,
+        expect: "27",
     },
 ];
 
@@ -635,7 +892,7 @@ fn member_set_matches_the_spec_section_5_table() {
         a, b,
         "§5 table and the R1 EXPORT list disagree.\n  spec: {spec:?}\n  impl: {impls:?}"
     );
-    assert_eq!(impls.len(), 17, "the §5 table declares 17 members");
+    assert_eq!(impls.len(), 27, "the §5 table declares 27 members");
     let mut seen = std::collections::HashSet::new();
     for n in &impls {
         assert!(seen.insert(n.as_str()), "{n} exported twice");
@@ -645,13 +902,13 @@ fn member_set_matches_the_spec_section_5_table() {
 /// 反向守卫:上面那条以「§5 解析出的成员集」为输入。§5 表格一旦被改成别的
 /// 形状(比如列数变了、签名写法变了),解析器可能一个成员都抽不出来 ——
 /// 那时断言会拿 `[]` 比 `[]`… 不,`impls` 侧非空所以仍会红;但若两侧同时
-/// 为空就绿了。这条把「§5 至少解析出 17 个」钉住。
+/// 为空就绿了。这条把「§5 至少解析出 27 个」钉住。
 #[test]
 fn the_spec_table_extractor_actually_finds_the_members() {
     let spec = spec_section5_members();
     assert_eq!(
         spec.len(),
-        17,
+        27,
         "§5 extractor found {} member(s): {spec:?} — the table's shape changed and the \
          extractor needs updating",
         spec.len()
@@ -674,6 +931,17 @@ fn the_spec_table_extractor_actually_finds_the_members() {
         "UNIQ",
         "GROUP_BY",
         "JOIN",
+        // [v0.11.2 M3] 追加的十个。顺序与 §5.1 表格一致。
+        "CHUNK",
+        "WINDOW",
+        "DEDUP_BY",
+        "MIN_BY",
+        "MAX_BY",
+        "SUM",
+        "PRODUCT",
+        "FOLD_RIGHT",
+        "POSITION",
+        "KEY_BY",
     ] {
         assert!(spec.iter().any(|m| m == n), "§5 extractor missed `{n}`");
     }

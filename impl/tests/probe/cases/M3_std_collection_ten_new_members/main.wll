@@ -1,0 +1,40 @@
+IMPORT("wlwl:std.collection", ["CHUNK", "WINDOW", "DEDUP_BY", "MIN_BY", "MAX_BY", "SUM", "PRODUCT", "FOLD_RIGHT", "POSITION", "KEY_BY", "FIND", "GROUP_BY", "REDUCE", "SORT_BY"]);
+
+LET(a, [1, 2, 3, 4, 5]);
+
+// ── 分块与窗口:唯一的形态差别在 n > LEN(arr) 时 ──
+PRINT("CHUNK 5/2  = ", CHUNK(a, 2), "   (尾块可短)");
+PRINT("CHUNK 5/9  = ", CHUNK(a, 9), "   (给一块)");
+PRINT("WINDOW 5/3 = ", WINDOW(a, 3));
+PRINT("WINDOW 5/9 = ", WINDOW(a, 9), "   (给零块 —— 与 CHUNK 相反)");
+
+// ── 去重按 key,不按值 ──
+PRINT("DEDUP_BY   = ", DEDUP_BY([1, 1, 2, 2, 3, 1], FUN((x), x)));
+PRINT("DEDUP key  = ", DEDUP_BY(["aa", "ab", "b", "ba"], FUN((s), SUB(s, 0, 1))));
+
+// ── 极值返**元素**,不是键 ──
+PRINT("MIN_BY     = ", MIN_BY(a, FUN((x), -(x, 10))));
+PRINT("MAX_BY     = ", MAX_BY(a, FUN((x), -(x, 10))));
+PRINT("MIN_BY []  = ", MIN_BY([], FUN((x), x)));
+
+// MIN_BY 与 SORT_BY 的首元素逐字相等 —— 用的是同一个比较原语。
+LET(k, FUN((x), -(x, 10)));
+LET(sorted, [3, 1, 4, 1, 5]);
+PRINT("same as SORT_BY head: ", ==(MIN_BY(sorted, k), AT(SORT_BY(sorted, k), 0, NULL)));
+
+// ── 求和 / 求积:空数组给单位元 ──
+PRINT("SUM        = ", SUM([1, 2.5]), " / [] = ", SUM([]));
+PRINT("PRODUCT    = ", PRODUCT([2, 3, 4]), " / [] = ", PRODUCT([]));
+
+// ── 右折叠 vs 左折叠:同一个函数,相反的次序 ──
+PRINT("FOLD_RIGHT = ", FOLD_RIGHT(["a", "b", "c"], FUN((x, acc), +(x, acc)), ""));
+PRINT("REDUCE     = ", REDUCE(["a", "b", "c"], FUN((acc, x), +(x, acc)), ""));
+
+// ── POSITION 给下标,FIND 给元素:名字相近,返回类型不同 ──
+LET(p, FUN((x), >(x, 3)));
+PRINT("POSITION   = ", POSITION(a, p), "   FIND = ", FIND(a, p));
+PRINT("POSITION无 = ", POSITION(a, FUN((x), >(x, 99))));
+
+// ── KEY_BY 后者覆盖,GROUP_BY 收集 ──
+PRINT("KEY_BY     = ", KEY_BY(["a1", "b1", "a2"], FUN((s), SUB(s, 0, 1))));
+PRINT("GROUP_BY   = ", GROUP_BY(["a1", "b1", "a2"], FUN((s), SUB(s, 0, 1))));

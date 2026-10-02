@@ -209,6 +209,49 @@ below. Concurrent and OOP primitives are **global**, not under `wlwl:std.*`.
 The authoritative registry of every global builtin (106 entries) is
 `../docs/appendix_G.md`.
 
+### §9.4 `wlwl:std.collection` — the v0.11.2 ten (stdlib §5.1)
+
+| Member | Notes |
+|---|---|
+| `CHUNK(arr, n)` | Fixed-size blocks; **the tail block may be short**. `n > LEN(arr)` → one block. |
+| `WINDOW(arr, n)` | Sliding windows, step 1, count `LEN(arr) - n + 1`. `n > LEN(arr)` → `[]`. |
+| `DEDUP_BY(arr, key)` | Dedup by `key(v)`, **order-preserving** (first occurrence wins). |
+| `MIN_BY(arr, key)` / `MAX_BY(arr, key)` | The **element**, not the key. Empty → `NULL`. |
+| `SUM(arr)` / `PRODUCT(arr)` | Int/float promote per §2.2. Empty → `0` / `1` (identity). |
+| `FOLD_RIGHT(arr, f, init)` | Right fold. **Argument order matches `REDUCE(arr, f, init)`.** |
+| `POSITION(arr, pred)` | **0-based** index of the first match, else `-1`. |
+| `KEY_BY(arr, key)` | Dict, **later wins** (the opposite of `GROUP_BY`). |
+
+Four things that are easy to get backwards:
+
+1. **`CHUNK` and `WINDOW` disagree when `n > LEN(arr)`** — one block vs zero
+   blocks. That is the definitions, not a bug.
+2. **`FOLD_RIGHT` takes `(arr, f, init)`** — `f` before `init`, same as
+   `REDUCE`. `FOLD_RIGHT(["a","b","c"], f, "")` gives `"abc"`, `REDUCE` gives
+   `"cba"`.
+3. **`POSITION` gives an index, `FIND` gives an element.** Same predicate,
+   different return type: on `[10,20,30]` with `x > 15` you get `1` and `20`.
+4. **Keys are compared by their `STR` rendering**, the same rule as
+   `GROUP_BY` — so integer `1` and string `"1"` collide as keys.
+
+`n < 1` is `E0030` for both `CHUNK` and `WINDOW` (a size of `0` would make the
+loop non-terminating). An **empty** `sub`-style key is not involved here, but
+note the same rule in `std.str`: `INDEX_OF` / `CONTAINS_SUB` / `COUNT` all
+reject an empty `sub`.
+
+> ⚠ **Scale warning.** Members that build an array are **quadratic** in the
+> language layer (immutable arrays, and `PUSH` copies the whole array). Measured
+> on wlwl 0.11.2: `CHUNK(arr, 10)` on 5 000 elements ≈ 0.6 s; `WINDOW(arr, 10)`
+> on 5 000 ≈ 20 s. `WINDOW`'s **output alone** is Θ(n·k) elements, so it is
+> expensive by definition, not by accident. Near-linear: `SUM`, `PRODUCT`,
+> `KEY_BY`, `DEDUP_BY`, `FOLD_RIGHT`, `MIN_BY`, `MAX_BY`. Full table in
+> `../docs/stdlib/wlwl-stdlib-spec-v0.11.md` §5.
+
+> *Measured on wlwl 0.11.2 (2026-10-02):* `CHUNK([1,2,3,4,5], 2)` =
+> `[[1,2],[3,4],[5]]`; `WINDOW([1,2,3,4,5], 9)` = `[]`; `SUM([1, 2.5])` = `3.5`;
+> `PRODUCT([])` = `1`; `MIN_BY([], f)` = `NULL`;
+> `KEY_BY(["a1","b1","a2"], first-char)` = `[a: a2, b: b1]`.
+
 ### §9.2 `wlwl:std.text` (stdlib §12, v0.11.2)
 
 | Member | Notes |

@@ -73,6 +73,31 @@ Spec: **wlwl-spec-v0.11 不变**。本批**不改语言语义** —— 只加标
 ### Changed
 - `std.str` 门面里三处内联的「空 sub」检查收进 `_NEED_SUB` 助手,`COUNT` 的
   消息**逐字不变**(既有契约用例 `count_empty_needle_is_e0030` 仍绿)。
+- **`std.collection` 从 17 成员扩到 27 成员**(v0.11.2 M3,全部 R1 纯 wlwl、
+  无新增 kernel):`CHUNK` `WINDOW` `DEDUP_BY` `MIN_BY` `MAX_BY` `SUM`
+  `PRODUCT` `FOLD_RIGHT` `POSITION` `KEY_BY`。
+  - `CHUNK` / `WINDOW` 的尺寸实参 `n < 1` 报 `E0030`,**不**照 `TAKE` 那套
+    「负数给 `[]`」—— `0` 会让循环不终止。
+  - `CHUNK` 与 `WINDOW` 在 `n > LEN(arr)` 时**方向相反**(一块 vs 零块)。
+  - `FOLD_RIGHT` 的参数顺序跟随同模块 `REDUCE(arr, f, init)`;**迭代实现**
+    而非递归 —— 递归深度 = 数组长度,十万级直接 `E0101` 爆栈。
+    (第一版漏了游标推进,死循环;已修。)
+  - `DEDUP_BY` 用 `DICT` 记已见键(真正 O(n)),而不是照抄 `UNIQ` 的
+    `INDEX(out, k)` 线性扫(O(n²))。键按 `STR` 渲染,故 `1` 与 `"1"` 撞键。
+  - `MIN_BY` / `MAX_BY` **借用 `SORT_BY` 内部的比较原语 `_SORT_LT(NULL, …)`
+    做单遍扫描**,而不是真的去排序。口径因此与 `SORT_BY` 逐字相同,成本却从
+    「不可用」降到可用(见下条)。契约用例从两侧夹住这条等价性。
+  - `POSITION(arr, pred)` 给 0 起下标,与同模块 `FIND` 的「给元素」是
+    两件事;`pred` **必填**(原计划的 `pred?` 省略位已撤:可选谓词在不给时会
+    滑向真值语义,和 `FIND` 的必填布尔谓词并排出现只会让人猜)。
+- **成本剖面首次有实测数字**(debug 档、单线程,写在 stdlib §5):
+  | 成员 | n=625 | n=1250 | n=2500 | n=5000 |
+  |---|---:|---:|---:|---:|
+  | `CHUNK(arr,10)` | 29 ms | 57 ms | 165 ms | 644 ms |
+  | `WINDOW(arr,10)` | 335 ms | 1 164 ms | 5 177 ms | 20 502 ms |
+  `WINDOW` 贵有两层原因叠加:输出本身就是 Θ(n·k) 个元素,再叠上 `PUSH` 的
+  O(当前长度)拷贝。近线性的是 `SUM` / `PRODUCT` / `KEY_BY` / `DEDUP_BY` /
+  `FOLD_RIGHT` / `MIN_BY` / `MAX_BY`。
 
 ### Fixed
 - **`E0014`(`YIELD used outside a step context`)的 span 指向文件首**(复核 N-5):

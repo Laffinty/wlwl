@@ -29,6 +29,10 @@ and is authoritative).
   与 `CONTAINS_SUB(s, sub)`。下标是**码点**,与 `SUB` 同一坐标系,拿到后可直接
   `SUB` 切回。**空 `sub` 报 `E0030`,不是恒匹配** —— 与同模块既有的 `COUNT`
   同一口径。
+- **`wlwl:std.collection` 追加十个成员**(`reference.md` §9.4):`CHUNK` `WINDOW`
+  `DEDUP_BY` `MIN_BY` `MAX_BY` `SUM` `PRODUCT` `FOLD_RIGHT` `POSITION`
+  `KEY_BY`。附**规模警告**:建数组的成员在语言层是平方级,`WINDOW` 在 5000
+  元素上已经要 20 秒 —— 调这类成员前先看 stdlib §5 的实测表。
 
 ### 纪律
 - **未跑过的代码块就是假设**:引用模块成员的片段必须自带 `IMPORT`(名字是全局

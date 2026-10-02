@@ -372,15 +372,19 @@ mod tests {
     fn resolve_collection() {
         // [v0.11 M3-1] collection 以纯 wlwl 重写为终态(ADR-0021 判定准则
         // 3:非敏感库默认归宿 R1)。R2 原生实现已删,成员面改由嵌入源码的
-        // `EXPORT` 声明;17 条的**内容**对拍由
+        // `EXPORT` 声明;成员**内容**的对拍由
         // `wlwl-eval/tests/collection_contract.rs` 对标准库规范 §5 逐条做,
         // 这里只锁「解析到 Lang 后端 + 成员数」。
+        //
+        // [v0.11.2 M3] 17 → 27:M3 追加的十个成员同为 R1(成本理由见
+        // stdlib §5 —— 建数组的成员在语言层是平方级,把它们沉 R2 能让这
+        // 十个快,但 `MAP` / `FILTER` / `UNIQ` 等仍慢,那是治标)。
         let s = resolve("wlwl:std.collection").expect("collection resolves");
         let StdBackend::Lang(src) = s else {
             panic!("collection must be R1 now, got a native backend")
         };
         let names = lang_exports(src.source);
-        assert_eq!(names.len(), 17, "collection member set: {names:?}");
+        assert_eq!(names.len(), 27, "collection member set: {names:?}");
     }
     #[test]
     fn resolve_test() {

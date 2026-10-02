@@ -776,7 +776,7 @@ cargo test --locked -p wlwl-eval the_spec_table_extractor_actually_finds_the_mem
 | M0 | W-01 ~ W-07(缺陷修复) | ✅ 完成 | `1605f69` |
 | M1 | `std.encode`(6 成员) | ✅ 代码完成,门禁待确认 | — |
 | M2 | `std.text`(Unicode 大小写)+ `std.str` 检索(**2** 成员) | ✅ 代码完成,门禁待确认 | — |
-| M3 | `std.collection` 扩展(8 成员) | ☐ 未开始 | — |
+| M3 | `std.collection` 扩展(**10** 成员) | ✅ 代码完成,门禁待确认 | — |
 | M4 | `std.math` 扩展(13 成员) | ☐ 未开始 | — |
 | M5 | 排序/随机数裁决 + 登记 | ☐ 未开始 | — |
 | M6 | 收口(§7.3) | ☐ 未开始 | — |
@@ -835,6 +835,51 @@ cargo test --locked -p wlwl-eval the_spec_table_extractor_actually_finds_the_mem
 | ⑧ skill 指针表 | ✅ `SKILL.md` 指针表 + `reference.md` §9.2/§9.3 + skill CHANGELOG |
 | ⑨ `CHANGELOG.md` | ✅ |
 
+**M3 · `std.collection` 扩展(10 成员)**
+
+| 落点 | 状态 |
+|---|---|
+| ① 规范 §5 表 + 新增 §5.1 设计取舍 | ✅ 成员表 14 行→§5.1 另起十行;成本实测表进 §5 |
+| ② 附录 A 镜像 | ✅ 重生成,`stdlib_appendix_a_sync` 绿 |
+| ③ `wl/std/collection.wll` 的 `EXPORT` | ✅ 17 → 27 |
+| ④ 契约测试硬编码成员数 | ✅ `collection_contract.rs` 的 `17` → `27` ×2 + 点名清单 + **45 条新用例**(共 125) |
+| ⑤ `ALL_SPECS` / `NAMESPACE_META` / `resolve()` | **不适用** —— R1 门面,不进 R2 名单 |
+| ⑥ probe 用例 | ✅ +1(150 → 151) |
+| ⑦ 附录 G | **不适用** —— 成员不是全局内建 |
+| ⑧ skill 指针表 | ✅ `SKILL.md` 指针表 + `reference.md` §9.4 + skill CHANGELOG |
+| ⑨ `CHANGELOG.md` | ✅ |
+
+**M3 实施中偏离计划的三处**
+
+1. **计划要求给 `CHUNK` / `WINDOW` 各加 10 万元素基准 —— 撤销,做不到。**
+   计划的理由是「平方级实现会直接跑不完」;实测反过来了:**正是平方级所以确实
+   跑不完**(`CHUNK` 外推 10 万约 4 分钟,`WINDOW` 约 3 小时)。成本剖面改成
+   **实测表**写进规范 §5,probe 规模取 CI 跑得完的小值。
+   ⚠ 这次教训的根因是**我第一次测规模时拿到的是解析失败的启动耗时**:基准
+   模板自己有括号错误,程序立刻 `E0013` 退出,而「10 ms」看起来完全合理。
+   **计时之前必须先验证输出是预期值**,否则量的是崩溃不是计算。
+2. **`MIN_BY` / `MAX_BY` 从「`SORT_BY` 的首/末元素」改成单遍线性扫描。**
+   第一版语义上绝不会与 `SORT_BY` 分叉,但**不可用**:实测 n=100 要 3.2 s、
+   n=200 要 15 s、n=800 跑不完。改成借用 `SORT_BY` 内部那个比较原语
+   (`_SORT_LT(NULL, keyA, keyB)`)做单遍扫描 —— 口径仍逐字相同(用的是同一个
+   函数,不是照着规则重写),n=6400 降到 9.8 s。两条契约用例
+   (`min_by_agrees_with_sort_by_head` / `max_by_agrees_with_sort_by_tail`)
+   从两侧夹住等价性。
+3. **`POSITION` 的 `pred?` 省略位撤掉,改为必填。** 可选谓词在省略时会滑向
+   真值语义,与同模块 `FIND` 的必填布尔谓词并排出现,只会让人猜哪个是哪个。
+
+**M3 里被门禁/守卫当场抓到的四处**
+
+- `FOLD_RIGHT` **死循环**:游标推进只写在 ERR 分支里,正常路径上 `i` 永不前进。
+  而且是「看起来对」的死循环 —— 前几次迭代的累加器都在正确变化。
+  括号也数错过两轮(`-(LEN(...), 1)` 那个 `-(` 漏了闭合;`KEY_BY` 收尾比
+  `GROUP_BY` 少一层),最后用**逐行括号深度扫描**定位,不再手数。
+- 契约用例里又写了**中缀 `==`**(本语言只有 `==(a, b)` 函数形式)—— 这是本轮
+  第三次犯同一个语言形态错误。
+- 两条期望值是我算错的:`POSITION` 那条我把 `1 + 100` 写成 120;空 `DICT` 的
+  display 是 `[]` 不是 `[:]`。两条都被契约表当场打回。
+- probe 里漏了 `SORT_BY` 的 `IMPORT`(E0020),以及一行多余的 `LET`。
+
 **M2 实施中偏离计划的两处**
 
 1. **本计划 §1.3 的 GAP-3 判定错了,已更正。** 「无字符串检索内建」的依据是
@@ -847,7 +892,7 @@ cargo test --locked -p wlwl-eval the_spec_table_extractor_actually_finds_the_mem
    对齐三遍 —— 合成一块是**一个**决定而不是四个。裁决写进规范 §12.1,
    并有 `text_contract::the_ucd_deferral_rationale_is_documented` 钉住。
 
-**两处被门禁/守卫当场抓到的自造错误**(与 M0 的四处同类,记录以备对照)
+**M2 里被门禁/守卫当场抓到的三处**
 
 - `CONTAINS_SUB` 多写了一个右括号 ⇒ `E0013`,一次编不过;`str.wll` 的
   `kernel_injection_tests` 立刻红了,报错信息直接指向 `wlwl:std.str:143:37`。

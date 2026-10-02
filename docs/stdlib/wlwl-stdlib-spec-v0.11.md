@@ -158,15 +158,18 @@
 **锁定**:`impl/crates/wlwl-eval/tests/` 有一条契约用例分别钉住这两个输出,
 目的是防止后续实现「好心统一」,把这个有意保留的差异改掉。
 
-## 5 `std.collection` — 集合套件(混合:16 成员 R1 + `RANGE` 归 R2)
+## 5 `std.collection` — 集合套件(混合:26 成员 R1 + `RANGE` 归 R2)
 
 除注明外成员都是**非破坏性**的(语言规范 §10.1);成员回调抛出的 `ERR` 使
 整个调用按 8.2 传播;`arr` 实参须为 `ARRAY`、回调 `f` 须为函数值(违者
 `E0030`)。
 
-**落地状态**:17 个成员全部落地。**16 个是纯 wlwl(R1)**;**`RANGE` 的实现
+**落地状态**:27 个成员全部落地。**26 个是纯 wlwl(R1)**;**`RANGE` 的实现
 归 R2**,门面只改名导出 —— 层归属变更不算破坏性变更(ADR-0021 §0.2),故
 导出面 / 签名 / 语义未变,75 条冻结行为用例(诊断码与消息逐字)全绿。
+`CHUNK` / `WINDOW` / `DEDUP_BY` / `MIN_BY` / `MAX_BY` / `SUM` / `PRODUCT` /
+`FOLD_RIGHT` / `POSITION` / `KEY_BY` 十个成员随 v0.11.2 M3 追加,同为 R1
+(成本理由见下方「局限」)。
 
 > **「诊断一字未变」有一条例外,在此明写**(v0.11.1 / D11-003 补记):`RANGE`
 > 的整数计数溢出行为随层归属**回摆**过一次。R1 版走 `+(i, step)`,按语言
@@ -190,6 +193,83 @@ wlwl 数组不可变,`PUSH` 每次复制整个数组。于是语言规范 §6.6 
 `FILTER` / `FLAT` / `UNIQ` / `ENUMERATE` / `GROUP_BY` / `JOIN` 都走
 `PUSH`,故它们在 1000+ 元素上仍是平方级。只沉 `RANGE` 是**治标**;根因
 修复(解释器侧写时复制 / 结构共享)超出本版范围,记为演进项。
+
+**v0.11.2 M3 的十个新成员落在同一个坑里,实测数字如下**(debug 档、单线程、
+同一台机器,每档取 2–3 次最小值;**基线是进程启动约 2 ms**):
+
+| 成员 | n=625 | n=1250 | n=2500 | n=5000 | 每翻一档 |
+|---|---:|---:|---:|---:|---|
+| `CHUNK(arr, 10)` | 29 ms | 57 ms | 165 ms | 644 ms | ≈ 4×(平方) |
+| `WINDOW(arr, 10)` | 335 ms | 1 164 ms | 5 177 ms | 20 502 ms | ≈ 4×(平方) |
+
+近线性的四个(同机器、n=100 → 800,每档取最小值):
+
+| 成员 | n=100 | n=200 | n=400 | n=800 | 形状 |
+|---|---:|---:|---:|---:|---|
+| `DEDUP_BY(arr, FUN((x), %(x,7)))` | 264 ms | 272 ms | 290 ms | 204 ms | 平(启动成本占主导) |
+| `SUM(arr)` | 197 ms | 377 ms | 174 ms | 509 ms | 近线性 |
+| `KEY_BY(arr, FUN((x), x))` | 295 ms | 395 ms | 442 ms | 763 ms | 近线性 |
+| `FOLD_RIGHT(arr, f, 0)` | 43 ms | 301 ms | 288 ms | 385 ms | 近线性 |
+
+`DEDUP_BY` 之所以在四位上都平,是它用 `DICT` 记已见键(而非照抄 `UNIQ` 的
+线性扫),每步 O(1) ⇒ 真正线性;`UNIQ` 本身仍是 O(n²),本批不动它。
+
+> **计划里写的「10 万元素基准」是做不到的,已撤销。** v0.11.2 构建计划 §5.3
+> 原本要求给 `CHUNK` / `WINDOW` 各加一条 10 万元素的基准用例,理由是「平方级
+> 实现会直接跑不完」。实测反过来了:正是平方级,所以 10 万**确实跑不完** ——
+> `CHUNK` 外推到 10 万约 4 分钟,`WINDOW` 外推到 10 万约 3 小时。基准改成
+> CI 能跑完的小规模(见 probe 用例),成本剖面以**上面这两张表**的形式留在
+> 规范里。
+>
+> **`WINDOW` 尤其贵,有两层原因叠加**:它的**输出本身**就有 `n - k + 1` 个窗口
+> × 每个 `k` 个元素 = Θ(n·k);再叠上 `PUSH` 的 O(当前长度)拷贝,总成本
+> O(n²·k)。`k` 取常数时是 O(n²),但常数大得多 —— 5000 元素已经要 20 秒。
+> 它不是「实现没写好」,是**这个成员的定义本身**要产出 Θ(n·k) 个元素。
+> 要线性窗口就得惰性化,那是 `std.iter` 的事(见 §13,阻塞于批次 B)。
+
+### 5.1 M3 十个成员的设计取舍(v0.11.2,逐条写明以免后来人重新发明)
+
+| 成员 | 签名 | 说明 | 失败 |
+|---|---|---|---|
+| `CHUNK(arr, n)` | 定长分块,**尾块可短**;`n > LEN(arr)` 时得一块;空数组得 `[]` | `n < 1`:`E0030` |
+| `WINDOW(arr, n)` | 步长 1 的滑动窗口,共 `LEN(arr) - n + 1` 个;`n > LEN(arr)` 时得 `[]` | `n < 1`:`E0030` |
+| `DEDUP_BY(arr, key)` | 按 `key(v)` 去重,**保序**(留首现);键按 `STR` 渲染 | `key` 抛 `ERR` 按 8.2 传播 |
+| `MIN_BY(arr, key)` | 最小键对应的**元素**;空数组得 `NULL` | `key` 抛 `ERR` 按 8.2 传播 |
+| `MAX_BY(arr, key)` | 同上,取最大 | 同上 |
+| `SUM(arr)` | 求和;整数 / 浮点按 §2.2 提升;空数组得 `0` | 非数值元素:`E0030` |
+| `PRODUCT(arr)` | 求积;空数组得 `1`(单位元) | 同上 |
+| `FOLD_RIGHT(arr, f, init)` | 右折叠 `f(a0, f(a1, ... f(an, init)))`;**参数顺序与 `REDUCE` 一致** | `f` 抛 `ERR` 按 8.2 传播 |
+| `POSITION(arr, pred)` | 首个满足者的 **0 起**下标,无则 `-1` | `pred` 返非 `BOOLEAN`:`E0030` |
+| `KEY_BY(arr, key)` | `DICT`,同键**后者覆盖前者** | `key` 抛 `ERR` 按 8.2 传播 |
+
+五条容易记反、故写在这里:
+
+1. **`MIN_BY` / `MAX_BY` 用 `SORT_BY` 的比较原语做单遍扫描,不是去排序。**
+   两轮都试过,差别是决定性的:
+   - *第一版*写成「`SORT_BY` 的首 / 末元素」。语义上绝不会与 `SORT_BY`
+     分叉,但**不可用**:R1 的 `SORT` 是选择排序且内部走 `PUSH`,实测
+     `MIN_BY` 在 n = 100 要 3.2 s、n = 200 要 15 s、n = 400 要 32 s,
+     n = 800 **跑不完**。
+   - *现在*只借用 `SORT_BY` 内部那个比较原语本身
+     (`_SORT_LT(NULL, keyA, keyB)`),一次遍历。排序口径仍然**逐字相同** ——
+     因为用的是同一个函数,而不是「照着它的规则再写一遍」;不可比时
+     `_SORT_LT` 返 `FALSE`,与 `SORT_BY` 一致。同一输入上 `MIN_BY` 与
+     `SORT_BY` 的首元素相等,这条由契约用例 `min_by_agrees_with_sort_by_head`
+     / `max_by_agrees_with_sort_by_tail` 钉住。
+   - 成本对照(同机器):n = 6400 从「跑不完」变成 **9.8 s**。
+   形状约 n^1.4 —— 比平方好得多但不是严格线性,成因是 `WHILE` 里反复
+   `SET` 带来的作用域增长,与本成员的算法无关。
+2. **尺寸实参 `n < 1` 报 `E0030`,不照 `TAKE` 那套「负数给 `[]`」。**
+   `TAKE` 的负数语义是「取空」,本身说得通;而 `CHUNK` / `WINDOW` 的 `0`
+   会让循环**不终止**,负数几乎总是调用方算错了。悄悄给 `[]` 的话,
+   「我的数组怎么空了」比一条诊断难查。
+3. **`CHUNK` 与 `WINDOW` 在 `n > LEN(arr)` 时方向相反**:前者给一块、后者给
+   零块。这是定义决定的,不是笔误。
+4. **`DEDUP_BY` 的键按 `STR` 渲染**,与同模块 `GROUP_BY` 同一口径 ⇒ 整数 `1`
+   与字符串 `"1"` 撞键。它用 `DICT` 记见过的键(因此 O(n))而不是照抄
+   `UNIQ` 的 `INDEX(out, k)` 线性扫(O(n²))。
+5. **`FOLD_RIGHT` 是迭代的,不是递归的。** 递归深度 = 数组长度,十万元素
+   就是十万层,直接 `E0101` 爆栈;从尾往头累加一遍即可。
 
 | 签名 | 说明 |
 |------|------|
@@ -493,7 +573,7 @@ CJK 或组合字符上炸。
 | `std.format` | `FORMAT` | R2 | v0.10 及以前 |
 | `std.encode` | `BASE64_ENCODE` `BASE64_DECODE` `HEX_ENCODE` `HEX_DECODE` `URL_ENCODE` `URL_DECODE` | R2 | v0.11.2 |
 | `std.text` | `TO_UPPER` `TO_LOWER` | R2 | v0.11.2 |
-| `std.collection` | `MAP` `FILTER` `REDUCE` `SORT` `SORT_BY` `ZIP` `RANGE` `ANY` `ALL` `FIND` `ENUMERATE` `TAKE` `DROP` `FLAT` `UNIQ` `GROUP_BY` `JOIN` | 混合(R1 门面 + R2 `RANGE`) | v0.10 及以前(成员)/ v0.11(R1 重写,M5 起 RANGE 沉 R2) |
+| `std.collection` | `MAP` `FILTER` `REDUCE` `SORT` `SORT_BY` `ZIP` `RANGE` `ANY` `ALL` `FIND` `ENUMERATE` `TAKE` `DROP` `FLAT` `UNIQ` `GROUP_BY` `JOIN` `CHUNK` `WINDOW` `DEDUP_BY` `MIN_BY` `MAX_BY` `SUM` `PRODUCT` `FOLD_RIGHT` `POSITION` `KEY_BY` | 混合(R1 门面 + R2 `RANGE`) | v0.10 及以前(成员)/ v0.11(R1 重写,M5 起 RANGE 沉 R2) |
 | `std.str` | `JOIN` `SPLIT_LINES` `CHAR_AT` `COUNT` `QUOTE` `INDEX_OF` `CONTAINS_SUB` | R1 | v0.11 / INDEX_OF、CONTAINS_SUB 于 v0.11.2 |
 | `std.math` | `ABS` `MIN` `MAX` `FLOOR` `CEIL` `ROUND` `SQRT` `POW` `CLAMP` `PI` `E` | 混合 | v0.11 |
 | `std.test` | `TEST` `ASSERT` `ASSERT_EQ` `ASSERT_NEQ` `EXPECT_ERR` `RUN_TESTS` | 混合 | v0.10 及以前(成员)/ v0.11(混合化) |

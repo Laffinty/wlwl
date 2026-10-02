@@ -39,8 +39,10 @@ LET(_NEED, FUN((name, what, ty, v),
     IF(==(TYPE(v), ty), v, _DIAG_E0030(_CAT(name, ": expected ", what, ", got ", _KIND(v))))));
 
 LET(_NEED_ARR, FUN((name, v), _NEED(name, "array", "ARRAY", v)));
-// [D11-019] 原有 `_NEED_INT`,全模块无调用点(RANGE 沉 R2 后元数与元素
-// 类型检查一并归 R2),已删。
+// [v0.11.2 M3] D11-019 当初以「全模块无调用点」删掉了 `_NEED_INT`;
+// M3 给 `CHUNK` / `WINDOW` 的尺寸实参加检查,它又有调用点了,故恢复。
+// 名字与措辞沿用删除前的那一份,不重新发明。
+LET(_NEED_INT, FUN((name, v), _NEED(name, "integer", "INTEGER", v)));
 
 LET(_NEED_FN, FUN((name, v),
     IF(==(TYPE(v), "FUNCTION"),
@@ -374,8 +376,207 @@ LET(JOIN, FUN((*args),
           SET(s, +(s, STR(v)))));
      s)));
 
+// ── v0.11.2 M3 新增成员 ─────────────────────────────────────────────
+// 十一个新成员全部是 R1 纯 wlwl,由既有内建组合得出,没有新增 kernel。
+
+// 尺寸实参的共用检查。**不**照 TAKE 那套「负数给 []」:TAKE 的负数
+// 语义是「取空」,本身说得通;而 CHUNK / WINDOW 的 0 会让循环**不终止**,
+// 负数则几乎总是调用方算错了。两条都悄悄给 [] 的话,「我的数组怎么空了」
+// 比一条诊断难查得多。
+LET(_NEED_SIZE, FUN((name, v),
+    (LET(n, _NEED_INT(name, v));
+     IF(<(n, 1),
+        _DIAG_E0030(_CAT(name, ": size must be >= 1, got ", STR(n))),
+        NULL);
+     n)));
+
+// CHUNK(arr, n)  →  定长分块;**尾块可以短**。n > LEN(arr) 时得一块。
+LET(CHUNK, FUN((*args),
+    (_NEED_ARITY("CHUNK", args, 2, 2);
+     LET(arr, _NEED_ARR("CHUNK", AT(args, 0, NULL)));
+     LET(n, _NEED_SIZE("CHUNK", AT(args, 1, NULL)));
+     LET MUT(out, []);
+     LET MUT(i, 0);
+     WHILE(<(i, LEN(arr)),
+         (LET(end, +(i, n));
+          // 显式把 end 钳到数组长度:末块短于 n 时 SLICE 的第三参会
+          // 越过末尾,钳制行为不该由「SLICE 恰好也钳得住」来兜底。
+          SET(out, PUSH(out, SLICE(arr, i, IF(<(end, LEN(arr)), end, LEN(arr)))));
+          SET(i, end)));
+     out)));
+
+// WINDOW(arr, n)  →  步长 1 的滑动窗口,共 LEN(arr) - n + 1 个。
+// n > LEN(arr) 时得 []。**与 CHUNK 恰好相反**(那边给一块、这边给零块),
+// 这是定义决定的,不是笔误。
+LET(WINDOW, FUN((*args),
+    (_NEED_ARITY("WINDOW", args, 2, 2);
+     LET(arr, _NEED_ARR("WINDOW", AT(args, 0, NULL)));
+     LET(n, _NEED_SIZE("WINDOW", AT(args, 1, NULL)));
+     LET MUT(out, []);
+     LET MUT(i, 0);
+     WHILE(<=(i, -(LEN(arr), n)),
+         (SET(out, PUSH(out, SLICE(arr, i, +(i, n))));
+         SET(i, +(i, 1))));
+     out)));
+
+// DEDUP_BY(arr, key)  →  按 key 去重,**保序**(留首现)。
+//
+// 键的记法是 DICT 而不是 `UNIQ` 那样的 `INDEX(out, k)`:后者每步线性
+// 扫一遍已收下的元素,整体 O(n²)。用 DICT 后是 O(n)。
+// 代价是键按 `STR` 渲染(与同模块 `GROUP_BY` 同一口径,§5),于是整数 1
+// 与字符串 "1" 会撞键 —— 这一条写在这里而不是留给下一个人撞。
+LET(DEDUP_BY, FUN((*args),
+    (_NEED_ARITY("DEDUP_BY", args, 2, 2);
+     LET(arr, _NEED_ARR("DEDUP_BY", AT(args, 0, NULL)));
+     LET(f, _NEED_FN("DEDUP_BY", AT(args, 1, NULL)));
+     LET MUT(seen, DICT());
+     LET MUT(out, []);
+     LET MUT(err, NULL);
+     LET MUT(i, 0);
+     WHILE(<(i, LEN(arr)),
+         (LET(v, AT(arr, i, NULL));
+          LET(k, CALL(f, v));
+          IF(IS_ERR(k),
+             (SET(err, k); SET(i, LEN(arr))),
+             (LET(ks, STR(k));
+              IF(HAS(seen, ks),
+                 NULL,
+                 (SET(seen, INDEX_SET(seen, ks, TRUE));
+                  SET(out, PUSH(out, v))))));
+          IF(IS_ERR(err), NULL, SET(i, +(i, 1)))));
+     IF(IS_ERR(err), err, out))));
+
+// MIN_BY / MAX_BY 的共用实现。
+//
+// **用与 `SORT_BY` 完全相同的比较原语做单遍线性扫描,而不是真的去排序。**
+// 两轮都试过,差别是决定性的:
+//   * 第一版写成「`SORT_BY` 的首 / 末元素」—— 语义上绝不会与 `SORT_BY`
+//     分叉,但**不可用**:R1 的 `SORT` 是选择排序且内部走 `PUSH`,实测
+//     `MIN_BY` 在 n = 100 上就已经要一分钟以上,n = 625 跑不完。
+//   * 这一版只借用 `SORT_BY` 的比较原语本身
+//     (`_SORT_LT(NULL, keyA, keyB)`,见 `SORT_BY` 的实现),一次遍历。
+//     排序口径仍然**逐字相同** —— 因为用的是同一个函数,而不是「照着它
+//     的规则再写一遍」。不可比时 `_SORT_LT` 返 FALSE,与 `SORT_BY` 一致。
+// 成本 O(n)。
+//
+// 空数组得 NULL(与 `FIND` 无命中同一族)。首个元素的键先算一次;
+// 它抛 `ERR` 时原样传播,与 `SORT_BY` 对 `key` 的处理一致。
+LET(_EXTREME_BY, FUN((name, args, want_min),
+    (_NEED_ARITY(name, args, 2, 2);
+     LET(arr, _NEED_ARR(name, AT(args, 0, NULL)));
+     LET(key, _NEED_FN(name, AT(args, 1, NULL)));
+     IF(<(LEN(arr), 0),
+        NULL,
+        (LET MUT(best, AT(arr, 0, NULL));
+         LET MUT(bestk, CALL(key, AT(arr, 0, NULL)));
+         IF(IS_ERR(bestk),
+            bestk,
+            (LET MUT(err, NULL);
+             LET MUT(i, 1);
+             WHILE(<(i, LEN(arr)),
+                 (LET(v, AT(arr, i, NULL));
+                  LET(k, CALL(key, v));
+                  IF(IS_ERR(k),
+                     (SET(err, k); SET(i, LEN(arr))),
+                     (LET(better, IF(want_min,
+                                      _SORT_LT(NULL, k, bestk),
+                                      _SORT_LT(NULL, bestk, k)));
+                      IF(better, (SET(best, v); SET(bestk, k)), NULL)));
+                  IF(IS_ERR(err), NULL, SET(i, +(i, 1)))));
+             IF(IS_ERR(err), err, best))))))));
+
+LET(MIN_BY, FUN((*args), _EXTREME_BY("MIN_BY", args, TRUE)));
+LET(MAX_BY, FUN((*args), _EXTREME_BY("MAX_BY", args, FALSE)));
+
+// SUM / PRODUCT 是 REDUCE 的特化,直接复用:数值提升、ERR 传播、空数组
+// 的初值全都跟着 `REDUCE` 走,不会各算一套。空数组得 0 / 1(单位元)。
+// 先整表判一遍数值,是为了让诊断带 `SUM:` / `PRODUCT:` 的名字 ——
+// 交给 `REDUCE` 的话,`+` 报出来的 E0030 没有函数名前缀。
+LET(_ALL_NUM, FUN((name, arr),
+    (LET MUT(i, 0);
+     WHILE(<(i, LEN(arr)),
+         (LET(v, AT(arr, i, NULL));
+          IF(_NUM(v),
+             NULL,
+             _DIAG_E0030(_CAT(name, ": expected number, got ", _KIND(v)))));
+          SET(i, +(i, 1))))));
+
+LET(SUM, FUN((*args),
+    (_NEED_ARITY("SUM", args, 1, 1);
+     LET(arr, _NEED_ARR("SUM", AT(args, 0, NULL)));
+     _ALL_NUM("SUM", arr);
+     REDUCE(arr, FUN((a, b), +(a, b)), 0))));
+
+LET(PRODUCT, FUN((*args),
+    (_NEED_ARITY("PRODUCT", args, 1, 1);
+     LET(arr, _NEED_ARR("PRODUCT", AT(args, 0, NULL)));
+     _ALL_NUM("PRODUCT", arr);
+     REDUCE(arr, FUN((a, b), *(a, b)), 1))));
+
+// FOLD_RIGHT(arr, f, init)  →  右折叠: f(a0, f(a1, ... f(an, init)))
+//
+// 元数与参数顺序**跟随同模块的 `REDUCE(arr, f, init)`** —— 两个折叠成员
+// 摆在一起而参数顺序不一致,纯粹是给调用方找麻烦。
+//
+// 迭代实现而非递归:递归深度 = 数组长度,十万元素就是十万层,直接 E0101
+// 爆栈。从尾往头累加一遍即可,同样 O(n) 且不递归。
+LET(FOLD_RIGHT, FUN((*args),
+    (_NEED_ARITY("FOLD_RIGHT", args, 3, 3);
+     LET(arr, _NEED_ARR("FOLD_RIGHT", AT(args, 0, NULL)));
+     LET(f, _NEED_FN("FOLD_RIGHT", AT(args, 1, NULL)));
+     LET MUT(acc, AT(args, 2, NULL));
+     LET MUT(err, NULL);
+     LET MUT(i, -(LEN(arr), 1));
+     WHILE(>(i, -1),
+         (LET(r, CALL(f, AT(arr, i, NULL), acc));
+          IF(IS_ERR(r), (SET(err, r); SET(i, -1)), SET(acc, r));
+          // 游标**无条件**递减(与 MAP 同款)。第一版只把它放在 ERR 分支
+          // 里,于是正常路径上 i 永不前进 —— 死循环,而且是「看起来对」的
+          // 死循环:前几次迭代的 acc 都在正确地变化。
+          SET(i, -(i, 1))));
+     IF(IS_ERR(err), err, acc))));
+
+// POSITION(arr, pred)  →  首个满足者的 **0 起**下标,无则 -1。
+// 与同模块 `FIND` 的分工:`FIND` 返**元素**(无则 NULL),`POSITION` 返
+// **下标**(无则 -1)。两件事都要,所以是两个成员而不是一个带开关的。
+// 下标口径与 `std.str::INDEX_OF` 一致(都是 0 起、都是 -1 表示没有)。
+LET(POSITION, FUN((*args),
+    (_NEED_ARITY("POSITION", args, 2, 2);
+     LET(arr, _NEED_ARR("POSITION", AT(args, 0, NULL)));
+     LET(f, _NEED_FN("POSITION", AT(args, 1, NULL)));
+     LET MUT(found, -1);
+     LET MUT(err, NULL);
+     LET MUT(i, 0);
+     WHILE(<(i, LEN(arr)),
+         (LET(r, CALL(f, AT(arr, i, NULL)));
+          IF(IS_ERR(r),
+             (SET(err, r); SET(i, LEN(arr))),
+             IF(==(TYPE(r), "BOOLEAN"),
+                IF(r, (SET(found, i); SET(i, LEN(arr))), SET(i, +(i, 1))),
+                _DIAG_E0030(_CAT("POSITION", ": predicate must return BOOLEAN, got ", _KIND(r)))))));
+     IF(IS_ERR(err), err, found))));
+
+// KEY_BY(arr, key)  →  DICT;同键**后者覆盖前者**。
+// 与 `GROUP_BY` 的分工:GROUP_BY 把同键的元素收成数组(组内保序),
+// KEY_BY 只留最后一个(Go `maps.Collect` 的口径)。键按 `STR` 渲染。
+LET(KEY_BY, FUN((*args),
+    (_NEED_ARITY("KEY_BY", args, 2, 2);
+     LET(arr, _NEED_ARR("KEY_BY", AT(args, 0, NULL)));
+     LET(f, _NEED_FN("KEY_BY", AT(args, 1, NULL)));
+     LET MUT(d, DICT());
+     LET MUT(err, NULL);
+     LET MUT(i, 0);
+     WHILE(<(i, LEN(arr)),
+         (LET(k, CALL(f, AT(arr, i, NULL)));
+          IF(IS_ERR(k),
+             (SET(err, k); SET(i, LEN(arr))),
+             SET(d, INDEX_SET(d, STR(k), AT(arr, i, NULL))));
+          IF(IS_ERR(err), NULL, SET(i, +(i, 1)))));
+     IF(IS_ERR(err), err, d))));
+
 // EXPORT 顺序跟随标准库规范 §5 表格的行序;附录 A 镜像跟随本顺序。成员
 // **集合**由 `wlwl-eval/tests/collection_contract.rs` 对 §5 表格做外部对照。
 // [D11-019] 原文写「对齐 R2 的 `NAMES` 常量(锁测试 `names_match_catalog`
 // 对拍)」—— R2 实现删除后那两个东西都不存在了(该恒真锁已在 D11-006 拆除)。
-EXPORT(["MAP", "FILTER", "REDUCE", "SORT", "SORT_BY", "ZIP", "RANGE", "ANY", "ALL", "FIND", "ENUMERATE", "TAKE", "DROP", "FLAT", "UNIQ", "GROUP_BY", "JOIN"]);
+// [v0.11.2 M3] 末尾十个成员按规范 §5 表格的追加顺序接在 `JOIN` 之后。
+EXPORT(["MAP", "FILTER", "REDUCE", "SORT", "SORT_BY", "ZIP", "RANGE", "ANY", "ALL", "FIND", "ENUMERATE", "TAKE", "DROP", "FLAT", "UNIQ", "GROUP_BY", "JOIN", "CHUNK", "WINDOW", "DEDUP_BY", "MIN_BY", "MAX_BY", "SUM", "PRODUCT", "FOLD_RIGHT", "POSITION", "KEY_BY"]);
