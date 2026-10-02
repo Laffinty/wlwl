@@ -7,6 +7,26 @@
 > 两册冲突时以语言规范为准。规范性用语(必须/不得/应当/可以)沿用语言规范 §0.3。
 > 设计依据:ADR-0021(分层模型)、ADR-0022(值直通边界)、ADR-0023(稳定性政策)。
 
+### 本版变更(v0.11.2 编译器批次;规范版本号不变)
+
+**为什么版本号仍是 v0.11**:本规范头部写明「v0.11 起与语言规范**同号发布**」。
+v0.11.2 **不改语言语义**(语言规范仍为 v0.11),故本册也留在 v0.11。
+ADR-0023 §v0.x 1/2 只要求**可见面变更走四件套 + CHANGELOG**,**破坏性变更
+才需申报**;v0.11.2 是**纯新增**(无签名改动、无语义改动、无移除),故不触发
+分册升版。改按「册内登记变更」处理,与 1.0 后两册独立演进之前的机制一致。
+
+| 批次 | 新增 | 层 |
+|---|---|---|
+| M1 | 新命名空间 `std.encode`:`BASE64_ENCODE` `BASE64_DECODE` `HEX_ENCODE` `HEX_DECODE` `URL_ENCODE` `URL_DECODE`(§11) | R2 |
+| M2 | 新命名空间 `std.text`:`TO_UPPER` `TO_LOWER`(§12);`std.str` 追加 `INDEX_OF` `CONTAINS_SUB`(§6) | R2 / R1 |
+| M3 | `std.collection` 追加 `CHUNK` `WINDOW` `DEDUP_BY` `MIN_BY` `MAX_BY` `SUM` `PRODUCT` `FOLD_RIGHT` `POSITION` `KEY_BY`(§5) | R1 |
+| M4 | `std.math` 追加 `LN` `LOG2` `LOG10` `EXP` `TRUNC` `SIN` `COS` `TAN` `ASIN` `ACOS` `ATAN` `ATAN2` `SINH` `COSH` `TANH` `POW_MOD`(R2 内核)与 `SIGN` `DIV_CEIL` `GCD` `LCM` `IS_SQRT`(R1 门面)(§7) | 混合 |
+
+成员面 **58 → 99**(附录 A 镜像为准:12 个命名空间,`std.ai` 的 5 个成员受
+`real-ai` feature 门控,默认构建可见 94)。附录 A 的镜像由 `gen-appendix-a`
+从实现生成,`stdlib_appendix_a_sync` 双向对账;五份契约测试从**本规范
+markdown** 解析成员表后与实现对拍(ADR-0023 §v0.x 1 的执行机制)。
+
 ## 0 总则
 
 ### 0.1 调用面
@@ -596,8 +616,11 @@ CJK 或组合字符上炸。
 
 - `std.ai` / `std.agent` 降级为官方包,移出 `wlwl:std.*`(业界先例:Rust /
   Julia 的 std 小核心原则);
-- 新 R2 候选命名空间:`std.net`、`std.process`、`std.env`、`std.time`;
-- `std.math` 超越函数族(sin/cos/tan/exp/log);
+- 新 R2 候选命名空间:`std.net`、`std.process`、`std.env`、`std.time`。
+  **`std.time` 的参考坐标是 Go 1.24 的 `testing/synctest`**:把并发测试放进一个
+  「bubble」,bubble 内时间走**假时钟**,于是「测 10 秒超时」不用真等 10 秒。
+  wlwl 已有 `SCOPE` / `STEP` / `SPAWN` 调度器与 `std.test`,这是本语言最该抄的
+  一个标准库形态 —— 但它需要虚拟时钟设计,**不是加几个函数**;
 - **UCD 数据依赖的成员合成一块做**(v0.11.2 M2 裁决):`std.text` 的
   `NFC` / `NFD` / `GRAPHEME_COUNT` / `WIDTH` 共用同一捆
   `UnicodeData` + `CompositionExclusions` + `GraphemeBreakProperty` +
@@ -605,6 +628,16 @@ CJK 或组合字符上炸。
   随附:决定做的时候必须同时定「跟哪个 Unicode 版本」与「半张表怎么办」;
 - R1 预编译快照(替代启动解析);
 - 全局内建弃用别名(`DEL` / `POP` / `OR_DIE`)到期移除。
+
+### 13.1 两条**已否决**的方向(v0.11.2 裁决,写在这里以免被重新提起)
+
+| 方向 | 裁决 | 理由 |
+|---|---|---|
+| `SORT_UNSTABLE` / 选择类原语 | **本批不加** | 现有 `SORT` 的稳定性语义是规范承诺(D11-006 的 D-6 刚把它写清),而引入不稳定排序要同时处理比较器一致性检测与「择序策略决定组间次序」的新口径 —— 那是**语义变更**,与本批「不改可观察语义」的非目标冲突。收益(大数组常数因子)不足以换一次 breaking |
+| `wlwl:std.rand` | **本批不做** | wlwl 的卖点包含**可复现**(确定性并发、规范化的格式化器、契约门禁)。一个**默认播种**的 RNG 会削弱这个卖点,而一个**要求显式播种**的 RNG 需要先裁决「全局状态 vs 显式传递」—— 那是**设计决策**,不是加几个函数。参照先例:Rust 把 `rand` 放在 `std` 之外正是这个原因 |
+
+> 两条都不是「不重要」而是「**没想清楚**」。要动它们,先出 ADR,别直接在
+> 构建计划里加成员。
 
 ## 附录 A 成员注册镜像(规范性)
 

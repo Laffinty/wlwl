@@ -15,10 +15,22 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
-## [v0.11.2] — 未发(构建中)
+## [v0.11.2] — 2026-10-02
 
-Spec: **wlwl-spec-v0.11 不变**。本批**不改语言语义** —— 只加标准库成员、修诊断定位、
-补守卫。详见 [`docs/plan/wlwl-v0.11.2-build-plan.md`](docs/plan/wlwl-v0.11.2-build-plan.md)。
+Spec: **wlwl-spec-v0.11 与 wlwl-stdlib-spec-v0.11 均不变**。本批**不改语言语义**
+—— 只加标准库成员、修诊断定位、补守卫。标准库成员面 **58 → 99**(12 个命名空间;
+`std.ai` 的 5 个成员受 `real-ai` feature 门控,默认构建可见 94)。
+
+> **为什么规范不升版**:标准库规范头部写明「v0.11 起与语言规范**同号发布**」,
+> 而本批不动语言规范 ⇒ 标准库须留在 v0.11。ADR-0023 §v0.x 1/2 只要求**可见面
+> 变更走四件套 + CHANGELOG**,**破坏性变更才需申报**;本批是纯新增(无签名改动、
+> 无语义改动、无移除),故不触发分册升版。变更登记在标准库规范的「本版变更」块。
+> 详见 [`docs/plan/wlwl-v0.11.2-build-plan.md`](docs/plan/wlwl-v0.11.2-build-plan.md)
+> §6 偏差登记 D12-011。
+
+> **本批无 breaking 变更**(ADR-0023 §v0.x 2)。唯一可能被误认为 breaking 的是
+> `std.str` / `std.math` / `std.collection` 的成员面增长 —— 那是纯新增,既有签名
+> 与语义一字未动,既有契约用例逐条仍绿。
 
 ### Added
 - **`wlwl:std.encode`(新命名空间,R2,6 成员)** —— base64(RFC 4648)、

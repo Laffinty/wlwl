@@ -6,14 +6,17 @@
 
 | 计划 | 覆盖 | 状态 |
 |---|---|---|
-| [`wlwl-v0.11.2-build-plan.md`](wlwl-v0.11.2-build-plan.md) | v0.11.2:复核缺陷修复(M0)+ 标准库四块扩展(M1–M5)+ 偏差登记 D12 | **起草于 2026-10-02,未开工** |
+| [`wlwl-v0.11.2-build-plan.md`](wlwl-v0.11.2-build-plan.md) | v0.11.2:复核缺陷修复(M0)+ 标准库四块扩展(M1–M4)+ 偏差登记 D12 | **M0–M6 全部完成,待发 tag** |
 
 > v0.11.2 计划采用**执行契约**格式(首版范式):每条陈述自带地址或证伪命令,
 > 工作项自带依赖/验收/反向守卫,状态写在文档 §8 的检查点表里。
 > **§0「使用契约」写明了格式契约本身** —— 修改该计划前先读它。
+>
+> **成员面 58 → 99**(M1–M4 四批新增,12 个命名空间;`std.ai` 的 5 个成员受
+> `real-ai` feature 门控,默认构建可见 94)。语言规范与标准库规范**均留在 v0.11**
+> —— 标准库规范头部规定「与语言规范同号发布」,而本批不改语言语义(D12-011)。
 
-**历史**:v0.11(已发布)、v0.11.1(已发布)。v0.10.x 批次已全部收口;
-`std.web` 于 2026-10-01 宣告失败并回滚。全部历史归档(语言规范 v0.6–v0.10、
+**历史**:v0.11(已发布)、v0.11.1(已发布)。v0.10.x 批次已全部收口;`std.web` 于 2026-10-01 宣告失败并回滚。全部历史归档(语言规范 v0.6–v0.10、
 构建计划、偏差登记、审查报告、日次日志)已按归档规则**合并精简**为
 `../history/` 下三份汇总:
 
@@ -30,13 +33,13 @@
 | 项 | 状态 |
 |---|---|
 | 现行规范 | [`../spec/wlwl-spec-v0.11.md`](../spec/wlwl-spec-v0.11.md)(v0.11;§10 已机制化,命名空间成员契约外迁) |
-| 现行标准库规范 | [`../stdlib/wlwl-stdlib-spec-v0.11.md`](../stdlib/wlwl-stdlib-spec-v0.11.md)(v0.11,与语言规范相互独立、分别版本化) |
+| 现行标准库规范 | [`../stdlib/wlwl-stdlib-spec-v0.11.md`](../stdlib/wlwl-stdlib-spec-v0.11.md)(v0.11;**v0.11.2 起与语言规范同号** —— 本批成员面 58→99 但无 breaking,故不升版,变更登记在册首「本版变更」块) |
 | agent 专用规范 | [`../spec/wlwl-agent-spec-v0.11.md`](../spec/wlwl-agent-spec-v0.11.md)(与上面两册**冲突时以人读规范为准**;专供 AI agent,可随时改) |
-| 最新实现 | v0.11.1 已发布 |
-| 进行中的计划 | [**v0.11.2 构建计划**](wlwl-v0.11.2-build-plan.md)(2026-10-02 起草,M0–M6 全部未开工) |
-| 下一迭代 | v0.11.2 之后:批次 B `YIELD` 续体保存(**0 细化**,开细化前须先定三件事,见 `../history/20261001.md` §1)、`std.rand` 的全局状态裁决、NFC/NFD 的 Unicode 表成本评估、建数组类成员的平方级成本(D11-012,修复属 R0 解释器工作) |
-| 门禁 | `cargo fmt --check` 0 diff;`clippy -D warnings` 0;`cargo test --locked --all-targets` **0 failed**;`cargo deny check` exit 0;`cargo doc --no-deps -D warnings` 0 error(**D11-015 之后已并入本地门禁**;注意 `cargo doc` 不接受 `-D`,须走 `$env:RUSTDOCFLAGS='-D warnings'`);`cargo check --locked -p wlwl-std --features real-ai` exit 0(S-P1-1 之后新增);probe **146** 用例 —— 146 是 `impl/tests/probe/cases/` 的**用例目录数**,由单个 `probe_suite` 函数驱动并有 `probe_case_count_matches_inventory` 守卫,**不是** `#[test]` 函数数(`--test probe` 只跑 3 个函数);附录 G 逐字节不变 |
-| 已立项范围 | v0.11:**批次 A 标准库底座**(ADR-0021/0022/0023)**已收口**;批次 B `YIELD` 续体保存**已立项但未细化**;v0.11.1:`std.web` **已终止并回滚**;v0.11.2:**已立项未开工**(缺陷修复 M0 + 标准库扩展 M1–M5) |
+| 最新实现 | v0.11.2(代码完成,待发 tag) |
+| 进行中的计划 | [**v0.11.2 构建计划**](wlwl-v0.11.2-build-plan.md) M0–M6 全部完成 |
+| 下一迭代 | 未立项。候选:批次 B `YIELD` 续体保存(**0 细化**,开细化前须先定三件事,见 `../history/20261001.md` §1)、`std.rand` 的全局状态裁决(需先出 ADR)、UCD 数据依赖成员合成一块做(需先定 Unicode 版本与「半张表怎么办」)、`std.time` 的假时钟气泡(参照 Go 1.24 `testing/synctest`)、建数组类成员的平方级成本(根因在 R0 解释器,属治本工程) |
+| 门禁 | `cargo fmt --check` 0 diff;`clippy -D warnings` 0;`cargo test --locked --all-targets` **0 failed**;`cargo deny check` exit 0;`cargo doc --no-deps -D warnings` 0 error(**D11-015 之后已并入本地门禁**;注意 `cargo doc` 不接受 `-D`,须走 `$env:RUSTDOCFLAGS='-D warnings'`);`cargo check --locked -p wlwl-std --features real-ai` exit 0(S-P1-1 之后新增);probe **152** 用例 —— 152 是 `impl/tests/probe/cases/` 的**用例目录数**,由单个 `probe_suite` 函数驱动并有 `probe_case_count_matches_inventory` 守卫,**不是** `#[test]` 函数数(`--test probe` 只跑 3 个函数);契约表 `collection` 125 / `str_math` 155 / `format` 39 / `encode` 39 / `text` 20 条;附录 G 逐字节不变 |
+| 已立项范围 | v0.11:**批次 A 标准库底座**(ADR-0021/0022/0023)**已收口**;批次 B `YIELD` 续体保存**已立项但未细化**;v0.11.1:`std.web` **已终止并回滚**;v0.11.2:**代码与文档全部完成,待发 tag** |
 
 ## 挂账项
 
@@ -44,7 +47,7 @@
 |---|---|
 | D11-004 | ~~`SORT` 的自定义比较器返回 `ERR` 时返回值被拆成载荷~~ **已了结(v0.11.1,实测证实)** —— 复核报告 §1.3 判为已修,本轮实测 `SORT([2,1],cmp)` → `IS_ERR=TRUE` / `TYPE=RESULT` / `ERR_PAYLOAD="cmp-boom"`。此前此处长期挂着,根因与三条修法见 `../history/20261001.md` |
 | D11-022 | `StdCtx::warnings` 是无人排空的死汇,`W0052` 永不浮现。**凡依赖「推一条警告就能被看到」的设计都不成立** —— 走警告通道等于静默丢弃 |
-| D12-001 – D12-007 | v0.11.2 偏差登记,见[构建计划 §6](wlwl-v0.11.2-build-plan.md) |
+| D12-001 – D12-012 | v0.11.2 偏差登记(含 2 条**已知限制**:`NFC`/`NFD` 判不等(D12-004)、`CHUNK`/`WINDOW` 的平方级上限(D12-009))。逐条状态与证据见[构建计划 §6](wlwl-v0.11.2-build-plan.md) |
 
 ## 历史归档去哪找
 
