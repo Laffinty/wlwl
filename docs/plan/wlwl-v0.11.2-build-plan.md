@@ -792,19 +792,24 @@ cargo test --locked -p wlwl-eval the_spec_table_extractor_actually_finds_the_mem
 | M2 | `std.text`(Unicode 大小写)+ `std.str` 检索(**2** 成员) | ✅ 完成 | `96a72a0` |
 | M3 | `std.collection` 扩展(**10** 成员) | ✅ 完成 | `bc2f634` |
 | M4 | `std.math` 扩展(**21** 成员) | ✅ 完成 | `d2e82f6` |
-| M5 | 排序/随机数裁决 + 登记 | ☐ 未开始 | — |
-| M6 | 收口(§7.3) | ☐ 未开始 | — |
+| M5 | 排序/随机数裁决 + 登记 | ✅ 完成 | `ed36bb6` |
+| M6 | 收口(§7.3) | ✅ 完成(待发 tag) | `ed36bb6` |
 
 > **代码面已全部落地,门禁在每个里程碑结束时各跑一遍且全绿**
-> (fmt / clippy `-D warnings` / `test --all-targets` / `cargo deny` /
+> (fmt / clippy `-D warnings` / `test --all-targets` 40 块 / `cargo deny` /
 > `RUSTDOCFLAGS` 版的 `cargo doc` / `real-ai` feature 编译 / probe 套件)。
-> 截至 M4:probe **152** 用例、契约表 `collection` **125** /
+> 截至收口:probe **152** 用例、契约表 `collection` **125** /
 > `str_math` **155** / `format` **39** / `encode` **39** / `text` **20**、
-> 附录 G **106** 条不变。
+> 附录 G **106** 条不变、标准库成员面 **58 → 99**(12 命名空间,
+> `std.ai` 的 5 个受 `real-ai` 门控,默认构建可见 94)。
 >
 > **M5 与 M6 是纯文档与决策工作**,没有代码面:前者把「不加
-> `SORT_UNSTABLE`」「不做 `std.rand`」两条裁决与 D12 登记落进规范与本表,
-> 后者做规范升版、版本号、CHANGELOG 定稿与归档。
+> `SORT_UNSTABLE`」「不做 `std.rand`」两条裁决与 D12 登记落进规范,
+> 后者定版本号、CHANGELOG 与 plan README,并**推翻本计划 §7.3 的「规范升版
+> 到 v0.12」**(D12-011)。
+>
+> **剩下唯一未由 agent 执行的动作是打 tag 并 push** —— 按维护者的既有约定
+> 「push 要由我发出」,不由 agent 代劳。发 tag **前**请再本地跑一遍 §7.1 + §7.2。
 
 ### 8.1 里程碑内的细粒度进度
 
