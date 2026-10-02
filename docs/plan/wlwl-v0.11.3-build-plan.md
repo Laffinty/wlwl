@@ -400,7 +400,7 @@ probe 用例数只增不减(`EXPECTED_CASE_COUNT` 同步);附录 A 由生成器�
 
 | 里程碑 | 内容 | 状态 | commit |
 |---|---|---|---|
-| M0 | W-01 ~ W-05(规范新章 / ADR-0024 / 调研 / N-7 / N-8) | 未动工 | — |
+| M0 | W-01 ~ W-05(规范新章 / ADR-0024 / 调研 / N-7 / N-8) | ✅ 完成(验收:§13.3 / §14 / 警示句 / 标签残留全部核实;`stdlib_appendix_a_sync` 2/2 绿;零实现代码) | `601e76b` |
 | M1 | 转义与实体 R2(`HTML_ESCAPE` / `HTML_UNESCAPE` 全表 / 归层基准 W-08) | 未动工 | — |
 | M2 | `std.encode` 哈希(`SHA256` / `HMAC_SHA256`) | 未动工 | — |
 | M3 | `HTML_SANITIZE`(策略 schema → 树构建 → 幂等性 → 契约与基准) | 未动工 | — |
