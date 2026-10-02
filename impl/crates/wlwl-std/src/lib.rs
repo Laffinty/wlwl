@@ -16,6 +16,8 @@
 //!   - `wlwl:std.agent`  — agent-shaped helpers over `std.ai`
 //!     (`TASK`, `TOOL`, `CALL_TOOL`, `MODEL`, `CONTEXT`; §15.14, Phase D3)
 //!   - `wlwl:std.format` — `FORMAT` + the shared template grammar (§15.8 / §10.6, Phase B5)
+//!   - `wlwl:std.encode` — `BASE64_ENCODE` / `BASE64_DECODE` / `HEX_ENCODE` /
+//!     `HEX_DECODE` / `URL_ENCODE` / `URL_DECODE` (v0.11.2 M1, stdlib §11)
 //!
 //! R1 语言层(纯 wlwl,`include_str!` 嵌入,eval 侧求值并缓存):
 //!   - `wlwl:std.collection` — 集合套件(§5;M3-1 起 16 成员纯 wlwl,M5 起
@@ -34,6 +36,7 @@ pub mod agent;
 pub mod ai;
 pub mod collection;
 pub(crate) mod compat;
+pub mod encode;
 pub mod format;
 pub mod fs;
 pub mod io;
@@ -241,6 +244,7 @@ pub fn resolve(path: &str) -> Option<StdBackend> {
         "wlwl:std.ai" => &ai::SPEC,
         "wlwl:std.agent" => &agent::SPEC,
         "wlwl:std.format" => &format::SPEC,
+        "wlwl:std.encode" => &encode::SPEC,
         _ => return None,
     };
     Some(StdBackend::Native(spec))
@@ -437,6 +441,7 @@ mod tests {
         &ai::SPEC,
         &agent::SPEC,
         &format::SPEC,
+        &encode::SPEC,
     ];
 
     #[test]

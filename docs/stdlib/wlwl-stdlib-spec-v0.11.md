@@ -339,7 +339,71 @@ LET(handle, wlwl:std.agent.TASK("summarize", "long text..."));
 用户作用域内裸名 `TASK` 也合法(若 `IMPORT` 引入了同名函子);全限定写法
 仅为阅读清晰度,与同名类型名 `TASK` 不构成运行时冲突(§2.1)。
 
-## 11 演进方向(非规范性)
+## 11 `std.encode` — 编码(R2,v0.11.2 新增)
+
+base64(RFC 4648 §4)、hex、percent-encoding(RFC 3986 §2)。三者都作用在
+**字节**上,而本语言的 `STRING` 是 UTF-8:编码取实参的 UTF-8 字节,解码后
+**必须**是合法 UTF-8 才交出去。
+
+### 11.1 失败口径
+
+- 元数错 `E0022`、实参类型错 `E0030`(与 §5 / §7 同款:程序员错误走原生诊断)。
+- **解码失败是域违例**,返回 `ERR(["kind": "DecodeError", "op": ..., "reason": ...])`
+  **值**。它不叫 `DomainError` —— 把「`SQRT(-1)`」和「base64 串少了一个字符」
+  归成同一个 kind 会让调用方没法区分。
+- **编码永不失败**,下表的失败列对三个 `*_ENCODE` 是 `—`。
+
+### 11.2 成员
+
+| 签名 | 说明 | 失败 |
+|------|------|------|
+| `BASE64_ENCODE(s, url_safe?)` | RFC 4648 标准字母表 + `=` 补齐;`url_safe=TRUE` 换用 URL 字母表(`+/` → `-_`) | — |
+| `BASE64_DECODE(s)` | 忽略 `CR` / `LF`(base64 常被折行嵌入);**两张字母表都收** | 非法字符、补位错位、末组残留非零位、长度不合法 → `ERR([... "DecodeError" ...])`;解出非 UTF-8 同 |
+| `HEX_ENCODE(s)` | 小写、无分隔符 | — |
+| `HEX_DECODE(s)` | 大小写都收;不忽略任何字符 | 奇数长度、非 hex 字符、解出非 UTF-8 → `ERR([... "DecodeError" ...])` |
+| `URL_ENCODE(s)` | percent-encoding;`unreserved = ALPHA / DIGIT / "-" / "." / "_" / "~"`,其余 `%XX`(大写十六进制) | — |
+| `URL_DECODE(s)` | 解 `%XX`;**`+` 不折成空格** | 截断或非法的 `%` 转义、解出非 UTF-8 → `ERR([... "DecodeError" ...])` |
+
+### 11.3 三条需要明写的设计取舍
+
+1. **解码自动识别 base64 字母表。** 标准表的 `+/` 与 URL 表的 `-_` 除这两个
+   字符外完全相同,所以「两张都收」是确定性的。Go 的 `StdEncoding.Decode` 会
+   拒 `-`、`URLEncoding.Decode` 会拒 `+`;本成员比它们宽。混用 `+/` 与 `-_`
+   的串也能解,这是有意的放宽。
+2. **`+` 按 RFC 3986 读,不折成空格。** `+` → 空格是
+   `application/x-www-form-urlencoded` 的规则。Go 的 `url.QueryUnescape` 做这个
+   替换,`url.PathUnescape` 不做;本成员对标后者。表单编码请自己处理。
+3. **解码不做有损替换。** wlwl 没有字节类型,解出的非法字节没有能诚实表达的
+   返回形态。与其 `to_string_lossy` 换成 `U+FFFD` 骗调用方,不如报
+   `DecodeError`。这同时意味着**不能通过 `STRING` 携带任意二进制** ——
+   要传二进制得先 base64/hex,再在对面解回 `STRING`。
+
+### 11.4 RFC 测试向量(规范正文的一部分,不是实现细节)
+
+base64 编码的期望值取自 RFC 4648 §10 的表,**不复制实现输出**:
+
+| 输入 | 标准 | URL-safe |
+|---|---|---|
+| `""` | `""` | `""` |
+| `f` | `Zg==` | `Zg==` |
+| `fo` | `Zm8=` | `Zm8=` |
+| `foo` | `Zm9v` | `Zm9v` |
+| `foob` | `Zm9vYg==` | `Zm9vYg==` |
+| `fooba` | `Zm9vYmE=` | `Zm9vYmE=` |
+| `foobar` | `Zm9vYmFy` | `Zm9vYmFy` |
+
+最后一行的「URL-safe 与标准不同」用 0xFB 0xFF 演示(标准 `+/8=` / URL `-_8=`)——
+但那**不是合法的 UTF-8**,而 wlwl 的 `STRING` 是 UTF-8,所以这个向量只存在于
+`wlwl-std` 的 Rust 侧单测,不在语言层可达。语言层能观察到的 URL-safe 分歧用
+`U+083F`(UTF-8 字节 `E0 A0 BF`):标准 `4KC/`,URL-safe `4KC_`。
+
+> 取码点的方法(留给下一个要加向量的人):**不要手算**。用参考实现枚举 ——
+> `for cp in 0x80..0xFFFF` 取每个码点的 UTF-8 字节,喂
+> `[Convert]::ToBase64String`,挑第一个结果里含 `+/` 的。2 字节 UTF-8
+> (U+0080–U+07FF)**永远**产生不出 `+/`(首 6 位恒为 `110xxx`,落在索引
+> 48–55),必须从 3 字节起找。起草本节时手算过一次,算错了,以参考实现为准。
+
+## 12 演进方向(非规范性)
 
 - `std.ai` / `std.agent` 降级为官方包,移出 `wlwl:std.*`(业界先例:Rust /
   Julia 的 std 小核心原则);
@@ -366,6 +430,7 @@ LET(handle, wlwl:std.agent.TASK("summarize", "long text..."));
 | `std.fs` | `READ_FILE` `WRITE_FILE` `EXISTS` | R2 | v0.10 及以前 |
 | `std.json` | `PARSE` `STRINGIFY` | R2 | v0.10 及以前 |
 | `std.format` | `FORMAT` | R2 | v0.10 及以前 |
+| `std.encode` | `BASE64_ENCODE` `BASE64_DECODE` `HEX_ENCODE` `HEX_DECODE` `URL_ENCODE` `URL_DECODE` | R2 | v0.11.2 |
 | `std.collection` | `MAP` `FILTER` `REDUCE` `SORT` `SORT_BY` `ZIP` `RANGE` `ANY` `ALL` `FIND` `ENUMERATE` `TAKE` `DROP` `FLAT` `UNIQ` `GROUP_BY` `JOIN` | 混合(R1 门面 + R2 `RANGE`) | v0.10 及以前(成员)/ v0.11(R1 重写,M5 起 RANGE 沉 R2) |
 | `std.str` | `JOIN` `SPLIT_LINES` `CHAR_AT` `COUNT` `QUOTE` | R1 | v0.11 |
 | `std.math` | `ABS` `MIN` `MAX` `FLOOR` `CEIL` `ROUND` `SQRT` `POW` `CLAMP` `PI` `E` | 混合 | v0.11 |

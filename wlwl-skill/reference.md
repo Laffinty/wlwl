@@ -203,11 +203,41 @@ Uncaught ERR → `E0102`, exit 1.
 
 Full member lists live with the v0.11 namespaces: `std.collection` /
 `std.json` / `std.fs` / `std.test` / `std.format` / `std.io` / `std.ai` /
-`std.agent` are listed in `SKILL.md` "Standard library pointers"; the two
+`std.agent` / `std.encode` are listed in `SKILL.md` "Standard library pointers"; the two
 **v0.11-new** namespaces `std.str` and `std.math` have signed tables in §25
 below. Concurrent and OOP primitives are **global**, not under `wlwl:std.*`.
 The authoritative registry of every global builtin (106 entries) is
 `../docs/appendix_G.md`.
+
+### §9.1 `wlwl:std.encode` (stdlib §11, v0.11.2)
+
+All six members take/return `STRING` and work on its **UTF-8 bytes**.
+`STRING` is not a byte buffer: a round trip preserves text, not arbitrary
+binary — to carry binary, encode on this side and decode on the other.
+
+| Member | Notes |
+|---|---|
+| `BASE64_ENCODE(s, url_safe?)` | RFC 4648. `url_safe=TRUE` swaps `+/` → `-_`. Never fails. |
+| `BASE64_DECODE(s)` | Accepts **both** alphabets (wider than Go's two `Encoding`s) and ignores `\r` / `\n`. |
+| `HEX_ENCODE(s)` | Lowercase, no separator. Never fails. |
+| `HEX_DECODE(s)` | Accepts upper- and lowercase digits. |
+| `URL_ENCODE(s)` | RFC 3986; unreserved set is `ALPHA / DIGIT / "-" / "." / "_" / "~"`. |
+| `URL_DECODE(s)` | **`+` stays literal** — that is `application/x-www-form-urlencoded`, not RFC 3986. |
+
+**Failure split** (this is the part worth memorizing): encode never fails;
+decode failures are `ERR` **values** carrying `kind = "DecodeError"` with an
+`op` and a `reason`. Arity and type mistakes stay native diagnostics
+(`E0022` / `E0030`). A decode that yields invalid UTF-8 is a `DecodeError`
+rather than a lossy `U+FFFD` substitution — so
+`AT_K(ERR_PAYLOAD(BASE64_DECODE(s)), "kind", "?")` is the way to inspect it.
+`AT_K` is **not** an ERR consumer; without `ERR_PAYLOAD` the ERR propagates
+to `E0102`.
+
+> *Measured on wlwl 0.11.2 (2026-10-02):* `BASE64_ENCODE("foobar")` =
+> `Zm9vYmFy`; `URL_ENCODE("a b&c=d")` = `a%20b%26c%3Dd`; `URL_DECODE("a+b")` =
+> `a+b`; `BASE64_DECODE("!!!")` → `ERR([kind: DecodeError, ...])`. Full vector
+> table in `../docs/stdlib/wlwl-stdlib-spec-v0.11.md` §11.4; the base64
+> expectations are copied from RFC 4648 §10, not from this implementation.
 
 ## §10. Error codes (§11.2, §11.3)
 

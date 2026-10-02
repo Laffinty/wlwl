@@ -15,6 +15,70 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [v0.11.2] — 未发(构建中)
+
+Spec: **wlwl-spec-v0.11 不变**。本批**不改语言语义** —— 只加标准库成员、修诊断定位、
+补守卫。详见 [`docs/plan/wlwl-v0.11.2-build-plan.md`](docs/plan/wlwl-v0.11.2-build-plan.md)。
+
+### Added
+- **`wlwl:std.encode`(新命名空间,R2,6 成员)** —— base64(RFC 4648)、
+  hex、percent-encoding(RFC 3986)。零第三方依赖,手写约 120 行。
+  - **失败口径分两类**:编码永不失败;**解码失败返 `ERR` 值**
+    (`kind = "DecodeError"`,带 `op` / `reason`),而元数错 / 类型错仍是原生诊断
+    `E0022` / `E0030`。`kind` 不叫 `DomainError` —— 把「`SQRT(-1)`」和
+    「base64 少一个字符」归成同一 kind,调用方就没法分。
+  - **解码不做有损替换**:解出的字节不是合法 UTF-8 时报 `DecodeError`,而不是
+    替换成 `U+FFFD`。连带结论:wlwl 的 `STRING` 不是字节缓冲,跨语言传二进制
+    要走「这边编码、那边解回文本」。
+  - **base64 解码收两张字母表**(`+/` 与 `-_`),比 Go 的两个 `Encoding` 宽 ——
+    两表除这两个字符外完全相同,判定确定。
+  - **`URL_DECODE` 的 `+` 不折成空格**:那是 `application/x-www-form-urlencoded`
+    的规则,不是 RFC 3986 的。
+  - 规范 §11(含 §11.4 的 RFC 向量表),附录 A 镜像已由 `gen-appendix-a` 重生成;
+    `tests/encode_contract.rs` 39 条用例,**期望值取自 RFC 4648 §10 / RFC 3986 §2,
+    不是实现输出**;probe +2(144 → 148)。
+
+### Fixed
+- **`E0014`(`YIELD used outside a step context`)的 span 指向文件首**(复核 N-5):
+  实测第 3 行的 `YIELD();` 被报成 `1:1`,用户无从定位。`Signal::Yield` 不带 span
+  而 `Signal` 有几十处构造点,给整个枚举加 span 是大改;改走
+  `eval_call` 已设好的 `current_span` 旁路。实测 `1:1` → `3:1`。
+- **软警告一律渲染成无行列**:`Warning` 结构体**没有 span 字段**,`main.rs` 的
+  `report_eval_warnings` 只能硬挂 `Location::point(file, 0, 0)` —— `W0051` /
+  `W0030` / `W0066` / `W0065` 全是「有文件名、没有行列」。补上 `span` 字段后
+  `W0051` 实测 `0:0` → `3:1`。
+- **补「注入了但无调用点」的反向守卫**(复核 N-2):`CHANGELOG` v0.11.1 声称修死注入
+  时「并补反向守卫」,但既有守卫只锁 `KERNELS ⊆ 注入` **一个方向**;有人把死内核
+  同时加回 `KERNELS` 与注入表,全部门禁照绿 —— 这正是 `_DIAG_E0038` 当初能活下来的形状。
+  匹配先剥注释与字符串:门面头注释**逐条列出本模块注入的每个 kernel 名**,
+  `collection.wll` 里还记着已删的 `_DIAG_E0038`,朴素 `contains()` 恰好会拿
+  「解释这次删除原因的散文」当成现存调用点。不要求左括号:`_RANGE` / `_EXPECT_ERR`
+  是裸标识符改名导出(`LET(RANGE, _RANGE);`)。带负向自检,防守卫退化成恒真断言。
+- **`FORMAT` 对 `RESULT` 的双路径写清楚了**(复核 N-3):全局 `FORMAT("{0}", OK(1))`
+  渲染 `OK(1)`,`wlwl:std.format` 成员渲染 `1` —— 规范 §4 原称「同一函数」,在
+  `RESULT` 上不成立。**裁决:保留差异,只写口径**。两条路径分属 eval 侧与 std 边界
+  两处实现,统一是行为变更而非文档债。规范补 §4.1,新建
+  `tests/format_contract.rs` 锁住两个输出 —— 目的是防止后续「好心统一」这个
+  有意保留的差异。
+- **复核报告的两处失真留在原地会误导下一个 agent**:N-4(退出码表缺 2/3)实测
+  **不实** —— `reference.md:277-291` 早已收录五档;N-1 给的 `SLICE` 替代方案实测
+  对字符串报 `E0030`。更正写在
+  [`docs/review/wlwl-v0.11.1-recheck.md`](docs/review/wlwl-v0.11.1-recheck.md)
+  顶部(正文未改)。
+- **`RUN_TESTS` 在任务内挂起的行为从「只有静态守卫」升格为动态已证**(复核 §1.2
+  后半那条未能复现的判定):实测任务内 `RUN_TESTS` 返回 `NULL` 而非结果数组,
+  即 stdlib §8「不产出任何记录」成立;顶层变体报 `E0014` 并终止。probe +2。
+
+### 文档与流程
+- **探针书写规范**进 `CONTRIBUTING.md` 与 wlwl-skill:引用模块成员的片段必须自带
+  `IMPORT`(名字是不是全局内建**只**以 `docs/appendix_G.md` 为准),诊断消息不许
+  凭记忆写。起因是 v0.11.1 复核报告里三处「实测 ✓」的探针缺前置、原样跑不起来。
+- **skill 的 `SUB` 迁移公式**修正并补 `examples/sub_migration.wll` 门禁(用
+  `PANIC` 而非 `RUN_TESTS` —— 后者失败时退出码仍是 0,拦不住 CI)。
+- **v0.11.1 复核报告的四个 P1「已修」判定经本批复核属实**,其中 `real-ai` 特性的
+  编译验证由本批补齐(报告当时只做了静态推断,`cargo check --locked -p wlwl-std
+  --features real-ai` 实测 exit 0)。
+
 ## [v0.11.1] — 2026-10-01
 
 Spec: **wlwl-spec-v0.11**(未变)。本版是 v0.11.0 审查

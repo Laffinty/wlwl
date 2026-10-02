@@ -588,6 +588,7 @@ Categories (the per-namespace tables live in `reference.md` §9 and §25):
 - **Global builtins (§10.2–§10.5 + §10.7 + §10.9 + §13–§17)**: `PRINT`, `PRINT_ERR`, `INPUT`, `LEN`, `TYPE`, `STR`, `INT`, `FLOAT`, `BOOL`, container ops, string ops, `FORMAT`, `AT_K`/`POP`, OOP (`CLASS`/`NEW`/`THIS`/`GET_PROP`/`SET_PROP`/`CALL_METHOD`), and the §17 concurrency set.
 - **`wlwl:std.collection`** (§10.6): `MAP`, `FILTER`, `REDUCE`, `SORT`, `SORT_BY`, `RANGE`, `ZIP`, `ENUMERATE`, `TAKE`, `DROP`, `FLAT`, `UNIQ`, `GROUP_BY`, `ANY`, `ALL`, `FIND`, `JOIN`.
 - **`wlwl:std.json`** (§10.8): `STRINGIFY`, `PARSE`.
+- **`wlwl:std.encode`** (stdlib §11, **v0.11.2 new**): `BASE64_ENCODE`, `BASE64_DECODE`, `HEX_ENCODE`, `HEX_DECODE`, `URL_ENCODE`, `URL_DECODE` — see `reference.md` §9.1. Encoding never fails; **decode failures are `ERR` values** with `kind = "DecodeError"`, not native diagnostics. Arity/type mistakes are `E0022`/`E0030`. `URL_DECODE` keeps `+` literal (RFC 3986, not form encoding); `BASE64_DECODE` accepts **both** alphabets and ignores CR/LF.
 - **`wlwl:std.fs`** (§10.8): `WRITE_FILE`, `READ_FILE`, `EXISTS`.
 - **`wlwl:std.str`** (stdlib §6, **v0.11 new**): `JOIN`, `SPLIT_LINES`, `CHAR_AT`, `COUNT`, `QUOTE` — see `reference.md` §25.
 - **`wlwl:std.math`** (stdlib §7, **v0.11 new**): `ABS`, `MIN`, `MAX`, `FLOOR`, `CEIL`, `ROUND`, `SQRT`, `POW`, `CLAMP`, `PI`, `E` — see `reference.md` §25.

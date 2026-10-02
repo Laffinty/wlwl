@@ -1,0 +1,26 @@
+IMPORT("wlwl:std.encode", ["BASE64_ENCODE", "BASE64_DECODE", "HEX_ENCODE", "HEX_DECODE", "URL_ENCODE", "URL_DECODE"]);
+
+// RFC 4648 §10 的官方向量,逐条照抄 —— 期望值不取自实现输出。
+PRINT("b64 ''      -> [", BASE64_ENCODE(""), "]");
+PRINT("b64 f       -> [", BASE64_ENCODE("f"), "]");
+PRINT("b64 fo      -> [", BASE64_ENCODE("fo"), "]");
+PRINT("b64 foo     -> [", BASE64_ENCODE("foo"), "]");
+PRINT("b64 foob    -> [", BASE64_ENCODE("foob"), "]");
+PRINT("b64 fooba   -> [", BASE64_ENCODE("fooba"), "]");
+PRINT("b64 foobar  -> [", BASE64_ENCODE("foobar"), "]");
+
+// URL-safe 分歧只在产生 `+/` 的输入上可见;2 字节 UTF-8 永远产生不出来。
+// U+083F 的 UTF-8 字节是 E0 A0 BF ⇒ 标准 `4KC/`、URL-safe `4KC_`。
+LET(pua, FROM_CODEPOINTS([2111]));
+PRINT("b64 url divergence: ", BASE64_ENCODE(pua), " vs ", BASE64_ENCODE(pua, TRUE));
+
+PRINT("roundtrip: ", BASE64_DECODE(BASE64_ENCODE("Hello, 世界")));
+PRINT("hex: ", HEX_ENCODE("Hi"), " -> ", HEX_DECODE("4869"));
+PRINT("url: ", URL_ENCODE("a b&c=d"));
+PRINT("url back: ", URL_DECODE("a%20b%26c%3Dd"));
+PRINT("plus is literal: ", URL_DECODE("a+b"));
+
+// 解码失败是 ERR 值,不是原生诊断 —— §11.1。
+LET(bad, BASE64_DECODE("!!!"));
+PRINT("decode failure is ERR: ", IS_ERR(bad));
+PRINT("kind: ", AT_K(ERR_PAYLOAD(bad), "kind", "?"));

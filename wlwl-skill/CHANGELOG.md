@@ -3,6 +3,31 @@
 Skill-bundle changes (spec lives at `../docs/spec/wlwl-spec-v0.11.md`
 and is authoritative).
 
+## [Unreleased] — v0.11.2 批次
+
+语言规范仍冻结在 v0.11;本批只加标准库成员与修正文案。
+
+### Fixed
+- **`SUB` 迁移公式的「修复」此前无效(N-1)**:0.11.0 那次把公式从
+  `-(start, end_old)` 改成 `NEG(-(end_old, start))`,但 `NEG` 把刚算对的
+  长度再取负 —— 与旧式**代数恒等**,产出负长度、`SUB` 返回 `""`。本批改为
+  `SUB(s, start, -(end_old, start))`,并写明「不要包 `NEG`」。
+- **删掉 `SLICE` 替代方案**:该建议在本批实测中被证伪 —— `SLICE` 首参必须是
+  `ARRAY`,对字符串报 `E0030`;而 `E0030` 是原生诊断,任何 §8.3 消费者都拦不住,
+  照此「迁移」的程序不是降级而是从此中止。
+- 新增 `examples/sub_migration.wll`:上述两条各有断言,且门禁用 `PANIC` 而非
+  `RUN_TESTS` —— 实测 `RUN_TESTS` 失败**退出码仍是 0**,拦不住 CI。
+
+### Added
+- **`wlwl:std.encode` 收录**(`reference.md` §9.1、`SKILL.md` 指针表):六个成员、
+  失败口径(`DecodeError` 的 ERR 值 vs `E0022`/`E0030` 原生诊断)、`+` 不折成
+  空格、base64 解码两张字母表都收 —— 四条都是容易记反的地方。
+
+### 纪律
+- **未跑过的代码块就是假设**:引用模块成员的片段必须自带 `IMPORT`(名字是全局
+  内建**只**以 `../docs/appendix_G.md` 为准),诊断消息不许凭记忆写。本包与
+  `CONTRIBUTING.md` 同条规矩,起因见 v0.11.1 复核报告里三处缺前置的探针。
+
 ## [0.11.0] — 2026-10-01
 
 对齐 v0.11.0 实现与 v0.11 规范。此前本包停在 0.10.1,**v0.11 的全部用户可见增量零收录**。

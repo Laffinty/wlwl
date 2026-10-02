@@ -30,6 +30,7 @@ const NAMESPACE_META: &[(&str, &str, &str)] = &[
     ("wlwl:std.fs", "R2", "v0.10 及以前"),
     ("wlwl:std.json", "R2", "v0.10 及以前"),
     ("wlwl:std.format", "R2", "v0.10 及以前"),
+    ("wlwl:std.encode", "R2", "v0.11.2"),
     (
         "wlwl:std.collection",
         // [v0.11 M5] 16 成员 R1 + `RANGE` 归 R2。层归属变更不算破坏性变更

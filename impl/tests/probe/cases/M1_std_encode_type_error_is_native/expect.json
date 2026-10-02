@@ -1,0 +1,12 @@
+{
+ "exit": 1,
+ "contains": [
+  "E0030",
+  "HEX_ENCODE: expected string, got integer",
+  "main.wll:10:7"
+ ],
+ "not_contains": [
+  "after"
+ ],
+ "_why": "v0.11.2 M1。钉住 std.encode 失败口径的**另一半**:类型错必须走原生诊断 E0030 并终止运行,与 `M1_std_encode_rfc4648` 里「解码失败返 ERR 值」形成对照。两类混在一起,调用方就只能用一把 IS_ERR 抓所有错误,分不出「我传错了」和「数据坏了」。`main.wll:10:7` 是 span 断言 —— 指向 `HEX_ENCODE` 的调用位置(W-04 之后诊断带真实 span,不再是 0:0);`not_contains: after` 证明运行真的终止了。"
+}

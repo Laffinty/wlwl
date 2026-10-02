@@ -754,8 +754,8 @@ cargo test --locked -p wlwl-eval the_spec_table_extractor_actually_finds_the_mem
 
 | 里程碑 | 内容 | 状态 | commit |
 |---|---|---|---|
-| M0 | W-01 ~ W-07(缺陷修复) | 🟡 **代码完成,门禁待确认** | — |
-| M1 | `std.encode`(6 成员) | ☐ 未开始 | — |
+| M0 | W-01 ~ W-07(缺陷修复) | ✅ 完成 | `1605f69` |
+| M1 | `std.encode`(6 成员) | ✅ 代码完成,门禁待确认 | — |
 | M2 | `std.text`(Unicode 大小写)+ `std.str` 检索(3 成员) | ☐ 未开始 | — |
 | M3 | `std.collection` 扩展(8 成员) | ☐ 未开始 | — |
 | M4 | `std.math` 扩展(13 成员) | ☐ 未开始 | — |
@@ -764,15 +764,43 @@ cargo test --locked -p wlwl-eval the_spec_table_extractor_actually_finds_the_mem
 
 ### 8.1 里程碑内的细粒度进度
 
+**M0**(commit `1605f69`)
+
 | 工作项 | 状态 | 实际产出 | 备注 |
 |---|---|---|---|
-| **W-01** | ✅ 完成 | `reference.md:338-346`、`SKILL.md:631`、`examples/sub_migration.wll`(新)、`README.md` 示例表 | 门禁用 `PANIC` 而非 `RUN_TESTS` —— 实测 `RUN_TESTS` 失败**退出码仍是 0**,拦不住 CI。计划里原写的验收模式是错的,已改 |
-| **W-02** | ✅ 完成 | `stdlib_mirror.rs` 新增 2 条测试 | 匹配必须**剥注释**:门面头注释逐条列 kernel 名,`collection.wll` 注释里还记着已删的 `_DIAG_E0038`;朴素 `contains()` 恰好会掩盖要防的回归。**不能要求 `(`**:`_RANGE` / `_EXPECT_ERR` 是裸标识符改名导出 |
-| **W-03** | ✅ 完成 | stdlib 规范 §4.1、新建 `tests/format_contract.rs` | 我最初把 `E0102` 消息猜成 `top-level ERR reached the top level uncaught`,实测是 `unhandled ERR escaped to top level: x` —— 又一次印证「期望值不许凭记忆写」 |
-| **W-04** | ✅ 完成 | `Evaluator::last_yield_span`、`Warning::span`、`main.rs::report_eval_warnings`、2 条守卫 | `Warning` 结构体原本**没有 span 字段**,`main.rs:519` 硬编码 `0:0`。给 `Signal` 加 span 是大改(几十处构造点),改走 `current_span` 旁路。实测 `E0014` `1:1`→`3:1`,`W0051` `0:0`→`3:1` |
-| **W-05** | ✅ 完成 | `wlwl-v0.11.1-recheck.md` 顶部新增更正节 | 正文未改(历史记录不改写) |
-| **W-06** | ✅ 完成 | `CONTRIBUTING.md`「Coding conventions」、`SKILL.md` 验证窗口条目 | — |
-| **W-07** | ✅ 完成 | 2 个 probe 用例 + `EXPECTED_CASE_COUNT` 144→146 | 任务内实测 `in-task result: NULL` ⇒ 报告 §1.2 的判定**成立**。顶层那条的 span 是 `4:24` 不是 `9:24` —— `YIELD()` 在 TEST 注册行,且**只有 RUN_TESTS 真跑起来才传播** |
+| **W-01** | ✅ | `reference.md:338-346`、`SKILL.md:631`、`examples/sub_migration.wll`(新)、`README.md` 示例表 | 门禁用 `PANIC` 而非 `RUN_TESTS` —— 实测 `RUN_TESTS` 失败**退出码仍是 0**,拦不住 CI。计划里原写的验收模式是错的,已改 |
+| **W-02** | ✅ | `stdlib_mirror.rs` 新增 2 条测试 | 匹配必须**剥注释**:门面头注释逐条列 kernel 名,`collection.wll` 注释里还记着已删的 `_DIAG_E0038`;朴素 `contains()` 恰好会掩盖要防的回归。**不能要求 `(`**:`_RANGE` / `_EXPECT_ERR` 是裸标识符改名导出 |
+| **W-03** | ✅ | stdlib 规范 §4.1、新建 `tests/format_contract.rs` | 我最初把 `E0102` 消息猜成 `top-level ERR reached the top level uncaught`,实测是 `unhandled ERR escaped to top level: x` |
+| **W-04** | ✅ | `Evaluator::last_yield_span`、`Warning::span`、`main.rs::report_eval_warnings`、2 条守卫 | `Warning` 结构体原本**没有 span 字段**,`main.rs:519` 硬编码 `0:0`。给 `Signal` 加 span 是大改(几十处构造点),改走 `current_span` 旁路。实测 `E0014` `1:1`→`3:1`,`W0051` `0:0`→`3:1` |
+| **W-05** | ✅ | `wlwl-v0.11.1-recheck.md` 顶部新增更正节 | 正文未改(历史记录不改写) |
+| **W-06** | ✅ | `CONTRIBUTING.md`、`SKILL.md` 验证窗口条目 | — |
+| **W-07** | ✅ | 2 个 probe 用例 + `EXPECTED_CASE_COUNT` 144→146 | 任务内实测 `in-task result: NULL` ⇒ 报告 §1.2 的判定**成立**。顶层那条的 span 是 `4:24` 不是 `9:24` |
+
+**M1 · `wlwl:std.encode`**
+
+| 落点 | 状态 |
+|---|---|
+| ① 规范 §11 成员表(含 §11.4 RFC 向量) | ✅ §11 新增,原 §11 演进方向顺延为 §12 |
+| ② 附录 A 镜像 | ✅ `cargo run --bin gen-appendix-a` 重生成,`stdlib_appendix_a_sync` 绿 |
+| ③ `src/encode.rs` 的 `SPEC.functions` | ✅ 6 成员 |
+| ④ 契约测试硬编码成员数 | ✅ 新建 `tests/encode_contract.rs`(39 用例 + 成员集对账 + 文档在位守卫) |
+| ⑤ `ALL_SPECS` + `NAMESPACE_META` + `resolve()` + crate catalog | ✅ 四处都登记(`every_module_is_listed_in_the_crate_catalog` 绿) |
+| ⑥ probe 用例 | ✅ +2(146 → 148) |
+| ⑦ 附录 G | **不适用** —— 成员不是全局内建 |
+| ⑧ skill 成员指针 | ✅ `SKILL.md` 指针表 + `reference.md` §9.1 + skill CHANGELOG |
+| ⑨ `CHANGELOG.md` | ✅ |
+
+**M1 实施中偏离计划的三处**
+
+1. **失败格的 `kind` 用了新值 `DecodeError` 而非计划里写的「`E0071` 同族」**。
+   `E0071` 是 `STRINGIFY` 的原生诊断码,与「解码失败」不是一回事;
+   `DecodeError` 与 `kernels.rs` 的 `DomainError` 同构,分得清「数据坏了」和「算错了」。
+2. **base64 解码自动识别字母表**(比 Go 的两个 `Encoding` 宽)。两表除 `+/` 与 `-_`
+   外完全相同,判定确定;已在 §11.3-1 写明这是有意放宽。
+3. **§11.4 的 URL-safe 演示码点从计划没指定的具体值改为 U+083F**。
+   我第一版手算成 U+F0FF → `AAC/` —— **算错了**;用 .NET 的
+   `[Convert]::ToBase64String` 枚举后得到 U+083F(E0 A0 BF)→ `4KC/`。
+   §11.4 里留了「不要手算」的取码点方法。
 
 ---
 

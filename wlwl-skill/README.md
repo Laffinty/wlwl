@@ -126,7 +126,9 @@ wlwl run wlwl-skill/examples/oop.wll
   wlwl-spec-v0.11 — v0.6 core + v0.7 §17 concurrency + v0.8 clarifications
   + v0.9 true-suspension / OOP / session types / linear THIS
   + v0.10 static contracts (annotations, module signatures, MATCH checks)
-  carried over unchanged into v0.11.
+  carried over unchanged into v0.11. The **language spec is frozen at v0.11**;
+  v0.11.2 adds standard-library members only (`wlwl:std.encode`), so nothing
+  in the language surface moves.
 - **Out of scope**: the Rust implementation (`impl/`), formatter design,
   ADRs, release engineering. For those, read the repo docs directly.
 
