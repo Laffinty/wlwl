@@ -1,7 +1,7 @@
 # writing-wlwl skill bundle
 
 Claude Skills-format bundle for authoring **WLWL v0.11** `.wll` sources
-(impl 0.11.0; spec `wlwl-spec-v0.11`).
+(impl 0.11.2; spec `wlwl-spec-v0.11`).
 
 ```
 wlwl-skill/
