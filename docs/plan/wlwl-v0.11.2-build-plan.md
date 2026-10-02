@@ -774,12 +774,23 @@ cargo test --locked -p wlwl-eval the_spec_table_extractor_actually_finds_the_mem
 | 里程碑 | 内容 | 状态 | commit |
 |---|---|---|---|
 | M0 | W-01 ~ W-07(缺陷修复) | ✅ 完成 | `1605f69` |
-| M1 | `std.encode`(6 成员) | ✅ 代码完成,门禁待确认 | — |
-| M2 | `std.text`(Unicode 大小写)+ `std.str` 检索(**2** 成员) | ✅ 代码完成,门禁待确认 | — |
-| M3 | `std.collection` 扩展(**10** 成员) | ✅ 代码完成,门禁待确认 | — |
-| M4 | `std.math` 扩展(**21** 成员) | ✅ 代码完成,门禁待确认 | — |
+| M1 | `std.encode`(6 成员) | ✅ 完成 | `94fc279` |
+| M2 | `std.text`(Unicode 大小写)+ `std.str` 检索(**2** 成员) | ✅ 完成 | `96a72a0` |
+| M3 | `std.collection` 扩展(**10** 成员) | ✅ 完成 | `bc2f634` |
+| M4 | `std.math` 扩展(**21** 成员) | ✅ 完成 | `d2e82f6` |
 | M5 | 排序/随机数裁决 + 登记 | ☐ 未开始 | — |
 | M6 | 收口(§7.3) | ☐ 未开始 | — |
+
+> **代码面已全部落地,门禁在每个里程碑结束时各跑一遍且全绿**
+> (fmt / clippy `-D warnings` / `test --all-targets` / `cargo deny` /
+> `RUSTDOCFLAGS` 版的 `cargo doc` / `real-ai` feature 编译 / probe 套件)。
+> 截至 M4:probe **152** 用例、契约表 `collection` **125** /
+> `str_math` **155** / `format` **39** / `encode` **39** / `text` **20**、
+> 附录 G **106** 条不变。
+>
+> **M5 与 M6 是纯文档与决策工作**,没有代码面:前者把「不加
+> `SORT_UNSTABLE`」「不做 `std.rand`」两条裁决与 D12 登记落进规范与本表,
+> 后者做规范升版、版本号、CHANGELOG 定稿与归档。
 
 ### 8.1 里程碑内的细粒度进度
 
