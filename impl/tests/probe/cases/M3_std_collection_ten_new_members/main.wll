@@ -15,7 +15,9 @@ PRINT("DEDUP key  = ", DEDUP_BY(["aa", "ab", "b", "ba"], FUN((s), SUB(s, 0, 1)))
 // ── 极值返**元素**,不是键 ──
 PRINT("MIN_BY     = ", MIN_BY(a, FUN((x), -(x, 10))));
 PRINT("MAX_BY     = ", MAX_BY(a, FUN((x), -(x, 10))));
-PRINT("MIN_BY []  = ", MIN_BY([], FUN((x), x)));
+// 空 key 不容忍 NULL(D12-013):用 LEN 而非恒等 —— 恒等 key 会掩盖
+// 「空数组把 NULL 喂进 key」的回归(LEN(NULL) 是 E0030,恒等返回 NULL)。
+PRINT("MIN_BY []  = ", MIN_BY([], FUN((s), LEN(s))));
 
 // MIN_BY 与 SORT_BY 的首元素逐字相等 —— 用的是同一个比较原语。
 LET(k, FUN((x), -(x, 10)));

@@ -15,6 +15,15 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Fixed
+
+- **`MIN_BY` / `MAX_BY` 空数组中止运行,违反 stdlib §5「空数组得 `NULL`」**(v0.11.2
+  复核 N-6,偏差 D12-013)。`_EXTREME_BY` 的空数组守卫写成了 `<(LEN(arr), 0)` ——
+  恒假,空数组照样把 `NULL` 喂给 key 函数,普通 key(如 `LEN`)直接
+  `E0030` 中止;只有恒等 key 这类「对 NULL 免疫」的调用方才碰巧拿到 NULL。
+  已改 `==(LEN(arr), 0)`,返回先于碰 key;契约表新增两条**严格 key** 的空数组
+  用例(原有恒等 key 用例对本缺陷零防护,保留),probe 对照行同步换用严格 key。
+
 ## [v0.11.2] — 2026-10-02
 
 Spec: **wlwl-spec-v0.11 与 wlwl-stdlib-spec-v0.11 均不变**。本批**不改语言语义**

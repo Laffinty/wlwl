@@ -560,6 +560,20 @@ const CASES: &[Case] = &[
         src: r#"IMPORT("wlwl:std.collection", ["MAX_BY"]); MAX_BY([], FUN((x), x))"#,
         expect: "NULL",
     },
+    // 空数组的 NULL 必须发生在**碰 key 之前**(§5 明文,不以 key 的容忍度为条件)。
+    // 上面两条的恒等 key(`FUN((x), x)`)对 NULL 免疫 —— `key(NULL)` 照样返回
+    // NULL,守不住「NULL 被喂进 key」这一回归;对 NULL 不容忍的 key(LEN 会
+    // E0030)才是这条契约的探针。D12-013。
+    Case {
+        name: "min_by_empty_array_strict_key_still_null",
+        src: r#"IMPORT("wlwl:std.collection", ["MIN_BY"]); MIN_BY([], FUN((s), LEN(s)))"#,
+        expect: "NULL",
+    },
+    Case {
+        name: "max_by_empty_array_strict_key_still_null",
+        src: r#"IMPORT("wlwl:std.collection", ["MAX_BY"]); MAX_BY([], FUN((s), LEN(s)))"#,
+        expect: "NULL",
+    },
     // MIN_BY / MAX_BY 定义成 SORT_BY 的首 / 末元素 ⇒ 与 SORT_BY 不可能打架。
     // 注意比较要写 `==(a, b)`:本语言**没有中缀运算符**。
     Case {

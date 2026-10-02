@@ -461,11 +461,14 @@ LET(DEDUP_BY, FUN((*args),
 //
 // 空数组得 NULL(与 `FIND` 无命中同一族)。首个元素的键先算一次;
 // 它抛 `ERR` 时原样传播,与 `SORT_BY` 对 `key` 的处理一致。
+// 空数组判据必须 `== 0`(判负数恒假):返回必须发生在 **碰 key 之前** ——
+// key 对 `NULL` 未必有定义(`LEN(NULL)` 是 E0030),而 §5 的「空数组得 NULL」
+// 不以 key 的容忍度为条件。
 LET(_EXTREME_BY, FUN((name, args, want_min),
     (_NEED_ARITY(name, args, 2, 2);
      LET(arr, _NEED_ARR(name, AT(args, 0, NULL)));
      LET(key, _NEED_FN(name, AT(args, 1, NULL)));
-     IF(<(LEN(arr), 0),
+     IF(==(LEN(arr), 0),
         NULL,
         (LET MUT(best, AT(arr, 0, NULL));
          LET MUT(bestk, CALL(key, AT(arr, 0, NULL)));
