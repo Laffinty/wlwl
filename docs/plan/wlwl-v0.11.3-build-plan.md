@@ -389,7 +389,8 @@ probe 用例数只增不减(`EXPECTED_CASE_COUNT` 同步);附录 A 由生成器�
 
 | 编号 | 来源 | 内容 | 处置 |
 |---|---|---|---|
-| (空册,开工即填) | | | |
+| D13-001 | M2 实测 | 计划 W-09 的「RFC 4231 TC1–TC3 逐字冻结」不可达:TC1 / TC3 的密钥是**二进制**(0x0b×20 / 0xaa×20),wlwl 的 `STRING` 是 UTF-8 文本,表达不了;TC7 的提示文本回抄也不可靠(两次手打两次错) | ✅ 已处置 —— TC2(ASCII 键)逐字冻结;UTF-8 与超长键向量以 **Python hashlib 独立交叉核对**并注明出处;TC7 以字节级单元测试(真二进制密钥)落地。`本提交` |
+| D13-002 | M2 实测 | `HMAC_SHA256` 成员包装层把 HMAC 摘要**又过了一次 `sha256_hex`**(双重哈希)—— 单元级直接调 `hmac_sha256_bytes` 是对的,包装层错;单元测试与成员测试分居两层,恰好只剩后者能抓住 | ✅ 已处置 —— 摘要手工十六进制编码,encode.rs 补 ⚠ 注记;encode_contract 的 TC2 向量当场抓住并验红转绿。`本提交` |
 
 ---
 
@@ -402,7 +403,7 @@ probe 用例数只增不减(`EXPECTED_CASE_COUNT` 同步);附录 A 由生成器�
 |---|---|---|---|
 | M0 | W-01 ~ W-05(规范新章 / ADR-0024 / 调研 / N-7 / N-8) | ✅ 完成(验收:§13.3 / §14 / 警示句 / 标签残留全部核实;`stdlib_appendix_a_sync` 2/2 绿;零实现代码) | `601e76b` |
 | M1 | 转义与实体 R2(`HTML_ESCAPE` / `HTML_UNESCAPE` 全表 / 归层基准 W-08) | ✅ 完成(criterion:escape 442 MiB/s / unescape 115 MiB/s,均达标;W-08 归层对照:R1 每码点 2.7→15.4 µs 超线性、917K 码点档 >15 分钟未完成,R2 全档平坦 —— 数据入 baseline.txt M1 段;契约 22 条 + probe 154) | `613f13e` |
-| M2 | `std.encode` 哈希(`SHA256` / `HMAC_SHA256`) | 未动工 | — |
+| M2 | `std.encode` 哈希(`SHA256` / `HMAC_SHA256`) | ✅ 完成(FIPS 180-4 / RFC 4231 TC2 逐字 + Python 交叉核对;criterion sha256_10kb ≈ 255 MiB/s,指标 ≥ 100 ✅;D13-001 / D13-002 登记) | `本提交` |
 | M3 | `HTML_SANITIZE`(策略 schema → 树构建 → 幂等性 → 契约与基准) | 未动工 | — |
 | M4 | 收口(skill / CHANGELOG / 版本号 / tag 归维护者) | 未动工 | — |
 

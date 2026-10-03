@@ -27,7 +27,10 @@ pub fn sha256_hex(data: &[u8]) -> String {
     out
 }
 
-fn sha256(data: &[u8]) -> [u8; 32] {
+/// 字节级摘要。[v0.11.3 M2] 起对 `wlwl-std` 公开 —— `std.encode` 的
+/// `HMAC_SHA256` 需要字节形态做内 / 外层哈希(hex 往返是浪费);单一实现
+/// 两个消费者,杜绝副本漂移。`sha256_hex` 语义不变,既有调用方不受影响。
+pub fn sha256(data: &[u8]) -> [u8; 32] {
     let mut h: [u32; 8] = [
         0x6a09e667, 0xbb67ae85, 0x3c6ef372, 0xa54ff53a, 0x510e527f, 0x9b05688c, 0x1f83d9ab,
         0x5be0cd19,

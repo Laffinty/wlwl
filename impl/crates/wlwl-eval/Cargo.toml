@@ -36,3 +36,7 @@ workspace = true
 name = "sanitize"
 harness = false
 path = "benches/sanitize.rs"
+[[bench]]
+name = "encode"
+harness = false
+path = "benches/encode.rs"

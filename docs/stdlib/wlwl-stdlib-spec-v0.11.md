@@ -509,11 +509,12 @@ LET(handle, wlwl:std.agent.TASK("summarize", "long text..."));
 用户作用域内裸名 `TASK` 也合法(若 `IMPORT` 引入了同名函子);全限定写法
 仅为阅读清晰度,与同名类型名 `TASK` 不构成运行时冲突(§2.1)。
 
-## 11 `std.encode` — 编码(R2,v0.11.2 新增)
+## 11 `std.encode` — 编码与哈希(R2;编码 v0.11.2,哈希 v0.11.3)
 
 base64(RFC 4648 §4)、hex、percent-encoding(RFC 3986 §2)。三者都作用在
 **字节**上,而本语言的 `STRING` 是 UTF-8:编码取实参的 UTF-8 字节,解码后
-**必须**是合法 UTF-8 才交出去。
+**必须**是合法 UTF-8 才交出去。v0.11.3 起本命名空间另含**单向摘要**成员
+(`SHA256` / `HMAC_SHA256`),同口径取 UTF-8 字节。
 
 ### 11.1 失败口径
 
@@ -533,6 +534,8 @@ base64(RFC 4648 §4)、hex、percent-encoding(RFC 3986 §2)。三者都作用在
 | `HEX_DECODE(s)` | 大小写都收;不忽略任何字符 | 奇数长度、非 hex 字符、解出非 UTF-8 → `ERR([... "DecodeError" ...])` |
 | `URL_ENCODE(s)` | percent-encoding;`unreserved = ALPHA / DIGIT / "-" / "." / "_" / "~"`,其余 `%XX`(大写十六进制) | — |
 | `URL_DECODE(s)` | 解 `%XX`;**`+` 不折成空格** | 截断或非法的 `%` 转义、解出非 UTF-8 → `ERR([... "DecodeError" ...])` |
+| `SHA256(data) -> STRING` | SHA-256(FIPS 180-4);输入按 UTF-8 字节,输出**小写十六进制**(64 字符) | 类型错 `E0030`;元数错 `E0022` |
+| `HMAC_SHA256(key, data) -> STRING` | HMAC-SHA256(RFC 2104);`key` / `data` 均按 UTF-8 字节;密钥超过块长(64 字节)先哈希再补零 | 同上 |
 
 ### 11.3 三条需要明写的设计取舍
 
@@ -572,6 +575,16 @@ base64 编码的期望值取自 RFC 4648 §10 的表,**不复制实现输出**:
 > `[Convert]::ToBase64String`,挑第一个结果里含 `+/` 的。2 字节 UTF-8
 > (U+0080–U+07FF)**永远**产生不出 `+/`(首 6 位恒为 `110xxx`,落在索引
 > 48–55),必须从 3 字节起找。起草本节时手算过一次,算错了,以参考实现为准。
+
+### 11.5 哈希的边界(v0.11.3 W-09 否决记录)
+
+- 只提供**单向摘要**:对称 / 非对称加密不做(标准库给了 AES 就会有人自己攒
+  TLS —— 误用重灾区);密钥生成不做(需要系统随机,与 `std.rand` 的裁决同族,
+  见 §14.1);
+- `MD5` / `SHA-1` 已破,**不提供**;SHA-3 / BLAKE3 记演进方向;
+- 实现不承诺常数时间;`HMAC_SHA256` 结果的比较由调用方负责;
+- 实现复用 `wlwl-ast::sha256`(FIPS 180-4 纯 Rust,原为 AST 稳定 ID 所写)——
+  单一实现两个消费者,杜绝副本漂移。
 
 ## 12 `std.text` — Unicode 大小写(R2,v0.11.2 新增)
 
@@ -767,7 +780,7 @@ WHATWG 规则的**白名单子集**,差异显式登记 —— 安全性由幂等
 | `std.fs` | `READ_FILE` `WRITE_FILE` `EXISTS` | R2 | v0.10 及以前 |
 | `std.json` | `PARSE` `STRINGIFY` | R2 | v0.10 及以前 |
 | `std.format` | `FORMAT` | R2 | v0.10 及以前 |
-| `std.encode` | `BASE64_ENCODE` `BASE64_DECODE` `HEX_ENCODE` `HEX_DECODE` `URL_ENCODE` `URL_DECODE` | R2 | v0.11.2 |
+| `std.encode` | `BASE64_ENCODE` `BASE64_DECODE` `HEX_ENCODE` `HEX_DECODE` `URL_ENCODE` `URL_DECODE` `SHA256` `HMAC_SHA256` | R2 | v0.11.2 / SHA256、HMAC_SHA256 于 v0.11.3 |
 | `std.text` | `TO_UPPER` `TO_LOWER` | R2 | v0.11.2 |
 | `std.sanitize` | `HTML_ESCAPE` `HTML_UNESCAPE` | R2 | v0.11.3 |
 | `std.collection` | `MAP` `FILTER` `REDUCE` `SORT` `SORT_BY` `ZIP` `RANGE` `ANY` `ALL` `FIND` `ENUMERATE` `TAKE` `DROP` `FLAT` `UNIQ` `GROUP_BY` `JOIN` `CHUNK` `WINDOW` `DEDUP_BY` `MIN_BY` `MAX_BY` `SUM` `PRODUCT` `FOLD_RIGHT` `POSITION` `KEY_BY` | 混合(R1 门面 + R2 `RANGE`) | v0.10 及以前(成员)/ v0.11(R1 重写,M5 起 RANGE 沉 R2) |

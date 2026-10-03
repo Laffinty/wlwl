@@ -1,0 +1,11 @@
+{
+ "exit": 0,
+ "contains": [
+  "abc  =  ba7816bf8f01cfea414140de5dae2223b00361a396177a9cb410ff61f20015ad",
+  "empty=  e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+  "utf8 =  33650a369521ec29f2e26c43d25967535bcb26436755f536735d1ef6e84a1ec5",
+  "hmac =  5bdcc146bf60754e6a042426089575c75a003f089d2739839dec58b964ec3843",
+  "utf8h=  3a6a24a2a7b7f98e5be6100bf436c715bb7c028103cd8f33637af6c425df73cb"
+ ],
+ "_why": "v0.11.3 M2 的哈希成员。前两行是 FIPS 180-4 官方向量(逐字);`世界` 与 `密钥/数据` 两条是 UTF-8 字节口径的证明,期望值以 Python hashlib 独立交叉核对(D13-001 —— TC1/TC3 的二进制密钥 wlwl STRING 表达不了,TC2 逐字冻结);HMAC 行同时钉住「密钥超块长先哈希」路径之外的标准形态。"
+}

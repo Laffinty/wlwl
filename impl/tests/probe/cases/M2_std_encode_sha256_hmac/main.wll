@@ -1,0 +1,8 @@
+// [v0.11.3 M2] std.encode 哈希成员(W-09:向量取自 FIPS 180-4 / RFC 4231
+// 原文;UTF-8 向量以 Python hashlib 独立交叉核对,见 D13-001)
+IMPORT("wlwl:std.encode", ["SHA256", "HMAC_SHA256"]);
+PRINT("abc  = ", SHA256("abc"));
+PRINT("empty= ", SHA256(""));
+PRINT("utf8 = ", SHA256("世界"));
+PRINT("hmac = ", HMAC_SHA256("Jefe", "what do ya want for nothing?"));
+PRINT("utf8h= ", HMAC_SHA256("密钥", "数据"));

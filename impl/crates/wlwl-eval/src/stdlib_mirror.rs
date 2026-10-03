@@ -30,7 +30,13 @@ const NAMESPACE_META: &[(&str, &str, &str)] = &[
     ("wlwl:std.fs", "R2", "v0.10 及以前"),
     ("wlwl:std.json", "R2", "v0.10 及以前"),
     ("wlwl:std.format", "R2", "v0.10 及以前"),
-    ("wlwl:std.encode", "R2", "v0.11.2"),
+    // [v0.11.3 M2] SHA256 / HMAC_SHA256 追加(沿 str 的先例:引入列记
+    // 命名空间的引入版本,新成员的版本写成员表与 CHANGELOG)。
+    (
+        "wlwl:std.encode",
+        "R2",
+        "v0.11.2 / SHA256、HMAC_SHA256 于 v0.11.3",
+    ),
     ("wlwl:std.text", "R2", "v0.11.2"),
     // [v0.11.3 M1] 输出安全(旗舰特色功能)。**全员 R2**:转义 / 解码 / 净化
     // 都要处理文档级输入,而解释器侧字符串与数组构建超线性(D11-012 /

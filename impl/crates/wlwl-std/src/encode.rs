@@ -22,10 +22,23 @@
 //! 解码后**必须**是合法 UTF-8 才交出去。wlwl 没有字节类型,解码出
 //! 非法字节就没有能诚实表达的返回形态 —— 与其有损地替换成 `U+FFFD`
 //! (`to_string_lossy`)骗调用方,不如明确报 `DecodeError`。
+//!
+//! ## 哈希的边界(v0.11.3 M2,W-09,否决记录)
+//!
+//! `SHA256` / `HMAC_SHA256` 提供的是**单向摘要**:
+//! - 对称 / 非对称加密**不做**(误用重灾区 —— 标准库给了 AES 就会有人
+//!   自己攒 TLS);
+//! - 密钥生成**不做**(需要系统随机,撞 `std.rand` 的同族裁决 D12-006);
+//! - `MD5` / `SHA-1` 已破,**不提供**;SHA-3 / BLAKE3 记演进方向;
+//! - 实现不承诺常数时间;`HMAC_SHA256` 结果的比较由调用方负责。
+//!
+//! 实现复用 `wlwl-ast::sha256`(FIPS 180-4 纯 Rust,原为 AST 稳定 ID 而
+//! 写;[v0.11.3 M2] 起字节级 `sha256` 公开)—— 单一实现两个消费者,
+//! 杜绝副本漂移。依赖方向合法:`wlwl-std` 本就依赖 `wlwl-ast`。
 
 use crate::{ModuleSpec, StdFn};
 use wlwl_error::ErrorCode;
-use wlwl_value::{StdHost, Value};
+use wlwl_value::{Outcome, StdHost, Value};
 
 pub static SPEC: ModuleSpec = ModuleSpec {
     path: "wlwl:std.encode",
@@ -36,6 +49,8 @@ pub static SPEC: ModuleSpec = ModuleSpec {
         ("HEX_DECODE", hex_decode as StdFn),
         ("URL_ENCODE", url_encode as StdFn),
         ("URL_DECODE", url_decode as StdFn),
+        ("SHA256", sha256 as StdFn),
+        ("HMAC_SHA256", hmac_sha256 as StdFn),
     ],
 };
 
@@ -381,6 +396,61 @@ pub fn url_decode(
     )))
 }
 
+// ── 哈希(v0.11.3 M2,W-09)──────────────────────────────────────────────
+
+/// HMAC-SHA256(RFC 2104):block size 64;密钥超过块长先哈希再补零。
+/// 内 / 外层哈希走字节级 `wlwl_ast::sha256`(公开于本批 —— hex 往返
+/// 做内层哈希是浪费)。
+fn hmac_sha256_bytes(key: &[u8], data: &[u8]) -> [u8; 32] {
+    let mut k = [0u8; 64];
+    if key.len() > 64 {
+        k[..32].copy_from_slice(&wlwl_ast::sha256::sha256(key));
+    } else {
+        k[..key.len()].copy_from_slice(key);
+    }
+    let mut inner: Vec<u8> = k.iter().map(|b| b ^ 0x36).collect();
+    inner.extend_from_slice(data);
+    let mut outer: Vec<u8> = k.iter().map(|b| b ^ 0x5C).collect();
+    outer.extend_from_slice(&wlwl_ast::sha256::sha256(&inner));
+    wlwl_ast::sha256::sha256(&outer)
+}
+
+/// `SHA256(data) -> STRING`:SHA-256(FIPS 180-4);输入按 UTF-8 字节,
+/// 输出**小写十六进制**(64 字符)。
+pub fn sha256(host: &mut dyn StdHost, args: Vec<Value>) -> wlwl_error::WlwlResult<Outcome> {
+    if args.len() != 1 {
+        return Err(arity(host, "SHA256", args.len(), 1));
+    }
+    let Value::String(s) = &args[0] else {
+        return Err(type_err(host, "SHA256", "string", &args[0]));
+    };
+    Ok(Outcome::normal(Value::String(
+        wlwl_ast::sha256::sha256_hex(s.as_bytes()),
+    )))
+}
+
+/// `HMAC_SHA256(key, data) -> STRING`:HMAC-SHA256(RFC 2104);密钥与
+/// 数据都按 UTF-8 字节,输出小写十六进制。
+pub fn hmac_sha256(host: &mut dyn StdHost, args: Vec<Value>) -> wlwl_error::WlwlResult<Outcome> {
+    if args.len() != 2 {
+        return Err(arity(host, "HMAC_SHA256", args.len(), 2));
+    }
+    let Value::String(key) = &args[0] else {
+        return Err(type_err(host, "HMAC_SHA256", "string", &args[0]));
+    };
+    let Value::String(data) = &args[1] else {
+        return Err(type_err(host, "HMAC_SHA256", "string", &args[1]));
+    };
+    // ⚠ 摘要字节用 `format!` 手工十六进制编码 —— **不能**过 `sha256_hex`,
+    // 那是「哈希 + 编码」的复合 API,对 HMAC 摘要再用一次就是双重哈希
+    // (RFC 4231 TC2 的向量在 encode_contract 变红时抓到的)。
+    let hex: String = hmac_sha256_bytes(key.as_bytes(), data.as_bytes())
+        .iter()
+        .map(|b| format!("{:02x}", b))
+        .collect();
+    Ok(Outcome::normal(Value::String(hex)))
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -514,5 +584,70 @@ mod tests {
             .find(|(k, _)| matches!(k, Value::String(s) if s == "kind"))
             .map(|(_, v)| v.clone());
         assert_eq!(kind, Some(Value::String("DecodeError".into())));
+    }
+
+    // ── 哈希向量(v0.11.3 M2)—— 期望值取自 FIPS 180-4 / RFC 4231 原文,
+    //    UTF-8 与超长键向量取自 Python hashlib 的独立交叉核对(D13-001),
+    //    不是实现输出。
+
+    #[test]
+    fn sha256_fips_vectors() {
+        assert_eq!(
+            wlwl_ast::sha256::sha256_hex(b"abc"),
+            "ba7816bf8f01cfea414140de5dae2223b00361a396177a9cb410ff61f20015ad"
+        );
+        assert_eq!(
+            wlwl_ast::sha256::sha256_hex(b""),
+            "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+        );
+        assert_eq!(
+            wlwl_ast::sha256::sha256_hex(
+                b"abcdbcdecdefdefgefghfghighijhijkijkljklmklmnlmnomnopnopq"
+            ),
+            "248d6a61d20638b8e5c026930c3e6039a33ce45964ff2167f6ecedd419db06c1"
+        );
+    }
+
+    #[test]
+    fn sha256_input_is_utf8_bytes() {
+        assert_eq!(
+            wlwl_ast::sha256::sha256_hex("世界".as_bytes()),
+            "33650a369521ec29f2e26c43d25967535bcb26436755f536735d1ef6e84a1ec5"
+        );
+    }
+
+    #[test]
+    fn hmac_rfc4231_tc2_ascii() {
+        // TC1 / TC3 的密钥是二进制(0x0b×20 / 0xaa×20),wlwl 的 STRING 是
+        // UTF-8 文本,表达不了 —— 见 D13-001。
+        assert_eq!(
+            hmac_sha256_bytes(b"Jefe", b"what do ya want for nothing?"),
+            [
+                0x5b, 0xdc, 0xc1, 0x46, 0xbf, 0x60, 0x75, 0x4e, 0x6a, 0x04, 0x24, 0x26, 0x08, 0x95,
+                0x75, 0xc7, 0x5a, 0x00, 0x3f, 0x08, 0x9d, 0x27, 0x39, 0x83, 0x9d, 0xec, 0x58, 0xb9,
+                0x64, 0xec, 0x38, 0x43,
+            ]
+        );
+    }
+
+    #[test]
+    fn hmac_rfc4231_tc7_key_over_block_size_is_hashed_first() {
+        // RFC 4231 TC7:131 字节 0xAA 密钥(> 块长 64,先哈希再补零)+
+        // ASCII 数据;摘要 = RFC 逐字。**字节级单元测试** —— wlwl 的
+        // STRING 表达不了二进制密钥,wlwl 层的对应口径见 D13-001。
+        let key = [0xAAu8; 131];
+        let data: &[u8] = b"This is a test using a larger than block-size key and a larger than block-size data. The key needs to be hashed before being used by the HMAC algorithm.";
+        let hex: String = hmac_sha256_bytes(&key, data)
+            .iter()
+            .map(|b| format!("{:02x}", b))
+            .collect();
+        // ⚠ 摘要字节用 `format!` 十六进制编码即可;**不能**再过一次
+        // `sha256_hex` —— 那是「哈希 + 编码」的复合 API,对摘要再用一次
+        // 就是双重哈希(本测试的第一次提交就栽在这里,左值
+        // cc53540e… 正是 sha256(9b09ffa7… 的字节))。
+        assert_eq!(
+            hex,
+            "9b09ffa71b942fcb27635fbcd5b0e944bfdc63644f0713938a7f51535c3a35e2"
+        );
     }
 }

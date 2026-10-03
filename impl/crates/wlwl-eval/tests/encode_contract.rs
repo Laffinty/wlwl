@@ -356,6 +356,69 @@ const CASES: &[Case] = &[
         ),
         expect: "!E0030 BASE64_ENCODE: expected boolean, got integer",
     },
+    // ── 哈希:v0.11.3 M2(W-09)。期望值取自 FIPS 180-4 / RFC 4231 原文,
+    //    UTF-8 向量以 Python hashlib 独立交叉核对(D13-001)。
+    Case {
+        name: "sha256_fips_abc",
+        src: concat!(
+            r#"IMPORT("wlwl:std.encode", ["SHA256"]); "#,
+            r#"SHA256("abc")"#
+        ),
+        expect: "ba7816bf8f01cfea414140de5dae2223b00361a396177a9cb410ff61f20015ad",
+    },
+    Case {
+        name: "sha256_fips_empty",
+        src: concat!(
+            r#"IMPORT("wlwl:std.encode", ["SHA256"]); "#,
+            r#"SHA256("")"#
+        ),
+        expect: "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+    },
+    Case {
+        name: "sha256_fips_56byte",
+        src: concat!(
+            r#"IMPORT("wlwl:std.encode", ["SHA256"]); "#,
+            r#"SHA256("abcdbcdecdefdefgefghfghighijhijkijkljklmklmnlmnomnopnopq")"#
+        ),
+        expect: "248d6a61d20638b8e5c026930c3e6039a33ce45964ff2167f6ecedd419db06c1",
+    },
+    Case {
+        name: "sha256_utf8_world",
+        src: concat!(
+            r#"IMPORT("wlwl:std.encode", ["SHA256"]); "#,
+            r#"SHA256("世界")"#
+        ),
+        expect: "33650a369521ec29f2e26c43d25967535bcb26436755f536735d1ef6e84a1ec5",
+    },
+    Case {
+        name: "sha256_non_string",
+        src: concat!(r#"IMPORT("wlwl:std.encode", ["SHA256"]); "#, r#"SHA256(1)"#),
+        expect: "!E0030 SHA256: expected string, got integer",
+    },
+    Case {
+        name: "hmac_rfc4231_tc2",
+        src: concat!(
+            r#"IMPORT("wlwl:std.encode", ["HMAC_SHA256"]); "#,
+            r#"HMAC_SHA256("Jefe", "what do ya want for nothing?")"#
+        ),
+        expect: "5bdcc146bf60754e6a042426089575c75a003f089d2739839dec58b964ec3843",
+    },
+    Case {
+        name: "hmac_utf8_key_and_data",
+        src: concat!(
+            r#"IMPORT("wlwl:std.encode", ["HMAC_SHA256"]); "#,
+            r#"HMAC_SHA256("密钥", "数据")"#
+        ),
+        expect: "3a6a24a2a7b7f98e5be6100bf436c715bb7c028103cd8f33637af6c425df73cb",
+    },
+    Case {
+        name: "hmac_arity_one",
+        src: concat!(
+            r#"IMPORT("wlwl:std.encode", ["HMAC_SHA256"]); "#,
+            r#"HMAC_SHA256("k")"#
+        ),
+        expect: "!E0022 HMAC_SHA256: function expects 2 argument(s), got 1",
+    },
 ];
 
 // `IMP` 保留给将来批量生成用例时引用;逐条手写 `IMPORT` 是刻意的 ——
@@ -463,7 +526,7 @@ fn encode_member_set_matches_the_spec_table() {
 
     assert_eq!(
         spec.len(),
-        6,
+        8,
         "§11 table extractor found {} member(s): {spec:?} — the table's shape changed \
          and the extractor needs updating",
         spec.len()
@@ -475,6 +538,8 @@ fn encode_member_set_matches_the_spec_table() {
         "HEX_DECODE",
         "URL_ENCODE",
         "URL_DECODE",
+        "SHA256",
+        "HMAC_SHA256",
     ] {
         assert!(
             spec.iter().any(|m| m == n),
@@ -485,7 +550,7 @@ fn encode_member_set_matches_the_spec_table() {
             "implementation does not export `{n}`: {impls:?}"
         );
     }
-    assert_eq!(impls.len(), 6, "wlwl:std.encode exports 6 members");
+    assert_eq!(impls.len(), 8, "wlwl:std.encode exports 8 members");
 }
 
 fn spec_path() -> PathBuf {
