@@ -20,14 +20,18 @@
 //!
 //! ## 实体表是全表,不是半表
 //!
-//! [`entities`] 由生成器从 WHATWG `entities.json` 官方数据产出(数据文件
+//! `entities` 由生成器从 WHATWG `entities.json` 官方数据产出(数据文件
 //! 不入库,生成器入库 —— `src/bin/gen-entities.rs`)。半张表在安全语境下
 //! 不是「documented 局限」而是**调用方拿到的错误数据**(`&copy;` 原样穿过),
 //! 这是 D12-004「不做半张表」教训在安全语义下的加倍成立。未知命名实体
 //! **原样保留**是 HTML5 自身的容错行为;数字引用按 WHATWG 规则映射
 //! (越界 / 代理区 → U+FFFD,溢出有检查,不得 panic)。
 
-pub mod entities;
+pub(crate) mod entities;
+pub(crate) mod filter;
+pub(crate) mod serialize;
+pub(crate) mod tokenize;
+pub(crate) mod tree;
 
 use crate::{ModuleSpec, StdFn};
 use wlwl_error::ErrorCode;
@@ -38,7 +42,7 @@ pub static SPEC: ModuleSpec = ModuleSpec {
     functions: &[
         ("HTML_ESCAPE", html_escape as StdFn),
         ("HTML_UNESCAPE", html_unescape as StdFn),
-        // [v0.11.3 M3] `HTML_SANITIZE` 随 M3 落地时注册。
+        ("HTML_SANITIZE", html_sanitize as StdFn),
     ],
 };
 
@@ -74,7 +78,7 @@ pub fn html_escape(host: &mut dyn StdHost, args: Vec<Value>) -> wlwl_error::Wlwl
 /// 容量取「输入字节长 + 16」—— 五个转义里膨胀最大的是单字符 → 6 字节,但
 /// 纯文本段占绝对多数,`+16` 的过分配远好于二次分配;最坏情况(全 `&`)由
 /// `String` 的倍增兜底,仍是一次线性摊销。
-fn escape_str(s: &str) -> String {
+pub(crate) fn escape_str(s: &str) -> String {
     let mut out = String::with_capacity(s.len() + 16);
     for ch in s.chars() {
         match ch {
@@ -101,180 +105,44 @@ pub fn html_unescape(host: &mut dyn StdHost, args: Vec<Value>) -> wlwl_error::Wl
     let Value::String(s) = &args[0] else {
         return Err(type_err(host, "HTML_UNESCAPE", &args[0]));
     };
-    Ok(Outcome::normal(Value::String(unescape_str(s))))
+    Ok(Outcome::normal(Value::String(entities::decode(s))))
 }
 
-/// WHATWG 数字引用解析表:0x80–0x9F 按 windows-1252 映射(HTML5
-/// "numeric character reference end state" 表),缺项与 0x00 一律 U+FFFD。
-fn numeric_replacement(cp: u32) -> Option<char> {
-    let mapped = match cp {
-        0x00 => None,
-        // windows-1252 映射表的五个「洞」:0x81 / 0x8D / 0x8F / 0x90 / 0x9D
-        // 在 WHATWG 数字引用表里就是 U+FFFD,绝不能原样穿过。
-        0x81 | 0x8D | 0x8F | 0x90 | 0x9D => None,
-        0x80 => Some(0x20AC),
-        0x82 => Some(0x201A),
-        0x83 => Some(0x0192),
-        0x84 => Some(0x201E),
-        0x85 => Some(0x2026),
-        0x86 => Some(0x2020),
-        0x87 => Some(0x2021),
-        0x88 => Some(0x02C6),
-        0x89 => Some(0x2030),
-        0x8A => Some(0x0160),
-        0x8B => Some(0x2039),
-        0x8C => Some(0x0152),
-        0x8E => Some(0x017D),
-        0x91 => Some(0x2018),
-        0x92 => Some(0x2019),
-        0x93 => Some(0x201C),
-        0x94 => Some(0x201D),
-        0x95 => Some(0x2022),
-        0x96 => Some(0x2013),
-        0x97 => Some(0x2014),
-        0x98 => Some(0x02DC),
-        0x99 => Some(0x2122),
-        0x9A => Some(0x0161),
-        0x9B => Some(0x203A),
-        0x9C => Some(0x0153),
-        0x9E => Some(0x017E),
-        0x9F => Some(0x0178),
-        // 其余码点原样;代理区交给 from_u32 的 None → U+FFFD。
-        other => Some(other),
-    };
-    mapped.and_then(char::from_u32).or(Some('\u{FFFD}'))
-}
-
-/// 实体名查找(纯名称字节序比较;表按名称排序,查询走 `binary_search_by`)。
-/// 分号不进比较键 —— 输入里的 `;` 由调用方在游程终点单独判定并消费。
-fn lookup_semicolon(name: &[u8]) -> Option<&'static [u32]> {
-    entities::SEMICOLON
-        .binary_search_by(|(n, _)| n.as_bytes().cmp(name))
-        .ok()
-        .map(|i| entities::SEMICOLON[i].1)
-}
-
-/// legacy 缺分号形式。
-fn lookup_legacy(name: &[u8]) -> Option<&'static [u32]> {
-    entities::LEGACY
-        .binary_search_by(|(n, _)| n.as_bytes().cmp(name))
-        .ok()
-        .map(|i| entities::LEGACY[i].1)
-}
-
-fn unescape_str(s: &str) -> String {
-    let b = s.as_bytes();
-    let mut out = String::with_capacity(s.len());
-    let mut i = 0;
-    while i < b.len() {
-        if b[i] != b'&' {
-            // 非 '&' 的字节段整段拷贝(UTF-8 安全:'&' 是 ASCII,切片边界
-            // 落在 ASCII 字符上必然是字符边界)。
-            let start = i;
-            while i < b.len() && b[i] != b'&' {
-                i += 1;
-            }
-            out.push_str(&s[start..i]);
-            continue;
-        }
-        // —— '&' 开头的候选 ——
-        match b.get(i + 1) {
-            // 数字引用:`&#DDDD;` / `&#xHHHH;`(缺分号也解码,HTML5 legacy)。
-            Some(b'#') => {
-                let (mut j, radix) = match b.get(i + 2) {
-                    Some(b'x' | b'X') => (i + 3, 16u64),
-                    _ => (i + 2, 10u64),
-                };
-                let mut acc: u64 = 0;
-                let mut too_big = false;
-                let mut digits = 0usize;
-                while let Some(&c) = b.get(j) {
-                    let d = match (radix, c) {
-                        (10, b'0'..=b'9') => (c - b'0') as u64,
-                        (16, b'0'..=b'9') => (c - b'0') as u64,
-                        (16, b'a'..=b'f') => (c - b'a') as u64 + 10,
-                        (16, b'A'..=b'F') => (c - b'A') as u64 + 10,
-                        _ => break,
-                    };
-                    digits += 1;
-                    if !too_big {
-                        acc = acc.saturating_mul(radix).saturating_add(d);
-                        if acc > 0x10FFFF {
-                            too_big = true;
-                        }
-                    }
-                    j += 1;
-                }
-                if digits == 0 {
-                    // `&#` 后面没有数字 → 字面量。只消费 '&',让后续字节
-                    // 走正常通道(`&#;` 里的 ';' 也会被原样吐出)。
-                    out.push('&');
-                    i += 1;
-                    continue;
-                }
-                if b.get(j) == Some(&b';') {
-                    j += 1;
-                }
-                let cp = if too_big || acc == 0 {
-                    None
-                } else {
-                    Some(acc as u32)
-                };
-                let ch = cp.and_then(numeric_replacement).unwrap_or('\u{FFFD}');
-                out.push(ch);
-                i = j;
-            }
-            // 命名引用:取 ASCII 字母数字游程,分号形式优先,legacy 按最长
-            // 前缀匹配;都没有 → '&' 原样,游程留在原地走正常通道。
-            Some(c) if c.is_ascii_alphanumeric() => {
-                let mut end = i + 1;
-                while end < b.len()
-                    && end - i <= entities::MAX_NAME_LEN
-                    && b[end].is_ascii_alphanumeric()
-                {
-                    end += 1;
-                }
-                let run = &b[i + 1..end];
-                let decoded = if b.get(end) == Some(&b';') {
-                    lookup_semicolon(run).map(|cps| (cps, end + 1))
-                } else {
-                    None
-                }
-                .or_else(|| {
-                    // legacy 缺分号:最长前缀优先(HTML5 文本行为;
-                    // `&copyx` → `©x`,`&copyz;` → `©z;`)。
-                    let max = run.len().min(entities::MAX_NAME_LEN);
-                    (1..=max)
-                        .rev()
-                        .find_map(|len| lookup_legacy(&run[..len]).map(|cps| (cps, i + 1 + len)))
-                });
-                match decoded {
-                    Some((cps, consumed)) => {
-                        for &cp in cps {
-                            // 命名实体不经过数字引用映射表;表里的码点全部合法。
-                            out.push(char::from_u32(cp).unwrap_or('\u{FFFD}'));
-                        }
-                        i = consumed;
-                    }
-                    None => {
-                        out.push('&');
-                        i += 1;
-                    }
-                }
-            }
-            // `&` 后面不是字母数字(空格 / 结尾 / 另一个实体等)→ 字面量。
-            _ => {
-                out.push('&');
-                i += 1;
-            }
-        }
+/// `HTML_SANITIZE(data, policy?) -> STRING`:富 HTML 白名单净化(旗舰成员)。
+///
+/// 形态:容错解析(tokenize)→ 树构建(白名单子集 tree-construction)→
+/// 白名单过滤 → 序列化。违规标签删除而非转义;raw-text / 外来内容整棵
+/// 删除;`policy` 缺省为保守策略(§13.2),形态不符 `E0030` 带名。
+/// **安全不变量:重解析幂等**(`SANITIZE(SANITIZE(x, p), p) == SANITIZE(x, p)`,
+/// W-12 测试守护);**不承诺**与浏览器解析逐位一致(§13.2 已登记差异)。
+/// 性能:三趟各 O(n),深嵌套迭代栈(病态契约),基准见 baseline.txt M3 段。
+pub fn html_sanitize(host: &mut dyn StdHost, args: Vec<Value>) -> wlwl_error::WlwlResult<Outcome> {
+    if args.is_empty() || args.len() > 2 {
+        return Err(arity(host, "HTML_SANITIZE", args.len(), 2));
     }
-    out
+    let Value::String(src) = &args[0] else {
+        return Err(type_err(host, "HTML_SANITIZE", &args[0]));
+    };
+    let policy = match args.get(1) {
+        None => filter::Policy::default(),
+        Some(v) => match v {
+            Value::Dict(_) => filter::parse_policy(host, v)?,
+            other => return Err(type_err(host, "HTML_SANITIZE", other)),
+        },
+    };
+    let tokens = tokenize::tokenize(src);
+    let mut tree = tree::build(tokens);
+    filter::filter_tree(&mut tree, &policy);
+    let mut out = String::with_capacity(src.len() + 16);
+    serialize::serialize(&tree, &mut out);
+    Ok(Outcome::normal(Value::String(out)))
 }
 
 #[cfg(test)]
 mod tests {
-    use super::{escape_str, unescape_str};
+    use super::entities::decode as unescape_str;
+    use super::escape_str;
+    use super::{filter, serialize, tokenize, tree};
 
     // ── escape ── 期望值取自规范 §13.1 的映射表,不是实现输出。
 
@@ -374,5 +242,62 @@ mod tests {
         ] {
             assert_eq!(unescape_str(&escape_str(s)), s);
         }
+    }
+
+    // ── sanitize ── 走与成员同一条流水线(tokenize → build → filter →
+    // serialize),缺省策略。**期望值是人工裁定的输出,不是实现回读。**
+
+    fn sanitize_default(src: &str) -> String {
+        let tokens = tokenize::tokenize(src);
+        let mut tree = tree::build(tokens);
+        filter::filter_tree(&mut tree, &filter::Policy::default());
+        let mut out = String::with_capacity(src.len() + 16);
+        serialize::serialize(&tree, &mut out);
+        out
+    }
+
+    #[test]
+    fn sanitize_keeps_siblings_after_a_dropped_raw_text() {
+        // D13-003 回归:tokenizer 吞掉 `</script>` 不发 End,若树构建不在
+        // 收到 RawText 时弹栈,后续内容会挂进被整删的 script 里一并消失。
+        assert_eq!(
+            sanitize_default("<b>x</b><script>evil</script>after"),
+            "<b>x</b>after"
+        );
+        // 未闭合的 raw-text 吞到串尾(HTML5 同款),其后无内容可丢。
+        assert_eq!(sanitize_default("<b>x</b><script>evil"), "<b>x</b>");
+        // 多个 raw-text 交替,每个都不能吃掉它的后继。
+        assert_eq!(
+            sanitize_default("<b>1</b><style>a{}</style><i>2</i><script>b</script><u>3</u>"),
+            "<b>1</b><i>2</i><u>3</u>"
+        );
+    }
+
+    #[test]
+    fn sanitize_keeps_content_of_unwrapped_elements() {
+        // D13-005 回归:非白名单元素是「拆壳留内容」(unwrap),不是整删。
+        // 挂载点算错时这层内容会静默消失(两代错法分别表现为:整段丢失 /
+        // 被踢到元素外面)。
+        assert_eq!(sanitize_default("<div onclick=\"x\">y</div>"), "y");
+        assert_eq!(sanitize_default("<table><td>x</td></table>"), "x");
+        // 拆壳保内容的同时,保留标签的嵌套结构不能被拆坏。
+        assert_eq!(sanitize_default("<div><b>x</b></div>"), "<b>x</b>");
+        assert_eq!(
+            sanitize_default("<section><p>a</p><ul><li>b</li></ul></section>"),
+            "<p>a</p><ul><li>b</li></ul>"
+        );
+        // 未知属性随拆壳一并消失,但内容留下。
+        assert_eq!(sanitize_default("<span class=\"c\" id=\"i\">t</span>"), "t");
+    }
+
+    #[test]
+    fn sanitize_drops_noembed_with_content() {
+        // D13-004 回归:规范 §13.2 把 noembed 列入 raw-text 整删集,实现漏了
+        // 会让它的 raw-text 正文被当标记解析(mXSS 面)。
+        assert_eq!(
+            sanitize_default("<noembed><b>x</b></noembed>after"),
+            "after"
+        );
+        assert_eq!(sanitize_default("<NOEMBED>x</NOEMBED>"), "");
     }
 }

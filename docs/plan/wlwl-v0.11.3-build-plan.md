@@ -391,6 +391,11 @@ probe 用例数只增不减(`EXPECTED_CASE_COUNT` 同步);附录 A 由生成器�
 |---|---|---|---|
 | D13-001 | M2 实测 | 计划 W-09 的「RFC 4231 TC1–TC3 逐字冻结」不可达:TC1 / TC3 的密钥是**二进制**(0x0b×20 / 0xaa×20),wlwl 的 `STRING` 是 UTF-8 文本,表达不了;TC7 的提示文本回抄也不可靠(两次手打两次错) | ✅ 已处置 —— TC2(ASCII 键)逐字冻结;UTF-8 与超长键向量以 **Python hashlib 独立交叉核对**并注明出处;TC7 以字节级单元测试(真二进制密钥)落地。`本提交` |
 | D13-002 | M2 实测 | `HMAC_SHA256` 成员包装层把 HMAC 摘要**又过了一次 `sha256_hex`**(双重哈希)—— 单元级直接调 `hmac_sha256_bytes` 是对的,包装层错;单元测试与成员测试分居两层,恰好只剩后者能抓住 | ✅ 已处置 —— 摘要手工十六进制编码,encode.rs 补 ⚠ 注记;encode_contract 的 TC2 向量当场抓住并验红转绿。`本提交` |
+| D13-003 | M3 W-11 收尾实测 | `tree.rs` 收到 `Token::RawText` 时**不弹栈**:tokenizer 吞掉 `</script>` 本体且不发 `End`,开标签永不出栈,其后内容全挂进这个「必被整删」的元素里 —— `HTML_SANITIZE("<b>x</b><script>evil</script>after")` 返回 `"<b>x</b>"`,`after` 静默消失 | ✅ 已处置 —— `tree.rs` 收到 RawText 即弹栈(tokenizer 保证此刻栈顶就是配对开标签);`sanitize_keeps_siblings_after_a_dropped_raw_text` 三条断言钉住(含多 raw-text 交替)。`本提交` |
+| D13-004 | M3 W-11 收尾实测 | `DROP_WITH_CONTENT` **漏了 `noembed`**,而规范 §13.2 明写它是 raw-text 整删集成员 —— 实现与已冻规范相悖,`noembed` 的 raw-text 正文会被当标记解析(mXSS 面) | ✅ 已处置 —— 补入整删集;`drop_set_covers_raw_text_elements`(以 `tokenize::RAWTEXT` 为循环源的守卫)当场抓住;另加 `sanitize_drops_noembed_with_content` 端到端钉住。`本提交` |
+| D13-005 | M3 W-11 收尾实测 | `filter_tree` 的挂载点 `target[id]` 判据用错了对象:按**自己**的动作分支,Keep 节点被挂到 `parent` 上;而 Unwrap 父节点自身不输出、那棵子树无人遍历 —— **非白名单元素内的内容整段消失**(`<div onclick="x">y</div>` → `""`、`<table><td>x</td></table>` → `""`)。注释写的是「进父的挂载点」,代码写的是 `parent`,二者矛盾 | ✅ 已处置 —— 判据改为**父**的动作(`actions[parent]`):父 Keep 挂父本身、父 Unwrap 沿链上溯;`sanitize_keeps_content_of_unwrapped_elements` 五条断言钉住。⚠ 中途试过「一律 `target[parent]`」,同样错(Keep 的孩子被踢出元素,`<a>x</a>` → `<a></a>x`)—— 两种错法都表现为「静默丢内容」,不报错。`本提交` |
+| D13-006 | M3 W-11 收尾实测 | `serialize` 以 `Item::Enter(tree.root)` 起栈,而 root 的 `NodeKind` 是 `Text("")` 占位 → 匹配 Text 分支只写空串、**从不遍历孩子** —— **`HTML_SANITIZE` 对任何输入都返回空串**,旗舰成员整体不可用 | ✅ 已处置 —— 以 root 的**孩子**为栈起点(root 透明);`serialize.rs` 留注记说明该坑,三条 sanitize 端到端测试各自覆盖一个非空输出。`本提交` |
+| D13-007 | M3 W-11 收尾实测 | 承接上四条的**共同根因**:W-11 只交了模块内单测,**端到端零覆盖**,于是上述四道静默缺陷(其中两道使成员完全不产出内容)全部存活且门禁全绿 —— 单测测的是各段自身,没有一条从 `HTML_SANITIZE` 入口走到出口 | ⚠️ 已知限制(**未完成**,非「有意不做」)—— W-12(幂等性)与 W-13(OWASP 向量 + 性能断言)仍**未动工**,它们才是封住这个洞的工作项;本检查点只补了三条端到端回归作为最低防线,不等于 W-12 / W-13 已交付。恢复工作时**先做 W-12**。`本提交` |
 
 ---
 
@@ -404,7 +409,7 @@ probe 用例数只增不减(`EXPECTED_CASE_COUNT` 同步);附录 A 由生成器�
 | M0 | W-01 ~ W-05(规范新章 / ADR-0024 / 调研 / N-7 / N-8) | ✅ 完成(验收:§13.3 / §14 / 警示句 / 标签残留全部核实;`stdlib_appendix_a_sync` 2/2 绿;零实现代码) | `601e76b` |
 | M1 | 转义与实体 R2(`HTML_ESCAPE` / `HTML_UNESCAPE` 全表 / 归层基准 W-08) | ✅ 完成(criterion:escape 442 MiB/s / unescape 115 MiB/s,均达标;W-08 归层对照:R1 每码点 2.7→15.4 µs 超线性、917K 码点档 >15 分钟未完成,R2 全档平坦 —— 数据入 baseline.txt M1 段;契约 22 条 + probe 154) | `613f13e` |
 | M2 | `std.encode` 哈希(`SHA256` / `HMAC_SHA256`) | ✅ 完成(FIPS 180-4 / RFC 4231 TC2 逐字 + Python 交叉核对;criterion sha256_10kb ≈ 255 MiB/s,指标 ≥ 100 ✅;D13-001 / D13-002 登记) | `本提交` |
-| M3 | `HTML_SANITIZE`(策略 schema → 树构建 → 幂等性 → 契约与基准) | 未动工 | — |
+| M3 | `HTML_SANITIZE`(策略 schema → 树构建 → 幂等性 → 契约与基准) | 🟡 **进行中,不可发布** —— W-10 ✅ 文档面已落地(规范 §13.2 策略四键表 + 解析子集差异登记);W-11 ✅ 五文件 + 单测落地,但**四道静默缺陷(D13-003 ~ D13-006)在本检查点才被实测揪出并处置**,其中 D13-006 使该成员对任何输入都返回空串、此前门禁全绿;D13-007 记录共同根因(端到端零覆盖)。**W-12(幂等性)⬜ 未动工、W-13(OWASP 向量 + 性能断言)⬜ 未动工** —— 恢复工作时先做 W-12。门禁现状:`fmt --check` / `clippy --all-targets -D warnings` / `doc -D warnings` / `test --all-targets`(42 套件 1947 绿)/ `conformance` 全绿 | `本提交` |
 | M4 | 收口(skill / CHANGELOG / 版本号 / tag 归维护者) | 未动工 | — |
 
 > 裁决点备忘(开工前业主可否决,否则视为接受):
@@ -412,6 +417,13 @@ probe 用例数只增不减(`EXPECTED_CASE_COUNT` 同步);附录 A 由生成器�
 > ② `HMAC_SHA256` 是否随 `SHA256` 同批(计划内:同批,增量 ~30 行);
 > ③ W-08 归层对照是否真做 R1 原型(计划内:真做 —— ADR-0021 要求归层附基准,
 > M5 先例;数据只有一条才有说服力)。
+
+> ⚠️ **裁决点 ① 的「业主确认」至今没有记录**:W-10 的策略表(22 个缺省标签 /
+> `{"a": ["href","title"]}` / 三个 URL scheme / 删注释)已随 M3 实现一并落地,
+> 冻结在规范 §13.2,但**没有业主签字的记录**。按本计划 §7 的顺序纪律
+> (「策略 schema 经业主确认后再动第一个实现」),这是流程缺口 —— 恢复工作时
+> 请业主复核该表并在此补一句确认,或明确否决后改表。**在补上之前,M3 的
+> 「完成」不成立**,W-12 / W-13 也不应在此之前动工。
 
 ---
 

@@ -259,15 +259,14 @@ fn sanitize_member_set_matches_the_spec_table() {
         vec!["HTML_ESCAPE", "HTML_UNESCAPE", "HTML_SANITIZE"],
         "§13 member table drifted"
     );
-    // M1:转义两成员落地,SANITIZE_HTML 随 M3。断言写成「已落地的集合 +
-    // 未落地的名字不在实现里」—— M3 落地时把 impl 断言改为三员全等。
+    // M1 只落地转义两成员;M3 已落地 `HTML_SANITIZE` —— 按 M1 时写在
+    // 本处的交接说明,impl 断言改为三员全等(集合等值,顺序同 §13 表)。
     let impls = impl_members();
     assert_eq!(
         impls,
-        vec!["HTML_ESCAPE", "HTML_UNESCAPE"],
-        "M1 surface: escape pair only (SANITIZE_HTML lands in M3)"
+        vec!["HTML_ESCAPE", "HTML_UNESCAPE", "HTML_SANITIZE"],
+        "M3 surface: all three §13 members landed"
     );
-    assert!(!impls.contains(&"HTML_SANITIZE".to_string()));
 }
 
 /// 反向守卫:集合比较不得是空转 —— 任何一边多出 / 少掉 / 改名都会红。
@@ -275,13 +274,9 @@ fn sanitize_member_set_matches_the_spec_table() {
 fn sanitize_member_set_is_not_trivially_satisfied() {
     let impls = impl_members();
     assert!(!impls.is_empty(), "impl surface must not be empty");
-    assert!(
-        !impls.contains(&"HTML_SANITIZE".to_string()),
-        "M1 must not export SANITIZE_HTML — it lands in M3"
-    );
     for n in &impls {
         assert!(
-            ["HTML_ESCAPE", "HTML_UNESCAPE"].contains(&n.as_str()),
+            ["HTML_ESCAPE", "HTML_UNESCAPE", "HTML_SANITIZE"].contains(&n.as_str()),
             "unexpected member `{n}`"
         );
     }

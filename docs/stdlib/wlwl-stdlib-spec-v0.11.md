@@ -693,12 +693,38 @@ OWASP 定性为 last resort 且方言分裂,而 wlwl 没有 `std.db`,不存在�
 - 解析与过滤**永不因输入内容失败** —— 失败只有类型错 / 元数错 / `policy`
   形态错三类原生诊断。
 
-**策略(`policy`,可省)**:`DICT`,键 —— `"tags"`(ARRAY[STRING],标签白名单)、
-`"attributes"`(DICT,标签名 → 属性白名单;键 `"*"` 为全局属性)、
-`"url_schemes"`(ARRAY[STRING],默认 `["http", "https", "mailto"]`;相对 URL
-恒允许)、`"strip_comments"`(BOOLEAN,默认 TRUE)。省略时取**内置保守策略**
-(段落 / 链接 / 强调 / 列表级;确切清单在实现落地时随 W-10 文档冻结)。
-`policy` 形态不符 → `E0030` 带名。
+**策略(`policy`,可省)**:`DICT`,四键(全部可省,省略的键取**缺省策略**;
+出现的键**整体替换**缺省值,不是合并):
+
+| 键 | 类型 | 缺省值 | 说明 |
+|---|---|---|---|
+| `"tags"` | ARRAY[STRING] | `a` `b` `blockquote` `br` `code` `em` `h1`–`h6` `hr` `i` `li` `ol` `p` `pre` `s` `strong` `u` `ul`(22 个,小写) | 允许保留的标签白名单;不在表内的标签**拆壳留内容**(unwrap),下列例外整棵删除 |
+| `"attributes"` | DICT(键:标签名 → ARRAY[STRING];键 `"*"` 为全局属性) | `{"a": ["href", "title"]}`(`"*"` 缺省为空) | 逐标签属性白名单;不在表内的属性**删除** |
+| `"url_schemes"` | ARRAY[STRING](小写) | `["http", "https", "mailto"]` | URL 类属性(`href` / `src` / `action` / `formaction` / `poster` / `cite` / `background` / `data` / `srcset` / `longdesc` / `usemap` / `manifest` / `codebase` / `archive` / `dynsrc` / `lowsrc` / `icon` / `xlink:href`)的 scheme 白名单;**相对 URL 恒允许**;判定前先剥首尾空白与控制字符再取 `:` 前缀小写比较(实体已由解析解码) |
+| `"strip_comments"` | BOOLEAN | TRUE | TRUE → 注释删除;FALSE → 保留,但注释内容中的 `--` 全部移除(防 `-->` 提前闭合) |
+
+`policy` 形态不符(键值类型错、tags 元素非小写标识符等)→ `E0030` 带名。
+
+**树构建与解析的子集(与浏览器解析器的差异,显式登记)**:
+
+- 解析为**树**(非 token 流):维护开标签栈,实现白名单相关子集的
+  tree-construction 规则 —— `<p>` 在新块级标签开始时隐式闭合、`<li>` 闭合
+  `<li>`、`<dt>` / `<dd>` 闭合彼此、`<tr>` / `<td>` / `<th>` / `<thead>` /
+  `<tbody>` / `<tfoot>` 互相按 HTML5 位次闭合;结束标签在栈内则弹到匹配处、
+  不在栈内则忽略。
+- **不实现**:foster parenting(表格外内容的搬移)、命名空间 / 外来内容
+  (svg / math 整棵删除)、`<plaintext>` 后的全文文本化(按普通文本处理)、
+  `</p>` 无对应开标签时的空元素生成(直接忽略)。**安全性由幂等性守护,
+  不由「与浏览器相同」守护** —— 本成员的输出再次输入本成员必须逐字节不动。
+- **raw-text 元素**(`script` / `style` / `textarea` / `title` / `xmp` /
+  `noembed` / `noframes` / `iframe` 内文):内容不作为标记解析,整棵删除
+  —— 这些元素的删除集身份同时封掉了「raw-text 内容再解析」这一整类 mXSS 面。
+- **void 元素**(`br` / `hr` / `img` / `input` 等 14 个):无子节点,序列化
+  为 `<name …>` 无结束标签。
+- 未知 / 拆壳的标签,其**属性一并消失**(只有保留标签才谈属性白名单);
+  同名属性重复时**首个生效**。
+- 性能契约:解析 / 过滤 / 序列化各一趟 O(n);深嵌套不栈溢出(迭代栈 +
+  节点索引池);基准见 `baseline.txt` M3 段。
 
 **安全不变量(规范性,打破即缺陷)**:**重解析幂等** ——
 `HTML_SANITIZE(HTML_SANITIZE(x, p), p) == HTML_SANITIZE(x, p)`(字节级)。
@@ -782,7 +808,7 @@ WHATWG 规则的**白名单子集**,差异显式登记 —— 安全性由幂等
 | `std.format` | `FORMAT` | R2 | v0.10 及以前 |
 | `std.encode` | `BASE64_ENCODE` `BASE64_DECODE` `HEX_ENCODE` `HEX_DECODE` `URL_ENCODE` `URL_DECODE` `SHA256` `HMAC_SHA256` | R2 | v0.11.2 / SHA256、HMAC_SHA256 于 v0.11.3 |
 | `std.text` | `TO_UPPER` `TO_LOWER` | R2 | v0.11.2 |
-| `std.sanitize` | `HTML_ESCAPE` `HTML_UNESCAPE` | R2 | v0.11.3 |
+| `std.sanitize` | `HTML_ESCAPE` `HTML_UNESCAPE` `HTML_SANITIZE` | R2 | v0.11.3 |
 | `std.collection` | `MAP` `FILTER` `REDUCE` `SORT` `SORT_BY` `ZIP` `RANGE` `ANY` `ALL` `FIND` `ENUMERATE` `TAKE` `DROP` `FLAT` `UNIQ` `GROUP_BY` `JOIN` `CHUNK` `WINDOW` `DEDUP_BY` `MIN_BY` `MAX_BY` `SUM` `PRODUCT` `FOLD_RIGHT` `POSITION` `KEY_BY` | 混合(R1 门面 + R2 `RANGE`) | v0.10 及以前(成员)/ v0.11(R1 重写,M5 起 RANGE 沉 R2) |
 | `std.str` | `JOIN` `SPLIT_LINES` `CHAR_AT` `COUNT` `QUOTE` `INDEX_OF` `CONTAINS_SUB` | R1 | v0.11 / INDEX_OF、CONTAINS_SUB 于 v0.11.2 |
 | `std.math` | `ABS` `MIN` `MAX` `FLOOR` `CEIL` `ROUND` `SQRT` `POW` `CLAMP` `PI` `E` `LN` `LOG2` `LOG10` `EXP` `TRUNC` `SIN` `COS` `TAN` `ASIN` `ACOS` `ATAN` `ATAN2` `SINH` `COSH` `TANH` `SIGN` `DIV_CEIL` `GCD` `LCM` `IS_SQRT` `POW_MOD` | 混合 | v0.11 |

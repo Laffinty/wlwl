@@ -2,7 +2,7 @@
 //!
 //! 生成:cargo run -p wlwl-std --bin gen-entities -- <entities.json> \
 //!       > crates/wlwl-std/src/sanitize/entities.rs(在 impl/ 目录下)
-//! 数据源:https://html.spec.whatwg.org/entities.json(WHATWG 官方;
+//! 数据源:<https://html.spec.whatwg.org/entities.json>(WHATWG 官方;
 //! 本表取于 2026-10-03)。
 //! 口径:SEMICOLON 是分号收尾的全量(共 2125 项);LEGACY 是 HTML5 允许
 //! 不带分号匹配的子集(共 106 项,每项均有同名分号孪生且码点一致 ——
@@ -2247,3 +2247,170 @@ pub(crate) static LEGACY: &[(&str, &[u32])] = &[
 
 /// 实体名(不含 `&` 与结尾 `;`)的最大字节长度;扫描时的游程上限。
 pub(crate) const MAX_NAME_LEN: usize = 31;
+
+// ── 解码(W-07 的 unescape_str,下沉至此供 tokenizer 的文本 / 属性共用)──
+
+/// WHATWG 数字引用解析表:0x80–0x9F 按 windows-1252 映射(HTML5
+/// "numeric character reference end state" 表),缺项与 0x00 一律 U+FFFD。
+pub(crate) fn numeric_replacement(cp: u32) -> Option<char> {
+    let mapped = match cp {
+        0x00 => None,
+        // windows-1252 映射表的五个「洞」:0x81 / 0x8D / 0x8F / 0x90 / 0x9D
+        // 在 WHATWG 数字引用表里就是 U+FFFD,绝不能原样穿过。
+        0x81 | 0x8D | 0x8F | 0x90 | 0x9D => None,
+        0x80 => Some(0x20AC),
+        0x82 => Some(0x201A),
+        0x83 => Some(0x0192),
+        0x84 => Some(0x201E),
+        0x85 => Some(0x2026),
+        0x86 => Some(0x2020),
+        0x87 => Some(0x2021),
+        0x88 => Some(0x02C6),
+        0x89 => Some(0x2030),
+        0x8A => Some(0x0160),
+        0x8B => Some(0x2039),
+        0x8C => Some(0x0152),
+        0x8E => Some(0x017D),
+        0x91 => Some(0x2018),
+        0x92 => Some(0x2019),
+        0x93 => Some(0x201C),
+        0x94 => Some(0x201D),
+        0x95 => Some(0x2022),
+        0x96 => Some(0x2013),
+        0x97 => Some(0x2014),
+        0x98 => Some(0x02DC),
+        0x99 => Some(0x2122),
+        0x9A => Some(0x0161),
+        0x9B => Some(0x203A),
+        0x9C => Some(0x0153),
+        0x9E => Some(0x017E),
+        0x9F => Some(0x0178),
+        // 其余码点原样;代理区交给 from_u32 的 None → U+FFFD。
+        other => Some(other),
+    };
+    mapped.and_then(char::from_u32).or(Some('\u{FFFD}'))
+}
+
+/// 实体名查找(纯名称字节序比较;表按名称排序,查询走 `binary_search_by`)。
+/// 分号不进比较键 —— 输入里的 `;` 由调用方在游程终点单独判定并消费。
+pub(crate) fn lookup_semicolon(name: &[u8]) -> Option<&'static [u32]> {
+    SEMICOLON
+        .binary_search_by(|(n, _)| n.as_bytes().cmp(name))
+        .ok()
+        .map(|i| SEMICOLON[i].1)
+}
+
+/// legacy 缺分号形式。
+pub(crate) fn lookup_legacy(name: &[u8]) -> Option<&'static [u32]> {
+    LEGACY
+        .binary_search_by(|(n, _)| n.as_bytes().cmp(name))
+        .ok()
+        .map(|i| LEGACY[i].1)
+}
+
+pub(crate) fn decode(s: &str) -> String {
+    let b = s.as_bytes();
+    let mut out = String::with_capacity(s.len());
+    let mut i = 0;
+    while i < b.len() {
+        if b[i] != b'&' {
+            // 非 '&' 的字节段整段拷贝(UTF-8 安全:'&' 是 ASCII,切片边界
+            // 落在 ASCII 字符上必然是字符边界)。
+            let start = i;
+            while i < b.len() && b[i] != b'&' {
+                i += 1;
+            }
+            out.push_str(&s[start..i]);
+            continue;
+        }
+        // —— '&' 开头的候选 ——
+        match b.get(i + 1) {
+            // 数字引用:`&#DDDD;` / `&#xHHHH;`(缺分号也解码,HTML5 legacy)。
+            Some(b'#') => {
+                let (mut j, radix) = match b.get(i + 2) {
+                    Some(b'x' | b'X') => (i + 3, 16u64),
+                    _ => (i + 2, 10u64),
+                };
+                let mut acc: u64 = 0;
+                let mut too_big = false;
+                let mut digits = 0usize;
+                while let Some(&c) = b.get(j) {
+                    let d = match (radix, c) {
+                        (10, b'0'..=b'9') => (c - b'0') as u64,
+                        (16, b'0'..=b'9') => (c - b'0') as u64,
+                        (16, b'a'..=b'f') => (c - b'a') as u64 + 10,
+                        (16, b'A'..=b'F') => (c - b'A') as u64 + 10,
+                        _ => break,
+                    };
+                    digits += 1;
+                    if !too_big {
+                        acc = acc.saturating_mul(radix).saturating_add(d);
+                        if acc > 0x10FFFF {
+                            too_big = true;
+                        }
+                    }
+                    j += 1;
+                }
+                if digits == 0 {
+                    // `&#` 后面没有数字 → 字面量。只消费 '&',让后续字节
+                    // 走正常通道(`&#;` 里的 ';' 也会被原样吐出)。
+                    out.push('&');
+                    i += 1;
+                    continue;
+                }
+                if b.get(j) == Some(&b';') {
+                    j += 1;
+                }
+                let cp = if too_big || acc == 0 {
+                    None
+                } else {
+                    Some(acc as u32)
+                };
+                let ch = cp.and_then(numeric_replacement).unwrap_or('\u{FFFD}');
+                out.push(ch);
+                i = j;
+            }
+            // 命名引用:取 ASCII 字母数字游程,分号形式优先,legacy 按最长
+            // 前缀匹配;都没有 → '&' 原样,游程留在原地走正常通道。
+            Some(c) if c.is_ascii_alphanumeric() => {
+                let mut end = i + 1;
+                while end < b.len() && end - i <= MAX_NAME_LEN && b[end].is_ascii_alphanumeric() {
+                    end += 1;
+                }
+                let run = &b[i + 1..end];
+                let decoded = if b.get(end) == Some(&b';') {
+                    lookup_semicolon(run).map(|cps| (cps, end + 1))
+                } else {
+                    None
+                }
+                .or_else(|| {
+                    // legacy 缺分号:最长前缀优先(HTML5 文本行为;
+                    // `&copyx` → `©x`,`&copyz;` → `©z;`)。
+                    let max = run.len().min(MAX_NAME_LEN);
+                    (1..=max)
+                        .rev()
+                        .find_map(|len| lookup_legacy(&run[..len]).map(|cps| (cps, i + 1 + len)))
+                });
+                match decoded {
+                    Some((cps, consumed)) => {
+                        for &cp in cps {
+                            // 命名实体不经过数字引用映射表;表里的码点全部合法。
+                            out.push(char::from_u32(cp).unwrap_or('\u{FFFD}'));
+                        }
+                        i = consumed;
+                    }
+                    None => {
+                        out.push('&');
+                        i += 1;
+                    }
+                }
+            }
+            // `&` 后面不是字母数字(空格 / 结尾 / 另一个实体等)→ 字面量。
+            _ => {
+                out.push('&');
+                i += 1;
+            }
+        }
+    }
+    out
+}
