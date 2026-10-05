@@ -395,7 +395,10 @@ probe 用例数只增不减(`EXPECTED_CASE_COUNT` 同步);附录 A 由生成器�
 | D13-004 | M3 W-11 收尾实测 | `DROP_WITH_CONTENT` **漏了 `noembed`**,而规范 §13.2 明写它是 raw-text 整删集成员 —— 实现与已冻规范相悖,`noembed` 的 raw-text 正文会被当标记解析(mXSS 面) | ✅ 已处置 —— 补入整删集;`drop_set_covers_raw_text_elements`(以 `tokenize::RAWTEXT` 为循环源的守卫)当场抓住;另加 `sanitize_drops_noembed_with_content` 端到端钉住。`本提交` |
 | D13-005 | M3 W-11 收尾实测 | `filter_tree` 的挂载点 `target[id]` 判据用错了对象:按**自己**的动作分支,Keep 节点被挂到 `parent` 上;而 Unwrap 父节点自身不输出、那棵子树无人遍历 —— **非白名单元素内的内容整段消失**(`<div onclick="x">y</div>` → `""`、`<table><td>x</td></table>` → `""`)。注释写的是「进父的挂载点」,代码写的是 `parent`,二者矛盾 | ✅ 已处置 —— 判据改为**父**的动作(`actions[parent]`):父 Keep 挂父本身、父 Unwrap 沿链上溯;`sanitize_keeps_content_of_unwrapped_elements` 五条断言钉住。⚠ 中途试过「一律 `target[parent]`」,同样错(Keep 的孩子被踢出元素,`<a>x</a>` → `<a></a>x`)—— 两种错法都表现为「静默丢内容」,不报错。`本提交` |
 | D13-006 | M3 W-11 收尾实测 | `serialize` 以 `Item::Enter(tree.root)` 起栈,而 root 的 `NodeKind` 是 `Text("")` 占位 → 匹配 Text 分支只写空串、**从不遍历孩子** —— **`HTML_SANITIZE` 对任何输入都返回空串**,旗舰成员整体不可用 | ✅ 已处置 —— 以 root 的**孩子**为栈起点(root 透明);`serialize.rs` 留注记说明该坑,三条 sanitize 端到端测试各自覆盖一个非空输出。`本提交` |
-| D13-007 | M3 W-11 收尾实测 | 承接上四条的**共同根因**:W-11 只交了模块内单测,**端到端零覆盖**,于是上述四道静默缺陷(其中两道使成员完全不产出内容)全部存活且门禁全绿 —— 单测测的是各段自身,没有一条从 `HTML_SANITIZE` 入口走到出口 | ⚠️ 已知限制(**未完成**,非「有意不做」)—— W-12(幂等性)与 W-13(OWASP 向量 + 性能断言)仍**未动工**,它们才是封住这个洞的工作项;本检查点只补了三条端到端回归作为最低防线,不等于 W-12 / W-13 已交付。恢复工作时**先做 W-12**。`本提交` |
+| D13-007 | M3 W-11 收尾实测 | 承接上四条的**共同根因**:W-11 只交了模块内单测,**端到端零覆盖**,于是上述四道静默缺陷(其中两道使成员完全不产出内容)全部存活且门禁全绿 —— 单测测的是各段自身,没有一条从 `HTML_SANITIZE` 入口走到出口 | ⚠️ 已知限制(**本检查点已解除**):W-12 幂等性套件 + W-13 契约表已落地(79 条冻结用例 / 324 条变异 / 14 条 mXSS 样本 / 病态深度 10 万层断言),「入口到出口」的路已被钉住。**残余**:变异集是**确定性枚举**而非属性测试的随机生成,覆盖受 `mutation_variants` 的 9 类变形所限;要更强的覆盖需引入 proptest 一类依赖(本批非目标)。`本提交` |
+| D13-008 | M3 W-13 契约表判读 | `plaintext` 被放进 `DROP_WITH_CONTENT`(整删集),而规范 §13.2 的整删枚举里**没有它**,且明写「`<plaintext>` 后的全文文本化不实现(按普通文本处理)」⇒ 规范要求它走**拆壳留内容**。实现比规范更狠,把用户内容整段丢掉(`<plaintext>hello` → `""`) | ✅ 已处置 —— 按规范移出整删集,改为普通非白名单元素:`<plaintext>hello` → `hello`,`<plaintext><b>x</b>` → `<b>x</b>`,而内层 `script` / `img` / `javascript:` 照常按各自规则处置(拆壳不放宽内层判定);规范 §13.2 同步补写「整删集恰好 8 个 raw-text 元素,`plaintext` 不在其中」,把原本可能被读成「整删」的措辞钉死;契约表 `mxss_plaintext` + wlwl-std 单元测试 `plaintext_is_unwrapped_not_dropped` 各钉一道。`本提交` |
+| D13-009 | M3 W-13 契约表判读 | `policy` 传非 `DICT` 时复用了 `data` 的类型错模板,报 `HTML_SANITIZE: expected string, got array` —— 对着一个**本来就合法**的 string 参数说「要 string」,把错误指到了错的参数上(调用方会照着去改 `data`)。`filter::parse_policy` 里其实已有 `policy must be a DICT` 的 `perr`,只是调用点在进 `parse_policy` 之前就把它截住了 | ✅ 已处置 —— `sanitize.rs` 的 policy 分支改用专属诊断 `HTML_SANITIZE: policy must be a DICT, got <kind>`;契约表 `policy_non_dict` 逐字冻结,消息与键名类诊断(`policy "tags" must be an ARRAY`)形态一致。`本提交` |
+| D13-010 | M3 W-13 契约表判读 | `HTML_SANITIZE()` 的元数错复用了共享 `arity()` 模板,报「expects **2** argument(s)」—— 而 `policy` 可省、**1 个实参才合法**,等于对着合法调用报错。三个成员共用一个 `want` 固定为 2 的模板,只有本成员是变参 | ✅ 已处置 —— `sanitize.rs` 改用本成员专属消息「expects 1 or 2 argument(s), got N」;契约组 `sanitize_diagnostics_are_frozen` 逐字冻结下界(0)与上界(3)两端。`本提交` |
 
 ---
 
@@ -409,7 +412,7 @@ probe 用例数只增不减(`EXPECTED_CASE_COUNT` 同步);附录 A 由生成器�
 | M0 | W-01 ~ W-05(规范新章 / ADR-0024 / 调研 / N-7 / N-8) | ✅ 完成(验收:§13.3 / §14 / 警示句 / 标签残留全部核实;`stdlib_appendix_a_sync` 2/2 绿;零实现代码) | `601e76b` |
 | M1 | 转义与实体 R2(`HTML_ESCAPE` / `HTML_UNESCAPE` 全表 / 归层基准 W-08) | ✅ 完成(criterion:escape 442 MiB/s / unescape 115 MiB/s,均达标;W-08 归层对照:R1 每码点 2.7→15.4 µs 超线性、917K 码点档 >15 分钟未完成,R2 全档平坦 —— 数据入 baseline.txt M1 段;契约 22 条 + probe 154) | `613f13e` |
 | M2 | `std.encode` 哈希(`SHA256` / `HMAC_SHA256`) | ✅ 完成(FIPS 180-4 / RFC 4231 TC2 逐字 + Python 交叉核对;criterion sha256_10kb ≈ 255 MiB/s,指标 ≥ 100 ✅;D13-001 / D13-002 登记) | `本提交` |
-| M3 | `HTML_SANITIZE`(策略 schema → 树构建 → 幂等性 → 契约与基准) | 🟡 **进行中,不可发布** —— W-10 ✅ 文档面已落地(规范 §13.2 策略四键表 + 解析子集差异登记);W-11 ✅ 五文件 + 单测落地,但**四道静默缺陷(D13-003 ~ D13-006)在本检查点才被实测揪出并处置**,其中 D13-006 使该成员对任何输入都返回空串、此前门禁全绿;D13-007 记录共同根因(端到端零覆盖)。**W-12(幂等性)⬜ 未动工、W-13(OWASP 向量 + 性能断言)⬜ 未动工** —— 恢复工作时先做 W-12。门禁现状:`fmt --check` / `clippy --all-targets -D warnings` / `doc -D warnings` / `test --all-targets`(42 套件 1947 绿)/ `conformance` 全绿 | `本提交` |
+| M3 | `HTML_SANITIZE`(策略 schema → 树构建 → 幂等性 → 契约与基准) | ✅ **W-10 ~ W-13 全部落地** —— W-10 规范 §13.2 策略四键表 + 解析子集差异登记;W-11 五文件(W-11 收尾修掉 D13-003~006 四道静默缺陷);**W-12 幂等性三组**:契约语料逐条 / **324 条变异**(9 类变形,逐类在场守卫)/ 14 条 mXSS 样本,字节级断言;**W-13 契约 + 性能**:**79 条 OWASP 向量逐条冻结并注明裁定依据**、病态契约断言(10 万层不栈溢出 / 1 MB 文本 / 2 万属性 / 10 万实体)、criterion 五条新基准。判读中又抓出三条与规范/契约相悖的实现缺陷(D13-008 `plaintext` 整删、 D13-009 policy 形态错指错参数、D13-010 元数下界报错),**已改实现而非冻结错误输出**。性能:§7.4 三条指标全达标(escape 454.8 / unescape 100.9 / sanitize 17.05 MiB/s);线性承诺成立(每字节 114.0 → 55.9 → 41.6 ns/B 随尺寸**下降**,不增);病态 700 KB / 10 万层 60.87 ms。门禁:`fmt` / `clippy --all-targets -D warnings` / `doc -D warnings` / `deny` / `test --all-targets`(42 套件 1955 绿)/ `conformance` 全绿 | `本提交` |
 | M4 | 收口(skill / CHANGELOG / 版本号 / tag 归维护者) | 未动工 | — |
 
 > 裁决点备忘(开工前业主可否决,否则视为接受):
@@ -419,11 +422,11 @@ probe 用例数只增不减(`EXPECTED_CASE_COUNT` 同步);附录 A 由生成器�
 > M5 先例;数据只有一条才有说服力)。
 
 > ⚠️ **裁决点 ① 的「业主确认」至今没有记录**:W-10 的策略表(22 个缺省标签 /
-> `{"a": ["href","title"]}` / 三个 URL scheme / 删注释)已随 M3 实现一并落地,
-> 冻结在规范 §13.2,但**没有业主签字的记录**。按本计划 §7 的顺序纪律
-> (「策略 schema 经业主确认后再动第一个实现」),这是流程缺口 —— 恢复工作时
-> 请业主复核该表并在此补一句确认,或明确否决后改表。**在补上之前,M3 的
-> 「完成」不成立**,W-12 / W-13 也不应在此之前动工。
+> `{"a": ["href","title"]}` / 三个 URL scheme / 删注释)已落地并冻结在规范
+> §13.2,第三方 agent 未等确认就实现了它;本轮 W-12 / W-13 也是**在该表
+> 现状之上**继续推进的(业主口头授权「继续开工」= 授权推进,≠ 对该表的
+> 签字)。**M4 收口前必须补上**:请业主复核 §13.2 那张表并在此补一句确认,
+> 或明确否决后改表 —— 改表会连带 W-13 的 79 条期望值一起作废。
 
 ---
 

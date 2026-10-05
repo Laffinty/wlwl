@@ -118,17 +118,34 @@ pub fn html_unescape(host: &mut dyn StdHost, args: Vec<Value>) -> wlwl_error::Wl
 /// 性能:三趟各 O(n),深嵌套迭代栈(病态契约),基准见 baseline.txt M3 段。
 pub fn html_sanitize(host: &mut dyn StdHost, args: Vec<Value>) -> wlwl_error::WlwlResult<Outcome> {
     if args.is_empty() || args.len() > 2 {
-        return Err(arity(host, "HTML_SANITIZE", args.len(), 2));
+        // 不用共享的 `arity()`:它的模板恒为「expects {want} argument(s)」,
+        // 而本成员的 `policy` 可省 —— 照搬会对着合法的单参调用说「expects 2」。
+        return Err(host.diag(
+            ErrorCode::E0022,
+            format!(
+                "HTML_SANITIZE: function expects 1 or 2 argument(s), got {}",
+                args.len()
+            ),
+        ));
     }
     let Value::String(src) = &args[0] else {
         return Err(type_err(host, "HTML_SANITIZE", &args[0]));
     };
     let policy = match args.get(1) {
         None => filter::Policy::default(),
-        Some(v) => match v {
-            Value::Dict(_) => filter::parse_policy(host, v)?,
-            other => return Err(type_err(host, "HTML_SANITIZE", other)),
-        },
+        // policy 形态错必须**说 policy**:`type_err` 是给 data 用的
+        // 「expected string」模板,用在 policy 上会指错参数(W-13 契约表
+        // 当场抓到 `[1, 2]` 报 "expected string, got array")。
+        Some(v @ Value::Dict(_)) => filter::parse_policy(host, v)?,
+        Some(other) => {
+            return Err(host.diag(
+                ErrorCode::E0030,
+                format!(
+                    "HTML_SANITIZE: policy must be a DICT, got {}",
+                    crate::value_kind(other)
+                ),
+            ))
+        }
     };
     let tokens = tokenize::tokenize(src);
     let mut tree = tree::build(tokens);
@@ -299,5 +316,25 @@ mod tests {
             "after"
         );
         assert_eq!(sanitize_default("<NOEMBED>x</NOEMBED>"), "");
+    }
+
+    #[test]
+    fn plaintext_is_unwrapped_not_dropped() {
+        // D13-008 回归:规范 §13.2 的整删集只列 8 个 raw-text 元素,`plaintext`
+        // 不在其中,且明写「按普通文本处理」⇒ 拆壳留内容,不是整删。
+        // (浏览器把 `<plaintext>` 之后全部当文本,本成员不复制该行为 ——
+        //  已登记的解析差分;但也不能因此把用户内容整段丢掉。)
+        assert_eq!(sanitize_default("<plaintext>hello"), "hello");
+        assert_eq!(sanitize_default("<b>a</b><plaintext>b"), "<b>a</b>b");
+        // 拆壳不削弱安全性:其内的危险元素照常按各自规则处置。
+        assert_eq!(sanitize_default("<plaintext><script>alert(1)</script>"), "");
+        assert_eq!(
+            sanitize_default("<plaintext><img src=x onerror=alert(1)>"),
+            ""
+        );
+        assert_eq!(
+            sanitize_default("<plaintext><a href=\"javascript:alert(1)\">x</a>"),
+            "<a>x</a>"
+        );
     }
 }

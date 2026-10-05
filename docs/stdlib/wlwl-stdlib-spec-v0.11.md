@@ -719,6 +719,12 @@ OWASP 定性为 last resort 且方言分裂,而 wlwl 没有 `std.db`,不存在�
 - **raw-text 元素**(`script` / `style` / `textarea` / `title` / `xmp` /
   `noembed` / `noframes` / `iframe` 内文):内容不作为标记解析,整棵删除
   —— 这些元素的删除集身份同时封掉了「raw-text 内容再解析」这一整类 mXSS 面。
+  **整删集恰好就是这 8 个 raw-text 元素,不多不少**(整删集还含 `object` /
+  `embed` / `noscript` / `template` / `svg` / `math` / `head` 等危险嵌入与
+  外来内容)。**`<plaintext>` 不在整删集** —— 它不是 raw-text 元素,本成员
+  不实现「其后全文文本化」,故按**普通非白名单元素**处理(拆壳留内容):
+  `<plaintext>hello` → `hello`,而其内的 `script` 照常整删。拆壳是就内容
+  可恢复性而言更宽松,**不放宽内层任何判定**。
 - **void 元素**(`br` / `hr` / `img` / `input` 等 14 个):无子节点,序列化
   为 `<name …>` 无结束标签。
 - 未知 / 拆壳的标签,其**属性一并消失**(只有保留标签才谈属性白名单);

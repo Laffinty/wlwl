@@ -16,23 +16,15 @@ use wlwl_value::{StdHost, Value};
 
 /// 整棵删除(内容一并消失)的元素:raw-text / 外来内容 / 危险嵌入。
 /// raw-text 的删除同时封掉「raw-text 内容再解析」的整类 mXSS 面。
+///
+/// **`plaintext` 不在本表**:规范 §13.2 只把 8 个 raw-text 元素列入整删集,
+/// 并明写「`<plaintext>` 后的全文文本化不实现(按普通文本处理)」——
+/// 即它是**普通非白名单元素**(拆壳留内容),不是整删。浏览器把其后文
+/// 当文本永不再解析,本成员不复制该行为(已登记的解析差分),但也不因此
+/// 把用户内容整段丢掉。D13-008。
 pub(crate) const DROP_WITH_CONTENT: &[&str] = &[
-    "script",
-    "style",
-    "iframe",
-    "object",
-    "embed",
-    "noscript",
-    "noframes",
-    "noembed",
-    "template",
-    "textarea",
-    "title",
-    "svg",
-    "math",
-    "xmp",
-    "plaintext",
-    "head",
+    "script", "style", "iframe", "object", "embed", "noscript", "noframes", "noembed", "template",
+    "textarea", "title", "svg", "math", "xmp", "head",
 ];
 
 /// URL 类属性:值可能是 URL,必须过 scheme 白名单。
