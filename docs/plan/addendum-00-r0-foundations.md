@@ -130,20 +130,23 @@ cargo bench -p wlwl-eval --bench eval_hot_paths -- --warm-up-time 1 --measuremen
 4. **R1 成员还剩多少?** 若 L0-A 做完 `std.collection` 全 R2,`std.str` 7 个
    仍是 R1 —— 那 R1 模块的启动解析成本与 `--std-src` 覆盖轨是否还有存在
    理由?这决定 §5「R1 预编译快照」那条演进方向是否还值得做。
-5. **[2026-10-05 新增,原计划整条漏掉]`DICT` 要不要从 `Vec<(Value,Value)>`
-   换成真哈希表?**
-   这是 L0-A-1 源码核查挖出来的**第二个**平方级来源:`builtin_index_set` 对
-   DICT 是「克隆整个 entries + `entries.iter().position(...)` 线性扫描」
-   (`lib.rs:1514` + `lib.rs:1427`),n 次插入 = O(n²)。受影响成员:
-   `KEY_BY` / `GROUP_BY` / `DEDUP_BY`。
-   - **归层不能绕过它** —— 归层只是把成员换成 R2 实现,而 R2 若继续用
-     `Value::Dict` 的线性 Vec,那三个成员**归层后照样平方**。要真修,R2 侧必须
-     用哈希表。
-   - **影响面远大于「给成员换层」**:`Value::Dict` 是语言核心表示,`==`、
-     `STR` 渲染、格式化器、契约表、附录 A 全要一起对齐 ⇒ 它的**九处表落点
-     远不止九处**。
-   - ⇒ **这条不裁,L0-A-2 做完也可能不达成本份 §0 的目标。** 裁决与证据见
-     [`ADR-0025`](../adr/0025-array-quadratic-cost-routes.md) 的 Q1。
+5. ~~`DICT` 要不要从 `Vec<(Value,Value)>` 换成真哈希表?~~ **已裁(2026-10-05,
+   `ADR-0025` Q1):`Value::Dict` 的表示本批不动;R2 的 `KEY_BY` / `GROUP_BY` /
+   `DEDUP_BY` 内部用 `HashMap<String, usize>` 作查找索引 + `Vec` 维持插入序,
+   返回前一次性物化回 `Value::Dict`。**
+   - 为什么不是「换哈希表」:`DICT` 现在是 `Vec`,**插入序就是可观察序** ——
+     JSON 输出、错误载荷、契约里冻结的 `display()` 全依赖它。换 `HashMap` 会让
+     这些乱序 = breaking,代价远超收益。
+   - 为什么「不动表示」也修得掉:第二个平方级来源的机制是
+     `builtin_index_set` 每次 `entries.clone()` + `dict_lookup` 的
+     `entries.iter().position(...)`(`lib.rs:1514` / `:1427`)。**R2 成员是 Rust,
+     内部结构自由**(本仓先例:`HTML_SANITIZE` 内部 `Vec<Node>` + `u32` 句柄索引池,
+     只在边界物化)⇒ 在成员**内部**用哈希、在**边界**还原,即可同时拿到 O(n) 与
+     逐字节相同的输出。键本就是 `STR(k)` 的字符串,**不必给 `Value` 实现 `Hash`**,
+     **零新依赖**。
+   - **已知遗留**(不阻塞 M5):用户代码里逐次 `INDEX_SET` 写 DICT 仍是 O(n²) ——
+     那是语言层的来源二本身,不是成员问题。按 D12-004 / D12-009 同款口径记为
+     **已知限制**。
 
 ## 4. 验收门禁
 
@@ -210,11 +213,13 @@ cargo check --locked -p wlwl-std --features real-ai                   # exit 0
 做完,用户代码里的累加器照样平方**(那是 L0-B 的面)。同时,§3 新增的第 5 条裁决
 点指出:归层要真修 `DEDUP_BY` / `GROUP_BY` / `KEY_BY`,**必须同时解决 `DICT` 的
 线性 Vec 表示**,否则那三个成员归层后仍平方。
-⇒ **待裁的已不是「改不改 §0 目标文本」这个二选一**,而是
-[`ADR-0025`](../adr/0025-array-quadratic-cost-routes.md) 的 Q1–Q4:
-`DICT` 表示怎么定(Q1,最大一块)、L0-B 是否立项及范围含不含 `CONCAT`(Q2)、
-L0-B 的回退能否可观测(Q3)、`SORT` 归层后那段「为省拷贝而选选择排序」的注释要不要
-重写(Q4)。**L0-A-2 开工前须先裁 Q1。**
+⇒ **`ADR-0025` 的 Q1–Q4 已于 2026-10-05 全裁**(Status: Accepted),要点:
+Q1 `Value::Dict` 表示**本批不动**,D 类三个成员在 R2 侧用「内部 `HashMap` +
+末次物化」实现;Q2 L0-B **立项但独立于 M5**,判据须含 `CONCAT` / `+` 族;
+Q3 回退**必须可观测**(计数器 + 基准守卫 + 契约测试),**不走警告通道**;
+Q4 `SORT` 归层用 `Vec::sort_by`(稳定,受 §14.1 否决 `SORT_UNSTABLE` 约束)并
+**重写**那段「为省拷贝而选选择排序」的注释。
+**⇒ L0-A-2 已解锁**,成员见 §7。
 
 **工程须知(仍然有效)**:① 取数**必须**带 `--warm-up-time 1 --measurement-time 2
 --sample-size 10`,否则 criterion 默认 100 样本 × `WINDOW` 24 s 级单次 = 跑不完;
@@ -265,7 +270,7 @@ M5 / M1 / M2 / M3 段并排;③ 归层后重跑即得**同方法学的前后对�
 | 子项 | 内容 | 状态 | commit |
 |---|---|---|---|
 | L0-A-1 | 基线基准落地(四档 + 线性承诺),先测出现值 | ✅ **完成** —— 新建 `benches/collection.rs`(5 组 × 4 档 = 20 条:`r1_build` + `collection_map/filter/chunk/window` × 1k/2k/4k/8k),`Cargo.toml` 登记;`--test` 烟测 20/20 通;criterion(bench 档 / 10 样本 / warm-up 1s / measurement 2s)取数完成,数据入 `baseline.txt` **L0 段**。**五组全部平方级坐实**(每元素成本随尺寸上涨,`chunk`/`window` 高档越过 4)。门禁:`cargo fmt --all -- --check` 0 diff、`cargo clippy --locked --workspace --all-targets -D warnings` exit 0 | `0fd7cd3` |
-| L0-A-2 | 归层第一批(高频 4 个) | ⛔ 未动工 —— **开工前须先裁 `ADR-0025` Q1**(`DICT` 是否换哈希表)。不裁就做,可能做完仍不达成本份 §0 目标 | — |
-| L0-A-3 | 归层第二批(其余) | ⛔ 未动工(依赖 L0-A-2 与 Q1 结论) | — |
+| L0-A-2 | 归层第一批 = **`MAP` `FILTER` `CHUNK` `WINDOW`**(L0-A-1 实测每元素成本最高的四个,8 k 档 254.16 / 179.45 / 46.23 / 3 059.00 µs;恰好覆盖三种形态:逐元素闭包 / 条件追加 / 每轮 `SLICE`) | ⬜ 未动工 —— **已解锁**(`ADR-0025` 四问 2026-10-05 全裁,Q1 定了 D 类实现路径) | — |
+| L0-A-3 | 归层第二批 = 其余 A 类 + B 类(`FLAT` 嵌套分支 / `JOIN`)+ **D 类**(`KEY_BY` `GROUP_BY` `DEDUP_BY`,按 Q1 走「内部哈希 + 末次物化」)+ **`SORT`**(按 Q4 用 `Vec::sort_by` 稳定版并重写 `collection.wll:142-148` 的注释)。**C 类 12 个已线性成员不进任何一批** | ⬜ 未动工(依赖 L0-A-2) | — |
 | L0-A-4 | 差分回归测试 + 契约表零改动核验 | 未动工 | — |
-| L0-B | 设计 ADR(**独立立项**,不在本批) | ⛔ 未动工 —— 已由 [`ADR-0025`](../adr/0025-array-quadratic-cost-routes.md) 提供分型证据与 Q2/Q3 两问;**β1 现措辞修不了 `CONCAT` 族,β3 的否决理由已被 v0.6 可变 cell 部分推翻** | — |
+| L0-B | 可变累加器:**已立项,独立于 M5,排在 M5 之后**,须另出 ADR。判据**必须含 `CONCAT` / `+` 族**;回退**必须可观测**(计数器 + 用户代码形态基准守卫 + 「识别失败时输出仍逐字节正确」契约测试),**明确不走警告通道**(D11-022 已证其失效);β3 须一并重评 | ⬜ 未动工(ADR-0025 Q2 / Q3 已给出范围与可观测性要求) | — |
