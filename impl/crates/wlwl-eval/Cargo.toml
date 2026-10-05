@@ -40,3 +40,7 @@ path = "benches/sanitize.rs"
 name = "encode"
 harness = false
 path = "benches/encode.rs"
+[[bench]]
+name = "collection"
+harness = false
+path = "benches/collection.rs"
