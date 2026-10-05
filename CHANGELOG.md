@@ -15,6 +15,67 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [v0.11.3] — 2026-10-05
+
+Spec: **wlwl-spec-v0.11 与 wlwl-stdlib-spec-v0.11 均不变**。本批**不改语言语义**
+—— 只加标准库成员、补文档与 ADR 草案、把两个「不做」留档成文。标准库成员面
+**99 → 104**,命名空间 **12 → 13**(`std.ai` 的 5 个成员受 `real-ai` feature
+门控,默认构建可见 99)。附录 G(全局内建)**逐字节不变** —— 本批没加全局内建。
+
+> **为什么规范不升版**:标准库规范头部写明「v0.11 起与语言规范**同号发布**」,
+> 而本批不动语言规范 ⇒ 标准库须留在 v0.11(同 v0.11.2 的裁决,ADR-0023 §v0.x 1/2)。
+> 标准库规范的变更登记在册首「本版变更」块与新增的 §13 章。
+
+> **本批无 breaking 变更**(ADR-0023 §v0.x 2)。纯新增:既有签名与语义一字未动,
+> 既有契约用例逐条仍绿。**唯一的既有行为改动**是 `HTML_SANITIZE` 的缺省策略里
+> `<plaintext>` 从「整删」改为「拆壳留内容」—— 而那不是新成员的参数选择,是把
+> 实现拉回**已冻结的规范文本**(详见下文 D13-008)。
+
+### Added
+
+- **`wlwl:std.sanitize`(新命名空间,R2 全员,3 成员)** —— `HTML_ESCAPE` /
+  `HTML_UNESCAPE` / `HTML_SANITIZE`。输出安全的上下文分工,三者**互不替代**:
+  URL → `URL_ENCODE`,标记 → `HTML_ESCAPE`,富 HTML → `HTML_SANITIZE`。
+  - **威胁模型写进成员描述**:防的是「不可信数据在**输出点**被解释为代码或
+    结构」;**不清洗输入**(OWASP 现行口径:输入侧「清洗」不是 XSS 防治手段),
+    不做语义校验,不防逻辑漏洞。
+  - **实体表是全表,不是半表**:由生成器从 WHATWG `entities.json` 官方数据产出
+    2125 项分号项 + 106 项 legacy 项(数据文件不入库,生成器入库)。半张表在
+    安全语境下不是「已知局限」而是**调用方拿到的错误数据**(`&copy;` 原样穿过)。
+    数字引用按 WHATWG 规则映射(越界 / 代理区 → `U+FFFD`,溢出有检查,不得 panic)。
+  - **净化器是树构建形态,不是 token 流**:IEEE S&P 2024 与 Sonar mXSS 研究
+    证明不建树的净化器与浏览器存在解析差分,可被 mXSS 结构性绕过。实现的是
+    WHATWG 规则的**白名单子集**(树构建用开标签栈 + 隐式闭合表),**不承诺与
+    浏览器逐位一致** —— 差异显式登记在规范 §13.2。
+  - **安全不变量是「重解析幂等」**:`SANITIZE(SANITIZE(x, p), p) == SANITIZE(x, p)`
+    字节级,规范性、打破即缺陷。**安全性由幂等性守护,不由「与浏览器相同」守护**。
+  - **缺省策略保守**:22 个排版级标签(`a` `b` `blockquote` `br` `code` `em`
+    `h1`–`h6` `hr` `i` `li` `ol` `p` `pre` `s` `strong` `u` `ul`)、
+    `{"a": ["href", "title"]}`、三个 URL scheme(`http` / `https` / `mailto`,
+    相对 URL 恒允许)、删注释。策略 `DICT` 的四个键**整体替换**缺省值而非合并。
+  - **违规标签删除而非转义**;`script` / `style` / `iframe` 等 8 个 raw-text
+    元素**连内容整删** —— 删除集身份同时封掉「raw-text 内容再解析」整类 mXSS 面;
+    `svg` / `math` 作为外来内容整删。非白名单的其余标签**拆壳留内容**。
+  - **性能是契约的一部分**(业主 2026-10-03 裁决「旗舰特色功能,性能是硬指标」):
+    全员 R2 直通 `Value`,单趟扫描 + 预分配,树构建用节点索引池 + 迭代栈
+    (**禁止递归**)。实测 10 KB 文章 **17.05 MiB/s**(§7.4 指标 ≥ 10);
+    每字节成本 114.0 → 55.9 → **41.6 ns/B**(1 KB → 10 KB → 100 KB)
+    随尺寸**下降**,线性承诺成立;10 万层嵌套不栈溢出(700 KB / 60.87 ms)。
+  - 契约表 `tests/sanitize_contract.rs` **103 条**(22 转义 + 81 净化/诊断),
+    其中 **79 条 OWASP XSS Filter Evasion 经典向量 + 14 条 mXSS 教科书样本**
+    逐条冻结并**注明裁定依据**,幂等性三组(契约语料 / **324 条变异** / mXSS),
+    病态契约断言(10 万层 / 1 MB 文本 / 2 万属性 / 10 万实体)。probe **155 → 157**。
+- **`wlwl:std.encode` +`SHA256` / `HMAC_SHA256`(6 → 8 成员)** —— FIPS 180-4
+  摘要与 RFC 4231 HMAC,手写零第三方依赖;复用 `wlwl-ast` 的字节级 SHA-256
+  (单一实现两个消费者)。
+  - **向量期望值取自 FIPS 180-4 与 RFC 4231 TC2,不是实现输出**;TC1 / TC3 的
+    密钥是**二进制**,wlwl 的 `STRING` 是 UTF-8 文本表达不了 ⇒ 以 **Python
+    hashlib 独立交叉核对**并注明出处(D13-001)。
+  - TC7(超长密钥)以**字节级单元测试**落地(真二进制密钥),提示文本回抄不可靠。
+  - 实测 `sha256_10kb` ≈ 255 MiB/s(§7.4 指标 ≥ 100)。
+- **ADR-0024 草案**(`std.time` 的假时钟气泡,状态 Proposed)与 **regex 调研备忘**
+  (RE2 式线性模拟,不立项)—— **只出文档,不出码**。
+
 ### Fixed
 
 - **`MIN_BY` / `MAX_BY` 空数组中止运行,违反 stdlib §5「空数组得 `NULL`」**(v0.11.2
@@ -23,6 +84,57 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   `E0030` 中止;只有恒等 key 这类「对 NULL 免疫」的调用方才碰巧拿到 NULL。
   已改 `==(LEN(arr), 0)`,返回先于碰 key;契约表新增两条**严格 key** 的空数组
   用例(原有恒等 key 用例对本缺陷零防护,保留),probe 对照行同步换用严格 key。
+- **净化器七道缺陷**(v0.11.3 收口时实测揪出,偏差 D13-003 ~ D13-010)。前四道
+  是**静默**的 —— 不报错、只丢东西,且当时全部门禁全绿:
+  - **D13-006**:`serialize` 以 `Enter(root)` 起栈,而 root 的 `NodeKind` 是
+    `Text("")` 占位 ⇒ 匹配 Text 分支只写空串、**从不遍历孩子**。
+    `HTML_SANITIZE` **对任何输入都返回空串**,旗舰成员整体不可用。
+  - **D13-005**:过滤器挂载点 `target[id]` 的判据用错了对象(看**自己**的动作
+    而非父的)⇒ Keep 节点被挂到不输出的 Unwrap 父节点下,那棵子树无人遍历 ——
+    **任何非白名单元素里的内容整段消失**(`<div>y</div>` → `""`)。注释写的是
+    「进父的挂载点」、代码写的是 `parent`,自相矛盾。
+  - **D13-003**:树构建收到 `Token::RawText` 不弹栈。tokenizer 吞掉 `</script>`
+    本体且不发 `End`,开标签永不出栈,其后内容全挂进这个「必被整删」的元素里
+    跟着消失(`<script>evil</script>after` 的 `after` 全丢)。
+  - **D13-004**:`DROP_WITH_CONTENT` 漏了 `noembed`,而规范 §13.2 明写它是
+    raw-text 整删集成员 —— 其内文会被当标记解析(mXSS 面)。
+  - **D13-008**:`plaintext` 被放进整删集,而规范 §13.2 的整删枚举里**没有它**、
+    且明写「按普通文本处理」⇒ 实现比规范更狠,`<plaintext>hello` 丢成空串。
+    已按规范移出整删集改走拆壳(内层 `script` / `javascript:` 照常处置 ——
+    拆壳不放宽内层判定),规范同步补写「整删集恰好 8 个 raw-text 元素」。
+  - **D13-009**:`policy` 传非 `DICT` 时复用了 `data` 的类型错模板,报
+    `expected string, got array` —— 对着一个**本来就合法**的 string 参数说
+    「要 string」,把错误指到了错的参数(调用方会照着去改 `data`)。
+  - **D13-010**:`HTML_SANITIZE()` 的元数错复用共享 `arity()` 模板报
+    「expects 2 argument(s)」,而 `policy` 可省、**1 个实参才合法**。
+  - **D13-007** 记录共同根因:W-11 只交了模块内单测,**端到端零覆盖** ——
+    上述四道静默缺陷因此全部存活。W-12 / W-13 补上「从入口走到出口」那条路
+    后才封住。
+- **clippy 8 处 / rustdoc 2 处**(含一条「断言恒真式」的假测试
+  `scheme_check_normalization`,以及 M1 契约表里「`SANITIZE_HTML` 不得出现」
+  的断言在 M3 落地后失效)—— CI 是 `RUSTFLAGS: -D warnings` + `clippy -D warnings`,
+  这些会直接让流水线红。
+
+### 不做(留档,「不做」与「做」同权)
+
+- **SQL 转义成员** —— 明示否决。OWASP 定性为 last resort 且方言分裂,而 wlwl
+  没有 `std.db`,不存在需要它的场景;复活条件 = 出现 `std.db` 形态的绑定层。
+  记录在标准库规范 §13.3,并由契约测试 `sql_escape_rejection_record_stays_in_the_spec`
+  钉住(删掉那段规范会变红)。
+- **加解密 / 密钥生成** —— 不做。撞 D12-006;`MD5` / `SHA-1` 已破不提供;
+  SHA-3 / BLAKE3 记演进方向。记录在规范 §11.5。
+- **不做流式 / 增量 API**(本批输入为整串)、**不承诺与浏览器解析器逐位一致**、
+  **不修 D11-012**(平方级成本属 R0 解释器治本工程)。
+
+### 门禁
+
+`cargo fmt --check` 0 diff;`clippy --all-targets -D warnings` 0;`cargo doc --no-deps
+-D warnings` 0 error;`cargo deny check` exit 0;`cargo check -p wlwl-std --features
+real-ai` exit 0;`cargo test --locked --all-targets` **0 failed**(42 套件);
+`--test conformance` 全绿;probe **157** 用例;附录 A 由 `gen-appendix-a` 重生成
+且双向锁绿;附录 G 逐字节不变;`sanitize_contract` 103 / `encode_contract` 47 /
+`collection` 127 / `str_math` 156 条逐条冻结。基准存档进
+`impl/crates/wlwl-eval/benches/baseline.txt`(M1 / M2 / M3 三段)。
 
 ## [v0.11.2] — 2026-10-02
 

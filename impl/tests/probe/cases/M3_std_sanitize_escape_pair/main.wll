@@ -1,0 +1,13 @@
+IMPORT("wlwl:std.sanitize", ["HTML_ESCAPE", "HTML_UNESCAPE"]);
+
+// 五个 ASCII 字符全转;单引号走数字引用(旧渲染器兼容口径)。
+PRINT(HTML_ESCAPE("a<b>&\"'"));
+
+// 全表实体(不是半表):&copy; 必须真的解出 ©。
+PRINT(HTML_UNESCAPE("&lt;b&gt;&amp;&copy;&#65;&#x41;"));
+
+// 往返定理:UNESCAPE ∘ ESCAPE == 恒等(对**一切**字符串成立)。
+PRINT(HTML_UNESCAPE(HTML_ESCAPE("a<b>&\"' &copy; ⪢̸")));
+
+// 未知命名实体原样保留 —— 那是 HTML5 自身的容错行为,不是缺陷。
+PRINT(HTML_UNESCAPE("&unknownent; 100% & up"));

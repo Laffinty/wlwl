@@ -1,0 +1,19 @@
+{
+ "exit": 0,
+ "contains": [
+  "<b>keep</b>",
+  "<a title=\"hi\">x</a>",
+  "<a href=\"/rel/path\">link</a>",
+  "y"
+ ],
+ "not_contains": [
+  "script",
+  "alert",
+  "javascript",
+  "onclick",
+  "onerror",
+  "panicked",
+  "E00"
+ ],
+ "_why": "v0.11.3 M3 净化器的**安全不变量**端到端守卫,逐条对应一类已修缺陷:① `<b>keep</b><script>alert(1)</script>` → `<b>keep</b>` —— raw-text 整删**且删除不越界**(D13-003:当年开标签不出栈,后面的内容跟着一起消失);② `<div onclick=\"x\">y</div>` → `y` —— 非白名单元素是「拆壳留内容」不是整删(D13-005:挂载点算错时这层内容会静默消失);③ `javascript:` 的 href 删掉而白名单里的 title 留下 —— **逐属性判定**,不因一个属性被拒就丢掉整个元素;④ `<img src=x onerror=alert(1)>` → 空 —— 危险属性只在标签**保留**时才谈白名单,img 不在白名单就整体消失(整条 `not_contains` 是这一族的面);⑤ 二次净化逐字节不动 —— 规范 §13.2 的**规范性**幂等不变量;⑥ 相对 URL 恒允许 —— 钉住「净化器不是见 href 就删」,否则会有人为省事把所有链接清空。`not_contains` 里的四个危险串是这道 case 的真正断言,`contains` 只是顺带确认内容没被误删。"
+}

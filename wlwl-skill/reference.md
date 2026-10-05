@@ -203,9 +203,10 @@ Uncaught ERR → `E0102`, exit 1.
 
 Full member lists live with the v0.11 namespaces: `std.collection` /
 `std.json` / `std.fs` / `std.test` / `std.format` / `std.io` / `std.ai` /
-`std.agent` / `std.encode` are listed in `SKILL.md` "Standard library pointers"; the two
-**v0.11-new** namespaces `std.str` and `std.math` have signed tables in §25
-below. Concurrent and OOP primitives are **global**, not under `wlwl:std.*`.
+`std.agent` / `std.encode` are listed in `SKILL.md` "Standard library pointers";
+the **v0.11-new** namespaces `std.str` and `std.math` have signed tables in
+§9.3 / §9.5 below, and the **v0.11.3-new** `std.sanitize` in §9.6. Concurrent
+and OOP primitives are **global**, not under `wlwl:std.*`.
 The authoritative registry of every global builtin (106 entries) is
 `../docs/appendix_G.md`.
 
@@ -342,9 +343,9 @@ each time.
 > `TO_UPPER("straße")` = `STRASSE` (length 7); `TO_UPPER("héllo")` = `HÉLLO`
 > while `UPPER("héllo")` = `HéLLO`.
 
-### §9.1 `wlwl:std.encode` (stdlib §11, v0.11.2)
+### §9.1 `wlwl:std.encode` (stdlib §11, v0.11.3)
 
-All six members take/return `STRING` and work on its **UTF-8 bytes**.
+All eight members take/return `STRING` and work on its **UTF-8 bytes**.
 `STRING` is not a byte buffer: a round trip preserves text, not arbitrary
 binary — to carry binary, encode on this side and decode on the other.
 
@@ -356,9 +357,18 @@ binary — to carry binary, encode on this side and decode on the other.
 | `HEX_DECODE(s)` | Accepts upper- and lowercase digits. |
 | `URL_ENCODE(s)` | RFC 3986; unreserved set is `ALPHA / DIGIT / "-" / "." / "_" / "~"`. |
 | `URL_DECODE(s)` | **`+` stays literal** — that is `application/x-www-form-urlencoded`, not RFC 3986. |
+| `SHA256(s)` | **v0.11.3 new.** FIPS 180-4, lowercase hex. Never fails. |
+| `HMAC_SHA256(key, s)` | **v0.11.3 new.** RFC 2104. Never fails. **Arity 2, key first.** |
 
-**Failure split** (this is the part worth memorizing): encode never fails;
-decode failures are `ERR` **values** carrying `kind = "DecodeError"` with an
+**Hashing is not encryption.** `SHA256` is a digest, not a cipher: there is no
+inverse, and it is deliberately **not** keyed. For keyed integrity use
+`HMAC_SHA256`. Neither is a password hash — there is no salt, no work factor,
+and no stretching; a password needs a dedicated KDF (none in this library).
+`MD5` / `SHA-1` are **not** provided (both broken); SHA-3 / BLAKE3 are recorded
+as future direction, not implemented.
+
+**Failure split** (this is the part worth memorizing): encode and hash never
+fail; decode failures are `ERR` **values** carrying `kind = "DecodeError"` with an
 `op` and a `reason`. Arity and type mistakes stay native diagnostics
 (`E0022` / `E0030`). A decode that yields invalid UTF-8 is a `DecodeError`
 rather than a lossy `U+FFFD` substitution — so
@@ -371,6 +381,66 @@ to `E0102`.
 > `a+b`; `BASE64_DECODE("!!!")` → `ERR([kind: DecodeError, ...])`. Full vector
 > table in `../docs/stdlib/wlwl-stdlib-spec-v0.11.md` §11.4; the base64
 > expectations are copied from RFC 4648 §10, not from this implementation.
+> `SHA256` / `HMAC_SHA256` vectors come from FIPS 180-4 and RFC 4231 **TC2**
+> (TC1 / TC3 keys are binary, which a UTF-8 `STRING` cannot hold — those were
+> cross-checked against Python `hashlib` instead).
+
+### §9.6 `wlwl:std.sanitize` — the v0.11.3 three (stdlib §13)
+
+**Pick by output context. They are not interchangeable, and choosing the wrong
+one is an error, not caution:**
+
+| You are writing | Use | Why not the others |
+|---|---|---|
+| `href="…"` / `src="…"` — a **URL** | `URL_ENCODE` (§9.1) | `HTML_ESCAPE` leaves `&` readable and does not percent-encode; `HTML_SANITIZE` will strip the attribute entirely if the scheme isn't on the list |
+| text or a quoted attribute — **markup** | `HTML_ESCAPE` | `HTML_SANITIZE` deletes every tag you wanted to keep |
+| **rich HTML** from an untrusted source | `HTML_SANITIZE` | `HTML_ESCAPE` shows the user the tags instead of removing them |
+
+| Member | Notes |
+|---|---|
+| `HTML_ESCAPE(data)` | Escapes **exactly five** ASCII chars: `&` `<` `>` `"` `'` (apostrophe → `&#39;`). Non-ASCII passes through byte-identical. |
+| `HTML_UNESCAPE(data)` | **Full** WHATWG table (2125 semicolon + 106 legacy entries). `&copy;` really decodes to `©`. Unknown named entities stay **verbatim** — that is HTML5's own tolerance, not a bug. |
+| `HTML_SANITIZE(data, policy?)` | Whitelist sanitizer. `policy` is an optional `DICT`; omit it for the built-in conservative one. |
+
+**`HTML_SANITIZE` behaviour, in the order you will hit it:**
+
+- Tags not on the whitelist are **removed but their text is kept** (unwrapped).
+  `<div onclick="x">y</div>` → `y`. The tag goes, the words stay.
+- `script` / `style` / `iframe` / `textarea` / `title` / `xmp` / `noembed` /
+  `noframes` (plus `object` / `embed` / `noscript` / `template` / `svg` /
+  `math`) are removed **with their contents** — their inner text is raw text
+  that must never be re-parsed as markup.
+- Attributes are filtered **per tag** (`a` allows only `href` and `title` by
+  default). A URL attribute survives only if its scheme is on the list
+  (`http` / `https` / `mailto`; **relative URLs always pass**). When a tag is
+  unwrapped, its attributes go with it.
+- **Idempotent, not round-trip.** `HTML_SANITIZE(HTML_SANITIZE(x, p), p) ==
+  HTML_SANITIZE(x, p)` byte-for-byte (a normative invariant). But the output
+  bears **no** positional relation to the input — nesting is corrected and
+  attributes are dropped. Do not try to map one back to the other.
+
+**Escaping gotchas:**
+
+- `HTML_ESCAPE(HTML_ESCAPE(s))` ≠ `HTML_ESCAPE(s)` — the second pass eats the
+  `&` of `&amp;`. The **round-trip theorem runs the other way only**:
+  `HTML_UNESCAPE(HTML_ESCAPE(s)) == s` for every `s`.
+- Use a **double quote** for an attribute you escaped with `HTML_ESCAPE`; the
+  five-char set already covers `"`, but single-quoted attributes are the caller's
+  problem.
+- `HTML_SANITIZE` escapes text on output with the same five characters, so a
+  sanitized document never needs a second pass.
+
+**Never fails on content.** The only diagnostics are `E0022` (arity — 1 or 2
+arguments) and `E0030` (non-string `data`, or a `policy` that is not a `DICT` /
+has a wrongly-typed key). Malformed HTML, unclosed tags, stray `<` — all
+recovered silently, because a sanitizer that throws on hostile input is a
+denial-of-service vector.
+
+> *Measured on wlwl 0.11.3:* 10 KB article **17.05 MiB/s**; per-byte cost falls
+> 114.0 → 41.6 ns/B from 1 KB to 100 KB (linear, no superlinear growth);
+> 100 000-deep nesting completes in 60.87 ms without stack overflow. The
+> entity table is the point of the full table: a half table is not a "known
+> limitation" in a security context, it is **wrong data handed to the caller**.
 
 ## §10. Error codes (§11.2, §11.3)
 
@@ -647,6 +717,19 @@ Beyond the top-24 in `SKILL.md`:
 - **`E0055` / `E0057` can be caught** — FALSE in v0.9; both codes removed. Use `ERR(ChannelClosed)` / `E0024`.
 - **`CLASS("C", null, [count: 0])` with a dict of fields** — FALSE; `members` must be an ARRAY of `[STRING, value]` pairs: `[["count", 0]]`.
 - **`THIS` is a plain alias for `self`** — FALSE in v0.9; `THIS` is a linear capability (consume once; never escape).
+- **"Sanitize the input" makes HTML safe** — FALSE, and OWASP calls input-side
+  cleaning a last resort. `HTML_SANITIZE` belongs at the **output** point, for
+  rich HTML only. For plain text or an attribute, use `HTML_ESCAPE`; for a URL,
+  `URL_ENCODE`. See §9.6 — the three are not interchangeable.
+- **`HTML_SANITIZE` "keeps what isn't dangerous"** — FALSE for tags: an
+  off-whitelist tag is **removed** (only its text survives), and
+  `script` / `style` / `iframe` go **with their contents**. It never round-trips:
+  output bytes bear no relation to input.
+- **Double-escaping with `HTML_ESCAPE`** — `HTML_ESCAPE(HTML_ESCAPE(s))` differs
+  from `HTML_ESCAPE(s)`; the theorem only runs `UNESCAPE ∘ ESCAPE`. See §9.6.
+- **`SHA256` is a password hash / a cipher** — FALSE. It is an unkeyed digest
+  with no salt and no work factor; use `HMAC_SHA256` for keyed integrity, and
+  note that neither is a KDF. `MD5` / `SHA-1` are not provided. See §9.1.
 
 ## §21. Concurrency (§17)
 

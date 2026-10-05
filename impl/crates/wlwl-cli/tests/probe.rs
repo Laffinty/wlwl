@@ -64,7 +64,13 @@ use std::time::{Duration, Instant};
 /// 驱动据此把不可见字节变成夹具里一个可审的声明。两条合起来覆盖那三类输入
 /// 规范所辖的三个文件(源文件 / `wlwl.toml` / `main.wll.sig`);`wlwl.lock` 不在
 /// 其中,理由见 §9.4(锁文件在规范外)。
-const EXPECTED_CASE_COUNT: usize = 155;
+/// 第 155–156 条(`M3_std_sanitize_*`)是 v0.11.3 补的:`std.sanitize` 的
+/// 转义对(`HTML_ESCAPE` / `HTML_UNESCAPE`,含往返定理与「未知实体原样」)
+/// 与净化器 `HTML_SANITIZE`(raw-text 整删不越界 / 拆壳留内容 / 逐属性
+/// 判定 / 幂等 / 相对 URL 恒允许)。净化器那条的 `not_contains` 才是真
+/// 断言 —— v0.11.3 收口时 D13-003 与 D13-005 两道「内容静默消失」的
+/// 缺陷,正是靠 `contains` 里的 `<b>keep</b>` 与 `y` 钉住的。
+const EXPECTED_CASE_COUNT: usize = 157;
 
 /// 单个 case 的上限,与 `probe.py` 的 `timeout=60` 同义。
 const CASE_TIMEOUT: Duration = Duration::from_secs(60);

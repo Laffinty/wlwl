@@ -6,7 +6,7 @@
 
 | 计划 | 覆盖 | 状态 |
 |---|---|---|
-| [`wlwl-v0.11.3-build-plan.md`](wlwl-v0.11.3-build-plan.md) | v0.11.3:输出安全 `std.sanitize`(**全员 R2**,性能为契约 —— 树构建净化器 + 全表实体 + 基准存档)+ `std.encode` 哈希 + SQL / 加解密否决成文 + `std.time` ADR-0024 与 regex 调研(只文档) | **M0–M2 完成**(M0 `601e76b`、M1 `613f13e`、M2 含 D13-001/002);分支 `wip0.11.3` |
+| [`wlwl-v0.11.3-build-plan.md`](wlwl-v0.11.3-build-plan.md) | v0.11.3:输出安全 `std.sanitize`(**全员 R2**,性能为契约 —— 树构建净化器 + 全表实体 + 基准存档)+ `std.encode` 哈希 + SQL / 加解密否决成文 + `std.time` ADR-0024 与 regex 调研(只文档) | **M0–M4 全部完成**(M0 `601e76b`、M1 `613f13e`、M2 `875b699`、M3 `d5b47ad` + `2572fba` 收掉 D13-003~010);分支 `wip0.11.3`;**tag 由维护者发** |
 
 > v0.11.2 已于 2026-10-02 收口(M0–M6 全部完成,复核 N-6 的修复 D12-013 亦已落地),
 > 计划与三份审查/复核报告已按归档规则精简入 [`../history/20261002.md`](../history/20261002.md)。
@@ -16,10 +16,15 @@
 > **树构建形态**(tokenizer 方案被 IEEE S&P 2024 mXSS 研究否决)、实体**全表**
 > 经生成器落地、幂等性为安全不变量、线性承诺与吞吐目标进 §7.4。
 > 命名空间名 `std.sanitize`(`std.html` 被否决,裁决记录见计划附录 A);
-> **成员面目标 99 → 104,命名空间 12 → 13**;§10 列有三个开工前可否决的裁决点
-> (默认净化策略内容 / `HMAC_SHA256` 是否同批 / W-08 归层对照是否真做)。
+> **成员面 99 → 104,命名空间 12 → 13 —— 已达成**(对着生成器锁定的附录 A
+> 逐行点过:`std.io` 3 / `std.fs` 3 / `std.json` 2 / `std.format` 1 /
+> `std.encode` 8 / `std.text` 2 / `std.sanitize` 3 / `std.collection` 27 /
+> `std.str` 7 / `std.math` 32 / `std.test` 6 / `std.ai` 5 / `std.agent` 5)。
+> §10 三个开工前裁决点均已闭合:`HMAC_SHA256` 同批落地、W-08 归层对照真做
+> (R1 原型在 1 MB 输入上「跑不完」,见 baseline.txt M1 段)、**W-10 缺省净化
+> 策略内容**由业主 2026-10-05 指示继续 M4 收口时确认按现状冻结(计划 §10 有记录)。
 
-**历史**:v0.11(已发布)、v0.11.1(已发布)、v0.11.2(代码收口 + 复核通过,待发 tag)。v0.10.x 批次已全部收口;`std.web` 于 2026-10-01 宣告失败并回滚。全部历史归档(语言规范 v0.6–v0.10、
+**历史**:v0.11(已发布)、v0.11.1(已发布)、v0.11.2(已发布,tag `v0.11.2`)。v0.10.x 批次已全部收口;`std.web` 于 2026-10-01 宣告失败并回滚。全部历史归档(语言规范 v0.6–v0.10、
 构建计划、偏差登记、审查报告、日次日志)已按归档规则**合并精简**为
 `../history/` 下四份汇总:
 
@@ -32,17 +37,17 @@
 
 各份的**完整原文在 git 历史**,按 `git log --follow docs/plan/<原文件名>` 追溯。
 
-## 当前状态(2026-10-03)
+## 当前状态(2026-10-05)
 
 | 项 | 状态 |
 |---|---|
 | 现行规范 | [`../spec/wlwl-spec-v0.11.md`](../spec/wlwl-spec-v0.11.md)(v0.11;§10 已机制化,命名空间成员契约外迁) |
 | 现行标准库规范 | [`../stdlib/wlwl-stdlib-spec-v0.11.md`](../stdlib/wlwl-stdlib-spec-v0.11.md)(v0.11;**v0.11.2 起与语言规范同号** —— 本批成员面 58→99 但无 breaking,故不升版,变更登记在册首「本版变更」块) |
 | agent 专用规范 | [`../spec/wlwl-agent-spec-v0.11.md`](../spec/wlwl-agent-spec-v0.11.md)(与上面两册**冲突时以人读规范为准**;专供 AI agent,可随时改) |
-| 最新实现 | v0.11.2 + 复核 N-6 修复 D12-013(代码完成,待发 tag) |
-| 进行中的计划 | [**v0.11.3 构建计划**](wlwl-v0.11.3-build-plan.md) 未动工(M0 文档先行 → M1 转义 → M2 哈希 → M3 净化 → M4 收口) |
+| 最新实现 | v0.11.3(M0–M4 全部完成,代码收口;**tag 由维护者发**) |
+| 进行中的计划 | 无 —— [**v0.11.3 构建计划**](wlwl-v0.11.3-build-plan.md) 已收口(M0 文档先行 → M1 转义 → M2 哈希 → M3 净化 → M4 收口) |
 | 下一迭代 | 未立项。候选:批次 B `YIELD` 续体保存(**0 细化**,开细化前须先定三件事,见 `../history/20261001.md` §1)、`std.rand` 的全局状态裁决(需先出 ADR)、UCD 数据依赖成员合成一块做(需先定 Unicode 版本与「半张表怎么办」)、regex(RE2 式线性模拟,调研见 v0.11.3 计划附录 B)、建数组类成员的平方级成本(根因在 R0 解释器,属治本工程) |
-| 门禁 | `cargo fmt --check` 0 diff;`clippy -D warnings` 0;`cargo test --locked --all-targets` **0 failed**;`cargo deny check` exit 0;`cargo doc --no-deps -D warnings` 0 error(**D11-015 之后已并入本地门禁**;注意 `cargo doc` 不接受 `-D`,须走 `$env:RUSTDOCFLAGS='-D warnings'`);`cargo check --locked -p wlwl-std --features real-ai` exit 0(S-P1-1 之后新增);probe **152** 用例 —— 152 是 `impl/tests/probe/cases/` 的**用例目录数**,由单个 `probe_suite` 函数驱动并有 `probe_case_count_matches_inventory` 守卫,**不是** `#[test]` 函数数(`--test probe` 只跑 3 个函数);契约表 `collection` 125 / `str_math` 155 / `format` 39 / `encode` 39 / `text` 20 条;附录 G 逐字节不变 |
+| 门禁 | `cargo fmt --check` 0 diff;`clippy -D warnings` 0;`cargo test --locked --all-targets` **0 failed**(42 套件 1955 passed);`cargo deny check` exit 0;`cargo doc --no-deps -D warnings` 0 error(**D11-015 之后已并入本地门禁**;注意 `cargo doc` 不接受 `-D`,须走 `$env:RUSTDOCFLAGS='-D warnings'`);`cargo check --locked -p wlwl-std --features real-ai` exit 0(S-P1-1 之后新增);probe **157** 用例 —— 157 是 `impl/tests/probe/cases/` 的**用例目录数**,由单个 `probe_suite` 函数驱动并有 `probe_case_count_matches_inventory` 守卫,**不是** `#[test]` 函数数(`--test probe` 只跑 3 个函数);契约表 `collection` 127 / `str_math` 156 / `format` 39 / `encode` 47 / `text` 20 / `sanitize` 103 条;附录 A 由 `gen-appendix-a` 双向锁绿;附录 G 逐字节不变;基准存档 `benches/baseline.txt` M1 / M2 / M3 三段 |
 | 已立项范围 | v0.11:**批次 A 标准库底座**(ADR-0021/0022/0023)**已收口**;批次 B `YIELD` 续体保存**已立项但未细化**;v0.11.1:`std.web` **已终止并回滚**;v0.11.2:**已收口**(M0–M6 + 复核 N-6 修复 D12-013),待发 tag;v0.11.3:**已立项**(输出安全 + 哈希,SQL / 加解密否决成文,time / regex 只出文档) |
 
 ## 挂账项

@@ -3,7 +3,35 @@
 Skill-bundle changes (spec lives at `../docs/spec/wlwl-spec-v0.11.md`
 and is authoritative).
 
-## [Unreleased] — v0.11.2 批次
+## [Unreleased] — v0.11.3 批次
+
+语言规范仍冻结在 v0.11;本批只加标准库成员。**没有任何语言面改动** ——
+`reference.md` 附录 G 逐字节不变。
+
+### Added
+- **`wlwl:std.sanitize` 收录**(`reference.md` §9.6 新章、`SKILL.md` 指针表):
+  `HTML_ESCAPE` / `HTML_UNESCAPE` / `HTML_SANITIZE`。**开篇就是上下文分工表**
+  —— URL 用 `URL_ENCODE`、标记用 `HTML_ESCAPE`、富 HTML 用 `HTML_SANITIZE`,
+  三者**互不替代**,选错不是「保守」是错误。收录的要点:净化器是**输出点**工具
+  (OWASP:输入侧清洗是 last resort)、非白名单标签**删标签留文本**、
+  `script` / `style` / `iframe` **连内容整删**、**幂等但不往返**、
+  「不清洗输入」这条威胁模型口径。
+- **`std.encode` 补 `SHA256` / `HMAC_SHA256`**(`reference.md` §9.1):并写明
+  **摘要不是加密、也不是口令哈希**(无盐、无工作因子、无拉伸;口令需要专用
+  KDF,本库没有);`MD5` / `SHA-1` 已破不提供。
+
+### Added (反模式)
+- §20 补四条:**「清洗输入就安全了」是错的**、`HTML_SANITIZE` 不会「保留不危险
+  的东西」(标签是删的)、**`HTML_ESCAPE` 双重转义是 bug**(定理只跑
+  `UNESCAPE ∘ ESCAPE`)、`SHA256` 不是口令哈希。
+
+### Fixed
+- §9 章首的交叉引用此前写「`std.str` / `std.math` 的签名表在 **§25**」,而两章
+  实际就在 §9.3 / §9.5 —— 按图索骥会扑空。已改指并补上 `std.sanitize` §9.6。
+- `README.md` 的 impl 标签 0.11.2 → **0.11.3**;「本批只加标准库成员」那句
+  补上 `wlwl:std.sanitize`。
+
+## [0.11.2] — 2026-10-02
 
 语言规范仍冻结在 v0.11;本批只加标准库成员与修正文案。
 

@@ -1,0 +1,19 @@
+IMPORT("wlwl:std.sanitize", ["HTML_SANITIZE"]);
+
+// raw-text 整删,且**删除不越界**:其后的 <b> 必须还在。
+PRINT(HTML_SANITIZE("<b>keep</b><script>alert(1)</script>"));
+
+// 非白名单元素拆壳留内容(D13-005 的反向守卫:内容不许消失)。
+PRINT(HTML_SANITIZE("<div onclick=\"x\">y</div>"));
+
+// 逐属性判定:javascript: 的 href 删掉,白名单里的 title 留下,元素留下。
+PRINT(HTML_SANITIZE("<a href=\"javascript:alert(1)\" title=\"hi\">x</a>"));
+
+// 危险事件属性只在标签**保留**时才谈白名单;img 不在白名单 → 整体消失。
+PRINT(HTML_SANITIZE("<img src=x onerror=alert(1)>"));
+
+// 幂等性(规范 §13.2 规范性安全不变量):二次净化逐字节不动。
+PRINT(HTML_SANITIZE(HTML_SANITIZE("<b>keep</b><script>alert(1)</script>")));
+
+// 相对 URL 恒允许 —— 净化器不是「见 href 就删」。
+PRINT(HTML_SANITIZE("<a href=\"/rel/path\">link</a>"));

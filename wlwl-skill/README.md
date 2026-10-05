@@ -1,7 +1,7 @@
 # writing-wlwl skill bundle
 
 Claude Skills-format bundle for authoring **WLWL v0.11** `.wll` sources
-(impl 0.11.2; spec `wlwl-spec-v0.11`).
+(impl 0.11.3; spec `wlwl-spec-v0.11`).
 
 ```
 wlwl-skill/
@@ -127,8 +127,8 @@ wlwl run wlwl-skill/examples/oop.wll
   + v0.9 true-suspension / OOP / session types / linear THIS
   + v0.10 static contracts (annotations, module signatures, MATCH checks)
   carried over unchanged into v0.11. The **language spec is frozen at v0.11**;
-  v0.11.2 adds standard-library members only (`wlwl:std.encode`), so nothing
-  in the language surface moves.
+  v0.11.2 and v0.11.3 add standard-library members only (`wlwl:std.encode`,
+  `wlwl:std.sanitize`), so nothing in the language surface moves.
 - **Out of scope**: the Rust implementation (`impl/`), formatter design,
   ADRs, release engineering. For those, read the repo docs directly.
 
