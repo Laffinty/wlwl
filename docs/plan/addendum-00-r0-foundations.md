@@ -219,7 +219,7 @@ M5 / M1 / M2 / M3 段并排;③ 归层后重跑即得**同方法学的前后对�
 
 | 子项 | 内容 | 状态 | commit |
 |---|---|---|---|
-| L0-A-1 | 基线基准落地(四档 + 线性承诺),先测出现值 | ✅ **完成** —— 新建 `benches/collection.rs`(5 组 × 4 档 = 20 条:`r1_build` + `collection_map/filter/chunk/window` × 1k/2k/4k/8k),`Cargo.toml` 登记;`--test` 烟测 20/20 通;criterion(bench 档 / 10 样本 / warm-up 1s / measurement 2s)取数完成,数据入 `baseline.txt` **L0 段**。**五组全部平方级坐实**(每元素成本随尺寸上涨,`chunk`/`window` 高档越过 4)。门禁:`cargo fmt --all -- --check` 0 diff、`cargo clippy --locked --workspace --all-targets -D warnings` exit 0 | `3c287d0` |
+| L0-A-1 | 基线基准落地(四档 + 线性承诺),先测出现值 | ✅ **完成** —— 新建 `benches/collection.rs`(5 组 × 4 档 = 20 条:`r1_build` + `collection_map/filter/chunk/window` × 1k/2k/4k/8k),`Cargo.toml` 登记;`--test` 烟测 20/20 通;criterion(bench 档 / 10 样本 / warm-up 1s / measurement 2s)取数完成,数据入 `baseline.txt` **L0 段**。**五组全部平方级坐实**(每元素成本随尺寸上涨,`chunk`/`window` 高档越过 4)。门禁:`cargo fmt --all -- --check` 0 diff、`cargo clippy --locked --workspace --all-targets -D warnings` exit 0 | `0fd7cd3` |
 | L0-A-2 | 归层第一批(高频 4 个) | 未动工 | — |
 | L0-A-3 | 归层第二批(其余) | 未动工 | — |
 | L0-A-4 | 差分回归测试 + 契约表零改动核验 | 未动工 | — |
