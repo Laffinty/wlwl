@@ -7,6 +7,24 @@
 | 计划 | 覆盖 | 状态 |
 |---|---|---|
 | [`wlwl-v0.11.3-build-plan.md`](wlwl-v0.11.3-build-plan.md) | v0.11.3:输出安全 `std.sanitize`(**全员 R2**,性能为契约 —— 树构建净化器 + 全表实体 + 基准存档)+ `std.encode` 哈希 + SQL / 加解密否决成文 + `std.time` ADR-0024 与 regex 调研(只文档) | **M0–M4 全部完成**(M0 `601e76b`、M1 `613f13e`、M2 `875b699`、M3 `d5b47ad` + `2572fba` 收掉 D13-003~010);分支 `wip0.11.3`;**tag 由维护者发** |
+| [`wlwl-v0.11.3-addendum.md`](wlwl-v0.11.3-addendum.md) | **v0.11.3 追加批次总纲**:15 份独立构建方案的分层依赖图、六个全局裁决点、版本口径后果、格式契约 | **待业主定版本路径**(甲并入 v0.11.3 / 乙独立 v0.11.4 / 丙分两版 —— 见总纲 §4);15 份方案**全部未动工** |
+
+### 追加批次 · 15 份独立方案(业主 2026-10-05 决定「一次性完善标准库」)
+
+总纲:[`wlwl-v0.11.3-addendum.md`](wlwl-v0.11.3-addendum.md) §2 有完整表、
+依赖图与裁决点。**`00` 必须最先** —— 它是 L2 三份的硬前置。
+
+| # | 方案 | # | 方案 |
+|---|---|---|---|
+| 00 | [R0 解释器治本(D11-012)](addendum-00-r0-foundations.md) | 08 | [`std.rand`(先出 ADR)](addendum-08-std-rand.md) |
+| 01 | [`std.time` + 假时钟气泡](addendum-01-std-time.md) | 09 | [`std.json` 深度](addendum-09-json-deep.md) |
+| 02 | [RE2 式线性正则](addendum-02-regex.md) | 10 | [`std.math` 扩展](addendum-10-numeric-extended.md) |
+| 03 | [Unicode 规范化(UCD 一整块)](addendum-03-unicode-normalization.md) | 11 | [`RESULT` 组合子](addendum-11-result-optional-combinators.md) |
+| 04 | [KDF / CSPRNG / 常数时间比较](addendum-04-crypto-kdf-secrets.md) | 12 | [同步原语 `std.sync`](addendum-12-sync-primitives.md) |
+| 05 | [`std.net`](addendum-05-std-net.md) | 13 | [`std.sanitize` 扩展](addendum-13-sanitize-extend.md) |
+| 06 | [`std.process` / `std.env` / 路径](addendum-06-std-process-env.md) | 14 | [`std.ai` / `agent` 移出(减法)](addendum-14-ai-agent-demotion.md) |
+| 07 | [压缩](addendum-07-compression.md) | | |
+
 
 > v0.11.2 已于 2026-10-02 收口(M0–M6 全部完成,复核 N-6 的修复 D12-013 亦已落地),
 > 计划与三份审查/复核报告已按归档规则精简入 [`../history/20261002.md`](../history/20261002.md)。
