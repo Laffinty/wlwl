@@ -143,6 +143,20 @@ Spec: **wlwl-spec-v0.11 与 wlwl-stdlib-spec-v0.11 均不变**。本批**不改�
     **比较器调用次数**(R1 实测恰好 C(n,2):n=4/8/16/32/64 → 6/28/120/496/2016),
     对带副作用的比较器是可观察行为。实测 R1 `SORT` 在 n=2 000 上要
     **9.4 分钟**,`SORT_BY` 直接依赖它。待业主裁。
+  - ⚠️ 顺带更正:原注释称选择排序「总拷贝量 O(n) 而不是 O(n²)」,**与代码矛盾**
+    —— 代码每轮做 `SLICE`+`SLICE`+`CONCAT`(合计 `len(rest)` 个元素),拷贝
+    **也是 Θ(n²)**。注释已改。
+
+### Fixed (规范文本 / 注释 —— 实现本身没变)
+
+- **`SORT` 排不了布尔(偏差 D13-011,本批之前就存在)**。`std.collection` 的
+  `_SORT_LT` 里 `&&(==(TYPE(a), "BOOLEAN"), ==(TYPE(b), "BOOLEAN"))` 判定两个
+  布尔**可比**并调 `<(a, b)`,而语言的 `<` 只支持数值与字符串
+  (`wlwl-eval` 的 `cmp_op` 对布尔直接 `Err`)。实测
+  `SORT([TRUE, FALSE])` → `E0030: <cmp>: cannot compute less than for boolean
+  and boolean` —— **布尔根本排不了**。**故意不修**:把「布尔可比」化是一次独立的
+  语义裁决,不该夹在一次归层里带走;已在 `_SORT_LT` 注释处标注。给自定义比较器
+  可绕开:`SORT([TRUE, FALSE], FUN((a, b), FALSE))` 正常返回。
 
 ### Fixed
 
