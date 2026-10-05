@@ -76,6 +76,28 @@ Spec: **wlwl-spec-v0.11 与 wlwl-stdlib-spec-v0.11 均不变**。本批**不改�
 - **ADR-0024 草案**(`std.time` 的假时钟气泡,状态 Proposed)与 **regex 调研备忘**
   (RE2 式线性模拟,不立项)—— **只出文档,不出码**。
 
+### Changed
+
+- **`wlwl:std.collection` 的 `MAP` / `FILTER` / `CHUNK` / `WINDOW` 归 R2**
+  (追加批次 M5 的 L0-A-2,`ADR-0025`)。**层归属变更,按 ADR-0023 §v0.x 5 不算
+  破坏性变更** —— 调用面、签名、语义、诊断**一字未改**,成员面仍是 27
+  (`EXPORT` 未动,门面 `LET(X, _X);` 改名导出,沿 `RANGE` 的既有形态)。
+  **本批无 breaking。**
+  - **为什么**:这四个是建数组类成员里规模成本最高的四个。四档实测
+    (bench profile / criterion / 10 样本)每元素成本随尺寸**线性上涨**,
+    平方级坐实 —— 根因是 `PUSH` 每次深拷贝整个不可变数组
+    (`wlwl-eval/src/lib.rs:1032`)。
+  - **效果**(8 000 元素,时间均值):`MAP` 2 033 → **26.4 ms**(77×)、
+    `FILTER` 1 436 → **31.0 ms**(46×)、`CHUNK` 370 → **3.2 ms**(115×)、
+    `WINDOW` 24 472 → **6.2 ms**(3 969×)。四组的每元素成本 1 k → 8 k
+    **持平或下降**,平方级消除。`WINDOW` 的输出本身是 Θ(n·k),所以它归层后
+    仍是 Θ(n·k) —— **贵是定义决定的,不是实现问题**(规范 §5.1 原话)。
+  - **没变的**:`FLAT` / `UNIQ` / `ENUMERATE` / `GROUP_BY` / `JOIN` / `SORT` /
+    `SORT_BY` / `ZIP` / `DEDUP_BY` / `KEY_BY` **仍在 R1、仍平方级**(L0-A-3);
+    用户代码里的累加器链(`SET(arr, +(arr, [v]))`)**归层管不到**,那是
+    L0-B(可变累加器,已立项、独立于 M5)的面。
+  - 逐条数据与口径见 `impl/crates/wlwl-eval/benches/baseline.txt` **L0 段**。
+
 ### Fixed
 
 - **`MIN_BY` / `MAX_BY` 空数组中止运行,违反 stdlib §5「空数组得 `NULL`」**(v0.11.2

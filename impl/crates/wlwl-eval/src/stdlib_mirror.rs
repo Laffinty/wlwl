@@ -49,8 +49,12 @@ const NAMESPACE_META: &[(&str, &str, &str)] = &[
         // (ADR-0021 §0.2),故「引入」列仍写 v0.10 及以前(成员)——
         // 变的是实现语言,不是成员面。依据见 baseline.txt 的 M5 段与
         // 偏差 D11-012。
-        "混合(R1 门面 + R2 `RANGE`)",
-        "v0.10 及以前(成员)/ v0.11(R1 重写,M5 起 RANGE 沉 R2)",
+        // [v0.11.3 M5 / L0-A-2] 再加 `MAP` / `FILTER` / `CHUNK` / `WINDOW`
+        // 归 R2(四档基准实测每元素成本随尺寸上涨,平方级坐实)。四个成员
+        // 同样**留在 EXPORT 里**(门面改名导出),故成员面与本行的成员名册
+        // 都不变,只有「层」这一列变。依据见 baseline.txt 的 L0 段。
+        "混合(R1 门面 + R2 `RANGE`/`MAP`/`FILTER`/`CHUNK`/`WINDOW`)",
+        "v0.10 及以前(成员)/ v0.11(R1 重写,M5 起 RANGE 沉 R2)/ v0.11.3(M5 L0-A-2 再加 MAP·FILTER·CHUNK·WINDOW 沉 R2)",
     ),
     (
         "wlwl:std.str",

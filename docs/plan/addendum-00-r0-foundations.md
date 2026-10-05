@@ -167,12 +167,22 @@ cargo check --locked -p wlwl-std --features real-ai                   # exit 0
 
 | 基准 | 8 k 档目标 | 每元素成本 | 口径 |
 |---|---|---|---|
-| `collection_map` | **≤ 2 ms** | 1 k → 8 k **不增** | R2 `RANGE` 建数组 + `MAP` 自身 |
-| `collection_filter` | **≤ 2 ms** | 同上 | R2 `RANGE` 建数组 + `FILTER` 自身 |
-| `collection_chunk` | **≤ 5 ms** | 同上 | R2 `RANGE` 建数组 + `CHUNK` 自身 |
-| `collection_window` | **≤ 50 ms** | 同上 | R2 `RANGE` 建数组 + `WINDOW` 自身 |
+| `collection_map` | ~~≤ 2 ms~~ → **实测 24.6 ms(未达,见下)** | 1 k → 8 k **不增** ✅ | R2 `RANGE` 建数组 + `MAP` 自身 |
+| `collection_filter` | ~~≤ 2 ms~~ → **实测 28.0 ms(未达,见下)** | 同上 ✅ | R2 `RANGE` 建数组 + `FILTER` 自身 |
+| `collection_chunk` | **≤ 5 ms** | 同上 ✅ | R2 `RANGE` 建数组 + `CHUNK` 自身 |
+| `collection_window` | **≤ 50 ms** | 同上 ✅ | R2 `RANGE` 建数组 + `WINDOW` 自身 |
 | **`r1_build`** | **不设目标** | **归层后不会变平** | R1 `+(arr,[v])` 建数组链 —— **L0-B 的对象,不是 L0-A 的验收** |
 | 线性承诺 | — | 四档**逐档记录**,任一档增长即缺陷 | 与 `baseline.txt` M3 段同一口径 |
+
+> **[L0-A-2 实施后更正]`MAP` / `FILTER` 的 8 k 目标值 `≤ 2 ms` 不可达。**
+> 归层后残余成本是**解释器的逐元素闭包调用开销**:`MAP` 8 k = 24.6 ms ÷ 8 000
+> = **3.08 µs/次** `host.call`(派发闭包 + 克隆一个 `Value` + 一次 `Vec::push`),
+> 而 `≤ 2 ms` 隐含「每元素 ≤ 0.25 µs」—— 低于本解释器调一次闭包的成本。
+> `CHUNK` / `WINDOW` **不收回调**,故轻松达标(3.1 / 5.5 ms)。
+> **原目标在定的时候不可能被算出来**:L0-A-1 的归层前数据(254 µs/元素)把
+> 「重建数组」与「调用闭包」两笔成本混在同一个数里,当时无法区分谁是主项。
+> ⇒ **再往下压 `MAP` / `FILTER` 是解释器工程(降低 `host.call` 成本),不是标准
+> 库层的事**,记为演进方向,不在 L0-A 范围。逐条数据见 `baseline.txt` **L0-A-2 段**。
 
 > **[2026-10-05 改写]** 原表是四条**单尺寸**基准(`_10k` / `_5k`),却要求验收
 > 「每字节 1 KB → 100 KB 不增」——**单点算不出每字节成本,这条验收按原规格不可
@@ -245,15 +255,48 @@ M5 / M1 / M2 / M3 段并排;③ 归层后重跑即得**同方法学的前后对�
 
 | 落点 | 本份动作 |
 |---|---|
-| 1 规范成员表 | **层列**改(混合 → 全 R2),成员名不变 |
-| 2 附录 A | 跑 `cargo run --bin gen-appendix-a`(生成物,勿手写) |
-| 3 `EXPORT` / `SPEC.functions` | 成员从 R1 `EXPORT` 移到 `SPEC.functions`,**两侧都要** |
-| 4 契约测试硬编码 | 成员数与点名清单**不变**(只有层变);新增差分测试 |
-| 5 模块登记 | `std.collection` 已登记,无需新增;若 R1 侧文件变空需处理 `src/` 文件数守卫 |
-| 6 probe | 已有 `M3_std_collection_ten_new_members`;补一条大数组规模的 probe |
-| 7 附录 G | **不动**(无全局内建变更)—— 但要确认归层没碰内建 |
-| 8 skill 指针 | `SKILL.md` 的「⚠ Scale」警告段改写(它现在写的是平方级) |
-| 9 CHANGELOG | 记层变更 + 基准前后对比 |
+| 1 规范成员表 | **层列**改(混合 → 全 R2),成员名不变。**L0-A-2 已改** §0.2 表与 §5.1 段的层表述 |
+| 2 附录 A | 跑 `cargo run --bin gen-appendix-a`(生成物,勿手写)。**L0-A-2 已跑**:层字符串在 `stdlib_mirror.rs` 的 `NAMESPACE_META` 里(硬编码,生成器从那里取值) |
+| 3 `EXPORT` / `SPEC.functions` | ~~成员从 R1 `EXPORT` 移到 `SPEC.functions`,**两侧都要**~~ → **[L0-A-2 实施更正]不采用 `SPEC` 形态,改走 kernel 注入 + 门面改名导出** —— 见下方偏离登记 |
+| 4 契约测试硬编码 | 成员数与点名清单**不变**(只有层变);新增差分测试。**L0-A-2:127 条逐条未动;差分对拍 8/8** |
+| 5 模块登记 | `std.collection` 已登记,无需新增;若 R1 侧文件变空需处理 `src/` 文件数守卫。**L0-A-2:`collection.rs` 仍在册(未变空)** |
+| 6 probe | 已有 `M3_std_collection_ten_new_members`;补一条大数组规模的 probe。**L0-A-2 已加 `M5_std_collection_l0a2_r2_scale`**(5 000 元素,`EXPECTED_CASE_COUNT` 157 → 158) |
+| 7 附录 G | **不动**(无全局内建变更)—— 但要确认归层没碰内建。**L0-A-2:四个新 kernel 名均 `_` 前缀 / UPPER_SNAKE / 不在 `EXPORT` / 不撞内建,`r1_kernels_never_leak_to_the_export_surface` 守卫绿** |
+| 8 skill 指针 | `SKILL.md` 的「⚠ Scale」警告段改写(它现在写的是平方级)。**L0-A-2 已改** `SKILL.md` 与 `reference.md` 两处 |
+| 9 CHANGELOG | 记层变更 + 基准前后对比。**L0-A-2 已加 `### Changed` 条**(明标「本批无 breaking」) |
+
+### 5.1 偏离登记:落点 3 的 `SPEC` 形态**未采用**(L0-A-2,2026-10-05)
+
+原文要求「成员从 R1 `EXPORT` 移到 `SPEC.functions`,**两侧都要**」。
+**实施改走 kernel 注入 + 门面改名导出**,理由三条:
+
+1. **仓里没有这条路径。** 全仓三个「部分 R2」的模块 —— `std.collection`
+   (`RANGE`)、`std.math`(`SQRT`/`POW`)、`std.test`(`EXPECT_ERR`)—— **一律走
+   kernel 注入**。`collection.rs` 的文件头把这条写成了规范体例(「门面改名导出,
+   不走 `SPEC`……本文件因此**不是命名空间**:没有 `SPEC`、不进 `resolve()`、
+   不进附录 A」)。要让一个模块同时被 R1 `EXPORT` 与 R2 `SPEC` 认领,得新造
+   合并注册路径 —— 那要动 `resolve()`、附录 A 生成与契约成员集对拍,
+   **本批没有为它立项**。
+2. **`SPEC` 形态与本份 §0 的非目标冲突。** 非目标第一条是「**成员面变化必须
+   为 0**」;而落点 4 又要求「成员数与点名清单**不变**(只有层变)」。移出
+   `EXPORT` 会同时改动附录 A 的成员名册来源与契约的成员集对拍路径,与这两条
+   都对不上。kernel 注入则让 `EXPORT` **一字不动** ⇒ 成员面字面上 0 变化,
+   127 条冻结契约的成员集断言完全不受影响。
+3. **有现成先例可抄。** `RANGE` 就是这个形态,连「门面侧是否还跑 `_NEED_ARITY`」
+   的细节都照它办(区别:本批四成员的检查代码随算法一起搬进了 R2,门面侧零检查;
+   理由与「别照抄 `RANGE` 以为门面会兜底」的提醒写在 `collection.wll` 文件头)。
+
+⇒ **按现实执行并在此登记**(沿 v0.11.3 计划 §8「两处计划文本与现实不符,M4 按现实
+执行并在此登记」的同款体例)。**L0-A-3 若沿用同一形态,本条自动适用。**
+
+### 5.2 顺带处置:`_NEED_SIZE` / `_NEED_INT` 随 `CHUNK` / `WINDOW` 沉 R2 而死
+
+这两个助手**只被** `CHUNK` / `WINDOW` 调用,归层后**零调用点**,已一并删除。
+留着就是「定义了没人用」的死代码,而那正是 D11-011 的反向守卫要防的东西
+(与 D11-019 删死 kernel `_DIAG_E0038` 同一处置)。**同一处死代码在
+v0.11.2 M3 与本批之间来回过一次** —— M3 让它复活(给了 `CHUNK` / `WINDOW` 一个
+调用点),本批又让它死回去。尺寸检查的 R2 形态与其理由已逐字搬进
+`collection.rs` 的 `kernel_chunk` / `kernel_window` 文档注释,未丢失。
 
 ## 6. 风险与已知代价
 
@@ -270,7 +313,7 @@ M5 / M1 / M2 / M3 段并排;③ 归层后重跑即得**同方法学的前后对�
 | 子项 | 内容 | 状态 | commit |
 |---|---|---|---|
 | L0-A-1 | 基线基准落地(四档 + 线性承诺),先测出现值 | ✅ **完成** —— 新建 `benches/collection.rs`(5 组 × 4 档 = 20 条:`r1_build` + `collection_map/filter/chunk/window` × 1k/2k/4k/8k),`Cargo.toml` 登记;`--test` 烟测 20/20 通;criterion(bench 档 / 10 样本 / warm-up 1s / measurement 2s)取数完成,数据入 `baseline.txt` **L0 段**。**五组全部平方级坐实**(每元素成本随尺寸上涨,`chunk`/`window` 高档越过 4)。门禁:`cargo fmt --all -- --check` 0 diff、`cargo clippy --locked --workspace --all-targets -D warnings` exit 0 | `0fd7cd3` |
-| L0-A-2 | 归层第一批 = **`MAP` `FILTER` `CHUNK` `WINDOW`**(L0-A-1 实测每元素成本最高的四个,8 k 档 254.16 / 179.45 / 46.23 / 3 059.00 µs;恰好覆盖三种形态:逐元素闭包 / 条件追加 / 每轮 `SLICE`) | ⬜ 未动工 —— **已解锁**(`ADR-0025` 四问 2026-10-05 全裁,Q1 定了 D 类实现路径) | — |
+| L0-A-2 | 归层第一批 = **`MAP` `FILTER` `CHUNK` `WINDOW`** | ✅ **完成** —— 四成员沉 R2(kernel 注入 + 门面改名导出,`EXPORT` 未动 ⇒ 成员面 0 变化)。127 条冻结契约全绿;**差分对拍 8/8**(归层前实测输出逐字冻结,含回调挂起那条 `MAP`→`NULL`);**12 条诊断逐字全对**(含最容易写错的 `callback is not callable` 是 **E0020** 不是 E0030)。新增 probe `M5_std_collection_l0a2_r2_scale`(5 000 元素,346 ms)。门禁:`fmt` 0 diff / `clippy -D warnings` exit 0 / `test --all-targets` 0 failed / probe 3 passed。**8 k 档实测:`MAP` 2 033→**24.6 ms**(82.6×)、`FILTER` 1 436→**28.0 ms**(51.3×)、`CHUNK` 370→**3.1 ms**(119×)、`WINDOW` 24 472→**5.5 ms**(4 479×);四组每元素成本 1 k→8 k **下降**,线性承诺成立;**对照组 `r1_build` 曲线逐档不变**(归层管不到它) | `本提交` |
 | L0-A-3 | 归层第二批 = 其余 A 类 + B 类(`FLAT` 嵌套分支 / `JOIN`)+ **D 类**(`KEY_BY` `GROUP_BY` `DEDUP_BY`,按 Q1 走「内部哈希 + 末次物化」)+ **`SORT`**(按 Q4 用 `Vec::sort_by` 稳定版并重写 `collection.wll:142-148` 的注释)。**C 类 12 个已线性成员不进任何一批** | ⬜ 未动工(依赖 L0-A-2) | — |
 | L0-A-4 | 差分回归测试 + 契约表零改动核验 | 未动工 | — |
 | L0-B | 可变累加器:**已立项,独立于 M5,排在 M5 之后**,须另出 ADR。判据**必须含 `CONCAT` / `+` 族**;回退**必须可观测**(计数器 + 用户代码形态基准守卫 + 「识别失败时输出仍逐字节正确」契约测试),**明确不走警告通道**(D11-022 已证其失效);β3 须一并重评 | ⬜ 未动工(ADR-0025 Q2 / Q3 已给出范围与可观测性要求) | — |

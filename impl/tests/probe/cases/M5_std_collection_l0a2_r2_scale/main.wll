@@ -1,0 +1,48 @@
+IMPORT("wlwl:std.collection", ["MAP", "FILTER", "CHUNK", "WINDOW", "RANGE"]);
+
+LET(arr, RANGE(0, 5000, 1));
+
+// ── 大数组规模:这条用例在 L0-A-2 之前**不可能存在** ──────────────
+//
+// `M3_std_collection_ten_new_members` 的 `_why` 明写「CI 放大规模只会让它
+// 变成一条『超时』的用例」—— 那时 `CHUNK` 5 000 元素 ≈ 0.6 s、`WINDOW`
+// ≈ 20 s(R1 平方级)。L0-A-2 把这四个成员归 R2 之后,5 000 元素全部落到
+// **毫秒级**(实测整条 346 ms / debug 构建;见 `benches/baseline.txt` 的
+// L0-A-2 段),于是「归层在真实规模上仍然正确」第一次可以由 CI 钉住,而不只
+// 由基准的计时数字旁证。
+//
+// 期望值**按定义算出**,不是抄实现输出:
+//   MAP     n 个元素 → n 个,末元素 = (n-1)*2 = 9 998
+//   FILTER  [0,5000) 里的 3 的倍数:0,3,…,4998 ⇒ 4998/3 + 1 = 1 667
+//   CHUNK   5 000 / 100 = 50 块;首块首/尾 = 0 / 99,末块首/尾 = 4 900 / 4 999
+//   WINDOW  5 000 − 100 + 1 = 4 901 个窗口;首窗首/尾 = 0 / 99,末窗 = 4 900 / 4 999
+//
+// 断言取**长度与端点**而不取整块数组 —— 整块是 100 个元素,冻结进
+// `expect.json` 只会变成一堵没人读得动的墙,而长度 + 首尾两端已经唯一
+// 钉住了分块的边界与步长。
+
+LET(doubled, MAP(arr, FUN((x), *(x, 2))));
+PRINT("MAP     len = ", LEN(doubled), "  last = ", AT(doubled, 4999, NULL));
+
+LET(multiples, FILTER(arr, FUN((x), ==(%(x, 3), 0))));
+PRINT("FILTER  len = ", LEN(multiples), "  last = ", AT(multiples, 1666, NULL));
+
+LET(chunks, CHUNK(arr, 100));
+LET(c0, AT(chunks, 0, NULL));
+LET(c49, AT(chunks, 49, NULL));
+PRINT("CHUNK   len = ", LEN(chunks),
+      "  first = ", AT(c0, 0, NULL), "..", AT(c0, 99, NULL),
+      "  last  = ", AT(c49, 0, NULL), "..", AT(c49, 99, NULL));
+
+LET(windows, WINDOW(arr, 100));
+LET(w0, AT(windows, 0, NULL));
+LET(w4900, AT(windows, 4900, NULL));
+PRINT("WINDOW  len = ", LEN(windows),
+      "  first = ", AT(w0, 0, NULL), "..", AT(w0, 99, NULL),
+      "  last  = ", AT(w4900, 0, NULL), "..", AT(w4900, 99, NULL));
+
+// 归层前后应当**逐字节相同** —— 规模只是变大了,语义没变。末尾两个小规模
+// 断言与 `M3_std_collection_ten_new_members` 的冻结值对照,防止出现
+// 「大规模那条对、小规模那条错」的分裂。
+PRINT("small CHUNK  = ", CHUNK([1, 2, 3, 4, 5], 2));
+PRINT("small WINDOW = ", WINDOW([1, 2, 3, 4, 5], 2));

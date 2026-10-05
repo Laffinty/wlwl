@@ -29,8 +29,9 @@
 //!     见 [`sanitize`])。`HTML_SANITIZE` 随 M3 落地。
 //!
 //! R1 语言层(纯 wlwl,`include_str!` 嵌入,eval 侧求值并缓存):
-//!   - `wlwl:std.collection` — 集合套件(§5;M3-1 起 16 成员纯 wlwl,M5 起
-//!     `RANGE` 归 R2 → 本模块是**混合**模块,见 [`collection`])
+//!   - `wlwl:std.collection` — 集合套件(§5;M3-1 起纯 wlwl,`RANGE` 于 v0.11 M5
+//!     归 R2,`MAP` / `FILTER` / `CHUNK` / `WINDOW` 于 v0.11.3 M5 L0-A-2 归 R2
+//!     → 本模块是**混合**模块(余 22 成员仍 R1),见 [`collection`])
 //!   - `wlwl:std.str`    — string extensions (§6,5 成员:M3-2 落齐)
 //!   - `wlwl:std.math`   — math basics (§7,11 成员:M3-2 落齐;`SQRT`/`POW`
 //!     走注入的 R2 浮点内核,故本模块是**混合**模块)
@@ -132,8 +133,9 @@ pub static LANG_SOURCES: &[StdSource] = &[
     StdSource {
         path: "wlwl:std.collection",
         source: include_str!("../wl/std/collection.wll"),
-        // 混合模块:诊断发射器 + 值种类措辞 + `RANGE` 的 R2 实现;其余 16
-        // 个成员的算法是纯 wlwl。
+        // 混合模块:诊断发射器 + 值种类措辞 + 五个已归 R2 成员的实现
+        // (`RANGE` 自 v0.11 M5;`MAP` / `FILTER` / `CHUNK` / `WINDOW` 自 v0.11.3
+        // M5 L0-A-2);其余 22 个成员的算法是纯 wlwl。
         kernels: &[
             ("_KIND", kernels::kernel_kind as StdFn),
             ("_DIAG_E0020", kernels::kernel_diag_e0020 as StdFn),
@@ -149,6 +151,15 @@ pub static LANG_SOURCES: &[StdSource] = &[
             // 语义 / 诊断一字未变 —— ADR-0021 §0.2:层归属变更不算破坏性变更。
             // 详见 `wl/std/collection.wll` 文件头与偏差 D11-012。
             ("_RANGE", collection::kernel_range as StdFn),
+            // [v0.11.3 M5 / addendum-00 L0-A-2] 归层第一批:四档基准实测
+            // 每元素成本随尺寸上涨(square 坐实,见 `benches/baseline.txt` L0 段),
+            // 四者同归 L0-A 裁决。沿 `RANGE` 的同一形态:**kernel 注入 + 门面
+            // 改名导出**,`EXPORT` 一字不动 ⇒ 成员面变化 0(§0 非目标)。
+            // 形态依据与「为何不走 SPEC」的理由见 `collection.rs` 对应小节。
+            ("_MAP", collection::kernel_map as StdFn),
+            ("_FILTER", collection::kernel_filter as StdFn),
+            ("_CHUNK", collection::kernel_chunk as StdFn),
+            ("_WINDOW", collection::kernel_window as StdFn),
         ],
     },
     StdSource {
@@ -586,7 +597,8 @@ mod tests {
             "kernels.rs",
             "test_native.rs",
             // [v0.11 M5] std.collection 的 R2 内核(M5 裁决:`RANGE` 单独
-            // 沉回 R2,其余 16 成员仍 R1)。同 test_native.rs:内核代码跟它
+            // 沉回 R2;v0.11.3 M5 L0-A-2 再加 `MAP` / `FILTER` / `CHUNK` /
+            // `WINDOW`,余 22 成员仍 R1)。同 test_native.rs:内核代码跟它
             // 服务的模块放一起,故不持 SPEC。
             "collection.rs",
         ];

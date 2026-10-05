@@ -70,7 +70,10 @@ use std::time::{Duration, Instant};
 /// 判定 / 幂等 / 相对 URL 恒允许)。净化器那条的 `not_contains` 才是真
 /// 断言 —— v0.11.3 收口时 D13-003 与 D13-005 两道「内容静默消失」的
 /// 缺陷,正是靠 `contains` 里的 `<b>keep</b>` 与 `y` 钉住的。
-const EXPECTED_CASE_COUNT: usize = 157;
+// [v0.11.3 M5 / addendum-00 L0-A-2] 157 → 158:新增
+// `M5_std_collection_l0a2_r2_scale`(`MAP` / `FILTER` / `CHUNK` / `WINDOW`
+// 归 R2 之后才可能存在的大数组规模用例,5 000 元素,整条 346 ms / debug 构建)。
+const EXPECTED_CASE_COUNT: usize = 158;
 
 /// 单个 case 的上限,与 `probe.py` 的 `timeout=60` 同义。
 const CASE_TIMEOUT: Duration = Duration::from_secs(60);

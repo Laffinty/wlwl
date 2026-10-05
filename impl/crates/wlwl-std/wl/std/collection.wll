@@ -2,19 +2,28 @@
 // 成员契约:docs/stdlib/wlwl-stdlib-spec-v0.11.md §5;注册镜像:附录 A。
 //
 // M3-1 起本模块是 std.collection 的**门面实现**(原 R2 Rust 实现已删)。
-// 算法、循环、比较全部是 wlwl;只有四样东西走注入的 R2 内核(ADR-0021
+// 算法、循环、比较全部是 wlwl;只有下面这些走注入的 R2 内核(ADR-0021
 // §层间规则,见 wlwl-std/src/kernels.rs):
 //
 //   _KIND(x)          值种类的诊断措辞(与 R2 的消息逐字对齐)
 //   _DIAG_E0020(msg)  回调不可调用
 //   _DIAG_E0022(msg)  元数不符(仅变长元数成员需要)
 //   _DIAG_E0030(msg)  类型错
-//   _RANGE(...)       RANGE 本身 —— M5 裁决单独沉回 R2(基准实测 R1 版每元素
-//                     成本超线性,见 D11-012),门面只改名导出
+//   _RANGE(...)       RANGE 本身 —— v0.11 M5 裁决单独沉回 R2(基准实测 R1 版
+//                     每元素成本超线性,见 D11-012),门面只改名导出
+//   _MAP / _FILTER    v0.11.3 M5 L0-A-2 归层第一批 —— 四档基准实测每元素
+//   _CHUNK / _WINDOW  成本随尺寸上涨(平方级坐实),四个同归
 //
 // [D11-019] 原先这里还列着 `_DIAG_E0038(msg)`,并称「E0038 全仓唯一的发射点
 // 就在这里」—— M5 之后不成立:唯一发射点是 `collection.rs` 的
 // `kernel_range`。该注入已作为死注入删除。
+//
+// [v0.11.3 M5 / L0-A-2] 四个新注入的 R2 内核**自带全部检查与措辞**
+// (元数 / 实参形态 / 回调可调用性 / 尺寸),所以门面侧对它们零检查 —— 这与
+// `RANGE` 的形态不同(`RANGE` 的门面仍跑 `_NEED_ARITY`,两边措辞恰好相同)。
+// 差别的原因:`RANGE` 沉 R2 时门面**其余部分未动**,而本批四个成员的检查代码
+// 随算法一起搬进了 R2。两种形态对外表现一致(都由 127 条冻结契约逐字钉住),
+// 但别照抄 `RANGE` 的做法以为门面也会兜底。
 //
 // 为什么要自己发诊断码:wlwl 源码**发不出**指定码的原生诊断(实测
 // PANIC → E0100;LEN(1) → E0030 但消息被 LEN 固定;闭包元数错 → E0022 但
@@ -41,8 +50,9 @@ LET(_NEED, FUN((name, what, ty, v),
 LET(_NEED_ARR, FUN((name, v), _NEED(name, "array", "ARRAY", v)));
 // [v0.11.2 M3] D11-019 当初以「全模块无调用点」删掉了 `_NEED_INT`;
 // M3 给 `CHUNK` / `WINDOW` 的尺寸实参加检查,它又有调用点了,故恢复。
-// 名字与措辞沿用删除前的那一份,不重新发明。
-LET(_NEED_INT, FUN((name, v), _NEED(name, "integer", "INTEGER", v)));
+// [v0.11.3 M5 / L0-A-2] **又删回去了** —— `CHUNK` / `WINDOW` 沉 R2 后它重新
+// 变成零调用点。同一处死代码在两批之间来回,原因都是「谁还需要整数检查」。
+// 尺寸检查的 R2 形态见 `wlwl-std/src/collection.rs` 的 `kernel_chunk`。
 
 LET(_NEED_FN, FUN((name, v),
     IF(==(TYPE(v), "FUNCTION"),
@@ -57,37 +67,24 @@ LET(_NEED_ARITY, FUN((name, args, lo, hi),
        NULL)));
 
 // 1. MAP(arr, f)  →  [f(v), ...]
-LET(MAP, FUN((*args),
-    (_NEED_ARITY("MAP", args, 2, 2);
-     LET(arr, _NEED_ARR("MAP", AT(args, 0, NULL)));
-     LET(f, _NEED_FN("MAP", AT(args, 1, NULL)));
-     LET MUT(out, []);
-     LET MUT(err, NULL);
-     LET MUT(i, 0);
-     WHILE(<(i, LEN(arr)),
-         (LET(r, CALL(f, AT(arr, i, NULL)));
-          IF(IS_ERR(r), SET(err, r), SET(out, PUSH(out, r)));
-          SET(i, +(i, 1))));
-     IF(IS_ERR(err), err, out))));
+//
+// [v0.11.3 M5 / addendum-00 L0-A-2] 已沉 R2:门面只改名导出(见文件头
+// 「_RANGE」同款形态)。R1 版是 `LET MUT(out, [])` + 循环内 `SET(out, PUSH(out, r))`,
+// 而 `PUSH` 每次深拷贝整个不可变数组 ⇒ O(n²);四档实测每元素成本 45.36 →
+// 254.16 µs(1 k → 8 k,「每翻一档」3.26 / 3.64 / 3.78,坐实平方级)。
+// 元数 / 实参形态 / 回调可调用性三类检查与全部诊断措辞已逐字搬进
+// `wlwl-std/src/collection.rs` 的 `kernel_map`(127 条冻结契约对它逐字比对)。
+// R1 语义的**两处不对称照搬未「修正」**:回调返 `ERR` 时不提前退出
+// (最后一个 `ERR` 覆盖前面的)、`OK(v)` 本身被推进结果数组。
+LET(MAP, _MAP);
 
 // 2. FILTER(arr, f)  →  [v for v in arr if f(v)]
-LET(FILTER, FUN((*args),
-    (_NEED_ARITY("FILTER", args, 2, 2);
-     LET(arr, _NEED_ARR("FILTER", AT(args, 0, NULL)));
-     LET(f, _NEED_FN("FILTER", AT(args, 1, NULL)));
-     LET MUT(out, []);
-     LET MUT(err, NULL);
-     LET MUT(i, 0);
-     WHILE(<(i, LEN(arr)),
-         (LET(v, AT(arr, i, NULL));
-          LET(r, CALL(f, v));
-          IF(IS_ERR(r),
-             SET(err, r),
-             IF(==(TYPE(r), "BOOLEAN"),
-                IF(r, SET(out, PUSH(out, v)), NULL),
-                _DIAG_E0030(_CAT("FILTER", ": predicate must return BOOLEAN, got ", _KIND(r)))));
-          SET(i, +(i, 1))));
-     IF(IS_ERR(err), err, out))));
+//
+// [v0.11.3 M5 / L0-A-2] 已沉 R2,同 `MAP` 的形态与理由(四档实测 37.47 →
+// 179.45 µs;它比 `MAP` 便宜 0.71×,唯一差别是输出只有一半 ⇒ 成本主要出在
+// **建结果数组**上,这正是归层要消掉的那一项)。ERR 处理与 `MAP` **相同**
+// (不提前退出、最后一个 `ERR` 覆盖前面的);`CALL(f, v)` 直接传元素。
+LET(FILTER, _FILTER);
 
 // 3. REDUCE(arr, f, init)  →  左折叠;空数组返回 init
 LET(REDUCE, FUN((*args),
@@ -378,46 +375,40 @@ LET(JOIN, FUN((*args),
 
 // ── v0.11.2 M3 新增成员 ─────────────────────────────────────────────
 // 十一个新成员全部是 R1 纯 wlwl,由既有内建组合得出,没有新增 kernel。
-
-// 尺寸实参的共用检查。**不**照 TAKE 那套「负数给 []」:TAKE 的负数
-// 语义是「取空」,本身说得通;而 CHUNK / WINDOW 的 0 会让循环**不终止**,
-// 负数则几乎总是调用方算错了。两条都悄悄给 [] 的话,「我的数组怎么空了」
-// 比一条诊断难查得多。
-LET(_NEED_SIZE, FUN((name, v),
-    (LET(n, _NEED_INT(name, v));
-     IF(<(n, 1),
-        _DIAG_E0030(_CAT(name, ": size must be >= 1, got ", STR(n))),
-        NULL);
-     n)));
+//
+// [v0.11.3 M5 / L0-A-2] `_NEED_SIZE` 与 `_NEED_INT` **已随 `CHUNK` / `WINDOW`
+// 沉 R2 一并删除** —— 它们只被这两个成员调用,现在零调用点。留着就是
+// 「定义了没人用」的死代码,而那正是 D11-011 的反向守卫要防的东西(与 D11-019
+// 删死 kernel `_DIAG_E0038` 同一处置)。它当年的理由已逐字搬进
+// `wlwl-std/src/collection.rs` 的 `kernel_chunk` / `kernel_window` 文档注释。
+//
+// `_NEED_ARR` / `_NEED_FN` / `_NEED_ARITY` / `_NEED` / `_CAT` 仍有大量调用点
+// (`REDUCE` / `SORT` / `SORT_BY` / `ANY` / `ALL` / `FIND` / `ENUMERATE` /
+// `TAKE` / `DROP` / `FLAT` / `UNIQ` / `GROUP_BY` / `JOIN` / `DEDUP_BY` /
+// `_EXTREME_BY` / `SUM` / `PRODUCT` / `FOLD_RIGHT` / `POSITION` / `KEY_BY`),
+// 保留。
 
 // CHUNK(arr, n)  →  定长分块;**尾块可以短**。n > LEN(arr) 时得一块。
-LET(CHUNK, FUN((*args),
-    (_NEED_ARITY("CHUNK", args, 2, 2);
-     LET(arr, _NEED_ARR("CHUNK", AT(args, 0, NULL)));
-     LET(n, _NEED_SIZE("CHUNK", AT(args, 1, NULL)));
-     LET MUT(out, []);
-     LET MUT(i, 0);
-     WHILE(<(i, LEN(arr)),
-         (LET(end, +(i, n));
-          // 显式把 end 钳到数组长度:末块短于 n 时 SLICE 的第三参会
-          // 越过末尾,钳制行为不该由「SLICE 恰好也钳得住」来兜底。
-          SET(out, PUSH(out, SLICE(arr, i, IF(<(end, LEN(arr)), end, LEN(arr)))));
-          SET(i, end)));
-     out)));
+// [v0.11.3 M5 / L0-A-2] 已沉 R2。四档实测 8.52 → 46.23 µs;比 `MAP` 便宜
+// 5.5×,因为它输出 n/10 个 10 元素块、外层只累积 800 次(n=8 000)而不是 8 000 次
+// ⇒ 同为平方、但常数小一个量级。归层后外层是 `Vec::with_capacity` + 一次
+// push/块。`n < 1` 报 `E0030`(**不**照 `TAKE` 那套「负数给 `[]`」——
+// `TAKE` 的负数语义是「取空」,本身说得通;而 `CHUNK` / `WINDOW` 的 0 会让
+// 循环**不终止**,负数则几乎总是调用方算错了;两条都悄悄给 `[]` 的话,
+// 「我的数组怎么空了」比一条诊断难查得多)。
+LET(CHUNK, _CHUNK);
 
 // WINDOW(arr, n)  →  步长 1 的滑动窗口,共 LEN(arr) - n + 1 个。
 // n > LEN(arr) 时得 []。**与 CHUNK 恰好相反**(那边给一块、这边给零块),
 // 这是定义决定的,不是笔误。
-LET(WINDOW, FUN((*args),
-    (_NEED_ARITY("WINDOW", args, 2, 2);
-     LET(arr, _NEED_ARR("WINDOW", AT(args, 0, NULL)));
-     LET(n, _NEED_SIZE("WINDOW", AT(args, 1, NULL)));
-     LET MUT(out, []);
-     LET MUT(i, 0);
-     WHILE(<=(i, -(LEN(arr), n)),
-         (SET(out, PUSH(out, SLICE(arr, i, +(i, n))));
-         SET(i, +(i, 1))));
-     out)));
+//
+// [v0.11.3 M5 / L0-A-2] 已沉 R2。四档实测 180.16 → 3 059.00 µs,是本批最贵的
+// 成员,且每翻一档冲过 4(实测指数 ~n^2.4)。**注意:输出本身就是 Θ(n·k)**
+// ((n-k+1) 个窗口 × k 个元素),所以归层后**仍不是 O(n)**,只是去掉了 `PUSH`
+// 带来的额外 n 因子 ⇒ Θ(n·k)。规范 §5.1 原话「它不是实现没写好,是这个成员的
+// 定义本身要产出 Θ(n·k) 个元素」与实测一致。要真正线性窗口得惰性化,那是
+// `std.iter` 的事(规范 §14,阻塞于批次 B)。
+LET(WINDOW, _WINDOW);
 
 // DEDUP_BY(arr, key)  →  按 key 去重,**保序**(留首现)。
 //
