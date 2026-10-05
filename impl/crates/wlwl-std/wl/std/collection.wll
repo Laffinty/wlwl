@@ -329,24 +329,13 @@ LET(UNIQ, _UNIQ);
 
 // 16. GROUP_BY(arr, key)  →  DICT;键按 §5 走 STR 渲染(与 R2 的
 //     `display()` 一致),组内保持首现序。
-LET(GROUP_BY, FUN((*args),
-    (_NEED_ARITY("GROUP_BY", args, 2, 2);
-     LET(arr, _NEED_ARR("GROUP_BY", AT(args, 0, NULL)));
-     LET(f, _NEED_FN("GROUP_BY", AT(args, 1, NULL)));
-     LET MUT(d, DICT());
-     LET MUT(err, NULL);
-     LET MUT(i, 0);
-     WHILE(<(i, LEN(arr)),
-         (LET(v, AT(arr, i, NULL));
-          LET(k, CALL(f, v));
-          IF(IS_ERR(k),
-             (SET(err, k); SET(i, LEN(arr))),
-             (LET(ks, STR(k));
-              SET(d, IF(HAS(d, ks),
-                        INDEX_SET(d, ks, PUSH(AT_K(d, ks, []), v)),
-                        INDEX_SET(d, ks, [v])))));
-          IF(IS_ERR(err), NULL, SET(i, +(i, 1)))));
-     IF(IS_ERR(err), err, d))));
+//
+// [v0.11.3 M5 / L0-A-3b] 已沉 R2。R1 版每次 `INDEX_SET` 都**克隆整个 dict**
+// 再线性 `dict_lookup` 找键 ⇒ n 次插入 O(n²)(与 `PUSH` 无关的第二笔平方级,
+// 见 `ADR-0025` Q1)。归层后内部 `HashMap<String, usize>` 索引 + 末次物化。
+// **键是 `STR(k)` 渲染串** ⇒ 哈希键天然可用,不必给 `Value` 实现 `Hash`。
+// `Value::Dict` 的表示**不动**(插入序 = 可观察序)。
+LET(GROUP_BY, _GROUP_BY);
 
 // 17. JOIN(arr, sep)  →  元素经 STR 渲染后以 sep 连接
 //
@@ -399,26 +388,13 @@ LET(WINDOW, _WINDOW);
 // 扫一遍已收下的元素,整体 O(n²)。用 DICT 后是 O(n)。
 // 代价是键按 `STR` 渲染(与同模块 `GROUP_BY` 同一口径,§5),于是整数 1
 // 与字符串 "1" 会撞键 —— 这一条写在这里而不是留给下一个人撞。
-LET(DEDUP_BY, FUN((*args),
-    (_NEED_ARITY("DEDUP_BY", args, 2, 2);
-     LET(arr, _NEED_ARR("DEDUP_BY", AT(args, 0, NULL)));
-     LET(f, _NEED_FN("DEDUP_BY", AT(args, 1, NULL)));
-     LET MUT(seen, DICT());
-     LET MUT(out, []);
-     LET MUT(err, NULL);
-     LET MUT(i, 0);
-     WHILE(<(i, LEN(arr)),
-         (LET(v, AT(arr, i, NULL));
-          LET(k, CALL(f, v));
-          IF(IS_ERR(k),
-             (SET(err, k); SET(i, LEN(arr))),
-             (LET(ks, STR(k));
-              IF(HAS(seen, ks),
-                 NULL,
-                 (SET(seen, INDEX_SET(seen, ks, TRUE));
-                  SET(out, PUSH(out, v))))));
-          IF(IS_ERR(err), NULL, SET(i, +(i, 1)))));
-     IF(IS_ERR(err), err, out))));
+// [v0.11.3 M5 / L0-A-3b] 已沉 R2。`seen` 原是 DICT,每次 `INDEX_SET` 克隆
+// 整个 dict + 线性扫描 ⇒ 平方级;归层后用 `HashSet<String>`。
+// ⚠️ **去重口径是 `STR(k)` 渲染串,不是值相等** —— 实测
+// `DEDUP_BY([1, 1.0, 2], id)` 得 `[1, 1.0, 2]`(三个都留,键是
+// "1" / "1.0" / "2"),而 `UNIQ([1, 1.0, 2])` 得 `[1, 2]`(值相等口径)。
+// **两者不是同一族,别互相参照。**
+LET(DEDUP_BY, _DEDUP_BY);
 
 // MIN_BY / MAX_BY 的共用实现。
 //
@@ -536,20 +512,14 @@ LET(POSITION, FUN((*args),
 // KEY_BY(arr, key)  →  DICT;同键**后者覆盖前者**。
 // 与 `GROUP_BY` 的分工:GROUP_BY 把同键的元素收成数组(组内保序),
 // KEY_BY 只留最后一个(Go `maps.Collect` 的口径)。键按 `STR` 渲染。
-LET(KEY_BY, FUN((*args),
-    (_NEED_ARITY("KEY_BY", args, 2, 2);
-     LET(arr, _NEED_ARR("KEY_BY", AT(args, 0, NULL)));
-     LET(f, _NEED_FN("KEY_BY", AT(args, 1, NULL)));
-     LET MUT(d, DICT());
-     LET MUT(err, NULL);
-     LET MUT(i, 0);
-     WHILE(<(i, LEN(arr)),
-         (LET(k, CALL(f, AT(arr, i, NULL)));
-          IF(IS_ERR(k),
-             (SET(err, k); SET(i, LEN(arr))),
-             SET(d, INDEX_SET(d, STR(k), AT(arr, i, NULL))));
-          IF(IS_ERR(err), NULL, SET(i, +(i, 1)))));
-     IF(IS_ERR(err), err, d))));
+// 与 `GROUP_BY` 的分工:GROUP_BY 把同键的元素收成数组(组内保序),
+// KEY_BY 只留最后一个(Go `maps.Collect` 的口径)。键按 `STR` 渲染。
+//
+// [v0.11.3 M5 / L0-A-3b] 已沉 R2,同 `GROUP_BY` 的理由(去掉 DICT 的
+// 克隆 + 线性扫描那笔平方级)。**位置留首次、值取最后**这条逐字保住:
+// 实测 `KEY_BY(["z1","y1","z2","x1"], 首字符)` → `[z: z2, y: y1, x: x1]`
+// —— `z` 在最前但值是 `z2`。
+LET(KEY_BY, _KEY_BY);
 
 // EXPORT 顺序跟随标准库规范 §5 表格的行序;附录 A 镜像跟随本顺序。成员
 // **集合**由 `wlwl-eval/tests/collection_contract.rs` 对 §5 表格做外部对照。

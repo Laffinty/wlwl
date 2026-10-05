@@ -54,13 +54,15 @@ const NAMESPACE_META: &[(&str, &str, &str)] = &[
         // [v0.11.3 M5 / L0-A-3a] 再加 `ENUMERATE` / `ZIP` / `UNIQ` / `FLAT` /
         // `JOIN` 归 R2(同样形态、同样理由)。十个成员**全部留在 `EXPORT` 里**
         // (门面改名导出),故成员面与本行的成员名册都不变,只有「层」这一列变。
-        // 仍留 R1 的 17 个:其余 A 类(`SORT` / `SORT_BY`)+ 混合形态
-        // (`SORT` 的 `CONCAT`+`SLICE` 重建 / `UNIQ` 的成员查找是**另一笔**
-        // 平方级,见 `collection.wll` 的注记)+ D 类(`DEDUP_BY` / `GROUP_BY` /
-        // `KEY_BY`)+ `ANY`/`ALL`/`FIND`/`POSITION`/`MIN_BY`/`MAX_BY`/`SUM`/
-        // `PRODUCT`/`FOLD_RIGHT`/`REDUCE`/`TAKE`/`DROP` 等已线性或留待 L0-A-3b。
-        "混合(R1 门面 + R2 `RANGE`/`MAP`/`FILTER`/`CHUNK`/`WINDOW`/`ENUMERATE`/`ZIP`/`UNIQ`/`FLAT`/`JOIN`)",
-        "v0.10 及以前(成员)/ v0.11(R1 重写,M5 起 RANGE 沉 R2)/ v0.11.3(M5 L0-A-2 加 MAP·FILTER·CHUNK·WINDOW,L0-A-3a 加 ENUMERATE·ZIP·UNIQ·FLAT·JOIN 沉 R2)",
+        // [v0.11.3 M5 / L0-A-3b] 再加 `GROUP_BY` / `DEDUP_BY` / `KEY_BY`(D 类,
+        // 键是 `STR(k)` 渲染串 ⇒ 内部 `HashMap<String, usize>` 索引 + 末次物化,
+        // `Value::Dict` 表示不动)。**`SORT` / `SORT_BY` 仍留 R1** —— 它们要换
+        // `Vec::sort_by` 就会改**比较器调用次数**(R1 实测恰好 C(n,2)),那是
+        // 可观察行为,待业主裁;见 `docs/plan/addendum-00-r0-foundations.md` §7。
+        // 十三个成员**全部留在 `EXPORT` 里**(门面改名导出),故成员面与本行的
+        // 成员名册都不变,只有「层」这一列变。
+        "混合(R1 门面 + R2 `RANGE`/`MAP`/`FILTER`/`CHUNK`/`WINDOW`/`ENUMERATE`/`ZIP`/`UNIQ`/`FLAT`/`JOIN`/`GROUP_BY`/`DEDUP_BY`/`KEY_BY`)",
+        "v0.10 及以前(成员)/ v0.11(R1 重写,M5 起 RANGE 沉 R2)/ v0.11.3(M5 L0-A-2 加 MAP·FILTER·CHUNK·WINDOW,L0-A-3a 加 ENUMERATE·ZIP·UNIQ·FLAT·JOIN,L0-A-3b 加 GROUP_BY·DEDUP_BY·KEY_BY 沉 R2)",
     ),
     (
         "wlwl:std.str",

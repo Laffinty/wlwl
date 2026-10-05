@@ -248,6 +248,54 @@ fn bench_join(c: &mut Criterion) {
     g.finish();
 }
 
+// ---------- 11~13. 归层第二批(下半,D 类三成员,L0-A-3b)--------------
+//
+// 语料是 `RANGE(0, n, 1)` + **恒等键** ⇒ 键全互异,于是 `seen` / `d` 一直
+// 增长到 n 项。这是必须的:R1 的 DICT 是 `Vec<(Value,Value)>` + 线性扫描,
+// **键互异才压得到那笔平方级**;若语料只有少数几个键,dict 早早定长,
+// 量到的是线性而不是要消的东西。
+//
+// 键恒等还顺带保证键是 `STR(k)` 渲染串(每个整数一个),与生产用法一致。
+
+fn bench_group_by(c: &mut Criterion) {
+    let mut g = c.benchmark_group("collection_group_by");
+    for &n in &TIERS {
+        let src = member_src(n, &["GROUP_BY"], "GROUP_BY(arr, FUN((x), x))");
+        let ast = parse_program(&src);
+        g.throughput(Throughput::Elements(n as u64));
+        g.bench_with_input(BenchmarkId::from_parameter(n), &n, |b, _| {
+            b.iter(|| run_eval(&src, &ast));
+        });
+    }
+    g.finish();
+}
+
+fn bench_dedup_by(c: &mut Criterion) {
+    let mut g = c.benchmark_group("collection_dedup_by");
+    for &n in &TIERS {
+        let src = member_src(n, &["DEDUP_BY"], "DEDUP_BY(arr, FUN((x), x))");
+        let ast = parse_program(&src);
+        g.throughput(Throughput::Elements(n as u64));
+        g.bench_with_input(BenchmarkId::from_parameter(n), &n, |b, _| {
+            b.iter(|| run_eval(&src, &ast));
+        });
+    }
+    g.finish();
+}
+
+fn bench_key_by(c: &mut Criterion) {
+    let mut g = c.benchmark_group("collection_key_by");
+    for &n in &TIERS {
+        let src = member_src(n, &["KEY_BY"], "KEY_BY(arr, FUN((x), x))");
+        let ast = parse_program(&src);
+        g.throughput(Throughput::Elements(n as u64));
+        g.bench_with_input(BenchmarkId::from_parameter(n), &n, |b, _| {
+            b.iter(|| run_eval(&src, &ast));
+        });
+    }
+    g.finish();
+}
+
 criterion_group!(
     benches,
     bench_r1_build,
@@ -260,5 +308,8 @@ criterion_group!(
     bench_uniq,
     bench_flat,
     bench_join,
+    bench_group_by,
+    bench_dedup_by,
+    bench_key_by,
 );
 criterion_main!(benches);

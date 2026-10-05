@@ -78,7 +78,7 @@ markdown** 解析成员表后与实现对拍(ADR-0023 §v0.x 1 的执行机制)�
 | `std.fs` | R2 | §2 |
 | `std.json` | R2 | §3 |
 | `std.format` | R2 | §4 |
-| `std.collection` | 混合(R1 门面 + R2 `RANGE`/`MAP`/`FILTER`/`CHUNK`/`WINDOW`) | §5 |
+| `std.collection` | 混合(R1 门面 + R2 `RANGE`/`MAP`/`FILTER`/`CHUNK`/`WINDOW`/`ENUMERATE`/`ZIP`/`UNIQ`/`FLAT`/`JOIN`/`GROUP_BY`/`DEDUP_BY`/`KEY_BY`) | §5 |
 | `std.str` | R1 | §6 |
 | `std.math` | 混合(R1 门面 + R2 浮点内核) | §7 |
 | `std.test` | 混合(R1 门面 + R2 原生内核) | §8 |
@@ -201,11 +201,15 @@ markdown** 解析成员表后与实现对拍(ADR-0023 §v0.x 1 的执行机制)�
 整个调用按 8.2 传播;`arr` 实参须为 `ARRAY`、回调 `f` 须为函数值(违者
 `E0030`)。
 
-**落地状态**:27 个成员全部落地。**17 个是纯 wlwl(R1)**;**10 个的实现归 R2**
+**落地状态**:27 个成员全部落地。**14 个是纯 wlwl(R1)**;**13 个的实现归 R2**
 (`RANGE` 自 v0.11 M5;`MAP` / `FILTER` / `CHUNK` / `WINDOW` 自 v0.11.3 M5
-L0-A-2;`ENUMERATE` / `ZIP` / `UNIQ` / `FLAT` / `JOIN` 自 L0-A-3a),门面一律
+L0-A-2;`ENUMERATE` / `ZIP` / `UNIQ` / `FLAT` / `JOIN` 自 L0-A-3a;
+`GROUP_BY` / `DEDUP_BY` / `KEY_BY` 自 L0-A-3b),门面一律
 只改名导出 —— 层归属变更不算破坏性变更(ADR-0021 §0.2),故导出面 / 签名 /
 语义未变,75 条冻结行为用例(诊断码与消息逐字)全绿。
+**`SORT` / `SORT_BY` 仍留 R1** —— 归层要换 `Vec::sort_by`,而那会改**比较器
+调用次数**(R1 实测恰好 C(n,2) 次),对带副作用的比较器是可观察行为,待裁决;
+`benchmarks/baseline.txt` 的 L0-A-3b 段与 `addendum-00` §7 有记录。
 `CHUNK` / `WINDOW` / `DEDUP_BY` / `MIN_BY` / `MAX_BY` / `SUM` / `PRODUCT` /
 `FOLD_RIGHT` / `POSITION` / `KEY_BY` 十个成员随 v0.11.2 M3 追加,当时**同为 R1**;
 其中 `CHUNK` / `WINDOW` 已于 v0.11.3 归 R2,其余八个**仍是 R1**(成本理由见下方
@@ -873,7 +877,7 @@ WHATWG 规则的**白名单子集**,差异显式登记 —— 安全性由幂等
 | `std.encode` | `BASE64_ENCODE` `BASE64_DECODE` `HEX_ENCODE` `HEX_DECODE` `URL_ENCODE` `URL_DECODE` `SHA256` `HMAC_SHA256` | R2 | v0.11.2 / SHA256、HMAC_SHA256 于 v0.11.3 |
 | `std.text` | `TO_UPPER` `TO_LOWER` | R2 | v0.11.2 |
 | `std.sanitize` | `HTML_ESCAPE` `HTML_UNESCAPE` `HTML_SANITIZE` | R2 | v0.11.3 |
-| `std.collection` | `MAP` `FILTER` `REDUCE` `SORT` `SORT_BY` `ZIP` `RANGE` `ANY` `ALL` `FIND` `ENUMERATE` `TAKE` `DROP` `FLAT` `UNIQ` `GROUP_BY` `JOIN` `CHUNK` `WINDOW` `DEDUP_BY` `MIN_BY` `MAX_BY` `SUM` `PRODUCT` `FOLD_RIGHT` `POSITION` `KEY_BY` | 混合(R1 门面 + R2 `RANGE`/`MAP`/`FILTER`/`CHUNK`/`WINDOW`/`ENUMERATE`/`ZIP`/`UNIQ`/`FLAT`/`JOIN`) | v0.10 及以前(成员)/ v0.11(R1 重写,M5 起 RANGE 沉 R2)/ v0.11.3(M5 L0-A-2 加 MAP·FILTER·CHUNK·WINDOW,L0-A-3a 加 ENUMERATE·ZIP·UNIQ·FLAT·JOIN 沉 R2) |
+| `std.collection` | `MAP` `FILTER` `REDUCE` `SORT` `SORT_BY` `ZIP` `RANGE` `ANY` `ALL` `FIND` `ENUMERATE` `TAKE` `DROP` `FLAT` `UNIQ` `GROUP_BY` `JOIN` `CHUNK` `WINDOW` `DEDUP_BY` `MIN_BY` `MAX_BY` `SUM` `PRODUCT` `FOLD_RIGHT` `POSITION` `KEY_BY` | 混合(R1 门面 + R2 `RANGE`/`MAP`/`FILTER`/`CHUNK`/`WINDOW`/`ENUMERATE`/`ZIP`/`UNIQ`/`FLAT`/`JOIN`/`GROUP_BY`/`DEDUP_BY`/`KEY_BY`) | v0.10 及以前(成员)/ v0.11(R1 重写,M5 起 RANGE 沉 R2)/ v0.11.3(M5 L0-A-2 加 MAP·FILTER·CHUNK·WINDOW,L0-A-3a 加 ENUMERATE·ZIP·UNIQ·FLAT·JOIN,L0-A-3b 加 GROUP_BY·DEDUP_BY·KEY_BY 沉 R2) |
 | `std.str` | `JOIN` `SPLIT_LINES` `CHAR_AT` `COUNT` `QUOTE` `INDEX_OF` `CONTAINS_SUB` | R1 | v0.11 / INDEX_OF、CONTAINS_SUB 于 v0.11.2 |
 | `std.math` | `ABS` `MIN` `MAX` `FLOOR` `CEIL` `ROUND` `SQRT` `POW` `CLAMP` `PI` `E` `LN` `LOG2` `LOG10` `EXP` `TRUNC` `SIN` `COS` `TAN` `ASIN` `ACOS` `ATAN` `ATAN2` `SINH` `COSH` `TANH` `SIGN` `DIV_CEIL` `GCD` `LCM` `IS_SQRT` `POW_MOD` | 混合 | v0.11 |
 | `std.test` | `TEST` `ASSERT` `ASSERT_EQ` `ASSERT_NEQ` `EXPECT_ERR` `RUN_TESTS` | 混合 | v0.10 及以前(成员)/ v0.11(混合化) |

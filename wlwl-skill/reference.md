@@ -295,18 +295,24 @@ reject an empty `sub`.
 > 76 ms). `WINDOW`'s **output alone** is Θ(n·k) elements, so it is expensive by
 > definition, not by accident.
 >
-> **Still quadratic** (same root cause, not yet re-layered — L0-A-3b): `SORT`,
-> `SORT_BY`, `DEDUP_BY`, `GROUP_BY`, `KEY_BY`. On 5 000 elements `CHUNK` used to
-> be ≈ 0.6 s and `WINDOW` ≈ 20 s.
+> **Still quadratic** (same root cause, not yet re-layered): `SORT`, `SORT_BY`.
+> On 5 000 elements `CHUNK` used to be ≈ 0.6 s and `WINDOW` ≈ 20 s. As of
+> v0.11.3, `SORT` on **2 000** elements takes **9.4 minutes** — it is the one
+> member re-layering would help most, but swapping in `Vec::sort_by` changes the
+> comparator's **call count** (R1 calls it exactly C(n,2) times), which is
+> observable to a side-effecting comparator; that is pending an owner decision.
 > **`UNIQ` is a half-way case**: re-layered in v0.11.3 and 8.4× faster at 8 000
 > elements (1 611 → 191 ms), but **still quadratic** — the `PUSH` rebuild went
 > away, the linear *membership scan* did not, and that scan cannot be hashed
 > without deciding hash semantics for `Value` (`1`/`1.0` compare equal, `Dict`
 > compares unordered, closures compare structurally, and `NaN` is **not** equal
 > to itself under `values_equal`, so `UNIQ([NaN, NaN])` keeps both).
+> Note `DEDUP_BY` is a **different** dedup basis from `UNIQ`: its key is the
+> `STR` **rendering**, so `DEDUP_BY([1, 1.0, 2], id)` keeps all three while
+> `UNIQ([1, 1.0, 2])` keeps two.
 > Near-linear already: `SUM`, `PRODUCT`, `FOLD_RIGHT`, `MIN_BY`, `MAX_BY`. Full
 > table in `../docs/stdlib/wlwl-stdlib-spec-v0.11.md` §5 and
-> `../impl/crates/wlwl-eval/benches/baseline.txt` **L0 / L0-A-2 / L0-A-3a** 段。
+> `../impl/crates/wlwl-eval/benches/baseline.txt` **L0 / L0-A-2 / L0-A-3a / L0-A-3b** 段。
 
 > *Measured on wlwl 0.11.2 (2026-10-02):* `CHUNK([1,2,3,4,5], 2)` =
 > `[[1,2],[3,4],[5]]`; `WINDOW([1,2,3,4,5], 9)` = `[]`; `SUM([1, 2.5])` = `3.5`;

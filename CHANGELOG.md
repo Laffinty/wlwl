@@ -117,6 +117,33 @@ Spec: **wlwl-spec-v0.11 与 wlwl-stdlib-spec-v0.11 均不变**。本批**不改�
     —— R1 现状,照搬未「修正」。
   - 逐条数据与口径见 `benches/baseline.txt` **L0-A-3a 段**。
 
+- **`wlwl:std.collection` 的 `GROUP_BY` / `DEDUP_BY` / `KEY_BY` 归 R2**
+  (追加批次 M5 的 L0-A-3b 下半)。同款形态与非破坏性契约。
+  - **为什么**:`Value::Dict` 的表示是 `Vec<(Value,Value)>`,`dict_lookup` 是
+    `iter().position(...)` 线性扫描,而 `INDEX_SET` 每次还要**克隆整个 entries**
+    ⇒ 键互异时 n 次插入是 O(n²) 的克隆 + O(n²) 的扫描。这是与 `PUSH` **无关的
+    第二笔平方级**。归层后内部 `HashMap<String, usize>` 索引 + 末次物化,
+    查找 O(n) → O(1)、克隆 O(n) → O(0)。实测 `GROUP_BY` 4 000 档
+    4 512 → **14.4 ms**(**314×**),每元素成本由涨(4.9×)转降。
+  - **`Value::Dict` 的表示不动** —— 插入序就是可观察序(JSON 输出、错误载荷、
+    契约里冻结的 `display()`),换 `HashMap` 会让这些乱序 = breaking。
+  - **键是 `STR(k)` 渲染串,不是值相等。** 实测对照:
+    `DEDUP_BY([1, 1.0, 2], id)` 得 `[1, 1.0, 2]`(三个都留),
+    而 `UNIQ([1, 1.0, 2])` 得 `[1, 2]`。**两者不是同一族。**
+    正因为键是渲染串,`HashMap<String, usize>` 才是天然键,不必给 `Value`
+    实现 `Hash`。
+  - `KEY_BY` **位置留首次、值取最后**(实测 `["z1","y1","z2","x1"]` → `[z: z2, y: y1, x: x1]`)。
+  - 差分:值 15/15、诊断 11/11;127 条冻结契约全绿。
+  - ⚠️ `DEDUP_BY` / `KEY_BY` 的**归层前**数据**未测**(R1 的 `group_by/8000`
+    单档 criterion 自报 214 秒,三个 8 k 档会让本轮跑到十几分钟),故本条**不
+    声称它们各自的倍数**,结论支撑是机制 + 同族已实测的 `GROUP_BY`。见
+    `benches/baseline.txt` **L0-A-3b 段**。
+  - **`SORT` / `SORT_BY` 仍留 R1** —— 归层必须换 `Vec::sort_by`(保留选择排序
+    只值 0.03%:实测 n=500 净 45 889 ms 里数组拷贝仅占 15.7 ms),而那会改
+    **比较器调用次数**(R1 实测恰好 C(n,2):n=4/8/16/32/64 → 6/28/120/496/2016),
+    对带副作用的比较器是可观察行为。实测 R1 `SORT` 在 n=2 000 上要
+    **9.4 分钟**,`SORT_BY` 直接依赖它。待业主裁。
+
 ### Fixed
 
 - **`MIN_BY` / `MAX_BY` 空数组中止运行,违反 stdlib §5「空数组得 `NULL`」**(v0.11.2

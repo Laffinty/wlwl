@@ -70,6 +70,8 @@
 //! 两者消息措辞相同(照抄 R2 的 `arity()` 口径:只报上限),所以对外表现
 //! 与 M3-1 的 R1 门面**逐字一致** —— 75 条冻结契约用例就是为此存在的。
 
+use std::collections::{HashMap, HashSet};
+
 use wlwl_value::{values_equal, Outcome, Signal, StdHost, Value};
 
 use wlwl_error::{ErrorCode, WlwlError, WlwlResult};
@@ -548,4 +550,152 @@ pub fn kernel_join(host: &mut dyn StdHost, args: Vec<Value>) -> WlwlResult<Outco
         s.push_str(&v.display());
     }
     Ok(Outcome::normal(Value::String(s)))
+}
+
+// ─────────────────────────────────────────────────────────────────────
+// [v0.11.3 M5 / addendum-00 L0-A-3b] 归层第二批(下半):D 类三成员
+// `GROUP_BY` / `DEDUP_BY` / `KEY_BY`
+// ─────────────────────────────────────────────────────────────────────
+//
+// 形态同前两批(kernel 注入 + 门面改名导出,`EXPORT` 未动)。
+//
+// ## 为什么 D 类「有 HashMap 却没有哈希语义难题」
+//
+// 关键事实(实测 2026-10-05 录 R1 快照时抓到,极易踩):
+// **这三个成员的键不是值,是 `STR(k)` 渲染串。** 对照实测:
+//
+//   DEDUP_BY([1, 1.0, 2], id)  →  [1, 1.0, 2]   ← 三个都留(键 "1" / "1.0" / "2")
+//   UNIQ([1, 1.0, 2])          →  [1, 2]        ← 两个(值相等口径)
+//   GROUP_BY([TRUE,1,1.0,FALSE], id)
+//                             →  四个组("TRUE"/"1"/"1.0"/"FALSE")
+//
+// ⇒ **`DEDUP_BY` 与 `UNIQ` 的去重口径根本不同**,别把它们当同一族。
+// 而正因为键**就是渲染串**,`HashMap<String, usize>` 是天然键 —— 不需要给
+// `Value` 实现 `Hash`,也没有 `Float(NaN)` / 闭包结构相等那类问题
+// (那是 `UNIQ` 的困难,见 `kernel_uniq` 的注记)。
+//
+// ## 物化形态(`ADR-0025` Q1):`Value::Dict` 的表示**不动**
+//
+// 内部用 `HashMap<String, usize>` 作查找索引 + `Vec` 维持**插入序**,返回前
+// 一次性物化成 `Value::Dict(Vec<(Value, Value)>)`。**不换哈希表**,因为
+// `DICT` 现在是 `Vec`、**插入序就是可观察序**(JSON 输出、错误载荷、契约里
+// 冻结的 `display()` 全靠它),换 `HashMap` 会让这些乱序 = breaking。
+//
+// ## 三者都要逐字保住的语义
+//
+//   * 键 = `Value::display()`(门面写的是 `STR(k)`;规范 §5 明写二者一致);
+//   * `GROUP_BY` 组内**首现序**;键之间**首现序**;
+//   * `KEY_BY` **位置留首次、值取最后**(实测 `KEY_BY(["z1","y1","z2","x1"])` →
+//     `[z: z2, y: y1, x: x1]` —— `z` 在最前但值是 `z2`);
+//   * `key` 回调返 `ERR` ⇒ **立刻中止**并把该 `ERR` 原样交回(门面有
+//     `SET(i, LEN(arr))`);返挂起信号 ⇒ 同 MAP/FILTER 那一套「透传 + 丢弃」。
+
+/// 三个成员共用的实参检查(元数 / 数组 / 回调可调用性),措辞逐字照抄门面。
+fn dict_key_member_args<'a>(
+    host: &mut dyn StdHost,
+    name: &str,
+    args: &'a [Value],
+) -> WlwlResult<(&'a [Value], &'a Value)> {
+    if args.len() != 2 {
+        return Err(arity(host, name, args.len(), 2));
+    }
+    let Value::Array(arr) = &args[0] else {
+        return Err(type_err(host, name, "array", &args[0]));
+    };
+    let f = &args[1];
+    if !is_callable(f) {
+        return Err(not_callable(host, name, f));
+    }
+    Ok((arr, f))
+}
+
+/// 把 `Vec<(String, Vec<Value>)>` 物化成 `Value::Dict`(键包成 `Value::String`)。
+fn materialize_groups(groups: Vec<(String, Vec<Value>)>) -> Value {
+    Value::Dict(
+        groups
+            .into_iter()
+            .map(|(k, v)| (Value::String(k), Value::Array(v)))
+            .collect(),
+    )
+}
+
+/// `GROUP_BY(arr, key)` → `DICT`;组内保首现序,键之间也保首现序。
+pub fn kernel_group_by(host: &mut dyn StdHost, args: Vec<Value>) -> WlwlResult<Outcome> {
+    let (arr, f) = dict_key_member_args(host, "GROUP_BY", &args)?;
+    let mut index: HashMap<String, usize> = HashMap::new();
+    let mut groups: Vec<(String, Vec<Value>)> = Vec::new();
+    for v in arr.iter() {
+        let r = host.call(f, vec![v.clone()], "GROUP_BY")?;
+        if r.signal != Signal::None {
+            return Ok(propagate_signal(r.signal));
+        }
+        if let Value::Err(_) = r.value {
+            return Ok(Outcome::normal(r.value));
+        }
+        let ks = r.value.display();
+        match index.get(&ks) {
+            Some(&i) => groups[i].1.push(v.clone()),
+            None => {
+                index.insert(ks.clone(), groups.len());
+                groups.push((ks, vec![v.clone()]));
+            }
+        }
+    }
+    Ok(Outcome::normal(materialize_groups(groups)))
+}
+
+/// `DEDUP_BY(arr, key)` → 按 **键的 `STR` 渲染**去重,保首现序。
+///
+/// ⚠️ 去重口径是**渲染串**,不是值相等 —— 故 `DEDUP_BY([1, 1.0, 2])` 留三个。
+/// 见本节开头的实测对照。
+pub fn kernel_dedup_by(host: &mut dyn StdHost, args: Vec<Value>) -> WlwlResult<Outcome> {
+    let (arr, f) = dict_key_member_args(host, "DEDUP_BY", &args)?;
+    let mut seen: HashSet<String> = HashSet::new();
+    let mut out: Vec<Value> = Vec::new();
+    for v in arr.iter() {
+        let r = host.call(f, vec![v.clone()], "DEDUP_BY")?;
+        if r.signal != Signal::None {
+            return Ok(propagate_signal(r.signal));
+        }
+        if let Value::Err(_) = r.value {
+            return Ok(Outcome::normal(r.value));
+        }
+        // `HashSet::insert` 返回「是否首次插入」—— 一趟查找兼做去重判据。
+        if seen.insert(r.value.display()) {
+            out.push(v.clone());
+        }
+    }
+    Ok(Outcome::normal(Value::Array(out)))
+}
+
+/// `KEY_BY(arr, key)` → `DICT`;**同键后者覆盖前者**,但**位置留在首次**。
+pub fn kernel_key_by(host: &mut dyn StdHost, args: Vec<Value>) -> WlwlResult<Outcome> {
+    let (arr, f) = dict_key_member_args(host, "KEY_BY", &args)?;
+    let mut index: HashMap<String, usize> = HashMap::new();
+    let mut keys: Vec<String> = Vec::new();
+    let mut vals: Vec<Value> = Vec::new();
+    for v in arr.iter() {
+        let r = host.call(f, vec![v.clone()], "KEY_BY")?;
+        if r.signal != Signal::None {
+            return Ok(propagate_signal(r.signal));
+        }
+        if let Value::Err(_) = r.value {
+            return Ok(Outcome::normal(r.value));
+        }
+        let ks = r.value.display();
+        match index.get(&ks) {
+            Some(&i) => vals[i] = v.clone(),
+            None => {
+                index.insert(ks.clone(), keys.len());
+                keys.push(ks);
+                vals.push(v.clone());
+            }
+        }
+    }
+    Ok(Outcome::normal(Value::Dict(
+        keys.into_iter()
+            .zip(vals)
+            .map(|(k, v)| (Value::String(k), v))
+            .collect(),
+    )))
 }
