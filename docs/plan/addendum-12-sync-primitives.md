@@ -63,7 +63,7 @@ Select-String -Path crates/wlwl-std/src/lib.rs -Pattern 'ALL_SPECS' -Context 0,2
 
 1. **归内建还是归 `std.sync`?**(这是本份的**头号**裁决)
    现状:通道 / `SCOPE` / `STEP` / `SPAWN` 是**全局内建**(附录 G)。
-   但 ADR-0023 §v0.x 1 有一条硬约束:**「新增命名空间不得重导出全局内建同名
+   但 ADR-0023 **§v0.x 4** 有一条硬约束:**「新增命名空间不得重导出全局内建同名
    成员」**。若 `std.sync` 叫 `SPAWN` / `SCOPE` 就违规;叫 `MUTEX` 不违规
    (内建里没有 `MUTEX`)。
    → 裁决:`MUTEX` 族是**新名字**,放 `std.sync` **不违规**;但「为什么锁在

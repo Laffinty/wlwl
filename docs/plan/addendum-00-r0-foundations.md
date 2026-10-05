@@ -9,7 +9,7 @@
   `std.collection` 的规模可用性回到线性。
 - **非目标**(违反即范围事故):
   - **不加任何标准库成员**。本份是纯工程,成员面变化必须为 0。
-  - **不改任何可观察语义**。ADR-0023 §v0.x 1:语义变更须明标 breaking。
+  - **不改任何可观察语义**。ADR-0023 §v0.x 2:语义变更须明标 breaking。
   - 不动 `PUSH` / `+` / `LET` 的**签名与错误行为**。
   - 不引入 GC / 引用计数 / 写时复制到语言语义层(那是语言变更,不是工程)。
 - **为什么必须最先**:L1 的八份里有四份要新增或扩大会构建大数组的成员;
@@ -47,9 +47,18 @@ cargo bench -p wlwl-eval --bench eval_hot_paths -- --warm-up-time 1 --measuremen
 
 ### 2.1 L0-A 的候选名单(全部现为 R1 门面)
 
-`MAP` `FILTER` `REDUCE` `SORT_BY` `ZIP` `ANY` `ALL` `FIND` `ENUMERATE` `TAKE`
-`DROP` `FLAT` `UNIQ` `GROUP_BY` `CHUNK` `WINDOW` `DEDUP_BY` `MIN_BY` `MAX_BY`
-`SUM` `PRODUCT` `FOLD_RIGHT` `POSITION` `KEY_BY`
+`MAP` `FILTER` `REDUCE` `SORT` `SORT_BY` `ZIP` `ANY` `ALL` `FIND` `ENUMERATE`
+`TAKE` `DROP` `FLAT` `UNIQ` `GROUP_BY` `JOIN` `CHUNK` `WINDOW` `DEDUP_BY`
+`MIN_BY` `MAX_BY` `SUM` `PRODUCT` `FOLD_RIGHT` `POSITION` `KEY_BY`
+
+共 **26** 项。`RANGE` 虽仍列在 `EXPORT` 名录里,但自 M5 起已绑定 R2 kernel
+(见该文件的 `[D11-019]` 注记),**不在本名单内** —— 26 项全部归层后,`EXPORT`
+恰好清空,与「收敛为全 R2」自洽。
+
+> **[2026-10-05 更正]** 原名单为 **24** 项,**漏了 `SORT` 与 `JOIN`** —— 两者都在
+> `wl/std/collection.wll:585` 的 R1 `EXPORT` 里(`EXPORT` 实为 27 项 = 本名单 26
+> + `RANGE`)。照原名单做完,`EXPORT` 仍留两个 R1 门面,达不到本节自己写的
+> 「收敛为全 R2」,§5 落点 3 的「两侧都要改」也落不干净。
 
 (归层后 `std.collection` 的层列从「混合(R1 门面 + R2 `RANGE`)」收敛为
 「全 R2」——**这是规范 §0.2 的层归属变更,须同批走四件套**。)
@@ -70,10 +79,18 @@ cargo bench -p wlwl-eval --bench eval_hot_paths -- --warm-up-time 1 --measuremen
 
 ## 3. 语义裁决点(开写前必须逐条回答)
 
-1. **层归属变更算不算 breaking?** 规范 §0.2 只说「归层须附基准」,没说归层
-   要不要申报。ADR-0023 §v0.x 2 的「破坏性变更」定义里**没有**层变更。
-   → 建议:明确写进 CHANGELOG「本批无 breaking」,并在规范 §0.2 补一句
-   「R1↔R2 迁移**不**属于破坏性变更」(**这是本份要产出的规范补丁**)。
+1. ~~**层归属变更算不算 breaking?**~~ **已由既有 ADR 回答,本份无产出。**
+   ADR-0023 **§v0.x 5**(`docs/adr/0023-stdlib-stability-policy.md:40-41`)明写:
+   「层归属变更(R1↔R2 下沉/上浮)**不算**破坏性变更(调用面不动),但必须附基准
+   数据并登记构建计划」;同文件 `:61` 的执行机制表把该条标为 **✅ M5 落地**。
+   → 本份照该条办事即可:CHANGELOG 记「本批无 breaking」+ 附基准数据(§4 的四档
+   取数就是那份数据)+ 登记本计划。**不必再写规范补丁。**
+
+   > **[2026-10-05 更正]** 原文本称「ADR-0023 的『破坏性变更』定义里**没有**层
+   > 变更」,并把「在规范 §0.2 补一句『R1↔R2 迁移不属于破坏性变更』」列为
+   > **本份要产出的规范补丁**。该条款早已存在且已落地,补写会产生一份与
+   > ADR-0023 重复、且可能被读成「ADR 没说过」的规范文字。原稿引作「§v0.x 2」
+   > 亦错(§v0.x 2 是 breaking 申报,层变更是 §v0.x 5)。
 2. **归层后 R1 的 `EXPORT` 面怎么办?** 归层意味着该成员不再出现在
    `wl/std/collection.wll` 的 `EXPORT` 里。§0.5 说 release 二进制默认嵌入
    全部 R1 源码 —— 归层后该成员从嵌入集中消失,**§0.5 第一行的表述要跟着改**
@@ -97,15 +114,33 @@ $env:RUSTDOCFLAGS='-D warnings'; cargo doc --locked --no-deps         # 0 error
 cargo check --locked -p wlwl-std --features real-ai                   # exit 0
 ```
 
-性能断言(新基准,归档进 `benches/baseline.txt` **L0 段**):
+性能断言(新基准,归档进 `impl/crates/wlwl-eval/benches/baseline.txt` **L0 段**):
 
-| 基准 | 现值 | 目标 | 口径 |
+**四档口径**(业主 2026-10-05 裁决)。每条基准在 **1 k / 2 k / 4 k / 8 k** 四档
+取数,逐档算**每元素成本**;体例沿 W-08(M1)给 `HTML_ESCAPE` 用的同款四档。
+
+| 基准 | 8 k 档目标 | 每元素成本 | 口径 |
 |---|---|---|---|
-| `collection_map_10k` | 平方级 | **≤ 2 ms** | 10 000 元素 |
-| `collection_filter_10k` | 平方级 | **≤ 2 ms** | 同上 |
-| `collection_chunk_5k` | ≈ 0.6 s | **≤ 5 ms** | 5 000 元素 |
-| `collection_window_5k` | ≈ 20 s | **≤ 50 ms** | 5 000 元素 |
-| 线性承诺 | — | 每字节 1 KB → 100 KB **不增** | 与 `baseline.txt` M3 段同一口径 |
+| `collection_map` | **≤ 2 ms** | 1 k → 8 k **不增** | 构造数组 + `MAP` 全链 |
+| `collection_filter` | **≤ 2 ms** | 同上 | 构造数组 + `FILTER` 全链 |
+| `collection_chunk` | **≤ 5 ms** | 同上 | 构造数组 + `CHUNK` 全链 |
+| `collection_window` | **≤ 50 ms** | 同上 | 构造数组 + `WINDOW` 全链 |
+| 线性承诺 | — | 四档**逐档记录**,任一档增长即缺陷 | 与 `baseline.txt` M3 段同一口径 |
+
+> **[2026-10-05 改写]** 原表是四条**单尺寸**基准(`_10k` / `_5k`),却要求验收
+> 「每字节 1 KB → 100 KB 不增」——**单点算不出每字节成本,这条验收按原规格不可
+> 满足**。现改为四档曲线:曲线本身就是平方级 / 线性的证据,不必硬跑 10 k,
+> 取数成本也低一个量级。
+
+**现值阶段的工程须知(开工前必读)**:本批要测的正是**平方级**的现状,所以
+「先测现值」这一步本身是平方级的。实测参考(2026-10-05,release 构建,构造数组
++ `MAP` 全链,单进程单次):n=1 000 ≈ 0.53 s / n=2 000 ≈ 0.38 s / n=4 000 ≈ 1.45 s
+/ n=8 000 ≈ 4.44 s。前两档被 ~0.35 s 的**进程启动**开销淹没、不可信,曲线读
+4 k / 8 k 两点即够(尺寸翻倍、耗时涨 3.1 倍 ≈ 平方级)。criterion 在进程内取样,
+不受启动开销影响。⇒ ① 取数**必须**带 §1 的 `--warm-up-time 1 --measurement-time
+2 --sample-size 10`,否则 criterion 默认 100 样本 × 秒级单次 = 数十分钟起;
+② 单档可能停几分钟不动,**不是卡死**,别中途 kill;③ 归层后重跑同一组基准,
+四档每元素成本应持平 —— 前后两段并排就是 ADR-0023 §v0.x 5 要求的「附基准数据」。
 
 **回归守卫**:`collection_contract.rs` 127 条**逐条不动**。另加一条断言
 「归层前后 `std.collection` 的可观察输出逐字节相同」的差分测试(同输入,

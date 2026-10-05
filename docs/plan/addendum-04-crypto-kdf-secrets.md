@@ -33,7 +33,7 @@ Select-String -Path crates/wlwl-eval/tests/encode_contract.rs -Pattern '^\s+Case
 | `std.encode` 成员 | **8**(`BASE64_*` `HEX_*` `URL_*` `SHA256` `HMAC_SHA256`) | 附录 A |
 | 编码失败口径 | 解码失败是 `ERR` 值(`kind = "DecodeError"` + `op` + `reason`);元数 / 类型错是 `E0022` / `E0030` | 规范 §11.1 |
 | 哈希边界 | 哈希是**摘要不是加密**;非常数时间口径已写明 | 规范 §11.5 |
-| `sha256_10kb` 实测 | ≈ **255 MiB/s**(§7.4 指标 ≥ 100 ✅) | `benches/baseline.txt` M2 段 |
+| `sha256_10kb` 实测 | ≈ **255 MiB/s**(§7.4 指标 ≥ 100 ✅) | `impl/crates/wlwl-eval/benches/baseline.txt` M2 段 |
 | `encode_contract` | **47 条** | 契约表 |
 | 已有否决 | 加解密 / 密钥生成**不做**;`MD5` / `SHA-1` 不提供 | 规范 §11.5 |
 | 主流对照 | Python `hashlib.pbkdf2_hmac` / `hashlib.scrypt` / `secrets`、Java `SecretKeyFactory`、Go `golang.org/x/crypto`(不在 std) | — |

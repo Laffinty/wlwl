@@ -35,7 +35,7 @@ Select-String -Path crates/wlwl-eval/tests/sanitize_contract.rs -Pattern '^\s+Sa
 |---|---|---|
 | `std.sanitize` 成员 | **3**(`HTML_ESCAPE` / `HTML_UNESCAPE` / `HTML_SANITIZE`) | 附录 A |
 | 冻结契约 | **79 条 OWASP/mXSS 向例** + 324 条变异 + 14 条 mXSS 样本 | `sanitize_contract.rs` |
-| 性能 | 10 KB 文章 **17.05 MiB/s** | `benches/baseline.txt` M3 段 |
+| 性能 | 10 KB 文章 **17.05 MiB/s** | `impl/crates/wlwl-eval/benches/baseline.txt` M3 段 |
 | 规范已登记 | §14:「**CSS / JS 上下文转义**(`CSS_ESCAPE` / `JS_ESCAPE`):需求出现时按 §13 的形态扩展 `std.sanitize`,**先有真实场景再立项**」 | 规范 §14 |
 | 类型化收口 | §14:「**类型化收口**(Trusted Types / Sanitizer API 范式):让危险的输出收口只接受经净化策略产出的**类型化值**……它需要宿主 / DOM 基建,不是字符串库能提供的;**wlwl 若将来出现宿主形态,照此记一笔**」 | 规范 §14 |
 

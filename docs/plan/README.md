@@ -6,8 +6,8 @@
 
 | 计划 | 覆盖 | 状态 |
 |---|---|---|
-| [`wlwl-v0.11.3-build-plan.md`](wlwl-v0.11.3-build-plan.md) | v0.11.3:输出安全 `std.sanitize`(**全员 R2**,性能为契约 —— 树构建净化器 + 全表实体 + 基准存档)+ `std.encode` 哈希 + SQL / 加解密否决成文 + `std.time` ADR-0024 与 regex 调研(只文档) | **M0–M4 全部完成**(M0 `601e76b`、M1 `613f13e`、M2 `875b699`、M3 `d5b47ad` + `2572fba` 收掉 D13-003~010);分支 `wip0.11.3`;**tag 由维护者发** |
-| [`wlwl-v0.11.3-addendum.md`](wlwl-v0.11.3-addendum.md) | **v0.11.3 追加批次总纲**:15 份独立构建方案的分层依赖图、六个全局裁决点、版本口径后果、格式契约 | **待业主定版本路径**(甲并入 v0.11.3 / 乙独立 v0.11.4 / 丙分两版 —— 见总纲 §4);15 份方案**全部未动工** |
+| [`wlwl-v0.11.3-build-plan.md`](wlwl-v0.11.3-build-plan.md) | v0.11.3:输出安全 `std.sanitize`(**全员 R2**,性能为契约 —— 树构建净化器 + 全表实体 + 基准存档)+ `std.encode` 哈希 + SQL / 加解密否决成文 + `std.time` ADR-0024 与 regex 调研(只文档) | **M0–M4 全部完成**(M0 `601e76b`、M1 `613f13e`、M2 `875b699`、M3 `d5b47ad` + `2572fba` 收掉 D13-003~010、M4 `200ff9c`);**追加 M5–M8 未动工**(甲路径,见总纲 §4);分支 `wip0.11.3`;**tag 继续按住不发**,收口后由维护者发 |
+| [`wlwl-v0.11.3-addendum.md`](wlwl-v0.11.3-addendum.md) | **v0.11.3 追加批次总纲**:15 份独立构建方案的分层依赖图、六个全局裁决点、版本口径后果、格式契约 | **版本路径已裁决:甲(业主 2026-10-05)** —— 并入 v0.11.3,分 **M5(L0)/ M6(L1 八份)/ M7(L2 五份)/ M8(L3)**;15 份方案 **82 个工作项全部未动工(0/82)**;G1–G6 与五份立项确认仍未闭合 |
 
 ### 追加批次 · 15 份独立方案(业主 2026-10-05 决定「一次性完善标准库」)
 
@@ -62,9 +62,9 @@
 | 现行规范 | [`../spec/wlwl-spec-v0.11.md`](../spec/wlwl-spec-v0.11.md)(v0.11;§10 已机制化,命名空间成员契约外迁) |
 | 现行标准库规范 | [`../stdlib/wlwl-stdlib-spec-v0.11.md`](../stdlib/wlwl-stdlib-spec-v0.11.md)(v0.11;**v0.11.2 起与语言规范同号** —— 本批成员面 58→99 但无 breaking,故不升版,变更登记在册首「本版变更」块) |
 | agent 专用规范 | [`../spec/wlwl-agent-spec-v0.11.md`](../spec/wlwl-agent-spec-v0.11.md)(与上面两册**冲突时以人读规范为准**;专供 AI agent,可随时改) |
-| 最新实现 | v0.11.3(M0–M4 全部完成,代码收口;**tag 由维护者发**) |
-| 进行中的计划 | 无 —— [**v0.11.3 构建计划**](wlwl-v0.11.3-build-plan.md) 已收口(M0 文档先行 → M1 转义 → M2 哈希 → M3 净化 → M4 收口) |
-| 下一迭代 | 未立项。候选:批次 B `YIELD` 续体保存(**0 细化**,开细化前须先定三件事,见 `../history/20261001.md` §1)、`std.rand` 的全局状态裁决(需先出 ADR)、UCD 数据依赖成员合成一块做(需先定 Unicode 版本与「半张表怎么办」)、regex(RE2 式线性模拟,调研见 v0.11.3 计划附录 B)、建数组类成员的平方级成本(根因在 R0 解释器,属治本工程) |
+| 最新实现 | v0.11.3(M0–M4 全部完成,代码收口;**tag 继续按住不发** —— 追加批次走甲路径并入本版) |
+| 进行中的计划 | **追加批次 M5–M8**(总纲 §4 已裁决甲)。**下一步 = M5 的 L0-A-1**(addendum-00 基线四档取数),它是 L2 三份的硬前置,且不依赖任何未决裁决 |
+| 下一迭代 | 未立项。候选:批次 B `YIELD` 续体保存(**0 细化**,开细化前须先定三件事,见 `../history/20261001.md` §1 —— 其第 2 件与 M5 的 L0 同根「R0 原语补齐」,两份范围尚未对齐)、`std.rand` 的全局状态裁决(需先出 ADR,总纲 G3)、UCD 数据依赖成员合成一块做(需先定 Unicode 版本 G1 与「半张表怎么办」G2)、regex(RE2 式线性模拟,调研见 v0.11.3 计划附录 B)、R1 预编译快照(其价值取决于 M5 完成后 R1 成员还剩多少) |
 | 门禁 | `cargo fmt --check` 0 diff;`clippy -D warnings` 0;`cargo test --locked --all-targets` **0 failed**(42 套件 1955 passed);`cargo deny check` exit 0;`cargo doc --no-deps -D warnings` 0 error(**D11-015 之后已并入本地门禁**;注意 `cargo doc` 不接受 `-D`,须走 `$env:RUSTDOCFLAGS='-D warnings'`);`cargo check --locked -p wlwl-std --features real-ai` exit 0(S-P1-1 之后新增);probe **157** 用例 —— 157 是 `impl/tests/probe/cases/` 的**用例目录数**,由单个 `probe_suite` 函数驱动并有 `probe_case_count_matches_inventory` 守卫,**不是** `#[test]` 函数数(`--test probe` 只跑 3 个函数);契约表 `collection` 127 / `str_math` 156 / `format` 39 / `encode` 47 / `text` 20 / `sanitize` 103 条;附录 A 由 `gen-appendix-a` 双向锁绿;附录 G 逐字节不变;基准存档 `benches/baseline.txt` M1 / M2 / M3 三段 |
 | 已立项范围 | v0.11:**批次 A 标准库底座**(ADR-0021/0022/0023)**已收口**;批次 B `YIELD` 续体保存**已立项但未细化**;v0.11.1:`std.web` **已终止并回滚**;v0.11.2:**已收口**(M0–M6 + 复核 N-6 修复 D12-013),待发 tag;v0.11.3:**已立项**(输出安全 + 哈希,SQL / 加解密否决成文,time / regex 只出文档) |
 
