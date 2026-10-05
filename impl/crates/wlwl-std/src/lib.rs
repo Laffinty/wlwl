@@ -30,8 +30,9 @@
 //!
 //! R1 语言层(纯 wlwl,`include_str!` 嵌入,eval 侧求值并缓存):
 //!   - `wlwl:std.collection` — 集合套件(§5;M3-1 起纯 wlwl,`RANGE` 于 v0.11 M5
-//!     归 R2,`MAP` / `FILTER` / `CHUNK` / `WINDOW` 于 v0.11.3 M5 L0-A-2 归 R2
-//!     → 本模块是**混合**模块(余 22 成员仍 R1),见 [`collection`])
+//!     归 R2,`MAP`/`FILTER`/`CHUNK`/`WINDOW` 于 v0.11.3 M5 L0-A-2 归 R2,
+//!     `ENUMERATE`/`ZIP`/`UNIQ`/`FLAT`/`JOIN` 于 L0-A-3a 归 R2
+//!     → 本模块是**混合**模块(余 **17** 成员仍 R1),见 [`collection`])
 //!   - `wlwl:std.str`    — string extensions (§6,5 成员:M3-2 落齐)
 //!   - `wlwl:std.math`   — math basics (§7,11 成员:M3-2 落齐;`SQRT`/`POW`
 //!     走注入的 R2 浮点内核,故本模块是**混合**模块)
@@ -133,9 +134,10 @@ pub static LANG_SOURCES: &[StdSource] = &[
     StdSource {
         path: "wlwl:std.collection",
         source: include_str!("../wl/std/collection.wll"),
-        // 混合模块:诊断发射器 + 值种类措辞 + 五个已归 R2 成员的实现
-        // (`RANGE` 自 v0.11 M5;`MAP` / `FILTER` / `CHUNK` / `WINDOW` 自 v0.11.3
-        // M5 L0-A-2);其余 22 个成员的算法是纯 wlwl。
+        // 混合模块:诊断发射器 + 值种类措辞 + 十个已归 R2 成员的实现
+        // (`RANGE` 自 v0.11 M5;`MAP`/`FILTER`/`CHUNK`/`WINDOW` 自 v0.11.3
+        // M5 L0-A-2;`ENUMERATE`/`ZIP`/`UNIQ`/`FLAT`/`JOIN` 自 L0-A-3a);
+        // 其余 **17** 个成员的算法是纯 wlwl。
         kernels: &[
             ("_KIND", kernels::kernel_kind as StdFn),
             ("_DIAG_E0020", kernels::kernel_diag_e0020 as StdFn),
@@ -160,6 +162,16 @@ pub static LANG_SOURCES: &[StdSource] = &[
             ("_FILTER", collection::kernel_filter as StdFn),
             ("_CHUNK", collection::kernel_chunk as StdFn),
             ("_WINDOW", collection::kernel_window as StdFn),
+            // [v0.11.3 M5 / addendum-00 L0-A-3a] 归层第二批(纯累加器那一半)。
+            // 形态同上一批。`SORT` / `SORT_BY` / `DEDUP_BY` / `GROUP_BY` /
+            // `KEY_BY` **不在此列** —— 它们各带一个需要单独裁决的设计点
+            // (排序稳定性与比较器调用次数、`DICT` 键控的物化形态),
+            // 留在 L0-A-3b。见 `collection.rs` 对应小节。
+            ("_ENUMERATE", collection::kernel_enumerate as StdFn),
+            ("_ZIP", collection::kernel_zip as StdFn),
+            ("_UNIQ", collection::kernel_uniq as StdFn),
+            ("_FLAT", collection::kernel_flat as StdFn),
+            ("_JOIN", collection::kernel_join as StdFn),
         ],
     },
     StdSource {
@@ -597,8 +609,9 @@ mod tests {
             "kernels.rs",
             "test_native.rs",
             // [v0.11 M5] std.collection 的 R2 内核(M5 裁决:`RANGE` 单独
-            // 沉回 R2;v0.11.3 M5 L0-A-2 再加 `MAP` / `FILTER` / `CHUNK` /
-            // `WINDOW`,余 22 成员仍 R1)。同 test_native.rs:内核代码跟它
+            // 沉回 R2;v0.11.3 M5 L0-A-2 再加 `MAP`/`FILTER`/`CHUNK`/`WINDOW`,
+            // L0-A-3a 再加 `ENUMERATE`/`ZIP`/`UNIQ`/`FLAT`/`JOIN`,
+            // 余 17 成员仍 R1)。同 test_native.rs:内核代码跟它
             // 服务的模块放一起,故不持 SPEC。
             "collection.rs",
         ];

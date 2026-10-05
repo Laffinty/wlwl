@@ -165,6 +165,89 @@ fn bench_window(c: &mut Criterion) {
     g.finish();
 }
 
+// ---------- 6~10. 归层第二批(纯累加器那一半,L0-A-3a)----------------
+//
+// 语料统一为 `RANGE(0, n, 1)`(R2,线性且便宜,同前五组),因此量到的就是
+// 成员自身的成本。`r1_build` 那一组仍是**对照组**(用户代码的累加器链,
+// 归层管不到它)—— 两批归层后它都应保持原来的平方曲线。
+//
+// `uniq` 的语料刻意做成**有重复**:`FLAT([arr, arr])` 把两段首尾相接,
+// 于是 n 个元素里只有 n/2 个互异 ⇒ 逼出「查到已存在就跳过」那条分支。
+// 它在 L0-A-3a 之后**仍是平方级**,但平方的来源从「PUSH 重建 + 线性查找」
+// 两笔变成只剩后者 —— 所以这一组的曲线**不**该被当成归层失败的证据,
+// 详见 `collection.wll` 里 `UNIQ` 那段注记。
+
+fn bench_enumeration(c: &mut Criterion) {
+    let mut g = c.benchmark_group("collection_enumeration");
+    for &n in &TIERS {
+        let src = member_src(n, &["ENUMERATE"], "ENUMERATE(arr)");
+        let ast = parse_program(&src);
+        g.throughput(Throughput::Elements(n as u64));
+        g.bench_with_input(BenchmarkId::from_parameter(n), &n, |b, _| {
+            b.iter(|| run_eval(&src, &ast));
+        });
+    }
+    g.finish();
+}
+
+fn bench_zip(c: &mut Criterion) {
+    let mut g = c.benchmark_group("collection_zip");
+    for &n in &TIERS {
+        let src = member_src(n, &["ZIP"], "ZIP(arr, arr)");
+        let ast = parse_program(&src);
+        g.throughput(Throughput::Elements(n as u64));
+        g.bench_with_input(BenchmarkId::from_parameter(n), &n, |b, _| {
+            b.iter(|| run_eval(&src, &ast));
+        });
+    }
+    g.finish();
+}
+
+fn bench_uniq(c: &mut Criterion) {
+    let mut g = c.benchmark_group("collection_uniq");
+    for &n in &TIERS {
+        // `FLAT([arr, arr])` = 首尾相接的两段,制造 n/2 个重复键。
+        let src = member_src(n, &["FLAT", "UNIQ"], "UNIQ(FLAT([arr, arr]))");
+        let ast = parse_program(&src);
+        g.throughput(Throughput::Elements(n as u64));
+        g.bench_with_input(BenchmarkId::from_parameter(n), &n, |b, _| {
+            b.iter(|| run_eval(&src, &ast));
+        });
+    }
+    g.finish();
+}
+
+fn bench_flat(c: &mut Criterion) {
+    let mut g = c.benchmark_group("collection_flat");
+    for &n in &TIERS {
+        // 语料是 `n` 个**二元组数组**,不是 `[arr, arr]` 那样两个大数组 ——
+        // 后者只有 2 轮迭代,R1 的 `CONCAT` 只重建两次,量到的根本不是平方级
+        // (首次实测 1k…8k 是 2.6/3.0/7.9/11.8 ms,比值毫无规律)。
+        // `ENUMERATE(arr)` 给 n 个两元素数组 ⇒ R1 要做 n 次 `CONCAT`,
+        // 每次 O(当前长度) ⇒ 平方级,才量得到要消的那笔。
+        let src = member_src(n, &["ENUMERATE", "FLAT"], "FLAT(ENUMERATE(arr))");
+        let ast = parse_program(&src);
+        g.throughput(Throughput::Elements(n as u64));
+        g.bench_with_input(BenchmarkId::from_parameter(n), &n, |b, _| {
+            b.iter(|| run_eval(&src, &ast));
+        });
+    }
+    g.finish();
+}
+
+fn bench_join(c: &mut Criterion) {
+    let mut g = c.benchmark_group("collection_join");
+    for &n in &TIERS {
+        let src = member_src(n, &["JOIN"], "JOIN(arr, \",\")");
+        let ast = parse_program(&src);
+        g.throughput(Throughput::Elements(n as u64));
+        g.bench_with_input(BenchmarkId::from_parameter(n), &n, |b, _| {
+            b.iter(|| run_eval(&src, &ast));
+        });
+    }
+    g.finish();
+}
+
 criterion_group!(
     benches,
     bench_r1_build,
@@ -172,5 +255,10 @@ criterion_group!(
     bench_filter,
     bench_chunk,
     bench_window,
+    bench_enumeration,
+    bench_zip,
+    bench_uniq,
+    bench_flat,
+    bench_join,
 );
 criterion_main!(benches);

@@ -13,6 +13,10 @@
 //                     每元素成本超线性,见 D11-012),门面只改名导出
 //   _MAP / _FILTER    v0.11.3 M5 L0-A-2 归层第一批 —— 四档基准实测每元素
 //   _CHUNK / _WINDOW  成本随尺寸上涨(平方级坐实),四个同归
+//   _ENUMERATE / _ZIP v0.11.3 M5 L0-A-3a 归层第二批(纯累加器那一半)。第二
+//   _UNIQ / _FLAT     批的另外五个 —— `SORT` / `SORT_BY` / `DEDUP_BY` /
+//   _JOIN             `GROUP_BY` / `KEY_BY` **不在此列**,它们各带一个需要
+//                     单独裁决的设计点(见 `ADR-0025`),留在 L0-A-3b。
 //
 // [D11-019] 原先这里还列着 `_DIAG_E0038(msg)`,并称「E0038 全仓唯一的发射点
 // 就在这里」—— M5 之后不成立:唯一发射点是 `collection.rs` 的
@@ -202,22 +206,11 @@ LET(SORT_BY, FUN((*args),
 
 // 6. ZIP(a, b, ...)  →  配对至较短者
 // 非数组实参按单列处理(R2 同款:规范没写,沿用既有实现以免行为漂移)。
-LET(ZIP, FUN((*args),
-    (IF(<(LEN(args), 1),
-        _DIAG_E0022(_CAT("ZIP", ": function expects 1 argument(s), got ", STR(LEN(args)))),
-        NULL);
-     LET MUT(cols, []);
-     FOR(a, args, SET(cols, PUSH(cols, IF(==(TYPE(a), "ARRAY"), a, [a]))));
-     LET MUT(minlen, -1);
-     FOR(c, cols, SET(minlen, IF(==(minlen, -1), LEN(c), IF(<(minlen, LEN(c)), minlen, LEN(c)))));
-     LET MUT(out, []);
-     LET MUT(i, 0);
-     WHILE(<(i, minlen),
-         (LET MUT(row, []);
-          FOR(c, cols, SET(row, PUSH(row, AT(c, i, NULL))));
-          SET(out, PUSH(out, row));
-          SET(i, +(i, 1))));
-     out)));
+// [v0.11.3 M5 / L0-A-3a] 已沉 R2。R1 版是「`cols` 累加器 + `minlen` 取最短
+// + 双层 `PUSH`」,外层每行都重建整个 `out` ⇒ 平方级。归层后是 O(行数 × 列数)。
+// **非数组实参按单列处理、不报 `E0030`**(`ZIP(1, 2)` → `[[1, 2]]`)—— R1 现状,照搬。
+// 元数下界 1,报 `E0022 … expects 1 argument(s), got 0`。
+LET(ZIP, _ZIP);
 
 
 // ── 7. RANGE(n) / RANGE(start, end) / RANGE(start, end, step)  →  [start, end)
@@ -290,15 +283,10 @@ LET(FIND, FUN((*args),
      IF(IS_ERR(err), err, hit))));
 
 // 11. ENUMERATE(arr)  →  [[0, v0], [1, v1], ...]
-LET(ENUMERATE, FUN((*args),
-    (_NEED_ARITY("ENUMERATE", args, 1, 1);
-     LET(arr, _NEED_ARR("ENUMERATE", AT(args, 0, NULL)));
-     LET MUT(out, []);
-     LET MUT(i, 0);
-     WHILE(<(i, LEN(arr)),
-         (SET(out, PUSH(out, [i, AT(arr, i, NULL)]));
-          SET(i, +(i, 1))));
-     out)));
+//
+// [v0.11.3 M5 / L0-A-3a] 已沉 R2。R1 版 `PUSH` 每轮重建整个 `out` ⇒ 平方级;
+// 归层后单趟 + 一次 `with_capacity`。无回调、无 `ERR` 分支,是本批最干净的一个。
+LET(ENUMERATE, _ENUMERATE);
 
 // 12/13. TAKE(arr, n) / DROP(arr, n)  —— n < 0 时 TAKE 得 []、DROP 是 no-op
 LET(TAKE, FUN((*args),
@@ -320,22 +308,24 @@ LET(DROP, FUN((*args),
      IF(<(n, 0), arr, SLICE(arr, n)))));
 
 // 14. FLAT(arr)  →  展平一层
-LET(FLAT, FUN((*args),
-    (_NEED_ARITY("FLAT", args, 1, 1);
-     LET(arr, _NEED_ARR("FLAT", AT(args, 0, NULL)));
-     LET MUT(out, []);
-     FOR(v, arr, SET(out, IF(==(TYPE(v), "ARRAY"), CONCAT(out, v), PUSH(out, v))));
-     out)));
+//
+// [v0.11.3 M5 / L0-A-3a] 已沉 R2。R1 版每个元素二选一:数组走 `CONCAT`、
+// 非数组走 `PUSH` —— 两者都重建整个 `out` ⇒ 平方级;归层后是 O(总元素数)。
+// 仍是**只展一层**:`FLAT([1, [2, [3]]])` → `[1, 2, [3]]`,内层数组原样保留。
+LET(FLAT, _FLAT);
 
 // 15. UNIQ(arr)  →  按 == 去重,保留首现
 // `INDEX` 的 1-based 查找用的就是值相等语义(与 R2 的 `values_equal`
 // 同一条:1 与 1.0 互等),所以 -1 就是没见过的判据。
-LET(UNIQ, FUN((*args),
-    (_NEED_ARITY("UNIQ", args, 1, 1);
-     LET(arr, _NEED_ARR("UNIQ", AT(args, 0, NULL)));
-     LET MUT(out, []);
-     FOR(v, arr, IF(==(INDEX(out, v), -1), SET(out, PUSH(out, v)), NULL));
-     out)));
+// [v0.11.3 M5 / L0-A-3a] 已沉 R2。⚠️ **归层只消掉了 `PUSH` 那笔平方级,
+//成员查找那笔仍平方**:`INDEX(out, v)` 是线性扫 + `values_equal`。所以
+// `UNIQ` 归层后从 O(n²) 重排 + O(n²) 查找,变成 O(n) 重排 + O(n²) 查找。
+// 查找那笔**不能顺手改成哈希**:`values_equal` 要求 `1` 与 `1.0` 判等、
+// `TRUE` 与 `1` **不**判等、`Dict` 判等**无序**、闭包判等是**结构**的,
+// 而 `Value` 没有 `Hash`;哈希键要先定数值规范化,`Float(NaN)` 在
+// `values_equal` 下与自身**不**等、按位哈希却会合并 —— 可观察的差异。
+// ⇒ 把 `UNIQ` 做成线性是一次**独立的设计裁决**,不是归层顺手能带的事。
+LET(UNIQ, _UNIQ);
 
 // 16. GROUP_BY(arr, key)  →  DICT;键按 §5 走 STR 渲染(与 R2 的
 //     `display()` 一致),组内保持首现序。
@@ -359,19 +349,12 @@ LET(GROUP_BY, FUN((*args),
      IF(IS_ERR(err), err, d))));
 
 // 17. JOIN(arr, sep)  →  元素经 STR 渲染后以 sep 连接
-LET(JOIN, FUN((*args),
-    (_NEED_ARITY("JOIN", args, 2, 2);
-     LET(arr, _NEED_ARR("JOIN", AT(args, 0, NULL)));
-     LET(sep, AT(args, 1, NULL));
-     IF(==(TYPE(sep), "STRING"),
-        NULL,
-        _DIAG_E0030(_CAT("JOIN", ": expected string (separator), got ", _KIND(sep))));
-     LET MUT(s, "");
-     LET MUT(first, TRUE);
-     FOR(v, arr,
-         (IF(first, SET(first, FALSE), SET(s, +(s, sep)));
-          SET(s, +(s, STR(v)))));
-     s)));
+//
+// [v0.11.3 M5 / L0-A-3a] 已沉 R2。R1 版是 `SET(s, +(s, …))` 的**字符串**逐次
+// 全量拷贝 ⇒ 平方级(与数组的 `PUSH` 同根因);归层后是一次 `String::push_str`
+// 累加。分隔符的类型诊断是 **bespoke 措辞**(`expected string (separator)`),
+// 不是 `_NEED` 那款 `expected <what>` —— 照抄,别「顺手统一」。
+LET(JOIN, _JOIN);
 
 // ── v0.11.2 M3 新增成员 ─────────────────────────────────────────────
 // 十一个新成员全部是 R1 纯 wlwl,由既有内建组合得出,没有新增 kernel。

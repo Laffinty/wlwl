@@ -286,19 +286,27 @@ loop non-terminating). An **empty** `sub`-style key is not involved here, but
 note the same rule in `std.str`: `INDEX_OF` / `CONTAINS_SUB` / `COUNT` all
 reject an empty `sub`.
 
-> ⚠ **Scale warning.** As of **v0.11.3**, `MAP` / `FILTER` / `CHUNK` / `WINDOW`
-> are **R2 and linear** — the language layer's `PUSH` copies the whole array, so
-> the R1 versions were quadratic. Measured on wlwl 0.11.3 at **8 000 elements**:
-> `MAP` 26 ms, `FILTER` 31 ms, `CHUNK` 3 ms, `WINDOW` 6 ms (was 2 033 / 1 436 /
-> 370 / 24 472 ms). `WINDOW`'s **output alone** is Θ(n·k) elements, so it is
-> expensive by definition, not by accident.
+> ⚠ **Scale warning.** As of **v0.11.3**, `MAP` / `FILTER` / `CHUNK` / `WINDOW` /
+> `ENUMERATE` / `ZIP` / `FLAT` / `JOIN` are **R2 and linear** — the language
+> layer's `PUSH` copies the whole array, so the R1 versions were quadratic.
+> Measured on wlwl 0.11.3 at **8 000 elements**: `MAP` 24 ms, `FILTER` 30 ms,
+> `CHUNK` 3 ms, `WINDOW` 5 ms, `ENUMERATE` 3 ms, `ZIP` 4 ms, `FLAT` 4 ms,
+> `JOIN` 3 ms (was 2 033 / 1 436 / 370 / 24 472 / 7 437 / 9 341 / 9 814 /
+> 76 ms). `WINDOW`'s **output alone** is Θ(n·k) elements, so it is expensive by
+> definition, not by accident.
 >
-> **Still quadratic** (same root cause, not yet re-layered — L0-A-3): `FLAT`,
-> `UNIQ`, `ENUMERATE`, `GROUP_BY`, `JOIN`, `SORT`, `SORT_BY`, `ZIP`, `DEDUP_BY`,
-> `KEY_BY`. On 5 000 elements `CHUNK` used to be ≈ 0.6 s and `WINDOW` ≈ 20 s.
+> **Still quadratic** (same root cause, not yet re-layered — L0-A-3b): `SORT`,
+> `SORT_BY`, `DEDUP_BY`, `GROUP_BY`, `KEY_BY`. On 5 000 elements `CHUNK` used to
+> be ≈ 0.6 s and `WINDOW` ≈ 20 s.
+> **`UNIQ` is a half-way case**: re-layered in v0.11.3 and 8.4× faster at 8 000
+> elements (1 611 → 191 ms), but **still quadratic** — the `PUSH` rebuild went
+> away, the linear *membership scan* did not, and that scan cannot be hashed
+> without deciding hash semantics for `Value` (`1`/`1.0` compare equal, `Dict`
+> compares unordered, closures compare structurally, and `NaN` is **not** equal
+> to itself under `values_equal`, so `UNIQ([NaN, NaN])` keeps both).
 > Near-linear already: `SUM`, `PRODUCT`, `FOLD_RIGHT`, `MIN_BY`, `MAX_BY`. Full
 > table in `../docs/stdlib/wlwl-stdlib-spec-v0.11.md` §5 and
-> `../impl/crates/wlwl-eval/benches/baseline.txt` **L0 段**.
+> `../impl/crates/wlwl-eval/benches/baseline.txt` **L0 / L0-A-2 / L0-A-3a** 段。
 
 > *Measured on wlwl 0.11.2 (2026-10-02):* `CHUNK([1,2,3,4,5], 2)` =
 > `[[1,2],[3,4],[5]]`; `WINDOW([1,2,3,4,5], 9)` = `[]`; `SUM([1, 2.5])` = `3.5`;

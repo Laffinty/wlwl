@@ -50,11 +50,17 @@ const NAMESPACE_META: &[(&str, &str, &str)] = &[
         // 变的是实现语言,不是成员面。依据见 baseline.txt 的 M5 段与
         // 偏差 D11-012。
         // [v0.11.3 M5 / L0-A-2] 再加 `MAP` / `FILTER` / `CHUNK` / `WINDOW`
-        // 归 R2(四档基准实测每元素成本随尺寸上涨,平方级坐实)。四个成员
-        // 同样**留在 EXPORT 里**(门面改名导出),故成员面与本行的成员名册
-        // 都不变,只有「层」这一列变。依据见 baseline.txt 的 L0 段。
-        "混合(R1 门面 + R2 `RANGE`/`MAP`/`FILTER`/`CHUNK`/`WINDOW`)",
-        "v0.10 及以前(成员)/ v0.11(R1 重写,M5 起 RANGE 沉 R2)/ v0.11.3(M5 L0-A-2 再加 MAP·FILTER·CHUNK·WINDOW 沉 R2)",
+        // 归 R2(四档基准实测每元素成本随尺寸上涨,平方级坐实)。
+        // [v0.11.3 M5 / L0-A-3a] 再加 `ENUMERATE` / `ZIP` / `UNIQ` / `FLAT` /
+        // `JOIN` 归 R2(同样形态、同样理由)。十个成员**全部留在 `EXPORT` 里**
+        // (门面改名导出),故成员面与本行的成员名册都不变,只有「层」这一列变。
+        // 仍留 R1 的 17 个:其余 A 类(`SORT` / `SORT_BY`)+ 混合形态
+        // (`SORT` 的 `CONCAT`+`SLICE` 重建 / `UNIQ` 的成员查找是**另一笔**
+        // 平方级,见 `collection.wll` 的注记)+ D 类(`DEDUP_BY` / `GROUP_BY` /
+        // `KEY_BY`)+ `ANY`/`ALL`/`FIND`/`POSITION`/`MIN_BY`/`MAX_BY`/`SUM`/
+        // `PRODUCT`/`FOLD_RIGHT`/`REDUCE`/`TAKE`/`DROP` 等已线性或留待 L0-A-3b。
+        "混合(R1 门面 + R2 `RANGE`/`MAP`/`FILTER`/`CHUNK`/`WINDOW`/`ENUMERATE`/`ZIP`/`UNIQ`/`FLAT`/`JOIN`)",
+        "v0.10 及以前(成员)/ v0.11(R1 重写,M5 起 RANGE 沉 R2)/ v0.11.3(M5 L0-A-2 加 MAP·FILTER·CHUNK·WINDOW,L0-A-3a 加 ENUMERATE·ZIP·UNIQ·FLAT·JOIN 沉 R2)",
     ),
     (
         "wlwl:std.str",

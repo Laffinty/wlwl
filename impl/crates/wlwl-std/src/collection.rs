@@ -31,6 +31,10 @@
 // 每轮 `SLICE`)。**形态与 `RANGE` 相同**:kernel 注入 + 门面改名导出,
 // `EXPORT` 一字不动 ⇒ 成员面变化 0。
 //!
+//! L0-A-3 归层第二批。**本文件当前归 R2 的成员共 10 个**:`RANGE` +
+//! L0-A-2 的四个 + L0-A-3a 的五个(余 17 成员仍 R1,`SORT` / `SORT_BY` /
+//! `DEDUP_BY` / `GROUP_BY` / `KEY_BY` 留 L0-A-3b)。
+//!
 //! 本次同时挖出**第二个**平方级来源(与 `PUSH` 无关):
 //! `Value::Dict` 是 `Vec<(Value,Value)>` + `dict_lookup` 线性扫描 +
 //! `builtin_index_set` 每次全量克隆 ⇒ `KEY_BY` / `GROUP_BY` / `DEDUP_BY`
@@ -66,7 +70,7 @@
 //! 两者消息措辞相同(照抄 R2 的 `arity()` 口径:只报上限),所以对外表现
 //! 与 M3-1 的 R1 门面**逐字一致** —— 75 条冻结契约用例就是为此存在的。
 
-use wlwl_value::{Outcome, Signal, StdHost, Value};
+use wlwl_value::{values_equal, Outcome, Signal, StdHost, Value};
 
 use wlwl_error::{ErrorCode, WlwlError, WlwlResult};
 
@@ -397,4 +401,151 @@ pub fn kernel_window(host: &mut dyn StdHost, args: Vec<Value>) -> WlwlResult<Out
         }
     }
     Ok(Outcome::normal(Value::Array(out)))
+}
+
+// ─────────────────────────────────────────────────────────────────────
+// [v0.11.3 M5 / addendum-00 L0-A-3a] 归层第二批(纯累加器那一半):
+// `ENUMERATE` / `ZIP` / `UNIQ` / `FLAT` / `JOIN`
+// ─────────────────────────────────────────────────────────────────────
+//
+// 与 L0-A-2 同一形态(kernel 注入 + 门面改名导出,`EXPORT` 未动)。这一半全是
+// **无跨成员依赖的累加器**,没有排序的稳定性/比较器调用次数问题,也没有
+// `DICT` 键控问题 —— 后两者(`SORT` / `SORT_BY` / `DEDUP_BY` / `GROUP_BY` /
+// `KEY_BY`)留在 L0-A-3b,因为它们各自带一个需要单独裁决的设计点。
+//
+// 诊断措辞逐字照抄门面(127 条冻结契约逐字比对):
+//   元数 E0022  `NAME: function expects <hi> argument(s), got N`
+//              —— `ZIP` 报的是**下界 1**(它是 ≥1 元成员,门面
+//                 `IF(<(LEN(args), 1), _DIAG_E0022(… STR(1) …))` 写死了 1)
+//   实参 E0030  `NAME: expected array, got <kind>`
+//              —— `JOIN` 的分隔符是** bespoke 措辞**:
+//                 `JOIN: expected string (separator), got <kind>`,不是 `_NEED` 那款
+
+/// `ENUMERATE(arr)` → `[[0, v0], [1, v1], …]`。无回调、无 `ERR` 分支。
+pub fn kernel_enumerate(host: &mut dyn StdHost, args: Vec<Value>) -> WlwlResult<Outcome> {
+    if args.len() != 1 {
+        return Err(arity(host, "ENUMERATE", args.len(), 1));
+    }
+    let Value::Array(arr) = &args[0] else {
+        return Err(type_err(host, "ENUMERATE", "array", &args[0]));
+    };
+    let mut out: Vec<Value> = Vec::with_capacity(arr.len());
+    for (i, v) in arr.iter().enumerate() {
+        out.push(Value::Array(vec![Value::Integer(i as i64), v.clone()]));
+    }
+    Ok(Outcome::normal(Value::Array(out)))
+}
+
+/// `ZIP(a, b, …)` → 配对至**较短者**。
+///
+/// **非数组实参按单列处理,不报 `E0030`**:`ZIP(1, 2)` → `[[1, 2]]`
+/// (门面把每个实参 `IF(==(TYPE(a), "ARRAY"), a, [a])` 包成单元素列,
+/// 而 `minlen` 就是最短列的长度)。这是 R1 现状,**照搬**。
+/// 元数下界 1:报 `E0022 … expects 1 argument(s), got 0`。
+pub fn kernel_zip(host: &mut dyn StdHost, args: Vec<Value>) -> WlwlResult<Outcome> {
+    if args.is_empty() {
+        return Err(arity(host, "ZIP", 0, 1));
+    }
+    // 非数组实参按**单列**处理(门面 `IF(==(TYPE(a), "ARRAY"), a, [a])`),
+    // 故这里统一物化成一列;代价是每列一次克隆,相对 R1 的「每行重建整个
+    // out」仍是 O(n·k) 而不是 O(n²k)。
+    let cols: Vec<Vec<Value>> = args
+        .iter()
+        .map(|a| match a {
+            Value::Array(v) => v.clone(),
+            other => vec![other.clone()],
+        })
+        .collect();
+    let minlen = cols.iter().map(Vec::len).min().unwrap_or(0);
+    let mut out: Vec<Value> = Vec::with_capacity(minlen);
+    for i in 0..minlen {
+        out.push(Value::Array(cols.iter().map(|c| c[i].clone()).collect()));
+    }
+    Ok(Outcome::normal(Value::Array(out)))
+}
+
+/// `UNIQ(arr)` → 按 `==` 去重,**保留首现**。
+///
+/// ⚠️ **残余仍是平方级,但平方的来源换了**:R1 版同时有两笔平方成本 ——
+/// `PUSH` 重建(归层消掉)与 `INDEX(out, v)` 的**线性成员查找**(消不掉)。
+/// 后者不能顺手改成哈希:`values_equal` 的语义要求 `1` 与 `1.0` 判等、
+/// `TRUE` 与 `1` **不**判等、`Dict` 判等**无序**、闭包判等是**结构**的
+/// (Env 的 PartialEq 快照),而 `Value` 没有 `Hash`;用哈希键就得先把
+/// 数值规范化(`Float(NaN)` 在 `values_equal` 下与自身**不**等,哈希按位相等
+/// 却会合并 —— 那是可观察的行为差异)。
+/// ⇒ 本实现保留 `values_equal` 线性扫描。**把 UNIQ 做成线性是一次独立的
+/// 设计裁决**(要给 `Value` 定哈希语义),不是归层顺手能带的事。
+pub fn kernel_uniq(host: &mut dyn StdHost, args: Vec<Value>) -> WlwlResult<Outcome> {
+    if args.len() != 1 {
+        return Err(arity(host, "UNIQ", args.len(), 1));
+    }
+    let Value::Array(arr) = &args[0] else {
+        return Err(type_err(host, "UNIQ", "array", &args[0]));
+    };
+    let mut out: Vec<Value> = Vec::with_capacity(arr.len());
+    for v in arr.iter() {
+        if !out.iter().any(|seen| values_equal(seen, v)) {
+            out.push(v.clone());
+        }
+    }
+    Ok(Outcome::normal(Value::Array(out)))
+}
+
+/// `FLAT(arr)` → 展平**一层**。
+///
+/// 门面每个元素二选一:数组走 `CONCAT`、非数组走 `PUSH`;故 `[[]]` 贡献
+/// 零个元素、`[1, [2, [3]]]` 得 `[1, 2, [3]]`(**只一层**,内层数组原样保留)。
+pub fn kernel_flat(host: &mut dyn StdHost, args: Vec<Value>) -> WlwlResult<Outcome> {
+    if args.len() != 1 {
+        return Err(arity(host, "FLAT", args.len(), 1));
+    }
+    let Value::Array(arr) = &args[0] else {
+        return Err(type_err(host, "FLAT", "array", &args[0]));
+    };
+    // 先量一遍容量,免得每遇一个嵌套数组就重新分配。
+    let cap: usize = arr
+        .iter()
+        .map(|v| match v {
+            Value::Array(inner) => inner.len(),
+            _ => 1,
+        })
+        .sum();
+    let mut out: Vec<Value> = Vec::with_capacity(cap);
+    for v in arr.iter() {
+        match v {
+            Value::Array(inner) => out.extend(inner.iter().cloned()),
+            other => out.push(other.clone()),
+        }
+    }
+    Ok(Outcome::normal(Value::Array(out)))
+}
+
+/// `JOIN(arr, sep)` → 元素经 `STR` 渲染后以 `sep` 连接。
+///
+/// 分隔符的类型诊断是 **bespoke 措辞**(`expected string (separator)`),
+/// 不是 `_NEED` 那款 `expected <what>` —— 照抄,别「顺手统一」。
+pub fn kernel_join(host: &mut dyn StdHost, args: Vec<Value>) -> WlwlResult<Outcome> {
+    if args.len() != 2 {
+        return Err(arity(host, "JOIN", args.len(), 2));
+    }
+    let Value::Array(arr) = &args[0] else {
+        return Err(type_err(host, "JOIN", "array", &args[0]));
+    };
+    let Value::String(sep) = &args[1] else {
+        return Err(host.diag(
+            ErrorCode::E0030,
+            format!(
+                "JOIN: expected string (separator), got {}",
+                crate::value_kind(&args[1])
+            ),
+        ));
+    };
+    let mut s = String::new();
+    for (i, v) in arr.iter().enumerate() {
+        if i > 0 {
+            s.push_str(sep);
+        }
+        s.push_str(&v.display());
+    }
+    Ok(Outcome::normal(Value::String(s)))
 }

@@ -98,6 +98,25 @@ Spec: **wlwl-spec-v0.11 与 wlwl-stdlib-spec-v0.11 均不变**。本批**不改�
     L0-B(可变累加器,已立项、独立于 M5)的面。
   - 逐条数据与口径见 `impl/crates/wlwl-eval/benches/baseline.txt` **L0 段**。
 
+- **`wlwl:std.collection` 的 `ENUMERATE` / `ZIP` / `UNIQ` / `FLAT` / `JOIN` 归 R2**
+  (追加批次 M5 的 L0-A-3a)。同 L0-A-2 的形态与不破契约的理由(层归属变更,
+  ADR-0023 §v0.x 5,非 breaking,`EXPORT` 未动,成员面仍是 27)。
+  - **效果**(8 000 元素):`ENUMERATE` 7 437 → **3.2 ms**、`ZIP` 9 341 → **3.7 ms**、
+    `FLAT` 9 814 → **3.7 ms**(2 300~2 650×,每元素成本由涨转降);
+    `JOIN` 75.7 → **2.6 ms**;`UNIQ` 1 611 → **191 ms**(8.4×)。
+  - **`UNIQ` 归层后仍平方级,如实记**:R1 有两笔平方成本 —— `PUSH` 重建
+    (归层消掉)与 `INDEX(out, v)` 的线性成员查找(消不掉)。后者不能顺手改
+    哈希:`values_equal` 要求 `1` 与 `1.0` 判等、`TRUE` 与 `1` **不**判等、
+    `Dict` 判等无序、闭包判等是结构性的,而 `Value` 没有 `Hash`;且
+    `Float(NaN)` 在 `values_equal` 下**与自身不等**(所以 `UNIQ([NaN, NaN])`
+    留两个),按位哈希却会合并 —— 那是可观察的行为差异。**把 `UNIQ` 做成线性
+    是一次独立的设计裁决**,不是归层顺手能带的事。
+  - **仍留 R1 / 仍平方级**:`SORT` / `SORT_BY`(L0-A-3b,涉排序稳定性与比较器
+    调用次数)、`DEDUP_BY` / `GROUP_BY` / `KEY_BY`(D 类)。
+  - `ZIP` 的非数组实参按**单列**处理且**不报 `E0030`**(`ZIP(1, 2)` → `[[1, 2]]`)
+    —— R1 现状,照搬未「修正」。
+  - 逐条数据与口径见 `benches/baseline.txt` **L0-A-3a 段**。
+
 ### Fixed
 
 - **`MIN_BY` / `MAX_BY` 空数组中止运行,违反 stdlib §5「空数组得 `NULL`」**(v0.11.2
