@@ -157,7 +157,7 @@ Spec: **wlwl-spec-v0.11 与 wlwl-stdlib-spec-v0.11 均不变**。本批**不改�
     `\w` `\d` `\s` 与 `(?i)` 全是 **ASCII-only**(Unicode 折叠走 `std.text`)。
   - **期望值来自 Python `re` 独立核对**,不是实现输出;两处刻意不跟它:`re.ASCII`
     (否则 `\w`/`\d` 是 Unicode)、空匹配邻接规则(照 RE2/Go —— Python 的
-    `finditer` 会照报紧贴的空匹配)。契约 `regex_contract` 新建 **23 条**,
+    `finditer` 会照报紧贴的空匹配)。契约 `regex_contract` 新建 **28 条**,
     `wlwl-std` 单测 **10 条**,probe **162 → 164**。
 - **新命名空间 `wlwl:std.time`(A1 片,2 成员)** —— 命名空间 **13 → 14**,
   成员面 **109 → 111**。GAP-4 的第一刀:墙钟与单调钟。
