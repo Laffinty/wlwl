@@ -61,6 +61,10 @@ Select-String -Path plan/wlwl-v0.11.3-build-plan.md -Pattern '附录 B' -Context
 2. **左最长 vs 最早匹配**:RE2 的语义是**左最长**(不是 POSIX 的左most-
    earliest 也不是 PCRE 的贪婪回溯)。wlwl 必须明确选一个并写进规范 ——
    这是会改变可观察结果的语义差异,不是实现细节。
+   ⚠️ **[2026-10-06 实测更正]本题前提是错的** —— RE2 的**默认**是
+   **leftmost-first**(Perl / Python 语义),左最长只是它的 **POSIX 模式**;
+   权威依据(`re2.h` 的 `longest_match (false)` 与 Go `regexp` 的文档注释)
+   与建议答案见 **§3.7.1**。
 3. **空匹配的推进规则**:`RE_FIND_ALL("a*", "bab")` 会不会无限循环?
    规则必须写死(RE2 的做法:空匹配处停在原位,`FIND_ALL` 特殊处理)。
 4. **大小写不敏感**:`(?i)` 内联标志做不做?若做,它与 `std.text` 的 Unicode
@@ -99,6 +103,74 @@ cargo check --locked -p wlwl-std --features real-ai
 > 复杂度那条**不能省**。没有它,一个回溯引擎也能让常规用例全绿 —— 而那正是
 > 本成员明确不做的形态。
 
+## 3.7 六条裁决的建议答案(2026-10-06,已回源核对,待业主拍板)
+
+§3 那六条「开写前必须逐条回答」在本轮**逐条回源核对了**,结论写在下面。
+其中 **§3.2 的前提是错的**,已更正 —— 而它恰好是计划里写着「一旦定死就不可改」
+的那一条,所以更值得先把证据摆出来。
+
+### 3.7.1 ⚠️ 实测更正:RE2 的默认语义是 leftmost-**first**,不是左最长
+
+§3.2 原文写「RE2 的语义是**左最长**(不是 POSIX 的 leftmost-earliest 也不是
+PCRE 的贪婪回溯)」。**这句反了,而且反了两次。**
+
+权威依据(两个上游源,逐字):
+
+| 出处 | 原文 |
+|---|---|
+| `google/re2` 的 `re2/re2.h`(`RE2::Options`) | `longest_match    (false) search for longest match, not first match` —— **默认是「非最长」**;`POSIX` 那一项的注释才是 `POSIX syntax, leftmost-longest match` |
+| Go 标准库 `regexp.Compile`(用 RE2)的文档注释 | "the regexp returns a match that begins as early as possible in the input (leftmost), and among those it chooses the one that a backtracking search would have found first. This so-called **leftmost-first** matching is the same semantics that **Perl, Python, and other implementations use** … For POSIX **leftmost-longest** matching, see `CompilePOSIX`." |
+
+⇒ **左最长是 RE2 的 POSIX 模式,不是 RE2 的默认语义。** 计划把「RE2 提供两种」
+误记成「RE2 就是左最长」。
+
+**建议:w1wl 选 leftmost-first(早期最优)。** 三条理由:
+
+1. **与主流一致**:Go / Python / JS / Java / Rust `regex` 全是 leftmost-first。
+   选左最长会让 wlwl 成为**唯一的异类** —— 而正则模式跨语言移植是日常操作,
+   用户最不想要的就是「在我这儿好好的,到 wlwl 就换了个人」。
+2. **计划把两件事混在了一起**:左最长 / 早期决定的是**选哪个匹配**,而本成员
+   的**线性时间保证来自 NFA 模拟,与选哪条语义无关**。左最长不会让正则更快,
+   也不会更慢 —— 所以没有性能理由偏向它。
+3. **左最长的子选择规则本身没定死**:Go 的文档承认「POSIX 规定先最大化第一个
+   子表达式、再第二个……而这条规则**计算上不可承受甚至没有良定义**」,所以
+   Go 的 `CompilePOSIX` 实际上**并没有完全遵守 POSIX**。选它等于选一个连参考
+   实现都没完全实现的标准。
+
+### 3.7.2 其余五条的建议答案
+
+1. **失败分界**(§3.1)→ `RE(pattern)` 的语法错 = **原生诊断 `E0030` 中止**(带行列)。
+   **`TRY_RE` 本批不做**,理由是**不对称**:加一个成员是**附加式**(日后加不破坏
+   任何东西),而**改失败形态是破坏式** ⇒ 先把破坏性的那条定死,附加的那条后加。
+   (与 `PBKDF2_ITER` 的 `algo` 留位同一思路。)
+   ⚠️ 已知限制要写进规范:**模式来自用户输入时本批无法「试编译不中止」**。
+2. **空匹配推进**(§3.3)→ 照 RE2/Go 的**文档化**规则:**紧贴前一个匹配的空匹配
+   跳过不报**,其余空匹配**推进一个码点**。所以 `RE_FIND_ALL("a*", "bab")`
+   不会无限循环 —— 「推进一个码点」就是那个保证,而「跳过紧贴的空匹配」防止
+   `"bab"` 上 `a*` 在每个位置都报一次(`b`、`a`、`b` 三处)。
+3. **`(?i)`**(§3.4)→ 做内联标志,但**折叠只限 ASCII**(与全局内建 `UPPER` /
+   `LOWER` 同款 ASCII 口径)。Unicode 折叠需要 UCD 表 ⇒ 属 03 的批次,与 G1/G2
+   共用生成器。**分界写在规范里**:`(?i)` 管 ASCII,要 Unicode 折叠走 `std.text`。
+4. **`.` 与锚点**(§3.5)→ `.` 默认**不匹配换行**(依据:`re2.h` 的
+   `dot_nl (false) dot matches everything including new line` ⇒ 默认不含换行),
+   `(?s)` 让它匹配一切。`^` / `$` 默认锚**整个输入**,`(?m)` 切到**行锚点**。
+   ⚠️ **刻意不照抄 RE2 的 `m` 命名**:RE2 的 `(?m)` 语义与 Perl 相反(它的
+   `one_line` 选项才是「`^`/`$` 只在文本首尾」),而 Perl / JS / Python 用户对
+   `m` 的直觉是「多行 = 行锚点」。**跟着直觉走**,并把「我们与 RE2 在此命名相反」
+   写进规范 —— 否则下一个从 RE2 抄文档的人会把语义抄反。
+5. **`\p{…}` / Unicode 类别**(§3.6)→ 本批**不做**(计划已建议)。`\w` `\d` `\s`
+   明确 **ASCII-only**,不跟 `std.text` 的 Unicode 口径混。理由:与 G1
+   (Unicode 18.0.0)/ G2(要么全量要么不做)一致,且不给本成员引入 UCD 依赖。
+6. **命名组**(§0 非目标里的「命名组可做,但要走裁决点」)→ 本批**不做**,只支持
+   数字捕获组。理由同 5:命名组会牵出「组名与模式语法的关系」,而现在先把
+   线性时间与语义这两件**不可回退**的事定死更划算。
+
+### 3.7.3 一条不能省的钉子(§4 复杂度契约)
+
+`§4` 那条「病态输入(`(a*)*b` 之类经典指数爆炸模式)在 10 000 字符上 ≤ 50 ms」
+**是本成员存在的唯一理由** —— 没有它,一个回溯引擎也能让全部常规用例全绿,而那
+正是本成员明确不做的形态。这条必须落成**会红的断言**,不是文档里的一句话。
+
 ## 5. 九处表落点
 
 九处见 `docs/history/20261002.md` §5.0。**本份九处全中**(新命名空间):
@@ -131,7 +203,7 @@ cargo check --locked -p wlwl-std --features real-ai
 
 | 子项 | 内容 | 状态 | commit |
 |---|---|---|---|
-| W-01 | 语义裁决落规范(左最长 / 锚点 / 空匹配 / 失败分界) | 未动工 | — |
+| W-01 | 语义裁决落规范(左最早 / 锚点 / 空匹配 / 失败分界) | 🟡 **已回源核对,待业主拍板(2026-10-06)** —— §3.7 给出六条的建议答案 + 逐条依据。**其中 §3.2 的前提被实测推翻**:计划原文说「RE2 的语义是左最长」,而 `re2.h` 的 `longest_match (false) search for longest match, **not first match**` 与 Go `regexp` 的文档注释(「leftmost-first … same semantics that Perl, Python … use」)都证明**RE2 默认是 leftmost-first,左最长只是它的 POSIX 模式**。建议 wlwl 选 **leftmost-first**(与主流一致;且线性时间来自 NFA 模拟、与选哪条语义无关)。另五条:`RE` 语法错 → `E0030` 中止、`TRY_RE` 本批不做(加成员是附加式、改失败形态是破坏式,先定死破坏那条);空匹配照 RE2/Go 的文档规则(紧贴前一个匹配则跳过、否则推进一个码点);`(?i)` **只折叠 ASCII**;`.` 默认不含换行、`(?m)` 是**行锚点**且**刻意不抄 RE2 的反直觉命名**;`\p{…}` 与命名组本批不做 | `待回填` |
 | W-02 | 解析器 + Thompson 构造 + NFA 模拟(核心) | 未动工 | — |
 | W-03 | 成员包装 + 契约表 | 未动工 | — |
 | W-04 | **复杂度契约**(病态输入 ≤ 50 ms)+ 性能基准 | 未动工 | — |
