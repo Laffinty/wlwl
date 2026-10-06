@@ -957,8 +957,10 @@ WHATWG 规则的**白名单子集**,差异显式登记 —— 安全性由幂等
 - 新 R2 候选命名空间:`std.net`、`std.process`、`std.env`、`std.time`。
   **`std.time` 的参考坐标是 Go 1.24 的 `testing/synctest`**:把并发测试放进一个
   「bubble」,bubble 内时间走**假时钟**,于是「测 10 秒超时」不用真等 10 秒。
-  wlwl 已有 `SCOPE` / `STEP` / `SPAWN` 调度器与 `std.test`,这是本语言最该抄的
-  一个标准库形态 —— 但它需要虚拟时钟设计,**不是加几个函数**;
+  wlwl 已有 `SCOPE` / `SPAWN` 调度器与 `std.test`(⚠️ **不含 `STEP`** —— 本行早前
+  写的「`SCOPE` / `STEP` / `SPAWN`」有误:截至 2026-10-06 实查,`STEP` 在附录 G、
+  语言规范与实现里**都不存在**,已更正;推导见 `addendum-01` §3.6(a)),这是本语言
+  最该抄的一个标准库形态 —— 但它需要虚拟时钟设计,**不是加几个函数**;
 - **UCD 数据依赖的成员合成一块做**(v0.11.2 M2 裁决):`std.text` 的
   `NFC` / `NFD` / `GRAPHEME_COUNT` / `WIDTH` 共用同一捆
   `UnicodeData` + `CompositionExclusions` + `GraphemeBreakProperty` +
