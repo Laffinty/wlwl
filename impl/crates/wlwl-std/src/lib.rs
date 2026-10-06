@@ -56,6 +56,7 @@ pub mod kernels;
 pub mod sanitize;
 pub mod test_native;
 pub mod text;
+pub mod time;
 
 use wlwl_error::{WlwlError, WlwlResult};
 use wlwl_value::type_name;
@@ -307,6 +308,8 @@ pub fn resolve(path: &str) -> Option<StdBackend> {
         "wlwl:std.encode" => &encode::SPEC,
         "wlwl:std.text" => &text::SPEC,
         "wlwl:std.sanitize" => &sanitize::SPEC,
+        // [v0.11.3 M6 / addendum-01 A1] 时间能力第一片:两个纯读成员。
+        "wlwl:std.time" => &time::SPEC,
         _ => return None,
     };
     Some(StdBackend::Native(spec))
@@ -510,6 +513,8 @@ mod tests {
         &encode::SPEC,
         &text::SPEC,
         &sanitize::SPEC,
+        // [v0.11.3 M6 / addendum-01 A1] 时间能力第一片(两个纯读成员)。
+        &time::SPEC,
     ];
 
     #[test]

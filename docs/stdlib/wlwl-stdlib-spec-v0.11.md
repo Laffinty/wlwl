@@ -43,8 +43,9 @@ markdown** 解析成员表后与实现对拍(ADR-0023 §v0.x 1 的执行机制)�
 | — | 否决留档:**SQL 转义**不做(§13.3)、**加解密 / 密钥生成**不做(§11.5 §11.6);`MD5` / `SHA-1` 已破不提供;SHA-3 / BLAKE3 记演进 | — |
 
 成员面 **99 → 104**、命名空间 **12 → 13**(附录 A 镜像为准;`std.ai` 的 5 个
-成员仍受 `real-ai` feature 门控,默认构建可见 99)。M6 的五个成员落地后
-`std.encode` 由 8 增至 13 成员,成员面实际为 **109**。
+成员仍受 `real-ai` feature 门控,默认构建可见 99)。M6 的五个安全成员落地后
+`std.encode` 由 8 增至 13 成员;**M6 的 A1 片另开 `std.time`**(2 成员),
+命名空间 13 → **14**、成员面 109 → **111**。
 
 ## 0 总则
 
@@ -979,6 +980,55 @@ WHATWG 规则的**白名单子集**,差异显式登记 —— 安全性由幂等
 > 两条都不是「不重要」而是「**没想清楚**」。要动它们,先出 ADR,别直接在
 > 构建计划里加成员。
 
+## 15 `std.time` — 墙钟与单调钟(R2,v0.11.3 M6 · **A1 片**)
+
+**本节只覆盖 A1 片(两个纯读成员)。** 完整的时间能力分三片推进 —— A1 纯读(本节)、
+A2 `SLEEP`(挂起任务)、B 假时钟气泡 —— 范围与裁决见
+[`ADR-0024`](../adr/0024-time-fake-clock-bubble.md) §6 与
+`docs/plan/addendum-01-std-time.md` §3.7。**别把本节读成「时间能力齐了」**。
+
+### 15.1 成员
+
+| 签名 | 说明 | 失败 |
+|---|---|---|
+| `NOW() -> INTEGER` | **墙钟**:Unix 纪元起的**毫秒**。**可能因系统时间调整而向后跳**(NTP 校时 / 手动改表 / 夏令时),所以**不要**用它测时间差 | 元数错 `E0022`。**无其它失败** —— 读时钟不会失败 |
+| `MONOTONIC() -> INTEGER` | **单调钟**:**进程启动起**的毫秒。单调不减,且**不受系统时间调整影响**。⚠️ **绝对值无意义、跨进程不可比 —— 只有差值有效** | 同上 |
+
+**为什么是两个而不是一个**:「现在几点」要问 `NOW`,「过了多久」要问 `MONOTONIC`。
+后者用 `Instant`(Rust 标准库的 `Instant`),系统时间怎么改都动不了它;前者用
+`SystemTime` 才能给出绝对时刻。**两者单位相同(毫秒)但起点差着四十多年** ——
+把它们混用是最容易犯的错,契约表有一条专门钉这件事。
+
+### 15.2 三条口径(不可省的实现约束)
+
+1. **单位是毫秒,不是秒。** 取秒会带来 ±1 s 的量化误差,直接污染「缓存 5 秒过期」
+   这类真实语义。两个成员单位统一为 ms 也是刻意的:这样 A2 的 `SLEEP(ms)` 与时钟
+   差值能直接对齐,不必在每个调用点换算。
+2. **本批不做 ISO-8601 字符串。** 要写人类可读的时间戳是**格式化层**的事;
+   `std.format` 尚无日期能力,本节不扩。`NOW()` 给的是整数,不是字符串。
+3. **不支持亚毫秒测量。** 记为**已知限制**,不是疏漏。
+
+### 15.3 可复现性:使用 `NOW()` 会让程序不可复现(ADR-0024 的核心关切)
+
+本语言的卖点是「同一输入 ⇒ 同一行为」。**用了 `NOW()` 的程序不再满足它** ——
+而且是**静默地**不再满足(没有诊断、没有警告)。
+
+⇒ **规范不检测这件事**(运行时检测不到「你有没有用它」),只在成员表上声明。
+**测试代码尤其要用 `MONOTONIC` 而不要用 `NOW`** —— 测试的可复现性比断言的
+直观更重要。B 片的气泡正是为了把这件事在**测试里**变回可复现(而生产代码里
+用真实时间是使用者的明确选择)。
+
+### 15.4 层与来源(为什么不过宿主)
+
+R2(触系统资源,ADR-0021 机械规则第 1 条)。**成员在 `wlwl-std` 内直接读系统
+时钟,不经宿主** —— 与 `std.encode` 的 `RANDOM_BYTES` 直读 `getrandom` 同款
+理由(§11.6):`std.time` 是**时间的源**。
+
+⚠️ **绝不能给本命名空间的成员加「可注入时钟」形参。** 那等于让调用方能把它
+降级成可预测源 —— 与「给 CSPRNG 加后门」是同一条错误。B 片的虚拟时钟**只走宿主**
+(`StdHost` 加方法,ADR-0024 §6.3-2),且必须如此:全局可变状态会让测试之间互相
+污染、结果顺序相关(违反 D12-006 同族的「无隐藏全局状态」纪律)。
+
 ## 附录 A 成员注册镜像(规范性)
 
 > 状态:表体由生成器产出 —— 单源真相是实现(R2 取 `wlwl-std` 的
@@ -997,6 +1047,7 @@ WHATWG 规则的**白名单子集**,差异显式登记 —— 安全性由幂等
 | `std.json` | `PARSE` `STRINGIFY` | R2 | v0.10 及以前 |
 | `std.format` | `FORMAT` | R2 | v0.10 及以前 |
 | `std.encode` | `BASE64_ENCODE` `BASE64_DECODE` `HEX_ENCODE` `HEX_DECODE` `URL_ENCODE` `URL_DECODE` `SHA256` `HMAC_SHA256` `PBKDF2_ITER` `ARGON2ID` `RANDOM_BYTES` `RANDOM_HEX` `TIMING_SAFE_EQ` | R2 | v0.11.2 / SHA256、HMAC_SHA256 于 v0.11.3 |
+| `std.time` | `NOW` `MONOTONIC` | R2 | v0.11.3 |
 | `std.text` | `TO_UPPER` `TO_LOWER` | R2 | v0.11.2 |
 | `std.sanitize` | `HTML_ESCAPE` `HTML_UNESCAPE` `HTML_SANITIZE` | R2 | v0.11.3 |
 | `std.collection` | `MAP` `FILTER` `REDUCE` `SORT` `SORT_BY` `ZIP` `RANGE` `ANY` `ALL` `FIND` `ENUMERATE` `TAKE` `DROP` `FLAT` `UNIQ` `GROUP_BY` `JOIN` `CHUNK` `WINDOW` `DEDUP_BY` `MIN_BY` `MAX_BY` `SUM` `PRODUCT` `FOLD_RIGHT` `POSITION` `KEY_BY` | 混合(R1 门面 + R2 `RANGE`/`MAP`/`FILTER`/`CHUNK`/`WINDOW`/`ENUMERATE`/`ZIP`/`UNIQ`/`FLAT`/`JOIN`/`GROUP_BY`/`DEDUP_BY`/`KEY_BY`) | v0.10 及以前(成员)/ v0.11(R1 重写,M5 起 RANGE 沉 R2)/ v0.11.3(M5 L0-A-2 加 MAP·FILTER·CHUNK·WINDOW,L0-A-3a 加 ENUMERATE·ZIP·UNIQ·FLAT·JOIN,L0-A-3b 加 GROUP_BY·DEDUP_BY·KEY_BY 沉 R2) |

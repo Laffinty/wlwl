@@ -1,0 +1,19 @@
+{
+ "exit": 1,
+ "contains": [
+  "now_is_epoch_ms =  TRUE",
+  "not_seconds      =  TRUE",
+  "mono_from_boot   =  TRUE",
+  "two_sources      =  TRUE",
+  "mono_non_negative=  TRUE",
+  "mono_non_decreasing =  TRUE",
+  "before arity",
+  "E0022",
+  "NOW: function expects 0 argument(s), got 1"
+ ],
+ "not_contains": [
+  "after arity",
+  "E0030"
+ ],
+ "_why": "v0.11.3 M6 / addendum-01 A1。std.time 第一片的语言层口径,六行各钉一条可观察事实:now_is_epoch_ms 用 2020/2100 两个界把**单位**钉成 Unix 毫秒(误用秒或微秒都会出界);not_seconds 从另一侧补一刀(小于 1e13),因为只钉上界的话『返回微秒』也能蒙混过关;mono_from_boot 钉 MONOTONIC 从**进程启动**起算而非纪元;two_sources 钉两者是**独立源** —— 若有人把 MONOTONIC 也实现成读墙钟,这个差值会塌到 0;mono_non_decreasing 是 200 次采样的单调不减(用 IF 表达式体,不用花括号 —— 本语言没有中缀运算符也没有 block);末段钉元数错走**原生诊断 E0022 且终止运行**(not_contains after arity 证明终止点)。⚠ 本 probe 钉不住『单调性不受系统时间调整影响』—— 那要真的改系统时钟,谁也做不到;可测的那一半(单调不减 + 两源独立)已钉,不可测的那一半**写明为什么钉不住**而不是假装覆盖了。"
+}

@@ -1,0 +1,39 @@
+// [v0.11.3 M6 / addendum-01 A1] std.time 第一片:两个纯读时钟成员。
+//
+// 落点:addendum-01 §4 的契约组 + §5 落点 6(probe)。
+//
+// 本 probe 钉的是**语言层可观察**的那半边:
+//   * `NOW()` 落在 2020–2100 之间(证明单位确实是 Unix **毫秒**,而不是秒/微秒);
+//   * `MONOTONIC()` 远小于 Unix 毫秒(证明它从**进程启动**起算,不是纪元);
+//   * 两者差着 1970→2020 那五十多年(证明它们是**两个独立的源**,不是同一个);
+//   * 200 次采样单调不减(证明它接的是 `Instant` 而不是墙钟)。
+//
+// ⚠ 本 probe **钉不住「单调性不受系统时间调整影响」** —— 那要真的改系统时钟,
+//   谁也做不到。可测的那一半(单调不减 + 两个源互相独立)已经钉了。
+//
+// ⚠ **记法提醒(本轮实测踩过)**:本语言**没有中缀运算符、也没有花括号** ——
+//   比较是具名函数 `>(a, b)` / `<(a, b)`,合取是 `&&(a, b)`,条件是
+//   `IF(cond, then, else?)`(表达式求值),循环体是**表达式**、多条语句用
+//   `(a; b; c)` 串起来。`RANGE` 在 `std.collection`,不在全局内建里。
+IMPORT("wlwl:std.time", ["NOW", "MONOTONIC"]);
+IMPORT("wlwl:std.collection", ["RANGE"]);
+
+// 2020-01-01 = 1_577_836_800_000;2100-01-01 = 4_102_444_800_000。
+PRINT("now_is_epoch_ms = ", &&(>(NOW(), 1577836800000), <(NOW(), 4102444800000)));
+PRINT("not_seconds      = ", <(NOW(), 10000000000000));
+PRINT("mono_from_boot   = ", <(MONOTONIC(), 4102444800000));
+PRINT("two_sources      = ", >(-(NOW(), MONOTONIC()), 1577836800000));
+PRINT("mono_non_negative= ", &&(>=(MONOTONIC(), 0), <(MONOTONIC(), 4102444800000)));
+
+LET MUT(ok, TRUE);
+LET MUT(last, -1);
+FOR(i, RANGE(200), (
+  IF(<(MONOTONIC(), last), SET(ok, FALSE), NULL);
+  SET(last, MONOTONIC())
+));
+PRINT("mono_non_decreasing = ", ok);
+
+// 元数错必须是原生诊断 E0022,且**终止运行**(不留 "after")。
+PRINT("before arity");
+NOW(1);
+PRINT("after arity");
