@@ -77,7 +77,11 @@ use std::time::{Duration, Instant};
 // `SLEEP` 的方案 E 语义。其中 `in_task = 42` 那行是**挂起路线的反向守卫**:
 // 一旦有人把 `SLEEP` 改回「任务内挂起、到点唤醒」,这条会**超时**而不是
 // 断言失败(唤醒后整段重跑 → 再次 `SLEEP` → 无限循环)。
-const EXPECTED_CASE_COUNT: usize = 165;
+// [v0.11.3 M6 / addendum-08] 165 → 166:新增 `M6_std_rand_reproducible` ——
+// `std.rand` 的逐字节可复现性 + 「状态必须喂回去」。其中
+// `state_advanced = TRUE` 是早期标量返回实现的守卫:`DICT` 不可变,
+// 状态不推进的话三次抽签会拿到**同一个数**。
+const EXPECTED_CASE_COUNT: usize = 166;
 
 /// 单个 case 的上限,与 `probe.py` 的 `timeout=60` 同义。
 const CASE_TIMEOUT: Duration = Duration::from_secs(60);

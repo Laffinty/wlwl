@@ -57,3 +57,11 @@ path = "benches/kdf.rs"
 name = "regex"
 harness = false
 path = "benches/regex.rs"
+# [v0.11.3 M6 / addendum-08 W-04] `std.rand` 基准 —— **量「`DICT` 状态的代价」**
+# 这个具体疑问(ADR-0027 A2 明写「字典构造要进基准,不得假设它免费」)。
+# 与 kdf / regex 段分开:那两段量的是**算法**成本,这一段量的是**表示方式**的
+# 成本(成员路径 vs 绕过 dict 的同一序列)。
+[[bench]]
+name = "rand"
+harness = false
+path = "benches/rand.rs"

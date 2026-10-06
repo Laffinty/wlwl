@@ -1,0 +1,18 @@
+{
+ "exit": 1,
+ "contains": [
+  "state_frozen =  [s0: 6764085530779015468, s1: -6853809058185053683, s2: -3836445681651209747, s3: -5665664888633704124]",
+  "int_range_3draws =  [59, 78, 53]",
+  "state_advanced  =  TRUE",
+  "uniform_frozen =  [0.24385640050283885, 0.7961367080718161]",
+  "uniform_in_0_1 =  TRUE",
+  "codepoints_differ =  TRUE",
+  "before arity",
+  "E0022",
+  "UNIFORM: function expects 1 argument(s), got 4"
+ ],
+ "not_contains": [
+  "after arity"
+ ],
+ "_why": "v0.11.3 M6 / addendum-08。std.rand 的语言层口径,七行各钉一条可观察事实:state_frozen 把 `SEED(\"wlwl\")` 的状态**逐字节**冻住(算法一换就红 —— 这是 ADR-0027 A3 的核心承诺),注意键**不带引号**,那是 Value::display() 的既有形状;int_range_3draws 把三次**喂回状态**的抽签冻成 59/78/53(期望值取自独立 Python 第二实现,不是从本实现导出);state_advanced 同时断言「三个值互不相同」与「状态已推进」—— 早期实现返回标量、状态永不前进,这行是它的守卫;uniform_frozen 钉 53 bit 尾数的逐字节值(取样特意避开了指数区间,因为 `Value::Float::display()` 走 Rust 最短往返、而 Python `repr` 在指数区间与它不同);uniform_in_0_1 钉 300 次都在 [0,1);codepoints_differ 钉三次抽出互不相同的字符(不冻结具体字符 —— 语言层没有码点取值的成员,写不出「非代理区」那条断言,它由 wlwl-std 单测的 100 000 次抽样守);末段钉 2 参 UNIFORM 走**原生诊断 E0022 且终止运行**(not_contains after arity 证明终止点)—— `StdFn` 签名层没有可选形参构造,所以 2 参**必须**是错误,不能被当成「a 取默认」。⚠ 本 probe 钉不住「绝不返 1.0」的全称保证(要 2^53 次抽样才谈得上),可测的那半已钉,写明为什么钉不住而不是假装覆盖了。"
+}

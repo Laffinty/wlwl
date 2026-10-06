@@ -1,0 +1,59 @@
+// [v0.11.3 M6 / addendum-08] std.rand:显式播种的 RNG。
+//
+// 落点:addendum-08 §4 契约组 + §5 落点 6(probe)。
+//
+// 本 probe 钉四件在语言层可观察的事:
+//   * `SEED("wlwl")` 的状态**逐字节**冻结(算法一换这条就红);
+//   * 三个**喂回状态**的 `INT_RANGE` 抽签逐字节冻结(59 / 78 / 53);
+//   * `UNIFORM` 恒在 `[0, 1)` 且逐字节冻结;
+//   * `CODEPOINT` 三次抽出**互不相同**的字符(状态确实在推进)。
+//   + 元数错(2 参 `UNIFORM`)走**原生诊断 E0022 且终止运行**。
+//
+// ⚠ **本 probe 钉不住「绝不返 1.0」的全称保证** —— 那要 2^53 次抽样才谈得上;
+//   可测的那半(300 次都在 `[0,1)`)钉了,全称保证由实现的 `(next_u64() >> 11)`
+//   与 `wlwl-std` 单测的 200 000 次守。
+//
+// ⚠ **也钉不住「码点不是代理区」** —— 语言层没有码点取值的成员,写不出那条断言;
+//   它由 `wlwl-std` 单测的 100 000 次抽样守。
+//
+// ⚠ 记法提醒:本语言**没有中缀运算符、也没有花括号** —— 比较是具名函数
+//   `=(a, b)` / `<(a, b)`,解构绑定是 `LET([a, b], expr)`,循环体是**表达式**、
+//   多条语句用 `(a; b; c)` 串起来。`RANGE` 在 `std.collection`,不在全局内建里。
+IMPORT("wlwl:std.rand", ["SEED", "UNIFORM", "INT_RANGE", "CODEPOINT"]);
+IMPORT("wlwl:std.collection", ["RANGE"]);
+
+PRINT("state_frozen = ", SEED("wlwl"));
+
+LET(r0, SEED("wlwl"));
+LET([i1, r1], INT_RANGE(r0, 0, 100));
+LET([i2, r2], INT_RANGE(r1, 0, 100));
+LET([i3, r3], INT_RANGE(r2, 0, 100));
+PRINT("int_range_3draws = ", [i1, i2, i3]);
+PRINT("state_advanced  = ", &&(!=(i1, i2), &&(!=(i2, i3), !=(r0, r1))));
+
+// UNIFORM:[0, 1) + 逐字节冻结。
+LET(u0, SEED("wlwl"));
+LET([f1, u1], UNIFORM(u0));
+LET([f2, u2], UNIFORM(u1));
+PRINT("uniform_frozen = ", [f1, f2]);
+
+LET MUT(in01, TRUE);
+LET MUT(cur, SEED("wlwl"));
+FOR(i, RANGE(300), (
+  LET([v, nxt], UNIFORM(cur));
+  IF(||(>=(v, 1.0), <(v, 0.0)), SET(in01, FALSE), NULL);
+  SET(cur, nxt)
+));
+PRINT("uniform_in_0_1 = ", in01);
+
+// CODEPOINT:三次互不相同(状态在推进)。
+LET(p0, SEED("wlwl"));
+LET([c1, p1], CODEPOINT(p0));
+LET([c2, p2], CODEPOINT(p1));
+LET([c3, p3], CODEPOINT(p2));
+PRINT("codepoints_differ = ", &&(!=(c1, c2), &&(!=(c2, c3), !=(c1, c3))));
+
+// ⚠ 元数错:2 参 `UNIFORM` **不是**「`a` 取默认」,它是 E0022。
+PRINT("before arity");
+UNIFORM(SEED("wlwl"), 0.0, 1.0, 2.0);
+PRINT("after arity");
