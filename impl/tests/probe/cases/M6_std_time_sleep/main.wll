@@ -1,0 +1,34 @@
+// [v0.11.3 M6 / addendum-01 A2] std.time 第二片:SLEEP 是**阻塞原语**。
+//
+// 落点:addendum-01 §3.10(业主 2026-10-06 裁决「方案 E」)+ §5 落点 6(probe)。
+//
+// 本 probe 钉四件在语言层可观察的事:
+//   * `SLEEP(0)` 合法并返回 NULL(「让出一次时间片」不是「没写参数」);
+//   * `SLEEP(ms)` 之后单调钟**至少**前进 ms —— 断言的是**下界**,不是恰好;
+//   * **任务体里的 SLEEP 之后必须继续执行**并交出结果;
+//   * 负值走原生诊断 E0030 且**终止运行**。
+//
+// ⚠ 第三条是**方案 E 的反向守卫**,也是本 probe 存在的最大理由。挂起路线下
+//   它会**超时**:唤醒后整段重跑 → 再次执行同一个 SLEEP → 无限循环(实测 8 秒
+//   79 次不终止)。「超时」在这里就是「挂起路线被重新引入」的特征读数。
+//
+// ⚠ 总睡眠压到 40 + 10 ms:probe 每条 case 有 60 s 上限,但本 probe 钉的是
+//   **语义**不是吞吐,睡久了只是拖慢套件。
+//
+// ⚠ 记法提醒:本语言**没有中缀运算符、也没有花括号** —— 比较是具名函数
+//   `>(a, b)` / `>=(a, b)`,减法是 `-(a, b)`。
+IMPORT("wlwl:std.time", ["SLEEP", "MONOTONIC"]);
+
+PRINT("sleep_zero_returns_null = ", SLEEP(0));
+
+LET MUT(t0, MONOTONIC());
+SLEEP(40);
+// `thread::sleep` 保证**至少**睡够,实际耗时会略大于 40(调度、时钟粒度)。
+// 写成「恰好等于」在负载下必红,那就是一条假门禁。
+PRINT("slept_at_least_40ms = ", >=(-(MONOTONIC(), t0), 40));
+
+PRINT("in_task = ", SCOPE(FUN(() , AWAIT(SPAWN(FUN(() , SLEEP(10); 42))))));
+
+PRINT("before negative");
+SLEEP(-1);
+PRINT("after negative");

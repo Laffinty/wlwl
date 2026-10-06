@@ -143,6 +143,65 @@ const CASES: &[Case] = &[
         // 「两个成员其实是同一个源」)。
         expect: "TRUE",
     },
+    // ── SLEEP:形态 + 「阻塞但确实睡够」+ 挂起路线的反向守卫 ─────────────
+    Case {
+        name: "sleep_arity_zero",
+        src: concat!(r#"IMPORT("wlwl:std.time", ["SLEEP"]); "#, r#"SLEEP()"#),
+        expect: "!E0022 SLEEP: function expects 1 argument(s), got 0",
+    },
+    Case {
+        name: "sleep_arity_two",
+        src: concat!(r#"IMPORT("wlwl:std.time", ["SLEEP"]); "#, r#"SLEEP(1, 2)"#),
+        expect: "!E0022 SLEEP: function expects 1 argument(s), got 2",
+    },
+    Case {
+        name: "sleep_rejects_non_integer",
+        src: concat!(r#"IMPORT("wlwl:std.time", ["SLEEP"]); "#, r#"SLEEP(1.5)"#),
+        expect: "!E0030 SLEEP: expected integer, got float",
+    },
+    Case {
+        name: "sleep_rejects_negative_duration",
+        src: concat!(r#"IMPORT("wlwl:std.time", ["SLEEP"]); "#, r#"SLEEP(-1)"#),
+        expect: "!E0030 SLEEP: expected a non-negative duration in ms, got -1",
+    },
+    Case {
+        name: "sleep_zero_returns_null",
+        src: concat!(r#"IMPORT("wlwl:std.time", ["SLEEP"]); "#, r#"SLEEP(0)"#),
+        // `ms = 0` 是**合法**的(让出一次时间片),不是「没写参数」。
+        expect: "NULL",
+    },
+    Case {
+        name: "sleep_actually_advances_the_monotonic_clock",
+        src: concat!(
+            r#"IMPORT("wlwl:std.time", ["SLEEP", "MONOTONIC"]); "#,
+            r"LET(t0, MONOTONIC());",
+            r"SLEEP(40);",
+            r">=(-(MONOTONIC(), t0), 40)"
+        ),
+        // 断言的是**下界**而不是「恰好 40」:`thread::sleep` 保证至少睡够,
+        // 但实际耗时会略大于 40(调度、时钟粒度)。写成「恰好等于」在负载下必红,
+        // 那就是一条假门禁。
+        expect: "TRUE",
+    },
+    Case {
+        name: "sleep_inside_a_task_terminates",
+        src: concat!(
+            r#"IMPORT("wlwl:std.time", ["SLEEP"]); "#,
+            r"SCOPE(FUN(() , AWAIT(SPAWN(FUN(() , SLEEP(10); 42)))))"
+        ),
+        // ⚠️ **反向守卫:方案 E 的核心决定**。`SLEEP` 是**阻塞原语**,不挂起任务
+        // —— 所以任务体里的 `SLEEP` 之后必须**继续往下执行**并交出 42。
+        //
+        // 原本的设计是「任务内挂起、到点唤醒」,而 wlwl 只有 `YIELD()` 能中途续跑
+        // (`split_body_for_yield` 只认 `YIELD()` 一个名字,非分段任务体被唤醒后走
+        // `invoke_closure` **整段重跑**)。挂起路线下这条会**无限循环**:每次唤醒
+        // 都重新执行同一个 `SLEEP`。
+        //
+        // ⚠️ 因此这条红了的形式是**测试超时**,不是断言失败 —— 而「超时」恰恰就是
+        // 「挂起路线被重新引入」的特征读数。不要为了让它「快一点失败」而给
+        // `SLEEP` 加时限或让它在任务内报错:那会把方案 E 又变回方案 D。
+        expect: "42",
+    },
 ];
 
 fn scratch_dir() -> PathBuf {
@@ -240,12 +299,12 @@ fn time_member_set_matches_the_spec_table() {
 
     assert_eq!(
         spec.len(),
-        2,
+        3,
         "§15 table extractor found {} member(s): {spec:?} — the table's shape changed \
          and the extractor needs updating",
         spec.len()
     );
-    for n in ["NOW", "MONOTONIC"] {
+    for n in ["NOW", "MONOTONIC", "SLEEP"] {
         assert!(
             spec.iter().any(|m| m == n),
             "§15 table missed `{n}`: {spec:?}"
@@ -255,7 +314,11 @@ fn time_member_set_matches_the_spec_table() {
             "implementation does not export `{n}`: {impls:?}"
         );
     }
-    assert_eq!(impls.len(), 2, "wlwl:std.time exports 2 members (A1 slice)");
+    assert_eq!(
+        impls.len(),
+        3,
+        "wlwl:std.time exports 3 members (A1 + A2 slices)"
+    );
 }
 
 fn spec_path() -> PathBuf {

@@ -3,13 +3,16 @@
 //! 这是本语言**第一批时间能力**,也是 GAP-4 的第一刀(ADR-0024 §Context:
 //! 「标准库目前最大的一块硬缺口」)。
 //!
-//! ## 只放纯读成员,气泡是下一片
+//! ## A1 放纯读成员,A2 加一个阻塞原语,B(气泡)是下一片
 //!
-//! 本模块 A1 阶段**只有两个纯读成员** `NOW` / `MONOTONIC`。这与 ADR-0024 草案
+//! **A1** 只落两个纯读成员 `NOW` / `MONOTONIC`。这与 ADR-0024 草案
 //! 第 1 条「时间成员只进气泡语义」不同 —— 那条把两件无关的事耦合了:「读系统
 //! 时钟」与「有没有虚拟时钟」毫无关系,气泡只改变*读什么*,不改变*能不能读*。
-//! 批准时的重切见 `ADR-0024` §6 与 `addendum-01` §3.7:A1 / A2 / B 三片,
-//! 本文件是 **A1**。
+//! 批准时的重切见 `ADR-0024` §6 与 `addendum-01` §3.7:A1 / A2 / B 三片。
+//!
+//! **A2** 加 `SLEEP(ms)`。它**不**挂起任务,而是直接阻塞调用线程 —— 原因与代价
+//! 见 `sleep` 的文档注释与 `addendum-01` §3.10(这一片的实施过程撞上了「wlwl 只有
+//! `YIELD()` 能中途续跑」这个运行时能力缺口,是业主裁决的结果,不是实现取巧)。
 //!
 //! ## 为什么不走宿主(与 `RANDOM_BYTES` 同款)
 //!
@@ -32,7 +35,7 @@
 //!   (进程启动起的单调毫秒),**不是** Unix 时间 —— 两者的绝对值不能互相替换,
 //!   规范与成员表都写死了这一条。
 //!
-//! **两个成员单位统一为毫秒是刻意的**:这样 `SLEEP(ms)`(A2)与时钟差值能直接
+//! **三个成员单位统一为毫秒是刻意的**:这样 `SLEEP(ms)` 与时钟差值能直接
 //! 对齐,不必在每个调用点换算。代价是**不支持亚毫秒测量** —— 记为已知限制,
 //! 不是疏漏。
 
@@ -42,7 +45,11 @@ use wlwl_value::{Outcome, StdHost, Value};
 
 pub static SPEC: ModuleSpec = ModuleSpec {
     path: "wlwl:std.time",
-    functions: &[("NOW", now as StdFn), ("MONOTONIC", monotonic as StdFn)],
+    functions: &[
+        ("NOW", now as StdFn),
+        ("MONOTONIC", monotonic as StdFn),
+        ("SLEEP", sleep as StdFn),
+    ],
 };
 
 // ── 助手 ───────────────────────────────────────────────────────────────
@@ -51,6 +58,13 @@ fn arity(host: &mut dyn StdHost, name: &str, got: usize, want: usize) -> wlwl_er
     host.diag(
         ErrorCode::E0022,
         format!("{name}: function expects {want} argument(s), got {got}"),
+    )
+}
+
+fn type_err(host: &mut dyn StdHost, name: &str, got: &Value) -> wlwl_error::WlwlError {
+    host.diag(
+        ErrorCode::E0030,
+        format!("{name}: expected integer, got {}", crate::value_kind(got)),
     )
 }
 
@@ -109,6 +123,55 @@ pub fn monotonic(host: &mut dyn StdHost, args: Vec<Value>) -> wlwl_error::WlwlRe
     Ok(Outcome::normal(Value::Integer(monotonic_ms(host))))
 }
 
+/// `SLEEP(ms) -> NULL`
+///
+/// **阻塞原语**:把调用线程停住 `ms` 毫秒,期间**不调度任何其他任务**,然后返回
+/// `NULL`。
+///
+/// ## 为什么是阻塞,而不是挂起任务(2026-10-06 业主裁决「方案 E」)
+///
+/// 原本的设计是「任务内挂起、到点唤醒」—— 那样能保住并发。实现时撞上一个**运行时
+/// 能力缺口**,查证结论(`addendum-01` §3.10):
+///
+/// - wlwl 的「中途挂起后**原地续跑**」能力**只有 `YIELD()` 有**。它由
+///   `yield_split::split_body_for_yield` 产出分段 + `run_task_segments` 保存
+///   `running_env` 两件事共同实现,而**分段器只认 `YIELD()` 这一个名字**。
+/// - 任何**非分段**任务体一旦被挂起再唤醒,重入走的是 `invoke_closure`
+///   **整段重跑**:绑定从头重来、副作用重放。
+/// - `Sleeping` 若走挂起路线,唤醒后会**再次执行同一个 `SLEEP`** ⇒ 无限循环。
+///   (实测:8 秒打了 79 次 `tick` 仍不终止。)
+///
+/// 所以本成员**不挂起**。这条代价**原样写进规范**,不藏:「`SLEEP` 期间不调度
+/// 其他任务」是 `addendum-01` §3.8 候选甲**早已接受**的那句代价 —— 选 E 只是把它
+/// 从「队列排空后才阻塞」提前到「调用点即刻阻塞」,并没有新增一类代价。
+///
+/// **附带收益**:B 片(假时钟气泡)因此不再需要调度器那处「队列空 ⇒ 判全阻塞 ⇒
+/// 推进虚拟时钟」的分支 —— 气泡内 `SLEEP` 直接推进虚拟时钟并返回即可。
+///
+/// ## 边界
+///
+/// - `ms < 0` → `E0030`。负睡眠没有可表达的语义(不是「睡到过去」),不猜。
+/// - `ms = 0` 合法:让出一次 CPU 时间片,语义明确,不需要特判。
+/// - 单位是毫秒,与 `NOW` / `MONOTONIC` 对齐(亚毫秒不支持,已知限制)。
+/// - 与阻塞式 IO 在途时**不可依赖其及时性**(§3.8 已登记的语言级取舍)。
+pub fn sleep(host: &mut dyn StdHost, args: Vec<Value>) -> wlwl_error::WlwlResult<Outcome> {
+    if args.len() != 1 {
+        return Err(arity(host, "SLEEP", args.len(), 1));
+    }
+    let Value::Integer(ms) = &args[0] else {
+        return Err(type_err(host, "SLEEP", &args[0]));
+    };
+    if *ms < 0 {
+        return Err(host.diag(
+            ErrorCode::E0030,
+            format!("SLEEP: expected a non-negative duration in ms, got {ms}"),
+        ));
+    }
+    // `ms >= 0` 已由上一行保证,`as u64` 不会回绕。
+    std::thread::sleep(std::time::Duration::from_millis(*ms as u64));
+    Ok(Outcome::normal(Value::Null))
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -121,9 +184,12 @@ mod tests {
 
     impl StdHost for NullHost {
         fn ctx(&mut self) -> &mut crate::StdCtx {
-            // A1 的成员不读 ctx;这个 panic 是**故意的** —— 它把「A1 不经宿主」
-            // 这件事变成可执行的断言,而不是注释里的一句承诺。
-            panic!("std.time A1 must not touch StdCtx (the clock is read directly)")
+            // `std.time` 的**任何**成员都不读 ctx;这个 panic 是**故意的** ——
+            // 它把「本模块不经宿主取时钟」这件事变成可执行的断言,而不是注释里的
+            // 一句承诺。⚠️ 它同时守着一条已付过代价的决定:`SLEEP` 曾经要靠
+            // `StdCtx.task_depth` 区分「任务内 / 顶层」,方案 E 改成「一律阻塞」
+            // 之后**不再需要那个字段**(详见 `sleep` 的文档注释)。
+            panic!("std.time must not touch StdCtx (the clock is read directly)")
         }
 
         fn call(
@@ -205,5 +271,53 @@ mod tests {
             .diagnostic()
             .message
             .contains("expects 0 argument(s), got 1"));
+    }
+
+    // ── SLEEP 的形态契约 ───────────────────────────────────────────────
+    //
+    // ⚠️ 这里**只测诊断,不测时长**。「睡了多久」是计时断言,写进 `cargo test`
+    // 必然抖动 —— 它归契约表(那里断言的是「单调钟至少前进 N 毫秒」这个**下界**)
+    // 与基准(吞吐),这里测的是**形状**:元数 / 类型 / 负值 / 返回值。
+
+    #[test]
+    fn sleep_rejects_bad_arity_type_and_negative() {
+        for bad in [vec![], vec![Value::Integer(1), Value::Integer(2)]] {
+            let e = sleep(&mut NullHost, bad.clone()).unwrap_err();
+            assert_eq!(
+                e.diagnostic().code,
+                ErrorCode::E0022,
+                "arity {bad:?} must be E0022, got {}",
+                e.diagnostic().message
+            );
+        }
+        let e = sleep(&mut NullHost, vec![Value::Float(1.0)]).unwrap_err();
+        assert_eq!(
+            e.diagnostic().code,
+            ErrorCode::E0030,
+            "a non-integer duration must be E0030"
+        );
+        assert!(e.diagnostic().message.contains("expected integer"));
+        let e = sleep(&mut NullHost, vec![Value::Integer(-1)]).unwrap_err();
+        assert_eq!(
+            e.diagnostic().code,
+            ErrorCode::E0030,
+            "a negative duration must be E0030"
+        );
+        assert!(e
+            .diagnostic()
+            .message
+            .contains("expected a non-negative duration"));
+    }
+
+    /// `ms = 0` 合法并返 `NULL` —— 「让出一次时间片」是可表达的语义,不需要特判,
+    /// 也不该被误当成「没写参数」。
+    #[test]
+    fn sleep_zero_returns_null() {
+        let out = sleep(&mut NullHost, vec![Value::Integer(0)]).expect("SLEEP(0) succeeds");
+        assert!(
+            matches!(out.value, Value::Null),
+            "SLEEP must return NULL, got {:?}",
+            out.value
+        );
     }
 }

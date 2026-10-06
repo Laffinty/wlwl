@@ -73,7 +73,11 @@ use std::time::{Duration, Instant};
 // [v0.11.3 M5 / addendum-00 L0-A-2] 157 → 158:新增
 // `M5_std_collection_l0a2_r2_scale`(`MAP` / `FILTER` / `CHUNK` / `WINDOW`
 // 归 R2 之后才可能存在的大数组规模用例,5 000 元素,整条 346 ms / debug 构建)。
-const EXPECTED_CASE_COUNT: usize = 164;
+// [v0.11.3 M6 / addendum-01 A2] 164 → 165:新增 `M6_std_time_sleep` ——
+// `SLEEP` 的方案 E 语义。其中 `in_task = 42` 那行是**挂起路线的反向守卫**:
+// 一旦有人把 `SLEEP` 改回「任务内挂起、到点唤醒」,这条会**超时**而不是
+// 断言失败(唤醒后整段重跑 → 再次 `SLEEP` → 无限循环)。
+const EXPECTED_CASE_COUNT: usize = 165;
 
 /// 单个 case 的上限,与 `probe.py` 的 `timeout=60` 同义。
 const CASE_TIMEOUT: Duration = Duration::from_secs(60);

@@ -1,0 +1,16 @@
+{
+ "exit": 1,
+ "contains": [
+  "sleep_zero_returns_null =  NULL",
+  "slept_at_least_40ms =  TRUE",
+  "in_task =  42",
+  "before negative",
+  "E0030",
+  "SLEEP: expected a non-negative duration in ms, got -1"
+ ],
+ "not_contains": [
+  "after negative",
+  "E0022"
+ ],
+ "_why": "v0.11.3 M6 / addendum-01 A2(业主裁决「方案 E」:SLEEP 是阻塞原语,不挂起任务)。四行各钉一条可观察事实:sleep_zero_returns_null 钉 `ms = 0` **合法**并返回 NULL(「让出一次时间片」不能被当成「没写参数」);slept_at_least_40ms 钉「确实睡够了」—— 断言的是**下界** >= 40 而非恰好 40,因为 thread::sleep 只保证至少,写成恰好等在负载下必红(假门禁);in_task 是本 probe 存在的最大理由 —— **任务体里的 SLEEP 之后必须继续执行并交出 42**,这是「不挂起」这条决定的反向守卫,挂起路线下它会**超时**(唤醒后整段重跑 → 再次 SLEEP → 无限循环,实测 8 秒 79 次不终止),而超时正是「挂起路线被重新引入」的特征读数;末段钉负值走**原生诊断 E0030 且终止运行**(not_contains after negative 证明终止点,not_contains E0022 排除『元数错才是对的』这种误判)。⚠ 本 probe 钉的是语义不是吞吐,总睡眠压到 40 + 10 ms。"
+}
