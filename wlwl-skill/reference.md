@@ -486,6 +486,58 @@ PRINT(RE_REPLACE(RE("([a-z]+)=(\w+)"), "a=1 b=2", "$2:$1"));  // 1:a 2:b
 - `TRY_RE` does not exist yet: a pattern that comes from user input cannot be
   "trial-compiled" without aborting.
 
+### §9.10 `wlwl:std.rand` — explicitly seeded randomness (stdlib §17, v0.11.3)
+
+```wlwl
+IMPORT("wlwl:std.rand", ["SEED", "UNIFORM", "INT_RANGE", "CODEPOINT"]);
+
+// ⚠ THE draw members return [value, next_state] — not a bare scalar.
+LET(r0, SEED("order-2026-10-06"));
+LET([n, r1], INT_RANGE(r0, 1, 7));      // die roll
+LET([u, r2], UNIFORM(r1));              // [0, 1)
+LET([s, r3], UNIFORM(r2, 10.0, 20.0));  // [10, 20)
+PRINT(n, u, s);
+```
+
+- ⚠ **You must thread the state back.** `DICT` is **immutable** (spec §2.1) and
+  `SET_PROP` / `INDEX_SET` on a dict *return a new dict, receiver unchanged*
+  (§13.4). A draw member that returned only a scalar would therefore advance
+  **nothing** — the same `rng` value would yield the same number forever. Because
+  the new state comes back **with** the value, "forgot to advance" is not an
+  available idiom: you cannot get the value without also getting the state.
+  Use wlwl's existing array-pattern binding (§7.3) — that is what the `[a, b]`
+  form in `LET` is for.
+- **The state is an ordinary value, and that is the point.** `SEED(entropy)`
+  makes a value; every member's first argument receives it. There is **no
+  `SET_SEED()`, no "current global RNG", no hidden state anywhere.** Two chains
+  built from the same entropy produce byte-identical output — which is what makes
+  `std.rand` reproducible, and is what the contract table freezes.
+- ⚠ **Entropy comes only from an explicit argument.** `SEED` does **not** read the
+  OS entropy source itself. For real randomness take it from `std.encode` and pass
+  it in: `SEED(RANDOM_HEX(16))` (§9.8). `std.encode` is the source; `std.rand`
+  consumes it one-way. For an educational language whose selling point is
+  reproducibility, *visible* dependencies are a feature.
+- **`std.rand` is not cryptographic.** Salts, tokens and key material go through
+  `RANDOM_BYTES` / `RANDOM_HEX` in `std.encode`. Two namespaces, two jobs, not
+  merged.
+- `UNIFORM` takes exactly **1 or 3** arguments; **2 arguments is `E0022`**, *not*
+  "`a` defaulted". The unit interval is half-open and the upper bound is
+  **guaranteed** unreachable (53-bit mantissa), not "happens not to happen".
+  `UNIFORM(rng, a, b)` accepts integer endpoints and coerces them.
+- `INT_RANGE` is **unbiased** (modulo-with-rejection) and **never goes through
+  `FLOAT`** — a float has a 53-bit mantissa, so a float round-trip both biases and
+  silently narrows ranges above 2^53. `lo >= hi` is an empty interval → `E0030`.
+- `CODEPOINT` exists as its own member because a code point is **not** a uniform
+  distribution: UTF-16 surrogates (`0xD800..=0xDFFF`) and Unicode noncharacters
+  are excluded. It returns a **single-character string**.
+- ⚠ **`std.rand`'s home in `wlwl:std.*` is a transitional form.** Spec §14 already
+  records that `std.ai` / `std.agent` should become official packages outside std;
+  the same logic applies here once the official-package mechanism exists. Do not
+  treat its placement as permanent.
+- Only uniform distributions. There is no `NORMAL` / Poisson / exponential and
+  there is not planned to be — build those yourself from `UNIFORM` (polar /
+  inverse-transform) when you need them; that is your algorithm choice.
+
 ### §9.6 `wlwl:std.sanitize` — the v0.11.3 three (stdlib §13)
 
 **Pick by output context. They are not interchangeable, and choosing the wrong
