@@ -1029,6 +1029,77 @@ R2(触系统资源,ADR-0021 机械规则第 1 条)。**成员在 `wlwl-std` 内�
 (`StdHost` 加方法,ADR-0024 §6.3-2),且必须如此:全局可变状态会让测试之间互相
 污染、结果顺序相关(违反 D12-006 同族的「无隐藏全局状态」纪律)。
 
+## 16 `std.regex` — 线性时间正则(R2,v0.11.3 M6 · 新增命名空间)
+
+**本成员解决的是「功能清单里唯一的全员标配空白」**:主流 stdlib 全都标配模式
+匹配(Go `regexp` / Python `re` / JS 字面量 / Java `regex` / C++ `<regex>`),
+而本语言此前**零模式匹配能力** —— 邮箱 / URL / 词法模式这类校验需求无处落脚。
+
+**而它的立身之本是「执行时间对输入线性」。** 实现走 Thompson 构造 + Pike VM,
+**没有回溯**(裁决过程与依据见 `docs/plan/addendum-02-regex.md` §3.7)。
+下面的「必须拒绝」那一组不是功能取舍,是这条承诺的**前提**:一旦允许回溯引用或
+lookahead,指数爆炸就成了可能,那这个成员等于没做。
+
+### 16.1 成员
+
+| 签名 | 说明 | 失败 |
+|---|---|---|
+| `RE(pattern) -> DICT` | 编译成**模式对象** `[pattern, groups]`。**语法错 → 原生诊断 `E0030` 中止**(带**列号**) | 语法错 / 类型错 → `E0030`;元数错 → `E0022` |
+| `RE_TEST(re, s) -> BOOLEAN` | **整串**是否匹配(两端锚定,且**忽略** `(?m)` —— 整串的语义是「整个输入被消费完」) | 元数 / 类型错同上。**永不因内容失败** |
+| `RE_SEARCH(re, s) -> DICT \| NULL` | 第一个匹配:`[matched, start, end, groups]`。`start` / `end` 是**码点**下标(与 `CHAR_AT` / `INDEX_OF` 同一坐标系),**不是字节偏移** | 同上 |
+| `RE_FIND_ALL(re, s) -> ARRAY of DICT` | 全部**非重叠**匹配,逐项形状同 `RE_SEARCH` | 同上 |
+| `RE_REPLACE(re, s, repl) -> STRING` | 替换全部非重叠匹配;`repl` 里 `$0` 是整体、`$1`… 是数字捕获组 | 同上;`${…}` 命名组 → `E0030` |
+| `RE_SPLIT(re, s) -> ARRAY of STRING` | 按匹配切分(匹配本身不保留);**空匹配不做切分点** | 同上 |
+| `RE_GROUP_COUNT(re) -> INTEGER` | 捕获组个数(不含整体)。供调用方在解码侧索引,免得每个成员各返回一种形状 | 同上 |
+
+> **不匹配不是错误。** `RE_*` 返回成功值或 `NULL`;唯一的原生诊断是
+> 元数 / 类型 / 编译错。正则不匹配是**正常的业务分支**,做成 `ERR` 会逼调用方
+> 到处 `ERR_PAYLOAD`。
+
+### 16.2 语义:左最早,不是左最长
+
+多个分支都可能匹配时,wlwl 取**左最早(leftmost-first)** —— 也就是「一个回溯
+引擎最先找到的那个」,**与 Perl / Python / JS / Java / Rust `regex` 一致**。
+
+⚠️ **这里刻意不跟 RE2 的默认。** RE2 的默认也是 leftmost-first,而
+**左最长(leftmost-longest)是它的 POSIX 模式**;选它会让 wlwl 成为唯一异类,
+而正则跨语言移植是日常操作。另一条理由:Go 的文档承认 POSIX 的子选择规则
+「计算上不可承受甚至没有良定义」,它自己的 `CompilePOSIX` 也没完全遵守。
+
+⇒ **线性时间来自 NFA 模拟,与选哪条语义无关** —— 所以没有性能理由偏向任何一方。
+
+### 16.3 必须拒绝的构造(与线性时间互斥)
+
+`(?=…)` / `(?!…)`(lookahead)、`(?<=…)` / `(?<!…)`(lookbehind)、`\1` / `(?P=…)`
+(**回溯引用**)、`(?<name>…)`(命名组)、`\p{…}`(Unicode 类别)、
+反向正则、零宽断言 —— **一律在编译期 `E0030`**,不静默放行。
+**它们不是「以后再加」**:允许其中任何一条,线性承诺当场破。
+
+反向引用的实测后果(本仓的单测钉着):`(a*)*b` 在 10 000 个 `a` 上,
+回溯引擎跑不完,而本成员**立刻返回「不匹配」**。
+
+### 16.4 三条容易踩的细节
+
+1. **`.` 默认不含换行**,`(?s)` 让它匹配一切(依据 RE2 `re2.h` 的
+   `dot_nl (false)`)。
+2. **`^` / `$` 默认锚整个输入**,`(?m)` 切到行锚点。
+   ⚠️ **刻意不抄 RE2 的 `m` 命名** —— RE2 的 `(?m)` 语义与 Perl **相反**
+   (它的 `one_line` 才是「只在文本首尾」),而从 Perl / JS / Python 过来的人对
+   `m` 的直觉是「多行 = 行锚点」。跟直觉走。
+3. **`\w` `\d` `\s` 与 `(?i)` 都是 ASCII-only**。Unicode 大小写折叠走
+   `std.text` —— 两套口径混在一起会让「为什么 `\w` 不匹配 `é`」变成一件
+   说不清的事。
+
+### 16.5 已知限制
+
+- **`TRY_RE` 本批不做**:模式来自用户输入时**无法「试编译不中止」**。
+  理由是不对称 —— 加成员是**附加式**(日后加不破坏任何东西),而**改失败形态是
+  破坏式**,所以先把破坏的那条定死。
+- **无命名组**(见 §16.3);`RE_REPLACE` 见到 `${…}` 报 `E0030` 而不是原样输出。
+- **量词计数上限 1000、编译后指令数上限 64 K**:超出的模式报 `E0030`。
+  这防的是「模式把**编译期**打爆」,与**输入长度**无关 —— 线性承诺说的是输入。
+- **码点坐标系**:一切位置与长度都是码点,不是字节。
+
 ## 附录 A 成员注册镜像(规范性)
 
 > 状态:表体由生成器产出 —— 单源真相是实现(R2 取 `wlwl-std` 的
@@ -1048,6 +1119,7 @@ R2(触系统资源,ADR-0021 机械规则第 1 条)。**成员在 `wlwl-std` 内�
 | `std.format` | `FORMAT` | R2 | v0.10 及以前 |
 | `std.encode` | `BASE64_ENCODE` `BASE64_DECODE` `HEX_ENCODE` `HEX_DECODE` `URL_ENCODE` `URL_DECODE` `SHA256` `HMAC_SHA256` `PBKDF2_ITER` `ARGON2ID` `RANDOM_BYTES` `RANDOM_HEX` `TIMING_SAFE_EQ` | R2 | v0.11.2 / SHA256、HMAC_SHA256 于 v0.11.3 |
 | `std.time` | `NOW` `MONOTONIC` | R2 | v0.11.3 |
+| `std.regex` | `RE` `RE_TEST` `RE_SEARCH` `RE_FIND_ALL` `RE_REPLACE` `RE_SPLIT` `RE_GROUP_COUNT` | R2 | v0.11.3 |
 | `std.text` | `TO_UPPER` `TO_LOWER` | R2 | v0.11.2 |
 | `std.sanitize` | `HTML_ESCAPE` `HTML_UNESCAPE` `HTML_SANITIZE` | R2 | v0.11.3 |
 | `std.collection` | `MAP` `FILTER` `REDUCE` `SORT` `SORT_BY` `ZIP` `RANGE` `ANY` `ALL` `FIND` `ENUMERATE` `TAKE` `DROP` `FLAT` `UNIQ` `GROUP_BY` `JOIN` `CHUNK` `WINDOW` `DEDUP_BY` `MIN_BY` `MAX_BY` `SUM` `PRODUCT` `FOLD_RIGHT` `POSITION` `KEY_BY` | 混合(R1 门面 + R2 `RANGE`/`MAP`/`FILTER`/`CHUNK`/`WINDOW`/`ENUMERATE`/`ZIP`/`UNIQ`/`FLAT`/`JOIN`/`GROUP_BY`/`DEDUP_BY`/`KEY_BY`) | v0.10 及以前(成员)/ v0.11(R1 重写,M5 起 RANGE 沉 R2)/ v0.11.3(M5 L0-A-2 加 MAP·FILTER·CHUNK·WINDOW,L0-A-3a 加 ENUMERATE·ZIP·UNIQ·FLAT·JOIN,L0-A-3b 加 GROUP_BY·DEDUP_BY·KEY_BY 沉 R2) |

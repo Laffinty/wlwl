@@ -456,6 +456,36 @@ explicit, with no defaults:
 - Entropy-source failure surfaces as `E0060` (IO error), distinct from `E0030`
   (you passed a bad argument) and from a `DecodeError` value (bad data).
 
+### §9.9 `wlwl:std.regex` — linear-time patterns (stdlib §16, v0.11.3)
+
+```wlwl
+IMPORT("wlwl:std.regex", ["RE", "RE_SEARCH", "RE_REPLACE"]);
+
+LET(pat, RE("(?i)([a-z]+)@([a-z]+)"));
+PRINT(RE_SEARCH(pat, "x someone@example y"));   // [matched: …, start: 2, …]
+PRINT(RE_REPLACE(RE("([a-z]+)=(\w+)"), "a=1 b=2", "$2:$1"));  // 1:a 2:b
+```
+
+- `RE(pattern)` returns a **pattern object** `[pattern, groups]` — a dictionary,
+  because wlwl has no object type; `groups` is the capture count so callers can
+  index without recompiling.
+- **A syntax error aborts with native `E0030` including the column.** Not an
+  `ERR` value: a bad pattern is a programmer error, the same line §11.1 draws for
+  the rest of `std`.
+- **A non-match returns `NULL`, never `ERR`.** Regex "did not match" is a normal
+  business branch; making it an `ERR` would force `ERR_PAYLOAD` at every call site.
+- ⚠ **These are rejected, and that is the point** — `(?=…)` / `(?<=…)`,
+  backreferences (`\1`, `(?P=…)`), named groups, `\p{…}`. Each of them can blow up
+  exponentially, and **linear time is this member's only reason to exist**: `(a*)*b`
+  over 10 000 `a`s finishes instantly here and never finishes in a backtracker.
+- ⚠ **Semantics are leftmost-first, not leftmost-longest.** This matches RE2's
+  *default* (and Perl / Python / JS / Java); leftmost-longest is RE2's POSIX mode.
+- `(?m)` here means **line anchors** (the Perl/Python sense). RE2's `(?m)` means the
+  opposite — do not copy docs from RE2 on that one flag.
+- `\w` `\d` `\s` and `(?i)` are **ASCII-only**; use `std.text` for Unicode folding.
+- `TRY_RE` does not exist yet: a pattern that comes from user input cannot be
+  "trial-compiled" without aborting.
+
 ### §9.6 `wlwl:std.sanitize` — the v0.11.3 three (stdlib §13)
 
 **Pick by output context. They are not interchangeable, and choosing the wrong

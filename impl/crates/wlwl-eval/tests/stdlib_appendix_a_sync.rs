@@ -74,6 +74,8 @@ fn every_namespace_in_the_spec_resolves_in_the_implementation() {
         "std.agent",
         // [v0.11.3 M6 / addendum-01 A1] 时间能力第一片。
         "std.time",
+        // [v0.11.3 M6 / addendum-02] 正则。
+        "std.regex",
     ] {
         assert!(
             md.contains(&format!("`{ns}`")),

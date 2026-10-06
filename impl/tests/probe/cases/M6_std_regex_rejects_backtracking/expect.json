@@ -1,0 +1,12 @@
+{
+ "exit": 1,
+ "contains": [
+  "before",
+  "E0030",
+  "backreferences are not supported (they would break linear time)"
+ ],
+ "not_contains": [
+  "after"
+ ],
+ "_why": "v0.11.3 M6 / addendum-02。匹配那条 probe 钉「能做什么」,本条钉「必须拒什么」——**只测能编译的用法,一个回溯引擎也会全绿**。回溯引用 `\\1` / lookahead 一旦被放行,「执行时间对输入线性」当场破,而那是这个成员唯一的立身之本,所以「拒得掉」和「能编译」一样是契约。诊断是**原生 E0030 且带列号**(模式错在哪要一眼看见),不是 ERR 值 —— 编译期失败是程序员的问题。`not_contains: after` 证明终止点就在这一句,后面三条(lookahead / 命名组 / 超大重复计数)同样在编译期被拒,由 encode_regex 的契约表逐条钉住 —— 一条 probe 只演示「会终止」这件事,逐条断言留给契约表。"
+}

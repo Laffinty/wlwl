@@ -1,0 +1,18 @@
+{
+ "exit": 0,
+ "contains": [
+  "groups   =  3",
+  "test     =  TRUE",
+  "test_bad =  FALSE",
+  "search   =  [matched: someone@example, start: 2, end: 17, groups: [someone@example, someone, example]]",
+  "find_all =  3",
+  "replace  =  1:a 2:b",
+  "split    =  [a, b, c]",
+  "bomb     =  NULL",
+  "bomb_hit =  TRUE"
+ ],
+ "not_contains": [
+  "E00"
+ ],
+ "_why": "v0.11.3 M6 / addendum-02。九行各钉一条可观察事实:groups 钉捕获组个数(供解码侧索引,免得每个成员各返回一种形状);test / test_bad 这一对钉**整串**匹配 —— 锚点锚的是**整个输入**,所以带 ^…$ 的模式放进更长的串里必须判 FALSE(第一版 probe 栽在这:拿带锚点的模式去找子串却期望 TRUE,行为是对的、用例写错了);search 钉 leftmost-first 的 span 与捕获;find_all / replace / split 钉非重叠匹配与组引用;最后两行是**本成员存在的理由** —— (a*)*b 在 10000 个 a 上回溯引擎会指数爆炸跑不完,本成员走 NFA 模拟立刻返回 NULL,而输入末尾多个 b 时同一个模式又能正确匹配(证明上一条不是「一律不匹配」)。`not_contains: E00` 钉正常路径无诊断漏出。⚠ 期望值来自 Python `re` 独立核对(左最早语义同族),不是本实现输出;两处刻意不跟 Python:re.ASCII(把 \\w \\d \\s 钉成 ASCII)与空匹配邻接规则(照 RE2/Go)。⚠ 记法:本语言没有中缀运算符也没有花括号,比较是 =(a,b)/>(a,b),连接是 +(a,b) —— 写成中缀会在解析期就报 expected ')', got Plus,编译不过所以不会悄悄算错。"
+}

@@ -53,6 +53,7 @@ pub mod fs;
 pub mod io;
 pub mod json;
 pub mod kernels;
+pub mod regex;
 pub mod sanitize;
 pub mod test_native;
 pub mod text;
@@ -310,6 +311,8 @@ pub fn resolve(path: &str) -> Option<StdBackend> {
         "wlwl:std.sanitize" => &sanitize::SPEC,
         // [v0.11.3 M6 / addendum-01 A1] 时间能力第一片:两个纯读成员。
         "wlwl:std.time" => &time::SPEC,
+        // [v0.11.3 M6 / addendum-02] 正则。
+        "wlwl:std.regex" => &regex::SPEC,
         _ => return None,
     };
     Some(StdBackend::Native(spec))
@@ -515,6 +518,8 @@ mod tests {
         &sanitize::SPEC,
         // [v0.11.3 M6 / addendum-01 A1] 时间能力第一片(两个纯读成员)。
         &time::SPEC,
+        // [v0.11.3 M6 / addendum-02] 正则(RE2 式线性时间)。
+        &regex::SPEC,
     ];
 
     #[test]
