@@ -1,0 +1,14 @@
+{
+ "exit": 1,
+ "contains": [
+  "before",
+  "E0030",
+  "ARGON2ID: m_cost = 32 KiB is out of range; the allowed range is [19456, 1048576] KiB"
+ ],
+ "not_contains": [
+  "after",
+  "DomainError",
+  "DecodeError"
+ ],
+ "_why": "v0.11.3 M6 / W-03。RFC 9106 §5.3 的官方向量用 m = 32 KiB,在**本成员上必须是 E0030** —— 远低于 OWASP 2025 的 19 456 KiB 下界。附带一条本轮才挖到的事实:那个向量的 m=32、p=4 意味着每段只有 2 块(m' = 4p·floor(m/4p) = 32,q = 8,段长 = q/4 = 2),落在「段长 < 128 个地址块」的退化区 —— 参考实现那里 pass 0 / slice 0 的循环体根本不执行。这也是它的官方向量在两个现成实现上都对不上的原因,详见 addendum-04 §3.4。`not_contains: after` 证明运行真的终止了;`not_contains: DomainError / DecodeError` 钉住 KDF 参数错走原生诊断(§11.1)而非 ERR 值。PBKDF2 侧同款见 M6_std_encode_kdf_bounds。"
+}

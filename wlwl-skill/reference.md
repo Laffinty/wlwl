@@ -405,6 +405,37 @@ to `E0102`.
 > (TC1 / TC3 keys are binary, which a UTF-8 `STRING` cannot hold — those were
 > cross-checked against Python `hashlib` instead).
 
+#### Password hashing: `PBKDF2_ITER` / `ARGON2ID` (v0.11.3, M6/W-03)
+
+`SHA256` / `HMAC_SHA256` are **fast digests, never password hashes**. For a
+password you want the slow, parameterised members — and every parameter is
+explicit, with no defaults:
+
+| Member | Call | Bounds that are enforced (`E0030` outside) |
+|---|---|---|
+| `PBKDF2_ITER` | `PBKDF2_ITER(password, salt, iter, len, algo)` | `iter` ∈ [600 000, 10 000 000]; `len` ∈ [1, 1024] bytes; `algo` = `"sha256"` only |
+| `ARGON2ID` | `ARGON2ID(password, salt, t_cost, m_cost, p_cost, len)` | `t_cost` ∈ [2, 32]; `m_cost` ∈ [19 456, 1 048 576] KiB; `p_cost` ∈ [1, 16]; `len` ∈ [4, 1024] bytes; decoded `salt` ≥ 8 bytes |
+
+- The **lower bounds are OWASP 2025 minimums**, not recommendations: without
+  them an all-explicit interface would still let a caller configure `iter = 1`,
+  which is worse than not offering the member at all.
+- **`salt` is a hex text string** (RFC salts are arbitrary byte strings; a
+  wlwl `STRING` is UTF-8 text) — so the natural source is `RANDOM_HEX`, and
+  the bounds are counted in bytes *after* hex decoding.
+- **Memory:** `ARGON2ID` allocates about 19 MiB at the floor and is deliberately
+  expensive. Never call it per-item in a hot loop.
+- **No `secret` / `assoc` parameters on `ARGON2ID`.** An earlier plan added them
+  so that the RFC 9106 §5.3 vector could be fed in; measurement showed the Rust
+  crate's `keyid` / `data` path disagrees with the reference implementation
+  there, and a pepper that no other implementation reproduces is worse than no
+  pepper. See `addendum-04` §3.5.
+- Adding a KDF **does not** mean the cryptography story is complete: symmetric
+  encryption and key generation remain declined (spec §11.5 / §11.6).
+- Vectors: `PBKDF2_ITER` cross-checked against Python `hashlib.pbkdf2_hmac`;
+  `ARGON2ID` against a second implementation that first reproduces the Argon2
+  reference KAT block for block. Neither expectation is this implementation's
+  own output.
+
 ### §9.6 `wlwl:std.sanitize` — the v0.11.3 three (stdlib §13)
 
 **Pick by output context. They are not interchangeable, and choosing the wrong

@@ -1,0 +1,15 @@
+// [v0.11.3 M6 / W-03] std.encode ARGON2ID:参数越界必须**原生终止**。
+//
+// 与 `M6_std_encode_kdf_bounds`(PBKDF2 侧)成对。**必须拆成两个程序**:
+// 诊断在调用边界就终止运行,一个程序里放两句越界调用,第二句根本执行不到。
+//
+// 本条钉的是 m_cost 下界:RFC 9106 §5.3 的官方向量用 m = 32 KiB(32 块、
+// p = 4 ⇒ 每段只有 2 块,落在「段长 < 128」的退化区),远低于 OWASP 2025 的
+// 19 456 KiB。那个向量仍作为**原语层**向量冻结在 wlwl-std 的单元测试里。
+IMPORT("wlwl:std.encode", ["ARGON2ID"]);
+
+PRINT("before");
+
+ARGON2ID("passwd", "0102030405060708", 3, 32, 4, 32);
+
+PRINT("after");

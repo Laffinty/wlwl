@@ -50,6 +50,21 @@ insta = { version = "1.40", features = ["json"] }
 toml = "0.8"
 criterion = { version = "0.5", features = ["html_reports"] }
 
+# [v0.11.3 M6 / W-03] Argon2id, backing `std.encode` ARGON2ID.
+#
+# Feature set is narrowed deliberately (D10-011 discipline: pin it, do not
+# take the defaults and hope):
+#   - `default-features = false` drops `getrandom` (we never ask Argon2 for
+#     random salts; salt generation is `RANDOM_HEX`, a member of std.encode)
+#     and `password-hash` (we are a KDF, not a password-hash-string API).
+#   - `alloc` is the whole feature list. `kdf` was tried and removed: it
+#     unlocks `Kdf::derive_key`, which turns out to be `hash_password_into`
+#     with no associated-data parameter at all, so it buys us nothing
+#     (addendum-04 section 3.5). `parallel` is likewise not enabled: it is
+#     the one flag that would let a single call spawn a thread pool sized by
+#     `p_cost`, and W-01 already caps p_cost at 16.
+argon2 = { version = "0.6", default-features = false, features = ["alloc"] }
+
 # 閺堫剙浼愭担婊呪敄闂傛潙鍞撮柈?crate
 #
 # [v0.11 / D10-011] 每条都补了 `version`,与上面的 `[workspace.package]

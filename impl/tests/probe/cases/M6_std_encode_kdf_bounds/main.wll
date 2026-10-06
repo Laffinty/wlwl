@@ -1,0 +1,23 @@
+// [v0.11.3 M6 / W-03] std.encode PBKDF2_ITER:参数越界必须**原生终止**。
+//
+// 落点:addendum-04 §5 落点 6(probe ≥ 2 条)。本条钉 PBKDF2 那侧,Argon2id
+// 那侧是同目录的 `M6_std_encode_kdf_bounds_argon2id` —— **必须拆成两个
+// 程序**:诊断在调用边界就终止运行,一个程序里放两句越界调用,第二句
+// 根本执行不到(实测踩过:`not_contains: after` 绿了,但第二条的
+// 诊断文本永远不会被打印)。
+//
+// 为什么用「越界」而不是「正常值」当 probe:两个 KDF 的正常值要花
+// 600 000 次 HMAC / 19 MiB 内存,probe 每轮都跑不划算;而**越界路径**
+// 恰恰是最该被钉住的那条 —— 它证明上下界是**硬边界**(在调用边界就
+// 报 E0030),而不是「文档里写了建议值、实现照单全收」。
+// 正常值由 encode_contract.rs 的正例覆盖(期望值来自 RFC 原文与
+// 独立第二实现,不是实现输出)。
+IMPORT("wlwl:std.encode", ["PBKDF2_ITER"]);
+
+PRINT("before");
+
+// RFC 7914 §11 的 c = 1 —— 远低于 OWASP 2025 的下界 600 000。
+// 盐 "4e61434c" 是 "NaCl" 的十六进制:那个向量的盐本来就是文本。
+PBKDF2_ITER("passwd", "4e61434c", 1, 64, "sha256");
+
+PRINT("after");

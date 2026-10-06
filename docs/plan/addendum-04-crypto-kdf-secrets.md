@@ -1,7 +1,7 @@
 # 04 · KDF / CSPRNG / 常数时间比较(补 `std.encode` 的安全侧)
 
 > **层级** L1(可并行) · **前置** 无(04 与 08 都涉及熵源,**须共用一个源**)
-> **状态** 未动工 · **全局裁决点** G4(KDF 选型)
+> **状态** W-01 / W-02 / W-03 已完成(2026-10-06)· **全局裁决点** G4(KDF 选型)
 > → **G4 已由 [`ADR-0026`](../adr/0026-l1-global-decision-points.md)(2026-10-06,
 > Status **Accepted**)定稿**:**Argon2id 为主 + PBKDF2 兼容**(两者皆单向,不触碰
 > §11.5 对加解密 / 密钥生成的否决);**且新增一条原方案没有的硬约束 ——
@@ -36,11 +36,12 @@ Select-String -Path crates/wlwl-eval/tests/encode_contract.rs -Pattern '^\s+Case
 
 | 项 | 现值 | 出处 |
 |---|---|---|
-| `std.encode` 成员 | **8**(`BASE64_*` `HEX_*` `URL_*` `SHA256` `HMAC_SHA256`) | 附录 A |
+| `std.encode` 成员 | **10**(`BASE64_*` `HEX_*` `URL_*` `SHA256` `HMAC_SHA256` `PBKDF2_ITER` `ARGON2ID`;`RANDOM_*` / `TIMING_SAFE_EQ` 属 W-04) | 附录 A |
 | 编码失败口径 | 解码失败是 `ERR` 值(`kind = "DecodeError"` + `op` + `reason`);元数 / 类型错是 `E0022` / `E0030` | 规范 §11.1 |
-| 哈希边界 | 哈希是**摘要不是加密**;非常数时间口径已写明 | 规范 §11.5 |
+| **KDF 失败口径** | 参数越界 / 未知 `algo` / 非法 hex 盐 → **`E0030` 诊断**(不是 `DecodeError` 值):这三类是**程序员错误**,不是数据违例 | 规范 §11.1 / §11.2 |
+| 哈希边界 | 哈希是**摘要不是加密**;非常数时间口径已写明;有 KDF **不改变**加解密否决 | 规范 §11.5 / §11.6 |
 | `sha256_10kb` 实测 | ≈ **255 MiB/s**(§7.4 指标 ≥ 100 ✅) | `impl/crates/wlwl-eval/benches/baseline.txt` M2 段 |
-| `encode_contract` | **47 条** | 契约表 |
+| `encode_contract` | **67 条**(W-03 前 47) | 契约表 |
 | 已有否决 | 加解密 / 密钥生成**不做**;`MD5` / `SHA-1` 不提供 | 规范 §11.5 |
 | 主流对照 | Python `hashlib.pbkdf2_hmac` / `hashlib.scrypt` / `secrets`、Java `SecretKeyFactory`、Go `golang.org/x/crypto`(不在 std) | — |
 
@@ -51,19 +52,23 @@ Select-String -Path crates/wlwl-eval/tests/encode_contract.rs -Pattern '^\s+Case
 | 成员 | 层 | 语义要点 | 失败口径 |
 |---|---|---|---|
 | `PBKDF2_ITER(password, salt, iter, len, algo)` | R2 | 标准 PBKDF2。`algo` ∈ `sha256` / `sha512`。**参数全部显式**,无默认值 —— 少一个参数就不该有默认。`salt` 是**十六进制文本**(见下方文本域警示) | 参数越界 / 未知 `algo` / `salt` 非偶长 hex → `E0030` |
-| `ARGON2ID(password, salt, t_cost, m_cost, p_cost, len, secret?, assoc?)` | R2 | RFC 9106 Argon2id。内存硬,抗 GPU/ASIC。**`secret`(即 RFC 的 `K`,pepper 语义)与 `assoc`(即 `X`,关联数据)为可选,缺省空串** —— 加它们不是为了功能,是为了**能跑 RFC 9106 §5.3 的官方向量**(那个向量带 `K` / `X`,没有这两个形参就一个官方向量都验不了) | 同上;`salt` / `secret` / `assoc` 非偶长 hex → `E0030` |
+| `ARGON2ID(password, salt, t_cost, m_cost, p_cost, len)` | R2 | RFC 9106 Argon2id(v = 19),内存硬,抗 GPU/ASIC。**参数全部显式,无默认值**;`salt` 是**十六进制文本**(见下方文本域警示) | 参数越界 / `salt` 非偶长 hex / 解码后盐 < 8 字节 → `E0030` |
 | `RANDOM_BYTES(n)` | R2 | **CSPRNG**,操作系统熵源。**不是** `RAND()` —— 名字要让人看出它是密码学安全的 | `n < 0` → `E0030` |
 | `RANDOM_HEX(n)` | R2 | 便利层:`RANDOM_BYTES` 的十六进制形态(同 `std.encode` 既有风格) | 同上 |
 | `TIMING_SAFE_EQ(a, b)` | R2 | **常数时间**比较,长度不等也走完整比较(不提前返回) | 永不失败 |
 
-> ⚠️ **文本域警示(与 `salt` 同一个坑,现在扩到三个参数)**
+> ⚠️ **文本域警示(实现期确认成立,且比原设想更窄)**
 > `Value::String` 是 UTF-8 文本,而 RFC 8018 / RFC 9106 的 `salt` / `K`(secret)/
-> `X`(assoc)都是**任意字节串**。故三者一律收**十六进制文本**,实现前解码:
+> `X`(assoc)都是**任意字节串**。故收**十六进制文本**,实现前解码:
 > ① **偶数长度 + 全部 `[0-9a-fA-F]`**,否则 `E0030`(不静默截断、不猜测);
-> ② 空串 = 空字节串(合法,也是「无 pepper / 无关联数据」的写法);
+> ② 空串 = 空字节串(合法);
 > ③ **盐的自然来源是 `RANDOM_HEX`**,不是 `RANDOM_BYTES`;
 > ④ 长度下界只能在文本域表达(128 bit 盐 = 32 个 hex 字符)。
-> 同 **D13-001** 同源(RFC 4231 的二进制密钥在文本语言里表达不了)。**别在实现时才发现。**
+> **实况(W-03 已落地):收十六进制文本的实参只剩 `salt` 一个** ——
+> `secret` / `assoc` 已随 §3.5 的实测撤掉。`ARGON2ID` 另有一条长度下界:
+> 解码后 ≥ 8 字节(`argon2::MIN_SALT_LEN`;RFC 9106 只「RECOMMENDED 16」,
+> 但底层实现拒收更短的,越界必须由**我们**报 `E0030`,不能变成内部错误)。
+> 同 **D13-001** 同源(RFC 4231 的二进制密钥在文本语言里表达不了)。
 
 > ⚠️ `TIMING_SAFE_EQ` 的**长度不等**处理是设计要点:朴素实现
 > `a.len() == b.len() && ...` 会在长度不等时**提前返回**,泄漏长度。
@@ -150,9 +155,16 @@ tagLen=32 / P=`01`×32 / S=`02`×16 / **K=`03`×8** / **X=`04`×12**:
 
 | algo | c | 冻结值(hex) |
 |---|---:|---|
-| SHA-256 | 600 000 | `aaf96b2b19b3e4f9565dbf3218e55a3f77015d54ce07aa703fefb4809c32323f` |
-| SHA-256 | 1 000 000 | `3461309e6c26c6f407f71202a798124965e412fd97963521b26f2ba1c5fdd100` |
-| SHA-512 | 220 000 | `038344ac468974aa495a69f365f5a857f4f2786794d5e88f23ac190d7acde4e8` |
+| SHA-256 | 600 000 | `1074be241b7be078a90369fae10cdc0394cf64a6780904421bd79c51fd372db0` |
+| SHA-256 | 1 000 000 | ~~`3461309e…`~~ **待复核**(见 §3.5(d) 同款风险) |
+| SHA-512 | 220 000 | **本成员用不到** —— `algo = "sha512"` 报 `E0030`(§3.4 ①) |
+
+> ⚠️ **实测更正(2026-10-06,见 §3.5(d))**:本表原先把 `c = 600 000` 那条
+> 冻结成 `aaf96b2b…`,**那是错的**。同组参数经 `hashlib.pbkdf2_hmac` 复算是
+> `1074be24…`,本实现与之逐字节一致。**D13-001 第三次发作。**
+> `c = 1 000 000` 与 `c = 220 000` 两条**本轮没有再复算**,故上表按「未复核」
+> 处理 —— 实现期只用了 `c = 600 000` 那一条,不留「看起来像冻结值、其实没验过」
+> 的条目。
 
 #### (b) 本步暴露的三处冲突(写实现前必须先定,否则一定返工)
 
@@ -187,6 +199,11 @@ tagLen=32 / P=`01`×32 / S=`02`×16 / **K=`03`×8** / **X=`04`×12**:
   一律收**十六进制文本**、实参解码,奇长或含非 hex 字符报 `E0030`。
   **由此 RFC 9106 §5.3 的官方向量可原样喂进成员**:
   `K = 03×8` → `"0303030303030303"`、`X = 04×12` → `"040404040404040404040404"`。
+- ❌ **[2026-10-06 实测推翻,见 §3.5]**:形参**撤掉**。`secret` / `assoc`
+  能写进签名,但 `argon2` 0.6.0 走 `ParamsBuilder::keyid/data` 算出来的值
+  **与参考实现不符**(`58a04dad…` vs 权威值 `0d640df5…`)⇒ 存下来的哈希
+  别的实现都验不过。**当时的推理链「加了就能验官方向量」在第一步就断了**:
+  能*表达*不等于能*对上*。
 - **依赖取舍已定**(记录者裁决,理由见 §7.1):`PBKDF2_ITER` **手写**
   (`HMAC_SHA256` 已在 `wlwl-ast`,PBKDF2 = HMAC 迭代 + 块间 XOR,约 30 行);
   `ARGON2ID` **引 `argon2` crate**(纯 Rust / MIT OR Apache-2.0 / RustCrypto 官方),
@@ -224,19 +241,102 @@ SHA-512 若要支持,得手写一份(约 100 行 + 需要另取 FIPS 180-4 向�
 ⇒ **addendum §4 规定的「Python `argon2-cffi` 独立跑一遍」这条交叉核对路径,
 对 Argon2id 不是「还没装」,而是**根本走不通**。** 别再按那条做。
 
-**Rust 侧能不能补上?**(docs.rs `argon2` 0.6.0 实查)
-- ✅ **secret 有**:`Argon2::new_with_secret(secret, algorithm, version, params)`。
-- ⚠️ **assoc(X) 只有可选 feature**:`hash_password_into(&self, pwd, salt, out)`
-  **没有 ad 形参**;关联数据在 `kdf` feature 的 `Kdf::derive_key` 里
-  (`kdf = ["alloc", "dep:kdf"]`)。
-- ⚠️ **但 `derive_key` 是 KDF 模式,与 RFC 向量的 hashing 模式可能不是同一条
-  计算路径** ⇒ 加了 `assoc` 形参**能表达**它,**能不能用它复现 RFC 9106 §5.3
-  那个向量仍未确定**。
-- ⇒ **实现期第一件事就是做这个实测**:先用 `new_with_secret` + `hash_password_into`
-  在 `K=X=空` 下跑一次,看能否对上 RFC 5.1/5.2/5.3 的**变体**;若带 `X` 就对不上,
-  则**如实记录「`assoc` 形参无法用官方向量验证」**,并改用「自生成向量 + 与
-  `argon2` crate 自身测试互证」的组合(**别假装 RFC 向量验过了**)。
-- **依赖 feature 相应调整为**:`default-features = false, features = ["alloc", "kdf"]`。
+**Rust 侧能不能补上?**(源码实查 `argon2` 0.6.0 —— `cargo fetch` 后直接读 registry 里的源码,不是读 docs.rs 的摘要)
+- ✅ **secret 与 assoc 都有**,但**不在 `new_with_secret` / `derive_key` 上** ——
+  ⚠️ **本节早前那句「关联数据在 `kdf` feature 的 `Kdf::derive_key` 里」是错的**,
+  §3.5 已用源码更正:`Kdf::derive_key(&self, password, salt, out)` **没有 ad 形参**,
+  它只是 `hash_password_into` 的一层壳。
+- ✅ **真正的入口是 `ParamsBuilder`**:`.keyid(KeyId::new(k)?)` 与
+  `.data(AssociatedData::new(x)?)`(`KeyId` 上限 8 字节 / `AssociatedData` 32 字节),
+  再 `Argon2::new(Algorithm::Argon2id, Version::V0x13, params.build()?)` +
+  `hash_password_into`。
+- ⇒ `secret` / `assoc` **能表达**,但**能不能复现 RFC 9106 §5.3 那个向量仍需实测**
+  —— 那正是 §3.5 的起因,而实测结论是**不能**。
+- ⇒ **实现期第一件事就是做这个实测**,而且**不能只查 API 形状**:
+  `hash_password_into` 有没有 ad 形参、文档说它在哪个 feature 下,都**不等于**
+  「它算出来的东西与 RFC 一致」。**唯一能回答这个问题的是把 RFC 那个向量跑出来
+  对比** —— §3.5 就是这么做的,结论是**复现不出来**,于是 `secret` / `assoc`
+  两个形参被**撤掉**(不是「换个算法」,是那个唯一的验证向量本身就对不上)。
+- **依赖 feature 相应收窄为**:`default-features = false, features = ["alloc"]`
+  —— `kdf` feature 是为 `derive_key` 加的,而 `derive_key` 既然没有 ad 形参,
+  它对 `ARGON2ID` 毫无用处,不该留着(每多一个 feature 就多一份攻击面与
+  依赖面,而 `cargo deny` 的面是按实际拉进来的包算的)。
+
+### 3.5 W-03 实现期实测(2026-10-06):`secret` / `assoc` 被**撤掉**,附完整证据链
+
+计划里那句「实现期第一件事就是实测能否复现 RFC 9106 §5.3」在本轮做完了。
+**结论:复现不出来 ⇒ 两个形参撤掉。** 过程与读数全部记在这里,因为
+「为什么不用某个参数」比「用了什么」更需要留档。
+
+#### (a) 期望值是权威的,不是转录错的
+
+- §5.3 的 **Tag `0d640df5…`** 已从 **RFC 9106 原文**(rfc-editor.org)重新逐字核对,
+  与本文件早前记录一致 ⇒ **期望值没错**。
+- 更强的一条:§5.3 给的 **Pre-hashing digest `2889de48…`**,用 Python
+  `hashlib.blake2b` 按 RFC §3.2 的 H₀ 公式(含 `K = 03×8`、`X = 04×12`)手算,
+  **逐字节吻合** ⇒ 期望值与 RFC 的**参数、公式、内部结构**三者自洽。
+- RFC 9106 的 **errata 只有一条**(EID 7721,把 §3.2 的 "raging" 改成 "ranging",
+  纯拼写)⇒ **没有**关于该向量的更正可引。
+- 最终判据来自更上游:`P-H-C/phc-winner-argon2` 仓库里的 `kats/argon2id` —— 它
+  **只有一条记录**,正是这个向量(同参数、同 digest、同三轮分块),出自 Argon2
+  作者本人。**那个文件就是权威答案。**
+
+#### (b) 实测:两个现成实现在这个配置上都对不上
+
+| 实现 | 带 `K`/`X` | 无 `K`/`X` |
+|---|---|---|
+| RFC 9106 §5.3 / `kats/argon2id`(权威) | `0d640df5…` | — |
+| `argon2` 0.6.0(RustCrypto,`ParamsBuilder::keyid/data`) | **`58a04dad…`** ✗ | `03aab965…` |
+| `argon2-cffi`(C 参考实现的 Python 绑定,**不支持 K/X**) | 不适用 | `03aab965…` |
+| 本轮新写的独立 Python 实现(见 (c)) | `0d640df5…` ✅ | `03aab965…` |
+
+⇒ **`argon2` 0.6.0 的 `keyid` / `data`(即 secret / assoc)路径与参考实现不符;
+它的无 K/X 路径三方一致。** 这条差别的后果很具体:用带 `secret` / `assoc` 的
+`ARGON2ID` 存下的哈希,**任何别的 Argon2 实现都验不过**。对一个 KDF 来说,
+那比没有这个参数更危险 —— 所以**撤掉**,而不是「照用并写进文档」。
+
+#### (c) 怎么排除「是我的实现 / 我的用法错了」
+
+三步,每步都换一个独立参照:
+
+1. **H₀ 层**:Python 按 RFC 公式算出的 digest 与 KAT 逐字节同 ⇒ 参数与
+   `initial_hash` 公式没问题(参考实现 `core.c::initial_hash` 的字段顺序也
+   与 RFC 公式逐项对上,已读过源码确认)。
+2. **KAT 逐块自校验**:照 **RFC 9106 + 参考实现 `ref.c` / `core.c`** 写了一份
+   独立 Python Argon2id(H₀、`H'`、`fill_block` 的两轮 BLAKE2 轮、`index_alpha`
+   的 `uint32` 回绕、`fill_segment` 的段序与地址块索引全部照抄 C 源码),它
+   **逐块复现了 KAT 的三轮中间分块**(`Block 0000 [0..3]`、`Block 0031 [124..127]`,
+   pass 0/1/2 各八个值)与**最终 Tag**。⇒ 这份实现本身是对的,
+   「`58a04dad`」不是它算出来的。
+3. **退化配置的成因**(顺带挖到的):`m = 32 KiB`、`p = 4` ⇒ `m' = 4p·floor(m/4p) = 32`、
+   `q = m'/p = 8`、**段长 = q/4 = 2**,而数据无关寻址的地址块是**每 128 块**才
+   生成一次 ⇒ 段长 2 落在「段长 < 128」的退化区。参考实现里 pass 0 / slice 0 的
+   循环体 `for (i = starting_index; i < segment_length; ++i)` **一次都不执行**
+   (起始下标是 2,段长是 2)。**RFC 9106 §3.4.1.2 的散文并没有覆盖这个情形** ——
+   也就是说官方向量恰好落在规范没写清的地方。
+
+> ⇒ 我们自己的成员**够不着**这个退化区(`m_cost` 下界 19 456 KiB ⇒ 段长
+> ≥ 1216 ≫ 128),所以「无 K/X 路径三方一致」这个结论**足以支撑上线**。
+
+#### (d) 顺带更正本文件 §3.2(a) 的一条冻结向量
+
+自生成向量里 SHA-256 / `c` = 600 000 那条,本文件早前记作
+`aaf96b2b19b3e4f9565dbf3218e55a3f77015d54ce07aa703fefb4809c32323f`,
+**那是错的**:同组参数(`P = "passwd"`、`S = hex"73616c74"`、`dkLen = 32`)经
+Python `hashlib.pbkdf2_hmac` 复算是 **`1074be24…`**,本实现与之逐字节一致。
+**D13-001 第三次发作了**(前两次是手打向量打错,这次是写进文档时抄错)——
+**同一条纪律、同一个失效模式**。已就地改掉,并在 `encode.rs` 的单测里注记。
+
+#### (e) 落定后的形状
+
+- `ARGON2ID(password, salt, t_cost, m_cost, p_cost, len)` —— **六个形参,无
+  `secret`、无 `assoc`**。
+- 依赖 feature 收窄为 `["alloc"]`(去掉 `kdf`)。
+- 验证口径换成:**原语层**冻结 RFC 7914 §11 两条 + 独立实现的交叉核对向量;
+  **成员层**用落在我们上下界内的 5 条(3 条 Argon2id + 2 条 PBKDF2),期望值
+  全部来自第二个实现,不是本实现输出。
+- 规范 §11.2 / §11.6 与 `encode.rs` 的 `ARGON2ID` 文档注释都写明了「为什么没有
+  这两个形参」,免得下一个做 RFC 合规的人以为是漏实现。
 
 ### 3.3 W-02 裁决(2026-10-06):熵源归属
 
@@ -267,36 +367,51 @@ $env:RUSTDOCFLAGS='-D warnings'; cargo doc --locked --no-deps
 cargo check --locked -p wlwl-std --features real-ai
 ```
 
-契约表扩 `tests/encode_contract.rs`(47 → 约 60),**期望值取自 RFC 原文与
-官方测试向量,不是实现输出**:
+契约表扩 `tests/encode_contract.rs`(47 → **67**,W-03 一次加 20 条),
+**期望值取自 RFC 原文与独立第二实现,不是实现输出**:
 
-| 组 | 用例 | 出处 |
-|---|---|---|
-| PBKDF2 | RFC 6070 的 SHA-1 向例**不可用**(SHA-1 不提供)⇒ 改用 RFC 7914 §11 的 **SHA-256** 向量**逐字冻结** | RFC 7914 |
-| Argon2id | RFC 9106 官方测试向量**逐字冻结** | RFC 9106 |
-| 交叉核对 | Python `hashlib.pbkdf2_hmac` / `argon2-cffi` 独立跑一遍并注明出处(D13-001 建立的纪律) | Python |
-| CSPRNG | 100 000 次抽样**不得重复**;统计检验(卡方粗检) | 自证 |
-| **常数时间** | 长度不等时**不得提前返回** —— 钉住「长度不泄漏」;性能上两路径耗时差 < 10% | 机制断言 |
-| 回归 | `SHA256` / `HMAC_SHA256` 47 条**逐条不动** | 防顺手改坏 |
+| 组 | 用例 | 出处 | W-03 状态 |
+|---|---|---|---|
+| PBKDF2 正例 | 2 条(`c` = 600 000,大写 hex 盐等价) | Python `hashlib.pbkdf2_hmac` | ✅ |
+| PBKDF2 `E0030` | 8 条(低于下界 / 超上界 / `len` = 0 / `sha512` / 奇长盐 / 非 hex 盐 / 元数) | addendum-04 §3.1 + §3.4 ① | ✅ |
+| Argon2id 正例 | 3 条(OWASP 下界 `m`/`t`/`p`、双 lane、UTF-8 口令 + 全零盐) | 独立第二实现(§3.5(c)) | ✅ |
+| Argon2id `E0030` | 7 条(`m` 低于下界 / `t` 低于下界 / `p` 超上界 / `m` 超上界 / `len` 低于 RFC 下界 / 盐 < 8 B / 元数) | §3.1 + RFC 9106 §3.1 | ✅ |
+| PBKDF2 原语层 | RFC 7914 §11 两条 + 块计数从 1 起 | RFC 7914 原文 | ✅(在 `wlwl-std` 单测) |
+| Argon2id 原语层 | ~~RFC 9106 官方向量~~ → **该向量在两个现成实现上都复现不出来**(§3.5);改为独立第二实现的交叉核对向量 | `kats/argon2id` + 独立实现 | ✅ |
+| 交叉核对 | `hashlib.pbkdf2_hmac`(PBKDF2)+ 独立 Python Argon2id(**先逐块复现 `kats/argon2id` 才被采信**) | Python | ✅ |
+| ~~`argon2-cffi` 交叉核对~~ | ❌ **路径不通**,对 Argon2id 根本传不进 `K`/`X`(§3.4 末) | — | 已作废 |
+| CSPRNG | 100 000 次抽样**不得重复**;统计检验(卡方粗检) | 自证 | ⏳ W-04 |
+| **常数时间** | 长度不等时**不得提前返回** —— 钉住「长度不泄漏」;性能上两路径耗时差 < 10% | 机制断言 | ⏳ W-04 |
+| 回归 | `SHA256` / `HMAC_SHA256` 及编码侧 45 条**逐条不动** | 防顺手改坏 | ✅ |
+
+probe **158 → 160**:新增 `M6_std_encode_kdf_bounds`(PBKDF2 侧)与
+`M6_std_encode_kdf_bounds_argon2id`(Argon2id 侧)。
+⚠️ **必须拆成两个用例目录** —— 诊断在调用边界就终止运行,一个程序里放两句
+越界调用,第二句**根本执行不到**(实测踩过:`not_contains: after` 绿了,但
+第二条的诊断文本永远不会被打印,于是 `contains` 少一条而红)。
 
 **性能断言**:`PBKDF2_ITER` 100 000 轮 ≤ 100 ms(否则调用方会用更小的
 `iter`,安全性就崩了);`RANDOM_BYTES(4096)` ≤ 50 µs。
+⚠️ **不能在 `cargo test` 里断言** —— 测试 profile 是未优化构建,两条 KDF
+的正例本来就要 600 000 次 HMAC / 19 MiB 内存。W-03 实测:`encode` 单测
+15 s、`encode_contract` 34 s(debug)。**这条断言留给 release 基准**
+(W-05 的 bench 段),别在单测里写死毫秒数。
 
 ## 5. 九处表落点
 
 九处见 `docs/history/20261002.md` §5.0。**扩已有命名空间**:
 
-| 落点 | 本份动作 |
-|---|---|
-| 1 规范成员表 | §11.2 补 5 行 + §11.5 补 KDF / CSPRNG 边界 + 参数上界条款 |
-| 2 附录 A | 跑 `gen-appendix-a`(`std.encode` 8 → 13 成员) |
-| 3 `SPEC.functions` | `encode.rs` 追加 5 个 `StdFn` |
-| 4 契约测试硬编码 | `encode_contract` 成员数与点名清单 |
-| 5 模块登记 | 无新模块 |
-| 6 probe | ≥ 2 条(常数时间 / 参数越界),`EXPECTED_CASE_COUNT` 同步 |
-| 7 附录 G | **不动** |
-| 8 skill 指针 | `SKILL.md` + `reference.md` §9.1;**必加反模式**:「`SHA256` 是口令哈希」是错的(已有一条,补 KDF 后要指向新成员) |
-| 9 CHANGELOG | 成员面 +5;**重申加解密仍否决**(防读者以为本份开了那个口子) |
+| 落点 | 本份动作 | W-03 状态 |
+|---|---|---|
+| 1 规范成员表 | §11.2 补 5 行 + §11.5 补 KDF / CSPRNG 边界 + 参数上界条款 | ✅ §11.2 补 2 行(`PBKDF2_ITER` / `ARGON2ID`)+ 上下界条款 + 盐的文本域口径 + 「为什么没有 `secret`/`assoc`」;**另开 §11.6**(KDF 边界) |
+| 2 附录 A | 跑 `gen-appendix-a`(`std.encode` 8 → 13 成员) | ✅ 已跑(现 10;`RANDOM_*` / `TIMING_SAFE_EQ` 随 W-04 到 13) |
+| 3 `SPEC.functions` | `encode.rs` 追加 5 个 `StdFn` | ✅ 追加 2 个 |
+| 4 契约测试硬编码 | `encode_contract` 成员数与点名清单 | ✅ 8 → **10**;契约 47 → **67** |
+| 5 模块登记 | 无新模块 | — |
+| 6 probe | ≥ 2 条(常数时间 / 参数越界),`EXPECTED_CASE_COUNT` 同步 | ✅ 参数越界侧 2 条(158 → **160**);常数时间侧 ⏳ W-04 |
+| 7 附录 G | **不动** | — |
+| 8 skill 指针 | `SKILL.md` + `reference.md` §9.1;**必加反模式**:「`SHA256` 是口令哈希」是错的(已有一条,补 KDF 后要指向新成员) | ⏳ W-05 |
+| 9 CHANGELOG | 成员面 +5;**重申加解密仍否决**(防读者以为本份开了那个口子) | ⏳ W-05 |
 
 ## 6. 风险与已知代价
 
@@ -305,10 +420,15 @@ cargo check --locked -p wlwl-std --features real-ai
   「我这个配置大概要多少内存」。
 - ⚠️ **`RANDOM_BYTES` 一旦引入,就必须和 08 的 `std.rand` 划清界限** ——
   否则会出现「哪个才是安全的随机」这个问题,而答案会是「两个都是,但用法
-  不同」。裁决点 §3.2 未定之前不要开写。
+  不同」。裁决点 §3.3 已定(单向依赖),W-04 落地时按那条写用法。
 - ⚠️ 加解密**仍未做**:这意味着本份之后,wlwl 能安全地处理口令与比较密钥,
-  但**不能加密数据**。规范 §11.5 的否决理由要保持可见,别让「有 KDF 了」
-  被读成「密码学这块齐了」。
+  但**不能加密数据**。规范 §11.5 / §11.6 的否决理由要保持可见,别让
+  「有 KDF 了」被读成「密码学这块齐了」。
+- ⚠️ **W-03 新增的已知限制**:`algo` 只有 `"sha256"`(SHA-512 不提供,理由见
+  §3.4 ①,`E0030` 而非静默接受);`ARGON2ID` 无 `secret` / `assoc`(§3.5);
+  **`m_cost` 下界 19 456 KiB 意味着单次调用至少占 19 MiB 内存** —— 调用方
+  在循环里调它会把自己打爆,这是有意的(下界就是安全底线),但值得在规范里
+  明写「别在热路径里逐条哈希」。
 - **明确不做**:对称加密 / 密钥生成 / KDF 便捷封装 / KMS / SHA-3 / BLAKE3 /
   `MD5` / `SHA-1`。
 
@@ -318,6 +438,6 @@ cargo check --locked -p wlwl-std --features real-ai
 |---|---|---|---|
 | W-01 | G4 选型裁决 + 参数上界裁决 | ✅ **完成(2026-10-06)** —— 选型由 `ADR-0026` G4 定(Argon2id 为主 + PBKDF2 兼容);**上下界**见 §3.1:下界取 OWASP 2025(Argon2id 19 456 KiB / t=2 / p=1;PBKDF2-SHA256 600k、SHA-512 220k),上界建议 `iter ≤ 10M` / `len ≤ 1 024 B` / `m_cost ≤ 1 GiB` / `t_cost ≤ 32` / `p_cost ≤ 16`,**越界一律 `E0030`**。**附一条连带事实**:本语言 `salt` 只能是文本 ⇒ 盐的自然来源是 `RANDOM_HEX`,盐长下界只能在文本域表达(同 D13-001 的二进制密钥问题) | `5924f65` |
 | W-02 | 熵源归属裁决(与 08 共同) | ✅ **完成(2026-10-06)** —— **`std.encode` 是源,`std.rand` 单向消费**:`RANDOM_BYTES`/`RANDOM_HEX` 读 OS 熵源,是唯一「安全随机」入口;`std.rand` 播种从它取,不得反向依赖。依据:总纲 §1 + `ADR-0026` G3(显式 seed + 可注入源 ⇒ 单向依赖是其必然结果)。命名面无冲突(不违反 §v0.x 4) | `5924f65` |
-| W-03 | PBKDF2 + Argon2id + 契约(RFC 向量 + Python 交叉核对) | 🔄 **第 0 步已完成(2026-10-06)** —— 向量取自 RFC 原文并独立交叉核对:PBKDF2 的 RFC 7914 §11 两个向量经 Python `hashlib` **逐字节复算通过**;另生成 4 条落在我们上下界内的自生成向量。**并因此发现三处冲突**:① 两个 RFC 向量的 `c` = 1 / 80 000 **低于** OWASP 下界 600 000 ⇒ 会被自己的 `E0030` 拒掉;② RFC 9106 §5.3 的 `m` = 32 KiB **低于** 19 456 KiB 下界;③ **该向量带 `Secret[8]` / `Associated data[12]`(RFC 的 `K`/`X`),而 `ARGON2ID` 签名没有对应形参 ⇒ 连官方向量都喂不进去**。处置见 §3.2:原语层冻结 RFC 向量、成员层用自生成向量、RFC 越界参数改造成 `E0030` 反例;| `ARGON2ID` 那个向量的**独立复核路径已被推翻**:`argon2-cffi` 传不进 `K`/`X`(见 §3.4),`assoc` 在 Rust 侧只在可选 `kdf` feature 且可能是**另一条计算路径**。**实现期第一件事就是实测它能否复现**,复现不了就如实记「该向量无法用官方路径验证」——**别假装验过了**。`cd1e4d2` |
+| W-03 | PBKDF2 + Argon2id + 契约(RFC 向量 + Python 交叉核对) | ✅ **完成(2026-10-06)** —— 依赖 `argon2` 0.6.0(feature 收窄 `["alloc"]`);`PBKDF2_ITER` **手写**(PRF 复用 `HMAC_SHA256` 已有的字节级 HMAC,约 30 行,不引依赖)。成员面 **8 → 10**。契约 `encode_contract` **47 → 67**(新 20 条:正例 5 / `E0030` 15),`wlwl-std` 单测 17 → **21**(原语层 RFC 7914 §11 两条 + 块计数 + 3 条交叉核对 Argon2id + `p_cost` 生效性),probe **158 → 160**。**三个必须记的实测结论**:① **`secret` / `assoc` 形参撤掉** —— `argon2` 0.6.0 的 `keyid`/`data` 路径与参考实现不符(`58a04dad…` vs 权威 `0d640df5…`),存下的哈希别的实现验不过;证据链见 §3.5。② 本文件 §3.2(a) 的 `c = 600 000` 冻结向量**是错的**,已更正为 `1074be24…`(D13-001 第三次)。③ 「`assoc` 在 `kdf` feature 的 `derive_key` 里」**是错的** —— `derive_key` 没有 ad 形参,真入口是 `ParamsBuilder`;`kdf` feature 因此撤掉 | 待回填 |
 | W-04 | CSPRNG + 常数时间比较 + 契约 | 未动工 | — |
 | W-05 | skill / CHANGELOG / 收口 | 未动工 | — |

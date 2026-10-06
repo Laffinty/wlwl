@@ -37,6 +37,7 @@
 //! 杜绝副本漂移。依赖方向合法:`wlwl-std` 本就依赖 `wlwl-ast`。
 
 use crate::{ModuleSpec, StdFn};
+use argon2::{Algorithm, Argon2, ParamsBuilder, Version};
 use wlwl_error::ErrorCode;
 use wlwl_value::{Outcome, StdHost, Value};
 
@@ -51,6 +52,8 @@ pub static SPEC: ModuleSpec = ModuleSpec {
         ("URL_DECODE", url_decode as StdFn),
         ("SHA256", sha256 as StdFn),
         ("HMAC_SHA256", hmac_sha256 as StdFn),
+        ("PBKDF2_ITER", pbkdf2_iter as StdFn),
+        ("ARGON2ID", argon2id as StdFn),
     ],
 };
 
@@ -252,10 +255,21 @@ pub fn base64_decode(
 // ── hex ────────────────────────────────────────────────────────────────
 
 fn hex_encode_bytes(s: &str) -> String {
-    let mut out = String::with_capacity(s.len() * 2);
-    for b in s.as_bytes() {
-        out.push(char::from_digit((b >> 4) as u32, 16).unwrap());
-        out.push(char::from_digit((b & 0x0F) as u32, 16).unwrap());
+    bytes_to_hex(s.as_bytes())
+}
+
+/// 字节 → 小写十六进制(无分隔符)。`HEX_ENCODE` / `HMAC_SHA256` / 两个
+/// KDF 共用**同一个**编码器。
+///
+/// ⚠ 摘要字节**不能**过 `sha256_hex` —— 那是「哈希 + 编码」的复合 API,
+/// 对摘要再用一次就是双重哈希(RFC 4231 TC2 的向量在 `encode_contract`
+/// 变红时抓到的)。
+fn bytes_to_hex(bytes: &[u8]) -> String {
+    const DIGITS: &[u8; 16] = b"0123456789abcdef";
+    let mut out = String::with_capacity(bytes.len() * 2);
+    for b in bytes {
+        out.push(char::from(DIGITS[usize::from(b >> 4)]));
+        out.push(char::from(DIGITS[usize::from(b & 0x0F)]));
     }
     out
 }
@@ -441,14 +455,311 @@ pub fn hmac_sha256(host: &mut dyn StdHost, args: Vec<Value>) -> wlwl_error::Wlwl
     let Value::String(data) = &args[1] else {
         return Err(type_err(host, "HMAC_SHA256", "string", &args[1]));
     };
-    // ⚠ 摘要字节用 `format!` 手工十六进制编码 —— **不能**过 `sha256_hex`,
-    // 那是「哈希 + 编码」的复合 API,对 HMAC 摘要再用一次就是双重哈希
-    // (RFC 4231 TC2 的向量在 encode_contract 变红时抓到的)。
-    let hex: String = hmac_sha256_bytes(key.as_bytes(), data.as_bytes())
-        .iter()
-        .map(|b| format!("{:02x}", b))
-        .collect();
+    let hex: String = bytes_to_hex(&hmac_sha256_bytes(key.as_bytes(), data.as_bytes()));
     Ok(Outcome::normal(Value::String(hex)))
+}
+
+// ── KDF(v0.11.3 M6,W-03)──────────────────────────────────────────────
+//
+// `PBKDF2_ITER` 与 `ARGON2ID` 解决的是同一个场景:**口令**。它们与
+// `SHA256` / `HMAC_SHA256` 的差别不在「强度」,而在**成本可调** ——
+// 单向摘要是快的,快到 GPU 上每秒几十亿次;KDF 的全部意义就是把它压到
+// 每秒几千次。
+//
+// 三条硬约束(addendum-04 §3.1):
+//
+// 1. **参数全部显式,无默认值**。少一个参数就不该有默认 —— 调用方必须
+//    能看见并自己组合,否则参数就成了不可审计的魔法数。
+// 2. **上下界都是硬边界,越界 `E0030`**。下界取 OWASP 2025 的最小配置,
+//    上界防「一个参数打满机器」。不设下界的话「参数全显式」等于
+//    「调用方可以传 `iter=1`」,那比不给这个成员更危险。
+// 3. **`salt` / `secret` / `assoc` 收十六进制文本**。RFC 8018 / RFC 9106
+//    的它们都是**任意字节串**,而 wlwl 的 `STRING` 是 UTF-8 文本 ——
+//    同 D13-001 的二进制密钥问题。**盐的自然来源是 `RANDOM_HEX`**。
+//
+// ⚠ **`algo` 暂为单值不是设计缺陷,是留位。** 签名保留 `algo` 免得日后
+// 加值改签名,但当前**只接受 `sha256`**:仓里没有 SHA-512(要支持得手写
+// 约 100 行 + 另取 FIPS 180-4 向量),而 OWASP 把 PBKDF2-HMAC-SHA-512 的
+// 适用场景写成「FIPS-140 合规时」—— wlwl 提供不了经 FIPS 校验的实现,
+// 那条互操作路径对本语言不成立。与模块对 `MD5` / `SHA-1` 的既有立场一致。
+
+/// PBKDF2 迭代数下界:OWASP 2025 对 HMAC-SHA-256 的最小配置。
+const PBKDF2_ITER_MIN: i64 = 600_000;
+/// PBKDF2 迭代数上界:600 k ≈ 0.3 s ⇒ 10 M ≈ 5 s,单次调用有界。
+const PBKDF2_ITER_MAX: i64 = 10_000_000;
+/// 派生字节数下界。短输出无意义(RFC 8018)。
+const KDF_LEN_MIN: i64 = 1;
+/// 派生字节数上界:任何派生用途都用不到 1 KiB,上界只为防「一个参数吃掉内存」。
+const KDF_LEN_MAX: i64 = 1_024;
+/// Argon2id 内存下界:OWASP 2025(19 MiB)。
+const ARGON2_M_MIN: i64 = 19_456;
+/// Argon2id 内存上界:1 GiB。刻意**略低于** RFC 9106 §4 的 first-recommended
+/// (2 GiB)—— 上界的职责是防 DoS,而 OWASP 底线之上已有 54 倍余量。
+const ARGON2_M_MAX: i64 = 1_048_576;
+/// Argon2id 轮数下界:OWASP 2025。
+const ARGON2_T_MIN: i64 = 2;
+/// Argon2id 轮数上界:成本是 `m_cost × t_cost` 的内存流量,1 GiB × 32
+/// 已是数十秒级。
+const ARGON2_T_MAX: i64 = 32;
+/// Argon2id 并行度下界。
+const ARGON2_P_MIN: i64 = 1;
+/// Argon2id 并行度上界:`p` 会开线程,16 已高于常规服务器核数。
+const ARGON2_P_MAX: i64 = 16;
+/// Argon2id 标签长度下界:RFC 9106 §3.1 要求 `T` ∈ [4, 2^32-1]。
+const ARGON2_TAG_MIN: i64 = 4;
+/// Argon2id 盐长度下界:`argon2::MIN_SALT_LEN`。RFC 9106 只「RECOMMENDED 16」,
+/// 没有硬下界,但底层实现拒收更短的,越界必须由**我们**报,不能变成内部错误。
+const ARGON2_SALT_MIN: usize = 8;
+
+/// KDF 的参数错 / 未知 `algo` / 非法 hex 实参 → `E0030`。
+///
+/// **为什么是诊断而不是 `DecodeError` 值**:这三类都是**程序员错误**
+/// (把参数配到不安全值、把十六进制写错),不是数据违例。沿用 §11.1
+/// 「程序员错误走原生诊断」那条 —— 编码侧才是数据违例。
+fn kdf_err(host: &mut dyn StdHost, detail: String) -> wlwl_error::WlwlError {
+    host.diag(ErrorCode::E0030, detail)
+}
+
+fn str_arg_at<'a>(
+    host: &mut dyn StdHost,
+    name: &str,
+    label: &str,
+    args: &'a [Value],
+    idx: usize,
+) -> Result<&'a str, wlwl_error::WlwlError> {
+    match &args[idx] {
+        Value::String(s) => Ok(s.as_str()),
+        other => Err(kdf_err(
+            host,
+            format!(
+                "{name}: expected string for {label}, got {}",
+                crate::value_kind(other)
+            ),
+        )),
+    }
+}
+
+fn int_arg(
+    host: &mut dyn StdHost,
+    name: &str,
+    label: &str,
+    got: &Value,
+) -> Result<i64, wlwl_error::WlwlError> {
+    match got {
+        Value::Integer(i) => Ok(*i),
+        other => Err(kdf_err(
+            host,
+            format!(
+                "{name}: expected integer for {label}, got {}",
+                crate::value_kind(other)
+            ),
+        )),
+    }
+}
+
+/// 十六进制文本实参。**偶长 + 全 `[0-9a-fA-F]`**,否则 `E0030`
+/// (不静默截断、不猜测);空串 = 空字节串(合法)。
+fn hex_text_arg(
+    host: &mut dyn StdHost,
+    name: &str,
+    label: &str,
+    s: &str,
+) -> Result<Vec<u8>, wlwl_error::WlwlError> {
+    hex_decode_bytes(s).map_err(|reason| {
+        kdf_err(
+            host,
+            format!("{name}: {label} must be an even-length hex string, but {reason}"),
+        )
+    })
+}
+
+/// 越界一律 `E0030` —— 不静默接受、不 OOM。
+fn bounded(
+    host: &mut dyn StdHost,
+    name: &str,
+    label: &str,
+    got: i64,
+    lo: i64,
+    hi: i64,
+    unit: &str,
+) -> Result<u32, wlwl_error::WlwlError> {
+    if got < lo || got > hi {
+        return Err(kdf_err(
+            host,
+            format!("{name}: {label} = {got}{unit} is out of range; the allowed range is [{lo}, {hi}]{unit}"),
+        ));
+    }
+    u32::try_from(got).map_err(|_| {
+        kdf_err(
+            host,
+            format!("{name}: {label} = {got}{unit} does not fit in 32 bits"),
+        )
+    })
+}
+
+/// PBKDF2-HMAC-SHA256(RFC 8018 §5.2):
+/// `T_i = U_1 xor U_2 xor ... xor U_c`,`U_1 = PRF(P, S || INT_BE32(i))`、
+/// `U_j = PRF(P, U_{j-1})`,`i` 从 **1** 起,输出按 `i` 顺序拼接后取前
+/// `out.len()` 字节。
+///
+/// **刻意手写**:PRF 就是本文件的 `hmac_sha256_bytes`(M2 为 `HMAC_SHA256`
+/// 写的,现在有第二个消费者 —— 单一实现,杜绝副本漂移)。RFC 8018 的
+/// PBKDF2 本身约 30 行,不值得为它引一个依赖。
+fn pbkdf2_hmac_sha256(password: &[u8], salt: &[u8], iter: u32, out: &mut [u8]) {
+    const HLEN: usize = 32;
+    let blocks = out.len().div_ceil(HLEN);
+    for block in 1..=blocks {
+        // 末块可能不满 32 字节(输出长度由调用方定,不是 32 的倍数)。
+        let start = (block - 1) * HLEN;
+        let end = (start + HLEN).min(out.len());
+        let chunk = &mut out[start..end];
+        let mut prf_input = Vec::with_capacity(salt.len() + 4);
+        prf_input.extend_from_slice(salt);
+        prf_input.extend_from_slice(&u32::try_from(block).unwrap_or(u32::MAX).to_be_bytes());
+        let mut u = hmac_sha256_bytes(password, &prf_input);
+        let mut acc = u;
+        for _ in 1..iter {
+            u = hmac_sha256_bytes(password, &u);
+            for (a, b) in acc.iter_mut().zip(u.iter()) {
+                *a ^= b;
+            }
+        }
+        chunk.copy_from_slice(&acc[..chunk.len()]);
+    }
+}
+
+/// `PBKDF2_ITER(password, salt, iter, len, algo) -> STRING`
+///
+/// 标准 PBKDF2,输出**小写十六进制**。参数全部显式,`algo` 当前只接受
+/// `"sha256"`(见本节 ⚠)。`salt` 是十六进制文本。
+pub fn pbkdf2_iter(host: &mut dyn StdHost, args: Vec<Value>) -> wlwl_error::WlwlResult<Outcome> {
+    const NAME: &str = "PBKDF2_ITER";
+    if args.len() != 5 {
+        return Err(arity(host, NAME, args.len(), 5));
+    }
+    let password = str_arg_at(host, NAME, "password", &args, 0)?;
+    let salt_text = str_arg_at(host, NAME, "salt", &args, 1)?;
+    let iter = int_arg(host, NAME, "iter", &args[2])?;
+    let len = int_arg(host, NAME, "len", &args[3])?;
+    let algo = str_arg_at(host, NAME, "algo", &args, 4)?;
+
+    if algo != "sha256" {
+        return Err(kdf_err(
+            host,
+            format!(
+                "{NAME}: algo = {algo:?} is not provided; only \"sha256\" is (SHA-512 is not \
+                 implemented, and the FIPS-140 interop path it exists for does not apply here)"
+            ),
+        ));
+    }
+    let iter = bounded(
+        host,
+        NAME,
+        "iter",
+        iter,
+        PBKDF2_ITER_MIN,
+        PBKDF2_ITER_MAX,
+        "",
+    )?;
+    let len = bounded(host, NAME, "len", len, KDF_LEN_MIN, KDF_LEN_MAX, " bytes")?;
+    let salt = hex_text_arg(host, NAME, "salt", salt_text)?;
+
+    let mut out = vec![0u8; len as usize];
+    pbkdf2_hmac_sha256(password.as_bytes(), &salt, iter, &mut out);
+    Ok(Outcome::normal(Value::String(bytes_to_hex(&out))))
+}
+
+/// `ARGON2ID(password, salt, t_cost, m_cost, p_cost, len) -> STRING`
+///
+/// RFC 9106 Argon2id(v = 19),内存硬、抗 GPU/ASIC。输出**小写十六进制**。
+/// `m_cost` 单位 KiB,`salt` 是十六进制文本。
+///
+/// **无 `secret` / `assoc` 形参** —— 这不是省事,是实测结论:唯一的官方向量
+/// (RFC 9106 §5.3,带 `Secret[8]` 与 `Associated data[12]`)在
+/// `argon2` 0.6.0 上**复现不出来**(得 `58a04dad…`,权威值是 `0d640df5…`),
+/// 而同一 crate 的**无 K/X 路径三方一致**(见本文件 `#[cfg(test)]` 里的
+/// `argon2id_matches_an_independent_implementation`)。一个与其他实现
+/// 互不认的 `secret` / `assoc`,存下来的哈希**任何别的实现都验不过** ——
+/// 那比没有这个参数更危险。详见 `addendum-04` §3.4。
+pub fn argon2id(host: &mut dyn StdHost, args: Vec<Value>) -> wlwl_error::WlwlResult<Outcome> {
+    const NAME: &str = "ARGON2ID";
+    if args.len() != 6 {
+        return Err(arity(host, NAME, args.len(), 6));
+    }
+    let password = str_arg_at(host, NAME, "password", &args, 0)?;
+    let salt_text = str_arg_at(host, NAME, "salt", &args, 1)?;
+    let t_cost = int_arg(host, NAME, "t_cost", &args[2])?;
+    let m_cost = int_arg(host, NAME, "m_cost", &args[3])?;
+    let p_cost = int_arg(host, NAME, "p_cost", &args[4])?;
+    let len = int_arg(host, NAME, "len", &args[5])?;
+
+    let t_cost = bounded(host, NAME, "t_cost", t_cost, ARGON2_T_MIN, ARGON2_T_MAX, "")?;
+    let m_cost = bounded(
+        host,
+        NAME,
+        "m_cost",
+        m_cost,
+        ARGON2_M_MIN,
+        ARGON2_M_MAX,
+        " KiB",
+    )?;
+    let p_cost = bounded(host, NAME, "p_cost", p_cost, ARGON2_P_MIN, ARGON2_P_MAX, "")?;
+    let len = bounded(
+        host,
+        NAME,
+        "len",
+        len,
+        ARGON2_TAG_MIN,
+        KDF_LEN_MAX,
+        " bytes",
+    )?;
+    let salt = hex_text_arg(host, NAME, "salt", salt_text)?;
+    if salt.len() < ARGON2_SALT_MIN {
+        return Err(kdf_err(
+            host,
+            format!(
+                "{NAME}: salt decodes to {} byte(s), but Argon2id requires at least {ARGON2_SALT_MIN} \
+                 (RFC 9106 recommends 16; the natural source is RANDOM_HEX)",
+                salt.len()
+            ),
+        ));
+    }
+
+    argon2id_bytes(
+        password.as_bytes(),
+        &salt,
+        t_cost,
+        m_cost,
+        p_cost,
+        len as usize,
+    )
+    .map(|bytes| Outcome::normal(Value::String(bytes_to_hex(&bytes))))
+    .map_err(|e| kdf_err(host, format!("{NAME}: {e}")))
+}
+
+/// Argon2id 原语:字节进、字节出。**成员与单测共用** —— 参数装配只写一遍,
+/// 于是「单测里过、成员里不过」这种偏差在结构上就不可能发生。
+///
+/// 刻意不带上下界检查:原语层要能跑成员层**够不着**的参数
+/// (RFC 9106 §5.3 的 `m = 32 KiB` 就是这种),那正是原语层存在的意义。
+fn argon2id_bytes(
+    password: &[u8],
+    salt: &[u8],
+    t_cost: u32,
+    m_cost: u32,
+    p_cost: u32,
+    len: usize,
+) -> Result<Vec<u8>, argon2::Error> {
+    let mut builder = ParamsBuilder::new();
+    builder
+        .m_cost(m_cost)
+        .t_cost(t_cost)
+        .p_cost(p_cost)
+        .output_len(len);
+    let argon2 = Argon2::new(Algorithm::Argon2id, Version::V0x13, builder.build()?);
+    let mut out = vec![0u8; len];
+    argon2.hash_password_into(password, salt, &mut out)?;
+    Ok(out)
 }
 
 #[cfg(test)]
@@ -637,17 +948,154 @@ mod tests {
         // STRING 表达不了二进制密钥,wlwl 层的对应口径见 D13-001。
         let key = [0xAAu8; 131];
         let data: &[u8] = b"This is a test using a larger than block-size key and a larger than block-size data. The key needs to be hashed before being used by the HMAC algorithm.";
-        let hex: String = hmac_sha256_bytes(&key, data)
-            .iter()
-            .map(|b| format!("{:02x}", b))
-            .collect();
-        // ⚠ 摘要字节用 `format!` 十六进制编码即可;**不能**再过一次
-        // `sha256_hex` —— 那是「哈希 + 编码」的复合 API,对摘要再用一次
-        // 就是双重哈希(本测试的第一次提交就栽在这里,左值
-        // cc53540e… 正是 sha256(9b09ffa7… 的字节))。
+        // ⚠ 摘要字节用 `bytes_to_hex` 即可;**不能**再过一次 `sha256_hex` ——
+        // 那是「哈希 + 编码」的复合 API,对摘要再用一次就是双重哈希(本测试
+        // 的第一次提交就栽在这里,左值 cc53540e… 正是 sha256(9b09ffa7… 的字节))。
         assert_eq!(
-            hex,
+            bytes_to_hex(&hmac_sha256_bytes(&key, data)),
             "9b09ffa71b942fcb27635fbcd5b0e944bfdc63644f0713938a7f51535c3a35e2"
         );
+    }
+
+    // ── KDF 向量(v0.11.3 M6 / W-03)────────────────────────────────────
+    //
+    // 期望值**一律不是本实现的输出**:
+    //   · PBKDF2 前两条 = RFC 7914 §11 原文,另经 Python `hashlib.pbkdf2_hmac`
+    //     逐字节复算;
+    //   · PBKDF2 第三条与 Argon2id 三条 = 独立第二实现交叉核对(下注)。
+
+    /// RFC 7914 §11 的两个 PBKDF2-HMAC-SHA-256 向量,**逐字冻结**。
+    ///
+    /// ⚠ 它们的 `c` = 1 与 80 000 **低于** OWASP 下界 600 000 ⇒ **成员层
+    /// 走这两个参数会被自己的 `E0030` 拒掉**(那正是 `encode_contract` 里的
+    /// 两条反例)。它们住在原语层证明**算法实现**对,与成员参数界无关 ——
+    /// 与 M3-1 处理 `SHA256` 的二进制向量同款做法。
+    #[test]
+    fn pbkdf2_rfc7914_11_vectors() {
+        let mut out = [0u8; 64];
+        pbkdf2_hmac_sha256(b"passwd", b"salt", 1, &mut out);
+        assert_eq!(
+            bytes_to_hex(&out),
+            concat!(
+                "55ac046e56e3089fec1691c22544b605f94185216dde0465e68b9d57c20dacbc",
+                "49ca9cccf179b645991664b39d77ef317c71b845b1e30bd509112041d3a19783",
+            )
+        );
+
+        let mut out = [0u8; 64];
+        pbkdf2_hmac_sha256(b"Password", b"NaCl", 80_000, &mut out);
+        assert_eq!(
+            bytes_to_hex(&out),
+            concat!(
+                "4ddcd8f60b98be21830cee5ef22701f9641a4418d04c0414aeff08876b34ab5",
+                "6a1d425a1225833549adb841b51c9b3176a272bdebba1d078478f62b397f33c8d",
+            )
+        );
+    }
+
+    /// 输出长度跨过 32 字节边界时,第二块要用 `S || INT_BE32(2)` **重新起链**,
+    /// 而不是接着第一块算(RFC 8018 §5.2 的块索引从 1 起)。
+    ///
+    /// 这条锁的是「前 32 字节与 `len = 32` 时相同、且后 32 字节与之不同」——
+    /// 一个把 `i` 写成从 0 起或忘记换块的实现会在这里现形。
+    #[test]
+    fn pbkdf2_block_counter_starts_at_one() {
+        let mut short = [0u8; 32];
+        pbkdf2_hmac_sha256(b"passwd", b"salt", 1, &mut short);
+        let mut long = [0u8; 64];
+        pbkdf2_hmac_sha256(b"passwd", b"salt", 1, &mut long);
+        assert_eq!(
+            &long[..32],
+            &short[..],
+            "block 1 must not depend on the requested output length"
+        );
+        assert_ne!(
+            &long[32..],
+            &short[..],
+            "block 2 must be a different chain, not a repeat of block 1"
+        );
+    }
+
+    /// 落在我们上下界内的 PBKDF2 向量(`c = 600 000` = OWASP 2025 下界),
+    /// 期望值来自 Python `hashlib.pbkdf2_hmac` 的独立复算。
+    ///
+    /// ⚠ **实测更正**:`addendum-04` §3.2(a) 曾把这条冻结成
+    /// `aaf96b2b…`,那是**错的** —— 同一组参数经 `hashlib` 复算是
+    /// `1074be24…`(本实现与之逐字节一致)。salt 在这里是**十六进制解码后**
+    /// 的 4 字节 `73 61 6c 74`,不是 ASCII 串 `73616c74`;把未解码的文本
+    /// 当盐就会得到另一个值。计划文档已改。
+    #[test]
+    fn pbkdf2_owasp_floor_vector() {
+        let mut out = [0u8; 32];
+        pbkdf2_hmac_sha256(
+            b"passwd",
+            &hex_decode_bytes("73616c74").unwrap(),
+            600_000,
+            &mut out,
+        );
+        assert_eq!(
+            bytes_to_hex(&out),
+            "1074be241b7be078a90369fae10cdc0394cf64a6780904421bd79c51fd372db0"
+        );
+    }
+
+    /// Argon2id 与**独立第二实现**逐字节一致。
+    ///
+    /// 期望值由一份照 **RFC 9106 + 参考实现 C 源码**
+    /// (`P-H-C/phc-winner-argon2` 的 `core.c` / `ref.c`)独立写成的 Python
+    /// 产生;而那份实现先**逐块复现了参考实现自己的 KAT**
+    /// (`kats/argon2id`,即 RFC 9106 §5.3,含三轮全部中间分块与最终 Tag)。
+    /// 这就是 D13-001 那条纪律在 Argon2 上的形状:**第二个实现**,不是自己
+    /// 的输出。推导与全部读数见 `addendum-04` §3.4。
+    #[test]
+    fn argon2id_matches_an_independent_implementation() {
+        // A:m = 19 456 KiB(OWASP 下界)、t = 2、p = 1、tag 32 B、盐 8 B
+        //    —— 成员层的**下界参数**本身(OWASP 最小配置),最该被钉住的一组。
+        assert_eq!(
+            bytes_to_hex(
+                &argon2id_bytes(
+                    b"passwd",
+                    &hex_decode_bytes("0001020304050607").unwrap(),
+                    2,
+                    19_456,
+                    1,
+                    32
+                )
+                .unwrap()
+            ),
+            "b95d51b0625a6b6013d3e7b024d8f34efb064f93996fea539965c3852ccbafa3"
+        );
+
+        // B:t = 3、p = 2(多 lane)—— `p_cost` 是显式参数,得有向量钉住它生效
+        assert_eq!(
+            bytes_to_hex(
+                &argon2id_bytes(
+                    b"passwd",
+                    &hex_decode_bytes("0102030405060708").unwrap(),
+                    3,
+                    19_456,
+                    2,
+                    32
+                )
+                .unwrap()
+            ),
+            "4deaf7554232beb810f790184b3f0051cd30a867106611088f85a9966390455d"
+        );
+
+        // C:口令与盐都是非 ASCII / 全零,证明文本域走的是 UTF-8 字节
+        assert_eq!(
+            bytes_to_hex(&argon2id_bytes("世界".as_bytes(), &[0u8; 16], 2, 19_456, 1, 32).unwrap()),
+            "a5e4dd3d628296d67d7aa747d30d956b99387c6a0e6fa4af14a0b63cd5da417d"
+        );
+    }
+
+    /// `p_cost` 必须真的改变结果 —— 参数是**显式**的,不是摆设。
+    /// (无 `parallel` feature 时 `p_cost` 仍走多 lane 语义,只是不并发。)
+    #[test]
+    fn argon2id_p_cost_changes_the_tag() {
+        let salt = [0u8; 16];
+        let a = argon2id_bytes(b"passwd", &salt, 2, 19_456, 1, 32).unwrap();
+        let b = argon2id_bytes(b"passwd", &salt, 2, 19_456, 2, 32).unwrap();
+        assert_ne!(a, b, "p_cost had no effect on the tag");
     }
 }

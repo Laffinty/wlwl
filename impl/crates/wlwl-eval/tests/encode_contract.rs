@@ -419,6 +419,191 @@ const CASES: &[Case] = &[
         ),
         expect: "!E0022 HMAC_SHA256: function expects 2 argument(s), got 1",
     },
+
+    // ── PBKDF2_ITER(v0.11.3 M6 / W-03)────────────────────────────────
+    //
+    // 正例期望值**不是实现输出**:两条都经 Python `hashlib.pbkdf2_hmac`
+    // 独立复算(与 RFC 7914 §11 的原文向量同一纪律,D13-001)。
+    Case {
+        name: "kdf_pbkdf2_at_the_owasp_floor",
+        src: concat!(
+            r#"IMPORT("wlwl:std.encode", ["PBKDF2_ITER"]); "#,
+            r#"PBKDF2_ITER("passwd", "73616c74", 600000, 32, "sha256")"#
+        ),
+        expect: "1074be241b7be078a90369fae10cdc0394cf64a6780904421bd79c51fd372db0",
+    },
+    Case {
+        name: "kdf_pbkdf2_salt_is_hex_decoded_not_ascii",
+        src: concat!(
+            r#"IMPORT("wlwl:std.encode", ["PBKDF2_ITER"]); "#,
+            r#"PBKDF2_ITER("passwd", "73616C74", 600000, 32, "sha256")"#
+        ),
+        // 大写 hex 与小写等价;且**不等于**把 `73616c74` 当 ASCII 盐用 ——
+        // 后者会解出 8 字节 0x37 0x36…,是完全不同的派生值。
+        expect: "1074be241b7be078a90369fae10cdc0394cf64a6780904421bd79c51fd372db0",
+    },
+    // RFC 7914 §11 的两个 `c` 值原样搬过来:它们**低于** OWASP 下界 ⇒
+    // 成员层必须拒。原语层(`encode.rs` 的 `pbkdf2_rfc7914_11_vectors`)
+    // 仍用它们证明算法实现本身对。
+    Case {
+        name: "kdf_pbkdf2_rfc7914_c1_is_rejected_by_our_floor",
+        src: concat!(
+            r#"IMPORT("wlwl:std.encode", ["PBKDF2_ITER"]); "#,
+            r#"PBKDF2_ITER("passwd", "salt", 1, 64, "sha256")"#
+        ),
+        expect: "!E0030 PBKDF2_ITER: iter = 1 is out of range; the allowed range is [600000, 10000000]",
+    },
+    Case {
+        name: "kdf_pbkdf2_rfc7914_c80000_is_rejected_by_our_floor",
+        src: concat!(
+            r#"IMPORT("wlwl:std.encode", ["PBKDF2_ITER"]); "#,
+            r#"PBKDF2_ITER("Password", "4e61436c", 80000, 64, "sha256")"#
+        ),
+        expect: "!E0030 PBKDF2_ITER: iter = 80000 is out of range; the allowed range is [600000, 10000000]",
+    },
+    Case {
+        name: "kdf_pbkdf2_iter_above_the_cap",
+        src: concat!(
+            r#"IMPORT("wlwl:std.encode", ["PBKDF2_ITER"]); "#,
+            r#"PBKDF2_ITER("passwd", "73616c74", 10000001, 32, "sha256")"#
+        ),
+        expect: "!E0030 PBKDF2_ITER: iter = 10000001 is out of range; the allowed range is [600000, 10000000]",
+    },
+    Case {
+        name: "kdf_pbkdf2_len_zero",
+        src: concat!(
+            r#"IMPORT("wlwl:std.encode", ["PBKDF2_ITER"]); "#,
+            r#"PBKDF2_ITER("passwd", "73616c74", 600000, 0, "sha256")"#
+        ),
+        expect: "!E0030 PBKDF2_ITER: len = 0 bytes is out of range; the allowed range is [1, 1024] bytes",
+    },
+    Case {
+        name: "kdf_pbkdf2_sha512_is_not_provided",
+        src: concat!(
+            r#"IMPORT("wlwl:std.encode", ["PBKDF2_ITER"]); "#,
+            r#"PBKDF2_ITER("passwd", "73616c74", 600000, 32, "sha512")"#
+        ),
+        expect: concat!(
+            "!E0030 PBKDF2_ITER: algo = \"sha512\" is not provided; only \"sha256\" is ",
+            "(SHA-512 is not implemented, and the FIPS-140 interop path it exists for ",
+            "does not apply here)"
+        ),
+    },
+    Case {
+        name: "kdf_pbkdf2_odd_length_salt",
+        src: concat!(
+            r#"IMPORT("wlwl:std.encode", ["PBKDF2_ITER"]); "#,
+            r#"PBKDF2_ITER("passwd", "73616c7", 600000, 32, "sha256")"#
+        ),
+        expect: "!E0030 PBKDF2_ITER: salt must be an even-length hex string, but hex string has odd length 7",
+    },
+    Case {
+        name: "kdf_pbkdf2_non_hex_salt",
+        src: concat!(
+            r#"IMPORT("wlwl:std.encode", ["PBKDF2_ITER"]); "#,
+            r#"PBKDF2_ITER("passwd", "73616c74zz", 600000, 32, "sha256")"#
+        ),
+        expect: "!E0030 PBKDF2_ITER: salt must be an even-length hex string, but illegal hex digit in \"zz\"",
+    },
+    Case {
+        name: "kdf_pbkdf2_arity",
+        src: concat!(
+            r#"IMPORT("wlwl:std.encode", ["PBKDF2_ITER"]); "#,
+            r#"PBKDF2_ITER("passwd", "73616c74", 600000, 32)"#
+        ),
+        expect: "!E0022 PBKDF2_ITER: function expects 5 argument(s), got 4",
+    },
+
+    // ── ARGON2ID(v0.11.3 M6 / W-03)──────────────────────────────────
+    //
+    // 期望值来自**独立第二实现**(照 RFC 9106 + 参考实现 C 源码写的
+    // Python),而那份实现先逐块复现了参考实现自己的 KAT。推导见
+    // `addendum-04` §3.4。
+    Case {
+        name: "kdf_argon2id_at_the_owasp_floor",
+        src: concat!(
+            r#"IMPORT("wlwl:std.encode", ["ARGON2ID"]); "#,
+            r#"ARGON2ID("passwd", "0001020304050607", 2, 19456, 1, 32)"#
+        ),
+        expect: "b95d51b0625a6b6013d3e7b024d8f34efb064f93996fea539965c3852ccbafa3",
+    },
+    Case {
+        name: "kdf_argon2id_two_lanes",
+        src: concat!(
+            r#"IMPORT("wlwl:std.encode", ["ARGON2ID"]); "#,
+            r#"ARGON2ID("passwd", "0102030405060708", 3, 19456, 2, 32)"#
+        ),
+        expect: "4deaf7554232beb810f790184b3f0051cd30a867106611088f85a9966390455d",
+    },
+    Case {
+        name: "kdf_argon2id_utf8_password_and_zero_salt",
+        src: concat!(
+            r#"IMPORT("wlwl:std.encode", ["ARGON2ID"]); "#,
+            r#"ARGON2ID("世界", "00000000000000000000000000000000", 2, 19456, 1, 32)"#
+        ),
+        // 口令按 UTF-8 字节入算(同 `SHA256` 的既有口径);盐是 16 个零字节。
+        expect: "a5e4dd3d628296d67d7aa747d30d956b99387c6a0e6fa4af14a0b63cd5da417d",
+    },
+    // RFC 9106 §5.3 的 `m = 32 KiB` 远低于 OWASP 下界 ⇒ 成员层拒。
+    Case {
+        name: "kdf_argon2id_rfc9106_memory_is_rejected_by_our_floor",
+        src: concat!(
+            r#"IMPORT("wlwl:std.encode", ["ARGON2ID"]); "#,
+            r#"ARGON2ID("passwd", "0102030405060708", 3, 32, 4, 32)"#
+        ),
+        expect: "!E0030 ARGON2ID: m_cost = 32 KiB is out of range; the allowed range is [19456, 1048576] KiB",
+    },
+    Case {
+        name: "kdf_argon2id_t_cost_below_floor",
+        src: concat!(
+            r#"IMPORT("wlwl:std.encode", ["ARGON2ID"]); "#,
+            r#"ARGON2ID("passwd", "0102030405060708", 1, 19456, 1, 32)"#
+        ),
+        expect: "!E0030 ARGON2ID: t_cost = 1 is out of range; the allowed range is [2, 32]",
+    },
+    Case {
+        name: "kdf_argon2id_p_cost_above_cap",
+        src: concat!(
+            r#"IMPORT("wlwl:std.encode", ["ARGON2ID"]); "#,
+            r#"ARGON2ID("passwd", "0102030405060708", 2, 19456, 17, 32)"#
+        ),
+        expect: "!E0030 ARGON2ID: p_cost = 17 is out of range; the allowed range is [1, 16]",
+    },
+    Case {
+        name: "kdf_argon2id_memory_above_cap",
+        src: concat!(
+            r#"IMPORT("wlwl:std.encode", ["ARGON2ID"]); "#,
+            r#"ARGON2ID("passwd", "0102030405060708", 2, 1048577, 1, 32)"#
+        ),
+        expect: "!E0030 ARGON2ID: m_cost = 1048577 KiB is out of range; the allowed range is [19456, 1048576] KiB",
+    },
+    Case {
+        name: "kdf_argon2id_tag_below_rfc_minimum",
+        src: concat!(
+            r#"IMPORT("wlwl:std.encode", ["ARGON2ID"]); "#,
+            r#"ARGON2ID("passwd", "0102030405060708", 2, 19456, 1, 3)"#
+        ),
+        expect: "!E0030 ARGON2ID: len = 3 bytes is out of range; the allowed range is [4, 1024] bytes",
+    },
+    Case {
+        name: "kdf_argon2id_salt_shorter_than_the_underlying_minimum",
+        src: concat!(
+            r#"IMPORT("wlwl:std.encode", ["ARGON2ID"]); "#,
+            r#"ARGON2ID("passwd", "01020304", 2, 19456, 1, 32)"#
+        ),
+        expect: concat!(
+            "!E0030 ARGON2ID: salt decodes to 4 byte(s), but Argon2id requires at least 8 ",
+            "(RFC 9106 recommends 16; the natural source is RANDOM_HEX)"
+        ),
+    },
+    Case {
+        name: "kdf_argon2id_arity",
+        src: concat!(
+            r#"IMPORT("wlwl:std.encode", ["ARGON2ID"]); "#,
+            r#"ARGON2ID("passwd", "0102030405060708", 2, 19456, 1)"#
+        ),
+        expect: "!E0022 ARGON2ID: function expects 6 argument(s), got 5",
+    },
 ];
 
 // `IMP` 保留给将来批量生成用例时引用;逐条手写 `IMPORT` 是刻意的 ——
@@ -526,7 +711,7 @@ fn encode_member_set_matches_the_spec_table() {
 
     assert_eq!(
         spec.len(),
-        8,
+        10,
         "§11 table extractor found {} member(s): {spec:?} — the table's shape changed \
          and the extractor needs updating",
         spec.len()
@@ -540,6 +725,8 @@ fn encode_member_set_matches_the_spec_table() {
         "URL_DECODE",
         "SHA256",
         "HMAC_SHA256",
+        "PBKDF2_ITER",
+        "ARGON2ID",
     ] {
         assert!(
             spec.iter().any(|m| m == n),
@@ -550,7 +737,7 @@ fn encode_member_set_matches_the_spec_table() {
             "implementation does not export `{n}`: {impls:?}"
         );
     }
-    assert_eq!(impls.len(), 8, "wlwl:std.encode exports 8 members");
+    assert_eq!(impls.len(), 10, "wlwl:std.encode exports 10 members");
 }
 
 fn spec_path() -> PathBuf {

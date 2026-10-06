@@ -39,10 +39,12 @@ markdown** 解析成员表后与实现对拍(ADR-0023 §v0.x 1 的执行机制)�
 | M1 | 新命名空间 `std.sanitize` 的转义对:`HTML_ESCAPE` `HTML_UNESCAPE`(§13) | R2 |
 | M2 | `std.encode` 追加 `SHA256` `HMAC_SHA256`(§11) | R2 |
 | M3 | `std.sanitize` 追加 `HTML_SANITIZE`(§13) | R2 |
-| — | 否决留档:**SQL 转义**不做(§13.3)、**加解密 / 密钥生成**不做(§11.5);`MD5` / `SHA-1` 已破不提供;SHA-3 / BLAKE3 记演进 | — |
+| M6 | `std.encode` 追加 `PBKDF2_ITER` `ARGON2ID` 两个 KDF(§11;`RANDOM_BYTES` `RANDOM_HEX` `TIMING_SAFE_EQ` 属 W-04,尚未落地) | R2 |
+| — | 否决留档:**SQL 转义**不做(§13.3)、**加解密 / 密钥生成**不做(§11.5 §11.6);`MD5` / `SHA-1` 已破不提供;SHA-3 / BLAKE3 记演进 | — |
 
 成员面 **99 → 104**、命名空间 **12 → 13**(附录 A 镜像为准;`std.ai` 的 5 个
-成员仍受 `real-ai` feature 门控,默认构建可见 99)。
+成员仍受 `real-ai` feature 门控,默认构建可见 99)。M6 两个 KDF 落地后
+`std.encode` 由 8 增至 10 成员,成员面实际为 **106**。
 
 ## 0 总则
 
@@ -598,6 +600,30 @@ base64(RFC 4648 §4)、hex、percent-encoding(RFC 3986 §2)。三者都作用在
 | `URL_DECODE(s)` | 解 `%XX`;**`+` 不折成空格** | 截断或非法的 `%` 转义、解出非 UTF-8 → `ERR([... "DecodeError" ...])` |
 | `SHA256(data) -> STRING` | SHA-256(FIPS 180-4);输入按 UTF-8 字节,输出**小写十六进制**(64 字符) | 类型错 `E0030`;元数错 `E0022` |
 | `HMAC_SHA256(key, data) -> STRING` | HMAC-SHA256(RFC 2104);`key` / `data` 均按 UTF-8 字节;密钥超过块长(64 字节)先哈希再补零 | 同上 |
+| `PBKDF2_ITER(password, salt, iter, len, algo) -> STRING` | PBKDF2-HMAC-SHA256(RFC 8018 §5.2);`salt` 是**十六进制文本**;输出**小写十六进制**。`algo` 当前**只接受 `"sha256"`** —— 签名保留该形参是留位,SHA-512 不提供(见 §11.5) | `iter` ∉ [600 000, 10 000 000]、`len` ∉ [1, 1024]、未知 `algo`、`salt` 非偶长 hex → `E0030`;类型错 `E0030`;元数错 `E0022` |
+| `ARGON2ID(password, salt, t_cost, m_cost, p_cost, len) -> STRING` | Argon2id(RFC 9106,v = 19);`m_cost` 单位 KiB;`salt` 是**十六进制文本**;输出**小写十六进制**。**参数全部显式,无默认值** | `t_cost` ∉ [2, 32]、`m_cost` ∉ [19 456, 1 048 576] KiB、`p_cost` ∉ [1, 16]、`len` ∉ [4, 1024]、解码后 `salt` < 8 字节、`salt` 非偶长 hex → `E0030`;类型错 `E0030`;元数错 `E0022` |
+
+> **两个 KDF 的上下界不是「推荐值」,是硬边界。** 下界取 OWASP 2025 的
+> 最小配置(Argon2id `m` = 19 MiB / `t` = 2 / `p` = 1;PBKDF2-SHA256
+> `c` = 600 000),上界防「一个参数打满机器」。不设下界的话「参数全显式」
+> 等于「调用方可以传 `iter = 1`」—— 那比不给这个成员更危险。
+> **代价也要写明:越界会拒掉一些合法的历史参数。** RFC 7914 §11 的
+> `c` = 1 / 80 000 与 RFC 9106 §5.3 的 `m` = 32 KiB **在本成员上都是
+> `E0030`** —— 它们仍作为**原语层**向量冻结在 `wlwl-std` 的单元测试里。
+
+> ⚠ **`salt` 收十六进制文本,不是原样字符串。** RFC 8018 / RFC 9106 的
+> `salt` 是**任意字节串**,而本语言的 `STRING` 是 UTF-8 文本(同 D13-001
+> 的二进制密钥问题)。三者一律十六进制:偶数长度 + 全 `[0-9a-fA-F]`,
+> 否则 `E0030`(不静默截断、不猜测);**空串 = 空字节串**是合法的。
+> ⇒ **盐的自然来源是 `RANDOM_HEX`(W-04)**,不是 `RANDOM_BYTES`。
+
+> ⚠ **`ARGON2ID` 没有 `secret`(pepper)/ `assoc`(关联数据)形参。** 曾提议
+> 加上,理由是「没有它们就一个 RFC 官方向量都验不了」。**实测结论是不能加**:
+> 唯一的官方向量(RFC 9106 §5.3,带 `Secret[8]` + `Associated data[12]`)
+> 在 `argon2` 0.6.0 上**复现不出来**(`58a04dad…` vs 权威值 `0d640df5…`),
+> 而同一 crate 的无 K/X 路径三方一致。一个与其他实现**互不认**的
+> `secret` / `assoc`,存下来的哈希任何别的实现都验不过 —— 那比没有这个
+> 参数更危险。完整证据链见 `docs/plan/addendum-04-crypto-kdf-secrets.md` §3.4。
 
 ### 11.3 三条需要明写的设计取舍
 
@@ -647,6 +673,27 @@ base64 编码的期望值取自 RFC 4648 §10 的表,**不复制实现输出**:
 - 实现不承诺常数时间;`HMAC_SHA256` 结果的比较由调用方负责;
 - 实现复用 `wlwl-ast::sha256`(FIPS 180-4 纯 Rust,原为 AST 稳定 ID 所写)——
   单一实现两个消费者,杜绝副本漂移。
+
+### 11.6 KDF 的边界(v0.11.3 M6 / W-03)
+
+**有 KDF ≠ 密码学这块齐了。下面三条否决依然成立,且不因 `PBKDF2_ITER` /
+`ARGON2ID` 的加入而松动。**
+
+- **加解密仍未做,密钥生成仍未做。** 本命名空间现在能安全地处理**口令**
+  (慢哈希 + 参数显式 + 上下界硬),但**不能加密数据、不能凭空生成密钥**。
+  §11.5 第一条的否决理由原样保留:没有密钥管理就不该给。
+- **`algo` 只有 `"sha256"`,不是漏实现。** 签名保留该形参是**留位**
+  (免得日后加值改签名)。SHA-512 若要支持得手写一份实现并另取 FIPS 180-4
+  向量冻结;而 OWASP 把 PBKDF2-HMAC-SHA-512 的适用场景写成「FIPS-140
+  合规时」—— 本语言提供不了经 FIPS 校验的实现(没有硬件边界),那条互操作
+  路径不成立。**记为已知限制**,不是设计缺陷。
+- **`SHA256` / `HMAC_SHA256` 不是口令哈希。** 它们是**快的**单向摘要:
+  GPU 上每秒几十亿次。口令必须走 `PBKDF2_ITER` / `ARGON2ID` —— 全部意义
+  就是把成本压到每秒几千次。skill 的反模式清单里有这一条。
+- **`ARGON2ID` 引入了第三个 RustCrypto 依赖**(`argon2` 0.6.0,MIT OR
+  Apache-2.0),feature 收窄为 `["alloc"]`;`PBKDF2_ITER` **手写**(约 30 行,
+  PRF 复用 `HMAC_SHA256` 已有的字节级实现,不引依赖)。**不做**对称加密 /
+  密钥生成 / KDF 便捷封装 / KMS / SHA-3 / BLAKE3 / `MD5` / `SHA-1`。
 
 ## 12 `std.text` — Unicode 大小写(R2,v0.11.2 新增)
 
@@ -874,7 +921,7 @@ WHATWG 规则的**白名单子集**,差异显式登记 —— 安全性由幂等
 | `std.fs` | `READ_FILE` `WRITE_FILE` `EXISTS` | R2 | v0.10 及以前 |
 | `std.json` | `PARSE` `STRINGIFY` | R2 | v0.10 及以前 |
 | `std.format` | `FORMAT` | R2 | v0.10 及以前 |
-| `std.encode` | `BASE64_ENCODE` `BASE64_DECODE` `HEX_ENCODE` `HEX_DECODE` `URL_ENCODE` `URL_DECODE` `SHA256` `HMAC_SHA256` | R2 | v0.11.2 / SHA256、HMAC_SHA256 于 v0.11.3 |
+| `std.encode` | `BASE64_ENCODE` `BASE64_DECODE` `HEX_ENCODE` `HEX_DECODE` `URL_ENCODE` `URL_DECODE` `SHA256` `HMAC_SHA256` `PBKDF2_ITER` `ARGON2ID` | R2 | v0.11.2 / SHA256、HMAC_SHA256 于 v0.11.3 |
 | `std.text` | `TO_UPPER` `TO_LOWER` | R2 | v0.11.2 |
 | `std.sanitize` | `HTML_ESCAPE` `HTML_UNESCAPE` `HTML_SANITIZE` | R2 | v0.11.3 |
 | `std.collection` | `MAP` `FILTER` `REDUCE` `SORT` `SORT_BY` `ZIP` `RANGE` `ANY` `ALL` `FIND` `ENUMERATE` `TAKE` `DROP` `FLAT` `UNIQ` `GROUP_BY` `JOIN` `CHUNK` `WINDOW` `DEDUP_BY` `MIN_BY` `MAX_BY` `SUM` `PRODUCT` `FOLD_RIGHT` `POSITION` `KEY_BY` | 混合(R1 门面 + R2 `RANGE`/`MAP`/`FILTER`/`CHUNK`/`WINDOW`/`ENUMERATE`/`ZIP`/`UNIQ`/`FLAT`/`JOIN`/`GROUP_BY`/`DEDUP_BY`/`KEY_BY`) | v0.10 及以前(成员)/ v0.11(R1 重写,M5 起 RANGE 沉 R2)/ v0.11.3(M5 L0-A-2 加 MAP·FILTER·CHUNK·WINDOW,L0-A-3a 加 ENUMERATE·ZIP·UNIQ·FLAT·JOIN,L0-A-3b 加 GROUP_BY·DEDUP_BY·KEY_BY 沉 R2) |

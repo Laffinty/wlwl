@@ -32,6 +32,7 @@ const NAMESPACE_META: &[(&str, &str, &str)] = &[
     ("wlwl:std.format", "R2", "v0.10 及以前"),
     // [v0.11.3 M2] SHA256 / HMAC_SHA256 追加(沿 str 的先例:引入列记
     // 命名空间的引入版本,新成员的版本写成员表与 CHANGELOG)。
+    // [v0.11.3 M6 / W-03] 再加 `PBKDF2_ITER` / `ARGON2ID` 两个 KDF。
     (
         "wlwl:std.encode",
         "R2",

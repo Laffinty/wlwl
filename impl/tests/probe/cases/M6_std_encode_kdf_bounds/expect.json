@@ -1,0 +1,14 @@
+{
+ "exit": 1,
+ "contains": [
+  "before",
+  "E0030",
+  "PBKDF2_ITER: iter = 1 is out of range; the allowed range is [600000, 10000000]"
+ ],
+ "not_contains": [
+  "after",
+  "DomainError",
+  "DecodeError"
+ ],
+ "_why": "v0.11.3 M6 / W-03。RFC 7914 §11 的第一个官方向量(c = 1)在**本成员上必须是 E0030** —— 它远低于 OWASP 2025 的下界 600 000。该向量仍作为**原语层**向量冻结在 wlwl-std 的单元测试里(证明 PBKDF2 算法实现本身对),但语言层不得放行:「参数全显式」若没有下界,等于给了调用方一个能配出 iter=1 的接口,比不给更危险。`not_contains: after` 证明运行真的终止了;`not_contains: DomainError / DecodeError` 钉住第三类口径:KDF 的参数错是**程序员错误**,走原生诊断(§11.1),不是数据违例的 ERR 值 —— 与编码侧的 DecodeError 分得开。Argon2id 侧同款见 M6_std_encode_kdf_bounds_argon2id。"
+}
