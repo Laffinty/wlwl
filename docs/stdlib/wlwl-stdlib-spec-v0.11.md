@@ -717,6 +717,15 @@ base64 编码的期望值取自 RFC 4648 §10 的表,**不复制实现输出**:
   向量冻结;而 OWASP 把 PBKDF2-HMAC-SHA-512 的适用场景写成「FIPS-140
   合规时」—— 本语言提供不了经 FIPS 校验的实现(没有硬件边界),那条互操作
   路径不成立。**记为已知限制**,不是设计缺陷。
+- **选哪个 KDF(调用方最该看的一段)**:本机 release 实测
+  `ARGON2ID`(m = 19 456 KiB / t = 2 / p = 1,OWASP 下界)= **20.3 ms**,
+  而 `PBKDF2_ITER`(c = 600 000,同为 OWASP 下界)= **833 ms** ——
+  **Argon2id 便宜 41 倍,且抗 GPU/ASIC 强得多。**
+  ⇒ **新写的口令存储应当默认 `ARGON2ID`。** `PBKDF2_ITER` 存在的理由是
+  **互操作**:别的系统只能验 PBKDF2 时,它是那条下限,不是「二选一时差一点」。
+  ⚠️ 两边的下界都会让调用方**明显变慢**(0.8 s / 20 ms 量级)—— 这正是
+  KDF 的意义,但要写进你的超时与 UX 预期里。`ARGON2ID` 每次调用还分配约 19 MiB。
+  (读数与取数方法见 `impl/crates/wlwl-eval/benches/baseline.txt` 的 KDF 段。)
 - **`SHA256` / `HMAC_SHA256` 不是口令哈希。** 它们是**快的**单向摘要:
   GPU 上每秒几十亿次。口令必须走 `PBKDF2_ITER` / `ARGON2ID` —— 全部意义
   就是把成本压到每秒几千次。skill 的反模式清单里有这一条。
@@ -730,6 +739,34 @@ base64 编码的期望值取自 RFC 4648 §10 的表,**不复制实现输出**:
   的线程局部回退);`PBKDF2_ITER` **手写**(约 30 行,PRF 复用 `HMAC_SHA256`
   已有的字节级实现,不引依赖)。**不做**对称加密 / 密钥生成 / KDF 便捷封装 /
   KMS / SHA-3 / BLAKE3 / `MD5` / `SHA-1`。
+
+### 11.7 口令处理的标准写法(v0.11.3 M6)
+
+下面这段**是跑过的**(不是示意代码;两条输出在括号里):
+
+```wlwl
+IMPORT("wlwl:std.encode", ["RANDOM_HEX", "ARGON2ID", "TIMING_SAFE_EQ"]);
+
+LET(salt, RANDOM_HEX(16));
+LET(stored, ARGON2ID("correct horse battery staple", salt, 2, 19456, 1, 32));
+
+// 存库:把 salt 与 stored 一起落盘(盐不是秘密,但必须**每次不同**)。
+
+// 验签:重新派生一次,再常数时间比较。
+PRINT(TIMING_SAFE_EQ(stored, ARGON2ID("correct horse battery staple", salt, 2, 19456, 1, 32)));  // TRUE
+PRINT(TIMING_SAFE_EQ(stored, ARGON2ID("wrong horse battery staple", salt, 2, 19456, 1, 32)));      // FALSE
+```
+
+三条要点,每条都有代价:
+
+- **盐来自 `RANDOM_HEX(16)`**,不是 `RANDOM_BYTES` —— KDF 的 `salt` 实参收的是
+  **十六进制文本**。盐不保密,但**必须每次不同**(相同盐 ⇒ 相同口令的哈希可直接
+  互相比对,也让彩虹表能一次命中所有人)。
+- **参数照抄,不要自己调小**。`2, 19456, 1` 是 OWASP 2025 的下界。想更快就把
+  `m_cost` 调大(成本随 `m_cost` 线性涨),**不要**把 `t_cost` 调到 1 ——
+  那正是下界要拦的东西(会被自己的 `E0030` 拒掉)。
+- **比较必须用 `TIMING_SAFE_EQ`**,不要用 `=`。朴素比较会在首个不同的字节处
+  提前返回,验签耗时本身就是一条侧信道。
 
 ## 12 `std.text` — Unicode 大小写(R2,v0.11.2 新增)
 

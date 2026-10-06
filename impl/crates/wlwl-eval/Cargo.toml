@@ -44,3 +44,10 @@ path = "benches/encode.rs"
 name = "collection"
 harness = false
 path = "benches/collection.rs"
+# [v0.11.3 M6 / W-05] KDF / 熵源 / 常数时间比较的 release 读数。
+# 与 encode 段分开:KDF 的成本**就是**它的价值,而 encode 段是 §7.4 的
+# 吞吐指标,两者不构成同一条曲线。
+[[bench]]
+name = "kdf"
+harness = false
+path = "benches/kdf.rs"
