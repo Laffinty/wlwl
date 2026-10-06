@@ -282,8 +282,8 @@ cargo bench -p wlwl-eval --bench sanitize -- --warm-up-time 1 --measurement-time
 
 | 子项 | 内容 | 状态 | commit |
 |---|---|---|---|
-| W-01 | 纯 R2 三成员(`NOW` / `MONOTONIC` / `SLEEP`)+ 契约 | 🔄 **A1 已完成(2026-10-06)** —— `NOW()` + `MONOTONIC()` 两个**纯读**成员落地,新命名空间 `wlwl:std.time`(命名空间 13 → 14、成员面 109 → **111**)。**零宿主改动**:`wlwl-std` 直读 `SystemTime` / `Instant`,与 `RANDOM_BYTES` 直读 `getrandom` 同款(§3.7)。**留了 B 阶段的接缝**:成员调 `now_ms(_host)`,`_host` 形参 A1 阶段占位 ⇒ B 只换函数体、不改签名与调用点。`SLEEP` 属 A2(W-02 一并做,需要新 `YieldReason` 变体 + park/wake) | 待回填 |
+| W-01 | 纯 R2 三成员(`NOW` / `MONOTONIC` / `SLEEP`)+ 契约 | 🔄 **A1 已完成(2026-10-06)** —— `NOW()` + `MONOTONIC()` 两个**纯读**成员落地,新命名空间 `wlwl:std.time`(命名空间 13 → 14、成员面 109 → **111**)。**零宿主改动**:`wlwl-std` 直读 `SystemTime` / `Instant`,与 `RANDOM_BYTES` 直读 `getrandom` 同款(§3.7)。**留了 B 阶段的接缝**:成员调 `now_ms(_host)`,`_host` 形参 A1 阶段占位 ⇒ B 只换函数体、不改签名与调用点。`SLEEP` 属 A2(W-02 一并做,需要新 `YieldReason` 变体 + park/wake) | `902b7cb` |
 | W-02 | `SINCE` / `TIMEOUT` + 契约 | 未动工 | — |
-| W-03 | **气泡落点裁决**(ADR)+ 落点确认 | ✅ **完成(2026-10-06)** —— 业主批准 **ADR-0024**(Status 改 **Accepted**,并按 §3.7 / `ADR-0024` §6 **重切成三片 A1/A2/B**);气泡(B 阶段)落点取**候选甲**(`StdHost` 加方法,理由见 §3.6(b));五问一并定案(§3.7 末)。**调查过程中白捡两条**:① `detect_deadlock_l1` 只认 `ReceivingOn`/`SendingOn`,故「等时钟」若单列一个新 `YieldReason` 就**天然与真死锁可区分**(ADR 开放问题 2 免费拿到,见 §3.6(c));② 「`STEP` 的选项」候选**不可用** —— **`STEP` 不存在**(附录 G / 语言规范 / 实现均无),已更正规范 §14 的同一处误述(§3.6(a)) | `20475c9`(调查)/ 待回填(批准) |
+| W-03 | **气泡落点裁决**(ADR)+ 落点确认 | ✅ **完成(2026-10-06)** —— 业主批准 **ADR-0024**(Status 改 **Accepted**,并按 §3.7 / `ADR-0024` §6 **重切成三片 A1/A2/B**);气泡(B 阶段)落点取**候选甲**(`StdHost` 加方法,理由见 §3.6(b));五问一并定案(§3.7 末)。**调查过程中白捡两条**:① `detect_deadlock_l1` 只认 `ReceivingOn`/`SendingOn`,故「等时钟」若单列一个新 `YieldReason` 就**天然与真死锁可区分**(ADR 开放问题 2 免费拿到,见 §3.6(c));② 「`STEP` 的选项」候选**不可用** —— **`STEP` 不存在**(附录 G / 语言规范 / 实现均无),已更正规范 §14 的同一处误述(§3.6(a)) | `20475c9`(调查)/ `902b7cb`(批准 + A1 落地) |
 | W-04 | 气泡实现 + 时序契约 + 逃逸用例 | 未动工 | — |
 | W-05 | skill / CHANGELOG / 附录 A 收口 | 未动工 | — |
