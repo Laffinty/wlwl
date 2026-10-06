@@ -193,6 +193,51 @@ tagLen=32 / P=`01`×32 / S=`02`×16 / **K=`03`×8** / **X=`04`×12**:
   依赖面收窄为 `default-features = false, features = ["alloc"]`。
 
 
+### 3.4 W-03 实施准备(2026-10-06):动手前又挖出两条实现事实
+
+在真正写代码前把依赖与既有实现摸了一遍,发现两件**计划没写、但会直接决定实现形态**的事:
+
+**① 仓里没有 SHA-512。** `wlwl-ast` 只有 `sha256.rs`(`sha256` / `sha256_hex`),
+全仓无 SHA-512。而 §2 的签名写的是 `algo ∈ {sha256, sha512}`。
+SHA-512 若要支持,得手写一份(约 100 行 + 需要另取 FIPS 180-4 向量逐字冻结)。
+**裁决:`algo` 参数保留**(免得日后加值改签名),但**当前只接受 `sha256`**;
+`sha512` 报 `E0030` 并写明「不提供」—— 与模块对 `MD5` / `SHA-1` 的既有立场一致。
+**记为已知限制**,理由:OWASP 把 PBKDF2-HMAC-SHA-512 的适用场景写成
+「FIPS-140 合规时」,而 wlwl **提供不了 FIPS 校验过的实现**(没有硬件边界),
+那条互操作路径对本语言不成立。⇒ `algo` 暂为单值不是设计缺陷,是**留位**;
+把它写进规范成员表,免得日后有人以为漏实现了。
+
+**② `hmac_sha256_bytes` 现在是 `encode.rs` 里的私有函数。** PBKDF2 的
+`U_j = PRF(P, U_{j-1})` 需要**字节形态**的 HMAC 迭代(hex 往返是浪费)。
+两处可选,取前者:
+- 把它挪到 `wlwl-ast`(与 `sha256` 同处,**单一实现两个消费者**,沿 M2 的
+  「杜绝副本漂移」先例),`encode.rs` 改为调用;或
+- 留在 `encode.rs` 里不动,`pbkdf2` 实现在同文件内调用它。
+**取后者**(改动面最小、依赖方向不变);但**必须在代码注释里写明**它现在是
+`PBKDF2_ITER` 的第二个消费者,否则下一个做重构的人会当成死代码删掉。
+
+**另记一条工具链缺口,且**推翻本文件早前那句「装 `argon2-cffi` 即可补齐」**:
+实测 `argon2-cffi` 的 `low_level.hash_secret_raw` 签名是
+`(secret, salt, time_cost, memory_cost, parallelism, hash_len, type, version)`
+—— **没有 `ad` 参数**,且它的 `secret` 指的是**口令**、不是 RFC 的 `K`。
+而 RFC 9106 §5.1–5.3 的向量**全部**带 `Secret[8]` 与 `Associated data[12]`。
+⇒ **addendum §4 规定的「Python `argon2-cffi` 独立跑一遍」这条交叉核对路径,
+对 Argon2id 不是「还没装」,而是**根本走不通**。** 别再按那条做。
+
+**Rust 侧能不能补上?**(docs.rs `argon2` 0.6.0 实查)
+- ✅ **secret 有**:`Argon2::new_with_secret(secret, algorithm, version, params)`。
+- ⚠️ **assoc(X) 只有可选 feature**:`hash_password_into(&self, pwd, salt, out)`
+  **没有 ad 形参**;关联数据在 `kdf` feature 的 `Kdf::derive_key` 里
+  (`kdf = ["alloc", "dep:kdf"]`)。
+- ⚠️ **但 `derive_key` 是 KDF 模式,与 RFC 向量的 hashing 模式可能不是同一条
+  计算路径** ⇒ 加了 `assoc` 形参**能表达**它,**能不能用它复现 RFC 9106 §5.3
+  那个向量仍未确定**。
+- ⇒ **实现期第一件事就是做这个实测**:先用 `new_with_secret` + `hash_password_into`
+  在 `K=X=空` 下跑一次,看能否对上 RFC 5.1/5.2/5.3 的**变体**;若带 `X` 就对不上,
+  则**如实记录「`assoc` 形参无法用官方向量验证」**,并改用「自生成向量 + 与
+  `argon2` crate 自身测试互证」的组合(**别假装 RFC 向量验过了**)。
+- **依赖 feature 相应调整为**:`default-features = false, features = ["alloc", "kdf"]`。
+
 ### 3.3 W-02 裁决(2026-10-06):熵源归属
 
 **`std.encode` 是源,`std.rand` 单向消费它。**
@@ -273,6 +318,6 @@ cargo check --locked -p wlwl-std --features real-ai
 |---|---|---|---|
 | W-01 | G4 选型裁决 + 参数上界裁决 | ✅ **完成(2026-10-06)** —— 选型由 `ADR-0026` G4 定(Argon2id 为主 + PBKDF2 兼容);**上下界**见 §3.1:下界取 OWASP 2025(Argon2id 19 456 KiB / t=2 / p=1;PBKDF2-SHA256 600k、SHA-512 220k),上界建议 `iter ≤ 10M` / `len ≤ 1 024 B` / `m_cost ≤ 1 GiB` / `t_cost ≤ 32` / `p_cost ≤ 16`,**越界一律 `E0030`**。**附一条连带事实**:本语言 `salt` 只能是文本 ⇒ 盐的自然来源是 `RANDOM_HEX`,盐长下界只能在文本域表达(同 D13-001 的二进制密钥问题) | `5924f65` |
 | W-02 | 熵源归属裁决(与 08 共同) | ✅ **完成(2026-10-06)** —— **`std.encode` 是源,`std.rand` 单向消费**:`RANDOM_BYTES`/`RANDOM_HEX` 读 OS 熵源,是唯一「安全随机」入口;`std.rand` 播种从它取,不得反向依赖。依据:总纲 §1 + `ADR-0026` G3(显式 seed + 可注入源 ⇒ 单向依赖是其必然结果)。命名面无冲突(不违反 §v0.x 4) | `5924f65` |
-| W-03 | PBKDF2 + Argon2id + 契约(RFC 向量 + Python 交叉核对) | 🔄 **第 0 步已完成(2026-10-06)** —— 向量取自 RFC 原文并独立交叉核对:PBKDF2 的 RFC 7914 §11 两个向量经 Python `hashlib` **逐字节复算通过**;另生成 4 条落在我们上下界内的自生成向量。**并因此发现三处冲突**:① 两个 RFC 向量的 `c` = 1 / 80 000 **低于** OWASP 下界 600 000 ⇒ 会被自己的 `E0030` 拒掉;② RFC 9106 §5.3 的 `m` = 32 KiB **低于** 19 456 KiB 下界;③ **该向量带 `Secret[8]` / `Associated data[12]`(RFC 的 `K`/`X`),而 `ARGON2ID` 签名没有对应形参 ⇒ 连官方向量都喂不进去**。处置见 §3.2:原语层冻结 RFC 向量、成员层用自生成向量、RFC 越界参数改造成 `E0030` 反例;**并建议 `ARGON2ID` 增 `secret` / `assoc` 两个可选形参** —— ✅ **业主 2026-10-06 采纳**,口径见 §2(含文本域警示)。⚠️ Argon2id 那个向量的**独立复核还欠着**(`argon2-cffi` 本机未安装),**补齐前不得写进契约表** | `cd1e4d2` |
+| W-03 | PBKDF2 + Argon2id + 契约(RFC 向量 + Python 交叉核对) | 🔄 **第 0 步已完成(2026-10-06)** —— 向量取自 RFC 原文并独立交叉核对:PBKDF2 的 RFC 7914 §11 两个向量经 Python `hashlib` **逐字节复算通过**;另生成 4 条落在我们上下界内的自生成向量。**并因此发现三处冲突**:① 两个 RFC 向量的 `c` = 1 / 80 000 **低于** OWASP 下界 600 000 ⇒ 会被自己的 `E0030` 拒掉;② RFC 9106 §5.3 的 `m` = 32 KiB **低于** 19 456 KiB 下界;③ **该向量带 `Secret[8]` / `Associated data[12]`(RFC 的 `K`/`X`),而 `ARGON2ID` 签名没有对应形参 ⇒ 连官方向量都喂不进去**。处置见 §3.2:原语层冻结 RFC 向量、成员层用自生成向量、RFC 越界参数改造成 `E0030` 反例;| `ARGON2ID` 那个向量的**独立复核路径已被推翻**:`argon2-cffi` 传不进 `K`/`X`(见 §3.4),`assoc` 在 Rust 侧只在可选 `kdf` feature 且可能是**另一条计算路径**。**实现期第一件事就是实测它能否复现**,复现不了就如实记「该向量无法用官方路径验证」——**别假装验过了**。`cd1e4d2` |
 | W-04 | CSPRNG + 常数时间比较 + 契约 | 未动工 | — |
 | W-05 | skill / CHANGELOG / 收口 | 未动工 | — |
