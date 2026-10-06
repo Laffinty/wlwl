@@ -858,9 +858,13 @@ struct Vm<'a> {
     /// (先到 = 优先级更高,因为 ε 闭包按优先级展开)。
     seen: Vec<u32>,
     gen: u32,
-    /// 每一次 `Match` 抵达都记在这里(顺序 = 抵达顺序)。`find` 在其中挑最优,
-    /// `find_all` 按定序挑非重叠的那些 —— 见 `Hit::better_than`。
+    /// 每一次 `Match` 抵达都记在这里(顺序 = 抵达顺序)。`find_all` 在其中挑
+    /// 非重叠的一串 —— 见 `Hit::better_than` 与 `note_hit` 的模式说明。
     hits: Vec<Hit>,
+    /// 单次搜索只要最优那一个(见 `note_hit` 的 ⚠)。
+    best: Option<Hit>,
+    /// `true` = 攒全部候选(`find_all`);`false` = 只留最优(`find` / `run`)。
+    keep_all: bool,
     /// 抵达计数器 —— 同一 `(start, prio)` 时区分「先到」与「后到」。
     arrivals: usize,
 }
@@ -875,6 +879,8 @@ impl<'a> Vm<'a> {
             seen: vec![0; prog.insts.len()],
             gen: 0,
             hits: Vec::new(),
+            best: None,
+            keep_all: false,
             arrivals: 0,
         }
     }
@@ -897,10 +903,28 @@ impl<'a> Vm<'a> {
                 }
                 Inst::Split(a, b) => {
                     // 低优先级先入栈 ⇒ 高优先级先弹出;`prio` 追加 0 / 1。
+                    //
+                    // ⚠ **路径长度必须封顶。** 贪婪量词每绕一圈循环就经过
+                    // 一次 `Split` ⇒ 路径每字符增长一格,而 `add` 要克隆它
+                    // ⇒ `a*` 在第 n 个字符处路径长 n,整趟扫描退回 **O(n²)**。
+                    // 这不是理论担忧:W-04 的基准实测 100 000 个 a 要 1.4 s
+                    // (每字节成本随规模上涨 6 倍)。
+                    //
+                    // **封顶不损语义**:① 交替的选择深度是**模式里的分支数**,
+                    // 与输入长度无关,64 绰绰有余(`a|ab`、`ab|a` 这类判别式
+                    // 只需 1~2 格);② 贪婪延伸靠的是「同起点时**后到者**更
+                    // 完整」这条**抵达顺序**规则(见 `Hit::better_than` 的
+                    // 第三键),它与路径长度无关 —— 所以路径打平之后仍由抵达
+                    // 顺序正确地选出最长的那次匹配。
+                    const PRIO_MAX: usize = 64;
                     let mut hi_prio = t.prio.clone();
-                    hi_prio.push(0);
+                    if hi_prio.len() < PRIO_MAX {
+                        hi_prio.push(0);
+                    }
                     let mut lo_prio = t.prio.clone();
-                    lo_prio.push(1);
+                    if lo_prio.len() < PRIO_MAX {
+                        lo_prio.push(1);
+                    }
                     work.push(Thread {
                         pc: b,
                         caps: t.caps.clone(),
@@ -963,11 +987,18 @@ impl<'a> Vm<'a> {
         self.finish(self.input);
     }
 
-    /// 记下一次 `Match` 抵达。**不做任何取舍** —— 取舍是「跨步骤比较优先级」,
-    /// 而 clist 下标只反映**当前这一步**的顺序(跨步不可比)。
-    /// 把它当「clist 里第一个 Match」用会让 `a|ab` 取成 `ab`、`a+` 取成 `a`;
-    /// 正确做法是攒下全部候选,按 `(start, prio, arrival)` 定序(见
-    /// `Hit::better_than` 与 `best_hit`)。
+    /// 记下一次 `Match` 抵达。**取舍方式按模式分**:`find_all` 攒下全部
+    /// 候选(它要的是非重叠的一串),`find` / `run` 只留**最优那一个**。
+    ///
+    /// ⚠ **两者必须分开** —— W-04 的基准抓到的就是这个:早期实现无条件把
+    /// 每次抵达都攒进 `hits`,而 `a*` / `.*` 这类**在每个位置都命中**的模式
+    /// 于是攒下 O(n) 份拷贝 ⇒ 单次 `RE_SEARCH` 退化成 **O(n²)**
+    /// (实测 10 000 字符 20.6 ms → 100 000 字符 **1.267 s**,每字节成本从
+    /// 2.06 µs 涨到 12.67 µs)。单次搜索只需要最优解,边扫边替换即可。
+    ///
+    /// 两种模式都按 `(start, prio, arrival)` 定序 —— 取舍是「跨步骤比较
+    /// 优先级」,而 clist 下标只反映**当前这一步**的顺序(跨步不可比)。
+    /// 把它当「clist 里第一个 Match」用会让 `a|ab` 取成 `ab`、`a+` 取成 `a`。
     fn note_hit(&mut self, t: &Thread) {
         let (Some(lo), Some(hi)) = (
             t.caps.first().copied().flatten(),
@@ -977,20 +1008,38 @@ impl<'a> Vm<'a> {
         };
         let arrival = self.arrivals;
         self.arrivals += 1;
-        self.hits.push(Hit {
+        let hit = Hit {
             start: lo,
             end: hi,
             caps: t.caps.clone(),
             prio: t.prio.clone(),
             arrival,
-        });
+        };
+        if self.keep_all {
+            self.hits.push(hit);
+        } else {
+            let better = match &self.best {
+                None => true,
+                Some(cur) => hit.better_than(cur),
+            };
+            if better {
+                self.best = Some(hit);
+            }
+        }
     }
 
-    /// 全部候选里的最优者:起点最左,同起点比分支路径,同路径比抵达顺序。
+    /// 全部候选里的最优者(两种模式都适用:一个只有 `best`,一个只有 `hits`)。
     fn best_hit(&self) -> Option<&Hit> {
-        self.hits
+        let from_hits = self
+            .hits
             .iter()
-            .reduce(|a, b| if b.better_than(a) { b } else { a })
+            .reduce(|a, b| if b.better_than(a) { b } else { a });
+        match (&self.best, from_hits) {
+            (None, None) => None,
+            (Some(b), None) => Some(b),
+            (None, Some(h)) => Some(h),
+            (Some(b), Some(h)) => Some(if h.better_than(b) { h } else { b }),
+        }
     }
 
     /// 消费 `input[i]`,把 `clist` 推进成新的 `clist`,并在**末尾**注入
@@ -1096,6 +1145,7 @@ pub fn find(prog: &Program, text: &str, anchored: bool) -> Option<Captures> {
 pub fn find_all(prog: &Program, text: &str) -> Vec<Captures> {
     let input: Vec<char> = text.chars().collect();
     let mut vm = Vm::new(prog, &input);
+    vm.keep_all = true; // 这一条要非重叠的一串 ⇒ 必须攒全部候选
     vm.scan(false);
     let mut hits = std::mem::take(&mut vm.hits);
     // 定序:起点 → 分支路径 → 抵达顺序(贪婪延伸因此取到最长的那次)。

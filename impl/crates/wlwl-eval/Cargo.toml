@@ -51,3 +51,9 @@ path = "benches/collection.rs"
 name = "kdf"
 harness = false
 path = "benches/kdf.rs"
+# [v0.11.3 M6 / W-04] 正则基准 —— **复杂度契约的 release 读数**。机制部分
+# 在契约表里,阈值只能在这里钉(计时断言写进 cargo test 必然抖动)。
+[[bench]]
+name = "regex"
+harness = false
+path = "benches/regex.rs"
