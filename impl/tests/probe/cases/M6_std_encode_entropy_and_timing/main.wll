@@ -1,0 +1,35 @@
+// [v0.11.3 M6 / W-04] 熵源与常数时间比较的语言层口径。
+//
+// 落点:addendum-04 §5 落点 6(probe ≥ 2 条)。参数越界那两条是
+// `M6_std_encode_kdf_bounds` / `..._argon2id`;本条是「常数时间」那条。
+//
+// ⚠️ **诚实边界一:本 probe 钉不住「常数时间」本身。** 跨进程的耗时比较在
+//   CI 上必然抖动,把它写成断言就是制造一条会随机变红的门禁。「长度不等
+//   不得提前返回」是**机制断言**,落在 `wlwl-std` 的单元测试里
+//   (`length_mismatch_does_not_short_circuit` 与
+//   `content_does_not_change_the_timing`),且**做过变异验证**:把实现换成
+//   `a.len() == b.len() && a == b` 之后两条立刻变红(比值 0.000 对门槛 0.2)。
+//   本 probe 钉的是**语言层可观察**的那半边。
+//
+// ⚠️ **诚实边界二:这里刻意不调 KDF。** 实测 debug 构建下一次 600 000 轮
+//   的 `PBKDF2_ITER` 约 **11 s**,带两次派生的那版 probe 要 **33.6 s** ——
+//   单条用例吃掉整个 probe 套件的两倍时间,不划算。KDF 的接线与上下界由
+//   `encode_contract.rs` 钉住(其中 `kdf_pbkdf2_at_the_owasp_floor` 是精确
+//   值断言,**顺带也就钉住了 KDF 的确定性**),由上面两条越界 probe 钉住失败
+//   路径。真实工作流是 RANDOM_HEX 产盐 -> KDF 派生 -> TIMING_SAFE_EQ 比对。
+IMPORT("wlwl:std.encode", ["RANDOM_HEX", "RANDOM_BYTES", "TIMING_SAFE_EQ"]);
+
+LET(a, RANDOM_HEX(16));
+LET(b, RANDOM_HEX(16));
+
+PRINT("saltlen   = ", LEN(a));
+PRINT("hexlen    = ", LEN(RANDOM_HEX(4)));
+PRINT("bytes     = ", LEN(RANDOM_BYTES(3)));
+PRINT("zero_hex  = ", LEN(RANDOM_HEX(0)));
+PRINT("zero_byte = ", LEN(RANDOM_BYTES(0)));
+PRINT("distinct  = ", =(a, b));
+PRINT("self      = ", TIMING_SAFE_EQ(a, a));
+PRINT("equal     = ", TIMING_SAFE_EQ("世界", "世界"));
+PRINT("different = ", TIMING_SAFE_EQ("世界", "世男"));
+PRINT("shorter   = ", TIMING_SAFE_EQ(a, ""));
+PRINT("empty     = ", TIMING_SAFE_EQ("", ""));

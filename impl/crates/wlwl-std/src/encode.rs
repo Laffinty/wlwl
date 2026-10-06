@@ -54,6 +54,9 @@ pub static SPEC: ModuleSpec = ModuleSpec {
         ("HMAC_SHA256", hmac_sha256 as StdFn),
         ("PBKDF2_ITER", pbkdf2_iter as StdFn),
         ("ARGON2ID", argon2id as StdFn),
+        ("RANDOM_BYTES", random_bytes as StdFn),
+        ("RANDOM_HEX", random_hex as StdFn),
+        ("TIMING_SAFE_EQ", timing_safe_eq as StdFn),
     ],
 };
 
@@ -511,12 +514,12 @@ const ARGON2_TAG_MIN: i64 = 4;
 /// 没有硬下界,但底层实现拒收更短的,越界必须由**我们**报,不能变成内部错误。
 const ARGON2_SALT_MIN: usize = 8;
 
-/// KDF 的参数错 / 未知 `algo` / 非法 hex 实参 → `E0030`。
+/// 实参错(类型 / 参数越界 / 未知 `algo` / 非法 hex 文本)→ `E0030`。
 ///
-/// **为什么是诊断而不是 `DecodeError` 值**:这三类都是**程序员错误**
+/// **为什么是诊断而不是 `DecodeError` 值**:这几类都是**程序员错误**
 /// (把参数配到不安全值、把十六进制写错),不是数据违例。沿用 §11.1
 /// 「程序员错误走原生诊断」那条 —— 编码侧才是数据违例。
-fn kdf_err(host: &mut dyn StdHost, detail: String) -> wlwl_error::WlwlError {
+fn param_err(host: &mut dyn StdHost, detail: String) -> wlwl_error::WlwlError {
     host.diag(ErrorCode::E0030, detail)
 }
 
@@ -529,7 +532,7 @@ fn str_arg_at<'a>(
 ) -> Result<&'a str, wlwl_error::WlwlError> {
     match &args[idx] {
         Value::String(s) => Ok(s.as_str()),
-        other => Err(kdf_err(
+        other => Err(param_err(
             host,
             format!(
                 "{name}: expected string for {label}, got {}",
@@ -547,7 +550,7 @@ fn int_arg(
 ) -> Result<i64, wlwl_error::WlwlError> {
     match got {
         Value::Integer(i) => Ok(*i),
-        other => Err(kdf_err(
+        other => Err(param_err(
             host,
             format!(
                 "{name}: expected integer for {label}, got {}",
@@ -566,7 +569,7 @@ fn hex_text_arg(
     s: &str,
 ) -> Result<Vec<u8>, wlwl_error::WlwlError> {
     hex_decode_bytes(s).map_err(|reason| {
-        kdf_err(
+        param_err(
             host,
             format!("{name}: {label} must be an even-length hex string, but {reason}"),
         )
@@ -584,13 +587,13 @@ fn bounded(
     unit: &str,
 ) -> Result<u32, wlwl_error::WlwlError> {
     if got < lo || got > hi {
-        return Err(kdf_err(
+        return Err(param_err(
             host,
             format!("{name}: {label} = {got}{unit} is out of range; the allowed range is [{lo}, {hi}]{unit}"),
         ));
     }
     u32::try_from(got).map_err(|_| {
-        kdf_err(
+        param_err(
             host,
             format!("{name}: {label} = {got}{unit} does not fit in 32 bits"),
         )
@@ -644,7 +647,7 @@ pub fn pbkdf2_iter(host: &mut dyn StdHost, args: Vec<Value>) -> wlwl_error::Wlwl
     let algo = str_arg_at(host, NAME, "algo", &args, 4)?;
 
     if algo != "sha256" {
-        return Err(kdf_err(
+        return Err(param_err(
             host,
             format!(
                 "{NAME}: algo = {algo:?} is not provided; only \"sha256\" is (SHA-512 is not \
@@ -715,7 +718,7 @@ pub fn argon2id(host: &mut dyn StdHost, args: Vec<Value>) -> wlwl_error::WlwlRes
     )?;
     let salt = hex_text_arg(host, NAME, "salt", salt_text)?;
     if salt.len() < ARGON2_SALT_MIN {
-        return Err(kdf_err(
+        return Err(param_err(
             host,
             format!(
                 "{NAME}: salt decodes to {} byte(s), but Argon2id requires at least {ARGON2_SALT_MIN} \
@@ -734,7 +737,7 @@ pub fn argon2id(host: &mut dyn StdHost, args: Vec<Value>) -> wlwl_error::WlwlRes
         len as usize,
     )
     .map(|bytes| Outcome::normal(Value::String(bytes_to_hex(&bytes))))
-    .map_err(|e| kdf_err(host, format!("{NAME}: {e}")))
+    .map_err(|e| param_err(host, format!("{NAME}: {e}")))
 }
 
 /// Argon2id 原语:字节进、字节出。**成员与单测共用** —— 参数装配只写一遍,
@@ -760,6 +763,140 @@ fn argon2id_bytes(
     let mut out = vec![0u8; len];
     argon2.hash_password_into(password, salt, &mut out)?;
     Ok(out)
+}
+
+// ── CSPRNG 与常数时间比较(v0.11.3 M6,W-04)────────────────────────────
+//
+// 有了 KDF 还差两件东西才够「安全处理口令」:一块**不可预测**的原料
+// (否则盐是常量、token 可预测),和一个**不泄漏比较结果**的比较
+// (否则验签时间本身就是侧信道)。这两件就是本节。
+//
+// ⚠ **熵源只有一个,单向。** `RANDOM_BYTES` / `RANDOM_HEX` 直接读操作
+// 系统熵源(`getrandom(2)` / Windows `RtlGenRandom`);`std.rand` 的播种
+// 从这里取字节,**不得**反向依赖(addendum-04 §3.3 的 W-02 裁决)。名字
+// 要让人看出它是**密码学安全**的 —— 这正是它不叫 `RAND()` 的原因。
+
+/// 读操作系统熵源。**熵源读失败是 `E0060`(IO error)而不是 `E0030`**:
+/// 前者是**运行环境**出问题(内核没给熵、沙箱封了系统调用),后者是程序员
+/// 把参数写错了。两者的处置完全不同,不该混成一个码。
+fn fill_entropy(
+    host: &mut dyn StdHost,
+    name: &str,
+    buf: &mut [u8],
+) -> Result<(), wlwl_error::WlwlError> {
+    getrandom::fill(buf).map_err(|e| {
+        host.diag(
+            ErrorCode::E0060,
+            format!("{name}: the operating system entropy source failed ({e})"),
+        )
+    })
+}
+
+/// 随机缓冲区的长度实参。`n < 0` 报 `E0030`;`n = 0` **合法**且返回空 ——
+/// 长度 0 是一个正常请求,不是错误。
+///
+/// **刻意不设上界**:两个 KDF 成员设上界是因为「一个参数能打满机器」
+/// 是**安全**问题(把 `iter` 配小);而随机缓冲区调大只是多花点时间和内存,
+/// 一个 wlwl 程序本来就能建更大的数组。这里设上界只会凭空多一个陷阱。
+fn random_len(
+    host: &mut dyn StdHost,
+    name: &str,
+    got: i64,
+) -> Result<usize, wlwl_error::WlwlError> {
+    if got < 0 {
+        return Err(param_err(
+            host,
+            format!("{name}: n = {got} is negative; a buffer length cannot be negative"),
+        ));
+    }
+    usize::try_from(got).map_err(|_| {
+        param_err(
+            host,
+            format!("{name}: n = {got} does not fit in this platform's address space"),
+        )
+    })
+}
+
+/// `RANDOM_BYTES(n) -> ARRAY`(元素是 `INTEGER` 0–255)
+///
+/// **为什么返回整数数组而不是 `STRING`**:名字说的是「字节」,而 wlwl
+/// 没有字节类型。硬塞进 `STRING` 只能把非法 UTF-8 有损替换成 `U+FFFD` ——
+/// §11.3-3 已经把「不做有损替换」立成规范条款,§11.3-3 的注释写得很直白:
+/// 「与其有损地替换骗调用方,不如报 `DecodeError`」。整数数组是本语言
+/// **唯一**能无损承载任意字节串的形态。
+/// ⇒ **要文本就用 `RANDOM_HEX`** —— 那才是 KDF 盐的来源。
+///
+/// **无上界**(见 `random_len`);`n = 0` 返回空数组。
+pub fn random_bytes(host: &mut dyn StdHost, args: Vec<Value>) -> wlwl_error::WlwlResult<Outcome> {
+    const NAME: &str = "RANDOM_BYTES";
+    if args.len() != 1 {
+        return Err(arity(host, NAME, args.len(), 1));
+    }
+    let n = int_arg(host, NAME, "n", &args[0])?;
+    let n = random_len(host, NAME, n)?;
+    let mut buf = vec![0u8; n];
+    fill_entropy(host, NAME, &mut buf)?;
+    Ok(Outcome::normal(Value::Array(
+        buf.into_iter()
+            .map(|b| Value::Integer(i64::from(b)))
+            .collect(),
+    )))
+}
+
+/// `RANDOM_HEX(n) -> STRING`
+///
+/// `RANDOM_BYTES` 的十六进制文本形态(2 `n` 个小写字符)。**这是本语言
+/// 里生成 KDF 盐的正确方式** —— 两个 KDF 的 `salt` 实参收十六进制文本,
+/// 原因是 RFC 的盐是任意字节串而 `STRING` 是 UTF-8 文本(§11.2 注)。
+pub fn random_hex(host: &mut dyn StdHost, args: Vec<Value>) -> wlwl_error::WlwlResult<Outcome> {
+    const NAME: &str = "RANDOM_HEX";
+    if args.len() != 1 {
+        return Err(arity(host, NAME, args.len(), 1));
+    }
+    let n = int_arg(host, NAME, "n", &args[0])?;
+    let n = random_len(host, NAME, n)?;
+    let mut buf = vec![0u8; n];
+    fill_entropy(host, NAME, &mut buf)?;
+    Ok(Outcome::normal(Value::String(bytes_to_hex(&buf))))
+}
+
+/// `TIMING_SAFE_EQ(a, b) -> BOOLEAN`
+///
+/// **常数时间**比较两段 `STRING`(按 UTF-8 字节)。**永不失败** ——
+/// 它的返回值是 `BOOLEAN`,不是「相等 / 不相等」两种错误。
+///
+/// **长度不等时也走完整比较**,这是本成员存在的全部理由:朴素写法
+/// `a.len() == b.len() && ...` 在长度不等时**提前返回**,于是「两个值长度
+/// 不同」这件事可以从耗时上被观察到 —— 攻击者据此逐字节爆破长度,再
+/// 爆破内容。本实现走 `max(len_a, len_b)` 步并把长度差折进同一个累加器,
+/// **没有任何一处按比较结果分支**。
+///
+/// 诚实边界:**耗时仍然依赖长度**(比较多少字节就要走多少步),这无法避免
+/// 也不需要避免 —— 要隐藏的是「哪几个字节不同」和「是否相等」,不是长度。
+pub fn timing_safe_eq(host: &mut dyn StdHost, args: Vec<Value>) -> wlwl_error::WlwlResult<Outcome> {
+    const NAME: &str = "TIMING_SAFE_EQ";
+    if args.len() != 2 {
+        return Err(arity(host, NAME, args.len(), 2));
+    }
+    let a = str_arg_at(host, NAME, "a", &args, 0)?;
+    let b = str_arg_at(host, NAME, "b", &args, 1)?;
+    Ok(Outcome::normal(Value::Boolean(timing_safe_eq_bytes(
+        a.as_bytes(),
+        b.as_bytes(),
+    ))))
+}
+
+/// 常数时间相等。**逐字节累积差异,不按结果分支**。
+///
+/// 缺失的一侧按 `0` 补齐(而不是跳过)——跳过就是提前返回,那正是要避免的。
+/// 长度差最后折进同一个 `u8` 累加器,于是函数里没有一个 `if`。
+fn timing_safe_eq_bytes(a: &[u8], b: &[u8]) -> bool {
+    let mut acc: u8 = 0;
+    for i in 0..a.len().max(b.len()) {
+        acc |= a.get(i).copied().unwrap_or(0) ^ b.get(i).copied().unwrap_or(0);
+    }
+    acc |= u8::from((a.len() ^ b.len()) != 0);
+    acc == 0
 }
 
 #[cfg(test)]
@@ -1097,5 +1234,162 @@ mod tests {
         let a = argon2id_bytes(b"passwd", &salt, 2, 19_456, 1, 32).unwrap();
         let b = argon2id_bytes(b"passwd", &salt, 2, 19_456, 2, 32).unwrap();
         assert_ne!(a, b, "p_cost had no effect on the tag");
+    }
+
+    // ── CSPRNG 与常数时间比较(v0.11.3 M6 / W-04)─────────────────────
+    //
+    // 这两组断言**测不了「值」只能测「分布」** —— 期望一个随机值等于某个
+    // 常数,是把随机源钉死。所以它们断言的是**不变量**:不重复、分布接近
+    // 均匀、长度不等不提前返回。
+
+    /// 10 万次抽样**不得重复**。
+    ///
+    /// 这是能对 CSPRNG 提的最强单条断言:128 bit 抽样撞车的概率约
+    /// 2⁻⁸⁰,所以「一条都不撞」几乎必然成立;而**任何**退化成计数器、
+    /// 时间戳、定长 PRNG 未换种子的实现都会立刻撞出来。
+    #[test]
+    fn csprng_samples_never_repeat() {
+        let mut seen = std::collections::HashSet::with_capacity(100_000);
+        for _ in 0..100_000 {
+            let mut buf = [0u8; 16];
+            getrandom::fill(&mut buf).expect("OS entropy");
+            assert!(
+                seen.insert(buf),
+                "the entropy source produced a duplicate 128-bit sample"
+            );
+        }
+    }
+
+    /// 卡方粗检:10 万个样本的**首字节**在 256 个桶里应接近均匀。
+    ///
+    /// 阈值为什么敢取 400:均匀源的期望卡方 ≈ 255(自由度),99.9 分位约
+    /// 310 ⇒ 400 的误报率远低于万分之一;而**任何**真缺陷(常量源、
+    /// 只有两个取值、双峰)算出来的卡方在 10⁷ 量级 —— 两者差四个数量级,
+    /// 所以这个阈值不是在赌运气,是在给「缺陷」留出无法跨越的量级差。
+    #[test]
+    fn csprng_first_byte_is_roughly_uniform() {
+        const N: usize = 100_000;
+        let mut buckets = [0u32; 256];
+        for _ in 0..N {
+            let mut buf = [0u8; 1];
+            getrandom::fill(&mut buf).expect("OS entropy");
+            buckets[usize::from(buf[0])] += 1;
+        }
+        let expected = N as f64 / 256.0;
+        let chi2: f64 = buckets
+            .iter()
+            .map(|&obs| {
+                let d = f64::from(obs) - expected;
+                d * d / expected
+            })
+            .sum();
+        assert!(
+            chi2 < 400.0,
+            "first-byte distribution looks biased: chi2 = {chi2:.1} over 255 dof \
+             (a real defect lands around 1e7; a healthy source around 255)"
+        );
+    }
+
+    /// `RANDOM_HEX` 的长度必须是 `2n`,且只含小写 hex —— 契约表从语言层
+    /// 钉形状,这里从原语层钉编码。
+    #[test]
+    fn random_hex_is_lowercase_and_twice_as_long() {
+        for n in [0usize, 1, 16, 32] {
+            let mut buf = vec![0u8; n];
+            getrandom::fill(&mut buf).expect("OS entropy");
+            let hex = bytes_to_hex(&buf);
+            assert_eq!(hex.len(), n * 2, "n = {n}");
+            assert!(
+                hex.bytes()
+                    .all(|b| b.is_ascii_digit() || (b'a'..=b'f').contains(&b)),
+                "n = {n}: hex must be lowercase, got {hex:?}"
+            );
+        }
+    }
+
+    #[test]
+    fn timing_safe_eq_semantics() {
+        assert!(timing_safe_eq_bytes(b"", b""));
+        assert!(timing_safe_eq_bytes(b"a", b"a"));
+        assert!(!timing_safe_eq_bytes(b"a", b"b"));
+        assert!(!timing_safe_eq_bytes(b"a", b"ab"));
+        assert!(!timing_safe_eq_bytes(b"ab", b"a"));
+        assert!(!timing_safe_eq_bytes(b"", b"\0"));
+        // 差在**首字节**与差在**末字节**结果相同,且都不提前返回。
+        let base = b"abcdefgh".as_slice();
+        let mut first = base.to_vec();
+        first[0] = b'z';
+        let mut last = base.to_vec();
+        last[7] = b'z';
+        assert!(!timing_safe_eq_bytes(base, &first));
+        assert!(!timing_safe_eq_bytes(base, &last));
+        // 高位字节不能因为「符号位」被当成相等。
+        assert!(!timing_safe_eq_bytes(&[0x80], &[0x00]));
+    }
+
+    /// **长度不等时不得提前返回** —— 本成员存在的理由,机制断言。
+    ///
+    /// 断言的是**下界**而不是「两路径耗时相近」:朴素实现
+    /// `a.len() == b.len() && …` 在长度不等时立刻返回,耗时是这个循环的
+    /// 百万分之一量级,于是「短 vs 长」远低于 20% 的门槛而变红;而本实现
+    /// 走 `max(len)` 步,必然过线。**下界断言在负载不均的 CI 上也稳** ——
+    /// 机器慢只会让两边一起慢。
+    #[test]
+    fn length_mismatch_does_not_short_circuit() {
+        const N: usize = 1 << 20;
+        let long = vec![b'a'; N];
+        let warmup = 3;
+        let runs = 5;
+        let mut short_long = f64::INFINITY;
+        let mut same_length = f64::INFINITY;
+        for _ in 0..warmup {
+            std::hint::black_box(timing_safe_eq_bytes(&long, &long));
+        }
+        for _ in 0..runs {
+            let t0 = std::time::Instant::now();
+            std::hint::black_box(timing_safe_eq_bytes(b"", &long));
+            short_long = short_long.min(t0.elapsed().as_secs_f64());
+            let t0 = std::time::Instant::now();
+            std::hint::black_box(timing_safe_eq_bytes(&long, &long));
+            same_length = same_length.min(t0.elapsed().as_secs_f64());
+        }
+        let ratio = short_long / same_length;
+        assert!(
+            ratio > 0.2,
+            "length mismatch returned early: {short_long:.6?}s vs {same_length:.6?}s \
+             for the same max length (ratio {ratio:.3}; an early return gives ~0.001)"
+        );
+    }
+
+    /// **内容不同不得改变耗时** —— 比较结果本身不能从时钟上看出来。
+    /// 同样是下界断言(取 min、门槛宽松),只要求「差在首字节」与「完全相等」
+    /// 的耗时落在同一量级。
+    #[test]
+    fn content_does_not_change_the_timing() {
+        const N: usize = 1 << 20;
+        let long = vec![b'a'; N];
+        let mut differs_at_front = long.clone();
+        differs_at_front[0] = b'z';
+        let warmup = 3;
+        let runs = 5;
+        let mut equal = f64::INFINITY;
+        let mut different = f64::INFINITY;
+        for _ in 0..warmup {
+            std::hint::black_box(timing_safe_eq_bytes(&long, &long));
+        }
+        for _ in 0..runs {
+            let t0 = std::time::Instant::now();
+            std::hint::black_box(timing_safe_eq_bytes(&long, &long));
+            equal = equal.min(t0.elapsed().as_secs_f64());
+            let t0 = std::time::Instant::now();
+            std::hint::black_box(timing_safe_eq_bytes(&long, &differs_at_front));
+            different = different.min(t0.elapsed().as_secs_f64());
+        }
+        let ratio = different / equal;
+        assert!(
+            (0.2..5.0).contains(&ratio),
+            "content changed the timing: equal {equal:.6?}s vs different {different:.6?}s \
+             (ratio {ratio:.3}; a per-byte early exit would be far below 0.2)"
+        );
     }
 }

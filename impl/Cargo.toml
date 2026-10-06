@@ -65,6 +65,27 @@ criterion = { version = "0.5", features = ["html_reports"] }
 #     `p_cost`, and W-01 already caps p_cost at 16.
 argon2 = { version = "0.6", default-features = false, features = ["alloc"] }
 
+# [v0.11.3 M6 / W-04] CSPRNG entropy for `RANDOM_BYTES` / `RANDOM_HEX`.
+#
+# Hand-rolling OS entropy reads is not an option: a home-grown CSPRNG in a
+# language standard library is a supply-chain hazard wearing our name, so we
+# call the platform and nothing else. `getrandom` is RustCrypto's own crate
+# (MIT OR Apache-2.0) and is a thin syscall wrapper -- `getrandom(2)` on
+# Linux, `RtlGenRandom` on Windows, and no userspace fallback.
+#
+# **Pinned to 0.3, not 0.4, on purpose.** `getrandom` 0.4 declares
+# `rust-version = "1.85"` and `edition = "2024"`; the workspace promises
+# `rust-version = "1.75"` in `[workspace.package]`, so taking the newest
+# release would turn that promise into a lie (CI itself uses `stable`, so it
+# would not have caught it). 0.3.4 declares 1.63 / edition 2021 and exposes
+# the same `fill()` entry point. Bump this together with `rust-version`, not
+# on its own.
+#
+# `default-features = false` drops `std` and, importantly, `sys_rng` (a
+# thread-local *non-cryptographic* fallback that must never be reachable from
+# a CSPRNG member).
+getrandom = { version = "0.3", default-features = false }
+
 # 閺堫剙浼愭担婊呪敄闂傛潙鍞撮柈?crate
 #
 # [v0.11 / D10-011] 每条都补了 `version`,与上面的 `[workspace.package]

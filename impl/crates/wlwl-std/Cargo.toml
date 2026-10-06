@@ -13,6 +13,10 @@ serde_json = { workspace = true }
 # [v0.11.3 M6 / W-03] ARGON2ID. Feature narrowing is documented in the
 # workspace `Cargo.toml`; do not widen it here without re-reading that note.
 argon2 = { workspace = true }
+# [v0.11.3 M6 / W-04] OS entropy for RANDOM_BYTES / RANDOM_HEX. Feature
+# narrowing is documented in the workspace `Cargo.toml`; do not widen it here
+# without re-reading that note.
+getrandom = { workspace = true }
 
 # Optional: real LLM HTTP integration (Phase D1, spec v0.4 搂15.13).
 # `cargo build --features wlwl-std/real-ai` pulls reqwest + enables

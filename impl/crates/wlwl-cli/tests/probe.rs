@@ -73,7 +73,7 @@ use std::time::{Duration, Instant};
 // [v0.11.3 M5 / addendum-00 L0-A-2] 157 → 158:新增
 // `M5_std_collection_l0a2_r2_scale`(`MAP` / `FILTER` / `CHUNK` / `WINDOW`
 // 归 R2 之后才可能存在的大数组规模用例,5 000 元素,整条 346 ms / debug 构建)。
-const EXPECTED_CASE_COUNT: usize = 160;
+const EXPECTED_CASE_COUNT: usize = 161;
 
 /// 单个 case 的上限,与 `probe.py` 的 `timeout=60` 同义。
 const CASE_TIMEOUT: Duration = Duration::from_secs(60);

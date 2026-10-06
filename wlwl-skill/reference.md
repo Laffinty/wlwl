@@ -436,6 +436,26 @@ explicit, with no defaults:
   reference KAT block for block. Neither expectation is this implementation's
   own output.
 
+#### Entropy and constant-time comparison (v0.11.3, M6/W-04)
+
+| Member | Call | Notes |
+|---|---|---|
+| `RANDOM_BYTES` | `RANDOM_BYTES(n)` | OS entropy. Returns an **array** of integers 0–255 — the only lossless byte carrier here. `n = 0` is legal; `n < 0` is `E0030`; no upper bound |
+| `RANDOM_HEX` | `RANDOM_HEX(n)` | 2 `n` lowercase hex chars. **How you make a salt or a token** |
+| `TIMING_SAFE_EQ` | `TIMING_SAFE_EQ(a, b)` | Constant-time over UTF-8 bytes. **Never fails**: unequal lengths give `FALSE`, not an error |
+
+- **Never compare secrets with `=`** (or `==`): the comparison short-circuits and
+  the timing leaks which prefix matched. `TIMING_SAFE_EQ` walks `max(len_a,
+  len_b)` and folds the length difference into the same accumulator, so nothing
+  branches on the result. Honest bound: timing still depends on *length* — what
+  it hides is *which bytes differ*.
+- Two draws of `RANDOM_HEX(16)` are independent; a member that cached one seed
+  and replayed it would fail the contract case that compares them.
+- Use `std.rand` (not `RANDOM_*`) when you want a **reproducible** sequence, and
+  seed it from `RANDOM_HEX`.
+- Entropy-source failure surfaces as `E0060` (IO error), distinct from `E0030`
+  (you passed a bad argument) and from a `DecodeError` value (bad data).
+
 ### §9.6 `wlwl:std.sanitize` — the v0.11.3 three (stdlib §13)
 
 **Pick by output context. They are not interchangeable, and choosing the wrong

@@ -1,0 +1,22 @@
+{
+ "exit": 0,
+ "contains": [
+  "saltlen   =  32",
+  "hexlen    =  8",
+  "bytes     =  3",
+  "zero_hex  =  0",
+  "zero_byte =  0",
+  "distinct  =  FALSE",
+  "self      =  TRUE",
+  "equal     =  TRUE",
+  "different =  FALSE",
+  "shorter   =  FALSE",
+  "empty     =  TRUE"
+ ],
+ "not_contains": [
+  "E00",
+  "DomainError",
+  "DecodeError"
+ ],
+ "_why": "v0.11.3 M6 / W-04。熵源与常数时间比较的语言层口径,十一行各钉一条可观察事实:saltlen / hexlen 钉 RANDOM_HEX 的输出形状(2n 个小写 hex 字符 —— 两个 KDF 的 salt 实参就是这么收的,盐必须是文本不能是字节串);bytes 钉 RANDOM_BYTES 返回**数组**且每字节一个元素;zero_hex / zero_byte 钉 n=0 是**合法**的(返空,不是错误)—— 断言的是长度而不是distinct 钉两次抽样**互相独立**(128 bit 抽样撞车概率 2^-128,这条同时钉住「不是把种子缓存起来返回同一个值」这个最常见的伪 CSPRNG 缺陷);self / equal 钉相等返 TRUE(含非 ASCII,证明走的是 UTF-8 字节);different 钉只差一个字节且长度相同的情形返 FALSE(最容易被逐字节提前返回泄密的形态);shorter 钉**长度不等是 FALSE 而不是错误** —— TIMING_SAFE_EQ 永不失败,长度不等走完整比较;empty 钉两个空串相等。`not_contains: E00` 钉正常路径上没有任何诊断漏出来。⚠️ 两条诚实边界写在这里而不是藏起来:(1) 本 probe 钉不住「常数时间」本身 —— 跨进程耗时比较在 CI 上必然抖动,那条性质由 wlwl-std 的两条机制断言守着并已做变异验证(实现换成提前返回写法即变红,比值 0.000 对门槛 0.2);(2) 刻意不调 KDF —— debug 下一次 600000 轮 PBKDF2_ITER 实测约 11 s,带两次派生的版本要 33.6 s,单条就吃掉整个 probe 套件的两倍时间;KDF 由 encode_contract 的精确值断言(顺带钉住确定性)与两条越界 probe 覆盖。"
+}

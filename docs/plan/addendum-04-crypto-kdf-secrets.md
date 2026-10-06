@@ -1,7 +1,7 @@
 # 04 · KDF / CSPRNG / 常数时间比较(补 `std.encode` 的安全侧)
 
 > **层级** L1(可并行) · **前置** 无(04 与 08 都涉及熵源,**须共用一个源**)
-> **状态** W-01 / W-02 / W-03 已完成(2026-10-06)· **全局裁决点** G4(KDF 选型)
+> **状态** W-01 / W-02 / W-03 / W-04 已完成(2026-10-06)· **全局裁决点** G4(KDF 选型)
 > → **G4 已由 [`ADR-0026`](../adr/0026-l1-global-decision-points.md)(2026-10-06,
 > Status **Accepted**)定稿**:**Argon2id 为主 + PBKDF2 兼容**(两者皆单向,不触碰
 > §11.5 对加解密 / 密钥生成的否决);**且新增一条原方案没有的硬约束 ——
@@ -36,12 +36,12 @@ Select-String -Path crates/wlwl-eval/tests/encode_contract.rs -Pattern '^\s+Case
 
 | 项 | 现值 | 出处 |
 |---|---|---|
-| `std.encode` 成员 | **10**(`BASE64_*` `HEX_*` `URL_*` `SHA256` `HMAC_SHA256` `PBKDF2_ITER` `ARGON2ID`;`RANDOM_*` / `TIMING_SAFE_EQ` 属 W-04) | 附录 A |
+| `std.encode` 成员 | **13**(`BASE64_*` `HEX_*` `URL_*` `SHA256` `HMAC_SHA256` `PBKDF2_ITER` `ARGON2ID` `RANDOM_BYTES` `RANDOM_HEX` `TIMING_SAFE_EQ`) | 附录 A |
 | 编码失败口径 | 解码失败是 `ERR` 值(`kind = "DecodeError"` + `op` + `reason`);元数 / 类型错是 `E0022` / `E0030` | 规范 §11.1 |
 | **KDF 失败口径** | 参数越界 / 未知 `algo` / 非法 hex 盐 → **`E0030` 诊断**(不是 `DecodeError` 值):这三类是**程序员错误**,不是数据违例 | 规范 §11.1 / §11.2 |
 | 哈希边界 | 哈希是**摘要不是加密**;非常数时间口径已写明;有 KDF **不改变**加解密否决 | 规范 §11.5 / §11.6 |
 | `sha256_10kb` 实测 | ≈ **255 MiB/s**(§7.4 指标 ≥ 100 ✅) | `impl/crates/wlwl-eval/benches/baseline.txt` M2 段 |
-| `encode_contract` | **67 条**(W-03 前 47) | 契约表 |
+| `encode_contract` | **83 条**(W-03 前 47;W-03 +20、W-04 +16) | 契约表 |
 | 已有否决 | 加解密 / 密钥生成**不做**;`MD5` / `SHA-1` 不提供 | 规范 §11.5 |
 | 主流对照 | Python `hashlib.pbkdf2_hmac` / `hashlib.scrypt` / `secrets`、Java `SecretKeyFactory`、Go `golang.org/x/crypto`(不在 std) | — |
 
@@ -53,9 +53,9 @@ Select-String -Path crates/wlwl-eval/tests/encode_contract.rs -Pattern '^\s+Case
 |---|---|---|---|
 | `PBKDF2_ITER(password, salt, iter, len, algo)` | R2 | 标准 PBKDF2。`algo` ∈ `sha256` / `sha512`。**参数全部显式**,无默认值 —— 少一个参数就不该有默认。`salt` 是**十六进制文本**(见下方文本域警示) | 参数越界 / 未知 `algo` / `salt` 非偶长 hex → `E0030` |
 | `ARGON2ID(password, salt, t_cost, m_cost, p_cost, len)` | R2 | RFC 9106 Argon2id(v = 19),内存硬,抗 GPU/ASIC。**参数全部显式,无默认值**;`salt` 是**十六进制文本**(见下方文本域警示) | 参数越界 / `salt` 非偶长 hex / 解码后盐 < 8 字节 → `E0030` |
-| `RANDOM_BYTES(n)` | R2 | **CSPRNG**,操作系统熵源。**不是** `RAND()` —— 名字要让人看出它是密码学安全的 | `n < 0` → `E0030` |
-| `RANDOM_HEX(n)` | R2 | 便利层:`RANDOM_BYTES` 的十六进制形态(同 `std.encode` 既有风格) | 同上 |
-| `TIMING_SAFE_EQ(a, b)` | R2 | **常数时间**比较,长度不等也走完整比较(不提前返回) | 永不失败 |
+| `RANDOM_BYTES(n)` | R2 | **CSPRNG**,操作系统熵源。返回 `n` 个 `INTEGER`(0–255)的**数组**(本语言唯一能无损承载任意字节串的形态)。`n = 0` 合法,返空 | `n < 0` → `E0030`;类型错 `E0030`;元数错 `E0022`;**熵源读失败 → `E0060`** |
+| `RANDOM_HEX(n)` | R2 | 便利层:`RANDOM_BYTES` 的十六进制文本形态(2 `n` 个小写字符)。**盐的自然来源** | 同上 |
+| `TIMING_SAFE_EQ(a, b)` | R2 | **常数时间**比较,长度不等也走完整比较(不提前返回) | **永不失败**;仅元数错 `E0022` / 类型错 `E0030` |
 
 > ⚠️ **文本域警示(实现期确认成立,且比原设想更窄)**
 > `Value::String` 是 UTF-8 文本,而 RFC 8018 / RFC 9106 的 `salt` / `K`(secret)/
@@ -380,15 +380,23 @@ cargo check --locked -p wlwl-std --features real-ai
 | Argon2id 原语层 | ~~RFC 9106 官方向量~~ → **该向量在两个现成实现上都复现不出来**(§3.5);改为独立第二实现的交叉核对向量 | `kats/argon2id` + 独立实现 | ✅ |
 | 交叉核对 | `hashlib.pbkdf2_hmac`(PBKDF2)+ 独立 Python Argon2id(**先逐块复现 `kats/argon2id` 才被采信**) | Python | ✅ |
 | ~~`argon2-cffi` 交叉核对~~ | ❌ **路径不通**,对 Argon2id 根本传不进 `K`/`X`(§3.4 末) | — | 已作废 |
-| CSPRNG | 100 000 次抽样**不得重复**;统计检验(卡方粗检) | 自证 | ⏳ W-04 |
-| **常数时间** | 长度不等时**不得提前返回** —— 钉住「长度不泄漏」;性能上两路径耗时差 < 10% | 机制断言 | ⏳ W-04 |
+| CSPRNG | 100 000 次抽样**不得重复**;统计检验(卡方粗检) | 自证 | ✅ 原语层:10 万次 128 bit 抽样**一条不撞**;首字节卡方 **< 400**(健康源约 255、真缺陷在 10⁷ 量级 —— 差四个数量级,阈值不是赌运气)。契约层另钉 6 条形状/独立性断言 |
+| **常数时间** | 长度不等时**不得提前返回** —— 钉住「长度不泄漏」;性能上两路径耗时差 < 10% | 机制断言 | ✅ **已做变异验证**:实现换成 `a.len() == b.len() && a == b` 后两条机制断言立刻变红(比值 **0.000** 对门槛 0.2)⇒ 不是死测试。**断言改成「下界」而不是「两路径相近」** —— CI 上浮着做上界才稳 |
 | 回归 | `SHA256` / `HMAC_SHA256` 及编码侧 45 条**逐条不动** | 防顺手改坏 | ✅ |
 
-probe **158 → 160**:新增 `M6_std_encode_kdf_bounds`(PBKDF2 侧)与
-`M6_std_encode_kdf_bounds_argon2id`(Argon2id 侧)。
-⚠️ **必须拆成两个用例目录** —— 诊断在调用边界就终止运行,一个程序里放两句
+probe **158 → 161**:新增 `M6_std_encode_kdf_bounds`(PBKDF2 侧)、
+`M6_std_encode_kdf_bounds_argon2id`(Argon2id 侧)、
+`M6_std_encode_entropy_and_timing`(熵源 + 常数时间)。
+⚠️ **必须拆成三个用例目录** —— 诊断在调用边界就终止运行,一个程序里放两句
 越界调用,第二句**根本执行不到**(实测踩过:`not_contains: after` 绿了,但
 第二条的诊断文本永远不会被打印,于是 `contains` 少一条而红)。
+⚠️ **「常数时间」这条 probe 刻意不调 KDF。** 实测 debug 构建下一次 600 000 轮
+`PBKDF2_ITER` 约 **11 s**,带两次派生的那版 probe 单条要 **33.6 s** —— 整个
+probe 套件从 9 s 涨到 53 s。KDF 的接线由契约表的精确值断言覆盖(其中
+`kdf_pbkdf2_at_the_owasp_floor` 是精确值,**顺带钉住 KDF 的确定性**),失败路径
+由两条越界 probe 覆盖。**「常数时间」本身跨进程测不准**(耗时比较在 CI 上必然
+抖动,写成断言就是制造一条随机变红的门禁)—— 它由原语层的机制断言守着,那条
+已做变异验证。**该钉的写在能钉得住的地方,钉不住的写明为什么钉不住。**
 
 **性能断言**:`PBKDF2_ITER` 100 000 轮 ≤ 100 ms(否则调用方会用更小的
 `iter`,安全性就崩了);`RANDOM_BYTES(4096)` ≤ 50 µs。
@@ -403,12 +411,12 @@ probe **158 → 160**:新增 `M6_std_encode_kdf_bounds`(PBKDF2 侧)与
 
 | 落点 | 本份动作 | W-03 状态 |
 |---|---|---|
-| 1 规范成员表 | §11.2 补 5 行 + §11.5 补 KDF / CSPRNG 边界 + 参数上界条款 | ✅ §11.2 补 2 行(`PBKDF2_ITER` / `ARGON2ID`)+ 上下界条款 + 盐的文本域口径 + 「为什么没有 `secret`/`assoc`」;**另开 §11.6**(KDF 边界) |
-| 2 附录 A | 跑 `gen-appendix-a`(`std.encode` 8 → 13 成员) | ✅ 已跑(现 10;`RANDOM_*` / `TIMING_SAFE_EQ` 随 W-04 到 13) |
-| 3 `SPEC.functions` | `encode.rs` 追加 5 个 `StdFn` | ✅ 追加 2 个 |
-| 4 契约测试硬编码 | `encode_contract` 成员数与点名清单 | ✅ 8 → **10**;契约 47 → **67** |
+| 1 规范成员表 | §11.2 补 5 行 + §11.5 补 KDF / CSPRNG 边界 + 参数上界条款 | ✅ §11.2 补 **5** 行(`PBKDF2_ITER` / `ARGON2ID` / `RANDOM_BYTES` / `RANDOM_HEX` / `TIMING_SAFE_EQ`)+ 上下界条款 + 盐的文本域口径 + 「为什么没有 `secret`/`assoc`」+ `RANDOM_BYTES` 为何返回数组 + 熵源失败为何是 `E0060`;**另开 §11.6**(KDF 边界) |
+| 2 附录 A | 跑 `gen-appendix-a`(`std.encode` 8 → 13 成员) | ✅ 已跑(8 → **13**) |
+| 3 `SPEC.functions` | `encode.rs` 追加 5 个 `StdFn` | ✅ 追加 **5** 个 |
+| 4 契约测试硬编码 | `encode_contract` 成员数与点名清单 | ✅ 8 → **13**;契约 47 → **83** |
 | 5 模块登记 | 无新模块 | — |
-| 6 probe | ≥ 2 条(常数时间 / 参数越界),`EXPECTED_CASE_COUNT` 同步 | ✅ 参数越界侧 2 条(158 → **160**);常数时间侧 ⏳ W-04 |
+| 6 probe | ≥ 2 条(常数时间 / 参数越界),`EXPECTED_CASE_COUNT` 同步 | ✅ **3** 条(参数越界 ×2 + 熵源/常数时间 ×1),158 → **161** |
 | 7 附录 G | **不动** | — |
 | 8 skill 指针 | `SKILL.md` + `reference.md` §9.1;**必加反模式**:「`SHA256` 是口令哈希」是错的(已有一条,补 KDF 后要指向新成员) | ⏳ W-05 |
 | 9 CHANGELOG | 成员面 +5;**重申加解密仍否决**(防读者以为本份开了那个口子) | ⏳ W-05 |
@@ -439,5 +447,5 @@ probe **158 → 160**:新增 `M6_std_encode_kdf_bounds`(PBKDF2 侧)与
 | W-01 | G4 选型裁决 + 参数上界裁决 | ✅ **完成(2026-10-06)** —— 选型由 `ADR-0026` G4 定(Argon2id 为主 + PBKDF2 兼容);**上下界**见 §3.1:下界取 OWASP 2025(Argon2id 19 456 KiB / t=2 / p=1;PBKDF2-SHA256 600k、SHA-512 220k),上界建议 `iter ≤ 10M` / `len ≤ 1 024 B` / `m_cost ≤ 1 GiB` / `t_cost ≤ 32` / `p_cost ≤ 16`,**越界一律 `E0030`**。**附一条连带事实**:本语言 `salt` 只能是文本 ⇒ 盐的自然来源是 `RANDOM_HEX`,盐长下界只能在文本域表达(同 D13-001 的二进制密钥问题) | `5924f65` |
 | W-02 | 熵源归属裁决(与 08 共同) | ✅ **完成(2026-10-06)** —— **`std.encode` 是源,`std.rand` 单向消费**:`RANDOM_BYTES`/`RANDOM_HEX` 读 OS 熵源,是唯一「安全随机」入口;`std.rand` 播种从它取,不得反向依赖。依据:总纲 §1 + `ADR-0026` G3(显式 seed + 可注入源 ⇒ 单向依赖是其必然结果)。命名面无冲突(不违反 §v0.x 4) | `5924f65` |
 | W-03 | PBKDF2 + Argon2id + 契约(RFC 向量 + Python 交叉核对) | ✅ **完成(2026-10-06)** —— 依赖 `argon2` 0.6.0(feature 收窄 `["alloc"]`);`PBKDF2_ITER` **手写**(PRF 复用 `HMAC_SHA256` 已有的字节级 HMAC,约 30 行,不引依赖)。成员面 **8 → 10**。契约 `encode_contract` **47 → 67**(新 20 条:正例 5 / `E0030` 15),`wlwl-std` 单测 17 → **21**(原语层 RFC 7914 §11 两条 + 块计数 + 3 条交叉核对 Argon2id + `p_cost` 生效性),probe **158 → 160**。**三个必须记的实测结论**:① **`secret` / `assoc` 形参撤掉** —— `argon2` 0.6.0 的 `keyid`/`data` 路径与参考实现不符(`58a04dad…` vs 权威 `0d640df5…`),存下的哈希别的实现验不过;证据链见 §3.5。② 本文件 §3.2(a) 的 `c = 600 000` 冻结向量**是错的**,已更正为 `1074be24…`(D13-001 第三次)。③ 「`assoc` 在 `kdf` feature 的 `derive_key` 里」**是错的** —— `derive_key` 没有 ad 形参,真入口是 `ParamsBuilder`;`kdf` feature 因此撤掉 | `7b4a221` |
-| W-04 | CSPRNG + 常数时间比较 + 契约 | 未动工 | — |
+| W-04 | CSPRNG + 常数时间比较 + 契约 | ✅ **完成(2026-10-06)** —— 三个成员落地,`std.encode` **10 → 13** 成员,契约 **67 → 83**,`wlwl-std` 单测 21 → **27**,probe **160 → 161**。**四条实测结论**:① `getrandom` **钉 0.3 而非 0.4** —— 0.4 声明 `rust-version = "1.85"` / edition 2024,而工作区承诺 1.75,取最新版会把承诺变成谎言(CI 用 `stable` 抓不到);0.3.4 是 1.63 / edition 2021,`fill()` 同一入口。② **`RANDOM_BYTES` 返回整数数组**而不是 `STRING` —— 名字说的是字节,而本语言没有字节类型,硬塞进 STRING 只能有损替换(规范 §11.3-3 已把「不做有损替换」立成条款);要文本用 `RANDOM_HEX`。③ **熵源读失败是 `E0060` 而不是 `E0030`** —— 前者是运行环境出问题,后者是程序员参数写错,处置不同。④ **随机缓冲区刻意不设上界** —— KDF 设上界是因为「一个参数打满机器」是**安全**问题,随机缓冲区调大只是多花时间内存,而程序本来就能建更大的数组;`n = 0` 合法 | 待回填 |
 | W-05 | skill / CHANGELOG / 收口 | 未动工 | — |

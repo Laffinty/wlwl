@@ -604,6 +604,151 @@ const CASES: &[Case] = &[
         ),
         expect: "!E0022 ARGON2ID: function expects 6 argument(s), got 5",
     },
+
+    // ── CSPRNG(v0.11.3 M6 / W-04)────────────────────────────────────
+    //
+    // 随机成员的契约**不能钉值**,只能钉**不变量**:长度、字符集、两次
+    // 抽样不撞车、抽样不偏向某一半。这些正是在语言层唯一能断言的东西。
+    Case {
+        name: "csprng_hex_length_is_twice_n",
+        src: concat!(
+            r#"IMPORT("wlwl:std.encode", ["RANDOM_HEX"]); "#,
+            r#"LEN(RANDOM_HEX(16))"#
+        ),
+        expect: "32",
+    },
+    Case {
+        name: "csprng_hex_of_zero_is_empty",
+        src: concat!(
+            r#"IMPORT("wlwl:std.encode", ["RANDOM_HEX"]); "#,
+            r#"RANDOM_HEX(0)"#
+        ),
+        // 长度 0 是合法请求,不是错误(§3.4 裁决 4)。
+        expect: "",
+    },
+    Case {
+        name: "csprng_bytes_of_zero_is_empty_array",
+        src: concat!(
+            r#"IMPORT("wlwl:std.encode", ["RANDOM_BYTES"]); "#,
+            r#"LEN(RANDOM_BYTES(0))"#
+        ),
+        expect: "0",
+    },
+    Case {
+        name: "csprng_bytes_has_one_element_per_byte",
+        src: concat!(
+            r#"IMPORT("wlwl:std.encode", ["RANDOM_BYTES"]); "#,
+            r#"LEN(RANDOM_BYTES(4))"#
+        ),
+        expect: "4",
+    },
+    Case {
+        name: "csprng_two_draws_are_independent",
+        src: concat!(
+            r#"IMPORT("wlwl:std.encode", ["RANDOM_HEX"]); "#,
+            r#"LET(a, RANDOM_HEX(16)); LET(b, RANDOM_HEX(16)); =(a, b)"#
+        ),
+        // 128 bit 抽样撞车概率约 2^-128。这条同时钉住「成员不是把种子
+        // 缓存起来返回同一个值」这个最常见的伪 CSPRNG 缺陷。
+        // 相等用**规范拼写** `=(a, b)`(语言规范 §9.2);`==` 是遗留形式,
+        // 解析器在表达式位置不收。
+        expect: "FALSE",
+    },
+    Case {
+        name: "csprng_negative_length_is_rejected",
+        src: concat!(
+            r#"IMPORT("wlwl:std.encode", ["RANDOM_HEX"]); "#,
+            r#"RANDOM_HEX(-1)"#
+        ),
+        expect: "!E0030 RANDOM_HEX: n = -1 is negative; a buffer length cannot be negative",
+    },
+    Case {
+        name: "csprng_non_integer_length_is_rejected",
+        src: concat!(
+            r#"IMPORT("wlwl:std.encode", ["RANDOM_BYTES"]); "#,
+            r#"RANDOM_BYTES("8")"#
+        ),
+        expect: "!E0030 RANDOM_BYTES: expected integer for n, got string",
+    },
+    Case {
+        name: "csprng_arity",
+        src: concat!(
+            r#"IMPORT("wlwl:std.encode", ["RANDOM_HEX"]); "#,
+            r#"RANDOM_HEX()"#
+        ),
+        expect: "!E0022 RANDOM_HEX: function expects 1 argument(s), got 0",
+    },
+
+    // ── TIMING_SAFE_EQ(v0.11.3 M6 / W-04)────────────────────────────
+    //
+    // 语义正例在这里;「长度不等不得提前返回」是**机制断言**,只能落在
+    // `wlwl-std` 的单元测试里(它要测耗时,语言层测不了)。
+    Case {
+        name: "timing_safe_eq_equal_strings",
+        src: concat!(
+            r#"IMPORT("wlwl:std.encode", ["TIMING_SAFE_EQ"]); "#,
+            r#"TIMING_SAFE_EQ("correct horse battery staple", "correct horse battery staple")"#
+        ),
+        expect: "TRUE",
+    },
+    Case {
+        name: "timing_safe_eq_empty_strings",
+        src: concat!(
+            r#"IMPORT("wlwl:std.encode", ["TIMING_SAFE_EQ"]); "#,
+            r#"TIMING_SAFE_EQ("", "")"#
+        ),
+        expect: "TRUE",
+    },
+    Case {
+        name: "timing_safe_eq_different_strings",
+        src: concat!(
+            r#"IMPORT("wlwl:std.encode", ["TIMING_SAFE_EQ"]); "#,
+            r#"TIMING_SAFE_EQ("abc", "abd")"#
+        ),
+        expect: "FALSE",
+    },
+    Case {
+        name: "timing_safe_eq_length_mismatch_is_false_not_an_error",
+        src: concat!(
+            r#"IMPORT("wlwl:std.encode", ["TIMING_SAFE_EQ"]); "#,
+            r#"TIMING_SAFE_EQ("abc", "abcd")"#
+        ),
+        // 长度不等是**正常结果**(FALSE),不是失败格 —— 本成员永不失败。
+        expect: "FALSE",
+    },
+    Case {
+        name: "timing_safe_eq_compares_utf8_bytes",
+        src: concat!(
+            r#"IMPORT("wlwl:std.encode", ["TIMING_SAFE_EQ"]); "#,
+            r#"TIMING_SAFE_EQ("世界", "世界")"#
+        ),
+        expect: "TRUE",
+    },
+    Case {
+        name: "timing_safe_eq_near_miss_differs_in_one_byte",
+        src: concat!(
+            r#"IMPORT("wlwl:std.encode", ["TIMING_SAFE_EQ"]); "#,
+            r#"TIMING_SAFE_EQ("世界", "世男")"#
+        ),
+        // 只差一个字节且长度相同 —— 最容易被逐字节提前返回泄密的形态。
+        expect: "FALSE",
+    },
+    Case {
+        name: "timing_safe_eq_type_error",
+        src: concat!(
+            r#"IMPORT("wlwl:std.encode", ["TIMING_SAFE_EQ"]); "#,
+            r#"TIMING_SAFE_EQ(1, "1")"#
+        ),
+        expect: "!E0030 TIMING_SAFE_EQ: expected string for a, got integer",
+    },
+    Case {
+        name: "timing_safe_eq_arity",
+        src: concat!(
+            r#"IMPORT("wlwl:std.encode", ["TIMING_SAFE_EQ"]); "#,
+            r#"TIMING_SAFE_EQ("a")"#
+        ),
+        expect: "!E0022 TIMING_SAFE_EQ: function expects 2 argument(s), got 1",
+    },
 ];
 
 // `IMP` 保留给将来批量生成用例时引用;逐条手写 `IMPORT` 是刻意的 ——
@@ -711,7 +856,7 @@ fn encode_member_set_matches_the_spec_table() {
 
     assert_eq!(
         spec.len(),
-        10,
+        13,
         "§11 table extractor found {} member(s): {spec:?} — the table's shape changed \
          and the extractor needs updating",
         spec.len()
@@ -727,6 +872,9 @@ fn encode_member_set_matches_the_spec_table() {
         "HMAC_SHA256",
         "PBKDF2_ITER",
         "ARGON2ID",
+        "RANDOM_BYTES",
+        "RANDOM_HEX",
+        "TIMING_SAFE_EQ",
     ] {
         assert!(
             spec.iter().any(|m| m == n),
@@ -737,7 +885,7 @@ fn encode_member_set_matches_the_spec_table() {
             "implementation does not export `{n}`: {impls:?}"
         );
     }
-    assert_eq!(impls.len(), 10, "wlwl:std.encode exports 10 members");
+    assert_eq!(impls.len(), 13, "wlwl:std.encode exports 13 members");
 }
 
 fn spec_path() -> PathBuf {
