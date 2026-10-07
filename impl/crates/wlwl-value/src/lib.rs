@@ -667,6 +667,15 @@ impl Outcome {
             signal: Signal::None,
         }
     }
+
+    /// 带一个**控制流信号**的返回值(如 `Signal::Return`)。
+    ///
+    /// ⚠️ 跨层调用方**必须**自己决定要不要把信号往上再传 —— `wlwl-std` 的
+    /// 成员不得消费它(结构化并发,spec §17):`TIMEOUT` 就是这么用的,它
+    /// **接收** body 逃上来的 `Signal::Return` 并把它**换成自己的返回值**。
+    pub fn with_signal(v: Value, signal: Signal) -> Self {
+        Outcome { value: v, signal }
+    }
 }
 
 // ──────────────────────────────────────────────────────────────────────
@@ -1022,6 +1031,98 @@ pub trait StdHost {
     fn call(&mut self, f: &Value, args: Vec<Value>, name: &str) -> Result<Outcome, WlwlError>;
     /// 以当前调用点 span 构造诊断。
     fn diag(&mut self, code: ErrorCode, message: String) -> WlwlError;
+
+    // ── 时钟接缝(v0.11.3 M6 / addendum-01 B 片)────────────────────────
+    //
+    // 形态来自 `ADR-0024` §6.3-2 **候选甲**:`StdHost` **加方法**。
+    //
+    // ⚠️ **为什么是「加方法」而不是往 `StdCtx` 加字段** —— `addendum-01` §3.10
+    // 否掉的 `StdCtx.task_depth` 恰好是**同一个候选的镜像**:那次要问的是
+    // 「我在不在任务内」,那是**逐次调用的上下文事实**(与 `argv` / `env` 同类,
+    // 于是放 `StdCtx`);这次要问的是「当前处于哪个气泡、虚拟钟走到哪」,那是
+    // **调度器状态**,塞进 `StdCtx` 会让「谁拥有时钟」在类型上说不清。
+    // **一个判据,两次相反的落点。**
+    //
+    // **默认值是「不在气泡内 + 真实时钟」**,所以每个手写 `StdHost`(测试里的
+    // `NullHost`、基准里的对照宿主)都**不用改**,而它们的存在本身就是在断言
+    // 「`std.rand` / 纯计算成员不碰宿主」。
+
+    /// 当前是否处于假时钟气泡内(`TEST_BUBBLE` 之内)。
+    fn in_clock_bubble(&self) -> bool {
+        false
+    }
+
+    /// 当前可见的**墙钟**毫秒(Unix 纪元)。气泡内 = 虚拟钟,否则 = 真实系统时钟。
+    fn clock_wall_ms(&self) -> i64 {
+        real_wall_ms()
+    }
+
+    /// 当前可见的**单调钟**毫秒(进程启动起)。气泡内 = 虚拟钟,否则 = 真实 `Instant`。
+    ///
+    /// ⚠️ 绝对值无意义、跨进程不可比,只有差值有效(规范 §15.1)。
+    fn clock_mono_ms(&self) -> i64 {
+        real_mono_ms()
+    }
+
+    /// 进入一个假时钟气泡。**已在气泡内 → `E0030`**(气泡不再嵌套,
+    /// `ADR-0024` §5-1 业主 2026-10-07 裁决)。成功时虚拟钟**重置到固定起点**。
+    ///
+    /// 必须与 [`StdHost::exit_clock_bubble`] 成对调用。
+    fn enter_clock_bubble(&mut self) -> Result<(), WlwlError> {
+        let _ = self;
+        Err(self.diag(
+            ErrorCode::E0030,
+            "clock bubble: this host does not support bubbles".into(),
+        ))
+    }
+
+    /// 退出当前气泡(与 [`StdHost::enter_clock_bubble`] 成对)。不在气泡内 = 空操作。
+    fn exit_clock_bubble(&mut self) {
+        let _ = self;
+    }
+
+    /// 把虚拟钟拨快 `ms` 毫秒,返回「**最紧的**未放弃 `TIMEOUT` deadline
+    /// 是否被越过」。**不在气泡内 → `E0030`**。
+    ///
+    /// ⚠️ 返回那个 `bool` 是因为 `SLEEP` 靠它决定要不要把 body 从最近的函数
+    /// 边界弹回去(`Signal::Return`);让成员自己去查一次「有没有被越过」会
+    /// 多一次虚方法调用,而且把「谁判定」这件事在两处各写一遍。
+    fn advance_clock(&mut self, ms: i64) -> Result<bool, WlwlError> {
+        let _ = ms;
+        Err(self.diag(ErrorCode::E0030, "clock bubble: not inside a bubble".into()))
+    }
+
+    /// 压入一个 `TIMEOUT` 的 deadline(`at_ms`,虚拟单调域),返回它在栈里的
+    /// **深度**。**不在气泡内 → `E0030`**。
+    fn push_clock_deadline(&mut self, at_ms: i64) -> Result<usize, WlwlError> {
+        let _ = at_ms;
+        Err(self.diag(ErrorCode::E0030, "clock bubble: not inside a bubble".into()))
+    }
+
+    /// 弹出深度 `depth` 的 deadline,返回**它是否已被放弃过**。
+    fn pop_clock_deadline(&mut self, depth: usize) -> bool {
+        let _ = depth;
+        false
+    }
+}
+
+/// 真实墙钟:Unix 纪元起的毫秒。**默认实现** —— 只有气泡内的虚拟钟需要宿主接管。
+pub fn real_wall_ms() -> i64 {
+    match std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH) {
+        Ok(d) => i64::try_from(d.as_millis()).unwrap_or(i64::MAX),
+        // 系统时钟早于 1970 是病态情形(改了系统时间 / 容器里 epoch 未初始化)。
+        // 不用 `unwrap()` 崩掉一个只读的时钟成员:负毫秒是**可表达**的
+        // (减法仍然精确),而崩溃不是。
+        Err(e) => -i64::try_from(e.duration().as_millis()).unwrap_or(i64::MAX),
+    }
+}
+
+/// 真实单调钟:**进程启动起**的毫秒。基准用 `OnceLock` 固定住 —— 否则每次调用都
+/// 从一个新基准算起,结果不是单调的,而是「永远等于上一次到现在」。
+pub fn real_mono_ms() -> i64 {
+    static ORIGIN: std::sync::OnceLock<std::time::Instant> = std::sync::OnceLock::new();
+    let origin = ORIGIN.get_or_init(std::time::Instant::now);
+    i64::try_from(origin.elapsed().as_millis()).unwrap_or(i64::MAX)
 }
 
 /// 注册进 [`StdCtx::tests`] 的单条测试(name + 零参测试体)。

@@ -1,0 +1,25 @@
+// [v0.11.3 / addendum-01 B 片] TIMEOUT 的语义验收。
+//
+// ⚠️ **不能用 `PRINT(v)` 看一个 `ERR` 值** —— 实测(且 stash 掉本批全部改动后
+// 复现,证明**既有**行为):`PRINT("x = ", ERR("y"))` 会**静默吞掉整条语句**,
+// 无诊断、退出码 0。所以超时的返回值一律用 `IS_ERR` 观察。
+IMPORT("wlwl:std.time", ["SLEEP", "TEST_BUBBLE", "TIMEOUT"]);
+
+PRINT("T1_ok = ", TEST_BUBBLE(FUN(() , TIMEOUT(1000, FUN(() , (SLEEP(100); "done"))))));
+
+PRINT("T2_iserr = ", TEST_BUBBLE(FUN(() , IS_ERR(TIMEOUT(100, FUN(() , SLEEP(200)))))));
+
+// 3. body 被放弃:SLEEP 直写在 body 中层 ⇒ 它之后那行不该打印。
+PRINT("T3_start");
+TEST_BUBBLE(FUN(() , TIMEOUT(100, FUN(() , (SLEEP(200); PRINT("  T3_AFTER_SLEEP_RAN"))))));
+PRINT("T3_done");
+
+PRINT("T4_inner_tighter = ", TEST_BUBBLE(FUN(() , IS_ERR(TIMEOUT(10000, FUN(() , TIMEOUT(50, FUN(() , SLEEP(100)))))))));
+
+PRINT("T5_outer_tighter = ", TEST_BUBBLE(FUN(() , IS_ERR(TIMEOUT(50, FUN(() , TIMEOUT(10000, FUN(() , SLEEP(100)))))))));
+
+PRINT("T6_nested_ok = ", TEST_BUBBLE(FUN(() , TIMEOUT(10000, FUN(() , TIMEOUT(1000, FUN(() , (SLEEP(100); "inner-done"))))))));
+
+PRINT("before T7");
+TIMEOUT(10, FUN(() , NULL));
+PRINT("after T7");

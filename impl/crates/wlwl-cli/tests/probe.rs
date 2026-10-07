@@ -81,7 +81,11 @@ use std::time::{Duration, Instant};
 // `std.rand` 的逐字节可复现性 + 「状态必须喂回去」。其中
 // `state_advanced = TRUE` 是早期标量返回实现的守卫:`DICT` 不可变,
 // 状态不推进的话三次抽签会拿到**同一个数**。
-const EXPECTED_CASE_COUNT: usize = 166;
+// [v0.11.3 M6 / addendum-01 B] 166 → 167:新增 `M6_std_time_bubble` ——
+// `TEST_BUBBLE` / `ADVANCE` / `TIMEOUT` 的语义。两条反向守卫:
+// `not_contains T3_AFTER_SLEEP_RAN` 钉「超时**放弃 body**」而不只是丢弃结果;
+// T4/T5 是一对,钉「取**最紧的**未放弃 deadline」而不是栈顶。
+const EXPECTED_CASE_COUNT: usize = 167;
 
 /// 单个 case 的上限,与 `probe.py` 的 `timeout=60` 同义。
 const CASE_TIMEOUT: Duration = Duration::from_secs(60);

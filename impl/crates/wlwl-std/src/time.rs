@@ -49,6 +49,9 @@ pub static SPEC: ModuleSpec = ModuleSpec {
         ("NOW", now as StdFn),
         ("MONOTONIC", monotonic as StdFn),
         ("SLEEP", sleep as StdFn),
+        ("TEST_BUBBLE", test_bubble as StdFn),
+        ("ADVANCE", advance as StdFn),
+        ("TIMEOUT", timeout as StdFn),
     ],
 };
 
@@ -68,34 +71,28 @@ fn type_err(host: &mut dyn StdHost, name: &str, got: &Value) -> wlwl_error::Wlwl
     )
 }
 
-// ── 时钟接缝(A1 用真实时钟;B 阶段换函数体,不改签名)─────────────────────
+// ── 时钟接缝(A1 留形参 / B 片走宿主)────────────────────────────────────
+//
+// A1 阶段这两个函数**直接摸系统时钟**、`_host` 形参只是占位。B 片落地后它们
+// **一律改问宿主**(`ADR-0024` §6.3-2 候选甲):气泡内宿主给虚拟钟、气泡外给
+// 真实钟。⇒ **成员签名与调用点一行都没改**,这正是 A1 留形参的回报。
+//
+// 真实时钟的实现落在 `wlwl_value::{real_wall_ms, real_mono_ms}`(也就是
+// `StdHost` 这两个方法的**默认实现**)—— 单一来源,免得两处各写一遍漂移。
 
-/// 墙钟:Unix 纪元起的**毫秒**。
-///
-/// **`_host` 是刻意留的接缝**:B 阶段的虚拟时钟要通过 `StdHost` 取,那时把这个
-/// 形参用上、函数体换掉即可 —— **成员签名与调用点一行都不用改**。这也是为什么
-/// A1 现在就按「带 host 形参」的形状写,而不是写一个裸 `now()`。
-fn now_ms(_host: &mut dyn StdHost) -> i64 {
-    match std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH) {
-        Ok(d) => i64::try_from(d.as_millis()).unwrap_or(i64::MAX),
-        // 系统时钟早于 1970 是病态情形(改了系统时间 / 容器里 epoch 未初始化)。
-        // 不用 `unwrap()` 崩掉一个只读的时钟成员:负毫秒是**可表达**的
-        // (减法仍然精确),而崩溃不是。
-        Err(e) => -i64::try_from(e.duration().as_millis()).unwrap_or(i64::MAX),
-    }
+/// 墙钟:Unix 纪元起的**毫秒**。宿主在气泡内时返回**虚拟**墙钟。
+fn now_ms(host: &mut dyn StdHost) -> i64 {
+    host.clock_wall_ms()
 }
 
-/// 单调钟:**进程启动起**的毫秒。
+/// 单调钟:**进程启动起**的毫秒。宿主在气泡内时返回**虚拟**单调钟。
 ///
 /// `Instant` 保证单调不减,且**不受系统时间调整影响**(NTP 校时 / 手动改表 /
 /// 夏令时都动不了它)—— 这正是它与 `NOW` 并存的理由:「过了多久」要问它,
-/// 「现在几点」要问 `NOW`。⚠️ 它的**绝对值无意义**,跨进程不可比。
-fn monotonic_ms(_host: &mut dyn StdHost) -> i64 {
-    // 进程启动时的基准,用 `OnceLock` 固定住 —— 否则每次调用都从一个新基准算起,
-    // 结果不是单调的,而是「永远等于上一次到现在」。
-    static ORIGIN: std::sync::OnceLock<std::time::Instant> = std::sync::OnceLock::new();
-    let origin = ORIGIN.get_or_init(std::time::Instant::now);
-    i64::try_from(origin.elapsed().as_millis()).unwrap_or(i64::MAX)
+/// 「现在几点」要问 `NOW`。⚠️ 它的**绝对值无意义**,跨进程不可比 —— 但**气泡内
+/// 是个例外**:虚拟单调钟从 0 起算,绝对值有定义且可复现。
+fn monotonic_ms(host: &mut dyn StdHost) -> i64 {
+    host.clock_mono_ms()
 }
 
 // ── 成员 ───────────────────────────────────────────────────────────────
@@ -167,8 +164,174 @@ pub fn sleep(host: &mut dyn StdHost, args: Vec<Value>) -> wlwl_error::WlwlResult
             format!("SLEEP: expected a non-negative duration in ms, got {ms}"),
         ));
     }
-    // `ms >= 0` 已由上一行保证,`as u64` 不会回绕。
+    // ── 气泡内:拨快虚拟钟并**立即返回**;气泡外:真阻塞线程 ──
+    //
+    // 这就是方案 **B-简**。Go `synctest` 那套「挂起睡着的任务、让别的任务插进来、
+    // 全员阻塞时才推进时钟」在本批**不可达**:那需要任务挂起,而挂起被
+    // `addendum-01` §3.10 否掉(非分段任务体被唤醒后整段重跑 ⇒ 无限循环)。
+    // ⇒ 气泡内的 `SLEEP(3600)` **墙钟耗时 < 1 s**,且同一程序跑两次时间序列
+    // **逐字节相同**;**给不了**的是「A 睡 1 s、B 能看到 +500 时刻」——
+    // 代价如实登记在规范 §15.5,不藏。
+    if host.in_clock_bubble() {
+        let expired = host.advance_clock(*ms)?;
+        if !expired {
+            return Ok(Outcome::normal(Value::Null));
+        }
+        // ── 超期:把 body 从**最近的函数边界**弹回去 ──
+        //
+        // 粒度是**实测**出来的(addendum-01 §3.12):`Signal::Return` 从最内层
+        // 闭包返回、**不逸出** `TEST_BUBBLE` / 顶层。所以:
+        //   * `SLEEP` 直写在 `TIMEOUT` 的 body 里 → body 被**完全放弃**;
+        //   * `SLEEP` 藏在 body 内更深的函数调用里 → 只中断到那一层,外层
+        //     继续跑完(但 `TIMEOUT` 的**返回值仍然正确**,见 `timeout`)。
+        // 这与本语言的 `ERR` 纪律一致:`ERR` 本来就是「返回给调用方、由调用方
+        // 决定怎么办」,逐层 `IS_ERR` 传播是用户的事。
+        return Ok(Outcome::with_signal(
+            timeout_err(),
+            wlwl_value::Signal::Return(timeout_err()),
+        ));
+    }
+    // `ms >= 0` 已由上面保证,`as u64` 不会回绕。
     std::thread::sleep(std::time::Duration::from_millis(*ms as u64));
+    Ok(Outcome::normal(Value::Null))
+}
+
+/// `TIMEOUT` 的失败载荷:`ERR([kind: "Timeout"])`。
+///
+/// ⚠️ 与 `addendum-01` §3.7 口径 2 定的形态一致(`ERR` **值**而不是原生诊断):
+/// 超时是**可预期的运行期结果**,调用方多半要 `IS_ERR` 分支处理它;而原生诊断
+/// 会**终止运行**。仓内已有同款先例 —— `AWAIT` 一个被取消的任务就返回
+/// `Err { kind: "Cancelled" }`。
+fn timeout_err() -> Value {
+    // `Value::Err` 的载荷是**单个** `Value`(§12 `ERR(value)`),所以
+    // `ERR([kind: "Timeout"])` = `Err(Dict { kind: "Timeout" })`。
+    Value::Err(Box::new(Value::Dict(vec![(
+        Value::String("kind".into()),
+        Value::String("Timeout".into()),
+    )])))
+}
+
+/// `TIMEOUT(d, body) -> v | ERR`
+///
+/// 跑 `body`,虚拟钟走过 `d` 毫秒仍未返回就**放弃**它,返回
+/// `ERR([kind: "Timeout"])`。**只在气泡内可用** —— 气泡外 → `E0030`。
+///
+/// ## 为什么气泡外做不到(不是偷懒,是运行时没有那个位置)
+///
+/// 运行时是**单线程协作式**的(没有 `thread::spawn`,调度是一个 run queue),
+/// 方案 E 又取消了挂起 ⇒ body 不挂起就**没有任何地方**可以判「超时了」。
+/// 看门狗线程也救不了:它能置一个标志,但 body 不会去看它。
+///
+/// ## 超时的**返回值**永远正确;body 的**提前退出是尽力而为**
+///
+/// `SLEEP` 越过 deadline 时会 ① 置「已放弃」标志 ② 返回
+/// `Signal::Return(ERR)`。`TIMEOUT` 在 body 返回后查标志 —— **只要置过就返回
+/// `ERR`**,哪怕 body 因为中断粒度只退到内层、最终还是跑完了。
+/// ⇒ **「超时了没有」这个问题永远有确定答案**;「省了多少时间」取决于
+/// `SLEEP` 位于多深的调用里(实测粒度见 `addendum-01` §3.12)。
+pub fn timeout(host: &mut dyn StdHost, args: Vec<Value>) -> wlwl_error::WlwlResult<Outcome> {
+    const NAME: &str = "TIMEOUT";
+    if args.len() != 2 {
+        return Err(arity(host, NAME, args.len(), 2));
+    }
+    let Value::Integer(d) = &args[0] else {
+        return Err(type_err(host, NAME, &args[0]));
+    };
+    if *d < 0 {
+        return Err(host.diag(
+            ErrorCode::E0030,
+            format!("{NAME}: expected a non-negative budget in ms, got {d}"),
+        ));
+    }
+    if !matches!(args[1], Value::Closure { .. } | Value::NativeFn { .. }) {
+        return Err(host.diag(
+            ErrorCode::E0030,
+            format!(
+                "{NAME}: expected a function body, got {}",
+                crate::value_kind(&args[1])
+            ),
+        ));
+    }
+    // 气泡外在这里就报错(诊断文本在 `push_clock_deadline` 的默认实现里 ——
+    // 「为什么气泡外做不到」那段解释跟着宿主走,免得两处各写一遍)。
+    let depth = host.push_clock_deadline(host.clock_mono_ms().saturating_add(*d))?;
+    let result = host.call(&args[1], Vec::new(), NAME);
+    let tripped = host.pop_clock_deadline(depth);
+    if tripped {
+        // ⚠️ **覆盖** body 的返回值,包括它逃上来的 `Signal::Return`:超时的
+        // 答案只有一个。让 body 的 `Return` 继续往外传才是 bug —— 那样调用方
+        // 会拿到一个「像普通返回值」的 `ERR`,与「这段逻辑超时了」混淆。
+        return Ok(Outcome::normal(timeout_err()));
+    }
+    result
+}
+
+/// `TEST_BUBBLE(body) -> v`
+///
+/// 在**假时钟气泡**内跑 `body`:期间 `NOW` / `MONOTONIC` 走虚拟钟、
+/// `SLEEP` 只拨钟不真等。`body` 的返回值原样传出。
+///
+/// ## 边界(ADR-0024 §5-1,业主 2026-10-07 裁决)
+///
+/// - **气泡不再嵌套** —— 已在气泡内 → `E0030`。两层虚拟时钟让语义面翻倍而收益
+///   近零。
+/// - **气泡内 `SPAWN` 的任务归气泡**,且**在物理上无法逃逸**:`SPAWN` 没有
+///   `SCOPE` 就报 `E0058` ⇒ 任务必然挂在 body 内部某个 `SCOPE` 下,而结构化
+///   并发保证它们在 `SCOPE` 返回前全部终止,也就是在 `body` 返回前。
+///
+/// ## ⚠️ 给不了的东西(B-简的已知限制)
+///
+/// **不实现 Go `synctest` 的任务间交错**:虚拟钟在 `SLEEP` 的**调用点**就跳,
+/// 睡着期间别的任务拿不到中间时刻。要那个语义必须先补 ADR-0017 Step 3 的
+/// 「中途续跑」运行时能力 —— 独立立项。
+pub fn test_bubble(host: &mut dyn StdHost, args: Vec<Value>) -> wlwl_error::WlwlResult<Outcome> {
+    const NAME: &str = "TEST_BUBBLE";
+    if args.len() != 1 {
+        return Err(arity(host, NAME, args.len(), 1));
+    }
+    if !matches!(args[0], Value::Closure { .. } | Value::NativeFn { .. }) {
+        return Err(host.diag(
+            ErrorCode::E0030,
+            format!(
+                "{NAME}: expected a function, got {}",
+                crate::value_kind(&args[0])
+            ),
+        ));
+    }
+    // ⚠️ `?` 在进入失败时**提前返回**,而那个分支**不能**再调 `exit` ——
+    // 否则会把别人的气泡关掉。顺序是有意义的,别调换。
+    host.enter_clock_bubble()?;
+    let result = host.call(&args[0], Vec::new(), NAME);
+    // 无论 body 是正常返回还是带 `Err` 出来,都**必须**退出气泡:
+    // wlwl 的错误是 `Result` 而不是 unwind,所以这里没有 panic 漏出的路径。
+    host.exit_clock_bubble();
+    result
+}
+
+/// `ADVANCE(ms) -> NULL`
+///
+/// **仅气泡内有效**:把虚拟钟拨快 `ms` 毫秒。气泡外 → `E0030`。
+///
+/// 典型用途是「跳过一段与被测逻辑无关的等待」:不想真的 `SLEEP` 两次,
+/// 也不想让时间自己流过去。
+///
+/// ⚠️ 计划 §2 原写「**并唤醒到期的等待者**」——**那一半被删掉了**:方案 B-简
+/// 下**没有等待者**(没有任务因时钟挂起),留着它就是一句骗人的描述。
+pub fn advance(host: &mut dyn StdHost, args: Vec<Value>) -> wlwl_error::WlwlResult<Outcome> {
+    const NAME: &str = "ADVANCE";
+    if args.len() != 1 {
+        return Err(arity(host, NAME, args.len(), 1));
+    }
+    let Value::Integer(ms) = &args[0] else {
+        return Err(type_err(host, NAME, &args[0]));
+    };
+    if *ms < 0 {
+        return Err(host.diag(
+            ErrorCode::E0030,
+            format!("{NAME}: expected a non-negative duration in ms, got {ms}"),
+        ));
+    }
+    host.advance_clock(*ms)?;
     Ok(Outcome::normal(Value::Null))
 }
 

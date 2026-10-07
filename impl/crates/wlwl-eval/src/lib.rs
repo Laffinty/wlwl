@@ -5983,6 +5983,87 @@ impl wlwl_std::StdHost for Evaluator {
         &mut self.std_ctx
     }
 
+    // ── 时钟接缝(addendum-01 B 片)─────────────────────────────────────
+    //
+    // 真实时钟一律落到 `wlwl_value` 的默认实现;这里只在**气泡内**接管,
+    // 从而保证「气泡外 = 真实时钟、行为如实文档化」(ADR-0024 Decision 3)。
+    fn in_clock_bubble(&self) -> bool {
+        self.clock_bubble.is_some()
+    }
+
+    fn clock_wall_ms(&self) -> i64 {
+        match &self.clock_bubble {
+            // 虚拟墙钟 = **固定起点** + 已流逝的虚拟单调毫秒。固定起点是
+            // 「可复现」这条承诺的全部:若起点取真实 `NOW()`,同一程序两次运行
+            // 读到的 `NOW` 就不同,气泡的意义当场消失。
+            Some(b) => ClockBubble::WALL_ORIGIN_MS.saturating_add(b.mono_ms),
+            None => wlwl_value::real_wall_ms(),
+        }
+    }
+
+    fn clock_mono_ms(&self) -> i64 {
+        match &self.clock_bubble {
+            Some(b) => b.mono_ms,
+            None => wlwl_value::real_mono_ms(),
+        }
+    }
+
+    fn enter_clock_bubble(&mut self) -> WlwlResult<()> {
+        if self.clock_bubble.is_some() {
+            // 气泡不再嵌套(ADR-0024 §5-1,业主 2026-10-07 裁决)。⚠️ 这条同时
+            // 挡住了「两层虚拟时钟」那个语义面翻倍而收益近零的口子。
+            return Err(wlwl_std::StdHost::diag(
+                self,
+                ErrorCode::E0030,
+                "TEST_BUBBLE: clock bubbles do not nest — a bubble cannot open another bubble"
+                    .into(),
+            ));
+        }
+        self.clock_bubble = Some(ClockBubble::default());
+        Ok(())
+    }
+
+    fn exit_clock_bubble(&mut self) {
+        self.clock_bubble = None;
+    }
+
+    fn advance_clock(&mut self, ms: i64) -> WlwlResult<bool> {
+        match &mut self.clock_bubble {
+            Some(b) => {
+                b.mono_ms = b.mono_ms.saturating_add(ms);
+                // ⚠️ 返回「**最紧的**未放弃 deadline 是否被越过」—— `SLEEP`
+                // 靠它决定要不要把 body 从最近的函数边界弹回去。
+                Ok(b.trip_if_expired(b.mono_ms))
+            }
+            None => Err(wlwl_std::StdHost::diag(
+                self,
+                ErrorCode::E0030,
+                "ADVANCE: not inside a clock bubble".into(),
+            )),
+        }
+    }
+
+    fn push_clock_deadline(&mut self, at_ms: i64) -> WlwlResult<usize> {
+        match &mut self.clock_bubble {
+            Some(b) => Ok(b.push_deadline(at_ms)),
+            None => Err(wlwl_std::StdHost::diag(
+                self,
+                ErrorCode::E0030,
+                "TIMEOUT: not inside a clock bubble — outside a bubble there is no portable \
+                 way to bound a body (the runtime is single-threaded and nothing suspends, \
+                 so there is nowhere to check the deadline). Wrap the body in TEST_BUBBLE."
+                    .into(),
+            )),
+        }
+    }
+
+    fn pop_clock_deadline(&mut self, depth: usize) -> bool {
+        match &mut self.clock_bubble {
+            Some(b) => b.pop_deadline(depth),
+            None => false,
+        }
+    }
+
     fn call(&mut self, f: &Value, args: Vec<Value>, name: &str) -> WlwlResult<Outcome> {
         // 与 eval_call 的函数分派同构;span 取 invoke_std 存好的当前调用点。
         let span = self
@@ -6020,8 +6101,86 @@ impl wlwl_std::StdHost for Evaluator {
     }
 }
 
+/// [v0.11.3 M6 / addendum-01 B 片] 假时钟气泡的状态(方案 **B-简**)。
+///
+/// 只有**一个**字段:已流逝的虚拟单调毫秒。气泡内 `SLEEP(ms)` 把它往前拨,
+/// `NOW` / `MONOTONIC` 读它。**没有等待者、没有唤醒队列** —— 方案 B-简
+/// 刻意不做 Go `synctest` 的「挂起睡着的任务、让别的任务插进来」那套,
+/// 因为那需要任务挂起,而挂起被 `addendum-01` §3.10 否掉了(中途续跑是
+/// ADR-0017 Step 3 的未建能力)。**语义损失如实登记在规范 §15.5。**
+#[derive(Debug, Clone, Default)]
+pub struct ClockBubble {
+    /// 气泡内已流逝的虚拟**单调**毫秒。起点恒为 0 ⇒ 绝对值有定义、可复现。
+    pub mono_ms: i64,
+    /// 活跃 `TIMEOUT` 的 deadline(**栈**,不是单值):每一项是
+    /// 「该 `TIMEOUT` 被放弃的虚拟单调毫秒」,外加一个「已放弃」位。
+    ///
+    /// 为什么是栈:**气泡不嵌套,但 `TIMEOUT` 可以嵌套**(一个 `TIMEOUT` 的 body
+    /// 里再套一个)。为什么带「已放弃」位:放弃之后这一项就**不再参与**最紧
+    /// deadline 的计算 —— 否则它会**永久**触发后续每一次 `SLEEP`。
+    deadlines: Vec<(i64, bool)>,
+}
+
+impl ClockBubble {
+    /// 虚拟**墙钟**的固定起点:2023-11-14T22:13:20Z。
+    ///
+    /// 为什么是一个**写死的常量**而不是真实 `NOW()`:气泡的全部价值就是
+    /// 「同一程序跑两次,时间序列逐字节相同」。起点一旦含真实时间,
+    /// 这条当场失效。⚠️ 它对调用方**不是**真实时刻 —— 想拿真实时刻用气泡外的
+    /// `NOW()`(规范 §15.5)。
+    pub const WALL_ORIGIN_MS: i64 = 1_700_000_000_000;
+
+    /// 压入一个 `TIMEOUT` 的 deadline,返回它在栈里的下标(= 深度)。
+    pub fn push_deadline(&mut self, at_ms: i64) -> usize {
+        self.deadlines.push((at_ms, false));
+        self.deadlines.len() - 1
+    }
+
+    /// 弹出深度 `depth` 那一项,返回**它是否已经被放弃过**。
+    pub fn pop_deadline(&mut self, depth: usize) -> bool {
+        self.deadlines
+            .get_mut(depth)
+            .map(|(_, tripped)| std::mem::replace(tripped, false))
+            .unwrap_or(false)
+    }
+
+    /// 虚拟钟推过 `now_ms` 之后:若**最紧的**未放弃 deadline 已被越过,
+    /// 就放弃它并返回 `true`。
+    ///
+    /// ⚠️ 取**最小值**而不是栈顶:`TIMEOUT(50, … TIMEOUT(10_000, …))` 里
+    /// 栈顶是 10 000,按栈顶判会让外层的 50 ms 失效。
+    pub fn trip_if_expired(&mut self, now_ms: i64) -> bool {
+        let Some(idx) = self
+            .deadlines
+            .iter()
+            .enumerate()
+            .filter(|(_, (_, tripped))| !*tripped)
+            .min_by_key(|(_, (at, _))| *at)
+            .map(|(i, _)| i)
+        else {
+            return false;
+        };
+        if now_ms > self.deadlines[idx].0 {
+            self.deadlines[idx].1 = true;
+            true
+        } else {
+            false
+        }
+    }
+}
+
 pub struct Evaluator {
     env: Env,
+    /// [v0.11.3 M6 / addendum-01 B 片] 当前所处的假时钟气泡(方案 **B-简**)。
+    ///
+    /// **为什么是 `Evaluator` 的字段而不是 `StdCtx` 的字段**:`StdCtx` 是
+    /// 「逐次调用的上下文事实」(argv / env / warnings / source_file),
+    /// 而「当前在哪个气泡、虚拟钟走到哪」是**调度器状态** —— 它必须在所有
+    /// std 成员之间共享、且只有求值器有权推进。见 `StdHost` 的时钟接缝注释。
+    ///
+    /// **气泡不再嵌套**(`ADR-0024` §5-1,业主 2026-10-07 裁决)⇒ 用
+    /// `Option` 而不是栈:「已在气泡内」是一个**错误**,不是「压一层」。
+    clock_bubble: Option<ClockBubble>,
     /// Optional original source (for `source_line` in runtime diagnostics).
     source: Option<String>,
     /// Current source file name (for diagnostics).
@@ -6219,6 +6378,7 @@ impl Evaluator {
             file: None,
             loader: Rc::new(RefCell::new(ModuleLoader::new(PathBuf::from(".")))),
             std_ctx: wlwl_std::StdCtx::from_process(),
+            clock_bubble: None,
             call_stack: Vec::new(),
             warnings: Vec::new(),
             top_level_bound: HashSet::new(),
@@ -6291,6 +6451,7 @@ impl Evaluator {
             file: None,
             loader: Rc::new(RefCell::new(loader)),
             std_ctx: wlwl_std::StdCtx::default(),
+            clock_bubble: None,
             call_stack: Vec::new(),
             warnings: Vec::new(),
             top_level_bound: HashSet::new(),

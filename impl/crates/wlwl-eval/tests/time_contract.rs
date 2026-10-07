@@ -27,6 +27,180 @@ struct Case {
 }
 
 const CASES: &[Case] = &[
+    // ── B 片:气泡(方案 B-简)───────────────────────────────────────────
+    //
+    // ⚠️ **一个实测踩过的坑先写在这里**:不能用 `PRINT(v)` 去观察一个 `ERR`
+    // 值 —— `PRINT("x = ", ERR("y"))` 会**静默吞掉整条语句**(无诊断、退出码 0)。
+    // 该行为 stash 掉本批全部改动后仍复现 ⇒ **既有**,不在本批范围。
+    // ⇒ 本组全部用 `IS_ERR` 观察超时。
+    Case {
+        name: "bubble_virtual_clock_starts_at_zero",
+        src: concat!(
+            r#"IMPORT("wlwl:std.time", ["TEST_BUBBLE", "MONOTONIC"]); "#,
+            r#"TEST_BUBBLE(FUN(() , MONOTONIC()))"#
+        ),
+        // 虚拟单调钟**从 0 起算** —— 这是「可复现」这条承诺的载体:起点一旦
+        // 含真实时间,同一程序两次运行读到的值就不同,气泡的意义当场消失。
+        expect: "0",
+    },
+    Case {
+        name: "bubble_sleep_advances_the_virtual_clock_not_the_wall",
+        src: concat!(
+            r#"IMPORT("wlwl:std.time", ["SLEEP", "MONOTONIC", "TEST_BUBBLE"]); "#,
+            r#"TEST_BUBBLE(FUN(() , (SLEEP(3600000); MONOTONIC())))"#
+        ),
+        // `SLEEP(1 小时)` 只拨钟。**墙钟耗时 < 1 s** 由 probe 的单条 case
+        // 60 s 上限间接保证(真的阻塞一小时这条 case 会超时)。
+        expect: "3600000",
+    },
+    Case {
+        name: "bubble_wall_clock_is_a_fixed_origin_plus_elapsed",
+        src: concat!(
+            r#"IMPORT("wlwl:std.time", ["SLEEP", "NOW", "TEST_BUBBLE"]); "#,
+            r#"TEST_BUBBLE(FUN(() , (SLEEP(1000); NOW())))"#
+        ),
+        // 虚拟墙钟 = **写死的起点** + 已流逝的虚拟毫秒。写死是为了可复现;
+        // ⚠️ 它**不是**真实时刻,想拿真实时刻用气泡外的 `NOW()`(规范 §15.5)。
+        expect: "1700000001000",
+    },
+    Case {
+        name: "advance_jumps_the_virtual_clock",
+        src: concat!(
+            r#"IMPORT("wlwl:std.time", ["ADVANCE", "MONOTONIC", "TEST_BUBBLE"]); "#,
+            r#"TEST_BUBBLE(FUN(() , (ADVANCE(500); MONOTONIC())))"#
+        ),
+        expect: "500",
+    },
+    Case {
+        name: "advance_outside_a_bubble_is_e0030",
+        src: concat!(
+            r#"IMPORT("wlwl:std.time", ["ADVANCE"]); "#,
+            r#"ADVANCE(10)"#
+        ),
+        expect: "!E0030 ADVANCE: not inside a clock bubble",
+    },
+    Case {
+        name: "advance_rejects_a_negative_duration",
+        src: concat!(
+            r#"IMPORT("wlwl:std.time", ["ADVANCE"]); "#,
+            r#"ADVANCE(-1)"#
+        ),
+        expect: "!E0030 ADVANCE: expected a non-negative duration in ms, got -1",
+    },
+    Case {
+        name: "bubbles_do_not_nest",
+        src: concat!(
+            r#"IMPORT("wlwl:std.time", ["TEST_BUBBLE"]); "#,
+            r#"TEST_BUBBLE(FUN(() , TEST_BUBBLE(FUN(() , 1))))"#
+        ),
+        // 两层虚拟钟让语义面翻倍而收益近零(ADR-0024 §5-1,业主 2026-10-07 裁决)。
+        expect: concat!(
+            "!E0030 TEST_BUBBLE: clock bubbles do not nest — ",
+            "a bubble cannot open another bubble"
+        ),
+    },
+    Case {
+        name: "timeout_returns_the_body_value_when_it_fits",
+        src: concat!(
+            r#"IMPORT("wlwl:std.time", ["SLEEP", "TEST_BUBBLE", "TIMEOUT"]); "#,
+            r#"TEST_BUBBLE(FUN(() , TIMEOUT(1000, FUN(() , (SLEEP(100); "done")))))"#
+        ),
+        expect: "done",
+    },
+    Case {
+        name: "timeout_yields_an_err_value_not_a_diagnostic",
+        src: concat!(
+            r#"IMPORT("wlwl:std.time", ["SLEEP", "TEST_BUBBLE", "TIMEOUT"]); "#,
+            r#"IS_ERR(TEST_BUBBLE(FUN(() , TIMEOUT(100, FUN(() , SLEEP(200))))))"#
+        ),
+        // §3.7 口径 2 定的形态:超时是**可预期的运行期结果** ⇒ `ERR` 值,
+        // 不是原生诊断(那会终止运行)。仓内先例:`AWAIT` 被取消的任务返回
+        // `Err { kind: "Cancelled" }`。
+        expect: "TRUE",
+    },
+    Case {
+        name: "timeout_payload_carries_kind_timeout",
+        src: concat!(
+            r#"IMPORT("wlwl:std.time", ["SLEEP", "TEST_BUBBLE", "TIMEOUT"]); "#,
+            r#"ERR_PAYLOAD(TEST_BUBBLE(FUN(() , TIMEOUT(100, FUN(() , SLEEP(200))))))"#
+        ),
+        expect: "[kind: Timeout]",
+    },
+    Case {
+        name: "timeout_outside_a_bubble_is_e0030",
+        src: concat!(
+            r#"IMPORT("wlwl:std.time", ["TIMEOUT"]); "#,
+            r#"TIMEOUT(10, FUN(() , NULL))"#
+        ),
+        expect: concat!(
+            "!E0030 TIMEOUT: not inside a clock bubble — outside a bubble there is no ",
+            "portable way to bound a body (the runtime is single-threaded and nothing ",
+            "suspends, so there is nowhere to check the deadline). Wrap the body in ",
+            "TEST_BUBBLE."
+        ),
+    },
+    Case {
+        name: "timeout_takes_the_tightest_armed_deadline",
+        src: concat!(
+            r#"IMPORT("wlwl:std.time", ["SLEEP", "TEST_BUBBLE", "TIMEOUT"]); "#,
+            r#"IS_ERR(TEST_BUBBLE(FUN(() , TIMEOUT(50, FUN(() , TIMEOUT(10000, FUN(() , SLEEP(100))))))))"#
+        ),
+        // 嵌套的**反面**那一半:外层 50 ms 比内层 10 000 ms 更紧 ⇒ 该超时的是
+        // **外层**。这条与 `timeout_picks_the_inner_deadline_when_it_is_tighter`
+        // 是一对 —— 只钉一半的话,「取最紧的」会被实现成「取栈顶」蒙混过关
+        // (按栈顶判,`TIMEOUT(50, … TIMEOUT(10000, …))` 的外层会失效)。
+        expect: "TRUE",
+    },
+    Case {
+        name: "timeout_picks_the_inner_deadline_when_it_is_tighter",
+        src: concat!(
+            r#"IMPORT("wlwl:std.time", ["SLEEP", "TEST_BUBBLE", "TIMEOUT"]); "#,
+            r#"IS_ERR(TEST_BUBBLE(FUN(() , TIMEOUT(10000, FUN(() , TIMEOUT(50, FUN(() , SLEEP(100))))))))"#
+        ),
+        expect: "TRUE",
+    },
+    Case {
+        name: "nested_timeouts_that_both_fit_do_not_false_positive",
+        src: concat!(
+            r#"IMPORT("wlwl:std.time", ["SLEEP", "TEST_BUBBLE", "TIMEOUT"]); "#,
+            r#"TEST_BUBBLE(FUN(() , TIMEOUT(10000, FUN(() , TIMEOUT(1000, FUN(() , (SLEEP(100); "ok")))))))"#
+        ),
+        // 被放弃过的 deadline 必须**退出**「最紧未放弃」的计算,否则它会永久
+        // 触发后续每一次 `SLEEP`。这条钉的是「弹过一次之后不再误报」。
+        expect: "ok",
+    },
+    Case {
+        name: "timeout_arity",
+        src: concat!(
+            r#"IMPORT("wlwl:std.time", ["TIMEOUT"]); "#,
+            r#"TIMEOUT(10)"#
+        ),
+        expect: "!E0022 TIMEOUT: function expects 2 argument(s), got 1",
+    },
+    Case {
+        name: "timeout_rejects_a_non_function_body",
+        src: concat!(
+            r#"IMPORT("wlwl:std.time", ["TIMEOUT"]); "#,
+            r#"TIMEOUT(10, 42)"#
+        ),
+        expect: "!E0030 TIMEOUT: expected a function body, got integer",
+    },
+    Case {
+        name: "timeout_rejects_a_negative_budget",
+        src: concat!(
+            r#"IMPORT("wlwl:std.time", ["TIMEOUT"]); "#,
+            r#"TIMEOUT(-1, FUN(() , 1))"#
+        ),
+        expect: "!E0030 TIMEOUT: expected a non-negative budget in ms, got -1",
+    },
+    Case {
+        name: "test_bubble_rejects_a_non_function",
+        src: concat!(
+            r#"IMPORT("wlwl:std.time", ["TEST_BUBBLE"]); "#,
+            r#"TEST_BUBBLE(7)"#
+        ),
+        expect: "!E0030 TEST_BUBBLE: expected a function, got integer",
+    },
     // ── 形态:元数与类型 ───────────────────────────────────────────────
     Case {
         name: "now_arity_one",
@@ -270,7 +444,21 @@ fn time_member_set_matches_the_spec_table() {
         .find("\n## ")
         .map(|i| start + i)
         .expect("a following top-level heading exists");
-    let body = &text[start..end];
+    // ⚠️ **提取范围必须收在「成员表」那一节内**,不能扫完整个 §15。
+    // 踩过一次:§15.6(气泡能给 / 给不了)那张对照表里有一行
+    // `| \`SLEEP(3600000)\` 墙钟耗时 < 1 s | … |`,它同样以 `| \`` 开头,
+    // 于是被当成了一个叫 `SLEEP` 的**成员行**,成员数从 6 变 7。
+    // ⇒ 散文里只要出现「以 `| \`开头的行」就会污染这条守卫,所以按 `### `
+    // 收在 §15.1 成员表内。**这不是把守卫放宽,是把它对准被测对象。**
+    let table_start = text[start..end]
+        .find("### 15.1")
+        .map(|i| start + i)
+        .expect("§15.1 member table heading exists");
+    let table_end = text[table_start..end]
+        .find("\n### ")
+        .map(|i| table_start + i)
+        .unwrap_or(end);
+    let body = &text[table_start..table_end];
 
     let mut spec: Vec<String> = Vec::new();
     for line in body.lines() {
@@ -299,12 +487,19 @@ fn time_member_set_matches_the_spec_table() {
 
     assert_eq!(
         spec.len(),
-        3,
+        6,
         "§15 table extractor found {} member(s): {spec:?} — the table's shape changed \
          and the extractor needs updating",
         spec.len()
     );
-    for n in ["NOW", "MONOTONIC", "SLEEP"] {
+    for n in [
+        "NOW",
+        "MONOTONIC",
+        "SLEEP",
+        "TEST_BUBBLE",
+        "ADVANCE",
+        "TIMEOUT",
+    ] {
         assert!(
             spec.iter().any(|m| m == n),
             "§15 table missed `{n}`: {spec:?}"
@@ -316,8 +511,8 @@ fn time_member_set_matches_the_spec_table() {
     }
     assert_eq!(
         impls.len(),
-        3,
-        "wlwl:std.time exports 3 members (A1 + A2 slices)"
+        6,
+        "wlwl:std.time exports 6 members (A1 + A2 + B slices)"
     );
 }
 

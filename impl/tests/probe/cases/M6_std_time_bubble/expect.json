@@ -1,0 +1,20 @@
+{
+ "exit": 1,
+ "contains": [
+  "T1_ok =  done",
+  "T2_iserr =  TRUE",
+  "T3_start",
+  "T3_done",
+  "T4_inner_tighter =  TRUE",
+  "T5_outer_tighter =  TRUE",
+  "T6_nested_ok =  inner-done",
+  "before T7",
+  "E0030",
+  "TIMEOUT: not inside a clock bubble"
+ ],
+ "not_contains": [
+  "T3_AFTER_SLEEP_RAN",
+  "after T7"
+ ],
+ "_why": "v0.11.3 M6 / addendum-01 B 片(方案 B-简)。八行各钉一条可观察事实。⚠️ **一个实测踩过的坑写在最前**:不能用 `PRINT(v)` 看一个 `ERR` 值 —— `PRINT(\"x = \", ERR(\"y\"))` 会**静默吞掉整条语句**(无诊断、退出码 0;stash 掉本批全部改动后复现,证明是**既有**行为,不在本批范围),所以超时的返回值一律用 `IS_ERR` 观察。T1 没超时 ⇒ body 的值原样传出;T2 超时 ⇒ 是 ERR;T3 **body 被放弃** —— `SLEEP` 直写在 `TIMEOUT` 的 body 中层,它之后那行**不该打印**(not_contains 钉住),这条是「放弃」而不是「结果被丢弃」的证据;⚠️ 中断粒度是**最近的函数边界**(实测:addendum-01 §3.12:`Signal::Return` 从最内层闭包返回、**不逸出** `TEST_BUBBLE`),所以这条用例特意让 `SLEEP` 直写在 body 中层 —— 深层嵌套时的「尽力而为」形态在契约表里用 `IS_ERR` 那条覆盖。T4 / T5 是**一对**:内层更紧 ⇒ 内层超时;外层更紧 ⇒ **外层**超时 —— 钉住「取**最紧的**未放弃 deadline」而不是栈顶(按栈顶判会让 `TIMEOUT(50, … TIMEOUT(10000, …))` 的外层失效)。T6 嵌套且都没超时 ⇒ 不得误报。T7 气泡外 `TIMEOUT` ⇒ `E0030` 并**终止运行**(not_contains after T7 证明终止点),诊断文本带「为什么气泡外做不到」的完整解释。"
+}
