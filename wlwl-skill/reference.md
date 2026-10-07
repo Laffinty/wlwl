@@ -486,6 +486,51 @@ PRINT(RE_REPLACE(RE("([a-z]+)=(\w+)"), "a=1 b=2", "$2:$1"));  // 1:a 2:b
 - `TRY_RE` does not exist yet: a pattern that comes from user input cannot be
   "trial-compiled" without aborting.
 
+### §9.11 `wlwl:std.time` — clocks, sleep and the fake-clock bubble (stdlib §15, v0.11.3)
+
+```wlwl
+IMPORT("wlwl:std.time", ["NOW", "MONOTONIC", "SLEEP", "TEST_BUBBLE", "TIMEOUT"]);
+
+// Real clock.
+LET(t0, MONOTONIC());
+SLEEP(50);
+PRINT(-(MONOTONIC(), t0));          // >= 50, measured in real milliseconds
+
+// Virtual clock: the hour-long wait costs no wall time, and is reproducible.
+PRINT(TEST_BUBBLE(FUN(() , (SLEEP(3600000); MONOTONIC()))));   // 3600000
+PRINT(TEST_BUBBLE(FUN(() , IS_ERR(TIMEOUT(100, FUN(() , SLEEP(200)))))));  // TRUE
+```
+
+- `NOW() -> INTEGER` is Unix **milliseconds**; `MONOTONIC() -> INTEGER` is
+  process-relative and monotonic. ⚠ **`MONOTONIC`'s absolute value is meaningless
+  — only differences are valid**, and it is the one to measure with. `NOW` can jump
+  backwards (NTP, manual clock changes) and a program that reads it is **no longer
+  reproducible**; the runtime cannot detect that, so it is only declared on the
+  member row. **Test code especially should use `MONOTONIC`.**
+- ⚠ **`SLEEP` blocks the calling thread** and **no other task is scheduled
+  meanwhile** — the same inside a task, and the same while a blocking HTTP call is
+  in flight. That is a documented deterministic rule, not an accident.
+- `TEST_BUBBLE(body)` runs `body` against a **virtual clock** starting at 0, so
+  `SLEEP(3600000)` returns immediately and the same program yields a
+  **byte-identical** time series on every run. The virtual wall origin is a **fixed
+  constant** (2023-11-14) — `NOW()` inside a bubble is **not** the real time.
+- ⚠ **Bubbles do not nest** (`E0030`). Tasks spawned inside belong to the bubble
+  and **cannot escape**: `SPAWN` without a `SCOPE` is `E0058`, so they are always
+  under a `SCOPE` inside the body, and structured concurrency drains them before the
+  body returns.
+- ⚠ **A bubble is deterministic *time*, not Go-`synctest` interleaving.** The
+  virtual clock jumps **at the `SLEEP` call site**, so a task sleeping an hour does
+  not let another task observe an intermediate moment. Getting that needs "resume
+  mid-body for any suspension reason", which the runtime does not have yet.
+- `ADVANCE(ms)` jumps the virtual clock forward (`E0030` outside a bubble) — use it
+  to skip a wait without advancing time by sleeping twice.
+- `TIMEOUT(d, body)` returns `ERR([kind: "Timeout"])` once the virtual clock passes
+  `d`; the body is abandoned **at the nearest function boundary** (measured: the
+  return signal does **not** escape the bubble), and `TIMEOUT`'s **return value is
+  always correct** even when the abort could only reach part of the way. Bubble-only:
+  outside one there is nowhere in a single-threaded runtime to check a deadline.
+  Nested `TIMEOUT`s are allowed and the **tightest armed** deadline wins.
+
 ### §9.10 `wlwl:std.rand` — explicitly seeded randomness (stdlib §17, v0.11.3)
 
 ```wlwl
