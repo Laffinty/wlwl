@@ -486,6 +486,42 @@ PRINT(RE_REPLACE(RE("([a-z]+)=(\w+)"), "a=1 b=2", "$2:$1"));  // 1:a 2:b
 - `TRY_RE` does not exist yet: a pattern that comes from user input cannot be
   "trial-compiled" without aborting.
 
+### §9.13 `wlwl:std.compress` — Zstandard and the DEFLATE family (stdlib §20, v0.11.3)
+
+```wlwl
+IMPORT("wlwl:std.compress", ["ZSTD_COMPRESS", "ZSTD_DECOMPRESS", "GZIP_COMPRESS", "GZIP_DECOMPRESS"]);
+
+LET(bytes, [119, 108, 119, 108]);                  // ARRAY[INTEGER], not STRING
+LET(packed, ZSTD_COMPRESS(bytes));
+ZSTD_DECOMPRESS(packed);                            // -> the original bytes
+```
+
+- The payload is an **`ARRAY[INTEGER]`** with each element `0..=255` — the same shape
+  as `READ_BYTES`, decided in addendum-06. Compressed input is by definition not
+  UTF-8, and a `STRING` would lossily substitute `U+FFFD`. An out-of-range element
+  is `E0030`, **never truncated** — a silent truncation would give one payload two
+  readings.
+- ⚠ **Compression is not encryption.** Zero confidentiality; anyone with the input
+  decompresses it. Treat "gzip it so nobody sees it" as a security defect, not a
+  usage.
+- ⚠ **`level` out of range is `E0030`, never clamped.** Clamping makes "I passed 9"
+  and "I passed 999" produce the same output — that is lying to the caller. Omit it
+  to take the library default (and note: *the default is not the recommended value*).
+- ⚠ **The 64 MiB decompression cap is a spec clause**, not a tunable in the
+  implementation: past it you get an `ERR`, not an OOM. It is also a **known
+  limitation** — this batch does not stream, so a larger single payload has no
+  decompression path yet.
+- ⚠ `DEFLATE_RAW_*` carries **no checksum**, so corruption is *undetectable* there:
+  a truncated stream can decode to a correct prefix without complaining. Use zlib
+  (Adler-32) or gzip (CRC32) when integrity matters.
+- ⚠ **Do not assert compression ratios.** How small the output is depends on the
+  compressor implementation — the same 104-byte input came out at **66 bytes** from
+  Python's `zlib` and **115 bytes** (larger than the input!) from `miniz_oxide`.
+  What is contractual: round-tripping, determinism, and decoding *another*
+  implementation's output (the contract table feeds us gzip/zlib streams produced
+  by Python's standard library, which is the check that proves the decoders really
+  follow the RFCs rather than only understanding their own output).
+
 ### §9.12 `wlwl:std.fs` / `std.env` / `std.process` (stdlib §2 / §18 / §19, v0.11.3)
 
 ```wlwl
