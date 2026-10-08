@@ -47,6 +47,7 @@ pub mod agent;
 pub mod ai;
 pub mod collection;
 pub(crate) mod compat;
+pub mod compress;
 pub mod encode;
 pub mod env;
 pub mod format;
@@ -314,6 +315,8 @@ pub fn resolve(path: &str) -> Option<StdBackend> {
         "wlwl:std.sanitize" => &sanitize::SPEC,
         // [v0.11.3 M6 / addendum-01 A1] 时间能力第一片:两个纯读成员。
         "wlwl:std.time" => &time::SPEC,
+        // [v0.11.3 M6 / addendum-07] Zstandard + DEFLATE 家族。
+        "wlwl:std.compress" => &compress::SPEC,
         // [v0.11.3 M6 / addendum-06] 文件系统扩充 + 进程 / 环境。
         "wlwl:std.env" => &env::SPEC,
         "wlwl:std.process" => &process::SPEC,
@@ -528,6 +531,8 @@ mod tests {
         &time::SPEC,
         // [v0.11.3 M6 / addendum-08] 显式播种的 RNG(四个成员)。
         &rand::SPEC,
+        // [v0.11.3 M6 / addendum-07] 压缩(八个成员)。
+        &compress::SPEC,
         // [v0.11.3 M6 / addendum-06] 进程环境(4 成员)与子进程(2 成员)。
         &env::SPEC,
         &process::SPEC,

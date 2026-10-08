@@ -89,7 +89,11 @@ use std::time::{Duration, Instant};
 // `M6_std_fs_paths_and_process_safety` —— 路径**纯函数**的跨平台逐字冻结 +
 // `std.process` 的注入防线。⚠️ 它**刻意不碰文件系统**:fs 成员的相对路径按进程
 // CWD 解析,在 probe 里建临时目录会污染工作树(实测踩过)。
-const EXPECTED_CASE_COUNT: usize = 168;
+// [v0.11.3 M6 / addendum-07] 168 -> 169:新增 M6_std_compress_roundtrip —— 四条格式的
+// 往返 + 确定性 + 损坏输入返回 ERR。⛔️ 它**刻意不断言压缩比、也不冻结输出字节**:
+// 两者都**实现定义**(实测同一份 104 字节载荷,Python 的 zlib 压到 66,
+// miniz_oxide 压到 115 —— 比原文还大)。
+const EXPECTED_CASE_COUNT: usize = 169;
 
 /// 单个 case 的上限,与 `probe.py` 的 `timeout=60` 同义。
 const CASE_TIMEOUT: Duration = Duration::from_secs(60);

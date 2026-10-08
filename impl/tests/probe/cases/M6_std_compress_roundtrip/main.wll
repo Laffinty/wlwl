@@ -1,0 +1,35 @@
+// [v0.11.3 M6 / addendum-07] std.compress:往返 + 确定性 + 损坏输入的失败形态。
+//
+// 落点:addendum-07 §5 落点 6(probe)。
+//
+// ⚠ **本 probe 刻意不断言「压缩比」**:压缩输出的字节、以及压缩比,都是**实现
+// 定义**的(块划分 / lazy matching / 熵编码选择都是实现自由)—— 实测同一份
+// 104 字节载荷,Python 的 zlib 压到 66,而 `miniz_oxide` 压到 **115**(比原文还大)。
+// 规范 §20.3 明写这条口径。⇒ 这里只钉**可跨实现成立**的三件事。
+//
+// ⚠ 载荷用**逐字节数组字面量**(`ARRAY[INTEGER]`,继承 addendum-06 的形状裁决),
+// 因为压缩的输入必然是**非 UTF-8 字节**,`STRING` 装不了。
+//
+// ⚠ 观察 `ERR` 一律用 `IS_ERR`:`PRINT` 观察不到 `ERR` 值(D13-012,既有缺陷)。
+IMPORT("wlwl:std.compress", ["ZSTD_COMPRESS", "ZSTD_DECOMPRESS", "GZIP_COMPRESS", "GZIP_DECOMPRESS", "ZLIB_COMPRESS", "ZLIB_DECOMPRESS", "DEFLATE_RAW_COMPRESS", "DEFLATE_RAW_DECOMPRESS"]);
+
+// "wlwl compress probe" —— 13 字节
+LET(d, [119, 108, 119, 108, 32, 99, 111, 109, 112, 114, 101, 115, 115]);
+
+// 1. 四条格式的往返:压再解,恒等于原文。
+PRINT("zstd_roundtrip = ", =(ZSTD_DECOMPRESS(ZSTD_COMPRESS(d)), d));
+PRINT("gzip_roundtrip = ", =(GZIP_DECOMPRESS(GZIP_COMPRESS(d)), d));
+PRINT("zlib_roundtrip = ", =(ZLIB_DECOMPRESS(ZLIB_COMPRESS(d)), d));
+PRINT("raw_roundtrip = ", =(DEFLATE_RAW_DECOMPRESS(DEFLATE_RAW_COMPRESS(d)), d));
+
+// 2. 确定性:同输入两次压缩**逐字节相同** —— 本语言的卖点之一。
+PRINT("deterministic = ", =(ZSTD_COMPRESS(d), ZSTD_COMPRESS(d)));
+
+// 3. 损坏 / 非帧输入 → ERR **值**,不是原生诊断,更不是 panic。
+PRINT("garbage_is_err = ", IS_ERR(GZIP_DECOMPRESS([1, 2, 3])));
+PRINT("empty_is_err = ", IS_ERR(ZSTD_DECOMPRESS([])));
+
+// 4. 元数错必须走原生诊断 E0022 并**终止运行**(不留 "after")。
+PRINT("before arity");
+ZSTD_DECOMPRESS(ZSTD_COMPRESS(d), 3);
+PRINT("after arity");

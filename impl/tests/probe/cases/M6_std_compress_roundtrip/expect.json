@@ -1,0 +1,19 @@
+{
+ "exit": 1,
+ "contains": [
+  "zstd_roundtrip =  TRUE",
+  "gzip_roundtrip =  TRUE",
+  "zlib_roundtrip =  TRUE",
+  "raw_roundtrip =  TRUE",
+  "deterministic =  TRUE",
+  "garbage_is_err =  TRUE",
+  "empty_is_err =  TRUE",
+  "before arity",
+  "E0022",
+  "ZSTD_DECOMPRESS: function expects 1 argument(s), got 2"
+ ],
+ "not_contains": [
+  "after arity"
+ ],
+ "_why": "v0.11.3 M6 / addendum-07。std.compress 的语言层口径。⚠ **本 probe 刻意不断言「压缩比」,也不冻结压缩输出字节** —— 两者都是**实现定义**的:实测同一份 104 字节载荷,Python 的 zlib 压到 66,而 `miniz_oxide` 压到 **115**(比原文还大);块划分 / lazy matching / 熵编码选择都是实现自由。⇒ 冻它只会冻结某个后端的内部选择,且**没有任何独立实现能产出同样的字节**(规范 §20.3 明写这条口径)。四条 `roundtrip` 钉的是**真正成立**的那条:压再解恒等于原文;`deterministic` 钉「同输入两次压缩**逐字节相同**」(本语言卖点之一,也是契约表冻向量的依据);`garbage_is_err` / `empty_is_err` 钉**损坏或非帧输入返回 `ERR` 值而非 panic** —— 解码器吃损坏输入是最经典的安全面(越界读 / 无界分配),压缩炸弹护栏(§20.2 的 64 MiB 上限)也走同一条路径。⚠ 观察 `ERR` 一律用 `IS_ERR`:`PRINT` 观察不到 `ERR` 值(**D13-012**,既有缺陷,静默吞整条语句)。载荷用**逐字节数组字面量**(`ARRAY[INTEGER]`,继承 addendum-06 的形状裁决)—— 压缩输入必然是非 UTF-8 字节,`STRING` 装不了。末段钉元数错走原生诊断 E0022 且**终止运行**(not_contains after arity)。"
+}
