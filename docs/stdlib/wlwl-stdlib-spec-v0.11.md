@@ -47,7 +47,9 @@ markdown** 解析成员表后与实现对拍(ADR-0023 §v0.x 1 的执行机制)�
 `std.encode` 由 8 增至 13 成员;**M6 的 A1 + A2 + B 片共开 `std.time`**
 (6 成员:`NOW` `MONOTONIC` 纯读 / `SLEEP` 阻塞 / `TEST_BUBBLE` `ADVANCE` `TIMEOUT`
 气泡),命名空间 13 → **15**、成员面 109 → **115**,**再加 `std.regex` 的 7 个 = 122**,
-**再加 `std.rand` 的 4 个 = 126**、命名空间 → **16**。
+**再加 `std.rand` 的 4 个 = 126**、命名空间 → **16**;
+**M6 的 06 再开 `std.env`(4)与 `std.process`(2)并把 `std.fs` 扩到 18**
+(新增 15:路径 5 / 目录 8 / 字节 2)⇒ **命名空间 18、成员面 147**。
 
 ## 0 总则
 
@@ -162,11 +164,84 @@ markdown** 解析成员表后与实现对拍(ADR-0023 §v0.x 1 的执行机制)�
 
 ## 2 `std.fs` — 文件系统(R2)
 
+### 2.1 原有三成员(v0.3,**契约冻结**,语义一字未动)
+
 | 签名 | 说明 |
 |------|------|
 | `WRITE_FILE(path, text) -> NULL` | 写 UTF-8 文本;父目录必须已存在 |
 | `READ_FILE(path) -> STRING` | 读文件;不存在产生 `E0061` |
 | `EXISTS(path) -> BOOLEAN` | 存在测试 |
+
+### 2.2 路径成员(ADDENDUM-06,2026-10-08 裁决)
+
+**规范分隔符恒为 `/`**(裁决「甲」)。**输入端**在 Windows 上额外容忍 `\` ——
+那是上面三个成员**既有**的行为(它们把 path 原样交给 OS),收掉就是破坏性变更。
+⚠️ **POSIX 上不做 `\` → `/` 的替换**:`\` 在 POSIX 里是**合法文件名字符**,
+把它换成 `/` 会让一个真实存在的文件「找不到」。
+
+| 签名 | 说明 | 失败 |
+|------|------|------|
+| `PATH_JOIN(parts...) -> STRING` | 变参(≥1,全 `STRING`);用 `/` 连接,**合并重复分隔符**、**跳过空片段** | 元数 < 1 或类型错 → `E0022` / `E0030` |
+| `PATH_DIR(p) -> STRING` | 父目录。**无父目录时返回 `""`**(不是 `"."`) | 同上 |
+| `PATH_BASE(p) -> STRING` | 最后一段。**不剥扩展名**(`a.tar.gz` → `a.tar.gz`) | 同上 |
+| `PATH_EXT(p) -> STRING` | 扩展名,**不含前导点**;无扩展名 → `""`;**点文件没有扩展名**(`.gitignore` → `""`) | 同上 |
+| `PATH_NORMALIZE(p) -> STRING` | 消 `.` / `..` / 冗余分隔符。**纯词法,绝不碰符号链接** | 同上 |
+
+**为什么分隔符要写死**:平台原生形态下 `PATH_JOIN("a","b")` 在 Windows 返
+`a\b`、Linux 返 `a/b` ⇒ **同一份程序跨平台产出不同字符串** ⇒ 契约表**无法逐字节
+冻结**。而逐字节冻结是本规范所有契约表的立足点。
+
+`PATH_DIR` 选 `""` 而不是 Go 的 `"."`:本语言里
+`PATH_JOIN(PATH_DIR(x), PATH_BASE(x))` 是取回 `x` 的惯用写法,`""` 让它成立
+而不必特判。
+
+⚠️ `PATH_NORMALIZE` 是**纯词法**的:它**不知道** `a/../b` 里的 `a` 是不是符号链接,
+所以「消 `..`」可能与真实文件系统不一致。这是刻意的 —— 一个会去
+`canonicalize` 的 `NORMALIZE` 就有 I/O 副作用、且路径不存在时行为突变,
+那不是「归一化」。要真实解析用 `EXISTS` / `LIST_DIR`。
+
+### 2.3 目录与字节成员(ADDENDUM-06)
+
+| 签名 | 说明 | 失败 |
+|------|------|------|
+| `LIST_DIR(p) -> ARRAY[STRING]` | 列目录(不递归),**结果排序** | 不存在 / 非目录 → `ERR([kind: FsError, op, reason])` |
+| `WALK_DIR(p, pattern?, follow?) -> ARRAY[STRING]` | 递归,返回**相对 `p`** 的路径(用 `/`),**排序** | 同上 |
+| `MKDIR(p) -> NULL` | 建**单层**;**已存在 → `ERR`**(不静默) | 同上 |
+| `MKDIRS(p) -> NULL` | 建**多级**(`mkdir -p`);**已存在即成功** | 同上 |
+| `REMOVE(p, recursive?) -> NULL` | 删文件 / 删目录;目录**未**带 `recursive = TRUE` 时非空即失败 | 同上 |
+| `COPY(src, dst) -> NULL` | 复制**文件**;目录**不做** | 同上 |
+| `MOVE(src, dst) -> NULL` | 移动 / 重命名;跨设备自动回退为「复制 + 删除」 | 同上 |
+| `FILE_SIZE(p) -> INTEGER` | 字节数 | 同上 |
+| `READ_BYTES(p) -> ARRAY[INTEGER]` | 二进制读,元素 `0..=255` | 同上 |
+| `WRITE_BYTES(p, data) -> NULL` | 二进制写;`data` 是 `ARRAY[INTEGER]`,**逐元素校验** `0..=255` | 同上 |
+
+**符号链接**:`LIST_DIR` **列出**链接条目(你有权知道它存在)但**不跟随**;
+`WALK_DIR` **默认不下降进链接目录**(`follow = FALSE`),因为**成环的链接目录会让
+递归永不终止**。置 `follow = TRUE` 时记 **visited 集合**(按 `canonicalize`)防环。
+
+**`WALK_DIR` 的 `pattern` 是 glob**(ADDENDUM-06 裁决):`*` **不跨分隔符**、
+`**` 跨目录、`?` 匹配单个字符。pattern **含 `/`** 时匹配整条相对路径,
+**否则只匹配文件名**。缺省 = 全中。
+
+⚠️ **字节形状与其范围**(ADDENDUM-06 裁决,`addendum-07` §3.2 **复用**本条):
+形状取 **`ARRAY[INTEGER]`**,与 `std.encode::RANDOM_BYTES` **同款** —— 它已被
+定为「本语言唯一无损字节载体」(§11.6):`STRING` 是 UTF-8,装不了任意字节,
+硬塞只能**有损替换**成 `U+FFFD`,而 §11.3-3 已把「不做有损替换」立成条款。
+**范围**:这是给**小**二进制用的(配置、图标、密钥材料片段)。**大载荷的正解是
+让它待在文件里** —— 压缩 / 拷贝都在 R2 侧走字节流;绕语言值搬一趟会重新踩上
+解释器侧数组构建的超线性证据(D11-012 / D12-009)。
+
+⚠️ **失败口径与 2.1 的三个成员不同,这是有意的**:那三个是 v0.3 的**原生诊断**
+口径(终止运行,`E0060`–`E0062`);而「目录不存在」「已存在」是**可预期的运行期
+结果**,调用方多半要 `IS_ERR` 分支(与 `AWAIT` 被取消返回
+`Err { kind: "Cancelled" }` 同款)⇒ 新成员用 `ERR` 值,载荷是
+`[kind: "FsError", op: <成员名>, reason: <路径与 OS 原因>]`。
+**元数 / 类型错**两套口径一致,都是 `E0022` / `E0030`。
+
+⚠️ **相对路径按进程 CWD 解析。** 程序的 base dir(用于 `IMPORT` 解析相对模块
+路径)**不影响**文件操作 —— `LIST_DIR(".")` 列的是**当前工作目录**。
+这是 CLI 的常规预期,但它有一个容易被踩的推论:**测试里做文件操作必须用绝对路径**,
+否则会把文件写进工作树(本轮实测踩到过)。
 
 ## 3 `std.json` — JSON(R2)
 
@@ -1261,7 +1336,64 @@ PRINT(v1, v2);        -- 两个不同的数
   偶尔变红的假门禁;统计断言在 `wlwl-std` 单测里用 4σ 容差,「无偏」的**确定性**
   证明(`2^64 mod 7 = 2` ⇒ 最高两个 `u64` 必然被拒)也在那里。
 
+## 18 `std.env` — 进程环境与命令行参数(R2,v0.11.3 M6 · ADDENDUM-06 · 新增命名空间)
+
+| 签名 | 说明 | 失败 |
+|------|------|------|
+| `ENV_GET(name, default?) -> STRING \| NULL` | 取环境变量。**不存在且无缺省 → `NULL`** | 元数 > 2 / 类型错 → `E0022` / `E0030` |
+| `ENV_SET(name, value) -> NULL` | **仅本进程可见,不写磁盘** | 同上 |
+| `ENV_KEYS() -> ARRAY[STRING]` | 全部键名,**排序后返回** | 元数 ≠ 0 → `E0022` |
+| `ARGS() -> ARRAY[STRING]` | 命令行参数,**含 `argv[0]`** | 元数 ≠ 0 → `E0022` |
+
+**`ENV_KEYS()` 排序是规范性要求,不是实现偏好**:宿主环境表的迭代序**逐次可能
+不同**,而**可复现是本语言卖点第一条** ⇒ 不排序就等于把一个不稳定值暴露给
+调用方。契约表钉死「两次调用逐字节相同」。
+
+**「没设」与「设为空串」是两件事** ⇒ `ENV_GET` 缺省返 `NULL` 而不是 `""`;
+分不开就没法读 `.env` 覆盖后的真实状态。
+
+`ARGS()` **含程序自身路径**(`argv[0]`),与 Go `os.Args` / Python `sys.argv` 同款;
+要「用户传进来的参数」就 `SLICE(ARGS(), 1)`。
+
+> 与 `std.time` 的立场差异(写明免得下一个人「顺手统一」):`std.time` **直读系统
+> 时钟**,因为本语言**就是**时间的源;而环境的源是**启动时由宿主交给程序的** ——
+> 它已经是「传进来的值」,所以本命名空间只读宿主的一个字段,不碰 OS API。
+
+## 19 `std.process` — 不经 shell 跑子进程(R2,v0.11.3 M6 · ADDENDUM-06 · 新增命名空间)
+
+| 签名 | 说明 | 失败 |
+|------|------|------|
+| `PROCESS_RUN(argv, opts?) -> DICT` | 返 `[code: INTEGER, stdout: STRING, stderr: STRING]`。**不经 shell** | 元数 / 类型错 → `E0022` / `E0030`;起不来 / 超时 → `ERR([kind: "ProcessError", op, reason])` |
+| `PROCESS_ID() -> INTEGER` | 本进程 id | 元数 ≠ 0 → `E0022` |
+
+`opts` 可含 `timeout`(毫秒,超时**杀掉整棵进程树**并返回 `ERR`)、`cwd`、
+`env`(**追加**到继承来的环境,同名键覆盖 —— 不是「替换整份环境」)。
+未知键(如 `shell`)→ `E0030`,**显式拒绝而不是忽略**:「忽略」与「禁止」在安全上
+是两件不同的事。
+
+⚠️ **`argv` 必须且只接受 `ARRAY[STRING]`。规范显式禁止字符串形态。**
+拼一个字符串再让系统解析就是**命令注入**(`; rm -rf /` 会真的被执行)⇒ 本规范
+**没有** `SYSTEM` / `exec("sh -c")` 这种形态。这条是本成员存在的**安全理由**,
+契约表有一条「元字符不被解释」的守卫钉它。
+
+⚠️ **非零退出码是正常结果,不是失败** —— 它就是 `code` 字段里的一个整数。
+
+⚠️ **它是阻塞的(与 `std.time::SLEEP` 同源)。** 运行时是**单线程协作式**
+(eval 侧无 `thread::spawn`,调度是一个 run queue)⇒ `PROCESS_RUN` 等子进程期间
+**不调度任何其他任务**,等价于把整个作用域停住。这条**语言级事实**必须成文,
+因为调用方若在气泡 / `SCOPE` 里用它,会以为别的任务还能跑。
+`addendum-05`(`std.net`)的阻塞式 `reqwest` 是**同源隐忧**。
+
+**没有 `PROCESS_EXIT_CODE` 成员**(ADDENDUM-06 裁决):它需要「上一条
+`PROCESS_RUN` 的退出码」——那是**跨调用隐藏可变状态**,与本语言「显式值传递、
+无隐藏状态」的纪律冲突(`ADR-0027` A1 同款理由);而 `code` 字段**已经在返回值
+里**,它存在的全部价值是少写一个字段名。
+
+
+
 ## 附录 A 成员注册镜像(规范性)
+
+
 
 > 状态:表体由生成器产出 —— 单源真相是实现(R2 取 `wlwl-std` 的
 > `ModuleSpec` 绑定表;R1 取嵌入源码的 `EXPORT` 声明,**含 `std.collection`
@@ -1275,7 +1407,7 @@ PRINT(v1, v2);        -- 两个不同的数
 | 命名空间 | 成员 | 层 | 引入 |
 |---|---|---|---|
 | `std.io` | `PRINT` `INPUT` `PRINT_ERR` | R2 | v0.10 及以前 |
-| `std.fs` | `READ_FILE` `WRITE_FILE` `EXISTS` | R2 | v0.10 及以前 |
+| `std.fs` | `READ_FILE` `WRITE_FILE` `EXISTS` `PATH_JOIN` `PATH_DIR` `PATH_BASE` `PATH_EXT` `PATH_NORMALIZE` `LIST_DIR` `WALK_DIR` `MKDIR` `MKDIRS` `REMOVE` `COPY` `MOVE` `FILE_SIZE` `READ_BYTES` `WRITE_BYTES` | R2 | v0.10 及以前 |
 | `std.json` | `PARSE` `STRINGIFY` | R2 | v0.10 及以前 |
 | `std.format` | `FORMAT` | R2 | v0.10 及以前 |
 | `std.encode` | `BASE64_ENCODE` `BASE64_DECODE` `HEX_ENCODE` `HEX_DECODE` `URL_ENCODE` `URL_DECODE` `SHA256` `HMAC_SHA256` `PBKDF2_ITER` `ARGON2ID` `RANDOM_BYTES` `RANDOM_HEX` `TIMING_SAFE_EQ` | R2 | v0.11.2 / SHA256、HMAC_SHA256 于 v0.11.3 |

@@ -486,6 +486,63 @@ PRINT(RE_REPLACE(RE("([a-z]+)=(\w+)"), "a=1 b=2", "$2:$1"));  // 1:a 2:b
 - `TRY_RE` does not exist yet: a pattern that comes from user input cannot be
   "trial-compiled" without aborting.
 
+### §9.12 `wlwl:std.fs` / `std.env` / `std.process` (stdlib §2 / §18 / §19, v0.11.3)
+
+```wlwl
+IMPORT("wlwl:std.fs", ["PATH_JOIN", "PATH_NORMALIZE", "LIST_DIR", "WALK_DIR", "MKDIRS"]);
+
+PATH_JOIN("a", "b", "c");          // "a/b/c"  — always `/`, on every platform
+PATH_NORMALIZE("a/./b/../c");      // "a/c"    — purely lexical
+MKDIRS("out/data");                // mkdir -p, idempotent
+LIST_DIR("out");                   // sorted; symlinks listed, not followed
+WALK_DIR(".", "**/*.md");          // `**` crosses directories, `*` does not
+```
+
+- ⚠ **The spec separator is `/` on every platform.** `PATH_JOIN` never emits `\`.
+  Windows *additionally accepts* `\` on input (that is the pre-existing behaviour of
+  the original three members; removing it would be breaking), and POSIX does **not**
+  translate it — there `\` is a legal filename character.
+  **Why this is decided rather than inherited:** with the platform's own separator,
+  `PATH_JOIN("a", "b")` returns `a\b` on Windows and `a/b` on Linux, so the same
+  program produces different output on different machines and the contract tables
+  **cannot be frozen byte-for-byte** — and byte-frozen contracts are what this whole
+  repository stands on.
+- Boundary cases that silently break a chain of path operations if you get them
+  wrong: `PATH_DIR("a.txt")` is `""` (not `"."`) so
+  `PATH_JOIN(PATH_DIR(x), PATH_BASE(x))` round-trips; `PATH_EXT("a.tar.gz")` is
+  `"gz"`; `PATH_EXT(".gitignore")` is `""` (a dotfile has **no** extension, otherwise
+  base + ext would not rebuild the name); `PATH_EXT` has **no leading dot**;
+  `PATH_NORMALIZE` is **purely lexical** — it does not know whether `a` in `a/../b`
+  is a symlink, because a normaliser that called `canonicalize` would have IO side
+  effects and would change behaviour when the path does not exist.
+- `LIST_DIR` / `WALK_DIR` results are **sorted** — the OS directory order varies
+  between runs, and determinism is this language's first selling point.
+  `WALK_DIR` **does not descend into symlinked directories** unless you pass
+  `follow = TRUE`; a symlink cycle would otherwise recurse forever.
+- `MKDIR` reports `ERR` when the path already exists — silently succeeding would
+  hide a race (another process just created it). `MKDIRS` is `mkdir -p` and
+  idempotent.
+- ⚠ **Binary IO is `ARRAY[INTEGER]`** (`READ_BYTES` / `WRITE_BYTES`), the same shape
+  as `std.encode::RANDOM_BYTES`, because `STRING` is UTF-8 and would lossily
+  substitute `U+FFFD`. It is meant for **small** payloads (config, icons, key
+  material fragments). **Large binary belongs on disk** — compression and copying
+  happen as byte streams inside R2; round-tripping a big payload through language
+  values walks straight back into the interpreter's superlinear array construction.
+- ⚠ **Relative paths resolve against the process CWD**, *not* the program's import
+  base dir (that one only affects `IMPORT`).
+- `std.env`: `ENV_KEYS()` is **sorted** (the host's iteration order varies) and
+  `ENV_GET` of an unset variable returns `NULL`, not `""` — "unset" and "set to
+  empty" are different states. `ENV_SET` is process-local and never touches disk.
+  `ARGS()` includes `argv[0]`, like Go's `os.Args` and Python's `sys.argv`.
+- `std.process`: `PROCESS_RUN(argv, opts?)` returns `[code, stdout, stderr]`.
+  ⚠ **`argv` must be an `ARRAY[STRING]`** — concatenating into one string and
+  letting the OS re-parse **is command injection**, so the string form is rejected
+  and there is deliberately no `SYSTEM` / `sh -c` member. A **nonzero exit code is
+  data, not an error**. Unknown `opts` keys (e.g. `shell`) are **rejected, not
+  ignored**: ignoring and forbidding are different things in a security context.
+  ⚠ **It blocks** — in this single-threaded cooperative runtime nothing else is
+  scheduled while a child runs (same cost as `std.time::SLEEP`).
+
 ### §9.11 `wlwl:std.time` — clocks, sleep and the fake-clock bubble (stdlib §15, v0.11.3)
 
 ```wlwl
