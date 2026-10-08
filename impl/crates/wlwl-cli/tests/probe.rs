@@ -85,7 +85,11 @@ use std::time::{Duration, Instant};
 // `TEST_BUBBLE` / `ADVANCE` / `TIMEOUT` 的语义。两条反向守卫:
 // `not_contains T3_AFTER_SLEEP_RAN` 钉「超时**放弃 body**」而不只是丢弃结果;
 // T4/T5 是一对,钉「取**最紧的**未放弃 deadline」而不是栈顶。
-const EXPECTED_CASE_COUNT: usize = 167;
+// [v0.11.3 M6 / addendum-06] 167 → 168:新增
+// `M6_std_fs_paths_and_process_safety` —— 路径**纯函数**的跨平台逐字冻结 +
+// `std.process` 的注入防线。⚠️ 它**刻意不碰文件系统**:fs 成员的相对路径按进程
+// CWD 解析,在 probe 里建临时目录会污染工作树(实测踩过)。
+const EXPECTED_CASE_COUNT: usize = 168;
 
 /// 单个 case 的上限,与 `probe.py` 的 `timeout=60` 同义。
 const CASE_TIMEOUT: Duration = Duration::from_secs(60);

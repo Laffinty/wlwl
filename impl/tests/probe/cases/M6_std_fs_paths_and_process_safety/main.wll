@@ -1,0 +1,56 @@
+// [v0.11.3 M6 / addendum-06] std.fs 的路径口径 + std.process 的注入防线。
+//
+// 落点:addendum-06 §5 落点 6(probe)。
+//
+// ⚠️ **本 probe 刻意不碰文件系统。** fs 成员的相对路径**按进程 CWD 解析**
+// (`with_base_dir` 只影响 `IMPORT` 的模块解析)⇒ 在 probe 里做「建临时目录再列它」
+// 会把文件写进**工作树**。实测踩过:一版用相对路径的契约测试把 `a.bin` 写到了
+// `impl/crates/wlwl-eval/`。⇒ 目录 / 字节类用例归契约表(那里能用绝对路径 +
+// 临时目录),probe 只钉**纯函数**与**安全性质**。
+//
+// 本 probe 钉三件事:
+//   * **规范分隔符恒为 `/`** —— 平台原生形态会让 `PATH_JOIN` 在 Windows 产出
+//     `a\b`,而**逐字节冻结的契约表正因此才可能存在**。这一行在任何平台都必须
+//     逐字相同。
+//   * `PATH_DIR` / `PATH_BASE` / `PATH_EXT` / `PATH_NORMALIZE` 的**边界用例**
+//     (无父目录返 `""`、点文件**没有**扩展名、绝对路径的 `..` 消不到根外、盘符
+//     不被当普通片段消掉)。
+//   * **注入防线**:`argv` 里的 shell 元字符**不被解释** —— 这是 `std.process`
+//     存在的安全理由(规范显式禁止字符串形态的 `argv`)。
+IMPORT("wlwl:std.fs", ["PATH_JOIN", "PATH_DIR", "PATH_BASE", "PATH_EXT", "PATH_NORMALIZE"]);
+
+PRINT("join         = ", PATH_JOIN("a", "b", "c"));
+PRINT("join_dup     = ", PATH_JOIN("a/", "/b"));
+PRINT("join_empty   = ", PATH_JOIN("a", "", "b"));
+PRINT("dir_nested   = ", PATH_DIR("a/b/c.txt"));
+PRINT("dir_bare     = ", PATH_DIR("a.txt"));
+PRINT("dir_abs      = ", PATH_DIR("/a/b"));
+PRINT("base_keeps_ext = ", PATH_BASE("a/b/c.txt"));
+PRINT("base_trailing  = ", PATH_BASE("a/b/"));
+PRINT("ext_no_dot   = ", PATH_EXT("a/b/c.txt"));
+PRINT("ext_multi    = ", PATH_EXT("a/b/c.tar.gz"));
+PRINT("ext_dotfile  = ", PATH_EXT(".gitignore"));
+PRINT("ext_none     = ", PATH_EXT("a/b/README"));
+PRINT("norm_dotdot  = ", PATH_NORMALIZE("a/./b/../c"));
+PRINT("norm_abs     = ", PATH_NORMALIZE("/a/../../b"));
+PRINT("norm_rel     = ", PATH_NORMALIZE("../a"));
+PRINT("norm_drive   = ", PATH_NORMALIZE("C:/a/./b"));
+
+// 注入防线:元字符必须作为**单个参数**原样到达,不被任何 shell 解释。
+// ⚠️ 这两条是**一对**,合起来才是完整的证据:
+//   * `argv_intact` 证明该参数**原样**到达(Rust 在 Windows 上会给含空格的
+//     实参加引号,所以 `cmd` 看到的是 `echo "a & echo INJECTED"`,`&` 是字面量);
+//   * `one_line_only` 证明 `&` **没有真的执行第二条命令** —— 若执行了,stdout
+//     会有两行,`SPLIT(out, "\n")` 的长度就 > 2。
+// ⚠️ 只用 `INDEX(...) >= 0` **证明不了**第二条:参数原样到达时它必然命中,
+//     而 `&` 被执行时它**也**会命中。两条都要。
+IMPORT("wlwl:std.process", ["PROCESS_RUN"]);
+LET(r, PROCESS_RUN(["cmd", "/C", "echo", "a & echo INJECTED"]));
+LET(out, AT_K(r, "stdout", ""));
+PRINT("argv_intact = ", >=(INDEX(out, "a & echo INJECTED"), 0));
+PRINT("one_line_only = ", >(LEN(SPLIT(out, "\n")), 1));
+
+// 元数错必须走原生诊断 E0022 并**终止运行**(不留 "after")。
+PRINT("before arity");
+PATH_DIR("a", "b");
+PRINT("after arity");

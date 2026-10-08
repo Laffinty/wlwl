@@ -48,11 +48,13 @@ pub mod ai;
 pub mod collection;
 pub(crate) mod compat;
 pub mod encode;
+pub mod env;
 pub mod format;
 pub mod fs;
 pub mod io;
 pub mod json;
 pub mod kernels;
+pub mod process;
 pub mod rand;
 pub mod regex;
 pub mod sanitize;
@@ -312,6 +314,9 @@ pub fn resolve(path: &str) -> Option<StdBackend> {
         "wlwl:std.sanitize" => &sanitize::SPEC,
         // [v0.11.3 M6 / addendum-01 A1] 时间能力第一片:两个纯读成员。
         "wlwl:std.time" => &time::SPEC,
+        // [v0.11.3 M6 / addendum-06] 文件系统扩充 + 进程 / 环境。
+        "wlwl:std.env" => &env::SPEC,
+        "wlwl:std.process" => &process::SPEC,
         // [v0.11.3 M6 / addendum-08] 显式播种的 RNG。
         "wlwl:std.rand" => &rand::SPEC,
         // [v0.11.3 M6 / addendum-02] 正则。
@@ -523,6 +528,9 @@ mod tests {
         &time::SPEC,
         // [v0.11.3 M6 / addendum-08] 显式播种的 RNG(四个成员)。
         &rand::SPEC,
+        // [v0.11.3 M6 / addendum-06] 进程环境(4 成员)与子进程(2 成员)。
+        &env::SPEC,
+        &process::SPEC,
         // [v0.11.3 M6 / addendum-02] 正则(RE2 式线性时间)。
         &regex::SPEC,
     ];
