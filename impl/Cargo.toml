@@ -29,7 +29,7 @@ version = "0.11.3"
 edition = "2021"
 license = "GPL-2.0-only"
 repository = "https://github.com/Laffinty/wlwl"
-rust-version = "1.75"
+rust-version = "1.85"
 
 # [v0.2 Phase G1] workspace-level lints.
 #
@@ -74,12 +74,17 @@ argon2 = { version = "0.6", default-features = false, features = ["alloc"] }
 # Linux, `RtlGenRandom` on Windows, and no userspace fallback.
 #
 # **Pinned to 0.3, not 0.4, on purpose.** `getrandom` 0.4 declares
-# `rust-version = "1.85"` and `edition = "2024"`; the workspace promises
-# `rust-version = "1.75"` in `[workspace.package]`, so taking the newest
-# release would turn that promise into a lie (CI itself uses `stable`, so it
-# would not have caught it). 0.3.4 declares 1.63 / edition 2021 and exposes
-# the same `fill()` entry point. Bump this together with `rust-version`, not
-# on its own.
+# `rust-version = "1.85"` and `edition = "2024"`, so taking the newest release
+# would raise *our* edition floor for no gain — 0.3.4 declares 1.63 / edition
+# 2021 and exposes the same `fill()` entry point.
+#
+# ⚠️ **[D13-013, 2026-10-08] 这条注释原本的理由是「工作区承诺 1.75,取 0.4 会把
+# 那个承诺变成谎言」—— 而那个承诺**当时就已经是假的**:把改动 stash 掉、从零解算,
+# `getrandom 0.4.3` **本来就在树里**(dev 链 `insta` -> `tempfile`)。**钉住直接依赖
+# 并没有把 0.4 挡在图外。** 现 `rust-version` 已按实测改为 `1.85`(见上),本条
+# 钉版本的**理由从「守 MSRV 承诺」改成「不无谓抬高 edition 下限」。**
+#
+# Bump this together with `rust-version`, not on its own.
 #
 # `default-features = false` drops `std` and, importantly, `sys_rng` (a
 # thread-local *non-cryptographic* fallback that must never be reachable from
