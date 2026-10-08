@@ -123,6 +123,35 @@ Select-String -Path impl/crates/wlwl-eval/tests/encode_contract.rs -Pattern '^\s
 `addendum-06` §3.1(b) 的裁决**(`ARRAY[INTEGER]` + 「小载荷」范围条款),
 本份**不重复裁决** —— 两份各定一次 = std 里两种字节表示,那是最难还的债。
 
+### 3.2 加依赖后的实测(2026-10-08):许可证**放行**,但撞出一条**既有的** MSRV 谎言
+
+**先说承诺要消掉的那条**:`zstd`(`BSD-3-Clause OR GPL-2.0` 双许可)与 `flate2`
+(`MIT OR Apache-2.0`,走纯 Rust 后端 `miniz_oxide`,零 C)**直接通过**
+`cargo deny --locked --all-features check`,判定 `advisories ok, bans ok,
+licenses ok, sources ok`,**`deny.toml` 一个字没改**。⇒ 调查里那条「静态读白名单
+的推断,必须实测」已兑现。
+
+**但实测顺带撞出一条与压缩无关的既有问题**:`[workspace.package]` 声明
+`rust-version = "1.75"`,而依赖图里有两个 **`rust-version = "1.85"`** 的 crate:
+
+| crate | MSRV | 位置 | 归属 |
+|---|---|---|---|
+| `getrandom 0.4.3` | **1.85** | **dev 链**(`insta` → `tempfile` → …) | ⚠️ **既有的** —— 把 `addendum-07` 的 Cargo.toml 改动 stash 掉、从零 `cargo generate-lockfile`,它**仍然在** |
+| `jobserver 0.1.35` | **1.85** | **build 链**(`zstd-sys` → `cc` 的 parallel) | ⚠️ **本批带来的** |
+
+**定性方法**(值得记,因为结论反直觉):`impl/Cargo.lock` 是 **gitignored** 的
+(`.gitignore:3`,且注释写明是刻意的「不入库」政策)⇒ 没有「HEAD 的锁」可比,
+只能**回到 HEAD 重新解一次**。实测:`cc` 两种状态下都是 `1.6.0`,而 `jobserver`
+**只在有 zstd 时出现** ⇒ 它来自 `zstd-sys`,不是 `cc`。
+
+⇒ **`rust-version = "1.75"` 这个承诺在本批开工前就已经不成立了**,本批又加了
+第二个 1.85 的 **build 依赖**。两者都只落在 build / dev 位置、CI 用 `stable`,
+所以**门禁一直是绿的** —— 绿的原因不是承诺成立,而是**没人真的用 1.75 构建过**。
+
+**待业主裁决**(记录者建议见 `build-plan` 的 D13-013):把 `rust-version` 改成
+**实测下限**并注明它是 build/dev 依赖带来的,而不是继续留一个假的数字;或者
+把承诺改成「CI 工具链」而非「MSRV」。
+
 ```powershell
 cd impl
 cargo fmt --all -- --check

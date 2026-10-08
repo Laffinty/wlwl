@@ -86,6 +86,23 @@ argon2 = { version = "0.6", default-features = false, features = ["alloc"] }
 # a CSPRNG member).
 getrandom = { version = "0.3", default-features = false }
 
+# [v0.11.3 M6 / addendum-07] `std.compress` 的两个后端。**这是本工作区第一次
+# 引入压缩依赖**,所以「要不要引」本身被当成一个取舍核过一遍(addendum-07
+# §3.1),结论是引:
+#
+#   * zstd 压缩端**手写不可行**(FSE / Huffman / 块划分,周级工作量且正确性
+#     极难自证)⇒ 必须引。
+#   * 「引入 C 依赖不是先例破坏」:`ring`(C + 汇编)已经经 `rustls` <- `reqwest`
+#     <- `std.ai` **在依赖树里**了,`zstd-sys` 属同一类,不是新的一类成本。
+#   * 自研 DEFLATE **解压端**是压缩炸弹 / OOB / 无界分配的第一现场 —— 而本份自己
+#     要写一条「解压输出上限」规范条款,说明这面攻击是真的 ⇒ 最不该自担。
+#   * flate2 默认走**纯 Rust** 后端 `miniz_oxide`(零 C),所以 RFC 1950/1951/1952
+#     三条线不引入新的 C 依赖。
+#
+# 版本按「钉住、不裸取最新版」的纪律显式给,与 `getrandom` / `argon2` 同款。
+zstd = { version = "0.13", default-features = false }
+flate2 = { version = "1", default-features = false, features = ["rust_backend"] }
+
 # 閺堫剙浼愭担婊呪敄闂傛潙鍞撮柈?crate
 #
 # [v0.11 / D10-011] 每条都补了 `version`,与上面的 `[workspace.package]
