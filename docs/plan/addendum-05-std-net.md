@@ -158,7 +158,7 @@ cargo check --locked -p wlwl-std --features real-ai
 
 | 子项 | 内容 | 状态 | commit |
 |---|---|---|---|
-| W-01 | 阻塞 / 挂起裁决 + 零依赖形态裁决(ADR) | ✅ **完成(2026-10-09,业主采纳 A)** —— [`ADR-0028`](../adr/0028-std-net-shape.md)**Accepted**:**D1** `HTTP_*` 阻塞原语(与 `SLEEP` 同族)、**D3** 手写明文 HTTP/1.1 **零新增依赖**、**D2** 超时必填缺省 30 s / **D4** 不自动跟随重定向 / **D5** 05 与 06 的边界。⚠ **D1 带条件冻结**:前提是「`ADR-0017` Step 3 仍未落地」,守卫测试 `impl/crates/wlwl-eval/tests/adr_conditional_guard.rs` 在前提不成立时**转红**并写明该重裁什么(见 ADR §6)。⚠ 查证时发现**两条把问题改写的事实**:① 阻塞在本仓**不是新问题** —— `real-ai` 那条路径本来就在阻塞(`reqwest::blocking::Client` 内联调用),已被 feature 门控与 CI 隔离;② 「等真挂起」**不是空话** —— `ADR-0017` 2026-09-25 已 **Accepted**、Step 1–2 已落地(通道是真挂起的),只差 Step 3,而业主 **2026-10-08 已裁决把 Step 3 与 `addendum-12` 一并往后放**。**顺带更正一处过时数字**:`addendum-12` §0.1 记的「`yield_split.rs` 338 行」实测已 **365 行** | `7581471` → 见下 |
+| W-01 | 阻塞 / 挂起裁决 + 零依赖形态裁决(ADR) | ✅ **完成(2026-10-09,业主采纳 A)** —— [`ADR-0028`](../adr/0028-std-net-shape.md)**Accepted**:**D1** `HTTP_*` 阻塞原语(与 `SLEEP` 同族)、**D3** 手写明文 HTTP/1.1 **零新增依赖**、**D2** 超时必填缺省 30 s / **D4** 不自动跟随重定向 / **D5** 05 与 06 的边界。⚠ **D1 带条件冻结**:前提是「`ADR-0017` Step 3 仍未落地」,守卫测试 `impl/crates/wlwl-eval/tests/adr_conditional_guard.rs` 在前提不成立时**转红**并写明该重裁什么(见 ADR §6)。⚠ 查证时发现**两条把问题改写的事实**:① 阻塞在本仓**不是新问题** —— `real-ai` 那条路径本来就在阻塞(`reqwest::blocking::Client` 内联调用),已被 feature 门控与 CI 隔离;② 「等真挂起」**不是空话** —— `ADR-0017` 2026-09-25 已 **Accepted**、Step 1–2 已落地(通道是真挂起的),只差 Step 3,而业主 **2026-10-08 已裁决把 Step 3 与 `addendum-12` 一并往后放**。**顺带更正一处过时数字**:`addendum-12` §0.1 记的「`yield_split.rs` 338 行」实测已 **365 行** | `7581471` / `29b9dae` |
 | W-02 | `URL_PARSE` / `URL_JOIN`(纯函数,先落) | 未动工 | — |
 | W-03 | 夹具服务器 + `HTTP_*` 实现 | 未动工 | — |
 | W-04 | 契约表(含离线门控 / 上限 / 不跟随重定向) | 未动工 | — |
