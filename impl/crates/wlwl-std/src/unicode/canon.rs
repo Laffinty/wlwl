@@ -74,17 +74,25 @@ fn is_nfc_suspect(cp: u32) -> bool {
 /// 契约文面按「**不保证**是不是 NFC」写,不按「不是 NFC」写。
 pub fn nfc_quick_ok(input: &[u32]) -> bool {
     let mut last = 0u8;
-    for &cp in input {
-        if is_nfc_suspect(cp) {
-            return false;
-        }
-        let cc = ccc(cp);
-        // `cc != 0` 让 starter(ccc=0)不参与乱序判定 —— 它是屏障,不是普通 0 类记号。
-        if last > cc && cc != 0 {
-            return false;
-        }
-        last = cc;
+    input.iter().all(|&cp| quick_step(cp, &mut last))
+}
+
+/// **D65 的逐码点判据**。抽成独立函数是为了让 `std.text` 的 `NFC_QC` 成员
+/// 能**直接从 `&str` 跑、一次 `Vec<u32>` 都不构造** —— 而 `nfc_quick_ok` 需要
+/// 一个连续的 `&[u32]`,从字符串现攒就得先分配。
+///
+/// 返回 `false` 即整个串「不保证是 NFC 形态」。`last_cc` 由调用方持有并在
+/// 码点之间传递(它就是 D65 的 `lastCanonicalClass`)。
+pub fn quick_step(cp: u32, last_cc: &mut u8) -> bool {
+    if is_nfc_suspect(cp) {
+        return false;
     }
+    let cc = ccc(cp);
+    // `cc != 0` 让 starter(ccc=0)不参与乱序判定 —— 它是屏障,不是普通 0 类记号。
+    if *last_cc > cc && cc != 0 {
+        return false;
+    }
+    *last_cc = cc;
     true
 }
 

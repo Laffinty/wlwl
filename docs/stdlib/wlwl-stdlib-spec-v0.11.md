@@ -847,27 +847,48 @@ PRINT(TIMING_SAFE_EQ(stored, ARGON2ID("wrong horse battery staple", salt, 2, 194
 - **比较必须用 `TIMING_SAFE_EQ`**,不要用 `=`。朴素比较会在首个不同的字节处
   提前返回,验签耗时本身就是一条侧信道。
 
-## 12 `std.text` — Unicode 大小写(R2,v0.11.2 新增)
+## 12 `std.text` — Unicode 大小写与规范规范化(R2,v0.11.2 新增 / v0.11.3 扩充)
 
 **全局内建 `UPPER` / `LOWER` 只做 ASCII 映射**(语言规范 §10.5),实测
 `UPPER("straße")` = `STRAßE`、`UPPER("héllo")` = `HéLLO` —— 非 ASCII 字符
 原样穿过。本命名空间提供**完整 Unicode 简单大小写映射**。
 
-零 Unicode 数据文件:Rust 的 `str::to_uppercase` / `to_lowercase` 直接走
-`char` 实现内置的 `Uppercase` / `Lowercase` 查表(含 `ß` → `SS`、希腊
+大小写部分零 Unicode 数据文件:Rust 的 `str::to_uppercase` / `to_lowercase`
+直接走 `char` 实现内置的 `Uppercase` / `Lowercase` 查表(含 `ß` → `SS`、希腊
 final sigma、土耳其无点 i / 点上 i 这类特殊映射)。ADR-0022 的零第三方依赖
 画像因此不变。
+
+**规范化部分要表**(v0.11.3 `addendum-03` 落地):Unicode 规范形式按 **UCD
+18.0.0** 定义,表由生成器 `bin/gen-ucd` 从 UCD 源数据产出并入库(源数据
+3.66 MB **不入库**,构建期零下载、零生成)。**换 Unicode 版本必须重跑生成器
++ 重跑 `bin/norm-check`**,两件事一起做。
 
 | 签名 | 说明 | 失败 |
 |------|------|------|
 | `TO_UPPER(s) -> STRING` | 完整 Unicode 大写映射;**长度可能变**(`ß` → `SS`) | — |
 | `TO_LOWER(s) -> STRING` | 完整 Unicode 小写映射;希腊 `Σ` 词尾得 `ς`、词中得 `σ` | — |
+| `NFC(s) -> STRING` | 规范组合:`"e"` + U+0301 → `"é"`,**长度变短** | — |
+| `NFD(s) -> STRING` | 规范分解:`"é"` → `"e"` + U+0301,**长度变长** | — |
+| `NFC_QC(s) -> BOOLEAN` | 规范快速检查(性能闸门,见 §12.2) | — |
 
 **与全局 `UPPER` / `LOWER` 的关系**:两个并存,本批**不替换**全局内建。
 替换是 breaking(既有程序里非 ASCII 字符的大小写行为会变),不在本批范围。
 调用方按需要显式选:`UPPER` 快且只管 ASCII,`TO_UPPER` 全 Unicode。
 
+⚠ **`NFC` / `NFD` 会改变字符串长度**,因此任何拿 `LEN` / `INDEX_OF` 下标做
+缓存键或行号的调用方,规范化之后**下标全部失效**。这是正确行为,但会打破
+调用方的既有假设 —— 见 `skill` 的反模式条目。
+
+**明确不做**:`NFKC` / `NFKD`(兼容性分解是**另一个语义**,会把全角/半角、
+`①`/`1` 折叠掉,不能与 NFC 混在一处默认)、case folding(等价类判定,与
+`TO_UPPER`/`TO_LOWER` 的映射不是一回事)、locale 相关排序 / 比较。
+
 ### 12.1 为什么只有两个成员(其余推迟的理由)
+
+> **状态更新(2026-10-08,`addendum-03` W-01/W-02/W-03)**:`NFC` / `NFD` /
+> `NFC_QC` **已落地**。`GRAPHEME_COUNT` / `WIDTH` **仍推迟**(W-04)——
+> 它们的数据源与规范化**完全无关**,混批会让「正确性只由全量自检证明」那条
+> 纪律的适用范围变模糊。
 
 原计划还有 `NFC` / `NFD` / `GRAPHEME_COUNT` / `WIDTH`,**全部推迟**。它们
 **共用同一捆 UCD 数据**:
@@ -884,6 +905,18 @@ final sigma、土耳其无点 i / 点上 i 这类特殊映射)。ADR-0022 的零
 **明确不做半张表**:只覆盖 Latin-1 的 NFC 比没有 NFC 更糟 —— 它会让
 `==(NFC(a), NFC(b))` 在部分输入上返回 TRUE,调用方据此建索引,然后在真正的
 CJK 或组合字符上炸。
+
+### 12.2 `NFC_QC` 的单方向语义(规范性)
+
+`NFC_QC(s)` 返回 `TRUE` **当且仅当**该串**必定**已是 NFC 形态,此时可安全
+跳过 `NFC`。返回 `FALSE` **只表示「不保证」** —— 该串**可能**已经是 NFC
+形态。
+
+**反向不成立,这是规范条款而不是实现瑕疵**:官方测试文件里有 202 行的串本来
+就是 NFC 形态(`Maybe` 类单码点行,例如单独一个 U+0301 —— 它经 `NFC` 之后
+原样不动,却有 `NFC_QC = Maybe`),快检一律返回 `FALSE`。⚠ 文面**不得**写成
+「返回 `FALSE` 即表示不是 NFC 形态」—— 那会教调用方一个假事实,进而写出
+「不是 NFC 就去 `TO_UPPER`」这类错误推理。
 
 ## 13 `std.sanitize` — 输出安全(R2,v0.11.3 新增)
 
@@ -1469,7 +1502,7 @@ R2 全员。**这是本工作区第一次引入压缩依赖**(`zstd` + `flate2`)
 | `std.encode` | `BASE64_ENCODE` `BASE64_DECODE` `HEX_ENCODE` `HEX_DECODE` `URL_ENCODE` `URL_DECODE` `SHA256` `HMAC_SHA256` `PBKDF2_ITER` `ARGON2ID` `RANDOM_BYTES` `RANDOM_HEX` `TIMING_SAFE_EQ` | R2 | v0.11.2 / SHA256、HMAC_SHA256 于 v0.11.3 |
 | `std.time` | `NOW` `MONOTONIC` `SLEEP` `TEST_BUBBLE` `ADVANCE` `TIMEOUT` | R2 | v0.11.3 |
 | `std.regex` | `RE` `RE_TEST` `RE_SEARCH` `RE_FIND_ALL` `RE_REPLACE` `RE_SPLIT` `RE_GROUP_COUNT` | R2 | v0.11.3 |
-| `std.text` | `TO_UPPER` `TO_LOWER` | R2 | v0.11.2 |
+| `std.text` | `TO_UPPER` `TO_LOWER` `NFC` `NFD` `NFC_QC` | R2 | v0.11.2 |
 | `std.sanitize` | `HTML_ESCAPE` `HTML_UNESCAPE` `HTML_SANITIZE` | R2 | v0.11.3 |
 | `std.collection` | `MAP` `FILTER` `REDUCE` `SORT` `SORT_BY` `ZIP` `RANGE` `ANY` `ALL` `FIND` `ENUMERATE` `TAKE` `DROP` `FLAT` `UNIQ` `GROUP_BY` `JOIN` `CHUNK` `WINDOW` `DEDUP_BY` `MIN_BY` `MAX_BY` `SUM` `PRODUCT` `FOLD_RIGHT` `POSITION` `KEY_BY` | 混合(R1 门面 + R2 `RANGE`/`MAP`/`FILTER`/`CHUNK`/`WINDOW`/`ENUMERATE`/`ZIP`/`UNIQ`/`FLAT`/`JOIN`/`GROUP_BY`/`DEDUP_BY`/`KEY_BY`) | v0.10 及以前(成员)/ v0.11(R1 重写,M5 起 RANGE 沉 R2)/ v0.11.3(M5 L0-A-2 加 MAP·FILTER·CHUNK·WINDOW,L0-A-3a 加 ENUMERATE·ZIP·UNIQ·FLAT·JOIN,L0-A-3b 加 GROUP_BY·DEDUP_BY·KEY_BY 沉 R2) |
 | `std.str` | `JOIN` `SPLIT_LINES` `CHAR_AT` `COUNT` `QUOTE` `INDEX_OF` `CONTAINS_SUB` | R1 | v0.11 / INDEX_OF、CONTAINS_SUB 于 v0.11.2 |

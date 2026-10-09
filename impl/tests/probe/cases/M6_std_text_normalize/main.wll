@@ -1,0 +1,41 @@
+// [v0.11.3 M6 / addendum-03 W-03] std.text 规范化:三成员语义 + 长度 + 幂等 + 失败形态。
+//
+// 落点:addendum-03 §5 落点 6(probe)。
+//
+// ⚠ **本 probe 不是正确性证据**。NFC/NFD 排错一个码点时渲染结果
+// 完全相同——人眼、截图、字节 diff 全都看不出来。唯一证据是
+// `cargo run --release -p wlwl-std --bin norm-check -- <UCD 目录>`
+// 对官方 NormalizationTest.txt 的**全量**自检（20 171 行）。这里只钉业务口径。
+//
+// 期望值全部取自 CPython `unicodedata.normalize`(独立第二实现),
+// 不是从本实现输出抄。
+IMPORT("wlwl:std.text", ["NFC", "NFD", "NFC_QC"]);
+
+// 1. NFC 缩短:"A" + U+0301 → U+00C1
+PRINT("nfc_composes = ", NFC("Á"));
+PRINT("nfc_len = ", LEN(NFC("Á")));
+
+// 2. NFD 变长:U+00E1 → "A" + U+0301
+PRINT("nfd_expands = ", NFD("á"));
+PRINT("nfd_len = ", LEN(NFD("á")));
+
+// 3. 幂等:NFC 与 NFD 各自重复不变。
+PRINT("nfc_idempotent = ", ==(NFC(NFC("Á")), NFC("Á")));
+PRINT("nfd_idempotent = ", ==(NFD(NFD("á")), NFD("á")));
+
+// 4. NFC_QC 的**单方向**语义(规范 §12.2):
+//    TRUE → 必定已是 NFC;、FALSE → **只表示「不保证」**。
+PRINT("qc_plain_ascii = ", NFC_QC("hello"));
+PRINT("qc_decomposable_pair = ", NFC_QC("Á"));
+PRINT("qc_already_nfc = ", NFC_QC("á"));
+// 保守方向:单独一个 U+0301 经 NFC 后原样不动,但快检仍说「不保证」。
+PRINT("qc_conservative_lone = ", NFC_QC("́"));
+PRINT("qc_conservative_nfc_same = ", ==(NFC("́"), "́"));
+
+// 5. CJK / ASCII 不受影响。
+PRINT("cjk_untouched = ", NFC("中文 123 !@#"));
+
+// 6. 元数错必须走原生诊断 E0022 并**终止运行**。
+PRINT("before arity");
+NFC("Á", "b");
+PRINT("after arity");

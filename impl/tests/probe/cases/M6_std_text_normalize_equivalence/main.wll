@@ -1,0 +1,32 @@
+// [v0.11.3 M6 / addendum-03 W-03] 正规化的根本动机:两串字节**不同、渲染**一致**。
+//
+// 落点:addendum-03 §5 落点 6(probe)。这一条比上一条更重要:它直接展示
+// 为什么这个命名空间值得存在。
+//
+// ⚠ `==` **不会自动规范化**——那会把「两个字符串到底同不同形态」这一
+// 事实直接抹掉。调用方必须显式写 `==(NFC(a), NFC(b))`。
+//
+// 本条**不展示**任何缩进展示差异——两个 PRINT 输出的字形一致。
+// 它针的是**判定结果**不同:一个 FALSE、一个 TRUE。
+//
+// ⚠写这条时连踩两个坑,都是**我自己的数据**而非实现:
+//   ① 将 U+00E1(á,注音字母 a)当成 U+00E9(é)——两个码点不同字母;
+//   ①将「A U+0301」当成「e U+0301」——大小写折叠得到 U+00C1 而非 U+00E9。
+// 两次都让 `nfc_eq` 误报 FALSE。现已对齐 CPython `unicodedata` 的实测值:预期生成 U+00E9。
+IMPORT("wlwl:std.text", ["NFC", "NFD"]);
+
+// 1. 原始比较:预组合 U+00E9 vs 「e + U+0301」。字节不同 → FALSE。
+PRINT("raw_eq = ", ==("é", "é"));
+
+// 2. 规范化后比较 → TRUE。这就是索引 / 去重 / 缓存键的前置。
+PRINT("nfc_eq = ", ==(NFC("é"), NFC("é")));
+
+// 3. 真实场景:同一个词的两种拼写。
+LET(typed, "café");
+LET(pasted, "café");
+PRINT("typed_vs_pasted_raw = ", ==(typed, pasted));
+PRINT("typed_vs_pasted_nfc = ", ==(NFC(typed), NFC(pasted)));
+
+// 4. 字符串长度也变:NFD 把它变长。拿长度做下标的调用方会静默失效。
+PRINT("nfd_typed = ", NFD(typed));
+PRINT("nfd_len_typed = ", LEN(NFD(typed)));

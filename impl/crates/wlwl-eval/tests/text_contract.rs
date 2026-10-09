@@ -120,6 +120,113 @@ const CASES: &[Case] = &[
         src: r#"IMPORT("wlwl:std.text", ["TO_LOWER"]); TO_LOWER("a", "b")"#,
         expect: "!E0022 TO_LOWER: function expects 1 argument(s), got 2",
     },
+    // ── NFC:规范组合(期望值取自 CPython `unicodedata.normalize`)────
+    Case {
+        name: "nfc_composes_ascii_plus_acute",
+        src: r#"IMPORT("wlwl:std.text", ["NFC"]); NFC("Á")"#,
+        expect: "Á",
+    },
+    Case {
+        name: "nfc_shortens_string",
+        src: r#"IMPORT("wlwl:std.text", ["NFC"]); LEN(NFC("Á"))"#,
+        expect: "1",
+    },
+    Case {
+        name: "nfc_respects_blocked_combination",
+        src: r#"IMPORT("wlwl:std.text", ["NFC"]); NFC("Ḍ̇")"#,
+        expect: "Ḍ̇",
+    },
+    Case {
+        name: "nfc_composes_hangul_jamo",
+        src: r#"IMPORT("wlwl:std.text", ["NFC"]); NFC("각")"#,
+        expect: "각",
+    },
+    Case {
+        name: "nfc_is_idempotent",
+        src: r#"IMPORT("wlwl:std.text", ["NFC"]); =(NFC(NFC("Á")), NFC("Á"))"#,
+        expect: "TRUE",
+    },
+    Case {
+        name: "nfc_leaves_cjk_and_ascii_alone",
+        src: r#"IMPORT("wlwl:std.text", ["NFC"]); NFC("中文 123 !@#")"#,
+        expect: "中文 123 !@#",
+    },
+    Case {
+        name: "nfc_of_lone_combining_acute_is_unchanged",
+        src: r#"IMPORT("wlwl:std.text", ["NFC"]); NFC("́")"#,
+        expect: "́",
+    },
+    Case {
+        name: "nfc_empty",
+        src: r#"IMPORT("wlwl:std.text", ["NFC"]); NFC("")"#,
+        expect: "",
+    },
+    // ── NFD:规范分解(同一份权威期望值)───────────────────────────
+    Case {
+        name: "nfd_expands_precomposed_accent",
+        src: r#"IMPORT("wlwl:std.text", ["NFD"]); NFD("Á")"#,
+        expect: "Á",
+    },
+    Case {
+        name: "nfd_lengthens_string",
+        src: r#"IMPORT("wlwl:std.text", ["NFD"]); LEN(NFD("Á"))"#,
+        expect: "2",
+    },
+    Case {
+        name: "nfd_decomposes_hangul_syllable",
+        src: r#"IMPORT("wlwl:std.text", ["NFD"]); NFD("각")"#,
+        expect: "각",
+    },
+    Case {
+        name: "nfd_is_idempotent",
+        src: r#"IMPORT("wlwl:std.text", ["NFD"]); =(NFD(NFD("Á")), NFD("Á"))"#,
+        expect: "TRUE",
+    },
+    Case {
+        name: "nfd_leaves_cjk_and_ascii_alone",
+        src: r#"IMPORT("wlwl:std.text", ["NFD"]); NFD("中文 123 !@#")"#,
+        expect: "中文 123 !@#",
+    },
+    // ── NFC_QC:单方向语义(§12.2)──────────────────────────────────
+    Case {
+        name: "nfc_qc_true_for_plain_ascii",
+        src: r#"IMPORT("wlwl:std.text", ["NFC_QC"]); NFC_QC("hello")"#,
+        expect: "TRUE",
+    },
+    Case {
+        name: "nfc_qc_true_for_empty",
+        src: r#"IMPORT("wlwl:std.text", ["NFC_QC"]); NFC_QC("")"#,
+        expect: "TRUE",
+    },
+    Case {
+        name: "nfc_qc_true_for_string_already_in_nfc",
+        src: r#"IMPORT("wlwl:std.text", ["NFC_QC"]); NFC_QC("Á")"#,
+        expect: "TRUE",
+    },
+    Case {
+        name: "nfc_qc_false_for_decomposable_pair",
+        src: r#"IMPORT("wlwl:std.text", ["NFC_QC"]); NFC_QC("Á")"#,
+        expect: "FALSE",
+    },
+    // ⚠ **保守方向的钉子**:单独一个 U+0301 经 NFC 之后**原样不动**,
+    // 但快检仍说「不保证」。少了这条,「FALSE 即不是 NFC」那个假
+    // 事实就不会有人去纠正(见规范 §12.2 与 `nfc_quick_ok` 文档)。
+    Case {
+        name: "nfc_qc_is_conservative_not_an_equivalence",
+        src: r#"IMPORT("wlwl:std.text", ["NFC", "NFC_QC"]); &&(=(NFC("́"), NFC("́")), NOT(NFC_QC("́")))"#,
+        expect: "TRUE",
+    },
+    // ── 规范化三成员的失败形态 ──────────────────────────────────────
+    Case {
+        name: "nfc_non_string_is_e0030",
+        src: r#"IMPORT("wlwl:std.text", ["NFC"]); NFC(5)"#,
+        expect: "!E0030 NFC: expected string, got integer",
+    },
+    Case {
+        name: "nfc_qc_arity_is_e0022",
+        src: r#"IMPORT("wlwl:std.text", ["NFC_QC"]); NFC_QC("a", "b")"#,
+        expect: "!E0022 NFC_QC: function expects 1 argument(s), got 2",
+    },
     // ── §12 明写:两个并存,全局 UPPER / LOWER **不动** ──────────────
     Case {
         name: "global_upper_is_still_ascii_only",
@@ -233,12 +340,12 @@ fn text_member_set_matches_the_spec_table() {
 
     assert_eq!(
         spec.len(),
-        2,
+        5,
         "§12 table extractor found {} member(s): {spec:?} — the table's shape changed \
          and the extractor needs updating",
         spec.len()
     );
-    for n in ["TO_UPPER", "TO_LOWER"] {
+    for n in ["TO_UPPER", "TO_LOWER", "NFC", "NFD", "NFC_QC"] {
         assert!(
             spec.iter().any(|m| m == n),
             "§12 table missed `{n}`: {spec:?}"
@@ -248,7 +355,7 @@ fn text_member_set_matches_the_spec_table() {
             "implementation does not export `{n}`: {impls:?}"
         );
     }
-    assert_eq!(impls.len(), 2, "wlwl:std.text exports 2 members");
+    assert_eq!(impls.len(), 5, "wlwl:std.text exports 5 members");
 }
 
 fn spec_path() -> PathBuf {
@@ -261,13 +368,16 @@ fn spec_path() -> PathBuf {
         .join("wlwl-stdlib-spec-v0.11.md")
 }
 
-/// §12.1 的推迟裁决必须留在规范里。
+/// UCD 依赖的成员分两批落地,两批的理由**都**必须留在规范里。
 ///
-/// 四个 UCD 依赖的成员(`NFC` / `NFD` / `GRAPHEME_COUNT` / `WIDTH`)是
-/// **一个**决定,不是一个成员一个决定。裁决丢了的话,下一个人会挑最容易
-/// 的那个先做,生成器于是要写第二遍。
+/// - `NFC` / `NFD` / `NFC_QC`:v0.11.3 `addendum-03` W-01/W-02/W-03 已落地;
+/// - `GRAPHEME_COUNT` / `WIDTH`:**仍推迟**(W-04),数据源与规范化无关。
+///
+/// 「合成一块做」这个裁决丢了的话,下一个人会挑最容易的那个先做,生成器
+/// 于是要写第二遍。所以连「已落地」的那半边也要留痕 —— 不是只记推迟,
+/// 也要记**为什么先做了这三、为什么后做那两**。
 #[test]
-fn the_ucd_deferral_rationale_is_documented() {
+fn the_ucd_batch_rationale_is_documented() {
     let text = std::fs::read_to_string(spec_path()).expect("stdlib spec readable");
     for needle in [
         "UCD",
@@ -275,11 +385,30 @@ fn the_ucd_deferral_rationale_is_documented() {
         "CompositionExclusions",
         "EastAsianWidth",
         "半张表",
+        // v0.11.3 新增:「正确性只由全量自检证明」这条纪律的落点。
+        "18.0.0",
+        "norm-check",
     ] {
         assert!(
             text.contains(needle),
-            "stdlib spec §12.1 lost `{needle}` — either the deferral was revisited on \
-             purpose (update this test and §12.1 together) or the rationale was trimmed"
+            "stdlib spec §12 lost `{needle}` — either the batching was revisited on \
+             purpose (update this test and §12.1/§12.2 together) or the rationale was trimmed"
+        );
+    }
+}
+
+/// `NFC_QC` 的**单方向**语义是规范条款(§12.2),不是实现细节。
+///
+/// 少了这条,文面随时会滑回「返回 `FALSE` 即表示不是 NFC 形态」—— 而那是
+/// 假的:官方测试文件里有 202 行的串本来就是 NFC 形态,快检照样返回 `FALSE`。
+#[test]
+fn nfc_qc_one_directional_wording_is_documented() {
+    let text = std::fs::read_to_string(spec_path()).expect("stdlib spec readable");
+    for needle in ["不保证", "反向不成立", "NFC_QC"] {
+        assert!(
+            text.contains(needle),
+            "stdlib spec §12.2 lost `{needle}` — the one-directional wording of \
+             NFC_QC is a normative clause, not commentary"
         );
     }
 }

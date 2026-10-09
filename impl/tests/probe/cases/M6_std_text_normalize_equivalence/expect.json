@@ -1,0 +1,12 @@
+{
+ "exit": 0,
+ "contains": [
+  "raw_eq =  FALSE",
+  "nfc_eq =  TRUE",
+  "typed_vs_pasted_raw =  FALSE",
+  "typed_vs_pasted_nfc =  TRUE",
+  "nfd_len_typed =  5"
+ ],
+ "not_contains": [],
+ "_why": "v0.11.3 M6 / addendum-03 W-03。这一条才是这个命名空间存在的理由:两串字节不同、渲染一致的字符串。`==` **不会自动规范化**(否则这个命名空间没有存在的价值),调用方必须显式写 `==(NFC(a), NFC(b))`。两组 `raw` vs `nfc` 对照就是全部:raw 两条都 FALSE、nfc 两条都 TRUE。本条**不展示**任何缩进展示差异,它针的是**判定结果**不同。`nfd_len_typed` 额外钉「NFC/NFD 会改变长度」——拿长度做下标的调用方会静默失效(skill 反模式条款)。⚠ 写这条时我连踩两个码点的坑:把 U+00E1(á)当 U+00E9(é)、把「A U+0301」当「e U+0301」。两次都让 `nfc_eq` 误报 FALSE,而实现始终正确 —— 规范化不做大小写折叠。期望值已对齐 CPython 实测值。"
+}

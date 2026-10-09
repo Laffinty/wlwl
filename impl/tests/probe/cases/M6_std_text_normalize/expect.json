@@ -1,0 +1,24 @@
+{
+ "exit": 1,
+ "contains": [
+  "nfc_composes =  Á",
+  "nfc_len =  1",
+  "nfd_expands =  á",
+  "nfd_len =  2",
+  "nfc_idempotent =  TRUE",
+  "nfd_idempotent =  TRUE",
+  "qc_plain_ascii =  TRUE",
+  "qc_decomposable_pair =  FALSE",
+  "qc_already_nfc =  TRUE",
+  "qc_conservative_lone =  FALSE",
+  "qc_conservative_nfc_same =  TRUE",
+  "cjk_untouched =  中文 123 !@#",
+  "before arity",
+  "E0022",
+  "NFC: function expects 1 argument(s), got 2"
+ ],
+ "not_contains": [
+  "after arity"
+ ],
+ "_why": "v0.11.3 M6 / addendum-03 W-03。std.text 的 NFC / NFD / NFC_QC 三成员口径。⚠ **本 probe 不是正确性证据** —— NFC/NFD 排错一个码点时渲染结果完全相同,人眼、截图、字节 diff 全都看不出来。唯一证据是 `cargo run --release -p wlwl-std --bin norm-check -- <UCD 目录>` 对官方 NormalizationTest.txt 的**全量**自检(20 171 行)。这里只钉业务口径,期望值全部取自 CPython `unicodedata.normalize`(独立第二实现)。⚠ `qc_conservative_*` 两条钉的是 NFC_QC 的**单方向**语义(规范 §12.2):返回 FALSE 只表示「不保证」,**不**表示「不是 NFC 形态」—— 单独一个 U+0301 经 NFC 后原样不动,快检照样 FALSE。少这两条,「FALSE 即不是 NFC」那个假事实就没人纠正。末段钉元数错走原生诊断 E0022 并**终止运行**(not_contains after arity)。"
+}

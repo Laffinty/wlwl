@@ -93,7 +93,13 @@ use std::time::{Duration, Instant};
 // 往返 + 确定性 + 损坏输入返回 ERR。⛔️ 它**刻意不断言压缩比、也不冻结输出字节**:
 // 两者都**实现定义**(实测同一份 104 字节载荷,Python 的 zlib 压到 66,
 // miniz_oxide 压到 115 —— 比原文还大)。
-const EXPECTED_CASE_COUNT: usize = 169;
+// [v0.11.3 M6 / addendum-03 W-03] 169 -> 171:新增两条 std.text 规范化 ——
+// `M6_std_text_normalize`(三成员语义 + 长度 + 幂等 + 快检方向 + E0022 终止)
+// 与 `M6_std_text_normalize_equivalence`(两串字节不同、渲染一致;`==` 不
+// 自动规范化,`==(NFC(a), NFC(b))` 才等价)。⚠ 两条都**刻意不断言 NFC/NFD
+// 的全量正确性** —— 排错一个码点时渲染完全相同,肉眼看不出来,证据是
+// `bin/norm-check` 对官方 NormalizationTest.txt 的全量自检。
+const EXPECTED_CASE_COUNT: usize = 171;
 
 /// 单个 case 的上限,与 `probe.py` 的 `timeout=60` 同义。
 const CASE_TIMEOUT: Duration = Duration::from_secs(60);
