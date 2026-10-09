@@ -130,13 +130,24 @@ pub fn monotonic(host: &mut dyn StdHost, args: Vec<Value>) -> wlwl_error::WlwlRe
 /// 原本的设计是「任务内挂起、到点唤醒」—— 那样能保住并发。实现时撞上一个**运行时
 /// 能力缺口**,查证结论(`addendum-01` §3.10):
 ///
-/// - wlwl 的「中途挂起后**原地续跑**」能力**只有 `YIELD()` 有**。它由
-///   `yield_split::split_body_for_yield` 产出分段 + `run_task_segments` 保存
-///   `running_env` 两件事共同实现,而**分段器只认 `YIELD()` 这一个名字**。
+/// - **分段器** `yield_split::split_body_for_yield` 静态地只认 `YIELD()` 这一个
+///   名字;`run_task_segments` 也只对 `Yield(Explicit)` 保存 `running_env`,其它
+///   signal 一律丢弃。
 /// - 任何**非分段**任务体一旦被挂起再唤醒,重入走的是 `invoke_closure`
 ///   **整段重跑**:绑定从头重来、副作用重放。
 /// - `Sleeping` 若走挂起路线,唤醒后会**再次执行同一个 `SLEEP`** ⇒ 无限循环。
 ///   (实测:8 秒打了 79 次 `tick` 仍不终止。)
+///
+/// ⚠ **[2026-10-09 更正措辞]** 本段原写「中途挂起后原地续跑能力**只有
+/// `YIELD()` 有**」—— 那句**已过时**且**误导**。`ADR-0017` Step 2 已落地,
+/// `YieldReason` 现在有**四个**变体(`Explicit` / `AwaitingChild` /
+/// `ReceivingOn` / `SendingOn`),**通道是真挂起的**(带 `E0065` / `E0064`)。
+/// 准确的说法是:挂起点**存在四个**,但**全部是运行时已知的位置**,而
+/// **`ADR-0017` Step 3(真 state-machine 续跑)从未落地**(`effect.rs` 不存在)
+/// —— 所以**原生 `StdFn` 仍无法在函数内部制造可续跑的挂起点**。
+/// 本成员的结论不变,但依据从「只有 `YIELD()`」改成「原生函数造不出挂起点」。
+/// 同样的更正见 `ADR-0028` §1 事实 2 / 3,以及 `wlwl-eval` 里 `TIMEOUT` 那句
+/// 「nothing suspends」—— 它同样是静态分段时代的措辞。
 ///
 /// 所以本成员**不挂起**。这条代价**原样写进规范**,不藏:「`SLEEP` 期间不调度
 /// 其他任务」是 `addendum-01` §3.8 候选甲**早已接受**的那句代价 —— 选 E 只是把它
