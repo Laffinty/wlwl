@@ -1,7 +1,7 @@
 # 03 · Unicode 规范化(UCD 数据依赖成员合成一块做)
 
 > **层级** L1(可并行) · **前置** 无(与 02 的 `\p{…}` 裁决共享生成器输入)
-> **状态** 🚧 **W-01 / W-02 已结(2026-10-08)** —— W-03(`NFC`/`NFD`/`NFC_QC` 成员)起
+> **状态** 🚧 **W-01 / W-02 / W-03 已结(2026-10-08)** —— W-04(`GRAPHEME_COUNT`/`WIDTH`)起
 > **全局裁决点** G1(Unicode 版本)/ G2(不做半张表)
 > → 两者已由 [`ADR-0026`](../adr/0026-l1-global-decision-points.md)(2026-10-06,
 > Status **Accepted**,六问全部采纳)定稿:**G1 钉 18.0.0**(2026-09-16 发布;18.0
@@ -324,6 +324,6 @@ NormalizationTest.txt / GraphemeBreakTest.txt / EastAsianWidth.txt**:
 |---|---|---|---|
 | W-01 | Unicode 版本裁决(G1)+ 数据入库形态裁决 | ✅ **完成(2026-10-08)** —— **版本**:Unicode **18.0.0**(G1 已钉)。**入库形态**:先例 `gen-entities.rs`(4.6 KB)+ `sanitize/entities.rs`(69.5 KB)**两者都入库** ⇒ 本份同款:**生成器 + 产物入库,3.66 MB 源数据不入库,构建期零下载**。⚠️ §3.2 原先担心「`NFC` 数据量比实体表**大一个量级**,每次构建重新生成会拖慢编译」—— **实测证伪**:产物 **186 KB** vs 实体表 69.5 KB,**2.7 倍不是 10 倍**,直接 `include!` 进二进制毫无压力 | 待回填 |
 | W-02 | 生成器 + 自检(全量官方测试文件) | ✅ **完成(2026-10-08)** —— 生成器 `bin/gen-ucd.rs` 落地(吃本地 UCD 目录、写 stdout、不联网),产出 `src/unicode/norm.rs` **93 518 B**(UTF-8/LF,与 stdout 逐字节一致),四张表 ccc **1002** / 规范分解 **2081** / 规范组合 **961** / NFC_QC **1252**。自检 `bin/norm-check.rs` 跑官方 `NormalizationTest.txt` **全量 20 171 行 × 100 855 条断言,零失败**(release 0.13 s)。⚠️ **落地上抓到/修掉的四个问题**:① 我上轮提交 `bedb8ed` 里混入 0 字节残留 `unicode_tmp.rs`,**把 `every_module_file_documents_and_registers_its_own_path` 守卫打红了**(16 vs 15)—— 那笔提交**没跑过门禁**;② `norm.rs` 被 PowerShell 的 `>` 写成 **UTF-16LE + CRLF**,编译报「stream did not contain valid UTF-8」、git 当二进制、体积虚高一倍(186 208 B ⇒ 真实 **93 450 B**);③ **全量自检抓到一个真 bug**:`NFC_QC` 快检只查「有没有 `No`/`Maybe` 码点」,漏了**规范排序**判据 ⇒ **1 164 条静默放行**(渲染完全相同,肉眼与截图都看不出来),修法与规范口径见 §3.2;④ `clippy` 的 `manual_is_multiple_of` 建议要用 **1.87** 才有的 API,而工作区承诺 1.85 ⇒ 就地豁免并写明原因 | `bedb8ed` → `934f9b5` |
-| W-03 | `NFC` / `NFD` / `NFC_QC` + 契约 | 未动工 | — |
+| W-03 | `NFC` / `NFD` / `NFC_QC` + 契约 | ✅ **完成(2026-10-08)** —— `std.text` **2 → 5** 成员,薄转发到 `unicode/canon.rs`(`String` ↔ 码点序列)。契约 `text_contract.rs` **20 → 40 条**(新增 20 条),**期望值全部取自 CPython `unicodedata.normalize`**(独立第二实现),其中一条专门钉 `NFC_QC` 的**保守方向**。规范 §12 成员表 +3 行、新增 **§12.2「`NFC_QC` 单方向语义」规范性条款**,成员集守卫 2 → 5。probe **169 → 171**(两条:三成员语义 / 「`==` 不自动规范化」),附录 A 重生成。四条守卫跟着改:`the_ucd_deferral_rationale_is_documented` → `the_ucd_batch_rationale_is_documented`(两批都留痕),新增 `nfc_qc_one_directional_wording_is_documented`。⚠️ **本轮连续三次「失败」全是我的测试数据看错码点,实现始终正确**:① 把 `U+00E1`(á)当 `U+00E9`(é);② 把 `"A"+U+0301` 当 `"e"+U+0301` —— **规范化不做大小写折叠**,它 NFC 得 `U+00C1 (Á)`,于是 `nfc_eq` 正确地返回 FALSE;③ probe 的 `expect.json` 抄了上一轮的大写 `A` 期望,而输入是 `U+00E1`。三次都「渲染看着一模一样」,因为错的恰恰是那些渲染相同的串。判据是 CPython 同时吐出**码点 + 名字 + NFC 结果**,以及 `WRITE_FILE` 落盘做十六进制对账 | 待回填 |
 | W-04 | `GRAPHEME_COUNT` / `WIDTH` + 契约 | 未动工 | — |
 | W-05 | 规范条款升级 / skill 反模式 / 收口 | 未动工 | — |
