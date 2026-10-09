@@ -62,6 +62,7 @@ pub mod sanitize;
 pub mod test_native;
 pub mod text;
 pub mod time;
+pub mod unicode;
 
 use wlwl_error::{WlwlError, WlwlResult};
 use wlwl_value::type_name;
@@ -650,6 +651,11 @@ mod tests {
             // 余 17 成员仍 R1)。同 test_native.rs:内核代码跟它
             // 服务的模块放一起,故不持 SPEC。
             "collection.rs",
+            // [v0.11.3 M6 / addendum-03] Unicode 规范化内核:生成表
+            // (`unicode/norm.rs`)+ 手写算法 (`unicode/canon.rs`)。`NFC` /
+            // `NFD` / `NFC_QC` 三个成员是 `std.text` 的,本模块不持 SPEC,
+            // 只被它们转发调用。
+            "unicode.rs",
         ];
         let mut files: Vec<String> = std::fs::read_dir("src")
             .expect("unit tests run with the package root as cwd")

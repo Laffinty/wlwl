@@ -10,10 +10,20 @@
 //!     > crates/wlwl-std/src/unicode/norm.rs
 //! ```
 //!
+//! ⚠️ **上面那条 `>` 只在 bash / zsh / cmd 下安全。PowerShell 5.1 会把
+//! stdout 写成 **UTF-16LE + CRLF**,产物因此翻倍到 186 208 B、编译报
+//! 「stream did not contain valid UTF-8」、`git diff` 还把它当二进制。
+//! —— 这三条症状**同时**出现就是撞上了这个坑。在 PowerShell 下改用:
+//!
+//! ```powershell
+//! python -c "import subprocess,pathlib,sys; pathlib.Path(r'crates\wlwl-std\src\unicode\norm.rs').write_bytes(subprocess.run([r'target\release\gen-ucd.exe', r'<UCD 目录>'],capture_output=True).stdout)"
+//! ```
+//!
 //! 纪律:**源数据不入库,生成器与产物都入库**(沿 `gen-entities` 的形状)。
 //! ⚠️ `addendum-03` §3.2 原先担心「`NFC` 数据量比实体表大一个量级,每次构建
-//! 重新生成会拖慢编译」—— **实测证伪**:产物 **92 KB** vs 实体表 **69.5 KB**,
-//! **同一量级**。⇒ 产物直接 `include!` 进二进制,构建期**零下载、零生成**。
+//! 重新生成会拖慢编译」—— **实测证伪**:产物 **93 450 B**(UTF-8 / LF / 十六进制
+//! 逐行一条)vs 实体表 **69 550 B**,**1.3 倍**。⇒ 产物直接编译进二进制,构建期
+//! **零下载、零生成**。
 //!
 //! ## 只生成**规范化**需要的四张表(不含 `GRAPHEME_COUNT` / `WIDTH`)
 //!
@@ -206,7 +216,8 @@ fn main() {
 
     o.push_str(
         "/// 规范组合类(非零)。按码点升序,二分查找。\n\
-               pub static CCC: &[(u32, u8)] = &[\n",
+               #[rustfmt::skip]
+pub static CCC: &[(u32, u8)] = &[\n",
     );
     for (c, v) in &ccc {
         o.push_str(&format!("(0x{c:04X},{v}),"));
@@ -215,7 +226,8 @@ fn main() {
 
     o.push_str(
         "/// 规范分解(**不含**兼容性分解)。按码点升序,二分查找。\n\
-               pub static DECOMP: &[(u32, &[u32])] = &[\n",
+               #[rustfmt::skip]
+pub static DECOMP: &[(u32, &[u32])] = &[\n",
     );
     for (c, seq) in &decomp {
         let body: Vec<String> = seq.iter().map(|x| format!("0x{x:04X}")).collect();
@@ -225,7 +237,8 @@ fn main() {
 
     o.push_str(
         "/// 规范组合:(starter, 组合记号) → 合成码点。按 (starter, 组合记号) 升序。\n\
-               pub static COMP: &[(u32, u32, u32)] = &[\n",
+               #[rustfmt::skip]
+pub static COMP: &[(u32, u32, u32)] = &[\n",
     );
     for ((a, b), c) in &comp {
         o.push_str(&format!("(0x{a:04X},0x{b:04X},0x{c:04X}),"));
@@ -235,7 +248,8 @@ fn main() {
     o.push_str(
         "/// `NFC_QC` 为 `No` 或 `Maybe` 的码点 —— 「这个串**可能**不是 NFC 形态」。\n\
                /// `NFC_QC` 的快速路径:串里一个都没有 ⇒ 已规范化,**不重排**。\n\
-               pub static NFC_QC_SUSPECT: &[u32] = &[",
+               #[rustfmt::skip]
+pub static NFC_QC_SUSPECT: &[u32] = &[",
     );
     for c in &qc {
         o.push_str(&format!("0x{c:04X},"));
