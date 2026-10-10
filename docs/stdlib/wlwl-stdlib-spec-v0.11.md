@@ -1482,9 +1482,7 @@ R2 全员。**这是本工作区第一次引入压缩依赖**(`zstd` + `flate2`)
 
 ## 21 `std.net` — 网络(R2,v0.11.3 M6 · ADDENDUM-05 · 新增命名空间)
 
-> **落地状态**:本章的 W-02 片已落地,只有 `URL_PARSE` / `URL_JOIN` 两个
-> **纯函数**成员。`HTTP_GET` / `HTTP_POST` / `HTTP_REQUEST` 属 W-03,形态由
-> [`ADR-0028`](../../adr/0028-std-net-shape.md)(**Accepted**)定死。
+> **落地状态**:W-02(两个纯函数)与 W-03(三个 HTTP 成员)已落地。
 > ⚠ **`HTTP_*` 明确不做 TLS —— 本命名空间只支持明文 `http:`。**
 > 调用方自备隧道 / 反代。
 
@@ -1499,6 +1497,13 @@ R2 全员。**这是本工作区第一次引入压缩依赖**(`zstd` + `flate2`)
 |---|---|---|
 | `URL_PARSE(url) -> DICT` | 拆成 `{scheme, userinfo, host, port, path, query, fragment}`。**纯解析,不发请求** | 不满足 `URI-reference` 的 ABNF → `E0030` |
 | `URL_JOIN(base, rel) -> STRING` | 相对引用 → 绝对引用(RFC 3986 §5,**strict 模式**) | 同上 |
+| `HTTP_GET(url, headers?, timeout?) -> DICT` | `{status, headers, body}`。**明文 `http:` only** | 网络失败 → `ERR([kind:"HttpError", op, reason])` |
+| `HTTP_POST(url, body, headers?, timeout?) -> DICT` | 同上 | 同上 |
+| `HTTP_REQUEST(method, url, body?, headers?, timeout?) -> DICT` | 其余动词的通用形态 | 同上 |
+
+⚠ **`HTTP_*` 是阻塞原语**(ADR-0028 D1):执行期间**不调度任何其他任务**,整个
+`SCOPE` 冻结。**不要在同一个 `SCOPE` 里并发发多个 HTTP 请求** —— `SPAWN` 了也
+还是排队,那是**错的写法**不是低效的写法。
 
 ### 21.1 `URL_PARSE` 的返回值(规范性)
 
@@ -1555,16 +1560,45 @@ R2 全员,`net.rs` 内部**零新增第三方依赖**(纯字符串处理)。`HTT
 将走 `std::net::TcpStream` + 系统解析器,同样零新增依赖 —— 裁决见 `ADR-0028`
 D3。
 
-### 21.5 `HTTP_*` 的形态预告(W-03,尚不存在于本版)
+### 21.5 `HTTP_*` 的形态(规范性)
 
-- **只支持明文 `http:`**,不做 TLS / WebSocket / SSE / gRPC / 连接池 / 重试
-  策略 / 自动重定向 / 代理 / cookie jar。
-- **`HTTP_*` 是阻塞原语**:执行期间不调度任何其他任务,整个 `SCOPE` 冻结。
-  ⚠ **不要在同一个 `SCOPE` 里并发发多个 HTTP 请求** —— `SPAWN` 了也还是
-  排队,那是**错的写法**不是低效的写法。
-- 超时必填,缺省 30 s。
-- 不支持的写法(例如 `Transfer-Encoding: chunked`)返回 `ERR`,**不**「尽力
-  解析」。
+裁决全文见 [`ADR-0028`](../../adr/0028-std-net-shape.md)(**Accepted**)。逐条:
+
+- **只支持明文 `http:`**,**不做 TLS**。`https://` 返回 `ERR`,不做「简易
+  封装」。调用方自备隧道 / 反代。
+- **零新增第三方依赖**:明文 HTTP/1.1 走 `std::net::TcpStream` + 系统解析器。
+- **超时必填且有保守默认**:缺省 **30 000 ms**,调用方可覆盖。⚠ 这条**不是建议
+  而是契约** —— 阻塞时长由墙钟决定(不像 `SLEEP` 有虚拟时钟可测),忘写就是
+  永久挂住整个程序。
+- **不自动跟随重定向**(D4)。3xx 原样返回,`Location` 在 `headers` 里,由调用方
+  决定。自动跟随可能把请求带到非预期 host(SSRF 面)。
+- **不支持的写法一律 `ERR`,绝不「尽力解析」**(D3)。请求走私 / 响应拆分的
+  根因都是「宽容地解析有歧义的框架」:
+
+| 情形 | 结果 |
+|---|---|
+| `Transfer-Encoding`(**含 `chunked`**) | `ERR` —— **不解码**,这是走私向量 |
+| 既无 `Content-Length` 又无 `Connection: close` | `ERR`(不猜 body 长度) |
+| 重复的 `Content-Length`(即便值相同) | `ERR` |
+| 响应头块 > **64 KiB** | `ERR`(**不是**无界分配) |
+| 响应体 > **8 MiB** | `ERR`(**不是** OOM) |
+| obs-fold(头行以空白开头) | `ERR`,**不合并** |
+| 头值含裸 CR / LF | `ERR` |
+
+- **失败是 `ERR` 值不是原生诊断**:网络不通是**运行期可预期的业务分支**(会
+  重试、会降级、会记日志),做成原生诊断会让整个运行**终止**,调用方连重试都
+  做不到。载荷是 `{kind:"HttpError", op, reason}`,与 `std.encode` 的
+  `DecodeError` 同款(把「参数错」与「网络不通」分成两种 kind,调用方才分得
+  清)。
+- **元数错 `E0022` / 实参类型错 `E0030`** —— 那两条是**程序员错误**,走原生
+  诊断。头字段名不是合法 token、或头值含 CR/LF,也是 `E0030`(后者是头注入)。
+- ⚠ **D1 是带条件冻结的**:冻结前提是「`ADR-0017` Step 3(真 state-machine
+  续跑)仍未落地」。前提一旦不成立,阻塞的代价就没有必要再承担,**必须重新
+  裁决 D1(以及随它而来的 30 s 超时兜底)**。守卫测试
+  `impl/crates/wlwl-eval/tests/adr_conditional_guard.rs` 会在前提不成立时转红。
+
+**明确不做**:TLS / WebSocket / SSE / gRPC / 连接池 / 重试策略 / 自动重定向 /
+代理 / cookie jar / 流式响应体。
 
 ## 附录 A 成员注册镜像(规范性)
 

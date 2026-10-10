@@ -54,8 +54,61 @@ pub static SPEC: ModuleSpec = ModuleSpec {
     functions: &[
         ("URL_PARSE", url_parse as StdFn),
         ("URL_JOIN", url_join as StdFn),
+        ("HTTP_GET", http_get as StdFn),
+        ("HTTP_POST", http_post as StdFn),
+        ("HTTP_REQUEST", http_request as StdFn),
     ],
 };
+
+// ── HTTP 的三条硬上限(ADR-0028 D3)──────────────────────────────
+//
+// ⚠ **越限必须是 `ERR` 而不是 OOM / 无界分配** —— 一个 `Content-Length:
+// 10 GB` 的响应不该把进程打死,那是**服务端能触发的**。
+/// 响应头块上限(字节)。超过即 `ERR`,不继续读到内存里。
+const MAX_HEADER_BYTES: usize = 64 * 1024;
+/// 响应体上限(字节)。超过即 `ERR`。
+const MAX_BODY_BYTES: usize = 8 * 1024 * 1024;
+/// `ADR-0028` D2 的默认超时(毫秒)。调用方可覆盖,但**忘写不会永久挂住**。
+const DEFAULT_TIMEOUT_MS: u64 = 30_000;
+
+/// HTTP 失败 → `ERR([kind:"HttpError", op, reason])`**值**,不是原生诊断。
+///
+/// 理由与 `std.encode` 的 `DecodeError` 同款:网络不通是**运行期可预期的
+/// 业务分支**(会重试、会降级、会记日志),不是程序员把参数写错了。把它做成
+/// 原生诊断会让整个运行**终止**,调用方连「重试」都做不到。
+fn http_error(op: &str, reason: impl Into<String>) -> Value {
+    Value::Err(Box::new(Value::Dict(vec![
+        (
+            Value::String("kind".into()),
+            Value::String("HttpError".into()),
+        ),
+        (Value::String("op".into()), Value::String(op.into())),
+        (Value::String("reason".into()), Value::String(reason.into())),
+    ])))
+}
+
+/// RFC 7230 `tchar` —— 头字段名与方法名只能用这些字符。
+fn is_tchar(c: u8) -> bool {
+    is_unreserved(c)
+        || is_sub_delim(c)
+        || matches!(
+            c,
+            b'!' | b'#'
+                | b'$'
+                | b'%'
+                | b'&'
+                | b'\''
+                | b'*'
+                | b'+'
+                | b'-'
+                | b'.'
+                | b'^'
+                | b'_'
+                | b'`'
+                | b'|'
+                | b'~'
+        )
+}
 
 // ── 诊断助手(与 text.rs 同款)────────────────────────────────────
 
@@ -567,9 +620,620 @@ pub fn url_join(
     Ok(wlwl_value::Outcome::normal(Value::String(out)))
 }
 
+// ── HTTP/1.1 客户端(W-03,ADR-0028 D1–D4)────────────────────────
+
+use std::io::{Read, Write};
+use std::net::{TcpStream, ToSocketAddrs};
+use std::time::Duration;
+
+/// 把请求实参收成 `(headers, timeout_ms)`。`args` 是**已经去掉必需部分**的尾部。
+fn opt_headers_timeout(
+    host: &mut dyn StdHost,
+    name: &str,
+    args: &[Value],
+) -> wlwl_error::WlwlResult<(Vec<(String, String)>, u64)> {
+    let mut headers = Vec::new();
+    let mut timeout = DEFAULT_TIMEOUT_MS;
+    let mut i = 0;
+    while i < args.len() {
+        match &args[i] {
+            Value::Dict(entries) => {
+                for (k, v) in entries {
+                    let (Value::String(k), Value::String(v)) = (k, v) else {
+                        return Err(type_err(host, name, k));
+                    };
+                    // 头字段名是 token;值里不许有裸 CR/LF —— 后者就是头注入。
+                    let kt = k.as_bytes();
+                    if kt.is_empty() || !kt.iter().copied().all(is_tchar) {
+                        return Err(host.diag(
+                            ErrorCode::E0030,
+                            format!("{name}: header name {k:?} is not a valid token"),
+                        ));
+                    }
+                    if v.contains('\r') || v.contains('\n') {
+                        return Err(host.diag(
+                            ErrorCode::E0030,
+                            format!("{name}: header {k:?} value contains CR or LF"),
+                        ));
+                    }
+                    headers.push((k.clone(), v.clone()));
+                }
+                i += 1;
+            }
+            Value::Integer(ms) => {
+                if *ms < 0 {
+                    return Err(host.diag(
+                        ErrorCode::E0030,
+                        format!("{name}: timeout must be >= 0 ms, got {ms}"),
+                    ));
+                }
+                timeout = *ms as u64;
+                i += 1;
+            }
+            other => return Err(type_err(host, name, other)),
+        }
+    }
+    Ok((headers, timeout))
+}
+
+fn method_token(host: &mut dyn StdHost, name: &str, m: &str) -> wlwl_error::WlwlResult<()> {
+    if m.is_empty() || !m.as_bytes().iter().copied().all(is_tchar) {
+        return Err(host.diag(
+            ErrorCode::E0030,
+            format!("{name}: method {m:?} is not a valid HTTP token"),
+        ));
+    }
+    Ok(())
+}
+
+/// HTTP 的全部实现。返回 `Value` —— 成功是 `DICT`,失败是 `ERR(...)` 值。
+fn request(
+    name: &str,
+    method: &str,
+    url: &str,
+    body: Option<&str>,
+    headers: Vec<(String, String)>,
+    timeout_ms: u64,
+) -> Value {
+    // ── 1. URL ──
+    let p = match parse(name, url) {
+        Ok(p) => p,
+        Err(why) => return http_error(name, format!("invalid URL: {why}")),
+    };
+    match p.scheme.as_deref() {
+        Some("http") => {}
+        Some(other) => {
+            return http_error(
+                name,
+                format!(
+                    "scheme {other:?} is not supported — plaintext http: only (ADR-0028 \u{00a7}0)"
+                ),
+            )
+        }
+        None => return http_error(name, "URL has no scheme; `http:` is required"),
+    }
+    let Some(host) = p.host.clone() else {
+        return http_error(name, "URL has no host");
+    };
+    let port = p.port.map_or(80u16, |n| n);
+    // `URL_PARSE` 保留 IPv6 的方括号,这里要的是裸地址。
+    let dial_host = host
+        .trim_start_matches('[')
+        .trim_end_matches(']')
+        .to_string();
+    // path 为空时请求行必须是 `/`。
+    let target = if p.path.is_empty() {
+        match &p.query {
+            None => "/".to_string(),
+            Some(q) => format!("/?{q}"),
+        }
+    } else {
+        match &p.query {
+            None => p.path.clone(),
+            Some(q) => format!("{}?{q}", p.path),
+        }
+    };
+
+    // ── 2. 连接(带超时)──
+    let dur = Duration::from_millis(timeout_ms);
+    let addrs: Vec<_> = match (dial_host.as_str(), port).to_socket_addrs() {
+        Ok(it) => it.collect(),
+        Err(e) => return http_error(name, format!("resolve {dial_host}:{port}: {e}")),
+    };
+    if addrs.is_empty() {
+        return http_error(name, format!("{dial_host}:{port} resolved to no address"));
+    }
+    let mut sock = None;
+    let mut last = String::new();
+    for a in &addrs {
+        match TcpStream::connect_timeout(a, dur) {
+            Ok(s) => {
+                sock = Some(s);
+                break;
+            }
+            Err(e) => last = e.to_string(),
+        }
+    }
+    let Some(mut sock) = sock else {
+        return http_error(name, format!("connect {dial_host}:{port}: {last}"));
+    };
+    let _ = sock.set_read_timeout(Some(dur));
+    let _ = sock.set_write_timeout(Some(dur));
+
+    // ── 3. 写请求 ──
+    let host_hdr = if port == 80 {
+        host.clone()
+    } else {
+        format!("{host}:{port}")
+    };
+    let mut req = format!("{method} {target} HTTP/1.1\r\nHost: {host_hdr}\r\n");
+    for (k, v) in &headers {
+        req.push_str(&format!("{k}: {v}\r\n"));
+    }
+    if let Some(b) = body {
+        req.push_str(&format!("Content-Length: {}\r\n", b.len()));
+    }
+    // 明确关闭连接:这样「无 Content-Length」的响应可以用 EOF 定界,
+    // 而不必去解 chunked(ADR-0028 D3:chunked 一律 `ERR`,不解码)。
+    req.push_str("Connection: close\r\n\r\n");
+    if let Some(b) = body {
+        req.push_str(b);
+    }
+    if let Err(e) = sock.write_all(req.as_bytes()) {
+        return http_error(name, format!("write: {e}"));
+    }
+    if let Err(e) = sock.flush() {
+        return http_error(name, format!("flush: {e}"));
+    }
+
+    // ── 4. 读响应头(先读到 \r\n\r\n,带上限)──
+    let mut raw: Vec<u8> = Vec::with_capacity(8 * 1024);
+    let mut buf = [0u8; 4096];
+    let head_end = loop {
+        if let Some(i) = find_head_end(&raw) {
+            break i;
+        }
+        if raw.len() > MAX_HEADER_BYTES {
+            return http_error(
+                name,
+                format!("response header block exceeds {MAX_HEADER_BYTES} bytes"),
+            );
+        }
+        match sock.read(&mut buf) {
+            Ok(0) => {
+                return http_error(
+                    name,
+                    format!(
+                        "connection closed with {} byte(s) of header, no complete head",
+                        raw.len()
+                    ),
+                )
+            }
+            Ok(n) => raw.extend_from_slice(&buf[..n]),
+            Err(e) => return http_error(name, format!("read head: {e}")),
+        }
+    };
+
+    // ── 5. 解析状态行 + 头 ──
+    let head = match std::str::from_utf8(&raw[..head_end]) {
+        Ok(h) => h,
+        Err(e) => return http_error(name, format!("response header is not valid UTF-8: {e}")),
+    };
+    let mut lines = head.split("\r\n");
+    let status_line = lines.next().unwrap_or("");
+    let mut sp = status_line.splitn(3, ' ');
+    let version = sp.next().unwrap_or("");
+    let status = sp.next().unwrap_or("");
+    let _reason = sp.next().unwrap_or("");
+    if version != "HTTP/1.1" && version != "HTTP/1.0" {
+        return http_error(name, format!("unexpected status line {status_line:?}"));
+    }
+    let Ok(status) = status.parse::<i64>() else {
+        return http_error(name, format!("status code {status:?} is not an integer"));
+    };
+
+    let mut out_headers: Vec<(String, String)> = Vec::new();
+    let mut content_length: Option<u64> = None;
+    let mut connection_close = false;
+    for line in lines {
+        if line.is_empty() {
+            continue;
+        }
+        // obs-fold(行首空白)是**已知的响应拆分/走私向量** ⇒ 拒绝,不合并。
+        if line.starts_with(' ') || line.starts_with('\t') {
+            return http_error(name, format!("obs-fold in response header: {line:?}"));
+        }
+        let Some((k, v)) = line.split_once(':') else {
+            return http_error(name, format!("malformed header line {line:?}"));
+        };
+        let v = v.trim();
+        if v.contains('\r') || v.contains('\n') {
+            return http_error(name, format!("header {k:?} value contains CR or LF"));
+        }
+        let lk = k.to_ascii_lowercase();
+        match lk.as_str() {
+            "content-length" => {
+                // 多个 Content-Length —— 即便值相同也拒:「同一个头出现两次」
+                // 本身就是走私信号,不同实现取第一个或最后一个会分叉。
+                if content_length.is_some() {
+                    return http_error(name, "duplicate Content-Length header");
+                }
+                let Ok(n) = v.parse::<u64>() else {
+                    return http_error(name, format!("Content-Length {v:?} is not a number"));
+                };
+                content_length = Some(n);
+            }
+            "transfer-encoding" => {
+                return http_error(
+                    name,
+                    format!("Transfer-Encoding {v:?} is not supported — chunked is a smuggling vector, refused rather than decoded (ADR-0028 D3)"),
+                );
+            }
+            "connection" if v.to_ascii_lowercase().contains("close") => {
+                connection_close = true;
+            }
+            _ => {}
+        }
+        out_headers.push((k.to_string(), v.to_string()));
+    }
+
+    // ── 6. 响应体:Content-Length 或 EOF 二者必居其一,否则拒绝 ──
+    let mut body_bytes: Vec<u8> = raw[head_end + 4..].to_vec();
+    let want = match content_length {
+        Some(n) => {
+            if n > MAX_BODY_BYTES as u64 {
+                return http_error(
+                    name,
+                    format!("Content-Length {n} exceeds the {MAX_BODY_BYTES} byte cap"),
+                );
+            }
+            Some(n as usize)
+        }
+        None if connection_close => None, // 读到 EOF
+        None => {
+            return http_error(
+                name,
+                "response has neither Content-Length nor Connection: close — refusing to guess the body length (ADR-0028 D3)",
+            )
+        }
+    };
+    loop {
+        let done = match want {
+            Some(w) => body_bytes.len() >= w,
+            None => false,
+        };
+        if done {
+            break;
+        }
+        if body_bytes.len() > MAX_BODY_BYTES {
+            return http_error(
+                name,
+                format!("response body exceeds {MAX_BODY_BYTES} bytes"),
+            );
+        }
+        match sock.read(&mut buf) {
+            Ok(0) => break,
+            Ok(n) => body_bytes.extend_from_slice(&buf[..n]),
+            Err(e) => return http_error(name, format!("read body: {e}")),
+        }
+    }
+    if let Some(w) = want {
+        if body_bytes.len() != w {
+            return http_error(
+                name,
+                format!("body truncated: got {} of {w} byte(s)", body_bytes.len()),
+            );
+        }
+        body_bytes.truncate(w);
+    }
+
+    let body = match String::from_utf8(body_bytes) {
+        Ok(b) => b,
+        Err(e) => return http_error(name, format!("response body is not valid UTF-8: {e}")),
+    };
+
+    Value::Dict(vec![
+        (Value::String("status".into()), Value::Integer(status)),
+        (
+            Value::String("headers".into()),
+            Value::Dict(
+                out_headers
+                    .into_iter()
+                    .map(|(k, v)| (Value::String(k), Value::String(v)))
+                    .collect(),
+            ),
+        ),
+        (Value::String("body".into()), Value::String(body)),
+    ])
+}
+
+fn find_head_end(raw: &[u8]) -> Option<usize> {
+    raw.windows(4).position(|w| w == b"\r\n\r\n")
+}
+
+pub fn http_get(
+    host: &mut dyn StdHost,
+    args: Vec<Value>,
+) -> wlwl_error::WlwlResult<wlwl_value::Outcome> {
+    if args.is_empty() || args.len() > 3 {
+        return Err(arity(host, "HTTP_GET", args.len(), 1));
+    }
+    let Value::String(url) = &args[0] else {
+        return Err(type_err(host, "HTTP_GET", &args[0]));
+    };
+    let (headers, timeout) = opt_headers_timeout(host, "HTTP_GET", &args[1..])?;
+    Ok(wlwl_value::Outcome::normal(request(
+        "HTTP_GET", "GET", url, None, headers, timeout,
+    )))
+}
+
+pub fn http_post(
+    host: &mut dyn StdHost,
+    args: Vec<Value>,
+) -> wlwl_error::WlwlResult<wlwl_value::Outcome> {
+    if args.len() < 2 || args.len() > 4 {
+        return Err(arity(host, "HTTP_POST", args.len(), 2));
+    }
+    let Value::String(url) = &args[0] else {
+        return Err(type_err(host, "HTTP_POST", &args[0]));
+    };
+    let Value::String(body) = &args[1] else {
+        return Err(type_err(host, "HTTP_POST", &args[1]));
+    };
+    let (headers, timeout) = opt_headers_timeout(host, "HTTP_POST", &args[2..])?;
+    Ok(wlwl_value::Outcome::normal(request(
+        "HTTP_POST",
+        "POST",
+        url,
+        Some(body),
+        headers,
+        timeout,
+    )))
+}
+
+pub fn http_request(
+    host: &mut dyn StdHost,
+    args: Vec<Value>,
+) -> wlwl_error::WlwlResult<wlwl_value::Outcome> {
+    if args.len() < 2 || args.len() > 5 {
+        return Err(arity(host, "HTTP_REQUEST", args.len(), 2));
+    }
+    let Value::String(method) = &args[0] else {
+        return Err(type_err(host, "HTTP_REQUEST", &args[0]));
+    };
+    let Value::String(url) = &args[1] else {
+        return Err(type_err(host, "HTTP_REQUEST", &args[1]));
+    };
+    method_token(host, "HTTP_REQUEST", method)?;
+    let mut body: Option<&str> = None;
+    let mut i = 2;
+    if let Some(Value::String(b)) = args.get(2) {
+        body = Some(b);
+        i = 3;
+    }
+    let (headers, timeout) = opt_headers_timeout(host, "HTTP_REQUEST", &args[i..])?;
+    Ok(wlwl_value::Outcome::normal(request(
+        "HTTP_REQUEST",
+        method,
+        url,
+        body,
+        headers,
+        timeout,
+    )))
+}
+
 #[cfg(test)]
 mod tests {
+    use std::io::{Read, Write};
+    use std::net::TcpListener;
+
     use super::*;
+
+    /// 仓内本地 HTTP 夹具:绑 `127.0.0.1:0`、回一句**原样**的字节。
+    ///
+    /// ⚠ **绝不访问外网** —— CI 不稳定,且违反本仓「可复现」卖点。
+    /// 夹具给的是**原始响应字节**,所以 `chunked` / 无 `Content-Length` /
+    /// 超大 `Content-Length` 这些形状都能精确造出来。
+    fn fixture(raw: &'static str) -> u16 {
+        let l = TcpListener::bind("127.0.0.1:0").expect("bind");
+        let port = l.local_addr().expect("addr").port();
+        std::thread::spawn(move || {
+            for s in l.incoming() {
+                let Ok(mut s) = s else { break };
+                let mut buf = [0u8; 4096];
+                let _ = s.read(&mut buf); // 读到头即可,本夹具不校验请求
+                let _ = s.write_all(raw.as_bytes());
+                let _ = s.flush();
+                // `Connection: close` 的形状靠直接关连接来表达。
+            }
+        });
+        port
+    }
+
+    fn err_reason(v: &Value) -> Option<&str> {
+        let Value::Err(p) = v else { return None };
+        let Value::Dict(entries) = &**p else {
+            return None;
+        };
+        entries
+            .iter()
+            .find(|(k, _)| matches!(k, Value::String(s) if s == "reason"))
+            .and_then(|(_, v)| match v {
+                Value::String(s) => Some(s.as_str()),
+                _ => None,
+            })
+    }
+
+    fn dict_get<'a>(v: &'a Value, key: &str) -> Option<&'a Value> {
+        let Value::Dict(entries) = v else { return None };
+        entries
+            .iter()
+            .find(|(k, _)| matches!(k, Value::String(s) if s == key))
+            .map(|(_, v)| v)
+    }
+
+    #[test]
+    fn get_returns_status_headers_and_body() {
+        let p = fixture("HTTP/1.1 200 OK\r\nContent-Length: 5\r\nX-T: v\r\n\r\nhello");
+        let v = request(
+            "HTTP_GET",
+            "GET",
+            &format!("http://127.0.0.1:{p}/x"),
+            None,
+            vec![],
+            5000,
+        );
+        assert_eq!(dict_get(&v, "status"), Some(&Value::Integer(200)));
+        assert_eq!(dict_get(&v, "body"), Some(&Value::String("hello".into())));
+        assert_eq!(
+            dict_get(dict_get(&v, "headers").unwrap(), "X-T"),
+            Some(&Value::String("v".into()))
+        );
+    }
+
+    #[test]
+    fn post_sends_body_and_content_length() {
+        // 夹具把请求原样回显,好让测试看到我们**发出去了**什么。
+        let l = TcpListener::bind("127.0.0.1:0").expect("bind");
+        let port = l.local_addr().unwrap().port();
+        let seen = std::sync::Arc::new(std::sync::Mutex::new(String::new()));
+        let sink = seen.clone();
+        std::thread::spawn(move || {
+            if let Ok((mut s, _)) = l.accept() {
+                let mut buf = [0u8; 4096];
+                let n = s.read(&mut buf).unwrap_or(0);
+                *sink.lock().unwrap() = String::from_utf8_lossy(&buf[..n]).into_owned();
+                let _ = s.write_all(b"HTTP/1.1 200 OK\r\nContent-Length: 2\r\n\r\nok");
+            }
+        });
+        let v = request(
+            "HTTP_POST",
+            "POST",
+            &format!("http://127.0.0.1:{port}/p"),
+            Some("hi"),
+            vec![("X-A".into(), "b".into())],
+            5000,
+        );
+        assert_eq!(dict_get(&v, "status"), Some(&Value::Integer(200)));
+        let got = seen.lock().unwrap().clone();
+        assert!(
+            got.starts_with("POST /p HTTP/1.1\r\n"),
+            "request line: {got:?}"
+        );
+        assert!(
+            got.contains("Content-Length: 2\r\n"),
+            "body length: {got:?}"
+        );
+        assert!(got.contains("X-A: b\r\n"), "caller header: {got:?}");
+        assert!(
+            got.ends_with("\r\n\r\nhi"),
+            "body follows the blank line: {got:?}"
+        );
+    }
+
+    #[test]
+    fn chunked_is_refused_not_decoded() {
+        let p =
+            fixture("HTTP/1.1 200 OK\r\nTransfer-Encoding: chunked\r\n\r\n5\r\nhello\r\n0\r\n\r\n");
+        let v = request(
+            "HTTP_GET",
+            "GET",
+            &format!("http://127.0.0.1:{p}/"),
+            None,
+            vec![],
+            5000,
+        );
+        let r = err_reason(&v).expect("must be an ERR value");
+        assert!(r.contains("chunked"), "reason should name the vector: {r}");
+    }
+
+    #[test]
+    fn no_length_and_no_close_is_refused() {
+        let p = fixture("HTTP/1.1 200 OK\r\nContent-Type: text/plain\r\n\r\nhello");
+        let v = request(
+            "HTTP_GET",
+            "GET",
+            &format!("http://127.0.0.1:{p}/"),
+            None,
+            vec![],
+            5000,
+        );
+        let r = err_reason(&v).expect("must be an ERR value");
+        assert!(r.contains("neither Content-Length"), "reason: {r}");
+    }
+
+    #[test]
+    fn redirect_is_returned_not_followed() {
+        let p =
+            fixture("HTTP/1.1 302 Found\r\nLocation: /elsewhere\r\nContent-Length: 4\r\n\r\ngoin");
+        let v = request(
+            "HTTP_GET",
+            "GET",
+            &format!("http://127.0.0.1:{p}/a"),
+            None,
+            vec![],
+            5000,
+        );
+        assert_eq!(
+            dict_get(&v, "status"),
+            Some(&Value::Integer(302)),
+            "3xx 必须原样返回(ADR-0028 D4),不能跟过去"
+        );
+        assert_eq!(
+            dict_get(dict_get(&v, "headers").unwrap(), "Location"),
+            Some(&Value::String("/elsewhere".into()))
+        );
+    }
+
+    #[test]
+    fn https_and_connection_refused_are_err_values() {
+        let v = request(
+            "HTTP_GET",
+            "GET",
+            "https://example.com/",
+            None,
+            vec![],
+            1000,
+        );
+        assert!(err_reason(&v)
+            .expect("https must be an ERR value")
+            .contains("plaintext"));
+
+        // 绑一个端口拿到号随即关闭 —— 连接必被拒绝。
+        let dead = TcpListener::bind("127.0.0.1:0")
+            .unwrap()
+            .local_addr()
+            .unwrap()
+            .port();
+        let v = request(
+            "HTTP_GET",
+            "GET",
+            &format!("http://127.0.0.1:{dead}/"),
+            None,
+            vec![],
+            2000,
+        );
+        assert!(
+            err_reason(&v).is_some(),
+            "连接拒绝必须是 ERR 值而不是 panic"
+        );
+    }
+
+    #[test]
+    fn body_over_the_cap_is_err_not_oom() {
+        // 声明一个超过 8 MiB 上限的 Content-Length,但一个字节都不发。
+        let p = fixture("HTTP/1.1 200 OK\r\nContent-Length: 99999999\r\n\r\n");
+        let v = request(
+            "HTTP_GET",
+            "GET",
+            &format!("http://127.0.0.1:{p}/"),
+            None,
+            vec![],
+            5000,
+        );
+        let r = err_reason(&v).expect("must be an ERR value");
+        assert!(r.contains("cap"), "reason should name the cap: {r}");
+    }
 
     fn p(s: &str) -> Parts {
         parse("t", s).expect("parses")

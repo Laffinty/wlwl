@@ -401,7 +401,13 @@ fn net_member_set_matches_the_spec_table() {
         .iter()
         .map(|(n, _)| (*n).to_string())
         .collect();
-    for n in ["URL_PARSE", "URL_JOIN"] {
+    for n in [
+        "URL_PARSE",
+        "URL_JOIN",
+        "HTTP_GET",
+        "HTTP_POST",
+        "HTTP_REQUEST",
+    ] {
         assert!(
             spec.iter().any(|m| m == n),
             "\u{00a7}21 table missed `{n}`: {spec:?}"
@@ -413,13 +419,9 @@ fn net_member_set_matches_the_spec_table() {
     }
     assert_eq!(
         spec.len(),
-        2,
+        5,
         "\u{00a7}21 table extractor found {} member(s): {spec:?}",
         spec.len()
     );
-    assert_eq!(
-        impls.len(),
-        2,
-        "wlwl:std.net exports 2 members (HTTP_* is W-03)"
-    );
+    assert_eq!(impls.len(), 5, "wlwl:std.net exports 5 members");
 }
