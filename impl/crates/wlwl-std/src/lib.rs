@@ -372,6 +372,52 @@ pub(crate) fn call_callable(
     host.call(callable, args, fn_name)
 }
 
+/// 每个 R2 std 模块的 `SPEC` —— **实现真相**。
+///
+/// [v0.11.3 M6 / addendum-05 收口] 这份清单此前只活在 `mod tests` 里,而
+/// 附录 A 镜像的登记表(`wlwl_eval::stdlib_mirror::NAMESPACE_META`)是**另抄
+/// 一份**的。实测那次两边**漏了同样四个命名空间**(`std.rand` / `std.env` /
+/// `std.process` / `std.compress`)——`stdlib_appendix_a_sync` 照样全绿,
+/// 因为它对账的两侧读的是同一份登记表。⇒ 两侧同源的守卫**防不住「登记表
+/// 本身漏了」**,必须有一道拿**实现真相**去夹逼登记表的独立守卫。
+/// 那道守卫在 `wlwl-eval`(`namespace_meta_covers_every_resolvable_namespace`),
+/// 靠的就是本清单经 [`namespace_paths`] 暴露出去。
+pub static NATIVE_SPECS: &[&ModuleSpec] = &[
+    &io::SPEC,
+    &fs::SPEC,
+    &json::SPEC,
+    &ai::SPEC,
+    &agent::SPEC,
+    &format::SPEC,
+    &encode::SPEC,
+    &text::SPEC,
+    &sanitize::SPEC,
+    // [v0.11.3 M6 / addendum-01 A1] 时间能力第一片(两个纯读成员)。
+    &time::SPEC,
+    // [v0.11.3 M6 / addendum-08] 显式播种的 RNG(四个成员)。
+    &rand::SPEC,
+    // [v0.11.3 M6 / addendum-07] 压缩(八个成员)。
+    &compress::SPEC,
+    // [v0.11.3 M6 / addendum-06] 进程环境(4 成员)与子进程(2 成员)。
+    &env::SPEC,
+    &process::SPEC,
+    // [v0.11.3 M6 / addendum-02] 正则(RE2 式线性时间)。
+    &regex::SPEC,
+    // [v0.11.3 M6 / addendum-05 W-02..W-04] 网络:`URL_PARSE` / `URL_JOIN`
+    // 两个纯函数 + `HTTP_GET` / `HTTP_POST` / `HTTP_REQUEST`(形态由
+    // `ADR-0028` 定死,D1 **带条件冻结**)。
+    &net::SPEC,
+];
+
+/// 全部可 [`resolve`] 的命名空间路径(R1 门面 + R2 原生),**实现真相**。
+///
+/// 这是附录 A 镜像登记表应当覆盖的那一份清单。
+pub fn namespace_paths() -> Vec<&'static str> {
+    let mut v: Vec<&'static str> = LANG_SOURCES.iter().map(|s| s.path).collect();
+    v.extend(NATIVE_SPECS.iter().map(|s| s.path));
+    v
+}
+
 // ── 直通边界包装(内部表示模块共用,ADR-0022 §4)──
 
 /// 把「serde_json 内部表示」的旧式函数包成直通 StdFn:
@@ -528,31 +574,8 @@ mod tests {
     // ---- 文档与命名约定的守门测试(C5′)----
 
     /// 每个 std 模块的 `SPEC`。R2 侧引用 SPEC 本体。
-    const ALL_SPECS: &[&ModuleSpec] = &[
-        &io::SPEC,
-        &fs::SPEC,
-        &json::SPEC,
-        &ai::SPEC,
-        &agent::SPEC,
-        &format::SPEC,
-        &encode::SPEC,
-        &text::SPEC,
-        &sanitize::SPEC,
-        // [v0.11.3 M6 / addendum-01 A1] 时间能力第一片(两个纯读成员)。
-        &time::SPEC,
-        // [v0.11.3 M6 / addendum-08] 显式播种的 RNG(四个成员)。
-        &rand::SPEC,
-        // [v0.11.3 M6 / addendum-07] 压缩(八个成员)。
-        &compress::SPEC,
-        // [v0.11.3 M6 / addendum-06] 进程环境(4 成员)与子进程(2 成员)。
-        &env::SPEC,
-        &process::SPEC,
-        // [v0.11.3 M6 / addendum-02] 正则(RE2 式线性时间)。
-        &regex::SPEC,
-        // [v0.11.3 M6 / addendum-05 W-02] 网络:先两个纯函数,`HTTP_*` 属 W-03
-        // (形态由 `ADR-0028` 定死,D1 **带条件冻结**)。
-        &net::SPEC,
-    ];
+    /// 每个 std 模块的 `SPEC`(模块级 `NATIVE_SPECS`,见那里的说明)。
+    use super::NATIVE_SPECS as ALL_SPECS;
 
     #[test]
     fn every_module_is_listed_in_the_crate_catalog() {

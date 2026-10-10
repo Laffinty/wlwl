@@ -64,7 +64,6 @@ const NAMESPACE_META: &[(&str, &str, &str)] = &[
     ("wlwl:std.process", "R2", "v0.11.3"),
     // [v0.11.3 M6 / addendum-07] Zstandard + DEFLATE 家族。R2 全员;**本工作区
     // 第一次引入压缩依赖**(`zstd` + `flate2`),取舍见 `addendum-07` §3.1。
-    ("wlwl:std.compress", "R2", "v0.11.3"),
     ("wlwl:std.text", "R2", "v0.11.2"),
     // [v0.11.3 M1] 输出安全(旗舰特色功能)。**全员 R2**:转义 / 解码 / 净化
     // 都要处理文档级输入,而解释器侧字符串与数组构建超线性(D11-012 /
@@ -104,6 +103,9 @@ const NAMESPACE_META: &[(&str, &str, &str)] = &[
     ("wlwl:std.test", "混合", "v0.10 及以前(成员)/ v0.11(混合化)"),
     ("wlwl:std.ai", "R2", "v0.10 及以前"),
     ("wlwl:std.agent", "R2", "v0.10 及以前"),
+    // [v0.11.3 M6 / addendum-07] Zstandard + DEFLATE 家族。R2 全员;本工作区
+    // 第一次引入压缩依赖(`zstd` + `flate2`)。
+    ("wlwl:std.compress", "R2", "v0.11.3"),
     // [v0.11.3 M6 / addendum-05 W-02..W-04] 网络。R2 全员,**零新增第三方
     // 依赖**(明文 HTTP/1.1 走 `std::net::TcpStream` + 系统解析器)。
     // ⚠ `HTTP_*` 是**阻塞原语**,且该裁决(`ADR-0028` D1)是**带条件冻结**的 ——
@@ -187,24 +189,30 @@ mod tests {
                 "{path} is listed in NAMESPACE_META but does not resolve"
             );
         }
-        // resolve 可达而 META 缺登记 = 文档撒谎。
-        for path in [
-            "wlwl:std.io",
-            "wlwl:std.fs",
-            "wlwl:std.json",
-            "wlwl:std.format",
-            "wlwl:std.collection",
-            "wlwl:std.str",
-            "wlwl:std.math",
-            "wlwl:std.test",
-            "wlwl:std.ai",
-            "wlwl:std.agent",
-        ] {
+        // 反向:**实现真相到的命名空间**而 META 缺登记 = 附录 A 撒谎。
+        //
+        // ⚠ 这一半边原先写的是**一份写死的 10 条路径清单**,而那份清单从没跟着
+        // 实现走 —— `std.rand` / `std.env` / `std.process` /
+        // `std.compress` 落地时它就过时了,因此附录 A 镜像整整消了四行 / 18 个成员,而
+        // `stdlib_appendix_a_sync` 照旧全绿 ——它对账的两侧(镜像 / 生成器输出)读的是
+        // **同一份 META**,同源对账只能防「实现动了而镜像没动」,防不住「登记表本身漏了」。
+        // ↳ 现在直接向 `wlwl_std::namespace_paths()`(实现真相,与 META **无共源**)要求,不再写死清单。
+        let impls = wlwl_std::namespace_paths();
+        for path in &impls {
             assert!(
-                NAMESPACE_META.iter().any(|(p, _, _)| *p == path),
-                "{path} resolves but is missing from NAMESPACE_META"
+                NAMESPACE_META.iter().any(|(p, _, _)| p == path),
+                "{path} resolves in the implementation but is missing from NAMESPACE_META — \
+                 appendix A would silently omit the whole namespace"
             );
         }
+        assert_eq!(
+            NAMESPACE_META.len(),
+            impls.len(),
+            "NAMESPACE_META has {} row(s) but the implementation has {} namespace(s) — \
+             a stale row or a missing registration",
+            NAMESPACE_META.len(),
+            impls.len()
+        );
     }
 
     #[test]
