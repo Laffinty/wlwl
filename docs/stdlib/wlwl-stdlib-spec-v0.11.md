@@ -51,15 +51,19 @@ markdown** 解析成员表后与实现对拍(ADR-0023 §v0.x 1 的执行机制)�
 **07 开 `std.compress`(8)**、**addendum-03 给 `std.text` 加 `NFC` / `NFD` /
 `NFC_QC`**、**addendum-05 开 `std.net`(5)**。
 
-> ⚠️ **[2026-10-11 登记的缺陷] 附录 A 镜像少了四个已落地的命名空间。**
-> 镜像当前读到 **16 个命名空间 / 145 个成员**(含 `std.ai` 的 5 个;默认构建
-> 可见 140)。缺的是 **`std.rand`(4)、`std.env`(4)、`std.process`(2)、
-> `std.compress`(8)** —— 它们**早已落地**,规范也各有一章(§17 / §18 / §19 /
-> §20),但 `wlwl-eval/src/stdlib_mirror.rs` 的 `NAMESPACE_META` 没登记。
-> 补齐后应为 **20 个命名空间 / 163 个成员**。
-> ⚠️ **`stdlib_appendix_a_sync` 抓不到这个缺口**:该测试对账的两侧(镜像与
-> 生成器输出)读的是**同一份** `NAMESPACE_META`,所以它自洽地全绿 ——
-> 这是「同源对账」的天花板,不是守卫失职。已报业主待裁。
+> ⚠️ **[2026-10-11 登记并已修复的缺陷] 附录 A 镜像曾少了四个已落地的命名空间。**
+> `wlwl-eval/src/stdlib_mirror.rs` 的 `NAMESPACE_META` 没登记 `std.rand`(4)、
+> `std.env`(4)、`std.process`(2)、`std.compress`(8) —— 它们**早已落地**,
+> 规范也各有一章(§17 / §18 / §19 / §20),实现里 `resolve()` 都能到。
+> ⇒ 补登记后镜像读到 **20 个命名空间 / 163 个成员**(含 `std.ai` 的 5 个;
+> 默认构建可见 158)。
+>
+> ⚠️ **值得记住的是它为什么没被发现**:`stdlib_appendix_a_sync` 抓不到这个
+> 缺口 —— 该测试对账的两侧(镜像与生成器输出)读的是**同一份** `NAMESPACE_META`,
+> 所以它**自洽地全绿**。这是「同源对账」的天花板,不是守卫失职:
+> **两侧同源的守卫只能防「实现动了而镜像没动」,防不住「登记表本身漏了」。**
+> 补齐的那几行里,`std.rand` 的「引入」列额外记了**过渡形态**(ADR-0027 A7)——
+> 那一列是规范 §14 演进方向的口径,不能只写「v0.11.3」。
 
 ## 0 总则
 
@@ -1638,6 +1642,10 @@ D3。
 | `std.encode` | `BASE64_ENCODE` `BASE64_DECODE` `HEX_ENCODE` `HEX_DECODE` `URL_ENCODE` `URL_DECODE` `SHA256` `HMAC_SHA256` `PBKDF2_ITER` `ARGON2ID` `RANDOM_BYTES` `RANDOM_HEX` `TIMING_SAFE_EQ` | R2 | v0.11.2 / SHA256、HMAC_SHA256 于 v0.11.3 |
 | `std.time` | `NOW` `MONOTONIC` `SLEEP` `TEST_BUBBLE` `ADVANCE` `TIMEOUT` | R2 | v0.11.3 |
 | `std.regex` | `RE` `RE_TEST` `RE_SEARCH` `RE_FIND_ALL` `RE_REPLACE` `RE_SPLIT` `RE_GROUP_COUNT` | R2 | v0.11.3 |
+| `std.rand` | `SEED` `UNIFORM` `INT_RANGE` `CODEPOINT` | R2 | v0.11.3(过渡形态,见 ADR-0027 A7) |
+| `std.env` | `ENV_GET` `ENV_SET` `ENV_KEYS` `ARGS` | R2 | v0.11.3 |
+| `std.process` | `PROCESS_RUN` `PROCESS_ID` | R2 | v0.11.3 |
+| `std.compress` | `ZSTD_COMPRESS` `ZSTD_DECOMPRESS` `ZLIB_COMPRESS` `ZLIB_DECOMPRESS` `GZIP_COMPRESS` `GZIP_DECOMPRESS` `DEFLATE_RAW_COMPRESS` `DEFLATE_RAW_DECOMPRESS` | R2 | v0.11.3 |
 | `std.text` | `TO_UPPER` `TO_LOWER` `NFC` `NFD` `NFC_QC` | R2 | v0.11.2 |
 | `std.sanitize` | `HTML_ESCAPE` `HTML_UNESCAPE` `HTML_SANITIZE` | R2 | v0.11.3 |
 | `std.collection` | `MAP` `FILTER` `REDUCE` `SORT` `SORT_BY` `ZIP` `RANGE` `ANY` `ALL` `FIND` `ENUMERATE` `TAKE` `DROP` `FLAT` `UNIQ` `GROUP_BY` `JOIN` `CHUNK` `WINDOW` `DEDUP_BY` `MIN_BY` `MAX_BY` `SUM` `PRODUCT` `FOLD_RIGHT` `POSITION` `KEY_BY` | 混合(R1 门面 + R2 `RANGE`/`MAP`/`FILTER`/`CHUNK`/`WINDOW`/`ENUMERATE`/`ZIP`/`UNIQ`/`FLAT`/`JOIN`/`GROUP_BY`/`DEDUP_BY`/`KEY_BY`) | v0.10 及以前(成员)/ v0.11(R1 重写,M5 起 RANGE 沉 R2)/ v0.11.3(M5 L0-A-2 加 MAP·FILTER·CHUNK·WINDOW,L0-A-3a 加 ENUMERATE·ZIP·UNIQ·FLAT·JOIN,L0-A-3b 加 GROUP_BY·DEDUP_BY·KEY_BY 沉 R2) |
