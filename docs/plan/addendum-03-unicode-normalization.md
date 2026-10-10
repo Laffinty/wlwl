@@ -59,7 +59,7 @@ Select-String -Path crates/wlwl-std/src/text.rs -Pattern 'fn |ASCII|ascii' | Sel
 | `NFD(s)` | R2 | 规范分解。`"é"` → `"e" + U+0301`(长度**变长**) | 同上 |
 | `NFC_QC(s)` | R2 | 快速检查:**是否已规范化**。无变化时返回 `FALSE` 而不重排 —— 规范化热路径的成本闸门 | `Quick_Check` 属性 |
 | `GRAPHEME_COUNT(s)` | R2 | 字素簇数(用户看到一个字符 = 1)。**`"👨‍👩‍👧"` 算 1** | `GraphemeBreakProperty` + `Extended_Pictographic` |
-| `WIDTH(s)` | R2 | 显示宽度列数(终端对齐用):东亚全角 = 2,组合记号 = 0,emoji = 2 | `EastAsianWidth` |
+| `WIDTH(s)` | R2 | 显示宽度列数(终端对齐用):`W`/`F` = 2,组合记号计 0,「`A`」= **1**,「`N`/`Na`/`H`」= 1;但**默认 emoji 呈现**的 `N` = 2(实测只有 26 个码点)。 ⚠ 原文「emoji = 2」已按 UCD 实测**改写**为「默认 emoji 呈现才是 2」,见 §3.3 | 「`EastAsianWidth`」+`emoji-data` |
 
 **返回值与失败的统一口径**:永不失败(输入任意码点串都产出结果),不返回
 `ERR`。元数 / 类型错是 `E0022` / `E0030`。
@@ -250,6 +250,94 @@ NFC 形态」,**不**写「不是 NFC 形态」—— 官方测试里 202 行反
    是 **Rust 1.87.0** 才稳定的(官方 std 文档标注),工作区承诺
    `rust-version = "1.85"`(D13-013 实测下限)。**就地 `#[allow]` + 写明
    原因**,不照改 —— 四条 CI workflow 全用 `stable`,抓不到这种回归。
+
+### 3.3 ✅ **[2026-10-09] `WIDTH` 的两条口径已定** —— 依据是 UCD 实测交叉表,不是印象
+
+W-04 开工前必答的两条:**`EAW=A`(Ambiguous)按 1 还是 2**、**emoji 与 `A`
+重叠时谁优先**。两条都在 Unicode **18.0.0** 的 `EastAsianWidth.txt` ×
+`emoji-data.txt` 上量过,数字如下。
+
+#### 实测底数(UCD 18.0.0)
+
+| `EastAsianWidth` 类 | 码点数 |
+|---|---|
+| **A**(Ambiguous) | **138 739** |
+| W | 183 762 |
+| N | 34 387 |
+| H | 123 |
+| Na | 111 |
+| F | 104 |
+| **全表** | **357 226** |
+
+⚠ `A` 类占全表 **38.9%** —— 这是本批唯一一个影响十万级码点的决定。
+
+| 交叉 | 码点数 |
+|---|---|
+| `Extended_Pictographic` | 2 830 |
+| ├ 其中 EAW = **W** | 1 203 |
+| ├ 其中 EAW = **N** | 168 |
+| ├ 其中 EAW = **A** | **33** |
+| └ EAW 表未标注(默认 N) | 1 426 |
+| `Emoji_Presentation`(默认 emoji 呈现) | 1 228 |
+| ├ 其中 EAW = **W** | 1 202 |
+| └ 其中 EAW = **N** | **26** |
+| **`A` ∩ `Emoji_Presentation`** | **0** |
+| **`N` ∩ `Emoji_Presentation`** | **26**(全部是 U+1F1E6–1F1FF 区域指示符) |
+
+#### D-W1 · `A` 类**按 1 列(窄)**
+
+1. **Unicode 自己的定位**就是「A 类在西方语境 1 列、在东亚语境 2 列」,而
+   `EastAsianWidth.txt` 不给单一答案 —— 把默认值定成 2 等于替东亚用户选,
+   替其余所有人吃亏。
+2. **主流实现一律默认窄**:`unicode-width`(Rust)、`wcwidth`(Python)、
+   `runewidth`(Go)都把 `A` 记 1,CJK 模式是**显式 opt-in**
+   (`width_cjk()` / `WIDTH_CJK` 环境变量),不是默认。
+3. **实测反证**:若 `A` → 2,则 `WIDTH("®")` / `WIDTH("™")` / `WIDTH("▶")` 得 2,
+   而绝大多数西文终端把它们渲染成 1 —— 一个「按规范」却「看起来不对」的结果。
+   那 33 个 emoji 属性字符(`® ™ ↔ ↕ ↖ ↗ ↘ ↙ Ⓜ ▶ ◀ ☎ ♀ ♂ ♠ ♣ ♥ ♨ ⛈ ⛏ ⛑
+   ⛓ ⛩ ⛰ ⛱ ⛴ ⛷ ⛸ ⛹ 🅰 🅱 🅾 🅿`)**全是默认文本呈现的符号**,要 emoji 呈现
+   必须显式加 U+FE0F,所以它们按 1 算是对的。
+
+⚠ **与 NFKC / 大小写折叠无关** —— `A` 类的折叠是 Unicode 的**规范化等价**问题
+(U+2122 OHM SIGN 与 U+00A5 是同一字符),而 `WIDTH` **不做**折叠,只按 EAW 映射。
+
+#### D-W2 · **`Emoji_Presentation` 且 EAW 非 `W`/`A` → 2;其余一律跟随 EAW**
+
+完整映射(规范性):
+
+| EAW 类 | `WIDTH` |
+|---|---|
+| `W` / `F` | **2** |
+| **`A`** | **1**(D-W1) |
+| `N` / `Na` / `H` / 未标注 | 1 |
+| **N 但 `Emoji_Presentation`** | **2**(D-W2 唯一抬升的一类) |
+
+⚠ **计划 §2 原话「emoji = 2」照字面实现是错的**,这里按实测改写:
+
+- 若按 `Extended_Pictographic` **一刀切**,`WIDTH("®")` 与 `WIDTH("▶")` 都会得
+  2 —— 与 D-W1 直接冲突,且违背 Unicode 的**默认文本呈现**事实(它们要 emoji
+  呈现得加 U+FE0F)。
+- 若按 `Emoji_Presentation` 判,则 **`A` ∩ `Emoji_Presentation` 实测为 0**
+  ——「emoji 与 `A` 重叠」这个假想冲突**在真实数据上不存在**,两条裁决因此
+  **不打架**。
+- D-W2 真正影响的只有 **26 个码点**,且**全是 U+1F1E6–1F1FF 区域指示符**:
+  它们 EAW = `N` 但默认 emoji 呈现。按 EAW 给 1 会让 `WIDTH("🇨🇳")` 得 2
+  而不是 4 —— 半个国旗算一列是明显错。
+
+⇒ 结论:**计划里的「emoji = 2」应当读作「默认就以 emoji 呈现的码点按 2」**,
+而不是「凡是 emoji 属性就按 2」。这两句话在 1 228 个**默认 emoji** 上结果
+相同,在 1 426 个**默认文本呈现**的 emoji 上完全相反。
+
+### 3.4 W-04 的正确性证据口径(与 W-02 同款)
+
+- `GRAPHEME_COUNT` 的唯一证据 = 官方 **`GraphemeBreakTest.txt` 全量**
+  (UAX #29 §7 的测试文件),逐条冻结,不接受抽样。
+- `WIDTH` 的唯一证据 = **`EastAsianWidth.txt` 全表逐条比对**(357 226 个码点),
+  外加上面那 **26 个** `N ∩ Emoji_Presentation` 与 **33 个**
+  `A ∩ Extended_Pictographic` 的**逐条**点名 —— 这两组是两条裁决真正生效的
+  地方,必须能被单独看见。
+- 两者都由脚本从源文件**解析产出**,不是手抄、也不是从本实现输出抄
+  (同 W-02 那 42 条 RFC 3986 向量的做法)。
 
 ## 4. 验收门禁
 
