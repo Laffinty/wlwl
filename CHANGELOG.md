@@ -370,6 +370,35 @@ Spec: **wlwl-spec-v0.11 与 wlwl-stdlib-spec-v0.11 均不变**。本批**不改�
   - **成员面就此冻结为 4**(`SEED` / `UNIFORM` / `INT_RANGE` / `CODEPOINT`)。
 - **ADR-0024 草案**(`std.time` 的假时钟气泡,状态 Proposed)与 **regex 调研备忘**
   (RE2 式线性模拟,不立项)—— **只出文档,不出码**。
+- **新命名空间 `wlwl:std.net`(5 成员,R2 全员)** —— 命名空间 **15 → 16**、
+  成员面 **118 → 123**。`URL_PARSE` / `URL_JOIN` 两个**纯函数** + `HTTP_GET` /
+  `HTTP_POST` / `HTTP_REQUEST` 三个明文 HTTP 成员。规范新增 **§21 `std.net`**,
+  附录 A 重生成,契约 `net_contract` 5 个测试、probe **171 → 172**。
+  - **`ADR-0028`(Accepted)定死形状**:明文 `http:` only、**零新增第三方依赖**
+    (走 `std::net::TcpStream` + 系统解析器)、`HTTP_*` 是**阻塞原语**、超时缺省
+    **30 000 ms**、**不自动跟随重定向**、**不解 chunked**。
+  - ⚠ **`HTTP_*` 是阻塞原语**:执行期间不调度任何其他任务,整个 `SCOPE` 冻结
+    —— 与 `std.time::SLEEP` / `std.process::PROCESS_RUN` 同源。**不要在同一个
+    `SCOPE` 里并发发多个 HTTP 请求**,`SPAWN` 了也还是排队:那是**错的写法**,
+    不是低效的写法。
+  - ⚠ **D1(`HTTP_*` 阻塞)是带条件冻结的**:冻结前提是「`ADR-0017` Step 3(真
+    state-machine 续跑)仍未落地」;前提不成立则阻塞的代价就没有必要承担,
+    **必须重新裁决**。守卫 `impl/crates/wlwl-eval/tests/adr_conditional_guard.rs`
+    会在前提不成立时**转红**。
+  - ⚠ **不支持的写法一律 `ERR`,绝不「尽力解析」**:`chunked` 不解码(走私向量)、
+    既无 `Content-Length` 又无 `Connection: close`、重复的 `Content-Length`、
+    obs-fold、头值含裸 CR/LF,全部拒绝;头块 **64 KiB** / 体 **8 MiB** 上限越限
+    是 `ERR` 而**不是** OOM。
+  - ⚠ **失败是 `ERR([kind:"HttpError", op, reason])` 值不是原生诊断** —— 网络不通
+    是可预期的业务分支,做成诊断会让整个运行终止、调用方连重试都做不到。
+  - ⚠ **`URL_PARSE` 返回七个键**(计划原列六个):多出的 `userinfo` **不得丢弃**
+    —— RFC 3986 §7.6 证明丢掉它会让人以为 host 是 `cnn.example.com` 而实际是
+    `10.0.0.1`,解析器替调用方吃掉它等于**藏起一个已知的语义攻击面**。
+  - ⚠ **`URL_JOIN` 是 strict 模式**:RFC §5.4.2 的 `http:g` 给了两个结果,本实现
+    取 RFC 排在**前面**的那个;**WHATWG URL 取的是另一个**,两者**不等价**,
+    跨规范对照时不要互相套用。
+  - **正确性证据**:契约把 **RFC 3986 §5.4 的 42 条引用求解用例逐字冻结** ——
+    由脚本从 `rfc3986.txt` 原文**解析产出**,不是手抄也不是从实现输出抄。
 
 ### Changed
 

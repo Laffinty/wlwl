@@ -486,6 +486,83 @@ PRINT(RE_REPLACE(RE("([a-z]+)=(\w+)"), "a=1 b=2", "$2:$1"));  // 1:a 2:b
 - `TRY_RE` does not exist yet: a pattern that comes from user input cannot be
   "trial-compiled" without aborting.
 
+### §9.14 `wlwl:std.net` — URLs and plaintext HTTP (stdlib §21, v0.11.3)
+
+```wlwl
+IMPORT("wlwl:std.net", ["URL_PARSE", "URL_JOIN", "HTTP_GET", "HTTP_POST", "HTTP_REQUEST"]);
+
+// Pure functions — RFC 3986 generic syntax. These never touch the network.
+URL_PARSE("http://user:pw@example.com:8080/p?q=1#f");
+// -> ["scheme": "http", "userinfo": "user:pw", "host": "example.com",
+//     "port": 8080, "path": "/p", "query": "q=1", "fragment": "f"]
+URL_JOIN("http://a/b/c/d;p?q", "../g");   // "http://a/b/g"
+
+// Plaintext HTTP. Returns ["status", "headers", "body"].
+LET(r, HTTP_GET("http://example.com/api"));
+AT_K(r, "status", NULL);                  // 200
+HTTP_POST("http://example.com/api", body, ["Content-Type": "application/json"]);
+HTTP_REQUEST("PUT", "http://example.com/api", "payload");
+```
+
+- ⚠ **`URL_PARSE` always returns all seven keys.** A component that never
+  appeared is `NULL`; one that appeared but is empty is `""`. That distinction is
+  **normative** (RFC 3986 §5.3): the separator was absent vs present-and-immediately
+  followed by the next separator. Collapsing them makes `query` and `path`
+  indistinguishable and `remove_dot_segments` then mangles a `/./` inside a query.
+- ⚠ **`userinfo` is a key, not discarded.** RFC 3986 §7.6:
+  `ftp://cnn.example.com&story=breaking_news@10.0.0.1/top_story.htm` reads as
+  host `cnn.example.com` to a human while the real host is `10.0.0.1`. A parser
+  that swallows the segment hides a known semantic attack. `host` keeps IPv6
+  literals bracketed (`"[::1]"`) so it round-trips; `port` is an `INTEGER`.
+- **What counts as an invalid URL** is pinned: the input must match
+  `URI-reference` in RFC 3986 Appendix A. Control characters/spaces, a `:` whose
+  prefix is not a legal `scheme`, a bare `%`, a `[`/`]` outside a well-formed
+  IP-literal, a non-`DIGIT` or `> 65535` port → `E0030`. **Empty host and missing
+  scheme are accepted** — judging those invalid would break `URL_JOIN` on §5.4's
+  `//g` and `""` inputs. IPv6's full grammar is deliberately **not** validated
+  (RFC §3.2.2 defers it to RFC 3513 and calls it hard to specify).
+- ⚠ **`URL_JOIN` is strict-mode.** RFC §5.4.2's `http:g` has two answers;
+  we take the one RFC lists first (`http:g`). **WHATWG URL gives the other**
+  (`http://a/b/c/g`) — do not carry expectations across specs. No percent-decoding,
+  no host lower-casing, no scheme normalisation: those are §6.2's
+  syntax/scheme normalisation, a **different semantic**.
+- ⚠ **`HTTP_*` is a blocking primitive.** Nothing else is scheduled while it runs
+  and the whole `SCOPE` freezes. Same cost as `SLEEP` / `PROCESS_RUN`. **Never
+  `SPAWN` several HTTP calls in one `SCOPE` expecting concurrency** — they
+  serialise, and that is a *wrong* program, not a slow one.
+- ⚠ **Timeout defaults to 30 000 ms**, and the default is not decoration: the
+  block is bounded by the **wall clock** (unlike `SLEEP`, there is no virtual
+  clock), so omitting it hangs the whole program. Pass a smaller one for
+  fan-out.
+- ⚠ **Redirects are not followed.** 3xx comes back with `status` and `Location`
+  intact; following can carry the request to a host you did not intend (SSRF).
+- ⚠ **Unsupported framing is `ERR`, never a best-effort parse.** Refused:
+  `Transfer-Encoding` (**including `chunked`** — a smuggling vector, so it is
+  *not* decoded), duplicate `Content-Length` (even with equal values), obs-fold
+  (a header line starting with whitespace), a bare CR/LF in a header value, and
+  a response with neither `Content-Length` nor `Connection: close` (we do not
+  guess the body length). The caps are **64 KiB** of header block and **8 MiB** of
+  body — past them you get an `ERR`, **not** an OOM, because a server can trigger
+  that.
+- ⚠ **Failures are `ERR([kind:"HttpError", op, reason])` values, not native
+  diagnostics.** An unreachable host is an expected business branch (retry,
+  degrade, log); a diagnostic would **terminate the run** and leave the caller
+  unable to retry. Arity / type / non-token method / header-injection mistakes are
+  still `E0022` / `E0030` — those *are* programmer errors.
+- Zero new third-party dependencies: plaintext HTTP/1.1 over
+  `std::net::TcpStream` plus the system resolver. TLS, WebSocket/SSE/gRPC,
+  connection pooling, retry policy, proxying and cookie jars are all **not**
+  provided.
+- **Correctness evidence.** `URL_JOIN`'s evidence is the **42 reference-resolution
+  vectors of RFC 3986 §5.4, frozen verbatim** — extracted by a script from the
+  RFC text, not typed by hand and not copied from this implementation. `URL_PARSE`'s
+  evidence is the Appendix B example plus Appendix A's ABNF.
+- ⚠ **The blocking shape is conditionally frozen.** `ADR-0028` D1 holds *because*
+  `ADR-0017` Step 3 (true state-machine resumption) has not landed. If it does,
+  the guard `adr_conditional_guard.rs` turns red and **D1 must be re-decided** —
+  the blocking cost (and with it the 30 s timeout floor) would no longer be
+  necessary.
+
 ### §9.13 `wlwl:std.compress` — Zstandard and the DEFLATE family (stdlib §20, v0.11.3)
 
 ```wlwl

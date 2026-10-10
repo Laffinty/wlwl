@@ -85,6 +85,11 @@ const NAMESPACE_META: &[(&str, &str, &str)] = &[
     ("wlwl:std.test", "混合", "v0.10 及以前(成员)/ v0.11(混合化)"),
     ("wlwl:std.ai", "R2", "v0.10 及以前"),
     ("wlwl:std.agent", "R2", "v0.10 及以前"),
+    // [v0.11.3 M6 / addendum-05 W-02..W-04] 网络。R2 全员,**零新增第三方
+    // 依赖**(明文 HTTP/1.1 走 `std::net::TcpStream` + 系统解析器)。
+    // ⚠ `HTTP_*` 是**阻塞原语**,且该裁决(`ADR-0028` D1)是**带条件冻结**的 ——
+    // 冻结前提是「`ADR-0017` Step 3 真 state-machine 续跑仍未落地」。
+    ("wlwl:std.net", "R2", "v0.11.3"),
 ];
 
 /// 一个命名空间的当前成员名册(实现真相)。

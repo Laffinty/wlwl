@@ -46,11 +46,20 @@ markdown** 解析成员表后与实现对拍(ADR-0023 §v0.x 1 的执行机制)�
 成员仍受 `real-ai` feature 门控,默认构建可见 99)。M6 的五个安全成员落地后
 `std.encode` 由 8 增至 13 成员;**M6 的 A1 + A2 + B 片共开 `std.time`**
 (6 成员:`NOW` `MONOTONIC` 纯读 / `SLEEP` 阻塞 / `TEST_BUBBLE` `ADVANCE` `TIMEOUT`
-气泡),命名空间 13 → **15**、成员面 109 → **115**,**再加 `std.regex` 的 7 个 = 122**,
-**再加 `std.rand` 的 4 个 = 126**、命名空间 → **16**;
-**M6 的 06 再开 `std.env`(4)与 `std.process`(2)并把 `std.fs` 扩到 18**
-(新增 15:路径 5 / 目录 8 / 字节 2),**07 再开 `std.compress`(8)**
-⇒ **命名空间 19、成员面 155**。
+气泡)、`std.regex`(7)、`std.rand`(4);**M6 的 06 开 `std.env`(4)与
+`std.process`(2)并把 `std.fs` 扩到 18**(新增 15:路径 5 / 目录 8 / 字节 2)、
+**07 开 `std.compress`(8)**、**addendum-03 给 `std.text` 加 `NFC` / `NFD` /
+`NFC_QC`**、**addendum-05 开 `std.net`(5)**。
+
+> ⚠️ **[2026-10-11 登记的缺陷] 附录 A 镜像少了四个已落地的命名空间。**
+> 镜像当前读到 **16 个命名空间 / 145 个成员**(含 `std.ai` 的 5 个;默认构建
+> 可见 140)。缺的是 **`std.rand`(4)、`std.env`(4)、`std.process`(2)、
+> `std.compress`(8)** —— 它们**早已落地**,规范也各有一章(§17 / §18 / §19 /
+> §20),但 `wlwl-eval/src/stdlib_mirror.rs` 的 `NAMESPACE_META` 没登记。
+> 补齐后应为 **20 个命名空间 / 163 个成员**。
+> ⚠️ **`stdlib_appendix_a_sync` 抓不到这个缺口**:该测试对账的两侧(镜像与
+> 生成器输出)读的是**同一份** `NAMESPACE_META`,所以它自洽地全绿 ——
+> 这是「同源对账」的天花板,不是守卫失职。已报业主待裁。
 
 ## 0 总则
 
@@ -1066,7 +1075,14 @@ WHATWG 规则的**白名单子集**,差异显式登记 —— 安全性由幂等
   而本语言零模式匹配能力;调研备忘见 v0.11.3 计划附录 B,建议独立批次立项。
 - `std.ai` / `std.agent` 降级为官方包,移出 `wlwl:std.*`(业界先例:Rust /
   Julia 的 std 小核心原则);
-- 新 R2 候选命名空间:`std.net`、`std.process`、`std.env`、`std.time`。
+- ~~新 R2 候选命名空间:`std.net`、`std.process`、`std.env`、`std.time`。~~
+  **已于 v0.11.3 全部落地**:`std.process` → §19、`std.env` → §18、`std.time`
+  → §15、**`std.net` → §21**(M6 / addendum-05,成员面 2 → 5)。
+  **本条不再是候选清单。** ⚠ `std.net` 的**阻塞**形态(`ADR-0028` D1)是
+  **带条件冻结**的 —— 冻结前提是「`ADR-0017` Step 3 真 state-machine 续跑
+  仍未落地」;前提一旦不成立,**必须重新裁决 D1**(那时 `HTTP_*` 可以直接做挂起
+  形态,连 30 s 超时兜底都不必承担)。守卫测试
+  `impl/crates/wlwl-eval/tests/adr_conditional_guard.rs` 会在前提不成立时转红。
   **`std.time` 的参考坐标是 Go 1.24 的 `testing/synctest`**:把并发测试放进一个
   「bubble」,bubble 内时间走**假时钟**,于是「测 10 秒超时」不用真等 10 秒。
   wlwl 已有 `SCOPE` / `SPAWN` 调度器与 `std.test`(⚠️ **不含 `STEP`** —— 本行早前
@@ -1630,5 +1646,6 @@ D3。
 | `std.test` | `TEST` `ASSERT` `ASSERT_EQ` `ASSERT_NEQ` `EXPECT_ERR` `RUN_TESTS` | 混合 | v0.10 及以前(成员)/ v0.11(混合化) |
 | `std.ai` | `ASK` `EMBED` `COMPLETE` `ASK_STREAM` `ASK_ALL` | R2 | v0.10 及以前 |
 | `std.agent` | `TASK` `TOOL` `CALL_TOOL` `MODEL` `CONTEXT` | R2 | v0.10 及以前 |
+| `std.net` | `URL_PARSE` `URL_JOIN` `HTTP_GET` `HTTP_POST` `HTTP_REQUEST` | R2 | v0.11.3 |
 <!-- appendix-a:end -->
 
