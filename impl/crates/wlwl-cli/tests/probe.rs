@@ -99,7 +99,11 @@ use std::time::{Duration, Instant};
 // 自动规范化,`==(NFC(a), NFC(b))` 才等价)。⚠ 两条都**刻意不断言 NFC/NFD
 // 的全量正确性** —— 排错一个码点时渲染完全相同,肉眼看不出来,证据是
 // `bin/norm-check` 对官方 NormalizationTest.txt 的全量自检。
-const EXPECTED_CASE_COUNT: usize = 171;
+// [v0.11.3 M6 / addendum-05 W-02] 171 -> 172:新增 `M6_std_net_url` ——
+// std.net 的两个**纯函数**成员(URL_PARSE / URL_JOIN)。
+// ⚠ **本 probe 不联网**,也不需要夹具服务器:这两个成员是纯函数,它们应该在
+// 「完全没有网络」的前提下跑通。期望值取自 RFC 3986 原文,不是从实现输出抄。
+const EXPECTED_CASE_COUNT: usize = 172;
 
 /// 单个 case 的上限,与 `probe.py` 的 `timeout=60` 同义。
 const CASE_TIMEOUT: Duration = Duration::from_secs(60);

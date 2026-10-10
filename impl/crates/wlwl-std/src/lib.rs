@@ -18,10 +18,15 @@
 //!   - `wlwl:std.format` — `FORMAT` + the shared template grammar (§15.8 / §10.6, Phase B5)
 //!   - `wlwl:std.encode` — `BASE64_ENCODE` / `BASE64_DECODE` / `HEX_ENCODE` /
 //!     `HEX_DECODE` / `URL_ENCODE` / `URL_DECODE` (v0.11.2 M1, stdlib §11)
-//!   - `wlwl:std.text` — `TO_UPPER` / `TO_LOWER`,完整 Unicode 简单大小写映射
-//!     (v0.11.2 M2, stdlib §12)。全局内建 `UPPER` / `LOWER` **只做 ASCII**,
-//!     实测 `UPPER("straße")` = `STRAßE`;本模块走 Rust `char` 内置查表,
-//!     **零 Unicode 数据文件**、零第三方依赖。
+//!   - `wlwl:std.text` — `TO_UPPER` / `TO_LOWER` / `NFC` / `NFD` / `NFC_QC`
+//!     (v0.11.2 M2 大小写;v0.11.3 M6 / addendum-03 规范规范化,Unicode **18.0.0**,
+//!     正确性只由 `bin/norm-check` 对官方 `NormalizationTest.txt` 的**全量**
+//!     自检证明)。全局内建 `UPPER` / `LOWER` **只做 ASCII**,实测
+//!     `UPPER("straße")` = `STRAßE`。大小写部分走 Rust `char` 内置查表,
+//!     **零 Unicode 数据文件**;规范化部分走 `unicode/norm.rs`(生成物)。
+//!   - `wlwl:std.net` — `URL_PARSE` / `URL_JOIN`(v0.11.3 M6 / addendum-05
+//!     W-02,RFC 3986 通用语法)。`HTTP_*` 属 W-03,形态由 `ADR-0028` 定死:
+//!     **明文 HTTP only、零新增依赖、`HTTP_*` 是阻塞原语**(D1 带条件冻结)。
 //!   - `wlwl:std.sanitize` — `HTML_ESCAPE` / `HTML_UNESCAPE` / `HTML_SANITIZE`
 //!     输出安全(旗舰特色功能,v0.11.3,stdlib §13)。**全员 R2、性能入契约**:
 //!     转义 / 解码 / 净化都要处理文档级输入,而解释器侧字符串与数组构建超线性
@@ -55,6 +60,7 @@ pub mod fs;
 pub mod io;
 pub mod json;
 pub mod kernels;
+pub mod net;
 pub mod process;
 pub mod rand;
 pub mod regex;
@@ -325,6 +331,10 @@ pub fn resolve(path: &str) -> Option<StdBackend> {
         "wlwl:std.rand" => &rand::SPEC,
         // [v0.11.3 M6 / addendum-02] 正则。
         "wlwl:std.regex" => &regex::SPEC,
+        // [v0.11.3 M6 / addendum-05 W-02] 网络的第一刀是**两个纯函数**
+        // (`URL_PARSE` / `URL_JOIN`);`HTTP_*` 属 W-03,形态由 `ADR-0028`
+        // (Accepted, D1 **带条件冻结**) 定死。
+        "wlwl:std.net" => &net::SPEC,
         _ => return None,
     };
     Some(StdBackend::Native(spec))
@@ -539,6 +549,9 @@ mod tests {
         &process::SPEC,
         // [v0.11.3 M6 / addendum-02] 正则(RE2 式线性时间)。
         &regex::SPEC,
+        // [v0.11.3 M6 / addendum-05 W-02] 网络:先两个纯函数,`HTTP_*` 属 W-03
+        // (形态由 `ADR-0028` 定死,D1 **带条件冻结**)。
+        &net::SPEC,
     ];
 
     #[test]

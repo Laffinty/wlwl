@@ -1,0 +1,49 @@
+// [v0.11.3 M6 / addendum-05 W-02] std.net 的两个纯函数:URL_PARSE / URL_JOIN。
+//
+// 落点:addendum-05 §5 落点 6(probe)。
+//
+// ⚠ **本 probe 不联网**。URL_PARSE / URL_JOIN 是纯函数,它们可以—也应该—在没有任何
+// 网络的前提下跑。`HTTP_*` 才需要夹具服务器(不得访问外网),
+// 那是 W-03/D那片的事。
+//
+// 期望值取自 **RFC 3986 原文**(§5.4 / Appendix B / §7.6),不是从本实现输出抄。
+IMPORT("wlwl:std.net", ["URL_PARSE", "URL_JOIN"]);
+
+// 1. 解析五个分量(RFC 3986 Appendix B 正文那一个例子)。
+LET(u, URL_PARSE("http://www.ics.uci.edu/pub/ietf/uri/#Related"));
+PRINT("scheme   = ", AT_K(u, "scheme", "MISSING"));
+PRINT("host     = ", AT_K(u, "host", "MISSING"));
+PRINT("path     = ", AT_K(u, "path", "MISSING"));
+PRINT("fragment = ", AT_K(u, "fragment", "MISSING"));
+// RFC 明写 query 是 <undefined> —— 未出现就是 NULL。
+PRINT("query_undefined = ", AT_K(u, "query", "MISSING"));
+
+// 2. undefined ≠ empty(§5.3 末段,规范性)。
+// 打长度而不打值:空串打出来就是"”,同一行无法区分。
+PRINT("empty_query_len  = ", LEN(AT_K(URL_PARSE("http://a/?"), "query", "MISSING")));
+PRINT("missing_query    = ", AT_K(URL_PARSE("http://a/"), "query", "MISSING"));
+
+// 3. RFC §7.6 的语义攻击:人会以为 host 是 cnn.example.com,实际是 10.0.0.1。
+//    userinfo 必须单独拆出来 —— 丢掉它等于替调用方藏起攻击面。
+PRINT("attack_host     = ", AT_K(URL_PARSE("ftp://cnn.example.com&story=breaking_news@10.0.0.1/top_story.htm"), "host", "MISSING"));
+PRINT("attack_userinfo = ", AT_K(URL_PARSE("ftp://cnn.example.com&story=breaking_news@10.0.0.1/top_story.htm"), "userinfo", "MISSING"));
+
+// 4. IPv6 literal 保留方括号;port 是 INTEGER。
+PRINT("ipv6_host = ", AT_K(URL_PARSE("http://[2001:db8::7]:8080/x"), "host", "MISSING"));
+PRINT("ipv6_port = ", AT_K(URL_PARSE("http://[2001:db8::7]:8080/x"), "port", "MISSING"));
+
+// 5. 引用求解(RFC §5.4):base = http://a/b/c/d;p?q
+LET(b, "http://a/b/c/d;p?q");
+PRINT("join_g       = ", URL_JOIN(b, "g"));
+PRINT("join_dotdot  = ", URL_JOIN(b, "../g"));
+PRINT("join_empty   = ", URL_JOIN(b, ""));
+PRINT("join_strict  = ", URL_JOIN(b, "http:g"));
+// 查询里的 /./ 必须原样保留 —— 混同 query 与 path 就会被 remove_dot_segments
+// 错误地动了 query(RFC §5.2.4 末段的 Note 就在说这个坑)。
+PRINT("join_query_dot = ", URL_JOIN(b, "g?y/./x"));
+PRINT("join_frag_dot  = ", URL_JOIN(b, "g#s/../x"));
+
+// 6. 非法边界 → E0030 并**终止运行**。
+PRINT("before arity");
+URL_PARSE("1a:b");
+PRINT("after arity");

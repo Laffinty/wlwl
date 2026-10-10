@@ -1,0 +1,29 @@
+{
+ "exit": 1,
+ "contains": [
+  "scheme   =  http",
+  "host     =  www.ics.uci.edu",
+  "path     =  /pub/ietf/uri/",
+  "fragment =  Related",
+  "query_undefined =  NULL",
+  "empty_query_len  =  0",
+  "missing_query    =  NULL",
+  "attack_host     =  10.0.0.1",
+  "attack_userinfo =  cnn.example.com&story=breaking_news",
+  "ipv6_host =  [2001:db8::7]",
+  "ipv6_port =  8080",
+  "join_g       =  http://a/b/c/g",
+  "join_dotdot  =  http://a/b/g",
+  "join_empty   =  http://a/b/c/d;p?q",
+  "join_strict  =  http:g",
+  "join_query_dot =  http://a/b/c/g?y/./x",
+  "join_frag_dot  =  http://a/b/c/g#s/../x",
+  "before arity",
+  "E0030",
+  "not a valid scheme"
+ ],
+ "not_contains": [
+  "after arity"
+ ],
+ "_why": "v0.11.3 M6 / addendum-05 W-02。std.net 的两个纯函数 URL_PARSE / URL_JOIN。⚠ **本 probe 不联网** —— 这两个成员是纯函数,应该在「完全没有网络」的前提下跑通;HTTP_* 才需要夹具服务器,那是 W-04。期望值取自 **RFC 3986 原文**(Appendix B 的例子 / §5.4 的引用求解 / §7.6 的语义攻击),不是从本实现输出抄。⚠ 四组刻意挑的:`query_undefined` vs `empty_query_len = 0` 钉 RFC §5.3 末段的 undefined/empty 之分(混同就分不开 query 与 path);`attack_host` / `attack_userinfo` 钉 RFC §7.6 —— 人会以为 host 是 cnn.example.com,实际是 10.0.0.1,丢 userinfo 等于替调用方藏起这个攻击面;`join_query_dot` / `join_frag_dot` 钉 §5.2.4 末段那条 Note(query 里的 /./ 必须原样保留,混同 query 与 path 就会被 remove_dot_segments 错误处理);`join_strict` 钉 strict 模式(§5.4.2 的 http:g,注意 WHATWG URL 给的是**另一个**答案,两者不等价)。末段钉非法边界 1a:b → E0030 且**终止运行**。"
+}
