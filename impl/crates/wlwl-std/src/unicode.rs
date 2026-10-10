@@ -24,4 +24,6 @@
 //! 相同,人眼与截图都看不出来。
 
 pub mod canon;
+pub mod gcb;
+pub mod grapheme;
 pub mod norm;
