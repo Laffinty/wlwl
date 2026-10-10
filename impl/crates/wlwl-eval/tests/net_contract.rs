@@ -361,7 +361,7 @@ fn spec_path() -> PathBuf {
 
 /// 规范 §21 的成员表 ↔ `SPEC.functions`。
 ///
-/// ⚠ `HTTP_*` 属 W-03,**尚未落地** —— 本条只锁**已落地**的那两个,数量写死 2。
+/// 规范 §21 的成员表 ↔ `SPEC.functions`(五个成员全部落地)。
 /// W-03 落地时这个数与名单**一起**改,别只改一边。
 #[test]
 fn net_member_set_matches_the_spec_table() {
@@ -424,4 +424,216 @@ fn net_member_set_matches_the_spec_table() {
         spec.len()
     );
     assert_eq!(impls.len(), 5, "wlwl:std.net exports 5 members");
+}
+
+// ── HTTP 夹具服务器(W-04)────────────────────────────────────────
+//
+// ⚠ **只绑 127.0.0.1,绝不访问任何外部地址。** CI 不稳定是一层,违反本仓「可复现」卖点是另一层。
+// `the_contract_never_touches_an_external_address` 守着这条,且它自己**不依赖任何环境变量**
+// (环境变量可以忘设; 扫源码不可以)。
+
+use std::io::{Read, Write};
+use std::net::TcpListener;
+use std::sync::OnceLock;
+
+static PORT: OnceLock<u16> = OnceLock::new();
+
+/// 按路径分派的本地夹具。每条连接**各开一个线程** —— 否则一条 `/slow`
+/// 会把后续所有请求一起堵住(而超时用例正要靠它)。
+fn start_fixture() -> u16 {
+    if let Some(p) = PORT.get() {
+        return *p;
+    }
+    let l = TcpListener::bind("127.0.0.1:0").expect("fixture bind");
+    let port = l.local_addr().expect("fixture addr").port();
+    std::thread::spawn(move || {
+        for conn in l.incoming() {
+            let Ok(mut s) = conn else { break };
+            std::thread::spawn(move || {
+                let mut buf = [0u8; 8192];
+                let n = s.read(&mut buf).unwrap_or(0);
+                let req = String::from_utf8_lossy(&buf[..n]).into_owned();
+                let path = req
+                    .lines()
+                    .next()
+                    .and_then(|l| l.split_whitespace().nth(1))
+                    .unwrap_or("/")
+                    .to_string();
+                let out: String = match path.as_str() {
+                    "/ok" => "HTTP/1.1 200 OK\r\nContent-Length: 5\r\nX-Fixture: yes\r\n\r\nhello".into(),
+                    "/notfound" => "HTTP/1.1 404 Not Found\r\nContent-Length: 3\r\n\r\nnah".into(),
+                    "/boom" => "HTTP/1.1 500 Internal Server Error\r\nContent-Length: 5\r\n\r\nbroke".into(),
+                    "/redirect" => "HTTP/1.1 302 Found\r\nLocation: /ok\r\nContent-Length: 4\r\n\r\ngoin".into(),
+                    "/chunked" => "HTTP/1.1 200 OK\r\nTransfer-Encoding: chunked\r\n\r\n5\r\nhello\r\n0\r\n\r\n".into(),
+                    "/nolength" => "HTTP/1.1 200 OK\r\nContent-Type: text/plain\r\n\r\nhello".into(),
+                    "/huge" => "HTTP/1.1 200 OK\r\nContent-Length: 99999999\r\n\r\n".into(),
+                    "/slow" => {
+                        std::thread::sleep(std::time::Duration::from_secs(3));
+                        "HTTP/1.1 200 OK\r\nContent-Length: 2\r\n\r\nok".into()
+                    }
+                    "/echo" => {
+                        let body = req.rsplit("\r\n\r\n").next().unwrap_or("");
+                        format!("HTTP/1.1 200 OK\r\nContent-Length: {}\r\n\r\n{body}", body.len())
+                    }
+                    _ => "HTTP/1.1 404 Not Found\r\nContent-Length: 0\r\n\r\n".into(),
+                };
+                let _ = s.write_all(out.as_bytes());
+                let _ = s.flush();
+            });
+        }
+    });
+    let _ = PORT.set(port);
+    port
+}
+
+const IMP: &str = r#"IMPORT("wlwl:std.net", ["HTTP_GET", "HTTP_POST", "HTTP_REQUEST"]); "#;
+
+/// `(用例名, 源码, 期望)`。端口在运行时才确定, 所以这张表**不能**是 `const`。
+fn http_cases() -> Vec<(String, String, String)> {
+    let p = start_fixture();
+    let u = |path: &str| format!("http://127.0.0.1:{p}{path}");
+    let get = |path: &str| format!("HTTP_GET(\"{}\")", u(path));
+    let err = |path: &str| format!("IS_ERR(HTTP_GET(\"{}\"))", u(path));
+    let field = |expr: &str, key: &str| format!(r#"AT_K({expr}, "{key}", "MISSING")"#);
+    // IMPORT 是**每条源码的前缀**;表达式本身不带 IMPORT,否则它会被包进
+    // `AT_K(...)` 的第一个实参里(那正是先前那个 E0011 的成因)。
+    let src = |body: &str| format!("{IMP}{body}");
+
+    vec![
+        // ── 2xx / 4xx / 5xx 都是**值**,不是诊断 ──
+        ("get_200_status".into(), src(&field(&get("/ok"), "status")), "200".into()),
+        ("get_200_body".into(), src(&field(&get("/ok"), "body")), "hello".into()),
+        (
+            "get_200_header".into(),
+            src(&field(&field(&get("/ok"), "headers"), "X-Fixture")),
+            "yes".into(),
+        ),
+        ("get_404_is_a_value".into(), src(&field(&get("/notfound"), "status")), "404".into()),
+        ("get_404_body".into(), src(&field(&get("/notfound"), "body")), "nah".into()),
+        ("get_500_status".into(), src(&field(&get("/boom"), "status")), "500".into()),
+        // ── 不跟随重定向(D4):302 原样返回 ──
+        ("redirect_status_is_302".into(), src(&field(&get("/redirect"), "status")), "302".into()),
+        (
+            "redirect_location_exposed".into(),
+            src(&field(&field(&get("/redirect"), "headers"), "Location")),
+            "/ok".into(),
+        ),
+        // ── 不支持的写法 → ERR **值**,不是原生诊断 ──
+        ("chunked_is_err_value".into(), src(&err("/chunked")), "TRUE".into()),
+        ("no_length_is_err_value".into(), src(&err("/nolength")), "TRUE".into()),
+        ("body_over_cap_is_err_value".into(), src(&err("/huge")), "TRUE".into()),
+        // 超时:只给一个位置参即可(实现按类型区分 DICT / INTEGER)。
+        (
+            "timeout_is_err_value".into(),
+            src(&format!("IS_ERR(HTTP_GET(\"{}\", 300))", u("/slow"))),
+            "TRUE".into(),
+        ),
+        // ── POST / REQUEST ──
+        (
+            "post_body_reaches_server".into(),
+            src(&field(&format!("HTTP_POST(\"{}\", \"ping\")", u("/echo")), "body")),
+            "ping".into(),
+        ),
+        (
+            "request_arbitrary_method".into(),
+            src(&field(&format!("HTTP_REQUEST(\"PUT\", \"{}\")", u("/ok")), "status")),
+            "200".into(),
+        ),
+        // ── 失败形态(原生诊断,断言完整消息)──
+        (
+            "https_is_refused".into(),
+            r#"IMPORT("wlwl:std.net", ["HTTP_GET"]); IS_ERR(HTTP_GET("https://127.0.0.1/x"))"#.to_string(),
+            "TRUE".into(),
+        ),
+        (
+            "connection_refused_is_err_value".into(),
+            r#"IMPORT("wlwl:std.net", ["HTTP_GET"]); IS_ERR(HTTP_GET("http://127.0.0.1:1/"))"#.to_string(),
+            "TRUE".into(),
+        ),
+        (
+            "get_arity_is_e0022".into(),
+            r#"IMPORT("wlwl:std.net", ["HTTP_GET"]); HTTP_GET("a", "b", "c", "d")"#.to_string(),
+            "!E0022 HTTP_GET: function expects 1 argument(s), got 4".to_string(),
+        ),
+        (
+            "get_non_string_is_e0030".into(),
+            r#"IMPORT("wlwl:std.net", ["HTTP_GET"]); HTTP_GET(5)"#.to_string(),
+            "!E0030 HTTP_GET: expected string, got integer".to_string(),
+        ),
+        (
+            "request_bad_method_is_e0030".into(),
+            r#"IMPORT("wlwl:std.net", ["HTTP_REQUEST"]); HTTP_REQUEST("BAD METHOD", "http://127.0.0.1:1/")"#.to_string(),
+            "!E0030 HTTP_REQUEST: method \"BAD METHOD\" is not a valid HTTP token".to_string(),
+        ),
+        (
+            "header_injection_is_e0030".into(),
+            r#"IMPORT("wlwl:std.net", ["HTTP_GET"]); HTTP_GET("http://127.0.0.1:1/", ["X-Evil": "a\rb"])"#.to_string(),
+            "!E0030 HTTP_GET: header \"X-Evil\" value contains CR or LF".to_string(),
+        ),
+    ]
+}
+
+#[test]
+fn http_contract() {
+    let bad: Vec<String> = http_cases()
+        .into_iter()
+        .filter_map(|(name, src, want)| {
+            let got = actual(&src);
+            if got == want {
+                return None;
+            }
+            if want == "E0030" || want == "E0022" {
+                let code = got.trim_start_matches('!').split(' ').next().unwrap_or("");
+                if code == want {
+                    return None;
+                }
+            }
+            Some(format!(
+                "{name}\n      expected: {want}\n      actual:   {got}"
+            ))
+        })
+        .collect();
+    assert!(
+        bad.is_empty(),
+        "wlwl:std.net HTTP contract drift:\n    {}",
+        bad.join("\n    ")
+    );
+}
+
+// **离线门控**:`这个契约表里的 HTTP 用例**不得打非回环地址**。
+/// ⚠ **扫的是「将要实际执行的那份源码」**(`http_cases()` 的返回值),不是整个文件。
+/// 第一版扫整文件,结果把 RFC 3986 §5.4 里那些「`http://a/b/c/g`」全报了——
+/// 但**它们是 `URL_JOIN` 的纯函数输入,根本不发请求**。
+/// 扫描范围必须**u7b49于被门控的行为**,否则它只会堆错报。
+#[test]
+fn the_contract_never_touches_an_external_address() {
+    let mut bad = Vec::new();
+    for (name, src, _) in http_cases() {
+        for scheme in ["http", "https"] {
+            // 拼出来而不写成字面量:不然下面这段自己就会被自己报了。
+            let needle = format!("{scheme}://");
+            let mut from = 0;
+            while let Some(i) = src[from..].find(&needle) {
+                let at = from + i + needle.len();
+                let host: String = src[at..]
+                    .chars()
+                    // authority 在 `/` `?` `#` 处终止(RFC 3986)——不停在那里的话,
+                    // 无端口的 `https://127.0.0.1/x` 会把 `127.0.0.1/x` 整个当 host。
+                    .take_while(|c| {
+                        !c.is_whitespace() && !matches!(c, '"' | ')' | ',' | '/' | '?' | '#')
+                    })
+                    .collect();
+                from = at;
+                let bare = host.split(':').next().unwrap_or("");
+                if !(bare == "127.0.0.1" || bare == "localhost" || bare == "[::1]") {
+                    bad.push(format!("  {name}: {scheme} host {host:?}"));
+                }
+            }
+        }
+    }
+    assert!(
+        bad.is_empty(),
+        "net_contract.rs 的 HTTP 契约指向了非回环地址 —— 它必须只打仓内夹具:{}",
+        bad.join("\n")
+    );
 }
