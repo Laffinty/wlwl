@@ -237,6 +237,132 @@ const CASES: &[Case] = &[
         name: "global_lower_is_still_ascii_only",
         src: r#"LOWER("ÉÀÜ")"#,
         expect: "ÉÀÜ",
+    }, // ── GRAPHEME_COUNT(坐标系是**字素簇**,不是码点)──────────────────────
+    Case {
+        name: "grapheme_empty_is_zero",
+        src: r#"IMPORT("wlwl:std.text", ["GRAPHEME_COUNT"]); GRAPHEME_COUNT("")"#,
+        expect: "0",
+    },
+    Case {
+        name: "grapheme_ascii_one_per_char",
+        src: r#"IMPORT("wlwl:std.text", ["GRAPHEME_COUNT"]); GRAPHEME_COUNT("abc")"#,
+        expect: "3",
+    },
+    Case {
+        name: "grapheme_cjk_one_each",
+        src: r#"IMPORT("wlwl:std.text", ["GRAPHEME_COUNT"]); GRAPHEME_COUNT("中文")"#,
+        expect: "2",
+    },
+    Case {
+        name: "grapheme_family_emoji_is_one",
+        src: r#"IMPORT("wlwl:std.text", ["GRAPHEME_COUNT"]); GRAPHEME_COUNT("👨‍👩‍👧")"#,
+        expect: "1",
+    },
+    Case {
+        name: "grapheme_combining_mark_joins_its_base",
+        src: r#"IMPORT("wlwl:std.text", ["GRAPHEME_COUNT"]); GRAPHEME_COUNT("é")"#,
+        expect: "1",
+    },
+    Case {
+        name: "grapheme_flag_pair_is_one",
+        src: r#"IMPORT("wlwl:std.text", ["GRAPHEME_COUNT"]); GRAPHEME_COUNT("🇨🇳")"#,
+        expect: "1",
+    },
+    Case {
+        name: "grapheme_non_string_is_e0030",
+        src: r#"IMPORT("wlwl:std.text", ["GRAPHEME_COUNT"]); GRAPHEME_COUNT(5)"#,
+        expect: "!E0030 GRAPHEME_COUNT: expected string, got integer",
+    },
+    Case {
+        name: "grapheme_arity_is_e0022",
+        src: r#"IMPORT("wlwl:std.text", ["GRAPHEME_COUNT"]); GRAPHEME_COUNT("a", "b")"#,
+        expect: "!E0022 GRAPHEME_COUNT: function expects 1 argument(s), got 2",
+    },
+    // ── WIDTH(三条口径 + 簇折叠)──────────────────────────────────────
+    Case {
+        name: "width_empty_is_zero",
+        src: r#"IMPORT("wlwl:std.text", ["WIDTH"]); WIDTH("")"#,
+        expect: "0",
+    },
+    Case {
+        name: "width_ascii_one_each",
+        src: r#"IMPORT("wlwl:std.text", ["WIDTH"]); WIDTH("abc")"#,
+        expect: "3",
+    },
+    Case {
+        name: "width_cjk_is_two_each",
+        src: r#"IMPORT("wlwl:std.text", ["WIDTH"]); WIDTH("中文")"#,
+        expect: "4",
+    },
+    // D-W1:`A` 类按 1。U+00AE REGISTERED SIGN / U+2122 TRADE MARK 的 EAW 是 `A`。
+    Case {
+        name: "width_ambiguous_is_one_dw1",
+        src: r#"IMPORT("wlwl:std.text", ["WIDTH"]); WIDTH("®")"#,
+        expect: "1",
+    },
+    Case {
+        name: "width_ambiguous_trademark_is_one_dw1",
+        src: r#"IMPORT("wlwl:std.text", ["WIDTH"]); WIDTH("™")"#,
+        expect: "1",
+    },
+    // D-W3:零宽。U+0301 是 Mn,U+200B / U+200D 是 Cf。
+    Case {
+        name: "width_combining_acute_is_zero_dw3",
+        src: r#"IMPORT("wlwl:std.text", ["WIDTH"]); WIDTH("́")"#,
+        expect: "0",
+    },
+    Case {
+        name: "width_zero_width_space_is_zero_dw3",
+        src: r#"IMPORT("wlwl:std.text", ["WIDTH"]); WIDTH("")"#,
+        expect: "0",
+    },
+    Case {
+        name: "width_zero_width_joiner_is_zero_dw3",
+        src: r#"IMPORT("wlwl:std.text", ["WIDTH"]); WIDTH("‍")"#,
+        expect: "0",
+    },
+    // D-W3 的例外:`Mc` 带间距,不置 0。天城文 visarga = U+0903。
+    Case {
+        name: "width_spacing_mark_mc_is_not_zero_dw3",
+        src: r#"IMPORT("wlwl:std.text", ["WIDTH"]); WIDTH("ः")"#,
+        expect: "1",
+    },
+    // D-W2:默认 emoji 呈现的 `N` 抬到 2。U+1F1E8 是区域指示符。
+    Case {
+        name: "width_regional_indicator_is_two_dw2",
+        src: r#"IMPORT("wlwl:std.text", ["WIDTH"]); WIDTH("🇨")"#,
+        expect: "2",
+    },
+    // D-W4:簇折叠。三个 emoji + 两个 ZWJ 逐码点是 8,但终端渲染 2 列。
+    Case {
+        name: "width_zwj_family_is_two_columns_dw4",
+        src: r#"IMPORT("wlwl:std.text", ["WIDTH"]); WIDTH("👨‍👩‍👧")"#,
+        expect: "2",
+    },
+    Case {
+        name: "width_flag_is_two_columns_not_four",
+        src: r#"IMPORT("wlwl:std.text", ["WIDTH"]); WIDTH("🇨🇳")"#,
+        expect: "2",
+    },
+    Case {
+        name: "width_base_plus_combining_is_one_not_two",
+        src: r#"IMPORT("wlwl:std.text", ["WIDTH"]); WIDTH("é")"#,
+        expect: "1",
+    },
+    Case {
+        name: "width_single_emoji_is_two",
+        src: r#"IMPORT("wlwl:std.text", ["WIDTH"]); WIDTH("😀")"#,
+        expect: "2",
+    },
+    Case {
+        name: "width_non_string_is_e0030",
+        src: r#"IMPORT("wlwl:std.text", ["WIDTH"]); WIDTH(5)"#,
+        expect: "!E0030 WIDTH: expected string, got integer",
+    },
+    Case {
+        name: "width_arity_is_e0022",
+        src: r#"IMPORT("wlwl:std.text", ["WIDTH"]); WIDTH("a", "b")"#,
+        expect: "!E0022 WIDTH: function expects 1 argument(s), got 2",
     },
 ];
 
@@ -340,12 +466,20 @@ fn text_member_set_matches_the_spec_table() {
 
     assert_eq!(
         spec.len(),
-        5,
+        7,
         "§12 table extractor found {} member(s): {spec:?} — the table's shape changed \
          and the extractor needs updating",
         spec.len()
     );
-    for n in ["TO_UPPER", "TO_LOWER", "NFC", "NFD", "NFC_QC"] {
+    for n in [
+        "TO_UPPER",
+        "TO_LOWER",
+        "NFC",
+        "NFD",
+        "NFC_QC",
+        "GRAPHEME_COUNT",
+        "WIDTH",
+    ] {
         assert!(
             spec.iter().any(|m| m == n),
             "§12 table missed `{n}`: {spec:?}"
@@ -355,7 +489,7 @@ fn text_member_set_matches_the_spec_table() {
             "implementation does not export `{n}`: {impls:?}"
         );
     }
-    assert_eq!(impls.len(), 5, "wlwl:std.text exports 5 members");
+    assert_eq!(impls.len(), 7, "wlwl:std.text exports 7 members");
 }
 
 fn spec_path() -> PathBuf {

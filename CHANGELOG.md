@@ -370,6 +370,14 @@ Spec: **wlwl-spec-v0.11 与 wlwl-stdlib-spec-v0.11 均不变**。本批**不改�
   - **成员面就此冻结为 4**(`SEED` / `UNIFORM` / `INT_RANGE` / `CODEPOINT`)。
 - **ADR-0024 草案**(`std.time` 的假时钟气泡,状态 Proposed)与 **regex 调研备忘**
   (RE2 式线性模拟,不立项)—— **只出文档,不出码**。
+- **`wlwl:std.text` 增 `GRAPHEME_COUNT` / `WIDTH`——addendum-03 W-04(v0.11.3)**
+  成员面 **5 → 7**,规范§12 补两行 + **§12.3**。现在 `std.text` 覆盖大小写、**规范归一**、**字符簇**、**显示宽度** 三个方向。
+  - ⚠ **坐标系有两个**:`LEN` 给码点数、`GRAPHEME_COUNT` 给**字符簇数**——`"👨‍👩‍👧"` 的 `LEN` 是 **5**而 `GRAPHEME_COUNT` 是 **1**。
+  - ⚠ **没有规范化就比不比错**:`é` 与 `"e" + U+0301` 渲染完全一致而 `==` 给 FALSE。
+  - ⚠ **`WIDTH` 是簇感知的**:三个 emoji + 两个 ZWJ 逐码点是 **8**,取簇内最大得 **2**。
+  - 口径是 **实测定的**(§3.3):D-W1 `A`类(Ambiguous)=**1**(占全表 **38.9%**) · D-W2 默认 emoji 呈现的 `N`=**2**(实测只影响 **26** 个 U+1F1E6..1F1FF) · D-W3 `Mn`/`Me`/`Cf`=**0**(`Mc` 不算)。⚠ **计划§2原话「emoji = 2」照字面实现是错的**。
+  - **正确性证据**:`bin/grapheme-check` 对官方 `GraphemeBreakTest.txt` **全量 853 行零失败**;`bin/width-check` 对 `EastAsianWidth.txt` **全表 1 114 112 个码点逐条比对**,并单独**逐条点名** 26 个 D-W2 生效点。两者均不在 `cargo test` 里。
+  - 契约 `text_contract` **20 → 44 条**,probe **172 → 173**(不联网,纯函数)。
 - **新命名空间 `wlwl:std.net`(5 成员,R2 全员)** —— 命名空间 **15 → 16**、
   成员面 **118 → 123**。`URL_PARSE` / `URL_JOIN` 两个**纯函数** + `HTTP_GET` /
   `HTTP_POST` / `HTTP_REQUEST` 三个明文 HTTP 成员。规范新增 **§21 `std.net`**,

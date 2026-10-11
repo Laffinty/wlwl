@@ -1,0 +1,34 @@
+{
+ "exit": 1,
+ "contains": [
+  "gc_empty   =  0",
+  "gc_ascii   =  3",
+  "gc_cjk     =  2",
+  "family_clusters =  1",
+  "family_codepoints =  5",
+  "family_differs =  TRUE",
+  "gc_ecomposed =  1",
+  "gc_flag =  1",
+  "w_empty =  0",
+  "w_ascii =  3",
+  "w_cjk   =  4",
+  "w_ambiguous_registered =  1",
+  "w_ambiguous_trademark =  1",
+  "w_ambiguous_both =  2",
+  "w_combining =  0",
+  "w_zwsp =  0",
+  "w_zwj =  0",
+  "w_spacing_mark =  1",
+  "w_regional =  2",
+  "w_family_folded =  2",
+  "w_family_is_two =  TRUE",
+  "w_flag =  2",
+  "before arity",
+  "E0022",
+  "GRAPHEME_COUNT: function expects 1 argument(s), got 2"
+ ],
+ "not_contains": [
+  "after arity"
+ ],
+ "_why": "v0.11.3 M6 / addendum-03 W-04。std.text 的 GRAPHEME_COUNT 与 WIDTH。⚠ **本 probe 不是正确性证据**:GRAPHEME_COUNT 的证据是 bin/grapheme-check 对官方 GraphemeBreakTest.txt 的**全量 853 行**,WIDTH 的证据是 bin/width-check 对 EastAsianWidth.txt **全表 1 114 112 个码点逐条比对**;这里只钉语言边界上的业务口径。⚠ **坐标系有两个**:family_clusters=1 而 family_codepoints=5 —— `LEN` 给码点数、`GRAPHEME_COUNT` 给字素簇数,family_differs 显式断言两者**不等**,防止有人拿 LEN 当簇数用。⚠ 三条宽度裁决各点名:Ambiguous=1(拆成单码点两条,合并那条是 2 是**两个 1 的和**,不写清会读成「A 类=2」)、Mn/Cf 零宽=0、Mc 不置 0、默认 emoji 呈现的 N=2。⚠ 簇折叠是 WIDTH 存在的理由:三个 emoji + 两个 ZWJ 逐码点是 **8**,w_family_folded=**2** 才是终端实际渲染的列数;w_flag 同理(两个 RI 是一**个**簇 ⇒ 2 而不是 4)。末段钉元数错 E0022 并**终止运行**。"
+}

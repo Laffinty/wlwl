@@ -36,7 +36,7 @@
 //! 版本对齐三遍。合成一块做,是**一次**决定而不是四次。见
 //! `docs/history/20261002.md` §1(v0.11.2 构建计划归档件)§5.2 的裁决更新。
 
-use crate::unicode::canon;
+use crate::unicode::{canon, grapheme, width};
 use crate::{ModuleSpec, StdFn};
 use wlwl_error::ErrorCode;
 use wlwl_value::{StdHost, Value};
@@ -49,6 +49,8 @@ pub static SPEC: ModuleSpec = ModuleSpec {
         ("NFC", nfc as StdFn),
         ("NFD", nfd as StdFn),
         ("NFC_QC", nfc_qc as StdFn),
+        ("GRAPHEME_COUNT", grapheme_count as StdFn),
+        ("WIDTH", width as StdFn),
     ],
 };
 
@@ -191,6 +193,43 @@ fn quick_ok(s: &str) -> bool {
     let mut last = 0u8;
     s.chars()
         .all(|ch| canon::quick_step(u32::from(ch), &mut last))
+}
+
+// ── 字素簇与显示宽度(v0.11.3 M6 / addendum-03 W-04)─────────────────
+//
+// 两条口径(规范 §12.3)都**已经算进** `unicode::width::cp_width` 的表里,成员层
+// 只做转接。正确性证据同样不在本文件:字素簇见 `bin/grapheme-check`(官方
+// `GraphemeBreakTest.txt` 全量 853 行),宽度见 `bin/width-check`(EAW 全表
+// 1 114 112 码点逐条比对)。
+
+/// `GRAPHEME_COUNT(s) -> INTEGER` —— 字素簇数(用户看到一个字符 = 1)。
+///
+/// 空串是 `0`。⚠ 坐标系是**字素簇**不是码点:`"👨‍👩‍👧"`(三个 emoji +
+/// 两个 ZWJ)得 **1**;`LEN` 给的是码点数(5),两者**不可混用**。
+pub fn grapheme_count(
+    host: &mut dyn StdHost,
+    args: Vec<Value>,
+) -> wlwl_error::WlwlResult<wlwl_value::Outcome> {
+    let s = str_arg(host, "GRAPHEME_COUNT", &args)?;
+    let n = grapheme::count_str(s);
+    Ok(wlwl_value::Outcome::normal(Value::Integer(n as i64)))
+}
+
+/// `WIDTH(s) -> INTEGER` —— 终端显示宽度(列数)。
+///
+/// ⚠ **簇折叠**:按 UAX #29 切簇,**每簇取簇内码点列宽的最大值**再求和。
+/// `"👨‍👩‍👧"` 得 **2** 而不是 8 —— 后者是逐码点求和,不是终端实际渲染的列数。
+/// ⚠ 三条口径(规范 §12.3):`A`(Ambiguous)= **1**;默认 emoji 呈现的 `N` = **2**;
+/// `Mn` / `Me` / `Cf` = **0**(`Mc` **不**计 —— 它是带间距的组合记号,占宽度)。
+/// ⚠ **不做**任何规范化折叠:U+2122 与 U+00A5 是同一字符,这里两者都恰好
+/// 得 1,但那是**各自独立查表**的结果,不是识别出了等价关系。
+pub fn width(
+    host: &mut dyn StdHost,
+    args: Vec<Value>,
+) -> wlwl_error::WlwlResult<wlwl_value::Outcome> {
+    let s = str_arg(host, "WIDTH", &args)?;
+    let n = width::width_str(s);
+    Ok(wlwl_value::Outcome::normal(Value::Integer(n as i64)))
 }
 
 #[cfg(test)]

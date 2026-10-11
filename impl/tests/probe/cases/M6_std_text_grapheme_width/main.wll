@@ -1,0 +1,58 @@
+// [v0.11.3 M6 / addendum-03 W-04] std.text 的字素簇与显示宽度两个成员。
+//
+// 落点:addendum-03 §5 落点 6(probe)。
+//
+// ⚠ **本 probe 不是正确性证据**。`GRAPHEME_COUNT` 的证据是 `bin/grapheme-check`
+// 对官方 GraphemeBreakTest.txt 的**全量 853 行**;`WIDTH` 的证据是
+// `bin/width-check` 对 EastAsianWidth.txt **全表 1 114 112 个码点逐条比对**。
+// 这里只钉语言边界上的业务口径(空串、坐标系、三条宽度裁决、簇折叠)。
+//
+// ⚠ **坐标系有两个**:`LEN` 给码点数,`GRAPHEME_COUNT` 给字素簇数。
+IMPORT("wlwl:std.text", ["GRAPHEME_COUNT", "WIDTH"]);
+
+// 1. 字素簇:空串 0;一个用户可见字符 = 1。
+PRINT("gc_empty   = ", GRAPHEME_COUNT(""));
+PRINT("gc_ascii   = ", GRAPHEME_COUNT("abc"));
+PRINT("gc_cjk     = ", GRAPHEME_COUNT("中文"));
+
+// 2. ⚠ 坐标系对比:同一个串,LEN 给码点数,GRAPHEME_COUNT 给簇数。
+LET(fam, "👨‍👩‍👧");
+PRINT("family_clusters = ", GRAPHEME_COUNT(fam));
+PRINT("family_codepoints = ", LEN(fam));
+PRINT("family_differs = ", !=(LEN(fam), GRAPHEME_COUNT(fam)));
+
+// 3. 组合记号归入基字符;国旗是两个 RI 合成的一个簇。
+PRINT("gc_ecomposed = ", GRAPHEME_COUNT("é"));
+PRINT("gc_flag = ", GRAPHEME_COUNT("🇨🇳"));
+
+// 4. 宽度:ASCII 1、CJK 2。
+PRINT("w_empty = ", WIDTH(""));
+PRINT("w_ascii = ", WIDTH("abc"));
+PRINT("w_cjk   = ", WIDTH("中文"));
+
+// 5. D-W1:Ambiguous 算 1(U+00AE / U+2122 的 EAW 是 A)。
+//    拆成单码点:两个码点各 1 的**和**是 2,写在一起会让「A 类=1」变成「两个都是 2」的误解。
+PRINT("w_ambiguous_registered = ", WIDTH("®"));
+PRINT("w_ambiguous_trademark = ", WIDTH("™"));
+PRINT("w_ambiguous_both = ", WIDTH("®™"));
+
+// 6. D-W3:零宽字符算 0 —— 按 EAW 它们各得 1,会让每个零宽字符占一整列。
+PRINT("w_combining = ", WIDTH("́"));
+PRINT("w_zwsp = ", WIDTH(""));
+PRINT("w_zwj = ", WIDTH("‍"));
+//  D-W3 的例外:Mc 带间距,不置 0(天城文 visarga U+0903)。
+PRINT("w_spacing_mark = ", WIDTH("ः"));
+
+// 7. D-W2:默认 emoji 呈现的 N 抬到 2(区域指示符 U+1F1E8)。
+PRINT("w_regional = ", WIDTH("🇨"));
+
+// 8. D-W4:簇折叠 —— 三个 emoji + 两个 ZWJ 逐码点是 8,但终端渲染 2 列。
+PRINT("w_family_folded = ", WIDTH("👨‍👩‍👧"));
+PRINT("w_family_is_two = ", ==(WIDTH("👨‍👩‍👧"), 2));
+//  一面旗是两个 RI,但它们是**一个**簇 ⇒ 2 而不是 4。
+PRINT("w_flag = ", WIDTH("🇨🇳"));
+
+// 9. 元数错 → E0022 并**终止运行**。
+PRINT("before arity");
+GRAPHEME_COUNT("a", "b");
+PRINT("after arity");

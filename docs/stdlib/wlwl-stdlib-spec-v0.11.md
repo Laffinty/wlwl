@@ -883,6 +883,8 @@ final sigma、土耳其无点 i / 点上 i 这类特殊映射)。ADR-0022 的零
 | `NFC(s) -> STRING` | 规范组合:`"e"` + U+0301 → `"é"`,**长度变短** | — |
 | `NFD(s) -> STRING` | 规范分解:`"é"` → `"e"` + U+0301,**长度变长** | — |
 | `NFC_QC(s) -> BOOLEAN` | 规范快速检查(性能闸门,见 §12.2) | — |
+| `GRAPHEME_COUNT(s) -> INTEGER` | 字素簇数(UAX #29)。**空串是 `0`**;`"👨‍👩‍👧"` 是 **1** | — |
+| `WIDTH(s) -> INTEGER` | 终端显示宽度(列数),**簇折叠**。三条口径见 §12.3 | — |
 
 **与全局 `UPPER` / `LOWER` 的关系**:两个并存,本批**不替换**全局内建。
 替换是 breaking(既有程序里非 ASCII 字符的大小写行为会变),不在本批范围。
@@ -1620,6 +1622,34 @@ D3。
 **明确不做**:TLS / WebSocket / SSE / gRPC / 连接池 / 重试策略 / 自动重定向 /
 代理 / cookie jar / 流式响应体。
 
+### 12.3 `GRAPHEME_COUNT` / `WIDTH` 的坐标系与口径(规范性)
+
+⚠ **坐标系有两个,不可混用**:`LEN` 给**码点数**,`GRAPHEME_COUNT` 给**字素簇
+数**。`"👨‍👩‍👧"` 的 `LEN` 是 **5**,`GRAPHEME_COUNT` 是 **1**。
+
+`GRAPHEME_COUNT` 按 **UAX #29 扩展字素簇**(Unicode **18.0.0**,含 15.1 新增的
+**GB9.3** Indic conjunct break)。
+
+`WIDTH` 是**簇感知**的:切簇后**每簇取簇内码点列宽的最大值**再求和。三条口径:
+
+| 判据 | 列宽 | 为什么 |
+|---|---|---|
+| `EAW` = `W` / `F` | **2** | 全角 |
+| `EAW` = **`A`**(Ambiguous) | **1** | Unicode 自己定位为「西方 1 列、东亚 2 列」;`unicode-width` / `wcwidth` / `runewidth` 一律默认窄,CJK 是显式 opt-in。`A` 类占全表 **38.9%** |
+| `EAW` = `N` / `Na` / `H`,**且**默认 emoji 呈现 | **2** | 实测只影响 **26** 个码点,全是 U+1F1E6–1F1FF 区域指示符 |
+| 一般类别 `Mn` / `Me` / `Cf` | **0** | 零宽。`Cf` 含 U+200B / U+200D / U+2060 / U+FEFF —— 按 EAW 它们各得 1,会让每个零宽字符**占一整列** |
+| 一般类别 **`Mc`** | **1**(不置 0) | 带间距的组合记号(天城文 visarga 等)在真实字体里占宽度,`wcwidth` 同款 |
+| 其余 | **1** | |
+
+⚠ **不做任何规范化折叠。** U+2122 OHM SIGN 与 U+00A5 YEN SIGN 是同一字符,
+本成员下两者都恰好得 1 —— 但那是**各自独立查表**的结果,**不是**识别出了等价
+关系。要按等价比较,先用 `NFC`。
+
+**正确性证据**:`GRAPHEME_COUNT` 由 `bin/grapheme-check` 对官方
+`GraphemeBreakTest.txt` **全量 853 行**自检;`WIDTH` 由 `bin/width-check` 对
+`EastAsianWidth.txt` **全表 1 114 112 个码点逐条比对**,并单独**逐条点名**
+26 个 D-W2 生效点。两者都不在 `cargo test` 里(源数据不入库)。
+
 ## 附录 A 成员注册镜像(规范性)
 
 
@@ -1645,7 +1675,7 @@ D3。
 | `std.rand` | `SEED` `UNIFORM` `INT_RANGE` `CODEPOINT` | R2 | v0.11.3(过渡形态,见 ADR-0027 A7) |
 | `std.env` | `ENV_GET` `ENV_SET` `ENV_KEYS` `ARGS` | R2 | v0.11.3 |
 | `std.process` | `PROCESS_RUN` `PROCESS_ID` | R2 | v0.11.3 |
-| `std.text` | `TO_UPPER` `TO_LOWER` `NFC` `NFD` `NFC_QC` | R2 | v0.11.2 |
+| `std.text` | `TO_UPPER` `TO_LOWER` `NFC` `NFD` `NFC_QC` `GRAPHEME_COUNT` `WIDTH` | R2 | v0.11.2 |
 | `std.sanitize` | `HTML_ESCAPE` `HTML_UNESCAPE` `HTML_SANITIZE` | R2 | v0.11.3 |
 | `std.collection` | `MAP` `FILTER` `REDUCE` `SORT` `SORT_BY` `ZIP` `RANGE` `ANY` `ALL` `FIND` `ENUMERATE` `TAKE` `DROP` `FLAT` `UNIQ` `GROUP_BY` `JOIN` `CHUNK` `WINDOW` `DEDUP_BY` `MIN_BY` `MAX_BY` `SUM` `PRODUCT` `FOLD_RIGHT` `POSITION` `KEY_BY` | 混合(R1 门面 + R2 `RANGE`/`MAP`/`FILTER`/`CHUNK`/`WINDOW`/`ENUMERATE`/`ZIP`/`UNIQ`/`FLAT`/`JOIN`/`GROUP_BY`/`DEDUP_BY`/`KEY_BY`) | v0.10 及以前(成员)/ v0.11(R1 重写,M5 起 RANGE 沉 R2)/ v0.11.3(M5 L0-A-2 加 MAP·FILTER·CHUNK·WINDOW,L0-A-3a 加 ENUMERATE·ZIP·UNIQ·FLAT·JOIN,L0-A-3b 加 GROUP_BY·DEDUP_BY·KEY_BY 沉 R2) |
 | `std.str` | `JOIN` `SPLIT_LINES` `CHAR_AT` `COUNT` `QUOTE` `INDEX_OF` `CONTAINS_SUB` | R1 | v0.11 / INDEX_OF、CONTAINS_SUB 于 v0.11.2 |
