@@ -1434,3 +1434,44 @@ almost always right, but the failure is real and immediate.
 > `OK(TRUE)` (exit 0).
 
 `ASSERT_EQ(a, b)` / `ASSERT_NEQ(a, b)` are unchanged (`E0047` / `E0048`).
+
+### §25.4 `wlwl:std.text` — Unicode normalization, clusters, display width (stdlib §12, v0.11.3)
+
+```wlwl
+IMPORT("wlwl:std.text", ["NFC", "NFD", "NFC_QC", "GRAPHEME_COUNT", "WIDTH"]);
+
+NFC("é");                       // -> "é"   (one codepoint)
+NFD("é");                       // -> "é" (base + U+0301)
+NFC_QC("é");                    // TRUE
+GRAPHEME_COUNT("👨‍👩‍👧");       // -> 1
+WIDTH("👨‍👩‍👧");                // -> 2
+```
+
+Unicode data version is pinned to **18.0.0**. Correctness evidence lives
+**outside** the contract table, because the UCD source files are not in the repo:
+`bin/grapheme-check` (official `GraphemeBreakTest.txt`, **all 853 rows**) and
+`bin/width-check` (`EastAsianWidth.txt`, **all 1 114 112 code points**).
+
+- ⚠ **Two coordinate systems.** `LEN` gives **code points**;
+  `GRAPHEME_COUNT` gives **grapheme clusters**. For `"👨‍👩‍👧"` that is `5`
+  versus `1`. Using `LEN` as a cluster count misaligns every line after the
+  first emoji.
+- ⚠ **No normalization means not equal.** `"é"` and `"é"` render
+  identically, and `==` says FALSE. Compare with `==(NFC(a), NFC(b))` when
+  you mean "the same user-visible string".
+- ⚠ **`NFC_QC` is one-directional.** `TRUE` = definitely already NFC.
+  `FALSE` = **"no guarantee"**, *not* "not NFC". Writing the latter teaches
+  callers a false fact; the official suite has rows that are already NFC yet
+  answer `FALSE`.
+- `NFD` always increases the code-point count; `NFC` can only decrease it
+  or leave it alone. Both are idempotent.
+- ⚠ **`WIDTH` is cluster-aware.** Three emoji plus two ZWJ is 8 if you sum
+  code-point widths, and **2** — the number of columns a terminal actually
+  uses — if you take the max within each cluster.
+- **Width rules** (all three measured, see stdlib §12.3): `A` (Ambiguous) =
+  **1** · default-emoji-presentation `N` = **2** · `Mn`/`Me`/`Cf` = **0**
+  (`Mc` is **not** zero — it is a spacing mark).
+- ⚠ **`WIDTH` performs no normalization.** U+2122 and U+00A5 are the same
+  character and both happen to measure 1 here, but that is two independent
+  table lookups, **not** a recognized equivalence. Normalize first if you
+  mean equivalence.
