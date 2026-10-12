@@ -249,6 +249,19 @@ pub static LANG_SOURCES: &[StdSource] = &[
             ("_RUN_TESTS", test_native::kernel_run_tests as StdFn),
         ],
     },
+    StdSource {
+        path: "wlwl:std.result",
+        source: include_str!("../wl/std/result.wll"),
+        // [v0.11.3 M7 / addendum-11 W-02] `OK` / `ERR` 组合子。
+        // **零 kernel**:实测 `UNWRAP_OR(x, d)` 一个函数同时给出「剥 `OK`
+        // 外壳」与「拒绝非 RESULT」,所以 `MAP` / `AND_THEN` / `FLATTEN` 不
+        // 需要注入任何 R2 内核(见 `result.wll` 头部与 `ADR-0029` §1)。
+        //
+        // ⚠ **它没有 `SPEC`** —— R1 模块不持绑定表,与 `std.collection` /
+        // `std.math` / `std.test` 同款。⚠ 且它**不复刻** `IS_OK` / `IS_ERR` /
+        // `UNWRAP_OR` / `UNWRAP` 四个全局内建(`ADR-0029` §4b)。
+        kernels: &[],
+    },
 ];
 
 /// From an R1 source file, extract the exported names: the string literals

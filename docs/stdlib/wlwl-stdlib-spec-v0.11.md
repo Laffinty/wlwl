@@ -1650,6 +1650,93 @@ D3。
 `EastAsianWidth.txt` **全表 1 114 112 个码点逐条比对**,并单独**逐条点名**
 26 个 D-W2 生效点。两者都不在 `cargo test` 里(源数据不入库)。
 
+## 22 `std.result` — `RESULT` 组合子(R1,v0.11.3 M7 · ADDENDUM-11 · 新增命名空间)
+
+`OK` / `ERR` 的控制流组合子。**R1 全员、零 kernel。**
+
+⚠ 本节的头号条款是 22.2:**这三个成员的 `ERR` 分支不在成员体内执行**,
+正确性由语言规范 §8.2 提供。读成员语义前必须先读 22.2。
+
+### 22.1 成员表(规范性)
+
+| 成员 | 层 | 语义 |
+|---|---|---|
+| `RESULT_MAP(r, f)` | R1 | `OK(x)` → `OK(f(x))`;`ERR` → 原样透传(`f` 一次都不被调用) |
+| `AND_THEN(r, f)` | R1 | `OK(x)` → `f(x)`(`f` 可返回 `OK` **或** `ERR`);`ERR` → 原样透传 |
+| `FLATTEN(r)` | R1 | `OK(OK(x))` → `OK(x)`;`OK(ERR(e))` → `ERR(e)`;`ERR(e)` → 原样透传;`OK(x)`(非 `RESULT`)→ `OK(x)` |
+
+三条**全是固定元数**,元数错由解释器报无名前缀的 `E0022`。
+实参非 `RESULT` 且非 `ERR` 时由 `UNWRAP_OR` 报 `E0030`。
+
+`FLATTEN` 只剥**一层**:`FLATTEN(OK(5))` 得 `OK(5)` 而不是 `5` —— 返回的仍然是
+`RESULT`,只是不再是嵌套的。
+
+⚠ **`AND_THEN` 不补 `OK` 外壳,这是字面语义。** `OK(x)` → `f(x)`,结果**就是**
+`f` 的返回值。`f` 一旦返回**裸值**,链就断了(`AND_THEN(OK(3), FUN((x), +(x, 1)))`
+得 `4`,不是 `OK(4)`)。调用方有责任让 `f` 返回 `RESULT`(与 Rust `and_then` 要求
+`F: FnOnce(T) -> Result<U, E>` 同款)。契约测试对此有**专门一条**。
+
+⚠ **`RESULT_MAP` 在 `f` 返回 `ERR` 时产出**嵌套**的 `OK(ERR(..))`,不展平** ——
+这正是 `FLATTEN` 存在的理由。
+
+⚠ **命名裁决:`MAP` 不可用。** `std.collection` 自 v0.10 起即导出 `MAP`,两者
+同作用域 `IMPORT` 会硬撞 **`E0021`**(不遮蔽、直接报错,实测)。
+故本成员取 `RESULT_MAP`,与本命名空间后续的 `RESULT_ALL` / `RESULT_ANY` 成族。
+`AND_THEN` / `FLATTEN` 对附录 A 全表无冲突。
+
+### 22.2 三条成员的 `ERR` 分支由 §8.2 提供,不在成员体内(规范性)
+
+语言规范 §8.2:**任何不在消费者注册表(§8.3)内的函数调用——内建或用户定义——
+若任一实参求值为 `ERR`,则该调用不求函数体,直接以该 `ERR` 为调用结果。**
+§8.3 明文「**本表不新增条目**」。
+
+⇒ 实参为 `ERR` 时,本节任何成员的**体都不执行**,§8.2 已把那个 `ERR` 原样返还。
+而「原样返还」恰好就是这三条在 `ERR` 上应有的行为 —— 所以 `ERR` 分支是**免费的**,
+不是被实现的。**本节不得**以任何形式绕过这条:不新增注册表条目、不把 `ERR` 藏进
+容器走私、不改 §8.2 传播语义。
+
+实现侧证据:`impl/crates/wlwl-eval/src/lib.rs` 的 `dispatch_call` 里 §12.6/§8.2 的
+传播块位于 `user_fn` 分派**之前**,判据是 `is_err_consumer(name)`——**被调用者的名字**。
+故 R2 原生内核与 R1 门面**同样**看不到 `ERR` 实参。实测:函数体里与实参无关的副作用
+计数器在传入 `ERR` 时为 `0`(体从未执行),传入 `OK` 时为 `1`,先 `ERR_PAYLOAD` 取载荷
+再传则为 `1`。
+
+⚠ 因此三条成员的源码里**没有** `IF(IS_ERR(r), r, …)` 外层护栏 —— 写上它是永久不可达
+的死代码,且会让人误以为 `ERR` 分支是成员体内实现的。`FLATTEN` 的**内层**
+`IS_ERR(i)` 是活的:`FLATTEN(OK(ERR(e)))` 的外层实参是 `OK`,体照常执行,内层才可能
+取出 `ERR`。
+
+**§8.2 旁路用例**:组合子**接不到**非消费者拿到的 `ERR`,所以它们**不可能**成为旁路。
+契约测试 `wlwl-eval/tests/result_contract.rs` 钉的是这条反向断言。
+
+### 22.3 三条**不可实现**的成员与调用方惯用法(规范性)
+
+下列成员的 `ERR` 分支要**做事**(取载荷 / 调 fallback / 换载荷),而 §8.2 保证体不
+执行 ⇒ **任何实现层都做不到**,R1 门面与 R2 内核 alike。**本规范不提供它们**,
+调用方按 §8.2 推论「消费 `ERR` 必须在拥有它的作用域内进行」改写:
+
+| 想要 | 不可用成员 | 调用方惯用法 |
+|---|---|---|
+| `ERR(e)` → `fallback(e)` | `OR_ELSE(r, fb)` | `LET(y, IF(IS_ERR(r), fb(ERR_PAYLOAD(r)), r));` |
+| `ERR(e)` → `ERR(f(e))` | `ERR_MAP(r, f)` | `LET(y, IF(IS_ERR(r), ERR(f(ERR_PAYLOAD(r))), r));` |
+| `ERR(_)` → `ERR(e)` | `ERR_OR_ELSE(r, e)` | `LET(y, IF(IS_ERR(r), ERR(e), r));` |
+
+三条惯用法成立的前提是 **`IF` 三参短路:未被选中的一支完全不求值**(含副作用)。
+实测:`IF(IS_ERR(<ERR>), OK(1), g(p))` 的 `g` 调用计数为 `0`。
+若 `IF` 求值了 else 支,`OR_ELSE` 的惯用法就会在 `r` 为 `OK` 时也调用 `fb`。
+
+`ERR_PAYLOAD` 对 `OK` 或非 `RESULT` 产生 `E0030`,故惯用法须放在 `IS_ERR` 判定的
+then 支内(短路保证 `OK` 时不触发)。
+
+### 22.4 `UNWRAP` 的诊断条款(规范性)
+
+`UNWRAP` 是**全局内建**,本命名空间不复刻(`ADR-0029` §4b)。它的失败诊断是
+**专用码 `E0100` PANIC**(`cause` = 载荷),**不是** `E0102`(后者是「`ERR` 逃逸到
+顶层」)。两者含义不同:调用方要能分清「我没接住」与「我没消费」。
+契约测试对这条做**否定断言**。
+
+**明确不做**:`OPTIONAL` 类型 / `?` 语法糖 / 宏 / 改 §8.3 注册表 / 改 §8.2 传播语义。
+
 ## 附录 A 成员注册镜像(规范性)
 
 
@@ -1685,5 +1772,6 @@ D3。
 | `std.agent` | `TASK` `TOOL` `CALL_TOOL` `MODEL` `CONTEXT` | R2 | v0.10 及以前 |
 | `std.compress` | `ZSTD_COMPRESS` `ZSTD_DECOMPRESS` `ZLIB_COMPRESS` `ZLIB_DECOMPRESS` `GZIP_COMPRESS` `GZIP_DECOMPRESS` `DEFLATE_RAW_COMPRESS` `DEFLATE_RAW_DECOMPRESS` | R2 | v0.11.3 |
 | `std.net` | `URL_PARSE` `URL_JOIN` `HTTP_GET` `HTTP_POST` `HTTP_REQUEST` | R2 | v0.11.3 |
+| `std.result` | `RESULT_MAP` `AND_THEN` `FLATTEN` | R1 | v0.11.3 |
 <!-- appendix-a:end -->
 
