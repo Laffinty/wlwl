@@ -197,8 +197,8 @@ cargo check --locked -p wlwl-std --features real-ai
 
 | 子项 | 内容 | 状态 | commit |
 |---|---|---|---|
-| W-01 | 命名空间归属 + 闭包形态实测(裁决 §3.3)+ §8.2 旁路裁决 | ✅ **已裁决,实测推翻计划五处** —— [`ADR-0029`](../adr/0029-std-result-shape.md)**Accepted**(同日修订):① **R1 门面、零 kernel**;② **命名空间 `std.result`**;③ **实参为 `ERR` ⇒ 调用不求函数体**(§8.2),判据是**被调用者的名字**,§8.3 明文不新增条目 ⇒ **R1 与 R2 同样接不到**;④ **成员面 13 → 6 可实现 + 3 不可实现**:`IS_OK`/`IS_ERR`/`UNWRAP_OR`/`UNWRAP` 已是全局内建不复刻,`OR_ELSE`/`ERR_MAP`/`ERR_OR_ELSE` **不可实现**;⑤ **`MAP` 改名 `RESULT_MAP`**(与 `std.collection::MAP` 硬撞 `E0021`)。⚠ 前一版把 ③ 写成「`ERR` 变成 `E0102`」是**错的**,`E0102` 只在浮到顶层时出现 | 待回填 |
-| W-02 | 判别 / 透传 / 展平族 + 契约(**不依赖 00**) | ✅ **已落地** —— `wl/std/result.wll` 三成员(`RESULT_MAP` / `AND_THEN` / `FLATTEN`)+ 规范 §22 + 附录 A 镜像 + `NAMESPACE_META` + `tests/result_contract.rs`。⚠ **核心不变量的断言口径已改**:正确性来自 §8.2(体不执行),不是成员体内 `IF` 短路 —— 原计划「`f` 不被调用」那条是**空证** | 待回填 |
+| W-01 | 命名空间归属 + 闭包形态实测(裁决 §3.3)+ §8.2 旁路裁决 | ✅ **已裁决,实测推翻计划五处** —— [`ADR-0029`](../adr/0029-std-result-shape.md)**Accepted**(同日修订):① **R1 门面、零 kernel**;② **命名空间 `std.result`**;③ **实参为 `ERR` ⇒ 调用不求函数体**(§8.2),判据是**被调用者的名字**,§8.3 明文不新增条目 ⇒ **R1 与 R2 同样接不到**;④ **成员面 13 → 6 可实现 + 3 不可实现**:`IS_OK`/`IS_ERR`/`UNWRAP_OR`/`UNWRAP` 已是全局内建不复刻,`OR_ELSE`/`ERR_MAP`/`ERR_OR_ELSE` **不可实现**;⑤ **`MAP` 改名 `RESULT_MAP`**(与 `std.collection::MAP` 硬撞 `E0021`)。⚠ 前一版把 ③ 写成「`ERR` 变成 `E0102`」是**错的**,`E0102` 只在浮到顶层时出现 | `94ffb94` + `ac95456` |
+| W-02 | 判别 / 透传 / 展平族 + 契约(**不依赖 00**) | ✅ **已落地** —— `wl/std/result.wll` 三成员(`RESULT_MAP` / `AND_THEN` / `FLATTEN`)+ 规范 §22 + 附录 A 镜像 + `NAMESPACE_META` + `tests/result_contract.rs`。⚠ **核心不变量的断言口径已改**:正确性来自 §8.2(体不执行),不是成员体内 `IF` 短路 —— 原计划「`f` 不被调用」那条是**空证** | `ac95456` |
 | W-03 | `UNWRAP` 专用诊断 + 契约 | 未动工 | — |
 | W-04 | `RESULT_ALL` / `RESULT_ANY` / `NULL_OR` + 契约 | 未动工 | — |
 | W-05 | §9.1 文档改写 / 性能 / 收口 | 未动工 | — |
