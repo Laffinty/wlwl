@@ -64,6 +64,7 @@ pub mod net;
 pub mod process;
 pub mod rand;
 pub mod regex;
+pub mod result;
 pub mod sanitize;
 pub mod test_native;
 pub mod text;
@@ -253,14 +254,25 @@ pub static LANG_SOURCES: &[StdSource] = &[
         path: "wlwl:std.result",
         source: include_str!("../wl/std/result.wll"),
         // [v0.11.3 M7 / addendum-11 W-02] `OK` / `ERR` 组合子。
-        // **零 kernel**:实测 `UNWRAP_OR(x, d)` 一个函数同时给出「剥 `OK`
-        // 外壳」与「拒绝非 RESULT」,所以 `MAP` / `AND_THEN` / `FLATTEN` 不
-        // 需要注入任何 R2 内核(见 `result.wll` 头部与 `ADR-0029` §1)。
+        // ⚠ **它现在是一个混合模块**(W-04 起不再是零 kernel):W-02 那三条
+        // (`RESULT_MAP` / `AND_THEN` / `FLATTEN`)仍是**零 kernel** 的纯 R1 ——
+        // `UNWRAP_OR(x, d)` 一个函数同时给出「剥 `OK` 外壳」与「拒绝非
+        // RESULT`,所以它们不需要任何 R2 内核(见 `result.wll` 头部与
+        // `ADR-0029` §1)。`NULL_OR` 也是纯 R1(只二选一,不建数组)。
         //
-        // ⚠ **它没有 `SPEC`** —— R1 模块不持绑定表,与 `std.collection` /
-        // `std.math` / `std.test` 同款。⚠ 且它**不复刻** `IS_OK` / `IS_ERR` /
-        // `UNWRAP_OR` / `UNWRAP` 四个全局内建(`ADR-0029` §4b)。
-        kernels: &[],
+        // [v0.11.3 M7 / addendum-11 **W-04**] `RESULT_ALL` / `RESULT_ANY`
+        // 归 R2:两者都要把 n 个载荷收集成新数组,而 R1 的累加链
+        // `SET(acc, +(acc, [v]))` 每次复制整个数组 —— 实测 n 每翻一倍耗时
+        // 约 ×3(n=4000 时 765 ms),标准库不该带这条曲线。与 `std.collection`
+        // 归层那十个成员同款理由,同款形态:kernel 注入 + 门面改名导出。
+        //
+        // ⚠ **它没有 `SPEC`** —— 与 `std.collection` / `std.math` / `std.test`
+        // 同款。⚠ 且它**不复刻** `IS_OK` / `IS_ERR` / `UNWRAP_OR` / `UNWRAP`
+        // 四个全局内建(`ADR-0029` §4b)。
+        kernels: &[
+            ("_RESULT_ALL", result::kernel_result_all as StdFn),
+            ("_RESULT_ANY", result::kernel_result_any as StdFn),
+        ],
     },
 ];
 

@@ -1709,6 +1709,18 @@ D3。
 **§8.2 旁路用例**:组合子**接不到**非消费者拿到的 `ERR`,所以它们**不可能**成为旁路。
 契约测试 `wlwl-eval/tests/result_contract.rs` 钉的是这条反向断言。
 
+**「装盛」与「消费」的分界线(规范性)**:标准库成员**从容器里**读出 `ERR` 并在
+**自己作用域内**用注册表消费者处理它,**不构成旁路**;把一个 §8.2 **本该传播**的
+**裸 `ERR`** 藏进 `DICT` / `ARRAY` 交给别的函数,**构成旁路**。判据:
+
+| 做法 | 判定 | 为什么 |
+|---|---|---|
+| 成员收到数组(数组不是 `ERR`),用 `IS_ERR` / `IS_OK` 逐元素判定 | **不是旁路** | `ERR` 全程在容器里(§8.5 明文「装盛不是消费」),**从未跨越调用边界**;调用方自己写循环也能做到,成员未新增任何能力 |
+| 闭包收到容器里的某个 `ERR` **元素** | **撞墙**(得 `E0102`) | 逐元素调用本身就是一次带 `ERR` 实参的调用。实测 `ANY(rs, FUN((x), IS_ERR(x)))` 与 `MAP(rs, FUN((x), x))` 都得 `E0102` |
+| `f(容器)` 传入的是裸 `ERR` 却被藏进容器绕过 | **是旁路** | 调用方自己做不到这件事,成员凭空给了它消费裸 `ERR` 的能力 |
+
+⇒ 结论:`RESULT_ALL` / `RESULT_ANY` **刻意不接受谓词参数**,正是为了不踩第二行。
+
 ### 22.3 三条**不可实现**的成员与调用方惯用法(规范性)
 
 下列成员的 `ERR` 分支要**做事**(取载荷 / 调 fallback / 换载荷),而 §8.2 保证体不
@@ -1736,6 +1748,41 @@ then 支内(短路保证 `OK` 时不触发)。
 契约测试对这条做**否定断言**。
 
 **明确不做**:`OPTIONAL` 类型 / `?` 语法糖 / 宏 / 改 §8.3 注册表 / 改 §8.2 传播语义。
+
+### 22.5 `NULL_OR` / `RESULT_ALL` / `RESULT_ANY`(规范性)
+
+| 成员 | 层 | 语义 |
+|---|---|---|
+| `NULL_OR(v, default)` | R1 | `NULL` → `default`;**其余一切原样返回**,含 `""` / `[]` / `0` / `FALSE` / `OK(..)` |
+| `RESULT_ALL(rs)` | **R2** | 全部 `OK` → `OK(解包后的数组)`;任一 `ERR` → **第一个** `ERR`(短路,不看后续) |
+| `RESULT_ANY(rs)` | **R2** | 任一 `OK` → **第一个** `OK`(**原样,不拆壳**,短路);全 `ERR` → **第一个** `ERR`;**空数组** → `OK(NULL)` |
+
+**空数组口径**(两条相反,各有惯例依据):
+
+- `RESULT_ALL([])` = `OK([])` —— 空集**真**(与 Rust `collect::<Result<Vec<_>, _>>()`
+  对空迭代器同款)。
+- `RESULT_ANY([])` = `OK(NULL)` —— 「**没有候选**」不是错误,故不编造 `ERR`;
+  载荷是 `NULL` 而不是 `OK([])`,因为这里要的是**一个**结果而不是一批。
+
+**拒绝面**:三个成员对非数组实参 / 非 `RESULT` 元素均产生 `E0030`
+(与 §22.1 的 `UNWRAP_OR` 口径一致)。
+
+⚠ **`NULL_OR` 不是 `UNWRAP_OR`。** `NULL` 不是 `ERR`,所以:
+
+- `NULL_OR("", 5)` = `""`、`NULL_OR([], 5)` = `[]`、`NULL_OR(0, 5)` = `0`
+  —— 三者**互不相等**,契约测试逐个点名;
+- `NULL_OR(ERR(e), 5)` = `ERR(e)` —— §8.2 让本成员的体不执行并原样返还。
+  这是**对的**:拿默认值去吞一个错误才是错的。
+
+⚠ **判别器只能写 `==(TYPE(v), "NULL")`** —— 语言**没有 `IS_NULL`** 这个构造
+(全局只有 `IS_OK` / `IS_ERR` / `BOOL` / `TYPE`)。用 `IF(v, …)` 的真值化会把
+`""` / `[]` / `0` 一起吞掉,那是**错的**。
+
+⚠ **归层理由(实测,不是偏好)**:`RESULT_ALL` / `RESULT_ANY` 都要把 n 个载荷
+收集成新数组,而 wlwl 数组不可变,R1 的 `SET(acc, +(acc, [v]))` 每次复制整个数组。
+实测该累加链 n 每翻一倍耗时约 **×3**(n=250→4000:27→765 ms),标准库不该带这条
+曲线。`NULL_OR` 只二选一、不建数组,故留 R1。与 `std.collection` 归层那十个成员
+同款理由、同款形态(kernel 注入 + 门面改名导出,`EXPORT` 里是用户可见的名字)。
 
 ## 附录 A 成员注册镜像(规范性)
 
@@ -1772,6 +1819,6 @@ then 支内(短路保证 `OK` 时不触发)。
 | `std.agent` | `TASK` `TOOL` `CALL_TOOL` `MODEL` `CONTEXT` | R2 | v0.10 及以前 |
 | `std.compress` | `ZSTD_COMPRESS` `ZSTD_DECOMPRESS` `ZLIB_COMPRESS` `ZLIB_DECOMPRESS` `GZIP_COMPRESS` `GZIP_DECOMPRESS` `DEFLATE_RAW_COMPRESS` `DEFLATE_RAW_DECOMPRESS` | R2 | v0.11.3 |
 | `std.net` | `URL_PARSE` `URL_JOIN` `HTTP_GET` `HTTP_POST` `HTTP_REQUEST` | R2 | v0.11.3 |
-| `std.result` | `RESULT_MAP` `AND_THEN` `FLATTEN` | R1 | v0.11.3 |
+| `std.result` | `RESULT_MAP` `AND_THEN` `FLATTEN` `NULL_OR` `RESULT_ALL` `RESULT_ANY` | 混合(R1 `RESULT_MAP`/`AND_THEN`/`FLATTEN`/`NULL_OR` + R2 `RESULT_ALL`/`RESULT_ANY`) | v0.11.3 |
 <!-- appendix-a:end -->
 

@@ -27,8 +27,9 @@ use wlwl_eval::Evaluator;
 /// 尚未写期望的占位符(与 `str_math_contract.rs` 同款理由:空串是合法期望值)。
 const UNFROZEN: &str = "~UNFROZEN";
 
-/// §22.1 的成员表恰三行。改这个数必须同时改 §22.1 与 `result.wll` 的 `EXPORT`。
-const MEMBER_COUNT: usize = 3;
+/// §22.1 与 §22.5 的成员表合起来恰六行。改这个数必须同时改那两张表与
+/// `result.wll` 的 `EXPORT`。
+const MEMBER_COUNT: usize = 6;
 
 struct Case {
     name: &'static str,
@@ -141,6 +142,100 @@ const RESULT_CASES: &[Case] = &[
         name: "result_map_wrong_arity_is_e0022_without_a_name_prefix",
         src: r#"IMPORT("wlwl:std.result", ["RESULT_MAP"]); RESULT_MAP(OK(1))"#,
         expect: "!E0022",
+    },
+    // ── NULL_OR:§22.5 逐句 ──
+    Case {
+        name: "null_or_maps_only_null_to_the_default",
+        src: r#"IMPORT("wlwl:std.result", ["NULL_OR"]); NULL_OR(NULL, 5)"#,
+        expect: "5",
+    },
+    Case {
+        // §22.5「`NULL` / `""` / `[]` 三者互不相等」——最容易写成 `IF(v, …)` 而
+        // 把后两者一起吞掉。这条钉住「不吞」。
+        name: "null_or_does_not_treat_empty_string_as_null",
+        src: r#"IMPORT("wlwl:std.result", ["NULL_OR"]); NULL_OR("", 5)"#,
+        expect: "",
+    },
+    Case {
+        name: "null_or_does_not_treat_empty_array_as_null",
+        src: r#"IMPORT("wlwl:std.result", ["NULL_OR"]); NULL_OR([], 5)"#,
+        expect: "[]",
+    },
+    Case {
+        name: "null_or_does_not_treat_zero_or_false_as_null",
+        src: r#"IMPORT("wlwl:std.result", ["NULL_OR"]); [NULL_OR(0, 5), NULL_OR(FALSE, 5)]"#,
+        expect: "[0, FALSE]",
+    },
+    Case {
+        name: "null_or_passes_ok_through",
+        src: r#"IMPORT("wlwl:std.result", ["NULL_OR"]); NULL_OR(OK(1), 5)"#,
+        expect: "OK(1)",
+    },
+    Case {
+        // §22.5「`NULL_OR` 不是 `UNWRAP_OR`」:ERR 按 §8.2 原样返还,不是默认值。
+        name: "null_or_propagates_an_err_instead_of_defaulting",
+        src: r#"IMPORT("wlwl:std.result", ["NULL_OR"]); IS_ERR(NULL_OR(ERR("x"), 5))"#,
+        expect: "TRUE",
+    },
+    // ── RESULT_ALL:§22.5 逐句 ──
+    Case {
+        name: "result_all_unwraps_every_ok_into_one_array",
+        src: r#"IMPORT("wlwl:std.result", ["RESULT_ALL"]); RESULT_ALL([OK(1), OK(2), OK(3)])"#,
+        expect: "OK([1, 2, 3])",
+    },
+    Case {
+        name: "result_all_on_an_empty_array_is_ok_of_empty",
+        // §22.5「空集真」,与 Rust `collect::<Result<Vec<_>, _>>()` 同款。
+        src: r#"IMPORT("wlwl:std.result", ["RESULT_ALL"]); RESULT_ALL([])"#,
+        expect: "OK([])",
+    },
+    Case {
+        name: "result_all_returns_the_first_err_with_its_payload",
+        src: r#"IMPORT("wlwl:std.result", ["RESULT_ALL"]); AT_K(ERR_PAYLOAD(RESULT_ALL([OK(1), ERR(["n": 7]), OK(3)])), "n", "?")"#,
+        expect: "7",
+    },
+    Case {
+        name: "result_all_first_err_wins_not_the_last",
+        src: r#"IMPORT("wlwl:std.result", ["RESULT_ALL"]); AT_K(ERR_PAYLOAD(RESULT_ALL([OK(1), ERR(["n": 7]), ERR(["n": 8])])), "n", "?")"#,
+        expect: "7",
+    },
+    Case {
+        name: "result_all_rejects_a_non_result_element",
+        src: r#"IMPORT("wlwl:std.result", ["RESULT_ALL"]); RESULT_ALL([OK(1), 5])"#,
+        expect: "!E0030",
+    },
+    Case {
+        name: "result_all_rejects_a_non_array",
+        src: r#"IMPORT("wlwl:std.result", ["RESULT_ALL"]); RESULT_ALL(5)"#,
+        expect: "!E0030",
+    },
+    // ── RESULT_ANY:§22.5 逐句 ──
+    Case {
+        name: "result_any_returns_the_first_ok_verbatim",
+        // 「原样,不拆壳」:返回的是 `OK(7)` 而不是 `7`。
+        src: r#"IMPORT("wlwl:std.result", ["RESULT_ANY"]); RESULT_ANY([ERR("a"), OK(7), OK(9)])"#,
+        expect: "OK(7)",
+    },
+    Case {
+        name: "result_any_on_all_err_returns_the_first_err",
+        src: r#"IMPORT("wlwl:std.result", ["RESULT_ANY"]); ERR_PAYLOAD(RESULT_ANY([ERR("a"), ERR("b")]))"#,
+        expect: "a",
+    },
+    Case {
+        name: "result_any_on_an_empty_array_is_ok_null",
+        src: r#"IMPORT("wlwl:std.result", ["RESULT_ANY"]); RESULT_ANY([])"#,
+        expect: "OK(NULL)",
+    },
+    Case {
+        name: "result_any_rejects_a_non_result_element",
+        src: r#"IMPORT("wlwl:std.result", ["RESULT_ANY"]); RESULT_ANY([1, 2])"#,
+        expect: "!E0030",
+    },
+    // ── 三条新成员与既有三条可续用 ──
+    Case {
+        name: "result_all_output_feeds_result_map",
+        src: r#"IMPORT("wlwl:std.result", ["RESULT_ALL", "RESULT_MAP"]); RESULT_MAP(RESULT_ALL([OK(1), OK(2)]), FUN((a), LEN(a)))"#,
+        expect: "OK(2)",
     },
 ];
 
@@ -396,18 +491,28 @@ fn spec_text() -> String {
     std::fs::read_to_string(&p).expect("stdlib spec is readable")
 }
 
-/// §22.1 的成员表(§22.3 那张表的单元格长成 `` `ERR(e)` → `fallback(e)` ``,
-/// 会被首列抽取误当成成员名,所以必须**只**取 22.1)。
-fn subsection_22_1() -> String {
+/// §22.1 与 §22.5 的成员表(§22.3 那张表的单元格长成
+/// `` `ERR(e)` → `fallback(e)` ``,会被首列抽取误当成成员名,所以**不**取它)。
+fn member_tables() -> String {
     let text = spec_text();
-    let start = text
-        .find("### 22.1")
-        .unwrap_or_else(|| panic!("§22.1 exists in the stdlib spec"));
-    let end = text[start..]
-        .find("### 22.2")
-        .map(|i| start + i)
-        .unwrap_or_else(|| panic!("§22.2 follows §22.1"));
-    text[start..end].to_string()
+    let grab = |start_marker: &str, end_marker: Option<&str>| {
+        let start = text
+            .find(start_marker)
+            .unwrap_or_else(|| panic!("{start_marker} exists in the stdlib spec"));
+        let end = match end_marker {
+            Some(m) => text[start..]
+                .find(m)
+                .map(|i| start + i)
+                .unwrap_or_else(|| panic!("{m} follows {start_marker}")),
+            None => text.len(),
+        };
+        text[start..end].to_string()
+    };
+    format!(
+        "{}\n{}",
+        grab("### 22.1", Some("### 22.2")),
+        grab("### 22.5", None)
+    )
 }
 
 fn members_of(section_body: &str) -> Vec<String> {
@@ -453,7 +558,7 @@ fn r1_exports(path: &str) -> Vec<String> {
 
 #[test]
 fn result_member_set_matches_the_spec_table() {
-    let spec = members_of(&subsection_22_1());
+    let spec = members_of(&member_tables());
     let impls = r1_exports("wlwl:std.result");
     let mut a = spec.clone();
     let mut b = impls.clone();
@@ -492,22 +597,20 @@ fn collection_map_still_works_on_its_own() {
     assert_eq!(actual(src), "[2, 4, 6]");
 }
 
-/// `ADR-0029` D6 / §4b:三条不可实现的成员**不得**出现在 `EXPORT` 里;
+/// `ADR-0029` D6 / §4b:三条**不可实现**的成员**不得**出现在 `EXPORT` 里;
 /// 四个全局内建**不得**被复刻。两组都用「不该在」的否定断言表达。
+///
+/// ⚠ W-04 落地后本测试**只**保留 `OR_ELSE` / `ERR_MAP` / `ERR_OR_ELSE` 三条 ——
+/// `RESULT_ALL` / `RESULT_ANY` / `NULL_OR` 已在 §22.5 落地,不再属于本组。
 #[test]
 fn no_unimplementable_member_and_no_reexported_builtin() {
     let impls = r1_exports("wlwl:std.result");
-    for n in [
-        "OR_ELSE",
-        "ERR_MAP",
-        "ERR_OR_ELSE",
-        "RESULT_ALL",
-        "RESULT_ANY",
-        "NULL_OR",
-    ] {
+    for n in ["OR_ELSE", "ERR_MAP", "ERR_OR_ELSE"] {
         assert!(
             !impls.iter().any(|m| m == n),
-            "`{n}` must not be exported yet — see ADR-0029 §4 and addendum-11 §2"
+            "`{n}` must not be exported — its ERR branch needs to do work, and \
+             §8.2 guarantees the body never runs. See ADR-0029 D6 and stdlib \
+             spec §22.3 for the caller-side idiom."
         );
     }
     let builtins = wlwl_eval::registry::resolved_builtin_names();
@@ -518,6 +621,48 @@ fn no_unimplementable_member_and_no_reexported_builtin() {
              stdlib spec §0.4 forbids re-exporting one (ADR-0029 §4b)"
         );
     }
+}
+
+// ── 规范 §22.2 的「装盛 vs 消费」分界线 ────────────────────────────────
+
+/// 第一行(**不是旁路**):成员收数组、在自己作用域内消费元素 `ERR` —— 调用方
+/// 自己写循环也能做到,成员未新增任何能力。`RESULT_ALL` 返回该 `ERR` 即是证据。
+#[test]
+fn a_member_may_consume_an_err_that_starts_out_inside_a_container() {
+    let src = r#"
+         IMPORT("wlwl:std.result", ["RESULT_ALL"]);
+         LET(r, RESULT_ALL([OK(1), ERR(["why": "inner"])]));
+         [IS_ERR(r), AT_K(ERR_PAYLOAD(r), "why", "?")]"#;
+    assert_eq!(actual(src), "[TRUE, inner]");
+}
+
+/// 第二行(**撞墙**):把容器里的 `ERR` **元素**喂给任何闭包都会触发 §8.2。
+///
+/// 这条正是 `RESULT_ALL` / `RESULT_ANY` **刻意不接受谓词参数**的原因 ——
+/// 逐元素调用本身就是一次带 `ERR` 实参的调用。
+#[test]
+fn handing_a_container_element_to_a_closure_hits_the_wall() {
+    let src = r#"
+         IMPORT("wlwl:std.collection", ["ANY"]);
+         LET(rs, [OK(1), ERR("boom")]);
+         ANY(rs, FUN((x), IS_ERR(x)))"#;
+    assert!(
+        matches("!E0102", &actual(src)),
+        "a per-element closure call is itself a call with an ERR argument; got: {}",
+        actual(src)
+    );
+}
+
+/// 第三行(**是旁路**):把**裸** `ERR` 藏进 `DICT` 交给别的函数,让调用方凭空
+/// 获得消费它的能力 —— 规范明文排除。钉住标准库没提供这种形状:
+/// `OR_ELSE` 始终不可导入。
+#[test]
+fn no_member_smuggles_a_bare_err_across_a_call_boundary() {
+    let src = r#"IMPORT("wlwl:std.result", ["OR_ELSE"])"#;
+    assert!(
+        matches("!E0023", &actual(src)),
+        "OR_ELSE must stay unimportable — see ADR-0029 D6"
+    );
 }
 
 /// 附录 A 镜像里也得有这一行(与 `stdlib_appendix_a_sync` 互补:那条对账

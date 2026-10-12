@@ -111,12 +111,20 @@ const NAMESPACE_META: &[(&str, &str, &str)] = &[
     // ⚠ `HTTP_*` 是**阻塞原语**,且该裁决(`ADR-0028` D1)是**带条件冻结**的 ——
     // 冻结前提是「`ADR-0017` Step 3 真 state-machine 续跑仍未落地」。
     ("wlwl:std.net", "R2", "v0.11.3"),
-    // [v0.11.3 M7 / addendum-11 W-02] `RESULT` 组合子。**R1 全员、零 kernel**。
+    // [v0.11.3 M7 / addendum-11 W-02] `RESULT` 组合子。
     // ⚠ 三条成员的 `ERR` 分支**不在成员体内执行** —— 语言规范 §8.2 规定实参为
     // `ERR` 时调用不求函数体(§8.3 注册表明文「不新增条目」),而「原样返还」恰好
     // 就是这三条在 `ERR` 上应有的行为。`OR_ELSE` / `ERR_MAP` / `ERR_OR_ELSE`
-    // 因此**不可实现**,惯用法见规范 §22。依据见 `ADR-0029` D1。
-    ("wlwl:std.result", "R1", "v0.11.3"),
+    // 因此**不可实现**,惯用法见规范 §22.3。依据见 `ADR-0029` D1 / D6。
+    // [v0.11.3 M7 / addendum-11 **W-04**] `RESULT_ALL` / `RESULT_ANY` 归 R2:
+    // 两者都要把 n 个载荷收成新数组,而 R1 累加链实测每翻一倍约 ×3
+    // (n=4000 时 765 ms)。`NULL_OR` 只二选一、不建数组,留 R1。
+    // ⇒ 本模块是**混合**模块(4 R1 + 2 R2)。
+    (
+        "wlwl:std.result",
+        "混合(R1 `RESULT_MAP`/`AND_THEN`/`FLATTEN`/`NULL_OR` + R2 `RESULT_ALL`/`RESULT_ANY`)",
+        "v0.11.3",
+    ),
 ];
 
 /// 一个命名空间的当前成员名册(实现真相)。

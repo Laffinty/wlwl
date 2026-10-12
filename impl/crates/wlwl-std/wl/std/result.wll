@@ -70,6 +70,30 @@ LET(FLATTEN, FUN((r),
      // 两种形状的合流点);否则原样包回 `OK`。
      IF(||(IS_OK(i), IS_ERR(i)), i, OK(i)))));
 
+// ── NULL_OR(v, default) -> v ─────────────────────────────────────────
+// `NULL` → `default`;**其余一切原样返回**,含 `""` / `[]` / `0` / `FALSE`。
+//
+// ⚠ **它不是 `UNWRAP_OR`**:`NULL` 不是 `ERR`。实参为 `ERR` 时本成员的体
+// 同样不执行(§8.2),`ERR` 原样成为调用结果 —— 这是**对的**:拿默认值去吞
+// 一个错误才是错的。实测 `NULL_OR(ERR("x"), 5)` 得 `ERR("x")`。
+//
+// ⚠ 判别器只能写 `==(TYPE(v), "NULL")` —— **没有 `IS_NULL` 这个内建**
+// (只有 `IS_OK` / `IS_ERR` / `BOOL` / `TYPE`)。
+LET(NULL_OR, FUN((v, d), IF(==(TYPE(v), "NULL"), d, v)));
+
+// ── RESULT_ALL(rs) / RESULT_ANY(rs) —— 归 R2 ─────────────────────────
+// 门面改名导出,实现见 `crates/wlwl-std/src/result.rs`(W-04)。
+//
+// 归层理由(实测):两者都要把 n 个载荷收集成新数组,而 R1 的累加链
+// `SET(acc, +(acc, [v]))` 每次复制整个数组 —— n 每翻一倍耗时约 ×3
+// (n=4000 时 765 ms)。与 `std.collection` 归层那十个成员同款理由。
+//
+// ⚠ **内核能看见容器里的 `ERR`,但门面式的逐元素闭包不能**:数组不是 `ERR`,
+// 整个数组原样到达内核;而 `ANY(rs, FUN((x), IS_ERR(x)))` / `MAP(rs, FUN((x), x))`
+// 都得 `E0102` —— 逐元素调用本身就是一次带 `ERR` 实参的调用(§8.2)。
+LET(RESULT_ALL, _RESULT_ALL);
+LET(RESULT_ANY, _RESULT_ANY);
+
 // EXPORT 顺序跟随标准库规范 §22 表格的行序;附录 A 镜像跟随本顺序。成员
 // **集合**由 `wlwl-eval/tests/result_contract.rs` 对 §22 表格做外部对照。
-EXPORT(["RESULT_MAP", "AND_THEN", "FLATTEN"]);
+EXPORT(["RESULT_MAP", "AND_THEN", "FLATTEN", "NULL_OR", "RESULT_ALL", "RESULT_ANY"]);
