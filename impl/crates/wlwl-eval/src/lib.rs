@@ -92,6 +92,274 @@ fn expr_mentions_this(e: &Expr) -> bool {
     }
 }
 
+// ── [v0.11.3 M7 / ADR-0032 D2 / PLAN S2] 累加器形态识别 ────────────────
+//
+// 目标形状(实测三种写法成本落在噪声内,见 ADR-0032 §1,所以**三种都要认**):
+//
+// ```wlwl
+// LET MUT(acc, []);
+// WHILE(<(i, n), (SET(acc, +(acc, [v])); SET(i, +(i, 1))));
+// ```
+//
+// **判据哲学:宁可 miss 多,不可误判。** miss 的后果只是性能没提升、语义完全正确;
+// 误判的后果是 `Cell` 逃出循环、共享语义与现在不同(PLAN §5 风险 2)。所以:
+// 任何看不懂的构造一律当「不是累加器」。
+//
+// 判据落在**循环体内的 `acc` 出现位置**上:`acc` 的每一次出现,要么是某条
+// `SET(acc, <追加>(acc, …))` 的目标位或那条追加的第一个实参,要么**判否**。
+
+/// 追加形态:`f(acc, …)`,`f` ∈ {`+`, `PUSH`, `CONCAT`}。
+fn is_acc_append(e: &Expr, acc: &str) -> bool {
+    use wlwl_ast::Expr as E;
+    let E::Call { name, args, .. } = e else {
+        return false;
+    };
+    if !matches!(name.as_str(), "+" | "PUSH" | "CONCAT") || args.is_empty() {
+        return false;
+    }
+    matches!(&args[0], E::Var(n, _) if n == acc)
+}
+
+/// 数 `acc` 的出现落在哪个角色:累加器位(`good`)还是别处(`bad`)。
+fn scan_acc_uses(e: &Expr, acc: &str, good: &mut usize, bad: &mut usize) {
+    use wlwl_ast::Expr as E;
+    match e {
+        E::Var(n, _) => {
+            if n == acc {
+                *bad += 1;
+            }
+        }
+        E::Call { name, args, .. } if name == "SET" && args.len() == 2 => {
+            let target_is_acc = matches!(&args[0], E::Var(n, _) if n == acc);
+            if target_is_acc && is_acc_append(&args[1], acc) {
+                // 目标位 + 追加的第一个实参 = 两个合法出现。
+                *good += 2;
+                // 追加的**其余**实参若再提 acc,那是「把 acc 当值用」⇒ 不合法。
+                if let E::Call { args: inner, .. } = &args[1] {
+                    for a in &inner[1..] {
+                        scan_acc_uses(a, acc, good, bad);
+                    }
+                }
+                return;
+            }
+            for a in args {
+                scan_acc_uses(a, acc, good, bad);
+            }
+        }
+        E::Call { args, .. } => args.iter().for_each(|a| scan_acc_uses(a, acc, good, bad)),
+        E::Literal(_, _) | E::Break { .. } | E::Continue { .. } => {}
+        E::Block { exprs, .. } | E::Array { items: exprs, .. } => {
+            exprs.iter().for_each(|a| scan_acc_uses(a, acc, good, bad));
+        }
+        E::Dict { entries, .. } => entries.iter().for_each(|(k, v)| {
+            scan_acc_uses(k, acc, good, bad);
+            scan_acc_uses(v, acc, good, bad);
+        }),
+        E::Let { value, .. } | E::LetPattern { value, .. } => scan_acc_uses(value, acc, good, bad),
+        E::If {
+            cond,
+            then_branch,
+            else_branch,
+            ..
+        } => {
+            scan_acc_uses(cond, acc, good, bad);
+            scan_acc_uses(then_branch, acc, good, bad);
+            if let Some(b) = else_branch {
+                scan_acc_uses(b, acc, good, bad);
+            }
+        }
+        E::While { cond, body, .. } => {
+            scan_acc_uses(cond, acc, good, bad);
+            scan_acc_uses(body, acc, good, bad);
+        }
+        E::For { iter, body, .. } => {
+            scan_acc_uses(iter, acc, good, bad);
+            scan_acc_uses(body, acc, good, bad);
+        }
+        E::Return { value, .. } => {
+            if let Some(v) = value {
+                scan_acc_uses(v, acc, good, bad);
+            }
+        }
+        // ⚠ 闭包捕获 acc ⇒ **逃逸**(生命周期跨出循环)。保守判否。
+        E::Fun { body, .. } => scan_acc_uses(body, acc, good, bad),
+        E::Ok { value, .. } | E::Err { value, .. } | E::Panic { value, .. } => {
+            scan_acc_uses(value, acc, good, bad)
+        }
+        E::Try { value, .. } | E::IsOk { value, .. } | E::IsErr { value, .. } => {
+            scan_acc_uses(value, acc, good, bad)
+        }
+        E::OrDie { value, default, .. } => {
+            scan_acc_uses(value, acc, good, bad);
+            scan_acc_uses(default, acc, good, bad);
+        }
+        E::Match {
+            value,
+            clauses,
+            default,
+            ..
+        } => {
+            scan_acc_uses(value, acc, good, bad);
+            scan_acc_uses(default, acc, good, bad);
+            clauses
+                .iter()
+                .for_each(|c| scan_acc_uses(&c.body, acc, good, bad));
+        }
+        E::Import { .. } | E::Export { .. } | E::Sealed { .. } => {}
+    }
+}
+
+/// 子树里是否出现过 `Var(name)`。
+///
+/// 用于把**循环计数器**从累加器候选里剔除:它必然出现在循环条件里,累加器不会。
+fn mentions_var(e: &Expr, name: &str) -> bool {
+    use wlwl_ast::Expr as E;
+    match e {
+        E::Var(n, _) => n == name,
+        E::Call { name: f, args, .. } => f == name || args.iter().any(|a| mentions_var(a, name)),
+        E::Literal(_, _) | E::Break { .. } | E::Continue { .. } => false,
+        E::Block { exprs, .. } | E::Array { items: exprs, .. } => {
+            exprs.iter().any(|a| mentions_var(a, name))
+        }
+        E::Dict { entries, .. } => entries
+            .iter()
+            .any(|(k, v)| mentions_var(k, name) || mentions_var(v, name)),
+        E::Let { value, .. } | E::LetPattern { value, .. } => mentions_var(value, name),
+        E::If {
+            cond,
+            then_branch,
+            else_branch,
+            ..
+        } => {
+            mentions_var(cond, name)
+                || mentions_var(then_branch, name)
+                || else_branch
+                    .as_deref()
+                    .is_some_and(|b| mentions_var(b, name))
+        }
+        E::While { cond, body, .. } => mentions_var(cond, name) || mentions_var(body, name),
+        E::For { iter, body, .. } => mentions_var(iter, name) || mentions_var(body, name),
+        E::Return { value, .. } => value.as_deref().is_some_and(|v| mentions_var(v, name)),
+        E::Fun { body, .. } => mentions_var(body, name),
+        E::Ok { value, .. } | E::Err { value, .. } | E::Panic { value, .. } => {
+            mentions_var(value, name)
+        }
+        E::Try { value, .. } | E::IsOk { value, .. } | E::IsErr { value, .. } => {
+            mentions_var(value, name)
+        }
+        E::OrDie { value, default, .. } => mentions_var(value, name) || mentions_var(default, name),
+        E::Match {
+            value,
+            clauses,
+            default,
+            ..
+        } => {
+            mentions_var(value, name)
+                || mentions_var(default, name)
+                || clauses.iter().any(|c| mentions_var(&c.body, name))
+        }
+        E::Import { .. } | E::Export { .. } | E::Sealed { .. } => false,
+    }
+}
+
+/// [PLAN S2] 返回该循环体里**唯一**的累加器名;任何歧义或可疑一律 `None`。
+fn recognize_accumulator(cond: &Expr, body: &Expr) -> Option<String> {
+    // 第一遍:找出所有「像累加器」的 `SET(acc, 追加(acc, …))`,收候选名。
+    let mut candidates: Vec<String> = Vec::new();
+    collect_acc_candidates(body, &mut candidates);
+    // 去重且**必须恰好一个** —— 两个不同的累加器不是本判据覆盖的形状。
+    candidates.sort();
+    candidates.dedup();
+    // ⚠ **计数器也是候选**:`SET(i, +(i, 1))` 与累加器同形。第一版就是在这里
+    // 把规范累加器判成了 miss(candidates = ["a", "i"],「恰好一个」不成立)。
+    //
+    // 判别式:**出现在循环条件里的候选是计数器,不是累加器** —— 计数器必然参与
+    // 「还要不要继续」的判断,累加器不参与。先按条件剔除,再要求**恰好剩下一个**;
+    // 剩下两个说明真的有两个累加器,那不是本判据覆盖的形状,判否。
+    candidates.retain(|n| !mentions_var(cond, n));
+    if candidates.len() != 1 {
+        return None;
+    }
+    let acc = candidates.into_iter().next()?;
+    // 第二遍:acc 的**每一次**出现都必须在累加器位。
+    let (mut good, mut bad) = (0usize, 0usize);
+    scan_acc_uses(body, &acc, &mut good, &mut bad);
+    if good > 0 && bad == 0 {
+        Some(acc)
+    } else {
+        None
+    }
+}
+
+fn collect_acc_candidates(e: &Expr, out: &mut Vec<String>) {
+    use wlwl_ast::Expr as E;
+    match e {
+        E::Call { name, args, .. } if name == "SET" && args.len() == 2 => {
+            if let E::Var(n, _) = &args[0] {
+                if is_acc_append(&args[1], n) {
+                    out.push(n.clone());
+                }
+            }
+            args.iter().for_each(|a| collect_acc_candidates(a, out));
+        }
+        E::Call { args, .. } => args.iter().for_each(|a| collect_acc_candidates(a, out)),
+        E::Block { exprs, .. } | E::Array { items: exprs, .. } => {
+            exprs.iter().for_each(|a| collect_acc_candidates(a, out));
+        }
+        E::Dict { entries, .. } => entries.iter().for_each(|(k, v)| {
+            collect_acc_candidates(k, out);
+            collect_acc_candidates(v, out);
+        }),
+        E::Let { value, .. } | E::LetPattern { value, .. } => collect_acc_candidates(value, out),
+        E::If {
+            cond,
+            then_branch,
+            else_branch,
+            ..
+        } => {
+            collect_acc_candidates(cond, out);
+            collect_acc_candidates(then_branch, out);
+            if let Some(b) = else_branch {
+                collect_acc_candidates(b, out);
+            }
+        }
+        E::While { cond, body, .. } => {
+            collect_acc_candidates(cond, out);
+            collect_acc_candidates(body, out);
+        }
+        E::For { iter, body, .. } => {
+            collect_acc_candidates(iter, out);
+            collect_acc_candidates(body, out);
+        }
+        E::Return { value: Some(v), .. } => collect_acc_candidates(v, out),
+        E::Return { .. } => {}
+        E::Fun { body, .. } => collect_acc_candidates(body, out),
+        E::Ok { value, .. } | E::Err { value, .. } | E::Panic { value, .. } => {
+            collect_acc_candidates(value, out)
+        }
+        E::Try { value, .. } | E::IsOk { value, .. } | E::IsErr { value, .. } => {
+            collect_acc_candidates(value, out)
+        }
+        E::OrDie { value, default, .. } => {
+            collect_acc_candidates(value, out);
+            collect_acc_candidates(default, out);
+        }
+        E::Match {
+            value,
+            clauses,
+            default,
+            ..
+        } => {
+            collect_acc_candidates(value, out);
+            collect_acc_candidates(default, out);
+            clauses
+                .iter()
+                .for_each(|c| collect_acc_candidates(&c.body, out));
+        }
+        _ => {}
+    }
+}
+
 /// [v0.10.2] WLWL 调用深度上限,超过即报 `E0101`。
 ///
 /// **这个数字是标定 + 保守取值的结果,不是拍脑袋。** 两条约束方向相反:
@@ -6183,6 +6451,17 @@ impl ClockBubble {
 
 pub struct Evaluator {
     env: Env,
+    /// [v0.11.3 M7 / `ADR-0032` D3] 累加器识别的 **hit / miss** 计数。
+    ///
+    /// ⚠ **`ADR-0025` Q3 的第一件可观测性**:「模式识别漏了」不能是静默的性能
+    /// 回退,必须是**可测事实**。`hit` = 判为累加器,`miss` = 判否(含「有歧义」
+    /// 与「看不懂的构造」)。测试与基准读它们,而不是读运行时警告 ——
+    /// **不走警告通道**(D11-022 已证 `StdCtx::warnings` 无人排空)。
+    ///
+    /// 用 `Cell<u64>` 而不是 `AtomicU64`:解释器是单线程的(§16.1 调度器边界),
+    /// 而 `AtomicU64` 会让 `Evaluator` 失去 `Sync` 之外的轻量性且无收益。
+    acc_opt_hit: std::cell::Cell<u64>,
+    acc_opt_miss: std::cell::Cell<u64>,
     /// [v0.11.3 M6 / addendum-01 B 片] 当前所处的假时钟气泡(方案 **B-简**)。
     ///
     /// **为什么是 `Evaluator` 的字段而不是 `StdCtx` 的字段**:`StdCtx` 是
@@ -6406,7 +6685,17 @@ impl Evaluator {
             current_method_instance: None,
             linear_this: None,
             scheduler: crate::runtime::Scheduler::new(),
+            acc_opt_hit: std::cell::Cell::new(0),
+            acc_opt_miss: std::cell::Cell::new(0),
         }
+    }
+
+    /// [v0.11.3 M7 / `ADR-0032` D3] 累加器识别的 `(hit, miss)` 计数。
+    ///
+    /// **只给测试与基准读**(`ADR-0025` Q3 第一件);**不做运行时警告** ——
+    /// D11-022 已证警告通道无人排空,走它等于静默丢弃。
+    pub fn accumulator_optimizer_counters(&self) -> (u64, u64) {
+        (self.acc_opt_hit.get(), self.acc_opt_miss.get())
     }
 
     /// Enable or disable strict-types boundary checks (Phase E1,
@@ -6479,6 +6768,8 @@ impl Evaluator {
             current_method_instance: None,
             linear_this: None,
             scheduler: crate::runtime::Scheduler::new(),
+            acc_opt_hit: std::cell::Cell::new(0),
+            acc_opt_miss: std::cell::Cell::new(0),
         }
     }
 
@@ -7412,6 +7703,17 @@ impl Evaluator {
     }
 
     fn eval_while(&mut self, cond: &Expr, body: &Expr) -> WlwlResult<Outcome> {
+        // [v0.11.3 M7 / ADR-0032 D3 / PLAN S2] 累加器识别。
+        //
+        // ⚠ **本步只识别并计数,不改变任何行为** —— 包装成 `Cell` 与三个内建的
+        // 就地分支是 S3。所以此刻无论 hit 还是 miss,程序结果都完全一样;计数的
+        // 作用是让「识别漏了多少」**可测**(ADR-0025 Q3 第一件),而不是静默的性能
+        // 回退。
+        if recognize_accumulator(cond, body).is_some() {
+            self.acc_opt_hit.set(self.acc_opt_hit.get() + 1);
+        } else {
+            self.acc_opt_miss.set(self.acc_opt_miss.get() + 1);
+        }
         loop {
             let c = self.eval_expr(cond)?;
             if c.signal != Signal::None {
