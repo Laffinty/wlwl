@@ -74,3 +74,10 @@ path = "benches/rand.rs"
 name = "accumulator"
 harness = false
 path = "benches/accumulator.rs"
+# [v0.11.3 M7 / addendum-10 W-07] `std.math` 统计族九成员的规模基准。
+# 另起文件:语料必须**乱序**(固定种子 LCG)—— `MEDIAN` / `PERCENTILE` 要排序,
+# 而 pdqsort 对已升序输入有快路径,`RANGE(0,n,1)` 会低估它们并让形状读数失真。
+[[bench]]
+name = "stats"
+harness = false
+path = "benches/stats.rs"
