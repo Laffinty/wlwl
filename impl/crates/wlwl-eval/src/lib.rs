@@ -7801,7 +7801,15 @@ impl Evaluator {
         self.acc_active.push(acc_name.clone());
         let out = self.eval_while_inner(cond, body);
         self.acc_active.pop();
-        let out = out?;
+        // ⚠ **先还原、再传播错误**。第一版把 `out?` 写在还原之前,于是循环若是
+        // **诊断错误**退出(`E0030` 之类),累加器就永远停在 `Cell` 上,与上面那句
+        // 「Cell 只是优化期间的临时表示」当场矛盾。
+        //
+        // 今天这不可观察(S1 的契约让 Cell 在 `TYPE` / `display` / `==` / 序列化上
+        // 与 `Array` 逐项相同),但它是**给未来埋的雷**:任何新写的、只对 `Array`
+        // 成立的分支(比如给某个内建再加一条 Array 专属快路)都会在这个出口上
+        // 静默走错分支。而诊断错误会中止整个程序,没有「谁来看这个值」来提醒
+        // —— 它只能靠这条不变量自己站住。
         if !already_cell {
             let after = self.env.get(&acc_name).map(|r| r.clone());
             if let Some(Value::Cell(c)) = after {
@@ -7809,7 +7817,7 @@ impl Evaluator {
                 self.env.set_local_mut(acc_name, Value::Array(items));
             }
         }
-        Ok(out)
+        out
     }
 
     fn eval_while_inner(&mut self, cond: &Expr, body: &Expr) -> WlwlResult<Outcome> {
@@ -23887,6 +23895,56 @@ entry = "main.wll"
             line.contains("IMPORT"),
             "the source line must be the offending one, got: {line}"
         );
+    }
+
+    /// [v0.11.3 M7 / ADR-0032 S3b] **诊断错误退出时,累加器也必须转回 `Array`。**
+    ///
+    /// 这条钉的是一句**不可观察的不变量**:`Cell` 是「优化期间的临时表示」,
+    /// 循环一退出(不论怎么退出)就不许留在环境里。今天它不可观察 —— S1 的契约
+    /// 让 `Cell` 在 `TYPE` / `display` / `==` / 序列化上与 `Array` 逐项相同 ——
+    /// 所以只能用内部状态来断言。
+    ///
+    /// ⚠ **为什么非钉不可**:写它的时候第一版已经把 `out?` 放在还原之前,于是
+    /// 循环走 `Err` 出口时累加器永远停在 `Cell`。诊断错误会中止整个程序,
+    /// 没有外部观察者,所以这条不变量只能靠测试自己站住 —— 而它正是未来任何
+    /// 「`Cell` 与 `Array` 走不同分支」的新代码的隐含前提。
+    #[test]
+    fn accumulator_is_restored_to_array_even_when_the_loop_errors() {
+        // `PUSH(1, 2)` 是 E0030(第一个实参不是数组),它在**识别命中**的
+        // 循环体里触发 ⇒ 包装成 Cell 之后才炸 ⇒ 正好是这条路径。
+        let src = "LET MUT(a, []);\n\
+                   LET MUT(i, 0);\n\
+                   WHILE(<(i, 3), (SET(a, +(a, [i])); SET(i, +(i, 1)); PUSH(1, 2)));\n\
+                   a\n";
+        let ast = parse(src, "t.wll").expect("parse");
+        let mut ev = Evaluator::new();
+        let err = ev.eval(&ast).expect_err("PUSH(1, 2) must raise E0030");
+        assert_eq!(err.diagnostic().code, ErrorCode::E0030);
+        // 识别确实命中过(否则这条断言压根没走到包装那一步,是空断言)。
+        assert_eq!(ev.accumulator_optimizer_counters(), (1, 0));
+        let slot = ev
+            .env
+            .get("a")
+            .map(|r| r.clone())
+            .expect("the accumulator binding must survive the error");
+        // ⚠ 失败信息**不能用 `type_name` / `value_type_name` 报变体** —— 两者对
+        // `Cell` 都返回 `array` / `ARRAY`(S1 的可观察面契约正是这么定的),等于
+        // 什么都没说。只能直接匹配 Rust 变体。
+        match &slot {
+            Value::Cell(_) => panic!(
+                "a Cell must never outlive the loop that created it, \
+                 even on the diagnostic-error exit"
+            ),
+            Value::Array(items) => assert_eq!(
+                items.len(),
+                1,
+                "the partially built accumulator must be restored intact, not truncated"
+            ),
+            other => panic!(
+                "expected Value::Array, got the {} variant",
+                type_name(other)
+            ),
+        }
     }
 }
 
