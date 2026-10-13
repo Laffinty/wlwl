@@ -22,6 +22,8 @@
 //! `NULL`。理由是 wlwl 没有浮点异常的传播约定(`/(0.0, 0.0)` 直接 `E1003`),让
 //! `NaN` 渗进统计量会让调用方**看不出**结果不可信,而 `NULL` 是看得见的。
 
+use std::collections::HashMap;
+
 use wlwl_error::ErrorCode;
 use wlwl_value::{Outcome, StdHost, Value};
 
@@ -138,18 +140,61 @@ pub fn mode(host: &mut dyn StdHost, args: Vec<Value>) -> R<Outcome> {
     if xs.is_empty() || !finite(&xs) {
         return Ok(null());
     }
-    let mut best: Option<f64> = None;
-    let mut best_n = 0usize;
-    for &x in &xs {
-        let n = xs.iter().filter(|y| **y == x).count();
-        if n > best_n {
-            best_n = n;
-            best = Some(x);
+    // [D13-015] 单趟 O(n) 计数。原实现对**每个**元素全量扫一遍数组数它的出现
+    // 次数 ⇒ Θ(n²)(每元素成本随 n 线性上涨,n = 100 000 外推约 1.36 s)。
+    //
+    // ⚠ **键不能直接用 `to_bits()`**:`0.0` 与 `-0.0` 的位模式不同
+    // (`0x0000…` vs `0x8000…`),会把它们拆成两组 ⇒ `MODE([0.0, NEG(0.0), 1.0])`
+    // 从 `0.0` 退化成 `NULL`。而 IEEE 下 `0.0 == -0.0` 为真,旧实现正是按 `==`
+    // 分组的,Python `statistics.mode` 也把它们当一组(dict 把 `-0.0` 哈希成 `0.0`)。
+    // ⇒ 键必须先把有符号零规范化掉,见 `mode_key`。
+    //
+    // ⚠ `f64` **没有实现 `Eq` / `Hash`**(`NaN` 不自反),所以 `HashMap<f64, _>`
+    // 连编译都过不了 —— 实现者必然要自己挑键表示,而两种显然的挑法
+    // (`to_bits()` 与 `total_cmp` 次序)**都**按符号区分零 ⇒ 这个坑是必踩的,
+    // 不是「小心一点就能避开」。契约 `mode_treats_signed_zeros_as_one_group_and_
+    // keeps_the_first_sign` 把它钉死,并做过负向验证(换回 `to_bits()` 即变红)。
+    let mut buckets: HashMap<u64, (usize, f64, usize)> = HashMap::new();
+    for (i, &x) in xs.iter().enumerate() {
+        match buckets.get_mut(&mode_key(x)) {
+            // 命中已有桶:只加计数,**保留首次出现的下标与原值**(符号就在原值里)。
+            Some(slot) => slot.2 += 1,
+            None => {
+                buckets.insert(mode_key(x), (i, x, 1));
+            }
         }
     }
-    match (best, best_n) {
-        (Some(x), n) if n > 1 => Ok(Outcome::normal(Value::Float(x))),
+    // 选「全局最大计数里的第一个」= 计数最大、并列时首次下标最小。
+    // ⚠ `buckets` 是 HashMap,`iter()` 顺序不确定 ⇒ 并列必须**显式**按下标比,
+    // 不能靠遍历顺序蒙对。旧实现的增量扫描恰好等价于此(第一次达到全局最大值的
+    // 元素把 `best` 顶上去,之后再也没有更大的计数能顶掉它),语义逐字保持。
+    let mut best: Option<(usize, f64, usize)> = None;
+    for (_, &(i, x, c)) in buckets.iter() {
+        match best {
+            None => best = Some((i, x, c)),
+            Some((bi, _, bc)) if c > bc || (c == bc && i < bi) => best = Some((i, x, c)),
+            Some(_) => {}
+        }
+    }
+    // ⚠ `c > 1` 是**与 Python 的有意分歧**(`statistics.mode([1])` 返回 `1`):
+    // 只出现一次 ⇒ 没有众数 ⇒ `NULL`。这一条不许在重写时"顺手对齐"。
+    match best {
+        Some((_, x, c)) if c > 1 => Ok(Outcome::normal(Value::Float(x))),
         _ => Ok(null()),
+    }
+}
+
+/// `MODE` 的桶键:把 `-0.0` 规范化成 `+0.0`,其余按位模式。
+///
+/// `finite()` 已在调用前排除 `NaN`,所以 `x == 0.0` 恰好就是「x 是某个有符号零」
+/// 的判定,不会误伤别的值。返回 `+0.0` 的位模式而非常量 `0`,是为了与分支里的
+/// `x.to_bits()` 保持同一种表示。
+#[inline]
+fn mode_key(x: f64) -> u64 {
+    if x == 0.0 {
+        0.0f64.to_bits()
+    } else {
+        x.to_bits()
     }
 }
 
