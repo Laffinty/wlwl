@@ -812,7 +812,7 @@ PRINT(n, u, s);
   there is not planned to be — build those yourself from `UNIFORM` (polar /
   inverse-transform) when you need them; that is your algorithm choice.
 
-### §9.6 `wlwl:std.sanitize` — the v0.11.3 three (stdlib §13)
+### §9.6 `wlwl:std.sanitize` — output safety across five contexts (stdlib §13)
 
 **Pick by output context. They are not interchangeable, and choosing the wrong
 one is an error, not caution:**
@@ -822,12 +822,38 @@ one is an error, not caution:**
 | `href="…"` / `src="…"` — a **URL** | `URL_ENCODE` (§9.1) | `HTML_ESCAPE` leaves `&` readable and does not percent-encode; `HTML_SANITIZE` will strip the attribute entirely if the scheme isn't on the list |
 | text or a quoted attribute — **markup** | `HTML_ESCAPE` | `HTML_SANITIZE` deletes every tag you wanted to keep |
 | **rich HTML** from an untrusted source | `HTML_SANITIZE` | `HTML_ESCAPE` shows the user the tags instead of removing them |
+| a **CSS identifier** — class / `id` / custom property | `CSS_ESCAPE_IDENT` | `HTML_ESCAPE` escapes the wrong set (`&` is legal in a CSS ident; `:` is not) |
+| a **CSS string literal** — e.g. `content:` | `CSS_ESCAPE_STRING` | an unescaped `"` ends the literal early |
+| a **CSS declaration** from untrusted input | `HTML_SANITIZE_CSS` — **allowlist first** | escaping alone never stops `expression(` / `url(javascript:)`; OWASP's CSS guidance leads with the allowlist for exactly this reason |
+| a URL you intend to put in `href` / `src` | `HTML_SANITIZE_URL` | `URL_ENCODE` percent-encodes but **does not** judge the scheme |
+| **server-rendered state** inlined into `<script>` | `HTML_SANITIZE_SCRIPT` | `JSON_STRINGIFY` alone is **not** an output-encoding function (see below) |
 
 | Member | Notes |
 |---|---|
 | `HTML_ESCAPE(data)` | Escapes **exactly five** ASCII chars: `&` `<` `>` `"` `'` (apostrophe → `&#39;`). Non-ASCII passes through byte-identical. |
 | `HTML_UNESCAPE(data)` | **Full** WHATWG table (2125 semicolon + 106 legacy entries). `&copy;` really decodes to `©`. Unknown named entities stay **verbatim** — that is HTML5's own tolerance, not a bug. |
 | `HTML_SANITIZE(data, policy?)` | Whitelist sanitizer. `policy` is an optional `DICT`; omit it for the built-in conservative one. |
+| `HTML_SANITIZE_SCRIPT(value)` | Serializes a **value** into a complete `<script type="application/json">…</script>` block. Takes a value, not a string — you cannot apply it partially. |
+| `CSS_ESCAPE_IDENT(s)` | CSSOM "serialize an identifier". `123` → `\31 23` (**with the trailing space** — it disambiguates the hex length); `-` → `\-`; `café` unchanged. |
+| `CSS_ESCAPE_STRING(s)` | CSSOM "serialize a string": wrapped in `"`. **`'` is not escaped** — CSSOM serializes strings with `"` always. |
+| `HTML_SANITIZE_CSS(text)` | Allowlist extractor over a **declaration list**. Two *separate* outcomes: a non-allowlisted property is **silently dropped** (that is the allowlist working), while a rejected construct (`@import`, `expression(`, `javascript:`, `behavior:`, `-moz-binding`, **any** `url(`) yields `ERR`. |
+| `HTML_SANITIZE_URL(u)` | Normalizes (trims control chars / surrounding whitespace) and judges the scheme with **the same logic** the sanitizer uses for `href`. Rejected → `ERR`. |
+
+⚠ **`JSON_STRINGIFY` alone is not enough for inline script.** OWASP states plainly
+that it "is not an output-encoding function": its output is valid JSON, but
+embedding it in HTML needs protection for the *destination* context. Measured here —
+`STRINGIFY` emits `<`, `>`, `&`, U+2028 and U+2029 **verbatim**. `HTML_SANITIZE_SCRIPT`
+turns exactly those five into `\uXXXX`, which removes every `<` and therefore every
+way to leave the script-data state. **It is total**: no value can make it fail on
+content, so the "forgot to harden it" failure mode does not exist.
+
+⚠ **`HTML_SANITIZE_URL` and the sanitizer agree by construction.** Both use one
+`scheme_allowed`; they are not two implementations that happen to look alike. If you
+ever see them disagree, one of them is wrong — that is a bug, not a policy.
+
+⚠ **`HTML_SANITIZE_CSS` drops silently but reports loudly, on purpose.** "Not on the
+allowlist" and "this is an attack" are different facts and the caller usually wants to
+tell them apart.
 
 **`HTML_SANITIZE` behaviour, in the order you will hit it:**
 
@@ -1147,7 +1173,24 @@ Beyond the top-24 in `SKILL.md`:
 - **"Sanitize the input" makes HTML safe** — FALSE, and OWASP calls input-side
   cleaning a last resort. `HTML_SANITIZE` belongs at the **output** point, for
   rich HTML only. For plain text or an attribute, use `HTML_ESCAPE`; for a URL,
-  `URL_ENCODE`. See §9.6 — the three are not interchangeable.
+  `URL_ENCODE`. See §9.6 — **none of them are interchangeable**, and picking the
+  wrong one is an error, not caution.
+- **Building an inline `<script>` payload by string concatenation** — FALSE, and
+  this is the one that bites. `STRINGIFY(user)` gives valid JSON, but it emits
+  `<`, `>`, `&`, U+2028 and U+2029 **verbatim**, so `</script>` in the data
+  closes the element early and the rest runs as markup. OWASP: "`JSON.stringify()`
+  is **not** an output-encoding function". Use `HTML_SANITIZE_SCRIPT(user)` — it
+  takes the **value**, serializes, hardens and wraps in one step, so there is no
+  partial application to forget. Its preferred form is still
+  `<script type="application/json">` read back with `JSON.parse` — see §9.6.
+- **`URL_ENCODE` makes a URL safe to put in `href`** — it percent-encodes, but it
+  does **not** judge the scheme; `javascript:alert(1)` encodes perfectly and is
+  still executable. Use `HTML_SANITIZE_URL` (or `HTML_SANITIZE`, which applies the
+  same scheme list to URL attributes).
+- **CSS-escaping makes untrusted CSS safe** — FALSE. OWASP's CSS guidance leads with
+  the **allowlist**, not escaping: an escaped `expression(` is still `expression(`.
+  Use `HTML_SANITIZE_CSS` for dynamic declarations; the two `CSS_ESCAPE_*` members
+  are for identifiers and string literals, not for vetting a whole stylesheet.
 - **`HTML_SANITIZE` "keeps what isn't dangerous"** — FALSE for tags: an
   off-whitelist tag is **removed** (only its text survives), and
   `script` / `style` / `iframe` go **with their contents**. It never round-trips:

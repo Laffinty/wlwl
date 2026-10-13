@@ -1,8 +1,7 @@
 # 13 · `std.sanitize` 扩展(CSS / JS 上下文转义 + 类型化收口)
 
-> **层级** L2 · **前置** 无 · **状态** 🟡 **W-01 已成文(待裁决),2026-10-13** —— [`ADR-0030`](../adr/0030-sanitize-extend-shape.md)
-> **规范登记** §14 已登记前两项;**第三项(类型化收口)被 §14 明确搁置** ——
-> 本份把它的前置条件写清
+> **层级** L2 · **前置** 无 · **状态** ✅ **整份结项(2026-10-13)** —— W-01…W-05 全部落地;[`ADR-0030`](../adr/0030-sanitize-extend-shape.md)**Accepted**;规范 §13.4 / §13.5 + 附录 A;skill §9.6。成员面 3 → 8(全库 172 → 176),契约 11 → 24 条
+> **规范登记** §14 前两项已结(CSS 做、JS 换题);**第三项(类型化收口)已调研并判为不适用** —— 否证记录已写进规范 §14,由契约 `typed_closure_rejection_record_stays_in_the_spec` 钉住
 
 ## 0. 契约摘要
 
@@ -198,4 +197,4 @@ ECMAScript 规范原文,不是实现输出**:
 | W-02 | CSS 转义族 + 契约(CSSOM / CSS Syntax 逐条) | ✅ **已改题为 `HTML_SANITIZE_SCRIPT`** —— ⚠ 计划原写的 W-02「CSS 转义族」被 `ADR-0030` D2 换掉:D1 说 CSS 做但**白名单高于转义**,D2 说 JS 侧真正的缺口不是通用转义器而是「JSON 内联加固」。本项先落 D2 的产物(它是**刚被裁决出来、且缺口有实测坐证**的那条),D1 的 CSS 族顺延到 W-03。规范新增 §13.4,契约 **11 → 17 条** | 待回e5ad7af
 | W-03 | \HTML_SANITIZE_CSS\ / \HTML_SANITIZE_URL\ + \CSS_ESCAPE_IDENT\ / \CSS_ESCAPE_STRING\ + **同款判定**断言 | ✅ **已落地** —— 四成员全 R2,规范新增 §13.5。⚠ **\HTML_SANITIZE_URL\ 复用 \ilter::scheme_allowed\(同一份逻辑 + 同一个默认 scheme 表)**,不是另写一份;契约 \html_sanitize_url_agrees_with_the_html_sanitizer\ 把同一组 URL 喂两个入口断言结论一致。两个转义器**逐条照抄 CSSOM §Common Serializing Idioms**并冻结现行版(2013 WD 版对 U+0000 是抛异常)。⚠ 实现顺序按 D1:白名单先于转义 | 56244a1 |
 | W-04 | 类型化收口 **ADR**(含「不适用」的否证结论) | ✅ **已并入 W-01** —— `ADR-0030` D3 判不适用,否证记录已写进规范 §14,契约 `typed_closure_rejection_record_stays_in_the_spec` 钉住它不被删 | — |
-| W-05 | skill 分工表扩 / 收口 | 未动工 | — |
+| W-05 | skill 分工表扩 / 收口 | ✅ **已落地** —— `reference.md` §9.6 的分工表从三行扩到**八行**(markup / rich HTML / URL / CSS 标识符 / CSS 字符串 / 动态 CSS / 进 `href` 的 URL / 内联 `<script>` 状态),成员表扩到 8 条;§20 反模式加三条:**「内联 JSON 用字符串拼接」**(OWASP 原话 + 本库实测 `STRINGIFY` 原样输出 `<` `>` `&` U+2028 U+2029)、**「`URL_ENCODE` 让 URL 对 `href` 安全」**(它百分号编码但**不判 scheme**)、**「CSS 转义让动态 CSS 安全」**(OWASP 口径是白名单优先);`SKILL.md` 指针同步。⚠ 原 §9.1「三行」的说法一并改成「**都不是彼此可替代的**」 | 待回填 |
