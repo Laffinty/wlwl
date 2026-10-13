@@ -1,7 +1,7 @@
 # 11 · `RESULT` 组合子(把 §8 的消费者名单变成可链的形态)
 
 > **层级** L2 · **硬前置** 00(R0 治本)
-> **状态** 🟡 **W-01 / W-02 已成文,2026-10-12** —— `ADR-0029`(已 Accepted,同日修订);**规范登记** 本批**不在** §14 清单里 —— 由本方案首次提出
+> **状态** ✅ **整份结项(2026-10-13)** —— W-01 / W-02 / W-04 / W-05 全部落地;`ADR-0029` **Accepted**(同日修订);规范 §22 + 附录 A;skill §9.15。⚠ 本份**不含** W-03(`UNWRAP` 专用诊断)—— 该问题在 W-01 实测中判为**不存在**(`UNWRAP` 已是全局内建且已有 `E0100`),只剩契约断言,已并入 W-02
 
 ## 0. 契约摘要
 
@@ -175,7 +175,7 @@ cargo check --locked -p wlwl-std --features real-ai
 | 5 模块登记 | ✅ `LANG_SOURCES` 登记 `std.result`;`NAMESPACE_META` 镜像同步 |
 | 6 probe | ✅ ≥ 2 条(`OK` 路径 + `ERR` 路径 + `FLATTEN` 四组合),`EXPECTED_CASE_COUNT` 同步 |
 | 7 附录 G | **不动**(`ERR_PAYLOAD` / `UNWRAP` 是既有内建) |
-| 8 skill 指针 | `SKILL.md` + `reference.md` §9.14(W-05);⚠ §9.1 那句 `AT_K(ERR_PAYLOAD(BASE64_DECODE(s)), …)` 的改写**改为 §22.3 惯用法** —— `RESULT_MAP` 帮不上解码失败这条(它收不到 `ERR`) |
+| 8 skill 指针 | ✅ `SKILL.md` + `reference.md` **§9.15**(⚠ 计划原写的「§9.14」是过时占位,那一节已归 `std.net`);并把 §9.1 里那句 `AT_K(ERR_PAYLOAD(BASE64_DECODE(s)), …)` **保持原样** —— ⚠ `RESULT_MAP` 帮不上解码失败这条(它收不到 `ERR`),该节加了一句指回 §9.15 |
 | 9 CHANGELOG | 成员面 **+3**;命名空间 +1 |
 
 ## 6. 风险与已知代价
@@ -207,4 +207,5 @@ cargo check --locked -p wlwl-std --features real-ai
 | W-02 | 判别 / 透传 / 展平族 + 契约(**不依赖 00**) | ✅ **已落地** —— `wl/std/result.wll` 三成员(`RESULT_MAP` / `AND_THEN` / `FLATTEN`)+ 规范 §22 + 附录 A 镜像 + `NAMESPACE_META` + `tests/result_contract.rs`。⚠ **核心不变量的断言口径已改**:正确性来自 §8.2(体不执行),不是成员体内 `IF` 短路 —— 原计划「`f` 不被调用」那条是**空证** | `ac95456` |
 | W-03 | `UNWRAP` 专用诊断 + 契约 | 未动工 | — |
 | W-04 | `RESULT_ALL` / `RESULT_ANY` / `NULL_OR` + 契约 | ✅ **已落地** —— `RESULT_ALL` / `RESULT_ANY` 归 **R2**(`src/result.rs`,kernel 注入 + 门面改名导出),`NULL_OR` 留 R1;规范新增 §22.5;契约 **12 → 15 条**。⚠ **实测翻转两处**:① §8.2 的墙对**容器元素同样成立**(`ANY` / `MAP` 逐元素调用都得 `E0102`),所以**不能**用「谓词闭包」实现;② 成员收**数组**时整个数组原样到达,可逐个读 `Value::Err` 而**全程不调闭包** ⇒ 可实现,且**刻意不接受谓词参数**。归 R2 的理由是实测的 R1 累加链曲线(n 每翻一倍约 ×3) | `95cb4d2` |
-| W-05 | §9.1 文档改写 / 性能 / 收口 | 未动工 | — |
+| W-03 | `UNWRAP` 专用诊断 + 契约 | ✅ **已并入 W-02** —— 计划担心的「专用码」问题**不存在**:`UNWRAP` 已是全局内建,失败码本就是 `E0100`(不是 `E0102`)。无需新诊断码,只剩契约断言 | — |
+| W-05 | §9.1 文档改写 / 性能 / 收口 | ✅ **已落地** —— ① `reference.md` 新增 **§9.15**(`std.result` 六成员 + 四条最容易踩的坑),`SKILL.md` 加指针条目;⚠ 计划原写的「§9.14」是过时占位(该节已归 `std.net`)。② §9.1 那句 `AT_K(ERR_PAYLOAD(BASE64_DECODE(s)), …)` **保持原样**并加了一句指回 §9.15 —— `RESULT_MAP` 帮不上解码失败这条(它收不到 `ERR`)。③ 性能**只记读数不设闸**,已追加 `benches/baseline.txt` **段十**:同形状基线相减后 `RESULT_MAP` 8 209 ns / `AND_THEN` 8 216 ns / `FLATTEN` 4 369 ns / `NULL_OR` 3 793 ns / `RESULT_ALL`(R2) 1 389 ns / `RESULT_ANY`(R2) 2 197 ns。**R2 比 R1 快约 6 倍**,是 D7 归层的实测佐证。⚠ 读数是**解释器端到端**的(循环 + SET + 值克隆 + 成员),不是成员逻辑成本;第一版曾因「跨形状减基线」得出 −9 ns / −68 µs 的纯噪声,已修正为每个形状各配自己的基线 | 待回填 |

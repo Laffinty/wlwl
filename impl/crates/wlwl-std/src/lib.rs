@@ -27,6 +27,12 @@
 //!   - `wlwl:std.net` — `URL_PARSE` / `URL_JOIN`(v0.11.3 M6 / addendum-05
 //!     W-02,RFC 3986 通用语法)。`HTTP_*` 属 W-03,形态由 `ADR-0028` 定死:
 //!     **明文 HTTP only、零新增依赖、`HTTP_*` 是阻塞原语**(D1 带条件冻结)。
+//!   - `wlwl:std.result` — `RESULT_MAP` / `AND_THEN` / `FLATTEN` / `NULL_OR`
+//!     (v0.11.3 M7 / addendum-11 W-02 + W-04,R1 门面)+ `RESULT_ALL` /
+//!     `RESULT_ANY`(W-04 归 R2)⇒ 本模块是**混合**模块,见 [`result`]。
+//!     ⚠ 这三条 R1 的 `ERR` 分支**不在成员体内执行**(语言规范 §8.2:实参为
+//!     `ERR` ⇒ 不求函数体),`OR_ELSE` / `ERR_MAP` / `ERR_OR_ELSE` 因此
+//!     **不可实现** —— 依据见 `ADR-0029` D1 / D6。
 //!   - `wlwl:std.sanitize` — `HTML_ESCAPE` / `HTML_UNESCAPE` / `HTML_SANITIZE`
 //!     输出安全(旗舰特色功能,v0.11.3,stdlib §13)。**全员 R2、性能入契约**:
 //!     转义 / 解码 / 净化都要处理文档级输入,而解释器侧字符串与数组构建超线性
@@ -717,6 +723,13 @@ mod tests {
             // `NFD` / `NFC_QC` 三个成员是 `std.text` 的,本模块不持 SPEC,
             // 只被它们转发调用。
             "unicode.rs",
+            // [v0.11.3 M7 / addendum-11 W-04] `std.result` 的 R2 内核。
+            // 同 `collection.rs`:内核代码跟它服务的模块放一起,故本模块不持
+            // `SPEC` —— 成员名册由 `wl/std/result.wll` 的 `EXPORT` 决定
+            // (`RESULT_ALL` / `RESULT_ANY` 走 kernel 注入 + 门面改名导出,
+            // `EXPORT` 里仍是用户可见的名字)。W-02 那三条与 `NULL_OR` 是纯
+            // R1,不需要任何内核。
+            "result.rs",
         ];
         let mut files: Vec<String> = std::fs::read_dir("src")
             .expect("unit tests run with the package root as cwd")

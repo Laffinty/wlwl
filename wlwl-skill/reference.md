@@ -205,7 +205,8 @@ Full member lists live with the v0.11 namespaces: `std.collection` /
 `std.json` / `std.fs` / `std.test` / `std.format` / `std.io` / `std.ai` /
 `std.agent` / `std.encode` are listed in `SKILL.md` "Standard library pointers";
 the **v0.11-new** namespaces `std.str` and `std.math` have signed tables in
-§9.3 / §9.5 below, and the **v0.11.3-new** `std.sanitize` in §9.6. Concurrent
+§9.3 / §9.5 below, and the **v0.11.3-new** `std.sanitize` in §9.6 and
+`std.result` in **§9.15**. Concurrent
 and OOP primitives are **global**, not under `wlwl:std.*`.
 The authoritative registry of every global builtin (106 entries) is
 `../docs/appendix_G.md`.
@@ -396,6 +397,10 @@ rather than a lossy `U+FFFD` substitution — so
 `AT_K` is **not** an ERR consumer; without `ERR_PAYLOAD` the ERR propagates
 to `E0102`.
 
+⚠ **This shape stays as-is — `std.result` cannot shorten it** (§9.15). The
+combinators' `ERR` branches never run (§8.2), so a decode failure has to be
+inspected in the caller's own scope, exactly as written above.
+
 > *Measured on wlwl 0.11.2 (2026-10-02):* `BASE64_ENCODE("foobar")` =
 > `Zm9vYmFy`; `URL_ENCODE("a b&c=d")` = `a%20b%26c%3Dd`; `URL_DECODE("a+b")` =
 > `a+b`; `BASE64_DECODE("!!!")` → `ERR([kind: DecodeError, ...])`. Full vector
@@ -562,6 +567,60 @@ HTTP_REQUEST("PUT", "http://example.com/api", "payload");
   the guard `adr_conditional_guard.rs` turns red and **D1 must be re-decided** —
   the blocking cost (and with it the 30 s timeout floor) would no longer be
   necessary.
+
+### §9.15 `wlwl:std.result` — `OK` / `ERR` combinators (stdlib §22, v0.11.3)
+
+```wlwl
+IMPORT("wlwl:std.result", ["RESULT_MAP", "AND_THEN", "FLATTEN", "NULL_OR"]);
+
+// Composing steps that may fail.
+RESULT_MAP(OK(5), FUN((x), +(x, 1)));          // OK(6)
+AND_THEN(OK(3), FUN((x), OK(+(x, 1))));        // OK(4)
+FLATTEN(OK(OK(7)));                            // OK(7)
+
+// Anything that isn't NULL passes through untouched.
+NULL_OR(NULL, 5);                              // 5
+NULL_OR("", 5);                                // ""      ← not NULL
+NULL_OR([], 5);                                // []      ← not NULL
+```
+
+- ⚠ **`RESULT_MAP` is not `MAP`.** `std.collection` has exported `MAP` since
+  v0.10; importing both in one scope is a hard **`E0021`** (it refuses rather
+  than shadowing). `AND_THEN` / `FLATTEN` / `NULL_OR` collide with nothing.
+- ⚠ **These three cannot see an `ERR`.** Per §8.2 a call whose **argument** is an
+  `ERR` never evaluates the callee's body — the `ERR` *becomes the result*. The
+  registry check is keyed on the **callee's name**, and §8.3 says the registry
+  takes no new entries. So `RESULT_MAP(ERR(e), f)` returns `ERR(e)` **because the
+  body never ran**, not because the member inspected it. Don't read a passing
+  counter as evidence that the `ERR` branch ran.
+- ⚠ **That same wall applies to collection elements.** Handing an `ERR` element to
+  any closure is itself such a call: `ANY(rs, FUN((x), IS_ERR(x)))` and
+  `MAP(rs, FUN((x), x))` both die with `E0102`. This is why `RESULT_ALL` /
+  `RESULT_ANY` **take no predicate argument** — they inspect elements themselves.
+- ⚠ **`OR_ELSE` / `ERR_MAP` / `ERR_OR_ELSE` do not exist.** Their `ERR` branches
+  have to *do* something (take the payload, call a fallback, replace the payload)
+  and the body never runs, so no implementation layer can. Branch in your own
+  scope instead — that is exactly what §8.2's corollary prescribes:
+
+  ```wlwl
+  // OR_ELSE(r, fallback):  ERR(e) -> fallback(e)
+  LET(r, risky());
+  LET(p, ERR_PAYLOAD(r));                  // consume HERE, in the owning scope
+  LET(y, IF(IS_ERR(r), fallback(p), r));   // IF short-circuits: only one branch runs
+  ```
+
+- ⚠ **`AND_THEN` does not re-wrap.** It returns `f(x)` **verbatim**, so a bare
+  value from `f` breaks the chain: `AND_THEN(OK(3), FUN((x), +(x, 1)))` is `4`,
+  not `OK(4)`. Same contract as Rust's `and_then` — `f` must return a `RESULT`.
+- ⚠ **`RESULT_MAP` nests.** `RESULT_MAP(OK(1), FUN((x), ERR(e)))` is
+  `OK(ERR(e))`. That is what `FLATTEN` is for.
+- ⚠ **`NULL_OR` is not `UNWRAP_OR`, and there is no `IS_NULL`.** `NULL` is not
+  `ERR`: `""` / `[]` / `0` / `FALSE` all pass through, and an `ERR` argument
+  **propagates** rather than taking the default (swallowing an error into a
+  default would be wrong). The only discriminator is `==(TYPE(v), "NULL")` — a
+  truthiness test like `IF(v, …)` would swallow `""` / `[]` / `0` too.
+- `UNWRAP` stays a **global builtin** and is not re-exported here; it fails with
+  `E0100` PANIC, which is a different code from `E0102` ("`ERR` reached the top").
 
 ### §9.13 `wlwl:std.compress` — Zstandard and the DEFLATE family (stdlib §20, v0.11.3)
 
