@@ -5873,6 +5873,18 @@ fn value_to_json_value(v: &Value) -> Option<serde_json::Value> {
             }
             serde_json::Value::Array(arr)
         }
+        // [v0.11.3 M7 / ADR-0032] 累加器 cell 必须**序列化成 `Array`** ——
+        // `Cell` 是**运行期实现细节**,不能出现在任何序列化产物里。
+        // 借出后逐元素转,借来的引用必须在这里释放(否则持有它时若去 borrow_mut
+        // 同一个 cell 会撞 `RefCell` 的运行期借用检查)。
+        Value::Cell(c) => {
+            let items = c.borrow();
+            let mut arr = Vec::with_capacity(items.len());
+            for item in items.iter() {
+                arr.push(value_to_json_value(item)?);
+            }
+            serde_json::Value::Array(arr)
+        }
         Value::Dict(entries) => {
             let mut obj = serde_json::Map::new();
             for (k, val) in entries {

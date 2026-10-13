@@ -37,6 +37,70 @@ use wlwl_error::{ErrorCode, Location, WlwlDiagnostic, WlwlError};
 /// is by **identity** (`Rc::ptr_eq`), consistent with how the
 /// existing handle variants (`TaskHandle`, `ChannelHandle`) compare
 /// by their `id` + `generation` fields rather than by deep value.
+/// [v0.11.3 M7 / `ADR-0032` D1 + D4 / addendum-00 `L0-B`] 累加器的共享可变数组。
+///
+/// **为什么要有它**:`Value::Array` 是纯 owned `Vec`,于是 `PUSH` / `+(a,[x])` /
+/// `CONCAT` 每次都 `clone()` 整个数组 —— 用户代码里的累加器因此是超线性的
+/// (`ADR-0032` §1 实测:每元素 44 847 → 117 437 ns,n 从 1 000 到 8 000)。
+/// 本类型是那三个内建的**就地追加**落点。
+///
+/// ⚠ **它必须与 `Array` 在所有可观察面上完全一致** —— `TYPE` / `display` /
+/// `==` / 序列化 / 诊断措辞。这是 (c) 路线的全部意义:现有 `Array` 与它的
+/// 244 处用法一字不动,只有被识别成累加器的数组才会变成 `Cell`。
+///
+/// ⚠ **克隆是深拷贝,不是共享**。`#[derive(Clone)]` 会让 `Rc` 共享 cell,
+/// 那会让 `LET(b, a)` 之后改 `a` 连带改 `b` —— **静默破坏不可变性语义**。
+/// 所以这里手写 `Clone`:深拷贝,行为与 `Array` 一致。性能收益来自
+/// 内建里的**就地分支**(PLAN S3),不来自克隆共享。
+#[derive(Debug)]
+pub struct CellVec(std::rc::Rc<std::cell::RefCell<Vec<Value>>>);
+
+impl CellVec {
+    /// 新建一个独立 cell。
+    pub fn new(items: Vec<Value>) -> Self {
+        CellVec(std::rc::Rc::new(std::cell::RefCell::new(items)))
+    }
+
+    /// 是否与 `other` **就是同一个** cell(同一 `Rc`)。
+    ///
+    /// 相等性必须先用它短路:两个 `Rc` 指向同一 cell 时直接判 `true`,
+    /// 不去 `borrow()` —— 否则同一 cell 上「借出比对」会撞
+    /// `RefCell` 的运行期借用检查。
+    pub fn ptr_eq(&self, other: &Self) -> bool {
+        std::rc::Rc::ptr_eq(&self.0, &other.0)
+    }
+
+    /// 只读借用。**调用方不得在持有它时去 `borrow_mut` 同一个 cell。**
+    pub fn borrow(&self) -> std::cell::Ref<'_, Vec<Value>> {
+        self.0.borrow()
+    }
+
+    /// 可变借用(仅 S3 的内建分支用)。
+    pub fn borrow_mut(&self) -> std::cell::RefMut<'_, Vec<Value>> {
+        self.0.borrow_mut()
+    }
+}
+
+/// 深拷贝 —— 与 `Value::Array` 的克隆语义一致,**不**共享 cell。
+///
+/// ⚠ 这一条是 S1 的关键不变量:若让 `Rc` 共享,`LET(b, a)` 之后改 `a` 会连带
+/// 改 `b`,那是**静默**的可观察语义破坏,而 §6.6 的性能收益并不依赖它。
+impl Clone for CellVec {
+    fn clone(&self) -> Self {
+        CellVec(std::rc::Rc::new(std::cell::RefCell::new(
+            self.0.borrow().clone(),
+        )))
+    }
+}
+
+/// 打印成 `[1, 2]` 而不是 `RefCell { value: [1, 2] }` —— 调试输出也是可观察面。
+impl std::fmt::Display for CellVec {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        let parts: Vec<String> = self.0.borrow().iter().map(|v| v.display()).collect();
+        write!(f, "[{}]", parts.join(", "))
+    }
+}
+
 #[derive(Debug, Clone)]
 pub enum Value {
     Integer(i64),
@@ -45,6 +109,11 @@ pub enum Value {
     Boolean(bool),
     Null,
     Array(Vec<Value>),
+    /// [v0.11.3 M7 / `ADR-0032` D1] 累加器的共享可变数组。**可观察面必须与
+    /// `Array` 一致**(`TYPE` 给 `"array"`、`==` 深比较、序列化产出 `Array`)。
+    /// 只有被识别成「循环局部累加器」的数组才会用它(PLAN S2);其余一律是
+    /// `Array`,那 244 处用法一字未动。
+    Cell(CellVec),
     Dict(Vec<(Value, Value)>),
     /// §8.2 function literal with captured environment (clone-based closure).
     Closure {
@@ -238,6 +307,8 @@ impl Value {
                 let parts: Vec<String> = items.iter().map(|v| v.display()).collect();
                 format!("[{}]", parts.join(", "))
             }
+            // ⚠ `Cell` 与 `Array` **必须渲染完全一样** —— 渲染是可观察面。
+            Value::Cell(c) => c.to_string(),
             Value::Dict(entries) => {
                 let parts: Vec<String> = entries
                     .iter()
@@ -888,6 +959,8 @@ pub fn type_name(v: &Value) -> &'static str {
         Value::Boolean(_) => "boolean",
         Value::Null => "null",
         Value::Array(_) => "array",
+        // ⚠ 变体名**不外泄**:用户看 `TYPE` 只能看到 `array`,分不清内部表示。
+        Value::Cell(_) => "array",
         Value::Dict(_) => "dict",
         Value::Closure { .. } => "function",
         Value::NativeFn { .. } => "native-function",
@@ -937,6 +1010,10 @@ pub fn value_type_name(v: &Value) -> &'static str {
         // runtime value kind).
         Value::Class(_) => "CLASS",
         Value::Instance { .. } => "INSTANCE",
+        // [v0.11.3 M7 / ADR-0032] 累加器 cell。**必须与 `Array` 同名** ——
+        // 这个函数是用户可见的类型名,把 `CELL` 之类的新名字列出来等于让内部
+        // 表示泄到可观察面(与 `type_name()` 的 "array" 同理)。
+        Value::Cell(_) => "ARRAY",
     }
 }
 
@@ -950,6 +1027,31 @@ pub fn values_equal(a: &Value, b: &Value) -> bool {
         (Value::Boolean(x), Value::Boolean(y)) => x == y,
         (Value::Null, Value::Null) => true,
         (Value::Array(x), Value::Array(y)) => {
+            x.len() == y.len() && x.iter().zip(y.iter()).all(|(a, b)| values_equal(a, b))
+        }
+        // [v0.11.3 M7 / ADR-0032 D1] `Cell` 的相等性。
+        //
+        // ⚠ **三条要求,缺一不可**:
+        // ① 必须是**深比较** —— 照 `Class` / `Instance` 的身份先例办的话,
+        //    `[1,2] == [1,2]` 会变成 FALSE,那是可观察的语义破坏;
+        // ② 必须先 `ptr_eq` 短路 —— 同一 cell 时直接 true,**不去 borrow**。
+        //    否则「同一 cell 上借出比对」会撞 `RefCell` 的运行期借用检查而
+        //    panic(PLAN §5 风险 1);短路的副作用是「self 同 cell 恒等」,
+        //    那与深比较的结果一致,不会给出错误答案;
+        // ③ 必须覆盖 `Array` ↔ `Cell` 的**交叉**比较 —— 一个累加器可能在中途
+        //    才被识别成 cell,`[1,2] == cell([1,2])` 必须为 TRUE。
+        (Value::Cell(x), Value::Cell(y)) => {
+            x.ptr_eq(y) || {
+                let (x, y) = (x.borrow(), y.borrow());
+                x.len() == y.len() && x.iter().zip(y.iter()).all(|(a, b)| values_equal(a, b))
+            }
+        }
+        (Value::Array(x), Value::Cell(y)) => {
+            let y = y.borrow();
+            x.len() == y.len() && x.iter().zip(y.iter()).all(|(a, b)| values_equal(a, b))
+        }
+        (Value::Cell(x), Value::Array(y)) => {
+            let x = x.borrow();
             x.len() == y.len() && x.iter().zip(y.iter()).all(|(a, b)| values_equal(a, b))
         }
         (Value::Dict(x), Value::Dict(y)) => {
@@ -1303,5 +1405,102 @@ pub fn subst(p: &Proto, name: &str, repl: &Proto) -> Proto {
         // Nested μ rebinds the same name → stop (skeleton; no shadowing tests).
         Proto::Mu(v, body) if v == name => Proto::Mu(v.clone(), body.clone()),
         Proto::Mu(v, body) => Proto::Mu(v.clone(), Box::new(subst(body, name, repl))),
+    }
+}
+
+// ── [v0.11.3 M7 / ADR-0032 D1 / PLAN S1] 累加器 cell 的契约 ──────────────
+//
+// (c) 路线的**全部**立足点是:`Cell` 在每个可观察面上都必须与 `Array`
+// 完全一致。下面逐面钉住;任何一条改动都要先想清楚它是不是可观察的。
+
+#[cfg(test)]
+mod accumulator_cell_tests {
+    use super::*;
+
+    fn arr(n: i64) -> Value {
+        Value::Array(vec![Value::Integer(n), Value::Integer(n + 1)])
+    }
+    fn cell(n: i64) -> Value {
+        Value::Cell(CellVec::new(vec![Value::Integer(n), Value::Integer(n + 1)]))
+    }
+
+    /// 可观察面 ①:`display()` 逐字节一致。
+    #[test]
+    fn cell_displays_exactly_like_an_array() {
+        assert_eq!(cell(1).display(), arr(1).display());
+        assert_eq!(cell(1).display(), "[1, 2]");
+        // 空 cell 也不能是 `[]` 之外的任何东西
+        assert_eq!(Value::Cell(CellVec::new(vec![])).display(), "[]");
+    }
+
+    /// 可观察面 ②:两个类型名函数都报「数组」,变体名不外泄。
+    #[test]
+    fn cell_reports_the_array_type_name() {
+        assert_eq!(type_name(&cell(1)), "array");
+        assert_eq!(type_name(&cell(1)), type_name(&arr(1)));
+        assert_eq!(value_type_name(&cell(1)), "ARRAY");
+        assert_eq!(value_type_name(&cell(1)), value_type_name(&arr(1)));
+    }
+
+    /// 可观察面 ③:相等性是**深比较**,不是身份 —— 且覆盖 `Array` ↔ `Cell`
+    /// 的**交叉**比较(累加器可能在中途才被识别)。
+    #[test]
+    fn cell_equality_is_deep_not_identity() {
+        assert!(values_equal(&cell(1), &cell(1)));
+        assert!(!values_equal(&cell(1), &cell(2)));
+        // 交叉
+        assert!(values_equal(&cell(1), &arr(1)));
+        assert!(values_equal(&arr(1), &cell(1)));
+        assert!(!values_equal(&cell(1), &arr(2)));
+        assert!(!values_equal(&arr(1), &cell(2)));
+        // 长度不同
+        let shorter = Value::Cell(CellVec::new(vec![Value::Integer(1)]));
+        assert!(!values_equal(&shorter, &cell(1)));
+        // 与非数组不相等
+        assert!(!values_equal(&cell(1), &Value::Integer(1)));
+    }
+
+    /// ⚠ `ptr_eq` 短路必须真的短路:同一 cell 自比**不能** panic。
+    ///
+    /// 若相等性里少了这一步,「借出同一个 cell 比对」会撞 `RefCell` 的运行期
+    /// 借用检查 —— 那是一个 **panic**,不是可诊断的错误(PLAN §5 风险 1)。
+    #[test]
+    fn comparing_a_cell_with_itself_does_not_panic() {
+        let c = Value::Cell(CellVec::new(vec![Value::Integer(1), Value::Integer(2)]));
+        assert!(values_equal(&c, &c));
+        // 反复比 —— 借用检查的 panic 在这里就会现形
+        for _ in 0..1000 {
+            assert!(values_equal(&c, &c));
+        }
+    }
+
+    /// ⚠ **克隆是深拷贝**,不是共享 —— 否则 `LET(b, a)` 之后改 `a` 会连带改 `b`,
+    /// 那是静默的不可变性破坏,性能收益并不依赖它。
+    #[test]
+    fn cloning_a_cell_is_a_deep_copy() {
+        let a = Value::Cell(CellVec::new(vec![Value::Integer(1)]));
+        let mut b = a.clone();
+        match &mut b {
+            Value::Cell(c) => c.borrow_mut().push(Value::Integer(2)),
+            _ => panic!("expected Cell"),
+        }
+        // 改 b 不能影响 a
+        assert_eq!(a.display(), "[1]");
+        assert_eq!(b.display(), "[1, 2]");
+        // 且克隆出的不是同一个 cell
+        match (&a, &b) {
+            (Value::Cell(x), Value::Cell(y)) => assert!(!x.ptr_eq(y)),
+            _ => panic!("expected Cells"),
+        }
+    }
+
+    /// `borrow_mut` 就地追加是 S3 的落点;S1 先确认机制通。
+    #[test]
+    fn borrow_mut_appends_in_place() {
+        let c = CellVec::new(vec![Value::Integer(1)]);
+        c.borrow_mut().push(Value::Integer(2));
+        c.borrow_mut().push(Value::Integer(3));
+        assert_eq!(c.borrow().len(), 3);
+        assert_eq!(Value::Cell(c).display(), "[1, 2, 3]");
     }
 }
