@@ -6500,6 +6500,18 @@ pub struct Evaluator {
     /// 而 `AtomicU64` 会让 `Evaluator` 失去 `Sync` 之外的轻量性且无收益。
     acc_opt_hit: std::cell::Cell<u64>,
     acc_opt_miss: std::cell::Cell<u64>,
+    /// [v0.11.3 M7 / ADR-0032 D1 / PLAN S4] 当前**活跃**的累加器名栈。
+    ///
+    /// S3 之后 `SET(acc, OP(acc, x))` 已经走就地追加,但每轮仍有一次
+    /// O(n):`Expr::Var(acc)` 在 `eval_expr` 里做 `(*v).clone()`,而
+    /// `CellVec::clone()` 是**语义深拷贝**(给 `LET(b, a)` 用的那个出口)。
+    /// 于是「就地追加省下的拷贝」在下一行又还回去了。
+    ///
+    /// 这个栈是 S4 共享通道的**唯一开关**:只有当某个名字被识别成活跃累加器
+    /// 时,`acc_cell_share` 才肯把那个 cell **按引用**交给三个内建。栈而非单值,
+    /// 因为循环可嵌套 —— 内层循环若也识别命中,压自己的名字,退出时弹出,
+    /// 外层的名字自动复原;内层若 miss 则不压栈,外层照常有效。
+    acc_active: Vec<String>,
     /// [v0.11.3 M6 / addendum-01 B 片] 当前所处的假时钟气泡(方案 **B-简**)。
     ///
     /// **为什么是 `Evaluator` 的字段而不是 `StdCtx` 的字段**:`StdCtx` 是
@@ -6725,6 +6737,7 @@ impl Evaluator {
             scheduler: crate::runtime::Scheduler::new(),
             acc_opt_hit: std::cell::Cell::new(0),
             acc_opt_miss: std::cell::Cell::new(0),
+            acc_active: Vec::new(),
         }
     }
 
@@ -6808,6 +6821,7 @@ impl Evaluator {
             scheduler: crate::runtime::Scheduler::new(),
             acc_opt_hit: std::cell::Cell::new(0),
             acc_opt_miss: std::cell::Cell::new(0),
+            acc_active: Vec::new(),
         }
     }
 
@@ -7776,7 +7790,18 @@ impl Evaluator {
         // 终止循环并传播),也可能带 `RETURN` / `BREAK` 的信号。丢掉它就等于
         // 悄悄改了循环语义 —— `P_v10_2_while_body_err_propagates` 这条 probe
         // 当场抓到了。
-        let out = self.eval_while_inner(cond, body)?;
+        //
+        // [PLAN S4] 开共享通道:名字进栈,循环期间该名字的 cell 可以按引用
+        // 直接交给三个追加内建(可证安全见 `acc_cell_share` 的注释)。
+        //
+        // ⚠ **必须先 pop 再让错误传播出去**:`eval_while_inner` 可能 Err(诊断),
+        // 若沿用 `...?` 的写法,这条路径就把名字留在栈上了 —— 之后**完全无关**
+        // 的循环会误开共享通道。栈与控制流必须同生共死,所以先把结果收成
+        // `Result`,弹出,再 `?`。
+        self.acc_active.push(acc_name.clone());
+        let out = self.eval_while_inner(cond, body);
+        self.acc_active.pop();
+        let out = out?;
         if !already_cell {
             let after = self.env.get(&acc_name).map(|r| r.clone());
             if let Some(Value::Cell(c)) = after {
@@ -7979,11 +8004,60 @@ impl Evaluator {
     /// Behaviour is byte-identical to the for-loop in pre-slice-2
     /// `eval_call`; this commit only extracts it so `step_call` can
     /// reuse it.
-    fn eval_arg_values(&mut self, args: &[Expr], whitelisted: bool) -> WlwlResult<ArgEvalResult> {
+    /// [v0.11.3 M7 / ADR-0032 D1 / PLAN S4] 实参求值前的**共享通道**。
+    ///
+    /// S3 消掉了「追加时重建数组」,但每轮仍剩一次 O(n):`Expr::Var(acc)` 在
+    /// `eval_expr` 里走 `(*v).clone()`,而 `CellVec::clone()` 是语义深拷贝。
+    /// n 翻 8 倍时这一步就是 GB 级 memcpy —— 由 a·n + b·n² 双点拟合反解,
+    /// n=8000 处二次项约占总耗时六成(~260ms / 428ms)。所以 S3 只拿到了
+    /// 2.19×,而不是把累加器循环拉平成线性。
+    ///
+    /// 这里在**不求值**的前提下直接交出 `share()`。安全性不是「看起来没问题」,
+    /// 而是 S2 识别器已经证明过的:`recognize_accumulator` 命中意味着
+    /// `scan_acc_uses` 数出 `bad == 0` —— `acc` 在整个循环体里(含嵌套
+    /// `While`/`For`、含闭包体,`E::Fun` 是显式判否臂)只出现在
+    /// `SET(acc, 追加(acc, …))` 的目标位或那条追加的第一个实参。别处出现
+    /// ⇒ 直接判否 ⇒ 根本走不到这里。
+    ///
+    /// 于是「`acc` 被当值另存一份」这件事在识别命中的循环里**不存在**,
+    /// 深拷贝纯属白拷。三个内建的 cell 分支就地追加后返回 `share()` 同一个
+    /// cell,`SET` 再把它移回环境槽 —— 净效果与今天逐位相同。
+    ///
+    /// ⚠ 只认**第一个**实参:那是三个内建唯一的累加器位。落在第二实参
+    /// (`PUSH([1], acc)`)的 `acc` 是「当值用」,`scan_acc_uses` 已判否。
+    /// ⚠ 环境里查不到、或该槽不是 cell ⇒ 返回 `None` 交回 `eval_expr`,
+    /// 由它产出正常的值或 `undefined_name` 诊断。共享通道只做加法,不做拦截。
+    fn acc_cell_share(&self, callee: &str, arg: &Expr) -> Option<Value> {
+        if !matches!(callee, "+" | "PUSH" | "CONCAT") {
+            return None;
+        }
+        let Expr::Var(n, _) = arg else { return None };
+        if !self.acc_active.iter().any(|a| a == n) {
+            return None;
+        }
+        match self.env.get(n) {
+            Some(r) => match &*r {
+                Value::Cell(c) => Some(Value::Cell(c.share())),
+                _ => None,
+            },
+            None => None,
+        }
+    }
+
+    fn eval_arg_values(
+        &mut self,
+        callee: &str,
+        args: &[Expr],
+        whitelisted: bool,
+    ) -> WlwlResult<ArgEvalResult> {
         let mut accum: Vec<Value> = Vec::with_capacity(args.len());
         let mut pending_err: Option<Value> = None;
         for a in args {
-            let o = self.eval_expr(a)?;
+            // [PLAN S4] 活跃累加器 cell 走共享通道,跳过 `Expr::Var` 的深拷贝。
+            let o = match self.acc_cell_share(callee, a) {
+                Some(v) => Outcome::normal(v),
+                None => self.eval_expr(a)?,
+            };
             if o.signal != Signal::None {
                 return Ok(ArgEvalResult::Signal(o));
             }
@@ -8734,7 +8808,7 @@ impl Evaluator {
         // the same two helpers without forking the dispatch logic.
         let user_fn = self.env.get(name).map(|v| v.clone());
         let whitelisted = is_err_consumer(name);
-        let (accum, pending_err) = match self.eval_arg_values(args, whitelisted)? {
+        let (accum, pending_err) = match self.eval_arg_values(name, args, whitelisted)? {
             ArgEvalResult::Signal(o) => return Ok(o),
             ArgEvalResult::Done { accum, pending_err } => (accum, pending_err),
         };
@@ -8795,7 +8869,7 @@ impl Evaluator {
         // but the `ArgEvalResult::Signal` arm translates the inner
         // `Outcome` into a `StepResult` so the caller can react to
         // a `Yield` from inside the arg list.
-        let (accum, pending_err) = match self.eval_arg_values(args, whitelisted)? {
+        let (accum, pending_err) = match self.eval_arg_values(name, args, whitelisted)? {
             ArgEvalResult::Signal(o) => {
                 return self.outcome_to_step_result(o, span);
             }
