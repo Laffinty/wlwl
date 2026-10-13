@@ -664,6 +664,50 @@ v0.11.2 M2 追加(§6 表格即当前成员面;附录 A 镜像由 `gen-appendix-
 (与「比容差更直觉的**判定**」那句一致);返回「有效数字的**个数**」是另一个成员,
 且那不是判定。
 
+### 7.5 描述统计(`v0.11.3 M7 · ADDENDUM-10 · 规范性`)
+
+| 成员 | 层 | 语义 | `[]` 时 |
+|---|---|---|---|
+| `MEDIAN(arr)` | R2 | 排序后取中位;**偶数长度取中间两个的平均**(走 `f64`,整数 `/` 会截断) | `NULL` |
+| `MODE(arr)` | R2 | 出现次数最多的值;**并列取先出现者**;全部只出现一次 ⇒ 无众数 | `NULL` |
+| `VARIANCE_S(arr)` / `VARIANCE_P(arr)` | R2 | 样本(`n-1`) / 总体(`n`)方差,**显式分成两个成员** | `NULL` |
+| `STDDEV_S(arr)` / `STDDEV_P(arr)` | R2 | 同上,取平方根 | `NULL` |
+| `PERCENTILE(arr, p)` | R2 | `p ∈ [0, 100]`,**线性插值**(含端点) | `NULL` |
+| `CORRELATION(xs, ys)` | R2 | Pearson 相关系数;两数组须**等长** | — |
+| `LINEAR_FIT(xs, ys)` | R2 | 最小二乘直线 ⇒ `{"slope": FLOAT, "intercept": FLOAT}` | — |
+
+⚠ **本族不含 `MEAN`** —— `SUM` 加 `/` 已覆盖(`ADR-0031` D2)。
+
+⚠ **混装静默提升**(`ADR-0031` D3):`ARRAY[INTEGER]` 与 `ARRAY[FLOAT]` 混装
+**不**报 `E0030`,与既有 `SUM` 同口径。收紧就会与 `SUM` 分裂,而分裂意味着其中
+一处是错的。
+
+⚠ **「空」与「无定义」都返回 `NULL`,不用错误** —— 这条容易被读反:
+
+| 输入 | 结果 | 为什么 |
+|---|---|---|
+| `[]` | `NULL` | 没有样本,与 `std.collection` §5 一致 |
+| `[x]` 的**样本**方差 / 标准差 | `NULL` | 分母 `n-1 = 0`,**数学上无定义** |
+| `[x]` 的**总体**方差 / 标准差 | `0.0` | 分母 `n = 1`,有定义 |
+| 任一元素是 `NaN` / `±inf` | `NULL` | 见下 |
+| `CORRELATION` / `LINEAR_FIT` 任一方向方差为零 | `NULL` | 相关系数 / 斜率无定义,**不是 0** |
+| `PERCENTILE` 的 `p` 越界 | `NULL` | `p` 是**数据**不是参数错 |
+
+⚠ **`NaN` 不渗进统计量。** 理由是 wlwl 没有浮点异常的传播约定
+(`/(0.0, 0.0)` 直接 `E1003`),让 `NaN` 渗进统计量会让调用方**看不出**结果不可信,
+而 `NULL` 是看得见的。
+
+⚠ **`PERCENTILE` 的插值方式是可观察的**,故必须写明:同样一组数据,`p` 落在两个
+观测点之间时,线性 / 较低 / 较高 / 中点 / 哈德利五种方法给出**不同**的值。本规范
+取线性(含端点),等价于 NumPy `method="linear"` / Python
+`statistics.quantiles(method="inclusive")`。
+
+⚠ **`CORRELATION` 在 `n = 2` 时恒为 `±1`** —— 两点永远共线,这是数学事实不是缺陷。
+
+**正确性证据**:契约期望值取自 **Python `statistics` 模块**,**不是实现输出**。
+⚠ 一处**有意分歧**:Python 的 `statistics.stdev([7])` 抛 `StatisticsError`,本规范
+的 `STDDEV_S([7])` 返回 `NULL` —— 见上表「无定义用 `NULL`」那条口径。
+
 ### 7.1 M4 二十一个成员的设计取舍(v0.11.2,逐条写明)
 
 1. **`TRUNC` 不是全局 `INT` 的别名,但差别只在界外。** 界内两者逐字相同
@@ -2037,7 +2081,7 @@ then 支内(短路保证 `OK` 时不触发)。
 | `std.sanitize` | `HTML_ESCAPE` `HTML_UNESCAPE` `HTML_SANITIZE` `HTML_SANITIZE_SCRIPT` `CSS_ESCAPE_IDENT` `CSS_ESCAPE_STRING` `HTML_SANITIZE_CSS` `HTML_SANITIZE_URL` | R2 | v0.11.3 |
 | `std.collection` | `MAP` `FILTER` `REDUCE` `SORT` `SORT_BY` `ZIP` `RANGE` `ANY` `ALL` `FIND` `ENUMERATE` `TAKE` `DROP` `FLAT` `UNIQ` `GROUP_BY` `JOIN` `CHUNK` `WINDOW` `DEDUP_BY` `MIN_BY` `MAX_BY` `SUM` `PRODUCT` `FOLD_RIGHT` `POSITION` `KEY_BY` | 混合(R1 门面 + R2 `RANGE`/`MAP`/`FILTER`/`CHUNK`/`WINDOW`/`ENUMERATE`/`ZIP`/`UNIQ`/`FLAT`/`JOIN`/`GROUP_BY`/`DEDUP_BY`/`KEY_BY`) | v0.10 及以前(成员)/ v0.11(R1 重写,M5 起 RANGE 沉 R2)/ v0.11.3(M5 L0-A-2 加 MAP·FILTER·CHUNK·WINDOW,L0-A-3a 加 ENUMERATE·ZIP·UNIQ·FLAT·JOIN,L0-A-3b 加 GROUP_BY·DEDUP_BY·KEY_BY 沉 R2) |
 | `std.str` | `JOIN` `SPLIT_LINES` `CHAR_AT` `COUNT` `QUOTE` `INDEX_OF` `CONTAINS_SUB` | R1 | v0.11 / INDEX_OF、CONTAINS_SUB 于 v0.11.2 |
-| `std.math` | `ABS` `MIN` `MAX` `FLOOR` `CEIL` `ROUND` `SQRT` `POW` `CLAMP` `PI` `E` `LN` `LOG2` `LOG10` `EXP` `TRUNC` `SIN` `COS` `TAN` `ASIN` `ACOS` `ATAN` `ATAN2` `SINH` `COSH` `TANH` `SIGN` `DIV_CEIL` `GCD` `LCM` `IS_SQRT` `POW_MOD` `DECIMAL` `DECIMAL_ADD` `DECIMAL_SUB` `DECIMAL_MUL` `DECIMAL_DIV` `DECIMAL_CMP` `DECIMAL_TO_STRING` `DECIMAL_ROUND` `FRACTION` `FRACTION_ADD` `FRACTION_SUB` `FRACTION_MUL` `FRACTION_DIV` `FRACTION_CMP` `FRACTION_TO_STRING` `FRACTION_TO_DECIMAL` `APPROX_EQ` `IS_NAN` `IS_INF` `SIGNIFICANT_DIGITS` | 混合 | v0.11 |
+| `std.math` | `ABS` `MIN` `MAX` `FLOOR` `CEIL` `ROUND` `SQRT` `POW` `CLAMP` `PI` `E` `LN` `LOG2` `LOG10` `EXP` `TRUNC` `SIN` `COS` `TAN` `ASIN` `ACOS` `ATAN` `ATAN2` `SINH` `COSH` `TANH` `SIGN` `DIV_CEIL` `GCD` `LCM` `IS_SQRT` `POW_MOD` `DECIMAL` `DECIMAL_ADD` `DECIMAL_SUB` `DECIMAL_MUL` `DECIMAL_DIV` `DECIMAL_CMP` `DECIMAL_TO_STRING` `DECIMAL_ROUND` `FRACTION` `FRACTION_ADD` `FRACTION_SUB` `FRACTION_MUL` `FRACTION_DIV` `FRACTION_CMP` `FRACTION_TO_STRING` `FRACTION_TO_DECIMAL` `APPROX_EQ` `IS_NAN` `IS_INF` `SIGNIFICANT_DIGITS` `MEDIAN` `MODE` `VARIANCE_S` `VARIANCE_P` `STDDEV_S` `STDDEV_P` `PERCENTILE` `CORRELATION` `LINEAR_FIT` | 混合 | v0.11 |
 | `std.test` | `TEST` `ASSERT` `ASSERT_EQ` `ASSERT_NEQ` `EXPECT_ERR` `RUN_TESTS` | 混合 | v0.10 及以前(成员)/ v0.11(混合化) |
 | `std.ai` | `ASK` `EMBED` `COMPLETE` `ASK_STREAM` `ASK_ALL` | R2 | v0.10 及以前 |
 | `std.agent` | `TASK` `TOOL` `CALL_TOOL` `MODEL` `CONTEXT` | R2 | v0.10 及以前 |

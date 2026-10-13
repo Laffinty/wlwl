@@ -83,6 +83,7 @@ pub mod rand;
 pub mod regex;
 pub mod result;
 pub mod sanitize;
+pub mod stats;
 pub mod test_native;
 pub mod text;
 pub mod time;
@@ -282,6 +283,18 @@ pub static LANG_SOURCES: &[StdSource] = &[
             ("_IS_NAN", math_ext::is_nan as StdFn),
             ("_IS_INF", math_ext::is_inf as StdFn),
             ("_SIGNIFICANT_DIGITS", math_ext::significant_digits as StdFn),
+            // [v0.11.3 M7 / addendum-10 W-05] 描述统计族(§7.5)。⚠ **不含 `MEAN`**
+            // (ADR-0031 D2);混装沿用 `SUM` 的静默提升(ADR-0031 D3);
+            // 空数组与「统计量无定义」一律 `NULL`(见 `stats.rs` 文件头)。
+            ("_MEDIAN", stats::median as StdFn),
+            ("_MODE", stats::mode as StdFn),
+            ("_VARIANCE_S", stats::variance_s as StdFn),
+            ("_VARIANCE_P", stats::variance_p as StdFn),
+            ("_STDDEV_S", stats::stddev_s as StdFn),
+            ("_STDDEV_P", stats::stddev_p as StdFn),
+            ("_PERCENTILE", stats::percentile as StdFn),
+            ("_CORRELATION", stats::correlation as StdFn),
+            ("_LINEAR_FIT", stats::linear_fit as StdFn),
         ],
     },
     StdSource {
@@ -780,6 +793,12 @@ mod tests {
             // 实现(kernel 注入 + 门面改名导出,`EXPORT` 里是用户可见的名字)。
             // ⚠ 本文件**不含** `MEAN` —— `SUM` + `/` 已覆盖(ADR-0031 D2)。
             "math_ext.rs",
+            // [v0.11.3 M7 / addendum-10 W-05] `std.math` 的描述统计内核
+            // (`MEDIAN` / `MODE` / 方差·标准差的样本/总体两套 / `PERCENTILE` /
+            // `CORRELATION` / `LINEAR_FIT`)。同 `collection.rs`:成员名册由
+            // `wl/std/math.wll` 的 `EXPORT` 决定,本文件只提供内核实现。
+            // ⚠ **不含 `MEAN`** —— `SUM` 加 `/` 已覆盖(`ADR-0031` D2)。
+            "stats.rs",
         ];
         let mut files: Vec<String> = std::fs::read_dir("src")
             .expect("unit tests run with the package root as cwd")

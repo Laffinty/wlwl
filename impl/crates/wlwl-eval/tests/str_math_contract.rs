@@ -1116,7 +1116,7 @@ fn math_member_set_matches_the_spec_table() {
     assert_member_set("std.math §7", &spec, &impls);
     // [v0.11.3 M7 / addendum-10 W-03] 32 -> 40:新增 `DECIMAL` 族(规范 §7.2,
     // 裁决见 `ADR-0031` D1)。
-    assert_eq!(impls.len(), 52, "§7 declares 32 members");
+    assert_eq!(impls.len(), 61, "§7 declares 32 members");
     for n in [
         "ABS",
         "MIN",
@@ -1669,4 +1669,162 @@ fn significant_digits_is_a_predicate_on_n() {
 fn new_families_do_not_disturb_the_original_thirty_two() {
     let src = r#"IMPORT("wlwl:std.math", ["SQRT", "POW_MOD", "GCD", "LCM", "SIGN", "TRUNC"]); [SQRT(9), POW_MOD(5, 3, 7), GCD(-4, 6), LCM(4, 6), SIGN(-3), TRUNC(-2.7)]"#;
     assert_eq!(actual(src), "[3.0, 6, 2, 12, -1, -2.0]");
+}
+
+// ── 描述统计族(规范 §7.5 · ADR-0031 D2 / D3)───────────────────────────
+//
+// ⚠ 期望值取自 **Python `statistics` 模块**(由 `D:\Temp\py_stats_ref.py` 独立跑
+// 一遍落表),**不是实现输出**。
+//
+// ⚠ 一处**有意分歧**:Python 的 `statistics.stdev([7])` 抛 `StatisticsError`,
+// 本成员的 `STDDEV_S([7])` 返回 **`NULL`** —— 见规范 §7.5「空与无定义都用 NULL」。
+// 这条不是抄漏,是有口径的,契约把它显式钉住。
+
+const ST_IMP: &str = r#"IMPORT("wlwl:std.math", ["MEDIAN", "MODE", "VARIANCE_S", "VARIANCE_P", "STDDEV_S", "STDDEV_P", "PERCENTILE", "CORRELATION", "LINEAR_FIT", "LN"]);"#;
+
+fn st_run(expr: &str) -> String {
+    actual(&format!("{ST_IMP} {expr}"))
+}
+
+fn st_f(expr: &str, want: &str) {
+    assert_eq!(&st_run(expr), want, "expr = {expr}");
+}
+
+/// `MEDIAN`:偶数长度取中间两个的**平均**,且平均那一步必须走 `f64`
+/// ——整数 `/` 会截断(ADR-0031 §3)。
+#[test]
+fn median_matches_python_statistics() {
+    st_f("MEDIAN([3, 1, 2])", "2.0");
+    st_f("MEDIAN([4, 1, 3, 2])", "2.5");
+    st_f("MEDIAN([1.5, 2.5, 3.5, 10.5])", "3.0");
+    st_f("MEDIAN([7])", "7.0");
+}
+
+/// `MEDIAN([])` ⇒ `NULL`,沿用 `std.collection` §5 口径。
+#[test]
+fn empty_array_gives_null_for_every_statistic() {
+    for expr in [
+        "MEDIAN([])",
+        "MODE([])",
+        "VARIANCE_S([])",
+        "VARIANCE_P([])",
+        "STDDEV_S([])",
+        "STDDEV_P([])",
+    ] {
+        assert_eq!(&st_run(expr), "NULL", "expr = {expr}");
+    }
+    st_f("PERCENTILE([], 50.0)", "NULL");
+}
+
+/// `MODE`:并列取**先出现者**;全部只出现一次 ⇒ **没有众数** ⇒ `NULL`。
+#[test]
+fn mode_takes_the_first_of_a_tie_and_reports_no_mode() {
+    st_f("MODE([1, 2, 2, 3])", "2.0");
+    st_f("MODE([2, 1, 2, 1])", "2.0");
+    // ⚠ `multimode` 才会给 [1, 2];本成员是单数 `mode`,没有众数就 `NULL`。
+    st_f("MODE([1, 2, 3])", "NULL");
+}
+
+/// 样本 / 总体**显式分成两个成员**,不给默认。
+#[test]
+fn variance_and_stddev_separate_sample_from_population() {
+    st_f("VARIANCE_S([2, 4, 4, 4, 5, 5, 7, 9])", "4.571428571428571");
+    st_f("VARIANCE_P([2, 4, 4, 4, 5, 5, 7, 9])", "4.0");
+    st_f("STDDEV_S([2, 4, 4, 4, 5, 5, 7, 9])", "2.138089935299395");
+    st_f("STDDEV_P([2, 4, 4, 4, 5, 5, 7, 9])", "2.0");
+}
+
+/// ⚠ **样本 `n = 1` 返回 `NULL`(不是错误)**,总体 `n = 1` 有定义。
+///
+/// 这是与 Python 的**有意分歧**:Python 抛 `StatisticsError`。契约把它显式钉住,
+/// 免得下一个「对齐 Python」的人改回去。
+#[test]
+fn sample_of_one_is_null_but_population_of_one_is_zero() {
+    st_f("STDDEV_S([7])", "NULL");
+    st_f("VARIANCE_S([7])", "NULL");
+    st_f("STDDEV_P([7])", "0.0");
+    st_f("VARIANCE_P([7])", "0.0");
+}
+
+/// `PERCENTILE` 的插值方式必须钉死 —— 它是**可观察的**(同样数据五种方法五个值)。
+#[test]
+fn percentile_uses_linear_interpolation_including_endpoints() {
+    st_f("PERCENTILE([1, 2, 3, 4], 0.0)", "1.0");
+    st_f("PERCENTILE([1, 2, 3, 4], 100.0)", "4.0");
+    st_f("PERCENTILE([1, 2, 3, 4], 50.0)", "2.5");
+    st_f("PERCENTILE([1, 2, 3, 4], 25.0)", "1.75");
+    st_f("PERCENTILE([1, 2, 3, 4], 10.0)", "1.3");
+    st_f("PERCENTILE([9], 42.0)", "9.0");
+    // ⚠ `p` 越界是**数据**不是参数错 ⇒ `NULL` 而非 `E0030`。
+    st_f("PERCENTILE([1, 2, 3, 4], 150.0)", "NULL");
+    st_f("PERCENTILE([1, 2, 3, 4], -1.0)", "NULL");
+}
+
+#[test]
+fn correlation_and_linear_fit_match_python() {
+    st_f(
+        "CORRELATION([1, 2, 3, 4, 5], [2, 4, 5, 4, 5])",
+        "0.7745966692414834",
+    );
+    st_f(
+        "AT_K(LINEAR_FIT([1, 2, 3, 4, 5], [2, 4, 5, 4, 5]), \"slope\", 0)",
+        "0.6",
+    );
+    st_f(
+        "AT_K(LINEAR_FIT([1, 2, 3, 4, 5], [2, 4, 5, 4, 5]), \"intercept\", 0)",
+        "2.2",
+    );
+    st_f("CORRELATION([1, 2, 3], [2, 4, 6])", "1.0");
+    // ⚠ `n = 2` 恒 `±1` —— 两点永远共线,这是数学事实不是缺陷。
+    st_f("CORRELATION([1, 2], [1, 3])", "1.0");
+    st_f("CORRELATION([1, 2], [3, 2])", "-1.0");
+}
+
+/// 任一方向方差为零 ⇒ 相关系数 / 斜率**无定义** ⇒ `NULL`(不是 0)。
+#[test]
+fn zero_variance_gives_null_not_zero() {
+    st_f("CORRELATION([1, 2, 3], [5, 5, 5])", "NULL");
+    st_f("LINEAR_FIT([2, 2, 2], [1, 2, 3])", "NULL");
+}
+
+/// ⚠ **`NaN` / `±inf` 不渗进统计量** —— wlwl 没有浮点异常传播约定
+/// (`/(0.0, 0.0)` 直接 `E1003`),让 `NaN` 渗进结果会让调用方**看不出**它不可信,
+/// 而 `NULL` 是看得见的。
+#[test]
+fn non_finite_inputs_yield_null_not_nan() {
+    let nan = "-(LN(0), LN(0))";
+    for expr in [
+        format!("MEDIAN([1, 2, {nan}])"),
+        format!("STDDEV_S([1, 2, {nan}])"),
+        "STDDEV_P([1, 2, LN(0)])".to_string(),
+        format!("CORRELATION([1, 2], [1, {nan}])"),
+        format!("LINEAR_FIT([1, 2], [1, {nan}])"),
+        format!("MODE([1, {nan}])"),
+    ] {
+        assert_eq!(&st_run(&expr), "NULL", "expr = {expr}");
+    }
+}
+
+/// 混装**静默提升**(`ADR-0031` D3):与既有 `SUM` 同口径,**不**报 `E0030`。
+#[test]
+fn mixed_integer_float_promotes_silently_like_sum() {
+    st_f("MEDIAN([1, 2.5, 3])", "2.5");
+    st_f("STDDEV_P([1, 2.5, 3])", "0.8498365855987975");
+}
+
+/// 形状错 ⇒ `E0030`(带名字与消息,只锁码)。
+#[test]
+fn wrong_shapes_are_e0030() {
+    for (expr, code) in [
+        ("MEDIAN(5)", "!E0030"),
+        ("MEDIAN([1, \"x\"])", "!E0030"),
+        ("CORRELATION([1, 2], [1, 2, 3])", "!E0030"),
+        ("PERCENTILE([1, 2], 50)", "!E0030"),
+        ("MODE([1, 2], 1)", "!E0022"),
+    ] {
+        assert!(
+            matches(code, &st_run(expr)),
+            "expr = {expr}\n  expected code: {code}"
+        );
+    }
 }

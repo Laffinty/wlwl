@@ -539,6 +539,22 @@ Spec: **wlwl-spec-v0.11 与 wlwl-stdlib-spec-v0.11 均不变**。本批**不改�
   - ⚠ `SIGNIFICANT_DIGITS(x, n)` 取**谓词**读法(x 是否恰好等于它保留 n 位有效
     数字后的值);计划原文没说返回什么,「返回有效数字**个数**」是另一个成员。零对任意
     `n ≥ 1` 为 TRUE;`NaN` / `±inf` 恒 FALSE。
+- **`wlwl:std.math` 加描述统计九成员(W-05)** —— 成员面 52 → 61(全库 196 → 205)。
+  `MEDIAN` / `MODE` / `VARIANCE_S` / `VARIANCE_P` / `STDDEV_S` / `STDDEV_P` /
+  `PERCENTILE` / `CORRELATION` / `LINEAR_FIT`(规范 §7.5)。
+  - ⚠ **不含 `MEAN`**(`ADR-0031` D2)。⚠ **混装静默提升**,与既有 `SUM` 同口径
+    (D3)—— 收紧就会与 `SUM` 分裂,而分裂意味着其中一处是错的。
+  - ⚠ **「空」与「无定义」都返回 `NULL`,不用错误**:样本标准差在 `n = 1` 时分母是 0;
+    `CORRELATION` / `LINEAR_FIT` 在任一方向方差为零时同理;含 `NaN` / `±inf` 时
+    同理。**`NaN` 不渗进统计量** —— wlwl 没有浮点异常传播约定
+    (`/(0.0, 0.0)` 直接 `E1003`),让 `NaN` 渗进结果会让调用方**看不出**它不可信,
+    而 `NULL` 是看得见的。
+  - **样本 / 总体显式分成两个成员**,不给默认。
+  - ⚠ `PERCENTILE` 的插值方式写死为**线性(含端点)**,因为它是**可观察的**:同样数据,
+    线性 / 较低 / 较高 / 中点 / 哈德利五种方法给出不同的值。
+  - 正确性证据:契约期望值取自 **Python `statistics`**(脚本独立跑一遍),逐值吻合。
+    ⚠ 一处**有意分歧**并被契约显式钉住:Python 的 `statistics.stdev([7])` 抛
+    `StatisticsError`,本成员的 `STDDEV_S([7])` 返回 `NULL`。
 
 ### Changed
 

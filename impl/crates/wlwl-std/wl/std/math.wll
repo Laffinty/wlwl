@@ -320,4 +320,26 @@ LET(IS_NAN, _IS_NAN);
 LET(IS_INF, _IS_INF);
 LET(SIGNIFICANT_DIGITS, _SIGNIFICANT_DIGITS);
 
-EXPORT(["ABS", "MIN", "MAX", "FLOOR", "CEIL", "ROUND", "SQRT", "POW", "CLAMP", "PI", "E", "LN", "LOG2", "LOG10", "EXP", "TRUNC", "SIN", "COS", "TAN", "ASIN", "ACOS", "ATAN", "ATAN2", "SINH", "COSH", "TANH", "SIGN", "DIV_CEIL", "GCD", "LCM", "IS_SQRT", "POW_MOD", "DECIMAL", "DECIMAL_ADD", "DECIMAL_SUB", "DECIMAL_MUL", "DECIMAL_DIV", "DECIMAL_CMP", "DECIMAL_TO_STRING", "DECIMAL_ROUND", "FRACTION", "FRACTION_ADD", "FRACTION_SUB", "FRACTION_MUL", "FRACTION_DIV", "FRACTION_CMP", "FRACTION_TO_STRING", "FRACTION_TO_DECIMAL", "APPROX_EQ", "IS_NAN", "IS_INF", "SIGNIFICANT_DIGITS"]);
+// ── 描述统计(规范 §7.5 · ADR-0031 D2/D3)────────────────────────────
+// 门面改名导出,内核见 `crates/wlwl-std/src/stats.rs`。
+//
+// ⚠ **不含 `MEAN`** —— `SUM` 加 `/` 已覆盖(ADR-0031 D2)。
+// ⚠ **混装静默提升**(`ARRAY[INTEGER]` 与 `ARRAY[FLOAT]` 混装**不**报错),
+//    与既有的 `SUM` 同口径(ADR-0031 D3)—— 收紧就会与 `SUM` 分裂。
+// ⚠ **空数组 ⇒ `NULL`**(沿用 `std.collection` §5 口径,本模块不发明新口径)。
+// ⚠ **「统计量无定义」也用 `NULL`,不用错误**:样本标准差在 `n = 1` 时分母是 0;
+//    `CORRELATION` / `LINEAR_FIT` 在任一方向方差为零时同理;含 `NaN` / `±inf`
+//    时同理 —— wlwl 没有浮点异常传播约定,让 `NaN` 渗进统计量会让调用方看不出
+//    结果不可信,而 `NULL` 是看得见的。
+// ⚠ 样本 / 总体**显式分成两个成员**(`_S` / `_P`),不给默认。
+LET(MEDIAN, _MEDIAN);
+LET(MODE, _MODE);
+LET(VARIANCE_S, _VARIANCE_S);
+LET(VARIANCE_P, _VARIANCE_P);
+LET(STDDEV_S, _STDDEV_S);
+LET(STDDEV_P, _STDDEV_P);
+LET(PERCENTILE, _PERCENTILE);
+LET(CORRELATION, _CORRELATION);
+LET(LINEAR_FIT, _LINEAR_FIT);
+
+EXPORT(["ABS", "MIN", "MAX", "FLOOR", "CEIL", "ROUND", "SQRT", "POW", "CLAMP", "PI", "E", "LN", "LOG2", "LOG10", "EXP", "TRUNC", "SIN", "COS", "TAN", "ASIN", "ACOS", "ATAN", "ATAN2", "SINH", "COSH", "TANH", "SIGN", "DIV_CEIL", "GCD", "LCM", "IS_SQRT", "POW_MOD", "DECIMAL", "DECIMAL_ADD", "DECIMAL_SUB", "DECIMAL_MUL", "DECIMAL_DIV", "DECIMAL_CMP", "DECIMAL_TO_STRING", "DECIMAL_ROUND", "FRACTION", "FRACTION_ADD", "FRACTION_SUB", "FRACTION_MUL", "FRACTION_DIV", "FRACTION_CMP", "FRACTION_TO_STRING", "FRACTION_TO_DECIMAL", "APPROX_EQ", "IS_NAN", "IS_INF", "SIGNIFICANT_DIGITS", "MEDIAN", "MODE", "VARIANCE_S", "VARIANCE_P", "STDDEV_S", "STDDEV_P", "PERCENTILE", "CORRELATION", "LINEAR_FIT"]);
