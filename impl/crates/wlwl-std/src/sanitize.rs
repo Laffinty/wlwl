@@ -43,6 +43,7 @@ pub static SPEC: ModuleSpec = ModuleSpec {
         ("HTML_ESCAPE", html_escape as StdFn),
         ("HTML_UNESCAPE", html_unescape as StdFn),
         ("HTML_SANITIZE", html_sanitize as StdFn),
+        ("HTML_SANITIZE_SCRIPT", html_sanitize_script as StdFn),
     ],
 };
 
@@ -87,6 +88,65 @@ pub(crate) fn escape_str(s: &str) -> String {
             '>' => out.push_str("&gt;"),
             '"' => out.push_str("&quot;"),
             '\'' => out.push_str("&#39;"),
+            other => out.push(other),
+        }
+    }
+    out
+}
+
+/// `HTML_SANITIZE_SCRIPT(value) -> STRING`:把一个值序列化成**可安全内联进
+/// `<script>` 的 inert 数据块**,返回完整元素
+/// `<script type="application/json">…</script>`。
+///
+/// **为什么收整个元素而不是裸串**(见规范 §13.4):只暴露「转义裸串」的成员时,
+/// 调用方可以忘记调、可以只转一半、可以转完又拼回去 —— 那它提供的安全感和裸拼
+/// 字符串没有区别。收**值**、由本成员自己 `STRINGIFY` + 加固 + 包壳,
+/// 「忘记加固」这个失败模式就**不存在**,而不是靠文档提醒。
+///
+/// **为什么不是 `JS_ESCAPE_*`**:OWASP 的首选根本不是转义,是 `application/json`
+/// 这个 inert 容器本身;通用 JS 字面量转义剩下的用武之地(`onclick="f('…')"`)
+/// 已被 `HTML_SANITIZE` 整条剥掉事件处理器属性覆盖掉。裁决见 `ADR-0030` D2。
+///
+/// **全函数**:加固把 `<` 全部消掉之后,输出里唯一的 `<` 是本成员自己写的开标签,
+/// 任何输入都无法终止 script data 状态 ⇒ **没有任何值能让它出错**。
+pub fn html_sanitize_script(
+    host: &mut dyn StdHost,
+    args: Vec<Value>,
+) -> wlwl_error::WlwlResult<Outcome> {
+    if args.len() != 1 {
+        return Err(arity(host, "HTML_SANITIZE_SCRIPT", args.len(), 1));
+    }
+    let json = crate::json::value_to_json(&args[0])
+        .map_err(|(code, msg)| host.diag(code, format!("HTML_SANITIZE_SCRIPT: {msg}")))?;
+    let text = serde_json::to_string(&json)
+        .map_err(|e| host.diag(ErrorCode::E0071, format!("HTML_SANITIZE_SCRIPT: {e}")))?;
+    Ok(Outcome::normal(Value::String(format!(
+        "<script type=\"application/json\">{}</script>",
+        harden_for_script(&text)
+    ))))
+}
+
+/// 把 JSON 文本加固到可安全内联进 `<script>`(规范 §13.4)。
+///
+/// **只转 OWASP 点名的五个字符**:`<` `>` `&` U+2028 U+2029。JSON 自身的
+/// `\"` `\\` 与控制字符转义已由 `STRINGIFY` 负责,这里**不重复**。
+///
+/// 关键在于 `<` 被消掉:HTML 的 script data 状态机靠 `<` 转移
+/// (double escaped / escaped 态),一旦数据里没有 `<`,任何字符串都无法把解析器
+/// 带出 script data。U+2028 / U+2029 是 ES2019 起的**行终止符**,在
+/// `JSON.parse` 之外的旧解析器与部分工具链里会截断源码。
+///
+/// 单趟扫描 + 一次分配,与 [`escape_str`] 同款形状;五个替换里膨胀最大的是
+/// 1 字符 → 6 字节。
+pub(crate) fn harden_for_script(s: &str) -> String {
+    let mut out = String::with_capacity(s.len() + 16);
+    for ch in s.chars() {
+        match ch {
+            '<' => out.push_str("\\u003C"),
+            '>' => out.push_str("\\u003E"),
+            '&' => out.push_str("\\u0026"),
+            '\u{2028}' => out.push_str("\\u2028"),
+            '\u{2029}' => out.push_str("\\u2029"),
             other => out.push(other),
         }
     }
@@ -159,7 +219,7 @@ pub fn html_sanitize(host: &mut dyn StdHost, args: Vec<Value>) -> wlwl_error::Wl
 mod tests {
     use super::entities::decode as unescape_str;
     use super::escape_str;
-    use super::{filter, serialize, tokenize, tree};
+    use super::{filter, harden_for_script, serialize, tokenize, tree};
 
     // ── escape ── 期望值取自规范 §13.1 的映射表,不是实现输出。
 
@@ -336,5 +396,32 @@ mod tests {
             sanitize_default("<plaintext><a href=\"javascript:alert(1)\">x</a>"),
             "<a>x</a>"
         );
+    }
+
+    /// [v0.11.3 M7 / addendum-13 W-02] `harden_for_script` 纯函数单测。
+    ///
+    /// ⚠ 期望值全部用 **ASCII 转义字面量**拼,不把不可见字符敲进源码 ——
+    /// 这批测试的第一版正是栽在这里(`&` / U+2028 的期望值写成「看起来像空格」的
+    /// 字符,渲染上完全分不出)。
+    #[test]
+    fn harden_for_script_escapes_exactly_the_five_owasp_characters() {
+        // OWASP 点名的五个:`<` `>` `&` U+2028 U+2029。
+        assert_eq!(harden_for_script("<"), "\\u003C");
+        assert_eq!(harden_for_script(">"), "\\u003E");
+        assert_eq!(harden_for_script("&"), "\\u0026");
+        assert_eq!(harden_for_script("\u{2028}"), "\\u2028");
+        assert_eq!(harden_for_script("\u{2029}"), "\\u2029");
+
+        // ⚠ **只转这五个** —— JSON 自身的 `\"` `\\` 由 STRINGIFY 负责,这里不动。
+        assert_eq!(harden_for_script("\\\""), "\\\"");
+        assert_eq!(harden_for_script("\\\\"), "\\\\");
+
+        // 幂等性:输出里已无任何待转字符,再跑一遍应当不变。
+        let once = harden_for_script("</script>&a\u{2028}b");
+        assert_eq!(harden_for_script(&once), once);
+
+        // 空串与纯 ASCII 是恒等(除五个字符外)。
+        assert_eq!(harden_for_script(""), "");
+        assert_eq!(harden_for_script("abc123"), "abc123");
     }
 }

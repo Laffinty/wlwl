@@ -265,16 +265,27 @@ fn sanitize_member_set_matches_the_spec_table() {
     let spec = members_of(&section(13, 14));
     assert_eq!(
         spec,
-        vec!["HTML_ESCAPE", "HTML_UNESCAPE", "HTML_SANITIZE"],
+        vec![
+            "HTML_ESCAPE",
+            "HTML_UNESCAPE",
+            "HTML_SANITIZE",
+            // [v0.11.3 M7 / addendum-13 W-02] §13.4 表。ADR-0030 D2 的产物:
+            // JS 侧换题 —— 不做通用 `JS_ESCAPE_*`,改做收整个 inert 元素的
+            // `HTML_SANITIZE_SCRIPT`。
+            "HTML_SANITIZE_SCRIPT",
+        ],
         "§13 member table drifted"
     );
-    // M1 只落地转义两成员;M3 已落地 `HTML_SANITIZE` —— 按 M1 时写在
-    // 本处的交接说明,impl 断言改为三员全等(集合等值,顺序同 §13 表)。
     let impls = impl_members();
     assert_eq!(
         impls,
-        vec!["HTML_ESCAPE", "HTML_UNESCAPE", "HTML_SANITIZE"],
-        "M3 surface: all three §13 members landed"
+        vec![
+            "HTML_ESCAPE",
+            "HTML_UNESCAPE",
+            "HTML_SANITIZE",
+            "HTML_SANITIZE_SCRIPT",
+        ],
+        "M7 surface: all four §13 members landed"
     );
 }
 
@@ -285,7 +296,13 @@ fn sanitize_member_set_is_not_trivially_satisfied() {
     assert!(!impls.is_empty(), "impl surface must not be empty");
     for n in &impls {
         assert!(
-            ["HTML_ESCAPE", "HTML_UNESCAPE", "HTML_SANITIZE"].contains(&n.as_str()),
+            [
+                "HTML_ESCAPE",
+                "HTML_UNESCAPE",
+                "HTML_SANITIZE",
+                "HTML_SANITIZE_SCRIPT",
+            ]
+            .contains(&n.as_str()),
             "unexpected member `{n}`"
         );
     }
@@ -305,6 +322,153 @@ fn sql_escape_rejection_record_stays_in_the_spec() {
         assert!(
             spec.contains(marker),
             "§13.3 SQL rejection record lost its marker `{marker}` — \
+             the rejection is a contract, restore it or re-adjudicate"
+        );
+    }
+}
+
+// ── HTML_SANITIZE_SCRIPT(§13.4 · ADR-0030 D2)──────────────────────
+//
+// 期望值取自 **OWASP DOM XSS Prevention Cheat Sheet 点名的五个字符**
+// (`<` `>` `&` U+2028 U+2029)与 §13.4 的包装形态,不是实现输出。
+
+const SCRIPT_IMP: &str = r#"IMPORT("wlwl:std.sanitize", ["HTML_SANITIZE_SCRIPT"]);"#;
+
+/// 跑一段程序,返回**末条语句的值**。
+///
+/// ⚠ 不要把待测表达式包进 `PRINT(...)` —— 那样末条语句的值是 `PRINT` 的返回值
+/// 而不是被测值,断言会拿 NULL 去比。
+fn actual_raw(src: &str) -> String {
+    match run(src) {
+        Ok(v) => v.display(),
+        Err(s) => panic!("program must not fail: {src}\n  got: {s}"),
+    }
+}
+
+/// 包出期望形态:`<script type="application/json">` + payload + `</script>`。
+fn script_wrapped(payload: &str) -> String {
+    format!("<script type=\"application/json\">\"{payload}\"</script>")
+}
+
+/// OWASP 点名的五个字符,一个都不能留在**数据**里。
+///
+/// ⚠ **期望值全部用 ASCII 转义拼,不写不可见字面量。** 本测试的第一版把
+/// `&` / U+2028 的期望值直接敲成「看起来像空格」的字符,结果断言拿 U+2028 去比 ——
+/// 渲染上完全分不出,只有码点对账才抓得到。同理 wlwl 字符串**不支持** `\uXXXX`
+/// 转义(§4 lexer 陷阱),所以**输入侧**的 U+2028 / U+2029 用 Rust 的 `\u{2028}`
+/// 写成真字符。
+#[test]
+fn sanitize_script_hardens_the_five_owasp_characters() {
+    let cases: Vec<(String, String)> = vec![
+        // 闭合标签逃逸 —— 整个成员存在的理由
+        (
+            r#"HTML_SANITIZE_SCRIPT("</script><img src=x onerror=alert(1)>")"#.to_string(),
+            script_wrapped("\\u003C/script\\u003E\\u003Cimg src=x onerror=alert(1)\\u003E"),
+        ),
+        (
+            r#"HTML_SANITIZE_SCRIPT("a & b")"#.to_string(),
+            script_wrapped("a \\u0026 b"),
+        ),
+        (
+            "HTML_SANITIZE_SCRIPT(\"a\u{2028}b\")".to_string(),
+            script_wrapped("a\\u2028b"),
+        ),
+        (
+            "HTML_SANITIZE_SCRIPT(\"a\u{2029}b\")".to_string(),
+            script_wrapped("a\\u2029b"),
+        ),
+    ];
+    for (expr, want) in &cases {
+        let src = format!("{SCRIPT_IMP} {expr}");
+        assert_eq!(&actual_raw(&src), want, "expr = {expr}");
+    }
+}
+
+/// **反向**断言:输出里除本成员自己写的开标签外,一个 `<` 都不该有。
+///
+/// 这条比逐条比对更有价值 —— 它对**任何**输入成立,是「加固真的做了」的
+/// 结构性证据,而不是「这几条样例碰巧对」。
+#[test]
+fn sanitize_script_output_never_contains_a_raw_lt_outside_its_own_tag() {
+    let src = format!(
+        "{SCRIPT_IMP} HTML_SANITIZE_SCRIPT([\"a<b\", [\"c\": \"</script>\"], 1, NULL, TRUE])"
+    );
+    let out = actual_raw(&src);
+    assert_eq!(out.matches('<').count(), 2, "unexpected raw `<` in: {out}");
+    assert!(
+        out.starts_with("<script type=\"application/json\">"),
+        "{out}"
+    );
+    assert!(out.ends_with("</script>"), "{out}");
+}
+
+/// JSON 自身的转义**不被**加固逻辑破坏(§13.4:「只转这五个」)。
+#[test]
+fn sanitize_script_leaves_json_own_escapes_intact() {
+    let cases: Vec<(String, String)> = vec![
+        (
+            r#"HTML_SANITIZE_SCRIPT("say \"hi\"")"#.to_string(),
+            script_wrapped("say \\\"hi\\\""),
+        ),
+        (
+            r#"HTML_SANITIZE_SCRIPT("a\\b")"#.to_string(),
+            script_wrapped("a\\\\b"),
+        ),
+    ];
+    for (expr, want) in &cases {
+        let src = format!("{SCRIPT_IMP} {expr}");
+        assert_eq!(&actual_raw(&src), want, "expr = {expr}");
+    }
+}
+
+/// 收的是**值**不是裸串(规范 §13.4 的形状理由)。
+///
+/// ⚠ 注意非字符串值产出的是**裸 JSON**,不带引号 —— `script_wrapped` 只适用于
+/// 字符串载荷。
+#[test]
+fn sanitize_script_takes_a_value_not_a_string() {
+    let src = format!("{SCRIPT_IMP} HTML_SANITIZE_SCRIPT(TRUE)");
+    assert_eq!(
+        actual_raw(&src),
+        "<script type=\"application/json\">true</script>"
+    );
+}
+
+/// 全函数(§13.4):**没有任何值能让它出错** —— 元数错仍是原生诊断,但内容永远不会。
+#[test]
+fn sanitize_script_is_total_over_content() {
+    for expr in [
+        r#"HTML_SANITIZE_SCRIPT("")"#.to_string(),
+        "HTML_SANITIZE_SCRIPT(\"\u{2028}\u{2029}\")".to_string(),
+        r#"HTML_SANITIZE_SCRIPT(NULL)"#.to_string(),
+        r#"HTML_SANITIZE_SCRIPT([])"#.to_string(),
+        r#"HTML_SANITIZE_SCRIPT(["": ""])"#.to_string(),
+    ] {
+        let src = format!("{SCRIPT_IMP} {expr}");
+        let out = actual_raw(&src);
+        assert!(
+            out.starts_with("<script type=\"application/json\">") && out.ends_with("</script>"),
+            "expr = {expr} produced {out}"
+        );
+    }
+}
+
+/// 规范 §14 的**否证记录**是契约的一部分(否证记录与肯定记录同权)。
+/// `ADR-0030` D3 判「类型化收口不适用」—— 删掉这段规范的尝试在这里变红。
+#[test]
+fn typed_closure_rejection_record_stays_in_the_spec() {
+    let spec = spec_text();
+    for marker in [
+        "类型化收口",
+        "不适用",
+        "定义上的",
+        "没有 sink",
+        "Trusted Types do not protect against server-side XSS",
+        "复活条件",
+    ] {
+        assert!(
+            spec.contains(marker),
+            "§14 typed-closure rejection record lost its marker `{marker}` — \
              the rejection is a contract, restore it or re-adjudicate"
         );
     }

@@ -34,6 +34,7 @@
 //!     `ERR` ⇒ 不求函数体),`OR_ELSE` / `ERR_MAP` / `ERR_OR_ELSE` 因此
 //!     **不可实现** —— 依据见 `ADR-0029` D1 / D6。
 //!   - `wlwl:std.sanitize` — `HTML_ESCAPE` / `HTML_UNESCAPE` / `HTML_SANITIZE`
+//!     / `HTML_SANITIZE_SCRIPT`(v0.11.3 M7 / addendum-13,stdlib §13.4)
 //!     输出安全(旗舰特色功能,v0.11.3,stdlib §13)。**全员 R2、性能入契约**:
 //!     转义 / 解码 / 净化都要处理文档级输入,而解释器侧字符串与数组构建超线性
 //!     (D11-012/D12-009 已归档证据);实体表为 WHATWG 全表(生成器产出,

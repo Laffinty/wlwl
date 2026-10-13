@@ -2,7 +2,7 @@
 
 | | |
 |---|---|
-| **Status** | **Proposed**(2026-10-13,`addendum-13` W-01 调研产出;待业主裁决 D2 / D3) |
+| **Status** | **Accepted**(2026-10-13,业主「请做下一步」采纳 D1–D4;`addendum-13` W-02 已落地 `HTML_SANITIZE_SCRIPT`) |
 | **Date** | 2026-10-13 |
 | **Related** | ADR-0029(`std.result` 的形状,同日另一份「实测推翻计划」的 ADR)、`addendum-13-sanitize-extend.md` §3.1 / §3.2、`docs/stdlib/wlwl-stdlib-spec-v0.11.md` §13 / §14、`wlwl-std/src/sanitize.rs`、`wlwl-eval/tests/sanitize_contract.rs` |
 
@@ -131,6 +131,8 @@ XSS; they only cover DOM XSS sinks in the browser」。本 ADR 采信后者,并�
 - **D3 · 类型化收口不实现**,只留否证记录 + 复活条件(§4),写进规范 §14。
 - **D4 · 现有 81 条冻结契约一条不动。**
 
+**D2 已落地**(规范 §13.4 + `sanitize.rs::html_sanitize_script` + 契约 6 条)。
+
 ## Consequences
 
 **能拿到的**:把 `std.sanitize` 从「HTML 一个上下文」变成「HTML / CSS / URL /
@@ -142,10 +144,19 @@ inline-script 四处」,且每一处都对着 OWASP 的**具体**指引,不是�
 
 - ⚠ **D2 是偏离 `addendum-13` §2 的**(它列了 `JS_ESCAPE_STRING` / `JS_ESCAPE_COMMENT`)。
   计划里那两条**不做**的理由要成文,不能默默消失(§3.2 同款体例)。
-- ⚠ **`HTML_SANITIZE_SCRIPT` 与 `HTML_SANITIZE` 的失败口径必须不同**:后者**永不因内容
-  失败**(否则是 DoS 面),前者失败就说明数据里有连 `<script type="application/json">`
-  都装不下的东西 —— 那是**数据**问题,报 `ERR([kind: SanitizeError])`,不是参数错。
+- ⚠ **`HTML_SANITIZE_SCRIPT` 与 `HTML_SANITIZE` 的失败口径不是「不同族」,而是
+  **更强的一档** —— 初稿这里写错了。**本成员是全函数:加固把 `<` 全部消掉之后,
+  输出里唯一的 `<` 是它自己写的开标签,任何值都无法终止 script data 状态 ⇒
+  内容层面**没有任何值能让它出错**。** `HTML_SANITIZE` 还要考虑畸形标记的解析
+  开销,本成员连那条都不必担心。元数错仍是原生 `E0022` / `E0030`(那是程序员错,
+  不是数据错)。
+  同 §13.3 的体例:**「什么情况下它不够用」要成文** —— 需要把数据**执行**而不是
+  **读取**时(本成员产出的 `application/json` 块必须由 `JSON.parse` 读取),以及
+  跨域读取时(同源策略,与本成员无关)。
 - ⚠ **契约期望值必须取自规范原文**(CSSOM / CSS Syntax L3 / OWASP),不是实现输出。
   OWASP 点名的那五个字符是本 ADR 的独立佐证,可直接作为契约向量。
+  ⚠ **写这类契约时不要把不可见字符直接敲进期望值** —— 本轮第一版把 `&` / U+2028
+  的期望值写成「看起来像空格」的字符,断言拿 U+2028 去比,渲染上完全看不出。
+  现在期望值全部用 ASCII 转义拼(`script_wrapped` + `\\uXXXX` 字面量)。
 - **明确不做**:HTML 净化器语义变更 / CSS 选择器解析 / JS 代码生成 / DOM 基建 /
   新内建类型。

@@ -1070,13 +1070,65 @@ WHATWG 规则的**白名单子集**,差异显式登记 —— 安全性由幂等
 4. **复活条件**:`std.db`(或任何 SQL 互操作命名空间)落地时,防治手段以
    prepared statement 形态提供;届时本记录由该命名空间的规范接手。
 
+### 13.4 `HTML_SANITIZE_SCRIPT` — 把值加固成可安全内联的 `<script>`(v0.11.3 M7 · ADDENDUM-13)
+
+| 成员 | 层 | 语义 |
+|---|---|---|
+| `HTML_SANITIZE_SCRIPT(value)` | R2 | `value` → `<script type="application/json">…</script>` 单个字符串,内部 JSON 已加固 |
+
+**为什么不是 `JS_ESCAPE_STRING`。** OWASP DOM XSS Prevention Cheat Sheet 明写
+`JSON.stringify()`「**is not an output-encoding function**」,并逐字符点名内联场景
+还要额外挡住 `<`(及 `>` `&` U+2028 U+2029)。本库实测坐实:`STRINGIFY` 把这五个
+字符**全部原样输出**(U+2028 / U+2029 按长度判定 —— 输入 3 码点 → 输出 5,
+转成 ` ` 该是 11)。**缺口是本库自己的。**
+
+但 OWASP 的**首选**根本不是转义,是「用 `Content-Type: application/json` 单独
+响应」或「走 `<script type="application/json">` 这个 inert 容器」;而通用 JS 字符串
+字面量转义剩下的用武之地(`onclick="f('…')"`)已被 `HTML_SANITIZE` 整条剥掉事件
+处理器属性覆盖掉。⇒ 裁决见 `ADR-0030` D2:**不做通用 `JS_ESCAPE_*`**,做本成员。
+
+**加固动作**:对 `STRINGIFY(value)` 的输出,把 `<` `>` `&` U+2028 U+2029 五个字符
+逐个换成**大写十六进制**的 ` ` / ` ` / ` ` / ` ` / ` `。
+⚠ **只转这五个** —— JSON 自身的 `\"` `\\` 与控制字符转义已由 `STRINGIFY` 负责。
+
+**为什么收整个元素而不是裸串**(这是本成员的关键设计):若只暴露一个「转义裸串」的
+成员,调用方可以忘记调、可以只转一半、可以转完又拼回去 —— 那它提供的安全感和裸拼
+字符串没有区别。收**值**、由成员自己 `STRINGIFY` + 加固 + 包壳,「忘记加固」这个
+失败模式就**不存在**,而不是靠文档提醒。这与 `HTML_SANITIZE` 收整段标记、
+`HTML_SANITIZE_URL` 收整个 URL 是同一个族。
+
+**失败口径:全函数,且不因内容失败。** 加固把 `<` 全部消掉之后,输出里唯一的 `<` 是
+本成员自己写的开标签,任何输入都无法终止 script data 状态 ⇒ **没有任何值能让它
+出错**。这比 `HTML_SANITIZE` 的「永不因内容失败」更强一档(后者还要考虑
+畸形标记的解析开销)。⚠ 与 §13.3 同体例:**「什么情况下它不够用」要成文** ——
+需要把数据**执行**而不是**读取**时(本成员产出的 `application/json` 块必须由
+`JSON.parse` 读取),以及需要跨域读取时(同源策略,与本成员无关)。
+
+**明确不做**:`JS_ESCAPE_STRING` / `JS_ESCAPE_COMMENT`(通用字面量与注释转义)、
+JS 代码生成、把裸 JSON 交给 `eval` 的任何便利化。
+
 ## 14 演进方向(非规范性)
 
-- **类型化收口**(Trusted Types / Sanitizer API 范式):让危险的输出收口只接受
-  经净化策略产出的**类型化值**。浏览器生态在走这条路,但它需要宿主 / DOM 基建,
-  不是字符串库能提供的;wlwl 若将来出现宿主形态,照此记一笔。
-- **CSS / JS 上下文转义**(`CSS_ESCAPE` / `JS_ESCAPE`):需求出现时按 §13 的
-  形态扩展 `std.sanitize`,先有真实场景再立项。
+- ~~**类型化收口**(Trusted Types / Sanitizer API 范式)~~ —— ✅ **已调研,结论:
+  **不适用**(2026-10-13,`ADR-0030` D3)。**否证记录**(否证记录与肯定记录同权):
+  Trusted Types 的**全部**安全收益来自「**浏览器在 sink 处强制拒绝裸串**」
+  (`require-trusted-types-for 'script'` 让 `innerHTML = "str"` 抛 `TypeError`,
+  只有策略产出的 `TrustedHTML` 才被接受)。wlwl **没有宿主形态**时,这条收益是
+  **定义上的**消失,不是打折:**没有 sink**(`innerHTML` / `eval` /
+  `document.write` / `location.href` 全部不存在),**也没有执行者**(强制发生在
+  浏览器里,不在语言里)。剩下的只有「一个做净化、返回字符串的函数」——
+  **那正是 `HTML_SANITIZE`,已经有了**。套一层类型标记买不到它没有的东西。
+  ⚠ 有第三方资料称 Trusted Types 可防服务端 XSS —— **那是错的**;同一批资料
+  自己也写着「Trusted Types do not protect against server-side XSS; they only
+  cover DOM XSS sinks in the browser」。本条采信后者。
+  **复活条件**:wlwl 出现**宿主形态**(能执行代码、能接管输出点的运行时)。
+- ~~**CSS / JS 上下文转义**(`CSS_ESCAPE` / `JS_ESCAPE`)~~ —— 🟡 **已调研**
+  (2026-10-13,`ADR-0030` D1 / D2),「先有真实场景」这条门槛**过了一半**:
+  - **CSS 做**,但 OWASP 的口径是「**白名单高于转义**」—— allowlist 是第一句,
+    CSS-escape 是补充 ⇒ 实现顺序 `HTML_SANITIZE_CSS` 先于 `CSS_ESCAPE_IDENT` /
+    `CSS_ESCAPE_STRING`。
+  - **JS 换题**:`JS_ESCAPE_STRING` / `JS_ESCAPE_COMMENT` **不做**,理由见 §13.4;
+    改做 `HTML_SANITIZE_SCRIPT`(已落地于本节)。
 - **正则**:RE2 式线性时间模拟(NFA,零依赖手写)—— 主流 stdlib 全员标配,
   而本语言零模式匹配能力;调研备忘见 v0.11.3 计划附录 B,建议独立批次立项。
 - `std.ai` / `std.agent` 降级为官方包,移出 `wlwl:std.*`(业界先例:Rust /
@@ -1810,7 +1862,7 @@ then 支内(短路保证 `OK` 时不触发)。
 | `std.env` | `ENV_GET` `ENV_SET` `ENV_KEYS` `ARGS` | R2 | v0.11.3 |
 | `std.process` | `PROCESS_RUN` `PROCESS_ID` | R2 | v0.11.3 |
 | `std.text` | `TO_UPPER` `TO_LOWER` `NFC` `NFD` `NFC_QC` `GRAPHEME_COUNT` `WIDTH` | R2 | v0.11.2 |
-| `std.sanitize` | `HTML_ESCAPE` `HTML_UNESCAPE` `HTML_SANITIZE` | R2 | v0.11.3 |
+| `std.sanitize` | `HTML_ESCAPE` `HTML_UNESCAPE` `HTML_SANITIZE` `HTML_SANITIZE_SCRIPT` | R2 | v0.11.3 |
 | `std.collection` | `MAP` `FILTER` `REDUCE` `SORT` `SORT_BY` `ZIP` `RANGE` `ANY` `ALL` `FIND` `ENUMERATE` `TAKE` `DROP` `FLAT` `UNIQ` `GROUP_BY` `JOIN` `CHUNK` `WINDOW` `DEDUP_BY` `MIN_BY` `MAX_BY` `SUM` `PRODUCT` `FOLD_RIGHT` `POSITION` `KEY_BY` | 混合(R1 门面 + R2 `RANGE`/`MAP`/`FILTER`/`CHUNK`/`WINDOW`/`ENUMERATE`/`ZIP`/`UNIQ`/`FLAT`/`JOIN`/`GROUP_BY`/`DEDUP_BY`/`KEY_BY`) | v0.10 及以前(成员)/ v0.11(R1 重写,M5 起 RANGE 沉 R2)/ v0.11.3(M5 L0-A-2 加 MAP·FILTER·CHUNK·WINDOW,L0-A-3a 加 ENUMERATE·ZIP·UNIQ·FLAT·JOIN,L0-A-3b 加 GROUP_BY·DEDUP_BY·KEY_BY 沉 R2) |
 | `std.str` | `JOIN` `SPLIT_LINES` `CHAR_AT` `COUNT` `QUOTE` `INDEX_OF` `CONTAINS_SUB` | R1 | v0.11 / INDEX_OF、CONTAINS_SUB 于 v0.11.2 |
 | `std.math` | `ABS` `MIN` `MAX` `FLOOR` `CEIL` `ROUND` `SQRT` `POW` `CLAMP` `PI` `E` `LN` `LOG2` `LOG10` `EXP` `TRUNC` `SIN` `COS` `TAN` `ASIN` `ACOS` `ATAN` `ATAN2` `SINH` `COSH` `TANH` `SIGN` `DIV_CEIL` `GCD` `LCM` `IS_SQRT` `POW_MOD` | 混合 | v0.11 |

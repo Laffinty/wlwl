@@ -452,6 +452,27 @@ Spec: **wlwl-spec-v0.11 与 wlwl-stdlib-spec-v0.11 均不变**。本批**不改�
   - **空数组口径两条相反**:`RESULT_ALL([])` = `OK([])`(空集真,与 Rust
     `collect::<Result<Vec<_>,_>>()` 同款);`RESULT_ANY([])` = `OK(NULL)`
     (「没有候选」不是错误,不编造 `ERR`)。
+- **`wlwl:std.sanitize` 加 `HTML_SANITIZE_SCRIPT`(v0.11.3 M7 / addendum-13)** ——
+  成员面 3 → 4(全库 171 → 172)。把一个值序列化成**可安全内联进 `<script>` 的
+  inert 数据块**,返回完整 `<script type="application/json">…</script>`。
+  - ⚠ **补的是本库自己的缺口,不是转述别人的**:OWASP DOM XSS Cheat Sheet 明写
+    `JSON.stringify()` 「**is not an output-encoding function**」并逐字符点名内联场景
+    还要额外挡 `<`(及 `>` `&` U+2028 U+2029);实测 `STRINGIFY` 把这五个**全部原样
+    输出**(U+2028 按**长度**判:输入 3 码点 → 输出 5,转成 `\u2028` 该是 11)。
+  - **收整个元素而不是裸串**:只暴露「转义裸串」的成员时,调用方可以忘记调、可以
+    只转一半、可以转完又拼回去 —— 那它提供的安全感和裸拼字符串没有区别。收**值**、
+    由成员自己 `STRINGIFY` + 加固 + 包壳,「忘记加固」这个失败模式就**不存在**。
+  - **全函数**:加固把 `<` 全部消掉之后,输出里唯一的 `<` 是它自己写的开标签,任何
+    值都无法终止 script data 状态 ⇒ 内容层面**没有任何值能让它出错**。
+  - ⚠ **不做 `JS_ESCAPE_STRING` / `JS_ESCAPE_COMMENT`**(`ADR-0030` D2):OWASP 的首选
+    根本不是转义,是 `application/json` 这个 inert 容器本身;而通用 JS 字面量转义剩下
+    的用武之地(`onclick="f('…')"`)已被 `HTML_SANITIZE` 整条剥掉事件处理器属性覆盖。
+  - **类型化收口判为不适用**(`ADR-0030` D3):Trusted Types 的**全部**收益来自
+    「浏览器在 sink 处强制拒绝裸串」;wlwl 没有宿主形态时它是**定义上**的消失 ——
+    没有 sink、没有执行者,剩下的「一个净化函数」正是 `HTML_SANITIZE`。否证记录
+    已写进规范 §14,并由契约测试钉住不被删。复活条件 = 出现宿主形态。
+  - 契约 11 → 17 条;⚠ 其中一条是**反向断言**(输出里除自身开标签外一个 `<` 都没有),
+    它对任何输入成立,比逐条比对样例更有价值。
 
 ### Changed
 
