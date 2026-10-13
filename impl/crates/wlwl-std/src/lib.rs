@@ -53,6 +53,10 @@
 //!     [v0.11.3 M7 / addendum-10 W-03] 成员面 32 → 40:任意精度十进制 `DECIMAL`
 //!     族(§7.2,裁决见 [`math_ext`]),内核也走注入。⚠ **本族不含 `MEAN`** ——
 //!     `std.collection::SUM` 加 `/` 已覆盖(`ADR-0031` D2)。
+//!     [v0.11.3 M7 / addendum-10 W-04 / W-06] 再加 12 个:精确分数 `FRACTION`
+//!     族(§7.3)与近似比较四成员(§7.4)。⚠ 分数的分子分母是 **i64 而非任意精度**,
+//!     溢出报 `OverflowError` 而**不**让 `E0035`(会中止整个运行)冒出来。
+//!     ⚠ `IS_INF` 补的是**缺口**:`==(x, x)` 对 `±inf` 为 TRUE,自等判据抓不到它。
 //!   - `wlwl:std.test`   — test framework facade (§8;M3-3 混合化,R2 内核
 //!     见 [`test_native`] —— 注册表 / 计时 / 测试体调用 / `EXPECT_ERR`)
 //!
@@ -255,6 +259,29 @@ pub static LANG_SOURCES: &[StdSource] = &[
             ("_DECIMAL_CMP", math_ext::decimal_cmp as StdFn),
             ("_DECIMAL_TO_STRING", math_ext::decimal_to_string as StdFn),
             ("_DECIMAL_ROUND", math_ext::decimal_round as StdFn),
+            // [v0.11.3 M7 / addendum-10 W-04] 精确分数族(ADR-0031 D1 同款形状:
+            // `{num: INTEGER, den: INTEGER}`,约分到最简、`den > 0`)。
+            // ⚠ 分子分母是 **i64 而非任意精度**;溢出在**发生前**检查并报
+            // `ERR([kind: OverflowError])`,不让语言层 `E0035`(会中止整个运行)
+            // 冒进标准库成员里。
+            ("_FRACTION", math_ext::fraction as StdFn),
+            ("_FRACTION_ADD", math_ext::fraction_add as StdFn),
+            ("_FRACTION_SUB", math_ext::fraction_sub as StdFn),
+            ("_FRACTION_MUL", math_ext::fraction_mul as StdFn),
+            ("_FRACTION_DIV", math_ext::fraction_div as StdFn),
+            ("_FRACTION_CMP", math_ext::fraction_cmp as StdFn),
+            ("_FRACTION_TO_STRING", math_ext::fraction_to_string as StdFn),
+            (
+                "_FRACTION_TO_DECIMAL",
+                math_ext::fraction_to_decimal as StdFn,
+            ),
+            // [v0.11.3 M7 / addendum-10 W-06] 近似比较族(ADR-0031 D4)。
+            // ⚠ `IS_INF` 补的是**缺口**:`==(x, x)` 对 ±inf 为 TRUE,自等判据
+            // 抓不到它,而本库此前没有 `IS_INF` / `IS_NAN`。
+            ("_APPROX_EQ", math_ext::approx_eq as StdFn),
+            ("_IS_NAN", math_ext::is_nan as StdFn),
+            ("_IS_INF", math_ext::is_inf as StdFn),
+            ("_SIGNIFICANT_DIGITS", math_ext::significant_digits as StdFn),
         ],
     },
     StdSource {

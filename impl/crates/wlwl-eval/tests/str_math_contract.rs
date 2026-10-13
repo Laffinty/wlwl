@@ -1116,7 +1116,7 @@ fn math_member_set_matches_the_spec_table() {
     assert_member_set("std.math §7", &spec, &impls);
     // [v0.11.3 M7 / addendum-10 W-03] 32 -> 40:新增 `DECIMAL` 族(规范 §7.2,
     // 裁决见 `ADR-0031` D1)。
-    assert_eq!(impls.len(), 40, "§7 declares 32 members");
+    assert_eq!(impls.len(), 52, "§7 declares 32 members");
     for n in [
         "ABS",
         "MIN",
@@ -1396,4 +1396,277 @@ fn decimal_literal_parsing_and_its_diagnostics() {
 fn decimal_family_does_not_disturb_the_original_thirty_two() {
     let src = r#"IMPORT("wlwl:std.math", ["SQRT", "POW_MOD", "GCD", "LCM", "SIGN"]); [SQRT(9), POW_MOD(5, 3, 7), GCD(-4, 6), LCM(4, 6), SIGN(-3)]"#;
     assert_eq!(actual(src), "[3.0, 6, 2, 12, -1]");
+}
+
+// ── `FRACTION` 族(规范 §7.3 · ADR-0031 D1)──────────────────────────────
+//
+// ⚠ 期望值取自 **Python `fractions` 模块**,**不是实现输出** —— 由
+// `D:\Temp\py_fraction_ref.py` 独立跑一遍再落表。
+
+const FR_IMP: &str = r#"IMPORT("wlwl:std.math", ["FRACTION", "FRACTION_ADD", "FRACTION_SUB", "FRACTION_MUL", "FRACTION_DIV", "FRACTION_CMP", "FRACTION_TO_STRING", "FRACTION_TO_DECIMAL", "DECIMAL_TO_STRING"]);"#;
+
+fn fr_run(expr: &str) -> String {
+    actual(&format!("{FR_IMP} {expr}"))
+}
+
+/// 构造与约分。分母为负时**分子分母同时取反**(规范形式的 `den > 0`)。
+#[test]
+fn fraction_construction_reduces_and_normalises_sign() {
+    let cases: Vec<(&str, &str)> = vec![
+        (r#"FRACTION(6, 4)"#, "3/2"),
+        (r#"FRACTION(-3, 6)"#, "-1/2"),
+        (r#"FRACTION(3, -6)"#, "-1/2"),
+        (r#"FRACTION(4, 2)"#, "2"),
+        (r#"FRACTION(7, 7)"#, "1"),
+    ];
+    for (expr, want) in cases {
+        assert_eq!(
+            &fr_run(&format!("FRACTION_TO_STRING({expr})")),
+            want,
+            "expr = {expr}"
+        );
+    }
+    // 零恒为 {0, 1} —— 不是 0/5。
+    assert_eq!(&fr_run(r#"FRACTION(0, 5)"#), "[num: 0, den: 1]");
+}
+
+/// 四则,逐条对照 Python `fractions`(`a = 1/3`, `b = 1/6`)。
+#[test]
+fn fraction_arithmetic_matches_python_fractions() {
+    let cases: Vec<(&str, &str)> = vec![
+        (r#"FRACTION_ADD(FRACTION(1, 3), FRACTION(1, 6))"#, "1/2"),
+        (r#"FRACTION_SUB(FRACTION(1, 3), FRACTION(1, 6))"#, "1/6"),
+        (r#"FRACTION_MUL(FRACTION(1, 3), FRACTION(1, 6))"#, "1/18"),
+        // 整除的结果**不写分母**
+        (r#"FRACTION_DIV(FRACTION(1, 3), FRACTION(1, 6))"#, "2"),
+        // 链式
+        (
+            r#"FRACTION_MUL(FRACTION_ADD(FRACTION(1, 3), FRACTION(1, 6)), FRACTION(6, 1))"#,
+            "3",
+        ),
+    ];
+    for (expr, want) in cases {
+        assert_eq!(
+            &fr_run(&format!("FRACTION_TO_STRING({expr})")),
+            want,
+            "expr = {expr}"
+        );
+    }
+}
+
+/// 比较按**数值**,且已约分的等价分数必须判等。
+#[test]
+fn fraction_cmp_is_numeric() {
+    let cases: Vec<(&str, &str)> = vec![
+        (r#"FRACTION_CMP(FRACTION(1, 3), FRACTION(1, 6))"#, "1"),
+        (r#"FRACTION_CMP(FRACTION(1, 2), FRACTION(2, 4))"#, "0"),
+        (r#"FRACTION_CMP(FRACTION(-1, 2), FRACTION(1, 2))"#, "-1"),
+        // 交叉相乘在 i64 下会溢出(`3 * 10^19` 量级),比较**不该**因此出错
+        (r#"FRACTION_CMP(FRACTION(1, 7), FRACTION(1, 11))"#, "1"),
+    ];
+    for (expr, want) in cases {
+        assert_eq!(&fr_run(expr), want, "expr = {expr}");
+    }
+}
+
+/// 转十进制,`scale` 必填,舍入恒 `HALF_EVEN`(Python 侧同款)。
+#[test]
+fn fraction_to_decimal_matches_python() {
+    let cases: Vec<(&str, &str)> = vec![
+        (r#"FRACTION_TO_DECIMAL(FRACTION(3, 4), 4)"#, "0.7500"),
+        (r#"FRACTION_TO_DECIMAL(FRACTION(1, 3), 5)"#, "0.33333"),
+        (r#"FRACTION_TO_DECIMAL(FRACTION(1, 2), 2)"#, "0.50"),
+        (r#"FRACTION_TO_DECIMAL(FRACTION(-1, 8), 3)"#, "-0.125"),
+    ];
+    for (expr, want) in cases {
+        assert_eq!(
+            &fr_run(&format!("DECIMAL_TO_STRING({expr})")),
+            want,
+            "expr = {expr}"
+        );
+    }
+}
+
+/// 域违例 ⇒ `ERR([kind: DomainError])`;非法 `DICT` ⇒ `E0030` **不修复**。
+#[test]
+fn fraction_rejects_domain_errors_and_illegal_dicts() {
+    for (expr, want) in [
+        // 分母为零 ⇒ DomainError(不是原生诊断)
+        (
+            r#"AT_K(ERR_PAYLOAD(FRACTION(1, 0)), "kind", "?")"#,
+            "DomainError",
+        ),
+        (
+            r#"AT_K(ERR_PAYLOAD(FRACTION_DIV(FRACTION(1, 3), FRACTION(0, 1))), "kind", "?")"#,
+            "DomainError",
+        ),
+        // 未约分 / 负分母 / 零不是 0/1 ⇒ E0030
+        (
+            r#"FRACTION_ADD(FRACTION(1, 3), ["num": 2, "den": 4])"#,
+            "!E0030",
+        ),
+        (
+            r#"FRACTION_ADD(FRACTION(1, 3), ["num": 1, "den": -2])"#,
+            "!E0030",
+        ),
+        (
+            r#"FRACTION_ADD(FRACTION(1, 3), ["num": 0, "den": 5])"#,
+            "!E0030",
+        ),
+        // `den` 必须是 INTEGER
+        (r#"FRACTION(1, "2")"#, "!E0030"),
+        // `scale` 越界
+        (r#"FRACTION_TO_DECIMAL(FRACTION(1, 3), 99)"#, "!E0030"),
+    ] {
+        // ⚠ 诊断带名字和消息,只锁码 ⇒ 用 `matches!` 的「只锁码」前缀规则,
+        // 不能用 `assert_eq!`(那会拿整条消息去比)。
+        assert!(
+            matches(want, &fr_run(expr)),
+            "expr = {expr}\n  expected code: {want}"
+        );
+    }
+}
+
+/// **溢出边界**:`(1/3)^k` 的分母是 `3^k`。`3^39 < 2^63-1 < 3^40`
+/// (Python 侧实测 `3^40 = 12157665459056928801`)⇒ k=40 必须报
+/// `OverflowError`,**绝不允许**让语言层的 `E0035` 冒出来(那个会**中止整个运行**)。
+#[test]
+fn fraction_overflow_is_caught_before_it_happens() {
+    let src = format!(
+        "{FR_IMP}
+         LET MUT(f, FRACTION(1, 1));
+         LET MUT(k, 0);
+         WHILE(<(k, 39), (SET(f, FRACTION_DIV(f, FRACTION(3, 1))); SET(k, +(k, 1))));
+         [FRACTION_TO_STRING(f), k]"
+    );
+    assert_eq!(actual(&src), "[1/4052555153018976267, 39]");
+    // 再来一次 ⇒ 越界
+    let src2 = format!(
+        "{FR_IMP}
+         LET MUT(f, FRACTION(1, 1));
+         LET MUT(k, 0);
+         WHILE(<(k, 40), (SET(f, FRACTION_DIV(f, FRACTION(3, 1))); SET(k, +(k, 1))));
+         AT_K(ERR_PAYLOAD(f), \"kind\", \"?\")"
+    );
+    assert_eq!(actual(&src2), "OverflowError");
+}
+
+// ── 近似比较(规范 §7.4 · ADR-0031 D4)─────────────────────────────────
+
+const W06_IMP: &str =
+    r#"IMPORT("wlwl:std.math", ["APPROX_EQ", "IS_NAN", "IS_INF", "SIGNIFICANT_DIGITS", "LN"]);"#;
+
+/// `0.1 + 0.2 == 0.3` 这个经典陷阱必须过 —— 而裸 `==` 必须仍然失败。
+#[test]
+fn approx_eq_covers_the_classic_float_trap() {
+    let cases: Vec<(&str, &str)> = vec![
+        // 裸 `==` 失败(实测 `+(0.1, 0.2)` = 0.30000000000000004)
+        ("==(+(0.1, 0.2), 0.3)", "FALSE"),
+        // 绝对容差兜住
+        ("APPROX_EQ(+(0.1, 0.2), 0.3, 0.0, 1e-9)", "TRUE"),
+        // 容差太紧 ⇒ 仍然 FALSE(不是无脑放行)
+        ("APPROX_EQ(+(0.1, 0.2), 0.3, 0.0, 1e-18)", "FALSE"),
+        // 相对容差在大数量级上才起作用
+        ("APPROX_EQ(1000000.0, 1000000.1, 1e-6, 0.0)", "TRUE"),
+        ("APPROX_EQ(1000000.0, 1000000.1, 1e-9, 0.0)", "FALSE"),
+    ];
+    for (expr, want) in cases {
+        // ⚠ 这张表混了纯值(`TRUE`/`FALSE`)与诊断码(`!E0030`),而诊断带
+        // 名字和消息 —— 统一走 `matches!` 的「只锁码」前缀规则。
+        assert!(
+            matches(want, &actual(&format!("{W06_IMP} {expr}"))),
+            "expr = {expr}\n  expected: {want}"
+        );
+    }
+}
+
+/// ⚠ **`IS_INF` 补的是缺口**:`==(x, x)` 对 `±inf` 为 TRUE,自等绕法抓不到它。
+/// `IS_NAN` 则有 `x != x` 可用 —— 但两条都值得有成员。
+#[test]
+fn is_nan_and_is_inf_close_a_real_gap() {
+    let nan = "-(LN(0), LN(0))";
+    // ⚠ 类型必须是 `String` 而非 `&str` —— 头两条用 `format!` 拼 `NaN` 表达式。
+    let cases: Vec<(String, &str)> = vec![
+        // NaN 可达且判得出;自等判据也判得出(所以 IS_NAN 是便利)
+        (format!("IS_NAN({nan})"), "TRUE"),
+        (format!("==({nan}, {nan})"), "FALSE"),
+        // ±inf 判得出;**自等判据失效** ⇒ 这是缺口
+        ("IS_INF(LN(0))".to_string(), "TRUE"),
+        ("IS_INF(-(0, LN(0)))".to_string(), "TRUE"),
+        ("IS_INF(1.0)".to_string(), "FALSE"),
+        ("==(LN(0), LN(0))".to_string(), "TRUE"),
+    ];
+    for (expr, want) in cases {
+        // ⚠ 这张表混了纯值(`TRUE`/`FALSE`)与诊断码(`!E0030`),而诊断带
+        // 名字和消息 —— 统一走 `matches!` 的「只锁码」前缀规则。
+        assert!(
+            matches(want, &actual(&format!("{W06_IMP} {expr}"))),
+            "expr = {expr}\n  expected: {want}"
+        );
+    }
+}
+
+/// 三个成员在特殊值上都必须是**总函数**:不崩,且给出规定结论。
+#[test]
+fn approximate_members_are_total_over_special_values() {
+    let nan = "-(LN(0), LN(0))";
+    let cases: Vec<(String, &str)> = vec![
+        // NaN 与任何值(含自己)都不近似
+        (format!("APPROX_EQ({nan}, {nan}, 1.0, 1.0)"), "FALSE"),
+        (format!("APPROX_EQ({nan}, 1.0, 1.0, 1.0)"), "FALSE"),
+        // 同号同无穷才近似
+        ("APPROX_EQ(LN(0), LN(0), 0.0, 0.0)".to_string(), "TRUE"),
+        (
+            "APPROX_EQ(LN(0), -(0, LN(0)), 0.0, 0.0)".to_string(),
+            "FALSE",
+        ),
+        ("APPROX_EQ(LN(0), 1.0, 0.0, 0.0)".to_string(), "FALSE"),
+        // SIGNIFICANT_DIGITS 对特殊值恒 FALSE,零恒 TRUE
+        (format!("SIGNIFICANT_DIGITS({nan}, 5)"), "FALSE"),
+        ("SIGNIFICANT_DIGITS(LN(0), 5)".to_string(), "FALSE"),
+        ("SIGNIFICANT_DIGITS(0.0, 5)".to_string(), "TRUE"),
+    ];
+    for (expr, want) in cases {
+        // ⚠ 这张表混了纯值(`TRUE`/`FALSE`)与诊断码(`!E0030`),而诊断带
+        // 名字和消息 —— 统一走 `matches!` 的「只锁码」前缀规则。
+        assert!(
+            matches(want, &actual(&format!("{W06_IMP} {expr}"))),
+            "expr = {expr}\n  expected: {want}"
+        );
+    }
+}
+
+/// `SIGNIFICANT_DIGITS(x, n)`:`x` 是否恰好等于它保留 `n` 位有效数字后的值。
+#[test]
+fn significant_digits_is_a_predicate_on_n() {
+    let cases: Vec<(&str, &str)> = vec![
+        ("SIGNIFICANT_DIGITS(1.234, 3)", "FALSE"),
+        ("SIGNIFICANT_DIGITS(1.234, 4)", "TRUE"),
+        // 跨数量级:小数点位置不影响有效数字
+        ("SIGNIFICANT_DIGITS(0.0012340, 3)", "FALSE"),
+        ("SIGNIFICANT_DIGITS(0.0012340, 5)", "TRUE"),
+        ("SIGNIFICANT_DIGITS(3.14159265, 7)", "FALSE"),
+        // ⚠ 3.14159265 需要 **9** 位(第 9 位是 5,half-even 落在偶数位 6 上 ⇒
+        // 8 位给 3.1415926 ≠ 原值)。Python 侧逐位核对过。
+        ("SIGNIFICANT_DIGITS(3.14159265, 8)", "FALSE"),
+        ("SIGNIFICANT_DIGITS(3.14159265, 9)", "TRUE"),
+        // n 越界 ⇒ E0030(1..=17,f64 精度上限)
+        ("SIGNIFICANT_DIGITS(1.0, 0)", "!E0030"),
+        ("SIGNIFICANT_DIGITS(1.0, 18)", "!E0030"),
+    ];
+    for (expr, want) in cases {
+        // ⚠ 这张表混了纯值(`TRUE`/`FALSE`)与诊断码(`!E0030`),而诊断带
+        // 名字和消息 —— 统一走 `matches!` 的「只锁码」前缀规则。
+        assert!(
+            matches(want, &actual(&format!("{W06_IMP} {expr}"))),
+            "expr = {expr}\n  expected: {want}"
+        );
+    }
+}
+
+/// ⚠ **回归锁**:W-02 / W-03 / W-04 / W-06 都不许动既有的 32 个成员。
+#[test]
+fn new_families_do_not_disturb_the_original_thirty_two() {
+    let src = r#"IMPORT("wlwl:std.math", ["SQRT", "POW_MOD", "GCD", "LCM", "SIGN", "TRUNC"]); [SQRT(9), POW_MOD(5, 3, 7), GCD(-4, 6), LCM(4, 6), SIGN(-3), TRUNC(-2.7)]"#;
+    assert_eq!(actual(src), "[3.0, 6, 2, 12, -1, -2.0]");
 }

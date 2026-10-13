@@ -603,6 +603,67 @@ v0.11.2 M2 追加(§6 表格即当前成员面;附录 A 镜像由 `gen-appendix-
 **正确性证据**:契约用例的期望值取自 **Python `decimal` 模块**(默认精度 28、
 舍入 `ROUND_HALF_EVEN`),**不是实现输出** —— 由脚本跑 Python 侧独立算一遍再落表。
 
+### 7.3 精确分数(`FRACTION` 族,v0.11.3 M7 · ADDENDUM-10 · 规范性)
+
+**值形状是公开契约,字段名变更即 breaking。**
+
+```
+{"num": INTEGER, "den": INTEGER}
+```
+
+规范形式:`den > 0`、`gcd(|num|, den) = 1`(**约分到最简**)、**零恒为 `{0, 1}`**。
+
+| 成员 | 语义 | 失败口径 |
+|---|---|---|
+| `FRACTION(n, d)` | 构造并约分;分母负时**分子分母同时取反** | `d = 0` ⇒ `ERR(["kind": "DomainError"])` |
+| `FRACTION_ADD(a, b)` / `FRACTION_SUB(a, b)` / `FRACTION_MUL(a, b)` | 精确算术,结果自动约分 | 溢出 ⇒ `ERR(["kind": "OverflowError"])`;非法 `DICT` ⇒ `E0030` |
+| `FRACTION_DIV(a, b)` | 精确算术 | 除数为零 / 溢出 ⇒ `ERR([…])` |
+| `FRACTION_CMP(a, b)` | `-1` / `0` / `1`。**永不失败**(交叉相乘用 `i128` 中转,不该因中间量溢出给出错误答案) | — |
+| `FRACTION_TO_STRING(f)` | `"3/4"` / `"-1/2"` / `"2"`(分母为 1 时不写分母) | — |
+| `FRACTION_TO_DECIMAL(f, scale)` | 转十进制,舍入恒 `HALF_EVEN` | **`scale` 必填**;超出 `0..=30` ⇒ `E0030` |
+
+⚠ **分子分母是 `i64`,不是任意精度。** 计划 §0 把「任意精度」明确划给十进制,
+分数另立一项。代价说清:分数连乘很容易撞 `i64` 上界,本族**一律在溢出发生前**
+检查并报 `ERR([kind: OverflowError])`,**绝不**让语言层的 `E0035` 冒出来 ——
+那个是**中止整个运行**的,放进标准库成员里不可接受。若将来需要任意精度分数,
+正确做法是复用 §7.2 的数位编码而不是另起一套。
+
+⚠ **未约分 / `den <= 0` / 零不是 `0/1` 的 `DICT` 一律 `E0030`,不修复。**
+与 §7.2 同款:`DICT` 承载的固有缺陷,明码标价。
+
+⚠ **`scale` 必填**:`1/3` 的十进制展开**不终止**,静默给一个截断值就是精度谎言。
+
+**正确性证据**:契约期望值取自 **Python `fractions` 模块**,不是实现输出。
+
+### 7.4 近似比较(`v0.11.3 M7 · ADDENDUM-10 · 规范性`)
+
+| 成员 | 语义 | 失败口径 |
+|---|---|---|
+| `APPROX_EQ(a, b, rel_tol, abs_tol)` | `\|a - b\| <= max(rel_tol × max(\|a\|, \|b\|), abs_tol)` | 元数 4;非数值实参 ⇒ `E0030` |
+| `IS_NAN(x)` | `x` 是 `NaN` | 非数值实参 ⇒ `E0030` |
+| `IS_INF(x)` | `x` 是 `±inf` | 同上 |
+| `SIGNIFICANT_DIGITS(x, n)` | `x` 是否**恰好等于**它保留 `n` 位有效数字后的值 | `n` 超出 `1..=17` ⇒ `E0030` |
+
+⚠ **两个容差都不给默认。** `0.1` 与 `0.1000000001` 该不该相等是**业务决定**;
+猜一个默认值等于替调用方选语义。
+
+⚠ **`IS_INF` 补的是缺口,不是便利。** `==(x, x)` 对 `±inf` 为 **TRUE** ——
+自等判据抓不到它(实测),而本库此前既没有 `IS_INF` 也没有 `IS_NAN`。`NaN` 至少有
+`x != x` 这个经典绕法(`==(NaN, NaN)` 实测为 `FALSE`)。
+
+**特殊值语义**(三者都必须是总函数,不能因特殊值崩掉):
+
+| 情形 | `APPROX_EQ` | `SIGNIFICANT_DIGITS` |
+|---|---|---|
+| `NaN` 与任何值(含自己) | `FALSE` | `FALSE` |
+| `±inf` 与**同号** `±inf` | `TRUE` | `FALSE` |
+| `±inf` 与 `-∞` / 有限值 | `FALSE` | `FALSE` |
+| `0.0` | 正常判据 | `TRUE`(零对任意 `n ≥ 1` 都「已经就位」) |
+
+⚠ 计划原文写 `SIGNIFICANT_DIGITS(x, n)` 但没说返回什么。本规范取**谓词**读法
+(与「比容差更直觉的**判定**」那句一致);返回「有效数字的**个数**」是另一个成员,
+且那不是判定。
+
 ### 7.1 M4 二十一个成员的设计取舍(v0.11.2,逐条写明)
 
 1. **`TRUNC` 不是全局 `INT` 的别名,但差别只在界外。** 界内两者逐字相同
@@ -1976,7 +2037,7 @@ then 支内(短路保证 `OK` 时不触发)。
 | `std.sanitize` | `HTML_ESCAPE` `HTML_UNESCAPE` `HTML_SANITIZE` `HTML_SANITIZE_SCRIPT` `CSS_ESCAPE_IDENT` `CSS_ESCAPE_STRING` `HTML_SANITIZE_CSS` `HTML_SANITIZE_URL` | R2 | v0.11.3 |
 | `std.collection` | `MAP` `FILTER` `REDUCE` `SORT` `SORT_BY` `ZIP` `RANGE` `ANY` `ALL` `FIND` `ENUMERATE` `TAKE` `DROP` `FLAT` `UNIQ` `GROUP_BY` `JOIN` `CHUNK` `WINDOW` `DEDUP_BY` `MIN_BY` `MAX_BY` `SUM` `PRODUCT` `FOLD_RIGHT` `POSITION` `KEY_BY` | 混合(R1 门面 + R2 `RANGE`/`MAP`/`FILTER`/`CHUNK`/`WINDOW`/`ENUMERATE`/`ZIP`/`UNIQ`/`FLAT`/`JOIN`/`GROUP_BY`/`DEDUP_BY`/`KEY_BY`) | v0.10 及以前(成员)/ v0.11(R1 重写,M5 起 RANGE 沉 R2)/ v0.11.3(M5 L0-A-2 加 MAP·FILTER·CHUNK·WINDOW,L0-A-3a 加 ENUMERATE·ZIP·UNIQ·FLAT·JOIN,L0-A-3b 加 GROUP_BY·DEDUP_BY·KEY_BY 沉 R2) |
 | `std.str` | `JOIN` `SPLIT_LINES` `CHAR_AT` `COUNT` `QUOTE` `INDEX_OF` `CONTAINS_SUB` | R1 | v0.11 / INDEX_OF、CONTAINS_SUB 于 v0.11.2 |
-| `std.math` | `ABS` `MIN` `MAX` `FLOOR` `CEIL` `ROUND` `SQRT` `POW` `CLAMP` `PI` `E` `LN` `LOG2` `LOG10` `EXP` `TRUNC` `SIN` `COS` `TAN` `ASIN` `ACOS` `ATAN` `ATAN2` `SINH` `COSH` `TANH` `SIGN` `DIV_CEIL` `GCD` `LCM` `IS_SQRT` `POW_MOD` `DECIMAL` `DECIMAL_ADD` `DECIMAL_SUB` `DECIMAL_MUL` `DECIMAL_DIV` `DECIMAL_CMP` `DECIMAL_TO_STRING` `DECIMAL_ROUND` | 混合 | v0.11 |
+| `std.math` | `ABS` `MIN` `MAX` `FLOOR` `CEIL` `ROUND` `SQRT` `POW` `CLAMP` `PI` `E` `LN` `LOG2` `LOG10` `EXP` `TRUNC` `SIN` `COS` `TAN` `ASIN` `ACOS` `ATAN` `ATAN2` `SINH` `COSH` `TANH` `SIGN` `DIV_CEIL` `GCD` `LCM` `IS_SQRT` `POW_MOD` `DECIMAL` `DECIMAL_ADD` `DECIMAL_SUB` `DECIMAL_MUL` `DECIMAL_DIV` `DECIMAL_CMP` `DECIMAL_TO_STRING` `DECIMAL_ROUND` `FRACTION` `FRACTION_ADD` `FRACTION_SUB` `FRACTION_MUL` `FRACTION_DIV` `FRACTION_CMP` `FRACTION_TO_STRING` `FRACTION_TO_DECIMAL` `APPROX_EQ` `IS_NAN` `IS_INF` `SIGNIFICANT_DIGITS` | 混合 | v0.11 |
 | `std.test` | `TEST` `ASSERT` `ASSERT_EQ` `ASSERT_NEQ` `EXPECT_ERR` `RUN_TESTS` | 混合 | v0.10 及以前(成员)/ v0.11(混合化) |
 | `std.ai` | `ASK` `EMBED` `COMPLETE` `ASK_STREAM` `ASK_ALL` | R2 | v0.10 及以前 |
 | `std.agent` | `TASK` `TOOL` `CALL_TOOL` `MODEL` `CONTEXT` | R2 | v0.10 及以前 |

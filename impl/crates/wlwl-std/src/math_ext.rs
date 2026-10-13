@@ -684,3 +684,462 @@ pub fn decimal_round(host: &mut dyn StdHost, args: Vec<Value>) -> wlwl_error::Wl
         &a.round_to(*scale as usize, mode),
     )))
 }
+
+// ── 精确分数(v0.11.3 M7 / addendum-10 W-04)─────────────────────────────
+//
+// 形状 `{num: INTEGER, den: INTEGER}`,规范形式:`den > 0` 且 `gcd(|num|, den) = 1`
+// (约分到最简);零恒为 `{0, 1}`。
+//
+// ⚠ **分子分母是 `i64`,不是任意精度。** 计划 §0 把「任意精度」明确划给十进制,
+// 分数另立一项 ⇒ 本族用语言层的 `INTEGER` 口径。代价要说清:分数连乘很容易撞
+// `i64` 上界(`1/3 * 1/7 * 1/11 * …`),本族一律在**溢出前**检查并报
+// `ERR([kind: OverflowError])`,**绝不**让语言层的 `E0035` 冒出来 —— 那个是
+// **中止整个运行**的,放进标准库成员里不可接受。
+// 若将来需要任意精度分数,正确做法是复用 `Dec` 的数位编码而不是另起一套。
+
+#[derive(Clone, Copy, PartialEq, Eq)]
+struct Frac {
+    num: i64,
+    den: i64,
+}
+
+/// 失败类别。分派到 `ERR([kind: …])` 而不是原生诊断。
+enum FracErr {
+    Domain,
+    Overflow,
+}
+
+impl FracErr {
+    fn kind(&self) -> &'static str {
+        match self {
+            FracErr::Domain => "DomainError",
+            FracErr::Overflow => "OverflowError",
+        }
+    }
+    fn op(&self, op: &'static str) -> Value {
+        Value::Dict(vec![
+            (
+                Value::String("kind".into()),
+                Value::String(self.kind().into()),
+            ),
+            (Value::String("op".into()), Value::String(op.into())),
+        ])
+    }
+}
+
+/// 欧几里得算法(取绝对值)。`a == 0` 时返回 `b`。
+fn gcd(mut a: i64, mut b: i64) -> i64 {
+    a = a.abs();
+    b = b.abs();
+    while b != 0 {
+        let t = a % b;
+        a = b;
+        b = t;
+    }
+    a
+}
+
+impl Frac {
+    /// 约分到最简并把分母规整为正。
+    fn new(num: i64, den: i64) -> Result<Frac, FracErr> {
+        if den == 0 {
+            return Err(FracErr::Domain);
+        }
+        // 分母负 ⇒ 分子分母同时取反,保证 `den > 0`(规范形式的一半)。
+        let (mut n, mut d) = if den < 0 {
+            (
+                num.checked_neg().ok_or(FracErr::Overflow)?,
+                den.checked_neg().ok_or(FracErr::Overflow)?,
+            )
+        } else {
+            (num, den)
+        };
+        let g = gcd(n, d);
+        if g > 1 {
+            n /= g;
+            d /= g;
+        }
+        // 零恒为 {0, 1}(gcd(0, d) = d,约分后自然是 0/1)。
+        Ok(Frac { num: n, den: d })
+    }
+
+    fn is_zero(&self) -> bool {
+        self.num == 0
+    }
+
+    /// 交叉相乘比较。⚠ 用 `i128` 中转:`a.n * b.d` 在 `i64` 口径下极易溢出,
+    /// 而比较**不该**因为中间量溢出而给出错误答案。
+    fn cmp(&self, other: &Frac) -> i32 {
+        let l = self.num as i128 * other.den as i128;
+        let r = other.num as i128 * self.den as i128;
+        if l < r {
+            -1
+        } else if l > r {
+            1
+        } else {
+            0
+        }
+    }
+
+    /// `self ± other`,全程 `checked_*` —— 溢出即 `OverflowError`,**不**静默回绕。
+    fn add(&self, other: &Frac) -> Result<Frac, FracErr> {
+        let n = self
+            .num
+            .checked_mul(other.den)
+            .and_then(|x| x.checked_add(other.num.checked_mul(self.den)?))
+            .ok_or(FracErr::Overflow)?;
+        let d = self.den.checked_mul(other.den).ok_or(FracErr::Overflow)?;
+        Frac::new(n, d)
+    }
+
+    fn sub(&self, other: &Frac) -> Result<Frac, FracErr> {
+        let n = self
+            .num
+            .checked_mul(other.den)
+            .and_then(|x| x.checked_sub(other.num.checked_mul(self.den)?))
+            .ok_or(FracErr::Overflow)?;
+        let d = self.den.checked_mul(other.den).ok_or(FracErr::Overflow)?;
+        Frac::new(n, d)
+    }
+
+    fn mul(&self, other: &Frac) -> Result<Frac, FracErr> {
+        let n = self.num.checked_mul(other.num).ok_or(FracErr::Overflow)?;
+        let d = self.den.checked_mul(other.den).ok_or(FracErr::Overflow)?;
+        Frac::new(n, d)
+    }
+
+    fn div(&self, other: &Frac) -> Result<Frac, FracErr> {
+        if other.is_zero() {
+            return Err(FracErr::Domain);
+        }
+        let n = self.num.checked_mul(other.den).ok_or(FracErr::Overflow)?;
+        let d = self.den.checked_mul(other.num).ok_or(FracErr::Overflow)?;
+        Frac::new(n, d)
+    }
+
+    fn render(&self) -> String {
+        if self.den == 1 {
+            self.num.to_string()
+        } else {
+            format!("{}/{}", self.num, self.den)
+        }
+    }
+
+    // ⚠ `Frac` 是 `Copy`,所以按**值**收(`clippy::wrong_self_convention`:`to_*` +
+    // `self: Copy` ⇒ 取值)。`Dec` 不是 `Copy`(含 `Vec`),那边才是 `&self`。
+    fn to_value(self) -> Value {
+        Value::Dict(vec![
+            (Value::String("num".into()), Value::Integer(self.num)),
+            (Value::String("den".into()), Value::Integer(self.den)),
+        ])
+    }
+}
+
+/// 校验并取出分数形状。非法 `DICT` → `E0030`,**不修复**(`ADR-0031` D1 同款)。
+fn frac_from_value(v: &Value) -> Option<Frac> {
+    let Value::Dict(pairs) = v else { return None };
+    let get = |key: &str| {
+        pairs
+            .iter()
+            .find(|(k, _)| matches!(k, Value::String(s) if s == key))
+            .map(|(_, v)| v)
+    };
+    let (Some(Value::Integer(n)), Some(Value::Integer(d))) = (get("num"), get("den")) else {
+        return None;
+    };
+    if *d <= 0 {
+        return None; // 分母必须是正数(规范形式),0 / 负数都非法
+    }
+    if gcd(*n, *d) != 1 {
+        return None; // 未约分 = 非法形状
+    }
+    if *n == 0 && *d != 1 {
+        return None; // 零恒为 {0, 1}
+    }
+    Some(Frac { num: *n, den: *d })
+}
+
+// ── 成员 ──────────────────────────────────────────────────────────────
+
+fn fr_arity(host: &mut dyn StdHost, name: &str, got: usize, want: usize) -> wlwl_error::WlwlError {
+    host.diag(
+        ErrorCode::E0022,
+        format!("{name}: function expects {want} argument(s), got {got}"),
+    )
+}
+
+fn fr_type_err(host: &mut dyn StdHost, name: &str, got: &Value) -> wlwl_error::WlwlError {
+    host.diag(
+        ErrorCode::E0030,
+        format!(
+            "{name}: expected a FRACTION DICT {{\"num\": INTEGER, \"den\": INTEGER}}, got {}",
+            wlwl_value::type_name(got)
+        ),
+    )
+}
+
+/// `FRACTION(n, d)` —— 约分到最简;`d = 0` ⇒ `ERR([kind: DomainError])`。
+pub fn fraction(host: &mut dyn StdHost, args: Vec<Value>) -> wlwl_error::WlwlResult<Outcome> {
+    if args.len() != 2 {
+        return Err(fr_arity(host, "FRACTION", args.len(), 2));
+    }
+    // ⚡ 直接对 `&Value` 匹配(`match ergonomics` 会把 `n` / `d` 绑成 `&i64`),
+    // 不要写成 `(Some(..), Some(..)) = (&args[0], &args[1])` —— 右边是
+    // `(&Value, &Value)` 不是 `(Option, Option)`,那样编不过。
+    let (Value::Integer(n), Value::Integer(d)) = (&args[0], &args[1]) else {
+        let bad = if matches!(args[0], Value::Integer(_)) {
+            &args[1]
+        } else {
+            &args[0]
+        };
+        return Err(fr_type_err(host, "FRACTION", bad));
+    };
+    match Frac::new(*n, *d) {
+        Ok(f) => Ok(Outcome::normal(f.to_value())),
+        Err(e) => Ok(Outcome::normal(Value::Err(Box::new(e.op("FRACTION"))))),
+    }
+}
+
+macro_rules! frac_binary {
+    ($name:ident, $fn_name:literal, $method:ident) => {
+        pub fn $name(host: &mut dyn StdHost, args: Vec<Value>) -> wlwl_error::WlwlResult<Outcome> {
+            if args.len() != 2 {
+                return Err(fr_arity(host, $fn_name, args.len(), 2));
+            }
+            let (Some(a), Some(b)) = (frac_from_value(&args[0]), frac_from_value(&args[1])) else {
+                let bad = if frac_from_value(&args[0]).is_none() {
+                    &args[0]
+                } else {
+                    &args[1]
+                };
+                return Err(fr_type_err(host, $fn_name, bad));
+            };
+            match a.$method(&b) {
+                Ok(f) => Ok(Outcome::normal(f.to_value())),
+                Err(e) => Ok(Outcome::normal(Value::Err(Box::new(e.op($fn_name))))),
+            }
+        }
+    };
+}
+
+frac_binary!(fraction_add, "FRACTION_ADD", add);
+frac_binary!(fraction_sub, "FRACTION_SUB", sub);
+frac_binary!(fraction_mul, "FRACTION_MUL", mul);
+frac_binary!(fraction_div, "FRACTION_DIV", div);
+
+/// `FRACTION_CMP(a, b) -> -1 | 0 | 1`。**永不失败**(比较用 `i128` 中转)。
+pub fn fraction_cmp(host: &mut dyn StdHost, args: Vec<Value>) -> wlwl_error::WlwlResult<Outcome> {
+    if args.len() != 2 {
+        return Err(fr_arity(host, "FRACTION_CMP", args.len(), 2));
+    }
+    let (Some(a), Some(b)) = (frac_from_value(&args[0]), frac_from_value(&args[1])) else {
+        let bad = if frac_from_value(&args[0]).is_none() {
+            &args[0]
+        } else {
+            &args[1]
+        };
+        return Err(fr_type_err(host, "FRACTION_CMP", bad));
+    };
+    Ok(Outcome::normal(Value::Integer(a.cmp(&b) as i64)))
+}
+
+/// `FRACTION_TO_STRING(f)` —— `"3/4"` / `"-1/2"` / `"2"`(分母为 1 时不写分母)。
+pub fn fraction_to_string(
+    host: &mut dyn StdHost,
+    args: Vec<Value>,
+) -> wlwl_error::WlwlResult<Outcome> {
+    if args.len() != 1 {
+        return Err(fr_arity(host, "FRACTION_TO_STRING", args.len(), 1));
+    }
+    let Some(f) = frac_from_value(&args[0]) else {
+        return Err(fr_type_err(host, "FRACTION_TO_STRING", &args[0]));
+    };
+    Ok(Outcome::normal(Value::String(f.render())))
+}
+
+/// `FRACTION_TO_DECIMAL(f, scale)` —— 转十进制。
+///
+/// ⚠ **`scale` 必填**:分数的十进制展开可能**不终止**(`1/3`),静默给一个截断值
+/// 就是精度谎言(与 `DECIMAL_DIV` 同款理由)。舍入恒 `HALF_EVEN`。
+pub fn fraction_to_decimal(
+    host: &mut dyn StdHost,
+    args: Vec<Value>,
+) -> wlwl_error::WlwlResult<Outcome> {
+    if args.len() != 2 {
+        return Err(fr_arity(host, "FRACTION_TO_DECIMAL", args.len(), 2));
+    }
+    let Some(f) = frac_from_value(&args[0]) else {
+        return Err(fr_type_err(host, "FRACTION_TO_DECIMAL", &args[0]));
+    };
+    let Value::Integer(scale) = args[1] else {
+        return Err(host.diag(
+            ErrorCode::E0030,
+            format!(
+                "FRACTION_TO_DECIMAL: scale must be INTEGER, got {}",
+                wlwl_value::type_name(&args[1])
+            ),
+        ));
+    };
+    if !(0..=30).contains(&scale) {
+        return Err(host.diag(
+            ErrorCode::E0030,
+            format!("FRACTION_TO_DECIMAL: scale must be 0..=30, got {scale}"),
+        ));
+    }
+    // num / den 用 i128 做,再交给 `Dec` 的除法(它已经实现 HALF_EVEN)。
+    let d = Dec {
+        neg: f.num < 0,
+        digits: f
+            .num
+            .unsigned_abs()
+            .to_string()
+            .bytes()
+            .map(|c| c - b'0')
+            .collect(),
+        scale: 0,
+    };
+    let e = Dec {
+        neg: false,
+        digits: f
+            .den
+            .unsigned_abs()
+            .to_string()
+            .bytes()
+            .map(|c| c - b'0')
+            .collect(),
+        scale: 0,
+    };
+    Ok(Outcome::normal(dec_to_value(&d.div(&e, scale as usize))))
+}
+// ── 近似比较(v0.11.3 M7 / addendum-10 W-06 · ADR-0031 D4)──────────────
+//
+// 为什么这四个成员值得有(`ADR-0031` §5 的实测):
+//
+// * **`±inf` 没有任何数值绕法** —— `==(LN(0), LN(0))` 是 TRUE,自等判据对它无效,
+//   只能靠 `STR(x)` 字符串匹配。所以 `IS_INF` 不是「便利」,是**缺口**。
+// * **`NaN` 可达**(`-(LN(0), LN(0))` / `*(0.0, LN(0))` 都得 NaN),且有
+//   `x != x` 这个经典绕法 —— `IS_NAN` 是便利。
+// * `0.1 + 0.2 == 0.3` 在**本库**同样为 FALSE(实测 `+(0.1, 0.2)` 得
+//   `0.30000000000000004`),所以 `APPROX_EQ` 是 `ASSERT_EQ` 在浮点上唯一能用的形态。
+
+/// 取实数,失败时把诊断挂到宿主上(调用方负责 `take_diag` 或忽略)。
+macro_rules! num_or_err {
+    ($host:expr, $name:literal, $v:expr) => {
+        match $v {
+            Value::Integer(i) => *i as f64,
+            Value::Float(f) => *f,
+            other => {
+                return Err($host.diag(
+                    ErrorCode::E0030,
+                    format!(
+                        "{}: expected INTEGER or FLOAT, got {}",
+                        $name,
+                        wlwl_value::type_name(other)
+                    ),
+                ));
+            }
+        }
+    };
+}
+
+/// `APPROX_EQ(a, b, rel_tol, abs_tol) -> BOOLEAN`
+///
+/// 判据: `|a - b| <= max(rel_tol × max(|a|, |b|), abs_tol)` —— **显式相对 +
+/// 绝对容差**,两个都必须给。
+///
+/// ⚠ 容差**不给默认**:`0.1` 与 `0.1000000001` 该不该相等是**业务决定**,
+/// 猜一个默认值等于替调用方选了一个语义。⚠ **任一实参是 `NaN` ⇒ `FALSE`**
+/// (`NaN` 与任何值都不近似,包括它自己);`±inf` 只有「两者同号且同无穷」才 `TRUE`。
+pub fn approx_eq(host: &mut dyn StdHost, args: Vec<Value>) -> wlwl_error::WlwlResult<Outcome> {
+    if args.len() != 4 {
+        return Err(arity_range4(host, "APPROX_EQ", args.len()));
+    }
+    let a = num_or_err!(host, "APPROX_EQ", &args[0]);
+    let b = num_or_err!(host, "APPROX_EQ", &args[1]);
+    let rt = num_or_err!(host, "APPROX_EQ", &args[2]);
+    let at = num_or_err!(host, "APPROX_EQ", &args[3]);
+    let ok = if a.is_nan() || b.is_nan() {
+        false
+    } else if a.is_infinite() || b.is_infinite() {
+        a == b // 同号同无穷才 TRUE;inf 与 -inf 不等
+    } else {
+        let diff = (a - b).abs();
+        let scale = a.abs().max(b.abs());
+        diff <= (rt * scale).max(at)
+    };
+    Ok(Outcome::normal(Value::Boolean(ok)))
+}
+
+fn arity_range4(host: &mut dyn StdHost, name: &str, got: usize) -> wlwl_error::WlwlError {
+    host.diag(
+        ErrorCode::E0022,
+        format!("{name}: function expects 4 argument(s), got {got}"),
+    )
+}
+
+/// `IS_NAN(x) -> BOOLEAN`。**总函数**,永不失败(除类型错)。
+///
+/// 等价于 `NOT(==(x, x))`,但直接可读 —— 那条绕法在 skill 里被标为反模式。
+pub fn is_nan(host: &mut dyn StdHost, args: Vec<Value>) -> wlwl_error::WlwlResult<Outcome> {
+    if args.len() != 1 {
+        return Err(arity(host, "IS_NAN", args.len(), 1));
+    }
+    let x = num_or_err!(host, "IS_NAN", &args[0]);
+    Ok(Outcome::normal(Value::Boolean(x.is_nan())))
+}
+
+/// `IS_INF(x) -> BOOLEAN`。**总函数**。
+///
+/// ⚠ 这是**缺口**而非便利:`==(x, x)` 对 `±inf` 为 TRUE(见文件头),自等判据
+/// 抓不到它;本库也没有 `IS_FINITE`。
+pub fn is_inf(host: &mut dyn StdHost, args: Vec<Value>) -> wlwl_error::WlwlResult<Outcome> {
+    if args.len() != 1 {
+        return Err(arity(host, "IS_INF", args.len(), 1));
+    }
+    let x = num_or_err!(host, "IS_INF", &args[0]);
+    Ok(Outcome::normal(Value::Boolean(x.is_infinite())))
+}
+
+/// `SIGNIFICANT_DIGITS(x, n) -> BOOLEAN`:`x` 是否**恰好等于**它保留 `n` 位
+/// 有效数字后的值(舍入用 IEEE 的十进制格式化,等价 half-even)。
+///
+/// ⚠ 计划原文写的是 `SIGNIFICANT_DIGITS(x, n)` 但没说返回什么 —— 这里取**谓词**
+/// 读法(与「比容差更直觉的**判定**」那句一致),返回 `n` 位有效数字的**个数**是
+/// 另一个成员(那不是判定)。零对任意 `n ≥ 1` 都是 `TRUE`;`NaN` / `±inf` 恒
+/// `FALSE`(特殊值谈「有效数字」没有意义)。
+pub fn significant_digits(
+    host: &mut dyn StdHost,
+    args: Vec<Value>,
+) -> wlwl_error::WlwlResult<Outcome> {
+    if args.len() != 2 {
+        return Err(arity(host, "SIGNIFICANT_DIGITS", args.len(), 2));
+    }
+    let x = num_or_err!(host, "SIGNIFICANT_DIGITS", &args[0]);
+    let Value::Integer(n) = args[1] else {
+        return Err(host.diag(
+            ErrorCode::E0030,
+            format!(
+                "SIGNIFICANT_DIGITS: n must be INTEGER, got {}",
+                wlwl_value::type_name(&args[1])
+            ),
+        ));
+    };
+    if !(1..=17).contains(&n) {
+        return Err(host.diag(
+            ErrorCode::E0030,
+            format!("SIGNIFICANT_DIGITS: n must be 1..=17 (f64 精度上限), got {n}"),
+        ));
+    }
+    let ok = if x == 0.0 {
+        true // 零对任意位数都「已经就位」
+    } else if x.is_nan() || x.is_infinite() {
+        false
+    } else {
+        // `{:.*e}` = 小数点后 n-1 位 ⇒ 合计 n 位有效数字。
+        match format!("{:.*e}", (n - 1) as usize, x).parse::<f64>() {
+            Ok(r) => r == x,
+            Err(_) => false,
+        }
+    };
+    Ok(Outcome::normal(Value::Boolean(ok)))
+}
