@@ -1295,6 +1295,13 @@ fn builtin_push(_ev: &mut Evaluator, args: Vec<Value>) -> WlwlResult<Outcome> {
         return Err(arity_error("PUSH", args.len(), 2));
     }
     let item = &args[1];
+    // [v0.11.3 M7 / ADR-0032 D1 / PLAN S3] 累加器就地追加:第一个实参是 cell
+    // ⇒ `borrow_mut().push(..)` 后返回**同一个** cell(`share()`,不是 `clone()`
+    // —— 后者会把整个数组深拷一遍,优化归零)。
+    if let Value::Cell(c) = &args[0] {
+        c.borrow_mut().push(item.clone());
+        return Ok(Outcome::normal(Value::Cell(c.share())));
+    }
     let arr = match &args[0] {
         Value::Array(a) => {
             let mut a = a.clone();
@@ -2070,6 +2077,26 @@ fn builtin_concat(_ev: &mut Evaluator, args: Vec<Value>) -> WlwlResult<Outcome> 
         return Err(arity_error("CONCAT", args.len(), 2));
     }
     match (&args[0], &args[1]) {
+        // [v0.11.3 M7 / ADR-0032 D1 / PLAN S3] 累加器就地追加:
+        // 左操作数是 cell ⇒ 原地 extend,**不**分配新数组,也**不**深拷贝
+        // (返回 `share()` 的同一个 cell,不是 `clone()`)。
+        // ⚠ 借来的引用在这里就结束 —— 持有它时若去 `borrow_mut` 同一个 cell
+        // 会撞 `RefCell` 的运行期借用检查。
+        (Value::Cell(c), _) => {
+            let mut v = c.borrow_mut();
+            match &args[1] {
+                Value::Array(items) => v.extend(items.iter().cloned()),
+                Value::Cell(other) => {
+                    let o = other.borrow();
+                    v.extend(o.iter().cloned());
+                }
+                Value::Null => {}
+                other => {
+                    v.push(other.clone());
+                }
+            }
+            Ok(Outcome::normal(Value::Cell(c.share())))
+        }
         (Value::Array(a), Value::Array(b)) => {
             let mut out = Vec::with_capacity(a.len() + b.len());
             out.extend(a.iter().cloned());
@@ -5679,6 +5706,17 @@ fn builtin_add(_ev: &mut Evaluator, args: Vec<Value>) -> WlwlResult<Outcome> {
         return Ok(Outcome::normal(Value::String(format!("{}{}", s1, s2))));
     }
     // Array concatenation.
+    // [v0.11.3 M7 / ADR-0032 D1 / PLAN S3] 累加器就地追加:左操作数是 cell
+    // ⇒ `borrow_mut().extend(..)` 后返回**同一个** cell(`share()`,不是
+    // `clone()` —— 后者会把整个数组深拷一遍,优化归零且比现在更慢)。
+    if let Value::Cell(c) = a {
+        if let Value::Array(a2) = b {
+            c.borrow_mut().extend(a2.iter().cloned());
+        } else {
+            c.borrow_mut().push(b.clone());
+        }
+        return Ok(Outcome::normal(Value::Cell(c.share())));
+    }
     if let (Value::Array(a1), Value::Array(a2)) = (a, b) {
         let mut out = a1.clone();
         out.extend(a2.iter().cloned());
@@ -7709,11 +7747,47 @@ impl Evaluator {
         // 就地分支是 S3。所以此刻无论 hit 还是 miss,程序结果都完全一样;计数的
         // 作用是让「识别漏了多少」**可测**(ADR-0025 Q3 第一件),而不是静默的性能
         // 回退。
-        if recognize_accumulator(cond, body).is_some() {
-            self.acc_opt_hit.set(self.acc_opt_hit.get() + 1);
-        } else {
-            self.acc_opt_miss.set(self.acc_opt_miss.get() + 1);
+        let acc_name = match recognize_accumulator(cond, body) {
+            Some(n) => n,
+            None => {
+                self.acc_opt_miss.set(self.acc_opt_miss.get() + 1);
+                return self.eval_while_inner(cond, body);
+            }
+        };
+        self.acc_opt_hit.set(self.acc_opt_hit.get() + 1);
+        // [PLAN S3] 识别命中 ⇒ 把累加器包成 cell,让三个内建走就地追加。
+        //
+        // ⚠ `Env::get` 返回 `Option<Ref<Value>>`(v0.6 §3.4 的按引用 cell),
+        // 所以每次都要**先把 `Ref` 取出、拷成 owned,再放回** —— 持有 `Ref`
+        // 时调 `set_local_mut` 会二次借同一个 cell。
+        //
+        // ⚠ **循环结束后转回 `Array`**:可观察面本来就一致(S1 的契约),转回去是
+        // 为了不让 `Cell` 逃出这个循环的词法范围 —— 它只是优化期间的临时表示。
+        let peek = self.env.get(&acc_name).map(|r| r.clone());
+        let already_cell = matches!(peek, Some(Value::Cell(_)));
+        if !already_cell {
+            if let Some(Value::Array(v)) = peek {
+                self.env
+                    .set_local_mut(acc_name.clone(), Value::Cell(wlwl_value::CellVec::new(v)));
+            }
         }
+        // ⚠ **必须把 `eval_while_inner` 的结果原样传出去**。循环体可能以
+        // `Signal::None` + `Value::Err` 结束(v0.10.2 §6.2:体产生的 `ERR`
+        // 终止循环并传播),也可能带 `RETURN` / `BREAK` 的信号。丢掉它就等于
+        // 悄悄改了循环语义 —— `P_v10_2_while_body_err_propagates` 这条 probe
+        // 当场抓到了。
+        let out = self.eval_while_inner(cond, body)?;
+        if !already_cell {
+            let after = self.env.get(&acc_name).map(|r| r.clone());
+            if let Some(Value::Cell(c)) = after {
+                let items = c.borrow().clone();
+                self.env.set_local_mut(acc_name, Value::Array(items));
+            }
+        }
+        Ok(out)
+    }
+
+    fn eval_while_inner(&mut self, cond: &Expr, body: &Expr) -> WlwlResult<Outcome> {
         loop {
             let c = self.eval_expr(cond)?;
             if c.signal != Signal::None {

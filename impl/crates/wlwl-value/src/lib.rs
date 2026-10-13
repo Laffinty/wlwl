@@ -61,6 +61,18 @@ impl CellVec {
         CellVec(std::rc::Rc::new(std::cell::RefCell::new(items)))
     }
 
+    /// **共享同一个 cell**(只克隆 `Rc`,不深拷贝)。
+    ///
+    /// ⚠ 与 `Clone`(深拷贝)是**两个不同的出口**,别混:
+    /// - `clone()` = 语义拷贝,给 `LET(b, a)` 那种「绑一份新的」用;
+    /// - `share()` = 就地追加的内建**返回同一个 cell** 时用。
+    ///
+    /// 若内建用 `clone()` 返回,每轮追加都会把整个数组深拷一遍 —— 优化归零,
+    /// 而且比现在更慢(多了一次 cell 化 + 一次深拷)。
+    pub fn share(&self) -> Self {
+        CellVec(self.0.clone())
+    }
+
     /// 是否与 `other` **就是同一个** cell(同一 `Rc`)。
     ///
     /// 相等性必须先用它短路:两个 `Rc` 指向同一 cell 时直接判 `true`,
