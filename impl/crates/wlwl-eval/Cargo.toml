@@ -65,3 +65,12 @@ path = "benches/regex.rs"
 name = "rand"
 harness = false
 path = "benches/rand.rs"
+# [v0.11.3 M7 / ADR-0032 §7-S4] L0-B 可变累加器基准 —— **D3 三件套的第二件**。
+# 另建文件而不并进 collection.rs:那里的 `r1_build_*` 走 FOR + 闭包,而识别器只在
+# `eval_while` 上调用 ⇒ 那一组永远判否,拿它守 L0-B 会得到一个「怎么都不变」的
+# 绿色读数。四组里 `l0b_control` 是对照组(只多一句 `LEN(acc)` ⇒ 识别判否),
+# 用来把「优化生效」与「解释器整体变快」区分开。
+[[bench]]
+name = "accumulator"
+harness = false
+path = "benches/accumulator.rs"
