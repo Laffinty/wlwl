@@ -1,6 +1,6 @@
 # 13 · `std.sanitize` 扩展(CSS / JS 上下文转义 + 类型化收口)
 
-> **层级** L2 · **前置** 无 · **状态** 未动工
+> **层级** L2 · **前置** 无 · **状态** 🟡 **W-01 已成文(待裁决),2026-10-13** —— [`ADR-0030`](../adr/0030-sanitize-extend-shape.md)
 > **规范登记** §14 已登记前两项;**第三项(类型化收口)被 §14 明确搁置** ——
 > 本份把它的前置条件写清
 
@@ -86,6 +86,24 @@ Select-String -Path crates/wlwl-eval/tests/sanitize_contract.rs -Pattern '^\s+Sa
      ⇒ **这一点必须先答**:如果 `JSON_STRINGIFY` 已经覆盖了 90% 的场景,
      `JS_ESCAPE_STRING` 的边际价值就很低,规范 §14 说的「先有真实场景」
      可能并不成立。
+   > 🟡 **[2026-10-13 已调研 → `ADR-0030`]—— 答案既不是「成立」也不是「不成立」,
+   > 而是「**问错了问题**」。**
+   >
+   > ① **`JSON_STRINGIFY` 没覆盖**,实测坐实:OWASP DOM XSS Cheat Sheet 明写它
+   > 「**is not an output-encoding function**」,并逐字符点名内联场景要额外挡住
+   > `<`(以及 `>` `&` U+2028 U+2029)。本仓库实测:`STRINGIFY("</script><img src=x>")`
+   > → `</script><img src=x>`;`STRINGIFY("a & b")` → `a & b`;U+2028 / U+2029
+   > 原样输出(按**长度**判:输入 3 码点 → 输出 5,转成 `\u2028` 该是 11)。
+   > ⇒ 缺口是**本仓库自己的**,不是转述别人的。
+   > ② 但 **通用 `JS_ESCAPE_STRING` 仍是错的题**:OWASP 的**首选**根本不是转义,
+   > 是「用 `application/json` 单独响应 / 走 `<script type="application/json">`
+   > inert 容器」;而 `JS_ESCAPE_*` 剩下的用武之地(`onclick="f('…')"`)已被
+   > `HTML_SANITIZE` 整条剥掉事件处理器属性覆盖掉。
+   > ③ **裁决(D2):不做 `JS_ESCAPE_STRING` / `JS_ESCAPE_COMMENT`,改做
+   > `HTML_SANITIZE_SCRIPT(value)`** —— 收**值**,自己 `STRINGIFY` + 加固 + 包壳,
+   > 返回整个 `<script type="application/json">…</script>`。这样「忘记加固」这个
+   > 失败模式**不存在**,而不是靠文档提醒。
+
 2. **类型化收口的前置**:§14 已明写它「需要宿主 / DOM 基建」,而 wlwl
    **没有宿主形态**。⇒ 本份**只做调研与 ADR,不实现**。ADR 要回答:
    - 「类型」是否要新增内建类型(语言变更)?
@@ -94,6 +112,16 @@ Select-String -Path crates/wlwl-eval/tests/sanitize_contract.rs -Pattern '^\s+Sa
    - 没有 DOM 时,Trusted Types 的**主要安全收益**(浏览器能识别 tainted
      值并在 sink 处拦截)还能不能拿到?**大概率拿不到** ⇒ 结论可能是
      「不适用,继续搁置」。
+   > ✅ **[2026-10-13 已裁决 → `ADR-0030` D3]** —— **不适用**(否证结论)。
+   > 收益的**全部**来自「浏览器在 sink 处强制拒绝裸串」(`require-trusted-types-for
+   > 'script'` 让 `innerHTML = "str"` 抛 `TypeError`)。没有宿主时,这条收益是
+   > **定义上的**消失而非打折:**没有 sink**(innerHTML / eval / document.write 都不存在),
+   > **也没有执行者**(强制发生在浏览器里,不在语言里)。剩下的「一个做净化、返回
+   > 字符串的函数」**正是 `HTML_SANITIZE`,已经有了**。
+   > ⚠ 有第三方资料称 Trusted Types 可防服务端 XSS —— **那是错的**,同一批资料
+   > 自己也写着「Trusted Types do not protect against server-side XSS; they only
+   > cover DOM XSS sinks in the browser」。本裁决采信后者。
+   > **复活条件**:wlwl 出现**宿主形态**(能执行代码、能接管输出点的运行时)。
 3. **`CSS.escape()` 的规范来源**:CSSOM 规范定义了 CSS 标识符转义;
    `CSS_ESCAPE_STRING` 的来源是 CSS Syntax L3。两者**不是同一套算法** ——
    不能混成一个成员。
@@ -166,7 +194,7 @@ ECMAScript 规范原文,不是实现输出**:
 
 | 子项 | 内容 | 状态 | commit |
 |---|---|---|---|
-| W-01 | **真实场景调研**(§3.1)—— 决定 CSS / JS 各自做不做 | 未动工 | — |
+| W-01 | **真实场景调研**(§3.1)—— 决定 CSS / JS 各自做不做 | 🟡 **已成文(待裁决)** —— [`ADR-0030`](../adr/0030-sanitize-extend-shape.md)**Proposed**:① **基线复核**:81 条 / 14 条 mXSS / 3 成员,数字仍成立(D11-024 的坑:先数真值再引用);② **CSS 做**(D1),但按 OWASP 口径**白名单高于转义** ⇒ `HTML_SANITIZE_CSS` 优先于两个 `CSS_ESCAPE_*`;③ **JS 换题**(D2):实测坐实 `JSON_STRINGIFY` **不是**输出编码函数(OWASP 点名的 `<` `>` `&` U+2028 U+2029 一个没转,U+2028 按**长度**判:3→5 而非 11),但通用 `JS_ESCAPE_*` 是错的题,改做收整个元素的 `HTML_SANITIZE_SCRIPT`;④ **类型化收口不适用**(D3)—— Trusted Types 的收益全部来自「浏览器在 sink 处强制拒绝裸串」,无宿主时是**定义上**消失,剩下的「一个净化函数」正是 `HTML_SANITIZE`;复活条件 = 出现宿主形态 | 待回填 |
 | W-02 | CSS 转义族 + 契约(CSSOM / CSS Syntax 逐条) | 未动工 | — |
 | W-03 | `HTML_SANITIZE_CSS` / `_URL` + **同款判定**断言 | 未动工 | — |
 | W-04 | 类型化收口 **ADR**(含「不适用」的否证结论) | 未动工 | — |
