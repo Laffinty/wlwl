@@ -473,6 +473,29 @@ Spec: **wlwl-spec-v0.11 与 wlwl-stdlib-spec-v0.11 均不变**。本批**不改�
     已写进规范 §14,并由契约测试钉住不被删。复活条件 = 出现宿主形态。
   - 契约 11 → 17 条;⚠ 其中一条是**反向断言**(输出里除自身开标签外一个 `<` 都没有),
     它对任何输入成立,比逐条比对样例更有价值。
+- **`std.sanitize` 扩到 CSS / URL 上下文(4 → 8 成员,v0.11.3 M7 / addendum-13)** ——
+  全库 172 → 176。`CSS_ESCAPE_IDENT` / `CSS_ESCAPE_STRING` / `HTML_SANITIZE_CSS` /
+  `HTML_SANITIZE_URL`。
+  - **实现顺序按 OWASP 口径**(`ADR-0030` D1):CSS 上下文指引第一句是「**allowlist
+    it**」,CSS-escape 只是补充 ⇒ `HTML_SANITIZE_CSS` 先于两个 `CSS_ESCAPE_*`。
+    这与 §13.3 否掉 SQL 转义是同一条纪律:转义垫底、白名单当第一防线。
+  - **两个转义器逐条照抄 CSSOM §"Common Serializing Idioms"**,不是自创规则。
+    ⚠ 「按码点转义」= `\` + **最小位数小写十六进制** + **一个空格** —— 尾随空格
+    是消歧符,漏了它 `\31 23` 会与 `\3123` 混。⚠ **单引号不转义**(CSSOM 明注:
+    字符串**总是**用 `"` 序列化),这条最容易凭直觉写成「引号都转」。
+    ⚠ **版本差异**:2013 WD 版对 `U+0000` 是抛 `InvalidCharacterError`,现行版
+    (W3C REC cssom-1)是 → `U+FFFD`;契约冻结**现行版**。
+  - **`HTML_SANITIZE_CSS` 的两条分开失败口径**:属性不在白名单 ⇒ **静默丢弃**
+    (白名单正常工作);命中拒绝构造(`@import` / `expression(` / `javascript:` /
+    `behavior:` / `-moz-binding` / **任意 `url(`**)⇒ 整个输入判为攻击,报 `ERR`。
+    ⚠ 任意 `url(` 一律拒 —— 「看着安全就放行」需要解析 `url()` 完整语法 +
+    `data:` MIME 白名单,那是**另一个成员**的事,放在这里只会变成一个看起来能用的
+    漏洞;能取 `url()` 的属性也一律不在白名单,不靠单点防御。
+  - **`HTML_SANITIZE_URL` 与 `HTML_SANITIZE` 的 URL 判定是同一份逻辑**(默认
+    `http`/`https`/`mailto`)。**复用,不要各写一份** —— 分裂意味着其中一处是错的。
+    契约 `html_sanitize_url_agrees_with_the_html_sanitizer` 把同一组 URL 喂两个
+    入口并断言结论一致。
+  - ⚠ **不做大小写归一、不做百分号编码**:路径大小写敏感,小写化会改错资源。
 
 ### Changed
 

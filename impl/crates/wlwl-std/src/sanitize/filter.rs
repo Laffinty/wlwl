@@ -92,13 +92,21 @@ impl Default for Policy {
                 "a".to_string(),
                 vec!["href".to_string(), "title".to_string()],
             )],
-            url_schemes: ["http", "https", "mailto"]
-                .iter()
-                .map(|s| s.to_string())
-                .collect(),
+            url_schemes: default_url_schemes(),
             strip_comments: true,
         }
     }
+}
+
+/// 默认允许的 URL scheme 列表(单源)。
+///
+/// [v0.11.3 M7 / addendum-13 W-03] `HTML_SANITIZE` 的默认策略与
+/// `HTML_SANITIZE_URL` 都从这里取,否则会出现「净化器放行、独立成员拒绝」的分裂。
+pub(crate) const DEFAULT_URL_SCHEMES: &[&str] = &["http", "https", "mailto"];
+
+/// [v0.11.3 M7 / addendum-13 W-03] 默认 scheme 列表的 owned 形态(供策略用)。
+pub(crate) fn default_url_schemes() -> Vec<String> {
+    DEFAULT_URL_SCHEMES.iter().map(|s| s.to_string()).collect()
 }
 
 /// 从 wlwl `DICT` 解析策略。出现未知键 / 类型不符 → `E0030` 带名
@@ -208,7 +216,13 @@ fn allowed_attrs<'p>(policy: &'p Policy, tag: &str) -> Vec<&'p str> {
 
 /// URL 值的 scheme 判定:剥首尾空白与控制字符(0x00–0x20)后取 `:` 前缀;
 /// 没有 `:`(相对 URL)或 `:` 前出现 `/` `?` `#` → 相对,恒允许。
-fn scheme_allowed(value: &str, schemes: &[String]) -> bool {
+/// URL 类属性的 scheme 判定。
+///
+/// [v0.11.3 M7 / addendum-13 W-03] 提为 `pub(crate)`,让 `HTML_SANITIZE_URL`
+/// **复用同一份逻辑** —— 另写一份就会出现「净化器放行、独立成员拒绝」的分裂,
+/// 而分裂意味着其中一处是错的。契约 `sanitize_contract` 对同一组 URL 喂两个
+/// 入口并断言结论一致。
+pub(crate) fn scheme_allowed(value: &str, schemes: &[String]) -> bool {
     let trimmed: &str = value.trim_matches(|c: char| c <= ' ');
     let lowered = trimmed.to_ascii_lowercase();
     match lowered.find(':') {

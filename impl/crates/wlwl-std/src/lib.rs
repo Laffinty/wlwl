@@ -34,11 +34,13 @@
 //!     `ERR` ⇒ 不求函数体),`OR_ELSE` / `ERR_MAP` / `ERR_OR_ELSE` 因此
 //!     **不可实现** —— 依据见 `ADR-0029` D1 / D6。
 //!   - `wlwl:std.sanitize` — `HTML_ESCAPE` / `HTML_UNESCAPE` / `HTML_SANITIZE`
-//!     / `HTML_SANITIZE_SCRIPT`(v0.11.3 M7 / addendum-13,stdlib §13.4)
 //!     输出安全(旗舰特色功能,v0.11.3,stdlib §13)。**全员 R2、性能入契约**:
 //!     转义 / 解码 / 净化都要处理文档级输入,而解释器侧字符串与数组构建超线性
 //!     (D11-012/D12-009 已归档证据);实体表为 WHATWG 全表(生成器产出,
 //!     见 [`sanitize`])。`HTML_SANITIZE` 随 M3 落地。
+//!     [v0.11.3 M7 / addendum-13] 成员面 3 → 8:`HTML_SANITIZE_SCRIPT`(§13.4,
+//!     把值加固成可安全内联的 inert 数据块)+ `CSS_ESCAPE_IDENT` /
+//!     `CSS_ESCAPE_STRING` / `HTML_SANITIZE_CSS` / `HTML_SANITIZE_URL`(§13.5)。
 //!
 //! R1 语言层(纯 wlwl,`include_str!` 嵌入,eval 侧求值并缓存):
 //!   - `wlwl:std.collection` — 集合套件(§5;M3-1 起纯 wlwl,`RANGE` 于 v0.11 M5

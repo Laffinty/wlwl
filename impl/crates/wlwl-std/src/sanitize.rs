@@ -27,6 +27,7 @@
 //! **原样保留**是 HTML5 自身的容错行为;数字引用按 WHATWG 规则映射
 //! (越界 / 代理区 → U+FFFD,溢出有检查,不得 panic)。
 
+pub(crate) mod css;
 pub(crate) mod entities;
 pub(crate) mod filter;
 pub(crate) mod serialize;
@@ -44,6 +45,10 @@ pub static SPEC: ModuleSpec = ModuleSpec {
         ("HTML_UNESCAPE", html_unescape as StdFn),
         ("HTML_SANITIZE", html_sanitize as StdFn),
         ("HTML_SANITIZE_SCRIPT", html_sanitize_script as StdFn),
+        ("CSS_ESCAPE_IDENT", css_escape_ident as StdFn),
+        ("CSS_ESCAPE_STRING", css_escape_string as StdFn),
+        ("HTML_SANITIZE_CSS", html_sanitize_css as StdFn),
+        ("HTML_SANITIZE_URL", html_sanitize_url as StdFn),
     ],
 };
 
@@ -151,6 +156,205 @@ pub(crate) fn harden_for_script(s: &str) -> String {
         }
     }
     out
+}
+
+// ── CSS 上下文(规范 §13.5 · ADR-0030 D1)────────────────────────────
+//
+// 两个转义器逐条照抄 **CSSOM §"Common Serializing Idioms"** 的
+// 「serialize an identifier」与「serialize a string」,不是自创规则。
+//
+// ⚠ **版本选择**:CSSOM 的这两条算法改过。2013 WD 版对 U+0000 是
+// **抛 `InvalidCharacterError`**,控制字符范围也更宽(`[7f-9f]`);
+// **现行版**(W3C REC cssom-1)是 U+0000 → **U+FFFD**、控制字符取
+// `[1-1f]` + `U+007F`。本实现跟**现行版**,契约冻结现行版的例子。
+
+/// 「把一个字符转义」= 反斜杠 + 该字符(CSSOM 原文:*escape a character*)。
+fn escape_char(c: char, out: &mut String) {
+    out.push('\\');
+    out.push(c);
+}
+
+/// 「按码点转义」= 反斜杠 + **最小位数的小写十六进制** + **一个空格**
+/// (CSSOM 原文:*escape a character as code point*)。
+///
+/// ⚠ 小写与那个空格都是规范的一部分:小写是 `0-9` / `a-f` 明确写死的,
+/// 尾随空格是十六进制位数不定时的消歧符 —— 漏了它,`CSS.escape("31")`
+/// 与 `CSS.escape("3")` 拼在一起会歧义。
+fn escape_codepoint(c: char, out: &mut String) {
+    out.push('\\');
+    out.push_str(&format!("{:x}", c as u32));
+    out.push(' ');
+}
+
+/// `CSS_ESCAPE_IDENT(s) -> STRING`:把字符串序列化成**合法的 CSS 标识符**
+/// (类名 / `id` / 自定义属性名)。
+///
+/// CSSOM「serialize an identifier」逐条:
+/// 1. U+0000 → U+FFFD;
+/// 2. `[\x01-\x1f]` 或 U+007F → 按码点转义;
+/// 3. **首字符**是 `[0-9]` → 按码点转义;
+/// 4. **第二字符**是 `[0-9]` 且首字符是 `-` → 按码点转义;
+/// 5. 首字符是 `-` 且**没有第二字符** → 转义该字符;
+/// 6. 上述未命中且(`>= U+0080` 或 `-` `_` `[0-9]` `[A-Z]` `[a-z]`)→ 原样;
+/// 7. 否则 → 转义该字符。
+pub fn css_escape_ident(
+    host: &mut dyn StdHost,
+    args: Vec<Value>,
+) -> wlwl_error::WlwlResult<Outcome> {
+    if args.len() != 1 {
+        return Err(arity(host, "CSS_ESCAPE_IDENT", args.len(), 1));
+    }
+    let Value::String(s) = &args[0] else {
+        return Err(type_err(host, "CSS_ESCAPE_IDENT", &args[0]));
+    };
+    Ok(Outcome::normal(Value::String(css_ident(s))))
+}
+
+pub(crate) fn css_ident(s: &str) -> String {
+    let mut out = String::with_capacity(s.len() + 8);
+    let only_dash = s.chars().count() == 1;
+    for (idx, ch) in s.chars().enumerate() {
+        let code = ch as u32;
+        if code == 0 {
+            out.push('\u{FFFD}');
+        } else if (0x01..=0x1f).contains(&code)
+            || code == 0x7f
+            // 规则 2 / 3 / 4 的动作**相同**(都按码点转义),合成一个分支。
+            // 分开写更贴合 CSSOM 的逐条编号,但 clippy `if_same_then_else` 会拦 ——
+            // 编号的对应关系写在这里,分支合并不丢信息。
+            || (idx == 0 && ch.is_ascii_digit())
+            || (idx == 1 && ch.is_ascii_digit() && s.starts_with('-'))
+        {
+            escape_codepoint(ch, &mut out);
+        } else if idx == 0 && ch == '-' && only_dash {
+            escape_char(ch, &mut out);
+        } else if code >= 0x80 || ch == '-' || ch == '_' || ch.is_ascii_alphanumeric() {
+            out.push(ch);
+        } else {
+            escape_char(ch, &mut out);
+        }
+    }
+    out
+}
+
+/// `CSS_ESCAPE_STRING(s) -> STRING`:把字符串序列化成 **CSS 字符串字面量**
+/// (两侧带 `"`,内部按 CSSOM「serialize a string」转义)。
+///
+/// CSSOM 逐条:1. U+0000 → U+FFFD;2. `[\x01-\x1f]` 或 U+007F → 按码点转义;
+/// 3. `"` 或 `\` → 转义该字符;4. 其余原样。
+/// ⚠ **`'` 不转义** —— CSSOM 原文注明:字符串**总是**用 `"` 序列化,所以
+/// 单引号没有转义的必要。这条容易凭直觉写成「引号都转」,契约里点名。
+pub fn css_escape_string(
+    host: &mut dyn StdHost,
+    args: Vec<Value>,
+) -> wlwl_error::WlwlResult<Outcome> {
+    if args.len() != 1 {
+        return Err(arity(host, "CSS_ESCAPE_STRING", args.len(), 1));
+    }
+    let Value::String(s) = &args[0] else {
+        return Err(type_err(host, "CSS_ESCAPE_STRING", &args[0]));
+    };
+    Ok(Outcome::normal(Value::String(css_string(s))))
+}
+
+pub(crate) fn css_string(s: &str) -> String {
+    let mut out = String::with_capacity(s.len() + 8);
+    out.push('"');
+    for ch in s.chars() {
+        let code = ch as u32;
+        if code == 0 {
+            out.push('\u{FFFD}');
+        } else if (0x01..=0x1f).contains(&code) || code == 0x7f {
+            escape_codepoint(ch, &mut out);
+        } else if ch == '"' || ch == '\\' {
+            escape_char(ch, &mut out);
+        } else {
+            out.push(ch);
+        }
+    }
+    out.push('"');
+    out
+}
+
+/// `HTML_SANITIZE_URL(u) -> STRING`:`ERR([kind: SanitizeError, …])`。
+///
+/// URL 归一(剥首尾控制字符与空白)+ scheme 判定,**判定复用
+/// `filter::scheme_allowed`** —— 另写一份就会出现「净化器放行、独立成员拒绝」
+/// 的分裂,而分裂意味着其中一处是错的。
+///
+/// **失败口径与 `HTML_SANITIZE` 不同族**:后者**永不因内容失败**(否则是 DoS 面,
+/// 它有 81 条冻结契约);本成员收的是**一个值**,「这个 URL 不能放进 `href`」
+/// 有明确业务含义,必须让调用方看见,故报 `ERR` 而不是静默返回空串。
+///
+/// ⚠ **不做大小写归一、不做百分号编码**:路径是大小写敏感的,
+/// 把它小写化会**改错资源**;百分号编码是 URL 上下文自己的事
+/// (`std.encode.URL_ENCODE`)。本成员只做**安全判定需要**的那一步归一。
+pub fn html_sanitize_url(
+    host: &mut dyn StdHost,
+    args: Vec<Value>,
+) -> wlwl_error::WlwlResult<Outcome> {
+    if args.len() != 1 {
+        return Err(arity(host, "HTML_SANITIZE_URL", args.len(), 1));
+    }
+    let Value::String(u) = &args[0] else {
+        return Err(type_err(host, "HTML_SANITIZE_URL", &args[0]));
+    };
+    let schemes = filter::default_url_schemes();
+    if !filter::scheme_allowed(u, &schemes) {
+        // 只回**取出来的 scheme**,不回显整个 URL —— 后者可能正是攻击载荷,
+        // 回显进日志等于替攻击者扩散它。
+        let scheme = u
+            .trim_matches(|c: char| c <= ' ')
+            .to_ascii_lowercase()
+            .split(':')
+            .next()
+            .unwrap_or("")
+            .to_string();
+        return Ok(Outcome::normal(Value::Err(Box::new(Value::Dict(vec![
+            (
+                Value::String("kind".into()),
+                Value::String("SanitizeError".into()),
+            ),
+            (Value::String("scheme".into()), Value::String(scheme)),
+        ])))));
+    }
+    Ok(Outcome::normal(Value::String(
+        u.trim_matches(|c: char| c <= ' ').to_string(),
+    )))
+}
+
+/// `HTML_SANITIZE_CSS(text) -> STRING`:`ERR([kind: SanitizeError])`。
+///
+/// OWASP CSS 上下文的**第一句**是 allowlist,转义只是补充 ⇒ 本成员先于两个
+/// `CSS_ESCAPE_*` 落地(规范 §13.5)。
+///
+/// 两条**分开**的失败口径:
+/// * 属性不在白名单 → **静默丢弃**,产出里看不到它。那是白名单正常工作。
+/// * 命中拒绝构造(`@import` / `expression(` / `javascript:` / `behavior` /
+///   `-moz-binding` / **任意 `url(`**)→ 整个输入判为攻击,报 `ERR`。
+///   让调用方看见「这**是**攻击」与「只是没匹配上」是两回事。
+///
+/// ⚠ **任意 `url(` 一律拒**,不做「URL 看着安全就放行」—— 那需要解析
+/// `url()` 完整语法 + `data:` 的 MIME 白名单,是**另一个成员**的事;在这里
+/// 它只会变成一个看起来能用的漏洞。能取 `url()` 的属性也**一律不在白名单**
+/// (`background` / `cursor` / `content` / `filter` / `src` …),不靠单点防御。
+pub fn html_sanitize_css(
+    host: &mut dyn StdHost,
+    args: Vec<Value>,
+) -> wlwl_error::WlwlResult<Outcome> {
+    if args.len() != 1 {
+        return Err(arity(host, "HTML_SANITIZE_CSS", args.len(), 1));
+    }
+    let Value::String(s) = &args[0] else {
+        return Err(type_err(host, "HTML_SANITIZE_CSS", &args[0]));
+    };
+    match css::sanitize_css(s) {
+        Ok(out) => Ok(Outcome::normal(Value::String(out))),
+        Err(()) => Ok(Outcome::normal(Value::Err(Box::new(Value::Dict(vec![(
+            Value::String("kind".into()),
+            Value::String("SanitizeError".into()),
+        )]))))),
+    }
 }
 
 /// `HTML_UNESCAPE(data) -> STRING`:HTML 实体解码,**全表**(WHATWG 官方数据,

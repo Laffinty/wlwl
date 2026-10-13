@@ -1107,6 +1107,68 @@ WHATWG 规则的**白名单子集**,差异显式登记 —— 安全性由幂等
 **明确不做**:`JS_ESCAPE_STRING` / `JS_ESCAPE_COMMENT`(通用字面量与注释转义)、
 JS 代码生成、把裸 JSON 交给 `eval` 的任何便利化。
 
+### 13.5 CSS 上下文与 URL 上下文(规范性,v0.11.3 M7 · ADDENDUM-13)
+
+| 成员 | 层 | 语义 |
+|---|---|---|
+| `CSS_ESCAPE_IDENT(s)` | R2 | 把字符串序列化成**合法 CSS 标识符**(类名 / `id` / 自定义属性名) |
+| `CSS_ESCAPE_STRING(s)` | R2 | 把字符串序列化成 **CSS 字符串字面量**(两侧带 `"`) |
+| `HTML_SANITIZE_CSS(text)` | R2 | 从**声明列表**里按白名单抽出安全声明;命中拒绝构造 ⇒ `ERR` |
+| `HTML_SANITIZE_URL(u)` | R2 | 归一 + scheme 判定,返回可放进 `href` 的值;不接受 ⇒ `ERR` |
+
+⚠ **实现顺序按 OWASP 口径**:CSS 上下文指引的第一句是「**allowlist it**」,
+CSS-escape 是**补充** ⇒ `HTML_SANITIZE_CSS` 先于两个 `CSS_ESCAPE_*`。这与
+§13.3 否掉 SQL 转义是同一条纪律:转义垫底、白名单当第一防线。
+
+**`CSS_ESCAPE_IDENT` / `CSS_ESCAPE_STRING` 逐条照抄 CSSOM §"Common Serializing
+Idioms"**,不是自创规则。要点:
+
+- 「转义一个字符」= `\` + 该字符;「按码点转义」= `\` + **最小位数小写十六进制**
+  + **一个空格**。尾随空格是消歧符,漏了它 `\31 23` 会与 `\3123` 混。
+- 标识符:`U+0000` → `U+FFFD`;`[U+0001-U+001F]` 与 `U+007F` 按码点转义;
+  **首字符**数字按码点转义;**第二字符**数字且首字符是 `-` 按码点转义;
+  单独的 `-` 转义为 `\-`;`>= U+0080` 与 `- _ 0-9 A-Z a-z` 原样;其余转义。
+- 字符串:`"` + 内容 + `"`;`U+0000` → `U+FFFD`;控制字符按码点转义;`"` 与 `\`
+  转义;**其余原样**。⚠ **`'` 不转义** —— CSSOM 原文注明字符串**总是**用 `"`
+  序列化,单引号没有转义必要。这条容易凭直觉写成「引号都转」。
+- ⚠ **版本差异(契约冻结现行版)**:CSSOM 的这两条算法改过 —— 2013 WD 版对
+  `U+0000` 是**抛 `InvalidCharacterError`**,控制字符范围也更宽
+  (`[U+007F-U+009F]`);**现行版**(W3C REC cssom-1)是 `U+0000` → **`U+FFFD`**、
+  取 `[U+0001-U+001F]` + `U+007F`。本规范跟**现行版**。
+
+**`HTML_SANITIZE_CSS` 的输出形态**:每条存活声明写成 `属性: 值`,
+**声明之间以 `;` 分隔**(尾随 `;` 保留)。⚠ 分隔符**不可省** ——
+`color: red font-weight: bold` **不是合法 CSS**;属性名一律小写归一。
+**没有任何声明存活时返回空串 `""`**,不是一个孤零零的 `;`。
+
+**`HTML_SANITIZE_CSS` 的两条分开失败口径**:
+
+| 情形 | 结果 |
+|---|---|
+| 属性**不在白名单** | **静默丢弃**,产出里看不到它 —— 那是白名单**正常工作**的样子 |
+| 命中**拒绝构造** | 整个输入判为攻击 ⇒ `ERR([kind: SanitizeError])` |
+
+拒绝构造(文本级,**先于**解析扫描):`@import`、`expression(`、`javascript:`、
+`vbscript:`、`behavior:`、`-moz-binding`、**任意 `url(`**。
+
+⚠ **任意 `url(` 一律拒**,不做「URL 看着安全就放行」—— 那需要解析 `url()` 的
+完整语法 + `data:` 的 MIME 白名单,是**另一个成员**的事,放在这里只会变成一个
+看起来能用的漏洞。能取 `url()` 的属性(`background` / `cursor` / `content` /
+`filter` / `src` / `list-style-image` / `border-image`)**也一律不在白名单** ——
+不靠单点防御。
+⚠ 解析范围只到**声明级**(`prop: value` 对):**不做选择器语义、不做值语法解析**;
+但拒绝扫描是**文本级**的(先扫原文再解析),分号与冒号都**不在引号内、不在圆括号内**
+才算分隔符 —— 否则 `url(data:...;base64,…)` 与 `content: "a;b"` 会被切碎。
+
+**`HTML_SANITIZE_URL` 与 `HTML_SANITIZE` 的 URL 属性判定是同一份逻辑**,
+默认 scheme 列表同为 `http` / `https` / `mailto`。**复用,不要各写一份** ——
+否则会出现「净化器放行、独立成员拒绝」的分裂,而分裂意味着其中一处是错的。
+契约测试对同一组 URL 喂两个入口并断言结论一致。
+
+⚠ **不做大小写归一、不做百分号编码**:路径大小写敏感,小写化会**改错资源**;
+百分号编码是 URL 上下文自己的事(`std.encode.URL_ENCODE`)。本成员只做**安全
+判定需要**的那一步归一(剥首尾控制字符与空白)。
+
 ## 14 演进方向(非规范性)
 
 - ~~**类型化收口**(Trusted Types / Sanitizer API 范式)~~ —— ✅ **已调研,结论:
@@ -1862,7 +1924,7 @@ then 支内(短路保证 `OK` 时不触发)。
 | `std.env` | `ENV_GET` `ENV_SET` `ENV_KEYS` `ARGS` | R2 | v0.11.3 |
 | `std.process` | `PROCESS_RUN` `PROCESS_ID` | R2 | v0.11.3 |
 | `std.text` | `TO_UPPER` `TO_LOWER` `NFC` `NFD` `NFC_QC` `GRAPHEME_COUNT` `WIDTH` | R2 | v0.11.2 |
-| `std.sanitize` | `HTML_ESCAPE` `HTML_UNESCAPE` `HTML_SANITIZE` `HTML_SANITIZE_SCRIPT` | R2 | v0.11.3 |
+| `std.sanitize` | `HTML_ESCAPE` `HTML_UNESCAPE` `HTML_SANITIZE` `HTML_SANITIZE_SCRIPT` `CSS_ESCAPE_IDENT` `CSS_ESCAPE_STRING` `HTML_SANITIZE_CSS` `HTML_SANITIZE_URL` | R2 | v0.11.3 |
 | `std.collection` | `MAP` `FILTER` `REDUCE` `SORT` `SORT_BY` `ZIP` `RANGE` `ANY` `ALL` `FIND` `ENUMERATE` `TAKE` `DROP` `FLAT` `UNIQ` `GROUP_BY` `JOIN` `CHUNK` `WINDOW` `DEDUP_BY` `MIN_BY` `MAX_BY` `SUM` `PRODUCT` `FOLD_RIGHT` `POSITION` `KEY_BY` | 混合(R1 门面 + R2 `RANGE`/`MAP`/`FILTER`/`CHUNK`/`WINDOW`/`ENUMERATE`/`ZIP`/`UNIQ`/`FLAT`/`JOIN`/`GROUP_BY`/`DEDUP_BY`/`KEY_BY`) | v0.10 及以前(成员)/ v0.11(R1 重写,M5 起 RANGE 沉 R2)/ v0.11.3(M5 L0-A-2 加 MAP·FILTER·CHUNK·WINDOW,L0-A-3a 加 ENUMERATE·ZIP·UNIQ·FLAT·JOIN,L0-A-3b 加 GROUP_BY·DEDUP_BY·KEY_BY 沉 R2) |
 | `std.str` | `JOIN` `SPLIT_LINES` `CHAR_AT` `COUNT` `QUOTE` `INDEX_OF` `CONTAINS_SUB` | R1 | v0.11 / INDEX_OF、CONTAINS_SUB 于 v0.11.2 |
 | `std.math` | `ABS` `MIN` `MAX` `FLOOR` `CEIL` `ROUND` `SQRT` `POW` `CLAMP` `PI` `E` `LN` `LOG2` `LOG10` `EXP` `TRUNC` `SIN` `COS` `TAN` `ASIN` `ACOS` `ATAN` `ATAN2` `SINH` `COSH` `TANH` `SIGN` `DIV_CEIL` `GCD` `LCM` `IS_SQRT` `POW_MOD` | 混合 | v0.11 |

@@ -273,6 +273,13 @@ fn sanitize_member_set_matches_the_spec_table() {
             // JS 侧换题 —— 不做通用 `JS_ESCAPE_*`,改做收整个 inert 元素的
             // `HTML_SANITIZE_SCRIPT`。
             "HTML_SANITIZE_SCRIPT",
+            // [v0.11.3 M7 / addendum-13 W-03] §13.5 表。ADR-0030 D1 的产物,
+            // 顺序按 OWASP 口径:**白名单先于转义** ⇒ `HTML_SANITIZE_CSS` 在
+            // 两个 `CSS_ESCAPE_*` 之后、`HTML_SANITIZE_URL` 之前。
+            "CSS_ESCAPE_IDENT",
+            "CSS_ESCAPE_STRING",
+            "HTML_SANITIZE_CSS",
+            "HTML_SANITIZE_URL",
         ],
         "§13 member table drifted"
     );
@@ -284,8 +291,12 @@ fn sanitize_member_set_matches_the_spec_table() {
             "HTML_UNESCAPE",
             "HTML_SANITIZE",
             "HTML_SANITIZE_SCRIPT",
+            "CSS_ESCAPE_IDENT",
+            "CSS_ESCAPE_STRING",
+            "HTML_SANITIZE_CSS",
+            "HTML_SANITIZE_URL"
         ],
-        "M7 surface: all four §13 members landed"
+        "M7 surface: all eight §13 members landed"
     );
 }
 
@@ -301,6 +312,10 @@ fn sanitize_member_set_is_not_trivially_satisfied() {
                 "HTML_UNESCAPE",
                 "HTML_SANITIZE",
                 "HTML_SANITIZE_SCRIPT",
+                "CSS_ESCAPE_IDENT",
+                "CSS_ESCAPE_STRING",
+                "HTML_SANITIZE_CSS",
+                "HTML_SANITIZE_URL"
             ]
             .contains(&n.as_str()),
             "unexpected member `{n}`"
@@ -471,6 +486,236 @@ fn typed_closure_rejection_record_stays_in_the_spec() {
             "§14 typed-closure rejection record lost its marker `{marker}` — \
              the rejection is a contract, restore it or re-adjudicate"
         );
+    }
+}
+
+// ── CSS 上下文 + URL 上下文(§13.5 · ADR-0030 D1)────────────────────
+//
+// 期望值取自 **CSSOM §"Common Serializing Idioms"** 的算法与例子,不是实现输出。
+// ⚠ 期望值全部用 ASCII 转义拼,不把不可见字符敲进源码(W-02 吃过一次这个坑)。
+
+const CSS_IMP: &str = concat!(
+    r#"IMPORT("wlwl:std.sanitize", ["#,
+    r#""CSS_ESCAPE_IDENT", "CSS_ESCAPE_STRING", "HTML_SANITIZE_CSS", "#,
+    r#""HTML_SANITIZE_URL", "HTML_SANITIZE"]);"#
+);
+
+/// CSSOM「serialize an identifier」逐条 + 规范里给的例子。
+///
+/// ⚠ `\31 23` 里的**尾随空格**是规范的一部分(十六进制位数不定时的消歧符),
+/// 漏了它 `\31 23` 与 `\3123` 会混 —— 这条专门钉它。
+#[test]
+fn css_escape_ident_follows_the_cssom_algorithm() {
+    let cases: Vec<(String, String)> = vec![
+        // 例子(CSSOM / CSS.escape())
+        (
+            r#"CSS_ESCAPE_IDENT("my class")"#.to_string(),
+            r#"my\ class"#.to_string(),
+        ),
+        (
+            r#"CSS_ESCAPE_IDENT("user-input#1")"#.to_string(),
+            r#"user-input\#1"#.to_string(),
+        ),
+        // 首字符数字 ⇒ 按码点转义,**带尾随空格**
+        (
+            r#"CSS_ESCAPE_IDENT("123")"#.to_string(),
+            r#"\31 23"#.to_string(),
+        ),
+        (
+            r#"CSS_ESCAPE_IDENT("example.class")"#.to_string(),
+            r#"example\.class"#.to_string(),
+        ),
+        (
+            r#"CSS_ESCAPE_IDENT("a:b")"#.to_string(),
+            r#"a\:b"#.to_string(),
+        ),
+        // 单独的 `-` ⇒ `\-`;`-a` 里的 `-` 不是首字符 ⇒ 原样
+        (r#"CSS_ESCAPE_IDENT("-")"#.to_string(), r#"\-"#.to_string()),
+        (
+            r#"CSS_ESCAPE_IDENT("-1x")"#.to_string(),
+            r#"-\31 x"#.to_string(),
+        ),
+        (r#"CSS_ESCAPE_IDENT("-a")"#.to_string(), "-a".to_string()),
+        // `>= U+0080` 原样 —— 期望值用 Rust 的 `\u{00E9}` 写成真字符,
+        // **不是** wlwl 的 `\uXXXX`(wlwl 字符串不认那个转义)。
+        (
+            "CSS_ESCAPE_IDENT(\"caf\u{00E9}\")".to_string(),
+            "caf\u{00E9}".to_string(),
+        ),
+        // 引号 / 反斜杠 ⇒ 转义该字符(不是按码点)
+        (
+            r#"CSS_ESCAPE_IDENT("say \"hi\"")"#.to_string(),
+            r#"say\ \"hi\""#.to_string(),
+        ),
+        (r#"CSS_ESCAPE_IDENT("")"#.to_string(), "".to_string()),
+    ];
+    for (expr, want) in &cases {
+        let src = format!("{CSS_IMP} {expr}");
+        assert_eq!(&actual_raw(&src), want, "expr = {expr}");
+    }
+}
+
+/// CSSOM「serialize a string」逐条。
+///
+/// ⚠ **`'` 不转义** —— CSSOM 原文注明字符串**总是**用 `"` 序列化。这条最容易
+/// 凭直觉写成「引号都转」,故单独钉。
+#[test]
+fn css_escape_string_follows_the_cssom_algorithm() {
+    let cases: Vec<(String, String)> = vec![
+        (
+            r#"CSS_ESCAPE_STRING("abc")"#.to_string(),
+            "\"abc\"".to_string(),
+        ),
+        (
+            r#"CSS_ESCAPE_STRING("say \"hi\"")"#.to_string(),
+            r#""say \"hi\"""#.to_string(),
+        ),
+        (
+            r#"CSS_ESCAPE_STRING("a\\b")"#.to_string(),
+            r#""a\\b""#.to_string(),
+        ),
+        // 单引号**不**转义(CSSOM 明注)。
+        (
+            r#"CSS_ESCAPE_STRING("it's")"#.to_string(),
+            "\"it's\"".to_string(),
+        ),
+        // 控制字符 ⇒ 按码点转义(带尾随空格)。
+        // ⚠ 用 wlwl **认得**的 `\t`,不用 `\u{0009}` —— wlwl 字符串的合法转义
+        // 只有 `\" \\ / \b \f \n \r \t \0`(lexer 错误信息里写死了这份清单)。
+        // 写成 Rust 的 `\u{0009}` 会原样落成 wlwl 源码里的 `\u{…}`,直接 E0001。
+        (
+            r#"CSS_ESCAPE_STRING("a\tb")"#.to_string(),
+            r#""a\9 b""#.to_string(),
+        ),
+        (r#"CSS_ESCAPE_STRING("")"#.to_string(), "\"\"".to_string()),
+    ];
+    for (expr, want) in &cases {
+        let src = format!("{CSS_IMP} {expr}");
+        assert_eq!(&actual_raw(&src), want, "expr = {expr}");
+    }
+}
+
+/// `HTML_SANITIZE_CSS` 的两条**分开**失败口径(§13.5)。
+#[test]
+fn html_sanitize_css_separates_silent_drop_from_rejection() {
+    let cases: Vec<(String, &str)> = vec![
+        // 白名单内 ⇒ 保留,属性名小写归一
+        (
+            r#"HTML_SANITIZE_CSS("color: red; font-weight: bold")"#.to_string(),
+            "color: red; font-weight: bold;",
+        ),
+        // 不在白名单 ⇒ **静默丢弃**,不是失败
+        (
+            r#"HTML_SANITIZE_CSS("color: red; position: fixed")"#.to_string(),
+            "color: red;",
+        ),
+        // 能取 `url()` 的属性一律不在白名单
+        (
+            r#"HTML_SANITIZE_CSS("color: red; background: red")"#.to_string(),
+            "color: red;",
+        ),
+        // 什么都没存活 ⇒ **空串**,不是 `";"`
+        (r#"HTML_SANITIZE_CSS("")"#.to_string(), ""),
+        (r#"HTML_SANITIZE_CSS("garbage")"#.to_string(), ""),
+    ];
+    for (expr, want) in &cases {
+        let src = format!("{CSS_IMP} {expr}");
+        assert_eq!(&actual_raw(&src), want, "expr = {expr}");
+    }
+}
+
+/// 命中拒绝构造 ⇒ `ERR([kind: SanitizeError])`,不是空串。
+#[test]
+fn html_sanitize_css_rejects_attack_constructs() {
+    for payload in [
+        r#"HTML_SANITIZE_CSS("width: expression(alert(1))")"#,
+        r#"HTML_SANITIZE_CSS("@import url(evil.css)")"#,
+        r#"HTML_SANITIZE_CSS("color: javascript:alert(1)")"#,
+        r#"HTML_SANITIZE_CSS("color: vbscript:msgbox(1)")"#,
+        r#"HTML_SANITIZE_CSS("behavior: url(#default#time2)")"#,
+        r#"HTML_SANITIZE_CSS("-moz-binding: anything")"#,
+        // 任意 `url(` 一律拒,不做「看着安全就放行」
+        r#"HTML_SANITIZE_CSS("color: red; background: url(x)")"#,
+        // ⚠ 注释里藏 `url(` **仍然被拒** —— 拒绝扫描是文本级的,先于解析
+        r#"HTML_SANITIZE_CSS("color: /* url(x) */ red")"#,
+    ] {
+        let src = format!("{CSS_IMP} IS_ERR({payload})");
+        assert_eq!(&actual_raw(&src), "TRUE", "payload = {payload}");
+    }
+}
+
+/// `HTML_SANITIZE_CSS` 的括号 / 引号感知:分号与冒号在括号或引号内**不算分隔符**。
+#[test]
+fn html_sanitize_css_is_paren_and_quote_aware() {
+    // 合法值原样保留
+    let src = format!("{CSS_IMP} HTML_SANITIZE_CSS(\"text-align: center; padding: 4px\")");
+    assert_eq!(actual_raw(&src), "text-align: center; padding: 4px;");
+}
+
+/// **同款判定**:`HTML_SANITIZE` 的 `href` 判定与 `HTML_SANITIZE_URL` 结论一致。
+///
+/// 这是 §13.5 最要紧的一条 —— 两处判定一旦分裂,意味着其中一处是错的,
+/// 而「哪一处错」要靠看代码才知道。同一组 URL 喂两个入口,结论必须相同。
+#[test]
+fn html_sanitize_url_agrees_with_the_html_sanitizer() {
+    let urls = [
+        "https://example.com/a",
+        "http://example.com",
+        "mailto:a@b.c",
+        "/relative/path",
+        "#frag",
+        "javascript:alert(1)",
+        "JaVaScRiPt:alert(1)",
+        "data:text/html,<script>alert(1)</script>",
+        "vbscript:msgbox(1)",
+        "java\tscript:alert(1)",
+    ];
+    for u in urls {
+        // 入口一:`HTML_SANITIZE_URL` 自己。
+        let direct = format!("{CSS_IMP} IS_ERR(HTML_SANITIZE_URL(\"{}\"))", esc(u));
+        // 入口二:同一 URL 塞进 `href`,看净化器是否**删掉整个属性**。
+        // ⚠ 别把这行塞进 `concat!` —— 那里 `{CSS_IMP}` 会被当作 format 参数。
+        let via_attr = format!(
+            "{CSS_IMP} HTML_SANITIZE(\"<a href=\\\"{}\\\">x</a>\")",
+            esc(u)
+        );
+        let a_keeps = actual_raw(&direct) == "FALSE";
+        // 属性被删 ⇒ `<a>x</a>`;被留 ⇒ 里面有 `href=`
+        let b_keeps = actual_raw(&via_attr).contains("href");
+        assert_eq!(
+            a_keeps, b_keeps,
+            "判定分裂: URL_SANITIZE 放行={a_keeps} 而 HTML_SANITIZE 保留属性={b_keeps}  ({u})"
+        );
+    }
+}
+
+/// 把 URL 里的引号 / 反斜杠转义,好塞进 wlwl 字符串字面量。
+fn esc(u: &str) -> String {
+    u.replace('\\', "\\\\").replace('"', "\\\"")
+}
+
+/// `HTML_SANITIZE_URL` 的归一只做**安全判定需要**的那一步(§13.5)。
+#[test]
+fn html_sanitize_url_normalizes_only_what_the_judgment_needs() {
+    let cases: Vec<(String, String)> = vec![
+        // 剥首尾控制字符与空白
+        (
+            r#"HTML_SANITIZE_URL("  https://example.com/a  ")"#.to_string(),
+            "https://example.com/a".to_string(),
+        ),
+        // ⚠ **不做大小写归一**:路径大小写敏感,小写化会改错资源
+        (
+            r#"HTML_SANITIZE_URL("HTTPS://Example.COM/A")"#.to_string(),
+            "HTTPS://Example.COM/A".to_string(),
+        ),
+        (
+            r#"HTML_SANITIZE_URL("/p?x=1")"#.to_string(),
+            "/p?x=1".to_string(),
+        ),
+    ];
+    for (expr, want) in &cases {
+        let src = format!("{CSS_IMP} {expr}");
+        assert_eq!(&actual_raw(&src), want, "expr = {expr}");
     }
 }
 
