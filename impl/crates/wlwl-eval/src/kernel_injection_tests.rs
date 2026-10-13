@@ -208,11 +208,31 @@ mod tests {
         }
         let table: std::collections::HashSet<&str> =
             wlwl_std::kernels::KERNELS.iter().map(|(n, _)| *n).collect();
-        for n in &names {
+        // ⚠ **只对「共享内核」做 KERNELS 交叉核对,不对整张注入表做。**
+        // `kernels::KERNELS` 是**模块无关的共享名册**;模块专属内核按 `StdSource`
+        // 的约定住在自己的模块里 —— `std.collection` 的 `_MAP` / `std.test` 的
+        // `_TEST` / `std.math` 的 `_DECIMAL*`(`math_ext.rs`)都不在 KERNELS 里,
+        // 而且**本来就不该在**。原先这里遍历 `names` 全表,把「std.math 只用共享
+        // 内核」这个历史假设当成了契约;`addendum-10 W-03` 往 std.math 注入模块专属
+        // 内核时它就误伤了。
+        // 真正的契约仍是上面那两条(`_SQRT` / `_POW` 走 R2 内核),已单独钉住。
+        for required in ["_SQRT", "_POW"] {
             assert!(
-                table.contains(n),
-                "`{n}` is injected but missing from `kernels::KERNELS`"
+                table.contains(required),
+                "{required} must be in the shared KERNELS table"
             );
         }
+        // 剩下的名字仍要钉住**命名与唯一性** —— 空名 / 无下划线前缀 / 重复注入
+        // 都是真缺陷,只是不该用 KERNELS 当判据。
+        let mut seen = std::collections::HashSet::new();
+        for n in &names {
+            assert!(n.starts_with('_'), "kernel name `{n}` must start with `_`");
+            assert!(seen.insert(*n), "std.math injects `{n}` twice");
+        }
+        assert!(
+            names.len() >= 2,
+            "std.math's kernel list collapsed to {} entries",
+            names.len()
+        );
     }
 }

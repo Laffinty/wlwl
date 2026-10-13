@@ -554,6 +554,55 @@ v0.11.2 M2 追加(§6 表格即当前成员面;附录 A 镜像由 `gen-appendix-
 | `IS_SQRT(n) -> INTEGER` | 整数平方根(向下取整)—— **返回平方根本身,不是布尔谓词**,与 `IS_OK` / `IS_ERR` 家族的 `IS_` 前缀无关;改名属破坏性变更,须走 ADR-0023 弃用两步,暂不动 | `n < 0`:`ERR(["kind": "DomainError"])` |
 | `POW_MOD(base, exp, mod) -> INTEGER` | 模幂(平方-乘,`O(log exp)`);**`mod` 可以是 `2^61-1` 这样的密码学素数** | `mod = 0` 或 `exp < 0`:`ERR(["kind": "DomainError"])` |
 
+### 7.2 任意精度十进制(`DECIMAL` 族,v0.11.3 M7 · ADDENDUM-10 · 规范性)
+
+**值形状是公开契约,字段名变更即 breaking。**
+
+```
+{"sign": INTEGER, "digits": STRING, "scale": INTEGER}
+```
+
+表示 `sign × digits × 10^-scale`。规范形式:
+
+* `digits` **无前导零**(零为 `"0"`),只含 ASCII 数字;
+* `scale >= 0`;
+* `sign ∈ {-1, 1}`,且**零恒为 `{1, "0", 0}`** —— 消灭 `-0` 那种两个表示同一数的状态。
+
+⚠ `scale` 是**有意义的**,不是规范化掉的:`DECIMAL("1.00")` 渲染回 `"1.00"`。
+金额场景靠它保留「几位」这个业务事实。
+
+⚠ **本族不接受语言层不存在的类型**:`INTEGER` / `FLOAT` 是 `i64` / `f64`,
+金额大到 `f64` 的 `2^53` 之后就会被静默丢精度 —— 实测
+`+(9007199254740993.0, 1.0)` 得 `9007199254740992.0`,而 `DECIMAL` 给
+`9007199254740994`。这正是本族存在的理由。
+
+| 成员 | 语义 | 失败口径 |
+|---|---|---|
+| `DECIMAL(literal)` | 从字面量构造。接受 `[+-]?digits[.digits]`,含 `".5"` 与 `"-0"` | 非法字面量 → `E0030` |
+| `DECIMAL_ADD(a, b)` / `DECIMAL_SUB(a, b)` / `DECIMAL_MUL(a, b)` | 精确算术;加减结果的 `scale` = 两者的较大者,乘法结果 `scale` = 两者之和 | 非法 `DICT` → `E0030` |
+| `DECIMAL_DIV(a, b, scale)` | 精确到 `scale` 位,舍入恒 `HALF_EVEN` | **`scale` 必填**;`b = 0` → `ERR(["kind": "DomainError", "op": "DIV"])` |
+| `DECIMAL_CMP(a, b)` | `-1` / `0` / `1`,**按数值**比(`1.0` 与 `1.00` 等) | 永不失败 |
+| `DECIMAL_TO_STRING(a)` | 按 `scale` 渲染(`"1.50"` / `"-0.25"` / `"3"`) | 永不失败 |
+| `DECIMAL_ROUND(a, scale, mode)` | `mode` ∈ `HALF_EVEN` / `HALF_UP` / `DOWN` / `UP` / `FLOOR` / `CEILING` | **`mode` 无默认**;未知 → `E0030` |
+
+⚠ **`scale` 必填是刻意的**:静默截断是精度谎言(`ADR-0031` D1)。调用方必须
+显式声明要几位。
+
+⚠ **`mode` 无默认是刻意的**:银行家舍入与四舍五入是**业务决定**,给默认等于替
+业务方选了一个。
+
+⚠ **方向模式的差别只在负数上**:`DOWN` 向零、`FLOOR` 向 `-inf`、`UP` 远离零、
+`CEILING` 向 `+inf`。所以 `FLOOR(-2.1) = -3` 而 `DOWN(-2.1) = -2`。
+
+⚠ **非法 `DICT` → `E0030`,不修复、不报错成别的形状。** 用户能手工写出
+`{"sign": 0, "digits": "abc", "scale": 0}` 这种非法状态 —— 这是**明码标价的
+妥协**(`ADR-0031` D1),不是干净的形状。
+
+⚠ **本族不含 `MEAN`** —— `std.collection::SUM` 加 `/` 已覆盖(`ADR-0031` D2)。
+
+**正确性证据**:契约用例的期望值取自 **Python `decimal` 模块**(默认精度 28、
+舍入 `ROUND_HALF_EVEN`),**不是实现输出** —— 由脚本跑 Python 侧独立算一遍再落表。
+
 ### 7.1 M4 二十一个成员的设计取舍(v0.11.2,逐条写明)
 
 1. **`TRUNC` 不是全局 `INT` 的别名,但差别只在界外。** 界内两者逐字相同
@@ -1927,7 +1976,7 @@ then 支内(短路保证 `OK` 时不触发)。
 | `std.sanitize` | `HTML_ESCAPE` `HTML_UNESCAPE` `HTML_SANITIZE` `HTML_SANITIZE_SCRIPT` `CSS_ESCAPE_IDENT` `CSS_ESCAPE_STRING` `HTML_SANITIZE_CSS` `HTML_SANITIZE_URL` | R2 | v0.11.3 |
 | `std.collection` | `MAP` `FILTER` `REDUCE` `SORT` `SORT_BY` `ZIP` `RANGE` `ANY` `ALL` `FIND` `ENUMERATE` `TAKE` `DROP` `FLAT` `UNIQ` `GROUP_BY` `JOIN` `CHUNK` `WINDOW` `DEDUP_BY` `MIN_BY` `MAX_BY` `SUM` `PRODUCT` `FOLD_RIGHT` `POSITION` `KEY_BY` | 混合(R1 门面 + R2 `RANGE`/`MAP`/`FILTER`/`CHUNK`/`WINDOW`/`ENUMERATE`/`ZIP`/`UNIQ`/`FLAT`/`JOIN`/`GROUP_BY`/`DEDUP_BY`/`KEY_BY`) | v0.10 及以前(成员)/ v0.11(R1 重写,M5 起 RANGE 沉 R2)/ v0.11.3(M5 L0-A-2 加 MAP·FILTER·CHUNK·WINDOW,L0-A-3a 加 ENUMERATE·ZIP·UNIQ·FLAT·JOIN,L0-A-3b 加 GROUP_BY·DEDUP_BY·KEY_BY 沉 R2) |
 | `std.str` | `JOIN` `SPLIT_LINES` `CHAR_AT` `COUNT` `QUOTE` `INDEX_OF` `CONTAINS_SUB` | R1 | v0.11 / INDEX_OF、CONTAINS_SUB 于 v0.11.2 |
-| `std.math` | `ABS` `MIN` `MAX` `FLOOR` `CEIL` `ROUND` `SQRT` `POW` `CLAMP` `PI` `E` `LN` `LOG2` `LOG10` `EXP` `TRUNC` `SIN` `COS` `TAN` `ASIN` `ACOS` `ATAN` `ATAN2` `SINH` `COSH` `TANH` `SIGN` `DIV_CEIL` `GCD` `LCM` `IS_SQRT` `POW_MOD` | 混合 | v0.11 |
+| `std.math` | `ABS` `MIN` `MAX` `FLOOR` `CEIL` `ROUND` `SQRT` `POW` `CLAMP` `PI` `E` `LN` `LOG2` `LOG10` `EXP` `TRUNC` `SIN` `COS` `TAN` `ASIN` `ACOS` `ATAN` `ATAN2` `SINH` `COSH` `TANH` `SIGN` `DIV_CEIL` `GCD` `LCM` `IS_SQRT` `POW_MOD` `DECIMAL` `DECIMAL_ADD` `DECIMAL_SUB` `DECIMAL_MUL` `DECIMAL_DIV` `DECIMAL_CMP` `DECIMAL_TO_STRING` `DECIMAL_ROUND` | 混合 | v0.11 |
 | `std.test` | `TEST` `ASSERT` `ASSERT_EQ` `ASSERT_NEQ` `EXPECT_ERR` `RUN_TESTS` | 混合 | v0.10 及以前(成员)/ v0.11(混合化) |
 | `std.ai` | `ASK` `EMBED` `COMPLETE` `ASK_STREAM` `ASK_ALL` | R2 | v0.10 及以前 |
 | `std.agent` | `TASK` `TOOL` `CALL_TOOL` `MODEL` `CONTEXT` | R2 | v0.10 及以前 |

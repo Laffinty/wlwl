@@ -269,4 +269,23 @@ LET(POW_MOD, FUN((base, exp, mod),
 // EXPORT 顺序跟随标准库规范 §7 表格的行序;附录 A 镜像跟随本顺序。成员
 // **集合**由 `wlwl-eval/tests/str_math_contract.rs` 对 §7 表格做外部对照。
 // [v0.11.2 M4] 后续 21 个成员按 §7 表格的追加顺序接在 `E` 之后。
-EXPORT(["ABS", "MIN", "MAX", "FLOOR", "CEIL", "ROUND", "SQRT", "POW", "CLAMP", "PI", "E", "LN", "LOG2", "LOG10", "EXP", "TRUNC", "SIN", "COS", "TAN", "ASIN", "ACOS", "ATAN", "ATAN2", "SINH", "COSH", "TANH", "SIGN", "DIV_CEIL", "GCD", "LCM", "IS_SQRT", "POW_MOD"]);
+// ── 任意精度十进制(规范 §7.6 · ADR-0031 D1)─────────────────────────
+// 门面改名导出,内核见 `crates/wlwl-std/src/math_ext.rs`。
+//
+// 值形状是**公开契约**:`{sign: INTEGER, digits: STRING, scale: INTEGER}`
+// 表示 `sign × digits × 10^-scale`。⚠ **非法 `DICT` → `E0030`,不修复** ——
+// 用户能手工写出 `{sign: 0, digits: "abc"}` 那种状态,这是明码标价的妥协。
+//
+// ⚠ `DECIMAL_DIV` 的 **`scale` 必填**(静默截断是精度谎言);舍入恒 HALF_EVEN。
+// ⚠ `DECIMAL_ROUND` 的 **`mode` 无默认**:银行家舍入与四舍五入是业务决定。
+// ⚠ **本族不含 `MEAN`** —— `SUM` + `/` 已覆盖(ADR-0031 D2)。
+LET(DECIMAL, _DECIMAL);
+LET(DECIMAL_ADD, _DECIMAL_ADD);
+LET(DECIMAL_SUB, _DECIMAL_SUB);
+LET(DECIMAL_MUL, _DECIMAL_MUL);
+LET(DECIMAL_DIV, _DECIMAL_DIV);
+LET(DECIMAL_CMP, _DECIMAL_CMP);
+LET(DECIMAL_TO_STRING, _DECIMAL_TO_STRING);
+LET(DECIMAL_ROUND, _DECIMAL_ROUND);
+
+EXPORT(["ABS", "MIN", "MAX", "FLOOR", "CEIL", "ROUND", "SQRT", "POW", "CLAMP", "PI", "E", "LN", "LOG2", "LOG10", "EXP", "TRUNC", "SIN", "COS", "TAN", "ASIN", "ACOS", "ATAN", "ATAN2", "SINH", "COSH", "TANH", "SIGN", "DIV_CEIL", "GCD", "LCM", "IS_SQRT", "POW_MOD", "DECIMAL", "DECIMAL_ADD", "DECIMAL_SUB", "DECIMAL_MUL", "DECIMAL_DIV", "DECIMAL_CMP", "DECIMAL_TO_STRING", "DECIMAL_ROUND"]);

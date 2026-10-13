@@ -1114,14 +1114,55 @@ fn math_member_set_matches_the_spec_table() {
     let spec = members_of(&section(7, 8));
     let impls = r1_exports("wlwl:std.math");
     assert_member_set("std.math §7", &spec, &impls);
-    assert_eq!(impls.len(), 32, "§7 declares 32 members");
+    // [v0.11.3 M7 / addendum-10 W-03] 32 -> 40:新增 `DECIMAL` 族(规范 §7.2,
+    // 裁决见 `ADR-0031` D1)。
+    assert_eq!(impls.len(), 40, "§7 declares 32 members");
     for n in [
-        "ABS", "MIN", "MAX", "FLOOR", "CEIL", "ROUND", "SQRT", "POW", "CLAMP", "PI", "E",
+        "ABS",
+        "MIN",
+        "MAX",
+        "FLOOR",
+        "CEIL",
+        "ROUND",
+        "SQRT",
+        "POW",
+        "CLAMP",
+        "PI",
+        "E",
         // [v0.11.2 M4] 追加的二十一个。超越函数族 + TRUNC 走 R2 浮点内核,
         // SIGN / DIV_CEIL / GCD / LCM / IS_SQRT 是纯 wlwl 门面,POW_MOD 走
         // R2(门面算不出中间积是否溢出 —— 见 stdlib §7.1-6)。
-        "LN", "LOG2", "LOG10", "EXP", "TRUNC", "SIN", "COS", "TAN", "ASIN", "ACOS", "ATAN", "ATAN2",
-        "SINH", "COSH", "TANH", "SIGN", "DIV_CEIL", "GCD", "LCM", "IS_SQRT", "POW_MOD",
+        "LN",
+        "LOG2",
+        "LOG10",
+        "EXP",
+        "TRUNC",
+        "SIN",
+        "COS",
+        "TAN",
+        "ASIN",
+        "ACOS",
+        "ATAN",
+        "ATAN2",
+        "SINH",
+        "COSH",
+        "TANH",
+        "SIGN",
+        "DIV_CEIL",
+        "GCD",
+        "LCM",
+        "IS_SQRT",
+        "POW_MOD",
+        // [v0.11.3 M7 / addendum-10 W-03] 任意精度十进制族(§7.2)。
+        // ⚠ **本族不含 `MEAN`** —— `SUM` + `/` 已覆盖(`ADR-0031` D2)。
+        "DECIMAL",
+        "DECIMAL_ADD",
+        "DECIMAL_SUB",
+        "DECIMAL_MUL",
+        "DECIMAL_DIV",
+        "DECIMAL_CMP",
+        "DECIMAL_TO_STRING",
+        "DECIMAL_ROUND",
     ] {
         assert!(
             spec.iter().any(|m| m == n),
@@ -1156,4 +1197,203 @@ fn str_and_math_reexport_no_global_builtin() {
             );
         }
     }
+}
+
+// ── `DECIMAL` 族(规范 §7.2 · ADR-0031 D1)──────────────────────────────
+//
+// ⚠ **期望值全部取自 Python `decimal` 模块**(默认精度 28、舍入 `ROUND_HALF_EVEN`),
+// **不是实现输出** —— 由 `D:\Temp\py_decimal_ref.py` 独立跑一遍再落表。
+// 这一条是本契约表的立足点:`DECIMAL` 的价值就是「比 f64 准」,若期望值来自
+// 自己的实现,那它对「准不准」这件事什么都不能证明。
+
+const DEC_IMP: &str = r#"IMPORT("wlwl:std.math", ["DECIMAL", "DECIMAL_ADD", "DECIMAL_SUB", "DECIMAL_MUL", "DECIMAL_DIV", "DECIMAL_CMP", "DECIMAL_TO_STRING", "DECIMAL_ROUND"]);"#;
+
+fn dec_run(expr: &str) -> String {
+    actual(&format!("{DEC_IMP} {expr}"))
+}
+
+/// 构造 + 四则(`DECIMAL("1.25")` 与 `DECIMAL("0.5")`)。
+#[test]
+fn decimal_arithmetic_matches_python_decimal() {
+    let cases: Vec<(&str, &str)> = vec![
+        (
+            r#"DECIMAL_TO_STRING(DECIMAL_ADD(DECIMAL("1.25"), DECIMAL("0.5")))"#,
+            "1.75",
+        ),
+        (
+            r#"DECIMAL_TO_STRING(DECIMAL_SUB(DECIMAL("1.25"), DECIMAL("0.5")))"#,
+            "0.75",
+        ),
+        (
+            r#"DECIMAL_TO_STRING(DECIMAL_MUL(DECIMAL("1.25"), DECIMAL("0.5")))"#,
+            "0.625",
+        ),
+        (
+            r#"DECIMAL_TO_STRING(DECIMAL_ADD(DECIMAL("1.50"), DECIMAL("2.25")))"#,
+            "3.75",
+        ),
+    ];
+    for (expr, want) in cases {
+        assert_eq!(&dec_run(expr), want, "expr = {expr}");
+    }
+}
+
+/// `scale` 保留 —— 金额场景靠它保留「几位」。
+#[test]
+fn decimal_preserves_scale() {
+    assert_eq!(&dec_run(r#"DECIMAL_TO_STRING(DECIMAL("1.00"))"#), "1.00");
+    assert_eq!(&dec_run(r#"DECIMAL_TO_STRING(DECIMAL("1.5"))"#), "1.5");
+}
+
+/// 除法:`scale` 必填 + `HALF_EVEN` + 除不尽。
+#[test]
+fn decimal_division_respects_scale_and_half_even() {
+    let cases: Vec<(&str, &str)> = vec![
+        (
+            r#"DECIMAL_TO_STRING(DECIMAL_DIV(DECIMAL("1.25"), DECIMAL("0.5"), 2))"#,
+            "2.50",
+        ),
+        (
+            r#"DECIMAL_TO_STRING(DECIMAL_DIV(DECIMAL("1.25"), DECIMAL("0.5"), 4))"#,
+            "2.5000",
+        ),
+        // 恰好一半 ⇒ half-even 取偶数(2.5 -> 2,而不是 3)
+        (
+            r#"DECIMAL_TO_STRING(DECIMAL_DIV(DECIMAL("1.25"), DECIMAL("0.5"), 0))"#,
+            "2",
+        ),
+        (
+            r#"DECIMAL_TO_STRING(DECIMAL_DIV(DECIMAL("1"), DECIMAL("2"), 2))"#,
+            "0.50",
+        ),
+        (
+            r#"DECIMAL_TO_STRING(DECIMAL_DIV(DECIMAL("1"), DECIMAL("3"), 5))"#,
+            "0.33333",
+        ),
+    ];
+    for (expr, want) in cases {
+        assert_eq!(&dec_run(expr), want, "expr = {expr}");
+    }
+}
+
+/// `b = 0` ⇒ `ERR([kind: DomainError, op: DIV])`,**不是**原生诊断。
+#[test]
+fn decimal_division_by_zero_is_a_domain_err() {
+    let src = format!(
+        "{DEC_IMP} LET(e, DECIMAL_DIV(DECIMAL(\"1\"), DECIMAL(\"0\"), 2));\
+         [IS_ERR(e), AT_K(ERR_PAYLOAD(e), \"kind\", \"?\"), AT_K(ERR_PAYLOAD(e), \"op\", \"?\")]"
+    );
+    assert_eq!(actual(&src), "[TRUE, DomainError, DIV]");
+}
+
+/// 舍入:六种模式,含**负数上的方向差**(那是 `FLOOR` 与 `DOWN` 的唯一区别)。
+#[test]
+fn decimal_rounding_matches_python_decimal_modes() {
+    let cases: Vec<(&str, &str)> = vec![
+        (r#"DECIMAL_ROUND(DECIMAL("2.5"), 0, "HALF_EVEN")"#, "2"),
+        (r#"DECIMAL_ROUND(DECIMAL("3.5"), 0, "HALF_EVEN")"#, "4"),
+        (r#"DECIMAL_ROUND(DECIMAL("2.5"), 0, "HALF_UP")"#, "3"),
+        (r#"DECIMAL_ROUND(DECIMAL("2.4"), 0, "HALF_UP")"#, "2"),
+        (r#"DECIMAL_ROUND(DECIMAL("2.9"), 0, "DOWN")"#, "2"),
+        (r#"DECIMAL_ROUND(DECIMAL("2.1"), 0, "UP")"#, "3"),
+        (r#"DECIMAL_ROUND(DECIMAL("-2.5"), 0, "HALF_EVEN")"#, "-2"),
+        // ⚠ FLOOR 向 -inf、DOWN 向零 —— 负数上这是**两个不同的结果**
+        (r#"DECIMAL_ROUND(DECIMAL("-2.1"), 0, "FLOOR")"#, "-3"),
+        (r#"DECIMAL_ROUND(DECIMAL("-2.1"), 0, "DOWN")"#, "-2"),
+        (r#"DECIMAL_ROUND(DECIMAL("-2.1"), 0, "CEILING")"#, "-2"),
+        (
+            r#"DECIMAL_ROUND(DECIMAL("1.0049"), 3, "HALF_EVEN")"#,
+            "1.005",
+        ),
+        (
+            r#"DECIMAL_ROUND(DECIMAL("0.0049"), 3, "HALF_EVEN")"#,
+            "0.005",
+        ),
+        // 恰好一半且前一位为偶 ⇒ 不进(1.005 -> 1.00)
+        (r#"DECIMAL_ROUND(DECIMAL("1.005"), 2, "HALF_EVEN")"#, "1.00"),
+    ];
+    for (expr, want) in cases {
+        assert_eq!(
+            &dec_run(&format!("DECIMAL_TO_STRING({expr})")),
+            want,
+            "expr = {expr}"
+        );
+    }
+}
+
+/// 比较按**数值**,不受 `scale` 影响。
+#[test]
+fn decimal_cmp_is_numeric_not_lexical() {
+    let cases: Vec<(&str, &str)> = vec![
+        (r#"DECIMAL_CMP(DECIMAL("1.0"), DECIMAL("1.00"))"#, "0"),
+        (r#"DECIMAL_CMP(DECIMAL("1.5"), DECIMAL("2.5"))"#, "-1"),
+        (r#"DECIMAL_CMP(DECIMAL("2.5"), DECIMAL("1.5"))"#, "1"),
+        (r#"DECIMAL_CMP(DECIMAL("-1"), DECIMAL("1"))"#, "-1"),
+        // 跨 scale 的字面量比较:`10 < 9` 是**错的**,`10.0 > 9.5` 才对
+        (r#"DECIMAL_CMP(DECIMAL("10.0"), DECIMAL("9.5"))"#, "1"),
+    ];
+    for (expr, want) in cases {
+        assert_eq!(&dec_run(expr), want, "expr = {expr}");
+    }
+}
+
+/// **本族存在的理由**:超出 `f64` 的 `2^53` 之后 `FLOAT` 会静默丢精度。
+#[test]
+fn decimal_keeps_precision_beyond_the_f64_boundary() {
+    // f64 给 9007199254740992(丢掉了 +1);DECIMAL 给 9007199254740994。
+    assert_eq!(
+        &dec_run(r#"DECIMAL_TO_STRING(DECIMAL_ADD(DECIMAL("9007199254740993"), DECIMAL("1")))"#),
+        "9007199254740994"
+    );
+    assert_eq!(
+        &dec_run(r#"DECIMAL_TO_STRING(DECIMAL_MUL(DECIMAL("9007199254740993"), DECIMAL("1")))"#),
+        "9007199254740993"
+    );
+}
+
+/// 规范形式:`-0` 归零、`scale < 0` 非法、`digits` 带前导零非法。
+#[test]
+fn decimal_canonical_form_rejects_and_normalises() {
+    assert_eq!(
+        &dec_run(r#"DECIMAL("-0")"#),
+        "[sign: 1, digits: 0, scale: 0]"
+    );
+    assert_eq!(
+        &dec_run(r#"DECIMAL(".5")"#),
+        "[sign: 1, digits: 5, scale: 1]"
+    );
+    // 非数字 digits ⇒ E0030
+    let bad = r#"DECIMAL_ADD(DECIMAL("1"), ["sign": 1, "digits": "x", "scale": 0])"#;
+    assert!(
+        matches("!E0030", &dec_run(bad)),
+        "illegal digits must be E0030"
+    );
+    // 前导零 = 非法形状(**不修复**,ADR-0031 D1)
+    let lead = r#"DECIMAL_ADD(DECIMAL("1"), ["sign": 1, "digits": "012", "scale": 0])"#;
+    assert!(
+        matches("!E0030", &dec_run(lead)),
+        "leading zeros must be E0030"
+    );
+    // sign 只能是 -1 / 1
+    let sgn = r#"DECIMAL_ADD(DECIMAL("1"), ["sign": 0, "digits": "12", "scale": 0])"#;
+    assert!(matches("!E0030", &dec_run(sgn)), "sign must be +-1");
+}
+
+/// `DECIMAL` 的字面量语法与失败口径。
+#[test]
+fn decimal_literal_parsing_and_its_diagnostics() {
+    for bad in ["1.2.3", "", "-", ".", "1a", "1e5"] {
+        let expr = format!(r#"DECIMAL("{bad}")"#);
+        assert!(
+            matches("!E0030", &dec_run(&expr)),
+            "literal {bad:?} must be E0030"
+        );
+    }
+}
+
+/// ⚠ **不误伤既有的 32 个成员** —— 这是回归锁。
+#[test]
+fn decimal_family_does_not_disturb_the_original_thirty_two() {
+    let src = r#"IMPORT("wlwl:std.math", ["SQRT", "POW_MOD", "GCD", "LCM", "SIGN"]); [SQRT(9), POW_MOD(5, 3, 7), GCD(-4, 6), LCM(4, 6), SIGN(-3)]"#;
+    assert_eq!(actual(src), "[3.0, 6, 2, 12, -1]");
 }

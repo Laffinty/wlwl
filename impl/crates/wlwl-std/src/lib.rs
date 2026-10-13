@@ -50,6 +50,9 @@
 //!   - `wlwl:std.str`    — string extensions (§6,5 成员:M3-2 落齐)
 //!   - `wlwl:std.math`   — math basics (§7,11 成员:M3-2 落齐;`SQRT`/`POW`
 //!     走注入的 R2 浮点内核,故本模块是**混合**模块)
+//!     [v0.11.3 M7 / addendum-10 W-03] 成员面 32 → 40:任意精度十进制 `DECIMAL`
+//!     族(§7.2,裁决见 [`math_ext`]),内核也走注入。⚠ **本族不含 `MEAN`** ——
+//!     `std.collection::SUM` 加 `/` 已覆盖(`ADR-0031` D2)。
 //!   - `wlwl:std.test`   — test framework facade (§8;M3-3 混合化,R2 内核
 //!     见 [`test_native`] —— 注册表 / 计时 / 测试体调用 / `EXPECT_ERR`)
 //!
@@ -69,6 +72,7 @@ pub mod fs;
 pub mod io;
 pub mod json;
 pub mod kernels;
+pub mod math_ext;
 pub mod net;
 pub mod process;
 pub mod rand;
@@ -241,6 +245,16 @@ pub static LANG_SOURCES: &[StdSource] = &[
             ("_COSH", kernels::kernel_cosh as StdFn),
             ("_TANH", kernels::kernel_tanh as StdFn),
             ("_POW_MOD", kernels::kernel_pow_mod as StdFn),
+            // [v0.11.3 M7 / addendum-10 W-03] 任意精度十进制族(ADR-0031 D1)。
+            // 每次运算都要构造一个新 `DICT`,与 D11-012 的数组平方级同族 ⇒ 归 R2。
+            ("_DECIMAL", math_ext::decimal as StdFn),
+            ("_DECIMAL_ADD", math_ext::decimal_add as StdFn),
+            ("_DECIMAL_SUB", math_ext::decimal_sub as StdFn),
+            ("_DECIMAL_MUL", math_ext::decimal_mul as StdFn),
+            ("_DECIMAL_DIV", math_ext::decimal_div as StdFn),
+            ("_DECIMAL_CMP", math_ext::decimal_cmp as StdFn),
+            ("_DECIMAL_TO_STRING", math_ext::decimal_to_string as StdFn),
+            ("_DECIMAL_ROUND", math_ext::decimal_round as StdFn),
         ],
     },
     StdSource {
@@ -733,6 +747,12 @@ mod tests {
             // `EXPORT` 里仍是用户可见的名字)。W-02 那三条与 `NULL_OR` 是纯
             // R1,不需要任何内核。
             "result.rs",
+            // [v0.11.3 M7 / addendum-10 W-03] `std.math` 的任意精度十进制内核
+            // (`DECIMAL` 族, ADR-0031 D1)。同 `collection.rs`:`std.math` 的
+            // 成员名册由 `wl/std/math.wll` 的 `EXPORT` 决定,本文件只提供内核
+            // 实现(kernel 注入 + 门面改名导出,`EXPORT` 里是用户可见的名字)。
+            // ⚠ 本文件**不含** `MEAN` —— `SUM` + `/` 已覆盖(ADR-0031 D2)。
+            "math_ext.rs",
         ];
         let mut files: Vec<String> = std::fs::read_dir("src")
             .expect("unit tests run with the package root as cwd")

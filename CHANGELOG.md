@@ -496,6 +496,27 @@ Spec: **wlwl-spec-v0.11 与 wlwl-stdlib-spec-v0.11 均不变**。本批**不改�
     契约 `html_sanitize_url_agrees_with_the_html_sanitizer` 把同一组 URL 喂两个
     入口并断言结论一致。
   - ⚠ **不做大小写归一、不做百分号编码**:路径大小写敏感,小写化会改错资源。
+- **`wlwl:std.math` 加任意精度十进制 `DECIMAL` 族(8 成员,v0.11.3 M7 / addendum-10)** ——
+  成员面 32 → 40(全库 176 → 184)。`DECIMAL` / `DECIMAL_ADD` / `_SUB` / `_MUL` /
+  `_DIV` / `_CMP` / `_TO_STRING` / `_ROUND`,**R2 归层**(每次运算都要构造一个新
+  `DICT`,与 D11-012 的数组平方级同族)。形状见 `ADR-0031` D1。
+  - **值形状是公开契约**:`{sign: INTEGER, digits: STRING, scale: INTEGER}`,字段名
+    变更即 breaking。规范形式:`digits` 无前导零、`scale ≥ 0`、`sign ∈ {-1,1}`,
+    **零恒为 `{1, "0", 0}`**。⚠ `scale` **有意义**:`DECIMAL("1.00")` 渲染回
+    `"1.00"` —— 金额场景靠它保留「几位」。
+  - ⚠ **本族存在的理由是 `f64` 的 `2^53`**:实测 `+(9007199254740993.0, 1.0)` 得
+    `9007199254740992.0`(静默丢掉 +1),而 `DECIMAL_ADD` 给 `9007199254740994`。
+  - ⚠ `DECIMAL_DIV` 的 **`scale` 必填**(静默截断是精度谎言),舍入恒 `HALF_EVEN`;
+    `b = 0` ⇒ `ERR([kind: DomainError, op: DIV])`。⚠ `DECIMAL_ROUND` 的 **`mode`
+    无默认**(银行家舍入与四舍五入是业务决定);`FLOOR` 与 `DOWN` **只在负数上**分岔。
+  - ⚠ **不含 `MEAN`**(`ADR-0031` D2):`std.collection::SUM` 加 `/` 已覆盖。
+  - ⚠ **非法 `DICT` → `E0030`,不修复** —— 用户能手工写出
+    `{sign: 0, digits: "abc"}`,这是**明码标价的妥协**,不是干净的形状。
+  - **正确性证据**:契约期望值取自 **Python `decimal` 模块**(默认精度 28、
+    `ROUND_HALF_EVEN`),由脚本独立跑一遍再落表,**不是实现输出** —— 否则它对
+    「准不准」这件事什么都不能证明。实现期由交叉核对抓出三个真 bug:大端下标的
+    乘法权重写错(`125 × 5` 算成 5062)、`at_scale` 把补零**前置**、以及用
+    `Vec::cmp` 做字典序比较(位数不同时 `[1,0,0] < [9,5]`,数值却 100 > 95)。
 
 ### Changed
 
