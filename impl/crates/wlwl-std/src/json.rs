@@ -10,6 +10,7 @@ use wlwl_value::{type_name, Outcome, StdHost, Value};
 
 pub(crate) mod lexer;
 pub(crate) mod path;
+pub(crate) mod schema;
 
 pub(super) fn std_parse_inner(
     _ctx: &mut StdCtx,
@@ -60,6 +61,8 @@ pub static SPEC: ModuleSpec = ModuleSpec {
         ("JSON_DELETE", json_delete as StdFn),
         ("JSON_MERGE", json_merge as StdFn),
         ("JSON_CHUNK_ITEMS", json_chunk_items as StdFn),
+        // [v0.11.3 M7 / addendum-09 W-05]
+        ("JSON_CHECK", json_check as StdFn),
     ],
 };
 
@@ -338,6 +341,91 @@ fn json_err_from_path(op: &str, e: &path::PathError) -> Outcome {
     Outcome::normal(path::path_err(op, e))
 }
 
+/// `JSON_CHECK(doc, schema) -> OK | ERR` —— schema **闭合子集**校验。
+///
+/// ⚠ **`doc` 收 STRING,不是已解析的值** —— 这是对 `addendum-09` §2.3 签名的一处
+///   **有意偏离**,理由写在这里:
+///
+///   §2.3 的签名是 `JSON_CHECK(doc, schema)`(读起来 `doc` 是值),却把
+///   `line` / `column` 列为「本份最有价值的部分:现在报错不带位置」。**这两条不能
+///   同时成立** —— 同一个值可以由任何一段文本产生,值里**没有位置可指**。
+///
+///   ⇒ 收文本。解析走 W-02 的词法层(位置现成),schema 校验走 `schema.rs`。
+///   调用方手上通常就是刚读进来的一整段响应,多一次 `PARSE` 是它本来就要付的。
+///
+/// ⚠ **未知 schema 关键字 → `E0030`**,不是静默忽略(`ADR-0033` D4 + 规范 §12.1
+///   「半张表比没有更糟」)。消息的**形状照抄 D13-009 的 `parse_policy` 真实实现**:
+///   把全部合法键一并列出来 —— 那条不在 ADR 里,是读代码才发现的。
+pub fn json_check(host: &mut dyn StdHost, args: Vec<Value>) -> Result<Outcome, WlwlError> {
+    if args.len() != 2 {
+        return Err(arg_count(host, "JSON_CHECK", args.len(), 2));
+    }
+    let Value::String(text) = &args[0] else {
+        return Err(json_shape_err(
+            host,
+            format!(
+                "JSON_CHECK: expected a JSON STRING as the first argument, got {} \
+                 (a parsed value has no position to report — see the member doc)",
+                type_name(&args[0])
+            ),
+        ));
+    };
+    let sch = match schema::parse_schema(&args[1]) {
+        Ok(s) => s,
+        // schema 自身写错 ⇒ `E0030`(程序员的错,不是数据的错)。
+        Err(msg) => return Err(host.diag(ErrorCode::E0030, format!("JSON_CHECK: {msg}"))),
+    };
+    let chars: Vec<char> = text.chars().collect();
+    let toks = match lexer::tokenize(&chars) {
+        Ok(t) => t,
+        Err(e) => return Ok(json_err("JSON_CHECK", e)),
+    };
+    if let Err(e) = lexer::validate(&chars) {
+        // 语法错先报语法错 —— 拿一份坏文本去校验 schema 没有意义,
+        // 而且那时报出来的 schema 违规位置会是**假的**。
+        return Ok(json_err("JSON_CHECK", e));
+    }
+    let Ok(doc) = serde_json::from_str::<serde_json::Value>(text) else {
+        // 走不到:`validate` 已经保证语法合法,而 serde 是本仓唯一的 JSON 实现。
+        return Err(host.diag(
+            ErrorCode::E0030,
+            "JSON_CHECK: internal: lexer accepted what serde_json rejected".to_string(),
+        ));
+    };
+    let doc = json_to_value(doc);
+    // 位置表:把 token 流与值树**同步配对**,产出 `path -> 起始码点偏移`。
+    //
+    // ⚠ 第一版这里取的是 `value_offsets(..)[0]`,而那个函数先压内层再压容器,
+    //   于是 `{"a":1}` 的「根」被报成 5(指向 `1`)。位置是给用户看的,指错地方
+    //   比没有位置更糟。现在按文档序产出,根必然第一个。
+    let index = schema::position_index(&doc, &toks);
+    match schema::check(&doc, &sch, schema::ROOT_PATH) {
+        Some(mut v) => {
+            // 用违规自己的 `path` 回查它在文本里的位置。
+            //
+            // ⚠ **查不到就退回父级/文档开头**,不猜:一个 `required`
+            //   缺失的违规在文本里**没有对应的值节点**(那个值本来就不存在),
+            //   此时指向**u5bf9象自身**才是对的。
+            let parent = match v.path.find('.') {
+                Some(i) => format!("${}", &v.path[..i]),
+                None => schema::ROOT_PATH.to_string(),
+            };
+            v.offset = index
+                .iter()
+                .find(|(p, _)| *p == v.path)
+                .or_else(|| index.iter().find(|(p, _)| *p == parent))
+                .map(|(_, o)| *o)
+                .unwrap_or(0);
+            Ok(Outcome::normal(schema::violation_err(
+                "JSON_CHECK",
+                &chars,
+                &v,
+            )))
+        }
+        None => Ok(Outcome::normal(Value::Ok(Box::new(Value::Null)))),
+    }
+}
+
 /// [v0.11 M2 / ADR-0022] 直通边界包装:Value→内部表示→Value。
 pub fn std_parse(host: &mut dyn StdHost, args: Vec<Value>) -> Result<Outcome, WlwlError> {
     crate::wrap(host, std_parse_inner, args)
@@ -494,13 +582,14 @@ mod tests {
     }
 
     #[test]
-    fn spec_lists_all_ten_members() {
+    fn spec_lists_all_eleven_members() {
         assert_eq!(SPEC.path, "wlwl:std.json");
         let names: Vec<&str> = SPEC.functions.iter().map(|(n, _)| *n).collect();
-        // ⚠ [v0.11.3 M7 / addendum-09] **2 → 5 → 10**。加成员时这条会红 ——
+        // ⚠ [v0.11.3 M7 / addendum-09] **2 → 5 → 10 → 11**。加成员时这条会红 ——
         //   那正是它的用途:名册是契约面,悄悄多一个/少一个成员必须有人喊。
         //   附录 A 镜像由 `gen-appendix-a` 同步,那边另有一道闸。
-        //   (它已经红了两次:W-02 的 2→5、W-04 的 5→10 —— 两次都是**正当**变更。)
+        //   (它已经红了三次:W-02 的 2→5、W-04 的 5→10、W-05 的 10→11 —— 三次都是
+        //   **正当**变更,那正是它存在的理由。)
         assert_eq!(
             names,
             vec![
@@ -516,6 +605,8 @@ mod tests {
                 "JSON_DELETE",
                 "JSON_MERGE",
                 "JSON_CHUNK_ITEMS",
+                // W-05:schema 闭合子集
+                "JSON_CHECK",
             ]
         );
     }

@@ -936,3 +936,183 @@ fn json_get_returns_null_where_index_get_raises_e0037() {
         "!E0037 INDEX_GET: dict key zz not found"
     );
 }
+
+// ── §11 W-05:`JSON_CHECK` schema 闭合子集 ──────────────────────────────
+//
+// ⚠ **`doc` 收 STRING,不是已解析的值** —— 这是对 `addendum-09` §2.3 的一处
+//   **有意偏离**。§2.3 的签名读起来 `doc` 是值,却把 `line` / `column` 列为
+//   「本份最有价值的部分」——**这两条不能同时成立**:同一个值可以由任何一段文本
+//   产生,值里**没有位置可指**。⇒ 收文本,位置才有意义。
+//
+// ⚠ **未知 schema 关键字 → `E0030`**(`ADR-0033` D4 + 规范 §12.1「半张表比没有更
+//   糟」)。消息**把全部合法键列出来** —— 那个形状不在 ADR 里,是从 D13-009 的
+//   `sanitize/filter.rs::parse_policy` **真实实现**里读出来的,只读 ADR 会漏。
+
+const CHECK_IMP: &str = r#"IMPORT("wlwl:std.json", ["JSON_CHECK"]);"#;
+
+/// 跑一段只用 `JSON_CHECK` 的源,回 `ERR` 载荷(失败时)或 `OK` 的显示值。
+fn ck(body: &str) -> String {
+    out(&format!("{JSON_IMP} {CHECK_IMP} {body}"))
+}
+
+#[test]
+fn json_check_accepts_documents_matching_the_schema() {
+    assert_eq!(
+        ck(r#"JSON_CHECK("{\"a\": 1}", ["type": "object"])"#),
+        "OK(NULL)"
+    );
+    assert_eq!(
+        ck(r#"JSON_CHECK("{\"a\":1,\"b\":2}", ["type": "object", "required": ["a"]])"#),
+        "OK(NULL)"
+    );
+    assert_eq!(
+        ck(r#"JSON_CHECK("5", ["minimum": 1, "maximum": 10])"#),
+        "OK(NULL)"
+    );
+    assert_eq!(ck(r#"JSON_CHECK("2", ["type": "integer"])"#), "OK(NULL)");
+    assert_eq!(ck(r#"JSON_CHECK("2", ["enum": [1, 2, 3]])"#), "OK(NULL)");
+    // 空 schema ⇒ 什么都不约束(闭合子集里这是合法的,不是「半张表」——
+    // 显式写一个空字典就是「我不校验」,与「写了不认识的键」完全不同)。
+    // ⚠ 空字典必须写 **`DICT()` 而不是 `{}`** —— 后者在实参位直接 `E0001
+    //   illegal character '{'`(规范 §16.3:空集合的规范形式是那两个宏)。
+    //   第一版两处都写错了:先写 `[]`(schema 要 DICT),再写 `{}`(语法非法)。
+    assert_eq!(
+        ck(r#"JSON_CHECK("{\"anything\": [1, null]}", DICT())"#),
+        "OK(NULL)"
+    );
+}
+
+#[test]
+fn json_check_violations_are_err_values_carrying_path_line_and_column() {
+    // 类型不符:根节点。
+    let g = ck(r#"ERR_PAYLOAD(JSON_CHECK("{\"a\": 1}", ["type": "array"]))"#);
+    assert!(g.contains("kind: JsonError"), "{g}");
+    assert!(g.contains("path: $"), "{g}");
+    assert!(g.contains("line: 1"), "{g}");
+    assert!(g.contains("column: 1"), "{g}");
+    // `required` 缺失:`path` 指**缺的那个键**。
+    let m = ck(r#"ERR_PAYLOAD(JSON_CHECK("{\"a\":1}", ["type":"object","required":["b"]]))"#);
+    assert!(m.contains("path: b"), "{m}");
+    assert!(m.contains("required property \"b\" is missing"), "{m}");
+    // ⚠ 嵌套违规的 `path` 必须是 `a.b[0]` —— **不能**是 `a.b.[0]`。
+    //   第一版让每层返回后由父层改写 `vi.path`,而数组那层是**覆盖**而非前置,
+    //   于是多出一个点。这类 bug 断言全绿、只有逐条看输出才发现。
+    let n = ck(
+        r#"ERR_PAYLOAD(JSON_CHECK("{\"a\":{\"b\":[1,2]}}", ["type":"object","properties":["a": ["type":"object","properties":["b": ["type":"array","items":["type":"string"]]]]]]))"#,
+    );
+    assert!(n.contains("path: a.b[0]"), "{n}");
+    // ⚠ `line` / `column` 必须落在**违规值自己**上,不是文档开头。
+    //   `{"a":{"b":[1,2]}}` 的第 0 个数组元素在码点 11。
+    assert!(n.contains("offset: 11"), "{n}");
+    // 跨行文档:错误在第 2 行。
+    let ml = ck(
+        r#"ERR_PAYLOAD(JSON_CHECK("{\n  \"a\": \"s\"\n}", ["properties": ["a": ["type": "array"]]]))"#,
+    );
+    assert!(ml.contains("line: 2"), "{ml}");
+    assert!(ml.contains("column: 8"), "{ml}");
+}
+
+#[test]
+fn json_check_boundary_keywords_each_have_both_directions() {
+    for (expr, want) in [
+        (
+            r#"JSON_CHECK("50", ["minimum":1,"maximum":10])"#,
+            "50 > maximum 10",
+        ),
+        (
+            r#"JSON_CHECK("\"ab\"", ["minLength":5])"#,
+            "length 2 < minLength 5",
+        ),
+        (
+            r#"JSON_CHECK("\"abcdef\"", ["maxLength":3])"#,
+            "length 6 > maxLength 3",
+        ),
+        (
+            r#"JSON_CHECK("9", ["enum":[1,2,3]])"#,
+            "value not in enum (3 allowed)",
+        ),
+    ] {
+        let g = ck(&format!("ERR_PAYLOAD({expr})"));
+        assert!(g.contains(want), "expr {expr}: expected {want:?} in {g}");
+    }
+}
+
+/// ⚠ **有意分歧**:`type: "integer"` 只认 `INTEGER`,**不认** `FLOAT`。
+///
+/// `PARSE("2.0")` 给的是 `FLOAT`(实测,冻结在 `number_kind_mapping_is_frozen`)。
+/// JSON Schema 的 `integer` 指「没有小数部分的值」,于是有两条路:
+/// ① 抹平 —— `2.0` 也算 `integer`;
+/// ② 取严 —— 只有 `INTEGER` 算。
+///
+/// **这里取 ②。** 理由:wlwl 的类型系统**记得**原来是不是整数(`INTEGER` / `FLOAT`
+/// 是两个种类),抹平就丢掉了本仓比 Python 多出来的那份信息,而且用户无法从
+/// `TYPE()` 的结果预判校验结果 —— 那是「校验结果与类型系统不一致」。
+///
+/// ⚠ 与 `STDDEV_S([7])` 那条分歧同款体例:显式钉住,免得下一个「对齐 JSON Schema」
+/// 的人改回去。
+#[test]
+fn json_check_integer_is_strict_about_the_value_kind() {
+    assert_eq!(
+        ck(r#"IS_ERR(JSON_CHECK("2.0", ["type": "integer"]))"#),
+        "TRUE"
+    );
+    assert_eq!(ck(r#"JSON_CHECK("2", ["type": "integer"])"#), "OK(NULL)");
+    // 但 `number` 两支都收。
+    assert_eq!(ck(r#"JSON_CHECK("2.0", ["type": "number"])"#), "OK(NULL)");
+    assert_eq!(ck(r#"JSON_CHECK("2", ["type": "number"])"#), "OK(NULL)");
+}
+
+/// 闭合子集的关键一条:**未知关键字报错**,且消息**列出全部合法键**。
+///
+/// 那个「列出全部」的形状照抄 D13-009 的 `parse_policy` 真实实现 —— 它是这套错误
+/// 消息里最有用的一行(调用方不用去翻文档就知道该写什么),而它**不在** ADR-0033
+/// D4 里,只读 ADR 会漏。
+#[test]
+fn json_check_rejects_unknown_schema_keys_and_lists_the_known_ones() {
+    let g = ck(r#"JSON_CHECK("1", ["typo": 1])"#);
+    assert!(g.starts_with("!E0030"), "{g}");
+    assert!(g.contains("unknown schema key \"typo\""), "{g}");
+    assert!(g.contains("known keys:"), "{g}");
+    // 全部九个合法键都要在消息里。
+    for k in [
+        "type",
+        "required",
+        "properties",
+        "items",
+        "enum",
+        "minimum",
+        "maximum",
+        "minLength",
+        "maxLength",
+    ] {
+        assert!(g.contains(k), "known-keys list must mention {k}: {g}");
+    }
+    // 未知 `type` 值同理,把七个类型列出来。
+    let t = ck(r#"JSON_CHECK("1", ["type": "strng"])"#);
+    assert!(t.contains("known types:"), "{t}");
+    for ty in [
+        "object", "array", "string", "number", "integer", "boolean", "null",
+    ] {
+        assert!(t.contains(ty), "known-types list must mention {ty}: {t}");
+    }
+    // schema 自身的形状错也是 `E0030`(程序员的错,不是数据的错)。
+    assert!(ck(r#"JSON_CHECK("1", ["minimum": "x"])"#).starts_with("!E0030"));
+}
+
+/// 语法错**先**报语法错:拿一份坏文本去校验 schema 没有意义,而且那时报出来的
+/// schema 违规位置会是**假的**。
+#[test]
+fn json_check_reports_a_syntax_error_before_any_schema_verdict() {
+    let g = ck(r#"ERR_PAYLOAD(JSON_CHECK("{bad", ["type": "object"]))"#);
+    assert!(g.contains("kind: JsonError"), "{g}");
+    // 词法错误的消息里没有 schema 的字样 ⇒ 报的是语法错,不是「类型不是 object」。
+    assert!(!g.contains("expected type"), "{g}");
+}
+
+/// `doc` 收**值**时报 `E0030` —— 值里没有位置可指,收下它就会给出一个假位置。
+#[test]
+fn json_check_requires_the_document_as_a_string() {
+    let g = ck(r#"JSON_CHECK(["a": 1], ["type": "object"])"#);
+    assert!(g.starts_with("!E0030"), "{g}");
+    assert!(g.contains("no position to report"), "{g}");
+}

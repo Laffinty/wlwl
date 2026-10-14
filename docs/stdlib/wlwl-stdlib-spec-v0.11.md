@@ -294,6 +294,42 @@ markdown** 解析成员表后与实现对拍(ADR-0023 §v0.x 1 的执行机制)�
    `1e400` 这类溢出 `f64` 的数字拒。
 
 ⚠ **元数 / 类型错仍是诊断**(`E0022` / `E0030`),不是 `ERR` 值 —— 与 §2.3
+
+### 3.2 `JSON_CHECK` 的 schema 闭合子集
+
+`JSON_CHECK(doc, schema) -> OK | ERR`
+
+⚠ **`doc` 收 **STRING**,**不是已解析的值** —— 这是对本版方案原文的一处
+**有意偏离**,理由必须写清楚:
+
+原文的签名是 `JSON_CHECK(doc, schema)`(读来正 `doc` 是值),却把 `line` / `column`
+列为「本份有最大价值的部分」。**这两条不能同时成立** —— 同一个值
+可以由任何一段文本产生,值里**没有位置可指**。当位置是伪的,比没有位置更惣坏。
+
+| 字关字 | 含义 |
+|---|---|
+| `type` | `object` / `array` / `string` / `number` / `integer` / `boolean` / `null`;**可写多个**(任一匹配即过);缺省不约束 |
+| `required` | 字符串数组;每个都必须存在 |
+| `properties` | 字典，键 → 子 schema |
+| `items` | 子 schema;对**数组的每个元素**生效 |
+| `enum` | 允许值的数组 |
+| `minimum` / `maximum` | 数值边界(含端点) |
+| `minLength` / `maxLength` | 字符串长度边界(**按码点数**, 不是字节数) |
+
+⚠ **不支持的关键字一律报 `E0030`**(半张表比没有更惜,§12.1)，且报错的
+**消息会把全部合法键一并列出来** —— 那个形状照抄 D13-009
+(`HTML_SANITIZE` 的 policy)的**真实实现`，而不是 ADR 里的转述。
+
+**数据不符 schema → `ERR([kind: "JsonError", op, path, offset, line, column, reason])`**。这里
+**既有 `path` 又有 `line`/`column`** —— 与本节 W-02 那三个成员(有行列、无 path)和 W-04
+路径族(有 path、无行列)都不同。违规只报**第一条**(走文件序,类型不对时优先报类型)。
+
+⚠ **一条有意分歧**:`type: "integer"` 只认 wlwl 的 **`INTEGER`**,**不认 `FLOAT`** ——
+`PARSE("2.0")` 给的是 `FLOAT`(实测,冻结在数值种类映射那组)。JSON Schema 的 `integer`
+指「没有小数部分的值」,本仓取**严**的一支:本语言的类型系统**记得**
+原来是不是整数,抹平就丢掉了本仓比 Python 多出来的那份信息,而且用户无法从 `TYPE()`
+预判校验结果。与 `STDDEV_S([7])` 那条分歧同款体例。
+
 「失败的统一口径」一致:数据不合预期返 `ERR`,调用方式错报诊断。
 
 ## 4 `std.format` — 格式化(R2)
@@ -2101,7 +2137,7 @@ then 支内(短路保证 `OK` 时不触发)。
 |---|---|---|---|
 | `std.io` | `PRINT` `INPUT` `PRINT_ERR` | R2 | v0.10 及以前 |
 | `std.fs` | `READ_FILE` `WRITE_FILE` `EXISTS` `PATH_JOIN` `PATH_DIR` `PATH_BASE` `PATH_EXT` `PATH_NORMALIZE` `LIST_DIR` `WALK_DIR` `MKDIR` `MKDIRS` `REMOVE` `COPY` `MOVE` `FILE_SIZE` `READ_BYTES` `WRITE_BYTES` | R2 | v0.10 及以前 |
-| `std.json` | `PARSE` `STRINGIFY` `JSON_TOKENIZE` `JSON_LOCATE` `JSON_VALIDATE` `JSON_GET` `JSON_SET` `JSON_DELETE` `JSON_MERGE` `JSON_CHUNK_ITEMS` | R2 | v0.10 及以前 |
+| `std.json` | `PARSE` `STRINGIFY` `JSON_TOKENIZE` `JSON_LOCATE` `JSON_VALIDATE` `JSON_GET` `JSON_SET` `JSON_DELETE` `JSON_MERGE` `JSON_CHUNK_ITEMS` `JSON_CHECK` | R2 | v0.10 及以前 |
 | `std.format` | `FORMAT` | R2 | v0.10 及以前 |
 | `std.encode` | `BASE64_ENCODE` `BASE64_DECODE` `HEX_ENCODE` `HEX_DECODE` `URL_ENCODE` `URL_DECODE` `SHA256` `HMAC_SHA256` `PBKDF2_ITER` `ARGON2ID` `RANDOM_BYTES` `RANDOM_HEX` `TIMING_SAFE_EQ` | R2 | v0.11.2 / SHA256、HMAC_SHA256 于 v0.11.3 |
 | `std.time` | `NOW` `MONOTONIC` `SLEEP` `TEST_BUBBLE` `ADVANCE` `TIMEOUT` | R2 | v0.11.3 |
