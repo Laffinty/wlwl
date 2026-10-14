@@ -39,6 +39,11 @@ use std::path::PathBuf;
 use wlwl_eval::Evaluator;
 
 const JSON_IMP: &str = r#"IMPORT("wlwl:std.json", ["PARSE", "STRINGIFY"]);"#;
+/// [W-02] 低层词法层三成员的 IMPORT。**不能**并进 `JSON_IMP` —— W-01 那
+/// 十组断言的是旧两成员的行为,让它们顺带依赖新成员会把「冻结基线」和
+/// 「新功能」绑在一起:新成员一坏,冻结基线也一起变红,分不清是谁的锅。
+const LEX_IMP: &str =
+    r#"IMPORT("wlwl:std.json", ["JSON_TOKENIZE", "JSON_LOCATE", "JSON_VALIDATE"]);"#;
 /// `LN` 是 `std.math` 的成员、不是全局内建(实测单独用会 `E0020`),造
 /// `NaN` 得显式 IMPORT。
 const NAN_SRC: &str = r#"-(LN(0), LN(0))"#;
@@ -91,6 +96,11 @@ fn out(src: &str) -> String {
 
 fn run(body: &str) -> String {
     out(&format!("{JSON_IMP} {body}"))
+}
+
+/// 跑一段**只用新成员**的源(§7 / §8 那几组用)。
+fn lex(body: &str) -> String {
+    out(&format!("{JSON_IMP} {LEX_IMP} {body}"))
 }
 
 /// `PARSE(<原始 JSON 文本>)` 的显示值。
@@ -343,4 +353,247 @@ fn parse_stringify_round_trip_matches_python_canonical() {
     //   (合法的 u64 上界进去,出来是一个不同的浮点数)。
     assert_eq!(rt("-0"), "-0.0");
     assert_eq!(rt("18446744073709551615"), "1.8446744073709552e+19");
+}
+
+// ── §7 W-02:新词法层与 `PARSE` 的接受集**必须逐条一致** ────────────────
+//
+// ⚠ **这是 W-01 冻结契约存在的全部理由。** `JSON_VALIDATE` 与 `PARSE` 是**同一份
+// JSON 语法的两套判定**(一套走 serde_json、一套走本仓手写词法器)。两套一旦分叉,
+// 用户就会拿到「`PARSE` 说对、`JSON_VALIDATE` 说错」或反过来 —— 那比没有新成员
+// 更糟,因为它让「先验后用」这件事失去意义。
+//
+// ⇒ 本组把 76 条输入(RFC 8259 合法面 + 拒收清单 + **serde 比 Python 更严的三处**)
+//   的两条判定**并排**跑一遍,逐条比对。**任何一条分叉就红。**
+
+/// `JSON_VALIDATE` 与 `PARSE` 对同一输入必须给出**同一判决**。
+///
+/// ⚠ 判定面只有两个:程序是否以诊断中止。**不比对渲染出的值** —— 第一版把
+///   「输出是不是 `OK`」当成判据,于是 `PARSE` 返值、`JSON_VALIDATE` 返 `OK(NULL)`
+///   一起被判成「未知」,47 条假分歧。渲染形态不是这一层要管的事。
+fn agrees(json_text: &str, want_accept: bool) {
+    let lit = wl(json_text);
+    let p = run(&format!("PARSE({lit})"));
+    let v = lex(&format!("JSON_VALIDATE({lit})"));
+    let (pa, va) = (!p.starts_with('!'), !v.starts_with('!'));
+    assert_eq!(
+        pa, want_accept,
+        "PARSE disagreed with the expectation on {json_text:?}: {p}"
+    );
+    assert_eq!(
+        pa, va,
+        "PARSE and JSON_VALIDATE diverged on {json_text:?}: PARSE={p} / VALIDATE={v}"
+    );
+}
+
+#[test]
+fn lexer_layer_agrees_with_parse_on_valid_json() {
+    for src in [
+        "{}",
+        r##"{"a": 1}"##,
+        r##"{"a": 1, "b": 2}"##,
+        r##"  {  "a"  :  1  }  "##,
+        "[]",
+        "[1]",
+        "[1,2,3]",
+        r#""""#,
+        r#""abc""#,
+        r#""\"""#,
+        r#""\\""#,
+        r#""\/""#,
+        r#""\b""#,
+        r#""\f""#,
+        r#""\n""#,
+        r#""\r""#,
+        r#""\t""#,
+        r#""\u005C""#,
+        r#""\u0041""#,
+        "0",
+        "-0",
+        "1",
+        "-1",
+        "1.0",
+        "1E+2",
+        "1e-2",
+        "1.5e+3",
+        "-0.0",
+        "true",
+        "false",
+        "null",
+        r##"[{"a":[1,2]},null,true]"##,
+        r##"{"a":{"b":{"c":[1,[2,[3]]]}}}"##,
+        "1e2",
+        "18446744073709551615",
+        "100.0",
+        "9007199254740993",
+        "1e-400",
+        // ⚠ 合法代理对、重复键、30 层嵌套、空键键名里的 NUL、tab 当空白
+        r#""\uD834\uDD1E""#,
+        r#""\uD800\uDC00""#,
+        r#""\uDBFF\uDFFF""#,
+        r##"{"a":1,"a":2}"##,
+        "[\t1\t]",
+    ] {
+        agrees(src, true);
+    }
+}
+
+#[test]
+fn lexer_layer_agrees_with_parse_on_rejected_json() {
+    for src in [
+        "NaN",
+        "Infinity",
+        "-Infinity",
+        r##"{"a":1/*c*/}"##,
+        "{\"a\":1 // c\n}",
+        "[1,]",
+        r##"{"a":1,}"##,
+        "'a'",
+        "01",
+        "-01",
+        "00",
+        "\"a\nb\"",
+        "\"a\tb\"",
+        "{a:1}",
+        "{} x",
+        "",
+        "abc",
+        "+1",
+        "0x1F",
+        ".5",
+        "5.",
+        r##"{"a" 1}"##,
+        r##"{"a":1"##,
+        r#""abc"#,
+        // ⚠ 下面五条是 **serde 比 Python 严**的三处边界(ADR-0033 记在案)。两套都
+        //   必须拒,否则词法层比 `PARSE` 宽松 ⇒ 分叉。详见 `json/lexer.rs` 的表。
+        r#""\uD800""#,       // 孤立高代理
+        r#""\uDC00""#,       // 孤立低代理
+        r#""\uDD1E\uD834""#, // 代理对换序
+        "1e400",             // f64 溢出
+    ] {
+        agrees(src, false);
+    }
+    // 嵌套 200 层:serde 的递归上限是 128。单独一条是因为它是个长字符串,
+    // 放进上面的表会撑爆可读性。
+    let deep: String = "[".repeat(200) + &"]".repeat(200);
+    agrees(&deep, false);
+    // ⚠ 30 层在上限内 —— 证明那条闸是 128 而不是「一超过 30 层就拒」。
+    let ok_deep: String = "[".repeat(30) + &"]".repeat(30);
+    agrees(&ok_deep, true);
+}
+
+// ── §8 W-02:`JSON_TOKENIZE` / `JSON_LOCATE` 的可观察面 ────────────────
+//
+// 完整契约在 W-03(「定位契约,逐字节冻结」)。这里只钉**结构与单位**,
+// 让「偏移是码点、行列 1 基」这件事有守卫 —— 单位错了以后整批冻结值都要重写。
+
+#[test]
+fn json_tokenize_emits_codepoint_offsets_and_is_purely_lexical() {
+    // `[1, "a"]` ⇒ 5 个 token;**纯词法无结构**,所以下面这条对 JSON 无效文本
+    // 仍然出 token 流。
+    let toks = lex(r##"JSON_TOKENIZE("[1, \"a\"]")"##);
+    assert!(
+        toks.contains("lbracket") && toks.contains("number"),
+        "{toks}"
+    );
+    assert!(
+        toks.contains("string") && toks.contains("rbracket"),
+        "{toks}"
+    );
+    // ⚠ **纯词法**:`[}` 没有词法错误(括号与花括号都是合法 token)⇒ 出 token 流。
+    //   结构由 `JSON_VALIDATE` 管。这条钉住 §2.1「纯词法,无结构」。
+    let structural = lex(r##"JSON_TOKENIZE("[}")"##);
+    assert!(structural.contains("lbracket"), "{structural}");
+    assert!(!structural.starts_with('!'), "{structural}");
+    assert!(lex(r##"JSON_VALIDATE("[}")"##).starts_with('!'));
+    // ⚠ **码点偏移**:输入 `["é"]` 的码点是 `[`0 `"`1 `é`2 `"`3 `]`4,而 `é` 在
+    //   UTF-8 里占 **2 字节**。字符串 token 是 `[1, 4)`(`"`1 `é`2 `"`3)。
+    //   ⇒ **按码点 `end = 4`;按字节会是 `end = 5`**。断 `end` 而不是 `start`,
+    //   因为 `start` 在两种单位下都是 1 —— 断它等于什么都没断。
+    let off = lex(r##"JSON_TOKENIZE("[\"é\"]")"##);
+    assert!(
+        off.contains("start: 1, end: 4"),
+        "codepoint offsets expected: {off}"
+    );
+}
+
+#[test]
+fn json_locate_returns_one_based_line_and_codepoint_column() {
+    // 输入 `{\n  1`:码点 0=`{` 1=`\n` 2=` ` 3=` ` 4=`1`。offset 3 是**第二个
+    // 空格**;第 2 行从码点 2 起算,所以它是第 2 列。⚠ 我第一版写的是「column: 3,
+    // token_start: 3」—— 两个都错:列该从行首算,`token_start` 也不是 3。
+    //
+    // `token_start: 0` 也是对的且值得说清:`JSON_TOKENIZE` 是**纯词法**的,这段输入
+    // 结构上无效(缺 `}`)但**词法上合法**(就是一个 `lbrace`),所以词法层给出了
+    // token 0。若这里换成 `JSON_LOCATE` 依赖结构校验,它会回 `NULL` —— 两条路都要
+    // 有人想清楚,否则下一个人会以为它坏了。
+    assert_eq!(
+        lex("JSON_LOCATE(\"{\\n  1\", 3)"),
+        "[line: 2, column: 2, token_start: 0]"
+    );
+    // ⚠ `column` 按**码点**数:同一个 `é` 占 1 列不是 2。offset 2 指向 `é`,它**在**
+    //   字符串 token `[1, 4)` 里 ⇒ `token_start` 是 **1**。
+    //
+    //   ⚠ 这条同时钉住 `token_start_at` 的方向:第一版写的是
+    //   `toks.iter().find(|t| t.start <= offset)` —— 那是「第一个开始早于它的
+    //   token」,于是这里会回 **0**(`[` 的起点)。正解是**最后一个**
+    //   `start <= offset` 的那个,即包含该偏移的 token。
+    assert_eq!(
+        lex("JSON_LOCATE(\"[\\\"é\\\"]\", 2)"),
+        "[line: 1, column: 3, token_start: 1]"
+    );
+    // 空输入没有 token ⇒ `token_start` 是 `NULL`,不是 0(0 会被读成「第 0 个
+    // token 开始」,那不存在)。
+    assert_eq!(
+        lex("JSON_LOCATE(\"\", 0)"),
+        "[line: 1, column: 1, token_start: NULL]"
+    );
+    // ⚠ **越界不报错**:给一个仍然有意义的「附近」位置。理由写在实现注释里 ——
+    //   报错让你知道 offset 写错了,但用户要的是「这附近是什么」。
+    assert_eq!(
+        lex("JSON_LOCATE(\"[1]\", 99)"),
+        "[line: 1, column: 4, token_start: 2]"
+    );
+    // 非负整数是硬要求;负数 / 非整数 ⇒ E0030。
+    assert!(lex("JSON_LOCATE(\"[1]\", -1)").starts_with("!E0030"));
+    assert!(lex("JSON_LOCATE(\"[1]\", 1.5)").starts_with("!E0030"));
+}
+
+/// ⚠ `JSON_VALIDATE` 的 ERR 载荷里**必须带 `offset`** —— 不是因为规范要求,
+/// 而是因为**这套 API 自己转不过弯**:`JSON_VALIDATE` 报的是 `line`/`column`,
+/// 而 `JSON_LOCATE` 的实参是 `offset`。没有 `offset`,用户就得自己把行列反算回
+/// 码点下标,而本模块不提供那个反算。⇒ `line`/`column` 给人看,`offset` 给机器
+/// 接下一棒,三个一起给。
+#[test]
+fn json_validate_error_payload_carries_offset_line_and_column() {
+    // ⚠⚠ **不能**写 `PRINT(JSON_VALIDATE(bad))`:`PRINT(<ERR>)` 是**静默**的
+    //   (实测 `PRINT("x = ", ERR("y"))` 一个字符都不输出),ERR 直接以 **E0102**
+    //   逃到顶层 —— 载荷一个字都看不到。必须先用 `ERR_PAYLOAD` 取出来
+    //   (它是 §12.7 的注册消费者)。第一版就是写成 `PRINT(...)` 然后拿到 E0102
+    //   一脸茫然。
+    //
+    // 顺带:`{\n  1 2}` 的出错处是码点 4 的 `1`(它该是字符串键),第 2 行从码点 2
+    // 起算 ⇒ 第 3 列。我第一版写的是 column 5,是自己算错了。
+    // ⚠ **不能**以 `PRINT(...)` 收尾:`out()` 返回的是**最后一个表达式的值**,而
+    //   `PRINT(x)` 求值为 `NULL` —— 载荷打进了 stdout,`got` 却是 `NULL`,
+    //   断言在 `assert!(got.contains("JsonError"))` 上炸,而屏幕上明明印着载荷。
+    //   ⇒ 尾表达式直接用 `ERR_PAYLOAD(e)`(同 `collection_regression.rs` 的写法)。
+    let got = lex("LET(e, JSON_VALIDATE(\"{\\n  1 2}\")); ERR_PAYLOAD(e)");
+    assert!(got.contains("JsonError"), "{got}");
+    assert!(got.contains("op: JSON_VALIDATE"), "{got}");
+    assert!(got.contains("offset: 4"), "{got}");
+    assert!(got.contains("line: 2"), "{got}");
+    assert!(got.contains("column: 3"), "{got}");
+    // ⚠ `path` **不出现**:本批这三个成员只做语法,不看结构,没有路径可言。
+    //   塞一个恒为 NULL 的 `path` 会让人以为「路径是空的」而不是「此处无路径」。
+    assert!(!got.contains("path"), "{got}");
+}
+
+/// 元数 / 类型错是**诊断**不是 `ERR` 值 —— 与 §2.3 的「失败的统一口径」一致。
+#[test]
+fn lexer_layer_arity_and_type_misuse_are_diagnostics() {
+    assert!(lex("JSON_TOKENIZE()").starts_with("!E0022"));
+    assert!(lex("JSON_TOKENIZE(1)").starts_with("!E0030"));
+    assert!(lex("JSON_VALIDATE(1)").starts_with("!E0030"));
+    assert!(lex("JSON_LOCATE(\"[1]\")").starts_with("!E0022"));
 }

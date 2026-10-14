@@ -1,10 +1,14 @@
-//! `wlwl:std.json` — `PARSE`, `STRINGIFY` (v0.3 §15.3 + §14.4 E0070/E0071).
+//! `wlwl:std.json` — `PARSE`, `STRINGIFY` (v0.3 §15.3 + §14.4 E0070/E0071)
+//! + [v0.11.3 M7 / addendum-09 W-02] 低层词法层 `JSON_TOKENIZE` /
+//!   `JSON_LOCATE` / `JSON_VALIDATE`。
 
 use crate::compat::*;
 use crate::{ModuleSpec, StdCtx, StdFn};
 use wlwl_error::ErrorCode;
 use wlwl_error::WlwlError;
 use wlwl_value::{type_name, Outcome, StdHost, Value};
+
+pub(crate) mod lexer;
 
 pub(super) fn std_parse_inner(
     _ctx: &mut StdCtx,
@@ -45,8 +49,176 @@ pub static SPEC: ModuleSpec = ModuleSpec {
     functions: &[
         ("PARSE", std_parse as StdFn),
         ("STRINGIFY", std_stringify as StdFn),
+        // [v0.11.3 M7 / addendum-09 W-02] 低层词法层。
+        ("JSON_TOKENIZE", json_tokenize as StdFn),
+        ("JSON_LOCATE", json_locate as StdFn),
+        ("JSON_VALIDATE", json_validate as StdFn),
     ],
 };
+
+// ── [v0.11.3 M7 / addendum-09 W-02] 低层词法层 ────────────────────────
+//
+// ⚠ **失败口径与上面两个旧成员刻意不同**(`ADR-0033` D5):旧两成员走 `E0070` /
+// `E0071` **诊断**且 §3.6 冻结不许动;新成员走规范 §11 已定的**`ERR` 值**
+// `[kind, op, path, line, column, reason]`。
+//
+// ⚠ `path` 在本批这三个成员里**恒缺省**:`JSON_TOKENIZE` / `JSON_VALIDATE` 只做
+// **语法**,不看结构(`JSON_TOKENIZE` 连结构都不看),没有路径可言。`path` 从
+// `JSON_CHECK`(W-05,schema)与路径族(W-04)才开始有 —— 那时它才有意义。
+// 现在塞一个恒为 `NULL` 的 `path` 只会让人以为「路径是空的」而不是「此处无路径」。
+
+/// 词法错误的统一形状。`path` 见上面的说明(此处不出现)。
+///
+/// ⚠ **`offset` 必须在载荷里**,否则这套 API 自己转不过弯:`JSON_VALIDATE` 报的是
+/// `line` / `column`,而 `JSON_LOCATE` 的实参是 `offset` —— 没有 `offset` 用户就得
+/// 自己把行列反算回码点下标,而本模块不提供那个反算。⇒ `line`/`column` 是给人看的,
+/// `offset` 是给机器接下一棒用的,三个一起给。
+fn json_err(op: &str, e: lexer::JsonError) -> Outcome {
+    Outcome::normal(Value::Err(Box::new(Value::Dict(vec![
+        (
+            Value::String("kind".into()),
+            Value::String("JsonError".into()),
+        ),
+        (Value::String("op".into()), Value::String(op.into())),
+        (
+            Value::String("offset".into()),
+            Value::Integer(e.offset as i64),
+        ),
+        (Value::String("line".into()), Value::Integer(e.line as i64)),
+        (
+            Value::String("column".into()),
+            Value::Integer(e.column as i64),
+        ),
+        (Value::String("reason".into()), Value::String(e.reason)),
+    ]))))
+}
+
+fn chars_and_arg(
+    host: &mut dyn StdHost,
+    op: &str,
+    args: Vec<Value>,
+) -> Result<(Vec<char>, usize), WlwlError> {
+    if args.len() != 1 {
+        return Err(host.diag(
+            ErrorCode::E0022,
+            format!("{op}: function expects 1 argument(s), got {}", args.len()),
+        ));
+    }
+    let s = match &args[0] {
+        Value::String(s) => s.clone(),
+        other => {
+            return Err(host.diag(
+                ErrorCode::E0030,
+                format!("{op}: expected string, got {}", type_name(other)),
+            ))
+        }
+    };
+    Ok((s.chars().collect(), 0))
+}
+
+/// `JSON_TOKENIZE(s) -> ARRAY[DICT]`
+///
+/// 每个 token 是 `{kind, start, end, text}`。**纯词法、无结构**(§2.1),所以
+/// `[}` 在这里合法 —— 它不是词法错误。结构由 `JSON_VALIDATE` 管。
+///
+/// ⚠ 偏移是**码点、0 基**(`ADR-0033` 决定):全语言唯一的字符串切分原语 `SUB` 是
+/// 按码点的,字节偏移用户根本用不了。
+pub fn json_tokenize(host: &mut dyn StdHost, args: Vec<Value>) -> Result<Outcome, WlwlError> {
+    let (chars, _) = chars_and_arg(host, "JSON_TOKENIZE", args)?;
+    match lexer::tokenize(&chars) {
+        Ok(toks) => {
+            let items = toks
+                .iter()
+                .map(|t| {
+                    Value::Dict(vec![
+                        (
+                            Value::String("kind".into()),
+                            Value::String(t.kind.as_str().into()),
+                        ),
+                        (
+                            Value::String("start".into()),
+                            Value::Integer(t.start as i64),
+                        ),
+                        (Value::String("end".into()), Value::Integer(t.end as i64)),
+                        (
+                            Value::String("text".into()),
+                            Value::String(chars[t.start..t.end].iter().collect()),
+                        ),
+                    ])
+                })
+                .collect();
+            Ok(Outcome::normal(Value::Array(items)))
+        }
+        Err(e) => Ok(json_err("JSON_TOKENIZE", e)),
+    }
+}
+
+/// `JSON_LOCATE(s, offset) -> DICT` = `{line, column, token_start}`
+///
+/// `offset` 是**码点、0 基**;`line` / `column` 是 **1 基**。
+///
+/// ⚠ `offset` **不**做越界报错:越界 / 落在空白里都返回「该位置附近的」行列表,
+/// 因为「报个错让你知道 offset 写错了」不如「给一个仍然有意义的附近位置」。
+pub fn json_locate(host: &mut dyn StdHost, args: Vec<Value>) -> Result<Outcome, WlwlError> {
+    if args.len() != 2 {
+        return Err(host.diag(
+            ErrorCode::E0022,
+            format!(
+                "JSON_LOCATE: function expects 2 argument(s), got {}",
+                args.len()
+            ),
+        ));
+    }
+    let s = match &args[0] {
+        Value::String(s) => s.clone(),
+        other => {
+            return Err(host.diag(
+                ErrorCode::E0030,
+                format!("JSON_LOCATE: expected string, got {}", type_name(other)),
+            ))
+        }
+    };
+    let offset = match &args[1] {
+        Value::Integer(i) if *i >= 0 => *i as usize,
+        other => {
+            return Err(host.diag(
+                ErrorCode::E0030,
+                format!(
+                    "JSON_LOCATE: expected a non-negative offset, got {}",
+                    type_name(other)
+                ),
+            ))
+        }
+    };
+    let chars: Vec<char> = s.chars().collect();
+    let (line, column) = lexer::line_col(&chars, offset.min(chars.len()));
+    let token_start = lexer::token_start_at(&chars, offset.min(chars.len()))
+        .map(|v| Value::Integer(v as i64))
+        .unwrap_or(Value::Null);
+    Ok(Outcome::normal(Value::Dict(vec![
+        (Value::String("line".into()), Value::Integer(line as i64)),
+        (
+            Value::String("column".into()),
+            Value::Integer(column as i64),
+        ),
+        (Value::String("token_start".into()), token_start),
+    ])))
+}
+
+/// `JSON_VALIDATE(s) -> OK | ERR`
+///
+/// 只验语法(含结构、深度、f64 范围),**不**看 schema。schema 是 W-05 的
+/// `JSON_CHECK`。
+///
+/// ⚠ 它与 `PARSE` 是**同一份语法的两套判定**,接受集必须逐条一致 ——
+/// 见 `lexer` 模块注释里那张「serde 比 Python 更严」的三行表。
+pub fn json_validate(host: &mut dyn StdHost, args: Vec<Value>) -> Result<Outcome, WlwlError> {
+    let (chars, _) = chars_and_arg(host, "JSON_VALIDATE", args)?;
+    match lexer::validate(&chars) {
+        Ok(()) => Ok(Outcome::normal(Value::Ok(Box::new(Value::Null)))),
+        Err(e) => Ok(json_err("JSON_VALIDATE", e)),
+    }
+}
 
 /// [v0.11 M2 / ADR-0022] 直通边界包装:Value→内部表示→Value。
 pub fn std_parse(host: &mut dyn StdHost, args: Vec<Value>) -> Result<Outcome, WlwlError> {
@@ -204,10 +376,54 @@ mod tests {
     }
 
     #[test]
-    fn spec_lists_parse_and_stringify() {
+    fn spec_lists_all_five_members() {
         assert_eq!(SPEC.path, "wlwl:std.json");
         let names: Vec<&str> = SPEC.functions.iter().map(|(n, _)| *n).collect();
-        assert_eq!(names, vec!["PARSE", "STRINGIFY"]);
+        // ⚠ [v0.11.3 M7 / addendum-09 W-02] 从 2 变 5。加成员时这条会红 ——
+        //   那正是它的用途:名册是契约面,悄悄多一个/少一个成员必须有人喊。
+        //   附录 A 镜像由 `gen-appendix-a` 同步,那边另有一道闸。
+        assert_eq!(
+            names,
+            vec![
+                "PARSE",
+                "STRINGIFY",
+                "JSON_TOKENIZE",
+                "JSON_LOCATE",
+                "JSON_VALIDATE",
+            ]
+        );
+    }
+
+    // ── [v0.11.3 M7 / addendum-09 W-02] 词法层与 serde_json 的接受集对齐 ──
+    //
+    // 这几条与 `tests/json_contract.rs` 的 76 条对账同族,但留在**内核层**是为了
+    // 让它们不依赖解释器 —— 词法器是纯函数,单测就能断。契约那 76 条走公开面,
+    // 两者互补:内核层证明词法器本身对,契约层证明它与 `PARSE` 对得上。
+
+    #[test]
+    fn lexer_matches_serde_on_the_three_stricter_points() {
+        let accepts = |s: &str| lexer::validate(&s.chars().collect::<Vec<_>>()).is_ok();
+        // 孤立代理 / 换序代理对:serde 拒(Python 收)⇒ 词法层也必须拒
+        assert!(!accepts(r#""\uD800""#));
+        assert!(!accepts(r#""\uDC00""#));
+        assert!(!accepts(r#""\uDD1E\uD834""#));
+        // 合法代理对必须收(这条曾经因为一个 `i += 4` / `i += 2` 的偏移写错而误判)
+        assert!(accepts(r#""\uD834\uDD1E""#));
+        // f64 溢出:serde 拒(Python 收 inf)⇒ 词法层也必须拒
+        assert!(!accepts("1e400"));
+        assert!(accepts("1e-400")); // 下溢到 0.0 是**合法**的
+                                    // 深度上限 128
+        assert!(accepts(&format!("{}{}", "[".repeat(30), "]".repeat(30))));
+        assert!(!accepts(&format!("{}{}", "[".repeat(200), "]".repeat(200))));
+    }
+
+    #[test]
+    fn tokenize_is_purely_lexical_so_bracket_brace_pair_is_not_an_error() {
+        // §2.1「纯词法,无结构」:`[}` 的括号与花括号都是合法 token ⇒ 词法层不报错。
+        // 结构由 `validate` 管。这两条同时断,免得有人把两层的职责混掉。
+        let chars: Vec<char> = "[}".chars().collect();
+        assert_eq!(lexer::tokenize(&chars).unwrap().len(), 2);
+        assert!(lexer::validate(&chars).is_err());
     }
 
     // ── [D11-019] 边界转换的语义锁 ──
