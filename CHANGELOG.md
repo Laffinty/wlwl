@@ -15,6 +15,34 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### 追加批次(M7 · L2)—— `std.json` 深度面
+
+**`wlwl:std.json` 成员面 2 → 11**。⚠ **`PARSE` / `STRINGIFY` 的可观察行为
+**一条未改**(照 Go `encoding/json/v2` 保留旧行为的体例),新者全部是增量。
+
+| 组 | 新成员 | 用途 |
+|---|---|---|
+| 词法层 | `JSON_TOKENIZE` `JSON_LOCATE` `JSON_VALIDATE` | **位置**。从这里开始的每个错误都说 **哪里** |
+| 路径族 | `JSON_GET` `JSON_SET` `JSON_DELETE` `JSON_MERGE` `JSON_CHUNK_ITEMS` | 寻址与不可变编辑 |
+| schema | `JSON_CHECK` | JSON Schema 的**闭合子集** |
+
+⚠ **同一命名空间里存在两套失败口径**,且都是规格:旧两成员报
+**`E0070` / `E0071` 诊断**(会中止运行),新九个返**`ERR` 值**(用 `IS_ERR` /
+`ERR_PAYLOAD` / `UNWRAP_OR` 消费)。
+
+**新登记的缺陷(本批不修,见 `wlwl-v0.11.3-build-plan.md` 缺陷表)**:
+
+- **D13-016** —— `PARSE` 对 **i64 之外**的整数静默丢精度
+  (`-9223372036854775809` 变成 `-9223372036854775808`,值被改了)。
+- **D13-017** —— `PARSE` **不保文档序**,键被排序(规范 §3 明写保序)。
+  根因:`serde_json` 未开 `preserve_order`。同一根因还导致 `PARSE` 的每字节成本
+  从 1 KB 到 1 MB 涨 **2.74 倍** ⇒ `addendum-09` §4 的**规模契约**未达成。
+
+⚠ **工具链**—— `impl/deny.toml` 登记 `rustls 0.23.45` 的四条
+RUSTSEC(2026-0346 ~ 0349)为**已知未修复**:锁文件未动、`0.23.45` 已是最新兼容版
+(无可升目标),依赖链仅在 `--features real-ai` 的 HTTP 路径上。
+
+
 ## [v0.11.3] — 2026-10-05
 
 Spec: **wlwl-spec-v0.11 与 wlwl-stdlib-spec-v0.11 均不变**。本批**不改语言语义**

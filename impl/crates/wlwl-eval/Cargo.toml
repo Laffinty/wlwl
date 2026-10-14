@@ -81,3 +81,11 @@ path = "benches/accumulator.rs"
 name = "stats"
 harness = false
 path = "benches/stats.rs"
+# [v0.11.3 M7 / addendum-09 W-06] `std.json` 规模基准 + **规模契约**
+# (1 MB 上每字节成本与 1 KB 持平 —— 那是 00 治本之后第一次可以真正验的一条)。
+# ⚠ `json_get` 那一组**必然随文档变大而下降**:`Value::Dict` 是线性扫描
+# (`ADR-0025` Q1 裁定本批不动它)。计划 §4 那条「≥ 100 MB/s」只能按小档读。
+[[bench]]
+name = "json"
+harness = false
+path = "benches/json.rs"

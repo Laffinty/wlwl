@@ -460,6 +460,92 @@ explicit, with no defaults:
   seed it from `RANDOM_HEX`.
 - Entropy-source failure surfaces as `E0060` (IO error), distinct from `E0030`
   (you passed a bad argument) and from a `DecodeError` value (bad data).
+### §9.7 `wlwl:std.json` — the deep face: lexical layer, paths, schema (stdlib §3, v0.11.3)
+
+Eleven members. The two you already knew — `PARSE`, `STRINGIFY` — are **frozen**:
+their behaviour may not change. The nine added here are all additive.
+
+| group | members | what it is for |
+|---|---|---|
+| lexical | `JSON_TOKENIZE` `JSON_LOCATE` `JSON_VALIDATE` | **positions**. Every error from here on says *where* |
+| paths | `JSON_GET` `JSON_SET` `JSON_DELETE` `JSON_MERGE` `JSON_CHUNK_ITEMS` | addressing and immutable edits |
+| schema | `JSON_CHECK` | a **closed subset** of JSON Schema |
+
+⚠ **Two failure conventions live in this one namespace, and that is the spec, not an
+oversight.** `PARSE` / `STRINGIFY` fail with **`E0070` / `E0071` diagnostics** (they
+abort the run — v0.3-era behaviour, frozen). The nine new members return an
+**`ERR` value** you consume with `IS_ERR` / `ERR_PAYLOAD` / `UNWRAP_OR`, shaped
+`[kind: "JsonError", op, …]` per stdlib §11.
+
+⚠ **`PRINT(<ERR>)` prints nothing** and the `ERR` escapes as `E0102`. Bind it first,
+then `ERR_PAYLOAD` it — that is the whole idiom:
+
+```
+LET(e, JSON_VALIDATE(body));
+IF(IS_ERR(e), PRINT(ERR_PAYLOAD(e)), …)
+```
+
+**What each position field means, and what it does not mean:**
+
+| member | `path` | `line` / `column` |
+|---|---|---|
+| `JSON_VALIDATE` / `JSON_TOKENIZE` | ✗ absent — they do not look at structure | ✓ the offending byte |
+| `JSON_SET` / `JSON_DELETE` / `JSON_MERGE` | ✓ the conflicting path | ✗ absent — **a path is not a location** |
+| `JSON_CHECK` | ✓ | ✓ |
+
+The omitted fields are omitted on purpose. A field that is present but meaningless
+(`line: 1` for "the document is not an array") is worse than an absent one: you
+cannot tell a real position from a filler.
+
+⚠ **Offsets are codepoints, not bytes.** `start` / `end` / `offset` / `token_start`
+are **0-based codepoint** indices; `line` / `column` are **1-based**, and `column`
+counts codepoints too. The only string-slicing primitive in the language,
+`SUB(s, start, len?)`, is codepoint-indexed — byte offsets would be numbers you
+cannot use. Same reason `JSON_LOCATE` reports the start of the token **containing**
+the offset, not the previous one.
+
+⚠ **`JSON_CHECK` takes the document as a `STRING`, not a parsed value.** stdlib §2.3
+sketched the signature with a value while also asking for `line` / `column`; those
+cannot both hold, because the same value can come from any text. Positions are the
+point of this batch, so the text is what it takes. An unknown schema key is
+**`E0030`, never silently ignored** — a half-enforced schema is worse than none,
+because the caller believes the constraint is live. The message lists **every** legal
+key, so you do not have to go looking it up.
+
+⚠ **`type: "integer"` means `INTEGER`, not "no fractional part".** `PARSE("2.0")`
+gives you a `FLOAT`, and `JSON_CHECK` will reject it under `integer`. wlwl *remembers*
+whether a number was an integer; flattening that here would throw away information
+you can already get from `TYPE()`, and make the verdict unpredictable from the value
+alone. Deliberate divergence from JSON Schema — the same kind as `STDDEV_S([7])`
+returning `NULL`.
+
+⚠ **`JSON_MERGE` recurses on objects and REPLACES arrays.** `{"a":{"x":1}}` merged
+with `{"a":{"y":2}}` keeps both `x` and `y`; `{"a":[1,2]}` merged with `{"a":[9]}`
+gives `[9]`, never `[1,2,9]`. Vague merge semantics are a configuration-incident
+generator, so both directions are pinned by contract cases.
+
+⚠ **`JSON_GET` / `JSON_SET` / `JSON_DELETE` copy the whole document on every call.**
+`Value` is a deep-copying owning tree, so passing a document in *is* a deep clone —
+that is the price of the language's immutable value semantics, not a cost this
+module invented. `JSON_SET` creates missing intermediate containers (typed by the
+**next** path segment), so building a config tree one `SET` at a time works;
+passing **through** a scalar is a real conflict and returns an `ERR`.
+
+⚠ **`JSON_TOKENIZE` is ~10× slower than `JSON_VALIDATE` on the same lexer.** Both
+scan identically; tokenizing also *materializes* a `DICT` and a `STRING` per token —
+about six heap allocations each. If all you want is "is this valid?", call
+`JSON_VALIDATE`, not `JSON_TOKENIZE`.
+
+⚠ **`PARSE` does not preserve document order — keys come back sorted** (stdlib §3
+says otherwise; registered as **D13-017**, root cause: `serde_json` without
+`preserve_order`, so its `Map` is a `BTreeMap`). Do not rely on key order coming out
+of `PARSE`; `STRINGIFY` sorting keys *is* specified.
+
+**Anti-pattern: treating a `PARSE` failure as "the data is bad".** `E0070` carries no
+position, so a failing response tells you nothing about *which* byte. Use
+`JSON_VALIDATE` when you need to point a human at the problem — that is the member
+that exists for it.
+
 
 ### §9.9 `wlwl:std.regex` — linear-time patterns (stdlib §16, v0.11.3)
 
