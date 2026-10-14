@@ -46,7 +46,34 @@ feature-depth = 1
 [advisories]
 # P4-G2-002: ignore = [] until first run completes; subsequent
 # appends require { id, reason } per advisory.
-ignore = []
+ignore = [
+  # === 2026-10-15 · rustls 0.23.45 · 等上游,无可升目标 ===
+  #
+  # 四条公告由 advisory-db 更新引入,**与本仓代码无关**:`git diff --stat
+  # impl/Cargo.lock` 为空,锁文件一行未动。依赖链
+  # `reqwest -> hyper-rustls -> tokio-rustls -> rustls`,
+  # **只在 `--features real-ai` 的 HTTP 路径上**(`wlwl-std` 的
+  # `std.net` / `std.ai`),不在核心求值器里。
+  #
+  # ⚠ 为什么现在只能登记而不能修:`cargo update -p rustls --dry-run` 回
+  #   `Locking 0 packages to latest compatible versions`
+  #   —— 0.23.45 **已是最新兼容版本**,上游尚未发布修复版。
+  #   跨 semver 强升(0.24+)是一次独立的依赖升级工程,不在任何 addendum 范围内。
+  #
+  # ⚠ **登记 ≠ 认定无害**。每条都写明具体内容,便于日后复核:
+  #   0346 `Debug` impl 会把 TLS secret 暴露出来 —— 仅在打印 rustls 类型时触发,
+  #        本仓不打印(但 `real-ai` 路径的调试日志将来可能碰)。
+  #   0347 ECH 被拒后仍把缓冲的应用数据发给外层服务器。
+  #   0348 brotli 证书解压可在认证前分配至多 1 GiB(DoS 面)。
+  #   0349 未认证的 ServerHello 可把后续连接降级到经典密钥交换。
+  #
+  # ⇒ **上游一发布修复版就删掉这四条**,并把 `cargo update -p rustls` 的结果
+  #   连同验证记在提交信息里。不要让它们在这里长期躺着。
+  { id = "RUSTSEC-2026-0346", reason = "rustls 0.23.45 Debug impl 泄漏 TLS secret;该版本已是最新兼容版、无修复可升,依赖链仅在 real-ai 的 HTTP 路径上。等上游。" },
+  { id = "RUSTSEC-2026-0347", reason = "rustls 0.23.45 ECH 被拒后仍向��层服务器发缓冲数据;无可升修复版,仅 real-ai HTTP 路径。等上游。" },
+  { id = "RUSTSEC-2026-0348", reason = "rustls 0.23.45 brotli 证书解压可在认证前分配至多 1 GiB(DoS);无可升修复版,仅 real-ai HTTP 路径。等上游。" },
+  { id = "RUSTSEC-2026-0349", reason = "rustls 0.23.45 未认证 ServerHello 可降级后续连接的密钥交换;无可升修复版,仅 real-ai HTTP 路径。等上游。" },
+]
 git-fetch-with-cli = true   # use external git so it respects cargo config (Tsinghua mirror) for advisory-db clone
 # yank / unmaintained: warn only 闂?yanks are upstream signals, not
 # security advisories. Matches plan 闂?.1 R008 hardening strategy.
