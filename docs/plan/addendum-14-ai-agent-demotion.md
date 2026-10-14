@@ -56,19 +56,39 @@ Select-String -Path crates/wlwl-std/Cargo.toml -Pattern 'real-ai' -Context 0,3
 ## 3. 语义裁决点(开写前必须逐条回答)
 
 1. **「官方包」机制长什么样?**(§3.1 是**本份的头号阻塞**)
-   现状:`wlwl` 有 `--std-src` 源码覆盖轨(规范 §0.5, debug 硬门控)与
-   release 内嵌 R1 源码的机制,但**没有「包」的概念** —— 没有版本、没有
-   依赖声明、没有独立的分发单元。
-   → 三条路:
+   > ✅ **[2026-10-15 核实:本条的基线断言已过期,头号阻塞其实不存在]**
+   >
+   > 初稿写:「现状:`wlwl` 有 `--std-src` 源码覆盖轨与 release 内嵌 R1 源码的
+   > 机制,但**没有「包」的概念** —— 没有版本、没有依赖声明、没有独立的分发单元。」
+   > **三样东西现在都在,而且 `[namespaces]` 已经接进 `wlwl-eval` 的模块解析并可用:**
+   >
+   > | 初稿说「没有」 | 实测 | 出处 |
+   > |---|---|---|
+   > | 版本 | `[package] name / version / entry / description / license` | `wlwl-toml/src/manifest.rs:50` `struct Package` |
+   > | 依赖声明 | `[dependencies]` + **MVS semver 求解**(精确 / `^` caret / `>=`/`<` 比較子 / 逗号 AND) | `manifest.rs:106`、`mvs.rs` |
+   > | 独立的分发单元 | `[namespaces] <ns> = <dir>` + 该目录下的 `<name>.wll` | `manifest.rs:108` `namespaces` 字段 |
+   > | 锁文件 | `wlwl_toml::lock::hash_dependency_dir` | `wlwl-toml/src/lock.rs` |
+   >
+   > **功能验证(不是读代码推断)**:一个只有 `wlwl.toml` + `vendor/greet/utils.wll`
+   > 的目录,`[namespaces] greet = "vendor/greet"`,`IMPORT("greet:utils", ["greet"])`
+   > ⇒ 打印 `hi from a wlwl.toml namespace` rc=0;**把 `wlwl.toml` 挪走即 `E0043` rc=1**。
+   >
+   > ⇒ **路线 (c)「R1 模块 + 独立命名空间前缀」不需要新机制 —— 它已经在了。**
+   > 初稿建议 (a) 独立 crate 并警告它「连带『包机制』这个更大的问题,**可能超出本份**」,
+   > 那个警告建立在过期基线上。⇒ **§3.1 的三选一需要按新事实重答**:
+   > (a) 与 (c) 的工作量差距已不是「造机制 vs 不造」,而是「crate 边界 vs 清单边界」。
+   > ⚠ **但「官方包要不要独立 crate」仍是契约面决定**,不在本轮自行选定。
+
+   三条路(⚠ 代价评估已按上面的事实修正):
    - (a) **独立 crate**(`wlwl-ai` / `wlwl-agent`)+ 独立 feature + 独立
-     规范文件。最接近 Rust,工作量最大。
+     规范文件。最接近 Rust。
    - (b) **仍在同一 crate,但用 feature 隔离**(`--features wlwl-std/ai`),
      `resolve()` 不返回它们。改动最小,但**形态上仍在 `wlwl-std` 里**,
      只是「看不见」—— 这算不算真搬?**要如实认定**。
-   - (c) **R1 模块 + 独立加载路径**。复用 R1 的 `EXPORT` 机制,像
-     `wlwl:std.*` 的 R1 成员一样,但用独立命名空间前缀。
-   → **建议 (a)**,但它连带「包机制」这个更大的问题,可能超出本份。
-   **若裁决停在 (b)/(c),本份应记为「部分完成」并写明差距**,不能宣称搬完了。
+   - (c) **R1 模块 + `wlwl.toml` `[namespaces]` 声明的独立命名空间**。
+     **⚠ 这一条的机制已存在且已验证可用**(见上框),它是三者里最省的。
+   → 初稿建议 (a)。**该建议的**前提**(「要连带造包机制」)已不成立,建议本身待重评。
+   **若最终裁决停在 (b)/(c),本份应记为「部分完成」并写明差距**,不能宣称搬完了。
 2. **这是 breaking 吗?** 成员的**名字 / 签名 / 语义**一字未改,但
    **可见面**变了(从 `wlwl:std.ai` 变成别的)。ADR-0023 §v0.x 1:「可见面变更
    (新增/改签名/改语义/移除/弃用)必须同批次完成四件套同步并留 CHANGELOG
