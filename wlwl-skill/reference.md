@@ -1373,7 +1373,15 @@ BEFORE the §17.1 fn-type check; `E0052` does not fire.
   YIELD mutual-yield is not a deadlock.
 - Fairness: best-effort FIFO (§17.8). In-flight sibling cancel is
   observable at the next checkpoint.
-- Prefer `LET MUT` for shared mutable cells.
+- ⚠ **Do not use `LET MUT` to share mutable state between tasks.** `LET MUT` is the
+  right tool for **single-task** mutable state, and that is exactly what the
+  accumulator optimization is built on. But a cell reachable from two tasks in
+  one `SCOPE` is an **anti-pattern** in this language — spec §17.0.1, and the
+  reason is not taste: the scheduler only checkpoints at segment boundaries while
+  the critical section is drawn by user code, so the two granularities cannot be
+  aligned, and **reproducibility** (this language's first selling point) breaks
+  when the interleaving depends on that hand-drawn boundary. Pass messages through
+  channels; each task owns its own state.
 
 ## §22. Notes on `interp.wll`
 

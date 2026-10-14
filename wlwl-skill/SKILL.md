@@ -30,6 +30,13 @@ WLWL writing progress (v0.10):
 - [ ] 3. Concurrency? wrap SPAWN in SCOPE; YIELD legal at ANY expression
        position inside a task body (v0.9 true suspension). Blocking
        CHANNEL_SEND/RECV suspend — no ChannelWouldBlock.
+       ⚠ **Never share mutable state between tasks** (spec §17.0.1). `LET MUT` is
+       for **single-task** mutable state (the accumulator optimization is built on
+       it); a cell two tasks in one `SCOPE` can both touch is an **anti-pattern**
+       here, because the scheduler only checkpoints at segment boundaries while the
+       critical section is drawn by *your* code — the two granularities cannot align,
+       and reproducibility breaks when the interleaving depends on that boundary.
+       Pass messages through channels; each task owns its state.
 - [ ] 4. OOP? CLASS(name, parent, members) with [STRING, value] pair
        members; methods are closures whose first param is named `self`;
        declare a session protocol for call-order control (§14).
