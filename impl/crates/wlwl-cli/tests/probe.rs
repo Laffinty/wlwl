@@ -107,7 +107,7 @@ use std::time::{Duration, Instant};
 // std.net 的两个**纯函数**成员(URL_PARSE / URL_JOIN)。
 // ⚠ **本 probe 不联网**,也不需要夹具服务器:这两个成员是纯函数,它们应该在
 // 「完全没有网络」的前提下跑通。期望值取自 RFC 3986 原文,不是从实现输出抄。
-const EXPECTED_CASE_COUNT: usize = 173;
+const EXPECTED_CASE_COUNT: usize = 175;
 
 /// 单个 case 的上限,与 `probe.py` 的 `timeout=60` 同义。
 const CASE_TIMEOUT: Duration = Duration::from_secs(60);

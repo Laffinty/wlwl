@@ -1,0 +1,5 @@
+IMPORT("wlwl:std.json", ["JSON_TOKENIZE", "JSON_LOCATE", "JSON_VALIDATE"]);
+
+LET(e, JSON_VALIDATE("{\n  \"a\": 1,\n  \"b\": @\n}"));
+PRINT(IS_ERR(e));
+PRINT(ERR_PAYLOAD(e));

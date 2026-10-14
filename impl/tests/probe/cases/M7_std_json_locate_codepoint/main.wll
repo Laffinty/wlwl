@@ -1,0 +1,6 @@
+IMPORT("wlwl:std.json", ["JSON_TOKENIZE", "JSON_LOCATE", "JSON_VALIDATE"]);
+
+PRINT(JSON_VALIDATE("[1, \"a\"]"));
+PRINT(LEN(JSON_TOKENIZE("[1, \"a\"]")));
+PRINT(JSON_TOKENIZE("[1, \"a\"]")[1]);
+PRINT(JSON_LOCATE("[\"é\"]", 2));

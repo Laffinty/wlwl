@@ -263,6 +263,38 @@ markdown** 解析成员表后与实现对拍(ADR-0023 §v0.x 1 的执行机制)�
 |------|------|
 | `STRINGIFY(x) -> STRING` | 序列化为 JSON;字典键按字典序输出;`NULL`/布尔/数字/字符串/数组/字典自然映射;失败产生 `E0071` |
 | `PARSE(s)` | 解析 JSON;对象保持文档序的字典;失败产生 `E0070` |
+| `JSON_TOKENIZE(s) -> ARRAY[DICT]` | **纯词法层**:切出 token 流,每个是 `{kind, start, end, text}`。`kind` ∈ `lbrace` `rbrace` `lbracket` `rbracket` `colon` `comma` `string` `number` `true` `false` `null`。**不看结构** —— 故 `[}` 在这里合法(它不是词法错误),结构由 `JSON_VALIDATE` 管 |
+| `JSON_LOCATE(s, offset) -> DICT` | 由**码点偏移** `offset` 求 `{line, column, token_start}`。`token_start` 是**包含该偏移的 token** 的起点;空输入返 `NULL`。**越界不报错**,返该位置附近的行列 |
+| `JSON_VALIDATE(s) -> OK | ERR` | 只验**语法**(词法 + 结构 + 嵌套深度 ≤ **128** + 数值须在 `f64` 范围内),**不看 schema**(schema 是 `JSON_CHECK`)。失败返 `ERR([kind: "JsonError", op, offset, line, column, reason])` |
+
+⚠ **本表内部存在两套失败口径,这是规格的一部分,不是待清理的债**:
+
+- 旧两成员(`PARSE` / `STRINGIFY`)失败产生 **`E0070` / `E0071` 诊断**(中止整个
+  运行),它们是 v0.3 时代的遗留且**冻结不许动**。
+- 本表新增三成员失败返 **`ERR` 值**(可被 `IS_ERR` / `ERR_PAYLOAD` /
+  `UNWRAP_OR` 消费),载荷按 §11 既有体例 `[kind, op, reason]` **加**位置三件套。
+  照 Go `encoding/json/v2` 的体例(新 API 落地、**旧行为原样保留**)。
+
+### 3.1 低层词法层的可观察约定
+
+1. **偏移一律码点,不是字节。** `start` / `end` / `offset` / `token_start` 是
+   **码点 0 基**;`line` / `column` 是 **1 基**,`column` 也是**码点列**。
+   依据:本语言唯一的字符串切分原语 `SUB(s, start, len?)` 按**码点**(§10.5),
+   字节偏移用户根本用不了。
+2. **`ERR` 载荷必须带 `offset`。** `JSON_VALIDATE` 给行列而 `JSON_LOCATE` 收偏移
+   —— 没有 `offset`,两个成员之间**转不过弯**,而本册不提供行列反算回偏移的函数。
+   `line` / `column` 给人看,`offset` 给机器接下一棒。
+3. **`offset` 指向最小「出错构造」的起点**,不是它内部某个字符。坏转义
+   `"\uZZZZ"` 报**反斜杠**的位置,前导零 `01` 报**整个数字**的起点。
+4. **`path` 在本表这三成员里不出现。** 它们只做语法,不看结构 ⇒ 没有路径可言;
+   `path` 从 `JSON_CHECK` 与路径族成员开始才有。塞一个恒为 `NULL` 的 `path`
+   会让人误以为「路径是空的」而不是「此处无路径」。
+5. **三处比 RFC / Python 更严**(与 `PARSE` 对齐,不与它们对齐):孤立代理
+   (`"\uD800"` / `"\uDC00"` / 换序的代理对)一律拒;嵌套深度上限 **128**;
+   `1e400` 这类溢出 `f64` 的数字拒。
+
+⚠ **元数 / 类型错仍是诊断**(`E0022` / `E0030`),不是 `ERR` 值 —— 与 §2.3
+「失败的统一口径」一致:数据不合预期返 `ERR`,调用方式错报诊断。
 
 ## 4 `std.format` — 格式化(R2)
 

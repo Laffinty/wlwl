@@ -1,0 +1,12 @@
+{
+ "exit": 0,
+ "contains": [
+  "TRUE",
+  "[kind: JsonError, op: JSON_VALIDATE, offset: 19, line: 3, column: 8, reason: unexpected character '@']"
+ ],
+ "not_contains": [
+  "path",
+  "E0070"
+ ],
+ "_why": "addendum-09 W-03 的核心产出:**错误带位置**。旧成员 `PARSE` 只给一个 `E0070`、不告诉你错在哪 —— 这是本批最有价值的部分。四条都断:① `IS_ERR(e)` 为 `TRUE` ⇒ 失败返 **`ERR` 值**(可被消费),不是诊断;② 载荷逐字节:`offset: 19`(码点 0 基,`@` 的位置;**手工数出来的**)、`line: 3, column: 8`(1 基;第 3 行从码点 12 起算,19-12+1=8,列按**码点**数)、`reason` 指向出错构造。⚠ 期望值**不是**从实现输出抄的:`offset` 手工数、`line`/`column` 由该下标独立算出,三方一致才算过。③ `not_contains: path` —— 这三个成员只做语法、不看结构,没有路径可言;塞一个恒为 NULL 的 `path` 会让人误以为「路径是空的」而不是「此处无路径」。④ `not_contains: E0070` —— 钉住新旧两套失败口径的分界(新成员走 `ERR`,旧成员走诊断),两者不许互相漂移。"
+}

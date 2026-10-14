@@ -597,3 +597,136 @@ fn lexer_layer_arity_and_type_misuse_are_diagnostics() {
     assert!(lex("JSON_VALIDATE(1)").starts_with("!E0030"));
     assert!(lex("JSON_LOCATE(\"[1]\")").starts_with("!E0022"));
 }
+
+// ── §9 W-03:定位契约 —— `offset` / `line` / `column` / `reason` **逐字节冻结** ──
+//
+// ## 期望侧的三个来源(必须分开,混了就等于「把实现输出抄进契约」)
+//
+// 1. **`offset`** —— **手工数出来的**出错码点下标(下表第三列就是它)。
+// 2. **`line` / `column`** —— 由上面那个下标**独立算出**:1 基、换行重置列、
+//    **tab 占 1 列**、多字节字符占 **1** 列(单位是码点,`ADR-0033` D7.1)。
+// 3. **`reason`** —— 本仓自己的措辞,**没有独立实现可对**,属「现状冻结」侧
+//    (同 `parse_code` 那批 `E0070` 的处置:冻结「是哪个码 / 哪句话」,而不是
+//    冻结依赖库版本一变就会动的东西)。
+//
+// ⇒ 三方(手数 offset / 独立算行列 / 实现报的三个数)一致才算过。这比「抄实现
+// 输出」强得多:实现错了,期望侧不会跟着错。
+//
+// ## ⚠ 一条必须冻结的规则:`offset` 指向**最小「出错构造」的起点**
+//
+// 坏转义 `"\uZZZZ"` 报 **1**(那个 `\`),不是 2(`u`);前导零 `01` 报 **0**
+// (整个数字 token 的起点),不是 1(第二个数字)。指向构造起点比指向内部某个
+// 字符有用 —— 它标出了「什么东西错了」的边界。
+//
+// ⚠ 这三条我头两轮都**手数错了**(`err on line 3` 的 `@` 在码点 19 不在 16),
+// 是**实现对、我错**。记在这里是因为「我的期望值错了」比「实现错了」更常见,
+// 也更隐蔽 —— 契约写错了会在实现修好之后继续错下去。
+
+/// `(json 文本, 手数 offset, 独立算出的 line, 独立算出的 column, 现状冻结的 reason)`
+// `(json 文本, 手数 offset, 独立算出的 line, 独立算出的 column, 现状冻结的 reason)`
+// ⚠ 用 `//` 而不是 `///`:这段落在 `const` 的**数组字面量**里,`///` 会被当成
+// 「给表达式写文档」⇒ clippy 的 `unused_doc_comments` 报警。
+const LOCATIONS: &[(&str, usize, usize, usize, &str)] = &[
+    // trailing comma in object
+    (r#"{"a":1,}"#, 7, 1, 8, r#"expected an object key"#),
+    // missing colon
+    (r#"{"a" 1}"#, 5, 1, 6, r#"expected ':'"#),
+    // double comma in array
+    (r#"[1,,2]"#, 3, 1, 4, r#"unexpected token comma"#),
+    // bad char after colon
+    (r#"{"a": @}"#, 6, 1, 7, r#"unexpected character '@'"#),
+    // err on line 3
+    (
+        r#"{
+  "a": 1,
+  "b": @
+}"#,
+        19,
+        3,
+        8,
+        r#"unexpected character '@'"#,
+    ),
+    // tab counts as one column
+    (r#"{		@}"#, 3, 1, 4, r#"unexpected character '@'"#),
+    // after a multi-byte char
+    (r#"{"é":@}"#, 5, 1, 6, r#"unexpected character '@'"#),
+    // bad hex escape
+    (
+        r#""\uZZZZ""#,
+        1,
+        1,
+        2,
+        r#"\uXXXX escape needs 4 hex digits"#,
+    ),
+    // unterminated string
+    (r#"{"a":"x"#, 7, 1, 8, r#"unterminated string"#),
+    // bare word
+    (r#"abc"#, 0, 1, 1, r#"unexpected character 'a'"#),
+    // leading zero
+    (r#"01"#, 0, 1, 1, r#"leading zero in number"#),
+    // raw control char
+    (
+        r#""a	b""#,
+        2,
+        1,
+        3,
+        r#"raw control character U+0009 in string"#,
+    ),
+    // number out of range
+    (r#"1e400"#, 0, 1, 1, r#"number out of f64 range: 1e400"#),
+    // nesting too deep
+    (
+        r#"[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[["#,
+        128,
+        1,
+        129,
+        r#"nesting deeper than 128"#,
+    ),
+];
+
+#[test]
+fn error_locations_are_frozen_byte_for_byte() {
+    for (text, off, line, col, reason) in LOCATIONS {
+        let lit = wl(text);
+        let got = lex(&format!("LET(e, JSON_VALIDATE({lit})); ERR_PAYLOAD(e)"));
+        for (k, want) in [("offset", *off), ("line", *line), ("column", *col)] {
+            let needle = format!("{k}: {want}");
+            assert!(
+                got.contains(&needle),
+                "case {text:?}: expected `{needle}` in payload: {got}"
+            );
+        }
+        // ⚠ `reason` 逐条冻结,故断**整句**而不是片段。
+        assert!(
+            got.contains(reason),
+            "case {text:?}: expected reason {reason:?} in payload: {got}"
+        );
+        // 且它必须**只**是一个 ERR,没有顺手退化成 `E0070` 诊断
+        // —— 那是旧成员那条路,与新成员这条路的分界(`ADR-0033` D5)。
+        assert!(
+            !got.starts_with('!'),
+            "case {text:?}: JSON_VALIDATE must return an ERR *value*, not a diagnostic: {got}"
+        );
+    }
+}
+
+/// `JSON_LOCATE` 报的 `line` / `column` 必须与 `JSON_VALIDATE` **自洽** ——
+/// 用户拿到一个 `offset` 喂进 `JSON_LOCATE`,应当拿回同一组行列。
+///
+/// ⚠ 这条是 `ADR-0033` D7.2 那条决定存在的理由:`JSON_VALIDATE` 给行列、
+/// `JSON_LOCATE` 收 `offset`,**两个成员必须闭环**,否则用户手里的数字互相矛盾。
+#[test]
+fn locate_round_trips_with_the_offset_the_error_reports() {
+    for (text, off, line, col, _reason) in LOCATIONS {
+        let lit = wl(text);
+        let back = lex(&format!("JSON_LOCATE({lit}, {off})"));
+        assert!(
+            back.contains(&format!("line: {line}")),
+            "case {text:?}: locate/validate disagree on line: {back} vs {line}:{col}"
+        );
+        assert!(
+            back.contains(&format!("column: {col}")),
+            "case {text:?}: locate/validate disagree on column: {back} vs {line}:{col}"
+        );
+    }
+}

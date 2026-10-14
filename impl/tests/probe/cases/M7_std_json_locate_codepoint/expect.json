@@ -1,0 +1,10 @@
+{
+ "exit": 0,
+ "contains": [
+  "OK(NULL)",
+  "5",
+  "[kind: number, start: 1, end: 2, text: 1]",
+  "[line: 1, column: 3, token_start: 1]"
+ ],
+ "_why": "addendum-09 W-02/W-03 的三条单位约定,在一个 probe 里一起断。① `JSON_VALIDATE(\"[1, \\\"a\\\"]\")` 返 `OK(NULL)` —— 合法输入返 **OK 包着 NULL**(不是 TRUE、不是裸值)。② `[1, \"a\"]` 切出 **5** 个 token(`[` `1` `,` `\"a\"` `]`),**空格不是 token**。③ 第 1 个 token(`number` 那个 `1`)是 `start: 1, end: 2`。④ **偏移是码点不是字节**:输入 `[\"é\"]` 的码点是 `[`0 `\"`1 `é`2 `\"`3 `]`4,而 `é` 在 UTF-8 里占 2 字节 —— offset 2 落在字符串 token 的**内部**,所以 `token_start` 必须是那个字符串的起点 **1**。⚠ 这条同时钉住 `token_start_at` 的方向:若取「第一个 `start <= offset` 的 token」会回 **0**(`[` 的位置),正解是**最后一个**,即包含该偏移的 token。`column: 3` 同理按**码点**数。依据:本语言唯一的字符串切分原语 `SUB(s, start, len?)` 按码点(规范 §10.5),字节偏移用户根本用不了。"
+}
