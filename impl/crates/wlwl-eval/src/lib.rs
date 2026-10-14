@@ -926,6 +926,21 @@ impl ModuleLoader {
         .into()
     }
 
+    /// [D13-018] 这条建议过去写的是 `[namespaces] <ns>-<name> = <path>` ——
+    /// **照它写必然失败**,而且第一次失败报的是 E0043「没注册」,与「键名写错了」
+    /// 毫无关系,用户会往完全错误的方向查。
+    ///
+    /// 实际口径见 `wlwl_toml::manifest::resolve_namespace`(`manifest.rs:827`),
+    /// 两条**键格式不同、值形态也不同**:
+    ///
+    /// | 段 | 键 | 值 |
+    /// |---|---|---|
+    /// | `[namespaces]` | `<ns>`(**只写前缀**) | `<dir>` —— 模块在 `<dir>/<name>.wll` |
+    /// | `[dependencies]` | `"<ns>:<name>"`(**完整**) | `{ path = "<dir>" }` |
+    ///
+    /// 逐条实测(2026-10-15):`[namespaces] greet-greet = "greet.wll"` ⇒ E0043;
+    /// `[namespaces] "greet:greet" = ...` ⇒ W0001(键名不符 `^[a-z][a-z0-9-]*$`);
+    /// `[namespaces] greet = "vendor/greet"` ⇒ 成功。
     fn diag_unregistered_namespace(&self, path: &str, ns: &str, name: &str) -> WlwlError {
         WlwlDiagnostic::new(
             ErrorCode::E0043,
@@ -937,7 +952,13 @@ impl ModuleLoader {
             ),
             Location::point("<module>", 0, 0),
         )
-    .with_suggestion(Suggestion::Note { description: "add the `[namespaces] <ns>-<name> = <path>` (or `[dependencies] <ns>-<name> = <path>`) section to the project `wlwl.toml`".into() })
+    .with_suggestion(Suggestion::Note { description: format!(
+            "add one of these to the project `wlwl.toml` (the two sections take \
+             DIFFERENT keys):\n  \
+             [namespaces]\n  {ns} = \"vendor/{ns}\"          # key is the prefix alone; \
+             module file is vendor/{ns}/{name}.wll\n  \
+             [dependencies]\n  \"{ns}:{name}\" = {{ path = \"vendor/{ns}\" }}   # key is the full ns:name",
+            ns = ns, name = name) })
         .into()
     }
 
@@ -15464,6 +15485,50 @@ entry = "main.wll"
         "#;
         let err = run_in(&dir, src).unwrap_err();
         assert_eq!(err.diagnostic().code, ErrorCode::E0043);
+    }
+
+    /// [D13-018] **诊断的建议文本本身也要被钉住。**
+    ///
+    /// ⚠ 上面那条 `namespace_path_unregistered_is_e0043` 只断**错误码**,所以
+    ///   建议文案写成什么它都不管 —— 那正是这条缺陷当初能存在的原因:
+    ///   旧文案教人写 `[namespaces] <ns>-<name> = <path>`,照做必然失败,而第一次
+    ///   失败仍报 E0043,测试照样绿。
+    ///
+    ///   ⇒ 「错误码对了」不等于「这条诊断有用」。文案是**契约面**的一部分,
+    ///   它教用户写的那段 TOML 必须**真的能用**。
+    #[test]
+    fn e0043_suggests_two_manifest_forms_whose_keys_actually_work() {
+        let dir = unique_test_dir("ns_suggest");
+        std::fs::write(
+            dir.join("wlwl.toml"),
+            "[package]\nname = \"app\"\nversion = \"0.1.0\"\nentry = \"main.wll\"\n",
+        )
+        .unwrap();
+        let err = run_in(&dir, r#"IMPORT("myteam:utils", ["x"]);"#).unwrap_err();
+        assert_eq!(err.diagnostic().code, ErrorCode::E0043);
+        // `Suggestion::Note` 落在诊断的 `suggestion_code` 字段上,不是 `hint`
+        // (那是另一条「自然语言修复提示」)—— 结构体上没有叫 `suggestions` 的字段。
+        let text = format!("{:?}", err.diagnostic().suggestion_code);
+        assert_ne!(text, "[]", "E0043 must carry a fix suggestion");
+        // ① `[namespaces]` 的键是**前缀本身**;旧文案写的 `<ns>-<name>` 必须消失。
+        assert!(
+            !text.contains("<ns>-<name>"),
+            "the old, non-working `<ns>-<name>` key shape is back: {text}"
+        );
+        // ② 两种形态都必须出现,且各自的键形态要分列。
+        assert!(text.contains("[namespaces]"), "{text}");
+        assert!(text.contains("[dependencies]"), "{text}");
+        assert!(
+            text.contains("key is the prefix alone"),
+            "the two sections take different keys and the note must say so: {text}"
+        );
+        assert!(text.contains("key is the full ns:name"), "{text}");
+        // ③ `[namespaces]` 的值是**目录**、模块在 `<dir>/<name>.wll` —— 这是实测里
+        //    第二个坑(写文件路径当值 ⇒ 模块找不到)。
+        assert!(
+            text.contains(".wll"),
+            "the note must say where the module file actually lives: {text}"
+        );
     }
 
     #[test]
