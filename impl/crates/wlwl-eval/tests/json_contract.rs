@@ -730,3 +730,209 @@ fn locate_round_trips_with_the_offset_the_error_reports() {
         );
     }
 }
+
+// ── §10 W-04:路径族契约 ───────────────────────────────────────────────
+//
+// ⚠ 先读 `src/json/path.rs` 的模块注释:**`Value::Dict` 是线性扫描、没有索引**
+//   (`ADR-0025` Q1 已裁定本批不动它)。实测单次最坏查找:250 键 15.9 µs →
+//   1000 键 108.3 µs → 4000 键 276.9 µs ⇒ **成本随 n 线性**。
+//   ⇒ 本组钉的是**语义**,性能读数在 `baseline.txt` 的 JSON 段。
+
+const PATH_IMP: &str = r#"IMPORT("wlwl:std.json", ["JSON_GET", "JSON_SET", "JSON_DELETE", "JSON_MERGE", "JSON_CHUNK_ITEMS"]);"#;
+
+/// 跑一段**只用路径族**的源。
+fn p(body: &str) -> String {
+    out(&format!("{JSON_IMP} {PATH_IMP} {body}"))
+}
+
+// ── `JSON_GET`:路径用 `ARRAY` 表达(`ADR-0033` D2),缺失返 `NULL` ──
+
+#[test]
+fn json_get_walks_mixed_paths_and_returns_null_when_missing() {
+    assert_eq!(p(r#"JSON_GET(["a": 1], ["a"])"#), "1");
+    assert_eq!(p(r#"JSON_GET(["a": ["b": [1, 2]]], ["a", "b", 1])"#), "2");
+    // §2.2 明写「缺失返 `NULL`」—— **不**是错误。
+    assert_eq!(p(r#"JSON_GET(["a": 1], ["zz"])"#), "NULL");
+    // 形状不匹配也算缺失(路径穿过标量)⇒ 同样 `NULL`,不是 ERR。
+    assert_eq!(p(r#"JSON_GET(["a": 1], ["a", "b"])"#), "NULL");
+    // 负下标从尾部计数,与 `SLICE` 同口径。
+    assert_eq!(p("JSON_GET([10, 20, 30], [-1])"), "30");
+    assert_eq!(p("JSON_GET([10, 20, 30], [-3])"), "10");
+    // 空路径 ⇒ 文档本身。
+    assert_eq!(p("JSON_GET([1, 2], [])"), "[1, 2]");
+    // 下标越界 ⇒ `NULL`。
+    assert_eq!(p("JSON_GET([1], [9])"), "NULL");
+}
+
+// ── `JSON_SET` / `JSON_DELETE`:不可变语义(返**新**文档)──────────────
+
+#[test]
+fn json_set_returns_a_new_document_and_never_mutates_the_input() {
+    assert_eq!(p(r#"JSON_SET(["a": 1], ["a"], 2)"#), "[a: 2]");
+    // ⚠ **缺失的中间容器按「下一段的种类」建出来** —— 下一段是字符串键建字典、
+    //   是下标建数组。第一版一律塞 `NULL` 占位,第二轮下潜撞进「穿过标量」的
+    //   冲突分支,于是 `JSON_SET({"a":1}, ["b","c"], 9)` 返 ERR 而不是把 `b.c`
+    //   建出来 —— 而那正是 `SET` 的常用形态(在尚不完整的文档上逐层搭结构)。
+    assert_eq!(
+        p(r#"JSON_SET(["a": 1], ["b", "c"], 9)"#),
+        "[a: 1, b: [c: 9]]"
+    );
+    // 数组下标越界 ⇒ **追加**而不是报错(调用方手上只有一个路径,没法先问
+    // 「你要覆盖还是追加」,而追加是更常用的意图)。
+    assert_eq!(p("JSON_SET([1], [3], 9)"), "[1, 9]");
+    // 不可变:调用 `JSON_SET` 之后原文档**一字未动**。
+    assert_eq!(p(r#"LET(d, ["a": 1]); JSON_SET(d, ["a"], 2); d"#), "[a: 1]");
+}
+
+#[test]
+fn json_delete_removes_the_whole_segment_and_is_idempotent() {
+    assert_eq!(p(r#"JSON_DELETE(["a": 1, "b": 2], ["a"])"#), "[b: 2]");
+    // 数组元素**删完会前移**(`[1,2,3]` 删下标 1 ⇒ `[1,3]`,不是留洞)。
+    assert_eq!(p("JSON_DELETE([1, 2, 3], [1])"), "[1, 3]");
+    // 路径不存在 ⇒ **幂等**返原文档,不是错误。
+    assert_eq!(p(r#"JSON_DELETE(["a": 1], ["zz"])"#), "[a: 1]");
+    assert_eq!(p("JSON_DELETE([1], [9])"), "[1]");
+    // 不可变。
+    assert_eq!(
+        p(r#"LET(d, ["a": 1, "b": 2]); JSON_DELETE(d, ["a"]); d"#),
+        "[a: 1, b: 2]"
+    );
+}
+
+// ── `JSON_MERGE`:D3 逐字写死的两条 ───────────────────────────────────
+
+#[test]
+fn json_merge_is_recursive_on_objects_and_replaces_arrays() {
+    // ① 对象**递归深合并**:`x` 不该被丢掉。若实现成「顶层替换」,这条会得到
+    //    `[a: [y: 2]]` —— 而那正是配置事故里最常见的形状。
+    assert_eq!(
+        p(r#"JSON_MERGE(["a": ["x": 1]], ["a": ["y": 2]])"#),
+        "[a: [x: 1, y: 2]]"
+    );
+    // ② 数组**整体替换**,**不拼接**。拼接不可逆,且与「merge 是覆盖语义」相反。
+    assert_eq!(p(r#"JSON_MERGE(["a": [1, 2]], ["a": [9]])"#), "[a: [9]]");
+    // ③ `b` 侧是标量而 `a` 侧是容器 ⇒ **`b` 赢**(覆盖语义的一致延伸)。
+    assert_eq!(p(r#"JSON_MERGE(["a": ["x": 1]], ["a": 5])"#), "[a: 5]");
+    // ④ 顶层两侧都不是对象 ⇒ 直接取 `b`。
+    assert_eq!(p("JSON_MERGE([1, 2], [9])"), "[9]");
+    // ⑤ 不可变:两个入参都不动。
+    assert_eq!(
+        p(r#"LET(a, ["k": 1]); LET(b, ["j": 2]); JSON_MERGE(a, b); a"#),
+        "[k: 1]"
+    );
+    assert_eq!(
+        p(r#"LET(a, ["k": 1]); LET(b, ["j": 2]); JSON_MERGE(a, b); b"#),
+        "[j: 2]"
+    );
+}
+
+// ── `JSON_CHUNK_ITEMS`:消费层的惰性替代,**不是**流式解析 ─────────────
+
+#[test]
+fn json_chunk_items_slices_the_parsed_array_without_reparsing() {
+    assert_eq!(
+        p("JSON_CHUNK_ITEMS([1, 2, 3, 4, 5], 2)"),
+        "[[1, 2], [3, 4], [5]]"
+    );
+    // 缺省块大小 1 ⇒ 每块一个元素。
+    assert_eq!(p("LEN(JSON_CHUNK_ITEMS([1, 2, 3]))"), "3");
+    // 空数组 ⇒ 一个块都没有。
+    assert_eq!(p("JSON_CHUNK_ITEMS([], 2)"), "[]");
+    // 块大小 > 元素数 ⇒ 一块装完。
+    assert_eq!(p("JSON_CHUNK_ITEMS([1, 2], 9)"), "[[1, 2]]");
+    // ⚠ **不是流式解析**(`ADR-0033` D1):`Value::Array` 是属主 `Vec`,真惰性在本语言里
+    //   做不到,每块是一次切片拷贝。能保证的是**不重新解析** —— 块直接从已解析的
+    //   数组切,不经过 `STRINGIFY` / `PARSE`。
+}
+
+// ── 失败口径:形状错是诊断,寻址冲突是 `ERR` 值(带 `path`,**不带**行列)──
+
+#[test]
+fn path_shape_mistakes_are_diagnostics() {
+    // 路径不是 `ARRAY`。
+    assert!(p(r#"JSON_GET(["a": 1], "a")"#).starts_with("!E0030"));
+    // 路径元素不是 `STRING` / `INTEGER` —— 路径是**寻址**,`1.5` 当下标没有解释。
+    assert!(p(r#"JSON_GET(["a": 1], [1.5])"#).starts_with("!E0030"));
+    assert!(p(r#"JSON_GET(["a": 1], [TRUE])"#).starts_with("!E0030"));
+    // 切块要求顶层是数组。
+    assert!(p(r#"JSON_CHUNK_ITEMS(["a": 1])"#).starts_with("!E0030"));
+    // 块大小必须 ≥ 1。
+    assert!(p("JSON_CHUNK_ITEMS([1], 0)").starts_with("!E0030"));
+    // 元数错。
+    assert!(p("JSON_GET()").starts_with("!E0022"));
+    assert!(p("JSON_SET([1])").starts_with("!E0022"));
+}
+
+/// 寻址冲突返 `ERR` 值,载荷带 `path`。
+///
+/// ⚠ **载荷里没有 `line` / `column`** —— 出错的是**路径**,不是文档里的某个字节。
+/// 填一个假的 `line: 1` 会让人以为「第一行出错了」,而那不是位置信息,是**假信息**。
+/// 这与 W-02 那三个成员相反(它们带行列、不带 path),两边都在 `path.rs` 里记了。
+#[test]
+fn path_conflicts_are_err_values_carrying_the_path() {
+    let got = p(r#"LET(r, JSON_SET(["a": 1], ["a", "b"], 2)); ERR_PAYLOAD(r)"#);
+    assert!(got.contains("kind: JsonError"), "{got}");
+    assert!(got.contains("op: JSON_SET"), "{got}");
+    assert!(got.contains("path: a.b"), "{got}");
+    assert!(!got.contains("line:"), "{got}");
+    assert!(!got.contains("column:"), "{got}");
+    // 它必须**只**是一个 `ERR` 值,没有退化成诊断 —— 那是旧成员 `E0070` 那条路。
+    // ⚠ 判据必须用 `IS_ERR`,**不能**看 `display()` 的前缀:一个 `ERR` **值**照样
+    //   会被渲染成「像错误的样子」,前缀不是 `!` 但它也不是普通值。第一版用
+    //   `starts_with('!')` 判,结果断言在「它确实不是诊断」这件事上失败了。
+    assert_eq!(p(r#"IS_ERR(JSON_SET(["a": 1], ["a", "b"], 2))"#), "TRUE");
+    // `JSON_DELETE` 整份文档没有表示 ⇒ 按冲突报错,而不是静默给一个用户没要求的东西。
+    let d = p(r#"LET(r, JSON_DELETE(["a": 1], [])); ERR_PAYLOAD(r)"#);
+    assert!(d.contains("path: $"), "{d}");
+}
+
+/// 键**存在**时,`JSON_GET` 的单段路径必须与全局 `INDEX_GET` 一致。
+///
+/// ⚠ 这条是「重复造轮子会不会造歪」的守卫:两者底层都是 `Value::Dict` 的线性扫描,
+///   但若哪天其中一条换了实现而另一条没换,同一个「取 `a`」会在两个成员里给出
+///   不同结果 —— 那是最难查的一类分叉。
+#[test]
+fn json_get_single_segment_agrees_with_index_get_when_the_key_exists() {
+    for (src, key) in [
+        (r#"{"a": 1, "b": 2}"#, "a"),
+        (r#"{"a": {"x": 9}}"#, "a"),
+        (r#"{"a": NULL}"#, "a"),
+        (r#"{"a": [1, 2]}"#, "a"),
+    ] {
+        let lit = wl(src);
+        // ⚠ 不要再 IMPORT 一次 `PARSE` —— `JSON_IMP` 已经导了它,重复导入报
+        //   `E0021 name 'PARSE' already bound by previous IMPORT in this scope`。
+        assert_eq!(
+            p(&format!("JSON_GET(PARSE({lit}), [{}])", wl(key))),
+            out(&format!(
+                "{JSON_IMP} LET(d, PARSE({lit})); INDEX_GET(d, {})",
+                wl(key)
+            )),
+            "INDEX_GET/JSON_GET disagree on {src} key {key}"
+        );
+    }
+}
+
+/// ⚠ **键不存在时两者刻意不一致** —— 这条钉住那个「不一致」。
+///
+/// `addendum-09` §2.2 明写 `JSON_GET` 缺失返 `NULL`;而全局 `INDEX_GET` 的既有契约
+/// 是缺失报 **`E0037`**。两者都是规格,不是谁错了。
+///
+/// ⚠ 为什么值得单独冻:「统一一下」是这类差异最可能的死法。一个后来人看到
+/// `JSON_GET` 返 `NULL` 而 `INDEX_GET` 报 `E0037`,很容易当成不一致的 bug 顺手改掉
+///   —— 而那会**改掉一个成员的可观察行为**,且很可能破坏下游代码的错误处理。
+#[test]
+fn json_get_returns_null_where_index_get_raises_e0037() {
+    let lit = wl(r#"{"a": 1}"#);
+    assert_eq!(
+        p(&format!("JSON_GET(PARSE({lit}), [{}])", wl("zz"))),
+        "NULL"
+    );
+    assert_eq!(
+        out(&format!(
+            "{JSON_IMP} LET(d, PARSE({lit})); INDEX_GET(d, {})",
+            wl("zz")
+        )),
+        "!E0037 INDEX_GET: dict key zz not found"
+    );
+}

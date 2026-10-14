@@ -9,6 +9,7 @@ use wlwl_error::WlwlError;
 use wlwl_value::{type_name, Outcome, StdHost, Value};
 
 pub(crate) mod lexer;
+pub(crate) mod path;
 
 pub(super) fn std_parse_inner(
     _ctx: &mut StdCtx,
@@ -53,6 +54,12 @@ pub static SPEC: ModuleSpec = ModuleSpec {
         ("JSON_TOKENIZE", json_tokenize as StdFn),
         ("JSON_LOCATE", json_locate as StdFn),
         ("JSON_VALIDATE", json_validate as StdFn),
+        // [v0.11.3 M7 / addendum-09 W-04] 路径族。
+        ("JSON_GET", json_get as StdFn),
+        ("JSON_SET", json_set as StdFn),
+        ("JSON_DELETE", json_delete as StdFn),
+        ("JSON_MERGE", json_merge as StdFn),
+        ("JSON_CHUNK_ITEMS", json_chunk_items as StdFn),
     ],
 };
 
@@ -220,6 +227,117 @@ pub fn json_validate(host: &mut dyn StdHost, args: Vec<Value>) -> Result<Outcome
     }
 }
 
+// ── [v0.11.3 M7 / addendum-09 W-04] 路径族 ─────────────────────────────
+//
+// ⚠ 这五个成员与 W-02 那三个的失败口径**有两处不同**,都记在 `path.rs` 里:
+//   ① 寻址冲突返 `ERR` 且**带 `path`**(W-02 那三个不带,因为它们没有路径);
+//   ② `ERR` 载荷里**没有 `line` / `column`** —— 出错的是**路径**,不是文档里的
+//      某个字节,填一个假的 `line: 1` 会让人以为「第一行出错了」。
+// 形状错(路径不是数组 / 元素不是字符串或整数)仍是 `E0030` 诊断,与 W-02 同款。
+
+fn json_shape_err(host: &mut dyn StdHost, msg: String) -> WlwlError {
+    host.diag(ErrorCode::E0030, msg)
+}
+
+fn arg_count(host: &mut dyn StdHost, op: &str, got: usize, want: usize) -> WlwlError {
+    host.diag(
+        ErrorCode::E0022,
+        format!("{op}: function expects {want} argument(s), got {got}"),
+    )
+}
+
+/// `JSON_GET(doc, path) -> v | NULL` —— 路径用 `ARRAY` 表达,缺失返 `NULL`。
+pub fn json_get(host: &mut dyn StdHost, args: Vec<Value>) -> Result<Outcome, WlwlError> {
+    if args.len() != 2 {
+        return Err(arg_count(host, "JSON_GET", args.len(), 2));
+    }
+    let segs = match path::parse_path(&args[1], "JSON_GET") {
+        Ok(v) => v,
+        Err(path::PathError::Shape(m)) => return Err(json_shape_err(host, m)),
+        Err(e) => return Ok(json_err_from_path("JSON_GET", &e)),
+    };
+    Ok(match path::get(&args[0], &segs) {
+        Some(v) => Outcome::normal(v.clone()),
+        None => Outcome::normal(Value::Null),
+    })
+}
+
+/// `JSON_SET(doc, path, value) -> doc'` —— 返回**新**文档,原文档不动。
+pub fn json_set(host: &mut dyn StdHost, args: Vec<Value>) -> Result<Outcome, WlwlError> {
+    if args.len() != 3 {
+        return Err(arg_count(host, "JSON_SET", args.len(), 3));
+    }
+    let segs = match path::parse_path(&args[1], "JSON_SET") {
+        Ok(v) => v,
+        Err(path::PathError::Shape(m)) => return Err(json_shape_err(host, m)),
+        Err(e) => return Ok(json_err_from_path("JSON_SET", &e)),
+    };
+    match path::set(&args[0], &segs, &args[2]) {
+        Ok(v) => Ok(Outcome::normal(v)),
+        Err(path::PathError::Shape(m)) => Err(json_shape_err(host, m)),
+        Err(e) => Ok(json_err_from_path("JSON_SET", &e)),
+    }
+}
+
+/// `JSON_DELETE(doc, path) -> doc'` —— 路径不存在时**幂等**返原文档。
+pub fn json_delete(host: &mut dyn StdHost, args: Vec<Value>) -> Result<Outcome, WlwlError> {
+    if args.len() != 2 {
+        return Err(arg_count(host, "JSON_DELETE", args.len(), 2));
+    }
+    let segs = match path::parse_path(&args[1], "JSON_DELETE") {
+        Ok(v) => v,
+        Err(path::PathError::Shape(m)) => return Err(json_shape_err(host, m)),
+        Err(e) => return Ok(json_err_from_path("JSON_DELETE", &e)),
+    };
+    match path::delete(&args[0], &segs) {
+        Ok(v) => Ok(Outcome::normal(v)),
+        Err(path::PathError::Shape(m)) => Err(json_shape_err(host, m)),
+        Err(e) => Ok(json_err_from_path("JSON_DELETE", &e)),
+    }
+}
+
+/// `JSON_MERGE(a, b) -> doc` —— **对象递归深合并;数组整体替换**(`ADR-0033` D3)。
+pub fn json_merge(host: &mut dyn StdHost, args: Vec<Value>) -> Result<Outcome, WlwlError> {
+    if args.len() != 2 {
+        return Err(arg_count(host, "JSON_MERGE", args.len(), 2));
+    }
+    Ok(Outcome::normal(path::merge(&args[0], &args[1])))
+}
+
+/// `JSON_CHUNK_ITEMS(doc, size?) -> ARRAY[ARRAY]` —— 顶层数组切块。
+///
+/// ⚠ **不是流式解析**(`ADR-0033` D1):`Value::Array` 是属主 `Vec`,真惰性在本语言里
+///   做不到,每块都是一次切片拷贝。能保证的是**不重新解析** —— 块直接从已解析的
+///   数组里切,不经过 `STRINGIFY` / `PARSE`。
+pub fn json_chunk_items(host: &mut dyn StdHost, args: Vec<Value>) -> Result<Outcome, WlwlError> {
+    if args.is_empty() || args.len() > 2 {
+        return Err(arg_count(host, "JSON_CHUNK_ITEMS", args.len(), 2));
+    }
+    let size = match args.get(1) {
+        None => 1usize,
+        Some(Value::Integer(n)) if *n >= 1 => *n as usize,
+        Some(other) => {
+            return Err(json_shape_err(
+                host,
+                format!(
+                    "JSON_CHUNK_ITEMS: expected a positive INTEGER size, got {}",
+                    type_name(other)
+                ),
+            ))
+        }
+    };
+    match path::chunk_items(&args[0], size, "JSON_CHUNK_ITEMS") {
+        Ok(v) => Ok(Outcome::normal(v)),
+        Err(path::PathError::Shape(m)) => Err(json_shape_err(host, m)),
+        Err(e) => Ok(json_err_from_path("JSON_CHUNK_ITEMS", &e)),
+    }
+}
+
+/// 路径冲突的 `ERR` 载荷(带 `path`,**不带** `line`/`column` —— 见 `path.rs`)。
+fn json_err_from_path(op: &str, e: &path::PathError) -> Outcome {
+    Outcome::normal(path::path_err(op, e))
+}
+
 /// [v0.11 M2 / ADR-0022] 直通边界包装:Value→内部表示→Value。
 pub fn std_parse(host: &mut dyn StdHost, args: Vec<Value>) -> Result<Outcome, WlwlError> {
     crate::wrap(host, std_parse_inner, args)
@@ -376,20 +494,28 @@ mod tests {
     }
 
     #[test]
-    fn spec_lists_all_five_members() {
+    fn spec_lists_all_ten_members() {
         assert_eq!(SPEC.path, "wlwl:std.json");
         let names: Vec<&str> = SPEC.functions.iter().map(|(n, _)| *n).collect();
-        // ⚠ [v0.11.3 M7 / addendum-09 W-02] 从 2 变 5。加成员时这条会红 ——
+        // ⚠ [v0.11.3 M7 / addendum-09] **2 → 5 → 10**。加成员时这条会红 ——
         //   那正是它的用途:名册是契约面,悄悄多一个/少一个成员必须有人喊。
         //   附录 A 镜像由 `gen-appendix-a` 同步,那边另有一道闸。
+        //   (它已经红了两次:W-02 的 2→5、W-04 的 5→10 —— 两次都是**正当**变更。)
         assert_eq!(
             names,
             vec![
                 "PARSE",
                 "STRINGIFY",
+                // W-02:低层词法层
                 "JSON_TOKENIZE",
                 "JSON_LOCATE",
                 "JSON_VALIDATE",
+                // W-04:路径族
+                "JSON_GET",
+                "JSON_SET",
+                "JSON_DELETE",
+                "JSON_MERGE",
+                "JSON_CHUNK_ITEMS",
             ]
         );
     }
@@ -415,6 +541,35 @@ mod tests {
                                     // 深度上限 128
         assert!(accepts(&format!("{}{}", "[".repeat(30), "]".repeat(30))));
         assert!(!accepts(&format!("{}{}", "[".repeat(200), "]".repeat(200))));
+    }
+
+    /// `ADR-0033` D3 的两条 merge 语义,在**内核层**断一遍(不经解释器)。
+    /// 契约那组另有一份走公开面的;两层互补:这里证明内核本身对,那里证明公开面
+    /// 与内核一致。
+    #[test]
+    fn merge_is_recursive_on_objects_and_replaces_arrays() {
+        use crate::json::path;
+        // ⚠ 夹具走 `json_to_value`(serde 表示 → wlwl 值),**不能**直接
+        //   `serde_json::from_str::<wlwl_value::Value>` —— 后者没有
+        //   `Deserialize` 实现(编译报 `T: Deserialize` 未满足)。
+        let v = |s: &str| {
+            crate::json::json_to_value(serde_json::from_str::<serde_json::Value>(s).expect("json"))
+        };
+        // 对象深合并:`x` 不丢
+        assert_eq!(
+            path::merge(&v(r#"{"a":{"x":1}}"#), &v(r#"{"a":{"y":2}}"#)).display(),
+            "[a: [x: 1, y: 2]]"
+        );
+        // 数组整体替换,不拼接
+        assert_eq!(
+            path::merge(&v(r#"{"a":[1,2]}"#), &v(r#"{"a":[9]}"#)).display(),
+            "[a: [9]]"
+        );
+        // b 侧是标量 ⇒ b 赢
+        assert_eq!(
+            path::merge(&v(r#"{"a":{"x":1}}"#), &v(r#"{"a":5}"#)).display(),
+            "[a: 5]"
+        );
     }
 
     #[test]
