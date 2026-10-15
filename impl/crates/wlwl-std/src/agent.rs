@@ -299,7 +299,8 @@ pub(super) fn std_context_inner(
 }
 
 pub static SPEC: ModuleSpec = ModuleSpec {
-    path: "wlwl:std.agent",
+    // [v0.11.3 M8 / addendum-14 / ADR-0034 D2] 同 `ai.rs`,前缀名的理由一致。
+    path: "agent",
     functions: &[
         ("TASK", std_task as StdFn),
         ("TOOL", std_tool as StdFn),
@@ -620,7 +621,8 @@ mod tests {
 
     #[test]
     fn spec_contains_all_five() {
-        assert_eq!(SPEC.path, "wlwl:std.agent");
+        // [v0.11.3 M8 / addendum-14 / ADR-0034 D2] 同 `ai.rs`。
+        assert_eq!(SPEC.path, "agent");
         let names: Vec<&str> = SPEC.functions.iter().map(|(n, _)| *n).collect();
         assert_eq!(names, vec!["TASK", "TOOL", "CALL_TOOL", "MODEL", "CONTEXT"]);
     }

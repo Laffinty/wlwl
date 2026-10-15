@@ -101,8 +101,12 @@ const NAMESPACE_META: &[(&str, &str, &str)] = &[
     ),
     ("wlwl:std.math", "混合", "v0.11"),
     ("wlwl:std.test", "混合", "v0.10 及以前(成员)/ v0.11(混合化)"),
-    ("wlwl:std.ai", "R2", "v0.10 及以前"),
-    ("wlwl:std.agent", "R2", "v0.10 及以前"),
+    // [v0.11.3 M8 / addendum-14 / ADR-0034] 两行从 `wlwl:std.*` 换到官方包路径。
+    // ⚠ **成员一个未动**,且 `wlwl:std.ai` / `wlwl:std.agent` 现在返回 `None`。
+    // ⚠ 形态上的差距(如实记下):包仍以 `wlwl-std` 的 `real-ai` feature 编译,
+    // **没有独立的 crate 边界与分发产物** ⇒ `addendum-14` §6 要求记为**部分完成**。
+    ("ai", "R2", "v0.10 及以前(以 wlwl:std.ai 名义)/ v0.11.3 M8 降级为官方包(ADR-0034)"),
+    ("agent", "R2", "v0.10 及以前(以 wlwl:std.agent 名义)/ v0.11.3 M8 降级为官方包(ADR-0034)"),
     // [v0.11.3 M6 / addendum-07] Zstandard + DEFLATE 家族。R2 全员;本工作区
     // 第一次引入压缩依赖(`zstd` + `flate2`)。
     ("wlwl:std.compress", "R2", "v0.11.3"),
@@ -145,7 +149,13 @@ pub fn generate_appendix_a_md() -> String {
     out.push_str("| 命名空间 | 成员 | 层 | 引入 |\n");
     out.push_str("|---|---|---|---|\n");
     for (path, layer, introduced) in NAMESPACE_META {
-        let short = path.trim_start_matches("wlwl:std.");
+        // [v0.11.3 M8 / addendum-14 / ADR-0034] \u663e\u793a\u540d\u4e0d\u518d\u786c\u7f16\u7801 `std.` \u524d\u7f00\u3002
+        //
+        // \u65e7\u5199\u6cd5 `format!("| \`std.{short}\` | ...")` \u5047\u5b9a\u6bcf\u4e2a\u8def\u5f84\u90fd\u5728 `wlwl:std.` \u4e0b \u2014\u2014
+        // \u4e00\u65f6\u771f\u7684(\u5168\u90e8\u547d\u540d\u7a7a\u95f4\u90fd\u662f std),\u4f46 **\u5b98\u65b9\u5305**(`ai` / `agent`)\u4e0d\u5728\u3002
+        // \u4e0d\u6539\u7684\u8bdd\u5b83\u4f1a\u628a `ai` \u6253\u5370\u6210 **`std.ai`** \u2014\u2014
+        // \u9644\u5f55 A \u5728\u5bf9\u4e00\u4e2a\u5df2\u4e0d\u518d\u5b58\u5728\u7684\u547d\u540d\u7a7a\u95f4\u6253\u5b57,\u800c\u6240\u6709\u5bf9\u8d26\u4ecd\u7136\u81ea\u6d3d\u3002
+        let short = path.trim_start_matches("wlwl:");
         let names = members(path);
         let members = if names.is_empty() {
             "—".to_string()
@@ -157,7 +167,7 @@ pub fn generate_appendix_a_md() -> String {
                 .join(" ")
         };
         out.push_str(&format!(
-            "| `std.{short}` | {members} | {layer} | {introduced} |\n"
+            "| `{short}` | {members} | {layer} | {introduced} |\n"
         ));
     }
     out

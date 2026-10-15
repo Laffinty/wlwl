@@ -617,7 +617,10 @@ fn fnv1a(bytes: &[u8]) -> u32 {
 }
 
 pub static SPEC: ModuleSpec = ModuleSpec {
-    path: "wlwl:std.ai",
+    // [v0.11.3 M8 / addendum-14 / ADR-0034 D2] 从 `wlwl:std.*` 移出。
+    // 前缀**不能**是 `wlwl:`——那是 std 的保留前缀
+    // (`parse_ns_path` 对 `wlwl:` 开头直接返回 `None`)。
+    path: "ai",
     functions: &[
         ("ASK", std_ask as StdFn),
         ("EMBED", std_embed as StdFn),
@@ -884,7 +887,9 @@ mod tests {
 
     #[test]
     fn spec_contains_all_three() {
-        assert_eq!(SPEC.path, "wlwl:std.ai");
+        // [v0.11.3 M8 / addendum-14 / ADR-0034 D2] 路径已从 `wlwl:std.*` 换到
+        // 官方包名。⚠ 新旧两个路径都不能背离:旧的 `wlwl:` 保留给 std。
+        assert_eq!(SPEC.path, "ai");
         let names: Vec<&str> = SPEC.functions.iter().map(|(n, _)| *n).collect();
         assert_eq!(
             names,

@@ -70,8 +70,10 @@ fn every_namespace_in_the_spec_resolves_in_the_implementation() {
         "std.str",
         "std.math",
         "std.test",
-        "std.ai",
-        "std.agent",
+        // [v0.11.3 M8 / addendum-14 / ADR-0034] `std.ai` / `std.agent` 已移出,
+        // 不再走 `wlwl:std.*` 前缀 —— 单独断在下方,不跟这个循环回步。
+        // ⚠ 怕本来一只只删掉名字、留下一个**空壳**行,那就是「假搬」
+        // (`addendum-14` §4 点名的分界判据)。
         // [v0.11.3 M6 / addendum-01 A1] 时间能力第一片。
         "std.time",
         // [v0.11.3 M6 / addendum-02] 正则。
@@ -84,6 +86,23 @@ fn every_namespace_in_the_spec_resolves_in_the_implementation() {
         assert!(
             wlwl_std::resolve(&format!("wlwl:{ns}")).is_some(),
             "`{ns}` is documented in the spec but does not resolve"
+        );
+    }
+
+    // 官方包行:前缀不是 `wlwl:`(那是 std 的保留前缀),也不在 `wlwl:std.` 下。
+    for pkg in ["ai", "agent"] {
+        assert!(
+            md.contains(&format!("`{pkg}`")),
+            "stdlib spec lost its `{pkg}` official-package row"
+        );
+        assert!(
+            wlwl_std::resolve(pkg).is_some(),
+            "`{pkg}` is documented as an official package but does not resolve"
+        );
+        assert!(
+            wlwl_std::resolve(&format!("wlwl:std.{pkg}")).is_none(),
+            "`wlwl:std.{pkg}` must NOT resolve — an empty SPEC would still resolve, \
+             which is exactly the \"fake demotion\" this addendum has to rule out"
         );
     }
 }

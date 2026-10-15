@@ -402,8 +402,11 @@ pub fn resolve(path: &str) -> Option<StdBackend> {
         "wlwl:std.io" => &io::SPEC,
         "wlwl:std.fs" => &fs::SPEC,
         "wlwl:std.json" => &json::SPEC,
-        "wlwl:std.ai" => &ai::SPEC,
-        "wlwl:std.agent" => &agent::SPEC,
+        // [v0.11.3 M8 / addendum-14 / ADR-0034] `std.ai` / `std.agent` **已移出**
+        // `wlwl:std.*`,改用非 `std` 前缀 —— 见下面 `OFFICIAL_PKG_SPECS`。
+        // ⚠ `resolve("wlwl:std.ai")` 现在返回 **`None`** 而不是空 `SPEC`:
+        //   空壳会让 `resolve()` 仍返回它,而那正是「假搬」—— 见
+        //   `addendum-14` §4 给出的分界判据。
         "wlwl:std.format" => &format::SPEC,
         "wlwl:std.encode" => &encode::SPEC,
         "wlwl:std.text" => &text::SPEC,
@@ -423,6 +426,35 @@ pub fn resolve(path: &str) -> Option<StdBackend> {
         // (`URL_PARSE` / `URL_JOIN`);`HTTP_*` 属 W-03,形态由 `ADR-0028`
         // (Accepted, D1 **带条件冻结**) 定死。
         "wlwl:std.net" => &net::SPEC,
+        // [v0.11.3 M8 / addendum-14 / ADR-0034 D2] 两个**官方包**的成员路径。
+        //
+        // ⚠ 为什么它们仍由这张表解析、而不是由 `wlwl.toml` 的 `[namespaces]`:
+        //   清单机制**只**产出磁盘上的 R1 `.wll` 模块(`resolve_namespace` 无条件
+        //   构造 `<dir>/<name>.wll`),**没有任何路径能让它到达原生 `SPEC`**;
+        //   而 `ai` / `agent` 是 **R2 原生**(真 HTTP 走 `reqwest`)。
+        //   ⇒ 这是 ADR-0034 D1 撤回时记录的那条缺口。**形态上的差距**:
+        //   包**仍以 `wlwl-std` 的 `real-ai` feature 编译**,没有独立的 crate
+        //   边界,也没有独立的分发产物 ⇒ 按 `addendum-14` §6 如实记为**部分完成**。
+        //
+        // ⚠ 前缀**不能**是 `wlwl:`:`parse_ns_path` 对 `wlwl:` 开头直接返回 `None`
+        //   (那是 std 的保留前缀),实测 `IMPORT("wlwl:ai", …)` ⇒ `E0040`,且它把
+        //   整个路径当文件名去找。见 ADR-0034 D2 的硬约束。
+        // 包名本身也可解析(不只是 `ai:ask` 那些成员路径):
+        // 附录 A 镜像的模型是「一命名空间一路径」,而
+        // `namespace_paths()` 也是从 `ModuleSpec.path` 枚举的 —— 只让 `ai:ask` 能解析、
+        // 而不让 `ai` 能解析的话,镜像会拿到一个**没有对应行**的实现真相。
+        "ai" => &ai::SPEC,
+        "agent" => &agent::SPEC,
+        "ai:ask" => &ai::SPEC,
+        "ai:embed" => &ai::SPEC,
+        "ai:complete" => &ai::SPEC,
+        "ai:ask_stream" => &ai::SPEC,
+        "ai:ask_all" => &ai::SPEC,
+        "agent:task" => &agent::SPEC,
+        "agent:tool" => &agent::SPEC,
+        "agent:call_tool" => &agent::SPEC,
+        "agent:model" => &agent::SPEC,
+        "agent:context" => &agent::SPEC,
         _ => return None,
     };
     Some(StdBackend::Native(spec))
@@ -532,6 +564,59 @@ pub(crate) fn wrap(
 
 #[cfg(test)]
 mod tests {
+    /// [v0.11.3 M8 / addendum-14 §4 / ADR-0034] **「真搬」与「假搬」的分界断言。**
+    ///
+    /// `addendum-14` §4 原文:「`resolve("wlwl:std.ai")` ⇒ **`None`**(不是空 `SPEC`)|
+    /// **这条是「真搬」与「只 feature 掉」的分界**」。
+    ///
+    /// ⚠ 为什么「不是空 SPEC」是重点:留一个**空壳 SPEC** 会让 `resolve()` 仍返回
+    ///   `Some(...)`,于是 `IMPORT("wlwl:std.ai", …)` 在**名字解析上**照样成功,
+    ///   降级就成了纯文档动作 —— 那才是「假搬」。所以这条断的是
+    ///   **`None` 而不是「成员数为 0」**。
+    ///
+    /// ⚠ 另一半同样重要:新路径**必须可达**。只断旧路径为 `None` 的话,
+    ///   「把两个命名空间删掉」也能让测试变绿 —— 那不是降级,是砍功能
+    ///   (`addendum-14` §0 的非目标之一)。
+    #[test]
+    fn std_ai_and_agent_are_demoted_to_official_packages() {
+        // ① 旧路径**不存在**,且不是空壳。
+        for gone in ["wlwl:std.ai", "wlwl:std.agent"] {
+            assert!(
+                resolve(gone).is_none(),
+                "{gone} must not resolve; an empty SPEC would still resolve and count as a fake demotion"
+            );
+        }
+        // ② 新路径**可达**,且成员面一字未少(5 + 5)。
+        for (path, want) in [
+            ("ai:ask", 5usize),
+            ("ai:embed", 5),
+            ("ai:complete", 5),
+            ("ai:ask_stream", 5),
+            ("ai:ask_all", 5),
+            ("agent:task", 5),
+            ("agent:tool", 5),
+            ("agent:call_tool", 5),
+            ("agent:model", 5),
+            ("agent:context", 5),
+        ] {
+            let got = resolve(path).expect("the official package path must resolve");
+            let n = match got {
+                StdBackend::Native(s) => s.functions.len(),
+                StdBackend::Lang(_) => panic!("{path} must be R2 native, not an R1 source module"),
+            };
+            assert_eq!(n, want, "{path} member count changed");
+        }
+        // ③ ⚠ 前缀**不能**是 `wlwl:`:`parse_ns_path` 对 `wlwl:` 开头直接返回
+        //    `None`(std 的保留前缀)。这条钉住它,免得日后有人把名字改回去 ——
+        //    实测 `IMPORT("wlwl:ai", …)` 会落进「裸模块名」分支被当成文件名。
+        for forbidden in ["wlwl:ai", "wlwl:agent", "wlwl:pkg.ai"] {
+            assert!(
+                resolve(forbidden).is_none(),
+                "{forbidden} must not resolve: `wlwl:` is the reserved std prefix"
+            );
+        }
+    }
+
     use super::*;
 
     #[test]
@@ -567,13 +652,17 @@ mod tests {
     }
     #[test]
     fn resolve_ai() {
-        let s = resolve("wlwl:std.ai").expect("ai resolves");
-        assert_eq!(s.path(), "wlwl:std.ai");
+        // [v0.11.3 M8 / ADR-0034 D2] 成员路径是 `ai:ask` 那一组;包名 `ai` 也可解析
+        // (附录 A 镜像按「一命名空间一路径」模型取路径)。
+        let s = resolve("ai:ask").expect("ai:ask resolves");
+        assert_eq!(s.path(), "ai");
+        assert_eq!(resolve("ai").expect("ai resolves").path(), "ai");
     }
     #[test]
     fn resolve_agent() {
-        let s = resolve("wlwl:std.agent").expect("agent resolves");
-        assert_eq!(s.path(), "wlwl:std.agent");
+        let s = resolve("agent:task").expect("agent:task resolves");
+        assert_eq!(s.path(), "agent");
+        assert_eq!(resolve("agent").expect("agent resolves").path(), "agent");
         let names: Vec<&str> = s.functions().iter().map(|(n, _)| *n).collect();
         assert_eq!(names, vec!["TASK", "TOOL", "CALL_TOOL", "MODEL", "CONTEXT"]);
     }

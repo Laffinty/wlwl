@@ -15621,7 +15621,7 @@ entry = "main.wll"
         // a hash of the prompt. End-to-end the value is a STRING.
         let dir = unique_test_dir("ai_ask_ok");
         let src = r#"
-            IMPORT("wlwl:std.ai", ["ASK"]);
+            IMPORT("ai:ask", ["ASK"]);
             LET(r, ASK("gpt-4", "explain ERR"));
             r;
         "#;
@@ -15641,7 +15641,7 @@ entry = "main.wll"
         // (unreachable) without needing to mutate env.
         let dir = unique_test_dir("ai_ask_e0080");
         let src = r#"
-            IMPORT("wlwl:std.ai", ["ASK"]);
+            IMPORT("ai:ask", ["ASK"]);
             ASK("_fail_E0080", "x");
         "#;
         let err = run_in(&dir, src).unwrap_err();
@@ -15652,7 +15652,7 @@ entry = "main.wll"
     fn std_ai_ask_failure_token_e0083_timeout() {
         let dir = unique_test_dir("ai_ask_e0083");
         let src = r#"
-            IMPORT("wlwl:std.ai", ["ASK"]);
+            IMPORT("ai:ask", ["ASK"]);
             ASK("_fail_E0083", "x");
         "#;
         let err = run_in(&dir, src).unwrap_err();
@@ -15665,7 +15665,7 @@ entry = "main.wll"
     fn std_ai_embed_returns_array_of_floats() {
         let dir = unique_test_dir("ai_embed");
         let src = r#"
-            IMPORT("wlwl:std.ai", ["EMBED"]);
+            IMPORT("ai:ask", ["EMBED"]);
             LET(v, EMBED("hello"));
             v;
         "#;
@@ -15685,7 +15685,7 @@ entry = "main.wll"
     fn std_ai_embed_failure_via_model() {
         let dir = unique_test_dir("ai_embed_fail");
         let src = r#"
-            IMPORT("wlwl:std.ai", ["EMBED"]);
+            IMPORT("ai:ask", ["EMBED"]);
             EMBED("hi", "_fail_E0081");
         "#;
         let err = run_in(&dir, src).unwrap_err();
@@ -15696,7 +15696,7 @@ entry = "main.wll"
     fn std_ai_complete_returns_string() {
         let dir = unique_test_dir("ai_complete");
         let src = r#"
-            IMPORT("wlwl:std.ai", ["COMPLETE"]);
+            IMPORT("ai:ask", ["COMPLETE"]);
             LET(s, COMPLETE("fun fib(n) {", "rust"));
             s;
         "#;
@@ -15714,7 +15714,7 @@ entry = "main.wll"
     fn std_ai_complete_failure_via_language() {
         let dir = unique_test_dir("ai_complete_fail");
         let src = r#"
-            IMPORT("wlwl:std.ai", ["COMPLETE"]);
+            IMPORT("ai:ask", ["COMPLETE"]);
             COMPLETE("ctx", "_fail_E0082");
         "#;
         let err = run_in(&dir, src).unwrap_err();
