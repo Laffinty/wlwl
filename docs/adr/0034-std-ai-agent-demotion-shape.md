@@ -54,6 +54,31 @@ handled above」)⇒ 它落到第 4 步「裸模块名」分支,被当成文件�
 
 ⇒ **`wlwl:ai` / `wlwl:agent` 两条最直觉的命名方案结构上不可行**,必须换前缀。
 
+## 2b. 第二条过期基线:`real-ai` **不门控成员**,只门控 HTTP 传输
+
+`addendum-14` §1 写「`std.ai` 的 5 个成员受 `real-ai` 门控,默认构建**不可见**」。
+**实测相反**(2026-10-15,默认构建):
+
+```
+IMPORT("wlwl:std.ai", ["ASK","EMBED","COMPLETE","ASK_STREAM","ASK_ALL"]);
+⇒ 5 个成员全部绑定成功(唯一报错是 ASK 元数不对 —— 名字已解析、函数存在)
+```
+
+真实形状:`wlwl-std/Cargo.toml` 的 **`real-ai = ["dep:reqwest"]`** —— 它门控的是
+**HTTP 传输层**(mock ↔ real);`src/ai.rs` 的 `#[cfg(feature = "real-ai")] mod real`
+只包住真实后端,**成员函数本身一直编译**。
+
+⇒ **两条下游结论随之作废**:
+
+1. `addendum-14` §3.4「`real-ai` 移出后门禁命令会失效」—— **在 D1 选的 (c) 下不成立**。
+   crate 仍是 `wlwl-std`、feature 仍挂在它上面,`cargo check -p wlwl-std --features
+   real-ai` **继续有效** ⇒ **W-07 的「门禁命令三处同步」在 (c) 下不需要做**,
+   计划 §3.3 完成定义 / README 门禁行 / skill 门禁说明三处**都不动**。
+   ⚠ (a) 路线下这条才会成立 —— 这是 (c) 与 (a) 的一处**具体**代价差。
+2. `addendum-14` §4 契约表的「默认构建下成员**不可见**;带 feature 可见」—— 当前
+   **恰恰相反**,而 §0 的非目标写明「不改任何成员的语义」⇒ 搬完之后成员
+   **应当仍然在默认构建下可见**。契约要照**现状**写,**不是**照初稿。
+
 ## Decision
 
 ### D1 · 机制选 **(c)**(路线 c:R1 模块 + `wlwl.toml` `[namespaces]` 声明的命名空间)

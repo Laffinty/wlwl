@@ -32,10 +32,29 @@ Select-String -Path crates/wlwl-std/Cargo.toml -Pattern 'real-ai' -Context 0,3
 |---|---|---|
 | `std.ai` 成员 | **5**(`ASK` `EMBED` `COMPLETE` `ASK_STREAM` `ASK_ALL`) | 附录 A |
 | `std.agent` 成员 | **5**(`TASK` `TOOL` `CALL_TOOL` `MODEL` `CONTEXT`) | 附录 A |
-| feature 门控 | `std.ai` 的 5 个成员受 **`real-ai`** 门控,默认构建**不可见** | 附录 A / `Cargo.toml` |
+| feature 门控 | ~~`std.ai` 的 5 个成员受 **`real-ai`** 门控,默认构建**不可见**~~ ⛔ **该行经 2026-10-15 实测证伪,见下方更正** | ~~附录 A / `Cargo.toml`~~ |
 | 门禁 | `cargo check --locked -p wlwl-std --features real-ai` 是 §3.3 的一条 | 计划 §3.3 |
 | 规范已登记 | §14:「`std.ai` / `std.agent` 降级为官方包,移出 `wlwl:std.*`(**业界先例:Rust / Julia 的 std 小核心原则**)」 | 规范 §14 |
 | 行业先例 | Rust(`rand` / `regex` / `serde` 都在 std 外)、Julia(标准库 + 独立包) | — |
+
+> ⛔ **[2026-10-15 实测更正:上面「feature 门控」那一行是错的]**
+>
+> 原表写「`std.ai` 的 5 个成员受 `real-ai` 门控,默认构建**不可见**」。**实测相反**:
+> **默认构建**(不带 `real-ai`)下 `IMPORT("wlwl:std.ai", [ASK, EMBED, COMPLETE,
+> ASK_STREAM, ASK_ALL])` **成功绑定全部 5 个成员**(唯一报错是 `ASK` 元数不对,
+> 说明名字已解析、函数确实存在)。
+>
+> 真实形状:`wlwl-std/Cargo.toml` 的 `real-ai = ["dep:reqwest"]` —— 它门控的是
+> **HTTP 传输层**(mock ↔ real),**不是成员**;`src/ai.rs` 的
+> `#[cfg(feature = "real-ai")] mod real` 只包住真实后端,成员函数本身一直编译。
+>
+> ⇒ **两条下游结论随之作废**:
+> ① §3.4「`real-ai` 移出后门禁命令会失效」—— 在 **ADR-0034 D1 选的 (c)** 下**不成立**:
+>    crate 仍是 `wlwl-std`,feature 仍挂在它上面,`cargo check -p wlwl-std --features
+>    real-ai` **继续有效** ⇒ W-07 的「门禁命令三处同步」在 (c) 下**不需要做**。
+> ② §4 契约表的「默认构建下成员**不可见**;带 feature 可见」—— 当前恰恰相反,
+>    且 `addendum-14` §0 的非目标写明**不改任何成员的语义** ⇒ 搬完之后成员
+>    **应当仍然在默认构建下可见**。这条要照现状写进契约,**不是**照初稿。
 
 ## 2. 目标形态
 
