@@ -17,8 +17,6 @@
   "norm_abs     =  /b",
   "norm_rel     =  ../a",
   "norm_drive   =  C:/a/b",
-  "argv_intact =  TRUE",
-  "one_line_only =  TRUE",
   "before arity",
   "E0022",
   "PATH_DIR: function expects 1 argument(s), got 2"
@@ -27,5 +25,5 @@
   "after arity",
   "E0030"
  ],
- "_why": "v0.11.3 M6 / addendum-06。十七行各钉一条。⚠️ **本 probe 刻意不碰文件系统**:fs 成员的相对路径**按进程 CWD 解析**(`with_base_dir` 只影响 `IMPORT`),在 probe 里「建临时目录再列它」会把文件写进**工作树** —— 实测踩过,一版相对路径的契约测试把 `a.bin` 写到了 `impl/crates/wlwl-eval/`。⇒ 目录 / 字节类用例归契约表(那里能用绝对路径 + 临时目录),probe 只钉**纯函数**与**安全性质**。`join*` 三行钉**规范分隔符恒为 `/`** —— 平台原生形态会让 `PATH_JOIN` 在 Windows 产出 `a\\b`,而**逐字节冻结的契约表正因此才可能存在** ⇒ 这几行在任何平台都必须逐字相同。`dir_bare` / `ext_dotfile` / `ext_none` 钉三个**空串**边界(不是 `NULL`、不是 `.`):无父目录、点文件**没有**扩展名、无扩展名。`norm_rel` 钉相对路径的 `..` **消不掉**(消了就改了语义),`norm_drive` 钉盘符 `C:` **不被当普通片段消掉**。`argv_intact` + `one_line_only` 是一**对**:前者证明该参数**原样**到达(Rust 在 Windows 上会给含空格的实参加引号,所以 `cmd` 看到的是 `echo \"a & echo INJECTED\"`,`&` 是字面量),后者用 `SPLIT(out, \"\\n\")` 的长度证明 stdout **只有一行** ⇒ `&` **没有真的执行第二条命令**。⚠️ 只用 `INDEX(...) >= 0` **证明不了后一条**:参数原样到达时它必然命中,而 `&` 真被执行时它**也**会命中 —— 两条都要(第一版就只写了一条,期望值还写反了)。合起来才是「元字符不被解释」这条**安全理由**(规范显式禁止字符串形态的 `argv`)。末段钉元数错走原生诊断 E0022 且**终止运行**(not_contains after arity),not_contains E0030 排除「类型错才是对的」这种误判。"
+ "_why": "v0.11.3 M6 / addendum-06。十七行各钉一条。⚠️ **本 probe 刻意不碰文件系统**:fs 成员的相对路径**按进程 CWD 解析**(`with_base_dir` 只影响 `IMPORT`),在 probe 里「建临时目录再列它」会把文件写进**工作树** —— 实测踩过,一版相对路径的契约测试把 `a.bin` 写到了 `impl/crates/wlwl-eval/`。⇒ 目录 / 字节类用例归契约表(那里能用绝对路径 + 临时目录),probe 只钉**纯函数**与**安全性质**。`join*` 三行钉**规范分隔符恒为 `/`** —— 平台原生形态会让 `PATH_JOIN` 在 Windows 产出 `a\\b`,而**逐字节冻结的契约表正因此才可能存在** ⇒ 这几行在任何平台都必须逐字相同。`dir_bare` / `ext_dotfile` / `ext_none` 钉三个**空串**边界(不是 `NULL`、不是 `.`):无父目录、点文件**没有**扩展名、无扩展名。`norm_rel` 钉相对路径的 `..` **消不掉**(消了就改了语义),`norm_drive` 钉盘符 `C:` **不被当普通片段消掉**。⚠🔴 **`argv_intact` + `one_line_only` 已于 2026-10-16 移出本 case(D13-054)**:它们探的是 `PROCESS_RUN([\"cmd\", \"/C\", …])`,而 `cmd` 是 **Windows 命令提示符** —— Linux / macOS 上没有这个程序,两条断言恒 FALSE ⇒ 那两个平台的 CI 全程红、windows 绿。移走而不是条件化的理由:① `expect.json` **没有任何平台条件化机制**,为一条用例加整套机制是过度设计;② **同一安全性质在契约表里已有且两平台都写对了** —— `process_contract.rs::argv_elements_are_never_shell_interpreted`(Windows 用 `cmd /C`,POSIX 用 `sh -c printf %s \"$1\"`,**两半都断言**);③ 这两行既只覆盖一半平台、又重复已有覆盖。该缺口自 2026-10-08(`517aa10`)起就在,一直没人看见 —— 因为 CI 此前死在 clippy(D13-053),**测试步骤从来没跑过**。末段钉元数错走原生诊断 E0022 且**终止运行**(not_contains after arity),not_contains E0030 排除「类型错才是对的」这种误判。"
 }

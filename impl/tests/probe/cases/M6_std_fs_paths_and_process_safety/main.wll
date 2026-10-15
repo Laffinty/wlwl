@@ -8,15 +8,35 @@
 // `impl/crates/wlwl-eval/`。⇒ 目录 / 字节类用例归契约表(那里能用绝对路径 +
 // 临时目录),probe 只钉**纯函数**与**安全性质**。
 //
-// 本 probe 钉三件事:
+// 本 probe 钉两件事:
 //   * **规范分隔符恒为 `/`** —— 平台原生形态会让 `PATH_JOIN` 在 Windows 产出
 //     `a\b`,而**逐字节冻结的契约表正因此才可能存在**。这一行在任何平台都必须
 //     逐字相同。
 //   * `PATH_DIR` / `PATH_BASE` / `PATH_EXT` / `PATH_NORMALIZE` 的**边界用例**
 //     (无父目录返 `""`、点文件**没有**扩展名、绝对路径的 `..` 消不到根外、盘符
 //     不被当普通片段消掉)。
-//   * **注入防线**:`argv` 里的 shell 元字符**不被解释** —— 这是 `std.process`
-//     存在的安全理由(规范显式禁止字符串形态的 `argv`)。
+//
+// ⚠🔴 **`std.process` 的注入防线已从本 probe 移走(2026-10-16,D13-054)。**
+// 本用例原先还有两行 `argv_intact` / `one_line_only`,它们**只在 Windows 上成立**
+// —— 探的是 `PROCESS_RUN(["cmd", "/C", …])`,而 `cmd` 是 Windows 命令提示符,
+// **Linux / macOS 上根本没有这个程序**,于是 `AT_K(r, "stdout", "")` 取到空串、
+// 两条断言全 FALSE。⇒ macOS 与 ubuntu 的 CI 全程红,windows 绿。
+//
+// 为什么**移走而不是条件化**:
+//   ① probe harness 的 `expect.json` **没有任何平台条件化机制**(只有 `exit` /
+//      `contains` / `not_contains` / `present` / `absent` / `deviation` / `bom`),
+//      为一条用例加整套机制是过度设计;
+//   ② **同一个安全性质在契约表里已经有了,而且两平台都写对了** ——
+//      `impl/crates/wlwl-eval/tests/process_contract.rs` 的
+//      `argv_elements_are_never_shell_interpreted`:Windows 用 `cmd /C`,
+//      POSIX 用 `sh -c printf %s "$1"`,并且**两半都断言**(参数原样到达 +
+//      `&` 没有真的执行第二条命令)。契约表是 Rust,可以用 `cfg!(windows)`。
+//   ③ 也就是说本用例这两行既**只覆盖一半平台**,又**重复**已有覆盖。
+//
+// ⚠ 顺带一提,那个漏洞是**从 2026-10-08 就在的**(`517aa10`),一直没被发现 ——
+// 因为 CI 此前死在 clippy(工具链漂移,D13-053),**测试步骤从来没跑过**。
+// 本用例的 id 保留不改:它出现在 CHANGELOG 与 addendum-06 的历史记录里,
+// 改 id 会让那两处记录失真。
 IMPORT("wlwl:std.fs", ["PATH_JOIN", "PATH_DIR", "PATH_BASE", "PATH_EXT", "PATH_NORMALIZE"]);
 
 PRINT("join         = ", PATH_JOIN("a", "b", "c"));
@@ -36,19 +56,6 @@ PRINT("norm_abs     = ", PATH_NORMALIZE("/a/../../b"));
 PRINT("norm_rel     = ", PATH_NORMALIZE("../a"));
 PRINT("norm_drive   = ", PATH_NORMALIZE("C:/a/./b"));
 
-// 注入防线:元字符必须作为**单个参数**原样到达,不被任何 shell 解释。
-// ⚠️ 这两条是**一对**,合起来才是完整的证据:
-//   * `argv_intact` 证明该参数**原样**到达(Rust 在 Windows 上会给含空格的
-//     实参加引号,所以 `cmd` 看到的是 `echo "a & echo INJECTED"`,`&` 是字面量);
-//   * `one_line_only` 证明 `&` **没有真的执行第二条命令** —— 若执行了,stdout
-//     会有两行,`SPLIT(out, "\n")` 的长度就 > 2。
-// ⚠️ 只用 `INDEX(...) >= 0` **证明不了**第二条:参数原样到达时它必然命中,
-//     而 `&` 被执行时它**也**会命中。两条都要。
-IMPORT("wlwl:std.process", ["PROCESS_RUN"]);
-LET(r, PROCESS_RUN(["cmd", "/C", "echo", "a & echo INJECTED"]));
-LET(out, AT_K(r, "stdout", ""));
-PRINT("argv_intact = ", >=(INDEX(out, "a & echo INJECTED"), 0));
-PRINT("one_line_only = ", >(LEN(SPLIT(out, "\n")), 1));
 
 // 元数错必须走原生诊断 E0022 并**终止运行**(不留 "after")。
 PRINT("before arity");

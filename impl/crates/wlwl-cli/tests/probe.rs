@@ -88,7 +88,7 @@ use std::time::{Duration, Instant};
 // [v0.11.3 M6 / addendum-06] 167 → 168:新增
 // `M6_std_fs_paths_and_process_safety` —— 路径**纯函数**的跨平台逐字冻结 +
 // `std.process` 的注入防线。⚠️ 它**刻意不碰文件系统**:fs 成员的相对路径按进程
-// CWD 解析,在 probe 里建临时目录会污染工作树(实测踩过)。
+// CWD 解析,在 probe 里建临时目录会污染工作树(实测踩过)。 ⚠ **2026-10-16 更正**(`D13-054`):该用例原含 `argv_intact` / `one_line_only` 两条**只覆盖 Windows** 的断言(探 `cmd /C`,而 `cmd` 不存在于 Linux/macOS),已移出 —— 同一安全性质由 `process_contract.rs::argv_elements_are_never_shell_interpreted` 两平台钉住;用例 id 保留不改(它在历史记录里)。
 // [v0.11.3 M6 / addendum-07] 168 -> 169:新增 M6_std_compress_roundtrip —— 四条格式的
 // 往返 + 确定性 + 损坏输入返回 ERR。⛔️ 它**刻意不断言压缩比、也不冻结输出字节**:
 // 两者都**实现定义**(实测同一份 104 字节载荷,Python 的 zlib 压到 66,

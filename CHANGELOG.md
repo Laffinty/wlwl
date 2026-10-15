@@ -384,7 +384,7 @@ Spec: **wlwl-spec-v0.11 与 wlwl-stdlib-spec-v0.11 均不变**。本批**不改�
     `impl/crates/wlwl-eval/`。⇒ 契约里的 IO 用例全改绝对路径,probe **刻意不碰
     文件系统**,并把这条语义写进规范 §2.3。
   - 契约 `fs_contract`(13 个测试)+ `process_contract`(8 个测试)新建;probe
-    **167 → 168**(`M6_std_fs_paths_and_process_safety`)。
+    **167 → 168**(`M6_std_fs_paths_and_process_safety`)。 ⚠ **2026-10-16 更正**(`D13-054`):该用例原含 `argv_intact` / `one_line_only` 两条**只覆盖 Windows** 的断言(探 `cmd /C`,而 `cmd` 不存在于 Linux/macOS),已移出 —— 同一安全性质由 `process_contract.rs::argv_elements_are_never_shell_interpreted` 两平台钉住;用例 id 保留不改(它在历史记录里)。
 - **新命名空间 `wlwl:std.rand`(4 成员)** —— 消掉规范 §14.1 那条否决(它是
   「**没想清楚**」,不是「不重要」)。命名空间 **15 → 16**、成员面 119 → **123**。
   形状由 [`ADR-0027`](docs/adr/0027-std-rand-shape.md) 逐条裁决(A1–A7 + 四处补强)。

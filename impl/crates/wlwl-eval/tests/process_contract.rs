@@ -147,12 +147,27 @@ fn process_contract() {
 ///
 /// ⚠️ 本语言**没有中缀运算符**,所以字符串拼接是 `+(a, b)`。
 /// 若实现哪天改成「拼一个字符串给 shell」,这条会红。
+///
+/// ⚠⚠ **两条断言缺一不可**(2026-10-16 从 probe 搬过来时补记,`D13-054`):
+/// ① 「参数原样到达」② 「`&` 没有真的执行第二条命令」。
+/// **只用 `INDEX(...) >= 0` 证明不了 ②** —— 参数原样到达时它必然命中,而 `&`
+/// 真的被执行时它**也**会命中(输出里同样含那段字面量)。② 靠「stdout 只有
+/// 一行」(`!\nINJECTED`)才真正区分两者。这段论证原先只写在 probe 的 `_why` 里,
+/// 用例被移除时会跟着丢,所以搬到这里。
+///
+/// ⚠ **本用例是 `std.process` 注入防线的唯一跨平台钉法** —— probe 用例
+/// `M6_std_fs_paths_and_process_safety` 原本也探这条,但它探的是 `cmd /C`,
+/// 而 `cmd` 只存在于 Windows ⇒ macOS / ubuntu 恒红(那个缺口自 2026-10-08 起就在,
+/// 因 CI 此前死在 clippy、**测试步骤从来没跑过**)。probe 侧已移除并留了指路。
 #[test]
 fn argv_elements_are_never_shell_interpreted() {
     let src = if cfg!(windows) {
         r#"IMPORT("wlwl:std.process", ["PROCESS_RUN"]);
 AT_K(PROCESS_RUN(["cmd", "/C", "echo", "a & echo INJECTED"]), "stdout", "")"#
     } else {
+        // ⚠ `sh -c printf %s "$1" sh <arg>`:被测参数放进 **$1**,让它**只展开
+        // 一次**。若把它直接写进 `-c` 的脚本体,`&` 会被 sh 在**第一轮**就当操作符
+        // —— 那测的是「sh 的引号处理」而不是「argv 有没有被拼接」。
         r#"IMPORT("wlwl:std.process", ["PROCESS_RUN"]);
 AT_K(PROCESS_RUN(["sh", "-c", "printf %s "$1"", "sh", "a & echo INJECTED"]), "stdout")"#
     };
