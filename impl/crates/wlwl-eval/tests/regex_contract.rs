@@ -523,3 +523,53 @@ fn the_linearity_promise_is_documented() {
         );
     }
 }
+
+/// [D13-024 / N-005]括号嵌套必须有一道闸,且闸超限走 E0030 而不是爆栈。
+///
+/// ⚠ **这条守的是「失败分界」而不是「匹配结果」。** 栈溢出是 `abort`,不是
+/// unwind —— `catch_unwind` 接不住,整个解释器进程被带走。所以判据是
+/// 「诊断是 `!E0030`」而不是「没有崩」。
+///
+/// ⚠ **括号必须配平。** 只有开括号时,`parse_group` 会先撞上它自己的
+/// 「pattern ends with an unclosed group」(`regex.rs` 里在递归**之前**就查
+/// `peek().is_none()`),深度闸根本轮不到触发 —— 那样这条测试会在**闸完全
+/// 没生效**的情况下变绿,正是它要防的那类假守卫。
+///
+/// 期望值的出处:**实现侧的 `MAX_NEST`**(`regex.rs`),不是本测试自己写的数字 ——
+/// 改闸时两处必须同步。取值理由见 `MAX_NEST` 的文档注释:Go 的 1000 在本仓
+/// 2 MiB 测试线程栈 + debug 构建下实测爆栈,故取 256。
+///
+/// 单独一条 `#[test]` 而不是进 `CASES` 表:几百个括号手写进 `&'static str`
+/// 会撑爆可读性,照 `json_contract.rs` 的 `[`.repeat(200) 那个先例在 Rust 侧拼。
+#[test]
+fn deep_nesting_is_rejected_not_crashed() {
+    const MAX_NEST: usize = 256; // regex.rs::MAX_NEST
+    let nest = |n: usize| {
+        format!(
+            "IMPORT(\"wlwl:std.regex\", [\"RE\"]); RE(\"{}\")",
+            "(".repeat(n) + &")".repeat(n)
+        )
+    };
+
+    let got = actual(&nest(MAX_NEST + 1));
+    assert!(
+        got.starts_with("!E0030") && got.contains("pattern nests too deeply"),
+        "nesting past {MAX_NEST} must be a graceful E0030, got: {got}"
+    );
+
+    // ⚠ 边界两侧都要断:证明那道闸是 {MAX_NEST} 而不是「一超过十几层就拒」
+    // (与 `json_contract.rs` 那条 `ok_deep` 同一个道理)。
+    let at_limit = actual(&nest(MAX_NEST));
+    assert!(
+        !at_limit.starts_with('!') && at_limit.ends_with(&format!(", groups: {MAX_NEST}]")),
+        "nesting exactly at {MAX_NEST} must still compile all {MAX_NEST} groups, got: {at_limit}"
+    );
+
+    // 病态量级:修复前 20 000 层直接 abort。本测试进程若还能跑到这条断言,
+    // 就说明闸起作用了 —— 它不能只在 257 层这种「温和」的输入上绿。
+    let absurd = actual(&nest(20_000));
+    assert!(
+        absurd.starts_with("!E0030"),
+        "20 000 nested groups must be E0030, got: {absurd}"
+    );
+}

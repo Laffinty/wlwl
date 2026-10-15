@@ -222,29 +222,50 @@ fn allowed_attrs<'p>(policy: &'p Policy, tag: &str) -> Vec<&'p str> {
 /// **复用同一份逻辑** —— 另写一份就会出现「净化器放行、独立成员拒绝」的分裂,
 /// 而分裂意味着其中一处是错的。契约 `sanitize_contract` 对同一组 URL 喂两个
 /// 入口并断言结论一致。
+///
+/// [D13-023 · N-016] 上面那句注释原先是**空头支票**:实现只有
+/// `find(':') == None` 一支,`/ ? #` 豁免根本没写。后果 `/wiki/Special:Search`
+/// 被判成 `scheme = "/wiki/special"`(首字符非字母 → 非法 → 拒),`href` 被删 ——
+/// 方向保守,但**违背自家规范 §13.2 / §13.5 的「相对 URL 恒允许」**。
+/// 判定顺序按 WHATWG URL §4.2「scheme start state」:scheme 只可能在**第一个**
+/// `/`、`?`、`#` **之前**结束;落在它们之后的那个 `:` 是路径段 / 查询 /
+/// 片段内部的分隔符(RFC 3986 §3.3 只禁止**首段**含 `:`,§3.4 查询与
+/// §3.5 片段则允许 `:` 自由出现)。
+///
+/// ⚠ 判定位置必须在**剥空白/控制字符之后、大小写归一之前**的位置语义上做,
+/// 但本实现沿用「先小写化再找 `:`」—— 三者对 `/ ? #` 的位置判定等价
+/// (这三者的大小写与空白形态都被 scheme 语法排除)。
+///
+/// ⚠ 不覆盖 `\`(WHATWG 对 special scheme 把 `\` 视作 `/`):`\\host` 那类值
+/// 按规范 §13.2 已是「相对 URL」恒允许,豁免与否结论相同,故不扩大豁免集。
 pub(crate) fn scheme_allowed(value: &str, schemes: &[String]) -> bool {
     let trimmed: &str = value.trim_matches(|c: char| c <= ' ');
     let lowered = trimmed.to_ascii_lowercase();
-    match lowered.find(':') {
-        None => true, // 相对 URL
-        Some(pos) => {
-            let scheme = &lowered[..pos];
-            if scheme.is_empty()
-                || !scheme
-                    .chars()
-                    .next()
-                    .is_some_and(|c| c.is_ascii_alphabetic())
-                || !scheme
-                    .chars()
-                    .all(|c| c.is_ascii_alphanumeric() || c == '+' || c == '-' || c == '.')
-            {
-                // 非法 scheme 形态(如 `java script:` 已被剥空格,但残着
-                // 其它怪字符)→ 不放行。
-                return false;
-            }
-            schemes.iter().any(|s| s == scheme)
-        }
+    let Some(pos) = lowered.find(':') else {
+        return true; // 相对 URL:连 `:` 都没有
+    };
+    // `:` 之前有 `/` `?` `#` ⇒ 这个 `:` 不是 scheme 的结尾,是路径 / 查询 /
+    // 片段里的分隔符 ⇒ 相对 URL,**恒允许**(不进 scheme 白名单比对)。
+    // ⚠ 这一支必须排在「scheme 形态合法性」判定**之前**:先判形态会把
+    // `/wiki/special` 当成非法 scheme 而拒掉 —— 那正是原缺陷。
+    if lowered[..pos].contains(['/', '?', '#']) {
+        return true;
     }
+    let scheme = &lowered[..pos];
+    if scheme.is_empty()
+        || !scheme
+            .chars()
+            .next()
+            .is_some_and(|c| c.is_ascii_alphabetic())
+        || !scheme
+            .chars()
+            .all(|c| c.is_ascii_alphanumeric() || c == '+' || c == '-' || c == '.')
+    {
+        // 非法 scheme 形态(如 `java script:` 已被剥空格,但残着
+        // 其它怪字符)→ 不放行。
+        return false;
+    }
+    schemes.iter().any(|s| s == scheme)
 }
 
 #[derive(Clone, Copy, PartialEq)]
@@ -370,6 +391,28 @@ mod tests {
         assert!(scheme_allowed("MAILTO:a@b", &p.url_schemes));
         // 大小写不敏感:mailto 在白名单里(小写),大写输入小写化后命中。
         assert!(scheme_allowed("Mailto:a@b", &p.url_schemes));
+    }
+
+    /// [D13-023 · N-016] `/ ? #` 豁免 —— 注释承诺过、原文没实现的那一支。
+    ///
+    /// 依据:WHATWG URL §4.2 scheme start state(scheme 只在首个 `/` `?` `#`
+    /// 之前结束)≡ RFC 3986 §3.3(相对引用的**首段**不得含 `:`;§3.4/§3.5
+    /// 对 query / fragment 里的 `:` 无限制)。
+    #[test]
+    fn scheme_check_exempts_colons_after_path_query_fragment_delimiters() {
+        let p = Policy::default();
+        // 维基式命名空间:路径段里带冒号。
+        assert!(scheme_allowed("/wiki/Special:Search", &p.url_schemes));
+        assert!(scheme_allowed("p/x:y?q=1#z", &p.url_schemes));
+        assert!(scheme_allowed("?q=a:b", &p.url_schemes));
+        assert!(scheme_allowed("#frag:x", &p.url_schemes));
+        // ⚠ 豁免是**位置**判定而非「含冒号就放过」:`special` 是形态合法的
+        // scheme token,`:` 前无分隔符 ⇒ 按 scheme 判,不在白名单 ⇒ 拒。
+        assert!(!scheme_allowed("Special:Search", &p.url_schemes));
+        // 经典攻击串不受豁免影响。
+        assert!(!scheme_allowed("javascript:alert(1)", &p.url_schemes));
+        assert!(!scheme_allowed("data:text/html,x", &p.url_schemes));
+        assert!(!scheme_allowed("java script:x", &p.url_schemes));
     }
 
     #[test]

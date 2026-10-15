@@ -422,11 +422,35 @@ fn split_authority(name: &str, a: &str) -> Result<AuthParts, String> {
             if p.is_empty() {
                 None
             } else {
-                let n: u32 = p.parse().expect("all digits");
-                if n > 65535 {
-                    return Err(format!("port {n} exceeds 65535"));
+                // 🔴 **D13-020 / N-008:这里曾是一条 panic 面。**
+                //
+                // `is_digit` 只保证「**全是数字**」,不保证「**放得进 u32**」。
+                // `http://a:99999999999999/` 是 14 位合法 `*DIGIT`(RFC 3986 §3.2.2),
+                // 它让 `"99999999999999".parse::<u32>()` 返回 `Err`,于是旧的
+                // `.expect("all digits")` **当场 panic** —— 纯输入打死整个解释器
+                // 进程。规范 §21 表那行「`port` 非 `*DIGIT`,或数值 > 65535 → `E0030`」
+                // 要求的是**诊断**,给 panic 是**违反规范**,不是「更严格的校验」。
+                //
+                // ⇒ 判据仍是**同一条** `exceeds 65535`(不新造错误类别、不静默 clamp):
+                //   静默 clamp 会把 `:99999` 变成 `:34463`,调用方拿到一个**看起来
+                //   合法**的端口 —— 那比报错坏得多。
+                //   只把**真实值**如实带进文案,免得 `:99999999999999` 被报成
+                //   `port 0` 之类的不存在值。
+                //
+                // ⚠ 为什么用 `u64` 而不是 `u128` / `str::parse` 兜底:`u64` 覆盖
+                //   20 位十进制数,已远超 `u16` 的 5 位;真正放不下的(> 20 位)那条
+                //   走 `Err` 分支,把**原始串**打进文案 —— 同样**不 panic**,
+                //   同样落在既有的 `exceeds 65535` 这条路径上。
+                match p.parse::<u64>() {
+                    Ok(n) if n > 65535 => {
+                        return Err(format!("port {n} exceeds 65535"));
+                    }
+                    Ok(n) => Some(n as u16),
+                    // ⚠ `u64` 装不下 ⇒ 数值必然 > 65535,判据没有变。
+                    Err(_) => {
+                        return Err(format!("port {p} exceeds 65535"));
+                    }
                 }
-                Some(n as u16)
             }
         }
     };

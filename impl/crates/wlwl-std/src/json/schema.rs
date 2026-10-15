@@ -13,9 +13,29 @@
 //!
 //! ⚠ 第 2 条**不在** ADR-0033 D4 里 —— D4 只说了「未知键 → `E0030`」。只读 ADR
 //!   就会漏掉它,而它恰好是这套错误消息里最有用的一行。
+//!
+//! ## 🔴 D13-021 / N-013:递归必须有闸(`MAX_DEPTH` 与词法层同一口径)
+//!
+//! 本模块有两处**无界递归**:`parse_schema` 顺着 `properties` / `items` 往下,
+//! `check` 顺着 `s.properties` / `s.items` 往下。schema 的第二个实参收的是**任意
+//! wlwl 值**,而 wlwl 可以用循环**迭代**拼出 10 万层嵌套的 DICT —— 迭代构造不
+//! 占调用栈,递归消费它却每层都占 ⇒ 栈溢出 ⇒ `abort`(不是诊断,是进程死)。
+//! ⇒ 两处都按 `lexer::MAX_DEPTH`(128)**同一口径**加闸,**不另立数字**:
+//! 另立一个数会让 `JSON_CHECK` 与 `JSON_VALIDATE` 对「同一份深层文档」的接受集
+//! 分叉 —— 那正是本仓 M7 W-02 头号要防的事(`lexer.rs` 模块头那张差分表)。
 
 use crate::json::lexer::{self, Kind, Token};
 use wlwl_value::Value;
+
+/// 嵌套深度上限。**不另立数字** —— 直接用词法层的 `lexer::MAX_DEPTH`,理由见
+/// 模块头。`JSON_VALIDATE` 拒第 129 层,`JSON_CHECK` 也必须拒第 129 层。
+const MAX_DEPTH: usize = lexer::MAX_DEPTH;
+
+/// 超深时的那句话。⚠ 与 `lexer.rs` 的 `nesting deeper than {MAX_DEPTH}` 同一句式,
+/// 只多一个 `schema` 前缀 —— 调用方要能一眼分出**是哪一侧**超深(schema 还是文档)。
+fn too_deep() -> SchemaErr {
+    format!("schema nesting deeper than {MAX_DEPTH}")
+}
 
 /// schema 支持的关键字(闭合子集)。**不在此表的键一律 `E0030`**
 /// —— 半张表比没有更糟(规范 §12.1),静默忽略会让调用方以为约束生效了。
@@ -53,7 +73,23 @@ pub struct Violation {
 }
 
 /// 解析 schema(只做形状与关键字检查;值域在 `check` 里判)。
+///
+/// ⚠ 这是**不带深度的入口** —— 真正的入口在 `parse_schema_at`,它拿 `level = 1`
+///   把「根就是第 1 层」这件事钉死。留着这个薄壳是因为调用方(`json.rs::json_check`)
+///   不该、也不需要知道深度这件事 —— **闸是本模块自己的不变量,不是调用方的义务**。
 pub fn parse_schema(schema: &Value) -> Result<Schema, SchemaErr> {
+    parse_schema_at(schema, 1)
+}
+
+/// 递归体。`level` 是**本层是第几层 schema**,根为 `1` —— 与 `lexer::validate` 里
+/// 「进一个 `{` / `[` 就 `*depth += 1`、再比 `MAX_DEPTH`」的口径**逐条对齐**,
+/// 这样「128 层收、第 129 层拒」在两侧是同一个数。
+fn parse_schema_at(schema: &Value, level: usize) -> Result<Schema, SchemaErr> {
+    // 🔴 **D13-021**:闸放在函数入口、递归**之前**。放在递归之后等于没放 ——
+    //   溢出的那一刻已经晚了。
+    if level > MAX_DEPTH {
+        return Err(too_deep());
+    }
     let mut s = Schema::default();
     let Value::Dict(entries) = schema else {
         return Err(format!(
@@ -97,10 +133,14 @@ pub fn parse_schema(schema: &Value) -> Result<Schema, SchemaErr> {
                     let Value::String(name) = pk else {
                         return Err("schema \"properties\" keys must be STRING".into());
                     };
-                    s.properties.push((name.clone(), parse_schema(pv)?));
+                    // ⚠ `level + 1`:schema 的「一层」= 一个 DICT。`properties` 的值
+                    //   与 `items` 的值都必须是 DICT(上面两行已经各自查过),
+                    //   所以**只有 DICT 会继续递归**,层数与 lexer 数容器同口径。
+                    s.properties
+                        .push((name.clone(), parse_schema_at(pv, level + 1)?));
                 }
             }
-            "items" => s.items = Some(Box::new(parse_schema(v)?)),
+            "items" => s.items = Some(Box::new(parse_schema_at(v, level + 1)?)),
             "enum" => {
                 let Value::Array(items) = v else {
                     return Err("schema \"enum\" must be an ARRAY".into());
@@ -202,7 +242,27 @@ fn matches_type(v: &Value, t: &str) -> bool {
 /// ⚠ `offset` **不在这里产出**:`check` 只知道值与 schema,不知道它在文本里的位置。
 ///   位置由 `json_check` 按违规的 `path` 去 `position_index` 里回查 —— 单一出处,
 ///   免得「递归里顺手传一个 offset」传错层级。
+///
+/// ⚠ 这是**不带深度的入口**,理由同 `parse_schema`:闸是本模块自己的不变量。
 pub fn check(v: &Value, s: &Schema, prefix: &str) -> Option<Violation> {
+    check_at(v, s, prefix, 1)
+}
+
+/// 递归体,`level` 语义同 `parse_schema_at`(根为 `1`)。
+///
+/// ⚠ **D13-021:这一道闸与 `parse_schema_at` 那道不是重复,是两道不同的边界。**
+///   `parse_schema_at` 守的是**schema 侧**(第二个实参,wlwl 程序可迭代构造);
+///   这里守的是**值与 schema 联合下潜的那条链** —— 两者深度只要有一侧失控,
+///   递归就会溢。
+///   ⚠ 今天从 `json_check` 走进来时,值侧已经被 `lexer::validate` 的同一口径
+///   `MAX_DEPTH` 限住了(schema 侧又被 `parse_schema_at` 限住),所以这道闸**当前
+///   不可达**。留着它是**为了让「不溢出」成为本模块自己的不变量**:这道函数是
+///   `pub` 的,下一个调用方(内置 schema、从别处反序列化出来的 schema)完全可能
+///   不经过 `parse_schema`。
+///   ⚠ 超深在**这里**只能以 `Violation` 出现(本函数返回 `Option`,升不了诊断),
+///   与 `parse_schema_at` 那条 `E0030` 不同形 —— 但**正常的调用路径**上报出去的是
+///   `parse_schema_at` 那条:它先跑,先拒。
+fn check_at(v: &Value, s: &Schema, prefix: &str, level: usize) -> Option<Violation> {
     let bad = |reason: String| {
         Some(Violation {
             path: prefix.to_string(),
@@ -210,6 +270,9 @@ pub fn check(v: &Value, s: &Schema, prefix: &str) -> Option<Violation> {
             reason,
         })
     };
+    if level > MAX_DEPTH {
+        return bad(too_deep());
+    }
     // `type` 写在前面:类型都不对时,报别的约束只会让人更困惑。
     if !s.ty.is_empty() && !s.ty.iter().any(|t| matches_type(v, t)) {
         return bad(format!(
@@ -278,7 +341,7 @@ pub fn check(v: &Value, s: &Schema, prefix: &str) -> Option<Violation> {
                     //   `format!("[{i}]{}", ...)` —— **覆盖**了整条路径,于是
                     //   嵌套违规的 `path` 变成 `a.b.[0]`(多一个点、少了前缀语义)。
                     //   这种 bug 只有逐条看输出才发现:断言全绿、路径是错的。
-                    if let Some(mut vi) = check(val, sub, &join(prefix, k)) {
+                    if let Some(mut vi) = check_at(val, sub, &join(prefix, k), level + 1) {
                         vi.offset = 0;
                         return Some(vi);
                     }
@@ -295,7 +358,7 @@ pub fn check(v: &Value, s: &Schema, prefix: &str) -> Option<Violation> {
             };
             if let Some(sub) = &s.items {
                 for (i, it) in items.iter().enumerate() {
-                    if let Some(mut vi) = check(it, sub, &format!("{prefix}[{i}]")) {
+                    if let Some(mut vi) = check_at(it, sub, &format!("{prefix}[{i}]"), level + 1) {
                         vi.offset = 0;
                         return Some(vi);
                     }
@@ -334,6 +397,10 @@ fn numeric(v: &Value) -> Option<f64> {
 ///
 /// JSON 文法无歧义 ⇒ 值树与 token 流可以逐节点对齐。对不齐就返回已收集的部分
 /// (调用方据此退化成「位置指向文档开头」),**不猜**。
+///
+/// ⚠ **这里没有深度闸,与上面两个不是同一回事**:`doc` 一定是 `lexer::validate`
+///   放行过的**文本**解析出来的,而那个闸已经把嵌套限在 `MAX_DEPTH` 以内 ⇒ 这条
+///   递归**天然有界**。schema 那边不是:它的输入是 wlwl 程序可以迭代拼出来的值。
 pub fn position_index(doc: &Value, toks: &[Token]) -> Vec<(String, usize)> {
     let mut out = Vec::new();
     let mut cur = 0usize;

@@ -1153,3 +1153,158 @@ fn known_defect_d13_017_parse_sorts_object_keys() {
         r#"{"a":1,"b":2,"c":3}"#
     );
 }
+
+// ── §12 D13-021 / N-013:`JSON_CHECK` 的 **schema 侧**递归必须有闸 ──────────────
+//
+// ## 期望值的来源(本组的 `128` 与 `E0030` 各有出处,不是「跑一遍抄下来」)
+//
+// 1. **`128`** ← **规范 `docs/stdlib/wlwl-stdlib-spec-v0.11.md` §12** 的
+//    `JSON_VALIDATE` 行:「只验语法(词法 + 结构 + **嵌套深度 ≤ 128** + …)」,
+//    以及同节注 5「三处比 RFC / Python 更严(与 `PARSE` 对齐):……**嵌套深度上限
+//    128**」。⇒ 本组断的是**同一个数字**:schema 侧与文档侧必须**同一口径**,
+//    否则同一份深层输入 `JSON_VALIDATE` 与 `JSON_CHECK` 给出不同判决 ⇒ 正是 M7
+//    W-02 模块头那张差分表(第 24 行)要防的分叉。
+//    ⚠ **Python `json` 收任意深**(实测),所以这条**不能**拿 Python 当裁判,
+//    只能拿规范 —— 这与 `lexer.rs` 模块头表里那格「Python 收 / 本模块拒」同源。
+// 2. **`E0030`** ← **ADR-0033 D4 + 规范 §12.1「半张表比没有更糟」**这条既有
+//    体例:schema 自身写错(未知键 / 类型错 / 形状错)一律 `E0030`。超深是
+//    **第四种**「schema 自己写错」,落同一族。见同文件
+//    `json_check_rejects_unknown_schema_keys_and_lists_the_known_ones`。
+//
+// ## 为什么这个形状的输入是**真实攻击面**,不是构造出来的玩具
+//
+// `JSON_CHECK` 的第二个实参收**任意 wlwl 值**,而 wlwl 程序可以用循环**迭代**
+// 拼出任意深的 DICT —— 迭代构造**不占调用栈**,而消费它的递归每层都占 ⇒ 栈溢出
+// 是 `abort`(进程死),不是诊断。修复前 `parse_schema` 就顺着 `properties` /
+// `items` 无界下潜。
+
+/// 造 `depth` 层 `properties.a` 链的 schema 源。
+///
+/// ⚠ 为什么**在 Rust 侧拼**而不是在 wlwl 里写循环:契约要读的人一眼能数出层数;
+///   在 wlwl 里循环拼出来的深度得自己算,数错了就是「冻了个假边界」。
+fn nested_properties_schema(depth: usize) -> String {
+    let mut s = String::from(r#"["type": "object"]"#);
+    for _ in 1..depth {
+        s = format!(r#"["properties": ["a": {s}]]"#);
+    }
+    s
+}
+
+/// 造 `depth` 层 `items` 链的 schema 源 —— **另一条**递归边。
+fn nested_items_schema(depth: usize) -> String {
+    let mut s = String::from(r#"["type": "array"]"#);
+    for _ in 1..depth {
+        s = format!(r#"["items": {s}]"#);
+    }
+    s
+}
+
+/// 文档取 `{}` —— 两侧最省事的合法输入:schema 侧再深,值侧也只有 1 层,
+/// 于是**唯一能触发深度闸的变量就是 schema 自身**,用例不会因文档侧变化而失效。
+fn ck_schema(schema: &str) -> String {
+    ck(&format!(r#"JSON_CHECK("{{}}", {schema})"#))
+}
+
+/// 本组要钉的深度上限是 **128**,而 128 层嵌套的 **wlwl 源字面量**在默认
+/// 2MB 测试线程里**根本走不到** `JSON_CHECK`。
+///
+/// ⚠ **实测**:默认线程(`libtest` 每例一条,2MB)下,`depth` 1…48 全过、
+///   `depth 64` 直接 `STATUS_STACK_OVERFLOW`(0xC00000FD,整进程死)。那条栈上
+///   叠着**三份**逐层递归:**wlwl 解析器**的递归下降 + AST 求值 + `Value` 丢弃,
+///   每层几十 KB(debug 构建)。
+/// ⇒ 那**不是 `JSON_CHECK` 的边界**(本组要钉的 128),是**测试宿主的边界**。
+///   两件事必须分开,否则这条契约量的东西就不是它声称的东西。
+/// ⇒ 给一条 64MB 栈的线程跑本组:48 层≈2MB ⇒ 128 层≈5.5MB,余量十倍以上。
+///   ⚠ Rust 的栈溢出是 `abort`,**不是** unwind,所以「跑挂了就算红」这条路走不通
+///   —— 必须让这个深度**本身可表达**,否则连红的形态都是错的(是 abort,不是断言)。
+fn on_deep_stack(f: impl FnOnce() + Send + 'static) {
+    std::thread::Builder::new()
+        .stack_size(64 << 20)
+        .spawn(f)
+        .expect("spawn deep-stack probe thread")
+        .join()
+        .expect("deep-stack probe thread must not panic (栈溢出在这里就是 abort)");
+}
+
+#[test]
+fn json_check_schema_nesting_is_bounded_at_the_same_128_as_the_document_side() {
+    on_deep_stack(|| {
+        // 边界:**128 层收**,第 **129 层拒** —— 与 `lexer::MAX_DEPTH` 同一口径。
+        // ⚠ 128 这个数若哪天被调大,这条会红;届时 **spec §12 的 128 与
+        //   `lexer.rs:44` 的 `MAX_DEPTH` 要一起改**,别只改一处。
+        assert_eq!(ck_schema(&nested_properties_schema(128)), "OK(NULL)");
+        assert_eq!(ck_schema(&nested_items_schema(128)), "OK(NULL)");
+
+        let over = ck_schema(&nested_properties_schema(129));
+        assert!(over.starts_with("!E0030"), "{over}");
+        assert!(
+            over.contains("schema nesting deeper than 128"),
+            "超深必须报出**真实上限**,否则调用方只能猜:{over}"
+        );
+
+        // `items` 那条递归边同样有闸 —— 两条边是两次独立的递归调用,
+        // 只钉 `properties` 的话,把 `items` 那条改回无界,本组仍全绿。
+        let over_items = ck_schema(&nested_items_schema(129));
+        assert!(over_items.starts_with("!E0030"), "{over_items}");
+        assert!(
+            over_items.contains("schema nesting deeper than 128"),
+            "{over_items}"
+        );
+    });
+}
+
+/// 更深也**必须是诊断**:不能是 panic,也不能是栈溢出。
+///
+/// ⚠ 为什么只到 512:本组量的**不是**「wlwl 能拼多深的值」(`on_deep_stack`
+///   的文档记了那个边界的实测值:默认测试线程 ~48~64 层就 abort,那是**解析器 +
+///   求值 + 丢弃**三份递归叠出来的,与本组无关),而是「**闸一旦越界,形态恒定**」。
+///   512 层足以把「无界递归 ⇒ abort」的旧形态打成红 —— 旧形态在第 129 层就溢了。
+///   ⚠ 而 Rust 栈溢出是 `abort`,所以这条的红必须是**断言失败**而不是进程死;
+///     `on_deep_stack` 让深度可表达,才谈得上「红的形态对不对」。
+#[test]
+fn json_check_deep_schema_is_a_diagnostic_never_a_crash() {
+    on_deep_stack(|| {
+        for depth in [129, 200, 512] {
+            let g = ck_schema(&nested_properties_schema(depth));
+            assert!(
+                g.starts_with("!E0030"),
+                "depth {depth}: 超深必须是 E0030 诊断,不能 panic / 栈溢出 —— 实得 {g}"
+            );
+            assert!(
+                g.contains("schema nesting deeper than 128"),
+                "depth {depth}: {g}"
+            );
+        }
+    });
+}
+
+/// ⚠ **反向守卫**:加深 schema 侧的闸**不许**顺手改掉**文档侧**的行为。
+///
+/// 文档侧的闸归 `lexer::MAX_DEPTH` 管(`JSON_VALIDATE` 的 `ERR` 载荷),与本组
+/// 改的是两处代码。这条把「文档 128+ 层仍是 `ERR` 值、不是 `E0030` 诊断」钉住,
+/// 免得日后有人为了「统一口径」把两个成员改成同一种失败形态 —— 那会改掉
+/// `ADR-0033` D5 记的**失败口径二分**(诊断 vs `ERR` 值)。
+///
+/// 期望值来源:`lexer.rs` 模块头差分表第 24 行(「嵌套 200 层 / 本模块 拒
+/// (`MAX_DEPTH`)」)+ 同文件 `error_locations_are_frozen_byte_for_byte` 里**已逐字节
+/// 冻结**的 `nesting deeper than 128` 一行(offset 128 / line 1 / column 129)。
+#[test]
+fn json_check_schema_gate_does_not_disturb_the_document_side_gate() {
+    // 文档侧:第 129 层起就是词法层的 `ERR` 值。
+    //
+    // ⚠ 文档**刻意**只造 2 层 schema:schema 侧那 1 层远不到 128 ⇒ 报出来的
+    //   **一定**是文档侧那条,两组断言才不会互相冒充。
+    // ⚠ 文档用 `wl()` + 程序拼,不是手抄一长串 `[` —— 第一版就是手抄的,抄成
+    //   **284** 个 `[` 而 `]` 只有一个,wlwl 解析器在 `)` 前撞上 `RBracket`
+    //   (`E0011`)。**测试失败的方式**比失败本身更有信息量:它说明「手工数
+    //   出来的边界」根本不可信。`LOCATIONS` 里那条 129 个 `[` 能冻住,是因为
+    //   它带 `offset 128 / column 129` 三重校验;这里只要结论,不必再手抄一次。
+    let doc = wl(&format!("{}1", "[".repeat(200)));
+    let d = ck(&format!(
+        r#"ERR_PAYLOAD(JSON_CHECK({doc}, ["items": ["items": ["type": "array"]]]))"#
+    ));
+    assert!(d.contains("kind: JsonError"), "{d}");
+    assert!(d.contains("nesting deeper than 128"), "{d}");
+    // 且它**不是**诊断 —— 失败口径的边界没被挪动(见本节开头的 ⚠)。
+    assert!(!d.starts_with('!'), "{d}");
+}

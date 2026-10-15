@@ -256,11 +256,33 @@ enum Ast {
 const MAX_REPEAT: u32 = 1000;
 /// 编译后指令数上限(Go 的 `maxSize` 思路):宁可拒收,不要在编译期爆掉。
 const MAX_PROG: usize = 64 * 1024;
+/// 括号嵌套深度上限。
+///
+/// ⚠ [D13-024 / N-005]这道闸**此前不存在**。`MAX_REPEAT` / `MAX_PROG` 拦得住
+/// 「重复太多」和「编译产物太大」,但 2 万层 `((((…))))` 只产出 2 万条指令,
+/// 两道闸都过得去 —— 于是解析器的 `parse_group → parse_alt → parse_concat →
+/// parse_atom → parse_group` 递归、`Compiler::compile` 的递归、以及 `Ast`
+/// 析构时的递归**全部爆栈**。栈溢出是 `abort` 不是 unwind,`catch_unwind`
+/// 接不住 ⇒ **纯输入打死整个解释器进程**,而不是 §16 决策 2 承诺的
+/// 「语法错 → E0030 优雅中止」。
+///
+/// ⚠ **取值是量出来的,不是抄来的。** Go `regexp/syntax` 用 1000(`maxNestDepth`),
+/// 本仓**不能照抄**:每层嵌套要占 `parse_alt`/`parse_concat`/`parse_atom`/
+/// `parse_group` 四个栈帧,`cargo test` 的测试线程默认只有 **2 MiB** 栈,而
+/// 门禁跑的是 **debug 构建**(帧比 release 大一个量级)。实测 1000 层直接
+/// `STATUS_STACK_OVERFLOW`。取 256 后留出约 4 倍余量,且离日常模式的手写嵌套
+/// 深度(实测极少超过 20)仍有数量级差距。
+///
+/// 同仓 `json/lexer.rs` 的 `MAX_DEPTH = 128` 是同一族闸的另一个实例 —— 那道
+/// 128 是本仓既定的深度闸口径,这里同族但取值不同,因为两者的每层栈开销不同。
+const MAX_NEST: usize = 256;
 
 struct Parser {
     pat: Vec<char>,
     pos: usize,
     groups: usize,
+    /// 当前括号嵌套层数(见 `MAX_NEST`)。
+    depth: usize,
 }
 
 impl Parser {
@@ -470,6 +492,8 @@ impl Parser {
         Ok(Ast::Class(self.literal(unescape_literal(c), flags)))
     }
 
+    /// 括号组。⚠ **这是解析器唯一的自递归入口**(唯一的另外一条递归路径
+    /// `parse_class` 不嵌套),所以深度闸开在这里就够 —— 见 `MAX_NEST`。
     fn parse_group(&mut self, flags: Flags) -> Result<Ast, String> {
         let inner = flags;
         let index;
@@ -501,7 +525,14 @@ impl Parser {
             index = Some(self.groups + 1);
             self.groups += 1;
         }
-        let node = self.parse_alt(inner)?;
+        self.depth += 1;
+        if self.depth > MAX_NEST {
+            self.depth -= 1;
+            return self.err("pattern nests too deeply");
+        }
+        let node = self.parse_alt(inner);
+        self.depth -= 1;
+        let node = node?;
         if self.bump() != Some(')') {
             return self.err("missing ')'");
         }
@@ -762,6 +793,7 @@ pub fn compile(pattern: &str) -> Result<Program, String> {
         pat: pattern.chars().collect(),
         pos: 0,
         groups: 0,
+        depth: 0,
     };
     let ast = p.parse_alt(Flags::default())?;
     if p.pos != p.pat.len() {
@@ -1173,8 +1205,11 @@ pub fn find_all(prog: &Program, text: &str) -> Vec<Captures> {
     // 同一口径(后到者更完整),否则单次搜索与 `find_all` 会在封顶区给出
     // 两个不同的答案(D13-019 / N-003)。
     hits.sort_by(|a, b| {
-        (a.start, &a.prio, std::cmp::Reverse(a.arrival))
-            .cmp(&(b.start, &b.prio, std::cmp::Reverse(b.arrival)))
+        (a.start, &a.prio, std::cmp::Reverse(a.arrival)).cmp(&(
+            b.start,
+            &b.prio,
+            std::cmp::Reverse(b.arrival),
+        ))
     });
     let mut out: Vec<Captures> = Vec::new();
     for h in hits {

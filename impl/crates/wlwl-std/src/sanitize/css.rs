@@ -22,6 +22,15 @@
 //! 但拒绝构造的扫描是**文本级**的(先扫全文再解析)—— 藏在注释外、
 //! 畸形声明里、`url(data:...;base64,...)` 的分号之后的攻击,都不能靠
 //! 「解析不出来就丢掉」蒙混过去。
+//!
+//! ## 输出侧也要硬化(§13.5 · `D13-022`)
+//!
+//! 白名单管的是「哪些声明能活」,不管「活下来的值能不能越出它在 CSS / HTML
+//! 里的位置」。`HTML_SANITIZE_SCRIPT` 侧有 `harden_for_script`,CSS 侧本来
+//! 没有 —— 输出可含裸 `</style>`,嵌进 `<style>` 即破壳(N-018)。见
+//! [`harden_for_css`]。
+
+use super::escape_codepoint;
 
 /// 允许的 CSS 属性(小写比较)。
 ///
@@ -156,7 +165,9 @@ pub(crate) fn sanitize_css(text: &str) -> Result<String, ()> {
         if value.is_empty() {
             continue;
         }
-        out.push(format!("{prop_l}: {value}"));
+        // [D13-022 · N-018] 声明值**必须**加固后才能出本函数。属性名不用:
+        // `prop_l` 命中 `ALLOWED_PROPS`(只含 `[a-z-]`),天然无元字符。
+        out.push(format!("{prop_l}: {}", harden_for_css(value)));
     }
     // 什么都没有存活 ⇒ **空串**,不是 `";"`。空串能被 `==` 与拼接安全处理;
     // 一个孤零零的分号会让「无输出」看起来像坏掉的声明列表。
@@ -167,6 +178,68 @@ pub(crate) fn sanitize_css(text: &str) -> Result<String, ()> {
     // (尾随 `;` 可省,分隔符不可省)。这条曾被写成 `" "` 连接,产出不可用的
     // 样式表。
     Ok(format!("{};", out.join("; ")))
+}
+
+/// [D13-022 · N-018] 把存活声明的**值**加固成「可安全内联进 CSS」的形式。
+///
+/// ## 为什么不能照抄 `harden_for_script` 的 `\u003C`
+///
+/// JS 字符串字面量的转义形状是 `\uXXXX`,CSS **没有这个形状** —— CSS 的
+/// 转义是「反斜杠 + 十六进制码位」(CSS Syntax §4.3.7 *Consume an escaped
+/// code point*:1–6 位十六进制 + 一个可选的空白消歧符)。照抄 `\u003C` 在 CSS
+/// 里只是标识符文本 `u003C`,`<` **原样留在输出里**,破壳照旧。
+/// 转义形状统一走 CSSOM §"Common Serializing Idioms" 的
+/// *escape a character as code point*(小写十六进制 + **一个空格**),与本模块
+/// `CSS_ESCAPE_IDENT` / `CSS_ESCAPE_STRING` 复用 [`super::escape_codepoint`]
+/// —— 一份规则两处用,免得两套十六进制写法在同一个样式表里打架。
+///
+/// ## 输出必须同时在**四种**上下文里成立
+///
+/// 白名单只保证「值语法无害」,不保证「值不能越出它在 CSS / HTML 里的
+/// 位置」。调用方可能把它放进 `<style>…</style>`、`style="…"`、CSS 字符串,
+/// 甚至 `/* … */` 里,故四条都要成立:
+///
+/// 1. **HTML raw text(`<style>` 内)**:HTML 分词器只靠 `</style` 转移出
+///    raw text。输出里**一个 `<` 都没有** ⇒ 那个序列无从拼出 ⇒ 任何输入都
+///    不能终止 `<style>` 元素(与 §13.4 的 `harden_for_script` 同一判据)。
+/// 2. **CSS 字符串**:`"` `'` 与裸换行(CR / LF / FF)都能终止字符串 ⇒ 全转。
+/// 3. **CSS 注释**:能提前闭合的是 `*/`。只转 `*` 就够 —— 序列里少了未转义的
+///    `*`,`*/` 就**拼不出来**;`/` 反而是合法值里的常见字符(`font: 12px/1.5`
+///    族),转它没有收益。
+/// 4. **CSS 规则体**(调用方写 `p { …输出… }`):`;` 是声明分隔符,`{` `}` 能
+///    结束整条规则并另起一条 —— 攻击者借此把**任意**声明塞进样式表。
+///
+/// ## ⚠ `\` 必须与本文插入的转义**一起**处理
+///
+/// CSS 里 `\` 后面跟十六进制才是转义。若不先处理输入自带的 `\`,它会与本函数
+/// 插入的 `\3c ` 连成另一个序列(`\\3c ` 被读成「字面反斜杠 + 标识符 `3c`」),
+/// 转义就不再是「值的逐字映射」,正确性论证也随之失效。转义 `\` 之后,
+/// 攻击者的反斜杠在 CSS 里**只是个字符**,造不出新的十六进制转义。
+/// 副作用(有意的取舍):调用方自己写的嵌套 CSS 转义(中文自定义字体名
+/// `\5FAE\8BA4` 一族)会被当数据,字体名退化为不匹配 → 回退字体。
+/// 对**不可信数据**而言,嵌套转义语法正是 N-017 的攻击面,不能留给它。
+fn harden_for_css(s: &str) -> String {
+    let mut out = String::with_capacity(s.len() + 16);
+    for ch in s.chars() {
+        match ch {
+            // ① 标记上下文:`</style` 的 `<` 消不掉就没有破壳;`>` 一并转是
+            //    OWASP 同款清单,顺带封掉 `-->` 类注释提前闭合的读法。
+            '<' | '>' => escape_codepoint(ch, &mut out),
+            // ② CSS 字符串:`"` `'` 终止字符串,裸换行把它变成 bad-string
+            //    token(同样等于闭合)。⚠ 这些在合法值里本就不该出现,
+            //    转义它们等于**修好**畸形输入。
+            '"' | '\'' | '\n' | '\r' | '\u{c}' => escape_codepoint(ch, &mut out),
+            // ③ CSS 注释:只转 `*`,让 `*/` 无法拼出。
+            '*' => escape_codepoint(ch, &mut out),
+            // ④ 规则体:分隔符与块界。白名单属性的合法值里三者都不出现,
+            //    转义没有功能代价(不转才有)。
+            ';' | '{' | '}' => escape_codepoint(ch, &mut out),
+            // ⑤ 见上文的 `\` 论证。
+            '\\' => escape_codepoint(ch, &mut out),
+            other => out.push(other),
+        }
+    }
+    out
 }
 
 fn strip_comments(s: &str) -> String {
@@ -261,4 +334,57 @@ fn push_decl(chunk: &[char], out: &mut Vec<(String, String)>) {
         chunk[..pos].iter().collect(),
         chunk[pos + 1..].iter().collect(),
     ));
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// [D13-022 · N-018] 转义形状 = CSSOM *escape a character as code point*:
+    /// 反斜杠 + **小写**十六进制 + **一个空格**(与 `CSS_ESCAPE_IDENT` 同一
+    /// 份规则,两处不各写一套)。
+    #[test]
+    fn hex_escape_shape_follows_cssom() {
+        assert_eq!(harden_for_css("a<b"), r"a\3c b");
+        assert_eq!(harden_for_css("a>b"), r"a\3e b");
+        assert_eq!(harden_for_css(r"a\b"), r"a\5c b");
+        assert_eq!(harden_for_css("a\"b"), r"a\22 b");
+        assert_eq!(harden_for_css("a'b"), r"a\27 b");
+        assert_eq!(harden_for_css("a*b"), r"a\2a b");
+        assert_eq!(harden_for_css("a;b"), r"a\3b b");
+        assert_eq!(harden_for_css("a{b"), r"a\7b b");
+        assert_eq!(harden_for_css("a}b"), r"a\7d b");
+        assert_eq!(harden_for_css("a\nb"), r"a\a b");
+        assert_eq!(harden_for_css("a\rb"), r"a\d b");
+        assert_eq!(harden_for_css("a\u{c}b"), r"a\c b");
+        // 非转义集原样。
+        assert_eq!(harden_for_css("red 1px / 2px"), "red 1px / 2px");
+    }
+
+    /// 复核样本:修复前 `</style>` 原样穿过本函数。
+    #[test]
+    fn css_output_cannot_terminate_a_style_element() {
+        let out = sanitize_css("color: red</style><img src=x onerror=alert(1)>").unwrap();
+        assert!(!out.contains('<'), "裸 `<` 留在输出里: {out}");
+        assert_eq!(
+            out,
+            r"color: red\3c /style\3e \3c img src=x onerror=alert(1)\3e ;"
+        );
+    }
+
+    /// ⚠ 攻击者自带的 `\` 若不先转义,会与插入的 `\3c ` 连成别的转义序列 ——
+    /// 这条钉住「先处理 `\`」这件事本身,而不只是转义集里有个 `\`。
+    #[test]
+    fn attacker_backslash_cannot_swallow_the_inserted_escape() {
+        assert_eq!(harden_for_css(r"a\</style>"), r"a\5c \3c /style\3e ");
+        // 转义之后,`\` 在 CSS 里只是个字面字符,造不出新的十六进制转义。
+        assert_eq!(harden_for_css(r"e\78 pression(x)"), r"e\5c 78 pression(x)");
+    }
+
+    /// CSS 注释上下文:`*/` 在输出里**拼不出来**(只转 `*`,不转 `/`)。
+    #[test]
+    fn css_output_cannot_close_a_comment() {
+        assert_eq!(harden_for_css("*/"), r"\2a /");
+        assert!(!sanitize_css("color: a*/").unwrap().contains("*/"));
+    }
 }

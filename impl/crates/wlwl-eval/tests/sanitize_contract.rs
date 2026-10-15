@@ -652,10 +652,106 @@ fn html_sanitize_css_is_paren_and_quote_aware() {
     assert_eq!(actual_raw(&src), "text-align: center; padding: 4px;");
 }
 
+/// [D13-022 · N-018] 输出侧加固:值不能越出它在 CSS / HTML 里的位置。
+///
+/// **期望值的出处**(不是「跑一遍看它输出什么」):
+/// - 转义**形状** = CSSOM §"Common Serializing Idioms" 的 *escape a character
+///   as code point*:反斜杠 + **小写**十六进制 + **一个空格**。`<` = U+003C ⇒
+///   `\3c `,`>` = U+003E ⇒ `\3e `,`\` = U+005C ⇒ `\5c `,`"` = U+0022 ⇒ `\22 `,
+///   `'` = U+0027 ⇒ `\27 `,`*` = U+002A ⇒ `\2a `。
+/// - **为什么必须转 `<`**:HTML 分词器在 raw text 状态只靠 `</style` 转移出
+///   `style` 元素(WHATWG HTML §13.2.6.4 *RAWTEXT* / *appropriate end tag*)。
+///   输出里没有 `<` ⇒ 该序列无从拼出 ⇒ 任何输入都不能终止 `<style>`。
+/// - **为什么必须转 `\`**:CSS 里 `\` 后跟十六进制才是转义(CSS Syntax §4.3.7
+///   *consume an escaped code point*);不处理它,攻击者自带的 `\` 会与插入的
+///   `\3c ` 连成别的序列(`\\3c ` = 字面反斜杠 + 标识符 `3c`)。
+/// - **为什么转 `*` 而不转 `/`**:CSS 注释里不做转义解析,能提前闭合注释的
+///   只有 `*/`;输出里没有未转义的 `*` ⇒ 该序列拼不出来。`/` 在合法值里
+///   (`font: 12px/1.5` 族)是常见字符,转它没有收益。
+/// - **为什么转 `;` `{` `}`**:调用方把输出放进规则体(`p { …输出… }`)时,`;`
+///   是声明分隔符、`{` `}` 能结束整条规则并另起一条。三者在白名单属性的合法值里
+///   都不出现,转义没有功能代价。
+#[test]
+fn html_sanitize_css_output_cannot_break_out_of_its_context() {
+    let cases: Vec<(String, String)> = vec![
+        // 复核样本本体:破壳串原样穿过(修复前的输出)
+        (
+            r#"HTML_SANITIZE_CSS("color: red</style><img src=x onerror=alert(1)>")"#.to_string(),
+            r#"color: red\3c /style\3e \3c img src=x onerror=alert(1)\3e ;"#.to_string(),
+        ),
+        // 调用方自带的 `\` 必须**先**被转义,否则它会与插入的 `\3c ` 相连
+        // (wlwl 源码里 `\\` = 一个反斜杠)
+        (
+            r#"HTML_SANITIZE_CSS("color: a\\</style>")"#.to_string(),
+            r#"color: a\5c \3c /style\3e ;"#.to_string(),
+        ),
+        // CSS 注释:`*/` 拼不出来
+        (
+            r#"HTML_SANITIZE_CSS("color: a*/")"#.to_string(),
+            r#"color: a\2a /;"#.to_string(),
+        ),
+        // CSS 字符串:引号与裸换行都被转义(U+0022 / U+000A;wlwl 字符串的合法
+        // 转义只有 `\" \\ / \b \f \n \r \t \0`,故换行用 wlwl 认得的 `\n`)
+        (
+            "HTML_SANITIZE_CSS(\"color: \\\"a\\nb\\\"\")".to_string(),
+            r#"color: \22 a\a b\22 ;"#.to_string(),
+        ),
+        // 规则体:分号与花括号。⚠ 分号要在**引号内**才留得住 —— 顶层分号是
+        // 声明分隔符(`; ` 由本成员自己写,不转义),引号内的分号才会进值里。
+        (
+            r#"HTML_SANITIZE_CSS("font-family: \"a;b\"")"#.to_string(),
+            r#"font-family: \22 a\3b b\22 ;"#.to_string(),
+        ),
+        (
+            r#"HTML_SANITIZE_CSS("color: a}b{c")"#.to_string(),
+            r#"color: a\7d b\7b c;"#.to_string(),
+        ),
+        // 合法值**不受影响**(加固不能顺手毁掉白名单的正常用法)
+        (
+            r#"HTML_SANITIZE_CSS("font-family: Arial; padding: 4px")"#.to_string(),
+            "font-family: Arial; padding: 4px;".to_string(),
+        ),
+    ];
+    for (expr, want) in &cases {
+        let src = format!("{CSS_IMP} {expr}");
+        assert_eq!(&actual_raw(&src), want, "expr = {expr}");
+    }
+}
+
+/// **反向**断言:输出里**一个 `<` 都没有**,对**任何**输入成立。
+///
+/// 这条比逐条比对更有价值(与 `sanitize_script_output_never_contains_a_raw_lt…`
+/// 同款判据):它对所有输入成立,是「加固真的做了」的结构性证据,而不是「这几条
+/// 样例碰巧对」。⚠ 期望是**结构性命题**(输出不含 `<`),不是实现回读。
+#[test]
+fn html_sanitize_css_output_never_contains_a_raw_lt() {
+    for payload in [
+        r#"HTML_SANITIZE_CSS("color: red</style>")"#,
+        r#"HTML_SANITIZE_CSS("color: <img src=x onerror=alert(1)>")"#,
+        r#"HTML_SANITIZE_CSS("font-family: \"</style><script>alert(1)</script>\"")"#,
+        // wlwl 源码里 `\\` = 一个反斜杠:攻击者自带的转义前缀不许生效
+        r#"HTML_SANITIZE_CSS("color: \\3c /style\\3e ")"#,
+        r#"HTML_SANITIZE_CSS("color: red; text-align: <!--*/-->")"#,
+    ] {
+        let src = format!("{CSS_IMP} {payload}");
+        let out = actual_raw(&src);
+        assert!(
+            !out.contains('<'),
+            "裸 `<` 留在 CSS 输出里: {payload} -> {out}"
+        );
+    }
+}
+
 /// **同款判定**:`HTML_SANITIZE` 的 `href` 判定与 `HTML_SANITIZE_URL` 结论一致。
 ///
 /// 这是 §13.5 最要紧的一条 —— 两处判定一旦分裂,意味着其中一处是错的,
 /// 而「哪一处错」要靠看代码才知道。同一组 URL 喂两个入口,结论必须相同。
+///
+/// ⚠ **这条只断言「一致」,不断言「哪个结论」** —— 两处同时错也照样绿。
+/// 所以 D13-023 修好 `/ ? #` 豁免之后,组内补了三条**带冒号的相对 URL**
+/// (让「一致」这条覆盖到新分支),并另加
+/// `html_sanitize_url_allows_relative_urls_with_a_colon_after_a_delimiter`
+/// 钉住**绝对**结论。两道守卫各管一半,缺一不可。
 #[test]
 fn html_sanitize_url_agrees_with_the_html_sanitizer() {
     let urls = [
@@ -669,6 +765,11 @@ fn html_sanitize_url_agrees_with_the_html_sanitizer() {
         "data:text/html,<script>alert(1)</script>",
         "vbscript:msgbox(1)",
         "java\tscript:alert(1)",
+        // [D13-023 · N-016] 带冒号的相对 URL:`:` 落在 `/` `?` `#` **之后**
+        // ⇒ 不是 scheme 的结尾(WHATWG URL §4.2 scheme start state)。
+        "/wiki/Special:Search",
+        "?q=a:b",
+        "#frag:x",
     ];
     for u in urls {
         // 入口一:`HTML_SANITIZE_URL` 自己。
@@ -692,6 +793,61 @@ fn html_sanitize_url_agrees_with_the_html_sanitizer() {
 /// 把 URL 里的引号 / 反斜杠转义,好塞进 wlwl 字符串字面量。
 fn esc(u: &str) -> String {
     u.replace('\\', "\\\\").replace('"', "\\\"")
+}
+
+/// [D13-023 · N-016] 相对 URL 恒允许 —— 规范 §13.2 / §13.5 的**明文**条款,
+/// 而实现原先只实现了「没有 `:`」那一半。
+///
+/// **期望值的出处**(不是实现回读):
+/// - WHATWG URL Standard §4.2 **scheme start state**:scheme 只在**第一个**
+///   `/`(path state)、`?`(query state)、`#`(fragment state)之前才可能
+///   结束;那三个字符之后的 `:` 是段内分隔符 ⇒ 该 URL 是 **relative-ref**。
+/// - RFC 3986 §3.3:*"a path segment may contain a colon character, but the
+///   **first path segment** of a relative-part reference cannot"* —— 与上面
+///   同一结论的文法表述;§3.4(query) / §3.5(fragment)对 `:` 无限制。
+/// - 因此 `/wiki/Special:Search`、`?q=a:b`、`#frag:x` 三条**恒允许**,且
+///   归一(只剥首尾控制字符)后**原样**返回 —— 路径大小写敏感,不做大小写归一。
+#[test]
+fn html_sanitize_url_allows_relative_urls_with_a_colon_after_a_delimiter() {
+    let cases: Vec<(String, String)> = vec![
+        (
+            r#"HTML_SANITIZE_URL("/wiki/Special:Search")"#.to_string(),
+            "/wiki/Special:Search".to_string(),
+        ),
+        (
+            r#"HTML_SANITIZE_URL("?q=a:b")"#.to_string(),
+            "?q=a:b".to_string(),
+        ),
+        (
+            // ⚠ 用 `r##"…"##`:串里有 `"#`,单 `#` 的 raw 串会在此提前闭合。
+            r##"HTML_SANITIZE_URL("#frag:x")"##.to_string(),
+            "#frag:x".to_string(),
+        ),
+        (
+            r#"HTML_SANITIZE_URL("p/x:y?q=1#z")"#.to_string(),
+            "p/x:y?q=1#z".to_string(),
+        ),
+        // 豁免是**位置**判定,不是「含冒号就放过」:`:` 前无 `/ ? #` 时,
+        // `special` 是一个形态合法的 scheme token(WHATWG:URI 的 scheme 语法
+        // `ALPHA *( ALPHA / DIGIT / "+" / "-" / "." )`),不在缺省白名单 ⇒ 拒。
+        (
+            r#"IS_ERR(HTML_SANITIZE_URL("Special:Search"))"#.to_string(),
+            "TRUE".to_string(),
+        ),
+        // 经典攻击串一个都不能因为豁免而复活:`:` 前无分隔符。
+        (
+            r#"IS_ERR(HTML_SANITIZE_URL("javascript:alert(1)"))"#.to_string(),
+            "TRUE".to_string(),
+        ),
+        (
+            r#"IS_ERR(HTML_SANITIZE_URL("data:text/html,x"))"#.to_string(),
+            "TRUE".to_string(),
+        ),
+    ];
+    for (expr, want) in &cases {
+        let src = format!("{CSS_IMP} {expr}");
+        assert_eq!(&actual_raw(&src), want, "expr = {expr}");
+    }
 }
 
 /// `HTML_SANITIZE_URL` 的归一只做**安全判定需要**的那一步(§13.5)。
@@ -860,6 +1016,8 @@ const SANITIZE_CASES: &[SanCase] = &[
         why: "引号内的 `<script>` 只是属性值字符,不构成标记;`data:` 不在 scheme 白名单 → 属性删除" },
     SanCase { name: "a_href_relative_ok", html: r#"<a href="/rel/path">click</a>"#, policy: "", expect: "<a href=\"/rel/path\">click</a>",
         why: "相对 URL **恒允许**(规范 §13.2);属性值恒双引号包裹后序列化" },
+    SanCase { name: "a_href_relative_with_colon_ok", html: r#"<a href="/wiki/Special:Search">s</a>"#, policy: "", expect: "<a href=\"/wiki/Special:Search\">s</a>",
+        why: "D13-023:维基式命名空间(路径段里带 `:`)也是相对 URL —— WHATWG URL §4.2 scheme 只可能在首个 `/` `?` `#` 之前结束。**修复前这个 href 被删**,方向保守但违背 §13.2「相对 URL 恒允许」" },
     SanCase { name: "a_href_mailto_ok", html: r#"<a href="mailto:a@b.c">mail</a>"#, policy: "", expect: "<a href=\"mailto:a@b.c\">mail</a>",
         why: "mailto 在缺省 scheme 白名单里" },
     SanCase { name: "a_title_kept_href_dropped", html: r#"<a href="javascript:1" title="hi">x</a>"#, policy: "", expect: "<a title=\"hi\">x</a>",

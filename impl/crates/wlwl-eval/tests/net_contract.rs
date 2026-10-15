@@ -225,6 +225,45 @@ const CASES: &[Case] = &[
         src: r#"IMPORT("wlwl:std.net", ["URL_PARSE"]); URL_PARSE("http://a:70000/")"#,
         expect: "E0030",
     },
+    // ── D13-020 / N-008:`port` 的位数没有上限,`is_digit` 只保证「全是数字」────
+    //
+    // 判据来源(三者之一):
+    // ① **独立第二实现** —— Python 3.13 `urllib.parse.urlsplit` 实测:
+    //    `http://a:65536/`、`http://a:99999999999999/`、`http://a:999999999999999999999999/`
+    //    三条**全部** `ValueError: Port out of range 0-65535`,
+    //    `http://a:65535/` 给 `port=65535`,`http://a:/` 给 `None`。
+    //    ⇒ Python 用**任意精度整数**,所以「超范围」这条判据**与位数无关**;
+    //    本实现改用 `u64`(≤ 20 位)后拿到的是**同一条判据**,不是一条新判据。
+    // ② **规范** §21 拒绝表:「`port` 非 `*DIGIT`,或数值 > 65535 → `E0030`」。
+    // ③ RFC 3986 §3.2.2 只定义 `port = *DIGIT`(纯文法,**不含范围**)⇒ 范围是规范
+    //    自己加的约束,故引用规范而不引 RFC。
+    //
+    // ⚠ 修复前 `http://a:99999999999999/` 会让 `"…".parse::<u32>()` 返 `Err`,
+    //   再被 `.expect("all digits")` **panic** —— 纯输入打死解释器进程。
+    //   下面 4 条合起来钉住「超范围一律 `E0030` + 如实报值,**永不 panic**」。
+    Case {
+        name: "reject_port_above_u32_range_reports_the_real_value",
+        src: r#"IMPORT("wlwl:std.net", ["URL_PARSE"]); URL_PARSE("http://a:99999999999999/")"#,
+        expect: r#"!E0030 URL_PARSE: not a valid URI reference: port 99999999999999 exceeds 65535: "http://a:99999999999999/""#,
+    },
+    // ⚠ > 20 位:`u64` 也放不下 ⇒ 文案带**原始串**而不是数字,但判据**不变**
+    //   (Python 对同一输入同样只给「超出 0-65535」一条判决,见上)。
+    Case {
+        name: "reject_port_beyond_u64_range_reports_the_raw_digits",
+        src: r#"IMPORT("wlwl:std.net", ["URL_PARSE"]); URL_PARSE("http://a:999999999999999999999999/")"#,
+        expect: r#"!E0030 URL_PARSE: not a valid URI reference: port 999999999999999999999999 exceeds 65535: "http://a:999999999999999999999999/""#,
+    },
+    // 边界值两个方向。期望值 = Python 实测(①),且 65535 本来就在旧契约里合法。
+    Case {
+        name: "accept_port_at_the_u16_upper_bound",
+        src: r#"IMPORT("wlwl:std.net", ["URL_PARSE"]); AT_K(URL_PARSE("http://a:65535/"), "port", "MISSING")"#,
+        expect: "65535",
+    },
+    Case {
+        name: "reject_port_one_past_the_u16_upper_bound",
+        src: r#"IMPORT("wlwl:std.net", ["URL_PARSE"]); URL_PARSE("http://a:65536/")"#,
+        expect: "E0030",
+    },
     Case {
         name: "reject_unclosed_ip_literal",
         src: r#"IMPORT("wlwl:std.net", ["URL_PARSE"]); URL_PARSE("http://[2001:db8::7/")"#,
