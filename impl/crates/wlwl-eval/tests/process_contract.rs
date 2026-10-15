@@ -185,7 +185,7 @@ fn argv_elements_are_never_shell_interpreted() {
         r#"IMPORT("wlwl:std.process", ["PROCESS_RUN"]);
 AT_K(PROCESS_RUN(["cmd", "/C", "echo", "a & echo INJECTED"]), "stdout", "")"#
     } else {
-        // ⚠ 两个转义坑,都在这里踩过(`D13-055`):
+        // ⚠ 三个转义 / 元数坑,都在这里踩过(`D13-055` / `D13-056`):
         //   ① wlwl 字符串里**必须有 `\"`** —— lexer(`wlwl-lexer/src/lib.rs`
         //      的 `Some(b'"') => push(b'"')`)**支持** `\"`,不写就会让内层引号
         //      提前闭合并让 `$1` 落到字符串外 ⇒ `E0001 illegal character '$'`。
@@ -195,11 +195,16 @@ AT_K(PROCESS_RUN(["cmd", "/C", "echo", "a & echo INJECTED"]), "stdout", "")"#
         //      才当插值(`Some(b'$') if peek_at(1) == Some(b'{')`),`$1` 落回
         //      普通字符。写成 `\$1` 反而会让 wlwl 交出**字面** `$1`,sh 就
         //      不会展开它 —— 那测到的是另一件事。
+        //   ③ `AT_K` 是**三元**的 `(dict, key, 缺省)`。原先这个分支只写了
+        //      两个 ⇒ `E0022 function AT_K expects 3 argument(s), got 2`。
+        //      ⚠ **它被 ① 挡住了**:词法错误先炸,元数错误根本没机会报出来 ——
+        //      所以「只验解析通过」这种局部验证会漏掉下一层。修 ① 之后 ③ 才
+        //      浮出来。⇒ 验证要**跑**整个程序,不能只 `check`。
         // ⚠ 被测参数放进 `$1` 让它**只展开一次**;若直接写进 `-c` 的脚本体,
         //   `&` 会被 sh 在**第一轮**就当操作符 —— 那测的是「sh 的引号处理」
         //   而不是「argv 有没有被拼接」。
         r#"IMPORT("wlwl:std.process", ["PROCESS_RUN"]);
-AT_K(PROCESS_RUN(["sh", "-c", "printf %s \"$1\"", "sh", "a & echo INJECTED"]), "stdout")"#
+AT_K(PROCESS_RUN(["sh", "-c", "printf %s \"$1\"", "sh", "a & echo INJECTED"]), "stdout", "")"#
     };
     let out = actual(src);
     assert!(
