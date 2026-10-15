@@ -627,6 +627,13 @@ impl Parser {
                     // 字符类用例是纯字面的 `[^a-c]` —— 契约只钉了「看起来覆盖了
                     // 取反」的形状,没钉预定义类这一支。
                     set.ranges.extend(sub.ranges);
+                    // 🔴 [D13-031 / N-022]如果**下一个** token 就是一个区间连字符,
+                    // 说明这个预定义类被当成了区间的**低端** —— 而预定义类不是单个
+                    // 码点,`[\d-x]` 没有任何合法含义。此前是 `continue` 掉、把 `-`
+                    // 留给下一轮当字面量,于是类悄悄变成了「数字 ∪ `-`..`x`」。
+                    if self.peek() == Some('-') && self.at(1).is_some() && self.at(1) != Some(']') {
+                        return self.err(&range_endpoint_msg(e));
+                    }
                     continue;
                 }
                 unescape_literal(e)
@@ -642,6 +649,17 @@ impl Parser {
                     let Some(e) = self.bump() else {
                         return self.err("pattern ends with a backslash");
                     };
+                    // 🔴 [D13-031 / N-022]预定义类出现在区间**高端**。
+                    // 此前这里只过 `unescape_literal`,`\d` 被取成字符 `'d'`
+                    // (0x64) ⇒ `[a-\d]` 的区间 `a-d` 顺利通过校验 ⇒
+                    // `RE_TEST(RE("[a-\\d]"), "c")` 答 TRUE。Go / Python 在这里
+                    // 报 `invalid character class range`,本成员此前**不报**。
+                    //
+                    // ⚠ 零宽断言一并拒:它落到同一个兜底分支、同样会被当成码点
+                    //   (`[0-\b]` ⇒ 区间 `0`..`'b'`)。与 D13-030 同源。
+                    if let Some(why) = range_endpoint_rejection(e) {
+                        return self.err(&why);
+                    }
                     hi = unescape_literal(e);
                 }
                 if (hi as u32) < (lo as u32) {
@@ -1549,11 +1567,45 @@ pub fn re_replace(host: &mut dyn StdHost, args: Vec<Value>) -> wlwl_error::WlwlR
     Ok(Outcome::normal(Value::String(out)))
 }
 
-/// 展开替换串里的 `$0` / `$1` / `$2`。未知组号 → `E0030`(静默原样输出会
-/// 让用户以为引用生效了)。
-/// 展开替换串里的 `$0` / `$1` / `$2`。未知组号 → `Err`(调用方报 `E0030`;
-/// 静默原样输出会让用户以为引用生效了)。未参与匹配的组按空串处理
-/// (Python / Go 一致),**不是错误**。
+/// 🔴 [D13-031 / N-022]字符类的**区间端点**位置上不能出现的转义。
+///
+/// 预定义类不是一个码点 —— `[a-\d]` 里的 `\d` 若被取成字符 `'d'`(0x64),
+/// 区间 `a-d` 会**顺利通过**校验,得到一个与作者意图毫无关系的类。
+/// Go `regexp/syntax` 与 Python 都在这里报 `invalid character class range`;
+/// 本成员此前**不报**,而契约里也没有一条 `[<预定义类>]` 用例(全仓唯一的
+/// 取反字符类用例是纯字面的 `[^a-c]`)⇒ **守卫的扫描范围小于被承诺的行为**。
+///
+/// 零宽断言一并纳入:它落到同一个 `unescape_literal` 兜底分支,同样会被当成
+/// 码点(`[0-\b]` ⇒ 区间 `0`..`'b'`),与 D13-030 同源。
+fn range_endpoint_rejection(escape: char) -> Option<String> {
+    if let Some(why) = zero_width_rejection(escape) {
+        return Some(why);
+    }
+    predefined(escape).map(|_| range_endpoint_msg(escape))
+}
+
+/// 区间端点用了预定义类时的那句话。
+fn range_endpoint_msg(escape: char) -> String {
+    format!("`\\{escape}` is a predefined class and cannot be a character range endpoint")
+}
+
+/// 展开替换串里的 `$0` / `$1` / `$2`。
+///
+/// ⚠ [D13-032 / N-023]这段 doc 此前是**两段重复**且互相矛盾的拷贝:第一份写
+/// 「未知组号 → `E0030`」就断在半句,第二份写「未知组号 → `Err`(调用方报
+/// `E0030`)」。**两句话都不准确** —— 实际是**三分**:
+///
+/// | 情形 | 本成员 | Python | Go |
+/// |---|---|---|---|
+/// | `${name}` | `E0030`(在 [`re_replace`] 里判,不在本函数) | `error: unknown group name` | 原样输出 |
+/// | `$N` 的 `N` **超出 `usize`**(如 `$99999999999999999999`) | `Err` ⇒ 调用方报 `E0030` | 同 Python | 原样输出 |
+/// | `$N` 的 `N` 是合法数字但**没有这个组** | **静默展开成空串** | `error: invalid group reference` | 原样输出 |
+/// | 组存在但**没参与这次匹配** | 空串 | 空串 | 空串 |
+///
+/// ⚠ **第三行那格是本成员的已知语义差分**,不是笔误:规范 §16 没有要求
+/// `RE_REPLACE` 对越界组号报错,改它属**可观察行为变更**(今天展开成空串的
+/// 程序会开始报错),按 §14.1 体例须单独立项。差分已在 §16.5 登记。
+/// 下面那句「没参与匹配的组按空串处理(Python / Go 一致)」是**对的**,保留。
 fn expand(repl: &str, input: &[char], caps: &Captures) -> Result<String, String> {
     let chars: Vec<char> = repl.chars().collect();
     let mut out = String::new();

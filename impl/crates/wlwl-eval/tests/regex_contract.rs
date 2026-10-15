@@ -90,6 +90,26 @@ const CASES: &[Case] = &[
         ),
         // 列号 2 = 那个 `b` 本身(1 基),即**被拒的那个转义字符**,不是 `\`。
     },
+    // ⚠🔴 [D13-031 / N-022]**预定义类不能当字符区间的端点。**
+    //
+    // 期望值出处:Go `regexp/syntax` 与 Python 都在这里报
+    // `invalid character class range` / `bad character range` —— 预定义类
+    // (一整类码点)不是一个码点,`a-\d` 没有合法含义。
+    //
+    // ⚠ 修复前本条**编译成功**,而且给出的是一个与作者意图毫无关系的类:
+    // `\d` 被 `unescape_literal` 取成字符 `'d'`(0x64),区间 `a-d` 顺利通过
+    // 校验 ⇒ `RE_TEST(RE("[a-\\d]"), "c")` 答 TRUE。**没有任何诊断。**
+    Case {
+        name: "rejects_a_predefined_class_as_a_range_endpoint",
+        src: concat!(
+            r#"IMPORT("wlwl:std.regex", ["RE"]); "#,
+            r#"RE("[a-\\d]")"#
+        ),
+        expect: concat!(
+            "!E0030 RE: `\\d` is a predefined class and cannot be a character ",
+            "range endpoint at column 6 of the pattern"
+        ),
+    },
     // **必须拒**的三类(与线性时间互斥)。放进契约表是因为「拒得掉」和
     // 「能编译」一样是契约 —— 只测能编译的那种,回溯引擎也会全绿。
     Case {
@@ -542,6 +562,66 @@ fn the_linearity_promise_is_documented() {
             text.contains(needle),
             "stdlib spec §16 lost `{needle}` — either the design changed on purpose (update \
              this test and §16 together) or the section was trimmed by accident"
+        );
+    }
+}
+
+/// [D13-031 / N-022]区间端点：两端都要拒，且**合法的相邻形态不能被误伤**。
+///
+/// ⚠ 期望值出处：Go `regexp/syntax` 与 Python 都拒「预定义类当端点」；末尾那
+///   四条**合法**形态的依据是 RFC / Python 的字符类文法（连字符在首尾是字面量）。
+///   **不是**「跑一遍本实现看它报什么」—— 那会把「静默放行」冻成基线。
+///
+/// ⚠ **反向守卫与正向守卫一样重要**：`[\d-]` 里的 `-` 是**字面量**（`]` 收尾）,
+///   不构成区间端点,必须仍然编译成功。只写「要拒」的那几条,很容易顺手把
+///   合法形态一起拒掉 —— 那是另一种静默破坏。
+#[test]
+fn a_predefined_class_may_not_be_a_range_endpoint_but_adjacent_forms_still_work() {
+    for name in ["d", "w", "s", "D", "W", "S"] {
+        for pattern in [
+            format!("[a-\\{name}]"), // 高端
+            format!("[\\{name}-x]"), // 低端
+        ] {
+            let got = actual(&format!(
+                r#"IMPORT("wlwl:std.regex", ["RE"]); RE("{}")"#,
+                pattern.replace('\\', "\\\\")
+            ));
+            assert!(
+                got.starts_with("!E0030") && got.contains("cannot be a character range endpoint"),
+                "pattern {pattern:?} must be rejected, got: {got}"
+            );
+        }
+    }
+
+    // 零宽断言当端点走的是同一个兜底分支 ⇒ 一并拒(D13-030 同源)。
+    for pattern in [r"[0-\b]", r"[\A-x]"] {
+        let got = actual(&format!(
+            r#"IMPORT("wlwl:std.regex", ["RE"]); RE("{}")"#,
+            pattern.replace('\\', "\\\\")
+        ));
+        assert!(
+            got.starts_with("!E0030"),
+            "pattern {pattern:?} must be rejected, got: {got}"
+        );
+    }
+
+    // ⚠ 正向守卫:这些**合法**,不能被上面那道闸误伤。
+    for pattern in [
+        r"[\d]",  // 预定义类单独在类里
+        r"[^\d]", // 取反
+        r"[a\d]", // 与字面量混排
+        r"[\d-]", // 连字符在**末尾** ⇒ 字面量,不是区间
+        r"[-a]",  // 连字符在**开头** ⇒ 字面量
+        r"[a-]",  // 同上
+        r"[a-c]", // 纯字面区间(全仓原有的那唯一一条取反用例的同类)
+    ] {
+        let got = actual(&format!(
+            r#"IMPORT("wlwl:std.regex", ["RE"]); RE("{}")"#,
+            pattern.replace('\\', "\\\\")
+        ));
+        assert!(
+            !got.starts_with('!'),
+            "pattern {pattern:?} is legal and must still compile, got: {got}"
         );
     }
 }
