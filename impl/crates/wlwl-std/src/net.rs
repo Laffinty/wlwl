@@ -812,7 +812,10 @@ fn request(
     let Some(host) = p.host.clone() else {
         return http_error(name, "URL has no host");
     };
-    let port = p.port.map_or(80u16, |n| n);
+    // ⚠ [D13-053]原先写 `p.port.map_or(80u16, |n| n)` —— 恒等闭包,clippy 1.99 的
+    // `map_or_identity`(由 `-D warnings` 提升为 error)判它可简化成 `unwrap_or`。
+    // 两式**语义逐字相同**(`Option<u16>` 的 `map_or` 与 `unwrap_or` 一致)。
+    let port = p.port.unwrap_or(80u16);
     // `URL_PARSE` 保留 IPv6 的方括号,这里要的是裸地址。
     let dial_host = host
         .trim_start_matches('[')

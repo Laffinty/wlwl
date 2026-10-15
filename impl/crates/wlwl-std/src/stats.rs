@@ -165,11 +165,20 @@ pub fn mode(host: &mut dyn StdHost, args: Vec<Value>) -> R<Outcome> {
         }
     }
     // 选「全局最大计数里的第一个」= 计数最大、并列时首次下标最小。
-    // ⚠ `buckets` 是 HashMap,`iter()` 顺序不确定 ⇒ 并列必须**显式**按下标比,
+    // ⚠ `buckets` 是 HashMap,`values()` 顺序不确定 ⇒ 并列必须**显式**按下标比,
     // 不能靠遍历顺序蒙对。旧实现的增量扫描恰好等价于此(第一次达到全局最大值的
     // 元素把 `best` 顶上去,之后再也没有更大的计数能顶掉它),语义逐字保持。
     let mut best: Option<(usize, f64, usize)> = None;
-    for (_, &(i, x, c)) in buckets.iter() {
+    // ⚠ `buckets` 是 HashMap,`values()` 顺序不确定 ⇒ 并列必须**显式**按下标比,
+    // 不能靠遍历顺序蒙对。旧实现的增量扫描恰好等价于此(第一次达到全局最大值的
+    // 元素把 `best` 顶上去,之后再也没有更大的计数能顶掉它),语义逐字保持。
+    //
+    // ⚠ 写法从 `for (_, &(i, x, c)) in buckets.iter()` 改成 `values()`
+    // ([D13-053]):clippy 1.99 的 `for_kv_map`(由 `-D warnings` 提升为 error)
+    // 判它「在遍历 map 的 values 却解构键值对」。⚠ **改写不影响遍历顺序** ——
+    // `values()` 与 `iter().map(|(_, v)| v)` 顺序完全相同,而上面那条注释已
+    // 明说顺序根本不承重。
+    for &(i, x, c) in buckets.values() {
         match best {
             None => best = Some((i, x, c)),
             Some((bi, _, bc)) if c > bc || (c == bc && i < bi) => best = Some((i, x, c)),
