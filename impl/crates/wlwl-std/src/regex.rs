@@ -35,8 +35,15 @@
 //! ## 不做(与线性时间互斥,不是「以后再加」)
 //!
 //! 回溯引用 `(?P=…)` / `\1`、lookahead `(?=…)` / `(?!…)`、lookbehind、
-//! PCRE 兼容、反向正则、零宽断言、字素簇语义。**它们在解析期一律 `E0030`** ——
-//! 必须拒,否则线性承诺当场破。
+//! PCRE 兼容、反向正则、字素簇语义,以及**零宽断言转义** `\b` `\B` `\A` `\z`
+//! `\Z`。**它们在解析期一律 `E0030`** —— 必须拒,否则线性承诺当场破。
+//!
+//! ⚠ **这一句曾经是空头支票**(D13-030 / N-021):`\b` `\B` `\A` `\z` `\Z`
+//! 落到 `unescape_literal` 的兜底分支,被当成**普通字面量**放行
+//! (`RE("\\b")` 匹配的是字符 `b`)。零宽断言在 Thompson NFA 上要**分支**
+//! 而不是消费字符 —— 那会让一次抵达同时对应「锚点前」与「锚点后」两条
+//! 路径,leftmost-first 的裁决键随之不再是良定义的。所以是**不能实现**,
+//! 不只是「以后再加」。
 
 use crate::{ModuleSpec, StdFn};
 use wlwl_error::ErrorCode;
@@ -159,6 +166,34 @@ impl ClassSet {
         }
         out
     }
+}
+
+/// ⚠ 零宽断言的转义形式:`\b` `\B` `\A` `\z` `\Z`。**一律拒收**(见
+/// [`zero_width_rejection`])。
+///
+/// ⚠ 为什么 `\A` `\z` `\Z` 也在列:它们在 Perl / Python / PCRE / RE2 里都是
+/// **正宗的零宽锚点**,而本成员**不实现**它们。若静默放行,`\Aabc` 会变成
+/// 「匹配字面量 `Aabc`」—— 比报错更坏的是它**看起来能用**。
+const ZERO_WIDTH_ESCAPES: [char; 5] = ['b', 'B', 'A', 'z', 'Z'];
+
+/// `\` 后的字符若是零宽断言 ⇒ 给出拒收理由(否则 `None`,继续按字面量走)。
+///
+/// 🔴 [D13-030 / N-021] 此前这些转义**静默变成字面量**:`predefined()` 只认
+/// `d w s D W S`,`unescape_literal()` 的兜底是 `other => other` ⇒
+/// `RE("\\b")` 匹配的是**字符 `b`**,`RE("a\\Ac")` 匹配字面量 `"Ac"`。
+///
+/// ⚠ 这不是「宽容」,是**违自家规范**:本文件头第 38 行写着「零宽断言 … 在
+/// 解析期一律 `E0030`」,规范 §16.3 同样列了「零宽断言」并要求 `E0030`。
+/// **实现与规范冲突**,且方向是静默给错结果 ⇒ 按 §16 决策 2 拒。
+///
+/// ⚠ 为什么不能实现它们而要拒:零宽断言在 Thompson NFA 上要**分支**而不是
+/// 消费字符 —— 那正是让优先级裁决失效的构造(一次抵达可以同时是「走到
+/// `\b` 前的」与「走到 `\b` 后的」两条路径),leftmost-first 的裁决键就
+/// 不再是良定义的。与 `MAX_NEST` / `MAX_PROG` 同族:宁可拒,不要静默。
+fn zero_width_rejection(name: char) -> Option<String> {
+    ZERO_WIDTH_ESCAPES.contains(&name).then(|| {
+        format!("zero-width assertion `\\{name}` is not supported (it would break linear time)")
+    })
 }
 
 fn unescape_literal(c: char) -> char {
@@ -484,6 +519,12 @@ impl Parser {
         if c.is_ascii_digit() {
             return self.err("backreferences are not supported (they would break linear time)");
         }
+        // ⚠ 零宽断言必须**拒**,不能落到下面的 `unescape_literal` 兜底里变字面量
+        // (D13-030 / N-021)。位置在 `predefined` 之前 —— 这五个字符不在预定义
+        // 集合里,顺序只影响可读性,但写在这里更醒目。
+        if let Some(why) = zero_width_rejection(c) {
+            return self.err(&why);
+        }
         if let Some(s) = predefined(c) {
             // 预定义类**不做 ASCII 折叠**:Python 的 `re.ASCII` 下 `(?i)\w`
             // 也不折叠数字与下划线,保持一致。
@@ -565,6 +606,13 @@ impl Parser {
                 };
                 if e.is_ascii_digit() {
                     return self.err("backreferences are not supported");
+                }
+                // ⚠ 字符类里**同样**拒,否则 `[\b]` 会变成「字符 `b` 的类」——
+                // 与类外 `\b` 静默变字面量是**同一个 bug 的两个入口**
+                // (D13-030 / N-021)。Go `regexp/syntax` 在类内也报
+                // `invalid escape sequence \b`,口径一致。
+                if let Some(why) = zero_width_rejection(e) {
+                    return self.err(&why);
                 }
                 if let Some(sub) = predefined(e) {
                     // `[\d]` 是合法形态:直接并入。**否定情形由整类的 `^`

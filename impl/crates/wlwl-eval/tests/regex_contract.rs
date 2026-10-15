@@ -68,6 +68,28 @@ const CASES: &[Case] = &[
         ),
         expect: "!E0030 RE: unterminated character class at column 3 of the pattern",
     },
+    // ⚠🔴 [D13-030 / N-021]**零宽断言转义必须编译期拒收**。
+    //
+    // 期望值出处:**本仓规范 §16.3**「`(?=…)` / `(?<=…)` / 回溯引用 / `(?<name>…)` /
+    // `\p{…}` / 反向正则 / **零宽断言** —— 一律在编译期 `E0030`,不静默放行」,
+    // 与 `regex.rs` 文件头同一句承诺。
+    //
+    // ⚠ 修复前本条答 `b`:`\b` 落到 `unescape_literal` 的兜底分支,被当成
+    // **普通字面量**。从 Perl / Python / PCRE 过来的人写 `\bfoo\b` 期望
+    // 「词边界」,拿到的是「字面量 bfoo 字面量 b」—— **静默给错结果**,
+    // 而且模式**编译成功**、不报任何诊断。
+    Case {
+        name: "rejects_a_word_boundary_escape",
+        src: concat!(
+            r#"IMPORT("wlwl:std.regex", ["RE"]); "#,
+            r#"RE("\\b")"#
+        ),
+        expect: concat!(
+            "!E0030 RE: zero-width assertion `\\b` is not supported ",
+            "(it would break linear time) at column 2 of the pattern"
+        ),
+        // 列号 2 = 那个 `b` 本身(1 基),即**被拒的那个转义字符**,不是 `\`。
+    },
     // **必须拒**的三类(与线性时间互斥)。放进契约表是因为「拒得掉」和
     // 「能编译」一样是契约 —— 只测能编译的那种,回溯引擎也会全绿。
     Case {
@@ -521,6 +543,35 @@ fn the_linearity_promise_is_documented() {
             "stdlib spec §16 lost `{needle}` — either the design changed on purpose (update \
              this test and §16 together) or the section was trimmed by accident"
         );
+    }
+}
+
+/// [D13-030 / N-021]五个零宽断言转义**逐个**拒收,类内外一致。
+///
+/// ⚠ 期望值出处:**规范 §16.3**(零宽断言一律编译期 `E0030`)+ `regex.rs`
+/// 文件头同一句承诺。**不是**「我跑一遍本实现看它报什么」—— 那会把
+/// 「静默放行」也冻成基线,正是本条要防的。
+///
+/// ⚠ **类内也要拒**:`[\b]` 与类外 `\b` 是同一个 bug 的两个入口,只修一个
+/// 会留下另一半。Go `regexp/syntax` 在类内同样报 `invalid escape sequence`。
+#[test]
+fn every_zero_width_escape_is_rejected_wherever_it_appears() {
+    for name in ["b", "B", "A", "z", "Z"] {
+        for pattern in [
+            format!("\\{name}"),   // 类外
+            format!("[\\{name}]"), // 字符类内
+            format!("a\\{name}b"), // 嵌在别的内容中间
+        ] {
+            let got = actual(&format!(
+                r#"IMPORT("wlwl:std.regex", ["RE"]); RE("{}")"#,
+                pattern.replace('\\', "\\\\")
+            ));
+            assert!(
+                got.starts_with("!E0030")
+                    && got.contains(&format!("zero-width assertion `\\{name}` is not supported")),
+                "pattern {pattern:?} must be rejected as a zero-width assertion, got: {got}"
+            );
+        }
     }
 }
 
