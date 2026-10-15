@@ -174,6 +174,67 @@ const CASES: &[Case] = &[
         ),
         expect: "[matched: a, start: 0, end: 1, groups: [a]]",
     },
+    // ⚠ **封顶不得损语义**(D13-019 / N-003)。贪含量词每绕一圈 `Split`,
+    //    `prio` 就长一格;长到 `PRIO_MAX`(64)之后不再增长,同一左端的多个
+    //    候选 `prio` 塌成同一向量,裁决权落到第三键 `arrival`。
+    //    100 个 a 远在封顶点之后 —— 修复前本条只匹配到 64/65 个。
+    //    **期望值不是拍脑袋的**:贪心的定义就是「尽可能长」,Python
+    //    `len(re.search("a+", "a"*100).group())` 同样是 100。
+    Case {
+        name: "greedy_repeat_survives_the_priority_cap",
+        src: concat!(
+            r#"IMPORT("wlwl:std.regex", ["RE", "RE_REPLACE"]); "#,
+            r#"=(LEN(RE_REPLACE(RE("a+"), REPEAT("a", 100), "$0")), 100)"#
+        ),
+        // `$0` = 整体匹配。修复前本条只会还原出 64/65 个 a。
+        expect: "TRUE",
+    },
+    Case {
+        name: "greedy_repeat_is_unbounded_in_find_all_too",
+        src: concat!(
+            r#"IMPORT("wlwl:std.regex", ["RE", "RE_FIND_ALL", "RE_TEST"]); "#,
+            r#"=(LEN(RE_FIND_ALL(RE("a+"), REPEAT("a", 100))), 1)"#
+        ),
+        expect: "TRUE",
+    },
+
+    // ── 取反字符类里的预定义类(D13-019 / N-002)────────────────────────
+    // 整类的 `^` 在收尾处统一取补,类内**不得**再补一次。补两次 = 没补:
+    // `[^\d]` 会等于 `\d`。这三条是判别式 —— 修复前它们全部答反。
+    Case {
+        name: "negated_class_over_a_predefined_class",
+        src: concat!(
+            r#"IMPORT("wlwl:std.regex", ["RE", "RE_TEST"]); "#,
+            r#"=(RE_TEST(RE("[^\\d]"), " "), TRUE)"#
+        ),
+        expect: "TRUE",
+    },
+    Case {
+        name: "negated_class_does_not_double_negate_word_chars",
+        src: concat!(
+            r#"IMPORT("wlwl:std.regex", ["RE", "RE_TEST"]); "#,
+            r#"=(RE_TEST(RE("[^\\w]"), "a"), FALSE)"#
+        ),
+        // 修复前答 TRUE(等于把 `[^\w]` 当成了 `\w`)。
+        expect: "TRUE",
+    },
+    Case {
+        name: "negated_class_of_an_uppercase_predefined_class",
+        src: concat!(
+            r#"IMPORT("wlwl:std.regex", ["RE", "RE_TEST"]); "#,
+            r#"=(RE_TEST(RE("[^\\D]"), "5"), TRUE)"#
+        ),
+        // `[^\D]` = 非「非数字」= 数字。修复前等于 `\D`,这条会答 FALSE。
+        expect: "TRUE",
+    },
+    Case {
+        name: "negated_class_mixes_literals_and_predefined",
+        src: concat!(
+            r#"IMPORT("wlwl:std.regex", ["RE", "RE_TEST"]); "#,
+            r#"=(RE_TEST(RE("[^a-z\\d]"), "5"), FALSE)"#
+        ),
+        expect: "TRUE",
+    },
 
     // ── RE_FIND_ALL ──────────────────────────────────────────────────
     Case {
@@ -194,6 +255,32 @@ const CASES: &[Case] = &[
         // 报 3 个 —— 空(0)、"a"(1..2)、空(3);**紧贴 "a" 的那个空匹配被跳过**。
         // Python 的 finditer 在这里会给 4 个(它会照报 (2,2))—— 刻意不跟它。
         expect: "3",
+    },
+    // ⚠ `find_all` 的 leftmost-first(D13-019 / N-004)。上面的判别式全部走
+    //    `RE_SEARCH`(经 `best_hit`),**照不到 `find_all` 这条路径** ——
+    //    而 `RE_REPLACE` / `RE_SPLIT` 建在 `find_all` 上。
+    //    修复前本条答 `["ab"]`:同一左端「后来的更长就取代」把分支 1 的 "a"
+    //    顶掉了。Python `re.findall("a|ab", "ab")` 答 `['a']`。
+    //    `RE_FIND_ALL` 返回的是**完整的捕获记录**(不是裸字符串),故期望值
+    //    是 `[[...]]` 而非 `[a]`。
+    Case {
+        name: "find_all_honours_leftmost_first",
+        src: concat!(
+            r#"IMPORT("wlwl:std.regex", ["RE", "RE_FIND_ALL"]); "#,
+            r#"RE_FIND_ALL(RE("a|ab"), "ab")"#
+        ),
+        expect: "[[matched: a, start: 0, end: 1, groups: [a]]]",
+    },
+    Case {
+        name: "replace_honours_leftmost_first_too",
+        src: concat!(
+            r#"IMPORT("wlwl:std.regex", ["RE", "RE_REPLACE"]); "#,
+            r#"RE_REPLACE(RE("(a)|ab"), "ab", "<$1>")"#
+        ),
+        // 建在 `find_all` 上 ⇒ 同一个 bug 的第二条通路。
+        // 模式必须带捕获组:`a|ab` 的组号 1 不存在,`$1` 只会展开成空串,
+        // 那就测不出「顶没顶掉」。
+        expect: "<a>b",
     },
 
     // ── RE_REPLACE ───────────────────────────────────────────────────

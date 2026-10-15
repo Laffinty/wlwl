@@ -536,8 +536,17 @@ impl Parser {
                     return self.err("backreferences are not supported");
                 }
                 if let Some(sub) = predefined(e) {
-                    // `[\d]` 是合法形态:并入(否定情形由整类的 `^` 统一处理)。
-                    let sub = if negated { sub.complement() } else { sub };
+                    // `[\d]` 是合法形态:直接并入。**否定情形由整类的 `^`
+                    // 统一处理**(收尾处的 `set.complement()`),类内**绝不能**
+                    // 先取一次补 —— 补两次等于没补。
+                    //
+                    // ⚠ [D13-019 / N-002]此前这里写着
+                    // `let sub = if negated { sub.complement() } else { sub };`,
+                    // 与紧跟的上一行注释**直接矛盾**(注释说统一处理,代码先补了)。
+                    // 后果:`[^\d]` 先取补并入、再被整类取补 ⇒ 结果等于 `\d` 本身,
+                    // `RE_TEST(RE("[^\\w]"), " ")` 会答 FALSE。而全仓唯一的取反
+                    // 字符类用例是纯字面的 `[^a-c]` —— 契约只钉了「看起来覆盖了
+                    // 取反」的形状,没钉预定义类这一支。
                     set.ranges.extend(sub.ranges);
                     continue;
                 }
@@ -844,8 +853,20 @@ struct Hit {
 
 impl Hit {
     /// 候选之间的定序:**起点优先**,同起点比**路径**,同路径比**抵达顺序**。
+    ///
+    /// ⚠ **`arrival` 是降序** —— 后到者更完整。抵达 `Match` 只能靠消费字符,
+    /// 所以「同 `(start, prio)` 而后到」等价于「同起点、同优先级分支、
+    /// 消耗了更多输入」。封顶前这条路走不到(贪含量词每绕一圈 `Split`,
+    /// `prio` 就长一格,天然分出胜负);封顶后 `prio` 塌成同一向量(见
+    /// `PRIO_MAX`),裁决权**全部**落到这一键。
+    ///
+    /// [D13-019 / N-003]此前这里是**升序**(先到者胜),而 `Hit::arrival` 字段
+    /// 注释与 `PRIO_MAX` 处的注释都写着「后到者更完整」—— 注释与代码方向相反。
+    /// 后果:`RE_SEARCH(RE("a+"), REPEAT("a", 100))` 只匹配到封顶处(约 64~65
+    /// 个 a)而不是 100,`addendum-02` W-04「封顶不损语义」的论证被推翻。
     fn better_than(&self, other: &Hit) -> bool {
-        (self.start, &self.prio, self.arrival) < (other.start, &other.prio, other.arrival)
+        (self.start, &self.prio, std::cmp::Reverse(self.arrival))
+            < (other.start, &other.prio, std::cmp::Reverse(other.arrival))
     }
 }
 
@@ -1148,8 +1169,13 @@ pub fn find_all(prog: &Program, text: &str) -> Vec<Captures> {
     vm.keep_all = true; // 这一条要非重叠的一串 ⇒ 必须攒全部候选
     vm.scan(false);
     let mut hits = std::mem::take(&mut vm.hits);
-    // 定序:起点 → 分支路径 → 抵达顺序(贪婪延伸因此取到最长的那次)。
-    hits.sort_by(|a, b| (a.start, &a.prio, a.arrival).cmp(&(b.start, &b.prio, b.arrival)));
+    // 定序:起点 → 分支路径 → 抵达顺序**降序**。第三键与 `Hit::better_than`
+    // 同一口径(后到者更完整),否则单次搜索与 `find_all` 会在封顶区给出
+    // 两个不同的答案(D13-019 / N-003)。
+    hits.sort_by(|a, b| {
+        (a.start, &a.prio, std::cmp::Reverse(a.arrival))
+            .cmp(&(b.start, &b.prio, std::cmp::Reverse(b.arrival)))
+    });
     let mut out: Vec<Captures> = Vec::new();
     for h in hits {
         let empty = h.start == h.end;
@@ -1161,13 +1187,20 @@ pub fn find_all(prog: &Program, text: &str) -> Vec<Captures> {
                     continue; // 紧贴前一个匹配的空匹配:跳过(RE2/Go 规则)
                 }
                 if prev.start() == h.start {
-                    // 同一左端的多个候选(贪婪延伸的中间态)。排序后**更完整
-                    // 的那个在前**,所以只在后来的更长时才取代 —— 否则会把
-                    // `aaa` 截成 `aa`。
-                    if h.end <= prev.end() {
-                        continue;
-                    }
-                    out.pop();
+                    // 同一左端只留**排序后的第一个**。它已经是该左端的最优解:
+                    // 贪含量词的多个中间态由 `arrival` 降序排成「最长的在前」,
+                    // 交替分支由 `prio` 排成「先试的分支在前」。两条裁决键都
+                    // 已经在上面用掉了,这里再做一次「更长就取代」只会重排一次
+                    // 已经排好的东西 —— 而且会把 leftmost-first 破坏掉。
+                    //
+                    // ⚠ [D13-019 / N-004]此前这里是
+                    // `if h.end <= prev.end() { continue } out.pop()`,
+                    // 后果是 `RE_FIND_ALL(RE("a|ab"), "ab")` 答 `["ab"]`,
+                    // 而 Python / Go 答 `["a"]`。契约里**照不到**:§3.7 登记的
+                    // 六个 leftmost-first 判别式全部走 `RE_SEARCH`(走
+                    // `best_hit`,不经这条分支),`RE_REPLACE` / `RE_SPLIT` 建在
+                    // `find_all` 上,连带受影响。
+                    continue;
                 } else if h.start < pe {
                     continue; // 与上一个匹配重叠
                 }
