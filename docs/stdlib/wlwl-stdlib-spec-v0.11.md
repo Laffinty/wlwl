@@ -40,6 +40,7 @@ markdown** 解析成员表后与实现对拍(ADR-0023 §v0.x 1 的执行机制)�
 | M2 | `std.encode` 追加 `SHA256` `HMAC_SHA256`(§11) | R2 |
 | M3 | `std.sanitize` 追加 `HTML_SANITIZE`(§13) | R2 |
 | M6 | `std.encode` 追加 `PBKDF2_ITER` `ARGON2ID` 两个 KDF 与 `RANDOM_BYTES` `RANDOM_HEX` `TIMING_SAFE_EQ` 三个安全原语(§11) | R2 |
+| M8 | **`std.ai` / `std.agent` 降级为官方包,移出 `wlwl:std.*`** —— 前缀改 `ai:` / `agent:`,成员面一字未改(§9 / §10,`ADR-0034`) | R2 |
 | — | 否决留档:**SQL 转义**不做(§13.3)、**加解密 / 密钥生成**不做(§11.5 §11.6);`MD5` / `SHA-1` 已破不提供;SHA-3 / BLAKE3 记演进 | — |
 
 成员面 **99 → 104**、命名空间 **12 → 13**(附录 A 镜像为准;`std.ai` 的 5 个
@@ -50,6 +51,36 @@ markdown** 解析成员表后与实现对拍(ADR-0023 §v0.x 1 的执行机制)�
 `std.process`(2)并把 `std.fs` 扩到 18**(新增 15:路径 5 / 目录 8 / 字节 2)、
 **07 开 `std.compress`(8)**、**addendum-03 给 `std.text` 加 `NFC` / `NFD` /
 `NFC_QC`**、**addendum-05 开 `std.net`(5)**。
+
+> ⚠️ **[2026-10-15 实测更正一:「成员受 `real-ai` feature 门控」是错的]**
+> 上面两段(以及本节历史上任何一处)写的「`std.ai` 的 5 个成员受 `real-ai`
+> feature 门控,默认构建可见 94 / 99」**经实测证伪**:默认构建(不带
+> `real-ai`)下 `IMPORT("ai:ask", [ASK, EMBED, COMPLETE, ASK_STREAM,
+> ASK_ALL])` **成功绑定全部 5 个成员**。真实形状是
+> `real-ai = ["dep:reqwest"]` —— 它门控的是 **HTTP 传输层**(mock ↔ real),
+> `#[cfg(feature = "real-ai")] mod real` 只包住真实后端,成员函数本身一直编译。
+> ⇒ 「默认构建下成员不可见、带 feature 可见」这条旧口径**作废**。
+> 依据:`ADR-0034` D1 撤回框、`addendum-14` §1。
+>
+> ⚠️ **[2026-10-15 更正二:命名空间数按实际表体重算,不沿用计划里的旧快照]**
+> `addendum-14` §2 写的目标值「13 → 11 个命名空间 / 104 − 10 = 94 成员」是
+> **M6 扩容之前**的快照(`std.time` / `regex` / `rand` / `env` / `process` /
+> `compress` / `net` 都还没开,`std.math` 也还没被 M7 扩充)。**照抄它会把一个
+> 假的当前状态写进规范。** 按现行附录 A 表体实测:
+>
+> | 项 | 实测值 | 口径 |
+> |---|---|---|
+> | `wlwl:std.*` 命名空间 | **19** | 附录 A 里以 `std.` 开头的行 |
+> | 官方包 | **2**(`ai` / `agent`) | §9 / §10 |
+> | 登记表总行数 | **21** | 附录 A 数据行 |
+> | `wlwl:std.*` 成员 | **204** | — |
+> | 官方包成员 | **10** | M8 移出的那 10 个 |
+> | 成员总计 | **214** | — |
+>
+> ⚠ 与代码里的守卫**无冲突**:`stdlib_appendix_a_sync` 与
+> `stdlib_mirror::tests::layer_meta_covers_exactly_the_resolvable_namespaces`
+> 都是**双向动态对账**(拿 `wlwl_std::namespace_paths()` 夹逼登记表),
+> **没有任何写死的 13 / 11** —— 本次 W-05 改的是本节这两段散文,不是代码常量。
 
 > ⚠️ **[2026-10-11 登记并已修复的缺陷] 附录 A 镜像曾少了四个已落地的命名空间。**
 > `wlwl-eval/src/stdlib_mirror.rs` 的 `NAMESPACE_META` 没登记 `std.rand`(4)、
@@ -845,10 +876,41 @@ R1 门面 + R2 原生内核(注册与计时)。
 > 通过」记账,于是 `TEST("t", FUN(() → YIELD(); ASSERT(FALSE)))` 判为通过
 > —— 体里的断言一次都没跑。
 
-## 9 `std.ai` — AI 推理(R2)
+## 9 `ai` — AI 推理(官方包 · R2)
+
+> ⚠ **[v0.11.3 M8 · `addendum-14` / `ADR-0034`] 本章已移出 `wlwl:std.*`。**
+> 成员面**一字未改**(名字 / 签名 / 语义全部原样),变的只有**可见面**:
+>
+> | 项 | 移出前 | 移出后 |
+> |---|---|---|
+> | `IMPORT` 路径 | `wlwl:std.ai` | **`ai:ask`** |
+> | `wlwl:std.ai` | 可解析 | **不可解析**(`resolve()` 返回 `None`,不是空壳 —— 空壳会让「搬没搬」看不出来) |
+> | 所在文档 | §9 `std.ai` | §9 `ai`(**章号不变**) |
+>
+> ⚠ **前缀不能写成 `wlwl:ai`** —— `wlwl:` 是 std 的**保留前缀**,解析器对它
+> 开头的路径直接返回 `None`,于是它落进「裸模块名」分支、被当成文件名去找
+> `…\wlwl:ai.wll`,最终报 `E0040`。前缀只有 `ai:` / `agent:` 两种形态可用。
+>
+> ⚠ **形态上的差距(如实记下,`addendum-14` §6 要求)**:`ai` / `agent` 目前
+> **仍以 `wlwl-std` 的 `real-ai` feature 编译**,只是不再出现在
+> `wlwl:std.*` 的可见面里;它们**没有**独立的 crate 边界与分发产物。
+> ⇒ 本批记为**部分完成**,不是搬完。裁决见 `ADR-0034` D1(已撤回)与 D2。
+>
+> ⚠ **`real-ai` feature 门控的是 HTTP 传输层(mock ↔ real),不是成员。**
+> 默认构建下这 5 个成员**全部可见可导入** —— 此前规范里「成员受 `real-ai`
+> 门控、默认构建不可见」的说法**经实测证伪**,已更正。
 
 下列最小契约是规范性的;各函数依赖外部服务,传输与供应商细节属实现文档,
 不在规范内。
+
+**导入写法**(唯一可用的形态 —— 文法**没有**「命名空间限定调用」这个语法,
+`ai:ask.ASK(…)` / `ai.ASK(…)` / `wlwl:std.ai.ASK(…)` **一律解析失败**
+`E0011 expected ')' got Colon`;成员只能经 `IMPORT` 取裸名):
+
+```wlwl
+IMPORT("ai:ask", ["ASK", "EMBED", "COMPLETE", "ASK_STREAM", "ASK_ALL"]);
+LET(answer, ASK("provider/model", "…"));
+```
 
 | 签名 | 说明 | 失败 |
 |------|------|------|
@@ -861,7 +923,12 @@ R1 门面 + R2 原生内核(注册与计时)。
 错误码语义:`E0080` 请求失败;`E0081` 协议错误;`E0082` 工具错误;`E0083`
 上下文错误。模型名缺少 `provider/` 前缀产生 `W0052`(语言规范 §11.3)。
 
-## 10 `std.agent` — 代理(R2)
+## 10 `agent` — 代理(官方包 · R2)
+
+> ⚠ **[v0.11.3 M8 · `addendum-14` / `ADR-0034`] 本章同样已移出 `wlwl:std.*`**,
+> 口径与 §9 相同:`IMPORT` 路径是 **`agent:task`**(或包名 `agent`),
+> `wlwl:std.agent` **不再可解析**,成员面**一字未改**,形态上的差距
+> (仍在 `wlwl-std` 内编译、无独立分发产物)见 §9 的框。
 
 | 签名 | 说明 | 失败 |
 |------|------|------|
@@ -877,15 +944,22 @@ R1 门面 + R2 原生内核(注册与计时)。
 返回的 `TASK` 句柄按语言规范 §17.1 经 `AWAIT` 取值;已取消任务的 `AWAIT`
 按 §17.3 返回 `ERR(kind="Cancelled", reason: ...)`。
 
-**示例**(推荐全限定以避免与类型名 `TASK` 混淆):
+**示例**:
 
 ```wlwl
-IMPORT("wlwl:std.agent", ["TASK", "MODEL"]);
-LET(handle, wlwl:std.agent.TASK("summarize", "long text..."));
+IMPORT("agent:task", ["TASK": "AGENT_TASK", "MODEL"]);
+LET(handle, AGENT_TASK("summarize", "long text..."));
 ```
 
-用户作用域内裸名 `TASK` 也合法(若 `IMPORT` 引入了同名函子);全限定写法
-仅为阅读清晰度,与同名类型名 `TASK` 不构成运行时冲突(§2.1)。
+⚠ **本节此前给的「推荐全限定写法」是错的,已更正。** 原文写的是
+`wlwl:std.agent.TASK("summarize", "long text…")` —— 实测**解析失败**
+(`E0011 expected ')' got Colon`):文法里**没有**「命名空间限定调用」这种
+表达式,冒号只出现在 `IMPORT` 的路径字符串与改名处
+(`["TASK": "AGENT_TASK"]`)。因此**想避开与类型名 `TASK` 混淆,唯一可行的
+办法是 `IMPORT` 时改名**,上面这段就是它的实测形态(`rc=0`)。
+
+裸名 `TASK` 本身也不与类型名 `TASK` 构成运行时冲突(§2.1):类型名活在
+类型位置,函子活在值位置。改名是为了**阅读清晰**,不是为了消歧义。
 
 ## 11 `std.encode` — 编码与哈希(R2;编码 v0.11.2,哈希 v0.11.3)
 
@@ -1415,8 +1489,14 @@ Idioms"**,不是自创规则。要点:
     改做 `HTML_SANITIZE_SCRIPT`(已落地于本节)。
 - **正则**:RE2 式线性时间模拟(NFA,零依赖手写)—— 主流 stdlib 全员标配,
   而本语言零模式匹配能力;调研备忘见 v0.11.3 计划附录 B,建议独立批次立项。
-- `std.ai` / `std.agent` 降级为官方包,移出 `wlwl:std.*`(业界先例:Rust /
-  Julia 的 std 小核心原则);
+- ~~`std.ai` / `std.agent` 降级为官方包,移出 `wlwl:std.*`~~ —— ✅ **已落地**
+  (v0.11.3 M8,`addendum-14` / `ADR-0034`)。前缀取 **`ai:` / `agent:`**,
+  `wlwl:std.ai` / `wlwl:std.agent` 已**不可解析**(返回 `None`,非空壳),
+  成员面**一字未改**,章节见 §9 / §10。⚠ **`wlwl:ai` 结构上不可行**
+  (`wlwl:` 是 std 保留前缀,实测落到「裸模块名」分支报 `E0040`)。
+  ⚠ **形态上的差距**:包**仍以 `wlwl-std` 的 `real-ai` feature 编译**、
+  **无独立 crate 边界与分发产物** ⇒ `addendum-14` §6 要求记为**部分完成**。
+  ⚠ `std.rand` 适用同一套逻辑(见 §17 与 `ADR-0027` A7),**本批未搬**;
 - ~~新 R2 候选命名空间:`std.net`、`std.process`、`std.env`、`std.time`。~~
   **已于 v0.11.3 全部落地**:`std.process` → §19、`std.env` → §18、`std.time`
   → §15、**`std.net` → §21**(M6 / addendum-05,成员面 2 → 5)。
