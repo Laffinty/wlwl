@@ -89,3 +89,13 @@ path = "benches/stats.rs"
 name = "json"
 harness = false
 path = "benches/json.rs"
+# [v0.11.3 收尾] `std.compress` 四格式 × 压缩/解压 × 两种语料(高冗余 / 不可压缩)。
+# 另起文件:这一族量的是**编解码器往返成本**(成员是纯 R2 包装),与 encode 的
+# §7.4 吞吐指标、kdf 的算法成本都不构成同一条曲线。⚠ 本段**只记读数** ——
+# 压缩比与输出字节都是**实现定义的**(实测同载荷 Python zlib 到 66、
+# miniz_oxide 到 115,后者比原文还大),正确性由 `compress_contract.rs` 的往返
+# + 交叉核对守,不进基准断言。
+[[bench]]
+name = "compress"
+harness = false
+path = "benches/compress.rs"
