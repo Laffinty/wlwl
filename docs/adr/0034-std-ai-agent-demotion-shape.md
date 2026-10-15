@@ -2,7 +2,7 @@
 
 | | |
 |---|---|
-| **Status** | **D2 已定**(命名取 `ai:` / `agent:`);**D1 于 2026-10-15 当日撤回,待重裁** —— 见 D1 的撤回框 |
+| **Status** | **Accepted**(D1 就地冻结于 (b′)、D2 命名 `ai:` / `agent:`、D3 申报口径确认)—— W-01 ~ W-07 已全部落地 |
 | **Date** | 2026-10-15 |
 | **Deciders** | Li(project lead) |
 | **Related** | [`ADR-0023`](0023-stdlib-stability-policy.md) §v0.x 1(可见面变更须四件套同步)、[`ADR-0021`](0021-stdlib-layering.md)(R1/R2 分层)、[`ADR-0022`](0022-value-passthrough.md)、[`addendum-14-ai-agent-demotion.md`](../plan/addendum-14-ai-agent-demotion.md) §3.1 / §3.2 / §3.3 / §6、`docs/spec/wlwl-spec-v0.11.md` §9.2(IMPORT 四形态)/ §9.4(清单)、`wlwl-toml/src/manifest.rs`(`Package` / `resolve_namespace`)/ `mvs.rs` / `lock.rs`、规范 §14(「`std.ai` / `std.agent` 降级为官方包」) |
@@ -81,38 +81,31 @@ IMPORT("wlwl:std.ai", ["ASK","EMBED","COMPLETE","ASK_STREAM","ASK_ALL"]);
 
 ## Decision
 
-### D1 · ~~机制选 **(c)**~~ ⛔ **D1 于 2026-10-15 当日撤回,待重裁**
+### D1 · 机制选 **(b′) 同 crate + 换前缀** —— 就地冻结,不再重裁(2026-10-15)
 
-> 🔴 **撤回理由(同日核实,补上了上一轮漏查的那一点)**
+> 🔴 **D1 的选型反复,根源是把「机制能不能用」当成了「机制适不适合这两个成员」。**
+> 第一轮据「包机制不存在」倾向 (a);核实后发现机制**已存在**且功能验证通过,
+> 于是改选 (c);同日补查发现那验证用的是 **R1 `.wll`**,而这两个成员是
+> **R2 原生**,清单机制到不了 ⇒ (c) 撤回。
 >
-> 上一轮选 (c) 的依据是「清单机制已存在且功能验证可用」。但那个验证用的是
-> **R1 `.wll` 模块**(`vendor/greet/utils.wll`),而 **`std.ai` / `std.agent` 是
-> **R2 原生**(真 HTTP 走 `reqwest`,不可能改写成 `.wll`)。
->
-> **清单机制到不了原生后端**:
-> - `wlwl-eval/src/lib.rs:448` `enum ResolvedSource` 只有两个变体:
->   `Std(wlwl_std::StdBackend)` 与 `File { path, name }`;
-> - `Std` **只**由 `wlwl_std::resolve(path)` 填充,那是 `wlwl-std/src/lib.rs:401`
->   一张**硬编码的 `wlwl:std.*` 匹配表**;
-> - 清单里**没有任何**指向原生后端的字段(`allow_builtin_shadow` 等是无关的特性开关);
-> - `ns:name` 分支(`lib.rs:551`)无条件构造 `<dir>/<name>.wll` 并返回 `File`。
->
-> ⇒ **一个 `wlwl.toml` 包只能是磁盘上的 R1 源文件**,没有任何路径能让它到达
-> 原生 Rust `SPEC`。**⇒ (c) 对 `std.ai` / `std.agent` 不成立。**
->
-> ⚠ **教训**:上一轮的核实验证了「机制能不能用」,却**没验证「它能不能承载这两个
-> 成员」** —— 后者才是选型的前提。**机制存在 ≠ 机制适配**。
+> **本轮定 (b′),理由是它已经满足验收判据,而 (a) 要的是另一个批次的东西。**
 
-**待重裁的选项(第四种是本轮新发现的,前三份方案都没列)**:
-
-| 方案 | 形态 | 代价 / 差距 |
+| 方案 | 判决 | 理由 |
 |---|---|---|
-| **(a)** 独立 crate | `wlwl-ai` / `wlwl-agent` 独立 crate + 注册点 | 最接近 Rust;但 `Std` 变体只由 `wlwl-std::resolve` 填充 ⇒ 需要**新增一个原生注册通道**,工作量最大的那一项 |
-| **(b')** 同 crate + 换前缀 | `wlwl-std` 不变(故 `real-ai` feature **不动**),只把匹配表里的 `wlwl:std.ai` 改成 `ai:ask` 等 10 个键 | ⚠ 形态上仍在 `wlwl-std` 里,**`addendum-14` §6 的「不算真搬」条款按字面适用** ⇒ 须如实记为**部分完成**。但它**满足 §4 自己给的判据**(`resolve("wlwl:std.ai") == None`) |
-| (b) 原样 | 同 crate 内只做 feature 隔离 | 命名空间仍是 `std`,与「移出 std」自相矛盾 ⇒ 已排除 |
+| **(b′)** 同 crate + 换前缀 | ✅ **采纳并冻结** | 它**满足 `addendum-14` §4 自己给的判据** —— `resolve("wlwl:std.ai") == None`(不是空 `SPEC`)。已落地并由 `std_ai_and_agent_are_demoted_to_official_packages` 钉住。形态差距(无独立 crate / 无独立分发产物)按 §6 **如实记为部分完成** |
+| **(a)** 独立 crate | ⏸ **推迟,不是否决** | 它要的是**新增一条原生包注册通道**(`ResolvedSource::Std` 目前只由 `wlwl_std::resolve` 那张硬编码表填充)。那是**语言运行时的机制变更**,不是一次「搬」—— 混进本份只会让两份计划互相污染 |
+| ~~(c)~~ 清单机制 | ❌ 已撤回 | 清单只能承载磁盘上的 R1 `.wll`,到不了原生后端 |
+| ~~(b)~~ 原样 feature 隔离 | ❌ 已排除 | 命名空间仍是 `std`,与「移出 std」自相矛盾 |
 
-⚠ **(a) 与 (b') 的取舍是「要不要新增原生注册通道」**,而不是「要不要造包机制」——
-**包机制已经有了**,缺的是「原生包怎么被解析到」这一段。
+⚠ **(b') 的差距是纯形态的,零可观察行为差**:成员仍在 `wlwl-std` 里编译、
+仍由同一个 `NATIVE_SPECS` 登记、`real-ai` feature 归属不变。
+**唯一变了的可观察面就是路径** —— 而那正是本份要做的事。
+
+**复活条件**(两条都满足才重开 D1):
+① 出现了「在 `wlwl-std` 之外发布**原生**包」的真实需求;
+② 那时 `std.rand` 及其它过渡形态命名空间**一并**处理(否则是为一个包造一条通道)。
+⚠ 在此之前,任何人拿「(b') 不够真」来重开这条,先回答:要新增的注册通道,
+**谁来用**?
 
 ### D2 · 命名取 **`ai:` / `agent:`**(沿用 §3.3 要求的「提名 / 理由 / 落选者」体例)
 
@@ -130,8 +123,12 @@ IMPORT("wlwl:std.ai", ["ASK","EMBED","COMPLETE","ASK_STREAM","ASK_ALL"]);
 ; 旧
 IMPORT("wlwl:std.ai", ["ASK"]);
 ; 新
-IMPORT("ai:ask", ["ASK"]);      # 需项目 wlwl.toml 声明 [namespaces] ai = "…"
+IMPORT("ai:ask", ["ASK"]);
 ```
+
+⚠ **(b′) 下不需要任何 `wlwl.toml` 声明** —— 这条是 (c) 撤回时残留的错误。
+`ai` / `agent` 的键直接写在 `wlwl-std` 的匹配表里,与 `wlwl:std.*` 同一张表。
+只有**第三方**包才需要 `[namespaces]` 声明。
 
 ### D3 · 可见面变更的申报口径(沿 §3.2,本 ADR 只确认不扩写)
 
@@ -141,16 +138,26 @@ IMPORT("ai:ask", ["ASK"]);      # 需项目 wlwl.toml 声明 [namespaces] ai = "
 
 ## Consequences
 
-**能拿到的**:`wlwl:std.*` 回到 11 命名空间 / 94 成员;§3.1 的头号阻塞解除;
-`addendum-14` 的 W-01 / W-02 两项裁决落地。
+**能拿到的**:`wlwl:std.*` 回到「语言通用设施」的定位 —— 现行附录 A 实测
+**19 个命名空间 / 204 成员**(官方包 2 个 / 10 成员,登记表 21 行 / 214 成员);
+⚠ 早期写的「11 命名空间 / 94 成员」是 M6 扩容**之前**的快照,已作废。
+§3.1 的头号阻塞解除;`addendum-14` 的 W-01 ~ W-07 全部落地。
 
 **明确不做**(`addendum-14` §0):不扩语法 / 不改任何成员语义 / **不把 `std.rand`
 顺带搬走**(那是 `08-std-rand` 自己的 ADR A6,两份不捆绑)/ 不引入第三方包机制
 (已有一部分,见 §1)/ 不砍功能。
 
-**留给实现阶段(W-03 起)**:门禁命令随 `real-ai` 的归属改动而改
-(`addendum-14` §3.4,三处:计划 §3.3 完成定义 / README 门禁行 / skill 门禁说明);
-skill 的 `reference.md` §9.x 编号顺延须**全文 grep 复核**(§6 已警告 v0.11.3 犯过
-一次失效交叉引用)。
+**两条 (c) 时期写下、现已作废的待办**:
+- ❌「门禁命令三处同步」(计划 §3.3 完成定义 / README 门禁行 / skill 门禁说明)——
+  `real-ai` 仍挂在 `wlwl-std` 上,(b′) 下 crate 与 feature 归属都不变,
+  `cargo check -p wlwl-std --features real-ai` **继续有效**,三处**都不动**。
+- ❌「`reference.md` §9.x 编号顺延」—— `reference.md` 的 §9.x 序列里**从来没有
+  ai/agent 章节**(§9.8 是空号),无对象可顺。真正要修的是那条**悬空引用**
+  (`§9.8` 指向不存在的章节,`RANDOM_HEX` 实际在 §9.1),已改。
 
-⚠ **本 ADR 只解 W-01 / W-02**(裁决)。实现(W-03 ~ W-07)未动一行代码。
+**仍未做、留给独立批次的**:新增「原生包注册通道」((a) 路线的前提)——
+见 D1 的复活条件。
+
+⚠ **本 ADR 解 W-01 / W-02(裁决);实现见 W-03 ~ W-07,已随 `f9da8ba` / `1cae28c`
+/ `216429b` 落地**,其中 `wlwl:std.ai` 与 `wlwl:std.agent` 的不可见性由
+`wlwl-std` 的 `std_ai_and_agent_are_demoted_to_official_packages` 钉住。
