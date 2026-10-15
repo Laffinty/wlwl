@@ -27,8 +27,13 @@ jobs:
     steps:
       - uses: actions/checkout@v4
 
-      - name: Install Rust toolchain
-        uses: dtolnay/rust-toolchain@stable
+      # [D13-053] 工具链钉死在仓根 `rust-toolchain.toml`;见 ci.yml test job 的理由。
+      - name: Install Rust toolchain (pinned in rust-toolchain.toml)
+        shell: bash
+        run: |
+          test -f rust-toolchain.toml || { echo `::error::rust-toolchain.toml missing`; exit 1; }
+          rustup toolchain install --profile default
+          cargo --version
 
       - name: Cache cargo registry and target
         uses: Swatinem/rust-cache@v2

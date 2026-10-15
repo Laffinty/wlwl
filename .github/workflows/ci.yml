@@ -23,20 +23,42 @@ env:
 
 jobs:
   test:
-    name: test (${{ matrix.os }} / rust ${{ matrix.rust }})
+    name: test (${{ matrix.os }} / rust pinned)
     runs-on: ${{ matrix.os }}
     strategy:
       fail-fast: false
       matrix:
         os: [ubuntu-latest, macos-latest, windows-latest]
-        rust: [stable]
     steps:
       - uses: actions/checkout@v4
 
-      - name: Install Rust toolchain
-        uses: dtolnay/rust-toolchain@stable
-        with:
-          toolchain: ${{ matrix.rust }}
+      # [D13-053] 工具链**钉死在仓根 `rust-toolchain.toml`**,本 job 是它的
+      # **权威说明处**(另外两处只留一行指回来)。
+      #
+      # ⚠⚠ **这里刻意不用 `dtolnay/rust-toolchain@stable`。** 那个 action
+      #   未传 `toolchain:` 输入时,**默认匹配 `@rev`** —— 也就是 `@stable`
+      #   ⇒ 装 stable。其 README 原文:"the default is to match the @rev"。
+      #   **它根本不读 `rust-toolchain.toml`。**(这条我一开始写错过:先以为
+      #   「去掉 `toolchain:` 输入就会读文件」,查了 action 的 README 才发现
+      #   恰恰相反 —— 那样会让本地钉了、CI 照旧漂,**分歧反而变得看不见**。)
+      #   ⇒ 改用 **rustup 本尊**:`rustup toolchain install` **不带参数**时
+      #   读的正是 override 文件(实测输出:`it's active because: overridden by
+      #   '.../rust-toolchain.toml'`),三个平台行为一致。
+      #
+      # 为什么值得做:2026-10-15 实际发生「本地 stable 停在 1.96、CI 已是 1.99」
+      # ⇒ `map_or_identity` / `for_kv_map` 两条 lint 让三平台同时变红,而那两行
+      # 代码**早已存在**,与当轮改动无关 —— **发现它的人不是引入它的人**。
+      # 浮动式 `stable` 的核心代价就是这个。
+      #
+      # `matrix.rust` 这个第二出处已一并去掉 ⇒ **单一来源**。版本号仍然会出现在
+      # 本步骤日志里(末尾的 `cargo --version`)。`test -f` 那道守卫是为了让
+      # 「文件被删掉」**响亮地失败**,而不是静默回落成 runner 自带的 stable。
+      - name: Install Rust toolchain (pinned in rust-toolchain.toml)
+        shell: bash
+        run: |
+          test -f rust-toolchain.toml || { echo "::error::rust-toolchain.toml missing"; exit 1; }
+          rustup toolchain install --profile default
+          cargo --version
 
       - name: Cache cargo registry and target
         uses: Swatinem/rust-cache@v2
@@ -164,8 +186,15 @@ jobs:
     steps:
       - uses: actions/checkout@v4
 
-      - name: Install Rust toolchain
-        uses: dtolnay/rust-toolchain@stable
+      # [D13-053] 工具链钉死在仓根 `rust-toolchain.toml`;这里用 rustup 本尊而非
+      # `dtolnay/rust-toolchain@stable`(后者未传 `toolchain:` 时默认匹配 `@rev`、
+      # **不读**那个文件)。理由见 ci.yml 的 test job。
+      - name: Install Rust toolchain (pinned in rust-toolchain.toml)
+        shell: bash
+        run: |
+          test -f rust-toolchain.toml || { echo "::error::rust-toolchain.toml missing"; exit 1; }
+          rustup toolchain install --profile default
+          cargo --version
 
       - name: Cache cargo registry and target
         uses: Swatinem/rust-cache@v2
