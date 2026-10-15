@@ -2,7 +2,7 @@
 
 | | |
 |---|---|
-| **Status** | **Accepted**(2026-10-15,业主「采纳建议」采纳 (c) 与 `ai:` / `agent:` 命名) |
+| **Status** | **D2 已定**(命名取 `ai:` / `agent:`);**D1 于 2026-10-15 当日撤回,待重裁** —— 见 D1 的撤回框 |
 | **Date** | 2026-10-15 |
 | **Deciders** | Li(project lead) |
 | **Related** | [`ADR-0023`](0023-stdlib-stability-policy.md) §v0.x 1(可见面变更须四件套同步)、[`ADR-0021`](0021-stdlib-layering.md)(R1/R2 分层)、[`ADR-0022`](0022-value-passthrough.md)、[`addendum-14-ai-agent-demotion.md`](../plan/addendum-14-ai-agent-demotion.md) §3.1 / §3.2 / §3.3 / §6、`docs/spec/wlwl-spec-v0.11.md` §9.2(IMPORT 四形态)/ §9.4(清单)、`wlwl-toml/src/manifest.rs`(`Package` / `resolve_namespace`)/ `mvs.rs` / `lock.rs`、规范 §14(「`std.ai` / `std.agent` 降级为官方包」) |
@@ -81,21 +81,38 @@ IMPORT("wlwl:std.ai", ["ASK","EMBED","COMPLETE","ASK_STREAM","ASK_ALL"]);
 
 ## Decision
 
-### D1 · 机制选 **(c)**(路线 c:R1 模块 + `wlwl.toml` `[namespaces]` 声明的命名空间)
+### D1 · ~~机制选 **(c)**~~ ⛔ **D1 于 2026-10-15 当日撤回,待重裁**
 
-**为什么 (c) 而不是 (a)**:(a) 与 (c) 的差距已从「造机制 vs 不造」缩成
-「crate 边界 vs 清单边界」—— 机制那一半(c)已经验证可用。而 `std.ai` / `std.agent`
-本就是 **R2 成员**(受 `real-ai` feature 门控),走清单声明的命名空间与它们的形态
-天然吻合:「不在 `wlwl:std.*` 里」正是降级的全部可见面变化。
+> 🔴 **撤回理由(同日核实,补上了上一轮漏查的那一点)**
+>
+> 上一轮选 (c) 的依据是「清单机制已存在且功能验证可用」。但那个验证用的是
+> **R1 `.wll` 模块**(`vendor/greet/utils.wll`),而 **`std.ai` / `std.agent` 是
+> **R2 原生**(真 HTTP 走 `reqwest`,不可能改写成 `.wll`)。
+>
+> **清单机制到不了原生后端**:
+> - `wlwl-eval/src/lib.rs:448` `enum ResolvedSource` 只有两个变体:
+>   `Std(wlwl_std::StdBackend)` 与 `File { path, name }`;
+> - `Std` **只**由 `wlwl_std::resolve(path)` 填充,那是 `wlwl-std/src/lib.rs:401`
+>   一张**硬编码的 `wlwl:std.*` 匹配表**;
+> - 清单里**没有任何**指向原生后端的字段(`allow_builtin_shadow` 等是无关的特性开关);
+> - `ns:name` 分支(`lib.rs:551`)无条件构造 `<dir>/<name>.wll` 并返回 `File`。
+>
+> ⇒ **一个 `wlwl.toml` 包只能是磁盘上的 R1 源文件**,没有任何路径能让它到达
+> 原生 Rust `SPEC`。**⇒ (c) 对 `std.ai` / `std.agent` 不成立。**
+>
+> ⚠ **教训**:上一轮的核实验证了「机制能不能用」,却**没验证「它能不能承载这两个
+> 成员」** —— 后者才是选型的前提。**机制存在 ≠ 机制适配**。
 
-**按 `addendum-14` §4 自己给的判据,(c) 是「真搬」**:`resolve("wlwl:std.ai")` 必须
-返回 **`None`**(不是空 `SPEC`)—— 空壳会让 `resolve()` 仍返回它,而那正是「假搬」。
+**待重裁的选项(第四种是本轮新发现的,前三份方案都没列)**:
 
-⚠ **形态上的差距,如实记下**:(c) 下包**仍以 `wlwl-std` 的 `real-ai` feature 编译**,
-只是**不再出现在 `wlwl:std.*` 的可见面里**。它**没有**成为独立的分发产物
-(独立的 crate / 独立的 `wlwl.toml` 随二进制分发)。这是 (c) 与 (a) 的真实差别,
-不是话术。⇒ 若日后要求「一个 `std.*` 之外的包能脱离本仓单独分发」,那是 (a),
-**另立一项**,不在本 ADR 范围内。
+| 方案 | 形态 | 代价 / 差距 |
+|---|---|---|
+| **(a)** 独立 crate | `wlwl-ai` / `wlwl-agent` 独立 crate + 注册点 | 最接近 Rust;但 `Std` 变体只由 `wlwl-std::resolve` 填充 ⇒ 需要**新增一个原生注册通道**,工作量最大的那一项 |
+| **(b')** 同 crate + 换前缀 | `wlwl-std` 不变(故 `real-ai` feature **不动**),只把匹配表里的 `wlwl:std.ai` 改成 `ai:ask` 等 10 个键 | ⚠ 形态上仍在 `wlwl-std` 里,**`addendum-14` §6 的「不算真搬」条款按字面适用** ⇒ 须如实记为**部分完成**。但它**满足 §4 自己给的判据**(`resolve("wlwl:std.ai") == None`) |
+| (b) 原样 | 同 crate 内只做 feature 隔离 | 命名空间仍是 `std`,与「移出 std」自相矛盾 ⇒ 已排除 |
+
+⚠ **(a) 与 (b') 的取舍是「要不要新增原生注册通道」**,而不是「要不要造包机制」——
+**包机制已经有了**,缺的是「原生包怎么被解析到」这一段。
 
 ### D2 · 命名取 **`ai:` / `agent:`**(沿用 §3.3 要求的「提名 / 理由 / 落选者」体例)
 
