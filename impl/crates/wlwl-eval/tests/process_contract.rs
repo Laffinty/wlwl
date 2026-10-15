@@ -31,63 +31,83 @@ const CASES: &[Case] = &[
     // ── argv 的形状:只收数组 ────────────────────────────────────────
     Case {
         name: "a_string_argv_is_e0030",
-        src: concat!(r#"IMPORT("wlwl:std.process", ["PROCESS_RUN", "PROCESS_ID"]); "#, r#"PROCESS_RUN("cmd /C dir")"#),
+        src: concat!(
+            r#"IMPORT("wlwl:std.process", ["PROCESS_RUN", "PROCESS_ID"]); "#,
+            r#"PROCESS_RUN("cmd /C dir")"#
+        ),
         // 拼字符串再解析 = 命令注入。**规范显式禁止字符串形态**,所以这是原生诊断。
         expect: "!E0030 PROCESS_RUN: expected an argv array of strings, got string",
     },
     Case {
         name: "an_empty_argv_is_e0030",
-        src: concat!(r#"IMPORT("wlwl:std.process", ["PROCESS_RUN", "PROCESS_ID"]); "#, r#"PROCESS_RUN([])"#),
+        src: concat!(
+            r#"IMPORT("wlwl:std.process", ["PROCESS_RUN", "PROCESS_ID"]); "#,
+            r#"PROCESS_RUN([])"#
+        ),
         expect: "!E0030 PROCESS_RUN: argv must have at least one element (the program)",
     },
     Case {
         name: "a_non_string_argv_element_is_e0030",
-        src: concat!(r#"IMPORT("wlwl:std.process", ["PROCESS_RUN", "PROCESS_ID"]); "#, r#"PROCESS_RUN(["cmd", 7])"#),
+        src: concat!(
+            r#"IMPORT("wlwl:std.process", ["PROCESS_RUN", "PROCESS_ID"]); "#,
+            r#"PROCESS_RUN(["cmd", 7])"#
+        ),
         expect: "!E0030 PROCESS_RUN: expected an argv array of strings, got integer",
     },
     Case {
         name: "process_run_arity",
-        src: concat!(r#"IMPORT("wlwl:std.process", ["PROCESS_RUN", "PROCESS_ID"]); "#, r#"PROCESS_RUN()"#),
+        src: concat!(
+            r#"IMPORT("wlwl:std.process", ["PROCESS_RUN", "PROCESS_ID"]); "#,
+            r#"PROCESS_RUN()"#
+        ),
         expect: "!E0022 PROCESS_RUN: function expects 1 argument(s), got 0",
     },
     Case {
         name: "process_id_takes_no_arguments",
-        src: concat!(r#"IMPORT("wlwl:std.process", ["PROCESS_RUN", "PROCESS_ID"]); "#, r#"PROCESS_ID(1)"#),
+        src: concat!(
+            r#"IMPORT("wlwl:std.process", ["PROCESS_RUN", "PROCESS_ID"]); "#,
+            r#"PROCESS_ID(1)"#
+        ),
         expect: "!E0022 PROCESS_ID: function expects 0 argument(s), got 1",
     },
     // ── opts 的形状 ─────────────────────────────────────────────────
     Case {
         name: "an_unknown_opts_key_is_e0030",
-        src: concat!(r#"IMPORT("wlwl:std.process", ["PROCESS_RUN", "PROCESS_ID"]); "#, r#"PROCESS_RUN(["cmd"], ["shell": TRUE])"#),
+        src: concat!(
+            r#"IMPORT("wlwl:std.process", ["PROCESS_RUN", "PROCESS_ID"]); "#,
+            r#"PROCESS_RUN(["cmd"], ["shell": TRUE])"#
+        ),
         // ⚠️ 尤其 `shell` 必须被**显式拒绝**而不是忽略 —— 「忽略」和「禁止」
         // 在安全上是两件不同的事。
         expect: "!E0030 PROCESS_RUN: unknown opts key `shell` (timeout / cwd / env)",
     },
     Case {
         name: "opts_must_be_a_dictionary",
-        src: concat!(r#"IMPORT("wlwl:std.process", ["PROCESS_RUN", "PROCESS_ID"]); "#, r#"PROCESS_RUN(["cmd"], 5)"#),
+        src: concat!(
+            r#"IMPORT("wlwl:std.process", ["PROCESS_RUN", "PROCESS_ID"]); "#,
+            r#"PROCESS_RUN(["cmd"], 5)"#
+        ),
         expect: "!E0030 PROCESS_RUN: expected an opts dictionary, got integer",
     },
     Case {
         name: "a_negative_timeout_is_e0030",
-        src: concat!(r#"IMPORT("wlwl:std.process", ["PROCESS_RUN", "PROCESS_ID"]); "#, r#"PROCESS_RUN(["cmd"], ["timeout": -1])"#),
-        expect: "!E0030 PROCESS_RUN: expected opts.timeout to be a non-negative integer, got integer",
+        src: concat!(
+            r#"IMPORT("wlwl:std.process", ["PROCESS_RUN", "PROCESS_ID"]); "#,
+            r#"PROCESS_RUN(["cmd"], ["timeout": -1])"#
+        ),
+        expect:
+            "!E0030 PROCESS_RUN: expected opts.timeout to be a non-negative integer, got integer",
     },
     // ── 失败形态:进程起不来是 ERR **值** ──────────────────────────────
     Case {
         name: "a_missing_program_is_an_err_value",
-        src: concat!(r#"IMPORT("wlwl:std.process", ["PROCESS_RUN", "PROCESS_ID"]); "#, r#"IS_ERR(PROCESS_RUN(["wlwl_no_such_program_zzz_42"]))"#),
+        src: concat!(
+            r#"IMPORT("wlwl:std.process", ["PROCESS_RUN", "PROCESS_ID"]); "#,
+            r#"IS_ERR(PROCESS_RUN(["wlwl_no_such_program_zzz_42"]))"#
+        ),
         // 「这个程序不存在」是**可预期的运行期结果**,调用方多半要 `IS_ERR`
         // 分支 ⇒ 用 `ERR` 值而不是终止运行的原生诊断。
         expect: "TRUE",
-    },
-    Case {
-        name: "the_failure_payload_carries_kind_op_reason",
-        src: concat!(
-            r#"IMPORT("wlwl:std.process", ["PROCESS_RUN", "PROCESS_ID"]); "#,
-            r#"ERR_PAYLOAD(PROCESS_RUN(["wlwl_no_such_program_zzz_42"]))"#
-        ),
-        expect: "[kind: ProcessError, op: PROCESS_RUN, reason: spawn wlwl_no_such_program_zzz_42: program not found]",
     },
 ];
 
@@ -165,11 +185,21 @@ fn argv_elements_are_never_shell_interpreted() {
         r#"IMPORT("wlwl:std.process", ["PROCESS_RUN"]);
 AT_K(PROCESS_RUN(["cmd", "/C", "echo", "a & echo INJECTED"]), "stdout", "")"#
     } else {
-        // ⚠ `sh -c printf %s "$1" sh <arg>`:被测参数放进 **$1**,让它**只展开
-        // 一次**。若把它直接写进 `-c` 的脚本体,`&` 会被 sh 在**第一轮**就当操作符
-        // —— 那测的是「sh 的引号处理」而不是「argv 有没有被拼接」。
+        // ⚠ 两个转义坑,都在这里踩过(`D13-055`):
+        //   ① wlwl 字符串里**必须有 `\"`** —— lexer(`wlwl-lexer/src/lib.rs`
+        //      的 `Some(b'"') => push(b'"')`)**支持** `\"`,不写就会让内层引号
+        //      提前闭合并让 `$1` 落到字符串外 ⇒ `E0001 illegal character '$'`。
+        //      ⚠ 本文件用 Rust **原始字符串** `r#"…"#`,所以里面的 `\"` 原样
+        //      就是 wlwl 源码里的 `\"`,**不需要**在 Rust 这层再转义。
+        //   ② `$1` 里的 `$` **不需要**转义:lexer 只在 `$` 后面紧跟 `{` 时
+        //      才当插值(`Some(b'$') if peek_at(1) == Some(b'{')`),`$1` 落回
+        //      普通字符。写成 `\$1` 反而会让 wlwl 交出**字面** `$1`,sh 就
+        //      不会展开它 —— 那测到的是另一件事。
+        // ⚠ 被测参数放进 `$1` 让它**只展开一次**;若直接写进 `-c` 的脚本体,
+        //   `&` 会被 sh 在**第一轮**就当操作符 —— 那测的是「sh 的引号处理」
+        //   而不是「argv 有没有被拼接」。
         r#"IMPORT("wlwl:std.process", ["PROCESS_RUN"]);
-AT_K(PROCESS_RUN(["sh", "-c", "printf %s "$1"", "sh", "a & echo INJECTED"]), "stdout")"#
+AT_K(PROCESS_RUN(["sh", "-c", "printf %s \"$1\"", "sh", "a & echo INJECTED"]), "stdout")"#
     };
     let out = actual(src);
     assert!(
@@ -180,6 +210,30 @@ AT_K(PROCESS_RUN(["sh", "-c", "printf %s "$1"", "sh", "a & echo INJECTED"]), "st
         !out.contains("INJECTED\r\n") && !out.contains("\nINJECTED"),
         "`&` must not have run a second command: {out}"
     );
+}
+
+/// 失败载荷必须带 `kind` / `op` / `reason`,且 **reason 里含失败的程序名**。
+///
+/// ⚠⚠ **只钉前缀,不钉操作系统那句原文**(`D13-055`,2026-10-16):原文是
+/// **Rust `std::io::Error` 的 Display** —— 那是标准库的措辞,不是本库的可观察
+/// 契约。冻结它等于把「换了 libc / 换了 OS」也变成一条契约,没有任何语义理由。
+/// 实测:Windows `program not found` / Linux `No such file or directory
+/// (os error 2)` —— **本条在 Linux / macOS 上从未通过过**,它此前以 Windows
+/// 的措辞整串冻结在 `CASES` 表里。⇒ 移出表、改钉本库自己负责的那段前缀。
+#[test]
+fn the_failure_payload_carries_kind_op_reason() {
+    let out = actual(
+        r#"IMPORT("wlwl:std.process", ["PROCESS_RUN", "PROCESS_ID"]);
+ERR_PAYLOAD(PROCESS_RUN(["wlwl_no_such_program_zzz_42"]))"#,
+    );
+    assert!(
+        out.starts_with(
+            "[kind: ProcessError, op: PROCESS_RUN, reason: spawn wlwl_no_such_program_zzz_42: "
+        ),
+        "kind / op / the program name must survive into the reason — got: {out}"
+    );
+    // ⚠ 反向:reason 至少得有内容(空 reason 会让调用方无从判断发生了什么)。
+    assert!(out.trim_end().ends_with(']'), "got: {out}");
 }
 
 /// 真的跑一个命令,钉住返回字典的三个键。
