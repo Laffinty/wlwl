@@ -500,8 +500,19 @@ pub(crate) fn call_callable(
 /// `std.process` / `std.compress`)——`stdlib_appendix_a_sync` 照样全绿,
 /// 因为它对账的两侧读的是同一份登记表。⇒ 两侧同源的守卫**防不住「登记表
 /// 本身漏了」**,必须有一道拿**实现真相**去夹逼登记表的独立守卫。
-/// 那道守卫在 `wlwl-eval`(`namespace_meta_covers_every_resolvable_namespace`),
+/// 那道守卫在 `wlwl-eval` 的
+/// `stdlib_mirror::tests::layer_meta_covers_exactly_the_resolvable_namespaces`,
 /// 靠的就是本清单经 [`namespace_paths`] 暴露出去。
+///
+/// ⚠ 本行原先写的是 `namespace_meta_covers_every_resolvable_namespace` ——
+///
+/// **仓里没有这个名字的测试**。守卫本身**在**(名字是上面那个),只是指针过期。
+/// ⚠ 而「指针解析不到」**不等于**「被指的东西不存在」:我当时正是从这个
+///   名字对不上直接推出「那道守卫根本没写、附录 A 漂移因此无人发现」——**错的**。
+///   守卫一直在,做的正是注释描述的双向对账。附录 A 那次漂移,按
+///   `stdlib_mirror.rs` 自述,发生在**修复前**(当时反向那半边写的是一份写死的
+///   10 条路径清单、没跟着实现走);那个修复早已在仓里。
+///   ⇒ 本次改的是**指针**,守卫**一行未动**。
 pub static NATIVE_SPECS: &[&ModuleSpec] = &[
     &io::SPEC,
     &fs::SPEC,
