@@ -2308,7 +2308,33 @@ pub(crate) fn lookup_legacy(name: &[u8]) -> Option<&'static [u32]> {
         .map(|i| LEGACY[i].1)
 }
 
+/// `decode` 的调用上下文。
+///
+/// ⚠ **HTML5 的实体解码在属性上下文里比文本上下文严格**,这不是细节:
+/// 文本里 `&copy=1` 是 `©=1`,属性里**必须**原样保留 —— 因为在属性里
+/// 「实体名的后续字符」会改变含义(见 WHATWG *character reference in
+/// attribute value* state:命中实体后若下一个字符是 `=` 或 ASCII 字母数字,
+/// 那就不是 legacy 实体而是字面量)。
+///
+/// ⚠ **数值引用 `&#…` 在两个上下文里都无条件解码**,不归这个闸管。
+#[derive(Clone, Copy, PartialEq, Eq)]
+pub(crate) enum Ctx {
+    Text,
+    Attribute,
+}
+
 pub(crate) fn decode(s: &str) -> String {
+    decode_in(s, Ctx::Text)
+}
+
+/// 🔴 [D13-034 / N-019]带上下文的解码。**属性上下文**里,legacy 无分号实体
+/// 命中后若下一个字符是 `=` 或 ASCII 字母数字,则**不解码**(原样输出)。
+///
+/// 修复前 [`decode`] 只有一份、文本与属性共用 ⇒ `<b title="&copy=1">` 的值
+/// 被解成 `©=1`,而浏览器原样输出 `&copy=1`(再由序列化侧转义成
+/// `&amp;copy=1`)。方向是**过度解码**,且 §13.2 的自幂等与「输出无无分号
+/// 实体」两条都验不出来 —— 因为它两次解码是自洽的。
+pub(crate) fn decode_in(s: &str, ctx: Ctx) -> String {
     let b = s.as_bytes();
     let mut out = String::with_capacity(s.len());
     let mut i = 0;
@@ -2386,10 +2412,32 @@ pub(crate) fn decode(s: &str) -> String {
                 .or_else(|| {
                     // legacy 缺分号:最长前缀优先(HTML5 文本行为;
                     // `&copyx` → `©x`,`&copyz;` → `©z;`)。
+                    //
+                    // 🔴 [D13-034 / N-019]属性上下文的额外判据:命中后若下一个
+                    // 字符是 `=` 或 ASCII 字母数字,**不解码**(WHATWG
+                    // *character reference in attribute value* state —— 那个
+                    // 下一字符的存在正是「这串不是实体名」的唯一判据)。
+                    //
+                    // ⚠ 用 `filter` 而不是「换一个更短的前缀再试」:HTML5 是
+                    //   先按最长前缀匹配、**再**看下一字符,不匹配就整串当字面量
+                    //   冲掉 —— 它不会退回去试 `co` / `cop`。所以这里失败必须
+                    //   一路落到 `decoded = None` 那个分支(`&` 原样、游程重走)。
+                    //
+                    // ⚠ **只对无分号形式设闸**。带分号的 `&amp;` 下一字符已被
+                    //   `;` 消费,且 HTML5 只在「最后匹配的不是分号」时才查这个
+                    //   条件。⚠⚠ 闸**必须落在这个闭包内部**而不是整条链的末尾
+                    //   —— 挂在末尾会把带分号的合法解码一起拦掉
+                    //   (`href="x?a=1&amp;b=2"` 会变成字面 `&amp;`)。
+                    //   `attributes_decoded_and_lowercased` 那条既有单测就是
+                    //   替这件事兜底的,当场就抓到了。
                     let max = run.len().min(MAX_NAME_LEN);
                     (1..=max)
                         .rev()
                         .find_map(|len| lookup_legacy(&run[..len]).map(|cps| (cps, i + 1 + len)))
+                        .filter(|(_, consumed)| match ctx {
+                            Ctx::Text => true,
+                            Ctx::Attribute => !matches!(b.get(*consumed), Some(&c) if c == b'=' || c.is_ascii_alphanumeric()),
+                        })
                 });
                 match decoded {
                     Some((cps, consumed)) => {
@@ -2413,4 +2461,71 @@ pub(crate) fn decode(s: &str) -> String {
         }
     }
     out
+}
+
+#[cfg(test)]
+mod tests {
+    use super::{decode_in, Ctx};
+
+    // ⚸ 本组单测的期望值依据 WHATWG HTML *character reference in attribute
+    // value state*:无分号形式命中后若下一字符是 `=` 或 ASCII 字母数字则
+    // **不解码**;带分号形式**无条件**解码;数值引用在两个上下文里都无条件解码。
+    // 三个方向都要钉 —— 只钉「该拒的」会留下「不该拒的被拒了」那种反向破坏。
+
+    #[test]
+    fn legacy_entity_before_equals_is_literal_in_an_attribute() {
+        assert_eq!(decode_in("&copy=1", Ctx::Attribute), "&copy=1");
+        // 文本上下文不受影响(HTML5 文本行为)。
+        assert_eq!(decode_in("&copy=1", Ctx::Text), "©=1");
+    }
+
+    #[test]
+    fn legacy_entity_before_a_letter_is_literal_in_an_attribute() {
+        assert_eq!(decode_in("&copyx", Ctx::Attribute), "&copyx");
+        assert_eq!(decode_in("&copyx", Ctx::Text), "©x");
+        // 后随 `-` 不在 `=` / 字母数字之列 ⇒ 照解码。
+        assert_eq!(decode_in("&copy-x", Ctx::Attribute), "©-x");
+    }
+
+    #[test]
+    fn semicolon_terminated_entities_decode_in_both_contexts() {
+        for s in ["&copy;", "&amp;", "x?a=1&amp;b=2"] {
+            assert_eq!(decode_in(s, Ctx::Attribute), decode_in(s, Ctx::Text));
+        }
+        assert_eq!(decode_in("x?a=1&amp;b=2", Ctx::Attribute), "x?a=1&b=2");
+    }
+
+    #[test]
+    fn numeric_references_decode_unconditionally_in_both_contexts() {
+        for s in ["&#65=x", "&#x41;x"] {
+            assert_eq!(decode_in(s, Ctx::Attribute), decode_in(s, Ctx::Text));
+        }
+        // ⚠ `&#65=x` 解出 `A` 后,余下的 `=x` 是**字面量** —— 数值引用没有
+        // 「下一字符是 `=` 就不解码」那条 legacy 闸(那是 HTML5 专给**无分号
+        // 命名实体**的规则)。把它写成 `Ax` 是我第一版写错了。
+        assert_eq!(decode_in("&#65=x", Ctx::Attribute), "A=x");
+        assert_eq!(decode_in("&#x41;x", Ctx::Attribute), "Ax");
+    }
+
+    #[test]
+    fn unknown_names_stay_literal_everywhere() {
+        for s in ["&nosuchentity", "&zzz=1"] {
+            assert_eq!(decode_in(s, Ctx::Attribute), s);
+            assert_eq!(decode_in(s, Ctx::Text), s);
+        }
+    }
+
+    /// ⚠ 最长前缀已定之后才查闸,**且不退回更短的前缀**。
+    /// HTML5 是「整串冲成字面量」,不是「换个短一点的实体名再试」。
+    #[test]
+    fn the_gate_does_not_backtrack_to_a_shorter_entity_name() {
+        // `&notin` 是真实体;`&noti` 若退回去可能匹配到别的短名。
+        // 无论最终是哪种,结果都必须等于「原样冲掉」或「最长命中」,
+        // **不能**是某个更短的名字。
+        let got = decode_in("&notinx", Ctx::Attribute);
+        assert!(
+            got == "&notinx" || got == "∉x",
+            "unexpected fallback: {got:?} — the gate must not backtrack"
+        );
+    }
 }

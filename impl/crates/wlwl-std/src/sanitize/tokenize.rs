@@ -40,8 +40,20 @@ pub(crate) const RAWTEXT: &[&str] = &[
     "script", "style", "textarea", "title", "xmp", "noembed", "noframes", "iframe",
 ];
 
-fn is_ascii_alnum(c: u8) -> bool {
-    c.is_ascii_alphanumeric()
+/// 标签名的**首**字符。⚠ **只能是字母** —— WHATWG *tag open state* 的定义
+/// 就是「`U+003C` 后面跟一个 ASCII 字母」;跟一个数字时它是**字面量 `<`**。
+///
+/// 🔴 [D13-033 / N-015]此处此前用 `is_ascii_alnum`(**含数字**)⇒ 串中段的
+/// `3<4 and 5<6` 会造出一个名为 `4` 的标签,并把 `and 5` 收成它的属性 ⇒
+/// `4` 不在白名单 → 整棵拆壳 → **输出 `"3&lt;6"`,`"4 and 5"` 静默蒸发**。
+/// HTML5 会原样输出 `3&lt;4 and 5&lt;6`。
+///
+/// ⚠ **结束标签分支此前是同一个错**(`</3>` 也会造假结束标签),两处一起改。
+/// ⚠ 契约 `malformed_lone_lt` 用的 `3<4` 之所以此前也绿,是因为它**串尾**——
+/// `parse_start_tag` 走到串尾返回 `None` 走了字面量分支,恰好蒙对。补上
+/// `3<4 and 5<6` 这个形状才真正照到它。
+fn is_ascii_alphabetic(c: u8) -> bool {
+    c.is_ascii_alphabetic()
 }
 
 /// 标签名 / 属性名:字母数字连体(HTML5 容许的字符远多,但白名单过滤
@@ -66,7 +78,7 @@ pub(crate) fn tokenize(src: &str) -> Vec<Token> {
         }
         // —— '<' 开头的候选 ——
         match b.get(i + 1) {
-            Some(c) if is_ascii_alnum(*c) => {
+            Some(c) if is_ascii_alphabetic(*c) => {
                 match parse_start_tag(src, i) {
                     Some(((name, attrs), next, self_closing)) => {
                         out.push(Token::Start {
@@ -109,7 +121,12 @@ pub(crate) fn tokenize(src: &str) -> Vec<Token> {
                     }
                 }
             }
-            Some(b'/') if b.get(i + 2).map(|c| is_ascii_alnum(*c)).unwrap_or(false) => {
+            Some(b'/')
+                if b.get(i + 2)
+                    .map(|c| is_ascii_alphabetic(*c))
+                    .unwrap_or(false) =>
+            {
+                // D13-033 / N-015
                 // 结束标签:取名字,跳到 '>'(结束标签的属性按 HTML5 忽略)。
                 let mut j = i + 2;
                 while j < b.len() && is_name_byte(b[j]) {
@@ -240,7 +257,7 @@ fn parse_start_tag(src: &str, i: usize) -> Option<((String, Vec<Attr>), usize, b
                             }
                             let v = src[vstart..k.min(b.len())].to_string();
                             k = (k + 1).min(b.len());
-                            entities::decode(&v)
+                            entities::decode_in(&v, entities::Ctx::Attribute)
                         }
                         _ => {
                             // 无引号:取到空白或 '>'。
@@ -248,7 +265,7 @@ fn parse_start_tag(src: &str, i: usize) -> Option<((String, Vec<Attr>), usize, b
                             while k < b.len() && !b[k].is_ascii_whitespace() && b[k] != b'>' {
                                 k += 1;
                             }
-                            entities::decode(&src[vstart..k])
+                            entities::decode_in(&src[vstart..k], entities::Ctx::Attribute)
                         }
                     }
                 } else {
@@ -326,6 +343,58 @@ mod tests {
             }
         }
         assert_eq!(text, "1 < 2 and 3<4");
+    }
+
+    /// [D13-033 / N-015]**串中段**的 `<` + 数字必须是字面量。
+    ///
+    /// 期望值出处:WHATWG HTML *tag open state* —— `<` 后跟 ASCII **字母**
+    /// 才进标签态;跟数字走 character reference / bogus comment 态,一律当
+    /// 字面量。浏览器对 `3<4 and 5<6` 的结果是 `3&lt;4 and 5&lt;6`。
+    ///
+    /// ⚠ **这条必须带「串中段的后续内容」**。既有的 `stray_lt_is_literal`
+    ///   用的 `3<4` 在**串尾**,此前是靠 `parse_start_tag` 走到串尾返回
+    ///   `None` 才走到字面量分支的 —— **恰好蒙对**,照不到这个 bug。
+    ///   去掉 ` and 5<6` 那个尾巴,守卫就废了。
+    #[test]
+    fn lt_digit_in_the_middle_is_literal_not_a_tag() {
+        for src in ["3<4 and 5<6", "x<1 y<2", "a<9b"] {
+            let toks = tokenize(src);
+            assert!(
+                !toks
+                    .iter()
+                    .any(|t| matches!(t, Token::Start { .. } | Token::End(_))),
+                "{src:?} must produce no tags, got {toks:?}"
+            );
+            let mut text = String::new();
+            for t in &toks {
+                if let Token::Text(x) = t {
+                    text.push_str(x);
+                }
+            }
+            assert_eq!(text, src, "every character must survive as text");
+        }
+    }
+
+    /// ⚠ 结束标签分支此前是**同一个错**:`</3>` 也会造出一个假结束标签。
+    #[test]
+    fn end_tag_branch_has_the_same_letter_only_rule() {
+        assert_eq!(
+            tokenize("a</3b"),
+            vec![
+                Token::Text("a".into()),
+                Token::Text("</".into()),
+                Token::Text("3b".into())
+            ]
+        );
+        // 真标签照旧。
+        assert_eq!(
+            tokenize("a</b>c"),
+            vec![
+                Token::Text("a".into()),
+                Token::End("b".into()),
+                Token::Text("c".into())
+            ]
+        );
     }
 
     #[test]

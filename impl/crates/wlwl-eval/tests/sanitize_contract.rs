@@ -1061,6 +1061,17 @@ const SANITIZE_CASES: &[SanCase] = &[
     SanCase { name: "mxss_unclosed_comment", html: r#"<b title="<!--"><script>alert(1)</script>">x</b>"#, policy: "", expect: "<b>&quot;&gt;x</b>",
         why: "**引号属性值吞掉后续标记**(`>` 不终止引号内的值)→ script 沦为属性值字符;title 不在白名单 → 属性删除,值里的 `\">` 作为文本转义输出" },
     // ── 畸形 / 容错口径 ──
+    // ⚠ [D13-033 / N-015] `<` + **数字**不是标签开始。WHATWG *tag open state*
+    //    要求后面跟 ASCII **字母**;跟数字时 `<` 是字面量。
+    SanCase { name: "malformed_lone_lt_before_a_digit_keeps_the_text", html: r#"3<4 and 5<6"#, policy: "", expect: "3&lt;4 and 5&lt;6",
+        why: "**串中段**的 `<4`。修复前分词器用 `is_ascii_alnum`(含数字)⇒ 造出名为 `4` 的标签、把 `and 5` 收成属性 → 不在白名单 → 整棵拆壳 → 输出 `3&lt;6`,`\"4 and 5\"` **静默蒸发**。⚠ 既有的 `malformed_lone_lt` 用 `1 < 2 and 3<4`,那个 `3<4` 在**串尾**,修复前是靠 `parse_start_tag` 走串尾返回 `None` 才落到字面量分支的 —— **恰好蒙对**,照不到这个形状" },
+    // ⚠ [D13-034 / N-019] 属性上下文里 legacy 无分号实体的额外判据。
+    //    WHATWG *character reference in attribute value state*:命中后若下一
+    //    字符是 `=` 或 ASCII 字母数字则**不解码**(文本上下文里要解)。
+    SanCase { name: "attribute_value_keeps_a_legacy_entity_before_equals", html: r#"<a href="/x?a=1&copy=2">y</a>"#, policy: "", expect: "<a href=\"/x?a=1&amp;copy=2\">y</a>",
+        why: "`&copy` 是 legacy(无分号)实体,后随 `=` ⇒ 属性上下文**不解码**,`&` 留作字面量再由序列化侧转义成 `&amp;`。修复前被解成 `©=2`。⚠ 方向是**过度解码**,不构成 XSS,且「自幂等」与「输出无无分号实体」两条守卫都验不出来 —— 两次解码是自洽的" },
+    SanCase { name: "text_context_still_decodes_the_same_legacy_entity", html: r#"&copy=1"#, policy: "", expect: "©=1",
+        why: "**反向守卫**:同一条判据不得泄漏到文本上下文。HTML5 文本行为是 `&copy=1` → `©=1`;只钉「该拒的」而不钉「不该拒的照旧」,闸很容易写成一刀切" },
     SanCase { name: "malformed_unclosed_b", html: r#"<b>unclosed"#, policy: "", expect: "<b>unclosed</b>",
         why: "未闭合元素在串尾补结束标签(**输出恒是良构的**,这是幂等的前提)" },
     SanCase { name: "malformed_lone_lt", html: r#"1 < 2 and 3<4"#, policy: "", expect: "1 &lt; 2 and 3&lt;4",
