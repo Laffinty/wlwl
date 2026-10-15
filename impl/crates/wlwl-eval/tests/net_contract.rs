@@ -498,25 +498,61 @@ fn start_fixture() -> u16 {
                     .and_then(|l| l.split_whitespace().nth(1))
                     .unwrap_or("/")
                     .to_string();
-                let out: String = match path.as_str() {
-                    "/ok" => "HTTP/1.1 200 OK\r\nContent-Length: 5\r\nX-Fixture: yes\r\n\r\nhello".into(),
-                    "/notfound" => "HTTP/1.1 404 Not Found\r\nContent-Length: 3\r\n\r\nnah".into(),
-                    "/boom" => "HTTP/1.1 500 Internal Server Error\r\nContent-Length: 5\r\n\r\nbroke".into(),
-                    "/redirect" => "HTTP/1.1 302 Found\r\nLocation: /ok\r\nContent-Length: 4\r\n\r\ngoin".into(),
-                    "/chunked" => "HTTP/1.1 200 OK\r\nTransfer-Encoding: chunked\r\n\r\n5\r\nhello\r\n0\r\n\r\n".into(),
-                    "/nolength" => "HTTP/1.1 200 OK\r\nContent-Type: text/plain\r\n\r\nhello".into(),
-                    "/huge" => "HTTP/1.1 200 OK\r\nContent-Length: 99999999\r\n\r\n".into(),
+                // ── D13-040(N-033):慢速滴流。头一次给全(带 Content-Length),
+                //    body 每 100 ms 给 1 字节、共 10 字节。
+                //    ⚠ 这条端点存在的**唯一**理由是让「每次 `read` 各有一份完整
+                //    `dur`」的缺陷形态**永远超不了时**:每轮 `read` 都在 100 ms 内
+                //    拿到了数据,旧实现在这里**必然成功**(总耗时 ~1 s ≫ `timeout`),
+                //    而总闸形态必须在 `timeout` 处失败。所以它是一条**真红**守卫。
+                //    ⚠ 客户端一旦放弃就会 `shutdown`,`write_all` 随即报错 —— 那个
+                //    `break` 是为了让这条线程早点退出,不是被断言的行为。
+                if path == "/dribble" {
+                    let _ = s.write_all(b"HTTP/1.1 200 OK\r\nContent-Length: 10\r\n\r\n");
+                    let _ = s.flush();
+                    for _ in 0..10 {
+                        std::thread::sleep(std::time::Duration::from_millis(100));
+                        if s.write_all(b"x").is_err() {
+                            break;
+                        }
+                        let _ = s.flush();
+                    }
+                    return;
+                }
+                let out: Vec<u8> = match path.as_str() {
+                    "/ok" => b"HTTP/1.1 200 OK\r\nContent-Length: 5\r\nX-Fixture: yes\r\n\r\nhello".to_vec(),
+                    "/notfound" => b"HTTP/1.1 404 Not Found\r\nContent-Length: 3\r\n\r\nnah".to_vec(),
+                    "/boom" => b"HTTP/1.1 500 Internal Server Error\r\nContent-Length: 5\r\n\r\nbroke".to_vec(),
+                    "/redirect" => b"HTTP/1.1 302 Found\r\nLocation: /ok\r\nContent-Length: 4\r\n\r\ngoin".to_vec(),
+                    "/chunked" => b"HTTP/1.1 200 OK\r\nTransfer-Encoding: chunked\r\n\r\n5\r\nhello\r\n0\r\n\r\n".to_vec(),
+                    "/nolength" => b"HTTP/1.1 200 OK\r\nContent-Type: text/plain\r\n\r\nhello".to_vec(),
+                    "/huge" => b"HTTP/1.1 200 OK\r\nContent-Length: 99999999\r\n\r\n".to_vec(),
+                    // ── D13-041(N-034):HTTP/1.0 + 无 Content-Length + 无
+                    //    `Connection: close` ⇒ **close 定界**(读到 EOF)。
+                    //    ⚠ 刻意与 `/nolength` 配对:两条只差**版本号**,于是
+                    //    「HTTP/1.1 仍严格 / HTTP/1.0 放宽」这个区分本身被钉住。
+                    "/close10" => b"HTTP/1.0 200 OK\r\nContent-Type: text/plain\r\n\r\nhello".to_vec(),
+                    // ── D13-043(N-036):body 是**非法 UTF-8**(含 `0x00` 与 `0xFF`)。
+                    //    ⚠ 这四个字节取自 Python 3.13 `http.client` 的实测输出,
+                    //    那是本机上可用的**独立第二实现**(见下面的用例注释)。
+                    "/binary" => {
+                        let mut v =
+                            b"HTTP/1.1 200 OK\r\nContent-Length: 4\r\nContent-Type: application/octet-stream\r\n\r\n"
+                                .to_vec();
+                        v.extend_from_slice(&[0xFF, 0xFE, 0x00, 0x41]);
+                        v
+                    }
                     "/slow" => {
                         std::thread::sleep(std::time::Duration::from_secs(3));
-                        "HTTP/1.1 200 OK\r\nContent-Length: 2\r\n\r\nok".into()
+                        b"HTTP/1.1 200 OK\r\nContent-Length: 2\r\n\r\nok".to_vec()
                     }
                     "/echo" => {
                         let body = req.rsplit("\r\n\r\n").next().unwrap_or("");
                         format!("HTTP/1.1 200 OK\r\nContent-Length: {}\r\n\r\n{body}", body.len())
+                            .into_bytes()
                     }
-                    _ => "HTTP/1.1 404 Not Found\r\nContent-Length: 0\r\n\r\n".into(),
+                    _ => b"HTTP/1.1 404 Not Found\r\nContent-Length: 0\r\n\r\n".to_vec(),
                 };
-                let _ = s.write_all(out.as_bytes());
+                let _ = s.write_all(&out);
                 let _ = s.flush();
             });
         }
@@ -559,12 +595,102 @@ fn http_cases() -> Vec<(String, String, String)> {
         ),
         // ── 不支持的写法 → ERR **值**,不是原生诊断 ──
         ("chunked_is_err_value".into(), src(&err("/chunked")), "TRUE".into()),
+        // ⚠ D13-041:`no_length_is_err_value` **没有被放宽**,而且它现在是
+        //   「HTTP/1.1 仍严格」这条边界的**正向守卫**。RFC 9112 §6.3 第 8 条
+        //   其实不分版本(见下面 `http10_*` 两条的注释),规范 §21.5 为了反走私
+        //   要求更严 —— 这一条是**刻意比 RFC 紧**,不许顺手改掉。
         ("no_length_is_err_value".into(), src(&err("/nolength")), "TRUE".into()),
         ("body_over_cap_is_err_value".into(), src(&err("/huge")), "TRUE".into()),
+        // ── D13-041(N-034):HTTP/1.0 的 close 定界 ──
+        //
+        // 期望值出处:RFC 9112 Appendix C.2.2 ——「In HTTP/1.0, each connection is
+        // established by the client prior to the request and **closed by the server
+        // after sending the response**」;RFC 9112 §6.3 第 8 条(响应定界判定的
+        // 兜底条)——「this is a response message without a declared message body
+        // length, so the message body length is determined by the number of octets
+        // received prior to the server closing the connection」。
+        // ⚠ **独立第二实现**:Python 3.13 `http.client` 对同一个「HTTP/1.0 + 无
+        //   `Content-Length`」的夹具实测返回 `status 200 / version 10 / body
+        //   b'hello'` —— 它**不报错**,直接读到 EOF。
+        ("http10_no_length_is_close_delimited".into(), src(&field(&get("/close10"), "body")), "hello".into()),
+        ("http10_status_is_readable".into(), src(&field(&get("/close10"), "status")), "200".into()),
+        // ── D13-042(N-035):`tchar` 收紧(精确地只少那五个)──
+        //
+        // 期望值出处:**只有 RFC 9110 §5.6.2**(与 RFC 7230 §3.2.6 逐字相同)——
+        // `tchar = "!" / "#" / "$" / "%" / "&" / "'" / "*" / "+" / "-" / "." /
+        //  "^" / "_" / "`" / "|" / "~" / DIGIT / ALPHA`,其下的注释是
+        // 「any VCHAR, except delimiters」,分隔符被点名为 `DQUOTE` 与
+        // `"(),/:;<=>?@[\]{}"` —— 五个被剔除的字符全在其中。
+        // `field-name = token`(RFC 9110 §5.1)、`method = token`(RFC 9112 §3.1)。
+        // ⚠ **本机上没有可用的第二实现**:Python 3.13 的
+        //   `http.client._is_legal_header_name` 接受除 `:` 外**全部**可见 ASCII
+        //   (实测 `!"#$%&'()*+,-./0123456789;<=>?@A-Z[\]^_`a-z{|}~`),那是
+        //   CPython `tokenize` 的 `_TOKEN`,**比 RFC 宽得多** —— 不能拿来佐证。
+        //   故这 5 条**只引 RFC**,不伪造「我以为浏览器会这样」。
+        (
+            "header_name_paren_is_e0030".into(),
+            src(&format!("HTTP_GET(\"{}\", [\"X-Bad(\": \"v\"])", u("/ok"))),
+            "!E0030 HTTP_GET: header name \"X-Bad(\" is not a valid token".into(),
+        ),
+        (
+            "header_name_semicolon_is_e0030".into(),
+            src(&format!("HTTP_GET(\"{}\", [\"X-Bad;\": \"v\"])", u("/ok"))),
+            "!E0030 HTTP_GET: header name \"X-Bad;\" is not a valid token".into(),
+        ),
+        (
+            "method_paren_is_e0030".into(),
+            src(&format!("HTTP_REQUEST(\"GE(\", \"{}\")", u("/ok"))),
+            "!E0030 HTTP_REQUEST: method \"GE(\" is not a valid HTTP token".into(),
+        ),
+        // ⚠ 收紧**只许少那五个** —— 这条把剩下 15 个非字母数字 tchar 逐个点名,
+        //   防止有人「顺手再紧一点」把 `~` / `|` / `^` 之类也砍掉。
+        (
+            "header_name_full_tchar_set_is_accepted".into(),
+            src(&format!(
+                "AT_K(HTTP_GET(\"{}\", [\"X-A!#$%&'*+-.^_`|~\": \"v\"]), \"status\", \"MISSING\")",
+                u("/ok")
+            )),
+            "200".into(),
+        ),
+        (
+            "method_full_tchar_set_is_accepted".into(),
+            src(&format!("AT_K(HTTP_REQUEST(\"M-SEARCH!#\", \"{}\"), \"status\", \"MISSING\")", u("/ok"))),
+            "200".into(),
+        ),
+        // ── D13-043(N-036):非 UTF-8 的 body 走 `ARRAY[INTEGER]`,不再整条 ERR ──
+        //
+        // 期望值出处:① **独立第二实现** —— Python 3.13 `http.client` 读同一个
+        // 「4 字节非法 UTF-8」夹具实测 `type(resp.read()) is bytes`、
+        // `list(b) == [255, 254, 0, 65]`,**不报错、不做 U+FFFD 替换**
+        // (`b.decode('utf-8')` 抛 `invalid start byte`);② **规范** §2.3 / §11.6
+        // 立 `ARRAY[INTEGER]` 为本语言**唯一无损字节载体**,元素 `0..=255`,与
+        // `std.fs::READ_BYTES` 同款;③ 方括号里逗号分隔的写法是 `Value::display`
+        // 对 `Value::Array` 的**渲染格式**(`wlwl-value/src/lib.rs:318`),
+        // 属测试夹具的格式化事实,不是语义期望值。
+        // ⚠ `0x00` 在里面是关键:它证明这不是「UTF-8 解码后补了什么」。
+        ("binary_body_is_a_byte_array".into(), src(&field(&get("/binary"), "body")), "[255, 254, 0, 65]".into()),
+        // 配对:`binary_body_is_a_byte_array` 放宽了**非** UTF-8 那一侧,
+        // 这一条守住**文本**那一侧没被顺手改成「一律数组」—— `body` 仍是 `STRING`。
+        ("text_body_is_still_a_string".into(), src(&field(&get("/ok"), "body")), "hello".into()),
         // 超时:只给一个位置参即可(实现按类型区分 DICT / INTEGER)。
         (
             "timeout_is_err_value".into(),
             src(&format!("IS_ERR(HTTP_GET(\"{}\", 300))", u("/slow"))),
+            "TRUE".into(),
+        ),
+        // ── D13-040(N-033):`timeout` 是**整条请求**的上界,不是每次读的 ──
+        //
+        // 期望值出处:规范 §21.5 的「**超时必填且有保守默认**…调用方可覆盖」+
+        // `ADR-0028` D2(30 s)—— 那是对**这次调用**的承诺,不是对每次系统调用的;
+        // RFC 9112 §6.3 第 6 条同向:「If the sender closes the connection or **the
+        // recipient times out** before the indicated number of octets are received,
+        // the recipient MUST consider the message to be incomplete」。
+        // ⚠ `/dribble` 每 100 ms 给 1 字节共 10 字节 ⇒ 缺陷形态总耗时 ~1 s,
+        //   而这里只给 500 ms。**这条不可能假绿**:新形态在 500 ms 处必然失败,
+        //   旧形态在 ~1 s 处必然成功 —— 两边都离 500 ms 有 2 倍以上余量。
+        (
+            "total_budget_caps_a_slow_dribble".into(),
+            src(&format!("IS_ERR(HTTP_GET(\"{}\", 500))", u("/dribble"))),
             "TRUE".into(),
         ),
         // ── POST / REQUEST ──

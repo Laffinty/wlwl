@@ -71,6 +71,64 @@ const MAX_BODY_BYTES: usize = 8 * 1024 * 1024;
 /// `ADR-0028` D2 的默认超时(毫秒)。调用方可覆盖,但**忘写不会永久挂住**。
 const DEFAULT_TIMEOUT_MS: u64 = 30_000;
 
+/// D13-040(N-033):一次 HTTP 请求的**总**时间闸。
+///
+/// ## 缺陷形态(为什么要有这个类型)
+///
+/// 旧的 `timeout_ms` 被当成「**每一次系统调用**的时长」而不是「整条请求的上界」:
+/// 每个候选地址各拿一份完整 `dur`,`sock.read()` 每轮又各拿一份。于是
+///
+/// ```text
+/// 总时长 = DNS(无上限) + N × dur + Σ(每次 read 的 dur)
+/// ```
+///
+/// 一个解析出 4 个 A 记录、body 又是慢速滴流的主机,能把 30 s 的承诺变成几分钟,
+/// 而 `ADR-0028` D2 写的是「超时必填 30 s」—— 那是**整条请求**的承诺。
+/// 现在 DNS 之后的每一处(connect / write / 每次 read / flush)都从**同一份剩余预算**里扣。
+///
+/// ## ⚠ DNS 解析**不在闸内** —— 这是已知缺口,不是已解决
+///
+/// `ToSocketAddrs::to_socket_addrs` 是**阻塞的系统调用**,标准库**没有**可移植的
+/// 取消手段(`getaddrinfo` 要么同步返回要么阻塞;另起线程 + 丢弃句柄解决不了
+/// 「线程仍会挂住」这件事,还会泄漏线程)。所以「超时覆盖 DNS」这句**做不到**,
+/// 闸从 DNS **返回之后**才开始计。若 DNS 真的挂住,本函数仍会挂住。
+/// ⇒ 这是**需要改规范**的一条(见交付说明):要么规范承认这个缺口,
+/// 要么规范要求改用可取消的解析器(那会引入第三方依赖,与 D3「零新增依赖」冲突)。
+struct Deadline {
+    /// 请求开始的那一刻(URL 解析之后、拨号之前)。
+    start: std::time::Instant,
+    /// 调用方给的**总**预算。
+    total: Duration,
+}
+
+impl Deadline {
+    fn new(total: Duration) -> Self {
+        Self {
+            start: std::time::Instant::now(),
+            total,
+        }
+    }
+
+    /// 剩余预算。**耗尽即 `None`**。
+    ///
+    /// ⚠ 这里用 `total.checked_sub(elapsed)` 而不是 `start + total` 再求差:
+    /// `timeout_ms` 是用户给的 `u64`,`Instant + Duration` 在 `u64::MAX` 上会
+    /// **panic**;而 `Instant::elapsed()` 与 `Duration` 的减法都不溢出。
+    fn left(&self) -> Option<Duration> {
+        self.total.checked_sub(self.start.elapsed())
+    }
+
+    /// 预算耗尽时给 `http_error` 的 `reason`。**刻意带 `timeout` 字样** ——
+    /// 调用方看到的 `reason` 必须能区分「总预算用完」与「某个别的 I/O 错误」。
+    fn exhausted_reason(&self, doing: &str) -> String {
+        format!(
+            "{doing}: total request budget of {} ms exhausted (the `timeout` argument is a \
+             whole-request cap, not a per-read one — ADR-0028 D2)",
+            self.total.as_millis()
+        )
+    }
+}
+
 /// HTTP 失败 → `ERR([kind:"HttpError", op, reason])`**值**,不是原生诊断。
 ///
 /// 理由与 `std.encode` 的 `DecodeError` 同款:网络不通是**运行期可预期的
@@ -87,26 +145,41 @@ fn http_error(op: &str, reason: impl Into<String>) -> Value {
     ])))
 }
 
-/// RFC 7230 `tchar` —— 头字段名与方法名只能用这些字符。
+/// RFC 9110 §5.6.2 的 `tchar` —— 头字段名与方法名只能用这些字符。
+///
+/// ```text
+/// token          = 1*tchar
+/// tchar          = "!" / "#" / "$" / "%" / "&" / "'" / "*"
+///                / "+" / "-" / "." / "^" / "_" / "`" / "|" / "~"
+///                / DIGIT / ALPHA
+///                ; any VCHAR, except delimiters
+/// ```
+/// 原文(RFC 9110 §5.6.2 第 15–16 行)把分隔符点名为 `DQUOTE` 与
+/// `"(),/:;<=>?@[\]{}"` —— ⚠ `(`, `)`, `,`, `;`, `=` **正在其中**。
+/// RFC 7230 §3.2.6 的同一条 ABNF 逐字相同(它是本仓此前引用的出处)。
+///
+/// ## D13-042(N-035):这里曾是**刻意收紧之前**的形态,多放进五个 sub-delim
+///
+/// 旧实现写的是 `is_unreserved || is_sub_delim || <16 个标点>`,而
+/// `sub-delims`(RFC 3986 Appendix A)比 `tchar` **多出且只多出**
+/// `(` `)` `,` `;` `=` 这五个 —— 于是它们被一并放进了 token。
+/// ⚠ 这是**收紧**方向的改动(接受集合变小 5 个字符),所以它有可能让既有契约转红;
+/// 真红了要**改判契约**(`D13-008`:已改实现而非冻结错误输出),不许回退实现来保绿。
+///
+/// ⚠ **为什么是收紧而不是放宽**:`field-name = token`(RFC 9110 §5.1)、`method = token`
+/// (RFC 9112 §3.1)—— 两处文法都只认 `tchar`。放宽就得自己发明「更友好的 token」,
+/// 而分号 / 等号在头字段名里出现正是响应拆分与走私的经典歧义源
+/// (RFC 9112 §11.1 / §11.2);**没有规范依据支持放宽**。
+/// ⚠ 本机上 Python 3.13 的 `http.client._is_legal_header_name` **不能**当第二实现:
+///   它接受除 `:` 外**全部**可见 ASCII(那是 CPython `tokenize` 的 `_TOKEN`,
+///   不是 HTTP token),比 RFC **宽得多** —— 故本条**只有 RFC 一个出处**。
 fn is_tchar(c: u8) -> bool {
+    // 15 个非字母数字 tchar 里,`-` `.` `_` `~` 已由 `is_unreserved` 覆盖
+    // (RFC 3986 Appendix A 的 `unreserved` 恰好是这四个),这里只补剩下 11 个。
     is_unreserved(c)
-        || is_sub_delim(c)
         || matches!(
             c,
-            b'!' | b'#'
-                | b'$'
-                | b'%'
-                | b'&'
-                | b'\''
-                | b'*'
-                | b'+'
-                | b'-'
-                | b'.'
-                | b'^'
-                | b'_'
-                | b'`'
-                | b'|'
-                | b'~'
+            b'!' | b'#' | b'$' | b'%' | b'&' | b'\'' | b'*' | b'+' | b'^' | b'`' | b'|'
         )
 }
 
@@ -759,7 +832,12 @@ fn request(
     };
 
     // ── 2. 连接(带超时)──
+    //
+    // D13-040:总闸从**这里**开始计(URL 解析是纯计算,不计)。⚠ DNS 本身在闸外 ——
+    // `to_socket_addrs` 是不可中断的阻塞系统调用,标准库没有可移植的取消手段。
+    // 详见 `Deadline` 的文档注释。
     let dur = Duration::from_millis(timeout_ms);
+    let deadline = Deadline::new(dur);
     let addrs: Vec<_> = match (dial_host.as_str(), port).to_socket_addrs() {
         Ok(it) => it.collect(),
         Err(e) => return http_error(name, format!("resolve {dial_host}:{port}: {e}")),
@@ -770,7 +848,12 @@ fn request(
     let mut sock = None;
     let mut last = String::new();
     for a in &addrs {
-        match TcpStream::connect_timeout(a, dur) {
+        // ⚠ 缺陷形态是 `connect_timeout(a, dur)` —— **每个候选地址一份完整 dur**,
+        //   N 个地址就把预算放大成 N 倍。这里只给「剩下的那一份」。
+        let Some(left) = deadline.left() else {
+            return http_error(name, deadline.exhausted_reason("connect"));
+        };
+        match TcpStream::connect_timeout(a, left) {
             Ok(s) => {
                 sock = Some(s);
                 break;
@@ -781,8 +864,16 @@ fn request(
     let Some(mut sock) = sock else {
         return http_error(name, format!("connect {dial_host}:{port}: {last}"));
     };
-    let _ = sock.set_read_timeout(Some(dur));
-    let _ = sock.set_write_timeout(Some(dur));
+    // ⚠ 读 / 写超时**不在这里一次设定死** —— 缺陷形态的 `set_read_timeout(Some(dur))`
+    //   是「每次读各有一份完整 dur」的总时长来源。每次 I/O 前重新按剩余预算设定,
+    //   见下面 `Deadline::left()` 的三个调用点。
+    match deadline.left() {
+        Some(left) => {
+            let _ = sock.set_read_timeout(Some(left));
+            let _ = sock.set_write_timeout(Some(left));
+        }
+        None => return http_error(name, deadline.exhausted_reason("connect")),
+    }
 
     // ── 3. 写请求 ──
     let host_hdr = if port == 80 {
@@ -802,6 +893,14 @@ fn request(
     req.push_str("Connection: close\r\n\r\n");
     if let Some(b) = body {
         req.push_str(b);
+    }
+    // D13-040:写也吃总预算。⚠ 缺陷形态只对读做了「一次性 set」,写的超时是
+    // 连接建立时那一份 —— 一个不读请求体的服务端可以让写永久阻塞。
+    match deadline.left() {
+        Some(left) => {
+            let _ = sock.set_write_timeout(Some(left));
+        }
+        None => return http_error(name, deadline.exhausted_reason("write")),
     }
     if let Err(e) = sock.write_all(req.as_bytes()) {
         return http_error(name, format!("write: {e}"));
@@ -823,7 +922,7 @@ fn request(
                 format!("response header block exceeds {MAX_HEADER_BYTES} bytes"),
             );
         }
-        match sock.read(&mut buf) {
+        match read_once(&mut sock, &mut buf, &deadline) {
             Ok(0) => {
                 return http_error(
                     name,
@@ -913,7 +1012,29 @@ fn request(
             }
             Some(n as usize)
         }
-        None if connection_close => None, // 读到 EOF
+        // ── D13-041(N-034):HTTP/1.0 的 close 定界 ──
+        //
+        // 缺陷形态只认 `Connection: close` 这**一个**信号,把 HTTP/1.0 的
+        // 「默认即 close 定界」整个丢掉了 —— `version` 解析出来只用于
+        // §5 的版本校验,之后再无第二次使用。
+        //
+        // 依据:HTTP/1.0 **没有** keep-alive,RFC 9112 Appendix C.2.2 的原话是
+        // 「In HTTP/1.0, each connection is established by the client prior to
+        // the request and **closed by the server after sending the response**」;
+        // RFC 9112 §6.3 第 8 条(定界的判定优先级,响应专用)也说
+        // 「Otherwise, this is a response message without a declared message body
+        // length, so the message body length is determined by the number of octets
+        // received prior to the server closing the connection」。
+        //
+        // ⚠ **HTTP/1.1 保持严格,这是刻意的、比 RFC 更紧的一刀**:RFC 9112 §6.3
+        // 第 8 条其实**不分版本**,而规范 §21.5 的拒绝表为了反走私要求
+        // 「既无 Content-Length 又无 Connection: close → ERR」。本次只给
+        // **HTTP/1.0** 开口子(那里 close 定界是**唯一**可能的框架,拒绝它没有
+        // 任何安全收益,只会让一堆老服务器不可达);HTTP/1.1 的那条 ERR 契约
+        // `no_length_is_err_value` **原样保留**,不顺手放宽。
+        // ⚠ 放宽的那一侧仍受 `MAX_BODY_BYTES` 与总闸(`Deadline`)双重约束,
+        //   所以「恶意 HTTP/1.0 服务端无限流」不会变成无界分配或永久挂住。
+        None if connection_close || version == "HTTP/1.0" => None, // 读到 EOF
         None => {
             return http_error(
                 name,
@@ -935,7 +1056,7 @@ fn request(
                 format!("response body exceeds {MAX_BODY_BYTES} bytes"),
             );
         }
-        match sock.read(&mut buf) {
+        match read_once(&mut sock, &mut buf, &deadline) {
             Ok(0) => break,
             Ok(n) => body_bytes.extend_from_slice(&buf[..n]),
             Err(e) => return http_error(name, format!("read body: {e}")),
@@ -951,9 +1072,32 @@ fn request(
         body_bytes.truncate(w);
     }
 
+    // ── D13-043(N-036):非 UTF-8 的 body **不再整条 ERR** ──
+    //
+    // 缺陷形态:`String::from_utf8(body_bytes)` 失败 ⇒ 整条请求 `ERR`。于是
+    // 「取一个 PNG / 一个 wasm」这种最普通的用法**完全不可用** —— 这是**可用性**
+    // 缺陷,不是安全缺陷(顶多丢一次请求,不会越权、不会越界)。
+    //
+    // 依据:规范 §2.3 / §11.6 把 `ARRAY[INTEGER]` 定为本语言**唯一无损字节载体**
+    // (`STRING` 是 UTF-8,装不了任意字节),而 `std.fs::READ_BYTES` 正是逐字节
+    // 无损返回。`HTTP_*` 的 body 是同一个东西,没理由比 `READ_BYTES` 更严。
+    //
+    // ⚠ **这是规范改动**:规范 §21 的成员表只写了 `{status, headers, body}`,
+    //    **从未规定 `body` 的类型** —— 所以实现侧无冲突,但规范必须补一条
+    //    「`STRING` 或 `ARRAY[INTEGER]`」才不算自说自话(见交付说明)。
+    // ⚠ 形状**随内容走**:合法 UTF-8 ⇒ `STRING`(既有契约一个不改),否则 ⇒
+    //    `ARRAY[INTEGER]`。不允许「无脑一律返回数组」—— 那会把每一个文本响应
+    //    的调用方全部改成手动重组。
     let body = match String::from_utf8(body_bytes) {
-        Ok(b) => b,
-        Err(e) => return http_error(name, format!("response body is not valid UTF-8: {e}")),
+        Ok(b) => Value::String(b),
+        // `FromUtf8Error::into_bytes` 把**原始字节**原样取回 —— 不重扫一遍,
+        // 也就不可能在这一步引入有损替换(§11.3-3「不做有损替换」)。
+        Err(e) => Value::Array(
+            e.into_bytes()
+                .into_iter()
+                .map(|b| Value::Integer(i64::from(b)))
+                .collect(),
+        ),
     };
 
     Value::Dict(vec![
@@ -967,8 +1111,30 @@ fn request(
                     .collect(),
             ),
         ),
-        (Value::String("body".into()), Value::String(body)),
+        (Value::String("body".into()), body),
     ])
+}
+
+/// D13-040(N-033):一次**从总闸里扣**的读。
+///
+/// 缺陷形态是 `sock.read(buf)` 配一个建连时设死的 `set_read_timeout(Some(dur))`
+/// —— 每次读都拿到一份**完整**的 `dur`,于是一个慢速滴流的服务端可以无限续命。
+/// 现在每次读之前都把 socket 的读超时**重设**为剩余预算。
+///
+/// ⚠ 预算耗尽时**不能**去 `set_read_timeout(Some(Duration::ZERO))`:零值在
+/// Windows 与 Linux 上都让 `setsockopt` 报 `EINVAL`,而调用点用的是
+/// `let _ =`,那个失败会被**静默吞掉** —— 于是「超时」悄悄退化成
+/// 「无超时」(这正是缺陷形态本身)。所以先判 `left()`,为 `None` 就直接返回
+/// 一个 `TimedOut` 错误,根本不碰 socket 的选项。
+fn read_once(sock: &mut TcpStream, buf: &mut [u8], deadline: &Deadline) -> std::io::Result<usize> {
+    let Some(left) = deadline.left() else {
+        return Err(std::io::Error::new(
+            std::io::ErrorKind::TimedOut,
+            deadline.exhausted_reason("read"),
+        ));
+    };
+    let _ = sock.set_read_timeout(Some(left));
+    sock.read(buf)
 }
 
 fn find_head_end(raw: &[u8]) -> Option<usize> {

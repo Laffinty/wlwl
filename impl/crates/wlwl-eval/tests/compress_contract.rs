@@ -18,8 +18,12 @@
 //!
 //! ## 压缩炸弹上限是**规范条款**,不是实现里的一个可调 `const`
 //!
-//! §17.4 那条「越限 → `ERR` 而非 OOM」由 `wlwl-std` 的单测守着上限常量本身;
-//! 语言层能验的是「越限路径确实产出 `ERR` 值而不是 panic」。
+//! §17.4 那条「越限 → `ERR` 而非 OOM」在 `wlwl-std` 的单测里**被真的执行**
+//! (`over_limit_decompression_is_an_err_value_not_an_oom`,zstd 与 flate 两个
+//! 执行点各跑一遍)。⚠ **语言层造不出这个用例**:它需要 > 64 MiB 的
+//! `ARRAY[INTEGER]`,而「在解释器里物化一百万个以上的值」正是这条护栏要防的
+//! 形状 —— 用被测对象去造测试数据会让测试自己先被打挂。所以「上限是规范性
+//! 条款」在语言层仍然只断言**文档里写着** `MAX_DECOMPRESSED`。
 
 use std::path::PathBuf;
 use wlwl_eval::Evaluator;
@@ -39,6 +43,16 @@ const PY_GZIP_HEX: &str = "1f8b08000000000000ff2bcf29cf5148cecf2d284a2d2eb65228c
 
 /// **Python `zlib.compress(level=6)` 的输出**(RFC 1950, 66 字节)。
 const PY_ZLIB_HEX: &str = "789c2bcf29cf5148cecf2d284a2d2eb65228c94855282ccd4cce56482aca2fcf5348cbaf50c82acd2d2856c82f4b2d024be72456552aa4e4a7eb91a41800e861261b";
+
+/// **Python `gzip.compress(b"AAA", mtime=0) + gzip.compress(b"BBB", mtime=0)`**
+/// (RFC 1952 §2.2 的**多成员**文件,46 字节)—— 独立第二实现。
+const PY_GZIP_MULTI_HEX: &str =
+    "1f8b08000000000002ff7374740400a731a066030000001f8b08000000000002ff7372720200878dc2d603000000";
+
+/// **Python `gzip.compress(b"wlwl", mtime=0) + b"TRAILING-GARBAGE"`**(40 字节)
+/// —— 成员之后还有 16 字节垃圾。
+const PY_GZIP_TAIL_HEX: &str =
+    "1f8b08000000000002ff2bcf29cf01003fb71bb204000000545241494c494e472d47415242414745";
 
 /// 把 wlwl 源码里的 `[12, 34, …]` 字节数组展开成常量。测试用字面量写死
 /// 独立向量,而**载荷**这一侧同样写死字面量,免得测试里跑一段转换逻辑
@@ -252,6 +266,36 @@ fn py_vectors_are_decodable() {
         actual(&src),
         format!("[{}]", plain.join(", ")),
         "we must decode a Python-produced zlib stream to the original bytes"
+    );
+}
+
+/// ⚠🔴 **[D13-048 / N-027] 多成员必须**全部**解开;流后的尾随字节必须**报错**。
+///
+/// **出处**:RFC 1952 §2.2 —— 一个 gzip 文件是若干成员首尾相接,解压结果是
+/// 拼接;第二段不是成员就不是这个格式的一部分。**独立第二实现**(Python
+/// 3.13.13)同判:`gzip.decompress(多成员)` → `b'AAABBB'`,加尾随垃圾 → 抛
+/// `BadGzipFile: Not a gzipped file (b'TR')`。
+///
+/// 此前本实现用**单成员** `flate2::read::GzDecoder` ⇒ 第二个成员被**静默丢弃**
+/// 且不报错 —— 与「⚠ CRC32 不符 → `ERR`」给人的完整性承诺相悖:一个「校验过
+/// 校验和」的返回值实际只覆盖了输入的一部分。
+#[test]
+fn py_multi_member_gzip_is_fully_decoded_and_trailing_garbage_is_refused() {
+    let decoded = actual(&format!(
+        r#"IMPORT("wlwl:std.compress", ["GZIP_DECOMPRESS"]); GZIP_DECOMPRESS([{}])"#,
+        bytes_src(PY_GZIP_MULTI_HEX)
+    ));
+    assert_eq!(
+        decoded, "[65, 65, 65, 66, 66, 66]",
+        "RFC 1952 §2.2: members concatenate and no member may be dropped"
+    );
+    let refused = actual(&format!(
+        r#"IMPORT("wlwl:std.compress", ["GZIP_DECOMPRESS"]); IS_ERR(GZIP_DECOMPRESS([{}]))"#,
+        bytes_src(PY_GZIP_TAIL_HEX)
+    ));
+    assert_eq!(
+        refused, "TRUE",
+        "bytes after the last member must be an ERR, never dropped in silence"
     );
 }
 

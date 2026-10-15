@@ -329,9 +329,35 @@ pub fn gzip_compress(host: &mut dyn StdHost, args: Vec<Value>) -> Result<Outcome
 }
 
 /// `GZIP_DECOMPRESS(data) -> ARRAY[INTEGER]`。⚠ CRC32 不符 → `ERR`。
+///
+/// ⚠🔴 **[D13-048 / N-027] 这里必须是 `MultiGzDecoder`,不是 `GzDecoder`。**
+///
+/// **RFC 1952 §2.2** —— 一个 gzip 文件是**若干成员首尾相接**,解压结果是它们
+/// 解出内容的拼接(`cat a.gz b.gz > ab.gz` 是合法构造)。`GzDecoder` 只吃
+/// **第一个**成员就返回 EOF ⇒ 第二个成员被**静默丢弃**、不报错。那与本成员
+/// 文档里「⚠ CRC32 不符 → `ERR`」给人的完整性承诺直接相悖:一个「校验和被
+/// 验证过」的返回值,实际只覆盖了输入的一部分。
+///
+/// **尾随字节(流后多出来的垃圾)**:换 `MultiGzDecoder` 之后它同样**不再静默**
+/// —— 解完一个成员后 flate2 会去看还有没有下一个成员,垃圾头解析失败 ⇒ 整条
+/// 解压返回错误 ⇒ 本函数返 `ERR`。
+/// ⚠ **本条是实测的**(flate2 1.1.10 + Python 3.13.13),不是推断:
+/// - 多成员(两个 `gzip.compress(b"AAA")` / `b"BBB"`)⇒ 解出 `[65,65,65,66,66,66]`;
+/// - 成员后接 16 字节垃圾 ⇒ `Err(InvalidInput)`;Python `gzip.decompress` 对同一
+///   输入抛 `BadGzipFile` —— 两个独立实现在这里同判。
+/// - ⚠🔴 **审查报告里建议的「校验 `Cursor::position() == len`」是无效的**:
+///   `flate2::read::` 的解码器内部套了 `BufReader`,会**预读**,实测尾随垃圾
+///   情形下 `position()` 仍等于 `len`(38 == 38)。靠它去抓尾随字节会得到一个
+///   永远绿的守卫。抓住它的是**解码器自己的错误**,不是位置。
+///
+/// ⚠ 为什么 `ZLIB_DECOMPRESS` / `DEFLATE_RAW_DECOMPRESS` **不加**尾随字节检查:
+/// RFC 1950 的 zlib 流没有「多成员」这个概念,zlib API 把它叫 `unused_data`
+/// 并**允许**调用方忽略;Python `zlib.decompress(zlib_stream + b"JUNK")` 同样
+/// 正常返回数据(实测)。gzip 那条之所以要严,是因为 RFC 1952 **定义了**成员
+/// 拼接语义 ⇒ 尾随字节要么是第二个成员(该解),要么是垃圾(该报)。
 pub fn gzip_decompress(host: &mut dyn StdHost, args: Vec<Value>) -> Result<Outcome, WlwlError> {
     flate_decompress(host, "GZIP_DECOMPRESS", args, |data| {
-        Ok(Box::new(flate2::read::GzDecoder::new(
+        Ok(Box::new(flate2::read::MultiGzDecoder::new(
             std::io::Cursor::new(data),
         )))
     })
@@ -602,9 +628,8 @@ mod tests {
 
     /// **压缩炸弹护栏**:越限返回 `ERR`,不是 OOM、不是 panic。
     ///
-    /// ⚠ 64 MiB 的**真炸弹**在单测里造不出来(要先占住 64 MiB),所以这里
-    /// 断言两件可测的事:① 上限常量被写死(不是可调 `const`);② 非帧输入
-    /// 走 `ERR` 而不是 panic。真炸弹由契约表的「上限是规范性条款」条款守着。
+    /// ⚠ 这条只钉**常量本身**与「非帧输入走 `ERR`」;**越限那条分支的执行
+    /// 覆盖在下一条测试里** —— `MAX_DECOMPRESSED` 是规范条款,不该被随手改。
     #[test]
     fn the_bomb_guard_limit_is_a_written_constant() {
         assert_eq!(
@@ -618,6 +643,51 @@ mod tests {
             matches!(out.value, Value::Err(_)),
             "a 3-byte non-frame must be an ERR value"
         );
+    }
+
+    /// ⚠🔴 **[D13-049 / N-028] 越限分支此前**零执行覆盖**。**
+    ///
+    /// 旧结论「64 MiB 的真炸弹在单测里造不出来」是错的:造炸弹不需要真造 GB,
+    /// 只要输出**刚过上限一个字节**。addendum-07 §7 W-05 打 ✅ 时写的是
+    /// 「单测守着常量本身」—— 而它自己的验收条款要求「越限 → `ERR` 而不是
+    /// OOM」⇒ 结项声明相对自己的条款是虚的。
+    ///
+    /// ⚠ **判据是语义,不是本实现的输出**:断言「解压超过上限返回一个
+    /// `ERR` **值**、而不是 `ERR` 诊断、且进程活着走完」—— 不去比对任何
+    /// 字节数、不抄实现的错误文本。
+    #[test]
+    fn over_limit_decompression_is_an_err_value_not_an_oom() {
+        // 载荷 = 上限 **加一个字节** ⇒ 必然越限,而与「压缩后多大」无关。
+        let bomb = vec![b'A'; MAX_DECOMPRESSED + 1];
+        let packed = zstd::bulk::compress(&bomb, 1).expect("compress");
+        let mut e = flate2::write::GzEncoder::new(Vec::new(), flate2::Compression::fast());
+        e.write_all(&bomb).expect("gzip");
+        let gz = e.finish().expect("gzip finish");
+        // ⚠ 先把 64 MiB 的**源**放掉再解压:否则两个 64 MiB 的缓冲同时活着,
+        //   峰值会翻倍。压缩流本身只有几十 KiB。
+        drop(bomb);
+        // 结构性命题(不是某个字节数):这确实是个炸弹 —— 几十 KiB 打出 64 MiB+。
+        assert!(
+            packed.len() * 100 < MAX_DECOMPRESSED,
+            "the fixture must actually be a bomb: {} bytes in, {} out",
+            packed.len(),
+            MAX_DECOMPRESSED + 1
+        );
+
+        let mut h = NullHost;
+        let z = zstd_decompress(&mut h, vec![arr(&packed)]);
+        assert!(
+            matches!(&z, Ok(o) if matches!(o.value, Value::Err(_))),
+            "zstd over the cap must be an ERR **value**, got {z:?}"
+        );
+
+        // 同一条护栏的 flate 侧(`flate_decompress` 是另一个执行点)。
+        let g = gzip_decompress(&mut h, vec![arr(&gz)]);
+        assert!(
+            matches!(&g, Ok(o) if matches!(o.value, Value::Err(_))),
+            "gzip over the cap must be an ERR **value**, got {g:?}"
+        );
+        // 走到这里进程还活着 ⇒ 不是 OOM、不是 abort。
     }
 
     #[test]

@@ -587,6 +587,65 @@ fn write_bytes_rejects_out_of_range_bytes() {
     let _ = std::fs::remove_dir_all(&dir);
 }
 
+/// ⚠🔴 **[D13-045 / N-031] 根目录打不开必须与 `LIST_DIR` 同口径。**
+///
+/// 顶层此前忽略 `walk` 的全部产出 ⇒ **根不存在**与**根是个空目录**返回
+/// 完全相同的 `[]`,调用方无从分辨。这条把两件事**同时**钉住:缺失的根要响,
+/// 而**存在但为空**的根仍然是空数组(别把守卫做成「一律响」)。
+#[test]
+fn walk_dir_on_a_missing_root_is_an_err_value_but_an_empty_root_is_not() {
+    let dir = io_scratch();
+    let missing = abs(&dir, "no_such_dir_zzz");
+    assert_eq!(
+        run_with_dir(&format!("{IO}IS_ERR(WALK_DIR(\"{missing}\"))"), &dir),
+        "TRUE",
+        "a missing root must be an ERR value, not an empty list"
+    );
+    // 口径对齐:同一条路径在 `LIST_DIR` 上本来就响(两个成员不该有两种答案)。
+    assert_eq!(
+        run_with_dir(&format!("{IO}IS_ERR(LIST_DIR(\"{missing}\"))"), &dir),
+        "TRUE",
+        "WALK_DIR and LIST_DIR must agree on a missing directory"
+    );
+    std::fs::create_dir_all(dir.join("empty")).unwrap();
+    let empty = abs(&dir, "empty");
+    assert_eq!(
+        run_with_dir(&format!("{IO}WALK_DIR(\"{empty}\")"), &dir),
+        "[]",
+        "an existing but empty root must stay an empty array"
+    );
+    let _ = std::fs::remove_dir_all(&dir);
+}
+
+/// ⚠🔴 **[D13-047 / N-038] `READ_BYTES` 的大小护栏。**
+///
+/// 文件在 **Rust 侧**写:用 `WRITE_BYTES` 造一个 1 MiB+ 的 `ARRAY[INTEGER]`
+/// 需要在解释器里物化上百万个值 —— 那正是这条护栏要防的形状,不能拿被测对象
+/// 造测试数据。
+///
+/// 判据是**语义**:超上限返 `ERR` **值**(不是诊断、不是截断),而且**文件本身
+/// 毫发无损**(`FILE_SIZE` 仍报真实大小)—— 拒绝读取不该有任何副作用。
+#[test]
+fn read_bytes_refuses_a_file_over_the_cap_without_touching_it() {
+    let dir = io_scratch();
+    let big = abs(&dir, "big.bin");
+    std::fs::write(dir.join("big.bin"), vec![65u8; 2 * 1024 * 1024]).unwrap();
+    assert_eq!(
+        run_with_dir(&format!("{IO}IS_ERR(READ_BYTES(\"{big}\"))"), &dir),
+        "TRUE",
+        "a file over the READ_BYTES cap must be an ERR value"
+    );
+    let payload = run_with_dir(&format!("{IO}ERR_PAYLOAD(READ_BYTES(\"{big}\"))"), &dir);
+    assert!(payload.contains("kind: FsError"), "payload = {payload}");
+    assert!(payload.contains("op: READ_BYTES"), "payload = {payload}");
+    assert_eq!(
+        run_with_dir(&format!("{IO}FILE_SIZE(\"{big}\")"), &dir),
+        (2 * 1024 * 1024).to_string(),
+        "a refused read must not truncate, move or delete the file"
+    );
+    let _ = std::fs::remove_dir_all(&dir);
+}
+
 /// 规范 §2 的成员表 ↔ `SPEC.functions`。
 #[test]
 fn fs_member_set_matches_the_spec_table() {

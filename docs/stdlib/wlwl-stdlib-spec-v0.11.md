@@ -224,6 +224,14 @@ markdown** 解析成员表后与实现对拍(ADR-0023 §v0.x 1 的执行机制)�
 ⚠️ **POSIX 上不做 `\` → `/` 的替换**:`\` 在 POSIX 里是**合法文件名字符**,
 把它换成 `/` 会让一个真实存在的文件「找不到」。
 
+🔴 **出参端同理,且这一条曾被违反**(`D13-044`):`LIST_DIR` / `WALK_DIR` 返回的
+相对路径**只在 Windows 上**做 `\` → `/` 归一。若在 POSIX 上也替换,形如
+`a\b.txt` 的**合法文件名**会被吐成 `a/b.txt`,而**把出参原样喂回 `READ_TEXT` /
+`MOVE` 会指向另一个路径** —— 这是**不可逆的往返破坏**,比单个成员出错严重。
+⚠ Windows 上替换**无损**(`\` 不可能出现在 Windows 文件名里),所以那条分支的
+行为前后逐字节不变;缺陷**只在 POSIX 分支**,而门禁跑在 Windows 上 ⇒
+**未经 POSIX 实测**,已如实标注。
+
 | 签名 | 说明 | 失败 |
 |------|------|------|
 | `PATH_JOIN(parts...) -> STRING` | 变参(≥1,全 `STRING`);用 `/` 连接,**合并重复分隔符**、**跳过空片段** | 元数 < 1 或类型错 → `E0022` / `E0030` |
@@ -250,19 +258,24 @@ markdown** 解析成员表后与实现对拍(ADR-0023 §v0.x 1 的执行机制)�
 | 签名 | 说明 | 失败 |
 |------|------|------|
 | `LIST_DIR(p) -> ARRAY[STRING]` | 列目录(不递归),**结果排序** | 不存在 / 非目录 → `ERR([kind: FsError, op, reason])` |
-| `WALK_DIR(p, pattern?, follow?) -> ARRAY[STRING]` | 递归,返回**相对 `p`** 的路径(用 `/`),**排序** | 同上 |
+| `WALK_DIR(p, pattern?, follow?) -> ARRAY[STRING]` | 递归,返回**相对 `p`** 的路径(用 `/`),**排序**。⚠ **`p` 本身打不开 ⇒ `ERR`**,与 `LIST_DIR` 同口径;递归途中的**子目录**打不开(权限 / 竞态删除)静默跳过(`D13-045`) | 同上 |
 | `MKDIR(p) -> NULL` | 建**单层**;**已存在 → `ERR`**(不静默) | 同上 |
 | `MKDIRS(p) -> NULL` | 建**多级**(`mkdir -p`);**已存在即成功** | 同上 |
 | `REMOVE(p, recursive?) -> NULL` | 删文件 / 删目录;目录**未**带 `recursive = TRUE` 时非空即失败 | 同上 |
 | `COPY(src, dst) -> NULL` | 复制**文件**;目录**不做** | 同上 |
 | `MOVE(src, dst) -> NULL` | 移动 / 重命名;跨设备自动回退为「复制 + 删除」 | 同上 |
 | `FILE_SIZE(p) -> INTEGER` | 字节数 | 同上 |
-| `READ_BYTES(p) -> ARRAY[INTEGER]` | 二进制读,元素 `0..=255` | 同上 |
-| `WRITE_BYTES(p, data) -> NULL` | 二进制写;`data` 是 `ARRAY[INTEGER]`,**逐元素校验** `0..=255` | 同上 |
+| `READ_BYTES(p) -> ARRAY[INTEGER]` | 二进制读,元素 `0..=255`。⚠ 单次超过 `MAX_READ_BYTES` = **1 MiB** ⇒ `ERR`(`D13-047`),**不是截断、不是 OOM** | 同上 |
+| `WRITE_BYTES(p, data) -> NULL` | 二进制写;`data` 是 `ARRAY[INTEGER]`,**逐元素校验** `0..=255`。⚠ **本成员尚无上限**,与 `READ_BYTES` 不对称 —— 已登记待立项 | 同上 |
 
 **符号链接**:`LIST_DIR` **列出**链接条目(你有权知道它存在)但**不跟随**;
 `WALK_DIR` **默认不下降进链接目录**(`follow = FALSE`),因为**成环的链接目录会让
 递归永不终止**。置 `follow = TRUE` 时记 **visited 集合**(按 `canonicalize`)防环。
+🔴 `MOVE` 的**跨设备回退**(复制 + 删除)按 `WALK_DIR(follow = TRUE)` 的纪律展开
+符号链接并记 `visited` 防环;**命中环返 `ERR` 而非跳过**(`D13-046`)。⚠ 返 `ERR`
+是刻意的:跳过会让随后的 `remove_dir_all(src)` **把源侧链接删掉** —— 搬完少一个
+链接,比直接报错更坏。⚠ **「文件型链接按内容展开」沿用原行为**(不原样重建链接);
+要不要改成「原样重建 / 跳过并报错」是**产品取舍**,尚未裁决,已登记待立项。
 
 **`WALK_DIR` 的 `pattern` 是 glob**(ADDENDUM-06 裁决):`*` **不跨分隔符**、
 `**` 跨目录、`?` 匹配单个字符。pattern **含 `/`** 时匹配整条相对路径,
@@ -1952,7 +1965,7 @@ PRINT(v1, v2);        -- 两个不同的数
 | `ZLIB_COMPRESS(data, level?) -> ARRAY[INTEGER]` | RFC 1950(zlib 包装,Adler-32)。`level` 缺省库默认(6),范围 `0..=9` | 同上 |
 | `ZLIB_DECOMPRESS(data) -> ARRAY[INTEGER]` | 校验和不符 → `ERR` | 同上 |
 | `GZIP_COMPRESS(data, level?) -> ARRAY[INTEGER]` | RFC 1952(CRC32)。`level` 同上 | 同上 |
-| `GZIP_DECOMPRESS(data) -> ARRAY[INTEGER]` | CRC32 不符 → `ERR` | 同上 |
+| `GZIP_DECOMPRESS(data) -> ARRAY[INTEGER]` | CRC32 不符 → `ERR`。🔴 **多成员全解 + 流后尾随字节 `ERR`**(`D13-048`,RFC 1952 §2.2) | 同上 |
 | `DEFLATE_RAW_COMPRESS(data, level?) -> ARRAY[INTEGER]` | RFC 1951 **裸流**(无容器、无校验和),给自定义容器用 | 同上 |
 | `DEFLATE_RAW_DECOMPRESS(data) -> ARRAY[INTEGER]` | ⚠ **没有校验和 ⇒ 数据损坏不可检测**,截断输入可能解出一段前缀正确的垃圾而不报错 | 同上 |
 
@@ -1976,6 +1989,21 @@ PRINT(v1, v2);        -- 两个不同的数
 
 ⚠ **它同时是一条已知限制**:本批明确**不做流式 API**,所以 > 64 MiB 的单个载荷
 **没有解压路径** —— 要处理它得先解压到文件,或等流式成员落地。
+
+🔴 **闸封的是 `len` 不是 `capacity`**(`D13-049`)。合法载荷压在 64 MiB 上限时
+`read_to_end` 的 `Vec` 仍会翻倍 ⇒ 实测峰值约为文档上限的 **2×**(本机 debug
+构建实测 152.3 MiB)。⚠ **没有改**:修法(读前 `with_capacity`)会让**每一次**
+解压都先占 64 MiB,比现在更坏。已登记待独立立项。
+
+🔴 **`GZIP_DECOMPRESS` 吃多成员,`ZLIB_DECOMPRESS` / `DEFLATE_RAW_DECOMPRESS`
+不**(`D13-048`)。gzip 格式本身支持多个成员串联(RFC 1952 §2.2),故全部解开;
+**流后尾随字节 ⇒ `ERR`**。⚠ zlib(RFC 1950)**没有成员概念**,Python 的对应行为叫
+`unused_data`(实测 `zlib.decompress(stream + b"JUNK")` **正常返回**)⇒ 对它做
+同样的拒绝会是**发明需求**,有意不做。
+⚠⚠ **实现细节坑**:抓尾随字节**不能靠 `Cursor::position() == len`** ——
+`flate2::read::` 的解码器内部套 `BufReader` 会**预读**,尾随垃圾情形下实测
+`position` 仍等于 `len` ⇒ 那样写的守卫**永远绿**。真正抓住它的是
+`MultiGzDecoder` 自己的错误路径。
 
 ### 20.3 确定性口径:往返与交叉核对,而**不是**冻结输出字节
 
@@ -2015,7 +2043,7 @@ R2 全员。**这是本工作区第一次引入压缩依赖**(`zstd` + `flate2`)
 |---|---|---|
 | `URL_PARSE(url) -> DICT` | 拆成 `{scheme, userinfo, host, port, path, query, fragment}`。**纯解析,不发请求** | 不满足 `URI-reference` 的 ABNF → `E0030` |
 | `URL_JOIN(base, rel) -> STRING` | 相对引用 → 绝对引用(RFC 3986 §5,**strict 模式**) | 同上 |
-| `HTTP_GET(url, headers?, timeout?) -> DICT` | `{status, headers, body}`。**明文 `http:` only** | 网络失败 → `ERR([kind:"HttpError", op, reason])` |
+| `HTTP_GET(url, headers?, timeout?) -> DICT` | `{status, headers, body}`。**明文 `http:` only**。🔴 **`body` 的形状随内容走**(`D13-043`):合法 UTF-8 ⇒ `STRING`;否则 ⇒ `ARRAY[INTEGER]`(元素 `0..=255`,逐字节无损,继承 §2.3 / §11.6 的字节裁决)。⚠ 此前本行**从未规定 `body` 的类型**,而实现对非 UTF-8 响应体**整条 `ERR`** —— 那让「取一个二进制资源」根本做不到,且与 `READ_BYTES` 的字节 doctrine 冲突。⚠ **代价要写明**:8 MiB 的非 UTF-8 体会展开成约 840 万元素(与 `READ_BYTES` 同族放大)。**大载荷的正解仍是让它待在文件里** | 网络失败 → `ERR([kind:"HttpError", op, reason])` |
 | `HTTP_POST(url, body, headers?, timeout?) -> DICT` | 同上 | 同上 |
 | `HTTP_REQUEST(method, url, body?, headers?, timeout?) -> DICT` | 其余动词的通用形态 | 同上 |
 
@@ -2088,6 +2116,18 @@ D3。
 - **超时必填且有保守默认**:缺省 **30 000 ms**,调用方可覆盖。⚠ 这条**不是建议
   而是契约** —— 阻塞时长由墙钟决定(不像 `SLEEP` 有虚拟时钟可测),忘写就是
   永久挂住整个程序。
+  🔴 **`timeout` 是「整条请求」的预算上限,不是每次 I/O 的时限**
+  (`D13-040`)。拨号、重定向轮次、每一次 `read` 都从**同一份剩余预算**里扣
+  (`Deadline::left()`),不再各拿一份完整的 `dur` —— 否则「多地址连接 + 慢速
+  滴流响应」可以把总耗时放大成 `N × dur + Σ 每次读`。
+  ⚠ **DNS 解析不在闸内,且这是已知缺口不是疏忽**:`to_socket_addrs` 是
+  **不可中断**的阻塞系统调用(标准库无取消手段;另起线程解决不了「线程仍会
+  挂住」,还会泄漏线程)。⇒ 闸**从 DNS 返回之后**才开始计;若 DNS 真的挂住,
+  本函数仍会挂住。要真正覆盖只能换可取消的解析器,**那会引入第三方依赖**,
+  与 `ADR-0028` D3「零新增依赖」冲突 —— **需要一次独立裁决**,不在本版。
+  ⚠ 实现在预算耗尽时**返回 `TimedOut` 而不是把 socket 超时设成 0** —— 零值
+  会让 `setsockopt` 报 `EINVAL`,而调用点的 `let _ =` 会把失败静默吞掉,「超时」
+  就退化成「无超时」(正是缺陷形态本身)。
 - **不自动跟随重定向**(D4)。3xx 原样返回,`Location` 在 `headers` 里,由调用方
   决定。自动跟随可能把请求带到非预期 host(SSRF 面)。
 - **不支持的写法一律 `ERR`,绝不「尽力解析」**(D3)。请求走私 / 响应拆分的
@@ -2096,12 +2136,22 @@ D3。
 | 情形 | 结果 |
 |---|---|
 | `Transfer-Encoding`(**含 `chunked`**) | `ERR` —— **不解码**,这是走私向量 |
-| 既无 `Content-Length` 又无 `Connection: close` | `ERR`(不猜 body 长度) |
+| HTTP/1.1 既无 `Content-Length` 又无 `Connection: close` | `ERR`(不猜 body 长度)。**HTTP/1.0 不适用此条** —— 见下 |
 | 重复的 `Content-Length`(即便值相同) | `ERR` |
 | 响应头块 > **64 KiB** | `ERR`(**不是**无界分配) |
 | 响应体 > **8 MiB** | `ERR`(**不是** OOM) |
 | obs-fold(头行以空白开头) | `ERR`,**不合并** |
 | 头值含裸 CR / LF | `ERR` |
+
+🔴 **HTTP/1.0 的 close 定界是例外**(`D13-041`)。RFC 9112 §6.3 第 8 条其实
+**不分版本**,本规范**刻意只给 HTTP/1.0 开口子**:HTTP/1.0 没有别的定界手段,
+在那里拒绝等于零安全收益;而 **HTTP/1.1 无长度无 close 是真正的歧义**(请求走私
+向量),收紧是刻意的。⇒ 契约里 `/nolength`(1.1)与 `/close10`(1.0)**只差版本号**,
+这一条边界被配对夹具直接钉住。
+
+⚠ 另有一处**已知缺口、不在本版裁决范围**:实现未特判 **1xx / 204 / 304**,
+而按 RFC 9112 §6.3 第 1 条这些响应**本就无 body**(无论头里写了什么)。
+⇒ HTTP/1.1 的 `204` 若不带 `Content-Length` 现在会 `ERR`。已登记待独立立项。
 
 - **失败是 `ERR` 值不是原生诊断**:网络不通是**运行期可预期的业务分支**(会
   重试、会降级、会记日志),做成原生诊断会让整个运行**终止**,调用方连重试都
