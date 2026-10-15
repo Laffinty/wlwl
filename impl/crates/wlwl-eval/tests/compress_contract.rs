@@ -109,6 +109,36 @@ const CASES: &[Case] = &[
         ),
         expect: "!E0030 ZSTD_COMPRESS: level 23 is outside -131072..=22",
     },
+    // ── [D13-026 / N-012]缺省级别**必须真的压缩** ──────────────────────
+    //
+    // ⚠ 载荷用 `MAP(RANGE(0, 2000), …)` 造而不是手写字面量:2000 个元素的
+    //   `ARRAY[INTEGER]` 手写没法读,而 `REPEAT("ab", n)` 造出的是**字符串**,
+    //   压缩成员只收字节数组。
+    // ⚠ 判据写成「压完 **小于一半**」这种**结构性命题**,而不是某个字节数 ——
+    //   后者会把实现细节冻死,换个 zlib 版本就红。2000 字节全同载荷在
+    //   deflate level 6 下是几十字节量级;stored 则是 2000 + 容器开销。
+    Case {
+        name: "default_level_actually_compresses_a_redundant_payload",
+        src: concat!(
+            r#"IMPORT("wlwl:std.compress", ["GZIP_COMPRESS"]); "#,
+            r#"IMPORT("wlwl:std.collection", ["MAP", "RANGE"]); "#,
+            r#"LET(d, MAP(RANGE(0, 2000), FUN((x), 65))); "#,
+            r#"=(<(LEN(GZIP_COMPRESS(d)), 1000), TRUE)"#
+        ),
+        expect: "TRUE",
+    },
+    Case {
+        name: "default_level_matches_the_library_default_not_zero",
+        src: concat!(
+            r#"IMPORT("wlwl:std.compress", ["ZLIB_COMPRESS"]); "#,
+            r#"IMPORT("wlwl:std.collection", ["MAP", "RANGE"]); "#,
+            r#"LET(d, MAP(RANGE(0, 2000), FUN((x), 65))); "#,
+            r#"=(LEN(ZLIB_COMPRESS(d, 6)), LEN(ZLIB_COMPRESS(d)))"#
+        ),
+        // 缺省 == 显式 6(flate2 的 `Compression::default()`)。⚠ 这条同时钉住
+        // 「缺省不是 0」:显式传 0 会得到 stored,体积差两个数量级。
+        expect: "TRUE",
+    },
     Case {
         name: "empty_input_is_an_err_value_not_a_panic",
         src: concat!(
@@ -228,10 +258,24 @@ fn py_vectors_are_decodable() {
 /// **往返**:四条格式各自压→解,恒等于原文。
 ///
 /// ⚠ **这里刻意不断言「压缩比」。** 第一版断言了「压缩后更小」,当场红:
-/// 同样的 104 字节载荷,Python 的 zlib 压到 66,而 `miniz_oxide` 压到 **115**(比原文
-/// 还大)。**压缩比是实现定义的**(块划分 / lazy matching / 熵编码选择都自由)
-/// —— 这正是本文件头与规范 §20.3 写的那条。「确实压得动」由 `wlwl-std` 的
-/// `repetitive_input_actually_shrinks` 用**高冗余**载荷守(那个各实现都压得动)。
+/// 同样的 104 字节载荷,Python 的 zlib 压到 66,而本实现压到 **115**(比原文
+/// 还大)。
+///
+/// 🔴 **[D13-026]那段注记原先的归因是错的,现已改正。** 它当时写的是
+/// 「**压缩比是实现定义的**(块划分 / lazy matching / 熵编码选择都自由)」
+/// —— 那句仍然成立,但它**不是**此处变大的原因。真实原因是:`level_of` 在
+/// 调用方**没给** `level` 时返回 `Some(0)`,而 `flate2::Compression::new(0)`
+/// 是 **stored 块(完全不压)** —— 104 字节 + 11 字节容器开销 = **115**,
+/// 数字精确吻合。
+///
+/// ⚠ **「压缩比是实现定义的」不能拿来解释任何一次反常。** 一个听起来合理
+/// 的解释一旦写进契约就成了规范,下一个读到这里的人会拿它当挡箭牌,而真正的
+/// bug 从此有了官方背书。这正是本仓 D13-008「已改实现而非冻结错误输出」
+/// 要防的形态 —— 这次连**解释**一起改了。
+///
+/// 「确实压得动」现在由 `wlwl-std` 的 `repetitive_input_actually_shrinks`
+/// 用**高冗余**载荷守,⚠ 且它已从「只测 zstd」扩到**四条线全测** —— zstd
+/// 恰好是唯一没坏的那条(它的 `level 0` 就是库默认),只测它等于没测。
 #[test]
 fn every_format_round_trips() {
     let plain: Vec<String> = PLAIN.bytes().map(|b| b.to_string()).collect();

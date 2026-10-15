@@ -6476,11 +6476,27 @@ impl ClockBubble {
     }
 
     /// 弹出深度 `depth` 那一项,返回**它是否已经被放弃过**。
+    ///
+    /// 🔴 [D13-027 / N-009] 这里**真正把条目移除**。此前只把 `tripped` 复位成
+    /// `false` 而条目从不出栈 —— 与 `trip_if_expired` 拼起来就是一条
+    /// **幽灵超时**:`trip_if_expired` 跳过 `tripped = true` 的项,于是「弹栈」
+    /// 等于把一个**已经过期**的 deadline **重新武装**;同一气泡里此后任何
+    /// `SLEEP` 都会撞上它并返回 `ERR Timeout`,把 `TEST_BUBBLE` 的 body 弹断。
+    ///
+    /// ⚠ 既有契约抓不住:它们的形状恰好是「弹完就不再 `SLEEP`」。
+    ///
+    /// ⚠ 用 `remove` 而不是 `swap_remove`:`pop_deadline` 拿到的下标来自
+    /// `push_deadline`,而 push/pop **严格嵌套**(`time.rs` 的 `TIMEOUT` 用
+    /// push 括号住整个 body 调用)⇒ 弹掉 `depth` 时 `> depth` 的项都已被弹走,
+    /// 没有元素会被移位。`swap_remove` 在这里也正确,但它会**打乱下标** ——
+    /// 一旦将来有人在非严格嵌套处调用它,`remove` 会安静地弹错那一项,
+    /// `swap_remove` 则至少让顺序依赖显形。
     pub fn pop_deadline(&mut self, depth: usize) -> bool {
-        self.deadlines
-            .get_mut(depth)
-            .map(|(_, tripped)| std::mem::replace(tripped, false))
-            .unwrap_or(false)
+        if depth >= self.deadlines.len() {
+            return false;
+        }
+        let (_, tripped) = self.deadlines.remove(depth);
+        tripped
     }
 
     /// 虚拟钟推过 `now_ms` 之后:若**最紧的**未放弃 deadline 已被越过,

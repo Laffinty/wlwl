@@ -121,9 +121,23 @@ fn level_of(
     v: Option<&Value>,
     lo: i32,
     hi: i32,
-) -> Result<i32, WlwlError> {
+) -> Result<Option<i32>, WlwlError> {
     match v {
-        None | Some(Value::Null) => Ok(0),
+        // ⚠🔴 **[D13-026 / N-012] 缺省必须返回 `None` 而不是 `Some(0)`。**
+        // 「`0` 恰好等于各库的缺省」只对 **zstd** 成立(zstd 的
+        // `ZSTD_c_compressionLevel = 0` 明确定义为「用库默认」),对
+        // **flate2** 恰好相反:`Compression::new(0)` 是 **stored 块 ——
+        // 即「完全不压缩」**。所以统一返回 `0` 等于给 zlib / gzip /
+        // deflate 三条线装了个「缺省 = 不压」,而本函数的文档写的是
+        // 「缺省 = 库默认」。
+        //
+        // ⚠ 自证就在自家契约里:`compress_contract.rs` 的 `every_format_
+        // round_trips` 注记着「同样的 104 字节载荷,Python 的 zlib 压到 66,
+        // 而 miniz_oxide 压到 **115**(比原文还大)」—— 那个 115 正是
+        // stored 块的形状(104 + 11 字节容器开销)。当时它被归因成「压缩比
+        // 是实现定义的」,于是这条 bug 被**写进了契约当规范**。那几行注释
+        // 已同步改正 —— 错误的归因留着,下一个人还会读到同一个误导。
+        None | Some(Value::Null) => Ok(None),
         Some(Value::Integer(n)) => {
             let n = i32::try_from(*n).unwrap_or(i32::MAX);
             if n < lo || n > hi {
@@ -132,10 +146,21 @@ fn level_of(
                     format!("{name}: level {n} is outside {lo}..={hi}"),
                 ));
             }
-            Ok(n)
+            Ok(Some(n))
         }
         Some(other) => Err(type_err(host, name, "a level integer", other)),
     }
+}
+
+/// 把「调用方给没给 `level`」翻译成 **flate2 的压缩级别**。
+///
+/// ⚠ 缺省走 [`flate2::Compression::default()`](flate2::Compression) 而不是
+/// `new(0)` —— 见 `level_of` 里 D13-026 那段论证。
+#[must_use]
+fn flate_level(lvl: Option<i32>) -> flate2::Compression {
+    lvl.map_or_else(flate2::Compression::default, |n| {
+        flate2::Compression::new(n as u32)
+    })
 }
 
 /// 元数:1 或 2(`data`, `level?`)。
@@ -177,7 +202,9 @@ pub fn zstd_compress(host: &mut dyn StdHost, args: Vec<Value>) -> Result<Outcome
     arity_1_or_2(host, NAME, args.len())?;
     let data = bytes_of(host, NAME, &args[0])?;
     let level = level_of(host, NAME, args.get(1), -131_072, 22)?;
-    match zstd::bulk::compress(&data, level) {
+    // ⚠ zstd 的 `compression_level = 0` **确实**定义为「用库默认(3)」,所以这条
+    //   线 `unwrap_or(0)` 是对的 —— 与 flate2 的「0 = 不压」正好相反,见 D13-026。
+    match zstd::bulk::compress(&data, level.unwrap_or(0)) {
         Ok(out) => ok(to_array(out)),
         Err(e) => ok(err(NAME, format!("compress: {e}"))),
     }
@@ -229,7 +256,7 @@ fn flate_compress(
     name: &'static str,
     args: Vec<Value>,
     level: (i32, i32),
-    build: fn(&[u8], i32) -> std::io::Result<Vec<u8>>,
+    build: fn(&[u8], Option<i32>) -> std::io::Result<Vec<u8>>,
 ) -> Result<Outcome, WlwlError> {
     arity_1_or_2(host, name, args.len())?;
     let data = bytes_of(host, name, &args[0])?;
@@ -277,8 +304,7 @@ fn flate_decompress(
 /// `ZLIB_COMPRESS(data, level?) -> ARRAY[INTEGER]` —— RFC 1950(zlib 包装,Adler-32)。
 pub fn zlib_compress(host: &mut dyn StdHost, args: Vec<Value>) -> Result<Outcome, WlwlError> {
     flate_compress(host, "ZLIB_COMPRESS", args, (0, 9), |data, lvl| {
-        let mut e =
-            flate2::write::ZlibEncoder::new(Vec::new(), flate2::Compression::new(lvl as u32));
+        let mut e = flate2::write::ZlibEncoder::new(Vec::new(), flate_level(lvl));
         e.write_all(data)?;
         e.finish()
     })
@@ -296,7 +322,7 @@ pub fn zlib_decompress(host: &mut dyn StdHost, args: Vec<Value>) -> Result<Outco
 /// `GZIP_COMPRESS(data, level?) -> ARRAY[INTEGER]` —— RFC 1952(CRC32 + mtime=0)。
 pub fn gzip_compress(host: &mut dyn StdHost, args: Vec<Value>) -> Result<Outcome, WlwlError> {
     flate_compress(host, "GZIP_COMPRESS", args, (0, 9), |data, lvl| {
-        let mut e = flate2::write::GzEncoder::new(Vec::new(), flate2::Compression::new(lvl as u32));
+        let mut e = flate2::write::GzEncoder::new(Vec::new(), flate_level(lvl));
         e.write_all(data)?;
         e.finish()
     })
@@ -318,8 +344,7 @@ pub fn deflate_raw_compress(
     args: Vec<Value>,
 ) -> Result<Outcome, WlwlError> {
     flate_compress(host, "DEFLATE_RAW_COMPRESS", args, (0, 9), |data, lvl| {
-        let mut e =
-            flate2::write::DeflateEncoder::new(Vec::new(), flate2::Compression::new(lvl as u32));
+        let mut e = flate2::write::DeflateEncoder::new(Vec::new(), flate_level(lvl));
         e.write_all(data)?;
         e.finish()
     })
@@ -458,15 +483,69 @@ mod tests {
     }
 
     /// 真压缩比:重复串必须被压小,否则「压缩」这个词是空的。
+    ///
+    /// ⚠🔴 **[D13-026 / N-012]这条此前只测 `zstd`** —— 而 zstd 恰好是**唯一没坏**
+    /// 的那一条(它的 `level 0` 就是库默认)。真正坏掉的 zlib / gzip /
+    /// deflate 三条线当时**零覆盖**,于是「缺省 = 不压缩」这条 bug 从缝里漏过去,
+    /// 还被 `compress_contract` 记成「压缩比是实现定义的」。现在四条线都测。
     #[test]
     fn repetitive_input_actually_shrinks() {
+        let d = "ab".repeat(20_000).into_bytes();
+        for (name, out) in [
+            (
+                "zstd",
+                zstd_compress(&mut NullHost, vec![arr(&d)]).expect("zstd"),
+            ),
+            (
+                "zlib",
+                zlib_compress(&mut NullHost, vec![arr(&d)]).expect("zlib"),
+            ),
+            (
+                "gzip",
+                gzip_compress(&mut NullHost, vec![arr(&d)]).expect("gzip"),
+            ),
+            (
+                "deflate",
+                deflate_raw_compress(&mut NullHost, vec![arr(&d)]).expect("deflate"),
+            ),
+        ] {
+            let c = back(&out.value).len();
+            assert!(
+                c * 50 < d.len(),
+                "{name} at the **default** level: 40 KB of \"ab\" should compress far below \
+                 1 KB, got {c} bytes — a default that stores is not compression"
+            );
+        }
+    }
+
+    /// ⚠ **缺省级别 ≠ `0`。** zstd 的 `0` 是「库默认」,flate2 的 `0` 是
+    /// 「stored / 完全不压」—— 两者的 `0` 含义相反,这正是 D13-026 的根因。
+    /// 显式传 `0` 时三条 flate 线**应当**就是 stored(那是调用方的选择),
+    /// 本测试只钉「缺省 ≠ 0」这一条,免得有人把两条路又合并回去。
+    #[test]
+    fn explicit_level_zero_is_stored_but_the_default_is_not() {
         let mut h = NullHost;
         let d = "ab".repeat(20_000).into_bytes();
-        let out = zstd_compress(&mut h, vec![arr(&d)]).expect("zstd");
-        let c = back(&out.value).len();
+        let default_len = back(
+            &gzip_compress(&mut NullHost, vec![arr(&d)])
+                .expect("gzip")
+                .value,
+        )
+        .len();
+        let zero_len = back(
+            &gzip_compress(&mut h, vec![arr(&d), Value::Integer(0)])
+                .expect("gzip level 0")
+                .value,
+        )
+        .len();
         assert!(
-            c * 50 < d.len(),
-            "40 KB of \"ab\" should compress far below 1 KB, got {c} bytes"
+            zero_len >= d.len(),
+            "explicit level 0 should be stored ({zero_len} >= {})",
+            d.len()
+        );
+        assert!(
+            default_len * 2 < zero_len,
+            "the default level must actually compress: default {default_len} vs level-0 {zero_len}"
         );
     }
 

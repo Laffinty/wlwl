@@ -107,6 +107,31 @@ const CASES: &[Case] = &[
         ),
         expect: "done",
     },
+    // 🔴 [D13-027 / N-009] 已**结束**的 `TIMEOUT` 不得劫持同气泡里其后的 `SLEEP`。
+    //
+    // ⚠ 判别式的形状就是本条注释:**先让 TIMEOUT 正常返回**(它的 deadline 从未
+    //   越过),**再让 SLEEP 把虚拟钟推过那个 deadline**。
+    //   修复前 `pop_deadline` 只把 `tripped` 复位 false 而条目从不出栈,
+    //   `trip_if_expired` 又跳过 `tripped = true` 的项 ⇒ 「弹栈」等于把一个
+    //   **已经过期**的 deadline **重新武装** ⇒ SLEEP(20) 撞上它,body 被弹断。
+    //
+    // ⚠ 既有契约全部照不到:`timeout_returns_the_body_value_when_it_fits` 的
+    //   `TIMEOUT(1000)` 在 `SLEEP(100)` 之后**时钟根本没走到** deadline,
+    //   幽灵条目没有机会发作;超时的几条则根本不再 `SLEEP`。缺的是
+    //   「弹完之后时钟继续走」这个形状。
+    //
+    // 期望值出处:规范 §15.5 的假时钟口径 —— 气泡内 `SLEEP` 只是**拨快虚拟钟**,
+    // 而 `TIMEOUT` 的作用域**只覆盖它的 body**。一个已返回的 `TIMEOUT` 在语义上
+    // 不再存在,不该对后续语句有任何影响。
+    Case {
+        name: "sleep_after_a_finished_timeout_is_not_hijacked_by_it",
+        src: concat!(
+            r#"IMPORT("wlwl:std.time", ["SLEEP", "TEST_BUBBLE", "TIMEOUT"]); "#,
+            r#"TEST_BUBBLE(FUN(() , (TIMEOUT(10, FUN(() , NULL)); SLEEP(20); "after")))"#
+        ),
+        // 修复前:第二个语句被幽灵 deadline 弹断,整个表达式是 `ERR Timeout`。
+        expect: "after",
+    },
     Case {
         name: "timeout_yields_an_err_value_not_a_diagnostic",
         src: concat!(

@@ -1080,6 +1080,19 @@ const SANITIZE_CASES: &[SanCase] = &[
         why: "attributes 整体替换 → href / title 都删,只留 rel;元素仍保留(在 tags 里)" },
     SanCase { name: "policy_keep_comments", html: r#"<b>x</b><!--c-->"#, policy: r#"["strip_comments": FALSE]"#, expect: "<b>x</b><!--c-->",
         why: "strip_comments=FALSE → 注释保留;注释内容里的 `--` 在序列化时全部移除(防 `-->` 提前闭合)" },
+    // ── [D13-025 / N-001] abrupt closing:`<!-->` / `<!--->` 是 WHATWG 的两个
+    //    **合法空注释**,注释在此结束、余文回到 data state 继续按标记解析。
+    //    ⚠ 这三条必须配 `strip_comments: FALSE` —— 缺省 TRUE 时注释整删,
+    //    连 bug 的入口都没有。三条一起才构成完整链路:
+    //      ① 分词:余文必须继续被解析成标记(修复前整段并成一条注释);
+    //      ② 过滤:后面的 `img` 必须照常被白名单拒掉;
+    //      ③ 序列化:空注释写成 `<!---->`,输出里不留 `<!-->` 字面形状。
+    SanCase { name: "mxss_abrupt_closing_img_does_not_survive", html: r#"<b>x</b><!--><img src=x onerror=alert(1)>"#, policy: r#"["strip_comments": FALSE]"#, expect: "<b>x</b><!---->",
+        why: "**教科书 mXSS 变体**:修复前 `<!--` 找不到 `-->` → 整个余文成为一条「未闭合注释」,`img` **从未进入过滤阶段**,序列化原样写回 `<!--`+数据+`-->` ⇒ 输出含 `<!-->` ⇒ 浏览器重解析读成空注释,img 落在注释外成为活标记。修复后注释在此结束、img 照常被拒" },
+    SanCase { name: "mxss_abrupt_closing_three_dashes", html: r#"<b>x</b><!---><img src=x onerror=alert(1)>"#, policy: r#"["strip_comments": FALSE]"#, expect: "<b>x</b><!---->",
+        why: "同上,`<!--->` 形态(WHATWG comment end state 收尾)" },
+    SanCase { name: "abrupt_closing_resumes_markup_parsing", html: r#"<b>x</b><!-->y<script>alert(1)</script>"#, policy: r#"["strip_comments": FALSE]"#, expect: "<b>x</b><!---->y",
+        why: "判别式:余文**继续按标记解析** —— 文本 `y` 幸存、script 整删。修复前 `y<script>…` 会整段成为注释数据而一并消失(夹具的输出会短一截)" },
     SanCase { name: "policy_add_scheme", html: r#"<a href="ftp://h/f">z</a>"#, policy: r#"["url_schemes": ["ftp"]]"#, expect: "<a href=\"ftp://h/f\">z</a>",
         why: "url_schemes 整体替换 → 只剩 ftp;http / https / mailto 此时会被拒(调用方自己收窄的)" },
     SanCase { name: "policy_omitted_keys_take_defaults", html: r#"<b>x</b><a href="https://k" title="t">y</a><!--c-->"#, policy: r#"["url_schemes": ["ftp", "https"]]"#, expect: "<b>x</b><a href=\"https://k\" title=\"t\">y</a>",

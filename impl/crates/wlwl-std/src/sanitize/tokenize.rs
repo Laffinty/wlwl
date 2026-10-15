@@ -125,6 +125,32 @@ pub(crate) fn tokenize(src: &str) -> Vec<Token> {
             Some(b'!') => {
                 // 注释 / doctype / CDATA:全部按注释吞(内容原样,不解码)。
                 if src[i..].starts_with("<!--") {
+                    // ⚠🔴 **[D13-025 / N-001]WHATWG 的 abrupt closing:
+                    // `<!-->` 与 `<!--->` 是两个「合法空注释」** ——
+                    // comment start state 见到 `>` 直接 emit 并回 data state;
+                    // comment start dash state 见到 `-->` 同理。
+                    //
+                    // 这条分支**此前不存在**,而它是一整条 mXSS 链的起点:
+                    // 输入 `<!--><img src=x onerror=alert(1)>` 此前找不到
+                    // `-->` ⇒ **整个余文成为一条「未闭合注释」的数据** ⇒
+                    // `<img>` **从未进入过滤阶段**,连白名单都��看过一眼。
+                    // 序列化时又原样写回 `<!--` + 数据 + `-->`,输出串里
+                    // 于是含 `<!-->` —— 而浏览器重解析时把它读成**空注释**,
+                    // `<img …>` 落在注释之外成为**活标记** ⇒ XSS。
+                    //
+                    // ⚠ 为什么幂等性测试抓不住:二次 sanitize 解析回的**仍是**
+                    // 同一条 Comment(本模块口径自洽),三组幂等用例全绿。
+                    // ⇒ 「自幂等」是重解析安全的**必要不充分**条件。
+                    if src[i + 4..].starts_with('>') {
+                        out.push(Token::Comment(String::new()));
+                        i += 5;
+                        continue;
+                    }
+                    if src[i + 4..].starts_with("->") {
+                        out.push(Token::Comment(String::new()));
+                        i += 6;
+                        continue;
+                    }
                     match src[i + 4..].find("-->") {
                         Some(p) => {
                             out.push(Token::Comment(src[i + 4..i + 4 + p].to_string()));
@@ -333,6 +359,48 @@ mod tests {
             tokenize("<!DOCTYPE html>"),
             vec![Token::Comment("DOCTYPE html".into()),]
         );
+    }
+
+    /// [D13-025 / N-001]`<!-->` 与 `<!--->` 是 WHATWG 的两个**合法空注释**
+    /// (abrupt closing)。注释在此结束,余文回到 data state **继续按标记解析**。
+    ///
+    /// 期望值出处:WHATWG HTML §13.2.5.44 *comment start state*(见到 `>` 即
+    /// abrupt-closing-of-empty-comment 并回 data state)与 *comment end state*
+    /// (`-->` 收尾)。
+    ///
+    /// ⚠ 回归的判别式是最后那条 `Comment` / `Start(img)` 的**顺序与个数** ——
+    /// 修复前整段余文被并成**一条**注释,`img` 连 token 都不是。
+    #[test]
+    fn abrupt_closing_ends_the_comment_and_content_resumes() {
+        assert_eq!(
+            tokenize("<!-->ok"),
+            vec![Token::Comment(String::new()), Token::Text("ok".into())]
+        );
+        assert_eq!(
+            tokenize("<!--->ok"),
+            vec![Token::Comment(String::new()), Token::Text("ok".into())]
+        );
+        // mXSS 那条真实载荷:`img` 必须作为**开始标签**被看见,才能进过滤阶段。
+        assert_eq!(
+            tokenize("<!--><img src=x>"),
+            vec![
+                Token::Comment(String::new()),
+                Token::Start {
+                    name: "img".into(),
+                    attrs: vec![Attr {
+                        name: "src".into(),
+                        value: "x".into()
+                    }],
+                    self_closing: false,
+                },
+            ]
+        );
+        // 边界:只有开括号(`<!--`)仍是「未闭合注释」;`<!--a-->` 仍是普通注释。
+        assert_eq!(
+            tokenize("<!--a-->b"),
+            vec![Token::Comment("a".into()), Token::Text("b".into())]
+        );
+        assert_eq!(tokenize("<!--"), vec![Token::Comment(String::new())]);
     }
 
     #[test]
