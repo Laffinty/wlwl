@@ -1,4 +1,9 @@
-//! `wlwl:std.ai` — LLM bridge.
+//! `ai` official package — LLM bridge (was `wlwl:std.ai` before v0.11.3 M8).
+//!
+//! ⚠ **Import path changed** (`ADR-0034` D2): `IMPORT("ai:ask", …)`.
+//! `wlwl:std.ai` no longer resolves, and `wlwl:ai` cannot work — `wlwl:`
+//! is std's reserved prefix. Member names / signatures / semantics are
+//! untouched; only the visible surface moved.
 //!
 //! Phase D (`v0.4 §15.13`): replace the v0.3 mock with a real
 //! HTTP integration. The mock path is preserved for offline builds
@@ -45,13 +50,17 @@
 //! 类型名也叫 `TASK`(用于运行时任务句柄)。同名不冲突:
 //!
 //! - `TYPE(handle)` 返回字符串 `"TASK"`,**形参位置不做名字解析**;
-//!   `IMPORT("wlwl:std.ai", TASK)` 注入的是函子绑定,与类型名空间独立;
+//!   `IMPORT("ai:ask", TASK)` 注入的是函子绑定,与类型名空间独立;
 //! - 文法槽位消解:类型名出现在 `:` 类型注解后,标识符出现在表达式位置。
 //!
-//! 详细讨论见 `wlwl:std.agent` 模块 docstring 的同名章节(共享同一规范
-//! 论述)。**文档约定**:spec §10.11 / 本 crate 内一律写 `wlwl:std.ai.TASK` /
-//! `wlwl:std.agent.TASK` 全限定以避免阅读混淆;用户作用域内裸名 `TASK`
-//! 也合法(取决于 `IMPORT` 是否引入)。
+//! 详细讨论见 `agent` 模块 docstring 的同名章节(共享同一规范
+//! 论述)。⚠ **旧文档约定「一律写全限定 `wlwl:std.ai.TASK`」是错的,已废止**
+//! —— 文法里**没有**「命名空间限定调用」这种表达式,冒号只出现在 `IMPORT`
+//! 的路径字符串与改名处,所以 `wlwl:std.ai.TASK(…)` / `ai:ask.TASK(…)` /
+//! `ai.TASK(…)` **一律解析失败**(`E0011 expected ')' got Colon`)。
+//! 想避开与类型名的阅读混淆,唯一可行的办法是 **`IMPORT` 时改名**:
+//! `IMPORT("ai:ask", ["TASK": "AI_TASK"])`(实测 `rc=0`)。
+//! 用户作用域内裸名 `TASK` 也合法(取决于 `IMPORT` 是否引入)。
 
 use crate::compat::*;
 use crate::{ModuleSpec, StdCtx, StdFn};

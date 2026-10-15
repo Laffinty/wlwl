@@ -163,7 +163,7 @@ WLWL 是动态类型语言:类型属于值而非名字。值的论域由以下**
 
 数组与字典字面量见 4.8;`TYPE(x)` 返回上表名称的字符串(`RESULT` 两个变体都报 `"RESULT"`)。
 
-类型名(`NULL`/`BOOLEAN`/`INTEGER`/`FLOAT`/`STRING`/`ARRAY`/`DICT`/`FUNCTION`/`RESULT`/`TASK`/`CHANNEL`/`CLASS`/`INSTANCE`)是 `TYPE` 返回的字符串,**不**构成标识符绑定。命名空间成员可以与类型名同名(如 `wlwl:std.agent.TASK`),二者在各自作用域中独立解析。`TYPE` 的参数位置不做名字解析 — 它取运行时值,返回字符串,过程中不查任何名字表。
+类型名(`NULL`/`BOOLEAN`/`INTEGER`/`FLOAT`/`STRING`/`ARRAY`/`DICT`/`FUNCTION`/`RESULT`/`TASK`/`CHANNEL`/`CLASS`/`INSTANCE`)是 `TYPE` 返回的字符串,**不**构成标识符绑定。命名空间成员可以与类型名同名(如官方包 `agent` 的 `TASK`),二者在各自作用域中独立解析。`TYPE` 的参数位置不做名字解析 — 它取运行时值,返回字符串,过程中不查任何名字表。
 
 `TYPE` 对句柄报 `"TASK"` / `"CHANNEL"`,对类对象报 `"CLASS"`,对实例报 `"INSTANCE"`。句柄的真值按 2.3「其余一切值为真」;相等按 2.4;显示形态见 2.5。
 
@@ -753,7 +753,13 @@ NameItem = string_lit | string_lit ":" string_lit | identifier .
 
 ### 9.3 标准库命名空间
 
-`wlwl:std.` 前缀的路径由实现直接提供,不经文件系统:`wlwl:std.io`、`wlwl:std.fs`、`wlwl:std.json`、`wlwl:std.collection`、`wlwl:std.format`、`wlwl:std.test`、`wlwl:std.ai`、`wlwl:std.agent`、`wlwl:std.str`、`wlwl:std.math`。
+`wlwl:std.` 前缀的路径由实现直接提供,不经文件系统:`wlwl:std.io`、`wlwl:std.fs`、`wlwl:std.json`、`wlwl:std.collection`、`wlwl:std.format`、`wlwl:std.test`、`wlwl:std.str`、`wlwl:std.math`。
+
+⚠ **`wlwl:std.ai` / `wlwl:std.agent` 自 v0.11.3 起不再由本前缀提供**(M8,
+`ADR-0034`):它们是**官方包**,经 `"ai:ask"` / `"agent:task"` 导入,旧路径
+**不再解析**。`wlwl:` 是标准库的**保留前缀**,因此官方包**不能**写成
+`wlwl:ai` —— 那会落进「裸模块名」分支、被当成文件名,最终 `E0040`。成员面
+(名字 / 签名 / 语义)**一字未改**,变的只有可见面。
 
 各命名空间按**实现分层**归入语言层(纯 wlwl)、原生层(Rust)或混合实现;无论归属哪一层,同一成员的名字、签名与语义**必须**一致,调用方式不因实现层而异。分层归属表与各命名空间的成员契约见标准库规范 `docs/stdlib/wlwl-stdlib-spec-v0.11.md`(与本规范相互独立、分别版本化)。实现**可以**提供开发期加载覆盖,这是非规范性的实现自由度,**不得**改变任何成员的名字与语义。
 
@@ -899,11 +905,22 @@ NameItem = string_lit | string_lit ":" string_lit | identifier .
 
 归属**混合实现**(R1 门面 + R2 原生内核)。成员契约 —— `TEST` / `ASSERT` / `ASSERT_EQ` / `ASSERT_NEQ` / `EXPECT_ERR` / `RUN_TESTS` 的签名、语义与断言失败码 `E0046`–`E0049` —— 见标准库规范;测试体应当以 `ASSERT` 族断言收尾并以 `TRUE` 结束、体求值期间逃逸的 `ERR` 使该项 `passed = FALSE` 的约定同样登记于彼处。
 
-### 10.11 AI 与代理 — `wlwl:std.ai` / `wlwl:std.agent`
+### 10.11 AI 与代理 — 官方包 `ai` / `agent`(v0.11.3 M8 移出 `wlwl:std.*`)
+
+⚠ **可见面变更(v0.11.3 M8,`ADR-0034`)**:本节两个命名空间**不再**由
+`wlwl:std.` 前缀提供,改为**官方包**,经 `"ai:ask"` / `"agent:task"` 导入。
+成员面(名字 / 签名 / 语义 / 错误码)**一字未改** —— 变的是**可见面**,不是
+移除成员,故**不走弃用两步**。按 ADR-0023 §v0.x 1 属须申报的可见面变更。
 
 归属**原生层**(R2)。成员契约 —— `ASK` / `ASK_STREAM` / `ASK_ALL` / `EMBED` / `COMPLETE` 与 `MODEL` / `TASK` / `TOOL` / `CALL_TOOL` / `CONTEXT` 的签名、语义、错误码语义(`E0080`–`E0083`、`E0090`–`E0094`)与 `W0052` 的触发条件 —— 见标准库规范;传输与供应商细节属实现文档,不在规范内。
 
 规范层面的两条对接点:`TASK` 返回的任务句柄按 §17.1 经 `AWAIT` 取值,已取消任务的 `AWAIT` 按 §17.3 返回 `ERR(kind="Cancelled", reason: ...)`;用户作用域内裸名 `TASK`(若 `IMPORT` 引入了同名函子)与类型名 `TASK`(§2.1)不构成运行时冲突。
+
+⚠ **「全限定写法」在本语言不存在**:文法没有「命名空间限定调用」表达式,
+冒号只出现在 `IMPORT` 的路径字符串与改名处。`ai:ask.ASK(…)`、`ai.ASK(…)`
+与旧式的 `wlwl:std.ai.ASK(…)` **一律解析失败**(`E0011 expected ')' got
+Colon`)。成员只能经 `IMPORT` 取裸名,或用改名避开与类型名的阅读混淆 ——
+`IMPORT("agent:task", ["TASK": "AGENT_TASK"])`(实测 `rc=0`)。
 
 ### 10.12 对象模型内建
 

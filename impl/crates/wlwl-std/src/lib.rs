@@ -12,9 +12,11 @@
 //!   - `wlwl:std.io`     — `PRINT`, `PRINT_ERR`, `INPUT` (§15.1)
 //!   - `wlwl:std.fs`     — `READ_FILE`, `WRITE_FILE`, `EXISTS` (§15.3)
 //!   - `wlwl:std.json`   — `PARSE`, `STRINGIFY` (§15.3 + E0070/E0071)
-//!   - `wlwl:std.ai`     — ASK / ASK_STREAM stubs (§15.13, Phase 4 batch 3)
-//!   - `wlwl:std.agent`  — agent-shaped helpers over `std.ai`
+//!   - `ai`            — ASK / ASK_STREAM stubs (§15.13, Phase 4 batch 3)
+//!   - `agent`         — agent-shaped helpers over the `ai` package
 //!     (`TASK`, `TOOL`, `CALL_TOOL`, `MODEL`, `CONTEXT`; §15.14, Phase D3)
+//!     ⚠ 两者自 v0.11.3 M8 起是**官方包**,不再走 `wlwl:std.` 前缀
+//!     (`ADR-0034` D2);它们在本清单里仍以 `ai` / `agent` 为 `ModuleSpec.path`。
 //!   - `wlwl:std.format` — `FORMAT` + the shared template grammar (§15.8 / §10.6, Phase B5)
 //!   - `wlwl:std.encode` — `BASE64_ENCODE` / `BASE64_DECODE` / `HEX_ENCODE` /
 //!     `HEX_DECODE` / `URL_ENCODE` / `URL_DECODE` (v0.11.2 M1, stdlib §11)

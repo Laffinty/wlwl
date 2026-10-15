@@ -202,12 +202,15 @@ Uncaught ERR → `E0102`, exit 1.
 ## §9. Standard library catalogue (§10)
 
 Full member lists live with the v0.11 namespaces: `std.collection` /
-`std.json` / `std.fs` / `std.test` / `std.format` / `std.io` / `std.ai` /
-`std.agent` / `std.encode` are listed in `SKILL.md` "Standard library pointers";
+`std.json` / `std.fs` / `std.test` / `std.format` / `std.io` /
+`std.encode` are listed in `SKILL.md` "Standard library pointers";
 the **v0.11-new** namespaces `std.str` and `std.math` have signed tables in
 §9.3 / §9.5 below, and the **v0.11.3-new** `std.sanitize` in §9.6 and
 `std.result` in **§9.15**. Concurrent
 and OOP primitives are **global**, not under `wlwl:std.*`.
+⚠ **`std.ai` / `std.agent` are no longer under `wlwl:std.*`** (v0.11.3 M8,
+`ADR-0034`) — they are **official packages** imported as `"ai:ask"` /
+`"agent:task"`, and `wlwl:std.ai` / `wlwl:std.agent` no longer resolve.
 The authoritative registry of every global builtin (106 entries) is
 `../docs/appendix_G.md`.
 
@@ -874,7 +877,7 @@ PRINT(n, u, s);
   `std.rand` reproducible, and is what the contract table freezes.
 - ⚠ **Entropy comes only from an explicit argument.** `SEED` does **not** read the
   OS entropy source itself. For real randomness take it from `std.encode` and pass
-  it in: `SEED(RANDOM_HEX(16))` (§9.8). `std.encode` is the source; `std.rand`
+  it in: `SEED(RANDOM_HEX(16))` (§9.1). `std.encode` is the source; `std.rand`
   consumes it one-way. For an educational language whose selling point is
   reproducibility, *visible* dependencies are a feature.
 - **`std.rand` is not cryptographic.** Salts, tokens and key material go through
@@ -890,10 +893,11 @@ PRINT(n, u, s);
 - `CODEPOINT` exists as its own member because a code point is **not** a uniform
   distribution: UTF-16 surrogates (`0xD800..=0xDFFF`) and Unicode noncharacters
   are excluded. It returns a **single-character string**.
-- ⚠ **`std.rand`'s home in `wlwl:std.*` is a transitional form.** Spec §14 already
-  records that `std.ai` / `std.agent` should become official packages outside std;
-  the same logic applies here once the official-package mechanism exists. Do not
-  treat its placement as permanent.
+- ⚠ **`std.rand`'s home in `wlwl:std.*` is a transitional form.** Spec §14 records
+  that `std.ai` / `std.agent` become official packages outside std, and **v0.11.3
+  M8 has now done exactly that** (`ai:` / `agent:` prefixes, `wlwl:std.ai` no
+  longer resolves). The same logic applies to `std.rand` — it **has not** been
+  moved yet, so do not treat its placement as permanent.
 - Only uniform distributions. There is no `NORMAL` / Poisson / exponential and
   there is not planned to be — build those yourself from `UNIFORM` (polar /
   inverse-transform) when you need them; that is your algorithm choice.

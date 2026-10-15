@@ -9840,7 +9840,7 @@ impl Evaluator {
             }),
             ErrorCode::E0080 | ErrorCode::E0081 | ErrorCode::E0082 | ErrorCode::E0083 => {
                 d.with_suggestion(Suggestion::Note {
-                    description: "AI provider call failed; this is transient (retryable: true) -- retry the operation, or check `wlwl:std.ai` provider configuration".into(),
+                    description: "AI provider call failed; this is transient (retryable: true) -- retry the operation, or check the `ai` official package provider configuration".into(),
                 })
             }
             ErrorCode::E0100 => d.with_suggestion(Suggestion::Note {

@@ -149,12 +149,12 @@ pub fn generate_appendix_a_md() -> String {
     out.push_str("| 命名空间 | 成员 | 层 | 引入 |\n");
     out.push_str("|---|---|---|---|\n");
     for (path, layer, introduced) in NAMESPACE_META {
-        // [v0.11.3 M8 / addendum-14 / ADR-0034] \u663e\u793a\u540d\u4e0d\u518d\u786c\u7f16\u7801 `std.` \u524d\u7f00\u3002
+        // [v0.11.3 M8 / addendum-14 / ADR-0034] 显示名不再硬编码 `std.` 前缀。
         //
-        // \u65e7\u5199\u6cd5 `format!("| \`std.{short}\` | ...")` \u5047\u5b9a\u6bcf\u4e2a\u8def\u5f84\u90fd\u5728 `wlwl:std.` \u4e0b \u2014\u2014
-        // \u4e00\u65f6\u771f\u7684(\u5168\u90e8\u547d\u540d\u7a7a\u95f4\u90fd\u662f std),\u4f46 **\u5b98\u65b9\u5305**(`ai` / `agent`)\u4e0d\u5728\u3002
-        // \u4e0d\u6539\u7684\u8bdd\u5b83\u4f1a\u628a `ai` \u6253\u5370\u6210 **`std.ai`** \u2014\u2014
-        // \u9644\u5f55 A \u5728\u5bf9\u4e00\u4e2a\u5df2\u4e0d\u518d\u5b58\u5728\u7684\u547d\u540d\u7a7a\u95f4\u6253\u5b57,\u800c\u6240\u6709\u5bf9\u8d26\u4ecd\u7136\u81ea\u6d3d\u3002
+        // 旧写法 `format!("| \`std.{short}\` | ...")` 假定每个路径都在
+        // `wlwl:std.` 下 —— 一时真的(全部命名空间都是 std),但**官方包**
+        // (`ai` / `agent`)不在。不改的话它会把 `ai` 打印成 **`std.ai`** ——
+        // 附录 A 在对一个已不存在的命名空间打字,而所有对账仍然自洽。
         let short = path.trim_start_matches("wlwl:");
         let names = members(path);
         let members = if names.is_empty() {

@@ -1,11 +1,16 @@
-//! `wlwl:std.agent` \u2014 agent-style LLM helpers (v0.4 §15.14).
+//! `agent` official package — agent-style LLM helpers (v0.4 §15.14).
 //!
-//! Phase D3 (§15.14.1 \u2013 §15.14.5): thin wrappers over `wlwl:std.ai`
-//! for the high-level "agent" shape that AI tools prefer. The v0.4
-//! surface is intentionally minimal: each function delegates to
-//! `wlwl:std.ai.ASK` (for TASK) or returns a structured DICT (for
-//! TOOL / MODEL / CONTEXT). The richer orchestration \u2014 tool
-//! calling loops, multi-turn memory, sub-agent dispatch \u2014 lands
+//! ⚠ **Import path changed** (`ADR-0034` D2): `IMPORT("agent:task", …)`.
+//! `wlwl:std.agent` no longer resolves, and `wlwl:agent` cannot work —
+//! `wlwl:` is std's reserved prefix. Member names / signatures / semantics
+//! are untouched; only the visible surface moved.
+//!
+//! Phase D3 (§15.14.1 – §15.14.5): thin wrappers over the `ai`
+//! official package for the high-level "agent" shape that AI tools
+//! prefer. The v0.4 surface is intentionally minimal: each function
+//! delegates to `ai::ASK` (for TASK) or returns a structured DICT (for
+//! TOOL / MODEL / CONTEXT). The richer orchestration — tool
+//! calling loops, multi-turn memory, sub-agent dispatch — lands
 //! in v0.5 alongside the interpreter-callback work in D1b / D2.
 //!
 //! ## Functions
@@ -28,22 +33,26 @@
 //! ## 与类型名 `TASK` 的同名问题 (v0.8 §2.8 / G-04)
 //!
 //! 本模块导出 `TASK(name, prompt, opts?) -> TASK_RESULT`(agent 形态)与
-//! `wlwl:std.ai.TASK(...)`(ai 形态);而 §2.1 类型表里的类型名 `TASK`
+//! `ai` 包的 `TASK(...)`(ai 形态);而 §2.1 类型表里的类型名 `TASK`
 //! 也叫 `TASK`。同名不冲突,理由:
 //!
 //! - `TYPE(handle)` 返回字符串 `"TASK"`,**`TYPE` 形参位置不做名字解析** —
 //!   它取运行时值,返回字符串,过程中不查任何名字表。
 //! - 用户作用域内的 `TASK`(由 `IMPORT` 注入)与类型名空间独立;两者在各自
-//!   作用域中独立解析。`IMPORT("wlwl:std.agent", TASK)` 注入的是本模块的
+//!   作用域中独立解析。`IMPORT("agent:task", TASK)` 注入的是本模块的
 //!   函子,不是类型名。
 //! - 任何上下文歧义由文法消解:类型名出现在 `:` 类型注解后(`LET(x: TASK, ...)`),
 //!   标识符出现在表达式位置(`IMPORT(...) TASK(...)`)。两者在不同语法槽位,
 //!   parser 不需要符号表预查。
 //!
-//! **文档约定**:本模块内及 `wlwl-spec-v0.7.md` §10.11 一律写作
-//! `wlwl:std.agent.TASK` / `wlwl:std.ai.TASK` 以避免阅读混淆。
-//! 用户代码内直接 `TASK(...)` 也合法(取决于 `IMPORT` 是否引入同名函子)。
-//! 函数签名表格里的"显示形式"沿用裸名 `TASK` — 不动 §10.11 实际签名表。
+//! ⚠ **旧「文档约定」(一律写全限定 `wlwl:std.agent.TASK`)已废止** —— 文法
+//! 里**没有**「命名空间限定调用」这种表达式,所以 `wlwl:std.agent.TASK(…)` /
+//! `agent:task.TASK(…)` / `agent.TASK(…)` **一律解析失败**
+//! (`E0011 expected ')' got Colon`)。想避开阅读混淆,唯一可行的办法是
+//! **`IMPORT` 时改名**:`IMPORT("agent:task", ["TASK": "AGENT_TASK"])`
+//! (实测 `rc=0`)。用户代码内直接 `TASK(...)` 也合法(取决于 `IMPORT` 是否
+//! 引入同名函子)。函数签名表格里的「显示形式」沿用裸名 `TASK` —
+//! 不动 §10.11 实际签名表。
 
 use crate::compat::*;
 use crate::{ModuleSpec, StdCtx, StdFn};

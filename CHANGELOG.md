@@ -15,6 +15,56 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### 追加批次(M8 · L3)—— `std.ai` / `std.agent` 移出 `wlwl:std.*`(可见面变更)
+
+⚠ **这是需要申报的可见面变更(ADR-0023 §v0.x 1),但不是「移除成员」。**
+成员的**名字、签名、语义一条未改** —— 变的只有**在哪个前缀下可达**。
+因此**不走弃用两步**(不设警告码、不保留一个次版本)。
+
+**迁移写法**(改 `IMPORT` 那一行即可,函数体一个字不用动):
+
+```wlwl
+// 之前
+IMPORT("wlwl:std.ai",    ["ASK", "EMBED", "COMPLETE", "ASK_STREAM", "ASK_ALL"]);
+IMPORT("wlwl:std.agent", ["TASK", "MODEL", "TOOL", "CALL_TOOL", "CONTEXT"]);
+
+// 之后
+IMPORT("ai:ask",    ["ASK", "EMBED", "COMPLETE", "ASK_STREAM", "ASK_ALL"]);
+IMPORT("agent:task", ["TASK", "MODEL", "TOOL", "CALL_TOOL", "CONTEXT"]);
+```
+
+| 项 | 之前 | 之后 |
+|---|---|---|
+| `wlwl:std.ai` | 可解析 | **`E0043` / 不再解析** |
+| `wlwl:std.agent` | 可解析 | **不再解析** |
+| `wlwl:ai` | — | ⚠ **不可行**,见下 |
+| 成员面 | 5 + 5 | **5 + 5,一字未改** |
+
+⚠ **前缀不能带 `wlwl:`** —— `wlwl:` 是标准库的**保留前缀**,`wlwl:ai` 会落进
+「裸模块名」分支、被当成文件名去找 `…\wlwl:ai.wll`,最终 `E0040`。
+**只有 `ai:` / `agent:` 两种形态可用。**
+
+⚠ **没有「全限定调用」这种语法** —— `ai:ask.ASK(…)`、`ai.ASK(…)` 以及旧式的
+`wlwl:std.ai.ASK(…)` **一律解析失败**(`E0011 expected ')' got Colon`)。
+成员只能经 `IMPORT` 取裸名。**旧文档里「推荐全限定写法以避免与类型名 `TASK`
+混淆」的建议是错的,已废止**;要避开阅读混淆请在 `IMPORT` 时改名:
+`IMPORT("agent:task", ["TASK": "AGENT_TASK"])`。裸名 `TASK` 与类型名 `TASK`
+本来就不冲突(§2.1)。
+
+⚠ **更正一条更早的错误陈述**:`v0.11.3` 段(以及标准库规范 §0)写的
+「`std.ai` 的 5 个成员受 `real-ai` feature 门控,默认构建可见 99」**从未成立**。
+`real-ai = ["dep:reqwest"]` 门控的是 **HTTP 传输层**(mock ↔ real),
+成员函数本身一直编译 —— 默认构建下这 5 个成员**全部可见**。
+
+⚠ **形态上的差距(如实记下)**:`ai` / `agent` 目前**仍以 `wlwl-std` 的
+`real-ai` feature 编译**,只是不再出现在 `wlwl:std.*` 的可见面里;它们
+**没有**独立的 crate 边界与分发产物 ⇒ 按 `addendum-14` §6,本批记为
+**部分完成**,不是搬完。裁决见 `ADR-0034`(D1 已撤回、D2 已定)。
+
+**规范与文档同步**:标准库规范 §9 / §10 改写为官方包正文(章号不变);
+§14 的演进方向条目标记为已落地;语言规范 §9.3 的前缀枚举与 §10.11 标题同步;
+skill 的指针表与失效交叉引用一并修正。
+
 ### 追加批次(M7 · L2)—— `std.json` 深度面
 
 **`wlwl:std.json` 成员面 2 → 11**。⚠ **`PARSE` / `STRINGIFY` 的可观察行为
