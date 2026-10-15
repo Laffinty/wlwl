@@ -960,8 +960,13 @@ impl Hit {
     ///
     /// [D13-019 / N-003]此前这里是**升序**(先到者胜),而 `Hit::arrival` 字段
     /// 注释与 `PRIO_MAX` 处的注释都写着「后到者更完整」—— 注释与代码方向相反。
-    /// 后果:`RE_SEARCH(RE("a+"), REPEAT("a", 100))` 只匹配到封顶处(约 64~65
-    /// 个 a)而不是 100,`addendum-02` W-04「封顶不损语义」的论证被推翻。
+    ///
+    /// ⚠ **症状只落在 `RE_SEARCH` / `run` 这条路径上**(负向验证实测):
+    /// `RE_SEARCH(RE("a+"), REPEAT("a", 200))` 在升序下只报 `end = 65`,
+    /// 而同一构建下 `RE_REPLACE` / `RE_FIND_ALL` 走 `find_all` 拿到的
+    /// **是完整长度**。⇒ 修本条时**别拿 `RE_REPLACE` 当守卫** —— 那条路径
+    /// 本来就没坏,用它写的契约在 bug 形态下也全绿,是条假守卫
+    /// (已发生过一次:初版契约正是这么写的,变异验证当场把它拆穿)。
     fn better_than(&self, other: &Hit) -> bool {
         (self.start, &self.prio, std::cmp::Reverse(self.arrival))
             < (other.start, &other.prio, std::cmp::Reverse(other.arrival))
@@ -1270,6 +1275,11 @@ pub fn find_all(prog: &Program, text: &str) -> Vec<Captures> {
     // 定序:起点 → 分支路径 → 抵达顺序**降序**。第三键与 `Hit::better_than`
     // 同一口径(后到者更完整),否则单次搜索与 `find_all` 会在封顶区给出
     // 两个不同的答案(D13-019 / N-003)。
+    //
+    // ⚠ 负向验证实测:升序下 **`find_all` 这条路径仍是完整长度**(见
+    // `Hit::better_than` 的同款注记)。这一处保持降序是为了**两个路径同口径**
+    // —— 它们共享排序键,口径分叉的话同一个「贪婪延伸到哪」的问题会在两条
+    // 路径上给出不同答案,那比现在更难查。它本身不被任何契约钉住。
     hits.sort_by(|a, b| {
         (a.start, &a.prio, std::cmp::Reverse(a.arrival)).cmp(&(
             b.start,

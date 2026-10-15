@@ -225,19 +225,25 @@ const CASES: &[Case] = &[
     Case {
         name: "greedy_repeat_survives_the_priority_cap",
         src: concat!(
-            r#"IMPORT("wlwl:std.regex", ["RE", "RE_REPLACE"]); "#,
-            r#"=(LEN(RE_REPLACE(RE("a+"), REPEAT("a", 100), "$0")), 100)"#
+            r#"IMPORT("wlwl:std.regex", ["RE", "RE_SEARCH"]); "#,
+            r#"RE_SEARCH(RE("a+"), REPEAT("a", 200)).end"#
         ),
-        // `$0` = 整体匹配。修复前本条只会还原出 64/65 个 a。
-        expect: "TRUE",
+        // ⚠⚠ **这条必须打在 `RE_SEARCH` 上,不能拿 `RE_REPLACE` 代替。**
+        // 负向验证实测:升序(bug 形态)下 `RE_SEARCH(RE("a+"), REPEAT("a", 200))`
+        // 只报 `end = 65`,而**同一构建**下 `RE_REPLACE` / `RE_FIND_ALL` 走
+        // `find_all`,拿到的是**完整长度 200**。⇒ 症状只落在 `best_hit` 那条
+        // 路径上。初版契约用的是 `RE_REPLACE`(读起来更顺、也更接近「贪婪量词」
+        // 的直觉),结果在 bug 形态下**全绿** —— 是一条假守卫,直到变异验证
+        // 才把它拆穿。教训写进 `Hit::better_than` 的注记里了。
+        expect: "200",
     },
     Case {
         name: "greedy_repeat_is_unbounded_in_find_all_too",
         src: concat!(
-            r#"IMPORT("wlwl:std.regex", ["RE", "RE_FIND_ALL", "RE_TEST"]); "#,
-            r#"=(LEN(RE_FIND_ALL(RE("a+"), REPEAT("a", 100))), 1)"#
+            r#"IMPORT("wlwl:std.regex", ["RE", "RE_FIND_ALL"]); "#,
+            r#"LEN(RE_FIND_ALL(RE("a+"), REPEAT("a", 100)))"#
         ),
-        expect: "TRUE",
+        expect: "1",
     },
 
     // ── 取反字符类里的预定义类(D13-019 / N-002)────────────────────────
@@ -672,6 +678,25 @@ fn every_zero_width_escape_is_rejected_wherever_it_appears() {
 ///
 /// 单独一条 `#[test]` 而不是进 `CASES` 表:几百个括号手写进 `&'static str`
 /// 会撑爆可读性,照 `json_contract.rs` 的 `[`.repeat(200) 那个先例在 Rust 侧拼。
+#[test]
+fn greedy_repeat_reports_the_whole_run_at_every_size_past_the_cap() {
+    // ⚠ 期望值不是「拍脑袋」也不是「跑一遍抄下来」:`n` 就是输入长度,
+    // 「贪婪量词必须匹配整个输入」是**语义定义**。这正是这条守卫的价值 ——
+    // 它不需要知道 `PRIO_MAX` 是几,也不需要知道 bug 形态下会报多少,
+    // **只要报的不是 `n` 就红**。初版那条只钉了单点(200),现在扫一整排,
+    // 免得「换个长度就绕过去」。
+    for n in [32usize, 63, 64, 65, 66, 70, 100, 200, 1000] {
+        let got = actual(&format!(
+            r#"IMPORT("wlwl:std.regex", ["RE", "RE_SEARCH"]); RE_SEARCH(RE("a+"), REPEAT("a", {n})).end"#
+        ));
+        assert_eq!(
+            got,
+            n.to_string(),
+            "greedy a+ on {n} a's must report end = {n}"
+        );
+    }
+}
+
 #[test]
 fn deep_nesting_is_rejected_not_crashed() {
     const MAX_NEST: usize = 256; // regex.rs::MAX_NEST
