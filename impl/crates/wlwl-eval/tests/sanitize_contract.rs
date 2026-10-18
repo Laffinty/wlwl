@@ -1117,6 +1117,35 @@ const SANITIZE_CASES: &[SanCase] = &[
         why: "键值类型错 → E0030 带**键名**(规范 §13.2:「policy 形态错 E0030(带名)」)" },
     SanCase { name: "policy_url_schemes_not_array", html: "", policy: r#"["url_schemes": "http"]"#, expect: "!E0030 HTML_SANITIZE: policy \"url_schemes\" must be an ARRAY",
         why: "同上" },
+    // ── [D13-058 / N-006]开标签栈的**索引化**(按名字查「栈内最内层位置」)
+    //    的语义面 —— 换算法不得改一棵树。⚠ 期望值全部按 WHATWG 的
+    //    tree-construction 规则**独立裁定**,不是抄实现输出;⚠ 且**只挑白名单
+    //    内的标签** —— 非白名单标签会被拆壳(结构在输出里看不见),那样的用例
+    //    照不到「关错元素」。
+    SanCase { name: "closure_unmatched_end_tag_is_ignored", html: r#"<b>x</b></i>y"#, policy: "", expect: "<b>x</b>y",
+        why: "WHATWG §13.2.6 *in body* 的「any other end tag」:栈内没有同名开元素时**只报 parse error、不改树**;规范 §13.2 同款登记「不在栈内则忽略」。判别式:`</i>` 之后的 `y` 仍在 **根**下,没被挂进 `<b>`" },
+    SanCase { name: "closure_li_implied", html: r#"<ul><li>a<li>b</ul>"#, policy: "", expect: "<ul><li>a</li><li>b</li></ul>",
+        why: "WHATWG §13.2.6 *in body*:`li` 开始标签在 **list item scope** 内有 `li` 时先闭合它(隐式闭合路径);`</ul>` 再弹到 `ul`。⚠ 这条走的是**隐式闭合**那条弹栈路径,与下面的显式 `truncate` 不是同一条" },
+    SanCase { name: "closure_p_implied_by_block_start", html: r#"<p>a<pre>b</pre>"#, policy: "", expect: "<p>a</p><pre>b</pre>",
+        why: "同上,`p` 元素在新的块级开始标签(`pre`)出现时被闭合(HTML5 的 `p` 元素闭合规则)" },
+    SanCase { name: "closure_p_implied_by_li", html: r#"<ul><li><p>a<li>b</ul>"#, policy: "", expect: "<ul><li><p>a</p></li><li>b</li></ul>",
+        why: "`li` 关闭 `li` **与** `p`(规范 §13.2 登记的子集);连着两次弹栈才轮到新的 `li` 入栈 ⇒ 判别式是 `a` 那个 `p` 被**包在**第一个 `li` 里、没有与 `b` 并列" },
+    SanCase { name: "closure_nested_matched_ends_keep_nesting", html: r#"<b><i>z</i></b>y"#, policy: "", expect: "<b><i>z</i></b>y",
+        why: "配对结束标签:内层 `</i>` 只弹到 `i`,外层 `</b>` 弹到 `b` ⇒ `<i>` 必须留在 `<b>` 里(索引把 `b` 记成位置 0、`i` 记成位置 1,顺序错了这条就红)" },
+    SanCase { name: "closure_after_full_close_the_stack_is_empty", html: r#"<b><i>z</i></b><em>w"#, policy: "", expect: "<b><i>z</i></b><em>w</em>",
+        why: "⚠ 索引同步的端到端判别式:两次闭合后栈必须**真的空**——若截断时漏清索引,`<em>` 会被挂成 `<b>` 的子节点(输出成 `<b><i>z</i><em>w</em></b>`)。`<em>` 在白名单内,故结构可见" },
+    // ── [D13-059 / N-007]raw-text 关闭扫描(不物化整段余文的滑窗版)的
+    //    语义面。期望值按 WHATWG 的 RAWTEXT / script data 结束条件裁定。
+    SanCase { name: "rawtext_close_tag_is_case_insensitive", html: r#"<b>a</b><script>x</SCRIPT>y"#, policy: "", expect: "<b>a</b>y",
+        why: "WHATWG:HTML 标签名**大小写不敏感**,故 `</SCRIPT>` 就是 `script` 的结束标签;§13.2 登记 raw-text 内文不作标记解析、整棵删除 ⇒ 余下的 `y` 幸存。判别式:若关闭扫描变成大小写敏感,`x</SCRIPT>y` 会整段成为正文而被删,输出只剩 `<b>a</b>`" },
+    SanCase { name: "rawtext_close_tag_may_carry_trailing_space", html: r#"<script>x</script >y"#, policy: "", expect: "y",
+        why: "WHATWG:*script data end tag name* 之后允许空白再 `>`;本模块的关闭扫描找的是 `</name`(不含 `>`),余下那一段由「跳到 `>`」吃掉 ⇒ `y` 幸存" },
+    SanCase { name: "rawtext_first_close_tag_wins", html: r#"<script>a</script>b</script>c"#, policy: "", expect: "bc",
+        why: "raw-text 在**首个**同名结束标签处结束;回到 data state 后第二个 `</script>` 是一个**没有对应开元素**的结束标签 ⇒ 忽略。判别式:`b` 与 `c` 都必须幸存且并列" },
+    SanCase { name: "rawtext_without_close_swallows_the_tail", html: r#"<b>a</b><script>tail"#, policy: "", expect: "<b>a</b>",
+        why: "WHATWG:script data state 到 EOF 即结束(未闭合的 script 内容仍是 script 内容);规范 §13.2 的 raw-text 整删 ⇒ `tail` 连同元素一起消失,而 `<b>a</b>` 完好" },
+    SanCase { name: "rawtext_title_and_textarea_are_dropped_with_content", html: r#"<title>t</title><textarea>u</textarea>v"#, policy: "", expect: "v",
+        why: "规范 §13.2:整删集恰好是 8 个 raw-text 元素(「不多不少」);`title` / `textarea` 都在内 ⇒ 元素与内容一起删,`v` 幸存" },
 ];
 
 /// 成员级诊断(与数据无关,单独一组:html 字段不参与)。
@@ -1230,6 +1259,9 @@ fn sanitize_evidence_matches_the_frozen_contract() {
         ("mxss_", 12),
         ("malformed_", 5),
         ("policy_", 7),
+        // [D13-058 / N-006 / D13-059]树构建索引化 + raw-text 关闭扫描的语义面。
+        ("closure_", 6),
+        ("rawtext_", 5),
     ] {
         let n = SANITIZE_CASES
             .iter()
@@ -1494,4 +1526,52 @@ fn sanitize_survives_pathological_text_and_attributes() {
     // 实体风暴:全表二分不得退化成线性扫描。
     let ents = "&copy;".repeat(100_000);
     assert_eq!(sanitize_of(&ents, ""), "©".repeat(100_000));
+}
+
+/// [D13-058 / N-006 + D13-059 / N-007]审查报告点名的两条病态形状,从
+/// `HTML_SANITIZE` 入口**整链**跑一遍。
+///
+/// ⚠ 与 `wlwl-std` 单测里的两条「计量型」契约分工:那边数扫描次数(精确、
+/// 与机器无关),这边只断言**输出正确** + 规模是审查报告点名的量级 ——
+/// 平方级 / n·k 级实现在这里不是「慢一点」,而是分钟级跑不完,CI 自己会红。
+///
+/// ⚠ 规模比单测里的小一档:这里每条都要过一次完整的解释器求值(解析 +
+/// 过滤 + 序列化 + 字符串字面量转义),1 MB 级输入按这个开销算不划算。
+#[test]
+fn sanitize_stays_linear_on_unmatched_ends_and_raw_text_storms() {
+    // ① `"<b>"×N + "</i>"×N` —— N-006:5 万个 `</i>` 每个都扫完整个栈。
+    const N: usize = 20_000;
+    let unmatched_ends = format!("{}x{}", "<b>".repeat(N), "</i>".repeat(N));
+    let out = sanitize_of(&unmatched_ends, "");
+    // `</i>` 全部忽略(§13.2「不在栈内则忽略」)⇒ 仍是 N 层 `<b>` 包着 `x`,
+    // 序列化时补齐 N 个结束标签:`<b>`×N + `x` + `</b>`×N = 7N + 1。
+    assert_eq!(
+        out.len(),
+        7 * N + 1,
+        "未匹配结束标签风暴的输出长度不对(建树可能漏弹或多弹)"
+    );
+    assert!(out.starts_with(&"<b>".repeat(N)));
+    assert!(out.ends_with(&"</b>".repeat(N)));
+    assert_eq!(out.matches('x').count(), 1, "文本 `x` 丢了或重复了");
+    assert!(
+        !out.contains("i"),
+        "被忽略的 `</i>` 不该留下痕迹(实际输出:{}…)",
+        &out[..out.len().min(40)]
+    );
+
+    // ② 密集 raw-text —— N-007:每个元素都把**整个余文**小写化一份。
+    const K: usize = 5_000;
+    let dense_rawtext = format!("{}y", "<script></script>".repeat(K));
+    assert_eq!(
+        sanitize_of(&dense_rawtext, ""),
+        "y",
+        "K 个空 raw-text 应当整删,只余末尾的 `y`"
+    );
+    // 关闭标签大小写混写时同样整删(滑窗比的是 `eq_ignore_ascii_case`)。
+    let mixed_case = format!("{}y", "<sCrIpT></ScRiPt>".repeat(K));
+    assert_eq!(
+        sanitize_of(&mixed_case, ""),
+        "y",
+        "raw-text 关闭扫描对大小写不敏感"
+    );
 }

@@ -387,8 +387,9 @@ pub fn list_dir(host: &mut dyn StdHost, args: Vec<Value>) -> Result<Outcome, Wlw
 ///   (业主 2026-10-08 裁决;与 `std.regex` 互补,正则已有 `RE`)。pattern **含 `/`
 ///   时匹配整条相对路径,否则只匹配文件名**。缺省 = 匹配全部。
 /// - `follow`:**默认 `FALSE`** —— **不下降进符号链接目录**(成环的链接目录会让
-///   递归永不终止)。置 `TRUE` 时记 **visited 集合**(按 `canonicalize` 的目录)
-///   防环。
+///   递归永不终止)。置 `TRUE` 时**下降进**符号链接目录,并记 **visited 集合**
+///   (按 `canonicalize` 的目录)防环。⚠ 这条在 **POSIX 与 Windows 上语义相同**
+///   ——`[N-010 / D13-060]` 修之前它在 POSIX 上是**死参数**(见 `walk` 里的注)。
 ///
 /// ⚠ **失败口径**:`p` **本身**打不开(不存在 / 不是目录 / 没权限)⇒
 /// `ERR([kind: "FsError", op, reason])`,**与 `LIST_DIR` 同一口径**
@@ -472,10 +473,35 @@ fn walk(
             .symlink_metadata()
             .map(|m| m.file_type().is_symlink())
             .unwrap_or(false);
-        let is_dir = entry.file_type().map(|t| t.is_dir()).unwrap_or(false);
+        // ⚠🔴 **[N-010 / D13-060] 判「能不能下降」在 `follow = TRUE` 时必须用
+        // **跟随**语义。**
+        // `DirEntry::file_type()` 的契约是「**不**跟随符号链接」
+        // (Rust `std::fs::DirEntry::file_type`:"This function will not traverse
+        // symlinks if this entry points at a symlink")⇒ 在 **POSIX** 上「符号链接
+        // → 目录」这项的 `is_dir()` **恒 `false`** ⇒ 下面 `!is_link || follow`
+        // 那条**放行分支永远到不了** ⇒ `follow` 在 POSIX 上是**死参数**。
+        // ⚠ **同一段代码在两个平台上语义分叉**:Windows 上目录符号链接带
+        // `FILE_ATTRIBUTE_DIRECTORY` 位,`file_type().is_dir()` 是 **true**
+        // ⇒ `follow` 照常生效。⇒ 同一份代码、同一个参数,Windows 有效、
+        // POSIX 无效,而**两边都不报错**。
+        // 修法:`follow` 为真时改用 `Path::is_dir()`(跟随语义)。
+        // ⚠⚠ **非 follow 分支绝不能一起改** —— 那会让 `WALK_DIR(follow = FALSE)`
+        // **开始跟随链接**,那是**语义变更**(成环的链接目录会让递归不止),
+        // 不是 bug 修复。`follow` 的默认值就是 `FALSE`(见 `walk_dir` 签名),
+        // 改错方向会把默认行为整个翻过来。
+        let is_dir = if follow {
+            // 跟随语义:`stat`(走完链接)。
+            path.is_dir()
+        } else {
+            // 非跟随语义:`lstat`(链接就是链接)。
+            entry.file_type().map(|t| t.is_dir()).unwrap_or(false)
+        };
         if glob_hit(pattern, &child_rel) {
             out.push(child_rel.clone());
         }
+        // ⚠ 这行的 `!is_link || follow` 在 `follow = TRUE` 时恒真(那正是
+        // 上面换判定的原因);`follow = FALSE` 时它才是**唯一**把链接目录挡在
+        // 门外的守卫 —— Windows 上目录链接的 `is_dir` 是 true,挡它的只有这里。
         if is_dir && (!is_link || follow) {
             // `?` 只可能拿到子目录的错误,而子目录的错误在上面已被吞成
             // `Ok(())` ⇒ 这里不会把「某个坏子目录」升级成整次遍历的失败。

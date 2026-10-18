@@ -44,8 +44,11 @@ pub static SPEC: ModuleSpec = ModuleSpec {
 /// 轮询间隔:5 ms。太大则超时的精度差,太小则空转。
 const POLL: Duration = Duration::from_millis(5);
 
-/// 读取线程的**有界**等待上限。子进程已退出后管道必然 EOF,这个上界只兜
-/// 「有后代继承了写端」这种异常路径。
+/// 读取线程的**有界**等待上限,**正常路径与超时路径共用**。
+///
+/// ⚠ 超时路径上这个上界**不是兜底而是命脉**(`[N-011 / D13-061]`,见 `drain`):
+/// 超时被杀的子进程留下的孙进程握着管道写端 ⇒ 管道不 EOF ⇒ 没有这个上界就会
+/// 无限期等下去。
 const JOIN_GRACE: Duration = Duration::from_millis(500);
 
 /// 杀掉子进程**及其整棵后代**。
@@ -68,23 +71,42 @@ fn kill_tree(child: &mut std::process::Child) {
     let _ = child.kill();
 }
 
-/// 收一个读取线程的输出。
+/// 收一个读取线程的输出,**两条路径走同一条有界逻辑**。
 ///
-/// ⚠️ **必须有界**:即便杀了进程树,一个「不听话」的孙进程仍可能握着管道写端,
-/// 无条件 `join()` 会把「超时返回」变成「等到孙进程自己结束」—— 那超时就没了。
-/// ⇒ 轮询 `is_finished()` 到 `JOIN_GRACE` 为止,仍未结束就**丢弃句柄**
+/// ⚠ **必须有界**:即便杀了进程树,一个「不听话」的**孙进程**仍可能握着管道
+/// 写端,无条件 `join()` 会把「超时返回」变成「等到孙进程自己结束」
+/// —— 那超时就没了。
+/// ⇒ 轮询 `is_finished()` 到 `JOIN_GRACE` 为止;仍未结束就**丢弃句柄**
 /// (`JoinHandle` drop = 分离线程),让它自生自灭。已读到的部分拿不到就返回空
 /// —— 超时路径上 stdout / stderr 本来就不给调用方。
-fn drain(h: std::thread::JoinHandle<Vec<u8>>, already_timed_out: bool) -> Vec<u8> {
-    if !already_timed_out {
-        // 正常路径:子进程已退出,管道必然 EOF —— 但仍给一个上界,免得
-        // 「有后代继承了句柄」这种异常把整个运行时挂住。
-        let deadline = Instant::now() + JOIN_GRACE;
-        while !h.is_finished() && Instant::now() < deadline {
-            std::thread::sleep(POLL);
-        }
+///
+/// ⚠🔴 **[N-011 / D13-061] 原实现把超时路径排除在这个上界之外。**
+/// 形参 `already_timed_out` 当时只控制「**要不要轮询**」,于是
+/// `already_timed_out == true` 时**跳过整个轮询、直接 `join()`**
+/// —— 而超时路径恰恰是**最可能挂住**的那条:`kill_tree` 只保证子进程
+/// (Windows 上连整棵进程树)被杀掉,**管不到「继承了管道写端、又活着的
+/// 孙进程」**。⚠ **POSIX** 上 `child.kill()` 只发信号给直接子进程 ⇒ `sh` 死了
+/// 而它的孙进程还握着 stdout / stderr 写端 ⇒ 管道**永不 EOF** ⇒ `join()`
+/// **无限期**等下去 ⇒ 「超时返回」退化成「等到孙进程自己结束」。
+/// ⚠ Windows 上这条路被 `taskkill /T /F` 掩盖了(它杀整棵进程树),所以**同一个
+/// 缺陷在 Windows 上跑不出来**,契约在 Windows 上恒绿。
+/// ⇒ 形参**已删除**:它曾经描述的意图(两条路径不同)恰恰就是缺陷本身,而两条
+/// 路径真正需要的性质(有界)是**同一条**。
+/// ⚠⚠ **这里不做「杀进程组」**:`D13-037`(POSIX 孙进程泄漏)是**另一条**、已
+/// 登记未修的账。连进程组一起杀会改「超时杀掉谁」的语义,不是本条的修复范围。
+fn drain(h: std::thread::JoinHandle<Vec<u8>>) -> Vec<u8> {
+    let deadline = Instant::now() + JOIN_GRACE;
+    while !h.is_finished() && Instant::now() < deadline {
+        std::thread::sleep(POLL);
     }
-    h.join().unwrap_or_default()
+    if h.is_finished() {
+        // 已结束 ⇒ `join()` 立即返回,拿得到完整缓冲。
+        h.join().unwrap_or_default()
+    } else {
+        // ⚠ **关键**:这里**必须**返回而不是 `join()` —— 句柄随作用域结束被丢弃
+        //   = 分离线程,让它自生自灭(见本函数注)。
+        Vec::new()
+    }
 }
 
 fn arity(host: &mut dyn StdHost, name: &str, got: usize, want: usize) -> WlwlError {
@@ -266,8 +288,10 @@ pub fn process_run(host: &mut dyn StdHost, args: Vec<Value>) -> Result<Outcome, 
         std::thread::sleep(POLL);
     };
 
-    let stdout = drain(out_handle, timed_out);
-    let stderr = drain(err_handle, timed_out);
+    // ⚠ 两条都用同一条有界 drain:超时路径**也**必须有界(见 `drain` 的
+    //   `[N-011 / D13-061]` 注 —— 那里曾经把超时路径排除在上界之外)。
+    let stdout = drain(out_handle);
+    let stderr = drain(err_handle);
     if timed_out {
         let secs = timeout_ms.unwrap_or(0) as f64 / 1000.0;
         return ok(proc_err(
@@ -481,6 +505,49 @@ mod tests {
             panic!()
         };
         assert!(reason.contains("timed out"), "reason = {reason:?}");
+    }
+
+    /// ⚠🔴 **[N-011 / D13-061] `drain` 对「不会结束的读取线程」也必须有界。**
+    ///
+    /// ⚠ 这条**不需要真的 spawn 子进程**就能钉住性质:缺陷的形状是
+    /// 「`already_timed_out == true` 时跳过轮询、直接 `join()`」⇒ **拿一个不会
+    /// 结束的读取线程调 `drain`,就会一直等下去**。这里用「睡 5 s 才结束」的线程
+    /// 做替身 —— 与真缺陷**同形**(孙进程握着管道写端 ⇒ 读取线程不结束)。
+    /// ⚠ 它**本机可跑、与平台无关**,所以它是本条的**负向验证闸门**:退回缺陷
+    /// 形态时这条会红(actual 见交付报告)。
+    /// 端到端那条在 `process_contract.rs`:
+    /// `a_timeout_with_a_living_grandchild_returns_promptly` —— ⚠ 那条在
+    /// **Windows 上恒绿**(`taskkill /T /F` 把孙进程也杀了),只有 POSIX 才验得到
+    /// 真形态 ⇒ 本条才是本机/Windows 上真正守得住的那一半。
+    #[test]
+    fn drain_is_bounded_even_when_the_reader_never_finishes() {
+        let h = std::thread::spawn(|| {
+            std::thread::sleep(Duration::from_secs(5));
+            Vec::new()
+        });
+        let started = Instant::now();
+        let out = drain(h);
+        let elapsed = started.elapsed();
+        // 未结束 ⇒ 已读到的部分**拿不到** ⇒ 空(超时路径上 stdout/stderr 本来
+        // 就不给调用方,见调用点)。
+        assert!(
+            out.is_empty(),
+            "an unfinished reader has no deliverable buffer, got {} bytes",
+            out.len()
+        );
+        assert!(
+            elapsed < Duration::from_secs(2),
+            "drain waited {elapsed:?} on a reader that never finishes — the bounded \
+             wait regressed; on the timeout path this is the hang"
+        );
+    }
+
+    /// 反向守卫:上界**不能**退化成「永远返回空」—— 读取线程**已结束**时必须拿得到
+    /// 完整缓冲(正常路径上 stdout / stderr 是要交给调用方的)。
+    #[test]
+    fn drain_returns_the_buffer_when_the_reader_has_finished() {
+        let h = std::thread::spawn(|| b"hello".to_vec());
+        assert_eq!(drain(h), b"hello".to_vec());
     }
 
     #[test]

@@ -481,6 +481,102 @@ fn walk_dir_recurses_and_glob_star_does_not_cross_separators() {
     let _ = std::fs::remove_dir_all(&dir);
 }
 
+/// ⚠🔴 **[N-010 / D13-060] `follow` 在 POSIX 上不是死参数。**
+///
+/// `WALK_DIR(root, "*.txt", TRUE)` 必须**下降进「符号链接 → 目录」**;
+/// `follow` 缺省 / `FALSE` 时**不得**下降。
+///
+/// ⚠ **期望值出处**(不抄本实现输出):
+/// - 规范 §2 `std.fs` 散文条款:**「`WALK_DIR` **默认不下降进链接目录**
+///   (`follow = FALSE`),因为**成环的链接目录会让递归永不终止**。置
+///   `follow = TRUE` 时记 **visited 集合**(按 `canonicalize`)防环。」**
+///   ⇒ 「`FALSE` 不下降」是**成文**的;而「`TRUE` 会下降」在规范里是**隐含**的
+///   (为什么要 visited 防环,只可能是会下降)—— ⚠ 这条已提请父代理在规范里
+///   补成显式条款,补之前本条断言的依据就是上面这段原文。
+/// - 成员行写明返回值是**相对 `p` 的路径、用 `/`** ⇒ 断言只写 `link/inside.txt`
+///   这样的规范形状,不碰平台分隔符。
+///
+/// ⚠ **为什么是 `#[cfg(unix)]`**:`DirEntry::file_type()` **不跟随**符号链接,
+/// 所以「链接 → 目录」在 **POSIX** 上 `is_dir()` 恒 `false` ⇒ 缺陷形态下
+/// `follow = TRUE` **完全不下降**。而 **Windows** 上目录符号链接带
+/// `FILE_ATTRIBUTE_DIRECTORY` 位 ⇒ `file_type().is_dir()` 是 true ⇒
+/// **`follow` 在 Windows 上一直是好的** ⇒ 这条契约**在 Windows 上恒绿,
+/// 即便实现退回缺陷形态也不红**。
+/// ⚠⚠ 本机(Windows)**也建不了符号链接**(实测:`New-Item -ItemType
+/// SymbolicLink` 报「此操作需要管理员权限」,未开开发者模式)⇒ 这条**在任何
+/// 平台都跑不到本机**,只能交给 CI 的 `ubuntu-latest` / `macos-latest`。
+#[cfg(unix)]
+#[test]
+fn walk_dir_follow_descends_into_a_symlinked_directory_only_when_follow_is_true() {
+    use std::os::unix::fs::symlink;
+    let dir = io_scratch();
+    std::fs::create_dir_all(dir.join("real")).unwrap();
+    std::fs::write(dir.join("real/inside.txt"), b"x").unwrap();
+    symlink(dir.join("real"), dir.join("link")).unwrap();
+    let root = abs(&dir, "");
+
+    // `follow` 缺省 = FALSE ⇒ 列出 `link` 这一项,但**不下降**进它。
+    let nofollow = run_with_dir(&format!("{IO}WALK_DIR(\"{root}\", \"*.txt\")"), &dir);
+    assert!(
+        nofollow.contains("real/inside.txt"),
+        "sanity: a real directory must be recursed — {nofollow}"
+    );
+    assert!(
+        !nofollow.contains("link/inside.txt"),
+        "follow defaults to FALSE: a symlinked directory must NOT be descended — {nofollow}"
+    );
+
+    // ⚠ 显式 `FALSE` 与缺省**必须同口径**(这两条是同一个承诺的两种写法)。
+    let explicit = run_with_dir(&format!("{IO}WALK_DIR(\"{root}\", \"*.txt\", FALSE)"), &dir);
+    assert!(
+        !explicit.contains("link/inside.txt"),
+        "follow = FALSE must behave like the default — {explicit}"
+    );
+
+    // ⚠🔴 这条在缺陷形态下**恒红**:POSIX 上 `follow = TRUE` 根本到不了
+    //   「链接目录也下降」那条分支。
+    let followed = run_with_dir(&format!("{IO}WALK_DIR(\"{root}\", \"*.txt\", TRUE)"), &dir);
+    assert!(
+        followed.contains("link/inside.txt"),
+        "follow = TRUE must descend into a symlinked directory — {followed}"
+    );
+    let _ = std::fs::remove_dir_all(&dir);
+}
+
+/// ⚠ **N-010 修好之后, `visited` 防环守卫在 POSIX 上才第一次真的被执行到。**
+///
+/// 修之前 `follow` 是死参数 ⇒ 链接目录从不被下降 ⇒ 成环**不可能发生**
+/// ⇒ 防环守卫在 POSIX 上是**从未被执行过的死代码**。修好之后「自环 / 指回祖先」
+/// 就成了真会发生的输入,守卫必须真的挡住。
+///
+/// ⚠⚠ 断言写成「**必须终止**」而不是「必须返回某个精确数组」: 防环的具体口径
+/// (哪些层被跳过)不是对外承诺;「不挂死 + 不重复」才是。这条断言形状与
+/// `copy_tree_refuses_a_cycle_instead_of_recursing_forever` 同源。
+#[cfg(unix)]
+#[test]
+fn walk_dir_follow_terminates_on_a_self_referential_symlink() {
+    use std::os::unix::fs::symlink;
+    let dir = io_scratch();
+    std::fs::create_dir_all(dir.join("sub")).unwrap();
+    std::fs::write(dir.join("sub/leaf.txt"), b"x").unwrap();
+    // `loop` 指回**根自己** ⇒ 跟到底就是无限下降。
+    symlink(&dir, dir.join("sub/loop")).unwrap();
+    let root = abs(&dir, "");
+
+    let out = run_with_dir(&format!("{IO}WALK_DIR(\"{root}\", \"*.txt\", TRUE)"), &dir);
+    assert!(
+        out.contains("sub/leaf.txt"),
+        "sanity: the real subtree must still be walked — {out}"
+    );
+    // ⚠ 环上的层被 `visited` 挡住 ⇒ `leaf.txt` **只出现一次**。
+    assert_eq!(
+        out.matches("sub/leaf.txt").count(),
+        1,
+        "the cycle guard must stop the walk before re-walking a directory — {out}"
+    );
+    let _ = std::fs::remove_dir_all(&dir);
+}
+
 #[test]
 fn remove_refuses_a_non_empty_directory_without_recursive() {
     let dir = io_scratch();

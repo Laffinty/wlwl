@@ -11,6 +11,17 @@
 //!    `child.kill()` 不杀孙进程,而孙进程握着管道句柄 ⇒ 读线程等不到 EOF)。
 //!    契约这边钉的是**结果形态**:`ERR` 值 + `kind = "ProcessError"`。
 //!
+//! ## ⚠ 哪条断言只在**某个平台**上咬人
+//!
+//! 超时类的断言分**两层**,别混:「结果形态」(`ERR` 值)两个平台都咬;但**「耗时
+//! 有界」**只有 **POSIX** 咬得到 —— Windows 的 `taskkill /T /F` 把整棵进程树
+//! 都杀了,孙进程也跟着死 ⇒ 管道必然 EOF ⇒ 无界的 `join()` 也照样秒回。
+//! ⚠ 那不是「Windows 更强」,是**同一条断言在 Windows 上失效**。
+//! ⇒ 端到端那条(`a_timeout_with_a_living_grandchild_returns_promptly`)在
+//! Windows 上**恒绿**;真正在 Windows 上守得住的那一半是 `wlwl-std` 里的
+//! `drain_is_bounded_even_when_the_reader_never_finishes`(直接钉 `drain` 的
+//! 有界性,与「杀不杀得掉进程树」无关)。
+//!
 //! ## ⚠️ 阻塞代价必须在这里也写一遍
 //!
 //! 运行时是**单线程协作式** ⇒ `PROCESS_RUN` 等子进程期间**不调度任何其他
@@ -296,6 +307,58 @@ IS_ERR(PROCESS_RUN({argv}, ["timeout": 300]))"#
     assert!(
         elapsed < std::time::Duration::from_secs(3),
         "a 300 ms timeout took {elapsed:?} — the child tree was not killed"
+    );
+}
+
+/// ⚠🔴 **[N-011 / D13-061] 超时 + **活着的孙进程** ⇒ 耗时有界。**
+///
+/// 这条与 `a_timeout_yields_an_err_value` 的差别**不在断言,在被测形态**:
+/// 那条只杀一个**叶子**子进程(`sleep 5` / `ping`),管道写端随它一起消失 ⇒
+/// 读线程必然 EOF ⇒ **`drain` 的上界有没有,这条都绿**。
+/// ⚠ 实测(本机 Windows、`taskkill` 正常):把 `drain` 退回缺陷形态后,
+/// `wlwl-std` 的 `a_timeout_kills_the_child_instead_of_hanging` **仍然绿**
+/// —— 它打在没有孙进程的路径上。
+/// ⚠ 本条让子进程**再生一个孙进程**并让它握住 stdout/stderr:
+/// 直接子进程被杀掉后,孙进程**仍活着、仍持有管道写端** ⇒ 管道不 EOF ⇒
+/// **只有有界的 `drain` 能让这里返回**。这正是 `[D13-061]` 的真形态。
+///
+/// ⚠⚠ **平台无关的写法,但两个平台走的是**不同**路径**:
+/// - **Windows**:祖先 → 孙的链是 `cmd` → `ping`,`taskkill /T /F` 把**整棵树**
+///   杀掉 ⇒ 孙进程也死 ⇒ 管道 EOF ⇒ 这条**恒绿**,**与 `drain` 修没修无关**。
+/// - **POSIX**:`child.kill()` 只给直接子进程发信号 ⇒ 孙进程**存活** ⇒ 旧实现
+///   在这里无限期 `join()` ⇒ 这条**才真的验得到** `[D13-061]`。
+///
+/// 所以**本机 Windows 上它恒绿**,POSIX 才是它的有效平台。
+/// ⚠ 在 Windows 上钉住这半的方法:**临时让 `kill_tree` 跳过 `taskkill`**
+/// (等价于模拟 POSIX 的 `child.kill()`)⇒ 缺陷形态下本条实测 **7.13 s**(红),
+/// 加上本修复后同条件下 **1.34 s**(绿)⇒ **是 `drain` 在起作用,不是
+/// `taskkill`**。
+#[test]
+fn a_timeout_with_a_living_grandchild_returns_promptly() {
+    // 孙进程活 ~30 s;旧的「无界 join」会把它整个等完 ⇒ 上界断言有足够分辨率。
+    let argv = if cfg!(windows) {
+        // `cmd` 是子进程、`ping` 是孙进程;`> NUL` 让它别把管道写爆。
+        r#"["cmd", "/C", "ping -n 31 127.0.0.1 > NUL"]"#
+    } else {
+        // ⚠ 形状:`sh -c <脚本>` 必须是**三个** argv 元素(`D13-057` 同款坑)。
+        //   脚本里的 `sleep 30 &` 起一个**后台孙进程**(继承 stdout/stderr),
+        //   紧跟的 `sleep 30` 是前台子进程 —— 超时被杀的正是它。
+        r#"["sh", "-c", "sleep 30 & sleep 30"]"#
+    };
+    let src = format!(
+        r#"IMPORT("wlwl:std.process", ["PROCESS_RUN"]);
+IS_ERR(PROCESS_RUN({argv}, ["timeout": 300]))"#
+    );
+    let started = std::time::Instant::now();
+    let out = actual(&src);
+    let elapsed = started.elapsed();
+    assert_eq!(out, "TRUE", "a timeout must be an ERR value — got {out}");
+    // 上界 = timeout(300 ms) + 两次 drain 的 JOIN_GRACE(各 500 ms)+ 余量。
+    // ⚠ 2.5 s 的余量要够放下**两次**串行 drain,又要比孙进程的 30 s 小一个量级。
+    assert!(
+        elapsed < std::time::Duration::from_millis(2500),
+        "a 300 ms timeout took {elapsed:?} — a surviving grandchild still holds the \
+         pipe write end, so the drain was unbounded"
     );
 }
 
