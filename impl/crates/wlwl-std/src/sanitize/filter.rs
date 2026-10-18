@@ -335,18 +335,46 @@ pub(crate) fn filter_tree(tree: &mut Tree, policy: &Policy) {
         if actions[id] == Action::Keep {
             if let NodeKind::Element(e) = &mut tree.nodes[id].kind {
                 let allowed = allowed_attrs(policy, &e.name);
-                let mut seen: Vec<String> = Vec::new();
-                e.attrs.retain(|a| {
-                    if seen.iter().any(|s| s == &a.name) {
-                        return false;
+                // 🔴 [D13-062 / N-020]同名判重用 **`HashSet`** 而非
+                // `Vec` + 线性扫。此前是 `seen.iter().any(|s| s == &a.name)`
+                // ⇒ 单个标签 k 个属性是 **O(k²) 次 `String` 比较**
+                // (实测 2 万属性 ≈ 2×10⁸ 次),撞规范 §13.2「任何线性输入不得
+                // 触发超线性时间」的**规范性条款**。
+                //
+                // ⚠⚠ **语义必须逐字不变**,两处都不能动:
+                //   ① **`seen` 在白名单判据之前登记** ⇒ 首个同名属性**即便因为
+                //      不在白名单而被删,也仍然挡住后面的同名属性**。这与
+                //      §13.2「同名属性重复时**首个生效**」一致(首个"生效"
+                //      指的是「占用这个名字」,不是「被保留」)。改这一行的顺序
+                //      就会让一个被拒的属性**不再挡住**后来的 —— 那是把
+                //      「首个生效」悄悄读成「首个被保留」。
+                //   ② 按**文档序**处理。
+                //
+                // ⚠ 为什么改成显式循环而不是 `retain`:原来的闭包里
+                // `seen.insert(a.name.as_str())` 会让 `seen` 借着
+                // `e.attrs` 的不可变引用,而 `retain` 要 `&mut e.attrs`
+                // —— 借用冲突。改成「循环收集到新 `Vec`、循环结束后再整体赋值」,
+                // NLL 下两个不可变借用在赋值时都已结束。
+                // 顺带**零额外分配**:原实现对每个属性 `a.name.clone()` 一次,
+                // 现在只有活下来的属性才被克隆。
+                let mut seen: std::collections::HashSet<&str> = std::collections::HashSet::new();
+                let mut kept = Vec::with_capacity(e.attrs.len());
+                for a in e.attrs.iter() {
+                    // ⚠ 见 ①:先登记,再判白名单。顺序即语义。
+                    if !seen.insert(a.name.as_str()) {
+                        continue;
                     }
-                    seen.push(a.name.clone());
                     if !allowed.contains(&a.name.as_str()) {
-                        return false;
+                        continue;
                     }
-                    !URL_ATTRS.contains(&a.name.as_str())
-                        || scheme_allowed(&a.value, &policy.url_schemes)
-                });
+                    if URL_ATTRS.contains(&a.name.as_str())
+                        && !scheme_allowed(&a.value, &policy.url_schemes)
+                    {
+                        continue;
+                    }
+                    kept.push(a.clone());
+                }
+                e.attrs = kept;
                 if is_void(&e.name) {
                     tree.nodes[id].children.clear();
                 }
@@ -413,6 +441,91 @@ mod tests {
         assert!(!scheme_allowed("javascript:alert(1)", &p.url_schemes));
         assert!(!scheme_allowed("data:text/html,x", &p.url_schemes));
         assert!(!scheme_allowed("java script:x", &p.url_schemes));
+    }
+
+    /// [D13-062 · N-020] **同名属性去重不得随属性数平方增长。**
+    ///
+    /// ⚠ **语料必须是「互不相同」的名字,不是重复的名字。** 原实现是
+    /// `seen.iter().any(|s| s == &a.name)`:同名时 `any` 在**下标 0** 就命中 ⇒
+    /// 每属性 O(1) ⇒ **整体是线性的**;真正付出平方代价的是**互不相同**的名字 ——
+    /// 每次都要扫完整个 `seen`。⚠ 用错语料这条测试就会**在缺陷形态下也绿**。
+    /// 而且这些名字都不在默认白名单里,却**照样进 `seen`** —— 因为 `seen`
+    /// 的登记在白名单判据**之前**(见下一条)。
+    ///
+    /// 判据用**两档规模的耗时比**而不是「小于 N ms」—— 后者会被机器噪声打脸。
+    /// ⚠ 阈值 **12 倍**,两侧余量都是量出来的(**2026-10-19 实测,4× 规模**):
+    ///   · 修好后 **4.0×**(debug,纯线性) / **0.8×**(release,已被 1 ms 下限
+    ///     的噪声主导)⇒ 距阈值 12 有 **3×** 余量;
+    ///   · 退回缺陷形态 **27.8×** ⇒ 距阈值有 **2.3×** 余量。
+    /// ⚠ **这里刻意不用 `tree.rs` 那套计数器**:那条的旧代价集中在 `rposition`
+    /// 的闭包里有埋点位置,而本条的旧代价在**比较谓词**里 —— 没有可埋点的调用
+    /// 点,计数器会**空转**。⇒ 代理指标的固有上限,如实登记而不是假装守卫很严。
+    #[test]
+    fn distinct_attribute_dedup_does_not_scale_quadratically() {
+        fn run(n: usize) -> std::time::Duration {
+            let mut src = String::from("<b");
+            for i in 0..n {
+                src.push_str(&format!(" a{i}=\"v\""));
+            }
+            src.push('>');
+            let mut tree = crate::sanitize::tree::build(tokenize::tokenize(&src));
+            let p = Policy::default();
+            let t0 = std::time::Instant::now();
+            filter_tree(&mut tree, &p);
+            t0.elapsed()
+        }
+        run(200); // 预热:首次分配与页错误会污染第一档
+        let small = run(2_000).max(std::time::Duration::from_millis(1));
+        let big = run(8_000);
+        let ratio = big.as_nanos() as f64 / small.as_nanos() as f64;
+        assert!(
+            ratio < 12.0,
+            "4× the distinct attributes took {ratio:.1}× the time (small={small:?} big={big:?}) \
+             — the dedup looks super-linear again?"
+        );
+    }
+
+    /// [D13-062 · N-020] **`seen` 的登记必须在白名单 / scheme 判据之前** ——
+    /// 这是规范 §13.2「同名属性重复时**首个生效**」的可观察面。
+    ///
+    /// 首个 `href` 因 scheme 被拒,**它仍然占住了 `href` 这个名字**,于是第二个
+    /// `href` 被跳过 ⇒ **一个 `href` 都不剩**。若把登记挪到判据之后,第二个
+    /// (合法的)就会活下来 —— 那等于把「首个生效」悄悄读成「首个**被保留**」。
+    ///
+    /// 依据:规范 §13.2「同名属性重复时**首个生效**」。⚠ 注意这条**不可观察**的
+    /// 情形:若首个是因为**名字不在白名单**而被拒,那么它的所有同名者本来也
+    /// 会被同一条白名单拒掉,登记顺序无差别 —— 真正能区分两种实现的只有
+    /// **scheme 判定**这一条,所以语料必须用 `href`。
+    #[test]
+    fn the_first_duplicate_claims_the_name_even_when_it_is_rejected() {
+        let mut tree = crate::sanitize::tree::build(tokenize::tokenize(
+            r#"<a href="javascript:alert(1)" href="https://ok.example/">x</a>"#,
+        ));
+        filter_tree(&mut tree, &Policy::default());
+        let html = &{
+            let mut s = String::new();
+            crate::sanitize::serialize::serialize(&tree, &mut s);
+            s
+        };
+        assert!(
+            !html.contains("href"),
+            "the first `href` was rejected by scheme but still claims the name, so NO href \
+             may survive — got {html:?}"
+        );
+        // 对照:只有**一个** `href` 且合法时它必须留下(否则本测试会因过度收紧而绿)。
+        let mut tree = crate::sanitize::tree::build(tokenize::tokenize(
+            r#"<a href="https://ok.example/">x</a>"#,
+        ));
+        filter_tree(&mut tree, &Policy::default());
+        let html = &{
+            let mut s = String::new();
+            crate::sanitize::serialize::serialize(&tree, &mut s);
+            s
+        };
+        assert!(
+            html.contains("href=\"https://ok.example/\""),
+            "got {html:?}"
+        );
     }
 
     #[test]

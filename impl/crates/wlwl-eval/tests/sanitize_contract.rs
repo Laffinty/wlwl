@@ -1072,6 +1072,12 @@ const SANITIZE_CASES: &[SanCase] = &[
         why: "`&copy` 是 legacy(无分号)实体,后随 `=` ⇒ 属性上下文**不解码**,`&` 留作字面量再由序列化侧转义成 `&amp;`。修复前被解成 `©=2`。⚠ 方向是**过度解码**,不构成 XSS,且「自幂等」与「输出无无分号实体」两条守卫都验不出来 —— 两次解码是自洽的" },
     SanCase { name: "text_context_still_decodes_the_same_legacy_entity", html: r#"&copy=1"#, policy: "", expect: "©=1",
         why: "**反向守卫**:同一条判据不得泄漏到文本上下文。HTML5 文本行为是 `&copy=1` → `©=1`;只钉「该拒的」而不钉「不该拒的照旧」,闸很容易写成一刀切" },
+    // ⚠🔴 [D13-062 / N-020] 同名属性**首个生效**,而「首个生效」指的是
+    //    **首个占住这个名字**,不是「首个被保留」。
+    SanCase { name: "first_duplicate_attr_wins_even_when_it_is_rejected", html: r#"<a href="javascript:alert(1)" href="https://ok.example/">x</a>"#, policy: "", expect: "<a>x</a>",
+        why: "首个 `href` 被 scheme 拒(规范 §13.2「URL 类属性过 scheme 白名单」),但它**仍占住** `href` 这个名字 ⇒ 第二个(合法的)`href` 也被跳过 ⇒ **一个 href 都不剩**。⚠ 这是本条**唯一可观察**的形状:若首个是因为「名字不在白名单」被拒,它��所有同名者本来也会被同一条白名单拒掉,登记顺序**无差别** —— 所以语料必须用 `href`(走 scheme 判定)才能区分两种实现。反向看:若把 `seen` 的登记挪到判据**之后**,第二个 href 会活下来 —— 那等于把「首个生效」悄悄读成「首个**被保留**」" },
+    SanCase { name: "a_single_legal_url_attr_survives", html: r#"<a href="https://ok.example/">x</a>"#, policy: "", expect: "<a href=\"https://ok.example/\">x</a>",
+        why: "**正向守卫**:上一条不能靠「过度收紧成永远丢掉 href」而变绿" },
     SanCase { name: "malformed_unclosed_b", html: r#"<b>unclosed"#, policy: "", expect: "<b>unclosed</b>",
         why: "未闭合元素在串尾补结束标签(**输出恒是良构的**,这是幂等的前提)" },
     SanCase { name: "malformed_lone_lt", html: r#"1 < 2 and 3<4"#, policy: "", expect: "1 &lt; 2 and 3&lt;4",
