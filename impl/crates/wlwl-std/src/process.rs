@@ -332,15 +332,21 @@ mod tests {
     #[test]
     fn runs_a_real_command_and_captures_stdout() {
         let mut h = NullHost;
-        let (cmd, flag): (&str, &str) = if cfg!(windows) {
-            ("cmd", "/C echo hello")
+        // ⚠🔴 [D13-057]这里必须给**三个以上** argv 元素。
+        //   POSIX 分支原先写 `["sh", "-c echo hello"]` —— 那是**一个**元素,
+        //   `sh` 认不出 `-c`(它带空格和后缀),直接以退出码 **2** 失败。
+        //   Windows 分支的 `["cmd", "/C echo hello"]` 同样是**一个**元素,只是
+        //   `cmd /C <整串>` 恰好也能跑,所以那条分支一直是绿的 ——
+        //   **两边的 argv 形状都写错了,只有 Windows 那边的错被容忍了**。
+        let argv: Vec<&str> = if cfg!(windows) {
+            vec!["cmd", "/C", "echo", "hello"]
         } else {
-            ("sh", "-c echo hello")
+            vec!["sh", "-c", "echo hello"]
         };
         let out = process_run(
             &mut h,
             vec![
-                Value::Array(vec![Value::String(cmd.into()), Value::String(flag.into())]),
+                Value::Array(argv.into_iter().map(|s| Value::String(s.into())).collect()),
                 Value::Dict(vec![]),
             ],
         )
@@ -367,10 +373,18 @@ mod tests {
     #[test]
     fn argv_elements_are_never_shell_interpreted() {
         let mut h = NullHost;
+        // ⚠⚠ [D13-057]POSIX 分支原先写 `["sh", "-c", "printf %s a; echo b"]` ——
+        //   `a; echo b` 被放进了 **shell 脚本本体**,于是 `;` 是**真的**命令分隔符,
+        //   输出 `a\nb`。⚠ **那条分支根本没在测这个性质**:被测的
+        //   `a; echo b` 从来没有作为 **argv 元素**到达过。
+        //   ⇒ 正确形状是把载荷放进 `$1`,让它**只展开一次**:
+        //   `sh -c 'printf %s "$1"' sh <arg>`。
+        //   (同一个错在 `process_contract.rs` 的同款用例里也有一份,
+        //    见 `D13-055` / `D13-056` —— 两处是同一个错误的两个副本。)
         let (cmd, args): (&str, Vec<&str>) = if cfg!(windows) {
             ("cmd", vec!["/C", "echo", "a; echo b"])
         } else {
-            ("sh", vec!["-c", "printf %s a; echo b"])
+            ("sh", vec!["-c", r#"printf %s "$1""#, "sh", "a; echo b"])
         };
         let argv = Value::Array(
             std::iter::once(cmd.to_string())
