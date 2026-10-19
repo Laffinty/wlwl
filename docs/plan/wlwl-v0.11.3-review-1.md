@@ -180,6 +180,14 @@ P0**,正文 §2 里它是 P1 —— 已改。⚠ **N-037 的三项分落在两�
 ⇒ 证明三道判定**都是承重的**。⚠⚠ **沙盘自己翻过两次车**(① 前缀赋值传不进子进程
 ⇒ 情形 4 **没测到分支**;② **PowerShell 直传给 Git Bash 会吞掉环境变量赋值**)
 —— 都是 harness 的错,但结论同一个:**「沙盘全绿」必须配一次负向验证**。
+
+✅ **CI 已验(run 39282312320,sha 049111b)**:四 job 全绿;三个平台的
+**upload 与 verify 两步都是 success**;artifact 列表 **total_count = 3**
+(`cargo-test-logs-{ubuntu,macos,windows}-latest`,各约 34 KB)—— run 242 是 **0**,
+⇒ **「日志真的存下来了」这件事本轮第一次被证实**。⚠⚠ **顺带实测到 GitHub 的
+job 索引会滞后**:run 报 completed/success 之后 30 秒与 60 秒两次复查,
+jobs 接口仍把 windows 记成 in_progress、smoke 记成 queued ⇒ 「回读类断言
+必须带重试」不是杞人忧天(本轮 50 秒窗口够用,但偏紧,放宽到 30×5 秒更稳)。
 详见台账 `D13-073`。
 
 `test` job 三平台(ubuntu / windows / macos)+ `smoke` job 的**结构**未变。
