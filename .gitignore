@@ -95,7 +95,11 @@ docs/site/site/
 # 输出,artifact 还会留 14 天。它在 CI 里生成,但任何人本地复现那个 step 都会
 # 落一份下来 —— 而未过滤的测试输出是最容易混进 secrets 的东西,不该有机会被
 # `git add .` 带进历史。
-impl/.ci-logs/
+# ⚠⚠ **目录名不能以点开头**:`actions/upload-artifact@v4` 默认
+#   `include-hidden-files: false`,README 原文写明「files within folders
+#   beginning with .」也算隐藏文件 ⇒ 整目录被排除 ⇒ 上传那步传 0 个文件却
+#   **显示 success** ⇒ 日志根本没存下来(D13-073 的实测)。
+impl/ci-logs/
 
 # [v0.11.3 / D13-072] 解包 GitHub Actions 日志 zip 的落地目录(分析用)。
 # ⚠ 这里装的是**未经处理**的 CI 日志原文,可能含 runner 路径、环境变量回显等 ⇒

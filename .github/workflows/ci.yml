@@ -17,6 +17,28 @@ on:
   pull_request:
     branches: [main, wip0.11.3]
 
+# [D13-073] **显式声明本 workflow 需要的最小权限。**
+#
+# 为什么要显式:下面那个「回读 artifact」的守卫靠 `gh api` 查 artifact 列表,
+# 需要 **`actions: read`**。若不声明,就得**依赖仓库默认权限** —— 而仓库
+# 默认权限随时可能被改成 read-only / 私有仓库的「最小权限」策略,那时这把
+# 守卫会从「artifact 不存在 ⇒ 红」变成「查不动 ⇒ 红」,**同一个红却是两个
+# 完全不同的原因**,排查成本全丢。
+#
+# 声明成显式值之后,权限是**这条 YAML 自己的事实**,不随仓库设置漂移。
+#
+# ⚠ 声明 `permissions:` 会**收窄** GITHUB_TOKEN:未列出的 scope 全部变成 none。
+#   所以这两项必须**逐个核对**过本 workflow 需要什么:
+#   - `contents: read` —— actions/checkout 拉代码(必需,收窄它会直接 checkout 失败)
+#   - `actions: read`  —— 「回读 artifact」守卫查列表
+#   其余步骤都不需要 GITHUB_TOKEN:upload-artifact 用的是 runner 的
+#   ACTIONS_RUNTIME_TOKEN、rust-cache 用的是 cache service、cargo-deny 安装
+#   只是下载二进制。**本 workflow 不含发布**(release 在独立的 release.yml,
+#   `permissions:` 不跨文件生效)。
+permissions:
+  contents: read
+  actions: read
+
 env:
   CARGO_TERM_COLOR: always
   RUSTFLAGS: -D warnings
@@ -192,7 +214,16 @@ jobs:
           # ⚠ 不用 `-e`:下面的失败码全部由本脚本显式判定。`pipefail` 仍开着
           #   (GitHub 对 `shell: bash` 默认加),所以 PIPESTATUS[0] 才是 cargo 的码。
           set +e
-          LOG_DIR=".ci-logs"
+          # ⚠⚠ **[D13-073] 目录名不能以点开头。** `actions/upload-artifact@v4`
+          #   默认 `include-hidden-files: false`,而它的 README 原文写明
+          #   「**Hidden files are defined as any file beginning with . or files
+          #   within folders beginning with .**」⇒ 一个叫 `.ci-logs` 的目录
+          #   **整目录被排除** ⇒ 上传那步传了 0 个文件 ⇒ 配合
+          #   `if-no-files-found: ignore` 就**静默成功**,而 artifact 根本不存在
+          #   (run 241 / 242 实测:上传步 success,artifact 列表 0)。
+          #   ⇒ 目录改成 `ci-logs`(不以点开头)才既能被默认 glob 找到、
+          #   又不必依赖一个非默认输入项。
+          LOG_DIR="ci-logs"
           mkdir -p "$LOG_DIR"
 
           # FLAKY_EXIT_CODE:首轮失败 + 复跑通过时的最终退出码。
@@ -273,8 +304,13 @@ jobs:
       # 失败时的第一手证据。⚠ 必须 `if: always()`:上一步失败后 job 的默认
       #   步骤会被跳过,不带条件的上传 step 就永远不会执行 —— 那正是「日志丢了」
       #   最容易复发的形态。
-      # ⚠ `if-no-files-found: ignore`:前面的 fmt / clippy / doc 门禁先失败时
-      #   这一步也要能安静跑完,不能反过来把结论搅浑(它们失败时本步无日志可传)。
+      # ⚠ `if-no-files-found: error`:⚠⚠ **原来这里是 `ignore`,那正是「日志明明
+      #   没存下来、这一步却显示 success」的成因** —— `ignore` 语义 = 「找不到
+      #   文件就算了」,于是「日志机制自己坏了」被**静默吞掉**。⇒ 改成 `error`:
+      #   日志目录不存在 ⇒ **这一步直接红** ⇒ 机制坏了必须有人看见。
+      #   (这个目录由测试步骤**无条件** `mkdir -p` 创建,所以正常路径上它必然存在。)
+      # ⚠ `include-hidden-files: true`:目录名已不以点开头,这一项是**冗余兜底**
+      #   —— 万一以后有人把目录名改回带点的,这里仍能兜住。
       # ⚠ artifact 名带 `matrix.os`:upload-artifact@v4 在同一 run 内不允许重名,
       #   三个平台同名会直接撞车。
       # ⚠ 用 `always()` 而非 `failure()`:成功轮次也会留一份完整日志(成本是
@@ -285,9 +321,68 @@ jobs:
         uses: actions/upload-artifact@v4
         with:
           name: cargo-test-logs-${{ matrix.os }}
-          path: impl/.ci-logs/
-          if-no-files-found: ignore
+          path: impl/ci-logs/
+          if-no-files-found: error
+          include-hidden-files: true
           retention-days: 14
+
+      # ⚠⚠ **[D13-073] 上传那步显示 success ≠ 真的有 artifact。**
+      #
+      # run 241 / 242 的实测:上传那步**显示 success**,而 artifact 列表是 **0**
+      # —— 因为目录名以点开头被默认排除 + `if-no-files-found: ignore` 把它静默
+      # 吞了。⇒ **「步骤成功」不能当「日志存下来了」的证据**。
+      # 这一步拿 API **回读一次**:artifact 不在列表里就当失败。
+      # ⚠ 为什么要重试:artifact 的可见性可能比上传动作**稍晚**(索引有延迟),
+      #   所以查不到就隔几秒再查,最多十次;真的一直查不到才判失败。
+      - name: Verify the log artifact really exists
+        if: always()
+        # ⚠⚠ **必须 `shell: bash`。** GitHub 对 `run:` 的默认 shell 是
+        #   「Linux/macOS ⇒ bash,Windows ⇒ pwsh」—— 而 windows-latest 在这个
+        #   matrix 里。pwsh 下这段脚本**整段作废**:`set -uo pipefail` 不是 pwsh
+        #   语法(`set` 在 pwsh 里是 `Set-Variable` 的别名),`for _ in 1 2 3` 不是
+        #   pwsh 的循环语法,`printf`/`grep -qx` 也得换成别的写法。
+        #   ⇒ **不写 `shell: bash`,Windows 平台这一步必然失败**,而且失败原因
+        #   长得像「守卫判定 artifact 缺失」—— **假阴性**。
+        #   (Windows runner 自带 Git Bash,这是 runner 契约。)
+        shell: bash
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          set -uo pipefail
+          expected="cargo-test-logs-${{ matrix.os }}"
+          names=""
+          for _ in 1 2 3 4 5 6 7 8 9 10; do
+            # ⚠⚠ **API 失败与「artifact 不存在」必须分开** —— 两者都是「查不到」,
+            #   但只有后者是「日志没存下来」。把 API 失败当成后者 ⇒ **CI 会无故变红**
+            #   (那是本步自己造的假阴性,比没这个守卫还糟)。
+            #
+            # stderr 单独收进临时文件:成功时绝不能混进 artifact 名单
+            # (gh 的告警会污染 `$names`),失败时又要把它**原样带进报错**,
+            # 否则只看到「查询失败」四个字,还得再猜是权限还是网络。
+            err_file="$(mktemp)"
+            if names=$(gh api "repos/${{ github.repository }}/actions/runs/${{ github.run_id }}/artifacts" \
+                --jq '.artifacts[].name' 2>"$err_file"); then
+              rm -f "$err_file"
+              # ⚠ 去掉可能的尾随 CR:Windows 上某些工具的输出带 CRLF,而
+              #   `grep -qx` 要求**整行完全相等** —— 一个尾随 CR 就会把
+              #   「artifact 明明在」判成「不在」,又是一个假阴性。
+              #   (与本 workflow 里 failed_names() 的 `tr -d '\r'` 同款理由。)
+              names="$(printf '%s\n' "$names" | tr -d '\r')"
+              if printf '%s\n' "$names" | grep -qx "$expected"; then
+                echo "artifact present: $expected"
+                exit 0
+              fi
+              # API 正常但还没看到 ⇒ 可能是**索引延迟**,隔几秒再查。
+            else
+              echo "::error title=artifact check failed::gh api 查询失败 —— 无法确认 artifact '$expected' 是否存在(GITHUB_TOKEN 需要 actions: read 权限)。API 原始错误:$(tr '\n' ' ' < "$err_file")"
+              rm -f "$err_file"
+              exit 1
+            fi
+            sleep 5
+          done
+          echo "::error title=missing log artifact::expected artifact '$expected' was not found; the log-preservation mechanism is broken (an upload step reporting success does NOT mean an artifact exists)"
+          printf 'artifacts actually present:\n%s\n' "$names"
+          exit 1
 
       # [D11-019] `real-ai` 特性编译门禁。
       #
