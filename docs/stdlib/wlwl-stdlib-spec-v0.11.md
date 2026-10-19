@@ -1793,7 +1793,7 @@ lookahead,指数爆炸就成了可能,那这个成员等于没做。
 反向引用的实测后果(本仓的单测钉着):`(a*)*b` 在 10 000 个 `a` 上,
 回溯引擎跑不完,而本成员**立刻返回「不匹配」**。
 
-### 16.4 三条容易踩的细节
+### 16.4 四条容易踩的细节
 
 1. **`.` 默认不含换行**,`(?s)` 让它匹配一切(依据 RE2 `re2.h` 的
    `dot_nl (false)`)。
@@ -1801,9 +1801,23 @@ lookahead,指数爆炸就成了可能,那这个成员等于没做。
    ⚠️ **刻意不抄 RE2 的 `m` 命名** —— RE2 的 `(?m)` 语义与 Perl **相反**
    (它的 `one_line` 才是「只在文本首尾」),而从 Perl / JS / Python 过来的人对
    `m` 的直觉是「多行 = 行锚点」。跟直觉走。
+   🔴 **`$` 是 `\z` 语义、不是 `\Z`**(`D13-063` 具名化):RE2 `doc/syntax.txt`
+   原文 "text end (**like `\z` not `\Z`**)" ⇒ **不匹配结尾换行之前**。
+   这与 RE2 / Go **一致**;与 **Perl / Python** 的 `$` 不同 —— 后者在结尾换行
+   **前**也成立,而 RE2 把那个形态叫 `\Z` 并标注 **NOT SUPPORTED**。
+   ⇒ 从 Perl / Python 过来的人若要「换行前也成立」,**本成员给不了**,
+   且**不会假装给**(不是静默当成成立)。
 3. **`\w` `\d` `\s` 与 `(?i)` 都是 ASCII-only**。Unicode 大小写折叠走
    `std.text` —— 两套口径混在一起会让「为什么 `\w` 不匹配 `é`」变成一件
    说不清的事。
+4. 🔴 **`(?i)` / `(?s)` / `(?m)` 的作用域比 RE2 / Go 窄**(`D13-063` 补齐;
+   此前**既没成文、代码里那句注释还写反了**)。本成员是「到**本分支**结束」;
+   RE2 `doc/syntax.txt` 原文 `(?flags)` = "set flags **within current group**"
+   (中文版「until outer paren closes」)⇒ RE2 / Go 是「到**所在 group 的
+   右括号**」;Go `regexp/syntax` 的 `parse.go` 同证(标志在闭合括号处才恢复,
+   `|` **不恢复**)。⇒ **`(a(?i)b|c)` 上两者结果不同**:RE2 让 `c` 也忽略大小写,
+   本实现不。⚠ 改成 RE2 口径要在**整个 group 层**共享标志而非每分支拷贝,属
+   **结构变更**,已登记待独立立项,本版**不修**。
 
 ### 16.5 已知限制
 
@@ -1953,7 +1967,7 @@ PRINT(v1, v2);        -- 两个不同的数
 
 | 签名 | 说明 | 失败 |
 |------|------|------|
-| `PROCESS_RUN(argv, opts?) -> DICT` | 返 `[code: INTEGER, stdout: STRING, stderr: STRING]`。**不经 shell** | 元数 / 类型错 → `E0022` / `E0030`;起不来 / 超时 → `ERR([kind: "ProcessError", op, reason])` |
+| `PROCESS_RUN(argv, opts?) -> DICT` | 返 `[code: INTEGER, stdout: STRING, stderr: STRING]`。🔴 **`stdout` / `stderr` 是 `from_utf8_lossy` 的结果 —— 非 UTF-8 字节被换成 `U+FFFD`,不可逆**(`D13-064` 补记,此前**从未成文**)。⚠ 这与 §2.3 / §11.3-3 的「不做有损替换」**冲突**:成员表把这两个键定为 `STRING`,改成 `ARRAY[INTEGER]` 并集属**破坏性变更**(已登记待独立立项)。**要拿无损字节就走文件**:`WRITE_BYTES` + `READ_BYTES`。**不经 shell** | 元数 / 类型错 → `E0022` / `E0030`;起不来 / 超时 → `ERR([kind: "ProcessError", op, reason])` |
 | `PROCESS_ID() -> INTEGER` | 本进程 id | 元数 ≠ 0 → `E0022` |
 
 `opts` 可含 `timeout`(毫秒)、`cwd`、

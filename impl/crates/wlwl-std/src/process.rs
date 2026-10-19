@@ -272,8 +272,21 @@ pub fn process_run(host: &mut dyn StdHost, args: Vec<Value>) -> Result<Outcome, 
             Ok(Some(s)) => break Some(s),
             Ok(None) => {}
             Err(e) => {
-                let _ = out_handle.join();
-                let _ = err_handle.join();
+                // 🔴 [D13-064 · N-037 项二]此前这里有两处缺陷,`review-1`
+                // **只报了第一处**:
+                //
+                // ① **不回收 wait 状态** —— `Ok(Some(s))` 那条会 `wait()` 到,
+                //    这条**直接 return**,`Child` 被丢弃。⚠ `std::process::Child`
+                //    的 `Drop` **不** wait ⇒ Unix 上留下**僵尸进程**直到本进程
+                //    退出。⇒ 先 kill 再 wait,把它收干净。
+                // ② ⚠⚠ **无界 `join()`** —— 与 `[N-011 / D13-061]` 是同一族:
+                //    `try_wait` 报错时子进程**可能还活着**并握着管道写端 ⇒
+                //    `out_handle.join()` 无限期等下去。**review-1 没提这一条。**
+                //    ⇒ 走同一条**有界** drain(缓冲反正要丢弃,因为这里返 `ERR`)。
+                let _ = child.kill();
+                let _ = child.wait();
+                let _ = drain(out_handle);
+                let _ = drain(err_handle);
                 return ok(proc_err(NAME, format!("wait {}: {e}", argv[0])));
             }
         }
@@ -307,6 +320,16 @@ pub fn process_run(host: &mut dyn StdHost, args: Vec<Value>) -> Result<Outcome, 
         ),
         (
             Value::String("stdout".into()),
+            // 🔴 [D13-064 · N-037 项一]这一行**是有损替换**,而成员文档与规范
+            // §19 **从未写过** ⇒ 调用方会以为 stdout 是**原始字节**。
+            // ⚠ 它与全局「不做有损替换」条款(§2.3 / §11.3-3)**冲突**:非 UTF-8
+            // 字节在这里被换成 `U+FFFD`,**不可逆**。
+            //
+            // ⚠ **为什么不改成 `ARRAY[INTEGER]` 并集**(像 `HTTP_*` 的 body 那样,
+            //   见 `D13-043`):成员表把 `stdout` / `stderr` 定为 `STRING`,
+            //   改类型是**破坏性变更**,且不在本批范围。⇒ 本批**如实成文**,
+            //   变更路径登记待独立立项。
+            // ⚠ **要拿字节就用文件**:`WRITE_BYTES` + `READ_BYTES` 是无损的那条路。
             Value::String(String::from_utf8_lossy(&stdout).into_owned()),
         ),
         (
@@ -426,6 +449,49 @@ mod tests {
         let Value::String(s) = stdout else { panic!() };
         // 无论哪个平台,`a; echo b` 必须作为**单个参数**原样到达。
         assert!(s.contains("a; echo b"), "argv element was mangled: {s:?}");
+    }
+
+    /// `try_wait` 出错时必须**回收 wait 状态**,且读线程**有界**收尾。
+    ///
+    /// ⚠⚠ **这是「形状守卫」不是「行为守卫」**(`D13-064 / N-037` 项二):那条
+    /// 分支**在测试里不可达** —— `try_wait` 返回 `Err` 需要平台级的非常规
+    /// 状况,本仓**造不出来**。这正是它当初能长期存在的原因。
+    /// ⇒ 能钉的只有**代码形状**。⚠ 守卫的固有上限已如实登记:有人把缺陷换个
+    /// 写法重新引入(而不复现旧形状),它不会响。
+    ///
+    /// ⚠⚠ needle **必须运行时拼**。写成字面量的话,这个测试**自己**就含有那个
+    /// 字符串 ⇒ `src.contains(..)` 命中测试自身 ⇒ 断言永假。
+    /// (本条守卫在成型过程中已经踩了两次:① 自引用;② 固定字节数切片切在
+    /// UTF-8 字符中间 panic。**形状守卫比它守的缺陷还容易坏** —— 这本身就是
+    /// 「用简单断言」的理由。)
+    #[test]
+    fn the_wait_error_branch_reaps_and_is_bounded() {
+        let src = include_str!("process.rs");
+        for handle in ["out", "err"] {
+            let old = format!("let _ = {handle}_handle.join();");
+            assert!(
+                !src.contains(&old),
+                "`{old}` is the defect shape D13-064 removed: on the `try_wait` error \
+                 arm the child may still be alive holding the pipe write end, so an \
+                 unbounded join turns a rare error into a hang (same class as D13-061)"
+            );
+        }
+        // `child.wait()` 必须出现在该分支里。⚠ 同样运行时拼,理由同上。
+        let reap = format!("let _ = child.{}();", "wait");
+        let arm_anchor = format!("Err(e) => {{{}", ""); // 仅用于把范围收窄到那条臂
+        let start = src
+            .find(&arm_anchor)
+            .expect("the try_wait error arm exists")
+            + arm_anchor.len();
+        let arm = &src[start..];
+        let end = arm
+            .find("return ok(proc_err(")
+            .expect("the arm's return statement exists");
+        assert!(
+            arm[..end].contains(&reap),
+            "the `try_wait` error arm must reap the wait status — `Child`'s Drop does \
+             NOT wait, so skipping it leaks a zombie on Unix (D13-064)"
+        );
     }
 
     #[test]

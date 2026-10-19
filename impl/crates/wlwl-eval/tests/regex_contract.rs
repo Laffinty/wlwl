@@ -572,7 +572,57 @@ fn the_linearity_promise_is_documented() {
     }
 }
 
-/// [D13-031 / N-022]区间端点：两端都要拒，且**合法的相邻形态不能被误伤**。
+/// [D13-063 · N-025] 标志作用域与 `$` 锚点的**成文**守卫。
+///
+/// ⚠ 本批对这两条**一个字行为都没改**（`(?i)` 作用域要「在 group 层共享标志」,
+/// 属结构变更,已登记待立项）⇒ **契约测不出差异**,能测的只有「文档里有没有
+/// 如实写」—— 所以这是一条**文档断言**守卫,不是行为守卫。
+///
+/// ⚠ 它守的是一条**具体的错误陈述**:本实现历史上在 `parse_concat` 里写着
+/// 「作用于本分支的余下部分(**RE2 的口径**)」,而 RE2 `doc/syntax.txt` 原文是
+/// `(?flags)` = "set flags **within current group**" ⇒ 那半句是**错的**。
+/// `review-1` 把它列为「未写进文件头六条」是对的,但没说代码里那句依据本身
+/// 写反了。
+///
+/// ⚠ 同时钉住 §16 的**标题**从「三条」变成「四条」—— 少一条会被当成笔误,
+/// 多一条才是「确实加了条款」。
+#[test]
+fn the_flag_scope_and_anchor_semantics_are_documented_honestly() {
+    let text = std::fs::read_to_string(spec_path()).expect("stdlib spec readable");
+    for needle in [
+        "四条容易踩的细节",
+        "within current group",     // RE2 对 (?flags) 的原文措辞
+        "until outer paren closes", // RE2 同一句的中文版
+        r"like `\z` not `\Z`",      // RE2 对 $ 的原文措辞
+        "(a(?i)b|c)",               // 两口径**具体分歧**的那个形状
+        "比 RE2 / Go 窄",
+    ] {
+        assert!(
+            text.contains(needle),
+            "stdlib spec §16 lost `{needle}` — the `(?i)` scope / `$` anchor semantics are \
+             documented divergences, not silent behaviour. Either the section was trimmed or \
+             someone 'fixed' the docs back into the old wrong claim."
+        );
+    }
+
+    // ⚠ **反向守卫**：那句错误的「RE2 的口径」不得复活。
+    //   源码里曾经写着「作用于本分支的余下部分(RE2 的口径)」—— 它把本实现
+    //   说成 RE2 同款,而实际**更窄**。这条断言直接读源码文件。
+    let src = std::fs::read_to_string(
+        std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("../wlwl-std/src/regex.rs"),
+    )
+    .expect("regex.rs readable");
+    assert!(
+        // ⚠ needle 必须**逐字节对上**源码。首版我按记忆写成
+        //   `余下部分(RE2 的口径)`,而源码里是两个 `**` 夹着的
+        //   `余下部分**(RE2 的口径)` ⇒ **断言永远为真**(needle 不存在),
+        //   守卫静默空转。⚠ 这是本仓踩过的第 N 次「检查器自己先错」——
+        //   **负向验证的价值就在这里**:不放回那句错注,这条断言根本没被测过。
+        !src.contains("的余下部分**(RE2 的口径)"),
+        "regex.rs must not claim the current `(?i)` scope IS RE2's — RE2's scope is the \
+         enclosing group, this one is the current branch (D13-063)."
+    );
+}
 ///
 /// ⚠ 期望值出处：Go `regexp/syntax` 与 Python 都拒「预定义类当端点」；末尾那
 ///   四条**合法**形态的依据是 RFC / Python 的字符类文法（连字符在首尾是字面量）。
