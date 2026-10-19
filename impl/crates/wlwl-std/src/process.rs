@@ -173,9 +173,16 @@ fn target_group(owned_group: Option<i32>, own_pgrp: i32) -> Option<i32> {
 #[cfg(unix)]
 fn own_pgrp() -> i32 {
     // ⚠ `getpgrp()` 没有失败语义(它不设 errno、也不返回 -1)⇒ 没有错误分支。
-    // ⚠ 显式收敛成 `i32`:libc 在所有支持的 POSIX 目标上 `pid_t == i32`,而
-    //   `target_group` 的签名不该跟着平台走。
-    i32::from(unsafe { libc::getpgrp() })
+    //
+    // ⚠⚠ **这里不能写 `i32::from(unsafe { libc::getpgrp() })`**:`getpgrp()` 的返回
+    //   类型 `libc::pid_t` 在所有支持的 POSIX 目标上**就是 `i32`** ⇒ 那层转换是
+    //   **同类型转换**,被 `clippy::useless_conversion` 判红(2026-10-19 run 241
+    //   实测:ubuntu 与 macOS 双双在 clippy 步骤红,Windows 绿)。
+    //   ⚠ **「收敛成 `i32`」这条契约改由函数签名保证**:哪天 `pid_t` 不是 `i32`
+    //   了,这一行**直接编译不过** —— 那正是我们想要的(显式失败,而不是静默截断)。
+    //   ⚠ 这条同形问题**本机查不出来**:`#[cfg(unix)]` 的代码在 Windows 的门禁里
+    //   **根本不存在**,而裸 `rustc` 又查不出 lint ⇒ 必须用 clippy 跑形状检查。
+    unsafe { libc::getpgrp() }
 }
 
 /// 杀掉一个**进程组**(`killpg`,即 `kill(-pgid, SIGKILL)`)。

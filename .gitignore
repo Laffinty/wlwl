@@ -100,4 +100,6 @@ impl/.ci-logs/
 # [v0.11.3 / D13-072] 解包 GitHub Actions 日志 zip 的落地目录(分析用)。
 # ⚠ 这里装的是**未经处理**的 CI 日志原文,可能含 runner 路径、环境变量回显等 ⇒
 #   绝不该进版本库。文件本身用完即弃,不需要保留。
-.ci-log-analysis/
+# ⚠ 用通配符:每轮 CI 都可能解包到 `.ci-log-analysis-<run>` 这种带序号的目录 ⇒
+#   写死一个名字的话,下一轮又会漏进 `git add -A`(已经漏过两次)。
+.ci-log-analysis*/
