@@ -696,8 +696,8 @@ pub fn move_path(host: &mut dyn StdHost, args: Vec<Value>) -> Result<Outcome, Wl
     }
     // 回退:目录树 / 跨设备 ⇒ 递归复制再删源。
     if s.is_dir() {
-        let mut visited: Vec<std::path::PathBuf> = Vec::new();
-        match copy_tree(&s, &d, &mut visited) {
+        let mut chain: Vec<std::path::PathBuf> = Vec::new();
+        match copy_tree(&s, &d, &mut chain) {
             Ok(()) => match std::fs::remove_dir_all(&s) {
                 Ok(()) => ok(Value::Null),
                 Err(e) => ok(fs_err(
@@ -723,42 +723,63 @@ pub fn move_path(host: &mut dyn StdHost, args: Vec<Value>) -> Result<Outcome, Wl
 
 /// 跨设备回退(`MOVE`)用的递归复制。
 ///
-/// ⚠🔴 **[D13-046 / N-032] 符号链接 + 防环。** 原实现无 `visited`、无
-/// `symlink_metadata`,且用 `Path::is_dir()` 判递归 —— 而 `is_dir()` 走
-/// `metadata()`、**跟随**符号链接 ⇒ 一个指向自身祖先的目录链接会无限递归
-/// 打挂。同模块的 `WALK_DIR` **有** `visited` + `canonicalize()` 防环,
-/// 两套纪律。
+/// ⚠🔴 **[D13-046 / N-032] 符号链接 + 防环。** 原实现无 `visited`、且用
+/// `Path::is_dir()` 判递归 —— 而 `is_dir()` 走 `metadata()`、**跟随**符号链接
+/// ⇒ 一个指向自身祖先的目录链接会无限递归打挂。
 ///
-/// 现在的口径与 `WALK_DIR(follow = TRUE)` 对齐:
-/// - 每个要展开的目录先 `canonicalize()` 并查 `visited`(同一真实目录只展开
-///   一次);
-/// - 命中环 **返回 `ERR`** 而不是「跳过」—— 跳过会让 `MOVE` 紧接着的
-///   `remove_dir_all(src)` 把那个链接删掉,即**搬完少了一个链接**,那比响
-///   更坏;
-/// - 指向文件的链接仍按 `std::fs::copy` 展开(跟随),与原行为一致。
+/// ⚠🔴 **[D13-066] 防环集合必须是「当前递归链上的祖先」,不是「全局已见」。**
+/// 同模块的 `walk` 犯过一模一样的错(`D13-065`,CI 连红三轮、只有 macOS),
+/// 这次是**第二份副本**。判据只有一条:**回到祖先才是环**;指向别处的链接是
+/// 合法别名,必须照常展开(`find -L` / `cp -rL` 同款)。
 ///
-/// ⚠ **不做**「把链接原样重建」:Windows 上建符号链接要特权 / 开发者模式,
-/// 而跨设备重建的语义也不明确。
-/// ⚠ **未经实测**:本轮开发机是 Windows、建符号链接需特权 ⇒ 链接成环的
-/// 实际表现未经 POSIX / 符号链接实测,这里是按 `walk` 的既有纪律与
-/// `canonicalize` 的标准语义推的。
+/// ⚠ **与 `walk` 的缺陷形态不同,别照抄那条描述。** `walk` 命中环是**静默跳过**
+/// ⇒ 表现为「少一条路径」,**顺序相关**。本函数命中环是**硬 ERR**,而「同目标
+/// 别名」在**两个遍历顺序下都失败**(第二个被遍历到的那个必然命中)⇒ **这是
+/// 确定性失败,不是顺序相关的缺陷**。顺序只影响**失败前已经写出去多少**
+/// —— 即失败后目标目录会**留在那儿且是半份的**,源目录不动。
+///
+/// 命中环 **返回 `ERR`** 而不是「跳过」—— 跳过会让 `MOVE` 紧接着的
+/// `remove_dir_all(src)` 把那个链接删掉,即**搬完少了一个链接**,那比响更坏。
+///
+/// - 指向文件的链接仍按 `std::fs::copy` 展开(跟随),与原行为一致;
+/// - **不做**「把链接原样重建」:Windows 上建符号链接要特权 / 开发者模式,
+///   而跨设备重建的语义也不明确。
+///
+/// ⚠ **「链接成环未经实测」这个保留已撤销**(`D13-066`):Windows 的**目录联接
+/// (junction)不需要管理员**,且 `canonicalize()` / `is_dir()` 都照样解析它
+/// ⇒ 成环与别名两条路径**本机就能真跑**,不必再依赖 POSIX 平台。
 fn copy_tree(
     src: &std::path::Path,
     dst: &std::path::Path,
-    visited: &mut Vec<std::path::PathBuf>,
+    chain: &mut Vec<std::path::PathBuf>,
 ) -> Result<(), String> {
     // ⚠ 防环检查**放在**展开之前:成环的判定必须先于 `create_dir_all`,
     // 否则环上的每一层都会先在目标侧建出目录。
     let canon = src
         .canonicalize()
         .map_err(|e| format!("{}: cannot resolve for the cycle check: {e}", src.display()))?;
-    if visited.contains(&canon) {
+    if chain.contains(&canon) {
         return Err(format!(
             "{}: symlink cycle — MOVE cannot copy this tree across devices",
             src.display()
         ));
     }
-    visited.push(canon);
+    // ⚠⚠ **`D13-066`:** `push` 之后必须在函数出口 `pop` —— 集合是**祖先链**,
+    // 不是「本次调用见过的所有目录」。少了这个 `pop`,两个**兄弟**路径指向
+    // 同一目录(别名)时,第二个就会被当成环。
+    chain.push(canon);
+    let r = copy_tree_body(src, dst, chain);
+    chain.pop();
+    r
+}
+
+/// [`copy_tree`] 的循环体。与防环判定拆开,是为了让「入栈 / 出栈」这对状态
+/// 操作**只有一处**,不会被某个 `return` 漏掉 `pop`。
+fn copy_tree_body(
+    src: &std::path::Path,
+    dst: &std::path::Path,
+    chain: &mut Vec<std::path::PathBuf>,
+) -> Result<(), String> {
     std::fs::create_dir_all(dst).map_err(|e| e.to_string())?;
     for entry in std::fs::read_dir(src).map_err(|e| e.to_string())? {
         // ⚠ 原实现是 `.flatten()`,把**读不出**的条目静默丢掉 ⇒ 源侧那份还在、
@@ -768,7 +789,7 @@ fn copy_tree(
         let from = entry.path();
         let to = dst.join(entry.file_name());
         if from.is_dir() {
-            copy_tree(&from, &to, visited)?;
+            copy_tree(&from, &to, chain)?;
         } else {
             std::fs::copy(&from, &to).map_err(|e| e.to_string())?;
         }
@@ -1113,22 +1134,136 @@ mod tests {
         let _ = std::fs::remove_file(&over);
     }
 
+    /// ⚠🔴 **[D13-066] 同目标别名** —— `link -> real` 两条**兄弟**路径指向同
+    /// 一个真实目录,**都必须展开**;它**不是环**。
+    ///
+    /// 缺陷形态:防环集合是**全局已见集合**且**从不出栈** ⇒ 兄弟里第二个被
+    /// 遍历到的那个必然命中 `visited.contains` ⇒ `MOVE` 对一棵**完全合法**的
+    /// 树直接报 `symlink cycle`。⚠ 与 `D13-065`(`walk`)同源但**不是同一形状**:
+    /// `walk` 是**静默跳过**(少一条路径、顺序相关,正是 CI 只红 macOS 的原因);
+    /// 本条是**硬 ERR**,且**两个遍历顺序都失败** ⇒ 确定性失败,顺序只影响
+    /// 「失败前写出去多少」。
+    ///
+    /// ⚠ **断言「两条都在」而不是只断言「没报错」** —— 只钉不报错的话,
+    /// 「只搬了一份、另一份被吃掉」这个方向照不出来(`D13-065` 犯过同样的错)。
+    #[cfg(any(unix, windows))]
+    #[test]
+    fn copy_tree_expands_a_same_target_alias_instead_of_calling_it_a_cycle() {
+        let dir = tmpfile("");
+        std::fs::create_dir_all(dir.join("real")).unwrap();
+        std::fs::write(dir.join("real/inside.txt"), b"x").unwrap();
+        alias_dir(&dir.join("real"), &dir.join("link"));
+        let dst = tmpfile("_alias_dst");
+
+        let r = copy_tree(&dir, &dst, &mut Vec::new());
+        assert!(r.is_ok(), "an alias is not a cycle, got Err: {r:?}");
+        assert!(
+            dst.join("real/inside.txt").exists(),
+            "the real path must be copied: {dst:?}"
+        );
+        assert!(
+            dst.join("link/inside.txt").exists(),
+            "the aliased path must be copied too: {dst:?}"
+        );
+
+        let _ = std::fs::remove_dir_all(&dir);
+        let _ = std::fs::remove_dir_all(&dst);
+    }
+
+    /// ⚠ **N-032 的真实成环实测** —— 此前那条守卫靠**预置 `visited`** 绕开,
+    /// 「链接指回祖先」这条路**从来没被真的走过**。⚠ junction / symlink 让它
+    /// 在本机就能跑,不必等 POSIX 平台。
+    ///
+    /// ⚠ 这条**不是缺陷守卫,是回归守卫**:旧的全局已见集合也能挡住真环
+    /// (它是**更严**而不是更松)⇒ 缺陷形态下它也绿。它的作用是钉住
+    /// `D13-066` 改成祖先链之后**没有把真环放过** —— 祖先链比全局已见**松**,
+    /// 「松」的那部分必须逐条有守卫。
+    #[cfg(any(unix, windows))]
+    #[test]
+    fn copy_tree_refuses_a_real_cycle_made_by_a_link_back_to_an_ancestor() {
+        let dir = tmpfile("");
+        std::fs::create_dir_all(dir.join("sub")).unwrap();
+        std::fs::write(dir.join("sub/leaf.txt"), b"x").unwrap();
+        // `sub/loop` 指回**根** ⇒ 跟到底就是无限下降。
+        alias_dir(&dir, &dir.join("sub/loop"));
+        let dst = tmpfile("_cycle_dst");
+
+        // ⚠ 测试能跑完本身就是「有界」的证据:缺陷形态(无防环)会无限递归,
+        // 这条用例会**挂死到 CI 超时**而不是返回。
+        let reason = match copy_tree(&dir, &dst, &mut Vec::new()) {
+            Ok(()) => panic!("a real cycle must be refused, got Ok(())"),
+            Err(e) => e,
+        };
+        assert!(
+            reason.contains("cycle"),
+            "the reason must name the cycle: {reason}"
+        );
+        // ⚠ **只有环那一层**不许在目标侧留痕迹(父层 `dst/sub` 早该建好)。
+        assert!(
+            !dst.join("sub/loop").exists(),
+            "the cycle guard must fire before create_dir_all on the cycling level: {dst:?}"
+        );
+
+        let _ = std::fs::remove_dir_all(&dir);
+        let _ = std::fs::remove_dir_all(&dst);
+    }
+
+    /// 造一条「指向 `target` 的目录别名」。**跨平台都不需要管理员。**
+    ///
+    /// ⚠ Windows 上 `symlink_dir` 要特权 / 开发者模式(实测本机报「此操作需要
+    /// 管理员权限」)⇒ 改用**目录联接(junction)**。⚠ 它同样能被 `canonicalize()`
+    /// 与 `is_dir()` 解析(实测 `real` 与 `link` 的 `canonicalize()` **完全相等**,
+    /// 都是 `\\?\…\real`)⇒ 对本文件要验的那条路径**等价**,而权限要求低得多。
+    #[cfg(unix)]
+    fn alias_dir(target: &std::path::Path, link: &std::path::Path) {
+        std::os::unix::fs::symlink(target, link).expect("create a directory symlink");
+    }
+
+    /// ⚠ `cmd` **不存在于 POSIX** ⇒ 这一支只编进 Windows(同 `D13-054` 的
+    /// 教训:平台原生程序名不能让 probe / 单测在另一个平台上编译失败)。
+    #[cfg(windows)]
+    fn alias_dir(target: &std::path::Path, link: &std::path::Path) {
+        use std::os::windows::process::CommandExt;
+        // ⚠⚠ **必须用 `raw_arg`,不能用 `.arg()`。** `.arg()` 碰到含空格的参数
+        // 会自己加一层外引号、并把**内层**的 `"` 转义成 `\"` ⇒ **`cmd` 不认
+        // 反斜杠转义**,`mklink` 收到的路径带反斜杠,报「文件名、目录名或卷标
+        // 语法不正确」(实测连栽两次)。`raw_arg` 跳过 Rust 的引号处理,`cmd`
+        // 拿到的就是原样那条命令。
+        //
+        // ⚠ 引号本身是必需的:临时目录名里可能有空格(实测去掉引号即
+        // 「The syntax of the command is incorrect」)。
+        let out = std::process::Command::new("cmd")
+            .raw_arg(format!(
+                "/C mklink /J \"{}\" \"{}\"",
+                link.display(),
+                target.display()
+            ))
+            .output()
+            .expect("cmd /C mklink /J runs");
+        assert!(
+            out.status.success(),
+            "mklink /J failed: {}{}",
+            String::from_utf8_lossy(&out.stdout),
+            String::from_utf8_lossy(&out.stderr)
+        );
+    }
+
     // ── [D13-046] `copy_tree` 的防环守卫 ───────────────────────────────
 
     /// 成环 ⇒ **`ERR`** 而不是无限递归。
     ///
-    /// ⚠ 这条**不需要真的建符号链接**:把源目录的 `canonicalize()` 预置进
-    /// `visited` 就等价于「递归回到自己」的那个状态 —— 而符号链接的构造在
-    /// Windows 上要特权/开发者模式(不可靠)。⚠ 但「真实链接成环时的完整
-    /// 路径」本身**未经 POSIX / 符号链接实测**,这里守的是守卫本身。
+    /// ⚠ 这条**不需要真的建链接**:把源目录的 `canonicalize()` 预置进祖先链
+    /// 就等价于「递归回到自己」的那个状态。⚠⚠ 但它**只守得住守卫本身** ——
+    /// 「真实链接成环时整条路径的实际表现」当年没人跑过 ⇒ `D13-066` 补了
+    /// 上面那条用 junction / symlink 的真用例,两条并存。
     #[test]
     fn copy_tree_refuses_a_cycle_instead_of_recursing_forever() {
         let dir = tmpfile("");
         std::fs::create_dir_all(&dir).unwrap();
         let dst = tmpfile("_copy");
         let canon = dir.canonicalize().unwrap();
-        let mut visited = vec![canon];
-        let r = copy_tree(&dir, &dst, &mut visited);
+        let mut chain = vec![canon];
+        let r = copy_tree(&dir, &dst, &mut chain);
         let reason = match &r {
             Ok(()) => panic!("a revisited directory must be refused, got Ok(())"),
             Err(e) => e.clone(),
