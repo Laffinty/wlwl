@@ -30,6 +30,22 @@ flate2 = { workspace = true }
 # the unit tests exercise.
 reqwest = { version = "0.12", optional = true, default-features = false, features = ["blocking", "json", "rustls-tls"] }
 
+# [N-037 项三 / D13-068] `std.process` 超时时**按进程组杀整棵后代**。
+#
+# 拆开看只有**两个**动作要跨平台:
+#   * 设组 —— `std::os::unix::process::CommandExt::process_group(0)`
+#     (1.64 起 stable,等价 `setpgid(0,0)`)⇒ **纯标准库,不需要依赖**;
+#   * 杀整组 —— `killpg` / `kill(-pgid, SIGKILL)` ⇒ **标准库没有**,只能靠 libc。
+# 所以这里只为了**那一个系统调用**引 libc。
+#
+# ⚠ 它此前已在本仓的**传递**依赖里(`impl/Cargo.lock` 的 libc 0.2.190,
+#   dev 链 `insta -> tempfile` 等),提成**直接**依赖几乎不扩大依赖面;
+#   `Cargo.lock` 只多一条依赖边,不升级任何版本。
+# ⚠ 按 `cfg(unix)` 声明:Windows 侧的等价机制是 `taskkill /T /F`(进程树),
+#   不需要 libc。版本按本仓纪律**显式给**(deny.toml `wildcards = "deny"`)。
+[target.'cfg(unix)'.dependencies]
+libc = "0.2"
+
 [features]
 # Default: mock-only build (offline, no reqwest). Tests + CI use this.
 default = []

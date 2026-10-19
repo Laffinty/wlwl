@@ -26,7 +26,7 @@
 //! **不冲突**:那条禁的是**把线程暴露给用户**。
 
 use crate::{ModuleSpec, StdFn};
-use std::io::Read;
+use std::io::{self, Read};
 use std::process::{Command, Stdio};
 use std::time::{Duration, Instant};
 use wlwl_error::ErrorCode;
@@ -51,13 +51,120 @@ const POLL: Duration = Duration::from_millis(5);
 /// 无限期等下去。
 const JOIN_GRACE: Duration = Duration::from_millis(500);
 
+/// 起子进程,并返回**我们自己创建的进程组 id**;拿不到就是 `None`。
+///
+/// 🔴 [N-037 项三 / D13-068] **契约**:返回 `Some(pgid)` **当且仅当**「这个组
+/// 是本次运行自己建的、且子进程已经进组了」。`kill_tree` 全靠这条前提才敢按组
+/// 杀 —— 返回 `None` 时它**必须**退回 `child.kill()`。
+#[cfg(unix)]
+fn spawn_owned_group(cmd: &mut Command) -> io::Result<(std::process::Child, Option<i32>)> {
+    use std::os::unix::process::CommandExt;
+    // ⚠ `process_group(0)` 的语义就是 `setpgid(0, 0)`:把子进程变成**新进程组的
+    //   组长**。它 1.64 起 stable、**纯标准库** —— 设组这一步不需要 libc。
+    let mut grouped = cmd.clone();
+    grouped.process_group(0);
+    match grouped.spawn() {
+        Ok(c) => {
+            // ⚠ 组 id **就是子进程 pid**(`setpgid(0,0)` 的定义)⇒ 必须**当场**取。
+            //   子进程一退出,组就可能消失,事后再问谁也答不出来。
+            // ⚠ `try_from` 而不是 `as`:万一 pid 超出 `i32`(现实中不可能)就得到
+            //   `None` ⇒ 降级成「只杀直接子进程」,而不是去杀一个可疑的组。
+            Ok((c, i32::try_from(c.id()).ok()))
+        }
+        Err(_) => {
+            // ⚠ **降级而不是让 `PROCESS_RUN` 失败**(红线:受限环境里
+            //   `PROCESS_RUN` 不该因为一个**优化**而拒绝干活)。seccomp / 沙箱 /
+            //   某些容器配置会让 fork 之后的 `setpgid` 失败,cargo 把它**一并报成
+            //   spawn 失败** —— 于是这里不带进程组再起一次,并如实返回 `None`。
+            //
+            // ⚠⚠ **重试不会让目标程序跑两遍**:`spawn()` 返回 `Err` 意味着 fork
+            //   失败、或 fork 成功了但 exec / pre-exec 的 `setpgid` 失败 ⇒ 那次
+            //   fork 出来的子进程**没有执行目标程序**。成功的那一次只会返回 `Ok`。
+            cmd.spawn().map(|c| (c, None))
+        }
+    }
+}
+
+/// Windows 上**没有**进程组 ⇒ 一律 `None`。
+///
+/// ⚠ Windows 的等价机制是 Job Object,而 `taskkill /T /F` 已经按**进程树**解决
+///   了同一件事(见 `kill_tree`)⇒ 这里不需要、也没有引入任何 Windows 侧机制。
+///   返回 `None` ⇒ `kill_tree` 在 Windows 上**逐字保持原样**。
+#[cfg(windows)]
+fn spawn_owned_group(cmd: &mut Command) -> io::Result<(std::process::Child, Option<i32>)> {
+    cmd.spawn().map(|c| (c, None))
+}
+
+/// 超时要杀的**进程组** id —— `None` 表示「没有可按组杀的组」。
+///
+/// 🔴 [N-037 项三 / D13-068] **红线函数**:它单独决定「要不要按组杀」。打错组
+/// 的代价是**杀掉不属于本次运行的进程** —— 那比多留一个孤儿坏得多。⇒ 三个条件
+/// 缺一不可,任何一条不满足都退回 `child.kill()`(只杀直接子进程,即修复前的
+/// 行为):
+///
+/// 1. **`Some(pgid)`** —— 必须是 spawn 时**我们自己**记下的那个组。没拿到组信息
+///    就绝不走按组杀:POSIX 里 `killpg(0, s)` 的语义是「调用者自己的组」⇒ 一旦
+///    传了 `0`,整台机器上**同组的进程**(包括整个 wlwl 运行时)一起死。
+/// 2. **`pgid > 1`** —— `1` 是 init 的组,不是我们的。
+/// 3. **`pgid != own_pgrp`** —— ⚠⚠ **最后一道闸**:即使 `process_group` 声称
+///    生效,也再核对一次「这个组不是我自己所在的组」。设错一次就是杀掉整个运行时。
+///
+/// ⚠ 做成**纯函数**(把 `own_pgrp` 当参数)是刻意的:按组杀那条路径只在 POSIX 上
+///   存在,而这个判定是本条最该被守住的逻辑 ⇒ 做成纯函数就能**在任何平台上被单测
+///   钉住**(`#[cfg(any(unix, test))]`,见 `target_group` 的单测)。
+#[cfg(any(unix, test))]
+fn target_group(owned_group: Option<i32>, own_pgrp: i32) -> Option<i32> {
+    match owned_group {
+        Some(pgid) if pgid > 1 && pgid != own_pgrp => Some(pgid),
+        _ => None,
+    }
+}
+
+/// 本进程所在的进程组 id。
+#[cfg(unix)]
+fn own_pgrp() -> i32 {
+    // ⚠ `getpgrp()` 没有失败语义(它不设 errno、也不返回 -1)⇒ 没有错误分支。
+    // ⚠ 显式收敛成 `i32`:libc 在所有支持的 POSIX 目标上 `pid_t == i32`,而
+    //   `target_group` 的签名不该跟着平台走。
+    i32::from(unsafe { libc::getpgrp() })
+}
+
+/// 杀掉一个**进程组**(`killpg`,即 `kill(-pgid, SIGKILL)`)。
+///
+/// ⚠ 标准库**没有**这个能力 —— `Child::kill()` 在 POSIX 上只给直接子进程发信号,
+///   这正是 `[N-037 项三]` 要修的东西。⇒ 这一处是全仓唯一用到 libc 的地方。
+#[cfg(unix)]
+fn kill_group(pgid: i32) {
+    // ⚠ 失败(组已空 / 权限不足)时返回 -1,这里**刻意丢弃**:此时仍要继续走
+    //   `kill_tree` 里那句 `child.kill()` —— 那才是**保证**生效的那一次。
+    // ⚠ `SIGKILL` 与 `child.kill()` 在 POSIX 上同义(后者内部也是发 `SIGKILL`),
+    //   所以按组杀**不会**改变「超时是硬杀、不是协商退出」这个既有语义。
+    let _ = unsafe { libc::killpg(pgid, libc::SIGKILL) };
+}
+
 /// 杀掉子进程**及其整棵后代**。
 ///
 /// ⚠️ 这不是洁癖 —— `child.kill()` 在 Windows 上**只杀直接子进程**:
 /// `cmd /C ping` 里 `cmd` 被杀了而 `ping` 还活着,而 `ping` **继承了管道句柄**
 /// ⇒ 读线程等不到 EOF。实测:300 ms 的超时因此走了 **29.26 s**。
 /// 「杀掉这个子进程」在语义上就该含它的后代,所以走 `taskkill /T /F`。
-fn kill_tree(child: &mut std::process::Child) {
+///
+/// 🔴 [N-037 项三 / D13-068] **POSIX 侧此前完全没有这一层**:`taskkill` 是
+/// Windows 专属,而 POSIX 上只剩 `child.kill()` —— 它只给**直接子进程**发信号。
+/// `sh -c 'sleep 300'` 里 `sh` 死了、`sleep` **还活着**,并继续握着继承来的
+/// stdout / stderr **写端**。
+/// ⚠ `[N-011 / D13-061]` 把 `drain` 改成有界之后,「**我们的线程挂死**」不再
+///   发生,但**孤儿进程本身还在跑**:它一直占 CPU 到自己结束,在 wlwl 退出之后
+///   也照样占着那些管道。⇒ 这一层补在**各平台自己的原生机制**上:
+///
+/// | | 设组 | 杀整组 |
+/// |---|---|---|
+/// | Windows | 不适用(等价物是 Job Object,此处用不上) | `taskkill /T /F`(**逐字不变**) |
+/// | POSIX | `CommandExt::process_group(0)`,**纯标准库** | `killpg`(要 libc),标准库没有 |
+///
+/// ⚠ **只有 `target_group` 判定出 `Some` 才按组杀**,拿不到组信息一律退回
+///   `child.kill()` —— 打错进程组比留一个孤儿坏得多(红线)。
+fn kill_tree(child: &mut std::process::Child, owned_group: Option<i32>) {
     if cfg!(windows) {
         let pid = child.id();
         // `taskkill` 失败也不该把调用卡住 ⇒ 立刻放弃,退回 `child.kill()`。
@@ -68,6 +175,14 @@ fn kill_tree(child: &mut std::process::Child) {
             .stderr(Stdio::null())
             .status();
     }
+    #[cfg(unix)]
+    if let Some(pgid) = target_group(owned_group, own_pgrp()) {
+        kill_group(pgid);
+    }
+    // ⚠ Windows 没有进程组 ⇒ 这个参数在这条分支上只用于让两平台共享签名。
+    #[cfg(not(unix))]
+    let _ = owned_group;
+    // ⚠ 无条件、且**在**按组杀之后:它是「无论如何都杀掉直接子进程」的那道底线。
     let _ = child.kill();
 }
 
@@ -92,8 +207,13 @@ fn kill_tree(child: &mut std::process::Child) {
 /// 缺陷在 Windows 上跑不出来**,契约在 Windows 上恒绿。
 /// ⇒ 形参**已删除**:它曾经描述的意图(两条路径不同)恰恰就是缺陷本身,而两条
 /// 路径真正需要的性质(有界)是**同一条**。
-/// ⚠⚠ **这里不做「杀进程组」**:`D13-037`(POSIX 孙进程泄漏)是**另一条**、已
-/// 登记未修的账。连进程组一起杀会改「超时杀掉谁」的语义,不是本条的修复范围。
+///
+/// ⚠⚠ **按组杀不能撤掉这个上界**(`[N-037 项三 / D13-068]`):`kill_tree` 现在在
+/// POSIX 上会 `killpg` 整个组,但那只覆盖「**还在这个组里**的进程」。一个
+/// 主动 `setsid()`、或者在**开了 job control** 的 shell(`sh -m`)里起的后台
+/// 孙进程**会逃出这个组** ⇒ 它照样能握着管道写端不放。
+/// ⇒ 两条防线是**互补**的:`killpg` 负责「别留孤儿」,这里的**有界等待**负责
+/// 「就算有进程逃出去了也别把我们自己拖死」。
 fn drain(h: std::thread::JoinHandle<Vec<u8>>) -> Vec<u8> {
     let deadline = Instant::now() + JOIN_GRACE;
     while !h.is_finished() && Instant::now() < deadline {
@@ -243,8 +363,12 @@ pub fn process_run(host: &mut dyn StdHost, args: Vec<Value>) -> Result<Outcome, 
         cmd.env(k, v);
     }
 
-    let mut child = match cmd.spawn() {
-        Ok(c) => c,
+    // 🔴 [N-037 项三 / D13-068] 起子进程时**顺手记下自己建的进程组**。
+    // ⚠ 记的是 `None` 的那一次 = 「没拿到组信息」⇒ `kill_tree` 只杀直接子进程。
+    // ⚠ 正常路径**不**按组杀:一个程序合法地起后台进程然后自己退出,那是它的
+    //   语义,不是泄漏(泄漏的定义是「我们超时杀了它」之后还留着)。
+    let (mut child, owned_group) = match spawn_owned_group(&mut cmd) {
+        Ok(pair) => pair,
         Err(e) => return ok(proc_err(NAME, format!("spawn {}: {e}", argv[0]))),
     };
     // 抽干两个管道,否则子进程写满缓冲就死锁(「先读后等」是错的)。
@@ -283,6 +407,12 @@ pub fn process_run(host: &mut dyn StdHost, args: Vec<Value>) -> Result<Outcome, 
                 //    `try_wait` 报错时子进程**可能还活着**并握着管道写端 ⇒
                 //    `out_handle.join()` 无限期等下去。**review-1 没提这一条。**
                 //    ⇒ 走同一条**有界** drain(缓冲反正要丢弃,因为这里返 `ERR`)。
+                //
+                // ⚠⚠ [N-037 项三 / D13-068]这里**刻意仍**只 `child.kill()`,没走
+                //   `kill_tree`:换成 `kill_tree` 会让 **Windows** 也多跑一次
+                //   `taskkill /T /F` —— 而本批的红线是「Windows 侧逐字不变」,
+                //   且这条臂在本仓**造不出来**(`try_wait` 返 `Err`)。⇒ POSIX 上
+                //   这里仍留有同族的孙进程泄漏面,登记为已知边界,不偷跑。
                 let _ = child.kill();
                 let _ = child.wait();
                 let _ = drain(out_handle);
@@ -292,7 +422,12 @@ pub fn process_run(host: &mut dyn StdHost, args: Vec<Value>) -> Result<Outcome, 
         }
         if let Some(dl) = deadline {
             if Instant::now() >= dl {
-                kill_tree(&mut child);
+                // ⚠⚠ 超时路径上子进程**一定还活着**(上一轮 `try_wait` 刚返回
+                //   `Ok(None)`),而且**我们还没有 reap 过它** ⇒ 它的 pid 这期间
+                //   **不可能被系统回收给别人**。这正是按组杀不会打到陌生进程组的
+                //   前提之一(另一道是 `target_group`)。⚠ 子进程此刻退出也只会变成
+                //   **僵尸**,僵尸仍然占着 pid。
+                kill_tree(&mut child, owned_group);
                 let _ = child.wait();
                 timed_out = true;
                 break None;
@@ -491,6 +626,159 @@ mod tests {
             arm[..end].contains(&reap),
             "the `try_wait` error arm must reap the wait status — `Child`'s Drop does \
              NOT wait, so skipping it leaks a zombie on Unix (D13-064)"
+        );
+    }
+
+    /// 🔴 **[N-037 项三 / D13-068] 头号红线:绝不误杀不属于本次运行的进程组。**
+    ///
+    /// 「按组杀」这条路径只在 POSIX 上存在,而本机是 Windows ⇒ 把「要不要按组杀」
+    /// 抽成**纯函数** `target_group(owned_group, own_pgrp)`,于是这条守卫
+    /// **在两个平台上都跑得到**,而且它守的正是红线本身,不是「某个字符串还在」。
+    ///
+    /// 逐条对应 `target_group` 的三个条件:
+    /// - `None` ⇒ 我们**没拿到**组信息 ⇒ 一律不按组杀(`killpg(0, s)` 在 POSIX 里
+    ///   是「调用者自己的组」,传错一次就是**整个运行时陪葬**);
+    /// - `pgid == own_pgrp` ⇒ 这个组是**我们自己**所在的 ⇒ 万一设组失败而子进程
+    ///   仍留在本进程组里,这条挡住我们自杀;
+    /// - `pgid <= 1` ⇒ `0` 是自己的组、`1` 是 init 的组,都不是我们的;
+    /// - 其余才按组杀。
+    #[test]
+    fn a_group_is_only_killed_when_this_run_created_it() {
+        const OWN: i32 = 4242; // 本进程所在的组(假装)
+        for (given, why) in [
+            (None, "no group id recorded => we did not create it"),
+            (
+                Some(OWN),
+                "it IS our own group => killing it kills the whole runtime",
+            ),
+            (Some(0), "pgid 0 means the caller's own group in POSIX"),
+            (Some(1), "pgid 1 is init's group"),
+            (Some(-7), "a negative id is not a group we ever created"),
+        ] {
+            assert_eq!(
+                target_group(given, OWN),
+                None,
+                "{why}: target_group({given:?}, {OWN}) must decline to kill by group"
+            );
+        }
+        // 反向:一个显然属于本次运行的组**必须**被按组杀,否则就是没修(N-037 项三)。
+        assert_eq!(
+            target_group(Some(7777), OWN),
+            Some(7777),
+            "a group we created ourselves is exactly the one N-037 item 3 exists to kill"
+        );
+    }
+
+    /// spawn 侧:**只有真的建了组才记 `Some`**。
+    ///
+    /// ⚠ 端到端的「超时后不留活着的孙进程」那条契约在 `process_contract.rs`,
+    ///   并且**只编在 POSIX 上**(Windows 的 `taskkill /T /F` 已经按进程树解决
+    ///   同一件事,那条用例在那里恒绿)。本条是它的**平台无关那一半**:Windows 上
+    ///   必须**拿不到**组 id ⇒ `kill_tree` 走不到按组杀那条分支 ⇒ Windows 行为
+    ///   逐字不变(红线二)。
+    #[test]
+    fn a_spawn_only_records_a_group_where_one_exists() {
+        let (prog, args): (&str, &[&str]) = if cfg!(windows) {
+            ("cmd", &["/C", "exit", "0"])
+        } else {
+            ("sh", &["-c", "exit 0"])
+        };
+        let mut cmd = Command::new(prog);
+        cmd.args(args);
+        let (mut child, group) = spawn_owned_group(&mut cmd).expect("spawn");
+        let pid = child.id();
+        let _ = child.wait();
+        if cfg!(windows) {
+            assert!(
+                group.is_none(),
+                "Windows has no process group here — recording one would let the \
+                 group-kill branch run on a platform that never asked for it"
+            );
+        } else {
+            // `setpgid(0, 0)` ⇒ 组 id 就是子进程 pid。
+            assert_eq!(
+                group,
+                Some(i32::try_from(pid).expect("pid fits in i32")),
+                "the recorded group id must be the child's own pid (setpgid(0,0))"
+            );
+        }
+    }
+
+    /// ⚠ **形状守卫**(`N-037 项三 / D13-068`):按组杀必须**被闸门挡着**,且
+    /// 必须**有回退**。
+    ///
+    /// ⚠ 它守不了「按组杀真的杀到了孙进程」—— 那只能在 POSIX 上真跑,见
+    /// `process_contract.rs` 的 `a_timeout_leaves_no_living_grandchild`。
+    /// 它守的是**红线那一侧**:「谁可以决定按组杀」。
+    ///
+    /// ⚠⚠ needle **全部运行时拼**(仓库既有纪律):写成字面量的话,这些字符串就在
+    /// 测试自身里 ⇒ `contains` 命中自己 ⇒ 断言永假、静默空转。
+    #[test]
+    fn the_group_kill_stays_behind_the_gate_and_keeps_a_fallback() {
+        /// 取某个 `fn name(` 的函数体(到下一个顶层 `fn` / 空行前的 `}` 之前)。
+        /// ⚠ needle **运行时拼**:写成字面量的话,这些字符串就在测试自身里 ⇒
+        ///   `contains` 命中自己 ⇒ 断言永假、静默空转(本仓已踩过两次)。
+        fn body_of<'a>(src: &'a str, name: &str) -> &'a str {
+            let head = format!("fn {name}(");
+            let start = src.find(&head).expect("the fn exists") + head.len();
+            let rest = &src[start..];
+            let end = rest.find("\nfn ").unwrap_or(rest.len());
+            &rest[..end]
+        }
+
+        let src = include_str!("process.rs");
+        let raw = format!("libc::{}", "killpg"); // 真正的系统调用点
+        let helper = format!("{}(pgid)", "kill_group"); // 受控的包装
+        let gate = format!("{}(owned_group, own_pgrp())", "target_group");
+
+        let kill_tree = body_of(src, "kill_tree");
+        // ① 红线:按组杀只由 `target_group` 的结果驱动。
+        assert!(
+            kill_tree.contains(&gate),
+            "kill_tree must decide the group through target_group — a raw group kill \
+             here would fire even when no group was created (N-037 item 3)"
+        );
+        // ② ⚠ 闸门必须**真的通向一次杀**。⚠ 这一条是**试出来**的:先前只钉 ①⑤,
+        //    把 `kill_group(pgid)` 换成 `let _ = pgid;`(即「拿到组却什么都不杀」)
+        //    之后守卫**仍然全绿** —— 那等于装饰。
+        assert!(
+            kill_tree.contains(&helper),
+            "the gated branch in kill_tree must actually call the group-kill helper — \
+             deciding the group and then not killing it is the defect N-037 item 3 \
+             exists to remove"
+        );
+        // ③ 系统调用不许内联进 `kill_tree`(必须待在受控包装里)。
+        assert!(
+            !kill_tree.contains(&raw),
+            "the raw group signal must not be inlined into kill_tree"
+        );
+        // ④ 回退底线:`child.kill()` 必须**无条件**留在最后。
+        let fallback = format!("let _ = child.{}();", "kill");
+        assert!(
+            kill_tree.contains(&fallback),
+            "kill_tree must keep the unconditional child.kill() — it is the one kill \
+             that is guaranteed to land (degraded spawn, empty group, failed group kill)"
+        );
+        // ⑤ 全链闭合:闸门 → 包装 → 系统调用。系统调用全文件**只出现一次**。
+        assert_eq!(
+            src.matches(&raw).count(),
+            1,
+            "the group signal must live in exactly one place (the wrapper)"
+        );
+        assert!(
+            body_of(src, "kill_group").contains(&raw),
+            "the group-signal wrapper must be the thing that emits it — otherwise the \
+             chain gate -> wrapper -> signal is broken somewhere in the middle"
+        );
+        // ⑥ spawn 侧真的设了组(否则「记下来的组」根本不存在)。
+        // ⚠ needle 带**接收者**(`grouped.`):注释里的 `CommandExt::process_group(0)`
+        //   也在讲同一件事,只拿函数名去 `contains` 会命中注释 ⇒ 删掉真调用也不响。
+        let setpgid = format!("grouped.process_{}(0)", "group");
+        assert!(
+            src.contains(&setpgid),
+            "the POSIX spawn path must put the child in its own process group \
+             (CommandExt::process_group(0) == setpgid(0,0)); without it there is no \
+             group to kill and N-037 item 3 is a no-op"
         );
     }
 

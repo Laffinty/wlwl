@@ -147,9 +147,147 @@ jobs:
         working-directory: impl
         run: cargo test --locked --test conformance -p wlwl-cli
 
-      - name: cargo test
+      # [v0.11.3 / 审查 N-014-③ + 台账 D13-029]「保留失败名 + 自动复跑一次」。
+      #
+      # 起因:一次失败无法归因 —— 首轮 `-p wlwl-std --lib` 报 1 failed,但首轮
+      # 日志经过 grep 过滤,**失败测试名被过滤掉了**,定位成本远高于跑第二遍。
+      # 这里把「信息不丢」放在第一位,「区分真失败 / flaky」放在第二位。
+      #
+      # ① 为什么统一 `shell: bash`(Windows runner 自带 Git Bash):
+      #    复跑 + 判定 + 摘要是**逻辑**,不是一行命令,写成 pwsh 就得再写一份
+      #    等价实现,两套语法会各自漂移。GitHub 官方保证 windows-latest 上
+      #    `shell: bash` 可用 ⇒ 三个平台跑**同一份脚本**,只有一份真值。
+      #    (代价:依赖 Git Bash 存在;这是 runner 契约,不是本仓的赌注。)
+      #
+      # ② 为什么复跑**整个 `--all-targets`**,而不是只重跑失败的那个测试:
+      #    - 失败信息只给出「测试名」,不给出「哪个 target 二进制」;要缩小到
+      #      单个二进制得解析 `Running unittests <path>` 行再反推包名,而这个
+      #      映射对 doctest / bench target / workspace 虚拟 manifest 都不可靠
+      #      —— **解析器本身就成了新的 flaky 来源**。
+      #    - flaky 是「任意一项偶发失败」。只重跑那一个测试名,会漏掉同一轮
+      #      里另一个 target 的偶发失败,得出「不是 flaky」的错误结论。
+      #    - 成本可接受:复跑**只在首轮失败时发生**(正常路径零开销),且此时
+      #      编译产物已在 target 目录里,第二遍主要是执行时间。
+      #
+      # ③ 为什么 flaky **不放行**(仍然 exit 1):
+      #    放行会让门禁说谎,而这次事故的根因就是「无法归因」—— 让偶发失败
+      #    静默变绿等于把不可归因重新造一遍。区分「真失败 / flaky」的价值由
+      #    醒目标注 + step summary + 完整日志承担,放行与否是可改的策略常量:
+      #    要改只需把下面的 FLAKY_EXIT_CODE 改成 0(位置已标出)。
+      #
+      # ④ 覆盖率**一条不少**:命令仍是逐字的 `cargo test --locked --all-targets`,
+      #    复跑是**额外**一遍。刻意**没有**加 `--no-fail-fast` —— 它确实能一次
+      #    收全所有失败名,但那是在改动既有测试语义(fail-fast 下失败后不再执行
+      #    的 target 现在会执行),超出「不改覆盖范围」的授权范围。失败名改由
+      #    「完整留存 + 复跑一遍」拿到。
+      #
+      # ⚠ 运行时提示一律用英文:Windows runner 的 bash locale 非 UTF-8,中文
+      #   标注有变乱码的风险,一旦乱码「显式标注」就失去意义。中文解释留在
+      #   注释里。日志目录用**相对路径**:绕开 RUNNER_TEMP / GITHUB_WORKSPACE
+      #   在 Windows 下是 `D:\...` 形态、而 Git Bash 认正斜杠的路径转换坑。
+      - name: cargo test (full log kept; one automatic retry)
+        shell: bash
         working-directory: impl
-        run: cargo test --locked --all-targets
+        run: |
+          # ⚠ 不用 `-e`:下面的失败码全部由本脚本显式判定。`pipefail` 仍开着
+          #   (GitHub 对 `shell: bash` 默认加),所以 PIPESTATUS[0] 才是 cargo 的码。
+          set +e
+          LOG_DIR=".ci-logs"
+          mkdir -p "$LOG_DIR"
+
+          # FLAKY_EXIT_CODE:首轮失败 + 复跑通过时的最终退出码。
+          # 现在是 1(flaky 仍然失败);改成 0 即为「flaky 放行」。
+          FLAKY_EXIT_CODE=1
+
+          run_pass() {
+            # ⚠ `local` 必须**分三行**写:同一条 `local a="$1" b="$a.log"` 里,
+            #   右侧展开发生在整条命令执行之前,此时 `a` 还没赋值 ⇒ `b` 会变成
+            #   `cargo-test-.log` —— 两轮**写进同一个文件**,第二轮覆盖第一轮,
+            #   「保留第一轮失败名」当场失效。这个坑由本机 stub 沙盘实测抓到。
+            local tag="$1"
+            local log="$LOG_DIR/cargo-test-$tag.log"
+            local rc
+            echo "::group::cargo test --locked --all-targets ($tag pass)"
+            # ⚠ 完整输出落盘,**不做任何过滤** —— 审查那次就是过滤掉了失败名。
+            #   ⚠ 不加 -vv / 不打印环境变量:artifact 会长期留存,不能带 secrets。
+            cargo test --locked --all-targets 2>&1 | tee "$log"
+            rc="${PIPESTATUS[0]}"
+            echo "::endgroup::"
+            echo "$tag pass exit code: $rc"
+            echo "$rc" > "$LOG_DIR/$tag.rc"
+          }
+
+          # 摘要用提取,日志用留存:这里的 grep 只服务于 step summary / 标注,
+          # 完整日志始终在 artifact 里,失败名不会被这一步弄丢。
+          failed_names() {
+            grep -E '^test .* \.\.\. FAILED' "$1" 2>/dev/null | tr -d '\r' | sort -u
+          }
+
+          run_pass first
+          if [ "$(cat "$LOG_DIR/first.rc")" = "0" ]; then
+            exit 0
+          fi
+
+          echo "::warning title=cargo test: pass 1 failed::Pass 1 of 'cargo test --locked --all-targets' failed. Retrying once, in full, to tell a real failure apart from a flaky one. Unfiltered logs are uploaded as an artifact."
+          run_pass retry
+          retry_rc="$(cat "$LOG_DIR/retry.rc")"
+          first_names="$(failed_names "$LOG_DIR/cargo-test-first.log")"
+          retry_names="$(failed_names "$LOG_DIR/cargo-test-retry.log")"
+
+          {
+            echo "### cargo test result (${{ matrix.os }})"
+            echo
+            if [ "$retry_rc" = "0" ]; then
+              echo "**FLAKY** - pass 1 FAILED, pass 2 PASSED. The job still fails (by design)."
+            else
+              echo "**REAL FAILURE** - both passes failed. Not flaky."
+            fi
+            echo
+            if [ -z "$first_names" ]; then
+              echo "No \`... FAILED\` line in pass 1 -> most likely a compile/link error rather than a test failure. Read the full log."
+            fi
+            echo "#### FAILED tests - pass 1"
+            echo '```'
+            echo "${first_names:-(none)}"
+            echo '```'
+            echo
+            echo "#### FAILED tests - pass 2"
+            echo '```'
+            echo "${retry_names:-(none)}"
+            echo '```'
+            echo
+            echo "Full unfiltered logs: artifact \`cargo-test-logs-${{ matrix.os }}\`."
+          } > "$LOG_DIR/summary.md"
+          cat "$LOG_DIR/summary.md"
+          if [ -n "${GITHUB_STEP_SUMMARY:-}" ]; then
+            cat "$LOG_DIR/summary.md" >> "$GITHUB_STEP_SUMMARY" 2>/dev/null || true
+          fi
+
+          if [ "$retry_rc" = "0" ]; then
+            echo "::warning title=FLAKY (cargo test)::${{ matrix.os }}: pass 1 FAILED, pass 2 PASSED -> flaky, NOT auto-cleared. Failing test names are in the step summary and the full-log artifact. Set FLAKY_EXIT_CODE=0 in ci.yml if flaky should be allowed to pass."
+            exit "$FLAKY_EXIT_CODE"
+          fi
+          echo "::error title=REAL FAILURE (cargo test)::${{ matrix.os }}: 'cargo test --locked --all-targets' failed on both passes -> real failure, not flaky."
+          exit 1
+
+      # 失败时的第一手证据。⚠ 必须 `if: always()`:上一步失败后 job 的默认
+      #   步骤会被跳过,不带条件的上传 step 就永远不会执行 —— 那正是「日志丢了」
+      #   最容易复发的形态。
+      # ⚠ `if-no-files-found: ignore`:前面的 fmt / clippy / doc 门禁先失败时
+      #   这一步也要能安静跑完,不能反过来把结论搅浑(它们失败时本步无日志可传)。
+      # ⚠ artifact 名带 `matrix.os`:upload-artifact@v4 在同一 run 内不允许重名,
+      #   三个平台同名会直接撞车。
+      # ⚠ 用 `always()` 而非 `failure()`:成功轮次也会留一份完整日志(成本是
+      #   每平台几十 KB、压缩后更小),换来的是「什么时候跑的、跑了多少条」永远
+      #   可查 —— 归属不清的那次事故里,缺的正是这一份对照。
+      - name: Upload cargo test logs (unfiltered, incl. failed test names)
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: cargo-test-logs-${{ matrix.os }}
+          path: impl/.ci-logs/
+          if-no-files-found: ignore
+          retention-days: 14
 
       # [D11-019] `real-ai` 特性编译门禁。
       #

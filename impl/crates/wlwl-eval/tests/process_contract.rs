@@ -22,6 +22,12 @@
 //! `drain_is_bounded_even_when_the_reader_never_finishes`(直接钉 `drain` 的
 //! 有界性,与「杀不杀得掉进程树」无关)。
 //!
+//! ⚠ 同理,`a_timeout_leaves_no_living_grandchild`(`[N-037 项三]`:超时之后
+//! **不得留下活着的孙进程**)**整条 `#[cfg(unix)]`** —— 它靠的也是「整棵树被杀」,
+//! Windows 上由 `taskkill /T /F` 白送 ⇒ 在那儿恒绿。它是**唯一**直接钉「孤儿
+//! 进程还在不在跑」的用例,证据只有 CI 的 ubuntu / macOS。Windows 上守得住的
+//! 是 `wlwl-std` 里的 `a_group_is_only_killed_when_this_run_created_it`。
+//!
 //! ## ⚠️ 阻塞代价必须在这里也写一遍
 //!
 //! 运行时是**单线程协作式** ⇒ `PROCESS_RUN` 等子进程期间**不调度任何其他
@@ -359,6 +365,80 @@ IS_ERR(PROCESS_RUN({argv}, ["timeout": 300]))"#
         elapsed < std::time::Duration::from_millis(2500),
         "a 300 ms timeout took {elapsed:?} — a surviving grandchild still holds the \
          pipe write end, so the drain was unbounded"
+    );
+}
+
+/// 🔴 **[N-037 项三 / D13-068] 超时之后**不得留下活着的孙进程**。
+///
+/// ⚠ 这条钉的不是「返回得快」(快慢由 `wlwl-std` 里 `drain` 那两条守卫负责),而是
+///   **进程还在不在跑**。`[D13-061]` 把「我们的线程挂死」救出来了,但**孤儿本身
+///   还在跑**:它占着 CPU 到自己结束,在 wlwl 退出之后也照样占着那些管道。
+///
+/// **可数出的代理指标**:孙进程每秒往一个文件追加一行;`PROCESS_RUN` 返回之后数
+/// 两次行数 —— **不再增长**才算它真的死了。
+/// ⚠ 刻意**不用耗时**做判据:修好时起作用的是「管道早 EOF」,与快慢无关;而快慢
+///   会被 CI 机器的负载搅动(仓库里已有 `D13-062` 用两档耗时比的先例,那条量的
+///   是复杂度,不是这里这种「有没有人还在动」)。
+///
+/// ⚠ **两侧余量是算出来的,不是抄某次运行**:
+/// - 心跳周期 1 s、观测窗 **2500 ms** ⇒ 一个**活着**的孙进程在这个窗里**至少**写
+///   `⌊2500 / 1000⌋ = 2` 行。阈值取「0 行增长」⇒ **红侧余量 ≥ 2 行**,不可能是
+///   噪声;反过来,组被杀时**恒定**是 0 行增长 ⇒ 绿侧没有边界在晃。
+/// - 防「空转恒绿」靠 `count1 >= 1`:孙进程**一上来就写第一行**(循环体里没有先
+///   sleep),而超时给足 800 ms ⇒ 「文件一行都没有」只可能是夹具没跑起来,那时
+///   这条会**因无意义而失败**,而不是悄悄通过。
+///
+/// ⚠⚠ **本用例 `#[cfg(unix)]` —— 本机(Windows)连编译都到不了。**
+///   `taskkill /T /F` 在 Windows 上已经把整棵树杀了,同一个夹具在那边**恒绿**,
+///   在那儿跑也不构成任何证据(与本文件既有那条同款理由)。⇒ 它的验证通路**只有
+///   CI 的 ubuntu / macOS**,这一段**没有本机实测证据**,如实登记。
+#[cfg(unix)]
+#[test]
+fn a_timeout_leaves_no_living_grandchild() {
+    let nanos = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map(|d| d.as_nanos())
+        .unwrap_or(0);
+    let beat = std::env::temp_dir().join(format!("wlwl_proc_beat_{nanos}"));
+    let _ = std::fs::remove_file(&beat);
+    let path = beat.to_string_lossy().into_owned();
+    // 路径被塞进 shell 脚本的**单引号**里(wlwl 字符串里 `'` 是普通字符,只有
+    // `\"` / `\` / `${` 需要转义)。路径本身带单引号的场合本仓**造不出来**,
+    // 真出现了就明说,而不是悄悄生成一个错的脚本。
+    assert!(
+        !path.contains('\''),
+        "temp path would break the quoting: {path}"
+    );
+
+    // `sh -c <脚本>` 必须是**三个** argv 元素(`D13-057` 同款坑)。脚本把心跳循环
+    // 放**后台**、前台 `sleep 30` —— 超时被杀的正是前台那个;后台那个就是
+    // ⚠ **握着 stdout/stderr 写端的活着的孙进程**(非交互 shell 默认不开 job
+    // control ⇒ 后台孙进程留在**同一个进程组**里,正是 `killpg` 覆盖得到的)。
+    let src = format!(
+        r#"IMPORT("wlwl:std.process", ["PROCESS_RUN"]);
+IS_ERR(PROCESS_RUN(["sh", "-c", "while :; do echo x >> '{path}'; sleep 1; done & sleep 30"], ["timeout": 800]))"#
+    );
+    assert_eq!(actual(&src), "TRUE", "a timeout must be an ERR value");
+
+    let lines = || {
+        std::fs::read_to_string(&beat)
+            .map(|s| s.lines().count())
+            .unwrap_or(0)
+    };
+    let first = lines();
+    assert!(
+        first >= 1,
+        "the grandchild never wrote a heartbeat line — the fixture did not run, so \
+         the growth check below would be vacuously true"
+    );
+    std::thread::sleep(std::time::Duration::from_millis(2500));
+    let second = lines();
+    let _ = std::fs::remove_file(&beat);
+    assert_eq!(
+        second, first,
+        "the heartbeat kept growing ({first} -> {second} lines): a grandchild of the \
+         timed-out child is STILL RUNNING — on POSIX `Child::kill()` only signals the \
+         direct child, so the whole group must be killed instead (N-037 item 3)"
     );
 }
 

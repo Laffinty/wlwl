@@ -967,6 +967,26 @@ struct Thread {
     prio: Vec<u8>,
 }
 
+/// `mem::take` 借走 `clist` 槽位后留下的空壳(`advance` 的热路径要用)。
+///
+/// 为什么需要它:`advance` 过去是 `self.clist[k].clone()`,而 `Thread` 带两个
+/// `Vec`(`caps` + `prio`)⇒ **每线程每步两次堆分配**,而这一步是整趟扫描里
+/// 最热的一步。`mem::take` 换来的空壳用 `Vec::new()` —— **不分配**,所以
+/// 「借走再还不还」是零成本的。
+///
+/// ⚠ `pc = usize::MAX` 是**故意的**:任何误读这个槽位都会立刻越界 panic。
+/// 若按直觉填 `pc = 0`,误读会悄悄从 0 号指令跑出一条**假路径** ——
+/// 「看起来能跑」的静默错误比当场崩难查得多。
+impl Default for Thread {
+    fn default() -> Self {
+        Thread {
+            pc: usize::MAX,
+            caps: Vec::new(),
+            prio: Vec::new(),
+        }
+    }
+}
+
 /// 一个抵达 `Match` 的候选。
 #[derive(Clone)]
 struct Hit {
@@ -1002,6 +1022,53 @@ impl Hit {
     }
 }
 
+/// `by_start` 里的「该左端还没有候选」标记。
+const NO_SLOT: u32 = u32::MAX;
+
+/// 测试期性能埋点(**不进 release 构建**,所以热路径不留任何运行时成本)。
+///
+/// 为什么需要它:性能判据不能钉绝对耗时(机器相关、CI 上必然不稳),而
+/// 「有没有排序」「克隆了几次」这类性质是**整数**的 —— 可数、可复现、与
+/// 机器无关。埋点分两组,缺一不可:
+///
+/// * **用量组**(`add_calls` / `inst_visits` / `thread_visits` /
+///   `hits_recorded`):计数点在**热路径上、修复前后都在**,它们证明这条
+///   路径真的被走到了 ⇒ 不会空转。
+/// * **缺陷组**(`work_allocs` / `inst_clones` / `thread_clones` /
+///   `hits_retained` / `order_comparisons`):在修好的构建里它们要么恒 0、
+///   要么被压到 O(不同起点数)—— 那正是它们要断言的事。守卫同时断言
+///   同一处的**用量组 > 0**,所以「计数器被删掉」会先被用量组拆穿。
+#[cfg(test)]
+#[derive(Default, Clone, Copy, Debug)]
+struct Probe {
+    /// `note_hit` 抵达 `Match` 的次数(**两种模式都计**,所以它证明的是
+    /// 「这条路径真的抵达过候选」,而不是「`find_all` 那一支跑了」)。
+    hits_recorded: usize,
+    /// `find_all` 留在候选表里的条数(按左端去重**之后**)= 这一步的内存量级。
+    hits_retained: usize,
+    /// 定序比较次数:按左端去重时的 `prio` 比 + 选取阶段的任何排序。
+    /// ⚠ **实测要点**:修复前那版 `sort_by` 在本 VM 的抵达顺序上是 **O(n) 次**
+    /// 比较(左最早 ⇒ 每步活着的 `Match` 线程都是最靠左那条 ⇒ `start` 键本来
+    /// 非降,自适应排序一眼认出)。所以真正消掉的是**候选表规模**(O(抵达次数)
+    /// → O(不同起点数),每条还带两次堆分配),排序本身只是顺带去掉了。
+    order_comparisons: usize,
+    /// `advance` 分派过的指令数(证明 dispatch 埋点是活的)。
+    inst_visits: usize,
+    /// `advance` 每步**克隆**指令的次数(修复前 = `inst_visits`)。只对
+    /// `Inst::Class` 真正分配,但计数在 dispatch 入口,与形态无关。
+    inst_clones: usize,
+    /// `add` 的调用次数(= 每线程每步都会来一次)。
+    add_calls: usize,
+    /// `add` 复用 `Vm` 常驻工作栈的次数(修复后 = `add_calls`)。
+    work_reuses: usize,
+    /// `add` 新建工作栈 `Vec` 的次数(修复前 = `add_calls`,修复后 = 0)。
+    work_allocs: usize,
+    /// `advance` 每步从 `clist` 取线程的次数。
+    thread_visits: usize,
+    /// `advance` 每步**克隆**线程的次数(修复前 = `thread_visits`)。
+    thread_clones: usize,
+}
+
 struct Vm<'a> {
     prog: &'a Program,
     input: &'a [char],
@@ -1011,15 +1078,35 @@ struct Vm<'a> {
     /// (先到 = 优先级更高,因为 ε 闭包按优先级展开)。
     seen: Vec<u32>,
     gen: u32,
-    /// 每一次 `Match` 抵达都记在这里(顺序 = 抵达顺序)。`find_all` 在其中挑
-    /// 非重叠的一串 —— 见 `Hit::better_than` 与 `note_hit` 的模式说明。
-    hits: Vec<Hit>,
+    /// `add` 的 ε 闭包工作栈 —— **复用**。⚠ 过去是每次调用 `vec![start]`,
+    /// 而 `add` 在「每线程每步」都会走到 ⇒ 分配次数 ∝ 线程数 × 步数。
+    work: Vec<Thread>,
+    /// `keep_all` 时**按起点去重**后的候选索引:`by_start[s]` = `slots` 下标,
+    /// `NO_SLOT` = 该左端还没有候选。
+    ///
+    /// 为什么要有这张表:`find_all` 的贪心段对某个左端**只认第一个**(同左端
+    /// 后来的一律 `continue`)⇒ 第二个及以后的候选**永远不参与结果**。有了
+    /// 它,选取阶段按**下标升序**走就是起点升序 ⇒ **不再需要排序**。
+    by_start: Vec<u32>,
+    /// 去重后的候选本体。⚠ 规模是「**不同起点数**」而不是「抵达次数」——
+    /// 贪含量词在**每个**位置都抵达 `Match`,而它们全在**同一个左端**
+    /// (左最早)⇒ 旧实现里这一栏是 O(n),实际影响 O(n) 个左端。
+    slots: Vec<Option<Hit>>,
     /// 单次搜索只要最优那一个(见 `note_hit` 的 ⚠)。
     best: Option<Hit>,
+    /// ⚠⚠ **等价判据用的「每一次抵达」原始候选流**(只在 `cfg(test)` 下存在)。
+    /// `note_hit` 无论去重与否都会往这里也推一份,于是测试可以把**优化前**
+    /// 那套算法(`legacy_select_all`)和**优化后**(`select_all`)拿同一批候选
+    /// 跑一遍比结果 —— 这是「行为逐字未变」最直接的证据,比任何一组
+    /// 手挑的样例都强。
+    #[cfg(test)]
+    legacy_hits: Vec<Hit>,
     /// `true` = 攒全部候选(`find_all`);`false` = 只留最优(`find` / `run`)。
     keep_all: bool,
     /// 抵达计数器 —— 同一 `(start, prio)` 时区分「先到」与「后到」。
     arrivals: usize,
+    #[cfg(test)]
+    probe: Probe,
 }
 
 impl<'a> Vm<'a> {
@@ -1031,11 +1118,29 @@ impl<'a> Vm<'a> {
             nlist: Vec::new(),
             seen: vec![0; prog.insts.len()],
             gen: 0,
-            hits: Vec::new(),
+            work: Vec::new(),
+            by_start: Vec::new(),
+            slots: Vec::new(),
             best: None,
             keep_all: false,
             arrivals: 0,
+            #[cfg(test)]
+            probe: Probe::default(),
+            #[cfg(test)]
+            legacy_hits: Vec::new(),
         }
+    }
+
+    /// 切到 `find_all` 模式(攒全部候选)。
+    ///
+    /// ⚠ `by_start` 是**唯一一处随输入长度线性增长的额外缓冲**(每起点 4 字节
+    /// ≈ 输入自身 `Vec<char>` 的一半)。这笔买卖划算:换掉的是「候选表随
+    /// **抵达次数**增长(每条带两次堆分配)+ 一次全量排序」,而输出在空匹配
+    /// 密集的输入上本来就是 O(n) ⇒ 这块内存**不改变**渐近阶,只改变常数。
+    /// ⚠ 也就是说:**别把它当成「find_all 现在是 O(1) 内存」** —— 它不是。
+    fn keep_all(&mut self) {
+        self.keep_all = true;
+        self.by_start = vec![NO_SLOT; self.input.len() + 1];
     }
 
     /// 把 `t.pc` 的 ε 闭包按优先级压进 `list`。
@@ -1043,15 +1148,36 @@ impl<'a> Vm<'a> {
     /// `Split(a, b)` **先展开 a 再展开 b** ⇒ a 的线程落在 list 更靠前的位置。
     /// 配合 `seen` 的先到者胜,「分支顺序」就变成了「匹配选择的优先级」。
     fn add(&mut self, list: &mut Vec<Thread>, start: Thread, gen: u32, pos: usize) {
-        let mut work = vec![start];
+        #[cfg(test)]
+        {
+            self.probe.add_calls += 1;
+            self.probe.work_reuses += 1;
+        }
+        // ⚠ **工作栈复用**。过去这里是 `vec![start]` —— 每次 `add` 调用一次堆
+        // 分配,而 `add` 在「每线程每步」都会走到 ⇒ 分配次数 ∝ 线程数 × 步数。
+        // 换成 `Vm` 上的常驻缓冲后,整趟扫描只分配**一次**。
+        //
+        // ⚠ 直接借 `&mut self.work`(而不是先 `mem::take`):`list` 是调用方的
+        // 可变借用,而三个调用点传进来的都**是从 `self` 上取走的局部 `Vec`**
+        // (`std::mem::take`)⇒ 它与 `self.work` 不可能别名。
+        // ⚠ 若哪天有人改成直接传 `&mut self.nlist`,这里会**当场编译不过**
+        // —— 那正是想要的:别名会让 ε 闭包写坏 nlist。
+        let work = &mut self.work;
+        work.clear();
+        work.push(start);
         while let Some(mut t) = work.pop() {
             if self.seen[t.pc] == gen {
                 continue;
             }
             self.seen[t.pc] = gen;
-            match self.prog.insts[t.pc].clone() {
+            // ⚠ **借用指令,不要克隆它**。`Inst` 不是 `Copy`(它带 `ClassSet`),
+            // 过去这里每展开一个 ε 节点克隆一次 ⇒ 每扫到一个 `Class` 指令一次
+            // 堆分配,而 `Class` 正是**消费字符**的那条指令 = 每输入位置一次。
+            // 这里任何一个分支都不需要**拥有**指令本身(只读字段 / 读 `pc`),
+            // 所以借用即可,克隆纯属白付一次分配。
+            match &self.prog.insts[t.pc] {
                 Inst::Jump(target) => {
-                    t.pc = target;
+                    t.pc = *target;
                     work.push(t);
                 }
                 Inst::Split(a, b) => {
@@ -1079,19 +1205,19 @@ impl<'a> Vm<'a> {
                         lo_prio.push(1);
                     }
                     work.push(Thread {
-                        pc: b,
+                        pc: *b,
                         caps: t.caps.clone(),
                         prio: lo_prio,
                     });
                     work.push(Thread {
-                        pc: a,
+                        pc: *a,
                         caps: t.caps,
                         prio: hi_prio,
                     });
                 }
                 Inst::Save(slot) => {
-                    if slot < t.caps.len() {
-                        t.caps[slot] = Some(pos);
+                    if *slot < t.caps.len() {
+                        t.caps[*slot] = Some(pos);
                     }
                     t.pc += 1;
                     work.push(t);
@@ -1161,6 +1287,71 @@ impl<'a> Vm<'a> {
         };
         let arrival = self.arrivals;
         self.arrivals += 1;
+        #[cfg(test)]
+        {
+            self.probe.hits_recorded += 1;
+        }
+
+        if self.keep_all {
+            #[cfg(test)]
+            {
+                self.legacy_hits.push(Hit {
+                    start: lo,
+                    end: hi,
+                    caps: t.caps.clone(),
+                    prio: t.prio.clone(),
+                    arrival,
+                });
+            }
+            // ⚠ **同一起点只需要最优的那一个**(`find_all` 的贪心段对某个左端
+            // 只认定序后的**第一个**,同左端后来的全部 `continue`;被第一个
+            // 挡下之后 `out.last()` 已经是同左端的那一个,后续候选一律撞上
+            // `prev.start() == h.start` 分支 ⇒ **一个都进不了结果**)。
+            // 旧实现却把它们全攒下来再排序,于是 `a*` 在 n 个 a 上攒了 n+1 份
+            // 拷贝(全部同一个左端)⇒ O(n) 内存 + 一次全量排序。
+            //
+            // ⚠ **裁决口径不许为了省这次比较而分叉**:`arrival` 单调递增 ⇒
+            // 第三键 `Reverse(arrival)` 恒让「后到者」更小 ⇒
+            // 「新候选更优」精确等价于 `t.prio <= cur.prio`,与
+            // `Hit::better_than` 的前两键**逐字同源**(D13-019 / N-003)。
+            // 一旦这里换成别的裁决,单次搜索与 `find_all` 会在封顶区给出
+            // **两个不同的答案**。
+            // ⚠ 负向验证实测:换成升序(先到者胜)时 `find_all` 这条路径
+            // **仍是完整长度** —— 也就是说这一处保持降序是为了**两个路径同
+            // 口径**,它本身不被任何契约钉住。别为了快把它改掉。
+            let slot = self.by_start[lo];
+            let wins = match self.slots.get(slot as usize) {
+                Some(Some(cur)) => {
+                    #[cfg(test)]
+                    {
+                        self.probe.order_comparisons += 1;
+                    }
+                    t.prio <= cur.prio
+                }
+                _ => true,
+            };
+            if wins {
+                let hit = Hit {
+                    start: lo,
+                    end: hi,
+                    caps: t.caps.clone(),
+                    prio: t.prio.clone(),
+                    arrival,
+                };
+                if slot == NO_SLOT {
+                    #[cfg(test)]
+                    {
+                        self.probe.hits_retained += 1;
+                    }
+                    self.by_start[lo] = self.slots.len() as u32;
+                    self.slots.push(Some(hit));
+                } else {
+                    self.slots[slot as usize] = Some(hit);
+                }
+            }
+            return;
+        }
+
         let hit = Hit {
             start: lo,
             end: hi,
@@ -1168,26 +1359,23 @@ impl<'a> Vm<'a> {
             prio: t.prio.clone(),
             arrival,
         };
-        if self.keep_all {
-            self.hits.push(hit);
-        } else {
-            let better = match &self.best {
-                None => true,
-                Some(cur) => hit.better_than(cur),
-            };
-            if better {
-                self.best = Some(hit);
-            }
+        let better = match &self.best {
+            None => true,
+            Some(cur) => hit.better_than(cur),
+        };
+        if better {
+            self.best = Some(hit);
         }
     }
 
-    /// 全部候选里的最优者(两种模式都适用:一个只有 `best`,一个只有 `hits`)。
+    /// 全部候选里的最优者(两种模式都适用:一个只有 `best`,一个只有 `slots`)。
     fn best_hit(&self) -> Option<&Hit> {
-        let from_hits = self
-            .hits
+        let from_slots = self
+            .slots
             .iter()
+            .flatten()
             .reduce(|a, b| if b.better_than(a) { b } else { a });
-        match (&self.best, from_hits) {
+        match (&self.best, from_slots) {
             (None, None) => None,
             (Some(b), None) => Some(b),
             (None, Some(h)) => Some(h),
@@ -1208,14 +1396,29 @@ impl<'a> Vm<'a> {
         let c = input[i];
         self.gen += 1;
         let gen = self.gen;
+        // ⚠ 把 `prog` **复制**成局部。`self.prog` 是 `&'a Program`(`Copy`),
+        // 于是 `&prog.insts[..]` 的借用挂在 `'a` 上、**不与 `&mut self` 冲突**。
+        // 直接写 `&self.prog.insts[..]` 会让循环体里的 `self.note_hit(&t)` /
+        // `self.add(..)` 借不过(同一个 `self`)。
+        let prog = self.prog;
         let mut nlist = std::mem::take(&mut self.nlist);
         nlist.clear(); // `take` 拿到的是**上一轮的 clist**,不清就会残留
                        // ⚠ **顺序即优先级**:既有线程的后继先入,新注入的起始线程**最后**入。
                        // 反过来写会让「最年轻的路径」压过「更前进的线程」(Go 的 `machine.step`
                        // 也是这个顺序),症状是贪婪量词只吃到一半、且匹配起点会莫名右移。
         for k in 0..self.clist.len() {
-            let t = self.clist[k].clone();
-            match self.prog.insts[t.pc].clone() {
+            #[cfg(test)]
+            {
+                self.probe.thread_visits += 1;
+                self.probe.inst_visits += 1;
+            }
+            // ⚠ **借走,不要克隆**。`clone()` 每线程每步两次堆分配(`caps` +
+            // `prio`),而这是扫描里最热的一步。槽位借走后本轮不会再被读
+            // (每个 `k` 只访问一次)⇒ 留下一个**不分配**的空壳。
+            // ⚠ `Thread::default` 的 `pc = usize::MAX` 是故意的:误读当场炸。
+            let t = std::mem::take(&mut self.clist[k]);
+            // ⚠ 同上:`Inst` 不 `Copy`,克隆它等于每输入位置白付一次分配。
+            match &prog.insts[t.pc] {
                 Inst::Class(cs) => {
                     if cs.matches(c) {
                         let mut n = t;
@@ -1252,10 +1455,13 @@ impl<'a> Vm<'a> {
         self.gen += 1;
         let gen = self.gen;
         let pos = input.len();
+        // 与 `advance` 同理:复制出来才能在循环体里 `&mut self`。
+        let prog = self.prog;
         let mut final_list = std::mem::take(&mut self.clist);
         let mut out = Vec::new();
         for t in final_list.drain(..) {
-            match self.prog.insts[t.pc].clone() {
+            // ⚠ 借用指令:`finish` 也要跟着去掉 `Inst` 克隆(同上)。
+            match &prog.insts[t.pc] {
                 Inst::Assert(a) => {
                     if a.holds(input, pos) {
                         let mut n = t;
@@ -1268,6 +1474,57 @@ impl<'a> Vm<'a> {
             }
         }
         self.clist = out;
+    }
+
+    /// 从**按左端去重后**的候选里挑出非重叠的一串(`find_all` 的选取阶段)。
+    ///
+    /// ⚠ **遍历顺序就是起点升序**,因为 `by_start` 的下标即起点 ⇒ 这里
+    /// **不需要排序**。它与旧代码「全量 `sort_by` + 同左端只留第一个」看到的
+    /// 候选序列**逐字相同**(同左端的第二个及以后的候选在旧代码里也全部撞上
+    /// `prev.start() == h.start` 而 `continue`,见 `note_hit` 的 ⚠)。
+    ///
+    /// ⚠ 定序键本身没被动:仍然是「起点 → 分支路径 → 抵达顺序**降序**」,
+    /// 只是第二 / 第三键的比较挪到了**抵达时**(`note_hit` 里那一次 `prio` 比),
+    /// 第一键退化成了下标顺序。代价从 O(n log n) 次定序比较降到 O(1) 次。
+    fn select_all(&mut self) -> Vec<Captures> {
+        let mut out: Vec<Captures> = Vec::new();
+        for start in 0..self.by_start.len() {
+            let slot = self.by_start[start];
+            if slot == NO_SLOT {
+                continue;
+            }
+            let Some(h) = self.slots[slot as usize].take() else {
+                continue;
+            };
+            let empty = h.start == h.end;
+            match out.last() {
+                None => {}
+                Some(prev) => {
+                    let pe = prev.end();
+                    if empty && h.start <= pe {
+                        continue; // 紧贴前一个匹配的空匹配:跳过(RE2/Go 规则)
+                    }
+                    if prev.start() == h.start {
+                        // ⚠ 有了按左端去重,这个分支**正常走不到**了 —— 同左端
+                        // 只剩一个候选。留着它是防御:万一有人改回去,这里仍是
+                        // 最后一道「左最早」的闸。
+                        //
+                        // [D13-019 / N-004]此前这里是
+                        // `if h.end <= prev.end() { continue } out.pop()`,
+                        // 后果是 `RE_FIND_ALL(RE("a|ab"), "ab")` 答 `["ab"]`,
+                        // 而 Python / Go 答 `["a"]`。契约里**照不到**:§3.7
+                        // 登记的六个 leftmost-first 判别式全部走 `RE_SEARCH`
+                        // (走 `best_hit`,不经这条分支),`RE_REPLACE` /
+                        // `RE_SPLIT` 建在 `find_all` 上,连带受影响。
+                        continue;
+                    } else if h.start < pe {
+                        continue; // 与上一个匹配重叠
+                    }
+                }
+            }
+            out.push(Captures { slots: h.caps });
+        }
+        out
     }
 
     /// 从起点 0 起跑一次扫描。
@@ -1298,57 +1555,9 @@ pub fn find(prog: &Program, text: &str, anchored: bool) -> Option<Captures> {
 pub fn find_all(prog: &Program, text: &str) -> Vec<Captures> {
     let input: Vec<char> = text.chars().collect();
     let mut vm = Vm::new(prog, &input);
-    vm.keep_all = true; // 这一条要非重叠的一串 ⇒ 必须攒全部候选
+    vm.keep_all(); // 这一条要非重叠的一串 ⇒ 必须攒候选(按左端去重之后)
     vm.scan(false);
-    let mut hits = std::mem::take(&mut vm.hits);
-    // 定序:起点 → 分支路径 → 抵达顺序**降序**。第三键与 `Hit::better_than`
-    // 同一口径(后到者更完整),否则单次搜索与 `find_all` 会在封顶区给出
-    // 两个不同的答案(D13-019 / N-003)。
-    //
-    // ⚠ 负向验证实测:升序下 **`find_all` 这条路径仍是完整长度**(见
-    // `Hit::better_than` 的同款注记)。这一处保持降序是为了**两个路径同口径**
-    // —— 它们共享排序键,口径分叉的话同一个「贪婪延伸到哪」的问题会在两条
-    // 路径上给出不同答案,那比现在更难查。它本身不被任何契约钉住。
-    hits.sort_by(|a, b| {
-        (a.start, &a.prio, std::cmp::Reverse(a.arrival)).cmp(&(
-            b.start,
-            &b.prio,
-            std::cmp::Reverse(b.arrival),
-        ))
-    });
-    let mut out: Vec<Captures> = Vec::new();
-    for h in hits {
-        let empty = h.start == h.end;
-        match out.last() {
-            None => {}
-            Some(prev) => {
-                let pe = prev.end();
-                if empty && h.start <= pe {
-                    continue; // 紧贴前一个匹配的空匹配:跳过(RE2/Go 规则)
-                }
-                if prev.start() == h.start {
-                    // 同一左端只留**排序后的第一个**。它已经是该左端的最优解:
-                    // 贪含量词的多个中间态由 `arrival` 降序排成「最长的在前」,
-                    // 交替分支由 `prio` 排成「先试的分支在前」。两条裁决键都
-                    // 已经在上面用掉了,这里再做一次「更长就取代」只会重排一次
-                    // 已经排好的东西 —— 而且会把 leftmost-first 破坏掉。
-                    //
-                    // ⚠ [D13-019 / N-004]此前这里是
-                    // `if h.end <= prev.end() { continue } out.pop()`,
-                    // 后果是 `RE_FIND_ALL(RE("a|ab"), "ab")` 答 `["ab"]`,
-                    // 而 Python / Go 答 `["a"]`。契约里**照不到**:§3.7 登记的
-                    // 六个 leftmost-first 判别式全部走 `RE_SEARCH`(走
-                    // `best_hit`,不经这条分支),`RE_REPLACE` / `RE_SPLIT` 建在
-                    // `find_all` 上,连带受影响。
-                    continue;
-                } else if h.start < pe {
-                    continue; // 与上一个匹配重叠
-                }
-            }
-        }
-        out.push(Captures { slots: h.caps });
-    }
-    out
+    vm.select_all()
 }
 
 // ── 成员层 ─────────────────────────────────────────────────────────────
@@ -1844,6 +2053,285 @@ mod tests {
 
     fn c_text(s: &str) -> Vec<char> {
         s.chars().collect()
+    }
+
+    // ── 性能守卫(埋点在 `Vm` 上,见 `Probe`)────────────────────────────
+    //
+    // ⚠ **判据是「可数出的代理指标」,不是绝对耗时。** 耗时在 CI 的机器上
+    // 必然不稳;而「排序比较了几次」「候选表里留了几条」「克隆了几次」都是
+    // 整数 —— 可复现、与机器无关、可做负向验证。
+    //
+    // ⚠ 埋点是 `#[cfg(test)]`,所以这些守卫只能落在**本文件**里:`wlwl-eval`
+    // 的契约是另一个 crate,拿不到 `cfg(test)` 项。**对外行为的**守卫在那边。
+
+    /// 跑一次 `find_all`(与 `find_all` 走同一条 `scan` + `select_all`),
+    /// 把性能埋点带回来。
+    fn probe_find_all(pat: &str, text: &str) -> (Vec<Captures>, Probe) {
+        let p = compile(pat).expect("compiles");
+        let input: Vec<char> = text.chars().collect();
+        let mut vm = Vm::new(&p, &input);
+        vm.keep_all();
+        vm.scan(false);
+        let caps = vm.select_all();
+        (caps, vm.probe)
+    }
+
+    /// 同上,但走**单次搜索**那条路(`RE_SEARCH` / `RE_TEST`)。
+    fn probe_find(pat: &str, text: &str) -> (Option<Captures>, Probe) {
+        let p = compile(pat).expect("compiles");
+        let input: Vec<char> = text.chars().collect();
+        let mut vm = Vm::new(&p, &input);
+        let caps = vm.run(false);
+        (caps, vm.probe)
+    }
+
+    /// ⚠ 先证明埋点是**活的**。没有这一步,下面那些 `== 0` 就是空转 ——
+    /// 「计数器没被接线」和「缺陷真的没了」在断言里长得一模一样。
+    fn assert_probe_is_live(p: &Probe) {
+        assert!(
+            p.hits_recorded > 0 && p.add_calls > 0 && p.inst_visits > 0 && p.thread_visits > 0,
+            "性能埋点是**死的**:hits_recorded={} add_calls={} inst_visits={} thread_visits={} \
+             —— 下面那些断言会全部空转",
+            p.hits_recorded,
+            p.add_calls,
+            p.inst_visits,
+            p.thread_visits
+        );
+    }
+
+    /// ⚠⚠ **等价判据用的旧算法** —— 逐字照抄自 [N-024] 那次性能改动**之前**
+    /// 的 `find_all`:全量 `sort_by`(起点 → 分支路径 → 抵达顺序降序)+ 贪心
+    /// 挑非重叠。它现在只活在测试里,当 `select_all` 的**等价判据**。
+    ///
+    /// ⚠ 为什么值得留着它:本成员对外承诺「leftmost-first + RE2/Go 空匹配
+    /// 邻接」,而 [N-024] 那笔优化把「同左端只认第一个」从「排序之后」挪到了
+    /// 「抵达之时」。这个等价**没有**任何一条手挑的样例能证明到「逐字」这个
+    /// 程度 —— 有了它,改一边不动另一边就会当场红。
+    fn legacy_select_all(mut hits: Vec<Hit>) -> Vec<Captures> {
+        hits.sort_by(|a, b| {
+            (a.start, &a.prio, std::cmp::Reverse(a.arrival)).cmp(&(
+                b.start,
+                &b.prio,
+                std::cmp::Reverse(b.arrival),
+            ))
+        });
+        let mut out: Vec<Captures> = Vec::new();
+        for h in hits {
+            let empty = h.start == h.end;
+            match out.last() {
+                None => {}
+                Some(prev) => {
+                    let pe = prev.end();
+                    if empty && h.start <= pe {
+                        continue;
+                    }
+                    if prev.start() == h.start {
+                        // 同一左端只留排序后的第一个(优化前由 sort_by 保证)。
+                        continue;
+                    } else if h.start < pe {
+                        // 与上一个匹配重叠。
+                        continue;
+                    }
+                }
+            }
+            out.push(Captures { slots: h.caps });
+        }
+        out
+    }
+
+    /// [N-024] 「优化前 = 优化后」的**逐字等价**判据。
+    ///
+    /// ⚠ 走**同一批抵达候选**的两条路:优化后的 `select_all`(按左端去重 +
+    /// 按下标升序遍历)vs 优化前的 `legacy_select_all`(全量 `sort_by` + 贪心)。
+    /// 手挑样例只能证明「我挑的那些还对」;这条证明的是**整批候选逐字同解**。
+    ///
+    /// ⚠ 语料含**左最长/leftmost-first 判别式**(`a|ab`、`ab*`、`(a|)`)、
+    /// **空匹配密集**(`a*`、`\w*`)、**多左端**、**嵌套可选组**
+    /// (`(a?)(b?)`)—— 也就是去重最可能出错的那几类形状。伪随机语料用
+    /// 确定性 LCG(不引依赖),失败时能原样复现。
+    #[test]
+    fn find_all_is_literally_equal_to_the_pre_optimization_algorithm() {
+        let pats = [
+            "a*", "a+", "a|ab", "(a)(b)?", "(?:ab)+", "[a-c]*", "a*?", "[0-9]+", "x?", "a{0,3}",
+            "(a+)(b*)", "\\w*", "b*|a*", "(a|ab)*c", "a+b*", ".?", "(a|)", "(a?)(b?)", "[ab]*c",
+            "^a*$", "a.c",
+        ];
+        let texts = [
+            "",
+            "a",
+            "b",
+            "ab",
+            "bab",
+            "abab",
+            "aa",
+            "aaabbb",
+            "abcabc",
+            "aabaa",
+            "xyz",
+            "aaa",
+            "abababab",
+            "9a1b22c333",
+            "aaXaa",
+            "ababab",
+            "cab",
+            "a\nb",
+            "aaaaabaaaaa",
+        ];
+        let mut n = 0usize;
+        for pat in pats {
+            let prog = compile(pat).unwrap_or_else(|e| panic!("{pat}: {e}"));
+            for text in texts {
+                let input: Vec<char> = text.chars().collect();
+                let mut vm = Vm::new(&prog, &input);
+                vm.keep_all();
+                vm.scan(false);
+                let optimized = vm.select_all();
+                let legacy = legacy_select_all(std::mem::take(&mut vm.legacy_hits));
+                assert_eq!(
+                    optimized, legacy,
+                    "pattern {pat:?} on {text:?}: optimized != legacy"
+                );
+                n += 1;
+            }
+        }
+        // 伪随机加料:确定性 LCG(不引依赖),长度 0..14 的 {a,b,c} 串。
+        let mut seed: u64 = 0x2545F4914F6CDD1D;
+        let mut next = move || {
+            seed ^= seed << 13;
+            seed ^= seed >> 7;
+            seed ^= seed << 17;
+            seed
+        };
+        let alphabet = ['a', 'b', 'c'];
+        for pat in pats {
+            let prog = compile(pat).unwrap_or_else(|e| panic!("{pat}: {e}"));
+            for _ in 0..300 {
+                let len = (next() % 15) as usize;
+                let text: String = (0..len).map(|_| alphabet[(next() % 3) as usize]).collect();
+                let input: Vec<char> = text.chars().collect();
+                let mut vm = Vm::new(&prog, &input);
+                vm.keep_all();
+                vm.scan(false);
+                let optimized = vm.select_all();
+                let legacy = legacy_select_all(std::mem::take(&mut vm.legacy_hits));
+                assert_eq!(
+                    optimized, legacy,
+                    "pattern {pat:?} on {text:?}: optimized != legacy"
+                );
+                n += 1;
+            }
+        }
+        assert!(
+            n >= 6_000,
+            "语料被削到 {n} 对了 —— 等价判据的覆盖面塌了,不是它变绿了"
+        );
+    }
+
+    /// [N-024] `find_all` 的候选表必须**按左端去重**。
+    ///
+    /// 规模取 `a*` × n 个 a:贪含量词在**每个**位置都抵达 `Match`,而「左最早」
+    /// 让这些候选**共用同一个左端 0** ⇒ 抵达次数 O(n) 而「不同起点数」= 1。
+    /// 这正是旧实现的病态形态:攒 n+1 份拷贝(每份带 `caps` + `prio` 两次堆
+    /// 分配)再 `sort_by` 一遍。
+    #[test]
+    fn find_all_dedups_by_left_end_instead_of_sorting() {
+        const N: usize = 200;
+        let (caps, p) = probe_find_all("a*", &"a".repeat(N));
+        // 语义没变:整串一整个匹配(贪心的定义 = 尽可能长)。
+        assert_eq!(caps.len(), 1, "a* on {N} a's is one match");
+        assert_eq!((caps[0].start(), caps[0].end()), (0, N));
+        assert_probe_is_live(&p);
+        assert!(
+            p.hits_recorded >= N,
+            "每一步都该有一次 Match 抵达(实测 {})",
+            p.hits_recorded
+        );
+
+        // ⚠ **这条才是抓住 N-024 的那条断言**(负向验证实测:缺陷形态下
+        // 201 条,修好后 1 条)。它量的是**候选表规模** = 这一步的内存量级。
+        assert_eq!(
+            p.hits_retained, 1,
+            "同一左端只该留最优的一个,实测留了 {} 条",
+            p.hits_retained
+        );
+
+        // ⚠⚠ **下面这条不是抓住 N-024 的那条** —— 别把它当成守卫的证据。
+        // 它是一条**上界**:没有比较排序 ⇒ 每条候选至多一次 `prio` 比。
+        // 负向验证实测:缺陷形态(`sort_by` 那一版)在这个输入上是 **200 次**,
+        // 修好后也是 **200 次** —— 因为抵达顺序里 `start` 本来就非降
+        // (左最早 ⇒ 每一步留在列表里的 `Match` 线程都是当前最靠左的那条),
+        // Rust 的自适应排序一眼就认出「已排好」而只花了 O(n) 次比较。
+        // ⇒ 报告里「O(n log n) 排序」那句在**最坏情况**上成立,实测不是
+        // 主要开销;**主要开销是那 201 份候选拷贝**,也就是上面那条断言。
+        // 留这条断言是为了挡住「哪天换了个抵达顺序,排序真的跑成 n log n」。
+        assert!(
+            p.order_comparisons <= p.hits_recorded,
+            "定序比较({})不该超过抵达次数({})—— 排序回来了",
+            p.order_comparisons,
+            p.hits_recorded
+        );
+
+        // 两档规模:候选表条数不得跟着**输入长度**长。
+        let (caps4, p4) = probe_find_all("a*", &"a".repeat(4 * N));
+        assert_eq!((caps4[0].start(), caps4[0].end()), (0, 4 * N));
+        assert_eq!(
+            p4.hits_retained, 1,
+            "规模 ×4 时候选表仍是 1 条(实测 {})",
+            p4.hits_retained
+        );
+        assert!(p4.order_comparisons <= p4.hits_recorded);
+    }
+
+    /// [N-024] 同一左端留下的是**最优**那一个 —— 不是先到的那一个。
+    ///
+    /// ⚠ 这条是**语义**守卫而非性能守卫:去重做错成「先到者胜」时结果会从
+    /// `end = n` 掉成 `end = 0`(空匹配),所以它能直接拆穿方向搞反的优化。
+    /// `note_hit` 的注记记着:那一处**曾经**是升序,实测那条路径仍是完整长度
+    /// —— 也就是说「方向搞反」在别的用例上不一定露馅,必须单独钉住。
+    #[test]
+    fn find_all_keeps_the_best_candidate_not_the_first_one() {
+        for n in [1usize, 2, 64, 65, 200] {
+            let (caps, _) = probe_find_all("a*", &"a".repeat(n));
+            assert_eq!(
+                (caps[0].start(), caps[0].end()),
+                (0, n),
+                "greedy a* on {n} a's must keep the longest reach"
+            );
+        }
+    }
+
+    /// [N-026] 每线程每步的分配热点:`Inst` 克隆 / `vec![start]` 工作栈 /
+    /// 线程克隆。修好前这三处分别是「每输入位置」「每次 `add` 调用」
+    /// 「每线程每步」的一次堆分配。
+    #[test]
+    fn the_scan_clones_nothing_per_thread_per_step() {
+        // ⚠ 末尾那个 `c` 不是凑数:输入**必须真的匹配得上**,否则 `note_hit`
+        // 一次都不会被调,`hits_recorded` 恒 0,埋点的活性断言会先红。
+        // 单次搜索那条路(`RE_SEARCH` / `RE_TEST`)才是日常热点:`find_all`
+        // 之外它才是默认路径,两条路的 `add` / `advance` 是同一份代码。
+        let text = format!("{}c", "ab".repeat(100));
+        for (label, p) in [
+            ("find", probe_find("[ab]+c", &text).1),
+            ("find_all", probe_find_all("[ab]+c", &text).1),
+        ] {
+            assert_probe_is_live(&p);
+            assert_eq!(
+                p.inst_clones, 0,
+                "[{label}] Inst 是每线程每步克隆的 ⇒ 每扫过一个 Class 就分配一次"
+            );
+            assert_eq!(
+                p.thread_clones, 0,
+                "[{label}] Thread 带 caps+prio 两个 Vec ⇒ 每线程每步两次分配"
+            );
+            assert_eq!(
+                p.work_allocs, 0,
+                "[{label}] ε 闭包的工作栈必须是 Vm 上的常驻缓冲,不是每次调用新建"
+            );
+            assert_eq!(
+                p.work_reuses, p.add_calls,
+                "[{label}] 每次 add 都得复用同一个工作栈"
+            );
+        }
     }
 
     #[test]

@@ -644,6 +644,114 @@ fn html_sanitize_css_rejects_attack_constructs() {
     }
 }
 
+/// [N-017] **CSS 转义**不能绕过拒绝扫描。
+///
+/// 复核样本:`width: e\78 pression(alert(1))`。浏览器按 CSS 转义把它读成
+/// `width: expression(alert(1))`,而修复前的扫描只做字面比较 ⇒ 放行。
+///
+/// **期望值的出处**(规范原文,不是「跑一遍看它输出什么」):
+/// - W3C **CSS Syntax Module Level 3**(CRD 2026-10-01,
+///   <https://www.w3.org/TR/css-syntax-3/>)§4.3.7 *Consume an escaped code point*
+///   (<https://www.w3.org/TR/css-syntax-3/#consume-escaped-code-point>):
+///   「Consume as many hex digits as possible, but no more than 5. **Note that this
+///   means 1-6 hex digits have been consumed in total.**」
+///   「**If the next input code point is whitespace, consume it as well.**」
+///   —— 那一个尾随空白被**消费掉**,于是 `\65 xpression` ≡ `expression`。
+/// - 同节 *anything else* 分支原文只有一句:「Return the current input code
+///   point.」—— **没有**「再消费一个尾随空白」这一步;消费空白的规则**只在**
+///   hex 分支里。非规范性的 §2.1 *Escaping* 同口径:「Any Unicode code point that
+///   is not a hex digits or a newline. The escape sequence is replaced by that
+///   code point.」
+/// - §4.3.8 *Check if two code points are a valid escape*:「if the second code
+///   point is a newline, return false.」⇒ `\` + 换行**不**是转义。
+/// - §4.2 *Definitions*:hex digit = digit ∪ `A-F` ∪ `a-f`;whitespace = newline /
+///   U+0009 / U+0020。⇒ 决定下面每条走**哪个分支**:`e` `b` 是 hex digit,所以它们
+///   的转义必须写成 `\78 ` `\62 `;`s` `r` `g` `t` `j` `u` 不是,所以 `\s` `\r`
+///   直接返回该码位(*anything else* 分支)。
+/// - ⚠ **转义必须落在 token 内部**才有绕过意义:落在 token **前面**(如 `\url(`)
+///   时字面串里照样含 `url(`,原文那一遍就拒了 —— 那种写法不是绕过,下面留了两
+///   条专门钉「两遍取并集、结论不变」。
+///
+/// ⚠ wlwl 源码里 `\\` = **一个**反斜杠(wlwl 字符串的合法转义只有
+/// `\" \\ / \b \f \n \r \t \0`),故 CSS 转义前缀一律写两个。
+#[test]
+fn html_sanitize_css_rejects_css_escaped_attack_constructs() {
+    for payload in [
+        // ① **hex 分支**(`\` + 1–6 位十六进制)。每一条在**原文**里都拼不出
+        //    拒绝构造(转义吃掉了 token 里的一个码位)—— 这才是「绕过」。
+        // `e` + `\78 ` + `pression(` ≡ `expression(`
+        r#"HTML_SANITIZE_CSS("width: e\\78 pression(alert(1))")"#,
+        r#"HTML_SANITIZE_CSS("width: \\65 xpression(alert(1))")"#,
+        // ⚠ 「no more than 5」+「1-6 in total」的判别样本:6 位十六进制取满后,
+        // 下一个字符 `x` **不是** whitespace ⇒ 不消费,`\000065xpression(` ≡
+        // `expression(`。写成「只吃一位十六进制」的实现会在这里漏放。
+        r#"HTML_SANITIZE_CSS("width: \\000065xpression(alert(1))")"#,
+        // 十六进制**大写**同样是 hex digit(§4.2 明写 `A-F`),且比较前先小写化。
+        // ⚠ 转义只替换**一个**码位 —— 写成 `E\78 XPRESSION` 会解成 `ExXPRESSION`
+        // (两个 x),那不是拒绝构造,是这条自己写错。
+        r#"HTML_SANITIZE_CSS("WIDTH: \\45 XPRESSION(alert(1))")"#,
+        r#"HTML_SANITIZE_CSS("color: EXPRESSIO\\4E (alert(1))")"#,
+        r#"HTML_SANITIZE_CSS("color: j\\61 vascript:alert(1)")"#,
+        r#"HTML_SANITIZE_CSS("color: vb\\73 cript:msgbox(1)")"#,
+        r#"HTML_SANITIZE_CSS("\\62 ehavior: \\75 rl(#default#time2)")"#,
+        r#"HTML_SANITIZE_CSS("@\\69 mport \\75 rl(evil.css)")"#,
+        r#"HTML_SANITIZE_CSS("-\\6d oz-binding: anything")"#,
+        // ② **anything else 分支**(`\` + **非** hex digit 的码位 ⇒「Return the
+        //    current input code point.」)。挑的字符都落在 token **内部**,
+        //    所以原文里同样拼不出 token。⚠ 用首字母(`\j` `\u`)是**不成立**的
+        //    绕过:反斜杠在 token 之前,字面里照样含 token。
+        r#"HTML_SANITIZE_CSS("width: expres\\sion(alert(1))")"#,
+        r#"HTML_SANITIZE_CSS("color: java\\script:alert(1)")"#,
+        r#"HTML_SANITIZE_CSS("color: vb\\script:msgbox(1)")"#,
+        r#"HTML_SANITIZE_CSS("behavio\\r: \\75 rl(#default#time2)")"#,
+        r#"HTML_SANITIZE_CSS("-moz-bindin\\g: anything")"#,
+        r##"HTML_SANITIZE_CSS("@impo\\rt \"evil.css\"")"##,
+        r#"HTML_SANITIZE_CSS("color: red; background: u\\rl(evil.png)")"#,
+        // ⚠ 这两条用首字母写法,**字面就已经**含 token,原文那一遍就会拒;留着是
+        //    为了钉住「解码不改变这个结论」(两遍取并集,不是二选一)。
+        r#"HTML_SANITIZE_CSS("color: \\javascript:alert(1)")"#,
+        r#"HTML_SANITIZE_CSS("color: red; background: \\url(evil.png)")"#,
+        // ⚠ 注释里藏**转义版**同样被拒 —— 原文那一遍与解码那一遍是并集,
+        // 任一侧撤掉,这条都会红(负向验证就是靠它)。
+        r#"HTML_SANITIZE_CSS("color: /* \\75 rl(x) */ red")"#,
+        // 转义版藏在**畸形声明**里(没有冒号 / 解析不出来)也一样被拒:
+        // 拒绝扫描是文本级的,不靠「解析不出来就丢掉」蒙混。
+        r#"HTML_SANITIZE_CSS("garbage \\65 xpression(alert(1)) garbage")"#,
+    ] {
+        let src = format!("{CSS_IMP} IS_ERR({payload})");
+        assert_eq!(&actual_raw(&src), "TRUE", "payload = {payload}");
+    }
+}
+
+/// [N-017] **反向**守卫:解码**不得**把白名单里的正常值判成攻击。
+///
+/// 这是「不误拒」那一半的契约,和上一条一起才构成本次修复的完整语义。
+/// ⚠ 期望值是**规范推出来的**结论(§4.3.7 解完不含任何拒绝构造 ⇒ 不该
+/// `ERR`),不是实现输出;断言的是 `IS_ERR` 这个**判定位**,故实现改了输出形状
+/// 也不会让它跟着变。
+#[test]
+fn html_sanitize_css_escape_decoding_does_not_reject_legitimate_values() {
+    for payload in [
+        // 常见的嵌套转义:中文自定义字体名(`\5FAE\8BA4` ≡ `微认`)。
+        // §4.3.7 解出的是两个字,不含任何拒绝构造 ⇒ 恒不 `ERR`。
+        r#"IS_ERR(HTML_SANITIZE_CSS("font-family: \"\\5FAE\\8BA4\""))"#,
+        // 转义后的普通标识符:`\65 x` ≡ `ex`,不是任何拒绝构造
+        r#"IS_ERR(HTML_SANITIZE_CSS("color: \\65 x"))"#,
+        // hex 分支 + 消歧空格:`\9 ` 解出的是制表符(U+0009),不是 `(`(U+0028 写成
+        // `\28 ` 才是)⇒ 解完不含任何拒绝构造。
+        r#"IS_ERR(HTML_SANITIZE_CSS("content: \"a\\9 b\""))"#,
+        // `\` + **换行**不是 valid escape(§4.3.8),两个字节都留着 ⇒ 拼不出拒绝构造。
+        // ⚠ wlwl 字符串不认 `\uXXXX`,换行只能用 wlwl 认得的 `\n`;`\\` 才是
+        // 一个反斜杠 —— 于是这里的 CSS 文本是「LF + `\` + LF」。
+        r#"IS_ERR(HTML_SANITIZE_CSS("color: red\n\\\n"))"#,
+        // 没有 `\` 的普通输入不受解码影响
+        r#"IS_ERR(HTML_SANITIZE_CSS("color: red; padding: 4px"))"#,
+    ] {
+        let src = format!("{CSS_IMP} {payload}");
+        assert_eq!(&actual_raw(&src), "FALSE", "payload = {payload}");
+    }
+}
+
 /// `HTML_SANITIZE_CSS` 的括号 / 引号感知:分号与冒号在括号或引号内**不算分隔符**。
 #[test]
 fn html_sanitize_css_is_paren_and_quote_aware() {

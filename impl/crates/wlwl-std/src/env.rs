@@ -11,8 +11,30 @@
 //! `ENV_KEYS()` **排序后返回**:`std::env::vars()` 的迭代序**逐次可能不同**,
 //! 而**可复现是本语言卖点第一条** ⇒ 排序是**规范性要求**,不是实现偏好。
 //!
-//! `ENV_SET` **仅本进程可见**,**不写磁盘** —— 它改的是宿主给本进程的那份副本,
-//! 子进程会继承,重启后消失。
+//! `ENV_SET` **仅本进程可见**,**不写磁盘** —— 它改的是**启动时从宿主环境拍的
+//! 那份快照**(`StdCtx::from_process` 里的 `std::env::vars().collect()`),
+//! 而不是操作系统那份真的环境,所以进程重启后自然消失。
+//!
+//! ⚠🔴 **[N-029]** 旧注释在这里写的是「**子进程会继承**」—— **那半句是错的,
+//! 已改正。** ⚠ 要分清两份东西:
+//!
+//! | | 来源 | `PROCESS_RUN` 的子进程看得到吗 |
+//! |---|---|---|
+//! | 操作系统环境 | `std::env::vars()` | **看得到**(`Command` 默认继承真实环境) |
+//! | wlwl 级环境表 `ctx.env` | 上述快照 + `ENV_SET` 的写入 | **看不到** |
+//!
+//! `PROCESS_RUN` 只把 `opts.env` 里显式给的键加进去(`process.rs` 里
+//! `for (k, v) in &extra_env { cmd.env(k, v); }`),**从不合并 `ctx.env`** ⇒
+//! `ENV_SET("FOO", "bar")` 之后 `PROCESS_RUN(["…", "printenv", "FOO"])`,
+//! 子进程**读不到** `FOO`。
+//!
+//! ⚠ **为什么是「改文档」而不是「改成继承」**(`D13-067`):让子进程继承
+//! `ctx.env` 是**行为变更**,会让**既有程序**的子进程环境突然多出变量;而且
+//! 子进程的环境将取决于**语句执行顺序**(程序跑到哪儿 `ENV_SET` 了多少),
+//! 这与本模块开头「**可复现是本语言卖点第一条**」那条立场直接冲突。⇒ 先把
+//! 文档改对,把「要不要继承」留成一个**独立的产品裁决**(见台账),不在缺陷
+//! 修复批次里夹带。⚠ 注意规范 §19 说的「追加到继承来的环境」指的是**操作系统
+//! 那份**,那句本身是对的,不必改。
 
 use crate::{ModuleSpec, StdFn};
 use wlwl_error::ErrorCode;
@@ -74,6 +96,10 @@ pub fn env_get(host: &mut dyn StdHost, args: Vec<Value>) -> Result<Outcome, Wlwl
 }
 
 /// `ENV_SET(name, value) -> NULL` —— **仅本进程可见,不写磁盘**。
+///
+/// ⚠ **写进的是 `ctx.env` 这份 wlwl 级快照,不是操作系统环境** ⇒
+/// **`PROCESS_RUN` 起的子进程看不到它**(该模块只加 `opts.env` 显式给的键)。
+/// 详见本文件头部 `N-029` 的对照表。
 pub fn env_set(host: &mut dyn StdHost, args: Vec<Value>) -> Result<Outcome, WlwlError> {
     const NAME: &str = "ENV_SET";
     if args.len() != 2 {

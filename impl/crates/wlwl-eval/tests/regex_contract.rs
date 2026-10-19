@@ -331,6 +331,78 @@ const CASES: &[Case] = &[
         expect: "<a>b",
     },
 
+    // ── RE_FIND_ALL 的**每个左端**只出一个候选 ────────────────────────────
+    //
+    // ⚠ 这几条是 [N-024]「按左端去重 + 不排序」那笔性能改动的**行为守卫**。
+    // 性能判据(定序比较次数、候选表条数)是整数,埋在 `regex.rs` 的
+    // `#[cfg(test)]` 埋点里,只能落单测;**对外行为**的守卫在这里。
+    //
+    // 期望值出处全部是 **Python `re`**(`re.finditer` / `re.findall` 的实际
+    // 输出,逐条跑过),**不是**本实现跑出来抄的 —— 那会把「优化改错了」也
+    // 冻成基线。
+    Case {
+        name: "find_all_reports_spans_in_left_end_order",
+        src: concat!(
+            r#"IMPORT("wlwl:std.regex", ["RE", "RE_FIND_ALL"]); "#,
+            r#"RE_FIND_ALL(RE("[0-9]+"), "ab12cd345")"#
+        ),
+        // Python `re.finditer(r"[0-9]+", "ab12cd345")` 的 `span()` 逐条核对:
+        // (2, 4) = "12"、(6, 9) = "345"。**顺序也是期望值的一部分** ——
+        // 选取阶段按起点升序遍历,去重之后起点键退化成了下标。
+        expect: concat!(
+            "[[matched: 12, start: 2, end: 4, groups: [12]], ",
+            "[matched: 345, start: 6, end: 9, groups: [345]]]"
+        ),
+    },
+    Case {
+        name: "find_all_keeps_the_winning_captures_at_a_left_end",
+        src: concat!(
+            r#"IMPORT("wlwl:std.regex", ["RE", "RE_FIND_ALL"]); "#,
+            r#"RE_FIND_ALL(RE("(a)(b)?"), "abab")"#
+        ),
+        // Python `re.findall(r"(a)(b)?", "abab")` = [('a','b'), ('a','b')]。
+        // ⚠ 这一条专门钉「留的是**最优**那个候选,不是**先到**那个」:
+        // 左端 0 上先后抵达过 (0,1) 组 2 未参与 与 (0,2) 组 2 = "b" 两个候选,
+        // 留错的话 `groups` 会变成 `[ab, a, NULL]`。
+        expect: concat!(
+            "[[matched: ab, start: 0, end: 2, groups: [ab, a, b]], ",
+            "[matched: ab, start: 2, end: 4, groups: [ab, a, b]]]"
+        ),
+    },
+    Case {
+        name: "find_all_reports_two_left_ends_in_order",
+        src: concat!(
+            r#"IMPORT("wlwl:std.regex", ["RE", "RE_FIND_ALL"]); "#,
+            r#"RE_FIND_ALL(RE("a+"), "aa b aa")"#
+        ),
+        // Python `re.finditer(r"a+", "aa b aa")` 的 span() = (0,2)、(5,7)。
+        expect: concat!(
+            "[[matched: aa, start: 0, end: 2, groups: [aa]], ",
+            "[matched: aa, start: 5, end: 7, groups: [aa]]]"
+        ),
+    },
+    // `RE_SPLIT` / `RE_REPLACE` 建在 `find_all` 上 ⇒ 同一个改动的另外两条通路。
+    // 之前只有 `RE_REPLACE` 的一条 leftmost-first 判别式挂在 `find_all` 上,
+    // 而它只覆盖**一个**左端;「多个左端按升序排」这一半当时没人钉。
+    Case {
+        name: "split_reports_every_left_end_boundary",
+        src: concat!(
+            r#"IMPORT("wlwl:std.regex", ["RE", "RE_SPLIT"]); "#,
+            r#"RE_SPLIT(RE("[0-9]+"), "ab12cd345x")"#
+        ),
+        // Python `re.split(r"[0-9]+", "ab12cd345x")` = ['ab', 'cd', 'x']。
+        expect: "[ab, cd, x]",
+    },
+    Case {
+        name: "replace_reports_every_left_end_boundary",
+        src: concat!(
+            r#"IMPORT("wlwl:std.regex", ["RE", "RE_REPLACE"]); "#,
+            r#"RE_REPLACE(RE("(a+)"), "aa b aa", "<$1>")"#
+        ),
+        // Python `re.sub(r"(a+)", r"<\1>", "aa b aa")` = '<aa> b <aa>'。
+        expect: "<aa> b <aa>",
+    },
+
     // ── RE_REPLACE ───────────────────────────────────────────────────
     Case {
         name: "replace_with_numbered_group_refs",
@@ -744,6 +816,67 @@ fn greedy_repeat_reports_the_whole_run_at_every_size_past_the_cap() {
             n.to_string(),
             "greedy a+ on {n} a's must report end = {n}"
         );
+    }
+}
+
+/// [N-024] `find_all` 在**封顶点之后**仍报整串长度。
+///
+/// ⚠ **必须打在 `RE_FIND_ALL` 上,不能拿 `RE_SEARCH` 代替** —— 同款理由见
+/// 上方 `greedy_repeat_survives_the_priority_cap` 的注记:症状只落在走
+/// `best_hit` 的那条路径上,拿对的那条写契约才有效。这里反过来:封顶区
+/// (`PRIO_MAX` 之后 `prio` 塌成同一向量)裁决权全落到抵达顺序那一键,
+/// 而 [N-024] 那笔改动**正好把这一键的比较从「排序时」挪到了「抵达时」**
+/// ⇒ 方向要是搞反成「先到者胜」,这一条会答 `end = 0`(空匹配)而不是整串。
+///
+/// ⚠ 期望值不是抄实现:`n` 就是输入长度,「贪婪量词匹配整个输入」是**语义
+/// 定义** —— Python `len(re.search("a+", "a"*n).group())` 同样是 `n`。
+#[test]
+fn find_all_reports_the_whole_run_past_the_priority_cap() {
+    for n in [32usize, 63, 64, 65, 66, 100, 200, 1000] {
+        let a = "a".repeat(n);
+        let got = actual(&format!(
+            r#"IMPORT("wlwl:std.regex", ["RE", "RE_FIND_ALL"]); RE_FIND_ALL(RE("a+"), REPEAT("a", {n}))"#
+        ));
+        assert_eq!(
+            got,
+            format!("[[matched: {a}, start: 0, end: {n}, groups: [{a}]]]"),
+            "greedy a+ on {n} a's must report one match spanning all {n}"
+        );
+    }
+}
+
+/// [N-024 / N-026] 性能守卫住在 `wlwl-std` 那边(埋点是 `#[cfg(test)]` 项,
+/// 跨 crate 读不到)。这边负责的是**行为不许变** —— 两条性能改动合起来覆盖
+/// `find_all` 的候选筛选与 VM 热路径,而 `RE_FIND_ALL` / `RE_REPLACE` /
+/// `RE_SPLIT` 三个成员建在它上面,所以行为守卫必须三个都打到。
+///
+/// ⚠ 这里**不钉任何绝对耗时**:耗时在 CI 的机器上必然不稳。可数的代理指标
+/// (定序比较次数、候选表条数、每步克隆次数)在 `regex.rs` 的单测里。
+#[test]
+fn find_all_family_members_agree_with_python_on_multi_match_shapes() {
+    // 期望值出处:Python `re`(逐条跑过 `finditer` / `findall` / `split` / `sub`),
+    // 不是本实现输出。多左端 + 捕获 + 空匹配邻接这三种形状各来一遍。
+    for (name, src, want) in [
+        (
+            "multi-start greedy",
+            r#"RE_FIND_ALL(RE("a+"), "aa b aa")"#,
+            "[[matched: aa, start: 0, end: 2, groups: [aa]], [matched: aa, start: 5, end: 7, groups: [aa]]]",
+        ),
+        (
+            "captures per start",
+            r#"RE_FIND_ALL(RE("(a)(b)?"), "abab")"#,
+            "[[matched: ab, start: 0, end: 2, groups: [ab, a, b]], [matched: ab, start: 2, end: 4, groups: [ab, a, b]]]",
+        ),
+        (
+            "empty-match adjacency",
+            r#"RE_FIND_ALL(RE("a*"), "bab")"#,
+            "[[matched: , start: 0, end: 0, groups: []], [matched: a, start: 1, end: 2, groups: [a]], [matched: , start: 3, end: 3, groups: []]]",
+        ),
+    ] {
+        let got = actual(&format!(
+            r#"IMPORT("wlwl:std.regex", ["RE", "RE_FIND_ALL"]); {src}"#
+        ));
+        assert_eq!(got, want, "[{name}] drifted:\n  want: {want}\n  got:  {got}");
     }
 }
 

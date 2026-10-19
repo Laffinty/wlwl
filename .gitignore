@@ -87,3 +87,12 @@ impl/target/llvm-cov.info
 # Project-local scratch (never tracked)
 ast_stable_preview.txt
 docs/site/site/
+
+# [v0.11.3 / D13-069] CI 测试日志落盘目录(`ci.yml` 的「保留失败名 + 自动复跑
+# 一次」机制写在这里)。
+#
+# ⚠ **必须忽略**:里面是 `cargo test --locked --all-targets` 的**完整未过滤**
+# 输出,artifact 还会留 14 天。它在 CI 里生成,但任何人本地复现那个 step 都会
+# 落一份下来 —— 而未过滤的测试输出是最容易混进 secrets 的东西,不该有机会被
+# `git add .` 带进历史。
+impl/.ci-logs/
