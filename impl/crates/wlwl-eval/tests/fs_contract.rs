@@ -540,6 +540,17 @@ fn walk_dir_follow_descends_into_a_symlinked_directory_only_when_follow_is_true(
         followed.contains("link/inside.txt"),
         "follow = TRUE must descend into a symlinked directory — {followed}"
     );
+    // ⚠⚠ **`real` 与 `link` 两条都必须出现**(`find -L` 同款:跟随链接不等于
+    //   只走一条路)。这一条是 **D13-065** 加的 —— 此前只断言 `link` 出现,
+    //   于是**「`real` 被吃掉」这个方向照不出来**。
+    // ⚠ 而旧实现(`visited` = 全局已见目标集合)恰恰是**反过来的**那个方向坏:
+    //   `read_dir` 顺序未定义,`real` 先被遍历到时 `link` 就被当成「已访问」跳过
+    //   —— CI 上 ubuntu 碰巧先返回 `link` 所以绿、macOS 先返回 `real` 所以红
+    //   (run 236/237/238)。⇒ **单平台绿灯证明不了顺序相关的性质**。
+    assert!(
+        followed.contains("real/inside.txt"),
+        "follow = TRUE must ALSO keep the real directory's path — {followed}"
+    );
     let _ = std::fs::remove_dir_all(&dir);
 }
 

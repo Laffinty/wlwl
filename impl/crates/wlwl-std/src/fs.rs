@@ -441,17 +441,55 @@ fn walk(
     pattern: Option<&str>,
     follow: bool,
     out: &mut Vec<String>,
-    visited: &mut Vec<std::path::PathBuf>,
+    chain: &mut Vec<std::path::PathBuf>,
 ) -> std::io::Result<()> {
-    // 跟随时防环:同一个真实目录只展开一次。
-    if follow {
-        if let Ok(canon) = dir.canonicalize() {
-            if visited.contains(&canon) {
-                return Ok(());
-            }
-            visited.push(canon);
+    // 🔴🔴 [D13-065 / CI 抓到] 防环集合必须是**当前递归链上的祖先集合**,
+    // 不是「本轮见过的所有目标」。
+    //
+    // ⚠⚠ 此前它是 `visited`(全局已见集合,键 = `canonicalize()` 的**目标**),
+    //   于是 **`link -> real` 这种「同目标别名」被当成「环」**:只要 `real` 先
+    //   被遍历到,`link` 就被跳过 —— 而它**根本不是环**,是另一条合法路径。
+    //
+    // ⚠ **这就是 CI 连红三次的原因**(2026-10-19,run 236/237/238,**只有
+    //   macOS 失败**):`std::fs::read_dir` 的**迭代顺序未定义**,Linux 上
+    //   恰好先返回 `link` ⇒ 断言通过;macOS 上先返回 `real` ⇒ 输出只有
+    //   `[real/inside.txt]`。
+    //   ⇒ **ubuntu 当初「验证通过」是碰巧,不是行为正确** —— 这条更正比
+    //   修复本身更值得记:单平台绿灯证明不了顺序相关的性质。
+    //
+    // 正确口径(`find -L` 同款):**只有回到祖先才是环**。指向别处的链接是
+    // 合法别名,照常展开 —— 于是 `real` 与 `link` 两条路径**都**出现在结果里。
+    let canon = if follow {
+        dir.canonicalize().ok()
+    } else {
+        None
+    };
+    if let Some(c) = canon.as_ref() {
+        if chain.contains(c) {
+            // 回到祖先 = 环。未 push,所以这里不需要 pop。
+            return Ok(());
         }
     }
+    if let Some(c) = canon.as_ref() {
+        chain.push(c.clone());
+    }
+    let r = walk_body(dir, rel, pattern, follow, out, chain);
+    if canon.is_some() {
+        chain.pop();
+    }
+    r
+}
+
+/// [`walk`] 的循环体。与防环判定分开,是为了让「入栈 / 出栈」这对状态操作
+/// 只有**一处**,不会被某个 `return` 漏掉 pop。
+fn walk_body(
+    dir: &std::path::Path,
+    rel: &str,
+    pattern: Option<&str>,
+    follow: bool,
+    out: &mut Vec<String>,
+    chain: &mut Vec<std::path::PathBuf>,
+) -> std::io::Result<()> {
     let rd = match std::fs::read_dir(dir) {
         Ok(rd) => rd,
         // 根:冒泡(见 D13-045)。
@@ -505,7 +543,7 @@ fn walk(
         if is_dir && (!is_link || follow) {
             // `?` 只可能拿到子目录的错误,而子目录的错误在上面已被吞成
             // `Ok(())` ⇒ 这里不会把「某个坏子目录」升级成整次遍历的失败。
-            walk(&path, &child_rel, pattern, follow, out, visited)?;
+            walk(&path, &child_rel, pattern, follow, out, chain)?;
         }
     }
     Ok(())
