@@ -51,17 +51,51 @@ const POLL: Duration = Duration::from_millis(5);
 /// 无限期等下去。
 const JOIN_GRACE: Duration = Duration::from_millis(500);
 
+/// 组装 `PROCESS_RUN` 要跑的那条 `Command`。
+///
+/// ⚠⚠ **为什么必须是独立函数、不能就地搭**:`std::process::Command`
+/// **没有实现 `Clone`**(它带 pre-exec 闭包,克隆不了)⇒ 「带进程组起一次、
+/// 失败再不带组起一次」这个**降级路径必须能重新造一个 `Command`**。
+///
+/// ⚠⚠ **这不是理论顾虑**:`D13-068` 第一版写的是 `cmd.clone()` ⇒ **在 POSIX 上
+/// 根本编译不过**(`no method named 'clone' found for &mut std::process::Command`),
+/// 而那段在 `#[cfg(unix)]` 里 ⇒ **Windows 的 clippy 永远看不见它**
+/// —— 只能等 CI 的 ubuntu / macOS 才炸出来(2026-10-19 run 240 实测如此)。
+/// ⇒ **凡是只编在某个平台上的代码,「本机门禁全绿」对它一句话都不算**。
+fn build_command(
+    argv: &[String],
+    cwd: Option<&std::path::Path>,
+    extra_env: &[(String, String)],
+) -> Command {
+    let mut cmd = Command::new(&argv[0]);
+    cmd.args(&argv[1..]);
+    cmd.stdin(Stdio::null())
+        .stdout(Stdio::piped())
+        .stderr(Stdio::piped());
+    if let Some(d) = cwd {
+        cmd.current_dir(d);
+    }
+    for (k, v) in extra_env {
+        cmd.env(k, v);
+    }
+    cmd
+}
+
 /// 起子进程,并返回**我们自己创建的进程组 id**;拿不到就是 `None`。
 ///
 /// 🔴 [N-037 项三 / D13-068] **契约**:返回 `Some(pgid)` **当且仅当**「这个组
 /// 是本次运行自己建的、且子进程已经进组了」。`kill_tree` 全靠这条前提才敢按组
 /// 杀 —— 返回 `None` 时它**必须**退回 `child.kill()`。
 #[cfg(unix)]
-fn spawn_owned_group(cmd: &mut Command) -> io::Result<(std::process::Child, Option<i32>)> {
+fn spawn_owned_group(
+    argv: &[String],
+    cwd: Option<&std::path::Path>,
+    extra_env: &[(String, String)],
+) -> io::Result<(std::process::Child, Option<i32>)> {
     use std::os::unix::process::CommandExt;
     // ⚠ `process_group(0)` 的语义就是 `setpgid(0, 0)`:把子进程变成**新进程组的
     //   组长**。它 1.64 起 stable、**纯标准库** —— 设组这一步不需要 libc。
-    let mut grouped = cmd.clone();
+    let mut grouped = build_command(argv, cwd, extra_env);
     grouped.process_group(0);
     match grouped.spawn() {
         Ok(c) => {
@@ -69,18 +103,27 @@ fn spawn_owned_group(cmd: &mut Command) -> io::Result<(std::process::Child, Opti
             //   子进程一退出,组就可能消失,事后再问谁也答不出来。
             // ⚠ `try_from` 而不是 `as`:万一 pid 超出 `i32`(现实中不可能)就得到
             //   `None` ⇒ 降级成「只杀直接子进程」,而不是去杀一个可疑的组。
-            Ok((c, i32::try_from(c.id()).ok()))
+            // ⚠⚠ **必须先把 pid 取出来再构造元组**:写成
+            //   `Ok((c, i32::try_from(c.id()).ok()))` 会**先移走 `c` 再借它**
+            //   ⇒ `E0382 borrow of moved value`。⚠ 这条**本机 Windows 看不见**
+            //   (整段在 `#[cfg(unix)]` 里),是 2026-10-19 的 unix 形状检查抓出来的
+            //   —— 同一段里还有一个 `cmd.clone()` 的编译错误,两者都只有 CI 能炸。
+            let pgid = i32::try_from(c.id()).ok();
+            Ok((c, pgid))
         }
         Err(_) => {
             // ⚠ **降级而不是让 `PROCESS_RUN` 失败**(红线:受限环境里
             //   `PROCESS_RUN` 不该因为一个**优化**而拒绝干活)。seccomp / 沙箱 /
             //   某些容器配置会让 fork 之后的 `setpgid` 失败,cargo 把它**一并报成
-            //   spawn 失败** —— 于是这里不带进程组再起一次,并如实返回 `None`。
+            //   spawn 失败** —— 于是这里**重新造一条** `Command`(不带进程组)再起
+            //   一次,并如实返回 `None`。
             //
             // ⚠⚠ **重试不会让目标程序跑两遍**:`spawn()` 返回 `Err` 意味着 fork
             //   失败、或 fork 成功了但 exec / pre-exec 的 `setpgid` 失败 ⇒ 那次
             //   fork 出来的子进程**没有执行目标程序**。成功的那一次只会返回 `Ok`。
-            cmd.spawn().map(|c| (c, None))
+            build_command(argv, cwd, extra_env)
+                .spawn()
+                .map(|c| (c, None))
         }
     }
 }
@@ -91,8 +134,14 @@ fn spawn_owned_group(cmd: &mut Command) -> io::Result<(std::process::Child, Opti
 ///   了同一件事(见 `kill_tree`)⇒ 这里不需要、也没有引入任何 Windows 侧机制。
 ///   返回 `None` ⇒ `kill_tree` 在 Windows 上**逐字保持原样**。
 #[cfg(windows)]
-fn spawn_owned_group(cmd: &mut Command) -> io::Result<(std::process::Child, Option<i32>)> {
-    cmd.spawn().map(|c| (c, None))
+fn spawn_owned_group(
+    argv: &[String],
+    cwd: Option<&std::path::Path>,
+    extra_env: &[(String, String)],
+) -> io::Result<(std::process::Child, Option<i32>)> {
+    build_command(argv, cwd, extra_env)
+        .spawn()
+        .map(|c| (c, None))
 }
 
 /// 超时要杀的**进程组** id —— `None` 表示「没有可按组杀的组」。
@@ -351,26 +400,15 @@ pub fn process_run(host: &mut dyn StdHost, args: Vec<Value>) -> Result<Outcome, 
         Some(other) => return Err(type_err(host, NAME, "an opts dictionary", other)),
     }
 
-    let mut cmd = Command::new(&argv[0]);
-    cmd.args(&argv[1..]);
-    cmd.stdin(Stdio::null())
-        .stdout(Stdio::piped())
-        .stderr(Stdio::piped());
-    if let Some(d) = &cwd {
-        cmd.current_dir(d);
-    }
-    for (k, v) in &extra_env {
-        cmd.env(k, v);
-    }
-
     // 🔴 [N-037 项三 / D13-068] 起子进程时**顺手记下自己建的进程组**。
     // ⚠ 记的是 `None` 的那一次 = 「没拿到组信息」⇒ `kill_tree` 只杀直接子进程。
     // ⚠ 正常路径**不**按组杀:一个程序合法地起后台进程然后自己退出,那是它的
     //   语义,不是泄漏(泄漏的定义是「我们超时杀了它」之后还留着)。
-    let (mut child, owned_group) = match spawn_owned_group(&mut cmd) {
-        Ok(pair) => pair,
-        Err(e) => return ok(proc_err(NAME, format!("spawn {}: {e}", argv[0]))),
-    };
+    let (mut child, owned_group) =
+        match spawn_owned_group(&argv, cwd.as_deref().map(std::path::Path::new), &extra_env) {
+            Ok(pair) => pair,
+            Err(e) => return ok(proc_err(NAME, format!("spawn {}: {e}", argv[0]))),
+        };
     // 抽干两个管道,否则子进程写满缓冲就死锁(「先读后等」是错的)。
     let mut out_pipe = child.stdout.take();
     let mut err_pipe = child.stderr.take();
@@ -678,14 +716,12 @@ mod tests {
     ///   逐字不变(红线二)。
     #[test]
     fn a_spawn_only_records_a_group_where_one_exists() {
-        let (prog, args): (&str, &[&str]) = if cfg!(windows) {
-            ("cmd", &["/C", "exit", "0"])
+        let argv: Vec<String> = if cfg!(windows) {
+            vec!["cmd".into(), "/C".into(), "exit".into(), "0".into()]
         } else {
-            ("sh", &["-c", "exit 0"])
+            vec!["sh".into(), "-c".into(), "exit 0".into()]
         };
-        let mut cmd = Command::new(prog);
-        cmd.args(args);
-        let (mut child, group) = spawn_owned_group(&mut cmd).expect("spawn");
+        let (mut child, group) = spawn_owned_group(&argv, None, &[]).expect("spawn");
         let pid = child.id();
         let _ = child.wait();
         if cfg!(windows) {
