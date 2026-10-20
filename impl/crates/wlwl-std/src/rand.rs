@@ -376,7 +376,7 @@ pub fn seed(host: &mut dyn StdHost, args: Vec<Value>) -> wlwl_error::WlwlResult<
 ///
 /// 所以状态与值**一起**返回,用语言**已有**的数组模式绑定消费:
 ///
-/// ```
+/// ```text
 /// LET(r0, SEED("seed"));
 /// LET([v, r1], UNIFORM(r0));        // r1 是**已推进**的状态
 /// LET([w, r2], UNIFORM(r1));

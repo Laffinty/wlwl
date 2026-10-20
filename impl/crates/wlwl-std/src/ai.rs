@@ -473,7 +473,11 @@ pub(super) fn std_ask_stream_inner(
     ctx: &mut StdCtx,
     args: Vec<StdValue>,
 ) -> Result<StdValue, StdError> {
-    if args.len() < 2 || args.len() > 4 {
+    if args.len() < 3 || args.len() > 4 {
+        // ⚠ **下界是 3 不是 2** —— 规范 §16 的成员表写的是
+        // `ASK_STREAM(model, prompt, callback, opts?)`,即 **3 个必填**;
+        // 而下面无条件取 `args[2]`(callback)⇒ 守卫放行 2 个实参时,
+        // **索引越界 panic**。缺陷形态的守卫写的是 `< 2`。
         return Err(arity_error("ASK_STREAM", args.len(), 4));
     }
     let model = match &args[0] {
@@ -941,6 +945,24 @@ mod tests {
     fn ask_stream_arity_error() {
         let mut c = ctx();
         let err = std_ask_stream_inner(&mut c, vec![StdValue::String("m".into())]).unwrap_err();
+        assert_eq!(err.code, ErrorCode::E0022);
+        assert!(err.message.contains("ASK_STREAM"));
+    }
+
+    /// 2 个实参**必须**是 `E0022`,**不是 panic**。
+    ///
+    /// ⚠ 缺陷形态的守卫写的是 `args.len() < 2` ⇒ 2 个实参放行 ⇒ 下面
+    /// 无条件取 `args[2]` ⇒ **索引越界 panic**。规范 §16 的成员表写的是
+    /// `ASK_STREAM(model, prompt, callback, opts?)` —— 3 个必填 ⇒ 2 个实参
+    /// 本来就是元数错。
+    #[test]
+    fn ask_stream_with_two_args_is_e0022_not_a_panic() {
+        let mut c = ctx();
+        let err = std_ask_stream_inner(
+            &mut c,
+            vec![StdValue::String("m".into()), StdValue::String("p".into())],
+        )
+        .unwrap_err();
         assert_eq!(err.code, ErrorCode::E0022);
         assert!(err.message.contains("ASK_STREAM"));
     }

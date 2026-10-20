@@ -26,7 +26,15 @@ re-run the same workflow.
 
 ## Current contents
 
-(empty — no reusable helpers yet)
+- `phase_strict.py` — **v0.11.3 追加批次工作项达成度的权威口径**。
+  `docs/plan/README.md` 写着「15 份方案 83 个工作项中已完成 78 项……口径同
+  `phase_strict.py` —— **该脚本才是权威**」,而那个脚本**从未进过仓库**
+  (`git log --all --diff-filter=A -- '*phase_strict*'` 零结果)⇒ 那句
+  「权威」一直无处可核。本脚本把它补回来,并把口径写在 docstring 里。
+  用法:`python script/phase_strict.py [plan 目录]`(默认 = 仓内 `docs/plan`)。
+  ⚠ 口径是**状态列里最左边的那个标记** —— 不是「第一个后面跟着粗体标题的
+  标记」,后者在 `addendum-14` 的 W-07 那种「`✅` 开头、正文里另有一个
+  `⚠ **…**`」的行上会取错,算出来的数与 README 对不上。
 
 ## Naming
 
@@ -35,6 +43,10 @@ re-run the same workflow.
   (`unignore-spec-tests.sh`).
 - For PowerShell helpers, suffix `.ps1` and use the
   `Set-StrictMode -Version Latest` prologue.
+- **Python helpers** use `snake_case.py` (`phase_strict.py`) — the
+  kebab-case rule above is for shell/PowerShell entry points.  ⚠ When a
+  filename is already cited by name in `docs/`, the **cited** spelling
+  wins (`phase_strict.py` is referenced from `docs/plan/README.md`).
 
 ## When adding a script
 
