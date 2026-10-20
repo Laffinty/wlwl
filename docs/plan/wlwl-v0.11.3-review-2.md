@@ -645,3 +645,4 @@ READ_BYTES 读它 → error[E0102]: ... READ_BYTES caps one read at 1048576 byte
 | skill 示例 | 20 个全部退出 0(含新增 `std_math.wll`) |
 | **CI run 39351388398**(sha `91eef87`) | **四 job 全绿**(`test` ubuntu/macos/windows + `smoke`);artifact **3 个全在**(`cargo-test-logs-{ubuntu,macos,windows}-latest`,各约 34 KB) ⇒ **重写后的规范仍被 16 份契约测试读得懂**,且新的回读校验步在真 `gh` + `actions: read` 权限下三平台全绿 |
 | **CI run 39349748174**(sha `3af3016`) | **四 job 全绿** + artifact 3 个全在(A 组那笔) |
+| **CI run 39353233472**(sha `1ac4b55`,纯文档那笔) | **四 job 全绿**(`test` ubuntu/macos/windows + `smoke`);artifact **3 个全在**(各约 34 KB) ⇒ 该文件不被任何测试解析、代码与 `91eef87` 逐字节相同,**可推定的结论与实测吻合** |
