@@ -530,13 +530,46 @@ mod tests {
     /// 一次「查 + 插」⇒ 计数 **== 属性数**(线性);退回线性扫 ⇒ 计数
     /// **≈ k²/2**。⇒ 同一份代码在本地与 CI 上**同红同绿**,不再随机器漂移。
     /// ⚠ 顺带比旧判据**多抓一种改法**:旧判据只看得见「慢」,看不见
-    /// 「没被计量」;新判据的第一条断言要求计数 **≥ 属性数** ⇒ 把去重
+    /// 「没被计量」;新判据的**校准**段要求计数**恰好**等于属性数 ⇒ 把计量
     /// 整个绕开(不经过计量点)也会红。
+    ///
+    /// ⚠ 判据是**两段式**(与 `tree.rs` 的 N-006 契约同体例):
+    /// ① **校准**:小输入上计数必须**恰好**等于属性数 ⇒ 证明「计量口径确实
+    ///    被走过」—— 否则下面那条上界可能是因为「计数器压根没被走过」而绿
+    ///    (这就是本仓反复踩的「守卫生效 = 退回 bug 形态真的转红」);
+    /// ② **上界**:大输入上计数不得超过 2 倍属性数 ⇒ 平方形态(≈ k²/2 次
+    ///    比较)超出**两个数量级** ⇒ 转红不靠余量,靠量级。
+    /// ⚠ **代理指标的固有上限**(同 `tree.rs` 登记的那条):谁把线性扫拿回来
+    /// **却不计数**,契约就空转 —— 本条只覆盖**埋了计数**的扫描点。
     #[test]
     fn distinct_attribute_dedup_does_not_scale_quadratically() {
-        const K: usize = 2_000;
+        // ① 校准:计量口径必须活着,且口径本身没被改动。
+        const SMALL: usize = 10;
+        let small = dedup_name_probes(SMALL);
+        assert_eq!(
+            small, SMALL,
+            "{SMALL} distinct attributes should cost exactly {SMALL} name lookups, \
+             got {small} — either the metering point was bypassed or the counting \
+             unit changed"
+        );
+        // ② 上界:平方形态 ⇒ k²/2 次查找,超上界两个数量级。
+        const BIG: usize = 2_000;
+        let big = dedup_name_probes(BIG);
+        assert!(
+            big <= 2 * BIG,
+            "the dedup did {big} name lookups for {BIG} distinct attributes \
+             (linear is {BIG}, quadratic is ~{}) — the dedup looks super-linear again?",
+            BIG * BIG / 2
+        );
+    }
+
+    /// 跑一遍「k 个**互不相同**的属性」的过滤,返回名字查找次数。
+    ///
+    /// ⚠ 语料必须是互不相同的名字 —— 同名时线性扫在**下标 0** 就命中 ⇒
+    /// 每属性 O(1) ⇒ 缺陷形态下这条测量**量不出平方**(见测试的说明)。
+    fn dedup_name_probes(k: usize) -> usize {
         let mut src = String::from("<b");
-        for i in 0..K {
+        for i in 0..k {
             src.push_str(&format!(" a{i}=\"v\""));
         }
         src.push('>');
@@ -544,22 +577,7 @@ mod tests {
         let p = Policy::default();
         let _ = take_name_probes(); // 清零(与其它用例共用线程时也不串味)
         filter_tree(&mut tree, &p);
-        let probes = take_name_probes();
-        // ① 计量点必须被走到 —— 「没量到」与「量到很少」必须能分开,
-        //    否则把去重整个绕开也能绿(空转的守卫比没有守卫更坏)。
-        assert!(
-            probes >= K,
-            "the dedup path was not metered: {probes} name lookups for {K} attributes \
-             — the complexity bound below would be vacuous"
-        );
-        // ② 线性上界:哈希集合下 probes == K(每个属性一次「查 + 插」);
-        //    平方形态(每次扫完整个已见表)⇒ probes ≈ K²/2。
-        assert!(
-            probes <= 64 * K,
-            "the dedup did {probes} name lookups for {K} distinct attributes \
-             (linear is {K}, quadratic is ~{}) — the dedup looks super-linear again?",
-            K * K / 2
-        );
+        take_name_probes()
     }
 
     /// [D13-062 · N-020] **`seen` 的登记必须在白名单 / scheme 判据之前** ——
