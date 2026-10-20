@@ -176,7 +176,7 @@ wlwl run examples/bad.wll --format=json
 ```json
 {
   "code": "E0020",
-  "error_category": "name",
+  "errorCategory": "name",
   "error_schema_version": "1.1.0",
   "message": "undefined name: foo",
   "location": { "file": "bad.wll", "line": 1, "col": 1, … },
