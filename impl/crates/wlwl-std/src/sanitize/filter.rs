@@ -14,6 +14,9 @@ use super::tree::{NodeKind, Tree, VOID};
 use wlwl_error::ErrorCode;
 use wlwl_value::{StdHost, Value};
 
+#[cfg(test)]
+use std::cell::Cell;
+
 /// 整棵删除(内容一并消失)的元素:raw-text / 外来内容 / 危险嵌入。
 /// raw-text 的删除同时封掉「raw-text 内容再解析」的整类 mXSS 面。
 ///
@@ -275,6 +278,66 @@ enum Action {
     DropSubtree,
 }
 
+// ── 同名判重的计量口径(D13-062 / N-020;判据换形见 D13-092)────────────
+//
+// ⚠ 计数器的**定义**是「一次『这个名字是否已见过』的判定所付出的名字
+// 查找次数」。哈希集合下 = 一次「哈希 + 探测」⇒ 计数 ≈ 属性个数(线性)。
+//
+// ⚠⚠ **判据为什么是计数而不是墙钟比值**(D13-092):同一份实现(哈希集合)
+// 在本地 debug 档量到 **4.0×**、在 macOS CI 上量到 **12.8×**(已越过旧
+// 阈值 12)⇒ 墙钟比值**测的是机器**不是复杂度 —— 两档规模的**内存占位**
+// 不同(2 千 vs 8 千个属性 ⇒ 哈希表与属性数组各自跨过 L2 边界),比值里
+// 混着缓存命中率的成分,而那部分随机器与并发负载漂移。
+// ⇒ 换成**确定性计数**:同一份代码在本地与 CI 上**同红同绿**。
+//
+// ⚠ **代理指标的固有上限**(同 `tree.rs` 的 `STACK_PROBES`):**任何把线性
+// 扫拿回来的改法都必须在它自己的扫描点上计数**,否则下面的契约会空转。
+// 本仓的写法把计量点收进 `SeenNames` 内部 ⇒ 「绕过计量点」与「退化成
+// 平方」这两种改法**分别**被下面两条断言抓住(见测试)。
+#[cfg(test)]
+thread_local! {
+    static NAME_PROBES: Cell<usize> = const { Cell::new(0) };
+}
+
+/// 取走当前线程的计量值(取走即清零)。
+#[cfg(test)]
+pub(crate) fn take_name_probes() -> usize {
+    NAME_PROBES.with(|c| c.replace(0))
+}
+
+/// 非测试构建下编译为空(不留任何运行时开销)。
+#[inline]
+fn probe_name(n: usize) {
+    #[cfg(test)]
+    NAME_PROBES.with(|c| c.set(c.get() + n));
+    #[cfg(not(test))]
+    let _ = n;
+}
+
+/// 同名判重用的「已见名字」集合。
+///
+/// 语义:`claim` 返回 `true` = 这个名字**第一次出现** ⇒ 该属性「生效」
+/// (§13.2「同名属性重复时**首个生效**」的「生效」= **占用这个名字**,
+/// 不是「被保留」—— 登记与白名单判据的先后顺序即语义,见 `filter_tree`)。
+struct SeenNames<'a> {
+    set: std::collections::HashSet<&'a str>,
+}
+
+impl<'a> SeenNames<'a> {
+    fn new() -> Self {
+        SeenNames {
+            set: std::collections::HashSet::new(),
+        }
+    }
+
+    /// 登记 `name`:`true` = 首次出现(生效),`false` = 同名(丢弃)。
+    fn claim(&mut self, name: &'a str) -> bool {
+        // 计量点:哈希集合的一次「查 + 插」= 一次名字查找。
+        probe_name(1);
+        self.set.insert(name)
+    }
+}
+
 /// 就地过滤(单源模型 `target[]`):按文档序(节点创建序)一遍定每个节点的
 /// 去留与挂载点 ——
 /// - `Keep`:自身输出挂到 `target[parent]`(父 Keep 即父本身,父 Unwrap /
@@ -335,11 +398,11 @@ pub(crate) fn filter_tree(tree: &mut Tree, policy: &Policy) {
         if actions[id] == Action::Keep {
             if let NodeKind::Element(e) = &mut tree.nodes[id].kind {
                 let allowed = allowed_attrs(policy, &e.name);
-                // 🔴 [D13-062 / N-020]同名判重用 **`HashSet`** 而非
-                // `Vec` + 线性扫。此前是 `seen.iter().any(|s| s == &a.name)`
-                // ⇒ 单个标签 k 个属性是 **O(k²) 次 `String` 比较**
-                // (实测 2 万属性 ≈ 2×10⁸ 次),撞规范 §13.2「任何线性输入不得
-                // 触发超线性时间」的**规范性条款**。
+                // 🔴 [D13-062 / N-020]同名判重用 **`SeenNames`**(内部是
+                // `HashSet<&str>`)而非 `Vec` + 线性扫。此前是
+                // `seen.iter().any(|s| s == &a.name)` ⇒ 单个标签 k 个属性是
+                // **O(k²) 次 `String` 比较**(实测 2 万属性 ≈ 2×10⁸ 次),撞
+                // 规范 §13.2「任何线性输入不得触发超线性时间」的**规范性条款**。
                 //
                 // ⚠⚠ **语义必须逐字不变**,两处都不能动:
                 //   ① **`seen` 在白名单判据之前登记** ⇒ 首个同名属性**即便因为
@@ -357,11 +420,11 @@ pub(crate) fn filter_tree(tree: &mut Tree, policy: &Policy) {
                 // NLL 下两个不可变借用在赋值时都已结束。
                 // 顺带**零额外分配**:原实现对每个属性 `a.name.clone()` 一次,
                 // 现在只有活下来的属性才被克隆。
-                let mut seen: std::collections::HashSet<&str> = std::collections::HashSet::new();
+                let mut seen = SeenNames::new();
                 let mut kept = Vec::with_capacity(e.attrs.len());
                 for a in e.attrs.iter() {
                     // ⚠ 见 ①:先登记,再判白名单。顺序即语义。
-                    if !seen.insert(a.name.as_str()) {
+                    if !seen.claim(a.name.as_str()) {
                         continue;
                     }
                     if !allowed.contains(&a.name.as_str()) {
@@ -452,36 +515,50 @@ mod tests {
     /// 而且这些名字都不在默认白名单里,却**照样进 `seen`** —— 因为 `seen`
     /// 的登记在白名单判据**之前**(见下一条)。
     ///
-    /// 判据用**两档规模的耗时比**而不是「小于 N ms」—— 后者会被机器噪声打脸。
-    /// ⚠ 阈值 **12 倍**,两侧余量都是量出来的(**2026-10-19 实测,4× 规模**):
-    ///   · 修好后 **4.0×**(debug,纯线性) / **0.8×**(release,已被 1 ms 下限
-    ///     的噪声主导)⇒ 距阈值 12 有 **3×** 余量;
-    ///   · 退回缺陷形态 **27.8×** ⇒ 距阈值有 **2.3×** 余量。
-    /// ⚠ **这里刻意不用 `tree.rs` 那套计数器**:那条的旧代价集中在 `rposition`
-    /// 的闭包里有埋点位置,而本条的旧代价在**比较谓词**里 —— 没有可埋点的调用
-    /// 点,计数器会**空转**。⇒ 代理指标的固有上限,如实登记而不是假装守卫很严。
+    /// ⚠⚠ [D13-092] **判据从「两档规模的墙钟比值」换成「确定性计数」。**
+    ///
+    /// 旧判据(两档规模的耗时比 < 12 倍)**在 CI 上不可靠**,已退役:
+    /// 同一份实现(哈希集合)在本地 debug 档量到 **4.0×**、在 macOS CI 上量到
+    /// **12.8×**(run `39394600227` 之后那一轮,越过旧阈值 12 ⇒ 误红)。
+    /// ⚠ **墙钟比值测的是机器,不是复杂度**:两档规模的**内存占位**不同
+    /// (2 千 vs 8 千个属性 ⇒ 哈希表与属性数组各自跨过 L2 边界),比值里混着
+    /// **缓存命中率**的成分,而那部分随机器与并发负载漂移 ⇒ 缺陷形态
+    /// (27.8×)与正常形态在 CI 上**没有稳定间隔**,任何阈值都是二选一:
+    /// 要么误红正常实现,要么放过缺陷实现。
+    ///
+    /// 新判据 = **名字查找次数**(`take_name_probes`):哈希集合下每个属性
+    /// 一次「查 + 插」⇒ 计数 **== 属性数**(线性);退回线性扫 ⇒ 计数
+    /// **≈ k²/2**。⇒ 同一份代码在本地与 CI 上**同红同绿**,不再随机器漂移。
+    /// ⚠ 顺带比旧判据**多抓一种改法**:旧判据只看得见「慢」,看不见
+    /// 「没被计量」;新判据的第一条断言要求计数 **≥ 属性数** ⇒ 把去重
+    /// 整个绕开(不经过计量点)也会红。
     #[test]
     fn distinct_attribute_dedup_does_not_scale_quadratically() {
-        fn run(n: usize) -> std::time::Duration {
-            let mut src = String::from("<b");
-            for i in 0..n {
-                src.push_str(&format!(" a{i}=\"v\""));
-            }
-            src.push('>');
-            let mut tree = crate::sanitize::tree::build(tokenize::tokenize(&src));
-            let p = Policy::default();
-            let t0 = std::time::Instant::now();
-            filter_tree(&mut tree, &p);
-            t0.elapsed()
+        const K: usize = 2_000;
+        let mut src = String::from("<b");
+        for i in 0..K {
+            src.push_str(&format!(" a{i}=\"v\""));
         }
-        run(200); // 预热:首次分配与页错误会污染第一档
-        let small = run(2_000).max(std::time::Duration::from_millis(1));
-        let big = run(8_000);
-        let ratio = big.as_nanos() as f64 / small.as_nanos() as f64;
+        src.push('>');
+        let mut tree = crate::sanitize::tree::build(tokenize::tokenize(&src));
+        let p = Policy::default();
+        let _ = take_name_probes(); // 清零(与其它用例共用线程时也不串味)
+        filter_tree(&mut tree, &p);
+        let probes = take_name_probes();
+        // ① 计量点必须被走到 —— 「没量到」与「量到很少」必须能分开,
+        //    否则把去重整个绕开也能绿(空转的守卫比没有守卫更坏)。
         assert!(
-            ratio < 12.0,
-            "4× the distinct attributes took {ratio:.1}× the time (small={small:?} big={big:?}) \
-             — the dedup looks super-linear again?"
+            probes >= K,
+            "the dedup path was not metered: {probes} name lookups for {K} attributes \
+             — the complexity bound below would be vacuous"
+        );
+        // ② 线性上界:哈希集合下 probes == K(每个属性一次「查 + 插」);
+        //    平方形态(每次扫完整个已见表)⇒ probes ≈ K²/2。
+        assert!(
+            probes <= 64 * K,
+            "the dedup did {probes} name lookups for {K} distinct attributes \
+             (linear is {K}, quadratic is ~{}) — the dedup looks super-linear again?",
+            K * K / 2
         );
     }
 
