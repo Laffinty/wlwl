@@ -908,3 +908,141 @@ fn the_separator_decision_is_written_down() {
         );
     }
 }
+
+// ═══════════════════════════════════════════════════════════════════════
+// [F-03] 读写两侧的**诊断码分流** —— `WRITE_FILE` 写失败 = `E0062`,
+// `READ_FILE` 读不到 = `E0061`
+// ═══════════════════════════════════════════════════════════════════════
+//
+// 规范依据:stdlib §2.0「`WRITE_FILE(path, text) -> NULL` | 写 UTF-8 文本;
+// **父目录必须已存在** | **写失败 → `E0062`**(原生诊断)」。
+//
+// 缺陷形态:实现与 `READ_FILE` **共用**一个 IO 映射,而「父目录不存在」在
+// OS 层同样落进 `ErrorKind::NotFound` ⇒ 写失败被报成
+// `error[E0061]: WRITE_FILE: file not found (…)` —— 码错(把「写不进」说成
+// 「文件不存在」)、消息也误导。⇒ 写侧一律 `E0062`,读侧一字未动。
+
+/// [F-03] 读写两成员的 IMPORT 头。
+///
+/// ⚠ 上面的 `IO` 那份**不含 `WRITE_FILE`** —— 本组用例自带一份,不去改
+/// 既有常量(避免牵动其它用例)。
+const RW: &str = r#"IMPORT("wlwl:std.fs", ["READ_FILE", "WRITE_FILE"]); "#;
+
+/// 把 `run_with_dir` 的 `!CODE message` 形状拆成 (码, 消息)。
+fn split_diag(out: &str) -> (String, String) {
+    let rest = out.strip_prefix('!').unwrap_or(out);
+    match rest.split_once(' ') {
+        Some((code, msg)) => (code.to_string(), msg.to_string()),
+        None => (rest.to_string(), String::new()),
+    }
+}
+
+/// ⚠🔴 **[F-03] 写失败必须是 `E0062`,不能是 `E0061`。**
+///
+/// 写向**不存在的父目录**是最常见的一种写失败(写侧规范明写「父目录必须
+/// 已存在」),它必须报 `E0062`。
+///
+/// ⚠ **必须用绝对路径**(stdlib §2.3:相对路径按进程 CWD 解析)⇒ 文件不会
+/// 落进工作树。
+#[test]
+fn write_file_into_a_missing_parent_directory_is_e0062_not_e0061() {
+    let dir = io_scratch();
+    let target = abs(&dir, "no_such_dir_zzz/x.txt");
+    let out = run_with_dir(&format!("{RW}WRITE_FILE(\"{target}\", \"hello\")"), &dir);
+    let (code, msg) = split_diag(&out);
+    assert_eq!(
+        code, "E0062",
+        "a write failure must be E0062 (stdlib §2.0), got {out}"
+    );
+    assert!(
+        msg.contains("parent directory"),
+        "the message must name the missing parent directory, got {msg}"
+    );
+    assert!(
+        !msg.contains("file not found"),
+        "the read-side wording must not leak into the write side, got {msg}"
+    );
+    let _ = std::fs::remove_dir_all(&dir);
+}
+
+/// ⚠ **读侧一字未动**:`READ_FILE` 读不到 ⇒ 仍是 `E0061`(语言规范 §11.2
+/// 「`E0061` | 文件 | 文件不存在」)。
+///
+/// 这条是 F-03 的**反向守卫**:防止修写侧时把读侧一起改坏(比如把
+/// `NotFound` 统一改成 `E0062` —— 那会把「读不到」也变成「写不进」)。
+#[test]
+fn read_file_of_a_missing_file_is_still_e0061() {
+    let dir = io_scratch();
+    let target = abs(&dir, "no_such_file_zzz.txt");
+    let out = run_with_dir(&format!("{RW}READ_FILE(\"{target}\")"), &dir);
+    let (code, msg) = split_diag(&out);
+    assert_eq!(
+        code, "E0061",
+        "a missing file on the read side must stay E0061, got {out}"
+    );
+    assert!(
+        msg.contains("file not found"),
+        "the read-side message must stay as it was, got {msg}"
+    );
+    let _ = std::fs::remove_dir_all(&dir);
+}
+
+/// ⚠ **只读目标** ⇒ 写失败 ⇒ `E0062`(stdlib §2.0)。
+///
+/// 这条守的是「写侧**一律** `E0062`」的另一半:不只是「父目录不存在」
+/// 这一种失败 —— 权限不足同样落在 `E0062`,且消息要能区分。
+///
+/// ⚠ **以 root 跑时**(部分容器 CI)只读位对 root 无效 ⇒ 先探一次可写性,
+/// 探得过就跳过这条,而不是让测试在那种环境里假红。
+#[test]
+fn write_file_to_a_read_only_target_is_e0062() {
+    let dir = io_scratch();
+    let target = dir.join("ro.txt");
+    std::fs::write(&target, b"x").unwrap();
+    // 跨平台置只读:Unix 上清掉写位,Windows 上置 `FILE_ATTRIBUTE_READONLY`。
+    let mut perms = std::fs::metadata(&target).unwrap().permissions();
+    perms.set_readonly(true);
+    std::fs::set_permissions(&target, perms).unwrap();
+    if std::fs::OpenOptions::new()
+        .write(true)
+        .open(&target)
+        .is_ok()
+    {
+        // 权限模型对本进程无效(root)⇒ 这条在本环境里测不了。
+        let _ = std::fs::remove_dir_all(&dir);
+        return;
+    }
+    let out = run_with_dir(
+        &format!("{RW}WRITE_FILE(\"{}\", \"hello\")", abs(&dir, "ro.txt")),
+        &dir,
+    );
+    let (code, msg) = split_diag(&out);
+    assert_eq!(
+        code, "E0062",
+        "writing to a read-only target must be E0062, got {out}"
+    );
+    assert!(
+        msg.contains("permission denied"),
+        "the message must distinguish a permission failure, got {msg}"
+    );
+    // 只读位会让 Windows 上的删除失败 ⇒ 清掉再清目录。
+    //
+    // ⚠ **必须按平台分治**:`Permissions::set_readonly(false)` 在 **Unix 上是空操作**
+    // ——Unix 上 `set_readonly` 改的是**写位**,那个位本身跟「只读」不是一个东西 ⇒
+    // Unix 上要恢复可写只能 `set_mode(0o644)`;Windows 上则只能用 `set_readonly(false)`。
+    // clippy 的 `permissions_set_readonly_false` 建议一律改 `set_mode`,那在 Windows 上
+    // 编译不过(`std::os::unix` 只在 Unix 存在)⇒ 非 Unix 分支只能局部豁免。
+    let mut perms = std::fs::metadata(&target).unwrap().permissions();
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::PermissionsExt;
+        perms.set_mode(0o644);
+    }
+    #[cfg(not(unix))]
+    {
+        #[allow(clippy::permissions_set_readonly_false)]
+        perms.set_readonly(false);
+    }
+    let _ = std::fs::set_permissions(&target, perms);
+    let _ = std::fs::remove_dir_all(&dir);
+}

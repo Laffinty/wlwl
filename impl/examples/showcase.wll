@@ -24,6 +24,11 @@ IMPORT("wlwl:std.json", ["PARSE", "STRINGIFY"]);
 // 已经存在 —— 在全新 checkout 里 `impl/build/` 并不存在,于是第三个 v0.4 遗留
 // 露了出来:`E0061: file not found (build/showcase.json)`。
 //
+// [F-03 / 2026-10-20] 上面那句是**历史**:写失败现在一律 `E0062`
+// (stdlib §2.0「写失败 → `E0062`」),父目录不存在时的消息是
+// `WRITE_FILE: cannot write (…): parent directory does not exist`。
+// 结论不变 —— 父目录必须已存在,所以路径仍写成裸文件名。
+//
 // 写成**裸文件名**:当前目录一定存在,示例在任何 checkout 里都能直接跑。
 // 产物由 CI 侧兜住 —— examples 冒烟测试会把每份示例暂存到临时目录再跑
 // (见 `crates/wlwl-cli/tests/examples.rs`),所以仓库不会被弄脏。

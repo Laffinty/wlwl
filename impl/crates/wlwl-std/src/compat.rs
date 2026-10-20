@@ -1,9 +1,13 @@
 //! [v0.11 M2 / ADR-0022 §4] 内部表示兼容层。
 //!
-//! io/fs/json/format/ai/agent 六个模块的函数体历史上以 serde_json 为
+//! fs/json/format/ai/agent 五个模块的函数体历史上以 serde_json 为
 //! 中间表示;边界直通后 serde_json 只是这些模块的**内部**表示(跨界
 //! 类型只有 `Value`,由 lib.rs 的 `wrap` 统一转换)。本模块提供它们
 //! 原有的助手与别名,函数体与测试零改动。
+//!
+//! [F-01] `io` 已**移出**本清单:`std.io` 三个成员整体改成直通边界
+//! (`Value` 进、`Value` 出),渲染走 `Value::display()` —— 与全局内建
+//! `PRINT` 逐字同源。清单收缩到五个。
 
 use wlwl_error::ErrorCode;
 

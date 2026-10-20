@@ -122,7 +122,14 @@ pub enum ErrorCode {
     E0058, // top-level SPAWN without an active SCOPE
     E0060, // IO error (generic)
     E0061, // file not found
-    E0062, // file permission denied
+    // ⚠ [F-03 / 2026-10-20] E0062 的语义**以标准库规范 §2.0 为准**:
+    //   「`WRITE_FILE` … **写失败 → `E0062`**」⇒ 它是**写侧失败**(父目录
+    //   不存在 / 权限不足 / 其他写失败),而**不是**「权限不足专用码」。
+    //   (此前此处写的是 "file permission denied",与 stdlib §2.0 的口径
+    //   不一致 —— 两册对同一个码各说各话,下一个人还会照旧理解。)
+    //   `READ_FILE` 撞上权限不足时也是它(读侧其余分流不变:`E0061` = 文件
+    //   不存在、`E0060` = 其它 IO 错)。
+    E0062,
     E0063, // network error (general)
     // [v0.10.1 / R10-014] 无缓冲通道上同一对任务**第二次** rendezvous。
     //

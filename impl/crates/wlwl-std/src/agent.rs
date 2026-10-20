@@ -10,8 +10,9 @@
 //! prefer. The v0.4 surface is intentionally minimal: each function
 //! delegates to `ai::ASK` (for TASK) or returns a structured DICT (for
 //! TOOL / MODEL / CONTEXT). The richer orchestration — tool
-//! calling loops, multi-turn memory, sub-agent dispatch — lands
-//! in v0.5 alongside the interpreter-callback work in D1b / D2.
+//! calling loops, multi-turn memory, sub-agent dispatch — is
+//! **not wired yet**: `CALL_TOOL` returns a mock envelope
+//! (`mocked: true`, `error_code: NULL`) instead of running the tool.
 //!
 //! ## Functions
 //!
@@ -19,7 +20,7 @@
 //! |-------------|-----------|-------------------------------------------|
 //! | `TASK`      | 2..3      | ASK with a pre-set system prompt for `name` |
 //! | `TOOL`      | 2..4      | Returns a TOOL spec DICT (name/desc/schema) |
-//! | `CALL_TOOL` | 2         | Executes a TOOL spec; v0.4 mock (E0093 if real wire) |
+//! | `CALL_TOOL` | 2         | Executes a TOOL spec; returns a mock envelope      |
 //! | `MODEL`     | 1         | Returns MODEL info {name, provider, caps} |
 //! | `CONTEXT`   | 1..2      | Sets/gets a process-level context key     |
 //!
@@ -209,14 +210,19 @@ pub(super) fn std_call_tool_inner(
         _ => "<unnamed>".to_string(),
     };
 
+    // [D-04] 桩状态**不再挪用错误码**:`E0093` 是「HTTP 4xx」(网络码),
+    //   拿它表达「这里是 mock」既语义错,也与标准库规范 §10 的成员表
+    //   (`CALL_TOOL` 失败走 `E0082` = 工具错误)自相矛盾 ⇒ 改用**专用
+    //   字段**:`mocked: true` + `error_code: NULL`。
     let mut out: serde_json::Map<String, StdValue> = serde_json::Map::new();
     out.insert("ok".into(), StdValue::Bool(false));
-    out.insert("error_code".into(), StdValue::String("E0093".into()));
+    out.insert("mocked".into(), StdValue::Bool(true));
+    out.insert("error_code".into(), StdValue::Null);
     out.insert(
         "message".into(),
         StdValue::String(format!(
-            "CALL_TOOL({}) is mocked in v0.4. Process-level tool executor \
-             lands in v0.5 (plan §5.4). Pass `params={:?}`.",
+            "CALL_TOOL({}) is mocked: no process-level tool executor \
+             is wired yet. Pass `params={:?}`.",
             tool_name, params
         )),
     );
@@ -482,7 +488,7 @@ mod tests {
     }
 
     #[test]
-    fn call_tool_returns_v04_mock_envelope() {
+    fn call_tool_returns_mock_envelope() {
         let mut c = ctx();
         let tool = serde_json::json!({
             "name": "weather_lookup",
@@ -498,8 +504,18 @@ mod tests {
             other => panic!("expected dict, got {:?}", other),
         };
         assert_eq!(m.get("ok"), Some(&StdValue::Bool(false)));
-        assert_eq!(m.get("error_code"), Some(&StdValue::String("E0093".into())));
-        assert!(m.contains_key("message"));
+        // [D-04] 桩状态用**专用字段**表达,不再挪用网络码 `E0093`(HTTP 4xx)。
+        assert_eq!(m.get("mocked"), Some(&StdValue::Bool(true)));
+        assert_eq!(m.get("error_code"), Some(&StdValue::Null));
+        let msg = match m.get("message") {
+            Some(StdValue::String(s)) => s.clone(),
+            other => panic!("expected string message, got {:?}", other),
+        };
+        // 文案**不许承诺版本**(旧文案写「in v0.4 … lands in v0.5」,漂了三个大版本)。
+        assert!(
+            !msg.contains("v0."),
+            "message must not carry a version promise: {msg}"
+        );
     }
 
     #[test]

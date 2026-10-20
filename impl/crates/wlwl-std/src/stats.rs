@@ -58,6 +58,19 @@ fn series(host: &mut dyn StdHost, name: &str, v: &Value) -> R<Vec<f64>> {
     Ok(out)
 }
 
+/// 取原数组的**原始元素**(不经 `f64` 转换)。
+///
+/// `series()` 会把 `INTEGER` 直接抹成 `f64`,原始 `Value` 的静态类型就在
+/// 那一步丢了。`MODE` 要「回查原数组取那个元素的原值」,所以这里另借一份
+/// **只读视图** —— 不改 `series()` 的对外行为(其余统计成员仍只拿 `f64`)。
+fn raw_items(v: &Value) -> &[Value] {
+    match v {
+        Value::Array(items) => items.as_slice(),
+        // `series()` 已把非数组判成 `E0030` ⇒ 非数组到不了这里。
+        _ => &[],
+    }
+}
+
 /// 取两个**等长**序列;不等长 ⇒ `E0030`(计划 §2.3)。
 fn pair(host: &mut dyn StdHost, name: &str, a: &Value, b: &Value) -> R<(Vec<f64>, Vec<f64>)> {
     let xs = series(host, name, a)?;
@@ -132,6 +145,13 @@ pub fn median(host: &mut dyn StdHost, args: Vec<Value>) -> R<Outcome> {
 /// 「取最小」更确定但会让 `MODE([2, 1, 2, 1])` 与 `MODE([1, 2, 1, 2])` 分道扬镳;
 /// 「并列就报错」在对称输入上过于苛刻。先出现者至少是**可预测**的。
 /// ⚠ **全部只出现一次 ⇒ 没有众数 ⇒ `NULL`**(Python `statistics.multimode` 的情形)。
+///
+/// ⚠ **返回「数组中那个元素的原值」,原样保留其静态类型**(`F-05` 裁决,
+/// 2026-10-20):纯 `INTEGER` 数组 ⇒ `INTEGER`、纯 `FLOAT` 数组 ⇒ `FLOAT`、
+/// **混装 ⇒ `FLOAT`**(语言规范 §2.2 的混装提升)。
+/// 此前返回类型由**内核的 `f64` 表示**决定(与输入类型无关),于是
+/// `MODE([1, 1, 2])` 得 `1.0` / `FLOAT`,而同族 `SUM([1, 2, 3])` 保持
+/// `INTEGER` —— 两兄弟口径不对称。
 pub fn mode(host: &mut dyn StdHost, args: Vec<Value>) -> R<Outcome> {
     if args.len() != 1 {
         return Err(arity(host, "MODE", args.len(), 1));
@@ -188,8 +208,32 @@ pub fn mode(host: &mut dyn StdHost, args: Vec<Value>) -> R<Outcome> {
     // ⚠ `c > 1` 是**与 Python 的有意分歧**(`statistics.mode([1])` 返回 `1`):
     // 只出现一次 ⇒ 没有众数 ⇒ `NULL`。这一条不许在重写时"顺手对齐"。
     match best {
-        Some((_, x, c)) if c > 1 => Ok(Outcome::normal(Value::Float(x))),
+        Some((i, x, c)) if c > 1 => Ok(Outcome::normal(mode_value(&args[0], i, x))),
         _ => Ok(null()),
+    }
+}
+
+/// `MODE` 的返回值:**原数组里那个元素的原值**,静态类型原样保留。
+///
+/// - 纯 `INTEGER` 数组 ⇒ `Value::Integer`(取原值,不做 `f64` 往返 ⇒ 大整数不丢精度);
+/// - 含任一 `FLOAT`(纯浮点或混装)⇒ `Value::Float`(语言规范 §2.2 的混装提升)。
+///
+/// ⚠ 混装时用的是**桶里存的那个 `f64`**(首次出现者的值):有符号零的符号就在
+/// 里面(见 `mode_key` 的注释),改成从原 `Value` 转换会把符号抹掉。
+/// ⚠ `i` 是胜出分组的**首次出现下标** ⇒ 纯整数路径回查到的就是该分组的
+/// 首个元素,符号 / 数值都原样。
+fn mode_value(arr: &Value, i: usize, x: f64) -> Value {
+    let items = raw_items(arr);
+    // ⚠ 混装判据看**整个输入**而不是只看胜出元素:输入里有 `FLOAT` 就是混装,
+    // 哪怕那个 `FLOAT` 不是众数(否则 `MODE([1, 1, 2.0])` 会返回 `INTEGER` 的 `1`)。
+    let mixed_float = items.iter().any(|v| matches!(v, Value::Float(_)));
+    if mixed_float {
+        return Value::Float(x);
+    }
+    match items.get(i) {
+        Some(Value::Integer(n)) => Value::Integer(*n),
+        // 理论到不了:非混装 ⇒ 全部元素都是 `INTEGER`。
+        _ => Value::Float(x),
     }
 }
 

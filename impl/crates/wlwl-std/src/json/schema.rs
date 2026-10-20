@@ -102,18 +102,44 @@ fn parse_schema_at(schema: &Value, level: usize) -> Result<Schema, SchemaErr> {
             return Err("schema keys must be STRING".into());
         };
         match key.as_str() {
-            "type" => {
-                let Value::String(t) = v else {
-                    return Err("schema \"type\" must be a STRING".into());
-                };
-                if !TYPES.contains(&t.as_str()) {
-                    return Err(format!(
-                        "schema \"type\" unknown: \"{t}\" — known types: {}",
-                        TYPES.join(", ")
-                    ));
+            // ⚠ `type` **可写多个**(规范 stdlib §3.5:「可写多个(任一匹配即过)」)——
+            //   单值写 `STRING`,多值写 `ARRAY[STRING]`,两种写法**完全等价**。
+            //   `Schema.ty` 本就是 `Vec`(下面逐个 `push`),**数据结构一直能存多个**,
+            //   缺的只是入口 —— 这条分支原来只收 `Value::String`,于是按规范书写多类型
+            //   schema 的用户被硬错误拦下(`schema "type" must be a STRING`)。
+            "type" => match v {
+                Value::String(t) => {
+                    if !TYPES.contains(&t.as_str()) {
+                        return Err(format!(
+                            "schema \"type\" unknown: \"{t}\" — known types: {}",
+                            TYPES.join(", ")
+                        ));
+                    }
+                    s.ty.push(t.clone());
                 }
-                s.ty.push(t.clone());
-            }
+                Value::Array(items) => {
+                    // ⚠ 数组里**任一**元素不合法 ⇒ **整条 schema 拒**(不留半条 schema):
+                    //   半条 schema 会让调用方以为约束生效了,比直接报错更糟
+                    //   (与 §12.1「半张表比没有更糟」同款理由)。
+                    for it in items {
+                        let Value::String(t) = it else {
+                            return Err(
+                                "schema \"type\" must be a STRING or an ARRAY of STRING".into()
+                            );
+                        };
+                        if !TYPES.contains(&t.as_str()) {
+                            return Err(format!(
+                                "schema \"type\" unknown: \"{t}\" — known types: {}",
+                                TYPES.join(", ")
+                            ));
+                        }
+                        s.ty.push(t.clone());
+                    }
+                }
+                // ⚠ 数字 / 布尔 / 嵌套数组等**其它形态** —— 形状错就是程序员的错
+                //   ⇒ `E0030`(不是 `ERR` 值)。
+                _ => return Err("schema \"type\" must be a STRING or an ARRAY of STRING".into()),
+            },
             "required" => {
                 let Value::Array(items) = v else {
                     return Err("schema \"required\" must be an ARRAY".into());

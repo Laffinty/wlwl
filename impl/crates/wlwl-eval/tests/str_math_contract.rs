@@ -1714,8 +1714,11 @@ fn empty_array_gives_null_for_every_statistic() {
 /// `MODE`:并列取**先出现者**;全部只出现一次 ⇒ **没有众数** ⇒ `NULL`。
 #[test]
 fn mode_takes_the_first_of_a_tie_and_reports_no_mode() {
-    st_f("MODE([1, 2, 2, 3])", "2.0");
-    st_f("MODE([2, 1, 2, 1])", "2.0");
+    // ⚠ 期望值是 `2` 而不是 `2.0`:`MODE` 返回**原数组里那个元素的原值**
+    // (F-05 裁决,2026-10-20)⇒ 纯 `INTEGER` 数组返回 `INTEGER`。
+    // ⚠ **取哪个值**的口径(并列取先出现者)一字未动,变的只是返回**类型**。
+    st_f("MODE([1, 2, 2, 3])", "2");
+    st_f("MODE([2, 1, 2, 1])", "2");
     // ⚠ `multimode` 才会给 [1, 2];本成员是单数 `mode`,没有众数就 `NULL`。
     st_f("MODE([1, 2, 3])", "NULL");
     // ⚠ 与 Python 的**有意分歧**:`statistics.mode([1])` 返回 `1`,本成员返回
@@ -1872,4 +1875,52 @@ fn wrong_shapes_are_e0030() {
             "expr = {expr}\n  expected code: {code}"
         );
     }
+}
+
+// ── F-05:`MODE` 的**返回类型**(业主裁决 2026-10-20)──────────────────────
+//
+// ⚠ **这是可观察语义变更(breaking)**:`MODE` 此前一律返回 `FLOAT`
+// (返回类型由 `f64` 内核决定,与输入无关),现在返回**数组中那个元素的原值**,
+// 原样保留其静态类型:纯 `INTEGER` ⇒ `INTEGER`、纯 `FLOAT` ⇒ `FLOAT`、
+// **混装 ⇒ `FLOAT`**(语言规范 §2.2 的混装提升)。
+//
+// ⚠ **取哪个值**的口径(并列取先出现者 / 全部只出现一次 ⇒ `NULL`)一字未动。
+// ⚠ 规范侧(标准库规范 §7.5)的类型口径文字归第二波补,本轮只改实现 + 契约。
+
+/// `MODE` 返回**原数组里那个元素的原值**,静态类型原样保留。
+#[test]
+fn mode_returns_the_original_element_keeping_its_static_type() {
+    // 纯 INTEGER ⇒ INTEGER(此前是 `1.0` / FLOAT)
+    st_f("MODE([1, 1, 2])", "1");
+    st_f("TYPE(MODE([1, 1, 2]))", "INTEGER");
+    // 纯 FLOAT ⇒ FLOAT
+    st_f("MODE([1.0, 1.0, 2.0])", "1.0");
+    st_f("TYPE(MODE([1.0, 1.0, 2.0]))", "FLOAT");
+}
+
+/// ⚠ **混装按语言规范 §2.2 提升为 `FLOAT`** —— 输入里只要有**一个** `FLOAT`。
+///
+/// 这是 F-05 裁决里最容易漏的一半:若按「谁赢就返回谁」实现,
+/// `MODE([1, 1.0])` 会返回 `INTEGER` 的 `1`,与 §2.2「混装提升为浮点」相悖。
+#[test]
+fn mode_promotes_mixed_integer_float_arrays_to_float() {
+    st_f("MODE([1, 1.0])", "1.0");
+    st_f("TYPE(MODE([1, 1.0]))", "FLOAT");
+    // ⚠ 混装判据看**整个输入**:那个 `FLOAT` 不是众数也一样算混装。
+    st_f("MODE([1, 1, 2.0])", "1.0");
+    st_f("TYPE(MODE([1, 1, 2.0]))", "FLOAT");
+}
+
+/// 空数组 / 全部只出现一次 ⇒ **没有众数** ⇒ `NULL`。
+#[test]
+fn mode_reports_null_for_empty_and_for_all_unique_arrays() {
+    st_f("MODE([])", "NULL");
+    st_f("MODE([1, 2])", "NULL");
+}
+
+/// 并列取**先出现者**,且纯整数数组的返回值是 `INTEGER`(不是 `2.0`)。
+#[test]
+fn mode_tie_among_integers_takes_the_first_one_and_keeps_integer_type() {
+    st_f("MODE([2, 1, 2, 1])", "2");
+    st_f("TYPE(MODE([2, 1, 2, 1]))", "INTEGER");
 }

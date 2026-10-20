@@ -1,9 +1,15 @@
 //! `wlwl:std.fs` — 文本读写 + **路径 / 目录 / 字节**(v0.3 §15.3 · v0.11.3 M6 扩)。
 //!
 //! Error code mapping (matches spec §14.4) for the **three original** members:
-//!   - E0061 — file not found
-//!   - E0062 — permission denied
+//!   - E0061 — file not found(**读侧**:`READ_FILE` 读不到)
+//!   - E0062 — **写侧失败**(`WRITE_FILE` 写不进:父目录不存在 / 权限不足 /
+//!     其他写失败);`READ_FILE` 撞上权限不足时也是它
 //!   - E0060 — other I/O error (retryable)
+//!
+//! ⚠️ [F-03] **读侧与写侧是两个入口**(`read_io_error` / `write_io_error`),
+//! 不是同一个映射:父目录不存在在 OS 层同样落进 `ErrorKind::NotFound`
+//! ⇒ 共用一个映射会把「写不进」报成「文件不存在」(`E0061`)。stdlib §2.0
+//! 明写「写失败 → `E0062`」,故**写侧一律 `E0062`**。
 //!
 //! [v0.11.3 M6 / addendum-06] 新增的 15 个成员走**另一种失败口径**:数据 / 状态
 //! 失败是 **`ERR` 值**(`kind = "FsError"` + `op` + `reason`),而**元数 / 类型错**
@@ -32,7 +38,7 @@ pub(super) fn std_read_file_inner(
     let path = expect_string("READ_FILE", &args, 0, 1)?;
     match std::fs::read_to_string(path) {
         Ok(content) => Ok(StdValue::String(content)),
-        Err(e) => Err(io_error_to_std("READ_FILE", e, path)),
+        Err(e) => Err(read_io_error("READ_FILE", e, path)),
     }
 }
 
@@ -50,7 +56,7 @@ pub(super) fn std_write_file_inner(
     };
     match std::fs::write(path, &content) {
         Ok(()) => Ok(StdValue::Null),
-        Err(e) => Err(io_error_to_std("WRITE_FILE", e, path)),
+        Err(e) => Err(write_io_error("WRITE_FILE", e, path)),
     }
 }
 
@@ -62,9 +68,13 @@ pub(super) fn std_exists_inner(
     Ok(StdValue::Bool(std::fs::metadata(path).is_ok()))
 }
 
-/// Map a `std::io::Error` to the v0.3 §14.4 IO error codes. `E0060`
-/// is the catch-all; `E0061` for NotFound; `E0062` for PermissionDenied.
-fn io_error_to_std(fn_name: &str, e: std::io::Error, path: &str) -> StdError {
+/// Map a `std::io::Error` from **`READ_FILE`** to the v0.3 §14.4 IO error
+/// codes. `E0060` is the catch-all; `E0061` for NotFound; `E0062` for
+/// PermissionDenied.
+///
+/// ⚠️ **读侧口径一字未动**(F-03 只拆映射,不改读侧语义):「文件不存在 →
+/// `E0061`」是 v0.3 冻结契约(语言规范 §11.2)。
+fn read_io_error(fn_name: &str, e: std::io::Error, path: &str) -> StdError {
     let (code, label) = match e.kind() {
         ErrorKind::NotFound => (ErrorCode::E0061, "file not found"),
         ErrorKind::PermissionDenied => (ErrorCode::E0062, "permission denied"),
@@ -73,6 +83,32 @@ fn io_error_to_std(fn_name: &str, e: std::io::Error, path: &str) -> StdError {
     StdError {
         code,
         message: format!("{}: {} ({}): {}", fn_name, label, path, e),
+    }
+}
+
+/// Map a `std::io::Error` from **`WRITE_FILE`** to the v0.3 §14.4 IO error
+/// codes —— **写失败一律 `E0062`**(stdlib §2.0:「`WRITE_FILE` … 写失败 →
+/// `E0062`」)。
+///
+/// ⚠️ **为什么写侧不复用读侧的映射**(F-03 的根因):父目录不存在在 OS 层
+/// 同样是 `ErrorKind::NotFound` ⇒ 共用映射会把「写不进」报成「文件不存在」
+/// (`E0061`),调用方按码分流时**分不出「读不到」与「写不进」**。故两侧各
+/// 一个入口:读侧 `E0061` = 文件不存在,写侧 `E0062` = 写失败。
+///
+/// 消息按 kind 分三种(语义必须分得开):
+/// - `parent directory does not exist` —— 父目录不存在(写侧最常见的一种);
+/// - `permission denied` —— 权限不足;
+/// - `<os error>` —— 其余写失败(路径是目录、只读卷、磁盘满 …),把 OS 原话
+///   带出来,别把它压成一句「写失败」。
+fn write_io_error(fn_name: &str, e: std::io::Error, path: &str) -> StdError {
+    let reason = match e.kind() {
+        ErrorKind::NotFound => "parent directory does not exist".to_string(),
+        ErrorKind::PermissionDenied => "permission denied".to_string(),
+        _ => e.to_string(),
+    };
+    StdError {
+        code: ErrorCode::E0062,
+        message: format!("{fn_name}: cannot write ({path}): {reason}"),
     }
 }
 

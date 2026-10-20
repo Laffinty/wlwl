@@ -10072,6 +10072,11 @@ fn levenshtein(a: &str, b: &str) -> usize {
 /// Pick up to `max` names from `pool` whose Levenshtein distance to `target` is
 /// at most 3 and strictly positive (no point suggesting the exact match).
 ///
+/// ⚠ **返回顺序是确定的** —— 按 **(编辑距离, 名字字典序)** 排成**全序**,
+///   **之后**才 `truncate(max)`。理由见下面排序处的那段注释(F-07):
+///   候选池是 `HashSet`(迭代序随机),排序键若**不含名字**,同距离项之间
+///   仍是随机序 ⇒ `truncate` 会随机化「**选哪几个**」与「**这 3 个的排列**」。
+///
 /// ⚠ **长度下限为什么是 `target.len() - 3` 而不是 `- 2`**:编辑距离 ≤ 3 **本身**
 ///   已经保证 `|len(a) - len(b)| ≤ 3`,所以这个下限是**额外**收紧的一刀。
 ///   原来的 `- 2` 把「目标比候选长 3 个字符」的情形也挡掉了 —— 而那恰恰是
@@ -10096,7 +10101,19 @@ fn similar_names(
             *d > 0 && *d <= max_dist && n.len() >= target.len().saturating_sub(max_dist)
         })
         .collect();
-    scored.sort_by_key(|(d, _)| *d);
+    // ⚠ **排序键必须含名字** —— 这是 F-07 的全部要害。
+    //
+    //   候选池是 `HashSet<String>`,而 Rust `HashSet` 的**迭代序每进程随机**
+    //   ⇒ `scored` 的初始序随机。原来的 `sort_by_key(|(d, _)| *d)` 是
+    //   **稳定排序** ⇒ 同距离项**保持随机初始序** ⇒ 随后的 `truncate(max)`
+    //   既随机化「**选哪几个**」,也随机化「**这 3 个的排列**」。
+    //
+    //   ⇒ 必须排成**全序**:先按编辑距离,同距离再按**名字字典序**。
+    //   全序之后 `truncate` 取到的那几个与它们的排列都随之确定。
+    //
+    //   ⚠ 候选池**不换** `BTreeSet`:全序之后 `HashSet` 的随机迭代序已不影响
+    //   结果,而换掉会给每次诊断引入 O(n log n) 的开销。
+    scored.sort_by(|a, b| (a.0, &a.1).cmp(&(b.0, &b.1)));
     scored.truncate(max);
     scored.into_iter().map(|(_, n)| n).collect()
 }
@@ -15330,7 +15347,8 @@ mod tests {
 
     #[test]
     fn std_io_print_with_non_string_args() {
-        // Confirm PRINT handles non-string values via JSON conversion.
+        // Confirm PRINT handles non-string values (rendered via Value::display(),
+        // not a serde_json round-trip).
         let v = run_std(
             r#"
             IMPORT("wlwl:std.io", ["PRINT"]);

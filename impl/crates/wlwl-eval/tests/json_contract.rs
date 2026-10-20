@@ -1303,3 +1303,68 @@ fn json_check_schema_gate_does_not_disturb_the_document_side_gate() {
     // 且它**不是**诊断 —— 失败口径的边界没被挪动(见本节开头的 ⚠)。
     assert!(!d.starts_with('!'), "{d}");
 }
+
+// ── F-02:`JSON_CHECK` 的 `type` 接受**多值**(规范 stdlib §3.5)──────────────
+//
+// ⚠ 规范 stdlib §3.5 成员表写明 `type`「**可写多个**(任一匹配即过)」,而实现原来
+//   只收单值 `STRING` ⇒ 按规范书写多类型 schema 的用户被硬错误 `E0030` 拦下:
+//   `JSON_CHECK: schema "type" must be a STRING`。
+//
+// ⚠ `Schema.ty` **本来就是 `Vec`** —— 数据结构一直能存多个,**缺的只是入口**。
+//   ⇒ 这次改的是**解析入口**,不是判定逻辑(判定侧 `s.ty.iter().any(..)` 本来
+//   就是析取 —— 「任一匹配即过」一直是那样实现的)。
+//
+// ⚠ 两种写法**完全等价**:单值 `"array"` 与多值 `["array"]` 同义;多值是**析取**
+//   (任一匹配即过),**不是**合取 —— 两个都不匹配时才是 `ERR` 值。
+
+#[test]
+fn json_check_accepts_a_multi_value_type_constraint() {
+    // 任一匹配即过:文档是数组,多值里含 "array"。
+    assert_eq!(
+        ck(r#"JSON_CHECK("[1,2]", ["type": ["array","object"]])"#),
+        "OK(NULL)"
+    );
+    // 换一份文档,另一个分支命中 —— 仍是「任一匹配即过」。
+    assert_eq!(
+        ck(r#"JSON_CHECK("{}", ["type": ["array","object"]])"#),
+        "OK(NULL)"
+    );
+    // 单值写法与多值写法**完全等价**。
+    assert_eq!(ck(r#"JSON_CHECK("[1,2]", ["type": "array"])"#), "OK(NULL)");
+    // ⚠ 多值**不放宽**判定:两个类型都不匹配 ⇒ 仍是 `ERR` 值(不是诊断)——
+    //   「数据不合 schema」与「schema 自己写错」那条边界没被挪动。
+    let g = ck(r#"ERR_PAYLOAD(JSON_CHECK("\"x\"", ["type": ["array","object"]]))"#);
+    assert!(g.contains("kind: JsonError"), "{g}");
+    assert!(
+        g.contains("expected type \"array\" or \"object\" but got string"),
+        "{g}"
+    );
+}
+
+/// ⚠ schema 自己写错 ⇒ `E0030`(程序员的错,不是数据的错)—— 这条边界**没被挪动**。
+#[test]
+fn json_check_rejects_a_malformed_multi_value_type_constraint() {
+    // 数组元素不是字符串 ⇒ `E0030`。
+    let e = ck(r#"JSON_CHECK("1", ["type": ["array", 1]])"#);
+    assert!(e.starts_with("!E0030"), "{e}");
+    assert!(
+        e.contains("schema \"type\" must be a STRING or an ARRAY of STRING"),
+        "{e}"
+    );
+    // 数组里有未知名 ⇒ **整条 schema 拒**(不留半条 schema)⇒ 诊断,不是 `ERR` 值。
+    // ⚠ 第一个元素是合法的 "array" —— 若实现是「跳过坏元素、拿剩下的继续用」,
+    //   这条会退化成 `ERR` 值(文档 "1" 不合 "array")而不是诊断 ⇒ 这条断言正是在
+    //   区分「整条拒」与「留半条 schema」。
+    let u = ck(r#"JSON_CHECK("1", ["type": ["array","nope"]])"#);
+    assert!(u.starts_with("!E0030"), "{u}");
+    assert!(u.contains("schema \"type\" unknown: \"nope\""), "{u}");
+    // 未知名的消息沿用既有文案形:把全部合法类型列出来。
+    assert!(u.contains("known types:"), "{u}");
+    // 整个 `type` 既不是字符串也不是数组 ⇒ `E0030`。
+    let n = ck(r#"JSON_CHECK("1", ["type": 1])"#);
+    assert!(n.starts_with("!E0030"), "{n}");
+    assert!(
+        n.contains("schema \"type\" must be a STRING or an ARRAY of STRING"),
+        "{n}"
+    );
+}

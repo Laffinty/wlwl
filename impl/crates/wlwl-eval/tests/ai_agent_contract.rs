@@ -218,3 +218,54 @@ fn ai_and_agent_member_sets_match_the_spec_tables() {
         }
     }
 }
+
+// ── [D-04] `CALL_TOOL` 的 mock 回包形状 ──
+//
+// ⚠ **桩状态不许挪用错误码**:`E0093` 是「HTTP 4xx」(网络码,规范 §10),
+//   而 §10 的成员表写 `CALL_TOOL` 的失败是 `E0082`(工具错误)⇒ 拿 `E0093`
+//   表达「这里是 mock」**连成员表自己的口径都对不上**。桩状态改用**专用
+//   字段**:`mocked: true` + `error_code: NULL`。
+//
+// ⚠ 契约**只钉形状与「不含版本承诺」**,不冻结 `message` 的整条措辞 ——
+//   措辞会变;「形状」与「不承诺版本」才是这条真正要守的东西。
+
+/// `CALL_TOOL` 的 mock 回包 —— 取其中一个字段的显示值。
+fn call_tool_mock_field(field: &str) -> String {
+    let src = format!(
+        r#"IMPORT("agent:task", ["CALL_TOOL", "TOOL"]); LET(t, TOOL("t1", "desc")); LET(r, CALL_TOOL(t, ["city": "Beijing"])); r["{field}"]"#
+    );
+    actual(&src)
+}
+
+#[test]
+fn call_tool_mock_envelope_is_flagged_mocked() {
+    assert_eq!(call_tool_mock_field("mocked"), "TRUE");
+    assert_eq!(call_tool_mock_field("ok"), "FALSE");
+}
+
+#[test]
+fn call_tool_mock_error_code_is_null() {
+    assert_eq!(call_tool_mock_field("error_code"), "NULL");
+}
+
+#[test]
+fn call_tool_mock_error_code_is_never_the_network_code_e0093() {
+    // ⚠ 显式钉住:`E0093` = HTTP 4xx(网络码),**不得**再被借来表达「桩状态」。
+    //   写成 `==(a, b)` 调用形式 —— `r[...] = x` 是 `INDEX_SET` 语法糖(赋值)。
+    let src = r#"IMPORT("agent:task", ["CALL_TOOL", "TOOL"]); LET(t, TOOL("t1", "desc")); LET(r, CALL_TOOL(t, ["city": "Beijing"])); ==(r["error_code"], "E0093")"#;
+    assert_eq!(actual(src), "FALSE");
+}
+
+#[test]
+fn call_tool_mock_message_carries_no_version_promise() {
+    let msg = call_tool_mock_field("message");
+    // 旧文案「is mocked in v0.4 … lands in v0.5」漂了三个大版本 ⇒ 禁。
+    assert!(
+        !msg.contains("v0."),
+        "message must not promise a version: {msg}"
+    );
+    assert!(
+        !msg.contains("E0093"),
+        "message must not reuse a network code: {msg}"
+    );
+}

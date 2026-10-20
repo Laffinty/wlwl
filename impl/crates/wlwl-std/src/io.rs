@@ -1,4 +1,4 @@
-//! `wlwl:std.io` — `PRINT`, `INPUT` (v0.3 §15.1).
+//! `wlwl:std.io` — `PRINT`, `PRINT_ERR`, `INPUT` (v0.3 §15.1).
 //!
 //! `PRINT` here is the std-module form. It co-exists with the
 //! `resolve_builtin("PRINT")` fallback in `wlwl-eval` so that
@@ -6,54 +6,92 @@
 //! the user does `IMPORT("wlwl:std.io", ["PRINT"])`, the env-bound
 //! `NativeFn` takes priority (per the dispatch rules in
 //! `eval_call`).
+//!
+//! ## [F-01] 直通边界:渲染与全局内建**逐字同源**
+//!
+//! 本模块整体移出 `crate::compat` 的 serde_json 中间表示(ADR-0022 方向):
+//! 三个成员直接收发真 [`Value`],渲染走 [`Value::display`] —— 与全局内建
+//! `PRINT` / `PRINT_ERR`(`wlwl-eval` 的 `builtin_print` / `builtin_print_err`)
+//! **用的是同一个函数**。
+//!
+//! 改之前本模块走 `crate::wrap`:`Value → serde_json::Value →` serde_json 的
+//! `Display`。那一步带来**三个**可观察差异(全部违反语言规范 §2.5):
+//!
+//! 1. 紧凑分隔符 ⇒ 数组渲染成 `[1,2,3]` 而不是 `[1, 2, 3]`;
+//! 2. `serde_json::Map` 是 `BTreeMap` ⇒ **字典键序被改写为字典序**
+//!    (`["b": 1, "a": 2]` 渲染成 `{"a":2,"b":1}`),而 §2.5 的口径是插入序;
+//! 3. JSON **没有 `RESULT` 变体** ⇒ `OK(1)` 被摊平成 `1`。
+//!
+//! ⇒ 同一份程序只要加一行 `IMPORT("wlwl:std.io", ["PRINT"])`,输出形态就变。
+//! 现在两侧**逐字节相同**;进程级的守卫在
+//! `crates/wlwl-cli/tests/io_print_parity.rs`。
 
-use crate::compat::*;
-use crate::{ModuleSpec, StdCtx, StdFn};
+use crate::{ModuleSpec, StdFn};
 use std::io::BufRead;
 use wlwl_error::ErrorCode;
 use wlwl_error::WlwlError;
 use wlwl_value::{Outcome, StdHost, Value};
 
-pub(super) fn std_print_inner(
-    _ctx: &mut StdCtx,
-    args: Vec<StdValue>,
-) -> Result<StdValue, StdError> {
-    let parts: Vec<String> = args.iter().map(json_to_print_string).collect();
-    println!("{}", parts.join(" "));
-    Ok(StdValue::Null)
-}
-
-/// Phase B10 (spec v0.4 §15.1 + §3.4): `PRINT_ERR` is the stderr
-/// twin of `PRINT` — same value formatting, same null return, but
-/// writes to stderr (Rust's `eprintln!`) so redirect-friendly
-/// scripts can route diagnostics separately from program output.
+/// 渲染一行:逐个实参走 [`Value::display`],以空格分隔(语言规范 §2.5)。
 ///
-/// We deliberately use a fresh `eprintln!` rather than `StdCtx`'s
-/// context (which doesn't carry stderr yet) — the std-side
-/// boundary is `serde_json::Value` only; cross-process I/O lives
-/// outside that contract. Adding a `stderr: Box<dyn Write>` field
-/// to `StdCtx` is a Phase D / Phase E concern (testability of
-/// captured output across the std boundary), deferred per plan
-/// §5.10.
-pub(super) fn std_print_err_inner(
-    _ctx: &mut StdCtx,
-    args: Vec<StdValue>,
-) -> Result<StdValue, StdError> {
-    let parts: Vec<String> = args.iter().map(json_to_print_string).collect();
-    eprintln!("{}", parts.join(" "));
-    Ok(StdValue::Null)
+/// 这是 `std.io` 的**唯一**渲染口径 —— `PRINT` 与 `PRINT_ERR` 共用它,
+/// 而它与全局内建 `PRINT` 逐字同源(同一个 `Value::display`)。
+fn render_line(args: &[Value]) -> String {
+    args.iter()
+        .map(|v| v.display())
+        .collect::<Vec<String>>()
+        .join(" ")
 }
 
-pub(super) fn std_input_inner(
-    _ctx: &mut StdCtx,
-    args: Vec<StdValue>,
-) -> Result<StdValue, StdError> {
+/// `PRINT(...)` —— 依序渲染实参,以空格分隔输出到标准输出;返回 `NULL`。
+pub fn std_print(_host: &mut dyn StdHost, args: Vec<Value>) -> Result<Outcome, WlwlError> {
+    println!("{}", render_line(&args));
+    Ok(Outcome::normal(Value::Null))
+}
+
+/// `PRINT_ERR(...)` —— `PRINT` 的 stderr 同款:同样的渲染、同样的 `NULL`
+/// 返回,但写到 stderr(`eprintln!`),好让脚本把诊断与输出分开重定向。
+///
+/// 我们**刻意**用新鲜的 `eprintln!` 而不是 `StdCtx` 的上下文(`StdCtx`
+/// 还不带 stderr 字段)—— 跨进程 I/O 不在 std 边界的契约里。给 `StdCtx`
+/// 加一个 `stderr: Box<dyn Write>` 字段是 Phase D / Phase E 的事
+/// (跨边界输出捕获的可测性),按计划 §5.10 推迟。
+pub fn std_print_err(_host: &mut dyn StdHost, args: Vec<Value>) -> Result<Outcome, WlwlError> {
+    eprintln!("{}", render_line(&args));
+    Ok(Outcome::normal(Value::Null))
+}
+
+/// `INPUT()` —— 从标准输入读一行,返回 `STRING`。
+///
+/// 零参;多参 → `E0022`(措辞与 `compat::arity_error` 逐字一致)。
+pub fn std_input(host: &mut dyn StdHost, args: Vec<Value>) -> Result<Outcome, WlwlError> {
     if !args.is_empty() {
-        return Err(arity_error("INPUT", args.len(), 0));
+        return Err(arity(host, "INPUT", args.len(), 0));
     }
     let stdin = std::io::stdin();
     let mut locked = stdin.lock();
-    read_input_line(&mut locked).map(StdValue::String)
+    let line = read_input_line(&mut locked).map_err(|e| host.diag(e.code, e.message))?;
+    Ok(Outcome::normal(Value::String(line)))
+}
+
+/// E0022(带函数名;措辞与 `compat::arity_error` 逐字一致)。
+fn arity(host: &mut dyn StdHost, name: &str, got: usize, want: usize) -> WlwlError {
+    host.diag(
+        ErrorCode::E0022,
+        format!("{name}: function expects {want} argument(s), got {got}"),
+    )
+}
+
+/// `INPUT` 的失败载荷。
+///
+/// ⚠ 本模块整体移出了 `crate::compat` 的 serde_json 中间表示(ADR-0022
+/// 方向),所以**不**复用 `compat::StdError` —— 那是 serde_json 内部表示层
+/// 的配套类型。本地这一个只带 `(code, message)`,由 `std_input` 在有宿主的
+/// 地方转成诊断。
+#[derive(Debug)]
+pub(crate) struct InputError {
+    code: ErrorCode,
+    message: String,
 }
 
 /// Internal helper: read one line from any `BufRead` source. Split
@@ -64,9 +102,9 @@ pub(super) fn std_input_inner(
 ///   * EOF before any byte → returns `Ok("")`.
 ///   * Reads to `\n` or EOF, then strips trailing `\n` / `\r`.
 ///   * Any other I/O error → `Err` with `E0060`.
-pub(crate) fn read_input_line<R: BufRead>(r: &mut R) -> Result<String, StdError> {
+pub(crate) fn read_input_line<R: BufRead>(r: &mut R) -> Result<String, InputError> {
     let mut line = String::new();
-    let n = r.read_line(&mut line).map_err(|e| StdError {
+    let n = r.read_line(&mut line).map_err(|e| InputError {
         code: ErrorCode::E0060,
         message: format!("INPUT: failed to read stdin: {}", e),
     })?;
@@ -80,25 +118,6 @@ pub(crate) fn read_input_line<R: BufRead>(r: &mut R) -> Result<String, StdError>
     Ok(line)
 }
 
-/// Convert a `serde_json::Value` to the form `PRINT` should emit. We
-/// keep this consistent with the builtin `PRINT` in `wlwl-eval`:
-/// strings print as-is, booleans as TRUE/FALSE, null as NULL, and
-/// everything else uses `serde_json`'s default formatting.
-fn json_to_print_string(v: &StdValue) -> String {
-    match v {
-        StdValue::String(s) => s.clone(),
-        StdValue::Bool(b) => {
-            if *b {
-                "TRUE".to_string()
-            } else {
-                "FALSE".to_string()
-            }
-        }
-        StdValue::Null => "NULL".to_string(),
-        other => other.to_string(),
-    }
-}
-
 pub static SPEC: ModuleSpec = ModuleSpec {
     path: "wlwl:std.io",
     functions: &[
@@ -110,38 +129,61 @@ pub static SPEC: ModuleSpec = ModuleSpec {
     ],
 };
 
-/// [v0.11 M2 / ADR-0022] 直通边界包装:Value→内部表示→Value。
-pub fn std_print(host: &mut dyn StdHost, args: Vec<Value>) -> Result<Outcome, WlwlError> {
-    crate::wrap(host, std_print_inner, args)
-}
-
-/// [v0.11 M2 / ADR-0022] 直通边界包装:Value→内部表示→Value。
-pub fn std_print_err(host: &mut dyn StdHost, args: Vec<Value>) -> Result<Outcome, WlwlError> {
-    crate::wrap(host, std_print_err_inner, args)
-}
-
-/// [v0.11 M2 / ADR-0022] 直通边界包装:Value→内部表示→Value。
-pub fn std_input(host: &mut dyn StdHost, args: Vec<Value>) -> Result<Outcome, WlwlError> {
-    crate::wrap(host, std_input_inner, args)
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::Signal;
     use std::io::{Cursor, Error as IoError, Read};
+
+    /// 一个够用的宿主:`std.io` 的三个成员只需要 `diag`。
+    ///
+    /// 形状照 `time.rs` 里的 `NullHost` —— 顺带证明 `StdHost` 的面小到
+    /// 可以手写。
+    struct NullHost;
+
+    impl StdHost for NullHost {
+        fn ctx(&mut self) -> &mut crate::StdCtx {
+            // `std.io` 的任何成员都不读 ctx;这个 panic 是**故意的** ——
+            // 它把「本模块不经宿主取上下文」变成可执行的断言。
+            panic!("std.io must not touch StdCtx")
+        }
+
+        fn call(
+            &mut self,
+            _f: &Value,
+            _args: Vec<Value>,
+            _name: &str,
+        ) -> wlwl_error::WlwlResult<Outcome> {
+            panic!("std.io has no member that calls back into the host")
+        }
+
+        fn diag(&mut self, code: ErrorCode, message: String) -> wlwl_error::WlwlError {
+            wlwl_error::WlwlDiagnostic::new(
+                code,
+                message,
+                wlwl_error::Location::point("<test>", 0, 0),
+            )
+            .into()
+        }
+    }
 
     #[test]
     fn print_emits_space_joined() {
-        let mut ctx = StdCtx::default();
-        let out = std_print_inner(
-            &mut ctx,
-            vec![
-                StdValue::String("hello".into()),
-                StdValue::Number(serde_json::Number::from(42)),
-            ],
+        let out = std_print(
+            &mut NullHost,
+            vec![Value::String("hello".into()), Value::Integer(42)],
         )
-        .unwrap();
-        assert_eq!(out, StdValue::Null);
+        .expect("PRINT succeeds");
+        assert_eq!(out.value, Value::Null);
+        assert_eq!(out.signal, Signal::None);
+    }
+
+    #[test]
+    fn print_err_returns_null_like_print() {
+        let out =
+            std_print_err(&mut NullHost, vec![Value::Integer(1)]).expect("PRINT_ERR succeeds");
+        assert_eq!(out.value, Value::Null);
+        assert_eq!(out.signal, Signal::None);
     }
 
     #[test]
@@ -149,32 +191,107 @@ mod tests {
         // The std PRINT and the builtin PRINT must agree on
         // null/boolean/array/dict formatting so the user does not see
         // a behaviour shift after IMPORT.
-        assert_eq!(json_to_print_string(&StdValue::Null), "NULL");
-        assert_eq!(json_to_print_string(&StdValue::Bool(true)), "TRUE");
-        assert_eq!(json_to_print_string(&StdValue::Bool(false)), "FALSE");
-        let arr = StdValue::Array(vec![StdValue::from(1), StdValue::from(2)]);
-        assert_eq!(json_to_print_string(&arr), "[1,2]");
+        //
+        // [F-01] 改之前这条注释与断言**互相矛盾**:断言写的是 serde_json 的
+        // 紧凑风格 `"[1,2]"`,把偏离锁成了契约(这正是缺陷能长期存在的
+        // 直接原因)。现在断言的是语言规范 §2.5 的口径,注释与断言终于说
+        // 同一件事。
+        assert_eq!(render_line(&[Value::Null]), "NULL");
+        assert_eq!(render_line(&[Value::Boolean(true)]), "TRUE");
+        assert_eq!(render_line(&[Value::Boolean(false)]), "FALSE");
+        let arr = Value::Array(vec![Value::Integer(1), Value::Integer(2)]);
+        assert_eq!(render_line(&[arr]), "[1, 2]");
     }
 
     #[test]
     fn print_formatting_numbers_and_dicts() {
-        // Numbers and dicts fall through the `other` arm — verify the
-        // serde_json default formatting so the user sees a stable
-        // shape across PRINT and STRINGIFY.
-        let n = StdValue::Number(serde_json::Number::from(42));
-        assert_eq!(json_to_print_string(&n), "42");
-        let d = StdValue::Object(serde_json::Map::from_iter([(
-            "k".to_string(),
-            StdValue::from(1),
-        )]));
-        assert_eq!(json_to_print_string(&d), "{\"k\":1}");
+        // Numbers render bare; dicts render as `[k: v, ...]` in **insertion
+        // order** (language spec §2.5). serde_json's `BTreeMap` order —
+        // which used to rewrite the keys into dictionary order — is gone.
+        assert_eq!(render_line(&[Value::Integer(42)]), "42");
+        assert_eq!(render_line(&[Value::Float(1.0)]), "1.0");
+        let d = Value::Dict(vec![(Value::String("k".into()), Value::Integer(1))]);
+        assert_eq!(render_line(&[d]), "[k: 1]");
+        // Insertion order, not dictionary order.
+        let d = Value::Dict(vec![
+            (Value::String("b".into()), Value::Integer(1)),
+            (Value::String("a".into()), Value::Integer(2)),
+        ]);
+        assert_eq!(render_line(&[d]), "[b: 1, a: 2]");
+    }
+
+    /// [F-01] **契约守卫(a)**:同一批值,`std.io` 的渲染与
+    /// `Value::display()`(全局内建 `PRINT` 用的就是它)**逐字相同**。
+    ///
+    /// 两道断言各有分工:
+    ///   * 头一条把 std.io **绑在** `Value::display()` 上 —— 两侧不许分叉;
+    ///   * 末一条把字面口径**钉死** —— `Value::display()` 自己哪天变了,
+    ///     这里也会红(否则「两侧一致」但一起跑偏,没人看得见)。
+    #[test]
+    fn std_io_rendering_is_byte_identical_to_value_display() {
+        let cases: Vec<(Value, &str)> = vec![
+            (Value::Integer(42), "42"),
+            (Value::Float(1.0), "1.0"),
+            (Value::Float(2.5), "2.5"),
+            (Value::String("hello".into()), "hello"),
+            (Value::Boolean(true), "TRUE"),
+            (Value::Boolean(false), "FALSE"),
+            (Value::Null, "NULL"),
+            (
+                Value::Array(vec![
+                    Value::Integer(1),
+                    Value::Integer(2),
+                    Value::Integer(3),
+                ]),
+                "[1, 2, 3]",
+            ),
+            (
+                Value::Dict(vec![
+                    (Value::String("a".into()), Value::Integer(1)),
+                    (Value::String("b".into()), Value::String("x".into())),
+                ]),
+                "[a: 1, b: x]",
+            ),
+            // Insertion order, not dictionary order.
+            (
+                Value::Dict(vec![
+                    (Value::String("b".into()), Value::Integer(1)),
+                    (Value::String("a".into()), Value::Integer(2)),
+                ]),
+                "[b: 1, a: 2]",
+            ),
+            (Value::Ok(Box::new(Value::Integer(1))), "OK(1)"),
+            (Value::Err(Box::new(Value::String("e".into()))), "ERR(e)"),
+            // Nested containers render recursively, same shape.
+            (
+                Value::Array(vec![
+                    Value::Array(vec![Value::Integer(1), Value::Integer(2)]),
+                    Value::Dict(vec![(
+                        Value::String("k".into()),
+                        Value::Array(vec![Value::Integer(3)]),
+                    )]),
+                ]),
+                "[[1, 2], [k: [3]]]",
+            ),
+        ];
+        for (v, expected) in &cases {
+            assert_eq!(
+                render_line(std::slice::from_ref(v)),
+                v.display(),
+                "std.io rendering must be byte-identical to Value::display() ({expected})"
+            );
+            assert_eq!(render_line(std::slice::from_ref(v)), *expected);
+        }
     }
 
     #[test]
     fn input_arity_mismatch_is_e0022() {
-        let mut ctx = StdCtx::default();
-        let err = std_input_inner(&mut ctx, vec![StdValue::Null]).unwrap_err();
-        assert_eq!(err.code, ErrorCode::E0022);
+        let err = std_input(&mut NullHost, vec![Value::Null]).unwrap_err();
+        assert_eq!(err.diagnostic().code, ErrorCode::E0022);
+        assert_eq!(
+            err.diagnostic().message,
+            "INPUT: function expects 0 argument(s), got 1"
+        );
     }
 
     #[test]
@@ -183,6 +300,7 @@ mod tests {
         let names: Vec<&str> = SPEC.functions.iter().map(|(n, _)| *n).collect();
         assert!(names.contains(&"PRINT"));
         assert!(names.contains(&"INPUT"));
+        assert!(names.contains(&"PRINT_ERR"));
     }
 
     // ---- read_input_line: P3-009c ----

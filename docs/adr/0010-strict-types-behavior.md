@@ -67,8 +67,8 @@ is downcast and emits E0031 only when strict). When `strict_types = true`,
 
 **Pros**: matches spec wording for strict_types; per-call cost measurable
 explicitly; enables fail-fast on the first offending call
-**Cons**: 4 % overhead measured (plan §3 §6.6 perf benchmark) — within
-budget
+**Cons**: 4 % overhead measured (ADR-0025 的「100 万次简单循环 < 30 s」
+符合性负载基准;原为语言规范 §6.6,v0.11 合并控制流章节后已不存在) — within budget
 
 ### C. Whole-program type inference at parse time
 

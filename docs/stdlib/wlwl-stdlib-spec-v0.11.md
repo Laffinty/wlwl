@@ -142,8 +142,10 @@ WLWL 标准库的成员契约:21 个命名空间、214 个成员的名字、签�
 | `INPUT(prompt?) -> STRING` | 读一行标准输入 | 读失败按宿主语义 | R2 |
 
 ```wlwl
-PRINT("hello, ", "world");   // hello, world
+PRINT("hello", "world");   // hello world
 ```
+
+**分隔符无条件插入** —— 实参自带尾空格时会得到两个空格(`'hello, '` + `'world'` ⇒ `hello,  world`)。
 
 ## 2 `std.fs` — 文件系统
 
@@ -183,7 +185,7 @@ PRINT("hello, ", "world");   // hello, world
 
 | 签名 | 语义 | 失败 | 层 |
 |---|---|---|---|
-| `LIST_DIR(p) -> ARRAY[STRING]` | 列目录(不递归),**结果排序** | 不存在 / 非目录 → `ERR([kind: "FsError", op, reason])` | R2 |
+| `LIST_DIR(p) -> ARRAY[STRING]` | 列目录(不递归),返回**以 `p` 为前缀的完整路径**(用 `/`),**含目录条目本身**,**结果排序** | 不存在 / 非目录 → `ERR([kind: "FsError", op, reason])` | R2 |
 | `WALK_DIR(p, pattern?, follow?) -> ARRAY[STRING]` | 递归,返回**相对 `p`** 的路径(用 `/`),**排序**。⚠ `p` 本身打不开 ⇒ `ERR`,与 `LIST_DIR` 同口径;递归途中的**子目录**打不开(权限 / 竞态删除)静默跳过 | 同上 | R2 |
 | `MKDIR(p) -> NULL` | 建**单层**;**已存在 → `ERR`**(不静默) | 同上 | R2 |
 | `MKDIRS(p) -> NULL` | 建**多级**(`mkdir -p`);**已存在即成功** | 同上 | R2 |
@@ -193,6 +195,8 @@ PRINT("hello, ", "world");   // hello, world
 | `FILE_SIZE(p) -> INTEGER` | 字节数 | 同上 | R2 |
 | `READ_BYTES(p) -> ARRAY[INTEGER]` | 二进制读,元素 `0..=255`。⚠ 单次超过 `MAX_READ_BYTES` = **1 MiB** ⇒ `ERR`,**不是截断、不是 OOM** | 同上 | R2 |
 | `WRITE_BYTES(p, data) -> NULL` | 二进制写;`data` 是 `ARRAY[INTEGER]`,**逐元素校验** `0..=255`。⚠ 单次超过 `MAX_WRITE_BYTES` = **64 MiB** ⇒ `ERR`,**不是截断、不是 OOM**;⚠ **超限时目标文件必须原封不动**(上限在**落盘之前**判 —— 落盘会截断目标文件,判晚了就是把原文件清空) | 同上 | R2 |
+
+⚠ **与 `WALK_DIR` 的相对路径坐标系不同** —— `LIST_DIR` 的每项是**以 `p` 为前缀的完整路径**,`WALK_DIR` 的每项是**相对 `p`** 的路径 ⇒ 两者的结果**不能直接比较**。跨成员比较前先归一(`LIST_DIR` 的每项去掉 `p` 前缀即得相对路径)。
 
 **符号链接**:`LIST_DIR` **列出**链接条目(你有权知道它存在)但**不跟随**;`WALK_DIR` **默认不下降进链接目录**(`follow = FALSE`),因为**成环的链接目录会让递归永不终止**。`follow = TRUE` 时**下降进**链接目录,并记 **visited 集合**(按 `canonicalize`)防环;**此语义在 POSIX 与 Windows 上相同**。偏差 D13-060。
 
@@ -248,7 +252,7 @@ PRINT(PATH_NORMALIZE("a/./b/../c//d"));   // a/c/d
 |---|---|---|---|
 | `STRINGIFY(x) -> STRING` | 序列化为 JSON;字典键按**字典序**输出;`NULL` / 布尔 / 数字 / 字符串 / 数组 / 字典自然映射 | 失败产生 `E0071` | R2 |
 | `PARSE(s) -> v` | 解析 JSON;对象得到**键按字典序排列**的字典(见 §3.2) | 失败产生 `E0070` | R2 |
-| `JSON_TOKENIZE(s) -> ARRAY[DICT]` | **纯词法层**:切出 token 流,每个是 `{kind, start, end, text}`。`kind` ∈ `lbrace` `rbrace` `lbracket` `rbracket` `colon` `comma` `string` `number` `true` `false` `null`。**不看结构** —— 故 `[}` 在这里合法(它不是词法错误),结构由 `JSON_VALIDATE` 管 | 元数 / 类型错 → `E0022` / `E0030` | R2 |
+| `JSON_TOKENIZE(s) -> ARRAY[DICT]` | **纯词法层**:切出 token 流,每个是 `{kind, start, end, text}`。`kind` ∈ `lbrace` `rbrace` `lbracket` `rbracket` `colon` `comma` `string` `number` `true` `false` `null`。**不看结构** —— 故 `[}` 在这里合法(它不是词法错误),结构由 `JSON_VALIDATE` 管。⚠ `text` 与 `start` / `end` 的口径见 §3.4 第 6 条 | 元数 / 类型错 → `E0022` / `E0030` | R2 |
 | `JSON_LOCATE(s, offset) -> DICT` | 由**码点偏移** `offset` 求 `{line, column, token_start}`。`token_start` 是**包含该偏移的 token** 的起点;空输入返 `NULL`。**越界不报错**,返该位置附近的行列 | 元数 / 类型错 → `E0022` / `E0030`;负偏移 → `E0030` | R2 |
 | `JSON_VALIDATE(s) -> OK \| ERR` | 只验**语法**(词法 + 结构 + 嵌套深度 ≤ **128** + 数值须在 `f64` 范围内),**不看 schema** | 语法错 → `ERR([kind: "JsonError", op, offset, line, column, reason])` | R2 |
 | `JSON_GET(doc, path) -> v` | 按**路径数组**取值;**缺失返 `NULL`,不报错** | 路径形状错 → `E0030` | R2 |
@@ -285,6 +289,7 @@ PRINT(PATH_NORMALIZE("a/./b/../c//d"));   // a/c/d
 3. **`offset` 指向最小「出错构造」的起点**,不是它内部某个字符。坏转义 `"\uZZZZ"` 报**反斜杠**的位置,前导零 `01` 报**整个数字**的起点。
 4. **`path` 在低层三成员里不出现。** 它们只做语法,不看结构 ⇒ 没有路径可言;`path` 从 `JSON_CHECK` 与路径族成员开始才有。塞一个恒为 `NULL` 的 `path` 会让人误以为「路径是空的」而不是「此处无路径」。
 5. **三处比 RFC / Python 更严**(与 `PARSE` 对齐,不与它们对齐):孤立代理(`"\uD800"` / `"\uDC00"` / 换序的代理对)一律拒;嵌套深度上限 **128**;`1e400` 这类溢出 `f64` 的数字拒。
+6. **`text` 是原文切片,`start` / `end` 是半开区间。** `text` 取 `chars[start..end]` —— 字符串 token **含两侧引号**;转义序列**不解码**(`"b\n"` 是字面反斜杠 + n)。`start` / `end` 是**半开区间 `[start, end)`**(`end` = token 最后一个字符的**后一位**)⇒ 原文第 i 个 token 的原文恰为 `SUB(s, start, end - start)`。
 
 ### 3.5 `JSON_CHECK` 的 schema 闭合子集
 
@@ -307,6 +312,8 @@ PRINT(PATH_NORMALIZE("a/./b/../c//d"));   // a/c/d
 **数据不符 schema → `ERR([kind: "JsonError", op, path, offset, line, column, reason])`**。这里**既有 `path` 又有 `line` / `column`** —— 与低层三成员(有行列、无 path)和路径族(有 path、无行列)都不同。违规只报**第一条**(走文档序,类型不对时优先报类型)。
 
 **一条有意分歧**:`type: "integer"` 只认 wlwl 的 **`INTEGER`**,**不认 `FLOAT`** —— `PARSE("2.0")` 给的是 `FLOAT`。JSON Schema 的 `integer` 指「没有小数部分的值」,本册取**严**的一支:本语言的类型系统**记得**原来是不是整数,抹平就丢掉了本仓比 Python 多出来的那份信息。
+
+**`type` 的多值写法**(F-02,2026-10-20 实施):`type` 收**一个**类型名(`STRING`)或**一个**类型名数组(`ARRAY[STRING]`);数组里**任一**匹配即过 ⇒ 多值与单值写法**完全等价**。三条边界写死:① 数组里的每个元素都必须是**已知**类型名(未知名 ⇒ `E0030`,不是「忽略这个类型」);② 数组里**任一**元素非法 ⇒ **整条 schema 拒**(不留半条 schema —— 半条 schema 会让「schema 写错了」看起来像「数据不合 schema」);③ **空数组 `type: []` = 不约束**(与「缺省不约束」同义,不是错误) —— 没有任何类型可匹配,于是没有约束生效。
 
 ### 3.6 示例
 
@@ -422,7 +429,9 @@ PRINT(GROUP_BY([1, 2, 3], FUN((x), %(x, 2))));  // [1: [1, 3], 0: [2]]
 
 ### 5.5 设计依据
 
-`RANGE` 归 R2 是 v0.11 M5 的**实测裁决**:R1 版每元素成本超线性(10 000 元素 3.6 s、40 000 元素 86 s),使语言规范 §6.6 的「100 万次简单循环 < 30 s」符合性负载跑不完。层归属变更不算破坏性变更(ADR-0021 §0.2)—— 成员面、签名、语义、诊断一字未变。偏差 D11-012。其余十个成员随 v0.11.2 M3 追加,当时**同为 R1**。平方级成本的分型证据与裁决点见 [`ADR-0025`](../adr/0025-array-quadratic-cost-routes.md) Q1。
+`RANGE` 归 R2 是 v0.11 M5 的**实测裁决**:R1 版每元素成本超线性(10 000 元素 3.6 s、40 000 元素 86 s),使 **ADR-0025 的「100 万次简单循环 < 30 s」符合性负载**跑不完。层归属变更不算破坏性变更(ADR-0021 §0.2)—— 成员面、签名、语义、诊断一字未变。偏差 D11-012。其余十个成员随 v0.11.2 M3 追加,当时**同为 R1**。平方级成本的分型证据与裁决点见 [`ADR-0025`](../adr/0025-array-quadratic-cost-routes.md) Q1。
+
+⚠ 该条款原为 v0.4 语言规范 §6.6;v0.11 合并控制流章节后 §6.6 已不存在,负载基准迁至 ADR-0025。
 
 ## 6 `std.str` — 字符串扩展
 
@@ -591,6 +600,8 @@ PRINT(CONTAINS_SUB("hello", "ell"));   // TRUE
 
 **混装静默提升**:`ARRAY[INTEGER]` 与 `ARRAY[FLOAT]` 混装**不**报 `E0030`,与既有 `SUM` 同口径。收紧就会与 `SUM` 分裂,而分裂意味着其中一处是错的。
 
+**`MODE` 的返回类型**:返回数组中那个元素的**原值**(原样保留其静态类型)—— 纯 `INTEGER` 数组返 `INTEGER`,纯 `FLOAT` 数组返 `FLOAT`,**混装按语言规范 §2.2 提升为 `FLOAT`**。⚠ 与 `MEDIAN` 不同(`MEDIAN` 明写「走 `f64`」),也与 `SUM` 对齐(`SUM` 走语言规范 §2.2 的整数提升)。
+
 **「空」与「无定义」都返回 `NULL`,不用错误** —— 这条容易被读反:
 
 | 输入 | 结果 | 为什么 |
@@ -689,7 +700,7 @@ PRINT(results[1].name, results[1].passed);  // fails FALSE
 | `ASK(model, prompt, opts?) -> STRING` | 单次推理;`opts` 是 `DICT` 或 `NULL` | 元数错 → `E0022`;类型错 → `E0030`;`E0080`–`E0083` | R2 |
 | `EMBED(text, model?) -> ARRAY` | 嵌入向量(**四维**,实现侧固定);`model` 缺省取环境变量 `WLWL_AI_DEFAULT_MODEL` | 同上;`E0080` | R2 |
 | `COMPLETE(context, language?, opts?) -> STRING` | 代码补全;`language` 缺省取 `WLWL_AI_DEFAULT_MODEL` | 同上;`E0080` | R2 |
-| `ASK_STREAM(model, prompt, callback, opts?) -> STRING` | 流式推理(实现侧当前**整收集为单块**,返回整段文本) | 同上 | R2 |
+| `ASK_STREAM(model, prompt, callback, opts?) -> STRING` | 流式推理(实现侧当前**整收集为单块**,返回整段文本) | 同上;⚠ `callback` 当前只接受 `NULL`(传函数值 → `E0030`);真流式回调形态见 §9.2 | R2 |
 | `ASK_ALL(prompts, opts?) -> ARRAY` | 多提示批量;`prompts` 是 `ARRAY[STRING]` | 同上 | R2 |
 
 **错误码语义**:`E0080` 请求失败;`E0081` 协议错误;`E0082` 工具错误;`E0083` 上下文错误。模型名缺少 `provider/` 前缀产生 `W0052`(语言规范 §11.3)。
@@ -711,6 +722,8 @@ PRINT(ASK_ALL(["a", "b"]));   // [[mock-batch:0] echo (h=0xe40c292c) :: a, [mock
 
 本包由 `wlwl:std.ai` **降级为官方包**,前缀取 `ai:`,成员面(名字 / 语义 / 错误码)**一字未改**,变的是**可见面** —— 属须申报的可见面变更(§0.8)。⇒ **本章已结项**;形态上的差距(仍在 `wlwl-std` 内编译、无独立 crate 边界、无独立分发产物)**按 §17 登记**,**零可观察行为差**。
 
+`callback` 形参是为**真流式**预留的占位:实现侧当前**整收集为单块**、返回整段文本(v0.4 起的既有形态);std 边界的函数值传递尚未对本包启用(ADR-0022 的 `Callable` 注入槽)⇒ **传闭包得 `E0030`**;真流式随 **P4-D1b-001** 立项。
+
 ## 10 `agent` — 代理(官方包)
 
 **导入路径是 `agent:task`**(或包名 `agent`)。`wlwl:std.agent` **不再可解析**,成员面一字未改,形态上的差距见 §9。
@@ -724,6 +737,8 @@ PRINT(ASK_ALL(["a", "b"]));   // [[mock-batch:0] echo (h=0xe40c292c) :: a, [mock
 | `CONTEXT(key, value?) -> v` | 上下文存取:给 `value` 则**写入并返回 `NULL`**;不给则**读取**,不存在时返回 `NULL` | 元数错 → `E0022`;类型错 → `E0030`;`E0083` | R2 |
 
 **网络错误码语义**:`E0090` 网络不可达、`E0091` DNS 失败、`E0092` TLS 错误、`E0093` HTTP 4xx、`E0094` HTTP 5xx。
+
+**`CALL_TOOL` 在工具执行器未接线时返回 mock 回包**,形状为 `{ok: false, mocked: true, error_code: NULL, message, params}`:`params` 回显传入的参数,`message` 说明「工具执行器未接线」且**不含版本承诺**(措辞不冻结)。⚠ `error_code` 是 `NULL`,**不是** `E0093` —— `E0093` 在本册 §10 是「HTTP 4xx」的**网络码**,拿它表达「mock 状态」是**语义挪用**;桩状态由 `mocked: true` 这个**专用字段**表达。⚠ 成员表里 `CALL_TOOL` 的失败码是 `E0082`(工具错误),`E0090`–`E0094` 是**网络码**,二者不是一回事。
 
 **`MODEL` 的 provider 来自名字里的 `provider/` 前缀**;没有前缀时 provider 为 `"unknown"`,并给 `W0052`。`capabilities` 按模型名前缀推导(`gpt-4` / `gpt-3.5` → 聊天 / 函数调用 / JSON 模式;`claude*` → 聊天 / 视觉 / 工具使用;`text-embed*` → 嵌入;其余 → 聊天)。
 
