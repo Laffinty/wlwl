@@ -638,5 +638,10 @@ READ_BYTES 读它 → error[E0102]: ... READ_BYTES caps one read at 1048576 byte
 |---|---|
 | 六项本地门禁 | `fmt` 0 / `clippy` 0 / `doc` 0 / `real-ai` 0 / `deny` 0 / `test` **2281 passed / 0 failed**(= 2275 + 我新增的 4 个单测 + 2 条契约) |
 | `fs_contract` | 15 → **17 passed / 0 failed** |
+| 17 份契约套件合计 | **206 passed / 0 failed** |
 | `wlwl-std` 单测 | 14 → **15 passed / 0 failed** |
 | 规范附录 A | 与实现**逐字节一致**(`gen-appendix-a` 跑完 git 无差异) |
+| skill 覆盖度 | **0 / 214 漏**;独立复核(按「行 → 首列单元格 → 成员名」)⇒ **33/33 全部定位到具体行** |
+| skill 示例 | 20 个全部退出 0(含新增 `std_math.wll`) |
+| **CI run 39351388398**(sha `91eef87`) | **四 job 全绿**(`test` ubuntu/macos/windows + `smoke`);artifact **3 个全在**(`cargo-test-logs-{ubuntu,macos,windows}-latest`,各约 34 KB) ⇒ **重写后的规范仍被 16 份契约测试读得懂**,且新的回读校验步在真 `gh` + `actions: read` 权限下三平台全绿 |
+| **CI run 39349748174**(sha `3af3016`) | **四 job 全绿** + artifact 3 个全在(A 组那笔) |
