@@ -1,41 +1,24 @@
 # WLWL
 
-**A small experimental programming language in which every syntactic form is a
+**A small experimental programming language where every operation is a named
 function call.**
 
-WLWL has no statement syntax to learn. Binding, branching, iteration, pattern
-matching, modules, classes and concurrency are all ordinary function calls with
-ordinary signatures, so the whole language is described by a single grammar and
-a single builtin table. The standard library is layered the same way: each
-namespace is imported by name, and every member's contract is written down in
-the standard-library specification.
+WLWL has one mechanism instead of five. There is no infix syntax and no
+operator precedence: arithmetic is `+(a, b)`, comparison is `==(a, b)`, and
+control flow, binding, iteration, pattern matching, modules, classes and
+concurrency are written in the same call-shaped form with ordinary argument
+lists. The whole language fits one grammar and one builtin table — and the
+standard library is layered the same way, with every member's contract
+written down.
 
-## Highlights
+[![CI](https://github.com/Laffinty/wlwl/actions/workflows/ci.yml/badge.svg)](https://github.com/Laffinty/wlwl/actions/workflows/ci.yml)
+[![Release](https://img.shields.io/github/v/release/Laffinty/wlwl)](https://github.com/Laffinty/wlwl/releases)
+[![License](https://img.shields.io/badge/license-GPL--2.0--only-blue.svg)](./LICENSE)
 
-- **One syntax for everything.** `LET`, `SET`, `IF`, `WHILE`, `FOR`, `MATCH`,
-  `FUN` and `IMPORT` are function calls, not keywords with a grammar of their
-  own.
-- **Errors are values.** A failing call yields an `ERR` value that propagates
-  through expressions; `OR DIE` turns it into a diagnostic carrying a stable
-  error code, and `RESULT` / `OPTION` carry recoverable failures.
-- **Closures capture cells.** `LET MUT` creates a mutable cell; closures that
-  capture it share it, which is how state is threaded through callbacks.
-- **Concurrency lives in the language.** `SCOPE`, `SPAWN`, `AWAIT`, `YIELD` and
-  the `CHANNEL_*` family are language constructs, not a library convention.
-- **Modules and classes.** `IMPORT` / `EXPORT` split a program into units;
-  `CLASS` / `NEW` / `CALL_METHOD` give those units state and behavior.
-- **A standard library with contracts.** I/O, files, JSON, regex, time,
-  randomness, collections, hashing and output safety — each member's behavior
-  is specified, and contract tests freeze the observable results.
-- **A toolchain, not just a compiler.** `wlwl run`, `check`, `ast`, `fmt`,
-  `sig`, `sig-gen`, `interface`, `schema` and `lsp`.
-
-## Quick start
+## Example
 
 ```wlwl
-IMPORT("wlwl:std.io", ["PRINT"]);
-
-// A closure captures a mutable cell; the cell is shared by every call.
+// A closure captures a mutable cell; every call shares that same cell.
 LET MUT(total, 0);
 LET(accumulate, FUN((amount), (
     SET(total, +(total, amount));
@@ -46,15 +29,104 @@ PRINT(accumulate(10));   // 10
 PRINT(accumulate(5));    // 15 — the same cell, shared across calls
 ```
 
-Run it with the built binary:
-
 ```bash
 wlwl run program.wll
 ```
 
+`wlwl` is the interpreter — [install a prebuilt binary](#install) or build it
+from source.
+
+Failures are values rather than exceptions:
+
+```wlwl
+LET(r, +(1, ERR("boom")));   // an ERR value, not a crash
+PRINT(IS_ERR(r));             // TRUE
+PRINT(UNWRAP_OR(r, -1));      // -1
+```
+
+## Why WLWL?
+
+- **One syntax to learn.** `IF(cond, then, else)`, `WHILE(cond, body)`,
+  `FOR(x, items, body)`, `MATCH(v, [clauses])`, `LET(name, value)`,
+  `CLASS(name, parent, members)` — argument lists, not grammar branches.
+  There is no precedence table to memorise and nothing for a parser to
+  disambiguate.
+- **Errors are values.** A failing operation yields an `ERR(...)` value that
+  travels up the call chain untouched; only the registered consumers —
+  `IS_ERR`, `ERR_PAYLOAD`, `UNWRAP_OR`, `TRY`, `WRAP` — can handle it. An
+  error nobody handles surfaces at the top of the program as a stable
+  diagnostic code (`E0102`) and a non-zero exit code.
+- **Mutable state is explicit.** `LET` binds an immutable cell, `LET MUT`
+  marks it mutable, `SET` rewrites it. Closures capture the cell rather than
+  its value, so several closures share one piece of state — no globals, no
+  hidden mutation.
+- **Concurrency is part of the language.** `SCOPE`, `SPAWN`, `AWAIT`,
+  `YIELD` and the `CHANNEL_*` family are language constructs, not a library
+  convention: a cooperative single-threaded scheduler with real suspension,
+  structured cancellation, and task lifetimes bounded by their lexical
+  scope. There is no implicit runtime scope and no free-floating task.
+- **Contracts, not conventions.** `SEALED([...])` states a module's
+  complete public surface, and a sidecar `.wll.sig` file states its types.
+  Both are checked in both directions, so a module cannot quietly grow
+  beyond what it promised. The standard library is specified the same way,
+  member by member, in its own volume.
+
+## Standard library
+
+19 `std.*` namespaces with 204 members, plus two official packages — `ai`
+and `agent` — for AI inference and agent tool calls.
+
+| Namespace | What it covers |
+|---|---|
+| `std.io` `std.fs` `std.process` `std.env` | input/output, files and paths, subprocesses without a shell, process environment |
+| `std.json` `std.format` `std.text` | JSON, template formatting, Unicode case handling and normalisation |
+| `std.collection` `std.str` `std.math` `std.result` | collections, string helpers, exact decimals and fractions, `RESULT` combinators |
+| `std.encode` `std.sanitize` `std.compress` | base64/hex/percent, SHA-256, HMAC, PBKDF2, Argon2id, output safety, zstd and the DEFLATE family |
+| `std.time` `std.regex` `std.rand` `std.net` `std.test` | wall and monotonic clocks, linear-time regex, explicitly seeded randomness, HTTP, the test harness |
+
+Each member's contract — including its failure modes — is specified in the
+standard-library specification and frozen by contract tests.
+
+## Toolchain
+
+`wlwl` is a tree-walking interpreter with a toolchain around it.
+
+| Command | What it does |
+|---|---|
+| `wlwl run <file>` | evaluate a program |
+| `wlwl check <file>` | parse, report unused bindings and static-contract diagnostics (no name resolution) |
+| `wlwl ast <file>` | print the parse tree as JSON |
+| `wlwl fmt <file>` | canonical formatter — `--check` to verify, `-w` to rewrite in place |
+| `wlwl sig` / `wlwl sig-gen` | print a module signature / generate a `.wll.sig` skeleton |
+| `wlwl interface <file>` | dump a module's public surface as JSON |
+| `wlwl schema` | dump the type system and static-contract codes as JSON |
+| `wlwl lsp` | language server on stdio: diagnostics, definition, hover, completion |
+
+Diagnostics carry stable four-digit codes and are available as
+machine-readable JSON or JSONL.
+
+## Documentation
+
+| Document | Contents |
+|---|---|
+| [Language specification](docs/spec/wlwl-spec-v0.11.md) | lexis, grammar, evaluation, the error model, modules, objects, concurrency |
+| [Standard library specification](docs/stdlib/wlwl-stdlib-spec-v0.11.md) | every namespace member's contract |
+| [Language tour](docs/site/tour.md) | a guided introduction |
+| [Agent skill pack](wlwl-skill/) | an AI-agent skill package with 20 runnable `.wll` examples |
+| [Changelog](CHANGELOG.md) | release history |
+| [Contributing](CONTRIBUTING.md) | development workflow, quality gates, conventions |
+
+## Install
+
+Prebuilt binaries for Linux, macOS and Windows are published on the
+[Releases page](https://github.com/Laffinty/wlwl/releases). Each archive
+carries the binary, the example programs, a CycloneDX SBOM and a cosign
+signature bundle.
+
 ## Build from source
 
-Requires Rust ≥ 1.75; the exact toolchain is pinned in `rust-toolchain.toml`.
+Requires Rust ≥ 1.85 (MSRV); the toolchain is pinned in
+`rust-toolchain.toml`.
 
 ```bash
 git clone https://github.com/Laffinty/wlwl
@@ -63,16 +135,18 @@ cargo build --release
 ./target/release/wlwl run examples/hello.wll
 ```
 
-For development setup, quality gates and the workspace layout, see
-[`CONTRIBUTING.md`](./CONTRIBUTING.md).
+## Status
 
-## Documentation
+WLWL is an experimental language. The language and the standard library are
+written down in full, but the implementation is young and some corners are
+deliberately unfinished.
 
-The language specification lives in
-[`docs/spec/wlwl-spec-v0.11.md`](./docs/spec/wlwl-spec-v0.11.md), the
-standard-library contract in
-[`docs/stdlib/wlwl-stdlib-spec-v0.11.md`](./docs/stdlib/wlwl-stdlib-spec-v0.11.md),
-and the release history in [`CHANGELOG.md`](./CHANGELOG.md).
+- There are no synchronisation primitives. The specification makes shared
+  mutable state an anti-pattern and puts the burden on channels instead —
+  locks cannot align with the scheduler's suspension points.
+- An unhandled error is only reported when it is the program's last
+  expression; earlier ones are dropped silently.
+- The most recent published release is a preview (RC) build.
 
 ## License
 
