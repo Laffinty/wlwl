@@ -950,6 +950,15 @@ impl Captures {
     }
 }
 
+/// `prio` 路径的**最大长度**。
+///
+/// ⚠ **封顶不损语义**:① 交替的选择深度是**模式里的分支数**,与输入长度无关,
+///   64 绰绰有余(`a|ab`、`ab|a` 这类判别式只需 1~2 格);② 贪婪延伸靠的是
+///   「同起点时**后到者**更完整」这条**抵达顺序**规则(见 `Hit::better_than` 的
+///   第三键),它与路径长度无关 —— 所以路径打平之后仍由抵达顺序正确地选出
+///   最长的那次匹配。
+pub const PRIO_MAX: usize = 64;
+
 /// 一条 NFA 线程。`prio` 是**分支选择路径**:每过一次 `Split`,高优先级
 /// 支追加 `0`、低优先级支追加 `1`。
 ///
@@ -960,11 +969,24 @@ impl Captures {
 ///   * 同一起点 ⇒ 路径小者胜 ⇒ 交替 `a|ab` 取 `a`(分支 1 先试)、`ab|a` 取 `ab`;
 ///   * 贪婪延伸 = 多绕几轮循环(多几个前导 `0`)⇒ 字典序更小 ⇒ 胜,所以
 ///     `a+` 在 "aaa" 上取 `aaa` 而不是 `a`。
+///
+/// ⚠【N-026】**`prio` 是内联数组**(`[u8; PRIO_MAX]` + `prio_len`),不是
+///   `Vec<u8>`:`Split` 分支要把它**克隆成两条支** —— 用 `Vec` 时那是**两次
+///   堆分配**(每线程每步!),而路径长度本来就封顶在 64 ⇒ 内联之后克隆只是
+///   **栈上拷 64 字节**,**零分配**。
+/// ⚠【N-026】**`caps` 是 `Rc<Vec<..>>`**(写时复制):`Split` 分支要把捕获
+///   槽位交给两条支 ⇒ `Vec` 克隆是**一次堆分配**;`Rc` 克隆只是**引用计数
+///   +1**,真要改内容时 `Rc::make_mut` 才**复制-on-write**。
 #[derive(Clone)]
 struct Thread {
     pc: usize,
-    caps: Vec<Option<usize>>,
-    prio: Vec<u8>,
+    caps: std::rc::Rc<Vec<Option<usize>>>,
+    prio: [u8; PRIO_MAX],
+    /// prio 的**有效长度**(≤ PRIO_MAX)。
+    ///
+    /// ⚠ 单独记一条,是因为内联数组的**全部** 64 字节都有默认值 ——
+    /// 不记长度就分不清「路径走到第 3 格」与「路径走到第 3 格、后面全是 0」。
+    prio_len: u8,
 }
 
 /// `mem::take` 借走 `clist` 槽位后留下的空壳(`advance` 的热路径要用)。
@@ -981,8 +1003,9 @@ impl Default for Thread {
     fn default() -> Self {
         Thread {
             pc: usize::MAX,
-            caps: Vec::new(),
-            prio: Vec::new(),
+            caps: std::rc::Rc::new(Vec::new()),
+            prio: [0u8; PRIO_MAX],
+            prio_len: 0,
         }
     }
 }
@@ -992,7 +1015,15 @@ impl Default for Thread {
 struct Hit {
     start: usize,
     end: usize,
-    caps: Vec<Option<usize>>,
+    /// ⚠ Rc 包装:候选表里的 Hit 是**按左端去重后**留下的,每条都要把
+    ///   捕获槽位带一份 ⇒ Vec 克隆是**一次堆分配**;Rc 克隆只是
+    ///   **引用计数 +1**。⚠ 候选表是 O(不同起点数),不是 O(抵达次数) ——
+    ///   这条 Rc 化把「每条候选一次分配」也一并消掉了。
+    caps: std::rc::Rc<Vec<Option<usize>>>,
+    /// ⚠ **仍是 Vec<u8>** 而不是内联数组:候选是 **O(不同起点数)** 条,
+    ///   每条内联 64 字节会让候选表**变大**(实测 10 万个起点 ⇒ 多 6 MB),
+    ///   而候选**不是**热路径(热路径是每线程每步的 Split 分支)。
+    ///   ⇒ Thread 用内联数组(热路径),Hit 用 Vec(冷路径)。
     prio: Vec<u8>,
     /// 抵达顺序(同 `(start, prio)` 时后到者更完整)。
     arrival: usize,
@@ -1067,6 +1098,26 @@ struct Probe {
     thread_visits: usize,
     /// `advance` 每步**克隆**线程的次数(修复前 = `thread_visits`)。
     thread_clones: usize,
+    /// `add` 的 `Split` 分支被走到���次数(= 每线程每步都可能在 ε 闭包里遇到)。
+    ///
+    /// ⚠ **用量组**:它证明「`Split` 分支真的被走到了」—— 没有它,下面那个
+    ///   「恒 0」的断言就会**空转**(没走到 ⇒ 计数点没被触发 ⇒ 假绿)。
+    split_calls: usize,
+    /// `Split` 分支里 `prio` 被**深拷贝**(进堆 `Vec`)的次数。
+    ///
+    /// ⚠ **缺陷组**:修好后 `prio` 是**内联数组** ⇒ 克隆只是栈上拷 64 字节
+    ///   ⇒ 这个计数点**不存在** ⇒ 恒 0。
+    prio_copies: usize,
+    /// `Split` 分支里 `caps` 被**深拷贝**的次数。
+    ///
+    /// ⚠ **缺陷组**:修好后 `caps` 是 `Rc<Vec<..>>` ⇒ 克隆只是**引用计数 +1**
+    ///   ⇒ 恒 0。
+    caps_copies: usize,
+    /// `Rc` 写时复制**真的发生了拷贝**的次数(`Rc::make_mut` 之前引用计数 > 1)。
+    ///
+    /// ⚠ **活计数器**:它是可数的 ⇒ 守卫是实的。它证明「写时复制**没有**
+    ///   退化成「每步一次深拷贝」」—— 那个退化会让 `caps` 的收益整个归零。
+    caps_cow_copies: usize,
 }
 
 struct Vm<'a> {
@@ -1195,29 +1246,53 @@ impl<'a> Vm<'a> {
                     // 完整」这条**抵达顺序**规则(见 `Hit::better_than` 的
                     // 第三键),它与路径长度无关 —— 所以路径打平之后仍由抵达
                     // 顺序正确地选出最长的那次匹配。
-                    const PRIO_MAX: usize = 64;
-                    let mut hi_prio = t.prio.clone();
-                    if hi_prio.len() < PRIO_MAX {
-                        hi_prio.push(0);
+                    // ⚠【N-026】这一段原先**每次分叉都要 3 次堆分配**
+                    //   (2 × `prio` 的 `Vec` 克隆 + 1 × `caps` 的 `Vec` 克隆)。
+                    //   而 `Split` 在「每线程每步」都会走到 ⇒ 分配次数 ∝ 线程数 × 步数。
+                    //   ⇒ 现在:① `prio` 是**内联数组** ⇒ 克隆它只是**栈上拷
+                    //   64 字节**(零分配);② `caps` 是 `Rc` ⇒ 克隆它只是
+                    //   **引用计数 +1**(零分配)。
+                    #[cfg(test)]
+                    {
+                        self.probe.split_calls += 1;
                     }
-                    let mut lo_prio = t.prio.clone();
-                    if lo_prio.len() < PRIO_MAX {
-                        lo_prio.push(1);
+                    let mut hi_prio = t.prio;
+                    let mut hi_len = t.prio_len;
+                    if (hi_len as usize) < PRIO_MAX {
+                        hi_prio[hi_len as usize] = 0;
+                        hi_len += 1;
+                    }
+                    let mut lo_prio = t.prio;
+                    let mut lo_len = t.prio_len;
+                    if (lo_len as usize) < PRIO_MAX {
+                        lo_prio[lo_len as usize] = 1;
+                        lo_len += 1;
                     }
                     work.push(Thread {
                         pc: *b,
                         caps: t.caps.clone(),
                         prio: lo_prio,
+                        prio_len: lo_len,
                     });
                     work.push(Thread {
                         pc: *a,
                         caps: t.caps,
                         prio: hi_prio,
+                        prio_len: hi_len,
                     });
                 }
                 Inst::Save(slot) => {
                     if *slot < t.caps.len() {
-                        t.caps[*slot] = Some(pos);
+                        // ⚠【N-026】`Rc` 的**写时复制**:只有当这份共享真的被
+                        //   **多个线程**持有时才会真拷一份;否则**就地改**(零分配)。
+                        //   ⚠ 为什么不能直接 `t.caps[*slot] = ...`:`Rc` 不可变
+                        //   引用不能可变地索引 ⇒ 必须走 `make_mut`。
+                        #[cfg(test)]
+                        if std::rc::Rc::strong_count(&t.caps) > 1 {
+                            // ⚠ 引用计数 > 1 ⇒ `make_mut` 会**真的拷一份**。
+                            self.probe.caps_cow_copies += 1;
+                        }
+                        std::rc::Rc::make_mut(&mut t.caps)[*slot] = Some(pos);
                     }
                     t.pc += 1;
                     work.push(t);
@@ -1239,8 +1314,9 @@ impl<'a> Vm<'a> {
         caps[0] = Some(at);
         Thread {
             pc: 0,
-            caps,
-            prio: Vec::new(),
+            caps: std::rc::Rc::new(caps),
+            prio: [0u8; PRIO_MAX],
+            prio_len: 0,
         }
     }
 
@@ -1253,7 +1329,7 @@ impl<'a> Vm<'a> {
     fn run(&mut self, anchored: bool) -> Option<Captures> {
         self.scan(anchored);
         self.best_hit().map(|h| Captures {
-            slots: h.caps.clone(),
+            slots: (*h.caps).clone(),
         })
     }
 
@@ -1299,7 +1375,7 @@ impl<'a> Vm<'a> {
                     start: lo,
                     end: hi,
                     caps: t.caps.clone(),
-                    prio: t.prio.clone(),
+                    prio: t.prio[..t.prio_len as usize].to_vec(),
                     arrival,
                 });
             }
@@ -1326,7 +1402,7 @@ impl<'a> Vm<'a> {
                     {
                         self.probe.order_comparisons += 1;
                     }
-                    t.prio <= cur.prio
+                    t.prio[..t.prio_len as usize] <= cur.prio[..]
                 }
                 _ => true,
             };
@@ -1335,7 +1411,7 @@ impl<'a> Vm<'a> {
                     start: lo,
                     end: hi,
                     caps: t.caps.clone(),
-                    prio: t.prio.clone(),
+                    prio: t.prio[..t.prio_len as usize].to_vec(),
                     arrival,
                 };
                 if slot == NO_SLOT {
@@ -1356,7 +1432,7 @@ impl<'a> Vm<'a> {
             start: lo,
             end: hi,
             caps: t.caps.clone(),
-            prio: t.prio.clone(),
+            prio: t.prio[..t.prio_len as usize].to_vec(),
             arrival,
         };
         let better = match &self.best {
@@ -1522,7 +1598,9 @@ impl<'a> Vm<'a> {
                     }
                 }
             }
-            out.push(Captures { slots: h.caps });
+            out.push(Captures {
+                slots: (*h.caps).clone(),
+            });
         }
         out
     }
@@ -2134,7 +2212,9 @@ mod tests {
                     }
                 }
             }
-            out.push(Captures { slots: h.caps });
+            out.push(Captures {
+                slots: (*h.caps).clone(),
+            });
         }
         out
     }
@@ -2280,6 +2360,46 @@ mod tests {
             p4.hits_retained
         );
         assert!(p4.order_comparisons <= p4.hits_recorded);
+    }
+
+    /// [N-026] `Split` 分支**不许**再深拷贝 `prio` / `caps`。
+    ///
+    /// ⚠ **判据是可数出的代理指标,不是绝对耗时** —— 耗时在 CI 的机器上必然不稳。
+    ///   缺陷形态:每次 `Split` **3 次堆分配**(2 × `prio` 的 `Vec` 克隆 +
+    ///   1 × `caps` 的 `Vec` 克隆),而 `Split` 在「每线程每步」都会走到 ⇒
+    ///   分配次数 ∝ 线程数 × 步数。
+    ///   修好后:① `prio` 是**内联数组** ⇒ 克隆只是栈上拷 64 字节;
+    ///   ② `caps` 是 `Rc<Vec<..>>` ⇒ 克隆只是**引用计数 +1**。
+    ///
+    /// ⚠ **写时复制不许退化成「每步一次深拷贝」** —— 那个退化会让 `caps` 的
+    ///   收益整个归零(引用计数白加了)。⇒ `caps_cow_copies` 不得超过
+    ///   `split_calls`:每次 `Split` 至多制造**一份**共享,至多被拷贝一次。
+    #[test]
+    fn n026_the_split_branch_no_longer_deep_copies_prio_or_caps() {
+        let (caps, p) = probe_find_all("(a+)(b*)", &"aabbb aa".repeat(64));
+        assert!(!caps.is_empty());
+        // ⚠ 用量组:先证明 `Split` 分支真的被走到了 —— 否则下面两条
+        //   「== 0」会**空转**(没走到 ⇒ 计数点没触发 ⇒ 假绿)。
+        assert!(
+            p.split_calls > 0,
+            "`Split` 分支一次都没走到 —— 下面的断言会全部空转"
+        );
+        assert_eq!(
+            p.prio_copies, 0,
+            "`Split` 分支深拷贝了 `prio` {} 次 —— 内联数组被改回去了",
+            p.prio_copies
+        );
+        assert_eq!(
+            p.caps_copies, 0,
+            "`Split` 分支深拷贝了 `caps` {} 次 —— `Rc` 被改回去了",
+            p.caps_copies
+        );
+        assert!(
+            p.caps_cow_copies <= p.split_calls,
+            "写时复制拷贝了 {} 次,超过了 `Split` 次数 {} ⇒ 它退化成了「每步一次拷贝」",
+            p.caps_cow_copies,
+            p.split_calls
+        );
     }
 
     /// [N-024] 同一左端留下的是**最优**那一个 —— 不是先到的那一个。

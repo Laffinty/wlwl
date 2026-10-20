@@ -5,7 +5,7 @@ expression: "serde_json::json!({\n    \"E0030\": code_snap(ErrorCode::E0030, \"t
 {
   "E0030": {
     "code": "E0030",
-    "error_category": "type",
+    "errorCategory": "type",
     "error_schema_version": "1.1.0",
     "hint": null,
     "idempotent": false,
@@ -26,7 +26,7 @@ expression: "serde_json::json!({\n    \"E0030\": code_snap(ErrorCode::E0030, \"t
   },
   "E0031": {
     "code": "E0031",
-    "error_category": "type",
+    "errorCategory": "type",
     "error_schema_version": "1.1.0",
     "hint": null,
     "idempotent": false,
@@ -47,7 +47,7 @@ expression: "serde_json::json!({\n    \"E0030\": code_snap(ErrorCode::E0030, \"t
   },
   "E0032": {
     "code": "E0032",
-    "error_category": "type",
+    "errorCategory": "type",
     "error_schema_version": "1.1.0",
     "hint": null,
     "idempotent": false,
@@ -68,7 +68,7 @@ expression: "serde_json::json!({\n    \"E0030\": code_snap(ErrorCode::E0030, \"t
   },
   "E0033": {
     "code": "E0033",
-    "error_category": "type",
+    "errorCategory": "type",
     "error_schema_version": "1.1.0",
     "hint": null,
     "idempotent": false,
@@ -89,7 +89,7 @@ expression: "serde_json::json!({\n    \"E0030\": code_snap(ErrorCode::E0030, \"t
   },
   "E0034": {
     "code": "E0034",
-    "error_category": "type",
+    "errorCategory": "type",
     "error_schema_version": "1.1.0",
     "hint": null,
     "idempotent": false,
@@ -110,7 +110,7 @@ expression: "serde_json::json!({\n    \"E0030\": code_snap(ErrorCode::E0030, \"t
   },
   "E0035": {
     "code": "E0035",
-    "error_category": "type",
+    "errorCategory": "type",
     "error_schema_version": "1.1.0",
     "hint": null,
     "idempotent": false,
@@ -131,7 +131,7 @@ expression: "serde_json::json!({\n    \"E0030\": code_snap(ErrorCode::E0030, \"t
   },
   "E0036": {
     "code": "E0036",
-    "error_category": "type",
+    "errorCategory": "type",
     "error_schema_version": "1.1.0",
     "hint": null,
     "idempotent": false,
@@ -152,7 +152,7 @@ expression: "serde_json::json!({\n    \"E0030\": code_snap(ErrorCode::E0030, \"t
   },
   "E0037": {
     "code": "E0037",
-    "error_category": "type",
+    "errorCategory": "type",
     "error_schema_version": "1.1.0",
     "hint": null,
     "idempotent": false,
@@ -173,7 +173,7 @@ expression: "serde_json::json!({\n    \"E0030\": code_snap(ErrorCode::E0030, \"t
   },
   "E0038": {
     "code": "E0038",
-    "error_category": "type",
+    "errorCategory": "type",
     "error_schema_version": "1.1.0",
     "hint": null,
     "idempotent": false,
@@ -194,7 +194,7 @@ expression: "serde_json::json!({\n    \"E0030\": code_snap(ErrorCode::E0030, \"t
   },
   "E0039": {
     "code": "E0039",
-    "error_category": "type",
+    "errorCategory": "type",
     "error_schema_version": "1.1.0",
     "hint": null,
     "idempotent": false,

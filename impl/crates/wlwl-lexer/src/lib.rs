@@ -655,7 +655,7 @@ impl<'a> Lexer<'a> {
     /// Read the expression body of a `${...}` interpolation (v0.6 §1.8).
     ///
     /// Returns the inner expression tokens (excluding the closing
-    /// `}`, which this method consumes). Two rules:
+    /// `}`, which this method consumes). Three rules:
     ///
     ///   1. Top-level `{` / `}` count for depth (so `{LET(x, {y: 1}), x}`
     ///      parses correctly).
@@ -664,73 +664,56 @@ impl<'a> Lexer<'a> {
     ///      inner expression. Without this skip, `"${1}${2}"` lexes
     ///      "1${2}" as the body of the first `${...}`, and the
     ///      recursive `lex()` chokes on the bare `$`.
+    ///   3. **Nested string literals are skipped over, not rejected.**
+    ///
+    /// ⚠ **[v0.11.3 / R2-005]** 第 3 条是修进来的。规范 §1.8 的文法是
+    /// `interpolation = "${" Expression "}"`,而 §1.8 正文逐字写着
+    /// 「`${...}` 内的表达式按**完整表达式语法**求值」—— 字符串字面量是
+    /// `Expression` 的合法组成,所以 `${ERR("x")}` **必须**能写。
+    ///
+    /// 修之前这里见 `"` 就报 E0001「nested string literal … is not allowed」,
+    /// 那条注释自称「per spec grammar」,**与 §1.8 的文法实际不符**。而且这条
+    /// 限制长在**词法层**,绕不开:`"${"x"}"`、`"${ERR("boom")}"` 一律在词法期
+    /// 被拒,连「换个写法」都不行。
+    ///
+    /// 跳过时要处理三件事,少一件就会把边界数错:
+    ///   ① **转义引号**:`\"` 不是结束符;
+    ///   ② 嵌套字符串里的 `{}` **不是**插值体的括号(否则深度计数被带偏,
+    ///      `}` 会提前收尾);
+    ///   ③ 嵌套字符串里**自己**的插值(`${…}`)同样不算本插值体的括号。
     fn read_interp_body(&mut self) -> WlwlResult<Vec<Token>> {
         let start = self.pos;
-        let mut depth: u32 = 1;
-        let mut i = self.pos;
-        while i < self.src.len() {
-            let b = self.src[i];
-            // Skip nested `${...}` pairs: they belong to the outer
-            // string, not the inner expression we are collecting.
-            if b == b'$' && self.src.get(i + 1) == Some(&b'{') {
-                i += 2; // consume `${`
-                let mut nest_depth: u32 = 1;
-                while i < self.src.len() && nest_depth > 0 {
-                    match self.src[i] {
-                        b'{' => nest_depth += 1,
-                        b'}' => nest_depth -= 1,
-                        _ => {}
-                    }
-                    if nest_depth > 0 {
-                        i += 1;
-                    }
-                }
-                if nest_depth != 0 {
-                    return Err(self.err(
-                        ErrorCode::E0002,
-                        "unterminated nested string interpolation (missing `}`)",
-                        self.line,
-                        self.col,
-                    ));
-                }
-                i += 1; // skip the closing `}` of the nested `${...}`
-                continue;
+        let end = match scan_interp_region(self.src, self.pos) {
+            Ok(end) => end,
+            Err(ScanFail::Interp) => {
+                return Err(self.err(
+                    ErrorCode::E0002,
+                    "unterminated string interpolation (missing `}`)",
+                    self.line,
+                    self.col,
+                ));
             }
-            match b {
-                b'{' => depth += 1,
-                b'}' => {
-                    depth -= 1;
-                    if depth == 0 {
-                        break;
-                    }
-                }
-                b'"' => {
-                    // Nested string literals are not allowed inside
-                    // `${...}` per spec grammar — they would break the
-                    // simple brace-counting strategy. Report E0001.
-                    return Err(self.err(
-                        ErrorCode::E0001,
-                        "nested string literal inside `${...}` interpolation is not allowed",
-                        self.line,
-                        self.col,
-                    ));
-                }
-                _ => {}
+            Err(ScanFail::NestedInterp) => {
+                return Err(self.err(
+                    ErrorCode::E0002,
+                    "unterminated nested string interpolation (missing `}`)",
+                    self.line,
+                    self.col,
+                ));
             }
-            i += 1;
-        }
-        if depth != 0 {
-            return Err(self.err(
-                ErrorCode::E0002,
-                "unterminated string interpolation (missing `}`)",
-                self.line,
-                self.col,
-            ));
-        }
-        let inner_bytes = &self.src[start..i];
+            Err(ScanFail::String) => {
+                return Err(self.err(
+                    ErrorCode::E0002,
+                    "unterminated string literal inside `${...}` interpolation",
+                    self.line,
+                    self.col,
+                ));
+            }
+        };
+        let inner_bytes = &self.src[start..end];
         let inner_str = std::str::from_utf8(inner_bytes).unwrap_or("");
         // Skip past the inner bytes plus the closing `}`.
-        while self.pos < i + 1 {
+        while self.pos < end + 1 {
             self.bump();
         }
         // Recursively lex the inner expression as a fresh source
@@ -1004,6 +987,90 @@ impl<'a> Lexer<'a> {
     }
 }
 
+// ── 插值体扫描器(词法层的边界判定) ────────────────────────────
+//
+// ⚠ [v0.11.3 / R2-005] 这两个自由函数是「插值体里允许嵌套字符串字面量」
+// 那条修复的**全部**实现。规范 §1.8:`interpolation = "${" Expression "}"`,
+// 且 §1.8 正文明写「`${...}` 内的表达式按**完整表达式语法**求值」⇒
+// 字符串字面量是合法组成,词法层**不得**把它拒掉。
+//
+// 边界判定的难点不在「找 `}`」,而在**三种会把边界数错的东西**:
+//   ① 嵌套字符串里的 `}`(它属于字符串,不属于插值体);
+//   ② 转义引号 `\"`(它不是字符串的结束符);
+//   ③ 嵌套字符串里**自己**的插值 `${…}`(它也不属于插值体的括号)。
+// 三者任意漏掉一条,`"${ERR("a}b")}"` 这类源码就会被截断成半截表达式。
+
+/// 扫描失败的原因。三种分开报,是因为它们的**修复动作**不同:
+/// 补一个 `}`、补一个 `"`、还是整段重写。
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum ScanFail {
+    /// 当前这一层插值体没有闭合的 `}`。
+    Interp,
+    /// 插值体里**嵌套**的 `${…}` 没有闭合的 `}`。
+    NestedInterp,
+    /// 字符串字面量没有闭合的 `"`。
+    String,
+}
+
+/// 扫描一层插值体:从 `i`(指向 `${` **之后**的第一个字符)开始,
+/// 返回**闭合 `}` 的位置**(指向那个 `}` 本身)。
+///
+/// 形如 `{LET(x, {y: 1}), x}` 的表达式:花括号按深度配对。
+fn scan_interp_region(src: &[u8], mut i: usize) -> Result<usize, ScanFail> {
+    let mut depth: u32 = 0;
+    while i < src.len() {
+        match src[i] {
+            // 嵌套字符串字面量:整段跳过。它里面的 `{}`、转义引号、
+            // 自己的插值都**不是**本层的边界。
+            b'"' => i = scan_nested_string(src, i)?,
+            // 插值体里**又**出现 `${…}`:整段跳过 —— 它属于外层字符串的
+            // 下一次插值,不是本插值体的表达式(修之前的老代码也是这个意思,
+            // 只是它的括号计数不认字符串)。
+            b'$' if src.get(i + 1) == Some(&b'{') => {
+                let end = scan_interp_region(src, i + 2).map_err(|_| ScanFail::NestedInterp)?;
+                i = end + 1; // 跳过闭合 `}`
+            }
+            b'{' => {
+                depth += 1;
+                i += 1;
+            }
+            b'}' => {
+                if depth == 0 {
+                    return Ok(i);
+                }
+                depth -= 1;
+                i += 1;
+            }
+            _ => i += 1,
+        }
+    }
+    Err(ScanFail::Interp)
+}
+
+/// 扫描一个**嵌套字符串字面量**:从 `i`(指向开引号 `"`)开始,
+/// 返回闭合引号**之后**的位置。
+///
+/// 字符串里可以有插值 `${…}`,插值体里又可能有字符串 ⇒ 必须**递归**。
+fn scan_nested_string(src: &[u8], mut i: usize) -> Result<usize, ScanFail> {
+    i += 1; // 跳过开引号
+    while i < src.len() {
+        match src[i] {
+            // 转义:被转义的那个字符**既不是**结束符,也不是括号。
+            // ⚠ 末尾那个反斜杠会让 `i` 越过末尾 ⇒ 下面的循环条件接住它,
+            // 报「字符串没闭合」而不是越界 panic。
+            b'\\' => i += 2,
+            b'"' => return Ok(i + 1),
+            // 字符串里的插值:整段跳过(它的 `}` 不是本字符串的边界)。
+            b'$' if src.get(i + 1) == Some(&b'{') => {
+                let end = scan_interp_region(src, i + 2).map_err(|_| ScanFail::NestedInterp)?;
+                i = end + 1; // 跳过闭合 `}`
+            }
+            _ => i += 1,
+        }
+    }
+    Err(ScanFail::String)
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -1251,10 +1318,15 @@ mod tests {
         // Missing `}` inside an interpolation is detected by the
         // outer string loop: the inner `"` closes the string first,
         // so the test really checks that the lexer rejects a string
-        // that ends mid-interpolation. The current implementation
-        // refuses nested string literals inside `${...}` with E0001.
+        // that ends mid-interpolation.
+        //
+        // ⚠ [v0.11.3 / R2-005] 断言的码从 E0001 变成 E0002:插值体里的
+        // 嵌套字符串字面量现在被**跳过**而不是被拒(规范 §1.8 的
+        // `interpolation = "${" Expression "}"`,字符串字面量是 `Expression`
+        // 的合法组成)。于是这个输入的失败点变成「那个嵌套字符串没有闭合
+        // 的 `"`」⇒ 词法码 E0002(未终止字符串),不再是 E0001(非法字符)。
         let err = lex("\"hi ${name\"", "t.wll").unwrap_err();
-        assert_eq!(err.diagnostic().code, ErrorCode::E0001);
+        assert_eq!(err.diagnostic().code, ErrorCode::E0002);
     }
 
     #[test]

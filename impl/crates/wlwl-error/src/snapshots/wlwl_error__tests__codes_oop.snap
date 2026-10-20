@@ -1,12 +1,11 @@
 ---
 source: crates/wlwl-error/src/lib.rs
-assertion_line: 1383
 expression: "serde_json::json!({\n    \"E0050\": code_snap(ErrorCode::E0050, \"inherit_err\"), \"E0051\":\n    code_snap(ErrorCode::E0051, \"call_method_protocol_violation\"),\n})"
 ---
 {
   "E0050": {
     "code": "E0050",
-    "error_category": "oop",
+    "errorCategory": "oop",
     "error_schema_version": "1.1.0",
     "hint": null,
     "idempotent": false,
@@ -27,7 +26,7 @@ expression: "serde_json::json!({\n    \"E0050\": code_snap(ErrorCode::E0050, \"i
   },
   "E0051": {
     "code": "E0051",
-    "error_category": "oop",
+    "errorCategory": "oop",
     "error_schema_version": "1.1.0",
     "hint": null,
     "idempotent": false,

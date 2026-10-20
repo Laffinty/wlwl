@@ -1,12 +1,11 @@
 ---
 source: crates/wlwl-error/src/lib.rs
-assertion_line: 1340
 expression: "serde_json::json!({\n    \"E0052\": code_snap(ErrorCode::E0052, \"scope_fn_not_function\"), \"E0053\":\n    code_snap(ErrorCode::E0053, \"task_handle_invalid\"), \"E0054\":\n    code_snap(ErrorCode::E0054, \"channel_send_closed\"), \"E0056\":\n    code_snap(ErrorCode::E0056, \"spawn_arity_mismatch\"), \"E0058\":\n    code_snap(ErrorCode::E0058, \"spawn_no_active_scope\"),\n})"
 ---
 {
   "E0052": {
     "code": "E0052",
-    "error_category": "concurrent",
+    "errorCategory": "concurrent",
     "error_schema_version": "1.1.0",
     "hint": null,
     "idempotent": false,
@@ -27,7 +26,7 @@ expression: "serde_json::json!({\n    \"E0052\": code_snap(ErrorCode::E0052, \"s
   },
   "E0053": {
     "code": "E0053",
-    "error_category": "concurrent",
+    "errorCategory": "concurrent",
     "error_schema_version": "1.1.0",
     "hint": null,
     "idempotent": false,
@@ -48,7 +47,7 @@ expression: "serde_json::json!({\n    \"E0052\": code_snap(ErrorCode::E0052, \"s
   },
   "E0054": {
     "code": "E0054",
-    "error_category": "concurrent",
+    "errorCategory": "concurrent",
     "error_schema_version": "1.1.0",
     "hint": null,
     "idempotent": false,
@@ -69,7 +68,7 @@ expression: "serde_json::json!({\n    \"E0052\": code_snap(ErrorCode::E0052, \"s
   },
   "E0056": {
     "code": "E0056",
-    "error_category": "concurrent",
+    "errorCategory": "concurrent",
     "error_schema_version": "1.1.0",
     "hint": null,
     "idempotent": false,
@@ -90,7 +89,7 @@ expression: "serde_json::json!({\n    \"E0052\": code_snap(ErrorCode::E0052, \"s
   },
   "E0058": {
     "code": "E0058",
-    "error_category": "concurrent",
+    "errorCategory": "concurrent",
     "error_schema_version": "1.1.0",
     "hint": null,
     "idempotent": false,

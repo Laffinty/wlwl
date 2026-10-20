@@ -100,9 +100,13 @@ const R1_SELF_TEST_FILES: &[&str] = &[
 
 // P4-H1-003: v0.4.0 emitter writes 12 schema-1.1.0 fields; `cause` is
 // deferred to v0.4.1 (see wlwl-error/src/lib.rs line 579).
+//
+// [R2-011] `error_category` → `errorCategory`:规范 §11.1 明写 JSON 诊断
+// 的字段名是 `errorCategory`(驼峰),实现此前吐的是蛇形 `error_category`,
+// 照规范写的工具读不到这个字段。**键名**变了,字段集合没变。
 const SCHEMA_110_FIELDS: &[&str] = &[
     "code",
-    "error_category",
+    "errorCategory",
     "error_schema_version",
     "message",
     "location",

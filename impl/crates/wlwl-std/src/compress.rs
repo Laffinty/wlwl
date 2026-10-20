@@ -33,6 +33,44 @@ use wlwl_value::{Outcome, StdHost, Value};
 /// 单个载荷**没有解压路径** —— 想处理它得先解压到文件,或等流式成员落地。
 pub const MAX_DECOMPRESSED: usize = 64 * 1024 * 1024;
 
+/// 定步读取解压输出,让 `Vec` 的 **`capacity` 与 `len` 同阶**(D13-074)。
+///
+/// ⚠ **缺陷形态**:`Read::take(cap).read_to_end(&mut out)` —— `read_to_end` 是
+///   **倍增**增长(Rust 的实现按 `reserve` 翻倍)⇒ 一个**恰好** 64 MiB 的合法
+///   载荷会让 `capacity` 涨到 ~128 MiB ⇒ **实测峰值约为文档上限的 2×**。
+///   而规范 §20.2 承诺的是「超过 64 MiB 返 `ERR`,**不是** OOM」——
+///   峰值 2× 在内存受限环境里**就是** OOM 的前置条件。
+/// ⚠ **修法不是「读前预分配」**:那会让**每一次**解压都先占 64 MiB,
+///   比现在更坏(规范 §20.2 已记下这条否决理由)。
+///   ⇒ 改为**定步**:每次读固定一块,每读一块就**精确**增长那一块,
+///   于是 `capacity` 始终 == `len` ⇒ 峰值与上限**同阶**。
+/// ⚠ **实测(2026-10-20,负向验证)**:缺陷形态下 4 MiB 的载荷拿到
+///   **8 MiB** 的 `capacity` —— 正好 2× ⇒ 规范 §20.2 那句「实测峰值约为
+///   文档上限的 2×」由此从推测变成**量出来的数**。
+/// ⚠ 用 `try_reserve_exact` 而不是 `reserve`:后者**会**为摊还而多要一倍;
+///   前者只多要「这一块」,且分配失败可以变成一个 `io::Error`(**不能** panic)
+///   —— 「越限不是 OOM」这条承诺的前提之一就是**不把进程打死**。
+///
+/// 最多读 `cap + 1` 字节:多一个就说明**超了**(与旧形态的 `take(cap + 1)`
+/// 同一口径,调用方看 `len > cap` 即可判越限)。
+fn read_capped_exact(r: &mut impl Read, cap: usize) -> std::io::Result<Vec<u8>> {
+    const CHUNK: usize = 64 * 1024;
+    let mut out: Vec<u8> = Vec::new();
+    let mut buf = [0u8; CHUNK];
+    let limit = cap + 1;
+    while out.len() < limit {
+        let want = CHUNK.min(limit - out.len());
+        let n = r.read(&mut buf[..want])?;
+        if n == 0 {
+            break;
+        }
+        out.try_reserve_exact(n)
+            .map_err(|e| std::io::Error::new(std::io::ErrorKind::OutOfMemory, e.to_string()))?;
+        out.extend_from_slice(&buf[..n]);
+    }
+    Ok(out)
+}
+
 pub static SPEC: ModuleSpec = ModuleSpec {
     path: "wlwl:std.compress",
     functions: &[
@@ -229,13 +267,12 @@ pub fn zstd_decompress(host: &mut dyn StdHost, args: Vec<Value>) -> Result<Outco
         Ok(d) => d,
         Err(e) => return ok(err(NAME, format!("not a zstd frame: {e}"))),
     };
-    let mut out = Vec::new();
-    let read = std::io::Read::take(&mut dec, MAX_DECOMPRESSED as u64 + 1).read_to_end(&mut out);
+    let read = read_capped_exact(&mut dec, MAX_DECOMPRESSED);
     match read {
-        Ok(_) if out.len() as u64 > MAX_DECOMPRESSED as u64 => {
+        Ok(out) if out.len() as u64 > MAX_DECOMPRESSED as u64 => {
             ok(io_err(NAME, std::io::Error::other("limit"), true))
         }
-        Ok(_) => ok(to_array(out)),
+        Ok(out) => ok(to_array(out)),
         Err(e) if e.kind() == std::io::ErrorKind::UnexpectedEof => {
             ok(err(NAME, format!("truncated frame: {e}")))
         }
@@ -282,21 +319,19 @@ fn flate_decompress(
     }
     // ⚠ 数据**按值**交给解码器:解码器必须**拥有**它,不能借用一个就要
     // 返回的局部 `Vec`(否则 `Box<dyn Read>` 活得比它短)。
-    let reader = match build(data) {
+    let mut reader = match build(data) {
         Ok(r) => r,
         Err(e) => return ok(err(name, format!("bad header: {e}"))),
     };
-    let mut out = Vec::new();
-    // `take(LIMIT + 1)` 同时做到两件事:把内存**封顶**在 LIMIT + 1,
+    // `read_capped_exact(LIMIT)` 同时做到两件事:把内存**封顶**在 LIMIT + 1
+    // (D13-074:定步增长,`capacity` 与 `len` 同阶,不再翻倍),
     // 以及「读满了 LIMIT + 1 就知道超了」。
-    let read = reader
-        .take(MAX_DECOMPRESSED as u64 + 1)
-        .read_to_end(&mut out);
+    let read = read_capped_exact(&mut reader, MAX_DECOMPRESSED);
     match read {
-        Ok(_) if out.len() > MAX_DECOMPRESSED => {
+        Ok(out) if out.len() > MAX_DECOMPRESSED => {
             ok(io_err(name, std::io::Error::other("limit"), true))
         }
-        Ok(_) => ok(to_array(out)),
+        Ok(out) => ok(to_array(out)),
         Err(e) => ok(err(name, format!("decompress: {e}"))),
     }
 }
@@ -652,6 +687,42 @@ mod tests {
     /// 「单测守着常量本身」—— 而它自己的验收条款要求「越限 → `ERR` 而不是
     /// OOM」⇒ 结项声明相对自己的条款是虚的。
     ///
+    /// D13-074:解压输出的 `capacity` 必须与 `len` **同阶**。
+    ///
+    /// ⚠ 缺陷形态用 `read_to_end`(**倍增**增长)⇒ 一个恰好压到上限的合法载荷
+    ///   会拿到 ~2× 的 `capacity` ⇒ 峰值约为文档上限的 2×,与规范 §20.2 的
+    ///   「超过 64 MiB 返 `ERR`,**不是** OOM」相抵触(峰值 2× 在内存受限环境里
+    ///   就是 OOM 的前置条件)。
+    /// ⚠ 这条守卫**量出** `capacity` 与 `len` 的关系 —— 只看长度的话,
+    ///   缺陷形态与修好的形态**一模一样**,这条守卫会假绿。
+    #[test]
+    fn the_decompression_output_capacity_stays_close_to_its_length() {
+        let payload = vec![b'A'; 4 * 1024 * 1024];
+        let mut s = payload.as_slice();
+        let out = read_capped_exact(&mut s, MAX_DECOMPRESSED).expect("read must succeed");
+        assert_eq!(out.len(), payload.len());
+        assert!(
+            out.capacity() <= out.len() + 64 * 1024,
+            "capacity {} must stay within one chunk of len {} — the doubling growth is back",
+            out.capacity(),
+            out.len()
+        );
+    }
+
+    /// 越限时**读到的字节数**必须**封顶**在 `MAX + 1` —— 不能因为定步读取
+    /// 就一路读到底(那会让「炸弹」把内存吃光才报越限)。
+    #[test]
+    fn the_over_limit_read_stops_at_one_byte_past_the_cap() {
+        let payload = vec![b'A'; MAX_DECOMPRESSED + 4096];
+        let mut s = payload.as_slice();
+        let out = read_capped_exact(&mut s, MAX_DECOMPRESSED).expect("read must succeed");
+        assert!(
+            out.len() <= MAX_DECOMPRESSED + 1,
+            "the read must stop at MAX + 1 byte(s), got {}",
+            out.len()
+        );
+    }
+
     /// ⚠ **判据是语义,不是本实现的输出**:断言「解压超过上限返回一个
     /// `ERR` **值**、而不是 `ERR` 诊断、且进程活着走完」—— 不去比对任何
     /// 字节数、不抄实现的错误文本。

@@ -409,6 +409,28 @@ fn dispatch(cmd: Cmd) -> ExitCode {
 mod lsp;
 mod tooling;
 
+/// [R2-010] 一次「读/写文件」失败的**码**。
+///
+/// ⚠ 码表对位是这个函数的全部理由:实现自己的码表把 `E0042` 定义为
+/// **清单/锁文件不一致**(`wlwl-error/src/lib.rs:75`),把它拿来报
+/// 「文件读不到」是**串码** —— 一个码号只对应一种条件(本仓一贯的纪律)。
+/// 规范 §11.2 给文件类故障留的是两个码:
+/// - `E0061` 文件不存在(§11.2 错误码表)
+/// - `E0062` 文件权限不足
+///
+/// ⚠ 「不存在」与「权限不足」是**两件事**,不能合并:前者是路径写错 / 文件
+/// 没生成,后者是文件在、但这个用户读不了。`io::ErrorKind` 正好分得开。
+/// 其余的 io 故障(路径是目录、路径过长、编码不是 UTF-8 …)归 `E0060`
+/// (通用 IO 错)—— 规范不定义它的触发条件,实现自己定,但总比串到
+/// `E0042` 上强。
+fn io_error_code(e: &std::io::Error) -> ErrorCode {
+    match e.kind() {
+        std::io::ErrorKind::NotFound => ErrorCode::E0061,
+        std::io::ErrorKind::PermissionDenied => ErrorCode::E0062,
+        _ => ErrorCode::E0060,
+    }
+}
+
 /// Top-level entry: parse, optionally execute, report errors.
 fn run_file(
     file: &PathBuf,
@@ -420,7 +442,7 @@ fn run_file(
         Ok(s) => s,
         Err(e) => {
             let d = WlwlDiagnostic::new(
-                ErrorCode::E0042,
+                io_error_code(&e),
                 format!("cannot read file ''{}'': {}", file.display(), e),
                 Location::point(file.to_string_lossy().to_string(), 0, 0),
             );
@@ -508,7 +530,7 @@ fn run_file(
 /// 走 `WlwlDiagnostic` 而不是自己拼字符串,是为了让 `run` 的警告与
 /// `check` 路径已有的警告(`static_check_gate` → `collect_static_diagnostics`)**共用
 /// 同一套渲染器** —— `--format json` / `jsonl` 因此自动带上
-/// `error_schema_version` / `error_category` / `severity` 等字段,不必在这里
+/// `error_schema_version` / `errorCategory` / `severity` 等字段,不必在这里
 /// 手工维护第二份 JSON 形状。
 ///
 /// 警告的源码位置在 [D12-002 / v0.11.2 W-04] 之后是**有**的:`Warning`
@@ -536,7 +558,7 @@ fn ast_file(file: &PathBuf, format: OutputFormat) -> ExitCode {
         Ok(s) => s,
         Err(e) => {
             let d = WlwlDiagnostic::new(
-                ErrorCode::E0042,
+                io_error_code(&e),
                 format!("cannot read file ''{}'': {}", file.display(), e),
                 Location::point(file.to_string_lossy().to_string(), 0, 0),
             );
@@ -827,7 +849,7 @@ fn fmt_file(file: &PathBuf, check: bool, write: bool) -> ExitCode {
         Ok(s) => s,
         Err(e) => {
             let d = WlwlDiagnostic::new(
-                ErrorCode::E0042,
+                io_error_code(&e),
                 format!("cannot read file ''{}'': {}", file.display(), e),
                 Location::point(file.to_string_lossy().to_string(), 0, 0),
             );
@@ -901,7 +923,7 @@ fn fmt_file(file: &PathBuf, check: bool, write: bool) -> ExitCode {
         }
         if let Err(e) = fs::write(file, &canonical) {
             let d = WlwlDiagnostic::new(
-                ErrorCode::E0042,
+                io_error_code(&e),
                 format!("cannot write ''{}'': {}", file.display(), e),
                 Location::point(file_name, 0, 0),
             );
@@ -1245,9 +1267,16 @@ fn static_check_gate(
         // 签名文件里写 `EXPORT add (ARRAY[INTEGER]: Comparable)` 报的就是
         // `E0010`(签名文法错误)。它此前在这里硬编码 `1`,于是同一种「读不
         // 出来的文本」会因为走哪条路而拿到不同的退出码。
-        Some(exit_code_for(
-            rendered.first().expect("blocking implies non-empty"),
-        ))
+        //
+        // ⚠ [R2-013] 退出码必须按**第一条挡路的**诊断算,不是按**第一条**
+        // 诊断。`rendered` 是按 (行, 列) 排的,清单类警告(`W0001`,位置
+        // `0:0`)会排在签名文件的解析失败(`E0010`)前面 —— 取 `first()`
+        // 就会按那条警告算成 `1`,而规范 §11.4 要求「读不出来的文本」是 `3`。
+        let first_blocking = rendered
+            .iter()
+            .find(|d| d.severity == Severity::Error)
+            .expect("blocking implies at least one hard diagnostic");
+        Some(exit_code_for(first_blocking))
     } else {
         None
     }
@@ -1334,6 +1363,23 @@ pub(crate) fn collect_static_diagnostics(
             .with_severity(Severity::Warning),
         );
     }
+
+    // [R2-013] 旁路签名文件的**语法**体检 —— **无条件**。
+    //
+    // 规范 §11.4:「「读不出来的文本」出现在**旁路签名文件**里同样是 `3`:
+    // 签名写 `EXPORT add (ARRAY[INTEGER]: Comparable)` 报的就是 `E0010`。
+    // **同一种故障不该因为走哪条路而拿到不同的退出码。**
+    //
+    // ⚠ 门控的是**契约比对**(`E0113`/`E0114`/`E0115`),不是**语法**:
+    // 一份写坏了的签名文件就是一份读不出来的文本,与 `gradual_typing`
+    // 无关。此前签名文件只在静态契约层启用时才被读取,而两个开关缺省全关
+    // (规范 §9.4)⇒ `.wll.sig` 整体惰性,**解析失败一条诊断都没有**,
+    // `wlwl check` 拿着一个写坏了的签名文件照样 `rc=0`。
+    //
+    // 这一层只读签名文件、不碰类型检查,所以「零开销」承诺的实质
+    // (不建内建签名表、不跑类型检查)没有被破坏。
+    let (sig_diags, broken_sigs) = sig_syntax_diagnostics(ast, file);
+    out.extend(sig_diags);
 
     // 两个开关都关 → 整条静态链路都不跑。这是「零开销」的落点,而且两个
     // 开关是**独立**的:只关 MATCH 不影响类型检查。
@@ -1434,6 +1480,7 @@ pub(crate) fn collect_static_diagnostics(
             &checked.declared,
             &builtins,
             severity,
+            &broken_sigs,
         ));
     }
     // Deterministic order: source order. The checker already discovers
@@ -1465,12 +1512,72 @@ fn load_module_sig(module: &std::path::Path) -> Result<Option<wlwl_types::Module
     }
     let text = fs::read_to_string(&sig).map_err(|e| {
         WlwlDiagnostic::new(
-            ErrorCode::E0042,
+            // ⚠ 同 [R2-010]:签名文件读不到也是**文件类**故障,不是清单 /
+            // 锁文件不一致(`E0042`)。文件不存在 `E0061`、权限不足 `E0062`。
+            io_error_code(&e),
             format!("cannot read module signature '{}': {}", sig.display(), e),
             Location::point(sig.to_string_lossy().to_string(), 0, 0),
         )
     })?;
     wlwl_types::parse_module_sig(&text, &sig.to_string_lossy()).map(Some)
+}
+
+/// [R2-013] 旁路签名文件的**语法**体检 —— 无条件,不受 `gradual_typing` 门控。
+///
+/// 返回两样东西:
+/// 1. 诊断(读不出来 / 解析不出来)—— 恒为**硬错**;
+/// 2. 出了问题的模块路径集合 —— 给门控内的契约扫描去重用。
+///
+/// 规范 §11.4:「「读不出来的文本」出现在**旁路签名文件**里同样是 `3`:
+/// 签名写 `EXPORT add (ARRAY[INTEGER]: Comparable)` 报的就是 `E0010`。
+/// **同一种故障不该因为走哪条路而拿到不同的退出码。**
+///
+/// ⚠ 门控的是**契约比对**(`E0113`/`E0114`/`E0115`),不是**语法**:
+/// 一份写坏了的签名文件就是一份读不出来的文本,与 `gradual_typing` 无关。
+/// 此前签名文件只在静态契约层启用时才被读取,两个开关缺省全关
+/// (规范 §9.4)⇒ `.wll.sig` 整体惰性,**解析失败一条诊断都没有**。
+///
+/// 覆盖范围:**入口模块自己** + 它**直接**导入的本地模块。更深一层的签名
+/// 文件属于 import 图的契约扫描,那一层整体受 §9.4 的门控(开关全关时
+/// `wlwl check` 根本不进 import 图)。
+fn sig_syntax_diagnostics(
+    ast: &Expr,
+    file: &std::path::Path,
+) -> (
+    Vec<WlwlDiagnostic>,
+    std::collections::BTreeSet<std::path::PathBuf>,
+) {
+    let mut out = Vec::new();
+    let mut broken = std::collections::BTreeSet::new();
+    let mut seen = std::collections::BTreeSet::new();
+
+    // 入口模块 + 直接依赖。直接依赖的解析口径与
+    // `collect_imported_sig_types` 一致(`IMPORT` spec -> 本地文件)。
+    let base = file.parent().map(|p| p.to_path_buf()).unwrap_or_default();
+    let mut modules: Vec<std::path::PathBuf> = vec![file.to_path_buf()];
+    for spec in wlwl_types::import_specs(ast) {
+        // std 模块没有磁盘源,也就没有旁路签名;解析不到的 spec 是
+        // `run` 的 `E0040` / `E0043`,不在这里报。
+        let Ok(Some(dep)) = wlwl_eval::resolve_module_file(&spec, &base) else {
+            continue;
+        };
+        modules.push(dep);
+    }
+
+    for m in modules {
+        let key = normalize_path(&m);
+        if !seen.insert(key.clone()) {
+            continue; // 同一个模块只报一次
+        }
+        // 读不出来 / 解析不出来 —— 都是「读不出来的文本」。
+        // ⚠ 硬错:退出码由**码**决定(§11.4),不由档位决定。签名文件的
+        // 语法错误是 `E0010` 族 ⇒ 退出码 `3`。
+        if let Err(e) = load_module_sig(&m) {
+            out.push(e.diagnostic().clone().with_severity(Severity::Error));
+            broken.insert(key);
+        }
+    }
+    (out, broken)
 }
 
 /// 沿 import 图检查模块契约,返回已按档位渲染好的诊断。
@@ -1485,12 +1592,18 @@ fn load_module_sig(module: &std::path::Path) -> Result<Option<wlwl_types::Module
 /// 2. **查消费方** —— 自己的 `IMPORT` 名字 vs 直接依赖的签名。
 ///
 /// 无签名的模块走 `wlwl-types` 的空契约短路,一条诊断都不会有。
+///
+/// ⚠ [R2-013] `already_reported` 是「签名文件已经**无条件**体检过」的模块
+/// 集合。签名文件的语法失败由 [`sig_syntax_diagnostics`] 统一报(硬错,
+/// 退出码 `3`),这一层再报一遍就是同一条诊断出现两遍 —— 报两次不致命,
+/// 但会让用户以为有两个不同的毛病。
 fn scan_module_contracts(
     entry: &std::path::Path,
     entry_ast: &Expr,
     entry_declared: &[DeclaredBinding],
     builtins: &HashMap<String, Ty>,
     severity: Severity,
+    already_reported: &std::collections::BTreeSet<PathBuf>,
 ) -> Vec<WlwlDiagnostic> {
     use std::collections::{BTreeMap, HashMap as PathCache};
 
@@ -1500,7 +1613,9 @@ fn scan_module_contracts(
     let entry_contract = match build_contract(entry, entry_ast, severity) {
         Ok(c) => c,
         Err(d) => {
-            out.push(d);
+            if !already_reported.contains(&normalize_path(entry)) {
+                out.push(d);
+            }
             return out;
         }
     };
@@ -1547,7 +1662,9 @@ fn scan_module_contracts(
                 let dep_contract = match build_contract(&dep, &dep_ast, severity) {
                     Ok(c) => c,
                     Err(d) => {
-                        out.push(d);
+                        if !already_reported.contains(&key) {
+                            out.push(d);
+                        }
                         continue;
                     }
                 };
@@ -1627,12 +1744,25 @@ fn default_empty_sig_types() -> &'static std::collections::BTreeMap<String, Ty> 
 
 /// 组装一个模块的契约载体(签名文件 + `SEALED`),并把签名文件的问题
 /// 按当前档位渲染成诊断。
+///
+/// ⚠ [R2-013] **语法**失败不跟着档位走。档位(`gradual_typing = "warn"`)
+/// 管的是**契约比对**的软硬 ——「签名说 `add` 是 `(INTEGER) -> INTEGER`,
+/// 实现写的是别的」这类**不一致**可以只警告;但「这份签名文件根本读不
+/// 出来」不是不一致,是**读不出来的文本**(规范 §11.4),退出码必须是 `3`。
+/// 把它降级成警告,同一种故障就又拿到了两种退出码。
 fn build_contract(
     path: &std::path::Path,
     ast: &Expr,
     severity: Severity,
 ) -> Result<wlwl_types::ModuleContract, WlwlDiagnostic> {
-    let sig = load_module_sig(path).map_err(|e| e.diagnostic().clone().with_severity(severity))?;
+    let sig = load_module_sig(path).map_err(|e| {
+        let d = e.diagnostic().clone();
+        if d.code.is_parse_failure() {
+            d // 硬错:解析失败恒为硬错(退出码 `3`)
+        } else {
+            d.with_severity(severity)
+        }
+    })?;
     Ok(wlwl_types::ModuleContract::from_module(
         ast,
         path.to_string_lossy().to_string(),
@@ -1665,7 +1795,7 @@ fn normalize_path(p: &std::path::Path) -> PathBuf {
 fn derive_signature(file: &std::path::Path) -> Result<wlwl_types::ModuleSig, WlwlError> {
     let source = fs::read_to_string(file).map_err(|e| {
         WlwlDiagnostic::new(
-            ErrorCode::E0042,
+            io_error_code(&e),
             format!("cannot read file ''{}'': {}", file.display(), e),
             Location::point(file.to_string_lossy().to_string(), 0, 0),
         )
@@ -1771,7 +1901,13 @@ struct SigOutput {
     /// 规范文本,与文本输出逐字节相同
     text: String,
     /// 每条导出声明,按渲染顺序(名字升序)
-    entries: Vec<SigEntryOutput>,
+    ///
+    /// ⚠ 键名是 `exports`,不是 `entries` —— 规范附录 E.4 的字段表明写
+    /// 「`exports[]` | 与 E.2 同构(见 E.2 的字段说明)」,而 E.2(`wlwl
+    /// interface`)用的就是 `exports`。此前这里叫 `entries`,于是**同一份
+    /// 承诺在两个子命令里键名不同**,E.4 要求的「与 E.2 同构」被破坏 ——
+    /// 照规范写的工具读 `sig` 的输出会找不到字段。
+    exports: Vec<SigEntryOutput>,
 }
 
 /// 一条签名声明的 JSON 形态。函数用 `params` + `returns`,值用 `type`,
@@ -1791,7 +1927,7 @@ struct SigEntryOutput {
 
 impl SigOutput {
     fn new(file: &std::path::Path, sig: &wlwl_types::ModuleSig) -> Self {
-        let entries = sig
+        let exports = sig
             .entries
             .values()
             .map(|e| match &e.ty {
@@ -1816,7 +1952,7 @@ impl SigOutput {
             module: file.to_string_lossy().to_string(),
             signature_file: sig_path_for(file).to_string_lossy().to_string(),
             text: sig.to_string(),
-            entries,
+            exports,
         }
     }
 }
@@ -2862,6 +2998,54 @@ mod tests {
         );
     }
 
+    /// [R2-013] 旁路签名文件的**语法**失败**不受 `gradual_typing` 门控**。
+    ///
+    /// 规范 §11.4:「「读不出来的文本」出现在**旁路签名文件**里同样是 `3`
+    /// ……**同一种故障不该因为走哪条路而拿到不同的退出码**」。
+    ///
+    /// ⚠ 门控的是**契约比对**(`E0113`/`E0114`/`E0115`),不是**语法**:
+    /// 一份写坏了的签名文件就是一份读不出来的文本。此前签名文件只在静态
+    /// 契约层启用时才被读取,两个开关缺省全关 ⇒ `.wll.sig` 整体惰性,
+    /// **解析失败一条诊断都没有**。
+    #[test]
+    fn r2_013_malformed_signature_is_reported_even_when_typing_is_off() {
+        // 清单里**没有** `[features]` —— `gradual_typing` 缺省 `off`
+        // (规范 §9.4)。
+        let root = std::env::temp_dir()
+            .join("wlwl-cli-tests")
+            .join("r2_013_sig_off");
+        let _ = fs::remove_dir_all(&root);
+        fs::create_dir_all(&root).unwrap();
+        fs::write(
+            root.join("wlwl.toml"),
+            "[package]\nname = \"p\"\nversion = \"0.0.1\"\nentry = \"main.wll\"\n",
+        )
+        .unwrap();
+        fs::write(root.join("main.wll"), "LET(x, 1);\nPRINT(x);\n").unwrap();
+        // 规范 §11.4 点名的那个写法:签名文法不认它。
+        fs::write(
+            root.join("main.wll.sig"),
+            "EXPORT add (ARRAY[INTEGER]: Comparable)\n",
+        )
+        .unwrap();
+
+        let ast = parse(
+            &fs::read_to_string(root.join("main.wll")).unwrap(),
+            "main.wll",
+        )
+        .unwrap();
+        let diags = collect_static_diagnostics(&ast, &root.join("main.wll"), &root);
+        assert!(
+            diags.iter().any(|d| d.code == ErrorCode::E0010),
+            "门控关着也必须报 E0010,拿到的是: {diags:?}"
+        );
+        // 硬错 ⇒ 退出码 3(规范 §11.4)。
+        assert_eq!(
+            run_file(&root.join("main.wll"), OutputFormat::Human, false, None),
+            ExitCode::from(3)
+        );
+    }
+
     /// `warn` 档发 `W0113` 但不挡退出码;`off` 档连签名文件都不读。
     #[test]
     fn c1_respects_the_three_gradual_typing_levels() {
@@ -3109,18 +3293,24 @@ EXPORT([\"add\", \"PI\"]);
         );
         // text 字段必须与文本输出逐字节相同 —— 三处渲染同源。
         assert_eq!(json["text"], sig.to_string());
-        let entries = json["entries"].as_array().expect("entries array");
+        // 键名是 `exports`(规范附录 E.4),与 `wlwl interface` 同构。
+        let exports = json["exports"].as_array().expect("exports array");
         // 渲染顺序 = `BTreeMap` 的字节序,所以大写名排在小写名前面
         // (`PI` < `add`)。确定即可,不必是好读序。
-        assert_eq!(entries[0]["name"], "PI");
-        assert_eq!(entries[0]["kind"], "value");
-        assert_eq!(entries[0]["type"], "INTEGER");
-        assert!(entries[0].get("params").is_none(), "值条目不带 params");
-        assert_eq!(entries[1]["name"], "add");
-        assert_eq!(entries[1]["kind"], "function");
-        assert_eq!(entries[1]["params"][0], "INTEGER");
-        assert_eq!(entries[1]["returns"], "INTEGER");
-        assert!(entries[1].get("type").is_none(), "函数条目不带 type");
+        assert_eq!(exports[0]["name"], "PI");
+        assert_eq!(exports[0]["kind"], "value");
+        assert_eq!(exports[0]["type"], "INTEGER");
+        assert!(exports[0].get("params").is_none(), "值条目不带 params");
+        assert_eq!(exports[1]["name"], "add");
+        assert_eq!(exports[1]["kind"], "function");
+        assert_eq!(exports[1]["params"][0], "INTEGER");
+        assert_eq!(exports[1]["returns"], "INTEGER");
+        assert!(exports[1].get("type").is_none(), "函数条目不带 type");
+        // 旧键名不得残留 —— 两个键都在的话,读到哪个就成了消费方的运气。
+        assert!(
+            json.get("entries").is_none(),
+            "旧键名 `entries` 必须不再出现: {json}"
+        );
     }
 
     // -- v0.10 Step 8 (P1-1): MATCH 穷尽性 / 可达性 --------------------
@@ -3423,9 +3613,57 @@ EXPORT([\"add\", \"PI\"]);
     #[test]
     fn run_jsonl_format_on_undefined_name() {
         // The Phase 3 JSONL output must contain the new schema fields:
-        // error_category, retryable, suggestion_code, related.
+        // errorCategory, retryable, suggestion_code, related.
         let p = write_tmp("PRINT(zzz);", "undef-jsonl.wll");
         let code = run_file(&p, OutputFormat::Jsonl, true, None);
+        assert_eq!(code, ExitCode::from(1));
+    }
+
+    // -- [R2-010] io 故障 -> 规范 §11.2 的码 ---------------------------
+
+    /// 「文件不存在」与「权限不足」是**两件事**,不能合并成一个码。
+    ///
+    /// 判据来自规范 §11.2 错误码表:「| `E0061` | 文件 | 文件不存在 | 错误 |」,
+    /// 以及实现自己的码表里 `E0062` = 文件权限不足。`E0042` 是**清单/锁
+    /// 文件不一致**,拿来报「文件读不到」是串码。
+    ///
+    /// ⚠ 这里用**构造出来的** `io::Error` 而不是真的去 chmod 一个文件 ——
+    /// 「权限不足」在 Windows 上没法用普通手段稳定复现(ACL 语义与 Unix
+    /// 不同),而映射本身是纯函数,直接喂 `ErrorKind` 才测得到它。
+    #[test]
+    fn r2_010_io_failures_map_to_the_spec_codes() {
+        use std::io::ErrorKind;
+        assert_eq!(
+            io_error_code(&std::io::Error::from(ErrorKind::NotFound)),
+            ErrorCode::E0061
+        );
+        assert_eq!(
+            io_error_code(&std::io::Error::from(ErrorKind::PermissionDenied)),
+            ErrorCode::E0062
+        );
+        // 其余的 io 故障归通用 IO 错 `E0060` —— 规范不定义它的触发条件,
+        // 但**不能**落到 `E0042`(那是清单 / 锁文件族)。
+        assert_eq!(
+            io_error_code(&std::io::Error::from(ErrorKind::InvalidData)),
+            ErrorCode::E0060
+        );
+        assert_ne!(
+            io_error_code(&std::io::Error::from(ErrorKind::NotFound)),
+            ErrorCode::E0042
+        );
+    }
+
+    /// 端到端:顶层 `run` 读到不存在的文件 ⇒ `E0061` 的诊断 + 退出码 `1`。
+    ///
+    /// ⚠ 退出码是 `1` 不是 `3`:`E0061` 不是**解析**失败(源文件根本没进
+    /// 解析器),规范 §11.4 的 `3` 留给「有输入文件没能解析出来」。
+    #[test]
+    fn r2_010_run_on_a_missing_file_reports_e0061() {
+        let missing = std::env::temp_dir()
+            .join("wlwl-cli-tests")
+            .join("r2_010_missing.wll");
+        let _ = fs::remove_file(&missing);
+        let code = run_file(&missing, OutputFormat::Human, true, None);
         assert_eq!(code, ExitCode::from(1));
     }
 

@@ -1723,6 +1723,53 @@ fn dict_lookup(entries: &[(Value, Value)], key: &Value) -> Option<usize> {
     entries.iter().position(|(k, _)| values_equal(k, key))
 }
 
+/// 规范 §2.1 的**键的类型约束** + §4.5 的「键类型不符 → `E0031`」。
+///
+/// 规范 §2.1:「**键的约束**:字典的键**必须**是 `STRING` 或 `INTEGER`。
+/// NaN(2.2)**不得**作键(`E0031`)。」
+/// 规范 §4.5:「字典按键取值,**键类型不符产生 `E0031`**,键不存在产生 `E0037`。」
+///
+/// ⚠ 缺陷形态:实现**完全不做**键的类型校验 ⇒ 非 `STRING`/`INTEGER` 的键
+///   原样进容器,直到 `wlwl:std.json` 的 `STRINGIFY` 才炸,报的还是**别的码**
+///   (`E0030: expected string dict key, got boolean`)⇒ 规范要求在**构造点**
+///   报 `E0031`,实现把错误推迟到了另一个子系统的另一个码。
+///
+/// ⚠ 为什么 `FLOAT` 也不行:规范写的是「必须是 `STRING` 或 `INTEGER`」——
+///   `1.0` 是 `FLOAT` 不是 `INTEGER` ⇒ 键类型不符。`NaN` 是 `FLOAT` 的特例,
+///   规范单独点名「NaN **不得**作键」。
+///
+/// ⚠ **只管 `INDEX_GET` / `INDEX_SET` / 字典字面量**三处 —— §4.5 的
+///   `E0031` 规则**只对 `INDEX_GET` 明写**;`AT` / `AT_K` 是「安全下标」
+///   (§10.4)、`HAS` 是「键存在测试」、`REMOVE_KEY` 是「去键的新字典」——
+///   它们遇到错类型的键时**查不到**,于是返回默认值 / `FALSE` / 原字典,
+///   **不报错**。这是规范自己定下的宽严差(严格的那条只给 `INDEX_GET`),
+///   不是实现偷懒。
+fn dict_key_type_gate(fn_name: &str, key: &Value) -> WlwlResult<()> {
+    match key {
+        // ⚠ 规范 §2.1 明列的两型。
+        Value::String(_) | Value::Integer(_) => Ok(()),
+        // ⚠ `INSTANCE` 是**仓内既有的刻意能力**(`R10-012` 的身份语义:
+        //   「`DICT` 用实例当键时,同实例命中、异实例不命中」),而且
+        //   `impl/crates/wlwl-cli/tests/conformance.rs` 的 OOP 夹具也这么用
+        //   ⇒ 禁掉它等于**删掉一个语言能力**(要连带改 4+ 条既有测试),
+        //   那是产品取舍,不是「顺手修个实现偏差」。
+        //   ⚠ 规范 §2.1 只写了 `STRING` / `INTEGER` ⇒ 「实例能不能当键」
+        //   这条**规范侧**待裁决(已登记),实现侧先维持既有行为。
+        Value::Instance { .. } => Ok(()),
+        other => Err(builtin_error(
+            ErrorCode::E0031,
+            fn_name,
+            dict_key_type_message(other),
+        )),
+    }
+}
+
+/// 键类型不符的**统一文案** —— 内建调用与字面量两条路径共用,
+/// 免得同一件事在两个地方说出两句话。
+fn dict_key_type_message(key: &Value) -> String {
+    format!("dict key must be STRING or INTEGER, got {}", type_name(key))
+}
+
 /// v0.6 §4.5 — `INDEX_GET(coll, idx_or_key)`.
 ///
 /// - ARRAY + INTEGER → element (negative indexes supported; OOB → E0036)
@@ -1739,14 +1786,21 @@ fn builtin_index_get(_ev: &mut Evaluator, args: Vec<Value>) -> WlwlResult<Outcom
             let i = resolve_array_index("INDEX_GET", a, raw)?;
             Ok(a[i].clone())
         }
-        (Value::Dict(entries), key) => match dict_lookup(entries, key) {
-            Some(i) => Ok(entries[i].1.clone()),
-            None => Err(builtin_error(
-                ErrorCode::E0037,
-                "INDEX_GET",
-                format!("dict key {} not found", key.display()),
-            )),
-        },
+        (Value::Dict(entries), key) => {
+            // ⚠ 规范 §4.5:「字典按键取值,**键类型不符产生 `E0031`**,
+            //   键不存在产生 `E0037`」⇒ **类型**这一关必须**先于**查找 ——
+            //   缺陷形态只有「找到 / 没找到」两路,查不到一律 `E0037`
+            //   (连数组分支都有的 `E0031` 检查都没有)⇒ 同一个错误两套码。
+            dict_key_type_gate("INDEX_GET", key)?;
+            match dict_lookup(entries, key) {
+                Some(i) => Ok(entries[i].1.clone()),
+                None => Err(builtin_error(
+                    ErrorCode::E0037,
+                    "INDEX_GET",
+                    format!("dict key {} not found", key.display()),
+                )),
+            }
+        }
         // v0.6 §4.5: STRING + INTEGER → single-codepoint STRING.
         // Negative indexes supported; OOB → E0036 (same code as ARRAY).
         (Value::String(s), Value::Integer(i)) => {
@@ -1807,6 +1861,11 @@ fn builtin_index_set(_ev: &mut Evaluator, args: Vec<Value>) -> WlwlResult<Outcom
             Value::Array(out)
         }
         (Value::Dict(entries), key) => {
+            // ⚠ 规范 §2.1:字典的键**必须**是 `STRING` 或 `INTEGER` ——
+            //   这是**构造点**的约束(`INDEX_SET` 就是往字典里放键)。
+            //   缺陷形态把键**原样**塞进容器 ⇒ 非 STRING/INTEGER 的键会
+            //   一路活到 `STRINGIFY` 才炸,报的还是别的码。
+            dict_key_type_gate("INDEX_SET", key)?;
             let mut out = entries.clone();
             match dict_lookup(&out, key) {
                 Some(i) => out[i].1 = new_val,
@@ -2813,6 +2872,30 @@ fn builtin_set_prop(_ev: &mut Evaluator, args: Vec<Value>) -> WlwlResult<Outcome
     if args.len() != 3 {
         return Err(arity_error("SET_PROP", args.len(), 3));
     }
+    // ⚠ **规范 §13.4 的校验顺序**:第 1 步是「`value` 是当前线性 `THIS` → `E0032`」
+    //   与「**键**为线性 `THIS` 同样 → `E0032`」,**先于**键的类型检查。
+    //
+    //   缺陷形态把**键的类型检查**放在最前 ⇒ 键是线性 `THIS` 时报的是
+    //   `E0030`(类型错),而规范要求 `E0032`(线性 capability 逃逸)——
+    //   同一个错误报成**另一个码**,调用方按码分派就会走错分支。
+    //
+    //   ⚠ 键位置存线性 `THIS` 与值位置**是同一种逃逸**:键会被存进实例的
+    //   字段表当属性名,`THIS` 因此活过了方法体 ⇒ 与 §15.3 的逃逸边界同款。
+    let v = args[2].clone();
+    if _ev.is_linear_this(&v) {
+        return Err(_ev.diag(
+            ErrorCode::E0032,
+            "linear THIS cannot escape the method body (SET_PROP value)",
+            diag_span,
+        ));
+    }
+    if _ev.is_linear_this(&args[1]) {
+        return Err(_ev.diag(
+            ErrorCode::E0032,
+            "linear THIS cannot escape the method body (SET_PROP key)",
+            diag_span,
+        ));
+    }
     let k = match &args[1] {
         Value::String(s) => s.clone(),
         other => {
@@ -2822,16 +2905,6 @@ fn builtin_set_prop(_ev: &mut Evaluator, args: Vec<Value>) -> WlwlResult<Outcome
             ));
         }
     };
-    let v = args[2].clone();
-    // [v0.9 D9-001] Storing linear THIS into any property slot is an
-    // escape across a container boundary (spec §15.1).
-    if _ev.is_linear_this(&v) {
-        return Err(_ev.diag(
-            ErrorCode::E0032,
-            "linear THIS cannot escape the method body (SET_PROP value)",
-            diag_span,
-        ));
-    }
     match &args[0] {
         Value::Dict(e) => {
             // Legacy DICT path — unchanged.
@@ -7475,6 +7548,22 @@ impl Evaluator {
                             expr.span().clone(),
                         ));
                     }
+                    // ⚠ 规范 §2.1:字典的键**必须**是 `STRING` 或 `INTEGER` ——
+                    //   字面量就是**构造点**,错类型的键必须**在这里**报
+                    //   `E0031`,而不是拖到某个下游子系统才炸。
+                    //   ⚠ 这里用 `self.diag` 而不是 `builtin_error` —— 字面量
+                    //   **不是**函数调用,消息前面不该挂一个函数名;位置指到
+                    //   **键**那个表达式(比整个字面量精确)。
+                    if !matches!(
+                        ko.value,
+                        Value::String(_) | Value::Integer(_) | Value::Instance { .. }
+                    ) {
+                        return Err(self.diag(
+                            ErrorCode::E0031,
+                            dict_key_type_message(&ko.value),
+                            k.span().clone(),
+                        ));
+                    }
                     vs.push((ko.value, vo.value));
                 }
                 Ok(Outcome::normal(Value::Dict(vs)))
@@ -9906,12 +9995,31 @@ impl Evaluator {
                 d = d.with_source_line(line_text);
             }
         }
-        let pool = self.env.names();
+        // ⚠ 候选池 = **作用域可见名 + 全局内建名**。
+        //
+        //   缺陷形态只取 `self.env.names()`(作用域)⇒ 拼错**内建**时一个候选
+        //   都给不出来 —— 而「把内建名打错」恰恰是最常见的 `E0020` 来源
+        //   (`LENGTH` 少打了 3 个字符,而 `LEN` 就在旁边)。
+        //   `registry::resolved_builtin_names()` 是那本**权威名册** ——
+        //   `BUILTIN_REGISTRY` 与规范附录 G 之间有逐条签名锁
+        //   (`spec_appendix_g_sync.rs`),所以这里**不另立**名字表。
+        let mut pool = self.env.names();
+        pool.extend(
+            crate::registry::resolved_builtin_names()
+                .into_iter()
+                .map(|s| s.to_string()),
+        );
         let candidates = similar_names(name, &pool, 3);
         if !candidates.is_empty() {
-            d = d.with_suggestion(Suggestion::Note {
-                description: format!("did you mean one of: {}?", candidates.join(", ")),
-            });
+            let note = format!("did you mean one of: {}?", candidates.join(", "));
+            // ⚠⚠ **同时写进 `hint`** —— `hint` 是**人类可读形态**里唯一会
+            //   渲染的字段(`render_human` 把它打成 `= hint: …`);而
+            //   `suggestion_code` **只**出现在 JSON 形态 ⇒ 只写
+            //   `suggestion_code` 的话,终端里的用户**根本看不到**这个候选名,
+            //   规范 §3.2 的「读一个不存在的名字产生 `E0020`(**附最近候选名**)」
+            //   在最常用的那个界面上等于没实现。
+            d = d.with_hint(note.clone());
+            d = d.with_suggestion(Suggestion::Note { description: note });
         }
         d.into()
     }
@@ -9948,19 +10056,50 @@ fn levenshtein(a: &str, b: &str) -> usize {
 
 /// Pick up to `max` names from `pool` whose Levenshtein distance to `target` is
 /// at most 3 and strictly positive (no point suggesting the exact match).
+///
+/// ⚠ **长度下限为什么是 `target.len() - 3` 而不是 `- 2`**:编辑距离 ≤ 3 **本身**
+///   已经保证 `|len(a) - len(b)| ≤ 3`,所以这个下限是**额外**收紧的一刀。
+///   原来的 `- 2` 把「目标比候选长 3 个字符」的情形也挡掉了 —— 而那恰恰是
+///   「把内建名**打长**了」这一类最常见的拼写错误(`LENGTH` 打成 `LEN` 就是
+///   少了 3 个字符)⇒ 候选池里明明有 `LEN`,却因为长度差 3 被过滤掉。
+///   ⇒ 下限与距离上界**对齐**(都是 3),不多挡也不少挡。
 fn similar_names(
     target: &str,
     pool: &std::collections::HashSet<String>,
     max: usize,
 ) -> Vec<String> {
+    // ⚠ **距离上限随目标长度缩放** —— 固定 3 对短名字太宽:
+    //   单字母目标 `a` 会被 3 个字符的候选淹没(「LENGTH」的近邻 `LEN` 与
+    //   `a` 的距离也是 3)。⇒ `max(1, min(3, len / 2))`:
+    //   短名只收 1 个字符的差别,长名仍能拿到 3 个字符的近邻。
+    let max_dist = (target.len() / 2).clamp(1, 3);
     let mut scored: Vec<(usize, String)> = pool
         .iter()
+        .filter(|n| is_identifier_like(n))
         .map(|n| (levenshtein(target, n), n.clone()))
-        .filter(|(d, n)| *d > 0 && *d <= 3 && n.len() >= target.len().saturating_sub(2))
+        .filter(|(d, n)| {
+            *d > 0 && *d <= max_dist && n.len() >= target.len().saturating_sub(max_dist)
+        })
         .collect();
     scored.sort_by_key(|(d, _)| *d);
     scored.truncate(max);
     scored.into_iter().map(|(_, n)| n).collect()
+}
+
+/// 候选名**必须长得像标识符** —— 语言规范 §1.2:标识符由 ASCII 字母 / 数字 /
+/// `_` 组成,且**不以数字开头**。
+///
+/// ⚠ **这条必须有**:候选池里除了作用域名,还有**全局内建名** —— 而内建
+///   注册表里**也收录了运算符 token**(`-` / `/` / `>` / …)。它们与目标名的
+///   编辑距离常常只有 1 ⇒ 不滤掉的话,未定义名 `a` 会收到
+///   「did you mean one of: -, /, >?」这种**荒唐**提示 —— 那比没有提示更糟。
+fn is_identifier_like(name: &str) -> bool {
+    let mut chars = name.chars();
+    match chars.next() {
+        Some(c) if c.is_ascii_alphabetic() || c == '_' => {}
+        _ => return false,
+    }
+    chars.all(|c| c.is_ascii_alphanumeric() || c == '_')
 }
 
 // ──────────────────────────────────────────────────────────────────────
@@ -14868,7 +15007,7 @@ mod tests {
         let (v, _) = ai_check_jsonl("PRINT(zzz);");
         assert_eq!(v["error_schema_version"], "1.1.0");
         assert_eq!(v["code"], "E0020");
-        assert_eq!(v["error_category"], "name");
+        assert_eq!(v["errorCategory"], "name");
         assert_eq!(v["retryable"], false);
         // v0.4 (Sec. 14.2) -- new required fields
         assert!(
@@ -14889,21 +15028,21 @@ mod tests {
     fn ai_contract_unhandled_err_escape() {
         let (v, _) = ai_check_jsonl("ERR(\"top\");");
         assert_eq!(v["code"], "E0102");
-        assert_eq!(v["error_category"], "internal");
+        assert_eq!(v["errorCategory"], "internal");
     }
 
     #[test]
     fn ai_contract_panic() {
         let (v, _) = ai_check_jsonl("PANIC(\"oops\");");
         assert_eq!(v["code"], "E0100");
-        assert_eq!(v["error_category"], "internal");
+        assert_eq!(v["errorCategory"], "internal");
     }
 
     #[test]
     fn ai_contract_break_outside_loop() {
         let (v, _) = ai_check_jsonl("BREAK();");
         assert_eq!(v["code"], "E0014");
-        assert_eq!(v["error_category"], "syntax");
+        assert_eq!(v["errorCategory"], "syntax");
     }
 
     #[test]
@@ -14911,7 +15050,7 @@ mod tests {
         let src = "LET(f, FUN((a, b), +(a, b))); f(1);";
         let (v, _) = ai_check_jsonl(src);
         assert_eq!(v["code"], "E0022");
-        assert_eq!(v["error_category"], "name");
+        assert_eq!(v["errorCategory"], "name");
     }
 
     #[test]
@@ -14932,7 +15071,7 @@ mod tests {
         let line = err.diagnostic().render_jsonl();
         let v: serde_json::Value = serde_json::from_str(&line).unwrap();
         assert_eq!(v["code"], "E0040");
-        assert_eq!(v["error_category"], "module");
+        assert_eq!(v["errorCategory"], "module");
         assert!(!line.contains('\n'));
     }
 
@@ -14966,7 +15105,7 @@ mod tests {
         for key in &[
             "error_schema_version",
             "code",
-            "error_category",
+            "errorCategory",
             "severity",
             "message",
             "location",
@@ -14988,7 +15127,7 @@ mod tests {
 
     #[test]
     fn ai_contract_category_and_retryable_match_code() {
-        // The error_category and retryable fields must be consistent
+        // The `errorCategory` and retryable fields must be consistent
         // with the code's category()/retryable() methods. If anyone
         // adds a new code without wiring up these methods, this test
         // will catch the inconsistency.

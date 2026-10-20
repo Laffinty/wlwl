@@ -5,7 +5,7 @@ expression: "serde_json::json!({\n    \"E0020\": code_snap(ErrorCode::E0020, \"u
 {
   "E0020": {
     "code": "E0020",
-    "error_category": "name",
+    "errorCategory": "name",
     "error_schema_version": "1.1.0",
     "hint": null,
     "idempotent": false,
@@ -26,7 +26,7 @@ expression: "serde_json::json!({\n    \"E0020\": code_snap(ErrorCode::E0020, \"u
   },
   "E0021": {
     "code": "E0021",
-    "error_category": "name",
+    "errorCategory": "name",
     "error_schema_version": "1.1.0",
     "hint": null,
     "idempotent": false,
@@ -47,7 +47,7 @@ expression: "serde_json::json!({\n    \"E0020\": code_snap(ErrorCode::E0020, \"u
   },
   "E0022": {
     "code": "E0022",
-    "error_category": "name",
+    "errorCategory": "name",
     "error_schema_version": "1.1.0",
     "hint": null,
     "idempotent": false,
@@ -68,7 +68,7 @@ expression: "serde_json::json!({\n    \"E0020\": code_snap(ErrorCode::E0020, \"u
   },
   "E0023": {
     "code": "E0023",
-    "error_category": "name",
+    "errorCategory": "name",
     "error_schema_version": "1.1.0",
     "hint": null,
     "idempotent": false,
@@ -89,7 +89,7 @@ expression: "serde_json::json!({\n    \"E0020\": code_snap(ErrorCode::E0020, \"u
   },
   "E0024": {
     "code": "E0024",
-    "error_category": "name",
+    "errorCategory": "name",
     "error_schema_version": "1.1.0",
     "hint": null,
     "idempotent": false,
@@ -110,7 +110,7 @@ expression: "serde_json::json!({\n    \"E0020\": code_snap(ErrorCode::E0020, \"u
   },
   "E0025": {
     "code": "E0025",
-    "error_category": "name",
+    "errorCategory": "name",
     "error_schema_version": "1.1.0",
     "hint": null,
     "idempotent": false,
@@ -131,7 +131,7 @@ expression: "serde_json::json!({\n    \"E0020\": code_snap(ErrorCode::E0020, \"u
   },
   "E0026": {
     "code": "E0026",
-    "error_category": "name",
+    "errorCategory": "name",
     "error_schema_version": "1.1.0",
     "hint": null,
     "idempotent": false,
@@ -152,7 +152,7 @@ expression: "serde_json::json!({\n    \"E0020\": code_snap(ErrorCode::E0020, \"u
   },
   "E0027": {
     "code": "E0027",
-    "error_category": "name",
+    "errorCategory": "name",
     "error_schema_version": "1.1.0",
     "hint": null,
     "idempotent": false,
@@ -173,7 +173,7 @@ expression: "serde_json::json!({\n    \"E0020\": code_snap(ErrorCode::E0020, \"u
   },
   "W0051": {
     "code": "W0051",
-    "error_category": "name",
+    "errorCategory": "name",
     "error_schema_version": "1.1.0",
     "hint": null,
     "idempotent": false,
@@ -194,7 +194,7 @@ expression: "serde_json::json!({\n    \"E0020\": code_snap(ErrorCode::E0020, \"u
   },
   "W0054": {
     "code": "W0054",
-    "error_category": "name",
+    "errorCategory": "name",
     "error_schema_version": "1.1.0",
     "hint": null,
     "idempotent": false,

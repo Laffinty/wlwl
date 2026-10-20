@@ -793,6 +793,47 @@ impl Parser {
                 },
             });
         }
+        // Unary-plus sugar: `+x` desugars to `+(0, x)`.
+        //
+        // ⚠ 规范 §1.6 的 EBNF 是**规范性**的:`int_literal = [ "+" | "-" ] int_lit .`
+        // —— 前导 `+` 与前导 `-` **同形**。§1.6 的实现注也逐字写明
+        // 「前导符号字面量 `+x` / `-x` 在语法分析阶段被改写为 `+(0, x)` / `-(0, x)`」。
+        // 修之前只有 `-` 有这条分支,`+x` 落进 `parse_call_or_ident` 的变量分支,
+        // 产出 `Var("+")` 并把操作数留给下一条语句 ⇒ 实测 `PRINT(+5);` 报
+        // `E0011: expected ')', got Integer(5)`。同一形态的两种符号行为不一致,
+        // 而规范把 `+` 与 `-` 并列写进了文法。
+        //
+        // 判据与 `Minus` 分支完全一致:只有 `+` **不接** `(` 时才是 sugar ——
+        // `+(a, b)` 继续走「调用 `+`」那条路(它本来就是二元加法的调用形态)。
+        if matches!(kind, TokenKind::Plus) && !matches!(self.peek_at(1), TokenKind::LParen) {
+            let (l2, c2, _, _) = self.span_here();
+            self.advance(); // '+'
+            let inner = self.parse_expr()?;
+            let (_, _, le, ce) = self.span_here();
+            return Ok(Expr::Call {
+                name: "+".to_string(),
+                args: vec![
+                    Expr::Literal(
+                        Literal::Integer(0),
+                        Span {
+                            file: self.file.clone(),
+                            line_start: l2,
+                            col_start: c2,
+                            line_end: l2,
+                            col_end: c2,
+                        },
+                    ),
+                    inner,
+                ],
+                span: Span {
+                    file: self.file.clone(),
+                    line_start: l2,
+                    col_start: c2,
+                    line_end: le,
+                    col_end: ce,
+                },
+            });
+        }
         // Phase B9 (spec §3.4): `!x` (the v0.3-compat unary form)
         // desugars to `!(x)`. Without this branch the `!` token
         // falls into `parse_call_or_ident`'s var branch (peek is
@@ -1448,6 +1489,20 @@ impl Parser {
         //   name = expr           (default value, §8.2 — P3-011)
         //   *name                 (rest/varargs tail, §8.2 — P3-011)
         let mut params = Vec::new();
+        // §5.2 形参表:`*name`「只**可以**出现在末位」。
+        //
+        // ⚠ 这条必须在**解析期**强制,不能指望求值器兜住:形参一旦收进
+        // `params`,两种违规写法都会被**静默**吃掉 ——
+        // ① `*rest` 不在末位 ⇒ 求值器的 `has_rest` 判据是「**最后一个**形参
+        //    是 rest」,于是 `*rest` 被当成普通形参,多出来的实参触发
+        //    E0022(说的是元数,不是「形参表写错了」);
+        // ② 两个 rest ⇒ 绑定循环碰到第一个 rest 就 `break`,第二个**永远绑不上**,
+        //    函数体里那个名字变成未定义名,错误一路推迟到运行期才炸成 E0020。
+        // 两条都在**运行期**报一条**别的原因**的错 ⇒ 缺陷形态不可接受。
+        //
+        // 模式侧(`parse_pattern`)早就强制了同一条约束(数组模式的 `*rest`
+        // 后面必须紧跟 `]`),这里补上形参侧 ⇒ 两侧行为一致。
+        let mut seen_rest = false;
         if !matches!(self.peek(), TokenKind::RParen) {
             loop {
                 let is_rest = if matches!(self.peek(), TokenKind::Star) {
@@ -1456,6 +1511,19 @@ impl Parser {
                 } else {
                     false
                 };
+                // 上一个形参已经是 `*name`,而这里还有形参 ⇒ 违反「只可以出现在末位」。
+                //
+                // ⚠ 尾逗号(`FUN((*rest,), …)`)不算「末位违规」:它是「形参名」
+                // 那条既有诊断的活,别在这里抢它的场。
+                if seen_rest
+                    && (is_rest || matches!(self.peek(), TokenKind::Ident(_) | TokenKind::Mut))
+                {
+                    return Err(self.err_at(
+                        EC::E0010,
+                        "a rest parameter (`*name`) may only appear as the last parameter",
+                        self.span_here(),
+                    ));
+                }
                 let (pname, pspan) = match self.advance() {
                     Token {
                         kind: TokenKind::Ident(s),
@@ -1496,6 +1564,9 @@ impl Parser {
                     is_rest,
                     span: param_span,
                 });
+                if is_rest {
+                    seen_rest = true;
+                }
                 if matches!(self.peek(), TokenKind::Comma) {
                     self.advance();
                 } else {
@@ -2528,19 +2599,32 @@ impl Parser {
             line_end,
             col_end,
         };
-        Ok(match block {
+        let base = match block {
             Expr::Block { exprs, .. } => Expr::Block {
                 exprs,
                 span: new_span,
             },
             other => other,
-        })
-    }
-    // ── Type expression parser (P3-010) ─────────────────────────────
-    //
-    // parse_type_annotation collects the type annotation's tokens
-    // as a flat Vec<String>, then hands it to this entry point
-    // which builds a structured TypeExpr (Ident / Array / Generic).
+        };
+        // ⚠【R2-007】括号序列**也是**后缀链的合法挂载点。
+        //
+        // 判据(规范原文):附录 A 的产生式 `PostfixExpr = Primary { Postfix }`
+        // 里的 `Primary` **含** `"(" Block ")"` ⇒ `(d)["a"]` / `(d).a` 是
+        // **一致程序**;而 §0.4「一个实现是一致的,当且仅当它接受**所有**
+        // 一致的程序**并产生本规范规定的结果」⇒ 实现**必须**接受它。
+        //
+        // 缺陷形态:后缀链只挂在「标识符头」与「数组/字典字面量头」上
+        // ⇒ 括号序列头**不被接受** ⇒ `(d).a` 报 `E0011: expected ')', got Dot`。
+        //
+        // ⚠ §4.5 的挂载点枚举原先**没列**括号序列 —— 那一处已同步补上
+        //   (`docs/spec/wlwl-spec-v0.11.md` §4.5),否则两处条文继续互相矛盾。
+        // ⚠ 块**本身**的语义不变:后缀链只作用在块求值出来的**值**上。
+        self.apply_postfix_loop(base, line, col)
+    } // ── Type expression parser (P3-010) ─────────────────────────────
+      //
+      // parse_type_annotation collects the type annotation's tokens
+      // as a flat Vec<String>, then hands it to this entry point
+      // which builds a structured TypeExpr (Ident / Array / Generic).
     fn parse_type_expr_from_pieces(
         &self,
         pieces: &[String],
@@ -2563,9 +2647,7 @@ impl Parser {
             if rest.iter().any(|t| t == ":") {
                 return Err(WlwlDiagnostic::new(
                     EC::E0010,
-                    "a type constraint may only follow a bare type variable \
-                     (e.g. `T: Comparable`), not a type like ARRAY[…] or DICT[…]"
-                        .to_string(),
+                    E0010_CONSTRAINT_ON_COMPOSITE.to_string(),
                     Location::point(&self.file, sl, sc),
                 )
                 .into());
@@ -2602,6 +2684,17 @@ impl Parser {
 }
 
 // ── TypeExprParser (free helper) ────────────────────────────
+
+/// 规范 §2.6 事实 ③ / 附录 A 注 ③ 的诊断文案(逐字起头):
+/// 「显式约束只跟在**裸标识符**后」⇒ 给**容器**加约束报 `E0010`。
+///
+/// ⚠ 顶层那条检查(平铺 pieces 里还剩 `:`)与类型实参层那条检查
+/// (`parse_braced` 里实参后面还剩 `:`)**必须**共用同一句文案 ——
+/// 同一个缺陷形态只该有一条诊断,文案分叉会让按字符串匹配的下游工具
+/// 漏掉其中一条。
+const E0010_CONSTRAINT_ON_COMPOSITE: &str =
+    "a type constraint may only follow a bare type variable \
+     (e.g. `T: Comparable`), not a type like ARRAY[…] or DICT[…]";
 
 struct TypeExprParser<'a> {
     pieces: &'a [String],
@@ -2694,6 +2787,28 @@ impl<'a> TypeExprParser<'a> {
                 "]" => {
                     self.pos += 1;
                     break;
+                }
+                // ⚠ **[v0.11.3 / R2-009]** 刚解析完的类型实参后面跟着 `:`。
+                //
+                // 判据是「谁被约束」:约束只允许跟在**裸标识符**后(规范 §2.6
+                // 事实 ③ / 附录 A 注 ③)。`parse_expr` 只有在头是**裸标识符**
+                // 时才会自己吃下 `:`(于是产出 `Bounded`);头是容器
+                // (`ARRAY[…]` / `DICT[…,…]`)时它**不吃**,`:` 就留在这里 ——
+                // 所以「这里还剩一个 `:`」等价于「刚解析的那个类型是容器」。
+                //
+                // ⚠ 修之前这条只报 E0012(「expected `,` or `]`」)—— 语法错
+                // 是对的,但**码与文案都不是规范说的那条**:规范 §2.6 明写
+                // 「给容器加约束报 `E0010: a type constraint may only follow a
+                // bare type variable`」。同一个缺陷形态,顶层那条
+                // (`ARRAY[INTEGER] : Comparable`)报 E0010、括号里这条报 E0012 ——
+                // 诊断码分叉,下游按码分流会漏掉一半。
+                ":" => {
+                    return Err(WlwlDiagnostic::new(
+                        EC::E0010,
+                        E0010_CONSTRAINT_ON_COMPOSITE.to_string(),
+                        Location::point(&self.file, sl, sc),
+                    )
+                    .into());
                 }
                 other => {
                     return Err(WlwlDiagnostic::new(

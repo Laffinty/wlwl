@@ -5,7 +5,7 @@ expression: "serde_json::json!({\n    \"E0080\": code_snap(ErrorCode::E0080, \"a
 {
   "E0080": {
     "code": "E0080",
-    "error_category": "ai",
+    "errorCategory": "ai",
     "error_schema_version": "1.1.0",
     "hint": null,
     "idempotent": false,
@@ -26,7 +26,7 @@ expression: "serde_json::json!({\n    \"E0080\": code_snap(ErrorCode::E0080, \"a
   },
   "E0081": {
     "code": "E0081",
-    "error_category": "ai",
+    "errorCategory": "ai",
     "error_schema_version": "1.1.0",
     "hint": null,
     "idempotent": false,
@@ -47,7 +47,7 @@ expression: "serde_json::json!({\n    \"E0080\": code_snap(ErrorCode::E0080, \"a
   },
   "E0082": {
     "code": "E0082",
-    "error_category": "ai",
+    "errorCategory": "ai",
     "error_schema_version": "1.1.0",
     "hint": null,
     "idempotent": false,
@@ -68,7 +68,7 @@ expression: "serde_json::json!({\n    \"E0080\": code_snap(ErrorCode::E0080, \"a
   },
   "E0083": {
     "code": "E0083",
-    "error_category": "ai",
+    "errorCategory": "ai",
     "error_schema_version": "1.1.0",
     "hint": null,
     "idempotent": false,

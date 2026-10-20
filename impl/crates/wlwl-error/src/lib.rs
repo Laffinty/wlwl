@@ -333,7 +333,7 @@ impl ErrorCode {
             // [v0.9 Step 9a-3] Linear `THIS` capability codes.
             // `as_str` is registered here so the appendix G
             // snapshot test (`oop_section_*`) and the
-            // `error_category` map below can include them.
+            // code->category map below can include them.
             ErrorCode::E0095 => "E0095",
             ErrorCode::E0096 => "E0096",
             ErrorCode::E0099 => "E0099",
@@ -506,7 +506,7 @@ impl ErrorCode {
             // the other concurrent codes.
             ErrorCode::E0064 => ErrorCategory::Concurrent,
             // [v0.10.2 / §11.1] 「死锁检测产生的 `E0065` 的
-            // `error_category` 字段值为 `"deadlock"`」—— 此前落在
+            // `errorCategory` 字段值为 `"deadlock"`」—— 此前落在
             // `Concurrent` 桶,按 `== "deadlock"` 分类死锁的工具全部漏判。
             // 与 `W0065` 同桶:§11.3 说两者「触发形状」相同。
             ErrorCode::E0065 => ErrorCategory::Deadlock,
@@ -706,9 +706,9 @@ pub enum ErrorCategory {
     /// [v0.10.2 / §11.1] Structured-concurrency deadlock detected
     /// (`E0065`, and its `strict_deadlock_detect = false` soft twin
     /// `W0065`). Spec §11.1 states in normative prose that the
-    /// `error_category` field of a deadlock-detected `E0065` is
+    /// `errorCategory` field of a deadlock-detected `E0065` is
     /// `"deadlock"` — it was in fact `"concurrent"`, so a tool
-    /// routing on `error_category == "deadlock"` silently missed
+    /// routing on `errorCategory == "deadlock"` silently missed
     /// every deadlock.
     ///
     /// Split out from `Concurrent` because a deadlock is a
@@ -884,7 +884,7 @@ pub struct RelatedLocation {
 /// The structured error object.
 ///
 /// Schema version is `1.1.0` (v0.4 spec `Sec. 14.2`):
-/// - Phase 3 fields (v0.3): `code` / `error_category` / `severity` /
+/// - Phase 3 fields (v0.3): `code` / `errorCategory` / `severity` /
 ///   `message` / `location` / `source_line` / `hint` / `retryable` /
 ///   `suggestion_code` / `related` / `error_schema_version`
 /// - v0.4 additions: `idempotent` (v0.4 `Sec. 14.2`), `retry_after`
@@ -901,6 +901,15 @@ pub struct WlwlDiagnostic {
     /// Stable error code (see v0.4 `Sec. 14.4`).
     pub code: ErrorCode,
     /// High-level category (see v0.4 `Sec. 14.4` -- 13 buckets).
+    ///
+    /// ⚠ **线上键名是 `errorCategory`,不是 Rust 字段名 `error_category`** ——
+    /// 规范 §11.1 明写:「`--format json`/`jsonl` 产生机器可读结构(含
+    /// `error_schema_version`、**`errorCategory`**、`retryable`、`idempotent`、
+    /// `suggestion_code`、`trace` 等字段)」。serde 默认按字段名序列化,会吐
+    /// `error_category`,于是**照规范写的工具读不到这个字段** —— 键名对不上,
+    /// 分类信息就等于不存在。值(`"deadlock"` / `"name"` / …)一直是对的,
+    /// 错的只是键。
+    #[serde(rename = "errorCategory")]
     pub error_category: ErrorCategory,
     /// "error" | "warning" | "note"
     pub severity: Severity,
@@ -1513,7 +1522,7 @@ mod tests {
             location: Location::point("t.wll", 1, 1),
         });
         let j = d.render_json();
-        assert!(j.contains("\"error_category\": \"syntax\""));
+        assert!(j.contains("\"errorCategory\": \"syntax\""));
         assert!(j.contains("\"retryable\": false"));
         assert!(j.contains("\"suggestion_code\""));
         assert!(j.contains("\"related\""));
@@ -1529,7 +1538,41 @@ mod tests {
         let l = d.render_jsonl();
         assert!(!l.contains('\n'), "jsonl must be single-line: {}", l);
         assert!(l.contains("\"code\":\"E0020\""));
-        assert!(l.contains("\"error_category\":\"name\""));
+        assert!(l.contains("\"errorCategory\":\"name\""));
+    }
+
+    /// [R2-011] 规范 §11.1 的**键名**契约:`errorCategory`,不是
+    /// `error_category`。
+    ///
+    /// 判据来自规范原文,不是来自实现的输出:「`--format json`/`jsonl`
+    /// 产生机器可读结构(含 `error_schema_version`、**`errorCategory`**、
+    /// `retryable`、`idempotent`、`suggestion_code`、`trace` 等字段)」。
+    ///
+    /// 旧名必须**不再出现** —— 只断言新名在的话,一个同时吐两个键的
+    /// 实现也能过,而那正是「按规范写的工具读到了另一个键」的老问题。
+    #[test]
+    fn json_uses_the_spec_key_error_category_not_snake_case() {
+        let d = WlwlDiagnostic::new(
+            ErrorCode::E0065,
+            "deadlock detected",
+            Location::point("t.wll", 1, 1),
+        );
+        // 死锁那一类的**值**是规范点名的:「`E0065` 的 `errorCategory`
+        // 字段值为 `"deadlock"`」—— 值一直是对的,错的只是键。
+        assert_eq!(d.error_category, ErrorCategory::Deadlock);
+
+        let v: serde_json::Value = serde_json::from_str(&d.render_json()).expect("json parses");
+        assert_eq!(v["errorCategory"], "deadlock");
+        assert!(
+            v.get("error_category").is_none(),
+            "旧键名 `error_category` 必须不再出现,否则按规范写的工具 \
+             读到的可能是另一个字段: {v}"
+        );
+
+        // jsonl 是同一份结构,键名必须一致。
+        let l: serde_json::Value = serde_json::from_str(&d.render_jsonl()).expect("jsonl parses");
+        assert_eq!(l["errorCategory"], "deadlock");
+        assert!(l.get("error_category").is_none());
     }
     // -- Phase 3: insta snapshots for all 33 error codes -----------
     // The category and retryable fields are part of the public contract

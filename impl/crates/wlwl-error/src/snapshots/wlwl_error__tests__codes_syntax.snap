@@ -5,7 +5,7 @@ expression: "serde_json::json!({\n    \"E0010\": code_snap(ErrorCode::E0010, \"e
 {
   "E0010": {
     "code": "E0010",
-    "error_category": "syntax",
+    "errorCategory": "syntax",
     "error_schema_version": "1.1.0",
     "hint": null,
     "idempotent": false,
@@ -26,7 +26,7 @@ expression: "serde_json::json!({\n    \"E0010\": code_snap(ErrorCode::E0010, \"e
   },
   "E0011": {
     "code": "E0011",
-    "error_category": "syntax",
+    "errorCategory": "syntax",
     "error_schema_version": "1.1.0",
     "hint": null,
     "idempotent": false,
@@ -47,7 +47,7 @@ expression: "serde_json::json!({\n    \"E0010\": code_snap(ErrorCode::E0010, \"e
   },
   "E0012": {
     "code": "E0012",
-    "error_category": "syntax",
+    "errorCategory": "syntax",
     "error_schema_version": "1.1.0",
     "hint": null,
     "idempotent": false,
@@ -68,7 +68,7 @@ expression: "serde_json::json!({\n    \"E0010\": code_snap(ErrorCode::E0010, \"e
   },
   "E0013": {
     "code": "E0013",
-    "error_category": "syntax",
+    "errorCategory": "syntax",
     "error_schema_version": "1.1.0",
     "hint": null,
     "idempotent": false,
@@ -89,7 +89,7 @@ expression: "serde_json::json!({\n    \"E0010\": code_snap(ErrorCode::E0010, \"e
   },
   "E0014": {
     "code": "E0014",
-    "error_category": "syntax",
+    "errorCategory": "syntax",
     "error_schema_version": "1.1.0",
     "hint": null,
     "idempotent": false,
