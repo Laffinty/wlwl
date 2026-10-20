@@ -254,6 +254,38 @@ jobs:
             grep -E '^test .* \.\.\. FAILED' "$1" 2>/dev/null | tr -d '\r' | sort -u
           }
 
+          # ⚠⚠ **失败用例名必须落进「匿名可读」的位置** —— 这是实测出来的机制缺口。
+          #   失败名原先只写进 step summary 与 artifact,而这两处**都要登录**:
+          #   匿名 `GET /actions/artifacts/<id>/zip` = 401、`GET /actions/jobs/<id>/logs`
+          #   = 403,公开仓也一样(GitHub 现在要求登录才给看 workflow 日志)⇒ 归因时
+          #   **拿不到名字**,只能把日志落回仓库求人。
+          #   ⇒ 补一条 **workflow annotation**:注解是**匿名可读**的
+          #   (`GET /repos/<o>/<r>/check-runs/<id>/annotations` 无需 token)⇒
+          #   失败名从此**一次 API 调用就能读到**,不必再走「求人放日志」这条路。
+          #   ⚠ 名字放 **message** 不放 title:title 是属性值,`:` 要转义
+          #     (测试名里有 `::`),message 不用 ⇒ 放 message 才能**逐字**显示。
+          #   ⚠ 注解 message **不能含换行** ⇒ 多行名单折成一行(`; ` 分隔)。
+          #   ⚠ 长度封顶:GitHub 单条注解 message 上限 64 KB ⇒ 截断并注明,
+          #     **完整**名单仍在 step summary 与 artifact 里(两处都没删)。
+          emit_failed_names_annotation() {
+            local title="$1"
+            local names="$2"
+            local flat
+            # ⚠ `local` 逐个声明、不合并:右侧引用了前一个变量时,同一行会在
+            #   赋值**之前**展开(与 D13-073 那个坑同款)。
+            # ⚠ 折行用 `sed` 的 N/a/ba 拼接,不用 `tr '\n' '; '` —— tr 的两个
+            #   字符集是**一一对应**映射,`'\n'` 只会映到 `';'`,那个空格是**没用上**的
+            #   (本机 Git Bash 实测:输出 `a; b` 而不是 `a; b`)。
+            flat="$(printf '%s' "$names" | tr -d '\r' | sed ':a;N;$!ba;s/\n/; /g')"
+            if [ -z "$flat" ]; then
+              flat="(no '... FAILED' line captured)"
+            fi
+            if [ "${#flat}" -gt 6000 ]; then
+              flat="${flat:0:6000} ... (truncated; full list in the step summary and the log artifact)"
+            fi
+            echo "::warning title=$title::$flat"
+          }
+
           run_pass first
           if [ "$(cat "$LOG_DIR/first.rc")" = "0" ]; then
             exit 0
@@ -264,6 +296,11 @@ jobs:
           retry_rc="$(cat "$LOG_DIR/retry.rc")"
           first_names="$(failed_names "$LOG_DIR/cargo-test-first.log")"
           retry_names="$(failed_names "$LOG_DIR/cargo-test-retry.log")"
+          # ⚠ 失败名进**公开注解**(匿名可读)—— 见上面 emit_failed_names_annotation
+          #   的说明。两条都发:pass 1 的名单是「当时红了的那些」,pass 2 的是
+          #   「复跑时仍然红的那些」⇒ 两者的**差**就是 flaky 的候选集合。
+          emit_failed_names_annotation "FAILED tests - pass 1" "$first_names"
+          emit_failed_names_annotation "FAILED tests - pass 2" "$retry_names"
 
           {
             echo "### cargo test result (${{ matrix.os }})"
