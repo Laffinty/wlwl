@@ -722,6 +722,21 @@ ADR-0023 §v0.x 1)。⚠ **本批动了四处语言规范文本** —— 其中�
   `scheme_check_normalization`,以及 M1 契约表里「`SANITIZE_HTML` 不得出现」
   的断言在 M3 落地后失效)—— CI 是 `RUSTFLAGS: -D warnings` + `clippy -D warnings`,
   这些会直接让流水线红。
+- **门禁误红一处**(D13-092,发版前最后一处红)—— macOS job 的
+  `sanitize::filter::tests::distinct_attribute_dedup_does_not_scale_quadratically`
+  红,读数是「4× 的互异属性花了 **12.8×** 的时间(小=1ms 大=12.8ms)」。⚠ **红的
+  不是被测代码**:同名属性去重早已是哈希集合(O(k)),这条守卫只是**判据形式**
+  不可靠 —— 它用「两档规模(2 千 / 8 千属性)的**墙钟耗时比** < 12 倍」判「没
+  退化成平方」,而**同一份实现**本地 debug 档量到 **4.0×**、CI 上量到
+  **12.8×** ⇒ 越过阈值 ⇒ 误红(两档规模的内存占位不同 ⇒ 比值里混着缓存命中率,
+  那部分随机器与并发负载漂移 ⇒ 缺陷形态与正常形态在 CI 上**没有稳定间隔**)。
+  ⇒ 判据换成**确定性计数**(名字查找次数;两段式:校准 + 线性上界,与
+  `tree.rs` 的 N-006 契约同体例)⇒ 同一份代码在本地与 CI **同红同绿**;
+  负向验证 3/3 转红(平方形态校准段红 / 上界段红 / 绕过计量点红)。
+  ⚠ **零行为变化**:去重语义(§13.2「同名属性重复时首个生效」)一字未改。
+  同批另修 `ci.yml` 的 rust-cache 工作区指错(仓根**没有** `Cargo.toml` ⇒
+  它的 `cargo metadata` exit 101 ⇒ 依赖集解析为空 ⇒ 缓存键**不含** manifest
+  哈希 ⇒ 依赖变了缓存不失效)。
 
 ### 不做(留档,「不做」与「做」同权)
 
@@ -738,11 +753,16 @@ ADR-0023 §v0.x 1)。⚠ **本批动了四处语言规范文本** —— 其中�
 
 `cargo fmt --check` 0 diff;`clippy --all-targets -D warnings` 0;`cargo doc --no-deps
 -D warnings` 0 error;`cargo deny check` exit 0;`cargo check -p wlwl-std --features
-real-ai` exit 0;`cargo test --locked --all-targets` **0 failed**(42 套件);
-`--test conformance` 全绿;probe **157** 用例;附录 A 由 `gen-appendix-a` 重生成
-且双向锁绿;附录 G 逐字节不变;`sanitize_contract` 103 / `encode_contract` 47 /
-`collection` 127 / `str_math` 156 条逐条冻结。基准存档进
+real-ai` exit 0;`cargo test --locked --all-targets` **0 failed**(75 个测试二进制);
+`--test conformance` 全绿;probe **175** 用例(与本版段开头「本批实测数字」里的
+「probe 用例 175」一致 —— 旧数字 157 是 M3 批次的快照,已随 M5~M8 的新增用例
+过期);附录 A 由
+`gen-appendix-a` 重生成且双向锁绿;附录 G 逐字节不变;`sanitize_contract` 103 /
+`encode_contract` 47 / `collection` 127 / `str_math` 156 条逐条冻结。基准存档进
 `impl/crates/wlwl-eval/benches/baseline.txt`(M1 / M2 / M3 三段)。
+⚠ **门禁本身也修了一处**(D13-092,见上条「门禁误红一处」):一条复杂度守卫的
+**判据形式**不可靠,在 macOS CI 上误红;已换成**确定性计数**判据(本地与 CI
+同红同绿),负向验证 3/3 转红,去重语义零变化。
 
 ### 追加批次(M8 · L3)—— `std.ai` / `std.agent` 移出 `wlwl:std.*`(可见面变更)
 

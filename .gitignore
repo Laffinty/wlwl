@@ -86,7 +86,14 @@ impl/target/llvm-cov.info
 
 # Project-local scratch (never tracked)
 ast_stable_preview.txt
-docs/site/site/
+
+# [v0.11.3 / D13-093] `mkdocs build` 的产物目录。
+#
+# ⚠ `mkdocs.yml` 的 `site_dir: site` 是**相对仓库根**的 ⇒ 输出落在
+# `<仓根>/site/`,**不是** `docs/site/site/` —— 旧条目指错了地方(实测:
+# `git check-ignore site` 不命中 ⇒ 跑一次 `mkdocs build` 就会把整站产物
+# 变成未跟踪文件,`git add -A` 一把带进历史)。
+site/
 
 # [v0.11.3 / D13-069] CI 测试日志落盘目录(`ci.yml` 的「保留失败名 + 自动复跑
 # 一次」机制写在这里)。
