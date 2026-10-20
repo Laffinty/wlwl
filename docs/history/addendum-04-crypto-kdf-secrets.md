@@ -346,7 +346,7 @@ Python `hashlib.pbkdf2_hmac` 复算是 **`1074be24…`**,本实现与之逐字�
 - `std.rand` 的播种从 `RANDOM_BYTES` 取字节(种子本身只是字节,之后由 RNG 展开),
   **不得**反向依赖 04;
 - 依据:总纲 §1 已定「`RANDOM_BYTES` 是熵源(读 OS),`std.rand` 消费它做播种,
-  **单向依赖**」,且 [`ADR-0026`](../../adr/0026-l1-global-decision-points.md) G3
+  **单向依赖**」,且 [`ADR-0026`](../adr/0026-l1-global-decision-points.md) G3
   已定「显式 seed + 可注入确定性源」—— 单向依赖正是那个形态的必然结果。
 - 命名面无冲突:`RANDOM_BYTES` 在 `std.encode`,`std.rand` 的成员名不同 ⇒ 不违反
   ADR-0023 §v0.x 4(禁同名重导出)。

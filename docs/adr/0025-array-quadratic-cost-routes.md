@@ -5,7 +5,7 @@
 | **Status** | **Accepted(2026-10-05 —— 四问已裁决,见下「裁决」节;带实现落地)** |
 | **Date** | 2026-10-05 |
 | **Deciders** | Li(project lead)2026-10-05 |
-| **Related** | ADR-0021(层归属 / 归层须附基准)、ADR-0022(`Value` 直通)、D11-012(建数组平方级,处置仅 `RANGE` 单点沉 R2)、D12-009(`CHUNK`/`WINDOW` 平方级已知限制)、[`docs/plan/addendum-00-r0-foundations.md`](../docs/plan/addendum-00-r0-foundations.md)(L0-A / L0-B 两案)、`impl/crates/wlwl-eval/benches/baseline.txt` **L0 段**(本 ADR 的实测数据来源) |
+| **Related** | ADR-0021(层归属 / 归层须附基准)、ADR-0022(`Value` 直通)、D11-012(建数组平方级,处置仅 `RANGE` 单点沉 R2)、D12-009(`CHUNK`/`WINDOW` 平方级已知限制)、[`docs/history/addendum-00-r0-foundations.md`](../history/addendum-00-r0-foundations.md)(L0-A / L0-B 两案)、`impl/crates/wlwl-eval/benches/baseline.txt` **L0 段**(本 ADR 的实测数据来源) |
 
 ---
 

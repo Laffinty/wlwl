@@ -5,7 +5,7 @@
 | **Status** | **Accepted**(2026-10-13,业主「允许下一步建议」采纳 D1–D5) |
 | **Date** | 2026-10-13 |
 | **Deciders** | Li(project lead) |
-| **Related** | [`ADR-0025`](0025-array-quadratic-cost-routes.md) Q2 / Q3 / β3、`addendum-00-r0-foundations.md` §2.2、`docs/spec/wlwl-spec-v0.11.md` §6.6 符合性负载、`impl/crates/wlwl-eval/benches/baseline.txt` L0 段 |
+| **Related** | [`ADR-0025`](0025-array-quadratic-cost-routes.md) Q2 / Q3 / β3、`docs/history/$1` §2.2、`docs/spec/wlwl-spec-v0.11.md` §6.6 符合性负载、`impl/crates/wlwl-eval/benches/baseline.txt` L0 段 |
 
 ## Context
 

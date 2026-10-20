@@ -92,7 +92,7 @@ L3  14-ai-agent-demotion   ← 减法,不新增成员;建议在 L1 全部落地�
 | 09 | [JSON 深度(增量 / 低层词法层 / schema)](addendum-09-json-deep.md) | 扩 `std.json` | 00 | B 类缺口(Go 1.25 `json/v2` 实验) |
 | 10 | [数值扩展(任意精度 / 分数 / 统计 / 近似比较)](addendum-10-numeric-extended.md) | 扩 `std.math` | 00 | B 类缺口 |
 | 11 | [`RESULT` / `OPTIONAL` 组合子](addendum-11-result-optional-combinators.md) | 扩 `std.test` 外的**新** `std.result` | 00 | C 类结构性缺口 |
-| 12 | [同步原语](addendum-12-sync-primitives.md) | 新命名空间 | 01(假时钟利于测同步原语) | C 类结构性缺口 |
+| 12 | [同步原语](../active/addendum-12-sync-primitives.md) | 新命名空间 | 01(假时钟利于测同步原语) | C 类结构性缺口 |
 | 13 | [`std.sanitize` 扩展(CSS / JS 转义 / 类型化收口)](addendum-13-sanitize-extend.md) | 扩 `std.sanitize` | — | §14 D 类差异化面 |
 | 14 | [`std.ai` / `std.agent` 移出 `std`](addendum-14-ai-agent-demotion.md) | **减法** | L1 全部 | §14(Rust / Julia 小核心先例) |
 
@@ -115,7 +115,7 @@ L3  14-ai-agent-demotion   ← 减法,不新增成员;建议在 L1 全部落地�
 
 | # | 裁决点 | 建议默认 | 影响面 |
 |---|---|---|---|
-| G1 | **Unicode 版本跟哪个**(UCD 数据生成器的输入) | ~~Unicode 17.0(2025-09 发布)~~ → **[ADR-0026](adr/0026-l1-global-decision-points.md) 建议 18.0.0**(2026-09-16 已发布,**17.0 已落后一版**;18.0 明确「无新算法」⇒ NFC/NFD 语义零风险) | 03;`02` 若做 `\p{…}` 连带共用同一版。**不影响**已冻结的 `std.sanitize` 实体表(WHATWG 数据与 Unicode 版本无耦合) |
+| G1 | **Unicode 版本跟哪个**(UCD 数据生成器的输入) | ~~Unicode 17.0(2025-09 发布)~~ → **[ADR-0026](../adr/0026-l1-global-decision-points.md) 建议 18.0.0**(2026-09-16 已发布,**17.0 已落后一版**;18.0 明确「无新算法」⇒ NFC/NFD 语义零风险) | 03;`02` 若做 `\p{…}` 连带共用同一版。**不影响**已冻结的 `std.sanitize` 实体表(WHATWG 数据与 Unicode 版本无耦合) |
 | G2 | **半张表怎么办**(UCD 成员的覆盖面) | **坚持不做半张表** —— 改为「要么全量,要么不做」(沿 D12-004 与 §12.1 原话) | 03。**增一条开工前动作**:M6-03 动工前先量「全量 UCD 生成」的三个数(数据体积 / 生成器自检耗时 / 产物体积);不可接受就老实不做 |
 | G3 | **`std.rand` 的播种模型** | **显式 seed 的 RNG 对象 + 可注入确定性源,不设全局隐式状态**(沿 D12-006 的解锁条件与 §14.1 否决原话) | 08,并影响 01 的假时钟设计。**与 G6 是同一形态**,实现批次须共用一套注入机制 |
 | G4 | **KDF 选型** | **Argon2id 为主 + PBKDF2 兼容**;**不做对称加密**(§11.5 已否决)。**增**:参数上界须钉死,超界报 `E0030` | 04 |

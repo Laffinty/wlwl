@@ -85,7 +85,7 @@ const NAMESPACE_META: &[(&str, &str, &str)] = &[
         // 键是 `STR(k)` 渲染串 ⇒ 内部 `HashMap<String, usize>` 索引 + 末次物化,
         // `Value::Dict` 表示不动)。**`SORT` / `SORT_BY` 仍留 R1** —— 它们要换
         // `Vec::sort_by` 就会改**比较器调用次数**(R1 实测恰好 C(n,2)),那是
-        // 可观察行为,待业主裁;见 `docs/plan/addendum-00-r0-foundations.md` §7。
+        // 可观察行为,待业主裁;见 `docs/history/addendum-00-r0-foundations.md` §7。
         // 十三个成员**全部留在 `EXPORT` 里**(门面改名导出),故成员面与本行的
         // 成员名册都不变,只有「层」这一列变。
         "混合(R1 门面 + R2 `RANGE`/`MAP`/`FILTER`/`CHUNK`/`WINDOW`/`ENUMERATE`/`ZIP`/`UNIQ`/`FLAT`/`JOIN`/`GROUP_BY`/`DEDUP_BY`/`KEY_BY`)",

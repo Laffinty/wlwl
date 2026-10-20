@@ -22,8 +22,8 @@
    M7 = `addendum-09..13`;M8 = `addendum-14`。
 
 用法:
-    python script/phase_strict.py [plan 目录]
-默认 plan 目录 = 本脚本所在仓库的 `docs/plan`。
+    python script/phase_strict.py [plan 目录 ...]
+默认 = 本脚本所在仓库的 `docs/history` + `docs/active`(**两处都要读**,见 `plan_dirs()`)。
 """
 
 import os
@@ -42,11 +42,20 @@ MILESTONES = [
 ]
 
 
-def plan_dir() -> str:
+def plan_dirs() -> list:
+    """方案文件所在的目录(可能不止一个)。
+
+    ⚠⚠ **2026-10-20 起,v0.11.3 的方案文件按「收口状态」分了两处**:
+    已收口的 14 份 addendum 归档在 `docs/history/`,而**唯一未收口**、
+    仍在排队的 `addendum-12`(std.sync)在 `docs/active/` ⇒ 权威口径
+    **必须两处都读** —— 少读一处就会少算工作项(83 → 少 addendum-12 的 5 项)。
+    ⚠ `docs/plan/` 现在**只剩 README.md**(索引),不再是方案文件所在处。
+    """
     if len(sys.argv) > 1:
-        return sys.argv[1]
+        return list(sys.argv[1:])
     here = os.path.dirname(os.path.abspath(__file__))
-    return os.path.join(os.path.dirname(here), "docs", "plan")
+    docs = os.path.join(os.path.dirname(here), "docs")
+    return [os.path.join(docs, "history"), os.path.join(docs, "active")]
 
 
 def split_row(line: str) -> list:
@@ -108,12 +117,18 @@ def main() -> int:
             except (ValueError, OSError):
                 pass
 
-    plan = plan_dir()
-    files = sorted(
-        f for f in os.listdir(plan) if f.startswith("addendum-") and f.endswith(".md")
-    )
+    plans = plan_dirs()
+    files = []
+    for plan in plans:
+        if not os.path.isdir(plan):
+            print("跳过(目录不存在): %s" % plan)
+            continue
+        for f in os.listdir(plan):
+            if f.startswith("addendum-") and f.endswith(".md"):
+                files.append((plan, f))
+    files.sort(key=lambda pf: pf[1])
     per_file = {}
-    for f in files:
+    for plan, f in files:
         with open(os.path.join(plan, f), encoding="utf-8") as fh:
             lines = fh.read().split("\n")
         sec = section_7(lines)
@@ -133,7 +148,7 @@ def main() -> int:
 
     milestone_total = Counter()
     milestone_done = Counter()
-    for f in files:
+    for _plan, f in files:
         marks = per_file[f]
         if marks is None:
             print("%-46s %6s  (无 §7)" % (f, "-"))
@@ -164,7 +179,7 @@ def main() -> int:
     print("已完成(首个标记为 ✅) = %d / %d" % (grand_done, grand_total))
     unfinished = grand_total - grand_done
     print("未完成 = %d" % unfinished)
-    for f in files:
+    for _plan, f in files:
         marks = per_file[f]
         if marks is None:
             continue

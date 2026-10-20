@@ -134,7 +134,7 @@ ADR-0023 §v0.x 1)。⚠ **本批动了四处语言规范文本** —— 其中�
     权威值 `0d640df5…`,而同一 crate 的**无 K/X 路径三方一致**)⇒ **形参
     撤掉**:一个与其他实现互不认的 `secret` / `assoc`,存下的哈希任何别的
     实现都验不过,那比没有这个参数更危险。完整证据链见
-    `docs/plan/addendum-04-crypto-kdf-secrets.md` §3.5。
+    `docs/history/addendum-04-crypto-kdf-secrets.md` §3.5。
   - **已知限制**:`algo` 只接受 `"sha256"`(仓里无 SHA-512;签名保留该形参是
     留位,`sha512` 报 `E0030` 而非静默接受)。
 - **`wlwl:std.encode` +`RANDOM_BYTES` / `RANDOM_HEX` / `TIMING_SAFE_EQ`
@@ -812,7 +812,7 @@ skill 的指针表与失效交叉引用一并修正。
 **`E0070` / `E0071` 诊断**(会中止运行),新九个返**`ERR` 值**(用 `IS_ERR` /
 `ERR_PAYLOAD` / `UNWRAP_OR` 消费)。
 
-**新登记的缺陷(本批不修,见 `wlwl-v0.11.3-build-plan.md` 缺陷表)**:
+**新登记的缺陷(本批不修,见 `docs/history/$1` 缺陷表)**:
 
 - **D13-016** —— `PARSE` 对 **i64 之外**的整数静默丢精度
   (`-9223372036854775809` 变成 `-9223372036854775808`,值被改了)。

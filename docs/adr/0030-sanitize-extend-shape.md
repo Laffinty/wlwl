@@ -4,7 +4,7 @@
 |---|---|
 | **Status** | **Accepted**(2026-10-13,业主「请做下一步」采纳 D1–D4;`addendum-13` W-02 已落地 `HTML_SANITIZE_SCRIPT`) |
 | **Date** | 2026-10-13 |
-| **Related** | ADR-0029(`std.result` 的形状,同日另一份「实测推翻计划」的 ADR)、`addendum-13-sanitize-extend.md` §3.1 / §3.2、`docs/stdlib/wlwl-stdlib-spec-v0.11.md` §13 / §14、`wlwl-std/src/sanitize.rs`、`wlwl-eval/tests/sanitize_contract.rs` |
+| **Related** | ADR-0029(`std.result` 的形状,同日另一份「实测推翻计划」的 ADR)、`docs/history/$1` §3.1 / §3.2、`docs/stdlib/wlwl-stdlib-spec-v0.11.md` §13 / §14、`wlwl-std/src/sanitize.rs`、`wlwl-eval/tests/sanitize_contract.rs` |
 
 ## Context
 

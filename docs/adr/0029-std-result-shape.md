@@ -5,7 +5,7 @@
 | **Status** | **Accepted**(2026-10-12,业主采纳 §4b:「**不复刻**」四个已有全局内建;同日再采纳「成员面 9 → 6,三条判为不可实现」)。⚠ **D1 是带条件冻结的** —— 冻结前提是「`ADR-0017` Step 3(真 state-machine 续跑)仍未落地」,见 §7 |
 | **Date** | 2026-10-12(**同日修订**:D1 的机制依据、成员面、旁路结论三处由实测改写) |
 | **Deciders** | Li(project lead) |
-| **Related** | ADR-0021(层归属)、ADR-0022(值直通)、ADR-0023(稳定策略)、`addendum-11-result-optional-combinators.md` §2 / §3、`docs/spec/wlwl-spec-v0.11.md` §8.2 / §8.3、`docs/stdlib/wlwl-stdlib-spec-v0.11.md` §22、`wlwl-eval/src/lib.rs::dispatch_call`、`wlwl-eval/src/registry.rs`(内建名册) |
+| **Related** | ADR-0021(层归属)、ADR-0022(值直通)、ADR-0023(稳定策略)、`docs/history/$1` §2 / §3、`docs/spec/wlwl-spec-v0.11.md` §8.2 / §8.3、`docs/stdlib/wlwl-stdlib-spec-v0.11.md` §22、`wlwl-eval/src/lib.rs::dispatch_call`、`wlwl-eval/src/registry.rs`(内建名册) |
 
 > ⚠ **编号约定**:本 ADR 早期版本按 v0.10 编号写「§12.6 / §12.7」;v0.11 规范里
 > 同一机制已重编号为 **§8.2 透明传播 / §8.3 消费者注册表**。下文一律用 v0.11 编号。

@@ -21366,8 +21366,9 @@ TYPE(v);
 
     // v0.8.1 D8-010 — spec §10.5 `SUB(s, start, len?) -> STRING`:
     // third argument is **length** (codepoint count), not end-index.
-    // This is the 8-case matrix from build plan §2.2 / docs/plan/
-    // wlwl-build-plan-v0.8.1.md §1.2. Each row used to differ from
+    // This is the 8-case matrix from build plan §2.2 / the v0.8.1 build
+    // plan §1.2 (that plan was archived into docs/history/20260915-22.md).
+    // Each row used to differ from
     // the spec (or was silently clamped to "") under v0.8.0's
     // end-index interpretation; the post-fix behavior aligns with
     // the spec prose verbatim.

@@ -1,30 +1,47 @@
 # docs/plan
 
-本目录留给**当前迭代**的构建计划与偏差登记。
+本目录**只放当前迭代的索引与状态**。v0.11.3 的构建计划、审查报告与 15 份
+addendum 已按「是否收口」分流到别处(见下方「文件去哪了」)。
+
+> ⚠ **2026-10-20 归档**:`docs/plan/` 现在**只剩本文件**。这是本仓的既定体例
+> —— v0.11.1 那轮做过同样的事(见 [`../history/20261001.md`](../history/20261001.md) 开头)。
+
+## 文件去哪了
+
+| 去处 | 放什么 | 为什么 |
+|---|---|---|
+| [`../history/`](../history/) | **v0.11.3 的正式计划文件**:[`wlwl-v0.11.3-build-plan.md`](../history/wlwl-v0.11.3-build-plan.md)(**偏差台账 §9** + **检查点表 §10**)、[`wlwl-v0.11.3-review-1.md`](../history/wlwl-v0.11.3-review-1.md)、[`wlwl-v0.11.3-review-2.md`](../history/wlwl-v0.11.3-review-2.md)、[`wlwl-v0.11.3-addendum.md`](../history/wlwl-v0.11.3-addendum.md)(追加批次总纲),以及 **14 份已收口的 addendum**(`00`–`11`、`13`、`14`) | 已收口 ⇒ 归档留档。⚠ **整份原文保留**(不是精简合并),要追溯改动用 `git log --follow` |
+| [`../active/`](../active/) | **唯一未收口、且仍被引用**的方案:[`addendum-12-sync-primitives.md`](../active/addendum-12-sync-primitives.md)(`std.sync`) | 还没做完 ⇒ 留在「进行中」的位置;**语言规范 §17.0.1 引的就是它** |
+| [`../history/`](../history/) 里的日次件 | 2026-09 起的日次日志 + v0.11 / v0.11.1 / v0.11.2 的归档件(按归档规则**合并精简**) | 老规矩 |
+
+⚠ **权威口径脚本的输入目录变了**:方案文件现在分散在 `docs/history/` 与
+`docs/active/` 两处 ⇒ [`../../script/phase_strict.py`](../../script/phase_strict.py)
+**两处都读**(少读一处会少算 `addendum-12` 的 5 个工作项)。
+用法不变:`python script/phase_strict.py` ⇒ **读数不变**(83 项 / 78 完成 /
+M5 6/6 · M6 42/42 · M7 23/28 · M8 7/7)。
+
+### 15 份独立方案(业主 2026-10-05 决定「一次性完善标准库」)
+
+总纲:[`../history/wlwl-v0.11.3-addendum.md`](../history/wlwl-v0.11.3-addendum.md) §2 有完整表、
+依赖图与裁决点。**`00` 必须最先** —— 它是 L2 三份的硬前置。
+
+| # | 方案 | # | 方案 |
+|---|---|---|---|
+| 00 | [R0 解释器治本(D11-012)](../history/addendum-00-r0-foundations.md) | 08 | [`std.rand`(先出 ADR)](../history/addendum-08-std-rand.md) |
+| 01 | [`std.time` + 假时钟气泡](../history/addendum-01-std-time.md) | 09 | [`std.json` 深度](../history/addendum-09-json-deep.md) |
+| 02 | [RE2 式线性正则](../history/addendum-02-regex.md) | 10 | [`std.math` 扩展](../history/addendum-10-numeric-extended.md) |
+| 03 | [Unicode 规范化(UCD 一整块)](../history/addendum-03-unicode-normalization.md) | 11 | [`RESULT` 组合子](../history/addendum-11-result-optional-combinators.md) |
+| 04 | [KDF / CSPRNG / 常数时间比较](../history/addendum-04-crypto-kdf-secrets.md) | 12 | [**同步原语 `std.sync`**(未收口 → `../active/`)](../active/addendum-12-sync-primitives.md) |
+| 05 | [`std.net`](../history/addendum-05-std-net.md) | 13 | [`std.sanitize` 扩展](../history/addendum-13-sanitize-extend.md) |
+| 06 | [`std.process` / `std.env` / 路径](../history/addendum-06-std-process-env.md) | 14 | [`std.ai` / `agent` 移出(减法)](../history/addendum-14-ai-agent-demotion.md) |
+| 07 | [压缩](../history/addendum-07-compression.md) | | |
 
 ## 进行中
 
 | 计划 | 覆盖 | 状态 |
 |---|---|---|
-| [`wlwl-v0.11.3-build-plan.md`](wlwl-v0.11.3-build-plan.md) | v0.11.3:输出安全 `std.sanitize`(**全员 R2**,性能为契约 —— 树构建净化器 + 全表实体 + 基准存档)+ `std.encode` 哈希 + SQL / 加解密否决成文 + `std.time` ADR-0024 与 regex 调研(只文档) | **M0–M4 全部完成**(M0 `601e76b`、M1 `613f13e`、M2 `875b699`、M3 `d5b47ad` + `2572fba` 收掉 D13-003~010、M4 `200ff9c`);追加批次按**甲路径**推进中(见总纲 §4):**M5 6/6 全结项**、**M6 42/42 全结项**、**M7 23/28**(12 `std.sync` 0/5 受阻)、**M8 7/7 全结项**;分支 `wip0.11.3`;⚠️ **`tag v0.11.3` 按住不发** —— 总纲 §4 甲案的「M8 收口」条件**已满足**,由维护者发 |
-| [`wlwl-v0.11.3-addendum.md`](wlwl-v0.11.3-addendum.md) | **v0.11.3 追加批次总纲**:15 份独立构建方案的分层依赖图、六个全局裁决点、版本口径后果、格式契约 |  **版本路径已裁决:甲(业主 2026-10-05)** —— 并入 v0.11.3,分 **M5(L0)/ M6(L1 八份)/ M7(L2 五份)/ M8(L3)**;**15 份方案 83 个工作项**中已完成 **78 项**(M5 6、M6 42、M7 23、M8 7;按各 addendum §7 状态列首个标记机械统计,口径同 [`script/phase_strict.py`](../../script/phase_strict.py)(**已进仓,2026-10-20**)—— **该脚本才是权威**,本文档的数字会过期,以脚本为准);**新增四份 ADR**:`ADR-0029`(std.result 形状)、`ADR-0030`(std.sanitize 形状)、`ADR-0031`(std.math 形状)、`ADR-0032`(L0-B 可变累加器,含 §7 实施 PLAN);**G1–G6 已于 2026-10-06 全部裁决**(`ADR-0026` Accepted);**M6 技术前置已清空**;`2-sync-primitives` 的硬前置 `ADR-0017` Step 3 仍未落地 
-
-### 追加批次 · 15 份独立方案(业主 2026-10-05 决定「一次性完善标准库」)
-
-总纲:[`wlwl-v0.11.3-addendum.md`](wlwl-v0.11.3-addendum.md) §2 有完整表、
-依赖图与裁决点。**`00` 必须最先** —— 它是 L2 三份的硬前置。
-
-| # | 方案 | # | 方案 |
-|---|---|---|---|
-| 00 | [R0 解释器治本(D11-012)](addendum-00-r0-foundations.md) | 08 | [`std.rand`(先出 ADR)](addendum-08-std-rand.md) |
-| 01 | [`std.time` + 假时钟气泡](addendum-01-std-time.md) | 09 | [`std.json` 深度](addendum-09-json-deep.md) |
-| 02 | [RE2 式线性正则](addendum-02-regex.md) | 10 | [`std.math` 扩展](addendum-10-numeric-extended.md) |
-| 03 | [Unicode 规范化(UCD 一整块)](addendum-03-unicode-normalization.md) | 11 | [`RESULT` 组合子](addendum-11-result-optional-combinators.md) |
-| 04 | [KDF / CSPRNG / 常数时间比较](addendum-04-crypto-kdf-secrets.md) | 12 | [同步原语 `std.sync`](addendum-12-sync-primitives.md) |
-| 05 | [`std.net`](addendum-05-std-net.md) | 13 | [`std.sanitize` 扩展](addendum-13-sanitize-extend.md) |
-| 06 | [`std.process` / `std.env` / 路径](addendum-06-std-process-env.md) | 14 | [`std.ai` / `agent` 移出(减法)](addendum-14-ai-agent-demotion.md) |
-| 07 | [压缩](addendum-07-compression.md) | | |
-
+| [`../history/wlwl-v0.11.3-build-plan.md`](../history/wlwl-v0.11.3-build-plan.md) | v0.11.3:输出安全 `std.sanitize`(**全员 R2**,性能为契约 —— 树构建净化器 + 全表实体 + 基准存档)+ `std.encode` 哈希 + SQL / 加解密否决成文 + `std.time` ADR-0024 与 regex 调研(只文档) | **M0–M4 全部完成**(M0 `601e76b`、M1 `613f13e`、M2 `875b699`、M3 `d5b47ad` + `2572fba` 收掉 D13-003~010、M4 `200ff9c`);追加批次按**甲路径**推进(见总纲 §4):**M5 6/6 全结项**、**M6 42/42 全结项**、**M7 23/28**(12 `std.sync` 0/5 受阻)、**M8 7/7 全结项**;分支 `wip0.11.3`;⚠️ **`tag v0.11.3` 按住不发** —— 总纲 §4 甲案的「M8 收口」条件**已满足**,由维护者发。⚠️ **已归档**(原文含偏差台账 §9 与检查点表 §10) |
+| [`../active/addendum-12-sync-primitives.md`](../active/addendum-12-sync-primitives.md) | `std.sync` 同步原语(通道之外的那一半) | ⛔ **受阻** —— 硬前置 `ADR-0017` Step 3(真 state-machine 续跑)未落地;业主 2026-10-08 裁决「一并后放」⇒ **单开一个批次**(登记在「下一迭代」格与台账 `D13-086`)。⚠ 语言规范 §17.0.1 已把「共享可变状态是反模式」写成**与 Step 3 无关**的条款 ⇒ Step 3 落地**不会**自动解锁它 |
 
 > v0.11.2 已于 2026-10-02 收口(M0–M6 全部完成,复核 N-6 的修复 D12-013 亦已落地),
 > 计划与三份审查/复核报告已按归档规则精简入 [`../history/20261002.md`](../history/20261002.md)。
@@ -53,9 +70,9 @@
 | [`../history/20261001.md`](../history/20261001.md) | **v0.11 批次 A 标准库底座收口** + **v0.11.1 全部产出**(`std.web` 立项、推进与终止) + **v0.11 偏差台账 D11-001 – D11-026 + 终止条 D11-037** |
 | [`../history/20261002.md`](../history/20261002.md) | **v0.11.2 构建计划(含偏差台账 D12-001 – D12-013)** + **三份审查/复核报告**(v0.11.0 审查、v0.11.1 复核、v0.11.2 复核) |
 
-各份的**完整原文在 git 历史**,按 `git log --follow docs/plan/<原文件名>` 追溯。
+各份的**完整原文在 git 历史**,按 `git log --follow docs/history/<原文件名>` 追溯。
 
-## 当前状态(2026-10-05)
+## 当前状态(2026-10-20)
 
 | 项 | 状态 |
 |---|---|
@@ -63,9 +80,9 @@
 | 现行标准库规范 | [`../stdlib/wlwl-stdlib-spec-v0.11.md`](../stdlib/wlwl-stdlib-spec-v0.11.md)(v0.11;**v0.11.2 起与语言规范同号** —— 本批成员面 58→99 但无 breaking,故不升版,变更登记在册首「本版变更」块) |
 | agent 专用规范 | [`../spec/wlwl-agent-spec-v0.11.md`](../spec/wlwl-agent-spec-v0.11.md)(与上面两册**冲突时以人读规范为准**;专供 AI agent,可随时改) |
 | 最新实现 | v0.11.3(M0–M4 全部完成,代码收口;**tag 继续按住不发** —— 追加批次走甲路径并入本版) |
-| 现行实现态 | **M6 八份全部结项(42/42)、M7 五份结项、M8 减法已结项** —— 命名空间 **19** / 成员面 **214**(std 204 + 官方包 10,附录 A 头部为准)、probe **175**。⚠ 两条**在案的保留项**,不是遗漏:① **`std.sync` 0/5 受阻**(硬前置 `ADR-0017` Step 3 未落地,业主 2026-10-08 裁决一并后放 ⇒ **单开一个批次**,见「下一迭代」格);② **tag 继续按住不发**。⚠ 另:addendum-14(M8 官方包分发)**已结项**(2026-10-20 订正)—— §4 的机械判据**逐条已满足**,而「部分完成」这个旧措辞的依据(「官方包机制不存在」)已被 2026-10-15 的**实测**证伪;**形态差距 4 条 + 复活条件**已登记(纯形态、**零可观察行为差**),见 addendum-14 §7 W-01。⚠ 本单元格此前是一段 **2617 字符的编年史快照**(停在 2026-10-05 的「M6 已开工 / probe 164」),与同表门禁行的 175 打架 —— **同一页并存两个时间口径**。已改为当前态:进度按 [`wlwl-v0.11.3-build-plan.md`](wlwl-v0.11.3-build-plan.md) §10 检查点表读,分批历史看各 addendum 原文,**详细数字不写在这一格**(写了就会第二次腐烂)|
-| 下一迭代 | 未立项。候选:**`ADR-0017` Step 3(真 state-machine 续跑)** —— **单开一个批次**,开工前须先过「续体保存的数据形态」裁决闸(与批次 B 同一道闸,且批次 B 是它的**前置**);⚠ 实测规模:`runtime.rs` **1726** 行(ADR 估 718 ⇒ **2.4 倍**)、`channel.rs` **482**、`yield_split.rs` **365**,而真正的求值器 `lib.rs` **24 184** 行**不在 ADR 的文件清单里** ⇒ ADR 的 5–7 人周估算覆盖不了真实面(见 `wlwl-v0.11.3-build-plan.md` §9 台账 **D13-086**)。其余候选:批次 B `YIELD` 续体保存(**0 细化**,开细化前须先定三件事,见 `../history/20261001.md` §1 —— 其第 2 件与 M5 的 L0 同根「R0 原语补齐」,两份范围尚未对齐)、`std.rand` 的全局状态裁决(需先出 ADR,总纲 G3)、UCD 数据依赖成员合成一块做(需先定 Unicode 版本 G1 与「半张表怎么办」G2)、regex(RE2 式线性模拟,调研见 v0.11.3 计划附录 B)、R1 预编译快照(其价值取决于 M5 完成后 R1 成员还剩多少) |
-| 门禁 | `cargo fmt --check` 0 diff;`clippy -D warnings` 0;`cargo test --locked --all-targets` **0 failed**(**测试二进制数随目标增减,不写死** —— 重测:`cargo test --locked --all-targets` 输出里 `test result:` 的行数;⚠ 另有 11 个 bench 目标在 `--all-targets` 下跑在测试模式、不报结果行,两者别混);`cargo deny check` exit 0;`cargo doc --no-deps -D warnings` 0 error(**D11-015 之后已并入本地门禁**;注意 `cargo doc` 不接受 `-D`,须走 `$env:RUSTDOCFLAGS='-D warnings'`);`cargo check --locked -p wlwl-std --features real-ai` exit 0(S-P1-1 之后新增);probe **175** 用例 —— 175 是 `impl/tests/probe/cases/` 的**用例目录数**(2026-10-15 实测;v0.11.3 M6 新增 `M6_std_encode_kdf_bounds` / `..._argon2id`(KDF 参数越界)、`M6_std_encode_entropy_and_timing`(熵源 + 常数时间)、`M6_std_time_clocks`(`std.time` A1 片)),由单个 `probe_suite` 函数驱动并有 `probe_case_count_matches_inventory` 守卫,**不是** `#[test]` 函数数(`--test probe` 只跑 3 个函数);契约表(2026-10-20 **按各文件 `Case {` 条目重测**)`collection` 127 / `str_math` 156 / `format` 9 / `encode` 83 / `time` 35 / `regex` 43 / `rand` 24 / `fs` 28 / `process` 9 / `compress` 12 / **`net` 38** / **`result` 35** / **`test` 59** / **`text` 64**(原写 20,addendum-03 扩充后未更新)/ **`json` 38**(无 `CASES` 数组,是 38 个独立 `#[test]`)/ **`ai_agent` 18** / **`eval_dict_key` 16** / **`parser_syntax` 11**(无 `CASES` 数组,是 11 个独立 `#[test]`)/ **`spec_example` 2**(无 `CASES` 数组,是 2 个独立 `#[test]`)/ **`temp_scratch` 3**(无 `CASES` 数组,是 3 个独立 `#[test]`;D13-084 新增)/ `sanitize` 107 条(⚠️ `sanitize 107` 是**另一个口径** = 22 转义 + 85 净化/诊断,跨两份文件,`addendum-13` 已标注);条数一律按 **`CASES` 数组里的 `Case` 条目**数,**不是** `#[test]` 函数数 —— `format_contract` 有 **2** 个 `#[test]` 却装 **9** 条用例,当年那行写 `format 39` 就是把两者、又和邻居 `encode 39` 混在一起抄出来的(见 `build-plan` 的 D13-014);⚠ **重测时记得扣掉每个文件里那一次 `struct Case {` 定义**(否则每个文件恰好多 1);附录 A 由 `gen-appendix-a` 双向锁绿;附录 G 逐字节不变;基准存档 `benches/baseline.txt` 现有段:M1 / M2 / M3 / **L0** / **L0-A-2** / **L0-A-3a** / **L0-A-3b** / **KDF**(W-05)/ **regex**(W-04)/ **rand**(W-04,段九)/ **result**(W-05,段十)/ **accumulator**(L0-B 守卫,段十一)/ **stats**(W-07,段十二)/ **json**(W-06,段十三)/ **compress**(收尾补,段十四)(路径 `impl/crates/wlwl-eval/benches/`)。⚠ **「共 N 段」这个数没有单一来源,别去数标题** —— 只有 `段九` ~ `段十四` 用 `段N · ` 的标题格式,段一~段八那一批叫的是 `M1` / `M2` / `M3` / `L0` / `L0-A-2` / `L0-A-3a` / `L0-A-3b` / `KDF`(2026-10-15 实测确认) \|。**`std.compress` 的基准段已于 2026-10-15 收尾时补上**(段十四)—— `addendum-07` 的九处落点表本来没要求它(纯 R2 包装成员,量的是「表示方式」而非算法),但与 02 / 04 / 08 的体例不一致。⚠ 补的过程中发现**第一版写法是坏的**:逐轮深拷贝 `Value` 既主导了读数(占 18%)又是最大噪声源(跨轮摆 **2.3 倍**),改用 `iter_batched` 后降到多数 ±3% —— 推导见 `baseline.txt` 段十四 |
+| 现行实现态 | **M6 八份全部结项(42/42)、M7 五份结项、M8 减法已结项** —— 命名空间 **19** / 成员面 **214**(std 204 + 官方包 10,附录 A 头部为准)、probe **175**。⚠ 两条**在案的保留项**,不是遗漏:① **`std.sync` 0/5 受阻**(硬前置 `ADR-0017` Step 3 未落地,业主 2026-10-08 裁决一并后放 ⇒ **单开一个批次**,见「下一迭代」格);② **tag 继续按住不发**。⚠ 另:addendum-14(M8 官方包分发)**已结项**(2026-10-20 订正)—— §4 的机械判据**逐条已满足**,而「部分完成」这个旧措辞的依据(「官方包机制不存在」)已被 2026-10-15 的**实测**证伪;**形态差距 4 条 + 复活条件**已登记(纯形态、**零可观察行为差**),见 `docs/history/addendum-14-ai-agent-demotion.md` §7 W-01。⚠ 本单元格此前是一段 **2617 字符的编年史快照**(停在 2026-10-05 的「M6 已开工 / probe 164」),与同表门禁行的 175 打架 —— **同一页并存两个时间口径**。已改为当前态:进度按 [`wlwl-v0.11.3-build-plan.md`](../history/wlwl-v0.11.3-build-plan.md) §10 检查点表读,分批历史看各 addendum 原文,**详细数字不写在这一格**(写了就会第二次腐烂)|
+| 下一迭代 | 未立项。候选:**`ADR-0017` Step 3(真 state-machine 续跑)** —— **单开一个批次**,开工前须先过「续体保存的数据形态」裁决闸(与批次 B 同一道闸,且批次 B 是它的**前置**);⚠ 实测规模:`runtime.rs` **1726** 行(ADR 估 718 ⇒ **2.4 倍**)、`channel.rs` **482**、`yield_split.rs` **365**,而真正的求值器 `lib.rs` **24 184** 行**不在 ADR 的文件清单里** ⇒ ADR 的 5–7 人周估算覆盖不了真实面(见 `docs/history/wlwl-v0.11.3-build-plan.md` §9 台账 **D13-086**)。其余候选:批次 B `YIELD` 续体保存(**0 细化**,开细化前须先定三件事,见 `../history/20261001.md` §1 —— 其第 2 件与 M5 的 L0 同根「R0 原语补齐」,两份范围尚未对齐)、`std.rand` 的全局状态裁决(需先出 ADR,总纲 G3)、UCD 数据依赖成员合成一块做(需先定 Unicode 版本 G1 与「半张表怎么办」G2)、regex(RE2 式线性模拟,调研见 v0.11.3 计划附录 B)、R1 预编译快照(其价值取决于 M5 完成后 R1 成员还剩多少) |
+| 门禁 | `cargo fmt --check` 0 diff;`clippy -D warnings` 0;`cargo test --locked --all-targets` **0 failed**(**测试二进制数随目标增减,不写死** —— 重测:`cargo test --locked --all-targets` 输出里 `test result:` 的行数;⚠ 另有 11 个 bench 目标在 `--all-targets` 下跑在测试模式、不报结果行,两者别混);`cargo deny check` exit 0;`cargo doc --no-deps -D warnings` 0 error(**D11-015 之后已并入本地门禁**;注意 `cargo doc` 不接受 `-D`,须走 `$env:RUSTDOCFLAGS='-D warnings'`);`cargo check --locked -p wlwl-std --features real-ai` exit 0(S-P1-1 之后新增);probe **175** 用例 —— 175 是 `impl/tests/probe/cases/` 的**用例目录数**(2026-10-15 实测;v0.11.3 M6 新增 `M6_std_encode_kdf_bounds` / `..._argon2id`(KDF 参数越界)、`M6_std_encode_entropy_and_timing`(熵源 + 常数时间)、`M6_std_time_clocks`(`std.time` A1 片)),由单个 `probe_suite` 函数驱动并有 `probe_case_count_matches_inventory` 守卫,**不是** `#[test]` 函数数(`--test probe` 只跑 3 个函数);契约表(2026-10-20 **按各文件 `Case {` 条目重测**)`collection` 127 / `str_math` 156 / `format` 9 / `encode` 83 / `time` 35 / `regex` 43 / `rand` 24 / `fs` 28 / `process` 9 / `compress` 12 / **`net` 38** / **`result` 35** / **`test` 59** / **`text` 64**(原写 20,addendum-03 扩充后未更新)/ **`json` 38**(无 `CASES` 数组,是 38 个独立 `#[test]`)/ **`ai_agent` 18** / **`eval_dict_key` 16** / **`parser_syntax` 11**(无 `CASES` 数组,是 11 个独立 `#[test]`)/ **`spec_example` 2**(无 `CASES` 数组,是 2 个独立 `#[test]`)/ **`temp_scratch` 3**(无 `CASES` 数组,是 3 个独立 `#[test]`;D13-084 新增)/ `sanitize` 107 条(⚠️ `sanitize 107` 是**另一个口径** = 22 转义 + 85 净化/诊断,跨两份文件,`docs/history/addendum-13-sanitize-extend.md` 已标注);条数一律按 **`CASES` 数组里的 `Case` 条目**数,**不是** `#[test]` 函数数 —— `format_contract` 有 **2** 个 `#[test]` 却装 **9** 条用例,当年那行写 `format 39` 就是把两者、又和邻居 `encode 39` 混在一起抄出来的(见 `docs/history/wlwl-v0.11.3-build-plan.md` 的 D13-014);⚠ **重测时记得扣掉每个文件里那一次 `struct Case {` 定义**(否则每个文件恰好多 1);附录 A 由 `gen-appendix-a` 双向锁绿;附录 G 逐字节不变;基准存档 `benches/baseline.txt` 现有段:M1 / M2 / M3 / **L0** / **L0-A-2** / **L0-A-3a** / **L0-A-3b** / **KDF**(W-05)/ **regex**(W-04)/ **rand**(W-04,段九)/ **result**(W-05,段十)/ **accumulator**(L0-B 守卫,段十一)/ **stats**(W-07,段十二)/ **json**(W-06,段十三)/ **compress**(收尾补,段十四)(路径 `impl/crates/wlwl-eval/benches/`)。⚠ **「共 N 段」这个数没有单一来源,别去数标题** —— 只有 `段九` ~ `段十四` 用 `段N · ` 的标题格式,段一~段八那一批叫的是 `M1` / `M2` / `M3` / `L0` / `L0-A-2` / `L0-A-3a` / `L0-A-3b` / `KDF`(2026-10-15 实测确认) \|。**`std.compress` 的基准段已于 2026-10-15 收尾时补上**(段十四)—— `docs/history/addendum-07-compression.md` 的九处落点表本来没要求它(纯 R2 包装成员,量的是「表示方式」而非算法),但与 02 / 04 / 08 的体例不一致。⚠ 补的过程中发现**第一版写法是坏的**:逐轮深拷贝 `Value` 既主导了读数(占 18%)又是最大噪声源(跨轮摆 **2.3 倍**),改用 `iter_batched` 后降到多数 ±3% —— 推导见 `baseline.txt` 段十四 |
 | 已立项范围 | v0.11:**批次 A 标准库底座**(ADR-0021/0022/0023)**已收口**;批次 B `YIELD` 续体保存**已立项但未细化**;v0.11.1:`std.web` **已终止并回滚**;v0.11.2:**已收口**(M0–M6 + 复核 N-6 修复 D12-013),待发 tag;v0.11.3:**已立项**(输出安全 + 哈希,SQL / 加解密否决成文,time / regex 只出文档) |
 
 ## 挂账项
@@ -76,6 +93,7 @@
 | D11-022 | `StdCtx::warnings` 是无人排空的死汇,`W0052` 永不浮现。**凡依赖「推一条警告就能被看到」的设计都不成立** —— 走警告通道等于静默丢弃 |
 | D12-001 – D12-013 | v0.11.2 偏差登记(含 2 条**已知限制**:`NFC`/`NFD` 判不等(D12-004)、`CHUNK`/`WINDOW` 的平方级上限(D12-009);D12-013 为复核 N-6 的 `MIN_BY`/`MAX_BY` 空数组缺陷,**已修复**)。逐条状态与证据见 [`../history/20261002.md`](../history/20261002.md) §1 |
 
+
 ## 历史归档去哪找
 
 | 要找什么 | 去哪 |
@@ -84,4 +102,5 @@
 | 2026-09-15 ~ 09-22 日志 + 规范 v0.6–v0.10 / 构建计划 v0.7–v0.10 / 偏差登记 v0.7–v0.10 / 全部版本时代归档件精简 | [`../history/20260915-22.md`](../history/20260915-22.md) |
 | v0.11 / v0.11.1 全部产出(含 `std.web` 的失败记录与复活前置条件)+ 偏差台账 | [`../history/20261001.md`](../history/20261001.md) |
 | v0.11.2 构建计划(含 D12 台账)+ 三份审查/复核报告 | [`../history/20261002.md`](../history/20261002.md) |
-| 任一归档件的**完整原文** | git 历史(`git log --follow docs/plan/<原文件名>` 或 `git log --follow docs/history/<原文件名>`) |
+| **v0.11.3 的计划与 15 份 addendum 原文** | [`../history/`](../history/)(整份保留,`git log --follow` 追溯) |
+| 任一归档件的**完整原文** | git 历史(`git log --follow docs/history/<原文件名>`) |

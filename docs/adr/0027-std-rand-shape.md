@@ -5,7 +5,7 @@
 | **Status** | **Accepted**(2026-10-06,业主逐条采纳 —— A1–A7 全部采纳,另加**三处补强**、**三个开放问题**同时定案) |
 | **Date** | 2026-10-06 |
 | **Deciders** | Li(project lead) |
-| **Related** | ADR-0026 G3(显式 seed + 可注入熵源,解 D12-006)、`addendum-04` §3.3(W-02 熵源单向依赖)、`addendum-08-std-rand.md` §3、ADR-0021(层归属)、ADR-0023(稳定策略)、规范 §14.1(`std.rand`「本批不做」一条) |
+| **Related** | ADR-0026 G3(显式 seed + 可注入熵源,解 D12-006)、`addendum-04` §3.3(W-02 熵源单向依赖)、`docs/history/$1` §3、ADR-0021(层归属)、ADR-0023(稳定策略)、规范 §14.1(`std.rand`「本批不做」一条) |
 
 ## Context
 

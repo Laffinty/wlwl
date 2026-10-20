@@ -5,7 +5,7 @@
 | **Status** | **Accepted**(2026-10-09,业主采纳 §4 的 **A 引入 / 阻塞原语**)。⚠ **D1 是带条件冻结的** —— 见 §6:冻结前提是「`ADR-0017` Step 3 仍未落地」,前提一旦不成立**必须重新裁决 D1**。守卫测试 `impl/crates/wlwl-eval/tests/adr_conditional_guard.rs`(业主「采纳建议」时明确要求把它绑成机制而非散文) |
 | **Date** | 2026-10-09 |
 | **Deciders** | Li(project lead) |
-| **Related** | ADR-0016(单线程调度器边界)、**ADR-0017**(真挂起调度器,Accepted —— Step 3 未落地)、ADR-0022(零第三方依赖画像)、ADR-0023(稳定策略)、ADR-0024 / `addendum-01`(`SLEEP` 阻塞先例)、`addendum-12` §0.1(Step 3 的三条未落地证据)、`addendum-05-std-net.md` §0 / §3、规范 §14 候选命名空间 |
+| **Related** | ADR-0016(单线程调度器边界)、**ADR-0017**(真挂起调度器,Accepted —— Step 3 未落地)、ADR-0022(零第三方依赖画像)、ADR-0023(稳定策略)、ADR-0024 / `addendum-01`(`SLEEP` 阻塞先例)、`addendum-12` §0.1(Step 3 的三条未落地证据)、`docs/history/$1` §0 / §3、规范 §14 候选命名空间 |
 
 ## Context
 

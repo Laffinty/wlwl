@@ -5,7 +5,7 @@ WLWL 标准库的成员契约:21 个命名空间、214 个成员的名字、签�
 - **与语言规范的分工**:语言规范 [`docs/spec/wlwl-spec-v0.11.md`](../spec/wlwl-spec-v0.11.md) 定义语言本身(词法、语法、类型与值、错误模型、模块系统、面向对象、并发);本规范定义标准库**成员**的契约。语言规范 §10 只保留语言表面(全局内建)与命名空间的机制性条目,成员面一律以本规范为准。
 - **依赖声明**:本规范以语言规范 v0.11 的**值域**(§2.1)、**错误模型**(§8)、**模块机制**(§9)、**诊断码表**(§11)与**并发语义**(§17)为前提,不重复定义。两册冲突时以语言规范为准;唯一的例外登记在 §0.10。
 - **规范性用语**(必须 / 不得 / 应当 / 可以)沿用语言规范 §0.3。
-- **变更登记在哪**:本册是 **v0.11 同号发布**的成员契约,批次级变更(哪些成员变了、哪些是 breaking)**不在册内**—— 权威处是 [`CHANGELOG.md`](../../CHANGELOG.md)的 `[v0.11.3]` 段(其中「⛔ 本批的可见面变更」一张表是 breaking 申报);**逐条缺陷的推导与复现**在 [`wlwl-v0.11.3-review-2.md`](../plan/wlwl-v0.11.3-review-2.md)。⚠ 本册**不保留修订史/过程叙述**(那是草稿式行文),需要追溯用 `git history`。
+- **变更登记在哪**:本册是 **v0.11 同号发布**的成员契约,批次级变更(哪些成员变了、哪些是 breaking)**不在册内**—— 权威处是 [`CHANGELOG.md`](../../CHANGELOG.md)的 `[v0.11.3]` 段(其中「⛔ 本批的可见面变更」一张表是 breaking 申报);**逐条缺陷的推导与复现**在 [`docs/history/$1`](../history/wlwl-v0.11.3-review-2.md)。⚠ 本册**不保留修订史/过程叙述**(那是草稿式行文),需要追溯用 `git history`。
 
 ## 0 导言与总则
 
@@ -850,7 +850,7 @@ PRINT(TIMING_SAFE_EQ(stored, ARGON2ID("wrong horse battery staple", salt, 2, 194
 
 ### 11.7 设计依据
 
-编码族随 v0.11.2 M1 落地;摘要与 KDF 随 v0.11.3 M2 / M6 落地。KDF 的上下界取 OWASP 2025 最小配置;`ARGON2ID` 不收 `secret` / `assoc` 的实测证据见 `docs/plan/addendum-04-crypto-kdf-secrets.md` §3.4。KDF 的性能读数取自 `impl/crates/wlwl-eval/benches/baseline.txt` 的 KDF 段。
+编码族随 v0.11.2 M1 落地;摘要与 KDF 随 v0.11.3 M2 / M6 落地。KDF 的上下界取 OWASP 2025 最小配置;`ARGON2ID` 不收 `secret` / `assoc` 的实测证据见 `docs/history/addendum-04-crypto-kdf-secrets.md` §3.4。KDF 的性能读数取自 `impl/crates/wlwl-eval/benches/baseline.txt` 的 KDF 段。
 
 ## 12 `std.text` — Unicode 大小写与规范规范化
 
@@ -1193,7 +1193,7 @@ PRINT(IS_ERR(TEST_BUBBLE(FUN((), TIMEOUT(10, FUN((), SLEEP(100)))))));  // TRUE
 
 ### 15.8 设计依据
 
-本命名空间随 v0.11.3 M6 落地。范围与裁决见 [`ADR-0024`](../adr/0024-time-fake-clock-bubble.md) §6 与 `docs/plan/addendum-01-std-time.md` §3.7;`SLEEP` 的阻塞代价来自「中途挂起后原地续跑」只有 `YIELD()` 一条路这个**运行时能力缺口**。
+本命名空间随 v0.11.3 M6 落地。范围与裁决见 [`ADR-0024`](../adr/0024-time-fake-clock-bubble.md) §6 与 `docs/history/addendum-01-std-time.md` §3.7;`SLEEP` 的阻塞代价来自「中途挂起后原地续跑」只有 `YIELD()` 一条路这个**运行时能力缺口**。
 
 ## 16 `std.regex` — 线性时间正则
 
@@ -1262,7 +1262,7 @@ PRINT(RE_GROUP_COUNT(RE("(a)(b)")));          // 2
 
 ### 16.7 设计依据
 
-本命名空间随 v0.11.3 M6 落地,裁决过程见 `docs/plan/addendum-02-regex.md` §3.7。实现走 Thompson 构造 + **Pike VM**,零第三方依赖。
+本命名空间随 v0.11.3 M6 落地,裁决过程见 `docs/history/addendum-02-regex.md` §3.7。实现走 Thompson 构造 + **Pike VM**,零第三方依赖。
 
 ## 17 `std.rand` — 显式播种的随机数
 

@@ -31,7 +31,11 @@ re-run the same workflow.
   `phase_strict.py` —— **该脚本才是权威**」,而那个脚本**从未进过仓库**
   (`git log --all --diff-filter=A -- '*phase_strict*'` 零结果)⇒ 那句
   「权威」一直无处可核。本脚本把它补回来,并把口径写在 docstring 里。
-  用法:`python script/phase_strict.py [plan 目录]`(默认 = 仓内 `docs/plan`)。
+  用法:`python script/phase_strict.py [plan 目录 ...]`(默认 = 仓内 `docs/history`
+  + `docs/active`)。⚠ 2026-10-20 起方案文件**按收口状态分了两处**:已收口的
+  14 份 addendum 在 `docs/history/`,唯一未收口、仍在排队的 `addendum-12`
+  (`std.sync`)在 `docs/active/` ⇒ 权威口径**两处都要读**,少一处就会少算工作项;
+  `docs/plan/` 现在**只剩 README.md**(索引)。
   ⚠ 口径是**状态列里最左边的那个标记** —— 不是「第一个后面跟着粗体标题的
   标记」,后者在 `addendum-14` 的 W-07 那种「`✅` 开头、正文里另有一个
   `⚠ **…**`」的行上会取错,算出来的数与 README 对不上。
