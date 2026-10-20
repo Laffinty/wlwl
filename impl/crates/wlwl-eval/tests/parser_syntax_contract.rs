@@ -22,20 +22,15 @@
 //!    规范明写合法的形态一起拒掉(那不是修,是换一种不合规)。所以每条缺陷
 //!    都配一条**正例**,把「不许误伤」的边界钉死。
 
+mod common;
+
 use std::path::PathBuf;
 
 use wlwl_eval::Evaluator;
 
 /// 临时工作目录。本册的用例都不碰文件系统,建它只是为了不落在仓库里。
 fn scratch_dir() -> PathBuf {
-    let nanos = std::time::SystemTime::now()
-        .duration_since(std::time::UNIX_EPOCH)
-        .map(|d| d.as_nanos())
-        .unwrap_or(0);
-    let dir = std::env::temp_dir().join(format!("wlwl_syntax_contract_{nanos}"));
-    let _ = std::fs::remove_dir_all(&dir);
-    std::fs::create_dir_all(&dir).expect("scratch dir");
-    dir
+    common::scratch("wlwl_syntax_contract")
 }
 
 /// 解析 + 求值,返回可比较的文本。

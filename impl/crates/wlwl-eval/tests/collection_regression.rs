@@ -44,6 +44,8 @@
 //! `display()`。逐字比消息是有意的 —— 消息漂移必须在这里变红,由人决定改
 //! 实现还是改表。
 
+mod common;
+
 use std::path::PathBuf;
 use wlwl_eval::Evaluator;
 use wlwl_value::Value;
@@ -186,14 +188,7 @@ const CASES: &[Case] = &[
 ];
 
 fn scratch_dir() -> PathBuf {
-    let nanos = std::time::SystemTime::now()
-        .duration_since(std::time::UNIX_EPOCH)
-        .map(|d| d.as_nanos())
-        .unwrap_or(0);
-    let dir = std::env::temp_dir().join(format!("wlwl_regression_{nanos}"));
-    let _ = std::fs::remove_dir_all(&dir);
-    std::fs::create_dir_all(&dir).expect("scratch dir");
-    dir
+    common::scratch("wlwl_regression")
 }
 
 fn run(src: &str) -> Result<Value, String> {

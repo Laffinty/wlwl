@@ -35,6 +35,8 @@
 //! 是「unicode escape sequence」这种与真实原因无关的错)。⇒ 转义收进 `wl()`
 //! 一处,测试里只写**原始 JSON 文本**。
 
+mod common;
+
 use std::path::PathBuf;
 use wlwl_eval::Evaluator;
 
@@ -69,14 +71,7 @@ fn wl(json_text: &str) -> String {
 }
 
 fn scratch_dir() -> PathBuf {
-    let nanos = std::time::SystemTime::now()
-        .duration_since(std::time::UNIX_EPOCH)
-        .map(|d| d.as_nanos())
-        .unwrap_or(0);
-    let dir = std::env::temp_dir().join(format!("wlwl_json_{nanos}"));
-    let _ = std::fs::remove_dir_all(&dir);
-    std::fs::create_dir_all(&dir).expect("scratch dir");
-    dir
+    common::scratch("wlwl_json")
 }
 
 /// 跑一段源,回显示值 / `!CODE message`。

@@ -11,6 +11,8 @@
 //! - §13.4:「1. `value` 是当前线性 `THIS` → `E0032`(§15.3);**键为线性 `THIS`
 //!   同样 → `E0032`;」
 
+mod common;
+
 use std::path::PathBuf;
 use wlwl_eval::Evaluator;
 
@@ -46,14 +48,7 @@ fn diagnostic(src: &str) -> wlwl_error::WlwlDiagnostic {
 }
 
 fn scratch_dir() -> PathBuf {
-    let nanos = std::time::SystemTime::now()
-        .duration_since(std::time::UNIX_EPOCH)
-        .map(|d| d.as_nanos())
-        .unwrap_or(0);
-    let dir = std::env::temp_dir().join(format!("wlwl_dictkey_{nanos}"));
-    let _ = std::fs::remove_dir_all(&dir);
-    std::fs::create_dir_all(&dir).expect("scratch dir");
-    dir
+    common::scratch("wlwl_dictkey")
 }
 
 const CASES: &[Case] = &[

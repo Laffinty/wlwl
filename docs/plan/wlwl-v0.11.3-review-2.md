@@ -758,11 +758,27 @@ READ_BYTES 读它 → error[E0102]: ... READ_BYTES caps one read at 1048576 byte
 
 | 项 | 读数 |
 |---|---|
-| 六项本地门禁 | `fmt` **0** / `clippy --all-targets -D warnings` **0** / `doc -D warnings` **0** / `real-ai` **0** / `deny`(**advisories / bans / licenses / sources` 全 ok)** / `test --workspace --all-targets` **2321 passed / 0 failed**(63 条结果行;比上轮 +3 = §17.1 示例契约的 2 条 + `RETURN` 守卫的 1 条) |
+| 六项本地门禁 | `fmt` **0** / `clippy --all-targets -D warnings` **0** / `doc -D warnings` **0** / `real-ai` **0** / `deny`(**advisories / bans / licenses / sources` 全 ok)** / `test --workspace --all-targets` **2324 passed / 0 failed**(64 条结果行;比上轮 +3 = D13-084 新增的临时目录守卫 3 条) |
 | doc tests | **0 failed / 0 passed / 1 ignored**(`wlwl_eval` 那条是刻意 `ignore` 的) |
-| 契约套件 | `wlwl-eval` 下 `*_contract.rs` **20 份** / 合计 **224 passed / 0 failed** —— ⚠ 本报告上午写的是「17 份 / 206」,那是**当时的快照**;此后 `eval_dict_key` / `parser_syntax` / `spec_example` 三份陆续加入 ⇒ 份数与总数都变了。⚠ **这正是一类「记账滞后」**:数字写在文档里就会随仓库变旧,所以此处标的是**实测日** |
+| 契约套件 | `wlwl-eval` 下 `*_contract.rs` **21 份** / 合计 **227 passed / 0 failed** —— ⚠ 本报告上午写的是「17 份 / 206」,那是**当时的快照**;此后 `eval_dict_key` / `parser_syntax` / `spec_example` / `temp_scratch` 四份陆续加入 ⇒ 份数与总数都变了。⚠ **这正是一类「记账滞后」**:数字写在文档里就会随仓库变旧,所以此处标的是**实测日** |
 | 规范附录 A | 与实现**逐字节一致**(重跑 `gen-appendix-a` ⇒ **git 无差异**)—— 它管的是**标准库规范**的附录 A,**语言规范**附录 A 的文法块是手写的 |
 | skill 覆盖度 | **漏 0 / 214** |
 | skill 示例 | **20 / 20 全部退出 0** |
 | probe 用例 | `impl/tests/probe/cases/` **175** 个目录 |
-| 契约表条数 | 按 README 自己写的口径重测(**任意位置的 `Case {` 减去那一次 `struct Case {` 定义**):`collection` 127 / `str_math` 156 / `format` 9 / `encode` 83 / `time` 35 / `regex` 43 / `rand` 24 / `fs` 28 / `process` 9 / `compress` 12 / `net` 38 / `result` 35 / `test` **59** / `text` 64 / `json` 38(38 个独立 `#[test]`)/ **`ai_agent` 18** / **`eval_dict_key` 16** / **`parser_syntax` 11**(11 个独立 `#[test]`)/ **`spec_example` 2**(2 个独立 `#[test]`)/ `sanitize` 107(另一个口径,见 README)⚠ **README 那张表原先漏了后四份**,已补(D13-083) |
+| 契约表条数 | 按 README 自己写的口径重测(**任意位置的 `Case {` 减去那一次 `struct Case {` 定义**):`collection` 127 / `str_math` 156 / `format` 9 / `encode` 83 / `time` 35 / `regex` 43 / `rand` 24 / `fs` 28 / `process` 9 / `compress` 12 / `net` 38 / `result` 35 / `test` **59** / `text` 64 / `json` 38(38 个独立 `#[test]`)/ **`ai_agent` 18** / **`eval_dict_key` 16** / **`parser_syntax` 11**(11 个独立 `#[test]`)/ **`spec_example` 2**(2 个独立 `#[test]`)/ **`temp_scratch` 3**(3 个独立 `#[test]`,D13-084 新增)/ `sanitize` 107(另一个口径,见 README)⚠ **README 那张表原先漏了后四份**,已补(D13-083);`temp_scratch` 第五份同批补上(D13-084) |
+
+### 10.9 `D13-078` / `D13-084` —— macOS 的 flaky **已归因并修掉**(根因在测试基础设施,不在被测代码)
+
+| 项 | 结果 |
+|---|---|
+| 现象 | run 39394600227(sha `74336e0`)的 macOS job 红;注解 `::warning title=FAILED tests - pass 1::test copy_and_move_are_for_files ... FAILED` ⇒ **失败名坐实**(D13-077 的注解通道**首次生效**);pass 2 无失败 ⇒ flaky;windows / ubuntu 同轮**绿** |
+| ⚠ 一开始排错了方向 | 最初怀疑「临时目录名撞车」时,算的是**整个测试运行的时间跨度**(毫秒级)⇒ 撞名概率极低 ⇒ 几乎把自己否掉了。**错在时间窗**:真正相关的是 **libtest 头一波线程的启动间隔**(微秒级),不是整个 run 的跨度。改按「头一波」重算,结论翻转 |
+| 根因 | 临时目录名 `format!("wlwl_fs_io_{nanos}")` **只由时钟决定** ⇒ 名字是时钟的**纯函数**;而 `SystemTime::now()` 的**实际**分辨粒度是 macOS **1 微秒**(`clock_gettime(CLOCK_REALTIME)`;`clock_getres` 给出 `tv_nsec = 1000`)、Linux 纳秒、Windows 约 100ns(实测 1000 次采样只有 355 个不同值、645 次相邻重复)。契约测试**并行**跑 ⇒ 头一波几个线程的取名落在**几微秒**内 ⇒ **撞名** |
+| 平台签名 | 实测同刻取名(3 线程 × 300 轮):macOS 粒度 **53 轮(17.7%)** 撞、Linux 粒度 **0 轮**、Windows **2 轮(0.7%)** ⇒ **只有 macOS 常撞** ⇒ 与「macOS 红 / ubuntu / windows 绿」完全吻合。⚠ 这同时**推翻**了此前登记的头号候选 `process_contract.rs` 三条墙钟断言 —— 它们在复发那一轮是**绿的** |
+| 失败形态 | 撞名 ⇒ 两个用例**共用**一个目录 ⇒ 后起 scratch 的 `remove_dir_all` 把**正在跑**的用例的目录整个删掉 ⇒ 那个用例下一步 `COPY`/`MOVE` 找不到源文件 ⇒ 随机红(实测复刻:同名 scratch 起来后,前一个用例刚写的 `a.bin` **消失**)。⚠ 被红的那个用例正是全仓**唯一**在契约层跑 `COPY`/`MOVE` 的 ⇒ 它对文件系统最敏感,与症状吻合 |
+| 修法 | ① 新建 `impl/crates/wlwl-eval/tests/common/mod.rs`:**唯一命名 = 进程 id + 进程内原子计数 + 纳秒**(不依赖时钟分辨率);② `wlwl-eval` 侧 **22 处** nanos 取名**全部**迁到它(21 个 helper + 1 处内联心跳文件)⇒ 同一前缀下并发取名不再可能撞 |
+| 守卫 | 新增 `impl/crates/wlwl-eval/tests/temp_scratch_contract.rs`(3 条):① **时钟冻住也必须取到不同名**(根因的直译 —— `unique_name(prefix, nanos)` 把时钟**当参数**传进去 ⇒ 这条断言在**任何平台都是确定的**;⚠ 若写成「并行跑 N 次看会不会撞」,它在粗时钟上偶发、在细时钟上恒绿 ⇒ **守卫自己就成了另一个 flaky**)② 64 线程并发取名两两不同 ③ 名字带进程 id 字段(跨进程隔离) |
+| 负向验证 | 把 `unique_name` 退回「名字 = 时钟的纯函数」(`format!("{prefix}_{nanos}")`)⇒ **3/3 转红**(① 冻时钟那条 ② 进程 id 那条 ③ 并发那条**直接在 helper 里 panic** —— `create_dir_all` 撞上另一线程的 `remove_dir_all`,即**缺陷本身被直接观测到**,不只是推断),还原后 **3/3 绿** |
+| 同族审计 | CLI 侧 8 处已核**安全** —— `main.rs` 的 12 个前缀两两不同且带 pid;其余 7 处都**按名字分开**且不删别人的目录。⚠ `lexer_macro_coverage.rs` 的注释**明写**同一个坑(「临时目录**必须按名字分开**……共用一个目录时一边刚写下的 `main.wll` 会被另一边读走」)⇒ **CLI 侧当年修过,`wlwl-eval` 侧这 22 处是残留副本** |
+| ⚠ 边界 | **一个断言都没改** ⇒ 不属「改测试语义」,无须业主拍板;**不进 CHANGELOG**(同族的 D13-077 ~ D13-080 都只进台账) |
+| 状态 | ✅ **已落地** |

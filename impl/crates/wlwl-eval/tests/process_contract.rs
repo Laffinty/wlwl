@@ -35,6 +35,8 @@
 //! `{code, stdout, stderr}` 这个字典」,但**钉不住也不该假装钉得住**「它阻塞」
 //! —— 那是文档条款(`the_blocking_cost_is_documented` 那条测试守它)。
 
+mod common;
+
 use std::path::PathBuf;
 use wlwl_eval::Evaluator;
 
@@ -129,14 +131,7 @@ const CASES: &[Case] = &[
 ];
 
 fn scratch_dir() -> PathBuf {
-    let nanos = std::time::SystemTime::now()
-        .duration_since(std::time::UNIX_EPOCH)
-        .map(|d| d.as_nanos())
-        .unwrap_or(0);
-    let dir = std::env::temp_dir().join(format!("wlwl_proc_contract_{nanos}"));
-    let _ = std::fs::remove_dir_all(&dir);
-    std::fs::create_dir_all(&dir).expect("scratch dir");
-    dir
+    common::scratch("wlwl_proc_contract")
 }
 
 fn actual(src: &str) -> String {
@@ -395,11 +390,10 @@ IS_ERR(PROCESS_RUN({argv}, ["timeout": 300]))"#
 #[cfg(unix)]
 #[test]
 fn a_timeout_leaves_no_living_grandchild() {
-    let nanos = std::time::SystemTime::now()
-        .duration_since(std::time::UNIX_EPOCH)
-        .map(|d| d.as_nanos())
-        .unwrap_or(0);
-    let beat = std::env::temp_dir().join(format!("wlwl_proc_beat_{nanos}"));
+    // ⚠ 名字必须唯一(D13-078):旧写法只拿时钟当唯一性来源,而时钟的分辨粒度
+    // 在 macOS 上只有 1 微秒 ⇒ 并行取名会撞 ⇒ 撞了就互相覆盖心跳文件。
+    // ⇒ 走共享取名(进程 id + 原子计数 + 纳秒),文件放在那个唯一目录里。
+    let beat = common::scratch("wlwl_proc_beat").join("beat");
     let _ = std::fs::remove_file(&beat);
     let path = beat.to_string_lossy().into_owned();
     // 路径被塞进 shell 脚本的**单引号**里(wlwl 字符串里 `'` 是普通字符,只有

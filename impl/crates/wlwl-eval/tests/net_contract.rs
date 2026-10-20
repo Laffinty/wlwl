@@ -18,6 +18,8 @@
 //!    两者**不等价** —— 见 `src/net.rs` 的 `resolve`。
 //! 3. **`..` 不能改 authority**。第 24/25 条(`../../../g`)回退到根后**不再往上删**。
 
+mod common;
+
 use std::path::PathBuf;
 use wlwl_eval::Evaluator;
 
@@ -298,14 +300,7 @@ const CASES: &[Case] = &[
 ];
 
 fn scratch_dir() -> PathBuf {
-    let nanos = std::time::SystemTime::now()
-        .duration_since(std::time::UNIX_EPOCH)
-        .map(|d| d.as_nanos())
-        .unwrap_or(0);
-    let dir = std::env::temp_dir().join(format!("wlwl_net_{nanos}"));
-    let _ = std::fs::remove_dir_all(&dir);
-    std::fs::create_dir_all(&dir).expect("scratch dir");
-    dir
+    common::scratch("wlwl_net")
 }
 
 fn actual(src: &str) -> String {

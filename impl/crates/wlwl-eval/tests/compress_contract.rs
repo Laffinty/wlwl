@@ -25,6 +25,8 @@
 //! 形状 —— 用被测对象去造测试数据会让测试自己先被打挂。所以「上限是规范性
 //! 条款」在语言层仍然只断言**文档里写着** `MAX_DECOMPRESSED`。
 
+mod common;
+
 use std::path::PathBuf;
 use wlwl_eval::Evaluator;
 
@@ -187,14 +189,7 @@ const CASES: &[Case] = &[
 ];
 
 fn scratch_dir() -> PathBuf {
-    let nanos = std::time::SystemTime::now()
-        .duration_since(std::time::UNIX_EPOCH)
-        .map(|d| d.as_nanos())
-        .unwrap_or(0);
-    let dir = std::env::temp_dir().join(format!("wlwl_compress_{nanos}"));
-    let _ = std::fs::remove_dir_all(&dir);
-    std::fs::create_dir_all(&dir).expect("scratch dir");
-    dir
+    common::scratch("wlwl_compress")
 }
 
 fn actual(src: &str) -> String {

@@ -13,6 +13,8 @@
 //! 同步测试两侧都读实现,`stdlib_appendix_a_sync` 也只对账镜像与实现 —
 //! 规范表格被改坏而实现没动时,那些测试照样全绿。
 
+mod common;
+
 use std::path::{Path, PathBuf};
 use wlwl_eval::Evaluator;
 
@@ -888,14 +890,7 @@ const MATH_CASES: &[Case] = &[
 ];
 
 fn scratch_dir() -> PathBuf {
-    let nanos = std::time::SystemTime::now()
-        .duration_since(std::time::UNIX_EPOCH)
-        .map(|d| d.as_nanos())
-        .unwrap_or(0);
-    let dir = std::env::temp_dir().join(format!("wlwl_strmath_{nanos}"));
-    let _ = std::fs::remove_dir_all(&dir);
-    std::fs::create_dir_all(&dir).expect("scratch dir");
-    dir
+    common::scratch("wlwl_strmath")
 }
 
 fn actual(src: &str) -> String {

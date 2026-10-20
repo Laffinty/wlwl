@@ -25,6 +25,8 @@
 //! 慢,那是「值传递 + 不可变状态 = 永不前进」这条语言事实的直接后果。
 //! `two_draws_advance_the_state` 是它的守卫。
 
+mod common;
+
 use std::path::PathBuf;
 use wlwl_eval::Evaluator;
 
@@ -326,14 +328,7 @@ const CASES: &[Case] = &[
 ];
 
 fn scratch_dir() -> PathBuf {
-    let nanos = std::time::SystemTime::now()
-        .duration_since(std::time::UNIX_EPOCH)
-        .map(|d| d.as_nanos())
-        .unwrap_or(0);
-    let dir = std::env::temp_dir().join(format!("wlwl_rand_{nanos}"));
-    let _ = std::fs::remove_dir_all(&dir);
-    std::fs::create_dir_all(&dir).expect("scratch dir");
-    dir
+    common::scratch("wlwl_rand")
 }
 
 fn actual(src: &str) -> String {

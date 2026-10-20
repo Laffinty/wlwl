@@ -18,6 +18,8 @@
 //!
 //! 依赖真实文件系统状态(固定路径、残留文件)会让契约在 CI 上偶发红。
 
+mod common;
+
 use std::path::PathBuf;
 use wlwl_eval::Evaluator;
 
@@ -273,14 +275,7 @@ const CASES: &[Case] = &[
 ];
 
 fn scratch_dir() -> PathBuf {
-    let nanos = std::time::SystemTime::now()
-        .duration_since(std::time::UNIX_EPOCH)
-        .map(|d| d.as_nanos())
-        .unwrap_or(0);
-    let dir = std::env::temp_dir().join(format!("wlwl_fs_contract_{nanos}"));
-    let _ = std::fs::remove_dir_all(&dir);
-    std::fs::create_dir_all(&dir).expect("scratch dir");
-    dir
+    common::scratch("wlwl_fs_contract")
 }
 
 fn actual(src: &str) -> String {
@@ -330,14 +325,7 @@ fn fs_and_env_contract() {
 // 「同一份契约表同时冻结纯函数值和 IO 副作用」,失败时看不出是哪一类坏了。
 
 fn io_scratch() -> PathBuf {
-    let nanos = std::time::SystemTime::now()
-        .duration_since(std::time::UNIX_EPOCH)
-        .map(|d| d.as_nanos())
-        .unwrap_or(0);
-    let dir = std::env::temp_dir().join(format!("wlwl_fs_io_{nanos}"));
-    let _ = std::fs::remove_dir_all(&dir);
-    std::fs::create_dir_all(&dir).expect("scratch dir");
-    dir
+    common::scratch("wlwl_fs_io")
 }
 
 fn run_with_dir(src: &str, dir: &std::path::Path) -> String {

@@ -21,6 +21,8 @@
 //! 口径写在 `docs/stdlib/wlwl-stdlib-spec-v0.11.md` §4.1,`the_divergence_is_documented`
 //! 盯着那段文字还在不在 —— 免得代码锁住了、口径却被人删了。
 
+mod common;
+
 use std::path::PathBuf;
 use wlwl_eval::Evaluator;
 
@@ -91,14 +93,7 @@ const CASES: &[Case] = &[
 ];
 
 fn scratch_dir() -> PathBuf {
-    let nanos = std::time::SystemTime::now()
-        .duration_since(std::time::UNIX_EPOCH)
-        .map(|d| d.as_nanos())
-        .unwrap_or(0);
-    let dir = std::env::temp_dir().join(format!("wlwl_format_{nanos}"));
-    let _ = std::fs::remove_dir_all(&dir);
-    std::fs::create_dir_all(&dir).expect("scratch dir");
-    dir
+    common::scratch("wlwl_format")
 }
 
 fn actual(src: &str) -> String {

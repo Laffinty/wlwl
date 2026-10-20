@@ -7,17 +7,12 @@
 //! 判据哲学:**宁可 miss 多,不可误判**。miss 的后果只是性能没提升;误判的后果是
 //! `Cell` 逃出循环、共享语义与现在不同。
 
+mod common;
+
 use wlwl_eval::Evaluator;
 
 fn scratch_dir() -> std::path::PathBuf {
-    let nanos = std::time::SystemTime::now()
-        .duration_since(std::time::UNIX_EPOCH)
-        .map(|d| d.as_nanos())
-        .unwrap_or(0);
-    let dir = std::env::temp_dir().join(format!("wlwl_acc_{nanos}"));
-    let _ = std::fs::remove_dir_all(&dir);
-    std::fs::create_dir_all(&dir).expect("scratch dir");
-    dir
+    common::scratch("wlwl_acc")
 }
 
 /// 跑程序,返回 `(末条语句的值, 识别计数器)`。

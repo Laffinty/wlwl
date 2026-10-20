@@ -14,6 +14,8 @@
 //! ASCII(§12 明写「两个并存,不替换」)。少了这条,下一个人看到
 //! `UPPER` 的缺陷就可能直接改全局内建 —— 那是 breaking。
 
+mod common;
+
 use std::path::PathBuf;
 use wlwl_eval::Evaluator;
 
@@ -367,14 +369,7 @@ const CASES: &[Case] = &[
 ];
 
 fn scratch_dir() -> PathBuf {
-    let nanos = std::time::SystemTime::now()
-        .duration_since(std::time::UNIX_EPOCH)
-        .map(|d| d.as_nanos())
-        .unwrap_or(0);
-    let dir = std::env::temp_dir().join(format!("wlwl_text_{nanos}"));
-    let _ = std::fs::remove_dir_all(&dir);
-    std::fs::create_dir_all(&dir).expect("scratch dir");
-    dir
+    common::scratch("wlwl_text")
 }
 
 fn actual(src: &str) -> String {

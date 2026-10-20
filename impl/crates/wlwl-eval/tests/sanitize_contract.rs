@@ -22,6 +22,8 @@
 //! SQL 转义的**否决记录**(规范 §13.3)也被本文件钉住:删掉那段规范的
 //! 尝试会在这里变红 —— 「不做」与「做」同权,都是契约。
 
+mod common;
+
 use std::path::{Path, PathBuf};
 use wlwl_eval::Evaluator;
 use wlwl_value::Value;
@@ -984,14 +986,7 @@ fn html_sanitize_url_normalizes_only_what_the_judgment_needs() {
 }
 
 fn scratch_dir() -> PathBuf {
-    let nanos = std::time::SystemTime::now()
-        .duration_since(std::time::UNIX_EPOCH)
-        .map(|d| d.as_nanos())
-        .unwrap_or(0);
-    let dir = std::env::temp_dir().join(format!("wlwl_sanitize_{nanos}"));
-    let _ = std::fs::remove_dir_all(&dir);
-    std::fs::create_dir_all(&dir).expect("scratch dir");
-    dir
+    common::scratch("wlwl_sanitize")
 }
 
 // ══════════════════════════════════════════════════════════════

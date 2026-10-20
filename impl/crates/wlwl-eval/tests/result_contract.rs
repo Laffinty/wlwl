@@ -21,6 +21,8 @@
 //! 反过来,这三条合成「组合子**接不到** `ERR` ⇒ **不可能**成为 §8.2 旁路」
 //! —— `addendum-11` §6 的头号风险不是被绕开,是被证明无法发生。
 
+mod common;
+
 use std::path::{Path, PathBuf};
 use wlwl_eval::Evaluator;
 
@@ -240,14 +242,7 @@ const RESULT_CASES: &[Case] = &[
 ];
 
 fn scratch_dir() -> PathBuf {
-    let nanos = std::time::SystemTime::now()
-        .duration_since(std::time::UNIX_EPOCH)
-        .map(|d| d.as_nanos())
-        .unwrap_or(0);
-    let dir = std::env::temp_dir().join(format!("wlwl_result_{nanos}"));
-    let _ = std::fs::remove_dir_all(&dir);
-    std::fs::create_dir_all(&dir).expect("scratch dir");
-    dir
+    common::scratch("wlwl_result")
 }
 
 fn actual(src: &str) -> String {

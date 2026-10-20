@@ -13,6 +13,8 @@
 //! 「应然」侧(规范 §11 表格)与实现不同源是这套锁的全部意义:镜像生成器
 //! 与同步测试两侧都读实现,规范表格被改坏而实现没动时它们照样全绿。
 
+mod common;
+
 use std::path::PathBuf;
 use wlwl_eval::Evaluator;
 
@@ -757,14 +759,7 @@ const CASES: &[Case] = &[
 const _UNUSED: &str = IMP;
 
 fn scratch_dir() -> PathBuf {
-    let nanos = std::time::SystemTime::now()
-        .duration_since(std::time::UNIX_EPOCH)
-        .map(|d| d.as_nanos())
-        .unwrap_or(0);
-    let dir = std::env::temp_dir().join(format!("wlwl_encode_{nanos}"));
-    let _ = std::fs::remove_dir_all(&dir);
-    std::fs::create_dir_all(&dir).expect("scratch dir");
-    dir
+    common::scratch("wlwl_encode")
 }
 
 fn actual(src: &str) -> String {
