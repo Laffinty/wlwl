@@ -5,7 +5,7 @@
 | **Status** | Accepted(2026-10-01) |
 | **Date** | 2026-10-01 |
 | **Deciders** | Li (project lead) |
-| **Related** | ADR-0021(层归属变更流程)、Go 1 Compatibility Promise(外部先例)、spec v0.11 §11(诊断码表)、`docs/stdlib/wlwl-stdlib-spec-v0.11.md` §0.4 |
+| **Related** | ADR-0021(层归属变更流程)、Go 1 Compatibility Promise(外部先例)、spec v0.11 §11(诊断码表)、`docs/stdlib/wlwl-stdlib-spec-v0.11.md` §0.8 |
 
 ## Context and Problem Statement
 
