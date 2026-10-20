@@ -753,6 +753,57 @@ fn read_bytes_refuses_a_file_over_the_cap_without_touching_it() {
     let _ = std::fs::remove_dir_all(&dir);
 }
 
+/// [D13-051] **`MOVE` 的链接语义随「源与目标是否同一设备」而变**这件事,
+/// **必须写在规范里** —— 它是**实测**结论(同设备 `rename` 保留链接 /
+/// 跨设备回退按内容展开),而此前**任何一处规范文本都没写**它 ⇒ 读规范的人
+/// 会以为「链接总是被展开」。⚠ 写下来之后,「换个设备行为就变」就从
+/// 「环境事实」变成「**成文的契约**」—— 契约可以复核,环境事实只能撞见。
+///
+/// ⚠ 范围收在 **§2 内**:散文里出现「以 `| ` 开头的行」会污染成员表提取器。
+#[test]
+fn the_move_link_semantics_are_written_down() {
+    let text = std::fs::read_to_string(spec_path()).expect("stdlib spec readable");
+    let start = text.find("## 2 `std.fs`").expect("§2 header exists");
+    let end = text[start..]
+        .find("\n## ")
+        .map(|i| start + i)
+        .expect("a following top-level heading exists");
+    let body = &text[start..end];
+    for needle in ["同设备", "跨设备", "按内容展开", "D13-051"] {
+        assert!(
+            body.contains(needle),
+            "stdlib spec §2 lost `{needle}` — the MOVE link semantics must be \
+             written down, not left as an environment-dependent artefact"
+        );
+    }
+}
+
+/// [D13-052] `WRITE_BYTES` 的上限必须写在规范里 —— 旧版写着「**本成员尚无
+/// 上限**,与 `READ_BYTES` 不对称」,而实现**已经有**上限 ⇒ 规范与实现对不上,
+/// 下一个人会照旧文案以为没有上限。
+#[test]
+fn the_write_bytes_cap_is_written_down() {
+    let text = std::fs::read_to_string(spec_path()).expect("stdlib spec readable");
+    let start = text.find("## 2 `std.fs`").expect("§2 header exists");
+    let end = text[start..]
+        .find("\n## ")
+        .map(|i| start + i)
+        .expect("a following top-level heading exists");
+    let body = &text[start..end];
+    for needle in ["MAX_WRITE_BYTES", "64 MiB", "原封不动"] {
+        assert!(
+            body.contains(needle),
+            "stdlib spec §2 lost `{needle}` — the WRITE_BYTES cap must be \
+             written down, not left as an implementation artefact"
+        );
+    }
+    assert!(
+        !body.contains("本成员尚无上限"),
+        "stdlib spec §2 still says WRITE_BYTES has no cap — the implementation \
+         does have one, and the spec must not contradict it"
+    );
+}
+
 /// 规范 §2 的成员表 ↔ `SPEC.functions`。
 #[test]
 fn fs_member_set_matches_the_spec_table() {

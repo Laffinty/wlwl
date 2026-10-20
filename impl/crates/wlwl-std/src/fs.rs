@@ -880,7 +880,37 @@ pub fn read_bytes(host: &mut dyn StdHost, args: Vec<Value>) -> Result<Outcome, W
 ///
 /// 元素**逐个校验** `0..=255`:静默截断会让「同一个文件」有两种解释,而字节 IO
 /// 最不能容忍的就是这种二义性。
+///
+/// ⚠ **一次写入的字节数组上限** —— 与 `std.compress` 的 `MAX_DECOMPRESSED`
+/// **同值同源**:它是「语言值里一个字节数组能有多大」的**唯一**口径。
+/// ⚠ **不另立第三个数字** —— 照 `D13-021` 的做法(「口径直接复用,不另立数字」):
+/// 另立会让同一份输入在三个成员里得到**三种接受集**,而那种分叉没人说得清
+/// 是哪一处错了。
+/// ⚠ **为什么与 `READ_BYTES` 的 1 MiB 不同档**:那个是**读**的**策略**上限
+/// (读进来要**物化成语言值数组**,超线性证据在那边);这个是**写**的**规模**上限
+/// —— 写出去的是字节流、**不物化** ⇒ 取与解压护栏同档。
+///
+/// ⚠⚠ **写得出 ≠ 读得回**:`READ_BYTES` 一次只读 1 MiB,所以**大于 1 MiB 的文件
+/// 是 `WRITE_BYTES` 写得出来、`READ_BYTES` 读不回来的**。这不是缺陷,是两个成员的
+/// 档位不同;**真正的大载荷通路**是「让它待在文件里」+ 压缩 / 拷贝走字节流
+/// (`std.compress`),绕语言值搬一趟会重新踩上解释器侧数组构建的超线性证据。
+/// 流式写 / 分段读成员**本册不做**,见 §2.3 的说明。
+pub const MAX_WRITE_BYTES: usize = crate::compress::MAX_DECOMPRESSED;
+
 pub fn write_bytes(host: &mut dyn StdHost, args: Vec<Value>) -> Result<Outcome, WlwlError> {
+    write_bytes_with_cap(host, args, MAX_WRITE_BYTES)
+}
+
+/// 实现体;`cap` 只为**可测**而参数化 —— 真实路径传 [`MAX_WRITE_BYTES`]。
+///
+/// ⚠ **上限必须在落盘之前判**:`std::fs::write` 会**截断**目标文件,
+/// 判晚了就已经把原文件截掉了 ⇒ 「超限」必须表现为「原封不动」,
+/// 而不是「被清空」。
+fn write_bytes_with_cap(
+    host: &mut dyn StdHost,
+    args: Vec<Value>,
+    cap: usize,
+) -> Result<Outcome, WlwlError> {
     const NAME: &str = "WRITE_BYTES";
     if args.len() != 2 {
         return Err(fs_arity(host, NAME, args.len(), 2));
@@ -889,6 +919,17 @@ pub fn write_bytes(host: &mut dyn StdHost, args: Vec<Value>) -> Result<Outcome, 
     let Value::Array(items) = &args[1] else {
         return Err(fs_type(host, NAME, "a byte array of integers", &args[1]));
     };
+    // ⚠ **先判长度、再逐元素校验**:超限的数组**不该**被逐元素走一遍
+    // (那是 O(n) 的无用功),更不该走到落盘那一步。
+    if items.len() > cap {
+        return ok(fs_err(
+            NAME,
+            format!(
+                "array is {} bytes — WRITE_BYTES caps one write at {cap} bytes",
+                items.len()
+            ),
+        ));
+    }
     let mut bytes = Vec::with_capacity(items.len());
     for it in items {
         let Value::Integer(b) = it else {
@@ -980,6 +1021,73 @@ mod tests {
         assert_eq!(v, StdValue::String("hello\nworld".into()));
 
         let _ = std::fs::remove_file(&path);
+    }
+
+    /// [D13-052] `WRITE_BYTES` 的上限 —— **判定表**逐档覆盖。
+    ///
+    /// ⚠ **为什么用 `_with_cap` 而不是真的造 64 MiB 的数组**:上限是 64 MiB
+    /// ⇒ 物化那个数组要 ~1 GiB 的语言值,测试机上不现实。⇒ **上限值本身**
+    /// 由 `write_bytes_cap_is_the_shared_byte_array_limit` 钉住,**判定逻辑**
+    /// 由这里用一个小 cap 覆盖 —— 两者合起来覆盖全部路径,且**没有一条路径
+    /// 只在测试里存在**。
+    #[test]
+    fn write_bytes_refuses_an_array_over_the_cap() {
+        let mut host = NullHost;
+        let path = tmpfile(".bin");
+        let p_str = path.to_string_lossy().into_owned();
+        // ⚠ 先放一个**已存在**的文件 —— 超限的写**必须不碰它**
+        std::fs::write(&path, b"ORIGINAL").unwrap();
+
+        let over = write_bytes_with_cap(
+            &mut host,
+            vec![
+                Value::String(p_str.clone()),
+                Value::Array(vec![Value::Integer(1); 5]),
+            ],
+            4,
+        )
+        .unwrap();
+        // 超限 ⇒ 返 **ERR 值**(不是 Rust Err):与同族成员一致
+        assert!(
+            matches!(over.value, Value::Err(_)),
+            "over-cap write must return an ERR value"
+        );
+        // ⚠⚠ **原文件必须原封不动** —— `std::fs::write` 会**截断**目标文件,
+        // 判晚了就已经把文件清空了。这条是这个上限真正的风险点。
+        assert_eq!(std::fs::read(&path).unwrap(), b"ORIGINAL");
+
+        let _ = std::fs::remove_file(&path);
+    }
+
+    /// 边界:数组长度**正好等于**上限时**必须放行**(判据是 `>`,不是 `>=`)。
+    #[test]
+    fn write_bytes_accepts_an_array_exactly_at_the_cap() {
+        let mut host = NullHost;
+        let path = tmpfile(".bin");
+        let p_str = path.to_string_lossy().into_owned();
+
+        let v = write_bytes_with_cap(
+            &mut host,
+            vec![
+                Value::String(p_str.clone()),
+                Value::Array(vec![Value::Integer(7); 4]),
+            ],
+            4,
+        )
+        .unwrap();
+        assert_eq!(v.value, Value::Null);
+        assert_eq!(std::fs::read(&path).unwrap(), vec![7u8; 4]);
+
+        let _ = std::fs::remove_file(&path);
+    }
+
+    /// ⚠ **上限不得另立数字** —— 它必须与 `std.compress` 的 `MAX_DECOMPRESSED`
+    /// **同值同源**。另立会让同一份输入在三个成员里得到三种接受集,
+    /// 而那种分叉没人说得清是哪一处错了。
+    #[test]
+    fn write_bytes_cap_is_the_shared_byte_array_limit() {
+        assert_eq!(MAX_WRITE_BYTES, crate::compress::MAX_DECOMPRESSED);
+        assert_eq!(MAX_WRITE_BYTES, 64 * 1024 * 1024);
     }
 
     #[test]
@@ -1246,6 +1354,71 @@ mod tests {
             String::from_utf8_lossy(&out.stdout),
             String::from_utf8_lossy(&out.stderr)
         );
+    }
+
+    /// 「这个路径是不是链接」—— **跨平台**。
+    ///
+    /// ⚠ Windows 上 `FileType::is_symlink()` 对**目录联接(junction)**返 **false**
+    /// (Rust 只看 `FILE_ATTRIBUTE_SYMLINK`,而 junction 是 reparse point)⇒
+    /// 必须自己看 `FILE_ATTRIBUTE_REPARSE_POINT`。
+    #[cfg(unix)]
+    fn is_link(p: &std::path::Path) -> bool {
+        std::fs::symlink_metadata(p)
+            .map(|m| m.file_type().is_symlink())
+            .unwrap_or(false)
+    }
+
+    #[cfg(windows)]
+    fn is_link(p: &std::path::Path) -> bool {
+        use std::os::windows::fs::MetadataExt;
+        const FILE_ATTRIBUTE_REPARSE_POINT: u32 = 0x400;
+        std::fs::symlink_metadata(p)
+            .map(|m| m.file_attributes() & FILE_ATTRIBUTE_REPARSE_POINT != 0)
+            .unwrap_or(false)
+    }
+
+    /// [D13-051] **同设备** `MOVE` 必须**保留链接**(不展开成实体目录)。
+    ///
+    /// ⚠ **跨设备那半边做不成 CI 契约**:`rename` 在同设备必成功 ⇒ 跨设备回退
+    /// 在**单卷环境不可达**(要第二个卷)。⇒ 本条钉住**可达**的那半边;跨设备
+    /// 那半边由规范 §2.3 的明文 + 本机 D: → C: 实测承担。
+    ///
+    /// ⚠ 断言的是「**链接还在**」而不是「目录在」—— 展开成实体目录**也**满足
+    /// 后者(这正是 `D13-065` 犯过的错:只钉「没报错」照不出「被吃掉」那个方向)。
+    #[cfg(any(unix, windows))]
+    #[test]
+    fn move_within_one_device_preserves_a_link() {
+        let dir = tmpfile("");
+        std::fs::create_dir_all(dir.join("real")).unwrap();
+        std::fs::write(dir.join("real/inside.txt"), b"x").unwrap();
+        alias_dir(&dir.join("real"), &dir.join("link"));
+        let dst = tmpfile("_link_dst");
+
+        let mut host = NullHost;
+        let out = move_path(
+            &mut host,
+            vec![
+                Value::String(dir.join("link").to_string_lossy().into_owned()),
+                Value::String(dst.to_string_lossy().into_owned()),
+            ],
+        )
+        .unwrap();
+        assert!(
+            matches!(out.value, Value::Null),
+            "MOVE must succeed, got {:?}",
+            out.value
+        );
+        assert!(
+            is_link(&dst),
+            "same-device MOVE must preserve the link, not expand it into a real directory"
+        );
+        assert!(
+            dst.join("inside.txt").exists(),
+            "the preserved link must still resolve to its target"
+        );
+
+        let _ = std::fs::remove_dir_all(&dir);
+        let _ = std::fs::remove_dir_all(&dst);
     }
 
     // ── [D13-046] `copy_tree` 的防环守卫 ───────────────────────────────
