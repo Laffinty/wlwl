@@ -72,11 +72,34 @@ jobs:
               ;;
           esac
 
-          if [ "v$CARGO" != "$TAG" ]; then
-            echo "::error::tag $TAG does not match impl/Cargo.toml version $CARGO — the binary would report 'wlwl $CARGO' while being published as $TAG. Set [workspace.package] version = \"${TAG#v}\" in impl/Cargo.toml, commit, and re-tag."
+          # ⚠ [v0.11.3_rc1] **预发布 tag 比的是「基版本」。**
+          #
+          # `v0.11.3_rc1` 发布的二进制报的是 `wlwl 0.11.3` —— RC 与正式版是
+          # **同一份代码**,基版本相同即合法;基版本不同仍然是错版 ⇒ 仍然红。
+          # ⚠ 为什么以前没这条:守卫是 v0.10.4 才加的,而那之前**没有任何 RC
+          #   tag 存在过**(远端 tag 全是正式版)⇒ 守卫一直没遇到过 RC,而
+          #   `v0.11.3_rc1` 会命中 `v[0-9]*.[0-9]*.[0-9]*` ⇒ 守卫照跑 ⇒ 逐字
+          #   比较必然不等 ⇒ **任何 RC tag 都过不了这道守卫**(实测)。
+          # ⚠ 为什么不能改成「Cargo 版本 = tag 去 v」:下划线**不是合法 semver**
+          #   (实测 `cargo metadata` 报 `unexpected character '_' after patch
+          #   version number`)⇒ 把 `[workspace.package] version` 写成
+          #   `0.11.3_rc1` 会让**全仓每一条 cargo 命令都崩**。
+          # ⚠ 后缀集合与下面 release job 的 `prerelease` 表达式**保持一致**
+          #   (否则会出现「是预发布却没标」或「标了预发布却按正式版比」)。
+          BASE_TAG="$TAG"
+          case "$TAG" in
+            *[-_]rc*) BASE_TAG="${TAG%%[-_]rc*}" ;;
+            *-alpha*) BASE_TAG="${TAG%%-alpha*}" ;;
+            *-beta*)  BASE_TAG="${TAG%%-beta*}" ;;
+            *-dev*)   BASE_TAG="${TAG%%-dev*}" ;;
+          esac
+          echo "base  : $BASE_TAG"
+
+          if [ "v$CARGO" != "$BASE_TAG" ]; then
+            echo "::error::tag $TAG (base $BASE_TAG) does not match impl/Cargo.toml version $CARGO — the binary would report 'wlwl $CARGO' while being published as $TAG. Set [workspace.package] version = \"${BASE_TAG#v}\" in impl/Cargo.toml, commit, and re-tag."
             exit 1
           fi
-          echo "ok: $TAG matches Cargo version $CARGO"
+          echo "ok: $TAG (base $BASE_TAG) matches Cargo version $CARGO"
 
   build:
     name: build (${{ matrix.target }})
