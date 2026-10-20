@@ -651,7 +651,7 @@ READ_BYTES 读它 → error[E0102]: ... READ_BYTES caps one read at 1048576 byte
 
 **未复核的**:214 个标准库成员的**语义级**逐条一致性(只核了存在性 / 元数 / 声明形状);CSS `expression()` 的浏览器动态验证;POSIX 专属路径的本机运行;`std.sync` 的 5 个受阻项(前置 `ADR-0017` Step 3 未落地);`impl/target/audit*/` 下各审计的临时反例(已 gitignore)。
 
-**规范侧的内部张力(不计入实现缺陷,登记供规范维护者裁量)**:`R2-014`(附录 A 注 ② 说「吸收成不透明类型」而实现是「拒绝」—— ✅ 已按放行改准)、§17.1 的 `YIELD` 示例省略了 §3.4 要求的先行可变绑定(—— ✅ **2026-10-20 已闭合**,见 §10.6)、`RETURN` 裸用是否允许(附录 A 允许 vs §6.4 读法)—— ⏸ **待业主裁决**(已定性、附实测,见 §10.7)。
+**规范侧的内部张力(不计入实现缺陷,登记供规范维护者裁量)**:`R2-014`(附录 A 注 ② 说「吸收成不透明类型」而实现是「拒绝」—— ✅ 已按放行改准)、§17.1 的 `YIELD` 示例省略了 §3.4 要求的先行可变绑定(—— ✅ **2026-10-20 已闭合**,见 §10.6)、`RETURN` 裸用是否允许(附录 A 允许 vs §6.4 读法)—— ✅ **2026-10-20 已裁决并落地**(业主采纳建议 (a):改附录 A 的产生式,见 §10.7)。
 ⚠ `R2-007` 已**不再是**「规范内部张力」—— 实施期补到附录 A 的产生式与 §0.4 的一致性条款后,它判成**实现不符合文法**,已修(见 §3.1 的 R2-007 条)。
 
 **已知的良性噪音**:`Swatinem/rust-cache@v2` 的 post 步骤从仓库根调 cargo 报 `could not find Cargo.toml`(workspace 在 `impl/`),四个 job 都有、不影响结论 —— **属另一笔账,未动**。
@@ -735,7 +735,7 @@ READ_BYTES 读它 → error[E0102]: ... READ_BYTES caps one read at 1048576 byte
 | 负向验证 | 规范退回缺陷形态(`git stash` 抽掉 `LET MUT(k, 0)`)⇒ **2/2 转红**(① `!E0020 undefined name \`k\`` ② `expected to find \`LET MUT(k,\``),还原后 **2/2 绿** |
 | ⚠ 边界 | 这条**不涉及任何语言语义取舍**:`SET` 要先行可变绑定是 §3.4 既有明文,示例漏了它只是**示例写错** ⇒ 属「改错」不属「改语义」 |
 
-### 10.7 `RETURN` 裸用是否允许 —— ⏸ **待业主裁决**(规范侧的内部张力之二)
+### 10.7 `RETURN` 裸用是否允许 —— ✅ **已裁决并落地**(规范侧的内部张力之二)
 
 | 项 | 结果 |
 |---|---|
@@ -744,19 +744,23 @@ READ_BYTES 读它 → error[E0102]: ... READ_BYTES caps one read at 1048576 byte
 | ⚠ 为何一直没人发现 | `spec_grammar_consistency.rs` 只比对 **§9.2 与附录 A 的共有非终结符**(`Import` / `name_array` / `NameItem`),而 `ReturnExpr` **只由附录 A 一处定义** ⇒ 这条漂移**没有任何机器守卫** |
 | 两个方向 | **(a) 改附录 A 的产生式**(收窄为 `"RETURN" "(" [ Expression ] ")"`)—— 与 §6.4 / 成员表 / 实现 / 解析器注释**四处一致**,**零可观察行为变化**(实现本来就这样),且语言规范附录 A 的文法块是**手写的**(`gen-appendix-a` 管的是**标准库规范**的附录 A,不是语言规范的);**(b) 改实现去接受裸用**(放宽 = **新增语法形态** = 可见面变更)⇒ 要走 ADR-0023 §v0.x 2 申报 + CHANGELOG breaking 条目,且与另外四处冲突 |
 | 我的建议 | **(a) 改附录 A** —— 四比一,且不引入任何新语法形态 |
-| 状态 | ⏸ **待业主裁决**(语言级语义 ⇒ 不自行改) |
+| 裁决 | ✅ **2026-10-20 业主裁决:采纳建议 (a) —— 改附录 A 的产生式**。**(b) 改实现去接受裸用被否**:放宽 = **新增语法形态** = 可见面变更(要走 ADR-0023 §v0.x 2 申报),且与另外四处冲突 |
+| 落地 | 附录 A §A.2 的产生式改成 `ReturnExpr = "RETURN" "(" [ Expression ] ")" .`;§A.2 的注里写明「括号不可省 + 裸用报 `E0011` + 这条曾是一处笔误」。⚠ **零可观察行为变化**(实现本来就只认带括号的形式)⇒ **不进 CHANGELOG 的 breaking 表**;但 CHANGELOG 册首的「本批动了三处语言规范文本」改成**四处**并补上这一处 |
+| 守卫 | `spec_grammar_consistency.rs` 新增 `appendix_a_return_expr_agrees_with_the_parser`:① 产生式**必须**含括号(文本级)② `RETURN(5)` 必须能解析、`RETURN 5` 必须报 **E0011**(行为级)—— **两半一起钉**,否则又是一次「规范说 A、实现做 B」 |
+| 负向验证 | 规范退回缺陷形态(`git stash`,产生式回到 `"RETURN" [ Expression ] .`)⇒ **1/1 转红**(`got: "RETURN" [ Expression ]`),还原后该文件 **6/6 绿** |
+| 状态 | ✅ **已落地** |
 
 ### 10.8 本批收口时的重测读数(2026-10-20 晚,独立重跑)
 
 > ⚠ §10.5 是**上午那批**的快照;本表是**仓库现状**的读数。两者不同不是矛盾 ——
 > 是仓库在其间又变了几轮(13 条规范不符合 `9cca621` / `R2-001`+`R2-002` `f901528` /
-> D 组 `781e3af` / 脚本与表格修复 / 本批的 §17.1 示例契约)。
+> D 组 `781e3af` / 脚本与表格修复 / §17.1 示例契约 / `RETURN` 产生式与守卫)。
 
 | 项 | 读数 |
 |---|---|
-| 六项本地门禁 | `fmt` **0** / `clippy --all-targets -D warnings` **0** / `doc -D warnings` **0** / `real-ai` **0** / `deny`(**advisories / bans / licenses / sources` 全 ok)** / `test --workspace --all-targets` **2320 passed / 0 failed**(63 条结果行) |
+| 六项本地门禁 | `fmt` **0** / `clippy --all-targets -D warnings` **0** / `doc -D warnings` **0** / `real-ai` **0** / `deny`(**advisories / bans / licenses / sources` 全 ok)** / `test --workspace --all-targets` **2321 passed / 0 failed**(63 条结果行;比上轮 +3 = §17.1 示例契约的 2 条 + `RETURN` 守卫的 1 条) |
 | doc tests | **0 failed / 0 passed / 1 ignored**(`wlwl_eval` 那条是刻意 `ignore` 的) |
-| 契约套件 | **18 份**(本批新增 `spec_example_contract.rs`)/ 合计 **208 passed / 0 failed** |
+| 契约套件 | `wlwl-eval` 下 `*_contract.rs` **20 份** / 合计 **224 passed / 0 failed** —— ⚠ 本报告上午写的是「17 份 / 206」,那是**当时的快照**;此后 `eval_dict_key` / `parser_syntax` / `spec_example` 三份陆续加入 ⇒ 份数与总数都变了。⚠ **这正是一类「记账滞后」**:数字写在文档里就会随仓库变旧,所以此处标的是**实测日** |
 | 规范附录 A | 与实现**逐字节一致**(重跑 `gen-appendix-a` ⇒ **git 无差异**)—— 它管的是**标准库规范**的附录 A,**语言规范**附录 A 的文法块是手写的 |
 | skill 覆盖度 | **漏 0 / 214** |
 | skill 示例 | **20 / 20 全部退出 0** |

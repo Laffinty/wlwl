@@ -1842,7 +1842,7 @@ WhileExpr   = "WHILE" "(" Expression "," Expression ")" .
 ForExpr     = "FOR" "(" identifier "," Expression "," Expression ")" .
 MatchExpr   = "MATCH" "(" Expression "," ClauseArray [ "," Expression ] ")" .
 TryExpr     = "TRY" "(" Expression ")" .
-ReturnExpr  = "RETURN" [ Expression ] .
+ReturnExpr  = "RETURN" "(" [ Expression ] ")" .
 BreakExpr   = "BREAK" "(" ")" .
 ContinueExpr= "CONTINUE" "(" ")" .
 OkExpr      = "OK" "(" Expression ")" .
@@ -1895,6 +1895,17 @@ DictPattern = "[" Expression ":" Pattern { "," Expression ":" Pattern } ]" .
 `CLASS` / `NEW` / `THIS` 是关键字(1.4),出现在调用位置(§13 / §15)。会话协议表达式(§14.1)是普通 `Expression`(以 `ArrayLit` / `DictLit` / 字符串字面量书写),无独立文法。
 
 `ModuleDecl`(§9.1 / §9.2)只出现在模块顶层,不作为 `Expression`。
+
+**`RETURN` 的括号不可省**:`ReturnExpr` 要求 `RETURN` 之后**必须**跟一对括号
+(`RETURN()` / `RETURN(expr)`)—— 与 §6.4 的 `RETURN(expr?)`、附录 A 成员表的
+`RETURN(v?)`、以及实现的解析器(`parse_return` 强制 `'('` / `')'`,见
+`impl/crates/wlwl-parser/src/lib.rs`)**四处一致**。⚠ **裸用不是本语言的一部分**:
+`RETURN 5` 在实现里报 `E0011`(期望左括号)。⚠ 这条产生式**曾经**写成
+`"RETURN" [ Expression ]`(不带括号)—— 那是规范侧的一处笔误:它描述的语法实现
+从一开始就不接受(裸用报 `E0011`)。2026-10-20 已订正为带括号的形式 ⇒
+**零可观察行为变化**(实现本就是这样),不是 breaking;机器守卫见
+`impl/crates/wlwl-parser/tests/spec_grammar_consistency.rs` 的
+`appendix_a_return_expr_agrees_with_the_parser`。
 
 类型注解有三条必须照实写明的规则(详见 §2.6):① 容器用**方括号**;
 ② **尖括号与 `FUN(...) -> U` 的箭头形式都不可达**,且**直接报错**(`E0010` /

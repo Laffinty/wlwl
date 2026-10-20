@@ -369,3 +369,54 @@ fn module_decl_is_reachable_from_program() {
         "the three declaration forms must all be reachable, got {reach:?}"
     );
 }
+
+/// [D13-082] 附录 A 的 `ReturnExpr` 产生式必须与**实现**一致。
+///
+/// 背景:这条产生式曾写成 `"RETURN" [ Expression ] .`(裸用不带括号),而 §6.4 的
+/// `RETURN(expr?)`、附录 A 成员表的 `RETURN(v?)`、以及实现的 `parse_return`
+/// (强制 `'('` / `')'`)三处**都要求括号** ⇒ 规范描述的语法实现从一开始就不接受
+/// (裸用报 `E0011`)。
+///
+/// ⚠ **它为什么一直没被发现**:上面那条
+/// `section_9_2_and_appendix_a_agree_on_shared_nonterminals` 只比对 §9.2 与
+/// 附录 A **共有**的非终结符,而 `ReturnExpr` **只由附录 A 一处定义** ⇒ 这类
+/// 「只有一处定义、且与实现不一致」的漂移**没有任何机器守卫**。
+///
+/// 本条分两半钉住:① 产生式**必须**要求括号(文本级);② 解析器的实际行为
+/// **必须**与之一致(行为级)—— 文本与实现只能一起对,否则又是一次「规范说 A、
+/// 实现做 B」。
+#[test]
+fn appendix_a_return_expr_agrees_with_the_parser() {
+    let spec = spec_text();
+    let prods = productions_in(&appendix_a_block(&spec));
+    let body = prods
+        .iter()
+        .find(|p| p.name == "ReturnExpr")
+        .map(|p| p.body.clone())
+        .expect("appendix A no longer defines `ReturnExpr`");
+
+    assert!(
+        body.contains("\"(\"") && body.contains("\")\""),
+        "appendix A's `ReturnExpr` must require the parentheses — \
+         `\"RETURN\" \"(\" [ Expression ] \")\"` (D13-082).\n\
+         got: {body}\n\
+         §6.4, appendix A's member table and the implementation all require them; \
+         a bare `RETURN 5` is rejected with E0011."
+    );
+
+    // 行为级:附录 A 现在写下的那个形态必须真能解析。
+    assert!(
+        wlwl_parser::parse("LET(f, FUN(() , RETURN(5)));", "t.wll").is_ok(),
+        "the form appendix A documents (`RETURN(expr)`) must parse"
+    );
+
+    // 而裸用必须仍被拒 —— 一旦实现开始接受它,附录 A 的产生式与 CHANGELOG 的
+    // breaking 清单都要重新审。
+    let err = wlwl_parser::parse("LET(f, FUN(() , RETURN 5));", "t.wll")
+        .expect_err("a bare `RETURN 5` must be rejected");
+    assert_eq!(
+        err.diagnostic().code.as_str(),
+        "E0011",
+        "a bare `RETURN 5` must fail with E0011 (expected '(')"
+    );
+}
