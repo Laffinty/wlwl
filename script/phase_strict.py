@@ -92,6 +92,22 @@ def section_7(lines: list):
 
 
 def main() -> int:
+    # ⚠⚠ **stdout 必须是 UTF-8** —— 输出的状态标记含 ✅ / ⛔ / 🟡,
+    #   而 Windows 控制台默认编码是 **GBK** ⇒ 直接 `print` 会抛
+    #   `UnicodeEncodeError: 'gbk' codec can't encode character '\u2705'`
+    #   (本机 2026-10-20 实测:脚本在 Windows 上**根本跑不出结果** ⇒
+    #   「权威口径」在业主自己的机器上是不可用的)。
+    #   ⇒ `reconfigure(encoding="utf-8")` 把 stdout 切到 UTF-8;
+    #   `errors="replace"` 兜底:万一还有别的字符,退化成 `?` 而不是崩。
+    #   ⚠ `reconfigure` 是 **Python 3.7+** 的 API,本仓 MSRV 1.75 对应
+    #   Python 3.9+ ⇒ 可用;仍用 hasattr 兜一层,免得在更老的解释器上崩。
+    for stream in (sys.stdout, sys.stderr):
+        if hasattr(stream, "reconfigure"):
+            try:
+                stream.reconfigure(encoding="utf-8", errors="replace")
+            except (ValueError, OSError):
+                pass
+
     plan = plan_dir()
     files = sorted(
         f for f in os.listdir(plan) if f.startswith("addendum-") and f.endswith(".md")
