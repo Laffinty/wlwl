@@ -9,13 +9,14 @@ name: CI
 # pull_request 侧按**基**分支过滤),收工时记得撤掉。
 #
 # [v0.11.3] 2026-10-05:`wip0.11.3` 按上述规则加入(M0–M4 收口后要跑一遍
-# 全套门禁,而 push 到 wip 分支本身不触发任何 workflow)。**该分支并入 main
-# 后这两行要撤掉** —— 与 v0.11 时期 `wip0.11` 的处理同款。
+# 全套门禁,而 push 到 wip 分支本身不触发任何 workflow)。⚠ **2026-10-20
+# 该分支已并入 main 并删除,规则随之撤除** —— 与 v0.11 时期 `wip0.11` 的
+# 处理同款(体例相同:分支一删,下面这两行就摘掉,不留死规则)。
 on:
   push:
-    branches: [main, wip0.11.3]
+    branches: [main]
   pull_request:
-    branches: [main, wip0.11.3]
+    branches: [main]
 
 # [D13-073] **显式声明本 workflow 需要的最小权限。**
 #
