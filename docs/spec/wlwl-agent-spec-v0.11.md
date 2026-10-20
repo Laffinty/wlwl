@@ -222,6 +222,19 @@ wlwl 数组不可变,`PUSH` 每次复制整个数组。
   打印 ✅ / ⛔ 这类状态标记,而 Windows 控制台默认编码是 **GBK** ⇒ 直接 `print`
   抛 `UnicodeEncodeError` ⇒ 脚本在业主机器上**根本跑不出结果** ⇒ 「权威」二字
   无处可核。⇒ `stdout.reconfigure(encoding="utf-8", errors="replace")`。
+- **发布流水线的「失败」可能只是「排不到 runner」**(v0.11.3_rc1 首轮实测)。
+  `build (aarch64-apple-darwin)` 那个 job **一个 step 都没执行**就排队约 15 分钟
+  后被 GitHub **取消**(`conclusion = cancelled`,**不是** `failed`)⇒ 下游
+  `sbom` / `sign` / `release` 全被 **skipped**、整轮判 failure。⚠ **判据要看
+  job 的 step 列表**:step 为空 = 压根没开工(基础设施排队),不是构建失败 ⇒
+  **别去翻编译错误日志**。⇒ 处置:`POST /repos/<o>/<r>/actions/runs/<id>/rerun-failed-jobs`
+  **只重跑失败 job**(已成功的腿保留产物,不会重复上传撞名)⇒ attempt 2 一次过。
+  ⚠ 推论(阈值未核实):macOS runner 池小 ⇒ 同一时刻多跑 CI + release 容易把
+  macOS job 挤进排队 ⇒ **发 tag 前先把 CI 跑完**。
+- **发布 tag 的前置:**`release.yml` 的 `on.push.tags` 模式是 `v*.*.*`
+  ⇒ `v0.11.3_rc1` 会命中 ✓;但 `version-check` 守卫比的是**逐字相等**
+  ⇒ RC tag 需先让守卫认识「基版本」(D13-094)。⚠ 另:`workflow_dispatch` 那条
+  路径用 `GITHUB_REF_NAME`(分支名)给产物命名 ⇒ **手动触发不能替代推 tag**。
 
 ---
 
