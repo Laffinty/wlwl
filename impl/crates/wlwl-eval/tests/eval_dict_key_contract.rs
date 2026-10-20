@@ -3,8 +3,9 @@
 //!
 //! **判据全部来自语言标准** `docs/spec/wlwl-spec-v0.11.md`(不可修改):
 //!
-//! - §2.1:「**键的约束**:字典的键**必须**是 `STRING` 或 `INTEGER`。
-//!   NaN(2.2)**不得**作键(`E0031`)。」
+//! - §2.1:「**键的约束**:字典的键**必须**是 `STRING`、`INTEGER` 或 `INSTANCE`。
+//!   `INSTANCE` 作键按**对象身份**判定(2.4):同一实例命中,异实例不命中。
+//!   其它类型作键**类型不符**,产生 `E0031`。NaN(2.2)**不得**作键(`E0031`)。」
 //! - §4.5:「字典按键取值,**键类型不符产生 `E0031`**,键不存在产生 `E0037`。」
 //! - §3.2:「读一个不存在的名字产生 `E0020`(**附最近候选名**)。」
 //! - §13.4:「1. `value` 是当前线性 `THIS` → `E0032`(§15.3);**键为线性 `THIS`
@@ -64,31 +65,31 @@ const CASES: &[Case] = &[
     Case {
         name: "index_get_dict_key_type_must_be_e0031_not_e0037",
         src: r#"PRINT(INDEX_GET(["a": 1], TRUE));"#,
-        expect: "!E0031 INDEX_GET: dict key must be STRING or INTEGER, got boolean",
+        expect: "!E0031 INDEX_GET: dict key must be STRING, INTEGER or INSTANCE, got boolean",
     },
     Case {
         name: "index_get_dict_key_float_is_a_type_error",
         src: r#"PRINT(INDEX_GET(["a": 1], 1.5));"#,
-        expect: "!E0031 INDEX_GET: dict key must be STRING or INTEGER, got float",
+        expect: "!E0031 INDEX_GET: dict key must be STRING, INTEGER or INSTANCE, got float",
     },
-    // ⚠ `1.0` 是 `FLOAT` **不是** `INTEGER` —— 规范写的是「必须是 `STRING`
-    //   或 `INTEGER`」,所以它同样键类型不符。
+    // ⚠ `1.0` 是 `FLOAT` **不是** `INTEGER` —— 规范写的是「必须是 `STRING`、
+    //   `INTEGER` 或 `INSTANCE`」,所以它同样键类型不符。
     Case {
         name: "index_get_dict_key_integral_float_is_still_a_type_error",
         src: r#"PRINT(INDEX_GET(["a": 1], 1.0));"#,
-        expect: "!E0031 INDEX_GET: dict key must be STRING or INTEGER, got float",
+        expect: "!E0031 INDEX_GET: dict key must be STRING, INTEGER or INSTANCE, got float",
     },
     Case {
         name: "index_get_dict_key_array_is_a_type_error",
         src: r#"PRINT(INDEX_GET(["a": 1], [1]));"#,
-        expect: "!E0031 INDEX_GET: dict key must be STRING or INTEGER, got array",
+        expect: "!E0031 INDEX_GET: dict key must be STRING, INTEGER or INSTANCE, got array",
     },
     Case {
         name: "index_get_dict_key_null_is_a_type_error",
         src: r#"PRINT(INDEX_GET(["a": 1], NULL));"#,
-        expect: "!E0031 INDEX_GET: dict key must be STRING or INTEGER, got null",
+        expect: "!E0031 INDEX_GET: dict key must be STRING, INTEGER or INSTANCE, got null",
     },
-    // ── 合法键**不受影响**(§2.1 允许的两型)──
+    // ── 合法键**不受影响**(§2.1 允许的三型)──
     Case {
         name: "index_get_dict_with_string_key_still_works",
         src: r#"INDEX_GET(["a": 1], "a")"#,
@@ -109,7 +110,7 @@ const CASES: &[Case] = &[
     Case {
         name: "index_set_dict_key_type_must_be_e0031",
         src: r#"PRINT(INDEX_SET(["a": 1], TRUE, 2));"#,
-        expect: "!E0031 INDEX_SET: dict key must be STRING or INTEGER, got boolean",
+        expect: "!E0031 INDEX_SET: dict key must be STRING, INTEGER or INSTANCE, got boolean",
     },
     Case {
         name: "index_set_dict_with_string_key_still_works",
@@ -121,30 +122,30 @@ const CASES: &[Case] = &[
     Case {
         name: "dict_literal_with_boolean_key_is_e0031",
         src: r#"LET(d, ["a": 1, TRUE: 2]); PRINT(KEYS(d));"#,
-        expect: "!E0031 dict key must be STRING or INTEGER, got boolean",
+        expect: "!E0031 dict key must be STRING, INTEGER or INSTANCE, got boolean",
     },
     Case {
         name: "dict_literal_with_array_key_is_e0031",
         src: r#"LET(d, [[1]: "x"]); PRINT(d);"#,
-        expect: "!E0031 dict key must be STRING or INTEGER, got array",
+        expect: "!E0031 dict key must be STRING, INTEGER or INSTANCE, got array",
     },
     Case {
         name: "dict_literal_with_null_key_is_e0031",
         src: r#"LET(d, [NULL: "x"]); PRINT(d);"#,
-        expect: "!E0031 dict key must be STRING or INTEGER, got null",
+        expect: "!E0031 dict key must be STRING, INTEGER or INSTANCE, got null",
     },
     Case {
         name: "dict_literal_with_string_and_integer_keys_still_works",
         src: r#"["a": 1, 2: "b"]"#,
         expect: "[a: 1, 2: b]",
     },
-    // ── ⚠ `INSTANCE` 当键**仍然合法** ──
+    // ── ⚠ `INSTANCE` 当键**合法**(2026-10-20 业主裁决)──
     //
-    // 规范 §2.1 只写了 `STRING` / `INTEGER`,但仓里有 4+ 条**刻意**的
-    // `R10-012` 测试要求「`DICT` 用实例当键时,同实例命中、异实例不命中」
-    // (按**身份**判定),`impl/crates/wlwl-cli/tests/conformance.rs` 的 OOP
-    // 夹具也这么用 ⇒ 禁掉它等于**删掉一个语言能力**,那是产品取舍。
-    // ⇒ 实现侧维持既有行为;「实例能不能当键」这条**规范侧**待裁决(已登记)。
+    // 规范 §2.1 的键类型集合**已补上** `INSTANCE`,按**对象身份**判定:
+    // 「`DICT` 用实例当键时,同实例命中、异实例不命中」。
+    // ⚠ 这条能力是仓内 v0.10.1 起就**刻意**做出来的:`R10-012` 有 4+ 条测试
+    //   要求它,`impl/crates/wlwl-cli/tests/conformance.rs` 的 OOP 夹具
+    //   (`oop_identity.wll`)也拿实例当字典键 ⇒ 禁掉它等于**删一个语言能力**。
     // ⚠ 这里断言的是**语义**(同实例命中)而不是键的显示形态 —— 后者依赖
     //   `Value::display` 对 `INSTANCE` 的渲染,不该被这条契约钉住。
     Case {
@@ -227,4 +228,97 @@ fn undefined_name_carries_the_nearest_candidate() {
         .as_deref()
         .unwrap_or_else(|| panic!("E0020 must carry a `hint` with the nearest candidate: {d:?}"));
     assert!(hint.contains("FOO"), "hint must offer `FOO`: {hint:?}");
+}
+
+/// 语言标准 §2.1 的路径(与 `spec_appendix_g_sync.rs` 同一写法)。
+fn language_spec_path() -> PathBuf {
+    PathBuf::from(env!("CARGO_MANIFEST_DIR"))
+        .join("..")
+        .join("..")
+        .join("..")
+        .join("docs")
+        .join("spec")
+        .join("wlwl-spec-v0.11.md")
+}
+
+/// §2.1 的「键的约束」那**一句** —— 不是整章。
+///
+/// ⚠ 整章里 `INSTANCE` 本来就是**值域的一员**(§2.1 的类型表列了它),
+///   拿整章 `contains("INSTANCE")` 等于**没守** ⇒ 必须只取那一句。
+fn spec_key_constraint_sentence() -> String {
+    let text = std::fs::read_to_string(language_spec_path()).expect("language spec readable");
+    let start = text
+        .find("**键的约束**")
+        .expect("§2.1 has a 键的约束 clause");
+    text[start..].lines().next().unwrap_or("").to_string()
+}
+
+/// 2026-10-20 业主裁决:「`INSTANCE` 能不能当字典键」⇒ **能**,且**按身份**。
+///
+/// ⚠ 这一条守的是**规范文本**:§2.1 的键类型集合必须含 `INSTANCE`,而且
+///   必须写明**按对象身份判定** —— 只写「`INSTANCE` 是合法键」而不写身份语义,
+///   实现就会滑回「按结构相等」(两次 `NEW` 字段相同就撞键)⇒ 那正是
+///   `R10-012` 当年修掉的缺陷。
+#[test]
+fn the_spec_lists_instance_as_a_legal_dict_key() {
+    let sentence = spec_key_constraint_sentence();
+    assert!(
+        sentence.contains("`INSTANCE`"),
+        "语言规范 §2.1 的「键的约束」必须把 `INSTANCE` 列进合法键类型: {sentence}"
+    );
+    assert!(
+        sentence.contains("对象身份"),
+        "语言规范 §2.1 的「键的约束」必须写明 `INSTANCE` 按**对象身份**判定: {sentence}"
+    );
+}
+
+/// 键类型的**完整矩阵**:合法三型放行、其余一律 `E0031`。
+///
+/// ⚠ 为什么要有这条:上面那批固定文案只覆盖了布尔 / 浮点 / 数组 / null
+///   **四型**,而**字典 / 类对象 / 函数** 这几型当键**没人钉** —— 它们能悄悄
+///   溜进容器(闸门漏了),直到某个下游(`wlwl:std.json` 的 `STRINGIFY`)才炸,
+///   报的还是**别的码** ⇒ 正是 R2-002 当初的缺陷形态。
+/// ⚠ 合法集取**规范 §2.1 的三型**(`STRING` / `INTEGER` / `INSTANCE`),
+///   不是抄实现 —— 规范改了、实现没跟上时这条会红。
+/// ⚠ 全部走 `INDEX_SET` 这条路径:它**必过**闸门;而 `AT` / `AT_K` / `HAS`
+///   遇错类型只「查不到」不报错 ⇒ 用它们验不出闸门。
+/// ⚠ `TASK` / `CHANNEL` 两型**不在**矩阵里:构造它们要 `SPAWN` /
+///   `CHANNEL_NEW`,会把「造得出来吗」和「能当键吗」两件事搅在一起
+///   (前者要起运行时)⇒ 留作已知缺口,不在这里假装覆盖。
+#[test]
+fn every_key_type_is_either_legal_or_e0031() {
+    // ── 合法三型(§2.1)──
+    for (label, src) in [
+        ("STRING", r#"INDEX_SET(DICT(), "a", 1)"#),
+        ("INTEGER", r#"INDEX_SET(DICT(), 1, 1)"#),
+        (
+            "INSTANCE",
+            r#"LET(C, CLASS("C", NULL, [])); LET(a, NEW(C)); INDEX_SET(DICT(), a, 1)"#,
+        ),
+    ] {
+        let got = actual(src);
+        assert!(
+            !got.starts_with("!E"),
+            "{label} 是 §2.1 允许的键类型,实现却报错了: {got}"
+        );
+    }
+    // ── 其余一律 `E0031` ──
+    for (label, src) in [
+        ("BOOLEAN", r#"INDEX_SET(DICT(), TRUE, 1)"#),
+        ("FLOAT", r#"INDEX_SET(DICT(), 1.0, 1)"#),
+        ("ARRAY", r#"INDEX_SET(DICT(), [1], 1)"#),
+        ("DICT", r#"INDEX_SET(DICT(), ["x": 1], 1)"#),
+        ("NULL", r#"INDEX_SET(DICT(), NULL, 1)"#),
+        (
+            "CLASS",
+            r#"LET(C, CLASS("C", NULL, [])); INDEX_SET(DICT(), C, 1)"#,
+        ),
+        ("FUNCTION", r#"INDEX_SET(DICT(), FUN((x), x), 1)"#),
+    ] {
+        let got = actual(src);
+        assert!(
+            got.starts_with("!E0031 INDEX_SET: dict key must be STRING, INTEGER or INSTANCE, got "),
+            "{label} 不是合法键类型,必须报 E0031(且文案要列出 §2.1 的合法集): {got}"
+        );
+    }
 }

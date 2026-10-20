@@ -1725,8 +1725,9 @@ fn dict_lookup(entries: &[(Value, Value)], key: &Value) -> Option<usize> {
 
 /// 规范 §2.1 的**键的类型约束** + §4.5 的「键类型不符 → `E0031`」。
 ///
-/// 规范 §2.1:「**键的约束**:字典的键**必须**是 `STRING` 或 `INTEGER`。
-/// NaN(2.2)**不得**作键(`E0031`)。」
+/// 规范 §2.1:「**键的约束**:字典的键**必须**是 `STRING`、`INTEGER` 或 `INSTANCE`。
+/// `INSTANCE` 作键按**对象身份**判定(2.4):同一实例命中,异实例不命中。
+/// 其它类型作键**类型不符**,产生 `E0031`。NaN(2.2)**不得**作键(`E0031`)。」
 /// 规范 §4.5:「字典按键取值,**键类型不符产生 `E0031`**,键不存在产生 `E0037`。」
 ///
 /// ⚠ 缺陷形态:实现**完全不做**键的类型校验 ⇒ 非 `STRING`/`INTEGER` 的键
@@ -1734,7 +1735,7 @@ fn dict_lookup(entries: &[(Value, Value)], key: &Value) -> Option<usize> {
 ///   (`E0030: expected string dict key, got boolean`)⇒ 规范要求在**构造点**
 ///   报 `E0031`,实现把错误推迟到了另一个子系统的另一个码。
 ///
-/// ⚠ 为什么 `FLOAT` 也不行:规范写的是「必须是 `STRING` 或 `INTEGER`」——
+/// ⚠ 为什么 `FLOAT` 也不行:规范写的是「必须是 `STRING`、`INTEGER` 或 `INSTANCE`」——
 ///   `1.0` 是 `FLOAT` 不是 `INTEGER` ⇒ 键类型不符。`NaN` 是 `FLOAT` 的特例,
 ///   规范单独点名「NaN **不得**作键」。
 ///
@@ -1746,15 +1747,16 @@ fn dict_lookup(entries: &[(Value, Value)], key: &Value) -> Option<usize> {
 ///   不是实现偷懒。
 fn dict_key_type_gate(fn_name: &str, key: &Value) -> WlwlResult<()> {
     match key {
-        // ⚠ 规范 §2.1 明列的两型。
+        // ⚠ 规范 §2.1 明列的三型。
         Value::String(_) | Value::Integer(_) => Ok(()),
         // ⚠ `INSTANCE` 是**仓内既有的刻意能力**(`R10-012` 的身份语义:
         //   「`DICT` 用实例当键时,同实例命中、异实例不命中」),而且
         //   `impl/crates/wlwl-cli/tests/conformance.rs` 的 OOP 夹具也这么用
         //   ⇒ 禁掉它等于**删掉一个语言能力**(要连带改 4+ 条既有测试),
         //   那是产品取舍,不是「顺手修个实现偏差」。
-        //   ⚠ 规范 §2.1 只写了 `STRING` / `INTEGER` ⇒ 「实例能不能当键」
-        //   这条**规范侧**待裁决(已登记),实现侧先维持既有行为。
+        //   ⚠ **规范侧已于 2026-10-20 裁决**:§2.1 的键类型集合补上 `INSTANCE`
+        //   (按对象身份判定)⇒ 本闸门与规范**逐条对齐**,不再有「实现比规范宽」
+        //   的那条缺口。
         Value::Instance { .. } => Ok(()),
         other => Err(builtin_error(
             ErrorCode::E0031,
@@ -1767,7 +1769,10 @@ fn dict_key_type_gate(fn_name: &str, key: &Value) -> WlwlResult<()> {
 /// 键类型不符的**统一文案** —— 内建调用与字面量两条路径共用,
 /// 免得同一件事在两个地方说出两句话。
 fn dict_key_type_message(key: &Value) -> String {
-    format!("dict key must be STRING or INTEGER, got {}", type_name(key))
+    format!(
+        "dict key must be STRING, INTEGER or INSTANCE, got {}",
+        type_name(key)
+    )
 }
 
 /// v0.6 §4.5 — `INDEX_GET(coll, idx_or_key)`.
