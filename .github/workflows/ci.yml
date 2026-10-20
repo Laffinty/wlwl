@@ -83,10 +83,37 @@ jobs:
           rustup toolchain install --profile default
           cargo --version
 
+      # ⚠ [D13-092] **`workspaces: impl -> target`** —— 仓根**没有**
+      # `Cargo.toml`(Rust 工作区在 `impl/`),而 action 的默认工作区是**仓根**
+      # ⇒ 它在仓根跑 `cargo metadata --all-features --format-version 1 --no-deps`
+      # ⇒ **exit 101** ⇒ 日志第一段就是这个
+      # (`Error: The process '/Users/runner/.cargo/bin/cargo' failed with exit
+      # code 101` + 一整段栈回溯),而且是**每个平台每一轮**都出现。
+      #
+      # ⚠⚠ 那个 exit 101 背后还有两个**静默**后果(action 自己把它吞了,
+      # 只 `console.error` 一句,所以 job 照样绿):
+      # ① **依赖集解析为空** ⇒ 缓存键里**没有** `Cargo.toml` / `Cargo.lock`
+      #    的哈希 ⇒ 依赖变了缓存**不失效**;
+      # ② 缓存的 target 目录指向**不存在的** `<仓根>/target` ⇒ 真实构建目录
+      #    `impl/target` **从来没进过缓存**。
+      #
+      # ⇒ 显式指到 `impl`:metadata 在 `impl` 跑(那儿有 `Cargo.toml`)⇒ 依赖集
+      # 正常解析、缓存键带上 manifest / lockfile 的哈希;⚠ target 目录
+      # **故意不缓存**(理由见下一条)。
+      #
+      # ⚠ `cache-targets: false`:**故意不缓存 target 目录** —— 本仓实测
+      # `impl/target` 单机就 **26 GB**(debug 档,含 bench / doc 产物),而
+      # GitHub 的缓存是**全仓 10 GB 预算** ⇒ 缓存它会挤掉真正有用的
+      # `~/.cargo/registry`,净亏。⇒ 这里只缓存 registry(与改动前的**实际**
+      # 行为一致:改动前指向的 `<仓根>/target` 从来就不存在)。
+      # ⚠ 若将来要缓存 target,先给 `impl` 配一份**瘦身后的** profile
+      # (关 `debug` / `incremental`),再把这一项打开。
       - name: Cache cargo registry and target
         uses: Swatinem/rust-cache@v2
         with:
           cache-on-failure: true
+          workspaces: "impl -> target"
+          cache-targets: false
 
       # impl/Cargo.lock is gitignored, so the very first CI run on a
       # fresh cache miss has no lock file. --locked refuses to create
@@ -143,7 +170,10 @@ jobs:
       # locally per job (older 0.16 fails to parse CVSS v4.0 in the
       # current RustSec advisory-db). `impl/Cargo.lock` is gitignored,
       # so the first CI run materializes it via `cargo generate-lockfile`;
-      # subsequent runs get it back from `Swatinem/rust-cache`.
+      # ⚠ **it is NOT restored from `Swatinem/rust-cache`** — that action
+      # caches `~/.cargo` (registry / git) and the workspace `target/`;
+      # `Cargo.lock` sits in neither ⇒ every run re-resolves it (cheap, and
+      # the resolution is stable as long as the crates.io index is).
       - name: Install cargo-deny
         uses: taiki-e/install-action@cargo-deny
         with:
