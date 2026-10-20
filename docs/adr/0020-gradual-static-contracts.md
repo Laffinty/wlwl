@@ -1,6 +1,6 @@
 # ADR-0020 — Gradual Static Contracts (编译期 `gradual_typing` 静态 pass)
 
-| | |---|
+| | |
 |---|---|
 | **Status** | Accepted(2026-09-27;Step 0 定稿 → Step 1/2 落地后转正) |
 | **Date** | 2026-09-27 |
