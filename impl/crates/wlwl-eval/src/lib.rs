@@ -8612,11 +8612,21 @@ impl Evaluator {
     ///    stack (first run).
     /// 3. Evaluate `segments[current_segment]` as a top-level block
     ///    (`eval_block(_, true)` does not push/pop a scope).
-    /// 4. On `Signal::Yield(Explicit)`: capture the current
-    ///    `env.scopes` into `task.running_env` so the next segment
-    ///    run starts from this state. On any other outcome (normal,
-    ///    error, other signal): the segment is terminal — drop
-    ///    `running_env` and return.
+    /// 4. Persist the current `env.scopes` into `task.running_env`
+    ///    **on every outcome** (yield / normal / error / other
+    ///    signal) — so a later segment still sees the `LET` bindings
+    ///    accumulated by the earlier ones.
+    ///    ⚠⚠ **[2026-10-20 订正]本条 doc comment 此前是过时的**:它原写
+    ///    「On `Signal::Yield(Explicit)`: capture … / On any other outcome
+    ///    … drop `running_env` and return」—— **与代码不符**(实现是无条件
+    ///    写回)。⇒ **E0064 活锁的成因不是「env 被丢弃」**,而是**恢复点
+    ///    没存**:挂起后从**段首**重跑(下面取 `segments[current_segment]`
+    ///    再整段 `eval_block`)⇒ 段内副作用重复 ⇒ 同样的值被再投一次。
+    ///    ⚠ 体里**没有 `YIELD`** 的任务更彻底:它没有段表,恢复走
+    ///    `Scheduler::begin_run`,那里取的是 `task.env`(**初始 env**)
+    ///    ⇒ 整个函数体从第一行重跑、`LET MUT` 重新绑定。
+    ///    ⇒ 要真续跑,缺的是**挂起位置**的保存(续体容器在 `runtime.rs`
+    ///    里还是标注「NOT WIRED YET」的占位符)—— 见 `addendum-12` §0.1。
     /// 5. Restore the caller's env regardless.
     fn run_task_segments(
         &mut self,

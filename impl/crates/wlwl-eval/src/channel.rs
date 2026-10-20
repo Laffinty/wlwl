@@ -296,10 +296,14 @@ impl Channel {
     /// 按通道累计会把它误判。按任务对累计只抓「同一对任务在同一通道上
     /// rendezvous 了第二次」—— 而在当前的段重跑模型下,这**必然**是活锁。
     ///
-    /// **为什么阈值是 2 而不是某个经验值**:通道操作挂起时任务的
-    /// `running_env` 被丢弃,被唤醒的任务从段首重跑(见
-    /// `Evaluator::run_task_segments` 第 4 步:只有 `Yield(Explicit)`
-    /// 才保存 env,其它 signal 一律丢弃)。于是:
+    /// **为什么阈值是 2 而不是某个经验值**:通道操作挂起时**恢复点没存**
+    /// ⇒ 被唤醒的任务从**段首**重跑(`Evaluator::run_task_segments` 取
+    /// `segments[current_segment]` 再整段 `eval_block`)⇒ 段内副作用重复。
+    /// ⚠⚠ **[2026-10-20 订正]此处原写「通道操作挂起时任务的 `running_env`
+    /// 被丢弃……只有 `Yield(Explicit)` 才保存 env,其它 signal 一律丢弃」
+    /// —— 与代码不符**:`run_task_segments` 的第 4 步是**无条件**把
+    /// `env.scopes` 写回 `task.running_env`(`lib.rs` Step 4)⇒ **env 一直
+    /// 在**;丢的是**恢复点**。于是:
     ///
     /// - 第一次 rendezvous:接收方停泊、发送方被唤醒后重跑,此时它看到有
     ///   停泊的接收者,`try_pair_send` 交接成功,SEND 正常结束 —— 能推进;

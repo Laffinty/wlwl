@@ -81,7 +81,7 @@
 |---|---|---|
 | `ADR-0017` | **Accepted**(2026-09-25) | 该文件 Status 栏 |
 | Step 1–2 | ✅ **已落地** | `yield_split.rs` 文件头「**[v0.9 Step 2]** … Replaces the v0.7/v0.8.1 static segmenter (~492 lines) with a thin wrapper」;通道已有真挂起 + `E0065` + `E0064` |
-| **Step 3(真 state-machine 续跑)** | ⛔ **从未落地** | ① `impl/crates/wlwl-eval/src/effect.rs` **不存在**(ADR-0017 §Consequences / ADR-0019 计划新增);② `yield_split.rs` 仍是静态分段器、**338** 行(ADR 计划重写为 ~100);③ `run_task_segments` 仍**只对 `Yield(Explicit)` 保存 env**,其它 signal 一律丢弃 |
+| **Step 3(真 state-machine 续跑)** | ⛔ **从未落地** | ① `impl/crates/wlwl-eval/src/effect.rs` **不存在**(ADR-0017 §Consequences / ADR-0019 计划新增)—— ⚠ **但「没有 effect.rs」≠「没有代数效果」**:`Effect` 枚举已内联在 `runtime.rs:133`(变体 Yield/ChannelOp/Cancelled/MethodCall/ProtocolViolation)、`Effect::tag` 在 `:169`,而 `Scheduler::step`(`runtime.rs:409`)**在、但只是桩**(只 `enqueue`);② `yield_split.rs` 仍是静态分段器、**365** 行(ADR 计划重写为 ~100;⚠ ADR 写的 492 是**旧分段器**的规模,不是当前基线);③ ⚠⚠ **[2026-10-20 订正]**本条原写「`run_task_segments` 仍**只对 `Yield(Explicit)` 保存 env**,其它 signal 一律丢弃」—— **与代码不符**:`run_task_segments` 第 4 步(`lib.rs` Step 4)是**无条件**把 `env.scopes` 写回 `task.running_env` ⇒ **env 一直在**。**真正的缺陷是「恢复点没存」**:挂起后从**段首**重跑(`segments[current_segment]` + 整段 `eval_block`)⇒ 段内副作用重复 ⇒ 同样的值被再投一次;体里**没有 `YIELD`** 的任务更彻底 —— 它没有段表,恢复走 `Scheduler::begin_run`,那里取的是 `task.env`(**初始 env**)⇒ 整个函数体从第一行重跑、`LET MUT` 重新绑定 ⇒ 这才是 E0064 活锁的成因。⚠ 同源的两处**代码注释**(`channel.rs` E0064 归因段、`wlwl-error` 的 E0064 条目)此前复述了同一个过时说法,**已一并订正** |
 
 ⇒ **重启它不需要新设计,只需要执行一份已 Accepted 的 ADR。**
 `ADR-0017` §Consequences 自列的重写规模:`yield_split.rs` 492 → ~100、
