@@ -33,6 +33,8 @@
 - [§23. v0.9 增量备忘](#23-v09-)
 - [§24. v0.10 增量备忘 — 静态契约](#24-v010-)
 - [§25. v0.11 增量备忘 — `std.str` / `std.math` / `ASSERT` breaking](#25-v011-)
+- [§26. v0.11.2 增量备忘 — 编码 / Unicode 大小写 / 字符串检索 / 集合 / 超越函数](#26-v0112-)
+- [§27. v0.11.3 增量备忘 — 哈希与 KDF / Unicode / 输出安全 / 时钟 / 正则 / 随机 / 进程 / 压缩 / 网络 / `RESULT` / 精确数 / JSON 深度 / `ai`·`agent` 降级](#27-v0113-)
 
 ---
 
@@ -67,6 +69,9 @@ because the array is non-empty), `TASK` / `CHANNEL` handles, and
 | v0.8 | Clarifications: `EXPECT_ERR` in §8.3; `=` triple-identity; `LET`/`FUN` asymmetry; `%` float `E0030`; SHIELD/SCOPE(ERR)/AWAIT host-diagnostic notes; literal subscripts; `SUB` length semantics; float exponents; `MUT` as identifier; string-literal subscript |
 | **v0.9** | **True-suspension concurrency** (YIELD anywhere in task bodies; blocking SEND/RECV suspend; no `ChannelWouldBlock`); **structured cancellation** (`reason` DICT); **deadlock L1** (`E0065`/`W0065`); **OOP §13–§16** (`CLASS`/`NEW`/`THIS`/`GET_PROP`/`SET_PROP`/`CALL_METHOD`, session protocols, linear THIS); types `CLASS`/`INSTANCE`; codes `E0055`/`E0057` removed, `E0065`/`E0066`/`W0065`/`W0066` added |
 | **v0.10** | **Static contracts — all default-off, runtime unchanged from v0.9**: type annotation grammar enters the spec (`LET(x: INTEGER, …)`, `FUN((a: INTEGER, b: INTEGER) : INTEGER, …)`); container/function types `ARRAY[T]` / `DICT[K,V]` / `OPTION[T]` / `RESULT[T,E]`; bounded type variables `T: Comparable` (erased at runtime); `[features] gradual_typing = off\|warn\|error`; module signature sidecars `foo.wll.sig` + `SEALED([...])`; `MATCH` exhaustiveness behind `match_exhaustiveness`; codes `E0110`–`E0116` / `W0110`–`W0117` added (compile-time only) |
+| **v0.11** | **Two new `wlwl:std.*` namespaces and one breaking `ASSERT` change**, on a renumbered spec (the formatter moved to §A.3): `wlwl:std.str` (`JOIN` `SPLIT_LINES` `CHAR_AT` `COUNT` `QUOTE`) and `wlwl:std.math` (`ABS` `MIN` `MAX` `FLOOR` `CEIL` `ROUND` `SQRT` `POW` `CLAMP` `PI` `E`); ⚠ **`ASSERT` now rejects all eight falsy values** (`ASSERT(0)` used to pass). Full tables in §25 |
+| **v0.11.2** | **Standard library only — the language surface is frozen at v0.11** and `../docs/appendix_G.md` is unchanged. **41 new members**: `wlwl:std.encode` (6 encoders), `wlwl:std.text` (`TO_UPPER` `TO_LOWER`), `wlwl:std.str` (`INDEX_OF` `CONTAINS_SUB`), `wlwl:std.collection` (10), `wlwl:std.math` (21 transcendental / integer-math). Plus the `SUB` end-index migration formula fix. Full memo in §26 |
+| **v0.11.3** | **Standard library only — 115 new members plus one visible-surface change.** New namespaces `std.time` `std.regex` `std.rand` `std.env` `std.process` `std.compress` `std.net` `std.result` `std.sanitize`; `std.fs` grew from 3 to 18; `std.encode` gained the digest / KDF / CSPRNG family; `std.text` gained the Unicode family; `std.math` grew to 61; `std.json` gained a lexical layer and a path family. ⚠ **`ai` / `agent` left `wlwl:std.*`** — they are official packages now, imported as `"ai:ask"` / `"agent:task"`, and `wlwl:std.ai` no longer resolves (`E0040`). Full memo in §27 |
 
 ## §3. AST shapes (§A.2)
 
@@ -204,9 +209,9 @@ Uncaught ERR → `E0102`, exit 1.
 Full member lists live with the v0.11 namespaces: `std.collection` /
 `std.json` / `std.fs` / `std.test` / `std.format` / `std.io` /
 `std.encode` are listed in `SKILL.md` "Standard library pointers";
-the **v0.11-new** namespaces `std.str` and `std.math` have signed tables in
-§9.3 / §9.5 below, and the **v0.11.3-new** `std.sanitize` in §9.6 and
-`std.result` in **§9.15**. Concurrent
+`std.str` has a signed table in §9.3, **`std.math` has all 61 of its members
+in §9.5** (grouped by the spec's five families), and the **v0.11.3-new**
+`std.sanitize` is in §9.6 with `std.result` in **§9.15**. Concurrent
 and OOP primitives are **global**, not under `wlwl:std.*`.
 ⚠ **`std.ai` / `std.agent` are no longer under `wlwl:std.*`** (v0.11.3 M8,
 `ADR-0034`) — they are **official packages** imported as `"ai:ask"` /
@@ -214,23 +219,50 @@ and OOP primitives are **global**, not under `wlwl:std.*`.
 The authoritative registry of every global builtin (106 entries) is
 `../docs/appendix_G.md`.
 
-### §9.5 `wlwl:std.math` — the v0.11.2 twenty-one (stdlib §7.1)
+### §9.5 `wlwl:std.math` — the 61 members (stdlib §7, v0.11 → v0.11.3)
+
+`std.math` is **one namespace with 61 members**, in five families. It is split
+here by family because one 61-row table is unreadable; the normative tables are
+in `../docs/stdlib/wlwl-stdlib-spec-v0.11.md` §7.
+
+**Layers are mixed**: an R1 facade member may call an R2 kernel underneath
+(`TRUNC`), and the four families appended in v0.11.3 (`DECIMAL` / `FRACTION` /
+approximate comparison / descriptive statistics) are **R2 only**. Member counts
+per family: **A 32** (11 in v0.11 + 21 in v0.11.2) · **B 8** · **C 8** ·
+**D 4** · **E 9**.
+
+Conventions (stdlib §7): arithmetic promotion and overflow follow language
+spec §2.2; a **domain violation** returns an `ERR` *value*
+(`ERR(["kind": "DomainError", …])`); a wrong argument **type** is the native
+diagnostic `E0030`. `MIN` / `MAX` / `CLAMP` promote their **return** type too —
+any `FLOAT` argument makes the result `FLOAT` (`CLAMP` counts **all three**
+arguments).
+
+**A. Basics and float kernels — 32 members (stdlib §7.1)**
 
 | Member | Layer | Notes |
 |---|---|---|
-| `LN` / `LOG2` / `LOG10` | R2 | Natural / base-2 / base-10 log. `x < 0` → `ERR([kind: DomainError])`. **`LN(0)` is `-inf`, not an error** (matches C / Python / Go). |
-| `EXP` | R2 | Natural exponential, total. Overflows to `+inf`. |
-| `TRUNC` | R2 | Toward zero. **Not `INT`** — see below. |
-| `SIN` `COS` `TAN` | R2 | Radians, total. |
-| `ASIN` `ACOS` | R2 | Domain `[-1, 1]`; outside → `DomainError`. |
-| `ATAN` | R2 | Total. |
-| `ATAN2(y, x)` | R2 | Quadrant-aware. **Total** — `ATAN2(0, 0)` is `0.0`, not an error. |
-| `SINH` `COSH` `TANH` | R2 | Total; overflow to `±inf`. |
-| `POW_MOD(base, exp, mod)` | R2 | Modular power, square-and-multiply. `mod = 0` or `exp < 0` → `DomainError`. |
-| `SIGN(x)` | R1 | `-1` / `0` / `1`. **Always `INTEGER`**, even for a float input. |
-| `DIV_CEIL(a, b)` | R1 | Ceiling integer division. **Integers only** — `DIV_CEIL(7.0, 2)` is `E0030`, not a silent promotion. `b = 0` → `DomainError`. |
-| `GCD(a, b)` / `LCM(a, b)` | R1 | Euclidean. **Absolute values**: `GCD(-4, 6)` is `2`. `LCM` with a zero is `0`. |
-| `IS_SQRT(n)` | R2-adjacent (R1) | Integer square root, floored. `n < 0` → `DomainError`. |
+| `ABS(x)` | R1 | Absolute value; returns the **same type as the argument**. `INTEGER` lower bound → `E0034`. |
+| `MIN(a, b)` / `MAX(a, b)` | R1 | Binary min / max; mixed int/float promote per §2.2. |
+| `FLOOR(x)` / `CEIL(x)` | R1 | Round down / up. `INTEGER` is identity; `FLOAT` → `FLOAT`; `NaN` / `±inf` returned as-is. |
+| `ROUND(x)` | R1 | Half-**away-from-zero** rounding; otherwise as `FLOOR` / `CEIL`. |
+| `TRUNC(x)` | R1 facade + R2 float kernel | Toward zero. **Not `INT`** — see the traps below. Non-numeric → `E0030`. |
+| `CLAMP(x, lo, hi)` | R1 | Clamp into `[lo, hi]`; promotion as `MIN` / `MAX`. `lo > hi` → `ERR([kind: "DomainError"])`. |
+| `SQRT(x) -> FLOAT` | R2 | Square root; `-0.0` → `-0.0`. `x < 0` → `ERR([kind: "DomainError"])`. |
+| `POW(a, b) -> FLOAT` | R2 | Power; **both** arguments are promoted to `FLOAT`. `0` to a negative exponent, or a negative base with a non-integer exponent → `ERR([kind: "DomainError"])`. |
+| `PI` / `E` | R1 | `FLOAT` constants. |
+| `LN(x)` / `LOG2(x)` / `LOG10(x) -> FLOAT` | R2 | Natural / base-2 / base-10 log. **`x = 0` is not an error — it returns `-inf`** (matches C / Python / Go). `x < 0` → `ERR([kind: "DomainError"])`. |
+| `EXP(x) -> FLOAT` | R2 | Natural exponential; total. Overflows to `+inf`. |
+| `SIN(x)` / `COS(x)` / `TAN(x) -> FLOAT` | R2 | Trigonometry in **radians**; total. |
+| `ASIN(x)` / `ACOS(x) -> FLOAT` | R2 | Domain `[-1, 1]`; `ABS(x) > 1` → `ERR([kind: "DomainError"])`. |
+| `ATAN(x) -> FLOAT` | R2 | Total. |
+| `ATAN2(y, x) -> FLOAT` | R2 | Quadrant-aware. **Total** — `ATAN2(0, 0)` is `0.0`, not an error. |
+| `SINH(x)` / `COSH(x)` / `TANH(x) -> FLOAT` | R2 | Hyperbolic; total; overflow to `±inf`. |
+| `SIGN(x) -> INTEGER` | R1 | `-1` / `0` / `1`. **The return type is always `INTEGER`** — it does not follow the argument's promotion. |
+| `DIV_CEIL(a, b) -> INTEGER` | R1 | Ceiling integer division. **Integers only** — `DIV_CEIL(7.0, 2)` is `E0030`, not a silent promotion. `b = 0` → `ERR([kind: "DomainError"])`. |
+| `GCD(a, b) / LCM(a, b) -> INTEGER` | R1 | Euclidean. **Absolute values**: `GCD(-4, 6)` is `2`. `LCM` with a zero is `0`; `LCM` divides before multiplying so it avoids overflow. `INTEGER` lower bound while taking the absolute value → `E0034`; `LCM`'s intermediate product overflowing `i64` → `E0035`. |
+| `IS_SQRT(n) -> INTEGER` | R1 | Integer square root, floored — **it returns the root, not a boolean predicate** (unrelated to the `IS_OK` / `IS_ERR` family). `n < 0` → `ERR([kind: "DomainError"])`. |
+| `POW_MOD(base, exp, mod) -> INTEGER` | R2 | Modular power (square-and-multiply, `O(log exp)`); **`mod` may be a cryptographic prime such as `2^61-1`**. The remainder is the **Euclidean** one (it takes the sign of the modulus), not Rust's `%`. `mod = 0` or `exp < 0` → `ERR([kind: "DomainError"])`. |
 
 Six things that are easy to get wrong:
 
@@ -259,6 +291,209 @@ Six things that are easy to get wrong:
 > `[DIV_CEIL(7,2), DIV_CEIL(-7,2), DIV_CEIL(7,-2), DIV_CEIL(-7,-2)]` =
 > `[4, -3, -3, 4]`; `IS_SQRT(4611686018427387904)` = `2147483648`;
 > `POW_MOD(2, 10, 1000)` = `24`; `POW_MOD(-7, 3, 5)` = `2`.
+
+**B. `DECIMAL` family — 8 members (stdlib §7.2, new in v0.11.3)**
+
+The **value shape is a public contract** — a field-name change is breaking:
+
+```json
+{"sign": INTEGER, "digits": STRING, "scale": INTEGER}
+```
+
+It denotes `sign × digits × 10^-scale`. Canonical form: `digits` has **no
+leading zero** (zero is `"0"`) and holds ASCII digits only; `scale >= 0`;
+`sign ∈ {-1, 1}` and **zero is always `{1, "0", 0}`** — that removes the two
+representations of the same number.
+
+**`scale` is meaningful and is not normalised away**: `DECIMAL("1.00")` renders
+back as `"1.00"`. Money code depends on that — it carries the "how many
+decimal places" business fact.
+
+| Member | Layer | Notes |
+|---|---|---|
+| `DECIMAL(literal) -> DICT` | R2 | Build from a literal; accepts `[+-]?digits[.digits]`, including `".5"` and `"-0"`. Illegal literal → `E0030`. |
+| `DECIMAL_ADD(a, b) -> DICT` | R2 | Exact addition. The result's `scale` = the **larger** of the two. Illegal `DICT` → `E0030`. |
+| `DECIMAL_SUB(a, b) -> DICT` | R2 | Exact subtraction; same `scale` rule as `DECIMAL_ADD`. Illegal `DICT` → `E0030`. |
+| `DECIMAL_MUL(a, b) -> DICT` | R2 | Exact multiplication. The result's `scale` = the **sum** of the two. Illegal `DICT` → `E0030`. |
+| `DECIMAL_DIV(a, b, scale) -> DICT` | R2 | Exact to `scale` digits; rounding is always `HALF_EVEN`. **`scale` is mandatory**; `b = 0` → `ERR([kind: "DomainError", "op": "DIV"])`. |
+| `DECIMAL_CMP(a, b) -> INTEGER` | R2 | `-1` / `0` / `1`, compared **by value** — `1.0` and `1.00` are equal. Never fails. |
+| `DECIMAL_TO_STRING(a) -> STRING` | R2 | Rendered **by `scale`** (`"1.50"` / `"-0.25"` / `"3"`). Never fails. |
+| `DECIMAL_ROUND(a, scale, mode) -> DICT` | R2 | Round to `scale` digits by `mode`. **`mode` has no default**; unknown mode → `E0030`. |
+
+Four things that are easy to get wrong:
+
+1. **`scale` is mandatory because silent truncation is a lie about precision.**
+   The caller has to state how many digits it wants.
+2. **`mode` is mandatory because banker's rounding and half-up rounding are a
+   *business* decision** — a default would silently pick one for the caller.
+   The modes are `HALF_EVEN` (banker's), `HALF_UP` (half-up), `DOWN` (toward
+   zero), `UP` (away from zero), `FLOOR` (toward `-inf`), `CEILING` (toward
+   `+inf`). **The directional modes differ only on negatives**:
+   `FLOOR(-2.1)` = `-3` but `DOWN(-2.1)` = `-2`.
+3. **An illegal `DICT` is `E0030`, not a repair.** A caller can hand-write
+   `{"sign": 0, "digits": "abc", "scale": 0}` — the spec prices that
+   compromise in rather than pretending it cannot happen.
+4. **The family has no `MEAN` member** — `std.collection::SUM` plus `/`
+   already covers it.
+
+> *Measured on wlwl 0.11.3 (2026-10-20):* `DECIMAL("1.00")` =
+> `[sign: 1, digits: 100, scale: 2]`; `DECIMAL("-.5")` =
+> `[sign: -1, digits: 5, scale: 1]`; `DECIMAL("-0")` =
+> `[sign: 1, digits: 0, scale: 0]` (zero is always positive);
+> `DECIMAL_TO_STRING(DECIMAL_ADD(DECIMAL("1.25"), DECIMAL("0.5")))` = `"1.75"`;
+> `DECIMAL_MUL` of the same pair = `"0.625"` (scale 2 + 1);
+> `DECIMAL_DIV(DECIMAL("1"), DECIMAL("3"), 4)` = `"0.3333"`;
+> `DECIMAL_CMP(DECIMAL("1.0"), DECIMAL("1.00"))` = `0`;
+> `DECIMAL_CMP(DECIMAL("1.0"), DECIMAL("1.01"))` = `-1`;
+> `DECIMAL_ROUND(DECIMAL("2.5"), 0, "HALF_EVEN")` = `"2"`;
+> `DECIMAL_ROUND(DECIMAL("-2.1"), 0, "FLOOR")` = `"-3"`;
+> `DECIMAL_ROUND(DECIMAL("-2.1"), 0, "DOWN")` = `"-2"`.
+
+**C. `FRACTION` family — 8 members (stdlib §7.3, new in v0.11.3)**
+
+The **value shape is a public contract** — a field-name change is breaking:
+
+```json
+{"num": INTEGER, "den": INTEGER}
+```
+
+Canonical form: `den > 0`, `gcd(|num|, den) = 1` (**reduced to lowest terms**),
+and **zero is always `{0, 1}`**.
+
+| Member | Layer | Notes |
+|---|---|---|
+| `FRACTION(n, d) -> DICT` | R2 | Construct and reduce; a negative denominator flips **both** numerator and denominator. `d = 0` → `ERR([kind: "DomainError"])`. |
+| `FRACTION_ADD(a, b) -> DICT` | R2 | Exact addition; the result is auto-reduced. Overflow → `ERR([kind: "OverflowError"])`; illegal `DICT` → `E0030`. |
+| `FRACTION_SUB(a, b) -> DICT` | R2 | Exact subtraction; same rules as `FRACTION_ADD`. |
+| `FRACTION_MUL(a, b) -> DICT` | R2 | Exact multiplication; auto-reduced. Overflow → `ERR([kind: "OverflowError"])`; illegal `DICT` → `E0030`. |
+| `FRACTION_DIV(a, b) -> DICT` | R2 | Exact division. Zero divisor or overflow → `ERR`. |
+| `FRACTION_CMP(a, b) -> INTEGER` | R2 | `-1` / `0` / `1`. **Never fails** — the cross-multiplication goes through `i128`, so an intermediate overflow must not be turned into a wrong answer. |
+| `FRACTION_TO_STRING(f) -> STRING` | R2 | `"3/4"` / `"-1/2"` / `"2"` (no denominator when it is `1`). |
+| `FRACTION_TO_DECIMAL(f, scale) -> DICT` | R2 | Convert to a **`DECIMAL` dict** (not a `FRACTION` one), rounding always `HALF_EVEN`. **`scale` is mandatory**; outside `0..=30` → `E0030`. |
+
+Four things that are easy to get wrong:
+
+1. **The numerator and denominator are `i64`, not arbitrary precision.** A long
+   chain of fraction multiplications hits the `i64` ceiling easily, so the
+   family **checks before the overflow happens** and reports
+   `ERR([kind: "OverflowError"])`. The language-level `E0035` — which
+   **terminates the whole run** — must never escape from a library member.
+2. **An unreduced / `den <= 0` / zero-not-`0/1` `DICT` is `E0030`, not a
+   repair** — the same priced compromise as the `DECIMAL` family.
+3. **`scale` is mandatory** because `1/3`'s decimal expansion **does not
+   terminate**; silently returning a truncated value would be a precision lie.
+4. **`FRACTION_TO_DECIMAL` returns a `DECIMAL` dict.** Feeding it to
+   `FRACTION_TO_STRING` is `E0030` — the shapes are not interchangeable.
+
+> *Measured on wlwl 0.11.3 (2026-10-20):* `FRACTION(3, 6)` =
+> `[num: 1, den: 2]`; `FRACTION(1, -2)` = `[num: -1, den: 2]`;
+> `FRACTION_TO_STRING(FRACTION_ADD(FRACTION(1, 2), FRACTION(1, 3)))` = `"5/6"`;
+> `FRACTION_SUB` of the same pair = `"1/6"`;
+> `FRACTION_MUL(FRACTION(1, 2), FRACTION(2, 3))` = `"1/3"`;
+> `FRACTION_DIV(FRACTION(1, 2), FRACTION(1, 4))` = `"2"`;
+> `FRACTION_CMP(FRACTION(1, 2), FRACTION(2, 4))` = `0`;
+> `FRACTION_TO_STRING(FRACTION(2, 1))` = `"2"`.
+
+**D. Approximate comparison — 4 members (stdlib §7.4, new in v0.11.3)**
+
+| Member | Layer | Notes |
+|---|---|---|
+| `APPROX_EQ(a, b, rel_tol, abs_tol) -> BOOLEAN` | R2 | `\|a - b\| <= max(rel_tol × max(\|a\|, \|b\|), abs_tol)`. Arity 4; a non-numeric argument → `E0030`. |
+| `IS_NAN(x) -> BOOLEAN` | R2 | Is `x` `NaN`. A non-numeric argument → `E0030`. |
+| `IS_INF(x) -> BOOLEAN` | R2 | Is `x` `±inf`. Same. |
+| `SIGNIFICANT_DIGITS(x, n) -> BOOLEAN` | R2 | Is `x` **exactly equal** to its value after keeping `n` significant digits. `n` outside `1..=17` → `E0030`. |
+
+Three things that are easy to get wrong:
+
+1. **Neither tolerance has a default.** Whether `0.1` and `0.1000000001` are
+   equal is a **business decision**; guessing a default picks the semantics for
+   the caller.
+2. **`IS_INF` fills a gap, it is not a convenience.** `==(x, x)` is **TRUE**
+   for `±inf` — the self-equality test cannot see it, and this library had
+   neither `IS_INF` nor `IS_NAN` before this family. `NaN` at least has the
+   classic `x != x` workaround.
+3. **`SIGNIFICANT_DIGITS` is a predicate.** "How many significant digits does
+   `x` have" would be a *different* member, and it is not one.
+
+All three are **total functions** — a special value must not make them crash:
+
+| Case | `APPROX_EQ` | `SIGNIFICANT_DIGITS` |
+|---|---|---|
+| `NaN` against any value (including itself) | `FALSE` | `FALSE` |
+| `±inf` against the **same-sign** `±inf` | `TRUE` | `FALSE` |
+| `±inf` against `-∞` or a finite value | `FALSE` | `FALSE` |
+| `0.0` | normal criterion | `TRUE` (zero is "already there" for any `n >= 1`) |
+
+> *Measured on wlwl 0.11.3 (2026-10-20):* `APPROX_EQ(1.0, 1.0, 0.0, 0.0)` =
+> `TRUE`; `IS_NAN(0.0)` = `FALSE`; `IS_INF(1.0)` = `FALSE`;
+> `SIGNIFICANT_DIGITS(1.5, 2)` = `TRUE`;
+> `SIGNIFICANT_DIGITS(1.5, 3)` = `TRUE` (keeping 3 digits gives `1.50`, which
+> is exactly `1.5`).
+
+**E. Descriptive statistics — 9 members (stdlib §7.5, new in v0.11.3)**
+
+| Member | Layer | Notes |
+|---|---|---|
+| `MEDIAN(arr) -> v` | R2 | Median after sorting; **an even length averages the middle two** (via `f64` — integer `/` would truncate). `[]` → `NULL`. |
+| `MODE(arr) -> v` | R2 | The most frequent value; **ties go to the first occurrence**; if every value occurs once there is no mode. `[]` → `NULL`. |
+| `VARIANCE_S(arr) -> v` | R2 | **Sample** variance (denominator `n-1`). `[]` → `NULL`. |
+| `VARIANCE_P(arr) -> v` | R2 | **Population** variance (denominator `n`). `[]` → `NULL`. |
+| `STDDEV_S(arr) -> v` | R2 | The square root of `VARIANCE_S`. `[]` → `NULL`. |
+| `STDDEV_P(arr) -> v` | R2 | The square root of `VARIANCE_P`. `[]` → `NULL`. |
+| `PERCENTILE(arr, p) -> v` | R2 | `p ∈ [0, 100]`, **linear interpolation** (endpoints included). `p` out of range → `NULL`. |
+| `CORRELATION(xs, ys) -> v` | R2 | Pearson correlation coefficient; the two arrays must be **the same length**. Zero variance in either direction → `NULL`. |
+| `LINEAR_FIT(xs, ys) -> DICT` | R2 | Least-squares line ⇒ `{"slope": FLOAT, "intercept": FLOAT}`. Zero variance in either direction → `NULL`. |
+
+Five things that are easy to get wrong:
+
+1. **Sample and population variance are two separate members**, not one
+   member with a flag. `VARIANCE_S` / `STDDEV_S` divide by `n-1`;
+   `VARIANCE_P` / `STDDEV_P` divide by `n`.
+2. **"Empty" and "undefined" both give `NULL`, not an error** — and the two
+   are different inputs:
+
+   | Input | Result | Why |
+   |---|---|---|
+   | `[]` | `NULL` | No samples, consistent with `std.collection` §5 |
+   | sample variance / stddev of `[x]` | `NULL` | Denominator `n-1 = 0` — **mathematically undefined** |
+   | population variance / stddev of `[x]` | `0.0` | Denominator `n = 1` — defined |
+   | any element is `NaN` / `±inf` | `NULL` | See below |
+   | `CORRELATION` / `LINEAR_FIT` with zero variance in either direction | `NULL` | The coefficient / slope is undefined, **not 0** |
+   | `PERCENTILE` with `p` out of range | `NULL` | `p` is **data**, not a wrong argument |
+
+3. **`NaN` does not seep into a statistic.** wlwl has no convention for
+   propagating float exceptions (`/(0.0, 0.0)` is `E1003`), and a `NaN` that
+   quietly enters a statistic makes the result untrustworthy in a way the
+   caller cannot see. `NULL` is visible.
+4. **A mixed `ARRAY[INTEGER]` / `ARRAY[FLOAT]` does not raise `E0030`** — the
+   same rule as `SUM`. Tightening it would split the family from `SUM`, and a
+   split means one of the two is wrong.
+5. **`PERCENTILE`'s interpolation method is observable**, so it is written
+   down: on the same data, the linear / lower / higher / midpoint / Haudrey
+   methods give **different** values. This spec takes linear (endpoints
+   included) — equivalent to NumPy `method="linear"` and Python
+   `statistics.quantiles(method="inclusive")`.
+
+**`CORRELATION` is always `±1` at `n = 2`** — two points are always collinear.
+That is a mathematical fact, not a defect. The family has **no `MEAN`
+member** — `SUM` plus `/` already covers it.
+
+> *Measured on wlwl 0.11.3 (2026-10-20):* `MEDIAN([1, 2, 3, 4])` = `2.5`
+> (the even-length average); `MEDIAN([1, 3, 2])` = `2.0`;
+> `MODE([1, 1, 2, 3])` = `1.0`; `MODE([1, 2, 3])` = `NULL` (no mode);
+> `VARIANCE_S([1,2,3,4])` = `1.6666666666666667`;
+> `VARIANCE_P([1,2,3,4])` = `1.25`;
+> `STDDEV_S([1,2,3,4])` = `1.2909944487358056`;
+> `STDDEV_P([1,2,3,4])` = `1.118033988749895`;
+> `VARIANCE_S([7])` = `NULL`; `VARIANCE_P([7])` = `0.0`; `STDDEV_S([7])` =
+> `NULL`; `PERCENTILE([1,2,3,4], 50.0)` = `2.5`;
+> `PERCENTILE([1,2,3,4], 101.0)` = `NULL`;
+> `CORRELATION([1,2,3], [2,4,6])` = `1.0`;
+> `CORRELATION([1,2,3], [1,1,1])` = `NULL`;
+> `LINEAR_FIT([1,2,3], [2,4,6])` = `[slope: 2.0, intercept: 0.0]`;
+> `MEDIAN([])` = `NULL`; `MODE([])` = `NULL`.
+> ⚠ The whole family returns **`FLOAT`** even for integer input
+> (`MODE([1, 1, 2, 3])` is `1.0`, not `1`).
 
 ### §9.4 `wlwl:std.collection` — the v0.11.2 ten (stdlib §5.1)
 
@@ -795,14 +1030,62 @@ WALK_DIR(".", "**/*.md");          // `**` crosses directories, `*` does not
   `ENV_GET` of an unset variable returns `NULL`, not `""` — "unset" and "set to
   empty" are different states. `ENV_SET` is process-local and never touches disk.
   `ARGS()` includes `argv[0]`, like Go's `os.Args` and Python's `sys.argv`.
-- `std.process`: `PROCESS_RUN(argv, opts?)` returns `[code, stdout, stderr]`.
-  ⚠ **`argv` must be an `ARRAY[STRING]`** — concatenating into one string and
-  letting the OS re-parse **is command injection**, so the string form is rejected
-  and there is deliberately no `SYSTEM` / `sh -c` member. A **nonzero exit code is
-  data, not an error**. Unknown `opts` keys (e.g. `shell`) are **rejected, not
-  ignored**: ignoring and forbidding are different things in a security context.
-  ⚠ **It blocks** — in this single-threaded cooperative runtime nothing else is
-  scheduled while a child runs (same cost as `std.time::SLEEP`).
+- **`std.process`** — both members are **R2**; a failure is an **`ERR` value**,
+  not a diagnostic:
+
+| Member | Notes |
+|---|---|
+| `PROCESS_RUN(argv, opts?) -> DICT` | Returns `[code: INTEGER, stdout: STRING, stderr: STRING]`. ⚠ **`argv` must be an `ARRAY[STRING]`** — concatenating into one string and letting the OS re-parse **is command injection**, so the string form is rejected and there is deliberately no `SYSTEM` / `sh -c` member. A **nonzero exit code is data, not an error**. Unknown `opts` keys (e.g. `shell`) are **rejected, not ignored**: ignoring and forbidding are different things in a security context. ⚠ **It blocks** — in this single-threaded cooperative runtime nothing else is scheduled while a child runs (same cost as `std.time::SLEEP`). |
+| `PROCESS_ID() -> INTEGER` | This process's id. It takes **no arguments** — a non-zero arity is `E0022`. |
+
+  A start-up failure or a timeout is `ERR([kind: "ProcessError", op, reason])`.
+  There is deliberately **no `PROCESS_EXIT_CODE` member**: it would need "the
+  exit code of the last `PROCESS_RUN`", which is hidden mutable state across
+  calls, and the `code` field is already in the returned value.
+
+**`std.fs` — the tree-mutation family** (stdlib §2.2; all four are **R2** and
+all four fail with an **`ERR` value**, not a native diagnostic):
+
+| Member | Notes |
+|---|---|
+| `REMOVE(p, recursive?) -> NULL` | Delete a file or a directory. **A non-empty directory without `recursive = TRUE` fails** — it is not silently emptied. |
+| `COPY(src, dst) -> NULL` | Copy a **file**. **Directories are not copied** — there is no recursive-copy member. |
+| `MOVE(src, dst) -> NULL` | Move / rename. A **cross-device** move automatically falls back to "copy + delete". ⚠ **Symbolic links are handled differently depending on the device**: **same device** (the `rename` path) ⇒ the **link is preserved**; **cross-device** (the copy + delete fallback) ⇒ the link is **expanded by content** (a directory link becomes a real directory). This is **specified behaviour**, not an accident — see stdlib §2.3. If your code depends on "the moved thing is still a link", **make sure it stays on one device**. |
+| `FILE_SIZE(p) -> INTEGER` | Size in **bytes**. |
+
+The failure payload for the whole path / directory / byte family is
+`ERR([kind: "FsError", op: <member name>, reason: <path and OS reason>])`.
+
+⚠ **`WRITE_BYTES` has a per-call cap of 64 MiB** (`MAX_WRITE_BYTES`) — a larger
+array is an `ERR`, **not** a truncation and **not** an OOM. ⚠ The cap is checked
+**before** the write, so an over-cap call **leaves the target file untouched**.
+⚠ **Written ≠ readable**: `READ_BYTES` reads at most **1 MiB** per call, so a
+file larger than 1 MiB can be written but **not** read back in one go — leave
+big payloads in files and move them with the byte-stream members
+(`std.compress`), not through a language-value array.
+"Directory does not exist" and "already exists" are **expected runtime
+results**, so the caller gets a branchable `ERR` instead of a diagnostic that
+terminates the run. (Only the three **frozen** v0.3 members — `READ_FILE` /
+`WRITE_FILE` / `EXISTS` — still use the native `E0060`–`E0062` diagnostics,
+and their semantics have not changed since v0.3.)
+
+⚠ **`MOVE`'s cross-device fallback is not a plain copy.** It expands symlinks
+under the same discipline as `WALK_DIR(follow = TRUE)` and keeps a `visited`
+set to break cycles; **hitting a cycle returns an `ERR` rather than skipping
+it**. Skipping would let the follow-up delete wipe the source side's link —
+losing a link is worse than failing. ⚠ **Whether a symlink survives the move
+depends on the devices** (stdlib §2.2, D13-051): a **same-device** move is a
+plain rename and keeps the link **as a link**; a **cross-device** move falls
+back to copy + delete and therefore expands the link **by content** (a
+directory link becomes a real directory, a file link becomes the target's
+bytes). A caller that depends on "the thing I moved is still a symlink" must
+confirm it stays on one device.
+
+> *Measured on wlwl 0.11.3 (2026-10-20):* `FILE_SIZE` of a 5-byte file = `5`;
+> `COPY` then `MOVE` then `REMOVE` behave as above; the failure payload of
+> `REMOVE` / `COPY` / `MOVE` / `FILE_SIZE` on a missing path is
+> `[kind: FsError, op: REMOVE, reason: …: not found: … (os error 2)]` — the
+> `op` field is the member's own name.
 
 ### §9.11 `wlwl:std.time` — clocks, sleep and the fake-clock bubble (stdlib §15, v0.11.3)
 
@@ -916,7 +1199,7 @@ one is an error, not caution:**
 | a **CSS string literal** — e.g. `content:` | `CSS_ESCAPE_STRING` | an unescaped `"` ends the literal early |
 | a **CSS declaration** from untrusted input | `HTML_SANITIZE_CSS` — **allowlist first** | escaping alone never stops `expression(` / `url(javascript:)`; OWASP's CSS guidance leads with the allowlist for exactly this reason |
 | a URL you intend to put in `href` / `src` | `HTML_SANITIZE_URL` | `URL_ENCODE` percent-encodes but **does not** judge the scheme |
-| **server-rendered state** inlined into `<script>` | `HTML_SANITIZE_SCRIPT` | `JSON_STRINGIFY` alone is **not** an output-encoding function (see below) |
+| **server-rendered state** inlined into `<script>` | `HTML_SANITIZE_SCRIPT` | `STRINGIFY` alone is **not** an output-encoding function (see below) |
 
 | Member | Notes |
 |---|---|
@@ -929,7 +1212,7 @@ one is an error, not caution:**
 | `HTML_SANITIZE_CSS(text)` | Allowlist extractor over a **declaration list**. Two *separate* outcomes: a non-allowlisted property is **silently dropped** (that is the allowlist working), while a rejected construct (`@import`, `expression(`, `javascript:`, `behavior:`, `-moz-binding`, **any** `url(`) yields `ERR`. |
 | `HTML_SANITIZE_URL(u)` | Normalizes (trims control chars / surrounding whitespace) and judges the scheme with **the same logic** the sanitizer uses for `href`. Rejected → `ERR`. |
 
-⚠ **`JSON_STRINGIFY` alone is not enough for inline script.** OWASP states plainly
+⚠ **`STRINGIFY` alone is not enough for inline script.** OWASP states plainly
 that it "is not an output-encoding function": its output is valid JSON, but
 embedding it in HTML needs protection for the *destination* context. Measured here —
 `STRINGIFY` emits `<`, `>`, `&`, U+2028 and U+2029 **verbatim**. `HTML_SANITIZE_SCRIPT`
@@ -1675,3 +1958,192 @@ Unicode data version is pinned to **18.0.0**. Correctness evidence lives
   character and both happen to measure 1 here, but that is two independent
   table lookups, **not** a recognized equivalence. Normalize first if you
   mean equivalence.
+
+---
+
+## §26. v0.11.2 增量备忘 — 编码 / Unicode 大小写 / 字符串检索 / 集合 / 超越函数
+
+v0.11.2 added **41 standard-library members** and **no language-surface change**
+— the language spec is frozen at v0.11 and `../docs/appendix_G.md` is
+byte-for-byte unchanged. Every member below is `IMPORT`-gated like every other
+`wlwl:std.*` member.
+
+| Namespace | New members | Detail |
+|---|---|---|
+| `wlwl:std.encode` | `BASE64_ENCODE` `BASE64_DECODE` `HEX_ENCODE` `HEX_DECODE` `URL_ENCODE` `URL_DECODE` | §9.1 |
+| `wlwl:std.text` | `TO_UPPER` `TO_LOWER` | §9.2 |
+| `wlwl:std.str` | `INDEX_OF` `CONTAINS_SUB` | §9.3 |
+| `wlwl:std.collection` | `CHUNK` `WINDOW` `DEDUP_BY` `MIN_BY` `MAX_BY` `SUM` `PRODUCT` `FOLD_RIGHT` `POSITION` `KEY_BY` | §9.4 |
+| `wlwl:std.math` | `LN` `LOG2` `LOG10` `EXP` `TRUNC` `SIN` `COS` `TAN` `ASIN` `ACOS` `ATAN` `ATAN2` `SINH` `COSH` `TANH` `POW_MOD` `SIGN` `DIV_CEIL` `GCD` `LCM` `IS_SQRT` | §9.5 |
+
+The five traps this batch introduced, each written up in the section it
+belongs to:
+
+1. **Decode failures are `ERR` values, not diagnostics** — `kind = "DecodeError"`,
+   deliberately *not* `DomainError`, so a caller can tell "the base64 string
+   was malformed" from "the argument was out of the function's domain".
+2. **`URL_DECODE` keeps `+` literal** — that is RFC 3986, not
+   `application/x-www-form-urlencoded`.
+3. **`BASE64_DECODE` accepts both alphabets** and ignores `CR` / `LF`, and
+   `BASE64_ENCODE(url_safe = TRUE)` swaps `+/` → `-_`.
+4. **The global `UPPER` / `LOWER` stay ASCII-only** — replacing a global
+   builtin is breaking, so `std.text` added *new* members instead. `ß` → `SS`
+   changes the length; Greek `Σ` lowercases to `ς` word-finally.
+5. **`INDEX_OF` / `CONTAINS_SUB` / `COUNT` all reject an empty `sub`** with
+   `E0030` — an empty `sub` is not a wildcard. `INDEX_OF`'s offset is a
+   **codepoint**, the same frame as `SUB`, so the hit can be sliced straight
+   back out.
+
+Plus one **prose fix that changed a published formula**: the `SUB` end-index
+migration is `SUB(s, start, -(end_old, start))` — **length = end − start**,
+subtraction order `end_old` first, and **do not wrap it in `NEG`** (that
+re-negates the length and yields `""`). `SLICE` is **not** an alternative — it
+takes an `ARRAY` first argument and rejects strings with `E0030`, and `E0030` is
+a native diagnostic no §8.3 consumer can catch, so the "migration" would abort
+the program instead of degrading it. `examples/sub_migration.wll` was added for
+this and is gated with `PANIC`, not `RUN_TESTS` (a failing `RUN_TESTS` still
+exits 0 and would not stop CI).
+
+`std.math` also grew to **61 members** by v0.11.3 — §9.5 has the full
+catalogue, grouped by family.
+
+---
+
+## §27. v0.11.3 增量备忘 — 哈希与 KDF / Unicode / 输出安全 / 时钟 / 正则 / 随机 / 进程 / 压缩 / 网络 / `RESULT` / 精确数 / JSON 深度 / `ai`·`agent` 降级
+
+v0.11.3 added **115 standard-library members** plus **one visible-surface
+change** (the `ai` / `agent` demotion, below). The language surface is
+unchanged.
+
+Appendix A registers **214 members** in total; by the stdlib spec's own
+per-chapter 设计依据 the three batches split as **58 (v0.11 and earlier) /
+41 (v0.11.2) / 115 (v0.11.3)**.
+
+| Namespace | New members | Detail |
+|---|---|---|
+| `wlwl:std.encode` | `SHA256` `HMAC_SHA256` `PBKDF2_ITER` `ARGON2ID` `RANDOM_BYTES` `RANDOM_HEX` `TIMING_SAFE_EQ` | §9.1 |
+| `wlwl:std.text` | `NFC` `NFD` `NFC_QC` `GRAPHEME_COUNT` `WIDTH` | §25.4 |
+| `wlwl:std.sanitize` | `HTML_ESCAPE` `HTML_UNESCAPE` `HTML_SANITIZE` `HTML_SANITIZE_SCRIPT` `CSS_ESCAPE_IDENT` `CSS_ESCAPE_STRING` `HTML_SANITIZE_CSS` `HTML_SANITIZE_URL` | §9.6 |
+| `wlwl:std.time` | `NOW` `MONOTONIC` `SLEEP` `TEST_BUBBLE` `ADVANCE` `TIMEOUT` | §9.11 |
+| `wlwl:std.regex` | `RE` `RE_TEST` `RE_SEARCH` `RE_FIND_ALL` `RE_REPLACE` `RE_SPLIT` `RE_GROUP_COUNT` | §9.9 |
+| `wlwl:std.rand` | `SEED` `UNIFORM` `INT_RANGE` `CODEPOINT` | §9.10 |
+| `wlwl:std.env` | `ENV_GET` `ENV_SET` `ENV_KEYS` `ARGS` | §9.12 |
+| `wlwl:std.process` | `PROCESS_RUN` `PROCESS_ID` | §9.12 |
+| `wlwl:std.fs` | the path / directory / byte families — `PATH_JOIN` `PATH_DIR` `PATH_BASE` `PATH_EXT` `PATH_NORMALIZE` `LIST_DIR` `WALK_DIR` `MKDIR` `MKDIRS` `REMOVE` `COPY` `MOVE` `FILE_SIZE` `READ_BYTES` `WRITE_BYTES` | §9.12 |
+| `wlwl:std.compress` | `ZSTD_COMPRESS` `ZSTD_DECOMPRESS` `ZLIB_COMPRESS` `ZLIB_DECOMPRESS` `GZIP_COMPRESS` `GZIP_DECOMPRESS` `DEFLATE_RAW_COMPRESS` `DEFLATE_RAW_DECOMPRESS` | §9.13 |
+| `wlwl:std.net` | `URL_PARSE` `URL_JOIN` `HTTP_GET` `HTTP_POST` `HTTP_REQUEST` | §9.14 |
+| `wlwl:std.result` | `RESULT_MAP` `AND_THEN` `FLATTEN` `NULL_OR` `RESULT_ALL` `RESULT_ANY` | §9.15 |
+| `wlwl:std.math` | the `DECIMAL` family (8) + the `FRACTION` family (8) + approximate comparison (4) + descriptive statistics (9) | §9.5 B–E |
+| `wlwl:std.json` | the low-level lexical layer and the path family — `JSON_TOKENIZE` `JSON_LOCATE` `JSON_VALIDATE` `JSON_GET` `JSON_SET` `JSON_DELETE` `JSON_MERGE` `JSON_CHUNK_ITEMS` `JSON_CHECK` | §9.7 |
+
+`wlwl:std.collection` gained **no new members** in this batch, but **13 of its
+27 members moved from R1 to R2** (M5) — `MAP` `FILTER` `CHUNK` `WINDOW`
+`ENUMERATE` `ZIP` `UNIQ` `FLAT` `JOIN` `GROUP_BY` `DEDUP_BY` `KEY_BY`. That is
+a **layer** change, not a visible-surface change: the member names, signatures,
+semantics and diagnostics are unchanged, and the spec's §0.7 rule says a
+layer move is not breaking. The pay-off is that the array-building members
+stopped being quadratic — but `SORT` / `SORT_BY` and `UNIQ` are **still**
+quadratic, and §9.4 has the measured numbers.
+
+### §27.1 ⚠ Visible-surface change: `ai` / `agent` left `wlwl:std.*`
+
+This is the one thing in v0.11.3 that changes **existing** code, so it is
+worth reading on its own (`ADR-0034`, M8).
+
+**The import line changed:**
+
+```wlwl
+IMPORT("ai:ask", ["ASK", "EMBED", "COMPLETE", "ASK_STREAM", "ASK_ALL"]);
+IMPORT("agent:task", ["TASK", "TOOL", "CALL_TOOL", "MODEL", "CONTEXT"]);
+```
+
+**What stops resolving, and how it fails:**
+
+- `IMPORT("wlwl:std.ai", …)` and `IMPORT("wlwl:std.agent", …)` → **`E0040`**
+  ("module 'wlwl:std.ai' not found"). This is deliberate: an *empty* shell
+  would make "did it move or not" invisible.
+- `IMPORT("wlwl:ai", …)` → also **`E0040`**. `wlwl:` is the **reserved std
+  prefix**, so the resolver returns "no" for any path starting with it, the
+  path falls through to the bare-module-name branch, and the runtime goes
+  looking for a file named `…\wlwl:ai.wll`. **Only the `ai:` / `agent:` prefix
+  forms work.**
+
+**There is no namespace-qualified call syntax** (stdlib §0.6): the grammar has
+no `ns.MEMBER(...)` production, and the colon appears **only** inside the
+`IMPORT` path string and in the rename slot. So `ai:ask.ASK(…)`, `ai.ASK(…)`
+and `wlwl:std.ai.ASK(…)` are all parse errors, not runtime errors. After
+`IMPORT`, a member is reachable **only as a bare name**.
+
+**Rename at `IMPORT` time to dodge a type-name collision** — that is the
+escape hatch:
+
+```wlwl
+IMPORT("agent:task", ["TASK": "AGENT_TASK", "TOOL", "MODEL", "CONTEXT"]);
+```
+
+**What did *not* change:** the member names, the signatures, the semantics and
+the error codes (`E0080`–`E0083` for `ai`, `E0090`–`E0094` for `agent`) are
+**unchanged**. Only the visible surface moved. The packages still compile
+inside `wlwl-std` under the `real-ai` feature — that feature gates the **HTTP
+transport** (mock ↔ real), **not** the members, so all five `ai` members are
+visible and importable in a default build.
+
+> *Measured on wlwl 0.11.3 (2026-10-20):* `IMPORT("ai:ask", …)` +
+> `EMBED("hello")` returns the four-dimensional mock vector;
+> `IMPORT("agent:task", ["TASK": "AGENT_TASK", …])` + `TOOL("t1", "desc")`
+> returns `[description: desc, name: t1, params_schema: NULL,
+> returns_schema: NULL, v: 0.4.0]`; `IMPORT("wlwl:std.ai", …)` fails with
+> `E0040`.
+
+### §27.2 The rest of v0.11.3, in one line each
+
+The full contracts live in the §9.x sections named in the table above. The
+one-line shape of each family:
+
+- **Hashing and KDF** (§9.1) — `SHA256` / `HMAC_SHA256` are **fast digests**,
+  never password hashes; `PBKDF2_ITER` / `ARGON2ID` are the password hashes
+  and take **every parameter explicitly with no defaults**. `salt` is **hex
+  text**, so a salt comes from `RANDOM_HEX` — never from raw bytes. The KDF
+  lower bounds are OWASP 2025 minimums and out-of-range values are `E0030`;
+  `algo` accepts only `"sha256"`. `TIMING_SAFE_EQ` never fails — unequal
+  lengths are `FALSE`, not an error.
+- **Unicode** (§9.2, §25.4) — two coordinate systems (`LEN` counts code
+  points, `GRAPHEME_COUNT` counts clusters), and **no normalization means not
+  equal**: compare with `==(NFC(a), NFC(b))`. `NFC_QC` is **one-directional** —
+  `FALSE` means "no guarantee", not "not NFC".
+- **Output safety** (§9.6) — **pick by output context**; `HTML_ESCAPE`,
+  `HTML_SANITIZE`, `CSS_ESCAPE_*` and `HTML_SANITIZE_URL` are not
+  interchangeable. `HTML_SANITIZE` is an **output-point** tool, not input-side
+  cleaning.
+- **Clocks** (§9.11) — `NOW()` is Unix **milliseconds** (wall clock — never
+  use it to measure elapsed time); `MONOTONIC()`'s **absolute value is
+  meaningless**, only differences are valid; `SLEEP` and `TEST_BUBBLE` give
+  **deterministic** time, and bubbles **do not nest**.
+- **Regex** (§9.9) — linear time, no backtracking: lookarounds, backreferences,
+  named groups and `\p{…}` are **rejected**, not "added later".
+- **Randomness** (§9.10) — **explicitly seeded, no hidden state**; draw
+  members return `[value, next_state]`, not a scalar. `std.rand` is **not**
+  cryptographic; salts and tokens go through `std.encode`.
+- **Environment and processes** (§9.12) — `ENV_KEYS()` is **sorted**;
+  `ENV_GET` of an unset variable is `NULL`, not `""`. `argv` must be an
+  `ARRAY[STRING]` — the string form is command injection, and there is
+  deliberately no `SYSTEM` member. `PROCESS_RUN` **blocks** the whole runtime.
+- **Compression** (§9.13) — payload is `ARRAY[INTEGER]`, **compression is not
+  encryption**, and the decompression cap is a hard boundary, not an OOM.
+- **Network** (§9.14) — **plaintext `http:` only, no TLS**; `HTTP_*` is a
+  **blocking primitive**; redirects are **not** followed; failures are `ERR`
+  values, not diagnostics.
+- **`RESULT` combinators** (§9.15) — `RESULT_MAP` / `AND_THEN` / `FLATTEN` /
+  `NULL_OR` / `RESULT_ALL` / `RESULT_ANY`. ⚠ They **cannot see an `ERR`** —
+  a call whose argument is an `ERR` never runs the callee's body, so
+  `RESULT_MAP(ERR(e), f)` returns `ERR(e)` *because the body never ran*.
+- **Exact numbers** (§9.5 B–E) — `DECIMAL` and `FRACTION` are `DICT`-shaped
+  and their **field names are a public contract**. `scale` is **mandatory** on
+  `DECIMAL_DIV` and `FRACTION_TO_DECIMAL`; `mode` is **mandatory** on
+  `DECIMAL_ROUND`. Fractions are `i64`, not arbitrary precision — an overflow
+  is reported as `ERR([kind: "OverflowError"])`, never as the run-terminating
+  `E0035`.
+- **JSON depth** (§9.7) — the new members fail with **`ERR` values** while
+  `PARSE` / `STRINGIFY` still use the `E0070` / `E0071` diagnostics: **two
+  failure conventions in one namespace, both by spec**.
+

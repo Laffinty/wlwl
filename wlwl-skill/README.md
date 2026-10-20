@@ -82,6 +82,21 @@ This skill targets **wlwl-spec-v0.11** (file at
   - **⚠ BREAKING: `ASSERT` now rejects all eight falsy values.** It used to
     treat only `BOOLEAN(false)` and `NULL` as false, so `ASSERT(0)`,
     `ASSERT("")` and `ASSERT([])` silently passed. They now fail `E0046`.
+- **v0.11.2** adds **41 standard-library members** and **no language change** —
+  the language spec stays frozen at v0.11 and `../docs/appendix_G.md` is
+  unchanged. New: `wlwl:std.encode` (the six encoders), `wlwl:std.text`
+  (`TO_UPPER` `TO_LOWER`), `wlwl:std.str` (`INDEX_OF` `CONTAINS_SUB`),
+  `wlwl:std.collection` (10), `wlwl:std.math` (21 transcendental /
+  integer-math). Full memo in `reference.md` §26.
+- **v0.11.3** adds **115 standard-library members** plus **one visible-surface
+  change**. New namespaces: `std.time` `std.regex` `std.rand` `std.env`
+  `std.process` `std.compress` `std.net` `std.result` `std.sanitize`;
+  `std.fs` grew from 3 to 18; `std.encode` gained the digest / KDF / CSPRNG
+  family; `std.text` gained the Unicode family; `std.math` grew to 61;
+  `std.json` gained a lexical layer and a path family.
+  **⚠ `ai` / `agent` left `wlwl:std.*`** — they are official packages now,
+  imported as `"ai:ask"` / `"agent:task"`, and `wlwl:std.ai` no longer
+  resolves (`E0040`). Full memo in `reference.md` §27.
 
 Superseded specs (v0.6–v0.10) are archived in condensed form in
 `../docs/history/20260902-09.md` / `../docs/history/20260915-22.md`
@@ -98,7 +113,7 @@ Compiler version is independent of the spec version (see root
 | File | Use |
 |---|---|
 | `SKILL.md` | Writing flow, static contracts (§2.6/§5.2/§9.1/§9.6), concurrency hard rules, antipatterns (24 rows: v0.6–v0.9) |
-| `reference.md` | Operators, type/`TYPE` names, error codes (incl. `E0064` / `W0001` / `E0010`–`E0025`), §8.3 consumers (13 global), OOP (§14–§16), concurrency matrix (§21), v0.9 增量备忘 (§23), v0.10 增量备忘 (§24), **v0.11 增量备忘 (§25 — `std.str` / `std.math` / `ASSERT` breaking)** |
+| `reference.md` | Operators, type/`TYPE` names, error codes (incl. `E0064` / `W0001` / `E0010`–`E0025`), §8.3 consumers (13 global), OOP (§14–§16), concurrency matrix (§21), v0.9 增量备忘 (§23), v0.10 增量备忘 (§24), **v0.11 增量备忘 (§25 — `std.str` / `std.math` / `ASSERT` breaking)**, **v0.11.2 增量备忘 (§26)**, **v0.11.3 增量备忘 (§27 — incl. the `ai` / `agent` demotion)** |
 | `interp.wll` | String-interpolation gold example |
 | `examples/wlwl.toml` | Manifest for the examples. `[package]` is mandatory and `gradual_typing = "error"` turns the static gate on for every file under `examples/` — that is what makes `static_contracts.wll` demonstrate anything |
 | `examples/wlwl.lock` | The dependency lockfile belonging to that manifest. It exists so `wlwl build` / `wlwl run <dir>` on `examples/` resolve deterministically. Nothing in this bundle imports a third-party module, so it is currently trivial; you do not need to edit it by hand |
@@ -127,8 +142,9 @@ wlwl run wlwl-skill/examples/oop.wll
   + v0.9 true-suspension / OOP / session types / linear THIS
   + v0.10 static contracts (annotations, module signatures, MATCH checks)
   carried over unchanged into v0.11. The **language spec is frozen at v0.11**;
-  v0.11.2 and v0.11.3 add standard-library members only (`wlwl:std.encode`,
-  `wlwl:std.sanitize`), so nothing in the language surface moves.
+  v0.11.2 and v0.11.3 add standard-library members only, so nothing in the
+  language surface moves. The one visible-surface change in those two batches
+  is the `ai` / `agent` demotion out of `wlwl:std.*` (`reference.md` §27.1).
 - **Out of scope**: the Rust implementation (`impl/`), formatter design,
   ADRs, release engineering. For those, read the repo docs directly.
 

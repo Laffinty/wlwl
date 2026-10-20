@@ -1,0 +1,75 @@
+// std_math.wll — WLWL std.math exact numbers, approximate comparison and
+// descriptive statistics (stdlib spec §7.2–§7.5).
+//
+// The four families that arrived with v0.11.3 (M7). Everything here is
+// IMPORT-gated — std.math members are not global builtins.
+//
+// Three shapes worth internalising:
+//   * DECIMAL / FRACTION values are DICTs, and their field names are a
+//     public contract ({"sign","digits","scale"} / {"num","den"}).
+//   * `scale` (DECIMAL_DIV, FRACTION_TO_DECIMAL) and `mode` (DECIMAL_ROUND)
+//     are MANDATORY — a default would silently pick a rounding rule on
+//     your behalf.
+//   * The statistics family answers NULL for both "empty" and "undefined",
+//     and NaN never enters a statistic.
+
+IMPORT("wlwl:std.math", ["DECIMAL", "DECIMAL_ADD", "DECIMAL_MUL", "DECIMAL_DIV", "DECIMAL_CMP", "DECIMAL_TO_STRING", "DECIMAL_ROUND", "FRACTION", "FRACTION_ADD", "FRACTION_CMP", "FRACTION_TO_STRING", "FRACTION_TO_DECIMAL", "APPROX_EQ", "IS_NAN", "IS_INF", "SIGNIFICANT_DIGITS", "MEDIAN", "MODE", "VARIANCE_S", "VARIANCE_P", "STDDEV_S", "STDDEV_P", "PERCENTILE", "CORRELATION", "LINEAR_FIT"]);
+IMPORT("wlwl:std.test", ["ASSERT", "ASSERT_EQ"]);
+
+// (1) DECIMAL — the shape is public, and `scale` survives the round trip.
+LET(one_00, DECIMAL("1.00"));
+PRINT("DECIMAL(\"1.00\") = ${one_00}");
+LET(sum, DECIMAL_ADD(DECIMAL("1.25"), DECIMAL("0.5")));
+PRINT("DECIMAL_ADD(1.25, 0.5) = ${DECIMAL_TO_STRING(sum)}");
+LET(_s1, ASSERT_EQ(DECIMAL_TO_STRING(sum), "1.75"));
+// Multiplication sums the two scales; division rounds HALF_EVEN at `scale`.
+LET(_s2, ASSERT_EQ(DECIMAL_TO_STRING(DECIMAL_MUL(DECIMAL("1.25"), DECIMAL("0.5"))), "0.625"));
+LET(_s3, ASSERT_EQ(DECIMAL_TO_STRING(DECIMAL_DIV(DECIMAL("1"), DECIMAL("3"), 4)), "0.3333"));
+// DECIMAL_CMP compares by VALUE, not by shape: 1.0 and 1.00 are equal.
+LET(_s4, ASSERT_EQ(DECIMAL_CMP(DECIMAL("1.0"), DECIMAL("1.00")), 0));
+// `mode` has no default: HALF_EVEN is banker's rounding, and the
+// directional modes differ only on negatives.
+LET(_s5, ASSERT_EQ(DECIMAL_TO_STRING(DECIMAL_ROUND(DECIMAL("2.5"), 0, "HALF_EVEN")), "2"));
+LET(_s6, ASSERT_EQ(DECIMAL_TO_STRING(DECIMAL_ROUND(DECIMAL("-2.1"), 0, "FLOOR")), "-3"));
+LET(_s7, ASSERT_EQ(DECIMAL_TO_STRING(DECIMAL_ROUND(DECIMAL("-2.1"), 0, "DOWN")), "-2"));
+
+// (2) FRACTION — reduced to lowest terms, and the denominator stays positive.
+PRINT("FRACTION(3, 6) = ${FRACTION(3, 6)}");
+PRINT("FRACTION(1, -2) = ${FRACTION(1, -2)}");
+LET(_f1, ASSERT_EQ(FRACTION_TO_STRING(FRACTION(3, 6)), "1/2"));
+LET(_f2, ASSERT_EQ(FRACTION_TO_STRING(FRACTION(1, -2)), "-1/2"));
+LET(_f3, ASSERT_EQ(FRACTION_TO_STRING(FRACTION_ADD(FRACTION(1, 2), FRACTION(1, 3))), "5/6"));
+// FRACTION_CMP never fails: the cross-multiplication goes through i128.
+LET(_f4, ASSERT_EQ(FRACTION_CMP(FRACTION(1, 2), FRACTION(2, 4)), 0));
+
+// (3) Approximate comparison — four arguments, and NEITHER tolerance has
+// a default: whether 0.1 and 0.1000000001 are equal is a business decision.
+PRINT("APPROX_EQ(0.1, 0.1000000001, 0.001, 0.0) = ${APPROX_EQ(0.1, 0.1000000001, 0.001, 0.0)}");
+LET(_a1, ASSERT(APPROX_EQ(0.1, 0.1000000001, 0.001, 0.0)));
+// IS_INF fills a gap: ==(x, x) is TRUE for ±inf, so self-equality misses it.
+LET(_a2, ASSERT(NOT(IS_INF(1.0))));
+LET(_a3, ASSERT(NOT(IS_NAN(0.0))));
+// SIGNIFICANT_DIGITS is a PREDICATE, not a digit counter.
+LET(_a4, ASSERT(SIGNIFICANT_DIGITS(1.5, 2)));
+
+// (4) Descriptive statistics — NULL means both "empty" and "undefined".
+PRINT("MEDIAN([1,2,3,4]) = ${MEDIAN([1, 2, 3, 4])}");
+PRINT("MODE([1,1,2,3]) = ${MODE([1, 1, 2, 3])}");
+LET(_d1, ASSERT_EQ(MEDIAN([1, 2, 3, 4]), 2.5));
+// No mode when every value occurs exactly once.
+LET(_d2, ASSERT_EQ(MODE([1, 2, 3]), NULL));
+// Sample variance divides by n-1, so a single sample is undefined; the
+// population variance divides by n, so it is 0.0.
+LET(_d3, ASSERT_EQ(VARIANCE_S([7]), NULL));
+LET(_d4, ASSERT_EQ(VARIANCE_P([7]), 0.0));
+// PERCENTILE interpolates linearly; an out-of-range p is NULL (p is data).
+LET(_d5, ASSERT_EQ(PERCENTILE([1, 2, 3, 4], 50.0), 2.5));
+LET(_d6, ASSERT_EQ(PERCENTILE([1, 2, 3, 4], 101.0), NULL));
+// Zero variance in either direction leaves the coefficient undefined.
+LET(_d7, ASSERT_EQ(CORRELATION([1, 2, 3], [1, 1, 1]), NULL));
+LET(fit, LINEAR_FIT([1, 2, 3], [2, 4, 6]));
+PRINT("LINEAR_FIT([1,2,3], [2,4,6]) = ${fit}");
+LET(_d8, ASSERT_EQ(fit["slope"], 2.0));
+LET(_d9, ASSERT_EQ(fit["intercept"], 0.0));
+
+PRINT("std_math: all assertions passed");

@@ -3,6 +3,64 @@
 Skill-bundle changes (spec lives at `../docs/spec/wlwl-spec-v0.11.md`
 and is authoritative).
 
+## [Unreleased] — 覆盖度收口(stdlib 全成员)
+
+以标准库规范 `../docs/stdlib/wlwl-stdlib-spec-v0.11.md` 的**附录 A**(生成器
+产出,与实现逐字节一致)为基准,本包三份文件的成员覆盖此前漏 **33 / 214** 个。
+本批补齐到 **0 / 214**,外加修三处版本标签、补两批增量备忘。
+
+### Added
+- **`wlwl:std.math` 补 28 个成员**(`reference.md` §9.5 重写)。原 §9.5 是
+  「the v0.11.2 twenty-one」的表(13 行),与 §9「每章成员不多」的结构冲突;
+  现按规范 §7.1–§7.5 的五族分表:**A 基础与浮点内建 32**(v0.11 的 11 个与
+  v0.11.2 的 21 个并成一表)/ **B `DECIMAL` 族 8** / **C `FRACTION` 族 8** /
+  **D 近似比较 4** / **E 描述统计 9** = 61。⚠ 族内计数按规范的实际成员数写
+  (8 / 8 / 4 / 9),不是先前备忘里说的 9 / 9 / 11。每族附「容易记反」条目:
+  `scale` 与 `mode` 必填、分数是 `i64` 不是任意精度、统计族的「空」与
+  「无定义」都返 `NULL`、`NaN` 不渗进统计量。
+- **`wlwl:std.fs` 补 4 个成员**(`REMOVE` `COPY` `MOVE` `FILE_SIZE`)、
+  **`wlwl:std.process` 补 1 个**(`PROCESS_ID`)(`reference.md` §9.12 新增
+  「树形改动族」表,首列带签名)。`std.fs` 由此 18 个成员齐。
+- **`reference.md` 补 §26 / §27 两节增量备忘**(此前只到 §25 v0.11)。
+  §26 = v0.11.2(41 个新成员:`std.encode` 编码族 6 / `std.text` 大小写 2 /
+  `std.str` 检索 2 / `std.collection` 10 / `std.math` 21,外加 `SUB` 迁移
+  公式的修正)。§27 = v0.11.3(115 个新成员 + **一条可见面变更**)。
+- **§27.1 写清 `ai` / `agent` 降级**:`IMPORT("ai:ask", …)` /
+  `IMPORT("agent:task", …)`;`wlwl:std.ai` / `wlwl:std.agent` 不再解析
+  (`E0040`);`wlwl:ai` 也不行(`wlwl:` 是 std 的保留前缀,会掉进裸模块名分支
+  去找 `…\wlwl:ai.wll`);**没有命名空间限定调用语法**(冒号只出现在 `IMPORT`
+  的路径串与改名处);要避开类型名冲突就在 `IMPORT` 时改名
+  (`["TASK": "AGENT_TASK"]`)。成员名 / 签名 / 错误码一字未改,变的只是可见面。
+
+### Fixed
+- **`reference.md` §9.5 的小节标题过期**:原写「the v0.11.2 twenty-one」——
+  那是 v0.11.2 的成员数,现在是 **61**(v0.11 的 11 + v0.11.2 的 21 +
+  v0.11.3 的 29)。已改写为「the 61 members (stdlib §7, v0.11 → v0.11.3)」。
+- **`SKILL.md` 的运算符速查表标题过期**:原写「(v0.6–v0.9)」。按
+  `../docs/appendix_G.md`,**v0.7 之后没有新增任何内建**(106 条 = v0.2 的 70 +
+  v0.4 的 15 + v0.6 的 4 + v0.7 的 17),所以这张表对**冻结在 v0.11** 的语言面
+  是**完整的**;已改标题并在表首写明这一点,免得读者以为 v0.10 的类型注解与
+  v0.11 的 `ASSERT` 变更漏收(前者不是运算符,见静态契约一节;后者见 §25.3)。
+- **`reference.md` §2「Version decisions」表此前停在 v0.10**:补 v0.11 /
+  v0.11.2 / v0.11.3 三行;§9 章首与 SKILL.md 的指针表改指 §26 / §27。
+- `README.md` 的「Target version」此前说 v0.11.2 / v0.11.3 只加
+  `wlwl:std.encode` 与 `wlwl:std.sanitize` —— 实际这两批加了 156 个成员与
+  9 个新命名空间。已按实情改写,并补上 `ai` / `agent` 降级这一条。
+
+### Added — examples
+- **`examples/std_math.wll`**:v0.11.3 四个新族(`DECIMAL` / `FRACTION` /
+  近似比较 / 描述统计)的可跑范本,断言用 `ASSERT_EQ` / `ASSERT`,退出码 0。
+
+### 验证
+- 覆盖度脚本 `impl/target/ci-verify-sandbox/check_skill_coverage.py` 以附录 A
+  为基准,现报 **合计漏 0 / 214 个成员**(改前:33 / 214)。
+- 所有新增的「实测」读数在 **wlwl 0.11.3(2026-10-20)** 上实跑取得
+  (`impl/target/debug/wlwl.exe`):规范 §7.7 的整段示例、`DECIMAL` / `FRACTION`
+  两族的边界值、统计族的「空」与「无定义」两态、`std.fs` 四成员与
+  `std.process` 的 `PROCESS_ID`、以及 `ai:ask` / `agent:task` 的导入形态与
+  `wlwl:std.ai` 的 `E0040`。
+- `examples/` 下 20 个示例逐个实跑,**全部退出 0**(含新增的 `std_math.wll`)。
+
 ## [Unreleased] — v0.11.3 批次
 
 语言规范仍冻结在 v0.11;本批只加标准库成员。**没有任何语言面改动** ——
