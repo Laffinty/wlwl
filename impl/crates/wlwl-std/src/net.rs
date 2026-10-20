@@ -70,6 +70,14 @@ const MAX_HEADER_BYTES: usize = 64 * 1024;
 const MAX_BODY_BYTES: usize = 8 * 1024 * 1024;
 /// `ADR-0028` D2 的默认超时(毫秒)。调用方可覆盖,但**忘写不会永久挂住**。
 const DEFAULT_TIMEOUT_MS: u64 = 30_000;
+/// 允许跳过的 `1xx` 中间响应条数上限(D13-050)。
+///
+/// ⚠ 为什么要一个上限:`1xx` 是**中间响应**,客户端必须能跳过它继续读下一个
+/// 响应(RFC 9112 §15.2)。但「跳过」本身必须**有界** —— 一个只会发 `100` 的
+/// 服务端不该把客户端变成永动机。⇒ 超过这个数就 `ERR`。
+/// ⚠ 真正的兜底是**总闸**(`Deadline`):每跳一条都要从同一份预算里扣,
+/// 所以一个慢速滴流的 `1xx` 服务端照样会在预算耗尽处失败。
+const MAX_INFORMATIONAL_RESPONSES: usize = 16;
 
 /// D13-040(N-033):一次 HTTP 请求的**总**时间闸。
 ///
@@ -913,50 +921,104 @@ fn request(
     }
 
     // ── 4. 读响应头(先读到 \r\n\r\n,带上限)──
+    //
+    // ⚠ **D13-050:这里是一个循环,不是一次读** —— `1xx` 是**中间响应**,不是终响应,
+    //   必须**跳过它、继续读下一个响应**(RFC 9112 §15.2:「A client MUST be able
+    //   to parse one or more 1xx responses prior to a final response」)。
+    //   ⇒ 缺陷形态把 `1xx` 当终响应,于是 `103 Early Hints` 这类服务器
+    //     会把**中间响应**交回调用方。
+    //   ⇒ 跳过的 `1xx` 头**整块丢弃**(`consumed` 前移),头内容按 RFC 9112
+    //     §15.2「客户端可以忽略 1xx 的头」**不解析** —— 定界由**终响应**决定,
+    //     所以被跳过的 `1xx` 头不构成走私面。
     let mut raw: Vec<u8> = Vec::with_capacity(8 * 1024);
     let mut buf = [0u8; 4096];
-    let head_end = loop {
-        if let Some(i) = find_head_end(&raw) {
-            break i;
+    // 已经**消费掉**的字节数(只可能是若干个被跳过的 `1xx` 响应头)。
+    let mut consumed = 0usize;
+    let mut informational_skipped = 0usize;
+    let (head_end, http10, status) = loop {
+        // 在 `raw[consumed..]` 里找**这一份**响应头的结束。
+        let head_end = loop {
+            match find_head_end(&raw[consumed..]) {
+                Some(i) => break consumed + i,
+                None => {
+                    if raw.len() - consumed > MAX_HEADER_BYTES {
+                        return http_error(
+                            name,
+                            format!("response header block exceeds {MAX_HEADER_BYTES} bytes"),
+                        );
+                    }
+                    match read_once(&mut sock, &mut buf, &deadline) {
+                        Ok(0) => {
+                            return http_error(
+                                name,
+                                format!(
+                                    "connection closed with {} byte(s) of header, no complete head",
+                                    raw.len() - consumed
+                                ),
+                            )
+                        }
+                        Ok(n) => raw.extend_from_slice(&buf[..n]),
+                        Err(e) => return http_error(name, format!("read head: {e}")),
+                    }
+                }
+            }
+        };
+        let head = match std::str::from_utf8(&raw[consumed..head_end]) {
+            Ok(h) => h,
+            Err(e) => return http_error(name, format!("response header is not valid UTF-8: {e}")),
+        };
+        // ⚠ 只取第一行(状态行);`lines` 在这里**不留活** —— 它借着 `raw`,
+        //   而下一轮循环要可变地写 `raw`(NLL:本轮结束即失效)。
+        let status_line = head.split("\r\n").next().unwrap_or("");
+        let mut sp = status_line.splitn(3, ' ');
+        let version = sp.next().unwrap_or("");
+        let status_txt = sp.next().unwrap_or("");
+        let _reason = sp.next().unwrap_or("");
+        if version != "HTTP/1.1" && version != "HTTP/1.0" {
+            return http_error(name, format!("unexpected status line {status_line:?}"));
         }
-        if raw.len() > MAX_HEADER_BYTES {
+        let Ok(status) = status_txt.parse::<i64>() else {
             return http_error(
                 name,
-                format!("response header block exceeds {MAX_HEADER_BYTES} bytes"),
+                format!("status code {status_txt:?} is not an integer"),
             );
-        }
-        match read_once(&mut sock, &mut buf, &deadline) {
-            Ok(0) => {
+        };
+        if (100..200).contains(&status) {
+            // `1xx` = 中间响应 ⇒ **丢掉这一整块**,接着读下一个响应。
+            informational_skipped += 1;
+            if informational_skipped > MAX_INFORMATIONAL_RESPONSES {
                 return http_error(
                     name,
                     format!(
-                        "connection closed with {} byte(s) of header, no complete head",
-                        raw.len()
+                        "more than {MAX_INFORMATIONAL_RESPONSES} informational (1xx) responses — refusing to keep reading"
                     ),
-                )
+                );
             }
-            Ok(n) => raw.extend_from_slice(&buf[..n]),
-            Err(e) => return http_error(name, format!("read head: {e}")),
+            consumed = head_end + 4;
+            continue;
         }
+        break (head_end, version == "HTTP/1.0", status);
     };
 
     // ── 5. 解析状态行 + 头 ──
-    let head = match std::str::from_utf8(&raw[..head_end]) {
+    let head = match std::str::from_utf8(&raw[consumed..head_end]) {
         Ok(h) => h,
         Err(e) => return http_error(name, format!("response header is not valid UTF-8: {e}")),
     };
     let mut lines = head.split("\r\n");
-    let status_line = lines.next().unwrap_or("");
-    let mut sp = status_line.splitn(3, ' ');
-    let version = sp.next().unwrap_or("");
-    let status = sp.next().unwrap_or("");
-    let _reason = sp.next().unwrap_or("");
-    if version != "HTTP/1.1" && version != "HTTP/1.0" {
-        return http_error(name, format!("unexpected status line {status_line:?}"));
-    }
-    let Ok(status) = status.parse::<i64>() else {
-        return http_error(name, format!("status code {status:?} is not an integer"));
-    };
+    let _status_line = lines.next().unwrap_or("");
+
+    // ⚠ **D13-050:按状态码定界**(RFC 9112 §6.3 第 1 条)——
+    //
+    //   「Any response to a HEAD request and any response with a 1xx, 204, or
+    //   304 status code is always terminated by the first empty line after the
+    //   header fields, **regardless of the header fields present in the
+    //   message**, and thus cannot contain a message body or trailer section.」
+    //
+    // ⇒ `204` / `304` / `HEAD` 的响应 **body 恒空**、**忽略 `Content-Length`**。
+    //   缺陷形态是「完全不看状态码」⇒ `204` + `Content-Length: 5` 会把 body
+    //   **真的读出来**,而 RFC 说这些响应本就无 body。
+    let bodyless = status == 204 || status == 304 || method.eq_ignore_ascii_case("HEAD");
 
     let mut out_headers: Vec<(String, String)> = Vec::new();
     let mut content_length: Option<u64> = None;
@@ -984,10 +1046,16 @@ fn request(
                 if content_length.is_some() {
                     return http_error(name, "duplicate Content-Length header");
                 }
-                let Ok(n) = v.parse::<u64>() else {
-                    return http_error(name, format!("Content-Length {v:?} is not a number"));
-                };
-                content_length = Some(n);
+                // ⚠ **D13-050:`204` / `304` / `HEAD` ⇒ 忽略 `Content-Length` 的值**,
+                //   连「不是数字」都不报 —— 这些响应的 body 恒空,头里的
+                //   `Content-Length` **不参与定界**。
+                // ⚠ 但**重复出现**仍然拒:那是**头块层面**的走私信号,与状态码无关。
+                if !bodyless {
+                    let Ok(n) = v.parse::<u64>() else {
+                        return http_error(name, format!("Content-Length {v:?} is not a number"));
+                    };
+                    content_length = Some(n);
+                }
             }
             "transfer-encoding" => {
                 return http_error(
@@ -1005,16 +1073,23 @@ fn request(
 
     // ── 6. 响应体:Content-Length 或 EOF 二者必居其一,否则拒绝 ──
     let mut body_bytes: Vec<u8> = raw[head_end + 4..].to_vec();
-    let want = match content_length {
-        Some(n) => {
-            if n > MAX_BODY_BYTES as u64 {
-                return http_error(
-                    name,
-                    format!("Content-Length {n} exceeds the {MAX_BODY_BYTES} byte cap"),
-                );
+    let want = if bodyless {
+        // ⚠ **D13-050:`204` / `304` / `HEAD` ⇒ body 恒空**。
+        //   `Some(0)` 让下面的循环立刻收工,末尾的 `truncate(0)` 把
+        //   「同一段 TCP 里紧跟着的下一个响应字节」一并丢掉。
+        //   ⚠ **不看 `Content-Length`** —— 哪怕头里写了非零值。
+        Some(0)
+    } else {
+        match content_length {
+            Some(n) => {
+                if n > MAX_BODY_BYTES as u64 {
+                    return http_error(
+                        name,
+                        format!("Content-Length {n} exceeds the {MAX_BODY_BYTES} byte cap"),
+                    );
+                }
+                Some(n as usize)
             }
-            Some(n as usize)
-        }
         // ── D13-041(N-034):HTTP/1.0 的 close 定界 ──
         //
         // 缺陷形态只认 `Connection: close` 这**一个**信号,把 HTTP/1.0 的
@@ -1030,19 +1105,22 @@ fn request(
         // received prior to the server closing the connection」。
         //
         // ⚠ **HTTP/1.1 保持严格,这是刻意的、比 RFC 更紧的一刀**:RFC 9112 §6.3
-        // 第 8 条其实**不分版本**,而规范 §21.5 的拒绝表为了反走私要求
+        // 第 8 条其实**不分版本**,而规范 §21.4 的拒绝表为了反走私要求
         // 「既无 Content-Length 又无 Connection: close → ERR」。本次只给
         // **HTTP/1.0** 开口子(那里 close 定界是**唯一**可能的框架,拒绝它没有
         // 任何安全收益,只会让一堆老服务器不可达);HTTP/1.1 的那条 ERR 契约
         // `no_length_is_err_value` **原样保留**,不顺手放宽。
         // ⚠ 放宽的那一侧仍受 `MAX_BODY_BYTES` 与总闸(`Deadline`)双重约束,
         //   所以「恶意 HTTP/1.0 服务端无限流」不会变成无界分配或永久挂住。
-        None if connection_close || version == "HTTP/1.0" => None, // 读到 EOF
+        // ⚠ **D13-050 的 `204` / `304` / `HEAD` 走上面那个 `bodyless` 分支**,
+        //   不落到这里 —— 这三条「无 CL 无 close ⇒ ERR」的路径对它们不适用。
+        None if connection_close || http10 => None, // 读到 EOF
         None => {
             return http_error(
                 name,
                 "response has neither Content-Length nor Connection: close — refusing to guess the body length (ADR-0028 D3)",
             )
+        }
         }
     };
     loop {
@@ -1066,7 +1144,12 @@ fn request(
         }
     }
     if let Some(w) = want {
-        if body_bytes.len() != w {
+        // ⚠ **D13-050:`bodyless`(`204` / `304` / `HEAD`)⇒ body 恒空**,
+        //   紧跟着响应头的那些字节**不属于**本次 body(那可能是**下一个响应**)
+        //   ⇒ 直接丢掉,**不做**「长度不符」的判断。
+        //   ⚠ 缺陷形态在这里会报「body truncated: got 5 of 0 byte(s)」——
+        //   那正是「`204` 把 body 真的读出来了」的另一种表现。
+        if !bodyless && body_bytes.len() != w {
             return http_error(
                 name,
                 format!("body truncated: got {} of {w} byte(s)", body_bytes.len()),

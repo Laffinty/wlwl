@@ -471,6 +471,38 @@ fn net_member_set_matches_the_spec_table() {
 // `the_contract_never_touches_an_external_address` 守着这条,且它自己**不依赖任何环境变量**
 // (环境变量可以忘设; 扫源码不可以)。
 
+/// D13-050:规范 §21 的**状态码定界规则**必须写在册子里。
+///
+/// ⚠ 这条守卫守的是**规范文本**,不是实现 —— 那个缺陷之所以能活这么久,
+///   正是因为规范里只写了「实现未特判 1xx / 204 / 304」这一句**缺口描述**,
+///   从来没写下**目标语义**。⇒ 现在目标语义必须成文,且不许被删回去。
+/// ⚠ 三个锚点**刻意只挑目标语义那一句里才有的措辞** —— 「`204` / `304` / `HEAD`」
+///   在拒绝表里也出现,拿它当锚点等于没守。
+#[test]
+fn the_status_code_delimitation_rules_are_written_down() {
+    let text = std::fs::read_to_string(spec_path()).expect("stdlib spec readable");
+    let start = text.find("## 21 ").expect("\u{00a7}21 header exists");
+    let end = text[start..]
+        .find("\n## ")
+        .map(|i| start + i)
+        .unwrap_or(text.len());
+    let body = &text[start..end];
+    for needle in [
+        // §21.4 的目标语义:1xx 跳过继续读。
+        "跳过它,继续读下一个响应",
+        // §21.4 的目标语义:body 恒空 + 忽略 Content-Length。
+        "忽略 `Content-Length`",
+        // ADR-0023 §v0.x 2 的 breaking 申报(成员行标「自 vX.Y 变更」)。
+        "自 v0.11.3 变更",
+    ] {
+        assert!(
+            body.contains(needle),
+            "stdlib spec §21 lost `{needle}` — D13-050 的目标语义必须成文,\
+             不许退回「只登记缺口」那一句"
+        );
+    }
+}
+
 use std::io::{Read, Write};
 use std::net::TcpListener;
 use std::sync::OnceLock;
@@ -531,6 +563,34 @@ fn start_fixture() -> u16 {
                     //    ⚠ 刻意与 `/nolength` 配对:两条只差**版本号**,于是
                     //    「HTTP/1.1 仍严格 / HTTP/1.0 放宽」这个区分本身被钉住。
                     "/close10" => b"HTTP/1.0 200 OK\r\nContent-Type: text/plain\r\n\r\nhello".to_vec(),
+                    // ── D13-050:按**状态码**定界(RFC 9112 §6.3 第 1 条)──
+                    //
+                    // ⚠ 这六条路由存在的**唯一**理由是让四种响应形态在 CI 里
+                    //   **可复现** —— 缺陷形态(完全不看状态码)在每一条上的
+                    //   可观察后果都**不同**,所以每条各钉一件事。
+                    //
+                    // `204` 不带 `Content-Length` ⇒ 缺陷形态:`ERR`
+                    //   (「既无 CL 又无 Connection: close」)。
+                    "/204" => b"HTTP/1.1 204 No Content\r\n\r\n".to_vec(),
+                    // `204` 带 `Content-Length: 5` 且**真的有 5 字节 body**
+                    //   ⇒ 缺陷形态:那 5 字节被**真的读出来**(RFC 说这些响应
+                    //   本就无 body,无论头里写了什么)。
+                    "/204cl5" => b"HTTP/1.1 204 No Content\r\nContent-Length: 5\r\n\r\nhello".to_vec(),
+                    // `204` 带一个**非数字** `Content-Length` ⇒ 缺陷形态:`ERR`
+                    //   (「不是数字」);新形态:**忽略**它。
+                    "/204badcl" => b"HTTP/1.1 204 No Content\r\nContent-Length: abc\r\n\r\n".to_vec(),
+                    // `304` 不带 `Content-Length` ⇒ 缺陷形态:`ERR`。
+                    "/304" => b"HTTP/1.1 304 Not Modified\r\n\r\n".to_vec(),
+                    // `100 Continue` + **同一条连接上**的终响应
+                    //   ⇒ 缺陷形态:把 `100` 当**终响应**(读到的 status 是 100)。
+                    "/100" => {
+                        let mut v = b"HTTP/1.1 100 Continue\r\n\r\n".to_vec();
+                        v.extend_from_slice(b"HTTP/1.1 200 OK\r\nContent-Length: 5\r\n\r\nhello");
+                        v
+                    }
+                    // `HEAD` 的响应:头里有 `Content-Length: 5` 但**没有 body**
+                    //   ⇒ 缺陷形态:`ERR`(等 5 字节 body 等不到)。
+                    "/head" => b"HTTP/1.1 200 OK\r\nContent-Length: 5\r\n\r\n".to_vec(),
                     // ── D13-043(N-036):body 是**非法 UTF-8**(含 `0x00` 与 `0xFF`)。
                     //    ⚠ 这四个字节取自 Python 3.13 `http.client` 的实测输出,
                     //    那是本机上可用的**独立第二实现**(见下面的用例注释)。
@@ -597,7 +657,7 @@ fn http_cases() -> Vec<(String, String, String)> {
         ("chunked_is_err_value".into(), src(&err("/chunked")), "TRUE".into()),
         // ⚠ D13-041:`no_length_is_err_value` **没有被放宽**,而且它现在是
         //   「HTTP/1.1 仍严格」这条边界的**正向守卫**。RFC 9112 §6.3 第 8 条
-        //   其实不分版本(见下面 `http10_*` 两条的注释),规范 §21.5 为了反走私
+        //   其实不分版本(见下面 `http10_*` 两条的注释),规范 §21.4 为了反走私
         //   要求更严 —— 这一条是**刻意比 RFC 紧**,不许顺手改掉。
         ("no_length_is_err_value".into(), src(&err("/nolength")), "TRUE".into()),
         ("body_over_cap_is_err_value".into(), src(&err("/huge")), "TRUE".into()),
@@ -680,7 +740,7 @@ fn http_cases() -> Vec<(String, String, String)> {
         ),
         // ── D13-040(N-033):`timeout` 是**整条请求**的上界,不是每次读的 ──
         //
-        // 期望值出处:规范 §21.5 的「**超时必填且有保守默认**…调用方可覆盖」+
+        // 期望值出处:规范 §21.4 的「**超时必填且有保守默认**…调用方可覆盖」+
         // `ADR-0028` D2(30 s)—— 那是对**这次调用**的承诺,不是对每次系统调用的;
         // RFC 9112 §6.3 第 6 条同向:「If the sender closes the connection or **the
         // recipient times out** before the indicated number of octets are received,
@@ -692,6 +752,73 @@ fn http_cases() -> Vec<(String, String, String)> {
             "total_budget_caps_a_slow_dribble".into(),
             src(&format!("IS_ERR(HTTP_GET(\"{}\", 500))", u("/dribble"))),
             "TRUE".into(),
+        ),
+        // ── D13-050:按**状态码**定界(RFC 9112 §6.3 第 1 条)──
+        //
+        // 期望值出处:**RFC 9112 §6.3 第 1 条**原文 ——
+        // 「Any response to a HEAD request and any response with a 1xx, 204, or
+        // 304 status code is always terminated by the first empty line after the
+        // header fields, **regardless of the header fields present in the
+        // message**, and thus cannot contain a message body or trailer section.」
+        // ⚠ **独立第二实现**:Python 3.13 `http.client` 对 `204` / `304` 同样
+        //   **不读 body**(`length` 为 0),对 `1xx` 则**跳过并继续读下一个响应**
+        //   —— 与本实现的新形态一致。
+        (
+            "get_204_without_content_length_is_readable".into(),
+            src(&field(&get("/204"), "status")),
+            "204".into(),
+        ),
+        (
+            "get_204_body_is_empty".into(),
+            src(&field(&get("/204"), "body")),
+            "".into(),
+        ),
+        // ⚠ **这一条钉的是缺陷形态的核心**:`204` + `Content-Length: 5` + 真 body
+        //   ⇒ 旧实现把那 5 字节**真的读出来**(RFC 说这些响应本就无 body)。
+        (
+            "get_204_ignores_content_length".into(),
+            src(&field(&get("/204cl5"), "body")),
+            "".into(),
+        ),
+        (
+            "get_204_ignores_a_non_numeric_content_length".into(),
+            src(&field(&get("/204badcl"), "status")),
+            "204".into(),
+        ),
+        (
+            "get_304_without_content_length_is_readable".into(),
+            src(&field(&get("/304"), "status")),
+            "304".into(),
+        ),
+        (
+            "get_304_body_is_empty".into(),
+            src(&field(&get("/304"), "body")),
+            "".into(),
+        ),
+        // ⚠ **`1xx` 必须被跳过**:缺陷形态把 `100 Continue` 当**终响应**
+        //   ⇒ 调用方拿到的 status 是 100 而不是 200。
+        (
+            "get_1xx_is_skipped_and_the_next_response_is_returned".into(),
+            src(&field(&get("/100"), "status")),
+            "200".into(),
+        ),
+        (
+            "get_1xx_skipped_body_is_the_final_response_body".into(),
+            src(&field(&get("/100"), "body")),
+            "hello".into(),
+        ),
+        // ⚠ `HEAD` 响应头里的 `Content-Length` 描述的是「`GET` 会返回的实体有多长」,
+        //   **不是**本次 body 的长度 ⇒ 拿它当 body 长度去读,就会读到**下一个
+        //   响应**或一直挂住。
+        (
+            "head_response_status_is_readable".into(),
+            src(&field(&format!("HTTP_REQUEST(\"HEAD\", \"{}\")", u("/head")), "status")),
+            "200".into(),
+        ),
+        (
+            "head_response_body_is_empty".into(),
+            src(&field(&format!("HTTP_REQUEST(\"HEAD\", \"{}\")", u("/head")), "body")),
+            "".into(),
         ),
         // ── POST / REQUEST ──
         (

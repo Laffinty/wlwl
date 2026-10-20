@@ -1458,9 +1458,9 @@ R2 全员。**这是本工作区第一次引入压缩依赖**(`zstd` + `flate2`)
 |---|---|---|---|
 | `URL_PARSE(url) -> DICT` | 拆成 `{scheme, userinfo, host, port, path, query, fragment}`。**纯解析,不发请求** | 不满足 `URI-reference` 的 ABNF → `E0030` | R2 |
 | `URL_JOIN(base, rel) -> STRING` | 相对引用 → 绝对引用(RFC 3986 §5,**strict 模式**) | 同上 | R2 |
-| `HTTP_GET(url, headers?, timeout?) -> DICT` | `{status, headers, body}`。**明文 `http:` only**。🔴 **`body` 的形状随内容走**:合法 UTF-8 ⇒ `STRING`;否则 ⇒ `ARRAY[INTEGER]`(元素 `0..=255`,逐字节无损,继承 §2.2 / §11.2 的字节裁决)。⚠ 8 MiB 的非 UTF-8 体会展开成约 840 万元素(与 `READ_BYTES` 同族放大)。**大载荷的正解仍是让它待在文件里** | 网络失败 → `ERR([kind: "HttpError", op, reason])` | R2 |
-| `HTTP_POST(url, body, headers?, timeout?) -> DICT` | 同上 | 同上 | R2 |
-| `HTTP_REQUEST(method, url, body?, headers?, timeout?) -> DICT` | 其余动词的通用形态 | 同上 | R2 |
+| `HTTP_GET(url, headers?, timeout?) -> DICT` | `{status, headers, body}`。**明文 `http:` only**。🔴 **`body` 的形状随内容走**:合法 UTF-8 ⇒ `STRING`;否则 ⇒ `ARRAY[INTEGER]`(元素 `0..=255`,逐字节无损,继承 §2.2 / §11.2 的字节裁决)。⚠ 8 MiB 的非 UTF-8 体会展开成约 840 万元素(与 `READ_BYTES` 同族放大)。**大载荷的正解仍是让它待在文件里**。🔴 **自 v0.11.3 变更**:响应的 **body 按状态码定界**(§21.4)—— `204` / `304` / `HEAD` 的 body **恒空**且**忽略 `Content-Length`**;`1xx` 被**跳过**、继续读下一个响应 | 网络失败 → `ERR([kind: "HttpError", op, reason])` | R2 |
+| `HTTP_POST(url, body, headers?, timeout?) -> DICT` | 同上(含「自 v0.11.3 变更」那一条 body 定界规则) | 同上 | R2 |
+| `HTTP_REQUEST(method, url, body?, headers?, timeout?) -> DICT` | 其余动词的通用形态;`method` 为 `HEAD` 时响应 **body 恒空**且**忽略 `Content-Length`**(§21.4) | 同上 | R2 |
 
 ⚠ **`HTTP_*` 是阻塞原语**:执行期间**不调度任何其他任务**,整个 `SCOPE` 冻结。**不要在同一个 `SCOPE` 里并发发多个 HTTP 请求** —— `SPAWN` 了也还是排队,那是**错的写法**不是低效的写法。
 
