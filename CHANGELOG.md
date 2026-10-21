@@ -1,7 +1,7 @@
 ## [Unreleased]
 
 **v1.0 语义落地(第一批)**:实现 v1.0 规范的「未消费 `ERR` 的报告」(`E0103`)。
-规范在**独立仓** `Laffinty/wlwl-spec-v1`(基线 `24d7a6e`),本仓实现的语义以它为准 ——
+规范在**独立仓** `Laffinty/wlwl-spec-v1`(基线 `4b2fd83`),本仓实现的语义以它为准 ——
 本仓的码表守卫(`every_registered_code_is_covered_by_the_spec`)现在**直接读规范文本**,
 CI 把规范仓按钉死的提交取下来(见 `.github/workflows/ci.yml`)。
 
