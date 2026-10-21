@@ -10,11 +10,14 @@
 //! | 全局内建 `INPUT` | 0 或 1 | 有(`STRING`) | `ERR("EOF")` |
 //! | `std.io::INPUT`(改前) | **只收 0** | **没有** | `""` |
 //!
-//! ⇒ 给 `std.io` 的 `INPUT` 传一个 prompt 会得到 `E0022`,而同样的程序
-//! 不导入 `std.io` 却能跑 —— **加不加那行 `IMPORT` 改变了行为**。
+//! ⇒ ① 给 `std.io` 的 `INPUT` 传一个 prompt 会得到 `E0022`,而同样的程序
+//! 不导入 `std.io` 却能跑 —— **加不加那行 `IMPORT` 改变了行为**(X-05);
+//! ② EOF 上内建产 `ERR` 值、成员产空串 —— 两条路在 EOF 上**不**逐字相同
+//! (X-09)。
 //!
-//! 修法在**实现侧**(规范本来就写对了):`std.io::INPUT` 收 0 或 1 个实参,
-//! 给了 prompt 就先把它写到标准输出再读。
+//! 两处修法都在**实现侧**(规范本来就写对了):成员侧收 0 或 1 个实参、给了
+//! prompt 就先把它写到标准输出再读;内建侧在 EOF 上返回**空串**而不是
+//! `ERR` 值。
 //!
 //! ## 手法
 //!
@@ -23,11 +26,13 @@
 //! 「加不加这行 IMPORT 不改变行为」的可执行形式(与 `io_print_parity.rs`
 //! 同款手法)。
 //!
-//! ⚠ **EOF 不在这条的对拍范围内**:标准库·系统册 §1.2 把 EOF 钉死成
-//! 「一个字节都没读到 ⇒ 返回 `""`」,而全局内建在 EOF 上返回
-//! `ERR("EOF")` —— 那是**内建层**的口径(内建可以产 `ERR` 值,stdlib 成员
-//! 不产)。该分歧已登记在规范仓一致性册 §5.4;本文件只对拍**读到一行**的
-//! 那条路径。
+//! EOF **也在**对拍范围内:标准库·系统册 §1.2 把 EOF 钉死成「一个字节都没
+//! 读到 ⇒ 返回 `""`」,内建层原先返回 `ERR("EOF")` ⇒ 两条路径在 EOF 上分叉
+//! (规范仓一致性册 §5.4 的 X-09)⇒ 内建层已收敛,现在 EOF 也逐字相同。
+//!
+//! ⚠ **读失败仍不在对拍范围内**:内建层的读失败产 `ERR` 值,成员层的读失败
+//! 是原生诊断 `E0060`(标准库册 §1.1)—— 那是**两层的失败模型不同**
+//! (内建产 `ERR` 值、stdlib 成员产原生诊断),不是待收敛的分叉。
 
 use std::fs;
 use std::io::Write;
@@ -171,20 +176,39 @@ fn std_io_input_accepts_zero_arguments() {
 }
 
 /// EOF **不是**失败:一个字节都没读到 ⇒ 返回 `""`(标准库·系统册 §1.2),
-/// 不是 `E0060`,也不是 `ERR` 值。
+/// 不是 `E0060`,也不是 `ERR` 值。**两条路径都必须如此** —— 内建层原先在
+/// EOF 上返回 `ERR("EOF")`,那是 X-09;现已收敛,这里逐字节对拍。
 #[test]
 fn std_io_input_at_eof_returns_empty_string() {
     let tmp = Tmp::new("eof");
     let dir = tmp.path();
 
-    let src = "IMPORT(\"wlwl:std.io\", [\"INPUT\"]);\nLET(line, INPUT());\nPRINT(line);\n";
-    let out = run_program(dir, "eof.wll", src, "");
+    let imported = "IMPORT(\"wlwl:std.io\", [\"INPUT\"]);\nLET(line, INPUT());\nPRINT(line);\n";
+    let plain = "LET(line, INPUT());\nPRINT(line);\n";
+    let out_imported = run_program(dir, "eof_imported.wll", imported, "");
+    let out_plain = run_program(dir, "eof_plain.wll", plain, "");
 
-    assert_ok(&out, "INPUT() at EOF");
+    assert_ok(&out_imported, "std.io::INPUT() at EOF");
+    assert_ok(&out_plain, "builtin INPUT() at EOF");
+
     assert_eq!(
-        String::from_utf8_lossy(&out.stdout),
+        String::from_utf8_lossy(&out_imported.stdout),
         "\n",
         "EOF must yield an empty string, not a diagnostic"
+    );
+    assert_eq!(
+        String::from_utf8_lossy(&out_plain.stdout),
+        "\n",
+        "the builtin must yield an empty string at EOF too (X-09)"
+    );
+    assert_eq!(
+        out_imported.stdout, out_plain.stdout,
+        "EOF behaviour must be byte-identical across the two paths"
+    );
+    assert!(
+        out_plain.stderr.is_empty(),
+        "the builtin must not report an error at EOF:\n{}",
+        String::from_utf8_lossy(&out_plain.stderr)
     );
 }
 

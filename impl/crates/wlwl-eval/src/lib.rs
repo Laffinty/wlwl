@@ -2652,7 +2652,14 @@ fn builtin_neg(_ev: &mut Evaluator, args: Vec<Value>) -> WlwlResult<Outcome> {
 /// `INPUT(prompt?) -> STRING`: 从 stdin 读一行。
 /// prompt 可选 (STRING);输出到 stdout,读一行返回 (去掉尾部 \n)。
 /// 0 arg → 不输出 prompt 直接读。
-/// 无可用 stdin 时 (测试场景) → ERR("NoInputAvailable")。
+///
+/// **EOF 返回空串** —— 与 `std.io::INPUT` **逐字相同**(标准库·系统册 §1.2:
+/// 「读到 EOF 与读失败是两件事」)。此前这里返回 `ERR("EOF")`,两条路径在 EOF
+/// 上分叉(规范仓一致性册 §5.4 的 X-09,现已收敛)。
+///
+/// **读失败仍是 `ERR` 值**(`ERR("NoInputAvailable")`)—— 那是**内建层的失败
+/// 模型**:内建产 `ERR` 值,而 `std.io::INPUT` 产原生诊断 `E0060`
+/// (标准库册 §1.1 的成员契约)。两层的失败模型本就不同,**不是**待收敛的分叉。
 fn builtin_input(_ev: &mut Evaluator, args: Vec<Value>) -> WlwlResult<Outcome> {
     if args.len() > 1 {
         return Err(arity_error("INPUT", args.len(), 1));
@@ -2682,11 +2689,9 @@ fn builtin_input(_ev: &mut Evaluator, args: Vec<Value>) -> WlwlResult<Outcome> {
         }
     };
     if bytes == 0 {
-        // EOF
-        return Ok(Outcome::normal(Value::Err(Box::new(Value::Dict(vec![(
-            Value::String("kind".into()),
-            Value::String("EOF".into()),
-        )])))));
+        // EOF —— 返回**空串**,与 `std.io::INPUT` 相同(标准库·系统册 §1.2:
+        // 「一个字节都没读到 ⇒ 返回 `""`」)。这不是失败,也不产 `ERR` 值。
+        return Ok(Outcome::normal(Value::String(String::new())));
     }
     // 去掉尾部 \n (Windows: \r\n)
     let trimmed = line.trim_end_matches(['\n', '\r']).to_string();
@@ -22244,12 +22249,18 @@ TYPE(v);
         assert_eq!(err.diagnostic().code, ErrorCode::E0030);
     }
 
-    #[test]
-    fn b15_input_no_stdin_returns_err() {
-        // 测试环境下没有 stdin (cargo test 不连 tty) -> 返回 ERR
-        // wrap 在 IS_ERR 里观察 ERR 值 (顶层会变 E0102)
-        assert_eq!(run("IS_ERR(INPUT());").unwrap(), Value::Boolean(true));
-    }
+    // [X-09] 原 `b15_input_no_stdin_returns_err` 断言「EOF → `ERR` 值」
+    // (`IS_ERR(INPUT())` 为真)。这条断言随 EOF 口径收敛而**作废**:EOF 现在
+    // 返回**空串**(与 `std.io::INPUT` 逐字相同,标准库·系统册 §1.2)。
+    //
+    // 这条用例**被删**而不是改写,理由不是"顺手" —— 它在单元层**根本测不了**:
+    // `builtin_input` 直接读进程的 stdin,单测既不能喂它(⇒ 在本地终端上
+    // 还会**挂住**等输入),也不能可靠地制造"没有 stdin"(CI 上 stdin 是
+    // /dev/null ⇒ 走的是 EOF 分支,不是读失败分支)。
+    //
+    // ⇒ EOF 这条路径的守卫搬到 **CLI 层**(`crates/wlwl-cli/tests/
+    // io_input_parity.rs`):那里能真的喂 stdin,两条路径(内建 / 成员)在
+    // EOF 上的行为都被钉住。
 
     #[test]
     fn b15_call_closure_in_via_eval_call() {
