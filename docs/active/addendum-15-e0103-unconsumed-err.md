@@ -79,8 +79,10 @@ v1.0 把这条限制**删掉**了(规范册 总纲 §0.9 的 `D-01` / `D-05` / `
 
 ### D-06 诊断码
 
-`E0103`,`ErrorCategory::Runtime`(它不是内部错误,是用户代码的错误),消息形如
+`E0103`,`ErrorCategory::Internal` —— 与 `E0102`(顶层逃逸)同族:两者都是「未处理的 `ERR`」,分类一致。消息形如
 `unhandled ERR was discarded: <payload>`。退出码 1(§11.4)。
+
+> **勘误**:本条初稿写的是 `ErrorCategory::Runtime`。那是写本文时**还没读** `wlwl-error` 的码表 —— 实际 `E0102` 归 `Internal`,W-01 落地时按 `Internal` 注册了。**以 `Internal` 为准**;规范仓的 §11.2 码表只写「错误」严重级,不约束 `error_category` 这一层(那是诊断 JSON 的路由字段),两边不冲突。
 
 ## 4 工作项
 
@@ -88,13 +90,13 @@ v1.0 把这条限制**删掉**了(规范册 总纲 §0.9 的 `D-01` / `D-05` / `
 |---|---|---|---|
 | **W-00** | **码表守卫改读 v1.0 规范**:`spec_path()` 改为「`WLWL_SPEC_PATH` → 同级检出 `../wlwl-spec-v1`」,**无回落**;CI 增加规范仓检出(钉 `24d7a6e`) | —— | ✅ 已完成 |
 | **W-01** | `wlwl-error`:新增 `E0103` 码(`as_str` / `category` / 四处 code snapshot 列表 / 码数断言 65→66) | —— | ✅ 已完成 |
-| **W-02** | `wlwl-value`:`Binding.unconsumed` + `Outcome.unconsumed` + `Env` 辅助方法(读绑定的三种模式、作用域扫描) | W-01 | ⬜ |
-| **W-03** | `wlwl-eval`:读绑定的模式传递(消费者派发处按取走型 / 观察型分派) | W-02 | ⬜ |
-| **W-04** | `wlwl-eval`:三个丢弃点 + `E0103` 产生 | W-03 | ⬜ |
-| **W-05** | `wlwl-eval`:函数返回的令牌随 `Outcome` 带出函数体;`LET(_, …)` 显式丢弃 | W-04 | ⬜ |
-| **W-06** | 契约测试:`wlwl-eval/tests/` 增 `e0103_contract.rs`(§8.6.1–§8.6.5 每条一个用例 + 三个丢弃点各一个) | W-05 | ⬜ |
+| **W-02** | `wlwl-value`:`Binding.unconsumed` + `Outcome.unconsumed` + `Env` 辅助方法(读绑定的三种模式、作用域扫描) | W-01 | ✅ 已完成 |
+| **W-03** | `wlwl-eval`:读绑定的模式传递(消费者派发处按取走型 / 观察型分派) | W-02 | ✅ 已完成 |
+| **W-04** | `wlwl-eval`:三个丢弃点 + `E0103` 产生 | W-03 | ✅ 已完成 |
+| **W-05** | `wlwl-eval`:函数返回的令牌随 `Outcome` 带出函数体;`LET(_, …)` 显式丢弃 | W-04 | ✅ 已完成 |
+| **W-06** | 契约测试:`impl/crates/wlwl-eval/tests/e0103_contract.rs` —— 27 个用例,每个都做过**负向验证**(改错断言确认会红,27/27 命中,还原后 SHA256 校验一致) | W-05 | ✅ 已完成 |
 | **W-07** | probe 用例:`impl/tests/probe/cases/` 增 `M8_e0103_*` 系列 | W-05 | ⬜ |
-| **W-08** | **既有测试归因**:跑 `cargo test --locked --all-targets` + probe 全量,把因新规则变红的既有用例**逐条归类**(依赖旧行为 / 真缺陷 / 需改写)并登记偏差 | W-05 | ⬜ |
+| **W-08** | **既有测试归因**:22 个既有测试函数因新规则变红(清单见 §4.3),逐条改写 | W-05 | ⬜ |
 | **W-09** | 文档:实现仓 CHANGELOG 的 breaking 段 + 本文件状态更新;规范仓总纲 §0.9 的 `D-01` / `D-05` / `D-08` 实现状态改为「已实现」,一致性册 §5.4 的 X-03 结项;**并把本仓 CI 里规范仓的钉死提交号 `24d7a6e` 推到新的规范提交** | W-08 | ⬜ |
 
 **W-08 是本批的主要工作量**,不是 W-04。破坏性变更的代价落在既有测试上:凡是把 `ERR` 放在非末条语句、或把 `ERR` 装进单元格后不消费的用例,都会开始报 `E0103`。**每个变红都要归类**,不能一把改绿。
@@ -119,7 +121,48 @@ CI 侧:规范仓检出**钉死** `24d7a6e` —— 不跟 `main`,因为规范一�
 
 **当前状态**:`E0103` 已注册但**尚无触发路径**(W-04 未做)⇒ 读代码的人会看到一个「注册了但没人产生」的码。这是本批的**中间态**,不是终态。
 
-### 4.2 跨仓耦合(两处,别忘)
+### 4.3 W-02…W-06 的结果与三个裁决
+
+**实现落点**
+
+| 文件 | 改了什么 |
+|---|---|
+| `impl/crates/wlwl-value/src/lib.rs` | `Binding.unconsumed`(令牌挂绑定);`Outcome.unconsumed`;`Env` 新增 `read_binding(name, mode)` / `cell_token` / `scope_unconsumed[_at]` / `set_local[_mut]_with_token` / `set_cell_value_with_token`;新 `pub enum ReadMode { Consume, Observe, Transfer }` |
+| `impl/crates/wlwl-eval/src/lib.rs` | `Evaluator.read_mode` + `consumer_read_mode()` **两张分类表** + `eval_in_mode()`;三个丢弃点 + `e0103()`;`Outcome` 带令牌穿过 `RETURN` / 隐式返回;`LET(_, …)` 显式丢弃 |
+| `impl/crates/wlwl-std/src/{collection,test_native}.rs` | `Outcome { … }` 字面量补 `unconsumed` 字段(仅编译适配) |
+| `impl/crates/wlwl-eval/tests/e0103_contract.rs` | 27 个用例,一个用例 = 一个 `#[test]` |
+
+**读模式的实际行为**
+
+| 位置 | 源绑定令牌 | 在途值令牌 |
+|---|---|---|
+| **Consume** 取走型消费者的**第 0** 实参(`ERR_PAYLOAD` / `UNWRAP_OR` / `OR_DIE` / `TRY` / `UNWRAP` / `WRAP` / `EXPECT_ERR`) | 清除 | false |
+| **Observe** 观察型消费者的**第 0** 实参(`IS_ERR` / `IS_OK` / `BOOL` / `TYPE`) | **保留** | false |
+| **Transfer** 其余一切位置(含 `==` / `!=` 透传、`IF` 无 else 的条件位、`&&` / `||` 左操作数) | 清除 | **继承** |
+
+**只有第 0 个实参是「`ERR` 位」。** `UNWRAP_OR` 的默认值 / `WRAP` 的上下文走 `Transfer` —— 若按字面把整个实参列表判成取走,`UNWRAP_OR(ERR(..), d)` 里 `d` 持有的未消费 `ERR` 会被无声销毁,那正是 `E0103` 要根治的那类静默丢失。
+
+**`ERR_CONSUMER_REGISTRY` 不是「取走型」表** —— 它回答「哪些构造**不**触发 §8.2 的透明传播」,与「哪些取走载荷」不是同一件事:`==` / `!=` / `IF` / `&&` / `||` 在注册表里但都不是取走型;`TYPE` / `BOOL` 在注册表里却是观察型。实现用**两张表**合成。
+
+**函数返回怎么带出令牌**:**没有改 `Signal::Return` 的形状** —— 令牌装在 `Outcome.unconsumed` 里、与信号并行上行(信号里装值,令牌装在结果里)。`Expr::Return` 把子表达式的令牌放进 `Outcome.unconsumed`;`invoke_closure` 收到 `Signal::Return(v)` 时转成带令牌的 `Outcome`。隐式返回(体最后一条语句)天然随 `Outcome` 走。
+
+**三个裁决(集成者 2026-10-21 裁定)**
+
+1. **`E0103` 的 `error_category` = `Internal`** —— 与 `E0102` 同族。addendum D-06 初稿写的 `Runtime` 是**勘误**(写本文时还没读码表),已改。**代码不动**。
+2. **观察型**不附「仅被观察则不报」的豁免 —— 规范 §8.6.4 的示例**本来就要求**观察后必须显式丢弃:
+   ```
+   LET(r, ERR("boom"));
+   PRINT(IS_ERR(r));          // TRUE — 观察型消费者不解除未消费状态
+   LET(_, r);                 // 之后显式丢弃
+   ```
+   ⇒ 那 22 条既有测试变红是**预期代价**,该改的是**测试**(W-08),不是规范。
+3. **两个令牌表示近似本批不收敛**,登记为规范↔实现差异(一致性册 §5.4 的 X-06 / X-07),留给后续批次:
+   - ① 一个绑定只有一个 bool 令牌 ⇒ 容器里同时装两个未消费 `ERR` 时只记得住一个(假阴性);
+   - ② 标准库回调的实参通道不带令牌 ⇒ 回调内未消费的 `ERR` 不报 `E0103`(假阴性)。
+
+   两者都**只产生假阴性**(漏报),**不产生假阳性**(误报)⇒ 不会把合规程序判成不合规。
+
+### 4.4 跨仓耦合(两处,别忘)
 
 1. **本仓 CI 钉死了规范仓的提交号**(`24d7a6e`,见 `.github/workflows/ci.yml` 的「Checkout 规范仓(钉死提交)」步骤)。W-09 改规范仓后**必须**回来推这个号 —— 否则 CI 读的是**旧**规范,守卫的读数与规范文本脱节。
 2. **规范仓的「实现状态」列是规范侧的进度视图**,本仓的 addendum 是实现侧的进度视图。两者**手工对齐**,不自动同步 —— 规范仓刻意不感知实现进度(它是独立仓,「规范与实现解耦」是它存在的理由)。⇒ 每次改实现状态,**两处都要改**。

@@ -136,6 +136,7 @@ pub fn kernel_run_tests(host: &mut dyn StdHost, args: Vec<Value>) -> WlwlResult<
                 return Ok(Outcome {
                     value: Value::Null,
                     signal: o.signal.clone(),
+                    unconsumed: false,
                 });
             }
         }

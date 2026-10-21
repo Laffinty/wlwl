@@ -38,8 +38,8 @@ use wlwl_error::{
 pub use wlwl_value::{
     new_cell, subst, type_name, value_type_name, values_equal, Binding, Cell, ChannelHandle,
     ChannelId, ClassEntry, Env, LinearThis, Outcome, Proto, ProtocolCursor, ProtocolError,
-    RcHandle, Signal, Tag, TaskHandle, TaskId, TestEntry, ThisToken, ThisTokenError, Value,
-    YieldReason,
+    RcHandle, ReadMode, Signal, Tag, TaskHandle, TaskId, TestEntry, ThisToken, ThisTokenError,
+    Value, YieldReason,
 };
 /// (`Var("THIS")` or `Call { name: "THIS" }`). Used to reject
 /// closures / SPAWN bodies that would carry the linear capability
@@ -3864,7 +3864,15 @@ fn builtin_scope(ev: &mut Evaluator, args: Vec<Value>) -> WlwlResult<Outcome> {
     ev.scope_depth = ev.scope_depth.saturating_add(1);
     let scope_id = ev.push_scope();
     use crate::runtime::{TaskResult, TaskState};
-    let result = ev.invoke_closure("SCOPE", params, body, captured_env, Vec::new(), &diag_span);
+    let result = ev.invoke_closure(
+        "SCOPE",
+        params,
+        body,
+        captured_env,
+        Vec::new(),
+        Vec::new(),
+        &diag_span,
+    );
     // [v0.7 Phase E3] SCOPE boundary: when any sibling task in this
     // scope terminated with `Done(Err(_))` / `Failed(_)`, cancel the
     // remaining non-terminal siblings (plan §5.4.1 row "scope fn
@@ -4304,6 +4312,7 @@ fn builtin_yield(ev: &mut Evaluator, args: Vec<Value>) -> WlwlResult<Outcome> {
     Ok(Outcome {
         value: Value::Null,
         signal: Signal::Yield(YieldReason::Explicit),
+        unconsumed: false,
     })
 }
 
@@ -4626,7 +4635,15 @@ fn builtin_shield(ev: &mut Evaluator, args: Vec<Value>) -> WlwlResult<Outcome> {
     // the fn body sees shield_depth >= 1 and routes to the
     // pending-cancel path instead of the immediate subtree cancel.
     ev.shield_depth = ev.shield_depth.saturating_add(1);
-    let result = ev.invoke_closure("SHIELD", params, body, captured_env, Vec::new(), &diag_span);
+    let result = ev.invoke_closure(
+        "SHIELD",
+        params,
+        body,
+        captured_env,
+        Vec::new(),
+        Vec::new(),
+        &diag_span,
+    );
     // Decrement after invoke. If this was the outermost SHIELD
     // and a pending cancel was recorded, translate it to a
     // cancel_requested on the current task so subsequent code
@@ -4931,6 +4948,7 @@ fn channel_recv_yield(ev: &mut Evaluator, slot: usize, task_id: crate::runtime::
     Outcome {
         value: Value::Null,
         signal: Signal::Yield(YieldReason::ReceivingOn(ch_id)),
+        unconsumed: false,
     }
 }
 
@@ -4950,6 +4968,7 @@ fn channel_send_yield(
     Outcome {
         value: Value::Null,
         signal: Signal::Yield(YieldReason::SendingOn(ch_id)),
+        unconsumed: false,
     }
 }
 
@@ -5048,6 +5067,7 @@ fn builtin_channel_send(ev: &mut Evaluator, args: Vec<Value>) -> WlwlResult<Outc
             Ok(Outcome {
                 value: Value::Null,
                 signal: Signal::Yield(YieldReason::SendingOn(ch_id)),
+                unconsumed: false,
             })
         }
     }
@@ -5237,6 +5257,7 @@ fn builtin_channel_recv(ev: &mut Evaluator, args: Vec<Value>) -> WlwlResult<Outc
             Ok(Outcome {
                 value: Value::Null,
                 signal: Signal::Yield(YieldReason::ReceivingOn(ch_id)),
+                unconsumed: false,
             })
         }
     }
@@ -5628,6 +5649,65 @@ const ERR_CONSUMER_REGISTRY: &[&str] = &[
 /// propagate (per spec §12.6).
 fn is_err_consumer(name: &str) -> bool {
     ERR_CONSUMER_REGISTRY.contains(&name)
+}
+
+// ──────────────────────────────────────────────────────────────────────
+// [v1.0 spec §8.6] 未消费 `ERR` 的读模式分类
+//
+// ⚠ **`ERR_CONSUMER_REGISTRY` 不是这张表** —— 前者回答「哪些构造**不**触发
+// §8.2 的透明传播」,后者回答「哪些构造**取走**载荷」。两者不是同一件事:
+//
+//   * `==` / `!=` / `IF` / `&&` / `||` 在注册表里,但**都不是**取走型;
+//   * `TYPE` / `BOOL` 在注册表里,却是**观察型**。
+//
+// 规范 §8.6.1 的两分法 + §8.6.3 的「特判」合成下面两张表。
+// ──────────────────────────────────────────────────────────────────────
+
+/// [v1.0 spec §8.6.1] **取走型消费者** —— 该 `ERR` 被取走,不再处于未消费
+/// 状态。`OR_DIE` 是 `UNWRAP_OR` 的弃用别名,归入取走型。
+const ERR_TAKEAWAY_CONSUMERS: &[&str] = &[
+    "ERR_PAYLOAD",
+    "UNWRAP_OR",
+    "OR_DIE",
+    "TRY",
+    "UNWRAP",
+    "WRAP",
+    "EXPECT_ERR",
+];
+
+/// [v1.0 spec §8.6.1] **观察型消费者** —— 只看不带走,未消费状态**留在被读取
+/// 的绑定**。
+///
+/// ⚠ `==` / `!=` **不在**这张表里:它们在 §8.6.1 的观察型那一行,但 §8.6.3
+/// 明文「`==` / `!=` 按 §2.4 **透传**该 `ERR`」⇒ 未消费状态**转给结果值**
+/// ⇒ 走 `Transfer`。
+const ERR_OBSERVE_CONSUMERS: &[&str] = &["IS_ERR", "IS_OK", "BOOL", "TYPE"];
+
+/// [v1.0 spec §8.6.3] 该消费者第 `arg_index` 个实参该用哪种**读模式**。
+///
+/// `None` = 该名字不是消费者 ⇒ 调用方**继承**当前模式(嵌套调用的近似:
+/// 最深的那次读拿到该模式)。
+///
+/// ⚠ 只有**第 0 个实参**是「`ERR` 位」。`UNWRAP_OR` 的默认值 / `WRAP` 的
+/// 上下文不是 `ERR` 位 —— 它们走 `Transfer`,未消费状态由接收方承担
+/// (若把它们也判成取走,`UNWRAP_OR(ERR(..), d)` 里 `d` 持有的未消费 `ERR`
+/// 会被无声销毁 —— 那正是 `E0103` 要根治的静默丢失)。
+fn consumer_read_mode(name: &str, arg_index: usize) -> Option<ReadMode> {
+    if ERR_TAKEAWAY_CONSUMERS.contains(&name) {
+        return Some(if arg_index == 0 {
+            ReadMode::Consume
+        } else {
+            ReadMode::Transfer
+        });
+    }
+    if ERR_OBSERVE_CONSUMERS.contains(&name) {
+        return Some(if arg_index == 0 {
+            ReadMode::Observe
+        } else {
+            ReadMode::Transfer
+        });
+    }
+    None
 }
 
 // ── Operator implementations (v0.3 §9) ─────────────────────────────
@@ -6488,9 +6568,15 @@ impl wlwl_std::StdHost for Evaluator {
             .clone()
             .unwrap_or_else(|| Span::new("<runtime>", 0, 0));
         match f {
-            Value::Closure { params, body, env } => {
-                self.invoke_closure(name, params.clone(), body.clone(), env.clone(), args, &span)
-            }
+            Value::Closure { params, body, env } => self.invoke_closure(
+                name,
+                params.clone(),
+                body.clone(),
+                env.clone(),
+                args,
+                Vec::new(),
+                &span,
+            ),
             Value::NativeFn { invoke, .. } => invoke_std(self, *invoke, args, &span),
             other => Err(WlwlDiagnostic::new(
                 ErrorCode::E0020,
@@ -6627,6 +6713,20 @@ pub struct Evaluator {
     /// 因为循环可嵌套 —— 内层循环若也识别命中,压自己的名字,退出时弹出,
     /// 外层的名字自动复原;内层若 miss 则不压栈,外层照常有效。
     acc_active: Vec<String>,
+    /// [v1.0 spec §8.6.3] 当前**读绑定的模式**。
+    ///
+    /// 派发消费者时设好、求值完实参后恢复。三种模式见
+    /// [`wlwl_value::ReadMode`]:
+    ///
+    /// | 模式 | 何时 | 源绑定的令牌 | 在途值的令牌 |
+    /// |---|---|---|---|
+    /// | `Consume` | 取走型消费者的实参 | 清除 | false |
+    /// | `Observe` | 观察型消费者的实参 | **保留** | false |
+    /// | `Transfer` | 其余一切位置 | 清除 | 继承源令牌 |
+    ///
+    /// ⚠ 嵌套调用**继承当前模式** —— 这是可接受的近似(§8.6.3 的语义本就
+    /// 以「读到令牌的那一刻」为准)。
+    read_mode: ReadMode,
     /// [v0.11.3 M6 / addendum-01 B 片] 当前所处的假时钟气泡(方案 **B-简**)。
     ///
     /// **为什么是 `Evaluator` 的字段而不是 `StdCtx` 的字段**:`StdCtx` 是
@@ -6815,7 +6915,11 @@ pub struct Evaluator {
 enum ArgEvalResult {
     Done {
         accum: Vec<Value>,
+        /// [v1.0 spec §8.6] 每个实参的**未消费令牌**,与 `accum` 一一对应。
+        tokens: Vec<bool>,
         pending_err: Option<Value>,
+        /// `pending_err` 那个 `ERR` 的未消费令牌(§8.2 透明传播时随值带出)。
+        pending_token: bool,
     },
     Signal(Outcome),
 }
@@ -6853,6 +6957,7 @@ impl Evaluator {
             acc_opt_hit: std::cell::Cell::new(0),
             acc_opt_miss: std::cell::Cell::new(0),
             acc_active: Vec::new(),
+            read_mode: ReadMode::Transfer,
         }
     }
 
@@ -6937,6 +7042,7 @@ impl Evaluator {
             acc_opt_hit: std::cell::Cell::new(0),
             acc_opt_miss: std::cell::Cell::new(0),
             acc_active: Vec::new(),
+            read_mode: ReadMode::Transfer,
         }
     }
 
@@ -7055,7 +7161,7 @@ impl Evaluator {
                     _ => None,
                 };
                 let prev_linear = self.linear_this.take();
-                let result = self.invoke_closure(name, params, body, env, args, span);
+                let result = self.invoke_closure(name, params, body, env, args, Vec::new(), span);
                 if let Ok(outcome) = &result {
                     if self.is_linear_this(&outcome.value) {
                         let escape_err = self.diag(
@@ -7126,6 +7232,10 @@ impl Evaluator {
                 ));
             }
         }
+        // [v1.0 spec §8.5 + §8.6.2 第 3 项] 顶层最后一条是
+        // `LET(r, ERR(...))` 时,`ERR` 进了单元格、不外泄;该绑定若此后仍未被
+        // 消费,在**作用域结束**(模块顶层作用域)时报 `E0103`。
+        self.check_global_scope_end(expr.span())?;
         // Other signals at top level are a bug; treat as E0014.
         match outcome.signal {
             Signal::None => Ok(outcome.value),
@@ -7405,8 +7515,8 @@ impl Evaluator {
         // `&Expr`」的地方,`eval_block` 拿不到,所以挂在这里 ——
         // 模块加载、入口文件 `run`、`step_once` 三条路径都经过它。
         self.top_level_bound = collect_top_level_bindings(expr);
-        if let Expr::Block { exprs, .. } = expr {
-            self.eval_block(exprs, true)
+        if let Expr::Block { exprs, span } = expr {
+            self.eval_block(exprs, true, span)
         } else {
             self.eval_expr(expr)
         }
@@ -7418,6 +7528,9 @@ impl Evaluator {
     /// see the ERR and §12.6 will propagate it transparently.
     fn eval_module(&mut self, expr: &Expr) -> WlwlResult<()> {
         let outcome = self.eval_top_level(expr)?;
+        // [v1.0 spec §8.6.2 第 3 项] 模块顶层是一个作用域(§3.2)⇒ 作用域
+        // 结束时仍有绑定持有未消费 `ERR` ⇒ 丢弃点。
+        self.check_global_scope_end(expr.span())?;
         match outcome.signal {
             Signal::None | Signal::Return(_) => Ok(()),
             Signal::Break | Signal::Continue => Err(self.diag(
@@ -7471,13 +7584,16 @@ impl Evaluator {
             }
             Expr::Literal(lit, _) => Ok(Outcome::normal(Value::from(lit.clone()))),
             Expr::Var(name, span) => {
-                // Extract the value out of the cell-borrow before the
-                // match, so the Ref is dropped before we may need
-                // &mut self in the undefined-name branch. (*v).clone()
-                // copies the inner Value; the Ref itself is then unused.
-                let v = self.env.get(name).map(|v| (*v).clone());
-                match v {
-                    Some(v) => Ok(Outcome::normal(v)),
+                // [v1.0 spec §8.6.3] 读绑定 ⇒ 按**当前读模式**转移未消费状态。
+                //   * `Consume`(取走型消费者的实参)⇒ 源绑定的令牌销毁,在途值
+                //     的令牌为 false;
+                //   * `Observe`(观察型消费者的实参)⇒ 源绑定的令牌**保留**,
+                //     在途值的令牌为 false;
+                //   * `Transfer`(其余一切位置)⇒ 源绑定的令牌清除,在途值
+                //     **继承**该令牌。
+                let mode = self.read_mode;
+                match self.env.read_binding(name, mode) {
+                    Some((v, unconsumed)) => Ok(Outcome::with_unconsumed(v, unconsumed)),
                     None => Err(self.undefined_name(name, span)),
                 }
             }
@@ -7496,10 +7612,17 @@ impl Evaluator {
                 // v0.6 §3.1: `LET` creates an immutable cell; `LET MUT`
                 // creates a mutable cell. The flag is permanent.
                 self.check_let_shadowing(name.as_str(), span)?;
+                // [v1.0 spec §8.6.2 第 2 项] 同作用域**重绑定** ⇒ 旧绑定被
+                // 替换 ⇒ 旧值若持有未消费 `ERR`,改写即构成丢弃点。
+                // 遮蔽(内层作用域建新单元格)**不**构成丢弃点。
+                self.check_rebind_in_current_scope(name.as_str(), span)?;
+                // [v1.0 spec §8.6.3] 接收位置建立绑定 ⇒ 未消费状态转给该绑定。
                 if *mut_ {
-                    self.env.set_local_mut(name.clone(), v.value.clone());
+                    self.env
+                        .set_local_mut_with_token(name.clone(), v.value.clone(), v.unconsumed);
                 } else {
-                    self.env.set_local(name.clone(), v.value.clone());
+                    self.env
+                        .set_local_with_token(name.clone(), v.value.clone(), v.unconsumed);
                 }
                 Ok(Outcome::normal(Value::Null))
             }
@@ -7513,12 +7636,18 @@ impl Evaluator {
                 if v.signal != Signal::None {
                     return Ok(v);
                 }
-                self.destructure(pattern, &v.value, span)?;
+                // [v1.0 spec §8.6.4] `LET(_, expr)` 是本语言**唯一**的显式
+                // 丢弃构造:它不建立任何绑定 ⇒ 未消费状态不转给任何绑定 ⇒
+                // 该 `ERR` 被显式丢弃,**不**产生 `E0103`。
+                self.destructure(pattern, &v.value, v.unconsumed, span)?;
                 Ok(Outcome::normal(Value::Null))
             }
-            Expr::Block { exprs, .. } => self.eval_block(exprs, false),
+            Expr::Block { exprs, span } => self.eval_block(exprs, false, span),
             Expr::Array { items, .. } => {
                 let mut vs = Vec::with_capacity(items.len());
+                // [v1.0 spec §8.6.3] 容器装盛**不算消费**但**算转发** ⇒ 未消费
+                // 状态转给该容器(容器本身在丢弃点被处置)。
+                let mut unconsumed = false;
                 for it in items {
                     let o = self.eval_expr(it)?;
                     if o.signal != Signal::None {
@@ -7531,12 +7660,15 @@ impl Evaluator {
                             expr.span().clone(),
                         ));
                     }
+                    unconsumed |= o.unconsumed;
                     vs.push(o.value);
                 }
-                Ok(Outcome::normal(Value::Array(vs)))
+                Ok(Outcome::with_unconsumed(Value::Array(vs), unconsumed))
             }
             Expr::Dict { entries, .. } => {
                 let mut vs = Vec::with_capacity(entries.len());
+                // [v1.0 spec §8.6.3] 同 ARRAY:装盛算转发。
+                let mut unconsumed = false;
                 for (k, v) in entries {
                     let ko = self.eval_expr(k)?;
                     if ko.signal != Signal::None {
@@ -7570,8 +7702,9 @@ impl Evaluator {
                         ));
                     }
                     vs.push((ko.value, vo.value));
+                    unconsumed |= vo.unconsumed;
                 }
-                Ok(Outcome::normal(Value::Dict(vs)))
+                Ok(Outcome::with_unconsumed(Value::Dict(vs), unconsumed))
             }
             Expr::If {
                 cond,
@@ -7584,27 +7717,34 @@ impl Evaluator {
                 var, iter, body, ..
             } => self.eval_for(var, iter, body),
             Expr::Return { value, .. } => {
-                let v = if let Some(e) = value {
+                // [v1.0 spec §8.6] 返回值的**未消费令牌**随 `Signal::Return`
+                // 一起往上走:它挂在 `Outcome.unconsumed` 上(信号里装的是值,
+                // 令牌装在结果里),这样 `invoke_closure` 把它转成普通返回值
+                // 时不必改 `Signal` 的形状。
+                let (v, unconsumed) = if let Some(e) = value {
                     let o = self.eval_expr(e)?;
                     if o.signal != Signal::None {
                         return Ok(o);
                     }
-                    o.value
+                    (o.value, o.unconsumed)
                 } else {
-                    Value::Null
+                    (Value::Null, false)
                 };
                 Ok(Outcome {
                     value: Value::Null,
                     signal: Signal::Return(v),
+                    unconsumed,
                 })
             }
             Expr::Break { .. } => Ok(Outcome {
                 value: Value::Null,
                 signal: Signal::Break,
+                unconsumed: false,
             }),
             Expr::Continue { .. } => Ok(Outcome {
                 value: Value::Null,
                 signal: Signal::Continue,
+                unconsumed: false,
             }),
             Expr::Fun {
                 params, body, name, ..
@@ -7643,7 +7783,11 @@ impl Evaluator {
                 if o.signal != Signal::None {
                     return Ok(o);
                 }
-                Ok(Outcome::normal(Value::Ok(Box::new(o.value))))
+                // [v1.0 spec §8.6.3] `OK(x)` 是个容器 ⇒ 装盛算转发。
+                Ok(Outcome::with_unconsumed(
+                    Value::Ok(Box::new(o.value)),
+                    o.unconsumed,
+                ))
             }
             Expr::Err { value, .. } => {
                 let o = self.eval_expr(value)?;
@@ -7665,7 +7809,12 @@ impl Evaluator {
                         ));
                     }
                 }
-                Ok(Outcome::normal(Value::Err(Box::new(o.value))))
+                // [v1.0 spec §8.6.1] 一个**新生的** `ERR` 诞生 ⇒ 它处于未消费
+                // 状态(令牌置位),直到被取走 / 显式丢弃 / 逃逸到顶层。
+                Ok(Outcome::with_unconsumed(
+                    Value::Err(Box::new(o.value)),
+                    true,
+                ))
             }
             Expr::Panic { value, .. } => {
                 let o = self.eval_expr(value)?;
@@ -7682,16 +7831,23 @@ impl Evaluator {
                 ))
             }
             Expr::Try { value, .. } => {
-                let o = self.eval_expr(value)?;
+                // [v1.0 spec §8.6.1] `TRY` 是**取走型**消费者 ⇒ 实参位置
+                // 走 `Consume`:源绑定的令牌销毁。
+                let o = self.eval_in_mode(value, ReadMode::Consume)?;
                 match o.value {
                     Value::Ok(v) => Ok(Outcome::normal(*v)),
                     Value::Err(v) => {
                         // §19.4 E-TryErr: emit Return(Err(v)).
                         // This propagates up to the enclosing function
                         // frame; at the top level it becomes E0102.
+                        //
+                        // [v1.0 spec §8.6.1 第 3 条] 它已作为返回值逃逸 ⇒
+                        // 不再处于未消费状态 ⇒ 令牌为 false(不报 E0103,
+                        // 走 §8.5 的 E0102)。
                         Ok(Outcome {
                             value: Value::Null,
                             signal: Signal::Return(Value::Err(v)),
+                            unconsumed: false,
                         })
                     }
                     other => Err(self.diag(
@@ -7702,7 +7858,9 @@ impl Evaluator {
                 }
             }
             Expr::IsOk { value, .. } => {
-                let o = self.eval_expr(value)?;
+                // [v1.0 spec §8.6.1] `IS_OK` 是**观察型**消费者 ⇒ 只看不带走,
+                // 未消费状态留在被读取的绑定。
+                let o = self.eval_in_mode(value, ReadMode::Observe)?;
                 if o.signal != Signal::None {
                     return Ok(o);
                 }
@@ -7710,7 +7868,8 @@ impl Evaluator {
                 Ok(Outcome::normal(Value::Boolean(r)))
             }
             Expr::IsErr { value, .. } => {
-                let o = self.eval_expr(value)?;
+                // [v1.0 spec §8.6.1] `IS_ERR` 是**观察型**消费者。
+                let o = self.eval_in_mode(value, ReadMode::Observe)?;
                 if o.signal != Signal::None {
                     return Ok(o);
                 }
@@ -7729,18 +7888,21 @@ impl Evaluator {
                     ErrorCode::W0051,
                     "`OR_DIE` is a v0.3-compat alias; use `UNWRAP_OR` instead (W0051; deprecated alias — removal is an open evolution item, no version is scheduled)",
                 );
-                let o = self.eval_expr(value)?;
+                let o = self.eval_in_mode(value, ReadMode::Consume)?;
                 if o.signal != Signal::None {
                     return Ok(o);
                 }
                 match o.value {
                     Value::Ok(v) => Ok(Outcome::normal(*v)),
                     Value::Err(_) => {
-                        let d = self.eval_expr(default)?;
+                        // `OR_DIE` 是 `UNWRAP_OR` 的弃用别名 ⇒ 第 0 个实参是
+                        // 「`ERR` 位」(取走),默认值不是 ⇒ 走 `Transfer`:
+                        // 若默认值本身持有未消费 `ERR`,它随返回值转出去。
+                        let d = self.eval_in_mode(default, ReadMode::Transfer)?;
                         if d.signal != Signal::None {
                             return Ok(d);
                         }
-                        Ok(Outcome::normal(d.value))
+                        Ok(Outcome::with_unconsumed(d.value, d.unconsumed))
                     }
                     other => Err(self.diag(
                         ErrorCode::E0030,
@@ -7774,22 +7936,43 @@ impl Evaluator {
     /// the current scope (true, used for module top-level so that
     /// `LET` bindings and `EXPORT` declarations persist after the
     /// block is done).
-    fn eval_block(&mut self, exprs: &[Expr], top_level: bool) -> WlwlResult<Outcome> {
+    fn eval_block(&mut self, exprs: &[Expr], top_level: bool, span: &Span) -> WlwlResult<Outcome> {
         if !top_level {
             // Blocks create a new lexical scope — LET inside the block
             // does not leak out.
             self.env.push_scope();
         }
         let mut last = Outcome::normal(Value::Null);
-        for e in exprs {
+        for (i, e) in exprs.iter().enumerate() {
+            let is_last = i + 1 == exprs.len();
             last = self.eval_expr(e)?;
             // Control-flow signal short-circuits the block.
             if last.signal != Signal::None {
                 break;
             }
+            // [v1.0 spec §8.6.2 第 1 项] **语句值丢弃** —— 一个表达式语句的
+            // 值被丢弃(即该值既不成为所在作用域的返回值或括号序列的值,也
+            // 不成为程序值 §9.5)⇒ 丢弃点。
+            //
+            // ⚠ **末条语句不是丢弃点**:它的值是所在作用域的返回值(函数体)
+            // 或程序值(顶层)⇒ 程序值按 §8.5 报 `E0102`,**不**报 `E0103`。
+            if !is_last && last.unconsumed && matches!(last.value, Value::Err(_)) {
+                let err = self.e0103(&last.value, e.span().clone());
+                if !top_level {
+                    self.env.pop_scope();
+                }
+                return Err(err);
+            }
         }
         if !top_level {
+            // [v1.0 spec §8.6.2 第 3 项] **作用域结束时仍未消费** —— 作用域
+            // 结束时仍有绑定持有未消费 `ERR` ⇒ 丢弃点。
+            //
+            // ⚠ **先弹作用域再传播错误**:诊断错误会中止整个程序,栈与控制流
+            // 必须同生共死(与 `eval_while` 的同款纪律)。
+            let check = self.check_scope_end(span);
             self.env.pop_scope();
+            check?;
         }
         Ok(last)
     }
@@ -7800,7 +7983,20 @@ impl Evaluator {
         then_branch: &Expr,
         else_branch: Option<&Expr>,
     ) -> WlwlResult<Outcome> {
-        let c = self.eval_expr(cond)?;
+        // [v1.0 spec §8.6.3] **条件位**是「其它位置」的一种,但它的读模式
+        // 取决于有没有 else 臂:
+        //
+        //   * `IF` **有** else 臂 ⇒ 条件位的 `ERR` 被该 `IF` **放弃** ——
+        //     该 `ERR` 不在接收位置继续,未消费状态**留在被读取的绑定**
+        //     ⇒ 走 `Observe`;
+        //   * `IF` **无** else 臂 ⇒ 条件位的 `ERR` 是 `IF` 的**结果值**
+        //     (§8.2 透传),未消费状态**转给该结果值** ⇒ 走 `Transfer`。
+        let cond_mode = if else_branch.is_some() {
+            ReadMode::Observe
+        } else {
+            ReadMode::Transfer
+        };
+        let c = self.eval_in_mode(cond, cond_mode)?;
         if c.signal != Signal::None {
             return Ok(c);
         }
@@ -7854,7 +8050,10 @@ impl Evaluator {
             return Err(arity_error(name, args.len(), 2));
         }
         // Evaluate left first.
-        let left_o = self.eval_expr(&args[0])?;
+        // [v1.0 spec §8.6.3] `&&` / `||` 的左操作数为 `ERR` 时,该 `ERR` 是
+        // 该构造的**结果值**(§8.2 透传),未消费状态**转给该结果值**
+        // ⇒ 左操作数走 `Transfer`(不是取走:它透传,自己不取走载荷)。
+        let left_o = self.eval_in_mode(&args[0], ReadMode::Transfer)?;
         if left_o.signal != Signal::None {
             return Ok(left_o);
         }
@@ -7874,7 +8073,7 @@ impl Evaluator {
         if decide {
             return Ok(Outcome::normal(Value::Boolean(name == "||")));
         }
-        let right_o = self.eval_expr(&args[1])?;
+        let right_o = self.eval_in_mode(&args[1], ReadMode::Transfer)?;
         if right_o.signal != Signal::None {
             return Ok(right_o);
         }
@@ -7963,8 +8162,12 @@ impl Evaluator {
             // Push a fresh scope around the loop body so LETs inside
             // the body don't leak across iterations.
             self.env.push_scope();
-            let o = self.eval_expr(body)?;
+            let body_result = self.eval_expr(body);
+            // [v1.0 spec §8.6.2 第 3 项] 循环体作用域结束仍未消费 ⇒ 丢弃点。
+            let scope_check = self.check_scope_end(body.span());
             self.env.pop_scope();
+            let o = body_result?;
+            scope_check?;
             match o.signal {
                 Signal::None => {
                     // [v0.10.2] §6.2 「体产生的 `ERR` 终止循环并传播」。
@@ -8018,7 +8221,11 @@ impl Evaluator {
                         }
                         Signal::Continue => {}
                         Signal::Break => {
+                            // [v1.0 spec §8.6.2 第 3 项] 循环作用域结束仍未
+                            // 消费 ⇒ 丢弃点。
+                            let scope_check = self.check_scope_end(body.span());
                             self.env.pop_scope();
+                            scope_check?;
                             // Break terminates the loop; consume the
                             // signal so it does not escape to the
                             // enclosing frame.
@@ -8058,7 +8265,11 @@ impl Evaluator {
                         }
                         Signal::Continue => {}
                         Signal::Break => {
+                            // [v1.0 spec §8.6.2 第 3 项] 循环作用域结束仍未
+                            // 消费 ⇒ 丢弃点。
+                            let scope_check = self.check_scope_end(body.span());
                             self.env.pop_scope();
+                            scope_check?;
                             return Ok(Outcome::normal(Value::Null));
                         }
                         Signal::Return(_) => {
@@ -8095,7 +8306,11 @@ impl Evaluator {
                         }
                         Signal::Continue => {}
                         Signal::Break => {
+                            // [v1.0 spec §8.6.2 第 3 项] 循环作用域结束仍未
+                            // 消费 ⇒ 丢弃点。
+                            let scope_check = self.check_scope_end(body.span());
                             self.env.pop_scope();
+                            scope_check?;
                             return Ok(Outcome::normal(Value::Null));
                         }
                         Signal::Return(_) => {
@@ -8127,7 +8342,10 @@ impl Evaluator {
                 ));
             }
         };
+        // [v1.0 spec §8.6.2 第 3 项] `FOR` 循环体作用域结束仍未消费 ⇒ 丢弃点。
+        let scope_check = self.check_scope_end(body.span());
         self.env.pop_scope();
+        scope_check?;
         Ok(outcome)
     }
 
@@ -8190,27 +8408,50 @@ impl Evaluator {
         whitelisted: bool,
     ) -> WlwlResult<ArgEvalResult> {
         let mut accum: Vec<Value> = Vec::with_capacity(args.len());
+        // [v1.0 spec §8.6] 每个实参的未消费令牌(与 `accum` 一一对应)。
+        let mut tokens: Vec<bool> = Vec::with_capacity(args.len());
         let mut pending_err: Option<Value> = None;
-        for a in args {
+        let mut pending_token = false;
+        for (i, a) in args.iter().enumerate() {
+            // [v1.0 spec §8.6.3] 派发消费者时设好读模式,求值完实参后恢复。
+            // 非消费者**继承**当前模式(嵌套调用的近似)。
+            let mode = consumer_read_mode(callee, i).unwrap_or(self.read_mode);
+            let prev_mode = self.read_mode;
+            self.read_mode = mode;
             // [PLAN S4] 活跃累加器 cell 走共享通道,跳过 `Expr::Var` 的深拷贝。
             let o = match self.acc_cell_share(callee, a) {
-                Some(v) => Outcome::normal(v),
-                None => self.eval_expr(a)?,
+                Some(v) => Ok(Outcome::normal(v)),
+                None => self.eval_expr(a),
             };
+            self.read_mode = prev_mode;
+            let mut o = o?;
+            // 位置级处置:`Consume` / `Observe` 模式下到达该位置的 `ERR` 不再
+            // 处于未消费状态(取走型把它取走;观察型只是看一眼,令牌仍留在被
+            // 读取的绑定上)。
+            if mode != ReadMode::Transfer && matches!(o.value, Value::Err(_)) {
+                o.unconsumed = false;
+            }
             if o.signal != Signal::None {
                 return Ok(ArgEvalResult::Signal(o));
             }
             if !whitelisted {
                 if let Value::Err(_) = &o.value {
                     pending_err.get_or_insert_with(|| o.value.clone());
+                    pending_token = o.unconsumed;
                     // Stop evaluating further args — the ERR will
                     // short-circuit the call.
                     break;
                 }
             }
             accum.push(o.value);
+            tokens.push(o.unconsumed);
         }
-        Ok(ArgEvalResult::Done { accum, pending_err })
+        Ok(ArgEvalResult::Done {
+            accum,
+            tokens,
+            pending_err,
+            pending_token,
+        })
     }
 
     /// [v0.7 Phase B5a-3 slice 2] Dispatch a Call after all args are
@@ -8227,7 +8468,9 @@ impl Evaluator {
         &mut self,
         name: &str,
         accum: Vec<Value>,
+        tokens: Vec<bool>,
         pending_err: Option<Value>,
+        pending_token: bool,
         whitelisted: bool,
         user_fn: Option<Value>,
         span: &Span,
@@ -8237,24 +8480,34 @@ impl Evaluator {
         // the result of the call.
         if !whitelisted {
             if let Some(err) = pending_err {
-                return Ok(Outcome::normal(err));
+                return Ok(Outcome::with_unconsumed(err, pending_token));
             }
-            for v in &accum {
+            for (v, t) in accum.iter().zip(tokens.iter()) {
                 if let Value::Err(_) = v {
-                    return Ok(Outcome::normal(v.clone()));
+                    return Ok(Outcome::with_unconsumed(v.clone(), *t));
                 }
             }
         }
+        // [v1.0 spec §8.6.3] 预先摘出「值为 `ERR` 的实参」: 调用结果若是
+        // 其中之一, 令牌跟着那个实参走; 否则结果是一个**新生的** `ERR`。
+        let err_args: Vec<(Value, bool)> = accum
+            .iter()
+            .zip(tokens.iter())
+            .filter(|(v, _)| matches!(v, Value::Err(_)))
+            .map(|(v, t)| (v.clone(), *t))
+            .collect();
         // User-function dispatch takes priority over the global
         // builtin table (in Phase 2 we keep them in disjoint
         // namespaces by convention — there is no name conflict in
         // the std yet).
         if let Some(v) = user_fn {
             if let Value::Closure { params, body, env } = v {
-                return self.invoke_closure(name, params, body, env, accum, span);
+                return self.invoke_closure(name, params, body, env, accum, tokens, span);
             }
             if let Value::NativeFn { invoke, .. } = v {
-                return invoke_std(self, invoke, accum, span);
+                let mut result = invoke_std(self, invoke, accum, span)?;
+                self.attach_result_token(&mut result, &err_args);
+                return Ok(result);
             }
             // If the name resolves to a non-Closure value, treat as
             // E0020 (the user is trying to call a non-callable).
@@ -8274,9 +8527,29 @@ impl Evaluator {
             self.current_span = Some(span.clone());
             let result = b(self, accum);
             self.current_span = prev_span;
-            return result;
+            let mut result = result?;
+            self.attach_result_token(&mut result, &err_args);
+            return Ok(result);
         }
         Err(self.undefined_name(name, span))
+    }
+
+    /// [v1.0 spec §8.6.3] 给一次调用的结果定「未消费令牌」。
+    ///
+    /// 规则:
+    ///
+    /// * 结果**就是某个实参的值**(如 `UNWRAP_OR` 在 `ERR` 分支返回默认值)
+    ///   => 令牌跟着那个实参走(实参在取走型位置被消费 => 令牌为 false);
+    /// * 结果是**新生的** `ERR`(如 `WRAP` 造的包装层、或原生成员返回的
+    ///   `ERR`)=> 它是一个**新的未消费 `ERR`** => 令牌置位。
+    fn attach_result_token(&mut self, result: &mut Outcome, err_args: &[(Value, bool)]) {
+        if !matches!(result.value, Value::Err(_)) {
+            return;
+        }
+        result.unconsumed = match err_args.iter().rev().find(|(v, _)| *v == result.value) {
+            Some((_, token)) => *token,
+            None => true,
+        };
     }
 
     /// [v0.7 Phase B5a-3 slice 2] Translate an `Outcome` produced
@@ -8338,6 +8611,7 @@ impl Evaluator {
                 Ok(Some(Outcome {
                     value: Value::Null,
                     signal: Signal::Yield(crate::runtime::YieldReason::Explicit),
+                    unconsumed: false,
                 }))
             }
             // [v0.7 Phase B5a-3 slice 2 (smoke test)] 1-arg variant
@@ -8377,6 +8651,7 @@ impl Evaluator {
                 Ok(Some(Outcome {
                     value: Value::Null,
                     signal: Signal::Yield(crate::runtime::YieldReason::Explicit),
+                    unconsumed: false,
                 }))
             }
             _ => Ok(None),
@@ -8479,7 +8754,7 @@ impl Evaluator {
             let _ = (params, expr);
             self.run_task_segments(id, &captured, span)
         } else {
-            self.invoke_closure("TASK", params, expr, captured, Vec::new(), span)
+            self.invoke_closure("TASK", params, expr, captured, Vec::new(), Vec::new(), span)
         };
 
         self.current_task = prev_task;
@@ -8696,7 +8971,7 @@ impl Evaluator {
         // segment accumulate in the task_frame (top of env.scopes)
         // and persist across segments. Sub-blocks inside the
         // segment still get their own scopes via eval_block(false).
-        let outcome = match self.eval_block(&segment_exprs, true) {
+        let outcome = match self.eval_block(&segment_exprs, true, span) {
             Ok(o) => o,
             Err(e) => {
                 // Restore caller env on error before bubbling, so
@@ -8957,11 +9232,26 @@ impl Evaluator {
         // the same two helpers without forking the dispatch logic.
         let user_fn = self.env.get(name).map(|v| v.clone());
         let whitelisted = is_err_consumer(name);
-        let (accum, pending_err) = match self.eval_arg_values(name, args, whitelisted)? {
-            ArgEvalResult::Signal(o) => return Ok(o),
-            ArgEvalResult::Done { accum, pending_err } => (accum, pending_err),
-        };
-        self.dispatch_call(name, accum, pending_err, whitelisted, user_fn, span)
+        let (accum, tokens, pending_err, pending_token) =
+            match self.eval_arg_values(name, args, whitelisted)? {
+                ArgEvalResult::Signal(o) => return Ok(o),
+                ArgEvalResult::Done {
+                    accum,
+                    tokens,
+                    pending_err,
+                    pending_token,
+                } => (accum, tokens, pending_err, pending_token),
+            };
+        self.dispatch_call(
+            name,
+            accum,
+            tokens,
+            pending_err,
+            pending_token,
+            whitelisted,
+            user_fn,
+            span,
+        )
     }
 
     /// [v0.7 Phase B5a-3 slice 2] Iterative / step-friendly parallel
@@ -9018,13 +9308,28 @@ impl Evaluator {
         // but the `ArgEvalResult::Signal` arm translates the inner
         // `Outcome` into a `StepResult` so the caller can react to
         // a `Yield` from inside the arg list.
-        let (accum, pending_err) = match self.eval_arg_values(name, args, whitelisted)? {
-            ArgEvalResult::Signal(o) => {
-                return self.outcome_to_step_result(o, span);
-            }
-            ArgEvalResult::Done { accum, pending_err } => (accum, pending_err),
-        };
-        let outcome = self.dispatch_call(name, accum, pending_err, whitelisted, user_fn, span)?;
+        let (accum, tokens, pending_err, pending_token) =
+            match self.eval_arg_values(name, args, whitelisted)? {
+                ArgEvalResult::Signal(o) => {
+                    return self.outcome_to_step_result(o, span);
+                }
+                ArgEvalResult::Done {
+                    accum,
+                    tokens,
+                    pending_err,
+                    pending_token,
+                } => (accum, tokens, pending_err, pending_token),
+            };
+        let outcome = self.dispatch_call(
+            name,
+            accum,
+            tokens,
+            pending_err,
+            pending_token,
+            whitelisted,
+            user_fn,
+            span,
+        )?;
         self.outcome_to_step_result(outcome, span)
     }
 
@@ -9068,9 +9373,18 @@ impl Evaluator {
         if v.signal != Signal::None {
             return Ok(v);
         }
+        // [v1.0 spec §8.6.2 第 2 项] **绑定被覆盖** —— `SET` 改写单元格时,
+        // 旧值若是一个未被消费的 `ERR`,改写即构成一个丢弃点(§3.4 的说明)。
+        // ⚠ 判定必须在改写**之前**:改写后旧值就没了。
+        self.check_binding_overwritten(&target, span)?;
         // Look up the cell. Use `set_cell_value` to do the
         // mutability check in one shot.
-        match self.env.set_cell_value(&target, v.value) {
+        //
+        // [v1.0 spec §8.6.3] 新值若持有未消费 `ERR`,未消费状态转给该单元格。
+        match self
+            .env
+            .set_cell_value_with_token(&target, v.value, v.unconsumed)
+        {
             Ok(true) => Ok(Outcome::normal(Value::Null)),
             Ok(false) => Err(self.diag(
                 ErrorCode::E0024,
@@ -9084,6 +9398,7 @@ impl Evaluator {
         }
     }
 
+    #[allow(clippy::too_many_arguments)] // arg_values + arg_tokens are a pair (v1.0 §8.6.3)
     fn invoke_closure(
         &mut self,
         name: &str,
@@ -9091,6 +9406,7 @@ impl Evaluator {
         body: Box<Expr>,
         captured_env: Env,
         mut arg_values: Vec<Value>,
+        arg_tokens: Vec<bool>,
         span: &Span,
     ) -> WlwlResult<Outcome> {
         // [v0.10.2] 递归深度护栏。求值器是递归下降的,而 Rust 的线程栈有限:
@@ -9256,7 +9572,10 @@ impl Evaluator {
                 break; // rest is the trailing param by grammar
             }
             if i < arg_values.len() {
-                self.env.set_local(p.name.clone(), arg_values[i].clone());
+                // [v1.0 spec §8.6.3] 实参的未消费状态转给形参绑定。
+                let token = arg_tokens.get(i).copied().unwrap_or(false);
+                self.env
+                    .set_local_with_token(p.name.clone(), arg_values[i].clone(), token);
             } else {
                 let Some(default_expr) = p.default_expr.as_ref() else {
                     return Err(self.diag(
@@ -9271,7 +9590,8 @@ impl Evaluator {
                     ));
                 };
                 let o = self.eval_expr(default_expr)?;
-                self.env.set_local(p.name.clone(), o.value);
+                self.env
+                    .set_local_with_token(p.name.clone(), o.value, o.unconsumed);
             }
         }
         // [v0.4 spec Sec. 14.2] push call frame, eval body,
@@ -9299,17 +9619,31 @@ impl Evaluator {
         };
         // Successful body eval: pop the frame before returning.
         let _ = self.call_stack.pop();
+        // [v1.0 spec §8.6.2 第 3 项] **函数体作用域结束** —— 形参里若还有
+        // 持有未消费 `ERR` 的绑定 ⇒ 丢弃点。
+        //
+        // ⚠ **函数体例外**:返回值的令牌已随 `Outcome` 带出函数体(见下面
+        // `Signal::Return` 那行),所以函数体作用域内**不留**返回值的令牌 ——
+        // 这里只查形参作用域。
+        //
+        // ⚠ 先查再还原环境:还原之后作用域就没了,查不到。
+        let scope_check = self.check_scope_end(span);
         // Restore the caller's env EXACTLY (by swapping back, so any
         // mutations during the call are discarded).
         self.env.scopes = caller_scopes;
+        scope_check?;
 
         // Convert a Return signal back to a normal value; treat
         // Break/Continue as E0014 inside a function body. Yield
         // propagates unchanged so the caller's scheduler step loop
         // can observe it.
         match outcome.signal {
+            // 隐式返回:函数体最后一条语句的值 —— 令牌自然随 `Outcome` 带出。
             Signal::None => Ok(outcome),
-            Signal::Return(v) => Ok(Outcome::normal(v)),
+            // [v1.0 spec §8.6.3] 显式返回:返回值的未消费令牌随
+            // `Outcome.unconsumed` 一起带出函数体(信号里装的是值,令牌装在
+            // 结果里 —— 这样不必改 `Signal` 的形状)。
+            Signal::Return(v) => Ok(Outcome::with_unconsumed(v, outcome.unconsumed)),
             Signal::Break | Signal::Continue => Err(self.diag(
                 ErrorCode::E0014,
                 "BREAK or CONTINUE used outside a loop".to_string(),
@@ -9502,12 +9836,22 @@ impl Evaluator {
     /// - `E0026` for literal mismatches (the spec is silent on
     ///   this case in v0.4; we collapse it to E0026 for now to
     ///   keep the error family tight).
-    fn destructure(&mut self, pattern: &Pattern, value: &Value, _span: &Span) -> WlwlResult<()> {
+    fn destructure(
+        &mut self,
+        pattern: &Pattern,
+        value: &Value,
+        unconsumed: bool,
+        _span: &Span,
+    ) -> WlwlResult<()> {
         match pattern {
             Pattern::Ident(name, _) => {
-                self.env.set_local(name.clone(), value.clone());
+                // [v1.0 spec §8.6.3] 接收位置建立绑定 ⇒ 未消费状态转给该绑定。
+                self.env
+                    .set_local_with_token(name.clone(), value.clone(), unconsumed);
                 Ok(())
             }
+            // [v1.0 spec §8.6.4] 通配符**不**建立任何绑定 ⇒ 显式丢弃 ⇒
+            // 未消费状态不转给任何绑定 ⇒ **不**报 `E0103`。
             Pattern::Wildcard(_) => Ok(()),
             Pattern::Literal(lit, lspan) => {
                 let v = Value::from(lit.clone());
@@ -9549,12 +9893,17 @@ impl Evaluator {
                             aspan,
                         )
                     })?;
-                    self.destructure(sub, sub_value, aspan)?;
+                    self.destructure(
+                        sub,
+                        sub_value,
+                        unconsumed && matches!(sub_value, Value::Err(_)),
+                        aspan,
+                    )?;
                 }
                 if let Some(rest_pat) = rest {
                     let rest_items: Vec<Value> = arr.iter().skip(items.len()).cloned().collect();
                     let rest_value = Value::Array(rest_items);
-                    self.destructure(rest_pat, &rest_value, aspan)?;
+                    self.destructure(rest_pat, &rest_value, false, aspan)?;
                 } else if arr.len() > items.len() {
                     return Err(self.destructure_shape_error(
                         format!(
@@ -9589,7 +9938,12 @@ impl Evaluator {
                             ));
                         }
                     };
-                    self.destructure(sub, &found, dspan)?;
+                    self.destructure(
+                        sub,
+                        &found,
+                        unconsumed && matches!(found, Value::Err(_)),
+                        dspan,
+                    )?;
                 }
                 Ok(())
             }
@@ -9618,7 +9972,13 @@ impl Evaluator {
                         ));
                     }
                 };
-                self.destructure(inner, inner_value, cspan)
+                // `ERR(e)` 模式把载荷**取走** ⇒ 那个 `ERR` 不再处于未消费状态。
+                // `OK(v)` 模式取出内层值 ⇒ 内层若是 `ERR`,令牌跟着内层走。
+                let inner_token = match name.as_str() {
+                    "ERR" => false,
+                    _ => unconsumed && matches!(inner_value, Value::Err(_)),
+                };
+                self.destructure(inner, inner_value, inner_token, cspan)
             }
         }
     }
@@ -9777,14 +10137,23 @@ impl Evaluator {
                 // 3a. Run body in a fresh scope holding the bindings.
                 self.env.push_scope();
                 for (name, val) in &bindings {
-                    self.env.set_local(name.clone(), val.clone());
+                    // [v1.0 spec §8.6.3] 待匹配值的未消费状态转给**拿到那个
+                    // `ERR` 值**的绑定(标识符模式拿到的是整个待匹配值)。
+                    let token = v.unconsumed && matches!(val, Value::Err(_));
+                    self.env
+                        .set_local_with_token(name.clone(), val.clone(), token);
                 }
-                let result = self.eval_expr(&clause.body)?;
+                let result = self.eval_expr(&clause.body);
+                // [v1.0 spec §8.6.2 第 3 项] `MATCH` 分支体作用域结束仍未
+                // 消费 ⇒ 丢弃点。
+                let scope_check = self.check_scope_end(clause.body.span());
                 self.env.pop_scope();
+                let result = result?;
+                scope_check?;
                 if result.signal != Signal::None {
                     return Ok(result);
                 }
-                return Ok(Outcome::normal(result.value));
+                return Ok(Outcome::with_unconsumed(result.value, result.unconsumed));
             }
         }
         // 3b. No match -- evaluate the (synthesized-when-omitted)
@@ -9794,7 +10163,7 @@ impl Evaluator {
         if r.signal != Signal::None {
             return Ok(r);
         }
-        Ok(Outcome::normal(r.value))
+        Ok(Outcome::with_unconsumed(r.value, r.unconsumed))
     }
 
     /// Attempt to match `value` against `pattern`. On success, every
@@ -9898,6 +10267,109 @@ impl Evaluator {
                 }
             }
         }
+    }
+
+    // ──────────────────────────────────────────────────────────────
+    // [v1.0 spec §8.6] 未消费 `ERR` 的三个丢弃点
+    // ──────────────────────────────────────────────────────────────
+
+    /// [v1.0 spec §8.6.3] 在指定**读模式**下求值一个子表达式。
+    ///
+    /// 模式经求值器的 `read_mode` 字段传递:派发消费者时设好、求值完实参后
+    /// 恢复。`Consume` / `Observe` 两种模式下到达该位置的 `ERR` **不再处于
+    /// 未消费状态**(取走型把它取走;观察型只是看一眼 —— 令牌仍留在被读取的
+    /// 绑定上,见 [`ReadMode::Observe`])。
+    fn eval_in_mode(&mut self, expr: &Expr, mode: ReadMode) -> WlwlResult<Outcome> {
+        let prev = self.read_mode;
+        self.read_mode = mode;
+        let outcome = self.eval_expr(expr);
+        self.read_mode = prev;
+        let mut outcome = outcome?;
+        if mode != ReadMode::Transfer && matches!(outcome.value, Value::Err(_)) {
+            outcome.unconsumed = false;
+        }
+        Ok(outcome)
+    }
+
+    /// [v1.0 spec §8.6.2] 造一条 `E0103` 诊断。
+    ///
+    /// 消息形如 `unhandled ERR was discarded: <payload>` —— 报的是**载荷**,
+    /// 不是 `ERR(载荷)` 那个包装(与 §8.5 的 `E0102` 消息同款口径)。
+    fn e0103(&mut self, err_value: &Value, span: Span) -> WlwlError {
+        let payload = match err_value {
+            Value::Err(p) => p.display(),
+            other => other.display(),
+        };
+        self.diag(
+            ErrorCode::E0103,
+            format!("unhandled ERR was discarded: {payload}"),
+            span,
+        )
+    }
+
+    /// 把一段 span 拷出来(诊断要拿 owned 的 `Span`)。
+    fn span_copy(span: &Span) -> Span {
+        Span {
+            file: span.file.clone(),
+            line_start: span.line_start,
+            col_start: span.col_start,
+            line_end: span.line_end,
+            col_end: span.col_end,
+        }
+    }
+
+    /// [v1.0 spec §8.6.2 第 3 项] **作用域结束时仍未消费** —— 作用域结束时,
+    /// 仍有绑定持有未消费 `ERR` ⇒ `E0103`。
+    ///
+    /// ⚠ 报告即终止程序 ⇒ 一个 `ERR` 至多被报告一次(§8.6.5)由「终止」天然
+    /// 保证;令牌本身在报告前已被销毁(读取即转移),故不会重复。
+    fn check_scope_end(&mut self, span: &Span) -> WlwlResult<()> {
+        let pending = self.env.scope_unconsumed();
+        let Some((_name, value)) = pending.into_iter().next() else {
+            return Ok(());
+        };
+        Err(self.e0103(&value, Self::span_copy(span)))
+    }
+
+    /// [v1.0 spec §8.6.2 第 3 项] **全局作用域**(模块顶层)结束时的同一检查。
+    fn check_global_scope_end(&mut self, span: &Span) -> WlwlResult<()> {
+        let pending = self.env.scope_unconsumed_at(0);
+        let Some((_name, value)) = pending.into_iter().next() else {
+            return Ok(());
+        };
+        Err(self.e0103(&value, Self::span_copy(span)))
+    }
+
+    /// [v1.0 spec §8.6.2 第 2 项] **绑定被覆盖** —— 持有未消费 `ERR` 的绑定
+    /// 被改写:同作用域重绑定(§3.2)或 `SET` 改写单元格(§3.4)。
+    fn check_binding_overwritten(&mut self, name: &str, span: &Span) -> WlwlResult<()> {
+        let Some(token) = self.env.cell_token(name) else {
+            return Ok(());
+        };
+        if !token {
+            return Ok(());
+        }
+        let Some(value) = self.env.get(name).map(|v| (*v).clone()) else {
+            return Ok(());
+        };
+        Err(self.e0103(&value, Self::span_copy(span)))
+    }
+
+    /// [v1.0 spec §8.6.2 第 2 项] **同作用域重绑定** —— 旧绑定被替换。
+    ///
+    /// ⚠ 遮蔽**不**构成丢弃点(§8.6.2 说明):内层作用域的 `LET` 建立新
+    /// 单元格,外层绑定不受影响 ⇒ 这里只看**当前(最内层)作用域**。
+    fn check_rebind_in_current_scope(&mut self, name: &str, span: &Span) -> WlwlResult<()> {
+        let in_current = self
+            .env
+            .scopes
+            .last()
+            .map(|s| s.contains_key(name))
+            .unwrap_or(false);
+        if !in_current {
+            return Ok(());
+        }
+        self.check_binding_overwritten(name, span)
     }
 
     fn diag(&mut self, code: ErrorCode, message: impl Into<String>, span: Span) -> WlwlError {

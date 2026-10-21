@@ -505,6 +505,16 @@ impl From<Literal> for Value {
 pub struct Binding {
     pub value: Value,
     pub mutable: bool,
+    /// [v1.0 spec §8.6] **未消费 `ERR` 令牌**。
+    ///
+    /// ⚠ 令牌挂在**绑定**上,不挂在值上(D-01):`Value` 是 `#[derive(Clone)]`
+    /// 的普通枚举,数组 / 字典按值深拷贝 ⇒ 「这个 `ERR` 已被消费」若挂在
+    /// 值上,`LET(a, err); LET(b, a);` 之后消费 `b` 清不掉 `a` 的副本 ⇒ 误报。
+    ///
+    /// 令牌在任一时刻**只有一个持有者**:按 §8.6.3 的转发规则在读取时转移,
+    /// 被取走型消费者取走或被显式丢弃即销毁 ⇒ §8.6.5「至多报告一次」由转移
+    /// 语义天然保证。
+    pub unconsumed: bool,
 }
 
 /// A heap-allocated cell. Cloning the `Rc` is cheap and is what
@@ -519,7 +529,28 @@ pub fn new_cell(value: Value) -> Cell {
     Rc::new(RefCell::new(Binding {
         value,
         mutable: false,
+        unconsumed: false,
     }))
+}
+
+/// [v1.0 spec §8.6.3] **读绑定的三种模式**。
+///
+/// 规范把「读入某个位置」分成三类,每类对**源绑定**的未消费状态与**在途值**
+/// 的未消费状态有不同影响:
+///
+/// | 模式 | 何时 | 源绑定的令牌 | 在途值的令牌 |
+/// |---|---|---|---|
+/// | [`Consume`](ReadMode::Consume) | 取走型消费者的实参 | 清除 | false |
+/// | [`Observe`](ReadMode::Observe) | 观察型消费者的实参 | **保留** | false |
+/// | [`Transfer`](ReadMode::Transfer) | 其余一切位置 | 清除 | 继承源令牌 |
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum ReadMode {
+    /// 取走型:该 `ERR` 被取走,不再处于未消费状态(§8.6.1)。
+    Consume,
+    /// 观察型:只看不带走,未消费状态**留在被读取的绑定**(§8.6.1)。
+    Observe,
+    /// 转移:由接收方承担(§8.6.3「读入其它任何位置」)。
+    Transfer,
 }
 
 /// Lexical environment. v0.4 搂6.4: stores `HashMap<String, Cell>` so
@@ -552,7 +583,10 @@ impl PartialEq for Env {
                         // only call this on quiescent envs.
                         let ba = va.borrow();
                         let bb = vb.borrow();
-                        if ba.value != bb.value || ba.mutable != bb.mutable {
+                        if ba.value != bb.value
+                            || ba.mutable != bb.mutable
+                            || ba.unconsumed != bb.unconsumed
+                        {
                             return false;
                         }
                     }
@@ -640,6 +674,115 @@ impl Env {
         }
     }
 
+    /// [v1.0 spec §8.6.3] `LET` 建绑定时的**转发**:接收位置建立绑定 ⇒
+    /// 未消费状态转给该绑定。
+    pub fn set_local_with_token(
+        &mut self,
+        name: impl Into<String>,
+        value: Value,
+        unconsumed: bool,
+    ) {
+        if let Some(scope) = self.scopes.last_mut() {
+            scope.insert(
+                name.into(),
+                Rc::new(RefCell::new(Binding {
+                    value,
+                    mutable: false,
+                    unconsumed,
+                })),
+            );
+        }
+    }
+
+    /// [v1.0 spec §8.6.3] 同上,但建立**可变**绑定(`LET MUT`)。
+    pub fn set_local_mut_with_token(
+        &mut self,
+        name: impl Into<String>,
+        value: Value,
+        unconsumed: bool,
+    ) {
+        if let Some(scope) = self.scopes.last_mut() {
+            scope.insert(
+                name.into(),
+                Rc::new(RefCell::new(Binding {
+                    value,
+                    mutable: true,
+                    unconsumed,
+                })),
+            );
+        }
+    }
+
+    /// [v1.0 spec §8.6.3] **按模式读一个绑定**。
+    ///
+    /// 返回 `(值, 在途值的令牌)`。源绑定的令牌按模式处置:
+    /// `Consume` ⇒ 清除;`Observe` ⇒ **保留**;`Transfer` ⇒ 清除且令牌
+    /// 随在途值转走。
+    pub fn read_binding(&self, name: &str, mode: ReadMode) -> Option<(Value, bool)> {
+        for scope in self.scopes.iter().rev() {
+            if let Some(cell) = scope.get(name) {
+                let mut b = cell.borrow_mut();
+                let token = b.unconsumed;
+                let value = b.value.clone();
+                match mode {
+                    ReadMode::Consume => {
+                        b.unconsumed = false;
+                        return Some((value, false));
+                    }
+                    ReadMode::Observe => {
+                        // 未消费状态留在被读取的绑定(§8.6.1 观察型)。
+                        return Some((value, false));
+                    }
+                    ReadMode::Transfer => {
+                        b.unconsumed = false;
+                        return Some((value, token));
+                    }
+                }
+            }
+        }
+        None
+    }
+
+    /// [v1.0 spec §8.6.2] 查某个名字当前单元格的未消费令牌(用于 `SET`
+    /// 改写前的「绑定被覆盖」判定)。
+    pub fn cell_token(&self, name: &str) -> Option<bool> {
+        for scope in self.scopes.iter().rev() {
+            if let Some(cell) = scope.get(name) {
+                return Some(cell.borrow().unconsumed);
+            }
+        }
+        None
+    }
+
+    /// [v1.0 spec §8.6.2] **最内层作用域**内持有未消费 `ERR` 的绑定。
+    ///
+    /// 作用域结束时(§8.6.2 第 3 项)逐条检查 ⇒ 报 `E0103`。
+    pub fn scope_unconsumed(&self) -> Vec<(String, Value)> {
+        self.scope_unconsumed_at(self.scopes.len().saturating_sub(1))
+    }
+
+    /// [v1.0 spec §8.6.2] 指定下标的作用域内持有未消费 `ERR` 的绑定。
+    ///
+    /// 下标 0 是**全局作用域**(模块顶层)—— 程序 / 模块结束时它是最后
+    /// 一道「作用域结束时仍未消费」的检查点。
+    pub fn scope_unconsumed_at(&self, index: usize) -> Vec<(String, Value)> {
+        let mut out = Vec::new();
+        let Some(scope) = self.scopes.get(index) else {
+            return out;
+        };
+        for (name, cell) in scope {
+            let b = cell.borrow();
+            if b.unconsumed {
+                out.push((name.clone(), b.value.clone()));
+            }
+        }
+        // ⚠ **按名字排序**:作用域是 `HashMap`,迭代序不确定 ⇒ 同一份源码
+        // 同一时刻报哪一个绑定会漂。规范 §11.1「诊断的顺序也是结构的一部分」
+        // ⇒ 排序后再交给调用方挑第一个。
+        out.sort_by(|a, b| a.0.cmp(&b.0));
+        out
+    }
+
     /// v0.6 §3.1: `LET MUT(name, value)` binds a mutable cell. The
     /// mutability flag is set at binding creation time and **never**
     /// changes — there is no closure-capture upgrade (removed from
@@ -652,6 +795,7 @@ impl Env {
                 Rc::new(RefCell::new(Binding {
                     value,
                     mutable: true,
+                    unconsumed: false,
                 })),
             );
         }
@@ -664,6 +808,19 @@ impl Env {
     ///   * `Err(())`   -- cell not found at all (caller raises E0020)
     #[allow(clippy::result_unit_err)] // bool tri-state (Ok/Err-not-found) — see Phase A2 cell semantics
     pub fn set_cell_value(&self, name: &str, value: Value) -> Result<bool, ()> {
+        self.set_cell_value_with_token(name, value, false)
+    }
+
+    /// [v1.0 spec §8.6.3] `SET` 改写单元格时的**转发**:新值若持有未消费
+    /// `ERR`,未消费状态转给该单元格(§3.4 的说明:旧值若未被消费,改写即构成
+    /// 一个丢弃点 —— 那一半由调用方在改写**之前**判定)。
+    #[allow(clippy::result_unit_err)] // bool tri-state (Ok/Err-not-found) — see Phase A2 cell semantics
+    pub fn set_cell_value_with_token(
+        &self,
+        name: &str,
+        value: Value,
+        unconsumed: bool,
+    ) -> Result<bool, ()> {
         for scope in self.scopes.iter().rev() {
             if let Some(cell) = scope.get(name) {
                 let mut b = cell.borrow_mut();
@@ -671,6 +828,7 @@ impl Env {
                     return Ok(false);
                 }
                 b.value = value;
+                b.unconsumed = unconsumed;
                 return Ok(true);
             }
         }
@@ -741,6 +899,15 @@ pub enum Signal {
 pub struct Outcome {
     pub value: Value,
     pub signal: Signal,
+    /// [v1.0 spec §8.6] **未消费 `ERR` 令牌**。
+    ///
+    /// 它随求值结果走:能穿过函数返回值、容器字面量、`IF` / `MATCH` 分支、
+    /// `==` / `!=` 的透传。`Outcome::normal` 保持它为 `false`;需要带令牌
+    /// 的地方用 [`Outcome::with_unconsumed`]。
+    ///
+    /// ⚠ 当 `signal` 是 [`Signal::Return`] 时,`value` 是 `NULL`,**有意义
+    /// 的值在信号里** —— 此时本字段说的是**被返回的那个值**的令牌。
+    pub unconsumed: bool,
 }
 
 impl Outcome {
@@ -748,6 +915,16 @@ impl Outcome {
         Outcome {
             value: v,
             signal: Signal::None,
+            unconsumed: false,
+        }
+    }
+
+    /// [v1.0 spec §8.6.3] 带一个**未消费 `ERR` 令牌**的返回值。
+    pub fn with_unconsumed(v: Value, unconsumed: bool) -> Self {
+        Outcome {
+            value: v,
+            signal: Signal::None,
+            unconsumed,
         }
     }
 
@@ -757,7 +934,11 @@ impl Outcome {
     /// 成员不得消费它(结构化并发,spec §17):`TIMEOUT` 就是这么用的,它
     /// **接收** body 逃上来的 `Signal::Return` 并把它**换成自己的返回值**。
     pub fn with_signal(v: Value, signal: Signal) -> Self {
-        Outcome { value: v, signal }
+        Outcome {
+            value: v,
+            signal,
+            unconsumed: false,
+        }
     }
 }
 

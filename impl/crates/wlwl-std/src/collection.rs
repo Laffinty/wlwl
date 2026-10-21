@@ -250,6 +250,7 @@ fn propagate_signal(signal: Signal) -> Outcome {
     Outcome {
         value: Value::Null,
         signal,
+        unconsumed: false,
     }
 }
 
