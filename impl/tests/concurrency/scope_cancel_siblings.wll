@@ -25,4 +25,10 @@ LET(scope_err,
         v
     ))
 );
-IF(IS_ERR(scope_err), PRINT("ERR-surfaced"), PRINT("did-not-surface"))
+IF(IS_ERR(scope_err), PRINT("ERR-surfaced"), PRINT("did-not-surface"));
+
+// [v1.0 spec §8.6] `IS_ERR` 是观察型消费者 —— 它不解除未消费状态(§8.6.1)
+// ⇒ `scope_err` 里的 `ERR` 到作用域结束时仍未消费 ⇒ 丢弃点(§8.6.2 第 3 项)
+// ⇒ `E0103`。故观察之后显式丢弃(§8.6.4)。本夹具演示的东西不变:SCOPE
+// 把子 task 的未消费 `ERR` 交给调用方。
+LET(_, scope_err);

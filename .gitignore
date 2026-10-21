@@ -87,6 +87,12 @@ impl/target/llvm-cov.info
 # Project-local scratch (never tracked)
 ast_stable_preview.txt
 
+# [v1.0 / addendum-15 W-08] 红测基线清单 —— `script/red_tests.py --out` 的产物。
+#
+# 每次归因都重新生成,内容随分支变(新固定的用例要能从基线里消失)⇒ **不**进
+# 版本管理。基线本身是「本次破坏性变更的代价清单」,不是仓库资产。
+.red-baseline.json
+
 # [v0.11.3 / D13-093] `mkdocs build` 的产物目录。
 #
 # ⚠ `mkdocs.yml` 的 `site_dir: site` 是**相对仓库根**的 ⇒ 输出落在

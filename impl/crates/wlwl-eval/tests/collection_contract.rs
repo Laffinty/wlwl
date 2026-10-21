@@ -14,6 +14,18 @@
 //!
 //! `dump_actuals` 是第 1 步的引导器:`expect` 为空时它打印实际值,填完表
 //! 之后就不再需要(它自己不会失败,所以留着不碍事,还能当回归时的对照窗)。
+//!
+//! ## [v1.0 规范 §8.6] 期望值不变,**用例程序**补一句显式丢弃
+//!
+//! 凡是「成员把一个 `ERR` 交给调用方」的用例,调用方拿到的那个 `ERR` 处于
+//! **未消费**状态(§8.6.1)。`IS_ERR` 是**观察型**消费者 —— 它不解除未消费
+//! 状态 ⇒ 那个 `ERR` 到作用域结束时仍是丢弃点(§8.6.2 第 3 项)⇒ 报
+//! `E0103`。
+//!
+//! 所以这类用例现在写成 `LET(r, <成员>); LET(_, r); IS_ERR(r)`:`LET(_, …)`
+//! 是本语言**唯一**的显式丢弃构造(§8.6.4)。**冻结的 `expect` 一个字没动**
+//! —— 变的只是用例程序合规了,断言的仍是同一个行为(成员确实把 `ERR` 交了
+//! 出来)。
 
 mod common;
 
@@ -70,7 +82,7 @@ const CASES: &[Case] = &[
     },
     Case {
         name: "map_err_arg_transparent",
-        src: r#"IMPORT("wlwl:std.collection", ["MAP"]); LET(r, MAP(ERR("boom"), FUN((x), x))); IS_ERR(r)"#,
+        src: r#"IMPORT("wlwl:std.collection", ["MAP"]); LET(r, MAP(ERR("boom"), FUN((x), x))); LET(_, r); IS_ERR(r)"#,
         expect: "TRUE",
     },
     Case {
@@ -96,7 +108,7 @@ const CASES: &[Case] = &[
     },
     Case {
         name: "filter_err_arg_transparent",
-        src: r#"IMPORT("wlwl:std.collection", ["FILTER"]); LET(r, FILTER(ERR("boom"), FUN((x), TRUE))); IS_ERR(r)"#,
+        src: r#"IMPORT("wlwl:std.collection", ["FILTER"]); LET(r, FILTER(ERR("boom"), FUN((x), TRUE))); LET(_, r); IS_ERR(r)"#,
         expect: "TRUE",
     },
     // ── 3. REDUCE ──
@@ -117,7 +129,7 @@ const CASES: &[Case] = &[
     },
     Case {
         name: "reduce_callback_err",
-        src: r#"IMPORT("wlwl:std.collection", ["REDUCE"]); LET(g, FUN((a, b), ERR("boom"))); LET(r, REDUCE([1, 2], g, 0)); IS_ERR(r)"#,
+        src: r#"IMPORT("wlwl:std.collection", ["REDUCE"]); LET(g, FUN((a, b), ERR("boom"))); LET(r, REDUCE([1, 2], g, 0)); LET(_, r); IS_ERR(r)"#,
         expect: "TRUE",
     },
     // ── 4. SORT ──
@@ -165,7 +177,7 @@ const CASES: &[Case] = &[
     // 里最后一个不传播的回调 ERR 出口。
     Case {
         name: "sort_comparator_err_propagates",
-        src: r#"IMPORT("wlwl:std.collection", ["SORT"]); LET(g, FUN((a, b), ERR("boom"))); LET(r, SORT([2, 1], g)); IS_ERR(r)"#,
+        src: r#"IMPORT("wlwl:std.collection", ["SORT"]); LET(g, FUN((a, b), ERR("boom"))); LET(r, SORT([2, 1], g)); LET(_, r); IS_ERR(r)"#,
         expect: "TRUE",
     },
     // 载荷原样交回(§8.2「传播不消耗、不改写 ERR」),不是被拆成内层值。
@@ -212,7 +224,7 @@ const CASES: &[Case] = &[
     },
     Case {
         name: "sort_by_key_err",
-        src: r#"IMPORT("wlwl:std.collection", ["SORT_BY"]); LET(g, FUN((x), ERR("boom"))); LET(r, SORT_BY([1, 2], g)); IS_ERR(r)"#,
+        src: r#"IMPORT("wlwl:std.collection", ["SORT_BY"]); LET(g, FUN((x), ERR("boom"))); LET(r, SORT_BY([1, 2], g)); LET(_, r); IS_ERR(r)"#,
         expect: "TRUE",
     },
     Case {
@@ -300,12 +312,12 @@ const CASES: &[Case] = &[
     },
     Case {
         name: "any_predicate_err",
-        src: r#"IMPORT("wlwl:std.collection", ["ANY"]); LET(g, FUN((x), ERR("boom"))); LET(r, ANY([1, 2], g)); IS_ERR(r)"#,
+        src: r#"IMPORT("wlwl:std.collection", ["ANY"]); LET(g, FUN((x), ERR("boom"))); LET(r, ANY([1, 2], g)); LET(_, r); IS_ERR(r)"#,
         expect: "TRUE",
     },
     Case {
         name: "all_predicate_err",
-        src: r#"IMPORT("wlwl:std.collection", ["ALL"]); LET(g, FUN((x), ERR("boom"))); LET(r, ALL([1, 2], g)); IS_ERR(r)"#,
+        src: r#"IMPORT("wlwl:std.collection", ["ALL"]); LET(g, FUN((x), ERR("boom"))); LET(r, ALL([1, 2], g)); LET(_, r); IS_ERR(r)"#,
         expect: "TRUE",
     },
     Case {
@@ -331,7 +343,7 @@ const CASES: &[Case] = &[
     },
     Case {
         name: "find_predicate_err",
-        src: r#"IMPORT("wlwl:std.collection", ["FIND"]); LET(g, FUN((x), ERR("boom"))); LET(r, FIND([1, 2], g)); IS_ERR(r)"#,
+        src: r#"IMPORT("wlwl:std.collection", ["FIND"]); LET(g, FUN((x), ERR("boom"))); LET(r, FIND([1, 2], g)); LET(_, r); IS_ERR(r)"#,
         expect: "TRUE",
     },
     // ── 11. ENUMERATE ──
@@ -421,7 +433,7 @@ const CASES: &[Case] = &[
     },
     Case {
         name: "group_by_key_err",
-        src: r#"IMPORT("wlwl:std.collection", ["GROUP_BY"]); LET(g, FUN((x), ERR("boom"))); LET(r, GROUP_BY([1, 2], g)); IS_ERR(r)"#,
+        src: r#"IMPORT("wlwl:std.collection", ["GROUP_BY"]); LET(g, FUN((x), ERR("boom"))); LET(r, GROUP_BY([1, 2], g)); LET(_, r); IS_ERR(r)"#,
         expect: "TRUE",
     },
     Case {
@@ -703,7 +715,7 @@ const CASES: &[Case] = &[
     // ── ERR 透明性(§12.6)──
     Case {
         name: "err_arg_is_transparent",
-        src: r#"IMPORT("wlwl:std.collection", ["SORT"]); LET(r, SORT(ERR("boom"), NULL)); IS_ERR(r)"#,
+        src: r#"IMPORT("wlwl:std.collection", ["SORT"]); LET(r, SORT(ERR("boom"), NULL)); LET(_, r); IS_ERR(r)"#,
         expect: "TRUE",
     },
     // M3 新成员的回调 ERR 也要按 8.2 传播(DEDUP_BY / KEY_BY / FOLD_RIGHT)
@@ -719,7 +731,7 @@ const CASES: &[Case] = &[
     },
     Case {
         name: "fold_right_f_err_propagates",
-        src: r#"IMPORT("wlwl:std.collection", ["FOLD_RIGHT"]); IS_ERR(FOLD_RIGHT([1], FUN((x, acc), ERR("boom")), 0))"#,
+        src: r#"IMPORT("wlwl:std.collection", ["FOLD_RIGHT"]); LET(r, FOLD_RIGHT([1], FUN((x, acc), ERR("boom")), 0)); LET(_, r); IS_ERR(r)"#,
         expect: "TRUE",
     },
     // ── 成员面(§5 全表)──

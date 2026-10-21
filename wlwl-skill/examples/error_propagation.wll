@@ -14,6 +14,12 @@ LET(safe_div, FUN((a, b),
 LET(raw, safe_div(10, 0));
 PRINT("raw result type: ${IS_ERR(raw)}");
 
+// [v1.0 规范 §8.6] `IS_ERR` 是**观察型**消费者 —— 它只看不带走,不解除未消费
+// 状态(§8.6.1)⇒ `raw` 里的那个 `ERR` 到作用域结束时仍未被消费 ⇒ 那是丢弃点
+// (§8.6.2 第 3 项)⇒ 报 `E0103`。所以观察之后必须**显式丢弃**:`LET(_, …)`
+// 是本语言唯一的显式丢弃构造(§8.6.4)。
+LET(_, raw);
+
 // §8.3 consumers handle ERR safely.
 LET(value, UNWRAP_OR(safe_div(10, 0), -1));
 PRINT("UNWRAP_OR(div by 0, -1) = ${value}");

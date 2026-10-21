@@ -8,12 +8,20 @@
 //
 // Expected stdout (1 line):
 //   TRUE
+//
+// [v1.0 spec §8.6] `IS_ERR` 是**观察型**消费者 —— 它不解除未消费状态
+// (§8.6.1)⇒ `v` 里的 `ERR` 到作用域结束时仍未消费 ⇒ 丢弃点(§8.6.2 第 3 项)
+// ⇒ `E0103`。故观察之后补一句 `LET(_, v)` 显式丢弃(§8.6.4 唯一的显式
+// 丢弃构造)。本夹具演示的东西不变:跨 task 边界后 `IS_ERR` 仍认得出那个
+// `ERR`。
 
 LET(out,
     SCOPE(FUN(() ,
         LET(h, SPAWN(FUN(() , ERR("child-boom"))));
         LET(v, AWAIT(h));
-        IS_ERR(v)
+        LET(observed, IS_ERR(v));
+        LET(_, v);
+        observed
     ))
 );
 PRINT(out)

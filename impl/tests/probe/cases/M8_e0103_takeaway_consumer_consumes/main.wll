@@ -1,0 +1,7 @@
+// [v1.0 规范 §8.6.1] **取走型**消费者(`ERR_PAYLOAD` / `UNWRAP_OR` /
+// `OR_DIE` / `TRY` / `UNWRAP` / `WRAP` / `EXPECT_ERR`)把 `ERR` 的载荷**取走**
+// ⇒ 该 `ERR` 被取走,不再处于未消费状态 ⇒ 作用域结束时不是丢弃点 ⇒ **不**
+// 产生 `E0103`。
+
+LET(x, ERR("boom"));
+PRINT(ERR_PAYLOAD(x));

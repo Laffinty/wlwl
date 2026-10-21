@@ -57,8 +57,14 @@ def parse_failures(text):
     for line in text.split("\n"):
         line = line.rstrip()
         if line.startswith("     Running "):
+            # 单元测试:`Running unittests src/lib.rs (target/...)`
+            # 集成测试:`Running tests/concurrency.rs (target/...)`
             m = re.search(r"unittests (\S+)", line)
-            target = m.group(1) if m else "unknown"
+            if m:
+                target = m.group(1)
+            else:
+                m = re.search(r"Running (tests/\S+)", line)
+                target = m.group(1) if m else "unknown"
             in_failures = False
             continue
         if line.startswith("   Doc-tests "):

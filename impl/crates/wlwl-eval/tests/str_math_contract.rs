@@ -18,6 +18,16 @@ mod common;
 use std::path::{Path, PathBuf};
 use wlwl_eval::Evaluator;
 
+// ---------------------------------------------------------------------------
+// [v1.0 规范 §8.6] 期望值不变,**用例程序**补一句显式丢弃
+//
+// 域违例按 §7 是 `ERR(...)` **值**。那个值到调用方手里时处于**未消费**状态
+// (§8.6.1);`IS_ERR` 是**观察型**消费者,不解除它 ⇒ 作用域结束时是丢弃点
+// (§8.6.2 第 3 项)⇒ 报 `E0103`。所以这类用例现在写成
+// `LET(r, <成员>); LET(_, r); IF(IS_ERR(r), …)` —— `LET(_, …)` 是本语言
+// **唯一**的显式丢弃构造(§8.6.4)。**冻结的 `expect` 一个字没动**。
+// ---------------------------------------------------------------------------
+
 /// 尚未写期望的占位符。**不能**用空串当哨兵:`JOIN([], "-")` 的结果就是
 /// 空串,拿空串当「未写」会让「已写且值为空」和「还没写」无法区分。
 const UNFROZEN: &str = "~UNFROZEN";
@@ -490,7 +500,7 @@ const MATH_CASES: &[Case] = &[
     },
     Case {
         name: "sqrt_negative_is_domain_error_value",
-        src: r#"IMPORT("wlwl:std.math", ["SQRT"]); LET(r, SQRT(-1)); IF(IS_ERR(r), "ERR", "NOT_ERR")"#,
+        src: r#"IMPORT("wlwl:std.math", ["SQRT"]); LET(r, SQRT(-1)); LET(_, r); IF(IS_ERR(r), "ERR", "NOT_ERR")"#,
         expect: "ERR",
     },
     Case {
@@ -520,12 +530,12 @@ const MATH_CASES: &[Case] = &[
     },
     Case {
         name: "pow_zero_to_negative_is_domain_error",
-        src: r#"IMPORT("wlwl:std.math", ["POW"]); LET(r, POW(0, -1)); IF(IS_ERR(r), "ERR", "NOT_ERR")"#,
+        src: r#"IMPORT("wlwl:std.math", ["POW"]); LET(r, POW(0, -1)); LET(_, r); IF(IS_ERR(r), "ERR", "NOT_ERR")"#,
         expect: "ERR",
     },
     Case {
         name: "pow_negative_base_fractional_exponent_is_domain_error",
-        src: r#"IMPORT("wlwl:std.math", ["POW"]); LET(r, POW(-8, 0.5)); IF(IS_ERR(r), "ERR", "NOT_ERR")"#,
+        src: r#"IMPORT("wlwl:std.math", ["POW"]); LET(r, POW(-8, 0.5)); LET(_, r); IF(IS_ERR(r), "ERR", "NOT_ERR")"#,
         expect: "ERR",
     },
     // ── CLAMP ──
@@ -556,7 +566,7 @@ const MATH_CASES: &[Case] = &[
     },
     Case {
         name: "clamp_lo_gt_hi_is_domain_error",
-        src: r#"IMPORT("wlwl:std.math", ["CLAMP"]); LET(r, CLAMP(5, 10, 0)); IF(IS_ERR(r), "ERR", "NOT_ERR")"#,
+        src: r#"IMPORT("wlwl:std.math", ["CLAMP"]); LET(r, CLAMP(5, 10, 0)); LET(_, r); IF(IS_ERR(r), "ERR", "NOT_ERR")"#,
         expect: "ERR",
     },
     Case {

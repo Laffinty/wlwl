@@ -25,5 +25,13 @@ PRINT(IS_OK(a), IS_OK(b), IS_OK(c)); // → TRUE TRUE TRUE
 // 运行期判定,静态层默认是关的。
 LET(half, FUN((n: INTEGER) : INTEGER, IF(==(n, 0), ERR("zero"), /(n, 2))));
 LET(d, EXPECT_ERR(half(0)));         // OK(ERR(zero)) —— 错误沿调用传上来了
-LET(e, EXPECT_ERR(half(4)));         // OK(2) —— 正常路径产出 OK 值
-PRINT(IS_OK(d), IS_OK(e));            // → TRUE TRUE
+LET(e, EXPECT_ERR(half(4)));         // ERR(E0049) —— 输入不是 ERR ⇒ EXPECT_ERR 自己报错
+PRINT(IS_OK(d), IS_OK(e));            // → TRUE FALSE
+
+// [v1.0 规范 §8.6] `IS_OK` 是**观察型**消费者 —— 它只看不带走,不解除未消费
+// 状态(§8.6.1)⇒ `e` 里的那个 `ERR` 到作用域结束时仍未被消费 ⇒ 那是丢弃点
+// (§8.6.2 第 3 项)⇒ 报 `E0103`。
+//
+// 所以观察之后必须**显式丢弃**:`LET(_, …)` 是本语言唯一的显式丢弃构造
+// (§8.6.4)。上面 `d` / `c` 不需要这一句,因为它们装的是 `OK(...)`,不是 `ERR`。
+LET(_, e);

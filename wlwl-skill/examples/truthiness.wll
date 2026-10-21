@@ -39,6 +39,12 @@ LET(err_val, ERR("payload"));
 PRINT("IS_ERR(ERR(x)) = ${IS_ERR(err_val)}");
 PRINT("BOOL(ERR(x))   = ${BOOL(err_val)}");
 
+// [v1.0 规范 §8.6] `IS_ERR` / `BOOL` 都是**观察型**消费者 —— 它们只看不
+// 带走,不解除未消费状态(§8.6.1)⇒ `err_val` 里的那个 `ERR` 到作用域结束时
+// 仍未被消费 ⇒ 那是丢弃点(§8.6.2 第 3 项)⇒ 报 `E0103`。所以观察之后必须
+// **显式丢弃**:`LET(_, …)` 是本语言唯一的显式丢弃构造(§8.6.4)。
+LET(_, err_val);
+
 // Truthy values for contrast.
 PRINT(classify("42",    42));
 PRINT(classify("\"x\"", "x"));

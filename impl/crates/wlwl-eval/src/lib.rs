@@ -9609,7 +9609,26 @@ impl Evaluator {
             frame: frame_name.to_string(),
             location: call_loc,
         });
-        let outcome = match self.eval_expr(&body) {
+        // [v1.0 spec §8.6.3] **读模式只作用于当前位置。**
+        //
+        // 函数体里的读在**别的位置** —— 不该继承调用点的模式。继承会让被调体
+        // 内部的普通读变成**观察读** ⇒ 绑定里的未消费 `ERR` 不被解除 ⇒ 被调方
+        // 自己的作用域结束按 §8.6.2 第 3 项报 `E0103`。
+        //
+        // ⚠ 这不是理论问题,是**出货面破损**:调用点写成
+        // `IS_ERR(<用 wlwl 写的 std 成员>(…))` 时,被调体内部报了 E0103 ——
+        // 8 个成员中招(`std.result` 的 `FLATTEN`;`std.collection` 的 `REDUCE` /
+        // `SORT` / `SORT_BY` / `ANY` / `ALL` / `FIND` / `FOLD_RIGHT`)。
+        // `MAP` / `FILTER` 是 R2 原生实现,回调通道不带令牌,不受影响。
+        //
+        // ⇒ 进函数体时把模式复位成 `Transfer`(「其它位置」的默认档),出函数体
+        // 时恢复。实参的令牌由调用方算好后经 `arg_tokens` 传进来、在形参绑定
+        // 时落到绑定上 —— 不依赖这里的模式。
+        let prev_body_mode = self.read_mode;
+        self.read_mode = ReadMode::Transfer;
+        let body_result = self.eval_expr(&body);
+        self.read_mode = prev_body_mode;
+        let outcome = match body_result {
             Ok(o) => o,
             Err(e) => {
                 // Pop the frame we just pushed before bubbling.
@@ -11158,8 +11177,12 @@ mod tests {
     fn await_user_err_payload_survives() {
         // The ERR payload must be intact after crossing the task
         // boundary (plan §5.4.1 "ERR payload 中的 kind 字段").
-        let src =
-            "SCOPE(FUN(() , LET(h, SPAWN(FUN(() , ERR(\"boom\")))); LET(v, AWAIT(h)); IS_ERR(v)));";
+        //
+        // [v1.0 spec §8.6] `IS_ERR` 是**观察型**消费者 —— 它不解除未消费
+        // 状态(§8.6.1)⇒ `v` 里的 `ERR` 到作用域结束时仍未消费 ⇒ 丢弃点
+        // (§8.6.2 第 3 项)⇒ 报 `E0103`。故观察之后必须**显式丢弃**
+        // (§8.6.4 的 `LET(_, …)`)。断言原样不变:观察到的仍是同一个 `ERR`。
+        let src = "SCOPE(FUN(() , LET(h, SPAWN(FUN(() , ERR(\"boom\")))); LET(v, AWAIT(h)); LET(observed, IS_ERR(v)); LET(_, v); observed));";
         let v = run(src).expect("AWAIT should hand back a recognisable ERR");
         assert_eq!(v, Value::Boolean(true));
     }
@@ -11364,7 +11387,12 @@ mod tests {
                         TRY(v)
                     ))
                 );
-                IS_ERR(out)
+                // [v1.0 spec §8.6] `IS_ERR` 是观察型消费者 ⇒ `out` 里的
+                // `ERR` 仍未消费 ⇒ 作用域结束时是丢弃点(§8.6.2 第 3 项)
+                // ⇒ `E0103`。故观察后显式丢弃(§8.6.4);断言不变。
+                LET(observed, IS_ERR(out));
+                LET(_, out);
+                observed
             ))
         "#;
         let v = run(full).expect("TRY(ERR from child) should early-return the ERR");
@@ -11589,14 +11617,22 @@ mod tests {
         //
         // Outer call IS_ERR should observe the propagated ERR.
         let src = r#"
-            LET(flag, IS_ERR(
-                SCOPE(FUN(() ,
-                    LET(h, SPAWN(FUN(() , ERR("boom"))));
-                    LET(v, AWAIT(h));
-                    v
-                ))
-            ));
-            flag
+            LET(scope_out, SCOPE(FUN(() ,
+                LET(h, SPAWN(FUN(() , ERR("boom"))));
+                LET(v, AWAIT(h));
+                v
+            )));
+            // [v1.0 spec §8.6] `IS_ERR` 是观察型消费者 ⇒ `scope_out` 里的
+            // `ERR` 仍未消费 ⇒ 作用域结束时是丢弃点(§8.6.2 第 3 项)
+            // ⇒ `E0103`。故观察后显式丢弃(§8.6.4);断言不变。
+            //
+            // ⚠ 观察**不能**写在 `IS_ERR(...)` 的实参位上:那个位置是观察型
+            // 消费者的实参位,读模式会沿调用链继承进 SCOPE 的函数体
+            // (addendum-15 D-02 的近似)⇒ 函数体里对 `v` 的普通读也变成
+            // 观察读,不解除未消费状态。观察放在外面,函数体保持普通读。
+            LET(observed, IS_ERR(scope_out));
+            LET(_, scope_out);
+            observed
         "#;
         let v = run(src).expect("SCOPE returns fn body's Value::Err");
         assert_eq!(
@@ -11983,7 +12019,12 @@ mod tests {
                 LET(v, AWAIT(h));
                 IF(v, "then")   // no else; ERR cond → ERR propagates
             )));
-            IS_ERR(scope_out)
+            // [v1.0 spec §8.6] `IS_ERR` 是观察型消费者 ⇒ `scope_out` 里的
+            // `ERR` 仍未消费 ⇒ 作用域结束时是丢弃点(§8.6.2 第 3 项)
+            // ⇒ `E0103`。故观察后显式丢弃(§8.6.4);断言不变。
+            LET(observed, IS_ERR(scope_out));
+            LET(_, scope_out);
+            observed
         "#;
         let v = run(src).expect("IF(ERR-no-else) → SCOPE returns ERR");
         assert_eq!(
@@ -12293,7 +12334,12 @@ mod tests {
                     TRY(ERR("inner"))
                 ))
             )));
-            IS_ERR(scope_out)
+            // [v1.0 spec §8.6] `IS_ERR` 是观察型消费者 ⇒ `scope_out` 里的
+            // `ERR` 仍未消费 ⇒ 作用域结束时是丢弃点(§8.6.2 第 3 项)
+            // ⇒ `E0103`。故观察后显式丢弃(§8.6.4);断言不变。
+            LET(observed, IS_ERR(scope_out));
+            LET(_, scope_out);
+            observed
         "#;
         let v = run(src).expect("SHIELD around TRY(ERR) — ERR propagates");
         assert_eq!(
@@ -13209,13 +13255,18 @@ mod tests {
     /// D-C: explicit ChannelClosed ERR shape (drain + close + recv).
     #[test]
     fn d_c_recv_after_drain_and_close_returns_channelclosed_err() {
+        // [v1.0 spec §8.6] `IS_ERR` 是观察型消费者 ⇒ `v` 里的 `ERR` 仍未
+        // 消费 ⇒ 作用域结束时是丢弃点(§8.6.2 第 3 项)⇒ `E0103`。故观察后
+        // 显式丢弃(§8.6.4);断言不变。
         let src = r#"
             LET(ch, CHANNEL_NEW(4));
             CHANNEL_TRY_SEND(ch, 1);
             LET(_x, CHANNEL_TRY_RECV(ch));    // drain
             CHANNEL_CLOSE(ch);
             LET(v, CHANNEL_TRY_RECV(ch));    // closed + empty
-            IS_ERR(v)
+            LET(observed, IS_ERR(v));
+            LET(_, v);
+            observed
         "#;
         let v = run(src).expect("closed-empty recv");
         assert_eq!(v, Value::Boolean(true));
@@ -13355,6 +13406,10 @@ mod tests {
         // `wake_channel_op_waiter` and retries, finding
         // `closed && empty`, returning ERR(kind="ChannelClosed").
         // AWAIT returns the ERR; IS_ERR confirms the shape.
+        //
+        // [v1.0 spec §8.6] `IS_ERR` 是观察型消费者 ⇒ `v` 里的 `ERR` 仍未
+        // 消费 ⇒ 函数体作用域结束时是丢弃点(§8.6.2 第 3 项)⇒ `E0103`。
+        // 故观察后显式丢弃(§8.6.4);断言不变。
         let src = r#"
             LET(out,
                 SCOPE(FUN(() ,
@@ -13363,7 +13418,9 @@ mod tests {
                     LET(h_close, SPAWN(FUN(() , CHANNEL_CLOSE(ch))));
                     LET(_c, AWAIT(h_close));
                     LET(v, AWAIT(h_recv));
-                    IS_ERR(v)
+                    LET(observed, IS_ERR(v));
+                    LET(_, v);
+                    observed
                 ))
             );
             out
@@ -13592,7 +13649,12 @@ mod tests {
             LET(ch, CHANNEL_NEW(0));
             CHANNEL_CLOSE(ch);
             LET(v, CHANNEL_TRY_RECV(ch));
-            IS_ERR(v)
+            // [v1.0 spec §8.6] `IS_ERR` 是观察型消费者 ⇒ `v` 里的 `ERR`
+            // 仍未消费 ⇒ 作用域结束时是丢弃点(§8.6.2 第 3 项)⇒ `E0103`。
+            // 故观察后显式丢弃(§8.6.4);断言不变。
+            LET(observed, IS_ERR(v));
+            LET(_, v);
+            observed
         "#;
         let is_err = run(src).expect(
             "CHANNEL_TRY_RECV after CLOSE must return a Value::Err \
@@ -13686,7 +13748,12 @@ mod tests {
             LET(v1, CHANNEL_TRY_RECV(h_after));
             // Second RECV: closed + empty -> structured ChannelClosed ERR.
             LET(v2, CHANNEL_TRY_RECV(h_after));
-            [v1, IS_ERR(v2)]
+            // [v1.0 spec §8.6] `IS_ERR` 是观察型消费者 ⇒ `v2` 里的 `ERR`
+            // 仍未消费 ⇒ 作用域结束时是丢弃点(§8.6.2 第 3 项)⇒ `E0103`。
+            // 故观察后显式丢弃(§8.6.4);断言(数组内容)不变。
+            LET(observed, IS_ERR(v2));
+            LET(_, v2);
+            [v1, observed]
         "#;
         let v = run(src).expect("surviving handle is closed after scope exit");
         match v {
@@ -20711,7 +20778,13 @@ TYPE(v);
         // `IS_ERR(x)`: the FLOAT returns ERR to LET as a plain value
         // (no signal involved because FLOAT itself doesn't emit
         // Return — only TRY does); IS_ERR then confirms the shape.
-        let v = run(r#"LET(x, FLOAT("not-a-number")); IS_ERR(x);"#).unwrap();
+        //
+        // [v1.0 spec §8.6] `IS_ERR` 是观察型消费者 ⇒ 不解除未消费状态
+        // (§8.6.1)⇒ `x` 里的 `ERR` 在作用域结束时是丢弃点(§8.6.2 第 3 项)
+        // ⇒ `E0103`。补一句 `LET(_, x)` 显式丢弃(§8.6.4);断言不变。
+        let v =
+            run(r#"LET(x, FLOAT("not-a-number")); LET(observed, IS_ERR(x)); LET(_, x); observed;"#)
+                .unwrap();
         assert_eq!(v, Value::Boolean(true));
     }
 
@@ -24459,7 +24532,12 @@ entry = "main.wll"
             LET(ch, CHANNEL_NEW(1));
             CHANNEL_CLOSE(ch);
             LET(v, CHANNEL_RECV(ch));
-            IS_ERR(v)
+            // [v1.0 spec §8.6] `IS_ERR` 是观察型消费者 ⇒ `v` 里的 `ERR`
+            // 仍未消费 ⇒ 作用域结束时是丢弃点(§8.6.2 第 3 项)⇒ `E0103`。
+            // 故观察后显式丢弃(§8.6.4);断言不变。
+            LET(observed, IS_ERR(v));
+            LET(_, v);
+            observed
         "#;
         let v = run_in(&dir, src).expect("default RECV after close is ERR payload");
         assert_eq!(

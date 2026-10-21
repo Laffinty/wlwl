@@ -17,4 +17,10 @@ LET(scope_out,
         ))
     ))
 );
-IF(IS_ERR(scope_out), PRINT("ERR-propagated"), PRINT("ERR-absorbed"))
+IF(IS_ERR(scope_out), PRINT("ERR-propagated"), PRINT("ERR-absorbed"));
+
+// [v1.0 spec §8.6] `IS_ERR` 是观察型消费者 —— 它不解除未消费状态(§8.6.1)
+// ⇒ `scope_out` 里的 `ERR` 到作用域结束时仍未消费 ⇒ 丢弃点(§8.6.2 第 3 项)
+// ⇒ `E0103`。故观察之后显式丢弃(§8.6.4)。本夹具演示的东西不变:SHIELD
+// 不吸收 fn 自身的 `ERR`。
+LET(_, scope_out);

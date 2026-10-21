@@ -107,7 +107,16 @@ use std::time::{Duration, Instant};
 // std.net 的两个**纯函数**成员(URL_PARSE / URL_JOIN)。
 // ⚠ **本 probe 不联网**,也不需要夹具服务器:这两个成员是纯函数,它们应该在
 // 「完全没有网络」的前提下跑通。期望值取自 RFC 3986 原文,不是从实现输出抄。
-const EXPECTED_CASE_COUNT: usize = 175;
+// [v1.0 / addendum-15 W-07] 175 → 181:新增 `M8_e0103_*` 六条 —— v1.0 §8.6
+// 「未消费 `ERR` 的报告」的落地锁。三个丢弃点(§8.6.2)各一条(语句值丢弃 /
+// 绑定被覆盖 / 作用域结束时仍未消费)+ `LET(_, …)` 显式丢弃(§8.6.4)一条
+// + 取走型 vs 观察型(§8.6.1)一对反向守卫:取走型清了未消费状态、观察型
+// 没清。
+// ⚠ `H1_err_not_final_stmt` **不是**新增的 —— 它是 v0.10.0 原套件里那条
+// 「非末条语句的 `ERR` 被静默丢弃」断言的载体;v1.0 §8.5 / §8.6.2 删掉了那条
+// 限制(总纲 D-05)⇒ 它的 `expect.json` 改成断言 `E0103`(理由写在该目录的
+// `_why` 里),`main.wll` 一字未改。
+const EXPECTED_CASE_COUNT: usize = 181;
 
 /// 单个 case 的上限,与 `probe.py` 的 `timeout=60` 同义。
 const CASE_TIMEOUT: Duration = Duration::from_secs(60);

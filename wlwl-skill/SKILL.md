@@ -515,8 +515,13 @@ SCOPE(FUN(() ,
         LET MUT(done, FALSE);
         WHILE(NOT(done),
             LET(x, CHANNEL_RECV(ch));
+            // [v1.0 规范 §8.6] 通道关闭后 `CHANNEL_RECV` 返回
+            // `ERR(kind="ChannelClosed")`;`IS_ERR` 是**观察型**消费者(不解除
+            // 未消费状态,§8.6.1)⇒ 下一轮 `LET(x, …)` 覆盖它时就是丢弃点
+            // (§8.6.2 第 2 项)⇒ 报 `E0103`。故识别到它的那一支要显式丢弃
+            // (§8.6.4 的 `LET(_, …)`)。
             IF(IS_ERR(x),
-                SET(done, TRUE),
+                (LET(_, x); SET(done, TRUE)),
                 SET(acc, +(acc, x)))
         );
         acc

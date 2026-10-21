@@ -20,6 +20,14 @@
 //!
 //! 反过来,这三条合成「组合子**接不到** `ERR` ⇒ **不可能**成为 §8.2 旁路」
 //! —— `addendum-11` §6 的头号风险不是被绕开,是被证明无法发生。
+//!
+//! ## [v1.0 规范 §8.6] 期望值不变,**用例程序**补一句显式丢弃
+//!
+//! 成员把 `ERR` 交给调用方时,那个 `ERR` 处于**未消费**状态(§8.6.1)。
+//! `IS_ERR` 是**观察型**消费者 —— 不解除它 ⇒ 作用域结束时是丢弃点
+//! (§8.6.2 第 3 项)⇒ 报 `E0103`。所以这类用例现在写成
+//! `LET(r, <成员>); LET(_, r); IS_ERR(r)` —— `LET(_, …)` 是本语言**唯一**的
+//! 显式丢弃构造(§8.6.4)。**冻结的 `expect` 一个字没动**。
 
 mod common;
 
@@ -107,7 +115,7 @@ const RESULT_CASES: &[Case] = &[
     },
     Case {
         name: "flatten_ok_err_surfaces_the_inner_err",
-        src: r#"IMPORT("wlwl:std.result", ["FLATTEN"]); IS_ERR(FLATTEN(OK(ERR(["why": "inner"]))))"#,
+        src: r#"IMPORT("wlwl:std.result", ["FLATTEN"]); LET(r, FLATTEN(OK(ERR(["why": "inner"])))); LET(_, r); IS_ERR(r)"#,
         expect: "TRUE",
     },
     Case {
@@ -464,6 +472,7 @@ fn the_section_22_3_idioms_behave_as_documented() {
             "err_or_else_idiom",
             r#"LET(r, ERR(["why": "bad"]));
                LET(y, IF(IS_ERR(r), ERR(["why": "replaced"]), r));
+               LET(_, r);
                AT_K(ERR_PAYLOAD(y), "why", "?")"#,
             "replaced",
         ),

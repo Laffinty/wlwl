@@ -1,0 +1,10 @@
+{
+ "exit": 1,
+ "contains": [
+  "E0103"
+ ],
+ "not_contains": [
+  "unreachable"
+ ],
+ "_why": "v1.0 §8.6.2 第 2 项:绑定被覆盖。`x` 装的是未消费的 `ERR`;`SET(x, 42)` 改写它 ⇒ 旧值被丢弃 ⇒ 报 `E0103`、退出码 1。`not_contains \"unreachable\"` 钉住程序在 `SET` 那一刻就终止了。"
+}

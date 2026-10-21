@@ -6,7 +6,13 @@ SCOPE(FUN(() ,
     LET MUT(done, FALSE);
     WHILE(NOT(done),
         LET(x, CHANNEL_TRY_RECV(ch));
-        IF(IS_ERR(x), SET(done, TRUE),
+        // [v1.0 规范 §8.6] 通道关闭后 `CHANNEL_TRY_RECV` 返回 `ERR`
+        // (ChannelClosed)。`IS_ERR` 是**观察型**消费者 ⇒ 不解除未消费状态
+        // (§8.6.1)⇒ 下一轮 `LET(x, …)` 覆盖它时就是「绑定被覆盖」的丢弃点
+        // (§8.6.2 第 2 项)⇒ `E0103`。故在识别到它的那一支显式丢弃
+        // (§8.6.4 唯一的显式丢弃构造)。本用例要验的是缓冲通道的收包顺序
+        // 与累加值,不是那个 `ERR` 的形状。
+        IF(IS_ERR(x), (LET(_, x); SET(done, TRUE)),
            IF(==(TYPE(x), "NULL"), 0, SET(acc, +(acc, x))))
     );
     PRINT(acc)
