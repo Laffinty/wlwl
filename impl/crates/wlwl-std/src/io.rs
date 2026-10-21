@@ -28,6 +28,7 @@
 
 use crate::{ModuleSpec, StdFn};
 use std::io::BufRead;
+use std::io::Write;
 use wlwl_error::ErrorCode;
 use wlwl_error::WlwlError;
 use wlwl_value::{Outcome, StdHost, Value};
@@ -61,12 +62,42 @@ pub fn std_print_err(_host: &mut dyn StdHost, args: Vec<Value>) -> Result<Outcom
     Ok(Outcome::normal(Value::Null))
 }
 
-/// `INPUT()` —— 从标准输入读一行,返回 `STRING`。
+/// `INPUT` 的实参校验 —— 与读 stdin **分开**,这样元数与类型两条判据
+/// 都能在单元测试里验(读 stdin 那条路会挂住测试进程)。
 ///
-/// 零参;多参 → `E0022`(措辞与 `compat::arity_error` 逐字一致)。
+/// 0 个实参 → 无 prompt;1 个 → `Some(prompt)`(非 `STRING` → `E0030`);
+/// 超过 1 个 → `E0022`。
+fn prompt_arg<'a>(host: &mut dyn StdHost, args: &'a [Value]) -> Result<Option<&'a str>, WlwlError> {
+    match args {
+        [] => Ok(None),
+        [Value::String(s)] => Ok(Some(s.as_str())),
+        [other] => Err(host.diag(
+            ErrorCode::E0030,
+            format!("INPUT: expected string, got {}", crate::value_kind(other)),
+        )),
+        _ => Err(arity(host, "INPUT", args.len(), 1)),
+    }
+}
+
+/// `INPUT(prompt?)` —— 读一行标准输入,返回 `STRING`。
+///
+/// **0 或 1 个实参**:给了 1 个时它**必须**是 `STRING`(否则 `E0030`);
+/// 超过 1 个 → `E0022`。给了 prompt 时**必须**先把 prompt 写到标准输出再读
+/// (标准库·系统册 §1.1:「给了 `prompt` 时**必须**先把 `prompt` 写到标准
+/// 输出再读」)。
+///
+/// ⚠ **EOF 与读失败是两件事**(标准库·系统册 §1.2):一个字节都没读到 ⇒
+/// 返回 `""`;只有 I/O 错误才报 `E0060`。
+///
+/// [X-05] 此前本成员**只收 0 个实参**(给 1 个即 `E0022`),而全局内建
+/// `INPUT` 收 `prompt?` —— 两者分叉。规范(标准库·系统册 §1.1)写的是
+/// `INPUT(prompt?) -> STRING`,且 §1.2 要求「两条路径的可观察行为**必须**
+/// 逐字相同」⇒ 改的是**实现**,不是规范。
 pub fn std_input(host: &mut dyn StdHost, args: Vec<Value>) -> Result<Outcome, WlwlError> {
-    if !args.is_empty() {
-        return Err(arity(host, "INPUT", args.len(), 0));
+    if let Some(prompt) = prompt_arg(host, &args)? {
+        // prompt **不**带换行:换行由 prompt 自己带(与全局内建 `INPUT` 同款)。
+        print!("{prompt}");
+        std::io::stdout().flush().ok();
     }
     let stdin = std::io::stdin();
     let mut locked = stdin.lock();
@@ -286,11 +317,45 @@ mod tests {
 
     #[test]
     fn input_arity_mismatch_is_e0022() {
-        let err = std_input(&mut NullHost, vec![Value::Null]).unwrap_err();
+        // [X-05] `INPUT(prompt?)` 收 **0 或 1** 个实参;>1 才报元数错。
+        //
+        // ⚠ 1 个实参是**合法**的(会读 stdin)—— 单元测试里**不**走那条路
+        // (它会真的去读测试进程的 stdin);正向路径由 CLI 层的
+        // `io_input_parity.rs` 守(那里能喂 stdin)。
+        let err = std_input(
+            &mut NullHost,
+            vec![Value::String("p".into()), Value::String("q".into())],
+        )
+        .unwrap_err();
         assert_eq!(err.diagnostic().code, ErrorCode::E0022);
         assert_eq!(
             err.diagnostic().message,
-            "INPUT: function expects 0 argument(s), got 1"
+            "INPUT: function expects 1 argument(s), got 2"
+        );
+    }
+
+    #[test]
+    fn input_prompt_must_be_string() {
+        // [X-05] 给了 prompt 就必须是 `STRING` —— 类型错走 `E0030`
+        // (标准库·系统册 §1.1 的失败列:「`prompt` 非 `STRING` → `E0030`」)。
+        let err = std_input(&mut NullHost, vec![Value::Integer(42)]).unwrap_err();
+        assert_eq!(err.diagnostic().code, ErrorCode::E0030);
+        assert_eq!(
+            err.diagnostic().message,
+            "INPUT: expected string, got integer"
+        );
+    }
+
+    #[test]
+    fn input_accepts_zero_or_one_argument() {
+        // 元数下界是 **0** —— 0 个实参**合法**(无 prompt,直接读)。
+        //
+        // 这条只验**校验阶段**:验的是 `prompt_arg` 的判定,不去读 stdin
+        // (读的那一段由 `read_input_line` 的单测与 CLI 层的 parity 测试覆盖)。
+        assert_eq!(prompt_arg(&mut NullHost, &[]).unwrap(), None);
+        assert_eq!(
+            prompt_arg(&mut NullHost, &[Value::String("name: ".into())]).unwrap(),
+            Some("name: ")
         );
     }
 

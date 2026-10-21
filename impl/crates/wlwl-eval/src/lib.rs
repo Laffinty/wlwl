@@ -15900,16 +15900,33 @@ mod tests {
 
     #[test]
     fn std_io_input_arity_mismatch_is_e0022() {
-        // INPUT() takes zero args; passing an arg surfaces E0022.
-        // Real stdin behaviour is covered by the interactive doc
-        // tests (CI stdin is not redirectable in a unit test).
+        // [X-05] `std.io::INPUT` 收 **0 或 1** 个实参(prompt 可选);
+        // >1 才报元数错(标准库·系统册 §1.1)。
+        //
+        // ⚠ 1 个实参是**合法**的(会读 stdin)—— 单元测试里**不**走那条路
+        // (CI 的 stdin 不可控);正向路径由 CLI 层的 `io_input_parity.rs`
+        // 守(那里能喂 stdin)。
         let src = r#"
             IMPORT("wlwl:std.io", ["INPUT"]);
-            INPUT("oops");
+            INPUT("oops", "extra");
         "#;
         let dir = unique_test_dir("input");
         let err = run_in(&dir, src).unwrap_err();
         assert_eq!(err.diagnostic().code, ErrorCode::E0022);
+    }
+
+    #[test]
+    fn std_io_input_prompt_type_mismatch_is_e0030() {
+        // [X-05] prompt 非 `STRING` → `E0030`(标准库·系统册 §1.1 失败列:
+        // 「`prompt` 非 `STRING` → `E0030`」)。这条**不**读 stdin ——
+        // 类型校验在读之前就拒了。
+        let src = r#"
+            IMPORT("wlwl:std.io", ["INPUT"]);
+            INPUT(42);
+        "#;
+        let dir = unique_test_dir("input_type");
+        let err = run_in(&dir, src).unwrap_err();
+        assert_eq!(err.diagnostic().code, ErrorCode::E0030);
     }
 
     #[test]
