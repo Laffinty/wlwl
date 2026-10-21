@@ -13,7 +13,7 @@
 //! 64 error codes are registered (E0001-E0014 lex/syn, E0020-E0027
 //! name, E0030-E0039 type, E0040-E0043 module, E0050-E0051 OOP,
 //! E0060-E0063 IO, E0070-E0071 JSON, E0080-E0083 std.ai/network,
-//! E0099 user, E0100-E0102 internal, E0110-E0115 static contract,
+//! E0099 user, E0100-E0103 internal, E0110-E0115 static contract,
 //! E1003 runtime) + 21 warning codes. E0033 / E0038 / E0039 are
 //! registered ahead of their emitting sites (Phase E / Phase B6 /
 //! Phase B5) so the 搂14.4 type bucket E0030-E0039 has no holes.
@@ -190,6 +190,7 @@ pub enum ErrorCode {
     E0100, // internal error
     E0101, // stack overflow
     E0102, // unhandled ERR escaped to top level
+    E0103, // unhandled ERR was discarded (v1.0 §8.6)
     // v0.3 搂14.5 warning codes (added in P3-011).
     W0001, // undefined name (read)
     W0010, // unused LET binding
@@ -350,6 +351,7 @@ impl ErrorCode {
             ErrorCode::E0100 => "E0100",
             ErrorCode::E0101 => "E0101",
             ErrorCode::E0102 => "E0102",
+            ErrorCode::E0103 => "E0103",
             ErrorCode::W0001 => "W0001",
             ErrorCode::W0010 => "W0010",
             ErrorCode::W0011 => "W0011",
@@ -549,7 +551,7 @@ impl ErrorCode {
             // not general runtime errors).
             ErrorCode::E0095 | ErrorCode::E0096 => ErrorCategory::Oop,
             ErrorCode::E0099 => ErrorCategory::User,
-            ErrorCode::E0100 | ErrorCode::E0101 | ErrorCode::E0102 => ErrorCategory::Internal,
+            ErrorCode::E0100 | ErrorCode::E0101 | ErrorCode::E0102 | ErrorCode::E0103 => ErrorCategory::Internal,
             // Warnings map to the semantic bucket of the underlying
             // issue so consumers can route them by the same rules as
             // the equivalent E-codes. `is_warning()` distinguishes
@@ -1247,6 +1249,7 @@ mod tests {
             ErrorCode::E0058,
             ErrorCode::E0100, // PANIC
             ErrorCode::E0102, // ERR escaped
+            ErrorCode::E0103, // ERR discarded
             ErrorCode::E1003, // divide by zero
         ] {
             assert!(
@@ -1873,6 +1876,7 @@ mod tests {
                 "E0100": code_snap(ErrorCode::E0100, "internal"),
                 "E0101": code_snap(ErrorCode::E0101, "stack_overflow"),
                 "E0102": code_snap(ErrorCode::E0102, "unhandled_err_escape"),
+                "E0103": code_snap(ErrorCode::E0103, "unhandled_err_discard"),
             })
         );
     }
@@ -1971,6 +1975,7 @@ mod tests {
             ErrorCode::E0100,
             ErrorCode::E0101,
             ErrorCode::E0102,
+            ErrorCode::E0103,
             ErrorCode::E1003,
             // [v0.10 Step 2 / decision D-1] static contract segment.
             ErrorCode::E0110,
@@ -1983,7 +1988,7 @@ mod tests {
             // [v0.10 Step 8 / plan §5.1] MATCH segment.
             ErrorCode::E0116,
         ];
-        assert_eq!(codes.len(), 65);
+        assert_eq!(codes.len(), 66);
         // Each code has a stable string form.
         for c in &codes {
             assert!(c.as_str().starts_with('E'));
@@ -2397,7 +2402,7 @@ mod tests {
         let snap_json = ["E0070", "E0071"];
         let snap_ai = ["E0080", "E0081", "E0082", "E0083"];
         let snap_network = ["E0090", "E0091", "E0092", "E0093", "E0094"];
-        let snap_user_internal = ["E0099", "E0100", "E0101", "E0102", "E1003"];
+        let snap_user_internal = ["E0099", "E0100", "E0101", "E0102", "E0103", "E1003"];
         let snap_runtime = ["E1003"];
         let mut covered = std::collections::HashSet::<&str>::new();
         for group in [
@@ -2420,13 +2425,13 @@ mod tests {
         }
         let total = covered.len();
         // Plan 搂6.3 targets 56 + 14 codes. As of Phase D4 we
-        // have 58 error codes (E0001..E0102 + E1003) plus
+        // have 59 error codes (E0001..E0103 + E1003) plus
         // 13 warnings (W0001..W0054). This assertion is
         // informational 鈥?the strict guarantee is that future
         // additions can't shrink the union.
         assert!(
-            total >= 58,
-            "snapshot coverage regressed: only {} codes covered (>=58 expected)",
+            total >= 59,
+            "snapshot coverage regressed: only {} codes covered (>=59 expected)",
             total,
         );
     }
@@ -2507,6 +2512,7 @@ mod tests {
             ErrorCode::E0100,
             ErrorCode::E0101,
             ErrorCode::E0102,
+            ErrorCode::E0103,
         ] {
             let s = code.as_str();
             assert_ne!(
@@ -2536,14 +2542,47 @@ mod tests {
 
     /// 规范文件路径。CARGO_MANIFEST_DIR = impl/crates/wlwl-error,所以
     /// `../../..` 回到仓库根。
+    ///
+    /// [v1.0 迁移] 规范已独立成仓(`Laffinty/wlwl-spec-v1`),本仓实现的语义
+    /// 以 **v1.0 规范**为准 —— 码表守卫直接读规范文本,所以它读到的**必须**
+    /// 是 v1.0 那一份。查找顺序:
+    ///
+    /// 1. `WLWL_SPEC_PATH` 环境变量(CI 与多工作区开发用);
+    /// 2. 同级检出 `../wlwl-spec-v1/docs/spec/wlwl-v1.0-language.md`。
+    ///
+    /// **没有回落。** 读到仓内那份 v0.11 规范会让 `E0103` 之类的 v1.0 才引入
+    /// 的码**不在**检查范围内 —— 那是**静默削弱**:读数是绿的,守卫却已经不
+    /// 管那个码了。宁可响亮地失败。
+    ///
+    /// v1.0 规范的 §11 结构与 v0.11 一致(11.1 / 11.2 / 11.3 / 11.3.1 / 11.4),
+    /// 所以这三条守卫换读 v1.0 规范后**逻辑不变**。
     fn spec_path() -> std::path::PathBuf {
-        std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
+        if let Ok(p) = std::env::var("WLWL_SPEC_PATH") {
+            let p = std::path::PathBuf::from(p);
+            if p.exists() {
+                return p;
+            }
+        }
+        let root = std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
             .join("..")
             .join("..")
+            .join("..");
+        let v1 = root
             .join("..")
+            .join("wlwl-spec-v1")
             .join("docs")
             .join("spec")
-            .join("wlwl-spec-v0.11.md")
+            .join("wlwl-v1.0-language.md");
+        if v1.exists() {
+            return v1;
+        }
+        panic!(
+            "找不到 v1.0 规范 —— 本仓实现的语义以 v1.0 规范为准,码表守卫直接读它。\n\
+             二选一:\n\
+             1. 设 WLWL_SPEC_PATH 指向 wlwl-spec-v1/docs/spec/wlwl-v1.0-language.md;\n\
+             2. 把 wlwl-spec-v1 检出到本仓的同级目录。\n\
+             (CI 里已由 spec checkout 步骤提供 —— 见 .github/workflows/ci.yml。)"
+        );
     }
 
     /// [v0.10.3] 规范 §11.3.1 申报「已注册但无触发路径」的警告码。
@@ -2836,6 +2875,7 @@ mod tests {
         ErrorCode::E0100,
         ErrorCode::E0101,
         ErrorCode::E0102,
+        ErrorCode::E0103,
         ErrorCode::E1003,
         ErrorCode::E0110,
         ErrorCode::E0111,

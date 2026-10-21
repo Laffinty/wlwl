@@ -55,6 +55,30 @@ jobs:
     steps:
       - uses: actions/checkout@v4
 
+      # [v1.0 迁移] 规范已独立成仓(`Laffinty/wlwl-spec-v1`),本仓实现的语义
+      # 以 **v1.0 规范**为准。码表守卫
+      # (`every_registered_code_is_covered_by_the_spec`)直接**读规范文本**,
+      # 所以 CI 必须把规范取下来 —— 而且要**钉死**。
+      #
+      # 为什么钉死不跟 main:规范仓的 main 会动。不钉死的话,规范一改,本仓的
+      # CI 读数就跟着漂 —— 而「实现是否合规」这个问题需要**一个**确定的答案。
+      # 换规范版本 = 改这一行(与 `impl/Cargo.toml` 的版本守卫同一性质:钉住,
+      # 升级时显式改)。
+      #
+      # ⚠ 规范仓找不到时,守卫会**响亮地失败**(`spec_path()` 直接 panic 并给出
+      # 两条取得办法),**不**回落到仓内的 v0.11 规范 —— 回落会让 `E0103` 这类
+      # v1.0 才引入的码**不在**检查范围内,读数却是绿的,那是静默削弱。
+      - name: Checkout 规范仓(钉死提交)
+        uses: actions/checkout@v4
+        with:
+          repository: Laffinty/wlwl-spec-v1
+          ref: 24d7a6e
+          path: wlwl-spec-v1
+
+      - name: 指向 v1.0 规范
+        shell: bash
+        run: echo "WLWL_SPEC_PATH=$GITHUB_WORKSPACE/wlwl-spec-v1/docs/spec/wlwl-v1.0-language.md" >> "$GITHUB_ENV"
+
       # [D13-053] 工具链**钉死在仓根 `rust-toolchain.toml`**,本 job 是它的
       # **权威说明处**(另外两处只留一行指回来)。
       #

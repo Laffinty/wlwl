@@ -1,6 +1,6 @@
 ---
 source: crates/wlwl-error/src/lib.rs
-expression: "serde_json::json!({\n    \"E0099\": code_snap(ErrorCode::E0099, \"user_err\"), \"E0100\":\n    code_snap(ErrorCode::E0100, \"internal\"), \"E0101\":\n    code_snap(ErrorCode::E0101, \"stack_overflow\"), \"E0102\":\n    code_snap(ErrorCode::E0102, \"unhandled_err_escape\"),\n})"
+expression: "serde_json::json!({\n    \"E0099\": code_snap(ErrorCode::E0099, \"user_err\"), \"E0100\":\n    code_snap(ErrorCode::E0100, \"internal\"), \"E0101\":\n    code_snap(ErrorCode::E0101, \"stack_overflow\"), \"E0102\":\n    code_snap(ErrorCode::E0102, \"unhandled_err_escape\"), \"E0103\":\n    code_snap(ErrorCode::E0103, \"unhandled_err_discard\"),\n})"
 ---
 {
   "E0099": {
@@ -80,6 +80,27 @@ expression: "serde_json::json!({\n    \"E0099\": code_snap(ErrorCode::E0099, \"u
       "line_end": 1
     },
     "message": "snapshot for unhandled_err_escape",
+    "related": [],
+    "retry_after": null,
+    "retryable": false,
+    "severity": "error",
+    "source_line": null,
+    "suggestion_code": []
+  },
+  "E0103": {
+    "code": "E0103",
+    "errorCategory": "internal",
+    "error_schema_version": "1.1.0",
+    "hint": null,
+    "idempotent": false,
+    "location": {
+      "col_end": 1,
+      "col_start": 1,
+      "file": "snap.wll",
+      "line": 1,
+      "line_end": 1
+    },
+    "message": "snapshot for unhandled_err_discard",
     "related": [],
     "retry_after": null,
     "retryable": false,
