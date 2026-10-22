@@ -46,6 +46,11 @@ env:
 
 jobs:
   test:
+    # ⚠⚠ **这个 `name:` 就是 main 分支保护规则里的 required status check**
+    # (`test (ubuntu-latest / rust pinned)` / `test (macos-latest / rust pinned)` /
+    # `test (windows-latest / rust pinned)`)—— 改了它,main 的保护规则会**静默失配**
+    # ⇒ PR 永远显示「Expected — Waiting for status to be reported」,且看不出是谁的问题。
+    # 改名前先同步更新 main 的分支保护规则。
     name: test (${{ matrix.os }} / rust pinned)
     runs-on: ${{ matrix.os }}
     strategy:
@@ -541,6 +546,9 @@ jobs:
             -- --warm-up-time 1 --measurement-time 2 --sample-size 10
 
   smoke:
+    # ⚠⚠ **这个 `name:` 同样是 main 分支保护规则里的 required status check**
+    # (`smoke run examples`)—— 改了它,保护规则静默失配 ⇒ PR 永远卡在
+    # 「Expected — Waiting for status to be reported」。改名前先同步更新保护规则。
     name: smoke run examples
     needs: test
     runs-on: ubuntu-latest

@@ -204,6 +204,53 @@ fn spec_text() -> String {
     std::fs::read_to_string(&p).expect("stdlib spec is readable")
 }
 
+/// 取标准库某章里**某个三级小节**的正文。
+///
+/// 为什么要它:章作用域还不够 —— 章里若有两处写同样的字(例如
+/// `prepared statement` 在 §13.3 内出现 2 次),「章内 contains」仍然是
+/// **碰巧**成立。⇒ 判据要指到**小节**这一级。
+///
+/// 结束锚点取**下一个 `### ` 或 `## `** —— v1.0 的小节号逐章不同
+/// (`21.1` / `11.2` / `13.3` …)⇒ 按**标题文字**定位,写死小节号会在
+/// 规范改版时静默取错。
+///
+/// **找不到 ⇒ panic**(带这一章实际有的小节清单)—— 安静返回空会让
+/// 「小节被删/改名」变成**静默**漂移,而集合相等型断言在空集上会**假绿**。
+fn section_subsection(chapter: u32, subsection: u32) -> String {
+    let text = spec_text();
+    let chapter_head = format!("## 标准库规范 · {chapter} ");
+    let start = text
+        .find(&chapter_head)
+        .unwrap_or_else(|| panic!("{chapter_head} exists in the stdlib spec"));
+    let chapter_body = &text[start..];
+    let chapter_end = chapter_body.find("\n## ").unwrap_or(chapter_body.len());
+    let chapter_body = &chapter_body[..chapter_end];
+
+    let sub_head = format!("### {chapter}.{subsection} ");
+    let sub_start = chapter_body.find(&sub_head).unwrap_or_else(|| {
+        let mut seen: Vec<&str> = Vec::new();
+        for line in chapter_body.lines() {
+            if line.starts_with("### ") {
+                seen.push(line.trim_start_matches('#').trim());
+            }
+        }
+        panic!(
+            "{sub_head} exists in §{chapter} — 实际有的小节:{}",
+            if seen.is_empty() {
+                "(一个都没有)".to_string()
+            } else {
+                seen.join(" / ")
+            }
+        )
+    });
+    let sub_body = &chapter_body[sub_start..];
+    let sub_end = sub_body
+        .find("\n### ")
+        .or_else(|| sub_body.find("\n## "))
+        .unwrap_or(sub_body.len());
+    sub_body[..sub_end].to_string()
+}
+
 /// 本仓 ADR-0030(`std.sanitize` 扩展形状的裁决源头)正文。
 fn adr_0030_text() -> String {
     let p = Path::new(env!("CARGO_MANIFEST_DIR"))
@@ -371,9 +418,14 @@ fn sanitize_member_set_is_not_trivially_satisfied() {
 
 /// 规范 §13.3 的 SQL 否决记录是**契约的一部分**:「不做」与「做」同权。
 /// 删掉这段规范的尝试在这里变红。
+///
+/// ⚠ **判据收窄到 §13.3** —— 落在整本上时,别处的同名文字会让这条一直绿
+///   (修之前实测:删掉 §13.3 的条目 1,`prepared statement` 仍被同节的
+///   「复活条件」那条命中 ⇒ 整册口径**照样绿**)。收窄后判据才真的指着
+///   §13.3 那一段。
 #[test]
 fn sql_escape_rejection_record_stays_in_the_spec() {
-    let spec = spec_text();
+    let sec_13_3 = section_subsection(13, 3);
     for marker in [
         "为什么没有 SQL 转义成员",
         "last resort",
@@ -381,7 +433,7 @@ fn sql_escape_rejection_record_stays_in_the_spec() {
         "白名单映射",
     ] {
         assert!(
-            spec.contains(marker),
+            sec_13_3.contains(marker),
             "§13.3 SQL rejection record lost its marker `{marker}` — \
              the rejection is a contract, restore it or re-adjudicate"
         );

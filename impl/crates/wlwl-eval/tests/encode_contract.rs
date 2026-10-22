@@ -892,18 +892,33 @@ fn spec_path() -> PathBuf {
 /// 与 `format_contract::the_divergence_is_documented` 同理:代码侧的锁与
 /// 文档侧的锁必须成对。只锁代码,下一个人看到「测试说行为是这样」却找不到
 /// 依据;只锁文档,下一个人会「修实现」去迁就文档。
+///
+/// ⚠ **判据收在 §11 章内**,不落在整本合并册上。落在整本时,它守住的只是
+///   「全册别处碰巧没有同样的字」—— 将来新增一章写出同样的字,这条守卫会
+///   **当场失去它守的那件事**,而读数仍然是绿的(静默失效)。
 #[test]
 fn the_rfc_vectors_and_tradeoffs_are_documented() {
     let text = std::fs::read_to_string(spec_path()).expect("stdlib spec readable");
+    let start = text.find("## 标准库规范 · 11 ").expect("§11 header exists");
+    let end = text[start..]
+        .find("\n## ")
+        .map(|i| start + i)
+        .expect("a following top-level heading exists");
+    let body = &text[start..end];
+    // ⚠ 五个锚点在 §11 内**各自唯一**:§11.4 的 base64 向量表标题、§11.3 第 2 条
+    //   的取舍句、§11.1 的 `ERR` 载荷 JSON、§11.2 成员表里的 RFC 3986
+    //   `unreserved` 集、§11.4 的 URL-safe 分歧可观察值。
+    //   只钉「§11 里出现过 `RFC 4648`」不够 —— 那个字样在 §11 里出现 8 次,
+    //   删掉向量表照样绿。
     for needle in [
-        "RFC 4648",
-        "RFC 3986",
-        "DecodeError",
-        "unreserved",
-        "U+083F",
+        "**base64(RFC 4648 §10)**",
+        "按 RFC 3986 读,不折成空格",
+        "\"kind\": \"DecodeError\"",
+        r#"unreserved = ALPHA / DIGIT / "-" / "." / "_" / "~""#,
+        "`U+083F`(UTF-8 字节 `E0 A0 BF`):标准 `4KC/`,URL-safe `4KC_`",
     ] {
         assert!(
-            text.contains(needle),
+            body.contains(needle),
             "stdlib spec §11 lost `{needle}` — either the design changed on purpose \
              (update this test and §11 together) or the section was trimmed by accident"
         );

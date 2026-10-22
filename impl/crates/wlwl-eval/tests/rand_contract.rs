@@ -445,20 +445,36 @@ fn spec_path() -> PathBuf {
 }
 
 /// 代码侧的锁与文档侧的锁必须成对。
+///
+/// ⚠ **判据收在 §17 章内**,不落在整本合并册上。落在整本时,它守住的只是
+///   「全册别处碰巧没有同样的字」—— 将来别的章写出同样的字,这条守卫会
+///   **当场失去它守的那件事**,而读数仍然是绿的(静默失效)。实测:整本里
+///   `SEED` 出现 11 次、`不可变` 出现 27 次、`官方包` 出现 31 次。
 #[test]
 fn the_reproducibility_contract_is_documented() {
     let text = std::fs::read_to_string(spec_path()).expect("stdlib spec readable");
+    let start = text.find("## 标准库规范 · 17 ").expect("§17 header exists");
+    let end = text[start..]
+        .find("\n## ")
+        .map(|i| start + i)
+        .expect("a following top-level heading exists");
+    let body = &text[start..end];
+    // ⚠ 六个锚点在 §17 内**各自唯一**:§17.1 成员表里 `SEED` 的签名行、
+    //   §17.3 的生成算法与播种算法、§17.2 的「`DICT` 是不可变的」、§17.1
+    //   非目标段的「没有任何隐藏状态」、§17.8 的裁决出处。
+    //   只钉「§17 里出现过 `SplitMix64`」不够 —— 那个字样在 §17 里出现两次
+    //   (§17.3 播种 + §17.8 追溯),删掉播种算法照样绿。
     for needle in [
-        "SEED",
-        "xoshiro256++",
-        "SplitMix64",
-        "不可变",
-        "隐藏状态",
-        "ADR-0027",
+        "`SEED(entropy) -> DICT`",
+        "**生成**:**xoshiro256++**",
+        "**SplitMix64** 展开成 **256 bit 状态**(4 × `u64`)",
+        "**`DICT` 是不可变的**",
+        "没有任何隐藏状态。",
+        "裁决见 `ADR-0027`",
     ] {
         assert!(
-            text.contains(needle),
-            "stdlib spec lost `{needle}` — either the design changed on purpose (update \
+            body.contains(needle),
+            "stdlib spec §17 lost `{needle}` — either the design changed on purpose (update \
              this test and §17 together) or the section was trimmed by accident"
         );
     }
@@ -469,13 +485,31 @@ fn the_reproducibility_contract_is_documented() {
 /// 不写它,它就默认长期住在 `std`,而规范 §14 已登记「`std.ai` / `std.agent`
 /// 降级为官方包」的方向,两处会互相矛盾。这条测试就是为了让「那句话被删掉」
 /// 变成一件响的事。
+///
+/// ⚠ **判据收在 §17 章内**,不落在整本合并册上。落在整本时,「官方包」这
+///   个词在整本里出现 31 次(§14 也在讲降级)⇒ 这条守卫早就只在守「全册
+///   别处碰巧没有同样的字」。
 #[test]
 fn the_transitional_status_of_std_rand_is_still_written_down() {
     let text = std::fs::read_to_string(spec_path()).expect("stdlib spec readable");
-    assert!(
-        text.contains("过渡") && text.contains("官方包"),
-        "stdlib spec no longer records that `std.rand`'s home in std is a TRANSITIONAL \
-         form (official-package mechanism does not exist yet). ADR-0027 A7 requires this \
-         sentence; without it the layout silently becomes permanent."
-    );
+    let start = text.find("## 标准库规范 · 17 ").expect("§17 header exists");
+    let end = text[start..]
+        .find("\n## ")
+        .map(|i| start + i)
+        .expect("a following top-level heading exists");
+    let body = &text[start..end];
+    // ⚠ 三个锚点在 §17 内**各自唯一**:过渡形态的定性、降级方向登记在
+    //   哪本册、以及「这一句必须留着」的裁决句。
+    for needle in [
+        "**过渡形态**",
+        "降级为官方包、移出 `wlwl:std.*` 的方向已登记在标准库·官方包册",
+        "这一句**必须**留着:**不写它,现状就变成永久事实**",
+    ] {
+        assert!(
+            body.contains(needle),
+            "stdlib spec §17 no longer records that `std.rand`'s home in std is a TRANSITIONAL \
+             form (official-package mechanism does not exist yet). ADR-0027 A7 requires this \
+             sentence; without it the layout silently becomes permanent."
+        );
+    }
 }

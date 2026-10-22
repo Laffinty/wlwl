@@ -496,26 +496,34 @@ fn spec_text() -> String {
 
 /// §22.1 与 §22.5 的成员表(§22.3 那张表的单元格长成
 /// `` `ERR(e)` → `fallback(e)` ``,会被首列抽取误当成成员名,所以**不**取它)。
+///
+/// ⚠ 两张表的范围都**收在 §22 章内**:§22.1 到 §22.2 为止,§22.5 到**下一个
+/// `## ` 为止**(§22.7 结束处)。§22.5 **不能**收到**文件末尾** —— 那会一路抓到
+/// 附录 A 成员注册镜像与代理工作说明:今天恰好只抽出 `NULL_OR` / `RESULT_ALL` /
+/// `RESULT_ANY`(附录 A 的首列是 `std.xxx` 这类小写,被成员名过滤器排除掉)⇒
+/// **今天不是假绿**;但附录 A 格式一变(首列变成全大写)就会**假红**,而且失败
+/// 信息会指向一个完全无关的表。
 fn member_tables() -> String {
     let text = spec_text();
-    let grab = |start_marker: &str, end_marker: Option<&str>| {
+    let grab = |start_marker: &str, end_marker: &str| {
         let start = text
             .find(start_marker)
             .unwrap_or_else(|| panic!("{start_marker} exists in the stdlib spec"));
-        let end = match end_marker {
-            Some(m) => text[start..]
-                .find(m)
-                .map(|i| start + i)
-                .unwrap_or_else(|| panic!("{m} follows {start_marker}")),
-            None => text.len(),
-        };
+        let end = text[start..]
+            .find(end_marker)
+            .map(|i| start + i)
+            .unwrap_or_else(|| panic!("{end_marker} follows {start_marker}"));
         text[start..end].to_string()
     };
-    format!(
-        "{}\n{}",
-        grab("### 22.1", Some("### 22.2")),
-        grab("### 22.5", None)
-    )
+    // §22.5 的起点,与**章尾**(下一个顶层标题 = §22 章的结束)。
+    let s225 = text
+        .find("### 22.5")
+        .unwrap_or_else(|| panic!("### 22.5 exists in the stdlib spec"));
+    let e22 = text[s225..]
+        .find("\n## ")
+        .map(|i| s225 + i)
+        .unwrap_or_else(|| panic!("a chapter heading follows §22.5"));
+    format!("{}\n{}", grab("### 22.1", "### 22.2"), &text[s225..e22])
 }
 
 fn members_of(section_body: &str) -> Vec<String> {

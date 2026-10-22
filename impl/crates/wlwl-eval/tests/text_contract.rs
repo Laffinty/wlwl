@@ -544,9 +544,28 @@ fn the_ucd_batch_rationale_is_documented() {
 #[test]
 fn nfc_qc_one_directional_wording_is_documented() {
     let text = std::fs::read_to_string(spec_path()).expect("stdlib spec readable");
-    for needle in ["不保证", "反向不成立", "NFC_QC"] {
+    // ⚠ 判据**收窄到 §12**。落在整册上时,别处的同名文字会让这条一直绿 ——
+    //   修之前实测把 §12.2 里「**必定**已是 NFC 形态」改成「**必定**是某形态」,
+    //   整册判据**仍然绿**:旧针脚只查 `不保证` / `反向不成立` / `NFC_QC`,
+    //   而这三样**都没被动到**(`NFC_QC` 整册出现 8 次,§12 内就有 7 次)
+    //   ⇒ 旧判据压根**没在查**「正向定义」那一句。
+    let start = text
+        .find("## 标准库规范 · 12 `std.text`")
+        .expect("§12 header exists");
+    let end = text[start..]
+        .find("\n## ")
+        .map(|i| start + i)
+        .expect("a following top-level heading exists");
+    let body = &text[start..end];
+    // ⚠ 四个锚点在 §12 内**各自唯一**:`NFC_QC` 这个**成员名**在 §12 里出现 7 次
+    //   (分散在成员表 / §12.2 小节标题 / 条款正文 / §12.4 示例 4 处),拿它当
+    //   needle 等于判「§12 里提过 NFC_QC」⇒ 条款正文被删光也照样绿。改钉
+    //   **条款里的那几句**:正向定义 /「不保证」/ 反向不成立 / 文面禁止 ——
+    //   它们各自只出现一次。
+    for needle in ["已是 NFC 形态", "不保证", "反向不成立", "本规范的文面不得"]
+    {
         assert!(
-            text.contains(needle),
+            body.contains(needle),
             "stdlib spec §12.2 lost `{needle}` — the one-directional wording of \
              NFC_QC is a normative clause, not commentary"
         );

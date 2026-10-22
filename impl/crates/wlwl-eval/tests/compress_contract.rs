@@ -416,13 +416,32 @@ fn spec_path() -> PathBuf {
 
 /// 「压缩不是加密」与「解压输出上限」是**两条语言级条款**,必须留在规范里 ——
 /// 前者防调用方把 gzip 当「藏起来」,后者防压缩炸弹打满内存。
+///
+/// ⚠ **判据收在 §20 章内**,不落在整本合并册上。落在整本时,它守住的只是
+///   「全册别处碰巧没有同样的字」—— 将来别的章写出同样的字,这条守卫会
+///   **当场失去它守的那件事**,而读数仍然是绿的(静默失效)。
 #[test]
 fn the_two_normative_clauses_are_written_down() {
     let text = std::fs::read_to_string(spec_path()).expect("stdlib spec readable");
-    for needle in ["压缩不是加密", "MAX_DECOMPRESSED", "不是加密"] {
+    let start = text
+        .find("## 标准库规范 · 20 `std.compress`")
+        .expect("§20 header exists");
+    let end = text[start..]
+        .find("\n## ")
+        .map(|i| start + i)
+        .expect("a following top-level heading exists");
+    let body = &text[start..end];
+    // ⚠ 两个锚点在 §20 内**各自唯一**:§20.1 的「压缩不是加密」裁决句,以及
+    //   §20.2 的解压上限硬边界句。只钉「§20 里出现过 `MAX_DECOMPRESSED`」
+    //   不够 —— 那个字样在 §20 里出现两次(成员表 + §20.2),删掉 §20.2 的
+    //   裁决句照样绿。
+    for needle in [
+        "**压缩不是加密**:压缩**不提供机密性**",
+        "解压成员输出超过 **`MAX_DECOMPRESSED` = 64 MiB**",
+    ] {
         assert!(
-            text.contains(needle),
-            "stdlib spec lost `{needle}` — the no-encryption / bomb-cap clauses are \
+            body.contains(needle),
+            "stdlib spec §20 lost `{needle}` — the no-encryption / bomb-cap clauses are \
              language-level facts, not implementation notes"
         );
     }

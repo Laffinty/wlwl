@@ -530,8 +530,23 @@ fn spec_path() -> PathBuf {
 #[test]
 fn the_clock_contract_is_documented() {
     let text = std::fs::read_to_string(spec_path()).expect("stdlib spec readable");
+    // ⚠ 判据**收窄到 §15**。落在整册上时,别处的同名文字会让这条一直绿 ——
+    //   修之前实测把 §15.9 的 `ADR-0024` §6 改成 §7,整册判据**仍然绿**
+    //   (整册里 `ADR-0024` 有 2 处,`MONOTONIC` 出现 8 次、§15 内就有 7 处)
+    //   ⇒ 旧判据**没在查** §15.9 那处出处。
+    let start = text
+        .find("## 标准库规范 · 15 `std.time`")
+        .expect("§15 header exists");
+    let end = text[start..]
+        .find("\n## ")
+        .map(|i| start + i)
+        .expect("a following top-level heading exists");
+    let body = &text[start..end];
     for needle in [
-        "MONOTONIC",
+        // ⚠ 成员**签名**而不是成员名:`MONOTONIC` 这个名字在 §15 内出现 7 次
+        //   (分散在成员表 / §15.3 / §15.5 / §15.7 / §15.8),拿它当 needle 等于判
+        //   「§15 里提过 MONOTONIC」⇒ 时钟那一行被改写也照样绿。
+        "`MONOTONIC() -> INTEGER`",
         "Unix 纪元",
         "单调不减",
         "绝对值无意义",
@@ -541,11 +556,14 @@ fn the_clock_contract_is_documented() {
         // 起**、且**不受系统时间调整影响**(§15.1 成员表原文)。
         "进程启动起",
         "不受系统时间调整影响",
-        "ADR-0024",
+        // ⚠ `ADR-0024` 在 §15 内出现 **2** 次(§15 导语 + §15.9),拿它当 needle
+        //   等于判「§15 里某处提过这个编号」⇒ §15.9 那处被删也照样绿。改钉
+        //   **带定位的那一处**(§15.9 的 `ADR-0024` §6)。
+        "`ADR-0024` §6",
     ] {
         assert!(
-            text.contains(needle),
-            "stdlib spec lost `{needle}` — either the design changed on purpose (update \
+            body.contains(needle),
+            "stdlib spec §15 lost `{needle}` — either the design changed on purpose (update \
              this test and §15 together) or the section was trimmed by accident"
         );
     }

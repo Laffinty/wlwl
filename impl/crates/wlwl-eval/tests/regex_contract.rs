@@ -618,20 +618,34 @@ fn spec_path() -> PathBuf {
 
 /// 代码侧的锁与文档侧的锁必须成对 —— §16 里的「拒绝不支持的构造」与
 /// 「左最早而非左最长」是最容易被下一个人「修实现去迁就文档」的两条。
+///
+/// ⚠ **判据收在 §16 章内**,不落在整本合并册上。落在整本时,它守住的只是
+///   「全册别处碰巧没有同样的字」—— 将来新增一章写出同样的字,这条守卫会
+///   **当场失去它守的那件事**,而读数仍然是绿的(静默失效)。
 #[test]
 fn the_linearity_promise_is_documented() {
     let text = std::fs::read_to_string(spec_path()).expect("stdlib spec readable");
+    let start = text.find("## 标准库规范 · 16 ").expect("§16 header exists");
+    let end = text[start..]
+        .find("\n## ")
+        .map(|i| start + i)
+        .expect("a following top-level heading exists");
+    let body = &text[start..end];
+    // ⚠ 七个锚点在 §16 内**各自唯一**:§16.2 的两条语义裁决句、§16.3 的拒绝
+    //   清单、§16.4 的 ASCII-only 口径、§16.7 的追溯出处与「没有回溯」。
+    //   只钉「§16 里出现过 `lookahead`」不够 —— 那个字样在 §16 里出现两次
+    //   (导语 + §16.3 清单),删掉清单照样绿。
     for needle in [
-        "leftmost-first",
-        "leftmost-longest",
-        "lookahead",
-        "回溯引用",
-        "ASCII",
-        "addendum-02",
-        "Pike",
+        "**左最早(leftmost-first)**",
+        "**左最长(leftmost-longest)是它的 POSIX 模式**",
+        "`(?=…)` / `(?!…)`(lookahead)",
+        "**回溯引用**",
+        "都是 ASCII-only",
+        "addendum-02-regex.md",
+        "实现走 Thompson 构造 + Pike VM,**没有回溯**",
     ] {
         assert!(
-            text.contains(needle),
+            body.contains(needle),
             "stdlib spec §16 lost `{needle}` — either the design changed on purpose (update \
              this test and §16 together) or the section was trimmed by accident"
         );
@@ -657,9 +671,22 @@ fn the_linearity_promise_is_documented() {
 /// 表述**(「到**所在 group 的右括号**」)⇒ 钉 `until outer paren closes` 会
 /// 在规范改写措辞时**假红**。改钉 v1.0 的中文措辞,并**同时**钉住分歧的**两半**:
 /// RE2 侧 = 所在 group 的右括号,本成员侧 = 到**本分支**结束。
+///
+/// ⚠ **判据收在 §16 章内**,不落在整本合并册上。落在整本时,它守住的只是
+///   「全册别处碰巧没有同样的字」—— 将来新增一章写出同样的字,这条守卫会
+///   **当场失去它守的那件事**,而读数仍然是绿的(静默失效)。
 #[test]
 fn the_flag_scope_and_anchor_semantics_are_documented_honestly() {
     let text = std::fs::read_to_string(spec_path()).expect("stdlib spec readable");
+    let start = text.find("## 标准库规范 · 16 ").expect("§16 header exists");
+    let end = text[start..]
+        .find("\n## ")
+        .map(|i| start + i)
+        .expect("a following top-level heading exists");
+    let body = &text[start..end];
+    // ⚠ 七个锚点在 §16 内**各自唯一**:§16.4 的小节标题、RE2 对 `(?flags)` 的
+    //   原文措辞与其中文版、本成员侧的另一半、`$` 锚点的 RE2 原文、两口径
+    //   分歧的那个形状、以及「作用域比 RE2 / Go 窄」的裁决句。
     for needle in [
         "四条容易踩的细节",
         "within current group", // RE2 对 (?flags) 的原文措辞
@@ -670,7 +697,7 @@ fn the_flag_scope_and_anchor_semantics_are_documented_honestly() {
         "比 RE2 / Go 窄",
     ] {
         assert!(
-            text.contains(needle),
+            body.contains(needle),
             "stdlib spec §16 lost `{needle}` — the `(?i)` scope / `$` anchor semantics are \
              documented divergences, not silent behaviour. Either the section was trimmed or \
              someone 'fixed' the docs back into the old wrong claim."

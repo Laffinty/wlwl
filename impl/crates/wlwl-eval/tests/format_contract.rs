@@ -155,14 +155,27 @@ fn spec_path() -> PathBuf {
 #[test]
 fn the_divergence_is_documented() {
     let text = std::fs::read_to_string(spec_path()).expect("stdlib spec readable");
+    // ⚠ 判据**收窄到 §4**。这两个锚点当前在**整册**里也唯一(实测各 1 次)——
+    //   但那是**碰巧**:合并册将来另有一章提到「刻意不同」或 `D12-003` 时,整册
+    //   判据就**静默失去它守的那件事**。收窄到 §4 后,那种情况**仍会红**。
+    let start = text
+        .find("## 标准库规范 · 4 `std.format`")
+        .expect("§4 header exists");
+    let end = text[start..]
+        .find("\n## ")
+        .map(|i| start + i)
+        .expect("a following top-level heading exists");
+    let body = &text[start..end];
     assert!(
-        text.contains("刻意不同"),
+        body.contains("刻意不同"),
         "stdlib spec §4.1 no longer records the RESULT-rendering divergence. \
          Either the divergence was resolved on purpose (update this test and §4 \
          together) or the section was dropped by accident."
     );
+    // ⚠ `D12-003` 是**本仓的偏差台账号**(登记在 `docs/history/` 的台账里),但
+    //   合并册 §4.3 的追溯材料**确实**写了它 ⇒ 照钉即可,不必换成别的措辞。
     assert!(
-        text.contains("D12-003"),
-        "stdlib spec §4.1 lost its deviation-ledger reference (D12-003)"
+        body.contains("D12-003"),
+        "stdlib spec §4 lost its deviation-ledger reference (D12-003)"
     );
 }

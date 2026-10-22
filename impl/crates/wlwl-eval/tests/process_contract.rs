@@ -496,10 +496,24 @@ fn process_member_set_matches_the_spec_table() {
 #[test]
 fn the_blocking_cost_is_documented() {
     let text = std::fs::read_to_string(spec_path()).expect("stdlib spec readable");
-    for needle in ["不经 shell", "阻塞", "命令注入"] {
+    // ⚠ 判据**收窄到 §19**。落在整册上时,别处的同名文字会让这条一直绿 ——
+    //   修之前实测把 §19.2 里「**它是阻塞的**」那句改掉,整册判据**仍然绿**
+    //   (整册里 `阻塞` 出现 58 次,§19 里的「不经 shell」也另有 2 处)。
+    let start = text
+        .find("## 标准库规范 · 19 `std.process`")
+        .expect("§19 header exists");
+    let end = text[start..]
+        .find("\n## ")
+        .map(|i| start + i)
+        .expect("a following top-level heading exists");
+    let body = &text[start..end];
+    // ⚠ 三个锚点在 §19 内**各自唯一**:`不经 shell` 在 §19 里出现 3 次(章标题 /
+    //   成员表 / §19.5 示例)、`阻塞` 出现 4 次 —— 拿它们当 needle 等于判
+    //   「§19 里提到过这些词」⇒ 条款被删光也照样绿。改钉**条款所在的那一句**。
+    for needle in ["不经 shell 解析", "它是阻塞的", "命令注入"] {
         assert!(
-            text.contains(needle),
-            "stdlib spec lost `{needle}` — the no-shell / blocking-cost clauses of \
+            body.contains(needle),
+            "stdlib spec §19 lost `{needle}` — the no-shell / blocking-cost clauses of \
              std.process are language-level facts, not implementation notes"
         );
     }
