@@ -468,35 +468,15 @@ fn time_member_set_matches_the_spec_table() {
     // 踩过一次:§15.6(气泡能给 / 给不了)那张对照表里有一行
     // `| \`SLEEP(3600000)\` 墙钟耗时 < 1 s | … |`,它同样以 `| \`` 开头,
     // 于是被当成了一个叫 `SLEEP` 的**成员行**,成员数从 6 变 7。
-    // ⇒ 散文里只要出现「以 `| \`开头的行」就会污染这条守卫,所以按 `### `
-    // 收在 §15.1 成员表内。**这不是把守卫放宽,是把它对准被测对象。**
-    let table_start = text[start..end]
-        .find("### 15.1")
-        .map(|i| start + i)
-        .expect("§15.1 member table heading exists");
-    let table_end = text[table_start..end]
-        .find("\n### ")
-        .map(|i| table_start + i)
-        .unwrap_or(end);
-    let body = &text[table_start..table_end];
-
-    let mut spec: Vec<String> = Vec::new();
-    for line in body.lines() {
-        let Some(rest) = line.strip_prefix("| `") else {
-            continue;
-        };
-        let name: String = rest
-            .chars()
-            .take_while(|c| *c != '`' && *c != '(')
-            .collect();
-        if !name.is_empty()
-            && name
-                .chars()
-                .all(|c| c.is_ascii_uppercase() || c == '_' || c.is_ascii_digit())
-        {
-            spec.push(name);
-        }
-    }
+    // ⇒ 散文里只要出现「以 `| \`开头的行」就会污染这条守卫,所以范围收在
+    // §15.1 成员表内。**这不是把守卫放宽,是把它对准被测对象。**
+    //
+    // ⚠ **子节号逐章不同**(21.1 / 11.2 / 15.1)⇒ 共用助手按**标题文字**
+    // (`成员表`)定位,不按编号 —— 写死 `### 15.1` 的人改一次章就得再抄一次
+    // 查找逻辑。找不到 ⇒ 明确报错,不返回空。
+    let body = &text[start..end];
+    let table = common::member_table_section("§15", body);
+    let spec = common::member_names("§15", &table);
 
     let impls: Vec<String> = wlwl_std::resolve("wlwl:std.time")
         .expect("wlwl:std.time resolves")

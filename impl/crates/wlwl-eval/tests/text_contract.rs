@@ -507,18 +507,30 @@ fn spec_path() -> PathBuf {
 #[test]
 fn the_ucd_batch_rationale_is_documented() {
     let text = std::fs::read_to_string(spec_path()).expect("stdlib spec readable");
+    // ⚠ 判据**收窄到 §12**。落在整个文件上时,别处的同名文字会让这条一直绿 ——
+    //   修之前实测把 §12.1 的「数据覆盖必须完整」整段删掉,本条**仍然绿**。
+    let start = text.find("## 标准库规范 · 12 ").expect("§12 header exists");
+    let end = text[start..]
+        .find("\n## 标准库规范 · 13 ")
+        .map(|i| start + i)
+        .expect("§13 header follows §12");
+    let body = &text[start..end];
     for needle in [
         "UCD",
         "GraphemeBreakProperty",
         "CompositionExclusions",
         "EastAsianWidth",
-        "半张表",
+        // ⚠ v1.0 把 v0.11 的「**明确不做半张表**」改写成「**数据覆盖必须完整**」
+        //   —— 「半张表」这个措辞在 v1.0 合并册里**只剩 std.json §3.5 的同义
+        //   比喻**(「半张表比没有更糟」),拿它当 needle 等于判「std.json 里得有
+        //   这句话」⇒ std.text 的覆盖纪律被删光也照样绿。改钉 v1.0 的等价表述。
+        "数据覆盖必须完整",
         // v0.11.3 新增:「正确性只由全量自检证明」这条纪律的落点。
         "18.0.0",
         "norm-check",
     ] {
         assert!(
-            text.contains(needle),
+            body.contains(needle),
             "stdlib spec §12 lost `{needle}` — either the batching was revisited on \
              purpose (update this test and §12.1/§12.2 together) or the rationale was trimmed"
         );

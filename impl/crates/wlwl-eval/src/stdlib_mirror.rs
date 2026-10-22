@@ -1,9 +1,21 @@
-//! [v0.11 M1-3 / ADR-0021,v1.0 格式改造] stdlib 规范附录 A 镜像生成器。
+//! [v0.11.4 / v1.0 规范 §0.7] stdlib 规范附录 A:冻结快照 + 抄件。
 //!
-//! 单源真相:
-//! - R2 原生层成员来自 `wlwl_std` 的 `ModuleSpec` 绑定表;collection /
-//!   test 两个名录模块的 SPEC.functions 为空(既有契约),真名册取本
-//!   crate 的 `collection::BUILTINS` / `test::BUILTINS`;
+//! **附录 A 是 v1.0 规范的冻结快照,不是随实现更新的活镜像。** v1.0 规范仓
+//! 的注册镜像册 §0.7 明写:「本册的单源真相是本规范自身」「表体**不得**
+//! 由实现清单自动生成,**不得**为追平实现的当次改动而改写」。
+//!
+//! ⇒ 本仓**不再**拥有「跑一次生成器就把规范文本改写掉」这条路径。本文件
+//! 产出的是**从实现派生的表体**,**只用于一致性确认**,**不是真相源**;
+//! 真相源永远在规范仓的冻结快照里。
+//!
+//! 治理模型(两条守卫,见 `tests/stdlib_appendix_a_sync.rs`):
+//! - **抄件忠实度**:合并册(`docs/wlwl-spec-reference.md`)附录 A 标记区
+//!   与规范仓注册镜像册附录 A **逐字节相同**;
+//! - **实现与快照一致**:实现的成员集合 == 快照的成员集合(不一致时走
+//!   v1.0 一致性册 §5 的**差异登记**,由实现侧收敛,**不**由快照漂移)。
+//!
+//! 实现侧的成员清单(「成员是谁」这一点上实现说了算):
+//! - R2 原生层成员来自 `wlwl_std` 的 `ModuleSpec` 绑定表;
 //! - R1 语言层成员来自嵌入 `.wll` 源码的 `EXPORT([...])` 声明(经
 //!   `wlwl_std::lang_exports` 提取;运行期加载由 AST 的
 //!   `collect_exports` 权威提取,两者不一致会被锁测试抓出来)。
@@ -22,14 +34,12 @@
 //! 规范的**注册镜像册**为权威(§0.5 记法、§0.8 命名空间到册的映射、
 //! 附录 A 的 `[stub]` 标记位置)。
 //!
-//! 产出写进规范的附录 A 标记区(`<!-- appendix-a:begin -->` 到
-//! `<!-- appendix-a:end -->` 之间,标记保留),锁测试
-//! `tests/stdlib_appendix_a_sync.rs` 双向对账。
-//!
-//! 用法(在 `impl/` 目录下):
+//! 本地确认工具(在 `impl/` 目录下,**只读**,不写任何文件):
 //! ```bash
-//! cargo run --bin gen-appendix-a
+//! cargo run --bin check-appendix-a
 //! ```
+
+use std::collections::BTreeSet;
 
 use wlwl_std::StdBackend;
 
@@ -37,6 +47,12 @@ use wlwl_std::StdBackend;
 ///
 /// 字段与 v1.0 附录 A 的四列表一一对应:`path` + `layer` + `v1_book`
 /// 撑起表里的三列,`stubs` 决定「成员」格里哪些成员名后面跟 `[stub]`。
+///
+/// ⚠ **这些字段是「本仓用来确认『实现与快照一致』的元数据,不是快照的
+/// 来源」。** 快照只存在于 v1.0 规范仓的注册镜像册(§0.7 冻结快照);这里
+/// 登记「层」「v1.0 册」「`[stub]`」三列,是为了让本仓能拿**实现派生的
+/// 表体**与那份快照**逐字比对**。改这里的取值**不会**改写快照 —— 只会
+/// 让比对报出差异,由人按 v1.0 一致性册 §5.4 走差异登记。
 struct NsMeta {
     /// 实现侧的完整路径(`IMPORT` 用的路径)。
     path: &'static str,
@@ -44,8 +60,13 @@ struct NsMeta {
     layer: &'static str,
     /// 该命名空间的成员契约归 v1.0 标准库的哪一册(核心 / 文本 / 系统 /
     /// 安全 / 官方包)。
+    ///
+    /// ⚠ 取值以**快照**(规范仓注册镜像册 §0.8)为准;这里是**用于比对**的
+    /// 登记项,不是快照的来源。
     v1_book: &'static str,
     /// 该命名空间里带 `[stub]` 标记的成员(返回值形状不在公共面内)。
+    ///
+    /// ⚠ 同上:标记位置以**快照**为准,这里是**用于比对**的登记项。
     stubs: &'static [&'static str],
 }
 
@@ -54,7 +75,10 @@ const NO_STUBS: &[&str] = &[];
 
 /// 附录 A 的行登记:21 个命名空间。
 ///
-/// ⚠ 「v1.0 册」的取值以 v1.0 规范的**注册镜像册 §0.8**(命名空间到册的
+/// ⚠ **这不是快照的来源。** 快照是 v1.0 规范仓注册镜像册里的**冻结
+/// 快照**(§0.7);本表是**本仓用来确认「实现与快照一致」的元数据**。
+///
+/// 「v1.0 册」的取值以 v1.0 规范的**注册镜像册 §0.8**(命名空间到册的
 /// 映射)为准;「层」的取值以同册附录 A 的表体为准;`stubs` 以同册附录 A
 /// 的 `[stub]` 标记位置为准,并以本仓实现的桩事实为依据。
 const NAMESPACE_META: &[NsMeta] = &[
@@ -262,9 +286,15 @@ fn members(path: &str) -> Vec<String> {
     }
 }
 
-/// 生成附录 A 的表体(仅表格本身;标记与前置说明留在规范文件里)。
+/// 从实现派生附录 A 的表体(仅表格本身;标记与前置说明留在规范文件里)。
 ///
 /// **v1.0 格式**:四列 `| 命名空间 | 成员 | 层 | v1.0 册 |`。
+///
+/// ⚠ **这是用于一致性确认的派生表体,不是真相源。** 真相源是 v1.0 规范仓
+/// 注册镜像册里的**冻结快照**(§0.7)。本函数只回答「本仓实现现在长什么样」,
+/// 用来跟快照比对;它**不**、也**不得**被用来改写快照或规范文本 ——
+/// v0.11 那条「表体由生成器产出,手改无效;单源真相是实现」的规则**不再
+/// 适用**(§0.7 规则 1)。
 ///
 /// 「成员」格里跟在成员名后面的 `[stub]` 标记(注册镜像册附录 A 的写法:
 /// `` `CALL_TOOL` `[stub]` ``)标的是**返回值形状不在公共面内**的成员 ——
@@ -302,20 +332,28 @@ pub fn generate_appendix_a_md() -> String {
     out
 }
 
-/// 把生成的表体拼回 stdlib 规范文本:替换两个标记之间的内容,标记
-/// 本身保留。规范文件缺少标记或标记失序时返回 `None`(由 bin 报错,
-/// 不做猜测性改写)。
-pub fn splice_appendix_a(spec_md: &str) -> Option<String> {
-    const BEGIN: &str = "<!-- appendix-a:begin -->";
-    const END: &str = "<!-- appendix-a:end -->";
-    let start = spec_md.find(BEGIN)? + BEGIN.len();
-    let end = spec_md[start..].find(END)? + start;
-    let mut out = String::with_capacity(spec_md.len() + 256);
-    out.push_str(&spec_md[..start]);
-    out.push('\n');
-    out.push_str(&generate_appendix_a_md());
-    out.push_str(&spec_md[end..]);
-    Some(out)
+/// 实现侧每个命名空间的**成员集合**(实现真相)。
+///
+/// 与 `generate_appendix_a_md()` **同源**(同一个 `members()` 取法),但
+/// **不经** `NAMESPACE_META`:命名空间名单取 `wlwl_std::namespace_paths()`
+/// (实现真相,与 META 无共源),成员名单取 `wlwl_std::resolve` 的绑定表 /
+/// `EXPORT` 声明。
+///
+/// 用途:**一致性确认** —— 「实现的成员集合 == 冻结快照的成员集合」
+/// (v1.0 规范 §0.7 规则 2:不一致时走一致性册 §5.4 的差异登记,由实现侧
+/// 收敛;**不**由快照跟随实现漂移)。
+///
+/// 返回的命名空间名是**表体里的显示名**(去掉 `wlwl:` 前缀),以便与快照
+/// 的表体逐行对齐。
+pub fn implementation_member_sets() -> Vec<(String, BTreeSet<String>)> {
+    wlwl_std::namespace_paths()
+        .into_iter()
+        .map(|path| {
+            let namespace = path.trim_start_matches("wlwl:").to_string();
+            let members = members(path).into_iter().collect::<BTreeSet<String>>();
+            (namespace, members)
+        })
+        .collect()
 }
 
 #[cfg(test)]
@@ -481,32 +519,6 @@ mod tests {
                 );
             }
         }
-    }
-
-    #[test]
-    fn splice_replaces_between_markers_and_keeps_them() {
-        // 哨兵**必须**是不会出现在任何成员名 / 命名空间名里的字符串。
-        // 原文用 `"OLD"` —— v0.11.2 M3 加了 `FOLD_RIGHT`,而它**含子串
-        // `OLD`**(F-O-L-D-R-I-G-H-T),于是这条守卫在成员表里读到自己的
-        // 旧正文时判成了「替换失败」。守卫被一个**完全正确**的成员名打成
-        // 红了,而失败的提示(`assertion failed: !out.contains("OLD")`)
-        // 指向的方向完全相反。
-        let spec = "head\n<!-- appendix-a:begin -->\nZZ-OLD-BODY-SENTINEL-XYZZ\n<!-- appendix-a:end -->\ntail\n";
-        let out = splice_appendix_a(spec).expect("markers present");
-        assert!(out.contains("head\n"));
-        assert!(out.contains("<!-- appendix-a:begin -->"));
-        assert!(out.contains("<!-- appendix-a:end -->"));
-        assert!(
-            !out.contains("ZZ-OLD-BODY-SENTINEL-XYZZ"),
-            "the previous body must be fully replaced"
-        );
-        assert!(out.contains("| 命名空间 | 成员 | 层 | v1.0 册 |"));
-        assert!(out.contains("tail\n"));
-    }
-
-    #[test]
-    fn splice_returns_none_on_missing_markers() {
-        assert!(splice_appendix_a("no markers here").is_none());
     }
 
     // ---- R1 内核注入(M3-0)------------------------------------------------

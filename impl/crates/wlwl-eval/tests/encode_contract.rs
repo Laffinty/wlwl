@@ -803,47 +803,6 @@ fn encode_contract() {
     );
 }
 
-/// 取一章正文里「成员表」子节的正文。
-///
-/// v1.0 的标准库册把成员表放进**子节**(`### 21.1 成员表` / `### 11.2 成员表`),
-/// 不再平铺在章标题之下 ⇒ 抽取范围必须落在那个子节上:
-/// 截到第一个 `### ` 会把成员表整个切掉(抽到 0 个成员),扫整章则会把同章的
-/// 参数表 / 测试向量表一起抽进来。
-///
-/// 返回 `None` = 这一章里没有「成员表」子节(章结构变了)。
-fn member_table_section(chapter: &str) -> Option<String> {
-    let mut in_table = false;
-    let mut found = false;
-    let mut fenced = false;
-    let mut out = String::new();
-    for line in chapter.lines() {
-        // 围栏代码块里的 `#` 行不是标题,别让它把 in_table 掐掉。
-        if line.trim_start().starts_with("```") {
-            fenced = !fenced;
-            continue;
-        }
-        if fenced {
-            continue;
-        }
-        if line.starts_with('#') {
-            in_table = line.trim_start_matches('#').trim_end().ends_with("成员表");
-            if in_table {
-                found = true;
-            }
-            continue;
-        }
-        if in_table {
-            out.push_str(line);
-            out.push('\n');
-        }
-    }
-    if found {
-        Some(out)
-    } else {
-        None
-    }
-}
-
 /// 规范 §11 的成员表里的十三个成员。
 ///
 /// 名单与成员表**必须同数**(见测试里的同数断言):只有同数,下面的「逐项包含」
@@ -880,33 +839,10 @@ fn encode_member_set_matches_the_spec_table() {
     let body = &text[start..end];
     // v1.0 的成员表在 `### 11.2 成员表` 子节里 ⇒ 范围落到那个子节。
     // 扫整章会把 KDF 参数表 / RFC 测试向量表一起抽进来(26 个而不是 13 个)。
-    let table = member_table_section(body).expect("§11 has a 成员表 subsection");
-
-    let mut spec: Vec<String> = Vec::new();
-    for line in table.lines() {
-        let Some(rest) = line.strip_prefix("| `") else {
-            continue;
-        };
-        // 成员格是 `` `NAME(sig)` ``,散文格里也可能出现 `` `NAME` ``。
-        // 名字在**反引号或左括号**中取较早的那个 —— 只看到反引号会把
-        // `BASE64_ENCODE(s, url_safe?)` 整个当成名字,然后被下面的
-        // `contains('(')` 过滤掉,静默抽成 0 个。
-        let name: String = rest
-            .chars()
-            .take_while(|c| *c != '`' && *c != '(')
-            .collect();
-        if name.is_empty() {
-            continue;
-        }
-        // 只收全大写标识符 —— 成员表里若混进非成员行(表头 / 散文里的标识符),
-        // 不许它们进成员集合。
-        if name
-            .chars()
-            .all(|c| c.is_ascii_uppercase() || c == '_' || c.is_ascii_digit())
-        {
-            spec.push(name);
-        }
-    }
+    // **子节号逐章不同** ⇒ 共用助手按**标题文字**(`成员表`)定位;找不到 ⇒
+    // 明确报错,不返回空。
+    let table = common::member_table_section("§11", body);
+    let spec = common::member_names("§11", &table);
 
     let impls: Vec<String> = wlwl_std::resolve("wlwl:std.encode")
         .expect("wlwl:std.encode resolves")

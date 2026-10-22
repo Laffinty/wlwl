@@ -54,7 +54,7 @@
 
 | 条款 | 强制它的机制 | 状态 |
 |---|---|---|
-| §v0.x 1 可见面变更同批次完成四件套 + CHANGELOG | 附录 A 由 `gen-appendix-a` 从实现生成,`stdlib_appendix_a_sync` 双向对账;成员表由 `collection_contract.rs` / `str_math_contract.rs` / `test_contract.rs` 从**本规范 markdown** 解析后对拍 | ✅ M3 起成立 |
+| §v0.x 1 可见面变更同批次完成四件套 + CHANGELOG | 附录 A 是 **v1.0 规范仓的冻结快照**(抄件,本仓只抄不改 —— 规范仓注册镜像册 §0.7 规则 1),`stdlib_appendix_a_sync` 双向对账(抄件 vs 规范仓逐字节 + 实现 vs 快照集合相等);成员表由 `collection_contract.rs` / `str_math_contract.rs` / `test_contract.rs` 从**本规范 markdown** 解析后对拍 | ✅ M3 起成立(⚠ 2026-10-22 起附录 A 的来源由「实现派生」改为「规范仓冻结快照」) |
 | §v0.x 2 breaking 必须申报 | 规范成员行标「自 vX.Y 变更」+ CHANGELOG 明标 breaking。**这一条是纪律不是机制** —— 没有测试能发现「有人改了语义却忘了标」 | ⚠️ 靠人;M3 两条 breaking 已按此申报(D11-010 / D11-012) |
 | §v0.x 3 弃用两步(警告码 + 至少一个次版本) | `W0051` 发射点(`registry` + `resolve_builtin` 的弃用别名)+ 警告消费者注册表 | ✅ 沿 v0.10 既有先例 |
 | §v0.x 4 不重导出同名全局内建 | `str_math_contract.rs::str_and_math_reexport_no_global_builtin` 逐条对全局内建注册表 | ✅ M3 起成立 |

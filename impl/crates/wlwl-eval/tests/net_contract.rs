@@ -392,47 +392,6 @@ fn spec_path() -> PathBuf {
         .join("wlwl-spec-reference.md")
 }
 
-/// 取一章正文里「成员表」子节的正文。
-///
-/// v1.0 的标准库册把成员表放进**子节**(`### 21.1 成员表` / `### 11.2 成员表`),
-/// 不再平铺在章标题之下 ⇒ 抽取范围必须落在那个子节上:
-/// 截到第一个 `### ` 会把成员表整个切掉(抽到 0 个成员),扫整章则会把同章的
-/// 参数表 / 测试向量表一起抽进来。
-///
-/// 返回 `None` = 这一章里没有「成员表」子节(章结构变了)。
-fn member_table_section(chapter: &str) -> Option<String> {
-    let mut in_table = false;
-    let mut found = false;
-    let mut fenced = false;
-    let mut out = String::new();
-    for line in chapter.lines() {
-        // 围栏代码块里的 `#` 行不是标题,别让它把 in_table 掐掉。
-        if line.trim_start().starts_with("```") {
-            fenced = !fenced;
-            continue;
-        }
-        if fenced {
-            continue;
-        }
-        if line.starts_with('#') {
-            in_table = line.trim_start_matches('#').trim_end().ends_with("成员表");
-            if in_table {
-                found = true;
-            }
-            continue;
-        }
-        if in_table {
-            out.push_str(line);
-            out.push('\n');
-        }
-    }
-    if found {
-        Some(out)
-    } else {
-        None
-    }
-}
-
 /// 规范 §21 的成员表里的五个成员。
 ///
 /// 名单与成员表**必须同数**(见测试里的同数断言):只有同数,下面的「逐项包含」
@@ -461,27 +420,10 @@ fn net_member_set_matches_the_spec_table() {
         .unwrap_or(text.len());
     let body = &text[start..end];
     // v1.0 的成员表在 `### 21.1 成员表` 子节里 ⇒ 范围落到那个子节,
-    // 截到第一个 `### ` 会把表整个切掉。
-    let table = member_table_section(body).expect("\u{00a7}21 has a 成员表 subsection");
-    let mut spec: Vec<String> = Vec::new();
-    for line in table.lines() {
-        let Some(rest) = line.strip_prefix("| `") else {
-            continue;
-        };
-        let name: String = rest
-            .chars()
-            .take_while(|c| *c != '`' && *c != '(')
-            .collect();
-        if name.is_empty() {
-            continue;
-        }
-        if name
-            .chars()
-            .all(|c| c.is_ascii_uppercase() || c == '_' || c.is_ascii_digit())
-        {
-            spec.push(name);
-        }
-    }
+    // 截到第一个 `### ` 会把表整个切掉。**子节号逐章不同** ⇒ 共用助手按
+    // **标题文字**(`成员表`)定位;找不到 ⇒ 明确报错,不返回空。
+    let table = common::member_table_section("§21", body);
+    let spec = common::member_names("§21", &table);
     let impls: Vec<String> = wlwl_std::resolve("wlwl:std.net")
         .expect("wlwl:std.net resolves")
         .functions()

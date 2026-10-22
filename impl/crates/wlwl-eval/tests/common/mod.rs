@@ -1,4 +1,6 @@
-//! 契约测试共用的**临时目录**工具。
+//! 契约测试共用的**助手**。
+//!
+//! ## 一、临时目录(唯一性)
 //!
 //! ⚠🔴 **[D13-078] 临时目录名不能只由时钟决定。**
 //!
@@ -34,6 +36,20 @@
 //! `wlwl-cli/tests/lexer_macro_coverage.rs` 里那段注释写得很直白:
 //! 「临时目录**必须按名字分开**……共用一个目录时一边刚写下的 `main.wll`
 //! 会被另一边读走」。那次只修了 CLI 侧,`wlwl-eval` 侧这 22 处是**残留副本**。
+//!
+//! ## 二、标准库规范的「成员表」子节
+//!
+//! v1.0 的标准库册把成员表放进**子节**(`### 21.1 成员表` / `### 11.2 成员表`),
+//! 不再平铺在章标题之下 ⇒ 抽取范围必须落在那个子节上:
+//! 截到第一个 `### ` 会把成员表整个切掉(抽到 0 个成员),扫整章则会把同章的
+//! 参数表 / 测试向量表一起抽进来。
+//!
+//! ⚠ **子节号逐章不同**(21.1 vs 11.2 vs 15.1)⇒ 按**标题文字**(`成员表`)
+//! 定位,不按编号 —— 按编号定位的人改一次章就得再抄一次查找逻辑。
+//!
+//! ⚠ **这一段原先在 `net_contract.rs` / `encode_contract.rs` / `time_contract.rs`
+//! 里各抄了一份**(`time_contract.rs` 那份还把 `### 15.1` 的**编号**写死了)。
+//! 三份抄件的行为必须一致 ⇒ 收在这里一处。
 
 #![allow(dead_code)]
 
@@ -75,4 +91,225 @@ pub fn scratch(prefix: &str) -> PathBuf {
     let _ = std::fs::remove_dir_all(&dir);
     std::fs::create_dir_all(&dir).expect("scratch dir");
     dir
+}
+
+// ── 标准库规范:「成员表」子节的定位与成员名抽取 ──────────────────────
+//
+// ⚠ **这一段的行为是契约**:改了它,`net_contract.rs` / `encode_contract.rs` /
+// `time_contract.rs` 抽到的成员集合就会变 ⇒ 那三张表的断言会红。
+// 「找不到就返回空」的写法尤其危险:它让「表结构变了」变成**静默**漂移,
+// 而集合相等型断言在空集上会**假绿**(`[] == []`)。
+
+/// 取一章正文里「成员表」子节的正文。
+///
+/// **定位口径**:找**第一个**标题行**以 `### ` 开头**且**标题文字以「成员表」
+/// **结尾**的子节,取该子节到下一个 `### ` 或 `## ` 为止(标题行本身**不含**
+/// 在返回的正文里)。
+///
+/// - ⚠ **按标题文字定位,不按子节号** —— 子节号逐章不同(`21.1` / `11.2` / `15.1`),
+///   按编号定位的人每改一章就得再抄一次查找逻辑。
+/// - ⚠ **围栏代码块(```)里的 `#` 行是注释,不是标题** —— 跳过,否则围栏里的
+///   `# 注释` 会被当成标题,把子节的边界掐错。
+///
+/// **找不到 ⇒ panic(不返回空)**:「找不到成员表」与「这个命名空间没有成员」是
+/// 两件必须分开的事 —— 前者是**表结构变了**(章改版 / 子节改名 / 子节被删),
+/// 后者是规范事实。安静返回空 ⇒ 抽取器抽到 0 个 ⇒ 集合相等型断言可能**假绿**。
+/// panic 消息里带上这一章实际有的标题,好让人一眼看出「子节改名了」还是
+/// 「这一章根本没有这个子节」。
+///
+/// `chapter` 只用于报错文案(如 `"§21"`),不参与定位。
+pub fn member_table_section(chapter: &str, chapter_body: &str) -> String {
+    let mut fenced = false;
+    let mut in_table = false;
+    let mut found: Option<String> = None;
+    let mut headings: Vec<String> = Vec::new();
+    let mut out = String::new();
+
+    for line in chapter_body.lines() {
+        // 围栏代码块里的 `#` 行不是标题,别让它把 in_table 掐掉。
+        if line.trim_start().starts_with("```") {
+            fenced = !fenced;
+            continue;
+        }
+        if fenced {
+            continue;
+        }
+        if line.starts_with("### ") || line.starts_with("## ") {
+            if in_table {
+                // 子节到下一个 `### ` / `## ` 为止。
+                break;
+            }
+            let title = line.trim_start_matches('#').trim().to_string();
+            headings.push(title.clone());
+            if title.ends_with("成员表") {
+                in_table = true;
+                found = Some(title);
+            }
+            continue;
+        }
+        if in_table {
+            out.push_str(line);
+            out.push('\n');
+        }
+    }
+
+    match found {
+        Some(_) => out,
+        None => {
+            let seen = if headings.is_empty() {
+                "(一个标题都没有)".to_string()
+            } else {
+                headings.join(" / ")
+            };
+            panic!(
+                "{chapter}: 这一章里找不到「成员表」子节 —— 期望一个形如 `### 21.1 成员表` \
+                 的标题行(子节标题文字以「成员表」结尾;子节号逐章不同,所以按文字定位、\
+                 不按编号)。这一章实际有的标题:{seen}"
+            );
+        }
+    }
+}
+
+/// 从「成员表」子节的正文里抽成员名。
+///
+/// **抽取口径**(v1.0 的行首形状 `` | `NAME(sig) -> T` | ``):取**反引号或左括号
+/// 前**的内容;只收**全大写标识符**(成员表里若混进非成员行 —— 表头、散文里的
+/// 标识符 —— 不许它们进成员集合)。
+///
+/// ⚠ 名字必须在**反引号与左括号中取较早的那个** —— 只看到反引号会把
+/// `BASE64_ENCODE(s, url_safe?)` 整个当成名字,然后被「全大写」这一关过滤掉,
+/// **静默抽成 0 个**。
+///
+/// **抽到 0 个 ⇒ panic(不返回空)**:同样是「表结构变了」(列数变了 / 签名写法变了),
+/// 不是「这个命名空间没有成员」。
+///
+/// `chapter` 只用于报错文案(如 `"§21"`),不参与抽取。
+pub fn member_names(chapter: &str, table: &str) -> Vec<String> {
+    let mut spec: Vec<String> = Vec::new();
+    for line in table.lines() {
+        let Some(rest) = line.strip_prefix("| `") else {
+            continue;
+        };
+        let name: String = rest
+            .chars()
+            .take_while(|c| *c != '`' && *c != '(')
+            .collect();
+        if name.is_empty() {
+            continue;
+        }
+        // 只收全大写标识符 —— 成员表里若混进非成员行(表头 / 散文里的标识符),
+        // 不许它们进成员集合。
+        if name
+            .chars()
+            .all(|c| c.is_ascii_uppercase() || c == '_' || c.is_ascii_digit())
+        {
+            spec.push(name);
+        }
+    }
+    if spec.is_empty() {
+        panic!(
+            "{chapter}: 「成员表」子节里一个成员都没抽出来 —— 表结构变了(行首不再是 \
+             `| `NAME(sig)` |` 这个形状),不是「这个命名空间没有成员」。"
+        );
+    }
+    spec
+}
+
+/// 共用助手自身的**自检** —— 把「找不到就报错」这条行为钉住。
+///
+/// ⚠ 这条守卫的意义在于**防止将来被改成安静返回空**:那种改法不会让任何一张
+/// 契约表立刻变红(集合相等型断言在空集上会**假绿**),而是把「表结构变了」
+/// 变成**静默**漂移 ⇒ 守卫必须在**今天**就钉住「它会响」。
+#[cfg(test)]
+mod self_check {
+    use super::{member_names, member_table_section};
+    use std::any::Any;
+    use std::panic::{catch_unwind, AssertUnwindSafe};
+
+    /// 一段**故意没有「成员表」子节**的假章节正文。
+    ///
+    /// ⚠ 它刻意**有**别的 `### ` 子节、也有 `` | ` `` 开头的表格行 ——
+    /// 「本章有子节」与「本章有成员表子节」是两件事,守卫要守的是后者。
+    const NO_MEMBER_TABLE: &str = "\
+## 标准库规范 · 99 `std.example` —— 假章
+
+### 99.1 失败口径
+
+| 签名 | 语义 |
+|---|---|
+| `NOT_A_MEMBER_TABLE(x)` | 长得像成员行,但所在的子节不叫「成员表」 |
+
+### 99.2 设计依据
+
+散文。
+";
+
+    /// 一个**有**「成员表」子节、但表里**没有成员行**的假章节正文。
+    const EMPTY_MEMBER_TABLE: &str = "\
+## 标准库规范 · 98 `std.example` —— 假章
+
+### 98.1 成员表
+
+| 签名 | 语义 |
+|---|---|
+| 说明 | 这一行不是成员行 |
+";
+
+    /// 取 panic 消息。
+    fn panic_message(err: &Box<dyn Any + Send>) -> String {
+        if let Some(s) = err.downcast_ref::<String>() {
+            s.clone()
+        } else if let Some(s) = err.downcast_ref::<&str>() {
+            (*s).to_string()
+        } else {
+            "(panic 载荷不是字符串)".to_string()
+        }
+    }
+
+    #[test]
+    fn member_table_section_panics_when_the_subsection_is_missing() {
+        let err = catch_unwind(AssertUnwindSafe(|| {
+            member_table_section("§99", NO_MEMBER_TABLE)
+        }))
+        .expect_err("找不到「成员表」子节必须 panic —— 不许安静返回空");
+        let msg = panic_message(&err);
+        assert!(
+            msg.contains("§99") && msg.contains("成员表"),
+            "panic 消息必须说清是哪一章、期望的子节标题形态:{msg}"
+        );
+    }
+
+    #[test]
+    fn member_names_panics_when_the_table_has_no_member_row() {
+        // 这一章**有**「成员表」子节,但子节里一行成员都没有 ⇒ 这是
+        // 「表结构变了」,与上一条「找不到子节」是**两件**事 ⇒ 两条都要响。
+        let table = member_table_section("§98", EMPTY_MEMBER_TABLE);
+        let err = catch_unwind(AssertUnwindSafe(|| member_names("§98", &table)))
+            .expect_err("抽到 0 个成员必须 panic —— 不许安静返回空");
+        let msg = panic_message(&err);
+        assert!(msg.contains("§98"), "panic 消息必须说清是哪一章:{msg}");
+    }
+
+    #[test]
+    fn member_table_section_finds_the_subsection_by_its_title_not_by_its_number() {
+        // 子节号故意写成 `99.7` ⇒ 按编号定位会失手,按标题文字定位不会。
+        let body = "\
+## 标准库规范 · 97 `std.example` —— 假章
+
+### 97.1 失败口径
+
+| 签名 | 语义 |
+|---|---|
+| `NOPE(x)` | 不是成员 |
+
+### 97.7 成员表
+
+| 签名 | 语义 |
+|---|---|
+| `ALPHA(x) -> INTEGER` | 一个成员 |
+";
+        let table = member_table_section("§97", body);
+        let names = member_names("§97", &table);
+        assert_eq!(names, vec!["ALPHA".to_string()]);
+    }
 }

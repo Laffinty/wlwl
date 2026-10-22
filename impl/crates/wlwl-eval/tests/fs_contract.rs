@@ -915,13 +915,48 @@ fn spec_path() -> PathBuf {
 
 /// 代码侧的锁与文档侧的锁必须成对:分隔符那条是**跨平台契约**,它必须
 /// 在规范里被写成明文,否则下一个人会以为平台原生是「允许的」。
+///
+/// ⚠ 判据**分两段、每段收在自己的章里**。落在整个文件上时,别的章里的同名
+///   文字会让这条一直绿 —— 修之前实测把 §2 的「规范分隔符恒为 `/`」与 §19 的
+///   三处「不经 shell」**全部删掉**,本条**仍然绿**。
 #[test]
 fn the_separator_decision_is_written_down() {
     let text = std::fs::read_to_string(spec_path()).expect("stdlib spec readable");
-    for needle in ["`/`", "分隔符", "ADDENDUM-06", "不经 shell"] {
+    // ① std.fs §2:分隔符恒为 `/`(跨平台契约)+ 那次裁决的出处。
+    let fs_start = text
+        .find("## 标准库规范 · 2 `std.fs`")
+        .expect("§2 header exists");
+    let fs_end = text[fs_start..]
+        .find("\n## ")
+        .map(|i| fs_start + i)
+        .expect("a following top-level heading exists");
+    let fs_body = &text[fs_start..fs_end];
+    // ⚠ 三个锚点在 §2 内**各自唯一**(整册也唯一):分隔符的**裁决句**(§2 导语)、
+    //   成员表里的**操作口径**(`PATH_JOIN`)、以及那次裁决的**出处**。
+    //   只钉「§2 里出现过 `/`」不够 —— §2 的成员表里到处是 `/`,删掉裁决句也照样绿。
+    for needle in ["规范分隔符恒为 `/`", "合并重复分隔符", "ADDENDUM-06"] {
         assert!(
-            text.contains(needle),
-            "stdlib spec lost `{needle}` — the separator / argv decisions must be \
+            fs_body.contains(needle),
+            "stdlib spec §2 lost `{needle}` — the separator decision must be \
+             written down, not left as an implementation artefact"
+        );
+    }
+    // ② std.process §19:`argv` 不经 shell 解析(不经 shell 跑子进程)。
+    let proc_start = text
+        .find("## 标准库规范 · 19 `std.process`")
+        .expect("§19 header exists");
+    let proc_end = text[proc_start..]
+        .find("\n## ")
+        .map(|i| proc_start + i)
+        .expect("a following top-level heading exists");
+    let proc_body = &text[proc_start..proc_end];
+    // ⚠ 同上:两个锚点在 §19 内各自唯一 —— 章题(声明这件事是本章的主题)与
+    //   §19.6 的 `argv` 语义句。整册的「不经 shell」在系统册总纲里也出现过,
+    //   所以不能拿「不经 shell」四个字本身当判据。
+    for needle in ["不经 shell 跑子进程", "不经 shell 解析"] {
+        assert!(
+            proc_body.contains(needle),
+            "stdlib spec §19 lost `{needle}` — the argv decision (no shell) must be \
              written down, not left as an implementation artefact"
         );
     }

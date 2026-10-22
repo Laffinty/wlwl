@@ -274,7 +274,7 @@ cargo check --locked -p wlwl-std --features real-ai
 | 落点 | 本份动作 |
 |---|---|
 | 1 规范成员表 | 新增 §23 `std.sync` 章 + 成员表 + **「为什么锁在 std 而通道在内建」条款** + 死锁后果条款 |
-| 2 附录 A | 跑 `gen-appendix-a` |
+| 2 附录 A | ⚠ **v1.0 起附录 A 是规范仓的冻结快照(本仓只抄不改)** ⇒ 新增 `std.sync` 成员**不能**在本仓改表体:走一致性册 §5 的差异登记(规范仓更新冻结快照 + 本仓重建合并册) |
 | 3 `SPEC.functions` | 新 `src/sync.rs` + N 个 `StdFn` |
 | 4 契约测试硬编码 | `sync_contract` 成员数与点名清单 |
 | 5 模块登记 | `ALL_SPECS` 登记 `sync`;`src/` 文件数守卫 |
