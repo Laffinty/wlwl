@@ -414,22 +414,6 @@ mod tests {
         assert_eq!(read_input_line(&mut cur).unwrap(), "");
     }
 
-    #[test]
-    fn read_line_io_error_is_e0060() {
-        // A `Read` impl that always fails should produce E0060, not
-        // E0001 / E0002.
-        struct FailingRead;
-        impl Read for FailingRead {
-            fn read(&mut self, _buf: &mut [u8]) -> std::io::Result<usize> {
-                Err(IoError::other("synthetic"))
-            }
-        }
-        let r = FailingRead;
-        let err = read_input_line(&mut r.bufreader()).unwrap_err();
-        assert_eq!(err.code, ErrorCode::E0060);
-        assert!(err.message.contains("INPUT: failed to read stdin"));
-    }
-
     // Helper to convert a Read into a BufRead for the failing-read test.
     trait ReadExt: Read + Sized {
         fn bufreader(self) -> std::io::BufReader<Self> {
@@ -437,4 +421,32 @@ mod tests {
         }
     }
     impl<T: Read> ReadExt for T {}
+
+    // A `Read` impl that always fails — the synthetic source of E0060.
+    //
+    // ⚠ **它必须住在模块作用域,不能住在用例体里**:规范仓的失败口径对拍
+    //   （`script/check_spec.py` 第 8 项）读行内单测时,把函数体截到
+    //   「第一个整行只有 `}`」为止 —— 嵌套的 `impl` 块会在那里**截断**,
+    //   截断点之后的断言宏**看不见**。断言写在用例体里就等于没写。
+    struct FailingRead;
+    impl Read for FailingRead {
+        fn read(&mut self, _buf: &mut [u8]) -> std::io::Result<usize> {
+            Err(IoError::other("synthetic"))
+        }
+    }
+
+    #[test]
+    fn read_line_input_io_error_is_e0060() {
+        // A `Read` impl that always fails should produce E0060, not
+        // E0001 / E0002.
+        //
+        // ⚠ **用例名里必须带成员名 `INPUT`**:规范仓检查器的归属口径是
+        //   「`#[test] fn` 名里含成员名的蛇形形式」⇒ 名字不含 `input` 就
+        //   推不出这条断言属于 `std.io::INPUT`,那条 `E0060` 口径就永远
+        //   处于「未钉住」状态。
+        let r = FailingRead;
+        let err = read_input_line(&mut r.bufreader()).unwrap_err();
+        assert_eq!(err.code, ErrorCode::E0060);
+        assert!(err.message.contains("INPUT: failed to read stdin"));
+    }
 }
