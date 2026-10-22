@@ -260,6 +260,103 @@ fn propagate_signal(signal: Signal) -> Outcome {
     }
 }
 
+// ─────────────────────────────────────────────────────────────────────
+// [X-07 / v1.0 spec §8.6.3] 实参令牌通道:成员 → 回调
+// ─────────────────────────────────────────────────────────────────────
+//
+// ## 为什么需要这一段
+//
+// §8.6.3:实参的未消费状态**转给形参绑定**。走**用户函数**时这条链是通的
+// (`eval_call` 算出实参令牌 → `invoke_closure` 落到形参绑定 → 回调作用域结束
+// 时按 §8.6.2 第 3 项报 `E0103`)。
+//
+// 走**标准库成员**时这条链此前**断在第一跳**:成员的实参通道**不带**令牌
+// (一致性册 §5.4 的 X-07)⇒ 成员不知道「我的实参带着未消费的 `ERR`」⇒
+// 成员回调用户函数时传不出令牌 ⇒ 回调里那个没被消费的 `ERR` **不报**。
+//
+// ## 两条通道,各管一半
+//
+// * 求值器 → 成员:`StdHost::arg_tokens()`(本次调用每个实参的令牌);
+// * 成员 → 回调:`StdHost::call_with_tokens()`(把令牌带进形参绑定)。
+//
+// ## 令牌转给**谁**
+//
+// 成员把**数组实参**的令牌转给**承载那个未消费 `ERR` 的那个元素** ——
+// 元素才是回调真正收到的东西(回调收到的是元素,不是整个数组)。
+// 元素带着令牌进形参绑定 ⇒ 回调不消费它 ⇒ **回调自己的作用域结束**时报
+// `E0103`(§8.6.2 第 3 项),载荷就是那个 `ERR` 的载荷。
+//
+// ⚠ **不转给成员自己的结果**:结果里已经没有那个 `ERR` 了(回调把它换成了
+// 别的值),转过去只会得到一条「丢弃了 `[0]`」这种指不到点的诊断;而且回调
+// 若**消费**了那个 `ERR`(如 `ERR_PAYLOAD(x)`),转给结果还会把合规程序判成
+// 不合规(假阳性)。
+
+/// 本次调用第 `index` 个实参的**未消费令牌**(求值器侧填好)。
+fn arg_token(host: &dyn StdHost, index: usize) -> bool {
+    host.arg_tokens().get(index).copied().unwrap_or(false)
+}
+
+/// 数组实参里**承载**未消费 `ERR` 的那个元素的下标。
+///
+/// 令牌是一个 bool(§8.6 的 X-06 已知限制:一个容器只记得住一个未消费
+/// `ERR`)⇒ 成员没法逐元素地问「这个元素带令牌吗」⇒ 只能按**候选唯一**判:
+///
+/// * 候选 = 值为 `ERR` 的元素(直接承载);
+/// * 没有 `ERR` 元素时,退到容器元素(`ERR` 嵌在容器里)。
+///
+/// ⚠ 候选**不唯一**时**不猜**:猜错会把一个**早已被消费**的 `ERR` 报出来
+/// (假阳性)。§8.6 那两条差异登记(X-06 / X-07)都只承诺**假阴性**,这条
+/// 纪律不能破。候选不唯一的场合归 X-06(容器里同时装两个未消费 `ERR`)。
+fn carrier_index(arr: &[Value]) -> Option<usize> {
+    let errs: Vec<usize> = arr
+        .iter()
+        .enumerate()
+        .filter(|(_, v)| matches!(v, Value::Err(_)))
+        .map(|(i, _)| i)
+        .collect();
+    if errs.len() == 1 {
+        return Some(errs[0]);
+    }
+    if !errs.is_empty() {
+        return None;
+    }
+    let containers: Vec<usize> = arr
+        .iter()
+        .enumerate()
+        .filter(|(_, v)| {
+            matches!(
+                v,
+                Value::Array(_) | Value::Cell(_) | Value::Dict(_) | Value::DictCell(_)
+            )
+        })
+        .map(|(i, _)| i)
+        .collect();
+    if containers.len() == 1 {
+        Some(containers[0])
+    } else {
+        None
+    }
+}
+
+/// 本次回调第 `index` 个元素该带多少令牌。
+///
+/// * 数组实参**不带**令牌 ⇒ 谁都不带;
+/// * 数组带令牌 ⇒ **只有承载者**那个元素带(见 [`carrier_index`])。
+fn element_token(arr_token: bool, carrier: Option<usize>, index: usize) -> bool {
+    arr_token && carrier == Some(index)
+}
+
+/// 回调的实参令牌(§8.6.3:转给形参绑定)。
+fn call_with_element_token(
+    host: &mut dyn StdHost,
+    f: &Value,
+    elem: Value,
+    elem_token: bool,
+    name: &str,
+) -> WlwlResult<Outcome> {
+    host.call_with_tokens(f, vec![elem], vec![elem_token], name)
+}
+
 /// `MAP(arr, f)` → `[f(v), …]`。
 ///
 /// **与 `FILTER` 的两处不对称是 R1 现状,照搬不「修正」**:
@@ -278,10 +375,19 @@ pub fn kernel_map(host: &mut dyn StdHost, args: Vec<Value>) -> WlwlResult<Outcom
     if !is_callable(f) {
         return Err(not_callable(host, "MAP", f));
     }
+    // [X-07 / §8.6.3] 数组实参的未消费令牌 ⇒ 转给承载它的那个元素。
+    let arr_token = arg_token(host, 0);
+    let carrier = carrier_index(arr);
     let mut out: Vec<Value> = Vec::with_capacity(arr.len());
     let mut err: Option<Value> = None;
-    for v in arr.iter() {
-        let r = host.call(f, vec![v.clone()], "MAP")?;
+    for (i, v) in arr.iter().enumerate() {
+        let r = call_with_element_token(
+            host,
+            f,
+            v.clone(),
+            element_token(arr_token, carrier, i),
+            "MAP",
+        )?;
         if r.signal != Signal::None {
             return Ok(propagate_signal(r.signal));
         }
@@ -313,10 +419,19 @@ pub fn kernel_filter(host: &mut dyn StdHost, args: Vec<Value>) -> WlwlResult<Out
     if !is_callable(f) {
         return Err(not_callable(host, "FILTER", f));
     }
+    // [X-07 / §8.6.3] 数组实参的未消费令牌 ⇒ 转给承载它的那个元素。
+    let arr_token = arg_token(host, 0);
+    let carrier = carrier_index(arr);
     let mut out: Vec<Value> = Vec::new();
     let mut err: Option<Value> = None;
-    for v in arr.iter() {
-        let r = host.call(f, vec![v.clone()], "FILTER")?;
+    for (i, v) in arr.iter().enumerate() {
+        let r = call_with_element_token(
+            host,
+            f,
+            v.clone(),
+            element_token(arr_token, carrier, i),
+            "FILTER",
+        )?;
         if r.signal != Signal::None {
             return Ok(propagate_signal(r.signal));
         }
@@ -633,10 +748,19 @@ fn materialize_groups(groups: Vec<(String, Vec<Value>)>) -> Value {
 /// `GROUP_BY(arr, key)` → `DICT`;组内保首现序,键之间也保首现序。
 pub fn kernel_group_by(host: &mut dyn StdHost, args: Vec<Value>) -> WlwlResult<Outcome> {
     let (arr, f) = dict_key_member_args(host, "GROUP_BY", &args)?;
+    // [X-07 / §8.6.3] 数组实参的未消费令牌 ⇒ 转给承载它的那个元素。
+    let arr_token = arg_token(host, 0);
+    let carrier = carrier_index(arr);
     let mut index: HashMap<String, usize> = HashMap::new();
     let mut groups: Vec<(String, Vec<Value>)> = Vec::new();
-    for v in arr.iter() {
-        let r = host.call(f, vec![v.clone()], "GROUP_BY")?;
+    for (i, v) in arr.iter().enumerate() {
+        let r = call_with_element_token(
+            host,
+            f,
+            v.clone(),
+            element_token(arr_token, carrier, i),
+            "GROUP_BY",
+        )?;
         if r.signal != Signal::None {
             return Ok(propagate_signal(r.signal));
         }
@@ -661,10 +785,19 @@ pub fn kernel_group_by(host: &mut dyn StdHost, args: Vec<Value>) -> WlwlResult<O
 /// 见本节开头的实测对照。
 pub fn kernel_dedup_by(host: &mut dyn StdHost, args: Vec<Value>) -> WlwlResult<Outcome> {
     let (arr, f) = dict_key_member_args(host, "DEDUP_BY", &args)?;
+    // [X-07 / §8.6.3] 数组实参的未消费令牌 ⇒ 转给承载它的那个元素。
+    let arr_token = arg_token(host, 0);
+    let carrier = carrier_index(arr);
     let mut seen: HashSet<String> = HashSet::new();
     let mut out: Vec<Value> = Vec::new();
-    for v in arr.iter() {
-        let r = host.call(f, vec![v.clone()], "DEDUP_BY")?;
+    for (i, v) in arr.iter().enumerate() {
+        let r = call_with_element_token(
+            host,
+            f,
+            v.clone(),
+            element_token(arr_token, carrier, i),
+            "DEDUP_BY",
+        )?;
         if r.signal != Signal::None {
             return Ok(propagate_signal(r.signal));
         }
@@ -682,11 +815,20 @@ pub fn kernel_dedup_by(host: &mut dyn StdHost, args: Vec<Value>) -> WlwlResult<O
 /// `KEY_BY(arr, key)` → `DICT`;**同键后者覆盖前者**,但**位置留在首次**。
 pub fn kernel_key_by(host: &mut dyn StdHost, args: Vec<Value>) -> WlwlResult<Outcome> {
     let (arr, f) = dict_key_member_args(host, "KEY_BY", &args)?;
+    // [X-07 / §8.6.3] 数组实参的未消费令牌 ⇒ 转给承载它的那个元素。
+    let arr_token = arg_token(host, 0);
+    let carrier = carrier_index(arr);
     let mut index: HashMap<String, usize> = HashMap::new();
     let mut keys: Vec<String> = Vec::new();
     let mut vals: Vec<Value> = Vec::new();
-    for v in arr.iter() {
-        let r = host.call(f, vec![v.clone()], "KEY_BY")?;
+    for (i, v) in arr.iter().enumerate() {
+        let r = call_with_element_token(
+            host,
+            f,
+            v.clone(),
+            element_token(arr_token, carrier, i),
+            "KEY_BY",
+        )?;
         if r.signal != Signal::None {
             return Ok(propagate_signal(r.signal));
         }

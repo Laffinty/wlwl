@@ -2085,6 +2085,35 @@ pub trait StdHost {
     fn ctx(&mut self) -> &mut StdCtx;
     /// 调用函数值(闭包 / NativeFn;name 用于诊断定位)。诊断带真实 span 原样上抛。
     fn call(&mut self, f: &Value, args: Vec<Value>, name: &str) -> Result<Outcome, WlwlError>;
+    /// [X-07 / v1.0 spec §8.6.3] 调用函数值,并把每个实参的**未消费令牌**带进
+    /// 形参绑定。
+    ///
+    /// §8.6.3:实参的未消费状态**转给形参绑定** ⇒ 回调收到一个未消费的 `ERR`
+    /// 却没消费它时,那是**回调自己作用域结束**时的丢弃点(§8.6.2 第 3 项)
+    /// ⇒ 报 `E0103`。
+    ///
+    /// ⚠ 默认实现**丢掉**令牌:没有令牌语义的手写宿主(各模块测试里的
+    /// `NullHost` 等)一个字都不用改,行为与从前逐字一致。
+    fn call_with_tokens(
+        &mut self,
+        f: &Value,
+        args: Vec<Value>,
+        arg_tokens: Vec<bool>,
+        name: &str,
+    ) -> Result<Outcome, WlwlError> {
+        let _ = arg_tokens;
+        self.call(f, args, name)
+    }
+    /// [X-07 / v1.0 spec §8.6.3] **本次调用**每个实参的未消费令牌(与实参
+    /// 一一对应)。
+    ///
+    /// 标准库成员据此知道「我的实参带着未消费的 `ERR`」—— 没有它,成员就没法
+    /// 按 §8.6.3 把这份状态转给自己的回调(一致性册 §5.4 的 X-07)。
+    ///
+    /// ⚠ 默认实现返回**空**:没有令牌语义的手写宿主不受影响。
+    fn arg_tokens(&self) -> &[bool] {
+        &[]
+    }
     /// 以当前调用点 span 构造诊断。
     fn diag(&mut self, code: ErrorCode, message: String) -> WlwlError;
 

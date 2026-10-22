@@ -1486,6 +1486,7 @@ fn invoke_std(
     ev: &mut Evaluator,
     std_fn: wlwl_std::StdFn,
     args: Vec<Value>,
+    arg_tokens: Vec<bool>,
     span: &Span,
 ) -> WlwlResult<Outcome> {
     // [v0.11 M2 / ADR-0022] 直通边界:无 Value↔serde_json 转换。
@@ -1495,10 +1496,18 @@ fn invoke_std(
     ev.current_span = Some(span.clone());
     let prev_file = ev.std_ctx.source_file.clone();
     ev.std_ctx.source_file = ev.file.clone().unwrap_or_else(|| "<runtime>".into());
+    // [X-07 / v1.0 spec §8.6.3] 本次调用的**实参令牌**交给标准库成员:
+    // 成员据此知道「我的实参带着未消费的 `ERR`」⇒ 能按 §8.6.3 把这份状态
+    // 转给自己的回调(一致性册 §5.4 的 X-07)。
+    //
+    // ⚠ 存旧值 → 填新值 → 调用 → 还原(与 `source_file` 同款):嵌套调用
+    // (成员回调用户函数,回调里又调成员)各自看到**自己那次**的令牌。
+    let prev_arg_tokens = std::mem::replace(&mut ev.current_arg_tokens, arg_tokens);
     let host: &mut dyn wlwl_std::StdHost = ev;
     let result = std_fn(host, args);
     ev.current_span = prev_span;
     ev.std_ctx.source_file = prev_file;
+    ev.current_arg_tokens = prev_arg_tokens;
     result
 }
 
@@ -6984,7 +6993,20 @@ impl wlwl_std::StdHost for Evaluator {
     }
 
     fn call(&mut self, f: &Value, args: Vec<Value>, name: &str) -> WlwlResult<Outcome> {
-        // 与 eval_call 的函数分派同构;span 取 invoke_std 存好的当前调用点。
+        // 无令牌语义的调用(旧通道):实参令牌一律为空。
+        self.call_with_tokens(f, args, Vec::new(), name)
+    }
+
+    /// [X-07 / v1.0 spec §8.6.3] 调用回调,并把实参的**未消费令牌**带进形参
+    /// 绑定 —— 与 `eval_call` 的函数分派同构;span 取 invoke_std 存好的当前
+    /// 调用点。
+    fn call_with_tokens(
+        &mut self,
+        f: &Value,
+        args: Vec<Value>,
+        arg_tokens: Vec<bool>,
+        name: &str,
+    ) -> WlwlResult<Outcome> {
         let span = self
             .current_span
             .clone()
@@ -6996,10 +7018,10 @@ impl wlwl_std::StdHost for Evaluator {
                 body.clone(),
                 env.clone(),
                 args,
-                Vec::new(),
+                arg_tokens,
                 &span,
             ),
-            Value::NativeFn { invoke, .. } => invoke_std(self, *invoke, args, &span),
+            Value::NativeFn { invoke, .. } => invoke_std(self, *invoke, args, Vec::new(), &span),
             other => Err(WlwlDiagnostic::new(
                 ErrorCode::E0020,
                 format!(
@@ -7015,6 +7037,11 @@ impl wlwl_std::StdHost for Evaluator {
             )
             .into()),
         }
+    }
+
+    /// [X-07 / v1.0 spec §8.6.3] **本次调用**每个实参的未消费令牌。
+    fn arg_tokens(&self) -> &[bool] {
+        &self.current_arg_tokens
     }
 
     fn diag(&mut self, code: ErrorCode, message: String) -> WlwlError {
@@ -7168,6 +7195,19 @@ pub struct Evaluator {
     /// ⚠ 嵌套调用**继承当前模式** —— 这是可接受的近似(§8.6.3 的语义本就
     /// 以「读到令牌的那一刻」为准)。
     read_mode: ReadMode,
+    /// [X-07 / v1.0 spec §8.6.3] **当前这次调用**每个实参的未消费令牌。
+    ///
+    /// 求值器算完实参就有了它(`eval_arg_values` 的 `tokens`),但标准库成员
+    /// 此前**看不到** ⇒ 成员不知道「我的实参带着未消费的 `ERR`」⇒ §8.6.3 的
+    /// 转发链在第一跳就断了(一致性册 §5.4 的 X-07:回调实参通道不带令牌 ⇒
+    /// 回调内未消费的 `ERR` 不报 `E0103`)。
+    ///
+    /// **为什么是 `Evaluator` 的字段而不是 `StdCtx` 的字段**:它与
+    /// `current_span` 同族 —— 「当前这次调用的实参事实」,由 `invoke_std`
+    /// **存旧值 → 填新值 → 调用 → 还原**。走 `StdHost` 的方法
+    /// (`arg_tokens`)暴露给标准库成员,于是成员不必碰 `ctx()`
+    /// (各模块测试里的 `NullHost` 对 `ctx()` 是**故意 panic** 的)。
+    current_arg_tokens: Vec<bool>,
     /// [v0.11.3 M6 / addendum-01 B 片] 当前所处的假时钟气泡(方案 **B-简**)。
     ///
     /// **为什么是 `Evaluator` 的字段而不是 `StdCtx` 的字段**:`StdCtx` 是
@@ -7403,6 +7443,7 @@ impl Evaluator {
             dict_acc_fallback: std::cell::Cell::new(0),
             dict_acc_active: Vec::new(),
             read_mode: ReadMode::Transfer,
+            current_arg_tokens: Vec::new(),
         }
     }
 
@@ -7512,6 +7553,7 @@ impl Evaluator {
             dict_acc_fallback: std::cell::Cell::new(0),
             dict_acc_active: Vec::new(),
             read_mode: ReadMode::Transfer,
+            current_arg_tokens: Vec::new(),
         }
     }
 
@@ -7666,7 +7708,7 @@ impl Evaluator {
                 self.current_method_instance = prev_method;
                 result
             }
-            Value::NativeFn { invoke, .. } => invoke_std(self, invoke, args, span),
+            Value::NativeFn { invoke, .. } => invoke_std(self, invoke, args, Vec::new(), span),
             other => Err(type_error(
                 name,
                 format!("member is not callable ({} value)", type_name(&other)),
@@ -9123,7 +9165,7 @@ impl Evaluator {
                 return self.invoke_closure(name, params, body, env, accum, tokens, span);
             }
             if let Value::NativeFn { invoke, .. } = v {
-                let mut result = invoke_std(self, invoke, accum, span)?;
+                let mut result = invoke_std(self, invoke, accum, tokens, span)?;
                 self.attach_result_token(&mut result, &err_args);
                 return Ok(result);
             }
