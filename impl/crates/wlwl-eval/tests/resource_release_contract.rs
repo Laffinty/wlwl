@@ -92,28 +92,54 @@ fn open_handle_count() -> usize {
     }
 }
 
-/// 本进程当前的**子进程**数(POSIX 才有意义)。
+/// 本进程当前的**遗留子进程**(POSIX 才有意义)。
 ///
-/// ⚠ **僵尸也算子进程** —— 它还没被 `wait` 掉 ⇒ 这正是「有没有被收割」的探针。
-/// ⚠ 工具缺失 ⇒ 返回 `None` ⇒ 断言会红(「测不出来」不等于「没问题」)。
+/// ⚠ 判据用 `waitpid(-1, WNOHANG)` —— **不依赖任何外部工具**:
+/// * 返回 `> 0` ⇒ 有**已退出但未被 wait 掉**的子进程(= 僵尸)⇒ 未收割;
+/// * 返回 `-1` 且 `errno == ECHILD` ⇒ 本进程**没有**子进程 ⇒ 收割干净。
+///
+/// ⚠ **为什么不用 `pgrep`**:各平台对「僵尸」的可见性不一致(BSD 的 `pgrep` 可能
+/// 不列僵尸)⇒ 用它做判据会得到**平台相关的假红**。`waitpid` 是 POSIX 自己的
+/// 口径,处处一致。
 #[cfg(unix)]
-fn child_process_count() -> Option<usize> {
-    let out = std::process::Command::new("pgrep")
-        .arg("-P")
-        .arg(std::process::id().to_string())
-        .output()
-        .ok()?;
-    match out.status.code() {
-        // pgrep:0 = 有匹配,1 = 无匹配(不是错误),其它 = 出错了。
-        Some(0) => Some(
-            String::from_utf8_lossy(&out.stdout)
-                .lines()
-                .filter(|l| !l.trim().is_empty())
-                .count(),
-        ),
-        Some(1) => Some(0),
-        _ => None,
+fn leftover_child_pid() -> Option<i32> {
+    #[cfg(target_os = "macos")]
+    extern "C" {
+        fn __error() -> *mut i32;
     }
+    #[cfg(not(target_os = "macos"))]
+    extern "C" {
+        fn __errno_location() -> *mut i32;
+    }
+    extern "C" {
+        fn waitpid(pid: i32, status: *mut i32, options: i32) -> i32;
+    }
+    const WNOHANG: i32 = 1;
+    const ECHILD: i32 = 10;
+    let mut status: i32 = 0;
+    // SAFETY: `waitpid` 是 POSIX API;`status` 指向一个合法的 i32;`WNOHANG` ⇒
+    // 不阻塞(没有已退出的子进程时立刻返回 -1 / ECHILD)。
+    let r = unsafe { waitpid(-1, &mut status, WNOHANG) };
+    if r > 0 {
+        return Some(r);
+    }
+    // SAFETY: 读取当前线程的 errno(glibc 的 `__errno_location` / BSD 的 `__error`)。
+    let err = unsafe {
+        #[cfg(target_os = "macos")]
+        {
+            *__error()
+        }
+        #[cfg(not(target_os = "macos"))]
+        {
+            *__errno_location()
+        }
+    };
+    assert_eq!(
+        err, ECHILD,
+        "waitpid(-1, WNOHANG) failed with errno {err} (expected ECHILD) — \
+         the leftover-child probe is broken on this platform"
+    );
+    None
 }
 
 fn scratch_dir() -> PathBuf {
@@ -235,9 +261,6 @@ fn a_spawned_child_is_reaped() {
         ev.eval(&ast).expect("program must run");
     }
 
-    #[cfg(unix)]
-    let children_before = child_process_count();
-
     let before = open_handle_count();
     let out = {
         let mut ev = Evaluator::new().with_base_dir(scratch_dir());
@@ -259,6 +282,7 @@ fn a_spawned_child_is_reaped() {
     );
 
     // ① 句柄回到基线(Windows 上这是「进程句柄被关掉」的唯一可测形式)。
+    //    ⚠ 消息里带上两个计数:失败时**自解释**,不用再猜是哪一条断言。
     assert_ne!(
         before,
         usize::MAX,
@@ -267,25 +291,31 @@ fn a_spawned_child_is_reaped() {
     assert_eq!(
         after as i64 - before as i64,
         0,
-        "spawning a child must not leave handles behind"
+        "spawning a child must not leave handles behind \
+         (handles before = {before}, after = {after})"
     );
 
-    // ② 僵尸探针:没收割 ⇒ 子进程数 +1。
+    // ② 遗留子进程探针(POSIX):`PROCESS_RUN` 返回后本进程**不得**还有子进程。
+    //
+    //    ⚠ 「拿到退出码」本身就是收割的**硬证据**:POSIX 上子进程的 status
+    //    **只能**由 wait/waitpid 取得 ⇒ ⓿ 那条断言拿到 `code` ⇒ 它被收割了。
+    //    这一条是**加一层**:万一实现改成「不等子进程就返回」,这里会看到僵尸。
     #[cfg(unix)]
     {
-        let children_before = children_before.expect(
-            "pgrep must be available for the zombie check — \
-             a missing probe is not a passing probe",
-        );
-        let children_after = child_process_count().expect("pgrep must stay available");
-        assert_eq!(
-            children_after, children_before,
-            "a spawned child must be reaped — {children_after} children vs {children_before} before"
+        let leftover = leftover_child_pid();
+        assert!(
+            leftover.is_none(),
+            "PROCESS_RUN returned, but a child is still unreaped (pid {leftover:?}) — \
+             a zombie means the child was not reaped"
         );
 
         // ②-探针自检(阴性对照):故意 spawn 一个**不收割**的子进程 ⇒ 探针必须
-        // 看得见它 ⇒ 证明上面那条断言不是「探针坏了所以永远相等」。
-        let base = child_process_count().expect("pgrep");
+        // 看得见它 ⇒ 证明上面那条断言不是「探针坏了所以永远为空」。
+        let base = leftover_child_pid();
+        assert!(
+            base.is_none(),
+            "the probe must be clean before the self-check"
+        );
         let mut orphan = std::process::Command::new("sh")
             .arg("-c")
             .arg("exit 0")
@@ -293,19 +323,18 @@ fn a_spawned_child_is_reaped() {
             .stderr(std::process::Stdio::null())
             .spawn()
             .expect("the self-check must be able to spawn");
-        let with_orphan = child_process_count().expect("pgrep");
-        assert_eq!(
-            with_orphan,
-            base + 1,
+        let seen = leftover_child_pid();
+        assert!(
+            seen.is_some(),
             "the probe must see an unreaped child — otherwise the reaping check is vacuous"
         );
-        orphan
-            .wait()
-            .expect("the self-check child must be waitable");
-        let after_reap = child_process_count().expect("pgrep");
-        assert_eq!(
-            after_reap, base,
-            "waiting on the self-check child must remove it from the probe"
+        // ⚠ 探针刚才的 `waitpid` 已经把它收走了 ⇒ 这里 `wait` 会拿到 ECHILD ⇒
+        //    忽略它的错误(进程已被回收,正是探针的职责)。
+        let _ = orphan.wait();
+        let after_reap = leftover_child_pid();
+        assert!(
+            after_reap.is_none(),
+            "the probe must be clean again after the self-check child was reaped"
         );
     }
 }
