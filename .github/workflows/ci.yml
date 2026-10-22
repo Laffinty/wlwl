@@ -69,15 +69,15 @@ jobs:
       # 两条取得办法),**不**回落到仓内的 v0.11 规范 —— 回落会让 `E0103` 这类
       # v1.0 才引入的码**不在**检查范围内,读数却是绿的,那是静默削弱。
       #
-      # ⚠⚠ `ref` **必须写完整 40 位 SHA**。写缩写(`bbff7d3`)时,
+      # ⚠⚠ `ref` **必须写完整 40 位 SHA**。写缩写(`287948e`)时,
       # `actions/checkout` 认不出它是提交 —— 它会退化成「当分支 / 标签找」,
-      # 于是 fetch 的是 `+refs/heads/bbff7d3*` 与 `+refs/tags/bbff7d3*`,
+      # 于是 fetch 的是 `+refs/heads/287948e*` 与 `+refs/tags/287948e*`,
       # 两者都不存在 ⇒ `git fetch` exit 1 ⇒ job 直接红。短形式只用于**人读**。
       - name: Checkout 规范仓(钉死提交)
         uses: actions/checkout@v4
         with:
           repository: Laffinty/wlwl-spec-v1
-          ref: bbff7d3559089c35fb8f2f18634d3376ca00a8dc
+          ref: 287948e1dcb2065af4ed49ad597576e4e6f8002a
           path: wlwl-spec-v1
 
       - name: 指向 v1.0 规范
