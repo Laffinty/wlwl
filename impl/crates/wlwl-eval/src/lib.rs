@@ -8593,10 +8593,8 @@ impl Evaluator {
                     // ⇒ 累加器形态的「临时表示」只能**就地改写已有绑定的值**,
                     // 保持可性不变(`Env::replace_binding_value`,与 `ADR-0035` D4
                     // 的字典版同款)。
-                    self.env.replace_binding_value(
-                        name,
-                        Value::Cell(wlwl_value::CellVec::new(v)),
-                    );
+                    self.env
+                        .replace_binding_value(name, Value::Cell(wlwl_value::CellVec::new(v)));
                 }
             }
         }
@@ -8662,8 +8660,7 @@ impl Evaluator {
                     let items = c.borrow().clone();
                     // ⚠ [D13-099] 同样用 `replace_binding_value` —— 还原也**不得**
                     // 遮蔽外层绑定或改它的可性(见上面包装处的同款说明)。
-                    self.env
-                        .replace_binding_value(name, Value::Array(items));
+                    self.env.replace_binding_value(name, Value::Array(items));
                 }
             }
         }
