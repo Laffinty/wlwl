@@ -1,15 +1,26 @@
 # Spec & conformance
 
-The current WLWL language spec lives in `docs/spec/`.
-Specs are identified by **version + name** (content-address filenames
-were dropped); `git log --follow` is the source of truth for content
-changes. Superseded specs are archived in condensed form under `docs/history/`.
+The WLWL specification now lives in a single file,
+[`docs/wlwl-spec-reference.md`](../wlwl-spec-reference.md) — the language
+spec, the standard library spec and the agent work-notes merged into one
+machine-readable document. The authoritative spec for this project is the
+**v1.0** edition in the separate
+[`Laffinty/wlwl-spec-v1`](https://github.com/Laffinty/wlwl-spec-v1) repo;
+the in-repo reference file is a **secondary** copy and is **still on the
+v0.11 baseline** while the migration is in progress.
+`git log --follow` is the source of truth for content changes. Superseded
+specs are archived under `docs/history/`.
 
-## Current spec
+## Current reference file
 
-**[v0.11](../spec/wlwl-spec-v0.11.md)** — the "v2 cleaned" edition of
-the v0.10 spec, renumbered with **zero semantic change**; everything
-introduced in v0.10 carries over:
+**[`docs/wlwl-spec-reference.md`](../wlwl-spec-reference.md)** — the merged
+v0.11-baseline document, organised as:
+
+- `## 语言规范 · N` — the language spec (the "v2 cleaned" edition of
+  the v0.10 spec, renumbered with **zero semantic change**; everything
+  introduced in v0.10 carries over):
+- `## 标准库规范 · N` — every namespace member's contract;
+- `## 代理工作说明 · N` — notes for AI agents (not normative).
 
 - the `Type` annotation grammar enters the spec for the first time
   (Appendix A) — until v0.9 it existed only in the implementation;
@@ -47,6 +58,9 @@ Archived specs v0.6 – v0.10 (with their build plans, deviation ledgers,
 reviews and daily logs) are condensed in
 [`20260902-09.md`](../history/20260902-09.md) and
 [`20260915-22.md`](../history/20260915-22.md); full text via git history.
+The v0.11 spec set (language + standard library + agent notes) is archived
+verbatim in
+[`20261022-spec-archive.md`](../history/20261022-spec-archive.md).
 
 > **v0.5 was never published** — the spec was drafted but not tagged,
 > and the implementation never claimed compliance with it. v0.6 was the

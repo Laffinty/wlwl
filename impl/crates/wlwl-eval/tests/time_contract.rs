@@ -457,7 +457,7 @@ fn time_contract() {
 #[test]
 fn time_member_set_matches_the_spec_table() {
     let text = std::fs::read_to_string(spec_path()).expect("stdlib spec readable");
-    let start = text.find("## 15 ").expect("§15 header exists");
+    let start = text.find("## 标准库规范 · 15 ").expect("§15 header exists");
     // §15 后面直接是「附录 A」,没有 §16 —— 所以终止条件取**下一个 `## ` 标题**,
     // 而不是写死 §16(写死的话,加一个 §16 时这个守卫会静默失效)。
     let end = text[start..]
@@ -542,8 +542,7 @@ fn spec_path() -> PathBuf {
         .join("..")
         .join("..")
         .join("docs")
-        .join("stdlib")
-        .join("wlwl-stdlib-spec-v0.11.md")
+        .join("wlwl-spec-reference.md")
 }
 
 /// 代码侧的锁与文档侧的锁必须成对:只锁代码,下一个人看到「测试说行为是这样」

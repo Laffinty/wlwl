@@ -5,7 +5,7 @@
 | **Status** | **Accepted(2026-10-06 —— 六问**全部采纳**,见下「裁决」节)** |
 | **Date** | 2026-10-06 |
 | **Deciders** | Li(project lead)2026-10-06 |
-| **Related** | [`docs/history/$1` §3](../history/wlwl-v0.11.3-addendum.md)(G1–G6 的出处)、[ADR-0021](0021-stdlib-layering.md)(层归属)、[ADR-0023](0023-stdlib-stability-policy.md)(§v0.x 4 不重导出 / §v0.x 5 归层)、[ADR-0024](0024-time-fake-clock-bubble.md)(G6 的同源草案)、D12-004(`NFC`/`NFD` 半张表)、D12-005(批次 B 阻塞 `std.iter`)、D12-006(`std.rand` 未裁决)、[`wlwl-stdlib-spec-v0.11.md` §11.5](../stdlib/wlwl-stdlib-spec-v0.11.md)(已否决加解密)、§14.2(两条已否决方向) |
+| **Related** | [`docs/history/$1` §3](../history/wlwl-v0.11.3-addendum.md)(G1–G6 的出处)、[ADR-0021](0021-stdlib-layering.md)(层归属)、[ADR-0023](0023-stdlib-stability-policy.md)(§v0.x 4 不重导出 / §v0.x 5 归层)、[ADR-0024](0024-time-fake-clock-bubble.md)(G6 的同源草案)、D12-004(`NFC`/`NFD` 半张表)、D12-005(批次 B 阻塞 `std.iter`)、D12-006(`std.rand` 未裁决)、[`wlwl-spec-reference.md` 标准库规范 · §11.5](../wlwl-spec-reference.md)(已否决加解密)、§14.2(两条已否决方向) |
 
 ---
 

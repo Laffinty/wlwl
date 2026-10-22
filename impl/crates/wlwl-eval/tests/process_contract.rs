@@ -452,7 +452,9 @@ fn process_id_is_positive() {
 #[test]
 fn process_member_set_matches_the_spec_table() {
     let text = std::fs::read_to_string(spec_path()).expect("stdlib spec readable");
-    let start = text.find("## 19 `std.process`").expect("§19 header exists");
+    let start = text
+        .find("## 标准库规范 · 19 `std.process`")
+        .expect("§19 header exists");
     let end = text[start..]
         .find("\n## ")
         .map(|i| start + i)
@@ -509,6 +511,5 @@ fn spec_path() -> PathBuf {
         .join("..")
         .join("..")
         .join("docs")
-        .join("stdlib")
-        .join("wlwl-stdlib-spec-v0.11.md")
+        .join("wlwl-spec-reference.md")
 }

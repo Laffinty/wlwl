@@ -810,9 +810,9 @@ fn encode_contract() {
 #[test]
 fn encode_member_set_matches_the_spec_table() {
     let text = std::fs::read_to_string(spec_path()).expect("stdlib spec readable");
-    let start = text.find("## 11 ").expect("§11 header exists");
+    let start = text.find("## 标准库规范 · 11 ").expect("§11 header exists");
     let end = text[start..]
-        .find("\n## 12 ")
+        .find("\n## 标准库规范 · 12 ")
         .map(|i| start + i)
         .expect("§12 header follows §11");
     let body = &text[start..end];
@@ -889,8 +889,7 @@ fn spec_path() -> PathBuf {
         .join("..")
         .join("..")
         .join("docs")
-        .join("stdlib")
-        .join("wlwl-stdlib-spec-v0.11.md")
+        .join("wlwl-spec-reference.md")
 }
 
 /// §11.4 的 RFC 向量表与 §11.3 的三条取舍必须留在规范里。

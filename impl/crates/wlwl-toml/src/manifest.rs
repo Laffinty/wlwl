@@ -1758,7 +1758,7 @@ match_exhaustiveness = {match_exh}
     //
     // No normative backing — the language spec's BOM clause (§1.1) covers only
     // `.wll`, and §9.4 does not state an encoding for the manifest at all.
-    // Tool choice; see `docs/spec/wlwl-agent-spec-v0.11.md` §2.
+    // Tool choice; see `docs/wlwl-spec-reference.md` §2.
     //
     // BOM fixtures are concatenated here rather than committed, because a
     // U+FEFF is an invisible byte in review.

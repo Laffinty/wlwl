@@ -1,5 +1,5 @@
 // wlwl:std.str — R1 语言层(标准库底座 v0.11,ADR-0021)
-// 成员契约:docs/stdlib/wlwl-stdlib-spec-v0.11.md §6;注册镜像:附录 A。
+// 成员契约:docs/wlwl-spec-reference.md §6;注册镜像:附录 A。
 // M1 只落地 QUOTE 一项证明双轨通道;M3 落齐 §6 全部成员。
 //
 // 本模块只**补**全局内建(语言规范 §10.5)没有的能力,不重导出任何全局内建

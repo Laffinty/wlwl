@@ -40,7 +40,7 @@ pub mod mvs;
 /// lock are **not** covered (§9.4 puts the lock outside the spec entirely), so
 /// this leniency is a tool choice with no normative backing. Rationale, the
 /// per-file map and the test layout live in
-/// `docs/spec/wlwl-agent-spec-v0.11.md` §2.
+/// `docs/wlwl-spec-reference.md` §2.
 pub(crate) fn strip_bom(s: &str) -> &str {
     s.strip_prefix('\u{FEFF}').unwrap_or(s)
 }

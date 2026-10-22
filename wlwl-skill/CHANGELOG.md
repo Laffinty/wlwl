@@ -1,11 +1,11 @@
 # wlwl-skill CHANGELOG
 
-Skill-bundle changes (spec lives at `../docs/spec/wlwl-spec-v0.11.md`
+Skill-bundle changes (spec lives at `../docs/wlwl-spec-reference.md`
 and is authoritative).
 
 ## [Unreleased] — 覆盖度收口(stdlib 全成员)
 
-以标准库规范 `../docs/stdlib/wlwl-stdlib-spec-v0.11.md` 的**附录 A**(生成器
+以标准库规范 `../docs/wlwl-spec-reference.md` 的**附录 A**(生成器
 产出,与实现逐字节一致)为基准,本包三份文件的成员覆盖此前漏 **33 / 214** 个。
 本批补齐到 **0 / 214**,外加修三处版本标签、补两批增量备忘。
 

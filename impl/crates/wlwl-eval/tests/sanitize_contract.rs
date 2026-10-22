@@ -200,18 +200,17 @@ fn spec_text() -> String {
         .join("..")
         .join("..")
         .join("docs")
-        .join("stdlib")
-        .join("wlwl-stdlib-spec-v0.11.md");
+        .join("wlwl-spec-reference.md");
     std::fs::read_to_string(&p).expect("stdlib spec is readable")
 }
 
 fn section(section_no: u32, next_no: u32) -> String {
     let text = spec_text();
     let start = text
-        .find(&format!("## {section_no} "))
+        .find(&format!("## 标准库规范 · {section_no} "))
         .unwrap_or_else(|| panic!("§{section_no} header exists"));
     let end = text[start..]
-        .find(&format!("\n## {next_no} "))
+        .find(&format!("\n## 标准库规范 · {next_no} "))
         .map(|i| start + i)
         .unwrap_or_else(|| panic!("§{next_no} header follows §{section_no}"));
     text[start..end].to_string()

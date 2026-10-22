@@ -3,7 +3,7 @@
 Thanks for your interest in WLWL. This document covers the day-to-day
 contribution workflow. For deeper design context, read:
 
-- [`docs/spec/wlwl-spec-v0.11.md`](docs/spec/wlwl-spec-v0.11.md) — the language spec (version + name)
+- [`docs/wlwl-spec-reference.md`](docs/wlwl-spec-reference.md) — the language spec (version + name)
 - [`docs/plan/README.md`](docs/plan/README.md) — current iteration status
 - [`docs/history/20260902-09.md`](docs/history/20260902-09.md) /
   [`docs/history/20260915-22.md`](docs/history/20260915-22.md) — all
@@ -52,7 +52,7 @@ cargo run -- ast   examples/phase2_demo.wll --format=json | head
 ```
 wlwl/
 ├── docs/
-│   ├── spec/       # current language spec (wlwl-spec-v0.11.md)
+│   ├── wlwl-spec-reference.md  # the spec reference (language + stdlib + agent notes)
 │   ├── plan/       # next-iteration plan home (see README)
 │   └── history/    # archived specs, completed plans, deviations, day notes
 ├── impl/

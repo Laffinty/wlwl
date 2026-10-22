@@ -1,5 +1,5 @@
 // wlwl:std.math — R1 门面 + R2 浮点内核(标准库底座 v0.11,ADR-0021)
-// 成员契约:docs/stdlib/wlwl-stdlib-spec-v0.11.md §7;注册镜像:附录 A。
+// 成员契约:docs/wlwl-spec-reference.md §7;注册镜像:附录 A。
 //
 // 混合形态:门面在 wlwl 侧,`_SQRT` / `_POW` 是 M3-0 的注入 kernel
 // (纯 wlwl 表达不出浮点指令,ADR-0021:84 已预告)。**门面是唯一对外契约

@@ -5,7 +5,7 @@
 | **Status** | **Accepted**(D1 就地冻结于 (b′)、D2 命名 `ai:` / `agent:`、D3 申报口径确认)—— W-01 ~ W-07 已全部落地 |
 | **Date** | 2026-10-15 |
 | **Deciders** | Li(project lead) |
-| **Related** | [`ADR-0023`](0023-stdlib-stability-policy.md) §v0.x 1(可见面变更须四件套同步)、[`ADR-0021`](0021-stdlib-layering.md)(R1/R2 分层)、[`ADR-0022`](0022-value-passthrough.md)、[`docs/history/$1`](../history/addendum-14-ai-agent-demotion.md) §3.1 / §3.2 / §3.3 / §6、`docs/spec/wlwl-spec-v0.11.md` §9.2(IMPORT 四形态)/ §9.4(清单)、`wlwl-toml/src/manifest.rs`(`Package` / `resolve_namespace`)/ `mvs.rs` / `lock.rs`、规范 §14(「`std.ai` / `std.agent` 降级为官方包」) |
+| **Related** | [`ADR-0023`](0023-stdlib-stability-policy.md) §v0.x 1(可见面变更须四件套同步)、[`ADR-0021`](0021-stdlib-layering.md)(R1/R2 分层)、[`ADR-0022`](0022-value-passthrough.md)、[`docs/history/$1`](../history/addendum-14-ai-agent-demotion.md) §3.1 / §3.2 / §3.3 / §6、`docs/wlwl-spec-reference.md` 语言规范 · §9.2(IMPORT 四形态)/ §9.4(清单)、`wlwl-toml/src/manifest.rs`(`Package` / `resolve_namespace`)/ `mvs.rs` / `lock.rs`、规范 §14(「`std.ai` / `std.agent` 降级为官方包」) |
 
 ## Context
 

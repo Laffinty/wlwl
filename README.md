@@ -109,8 +109,7 @@ machine-readable JSON or JSONL.
 
 | Document | Contents |
 |---|---|
-| [Language specification](docs/spec/wlwl-spec-v0.11.md) | lexis, grammar, evaluation, the error model, modules, objects, concurrency |
-| [Standard library specification](docs/stdlib/wlwl-stdlib-spec-v0.11.md) | every namespace member's contract |
+| [Specification reference](docs/wlwl-spec-reference.md) | the language spec (lexis, grammar, evaluation, the error model, modules, objects, concurrency) **and** the standard library spec (every namespace member's contract), in one file |
 | [Language tour](docs/site/tour.md) | a guided introduction |
 | [Agent skill pack](wlwl-skill/) | an AI-agent skill package with 20 runnable `.wll` examples |
 | [Changelog](CHANGELOG.md) | release history |

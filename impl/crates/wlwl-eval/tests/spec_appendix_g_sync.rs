@@ -37,8 +37,7 @@ fn spec_path() -> std::path::PathBuf {
         .join("..")
         .join("..")
         .join("docs")
-        .join("spec")
-        .join("wlwl-spec-v0.11.md")
+        .join("wlwl-spec-reference.md")
 }
 
 /// 切一行表格,尊重 `"..."` / `'...'` 里的竖线**和** `\|` 转义竖线。

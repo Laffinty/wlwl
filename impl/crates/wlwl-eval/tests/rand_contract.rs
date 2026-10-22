@@ -380,7 +380,7 @@ fn rand_contract() {
 #[test]
 fn rand_member_set_matches_the_spec_table() {
     let text = std::fs::read_to_string(spec_path()).expect("stdlib spec readable");
-    let start = text.find("## 17 ").expect("§17 header exists");
+    let start = text.find("## 标准库规范 · 17 ").expect("§17 header exists");
     let end = text[start..]
         .find("\n## ")
         .map(|i| start + i)
@@ -441,8 +441,7 @@ fn spec_path() -> PathBuf {
         .join("..")
         .join("..")
         .join("docs")
-        .join("stdlib")
-        .join("wlwl-stdlib-spec-v0.11.md")
+        .join("wlwl-spec-reference.md")
 }
 
 /// 代码侧的锁与文档侧的锁必须成对。

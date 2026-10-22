@@ -365,7 +365,7 @@ fn compression_is_deterministic() {
 fn compress_member_set_matches_the_spec_table() {
     let text = std::fs::read_to_string(spec_path()).expect("stdlib spec readable");
     let start = text
-        .find("## 20 `std.compress`")
+        .find("## 标准库规范 · 20 `std.compress`")
         .expect("§20 header exists");
     let end = text[start..]
         .find("\n## ")
@@ -411,8 +411,7 @@ fn spec_path() -> PathBuf {
         .join("..")
         .join("..")
         .join("docs")
-        .join("stdlib")
-        .join("wlwl-stdlib-spec-v0.11.md")
+        .join("wlwl-spec-reference.md")
 }
 
 /// 「压缩不是加密」与「解压输出上限」是**两条语言级条款**,必须留在规范里 ——

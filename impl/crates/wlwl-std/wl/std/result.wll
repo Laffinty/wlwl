@@ -1,5 +1,5 @@
 // wlwl:std.result — R1 语言层(标准库底座,ADR-0021;形状见 `ADR-0029`)
-// 成员契约:docs/stdlib/wlwl-stdlib-spec-v0.11.md §22;注册镜像:附录 A。
+// 成员契约:docs/wlwl-spec-reference.md §22;注册镜像:附录 A。
 //
 // ⚠ **本模块只补全局内建(语言规范 §10.5)没有的能力,不重导出任何全局内建。**
 // `IS_OK` / `IS_ERR` / `UNWRAP_OR` / `UNWRAP` / `ERR_PAYLOAD` 全是**全局内建**,

@@ -2,7 +2,7 @@
 
 A whirlwind tour of WLWL — by example. For the canonical
 reference, see
-[docs/spec/wlwl-spec-v0.11.md](../spec/wlwl-spec-v0.11.md)
+[docs/wlwl-spec-reference.md](../wlwl-spec-reference.md)
 (v0.10 / v0.9 / v0.8 / v0.7 / v0.6 archived under
 [`docs/history/`](../history/)).
 

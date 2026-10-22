@@ -485,16 +485,15 @@ fn spec_text() -> String {
         .join("..")
         .join("..")
         .join("docs")
-        .join("stdlib")
-        .join("wlwl-stdlib-spec-v0.11.md");
+        .join("wlwl-spec-reference.md");
     std::fs::read_to_string(&p).expect("stdlib spec is readable")
 }
 
 fn section_8_members() -> Vec<String> {
     let text = spec_text();
-    let start = text.find("## 8 ").expect("§8 header exists");
+    let start = text.find("## 标准库规范 · 8 ").expect("§8 header exists");
     let end = text[start..]
-        .find("\n## 9 ")
+        .find("\n## 标准库规范 · 9 ")
         .map(|i| start + i)
         .expect("§9 header follows §8");
     let mut out: Vec<String> = Vec::new();

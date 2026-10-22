@@ -118,7 +118,7 @@
 > 先做 `addendum-06` / `addendum-07`(两者**都不需要任务挂起**)。
 >
 > ✅ **[2026-10-15 补做：要点 3 已落地]** —— 新增
-> `docs/spec/wlwl-spec-v0.11.md` **§17.0.1**「共享可变状态是本语言的反模式」
+> `docs/wlwl-spec-reference.md` **§17.0.1**「共享可变状态是本语言的反模式」
 > （规范性条款）、`SKILL.md` 并发清单第 3 项、`reference.md` 并发段。
 > 同时把 `reference.md` 里原本直接写「Prefer `LET MUT` for shared mutable cells」
 > 那句**限定了** —— 它在并发语境下方向正好相反。
@@ -154,8 +154,8 @@
 
 ```powershell
 cd docs
-Select-String -Path spec/wlwl-spec-v0.11.md -Pattern '17|真挂起|SPAWN|SCOPE|STEP' -Context 0,2
-Select-String -Path stdlib/wlwl-stdlib-spec-v0.11.md -Pattern 'std.sync|同步' -Context 0,1
+Select-String -Path wlwl-spec-reference.md -Pattern '17|真挂起|SPAWN|SCOPE|STEP' -Context 0,2
+Select-String -Path wlwl-spec-reference.md -Pattern 'std.sync|同步' -Context 0,1
 cd ..\impl
 Select-String -Path crates/wlwl-std/src/lib.rs -Pattern 'ALL_SPECS' -Context 0,2
 ```

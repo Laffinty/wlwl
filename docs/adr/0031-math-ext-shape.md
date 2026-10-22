@@ -4,7 +4,7 @@
 |---|---|
 | **Status** | **Accepted**(2026-10-13,业主「继续下一步」采纳 D1–D5;`addendum-10` W-03 起按此实现) |
 | **Date** | 2026-10-13 |
-| **Related** | ADR-0021(层归属)、ADR-0022(值直通)、`docs/history/$1` §3.1 / §3.4 / §3.6、`docs/stdlib/wlwl-stdlib-spec-v0.11.md` §7、`wlwl-skill/reference.md` §9.5 |
+| **Related** | ADR-0021(层归属)、ADR-0022(值直通)、`docs/history/$1` §3.1 / §3.4 / §3.6、`docs/wlwl-spec-reference.md` 标准库规范 · §7、`wlwl-skill/reference.md` §9.5 |
 
 ## Context
 

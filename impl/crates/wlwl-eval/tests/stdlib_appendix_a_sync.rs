@@ -3,7 +3,7 @@
 //! 单源真相在实现(见 `wlwl_eval::stdlib_mirror`):R2 成员取
 //! `ModuleSpec` 绑定表(collection/test 名录取 eval 侧 BUILTINS),R1
 //! 成员取嵌入源码的 `EXPORT` 声明。本文件把
-//! `docs/stdlib/wlwl-stdlib-spec-v0.11.md` 附录 A 标记区与生成器输出
+//! `docs/wlwl-spec-reference.md` 附录 A 标记区与生成器输出
 //! 逐字节对账 —— 漂移即文档撒谎,跑 `cargo run --bin gen-appendix-a`
 //! 重新拼接。
 
@@ -15,7 +15,7 @@ const END: &str = "<!-- appendix-a:end -->";
 
 fn spec_path() -> PathBuf {
     // CARGO_MANIFEST_DIR = impl/crates/wlwl-eval;仓库根的 docs/ 在三级之上。
-    Path::new(env!("CARGO_MANIFEST_DIR")).join("../../../docs/stdlib/wlwl-stdlib-spec-v0.11.md")
+    Path::new(env!("CARGO_MANIFEST_DIR")).join("../../../docs/wlwl-spec-reference.md")
 }
 use std::path::PathBuf;
 

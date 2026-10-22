@@ -220,7 +220,7 @@ pub fn read(path: &Path) -> Result<Option<Lockfile>, LockError> {
     // The language spec does **not** cover `wlwl.lock` at all — §9.4 puts the
     // lock file outside it, and §1.1's BOM clause covers only `.wll`. So
     // this leniency is a *tool* choice with no normative backing, recorded
-    // in `docs/spec/wlwl-agent-spec-v0.11.md` §2. A future implementation is
+    // in `docs/wlwl-spec-reference.md` §2. A future implementation is
     // free to reject a BOM'd lock instead.
     let lf: Lockfile = serde_json::from_str(crate::strip_bom(&s))?;
     if lf.schema_version != CURRENT_SCHEMA_VERSION {
@@ -625,7 +625,7 @@ entry = "main.wll"
     //
     // **无规范背书**:语言规范的 BOM 条款(§1.1)只覆盖 `.wll`,§9.4 把锁文件
     // 整个划在规范外。所以这条宽容是**工具选择**;依据见
-    // `docs/spec/wlwl-agent-spec-v0.11.md` §2。
+    // `docs/wlwl-spec-reference.md` §2。
     //
     // BOM 在测试内拼接,不提交带 BOM 的文件 —— U+FEFF 在 review 里不可见。
     // ---------------------------------------------------------------------

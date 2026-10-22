@@ -18,7 +18,7 @@
 //! 「证明实现符合规范」,而是**钉住一个有意保留的不一致** —— 没有它,下一个
 //! 看到「明明能统一」的 agent 会去统一,那是行为变更,且没有经过裁决。
 //!
-//! 口径写在 `docs/stdlib/wlwl-stdlib-spec-v0.11.md` §4.1,`the_divergence_is_documented`
+//! 口径写在 `docs/wlwl-spec-reference.md` §4.1,`the_divergence_is_documented`
 //! 盯着那段文字还在不在 —— 免得代码锁住了、口径却被人删了。
 
 mod common;
@@ -144,8 +144,7 @@ fn spec_path() -> PathBuf {
         .join("..")
         .join("..")
         .join("docs")
-        .join("stdlib")
-        .join("wlwl-stdlib-spec-v0.11.md")
+        .join("wlwl-spec-reference.md")
 }
 
 /// §4.1 那段口径必须还在。

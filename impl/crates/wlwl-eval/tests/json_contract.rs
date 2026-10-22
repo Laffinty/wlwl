@@ -1154,7 +1154,7 @@ fn known_defect_d13_017_parse_sorts_object_keys() {
 //
 // ## 期望值的来源(本组的 `128` 与 `E0030` 各有出处,不是「跑一遍抄下来」)
 //
-// 1. **`128`** ← **规范 `docs/stdlib/wlwl-stdlib-spec-v0.11.md` §12** 的
+// 1. **`128`** ← **规范 `docs/wlwl-spec-reference.md` §12** 的
 //    `JSON_VALIDATE` 行:「只验语法(词法 + 结构 + **嵌套深度 ≤ 128** + …)」,
 //    以及同节注 5「三处比 RFC / Python 更严(与 `PARSE` 对齐):……**嵌套深度上限
 //    128**」。⇒ 本组断的是**同一个数字**:schema 侧与文档侧必须**同一口径**,

@@ -5,7 +5,7 @@
 | **Status** | **Accepted**(2026-10-14,业主「执行下一步建议」批准 `addendum-09` §3 全部六条) |
 | **Date** | 2026-10-14 |
 | **Deciders** | Li(project lead) |
-| **Related** | [`docs/history/$1`](../history/addendum-09-json-deep.md) §2 / §3 / §7、`docs/stdlib/wlwl-stdlib-spec-v0.11.md` §3(`std.json`)与 §11(`STRINGIFY` 不转义 `<>&` 的实测条款 + 失败口径「**新成员用 `ERR` 值**」)/ §12.1(「半张表比没有更糟」)、`impl/crates/wlwl-eval/tests/json_contract.rs`(W-01 冻结基线)、`docs/spec/wlwl-spec-v0.11.md`(语言面;D2 的「新语法 = 语言变更」由它定)、`addendum-13` D13-009(`HTML_SANITIZE` policy 未知键 → `E0030` 的同款先例) |
+| **Related** | [`docs/history/$1`](../history/addendum-09-json-deep.md) §2 / §3 / §7、`docs/wlwl-spec-reference.md` 标准库规范 · §3(`std.json`)与 §11(`STRINGIFY` 不转义 `<>&` 的实测条款 + 失败口径「**新成员用 `ERR` 值**」)/ §12.1(「半张表比没有更糟」)、`impl/crates/wlwl-eval/tests/json_contract.rs`(W-01 冻结基线)、`docs/wlwl-spec-reference.md` 语言规范 · (语言面;D2 的「新语法 = 语言变更」由它定)、`addendum-13` D13-009(`HTML_SANITIZE` policy 未知键 → `E0030` 的同款先例) |
 
 ## Context
 
@@ -73,7 +73,7 @@
 ### D2 · `JSON_GET` 的路径类型用 `ARRAY`
 
 `JSON_GET(d, ["a", 0, "b"])`。**排除**新语法:那是**语言面**的变更
-(`docs/spec/wlwl-spec-v0.11.md`),不在本批的九个落点之内。
+(`docs/wlwl-spec-reference.md`),不在本批的九个落点之内。
 
 ### D3 · `JSON_MERGE` 语义逐字写死
 

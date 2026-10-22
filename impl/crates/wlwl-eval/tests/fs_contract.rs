@@ -751,7 +751,9 @@ fn read_bytes_refuses_a_file_over_the_cap_without_touching_it() {
 #[test]
 fn the_move_link_semantics_are_written_down() {
     let text = std::fs::read_to_string(spec_path()).expect("stdlib spec readable");
-    let start = text.find("## 2 `std.fs`").expect("§2 header exists");
+    let start = text
+        .find("## 标准库规范 · 2 `std.fs`")
+        .expect("§2 header exists");
     let end = text[start..]
         .find("\n## ")
         .map(|i| start + i)
@@ -772,7 +774,9 @@ fn the_move_link_semantics_are_written_down() {
 #[test]
 fn the_write_bytes_cap_is_written_down() {
     let text = std::fs::read_to_string(spec_path()).expect("stdlib spec readable");
-    let start = text.find("## 2 `std.fs`").expect("§2 header exists");
+    let start = text
+        .find("## 标准库规范 · 2 `std.fs`")
+        .expect("§2 header exists");
     let end = text[start..]
         .find("\n## ")
         .map(|i| start + i)
@@ -796,7 +800,9 @@ fn the_write_bytes_cap_is_written_down() {
 #[test]
 fn fs_member_set_matches_the_spec_table() {
     let text = std::fs::read_to_string(spec_path()).expect("stdlib spec readable");
-    let start = text.find("## 2 `std.fs`").expect("§2 header exists");
+    let start = text
+        .find("## 标准库规范 · 2 `std.fs`")
+        .expect("§2 header exists");
     let end = text[start..]
         .find("\n## ")
         .map(|i| start + i)
@@ -847,7 +853,9 @@ fn fs_member_set_matches_the_spec_table() {
 #[test]
 fn env_member_set_matches_the_spec_table() {
     let text = std::fs::read_to_string(spec_path()).expect("stdlib spec readable");
-    let start = text.find("## 18 `std.env`").expect("§18 header exists");
+    let start = text
+        .find("## 标准库规范 · 18 `std.env`")
+        .expect("§18 header exists");
     let end = text[start..]
         .find("\n## ")
         .map(|i| start + i)
@@ -891,8 +899,7 @@ fn spec_path() -> PathBuf {
         .join("..")
         .join("..")
         .join("docs")
-        .join("stdlib")
-        .join("wlwl-stdlib-spec-v0.11.md")
+        .join("wlwl-spec-reference.md")
 }
 
 /// 代码侧的锁与文档侧的锁必须成对:分隔符那条是**跨平台契约**,它必须

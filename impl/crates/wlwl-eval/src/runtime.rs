@@ -1705,8 +1705,7 @@ mod tests {
             .join("..")
             .join("..")
             .join("docs")
-            .join("spec")
-            .join("wlwl-spec-v0.11.md");
+            .join("wlwl-spec-reference.md");
         let spec = std::fs::read_to_string(&path)
             .unwrap_or_else(|e| panic!("cannot read the spec at {}: {}", path.display(), e));
         for tag in ["MethodCall", "ProtocolViolation"] {

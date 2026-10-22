@@ -1,7 +1,7 @@
 //! 字典键的类型约束(语言规范 §2.1 / §4.5)与 `E0020` 的候选名(§3.2)——
 //! 第二轮审计 R2-001 / R2-002 / R2-006 / R2-008 的契约。
 //!
-//! **判据全部来自语言标准** `docs/spec/wlwl-spec-v0.11.md`(不可修改):
+//! **判据全部来自语言标准** `docs/wlwl-spec-reference.md`(不可修改):
 //!
 //! - §2.1:「**键的约束**:字典的键**必须**是 `STRING`、`INTEGER` 或 `INSTANCE`。
 //!   `INSTANCE` 作键按**对象身份**判定(2.4):同一实例命中,异实例不命中。
@@ -232,8 +232,7 @@ fn language_spec_path() -> PathBuf {
         .join("..")
         .join("..")
         .join("docs")
-        .join("spec")
-        .join("wlwl-spec-v0.11.md")
+        .join("wlwl-spec-reference.md")
 }
 
 /// §2.1 的「键的约束」那**一句** —— 不是整章。

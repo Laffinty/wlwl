@@ -417,9 +417,9 @@ fn text_contract() {
 #[test]
 fn text_member_set_matches_the_spec_table() {
     let text = std::fs::read_to_string(spec_path()).expect("stdlib spec readable");
-    let start = text.find("## 12 ").expect("§12 header exists");
+    let start = text.find("## 标准库规范 · 12 ").expect("§12 header exists");
     let end = text[start..]
-        .find("\n## 13 ")
+        .find("\n## 标准库规范 · 13 ")
         .map(|i| start + i)
         .expect("§13 header follows §12");
     let body = &text[start..end];
@@ -493,8 +493,7 @@ fn spec_path() -> PathBuf {
         .join("..")
         .join("..")
         .join("docs")
-        .join("stdlib")
-        .join("wlwl-stdlib-spec-v0.11.md")
+        .join("wlwl-spec-reference.md")
 }
 
 /// UCD 依赖的成员分两批落地,两批的理由**都**必须留在规范里。

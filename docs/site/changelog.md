@@ -1,9 +1,9 @@
 # Changelog
 
 > **Note.** The compiler version is **independent of the language
-> spec version**. The language spec lives in `docs/spec/` and
-> is content-addressed. This page tracks the **compiler / tooling**
-> releases.
+> spec version**. The spec reference lives in
+> `docs/wlwl-spec-reference.md` and is content-addressed. This page
+> tracks the **compiler / tooling** releases.
 
 !!! note "On this page"
 

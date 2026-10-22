@@ -842,8 +842,7 @@ fn spec_path() -> std::path::PathBuf {
         .join("..")
         .join("..")
         .join("docs")
-        .join("stdlib")
-        .join("wlwl-stdlib-spec-v0.11.md")
+        .join("wlwl-spec-reference.md")
 }
 
 /// 从 §5 的表格首列抽出成员名。
@@ -856,10 +855,10 @@ fn spec_path() -> std::path::PathBuf {
 fn spec_section5_members() -> Vec<String> {
     let text = std::fs::read_to_string(spec_path()).expect("stdlib spec is readable");
     let start = text
-        .find("## 5 `std.collection`")
+        .find("## 标准库规范 · 5 `std.collection`")
         .expect("§5 header exists");
     let end = text[start..]
-        .find("\n## 6 ")
+        .find("\n## 标准库规范 · 6 ")
         .map(|i| start + i)
         .expect("§6 header follows §5");
     let mut out: Vec<String> = Vec::new();

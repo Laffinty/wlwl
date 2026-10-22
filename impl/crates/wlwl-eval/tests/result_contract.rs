@@ -490,8 +490,7 @@ fn spec_text() -> String {
         .join("..")
         .join("..")
         .join("docs")
-        .join("stdlib")
-        .join("wlwl-stdlib-spec-v0.11.md");
+        .join("wlwl-spec-reference.md");
     std::fs::read_to_string(&p).expect("stdlib spec is readable")
 }
 

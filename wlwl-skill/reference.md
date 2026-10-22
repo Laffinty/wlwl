@@ -2,7 +2,7 @@
 
 > Loaded only when `SKILL.md` points here. This is a lookup catalogue,
 > not a tutorial. Section numbers (`§1.5`, `§8.3`, `§10.4`, `§13`, `§17`, etc.)
-> refer to `docs/spec/wlwl-spec-v0.11.md` (superseded specs v0.6–v0.10
+> refer to `docs/wlwl-spec-reference.md` (superseded specs v0.6–v0.10
 > archived in condensed form in `docs/history/20260902-09.md` /
 > `docs/history/20260915-22.md`; full text via git history).
 
@@ -223,7 +223,7 @@ The authoritative registry of every global builtin (106 entries) is
 
 `std.math` is **one namespace with 61 members**, in five families. It is split
 here by family because one 61-row table is unreadable; the normative tables are
-in `../docs/stdlib/wlwl-stdlib-spec-v0.11.md` §7.
+in `../docs/wlwl-spec-reference.md` §7.
 
 **Layers are mixed**: an R1 facade member may call an R2 kernel underneath
 (`TRUNC`), and the four families appended in v0.11.3 (`DECIMAL` / `FRACTION` /
@@ -550,7 +550,7 @@ reject an empty `sub`.
 > `STR` **rendering**, so `DEDUP_BY([1, 1.0, 2], id)` keeps all three while
 > `UNIQ([1, 1.0, 2])` keeps two.
 > Near-linear already: `SUM`, `PRODUCT`, `FOLD_RIGHT`, `MIN_BY`, `MAX_BY`. Full
-> table in `../docs/stdlib/wlwl-stdlib-spec-v0.11.md` §5 and
+> table in `../docs/wlwl-spec-reference.md` §5 and
 > `../impl/crates/wlwl-eval/benches/baseline.txt` **L0 / L0-A-2 / L0-A-3a / L0-A-3b** 段。
 
 > *Measured on wlwl 0.11.2 (2026-10-02):* `CHUNK([1,2,3,4,5], 2)` =
@@ -642,7 +642,7 @@ inspected in the caller's own scope, exactly as written above.
 > *Measured on wlwl 0.11.2 (2026-10-02):* `BASE64_ENCODE("foobar")` =
 > `Zm9vYmFy`; `URL_ENCODE("a b&c=d")` = `a%20b%26c%3Dd`; `URL_DECODE("a+b")` =
 > `a+b`; `BASE64_DECODE("!!!")` → `ERR([kind: DecodeError, ...])`. Full vector
-> table in `../docs/stdlib/wlwl-stdlib-spec-v0.11.md` §11.4; the base64
+> table in `../docs/wlwl-spec-reference.md` §11.4; the base64
 > expectations are copied from RFC 4648 §10, not from this implementation.
 > `SHA256` / `HMAC_SHA256` vectors come from FIPS 180-4 and RFC 4231 **TC2**
 > (TC1 / TC3 keys are binary, which a UTF-8 `STRING` cannot hold — those were
@@ -1704,7 +1704,7 @@ v0.9 spec's 附录 D (archived in condensed form in
 ## §24. v0.10 增量备忘 — 静态契约
 
 Every v0.10 item that affects writing `.wll` source — pulled from
-`docs/spec/wlwl-spec-v0.11.md` 附录 D (unchanged from the v0.10 edition).
+`docs/wlwl-spec-reference.md` 附录 D (unchanged from the v0.10 edition).
 
 **v0.10's runtime is identical to v0.9's.** Everything below is opt-in; a
 program that adds no annotation and ships no `.sig` behaves exactly as before.
@@ -1825,13 +1825,13 @@ under `examples/` are hand-written teaching material and are **not** canonical;
 
 | 文档 | 路径 | 用途 |
 |------|------|------|
-| 权威规范 | `../docs/spec/wlwl-spec-v0.11.md` | 唯一真相源 |
+| 权威规范 | `../docs/wlwl-spec-reference.md` | 唯一真相源 |
 | 历史归档(v0.6–v0.10 精简) | `../docs/history/20260902-09.md` / `20260915-22.md` | 旧版上下文(原文在 git 历史) |
 | 内建注册表 | `../docs/appendix_G.md` | 106 条内建单一真相源 |
 
 ### §24.6 Standard library spec
 
-`../docs/stdlib/wlwl-stdlib-spec-v0.11.md` — per-namespace signatures, `std.str`
+`../docs/wlwl-spec-reference.md` — per-namespace signatures, `std.str`
 §6, `std.math` §7, `std.test` §8.
 
 ---

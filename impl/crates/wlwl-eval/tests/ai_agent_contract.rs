@@ -189,18 +189,17 @@ fn ai_and_agent_member_sets_match_the_spec_tables() {
             .join("..")
             .join("..")
             .join("docs")
-            .join("stdlib")
-            .join("wlwl-stdlib-spec-v0.11.md"),
+            .join("wlwl-spec-reference.md"),
     )
     .expect("stdlib spec readable");
 
     for (chapter, members) in [
         (
-            "## 9 `ai`",
+            "## 标准库规范 · 9 `ai`",
             ["ASK", "EMBED", "COMPLETE", "ASK_STREAM", "ASK_ALL"],
         ),
         (
-            "## 10 `agent`",
+            "## 标准库规范 · 10 `agent`",
             ["TASK", "TOOL", "CALL_TOOL", "MODEL", "CONTEXT"],
         ),
     ] {

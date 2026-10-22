@@ -1,5 +1,5 @@
 // wlwl:std.collection — R1 语言层(标准库底座 v0.11,ADR-0021)
-// 成员契约:docs/stdlib/wlwl-stdlib-spec-v0.11.md §5;注册镜像:附录 A。
+// 成员契约:docs/wlwl-spec-reference.md §5;注册镜像:附录 A。
 //
 // M3-1 起本模块是 std.collection 的**门面实现**(原 R2 Rust 实现已删)。
 // 算法、循环、比较全部是 wlwl;只有下面这些走注入的 R2 内核(ADR-0021

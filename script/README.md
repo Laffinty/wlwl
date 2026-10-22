@@ -21,7 +21,7 @@ re-run the same workflow.
   value and only add noise.
 - Cargo build artifacts, target dir, lock files — those are
   already in `.gitignore`.
-- A copy of the spec for offline read — `docs/spec/` is
+- A copy of the spec for offline read — `docs/wlwl-spec-reference.md` is
   the canonical location.
 
 ## Current contents

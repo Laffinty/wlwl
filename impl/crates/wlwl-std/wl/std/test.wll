@@ -1,5 +1,5 @@
 // wlwl:std.test — R1 门面 + R2 原生内核(标准库底座 v0.11,ADR-0021)
-// 成员契约:docs/stdlib/wlwl-stdlib-spec-v0.11.md §8;注册镜像:附录 A。
+// 成员契约:docs/wlwl-spec-reference.md §8;注册镜像:附录 A。
 //
 // 混合形态的分工(规范 §8「R1 门面 + R2 原生内核(注册与计时)」):
 //

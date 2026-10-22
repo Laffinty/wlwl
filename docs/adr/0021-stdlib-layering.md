@@ -5,7 +5,7 @@
 | **Status** | Accepted(2026-10-01) |
 | **Date** | 2026-10-01 |
 | **Deciders** | Li (project lead) |
-| **Related** | **ADR-0022**(值直通边界,本 ADR 的实现前提)、ADR-0023(稳定性政策)、`docs/stdlib/wlwl-stdlib-spec-v0.11.md`、spec v0.11 §9.3 / §10.1 |
+| **Related** | **ADR-0022**(值直通边界,本 ADR 的实现前提)、ADR-0023(稳定性政策)、`docs/wlwl-spec-reference.md`、spec v0.11 §9.3 / §10.1 |
 
 ## Context and Problem Statement
 
@@ -120,7 +120,7 @@ Rust `core`/`alloc`/`std` 的分层轴心:一层 = 一组实现前提。层与�
 > **只在 debug 构建下生效**,release 构建无条件忽略;release 下的覆盖轨
 > 只能经显式 `--std-src` flag。
 
-**文档**:标准库 API 契约独立成册(`docs/stdlib/wlwl-stdlib-spec-v0.11.md`),
+**文档**:标准库 API 契约独立成册(`docs/wlwl-spec-reference.md`),
 与语言规范相互独立、分别版本化;语言规范只保留语言表面(全局内建)与机制。
 
 ## Consequences

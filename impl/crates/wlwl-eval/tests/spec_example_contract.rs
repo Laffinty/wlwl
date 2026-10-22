@@ -29,8 +29,7 @@ fn spec_path() -> PathBuf {
         .join("..")
         .join("..")
         .join("docs")
-        .join("spec")
-        .join("wlwl-spec-v0.11.md")
+        .join("wlwl-spec-reference.md")
 }
 
 fn spec_text() -> String {

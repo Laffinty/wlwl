@@ -2617,7 +2617,7 @@ impl Parser {
         // ⇒ 括号序列头**不被接受** ⇒ `(d).a` 报 `E0011: expected ')', got Dot`。
         //
         // ⚠ §4.5 的挂载点枚举原先**没列**括号序列 —— 那一处已同步补上
-        //   (`docs/spec/wlwl-spec-v0.11.md` §4.5),否则两处条文继续互相矛盾。
+        //   (`docs/wlwl-spec-reference.md` §4.5),否则两处条文继续互相矛盾。
         // ⚠ 块**本身**的语义不变:后缀链只作用在块求值出来的**值**上。
         self.apply_postfix_loop(base, line, col)
     } // ── Type expression parser (P3-010) ─────────────────────────────

@@ -389,8 +389,7 @@ fn spec_path() -> PathBuf {
         .join("..")
         .join("..")
         .join("docs")
-        .join("stdlib")
-        .join("wlwl-stdlib-spec-v0.11.md")
+        .join("wlwl-spec-reference.md")
 }
 
 /// 规范 §21 的成员表 ↔ `SPEC.functions`。
@@ -400,7 +399,9 @@ fn spec_path() -> PathBuf {
 #[test]
 fn net_member_set_matches_the_spec_table() {
     let text = std::fs::read_to_string(spec_path()).expect("stdlib spec readable");
-    let start = text.find("## 21 ").expect("\u{00a7}21 header exists");
+    let start = text
+        .find("## 标准库规范 · 21 ")
+        .expect("\u{00a7}21 header exists");
     let end = text[start..]
         .find("\n## ")
         .map(|i| start + i)
@@ -476,7 +477,9 @@ fn net_member_set_matches_the_spec_table() {
 #[test]
 fn the_status_code_delimitation_rules_are_written_down() {
     let text = std::fs::read_to_string(spec_path()).expect("stdlib spec readable");
-    let start = text.find("## 21 ").expect("\u{00a7}21 header exists");
+    let start = text
+        .find("## 标准库规范 · 21 ")
+        .expect("\u{00a7}21 header exists");
     let end = text[start..]
         .find("\n## ")
         .map(|i| start + i)
