@@ -118,6 +118,90 @@ impl std::fmt::Display for CellVec {
     }
 }
 
+/// [ADR-0035 D4] 字典累加器的共享可变单元 —— **`ADR-0032` 的 `CellVec` 的字典版**。
+///
+/// **为什么要有它**:`Value::Dict(Rc<DictInner>)` 的写路径走 **copy-on-write**
+/// (`Rc::make_mut`):唯一拥有时原地改,被别名时克隆整个字典。而
+/// `SET(d, INDEX_SET(d, k, v))` 这种**最常见的字典累加写法**里,`d` 仍被绑定
+/// 持有 ⇒ 写之前必拷贝 ⇒ 累加 n 个键的总拷贝是**二次的**(`ADR-0035` 修订记录
+/// 实测:n = 16 ⇒ 拷贝 120 条)⇒ 规范 §18.3 的 `INDEX_SET` 写上界
+/// (新键 O(1) 摊还)**未达标**。本类型是那一步的落点。
+///
+/// ⚠ **它必须与 `Value::Dict` 在所有可观察面上完全一致** —— `TYPE` / `display` /
+/// `==` / 序列化 / 诊断措辞 / **插入序**。这是 `ADR-0032` (c) 路线的全部意义:
+/// 现有 `Dict` 与它的 175 处用法一字不动,只有被识别成累加器的字典才会用它。
+///
+/// ⚠ **载荷是 `Rc<RefCell<Rc<DictInner>>>`** —— 最里层的 `Rc<DictInner>` 让
+/// **写时复制** machinery([`dict_make_mut`])原样可用:唯一拥有时原地改
+/// (单次写 O(1)),被别名时先克隆再改(O(n))—— 与普通字典的写路径**逐字同一条**,
+/// 连 §18.5 的确定性工作量计数点都是同一个。
+///
+/// ⚠ **克隆是共享,不是深拷贝** —— 与 `Value::Dict` 的克隆语义**一致**
+/// (`Rc::clone`):`LET(b, d)` 之后 `b` 与 `d` 共享同一份字典数据,改 `d` 不改 `b`
+/// (写时复制保证)。这与 `CellVec` 的深拷贝克隆**不同**,而且**必须不同**:
+/// 字典载荷本来就是 `Rc` ⇒ 深拷贝会让 `LET(b, d)` 的成本从 O(1) 变成 O(n),
+/// 而那正是本批要消灭的二次代价。
+#[derive(Debug)]
+pub struct CellDict(std::rc::Rc<std::cell::RefCell<std::rc::Rc<DictInner>>>);
+
+impl CellDict {
+    /// 新建一个 cell,载荷是给定的 `Rc<DictInner>`(**共享**,不拷贝字典)。
+    pub fn new(inner: std::rc::Rc<DictInner>) -> Self {
+        CellDict(std::rc::Rc::new(std::cell::RefCell::new(inner)))
+    }
+
+    /// **共享同一个 cell**(只克隆 `Rc`,不拷贝字典)。
+    ///
+    /// ⚠ 与 `Clone`(语义拷贝)是两个不同的出口,别混:
+    /// - `clone()` = 语义拷贝,给 `LET(b, a)` 那种「绑一份新的」用;
+    /// - `share()` = 就地写的那条路上「把同一个 cell 交出去」用。
+    pub fn share(&self) -> Self {
+        CellDict(self.0.clone())
+    }
+
+    /// 是否与 `other` **就是同一个** cell(同一 `Rc`)。
+    ///
+    /// 相等性必须先用它短路:两个 `Rc` 指向同一 cell 时直接判 `true`,
+    /// 不去 `borrow()` —— 否则同一 cell 上「借出比对」会撞 `RefCell` 的运行期
+    /// 借用检查。
+    pub fn ptr_eq(&self, other: &Self) -> bool {
+        std::rc::Rc::ptr_eq(&self.0, &other.0)
+    }
+
+    /// 取出载荷的 `Rc<DictInner>`(**共享**,O(1) —— 不是深拷贝)。
+    ///
+    /// 循环结束时把 cell 换回普通字典走这里:换回去的是**同一份数据**,
+    /// 所以「还原」这一步是 O(1),不是 O(n)。
+    pub fn inner_rc(&self) -> std::rc::Rc<DictInner> {
+        let slot = self.0.borrow();
+        (*slot).clone()
+    }
+
+    /// **就地改**字典(唯一拥有 ⇒ O(1);被别名 ⇒ 先克隆 ⇒ O(n))。
+    ///
+    /// ⚠ 走 [`dict_make_mut`] 而不是裸 `Rc::make_mut`:那是**唯一**允许写路径
+    /// 拿到 `&mut DictInner` 的入口,也是 §18.5 确定性工作量计数的**唯一**位置
+    /// ⇒ 绕开它,计数就会漏。
+    ///
+    /// ⚠ 借出的 `&mut DictInner` 只在闭包体内有效 —— `RefMut` 必须活得比它久,
+    ///   所以这里把 `borrow_mut()` 的结果**绑成局部变量**再取 `&mut`。
+    pub fn with_inner_mut<R>(&self, f: impl FnOnce(&mut DictInner) -> R) -> R {
+        let mut slot = self.0.borrow_mut();
+        let inner = dict_make_mut(&mut slot);
+        f(inner)
+    }
+}
+
+/// 克隆 = **共享载荷**(与 `Value::Dict` 的克隆语义一致),O(1)。
+///
+/// ⚠ 与 `CellVec` 的深拷贝克隆**不同**,而且**必须不同**:字典载荷本来就是
+/// `Rc` ⇒ 深拷贝会让 `LET(b, d)` 从 O(1) 变成 O(n)。
+impl Clone for CellDict {
+    fn clone(&self) -> Self {
+        CellDict(std::rc::Rc::new(std::cell::RefCell::new(self.inner_rc())))
+    }
+}
+
 #[derive(Debug, Clone)]
 pub enum Value {
     Integer(i64),
@@ -139,6 +223,11 @@ pub enum Value {
     ///   **copy-on-write**(`Rc::make_mut`):唯一拥有时原地改,被别名时克隆后改。
     ///   旧值在「唯一拥有」时不可观察(§19.1 的值语义)⇒ 原地改合法。
     Dict(Rc<DictInner>),
+    /// [ADR-0035 D4] 字典累加器的共享可变字典。**可观察面必须与 `Dict` 一致**
+    /// (`TYPE` 给 `"dict"`、`==` 深比较、渲染与 JSON 逐字相同、**插入序**不变)。
+    /// 只有被识别成「循环局部字典累加器」的字典才会用它(PLAN S2);
+    /// 其余一律是 `Dict`,那 175 处用法一字未动。
+    DictCell(CellDict),
     /// §8.2 function literal with captured environment (clone-based closure).
     Closure {
         params: Vec<FunParam>,
@@ -752,6 +841,17 @@ impl Value {
                     .collect();
                 format!("[{}]", parts.join(", "))
             }
+            // ⚠ [ADR-0035 D4] `DictCell` 与 `Dict` **必须渲染完全一样** ——
+            // 渲染是可观察面(§2.5)。逐字照抄 `Dict` 那一支的格式。
+            Value::DictCell(cell) => {
+                let inner = cell.inner_rc();
+                let parts: Vec<String> = inner
+                    .entries()
+                    .iter()
+                    .map(|(k, v)| format!("{}: {}", k.display(), v.display()))
+                    .collect();
+                format!("[{}]", parts.join(", "))
+            }
             Value::Closure { params, .. } => {
                 format!(
                     "<fun({})>",
@@ -853,6 +953,23 @@ impl PartialEq for Value {
             //   与旧的 `Vec<(Value, Value)> == Vec<(Value, Value)>` 逐字一致;
             //   哈希索引是派生数据,不参与比较。
             (Value::Dict(a), Value::Dict(b)) => a.entries() == b.entries(),
+            // ⚠ [ADR-0035 D4] `DictCell` 的 `PartialEq` 与 `Dict` **逐字同口径**
+            //   (插入序、逐元素、**顺序敏感**)—— 与 `values_equal` 的集合口径
+            //   是**两件事**,两种口径都原样保留(`ADR-0035` 修订记录「新事实三」)。
+            (Value::DictCell(a), Value::DictCell(b)) => {
+                a.ptr_eq(b) || {
+                    let (ai, bi) = (a.inner_rc(), b.inner_rc());
+                    ai.entries() == bi.entries()
+                }
+            }
+            (Value::Dict(a), Value::DictCell(b)) => {
+                let bi = b.inner_rc();
+                a.entries() == bi.entries()
+            }
+            (Value::DictCell(a), Value::Dict(b)) => {
+                let ai = a.inner_rc();
+                ai.entries() == b.entries()
+            }
             (
                 Value::Closure {
                     params: pa,
@@ -1138,6 +1255,25 @@ impl Env {
                 })),
             );
         }
+    }
+
+    /// [ADR-0035 D4] **就地改写已有绑定**的值 —— 保持该绑定的**可变性**与
+    /// **未消费令牌**不变。
+    ///
+    /// ⚠ 与 [`Env::set_local_mut`] 的区别:后者在**最内层作用域插入一个新
+    ///   绑定**(且新绑定是**可变**的)⇒ 会**遮蔽**外层的同名绑定并**改掉它的
+    ///   可变性**。规范 §3.1 说可变性在建绑定时定、**永不变** ⇒ 累加器形态的
+    ///   「临时表示」必须走这里,不能走 `set_local_mut`。
+    ///
+    /// 返回 `false` = 该名字在**任何**作用域里都没有绑定。
+    pub fn replace_binding_value(&self, name: &str, value: Value) -> bool {
+        for scope in self.scopes.iter().rev() {
+            if let Some(cell) = scope.get(name) {
+                cell.borrow_mut().value = value;
+                return true;
+            }
+        }
+        false
     }
 
     /// [v1.0 spec §8.6.3] **按模式读一个绑定**。
@@ -1582,6 +1718,9 @@ pub fn type_name(v: &Value) -> &'static str {
         // ⚠ 变体名**不外泄**:用户看 `TYPE` 只能看到 `array`,分不清内部表示。
         Value::Cell(_) => "array",
         Value::Dict(_) => "dict",
+        // ⚠ [ADR-0035 D4] 变体名**不外泄**:用户看 `TYPE` 只能看到 `dict`,
+        // 分不清内部表示(与 `Cell` → `"array"` 同理)。
+        Value::DictCell(_) => "dict",
         Value::Closure { .. } => "function",
         Value::NativeFn { .. } => "native-function",
         Value::Ok(_) => "ok",
@@ -1614,6 +1753,10 @@ pub fn value_type_name(v: &Value) -> &'static str {
         Value::Null => "NULL",
         Value::Array(_) => "ARRAY",
         Value::Dict(_) => "DICT",
+        // ⚠ [ADR-0035 D4] 累加器 cell。**必须与 `Dict` 同名** —— 这个函数是
+        // 用户可见的类型名,把 `DICTCELL` 之类的新名字列出来等于让内部表示
+        // 泄到可观察面(与 `Cell` → `"ARRAY"` 同理)。
+        Value::DictCell(_) => "DICT",
         Value::Closure { .. } | Value::NativeFn { .. } => "FUNCTION",
         Value::Ok(_) | Value::Err(_) => "RESULT",
         // [v0.7 Phase C2] distinct user-visible type for SPAWN
@@ -1635,6 +1778,25 @@ pub fn value_type_name(v: &Value) -> &'static str {
         // 表示泄到可观察面(与 `type_name()` 的 "array" 同理)。
         Value::Cell(_) => "ARRAY",
     }
+}
+
+/// [ADR-0035] 字典的**集合口径**相等(规范 §2.4):`x` 的每个条目都要在 `y`
+/// 里找到一个键值都相等的条目 —— **不看顺序**。
+///
+/// ⚠ 这是 `values_equal` 的字典分支**逐字搬出来的**判定,一个字节都没改
+/// (`ADR-0035` 修订记录「新事实三」:实现里 `values_equal` 的字典分支是集合
+/// 口径,只有 `PartialEq` 才是顺序敏感 —— 两种口径都逐字保留)。
+///
+/// 抽成函数是为了让 `DictCell` **复用同一条**判定 ⇒ 「累加器形态与普通字典
+/// 在可观察面上逐字相同」这条不变量只由**一处**代码保证。
+fn dict_entries_equal(x: &[(Value, Value)], y: &[(Value, Value)]) -> bool {
+    if x.len() != y.len() {
+        return false;
+    }
+    x.iter().all(|(xk, xv)| {
+        y.iter()
+            .any(|(yk, yv)| values_equal(xk, yk) && values_equal(xv, yv))
+    })
 }
 
 pub fn values_equal(a: &Value, b: &Value) -> bool {
@@ -1678,14 +1840,27 @@ pub fn values_equal(a: &Value, b: &Value) -> bool {
         //   里找到一个键值都相等的条目(集合口径,**不**看顺序)。
         //   ⇒ 这一段**一个字都不能改** —— 哈希索引只改**查找**路径,
         //   不改**相等**的语义(§2.4)。
-        (Value::Dict(x), Value::Dict(y)) => {
-            if x.len() != y.len() {
-                return false;
+        (Value::Dict(x), Value::Dict(y)) => dict_entries_equal(x.entries(), y.entries()),
+        // ⚠ [ADR-0035 D4] `DictCell` 的相等性:与 `Dict` **逐字同口径**
+        //   (集合口径、不看顺序)⇒ 复用同一个判定函数,一个分支都不另写。
+        //
+        //   ⚠ **先 `ptr_eq` 短路** —— 同一 cell 时直接 true,**不去 borrow**
+        //   (与 `Cell` 的同款理由:借出比对会撞 `RefCell` 的运行期借用检查)。
+        (Value::DictCell(x), Value::DictCell(y)) => {
+            x.ptr_eq(y) || {
+                let (xi, yi) = (x.inner_rc(), y.inner_rc());
+                dict_entries_equal(xi.entries(), yi.entries())
             }
-            x.iter().all(|(xk, xv)| {
-                y.iter()
-                    .any(|(yk, yv)| values_equal(xk, yk) && values_equal(xv, yv))
-            })
+        }
+        // ⚠ 交叉比较:一个累加器可能在中途才被识别成 cell ⇒
+        //   `dict == cell(dict)` 必须与 `dict == dict` 逐字同结果。
+        (Value::Dict(x), Value::DictCell(y)) => {
+            let yi = y.inner_rc();
+            dict_entries_equal(x.entries(), yi.entries())
+        }
+        (Value::DictCell(x), Value::Dict(y)) => {
+            let xi = x.inner_rc();
+            dict_entries_equal(xi.entries(), y.entries())
         }
         (Value::Ok(x), Value::Ok(y)) => values_equal(x, y),
         (Value::Err(x), Value::Err(y)) => values_equal(x, y),
@@ -2126,6 +2301,120 @@ mod accumulator_cell_tests {
         c.borrow_mut().push(Value::Integer(3));
         assert_eq!(c.borrow().len(), 3);
         assert_eq!(Value::Cell(c).display(), "[1, 2, 3]");
+    }
+}
+
+// ── [ADR-0035 D4] 字典累加器 cell 的契约 ───────────────────────────────
+//
+// 这一组钉的是 `ADR-0032` S1 的同款清单:**变体在每个可观察面上都必须与
+// 普通字典逐字相同**。`ADR-0032` 的教训正是「可观察面不许分叉」——
+// 两种表示的风险同源,所以这里逐条钉死。
+//
+//   ① `display()` 逐字节一致(含**插入序**);
+//   ② 两个类型名函数都报「字典」,变体名不外泄;
+//   ③ `values_equal`(集合口径)与 `PartialEq`(顺序敏感)两种口径都覆盖,
+//      且覆盖 `Dict` ↔ `DictCell` 的**交叉**比较;
+//   ④ 克隆是**共享**(与 `Value::Dict` 同语义)⇒ 写时复制保证「改一个不影响
+//      另一个」(规范 §19.1 的值语义);
+//   ⑤ 同一 cell 自比**不能** panic(`ptr_eq` 短路)。
+
+#[cfg(test)]
+mod dict_accumulator_cell_tests {
+    use super::*;
+
+    fn plain() -> Value {
+        Value::dict(vec![
+            (Value::String("zeta".into()), Value::Integer(1)),
+            (Value::String("alpha".into()), Value::Integer(2)),
+        ])
+    }
+
+    fn cell() -> Value {
+        let inner = Rc::new(DictInner::new(vec![
+            (Value::String("zeta".into()), Value::Integer(1)),
+            (Value::String("alpha".into()), Value::Integer(2)),
+        ]));
+        Value::DictCell(CellDict::new(inner))
+    }
+
+    /// 可观察面 ①:渲染逐字节一致(**插入序**不变)。
+    #[test]
+    fn dict_cell_displays_exactly_like_a_dict() {
+        assert_eq!(cell().display(), plain().display());
+        assert_eq!(cell().display(), "[zeta: 1, alpha: 2]");
+    }
+
+    /// 可观察面 ②:两个类型名函数都报「字典」。
+    #[test]
+    fn dict_cell_reports_the_dict_type_name() {
+        assert_eq!(type_name(&cell()), "dict");
+        assert_eq!(type_name(&cell()), type_name(&plain()));
+        assert_eq!(value_type_name(&cell()), "DICT");
+        assert_eq!(value_type_name(&cell()), value_type_name(&plain()));
+    }
+
+    /// 可观察面 ③:相等性是**深比较** —— 且两种口径(集合口径的
+    /// `values_equal` / 顺序敏感的 `PartialEq`)都覆盖 `Dict` ↔ `DictCell`
+    /// 的**交叉**比较。
+    #[test]
+    fn dict_cell_equality_is_deep_not_identity() {
+        assert!(values_equal(&cell(), &cell()));
+        assert!(values_equal(&cell(), &plain()));
+        assert!(values_equal(&plain(), &cell()));
+        assert!(!values_equal(&cell(), &Value::dict(vec![])));
+        // 顺序敏感的那一口径(`PartialEq`)也要覆盖交叉。
+        assert!(cell() == plain());
+        assert!(plain() == cell());
+        // 内容不同 ⇒ 不等。
+        let other = Value::dict(vec![(Value::String("zeta".into()), Value::Integer(9))]);
+        assert!(!values_equal(&cell(), &other));
+        assert!(cell() != other);
+    }
+
+    /// ⚠ `ptr_eq` 短路必须真的短路:同一 cell 自比**不能** panic。
+    #[test]
+    fn comparing_a_dict_cell_with_itself_does_not_panic() {
+        let c = cell();
+        for _ in 0..1000 {
+            assert!(values_equal(&c, &c));
+            assert!(c == c);
+        }
+    }
+
+    /// 可观察面 ④:克隆是**共享**(不是深拷贝)⇒ 与 `Value::Dict` 同语义;
+    /// 写时复制保证「改一个不影响另一个」。
+    #[test]
+    fn cloning_a_dict_cell_shares_the_payload() {
+        let a = cell();
+        let b = a.clone();
+        // 克隆出的 cell **不是同一个 cell**,但载荷是同一份数据。
+        match (&a, &b) {
+            (Value::DictCell(x), Value::DictCell(y)) => {
+                assert!(!x.ptr_eq(y));
+                assert!(Rc::ptr_eq(&x.inner_rc(), &y.inner_rc()));
+            }
+            _ => panic!("expected DictCells"),
+        }
+        // 改 b 不影响 a(写时复制)。
+        if let Value::DictCell(c) = &b {
+            c.with_inner_mut(|d| d.insert(Value::String("mid".into()), Value::Integer(3)));
+        }
+        assert_eq!(a.display(), "[zeta: 1, alpha: 2]");
+        assert_eq!(b.display(), "[zeta: 1, alpha: 2, mid: 3]");
+    }
+
+    /// 就地写是本批的落点:唯一拥有时 O(1)(载荷 `Rc` 计数为 1 ⇒ 写时复制
+    /// 判定为「唯一拥有」⇒ 原地改)。
+    #[test]
+    fn with_inner_mut_writes_in_place() {
+        let c = CellDict::new(Rc::new(DictInner::new(vec![(
+            Value::String("a".into()),
+            Value::Integer(1),
+        )])));
+        c.with_inner_mut(|d| {
+            d.insert(Value::String("b".into()), Value::Integer(2));
+        });
+        assert_eq!(Value::DictCell(c).display(), "[a: 1, b: 2]");
     }
 }
 

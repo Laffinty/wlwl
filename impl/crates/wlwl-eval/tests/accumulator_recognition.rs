@@ -140,3 +140,31 @@ fn a_recognised_accumulator_still_produces_the_right_array() {
     );
     assert_eq!(t, "ARRAY", "accumulator must stay observable as an array");
 }
+
+// ── [D13-099] 回归守卫:优化**不得**改掉绑定的可变性 ─────────────────────
+//
+// 规范 §3.1:可变性在建绑定时定、**永不变**。⇒ 累加器形态的「临时表示」只能
+// **就地改写已有绑定的值**,不得遮蔽外层绑定、不得把它改成可变的。
+//
+// ⚠ 这条钉的是**修复前的真实缺陷**:优化用 `set_local_mut` 插入了**一个可变的
+// 影子绑定** ⇒ 不可变绑定被静默改成了可变 ⇒ `LET(a, [])` + 累加器形状的程序
+// 从「报 E0024」变成「不报错」⇒ **可观察行为变了**。
+#[test]
+fn an_immutable_accumulator_binding_still_reports_e0024() {
+    let ast = wlwl_parser::parse(
+        "LET(a, []);\nLET MUT(i, 0);\n\
+         WHILE(<(i, 3), (SET(a, PUSH(a, 1)); SET(i, +(i, 1))));\na\n",
+        "t.wll",
+    )
+    .expect("case source must parse");
+    let mut ev = Evaluator::new().with_base_dir(scratch_dir());
+    let err = ev
+        .eval(&ast)
+        .expect_err("an immutable accumulator binding must report E0024");
+    assert_eq!(
+        err.diagnostic().code,
+        wlwl_error::ErrorCode::E0024,
+        "got {:?}",
+        err.diagnostic().code
+    );
+}

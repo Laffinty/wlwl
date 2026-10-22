@@ -23,11 +23,12 @@
 //!    (§18.3.1 的要求:计量点必须收在被测数据结构**内部**,并带**下界断言**
 //!    确认计量点确实被走到);
 //! ③ **写路径 · 唯一拥有** ⇒ 原地改(拷贝 0 条);
-//! ④ **写路径 · 别名 / 累加形态** ⇒ **如实**断言退化(拷贝随规模增长)——
-//!    ⚠ 这是**已知偏差**(§18.3.1 的摊还口径 + `ADR-0035` 的 **D4 尚未做**:
-//!    `SET(d, INDEX_SET(d, k, v))` 里 `d` 仍被绑定持有 ⇒ 写之前要克隆整个
-//!    字典 ⇒ 累加 n 个键的总拷贝是**二次的**)。这里**如实钉住**,不藏 ——
-//!    藏起来就是假绿;**D4 落地后本文件要改**(把 ④ 改成 O(n) 的总拷贝)。
+//! ④ **写路径 · 累加形态** ⇒ **原地累积**(拷贝 0 条,且**不随 n 增长**)——
+//!    `ADR-0035` **D4** 落地后,`SET(d, INDEX_SET(d, k, v))` 被识别成**字典
+//!    累加器形态** ⇒ 载荷只被累加器 cell 持有 ⇒ 写时复制判定为「唯一拥有」
+//!    ⇒ 原地改 ⇒ 规范 §18.3 的 `INDEX_SET` 写上界(新键 O(1) 摊还)**达标**。
+//!    ⚠ **别名形态**(两个绑定持有同一个字典)的退化**仍然存在**,由下一条用例
+//!    如实钉住 —— 累加器形态只覆盖「同一个绑定被反复写」这一种形态。
 
 mod common;
 
@@ -146,34 +147,72 @@ fn writing_to_an_aliased_dict_copies_the_whole_dict() {
 
 /// ④ 写路径,形态三(**最常见的写法**):循环里逐次 `SET(d, INDEX_SET(d, k, v))`。
 ///
-/// ⚠ **这条如实钉住的是当前偏差,不是期望行为**:循环里 `d` 仍被绑定持有 ⇒
-/// 每次写都要克隆整个字典 ⇒ 累加 n 个键的**总拷贝是二次的**。
+/// ✅ **这条钉住的是「达标」**(`ADR-0035` D4 落地后改写):循环体内对同一个
+/// 绑定反复 `INDEX_SET` ⇒ 被识别成**字典累加器形态**(`ADR-0032` 的
+/// `Value::Cell(CellVec)` 的字典版)⇒ 载荷只被累加器 cell 持有 ⇒ 写时复制
+/// 判定为「唯一拥有」⇒ **原地改** ⇒ 累加 n 个键的**总拷贝是 0**。
 ///
-/// ⇒ 这正是 `ADR-0035` **D4(逃逸分析 / 字典累加器形态)**要解决的另一半
-/// —— 形态与 `ADR-0032` 的 `CellVec` 同款(识别「同一个累加器被反复追加」⇒
-/// 原地累积)。**D4 落地后本断言要改**成 O(n) 的总拷贝。
+/// ⚠ **判定用确定性工作量计数**(规范 §18.5:不用墙钟比值)⇒ 三条断言:
+///
+/// ① **总拷贝为 0** —— 原地累积,一次拷贝都没有;
+/// ② **不随 n 增长** —— 两档 n(16 / 64)的拷贝读数**相同**(与规模无关);
+/// ③ **序列级上界**(规范 §18.3.1 第 2 条:「n 次写 ⇒ 总工作量 ≤ c·n」)
+///    —— 比较次数(键比较 + 索引插入)对 n **线性**。
+///
+/// ③ 的常数 `c` **不是拍的**:每次写恰好 2 次键比较(1 次哈希查找 + 1 次索引
+/// 插入),循环条件里的 `LEN(d)` 不做键比较 ⇒ 读数是 `2·(n-1)`;这里取
+/// `c = 4`(两倍余量)—— 确定性计数不抖,余量留给将来内建实现的细枝末节。
+///
+/// **实测读数**(2026-10-22,本机):n = 16 ⇒ 比较 30 / 拷贝 **0** / 索引查找 15;
+/// n = 64 ⇒ 比较 126 / 拷贝 **0** / 索引查找 63。⇒ 工作量**线性**(每次写 2 次
+/// 比较),拷贝**恒为 0**。
 #[test]
-fn accumulating_keys_in_a_loop_copies_the_whole_dict_every_time() {
-    const N: usize = 16;
+fn accumulating_keys_in_a_loop_copies_nothing() {
+    const SMALL: usize = 16;
+    const LARGE: usize = 64;
     // 键用 **INTEGER**(`LEN(d)`)—— 它在封闭域内(规范 §2.1)⇒ 走哈希索引那条路。
-    let w = work_of(&format!(
-        "LET MUT(d, [0: 0]);\
-         WHILE(<(LEN(d), {N}), SET(d, INDEX_SET(d, LEN(d), LEN(d))));\
-         PRINT(LEN(d));"
-    ));
-    // 从 1 个条目写到 {N} 个 ⇒ {N}-1 次写,每次克隆当时的全部条目
-    // ⇒ 总拷贝 = 1 + 2 + … + ({N}-1) = {N}({N}-1)/2。
-    let floor = (N as u64 * (N as u64 - 1)) / 2;
-    assert!(
-        w.copied_entries >= floor,
-        "the aliased accumulator copies the whole dict on every write \
-         (copied {} entries, expected at least {floor} for n = {N})",
-        w.copied_entries
+    let src = |n: usize| {
+        format!(
+            "LET MUT(d, [0: 0]);\
+             WHILE(<(LEN(d), {n}), SET(d, INDEX_SET(d, LEN(d), LEN(d))));\
+             PRINT(LEN(d));"
+        )
+    };
+    let small = work_of(&src(SMALL));
+    let large = work_of(&src(LARGE));
+
+    // ① 总拷贝为 0(原地累积)。
+    assert_eq!(
+        small.copied_entries, 0,
+        "the accumulator form must accumulate in place (copied {} entries)",
+        small.copied_entries
     );
-    // 下界断言:计量点真被走到。
+    // ② 不随 n 增长:两档读数相同。
+    assert_eq!(
+        small.copied_entries, large.copied_entries,
+        "the total copy count must not depend on n (small={}, large={})",
+        small.copied_entries, large.copied_entries
+    );
+    // ③ 序列级上界:总工作量 ≤ c·n。
+    let c = 4u64;
+    for (n, w) in [(SMALL as u64, small), (LARGE as u64, large)] {
+        assert!(
+            w.comparisons <= c * n,
+            "n writes must cost at most c·n comparisons (n={n}, comparisons={}, c={c})",
+            w.comparisons
+        );
+    }
+    // 下界断言:计量点真被走到(否则「恒为 0」也会绿)。
     assert!(
-        w.comparisons > 0,
+        small.comparisons > 0,
         "the write path must be counted at all (comparisons = {})",
-        w.comparisons
+        small.comparisons
+    );
+    // 且工作量确实**随 n 增长**(线性,不是常数)—— 说明计数点走的是真路径。
+    assert!(
+        large.comparisons > small.comparisons,
+        "the counted work must grow with n (small={}, large={})",
+        small.comparisons,
+        large.comparisons
     );
 }

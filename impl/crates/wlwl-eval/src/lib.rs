@@ -291,6 +291,253 @@ fn recognize_accumulator(cond: &Expr, body: &Expr) -> Option<String> {
     }
 }
 
+// ── [ADR-0035 D4] 字典累加器形态识别 ───────────────────────────────────
+//
+// 目标形状(规范 §18.4 的「循环内逐次 `INDEX_SET(d, k, v)` 写 n 个键」):
+//
+// ```wlwl
+// LET MUT(d, [0: 0]);
+// WHILE(<(LEN(d), n), SET(d, INDEX_SET(d, LEN(d), LEN(d))));
+// ```
+//
+// **判据哲学与 `ADR-0032` 一致:宁可 miss 多,不可误判。** miss 的后果只是性能
+// 没提升;误判的后果是**可观察的语义破坏**(原地改被别名看到 ⇒ 旧值变了)。
+//
+// 判据落在**循环体里 `acc` 的出现位置**上。允许的位置只有两类:
+//
+// 1. **累加器位**:`SET(acc, INDEX_SET(acc, k, v))` 的目标位 + 那条 `INDEX_SET`
+//    的第一个实参;
+// 2. **只读内建白名单的直接实参**:那些内建只读字典,拿到累加器 cell 与拿到
+//    普通字典**逐字同结果**。
+//
+// 其余位置(存进容器 / 赋给另一个变量 / 传给任何函数 / 被闭包捕获 / `RETURN`
+// 出去)—— 一律**判否**。⇒ 四条否定条件与 `ADR-0032` S2 一一对应;**判据结构**
+// 复用,不是逐字照抄:字典的累加位是 `INDEX_SET`,不是 `PUSH` / `+` / `CONCAT`。
+//
+// ⚠ **与 `ADR-0032` 的一处刻意差异**:闭包体里出现 `acc` 一律判否(那里允许
+//   闭包体里出现累加器位)。字典的 cell 是**共享可变**的,闭包捕获它等于把
+//   「可原地改的字典」带出循环 ⇒ 这里比数组版**更严**。
+
+/// [ADR-0035 D4] 字典累加器形态里,`acc` 允许出现的**只读内建**白名单。
+///
+/// ⚠ 白名单里的每一个内建都必须**真的能处理累加器 cell**(且结果与普通字典
+/// 逐字相同)—— 否则 `acc` 的值会以「实现细节」的身份漏到不认识它的代码里,
+/// 那就是可观察的语义破坏。
+///
+/// 本批已接上的:`LEN` / `INDEX_GET` / `HAS` / `AT` / `KEYS` / `VALUES`
+/// (在 `wlwl-eval` 里各有一臂);`==` / `!=` / `TYPE` 走 `wlwl_value` 的
+/// 相等性与类型名,**天然对齐**(那两个函数本批已加 `DictCell` 分支)。
+const DICT_ACC_READ_BUILTINS: &[&str] = &[
+    "LEN",
+    "INDEX_GET",
+    "HAS",
+    "AT",
+    "KEYS",
+    "VALUES",
+    "==",
+    "!=",
+    "TYPE",
+];
+
+/// [ADR-0035 D4] 该表达式是不是「字典累加器位」的写:`INDEX_SET(acc, k, v)`。
+fn is_dict_acc_write(e: &Expr, acc: &str) -> bool {
+    use wlwl_ast::Expr as E;
+    let E::Call { name, args, .. } = e else {
+        return false;
+    };
+    if name != "INDEX_SET" || args.len() != 3 {
+        return false;
+    }
+    matches!(&args[0], E::Var(n, _) if n == acc)
+}
+
+/// [ADR-0035 D4] 收集候选名:`SET(x, INDEX_SET(x, k, v))` 里的 `x`。
+fn collect_dict_acc_candidates(e: &Expr, out: &mut Vec<String>) {
+    use wlwl_ast::Expr as E;
+    if let E::Call { name, args, .. } = e {
+        if name == "SET" && args.len() == 2 {
+            if let E::Var(n, _) = &args[0] {
+                if is_dict_acc_write(&args[1], n) {
+                    out.push(n.clone());
+                }
+            }
+        }
+    }
+    for_each_child(e, |c| collect_dict_acc_candidates(c, out));
+}
+
+/// [ADR-0035 D4] 数 `acc` 的出现落在哪个角色:合法位(`good`)、累加器写
+/// (`writes`)、还是别处(`bad`)。
+///
+/// `bad > 0` ⇒ 判否(逃逸分析命中否定条件)。
+fn scan_dict_acc_uses(e: &Expr, acc: &str, good: &mut usize, writes: &mut usize, bad: &mut usize) {
+    use wlwl_ast::Expr as E;
+    // ① 裸变量出现:不在任何允许位置 ⇒ 判否。
+    if let E::Var(n, _) = e {
+        if n == acc {
+            *bad += 1;
+        }
+        return;
+    }
+    // ② 闭包捕获 ⇒ 逃逸(生命周期跨出循环)⇒ 判否。
+    if let E::Fun { body, .. } = e {
+        if expr_mentions_acc(body, acc) {
+            *bad += 1;
+        }
+        return;
+    }
+    if let E::Call { name, args, .. } = e {
+        // ③ 累加器位:`SET(acc, INDEX_SET(acc, k, v))`。
+        if name == "SET"
+            && args.len() == 2
+            && matches!(&args[0], E::Var(n, _) if n == acc)
+            && is_dict_acc_write(&args[1], acc)
+        {
+            // 目标位 + `INDEX_SET` 的第一个实参 = 两个合法出现。
+            *good += 2;
+            *writes += 1;
+            // 键 / 值表达式:只允许只读位置。
+            if let E::Call { args: inner, .. } = &args[1] {
+                for a in &inner[1..] {
+                    scan_dict_acc_uses(a, acc, good, writes, bad);
+                }
+            }
+            return;
+        }
+        // ④ 只读内建白名单:直接实参里的 `acc` 是**安全读**。
+        if DICT_ACC_READ_BUILTINS.contains(&name.as_str()) {
+            for a in args {
+                if let E::Var(n, _) = a {
+                    if n == acc {
+                        *good += 1;
+                        continue;
+                    }
+                }
+                scan_dict_acc_uses(a, acc, good, writes, bad);
+            }
+            return;
+        }
+    }
+    // ⑤ 其余位置:逐个子表达式继续数。
+    for_each_child(e, |c| scan_dict_acc_uses(c, acc, good, writes, bad));
+}
+
+/// [ADR-0035 D4] 子树里是否出现过 `Var(acc)`。
+fn expr_mentions_acc(e: &Expr, acc: &str) -> bool {
+    use wlwl_ast::Expr as E;
+    if let E::Var(n, _) = e {
+        return n == acc;
+    }
+    let mut found = false;
+    for_each_child(e, |c| {
+        if expr_mentions_acc(c, acc) {
+            found = true;
+        }
+    });
+    found
+}
+
+/// [ADR-0035 D4] 返回该循环体里**唯一**的字典累加器名;任何歧义或可疑一律 `None`。
+///
+/// ⚠ **与 `ADR-0032` 的 `recognize_accumulator` 是同一套判据结构**
+/// (数据流判据 + 四条否定条件),但**判据内容**按字典的语义换过:
+///
+/// | | 数组(`ADR-0032`) | 字典(本批) |
+/// |---|---|---|
+/// | 累加位 | `SET(a, PUSH/+/CONCAT(a, x))` | `SET(d, INDEX_SET(d, k, v))` |
+/// | 计数器判别式 | 「出现在条件里的候选是计数器」 | **不适用** —— 计数器的写法是 `SET(i, +(i,1))`,不是 `INDEX_SET` 形状 ⇒ 天然不是候选 |
+/// | 允许的其它出现 | **无**(任何其它出现都判否) | **只读内建的直接实参**(见 `DICT_ACC_READ_BUILTINS`) |
+///
+/// ⚠ 计数器判别式为什么不需要:`SET(i, +(i, 1))` 的形状与字典累加位**不同构**
+///   ⇒ 候选收集阶段就把它排除了。而字典累加器**常常出现在条件里**
+///   (`WHILE(<(LEN(d), n))` —— 用键数当循环边界是最常见的写法)⇒ 若沿用
+///   数组版的「条件里出现的就是计数器」判别式,会把最常见的形状**判否**。
+fn recognize_dict_accumulator(cond: &Expr, body: &Expr) -> Option<String> {
+    // 第一遍:找出所有「像字典累加器」的 `SET(acc, INDEX_SET(acc, …))`,收候选名。
+    let mut candidates: Vec<String> = Vec::new();
+    collect_dict_acc_candidates(body, &mut candidates);
+    // 去重且**必须恰好一个** —— 两个不同的累加器不是本判据覆盖的形状。
+    candidates.sort();
+    candidates.dedup();
+    if candidates.len() != 1 {
+        return None;
+    }
+    let acc = candidates.into_iter().next()?;
+    // 第二遍:acc 的**每一次**出现都必须在允许位置(累加器位 / 只读内建实参)。
+    let (mut good, mut writes, mut bad) = (0usize, 0usize, 0usize);
+    scan_dict_acc_uses(body, &acc, &mut good, &mut writes, &mut bad);
+    // 条件里也只允许只读位置(`LEN(d)` 这类)。
+    scan_dict_acc_uses(cond, &acc, &mut good, &mut writes, &mut bad);
+    if writes > 0 && bad == 0 {
+        Some(acc)
+    } else {
+        None
+    }
+}
+
+/// 遍历一个表达式的**直接子表达式**。
+///
+/// ⚠ 为什么要它:`ADR-0032` 的三个遍历函数(`collect_acc_candidates` /
+/// `scan_acc_uses` / `mentions_var`)各写了一份逐变体 match —— 再加第四份
+/// (字典累加器)就是第四份同形代码,而**漏掉一个变体 = 逃逸分析漏判 = 语义破坏**。
+/// ⇒ 把「有哪些子表达式」收成**一处**。
+fn for_each_child(e: &Expr, mut f: impl FnMut(&Expr)) {
+    use wlwl_ast::Expr as E;
+    match e {
+        E::Literal(_, _) | E::Break { .. } | E::Continue { .. } | E::Var(_, _) => {}
+        E::Call { args, .. } => args.iter().for_each(&mut f),
+        E::Block { exprs, .. } | E::Array { items: exprs, .. } => exprs.iter().for_each(&mut f),
+        E::Dict { entries, .. } => entries.iter().for_each(|(k, v)| {
+            f(k);
+            f(v);
+        }),
+        E::Let { value, .. } | E::LetPattern { value, .. } => f(value),
+        E::If {
+            cond,
+            then_branch,
+            else_branch,
+            ..
+        } => {
+            f(cond);
+            f(then_branch);
+            if let Some(b) = else_branch {
+                f(b);
+            }
+        }
+        E::While { cond, body, .. } => {
+            f(cond);
+            f(body);
+        }
+        E::For { iter, body, .. } => {
+            f(iter);
+            f(body);
+        }
+        E::Return { value, .. } => {
+            if let Some(v) = value {
+                f(v);
+            }
+        }
+        E::Fun { body, .. } => f(body),
+        E::Ok { value, .. } | E::Err { value, .. } | E::Panic { value, .. } => f(value),
+        E::Try { value, .. } | E::IsOk { value, .. } | E::IsErr { value, .. } => f(value),
+        E::OrDie { value, default, .. } => {
+            f(value);
+            f(default);
+        }
+        E::Match {
+            value,
+            clauses,
+            default,
+            ..
+        } => {
+            f(value);
+            f(default);
+            clauses.iter().for_each(|c| f(&c.body));
+        }
+        E::Import { .. } | E::Export { .. } | E::Sealed { .. } => {}
+    }
+}
+
 fn collect_acc_candidates(e: &Expr, out: &mut Vec<String>) {
     use wlwl_ast::Expr as E;
     match e {
@@ -1301,6 +1548,10 @@ fn builtin_len(_ev: &mut Evaluator, args: Vec<Value>) -> WlwlResult<Outcome> {
         Value::String(s) => s.chars().count() as i64,
         Value::Array(a) => a.len() as i64,
         Value::Dict(d) => d.len() as i64,
+        // ⚠ [ADR-0035 D4] 累加器 cell:键数与普通字典**逐字相同**(读的是同一
+        //   份载荷)。少了这一臂,`LEN(d)` 在识别命中的循环里会报 `E0030` ——
+        //   那是**可观察的语义破坏**(程序原本能跑,优化后报错)。
+        Value::DictCell(c) => c.inner_rc().len() as i64,
         other => {
             return Err(type_error(
                 "LEN",
@@ -1813,6 +2064,20 @@ fn builtin_index_get(_ev: &mut Evaluator, args: Vec<Value>) -> WlwlResult<Outcom
                 )),
             }
         }
+        // ⚠ [ADR-0035 D4] 累加器 cell:读的是**同一份载荷** ⇒ 与普通字典
+        //   逐字同结果(同样的 `E0031` / `E0037`,同样的键比较次数)。
+        (Value::DictCell(cell), key) => {
+            dict_key_type_gate("INDEX_GET", key)?;
+            let inner = cell.inner_rc();
+            match dict_lookup(&inner, key) {
+                Some(i) => Ok(inner.entries()[i].1.clone()),
+                None => Err(builtin_error(
+                    ErrorCode::E0037,
+                    "INDEX_GET",
+                    format!("dict key {} not found", key.display()),
+                )),
+            }
+        }
         // v0.6 §4.5: STRING + INTEGER → single-codepoint STRING.
         // Negative indexes supported; OOB → E0036 (same code as ARRAY).
         (Value::String(s), Value::Integer(i)) => {
@@ -1902,6 +2167,39 @@ fn builtin_index_set(_ev: &mut Evaluator, args: Vec<Value>) -> WlwlResult<Outcom
             }
             Value::Dict(inner)
         }
+        // ⚠ [ADR-0035 D4] 累加器 cell:**就地**写(唯一拥有 ⇒ O(1))。
+        //
+        //   这是本批的核心一步:普通字典的写路径在「`d` 仍被绑定持有」时必拷贝
+        //   ⇒ 累加 n 个键的总拷贝是二次的(实测 n = 16 ⇒ 拷贝 120 条)。
+        //   累加器形态下 `d` 的载荷只被 cell 持有 ⇒ 写时复制判定为「唯一拥有」
+        //   ⇒ 原地改 ⇒ 总工作量 O(n)。
+        (Value::DictCell(cell), _) => {
+            dict_key_type_gate("INDEX_SET", &key)?;
+            // ⚠ **运行期再核一遍「这个 cell 就是当前活跃的字典累加器」**。
+            //   识别器(语法判据)已经保证「累加器位」是唯一能拿到 cell 的地方,
+            //   但误判的后果是**可观察的语义破坏**(原地改被不该看到的人看到)。
+            //   这一层的判据是**运行期事实**(cell 的身份),不是语法推断 ⇒
+            //   判否时**退化成拷贝**(语义安全,只是优化没生效),而不是改语义。
+            if !is_active_dict_accumulator(_ev, &cell) {
+                _ev.dict_acc_fallback.set(_ev.dict_acc_fallback.get() + 1);
+                // 退化路径:**拷贝**一份载荷再改 ⇒ 与普通字典的写路径逐字同结果
+                // (旧值原样可见)。
+                let mut copy = Rc::new((*cell.inner_rc()).clone());
+                let dict = wlwl_value::dict_make_mut(&mut copy);
+                match dict.lookup(&key) {
+                    Some(i) => dict.set_value(i, new_val),
+                    None => dict.insert(key.clone(), new_val),
+                }
+                return Ok(Outcome::normal(Value::Dict(copy)));
+            }
+            // 就地改:走 `wlwl_value::dict_make_mut`(唯一的计数点)⇒ 唯一拥有时
+            // O(1),被别名时 CoW 克隆(语义仍正确)。
+            cell.with_inner_mut(|dict| match dict.lookup(&key) {
+                Some(i) => dict.set_value(i, new_val),
+                None => dict.insert(key.clone(), new_val),
+            });
+            Value::DictCell(cell.share())
+        }
         // v0.6 §4.5: strings are read-only subscriptable; write is
         // rejected with E0030 (type error). Use SUB / SPLIT /
         // CODEPOINTS for string manipulation.
@@ -1922,6 +2220,30 @@ fn builtin_index_set(_ev: &mut Evaluator, args: Vec<Value>) -> WlwlResult<Outcom
         }
     };
     Ok(Outcome::normal(v))
+}
+
+/// [ADR-0035 D4] 这个 cell **就是**当前活跃的字典累加器吗?
+///
+/// 判据是**运行期事实**:活跃累加器名栈里的某个名字,其绑定里放的 cell 与
+/// `cell` **是同一个**(`Rc::ptr_eq`)。
+///
+/// ⚠ 为什么要这层复核:识别器是**语法判据**,它的结论是「这个循环体的形状像
+///   累加器」。而「就地改」这件事一旦发生在**不该发生**的地方,后果是
+///   **可观察的语义破坏**(旧值被改掉)。⇒ 在真正要改之前,再核一次「这个
+///   cell 确实是当前活跃累加器的那一个」;核不过就**退化成拷贝**(语义安全,
+///   只是优化没生效)—— 而不是改语义。
+fn is_active_dict_accumulator(ev: &Evaluator, cell: &wlwl_value::CellDict) -> bool {
+    ev.dict_acc_active
+        .iter()
+        .any(|name| match ev.env.get(name) {
+            // ⚠ **不能克隆那个值**再比:克隆出来的是**另一个 cell**(只是共享载荷)
+            // ⇒ `ptr_eq` 恒为假 ⇒ 复核会把每一次都判否。直接借出比对。
+            Some(r) => match &*r {
+                Value::DictCell(c) => c.ptr_eq(cell),
+                _ => false,
+            },
+            None => false,
+        })
 }
 
 /// v0.4 §10.1 + §10.2 — `AT(coll, idx_or_key, default)`.
@@ -1957,6 +2279,15 @@ fn builtin_at(_ev: &mut Evaluator, args: Vec<Value>) -> WlwlResult<Outcome> {
             Some(i) => inner.entries()[i].1.clone(),
             None => default.clone(),
         },
+        // ⚠ [ADR-0035 D4] 累加器 cell:读的是**同一份载荷** ⇒ 与普通字典
+        //   逐字同结果(含「键不存在 ⇒ 回落默认值」)。
+        (Value::DictCell(cell), key) => {
+            let inner = cell.inner_rc();
+            match dict_lookup(&inner, key) {
+                Some(i) => inner.entries()[i].1.clone(),
+                None => default.clone(),
+            }
+        }
         (other, _) => {
             return Err(type_error(
                 "AT",
@@ -2555,6 +2886,12 @@ fn builtin_keys(_ev: &mut Evaluator, args: Vec<Value>) -> WlwlResult<Outcome> {
             let keys: Vec<Value> = entries.iter().map(|(k, _)| k.clone()).collect();
             Ok(Outcome::normal(Value::Array(keys)))
         }
+        // ⚠ [ADR-0035 D4] 累加器 cell:同一份载荷 ⇒ **插入序**逐字相同。
+        Value::DictCell(cell) => {
+            let inner = cell.inner_rc();
+            let keys: Vec<Value> = inner.entries().iter().map(|(k, _)| k.clone()).collect();
+            Ok(Outcome::normal(Value::Array(keys)))
+        }
         other => Err(type_error(
             "KEYS",
             format!("expected DICT, got {}", type_name(other)),
@@ -2568,6 +2905,12 @@ fn builtin_values(_ev: &mut Evaluator, args: Vec<Value>) -> WlwlResult<Outcome> 
     match v {
         Value::Dict(entries) => {
             let vals: Vec<Value> = entries.iter().map(|(_, v)| v.clone()).collect();
+            Ok(Outcome::normal(Value::Array(vals)))
+        }
+        // ⚠ [ADR-0035 D4] 累加器 cell:同一份载荷 ⇒ **插入序**逐字相同。
+        Value::DictCell(cell) => {
+            let inner = cell.inner_rc();
+            let vals: Vec<Value> = inner.entries().iter().map(|(_, v)| v.clone()).collect();
             Ok(Outcome::normal(Value::Array(vals)))
         }
         other => Err(type_error(
@@ -2584,6 +2927,13 @@ fn builtin_has(_ev: &mut Evaluator, args: Vec<Value>) -> WlwlResult<Outcome> {
     }
     let dict = match &args[0] {
         Value::Dict(entries) => entries,
+        // ⚠ [ADR-0035 D4] 累加器 cell:同一份载荷 ⇒ 命中判定逐字相同。
+        Value::DictCell(cell) => {
+            let inner = cell.inner_rc();
+            let key = &args[1];
+            let found = dict_lookup(&inner, key).is_some();
+            return Ok(Outcome::normal(Value::Boolean(found)));
+        }
         other => {
             return Err(type_error(
                 "HAS",
@@ -6422,6 +6772,22 @@ fn value_to_json_value(v: &Value) -> Option<serde_json::Value> {
             }
             serde_json::Value::Object(obj)
         }
+        // ⚠ [ADR-0035 D4] 累加器 cell 必须**序列化成与 `Dict` 同形** ——
+        // `DictCell` 是**运行期实现细节**,不能出现在任何序列化产物里。
+        // 逐字照抄 `Dict` 那一支(键序 = 插入序,非字符串键 → `None`)。
+        Value::DictCell(cell) => {
+            let inner = cell.inner_rc();
+            let mut obj = serde_json::Map::new();
+            for (k, val) in inner.entries() {
+                let key_str = match k {
+                    Value::String(s) => s.clone(),
+                    _ => return None,
+                };
+                let json_val = value_to_json_value(val)?;
+                obj.insert(key_str, json_val);
+            }
+            serde_json::Value::Object(obj)
+        }
         Value::Err(_) => return None, // ERR nested in WRAP chain: skip (avoid infinite recursion for pathological inputs)
         Value::Ok(inner) => value_to_json_value(inner)?,
         // [v0.7 Phase C2] TaskHandle is not JSON-serialisable; this
@@ -6753,6 +7119,25 @@ pub struct Evaluator {
     /// 因为循环可嵌套 —— 内层循环若也识别命中,压自己的名字,退出时弹出,
     /// 外层的名字自动复原;内层若 miss 则不压栈,外层照常有效。
     acc_active: Vec<String>,
+    /// [ADR-0035 D4] 字典累加器识别的 **hit / miss** 计数。
+    ///
+    /// ⚠ 与 `acc_opt_hit` / `acc_opt_miss` **分列**而不是合并:数组累加器与
+    /// 字典累加器是**两套判据**(`ADR-0032` 认 `PUSH` / `+` / `CONCAT`,
+    /// `ADR-0035` D4 认 `INDEX_SET`)⇒ 合并就分不清「哪种形态漏识别了」。
+    dict_acc_opt_hit: std::cell::Cell<u64>,
+    dict_acc_opt_miss: std::cell::Cell<u64>,
+    /// [ADR-0035 D4] 识别**命中**但运行期复核**判否**的次数(退化成拷贝)。
+    ///
+    /// ⚠ 正常形态下恒为 0。它非 0 说明识别器与运行期事实**不一致** ——
+    ///   那是「逃逸分析有洞」的可测信号(而不是静默的语义破坏:退化路径是
+    ///   **拷贝**,旧值原样可见)。
+    dict_acc_fallback: std::cell::Cell<u64>,
+    /// [ADR-0035 D4] 当前**活跃**的字典累加器名栈(与 `acc_active` 同款)。
+    ///
+    /// 这个栈是共享通道的**唯一开关**:只有当某个名字被识别成活跃字典累加器
+    /// 时,`acc_dict_share` 才肯把那个 cell **按引用**交给白名单内建。栈而非
+    /// 单值,因为循环可嵌套。
+    dict_acc_active: Vec<String>,
     /// [v1.0 spec §8.6.3] 当前**读绑定的模式**。
     ///
     /// 派发消费者时设好、求值完实参后恢复。三种模式见
@@ -6997,6 +7382,10 @@ impl Evaluator {
             acc_opt_hit: std::cell::Cell::new(0),
             acc_opt_miss: std::cell::Cell::new(0),
             acc_active: Vec::new(),
+            dict_acc_opt_hit: std::cell::Cell::new(0),
+            dict_acc_opt_miss: std::cell::Cell::new(0),
+            dict_acc_fallback: std::cell::Cell::new(0),
+            dict_acc_active: Vec::new(),
             read_mode: ReadMode::Transfer,
         }
     }
@@ -7007,6 +7396,26 @@ impl Evaluator {
     /// D11-022 已证警告通道无人排空,走它等于静默丢弃。
     pub fn accumulator_optimizer_counters(&self) -> (u64, u64) {
         (self.acc_opt_hit.get(), self.acc_opt_miss.get())
+    }
+
+    /// [ADR-0035 D4] **字典**累加器识别的 `(hit, miss, fallback)` 计数。
+    ///
+    /// * `hit` —— 识别判为字典累加器(循环级)。
+    /// * `miss` —— 识别判否(含「有歧义」与「看不懂的构造」)。
+    /// * `fallback` —— 识别**命中**但**运行期复核判否**的次数:那次写**退化**
+    ///   成拷贝(语义安全,只是优化没生效)。正常形态恒为 0;非 0 说明识别器与
+    ///   运行期事实不一致(逃逸分析有洞)的**可测信号**。
+    ///
+    /// ⚠ 与 [`Evaluator::accumulator_optimizer_counters`] **分列**:数组累加器
+    /// 与字典累加器是两套判据 ⇒ 合并就分不清「哪种形态漏识别了」。
+    ///
+    /// **只给测试与基准读**;**不做运行时警告**(D11-022:警告通道无人排空)。
+    pub fn dict_accumulator_optimizer_counters(&self) -> (u64, u64, u64) {
+        (
+            self.dict_acc_opt_hit.get(),
+            self.dict_acc_opt_miss.get(),
+            self.dict_acc_fallback.get(),
+        )
     }
 
     /// Enable or disable strict-types boundary checks (Phase E1,
@@ -7082,6 +7491,10 @@ impl Evaluator {
             acc_opt_hit: std::cell::Cell::new(0),
             acc_opt_miss: std::cell::Cell::new(0),
             acc_active: Vec::new(),
+            dict_acc_opt_hit: std::cell::Cell::new(0),
+            dict_acc_opt_miss: std::cell::Cell::new(0),
+            dict_acc_fallback: std::cell::Cell::new(0),
+            dict_acc_active: Vec::new(),
             read_mode: ReadMode::Transfer,
         }
     }
@@ -8131,14 +8544,30 @@ impl Evaluator {
         // 就地分支是 S3。所以此刻无论 hit 还是 miss,程序结果都完全一样;计数的
         // 作用是让「识别漏了多少」**可测**(ADR-0025 Q3 第一件),而不是静默的性能
         // 回退。
-        let acc_name = match recognize_accumulator(cond, body) {
-            Some(n) => n,
+        //
+        // [ADR-0035 D4] 字典累加器识别与数组累加器识别**并列**跑:两套判据
+        // (`ADR-0032` 认 `PUSH` / `+` / `CONCAT`,`ADR-0035` D4 认 `INDEX_SET`)
+        // ⇒ 计数器**分列**,合并就分不清「哪种形态漏识别了」。
+        let acc_name: Option<String> = match recognize_accumulator(cond, body) {
+            Some(n) => Some(n),
             None => {
                 self.acc_opt_miss.set(self.acc_opt_miss.get() + 1);
-                return self.eval_while_inner(cond, body);
+                None
             }
         };
-        self.acc_opt_hit.set(self.acc_opt_hit.get() + 1);
+        if acc_name.is_some() {
+            self.acc_opt_hit.set(self.acc_opt_hit.get() + 1);
+        }
+        let dict_acc_name: Option<String> = match recognize_dict_accumulator(cond, body) {
+            Some(n) => Some(n),
+            None => {
+                self.dict_acc_opt_miss.set(self.dict_acc_opt_miss.get() + 1);
+                None
+            }
+        };
+        if dict_acc_name.is_some() {
+            self.dict_acc_opt_hit.set(self.dict_acc_opt_hit.get() + 1);
+        }
         // [PLAN S3] 识别命中 ⇒ 把累加器包成 cell,让三个内建走就地追加。
         //
         // ⚠ `Env::get` 返回 `Option<Ref<Value>>`(v0.6 §3.4 的按引用 cell),
@@ -8147,12 +8576,46 @@ impl Evaluator {
         //
         // ⚠ **循环结束后转回 `Array`**:可观察面本来就一致(S1 的契约),转回去是
         // 为了不让 `Cell` 逃出这个循环的词法范围 —— 它只是优化期间的临时表示。
-        let peek = self.env.get(&acc_name).map(|r| r.clone());
-        let already_cell = matches!(peek, Some(Value::Cell(_)));
-        if !already_cell {
-            if let Some(Value::Array(v)) = peek {
+        let mut already_cell = false;
+        if let Some(name) = &acc_name {
+            let peek = self.env.get(name).map(|r| r.clone());
+            already_cell = matches!(peek, Some(Value::Cell(_)));
+            if !already_cell {
+                if let Some(Value::Array(v)) = peek {
+                    // ⚠ [D13-099] 用 `replace_binding_value` 而不是 `set_local_mut`。
+                    //
+                    // `set_local_mut` 在**最内层作用域插入一个新绑定**(且新绑定是
+                    // **可变**的)⇒ 会**遮蔽**外层的同名绑定并**改掉它的可变性**
+                    // (规范 §3.1:可变性建绑定时定、**永不变**)⇒ 后果是**可观察的
+                    // 语义破坏**:`LET(acc, [])`(不可变)+ 累加器形状的循环,原本
+                    // **必须**报 `E0024`,优化后**不报**了。
+                    //
+                    // ⇒ 累加器形态的「临时表示」只能**就地改写已有绑定的值**,
+                    // 保持可性不变(`Env::replace_binding_value`,与 `ADR-0035` D4
+                    // 的字典版同款)。
+                    self.env.replace_binding_value(
+                        name,
+                        Value::Cell(wlwl_value::CellVec::new(v)),
+                    );
+                }
+            }
+        }
+        // [ADR-0035 D4] 识别命中 ⇒ 把绑定里的普通字典换成**累加器 cell**,
+        // 让 `INDEX_SET` 走就地写(唯一拥有时 O(1))。
+        //
+        // ⚠ 用 `replace_binding_value` 而不是 `set_local_mut`:后者在**最内层
+        //   作用域插入一个新绑定** ⇒ 会**遮蔽**外层的同名绑定并**改掉它的
+        //   可变性**(§3.1:可变性建绑定时定,永不变)⇒ 那是可观察的语义破坏。
+        //
+        // ⚠ `Rc<DictInner>` 是**移进** cell 的(不是拷贝):绑定里那份被替换掉
+        //   ⇒ 强引用计数归 1 ⇒ 之后的写是**原地改**(O(1))而不是克隆(O(n))。
+        let mut dict_wrapped = false;
+        if let Some(name) = &dict_acc_name {
+            let cur = self.env.get(name).map(|r| r.clone());
+            if let Some(Value::Dict(inner)) = cur {
                 self.env
-                    .set_local_mut(acc_name.clone(), Value::Cell(wlwl_value::CellVec::new(v)));
+                    .replace_binding_value(name, Value::DictCell(wlwl_value::CellDict::new(inner)));
+                dict_wrapped = true;
             }
         }
         // ⚠ **必须把 `eval_while_inner` 的结果原样传出去**。循环体可能以
@@ -8168,9 +8631,21 @@ impl Evaluator {
         // 若沿用 `...?` 的写法,这条路径就把名字留在栈上了 —— 之后**完全无关**
         // 的循环会误开共享通道。栈与控制流必须同生共死,所以先把结果收成
         // `Result`,弹出,再 `?`。
-        self.acc_active.push(acc_name.clone());
+        if acc_name.is_some() {
+            self.acc_active
+                .push(acc_name.clone().expect("checked above"));
+        }
+        if dict_acc_name.is_some() {
+            self.dict_acc_active
+                .push(dict_acc_name.clone().expect("checked above"));
+        }
         let out = self.eval_while_inner(cond, body);
-        self.acc_active.pop();
+        if acc_name.is_some() {
+            self.acc_active.pop();
+        }
+        if dict_acc_name.is_some() {
+            self.dict_acc_active.pop();
+        }
         // ⚠ **先还原、再传播错误**。第一版把 `out?` 写在还原之前,于是循环若是
         // **诊断错误**退出(`E0030` 之类),累加器就永远停在 `Cell` 上,与上面那句
         // 「Cell 只是优化期间的临时表示」当场矛盾。
@@ -8180,11 +8655,29 @@ impl Evaluator {
         // 成立的分支(比如给某个内建再加一条 Array 专属快路)都会在这个出口上
         // 静默走错分支。而诊断错误会中止整个程序,没有「谁来看这个值」来提醒
         // —— 它只能靠这条不变量自己站住。
-        if !already_cell {
-            let after = self.env.get(&acc_name).map(|r| r.clone());
-            if let Some(Value::Cell(c)) = after {
-                let items = c.borrow().clone();
-                self.env.set_local_mut(acc_name, Value::Array(items));
+        if let Some(name) = &acc_name {
+            if !already_cell {
+                let after = self.env.get(name).map(|r| r.clone());
+                if let Some(Value::Cell(c)) = after {
+                    let items = c.borrow().clone();
+                    // ⚠ [D13-099] 同样用 `replace_binding_value` —— 还原也**不得**
+                    // 遮蔽外层绑定或改它的可性(见上面包装处的同款说明)。
+                    self.env
+                        .replace_binding_value(name, Value::Array(items));
+                }
+            }
+        }
+        // [ADR-0035 D4] 换回**普通字典**:可观察面本来就一致,但 cell 只是优化
+        // 期间的临时表示,不该逃出这个循环的词法范围。
+        //
+        // ⚠ 换回的是**同一份数据**(`inner_rc()` 是 `Rc` 克隆,O(1))⇒ 这一步
+        //   不是 O(n) 的拷贝。
+        if dict_wrapped {
+            let name = dict_acc_name.as_ref().expect("wrapped implies named");
+            let after = self.env.get(name).map(|r| r.clone());
+            if let Some(Value::DictCell(cell)) = after {
+                let inner = cell.inner_rc();
+                self.env.replace_binding_value(name, Value::Dict(inner));
             }
         }
         out
@@ -8444,6 +8937,57 @@ impl Evaluator {
         }
     }
 
+    /// [ADR-0035 D4] 活跃**字典**累加器 cell 走共享通道,跳过 `Expr::Var` 的
+    /// 克隆。
+    ///
+    /// ## 为什么必须有这个通道(与数组版 S3b 的理由**不同**)
+    ///
+    /// 数组版的 `Expr::Var` 克隆是**语义深拷贝** ⇒ 每轮 O(n) ⇒ 必须绕开。
+    /// 字典版不同:累加器 cell 的载荷是 `Rc<DictInner>` ⇒ 克隆是 **O(1)** 的
+    /// `Rc` 克隆。**但那恰好是问题所在**:
+    ///
+    /// `Rc` 克隆会让载荷的强引用计数 +1 ⇒ 写时复制(`dict_make_mut`)判定为
+    /// 「被别名」⇒ 克隆整个字典 ⇒ 累加 n 个键的总拷贝又是**二次的**。
+    ///
+    /// ⇒ 共享通道给的必须是**同一个 cell**(`share()` 只克隆 cell 的 `Rc`,
+    ///   **不**克隆载荷的 `Rc`)⇒ 载荷计数保持 1 ⇒ 写是**原地改**(O(1))。
+    ///
+    /// ## 安全性
+    ///
+    /// 与 `acc_cell_share` 同款:安全性不靠「看起来没问题」,而靠
+    /// `recognize_dict_accumulator` 的逃逸分析 —— 命中意味着 `acc` 在整个
+    /// 循环体(含嵌套 `While` / `For`)里只出现在**累加器位**或**只读内建的
+    /// 直接实参**上 ⇒ 「`acc` 被当值另存一份」这件事在命中循环里不存在。
+    ///
+    /// ⚠ **只认白名单里的只读内建 + 累加器位自己的 `INDEX_SET`**:
+    ///   别的内建不认识累加器 cell ⇒ 让它拿到就是可观察的语义破坏。
+    /// ⚠ **名字被用户绑定**遮蔽**时不能用**:那时拿到 cell 的是用户的函数,
+    ///   它可以把 cell 存到别处 ⇒ 累加器的原地改会被看到。正常路径给的是
+    ///   **克隆**出来的 cell ⇒ 写时复制保证互不影响 ⇒ 语义安全(只是优化
+    ///   失效,退化成今天的行为)。
+    /// ⚠ 环境里查不到、或该槽不是 cell ⇒ 返回 `None` 交回 `eval_expr`。
+    ///   共享通道只做加法,不做拦截。
+    fn acc_dict_share(&self, callee: &str, arg: &Expr) -> Option<Value> {
+        if !(DICT_ACC_READ_BUILTINS.contains(&callee) || callee == "INDEX_SET") {
+            return None;
+        }
+        let Expr::Var(n, _) = arg else { return None };
+        if !self.dict_acc_active.iter().any(|a| a == n) {
+            return None;
+        }
+        if self.env.get(callee).is_some() {
+            // 用户绑定遮蔽了这个名字 ⇒ 拿到 cell 的不是内建 ⇒ 不用共享通道。
+            return None;
+        }
+        match self.env.get(n) {
+            Some(r) => match &*r {
+                Value::DictCell(c) => Some(Value::DictCell(c.share())),
+                _ => None,
+            },
+            None => None,
+        }
+    }
+
     fn eval_arg_values(
         &mut self,
         callee: &str,
@@ -8462,9 +9006,14 @@ impl Evaluator {
             let prev_mode = self.read_mode;
             self.read_mode = mode;
             // [PLAN S4] 活跃累加器 cell 走共享通道,跳过 `Expr::Var` 的深拷贝。
+            // [ADR-0035 D4] 字典累加器同款:共享通道给的是**同一个 cell**
+            // (载荷 `Rc` 计数不变)⇒ 写时复制判定为「唯一拥有」⇒ 原地改。
             let o = match self.acc_cell_share(callee, a) {
                 Some(v) => Ok(Outcome::normal(v)),
-                None => self.eval_expr(a),
+                None => match self.acc_dict_share(callee, a) {
+                    Some(v) => Ok(Outcome::normal(v)),
+                    None => self.eval_expr(a),
+                },
             };
             self.read_mode = prev_mode;
             let mut o = o?;

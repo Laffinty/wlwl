@@ -31,6 +31,16 @@
 //! (8 k 时 889/906/940 ms,极差 5.7%),所以它们**必须都平**。只平一个说明
 //! 识别谓词漏了形态 —— 那正是 D2 要防的静默性能回退。
 //!
+//! ## [ADR-0035 D4] 另两组:**字典**累加器(`INDEX_SET` 形态)
+//!
+//! ```text
+//!   dict_acc         SET(d, INDEX_SET(d, i, i))
+//!   dict_acc_control 同上,循环体末尾多一句 STR(d) ⇒ 判否 ⇒ 平方级
+//! ```
+//!
+//! 判别式与数组版同款(只差一句 ⇒ 差就是优化的净值);档位小一档,理由见
+//! `DICT_TIERS` 的注释。
+//!
 //! ## 判据:每元素成本**持平**,不是「总时间变短」
 //!
 //! 每档报 `Throughput::Elements(n)`,criterion 直接给 ns/元素。四档 1k→8k
@@ -125,5 +135,75 @@ fn bench_shape_tail(c: &mut Criterion, group: &str, append: &str, tail: &str) {
     g.finish();
 }
 
-criterion_group!(benches, bench_plus, bench_push, bench_concat, bench_control,);
+// ── [ADR-0035 D4] 字典累加器(`INDEX_SET` 形态)─────────────────────────
+//
+// 目标形状(规范 §18.4 的「循环内逐次 `INDEX_SET(d, k, v)` 写 n 个键」):
+//
+// ```wlwl
+// LET MUT(d, [0: 0]);
+// LET MUT(i, 0);
+// WHILE(<(i, n), (SET(d, INDEX_SET(d, i, i)); SET(i, +(i, 1))));
+// ```
+//
+// 判别式与数组版**同款**:对照组只多一句 `STR(d)` —— `d` 出现在**非白名单**
+// 位置(`STR` 不在只读白名单里)⇒ 逃逸分析判否 ⇒ 写路径退回 copy-on-write
+// ⇒ 平方级。两者之差就是「优化本身」的净值。
+//
+// ⚠ **档位比数组版小一档**(500…4 000 而不是 1 000…8 000):字典的对照组是
+//   **平方级**,而它的常数比数组大(每次写要克隆整个字典**并重建哈希索引**)
+//   ⇒ 8 000 档单次要十几秒,criterion 只够采到 1 个样本。4 000 档是能采到
+//   样本的最大档位。
+
+/// 字典累加器:档位比数组版小一档(对照组是平方级,常数更大)。
+const DICT_TIERS: [usize; 4] = [500, 1_000, 2_000, 4_000];
+
+/// 字典累加器循环。`write` 是那一行写语句,`tail` 是循环体末尾的可选尾巴。
+fn dict_acc_src(n: usize, write: &str, tail: &str) -> String {
+    format!(
+        "LET(main, FUN((), (\n\
+         \x20   LET MUT(d, [0: 0]);\n\
+         \x20   LET MUT(i, 0);\n\
+         \x20   WHILE(<(i, {n}), ({write} SET(i, +(i, 1)){tail}));\n\
+         \x20   LEN(d)\n\
+         \x20 )));\n\
+         \x20main();\n"
+    )
+}
+
+fn bench_dict_acc(c: &mut Criterion) {
+    bench_dict_shape(c, "dict_acc", "SET(d, INDEX_SET(d, i, i));", "");
+}
+
+/// 对照组:同一份源码,只多一句 `STR(d)` ⇒ 识别判否 ⇒ 平方级。
+fn bench_dict_control(c: &mut Criterion) {
+    bench_dict_shape(
+        c,
+        "dict_acc_control",
+        "SET(d, INDEX_SET(d, i, i));",
+        "; STR(d)",
+    );
+}
+
+fn bench_dict_shape(c: &mut Criterion, group: &str, write: &str, tail: &str) {
+    let mut g = c.benchmark_group(group);
+    for &n in &DICT_TIERS {
+        let src = dict_acc_src(n, write, tail);
+        let ast = parse_program(&src);
+        g.throughput(Throughput::Elements(n as u64));
+        g.bench_with_input(BenchmarkId::from_parameter(n), &n, |b, _| {
+            b.iter(|| run_eval(&src, &ast));
+        });
+    }
+    g.finish();
+}
+
+criterion_group!(
+    benches,
+    bench_plus,
+    bench_push,
+    bench_concat,
+    bench_control,
+    bench_dict_acc,
+    bench_dict_control,
+);
 criterion_main!(benches);
