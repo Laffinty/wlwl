@@ -26,6 +26,24 @@ pub(super) fn std_parse_inner(
     }
 }
 
+/// 序列化失败 → `E0071` 的**映射**。
+///
+/// ⚠ **为什么抽成具名函数**:`E0071` 是 `serde_json::to_string` 失败的兜底,
+///   而 `serde_json::Value` 的键**必**是字符串、数**必**有限 ⇒ 那条分支在
+///   **正常路径上不可达** ⇒ 契约层造不出「序列化失败」的程序 ⇒ 规范仓检查器
+///   的失败口径对拍(V-05)钉不到它。
+///   ⚠ 而这条**不许**从规范侧消掉 —— 标准库·核心册 §3.1 把 `E0071` 写成
+///   `STRINGIFY` 的失败口径,§3.3 又把它**冻结**为 v0.3 遗留形态 ⇒ 只能从
+///   实现侧把它**真的**钉住。
+///
+///   抽函数**不改行为**:码、消息、调用点逐字不变。
+fn stringify_serialize_error(e: serde_json::Error) -> StdError {
+    StdError {
+        code: ErrorCode::E0071,
+        message: format!("STRINGIFY: {}", e),
+    }
+}
+
 pub(super) fn std_stringify_inner(
     _ctx: &mut StdCtx,
     args: Vec<StdValue>,
@@ -39,10 +57,7 @@ pub(super) fn std_stringify_inner(
     // spec surface is complete.
     match serde_json::to_string(&args[0]) {
         Ok(s) => Ok(StdValue::String(s)),
-        Err(e) => Err(StdError {
-            code: ErrorCode::E0071,
-            message: format!("STRINGIFY: {}", e),
-        }),
+        Err(e) => Err(stringify_serialize_error(e)),
     }
 }
 
@@ -572,6 +587,22 @@ mod tests {
         let mut ctx = StdCtx::default();
         let v = std_stringify_inner(&mut ctx, vec![serde_json::json!([1, 2, 3])]).unwrap();
         assert_eq!(v, StdValue::String("[1,2,3]".into()));
+    }
+
+    /// 序列化失败 → `E0071`(标准库·核心册 §3.1 的 `STRINGIFY` 失败列:
+    /// 「失败产生 `E0071`」;§3.3 把它**冻结**为 v0.3 遗留形态)。
+    ///
+    /// ⚠ `serde_json::Error` **没有**公共构造器,但**解析失败**能造出同类型的
+    ///   一个(`serde_json::from_str::<serde_json::Value>("{")` 的 `Err`)——
+    ///   序列化与解析共用同一个错误类型 ⇒ 喂得进去。
+    ///
+    /// ⚠ **用例名必须含成员名**:归属靠「`#[test] fn` 名里含成员名的蛇形
+    ///   形式」推出来。
+    #[test]
+    fn stringify_serialize_error_is_e0071() {
+        let parse_err = serde_json::from_str::<serde_json::Value>("{").unwrap_err();
+        let err = stringify_serialize_error(parse_err);
+        assert_eq!(err.code, ErrorCode::E0071);
     }
 
     #[test]

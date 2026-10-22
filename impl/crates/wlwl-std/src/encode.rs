@@ -776,6 +776,29 @@ fn argon2id_bytes(
 // 从这里取字节,**不得**反向依赖(addendum-04 §3.3 的 W-02 裁决)。名字
 // 要让人看出它是**密码学安全**的 —— 这正是它不叫 `RAND()` 的原因。
 
+/// 熵源读失败 → `E0060`(IO error)的**映射**。
+///
+/// 返回 `(诊断码, 消息)` —— 消息带**成员名**,与原实现逐字相同。
+///
+/// ⚠ **为什么抽成具名函数**:这条分支在**正常路径上不可达** —— 操作系统的
+///   熵源不会失败 ⇒ **契约层造不出「熵源读失败」的程序** ⇒ 规范仓检查器
+///   的「失败口径对拍」(一致性册 §6.2 的 V-05)钉不到它。抽出来之后,行内
+///   单测可以用**合成的** `io::Error` 直接喂它,把这条口径**真的**钉住。
+///
+/// ⚠ **失败原因按 `Display` 收,而不是按具体错误类型**:生产路径上的错误
+///   类型是 **`getrandom::Error`**(不是 `std::io::Error`)—— 它裹的是
+///   `NonZeroRawOsError`,**没有**公共构造器 ⇒ 造不出一个真的。
+///   收 `Display` 后,生产侧传 `getrandom::Error`、测试侧传合成的
+///   `std::io::Error`,**两边的消息逐字相同**(`Display` 输出一致)。
+///
+///   抽函数**不改行为**:码、消息、调用点逐字不变。
+fn entropy_io_error(name: &str, reason: impl std::fmt::Display) -> (ErrorCode, String) {
+    (
+        ErrorCode::E0060,
+        format!("{name}: the operating system entropy source failed ({reason})"),
+    )
+}
+
 /// 读操作系统熵源。**熵源读失败是 `E0060`(IO error)而不是 `E0030`**:
 /// 前者是**运行环境**出问题(内核没给熵、沙箱封了系统调用),后者是程序员
 /// 把参数写错了。两者的处置完全不同,不该混成一个码。
@@ -785,10 +808,8 @@ fn fill_entropy(
     buf: &mut [u8],
 ) -> Result<(), wlwl_error::WlwlError> {
     getrandom::fill(buf).map_err(|e| {
-        host.diag(
-            ErrorCode::E0060,
-            format!("{name}: the operating system entropy source failed ({e})"),
-        )
+        let (code, message) = entropy_io_error(name, e);
+        host.diag(code, message)
     })
 }
 
@@ -1305,6 +1326,32 @@ mod tests {
                 "n = {n}: hex must be lowercase, got {hex:?}"
             );
         }
+    }
+
+    /// 熵源读失败 → `E0060`(标准库·安全册 §11.1 的「环境失败」行:
+    /// 「操作系统熵源读失败 | 原生诊断 `E0060`」)。
+    ///
+    /// ⚠ 这条形态在**正常路径上不可达** —— 操作系统熵源不会失败 ⇒ 契约层
+    ///   造不出「熵源读失败」的程序 ⇒ 规范仓检查器的失败口径对拍(V-05)
+    ///   钉不到它。⇒ 映射被抽成具名函数 `entropy_io_error`,这里用**合成的**
+    ///   `io::Error` 直接喂它。
+    ///
+    /// ⚠ **用例名必须含成员名**:`fill_entropy` 是 `RANDOM_BYTES` 与
+    ///   `RANDOM_HEX` **共用**的 ⇒ 一个用例只能归属一个成员 ⇒ 两条各写一个。
+    #[test]
+    fn random_bytes_entropy_io_error_is_e0060() {
+        let (code, message) = entropy_io_error("RANDOM_BYTES", std::io::Error::other("synthetic"));
+        assert_eq!(code, ErrorCode::E0060);
+        assert!(message.contains("RANDOM_BYTES"), "{}", message);
+    }
+
+    /// 同上,但归属 `RANDOM_HEX`(见 `random_bytes_entropy_io_error_is_e0060`
+    /// 的说明:共用原语 ⇒ 两条各写一个用例)。
+    #[test]
+    fn random_hex_entropy_io_error_is_e0060() {
+        let (code, message) = entropy_io_error("RANDOM_HEX", std::io::Error::other("synthetic"));
+        assert_eq!(code, ErrorCode::E0060);
+        assert!(message.contains("RANDOM_HEX"), "{}", message);
     }
 
     #[test]

@@ -603,6 +603,25 @@ pub(super) fn std_ask_all_inner(
     }
 
     // Mock per-prompt response (batched).
+    //
+    // ⚠ **保留失败 token 在这条路径上生效** —— mock 后端**不发**推理请求,
+    //   所以「推理侧失败」在本路径上的**唯一**载体就是**默认模型**
+    //   (`WLWL_AI_DEFAULT_MODEL`,缺省 `"default"`);`EMBED` / `COMPLETE` 的
+    //   缺省模型取自**同一个**环境变量(标准库·官方包册 §9.1 的 `ASK_ALL`
+    //   失败列写着「推理侧失败 → `E0080`」⇒ 这条保留 token 就是该口径的
+    //   **唯一**可达形态)。
+    //
+    //   ⚠ **只挂在 mock 分支上**:真实模式的模型是**硬编码**的
+    //     `"default"`(见 `real::http_chat(ctx, "default", …)`),它**不**读
+    //     环境变量 ⇒ 在这里改模型会改真实模式的行为(把请求发给别的模型),
+    //     那是**可观察行为变更**,不属本条口径。
+    //
+    //   ⚠ **正常路径逐字不变**:默认模型是 `"default"`(不是保留 token)
+    //     ⇒ 下面那次检查恒不命中 ⇒ 返回值与诊断**一个字节都不变**。
+    let model = env_lookup(ctx, "WLWL_AI_DEFAULT_MODEL").unwrap_or("default");
+    if let Some(err) = check_reserved_failure(model) {
+        return Err(err);
+    }
     let mut out: Vec<StdValue> = Vec::with_capacity(prompts.len());
     for (i, p) in prompts.iter().enumerate() {
         let StdValue::String(prompt) = p else {
@@ -1031,6 +1050,46 @@ mod tests {
         .unwrap_err();
         assert_eq!(err.code, ErrorCode::E0030);
         assert!(err.message.contains("ASK_ALL"));
+    }
+
+    /// `ASK_ALL` 的保留失败 token → `E0080`(标准库·官方包册 §9.1 的
+    /// `ASK_ALL` 失败列:「推理侧失败 → `E0080`」)。
+    ///
+    /// ⚠ **载体是默认模型**:`ASK_ALL` 的签名里**没有模型名形参** ⇒ 只能取
+    ///   `WLWL_AI_DEFAULT_MODEL`。`StdCtx.env` 是**可注入的映射**(不是进程
+    ///   级 env)⇒ 并行测试互不踩。
+    ///
+    /// ⚠ **用例名必须含成员名**:`ASK_ALL` 既是本章的成员、又是 `ai` 包的
+    ///   成员名 ⇒ 归属靠「`#[test] fn` 名里含成员名的蛇形形式」推出来。
+    #[test]
+    fn ask_all_reserved_failure_token_is_e0080() {
+        let mut c = ctx();
+        c.env
+            .insert("WLWL_AI_DEFAULT_MODEL".into(), "_fail_E0080".into());
+        let err = std_ask_all_inner(
+            &mut c,
+            vec![StdValue::Array(vec![StdValue::String("p".into())])],
+        )
+        .unwrap_err();
+        assert_eq!(err.code, ErrorCode::E0080);
+        assert!(err.message.contains("_fail_E0080"), "{}", err.message);
+    }
+
+    /// 没有保留 token 时,`ASK_ALL` 仍**照常**返回 mock 批 —— 保留 token 的
+    /// 接入**不许**改变正常路径(标准库·官方包册 §9.3:返回值是 `ARRAY`,
+    /// 与 `prompts` **等长**、**同序**)。
+    #[test]
+    fn ask_all_without_reserved_token_still_returns_the_batch() {
+        let mut c = ctx();
+        let v = std_ask_all_inner(
+            &mut c,
+            vec![StdValue::Array(vec![
+                StdValue::String("a".into()),
+                StdValue::String("b".into()),
+            ])],
+        )
+        .unwrap();
+        assert_eq!(v.as_array().map(|a| a.len()), Some(2));
     }
 
     #[test]
