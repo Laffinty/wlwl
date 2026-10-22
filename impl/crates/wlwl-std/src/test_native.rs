@@ -177,7 +177,7 @@ pub fn kernel_run_tests(host: &mut dyn StdHost, args: Vec<Value>) -> WlwlResult<
                     };
                     ka.cmp(kb)
                 });
-                Value::Dict(d)
+                Value::dict(d)
             }
             Ok(other) => {
                 // Non-ERR outcome. Could be OK(TRUE) (from a passed
@@ -208,7 +208,7 @@ pub fn kernel_run_tests(host: &mut dyn StdHost, args: Vec<Value>) -> WlwlResult<
                     };
                     ka.cmp(kb)
                 });
-                Value::Dict(d)
+                Value::dict(d)
             }
             Err(()) => {
                 let mut d = vec![
@@ -237,7 +237,7 @@ pub fn kernel_run_tests(host: &mut dyn StdHost, args: Vec<Value>) -> WlwlResult<
                     };
                     ka.cmp(kb)
                 });
-                Value::Dict(d)
+                Value::dict(d)
             }
         };
         results.push(dict);
@@ -307,5 +307,5 @@ fn build_payload(code: &str, cond: &Value, msg: Option<Value>, kind: &str) -> Va
     if let Some(m) = msg {
         entries.push((Value::String("msg".into()), m));
     }
-    Value::Dict(entries)
+    Value::dict(entries)
 }

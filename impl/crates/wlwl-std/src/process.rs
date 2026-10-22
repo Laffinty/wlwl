@@ -304,7 +304,7 @@ fn ok(v: Value) -> Result<Outcome, WlwlError> {
 }
 
 fn proc_err(op: &str, reason: impl Into<String>) -> Value {
-    Value::Err(Box::new(Value::Dict(vec![
+    Value::Err(Box::new(Value::dict(vec![
         (
             Value::String("kind".into()),
             Value::String("ProcessError".into()),
@@ -353,7 +353,7 @@ pub fn process_run(host: &mut dyn StdHost, args: Vec<Value>) -> Result<Outcome, 
     match args.get(1) {
         None | Some(Value::Null) => {}
         Some(Value::Dict(entries)) => {
-            for (k, v) in entries {
+            for (k, v) in entries.iter() {
                 let (Value::String(key), _) = (k, v) else {
                     return Err(type_err(host, NAME, "an opts dict with string keys", k));
                 };
@@ -377,7 +377,7 @@ pub fn process_run(host: &mut dyn StdHost, args: Vec<Value>) -> Result<Outcome, 
                     },
                     "env" => match v {
                         Value::Dict(kvs) => {
-                            for (ek, ev) in kvs {
+                            for (ek, ev) in kvs.iter() {
                                 match (ek, ev) {
                                     (Value::String(k), Value::String(val)) => {
                                         extra_env.push((k.clone(), val.clone()))
@@ -493,7 +493,7 @@ pub fn process_run(host: &mut dyn StdHost, args: Vec<Value>) -> Result<Outcome, 
         ));
     }
     let code = status.and_then(|s| s.code()).unwrap_or(-1);
-    ok(Value::Dict(vec![
+    ok(Value::dict(vec![
         (
             Value::String("code".into()),
             Value::Integer(i64::from(code)),
@@ -574,7 +574,7 @@ mod tests {
             &mut h,
             vec![
                 Value::Array(argv.into_iter().map(|s| Value::String(s.into())).collect()),
-                Value::Dict(vec![]),
+                Value::dict(vec![]),
             ],
         )
         .expect("spawn");
@@ -880,7 +880,7 @@ mod tests {
                 Value::String("5".into()),
             ])
         };
-        let opts = Value::Dict(vec![(Value::String("timeout".into()), Value::Integer(300))]);
+        let opts = Value::dict(vec![(Value::String("timeout".into()), Value::Integer(300))]);
         let started = Instant::now();
         let out = process_run(&mut h, vec![argv, opts]).expect("returns");
         let elapsed = started.elapsed();
@@ -950,7 +950,7 @@ mod tests {
     #[test]
     fn unknown_opts_key_is_a_diagnostic() {
         let mut h = NullHost;
-        let opts = Value::Dict(vec![(Value::String("shell".into()), Value::Boolean(true))]);
+        let opts = Value::dict(vec![(Value::String("shell".into()), Value::Boolean(true))]);
         let e = process_run(&mut h, vec![argv_of("cmd"), opts]).unwrap_err();
         assert_eq!(e.diagnostic().code, ErrorCode::E0030);
         assert!(e.diagnostic().message.contains("unknown opts key"));

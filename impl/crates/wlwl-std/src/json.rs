@@ -84,7 +84,7 @@ pub static SPEC: ModuleSpec = ModuleSpec {
 /// 自己把行列反算回码点下标,而本模块不提供那个反算。⇒ `line`/`column` 是给人看的,
 /// `offset` 是给机器接下一棒用的,三个一起给。
 fn json_err(op: &str, e: lexer::JsonError) -> Outcome {
-    Outcome::normal(Value::Err(Box::new(Value::Dict(vec![
+    Outcome::normal(Value::Err(Box::new(Value::dict(vec![
         (
             Value::String("kind".into()),
             Value::String("JsonError".into()),
@@ -140,7 +140,7 @@ pub fn json_tokenize(host: &mut dyn StdHost, args: Vec<Value>) -> Result<Outcome
             let items = toks
                 .iter()
                 .map(|t| {
-                    Value::Dict(vec![
+                    Value::dict(vec![
                         (
                             Value::String("kind".into()),
                             Value::String(t.kind.as_str().into()),
@@ -205,7 +205,7 @@ pub fn json_locate(host: &mut dyn StdHost, args: Vec<Value>) -> Result<Outcome, 
     let token_start = lexer::token_start_at(&chars, offset.min(chars.len()))
         .map(|v| Value::Integer(v as i64))
         .unwrap_or(Value::Null);
-    Ok(Outcome::normal(Value::Dict(vec![
+    Ok(Outcome::normal(Value::dict(vec![
         (Value::String("line".into()), Value::Integer(line as i64)),
         (
             Value::String("column".into()),
@@ -474,7 +474,7 @@ pub(crate) fn value_to_json(
         }
         Value::Dict(entries) => {
             let mut obj = serde_json::Map::new();
-            for (k, val) in entries {
+            for (k, val) in entries.iter() {
                 // [D11-019] 键只接受 `STRING`。整数键是被 M2 的边界转换
                 // 顺手放开的(M2 的目标是「搬移」,不是「放宽」),会让
                 // `FORMAT("{0}", ["a":1]` 之后 INDEX_SET 出来的整数键字典
@@ -520,7 +520,7 @@ pub(crate) fn json_to_value(v: serde_json::Value) -> Value {
         serde_json::Value::Array(items) => {
             Value::Array(items.into_iter().map(json_to_value).collect())
         }
-        serde_json::Value::Object(obj) => Value::Dict(
+        serde_json::Value::Object(obj) => Value::dict(
             obj.into_iter()
                 .map(|(k, v)| (Value::String(k), json_to_value(v)))
                 .collect(),
@@ -699,7 +699,7 @@ mod tests {
 
     #[test]
     fn boundary_rejects_integer_dict_keys() {
-        let d = Value::Dict(vec![(Value::Integer(2), Value::String("v".into()))]);
+        let d = Value::dict(vec![(Value::Integer(2), Value::String("v".into()))]);
         let err = values_to_json(&[d]).unwrap_err();
         assert_eq!(err.0, wlwl_error::ErrorCode::E0030);
         assert!(
@@ -711,7 +711,7 @@ mod tests {
 
     #[test]
     fn boundary_accepts_string_dict_keys() {
-        let d = Value::Dict(vec![(Value::String("a".into()), Value::Integer(1))]);
+        let d = Value::dict(vec![(Value::String("a".into()), Value::Integer(1))]);
         assert_eq!(
             values_to_json(&[d]).unwrap(),
             vec![serde_json::json!({"a": 1})]

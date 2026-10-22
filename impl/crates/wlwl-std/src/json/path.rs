@@ -2,11 +2,15 @@
 //!
 //! `JSON_GET` / `JSON_SET` / `JSON_DELETE` / `JSON_MERGE` / `JSON_CHUNK_ITEMS`。
 //!
-//! ## ⚠ 头号事实:路径遍历是 **O(每层键数)**,因为 `Value::Dict` 是线性扫描
+//! ## ⚠ 头号事实:路径遍历是 **O(每层键数)**
 //!
-//! `Value::Dict(Vec<(Value,Value)>)` **没有索引**(`ADR-0025` Q1 已裁定「本批不动
-//! `Value::Dict`」),全仓查找都是 `.iter().find(...)`(`net.rs::dict_get`、
-//! `eval::lookup_str` 同款)。实测(W-04 只读调查,bench 档同机):
+//! ⚠ **[ADR-0035] 字典的表示已经变了**:`Value::Dict` 现在是
+//! `Rc<DictInner>`(插入序条目 + **键 → 位置**的哈希索引)⇒ 字典**自己**的
+//! 键查找是 O(1) 期望(规范 §18.3.1)。
+//!
+//! 但**本模块**的路径下潜仍是自己写的线性扫描(`.iter().find(...)`),
+//! 没走那张索引 ⇒ 「每层扫一遍」这个成本剖面**对本模块仍然成立**。
+//! 实测(W-04 只读调查,bench 档同机):
 //!
 //! | 键数 | 单次最坏查找 | 相对 250 键 |
 //! |---|---|---|
@@ -15,6 +19,8 @@
 //! |  4000 | 276.9 µs | 17.4× |
 //!
 //! ⇒ **查找成本随 n 线性增长**,深路径 `["a","b","c"]` 是「每层扫一遍」。
+//! (把本模块的扫描换成 `DictInner::lookup` 是一条独立的后续项 ——
+//! 语义等价,但不在 ADR-0035 的 S3「机械替换」范围内。)
 //!
 //! ## 本模块的两条设计决定(都是被那个事实逼出来的)
 //!
@@ -26,8 +32,12 @@
 //!    **必然**要付一次整份文档的拷贝 —— 这是语言的值语义,不是本批引入的。
 //!    能做的是**只拷一次**,不是「不拷」。
 //!
-//! ⚠ **不要**把 `Value::Dict` 改成 `HashMap`:那是 breaking(文档序、`display()`、
-//!    序列化产物全要跟着变),`ADR-0025` Q1 第 1 条已经把这条路否了。
+//! ⚠ **不要**把 `Value::Dict` 的**键序**改成哈希序:那是 breaking(文档序、
+//!    `display()`、序列化产物全要跟着变)。`ADR-0025` Q1 第 1 条否掉的是这条路;
+//!    `ADR-0035` 走的是另一条 —— **内部**加哈希索引、**外部**仍按插入序呈现
+//!    (规范 §18.3.1 明写这条路合法)。
+
+use std::rc::Rc;
 
 use wlwl_value::Value;
 
@@ -134,34 +144,56 @@ pub fn set(doc: &Value, path: &[Seg], new_value: &Value) -> Result<Value, PathEr
         cur = descend_mut(cur, seg, next, &path[..=depth])?;
     }
     let last = &path[path.len() - 1];
-    match (cur, last) {
-        (Value::Dict(entries), Seg::Key(k)) => {
-            match entries
-                .iter_mut()
-                .find(|(ek, _)| matches!(ek, Value::String(s) if s == k))
-            {
-                Some(slot) => slot.1 = new_value.clone(),
-                None => entries.push((Value::String(k.clone()), new_value.clone())),
-            }
-            Ok(out)
+    // ⚠ 类型名先取出来:下面要拿 `cur` 的**可变**借用(CoW),届时不能再借它。
+    let cur_ty = wlwl_value::type_name(cur);
+    // ⚠ [ADR-0035] 字典的写入走 **copy-on-write**:`as_dict_inner_mut` 内部是
+    //   `Rc::make_mut` —— 唯一拥有时原地改,被别名时先克隆再改 ⇒
+    //   `doc`(`out` 的来源)**不会**被就地改掉(不可变语义)。
+    if let Some(inner) = cur.as_dict_inner_mut() {
+        let Seg::Key(k) = last else {
+            return Err(PathError::Conflict {
+                path: path.to_vec(),
+                reason: format!(
+                    "cannot SET through a {} at path {}",
+                    cur_ty,
+                    render_path(&path[..path.len() - 1])
+                ),
+            });
+        };
+        match inner.lookup(&Value::String(k.clone())) {
+            Some(at) => inner.set_value(at, new_value.clone()),
+            None => inner.insert(Value::String(k.clone()), new_value.clone()),
         }
-        (Value::Array(items), Seg::Idx(i)) => match resolve_idx(items.len(), *i) {
-            Some(at) => {
-                items[at] = new_value.clone();
-                Ok(out)
-            }
-            None => {
-                // 数组下标越界 ⇒ **追加**。比报错有用的取舍:`SET` 拿不到元素下标
-                // 就没法先问「你要覆盖还是追加」,而调用方手上多半只有一个路径。
-                items.push(new_value.clone());
-                Ok(out)
-            }
+        return Ok(out);
+    }
+    match cur {
+        Value::Array(items) => match last {
+            Seg::Idx(i) => match resolve_idx(items.len(), *i) {
+                Some(at) => {
+                    items[at] = new_value.clone();
+                    Ok(out)
+                }
+                None => {
+                    // 数组下标越界 ⇒ **追加**。比报错有用的取舍:`SET` 拿不到元素下标
+                    // 就没法先问「你要覆盖还是追加」,而调用方手上多半只有一个路径。
+                    items.push(new_value.clone());
+                    Ok(out)
+                }
+            },
+            Seg::Key(_) => Err(PathError::Conflict {
+                path: path.to_vec(),
+                reason: format!(
+                    "cannot SET through a {} at path {}",
+                    cur_ty,
+                    render_path(&path[..path.len() - 1])
+                ),
+            }),
         },
-        (other, _) => Err(PathError::Conflict {
+        _ => Err(PathError::Conflict {
             path: path.to_vec(),
             reason: format!(
                 "cannot SET through a {} at path {}",
-                wlwl_value::type_name(other),
+                cur_ty,
                 render_path(&path[..path.len() - 1])
             ),
         }),
@@ -175,41 +207,69 @@ fn descend_mut<'a>(
     next: &Seg,
     walked: &[Seg],
 ) -> Result<&'a mut Value, PathError> {
-    match (cur, seg) {
-        (Value::Dict(entries), Seg::Key(k)) => {
-            if !entries
-                .iter()
-                .any(|(ek, _)| matches!(ek, Value::String(s) if s == k))
-            {
+    // ⚠ 类型名先取出来:下面要拿 `cur` 的**可变**借用(CoW),届时不能再借它。
+    let cur_ty = wlwl_value::type_name(cur);
+    // ⚠ 先用**共享**借用判种类(立刻结束),再按种类分支 —— 否则「一条路径上
+    //   持着 `cur` 的可变借用、另一条路径又要用 `cur`」会撞 E0503/E0499。
+    let is_dict = matches!(&*cur, Value::Dict(_));
+    if is_dict {
+        // ⚠ [ADR-0035] 字典分支走 **copy-on-write**(`Rc::make_mut`):被别名时
+        //   先克隆再改 ⇒ 源文档不被就地改掉(不可变语义)。
+        let Value::Dict(rc) = cur else {
+            unreachable!("kind checked above")
+        };
+        let Seg::Key(k) = seg else {
+            return Err(PathError::Conflict {
+                path: walked.to_vec(),
+                reason: format!(
+                    "cannot descend through a {} at path {}",
+                    cur_ty,
+                    render_path(walked)
+                ),
+            });
+        };
+        let inner = Rc::make_mut(rc);
+        let at = match inner.lookup(&Value::String(k.clone())) {
+            Some(at) => at,
+            None => {
                 // 按**下一段**的种类建容器,不是一律 `NULL` —— 见调用处的注释。
                 let fresh = match next {
-                    Seg::Key(_) => Value::Dict(Vec::new()),
+                    Seg::Key(_) => Value::dict(Vec::new()),
                     Seg::Idx(_) => Value::Array(Vec::new()),
                 };
-                entries.push((Value::String(k.clone()), fresh));
+                inner.insert(Value::String(k.clone()), fresh);
+                inner.len() - 1
             }
-            let at = entries
-                .iter()
-                .position(|(ek, _)| matches!(ek, Value::String(s) if s == k))
-                .expect("just inserted");
-            Ok(&mut entries[at].1)
-        }
-        (Value::Array(items), Seg::Idx(i)) => match resolve_idx(items.len(), *i) {
-            Some(at) => Ok(&mut items[at]),
-            None => {
-                let fresh = match next {
-                    Seg::Key(_) => Value::Dict(Vec::new()),
-                    Seg::Idx(_) => Value::Array(Vec::new()),
-                };
-                items.push(fresh);
-                Ok(items.last_mut().expect("just pushed"))
-            }
+        };
+        return Ok(inner.value_mut(at));
+    }
+    match cur {
+        Value::Array(items) => match seg {
+            Seg::Idx(i) => match resolve_idx(items.len(), *i) {
+                Some(at) => Ok(&mut items[at]),
+                None => {
+                    let fresh = match next {
+                        Seg::Key(_) => Value::dict(Vec::new()),
+                        Seg::Idx(_) => Value::Array(Vec::new()),
+                    };
+                    items.push(fresh);
+                    Ok(items.last_mut().expect("just pushed"))
+                }
+            },
+            Seg::Key(_) => Err(PathError::Conflict {
+                path: walked.to_vec(),
+                reason: format!(
+                    "cannot descend through a {} at path {}",
+                    cur_ty,
+                    render_path(walked)
+                ),
+            }),
         },
-        (other, _) => Err(PathError::Conflict {
+        _ => Err(PathError::Conflict {
             path: walked.to_vec(),
             reason: format!(
                 "cannot descend through a {} at path {}",
-                wlwl_value::type_name(other),
+                cur_ty,
                 render_path(walked)
             ),
         }),
@@ -236,8 +296,11 @@ pub fn delete(doc: &Value, path: &[Seg]) -> Result<Value, PathError> {
     };
     let last = &path[path.len() - 1];
     match (parent, last) {
-        (Value::Dict(entries), Seg::Key(k)) => {
-            entries.retain(|(ek, _)| !matches!(ek, Value::String(s) if s == k));
+        // ⚠ [ADR-0035] 字典分支走 **copy-on-write**(`Rc::make_mut`):被别名时
+        //   先克隆再改 ⇒ 源文档不被就地改掉(不可变语义)。
+        (Value::Dict(rc), Seg::Key(k)) => {
+            let inner = Rc::make_mut(rc);
+            inner.retain(|(ek, _)| !matches!(ek, Value::String(s) if s == k));
         }
         (Value::Array(items), Seg::Idx(i)) => {
             if let Some(at) = resolve_idx(items.len(), *i) {
@@ -253,11 +316,15 @@ fn get_parent_mut<'a>(doc: &'a mut Value, path: &[Seg]) -> Option<&'a mut Value>
     let mut cur = doc;
     for seg in &path[..path.len() - 1] {
         cur = match (cur, seg) {
-            (Value::Dict(entries), Seg::Key(k)) => {
-                let at = entries
-                    .iter()
-                    .position(|(ek, _)| matches!(ek, Value::String(s) if s == k))?;
-                &mut entries[at].1
+            // ⚠ [ADR-0035] 字典分支:CoW 后按下标取**值**的可变引用。
+            //   ⚠ 这里必须**解构**出 `rc`(`&mut Rc<DictInner>`)而不是走
+            //   `Value` 上的访问器:解构会**移动** `&mut Value`,于是内部的借用
+            //   能活到与原 `&mut Value` 同样的寿命 ⇒ 这里才敢返回指向**嵌套值**
+            //   的 `&mut`(下面 `cur = …` 的再借用链要求这一点)。
+            (Value::Dict(rc), Seg::Key(k)) => {
+                let inner = Rc::make_mut(rc);
+                let at = inner.lookup(&Value::String(k.clone()))?;
+                inner.value_mut(at)
             }
             // ⚠ 长度必须**先**取出来再 `get_mut`:写成 `items.get_mut(resolve_idx(items.len(), ..)?)`
             //   会在同一个表达式里同时持有可变与不可变借用(E0502)。
@@ -281,15 +348,24 @@ fn get_parent_mut<'a>(doc: &'a mut Value, path: &[Seg]) -> Option<&'a mut Value>
 ///   * `b` 侧是标量而 `a` 侧是容器时,**`b` 赢** —— 覆盖语义的一致延伸。
 pub fn merge(a: &Value, b: &Value) -> Value {
     match (a, b) {
-        (Value::Dict(ae), Value::Dict(be)) => {
-            let mut out = ae.clone();
-            for (bk, bv) in be {
-                match out.iter_mut().find(|(ak, _)| ak == bk) {
-                    Some(slot) => slot.1 = merge(&slot.1, bv),
-                    None => out.push((bk.clone(), bv.clone())),
+        (Value::Dict(_), Value::Dict(_)) => {
+            // ⚠ [ADR-0035] 合并结果必须是**新**字典 ⇒ `a.clone()` 只是**共享**
+            //   了 `Rc`,真正动手前先 CoW(`as_dict_inner_mut` = `Rc::make_mut`)
+            //   ⇒ `a` 本身不被就地改掉(不可变语义)。
+            let mut out_value = a.clone();
+            let out = out_value.as_dict_inner_mut().expect("matched a DICT above");
+            for (bk, bv) in b.as_dict_entries().unwrap_or(&[]) {
+                // ⚠ 键的比较口径**逐字保留**原实现:`==`(§2.4 的 `PartialEq`),
+                //   不是 `values_equal`(后者多一条「整数 ↔ 浮点跨类型相等」)。
+                match out.entries().iter().position(|(ak, _)| ak == bk) {
+                    Some(at) => {
+                        let merged = merge(&out.entries()[at].1, bv);
+                        out.set_value(at, merged);
+                    }
+                    None => out.insert(bk.clone(), bv.clone()),
                 }
             }
-            Value::Dict(out)
+            out_value
         }
         _ => b.clone(),
     }
@@ -360,7 +436,7 @@ pub fn path_err(op: &str, e: &PathError) -> Value {
         PathError::Conflict { path, .. } => render_path(path),
         PathError::Shape(_) => "$".to_string(),
     };
-    Value::Err(Box::new(Value::Dict(vec![
+    Value::Err(Box::new(Value::dict(vec![
         (
             Value::String("kind".into()),
             Value::String("JsonError".into()),

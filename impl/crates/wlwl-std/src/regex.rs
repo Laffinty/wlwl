@@ -1754,7 +1754,7 @@ fn groups_value(input: &[char], caps: &Captures, groups: usize) -> Value {
 }
 
 fn match_dict(input: &[char], caps: &Captures, groups: usize) -> Value {
-    Value::Dict(vec![
+    Value::dict(vec![
         (
             Value::String("matched".into()),
             Value::String(slice(input, caps.start(), caps.end())),
@@ -1790,7 +1790,7 @@ pub fn re(host: &mut dyn StdHost, args: Vec<Value>) -> wlwl_error::WlwlResult<Ou
     }
     let pattern = str_arg(host, NAME, "pattern", &args, 0)?;
     let prog = compile(pattern).map_err(|e| host.diag(ErrorCode::E0030, e))?;
-    Ok(Outcome::normal(Value::Dict(vec![
+    Ok(Outcome::normal(Value::dict(vec![
         (
             Value::String("pattern".into()),
             Value::String(prog.source().to_string()),

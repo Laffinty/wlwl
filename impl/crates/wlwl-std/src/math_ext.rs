@@ -488,7 +488,7 @@ fn dec_from_value(v: &Value) -> Option<Dec> {
 }
 
 fn dec_to_value(d: &Dec) -> Value {
-    Value::Dict(vec![
+    Value::dict(vec![
         (
             Value::String("sign".into()),
             Value::Integer(if d.neg { -1 } else { 1 }),
@@ -623,7 +623,7 @@ pub fn decimal_div(host: &mut dyn StdHost, args: Vec<Value>) -> wlwl_error::Wlwl
         ));
     }
     if b.is_zero() {
-        return Ok(Outcome::normal(Value::Err(Box::new(Value::Dict(vec![
+        return Ok(Outcome::normal(Value::Err(Box::new(Value::dict(vec![
             (
                 Value::String("kind".into()),
                 Value::String("DomainError".into()),
@@ -717,7 +717,7 @@ impl FracErr {
         }
     }
     fn op(&self, op: &'static str) -> Value {
-        Value::Dict(vec![
+        Value::dict(vec![
             (
                 Value::String("kind".into()),
                 Value::String(self.kind().into()),
@@ -828,7 +828,7 @@ impl Frac {
     // ⚠ `Frac` 是 `Copy`,所以按**值**收(`clippy::wrong_self_convention`:`to_*` +
     // `self: Copy` ⇒ 取值)。`Dec` 不是 `Copy`(含 `Vec`),那边才是 `&self`。
     fn to_value(self) -> Value {
-        Value::Dict(vec![
+        Value::dict(vec![
             (Value::String("num".into()), Value::Integer(self.num)),
             (Value::String("den".into()), Value::Integer(self.den)),
         ])

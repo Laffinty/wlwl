@@ -209,7 +209,7 @@ fn spec(p: &std::path::Path) -> String {
 /// `IS_ERR` 分支(与 `AWAIT` 被取消返回 `Err { kind: "Cancelled" }` 同款)。
 /// ⇒ 两套口径并存,新成员用后者。
 fn fs_err(op: &str, reason: impl Into<String>) -> Value {
-    Value::Err(Box::new(Value::Dict(vec![
+    Value::Err(Box::new(Value::dict(vec![
         (
             Value::String("kind".into()),
             Value::String("FsError".into()),

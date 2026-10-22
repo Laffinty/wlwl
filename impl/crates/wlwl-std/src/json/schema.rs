@@ -97,7 +97,7 @@ fn parse_schema_at(schema: &Value, level: usize) -> Result<Schema, SchemaErr> {
             wlwl_value::type_name(schema)
         ));
     };
-    for (k, v) in entries {
+    for (k, v) in entries.iter() {
         let Value::String(key) = k else {
             return Err("schema keys must be STRING".into());
         };
@@ -155,7 +155,7 @@ fn parse_schema_at(schema: &Value, level: usize) -> Result<Schema, SchemaErr> {
                 let Value::Dict(inner) = v else {
                     return Err("schema \"properties\" must be a DICT".into());
                 };
-                for (pk, pv) in inner {
+                for (pk, pv) in inner.iter() {
                     let Value::String(name) = pk else {
                         return Err("schema \"properties\" keys must be STRING".into());
                     };
@@ -440,7 +440,7 @@ fn walk(v: &Value, toks: &[Token], cur: &mut usize, path: &str, out: &mut Vec<(S
     match v {
         Value::Dict(entries) => {
             *cur += 1; // `{`
-            for (k, val) in entries {
+            for (k, val) in entries.iter() {
                 *cur += 1; // 键的 string token
                 *cur += 1; // `:`
                 let child = match k {
@@ -502,7 +502,7 @@ fn join(path: &str, key: &str) -> String {
 /// 词法错误、W-04 的寻址冲突都不同,三者的差别记在 `ADR-0033`。
 pub fn violation_err(op: &str, text: &[char], v: &Violation) -> Value {
     let (line, column) = lexer::line_col(text, v.offset);
-    Value::Err(Box::new(Value::Dict(vec![
+    Value::Err(Box::new(Value::dict(vec![
         (
             Value::String("kind".into()),
             Value::String("JsonError".into()),

@@ -216,7 +216,7 @@ pub fn sleep(host: &mut dyn StdHost, args: Vec<Value>) -> wlwl_error::WlwlResult
 fn timeout_err() -> Value {
     // `Value::Err` 的载荷是**单个** `Value`(§12 `ERR(value)`),所以
     // `ERR([kind: "Timeout"])` = `Err(Dict { kind: "Timeout" })`。
-    Value::Err(Box::new(Value::Dict(vec![(
+    Value::Err(Box::new(Value::dict(vec![(
         Value::String("kind".into()),
         Value::String("Timeout".into()),
     )])))

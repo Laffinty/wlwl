@@ -141,7 +141,9 @@ fn parse(v: &Value, binders: &mut Vec<String>) -> Result<Proto, ProtocolError> {
                 ))),
             }
         }
-        Value::Dict(entries) => parse_dict_seq(entries, binders),
+        // ⚠ [ADR-0035] 字典载荷改成 `Rc<DictInner>` ⇒ 这里取**插入序条目**
+        //   (`parse_dict_seq` 的签名与语义一字未动)。
+        Value::Dict(entries) => parse_dict_seq(entries.entries(), binders),
         other => Err(ProtocolError::Syntax(format!(
             "protocol must be STRING / ARRAY / DICT, got {}",
             crate::type_name(other)
@@ -277,7 +279,7 @@ mod tests {
     }
 
     fn dict(entries: Vec<(&str, Value)>) -> Value {
-        Value::Dict(
+        Value::dict(
             entries
                 .into_iter()
                 .map(|(k, v)| (Value::String(k.into()), v))

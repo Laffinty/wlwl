@@ -144,7 +144,7 @@ diag_kernel!(
 /// `ERR(["kind": "DomainError", ...])` —— 那是**值**(不是原生诊断),
 /// 所以走 `Ok(Outcome::normal(Value::Err(..)))`,由门面原样返回。
 fn domain_error(op: &str, detail: String) -> Value {
-    Value::Err(Box::new(Value::Dict(vec![
+    Value::Err(Box::new(Value::dict(vec![
         (
             Value::String("kind".into()),
             Value::String("DomainError".into()),
@@ -515,7 +515,7 @@ mod tests {
             Value::Boolean(true),
             Value::Null,
             Value::Array(vec![]),
-            Value::Dict(vec![]),
+            Value::dict(vec![]),
             Value::Ok(Box::new(Value::Integer(1))),
             Value::Err(Box::new(Value::Null)),
         ] {

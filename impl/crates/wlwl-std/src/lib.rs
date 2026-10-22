@@ -208,8 +208,11 @@ pub static LANG_SOURCES: &[StdSource] = &[
             ("_JOIN", collection::kernel_join as StdFn),
             // [v0.11.3 M5 / addendum-00 L0-A-3b] 归层第二批(下半):D 类三成员。
             // 键是 `STR(k)` 渲染串 ⇒ `HashMap<String, usize>` 是天然键,
-            // **不需要给 `Value` 实现 `Hash`**;`Value::Dict` 的表示不动
+            // **不需要给 `Value` 实现 `Hash`**;`Value::Dict` 的**键序**不动
             // (插入序 = 可观察序),内部索引 + 末次物化(ADR-0025 Q1)。
+            // ⚠️ [ADR-0035] 字典的**表示**已改成 `Rc<DictInner>`(内部有键索引),
+            // 但**键序仍是插入序** ⇒ 这条结论不变;本成员自己那张
+            // `HashMap<String, usize>` 是**渲染串去重口径**,与字典的键索引是两件事。
             // ⚠️ `DEDUP_BY` 的去重口径是**渲染串**而非值相等,与 `UNIQ` 不同族。
             ("_GROUP_BY", collection::kernel_group_by as StdFn),
             ("_DEDUP_BY", collection::kernel_dedup_by as StdFn),

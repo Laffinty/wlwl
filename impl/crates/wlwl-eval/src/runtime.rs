@@ -1536,7 +1536,7 @@ mod tests {
         assert!(t.cancel_reason.is_none());
 
         // First non-None reason wins.
-        let r1 = Value::Dict(vec![(
+        let r1 = Value::dict(vec![(
             Value::String("from".into()),
             Value::String("first".into()),
         )]);
@@ -1548,7 +1548,7 @@ mod tests {
         );
 
         // Second non-None reason is dropped (FIFO).
-        let r2 = Value::Dict(vec![(
+        let r2 = Value::dict(vec![(
             Value::String("from".into()),
             Value::String("second".into()),
         )]);
@@ -1586,7 +1586,7 @@ mod tests {
             id: TaskId(0),
             generation: 1,
         };
-        let reason = Value::Dict(vec![
+        let reason = Value::dict(vec![
             (
                 Value::String("reason".into()),
                 Value::String("shutdown".into()),
@@ -1616,7 +1616,7 @@ mod tests {
                 generation: 1,
             });
         }
-        let reason = Value::Dict(vec![(
+        let reason = Value::dict(vec![(
             Value::String("graceful".into()),
             Value::Boolean(true),
         )]);
@@ -1656,7 +1656,7 @@ mod tests {
                 generation: 1,
             });
         }
-        let reason = Value::Dict(vec![(
+        let reason = Value::dict(vec![(
             Value::String("tag".into()),
             Value::String("preempt".into()),
         )]);

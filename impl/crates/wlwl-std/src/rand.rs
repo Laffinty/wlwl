@@ -242,7 +242,7 @@ fn to_value(u: u64) -> Value {
 }
 
 fn state_to_value(s: [u64; 4]) -> Value {
-    Value::Dict(
+    Value::dict(
         ["s0", "s1", "s2", "s3"]
             .into_iter()
             .zip(s)
@@ -851,7 +851,7 @@ mod tests {
         let e = uniform(&mut NullHost, vec![Value::Integer(1)]).unwrap_err();
         assert_eq!(e.diagnostic().code, ErrorCode::E0030);
         // 状态缺键
-        let e = uniform(&mut NullHost, vec![Value::Dict(vec![])]).unwrap_err();
+        let e = uniform(&mut NullHost, vec![Value::dict(vec![])]).unwrap_err();
         assert!(e.diagnostic().message.contains("missing `s0`"));
         // 空区间
         let e = int_range(
@@ -976,7 +976,7 @@ mod tests {
 
         // 手工拆开 → 重新组装 → 再抽,必须是同一批。
         let Value::Dict(entries) = &st else { panic!() };
-        let rebuilt = Value::Dict(
+        let rebuilt = Value::dict(
             entries
                 .iter()
                 .map(|(k, v)| (k.clone(), v.clone()))

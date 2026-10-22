@@ -241,10 +241,10 @@ mod tests {
         // which used to rewrite the keys into dictionary order — is gone.
         assert_eq!(render_line(&[Value::Integer(42)]), "42");
         assert_eq!(render_line(&[Value::Float(1.0)]), "1.0");
-        let d = Value::Dict(vec![(Value::String("k".into()), Value::Integer(1))]);
+        let d = Value::dict(vec![(Value::String("k".into()), Value::Integer(1))]);
         assert_eq!(render_line(&[d]), "[k: 1]");
         // Insertion order, not dictionary order.
-        let d = Value::Dict(vec![
+        let d = Value::dict(vec![
             (Value::String("b".into()), Value::Integer(1)),
             (Value::String("a".into()), Value::Integer(2)),
         ]);
@@ -277,7 +277,7 @@ mod tests {
                 "[1, 2, 3]",
             ),
             (
-                Value::Dict(vec![
+                Value::dict(vec![
                     (Value::String("a".into()), Value::Integer(1)),
                     (Value::String("b".into()), Value::String("x".into())),
                 ]),
@@ -285,7 +285,7 @@ mod tests {
             ),
             // Insertion order, not dictionary order.
             (
-                Value::Dict(vec![
+                Value::dict(vec![
                     (Value::String("b".into()), Value::Integer(1)),
                     (Value::String("a".into()), Value::Integer(2)),
                 ]),
@@ -297,7 +297,7 @@ mod tests {
             (
                 Value::Array(vec![
                     Value::Array(vec![Value::Integer(1), Value::Integer(2)]),
-                    Value::Dict(vec![(
+                    Value::dict(vec![(
                         Value::String("k".into()),
                         Value::Array(vec![Value::Integer(3)]),
                     )]),

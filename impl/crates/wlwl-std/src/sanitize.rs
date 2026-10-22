@@ -310,7 +310,7 @@ pub fn html_sanitize_url(
             .next()
             .unwrap_or("")
             .to_string();
-        return Ok(Outcome::normal(Value::Err(Box::new(Value::Dict(vec![
+        return Ok(Outcome::normal(Value::Err(Box::new(Value::dict(vec![
             (
                 Value::String("kind".into()),
                 Value::String("SanitizeError".into()),
@@ -350,7 +350,7 @@ pub fn html_sanitize_css(
     };
     match css::sanitize_css(s) {
         Ok(out) => Ok(Outcome::normal(Value::String(out))),
-        Err(()) => Ok(Outcome::normal(Value::Err(Box::new(Value::Dict(vec![(
+        Err(()) => Ok(Outcome::normal(Value::Err(Box::new(Value::dict(vec![(
             Value::String("kind".into()),
             Value::String("SanitizeError".into()),
         )]))))),

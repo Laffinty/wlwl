@@ -125,7 +125,7 @@ pub(crate) fn parse_policy(
     let Value::Dict(entries) = dict else {
         return Err(perr("policy must be a DICT".into()));
     };
-    for (k, v) in entries {
+    for (k, v) in entries.iter() {
         let Value::String(key) = k else {
             return Err(perr("policy keys must be STRING".into()));
         };
@@ -154,7 +154,7 @@ pub(crate) fn parse_policy(
                     return Err(perr("policy \"attributes\" must be a DICT".into()));
                 };
                 let mut list = Vec::new();
-                for (tk, tv) in inner {
+                for (tk, tv) in inner.iter() {
                     let Value::String(tag) = tk else {
                         return Err(perr("policy \"attributes\" keys must be STRING".into()));
                     };

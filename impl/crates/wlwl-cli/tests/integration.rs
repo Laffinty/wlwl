@@ -56,7 +56,7 @@ fn int_4_dict_literal() {
     // 4) Dict literal — string keys, integer values
     assert_eq!(
         run_source("[\"a\": 1, \"b\": 2];").unwrap(),
-        Value::Dict(vec![
+        Value::dict(vec![
             (Value::String("a".into()), Value::Integer(1)),
             (Value::String("b".into()), Value::Integer(2)),
         ])

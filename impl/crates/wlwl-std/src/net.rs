@@ -143,7 +143,7 @@ impl Deadline {
 /// 业务分支**(会重试、会降级、会记日志),不是程序员把参数写错了。把它做成
 /// 原生诊断会让整个运行**终止**,调用方连「重试」都做不到。
 fn http_error(op: &str, reason: impl Into<String>) -> Value {
-    Value::Err(Box::new(Value::Dict(vec![
+    Value::Err(Box::new(Value::dict(vec![
         (
             Value::String("kind".into()),
             Value::String("HttpError".into()),
@@ -706,7 +706,7 @@ pub fn url_parse(
         (Value::String("query".into()), opt(&p.query)),
         (Value::String("fragment".into()), opt(&p.fragment)),
     ];
-    Ok(wlwl_value::Outcome::normal(Value::Dict(dict)))
+    Ok(wlwl_value::Outcome::normal(Value::dict(dict)))
 }
 
 /// `URL_JOIN(base, rel) -> STRING`
@@ -743,7 +743,7 @@ fn opt_headers_timeout(
     while i < args.len() {
         match &args[i] {
             Value::Dict(entries) => {
-                for (k, v) in entries {
+                for (k, v) in entries.iter() {
                     let (Value::String(k), Value::String(v)) = (k, v) else {
                         return Err(type_err(host, name, k));
                     };
@@ -1186,11 +1186,11 @@ fn request(
         ),
     };
 
-    Value::Dict(vec![
+    Value::dict(vec![
         (Value::String("status".into()), Value::Integer(status)),
         (
             Value::String("headers".into()),
-            Value::Dict(
+            Value::dict(
                 out_headers
                     .into_iter()
                     .map(|(k, v)| (Value::String(k), Value::String(v)))

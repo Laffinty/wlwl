@@ -38,8 +38,14 @@
 //! 本次同时挖出**第二个**平方级来源(与 `PUSH` 无关):
 //! `Value::Dict` 是 `Vec<(Value,Value)>` + `dict_lookup` 线性扫描 +
 //! `builtin_index_set` 每次全量克隆 ⇒ `KEY_BY` / `GROUP_BY` / `DEDUP_BY`
-//! 受它管。归层**不必**改 `Value::Dict` 的表示(那会毁掉「插入序 = 可观察序」),
+//! 受它管。归层**不必**改 `Value::Dict` 的**键序**(那会毁掉「插入序 = 可观察序」),
 //! R2 侧用「内部 `HashMap` + 末次物化」即可 —— 见 [`ADR-0025`] Q1。
+//!
+//! ⚠ **[ADR-0035] 更新**:`Value::Dict` 的**表示**已经变成
+//! `Rc<DictInner>`(插入序条目 + 键 → 位置的哈希索引)⇒ 字典自己的键查找是
+//! O(1) 期望;**键序仍是插入序**,所以上面那条「归层不必改键序」的结论**不变**。
+//! 本模块自己的 `HashMap<String, usize>` 索引是**去重口径**(键 = 渲染串,
+//! 与 `UNIQ` 不是一族),与字典的键索引**不是**同一件事 ⇒ 仍要各留各的。
 //!
 //! [`ADR-0025`]: ../../../../docs/adr/0025-array-quadratic-cost-routes.md
 //!
@@ -575,12 +581,16 @@ pub fn kernel_join(host: &mut dyn StdHost, args: Vec<Value>) -> WlwlResult<Outco
 // `Value` 实现 `Hash`,也没有 `Float(NaN)` / 闭包结构相等那类问题
 // (那是 `UNIQ` 的困难,见 `kernel_uniq` 的注记)。
 //
-// ## 物化形态(`ADR-0025` Q1):`Value::Dict` 的表示**不动**
+// ## 物化形态(`ADR-0025` Q1):`Value::Dict` 的**键序**不动
 //
 // 内部用 `HashMap<String, usize>` 作查找索引 + `Vec` 维持**插入序**,返回前
-// 一次性物化成 `Value::Dict(Vec<(Value, Value)>)`。**不换哈希表**,因为
-// `DICT` 现在是 `Vec`、**插入序就是可观察序**(JSON 输出、错误载荷、契约里
-// 冻结的 `display()` 全靠它),换 `HashMap` 会让这些乱序 = breaking。
+// 一次性物化成字典。**不换哈希表**,因为**插入序就是可观察序**(JSON 输出、
+// 错误载荷、契约里冻结的 `display()` 全靠它),换 `HashMap` 会让这些乱序 = breaking。
+//
+// ⚠ **[ADR-0035] 更新**:`Value::Dict` 的表示已改成 `Rc<DictInner>`(内部**也**
+// 有一张键 → 位置的哈希索引,见 `wlwl-value` 的 `DictInner`)。**键序仍按插入序**
+// ⇒ 上面那条结论**一字不变**。本模块自己这张 `HashMap<String, usize>` 是
+// **去重口径**(键 = 渲染串)⇒ 与字典的键索引**不是**同一件事,仍要各留各的。
 //
 // ## 三者都要逐字保住的语义
 //
@@ -612,7 +622,7 @@ fn dict_key_member_args<'a>(
 
 /// 把 `Vec<(String, Vec<Value>)>` 物化成 `Value::Dict`(键包成 `Value::String`)。
 fn materialize_groups(groups: Vec<(String, Vec<Value>)>) -> Value {
-    Value::Dict(
+    Value::dict(
         groups
             .into_iter()
             .map(|(k, v)| (Value::String(k), Value::Array(v)))
@@ -693,7 +703,7 @@ pub fn kernel_key_by(host: &mut dyn StdHost, args: Vec<Value>) -> WlwlResult<Out
             }
         }
     }
-    Ok(Outcome::normal(Value::Dict(
+    Ok(Outcome::normal(Value::dict(
         keys.into_iter()
             .zip(vals)
             .map(|(k, v)| (Value::String(k), v))

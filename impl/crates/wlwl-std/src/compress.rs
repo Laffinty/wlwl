@@ -106,7 +106,7 @@ fn ok(v: Value) -> Result<Outcome, WlwlError> {
 }
 
 fn err(op: &str, reason: impl Into<String>) -> Value {
-    Value::Err(Box::new(Value::Dict(vec![
+    Value::Err(Box::new(Value::dict(vec![
         (
             Value::String("kind".into()),
             Value::String("CompressError".into()),

@@ -88,7 +88,7 @@ fn type_err(
 /// 数学域违例是 `DomainError`,畸形编码是 `DecodeError` —— 把它塞进
 /// `DomainError` 会让「`SQRT(-1)`」和「base64 串少了一个字符」长得一样。
 fn decode_error(op: &str, reason: String) -> Value {
-    Value::Err(Box::new(Value::Dict(vec![
+    Value::Err(Box::new(Value::dict(vec![
         (
             Value::String("kind".into()),
             Value::String("DecodeError".into()),

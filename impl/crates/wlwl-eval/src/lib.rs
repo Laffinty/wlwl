@@ -37,9 +37,9 @@ use wlwl_error::{
 // `crate::Value` 等既有路径对子模块与外部消费者不变。
 pub use wlwl_value::{
     new_cell, subst, type_name, value_type_name, values_equal, Binding, Cell, ChannelHandle,
-    ChannelId, ClassEntry, Env, LinearThis, Outcome, Proto, ProtocolCursor, ProtocolError,
-    RcHandle, ReadMode, Signal, Tag, TaskHandle, TaskId, TestEntry, ThisToken, ThisTokenError,
-    Value, YieldReason,
+    ChannelId, ClassEntry, DictInner, DictKey, Env, LinearThis, Outcome, Proto, ProtocolCursor,
+    ProtocolError, RcHandle, ReadMode, Signal, Tag, TaskHandle, TaskId, TestEntry, ThisToken,
+    ThisTokenError, Value, YieldReason,
 };
 /// (`Var("THIS")` or `Call { name: "THIS" }`). Used to reject
 /// closures / SPAWN bodies that would carry the linear capability
@@ -1371,7 +1371,7 @@ fn builtin_int(_ev: &mut Evaluator, args: Vec<Value>) -> WlwlResult<Outcome> {
         }
         Value::String(s) => match s.parse::<i64>() {
             Ok(i) => Ok(Outcome::normal(Value::Integer(i))),
-            Err(e) => Ok(Outcome::normal(Value::Err(Box::new(Value::Dict(vec![
+            Err(e) => Ok(Outcome::normal(Value::Err(Box::new(Value::dict(vec![
                 (
                     Value::String("kind".into()),
                     Value::String("ParseError".into()),
@@ -1413,7 +1413,7 @@ fn builtin_float(_ev: &mut Evaluator, args: Vec<Value>) -> WlwlResult<Outcome> {
                 // §10.3 doesn't pin behavior; we mirror INT's
                 // ParseError shape so callers get a uniform
                 // `ERR(["kind": "ParseError"])` payload.
-                Ok(Outcome::normal(Value::Err(Box::new(Value::Dict(vec![
+                Ok(Outcome::normal(Value::Err(Box::new(Value::dict(vec![
                     (
                         Value::String("kind".into()),
                         Value::String("ParseError".into()),
@@ -1425,7 +1425,7 @@ fn builtin_float(_ev: &mut Evaluator, args: Vec<Value>) -> WlwlResult<Outcome> {
                     ),
                 ])))))
             }
-            Err(e) => Ok(Outcome::normal(Value::Err(Box::new(Value::Dict(vec![
+            Err(e) => Ok(Outcome::normal(Value::Err(Box::new(Value::dict(vec![
                 (
                     Value::String("kind".into()),
                     Value::String("ParseError".into()),
@@ -1716,11 +1716,18 @@ fn resolve_array_index(fn_name: &str, arr: &[Value], raw: &Value) -> WlwlResult<
     Ok(normalised as usize)
 }
 
-/// Look up a key in a `Value::Dict` entries list. Returns
-/// `Some(idx)` if present, `None` if absent. Equality uses §10.4
-/// strict rules via `values_equal`.
-fn dict_lookup(entries: &[(Value, Value)], key: &Value) -> Option<usize> {
-    entries.iter().position(|(k, _)| values_equal(k, key))
+/// Look up a key in a `Value::Dict`. Returns `Some(pos)` if present,
+/// `None` if absent.
+///
+/// ⚠ [ADR-0035 D2] 键的相等口径**逐字不变**:规范 §2.4 的语义
+///   (`STRING` 按字节 / `INTEGER` 按数值 / `INSTANCE` 按身份),由
+///   [`DictInner::lookup`] 承担 —— 键在封闭域内且字典全部键都在封闭域内
+///   时走哈希索引,否则退回 `values_equal` 的线性扫描(旧实现的原样)。
+///
+/// ⚠ 旧实现的注释写的是「§10.4 strict rules via `values_equal`」——
+///   §10.4 是标准库册的容器操作章;真正的键相等口径在**规范 §2.4**。
+fn dict_lookup(inner: &DictInner, key: &Value) -> Option<usize> {
+    inner.lookup(key)
 }
 
 /// 规范 §2.1 的**键的类型约束** + §4.5 的「键类型不符 → `E0031`」。
@@ -1791,14 +1798,14 @@ fn builtin_index_get(_ev: &mut Evaluator, args: Vec<Value>) -> WlwlResult<Outcom
             let i = resolve_array_index("INDEX_GET", a, raw)?;
             Ok(a[i].clone())
         }
-        (Value::Dict(entries), key) => {
+        (Value::Dict(inner), key) => {
             // ⚠ 规范 §4.5:「字典按键取值,**键类型不符产生 `E0031`**,
             //   键不存在产生 `E0037`」⇒ **类型**这一关必须**先于**查找 ——
             //   缺陷形态只有「找到 / 没找到」两路,查不到一律 `E0037`
             //   (连数组分支都有的 `E0031` 检查都没有)⇒ 同一个错误两套码。
             dict_key_type_gate("INDEX_GET", key)?;
-            match dict_lookup(entries, key) {
-                Some(i) => Ok(entries[i].1.clone()),
+            match dict_lookup(inner, key) {
+                Some(i) => Ok(inner.entries()[i].1.clone()),
                 None => Err(builtin_error(
                     ErrorCode::E0037,
                     "INDEX_GET",
@@ -1849,34 +1856,51 @@ fn builtin_index_get(_ev: &mut Evaluator, args: Vec<Value>) -> WlwlResult<Outcom
 ///                       `MERGE` semantics in §10.2)
 /// - other            → E0030
 ///
-/// "In-place" semantics are emulated by cloning the container,
-/// mutating the clone, and returning the clone — equivalent at the
-/// user level for a tree-walking interpreter where Value::Array /
-/// Value::Dict are owned Vecs (no Rc<RefCell<_>> yet).
+/// ⚠ [ADR-0035 D3] 字典的写路径走 **copy-on-write**:
+///   字典**唯一拥有**(强引用计数 == 1)时 ⇒ **原地**改(改 `entries` 的一格 +
+///   改 `index` 的一格)⇒ 单次写 O(1);被别名时 ⇒ `Rc::make_mut` 先克隆再改 ⇒ O(n)。
+///
+///   ⚠ 「唯一拥有」的判定**严格按引用计数**(`Rc::make_mut` 的 `Rc::is_unique`),
+///     不靠「看起来没人用」—— 后者在 §19.1 的值语义下不成立:旧值只要还有
+///     别的持有者,原地改就是**可观察的语义破坏**。
+///   ⚠ 原地改只在**旧值不可观察**时合法 ⇒ 唯一拥有 ⟺ 旧值不可观察。
+///
+///   ⚠ 函数式写法 `LET(d2, INDEX_SET(d, k, v))` 里 `d` 仍被绑定持有 ⇒ 不唯一
+///     ⇒ 必拷贝(这正是规范 §18.3.1「写路径在别名下退化为拷贝」那条)。
 fn builtin_index_set(_ev: &mut Evaluator, args: Vec<Value>) -> WlwlResult<Outcome> {
     if args.len() != 3 {
         return Err(arity_error("INDEX_SET", args.len(), 3));
     }
-    let new_val = args[2].clone();
-    let v = match (&args[0], &args[1]) {
+    // ⚠ 实参**按值**取出(不是借用):字典要能拿到 `Rc` 的**所有权**才能判
+    //   「是否唯一拥有」—— 借用一个 `Rc` 再克隆它会把引用计数抬上去,
+    //   于是原地改那条路**永远走不到**。
+    let mut it = args.into_iter();
+    let coll = it.next().expect("len == 3 checked");
+    let key = it.next().expect("len == 3 checked");
+    let new_val = it.next().expect("len == 3 checked");
+    let v = match (coll, &key) {
         (Value::Array(a), raw) => {
-            let i = resolve_array_index("INDEX_SET", a, raw)?;
+            let i = resolve_array_index("INDEX_SET", &a, raw)?;
             let mut out = a.clone();
             out[i] = new_val;
             Value::Array(out)
         }
-        (Value::Dict(entries), key) => {
+        (Value::Dict(mut inner), _) => {
             // ⚠ 规范 §2.1:字典的键**必须**是 `STRING` 或 `INTEGER` ——
             //   这是**构造点**的约束(`INDEX_SET` 就是往字典里放键)。
             //   缺陷形态把键**原样**塞进容器 ⇒ 非 STRING/INTEGER 的键会
             //   一路活到 `STRINGIFY` 才炸,报的还是别的码。
-            dict_key_type_gate("INDEX_SET", key)?;
-            let mut out = entries.clone();
-            match dict_lookup(&out, key) {
-                Some(i) => out[i].1 = new_val,
-                None => out.push((key.clone(), new_val)),
+            dict_key_type_gate("INDEX_SET", &key)?;
+            // ⚠ copy-on-write:唯一拥有 ⇒ 原地改;被别名 ⇒ 先克隆再改。
+            //   走 `wlwl_value::dict_make_mut`(而不是直接 `Rc::make_mut`):那是
+            //   **唯一**允许写路径拿到 `&mut DictInner` 的入口,也是 S5 计数点
+            //   的唯一位置 ⇒ 绕开它,工作量计数就会漏。
+            let dict = wlwl_value::dict_make_mut(&mut inner);
+            match dict.lookup(&key) {
+                Some(i) => dict.set_value(i, new_val),
+                None => dict.insert(key.clone(), new_val),
             }
-            Value::Dict(out)
+            Value::Dict(inner)
         }
         // v0.6 §4.5: strings are read-only subscriptable; write is
         // rejected with E0030 (type error). Use SUB / SPLIT /
@@ -1892,7 +1916,7 @@ fn builtin_index_set(_ev: &mut Evaluator, args: Vec<Value>) -> WlwlResult<Outcom
                 "INDEX_SET",
                 format!(
                     "expected ARRAY or DICT as first arg, got {}",
-                    type_name(other)
+                    type_name(&other)
                 ),
             ));
         }
@@ -1929,8 +1953,8 @@ fn builtin_at(_ev: &mut Evaluator, args: Vec<Value>) -> WlwlResult<Outcome> {
                 ));
             }
         },
-        (Value::Dict(entries), key) => match dict_lookup(entries, key) {
-            Some(i) => entries[i].1.clone(),
+        (Value::Dict(inner), key) => match dict_lookup(inner, key) {
+            Some(i) => inner.entries()[i].1.clone(),
             None => default.clone(),
         },
         (other, _) => {
@@ -1957,12 +1981,17 @@ fn builtin_at(_ev: &mut Evaluator, args: Vec<Value>) -> WlwlResult<Outcome> {
 fn builtin_remove_key(_ev: &mut Evaluator, args: Vec<Value>) -> WlwlResult<Outcome> {
     let (coll, key) = expect_arity2("REMOVE_KEY", &args)?;
     let v = match coll {
-        Value::Dict(entries) => {
-            let mut out = entries.clone();
-            if let Some(i) = dict_lookup(&out, key) {
-                out.remove(i);
+        Value::Dict(e) => {
+            // ⚠ [ADR-0035 D3] copy-on-write:唯一拥有 ⇒ 原地删;被别名 ⇒ 克隆后删。
+            //   ⚠ `e` 是 `args` 里的借用 ⇒ 引用计数 ≥ 2 ⇒ `make_mut` 必克隆 ⇒
+            //   调用方手上的那份**不受影响**(值语义)。
+            //   删键会让位置变 ⇒ `DictInner::remove` 内部**重建索引**。
+            let mut inner = e.clone();
+            let dict = std::rc::Rc::make_mut(&mut inner);
+            if let Some(i) = dict.lookup(key) {
+                dict.remove(i);
             }
-            Value::Dict(out)
+            Value::Dict(inner)
         }
         other => {
             return Err(type_error(
@@ -2028,8 +2057,8 @@ fn builtin_at_k(_ev: &mut Evaluator, args: Vec<Value>) -> WlwlResult<Outcome> {
     }
     let default = &args[2];
     let v = match (&args[0], &args[1]) {
-        (Value::Dict(entries), key) => match dict_lookup(entries, key) {
-            Some(i) => entries[i].1.clone(),
+        (Value::Dict(inner), key) => match dict_lookup(inner, key) {
+            Some(i) => inner.entries()[i].1.clone(),
             None => default.clone(),
         },
         (other, _) => {
@@ -2592,15 +2621,16 @@ fn builtin_merge(_ev: &mut Evaluator, args: Vec<Value>) -> WlwlResult<Outcome> {
             ));
         }
     };
-    let mut out: Vec<(Value, Value)> = a.clone();
-    for (k, v) in b {
-        if let Some(i) = dict_lookup(&out, k) {
-            out[i].1 = v.clone();
+    let mut out = DictInner::new(a.entries().to_vec());
+    for (k, v) in b.iter() {
+        // ⚠ 键的查找口径与旧实现**逐字一致**(`values_equal` 语义)。
+        if let Some(i) = out.lookup(k) {
+            out.set_value(i, v.clone());
         } else {
-            out.push((k.clone(), v.clone()));
+            out.insert(k.clone(), v.clone());
         }
     }
-    Ok(Outcome::normal(Value::Dict(out)))
+    Ok(Outcome::normal(out.into_value()))
 }
 
 // ──────────────────────────────────────────────────────────────────────
@@ -2682,7 +2712,7 @@ fn builtin_input(_ev: &mut Evaluator, args: Vec<Value>) -> WlwlResult<Outcome> {
     let bytes = match std::io::stdin().read_line(&mut line) {
         Ok(n) => n,
         Err(_) => {
-            return Ok(Outcome::normal(Value::Err(Box::new(Value::Dict(vec![(
+            return Ok(Outcome::normal(Value::Err(Box::new(Value::dict(vec![(
                 Value::String("kind".into()),
                 Value::String("NoInputAvailable".into()),
             )])))));
@@ -2760,7 +2790,9 @@ fn builtin_get_prop(_ev: &mut Evaluator, args: Vec<Value>) -> WlwlResult<Outcome
     // dispatch — `GET_PROP` now handles two shapes:
     //
     //   1. `Value::Dict(e)` — legacy / module-receiver path.
-    //      Unchanged from v0.7 (linear scan via `dict_lookup`).
+    //      Unchanged from v0.7 in behaviour; the lookup itself now goes
+    //      through the dict's hash index ([ADR-0035], §18.3.1) — the
+    //      key-equality rules are byte-for-byte the old ones.
     //   2. `Value::Instance { class, fields, .. }` — the §13
     //      OOP receiver. Lookup order:
     //        (a) `instance.fields` (the per-instance mutable
@@ -2773,7 +2805,7 @@ fn builtin_get_prop(_ev: &mut Evaluator, args: Vec<Value>) -> WlwlResult<Outcome
     // Anything else raises E0030 type error.
     match obj {
         Value::Dict(e) => match dict_lookup(e, &Value::String(k.clone())) {
-            Some(i) => Ok(Outcome::normal(e[i].1.clone())),
+            Some(i) => Ok(Outcome::normal(e.entries()[i].1.clone())),
             None => Err(builtin_error(
                 ErrorCode::E0037,
                 "GET_PROP",
@@ -2918,12 +2950,14 @@ fn builtin_set_prop(_ev: &mut Evaluator, args: Vec<Value>) -> WlwlResult<Outcome
     match &args[0] {
         Value::Dict(e) => {
             // Legacy DICT path — unchanged.
-            let mut entries = e.clone();
-            match dict_lookup(&entries, &Value::String(k.clone())) {
-                Some(i) => entries[i].1 = v,
-                None => entries.push((Value::String(k), v)),
+            // ⚠ [ADR-0035 D3] copy-on-write:唯一拥有 ⇒ 原地改;被别名 ⇒ 克隆后改。
+            let mut inner = e.clone();
+            let dict = std::rc::Rc::make_mut(&mut inner);
+            match dict.lookup(&Value::String(k.clone())) {
+                Some(i) => dict.set_value(i, v),
+                None => dict.insert(Value::String(k), v),
             }
-            Ok(Outcome::normal(Value::Dict(entries)))
+            Ok(Outcome::normal(Value::Dict(inner)))
         }
         Value::Instance {
             class,
@@ -3061,8 +3095,8 @@ fn builtin_call_method(ev: &mut Evaluator, args: Vec<Value>) -> WlwlResult<Outco
     // dispatch — `CALL_METHOD` now handles three shapes:
     //
     //   1. `Value::Dict(e)` — legacy / module-receiver path.
-    //      Unchanged from v0.7. Walks the dict entries in
-    //      declaration order.
+    //      Unchanged from v0.7 in behaviour; the method is now found
+    //      through the dict's hash index ([ADR-0035], §18.3.1).
     //   2. `Value::Instance { class, .. }` — the §13 OOP
     //      receiver. Looks up `class.members[name]`; on miss
     //      walks the parent chain (depth-bounded at 64 with
@@ -3077,7 +3111,7 @@ fn builtin_call_method(ev: &mut Evaluator, args: Vec<Value>) -> WlwlResult<Outco
         Value::Dict(e) => {
             // Legacy DICT path — unchanged.
             let callee = match dict_lookup(e, &Value::String(method.clone())) {
-                Some(i) => e[i].1.clone(),
+                Some(i) => e.entries()[i].1.clone(),
                 None => {
                     return Err(builtin_error(
                         ErrorCode::E0037,
@@ -3672,7 +3706,7 @@ fn builtin_module_ref(ev: &mut Evaluator, args: Vec<Value>) -> WlwlResult<Outcom
         let v = loaded.env.get(n).map(|r| r.clone()).unwrap_or(Value::Null);
         entries.push((Value::String(n.clone()), v));
     }
-    Ok(Outcome::normal(Value::Dict(entries)))
+    Ok(Outcome::normal(Value::dict(entries)))
 }
 
 /// v0.4 §10.3 + appendix G — `STR(x) → STRING`.
@@ -3778,7 +3812,8 @@ fn builtin_format(ev: &mut Evaluator, args: Vec<Value>) -> WlwlResult<Outcome> {
             },
             wlwl_std::format::FormatSegment::Named(name) => {
                 let hit = named.and_then(|entries| {
-                    dict_lookup(entries, &Value::String(name.clone())).map(|i| &entries[i].1)
+                    dict_lookup(entries, &Value::String(name.clone()))
+                        .map(|i| &entries.entries()[i].1)
                 });
                 match hit {
                     Some(v) => out.push_str(&v.display()),
@@ -4238,7 +4273,7 @@ fn builtin_await(ev: &mut Evaluator, args: Vec<Value>) -> WlwlResult<Outcome> {
                 .tasks
                 .get(handle.id.0)
                 .and_then(|t| t.cancel_reason.clone())
-                .unwrap_or(Value::Dict(Vec::new()));
+                .unwrap_or(Value::dict(Vec::new()));
             let payload = vec![
                 (
                     Value::String("kind".into()),
@@ -4253,7 +4288,7 @@ fn builtin_await(ev: &mut Evaluator, args: Vec<Value>) -> WlwlResult<Outcome> {
                 ),
                 (Value::String("reason".into()), reason),
             ];
-            Ok(Outcome::normal(Value::Err(Box::new(Value::Dict(payload)))))
+            Ok(Outcome::normal(Value::Err(Box::new(Value::dict(payload)))))
         }
         // Non-terminal after the B5b loop drained: treat as invalid.
         Awaited::NotReady => Err(ev.diag(
@@ -6297,7 +6332,7 @@ fn builtin_wrap(_ev: &mut Evaluator, args: Vec<Value>) -> WlwlResult<Outcome> {
             // full chain is preserved — `original` of an outer WRAP
             // is the entire inner ERR value (which may itself be a
             // `{original, context}` dict from a previous WRAP).
-            let dict = Value::Dict(vec![
+            let dict = Value::dict(vec![
                 (Value::String("original".into()), (**payload).clone()),
                 (Value::String("context".into()), args[1].clone()),
             ]);
@@ -6322,7 +6357,7 @@ fn value_to_error_cause(v: &Value) -> Option<ErrorCause> {
         Value::String(s) => Some(ErrorCause::String(s.clone())),
         Value::Dict(entries) => {
             let mut map = serde_json::Map::new();
-            for (k, val) in entries {
+            for (k, val) in entries.iter() {
                 let key_str = match k {
                     Value::String(s) => s.clone(),
                     _ => return None,
@@ -6377,7 +6412,7 @@ fn value_to_json_value(v: &Value) -> Option<serde_json::Value> {
         }
         Value::Dict(entries) => {
             let mut obj = serde_json::Map::new();
-            for (k, val) in entries {
+            for (k, val) in entries.iter() {
                 let key_str = match k {
                     Value::String(s) => s.clone(),
                     _ => return None,
@@ -7709,7 +7744,7 @@ impl Evaluator {
                     vs.push((ko.value, vo.value));
                     unconsumed |= vo.unconsumed;
                 }
-                Ok(Outcome::with_unconsumed(Value::Dict(vs), unconsumed))
+                Ok(Outcome::with_unconsumed(Value::dict(vs), unconsumed))
             }
             Expr::If {
                 cond,
@@ -8254,8 +8289,11 @@ impl Evaluator {
                 Outcome::normal(Value::Null)
             }
             Value::Dict(entries) => {
-                for (k, _v) in entries {
-                    self.env.set_local(var, k);
+                // ⚠ [ADR-0035] 字典载荷是 `Rc<DictInner>` ⇒ 迭代器给的是**借用**;
+                //   `set_local` 要**值** ⇒ 这里克隆一份键(旧实现是移动,
+                //   但旧实现的键是 `Vec` 里的所有权项)。
+                for (k, _v) in entries.iter() {
+                    self.env.set_local(var, k.clone());
                     let o = self.eval_expr(body)?;
                     match o.signal {
                         Signal::None => {
@@ -9225,7 +9263,7 @@ impl Evaluator {
             let v = if name == "ARRAY" {
                 Value::Array(Vec::new())
             } else {
-                Value::Dict(Vec::new())
+                Value::dict(Vec::new())
             };
             return Ok(Outcome::normal(v));
         }
@@ -9303,7 +9341,7 @@ impl Evaluator {
             let v = if name == "ARRAY" {
                 Value::Array(Vec::new())
             } else {
-                Value::Dict(Vec::new())
+                Value::dict(Vec::new())
             };
             return Ok(crate::runtime::StepResult::Done(v));
         }
@@ -9942,7 +9980,7 @@ impl Evaluator {
             }
             Pattern::Dict(entries, dspan) => {
                 let dict = match value {
-                    Value::Dict(entries) => entries.clone(),
+                    Value::Dict(entries) => entries.entries().to_vec(),
                     _ => return Err(self.destructure_type_error("DICT", value, dspan)),
                 };
                 for (k_expr, sub) in entries {
@@ -10245,7 +10283,7 @@ impl Evaluator {
             }
             Pattern::Dict(entries, pspan) => {
                 let dict = match value {
-                    Value::Dict(entries) => entries.clone(),
+                    Value::Dict(entries) => entries.entries().to_vec(),
                     _ => return Err(self.destructure_type_error("DICT", value, pspan)),
                 };
                 let checkpoint = bindings.len();
@@ -11329,7 +11367,7 @@ mod tests {
         let v = run(src).expect("ERR_PAYLOAD on ERR should return the payload");
         assert_eq!(
             v,
-            Value::Dict(vec![(
+            Value::dict(vec![(
                 Value::String("kind".into()),
                 Value::String("boom".into()),
             )]),
@@ -11917,7 +11955,7 @@ mod tests {
         // (the common case) it has been flattened one level.
         //
         // WRAP(ERR(dict), ctx) yields:
-        //   Value::Err(Box::new(Value::Dict(vec![
+        //   Value::Err(Box::new(Value::dict(vec![
         //     ("original", <inner-ERR's payload, which is a Dict>),
         //     ("context", ctx),
         //   ])))
@@ -13863,7 +13901,7 @@ mod tests {
     fn eval_dict() {
         assert_eq!(
             run("[\"a\": 1, \"b\": 2];").unwrap(),
-            Value::Dict(vec![
+            Value::dict(vec![
                 (Value::String("a".into()), Value::Integer(1)),
                 (Value::String("b".into()), Value::Integer(2)),
             ])
@@ -16698,7 +16736,7 @@ entry = "main.wll"
         // preserved).
         assert_eq!(
             run(r###"INDEX_SET(["a": 1], "b", 2);"###).unwrap(),
-            Value::Dict(vec![
+            Value::dict(vec![
                 (Value::String("a".into()), Value::Integer(1)),
                 (Value::String("b".into()), Value::Integer(2)),
             ])
@@ -16711,7 +16749,7 @@ entry = "main.wll"
         // (matches MERGE semantics in §10.2).
         assert_eq!(
             run(r###"INDEX_SET(["a": 1, "b": 2], "a", 99);"###).unwrap(),
-            Value::Dict(vec![
+            Value::dict(vec![
                 (Value::String("a".into()), Value::Integer(99)),
                 (Value::String("b".into()), Value::Integer(2)),
             ])
@@ -16783,7 +16821,7 @@ entry = "main.wll"
         // REMOVE_KEY returns the dict with the key dropped.
         assert_eq!(
             run(r###"REMOVE_KEY(["a": 1, "b": 2], "a");"###).unwrap(),
-            Value::Dict(vec![(Value::String("b".into()), Value::Integer(2))])
+            Value::dict(vec![(Value::String("b".into()), Value::Integer(2))])
         );
     }
 
@@ -16792,7 +16830,7 @@ entry = "main.wll"
         // Spec §10.2: missing key → NOOP (returns dict unchanged).
         assert_eq!(
             run(r###"REMOVE_KEY(["a": 1], "missing");"###).unwrap(),
-            Value::Dict(vec![(Value::String("a".into()), Value::Integer(1))])
+            Value::dict(vec![(Value::String("a".into()), Value::Integer(1))])
         );
     }
 
@@ -16818,7 +16856,7 @@ entry = "main.wll"
         // B1-003).
         assert_eq!(
             after_pop,
-            Value::Dict(vec![
+            Value::dict(vec![
                 (Value::String("a".into()), Value::Integer(1)),
                 (Value::String("b".into()), Value::Integer(2)),
             ])
@@ -16943,7 +16981,7 @@ entry = "main.wll"
         let (r, w) = run_with_warnings(r###"DEL(["a": 1, "b": 2], "a");"###);
         assert_eq!(
             r.unwrap(),
-            Value::Dict(vec![(Value::String("b".into()), Value::Integer(2))])
+            Value::dict(vec![(Value::String("b".into()), Value::Integer(2))])
         );
         assert_eq!(w.len(), 1, "expected exactly one W0051");
         assert_eq!(w[0].code, ErrorCode::W0051);
@@ -16954,7 +16992,7 @@ entry = "main.wll"
         let (r, w) = run_with_warnings(r###"DEL(["a": 1], "missing");"###);
         assert_eq!(
             r.unwrap(),
-            Value::Dict(vec![(Value::String("a".into()), Value::Integer(1))])
+            Value::dict(vec![(Value::String("a".into()), Value::Integer(1))])
         );
         assert_eq!(w.len(), 1);
         assert_eq!(w[0].code, ErrorCode::W0051);
@@ -17137,7 +17175,7 @@ entry = "main.wll"
             "[1, 2]"
         );
         assert_eq!(
-            Value::Dict(vec![
+            Value::dict(vec![
                 (Value::String("a".into()), Value::Integer(1)),
                 (Value::String("b".into()), Value::Integer(2)),
             ])
@@ -18773,7 +18811,7 @@ TYPE(v);
     #[test]
     fn b4_err_payload_err_returns_dict_payload() {
         let v = run(r###"ERR_PAYLOAD(ERR(["code": "E1001", "msg": "bad"]));"###).unwrap();
-        let expected = Value::Dict(vec![
+        let expected = Value::dict(vec![
             (Value::String("code".into()), Value::String("E1001".into())),
             (Value::String("msg".into()), Value::String("bad".into())),
         ]);
@@ -18836,7 +18874,7 @@ TYPE(v);
         // a Value::Err which §12.6 would surface as E0102 (same
         // top-level trap that bit B3 `b3_doc_style_…`).
         let v = run(r###"ERR_PAYLOAD(WRAP(ERR("e"), "ctx"));"###).unwrap();
-        let expected = Value::Dict(vec![
+        let expected = Value::dict(vec![
             (Value::String("original".into()), Value::String("e".into())),
             (Value::String("context".into()), Value::String("ctx".into())),
         ]);
@@ -18848,10 +18886,10 @@ TYPE(v);
         // WRAP(ERR(["code": "E1001"]), "ctx") →
         //   ERR({"original": {"code": "E1001"}, "context": "ctx"})
         let v = run(r###"ERR_PAYLOAD(WRAP(ERR(["code": "E1001"]), "ctx"));"###).unwrap();
-        let expected = Value::Dict(vec![
+        let expected = Value::dict(vec![
             (
                 Value::String("original".into()),
-                Value::Dict(vec![(
+                Value::dict(vec![(
                     Value::String("code".into()),
                     Value::String("E1001".into()),
                 )]),
@@ -18888,20 +18926,20 @@ TYPE(v);
             _ => panic!("outer should be dict"),
         };
         assert_eq!(
-            outer_dict[1],
+            outer_dict.entries()[1],
             (Value::String("context".into()), Value::String("c2".into()))
         );
         // original is the previous wrapped ERR value (a dict)
-        let inner_dict = match &outer_dict[0].1 {
+        let inner_dict = match &outer_dict.entries()[0].1 {
             Value::Dict(d) => d.clone(),
             _ => panic!("original should be dict"),
         };
         assert_eq!(
-            inner_dict[1],
+            inner_dict.entries()[1],
             (Value::String("context".into()), Value::String("c1".into()))
         );
         assert_eq!(
-            inner_dict[0],
+            inner_dict.entries()[0],
             (Value::String("original".into()), Value::String("e".into()))
         );
     }
@@ -18976,7 +19014,7 @@ TYPE(v);
         // ERR_PAYLOAD(WRAP(ERR("e"), "ctx")) → the wrap dict
         // (the most recent layer), NOT the original "e".
         let v = run(r###"ERR_PAYLOAD(WRAP(ERR("e"), "ctx"));"###).unwrap();
-        let expected = Value::Dict(vec![
+        let expected = Value::dict(vec![
             (Value::String("original".into()), Value::String("e".into())),
             (Value::String("context".into()), Value::String("ctx".into())),
         ]);
@@ -20060,7 +20098,7 @@ TYPE(v);
         match v {
             Value::Dict(entries) => {
                 assert_eq!(entries.len(), 2);
-                for (k, v) in &entries {
+                for (k, v) in entries.iter() {
                     let k = match k {
                         Value::String(s) => s.as_str(),
                         _ => panic!("non-string key"),
@@ -20549,8 +20587,8 @@ TYPE(v);
                                                              // error field is the ASSERT ERR's payload (a DICT).
                 match &items[1] {
                     Value::Dict(entries) => {
-                        assert_eq!(lookup_str(entries, "code").unwrap(), "E0046");
-                        assert_eq!(lookup_str(entries, "msg").unwrap(), "intentional");
+                        assert_eq!(lookup_str(entries.entries(), "code").unwrap(), "E0046");
+                        assert_eq!(lookup_str(entries.entries(), "msg").unwrap(), "intentional");
                     }
                     other => panic!("expected DICT in error, got {:?}", other),
                 }
@@ -20721,7 +20759,7 @@ TYPE(v);
     #[allow(dead_code)] // reserved helper for §12.6 ERR consumer integration (Phase E2+ follow-up)
     fn expect_dict(v: Value) -> Vec<(Value, Value)> {
         match v {
-            Value::Dict(entries) => entries,
+            Value::Dict(entries) => entries.entries().to_vec(),
             other => panic!("expected DICT, got {:?}", other),
         }
     }
@@ -22133,7 +22171,7 @@ TYPE(v);
         // 不冲突:按 b 的顺序附加到 a
         assert_eq!(
             run(r#"MERGE(["a": 1, "b": 2], ["c": 3]);"#).unwrap(),
-            Value::Dict(vec![
+            Value::dict(vec![
                 (Value::String("a".into()), Value::Integer(1)),
                 (Value::String("b".into()), Value::Integer(2)),
                 (Value::String("c".into()), Value::Integer(3)),
@@ -22142,7 +22180,7 @@ TYPE(v);
         // 冲突:b 的值覆盖 a
         assert_eq!(
             run(r#"MERGE(["x": 1, "y": 2], ["y": 99, "z": 3]);"#).unwrap(),
-            Value::Dict(vec![
+            Value::dict(vec![
                 (Value::String("x".into()), Value::Integer(1)),
                 (Value::String("y".into()), Value::Integer(99)),
                 (Value::String("z".into()), Value::Integer(3)),
@@ -22151,7 +22189,7 @@ TYPE(v);
         // 单 key dict merge
         assert_eq!(
             run(r#"MERGE(["a": 1], ["b": 2]);"#).unwrap(),
-            Value::Dict(vec![
+            Value::dict(vec![
                 (Value::String("a".into()), Value::Integer(1)),
                 (Value::String("b".into()), Value::Integer(2)),
             ])
@@ -22870,7 +22908,7 @@ entry = "main.wll"
 
     #[test]
     fn e2_empty_dict_call_evaluates() {
-        assert_eq!(run_strict("DICT();", false).unwrap(), Value::Dict(vec![]));
+        assert_eq!(run_strict("DICT();", false).unwrap(), Value::dict(vec![]));
         assert_eq!(
             run_strict("LET(d, DICT()); LEN(d);", false).unwrap(),
             Value::Integer(0)
@@ -23069,7 +23107,7 @@ entry = "main.wll"
         let v = run(src).expect("TASK_CANCEL(h) (no reason) must still set payload.reason");
         assert_eq!(
             v,
-            Value::Dict(Vec::new()),
+            Value::dict(Vec::new()),
             "payload.reason must default to empty DICT {{}}, got: {:?}",
             v
         );

@@ -389,7 +389,7 @@ pub fn linear_fit(host: &mut dyn StdHost, args: Vec<Value>) -> R<Outcome> {
         return Ok(null()); // x 无方差 ⇒ 斜率无定义
     }
     let slope = sxy / sxx;
-    Ok(Outcome::normal(Value::Dict(vec![
+    Ok(Outcome::normal(Value::dict(vec![
         (Value::String("slope".into()), Value::Float(slope)),
         (
             Value::String("intercept".into()),

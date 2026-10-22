@@ -52,6 +52,11 @@ use wlwl_error::{ErrorCode, Location, WlwlDiagnostic, WlwlError};
 /// 那会让 `LET(b, a)` 之后改 `a` 连带改 `b` —— **静默破坏不可变性语义**。
 /// 所以这里手写 `Clone`:深拷贝,行为与 `Array` 一致。性能收益来自
 /// 内建里的**就地分支**(PLAN S3),不来自克隆共享。
+///
+/// ⚠ **[ADR-0035] 一处口径细化**:元素是**数组**时仍是逐元素深拷贝;元素是
+///   **字典**时,字典载荷是 `Rc<DictInner>` ⇒ 克隆只拷那个 `Rc`(不再深拷
+///   键值对)。**不可变性不受影响** —— 字典的写路径一律走 copy-on-write
+///   (`Rc::make_mut`),被别名时先克隆再改 ⇒ 旧值原样可见。
 #[derive(Debug)]
 pub struct CellVec(std::rc::Rc<std::cell::RefCell<Vec<Value>>>);
 
@@ -126,7 +131,14 @@ pub enum Value {
     /// 只有被识别成「循环局部累加器」的数组才会用它(PLAN S2);其余一律是
     /// `Array`,那 244 处用法一字未动。
     Cell(CellVec),
-    Dict(Vec<(Value, Value)>),
+    /// [ADR-0035 D1 / S1] 字典载荷 = `Rc<DictInner>`。
+    ///
+    /// ⚠ **只有这一种字典表示**(没有并行的 `DictIndexed` 变体)⇒ 可观察面
+    ///   (`TYPE` / `==` / 渲染 / JSON / 诊断措辞 / **插入序**)只有一套代码路径。
+    /// ⚠ 载荷是 `Rc` ⇒ **克隆字典是共享,不是深拷贝** ⇒ 写路径必须走
+    ///   **copy-on-write**(`Rc::make_mut`):唯一拥有时原地改,被别名时克隆后改。
+    ///   旧值在「唯一拥有」时不可观察(§19.1 的值语义)⇒ 原地改合法。
+    Dict(Rc<DictInner>),
     /// §8.2 function literal with captured environment (clone-based closure).
     Closure {
         params: Vec<FunParam>,
@@ -195,6 +207,369 @@ pub enum Value {
         /// [v0.9 Step 9b] Per-instance session-protocol cursor.
         protocol_state: std::rc::Rc<std::cell::RefCell<ProtocolCursor>>,
     },
+}
+
+/// [ADR-0035 D2 / S1] 字典的**内部哈希键**。
+///
+/// ⚠ **`Eq` / `Hash` 必须与 `values_equal` 的键口径逐字一致**(规范 §2.4):
+///
+/// | 键类型 | 相等判据 | 哈希判据 |
+/// |---|---|---|
+/// | `STRING` | 按**字节**(同 `String` 的 `PartialEq`) | 同 `String` 的 `Hash` |
+/// | `INTEGER` | 按**数值** | 同 `i64` 的 `Hash` |
+/// | `INSTANCE` | 按**身份**(`Rc::ptr_eq` 的 `fields` 单元格) | `fields` 单元格的地址 |
+///
+/// 判据取自 `values_equal` 的对应分支:`Value::String` 走 `x == y`
+/// (字节口径)、`Value::Integer` 走 `x == y`(数值口径)、
+/// `Value::Instance` 走 `std::rc::Rc::ptr_eq(fx, fy)`(`fields` 单元格)。
+/// ⇒ **同一实例 ⇒ 同一哈希**,不同实例 ⇒ 不同哈希(地址不同;且 `DictKey`
+///   持有 `Rc` ⇒ 分配在被哈希期间不会消失,不会有「地址复用」造成的错命中)。
+///
+/// ⚠ **键域是封闭的**(规范 §2.1):只有 `STRING` / `INTEGER` / `INSTANCE`
+///   能作键。域外类型(`FLOAT` / 布尔 / `NULL` / 数组 / …)⇒
+///   [`DictKey::from_value`] 返回 `None` ⇒ 字典退回线性扫描(见
+///   [`DictInner::lookup`]),**不**静默改变查找语义。
+#[derive(Debug, Clone)]
+pub enum DictKey {
+    /// `STRING` 键 —— 按字节比。
+    Str(String),
+    /// `INTEGER` 键 —— 按数值比。
+    Int(i64),
+    /// `INSTANCE` 键 —— 按**身份**比(`fields` 单元格的 `Rc::ptr_eq`)。
+    Instance(Rc<RefCell<Vec<(Value, Value)>>>),
+}
+
+impl DictKey {
+    /// 把一个 `Value` 转成索引键;**域外**的键(规范 §2.1 的键域之外)返回 `None`。
+    ///
+    /// ⚠ `NaN` 是 `FLOAT` ⇒ 落在域外 ⇒ `None`(规范 §2.1:NaN 不得作键)。
+    pub fn from_value(v: &Value) -> Option<DictKey> {
+        match v {
+            Value::String(s) => Some(DictKey::Str(s.clone())),
+            Value::Integer(i) => Some(DictKey::Int(*i)),
+            Value::Instance { fields, .. } => Some(DictKey::Instance(Rc::clone(fields))),
+            _ => None,
+        }
+    }
+}
+
+impl PartialEq for DictKey {
+    fn eq(&self, other: &Self) -> bool {
+        match (self, other) {
+            (DictKey::Str(a), DictKey::Str(b)) => a == b,
+            (DictKey::Int(a), DictKey::Int(b)) => a == b,
+            // ⚠ 与 `values_equal` 的 `Value::Instance` 分支**同一条判据**:
+            //   `fields` 单元格的 `Rc::ptr_eq`(= 规范 §2.4 的「对象身份」)。
+            (DictKey::Instance(a), DictKey::Instance(b)) => Rc::ptr_eq(a, b),
+            _ => false,
+        }
+    }
+}
+
+impl Eq for DictKey {}
+
+impl std::hash::Hash for DictKey {
+    fn hash<H: std::hash::Hasher>(&self, state: &mut H) {
+        // ⚠ 变体前缀 ⇒ `Str` / `Int` / `Instance` 三族的哈希互不混淆
+        //   (否则 `"1"` 与 `1` 会撞桶,而它们在 §2.4 下**不**相等)。
+        match self {
+            DictKey::Str(s) => {
+                0u8.hash(state);
+                s.hash(state);
+            }
+            DictKey::Int(i) => {
+                1u8.hash(state);
+                i.hash(state);
+            }
+            DictKey::Instance(fields) => {
+                2u8.hash(state);
+                // 身份 ⇒ 地址。`Rc::as_ptr` 与 `Rc::ptr_eq` 用的是同一个指针
+                // 口径 ⇒ 「哈希相同」⟺「同一实例」。
+                Rc::as_ptr(fields).hash(state);
+            }
+        }
+    }
+}
+
+/// [ADR-0035 D1 / S1] 字典的**内部表示**:插入序条目 + 键 → 位置的哈希索引。
+///
+/// * `entries` —— **插入序**的键值序列(规范 §18.3.1:键序是插入序且可观察);
+///   它是**呈现的唯一来源**(渲染 / JSON / `KEYS` / `VALUES` 全走它)。
+/// * `index` —— `DictKey` → `entries` 里的**位置**。索引**只存位置**,
+///   **不参与呈现** ⇒ 哈希的实现细节不会漏到可观察面。
+///
+/// ⚠ **克隆是共享,不是深拷贝**(`Rc` 的语义)⇒ 任何写路径都必须走
+///   **copy-on-write**([`Value::as_dict_inner_mut`] 用 `Rc::make_mut`)。
+#[derive(Debug, Clone)]
+pub struct DictInner {
+    /// 插入序的键值序列(**呈现的唯一来源**)。
+    entries: Vec<(Value, Value)>,
+    /// 键 → `entries` 里的位置。
+    index: HashMap<DictKey, usize>,
+    /// 键域封闭性(规范 §2.1):`false` 表示本字典里**存在域外键**。
+    ///
+    /// ⚠ 域外键会让 `values_equal` 的「跨类型数值相等」变得不对称:
+    ///   存储侧 `FLOAT(1.0)` 与探测侧 `INTEGER(1)` 在 §2.4 下**相等**
+    ///   (数字跨类型比较),但 `FLOAT` 不在键域内 ⇒ 哈希索引不覆盖它 ⇒
+    ///   只查索引会**漏掉**这一项。
+    ///   ⇒ 存在域外键时,查找**退回线性扫描**,与旧的
+    ///   `entries.iter().position(|(k,_)| values_equal(k, key))` 逐字一致。
+    all_keys_in_domain: bool,
+}
+
+/// [ADR-0035 S5] 字典的**确定性工作量计数**。
+///
+/// 计数点收在**字典内部**(`DictInner::lookup` / `insert` / `remove` / `retain`
+/// 与 `Value::as_dict_inner_mut` 的克隆面)—— 规范 §18.5 要求判定**必须**用
+/// 确定性工作量计数,不用墙钟比值(同份线性实现在不同机器上可差 3 倍)。
+///
+/// ⚠ **线程局部,不是 `static`**:`cargo test` 的用例**并行**跑,全局计数会被
+/// 别的用例搅浑 ⇒ 每个用例只看见自己那次运行的工作量。
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+pub struct DictWorkCounters {
+    /// 键比较次数。哈希路径:每次查找 1 次;线性回退路径:按**实际扫描过**的
+    /// 条目数计(域外键 / 字典含域外键时走那条路)。
+    pub comparisons: u64,
+    /// 因 **copy-on-write 克隆**而拷贝的条目数(被别名时的写路径代价)。
+    pub copied_entries: u64,
+    /// 走哈希索引的查找次数。
+    pub indexed_lookups: u64,
+    /// 退回线性扫描的查找次数(域外键 / 字典含域外键)。
+    pub linear_lookups: u64,
+    /// 索引重建次数(`remove` / `retain` 改了位置 ⇒ 位置变 ⇒ 索引要重建)。
+    pub index_rebuilds: u64,
+}
+
+thread_local! {
+    static DICT_WORK: std::cell::Cell<DictWorkCounters> =
+        std::cell::Cell::new(DictWorkCounters::default());
+}
+
+/// 读**当前线程**的字典工作量计数。**只给测试与基准读**(同
+/// `Evaluator::accumulator_optimizer_counters` 的体例:不做运行时警告 ——
+/// D11-022 已证警告通道无人排空,走它等于静默丢弃)。
+pub fn dict_work_counters() -> DictWorkCounters {
+    DICT_WORK.with(|c| c.get())
+}
+
+/// 清零**当前线程**的字典工作量计数。**只给测试与基准读**。
+pub fn reset_dict_work_counters() {
+    DICT_WORK.with(|c| c.set(DictWorkCounters::default()));
+}
+
+/// 累加当前线程的工作量计数。
+fn add_dict_work(f: impl FnOnce(&mut DictWorkCounters)) {
+    DICT_WORK.with(|c| {
+        let mut w = c.get();
+        f(&mut w);
+        c.set(w);
+    });
+}
+
+/// [ADR-0035 S5 / D3] 字典的 **copy-on-write** 入口 —— **唯一**允许写路径拿到
+/// `&mut DictInner` 的地方。
+///
+/// 唯一拥有 ⇒ 原地改(单次写 O(1));被别名 ⇒ `Rc::make_mut` 先克隆 ⇒ O(n)。
+/// 判据**严格按引用计数**(`Rc::make_mut` 自己的 `is_unique`),不靠「看起来没人用」
+/// —— 后者在 §19.1 的值语义下不成立:旧值只要还有别的持有者,原地改就是**可观察的
+/// 语义破坏**。
+///
+/// ⚠ **所有写路径必须走这里**,否则计数会漏(本函数是 S5 计数点的**唯一**位置)。
+pub fn dict_make_mut(inner: &mut std::rc::Rc<DictInner>) -> &mut DictInner {
+    if std::rc::Rc::strong_count(inner) > 1 {
+        // 被别名 ⇒ 克隆整个字典 ⇒ 那是 O(n) 的拷贝代价 ⇒ 计数上单列
+        // (别名下的写是 O(n),这正是 §18.3.1「摊还口径」要如实登记的那一半)。
+        let copied = inner.entries.len() as u64;
+        add_dict_work(|w| w.copied_entries += copied);
+    }
+    std::rc::Rc::make_mut(inner)
+}
+
+// ⚠ `clippy::mutable_key_type` 在这里报「键有内部可变性」—— **本设计里它是假阳性**:
+//
+//   `DictKey::Instance` 持有 `Rc<RefCell<Vec<(Value, Value)>>>`(`fields` 单元格),
+//   clippy 看到 `RefCell` 就认为「键的哈希/相等可能变」。但本设计里**变的是
+//   实例的字段内容,不是键的身份**:
+//
+//   * 哈希 = `fields` 单元格的**分配地址**(`Rc::as_ptr`)—— 分配不随字段变化;
+//   * 相等 = `Rc::ptr_eq` —— 比的也是同一个分配地址。
+//
+//   ⇒ 哈希与相等**都稳定** ⇒ `HashMap` 的不变量成立。
+//   且 `DictKey` **持有**那个 `Rc` ⇒ 分配在被哈希期间不会消失 ⇒ 不存在
+//   「地址被复用 ⇒ 错命中」的问题(若只存裸地址,那才会)。
+#[allow(clippy::mutable_key_type)]
+impl DictInner {
+    /// 新建一个字典内部结构:按**插入序**建索引。
+    ///
+    /// ⚠ 重复键(字典字面量可以写 `["a": 1, "a": 2]`)⇒ 索引保留**首次**
+    ///   出现的位置,与旧实现「线性扫描取第一个匹配」逐字一致。
+    pub fn new(entries: Vec<(Value, Value)>) -> Self {
+        let mut index = HashMap::with_capacity(entries.len());
+        let mut all_keys_in_domain = true;
+        for (pos, (k, _)) in entries.iter().enumerate() {
+            match DictKey::from_value(k) {
+                Some(dk) => {
+                    index.entry(dk).or_insert(pos);
+                }
+                None => {
+                    all_keys_in_domain = false;
+                    break;
+                }
+            }
+        }
+        if !all_keys_in_domain {
+            index.clear();
+        }
+        DictInner {
+            entries,
+            index,
+            all_keys_in_domain,
+        }
+    }
+
+    /// 插入序的键值序列(**只读**)。
+    pub fn entries(&self) -> &[(Value, Value)] {
+        &self.entries
+    }
+
+    /// 把内部结构物化成字典值(内部结构 → `Value` 的**唯一**出口)。
+    pub fn into_value(self) -> Value {
+        Value::Dict(Rc::new(self))
+    }
+
+    /// 插入序条目的迭代器(**只读**)。
+    pub fn iter(&self) -> std::slice::Iter<'_, (Value, Value)> {
+        self.entries.iter()
+    }
+
+    /// 键数(**按条目数**,含重复键 —— 与旧的 `Vec::len()` 逐字一致)。
+    pub fn len(&self) -> usize {
+        self.entries.len()
+    }
+
+    /// 是否没有条目。
+    pub fn is_empty(&self) -> bool {
+        self.entries.is_empty()
+    }
+
+    /// 按键查**位置**(规范 §18.3.1 的 O(1) 期望路径)。
+    ///
+    /// ⚠ **与旧的线性扫描逐字等价**:
+    ///   * 键在封闭域内、且本字典**全部**键都在封闭域内 ⇒ 走哈希索引;
+    ///   * 否则(探测键域外,或本字典含域外键)⇒ 退回
+    ///     `values_equal` 的线性扫描(旧实现的原样)。
+    pub fn lookup(&self, key: &Value) -> Option<usize> {
+        if self.all_keys_in_domain {
+            if let Some(dk) = DictKey::from_value(key) {
+                // [ADR-0035 S5] 哈希路径:1 次键比较(哈希命中后那一次 `Eq`)。
+                add_dict_work(|w| {
+                    w.comparisons += 1;
+                    w.indexed_lookups += 1;
+                });
+                return self.index.get(&dk).copied();
+            }
+        }
+        // 线性回退:按**实际扫描过**的条目数计比较次数(⇒ 守卫能看出退化)。
+        let mut scanned = 0u64;
+        let found = self.entries.iter().position(|(k, _)| {
+            scanned += 1;
+            values_equal(k, key)
+        });
+        add_dict_work(|w| {
+            w.comparisons += scanned;
+            w.linear_lookups += 1;
+        });
+        found
+    }
+
+    /// 按键取值(等价于 `lookup` + 取那一格的值)。
+    pub fn get(&self, key: &Value) -> Option<&Value> {
+        self.lookup(key).map(|i| &self.entries[i].1)
+    }
+
+    /// 就地改某一格的**值**(不改结构 ⇒ 索引不受影响)。
+    pub fn set_value(&mut self, pos: usize, value: Value) {
+        self.entries[pos].1 = value;
+    }
+
+    /// 取某一格**值**的可变引用(用于「下潜进嵌套容器」;不改键 ⇒ 索引不受影响)。
+    pub fn value_mut(&mut self, pos: usize) -> &mut Value {
+        &mut self.entries[pos].1
+    }
+
+    /// 在**末尾**追加一个新键(规范 §18.3.1:新键追加到末尾 = 插入序)。
+    ///
+    /// ⚠ 键已存在时**不**覆盖(调用方先用 [`DictInner::lookup`] 判过);
+    ///   索引同步更新。
+    pub fn insert(&mut self, key: Value, value: Value) {
+        let pos = self.entries.len();
+        self.entries.push((key, value));
+        if self.all_keys_in_domain {
+            match DictKey::from_value(&self.entries[pos].0) {
+                Some(dk) => {
+                    self.index.entry(dk).or_insert(pos);
+                    // [ADR-0035 S5] 索引插入:1 次键比较(哈希桶里的那一次 `Eq`)。
+                    add_dict_work(|w| w.comparisons += 1);
+                }
+                None => {
+                    // 域外键 ⇒ 本字典不再「全部键在域内」⇒ 索引作废。
+                    self.all_keys_in_domain = false;
+                    self.index.clear();
+                }
+            }
+        }
+    }
+
+    /// 删掉某一格(位置会变 ⇒ 索引重建)。
+    pub fn remove(&mut self, pos: usize) -> (Value, Value) {
+        let removed = self.entries.remove(pos);
+        self.reindex();
+        removed
+    }
+
+    /// 按谓词保留条目(删掉的项会让位置变 ⇒ 索引重建)。
+    pub fn retain<F>(&mut self, mut f: F)
+    where
+        F: FnMut(&(Value, Value)) -> bool,
+    {
+        let before = self.entries.len();
+        self.entries.retain(|kv| f(kv));
+        if self.entries.len() != before {
+            self.reindex();
+        }
+    }
+
+    /// 重建索引(结构变动之后调用)。
+    fn reindex(&mut self) {
+        // [ADR-0035 S5] 索引重建是一次 O(n) 的结构工作 —— 计数上单列一项
+        // (它是**重建**,不是键比较)。
+        add_dict_work(|w| w.index_rebuilds += 1);
+        self.index.clear();
+        self.all_keys_in_domain = true;
+        for (pos, (k, _)) in self.entries.iter().enumerate() {
+            match DictKey::from_value(k) {
+                Some(dk) => {
+                    self.index.entry(dk).or_insert(pos);
+                }
+                None => {
+                    self.all_keys_in_domain = false;
+                    break;
+                }
+            }
+        }
+        if !self.all_keys_in_domain {
+            self.index.clear();
+        }
+    }
+}
+
+impl PartialEq for DictInner {
+    fn eq(&self, other: &Self) -> bool {
+        // ⚠ **只比 `entries`**(插入序、逐元素)⇒ 与旧的
+        //   `Vec<(Value, Value)> == Vec<(Value, Value)>` 逐字一致。
+        //   索引是**派生**数据,不比。
+        self.entries == other.entries
+    }
 }
 /// [v0.9 Step 9a-1 / plan §4.3 / ADR-0019 §4.3] Class entry — the
 /// shared backing store for `Value::Class` and `Value::Instance`.
@@ -302,6 +677,55 @@ pub enum ThisTokenError {
 pub type LinearThis = std::rc::Rc<std::cell::RefCell<Vec<(Value, Value)>>>;
 
 impl Value {
+    // ──────────────────────────────────────────────────────────────────
+    // [ADR-0035 S2] 字典的**构造函数**与**访问器**。
+    //
+    // ⚠ 全仓的字典构造 / 读取**只经这几个入口**(ADR-0035 S2 / S3):
+    //   内部表示(`Rc<DictInner>` + 哈希索引)不进调用方 ⇒ 175 处替换
+    //   不会把「表示」漏到别处去。
+    // ──────────────────────────────────────────────────────────────────
+
+    /// [ADR-0035 S2] 构造一个字典值(键值对按**插入序**排列)。
+    pub fn dict(entries: Vec<(Value, Value)>) -> Value {
+        Value::Dict(Rc::new(DictInner::new(entries)))
+    }
+
+    /// [ADR-0035 S2] 取字典的**插入序**条目(只读;`None` = 不是字典)。
+    pub fn as_dict_entries(&self) -> Option<&[(Value, Value)]> {
+        match self {
+            Value::Dict(inner) => Some(inner.entries()),
+            _ => None,
+        }
+    }
+
+    /// [ADR-0035 S2] 按键取**位置**(哈希索引;域外键退回线性扫描)。
+    pub fn dict_index_of(&self, key: &Value) -> Option<usize> {
+        match self {
+            Value::Dict(inner) => inner.lookup(key),
+            _ => None,
+        }
+    }
+
+    /// [ADR-0035 S2] 按键取值(哈希索引;域外键退回线性扫描)。
+    pub fn dict_get(&self, key: &Value) -> Option<&Value> {
+        match self {
+            Value::Dict(inner) => inner.get(key),
+            _ => None,
+        }
+    }
+
+    /// [ADR-0035 S2 / D3] 取字典的**可变**内部结构 —— **copy-on-write**。
+    ///
+    /// ⚠ 字典**唯一拥有**时(强引用计数 == 1)⇒ 原地改 ⇒ 单次写 O(1);
+    ///   被别名时 ⇒ 先克隆再改 ⇒ O(n)。判据由 `Rc::make_mut` 的引用计数
+    ///   严格给出(规范 §19.1 的值语义:旧值不可观察时原地改才合法)。
+    pub fn as_dict_inner_mut(&mut self) -> Option<&mut DictInner> {
+        match self {
+            Value::Dict(inner) => Some(dict_make_mut(inner)),
+            _ => None,
+        }
+    }
+
     pub fn display(&self) -> String {
         match self {
             Value::Integer(v) => v.to_string(),
@@ -425,7 +849,10 @@ impl PartialEq for Value {
             (Value::Boolean(a), Value::Boolean(b)) => a == b,
             (Value::Null, Value::Null) => true,
             (Value::Array(a), Value::Array(b)) => a == b,
-            (Value::Dict(a), Value::Dict(b)) => a == b,
+            // ⚠ [ADR-0035] 字典比较**只比插入序条目**(逐元素、顺序敏感),
+            //   与旧的 `Vec<(Value, Value)> == Vec<(Value, Value)>` 逐字一致;
+            //   哈希索引是派生数据,不参与比较。
+            (Value::Dict(a), Value::Dict(b)) => a.entries() == b.entries(),
             (
                 Value::Closure {
                     params: pa,
@@ -1247,6 +1674,10 @@ pub fn values_equal(a: &Value, b: &Value) -> bool {
             let x = x.borrow();
             x.len() == y.len() && x.iter().zip(y.iter()).all(|(a, b)| values_equal(a, b))
         }
+        // ⚠ [ADR-0035] 字典相等是**逐元素**比较:**每个** `x` 的条目都要在 `y`
+        //   里找到一个键值都相等的条目(集合口径,**不**看顺序)。
+        //   ⇒ 这一段**一个字都不能改** —— 哈希索引只改**查找**路径,
+        //   不改**相等**的语义(§2.4)。
         (Value::Dict(x), Value::Dict(y)) => {
             if x.len() != y.len() {
                 return false;
@@ -1695,5 +2126,206 @@ mod accumulator_cell_tests {
         c.borrow_mut().push(Value::Integer(3));
         assert_eq!(c.borrow().len(), 3);
         assert_eq!(Value::Cell(c).display(), "[1, 2, 3]");
+    }
+}
+
+// ── [ADR-0035] 字典哈希索引 + copy-on-write 的契约 ────────────────────
+//
+// 这一组钉的是**不能靠编译器发现**的那几条语义:
+//   ① `DictKey` 的 `Eq` / `Hash` 与 `values_equal`(规范 §2.4)逐字一致;
+//   ② 哈希索引的查找结果与旧的**线性扫描**逐字一致(含重复键、域外键);
+//   ③ copy-on-write:**唯一拥有 ⇒ 原地改**,**被别名 ⇒ 克隆后改**,
+//      且被别名时旧值**不受影响**(规范 §19.1 的值语义)。
+
+#[cfg(test)]
+mod dict_hash_index_tests {
+    use super::*;
+    use std::collections::hash_map::DefaultHasher;
+    use std::hash::{Hash, Hasher};
+
+    fn hash_of<T: Hash>(t: &T) -> u64 {
+        let mut h = DefaultHasher::new();
+        t.hash(&mut h);
+        h.finish()
+    }
+
+    fn s(v: &str) -> Value {
+        Value::String(v.to_string())
+    }
+
+    fn i(v: i64) -> Value {
+        Value::Integer(v)
+    }
+
+    /// 造一个实例(只用到它的**身份**)。
+    fn instance() -> Value {
+        Value::Instance {
+            class: Rc::new(RefCell::new(ClassEntry {
+                name: Some("K".into()),
+                parent: None,
+                members: Vec::new(),
+                init: None,
+                protocol: None,
+            })),
+            fields: Rc::new(RefCell::new(Vec::new())),
+            this_token: Rc::new(RefCell::new(ThisToken { moved: false })),
+            protocol_state: Rc::new(RefCell::new(ProtocolCursor::unrestricted())),
+        }
+    }
+
+    /// ① `DictKey` 的相等 / 哈希口径 = §2.4。
+    #[test]
+    fn dict_key_equality_follows_the_spec_2_4_key_domain() {
+        // STRING:按字节。
+        assert_eq!(DictKey::from_value(&s("a")), DictKey::from_value(&s("a")));
+        assert_ne!(DictKey::from_value(&s("a")), DictKey::from_value(&s("b")));
+        // INTEGER:按数值。
+        assert_eq!(DictKey::from_value(&i(1)), DictKey::from_value(&i(1)));
+        assert_ne!(DictKey::from_value(&i(1)), DictKey::from_value(&i(2)));
+        // ⚠ STRING 与 INTEGER 是**两个不同的键**(§2.4 的跨类型数值相等只对数字成立)。
+        assert_ne!(DictKey::from_value(&s("1")), DictKey::from_value(&i(1)));
+        // INSTANCE:按身份。
+        let a = instance();
+        let b = instance();
+        assert_eq!(DictKey::from_value(&a), DictKey::from_value(&a));
+        assert_ne!(DictKey::from_value(&a), DictKey::from_value(&b));
+        // 域外类型不是键(§2.1 键域封闭)。
+        assert!(DictKey::from_value(&Value::Float(1.0)).is_none());
+        assert!(DictKey::from_value(&Value::Boolean(true)).is_none());
+        assert!(DictKey::from_value(&Value::Null).is_none());
+        assert!(DictKey::from_value(&Value::Array(vec![])).is_none());
+    }
+
+    /// ① 相等的键 ⇒ 相等的哈希(哈希表的硬要求)。
+    #[test]
+    fn equal_keys_hash_equally() {
+        let inst = instance();
+        for (x, y) in [
+            (s("a"), s("a")),
+            (i(7), i(7)),
+            // ⚠ 同一个**实例**的两份克隆 ⇒ 同一身份 ⇒ 同一键。
+            (inst.clone(), inst.clone()),
+        ] {
+            let kx = DictKey::from_value(&x).expect("in domain");
+            let ky = DictKey::from_value(&y).expect("in domain");
+            assert_eq!(kx, ky);
+            assert_eq!(hash_of(&kx), hash_of(&ky));
+        }
+        // 三族的哈希互不相同(前缀标签的作用)。
+        let h_s = hash_of(&DictKey::from_value(&s("1")).unwrap());
+        let h_i = hash_of(&DictKey::from_value(&i(1)).unwrap());
+        assert_ne!(h_s, h_i);
+    }
+
+    /// ② 哈希索引的查找 = 旧的线性扫描(逐字)。
+    #[test]
+    fn index_lookup_agrees_with_the_old_linear_scan() {
+        let inst = instance();
+        // 重复键 + 混合类型键 + 域外键(FLOAT)都放进去。
+        let entries = vec![
+            (s("a"), i(1)),
+            (s("a"), i(2)),
+            (i(1), s("int-one")),
+            (inst.clone(), s("inst")),
+            (Value::Float(1.0), s("float-one")),
+            (Value::Boolean(true), s("bool")),
+        ];
+        let inner = DictInner::new(entries.clone());
+        let probes = [
+            s("a"),
+            s("zzz"),
+            i(1),
+            i(2),
+            inst.clone(),
+            instance(),
+            Value::Float(1.0),
+            Value::Boolean(true),
+            Value::Null,
+        ];
+        for probe in probes.iter() {
+            let old = entries.iter().position(|(k, _)| values_equal(k, probe));
+            let new = inner.lookup(probe);
+            assert_eq!(
+                new, old,
+                "lookup disagrees with the linear scan for {probe:?}"
+            );
+        }
+    }
+
+    /// ② 域外键存在时,查找**退回线性扫描**(不静默改语义)。
+    #[test]
+    fn a_dict_with_an_out_of_domain_key_falls_back_to_the_linear_scan() {
+        // 存储侧 `FLOAT(1.0)` 与探测侧 `INTEGER(1)` 在 §2.4 下**相等**
+        // (数字跨类型比较)⇒ 哈希索引(只收域内键)会漏掉它 ⇒ 必须退回扫描。
+        let inner = DictInner::new(vec![(Value::Float(1.0), s("v"))]);
+        assert_eq!(inner.lookup(&i(1)), Some(0));
+        assert_eq!(inner.lookup(&Value::Float(1.0)), Some(0));
+    }
+
+    /// ③ 唯一拥有 ⇒ **原地**改(同一个 `Rc` 分配)。
+    #[test]
+    fn a_uniquely_owned_dict_is_mutated_in_place() {
+        let mut v = Value::dict(vec![(s("k"), i(1))]);
+        let before = match &v {
+            Value::Dict(rc) => Rc::as_ptr(rc) as usize,
+            _ => panic!("expected Dict"),
+        };
+        v.as_dict_inner_mut().expect("is a dict").set_value(0, i(2));
+        let after = match &v {
+            Value::Dict(rc) => Rc::as_ptr(rc) as usize,
+            _ => panic!("expected Dict"),
+        };
+        assert_eq!(before, after, "唯一拥有 ⇒ 应当原地改(分配未变)");
+        assert_eq!(v.dict_get(&s("k")), Some(&i(2)));
+    }
+
+    /// ③ 被别名 ⇒ **克隆后**改,且**旧值不受影响**(§19.1 的值语义)。
+    #[test]
+    fn an_aliased_dict_is_cloned_before_mutation() {
+        let mut v = Value::dict(vec![(s("k"), i(1))]);
+        let alias = v.clone();
+        let before = match &v {
+            Value::Dict(rc) => Rc::as_ptr(rc) as usize,
+            _ => panic!("expected Dict"),
+        };
+        v.as_dict_inner_mut().expect("is a dict").set_value(0, i(2));
+        let after = match &v {
+            Value::Dict(rc) => Rc::as_ptr(rc) as usize,
+            _ => panic!("expected Dict"),
+        };
+        assert_ne!(before, after, "被别名 ⇒ 应当克隆后改(分配已换)");
+        assert_eq!(v.dict_get(&s("k")), Some(&i(2)));
+        assert_eq!(
+            alias.dict_get(&s("k")),
+            Some(&i(1)),
+            "别名持有的旧值必须原样可见"
+        );
+    }
+
+    /// ③ 结构性改动(删键)之后,索引必须与条目重新对齐。
+    #[test]
+    fn removing_a_key_realigns_the_index() {
+        let mut v = Value::dict(vec![(s("a"), i(1)), (s("b"), i(2)), (s("c"), i(3))]);
+        let inner = v.as_dict_inner_mut().expect("is a dict");
+        let at = inner.lookup(&s("b")).expect("b is there");
+        inner.remove(at);
+        // 删掉中间那个之后,位置全部前移 ⇒ 索引必须跟着重建。
+        assert_eq!(inner.lookup(&s("c")), Some(1));
+        assert_eq!(inner.lookup(&s("b")), None);
+        assert_eq!(inner.lookup(&s("a")), Some(0));
+        assert_eq!(inner.len(), 2);
+    }
+
+    /// ② 插入序是**呈现**的唯一来源:索引只存位置。
+    #[test]
+    fn the_index_never_reorders_the_entries() {
+        let mut v = Value::dict(vec![(s("zeta"), i(1)), (s("alpha"), i(2))]);
+        let inner = v.as_dict_inner_mut().expect("is a dict");
+        inner.insert(s("mid"), i(3));
+        assert_eq!(v.display(), "[zeta: 1, alpha: 2, mid: 3]");
+        assert_eq!(
+            v.as_dict_entries().expect("is a dict"),
+            &[(s("zeta"), i(1)), (s("alpha"), i(2)), (s("mid"), i(3))]
+        );
     }
 }
