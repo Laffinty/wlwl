@@ -29,11 +29,16 @@
 //! | E0090 unreachable             | network ladder |
 //! | E0091 DNS failure             | network ladder |
 //! | E0092 TLS error               | network ladder |
-//! | E0093 HTTP 4xx                | network ladder |
+//! | E0093 HTTP 4xx                | network ladder (except 401 / 403) |
 //! | E0094 HTTP 5xx                | network ladder |
-//! | E0081 auth (401 / 403)        | bucket from HTTP 4xx arm |
+//! | E0080 auth rejected (401 / 403) | request rejected — standard package §9.2 |
+//! | E0081 response malformed      | JSON parse failure on success body, or missing `choices[0].message.content` |
 //! | E0082 credentials missing     | `WLWL_AI_API_KEY` not set |
-//! | E0083 response malformed      | JSON parse failure on success body |
+//!
+//! ⚠ [v1.0 / X-11] 401 / 403 与响应解析失败两处的归类按**标准库·官方包册
+//!   §9.2「传输侧与响应层的归类」**对齐(此前分别是 `E0081` / `E0083`,
+//!   错位一格)。⚠ 这些路径在 `real-ai` feature 之内 ⇒ **默认构建与 CI 跑不到**
+//!   ⇒ 本仓的 CI **不能**给它们作证。
 //!
 //! ## W0052
 //!
@@ -226,12 +231,17 @@ mod real {
 
         let status = resp.status();
         if status.is_client_error() {
-            // 4xx — caller fault (bad request, auth, not found).
-            // 401 / 403 still maps to E0081 (auth/rate) for AI-tool
-            // compat; everything else → E0093.
+            // 4xx —— 调用方的问题(请求本身不合法、鉴权被拒、资源不存在)。
+            //
+            // ⚠ [标准库·官方包册 §9.2「传输侧与响应层的归类」]401 / 403 的归类
+            //   在 v1.0 **被钉死**为 `E0080`(推理请求失败):被拒是**请求失败**,
+            //   不是协议问题(`E0081`)。此前这里映射成 `E0081`(认证)、把 404
+            //   映射成 `E0083`(上下文错误)⇒ 与 §9.2 的语义**错位一格**
+            //   (一致性册 §5.4 的 X-11)。现在按规范对齐:
+            //   * 401 / 403 ⇒ `E0080`(请求被拒)
+            //   * 其余 4xx(含 404 模型不存在)⇒ `E0093`(HTTP 4xx)
             let code = match status.as_u16() {
-                401 | 403 => ErrorCode::E0081,
-                404 => ErrorCode::E0083, // model not found
+                401 | 403 => ErrorCode::E0080,
                 _ => ErrorCode::E0093,
             };
             return Err(StdError {
@@ -246,8 +256,11 @@ mod real {
             });
         }
 
+        // ⚠ 响应体不是合法 JSON、或缺 `choices[0].message.content` ⇒
+        //   **响应协议不符** ⇒ `E0081`(标准库·官方包册 §9.2)。
+        //   此前这两处报 `E0083`(上下文错误)⇒ 同样错位一格(X-11)。
         let v: serde_json::Value = resp.json().map_err(|e| StdError {
-            code: ErrorCode::E0083,
+            code: ErrorCode::E0081,
             message: format!("malformed AI response: {}", e),
         })?;
         let content = v
@@ -257,7 +270,7 @@ mod real {
             .and_then(|m| m.get("content"))
             .and_then(|c| c.as_str())
             .ok_or_else(|| StdError {
-                code: ErrorCode::E0083,
+                code: ErrorCode::E0081,
                 message: "AI response missing choices[0].message.content".into(),
             })?;
         Ok(content.to_string())
