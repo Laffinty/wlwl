@@ -44,6 +44,23 @@ scratch/
 build/
 dist/
 
+# [2026-10-22] `.spec1/` —— v1.0 规范的**本地工作副本**（尚未提升进
+# `docs/wlwl-spec-reference.md` 的内容）。
+#
+# ⚠ **必须忽略**,且配套一条纪律:**禁止引用本目录里的任何文档** ——
+#   哪怕内容准确、哪怕有用。需要引用时,先把有效内容复制进
+#   `docs/wlwl-spec-reference.md`(唯一可被引用的仓内规范载体),再去引用它。
+#   理由是结构性的:本目录不入库 ⇒ 任何指向它的路径在**别人的 clone 里
+#   必然是死链**。
+#
+#   纪律由机器守卫执行:`impl/crates/wlwl-cli/tests/spec_ref_hygiene_guard.rs`
+#   扫全仓,任何在本目录之外的文件里出现它的名字都会让 CI 转红
+#   (纪律的定义处本身除外:`.gitignore` / `CONTRIBUTING.md` / 该守卫测试)。
+#
+#   ⚠ 本目录**不是**真相源,只是暂存 —— 权威处永远是独立仓
+#   `Laffinty/wlwl-spec-v1`;`git` 也不备份这里。
+.spec1/
+
 # Node / JS (in case)
 node_modules/
 package-lock.json

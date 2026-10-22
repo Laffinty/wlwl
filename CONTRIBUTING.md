@@ -26,6 +26,24 @@ contribution workflow. For deeper design context, read:
    handling must keep the v0.3 §14 schema fields (`errorCategory`,
    `retryable`, `suggestion_code`, `related`, `error_schema_version`)
    intact. Schema changes go through a spec revision.
+5. **The `.spec1/` directory is local scratch — never reference it.** The
+   `.spec1/` directory at the repository root holds working copies of the
+   v1.0 spec that have **not** been promoted yet. It is **git-ignored**,
+   and **nothing in this repository may point at a file inside it** — not a
+   link, not a path in a comment, not a "temporary" pointer — **even if the
+   content is accurate and useful**. The reason is structural, not stylistic:
+   the directory is not tracked, so a pointer into it is a **dead link in
+   every fresh clone**.
+
+   **To cite something from there**, copy the effective content into
+   [`docs/wlwl-spec-reference.md`](docs/wlwl-spec-reference.md) first — that
+   file is the single referenceable spec for AI agents and machine guards —
+   then cite **that** file. The authoritative source is always the separate
+   spec repo (`Laffinty/wlwl-spec-v1`); `.spec1/` is never the source of
+   truth.
+
+   This rule is enforced by a machine guard
+   (`spec_ref_hygiene_guard` in `wlwl-cli`), not by good intentions.
 
 ## Development setup
 

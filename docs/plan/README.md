@@ -14,6 +14,7 @@ addendum 已按「是否收口」分流到别处(见下方「文件去哪了」)
 | [`../active/`](../active/) | **唯一未收口、且仍被引用**的方案:[`addendum-12-sync-primitives.md`](../active/addendum-12-sync-primitives.md)(`std.sync`) | 还没做完 ⇒ 留在「进行中」的位置;**语言规范 §17.0.1 引的就是它** |
 | [`../history/`](../history/) 里的日次件 | 2026-09 起的日次日志 + v0.11 / v0.11.1 / v0.11.2 的归档件(按归档规则**合并精简**) | 老规矩 |
 | [`../history/20261022-spec-archive.md`](../history/20261022-spec-archive.md) | **v0.11 规范三册原文**(语言规范 + 标准库规范 + 代理工作说明) | ⚠ **2026-10-22 归档**:`docs/spec/` 与 `docs/stdlib/` 两个文件夹**已从本仓移除** ⇒ 三册原文按册照录于这份**单 md** 归档件(原文保留,不精简合并) |
+| **仓根 `.spec1/`**(不入库) | **v1.0 规范的本地工作副本** —— 尚未提升进 [`../wlwl-spec-reference.md`](../wlwl-spec-reference.md) 的内容 | ⚠ **2026-10-22 设立纪律**:**禁止引用该目录里的任何文档**(哪怕内容准确、哪怕有用)。理由是结构性的:它不入库 ⇒ 任何指向它的路径在**别人的 clone 里必然是死链**。**要引用就把有效内容复制进 [`../wlwl-spec-reference.md`](../wlwl-spec-reference.md) 再引用那个**。权威源永远是独立仓 `Laffinty/wlwl-spec-v1`。纪律由机器守卫执行:`impl/crates/wlwl-cli/tests/spec_ref_hygiene_guard.rs`(扫全仓,违规即红) |
 
 ⚠ **权威口径脚本的输入目录变了**:方案文件现在分散在 `docs/history/` 与
 `docs/active/` 两处 ⇒ [`../../script/phase_strict.py`](../../script/phase_strict.py)
