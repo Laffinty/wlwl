@@ -364,16 +364,10 @@ fn compression_is_deterministic() {
 #[test]
 fn compress_member_set_matches_the_spec_table() {
     let text = std::fs::read_to_string(spec_path()).expect("stdlib spec readable");
-    let start = text
-        .find("## 标准库规范 · 20 `std.compress`")
-        .expect("§20 header exists");
-    let end = text[start..]
-        .find("\n## ")
-        .map(|i| start + i)
-        .expect("a following top-level heading exists");
-    // 收在「下一章」内 —— 但 `## 20` 之后的下一个 `##` 就是附录 A,所以这里
-    // 直接取到它为止即可。
-    let body = &text[start..end];
+    // 收在「下一章」内 —— `## 20` 之后的下一个 `##` 是 **§21 `std.net`**
+    // (⚠ 旧注释写的是「附录 A」,那是 v0.11 时期 stdlib 少两章时的位置,
+    // v1.0 里 §21 已存在 ⇒ 注释照事实订正)。
+    let body = common::chapter_body(&text, "## 标准库规范 · 20 `std.compress`");
     let mut spec: Vec<String> = Vec::new();
     for line in body.lines() {
         let Some(rest) = line.strip_prefix("| `") else {
@@ -423,14 +417,7 @@ fn spec_path() -> PathBuf {
 #[test]
 fn the_two_normative_clauses_are_written_down() {
     let text = std::fs::read_to_string(spec_path()).expect("stdlib spec readable");
-    let start = text
-        .find("## 标准库规范 · 20 `std.compress`")
-        .expect("§20 header exists");
-    let end = text[start..]
-        .find("\n## ")
-        .map(|i| start + i)
-        .expect("a following top-level heading exists");
-    let body = &text[start..end];
+    let body = common::chapter_body(&text, "## 标准库规范 · 20 `std.compress`");
     // ⚠ 两个锚点在 §20 内**各自唯一**:§20.1 的「压缩不是加密」裁决句,以及
     //   §20.2 的解压上限硬边界句。只钉「§20 里出现过 `MAX_DECOMPRESSED`」
     //   不够 —— 那个字样在 §20 里出现两次(成员表 + §20.2),删掉 §20.2 的

@@ -457,13 +457,11 @@ fn time_contract() {
 #[test]
 fn time_member_set_matches_the_spec_table() {
     let text = std::fs::read_to_string(spec_path()).expect("stdlib spec readable");
-    let start = text.find("## 标准库规范 · 15 ").expect("§15 header exists");
-    // §15 后面直接是「附录 A」,没有 §16 —— 所以终止条件取**下一个 `## ` 标题**,
-    // 而不是写死 §16(写死的话,加一个 §16 时这个守卫会静默失效)。
-    let end = text[start..]
-        .find("\n## ")
-        .map(|i| start + i)
-        .expect("a following top-level heading exists");
+    // §15 之后是 **§16 `std.regex`**(⚠ 旧注释写的是「后面直接是附录 A、
+    // 没有 §16」—— 那是 v0.11 时期的位置,§16 在 v1.0 里已存在 ⇒ 照事实订正)。
+    // 所以终止条件取**下一个 `## ` 标题**,而不是写死 §16 —— 写死的话,加一个
+    // §16 时这个守卫会静默失效(而现在它**已经**存在,写死反而正好)。
+    let body = common::chapter_body(&text, "## 标准库规范 · 15 ");
     // ⚠️ **提取范围必须收在「成员表」那一节内**,不能扫完整个 §15。
     // 踩过一次:§15.6(气泡能给 / 给不了)那张对照表里有一行
     // `| \`SLEEP(3600000)\` 墙钟耗时 < 1 s | … |`,它同样以 `| \`` 开头,
@@ -474,8 +472,7 @@ fn time_member_set_matches_the_spec_table() {
     // ⚠ **子节号逐章不同**(21.1 / 11.2 / 15.1)⇒ 共用助手按**标题文字**
     // (`成员表`)定位,不按编号 —— 写死 `### 15.1` 的人改一次章就得再抄一次
     // 查找逻辑。找不到 ⇒ 明确报错,不返回空。
-    let body = &text[start..end];
-    let table = common::member_table_section("§15", body);
+    let table = common::member_table_section("§15", &body);
     let spec = common::member_names("§15", &table);
 
     let impls: Vec<String> = wlwl_std::resolve("wlwl:std.time")
@@ -534,14 +531,7 @@ fn the_clock_contract_is_documented() {
     //   修之前实测把 §15.9 的 `ADR-0024` §6 改成 §7,整册判据**仍然绿**
     //   (整册里 `ADR-0024` 有 2 处,`MONOTONIC` 出现 8 次、§15 内就有 7 处)
     //   ⇒ 旧判据**没在查** §15.9 那处出处。
-    let start = text
-        .find("## 标准库规范 · 15 `std.time`")
-        .expect("§15 header exists");
-    let end = text[start..]
-        .find("\n## ")
-        .map(|i| start + i)
-        .expect("a following top-level heading exists");
-    let body = &text[start..end];
+    let body = common::chapter_body(&text, "## 标准库规范 · 15 `std.time`");
     for needle in [
         // ⚠ 成员**签名**而不是成员名:`MONOTONIC` 这个名字在 §15 内出现 7 次
         //   (分散在成员表 / §15.3 / §15.5 / §15.7 / §15.8),拿它当 needle 等于判

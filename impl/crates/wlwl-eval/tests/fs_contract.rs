@@ -756,14 +756,8 @@ fn read_bytes_refuses_a_file_over_the_cap_without_touching_it() {
 #[test]
 fn the_move_link_semantics_are_written_down() {
     let text = std::fs::read_to_string(spec_path()).expect("stdlib spec readable");
-    let start = text
-        .find("## 标准库规范 · 2 `std.fs`")
-        .expect("§2 header exists");
-    let end = text[start..]
-        .find("\n## ")
-        .map(|i| start + i)
-        .expect("a following top-level heading exists");
-    let body = &text[start..end];
+    // 范围收在 §2 内 ⇒ 取该章正文(结束于下一个 `## `)。
+    let body = common::chapter_body(&text, "## 标准库规范 · 2 `std.fs`");
     for needle in [
         "同设备",
         "跨设备",
@@ -785,14 +779,8 @@ fn the_move_link_semantics_are_written_down() {
 #[test]
 fn the_write_bytes_cap_is_written_down() {
     let text = std::fs::read_to_string(spec_path()).expect("stdlib spec readable");
-    let start = text
-        .find("## 标准库规范 · 2 `std.fs`")
-        .expect("§2 header exists");
-    let end = text[start..]
-        .find("\n## ")
-        .map(|i| start + i)
-        .expect("a following top-level heading exists");
-    let body = &text[start..end];
+    // 范围收在 §2 内 ⇒ 取该章正文(结束于下一个 `## `)。
+    let body = common::chapter_body(&text, "## 标准库规范 · 2 `std.fs`");
     for needle in ["MAX_WRITE_BYTES", "64 MiB", "原封不动"] {
         assert!(
             body.contains(needle),
@@ -811,16 +799,9 @@ fn the_write_bytes_cap_is_written_down() {
 #[test]
 fn fs_member_set_matches_the_spec_table() {
     let text = std::fs::read_to_string(spec_path()).expect("stdlib spec readable");
-    let start = text
-        .find("## 标准库规范 · 2 `std.fs`")
-        .expect("§2 header exists");
-    let end = text[start..]
-        .find("\n## ")
-        .map(|i| start + i)
-        .expect("a following top-level heading exists");
     // 提取范围收在 §2 内(散文里出现「以 `| ` 开头的行」会污染成员表提取器
     // —— 本轮在 §15 上踩过一次同样的坑)。
-    let body = &text[start..end];
+    let body = common::chapter_body(&text, "## 标准库规范 · 2 `std.fs`");
 
     let mut spec: Vec<String> = Vec::new();
     for line in body.lines() {
@@ -864,14 +845,8 @@ fn fs_member_set_matches_the_spec_table() {
 #[test]
 fn env_member_set_matches_the_spec_table() {
     let text = std::fs::read_to_string(spec_path()).expect("stdlib spec readable");
-    let start = text
-        .find("## 标准库规范 · 18 `std.env`")
-        .expect("§18 header exists");
-    let end = text[start..]
-        .find("\n## ")
-        .map(|i| start + i)
-        .expect("a following top-level heading exists");
-    let body = &text[start..end];
+    // 范围收在 §18 内 ⇒ 取该章正文(结束于下一个 `## `)。
+    let body = common::chapter_body(&text, "## 标准库规范 · 18 `std.env`");
 
     let mut spec: Vec<String> = Vec::new();
     for line in body.lines() {
@@ -923,14 +898,7 @@ fn spec_path() -> PathBuf {
 fn the_separator_decision_is_written_down() {
     let text = std::fs::read_to_string(spec_path()).expect("stdlib spec readable");
     // ① std.fs §2:分隔符恒为 `/`(跨平台契约)+ 那次裁决的出处。
-    let fs_start = text
-        .find("## 标准库规范 · 2 `std.fs`")
-        .expect("§2 header exists");
-    let fs_end = text[fs_start..]
-        .find("\n## ")
-        .map(|i| fs_start + i)
-        .expect("a following top-level heading exists");
-    let fs_body = &text[fs_start..fs_end];
+    let fs_body = common::chapter_body(&text, "## 标准库规范 · 2 `std.fs`");
     // ⚠ 三个锚点在 §2 内**各自唯一**(整册也唯一):分隔符的**裁决句**(§2 导语)、
     //   成员表里的**操作口径**(`PATH_JOIN`)、以及那次裁决的**出处**。
     //   只钉「§2 里出现过 `/`」不够 —— §2 的成员表里到处是 `/`,删掉裁决句也照样绿。
@@ -942,14 +910,7 @@ fn the_separator_decision_is_written_down() {
         );
     }
     // ② std.process §19:`argv` 不经 shell 解析(不经 shell 跑子进程)。
-    let proc_start = text
-        .find("## 标准库规范 · 19 `std.process`")
-        .expect("§19 header exists");
-    let proc_end = text[proc_start..]
-        .find("\n## ")
-        .map(|i| proc_start + i)
-        .expect("a following top-level heading exists");
-    let proc_body = &text[proc_start..proc_end];
+    let proc_body = common::chapter_body(&text, "## 标准库规范 · 19 `std.process`");
     // ⚠ 同上:两个锚点在 §19 内各自唯一 —— 章题(声明这件事是本章的主题)与
     //   §19.6 的 `argv` 语义句。整册的「不经 shell」在系统册总纲里也出现过,
     //   所以不能拿「不经 shell」四个字本身当判据。

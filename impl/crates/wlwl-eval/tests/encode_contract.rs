@@ -831,17 +831,16 @@ const EXPECTED: &[&str] = &[
 #[test]
 fn encode_member_set_matches_the_spec_table() {
     let text = std::fs::read_to_string(spec_path()).expect("stdlib spec readable");
-    let start = text.find("## 标准库规范 · 11 ").expect("§11 header exists");
-    let end = text[start..]
-        .find("\n## 标准库规范 · 12 ")
-        .map(|i| start + i)
-        .expect("§12 header follows §11");
-    let body = &text[start..end];
+    // ⚠ 结束锚点**写死 §12** ⇒ 规范**新增**中间章时这段正文会**多取一章** ⇒
+    //   成员表对拍失败 ⇒ 变红(「设计变了就一起改测试」那道闸)。
+    // ⇒ 必须用 `chapter_body_until`(结束于**指定**的下一个章标题);
+    //   `chapter_body`(结束于下一个 `## `)会**静默截断** ⇒ 把那道闸拆掉。
+    let body = common::chapter_body_until(&text, "## 标准库规范 · 11 ", "\n## 标准库规范 · 12 ");
     // v1.0 的成员表在 `### 11.2 成员表` 子节里 ⇒ 范围落到那个子节。
     // 扫整章会把 KDF 参数表 / RFC 测试向量表一起抽进来(26 个而不是 13 个)。
     // **子节号逐章不同** ⇒ 共用助手按**标题文字**(`成员表`)定位;找不到 ⇒
     // 明确报错,不返回空。
-    let table = common::member_table_section("§11", body);
+    let table = common::member_table_section("§11", &body);
     let spec = common::member_names("§11", &table);
 
     let impls: Vec<String> = wlwl_std::resolve("wlwl:std.encode")
@@ -899,12 +898,9 @@ fn spec_path() -> PathBuf {
 #[test]
 fn the_rfc_vectors_and_tradeoffs_are_documented() {
     let text = std::fs::read_to_string(spec_path()).expect("stdlib spec readable");
-    let start = text.find("## 标准库规范 · 11 ").expect("§11 header exists");
-    let end = text[start..]
-        .find("\n## ")
-        .map(|i| start + i)
-        .expect("a following top-level heading exists");
-    let body = &text[start..end];
+    // ⚠ 结束锚点是**下一个 `## `**(通用口径):判据的范围就是「§11 这一章」,
+    //   将来 §11 与 §12 之间新增一章时,本段**不会**把新章包进来。
+    let body = common::chapter_body(&text, "## 标准库规范 · 11 ");
     // ⚠ 五个锚点在 §11 内**各自唯一**:§11.4 的 base64 向量表标题、§11.3 第 2 条
     //   的取舍句、§11.1 的 `ERR` 载荷 JSON、§11.2 成员表里的 RFC 3986
     //   `unreserved` 集、§11.4 的 URL-safe 分歧可观察值。

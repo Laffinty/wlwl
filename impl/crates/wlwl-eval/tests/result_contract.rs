@@ -505,6 +505,8 @@ fn spec_text() -> String {
 /// 信息会指向一个完全无关的表。
 fn member_tables() -> String {
     let text = spec_text();
+    // ⚠ `grab` 是**子节级**的(起止标记都带 `### `)—— 共用助手是**章级**的,
+    //   形态不同 ⇒ 这一段**保持原样**。
     let grab = |start_marker: &str, end_marker: &str| {
         let start = text
             .find(start_marker)
@@ -516,14 +518,11 @@ fn member_tables() -> String {
         text[start..end].to_string()
     };
     // §22.5 的起点,与**章尾**(下一个顶层标题 = §22 章的结束)。
-    let s225 = text
-        .find("### 22.5")
-        .unwrap_or_else(|| panic!("### 22.5 exists in the stdlib spec"));
-    let e22 = text[s225..]
-        .find("\n## ")
-        .map(|i| s225 + i)
-        .unwrap_or_else(|| panic!("a chapter heading follows §22.5"));
-    format!("{}\n{}", grab("### 22.1", "### 22.2"), &text[s225..e22])
+    // ⚠ 这里**不能**用 `chapter_body`(结束于下一个 `## `、末尾兜底):本段
+    //   **不能**收到文件末尾(见上)⇒ 结束锚点缺失时必须响 ⇒ 用
+    //   `chapter_body_until`(结束于**指定**的锚点,缺失 ⇒ panic)。
+    let s225 = common::chapter_body_until(&text, "### 22.5", "\n## ");
+    format!("{}\n{}", grab("### 22.1", "### 22.2"), s225)
 }
 
 fn members_of(section_body: &str) -> Vec<String> {

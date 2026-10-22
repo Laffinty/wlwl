@@ -203,12 +203,9 @@ fn ai_and_agent_member_sets_match_the_spec_tables() {
             ["TASK", "TOOL", "CALL_TOOL", "MODEL", "CONTEXT"],
         ),
     ] {
-        let start = text.find(chapter).expect("chapter header exists");
-        let end = text[start..]
-            .find("\n## ")
-            .map(|i| start + i)
-            .unwrap_or(text.len());
-        let body = &text[start..end];
+        // ⚠ 结束锚点是**下一个 `## `**,末尾兜底(与原实现同构);§9 / §10 之后
+        //   必然还有下一章 ⇒ 兜底不可达。起锚点找不到 ⇒ panic(「找不到就响」)。
+        let body = common::chapter_body(&text, chapter);
         for m in members {
             assert!(
                 body.contains(&format!("`{m}(")),

@@ -417,18 +417,17 @@ fn text_contract() {
 #[test]
 fn text_member_set_matches_the_spec_table() {
     let text = std::fs::read_to_string(spec_path()).expect("stdlib spec readable");
-    let start = text.find("## 标准库规范 · 12 ").expect("§12 header exists");
-    let end = text[start..]
-        .find("\n## 标准库规范 · 13 ")
-        .map(|i| start + i)
-        .expect("§13 header follows §12");
-    let body = &text[start..end];
+    // ⚠ 结束锚点**写死 §13** ⇒ 规范**新增**中间章时这段正文会**多取一章** ⇒
+    //   成员表对拍失败 ⇒ 变红(「设计变了就一起改测试」那道闸)⇒ 必须用
+    //   `chapter_body_until`(结束于**指定**的下一个章标题),不能换成
+    //   `chapter_body`(结束于下一个 `## `)—— 那会静默截断,把那道闸拆掉。
+    let body = common::chapter_body_until(&text, "## 标准库规范 · 12 ", "\n## 标准库规范 · 13 ");
     // 只扫**规范性成员表**:§12.1 是推迟裁决的理由表,里面有 `NFC` /
     // `GRAPHEME_COUNT` / `WIDTH` 这些行,但它们**不是成员**。遇到第一个
     // `### ` 子标题就停 —— 表格的权威性止于它自己的小节。
-    let body = match body.find("\n### ") {
+    let body: &str = match body.find("\n### ") {
         Some(i) => &body[..i],
-        None => body,
+        None => &body,
     };
 
     let mut spec: Vec<String> = Vec::new();
@@ -509,12 +508,7 @@ fn the_ucd_batch_rationale_is_documented() {
     let text = std::fs::read_to_string(spec_path()).expect("stdlib spec readable");
     // ⚠ 判据**收窄到 §12**。落在整个文件上时,别处的同名文字会让这条一直绿 ——
     //   修之前实测把 §12.1 的「数据覆盖必须完整」整段删掉,本条**仍然绿**。
-    let start = text.find("## 标准库规范 · 12 ").expect("§12 header exists");
-    let end = text[start..]
-        .find("\n## 标准库规范 · 13 ")
-        .map(|i| start + i)
-        .expect("§13 header follows §12");
-    let body = &text[start..end];
+    let body = common::chapter_body_until(&text, "## 标准库规范 · 12 ", "\n## 标准库规范 · 13 ");
     for needle in [
         "UCD",
         "GraphemeBreakProperty",
@@ -549,14 +543,8 @@ fn nfc_qc_one_directional_wording_is_documented() {
     //   整册判据**仍然绿**:旧针脚只查 `不保证` / `反向不成立` / `NFC_QC`,
     //   而这三样**都没被动到**(`NFC_QC` 整册出现 8 次,§12 内就有 7 次)
     //   ⇒ 旧判据压根**没在查**「正向定义」那一句。
-    let start = text
-        .find("## 标准库规范 · 12 `std.text`")
-        .expect("§12 header exists");
-    let end = text[start..]
-        .find("\n## ")
-        .map(|i| start + i)
-        .expect("a following top-level heading exists");
-    let body = &text[start..end];
+    // ⚠ 结束锚点是**下一个 `## `**(通用口径):判据的范围就是「§12 这一章」。
+    let body = common::chapter_body(&text, "## 标准库规范 · 12 `std.text`");
     // ⚠ 四个锚点在 §12 内**各自唯一**:`NFC_QC` 这个**成员名**在 §12 里出现 7 次
     //   (分散在成员表 / §12.2 小节标题 / 条款正文 / §12.4 示例 4 处),拿它当
     //   needle 等于判「§12 里提过 NFC_QC」⇒ 条款正文被删光也照样绿。改钉

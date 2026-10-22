@@ -93,6 +93,255 @@ pub fn scratch(prefix: &str) -> PathBuf {
     dir
 }
 
+// ── 合并规范:「某一章」的正文切片 ─────────────────────────────────────
+//
+// ⚠ **这一段的行为是契约**:改了它,所有「章作用域」的契约判据抽到的内容就会变。
+//
+// ## 两种结束口径,**不等价,别混用**
+//
+// - `chapter_body(text, title)` —— 结束于**下一个 `## `**。
+// - `chapter_body_until(text, title, next_title)` —— 结束于**指定的下一个章标题**。
+//
+// 差别在**规范新增中间章**时:
+// - `chapter_body` 会**静默截断**(新章被排除,测试照绿 —— 成员表对拍看不出来);
+// - `chapter_body_until` 会把新章**包进来** ⇒ 成员表对拍**失败 ⇒ 变红**
+//   ⇒ 「设计变了就一起改测试」那道闸。
+//
+// ⇒ **凡是原来用具体章号当结束锚点的,收口后必须继续用 `chapter_body_until`**,
+// 不要「统一」成通用形式 —— 那会把一道闸悄悄拆掉。
+//
+// ## 为什么是「找不到就 panic」
+//
+// 「章标题找不到」与「这一章没有成员」是两件必须分开的事:前者是**结构变了**
+// (章改名 / 被删 / 册别前缀改了),后者是规范事实。安静返回空会让「结构变了」
+// 变成**静默**漂移,而集合相等型断言在空集上会**假绿**(`[] == []`)。
+//
+// ## 为什么**不**顺手把各文件的 `spec_text()` 也换成这里的
+//
+// 仓级守卫 `impl/crates/wlwl-cli/tests/spec_needle_scope_guard.rs` 靠**源码形态**
+// 识别「整册绑定」:它认的是「`let x = <读整本>`,且 `x` 直接当 `.contains()` 的
+// 接收者」。各测试文件里**本地定义的** `spec_text()` 正是它认得的形态之一 ⇒
+// 把它换成本模块的函数,守卫就**认不出**了 ⇒ 守卫静默减弱(漏报)。
+// ⇒ **各文件的 `spec_path()` / `spec_text()` 保持原样**,本模块只提供切片助手。
+
+/// 取合并规范里**某一章**的正文,结束于**下一个 `## `**。
+///
+/// `title` 是章标题的**前缀**(通常到章号后的空格为止),如
+/// `"## 标准库规范 · 17 "`。它同时充当**定位锚点**与**报错文案**。
+///
+/// **章标题找不到 ⇒ panic**(带这一册实际有的章标题清单)—— 安静返回空会让
+/// 「章改名 / 被删 / 册别前缀改了」变成**静默**漂移。
+///
+/// **下一个 `## ` 找不到 ⇒ 也 panic**:那说明这一章是全文**最后一个**二级
+/// 章节 —— 而规范册的最后一节是「代理工作说明」,**不是**任何标准库章 ⇒
+/// 走到这里只可能是结构变了(某章被删、或册别前缀改了)⇒ 必须响,不能安静
+/// 收到末尾(那会让「取到的正文多了一截」变成静默漂移)。
+pub fn chapter_body(text: &str, title: &str) -> String {
+    let start = text.find(title).unwrap_or_else(|| {
+        panic!(
+            "{title} exists in the merged spec — {}",
+            chapter_inventory(text)
+        )
+    });
+    let end = text[start..]
+        .find("\n## ")
+        .map(|i| start + i)
+        .unwrap_or_else(|| {
+            panic!(
+                "a `## ` heading follows {title} — 这一章成了全文最后一个二级章节;\
+                 规范册的最后一节是「代理工作说明」,不是标准库章 ⇒ 章结构变了\
+                 (被删 / 改名 / 换了册别前缀)"
+            )
+        });
+    text[start..end].to_string()
+}
+
+/// 取合并规范里**某一章**的正文,结束于**指定的下一个章标题**。
+///
+/// ⚠ 与 [`chapter_body`] 的差别见模块级说明:**规范新增中间章时,本函数会把
+/// 新章包进来 ⇒ 成员表对拍失败 ⇒ 变红**;而 `chapter_body` 会静默截断。
+/// ⇒ 原本用具体章号当结束锚点的调用点,必须用本函数。
+///
+/// **`next_title` 不存在 ⇒ panic** —— 那正是「规范册的章结构变了」的信号
+/// (例如被删、或换了册别前缀),必须响。
+pub fn chapter_body_until(text: &str, title: &str, next_title: &str) -> String {
+    let start = text.find(title).unwrap_or_else(|| {
+        panic!(
+            "{title} exists in the merged spec — {}",
+            chapter_inventory(text)
+        )
+    });
+    let end = text[start..]
+        .find(next_title)
+        .map(|i| start + i)
+        .unwrap_or_else(|| {
+            panic!(
+                "{next_title} follows {title} — 规范册的章结构变了(被删 / 改名 / 换了册别前缀);\
+                 ⚠ 收窄范围时**不要**改成「下一个 `## `」:那会静默截断,把「设计变了」这道闸拆掉"
+            )
+        });
+    text[start..end].to_string()
+}
+
+/// 列出合并册里实际有的章标题(报错时用,让人一眼看出是「章被删」还是「前缀变了」)。
+fn chapter_inventory(text: &str) -> String {
+    let mut seen: Vec<&str> = Vec::new();
+    for line in text.lines() {
+        if let Some(rest) = line.strip_prefix("## ") {
+            if !seen.contains(&rest) {
+                seen.push(rest);
+            }
+        }
+    }
+    if seen.is_empty() {
+        "(一个二级标题都没有)".to_string()
+    } else {
+        seen.join(" / ")
+    }
+}
+
+/// 共用助手自身的**自检** —— 把「找不到就报错」「两种结束口径不等价」这两条
+/// 行为钉住。
+///
+/// ⚠ 意义在于**防止将来被改成安静返回空**:那种改法不会让任何一张契约表立刻
+/// 变红(集合相等型断言在空集上会**假绿**),而是把「章结构变了」变成**静默**
+/// 漂移 ⇒ 守卫必须在**今天**就钉住「它会响」。
+#[cfg(test)]
+mod chapter_body_self_check {
+    use super::{chapter_body, chapter_body_until};
+    use std::any::Any;
+    use std::panic::{catch_unwind, AssertUnwindSafe};
+
+    /// 一段**假的**合并册片段:两章 + 一段散文。
+    const FAKE: &str = "\
+## 标准库规范 · 16 `std.regex` —— 线性时间正则
+
+### 16.1 成员表
+
+| 签名 | 语义 |
+|---|---|
+| `RE(x)` | 编译 |
+
+## 标准库规范 · 17 `std.rand` —— 显式播种的随机数
+
+### 17.1 成员表
+
+| 签名 | 语义 |
+|---|---|
+| `SEED(x)` | 播种 |
+";
+
+    fn panic_message(err: &Box<dyn Any + Send>) -> String {
+        if let Some(s) = err.downcast_ref::<String>() {
+            s.clone()
+        } else if let Some(s) = err.downcast_ref::<&str>() {
+            (*s).to_string()
+        } else {
+            "(panic 载荷不是字符串)".to_string()
+        }
+    }
+
+    #[test]
+    fn chapter_body_stops_at_the_next_h2() {
+        let b = chapter_body(FAKE, "## 标准库规范 · 16 ");
+        assert!(b.contains("`RE(x)`"));
+        assert!(
+            !b.contains("`SEED(x)`"),
+            "chapter_body 必须停在下一个 `## ` 之前,不能把下一章包进来"
+        );
+    }
+
+    #[test]
+    fn chapter_body_until_stops_at_the_named_chapter() {
+        let b = chapter_body_until(FAKE, "## 标准库规范 · 16 ", "## 标准库规范 · 17 ");
+        assert!(b.contains("`RE(x)`"));
+        assert!(!b.contains("`SEED(x)`"));
+    }
+
+    /// ⚠ **两种口径的差别就是这道闸**:若 §16 与 §17 之间**插入**一章,
+    /// `chapter_body` 会**静默截断**(新章被排除),`chapter_body_until`
+    /// 会把它**包进来** ⇒ 调用方的成员表对拍会失败 ⇒ 变红。
+    #[test]
+    fn the_two_end_modes_differ_when_a_chapter_is_inserted() {
+        const WITH_MIDDLE: &str = "\
+## 标准库规范 · 16 `std.regex` —— 线性时间正则
+
+### 16.1 成员表
+
+| 签名 | 语义 |
+|---|---|
+| `RE(x)` | 编译 |
+
+## 标准库规范 · 16.5 `std.newcomer` —— 插在中间的新章
+
+| 签名 | 语义 |
+|---|---|
+| `NEWCOMER(x)` | 新成员 |
+
+## 标准库规范 · 17 `std.rand` —— 显式播种的随机数
+";
+        let generic = chapter_body(WITH_MIDDLE, "## 标准库规范 · 16 ");
+        assert!(
+            !generic.contains("`NEWCOMER(x)`"),
+            "前提:chapter_body 会在下一个 `## ` 处截断"
+        );
+        let specific =
+            chapter_body_until(WITH_MIDDLE, "## 标准库规范 · 16 ", "## 标准库规范 · 17 ");
+        assert!(
+            specific.contains("`NEWCOMER(x)`"),
+            "chapter_body_until 必须把插入的新章**包进来** —— \
+             调用方的成员表对拍会因此失败 ⇒ 变红 ⇒ 「设计变了就一起改测试」那道闸"
+        );
+    }
+
+    #[test]
+    fn chapter_body_panics_when_the_chapter_is_missing() {
+        let err = catch_unwind(AssertUnwindSafe(|| {
+            chapter_body(FAKE, "## 标准库规范 · 99 ")
+        }))
+        .expect_err("章标题找不到必须 panic —— 不许安静返回空");
+        let msg = panic_message(&err);
+        assert!(
+            msg.contains("99") && msg.contains("标准库规范 · 16"),
+            "panic 消息必须说清缺哪一章、实际有哪些:{msg}"
+        );
+    }
+
+    /// ⚠ 结束锚点也是**严格**的:这一章成了全文最后一个二级章节 ⇒ panic。
+    ///
+    /// 安静收到末尾会让「取到的正文多了一截」变成**静默**漂移 —— 而成员表
+    /// 对拍会因此抽进别的章的成员却仍然绿。
+    #[test]
+    fn chapter_body_panics_when_there_is_no_following_h2() {
+        const LAST: &str = "\
+## 标准库规范 · 98 `std.example` —— 全文最后一章
+
+| 签名 | 语义 |
+|---|---|
+| `ONLY(x)` | 唯一一个成员 |
+";
+        let err = catch_unwind(AssertUnwindSafe(|| {
+            chapter_body(LAST, "## 标准库规范 · 98 ")
+        }))
+        .expect_err("没有下一个 `## ` 时必须 panic —— 不许安静收到末尾");
+        let msg = panic_message(&err);
+        assert!(
+            msg.contains("98"),
+            "panic 消息必须说清是哪一章成了最后一章:{msg}"
+        );
+    }
+
+    #[test]
+    fn chapter_body_until_panics_when_the_named_next_chapter_is_missing() {
+        let err = catch_unwind(AssertUnwindSafe(|| {
+            chapter_body_until(FAKE, "## 标准库规范 · 16 ", "## 标准库规范 · 99 ")
+        }))
+        .expect_err("指定的下一个章标题找不到必须 panic —— 那正是「章结构变了」的信号");
+        let msg = panic_message(&err);
+        assert!(msg.contains("99"), "panic 消息必须说清缺哪个章:{msg}");
+    }
+}
+
 // ── 标准库规范:「成员表」子节的定位与成员名抽取 ──────────────────────
 //
 // ⚠ **这一段的行为是契约**:改了它,`net_contract.rs` / `encode_contract.rs` /

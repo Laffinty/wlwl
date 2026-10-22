@@ -411,18 +411,11 @@ const EXPECTED: &[&str] = &[
 #[test]
 fn net_member_set_matches_the_spec_table() {
     let text = std::fs::read_to_string(spec_path()).expect("stdlib spec readable");
-    let start = text
-        .find("## 标准库规范 · 21 ")
-        .expect("\u{00a7}21 header exists");
-    let end = text[start..]
-        .find("\n## ")
-        .map(|i| start + i)
-        .unwrap_or(text.len());
-    let body = &text[start..end];
+    let body = common::chapter_body(&text, "## 标准库规范 · 21 ");
     // v1.0 的成员表在 `### 21.1 成员表` 子节里 ⇒ 范围落到那个子节,
     // 截到第一个 `### ` 会把表整个切掉。**子节号逐章不同** ⇒ 共用助手按
     // **标题文字**(`成员表`)定位;找不到 ⇒ 明确报错,不返回空。
-    let table = common::member_table_section("§21", body);
+    let table = common::member_table_section("§21", &body);
     let spec = common::member_names("§21", &table);
     let impls: Vec<String> = wlwl_std::resolve("wlwl:std.net")
         .expect("wlwl:std.net resolves")
@@ -472,14 +465,7 @@ fn net_member_set_matches_the_spec_table() {
 #[test]
 fn the_status_code_delimitation_rules_are_written_down() {
     let text = std::fs::read_to_string(spec_path()).expect("stdlib spec readable");
-    let start = text
-        .find("## 标准库规范 · 21 ")
-        .expect("\u{00a7}21 header exists");
-    let end = text[start..]
-        .find("\n## ")
-        .map(|i| start + i)
-        .unwrap_or(text.len());
-    let body = &text[start..end];
+    let body = common::chapter_body(&text, "## 标准库规范 · 21 ");
     for needle in [
         // §21.4 的目标语义:1xx 跳过继续读。
         "跳过它,继续读下一个响应",

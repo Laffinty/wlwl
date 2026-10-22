@@ -219,12 +219,10 @@ fn spec_text() -> String {
 fn section_subsection(chapter: u32, subsection: u32) -> String {
     let text = spec_text();
     let chapter_head = format!("## 标准库规范 · {chapter} ");
-    let start = text
-        .find(&chapter_head)
-        .unwrap_or_else(|| panic!("{chapter_head} exists in the stdlib spec"));
-    let chapter_body = &text[start..];
-    let chapter_end = chapter_body.find("\n## ").unwrap_or(chapter_body.len());
-    let chapter_body = &chapter_body[..chapter_end];
+    // ⚠ 章节范围:止于**下一个 `## `**(通用口径,末尾兜底)⇒ 共用助手
+    //   `chapter_body`;**小节**范围(下一个 `### ` 或 `## `)是**子节级**的,
+    //   助手是章级的 ⇒ 保持原样。
+    let chapter_body = common::chapter_body(&text, &chapter_head);
 
     let sub_head = format!("### {chapter}.{subsection} ");
     let sub_start = chapter_body.find(&sub_head).unwrap_or_else(|| {
@@ -292,14 +290,15 @@ fn flatten_markdown(text: &str) -> String {
 
 fn section(section_no: u32, next_no: u32) -> String {
     let text = spec_text();
-    let start = text
-        .find(&format!("## 标准库规范 · {section_no} "))
-        .unwrap_or_else(|| panic!("§{section_no} header exists"));
-    let end = text[start..]
-        .find(&format!("\n## 标准库规范 · {next_no} "))
-        .map(|i| start + i)
-        .unwrap_or_else(|| panic!("§{next_no} header follows §{section_no}"));
-    text[start..end].to_string()
+    // ⚠ 结束锚点**写死下一个章号** ⇒ 规范**新增**中间章时本段正文会**多取一章**
+    //   ⇒ 成员表对拍失败 ⇒ 变红(「设计变了就一起改测试」那道闸)⇒ 必须用
+    //   `chapter_body_until`(结束于**指定**的下一个章标题),不能换成
+    //   `chapter_body`(结束于下一个 `## `)—— 那会静默截断,把那道闸拆掉。
+    common::chapter_body_until(
+        &text,
+        &format!("## 标准库规范 · {section_no} "),
+        &format!("\n## 标准库规范 · {next_no} "),
+    )
 }
 
 /// 从成员表首列抽成员名(与 str_math_contract 同款口径)。

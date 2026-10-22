@@ -547,12 +547,8 @@ fn regex_contract() {
 #[test]
 fn regex_member_set_matches_the_spec_table() {
     let text = std::fs::read_to_string(spec_path()).expect("stdlib spec readable");
-    let start = text.find("## 标准库规范 · 16 ").expect("§16 header exists");
-    let end = text[start..]
-        .find("\n## ")
-        .map(|i| start + i)
-        .expect("a following top-level heading exists");
-    let body = &text[start..end];
+    // 范围收在 §16 内 ⇒ 取该章正文(结束于下一个 `## `)。
+    let body = common::chapter_body(&text, "## 标准库规范 · 16 ");
 
     let mut spec: Vec<String> = Vec::new();
     for line in body.lines() {
@@ -625,12 +621,8 @@ fn spec_path() -> PathBuf {
 #[test]
 fn the_linearity_promise_is_documented() {
     let text = std::fs::read_to_string(spec_path()).expect("stdlib spec readable");
-    let start = text.find("## 标准库规范 · 16 ").expect("§16 header exists");
-    let end = text[start..]
-        .find("\n## ")
-        .map(|i| start + i)
-        .expect("a following top-level heading exists");
-    let body = &text[start..end];
+    // 范围收在 §16 内 ⇒ 取该章正文(结束于下一个 `## `)。
+    let body = common::chapter_body(&text, "## 标准库规范 · 16 ");
     // ⚠ 七个锚点在 §16 内**各自唯一**:§16.2 的两条语义裁决句、§16.3 的拒绝
     //   清单、§16.4 的 ASCII-only 口径、§16.7 的追溯出处与「没有回溯」。
     //   只钉「§16 里出现过 `lookahead`」不够 —— 那个字样在 §16 里出现两次
@@ -678,12 +670,8 @@ fn the_linearity_promise_is_documented() {
 #[test]
 fn the_flag_scope_and_anchor_semantics_are_documented_honestly() {
     let text = std::fs::read_to_string(spec_path()).expect("stdlib spec readable");
-    let start = text.find("## 标准库规范 · 16 ").expect("§16 header exists");
-    let end = text[start..]
-        .find("\n## ")
-        .map(|i| start + i)
-        .expect("a following top-level heading exists");
-    let body = &text[start..end];
+    // 范围收在 §16 内 ⇒ 取该章正文(结束于下一个 `## `)。
+    let body = common::chapter_body(&text, "## 标准库规范 · 16 ");
     // ⚠ 七个锚点在 §16 内**各自唯一**:§16.4 的小节标题、RE2 对 `(?flags)` 的
     //   原文措辞与其中文版、本成员侧的另一半、`$` 锚点的 RE2 原文、两口径
     //   分歧的那个形状、以及「作用域比 RE2 / Go 窄」的裁决句。

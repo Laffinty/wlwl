@@ -491,13 +491,12 @@ fn spec_text() -> String {
 
 fn section_8_members() -> Vec<String> {
     let text = spec_text();
-    let start = text.find("## 标准库规范 · 8 ").expect("§8 header exists");
-    let end = text[start..]
-        .find("\n## 标准库规范 · 9 ")
-        .map(|i| start + i)
-        .expect("§9 header follows §8");
+    // ⚠ 结束锚点是**具体**的下一章号(§9)⇒ 用 `chapter_body_until`:
+    // 规范将来在 §8 与 §9 之间插入新章时,它会被**包进来** ⇒ 成员表对拍失败
+    // ⇒ 变红(「设计变了就一起改测试」那道闸)。用通用锚点则会**静默截断**。
+    let body = common::chapter_body_until(&text, "## 标准库规范 · 8 ", "\n## 标准库规范 · 9 ");
     let mut out: Vec<String> = Vec::new();
-    for line in text[start..end].lines() {
+    for line in body.lines() {
         let t = line.trim();
         if !t.starts_with('|') || t.contains("---") {
             continue;

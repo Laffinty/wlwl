@@ -380,12 +380,8 @@ fn rand_contract() {
 #[test]
 fn rand_member_set_matches_the_spec_table() {
     let text = std::fs::read_to_string(spec_path()).expect("stdlib spec readable");
-    let start = text.find("## 标准库规范 · 17 ").expect("§17 header exists");
-    let end = text[start..]
-        .find("\n## ")
-        .map(|i| start + i)
-        .expect("a following top-level heading exists");
-    let body = &text[start..end];
+    // 范围收在 §17 内 ⇒ 取该章正文(结束于下一个 `## `)。
+    let body = common::chapter_body(&text, "## 标准库规范 · 17 ");
 
     let mut spec: Vec<String> = Vec::new();
     for line in body.lines() {
@@ -453,12 +449,8 @@ fn spec_path() -> PathBuf {
 #[test]
 fn the_reproducibility_contract_is_documented() {
     let text = std::fs::read_to_string(spec_path()).expect("stdlib spec readable");
-    let start = text.find("## 标准库规范 · 17 ").expect("§17 header exists");
-    let end = text[start..]
-        .find("\n## ")
-        .map(|i| start + i)
-        .expect("a following top-level heading exists");
-    let body = &text[start..end];
+    // 范围收在 §17 内 ⇒ 取该章正文(结束于下一个 `## `)。
+    let body = common::chapter_body(&text, "## 标准库规范 · 17 ");
     // ⚠ 六个锚点在 §17 内**各自唯一**:§17.1 成员表里 `SEED` 的签名行、
     //   §17.3 的生成算法与播种算法、§17.2 的「`DICT` 是不可变的」、§17.1
     //   非目标段的「没有任何隐藏状态」、§17.8 的裁决出处。
@@ -492,12 +484,8 @@ fn the_reproducibility_contract_is_documented() {
 #[test]
 fn the_transitional_status_of_std_rand_is_still_written_down() {
     let text = std::fs::read_to_string(spec_path()).expect("stdlib spec readable");
-    let start = text.find("## 标准库规范 · 17 ").expect("§17 header exists");
-    let end = text[start..]
-        .find("\n## ")
-        .map(|i| start + i)
-        .expect("a following top-level heading exists");
-    let body = &text[start..end];
+    // 范围收在 §17 内 ⇒ 取该章正文(结束于下一个 `## `)。
+    let body = common::chapter_body(&text, "## 标准库规范 · 17 ");
     // ⚠ 三个锚点在 §17 内**各自唯一**:过渡形态的定性、降级方向登记在
     //   哪本册、以及「这一句必须留着」的裁决句。
     for needle in [
