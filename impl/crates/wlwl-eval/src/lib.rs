@@ -1571,13 +1571,16 @@ fn builtin_push(_ev: &mut Evaluator, args: Vec<Value>) -> WlwlResult<Outcome> {
     // ⇒ `borrow_mut().push(..)` 后返回**同一个** cell(`share()`,不是 `clone()`
     // —— 后者会把整个数组深拷一遍,优化归零)。
     if let Value::Cell(c) = &args[0] {
-        c.borrow_mut().push(item.clone());
+        c.borrow_mut().push(wlwl_value::copy_array_element(item));
         return Ok(Outcome::normal(Value::Cell(c.share())));
     }
     let arr = match &args[0] {
         Value::Array(a) => {
-            let mut a = a.clone();
-            a.push(item.clone());
+            // [V-01] 计数点:数组拷贝原语 —— 拷贝 n 个元素 + 追加的 1 个
+            // ⇒ 一次 `PUSH` 的拷贝量是 **n + 1**(规范 §18.3.2:产出 n+1 个元素
+            // 的新数组 ⇒ 拷贝量下界 Ω(n))。
+            let mut a = wlwl_value::copy_array_elements(a);
+            a.push(wlwl_value::copy_array_element(item));
             Value::Array(a)
         }
         other => {
@@ -2530,32 +2533,29 @@ fn builtin_concat(_ev: &mut Evaluator, args: Vec<Value>) -> WlwlResult<Outcome> 
         (Value::Cell(c), _) => {
             let mut v = c.borrow_mut();
             match &args[1] {
-                Value::Array(items) => v.extend(items.iter().cloned()),
+                Value::Array(items) => v.extend(wlwl_value::copy_array_elements(items)),
                 Value::Cell(other) => {
                     let o = other.borrow();
-                    v.extend(o.iter().cloned());
+                    v.extend(wlwl_value::copy_array_elements(&o));
                 }
                 Value::Null => {}
                 other => {
-                    v.push(other.clone());
+                    v.push(wlwl_value::copy_array_element(other));
                 }
             }
             Ok(Outcome::normal(Value::Cell(c.share())))
         }
         (Value::Array(a), Value::Array(b)) => {
-            let mut out = Vec::with_capacity(a.len() + b.len());
-            out.extend(a.iter().cloned());
-            out.extend(b.iter().cloned());
+            // [V-01] 计数点:拷贝 n + m 个元素 ⇒ `CONCAT` 的拷贝量是 **n + m**
+            // (规范 §18.3:`CONCAT` O(n+m) 最坏)。
+            let mut out = wlwl_value::copy_array_elements(a);
+            out.extend(wlwl_value::copy_array_elements(b));
             Ok(Outcome::normal(Value::Array(out)))
         }
         (Value::String(a), Value::String(b)) => {
-            let mut out = Vec::with_capacity(a.chars().count() + b.chars().count());
-            for c in a.chars() {
-                out.push(Value::Integer(c as i64));
-            }
-            for c in b.chars() {
-                out.push(Value::Integer(c as i64));
-            }
+            // [V-01] 计数点:展开 n + m 个码点 ⇒ 同样是 **n + m**。
+            let mut out = wlwl_value::string_codepoints(a);
+            out.extend(wlwl_value::string_codepoints(b));
             Ok(Outcome::normal(Value::Array(out)))
         }
         (other_a, other_b) => Err(type_error(
@@ -3111,6 +3111,9 @@ fn builtin_call(ev: &mut Evaluator, args: Vec<Value>) -> WlwlResult<Outcome> {
             diag_span,
         ));
     }
+    // [V-01] 计数点不在这里 —— 它收在**闭包真正被调用的落点**
+    // (`call_value_with_receiver` 的 `Value::Closure` 分支)⇒ 记的是「闭包被
+    // 调用了几次」,不是「`CALL` 算子被用了几次」。
     ev.call_value_with_receiver(callee, None, rest, &diag_span, "CALL")
 }
 
@@ -6272,7 +6275,11 @@ fn builtin_add(_ev: &mut Evaluator, args: Vec<Value>) -> WlwlResult<Outcome> {
     let b = &args[1];
     // String concatenation takes priority (per spec appendix examples).
     if let (Value::String(s1), Value::String(s2)) = (a, b) {
-        return Ok(Outcome::normal(Value::String(format!("{}{}", s1, s2))));
+        // [V-01] 计数点:字符串拼接原语 —— 拷贝 n + m 个**字节**
+        // (规范 §18.3:`CONCAT(s, t)` O(n+m) 最坏;本仓的字符串拼接是 `+`)。
+        return Ok(Outcome::normal(Value::String(wlwl_value::concat_strings(
+            s1, s2,
+        ))));
     }
     // Array concatenation.
     // [v0.11.3 M7 / ADR-0032 D1 / PLAN S3] 累加器就地追加:左操作数是 cell
@@ -6280,15 +6287,16 @@ fn builtin_add(_ev: &mut Evaluator, args: Vec<Value>) -> WlwlResult<Outcome> {
     // `clone()` —— 后者会把整个数组深拷一遍,优化归零且比现在更慢)。
     if let Value::Cell(c) = a {
         if let Value::Array(a2) = b {
-            c.borrow_mut().extend(a2.iter().cloned());
+            c.borrow_mut().extend(wlwl_value::copy_array_elements(a2));
         } else {
-            c.borrow_mut().push(b.clone());
+            c.borrow_mut().push(wlwl_value::copy_array_element(b));
         }
         return Ok(Outcome::normal(Value::Cell(c.share())));
     }
     if let (Value::Array(a1), Value::Array(a2)) = (a, b) {
-        let mut out = a1.clone();
-        out.extend(a2.iter().cloned());
+        // [V-01] 计数点:拷贝 n + m 个元素。
+        let mut out = wlwl_value::copy_array_elements(a1);
+        out.extend(wlwl_value::copy_array_elements(a2));
         return Ok(Outcome::normal(Value::Array(out)));
     }
     // v0.6 §2.2: INTEGER + INTEGER overflow throws E0035
@@ -6496,6 +6504,14 @@ where
     }
     // String comparison.
     if let (Value::String(s1), Value::String(s2)) = (a, b) {
+        // [V-01] 计数点:值比较原语里的**字符串 vs 字符串**比较。
+        //
+        // ⚠ 计数点在**比较原语内部**(不是 `SORT(...)` 的调用点)⇒ 排序内部换成
+        //   别的比较策略 ⇒ 比数变 ⇒ 守卫看得见。
+        // ⚠ 只记「字符串 vs 字符串」这一类 ⇒ 排序循环里那些**整数**的循环控制
+        //   比较(`<(i, LEN(rest))` 之类)不混进来 ⇒ 读数就是「元素之间的比较
+        //   次数」。
+        wlwl_value::note_string_comparison();
         return Ok(Outcome::normal(Value::Boolean(pred(s1.cmp(s2)))));
     }
     Err(type_error(
@@ -7582,6 +7598,19 @@ impl Evaluator {
     ) -> WlwlResult<Outcome> {
         match callee {
             Value::Closure { params, body, env } => {
+                // [V-01] 计数点:**闭包被真正调用了一次**。
+                //
+                // ⚠ 这不是「`SORT` 被调用了几次」那种调用点计数 —— 比较器**每被
+                //   调用一次**就多记一笔 ⇒ 排序内部换比较策略(比数变多/变少)
+                //   立刻被看见。
+                // ⚠ 收在**闭包调用的落点**上(而不是 `CALL` 算子的入口)⇒ 「一次
+                //   `CALL` 里其实调了两次」这种缺陷也看得见。
+                // ⚠ 按名调用的闭包(`eval_call` → `invoke_closure`)不走这里 ⇒ 门面
+                //   自己的内部闭包(`_SORT_LT` 等)**不计入** ⇒ 在 `SORT` 路径上
+                //   本计数**就是**比较器调用次数(规范 §18.3 的 `SORT` 行):门面
+                //   `collection.wll` 的 `_SORT_LT` 里唯一的 `CALL(cmp, a, b)` 就是
+                //   比较器的调用点。
+                wlwl_value::note_closure_call();
                 if let (Some(r), Some(p)) = (receiver.as_ref(), params.first()) {
                     if p.name == "self" {
                         args.insert(0, r.clone());

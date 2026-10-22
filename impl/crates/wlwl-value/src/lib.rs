@@ -474,6 +474,140 @@ pub fn dict_make_mut(inner: &mut std::rc::Rc<DictInner>) -> &mut DictInner {
     std::rc::Rc::make_mut(inner)
 }
 
+// ──────────────────────────────────────────────────────────────────────
+// [V-01] 复杂度上界的**确定性工作量计数**(规范 §18.5.2)
+// ──────────────────────────────────────────────────────────────────────
+//
+// 规范 §18.3 给「数组追加 / 字符串拼接 / 深度相等 / `SORT` 比较次数」的
+// 上界**都是「规范性」的** ⇒ 必须取证。取证口径(§18.5.2)有三条硬要求:
+//
+// ① **不用墙钟比值** —— 同一份线性实现在不同机器上可差 3 倍,比值里混着缓存
+//    命中率与调度噪声 ⇒ 只能用**确定性工作量计数**;
+// ② **计量点收在被测数据结构内部** —— 在调用点计数对「内部换成线性扫」不敏感;
+// ③ **带下界断言** —— 确认计量点确实被走到(否则「计数恒为 0」也会绿)。
+//
+// ⇒ 下面这组计数器**线程局部**(`cargo test` 的用例并行跑 ⇒ 全局计数会被别的
+// 用例搅浑),计数是**旁路**的:不改变任何求值路径的语义,只多记一个数。
+//
+// | 计数器 | 计量点(在被测结构内部) |
+// |---|---|
+// | `array_elements_copied` | [`copy_array_elements`] / [`copy_array_element`] —— 数组拷贝原语 |
+// | `string_bytes_copied` | [`concat_strings`] —— 字符串拼接原语 |
+// | `string_codepoints_expanded` | [`string_codepoints`] —— 字符串拆码点原语 |
+// | `equality_element_visits` | [`values_equal`] 的数组分支 —— 深度相等的逐对访问 |
+// | `equality_key_comparisons` | [`dict_entries_equal`] —— 深度相等的逐条扫描 |
+// | `comparator_calls` | [`note_closure_call`] —— 闭包被真正调用的次数(= `SORT` 路径上的比较器调用次数) |
+// | `string_comparisons` | [`note_string_comparison`] —— 值比较原语里的字符串比较 |
+
+/// [V-01 / 规范 §18.5.2] 复杂度上界的**确定性工作量计数**。
+///
+/// ⚠ **线程局部,不是 `static`**(同 [`DictWorkCounters`])——`cargo test` 的用例
+/// **并行**跑,全局计数会被别的用例搅浑 ⇒ 每个用例只看见自己那次运行的工作量。
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+pub struct ValueWorkCounters {
+    /// 数组**拷贝的元素个数**(顶层元素数;元素自身的深拷贝不再展开计)。
+    pub array_elements_copied: u64,
+    /// 字符串**拷贝的字节数**。
+    pub string_bytes_copied: u64,
+    /// 字符串**拆成码点**的字符个数。
+    pub string_codepoints_expanded: u64,
+    /// 深度相等:**数组**逐对访问的元素个数。
+    pub equality_element_visits: u64,
+    /// 深度相等:**字典**逐条扫描的**键比较**次数。
+    pub equality_key_comparisons: u64,
+    /// **闭包被真正调用**的次数 —— 在 `SORT` 的实现路径上**就是比较器调用
+    /// 次数**(门面 `collection.wll` 的 `_SORT_LT` 里唯一的 `CALL(cmp, a, b)`;
+    /// 门面自己的内部闭包按名调用 ⇒ 不计入)。
+    pub comparator_calls: u64,
+    /// 值比较(`<` / `>` / `<=` / `>=`)里**字符串 vs 字符串**的次数。
+    pub string_comparisons: u64,
+}
+
+thread_local! {
+    static VALUE_WORK: std::cell::Cell<ValueWorkCounters> =
+        std::cell::Cell::new(ValueWorkCounters::default());
+}
+
+/// 读**当前线程**的复杂度工作量计数。**只给测试与基准读**(同
+/// [`dict_work_counters`] 的体例:不做运行时警告 —— D11-022 已证警告通道无人
+/// 排空,走它等于静默丢弃)。
+pub fn value_work_counters() -> ValueWorkCounters {
+    VALUE_WORK.with(|c| c.get())
+}
+
+/// 清零**当前线程**的复杂度工作量计数。**只给测试与基准读**。
+pub fn reset_value_work_counters() {
+    VALUE_WORK.with(|c| c.set(ValueWorkCounters::default()));
+}
+
+/// 累加当前线程的工作量计数。
+fn add_value_work(f: impl FnOnce(&mut ValueWorkCounters)) {
+    VALUE_WORK.with(|c| {
+        let mut w = c.get();
+        f(&mut w);
+        c.set(w);
+    });
+}
+
+/// [V-01] 拷贝一个数组的**全部**元素 —— 计数点。
+///
+/// ⚠ **语义与 `Vec<Value>::clone` 逐字相同**(`to_vec()` = 逐元素克隆),
+///   只是多记一笔「拷贝了多少个元素」。
+pub fn copy_array_elements(src: &[Value]) -> Vec<Value> {
+    // ⚠ `to_vec()` 与 `Vec<Value>::clone` 逐字同语义(逐元素克隆)。
+    let out: Vec<Value> = src.to_vec();
+    add_value_work(|w| w.array_elements_copied += out.len() as u64);
+    out
+}
+
+/// [V-01] 拷贝**一个**数组元素 —— 计数点。
+///
+/// ⚠ 语义与 `Value::clone` 逐字相同(深拷贝)。
+pub fn copy_array_element(src: &Value) -> Value {
+    let out = src.clone();
+    add_value_work(|w| w.array_elements_copied += 1);
+    out
+}
+
+/// [V-01] 拼接两个字符串 —— 计数点(记**拷贝的字节数**)。
+///
+/// ⚠ **结果与 `format!("{}{}", a, b)` 逐字相同**。
+pub fn concat_strings(a: &str, b: &str) -> String {
+    let mut out = String::with_capacity(a.len() + b.len());
+    out.push_str(a);
+    out.push_str(b);
+    add_value_work(|w| w.string_bytes_copied += (a.len() + b.len()) as u64);
+    out
+}
+
+/// [V-01] 把字符串拆成**码点数组** —— 计数点(记**展开的字符个数**)。
+///
+/// ⚠ **结果与逐字符 `Value::Integer(c as i64)` 逐字相同**。
+pub fn string_codepoints(s: &str) -> Vec<Value> {
+    let out: Vec<Value> = s.chars().map(|c| Value::Integer(c as i64)).collect();
+    add_value_work(|w| w.string_codepoints_expanded += out.len() as u64);
+    out
+}
+
+/// [V-01] 记一次「`CALL` 算子调用了闭包」—— 计数点。
+///
+/// ⚠ **只有 `CALL` 算子**(`CALL(f, …)`)走这里 ⇒ 在 `SORT` 的实现路径上,
+///   **比较器正是经由 `CALL` 被调用**(门面 `collection.wll` 的 `_SORT_LT` 里
+///   唯一的 `CALL(cmp, a, b)`)⇒ 本计数在 `SORT` 路径上**就是**比较器调用次数。
+///
+/// ⚠ 这**不是**「`SORT` 被调用了几次」那种调用点计数:比较器**每被调用一次**
+///   就多记一笔 ⇒ 排序内部改成别的比较策略(比数变多/变少)都会立刻被看见。
+pub fn note_closure_call() {
+    add_value_work(|w| w.comparator_calls += 1);
+}
+
+/// [V-01] 记一次「字符串 vs 字符串」的值比较 —— 计数点。
+///
+/// ⚠ 计数点在**值比较原语**里(不是调用点)⇒ 排序内部换实现 ⇒ 比数变。
+pub fn note_string_comparison() {
+    add_value_work(|w| w.string_comparisons += 1);
+}
+
 // ⚠ `clippy::mutable_key_type` 在这里报「键有内部可变性」—— **本设计里它是假阳性**:
 //
 //   `DictKey::Instance` 持有 `Rc<RefCell<Vec<(Value, Value)>>>`(`fields` 单元格),
@@ -1793,10 +1927,33 @@ fn dict_entries_equal(x: &[(Value, Value)], y: &[(Value, Value)]) -> bool {
     if x.len() != y.len() {
         return false;
     }
-    x.iter().all(|(xk, xv)| {
-        y.iter()
-            .any(|(yk, yv)| values_equal(xk, yk) && values_equal(xv, yv))
-    })
+    // [V-01] 键比较次数的计数点 —— 收在**字典相等的内部扫描**里(不在调用点)。
+    let mut key_comparisons = 0u64;
+    let equal = x.iter().all(|(xk, xv)| {
+        y.iter().any(|(yk, yv)| {
+            key_comparisons += 1;
+            values_equal(xk, yk) && values_equal(xv, yv)
+        })
+    });
+    add_value_work(|w| w.equality_key_comparisons += key_comparisons);
+    equal
+}
+
+/// [V-01] 数组的深度相等 —— 逐对访问的元素个数的计数点。
+///
+/// ⚠ 与 [`values_equal`] 的数组分支**逐字同口径**:长度不等 ⇒ 立刻 `false`
+///   (不计访问);长度相等 ⇒ 逐对比较,遇首个不相等就短路(`all` 的语义)。
+fn array_entries_equal(x: &[Value], y: &[Value]) -> bool {
+    if x.len() != y.len() {
+        return false;
+    }
+    let mut visits = 0u64;
+    let equal = x.iter().zip(y.iter()).all(|(a, b)| {
+        visits += 1;
+        values_equal(a, b)
+    });
+    add_value_work(|w| w.equality_element_visits += visits);
+    equal
 }
 
 pub fn values_equal(a: &Value, b: &Value) -> bool {
@@ -1808,9 +1965,7 @@ pub fn values_equal(a: &Value, b: &Value) -> bool {
         (Value::String(x), Value::String(y)) => x == y,
         (Value::Boolean(x), Value::Boolean(y)) => x == y,
         (Value::Null, Value::Null) => true,
-        (Value::Array(x), Value::Array(y)) => {
-            x.len() == y.len() && x.iter().zip(y.iter()).all(|(a, b)| values_equal(a, b))
-        }
+        (Value::Array(x), Value::Array(y)) => array_entries_equal(x, y),
         // [v0.11.3 M7 / ADR-0032 D1] `Cell` 的相等性。
         //
         // ⚠ **三条要求,缺一不可**:
@@ -1825,16 +1980,16 @@ pub fn values_equal(a: &Value, b: &Value) -> bool {
         (Value::Cell(x), Value::Cell(y)) => {
             x.ptr_eq(y) || {
                 let (x, y) = (x.borrow(), y.borrow());
-                x.len() == y.len() && x.iter().zip(y.iter()).all(|(a, b)| values_equal(a, b))
+                array_entries_equal(&x, &y)
             }
         }
         (Value::Array(x), Value::Cell(y)) => {
             let y = y.borrow();
-            x.len() == y.len() && x.iter().zip(y.iter()).all(|(a, b)| values_equal(a, b))
+            array_entries_equal(x, &y)
         }
         (Value::Cell(x), Value::Array(y)) => {
             let x = x.borrow();
-            x.len() == y.len() && x.iter().zip(y.iter()).all(|(a, b)| values_equal(a, b))
+            array_entries_equal(&x, y)
         }
         // ⚠ [ADR-0035] 字典相等是**逐元素**比较:**每个** `x` 的条目都要在 `y`
         //   里找到一个键值都相等的条目(集合口径,**不**看顺序)。
