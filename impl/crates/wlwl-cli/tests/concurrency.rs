@@ -470,3 +470,96 @@ fn shield_then_error_propagates_via_5_4() {
         "stdout mismatch:\n  got:      {stdout:?}\n  expected: {expected:?}"
     );
 }
+
+// ────────────────────────────────────────────────────────────────────────
+// [v1.0 V-04] 挂起点的**切段 / 不切段**两格 —— 并发册 §17.0 的两个金标准示例。
+//
+// 规范(并发册 §17.0 的挂起点三类表)把「切段 / 不切段」写成**可观察行为**:
+// `YIELD()` 切段(段首**不**重跑),阻塞型 `CHANNEL_SEND` / `CHANNEL_RECV` 不切段
+// (段首**重放**)。一致性册 §6.2 的 **V-04** 要求「附录 H 的小步语义与参考实现的
+// 实际调度行为一致」,它的验证手段逐字写的是「逐条迁移规则对一条可观测行为;
+// **挂起点分类**(切段 / 不切段)用『恢复后段首是否重放』判定」。
+//
+// ⇒ 这一格此前**零覆盖**:既没有断言「YIELD 之前的代码不重跑」,也没有断言
+// 「阻塞恢复时段首重放一次」—— 现有生产者/消费者夹具里**一条 `PRINT` 都没有**,
+// 「不死锁」证不了「重放」。
+//
+// **成对**钉,两条互为**反向守卫**:只钉「切段时 A 出现一次」而不钉「不切段时 A
+// 出现两次」,任一侧改动都不会让测试变红。
+//
+// 期望值**手写自规范**:并发册 §17.0 的两段示例各自标注了输出(`7 / 1` 与
+// `A / A / B / 7`)。断言用**精确 stdout 相等**(不是 `contains`)—— 「A 打印两次」
+// 只能靠精确序列钉住,子串匹配钉不住「恰好两次」。
+//
+// 程序写在**临时目录**(`scratch_program`),不落进被跟踪的夹具目录 ⇒ 不必动
+// `WLT_FILES` 清单(那份清单的约束是「夹具文件不许悄悄消失」,而这里没有新增夹具文件)。
+// ────────────────────────────────────────────────────────────────────────
+
+/// 切段:`YIELD()` 之后恢复从**下一段**开始 ⇒ 段首的 `PRINT("A")` **不**重跑。
+///
+/// 规范(并发册 §17.0)的第一段示例:输出 `7 / 1`;这里把被打印的值换成 `A` 与
+/// `1`,判据不变 —— **段首那行只出现一次**。
+#[test]
+fn yield_suspension_does_not_replay_the_segment_head() {
+    let src = r#"
+SCOPE(FUN(() ,
+  LET(t, SPAWN(FUN(() ,
+    LET(x, 7);
+    YIELD();
+    PRINT("A");
+    1
+  )));
+  LET(v, AWAIT(t));
+  PRINT(v)
+));
+"#;
+    let path = scratch_program("yield_segment_split.wll", src);
+    let out = run_wlwl(&path);
+    let code = out.status.code().unwrap_or(-1);
+    let stdout = String::from_utf8_lossy(&out.stdout).into_owned();
+    let stderr = String::from_utf8_lossy(&out.stderr).into_owned();
+    assert_eq!(code, 0, "expected exit 0, got {code}:\n  stderr={stderr}");
+    // 切段的**可观察判据**:段首那行 `PRINT("A")` 只出现**一次**。
+    let expected = "A\n1\n";
+    assert_eq!(
+        stdout, expected,
+        "a YIELD suspension must resume at the NEXT segment (the segment head must not replay)\n\
+         got:      {stdout:?}\n  expected: {expected:?}"
+    );
+}
+
+/// 不切段:阻塞型 `CHANNEL_SEND` 之后恢复从**当前段首**重跑 ⇒ `PRINT("A")` **重放**
+/// (出现**两次**)。
+///
+/// 规范(并发册 §17.0)的第二段示例:输出 `A / A / B / 7`。
+#[test]
+fn blocking_channel_suspension_replays_the_segment_head_exactly_once() {
+    let src = r#"
+SCOPE(FUN(() ,
+  LET(ch, CHANNEL_NEW(0));
+  LET(s, SPAWN(FUN(() ,
+    PRINT("A");
+    CHANNEL_SEND(ch, 1);
+    PRINT("B");
+    7
+  )));
+  LET(r, SPAWN(FUN(() , CHANNEL_RECV(ch))));
+  LET(v, AWAIT(s));
+  PRINT(v)
+));
+"#;
+    let path = scratch_program("blocking_segment_replay.wll", src);
+    let out = run_wlwl(&path);
+    let code = out.status.code().unwrap_or(-1);
+    let stdout = String::from_utf8_lossy(&out.stdout).into_owned();
+    let stderr = String::from_utf8_lossy(&out.stderr).into_owned();
+    assert_eq!(code, 0, "expected exit 0, got {code}:\n  stderr={stderr}");
+    // 不切段的**可观察判据**:段首那行 `PRINT("A")` 出现**两次**(重放一次)。
+    let expected = "A\nA\nB\n7\n";
+    assert_eq!(
+        stdout, expected,
+        "a blocking channel suspension must resume at the CURRENT segment head \
+         (the segment head replays exactly once)\n\
+         got:      {stdout:?}\n  expected: {expected:?}"
+    );
+}
