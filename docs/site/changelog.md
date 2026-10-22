@@ -1,20 +1,22 @@
 # Changelog
 
 > **Note.** The compiler version is **independent of the language
-> spec version**. The spec reference lives in
-> `docs/wlwl-spec-reference.md` and is content-addressed. This page
-> tracks the **compiler / tooling** releases.
+> spec version**. The authoritative specification is the **v1.0** edition in
+> the separate [`Laffinty/wlwl-spec-v1`](https://github.com/Laffinty/wlwl-spec-v1)
+> repository; this repository keeps a merged copy of it in
+> `docs/wlwl-spec-reference.md`. This page tracks the **compiler / tooling**
+> releases.
 
 !!! note "On this page"
 
-    - [Unreleased — v0.7.0](#unreleased--v070)
-    - [v0.6.0](#v060)
-    - [v0.3.0](#v030)
+    - [v0.7.0 and earlier](#v070-and-earlier)
 
-## [Unreleased — v0.7.0] {#unreleased--v070}
+## [v0.7.0 and earlier] {#v070-and-earlier}
 
-> **WIP.** `wip0.7` branch. Plan: `docs/history/20260915-22.md`.
-> Spec file (Phase H1) is **not** yet cut.
+> **Historical snapshot.** The notes below are the state of the v0.7.0
+> cycle. The release history from v0.11 onwards lives in the root
+> [`CHANGELOG.md`](../../CHANGELOG.md), which is the canonical changelog of
+> this project — start there for anything recent.
 
 This release introduces the **structured-concurrency runtime**: a
 cooperative single-thread scheduler (§5.1), `SCOPE` / `SPAWN` /

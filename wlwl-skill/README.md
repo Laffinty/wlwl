@@ -1,7 +1,8 @@
 # writing-wlwl skill bundle
 
-Claude Skills-format bundle for authoring **WLWL v0.11** `.wll` sources
-(impl 0.11.3; spec `wlwl-spec-v0.11`).
+Claude Skills-format bundle for authoring **WLWL v1.0** `.wll` sources
+(spec v1.0 — authoritative source: the separate `wlwl-spec-v1` repository;
+merged copy: `../docs/wlwl-spec-reference.md`; compiler 0.12.0).
 
 ```
 wlwl-skill/
@@ -28,8 +29,10 @@ The skill is loaded when the task matches the `description` in
 
 ## Target version
 
-This skill targets **wlwl-spec-v0.11** (file at
-`../docs/wlwl-spec-reference.md`).
+This skill targets the **v1.0** specification. The authoritative source is the
+separate [`wlwl-spec-v1`](https://github.com/Laffinty/wlwl-spec-v1) repository
+(11 volumes); the merged copy this bundle reads is
+`../docs/wlwl-spec-reference.md`.
 
 - **v0.6 core** (truthiness overhaul, `&&/||` short-circuit, `IF` ERR-routing,
   `!` canonical, `AT_K` rename, string subscript, `LET MUT`, overflow→`E0035`,
@@ -97,11 +100,21 @@ This skill targets **wlwl-spec-v0.11** (file at
   **⚠ `ai` / `agent` left `wlwl:std.*`** — they are official packages now,
   imported as `"ai:ask"` / `"agent:task"`, and `wlwl:std.ai` no longer
   resolves (`E0040`). Full memo in `reference.md` §27.
+- **v1.0** is the current baseline. The spec moved to its own repository (11
+  volumes); the merged copy kept in this repo is the secondary carrier the
+  machine guards and agents read. **The `§N` numbering does not move** ⇒ every
+  section reference in this bundle still resolves. **Member surface unchanged**:
+  21 namespaces / 214 members, zero added and zero removed ⇒ no new members to
+  learn. What writers need to know: **§8.6 — an unconsumed `ERR` is reported
+  (`E0103`)** unless a consumer takes it or it is explicitly discarded with
+  `LET(_, expr)`; plus the new complexity / memory chapters (§18–§19) and the
+  conformance volume.
 
-Superseded specs (v0.6–v0.10) are archived in condensed form in
+Superseded specs (v0.6–v0.11) are archived in condensed form in
 `../docs/history/20260902-09.md` / `../docs/history/20260915-22.md`
 (full text via git history; each version additive on the previous;
-v0.11 is the current normative source — a renumbering of v0.10's spec
+the v1.0 spec in its own repository is the current normative source —
+v0.11 was a renumbering of v0.10's spec
 **plus** the `std.str` / `std.math` namespaces and the breaking `ASSERT`
 change above).
 
@@ -137,14 +150,17 @@ wlwl run wlwl-skill/examples/oop.wll
 
 ## Scope
 
-- **In scope**: writing and reviewing `.wll` programs against
-  wlwl-spec-v0.11 — v0.6 core + v0.7 §17 concurrency + v0.8 clarifications
+- **In scope**: writing and reviewing `.wll` programs against the **v1.0**
+  spec — v0.6 core + v0.7 §17 concurrency + v0.8 clarifications
   + v0.9 true-suspension / OOP / session types / linear THIS
   + v0.10 static contracts (annotations, module signatures, MATCH checks)
-  carried over unchanged into v0.11. The **language spec is frozen at v0.11**;
-  v0.11.2 and v0.11.3 add standard-library members only, so nothing in the
-  language surface moves. The one visible-surface change in those two batches
+  carried over unchanged into v0.11 and v1.0. The **operator / builtin surface
+  is frozen** (no new builtins since v0.7, `../docs/appendix_G.md` unchanged);
+  v0.11.2 and v0.11.3 add standard-library members only. The one
+  visible-surface change in those two batches
   is the `ai` / `agent` demotion out of `wlwl:std.*` (`reference.md` §27.1).
+  The one **language-surface** change under v1.0 is the unconsumed-`ERR` rule
+  (§8.6 → `E0103`, see `reference.md` §8).
 - **Out of scope**: the Rust implementation (`impl/`), formatter design,
   ADRs, release engineering. For those, read the repo docs directly.
 
@@ -211,7 +227,8 @@ opts in.
 
 ## See also
 
-- Language spec: `../docs/wlwl-spec-reference.md`
+- Authoritative spec (v1.0, 11 volumes): [`wlwl-spec-v1`](https://github.com/Laffinty/wlwl-spec-v1)
+- Merged in-repo copy: `../docs/wlwl-spec-reference.md`
 - Spec archives (condensed): `../docs/history/20260902-09.md`,
   `../docs/history/20260915-22.md`
 - Builtin registry (Appendix G): `../docs/appendix_G.md`

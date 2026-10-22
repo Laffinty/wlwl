@@ -22,10 +22,17 @@ re-run the same workflow.
 - Cargo build artifacts, target dir, lock files — those are
   already in `.gitignore`.
 - A copy of the spec for offline read — `docs/wlwl-spec-reference.md` is
-  the canonical location.
+  the canonical in-repo location (the merged copy of the v1.0 spec).
 
 ## Current contents
 
+- `build_spec_reference.py` — **重建合并册 `docs/wlwl-spec-reference.md`**:
+  把规范仓(`Laffinty/wlwl-spec-v1`,v1.0)的 **11 册**机械合并成**一份**,
+  供机器守卫与 AI agent 按锚点取章节。规范仓目录按 `WLWL_SPEC_V1_DIR`
+  环境变量 → 仓同级 `../wlwl-spec-v1` 的顺序查找。
+  用法:`python script/build_spec_reference.py [规范仓目录]`。
+  ⚠ **它整体覆盖目标文件** ⇒ 日常维护请直接编辑
+  `docs/wlwl-spec-reference.md`;只有在需要**从规范仓整体重建**时才跑它。
 - `phase_strict.py` — **v0.11.3 追加批次工作项达成度的权威口径**。
   `docs/plan/README.md` 写着「15 份方案 83 个工作项中已完成 78 项……口径同
   `phase_strict.py` —— **该脚本才是权威**」,而那个脚本**从未进过仓库**

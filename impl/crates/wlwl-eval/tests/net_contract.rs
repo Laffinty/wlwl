@@ -392,9 +392,62 @@ fn spec_path() -> PathBuf {
         .join("wlwl-spec-reference.md")
 }
 
-/// 规范 §21 的成员表 ↔ `SPEC.functions`。
+/// 取一章正文里「成员表」子节的正文。
 ///
-/// 规范 §21 的成员表 ↔ `SPEC.functions`(五个成员全部落地)。
+/// v1.0 的标准库册把成员表放进**子节**(`### 21.1 成员表` / `### 11.2 成员表`),
+/// 不再平铺在章标题之下 ⇒ 抽取范围必须落在那个子节上:
+/// 截到第一个 `### ` 会把成员表整个切掉(抽到 0 个成员),扫整章则会把同章的
+/// 参数表 / 测试向量表一起抽进来。
+///
+/// 返回 `None` = 这一章里没有「成员表」子节(章结构变了)。
+fn member_table_section(chapter: &str) -> Option<String> {
+    let mut in_table = false;
+    let mut found = false;
+    let mut fenced = false;
+    let mut out = String::new();
+    for line in chapter.lines() {
+        // 围栏代码块里的 `#` 行不是标题,别让它把 in_table 掐掉。
+        if line.trim_start().starts_with("```") {
+            fenced = !fenced;
+            continue;
+        }
+        if fenced {
+            continue;
+        }
+        if line.starts_with('#') {
+            in_table = line.trim_start_matches('#').trim_end().ends_with("成员表");
+            if in_table {
+                found = true;
+            }
+            continue;
+        }
+        if in_table {
+            out.push_str(line);
+            out.push('\n');
+        }
+    }
+    if found {
+        Some(out)
+    } else {
+        None
+    }
+}
+
+/// 规范 §21 的成员表里的五个成员。
+///
+/// 名单与成员表**必须同数**(见测试里的同数断言):只有同数,下面的「逐项包含」
+/// 检查才推得出「集合相等」—— 少一项时,少掉的那项就没人守了。
+const EXPECTED: &[&str] = &[
+    "URL_PARSE",
+    "URL_JOIN",
+    "HTTP_GET",
+    "HTTP_POST",
+    "HTTP_REQUEST",
+];
+
+/// 规范 §21 的成员表 ↔ `wlwl:std.net` 导出的成员。
+///
+/// 规范 §21 的成员表 ↔ 实现侧(五个成员全部落地)。
 /// W-03 落地时这个数与名单**一起**改,别只改一边。
 #[test]
 fn net_member_set_matches_the_spec_table() {
@@ -407,12 +460,11 @@ fn net_member_set_matches_the_spec_table() {
         .map(|i| start + i)
         .unwrap_or(text.len());
     let body = &text[start..end];
-    let body = match body.find("\n### ") {
-        Some(i) => &body[..i],
-        None => body,
-    };
+    // v1.0 的成员表在 `### 21.1 成员表` 子节里 ⇒ 范围落到那个子节,
+    // 截到第一个 `### ` 会把表整个切掉。
+    let table = member_table_section(body).expect("\u{00a7}21 has a 成员表 subsection");
     let mut spec: Vec<String> = Vec::new();
-    for line in body.lines() {
+    for line in table.lines() {
         let Some(rest) = line.strip_prefix("| `") else {
             continue;
         };
@@ -436,28 +488,29 @@ fn net_member_set_matches_the_spec_table() {
         .iter()
         .map(|(n, _)| (*n).to_string())
         .collect();
-    for n in [
-        "URL_PARSE",
-        "URL_JOIN",
-        "HTTP_GET",
-        "HTTP_POST",
-        "HTTP_REQUEST",
-    ] {
-        assert!(
-            spec.iter().any(|m| m == n),
-            "\u{00a7}21 table missed `{n}`: {spec:?}"
-        );
-        assert!(
-            impls.iter().any(|m| m == n),
-            "implementation does not export `{n}`: {impls:?}"
-        );
-    }
     assert_eq!(
         spec.len(),
         5,
         "\u{00a7}21 table extractor found {} member(s): {spec:?}",
         spec.len()
     );
+    // 名单与成员表**同数**:同数 + 逐项包含 ⇒ 集合相等。少写一项时这一条先红,
+    // 否则少掉的那项在下面的「逐项包含」里没人守。
+    assert_eq!(
+        EXPECTED.len(),
+        spec.len(),
+        "the expected list and the \u{00a7}21 member table must have the same size"
+    );
+    for n in EXPECTED {
+        assert!(
+            spec.iter().any(|m| m.as_str() == *n),
+            "\u{00a7}21 table missed `{n}`: {spec:?}"
+        );
+        assert!(
+            impls.iter().any(|m| m.as_str() == *n),
+            "implementation does not export `{n}`: {impls:?}"
+        );
+    }
     assert_eq!(impls.len(), 5, "wlwl:std.net exports 5 members");
 }
 
@@ -490,8 +543,11 @@ fn the_status_code_delimitation_rules_are_written_down() {
         "跳过它,继续读下一个响应",
         // §21.4 的目标语义:body 恒空 + 忽略 Content-Length。
         "忽略 `Content-Length`",
-        // ADR-0023 §v0.x 2 的 breaking 申报(成员行标「自 vX.Y 变更」)。
-        "自 v0.11.3 变更",
+        // ADR-0023 的 breaking 申报。v1.0 的成员表是**五列**(签名 / 语义 / 失败 /
+        // 复杂度 / 层),没有「自 vX.Y 变更」那一列 ⇒ 申报改写在 §21.4 的
+        // 「这三条改变可观察行为」那一条里。锚点跟着换形态,守的仍是同一条:
+        // breaking 必须在 §21 里成文。
+        "CHANGELOG 已按 ADR-0023 申报",
     ] {
         assert!(
             body.contains(needle),

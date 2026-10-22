@@ -204,6 +204,45 @@ fn spec_text() -> String {
     std::fs::read_to_string(&p).expect("stdlib spec is readable")
 }
 
+/// 本仓 ADR-0030(`std.sanitize` 扩展形状的裁决源头)正文。
+fn adr_0030_text() -> String {
+    let p = Path::new(env!("CARGO_MANIFEST_DIR"))
+        .join("..")
+        .join("..")
+        .join("..")
+        .join("docs")
+        .join("adr")
+        .join("0030-sanitize-extend-shape.md");
+    std::fs::read_to_string(&p).expect("ADR-0030 is readable")
+}
+
+/// 把正文压成「单行、无 markdown 强调符」的形态,好让判据按**词句**匹配,
+/// 而不是被排版(粗体标记 / 折行)绑架。
+///
+/// ⚠ 这**不是**放宽判据:被匹配的词句逐字不变,只是不再要求它恰好落在一行、
+/// 恰好不带 `**` / 反引号。
+///
+/// 必要性的实证:ADR-0030 §4 写的是「没有 **sink**」,以及跨行的
+/// 「Trusted Types do not protect against server-side / XSS」—— 这两个判据串
+/// 在原文里都**不是**连续子串,直接 `contains` 会永远红。
+fn flatten_markdown(text: &str) -> String {
+    let stripped = text.replace("**", "").replace('`', "");
+    let mut out = String::with_capacity(stripped.len());
+    let mut in_space = false;
+    for ch in stripped.chars() {
+        if ch.is_whitespace() {
+            if !in_space {
+                out.push(' ');
+                in_space = true;
+            }
+        } else {
+            out.push(ch);
+            in_space = false;
+        }
+    }
+    out
+}
+
 fn section(section_no: u32, next_no: u32) -> String {
     let text = spec_text();
     let start = text
@@ -263,7 +302,13 @@ fn impl_members() -> Vec<String> {
 
 #[test]
 fn sanitize_member_set_matches_the_spec_table() {
-    let spec = members_of(&section(13, 14));
+    // ⚠ 结束锚点是 **v1.0 规范册的下一个章号**:v1.0 **没有** stdlib §14
+    // (v0.11 的「演进方向」章被拆散 ——「复活条件」进各章、「已否决」进总纲),
+    // §13 之后紧跟的是 **§15**(`std.time`)。
+    //
+    // ⚠ 锚点写死章号 ⇒ 规范**新增**中间章时本测试会**变红**(正文会多取一章
+    // ⇒ 成员表对拍失败),这是「设计变了就一起改测试」那道闸,不是静默取错片段。
+    let spec = members_of(&section(13, 15));
     assert_eq!(
         spec,
         vec![
@@ -469,11 +514,22 @@ fn sanitize_script_is_total_over_content() {
     }
 }
 
-/// 规范 §14 的**否证记录**是契约的一部分(否证记录与肯定记录同权)。
-/// `ADR-0030` D3 判「类型化收口不适用」—— 删掉这段规范的尝试在这里变红。
+/// ADR-0030 §4 的**否证记录**是契约的一部分(否证记录与肯定记录同权)。
+/// `ADR-0030` D3 判「类型化收口不适用」—— 删掉这段记录的尝试在这里变红。
+///
+/// ⚠ **判据落点从「规范文本」挪到「本仓 ADR-0030 §4」** —— 理由:
+///
+/// - v1.0 把 v0.11 stdlib §14 的「演进方向」章**拆掉**了(「复活条件」分散到
+///   各章、「已否决」移到总纲)⇒ v1.0 规范里**没有**那段否证记录;
+/// - v1.0 规范仓的「一致性册」§5.3 明写:「实现侧的裁决(ADR、偏差台账)仍然
+///   是实现如何落地规范的权威」⇒ 这条记录的权威落点是**本仓的 ADR-0030 §4**。
+///
+/// ⇒ 判据现在守的是**裁决源头**,不是规范里的抄件 —— 意图(否证记录不得被悄悄
+/// 删掉)完整保住,而且更强。
 #[test]
-fn typed_closure_rejection_record_stays_in_the_spec() {
-    let spec = spec_text();
+fn typed_closure_rejection_record_stays_in_the_adr() {
+    // ① 裁决源头:本仓 ADR-0030 §4。
+    let adr = flatten_markdown(&adr_0030_text());
     for marker in [
         "类型化收口",
         "不适用",
@@ -483,9 +539,21 @@ fn typed_closure_rejection_record_stays_in_the_spec() {
         "复活条件",
     ] {
         assert!(
-            spec.contains(marker),
-            "§14 typed-closure rejection record lost its marker `{marker}` — \
-             the rejection is a contract, restore it or re-adjudicate"
+            adr.contains(marker),
+            "ADR-0030 §4 的否证记录丢了判据 `{marker}` — \
+             否证记录是契约,恢复它或重新裁决"
+        );
+    }
+
+    // ② 规范侧仍留痕:v1.0 §13 里「复活条件」(§13.3 的 SQL 否证记录)与
+    //    Trusted Types 的否证追溯(§13.5 / §13.7)都还在。① 守源头,② 守「规范
+    //    还认这个否证结论」—— 两者互补,缺一条都会漏。
+    let spec_chapter = section(13, 15);
+    for marker in ["复活条件", "Trusted Types"] {
+        assert!(
+            spec_chapter.contains(marker),
+            "§13 的否证追溯丢了 `{marker}` — 复活条件与 Trusted Types 的否证 \
+             都必须留在规范里"
         );
     }
 }

@@ -1,16 +1,22 @@
 ---
 name: writing-wlwl
-description: "Writes WLWL v0.11 .wll source files (spec docs/wlwl-spec-reference.md). Covers v0.6 core (truthy overhaul, &&/|| short-circuit, IF ERR-routing, ! canonical, AT_K rename, string subscript, LET MUT, overflow->E0035, ${} interpolation), v0.7 §17 concurrency, v0.8 clarifications, v0.9 (true-suspension concurrency + OOP §13-§16 with session-type protocols and linear THIS), and v0.10 static contracts (all DEFAULT-OFF, runtime semantics unchanged; carried over unchanged into v0.11): type annotations FUN((a: INTEGER) : INTEGER, ...) plus container types ARRAY[T]/DICT[K,V]/OPTION[T]/RESULT[T,E] and bounded type variables `T: Comparable`; [features] gradual_typing = off|warn|error; module signature sidecars `foo.wll.sig` and `SEALED([...])`; MATCH exhaustiveness. New codes E0110-E0116 / W0110-W0117, all compile-time only. Use when the user asks for WLWL code, a .wll file, or anything targeting wlwl-spec-v0.11 (or v0.6/v0.7/v0.8/v0.9/v0.10 core). Do NOT use for v0.5 or earlier (POP-not-AT_K, no LET MUT), the Rust implementation, or the formatter."
+description: "Writes WLWL .wll source files (spec v1.0 — merged reference at ../docs/wlwl-spec-reference.md, authoritative source the separate wlwl-spec-v1 repo). Covers v0.6 core (truthy overhaul, &&/|| short-circuit, IF ERR-routing, ! canonical, AT_K rename, string subscript, LET MUT, overflow->E0035, ${} interpolation), v0.7 §17 concurrency, v0.8 clarifications, v0.9 (true-suspension concurrency + OOP §13-§16 with session-type protocols and linear THIS), and v0.10 static contracts (all DEFAULT-OFF, runtime semantics unchanged; carried over unchanged into v0.11 and v1.0): type annotations FUN((a: INTEGER) : INTEGER, ...) plus container types ARRAY[T]/DICT[K,V]/OPTION[T]/RESULT[T,E] and bounded type variables `T: Comparable`; [features] gradual_typing = off|warn|error; module signature sidecars `foo.wll.sig` and `SEALED([...])`; MATCH exhaustiveness. New codes E0110-E0116 / W0110-W0117, all compile-time only. v1.0 error model: an unconsumed ERR is reported (E0103) unless a consumer takes it or it is explicitly discarded with LET(_, expr). Use when the user asks for WLWL code, a .wll file, or anything targeting the wlwl-spec-v1 baseline (or v0.6/v0.7/v0.8/v0.9/v0.10/v0.11 core). Do NOT use for v0.5 or earlier (POP-not-AT_K, no LET MUT), the Rust implementation, or the formatter."
 ---
 
-# Writing WLWL (v0.11)
+# Writing WLWL (spec v1.0)
+
+The **spec** and the **compiler** are versioned separately: this bundle targets
+the **v1.0 specification** (authoritative source — the separate
+[`wlwl-spec-v1`](https://github.com/Laffinty/wlwl-spec-v1) repository; the
+merged copy kept in this repo is `../docs/wlwl-spec-reference.md`), while the
+compiler it runs on is the `wlwl` release in `impl/`.
 
 ## When to load / NOT to use
 
 **Use when:**
-- The user asks for a `.wll` source file, a WLWL program, or a v0.6 / v0.7 / v0.8 / v0.9 / v0.10 / v0.11 idiom.
-- A task targets the v0.11 baseline (the current spec reference file `../docs/wlwl-spec-reference.md`) or any superseded spec (v0.6–v0.10, archived in condensed form under `../docs/history/`; the v0.11 spec set itself is archived verbatim in `../docs/history/20261022-spec-archive.md`).
-- Reviewing or debugging v0.6–v0.11 source (concurrency, OOP, session protocols, static contracts included).
+- The user asks for a `.wll` source file, a WLWL program, or a v0.6 / v0.7 / v0.8 / v0.9 / v0.10 / v0.11 / v1.0 idiom.
+- A task targets the v1.0 baseline (the current merged spec reference file `../docs/wlwl-spec-reference.md`) or any superseded spec (v0.6–v0.11, archived in condensed form under `../docs/history/`; the v0.11 spec set itself is archived verbatim in `../docs/history/20261022-spec-archive.md`).
+- Reviewing or debugging v0.6–v1.0 source (concurrency, OOP, session protocols, static contracts included).
 
 **Don't use when:**
 - The source targets WLWL v0.5 or earlier (different truthy rules, `POP`-not-`AT_K`, no `LET MUT`).
@@ -18,12 +24,21 @@ description: "Writes WLWL v0.11 .wll source files (spec docs/wlwl-spec-reference
 - The user wants `wlwl.exe` CLI documentation (that's `wlwl help` / `wlwl <subcmd> --help`).
 - The artifact is a Rust test, ADRs, or build-system file.
 
+**Where the chapters are.** `../docs/wlwl-spec-reference.md` merges the 11
+volumes of the v1.0 spec into one file, so its second-level headings carry a
+**volume prefix**: the language surface is `## 语言规范 · 8 错误模型`, the
+standard library is `## 标准库规范 · 11 std.encode`, the conformance volume is
+`## 一致性册 · 5 规范与实现的差异登记`. A `§N` reference in this bundle still
+means the same section it meant under v0.11 — the numbering did not move —
+but **cross-volume references need the volume name** (language §5 and standard
+library §5 are different sections).
+
 ## Writing flow
 
 Tick these as you go:
 
 ```
-WLWL writing progress (v0.10):
+WLWL writing progress (v1.0):
 - [ ] 1. Sketch the AST shape (use the operators/builtins section below)
 - [ ] 2. Decide mutation — any SET later means LET MUT(name, value) now
        (MUT itself can also be the binding name, e.g. LET(MUT, "x"))
@@ -63,13 +78,14 @@ Eight falsy values: `FALSE`, `NULL`, `0`, `0.0`, `""`, `[]` (empty array), `DICT
 
 `ERR(...)` is **not** in this list — it is its own propagation mechanism per §8.2. Passing `ERR(x)` to a non-consumer function transparently forwards the `ERR`; it does NOT make the function body "skip" because the arg was falsy. Only §8.3 consumers (`IS_OK`, `IS_ERR`, `UNWRAP_OR`, `OR_DIE`, `TRY`, `UNWRAP`, `ERR_PAYLOAD`, `WRAP`, `TYPE`, `==`/`!=`, `IF` condition, `&&`/`||`, `BOOL`, `EXPECT_ERR`) can inspect an ERR safely.
 
-## Operators / builtins — cheat sheet (v0.6 core, unchanged through v0.11)
+## Operators / builtins — cheat sheet (v0.6 core, unchanged through v1.0)
 
 **No operator and no builtin was added after v0.7.** The registry's 106 entries
 are 70 from v0.2, 15 from v0.4, 4 from v0.6 and 17 from v0.7
 (`../docs/appendix_G.md`). So this sheet is **complete** for the language
-surface frozen at v0.11: v0.10 added *type annotations* (not operators — see
-"Static contracts" below) and v0.11 only renumbered the spec and changed
+surface frozen at v0.11 and carried into v1.0 unchanged: v0.10 added *type
+annotations* (not operators — see "Static contracts" below) and v0.11 only
+renumbered the spec and changed
 `ASSERT` (`reference.md` §25.3).
 
 **Equality** (spec §2.4): `=(a, b)` and `==(a, b)` are aliases (§1.5 call-position desugar; `=` triple-identity — NOT same as `INDEX_SET`'s `=` or `Param`'s `=`). `!=(a, b)`. Cross-type numeric: `==(1, 1.0)` is `TRUE`. Function/handle identity: `==(f, f)` and `==(h, h)` are `TRUE`. **v0.9 object identity**: `==(cls, cls)` and `==(obj, obj)` are `TRUE` for the same class/instance; two `NEW(...)` results are never equal.
@@ -600,6 +616,26 @@ Concurrency and OOP names **are** global (Appendix G) — do not import them.
 
 **§8.5 top-level escape**: an uncaught ERR reaching the top level terminates with `E0102` and exit code 1. Always consume at the boundary.
 
+**§8.6 unconsumed `ERR` (v1.0)**: an `ERR` that is never consumed is now
+**reported** — the program ends with **`E0103`** (exit code 1) instead of being
+silently dropped. There are exactly three ways to dispose of one:
+
+1. a **consumer takes it** — `ERR_PAYLOAD` / `UNWRAP_OR` / `OR_DIE` / `TRY` /
+   `UNWRAP` / `WRAP` / `EXPECT_ERR`;
+2. **explicit discard** — `LET(_, expr)`, the only explicit discard form in the
+   language;
+3. it becomes the program's value at the top level (that is `E0102`).
+
+⚠ **Observing is not disposing.** `IS_ERR` / `IS_OK` / `BOOL` / `TYPE` are
+**observation-only** consumers: they do **not** clear the unconsumed state — after
+looking at an `ERR`, either take it or discard it explicitly. The drop points are
+exactly three: a discarded statement value, a binding being overwritten
+(re-bind / `SET`), and the end of a scope. ⚠ Two known gaps are registered in
+the spec's conformance volume (X-06 / X-07): a binding holds only **one**
+unconsumed token, so two unconsumed `ERR`s in one container lose one; and a
+standard-library callback's argument channel carries no token, so an unconsumed
+`ERR` inside a callback is not reported.
+
 **Concurrent ERR kinds** (§8.1): `ChannelClosed` · `Cancelled` (with `reason` dict). `ChannelWouldBlock` **removed in v0.9**.
 
 **Host diagnostic vs user ERR** (§17.5): `AWAIT` of a child task re-raises *host* diagnostics (`E0101` stack overflow, invalid handle `E0053`, etc.) — distinct from user `ERR(...)` values which pass through as ordinary `RESULT` values. `SCOPE(ERR("x"))` propagates the `ERR` per §8.2 BEFORE the parameter-type check (`E0052` does not fire).
@@ -719,9 +755,9 @@ file is a real (if cosmetic) deviation.
 
 ## References
 
-- **Authoritative spec**: `../docs/wlwl-spec-reference.md` — defer to this on any disagreement (§13–§16 = OOP + session types + linear THIS; §17 = concurrency; §2.6/§5.2/§9.1/§9.6 = static contracts). Where §5.2.1's "三条实测事实" disagrees with the compiler (the angle-bracket / arrow forms, and the constraint-on-a-concrete-type code), **the compiler wins** — this bundle records the measured values.
+- **Authoritative spec**: the **v1.0** edition in the separate [`wlwl-spec-v1`](https://github.com/Laffinty/wlwl-spec-v1) repository; the merged copy in `../docs/wlwl-spec-reference.md` is what this repo's guards and agents read — defer to it on any disagreement (§13–§16 = OOP + session types + linear THIS; §17 = concurrency; §2.6/§5.2/§9.1/§9.6 = static contracts). Where §5.2.1's "三条实测事实" disagrees with the compiler (the angle-bracket / arrow forms, and the constraint-on-a-concrete-type code), **the compiler wins** — this bundle records the measured values.
 - **Standard library spec**: `../docs/wlwl-spec-reference.md` — the member contracts (signature, semantics, failure behaviour) for every `wlwl:std.*` namespace and for the `ai` / `agent` packages. Its **Appendix A** is the *generated* member registry — **214 members across 21 namespaces** — and that table, not prose, is the membership list.
-- **Superseded specs (archived)**: v0.6–v0.10, condensed in `../docs/history/20260902-09.md` / `../docs/history/20260915-22.md` (full text via git history) — v0.11 is a *renumbering* of the spec (the formatter moved to §A.3) **plus real content**: two new stdlib namespaces and one breaking `ASSERT` change, both in `reference.md` §25. **v0.11.2 and v0.11.3 add standard-library members only** — the language surface stays frozen at v0.11 and `../docs/appendix_G.md` is unchanged; the per-batch deltas are in `reference.md` §26 / §27. v0.10 added static contracts on top of v0.9's runtime; v0.9 added true-suspension concurrency + OOP §13–§16; the older archives' §0–§17 remain valid as history.
+- **Superseded specs (archived)**: v0.6–v0.10, condensed in `../docs/history/20260902-09.md` / `../docs/history/20260915-22.md` (full text via git history) — v0.11 is a *renumbering* of the spec (the formatter moved to §A.3) **plus real content**: two new stdlib namespaces and one breaking `ASSERT` change, both in `reference.md` §25. **v0.11.2 and v0.11.3 add standard-library members only** — the language surface stays frozen at v0.11 and `../docs/appendix_G.md` is unchanged; the per-batch deltas are in `reference.md` §26 / §27. v0.10 added static contracts on top of v0.9's runtime; v0.9 added true-suspension concurrency + OOP §13–§16; the older archives' §0–§17 remain valid as history. **v1.0 keeps that numbering** (`§N` references above still resolve) and adds the unconsumed-`ERR` rule (§8.6), the complexity / memory chapters (§18–§19) and the conformance volume.
 - **Validity window for "measured" claims**: anything in this bundle stated as *measured* / *实测* / *verified* carries the compiler version it was checked against (e.g. "Measured on wlwl 0.11.0 (2026-10-01)"). Those are observations of one release, not spec guarantees — when the version is not named, assume it predates v0.11 and re-run it. `wlwl run` on your own file is always the final word.
 - **A code block that has not been run is a hypothesis (v0.11.2)**: two rules follow from the rule above, both learned the hard way. (1) A snippet using a namespace member must carry its own `IMPORT` line — a name is a global builtin **only** if it appears in `../docs/appendix_G.md`; `STRINGIFY` belongs to `wlwl:std.json` and `SORT` to `wlwl:std.collection`, so a snippet that names them bare dies with `E0020` and looks like a compiler bug. (2) Never write a diagnostic's message from memory — run it and copy the string. Excerpts in this bundle have shipped with both defects.
 - **Lookup tables** (operators, error codes, AST shapes, OOP, concurrency, the per-namespace stdlib member tables, and the per-batch deltas): `reference.md` in this folder.

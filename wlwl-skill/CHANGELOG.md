@@ -3,6 +3,37 @@
 Skill-bundle changes (spec lives at `../docs/wlwl-spec-reference.md`
 and is authoritative).
 
+## [Unreleased] — 规范基线切到 v1.0(合并册换代)
+
+目标规范从 `wlwl-spec-v0.11` 切到 **v1.0**:权威处是独立仓
+`Laffinty/wlwl-spec-v1`(11 册),仓内 `../docs/wlwl-spec-reference.md` 是把这 11 册
+**合并成一份**的**次级载体**(机器守卫与 AI agent 读它)。
+
+### Changed
+- **当前基线的口径全部改成 v1.0**:`SKILL.md` 的 frontmatter `description`、
+  标题、「何时加载」段、运算符速查表的标题;`reference.md` 的标题、卷首说明、
+  §2 版本表、§24.5 引用表;`README.md` 的抬头 / Target version / Scope / See also。
+  **历史沿革的表述原样保留**(v0.6 core / v0.7 §17 / v0.8 / v0.9 / v0.10 static
+  contracts / v0.11 / v0.11.2 / v0.11.3 各批沿革)。
+- **`description` 的触发面**:改前「anything targeting wlwl-spec-v0.11 (or
+  v0.6/v0.7/v0.8/v0.9/v0.10 core)」,改后「anything targeting the wlwl-spec-v1
+  baseline (or v0.6/v0.7/v0.8/v0.9/v0.10/v0.11 core)」⇒ **旧版本触发面一个没丢**
+  (v0.11 仍可触发),只把「当前基线」从 v0.11 挪到 v1.0,并补了一句 v1.0 的错误
+  模型(未消费 `ERR` 报 `E0103`)。
+- **新增「章在哪」的说明**(`SKILL.md` 与 `reference.md` 卷首):合并册的二级标题
+  带**册别前缀**(「语言规范 · 8 错误模型」「标准库规范 · 11 `std.encode`」
+  「一致性册 · 5 …」)⇒ 跨册引用必须带册名(语言面 §5 与标准库面 §5 是两处不同的
+  东西)。
+- **`reference.md` §2「Version decisions」补 v1.0 一行**;§8 补 **§8.6 未消费
+  `ERR`**:三条处置路径(消费者取走 / `LET(_, expr)` 显式丢弃 / 成为顶层程序值)、
+  「观察型消费者不解除未消费状态」、以及 X-06 / X-07 两处已知缺口。
+
+### 未改(有理由)
+- **全部 `§N` 交叉引用原样保留** —— v1.0 的章号与 v0.11 对齐(语言面 §0–§12
+  不变、对象面 §13–§16、并发面 §17;标准库面 §1–§22)⇒ 旧引用仍然有效。
+- **成员表未重写** —— 成员面 21 个命名空间 / 214 个成员,v0.11 → v1.0 增删各 0。
+- **沿革备忘 §23–§27 未动** —— 那是历史沿革,不是当前基线。
+
 ## [Unreleased] — 覆盖度收口(stdlib 全成员)
 
 以标准库规范 `../docs/wlwl-spec-reference.md` 的**附录 A**(生成器

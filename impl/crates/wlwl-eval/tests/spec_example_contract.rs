@@ -49,10 +49,10 @@ fn spec_text() -> String {
 /// 为什么按「含 `SET(`」挑而不是按行号挑:行号会随规范增删漂移,而「这一条
 /// 规律里演示 `SET` 的那个例子」是稳定的语义锚点。
 fn rule_1_set_example(spec: &str) -> String {
-    let anchor = "**可用的规律,两条:**";
+    let anchor = "**可用的规律,两条**";
     let start = spec
         .find(anchor)
-        .unwrap_or_else(|| panic!("§17.1's \"可用的规律,两条:\" anchor is gone from the spec"));
+        .unwrap_or_else(|| panic!("§17.1's \"可用的规律,两条\" anchor is gone from the spec"));
     let section = &spec[start..];
 
     // 只看紧邻的一段(规律 1 + 规律 2),不把整章都扫进来。

@@ -4,12 +4,12 @@
 |---|---|
 | **Status** | **Accepted**(2026-10-13,业主「请做下一步」采纳 D1–D4;`addendum-13` W-02 已落地 `HTML_SANITIZE_SCRIPT`) |
 | **Date** | 2026-10-13 |
-| **Related** | ADR-0029(`std.result` 的形状,同日另一份「实测推翻计划」的 ADR)、`docs/history/$1` §3.1 / §3.2、`docs/wlwl-spec-reference.md` 标准库规范 · §13 / §14、`wlwl-std/src/sanitize.rs`、`wlwl-eval/tests/sanitize_contract.rs` |
+| **Related** | ADR-0029(`std.result` 的形状,同日另一份「实测推翻计划」的 ADR)、`docs/history/$1` §3.1 / §3.2、`docs/wlwl-spec-reference.md` 标准库规范 · §13 / §14(此处 §14 指 **v0.11** 的「演进方向」章 —— **v1.0 已无 stdlib §14**,§4 的否证记录以本 ADR §4 为准)、`wlwl-std/src/sanitize.rs`、`wlwl-eval/tests/sanitize_contract.rs` |
 
 ## Context
 
 `addendum-13` 的 §0 把「本份的第一产出应当是**有没有真实场景**的调研**,不是成员表」
-写成了硬要求 —— 因为规范 §14 自己给 CSS / JS 转义设了门槛「**先有真实场景再立项**」,
+写成了硬要求 —— 因为 v0.11 规范 §14 自己给 CSS / JS 转义设了门槛「**先有真实场景再立项**」,
 并把「类型化收口」的条件写成「**若将来出现宿主形态**」。
 
 本 ADR 是那份调研的产出。它**不新增成员面**,只回答三个问题:CSS 做不做、
@@ -115,7 +115,7 @@ sink 处**拦截**,而那正是 Trusted Types 相对于「大家记得调用净�
 ⚠ 有第三方资料把 Trusted Types 描述成「浏览器可执行策略」甚至称其可防止服务端 XSS ——
 **那是错的**;同一批资料自己也写着「Trusted Types do not protect against server-side
 XSS; they only cover DOM XSS sinks in the browser」。本 ADR 采信后者,并把这条
-**否证记录**写进规范 §14(否证记录与肯定记录同权)。
+**否证记录**写进 v0.11 规范 §14(否证记录与肯定记录同权);**v1.0 起该记录以本 ADR §4 为准**(v1.0 已无 stdlib §14)。
 
 **复活条件**:wlwl 出现**宿主形态**(能执行代码、能接管输出点的运行时)。
 在那之前,「类型化收口」只是一个新内建类型 + 一个运行时检查,不值得。
@@ -128,7 +128,7 @@ XSS; they only cover DOM XSS sinks in the browser」。本 ADR 采信后者,并�
   实现顺序按 §3 表(白名单优先于转义)。
 - **D2 · JS 侧**换题**:不做通用 `JS_ESCAPE_STRING` / `JS_ESCAPE_COMMENT`,
   改做 `HTML_SANITIZE_SCRIPT(value)`**(§2.3)。这是本 ADR 唯一**推翻计划成员表**的裁决。
-- **D3 · 类型化收口不实现**,只留否证记录 + 复活条件(§4),写进规范 §14。
+- **D3 · 类型化收口不实现**,只留否证记录 + 复活条件(§4),写进 v0.11 规范 §14(v1.0 起以本 ADR §4 为准)。
 - **D4 · 现有 81 条冻结契约一条不动。**
 
 **D2 已落地**(规范 §13.4 + `sanitize.rs::html_sanitize_script` + 契约 6 条)。

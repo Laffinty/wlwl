@@ -1,4 +1,4 @@
-//! [v0.11 M1-3 / ADR-0021] stdlib 规范附录 A 镜像生成器。
+//! [v0.11 M1-3 / ADR-0021,v1.0 格式改造] stdlib 规范附录 A 镜像生成器。
 //!
 //! 单源真相:
 //! - R2 原生层成员来自 `wlwl_std` 的 `ModuleSpec` 绑定表;collection /
@@ -8,12 +8,22 @@
 //!   `wlwl_std::lang_exports` 提取;运行期加载由 AST 的
 //!   `collect_exports` 权威提取,两者不一致会被锁测试抓出来)。
 //!
-//! 层归属与引入版本登记在 `NAMESPACE_META`(私有 const —— 公开的模块级
-//! 文档链不到私有项,故写代码而非 intra-doc 链接),与
-//! `docs/wlwl-spec-reference.md` §0.2 归属总表一致。
+//! **表体格式 = v1.0 规范的四列表**:`| 命名空间 | 成员 | 层 | v1.0 册 |`。
+//! 第 4 列不再是 v0.11 的「引入版本」,而是**该命名空间的成员契约归
+//! v1.0 标准库的哪一册**(核心 / 文本 / 系统 / 安全 / 官方包)。
 //!
-//! 产出写进 stdlib 规范的附录 A 标记区(`<!-- appendix-a:begin -->`
-//! 到 `<!-- appendix-a:end -->` 之间,标记保留),锁测试
+//! 「成员」列里跟在成员名后面的 `[stub]` 标记表示**该成员的返回值形状
+//! 不在公共面内**(v1.0 一致性册 §4.4):实现侧**可以**把桩回包替换为
+//! 真实实现,替换**不**构成破坏性变更;标记**不**改变「成员集合相等」
+//! 这条规则 —— 它是集合内某个成员的附加属性。
+//!
+//! 层归属、「v1.0 册」与 stub 成员登记在 `NAMESPACE_META`(私有 const ——
+//! 公开的模块级文档链不到私有项,故写代码而非 intra-doc 链接),以 v1.0
+//! 规范的**注册镜像册**为权威(§0.5 记法、§0.8 命名空间到册的映射、
+//! 附录 A 的 `[stub]` 标记位置)。
+//!
+//! 产出写进规范的附录 A 标记区(`<!-- appendix-a:begin -->` 到
+//! `<!-- appendix-a:end -->` 之间,标记保留),锁测试
 //! `tests/stdlib_appendix_a_sync.rs` 双向对账。
 //!
 //! 用法(在 `impl/` 目录下):
@@ -23,59 +33,127 @@
 
 use wlwl_std::StdBackend;
 
-/// (完整路径, 层, 引入)。层的取值与 stdlib 规范 §0.2 一致:
-/// R2 / R1 / 混合。
-const NAMESPACE_META: &[(&str, &str, &str)] = &[
-    ("wlwl:std.io", "R2", "v0.10 及以前"),
-    ("wlwl:std.fs", "R2", "v0.10 及以前"),
-    ("wlwl:std.json", "R2", "v0.10 及以前"),
-    ("wlwl:std.format", "R2", "v0.10 及以前"),
-    // [v0.11.3 M2] SHA256 / HMAC_SHA256 追加(沿 str 的先例:引入列记
-    // 命名空间的引入版本,新成员的版本写成员表与 CHANGELOG)。
-    // [v0.11.3 M6 / W-03] 再加 `PBKDF2_ITER` / `ARGON2ID` 两个 KDF。
-    // [v0.11.3 M6 / W-04] 再加 `RANDOM_BYTES` / `RANDOM_HEX` / `TIMING_SAFE_EQ`。
-    (
-        "wlwl:std.encode",
-        "R2",
-        "v0.11.2 / SHA256、HMAC_SHA256 于 v0.11.3",
-    ),
+/// 一个命名空间在附录 A 里的登记项。
+///
+/// 字段与 v1.0 附录 A 的四列表一一对应:`path` + `layer` + `v1_book`
+/// 撑起表里的三列,`stubs` 决定「成员」格里哪些成员名后面跟 `[stub]`。
+struct NsMeta {
+    /// 实现侧的完整路径(`IMPORT` 用的路径)。
+    path: &'static str,
+    /// 实现层:R1 / R2 / 混合(与规范「层」列同口径)。
+    layer: &'static str,
+    /// 该命名空间的成员契约归 v1.0 标准库的哪一册(核心 / 文本 / 系统 /
+    /// 安全 / 官方包)。
+    v1_book: &'static str,
+    /// 该命名空间里带 `[stub]` 标记的成员(返回值形状不在公共面内)。
+    stubs: &'static [&'static str],
+}
+
+/// 「本命名空间没有 stub 成员」的简写。
+const NO_STUBS: &[&str] = &[];
+
+/// 附录 A 的行登记:21 个命名空间。
+///
+/// ⚠ 「v1.0 册」的取值以 v1.0 规范的**注册镜像册 §0.8**(命名空间到册的
+/// 映射)为准;「层」的取值以同册附录 A 的表体为准;`stubs` 以同册附录 A
+/// 的 `[stub]` 标记位置为准,并以本仓实现的桩事实为依据。
+const NAMESPACE_META: &[NsMeta] = &[
+    NsMeta {
+        path: "wlwl:std.io",
+        layer: "R2",
+        v1_book: "系统",
+        stubs: NO_STUBS,
+    },
+    NsMeta {
+        path: "wlwl:std.fs",
+        layer: "R2",
+        v1_book: "系统",
+        stubs: NO_STUBS,
+    },
+    NsMeta {
+        path: "wlwl:std.json",
+        layer: "R2",
+        v1_book: "核心",
+        stubs: NO_STUBS,
+    },
+    NsMeta {
+        path: "wlwl:std.format",
+        layer: "R2",
+        v1_book: "核心",
+        stubs: NO_STUBS,
+    },
+    // [v0.11.3 M2] SHA256 / HMAC_SHA256;[v0.11.3 M6 / W-03] PBKDF2_ITER /
+    // ARGON2ID;[v0.11.3 M6 / W-04] RANDOM_BYTES / RANDOM_HEX / TIMING_SAFE_EQ。
+    // 编码与哈希在 v1.0 归**安全册**。
+    NsMeta {
+        path: "wlwl:std.encode",
+        layer: "R2",
+        v1_book: "安全",
+        stubs: NO_STUBS,
+    },
     // [v0.11.3 M6 / addendum-01 A1] 时间能力第一片:两个纯读成员。
     // 全员 R2 —— 成员在 `wlwl-std` 内直读系统时钟(与 `RANDOM_BYTES` 直读
     // `getrandom` 同款:`std.time` 是时间的源,不经宿主)。B 片的虚拟时钟
     // 才需要宿主开口,见 ADR-0024 §6.3-2。
-    ("wlwl:std.time", "R2", "v0.11.3"),
+    NsMeta {
+        path: "wlwl:std.time",
+        layer: "R2",
+        v1_book: "系统",
+        stubs: NO_STUBS,
+    },
     // [v0.11.3 M6 / addendum-02] 正则(RE2 式线性时间,零第三方依赖)。
-    ("wlwl:std.regex", "R2", "v0.11.3"),
-    // [2026-10-11 补登记] 以下四个**早已落地**的命名空间此前漏在本表外 ——
-    // 附录 A 镜像因此少了 18 个成员 / 4 行,而 `stdlib_appendix_a_sync`
-    // **抓不到**(它对账的两侧读的是同一份本表,自洽地全绿)。
-    // ⚠ 这是一个横跨三个已完成批次的文档修补,故单独成笔,不顺手挂在别的批次上。
-
+    NsMeta {
+        path: "wlwl:std.regex",
+        layer: "R2",
+        v1_book: "文本",
+        stubs: NO_STUBS,
+    },
     // [v0.11.3 M6 / addendum-08] 显式播种的 RNG。R2 全员(算法在
     // `rand.rs`,零第三方依赖:哈希 / SplitMix64 / xoshiro256++ 手写)。
-    // ⚠ 「引入」列必须记**过渡形态**:规范 §14 已把 `std.ai` / `std.agent` 移到
-    // 官方包,同一机制一旦存在,本命名空间同样降级(ADR-0027 A7)。
-    ("wlwl:std.rand", "R2", "v0.11.3(过渡形态,见 ADR-0027 A7)"),
+    NsMeta {
+        path: "wlwl:std.rand",
+        layer: "R2",
+        v1_book: "系统",
+        stubs: NO_STUBS,
+    },
     // [v0.11.3 M6 / addendum-06] 进程环境与命令行参数。R2 全员。
-    ("wlwl:std.env", "R2", "v0.11.3"),
+    NsMeta {
+        path: "wlwl:std.env",
+        layer: "R2",
+        v1_book: "系统",
+        stubs: NO_STUBS,
+    },
     // [v0.11.3 M6 / addendum-06] 不经 shell 跑子进程。R2 全员。⚠ 它是**阻塞
     // 的**(与 `std.time::SLEEP` 同源):单线程协作式调度下,子进程运行期间
     // **不调度任何其他任务**(规范 §19)。
-    ("wlwl:std.process", "R2", "v0.11.3"),
-    // [v0.11.3 M6 / addendum-07] Zstandard + DEFLATE 家族。R2 全员;**本工作区
-    // 第一次引入压缩依赖**(`zstd` + `flate2`),取舍见 `addendum-07` §3.1。
-    ("wlwl:std.text", "R2", "v0.11.2"),
+    NsMeta {
+        path: "wlwl:std.process",
+        layer: "R2",
+        v1_book: "系统",
+        stubs: NO_STUBS,
+    },
+    // [v0.11.3 M1] Unicode 大小写与规范规范化(`NFC` / `NFD` / `NFC_QC`)。
+    // R2 全员:规范化要走 Unicode 表,语言层做不到。
+    NsMeta {
+        path: "wlwl:std.text",
+        layer: "R2",
+        v1_book: "文本",
+        stubs: NO_STUBS,
+    },
     // [v0.11.3 M1] 输出安全(旗舰特色功能)。**全员 R2**:转义 / 解码 / 净化
     // 都要处理文档级输入,而解释器侧字符串与数组构建超线性(D11-012 /
     // D12-009);归层基准见 v0.11.3 计划 W-08 与 baseline.txt M1 段。
-    // `HTML_SANITIZE` 随 M3 落地后本行成员数 2 → 3。
-    ("wlwl:std.sanitize", "R2", "v0.11.3"),
-    (
-        "wlwl:std.collection",
+    NsMeta {
+        path: "wlwl:std.sanitize",
+        layer: "R2",
+        v1_book: "文本",
+        stubs: NO_STUBS,
+    },
+    NsMeta {
+        path: "wlwl:std.collection",
         // [v0.11 M5] 16 成员 R1 + `RANGE` 归 R2。层归属变更不算破坏性变更
-        // (ADR-0021 §0.2),故「引入」列仍写 v0.10 及以前(成员)——
-        // 变的是实现语言,不是成员面。依据见 baseline.txt 的 M5 段与
-        // 偏差 D11-012。
+        // (ADR-0021 §0.2)—— 变的是实现语言,不是成员面。依据见
+        // baseline.txt 的 M5 段与偏差 D11-012。
         // [v0.11.3 M5 / L0-A-2] 再加 `MAP` / `FILTER` / `CHUNK` / `WINDOW`
         // 归 R2(四档基准实测每元素成本随尺寸上涨,平方级坐实)。
         // [v0.11.3 M5 / L0-A-3a] 再加 `ENUMERATE` / `ZIP` / `UNIQ` / `FLAT` /
@@ -88,33 +166,73 @@ const NAMESPACE_META: &[(&str, &str, &str)] = &[
         // 可观察行为,待业主裁;见 `docs/history/addendum-00-r0-foundations.md` §7。
         // 十三个成员**全部留在 `EXPORT` 里**(门面改名导出),故成员面与本行的
         // 成员名册都不变,只有「层」这一列变。
-        "混合(R1 门面 + R2 `RANGE`/`MAP`/`FILTER`/`CHUNK`/`WINDOW`/`ENUMERATE`/`ZIP`/`UNIQ`/`FLAT`/`JOIN`/`GROUP_BY`/`DEDUP_BY`/`KEY_BY`)",
-        "v0.10 及以前(成员)/ v0.11(R1 重写,M5 起 RANGE 沉 R2)/ v0.11.3(M5 L0-A-2 加 MAP·FILTER·CHUNK·WINDOW,L0-A-3a 加 ENUMERATE·ZIP·UNIQ·FLAT·JOIN,L0-A-3b 加 GROUP_BY·DEDUP_BY·KEY_BY 沉 R2)",
-    ),
-    (
-        "wlwl:std.str",
-        "R1",
+        layer: "混合(R1 门面 + R2 `RANGE`/`MAP`/`FILTER`/`CHUNK`/`WINDOW`/`ENUMERATE`/`ZIP`/`UNIQ`/`FLAT`/`JOIN`/`GROUP_BY`/`DEDUP_BY`/`KEY_BY`)",
+        v1_book: "核心",
+        stubs: NO_STUBS,
+    },
+    NsMeta {
+        path: "wlwl:std.str",
         // [v0.11.2 M2] `INDEX_OF` / `CONTAINS_SUB` 追加。与 `std.collection`
-        // 同款口径:层与成员面不变,「引入」列记的是**命名空间**的引入版本,
-        // 新成员的版本写在成员表与 CHANGELOG 里。
-        "v0.11 / INDEX_OF、CONTAINS_SUB 于 v0.11.2",
-    ),
-    ("wlwl:std.math", "混合", "v0.11"),
-    ("wlwl:std.test", "混合", "v0.10 及以前(成员)/ v0.11(混合化)"),
+        // 同款口径:层与成员面不变。
+        layer: "R1",
+        v1_book: "核心",
+        stubs: NO_STUBS,
+    },
+    NsMeta {
+        path: "wlwl:std.math",
+        layer: "混合",
+        v1_book: "核心",
+        stubs: NO_STUBS,
+    },
+    NsMeta {
+        path: "wlwl:std.test",
+        layer: "混合",
+        v1_book: "核心",
+        stubs: NO_STUBS,
+    },
     // [v0.11.3 M8 / addendum-14 / ADR-0034] 两行从 `wlwl:std.*` 换到官方包路径。
     // ⚠ **成员一个未动**,且 `wlwl:std.ai` / `wlwl:std.agent` 现在返回 `None`。
     // ⚠ 形态上的差距(如实记下):包仍以 `wlwl-std` 的 `real-ai` feature 编译,
     // **没有独立的 crate 边界与分发产物** ⇒ `addendum-14` §6 要求记为**部分完成**。
-    ("ai", "R2", "v0.10 及以前(以 wlwl:std.ai 名义)/ v0.11.3 M8 降级为官方包(ADR-0034)"),
-    ("agent", "R2", "v0.10 及以前(以 wlwl:std.agent 名义)/ v0.11.3 M8 降级为官方包(ADR-0034)"),
+    NsMeta {
+        path: "ai",
+        layer: "R2",
+        v1_book: "官方包",
+        stubs: NO_STUBS,
+    },
+    NsMeta {
+        path: "agent",
+        layer: "R2",
+        v1_book: "官方包",
+        // ⚠ `CALL_TOOL` 是**桩**:工具执行器未接线,回包固定为
+        // `{ok: false, mocked: true, error_code: NULL, message, params}`
+        // (实现见 `wlwl-std` 的 `agent.rs`;契约测试
+        // `ai_agent_contract.rs` 的 `call_tool_mock_*` 四条钉住这个形状)。
+        // ⇒ 它的**返回值形状不在公共面内**(v1.0 一致性册 §4.4):实现侧
+        // 换成真实执行器**不**构成破坏性变更 ⇒ 标 `[stub]`。
+        // ⚠ `ai` 包**不带**这个标记:它的推理成员要么走真实 HTTP(带
+        // `real-ai` feature + 端点环境变量),要么走**确定性**回包;两种
+        // 形态都是公共面内的既定行为,不在「形状可替换」的豁免里。
+        stubs: &["CALL_TOOL"],
+    },
     // [v0.11.3 M6 / addendum-07] Zstandard + DEFLATE 家族。R2 全员;本工作区
     // 第一次引入压缩依赖(`zstd` + `flate2`)。
-    ("wlwl:std.compress", "R2", "v0.11.3"),
+    NsMeta {
+        path: "wlwl:std.compress",
+        layer: "R2",
+        v1_book: "系统",
+        stubs: NO_STUBS,
+    },
     // [v0.11.3 M6 / addendum-05 W-02..W-04] 网络。R2 全员,**零新增第三方
     // 依赖**(明文 HTTP/1.1 走 `std::net::TcpStream` + 系统解析器)。
     // ⚠ `HTTP_*` 是**阻塞原语**,且该裁决(`ADR-0028` D1)是**带条件冻结**的 ——
     // 冻结前提是「`ADR-0017` Step 3 真 state-machine 续跑仍未落地」。
-    ("wlwl:std.net", "R2", "v0.11.3"),
+    NsMeta {
+        path: "wlwl:std.net",
+        layer: "R2",
+        v1_book: "系统",
+        stubs: NO_STUBS,
+    },
     // [v0.11.3 M7 / addendum-11 W-02] `RESULT` 组合子。
     // ⚠ 三条成员的 `ERR` 分支**不在成员体内执行** —— 语言规范 §8.2 规定实参为
     // `ERR` 时调用不求函数体(§8.3 注册表明文「不新增条目」),而「原样返还」恰好
@@ -124,11 +242,12 @@ const NAMESPACE_META: &[(&str, &str, &str)] = &[
     // 两者都要把 n 个载荷收成新数组,而 R1 累加链实测每翻一倍约 ×3
     // (n=4000 时 765 ms)。`NULL_OR` 只二选一、不建数组,留 R1。
     // ⇒ 本模块是**混合**模块(4 R1 + 2 R2)。
-    (
-        "wlwl:std.result",
-        "混合(R1 `RESULT_MAP`/`AND_THEN`/`FLATTEN`/`NULL_OR` + R2 `RESULT_ALL`/`RESULT_ANY`)",
-        "v0.11.3",
-    ),
+    NsMeta {
+        path: "wlwl:std.result",
+        layer: "混合(R1 `RESULT_MAP`/`AND_THEN`/`FLATTEN`/`NULL_OR` + R2 `RESULT_ALL`/`RESULT_ANY`)",
+        v1_book: "核心",
+        stubs: NO_STUBS,
+    },
 ];
 
 /// 一个命名空间的当前成员名册(实现真相)。
@@ -144,30 +263,40 @@ fn members(path: &str) -> Vec<String> {
 }
 
 /// 生成附录 A 的表体(仅表格本身;标记与前置说明留在规范文件里)。
+///
+/// **v1.0 格式**:四列 `| 命名空间 | 成员 | 层 | v1.0 册 |`。
+///
+/// 「成员」格里跟在成员名后面的 `[stub]` 标记(注册镜像册附录 A 的写法:
+/// `` `CALL_TOOL` `[stub]` ``)标的是**返回值形状不在公共面内**的成员 ——
+/// 标记**不是**成员名本身,「成员集合相等」这条规则看的仍只是成员名。
 pub fn generate_appendix_a_md() -> String {
     let mut out = String::new();
-    out.push_str("| 命名空间 | 成员 | 层 | 引入 |\n");
+    out.push_str("| 命名空间 | 成员 | 层 | v1.0 册 |\n");
     out.push_str("|---|---|---|---|\n");
-    for (path, layer, introduced) in NAMESPACE_META {
+    for meta in NAMESPACE_META {
         // [v0.11.3 M8 / addendum-14 / ADR-0034] 显示名不再硬编码 `std.` 前缀。
         //
         // 旧写法 `format!("| \`std.{short}\` | ...")` 假定每个路径都在
         // `wlwl:std.` 下 —— 一时真的(全部命名空间都是 std),但**官方包**
         // (`ai` / `agent`)不在。不改的话它会把 `ai` 打印成 **`std.ai`** ——
         // 附录 A 在对一个已不存在的命名空间打字,而所有对账仍然自洽。
-        let short = path.trim_start_matches("wlwl:");
-        let names = members(path);
-        let members = if names.is_empty() {
+        let short = meta.path.trim_start_matches("wlwl:");
+        let names = members(meta.path);
+        let mut cells: Vec<String> = Vec::new();
+        for name in &names {
+            cells.push(format!("`{name}`"));
+            if meta.stubs.contains(&name.as_str()) {
+                cells.push("`[stub]`".to_string());
+            }
+        }
+        let members = if cells.is_empty() {
             "—".to_string()
         } else {
-            names
-                .iter()
-                .map(|n| format!("`{n}`"))
-                .collect::<Vec<_>>()
-                .join(" ")
+            cells.join(" ")
         };
         out.push_str(&format!(
-            "| `{short}` | {members} | {layer} | {introduced} |\n"
+            "| `{short}` | {members} | {} | {} |\n",
+            meta.layer, meta.v1_book
         ));
     }
     out
@@ -195,7 +324,8 @@ mod tests {
 
     #[test]
     fn every_namespace_resolves_with_members() {
-        for (path, _, _) in NAMESPACE_META {
+        for meta in NAMESPACE_META {
+            let path = meta.path;
             let names = members(path);
             assert!(
                 !names.is_empty(),
@@ -207,7 +337,8 @@ mod tests {
 
     #[test]
     fn layer_meta_covers_exactly_the_resolvable_namespaces() {
-        for (path, _, _) in NAMESPACE_META {
+        for meta in NAMESPACE_META {
+            let path = meta.path;
             assert!(
                 wlwl_std::resolve(path).is_some(),
                 "{path} is listed in NAMESPACE_META but does not resolve"
@@ -224,7 +355,7 @@ mod tests {
         let impls = wlwl_std::namespace_paths();
         for path in &impls {
             assert!(
-                NAMESPACE_META.iter().any(|(p, _, _)| p == path),
+                NAMESPACE_META.iter().any(|m| m.path == *path),
                 "{path} resolves in the implementation but is missing from NAMESPACE_META — \
                  appendix A would silently omit the whole namespace"
             );
@@ -237,6 +368,119 @@ mod tests {
             NAMESPACE_META.len(),
             impls.len()
         );
+    }
+
+    /// 「v1.0 册」列只能取 v1.0 标准的五个册名。
+    ///
+    /// 为什么值得守:这一列是**给人读的路由**(读者照它去找成员契约在哪一册),
+    /// 写错一个字的代价是「照着导航找不到规范」,而机器对账**看不出来** ——
+    /// 它只比字节,不判断这个字节是不是册名。
+    #[test]
+    fn the_v1_book_column_only_uses_the_five_book_names() {
+        const BOOKS: &[&str] = &["核心", "文本", "系统", "安全", "官方包"];
+        for meta in NAMESPACE_META {
+            assert!(
+                BOOKS.contains(&meta.v1_book),
+                "{}: `{}` is not one of the five v1.0 stdlib books {BOOKS:?}",
+                meta.path,
+                meta.v1_book
+            );
+        }
+    }
+
+    /// 每个 `[stub]` 标记都必须指向**真实存在的成员**。
+    ///
+    /// 为什么值得守:`stubs` 是**手写**的登记项,而成员名册是**实现**给的 ——
+    /// 两者无共源。写错一个名字(成员改名、成员删除、登记项拼错)时,表里
+    /// 会出现一个**指向虚空**的 `[stub]`:它既不解释任何东西,也不会被
+    /// 任何别的守卫抓到(机器只比字节)。⇒ 拼错 = 静默撒谎。
+    #[test]
+    fn every_stub_marker_names_a_real_member() {
+        for meta in NAMESPACE_META {
+            let names = members(meta.path);
+            for stub in meta.stubs {
+                assert!(
+                    names.iter().any(|n| n == stub),
+                    "{}: `[stub]` is registered for `{stub}`, which is not a member of \
+                     that namespace ({names:?}) — the marker points at nothing",
+                    meta.path
+                );
+            }
+        }
+    }
+
+    /// `[stub]` 标记**必须**紧跟它标注的成员名后面。
+    ///
+    /// 写法取自 v1.0 注册镜像册附录 A:`` `CALL_TOOL` `[stub]` `` ——
+    /// 标记是**独立的一个反引号记号**,不是成员名的一部分。语义是
+    /// 「**它前面那个**成员」被标注(规范原话:「成员名后的 `[stub]` 标记」)。
+    ///
+    /// 为什么值得守:标记的位置就是它的**语义**。写成 `` `[stub]` `CALL_TOOL` ``
+    /// 会把标记挂到**上一个**成员(或挂空)身上,而表体的字节比对**照样通过**
+    /// —— 只有这条守卫能抓住。
+    #[test]
+    fn the_stub_marker_follows_its_member_name() {
+        /// 一行表体数据行 → (命名空间, 成员格);表头 / 分隔行 / 非表行 → `None`。
+        fn row_cells(line: &str) -> Option<(String, String)> {
+            let line = line.trim();
+            if !line.starts_with('|') {
+                return None;
+            }
+            let cells: Vec<&str> = line.trim_matches('|').split('|').collect();
+            if cells.len() != 4 {
+                return None;
+            }
+            let ns = cells[0].trim();
+            if !ns.starts_with('`') {
+                return None;
+            }
+            Some((
+                ns.trim_matches('`').to_string(),
+                cells[1].trim().to_string(),
+            ))
+        }
+
+        let md = generate_appendix_a_md();
+        // 正向:每个登记的 stub 成员名后面**紧跟**标记。
+        for meta in NAMESPACE_META {
+            for stub in meta.stubs {
+                let needle = format!("`{stub}` `[stub]`");
+                assert!(
+                    md.contains(&needle),
+                    "{}: the appendix A body has no `{needle}` — the `[stub]` marker \
+                     must follow the member name it annotates",
+                    meta.path
+                );
+            }
+        }
+        // 反向:表里出现的**每一个** `[stub]` 记号,前面必须紧跟一个**登记为
+        // stub 的成员名** —— 标记挂到别的成员身上 = 挂错成员。
+        for line in md.lines() {
+            let Some((ns, cell)) = row_cells(line) else {
+                continue;
+            };
+            let toks: Vec<&str> = cell.split_whitespace().collect();
+            for (i, tok) in toks.iter().enumerate() {
+                if *tok != "`[stub]`" {
+                    continue;
+                }
+                let Some(prev) = i.checked_sub(1).map(|k| toks[k]) else {
+                    panic!("a `[stub]` marker with no member in front of it: {line}");
+                };
+                assert_ne!(prev, "`[stub]`", "two `[stub]` markers in a row: {line}");
+                let member = prev.trim_matches('`');
+                let registered = NAMESPACE_META
+                    .iter()
+                    .find(|m| m.path.trim_start_matches("wlwl:") == ns)
+                    .map(|m| m.stubs.contains(&member))
+                    .unwrap_or(false);
+                assert!(
+                    registered,
+                    "`[stub]` in row `{ns}` follows `{member}`, which is not registered \
+                     as a stub member of that namespace: {line}"
+                );
+            }
+        }
     }
 
     #[test]
@@ -256,7 +500,7 @@ mod tests {
             !out.contains("ZZ-OLD-BODY-SENTINEL-XYZZ"),
             "the previous body must be fully replaced"
         );
-        assert!(out.contains("| 命名空间 | 成员 | 层 | 引入 |"));
+        assert!(out.contains("| 命名空间 | 成员 | 层 | v1.0 册 |"));
         assert!(out.contains("tail\n"));
     }
 

@@ -652,15 +652,21 @@ fn the_linearity_promise_is_documented() {
 ///
 /// ⚠ 同时钉住 §16 的**标题**从「三条」变成「四条」—— 少一条会被当成笔误,
 /// 多一条才是「确实加了条款」。
+///
+/// ⚠ **判据不能钉英文措辞**:规范 v1.0 把 RE2 作用域终点的英文引文换成了**中文
+/// 表述**(「到**所在 group 的右括号**」)⇒ 钉 `until outer paren closes` 会
+/// 在规范改写措辞时**假红**。改钉 v1.0 的中文措辞,并**同时**钉住分歧的**两半**:
+/// RE2 侧 = 所在 group 的右括号,本成员侧 = 到**本分支**结束。
 #[test]
 fn the_flag_scope_and_anchor_semantics_are_documented_honestly() {
     let text = std::fs::read_to_string(spec_path()).expect("stdlib spec readable");
     for needle in [
         "四条容易踩的细节",
-        "within current group",     // RE2 对 (?flags) 的原文措辞
-        "until outer paren closes", // RE2 同一句的中文版
-        r"like `\z` not `\Z`",      // RE2 对 $ 的原文措辞
-        "(a(?i)b|c)",               // 两口径**具体分歧**的那个形状
+        "within current group", // RE2 对 (?flags) 的原文措辞
+        "所在 group 的右括号",  // RE2 作用域终点:同一句的中文版
+        "本分支",               // 本成员侧的作用域终点(分歧的另一半)
+        r"like `\z` not `\Z`",  // RE2 对 $ 的原文措辞
+        "(a(?i)b|c)",           // 两口径**具体分歧**的那个形状
         "比 RE2 / Go 窄",
     ] {
         assert!(

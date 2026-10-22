@@ -748,6 +748,11 @@ fn read_bytes_refuses_a_file_over_the_cap_without_touching_it() {
 /// 「环境事实」变成「**成文的契约**」—— 契约可以复核,环境事实只能撞见。
 ///
 /// ⚠ 范围收在 **§2 内**:散文里出现「以 `| ` 开头的行」会污染成员表提取器。
+///
+/// ⚠ **判据里不能放本仓的台账号**:规范仓不会带本仓的偏差台账编号 ⇒ 拿
+/// `D13-051` 当 needle 等于判「规范必须提我们自己的内部编号」,规范**永远不会**
+/// 满足。改钉**语义表述**:同设备**链接原样保留**、跨设备**按内容展开**、
+/// 回退路径叫**复制 + 删除** —— 三者合起来才等于「MOVE 的链接语义成文」。
 #[test]
 fn the_move_link_semantics_are_written_down() {
     let text = std::fs::read_to_string(spec_path()).expect("stdlib spec readable");
@@ -759,7 +764,13 @@ fn the_move_link_semantics_are_written_down() {
         .map(|i| start + i)
         .expect("a following top-level heading exists");
     let body = &text[start..end];
-    for needle in ["同设备", "跨设备", "按内容展开", "D13-051"] {
+    for needle in [
+        "同设备",
+        "跨设备",
+        "按内容展开",
+        "链接原样保留",
+        "复制 + 删除",
+    ] {
         assert!(
             body.contains(needle),
             "stdlib spec §2 lost `{needle}` — the MOVE link semantics must be \

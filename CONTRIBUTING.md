@@ -3,7 +3,7 @@
 Thanks for your interest in WLWL. This document covers the day-to-day
 contribution workflow. For deeper design context, read:
 
-- [`docs/wlwl-spec-reference.md`](docs/wlwl-spec-reference.md) — the language spec (version + name)
+- [`docs/wlwl-spec-reference.md`](docs/wlwl-spec-reference.md) — the merged copy of the v1.0 spec (the authoritative source is [`Laffinty/wlwl-spec-v1`](https://github.com/Laffinty/wlwl-spec-v1))
 - [`docs/plan/README.md`](docs/plan/README.md) — current iteration status
 - [`docs/history/20260902-09.md`](docs/history/20260902-09.md) /
   [`docs/history/20260915-22.md`](docs/history/20260915-22.md) — all
@@ -12,20 +12,27 @@ contribution workflow. For deeper design context, read:
 
 ## Ground rules
 
-1. **The spec is authoritative.** If your change conflicts with the spec,
-   the spec wins — open a spec revision issue first. Implementation-only
-   deviations must be added to the **active cycle's** register
-   (`docs/plan/deviations-v0.NN.md`, created when the cycle starts;
-   closed registers are condensed into `docs/history/20260902-09.md` /
-   `20260915-22.md`). The current pointer lives in `docs/plan/README.md`.
+1. **The spec is authoritative — and it lives in its own repository.** If
+   your change conflicts with the spec, the spec wins. The authoritative
+   specification is the **v1.0** edition in
+   [`Laffinty/wlwl-spec-v1`](https://github.com/Laffinty/wlwl-spec-v1);
+   open a spec revision issue **there** before changing anything here. The
+   in-repo [`docs/wlwl-spec-reference.md`](docs/wlwl-spec-reference.md) is
+   the merged copy the machine guards and AI agents read — keep it in step
+   with the spec repository, but revisions are decided there, not here.
+   Implementation-only deviations stay in this repository: an **ADR** plus
+   the **deviation ledger** of the active cycle. Where that ledger currently
+   lives is listed in [`docs/plan/README.md`](docs/plan/README.md); closed
+   ledgers are condensed into the archives under `docs/history/`.
 2. **The compiler is GPL v2.** By contributing, you agree your contribution
    is licensed under GPL v2. Your `.wll` programs are not affected.
 3. **Small PRs.** One concern per PR. If a change touches the parser and
    the evaluator, it is probably two PRs.
 4. **AI-friendly diagnostics are a hard requirement.** Any change to error
-   handling must keep the v0.3 §14 schema fields (`errorCategory`,
+   handling must keep the error-schema fields (`errorCategory`,
    `retryable`, `suggestion_code`, `related`, `error_schema_version`)
-   intact. Schema changes go through a spec revision.
+   intact. The spec's diagnostics chapter is the normative source; schema
+   changes go through a spec revision.
 5. **The `.spec1/` directory is local scratch — never reference it.** The
    `.spec1/` directory at the repository root holds working copies of the
    v1.0 spec that have **not** been promoted yet. It is **git-ignored**,
@@ -125,7 +132,8 @@ wlwl/
 - [ ] New error codes documented in `wlwl-error/src/lib.rs`
 - [ ] New behavior added to the example in `examples/` if it is
       user-visible
-- [ ] If you changed the spec, **do not** — open a spec issue first
+- [ ] If you changed the spec, **do not** — open a spec revision issue in the
+      spec repository first
 
 ## Release process
 

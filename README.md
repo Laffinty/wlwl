@@ -109,11 +109,16 @@ machine-readable JSON or JSONL.
 
 | Document | Contents |
 |---|---|
-| [Specification reference](docs/wlwl-spec-reference.md) | the language spec (lexis, grammar, evaluation, the error model, modules, objects, concurrency) **and** the standard library spec (every namespace member's contract), in one file |
+| [Specification reference](docs/wlwl-spec-reference.md) | the merged specification — the language, the standard library, and the conformance rules — in one file |
 | [Language tour](docs/site/tour.md) | a guided introduction |
 | [Agent skill pack](wlwl-skill/) | an AI-agent skill package with 20 runnable `.wll` examples |
 | [Changelog](CHANGELOG.md) | release history |
 | [Contributing](CONTRIBUTING.md) | development workflow, quality gates, conventions |
+
+The authoritative specification lives in the separate
+[`Laffinty/wlwl-spec-v1`](https://github.com/Laffinty/wlwl-spec-v1) repository;
+the file linked above is the merged copy kept in this repository for the machine
+guards and AI agents.
 
 ## Install
 

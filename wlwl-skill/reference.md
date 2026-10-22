@@ -1,10 +1,18 @@
-# WLWL v0.11 Reference (on-demand)
+# WLWL v1.0 Reference (on-demand)
 
 > Loaded only when `SKILL.md` points here. This is a lookup catalogue,
 > not a tutorial. Section numbers (`§1.5`, `§8.3`, `§10.4`, `§13`, `§17`, etc.)
-> refer to `docs/wlwl-spec-reference.md` (superseded specs v0.6–v0.10
-> archived in condensed form in `docs/history/20260902-09.md` /
-> `docs/history/20260915-22.md`; full text via git history).
+> refer to `docs/wlwl-spec-reference.md` — the merged copy of the **v1.0**
+> specification (authoritative source: the separate
+> [`wlwl-spec-v1`](https://github.com/Laffinty/wlwl-spec-v1) repository). That
+> file merges the 11 volumes into one, so its second-level headings carry a
+> **volume prefix**: `## 语言规范 · 8 错误模型`, `## 标准库规范 · 11 std.encode`,
+> `## 一致性册 · 5 规范与实现的差异登记`. The `§N` numbering is unchanged from
+> v0.11, so every reference below still resolves — but **cross-volume
+> references need the volume name** (language §5 and standard library §5 are
+> different sections). Superseded specs v0.6–v0.11 are archived in condensed
+> form in `docs/history/20260902-09.md` / `20260915-22.md`; full text via git
+> history.
 
 ## Contents
 
@@ -72,6 +80,7 @@ because the array is non-empty), `TASK` / `CHANNEL` handles, and
 | **v0.11** | **Two new `wlwl:std.*` namespaces and one breaking `ASSERT` change**, on a renumbered spec (the formatter moved to §A.3): `wlwl:std.str` (`JOIN` `SPLIT_LINES` `CHAR_AT` `COUNT` `QUOTE`) and `wlwl:std.math` (`ABS` `MIN` `MAX` `FLOOR` `CEIL` `ROUND` `SQRT` `POW` `CLAMP` `PI` `E`); ⚠ **`ASSERT` now rejects all eight falsy values** (`ASSERT(0)` used to pass). Full tables in §25 |
 | **v0.11.2** | **Standard library only — the language surface is frozen at v0.11** and `../docs/appendix_G.md` is unchanged. **41 new members**: `wlwl:std.encode` (6 encoders), `wlwl:std.text` (`TO_UPPER` `TO_LOWER`), `wlwl:std.str` (`INDEX_OF` `CONTAINS_SUB`), `wlwl:std.collection` (10), `wlwl:std.math` (21 transcendental / integer-math). Plus the `SUB` end-index migration formula fix. Full memo in §26 |
 | **v0.11.3** | **Standard library only — 115 new members plus one visible-surface change.** New namespaces `std.time` `std.regex` `std.rand` `std.env` `std.process` `std.compress` `std.net` `std.result` `std.sanitize`; `std.fs` grew from 3 to 18; `std.encode` gained the digest / KDF / CSPRNG family; `std.text` gained the Unicode family; `std.math` grew to 61; `std.json` gained a lexical layer and a path family. ⚠ **`ai` / `agent` left `wlwl:std.*`** — they are official packages now, imported as `"ai:ask"` / `"agent:task"`, and `wlwl:std.ai` no longer resolves (`E0040`). Full memo in §27 |
+| **v1.0** | **The spec moved to its own repository** (`wlwl-spec-v1`, 11 volumes); this repo keeps a merged copy at `../docs/wlwl-spec-reference.md`. **The `§N` numbering does not move** — every reference in this bundle still resolves. **Member surface unchanged**: 21 namespaces / 214 members, zero added and zero removed ⇒ no new members to learn. What is new for writers: **§8.6 unconsumed `ERR` is reported (`E0103`)** — see §8 below; the **complexity / memory chapters** (§18–§19) and the **conformance volume** (its §5 registers the spec-vs-implementation differences X-01…X-15). The old stdlib **§14** (演进方向) was removed — its "revival conditions" moved into the individual chapters and "rejected" into the overview volume; ⚠ language §14 is a different section (session-type protocols) |
 
 ## §3. AST shapes (§A.2)
 
@@ -203,6 +212,32 @@ are not `RESULT` variants.
 ### §8.5 Top-level escape
 
 Uncaught ERR → `E0102`, exit 1.
+
+### §8.6 Unconsumed `ERR` (v1.0)
+
+An `ERR` nobody consumed is now **reported** — the program ends with
+**`E0103`** (exit 1). Under v0.11 it was silently dropped, which is how a
+failing comparator could return a plausible-looking result with **zero**
+diagnostics.
+
+Three ways to dispose of one:
+
+1. **a consumer takes it** — `ERR_PAYLOAD` / `UNWRAP_OR` / `OR_DIE` / `TRY` /
+   `UNWRAP` / `WRAP` / `EXPECT_ERR`;
+2. **explicit discard** — `LET(_, expr)`, the only explicit discard form in the
+   language;
+3. it becomes the program's value at the top level (that is `E0102`).
+
+⚠ **Observation-only consumers do not dispose of it.** `IS_ERR` / `IS_OK` /
+`BOOL` / `TYPE` (and `==`/`!=`, `IF` condition, `&&`/`||` left) let you *look*
+at an `ERR` but leave it unconsumed — after looking, take it or discard it
+explicitly. The drop points are exactly three: a discarded statement value, a
+binding being overwritten (re-bind / `SET`), and the end of a scope.
+
+⚠ Two gaps are registered in the spec's conformance volume (X-06 / X-07): a
+binding holds only **one** unconsumed token (two unconsumed `ERR`s in one
+container ⇒ one is lost), and a standard-library callback's argument channel
+carries no token (an unconsumed `ERR` inside a callback is not reported).
 
 ## §9. Standard library catalogue (§10)
 
@@ -1821,12 +1856,13 @@ formatter is the authority on canonical form, not this document. The `.wll` file
 under `examples/` are hand-written teaching material and are **not** canonical;
 `wlwl run` is what matters for them.
 
-### §24.5 Spec / impl / docs 三处引用 (v0.11 current)
+### §24.5 Spec / impl / docs 三处引用 (v1.0 current)
 
 | 文档 | 路径 | 用途 |
 |------|------|------|
-| 权威规范 | `../docs/wlwl-spec-reference.md` | 唯一真相源 |
-| 历史归档(v0.6–v0.10 精简) | `../docs/history/20260902-09.md` / `20260915-22.md` | 旧版上下文(原文在 git 历史) |
+| 权威规范 | 独立仓 [`wlwl-spec-v1`](https://github.com/Laffinty/wlwl-spec-v1)(v1.0,11 册) | 唯一真相源;改规范走那边 |
+| 仓内合并册 | `../docs/wlwl-spec-reference.md` | 次级载体 —— 机器守卫与 AI agent 读它(标题带册别前缀) |
+| 历史归档(v0.6–v0.11 精简) | `../docs/history/20260902-09.md` / `20260915-22.md` | 旧版上下文(原文在 git 历史) |
 | 内建注册表 | `../docs/appendix_G.md` | 106 条内建单一真相源 |
 
 ### §24.6 Standard library spec

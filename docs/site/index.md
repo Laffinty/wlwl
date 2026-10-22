@@ -4,8 +4,10 @@ WLWL is a small experimental programming language in which **every
 syntactic form is a function call**. There are no operators, no
 control-flow keywords, and no statement-level syntax — every line
 is `(operator operand1 operand2 ...)`. The compiler ships with a
-fully spec-accurate interpreter, a standard library modelled on
-the v0.3 §15 spec, and tooling aimed at AI workflows.
+fully spec-accurate interpreter, a standard library specified in the
+**v1.0** specification (published in the separate
+[`wlwl-spec-v1`](https://github.com/Laffinty/wlwl-spec-v1) repository),
+and tooling aimed at AI workflows.
 
 ## Why a function-call-everywhere language?
 
@@ -46,8 +48,8 @@ cosign verify steps.
 
 | Component | Version | Notes |
 |---|---|---|
-| Language spec | v0.11 baseline | language + standard library + agent notes, merged into `docs/wlwl-spec-reference.md` (v1.0 spec lives in the separate `wlwl-spec-v1` repo; older editions archived to `docs/history/`) |
-| Compiler (this repo) | v0.7 | structured concurrency + channels |
-| Standard library | v0.6 | `wlwl:std.{io, fs, json, format, ai, agent, test, collection}` |
-| Error schema | 1.1.0 | 58 error codes + 13 warning codes |
+| Language spec | v1.0 | published in the separate `wlwl-spec-v1` repo; the merged copy in `docs/wlwl-spec-reference.md` is what this repo's guards and agents read (older editions archived to `docs/history/`) |
+| Compiler (this repo) | v0.12.0 | structured concurrency + channels; ships the first batch of the v1.0 semantics |
+| Standard library | v1.0 | the `wlwl:std.*` namespaces plus the `ai` / `agent` packages |
+| Error schema | 1.1.0 | stable four-digit error and warning codes, machine-readable as JSON / JSONL |
 | License | GPL-2.0-only | Your `.wll` programs are yours |

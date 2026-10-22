@@ -1,9 +1,11 @@
 # Language tour
 
-A whirlwind tour of WLWL — by example. For the canonical
-reference, see
+A whirlwind tour of WLWL — by example. The canonical reference is the
+**v1.0** specification in the separate
+[`Laffinty/wlwl-spec-v1`](https://github.com/Laffinty/wlwl-spec-v1)
+repository; this repository keeps a merged copy of it in
 [docs/wlwl-spec-reference.md](../wlwl-spec-reference.md)
-(v0.10 / v0.9 / v0.8 / v0.7 / v0.6 archived under
+(superseded editions v0.11 down to v0.6 are archived under
 [`docs/history/`](../history/)).
 
 ## 1. Every form is a call

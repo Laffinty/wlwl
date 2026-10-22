@@ -1,26 +1,46 @@
 # Spec & conformance
 
-The WLWL specification now lives in a single file,
-[`docs/wlwl-spec-reference.md`](../wlwl-spec-reference.md) — the language
-spec, the standard library spec and the agent work-notes merged into one
-machine-readable document. The authoritative spec for this project is the
-**v1.0** edition in the separate
-[`Laffinty/wlwl-spec-v1`](https://github.com/Laffinty/wlwl-spec-v1) repo;
-the in-repo reference file is a **secondary** copy and is **still on the
-v0.11 baseline** while the migration is in progress.
-`git log --follow` is the source of truth for content changes. Superseded
-specs are archived under `docs/history/`.
+The WLWL specification lives in its own repository,
+[`Laffinty/wlwl-spec-v1`](https://github.com/Laffinty/wlwl-spec-v1) — the
+**v1.0** edition, published as eleven volumes: an overview, the language core,
+objects and session types, concurrency, conformance, and six
+standard-library volumes. That repository is the authoritative source — spec
+revisions are decided there, with a revision process and a register of
+differences.
+
+This repository keeps a **merged copy** of those volumes in
+[`docs/wlwl-spec-reference.md`](../wlwl-spec-reference.md): one file, so the
+machine guards and AI agents can read a chapter without crossing a repository
+boundary. It is a secondary carrier — when the two disagree, the spec
+repository wins. `git log --follow` is the source of truth for content
+changes. Superseded specs are archived under `docs/history/`.
 
 ## Current reference file
 
 **[`docs/wlwl-spec-reference.md`](../wlwl-spec-reference.md)** — the merged
-v0.11-baseline document, organised as:
+v1.0 document: three specification parts plus the agent notes, in this order —
 
-- `## 语言规范 · N` — the language spec (the "v2 cleaned" edition of
-  the v0.10 spec, renumbered with **zero semantic change**; everything
-  introduced in v0.10 carries over):
+- `## 语言规范 · N` — the language spec: lexis, types and values, evaluation,
+  the error model, modules, objects and session types, concurrency, and the
+  complexity / memory chapters;
+- `## 一致性册 · N` — conformance: definitions, stability policy, the public
+  surface, the register of spec-vs-implementation differences, and the
+  verification requirements;
 - `## 标准库规范 · N` — every namespace member's contract;
 - `## 代理工作说明 · N` — notes for AI agents (not normative).
+
+**Why the headings carry a volume prefix.** Every volume numbers its own
+sections, so after merging there would be many `## 0`, `## 1`, `## 11` …
+headings. The second-level titles are therefore prefixed with the volume name
+— you will meet `## 标准库规范 · 11`, not a bare `## 11`. The chapter numbers
+themselves did not move: the language chapters are still §1–§19 and the
+standard-library chapters still §1–§22, so references that were valid before
+are still valid. The two numbering spaces are independent, though — language
+§5 and standard library §5 are different sections, so a cross-volume
+reference has to name the volume.
+
+The language volume also carries the static-contract layer introduced in
+v0.10 (unchanged in v1.0):
 
 - the `Type` annotation grammar enters the spec for the first time
   (Appendix A) — until v0.9 it existed only in the implementation;
@@ -43,6 +63,8 @@ deliberately not a code (see the spec's §7.4 / §11.2).
 
 | Version | Status |
 |---|---|
+| v1.0 | current — published in the separate `wlwl-spec-v1` repo; merged copy in `docs/wlwl-spec-reference.md` |
+| v0.11 | superseded by v1.0 (2026-10-22); the three v0.11 volumes are archived verbatim in `docs/history/20261022-spec-archive.md` |
 | v0.10 | superseded by v0.11 (2026-09-30) |
 | v0.9 | superseded by v0.10 (2026-09-28) |
 | v0.8 | superseded by v0.9 (2026-09-25) |
@@ -74,7 +96,9 @@ verbatim in
 ## Compiler vs spec version
 
 The compiler release **does not have to match** the spec version.
-The current compiler implements the **v0.11 spec** in full. CI tracks
+The current compiler release (**v0.12.0**) targets the **v1.0** spec; the
+differences that are still open are registered in the conformance volume
+(§5) and listed in the release notes. CI tracks
 `wlwl --version` (compiler) and spec anchors via
 `impl/crates/wlwl-cli/tests/conformance.rs` plus the spec-consistency
 lock tests in `crates/wlwl-error` (error-code table) and
