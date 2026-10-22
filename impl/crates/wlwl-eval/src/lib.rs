@@ -9957,8 +9957,14 @@ impl Evaluator {
                 ));
             }
         };
-        // Evaluate the value side like any other call argument.
-        let v = self.eval_expr(&args[1])?;
+        // [ADR-0035 D5] **唯一拥有化**快路径 —— `SET(x, INDEX_SET(x, k, v))`
+        // 且 `x` 此刻**唯一拥有**它那份字典 ⇒ 原地改(单次写 O(1))。
+        //
+        // ⚠ 判否时**原路**(`eval_expr(&args[1])`)—— 一行代码都不改。
+        let v = match self.eval_set_dict_write_in_place(&target, &args[1])? {
+            Some(v) => v,
+            None => self.eval_expr(&args[1])?,
+        };
         if v.signal != Signal::None {
             return Ok(v);
         }
@@ -9985,6 +9991,166 @@ impl Evaluator {
             )),
             Err(()) => Err(self.undefined_name(&target, span)),
         }
+    }
+
+    /// [ADR-0035 D5] `SET(x, INDEX_SET(x, k, v))` 的**唯一拥有化**快路径。
+    ///
+    /// 返回 `Some(outcome)` = 值侧(`INDEX_SET` 调用)的 Outcome;`None` =
+    /// **判否**,调用方走原路(`eval_expr(&args[1])`)。
+    ///
+    /// ## 为什么需要它(规范 §18.3.1 第 2 条)
+    ///
+    /// 写路径的序列级判据是「n 次写 ⇒ 总工作量 ≤ c·n」。普通字典
+    /// (`Value::Dict`)的写路径是 copy-on-write,而**实参是按值传进去的**:
+    /// 求值 `d` 会克隆一份 `Rc<DictInner>` ⇒ 强引用计数变成 2 ⇒
+    /// `dict_make_mut` 判定「被别名」⇒ **每次写都拷贝整个字典** ⇒
+    /// n 次写的总拷贝是**二次的**(实测 n = 16 ⇒ 拷贝 121 条)。
+    ///
+    /// ⚠ 注意:让计数变成 2 的**不是**别名,而是**实参那份临时克隆** ——
+    /// 绑定自己持有的那一份**也**在计数里。所以「字典有没有别的持有者」
+    /// 这件事,在写路径上**看不出来**(只看得到「绑定那份 + 实参那份」)。
+    ///
+    /// ## 这条快路径做什么
+    ///
+    /// `SET(x, INDEX_SET(x, k, v))` 的语义是「把 `x` 改写成 `INDEX_SET` 的
+    /// 结果」。若 `x` 现在持有的字典**唯一拥有**(强引用计数 == 1,即没有别的
+    /// 绑定 / 容器 / 闭包捕获它),那么「改写 `x`」与「就地改这份字典」
+    /// **不可区分** —— 旧值没有任何别的持有者 ⇒ 没人能看到原地改的结果
+    /// (§19.1 的值语义:旧值不可观察 ⇒ 原地改合法)。
+    /// ⇒ 于是丢掉实参里那份克隆(计数 2 → 1)⇒ **就地改**(单次写 O(1))。
+    ///
+    /// ⚠ **被别名时必须拷贝**:别名 `e` 仍要看到**旧值**(§19.1)⇒ 第一次写
+    /// 必须产出新值(拷贝 k0 条)⇒ 写完之后 `x` 持有的新字典**只属于它自己**
+    /// ⇒ 后续 n−1 次写**可以原地进行** ⇒ 总工作量 = O(k0 + n) ⇒ 序列级判据成立。
+    ///
+    /// ## 判据(全部是**运行期事实**,不是推断)
+    ///
+    /// ① 形状:`SET(x, INDEX_SET(x, k, v))` —— 第一个实参就是 `x` 自己;
+    /// ② `INDEX_SET` 这个名字没被用户绑定遮蔽(遮蔽时那是用户的函数);
+    /// ③ `x` 的绑定**可变**(不可变时原路会报 `E0024` —— 快路径不许改这条);
+    /// ④ `x` 持有的是**普通字典**(不是累加器 cell —— cell 那条路已经原地写了);
+    /// ⑤ 此刻那份字典**唯一拥有**:强引用计数 == 2(绑定那份 + 实参那份克隆)
+    ///    ⇒ 丢掉实参那份之后计数回到 1 ⇒ 没有别的持有者 ⇒ 原地改**不可观察**。
+    ///
+    /// ⚠ **实参的求值顺序、ERR 令牌、累加器共享通道全部复用 `eval_arg_values`**
+    /// (与 `eval_call` 同一条)⇒ 实参的副作用与诊断逐字不变。
+    fn eval_set_dict_write_in_place(
+        &mut self,
+        target: &str,
+        value_expr: &Expr,
+    ) -> WlwlResult<Option<Outcome>> {
+        use wlwl_ast::Expr as E;
+        // ① 形状。
+        let E::Call {
+            name,
+            args: iargs,
+            span: ispan,
+        } = value_expr
+        else {
+            return Ok(None);
+        };
+        if name != "INDEX_SET" || iargs.len() != 3 {
+            return Ok(None);
+        }
+        let E::Var(x, _) = &iargs[0] else {
+            return Ok(None);
+        };
+        if x != target {
+            return Ok(None);
+        }
+        // ② 用户绑定遮蔽了 `INDEX_SET` ⇒ 那时它是用户的函数 ⇒ 原路。
+        if self.env.get("INDEX_SET").is_some() {
+            return Ok(None);
+        }
+        // ③④ 目标绑定:必须**可变**,且持有的是**普通字典**。
+        let Some(cell) = self.env.get_cell(target) else {
+            return Ok(None);
+        };
+        {
+            let b = cell.borrow();
+            if !b.mutable {
+                return Ok(None);
+            }
+            if !matches!(&b.value, Value::Dict(_)) {
+                return Ok(None);
+            }
+        }
+        // 求值实参 —— 与 `eval_call` 走**同一条** `eval_arg_values`。
+        let whitelisted = is_err_consumer("INDEX_SET");
+        let (accum, tokens, pending_err, pending_token) =
+            match self.eval_arg_values("INDEX_SET", iargs, whitelisted)? {
+                ArgEvalResult::Signal(o) => return Ok(Some(o)),
+                ArgEvalResult::Done {
+                    accum,
+                    tokens,
+                    pending_err,
+                    pending_token,
+                } => (accum, tokens, pending_err, pending_token),
+            };
+        // ERR 短路 ⇒ 实参没求全 ⇒ 原路(`dispatch_call` 负责 ERR 传播)。
+        if pending_err.is_some() || accum.len() != 3 {
+            return Ok(Some(self.dispatch_call(
+                "INDEX_SET",
+                accum,
+                tokens,
+                pending_err,
+                pending_token,
+                whitelisted,
+                None,
+                ispan,
+            )?));
+        }
+        let mut accum = accum;
+        // ⑤ 唯一拥有?—— 实参 0 必须就是绑定此刻持有的那一份字典,且强引用计数
+        //    恰好 2(绑定那份 + 实参这份克隆)⇒ 别的持有者**不存在**。
+        let unique = {
+            let b = cell.borrow();
+            match (&b.value, &accum[0]) {
+                (Value::Dict(rc), Value::Dict(arg)) => {
+                    Rc::ptr_eq(rc, arg) && Rc::strong_count(arg) == 2
+                }
+                _ => false,
+            }
+        };
+        if unique {
+            let key = accum[1].clone();
+            let new_val = accum[2].clone();
+            // 键类型闸门(与 `builtin_index_set` 同一条、同一个函数 ⇒ 诊断逐字相同)。
+            dict_key_type_gate("INDEX_SET", &key)?;
+            // 丢掉实参里那份克隆 ⇒ 计数 2 → 1 ⇒ 绑定自己那份成为唯一持有者。
+            let Value::Dict(arg) = std::mem::replace(&mut accum[0], Value::Null) else {
+                return Ok(None);
+            };
+            drop(arg);
+            let mut b = cell.borrow_mut();
+            let Value::Dict(rc) = &mut b.value else {
+                return Ok(None);
+            };
+            if Rc::strong_count(rc) != 1 {
+                return Ok(None);
+            }
+            // 原地改 —— 走 `wlwl_value::dict_make_mut`(§18.5 计数点的唯一位置)
+            // ⇒ 计数为 1 ⇒ 原地改 ⇒ **拷贝 0 条**。
+            let dict = wlwl_value::dict_make_mut(rc);
+            match dict.lookup(&key) {
+                Some(i) => dict.set_value(i, new_val),
+                None => dict.insert(key.clone(), new_val),
+            }
+            let out = b.value.clone();
+            drop(b);
+            return Ok(Some(Outcome::normal(out)));
+        }
+        // 判否 ⇒ 原路:`dispatch_call`(= `eval_call` 的派发段)。
+        Ok(Some(self.dispatch_call(
+            "INDEX_SET",
+            accum,
+            tokens,
+            pending_err,
+            pending_token,
+            whitelisted,
+            None,
+            ispan,
+        )?))
     }
 
     #[allow(clippy::too_many_arguments)] // arg_values + arg_tokens are a pair (v1.0 §8.6.3)

@@ -26,9 +26,16 @@
 //! ④ **写路径 · 累加形态** ⇒ **原地累积**(拷贝 0 条,且**不随 n 增长**)——
 //!    `ADR-0035` **D4** 落地后,`SET(d, INDEX_SET(d, k, v))` 被识别成**字典
 //!    累加器形态** ⇒ 载荷只被累加器 cell 持有 ⇒ 写时复制判定为「唯一拥有」
-//!    ⇒ 原地改 ⇒ 规范 §18.3 的 `INDEX_SET` 写上界(新键 O(1) 摊还)**达标**。
-//!    ⚠ **别名形态**(两个绑定持有同一个字典)的退化**仍然存在**,由下一条用例
-//!    如实钉住 —— 累加器形态只覆盖「同一个绑定被反复写」这一种形态。
+//!    ⇒ 原地改 ⇒ 规范 §18.3 的 `INDEX_SET` 写上界(新键 O(1) 摊还)**达标**;
+//! ⑤ **写路径 · 别名形态**(`LET(e, d)` 之后再写 `d`)⇒ **首次写拷贝一次,
+//!    之后原地写**(拷贝 = k0 = 1 条,且不随 n 增长)⇒ 规范 §18.3.1 第 2 条的
+//!    **序列级**判据成立(`ADR-0035` **D5** 的「唯一拥有化」落地后)。
+//!
+//! ## ⚠ 别名形态的语义前提(§19.1)
+//!
+//! 别名 `e` 必须仍看到**写之前**的字典 ⇒ 第一次写**必须**产出新值(拷贝 k0 条)
+//! ⇒ 这正是上面 ⑤ 的期望值来源。⇒ 这几条用例都同时断言**值**(别名的末值),
+//! 只看计数不看值的守卫没有语义。
 
 mod common;
 
@@ -47,6 +54,207 @@ fn work_of(src: &str) -> wlwl_value::DictWorkCounters {
     let mut ev = Evaluator::new().with_base_dir(scratch_dir());
     ev.eval(&ast).expect("program must run");
     dict_work_counters()
+}
+
+/// 跑一段源码,返回 `(末条语句的值, 字典内部的工作量)`。
+///
+/// ⚠ 末条语句的**值**也要拿到:工作量守卫必须同时证明「这次拷贝是**合法**的」
+/// (规范 §19.1:旧值可观察 ⇒ 写必拷贝)—— 只看计数不看值,守卫就没有语义。
+fn value_and_work_of(src: &str) -> (String, wlwl_value::DictWorkCounters) {
+    let ast = wlwl_parser::parse(src, "t.wll").expect("src must parse");
+    reset_dict_work_counters();
+    let mut ev = Evaluator::new().with_base_dir(scratch_dir());
+    let v = ev.eval(&ast).expect("program must run");
+    (v.display(), dict_work_counters())
+}
+
+/// ⑤ 写路径,形态四(**别名形态**,规范 §18.3.1 第 2 条点名的形态):
+/// `LET(e, d)` 之后再写 `d` ⇒ **首次写拷贝一次,之后原地写**。
+///
+/// ## 判据(期望值**手写自规范**,不是抄实现输出)
+///
+/// * **拷贝总数 = k0 = 1** —— 起始字典 1 个条目;第一次写因为「旧值仍被别名 `e`
+///   观察到」(§19.1 的值语义)而**必须**产出新值 ⇒ 拷贝 k0 条;写完之后 `d`
+///   持有的新字典**只属于它自己** ⇒ 后续 n−1 次写**原地进行** ⇒ 总拷贝 = 1,
+///   **不随 n 增长**。
+/// * **比较次数 = 2n 量级** —— 每次写 2 次(1 次哈希查找 + 1 次索引插入)⇒
+///   序列级判据「n 次写 ⇒ 总工作量 ≤ c·n」成立,**c = 2**;守卫取 c = 4
+///   (留一倍余量 —— 确定性计数不抖)。
+/// * **`e` 必须仍看到写之前的字典**(§19.1)⇒ 末值必须是 `[0: 0]`。
+///
+/// ⚠ **这条是「唯一拥有化」的守卫**:别名形态的退化(每次写都 O(k) 拷贝 ⇒ 总拷贝
+/// 二次)就是 §18.3.1 第 2 条不成立的样子 ⇒ 它必须红。
+#[test]
+fn writing_an_aliased_dict_copies_once_and_then_writes_in_place() {
+    const SMALL: usize = 16;
+    const LARGE: usize = 64;
+    // 别名在**写之前**建立(`LET(e, d)`),随后写 n 次(每次写一个新键)。
+    let src = |n: usize| {
+        let mut s = String::from("LET MUT(d, [0: 0]);\nLET MUT(e, d);\n");
+        for i in 1..=n {
+            s.push_str(&format!("SET(d, INDEX_SET(d, {i}, {i}));\n"));
+        }
+        s.push('e');
+        s
+    };
+    let (small_val, small) = value_and_work_of(&src(SMALL));
+    let (large_val, large) = value_and_work_of(&src(LARGE));
+
+    // ① 语义(§19.1):别名 `e` 仍看到**写之前**的字典。
+    assert_eq!(
+        small_val, "[0: 0]",
+        "the alias must still see the dict from before the writes"
+    );
+    assert_eq!(
+        large_val, "[0: 0]",
+        "the alias must still see the dict from before the writes"
+    );
+    // ② 拷贝:只有**第一次**写拷贝(起始 1 个条目)⇒ 总拷贝 = 1。
+    assert_eq!(
+        small.copied_entries, 1,
+        "an aliased dict must be cloned once, then written in place (copied {} entries)",
+        small.copied_entries
+    );
+    // ③ 不随 n 增长(两档读数相同)⇒ 不是「每次写都拷贝」。
+    assert_eq!(
+        small.copied_entries, large.copied_entries,
+        "the total copy count must not depend on n (small={}, large={})",
+        small.copied_entries, large.copied_entries
+    );
+    // ④ 序列级上界(§18.3.1 第 2 条):总工作量 ≤ c·n。
+    let c = 4u64;
+    for (n, w) in [(SMALL as u64, small), (LARGE as u64, large)] {
+        assert!(
+            w.comparisons <= c * n,
+            "n writes must cost at most c·n comparisons (n={n}, comparisons={}, c={c})",
+            w.comparisons
+        );
+    }
+    // ⑤ 下界断言(§18.5 的纪律):计量点真被走到;且工作量**随 n 线性增长**。
+    assert!(
+        small.comparisons > 0,
+        "the write path must be counted at all (comparisons = {})",
+        small.comparisons
+    );
+    assert!(
+        large.comparisons > small.comparisons,
+        "the counted work must grow with n (small={}, large={})",
+        small.comparisons,
+        large.comparisons
+    );
+}
+
+/// ⑥ 写路径,形态五(**别名形态 · 循环里**):别名在循环**之前**建立,循环里写
+/// n 次 ⇒ 同样是「首次写拷贝一次,之后原地写」。
+///
+/// ⚠ 这条走的是**累加器形态**(循环体是 `SET(d, INDEX_SET(d, k, v))`)⇒ 写是
+/// 累加器 cell 的就地写 ⇒ 拷贝同样只有第一次(旧值被别名 `e` 观察到 ⇒ 必须
+/// 产出新值)。
+///
+/// ⚠ **期望值手写自规范**:拷贝总数 = k0 = 1;`e` 仍看到**循环开始前**的字典。
+#[test]
+fn writing_an_aliased_dict_in_a_loop_copies_once() {
+    const SMALL: usize = 16;
+    const LARGE: usize = 64;
+    let src = |n: usize| {
+        format!(
+            "LET MUT(d, [0: 0]);\n\
+             LET MUT(e, d);\n\
+             WHILE(<(LEN(d), {n}), SET(d, INDEX_SET(d, LEN(d), LEN(d))));\n\
+             e"
+        )
+    };
+    let (small_val, small) = value_and_work_of(&src(SMALL));
+    let (large_val, large) = value_and_work_of(&src(LARGE));
+
+    // ① 语义(§19.1):别名 `e` 仍看到**循环开始前**的字典。
+    assert_eq!(
+        small_val, "[0: 0]",
+        "the alias must still see the dict from before the loop"
+    );
+    assert_eq!(
+        large_val, "[0: 0]",
+        "the alias must still see the dict from before the loop"
+    );
+    // ② 拷贝:第一次写拷贝 k0 = 1 条,之后原地写。
+    assert_eq!(
+        small.copied_entries, 1,
+        "an aliased accumulator must be cloned once, then written in place (copied {} entries)",
+        small.copied_entries
+    );
+    assert_eq!(
+        small.copied_entries, large.copied_entries,
+        "the total copy count must not depend on n (small={}, large={})",
+        small.copied_entries, large.copied_entries
+    );
+    // ③ 序列级上界(§18.3.1 第 2 条)。
+    let c = 4u64;
+    for (n, w) in [(SMALL as u64, small), (LARGE as u64, large)] {
+        assert!(
+            w.comparisons <= c * n,
+            "n writes must cost at most c·n comparisons (n={n}, comparisons={}, c={c})",
+            w.comparisons
+        );
+    }
+    assert!(
+        large.comparisons > small.comparisons,
+        "the counted work must grow with n (small={}, large={})",
+        small.comparisons,
+        large.comparisons
+    );
+}
+
+/// ⑦ 写路径,形态六(**无别名**):字典**唯一拥有** ⇒ 每次写都是 O(1) ⇒ 拷贝 **0 条**。
+///
+/// ⚠ 这条在「唯一拥有化」之前是**红的**(普通字典的写路径把实参那份临时克隆
+/// 也算进「被别名」⇒ 每次写都拷贝整个字典 ⇒ n = 16 ⇒ 拷贝 121 条)。
+///
+/// ⚠ **期望值手写自规范**(§18.3.1 第 2 条:「字典**唯一拥有**时单次写是 O(1)」):
+/// 拷贝 0 条;比较次数 2n 量级 ⇒ c = 2。
+#[test]
+fn writing_a_uniquely_owned_dict_in_a_plain_write_sequence_copies_nothing() {
+    const SMALL: usize = 16;
+    const LARGE: usize = 64;
+    let src = |n: usize| {
+        let mut s = String::from("LET MUT(d, [0: 0]);\n");
+        for i in 1..=n {
+            s.push_str(&format!("SET(d, INDEX_SET(d, {i}, {i}));\n"));
+        }
+        s.push_str("LEN(d)");
+        s
+    };
+    let (small_val, small) = value_and_work_of(&src(SMALL));
+    let (large_val, large) = value_and_work_of(&src(LARGE));
+
+    // 语义:唯一拥有 ⇒ 每次写都是 O(1) ⇒ 字典累积到 n+1 个条目。
+    assert_eq!(small_val, (SMALL + 1).to_string(), "the dict must grow");
+    assert_eq!(large_val, (LARGE + 1).to_string(), "the dict must grow");
+    // 拷贝 0 条。
+    assert_eq!(
+        small.copied_entries, 0,
+        "a uniquely owned dict must be mutated in place (copied {} entries)",
+        small.copied_entries
+    );
+    assert_eq!(
+        small.copied_entries, large.copied_entries,
+        "the total copy count must not depend on n (small={}, large={})",
+        small.copied_entries, large.copied_entries
+    );
+    // 序列级上界(§18.3.1 第 2 条)。
+    let c = 4u64;
+    for (n, w) in [(SMALL as u64, small), (LARGE as u64, large)] {
+        assert!(
+            w.comparisons <= c * n,
+            "n writes must cost at most c·n comparisons (n={n}, comparisons={}, c={c})",
+            w.comparisons
+        );
+    }
+    assert!(
+        large.comparisons > small.comparisons,
+        "the counted work must grow with n (small={}, large={})",
+        small.comparisons,
+        large.comparisons
+    );
 }
 
 /// 造一个 n 键的字典字面量(键全在封闭域内 ⇒ 走哈希索引那条路)。

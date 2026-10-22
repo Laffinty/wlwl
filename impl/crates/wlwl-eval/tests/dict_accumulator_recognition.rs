@@ -191,7 +191,45 @@ fn the_accumulator_differs_from_a_dict_with_other_content() {
     );
 }
 
-// ── [D13-099] 回归守卫:优化**不得**改掉绑定的可变性 ─────────────────────
+// ── [ADR-0035 D5] 别名形态:**就地写不得泄漏给别名** ─────────────────────
+//
+// 规范 §19.1(值语义):旧值只要还有别的持有者,原地改就是**可观察的语义破坏**。
+// ⇒ 字典累加器的写是**就地**进行的 ⇒ 别名 `e` 必须仍看到**循环开始前**的字典,
+// 而 `d` 必须看到循环结束后的字典。
+//
+// ⚠ 这条是「就地写」的**语义守卫**(工作量守卫在 `dict_cost_contract.rs`):
+//   计数对了但值错了 ⇒ 那是最糟的失败模式(优化悄悄改了语义)。
+#[test]
+fn an_aliased_accumulator_still_sees_the_dict_from_before_the_loop() {
+    // 别名在循环**之前**建立 ⇒ 它必须看到循环开始前的那份字典。
+    let (alias, (hit, miss, fallback)) = run("LET MUT(d, [0: 0]);\n\
+         LET MUT(e, d);\n\
+         WHILE(<(LEN(d), 4), (SET(d, INDEX_SET(d, LEN(d), LEN(d)))));\n\
+         e\n");
+    assert_eq!(hit, 1, "the accumulator shape must be recognised");
+    assert_eq!(miss, 0, "expected 0 miss, got hit={hit} miss={miss}");
+    assert_eq!(
+        fallback, 0,
+        "the runtime re-check must agree with the recogniser (fallback={fallback})"
+    );
+    assert_eq!(
+        alias, "[0: 0]",
+        "the alias must still see the dict from before the loop"
+    );
+}
+
+/// 同一条,但看**被写的那一份**:循环结束后 `d` 必须累积到 4 个条目(插入序)。
+#[test]
+fn the_aliased_accumulator_itself_still_accumulates() {
+    let (val, (hit, _, _)) = run("LET MUT(d, [0: 0]);\n\
+         LET MUT(e, d);\n\
+         WHILE(<(LEN(d), 4), (SET(d, INDEX_SET(d, LEN(d), LEN(d)))));\n\
+         d\n");
+    assert_eq!(hit, 1, "the accumulator shape must be recognised");
+    assert_eq!(val, "[0: 0, 1: 1, 2: 2, 3: 3]", "accumulator result");
+}
+
+/// ── [D13-099] 回归守卫:优化**不得**改掉绑定的可变性 ─────────────────────
 //
 // 规范 §3.1:可变性在建绑定时定、**永不变**。⇒ 字典累加器形态的「临时表示」
 // 只能**就地改写已有绑定的值**(`Env::replace_binding_value`),不得遮蔽外层
