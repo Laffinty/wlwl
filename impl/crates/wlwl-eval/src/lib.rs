@@ -8635,10 +8635,22 @@ impl Evaluator {
             }
             Expr::Try { value, .. } => {
                 // [v1.0 spec §8.6.1] `TRY` 是**取走型**消费者 ⇒ 实参位置
-                // 走 `Consume`:源绑定的令牌销毁。
-                let o = self.eval_in_mode(value, ReadMode::Consume)?;
+                // 走 `ConsumeCarry`:源绑定的令牌销毁,而**剥掉 `OK` 外壳**拿到的
+                // 那一个 `ERR` **随结果继续**。
+                //
+                // [G-02] 口径:§8.6.5「值语义即新身份」⇒ 剥壳得到的内层 `ERR`
+                // 是**新生的** ⇒ 它**自己未消费** ⇒ 它的未消费状态必须跟着结果
+                // 继续。若不携带:源绑定已被取走(空)、在途值又不带 ⇒ 那个 `ERR`
+                // **一条 `E0103` 都不报**(⇒ 假阴性)。
+                //
+                // ⚠ `ConsumeCarry` 的**边界**:只在 `OK(ERR(..))` 这一种形态上
+                // 携带;值**本身**是 `ERR` 时**不携带**(消费者要么处理它、要么
+                // 让它逃逸成返回值)⇒ 见下面 `Value::Err(v)` 那一支。
+                let o = self.eval_in_mode(value, ReadMode::ConsumeCarry)?;
                 match o.value {
-                    Value::Ok(v) => Ok(Outcome::normal(*v)),
+                    // ⚠ [G-02] 结果**带着**那份集合 ⇒ 它在下一个丢弃点被处置时
+                    // 才报 `E0103`(绑定被覆盖 / 语句值丢弃 / 作用域结束)。
+                    Value::Ok(v) => Ok(Outcome::with_unconsumed(*v, o.unconsumed)),
                     Value::Err(v) => {
                         // §19.4 E-TryErr: emit Return(Err(v)).
                         // This propagates up to the enclosing function
@@ -8691,12 +8703,20 @@ impl Evaluator {
                     ErrorCode::W0051,
                     "`OR_DIE` is a v0.3-compat alias; use `UNWRAP_OR` instead (W0051; deprecated alias — removal is an open evolution item, no version is scheduled)",
                 );
-                let o = self.eval_in_mode(value, ReadMode::Consume)?;
+                // [G-02] `OR_DIE` 是 `UNWRAP_OR` 的弃用别名 ⇒ 与 `TRY` **同款**:
+                // 实参位置走 `ConsumeCarry` —— 源绑定的令牌销毁,而**剥掉 `OK`
+                // 外壳**拿到的那一个 `ERR` 随结果继续(§8.6.5「值语义即新身份」
+                // ⇒ 剥壳得到的内层 `ERR` 是**新生的** ⇒ 它自己未消费)。
+                //
+                // ⚠ 不携带 ⇒ 源绑定已被取走(空)、在途值又不带 ⇒ 那个 `ERR`
+                // **一条 `E0103` 都不报**(⇒ 假阴性)。
+                let o = self.eval_in_mode(value, ReadMode::ConsumeCarry)?;
                 if o.signal != Signal::None {
                     return Ok(o);
                 }
                 match o.value {
-                    Value::Ok(v) => Ok(Outcome::normal(*v)),
+                    // ⚠ [G-02] 同 `TRY`:结果**带着**那份集合。
+                    Value::Ok(v) => Ok(Outcome::with_unconsumed(*v, o.unconsumed)),
                     Value::Err(_) => {
                         // `OR_DIE` 是 `UNWRAP_OR` 的弃用别名 ⇒ 第 0 个实参是
                         // 「`ERR` 位」(取走),默认值不是 ⇒ 走 `Transfer`:
@@ -10713,9 +10733,28 @@ impl Evaluator {
         } else {
             Vec::new()
         };
+        // [G-02 相邻通道 / v1.0 spec §8.6.3] **富余实参的未消费状态转给 rest
+        // 绑定** —— rest 形参是一个**接收位置**(它建立绑定)⇒ 那份状态归它
+        // (与固定形参**同一口径**:形参绑定那一位就是 `set_local_with_token`)。
+        //
+        // ⚠ 此前这里用 `set_local`(**不带令牌**)⇒ 富余实参持有的未消费 `ERR`
+        // **整个丢弃** ⇒ 被调方作用域结束时**一条 `E0103` 都不报**(假阴性)。
+        //
+        // ⚠ **并集**:rest 位在 `n_fixed` ⇒ 要拿 `arg_tokens[n_fixed..]` **全部**
+        // 富余实参的集合(只拿最后一个会把前面的漏掉)。
+        let rest_token: UnconsumedErrs = if has_rest {
+            let mut acc: UnconsumedErrs = Vec::new();
+            for set in arg_tokens.iter().skip(n_fixed) {
+                acc = union_unconsumed(&acc, set);
+            }
+            acc
+        } else {
+            Vec::new()
+        };
         for (i, p) in params.iter().enumerate() {
             if p.is_rest {
-                self.env.set_local(p.name.clone(), Value::Array(rest_vals));
+                self.env
+                    .set_local_with_token(p.name.clone(), Value::Array(rest_vals), rest_token);
                 break; // rest is the trailing param by grammar
             }
             if i < arg_values.len() {
@@ -10796,6 +10835,14 @@ impl Evaluator {
         // 这里只查形参作用域。
         //
         // ⚠ 先查再还原环境:还原之后作用域就没了,查不到。
+        //
+        // ⚠ **报告点的口径**:沿用**既有**约定 —— 作用域结束处的 `E0103` 报在
+        // **调用点**那一行(`span` 是调用方给的实参位置)⇒ 固定形参那条路径一直
+        // 就是这个位置 ⇒ rest 位现在与它**同一口径**。
+        //
+        // ⚠ **本批刻意不改**这一条:把 span 改成被调方的函数体(`body.span()`)
+        // 会**全局**挪动所有闭包的 scope-end 报告位置(超出本项范围)⇒ 留作
+        // 单独提案(见 `docs/active/v1.0-residual-batch.md` §8)。
         let scope_check = self.check_scope_end(span);
         // Restore the caller's env EXACTLY (by swapping back, so any
         // mutations during the call are discarded).
