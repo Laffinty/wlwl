@@ -1174,17 +1174,70 @@ impl WlwlDiagnostic {
 /// Result alias used throughout the WLWL toolchain.
 pub type WlwlResult<T> = Result<T, WlwlError>;
 
+/// 把一组诊断渲染成人类可读文本 —— 逐条,顺序即报告顺序。
+///
+/// [v1.0 §8.6]「丢弃时逐个报告」:一个丢弃点上被丢弃的集合里有几个
+/// `ERR`,就产生几条 `E0103`(§8.6.5 保证每个 `ERR` 至多被报告一次)。
+/// 渲染顺序 = `Vec` 顺序 = 出现序;规范 §11.1 把诊断的顺序钉成结构的一部分,
+/// 所以这里**不排序、不去重**。
+fn render_diagnostics(diagnostics: &[WlwlDiagnostic]) -> String {
+    diagnostics
+        .iter()
+        .map(WlwlDiagnostic::render_human)
+        .collect()
+}
+
 /// The unified error enum returned by lexer/parser/eval.
+// ⚠ `large_enum_variant` 在这里必须允许 —— 与工作区对 `result_large_err`
+// 的既有裁决同因(见 `impl/clippy.toml` 的 P4-G1-007 说明):单条变体的
+// 240 字节是 §14.2 诊断模式(trace + cause + location + suggestion +
+// related)的**构造性**大小,而多诊断变体只有 24 字节,两者差距够大 ⇒
+// clippy 建议把单条装箱。装箱会改掉既有变体的载荷类型(公开 API)、给每个
+// 构造点加一次分配,省下的只是 200 字节栈空间 —— 与「`WlwlError` 按规范
+// 大小设计、不重构」的既有决定一致,故按仓内惯例「带理由地允许」。
+#[allow(clippy::large_enum_variant)]
 #[derive(Debug, Clone, thiserror::Error)]
 pub enum WlwlError {
+    /// 单条诊断 —— 既有形状,渲染行为一个字未动。
     #[error("{}", .0.render_human())]
     Diagnostic(WlwlDiagnostic),
+    /// [v1.0 §8.6] 一个错误携带**多条**诊断(「丢弃时逐个报告」)。
+    ///
+    /// `Vec` 的顺序**就是**报告顺序(出现序);本变体不重排、不去重。
+    #[error("{}", render_diagnostics(.0))]
+    Diagnostics(Vec<WlwlDiagnostic>),
 }
 
 impl WlwlError {
+    /// 这条错误携带的**第一条**诊断。
+    ///
+    /// - 单条诊断(`Diagnostic`):就是那一条。
+    /// - 多条诊断(`Diagnostics`):**第一条**,即报告顺序上的第一条。
+    ///
+    /// 签名刻意保持不动(仍是 `&WlwlDiagnostic`)⇒ 下游那几百处只读调用点
+    ///(绝大多数是 `e.diagnostic().code.as_str()` 这类单条读法)**零改动**。
+    ///
+    /// ⚠ 多条变体里若一条诊断都没有,这里**明确 panic**(而不是返回一条占位
+    /// 诊断):空诊断集是程序错误,让它在读「第一条」的路上炸掉,比悄悄递
+    /// 一条编造的诊断强。构造侧 `From<Vec<WlwlDiagnostic>>` 同样不接受空集。
     pub fn diagnostic(&self) -> &WlwlDiagnostic {
         match self {
             WlwlError::Diagnostic(d) => d,
+            WlwlError::Diagnostics(ds) => ds
+                .first()
+                .expect("WlwlError::Diagnostics 变体不得为空(空诊断集是程序错误)"),
+        }
+    }
+
+    /// 这条错误携带的**全部**诊断,按报告顺序(出现序)排好。
+    ///
+    /// 单条时返回含那一条的切片,多条时返回全部。两种情形的切片都借用自
+    /// `self`(单条那一条本就存放在枚举里)⇒ 不需要 `&'static`,也不必把
+    /// 单条变体改写成 `Vec`(那会动到下游的构造路径)。
+    pub fn diagnostics(&self) -> &[WlwlDiagnostic] {
+        match self {
+            WlwlError::Diagnostic(d) => std::slice::from_ref(d),
+            WlwlError::Diagnostics(ds) => ds.as_slice(),
         }
     }
 }
@@ -1192,6 +1245,21 @@ impl WlwlError {
 impl From<WlwlDiagnostic> for WlwlError {
     fn from(d: WlwlDiagnostic) -> Self {
         WlwlError::Diagnostic(d)
+    }
+}
+
+/// [v1.0 §8.6] 把一组诊断包成**一个**错误(「丢弃时逐个报告」)。
+///
+/// 顺序**原样保留**:不排序、不去重 —— 报告顺序 = 出现序(§11.1)。
+impl From<Vec<WlwlDiagnostic>> for WlwlError {
+    fn from(diagnostics: Vec<WlwlDiagnostic>) -> Self {
+        // ⚠ 空集**明确 panic**:一个不带任何诊断的错误不是错误,是程序错误
+        // (空集在规范里对应「没有要报的东西」⇒ 不该产生错误)。
+        assert!(
+            !diagnostics.is_empty(),
+            "WlwlError::from(空诊断集):一个错误至少要带一条诊断"
+        );
+        WlwlError::Diagnostics(diagnostics)
     }
 }
 
@@ -3094,5 +3162,114 @@ mod tests {
             REGISTRY_CODES.iter().all(|c| c.as_str() != "E0117"),
             "E0117 must not be registered: unreachable clauses are W0117 only"
         );
+    }
+
+    // ---- 多诊断错误通道(v1.0 §8.6「丢弃时逐个报告」)----------------
+
+    /// 造一条诊断(测试用)。
+    fn diag_at(code: ErrorCode, message: &str, line: u32) -> WlwlDiagnostic {
+        WlwlDiagnostic::new(code, message, Location::point("t.wll", line, 1))
+    }
+
+    /// 单条诊断:`diagnostic()` 就是它,`diagnostics()` 长度 1。
+    #[test]
+    fn single_diagnostic_error_exposes_exactly_one_diagnostic() {
+        let e = WlwlError::from(diag_at(ErrorCode::E0103, "discarded", 7));
+        assert_eq!(e.diagnostic().code, ErrorCode::E0103);
+        assert_eq!(e.diagnostic().message, "discarded");
+        assert_eq!(e.diagnostics().len(), 1);
+        assert_eq!(e.diagnostics()[0].code, ErrorCode::E0103);
+        assert_eq!(e.diagnostics()[0].message, "discarded");
+    }
+
+    /// 多条诊断:`diagnostic()` 返回**第一条**,`diagnostics()` 全部且**有序**。
+    #[test]
+    fn multi_diagnostic_error_keeps_first_diagnostic_and_full_order() {
+        let e = WlwlError::from(vec![
+            diag_at(ErrorCode::E0103, "first", 1),
+            diag_at(ErrorCode::E0020, "second", 2),
+            diag_at(ErrorCode::E1003, "third", 3),
+        ]);
+        // 第一条 = 报告顺序上的第一条。
+        assert_eq!(e.diagnostic().code, ErrorCode::E0103);
+        assert_eq!(e.diagnostic().message, "first");
+        // 全部都在,且顺序与传入一致(出现序)。
+        assert_eq!(e.diagnostics().len(), 3);
+        let codes: Vec<ErrorCode> = e.diagnostics().iter().map(|d| d.code).collect();
+        assert_eq!(
+            codes,
+            vec![ErrorCode::E0103, ErrorCode::E0020, ErrorCode::E1003]
+        );
+        let messages: Vec<String> = e.diagnostics().iter().map(|d| d.message.clone()).collect();
+        assert_eq!(messages, vec!["first", "second", "third"]);
+        let lines: Vec<u32> = e.diagnostics().iter().map(|d| d.location.line).collect();
+        assert_eq!(lines, vec![1, 2, 3]);
+    }
+
+    /// `From<Vec<WlwlDiagnostic>>` 造出来的就是多诊断错误,顺序原样。
+    #[test]
+    fn from_vec_builds_multi_diagnostic_error_in_input_order() {
+        let ds = vec![
+            diag_at(ErrorCode::E0103, "a", 1),
+            diag_at(ErrorCode::E0103, "b", 2),
+        ];
+        let e: WlwlError = ds.into();
+        assert_eq!(e.diagnostics().len(), 2);
+        assert_eq!(e.diagnostics()[0].message, "a");
+        assert_eq!(e.diagnostics()[1].message, "b");
+        // 单条的那条 `From` 仍是老样子(长度 1)。
+        let one: WlwlError = diag_at(ErrorCode::E0020, "x", 1).into();
+        assert_eq!(one.diagnostics().len(), 1);
+        assert_eq!(one.diagnostics()[0].message, "x");
+    }
+
+    /// 不去重:两条一模一样的诊断也要原样留两条。
+    #[test]
+    fn multi_diagnostic_error_does_not_deduplicate() {
+        let e = WlwlError::from(vec![
+            diag_at(ErrorCode::E0103, "same", 1),
+            diag_at(ErrorCode::E0103, "same", 1),
+        ]);
+        assert_eq!(e.diagnostics().len(), 2);
+    }
+
+    /// 空诊断集是程序错误:构造侧明确 panic。
+    #[test]
+    #[should_panic(expected = "空诊断集")]
+    fn empty_diagnostic_list_panics_at_construction() {
+        let _ = WlwlError::from(Vec::<WlwlDiagnostic>::new());
+    }
+
+    /// 空诊断集在读「第一条」的路上也明确 panic(变体是公开的,可被直接构造)。
+    #[test]
+    #[should_panic(expected = "不得为空")]
+    fn empty_diagnostics_variant_panics_when_first_diagnostic_is_read() {
+        let e = WlwlError::Diagnostics(Vec::new());
+        let _ = e.diagnostic();
+    }
+
+    /// 多诊断错误的 `Display` 逐条渲染,顺序即报告顺序。
+    #[test]
+    fn multi_diagnostic_display_renders_every_diagnostic_in_order() {
+        let e = WlwlError::from(vec![
+            diag_at(ErrorCode::E0103, "alpha", 1),
+            diag_at(ErrorCode::E0020, "beta", 2),
+        ]);
+        let text = e.to_string();
+        assert!(text.contains("E0103"), "{text}");
+        assert!(text.contains("alpha"), "{text}");
+        assert!(text.contains("E0020"), "{text}");
+        assert!(text.contains("beta"), "{text}");
+        let a = text.find("alpha").expect("alpha must be rendered");
+        let b = text.find("beta").expect("beta must be rendered");
+        assert!(a < b, "rendering order must follow report order: {text}");
+    }
+
+    /// 单条诊断的 `Display` 仍**逐字**等于 `render_human()`(既有行为未变)。
+    #[test]
+    fn single_diagnostic_display_is_still_the_diagnostic_render() {
+        let d = diag_at(ErrorCode::E0013, "expected ';'", 9);
+        let e = WlwlError::from(d.clone());
+        assert_eq!(e.to_string(), d.render_human());
     }
 }

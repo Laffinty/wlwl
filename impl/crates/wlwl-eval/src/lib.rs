@@ -18,6 +18,33 @@
 //! - Cross-directory / `wlwl:std.io` paths — Phase 4
 //! - `std.ai` — Phase 4
 
+//! ## 未消费 `ERR` 状态:集合形态(v1.0 规范 §8.6,X-06 第二步)
+//!
+//! 求值器侧把「未消费」当成**集合**(`UnconsumedErrs` = `Vec<Value>`)而不是
+//! 单个 `bool`:一个绑定 / 一个容器 / 一个数组元素序列都可以**同时持有多个**
+//! 未消费的 `ERR`,集合元素是**那些 `ERR` 值本身**(`Value::Err(_)`),按
+//! **出现序**排列。
+//!
+//! * **汇入同一接收位置时取并集** —— 多个未消费 `ERR` 转给同一个绑定或容器
+//!   时**全部保留**(`union_unconsumed`,**不去重**:多重集口径)。
+//! * **丢弃时逐个报告** —— 一个丢弃点上集合里有几个 `ERR` 就产生几条
+//!   `E0103`,按**出现序**排列(`WlwlError::Diagnostics`)。
+//!   ⚠ **条数**由集合决定,**措辞**由**被处置的那个值**决定(§8.6.3「容器
+//!   本身在丢弃点被处置」):值是 `ERR` ⇒ 报它的**载荷**;值是容器 ⇒ 报容器
+//!   的 `display()`。
+//! * **取走型消费者取走的是它拿到的那一个** —— 容器里还剩几个,不受它影响。
+//!
+//! ⚠ **身份局限(X-06 第三步才解决,本轮不做)**:集合元素是**值** ⇒ 身份靠
+//! `PartialEq` 判定 ⇒ **两个内容相同但来源不同的 `ERR` 无法区分**。后果:
+//!
+//! * 取走型消费者「取走它拿到的那一个」时按 `PartialEq` 匹配 ⇒ 在多个内容
+//!   相同的 `ERR` 里**移除哪一个是不确定的**;
+//! * 措辞只说**被处置的那个值** ⇒ 两个内容相同但来源不同的 `ERR` **落在同
+//!   一句措辞里** ⇒ 读者分不出是哪一个。
+//!
+//! 解决它要改 `Value::Err` 的**表示**(约 111 处构造点)⇒ 需业主先定口径,
+//! 不在本轮范围内。
+
 #![allow(unpredictable_function_pointer_comparisons)]
 
 use std::borrow::Cow;
@@ -36,10 +63,10 @@ use wlwl_error::{
 // [v0.11 M2 / ADR-0022] 值层单源在 wlwl-value;这里 pub use 保持
 // `crate::Value` 等既有路径对子模块与外部消费者不变。
 pub use wlwl_value::{
-    new_cell, subst, type_name, value_type_name, values_equal, Binding, Cell, ChannelHandle,
-    ChannelId, ClassEntry, DictInner, DictKey, Env, LinearThis, Outcome, Proto, ProtocolCursor,
-    ProtocolError, RcHandle, ReadMode, Signal, Tag, TaskHandle, TaskId, TestEntry, ThisToken,
-    ThisTokenError, Value, YieldReason,
+    find_unconsumed_index, new_cell, subst, type_name, union_unconsumed, value_type_name,
+    values_equal, Binding, Cell, ChannelHandle, ChannelId, ClassEntry, DictInner, DictKey, Env,
+    LinearThis, Outcome, Proto, ProtocolCursor, ProtocolError, RcHandle, ReadMode, Signal, Tag,
+    TaskHandle, TaskId, TestEntry, ThisToken, ThisTokenError, UnconsumedErrs, Value, YieldReason,
 };
 /// (`Var("THIS")` or `Call { name: "THIS" }`). Used to reject
 /// closures / SPAWN bodies that would carry the linear capability
@@ -1486,7 +1513,7 @@ fn invoke_std(
     ev: &mut Evaluator,
     std_fn: wlwl_std::StdFn,
     args: Vec<Value>,
-    arg_tokens: Vec<bool>,
+    arg_tokens: Vec<UnconsumedErrs>,
     span: &Span,
 ) -> WlwlResult<Outcome> {
     // [v0.11 M2 / ADR-0022] 直通边界:无 Value↔serde_json 转换。
@@ -1502,12 +1529,23 @@ fn invoke_std(
     //
     // ⚠ 存旧值 → 填新值 → 调用 → 还原(与 `source_file` 同款):嵌套调用
     // (成员回调用户函数,回调里又调成员)各自看到**自己那次**的令牌。
-    let prev_arg_tokens = std::mem::replace(&mut ev.current_arg_tokens, arg_tokens);
+    //
+    // ⚠⚠ **[X-06 第二步] 通道仍是 `bool` 口径** —— `StdHost::arg_tokens()`
+    // 的签名(`&[bool]`)定义在 `wlwl-value` 里,本轮**冻结不动** ⇒ 成员侧
+    // 只能看到「这个实参**有没有**未消费的 `ERR`」,看不到**是哪几个**。
+    // 求值器侧因此把集合**投影**成布尔(非空即 `true`);成员回传时(见
+    // [`Evaluator::call_with_tokens`])再按实参值把集合**重建**回来。
+    // ⇒ **集合语义跨不过这条通道** —— 要跨过去必须改 `wlwl-value` 的
+    // `StdHost` trait(不在本轮范围内,登记为待办)。
+    let projected: Vec<bool> = arg_tokens.iter().map(|set| !set.is_empty()).collect();
+    let prev_arg_tokens = std::mem::replace(&mut ev.current_arg_tokens, projected);
+    let prev_arg_unconsumed = std::mem::replace(&mut ev.current_arg_unconsumed, arg_tokens);
     let host: &mut dyn wlwl_std::StdHost = ev;
     let result = std_fn(host, args);
     ev.current_span = prev_span;
     ev.std_ctx.source_file = prev_file;
     ev.current_arg_tokens = prev_arg_tokens;
+    ev.current_arg_unconsumed = prev_arg_unconsumed;
     result
 }
 
@@ -4714,7 +4752,7 @@ fn builtin_yield(ev: &mut Evaluator, args: Vec<Value>) -> WlwlResult<Outcome> {
     Ok(Outcome {
         value: Value::Null,
         signal: Signal::Yield(YieldReason::Explicit),
-        unconsumed: false,
+        unconsumed: Vec::new(),
     })
 }
 
@@ -5350,7 +5388,7 @@ fn channel_recv_yield(ev: &mut Evaluator, slot: usize, task_id: crate::runtime::
     Outcome {
         value: Value::Null,
         signal: Signal::Yield(YieldReason::ReceivingOn(ch_id)),
-        unconsumed: false,
+        unconsumed: Vec::new(),
     }
 }
 
@@ -5370,7 +5408,7 @@ fn channel_send_yield(
     Outcome {
         value: Value::Null,
         signal: Signal::Yield(YieldReason::SendingOn(ch_id)),
-        unconsumed: false,
+        unconsumed: Vec::new(),
     }
 }
 
@@ -5469,7 +5507,7 @@ fn builtin_channel_send(ev: &mut Evaluator, args: Vec<Value>) -> WlwlResult<Outc
             Ok(Outcome {
                 value: Value::Null,
                 signal: Signal::Yield(YieldReason::SendingOn(ch_id)),
-                unconsumed: false,
+                unconsumed: Vec::new(),
             })
         }
     }
@@ -5659,7 +5697,7 @@ fn builtin_channel_recv(ev: &mut Evaluator, args: Vec<Value>) -> WlwlResult<Outc
             Ok(Outcome {
                 value: Value::Null,
                 signal: Signal::Yield(YieldReason::ReceivingOn(ch_id)),
-                unconsumed: false,
+                unconsumed: Vec::new(),
             })
         }
     }
@@ -6110,6 +6148,76 @@ fn consumer_read_mode(name: &str, arg_index: usize) -> Option<ReadMode> {
         });
     }
     None
+}
+
+/// [X-06 第二步 / v1.0 §8.6.3] 一个值**携带**的 `ERR` —— 递归取出它内部
+/// 直接承载的 `ERR` 值(按**出现序**)。
+///
+/// 用途有二:
+///
+/// 1. **解构分发**(`LET([x, y], arr)`):父集合里的 `ERR` 要按「哪个子值
+///    携带它」分给子绑定 —— 分发判据就是「子值携带的 `ERR`」。
+/// 2. **标准库回调通道的重建**(`StdHost::call_with_tokens` 是 `bool` 口径):
+///    成员回传的 `bool` 说不清「是哪一个」⇒ 只能按实参值**推**。
+///
+/// ⚠ 这是**按值形状**的推算,不是身份判据:一个 `ERR` 值嵌在容器里就算
+/// 「被携带」。真正的身份语义要等 X-06 第三步(见 `wlwl-value` 的模块文档)。
+fn errs_carried_by(value: &Value) -> UnconsumedErrs {
+    let mut out = Vec::new();
+    collect_errs_carried_by(value, &mut out);
+    out
+}
+
+fn collect_errs_carried_by(value: &Value, out: &mut UnconsumedErrs) {
+    match value {
+        Value::Err(_) => out.push(value.clone()),
+        Value::Array(items) => {
+            for item in items {
+                collect_errs_carried_by(item, out);
+            }
+        }
+        Value::Ok(inner) => collect_errs_carried_by(inner, out),
+        Value::Cell(cell) => {
+            for item in cell.borrow().iter() {
+                collect_errs_carried_by(item, out);
+            }
+        }
+        Value::Dict(entries) => {
+            for (_, v) in entries.iter() {
+                collect_errs_carried_by(v, out);
+            }
+        }
+        Value::DictCell(cell) => {
+            for (_, v) in cell.inner_rc().entries().iter() {
+                collect_errs_carried_by(v, out);
+            }
+        }
+        _ => {}
+    }
+}
+
+/// [X-06 第二步 / v1.0 §8.6.3] 把一个父集合**分发**给若干子值 —— 每个
+/// `ERR` 只分给**携带它**的那个子值(且只分**一次**)。
+///
+/// ⚠ 分发是**一对一**的:父集合里的同一个 `ERR` 不会分给两个子绑定 ⇒
+/// §8.6.5「一个 `ERR` 至多被报告一次」成立。
+///
+/// ⚠ 父集合里**没有**子值携带的 `ERR`(例如集合来自别处)⇒ 那些元素**不
+/// 分发**(漏报,假阴性)—— 绝不猜,猜错就是误报。
+fn distribute_unconsumed(parent: &[Value], sub_values: &[&Value]) -> Vec<UnconsumedErrs> {
+    let mut pool: Vec<Value> = parent.to_vec();
+    let mut out: Vec<UnconsumedErrs> = Vec::with_capacity(sub_values.len());
+    for sub in sub_values {
+        let carried = errs_carried_by(sub);
+        let mut mine: UnconsumedErrs = Vec::new();
+        for e in carried {
+            if let Some(pos) = pool.iter().position(|p| *p == e) {
+                mine.push(pool.remove(pos));
+            }
+        }
+        out.push(mine);
+    }
+    out
 }
 
 // ── Operator implementations (v0.3 §9) ─────────────────────────────
@@ -7000,6 +7108,16 @@ impl wlwl_std::StdHost for Evaluator {
     /// [X-07 / v1.0 spec §8.6.3] 调用回调,并把实参的**未消费令牌**带进形参
     /// 绑定 —— 与 `eval_call` 的函数分派同构;span 取 invoke_std 存好的当前
     /// 调用点。
+    ///
+    /// ⚠⚠ **[X-06 第二步] 这条通道仍是 `bool` 口径** —— `StdHost` 的签名
+    /// (`call_with_tokens(..., arg_tokens: Vec<bool>, ...)`)定义在
+    /// `wlwl-value` 里,本轮**冻结不动** ⇒ 成员只能告诉求值器「这个实参
+    /// **有没有**未消费的 `ERR`」,说不出**是哪几个**。
+    ///
+    /// ⇒ 求值器侧按**实参值**把集合**重建**回来(见
+    /// [`Evaluator::rebuild_callback_unconsumed`]):重建出来的集合是
+    /// **近似**,不是原件 —— 通道本身承载不了集合(登记为待办:要改
+    /// `wlwl-value` 的 `StdHost` trait)。
     fn call_with_tokens(
         &mut self,
         f: &Value,
@@ -7011,6 +7129,15 @@ impl wlwl_std::StdHost for Evaluator {
             .current_span
             .clone()
             .unwrap_or_else(|| Span::new("<runtime>", 0, 0));
+        // [X-06 第二步] `bool` → 集合:逐个实参重建(见上)。
+        let rebuilt: Vec<UnconsumedErrs> = args
+            .iter()
+            .enumerate()
+            .map(|(i, value)| {
+                let token = arg_tokens.get(i).copied().unwrap_or(false);
+                self.rebuild_callback_unconsumed(value, token)
+            })
+            .collect();
         match f {
             Value::Closure { params, body, env } => self.invoke_closure(
                 name,
@@ -7018,7 +7145,7 @@ impl wlwl_std::StdHost for Evaluator {
                 body.clone(),
                 env.clone(),
                 args,
-                arg_tokens,
+                rebuilt,
                 &span,
             ),
             Value::NativeFn { invoke, .. } => invoke_std(self, *invoke, args, Vec::new(), &span),
@@ -7039,7 +7166,32 @@ impl wlwl_std::StdHost for Evaluator {
         }
     }
 
+    /// [X-06 第二步] **重建**标准库回调实参的未消费 `ERR` 集合。
+    ///
+    /// 输入是成员回传的 `bool`(「这个实参有没有未消费的 `ERR`」)与**实参
+    /// 值本身**;输出是那个实参的未消费集合。
+    ///
+    /// 规则:
+    ///
+    /// * 实参值**本身**是一个 `ERR` ⇒ 集合 = `{该 ERR}`(它就是成员说的那个
+    ///   未消费的 `ERR`);
+    /// * 实参值是**容器** ⇒ 集合 = 该容器**携带**的 `ERR`(成员把数组实参的
+    ///   令牌转给「承载那个未消费 `ERR` 的那个元素」—— 元素可能是嵌在容器里
+    ///   的,见 `wlwl-std` 的 `carrier_index`);
+    /// * 实参值不是 `ERR`、也不携带 `ERR` ⇒ 集合为空。
+    ///
+    /// ⚠ **重建是近似的**:成员回传的 `bool` 说不清「是哪一个」⇒ 本函数
+    /// 只能按实参值**推**。推不出来时给空集合 ⇒ 那一跳**漏报**(假阴性),
+    /// 绝不**误报**(假阳性)—— 差异登记项只承诺假阴性。
+    ///
+    /// (实现见 [`Evaluator::rebuild_callback_unconsumed`] —— 它是**固有
+    /// 方法**,不是 `StdHost` 的 trait 方法:trait 是**冻结**的,不能加方法。)
+    ///
     /// [X-07 / v1.0 spec §8.6.3] **本次调用**每个实参的未消费令牌。
+    ///
+    /// ⚠ **布尔口径**:`StdHost::arg_tokens()` 的签名是 `&[bool]`(定义在
+    /// 冻结的 `wlwl-value` 里)⇒ 成员只拿得到「有没有」,拿不到「是哪几个」。
+    /// 集合本体在 [`Evaluator::current_arg_unconsumed`]。
     fn arg_tokens(&self) -> &[bool] {
         &self.current_arg_tokens
     }
@@ -7208,6 +7360,18 @@ pub struct Evaluator {
     /// (`arg_tokens`)暴露给标准库成员,于是成员不必碰 `ctx()`
     /// (各模块测试里的 `NullHost` 对 `ctx()` 是**故意 panic** 的)。
     current_arg_tokens: Vec<bool>,
+    /// [X-06 第二步 / v1.0 §8.6.3] **本次调用**每个实参的未消费 `ERR`
+    /// **集合**(与 `current_arg_tokens` 一一对应)。
+    ///
+    /// ⚠ **为什么两个字段并存**:`StdHost::arg_tokens()` 的签名是
+    /// `&[bool]`(定义在**冻结**的 `wlwl-value` 里)⇒ 成员侧只能拿到布尔
+    /// 投影。本字段保存集合**本体** ⇒ 成员回传布尔时,求值器能按实参值把
+    /// 集合**重建**回来(见 [`Evaluator::rebuild_callback_unconsumed`]),
+    /// 不必把集合**降级**成布尔就丢掉。
+    ///
+    /// ⇒ **集合语义跨不过 `StdHost` 那条通道**(通道本身承载不了集合);
+    /// 要跨过去必须改 `wlwl-value` 的 trait(登记为待办)。
+    current_arg_unconsumed: Vec<UnconsumedErrs>,
     /// [v0.11.3 M6 / addendum-01 B 片] 当前所处的假时钟气泡(方案 **B-简**)。
     ///
     /// **为什么是 `Evaluator` 的字段而不是 `StdCtx` 的字段**:`StdCtx` 是
@@ -7396,11 +7560,12 @@ pub struct Evaluator {
 enum ArgEvalResult {
     Done {
         accum: Vec<Value>,
-        /// [v1.0 spec §8.6] 每个实参的**未消费令牌**,与 `accum` 一一对应。
-        tokens: Vec<bool>,
+        /// [v1.0 spec §8.6] 每个实参的**未消费 `ERR` 集合**,与 `accum`
+        /// 一一对应(元素是那些 `ERR` 值本身,按出现序)。
+        tokens: Vec<UnconsumedErrs>,
         pending_err: Option<Value>,
-        /// `pending_err` 那个 `ERR` 的未消费令牌(§8.2 透明传播时随值带出)。
-        pending_token: bool,
+        /// `pending_err` 那个 `ERR` 的未消费**集合**(§8.2 透明传播时随值带出)。
+        pending_token: UnconsumedErrs,
     },
     Signal(Outcome),
 }
@@ -7444,6 +7609,7 @@ impl Evaluator {
             dict_acc_active: Vec::new(),
             read_mode: ReadMode::Transfer,
             current_arg_tokens: Vec::new(),
+            current_arg_unconsumed: Vec::new(),
         }
     }
 
@@ -7554,6 +7720,7 @@ impl Evaluator {
             dict_acc_active: Vec::new(),
             read_mode: ReadMode::Transfer,
             current_arg_tokens: Vec::new(),
+            current_arg_unconsumed: Vec::new(),
         }
     }
 
@@ -8109,15 +8276,21 @@ impl Evaluator {
             Expr::Literal(lit, _) => Ok(Outcome::normal(Value::from(lit.clone()))),
             Expr::Var(name, span) => {
                 // [v1.0 spec §8.6.3] 读绑定 ⇒ 按**当前读模式**转移未消费状态。
-                //   * `Consume`(取走型消费者的实参)⇒ 源绑定的令牌销毁,在途值
-                //     的令牌为 false;
-                //   * `Observe`(观察型消费者的实参)⇒ 源绑定的令牌**保留**,
-                //     在途值的令牌为 false;
-                //   * `Transfer`(其余一切位置)⇒ 源绑定的令牌清除,在途值
-                //     **继承**该令牌。
+                //   * `Consume`(取走型消费者的实参)⇒ 源绑定里**它拿到的那个**
+                //     `ERR` 视为已消费(§8.6.3),在途值**不带**集合;
+                //   * `Observe`(观察型消费者的实参)⇒ 源绑定的集合**保留**,
+                //     在途值**不带**集合;
+                //   * `Transfer`(其余一切位置)⇒ 源绑定的集合**整体转走**,
+                //     在途值**继承**该集合。
                 let mode = self.read_mode;
                 match self.env.read_binding(name, mode) {
-                    Some((v, unconsumed)) => Ok(Outcome::with_unconsumed(v, unconsumed)),
+                    Some((v, unconsumed)) => {
+                        // ⚠ [X-06 / v1.0 §8.6.3] 读入**取走型**消费者 ⇒「该
+                        // `ERR`」**视为已消费**。这一步由 `Env::read_binding`
+                        // 的 `Consume` 分支**自己**完成(含 `OK(ERR(..))` 被
+                        // 剥壳的形态)⇒ 这里不重复补偿,避免两处同义实现。
+                        Ok(Outcome::with_unconsumed(v, unconsumed))
+                    }
                     None => Err(self.undefined_name(name, span)),
                 }
             }
@@ -8171,7 +8344,11 @@ impl Evaluator {
                 let mut vs = Vec::with_capacity(items.len());
                 // [v1.0 spec §8.6.3] 容器装盛**不算消费**但**算转发** ⇒ 未消费
                 // 状态转给该容器(容器本身在丢弃点被处置)。
-                let mut unconsumed = false;
+                //
+                // ⚠ [X-06 第二步] **并集**:容器可以**同时持有多个**未消费的
+                // `ERR` ⇒ 逐个元素的集合**合成一个**(`union_unconsumed`,
+                // 不去重)⇒ 容器在丢弃点被处置时**逐个**报告。
+                let mut unconsumed: UnconsumedErrs = Vec::new();
                 for it in items {
                     let o = self.eval_expr(it)?;
                     if o.signal != Signal::None {
@@ -8184,7 +8361,7 @@ impl Evaluator {
                             expr.span().clone(),
                         ));
                     }
-                    unconsumed |= o.unconsumed;
+                    unconsumed = union_unconsumed(&unconsumed, &o.unconsumed);
                     vs.push(o.value);
                 }
                 Ok(Outcome::with_unconsumed(Value::Array(vs), unconsumed))
@@ -8192,7 +8369,7 @@ impl Evaluator {
             Expr::Dict { entries, .. } => {
                 let mut vs = Vec::with_capacity(entries.len());
                 // [v1.0 spec §8.6.3] 同 ARRAY:装盛算转发。
-                let mut unconsumed = false;
+                let mut unconsumed: UnconsumedErrs = Vec::new();
                 for (k, v) in entries {
                     let ko = self.eval_expr(k)?;
                     if ko.signal != Signal::None {
@@ -8226,7 +8403,9 @@ impl Evaluator {
                         ));
                     }
                     vs.push((ko.value, vo.value));
-                    unconsumed |= vo.unconsumed;
+                    // ⚠ [X-06 第二步] **并集**(不去重):字典的每个值都可能是
+                    // 一个未消费的 `ERR` ⇒ 合成一个集合。
+                    unconsumed = union_unconsumed(&unconsumed, &vo.unconsumed);
                 }
                 Ok(Outcome::with_unconsumed(Value::dict(vs), unconsumed))
             }
@@ -8252,7 +8431,7 @@ impl Evaluator {
                     }
                     (o.value, o.unconsumed)
                 } else {
-                    (Value::Null, false)
+                    (Value::Null, Vec::new())
                 };
                 Ok(Outcome {
                     value: Value::Null,
@@ -8263,12 +8442,12 @@ impl Evaluator {
             Expr::Break { .. } => Ok(Outcome {
                 value: Value::Null,
                 signal: Signal::Break,
-                unconsumed: false,
+                unconsumed: Vec::new(),
             }),
             Expr::Continue { .. } => Ok(Outcome {
                 value: Value::Null,
                 signal: Signal::Continue,
-                unconsumed: false,
+                unconsumed: Vec::new(),
             }),
             Expr::Fun {
                 params, body, name, ..
@@ -8334,11 +8513,18 @@ impl Evaluator {
                     }
                 }
                 // [v1.0 spec §8.6.1] 一个**新生的** `ERR` 诞生 ⇒ 它处于未消费
-                // 状态(令牌置位),直到被取走 / 显式丢弃 / 逃逸到顶层。
-                Ok(Outcome::with_unconsumed(
-                    Value::Err(Box::new(o.value)),
-                    true,
-                ))
+                // 状态。
+                //
+                // ⚠ [X-06 第二步] **并集**:这个构造器是一个**接收位置** —— 它把
+                // 载荷读了进来 ⇒ 载荷里**未消费**的 `ERR` 一并转给它(与 `OK(x)`
+                // 同款:容器装盛算转发,§8.6.3)⇒ 新 `ERR` 的集合 =
+                // 载荷的集合 ∪ {这个新 `ERR`}。
+                //
+                // ⚠ **顺序** = 出现序:载荷里的 `ERR` **先**诞生(它是实参)⇒ 在
+                // 前;这个新 `ERR` 在后。
+                let new_err = Value::Err(Box::new(o.value));
+                let carried = union_unconsumed(&o.unconsumed, std::slice::from_ref(&new_err));
+                Ok(Outcome::with_unconsumed(new_err, carried))
             }
             Expr::Panic { value, .. } => {
                 let o = self.eval_expr(value)?;
@@ -8371,7 +8557,7 @@ impl Evaluator {
                         Ok(Outcome {
                             value: Value::Null,
                             signal: Signal::Return(Value::Err(v)),
-                            unconsumed: false,
+                            unconsumed: Vec::new(),
                         })
                     }
                     other => Err(self.diag(
@@ -8480,8 +8666,19 @@ impl Evaluator {
             //
             // ⚠ **末条语句不是丢弃点**:它的值是所在作用域的返回值(函数体)
             // 或程序值(顶层)⇒ 程序值按 §8.5 报 `E0102`,**不**报 `E0103`。
-            if !is_last && last.unconsumed && matches!(last.value, Value::Err(_)) {
-                let err = self.e0103(&last.value, e.span().clone());
+            //
+            // ⚠ [X-06 第二步] 判据是**集合非空**,不再看「值本身是不是
+            // `ERR`」—— 容器(数组 / 字典)持有的未消费 `ERR` 也在这个集合里
+            // ⇒ 语句丢弃一个装着未消费 `ERR` 的容器**同样**是丢弃点
+            // (差异登记项 **X-17** 的修复面)。
+            //
+            // ⚠ 集合里有几个 `ERR` 就产生**几条** `E0103`,按**出现序**。
+            //
+            // ⚠ 措辞报的是**被处置的那个值** = 这条语句的值(§8.6.3「容器
+            // 本身在丢弃点被处置」):值是 `ERR` ⇒ 报载荷;值是容器 ⇒ 报容器。
+            if !is_last && !last.unconsumed.is_empty() {
+                let count = last.unconsumed.len();
+                let err = self.e0103_all(&last.value, count, &e.span().clone());
                 if !top_level {
                     self.env.pop_scope();
                 }
@@ -9063,10 +9260,11 @@ impl Evaluator {
         whitelisted: bool,
     ) -> WlwlResult<ArgEvalResult> {
         let mut accum: Vec<Value> = Vec::with_capacity(args.len());
-        // [v1.0 spec §8.6] 每个实参的未消费令牌(与 `accum` 一一对应)。
-        let mut tokens: Vec<bool> = Vec::with_capacity(args.len());
+        // [v1.0 spec §8.6] 每个实参的未消费 `ERR` **集合**(与 `accum`
+        // 一一对应;元素是那些 `ERR` 值本身,按出现序)。
+        let mut tokens: Vec<UnconsumedErrs> = Vec::with_capacity(args.len());
         let mut pending_err: Option<Value> = None;
-        let mut pending_token = false;
+        let mut pending_token: UnconsumedErrs = Vec::new();
         for (i, a) in args.iter().enumerate() {
             // [v1.0 spec §8.6.3] 派发消费者时设好读模式,求值完实参后恢复。
             // 非消费者**继承**当前模式(嵌套调用的近似)。
@@ -9086,10 +9284,14 @@ impl Evaluator {
             self.read_mode = prev_mode;
             let mut o = o?;
             // 位置级处置:`Consume` / `Observe` 模式下到达该位置的 `ERR` 不再
-            // 处于未消费状态(取走型把它取走;观察型只是看一眼,令牌仍留在被
+            // 处于未消费状态(取走型把它取走;观察型只是看一眼,状态仍留在被
             // 读取的绑定上)。
+            //
+            // ⚠ [X-06 第二步] 清空的是**在途值**携带的集合 —— 源绑定的集合
+            // 由 `Env::read_binding` 按模式处置(取走型只移除「它拿到的那
+            // 一个」,观察型整组保留)。
             if mode != ReadMode::Transfer && matches!(o.value, Value::Err(_)) {
-                o.unconsumed = false;
+                o.unconsumed = Vec::new();
             }
             if o.signal != Signal::None {
                 return Ok(ArgEvalResult::Signal(o));
@@ -9128,9 +9330,9 @@ impl Evaluator {
         &mut self,
         name: &str,
         accum: Vec<Value>,
-        tokens: Vec<bool>,
+        tokens: Vec<UnconsumedErrs>,
         pending_err: Option<Value>,
-        pending_token: bool,
+        pending_token: UnconsumedErrs,
         whitelisted: bool,
         user_fn: Option<Value>,
         span: &Span,
@@ -9144,17 +9346,18 @@ impl Evaluator {
             }
             for (v, t) in accum.iter().zip(tokens.iter()) {
                 if let Value::Err(_) = v {
-                    return Ok(Outcome::with_unconsumed(v.clone(), *t));
+                    return Ok(Outcome::with_unconsumed(v.clone(), t.clone()));
                 }
             }
         }
         // [v1.0 spec §8.6.3] 预先摘出「值为 `ERR` 的实参」: 调用结果若是
-        // 其中之一, 令牌跟着那个实参走; 否则结果是一个**新生的** `ERR`。
-        let err_args: Vec<(Value, bool)> = accum
+        // 其中之一, 它的未消费集合跟着那个实参走; 否则结果是一个**新生的**
+        // `ERR`。
+        let err_args: Vec<(Value, UnconsumedErrs)> = accum
             .iter()
             .zip(tokens.iter())
             .filter(|(v, _)| matches!(v, Value::Err(_)))
-            .map(|(v, t)| (v.clone(), *t))
+            .map(|(v, t)| (v.clone(), t.clone()))
             .collect();
         // User-function dispatch takes priority over the global
         // builtin table (in Phase 2 we keep them in disjoint
@@ -9194,21 +9397,25 @@ impl Evaluator {
         Err(self.undefined_name(name, span))
     }
 
-    /// [v1.0 spec §8.6.3] 给一次调用的结果定「未消费令牌」。
+    /// [v1.0 spec §8.6.3] 给一次调用的结果定「未消费 `ERR` 集合」。
     ///
     /// 规则:
     ///
     /// * 结果**就是某个实参的值**(如 `UNWRAP_OR` 在 `ERR` 分支返回默认值)
-    ///   => 令牌跟着那个实参走(实参在取走型位置被消费 => 令牌为 false);
+    ///   => 集合跟着那个实参走(实参在取走型位置被消费 => 集合为空);
     /// * 结果是**新生的** `ERR`(如 `WRAP` 造的包装层、或原生成员返回的
-    ///   `ERR`)=> 它是一个**新的未消费 `ERR`** => 令牌置位。
-    fn attach_result_token(&mut self, result: &mut Outcome, err_args: &[(Value, bool)]) {
+    ///   `ERR`)=> 它是一个**新的未消费 `ERR`** => 集合 = {它自己}。
+    ///
+    /// ⚠ [X-06 第二步] 集合**按值复制** —— 集合是 `Vec<Value>`,复制的是
+    /// 元素(那些 `ERR` 值本身),不是引用。
+    fn attach_result_token(&mut self, result: &mut Outcome, err_args: &[(Value, UnconsumedErrs)]) {
         if !matches!(result.value, Value::Err(_)) {
             return;
         }
         result.unconsumed = match err_args.iter().rev().find(|(v, _)| *v == result.value) {
-            Some((_, token)) => *token,
-            None => true,
+            Some((_, set)) => set.clone(),
+            // 新生的 `ERR`:它自己就是那个未消费的 `ERR`。
+            None => vec![result.value.clone()],
         };
     }
 
@@ -9271,7 +9478,7 @@ impl Evaluator {
                 Ok(Some(Outcome {
                     value: Value::Null,
                     signal: Signal::Yield(crate::runtime::YieldReason::Explicit),
-                    unconsumed: false,
+                    unconsumed: Vec::new(),
                 }))
             }
             // [v0.7 Phase B5a-3 slice 2 (smoke test)] 1-arg variant
@@ -9311,7 +9518,7 @@ impl Evaluator {
                 Ok(Some(Outcome {
                     value: Value::Null,
                     signal: Signal::Yield(crate::runtime::YieldReason::Explicit),
-                    unconsumed: false,
+                    unconsumed: Vec::new(),
                 }))
             }
             _ => Ok(None),
@@ -10232,7 +10439,7 @@ impl Evaluator {
         body: Box<Expr>,
         captured_env: Env,
         mut arg_values: Vec<Value>,
-        arg_tokens: Vec<bool>,
+        arg_tokens: Vec<UnconsumedErrs>,
         span: &Span,
     ) -> WlwlResult<Outcome> {
         // [v0.10.2] 递归深度护栏。求值器是递归下降的,而 Rust 的线程栈有限:
@@ -10399,9 +10606,12 @@ impl Evaluator {
             }
             if i < arg_values.len() {
                 // [v1.0 spec §8.6.3] 实参的未消费状态转给形参绑定。
-                let token = arg_tokens.get(i).copied().unwrap_or(false);
+                //
+                // ⚠ [X-06 第二步] 转的是**整个集合**(不是一个布尔):一个实参
+                // 可以**同时**带着多个未消费的 `ERR` ⇒ 形参绑定**全部**接管。
+                let set = arg_tokens.get(i).cloned().unwrap_or_default();
                 self.env
-                    .set_local_with_token(p.name.clone(), arg_values[i].clone(), token);
+                    .set_local_with_token(p.name.clone(), arg_values[i].clone(), set);
             } else {
                 let Some(default_expr) = p.default_expr.as_ref() else {
                     return Err(self.diag(
@@ -10648,7 +10858,22 @@ impl Evaluator {
     /// `<toplevel>` frame so the spec's "minimum 1 frame" rule is
     /// satisfied.
     fn enrich_with_trace(&mut self, e: WlwlError) -> WlwlError {
-        let WlwlError::Diagnostic(mut d) = e;
+        // ⚠ [X-06 第二步] 错误可能是**多诊断**(`WlwlError::Diagnostics`)——
+        // 「丢弃时逐个报告」⇒ 每一条都要补上调用栈(§14.2)。
+        match e {
+            WlwlError::Diagnostic(d) => self.enrich_one_with_trace(d).into(),
+            WlwlError::Diagnostics(ds) => {
+                let mut out: Vec<WlwlDiagnostic> = Vec::with_capacity(ds.len());
+                for d in ds {
+                    out.push(self.enrich_one_with_trace(d));
+                }
+                WlwlError::Diagnostics(out)
+            }
+        }
+    }
+
+    /// [v0.4 spec Sec. 14.2] 给**一条**诊断补上调用栈。
+    fn enrich_one_with_trace(&mut self, mut d: WlwlDiagnostic) -> WlwlDiagnostic {
         if d.trace.is_empty() {
             if self.call_stack.is_empty() {
                 d.trace.push(TraceFrame {
@@ -10666,7 +10891,7 @@ impl Evaluator {
                 d.trace = self.call_stack.iter().rev().cloned().collect();
             }
         }
-        d.into()
+        d
     }
 
     /// Destructure `value` against `pattern` (v0.4 `Sec. 7.5`),
@@ -10685,12 +10910,15 @@ impl Evaluator {
         &mut self,
         pattern: &Pattern,
         value: &Value,
-        unconsumed: bool,
+        unconsumed: UnconsumedErrs,
         _span: &Span,
     ) -> WlwlResult<()> {
         match pattern {
             Pattern::Ident(name, _) => {
                 // [v1.0 spec §8.6.3] 接收位置建立绑定 ⇒ 未消费状态转给该绑定。
+                //
+                // ⚠ [X-06 第二步] 转的是**整个集合**:一个绑定可以**同时**持有
+                // 多个未消费的 `ERR`。
                 self.env
                     .set_local_with_token(name.clone(), value.clone(), unconsumed);
                 Ok(())
@@ -10728,6 +10956,9 @@ impl Evaluator {
                         aspan,
                     ));
                 }
+                // ⚠ [X-06 第二步] **分发**:父集合里的每个 `ERR` 只分给**携带
+                // 它**的那个子值(且只分一次)⇒ §8.6.5「至多报告一次」成立。
+                let mut subs: Vec<(&Pattern, &Value)> = Vec::with_capacity(items.len());
                 for (i, sub) in items.iter().enumerate() {
                     let sub_value = arr.get(i).ok_or_else(|| {
                         self.destructure_shape_error(
@@ -10738,17 +10969,23 @@ impl Evaluator {
                             aspan,
                         )
                     })?;
-                    self.destructure(
-                        sub,
-                        sub_value,
-                        unconsumed && matches!(sub_value, Value::Err(_)),
-                        aspan,
-                    )?;
+                    subs.push((sub, sub_value));
+                }
+                let sub_values: Vec<&Value> = subs.iter().map(|(_, v)| *v).collect();
+                let sets = distribute_unconsumed(&unconsumed, &sub_values);
+                for ((sub, sub_value), set) in subs.iter().zip(sets.iter()) {
+                    self.destructure(sub, sub_value, set.clone(), aspan)?;
                 }
                 if let Some(rest_pat) = rest {
                     let rest_items: Vec<Value> = arr.iter().skip(items.len()).cloned().collect();
                     let rest_value = Value::Array(rest_items);
-                    self.destructure(rest_pat, &rest_value, false, aspan)?;
+                    // ⚠ `*rest` 收走的是**剩下的元素** ⇒ 它们携带的 `ERR`
+                    // 一并转给 rest 绑定。
+                    let rest_set = distribute_unconsumed(&unconsumed, &[&rest_value])
+                        .into_iter()
+                        .next()
+                        .unwrap_or_default();
+                    self.destructure(rest_pat, &rest_value, rest_set, aspan)?;
                 } else if arr.len() > items.len() {
                     return Err(self.destructure_shape_error(
                         format!(
@@ -10766,7 +11003,9 @@ impl Evaluator {
                     Value::Dict(entries) => entries.entries().to_vec(),
                     _ => return Err(self.destructure_type_error("DICT", value, dspan)),
                 };
-                for (k_expr, sub) in entries {
+                // ⚠ [X-06 第二步] 同 ARRAY:按「哪个子值携带它」分发。
+                let mut found_values: Vec<Value> = Vec::with_capacity(entries.len());
+                for (k_expr, _) in entries {
                     let key_value = self.eval_literal_key(k_expr)?;
                     let pos = dict
                         .iter()
@@ -10783,12 +11022,14 @@ impl Evaluator {
                             ));
                         }
                     };
-                    self.destructure(
-                        sub,
-                        &found,
-                        unconsumed && matches!(found, Value::Err(_)),
-                        dspan,
-                    )?;
+                    found_values.push(found);
+                }
+                let sub_values: Vec<&Value> = found_values.iter().collect();
+                let sets = distribute_unconsumed(&unconsumed, &sub_values);
+                for ((_, sub), (found, set)) in
+                    entries.iter().zip(found_values.iter().zip(sets.iter()))
+                {
+                    self.destructure(sub, found, set.clone(), dspan)?;
                 }
                 Ok(())
             }
@@ -10819,11 +11060,18 @@ impl Evaluator {
                 };
                 // `ERR(e)` 模式把载荷**取走** ⇒ 那个 `ERR` 不再处于未消费状态。
                 // `OK(v)` 模式取出内层值 ⇒ 内层若是 `ERR`,令牌跟着内层走。
-                let inner_token = match name.as_str() {
-                    "ERR" => false,
-                    _ => unconsumed && matches!(inner_value, Value::Err(_)),
+                //
+                // ⚠ [X-06 第二步] `ERR(e)` 模式把载荷**取走** ⇒ 那个 `ERR`
+                // 不再处于未消费状态 ⇒ 集合**清空**;`OK(v)` 模式 ⇒ 内层值
+                // 携带的那部分集合跟着内层走(按「携带它」分发)。
+                let inner_set: UnconsumedErrs = match name.as_str() {
+                    "ERR" => UnconsumedErrs::new(),
+                    _ => distribute_unconsumed(&unconsumed, &[inner_value])
+                        .into_iter()
+                        .next()
+                        .unwrap_or_default(),
                 };
-                self.destructure(inner, inner_value, inner_token, cspan)
+                self.destructure(inner, inner_value, inner_set, cspan)
             }
         }
     }
@@ -10981,12 +11229,16 @@ impl Evaluator {
             if matched {
                 // 3a. Run body in a fresh scope holding the bindings.
                 self.env.push_scope();
-                for (name, val) in &bindings {
+                // ⚠ [X-06 第二步] **分发**:待匹配值的未消费集合按「哪个绑定
+                // 拿到的是携带它的那个值」分给各绑定(每个 `ERR` 只分一次)
+                // ⇒ §8.6.5「至多报告一次」成立。
+                let bound_values: Vec<&Value> = bindings.iter().map(|(_, val)| val).collect();
+                let bound_sets = distribute_unconsumed(&v.unconsumed, &bound_values);
+                for ((name, val), set) in bindings.iter().zip(bound_sets.iter()) {
                     // [v1.0 spec §8.6.3] 待匹配值的未消费状态转给**拿到那个
                     // `ERR` 值**的绑定(标识符模式拿到的是整个待匹配值)。
-                    let token = v.unconsumed && matches!(val, Value::Err(_));
                     self.env
-                        .set_local_with_token(name.clone(), val.clone(), token);
+                        .set_local_with_token(name.clone(), val.clone(), set.clone());
                 }
                 let result = self.eval_expr(&clause.body);
                 // [v1.0 spec §8.6.2 第 3 项] `MATCH` 分支体作用域结束仍未
@@ -11118,20 +11370,69 @@ impl Evaluator {
     // [v1.0 spec §8.6] 未消费 `ERR` 的三个丢弃点
     // ──────────────────────────────────────────────────────────────
 
+    /// [X-06 第二步 / v1.0 §8.6.3] **重建**标准库回调实参的未消费 `ERR` 集合。
+    ///
+    /// 输入是成员回传的 `bool`(「这个实参有没有未消费的 `ERR`」)与**实参
+    /// 值本身**;输出是那个实参的未消费集合。
+    ///
+    /// 规则:
+    ///
+    /// * 实参值**本身**是一个 `ERR` ⇒ 集合 = `{该 ERR}`(它就是成员说的那个
+    ///   未消费的 `ERR`);
+    /// * 实参值是**容器** ⇒ 集合 = 该容器**携带**的 `ERR`(成员把数组实参的
+    ///   令牌转给「承载那个未消费 `ERR` 的那个元素」—— 元素可能是嵌在容器里
+    ///   的,见 `wlwl-std` 的 `carrier_index`);
+    /// * 实参值不是 `ERR`、也不携带 `ERR` ⇒ 集合为空。
+    ///
+    /// ⚠ **重建是近似的**:成员回传的 `bool` 说不清「是哪一个」⇒ 本函数
+    /// 只能按实参值**推**。推不出来时给空集合 ⇒ 那一跳**漏报**(假阴性),
+    /// 绝不**误报**(假阳性)—— 差异登记项只承诺假阴性。
+    ///
+    /// ⚠ 这是**固有方法**而不是 `StdHost` 的 trait 方法:`StdHost` 定义在
+    /// **冻结**的 `wlwl-value` 里,不能加方法。
+    fn rebuild_callback_unconsumed(&self, value: &Value, token: bool) -> UnconsumedErrs {
+        if !token {
+            return Vec::new();
+        }
+        match value {
+            Value::Err(_) => vec![value.clone()],
+            other => {
+                let carried = errs_carried_by(other);
+                if carried.is_empty() {
+                    return Vec::new();
+                }
+                // ⚠ 只保留「本次调用的实参集合里真的挂着」的 `ERR` ——
+                // 成员说的「有令牌」指的就是那些。
+                let known: Vec<Value> = self
+                    .current_arg_unconsumed
+                    .iter()
+                    .flat_map(|set| set.iter())
+                    .cloned()
+                    .collect();
+                if known.is_empty() {
+                    return carried;
+                }
+                carried.into_iter().filter(|e| known.contains(e)).collect()
+            }
+        }
+    }
+
     /// [v1.0 spec §8.6.3] 在指定**读模式**下求值一个子表达式。
     ///
     /// 模式经求值器的 `read_mode` 字段传递:派发消费者时设好、求值完实参后
     /// 恢复。`Consume` / `Observe` 两种模式下到达该位置的 `ERR` **不再处于
-    /// 未消费状态**(取走型把它取走;观察型只是看一眼 —— 令牌仍留在被读取的
-    /// 绑定上,见 [`ReadMode::Observe`])。
+    /// 未消费状态**(取走型把它取走;观察型只是看一眼 —— 状态仍留在被读取的
+    /// 绑定上,见 [`ReadMode::Observe`]。
     fn eval_in_mode(&mut self, expr: &Expr, mode: ReadMode) -> WlwlResult<Outcome> {
         let prev = self.read_mode;
         self.read_mode = mode;
         let outcome = self.eval_expr(expr);
         self.read_mode = prev;
         let mut outcome = outcome?;
+        // ⚠ [X-06 第二步] 清空的是**在途值**携带的集合(源绑定的集合由
+        // `Env::read_binding` 按模式处置)。
         if mode != ReadMode::Transfer && matches!(outcome.value, Value::Err(_)) {
-            outcome.unconsumed = false;
+            outcome.unconsumed = Vec::new();
         }
         Ok(outcome)
     }
@@ -11152,6 +11453,30 @@ impl Evaluator {
         )
     }
 
+    /// [v1.0 spec §8.6.2] **丢弃时逐个报告** —— 一个丢弃点上被丢弃的集合里
+    /// 有几个 `ERR`,就产生**几条** `E0103`。
+    ///
+    /// * **条数** = 集合的元素个数;
+    /// * **顺序** = 集合的**出现序**(§8.6「诊断按它们在容器中的出现序排列」;
+    ///   §11.1 把诊断顺序钉成结构的一部分 ⇒ 这里**不排序、不去重**)。
+    ///
+    /// ⚠ **措辞报的是「被处置的那个值」**(§8.6.3「容器本身在丢弃点被处置」):
+    /// 被处置的值是 `ERR` ⇒ 报它的**载荷**;被处置的值是容器 ⇒ 报容器的
+    /// `display()`。集合决定**条数**,不决定**措辞**。
+    ///
+    /// ⚠ 借用:`self.diag` 要 `&mut self`(取调用栈),所以诊断**逐条**构造。
+    fn e0103_all(&mut self, disposed: &Value, count: usize, span: &Span) -> WlwlError {
+        let mut diags: Vec<WlwlDiagnostic> = Vec::with_capacity(count);
+        for _ in 0..count {
+            let owned = Self::span_copy(span);
+            let e = self.e0103(disposed, owned);
+            diags.push(e.diagnostic().clone());
+        }
+        // ⚠ `WlwlError::from(Vec<..>)` 对空集**明确 panic** —— 空集在这里是
+        // 程序错误(调用点都已经判过「集合非空」)。
+        WlwlError::from(diags)
+    }
+
     /// 把一段 span 拷出来(诊断要拿 owned 的 `Span`)。
     fn span_copy(span: &Span) -> Span {
         Span {
@@ -11164,40 +11489,91 @@ impl Evaluator {
     }
 
     /// [v1.0 spec §8.6.2 第 3 项] **作用域结束时仍未消费** —— 作用域结束时,
-    /// 仍有绑定持有未消费 `ERR` ⇒ `E0103`。
+    /// 仍有绑定持有未消费 `ERR` ⇒ 丢弃点。
     ///
     /// ⚠ 报告即终止程序 ⇒ 一个 `ERR` 至多被报告一次(§8.6.5)由「终止」天然
-    /// 保证;令牌本身在报告前已被销毁(读取即转移),故不会重复。
+    /// 保证;集合本身在报告前已被销毁(读取即转移),故不会重复。
+    ///
+    /// ⚠ [X-06 第二步] **逐个报告**:作用域里**所有**持有未消费 `ERR` 的
+    /// 绑定都要报(不再只报第一个)⇒ 集合里有几个 `ERR` 就几条 `E0103`。
+    /// 顺序 = **绑定间按名字序**(§11.1;`scope_unconsumed` 已经这么排)、
+    /// **集合内按出现序**。
     fn check_scope_end(&mut self, span: &Span) -> WlwlResult<()> {
+        let scope_index = self.env.scopes.len().saturating_sub(1);
         let pending = self.env.scope_unconsumed();
-        let Some((_name, value)) = pending.into_iter().next() else {
-            return Ok(());
-        };
-        Err(self.e0103(&value, Self::span_copy(span)))
+        Self::report_pending_unconsumed(self, scope_index, pending, span)
     }
 
     /// [v1.0 spec §8.6.2 第 3 项] **全局作用域**(模块顶层)结束时的同一检查。
     fn check_global_scope_end(&mut self, span: &Span) -> WlwlResult<()> {
         let pending = self.env.scope_unconsumed_at(0);
-        let Some((_name, value)) = pending.into_iter().next() else {
+        Self::report_pending_unconsumed(self, 0, pending, span)
+    }
+
+    /// [X-06 第二步] 把「作用域里待处置的未消费集合」变成**逐个**的 `E0103`。
+    ///
+    /// `pending` 的形状 = `Vec<(绑定名, 该绑定的未消费集合)>` —— 绑定间已经
+    /// 按**名字序**排好(§11.1);本函数**不重排**。
+    ///
+    /// ⚠ 每个绑定**各报各的**:被处置的值 = **那个绑定持有的值**(§8.6.3
+    /// 「容器本身在丢弃点被处置」)⇒ 值是 `ERR` 报载荷、值是容器报 `display()`;
+    /// 条数 = 该绑定集合的元素个数。
+    fn report_pending_unconsumed(
+        me: &mut Self,
+        scope_index: usize,
+        pending: Vec<(String, UnconsumedErrs)>,
+        span: &Span,
+    ) -> WlwlResult<()> {
+        let mut diags: Vec<WlwlDiagnostic> = Vec::new();
+        for (name, set) in pending {
+            if set.is_empty() {
+                continue;
+            }
+            let Some(value) = me.binding_value_at(scope_index, &name) else {
+                continue;
+            };
+            for _ in 0..set.len() {
+                let owned = Self::span_copy(span);
+                let e = me.e0103(&value, owned);
+                diags.push(e.diagnostic().clone());
+            }
+        }
+        if diags.is_empty() {
             return Ok(());
-        };
-        Err(self.e0103(&value, Self::span_copy(span)))
+        }
+        Err(WlwlError::from(diags))
+    }
+
+    /// 某个作用域里某个绑定持有的**值** —— 丢弃点的措辞用它(§8.6.3)。
+    ///
+    /// ⚠ 必须按**作用域下标**取(不能按名字全局找):全局作用域的绑定可能
+    /// 被内层作用域**同名遮蔽** ⇒ 按名字找会拿到内层那个(错的值)。
+    fn binding_value_at(&self, scope_index: usize, name: &str) -> Option<Value> {
+        self.env
+            .scopes
+            .get(scope_index)
+            .and_then(|scope| scope.get(name))
+            .map(|cell| cell.borrow().value.clone())
     }
 
     /// [v1.0 spec §8.6.2 第 2 项] **绑定被覆盖** —— 持有未消费 `ERR` 的绑定
     /// 被改写:同作用域重绑定(§3.2)或 `SET` 改写单元格(§3.4)。
+    ///
+    /// ⚠ [X-06 第二步] 旧绑定的集合里有几个 `ERR` 就报几条 `E0103`(按出现
+    /// 序)—— 措辞报的是**被处置的那个值**(旧绑定持有的值)。
     fn check_binding_overwritten(&mut self, name: &str, span: &Span) -> WlwlResult<()> {
-        let Some(token) = self.env.cell_token(name) else {
+        let Some(set) = self.env.cell_token(name) else {
             return Ok(());
         };
-        if !token {
+        if set.is_empty() {
             return Ok(());
         }
+        // 被处置的值 = 旧绑定持有的值(§8.6.3「容器本身在丢弃点被处置」)。
         let Some(value) = self.env.get(name).map(|v| (*v).clone()) else {
             return Ok(());
         };
-        Err(self.e0103(&value, Self::span_copy(span)))
+        let count = set.len();
+        Err(self.e0103_all(&value, count, span))
     }
 
     /// [v1.0 spec §8.6.2 第 2 项] **同作用域重绑定** —— 旧绑定被替换。
@@ -11317,11 +11693,18 @@ impl Evaluator {
         // takes `&mut self` so it can capture the call stack at
         // construction time; the trace is preserved through the
         // `match` below because it lives on the inner diagnostic.
-        let WlwlError::Diagnostic(mut d) = self.diag(
-            ErrorCode::E0020,
-            format!("undefined name `{}`", name),
-            span.clone(),
-        );
+        //
+        // ⚠ [X-06 第二步] `WlwlError` 现在有**两个**变体(`Diagnostic` /
+        // `Diagnostics`)⇒ 这个「取出内层诊断」的写法不再是**不可反驳**的
+        // let-pattern ⇒ 改用 `diagnostic()`(单诊断时它就是那一条)。
+        let mut d = self
+            .diag(
+                ErrorCode::E0020,
+                format!("undefined name `{}`", name),
+                span.clone(),
+            )
+            .diagnostic()
+            .clone();
         if let Some(src) = &self.source {
             if let Some(line_text) = extract_line(src, span.line_start) {
                 d = d.with_source_line(line_text);
@@ -11556,6 +11939,7 @@ mod tests {
             .eval(&ast)
             .expect_err("eval must error on top-level yield");
         match err {
+            WlwlError::Diagnostics(ds) => panic!("expected a single diagnostic, got {}", ds.len()),
             WlwlError::Diagnostic(d) => assert_eq!(
                 d.code,
                 ErrorCode::E0014,
@@ -11577,6 +11961,7 @@ mod tests {
             .eval(&ast)
             .expect_err("__YIELD_TEST__ with args must error");
         match err {
+            WlwlError::Diagnostics(ds) => panic!("expected a single diagnostic, got {}", ds.len()),
             WlwlError::Diagnostic(d) => assert_eq!(
                 d.code,
                 ErrorCode::E0022,
@@ -11639,6 +12024,7 @@ mod tests {
         let mut ev = Evaluator::new();
         let err = ev.eval(&ast).expect_err("0-arg call must error");
         match err {
+            WlwlError::Diagnostics(ds) => panic!("expected a single diagnostic, got {}", ds.len()),
             WlwlError::Diagnostic(d) => assert_eq!(
                 d.code,
                 ErrorCode::E0022,
@@ -11651,6 +12037,7 @@ mod tests {
         let mut ev2 = Evaluator::new();
         let err2 = ev2.eval(&ast2).expect_err("2-arg call must error");
         match err2 {
+            WlwlError::Diagnostics(ds) => panic!("expected a single diagnostic, got {}", ds.len()),
             WlwlError::Diagnostic(d) => assert_eq!(d.code, ErrorCode::E0022),
         }
     }
@@ -11780,6 +12167,7 @@ mod tests {
         let src = "SCOPE(1);";
         let err = run(src).expect_err("SCOPE(non-function) should fail");
         match err {
+            WlwlError::Diagnostics(ds) => panic!("expected a single diagnostic, got {}", ds.len()),
             WlwlError::Diagnostic(d) => assert_eq!(
                 d.code,
                 ErrorCode::E0052,
@@ -11794,6 +12182,7 @@ mod tests {
         let src = "SCOPE();";
         let err = run(src).expect_err("SCOPE() with no args should fail");
         match err {
+            WlwlError::Diagnostics(ds) => panic!("expected a single diagnostic, got {}", ds.len()),
             WlwlError::Diagnostic(d) => assert_eq!(
                 d.code,
                 ErrorCode::E0022,
@@ -11812,6 +12201,7 @@ mod tests {
         let src = "SCOPE(FUN((x), x));";
         let err = run(src).expect_err("SCOPE on a 1-arg fn should fail");
         match err {
+            WlwlError::Diagnostics(ds) => panic!("expected a single diagnostic, got {}", ds.len()),
             WlwlError::Diagnostic(d) => assert_eq!(
                 d.code,
                 ErrorCode::E0022,

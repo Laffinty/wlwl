@@ -17,6 +17,8 @@ use std::process::ExitCode;
 use serde_json::{json, Value};
 use wlwl_ast::Expr;
 
+use crate::OutputFormat;
+
 /// JSON 产物的 schema 版本。字段增删时**必须**动它 —— 工具靠它判断
 /// 自己的解析器还能不能用。
 const SCHEMA_VERSION: &str = "1.0.0";
@@ -34,7 +36,12 @@ pub fn interface_file(file: &std::path::Path) -> ExitCode {
     let ast = match wlwl_parser::parse(&source, &file_name) {
         Ok(a) => a,
         Err(e) => {
-            eprintln!("{}", e.diagnostic().render_human());
+            // 逐条:一个错误可能带**多条**诊断(§8.6)⇒ 全部打印,别只打
+            // 第一条。
+            eprint!(
+                "{}",
+                crate::diag_output::render_error_text(&e, OutputFormat::Human)
+            );
             return ExitCode::from(1);
         }
     };

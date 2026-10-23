@@ -41,7 +41,7 @@
 //! 挂起点的值当成测试结果(那正是此前「`YIELD()` 之后的断言没跑却判通过」
 //! 的成因,见 `crate::call_callable` 的文档)。
 
-use wlwl_value::{Outcome, Signal, StdHost, TestEntry, Value};
+use wlwl_value::{union_unconsumed, Outcome, Signal, StdHost, TestEntry, UnconsumedErrs, Value};
 
 use std::time::Instant;
 
@@ -114,6 +114,9 @@ pub fn kernel_run_tests(host: &mut dyn StdHost, args: Vec<Value>) -> WlwlResult<
     // legitimate) doesn't deadlock.
     let entries = std::mem::take(&mut host.ctx().tests);
     let mut results: Vec<Value> = Vec::with_capacity(entries.len());
+    // [X-06 / v1.0 spec §8.6.3] 结果容器持有的未消费集合 = 各条目集合的
+    // **并集**(容器装盛 ⇒ 转发给该容器)。
+    let mut result_set: UnconsumedErrs = Vec::new();
     for entry in entries {
         let started = Instant::now();
         // Per §8: ERR from assertions is "non-transparent" by spec rule
@@ -133,22 +136,44 @@ pub fn kernel_run_tests(host: &mut dyn StdHost, args: Vec<Value>) -> WlwlResult<
             if o.signal != Signal::None {
                 // 挂起优先于记账:原样把信号带回,值无意义(调度器在
                 // 段边界丢弃它,或在最后一段把它当作任务终值)。
+                //
+                // ⚠ [X-06 / v1.0 spec §8.6] 未消费状态是**集合**,这里给
+                // **空集合**:挂起**不是**丢弃点(§8.6.2 的三处都不含它)⇒
+                // 「本轮已攒的结果作废」**不产生** `E0103`。
                 return Ok(Outcome {
                     value: Value::Null,
                     signal: o.signal.clone(),
-                    unconsumed: false,
+                    unconsumed: Vec::new(),
                 });
             }
         }
-        let outcome = match called {
-            Ok(o) => Ok(o.value),
+        // [X-06 / v1.0 spec §8.6.3] 测试体返回值的未消费集合 ⇒ **转发**给
+        // 本成员的接收位置(§8.6.3「读入其它任何位置 ⇒ 由接收方承担」)⇒
+        // 最终落在 `RUN_TESTS` 的结果容器上。
+        //
+        // ⚠ `ERR` 的那一支**不转发**:成员把它的**载荷**取走了(取走型消费
+        // 者,§8.6.1)⇒ 那个 `ERR` 已不在未消费状态。
+        let (outcome, body_set): (Result<Value, ()>, UnconsumedErrs) = match called {
+            Ok(o) => {
+                let Outcome {
+                    value, unconsumed, ..
+                } = o;
+                let set = if matches!(&value, Value::Err(_)) {
+                    Vec::new()
+                } else {
+                    unconsumed
+                };
+                (Ok(value), set)
+            }
             Err(_e) => {
                 // Diagnostic surfaced during the test (e.g. uncaught
                 // E0102 from an unexpected ERR escape). Record the
                 // failure as a generic ERR.
-                Err(())
+                (Err(()), Vec::new())
             }
         };
+        // 本条测试体带回来的集合 ⇒ 并进结果容器的集合(§8.6.3)。
+        result_set = union_unconsumed(&result_set, &body_set);
         let duration_ms = started.elapsed().as_millis() as i64;
         let dict = match outcome {
             Ok(Value::Err(payload)) => {
@@ -242,7 +267,7 @@ pub fn kernel_run_tests(host: &mut dyn StdHost, args: Vec<Value>) -> WlwlResult<
         };
         results.push(dict);
     }
-    Ok(Outcome::normal(Value::Array(results)))
+    Ok(Outcome::with_unconsumed(Value::Array(results), result_set))
 }
 
 // ─────────────────────────────────────────────────────────────────────

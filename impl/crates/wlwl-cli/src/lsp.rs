@@ -189,7 +189,10 @@ impl Server {
                 (Some(ast), declared)
             }
             Err(e) => {
-                diags.push(e.diagnostic().clone());
+                // 逐条:一个错误可能带**多条**诊断(§8.6)⇒ 全部收下。
+                // LSP 的 `publishDiagnostics` **原生就是数组** ⇒ 一次
+                // 全量划到编辑器。
+                diags.extend(e.diagnostics().iter().cloned());
                 (None, Vec::new())
             }
         };

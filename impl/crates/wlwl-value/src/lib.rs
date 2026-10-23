@@ -10,6 +10,23 @@
 //!
 //! 函数调用行为(如何求值闭包)留在 eval 侧,经 [`StdHost::call`]
 //! 注入 —— wlwl-value 只承载值与句柄,不承载求值器。
+//!
+//! ## 未消费 `ERR` 状态:集合形态与**已知局限**
+//!
+//! [v1.0 规范 §8.6] 未消费状态是**集合**,不是单个标志 —— 一个绑定 / 一个
+//! 容器 / 一个数组元素序列都可以**同时持有多个**未消费的 `ERR`。集合类型是
+//! [`UnconsumedErrs`],元素是**那个 `ERR` 值本身**(`Value::Err(_)`),按
+//! **出现序**排列。
+//!
+//! ⚠ **已知局限(X-06 第二步才解决,本轮不做)**:集合元素是**值** ⇒ 身份靠
+//! `PartialEq` 判定 ⇒ **两个内容相同但来源不同的 `ERR` 无法区分**。后果:
+//!
+//! * 取走型消费者「取走它拿到的那一个」时按 `PartialEq` 匹配 ⇒ 在多个
+//!   内容相同的 `ERR` 里**移除哪一个是不确定的**;
+//! * 诊断只报**载荷** ⇒ 两个内容相同的 `ERR` 报出的消息逐字相同。
+//!
+//! 解决它要改 `Value::Err` 的**表示**(约 111 处构造点)⇒ 需业主先定口径,
+//! 不在本轮范围内。
 
 #![allow(clippy::doc_overindented_list_items)]
 
@@ -1167,6 +1184,49 @@ impl From<Literal> for Value {
 // Lexical environment (chain of scopes; v0.3 §6.3)
 // ──────────────────────────────────────────────────────────────────────
 
+// ──────────────────────────────────────────────────────────────────────
+// 未消费 `ERR` 状态(v1.0 规范 §8.6)
+// ──────────────────────────────────────────────────────────────────────
+
+/// [v1.0 规范 §8.6] **未消费 `ERR` 状态的集合**。
+///
+/// 元素是**那个 `ERR` 值本身**(`Value::Err(_)`),按**出现序**排列。
+///
+/// ⚠ 未消费状态是**集合**,不是单个标志 —— 一个绑定 / 一个容器 / 一个数组
+/// 元素序列都可以**同时持有多个**未消费的 `ERR`。
+pub type UnconsumedErrs = Vec<Value>;
+
+/// [v1.0 规范 §8.6] **并集** —— 多个未消费 `ERR` 汇入同一接收位置时
+/// **全部保留**。
+///
+/// **「并集」在此发生**:接收位置(绑定 / 容器 / 语句值)用它把各来源的集合
+/// 合成**一个**;**不是**「保留第一个」,也**不是**「后者覆盖前者」。
+///
+/// ⚠ **多重集口径,不去重**:身份判据(`PartialEq`)要到 X-06 第二步才有
+/// ⇒ 去重会把两个**内容相同、来源不同**的 `ERR` 合成一个 ⇒ **漏报**。
+/// 这里保留**全部元素**(含重复),让丢弃点能**逐个**报告。
+pub fn union_unconsumed(base: &[Value], extra: &[Value]) -> Vec<Value> {
+    let mut out = Vec::with_capacity(base.len() + extra.len());
+    out.extend_from_slice(base);
+    out.extend_from_slice(extra);
+    out
+}
+
+/// [v1.0 规范 §8.6] 在 `set` 里找**第一个**与 `value` 相等的元素下标。
+///
+/// 只在 `value` **本身就是** `Value::Err(_)` 时才找 —— 取走型消费者
+/// 「取走它拿到的那一个」只对 `ERR` 成立:值是容器时它拿到的是**容器**,
+/// 不是某个 `ERR` ⇒ 集合不变。
+///
+/// ⚠ **身份局限**:按 `PartialEq` 匹配 ⇒ 内容相同但来源不同的多个 `ERR`
+/// 里**命中哪一个是不确定的**(见模块文档的「已知局限」)。
+pub fn find_unconsumed_index(set: &[Value], value: &Value) -> Option<usize> {
+    if !matches!(value, Value::Err(_)) {
+        return None;
+    }
+    set.iter().position(|v| v == value)
+}
+
 /// Cell payload: a single binding's value plus its mutability flag.
 ///
 /// `mutable` is `false` (IMMUTABLE) when the cell is first created by a
@@ -1183,16 +1243,22 @@ impl From<Literal> for Value {
 pub struct Binding {
     pub value: Value,
     pub mutable: bool,
-    /// [v1.0 spec §8.6] **未消费 `ERR` 令牌**。
+    /// [v1.0 spec §8.6] **未消费 `ERR` 状态的集合**。
     ///
-    /// ⚠ 令牌挂在**绑定**上,不挂在值上(D-01):`Value` 是 `#[derive(Clone)]`
+    /// ⚠ 状态挂在**绑定**上,不挂在值上(D-01):`Value` 是 `#[derive(Clone)]`
     /// 的普通枚举,数组 / 字典按值深拷贝 ⇒ 「这个 `ERR` 已被消费」若挂在
     /// 值上,`LET(a, err); LET(b, a);` 之后消费 `b` 清不掉 `a` 的副本 ⇒ 误报。
     ///
-    /// 令牌在任一时刻**只有一个持有者**:按 §8.6.3 的转发规则在读取时转移,
-    /// 被取走型消费者取走或被显式丢弃即销毁 ⇒ §8.6.5「至多报告一次」由转移
-    /// 语义天然保证。
-    pub unconsumed: bool,
+    /// ⚠ 未消费状态是**集合**,不是单个标志:一个绑定可以**同时持有多个**
+    /// 未消费的 `ERR`(元素是那些 `ERR` 值本身,按出现序)。
+    ///
+    /// **每个 `ERR` 在任一时刻仍只有一个持有者**:按 §8.6.3 的转发规则在读取
+    /// 时转移(Transfer 整组转走),被取走型消费者取走其中**它拿到的那一个**,
+    /// 或被显式丢弃即销毁 ⇒ §8.6.5「至多报告一次」由转移语义天然保证。
+    ///
+    /// ⚠ **身份局限**:元素是**值** ⇒ 两个内容相同但来源不同的 `ERR` 无法
+    /// 区分(见模块文档的「已知局限」)。
+    pub unconsumed: UnconsumedErrs,
 }
 
 /// A heap-allocated cell. Cloning the `Rc` is cheap and is what
@@ -1207,7 +1273,7 @@ pub fn new_cell(value: Value) -> Cell {
     Rc::new(RefCell::new(Binding {
         value,
         mutable: false,
-        unconsumed: false,
+        unconsumed: Vec::new(),
     }))
 }
 
@@ -1216,18 +1282,24 @@ pub fn new_cell(value: Value) -> Cell {
 /// 规范把「读入某个位置」分成三类,每类对**源绑定**的未消费状态与**在途值**
 /// 的未消费状态有不同影响:
 ///
-/// | 模式 | 何时 | 源绑定的令牌 | 在途值的令牌 |
+/// | 模式 | 何时 | 源绑定的集合 | 在途值的集合 |
 /// |---|---|---|---|
-/// | [`Consume`](ReadMode::Consume) | 取走型消费者的实参 | 清除 | false |
-/// | [`Observe`](ReadMode::Observe) | 观察型消费者的实参 | **保留** | false |
-/// | [`Transfer`](ReadMode::Transfer) | 其余一切位置 | 清除 | 继承源令牌 |
+/// | [`Consume`](ReadMode::Consume) | 取走型消费者的实参 | 移除**它拿到的那一个** | 空 |
+/// | [`Observe`](ReadMode::Observe) | 观察型消费者的实参 | **保留**(整组不动) | 空 |
+/// | [`Transfer`](ReadMode::Transfer) | 其余一切位置 | **清空**(整组转走) | **继承源集合** |
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum ReadMode {
     /// 取走型:该 `ERR` 被取走,不再处于未消费状态(§8.6.1)。
+    ///
+    /// ⚠ 集合语义:**取走的是它拿到的那一个** —— 只有当读到的值**本身就是**
+    /// 一个 `ERR` 且它在源集合里时,才把**它**从源集合里移除;值是容器等
+    /// 其它情况时**集合不变**。
     Consume,
     /// 观察型:只看不带走,未消费状态**留在被读取的绑定**(§8.6.1)。
     Observe,
     /// 转移:由接收方承担(§8.6.3「读入其它任何位置」)。
+    ///
+    /// 源绑定的集合**整体转走**(源绑定清空),在途值**携带**该集合。
     Transfer,
 }
 
@@ -1354,11 +1426,15 @@ impl Env {
 
     /// [v1.0 spec §8.6.3] `LET` 建绑定时的**转发**:接收位置建立绑定 ⇒
     /// 未消费状态转给该绑定。
+    ///
+    /// `unconsumed` 是**已经并好的集合** —— **并集由调用方在接收位置用
+    /// [`union_unconsumed`] 完成**(把各来源的集合合成一个再传进来);
+    /// 本函数**不合并、不覆盖**:收下什么就是什么。
     pub fn set_local_with_token(
         &mut self,
         name: impl Into<String>,
         value: Value,
-        unconsumed: bool,
+        unconsumed: UnconsumedErrs,
     ) {
         if let Some(scope) = self.scopes.last_mut() {
             scope.insert(
@@ -1373,11 +1449,14 @@ impl Env {
     }
 
     /// [v1.0 spec §8.6.3] 同上,但建立**可变**绑定(`LET MUT`)。
+    ///
+    /// ⚠ 集合口径与 [`Env::set_local_with_token`] **逐字相同**(并集在调用方
+    /// 那一侧用 [`union_unconsumed`] 完成)。
     pub fn set_local_mut_with_token(
         &mut self,
         name: impl Into<String>,
         value: Value,
-        unconsumed: bool,
+        unconsumed: UnconsumedErrs,
     ) {
         if let Some(scope) = self.scopes.last_mut() {
             scope.insert(
@@ -1412,27 +1491,65 @@ impl Env {
 
     /// [v1.0 spec §8.6.3] **按模式读一个绑定**。
     ///
-    /// 返回 `(值, 在途值的令牌)`。源绑定的令牌按模式处置:
-    /// `Consume` ⇒ 清除;`Observe` ⇒ **保留**;`Transfer` ⇒ 清除且令牌
-    /// 随在途值转走。
-    pub fn read_binding(&self, name: &str, mode: ReadMode) -> Option<(Value, bool)> {
+    /// 返回 `(值, 在途值携带的集合)`。源绑定的集合按模式处置:
+    ///
+    /// * `Consume` ⇒ **取走它拿到的那一个**:读到的值**本身**是 `ERR`
+    ///   (`Value::Err(_)`)时移除它;读到的值是 `OK(ERR(..))` 时移除**内层**
+    ///   那个 `ERR`(取走型消费者剥掉 `OK` 外壳拿到的是内层那个);两种形态
+    ///   都只在它**确实在源集合里**时才移除。值是容器等其它情况 ⇒
+    ///   **集合不变**。在途值**永远不带**集合。
+    ///
+    ///   ⚠ `OK(ERR(..))` 这一支不可省:不移除 ⇒ 源绑定与结果值各留一份 ⇒
+    ///   同一个 `ERR` 被报两次(违 §8.6.5「一个 `ERR` 至多被报告一次」)。
+    /// * `Observe` ⇒ 源绑定的集合**保留**(整组不动),在途值**不带**集合。
+    /// * `Transfer` ⇒ 源绑定的集合**整体转走**(源绑定清空),在途值
+    ///   **携带**该集合。
+    ///
+    /// ⚠ **身份局限**:取走型的那一步按 `PartialEq` 匹配 ⇒ 内容相同但来源
+    /// 不同的多个 `ERR` 里**移除哪一个是不确定的**(见模块文档的「已知局限」)。
+    pub fn read_binding(&self, name: &str, mode: ReadMode) -> Option<(Value, UnconsumedErrs)> {
         for scope in self.scopes.iter().rev() {
             if let Some(cell) = scope.get(name) {
                 let mut b = cell.borrow_mut();
-                let token = b.unconsumed;
                 let value = b.value.clone();
                 match mode {
                     ReadMode::Consume => {
-                        b.unconsumed = false;
-                        return Some((value, false));
+                        // 取走型消费者取走的是**它拿到的那一个**(§8.6)。
+                        //
+                        // ⚠ [X-06 第二步] 「拿到的那一个」有两种形态:值**本身**
+                        // 是 `ERR`;或值是 `OK(ERR(..))` —— 消费者剥掉 `OK` 外壳
+                        // 拿到的是**内层**那个 `ERR`(§8.6.1 的取走型名单里有
+                        // `UNWRAP_OR` / `TRY` / `UNWRAP` / `WRAP` …)⇒ 两种形态
+                        // 都要从源集合里移除**那一个**;否则源绑定与结果值各留
+                        // 一份 ⇒ 同一个 `ERR` 被报两次(违 §8.6.5)。
+                        //
+                        // ⚠ 容器等其它形态**不动**:「取走型消费者取走的是它拿到
+                        // 的那个 `ERR` —— 容器里还剩几个,不受它影响」(§8.6.3)。
+                        let taken = match &value {
+                            Value::Err(_) => Some(value.clone()),
+                            Value::Ok(inner) => match inner.as_ref() {
+                                Value::Err(_) => Some((**inner).clone()),
+                                _ => None,
+                            },
+                            _ => None,
+                        };
+                        if let Some(taken) = taken {
+                            if let Some(idx) = find_unconsumed_index(&b.unconsumed, &taken) {
+                                b.unconsumed.remove(idx);
+                            }
+                        }
+                        // 在途值在 Consume 模式下**永远不带**集合。
+                        return Some((value, Vec::new()));
                     }
                     ReadMode::Observe => {
-                        // 未消费状态留在被读取的绑定(§8.6.1 观察型)。
-                        return Some((value, false));
+                        // 未消费状态留在被读取的绑定(§8.6.1 观察型)⇒ 集合
+                        // **不清空**。
+                        return Some((value, Vec::new()));
                     }
                     ReadMode::Transfer => {
-                        b.unconsumed = false;
-                        return Some((value, token));
+                        // 集合**整体转走**:源绑定清空,在途值携带该集合。
+                        let carried = std::mem::take(&mut b.unconsumed);
+                        return Some((value, carried));
                     }
                 }
             }
@@ -1440,12 +1557,15 @@ impl Env {
         None
     }
 
-    /// [v1.0 spec §8.6.2] 查某个名字当前单元格的未消费令牌(用于 `SET`
-    /// 改写前的「绑定被覆盖」判定)。
-    pub fn cell_token(&self, name: &str) -> Option<bool> {
+    /// [v1.0 spec §8.6.2] 查某个名字当前单元格持有的**未消费 `ERR` 集合**
+    /// (用于 `SET` 改写前的「绑定被覆盖」判定)。
+    ///
+    /// 返回 `None` = 该名字在**任何**作用域里都没有绑定;返回
+    /// `Some(空集合)` = 该绑定存在但**没有**未消费的 `ERR`。
+    pub fn cell_token(&self, name: &str) -> Option<UnconsumedErrs> {
         for scope in self.scopes.iter().rev() {
             if let Some(cell) = scope.get(name) {
-                return Some(cell.borrow().unconsumed);
+                return Some(cell.borrow().unconsumed.clone());
             }
         }
         None
@@ -1453,8 +1573,12 @@ impl Env {
 
     /// [v1.0 spec §8.6.2] **最内层作用域**内持有未消费 `ERR` 的绑定。
     ///
-    /// 作用域结束时(§8.6.2 第 3 项)逐条检查 ⇒ 报 `E0103`。
-    pub fn scope_unconsumed(&self) -> Vec<(String, Value)> {
+    /// 返回 `(绑定名, 该绑定持有的未消费 `ERR` 集合)` —— 一个绑定可以持有
+    /// **多个**,集合里是那些 `ERR` 值本身,按**出现序**。
+    ///
+    /// 作用域结束时(§8.6.2 第 3 项)逐**个**检查 ⇒ 一个集合里有几个 `ERR`
+    /// 就产生几条 `E0103`。
+    pub fn scope_unconsumed(&self) -> Vec<(String, UnconsumedErrs)> {
         self.scope_unconsumed_at(self.scopes.len().saturating_sub(1))
     }
 
@@ -1462,15 +1586,18 @@ impl Env {
     ///
     /// 下标 0 是**全局作用域**(模块顶层)—— 程序 / 模块结束时它是最后
     /// 一道「作用域结束时仍未消费」的检查点。
-    pub fn scope_unconsumed_at(&self, index: usize) -> Vec<(String, Value)> {
+    ///
+    /// ⚠ 集合内的次序 = **出现序**(§8.6「诊断按它们在容器中的出现序排列」);
+    /// 绑定之间的次序按**名字排序**(见下)。
+    pub fn scope_unconsumed_at(&self, index: usize) -> Vec<(String, UnconsumedErrs)> {
         let mut out = Vec::new();
         let Some(scope) = self.scopes.get(index) else {
             return out;
         };
         for (name, cell) in scope {
             let b = cell.borrow();
-            if b.unconsumed {
-                out.push((name.clone(), b.value.clone()));
+            if !b.unconsumed.is_empty() {
+                out.push((name.clone(), b.unconsumed.clone()));
             }
         }
         // ⚠ **按名字排序**:作用域是 `HashMap`,迭代序不确定 ⇒ 同一份源码
@@ -1492,7 +1619,7 @@ impl Env {
                 Rc::new(RefCell::new(Binding {
                     value,
                     mutable: true,
-                    unconsumed: false,
+                    unconsumed: Vec::new(),
                 })),
             );
         }
@@ -1505,18 +1632,23 @@ impl Env {
     ///   * `Err(())`   -- cell not found at all (caller raises E0020)
     #[allow(clippy::result_unit_err)] // bool tri-state (Ok/Err-not-found) — see Phase A2 cell semantics
     pub fn set_cell_value(&self, name: &str, value: Value) -> Result<bool, ()> {
-        self.set_cell_value_with_token(name, value, false)
+        self.set_cell_value_with_token(name, value, Vec::new())
     }
 
     /// [v1.0 spec §8.6.3] `SET` 改写单元格时的**转发**:新值若持有未消费
     /// `ERR`,未消费状态转给该单元格(§3.4 的说明:旧值若未被消费,改写即构成
-    /// 一个丢弃点 —— 那一半由调用方在改写**之前**判定)。
+    /// 一个丢弃点 —— 那一半由调用方在改写**之前**用 [`Env::cell_token`]
+    /// 判定)。
+    ///
+    /// ⚠ 集合口径与 [`Env::set_local_with_token`] **逐字相同**:本函数收下
+    /// 调用方**已经并好**的集合(并集在调用方那一侧用 [`union_unconsumed`]
+    /// 完成),**不合并、不覆盖**。
     #[allow(clippy::result_unit_err)] // bool tri-state (Ok/Err-not-found) — see Phase A2 cell semantics
     pub fn set_cell_value_with_token(
         &self,
         name: &str,
         value: Value,
-        unconsumed: bool,
+        unconsumed: UnconsumedErrs,
     ) -> Result<bool, ()> {
         for scope in self.scopes.iter().rev() {
             if let Some(cell) = scope.get(name) {
@@ -1596,15 +1728,18 @@ pub enum Signal {
 pub struct Outcome {
     pub value: Value,
     pub signal: Signal,
-    /// [v1.0 spec §8.6] **未消费 `ERR` 令牌**。
+    /// [v1.0 spec §8.6] **未消费 `ERR` 状态的集合**。
     ///
     /// 它随求值结果走:能穿过函数返回值、容器字面量、`IF` / `MATCH` 分支、
-    /// `==` / `!=` 的透传。`Outcome::normal` 保持它为 `false`;需要带令牌
+    /// `==` / `!=` 的透传。`Outcome::normal` 保持它为**空集合**;需要带集合
     /// 的地方用 [`Outcome::with_unconsumed`]。
     ///
     /// ⚠ 当 `signal` 是 [`Signal::Return`] 时,`value` 是 `NULL`,**有意义
-    /// 的值在信号里** —— 此时本字段说的是**被返回的那个值**的令牌。
-    pub unconsumed: bool,
+    /// 的值在信号里** —— 此时本字段说的是**被返回的那个值**的集合。
+    ///
+    /// ⚠ **并集在接收位置发生**:多个来源的集合汇进同一个 `Outcome` 时,
+    /// 调用方用 [`union_unconsumed`] 把它们**合成一个**(全部保留)。
+    pub unconsumed: UnconsumedErrs,
 }
 
 impl Outcome {
@@ -1612,12 +1747,15 @@ impl Outcome {
         Outcome {
             value: v,
             signal: Signal::None,
-            unconsumed: false,
+            unconsumed: Vec::new(),
         }
     }
 
-    /// [v1.0 spec §8.6.3] 带一个**未消费 `ERR` 令牌**的返回值。
-    pub fn with_unconsumed(v: Value, unconsumed: bool) -> Self {
+    /// [v1.0 spec §8.6.3] 带一个**未消费 `ERR` 集合**的返回值。
+    ///
+    /// ⚠ 传入的是**已经并好的集合**(并集在接收位置由调用方用
+    /// [`union_unconsumed`] 完成)—— 本函数**不合并、不覆盖**。
+    pub fn with_unconsumed(v: Value, unconsumed: UnconsumedErrs) -> Self {
         Outcome {
             value: v,
             signal: Signal::None,
@@ -1634,7 +1772,7 @@ impl Outcome {
         Outcome {
             value: v,
             signal,
-            unconsumed: false,
+            unconsumed: Vec::new(),
         }
     }
 }
@@ -2800,5 +2938,166 @@ mod dict_hash_index_tests {
             v.as_dict_entries().expect("is a dict"),
             &[(s("zeta"), i(1)), (s("alpha"), i(2)), (s("mid"), i(3))]
         );
+    }
+}
+
+// ── [v1.0 规范 §8.6] 未消费 `ERR` 状态:集合形态 ─────────────────────────
+//
+// 这一组钉的是**从单个 bool 升级为有序集合**之后的四条语义:
+//
+//   ① `Transfer` ⇒ 集合**整体转走**(源绑定清空,在途值携带**全部**);
+//   ② `Observe`  ⇒ 集合**留在源绑定**(一个都不少);
+//   ③ `Consume`  ⇒ 只移除**它拿到的那一个** `ERR`;值是容器时**集合不变**;
+//   ④ **并集**   ⇒ 多个未消费 `ERR` 汇入同一接收位置时**全部保留**。
+//
+// 每条都是**单独**可红的:改坏其中一条的落点,只有对应那条变红。
+
+#[cfg(test)]
+mod unconsumed_err_set_tests {
+    use super::*;
+
+    fn err(msg: &str) -> Value {
+        Value::Err(Box::new(Value::String(msg.to_string())))
+    }
+
+    /// 建一个只含 `name` 一个绑定、持有给定集合的作用域。
+    fn env_with(name: &str, value: Value, set: UnconsumedErrs) -> Env {
+        let mut env = Env::new();
+        env.set_local_with_token(name, value, set);
+        env
+    }
+
+    /// ① `Transfer`:集合**整体转走** —— 源绑定清空,在途值携带**全部**。
+    #[test]
+    fn transfer_moves_the_whole_collection_and_clears_the_source() {
+        let e1 = err("e1");
+        let e2 = err("e2");
+        let env = env_with("a", e1.clone(), vec![e1.clone(), e2.clone()]);
+
+        let (value, carried) = env
+            .read_binding("a", ReadMode::Transfer)
+            .expect("binding exists");
+
+        assert_eq!(value, e1);
+        // 整组转走:在途值携带**两个**,不是「只带第一个」。
+        assert_eq!(carried, vec![e1.clone(), e2.clone()]);
+        // 源绑定**清空**。
+        assert_eq!(env.cell_token("a"), Some(Vec::<Value>::new()));
+    }
+
+    /// ② `Observe`:集合**留在源绑定** —— 一个都不少,在途值不带集合。
+    #[test]
+    fn observe_keeps_the_collection_in_the_source_binding() {
+        let e1 = err("e1");
+        let e2 = err("e2");
+        let env = env_with("a", e1.clone(), vec![e1.clone(), e2.clone()]);
+
+        let (value, carried) = env
+            .read_binding("a", ReadMode::Observe)
+            .expect("binding exists");
+
+        assert_eq!(value, e1);
+        // 在途值**不带**集合。
+        assert!(carried.is_empty());
+        // 源绑定**保留**整组集合。
+        assert_eq!(env.cell_token("a"), Some(vec![e1.clone(), e2.clone()]));
+    }
+
+    /// ③ `Consume` + 值**本身**是 `ERR`:只移除**它拿到的那一个**。
+    #[test]
+    fn consume_removes_the_matching_err_and_keeps_the_others() {
+        let e1 = err("e1");
+        let e2 = err("e2");
+        let env = env_with("a", e1.clone(), vec![e1.clone(), e2.clone()]);
+
+        let (value, carried) = env
+            .read_binding("a", ReadMode::Consume)
+            .expect("binding exists");
+
+        assert_eq!(value, e1);
+        assert!(carried.is_empty());
+        // 只掉**那一个**;另一个仍在集合里。
+        assert_eq!(env.cell_token("a"), Some(vec![e2.clone()]));
+    }
+
+    /// ③ `Consume` + 值是**容器**:集合**不变** —— 取走型拿到的是容器,
+    /// 不是某个 `ERR` ⇒ 没有「它拿到的那一个」可取。
+    #[test]
+    fn consume_of_a_container_leaves_the_collection_untouched() {
+        let e1 = err("e1");
+        let e2 = err("e2");
+        let container = Value::Array(vec![e1.clone(), e2.clone()]);
+        let env = env_with("a", container.clone(), vec![e1.clone(), e2.clone()]);
+
+        let (value, carried) = env
+            .read_binding("a", ReadMode::Consume)
+            .expect("binding exists");
+
+        assert_eq!(value, container);
+        assert!(carried.is_empty());
+        // 集合**原样不动**。
+        assert_eq!(env.cell_token("a"), Some(vec![e1.clone(), e2.clone()]));
+    }
+
+    /// ④ **并集**:两侧的 `ERR` **全部保留** —— 不是「保留第一个」,也不是
+    /// 「后者覆盖前者」。
+    #[test]
+    fn union_keeps_every_element_from_both_sides() {
+        let e1 = err("e1");
+        let e2 = err("e2");
+
+        let merged = union_unconsumed(std::slice::from_ref(&e1), std::slice::from_ref(&e2));
+
+        assert_eq!(merged, vec![e1.clone(), e2.clone()]);
+    }
+
+    /// ④ 并集是**多重集**口径:内容相同、来源不同的两个 `ERR` **不去重**
+    /// (身份判据要到 X-06 第二步才有;去重会漏报)。
+    #[test]
+    fn union_keeps_duplicates_because_identity_is_not_settled_yet() {
+        let e1 = err("e1");
+
+        let merged = union_unconsumed(std::slice::from_ref(&e1), std::slice::from_ref(&e1));
+
+        assert_eq!(merged, vec![e1.clone(), e1.clone()]);
+    }
+
+    /// ④ 并集的结果**原样**落在接收位置上(绑定)—— 绑定**不覆盖、不丢弃**。
+    #[test]
+    fn a_binding_receives_the_union_of_two_sources() {
+        let e1 = err("e1");
+        let e2 = err("e2");
+        let mut env = Env::new();
+
+        let merged = union_unconsumed(std::slice::from_ref(&e1), std::slice::from_ref(&e2));
+        env.set_local_with_token("a", e1.clone(), merged);
+
+        assert_eq!(env.cell_token("a"), Some(vec![e1.clone(), e2.clone()]));
+    }
+
+    /// 丢弃点③ 的素材:一个绑定持有**多个**未消费 `ERR` ⇒ 逐**个**报告,
+    /// 顺序 = **出现序**(§8.6「诊断按它们在容器中的出现序排列」)。
+    #[test]
+    fn scope_unconsumed_reports_every_err_of_a_binding_in_appearance_order() {
+        let e1 = err("e1");
+        let e2 = err("e2");
+        let mut env = Env::new();
+        env.set_local_with_token("a", e1.clone(), vec![e1.clone(), e2.clone()]);
+
+        let pending = env.scope_unconsumed();
+
+        assert_eq!(pending.len(), 1);
+        assert_eq!(pending[0].0, "a");
+        assert_eq!(pending[0].1, vec![e1.clone(), e2.clone()]);
+    }
+
+    /// 没有未消费 `ERR` 的绑定**不出现**在丢弃点的素材里。
+    #[test]
+    fn a_binding_without_unconsumed_errs_is_not_reported() {
+        let mut env = Env::new();
+        env.set_local("a", err("e1"));
+
+        assert!(env.scope_unconsumed().is_empty());
+        assert_eq!(env.cell_token("a"), Some(Vec::<Value>::new()));
     }
 }

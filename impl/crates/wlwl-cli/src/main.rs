@@ -278,11 +278,7 @@ fn report_panic(
         ),
         Location::point(source.unwrap_or("<runtime>").to_string(), 0, 0),
     );
-    match format {
-        OutputFormat::Human => eprintln!("{}", d.render_human()),
-        OutputFormat::Json => eprintln!("{}", d.render_json()),
-        OutputFormat::Jsonl => eprintln!("{}", d.render_jsonl()),
-    }
+    eprintln!("{}", diag_output::render_diag_text(&d, format));
     // spec §11.4: 101 = 实现内部崩溃。**不能**走 `exit_code_for`
     // (它对非解析失败一律给 1)—— 那会把「程序跑挂了」说成「程序写错了」。
     ExitCode::from(101)
@@ -406,6 +402,7 @@ fn dispatch(cmd: Cmd) -> ExitCode {
     }
 }
 
+mod diag_output;
 mod lsp;
 mod tooling;
 
@@ -555,11 +552,7 @@ fn report_eval_warnings(ev: &mut wlwl_eval::Evaluator, file: &str, format: Outpu
             None => Location::point(file.to_string(), 0, 0),
         };
         let d = WlwlDiagnostic::new(w.code, w.message, loc).with_severity(Severity::Warning);
-        match format {
-            OutputFormat::Human => eprintln!("{}", d.render_human()),
-            OutputFormat::Json => eprintln!("{}", d.render_json()),
-            OutputFormat::Jsonl => eprintln!("{}", d.render_jsonl()),
-        }
+        eprintln!("{}", diag_output::render_diag_text(&d, format));
     }
 }
 
@@ -947,8 +940,16 @@ fn fmt_file(file: &PathBuf, check: bool, write: bool) -> ExitCode {
     }
 }
 
+/// 报告一个错误 —— **逐条**打印它携带的**全部**诊断。
+///
+/// [v1.0 规范 §8.6]「丢弃时逐个报告」:一个丢弃点上丢了几个 `ERR`,就有
+/// 几条 `E0103`。⇒ 这里必须走 `diagnostics()`(全部),不能走
+/// `diagnostic()`(第一条)—— 后者会让第 2..N 条**静默消失**。
+///
+/// 退出码按**第一条**的类别定(§11.4),见 `diag_output::exit_code_value_for_diags`。
 fn report_error(err: WlwlError, format: OutputFormat) -> ExitCode {
-    report_diag(err.diagnostic().clone(), format)
+    eprint!("{}", diag_output::render_error_text(&err, format));
+    diag_output::exit_code_for_diags(err.diagnostics())
 }
 
 /// 退出码契约(见 spec §11.5)。
@@ -961,20 +962,15 @@ fn report_error(err: WlwlError, format: OutputFormat) -> ExitCode {
 /// [v0.10.1] 改之前只有 `0` / `1` / `2`,而 `1` 同时表示「语法错」「类型错」
 /// 「未定义名」「除零」…… 脚本拿到 `1` 无法判断该回去改代码还是改逻辑。
 /// 只加**一个**码,不加一串:能解析出来但不对的,都还是「程序不对」,归 `1`。
+///
+/// 规则的**唯一**实现在 [`diag_output::exit_code_value`];这里只包一层
+/// `ExitCode`。
 fn exit_code_for(d: &WlwlDiagnostic) -> ExitCode {
-    if d.code.is_parse_failure() {
-        ExitCode::from(3)
-    } else {
-        ExitCode::from(1)
-    }
+    ExitCode::from(diag_output::exit_code_value(d))
 }
 
 fn report_diag(d: WlwlDiagnostic, format: OutputFormat) -> ExitCode {
-    match format {
-        OutputFormat::Human => eprintln!("{}", d.render_human()),
-        OutputFormat::Json => eprintln!("{}", d.render_json()),
-        OutputFormat::Jsonl => eprintln!("{}", d.render_jsonl()),
-    }
+    eprintln!("{}", diag_output::render_diag_text(&d, format));
     exit_code_for(&d)
 }
 
@@ -1267,11 +1263,7 @@ fn static_check_gate(
     // 警告的 `W0117`),那就不该拦。
     let blocking = rendered.iter().any(|d| d.severity == Severity::Error);
     for d in &rendered {
-        match format {
-            OutputFormat::Human => eprintln!("{}", d.render_human()),
-            OutputFormat::Json => eprintln!("{}", d.render_json()),
-            OutputFormat::Jsonl => eprintln!("{}", d.render_jsonl()),
-        }
+        eprintln!("{}", diag_output::render_diag_text(d, format));
     }
     if blocking {
         // [v0.10.1] 走同一条退出码契约。静态层也会产出 parser 的码 ——
@@ -1584,7 +1576,14 @@ fn sig_syntax_diagnostics(
         // ⚠ 硬错:退出码由**码**决定(§11.4),不由档位决定。签名文件的
         // 语法错误是 `E0010` 族 ⇒ 退出码 `3`。
         if let Err(e) = load_module_sig(&m) {
-            out.push(e.diagnostic().clone().with_severity(Severity::Error));
+            // 逐条:一个错误可能带**多条**诊断(§8.6)⇒ 全部收下,别只留
+            // 第一条 —— 签名文件里往往有好几处写错。
+            out.extend(
+                e.diagnostics()
+                    .iter()
+                    .cloned()
+                    .map(|d| d.with_severity(Severity::Error)),
+            );
             broken.insert(key);
         }
     }
@@ -1623,9 +1622,9 @@ fn scan_module_contracts(
     // 入口模块先自查(它不会被别人「发现」,所以不走下面的发现路径)。
     let entry_contract = match build_contract(entry, entry_ast, severity) {
         Ok(c) => c,
-        Err(d) => {
+        Err(ds) => {
             if !already_reported.contains(&normalize_path(entry)) {
-                out.push(d);
+                out.extend(ds);
             }
             return out;
         }
@@ -1672,9 +1671,9 @@ fn scan_module_contracts(
                 };
                 let dep_contract = match build_contract(&dep, &dep_ast, severity) {
                     Ok(c) => c,
-                    Err(d) => {
+                    Err(ds) => {
                         if !already_reported.contains(&key) {
-                            out.push(d);
+                            out.extend(ds);
                         }
                         continue;
                     }
@@ -1761,18 +1760,26 @@ fn default_empty_sig_types() -> &'static std::collections::BTreeMap<String, Ty> 
 /// 实现写的是别的」这类**不一致**可以只警告;但「这份签名文件根本读不
 /// 出来」不是不一致,是**读不出来的文本**(规范 §11.4),退出码必须是 `3`。
 /// 把它降级成警告,同一种故障就又拿到了两种退出码。
+///
+/// ⚠ 返回的是 **`Vec`** 而不是一条:签名文件里可能有好几处写错,一个错误
+/// 可以携带**多条**诊断(§8.6)⇒ 收下全部,别只留第一条。
 fn build_contract(
     path: &std::path::Path,
     ast: &Expr,
     severity: Severity,
-) -> Result<wlwl_types::ModuleContract, WlwlDiagnostic> {
+) -> Result<wlwl_types::ModuleContract, Vec<WlwlDiagnostic>> {
     let sig = load_module_sig(path).map_err(|e| {
-        let d = e.diagnostic().clone();
-        if d.code.is_parse_failure() {
-            d // 硬错:解析失败恒为硬错(退出码 `3`)
-        } else {
-            d.with_severity(severity)
-        }
+        e.diagnostics()
+            .iter()
+            .cloned()
+            .map(|d| {
+                if d.code.is_parse_failure() {
+                    d // 硬错:解析失败恒为硬错(退出码 `3`)
+                } else {
+                    d.with_severity(severity)
+                }
+            })
+            .collect::<Vec<_>>()
     })?;
     Ok(wlwl_types::ModuleContract::from_module(
         ast,
