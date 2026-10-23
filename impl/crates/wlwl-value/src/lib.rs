@@ -415,7 +415,7 @@ impl std::hash::Hash for DictKey {
 ///
 /// * `entries` —— **插入序**的键值序列(规范 §18.3.1:键序是插入序且可观察);
 ///   它是**呈现的唯一来源**(渲染 / JSON / `KEYS` / `VALUES` 全走它)。
-/// * `index` —— `DictKey` → `entries` 里的**位置**。索引**只存位置**,
+/// * `index` —— `DictKey` → `entries` 里的**位置列表**。索引**只存位置**,
 ///   **不参与呈现** ⇒ 哈希的实现细节不会漏到可观察面。
 ///
 /// ⚠ **克隆是共享,不是深拷贝**(`Rc` 的语义)⇒ 任何写路径都必须走
@@ -424,8 +424,15 @@ impl std::hash::Hash for DictKey {
 pub struct DictInner {
     /// 插入序的键值序列(**呈现的唯一来源**)。
     entries: Vec<(Value, Value)>,
-    /// 键 → `entries` 里的位置。
-    index: HashMap<DictKey, usize>,
+    /// 键 → `entries` 里的**位置列表**。
+    ///
+    /// ⚠ **列表而不是单个位置**:字典字面量允许**重复键**
+    ///   (`["a": 1, "a": 2]`)⇒ 同一键在 `entries` 里可能有**多个**位置。
+    ///   列表按**插入序**升序 ⇒ **首个**元素 = 首次出现的位置 ⇒
+    ///   [`DictInner::lookup`] 仍返回「首次出现」(与旧的线性扫描逐字一致);
+    ///   而**深度相等**([`dict_entries_equal`])要的是「**同键的所有**位置」
+    ///   ⇒ 集合口径才不会被「只取首个」悄悄改掉。
+    index: HashMap<DictKey, Vec<usize>>,
     /// 键域封闭性(规范 §2.1):`false` 表示本字典里**存在域外键**。
     ///
     /// ⚠ 域外键会让 `values_equal` 的「跨类型数值相等」变得不对称:
@@ -526,7 +533,7 @@ pub fn dict_make_mut(inner: &mut std::rc::Rc<DictInner>) -> &mut DictInner {
 // | `string_bytes_copied` | [`concat_strings`] —— 字符串拼接原语 |
 // | `string_codepoints_expanded` | [`string_codepoints`] —— 字符串拆码点原语 |
 // | `equality_element_visits` | [`values_equal`] 的数组分支 —— 深度相等的逐对访问 |
-// | `equality_key_comparisons` | [`dict_entries_equal`] —— 深度相等的逐条扫描 |
+// | `equality_key_comparisons` | [`dict_entries_equal`] —— 深度相等的**键比较**次数(哈希路径 / 线性回退) |
 // | `comparator_calls` | [`note_closure_call`] —— 闭包被真正调用的次数(= `SORT` 路径上的比较器调用次数) |
 // | `string_comparisons` | [`note_string_comparison`] —— 值比较原语里的字符串比较 |
 
@@ -544,7 +551,14 @@ pub struct ValueWorkCounters {
     pub string_codepoints_expanded: u64,
     /// 深度相等:**数组**逐对访问的元素个数。
     pub equality_element_visits: u64,
-    /// 深度相等:**字典**逐条扫描的**键比较**次数。
+    /// 深度相等:**字典**的**键比较**次数。
+    ///
+    /// ⚠ **两条路径,两种口径**(都只数**键**比较,值比较不计):
+    ///   * **哈希路径**(`dict_entries_equal_indexed`):每个 `x` 条目 1 次
+    ///     哈希探测(与 [`DictInner::lookup`] 的哈希路径同口径:一次查找 = 1 次
+    ///     键比较)+ 每个**候选** 1 次核对 ⇒ 键互异时**恰好 2n**;
+    ///   * **线性回退**(`dict_entries_equal_linear`):按**实际扫描过**的条目数
+    ///     计(存在域外键时走那条路)。
     pub equality_key_comparisons: u64,
     /// **闭包被真正调用**的次数 —— 在 `SORT` 的实现路径上**就是比较器调用
     /// 次数**(门面 `collection.wll` 的 `_SORT_LT` 里唯一的 `CALL(cmp, a, b)`;
@@ -655,15 +669,17 @@ pub fn note_string_comparison() {
 impl DictInner {
     /// 新建一个字典内部结构:按**插入序**建索引。
     ///
-    /// ⚠ 重复键(字典字面量可以写 `["a": 1, "a": 2]`)⇒ 索引保留**首次**
-    ///   出现的位置,与旧实现「线性扫描取第一个匹配」逐字一致。
+    /// ⚠ 重复键(字典字面量可以写 `["a": 1, "a": 2]`)⇒ 索引里存的是**位置
+    ///   列表**,而 [`DictInner::lookup`] 取**首个**(= 首次出现的位置),
+    ///   与旧实现「线性扫描取第一个匹配」逐字一致。
     pub fn new(entries: Vec<(Value, Value)>) -> Self {
-        let mut index = HashMap::with_capacity(entries.len());
+        let mut index: HashMap<DictKey, Vec<usize>> = HashMap::with_capacity(entries.len());
         let mut all_keys_in_domain = true;
         for (pos, (k, _)) in entries.iter().enumerate() {
             match DictKey::from_value(k) {
                 Some(dk) => {
-                    index.entry(dk).or_insert(pos);
+                    // ⚠ **位置列表**:重复键 ⇒ 同一键有多个位置(见 `index` 的说明)。
+                    index.entry(dk).or_default().push(pos);
                 }
                 None => {
                     all_keys_in_domain = false;
@@ -720,7 +736,8 @@ impl DictInner {
                     w.comparisons += 1;
                     w.indexed_lookups += 1;
                 });
-                return self.index.get(&dk).copied();
+                // ⚠ **首个**位置 = 首次出现(与旧的线性扫描「取第一个匹配」逐字一致)。
+                return self.index.get(&dk).and_then(|ps| ps.first().copied());
             }
         }
         // 线性回退:按**实际扫描过**的条目数计比较次数(⇒ 守卫能看出退化)。
@@ -761,7 +778,8 @@ impl DictInner {
         if self.all_keys_in_domain {
             match DictKey::from_value(&self.entries[pos].0) {
                 Some(dk) => {
-                    self.index.entry(dk).or_insert(pos);
+                    // ⚠ **位置列表**:重复键 ⇒ 同一键有多个位置(见 `index` 的说明)。
+                    self.index.entry(dk).or_default().push(pos);
                     // [ADR-0035 S5] 索引插入:1 次键比较(哈希桶里的那一次 `Eq`)。
                     add_dict_work(|w| w.comparisons += 1);
                 }
@@ -803,7 +821,8 @@ impl DictInner {
         for (pos, (k, _)) in self.entries.iter().enumerate() {
             match DictKey::from_value(k) {
                 Some(dk) => {
-                    self.index.entry(dk).or_insert(pos);
+                    // ⚠ **位置列表**:重复键 ⇒ 同一键有多个位置(见 `index` 的说明)。
+                    self.index.entry(dk).or_default().push(pos);
                 }
                 None => {
                     self.all_keys_in_domain = false;
@@ -2142,19 +2161,86 @@ pub fn value_type_name(v: &Value) -> &'static str {
     }
 }
 
-/// [ADR-0035] 字典的**集合口径**相等(规范 §2.4):`x` 的每个条目都要在 `y`
+/// [ADR-0035 / X-15] 字典的**集合口径**相等(规范 §2.4):`x` 的每个条目都要在 `y`
 /// 里找到一个键值都相等的条目 —— **不看顺序**。
 ///
-/// ⚠ 这是 `values_equal` 的字典分支**逐字搬出来的**判定,一个字节都没改
-/// (`ADR-0035` 修订记录「新事实三」:实现里 `values_equal` 的字典分支是集合
-/// 口径,只有 `PartialEq` 才是顺序敏感 —— 两种口径都逐字保留)。
+/// ⚠ **口径一个字都没改**:`ADR-0035` 修订记录「新事实三」——实现里
+///   `values_equal` 的字典分支是集合口径,只有 `PartialEq` 才是顺序敏感 ——
+///   两种口径都逐字保留。抽成函数是为了让 `DictCell` **复用同一条**判定 ⇒
+///   「累加器形态与普通字典在可观察面上逐字相同」这条不变量只由**一处**代码保证。
 ///
-/// 抽成函数是为了让 `DictCell` **复用同一条**判定 ⇒ 「累加器形态与普通字典
-/// 在可观察面上逐字相同」这条不变量只由**一处**代码保证。
-fn dict_entries_equal(x: &[(Value, Value)], y: &[(Value, Value)]) -> bool {
+/// ⚠ **[X-15] 改的只是「在 `y` 里找匹配条目」怎么找**,不是「什么算相等」:
+///
+///   * 两侧的键**全在封闭域内**(规范 §2.1:键域 = `STRING` / `INTEGER` /
+///     `INSTANCE`)⇒ 键相等 ⇔ [`DictKey`] 相等 ⇒ 用 `y` 的**哈希索引**把候选
+///     缩到 O(1) 条 ⇒ 键比较次数 **O(n)**(规范 §18.3 的**规范性**上界);
+///   * 否则(存在**域外键**)⇒ **逐字退回**旧的线性扫描:域外键的键相等可能是
+///     **跨类型数值相等**(`FLOAT(1.0)` ≡ `INTEGER(1)`,§2.4)⇒ 哈希索引
+///     **不覆盖**它 ⇒ 回退**不许**被悄悄去掉。
+fn dict_entries_equal(x: &DictInner, y: &DictInner) -> bool {
     if x.len() != y.len() {
         return false;
     }
+    if x.all_keys_in_domain && y.all_keys_in_domain {
+        return dict_entries_equal_indexed(x, y);
+    }
+    dict_entries_equal_linear(x.entries(), y.entries())
+}
+
+/// [X-15] 集合口径相等的**哈希路径** —— 两侧的键全在封闭域内时走这条。
+///
+/// ⚠ **口径不变**:仍然是「`x` 的每个条目都要在 `y` 里找到一个键值都相等的
+///   条目」(**集合口径、不看顺序**);变的只是**候选怎么找**:
+///   旧:在 `y` 的 n 个条目里**线性**扫 ⇒ 键比较 n(n+1)/2 次(**二次**);
+///   新:在 `y` 的哈希索引里按**键**定位 ⇒ 每个 `x` 条目 1 次哈希探测
+///       (+ 每个候选 1 次核对)⇒ 键比较 **O(n)** 次。
+///
+/// ⚠ **候选可以不止一个**:字典字面量允许**重复键**(`["a": 1, "a": 2]`)
+///   ⇒ 同一键在 `y` 里可能有**多个**位置 ⇒ 候选是**位置列表**;且**同一个**
+///   `y` 条目可以匹配**多个** `x` 条目(旧口径如此)⇒ 候选**不消费**。
+///
+/// ⚠ **按 `x` 的插入序遍历** ⇒ 短路点确定 ⇒ 读数可复算(规范 §18.5.2 的
+///   「确定性工作量计数」;哈希表的迭代顺序是随机的 ⇒ 不能拿它当遍历序)。
+fn dict_entries_equal_indexed(x: &DictInner, y: &DictInner) -> bool {
+    // [V-01] 键比较次数的计数点 —— 收在**字典相等的内部**里(不在调用点)。
+    let mut key_comparisons = 0u64;
+    let mut equal = true;
+    for (xk, xv) in x.entries() {
+        // ① **哈希探测**:记 1 次键比较(哈希桶里的那一次 `Eq`;与
+        //    [`DictInner::lookup`] 的哈希路径**同口径**:一次查找 = 1 次键比较)。
+        let dk = DictKey::from_value(xk).expect("快路径的前提:键全在封闭域内");
+        key_comparisons += 1;
+        let Some(positions) = y.index.get(&dk) else {
+            // `y` 里没有同键的条目 ⇒ 这个 `x` 条目**匹配不到** ⇒ 不相等。
+            equal = false;
+            break;
+        };
+        // ② **候选核对**:每个候选记 1 次键比较(按 §2.4 的口径**复核**键)
+        //    + 1 次值比较(值不计入本计数 —— 本计数只数**键**比较)。
+        let mut matched = false;
+        for &pos in positions {
+            let (yk, yv) = &y.entries()[pos];
+            key_comparisons += 1;
+            if values_equal(xk, yk) && values_equal(xv, yv) {
+                matched = true;
+                break;
+            }
+        }
+        if !matched {
+            equal = false;
+            break;
+        }
+    }
+    add_value_work(|w| w.equality_key_comparisons += key_comparisons);
+    equal
+}
+
+/// [X-15] 集合口径相等的**线性回退** —— 存在**域外键**时走这条。
+///
+/// ⚠ **逐字保留**旧实现(唯一差别:入参从切片换成 `DictInner` 的条目切片):
+///   域外键的键相等可能是**跨类型数值相等**(`FLOAT(1.0)` 与 `INTEGER(1)` 在
+///   §2.4 下相等)⇒ 哈希索引不覆盖它 ⇒ 这一路**必须**线性扫。
+fn dict_entries_equal_linear(x: &[(Value, Value)], y: &[(Value, Value)]) -> bool {
     // [V-01] 键比较次数的计数点 —— 收在**字典相等的内部扫描**里(不在调用点)。
     let mut key_comparisons = 0u64;
     let equal = x.iter().all(|(xk, xv)| {
@@ -2223,7 +2309,11 @@ pub fn values_equal(a: &Value, b: &Value) -> bool {
         //   里找到一个键值都相等的条目(集合口径,**不**看顺序)。
         //   ⇒ 这一段**一个字都不能改** —— 哈希索引只改**查找**路径,
         //   不改**相等**的语义(§2.4)。
-        (Value::Dict(x), Value::Dict(y)) => dict_entries_equal(x.entries(), y.entries()),
+        //   ⚠ [X-15] 传的是 `DictInner`(不是条目切片)⇒ 相等判定**能拿到 y 的
+        //   哈希索引** ⇒ 「在 y 里找匹配条目」的候选缩到 O(1) 条 ⇒ 键比较
+        //   从 n(n+1)/2 降到 O(n)(规范 §18.3 的**规范性**上界);**判定口径**
+        //   (集合口径、不看顺序)一个字没动。
+        (Value::Dict(x), Value::Dict(y)) => dict_entries_equal(x, y),
         // ⚠ [ADR-0035 D4] `DictCell` 的相等性:与 `Dict` **逐字同口径**
         //   (集合口径、不看顺序)⇒ 复用同一个判定函数,一个分支都不另写。
         //
@@ -2232,18 +2322,18 @@ pub fn values_equal(a: &Value, b: &Value) -> bool {
         (Value::DictCell(x), Value::DictCell(y)) => {
             x.ptr_eq(y) || {
                 let (xi, yi) = (x.inner_rc(), y.inner_rc());
-                dict_entries_equal(xi.entries(), yi.entries())
+                dict_entries_equal(&xi, &yi)
             }
         }
         // ⚠ 交叉比较:一个累加器可能在中途才被识别成 cell ⇒
         //   `dict == cell(dict)` 必须与 `dict == dict` 逐字同结果。
         (Value::Dict(x), Value::DictCell(y)) => {
             let yi = y.inner_rc();
-            dict_entries_equal(x.entries(), yi.entries())
+            dict_entries_equal(x, &yi)
         }
         (Value::DictCell(x), Value::Dict(y)) => {
             let xi = x.inner_rc();
-            dict_entries_equal(xi.entries(), y.entries())
+            dict_entries_equal(&xi, y)
         }
         (Value::Ok(x), Value::Ok(y)) => values_equal(x, y),
         (Value::Err(x), Value::Err(y)) => values_equal(x, y),

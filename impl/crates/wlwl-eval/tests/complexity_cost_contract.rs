@@ -9,7 +9,7 @@
 //! |---|---|---|---|
 //! | 数组追加 | `PUSH(arr, x)` O(n) 最坏 | `push_copies_n_plus_one_elements` | `wlwl_value::copy_array_elements` / `copy_array_element` |
 //! | 字符串拼接 | `CONCAT(s, t)` O(n+m) 最坏 | `concat_copies_n_plus_m_bytes` | `wlwl_value::concat_strings` |
-//! | 深度相等 | `==(a, b)`(数组 / 字典) O(n) 最坏 | `equality_visits_array_elements_linearly` | `wlwl_value::values_equal`(数组分支) |
+//! | 深度相等 | `==(a, b)`(数组 / 字典) O(n) 最坏 | `equality_visits_array_elements_linearly` / `equality_dict_deep_comparison_is_linear` / `equality_dict_must_be_linear` | `wlwl_value::values_equal`(数组分支 / 字典分支) |
 //! | `SORT` 比较次数 | `SORT(arr)` 的比较器调用次数 O(n²) 最坏 | `sort_comparator_calls_are_at_most_n_squared` | 闭包调用落点 + 值比较原语 |
 //!
 //! ## 测法(规范 §18.5.2 的三条硬要求,逐条照做)
@@ -31,18 +31,31 @@
 //!   拷贝 n 个旧元素 + 追加 1 个 ⇒ **n + 1**。
 //! * 字符串拼接:产出 n+m 个字符 ⇒ **n + m**。
 //! * 数组深度相等:逐对比较 ⇒ 访问 **n** 对元素。
-//! * 字典深度相等:每个条目都要在对方 n 个条目里线性找一遍 ⇒ 键比较
-//!   **1 + 2 + … + n = n(n+1)/2** ⇒ **二次**(⇒ 不达标,见下)。
+//! * 字典深度相等:每个条目在对方那边**按键定位**一次(哈希索引,规范 §18.3.1)
+//!   ⇒ 1 次探测 + 每个候选 1 次核对 ⇒ 键互异时 **2n** ⇒ **线性**(⇒ 达标,见下)。
 //! * `SORT`:每轮扫「剩余」,本轮首个不比较 ⇒ Σ(len(rest) − 1) = **n(n−1)/2**。
 //!
-//! ## ⚠ 一项**未达标**(偏差,不是「已取证」)
+//! ## ✅ 字典的深度相等已**达标**(X-15 收敛,2026-10-23)
 //!
-//! **字典的深度相等是 Θ(n²),不满足 §18.3 的 O(n) 最坏(规范性)。**
-//! 两条守卫分别负责:① `equality_scans_dict_keys_quadratically` 锁住**当前行为**
-//! (特征化守卫:实现收敛为线性时它会红 ⇒ 届时按新读数改写);②
-//! `equality_dict_must_be_linear` 是**规范性上界本身**的守卫,当前**红**⇒ 用
-//! `#[ignore]` 标着(原因写在属性里),**不**用「改规范」或「改实现来对上」来消掉它。
-//! 数组那一半(`equality_visits_array_elements_linearly`)**已达标**。
+//! **原先是 Θ(n²)**:每个 `x` 的条目都要在 `y` 的 n 个条目里**线性**找一遍 ⇒
+//! 键比较 n(n+1)/2 次 ⇒ 不满足 §18.3 的 O(n) 最坏(**规范性**)。收敛之后:
+//!
+//! * ① `equality_dict_deep_comparison_is_linear`(原名
+//!   `equality_scans_dict_keys_quadratically`)锁住**达标后的读数**:键互异时
+//!   键比较次数**恰好 2n**;
+//! * ② `equality_dict_must_be_linear` 是**规范性上界本身**的守卫(≤ c·n,
+//!   c = 4)—— **`#[ignore]` 已去掉**,现在是**绿**的。
+//!
+//! ⚠ **这两条期望为什么变过**(下一个人别再纠结):实现收敛前,① 钉的是**二次
+//!   读数 n(n+1)/2**,注释里明写「这是**偏差**,不是达标」—— 那条期望钉的是
+//!   **当时的实现偏差**,**不是规范**。规范侧**已裁决**(§18.3 的 O(n) 上界是
+//!   **规范性**的)⇒ 期望改成规范要求的那一档,而**不是**留一条红门禁。
+//!   ⚠ **判据本身没有放宽**:② 的 c·n(c = 4)一字未动,只去了 `#[ignore]`。
+//!
+//! ⚠ **相等口径没变**:仍是**集合口径**(规范 §2.4,**不看顺序**);域外键
+//!   (`FLOAT` / 布尔)仍走**线性回退**,判定与收敛前**逐字一致**。值层那份
+//!   契约(复杂度读数 + 重复键 / 域外键 / `INSTANCE` 键的语义)在
+//!   `wlwl-value` 的 `tests/x15_dict_equality_cost.rs`。
 
 mod common;
 
@@ -421,22 +434,30 @@ fn equality_visits_array_elements_linearly() {
     );
 }
 
-/// ⑤ **深度相等 · 字典**:⚠ **当前是 Θ(n²),不满足 §18.3 的 O(n) 最坏**。
+/// ⑤ **深度相等 · 字典**:✅ **O(n) 最坏**(规范 §18.3,**规范性**)。
 ///
-/// 这条是**特征化守卫**(锁住当前行为):字典的深度相等是「每个 x 的条目都要在
-/// y 的条目里线性找一遍」⇒ 键比较次数 = 1 + 2 + … + n = **n(n+1)/2** ⇒ **二次**。
+/// 这条是**特征化守卫**:锁住**达标后**的读数 —— 字典的深度相等现在按**键**
+/// 在对方的哈希索引里定位候选(规范 §18.3.1 的哈希索引),不再是「每个 `x` 的
+/// 条目都在 `y` 的 n 个条目里线性找一遍」。
 ///
 /// ## 判据(期望值**手写自规范 + 语义**)
 ///
-/// * **键比较次数 = n(n+1)/2** —— 两个字典的键**插入序相同** ⇒ x 的第 i 个条目
-///   要扫过 y 的前 i+1 个条目才命中 ⇒ 总和 1+2+…+n。
+/// * **键比较次数 = 2n** —— 每个 `x` 的条目:① **1 次哈希探测**(按键定位到 `y`
+///   里的候选位置;与 `DictInner::lookup` 的哈希路径同口径:一次查找 = 1 次键
+///   比较)② **1 次候选核对**(键按 §2.4 复核 + 值比较)⇒ 键互异时**恰好 2n**
+///   ⇒ **线性** ⇒ 满足 §18.3 的 O(n) 最坏。
+///   (⚠ 重复键时同一键有多个候选 ⇒ 核对次数可能多于 1 —— 那一形态由
+///   `wlwl-value` 的 `tests/x15_dict_equality_cost.rs` 覆盖。)
+/// * **两档读数之比 = 规模之比(= 4)** —— 线性,不是二次(= 16)。
 /// * **下界断言** —— 计数必须 **> 0**。
 /// * **语义** —— 相等的字典判 TRUE。
 ///
-/// ⚠ **它锁的是「不达标」这件事**:实现收敛成线性(哈希索引那条路)之后,本守卫
-///   会红 ⇒ 届时按新读数改写它,并把 §18.3 那一行从偏差改回已达标。
+/// ⚠ **这条期望为什么变过**(别再纠结):实现收敛前,本条钉的是**二次读数**
+///   n(n+1)/2,注释里明写「这是**偏差**,不是达标」—— 那钉的是**实现偏差**,
+///   不是规范。规范侧**已裁决**(§18.3 的 O(n) 上界是**规范性**的)⇒ 期望改成
+///   规范要求的那一档。**判据没有放宽**:下一条(⑥)的 c·n(c = 4)一字未动。
 #[test]
-fn equality_scans_dict_keys_quadratically() {
+fn equality_dict_deep_comparison_is_linear() {
     const SMALL: usize = 16;
     const LARGE: usize = 64;
     let small_src = format!("==({}, {})", dict_literal(SMALL), dict_literal(SMALL));
@@ -447,17 +468,17 @@ fn equality_scans_dict_keys_quadratically() {
     // 语义。
     assert_eq!(small_val, "TRUE", "equal dicts must compare equal");
     assert_eq!(large_val, "TRUE", "equal dicts must compare equal");
-    // 键比较次数 = n(n+1)/2 ⇒ 二次(这是**偏差**,不是达标)。
+    // 键比较次数 = 2n(1 次探测 + 1 次候选核对,每个条目)。
     assert_eq!(
         small.equality_key_comparisons,
-        (SMALL * (SMALL + 1) / 2) as u64,
-        "dict deep equality over {SMALL} entries must scan n(n+1)/2 keys (scanned {})",
+        2 * SMALL as u64,
+        "dict deep equality over {SMALL} entries must cost exactly 2n key comparisons (scanned {})",
         small.equality_key_comparisons
     );
     assert_eq!(
         large.equality_key_comparisons,
-        (LARGE * (LARGE + 1) / 2) as u64,
-        "dict deep equality over {LARGE} entries must scan n(n+1)/2 keys (scanned {})",
+        2 * LARGE as u64,
+        "dict deep equality over {LARGE} entries must cost exactly 2n key comparisons (scanned {})",
         large.equality_key_comparisons
     );
     // 下界断言(§18.5.2 的纪律)。
@@ -466,27 +487,27 @@ fn equality_scans_dict_keys_quadratically() {
         "the dict equality path must be counted at all (scanned = {})",
         small.equality_key_comparisons
     );
-    // 二次:两档读数之比 ≈ 规模之比的平方(= 16),不是线性(= 4)。
+    // 线性:两档读数之比 = 规模之比(= 4),不是二次(= 16)。
     assert!(
-        large.equality_key_comparisons > small.equality_key_comparisons * (LARGE / SMALL) as u64,
-        "the scanned-key count must grow faster than linearly (small={}, large={})",
+        large.equality_key_comparisons == small.equality_key_comparisons * (LARGE / SMALL) as u64,
+        "the scanned-key count must grow linearly with n (small={}, large={})",
         small.equality_key_comparisons,
         large.equality_key_comparisons
     );
 }
 
-/// ⑥ **深度相等 · 字典的规范性上界本身**:⚠ **当前红**(⇒ `#[ignore]`)。
+/// ⑥ **深度相等 · 字典的规范性上界本身**:✅ **已达标**(绿)。
 ///
 /// 这条断言的就是规范 §18.3 那一行的**规范性上界**:字典的深度相等必须
 /// **O(n) 最坏** ⇒ 键比较次数 ≤ c·n。
 ///
-/// ⚠ **当前实现是 Θ(n²)**(见上一条守卫的读数)⇒ 这条**必红**。
-///   **不**用「改规范」或「改实现来对上」消掉它 —— 它挂着 `#[ignore]` + 原因,
-///   等实现收敛(哈希索引那条路)之后**去掉 `#[ignore]`** 即可转绿。
+/// ⚠ **`#[ignore]` 已去掉**(X-15 收敛,2026-10-23):实现原先是 Θ(n²)(见上一条
+///   守卫的旧读数 n(n+1)/2)⇒ 这条曾**必红**;现在收敛为哈希索引那条路 ⇒
+///   读数落在 c·n 内。**判据本身一字未动**(c = 4 **不许**放宽)。
 ///
-/// 手动跑:`cargo test -p wlwl-eval --test complexity_cost_contract -- --ignored`。
+/// ⚠ 这条**不是**「改规范」或「改实现来对上」:规范 §18.3 那一行从头到尾都是
+///   **规范性**的 ⇒ 实现收敛 + 去掉 `#[ignore]` 是唯一正确的消法。
 #[test]
-#[ignore = "规范 §18.3 的 `==(a,b)`(字典)O(n) 最坏 —— 当前实现是 Θ(n²),未达标(一致性册 §5.4 待登记)"]
 fn equality_dict_must_be_linear() {
     const SMALL: usize = 16;
     const LARGE: usize = 64;
