@@ -5060,10 +5060,12 @@ fn builtin_task_cancel_parent(ev: &mut Evaluator, args: Vec<Value>) -> WlwlResul
         // SHIELD's exit code will translate it back into
         // `cancel_requested` on the current task. We still surface
         // `cancel_reason` on the SHIELD-buffered path via
-        // `shield_pending_reason` (see `builtin_shield_exit`).
-        if ev.shield_depth > 0 {
-            ev.shield_pending_cancel = true;
-            ev.shield_pending_reason = reason;
+        // the per-task pending slot (see `Evaluator::shield_exit`).
+        //
+        // [X-02a] 深度与待发取消**按任务**取 —— 别的任务的 `SHIELD`
+        // 不会遮蔽本任务的取消(见 `shield_depth_now`)。
+        if ev.shield_depth_now() > 0 {
+            ev.shield_record_pending(reason);
             return Ok(Outcome::normal(Value::Null));
         }
         // 1. Mark self first.
@@ -5084,6 +5086,103 @@ fn builtin_task_cancel_parent(ev: &mut Evaluator, args: Vec<Value>) -> WlwlResul
             .cancel_scope_subtree_with_reason(scope_id, reason);
     }
     Ok(Outcome::normal(Value::Null))
+}
+
+// ──────────────────────────────────────────────────────────────────
+// [X-02a] `SHIELD` 的**per-task** 屏蔽状态
+//
+// 本项**不改判据** —— 「取消的**来源**」还是「取消的**到达时点**」
+// 属 X-02b 的范围。X-02a 只把**状态**从「求值器共享」改成「每任务
+// 一份」,判据仍是来源判据。
+//
+// 为什么必须 per-task:一个任务在 `SHIELD` 块内 `AWAIT` 时,调度器会把
+// **别的任务**拉进来跑。深度挂在共享求值器上时,别的任务的 `SHIELD`
+// 会**误嵌套**、别的任务的 `TASK_CANCEL_PARENT()` 会被**误缓冲**,
+// 而那次待发取消**永不触发**(它的屏蔽块退出时共享深度回不到 0)。
+//
+// 顶层(`current_task` 为 `None`)没有「自己的任务」可挂 ⇒ 沿用求值器上
+// 的三个字段作兜底。顶层 `TASK_CANCEL_PARENT()` 本来就是 no-op(无作用域
+// 可取消),所以兜底槽实际只服务于深度计数。
+// ──────────────────────────────────────────────────────────────────
+
+impl Evaluator {
+    /// 当前执行任务的 `SHIELD` 深度(顶层 ⇒ 求值器兜底计数)。
+    fn shield_depth_now(&self) -> usize {
+        match self.current_task {
+            Some(id) => self.scheduler.tasks.get(id.0).map_or(0, |t| t.shield_depth),
+            None => self.shield_depth,
+        }
+    }
+
+    /// 进入 `SHIELD`:深度 +1。返回**本次 `SHIELD` 的归属任务**
+    /// (顶层 ⇒ `None`)。
+    ///
+    /// 归属任务在**进入时**捕获 ⇒ 退出时减的是同一个任务的深度,
+    /// 不会因为中途 `current_task` 变过而减错。
+    fn shield_enter(&mut self) -> Option<crate::runtime::TaskId> {
+        let owner = self.current_task;
+        match owner {
+            Some(id) => {
+                if let Some(t) = self.scheduler.tasks.get_mut(id.0) {
+                    t.shield_depth = t.shield_depth.saturating_add(1);
+                }
+                Some(id)
+            }
+            None => {
+                self.shield_depth = self.shield_depth.saturating_add(1);
+                None
+            }
+        }
+    }
+
+    /// 退出 `SHIELD`:深度 -1;若回到 0 且**本任务**有待发取消 ⇒ 回放成
+    /// `cancel_requested = true`。
+    fn shield_exit(&mut self, owner: Option<crate::runtime::TaskId>) {
+        match owner {
+            Some(id) => {
+                if let Some(t) = self.scheduler.tasks.get_mut(id.0) {
+                    t.shield_depth = t.shield_depth.saturating_sub(1);
+                    if t.shield_depth == 0 && t.shield_pending_cancel {
+                        // 先取走 reason 再清标记 ⇒ merge 是 no-op 时也不漏。
+                        let buffered_reason = t.shield_pending_reason.take();
+                        t.shield_pending_cancel = false;
+                        t.cancel_requested = true;
+                        t.merge_cancel_reason(buffered_reason);
+                    }
+                }
+            }
+            None => {
+                self.shield_depth = self.shield_depth.saturating_sub(1);
+                if self.shield_depth == 0 && self.shield_pending_cancel {
+                    let buffered_reason = self.shield_pending_reason.take();
+                    self.shield_pending_cancel = false;
+                    if let Some(self_id) = self.current_task {
+                        if let Some(t) = self.scheduler.tasks.get_mut(self_id.0) {
+                            t.cancel_requested = true;
+                            t.merge_cancel_reason(buffered_reason);
+                        }
+                    }
+                }
+            }
+        }
+    }
+
+    /// 记一条**本任务**的待发取消(由 `TASK_CANCEL_PARENT()` 在自己的
+    /// `SHIELD` 块内调用)。
+    fn shield_record_pending(&mut self, reason: Option<Value>) {
+        match self.current_task {
+            Some(id) => {
+                if let Some(t) = self.scheduler.tasks.get_mut(id.0) {
+                    t.shield_pending_cancel = true;
+                    t.shield_pending_reason = reason;
+                }
+            }
+            None => {
+                self.shield_pending_cancel = true;
+                self.shield_pending_reason = reason;
+            }
+        }
+    }
 }
 
 // ──────────────────────────────────────────────────────────────────
@@ -5112,6 +5211,13 @@ fn builtin_task_cancel_parent(ev: &mut Evaluator, args: Vec<Value>) -> WlwlResul
 //      (still applies immediately to the target — SHIELD's
 //      "external cancel" is specifically the parent's own cancel,
 //      which originates in this task's body).
+//
+// [X-02a] 上面三条提到的 `shield_depth` / `shield_pending_cancel`
+// **按任务**存(`Task::shield_depth` / `Task::shield_pending_cancel`)
+// —— 不是求值器上的共享字段 ⇒ 别的任务的 `SHIELD` 不会遮蔽本任务
+// 的取消,本任务的待发取消也不会被别的任务串走。
+// ⚠ **判据本身没变**:第 5 条那条「来源判据」仍原样成立 ⇒ 判据从
+// 「来源」改成「到达时点」是 X-02b 的范围。
 //
 // Returns whatever the fn body returns (NULL for void fn, value
 // for value-returning fn, ERR for ERR-raising fn). Like SCOPE,
@@ -5148,7 +5254,10 @@ fn builtin_shield(ev: &mut Evaluator, args: Vec<Value>) -> WlwlResult<Outcome> {
     // Increment before invoke so any TASK_CANCEL_PARENT inside
     // the fn body sees shield_depth >= 1 and routes to the
     // pending-cancel path instead of the immediate subtree cancel.
-    ev.shield_depth = ev.shield_depth.saturating_add(1);
+    //
+    // [X-02a] 深度记在**本任务**上(`Task::shield_depth`),归属任务
+    // 在这里捕获 ⇒ 退出时减的是同一个任务。
+    let owner = ev.shield_enter();
     let result = ev.invoke_closure(
         "SHIELD",
         params,
@@ -5160,24 +5269,9 @@ fn builtin_shield(ev: &mut Evaluator, args: Vec<Value>) -> WlwlResult<Outcome> {
     );
     // Decrement after invoke. If this was the outermost SHIELD
     // and a pending cancel was recorded, translate it to a
-    // cancel_requested on the current task so subsequent code
+    // cancel_requested on the owning task so subsequent code
     // observes the cancel at its next checkpoint.
-    ev.shield_depth = ev.shield_depth.saturating_sub(1);
-    if ev.shield_depth == 0 && ev.shield_pending_cancel {
-        // Drain the buffered cancel + reason in one shot; we clear
-        // `shield_pending_reason` first so the field can't leak
-        // across SHIELD invocations if the merge is a no-op
-        // (e.g. the task already had a non-None reason from an
-        // earlier cancel — `merge_cancel_reason` is FIFO).
-        let buffered_reason = ev.shield_pending_reason.take();
-        ev.shield_pending_cancel = false;
-        if let Some(self_id) = ev.current_task {
-            if let Some(t) = ev.scheduler.tasks.get_mut(self_id.0) {
-                t.cancel_requested = true;
-                t.merge_cancel_reason(buffered_reason);
-            }
-        }
-    }
+    ev.shield_exit(owner);
     result
 }
 
@@ -7577,28 +7671,35 @@ pub struct Evaluator {
     /// 语义是**单向高估**的旁路集合:它只影响「现在报不报 `E0020`」,
     /// 绝不提供值。真正未绑定的名字仍由求值后的 `E0023` 兜住。
     pub top_level_bound: HashSet<String>,
-    /// [v0.7 Phase F-B / plan §3 F5] SHIELD nesting depth. 0 means
-    /// "no SHIELD currently active"; values >= 1 mean we're inside
-    /// one or more nested SHIELD blocks. `builtin_shield` increments
-    /// on entry and decrements on exit; the outermost exit (depth
-    /// transitions from 1 → 0) is where pending cancels fire.
+    /// [X-02a / v1.0 差异登记 X-02 的前置] **顶层**(`current_task` 为
+    /// `None`)的 `SHIELD` 嵌套深度**兜底**。
+    ///
+    /// 任务内的屏蔽状态在 `Task::shield_depth` 上(per-task);顶层没有
+    /// 「自己的任务」可挂 ⇒ 用这三个字段兜底。0 = 不在任何 `SHIELD`
+    /// 块内;>= 1 = 在一层或多层 `SHIELD` 块内(嵌套累加)。
+    ///
+    /// ⚠ **为什么不能只留这一个**:一个任务在 `SHIELD` 块内 `AWAIT` 时,
+    /// 调度器会把别的任务拉进来跑 —— 深度挂在共享求值器上时,别的任务
+    /// 的 `SHIELD` 会误嵌套、别的任务的 `TASK_CANCEL_PARENT()` 会被误
+    /// 缓冲,那次待发取消**永不触发**。
     pub shield_depth: usize,
-    /// [v0.7 Phase F-B / plan §3 F5] Set by `TASK_CANCEL_PARENT()`
-    /// (and `TASK_CANCEL_PARENT` only) when called inside a SHIELD
-    /// block. The pending cancel does NOT take effect until the
-    /// outermost SHIELD exits — at which point `builtin_shield`'s
-    /// exit code translates it into `current_task.cancel_requested =
-    /// true`. SHIELD only blocks external cancel requests; the fn
-    /// body's own ERR is unaffected (still propagates via §5.4).
+    /// [X-02a] **顶层**的待发取消标记**兜底**(任务内的在
+    /// `Task::shield_pending_cancel` 上)。
+    ///
+    /// 由 `TASK_CANCEL_PARENT()` 在 `SHIELD` 块内调用时写入;在**最外层**
+    /// `SHIELD` 退出时回放成 `cancel_requested = true`。SHIELD 只挡
+    /// `TASK_CANCEL_PARENT()` 起的取消;块体自己的 ERR 不受影响
+    /// (仍按 §5.4 传播)。
     pub shield_pending_cancel: bool,
-    /// [v0.9 Step 8 / plan §4.4.2 / ADR-0019 §4.4.2] Companion to
-    /// `shield_pending_cancel`: when a `TASK_CANCEL_PARENT(reason)`
-    /// call lands inside a SHIELD block, the reason is buffered here
-    /// so the outermost SHIELD exit can replay it onto
-    /// `current_task.cancel_reason` (first non-None wins via
-    /// `Task::merge_cancel_reason`). Stays `None` when no reason was
-    /// supplied or when no cancel is pending — the SHIELD exit code
-    /// only consults this when `shield_pending_cancel` is also true.
+    /// [X-02a] **顶层**的待发取消原因**兜底**(任务内的在
+    /// `Task::shield_pending_reason` 上)。
+    ///
+    /// [v0.9 Step 8 / plan §4.4.2 / ADR-0019 §4.4.2] 与
+    /// `shield_pending_cancel` 配套:当 `TASK_CANCEL_PARENT(reason)`
+    /// 落在 `SHIELD` 块内时,reason 缓存在这里,供最外层 `SHIELD` 退出时
+    /// 回放到 `cancel_reason`(第一个非 None 的胜出,见
+    /// `Task::merge_cancel_reason`)。没带 reason 或没有待发取消时是
+    /// `None` —— 只有 `shield_pending_cancel` 同时为真时才会被读。
     pub shield_pending_reason: Option<Value>,
     /// [v0.9 Step 9a-3 / plan §4.3 / ADR-0019 §4.3] The current
     /// method-body context: when a closure is invoked via

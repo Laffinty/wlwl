@@ -121,6 +121,37 @@ pub struct Task {
     /// non-None reason wins (FIFO observation order on the cancel
     /// event).
     pub cancel_reason: Option<Value>,
+
+    /// [X-02a / v1.0 差异登记 X-02 的前置] 该任务**自己**的 `SHIELD`
+    /// 嵌套深度。
+    ///
+    /// 0 = 该任务当前不在任何 `SHIELD` 块内;>= 1 = 在一层或多层
+    /// `SHIELD` 块内。`builtin_shield` 进入时 +1、退出时 -1。
+    ///
+    /// ⚠ **per-task**,不是求值器共享字段。`SHIELD` 的块体在**同一个
+    /// 任务**里执行,但一个任务在 `SHIELD` 块内 `AWAIT` 时,调度器会把
+    /// **别的任务**拉进来跑 —— 深度若挂在共享求值器上,别的任务的
+    /// `SHIELD` 会**误嵌套**、别的任务的 `TASK_CANCEL_PARENT()` 会被
+    /// **误缓冲**,而那次待发取消**永不触发**(它的屏蔽块退出时共享深度
+    /// 回不到 0)。
+    pub shield_depth: usize,
+
+    /// [X-02a] 该任务**自己**的待发取消标记。
+    ///
+    /// 由 `TASK_CANCEL_PARENT()` 在**本任务**的 `SHIELD` 块内写入;
+    /// 在本任务**最外层** `SHIELD` 退出时回放成
+    /// `cancel_requested = true`(见 `Evaluator::shield_exit`)。
+    ///
+    /// per-task ⇒ 别的任务的屏蔽块退出**不会**回放或清空本任务的
+    /// 待发取消(共享槽下会互相串)。
+    pub shield_pending_cancel: bool,
+
+    /// [X-02a] 该任务**自己**的待发取消原因(与 `shield_pending_cancel`
+    /// 配套)。
+    ///
+    /// 形状与 `cancel_reason` 同源:`TASK_CANCEL_PARENT(reason)` 的
+    /// `reason` 必须是 DICT;没带 reason 时是 `None`。
+    pub shield_pending_reason: Option<Value>,
 }
 
 impl Task {
@@ -150,6 +181,9 @@ impl Task {
             running_env: None,
             cancel_requested: false,
             cancel_reason: None,
+            shield_depth: 0,
+            shield_pending_cancel: false,
+            shield_pending_reason: None,
         }
     }
 
