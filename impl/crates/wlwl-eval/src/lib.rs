@@ -4903,13 +4903,19 @@ fn builtin_task_is_cancelled(ev: &mut Evaluator, args: Vec<Value>) -> WlwlResult
                 .get(id.0)
                 .map(|t| matches!(t.state, TaskState::Cancelled) || t.cancel_requested)
                 .unwrap_or(false);
-            let scope_cancelled = ev
-                .scheduler
-                .tasks
-                .get(id.0)
-                .and_then(|t| ev.scheduler.scopes.get(t.parent_scope.0))
-                .map(|s| s.cancelled)
-                .unwrap_or(false);
+            // [X-02b / S5] 父作用域 `cancelled` 这条路径必须**尊重本任务的
+            // 屏蔽状态** —— 本任务在屏蔽块内 ⇒ 它自己的待发槽里已经记了
+            // 这次作用域级取消 ⇒ 这里**不**参与判定。
+            // ⚠ 不改这里 ⇒ 被屏蔽的任务照样读出「已取消」⇒ 屏蔽形同虚设
+            // (这正是 §6.7 里那条**连带约束**的由来)。
+            let scope_cancelled = ev.shield_depth_now() == 0
+                && ev
+                    .scheduler
+                    .tasks
+                    .get(id.0)
+                    .and_then(|t| ev.scheduler.scopes.get(t.parent_scope.0))
+                    .map(|s| s.cancelled)
+                    .unwrap_or(false);
             task_done_or_cancel || scope_cancelled
         }
     };
@@ -5064,14 +5070,21 @@ fn builtin_task_cancel_parent(ev: &mut Evaluator, args: Vec<Value>) -> WlwlResul
         //
         // [X-02a] 深度与待发取消**按任务**取 —— 别的任务的 `SHIELD`
         // 不会遮蔽本任务的取消(见 `shield_depth_now`)。
+        //
+        // [X-02b / S2] 「推迟自己」与「取消子树」**拆开**:
+        //   * 自己:按**自己**的状态判定(在屏蔽块内 ⇒ 推迟自己);
+        //   * 子树:**逐目标**投递(每个目标按自己的状态判定)⇒ 同域兄弟
+        //     **不再**随发起方一起推迟。
+        // ⚠ 因此这里**不再提前返回** —— 提前返回会把整棵子树都推迟,
+        // 那正是「来源判据」的旧口径。
         if ev.shield_depth_now() > 0 {
-            ev.shield_record_pending(reason);
-            return Ok(Outcome::normal(Value::Null));
-        }
-        // 1. Mark self first.
-        if let Some(t) = ev.scheduler.tasks.get_mut(self_id.0) {
-            t.cancel_requested = true;
-            t.merge_cancel_reason(reason.clone());
+            ev.shield_record_pending(reason.clone());
+        } else {
+            // 1. Mark self first.
+            if let Some(t) = ev.scheduler.tasks.get_mut(self_id.0) {
+                t.cancel_requested = true;
+                t.merge_cancel_reason(reason.clone());
+            }
         }
         // 2. F3: cancel the entire current scope subtree (siblings
         //    in current scope + every descendant scope + their
@@ -10271,6 +10284,14 @@ impl Evaluator {
                 self.scheduler.enqueue(tid);
             }
         }
+        // [X-02b / S4] 作用域退出的**硬清理** —— **豁免** `SHIELD` 的推迟。
+        //
+        // 并发册 §17.1「子任务寿命**不超过**词法 `SCOPE`」⇒ 仍非终态、
+        // 且(仍在屏蔽块内 或 已被请求取消)的子任务在这里收尾 ⇒ 不会因为
+        // 「取消被推迟」而活过作用域。
+        // ⚠ 范围刻意收窄:「既没被取消、又不在屏蔽块内」的停泊子任务**不动**
+        // (维持今天的形态)⇒ 不扩大行为变更面。
+        self.scheduler.force_cancel_scope_children(id);
         if let Some(sc) = self.scheduler.scopes.get_mut(id.0) {
             let _ = sc;
         }

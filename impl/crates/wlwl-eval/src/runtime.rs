@@ -58,6 +58,23 @@ pub enum TaskState {
     Cancelled,
 }
 
+/// [X-02b / S1] 取消请求是否**豁免**于 `SHIELD` 的推迟。
+///
+/// 规范并发册 §17.3:「`SHIELD(fn)`: 调用 `fn` 并**屏蔽屏蔽块内收到的取消
+/// 请求**」⇒ 默认(`Deferrable`)**按目标的状态**判定:目标当前在 `SHIELD`
+/// 块内 ⇒ 推迟到它退出自己的屏蔽块。
+///
+/// 只有**作用域退出**这种**生命周期边界**才豁免(`Bypass`)—— 否则被屏蔽
+/// 的子任务会活过 `SCOPE`,违反「子任务寿命不超过词法 `SCOPE`」那条结构化
+/// 并发不变量(§6.7 的 S4)。
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum ShieldPolicy {
+    /// 受屏蔽保护(默认):目标在 `SHIELD` 块内 ⇒ 推迟。
+    Deferrable,
+    /// 豁免(硬清理):无视目标的屏蔽状态,立即生效。
+    Bypass,
+}
+
 impl TaskState {
     /// Build a `Suspended { tag, reason }` from a [`YieldReason`],
     /// deriving the WasmFX-style [`Tag`] in one place. Use this in
@@ -492,10 +509,39 @@ impl Scheduler {
     /// observation order via `Task::merge_cancel_reason`); the
     /// reason surfaces as `payload.reason` on the `Cancelled`
     /// `Value::Err` returned by `AWAIT(h)`.
+    /// [X-02b / S1] Tag/payload cancellation with a **shield policy**.
+    ///
+    /// Same as `request_task_cancel_with_reason` but records a
+    /// `reason` DICT on the task. First non-None reason wins (FIFO
+    /// observation order via `Task::merge_cancel_reason`); the
+    /// reason surfaces as `payload.reason` on the `Cancelled`
+    /// `Value::Err` returned by `AWAIT(h)`.
     pub fn request_task_cancel_with_reason(
         &mut self,
         handle: TaskHandle,
         reason: Option<Value>,
+    ) -> bool {
+        self.request_task_cancel_with_reason_policy(handle, reason, ShieldPolicy::Deferrable)
+    }
+
+    /// [X-02b / S1] 同上,但带**屏蔽策略**。
+    ///
+    /// `Deferrable`(默认):目标**当前在 `SHIELD` 块内**
+    /// (`Task::shield_depth > 0`)⇒ 取消**记进该目标自己的**待发槽
+    /// (`shield_pending_cancel` / `shield_pending_reason`),**不**置
+    /// `cancel_requested` ⇒ 它在**自己的**屏蔽块退出时才生效(释放点 =
+    /// `Evaluator::shield_exit`)。
+    ///
+    /// `Bypass`:**豁免**屏蔽 —— 无视目标的屏蔽状态,立即置
+    /// `cancel_requested`。只给**硬清理**路径用(作用域退出)。
+    ///
+    /// 依据:规范并发册 §17.3「`SHIELD(fn)`: 调用 `fn` 并**屏蔽屏蔽块内
+    /// 收到的取消请求**」⇒ 判定按**目标**的状态(§6.7 的 S1)。
+    pub fn request_task_cancel_with_reason_policy(
+        &mut self,
+        handle: TaskHandle,
+        reason: Option<Value>,
+        policy: ShieldPolicy,
     ) -> bool {
         // Decide whether the target is a live, non-terminal task and
         // whether it is currently Pending (so we should re-enqueue).
@@ -521,13 +567,76 @@ impl Scheduler {
             return false;
         }
         if let Some(t) = self.tasks.get_mut(handle.id.0) {
-            t.cancel_requested = true;
-            t.merge_cancel_reason(reason);
+            if policy == ShieldPolicy::Deferrable && t.shield_depth > 0 {
+                // [X-02b / S1] 推迟:记进**该目标**的待发槽 —— 不置
+                // `cancel_requested` ⇒ 目标在自己的屏蔽块退出前读不到取消。
+                t.shield_pending_cancel = true;
+                t.shield_pending_reason = reason;
+            } else {
+                t.cancel_requested = true;
+                t.merge_cancel_reason(reason);
+            }
         }
         if needs_enqueue {
             self.enqueue(handle.id);
         }
         true
+    }
+
+    /// [X-02b / S4] 作用域退出时的**硬清理** —— **豁免** `SHIELD` 的推迟。
+    ///
+    /// 规范并发册 §17.1:「子任务寿命**不超过**词法 `SCOPE`」⇒ 作用域退出时
+    /// 仍非终态的子任务必须收尾。而 `SHIELD` 的推迟会把取消**压住** ⇒ 若不
+    /// 硬清理,被屏蔽的子任务会活过 `SCOPE`。
+    ///
+    /// 范围(刻意收窄):只清理「**仍非终态**且(**仍在屏蔽块内** 或
+    /// **已被请求取消**)」的子任务 ——
+    /// * 「仍在屏蔽块内」⇒ 取消**被推迟**、还没释放(例如目标停在 `AWAIT`
+    ///   上 —— `AWAIT` 不展开屏蔽帧);
+    /// * 「已被请求取消」⇒ 取消已释放,但任务**停泊**着跑不动。
+    ///
+    /// ⚠ **不动**那些「既没被取消、又不在屏蔽块内」的停泊子任务(例如停在
+    /// 通道上的)⇒ 维持今天的形态(由 `pop_scope` 的通道强关唤醒)⇒ 不扩大
+    /// 行为变更面。⚠「子任务寿命不超过词法 `SCOPE`」在**通道停泊**那一支
+    /// 今天仍不成立 ⇒ 属**既有**差异,另立登记(不混进 X-02b)。
+    ///
+    /// 返回被硬清理的任务数。
+    pub fn force_cancel_scope_children(&mut self, scope_id: crate::runtime::ScopeId) -> usize {
+        let handles: Vec<TaskHandle> = match self.scopes.get(scope_id.0) {
+            Some(s) => s.tasks.clone(),
+            None => return 0,
+        };
+        let mut forced = 0usize;
+        for h in handles {
+            let needs_force = match self.tasks.get(h.id.0) {
+                Some(t) => {
+                    t.id == h.id
+                        && t.generation == h.generation
+                        && !matches!(t.state, TaskState::Done(_) | TaskState::Cancelled)
+                        && (t.shield_depth > 0 || t.cancel_requested)
+                }
+                None => false,
+            };
+            if !needs_force {
+                continue;
+            }
+            // Suspended ⇒ 转 `Cancelled`(并唤醒依赖者);其余非终态 ⇒ 置标志
+            // + 转 `Cancelled`。
+            let suspended = matches!(
+                self.tasks.get(h.id.0).map(|t| &t.state),
+                Some(TaskState::Suspended { .. })
+            );
+            if suspended {
+                if self.cancel_suspended_task(h.id) {
+                    forced += 1;
+                }
+            } else if let Some(t) = self.tasks.get_mut(h.id.0) {
+                t.cancel_requested = true;
+                t.state = TaskState::Cancelled;
+                forced += 1;
+            }
+        }
+        forced
     }
 
     /// [v0.7 Phase E-B / E3] Cancel every direct child task in
@@ -1185,6 +1294,65 @@ mod tests {
             generation: gen,
         });
         (s, id, crate::channel::ChannelId(0))
+    }
+
+    // ────────────────────────────────────────────────────────────
+    // [X-02b / S4] 作用域退出的硬清理(白盒守卫)
+    // ────────────────────────────────────────────────────────────
+
+    /// [X-02b / S4] 作用域退出时,**已被请求取消**且**仍停泊**的子任务必须被
+    /// **强制取消**(`Suspended` ⇒ `Cancelled`)⇒ 不会因为「取消被推迟」而
+    /// 活过作用域(并发册 §17.1「子任务寿命不超过词法 `SCOPE`」)。
+    ///
+    /// ⚠ 这是**白盒**守卫:`SHIELD` 那一支(「仍在屏蔽块内」)在用户程序里
+    /// **不可达**(`AWAIT` **不停泊**调用方 —— 它把调度器跑到底、拿不到值
+    /// 就报 `E0053`;阻塞型通道 park 又会**展开**屏蔽帧)⇒ 只有「已被请求
+    /// 取消 + 仍停泊」这一支能被观测 ⇒ 在这里直接构造调度器状态来钉它。
+    #[test]
+    fn force_cancel_scope_children_terminates_a_cancelled_parked_child() {
+        let (mut s, id, ch) = fresh_scheduler_with_channel();
+        // Park the child on the channel op, then request a cancel for it.
+        s.tasks[id.0].state = TaskState::suspended(YieldReason::ReceivingOn(ch));
+        let handle = s.tasks[id.0].handle();
+        assert!(
+            s.request_task_cancel_with_reason(handle, None),
+            "the advisory cancel must be accepted"
+        );
+        assert!(
+            s.tasks[id.0].cancel_requested,
+            "the advisory flag must be set"
+        );
+        assert!(
+            matches!(s.tasks[id.0].state, TaskState::Suspended { .. }),
+            "precondition: the child is still parked"
+        );
+        // Scope exit hard-cleanup => the parked + cancelled child is terminated.
+        let forced = s.force_cancel_scope_children(ScopeId(0));
+        assert_eq!(
+            forced, 1,
+            "exactly one cancelled+parked child must be force-cancelled"
+        );
+        assert!(
+            matches!(s.tasks[id.0].state, TaskState::Cancelled),
+            "the hard cleanup must transition Suspended -> Cancelled"
+        );
+    }
+
+    /// [X-02b / S4] 反例:子任务**既没被取消、又不在屏蔽块内** ⇒ 硬清理
+    /// **不动**它(范围刻意收窄 ⇒ 不扩大行为变更面)。
+    #[test]
+    fn force_cancel_scope_children_leaves_an_uncancelled_parked_child_alone() {
+        let (mut s, id, ch) = fresh_scheduler_with_channel();
+        s.tasks[id.0].state = TaskState::suspended(YieldReason::ReceivingOn(ch));
+        let forced = s.force_cancel_scope_children(ScopeId(0));
+        assert_eq!(
+            forced, 0,
+            "an uncancelled parked child must NOT be force-cancelled"
+        );
+        assert!(
+            matches!(s.tasks[id.0].state, TaskState::Suspended { .. }),
+            "the parked child must be left as-is"
+        );
     }
 
     #[test]
