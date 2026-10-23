@@ -1320,7 +1320,8 @@ pub fn new_cell(value: Value) -> Cell {
     }))
 }
 
-/// [v1.0 spec §8.6.3] **读绑定的三种模式**。
+/// [v1.0 spec §8.6.3] **读绑定的三种模式**(外加 [`ConsumeCarry`](ReadMode::ConsumeCarry)
+/// 这个 [`Consume`](ReadMode::Consume) 的**变体**)。
 ///
 /// 规范把「读入某个位置」分成三类,每类对**源绑定**的未消费状态与**在途值**
 /// 的未消费状态有不同影响:
@@ -1328,6 +1329,7 @@ pub fn new_cell(value: Value) -> Cell {
 /// | 模式 | 何时 | 源绑定的集合 | 在途值的集合 |
 /// |---|---|---|---|
 /// | [`Consume`](ReadMode::Consume) | 取走型消费者的实参 | 移除**它拿到的那一个** | 空 |
+/// | [`ConsumeCarry`](ReadMode::ConsumeCarry) | **剥壳交还**的取走型消费者(`TRY` / `OR_DIE` 的 `OK` 分支) | 移除**它拿到的那一个** | **携带那一个**(仅 `OK(ERR(..))` 形态) |
 /// | [`Observe`](ReadMode::Observe) | 观察型消费者的实参 | **保留**(整组不动) | 空 |
 /// | [`Transfer`](ReadMode::Transfer) | 其余一切位置 | **清空**(整组转走) | **继承源集合** |
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -1338,6 +1340,34 @@ pub enum ReadMode {
     /// 一个 `ERR` 且它在源集合里时,才把**它**从源集合里移除;值是容器等
     /// 其它情况时**集合不变**。
     Consume,
+    /// [G-02 / v1.0 spec §8.6.5] **取走型 + 携带** —— [`Consume`](ReadMode::Consume)
+    /// 的**变体**:取走的口径**逐字相同**,区别只在**在途值带不带那份集合**。
+    ///
+    /// ## 什么时候用
+    ///
+    /// **只有「剥掉 `OK` 外壳、把内层 `ERR` 当结果交还」的消费者**才用它:
+    /// `TRY(OK(ERR(x)))` / `OR_DIE(OK(ERR(x)))`。
+    ///
+    /// ## 为什么
+    ///
+    /// 剥壳得到的内层 `ERR` 按 §8.6.5「**值语义即新身份**」是**新生的**
+    /// `ERR` ⇒ 它**自己未消费** ⇒ 它的未消费状态必须**跟着结果继续**。
+    /// 若不携带,它就**无处可寻** —— 源绑定已被取走(空)、在途值又不带 ⇒
+    /// 那个 `ERR` **一条 `E0103` 都不报**(⇒ 假阴性)。
+    ///
+    /// ## 边界(不可放宽)
+    ///
+    /// * **只在 `OK(ERR(..))` 这一种形态上携带** —— 值**本身**是 `ERR` 时
+    ///   (消费者要么处理它、要么让它逃逸成返回值)⇒ **不携带**。否则
+    ///   `UNWRAP_OR(ERR(x), d)` 会让默认值 `d` 白白背一个未消费的 `ERR`
+    ///   ⇒ **误报**。
+    /// * 值是**容器**等其它形态 ⇒ **不携带**(同 [`Consume`](ReadMode::Consume))。
+    ///
+    /// ⚠ **不得**把这个模式用到「不剥壳」的取走型消费者上
+    /// (`ERR_PAYLOAD` / `WRAP` / `EXPECT_ERR` / 内建调用路径的
+    /// `UNWRAP` / `UNWRAP_OR`) —— 那些路径各有自己的结果承接机制
+    /// (见求值器的 `attach_result_token`),两套机制叠加会**同一个 `ERR` 报两条**。
+    ConsumeCarry,
     /// 观察型:只看不带走,未消费状态**留在被读取的绑定**(§8.6.1)。
     Observe,
     /// 转移:由接收方承担(§8.6.3「读入其它任何位置」)。
@@ -1559,7 +1589,7 @@ impl Env {
                 let mut b = cell.borrow_mut();
                 let value = b.value.clone();
                 match mode {
-                    ReadMode::Consume => {
+                    ReadMode::Consume | ReadMode::ConsumeCarry => {
                         // 取走型消费者取走的是**它拿到的那一个**(§8.6)。
                         //
                         // ⚠ [X-06 第二步] 「拿到的那一个」有两种形态:值**本身**
@@ -1571,21 +1601,35 @@ impl Env {
                         //
                         // ⚠ 容器等其它形态**不动**:「取走型消费者取走的是它拿到
                         // 的那个 `ERR` —— 容器里还剩几个,不受它影响」(§8.6.3)。
-                        let taken = match &value {
-                            Value::Err(_) => Some(value.clone()),
+                        //
+                        // ⚠ [G-02] `peel` 标的是「消费者会**剥掉 `OK` 外壳**、
+                        // 把**内层**那个 `ERR` 当结果交还」的那一支 —— 只有这一支
+                        // 的内层 `ERR` 是**新生的**(§8.6.5)⇒ 只有这一支的未消费
+                        // 状态要**随在途值继续**。
+                        let (taken, peel) = match &value {
+                            Value::Err(_) => (Some(value.clone()), false),
                             Value::Ok(inner) => match inner.as_ref() {
-                                Value::Err(_) => Some((**inner).clone()),
-                                _ => None,
+                                Value::Err(_) => (Some((**inner).clone()), true),
+                                _ => (None, false),
                             },
-                            _ => None,
+                            _ => (None, false),
                         };
+                        let mut carried: UnconsumedErrs = Vec::new();
                         if let Some(taken) = taken {
                             if let Some(idx) = find_unconsumed_index(&b.unconsumed, &taken) {
-                                b.unconsumed.remove(idx);
+                                let removed = b.unconsumed.remove(idx);
+                                // [G-02] `ConsumeCarry` **只在剥壳那一支携带** ——
+                                // 值本身是 `ERR` 时消费者要么处理它、要么让它逃逸
+                                // ⇒ 那份状态**已被处置** ⇒ 不携带(否则
+                                // `UNWRAP_OR(ERR(x), d)` 会让 `d` 白背一个 ⇒ 误报)。
+                                if peel && mode == ReadMode::ConsumeCarry {
+                                    carried.push(removed);
+                                }
                             }
                         }
-                        // 在途值在 Consume 模式下**永远不带**集合。
-                        return Some((value, Vec::new()));
+                        // 在途值在 Consume 模式下**永远不带**集合;
+                        // `ConsumeCarry` 只在剥壳那一支带**那一个**。
+                        return Some((value, carried));
                     }
                     ReadMode::Observe => {
                         // 未消费状态留在被读取的绑定(§8.6.1 观察型)⇒ 集合
@@ -3083,6 +3127,103 @@ mod unconsumed_err_set_tests {
         assert!(carried.is_empty());
         // 集合**原样不动**。
         assert_eq!(env.cell_token("a"), Some(vec![e1.clone(), e2.clone()]));
+    }
+
+    // ── [G-02] `ConsumeCarry`:剥壳交还的那一个 `ERR` 要**跟着结果继续** ──
+    //
+    // 剥掉 `OK` 外壳拿到的内层 `ERR` 按 §8.6.5「值语义即新身份」是**新生**的
+    // ⇒ 它**自己未消费** ⇒ 它的未消费状态必须随在途值走 ⇒ 否则它**无处可寻**
+    // (源绑定已被取走、在途值又不带)⇒ 那个 `ERR` **一条 `E0103` 都不报**。
+
+    /// [G-02] `ConsumeCarry` + 值是 `OK(ERR(..))`:取走内层那个 `ERR`
+    /// **并携带**它。
+    #[test]
+    fn consume_carry_takes_the_inner_err_and_carries_it() {
+        let e1 = err("e1");
+        let ok_err = Value::Ok(Box::new(e1.clone()));
+        let env = env_with("a", ok_err.clone(), vec![e1.clone()]);
+
+        let (value, carried) = env
+            .read_binding("a", ReadMode::ConsumeCarry)
+            .expect("binding exists");
+
+        assert_eq!(value, ok_err);
+        // 携带**那一个**(被取走的那个),不是源集合的其余部分。
+        assert_eq!(carried, vec![e1.clone()]);
+        // 源绑定**空**(它已被取走)。
+        assert_eq!(env.cell_token("a"), Some(Vec::<Value>::new()));
+    }
+
+    /// [G-02] `ConsumeCarry` + 值**本身**是 `ERR`:取走它但**不携带** ——
+    /// 消费者要么处理它(`ERR_PAYLOAD` / `WRAP`)、要么让它逃逸成返回值
+    /// (`TRY` / `UNWRAP_OR`)⇒ 那份状态**已被处置**。
+    #[test]
+    fn consume_carry_on_a_plain_err_does_not_carry() {
+        let e1 = err("e1");
+        let env = env_with("a", e1.clone(), vec![e1.clone()]);
+
+        let (value, carried) = env
+            .read_binding("a", ReadMode::ConsumeCarry)
+            .expect("binding exists");
+
+        assert_eq!(value, e1);
+        assert!(carried.is_empty());
+        assert_eq!(env.cell_token("a"), Some(Vec::<Value>::new()));
+    }
+
+    /// [G-02] **旧语义不许被放宽**:`Consume` 在 `OK(ERR(..))` 形态下**仍然
+    /// 不携带** —— 内建调用路径(`UNWRAP` / `UNWRAP_OR`)另有自己的结果承接
+    /// 机制 ⇒ 两套机制叠加会**同一个 `ERR` 报两条**(违 §8.6.5)。
+    #[test]
+    fn consume_on_ok_wrapped_err_still_carries_nothing() {
+        let e1 = err("e1");
+        let ok_err = Value::Ok(Box::new(e1.clone()));
+        let env = env_with("a", ok_err.clone(), vec![e1.clone()]);
+
+        let (value, carried) = env
+            .read_binding("a", ReadMode::Consume)
+            .expect("binding exists");
+
+        assert_eq!(value, ok_err);
+        assert!(carried.is_empty());
+        assert_eq!(env.cell_token("a"), Some(Vec::<Value>::new()));
+    }
+
+    /// [G-02] `ConsumeCarry` + 值是**容器**:集合**不变**、**不携带** ——
+    /// 取走型拿到的是容器,不是某个 `ERR` ⇒ 没有「它拿到的那一个」可取。
+    #[test]
+    fn consume_carry_of_a_container_leaves_the_collection_untouched() {
+        let e1 = err("e1");
+        let e2 = err("e2");
+        let container = Value::Array(vec![e1.clone(), e2.clone()]);
+        let env = env_with("a", container.clone(), vec![e1.clone(), e2.clone()]);
+
+        let (value, carried) = env
+            .read_binding("a", ReadMode::ConsumeCarry)
+            .expect("binding exists");
+
+        assert_eq!(value, container);
+        assert!(carried.is_empty());
+        assert_eq!(env.cell_token("a"), Some(vec![e1.clone(), e2.clone()]));
+    }
+
+    /// [G-02] `ConsumeCarry` + 源集合里**没有**那个 `ERR` ⇒ **不携带** ——
+    /// 「两种形态都只在它**确实在源集合里**时才移除」(§8.6.3)。
+    #[test]
+    fn consume_carry_carries_nothing_when_the_source_does_not_hold_it() {
+        let e1 = err("e1");
+        let e2 = err("e2");
+        let ok_err = Value::Ok(Box::new(e1.clone()));
+        let env = env_with("a", ok_err.clone(), vec![e2.clone()]);
+
+        let (value, carried) = env
+            .read_binding("a", ReadMode::ConsumeCarry)
+            .expect("binding exists");
+
+        assert_eq!(value, ok_err);
+        assert!(carried.is_empty());
+        // 源集合**原样**(那个 `ERR` 不在里面 ⇒ 什么都没被取走)。
+        assert_eq!(env.cell_token("a"), Some(vec![e2.clone()]));
     }
 
     /// ④ **并集**:两侧的 `ERR` **全部保留** —— 不是「保留第一个」,也不是
