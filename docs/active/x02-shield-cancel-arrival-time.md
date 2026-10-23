@@ -1,0 +1,248 @@
+---
+title: X-02 机制验证与实施前置 —— `SHIELD` 的取消推迟口径(到达时点 vs 来源判据)
+reason: 2026-10-23 业主授权的**只读机制验证**(接替执行 v1.0 对齐批次);X-02 是未收敛清单仅剩两条之一
+---
+
+# X-02:`SHIELD` 的取消推迟口径
+
+## 0. 这份文件是什么
+
+**是**:X-02 的机制验证结论 + 实施前置条件 + 待裁决清单。
+**不是**:实施方案(未获授权);不是规范文本(权威在独立仓 `Laffinty/wlwl-spec-v1`,本文引用的条款都是**只读引用**)。
+
+**状态标记**(全篇统一):
+
+| 标记 | 含义 |
+|---|---|
+| `[已核实]` | 有**实测读数**或**规范原文**支撑 |
+| `[待裁决]` | 需业主拍板(语义裁决)⇒ 未拍板前不动实现 |
+| `[待验证]` | 源码推演,**未实测** |
+
+⚠ **行号会漂** ⇒ 下文以**函数名**为主定位,行号只是当时的辅助坐标。
+
+## 1. 结论(先看这一段)
+
+1. **缺口真实存在。** 实测:跨任务 `TASK_CANCEL(a)` 命中一个**正处在 `SHIELD` 块内**的任务 ⇒
+   **取消立即生效** `[已核实]`(§2 探针 A)⇒ 违反一致性册 §5.4 的 X-02 行
+   ——「`SHIELD` 屏蔽**屏蔽块内收到的**取消请求」。
+2. **现行实现是「来源判据」。** `shield_depth` 挂在**共享 `Evaluator`** 上;只有
+   `TASK_CANCEL_PARENT()` 在**自己**深度 > 0 时才缓冲;`TASK_CANCEL(handle)` 直接写
+   `cancel_requested`,**完全不看屏蔽状态** `[已核实]`(§3)。
+   ⚠ 这是**当初的刻意设计**(`git log -S shield_depth` 全仓只有一次提交 `62317f1`,
+   其 commit message 明写「`SHIELD` only blocks external cancel via `TASK_CANCEL_PARENT`;
+   `TASK_CANCEL(handle)` from another task is unaffected」)⇒ 改成「到达时点」是**语义变更**,
+   不是补 bug ⇒ 需进 CHANGELOG 发布说明 + 一致性册登记。
+3. **机制可行,但不是「换一个判据」那么小。** 需要 per-task 屏蔽状态 + 投递点改按**目标**判定
+   + **3 条语义裁决** + **2 项新能力**(§4 / §5)。
+4. **不必等 `ADR-0017` Step 3。** 「目标挂起在屏蔽块内」那一支只需在**挂起点**捕获深度
+   (挂起时屏蔽帧仍在栈上)⇒ 不需要续体 `[已核实]`(§7)。
+5. ⚠ **探针把原假设推翻了一半。** 规范并发册 §17.3 的「**不完成**」条款规定:挂起点所在的
+   最外层表达式**不完成**,含它的顶层语句随之**不完成**,该语句其余部分**不执行** ⇒
+   `YIELD` 落在 `SHIELD` 块内时,**屏蔽块体的剩余语句被丢弃** ⇒
+   「取消到达时目标还在不在屏蔽块内」这个问题比预想的更尖锐 `[已核实]`(§2 探针 C / D、§6 B1)。
+
+## 2. 实测读数(2026-10-23)
+
+**读数来源**:`impl/target/debug/wlwl.exe`(构建于 2026-10-23 21:20,含本批 X-15 / G-02 / rest 通道改动;
+这三项与 `SHIELD` / 取消**无交集** ⇒ 读数对本项有效)。
+**探针位置**:仓外 TEMP(`%TEMP%\wlwl_probe_20261023`)⇒ **不入库**(探针程序不进仓)。
+**CLI 用法**:`wlwl.exe run <file>`(直接给路径会报 `unrecognized subcommand`)。
+
+| # | 探针 | 场景 | 实测 stdout | 结论 |
+|---|---|---|---|---|
+| **A** | `x02_a_cross_task_cancel` | 任务 `a` 在 `SHIELD` 块内 `YIELD`;兄弟任务 `b` 调 `TASK_CANCEL(a)` | `a: in-shield` / `a-cancelled` | **取消立即生效**,`a` 直接转 `Cancelled` ⇒ **X-02 缺口本体** |
+| **B** | `x02_b_self_cancel_in_shield` | 任务**自己**在 `SHIELD` 块内调 `TASK_CANCEL_PARENT()` | `b: in-shield` / `b: inside-cancelled? no` / `b: after-shield cancelled? yes` / `b-not-cancelled` | **来源判据生效**:块内 `TASK_IS_CANCELLED()` = FALSE,退出后 = TRUE ⇒ H.4.4 金标准保住 |
+| **C** | `x02_c_cancel_after_yield_in_shield` | 任务在 `SHIELD` 块内 `YIELD`,**恢复后**(屏蔽块外)再 `TASK_CANCEL_PARENT()` | `c: in-shield` / `c: after-shield` / `c: after-self-cancel cancelled? yes` / `c-not-cancelled` | ① `c: after-yield-in-shield` **没打印** ⇒ **屏蔽块体剩余语句被丢弃**(§17.3「不完成」)② 恢复点在屏蔽块**之外** ③ 该次自取消**不被缓冲** ⇒ 屏蔽深度在**挂起点**就已回退 |
+| **D** | `x02_d_nested_yield_loss` | 任务体里 `LET(f, FUN(… YIELD() …))` + `CALL(f)`,`f` 内 `YIELD` 之后有 `PRINT` | `d: nested in` / `d-not-cancelled` | `d: nested after-yield` **与** `d: after-call` **都没打印** ⇒ 嵌套闭包尾巴 + 所在段的剩余语句**一起丢弃** |
+
+**探针程序**(仓外 TEMP,复跑时照抄):
+
+```wlwl
+// A —— 跨任务取消命中屏蔽块内的目标
+LET(out, SCOPE(FUN(() ,
+    LET(a, SPAWN(FUN(() ,
+        SHIELD(FUN(() , PRINT("a: in-shield"); YIELD(); PRINT("a: after-yield-in-shield"); 0));
+        PRINT("a: after-shield"); 1)));
+    LET(_, SPAWN(FUN(() , TASK_CANCEL(a); 0)));
+    LET(r, AWAIT(a)); LET(_, r);
+    IF(IS_ERR(r), "a-cancelled", "a-not-cancelled"))));
+PRINT(out)
+
+// B —— 自己取消(来源判据)
+LET(out, SCOPE(FUN(() ,
+    LET(a, SPAWN(FUN(() ,
+        SHIELD(FUN(() , PRINT("b: in-shield"); TASK_CANCEL_PARENT();
+            LET(inside, IF(TASK_IS_CANCELLED(), "yes", "no"));
+            PRINT(+( "b: inside-cancelled? ", inside )); 0));
+        LET(after, IF(TASK_IS_CANCELLED(), "yes", "no"));
+        PRINT(+( "b: after-shield cancelled? ", after )); 0)));
+    LET(r, AWAIT(a)); LET(_, r);
+    IF(IS_ERR(r), "b-cancelled", "b-not-cancelled"))));
+PRINT(out)
+
+// C —— 屏蔽块内 YIELD 之后自取消
+LET(out, SCOPE(FUN(() ,
+    LET(a, SPAWN(FUN(() ,
+        SHIELD(FUN(() , PRINT("c: in-shield"); YIELD(); PRINT("c: after-yield-in-shield"); 0));
+        PRINT("c: after-shield"); TASK_CANCEL_PARENT();
+        LET(after, IF(TASK_IS_CANCELLED(), "yes", "no"));
+        PRINT(+( "c: after-self-cancel cancelled? ", after )); 0)));
+    LET(r, AWAIT(a)); LET(_, r);
+    IF(IS_ERR(r), "c-cancelled", "c-not-cancelled"))));
+PRINT(out)
+
+// D —— 嵌套闭包里的 YIELD(与 SHIELD 无关,隔离变量)
+LET(out, SCOPE(FUN(() ,
+    LET(a, SPAWN(FUN(() ,
+        LET(f, FUN(() , PRINT("d: nested in"); YIELD(); PRINT("d: nested after-yield"); 0));
+        CALL(f); PRINT("d: after-call"); 0)));
+    LET(r, AWAIT(a)); LET(_, r);
+    IF(IS_ERR(r), "d-cancelled", "d-not-cancelled"))));
+PRINT(out)
+```
+
+⚠ **语法坑**(本轮踩到):字符串拼接是 **`+(a, b)`**(函数形态),**不是**中缀 `+`;`IF(c, a, b)` 可作表达式
+出现在实参位;`TASK_CANCEL(handle)` 的实参必须是**句柄**,不是任务值。
+
+## 3. 现行实现的机制事实(全部 `[已核实]`)
+
+### 3.1 屏蔽状态是**共享**的,不是 per-task
+
+`shield_depth` / `shield_pending_cancel` / `shield_pending_reason` 三个字段挂在 **共享 `Evaluator`** 上
+(`wlwl-eval/src/lib.rs`),而全仓只有**一个**求值器 ⇒ 任务在它上面轮流跑。
+
+⇒ **跨任务泄漏窗口** = 「A 在屏蔽块内把控制权交回调度器」的那段时间:
+* `YIELD()` / 阻塞型通道 park ⇒ 切走时深度**已回 0**(见 §3.3)⇒ B 不受影响,但 A 的「逻辑屏蔽区间」凭空消失;
+* A 在屏蔽块内 `AWAIT` / `SCOPE` 退出 drain ⇒ 切走时深度**仍为 1** ⇒ B 被拉进来跑 ⇒
+  B 的 `TASK_CANCEL_PARENT` 被**误缓冲**、B 自己的 `SHIELD` **误嵌套**(深度 2,退出回 1 ⇒
+  「深度 == 0 才回放待发取消」的判据不成立 ⇒ **B 的待发取消永不触发**)。
+
+### 3.2 取消投递的汇聚点
+
+| 写入 `cancel_requested = true` 的地方 | 语义 | 是否经汇聚点 |
+|---|---|---|
+| `runtime.rs` `request_task_cancel_with_reason` | **唯一汇聚点** | — |
+| `lib.rs` `builtin_task_cancel_parent` 的 `shield_depth > 0` 分支 | `TASK_CANCEL_PARENT()` 标记**自己** | ❌ 绕过 |
+| `lib.rs` `builtin_shield` 退出时的待发取消回放 | 最外层 `SHIELD` 退出 | ❌ 绕过 |
+
+汇聚点的上游(三条路):`TASK_CANCEL(handle)`、`TASK_CANCEL_PARENT()` 的**子树**部分、
+SCOPE **兄弟失败连带取消** ⇒ **改汇聚点一处 ⇒ 三条路同时受益**(但三条语义不同 ⇒ 需加「是否绕过屏蔽」入参)。
+
+### 3.3 「屏蔽块在挂起点就退出了」
+
+`invoke_closure` 把 `Signal::Yield` 当普通结果上抛 ⇒ `builtin_shield` 里**递减 `shield_depth` 的那几行照常执行**
+⇒ 深度在挂起点回退、待发取消在挂起点即触发。实测证据 = 探针 C 的 ②③。
+
+### 3.4 取消的观察点只有 2 个
+
+| 观察点 | 位置 | 状态 |
+|---|---|---|
+| 任务步进入口 | `run_one_task` | ✅ 有 |
+| `TASK_IS_CANCELLED()` | `builtin_task_is_cancelled` | ✅ 有(且第三条路径读**父作用域** `cancelled`,绕过 per-task flag) |
+| `YIELD()` 处 | `builtin_yield` | ❌ **不存在**(规范 §17.3 第 3 条要求) |
+| 阻塞型 `CHANNEL_SEND` / `CHANNEL_RECV` 入口 | — | ❌ **不存在** |
+
+### 3.5 作用域退出**没有**真正的强制取消
+
+`pop_scope` 只做「排干运行队列 + 强关通道」;`cancel_suspended_task` 与
+`Scope::outstanding_tasks` **只有测试调用点** ⇒ 「scope 退出等子任务、逾时强制取消」是**未兑现的承诺**。
+
+⇒ **对 X-02 的直接影响**:一旦允许「推迟」,就可能让子任务活过 scope ⇒ 必须先裁决「scope 退出时怎么办」(§6 B2)。
+
+## 4. 落点清单(按「到达时点」判定所需)
+
+| # | 落点 | 改什么 |
+|---|---|---|
+| L1 | `runtime.rs` `request_task_cancel_with_reason` | **主改**:读**目标**的 per-task 屏蔽状态;命中 ⇒ 写**目标的**待发取消缓冲,**不**置 `cancel_requested` |
+| L2 | `runtime.rs` `cancel_scope_subtree_with_reason` | 子树取消 ⇒ 传「**绕过屏蔽**」标记(硬清理不该被推迟) |
+| L3 | `runtime.rs` `cancel_siblings_in_scope_with_reason` | 兄弟连带取消 ⇒ 同样需要「绕过/可推迟」的区分 |
+| L4 | `lib.rs` `builtin_task_cancel_parent` 的 `shield_depth > 0` 分支 | **来源判据所在地** ⇒ 改后须删除或退化为「只对自己」;⚠ H.4.4 金标准正由它实现 ⇒ 改后必须仍得同样结果 |
+| L5 | `lib.rs` `builtin_shield` 的深度增减 | 深度改 per-task,增减时**写穿**到 `scheduler.tasks[current_task]`;顶层沿用求值器局部计数(顶层 `SHIELD` 是 no-op) |
+| L6 | `lib.rs` `builtin_shield` 退出回放 | 待发取消缓冲从全局移到 **per-task**;退出时只回放**本任务**的缓冲 |
+| L7 | `lib.rs` `builtin_yield` + 通道 park 处 | **挂起点捕获**深度 ⇒ 「目标挂起在屏蔽块内」这一支的唯一数据来源 |
+| L8 | `lib.rs` `builtin_task_is_cancelled` | 被推迟的取消在生效前必须读作 **FALSE**;⚠ 现有断言序列(`FALSE`/`TRUE`)要逐条重核 |
+| L9 | `lib.rs` `run_one_task` 入口 | 目标有「已推迟取消」且此刻**不在**屏蔽块内 ⇒ 生效 |
+| L10 | `runtime.rs` `cancel_suspended_task`(**未接线**)+ `lib.rs` `pop_scope` | **作用域退出的硬清理**(今天不存在)⇒ 「推迟」不泄漏的前提 |
+
+## 5. 前置能力(非裁决,是纯实现)
+
+| # | 前置 | 依据 |
+|---|---|---|
+| P1 | `Task` 加 `shield_depth` + `suspended_shield_depth` 两字段(与既有 `running_env` 同构) | §3.1 / §3.3 |
+| P2 | 深度增减**写穿**到 `scheduler.tasks[...]`(投递点在 `Scheduler` 里,拿不到求值器的工作副本) | L5 |
+| P3 | 投递点按**目标**判据 + 「绕过屏蔽」入参 | L1–L3 |
+
+## 6. 待裁决清单(⚠ **语义裁决** ⇒ 未拍板前不动实现)
+
+| # | 裁决问题 | 为什么必须先裁 | 我的倾向 |
+|---|---|---|---|
+| **B1** | 屏蔽块体被**挂起点丢弃**时(探针 C/D:§17.3「不完成」条款)——已经收到的取消算不算「屏蔽块内收到的」?屏蔽块的「最终退出」如何判定? | 探针 C 显示**屏蔽块体的剩余语句根本不执行** ⇒ 「屏蔽块在哪一刻结束」没有唯一答案(既可能是挂起点,也可能是块体被丢弃的那一刻) | 挂在**挂起点**:即 `SHIELD` 语句**不完成** ⇒ 其待发取消缓冲**随该语句一起丢弃**(不回放)⇒ 取消作废 |
+| **B2** | 作用域退出 / 兄弟失败连带取消 ⇒ **绕过**屏蔽(硬清理)还是也可推迟? | 今天**根本没有**强制取消 ⇒ 允许推迟就可能让子任务活过 scope | **绕过**(硬清理)+ 在一致性册登记该例外 |
+| **B3** | 被推迟的取消**在哪个检查点生效**? | 规范 §17.3 第 3 条列了 3 个检查点,实现只有 2 个 ⇒ 生效点无实现依据 | 在**任务步进入口**生效(与既有 `run_one_task` 一致);`YIELD` / 阻塞操作处的检查点**另立差异登记**(不混进 X-02) |
+
+## 7. 与 `ADR-0017` Step 3 的关系
+
+**不在关键路径上。** 「目标挂起在屏蔽块内」那一支只需在**挂起点**捕获深度:
+挂起发生时屏蔽帧**仍在 Rust 栈上** ⇒ 此刻读到的深度是精确的
+(`YIELD()` 处、通道 park 之前)。这**不需要**保存续体。
+
+⚠ **但不能用「段起基准深度」** —— 反例:「`AWAIT` 在屏蔽块内」。`AWAIT` 不产生 Yield 信号
+(它把调度器跑到底再返回普通值)⇒ 屏蔽帧留在栈上、深度仍是 1,而取消正是在这段窗口里到达
+⇒ 段起点深度 = 0、挂起点深度 = 1 ⇒ **段起基准漏判**。
+
+⚠ `ADR-0017` 里「保存挂起位置/续体」那块是 `runtime.rs` 的 `EvalState` / `ContFrame`
+(**NOT WIRED YET**)⇒ X-02 只需它的**一个子集**(存一个整数)。
+⚠ Step 3 落地后 B1 / B3 的答案要**重答**(与 `docs/active/addendum-12-sync-primitives.md` 的既有登记纪律一致)。
+
+## 8. 风险点
+
+| # | 风险 | 处置建议 |
+|---|---|---|
+| R1 | **屏蔽深度跨任务泄漏**(§3.1)—— 今天就是真 bug(B 的待发取消永不触发) | per-task 化(L5)**必须与** X-02 同批落地,否则换判据时基准就是错的 |
+| R2 | **段首重跑的副作用重放**:通道 park 恢复时整段重跑 ⇒ 屏蔽块体**再执行一遍** ⇒ 「最外层 `SHIELD` 退出」事件出现两次 | B1 裁决时按「重放后的退出」定释放点 |
+| R3 | **作用域退出的强制取消是否绕过屏蔽** | 见 B2 ⇒ 建议绕过 + 登记例外 + 补 L10 |
+| R4 | **`TASK_CANCEL_PARENT` 的子树语义变化**:现状「块内发起 ⇒ 整棵子树推迟」;到达时点判据下只有**在屏蔽块内的目标**被推迟 ⇒ 同域兄弟**立即**被取消 | breaking 候选 ⇒ 进 CHANGELOG 发布说明 + 一致性册登记 |
+| R5 | 待发取消缓冲是**全局**的 ⇒ A 的待发取消会被 B 的屏蔽块退出回放/清空 | 随 L6 一并 per-task 化 |
+| R6 | `TASK_IS_CANCELLED` 有**第三条路径**读父作用域 `cancelled` ⇒ 只改 flag 路径时,作用域级取消仍会绕过屏蔽 | L1/L2 的「绕过屏蔽」入参必须覆盖作用域级取消 |
+
+## 9. 实施路线建议
+
+**建议:拆成两批,先做「per-task 化」这一小步。**
+
+* **X-02a(先行,独立可交付)**:把 `shield_depth` 与待发取消缓冲 **per-task 化**
+  (L5 / L6 / P1 / P2)⇒ 修掉 R1 这个**今天就存在的真 bug**(跨任务泄漏 ⇒ B 的待发取消永不触发),
+  并新增一条跨任务 `SHIELD` 契约表把它钉住。**不改判据** ⇒ 现有 H.4.4 金标准逐字不变。
+  理由:这是 X-02b 的**硬前置**,且它本身就是一个可独立验证的缺陷修复;两者混在一批会让 diff 无法审。
+* **X-02b(随后)**:裁决落定后一次性实施 L1–L4 / L7–L10 ⇒ 「到达时点」判据。
+
+⚠ **X-14** 与 X-02 **无耦合** ⇒ 仍按业主决定**不排期**。
+
+## 10. 复跑命令
+
+```powershell
+# 探针(仓外 TEMP,不入库)
+$exe = 'D:\Project\wlwl\impl\target\debug\wlwl.exe'
+$dir = Join-Path $env:TEMP 'wlwl_probe_20261023'
+& $exe run (Join-Path $dir 'x02_a_cross_task_cancel.wll')   # ⇒ a: in-shield / a-cancelled
+& $exe run (Join-Path $dir 'x02_b_self_cancel_in_shield.wll')
+& $exe run (Join-Path $dir 'x02_c_cancel_after_yield_in_shield.wll')
+& $exe run (Join-Path $dir 'x02_d_nested_yield_loss.wll')
+
+# 门禁(实施批次才需要)
+cd D:\Project\wlwl\impl
+cargo test --locked --workspace --all-targets --no-fail-fast
+cargo clippy --locked --workspace --all-targets -- -D warnings
+```
+
+## 11. 相关文件
+
+| 文件 | 关系 |
+|---|---|
+| `impl/crates/wlwl-eval/src/lib.rs` | `builtin_shield` / `builtin_task_cancel_parent` / `builtin_yield` / `builtin_task_is_cancelled` / `run_one_task` / `invoke_closure` / `shield_depth` 字段 |
+| `impl/crates/wlwl-eval/src/runtime.rs` | `request_task_cancel_with_reason`(汇聚点)/ `cancel_scope_subtree_with_reason` / `cancel_siblings_in_scope_with_reason` / `cancel_suspended_task`(**未接线**) |
+| `impl/crates/wlwl-eval/src/task.rs` | `Task`(per-task 运行状态的落点) |
+| `impl/crates/wlwl-eval/src/yield_split.rs` | 段切分(含「嵌套 FUN 体内的 `YIELD`」的判定) |
+| `impl/crates/wlwl-cli/tests/scheduling_semantics.rs` | H.4.4 金标准(`FALSE` / `TRUE` / `1`) |
+| `impl/crates/wlwl-cli/tests/concurrency.rs` + `impl/tests/concurrency/*.wll` | 既有 `SHIELD` / `YIELD` 契约(**全部是单任务** ⇒ 跨任务形态无既有守卫) |
+| `docs/adr/0017-cooperative-suspension-scheduler.md` | Step 3(真 state-machine 续跑)**未立项** |
+| `docs/active/v1.0-residual-batch.md` §6 | 上游处置册对 X-02 的说明(本文是其展开) |
