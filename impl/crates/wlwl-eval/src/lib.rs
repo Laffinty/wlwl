@@ -3158,10 +3158,18 @@ fn builtin_call(ev: &mut Evaluator, args: Vec<Value>) -> WlwlResult<Outcome> {
             diag_span,
         ));
     }
+    // [X-16 / v1.0 spec §8.6.3] **实参的未消费集合要转给被调方的形参绑定**
+    // —— `CALL(f, [ERR("boom")])` 里那个数组持有未消费的 `ERR` ⇒ 它进 `f` 的
+    // 形参 ⇒ `f` 自己的作用域结束时按 §8.6.2 第 3 项报 `E0103`。
+    //
+    // ⚠ 集合从 [`Evaluator::current_arg_unconsumed`] 取(内建函数的签名
+    // `fn(&mut Evaluator, Vec<Value>)` **没有**传集合的参数位)⇒ **跳过第 0 个
+    // 实参**—— 那是**被调者**自己,不是 `CALL` 的实参。
+    let arg_sets: Vec<UnconsumedErrs> = ev.current_arg_unconsumed.iter().skip(1).cloned().collect();
     // [V-01] 计数点不在这里 —— 它收在**闭包真正被调用的落点**
     // (`call_value_with_receiver` 的 `Value::Closure` 分支)⇒ 记的是「闭包被
     // 调用了几次」,不是「`CALL` 算子被用了几次」。
-    ev.call_value_with_receiver(callee, None, rest, &diag_span, "CALL")
+    ev.call_value_with_receiver(callee, None, rest, arg_sets, &diag_span, "CALL")
 }
 
 // ── Properties / methods / module-as-value (Phase C2) ──
@@ -3638,7 +3646,17 @@ fn builtin_call_method(ev: &mut Evaluator, args: Vec<Value>) -> WlwlResult<Outco
             return Err(ev.diag(code, msg, diag_span));
         }
     }
-    ev.call_value_with_receiver(callee, Some(receiver), rest, &diag_span, &method)
+    // ⚠ [X-16 的同族缺口] `CALL_METHOD` 的实参集合**同样**在内建边界上被丢掉
+    // ⇒ 传给 `Vec::new()`(与本轮改动前**逐字一致**)⇒ 待登记为新差异项后
+    // 再收(见处置册 §6 的 G-5)。
+    ev.call_value_with_receiver(
+        callee,
+        Some(receiver),
+        rest,
+        Vec::new(),
+        &diag_span,
+        &method,
+    )
 }
 
 /// `CLASS(name?, parent, members) -> CLASS`: spec §13 (plan §4.3)
@@ -3968,6 +3986,9 @@ fn builtin_new(ev: &mut Evaluator, args: Vec<Value>) -> WlwlResult<Outcome> {
                 init_val,
                 Some(instance.clone()),
                 rest,
+                // ⚠ [X-16 的同族缺口] 同 `CALL_METHOD`:实参集合在内建边界上
+                // 被丢掉 ⇒ 传 `Vec::new()`(与本轮改动前**逐字一致**)。
+                Vec::new(),
                 &span_clone,
                 "NEW",
             )?;
@@ -7802,6 +7823,7 @@ impl Evaluator {
         callee: Value,
         receiver: Option<Value>,
         mut args: Vec<Value>,
+        mut arg_sets: Vec<UnconsumedErrs>,
         span: &Span,
         name: &str,
     ) -> WlwlResult<Outcome> {
@@ -7823,6 +7845,10 @@ impl Evaluator {
                 if let (Some(r), Some(p)) = (receiver.as_ref(), params.first()) {
                     if p.name == "self" {
                         args.insert(0, r.clone());
+                        // [X-16] receiver 是**注入**的实参,不是调用方给的 ⇒
+                        // 它**没有**未消费状态 ⇒ 集合表同步插一个**空集**,
+                        // 否则形参绑定会**错位**拿下一个实参的集合。
+                        arg_sets.insert(0, Vec::new());
                     }
                 }
                 // [v0.9 Step 9a-3 / plan §4.3 / ADR-0019 §4.3]
@@ -7852,7 +7878,7 @@ impl Evaluator {
                     _ => None,
                 };
                 let prev_linear = self.linear_this.take();
-                let result = self.invoke_closure(name, params, body, env, args, Vec::new(), span);
+                let result = self.invoke_closure(name, params, body, env, args, arg_sets, span);
                 if let Ok(outcome) = &result {
                     if self.is_linear_this(&outcome.value) {
                         let escape_err = self.diag(
@@ -7875,7 +7901,7 @@ impl Evaluator {
                 self.current_method_instance = prev_method;
                 result
             }
-            Value::NativeFn { invoke, .. } => invoke_std(self, invoke, args, Vec::new(), span),
+            Value::NativeFn { invoke, .. } => invoke_std(self, invoke, args, arg_sets, span),
             other => Err(type_error(
                 name,
                 format!("member is not callable ({} value)", type_name(&other)),
@@ -9388,7 +9414,21 @@ impl Evaluator {
             // a builtin) doesn't clobber the outer span.
             let prev_span = self.current_span.take();
             self.current_span = Some(span.clone());
+            // [X-16 / v1.0 spec §8.6.3] 内建**也**要拿到本次调用的每参未消费
+            // 集合 —— 否则 `CALL(f, [ERR("boom")])` 这类**实参持有未消费
+            // `ERR`** 的形态,集合在内建边界上被丢掉 ⇒ 被调方的形参绑定拿不到
+            // ⇒ 漏报(假阴性)。
+            //
+            // ⚠ 内建函数的签名是 `fn(&mut Evaluator, Vec<Value>)` ⇒ **没有**
+            // 传集合的参数位 ⇒ 只能走「求值器上的本次调用上下文」这条路
+            // (与 `StdHost::arg_tokens` 同一族机制)。
+            let projected: Vec<bool> = tokens.iter().map(|set| !set.is_empty()).collect();
+            let prev_arg_tokens = std::mem::replace(&mut self.current_arg_tokens, projected);
+            let prev_arg_unconsumed =
+                std::mem::replace(&mut self.current_arg_unconsumed, tokens.clone());
             let result = b(self, accum);
+            self.current_arg_tokens = prev_arg_tokens;
+            self.current_arg_unconsumed = prev_arg_unconsumed;
             self.current_span = prev_span;
             let mut result = result?;
             self.attach_result_token(&mut result, &err_args);
