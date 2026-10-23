@@ -309,30 +309,28 @@ fn propagate_signal(signal: Signal) -> Outcome {
 //    `ERR` 若同时出现在结果里,回调消费了它之后结果里还留着 ⇒ 假阳性
 //    + 违反 §8.6.5「至多报告一次」。
 //
-// ### ⚠ 实参通道仍是 `bool` —— 集合在**求值器侧**重建
+// ### ✅ 实参通道已是**集合** —— 不再在求值器侧重建
 //
-// `StdHost::arg_tokens()` / `StdHost::call_with_tokens()` 的签名在
-// **冻结**的 `wlwl-value` 里,当前是 `bool`(`&[bool]` / `Vec<bool>`)⇒ 本文件
-// **拿不到**「哪几个 `ERR` 未被消费」,只拿得到「这个实参**带着**未消费的
-// `ERR`」。
+// `StdHost::arg_tokens()` / `StdHost::call_with_tokens()` 的签名已从 `bool`
+// (`&[bool]` / `Vec<bool>`)改成**集合**(`&[UnconsumedErrs]` / `Vec<UnconsumedErrs>`)
+// ⇒ 本文件**直接拿到集合本体** ⇒ 成员转交的不再是「有没有」的标志,而是**哪几个
+// `ERR`**。
 //
-// ⇒ 集合由**求值器侧**按实参值**重建**(求值器的
-// `rebuild_callback_unconsumed`:实参值 + 这个标志 ⇒ 集合)⇒ 本文件这一侧
-// 只管把「**哪个元素**携带未消费状态」判对(候选唯一,见 [`carrier_index`])
-// —— 重建出来的集合是**近似**的(登记为待办:要改 `wlwl-value` 的
-// `StdHost` trait 才能让通道直接承载集合)。
+// ⇒ 成员把**实参那一档的整份集合**转给承载者那个元素;求值器侧再把它**收窄**到
+// 那个元素自己那部分(见求值器的 `narrow_to_arg_value`)⇒ 行为与旧的
+// 「bool + 重建」口径**逐字一致**,但通道本身现在承载得住集合了 ⇒ 集合**跨得过**
+// eval ↔ std 这条通道(一致性册 §5.4 的 X-06「跨通道逐元素归属」的前置条件)。
 //
-// ⇒ 本文件**不**自己重建集合:重建规则在求值器侧有一份(它还认得出
+// ⇒ 本文件**不**自己重建集合:收窄规则在求值器侧有一份(它还认得出
 // `CELL` / `DICT_CELL` / `OK` 这些本文件认不出的形态)⇒ 两边各留一份
 // 只会分叉。
 
-/// 本次调用第 `index` 个实参的**未消费状态**(求值器侧填好)。
+/// 本次调用第 `index` 个实参的**未消费集合**(求值器侧填好)。
 ///
-/// ⚠ **通道是 `bool` 口径**(`StdHost::arg_tokens()` 的签名是 `&[bool]`,
-/// 定义在冻结的 `wlwl-value` 里)⇒ 本函数只能知道「这个实参**带着**
-/// 未消费的 `ERR`」,**拿不到是哪几个** ⇒ 集合由求值器侧重建(见上)。
-fn arg_carried(host: &dyn StdHost, index: usize) -> bool {
-    host.arg_tokens().get(index).copied().unwrap_or(false)
+/// ⚠ **[X-06 第三步] 通道已是集合口径**(`StdHost::arg_tokens()` 的签名是
+/// `&[UnconsumedErrs]`)⇒ 本函数直接拿到**集合本体**,不再只拿到「有没有」。
+fn arg_carried(host: &dyn StdHost, index: usize) -> UnconsumedErrs {
+    host.arg_tokens().get(index).cloned().unwrap_or_default()
 }
 
 /// 数组实参里**承载**未消费 `ERR` 的那个元素的下标。
@@ -378,22 +376,32 @@ fn carrier_index(arr: &[Value]) -> Option<usize> {
     }
 }
 
-/// 本次回调第 `index` 个元素该带多少令牌(通道是 `bool` 口径)。
+/// 本次回调第 `index` 个元素该带哪一份集合。
 ///
 /// * 数组实参**不带**未消费状态 ⇒ 谁都不带;
-/// * 数组带 ⇒ **只有承载者**那个元素带(见 [`carrier_index`])。
-fn element_token(arr_carried: bool, carrier: Option<usize>, index: usize) -> bool {
-    arr_carried && carrier == Some(index)
+/// * 数组带 ⇒ **只有承载者**那个元素带(见 [`carrier_index`])—— 带的是**实参
+///   那一档的整份集合**;求值器侧会把它**收窄**到这个元素自己那部分
+///   (见求值器的 `narrow_to_arg_value`)。
+fn element_token(
+    arr_carried: &UnconsumedErrs,
+    carrier: Option<usize>,
+    index: usize,
+) -> UnconsumedErrs {
+    if carrier == Some(index) {
+        arr_carried.clone()
+    } else {
+        Vec::new()
+    }
 }
 
-/// 回调的实参令牌(§8.6.3:转给形参绑定)。
+/// 回调的实参集合(§8.6.3:转给形参绑定)。
 ///
-/// ⚠ 通道是 `bool` 口径 ⇒ **集合由求值器侧重建**(实参值 + 这个标志)。
+/// ⚠ **[X-06 第三步] 通道已是集合口径** ⇒ 传的是**集合本体**,不是「有没有」。
 fn call_with_element_token(
     host: &mut dyn StdHost,
     f: &Value,
     elem: Value,
-    elem_token: bool,
+    elem_token: UnconsumedErrs,
     name: &str,
 ) -> WlwlResult<Outcome> {
     host.call_with_tokens(f, vec![elem], vec![elem_token], name)
@@ -430,7 +438,7 @@ pub fn kernel_map(host: &mut dyn StdHost, args: Vec<Value>) -> WlwlResult<Outcom
             host,
             f,
             v.clone(),
-            element_token(carried, carrier, i),
+            element_token(&carried, carrier, i),
             "MAP",
         )?;
         if r.signal != Signal::None {
@@ -481,7 +489,7 @@ pub fn kernel_filter(host: &mut dyn StdHost, args: Vec<Value>) -> WlwlResult<Out
             host,
             f,
             v.clone(),
-            element_token(carried, carrier, i),
+            element_token(&carried, carrier, i),
             "FILTER",
         )?;
         if r.signal != Signal::None {
@@ -820,7 +828,7 @@ pub fn kernel_group_by(host: &mut dyn StdHost, args: Vec<Value>) -> WlwlResult<O
             host,
             f,
             v.clone(),
-            element_token(carried, carrier, i),
+            element_token(&carried, carrier, i),
             "GROUP_BY",
         )?;
         if r.signal != Signal::None {
@@ -865,7 +873,7 @@ pub fn kernel_dedup_by(host: &mut dyn StdHost, args: Vec<Value>) -> WlwlResult<O
             host,
             f,
             v.clone(),
-            element_token(carried, carrier, i),
+            element_token(&carried, carrier, i),
             "DEDUP_BY",
         )?;
         if r.signal != Signal::None {
@@ -901,7 +909,7 @@ pub fn kernel_key_by(host: &mut dyn StdHost, args: Vec<Value>) -> WlwlResult<Out
             host,
             f,
             v.clone(),
-            element_token(carried, carrier, i),
+            element_token(&carried, carrier, i),
             "KEY_BY",
         )?;
         if r.signal != Signal::None {

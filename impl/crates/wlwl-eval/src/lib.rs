@@ -1530,21 +1530,15 @@ fn invoke_std(
     // ⚠ 存旧值 → 填新值 → 调用 → 还原(与 `source_file` 同款):嵌套调用
     // (成员回调用户函数,回调里又调成员)各自看到**自己那次**的令牌。
     //
-    // ⚠⚠ **[X-06 第二步] 通道仍是 `bool` 口径** —— `StdHost::arg_tokens()`
-    // 的签名(`&[bool]`)定义在 `wlwl-value` 里,本轮**冻结不动** ⇒ 成员侧
-    // 只能看到「这个实参**有没有**未消费的 `ERR`」,看不到**是哪几个**。
-    // 求值器侧因此把集合**投影**成布尔(非空即 `true`);成员回传时(见
-    // [`Evaluator::call_with_tokens`])再按实参值把集合**重建**回来。
-    // ⇒ **集合语义跨不过这条通道** —— 要跨过去必须改 `wlwl-value` 的
-    // `StdHost` trait(不在本轮范围内,登记为待办)。
-    let projected: Vec<bool> = arg_tokens.iter().map(|set| !set.is_empty()).collect();
-    let prev_arg_tokens = std::mem::replace(&mut ev.current_arg_tokens, projected);
+    // ⚠⚠ **[X-06 第三步] 通道已是集合口径** —— `StdHost::arg_tokens()` 的签名
+    // 改成 `&[UnconsumedErrs]` ⇒ 成员侧**直接拿到集合本体**,不再只看到
+    // 「有没有」⇒ ⇒ **集合语义跨得过这条通道了**(一致性册 §5.4 的 X-06
+    // 「跨通道逐元素归属」与 X-20 的前置条件)。
     let prev_arg_unconsumed = std::mem::replace(&mut ev.current_arg_unconsumed, arg_tokens);
     let host: &mut dyn wlwl_std::StdHost = ev;
     let result = std_fn(host, args);
     ev.current_span = prev_span;
     ev.std_ctx.source_file = prev_file;
-    ev.current_arg_tokens = prev_arg_tokens;
     ev.current_arg_unconsumed = prev_arg_unconsumed;
     result
 }
@@ -7148,20 +7142,25 @@ impl wlwl_std::StdHost for Evaluator {
         &mut self,
         f: &Value,
         args: Vec<Value>,
-        arg_tokens: Vec<bool>,
+        arg_tokens: Vec<UnconsumedErrs>,
         name: &str,
     ) -> WlwlResult<Outcome> {
         let span = self
             .current_span
             .clone()
             .unwrap_or_else(|| Span::new("<runtime>", 0, 0));
-        // [X-06 第二步] `bool` → 集合:逐个实参重建(见上)。
+        // [X-06 第三步] 通道已是集合口径 ⇒ 成员回传的是**集合本体**。
+        //
+        // ⚠ 成员转交的是**实参那一档的集合**(它只知道实参持有多少);回调收到
+        // 的**元素**只应带**它自己那部分** ⇒ 这里按**元素携带的 `ERR`**与
+        // 实参集合**取交集**收窄(与旧口径的「重建」同一形状,只是判据从
+        // `bool` 换成集合本身)。
         let rebuilt: Vec<UnconsumedErrs> = args
             .iter()
             .enumerate()
             .map(|(i, value)| {
-                let token = arg_tokens.get(i).copied().unwrap_or(false);
-                self.rebuild_callback_unconsumed(value, token)
+                let set = arg_tokens.get(i).cloned().unwrap_or_default();
+                self.narrow_to_arg_value(value, &set)
             })
             .collect();
         match f {
@@ -7218,8 +7217,8 @@ impl wlwl_std::StdHost for Evaluator {
     /// ⚠ **布尔口径**:`StdHost::arg_tokens()` 的签名是 `&[bool]`(定义在
     /// 冻结的 `wlwl-value` 里)⇒ 成员只拿得到「有没有」,拿不到「是哪几个」。
     /// 集合本体在 [`Evaluator::current_arg_unconsumed`]。
-    fn arg_tokens(&self) -> &[bool] {
-        &self.current_arg_tokens
+    fn arg_tokens(&self) -> &[UnconsumedErrs] {
+        &self.current_arg_unconsumed
     }
 
     fn diag(&mut self, code: ErrorCode, message: String) -> WlwlError {
@@ -7385,18 +7384,13 @@ pub struct Evaluator {
     /// **存旧值 → 填新值 → 调用 → 还原**。走 `StdHost` 的方法
     /// (`arg_tokens`)暴露给标准库成员,于是成员不必碰 `ctx()`
     /// (各模块测试里的 `NullHost` 对 `ctx()` 是**故意 panic** 的)。
-    current_arg_tokens: Vec<bool>,
-    /// [X-06 第二步 / v1.0 §8.6.3] **本次调用**每个实参的未消费 `ERR`
-    /// **集合**(与 `current_arg_tokens` 一一对应)。
+    /// [X-06 第三步 / v1.0 §8.6.3] **本次调用**每个实参的未消费 `ERR`
+    /// **集合**。
     ///
-    /// ⚠ **为什么两个字段并存**:`StdHost::arg_tokens()` 的签名是
-    /// `&[bool]`(定义在**冻结**的 `wlwl-value` 里)⇒ 成员侧只能拿到布尔
-    /// 投影。本字段保存集合**本体** ⇒ 成员回传布尔时,求值器能按实参值把
-    /// 集合**重建**回来(见 [`Evaluator::rebuild_callback_unconsumed`]),
-    /// 不必把集合**降级**成布尔就丢掉。
-    ///
-    /// ⇒ **集合语义跨不过 `StdHost` 那条通道**(通道本身承载不了集合);
-    /// 要跨过去必须改 `wlwl-value` 的 trait(登记为待办)。
+    /// ⚠ **集合本体现在能过 `StdHost` 那条通道了**:`StdHost::arg_tokens()` 的
+    /// 签名已是 `&[UnconsumedErrs]` ⇒ 成员侧直接拿到集合本体 ⇒ 不再需要布尔
+    /// 投影 ⇒ 也就不再需要「按实参值**重建**」的近似(见
+    /// [`Evaluator::narrow_to_arg_value`] —— 那里只剩「收窄到这一个实参」这一步)。
     current_arg_unconsumed: Vec<UnconsumedErrs>,
     /// [v0.11.3 M6 / addendum-01 B 片] 当前所处的假时钟气泡(方案 **B-简**)。
     ///
@@ -7634,7 +7628,6 @@ impl Evaluator {
             dict_acc_fallback: std::cell::Cell::new(0),
             dict_acc_active: Vec::new(),
             read_mode: ReadMode::Transfer,
-            current_arg_tokens: Vec::new(),
             current_arg_unconsumed: Vec::new(),
         }
     }
@@ -7745,7 +7738,6 @@ impl Evaluator {
             dict_acc_fallback: std::cell::Cell::new(0),
             dict_acc_active: Vec::new(),
             read_mode: ReadMode::Transfer,
-            current_arg_tokens: Vec::new(),
             current_arg_unconsumed: Vec::new(),
         }
     }
@@ -9427,12 +9419,9 @@ impl Evaluator {
             // ⚠ 内建函数的签名是 `fn(&mut Evaluator, Vec<Value>)` ⇒ **没有**
             // 传集合的参数位 ⇒ 只能走「求值器上的本次调用上下文」这条路
             // (与 `StdHost::arg_tokens` 同一族机制)。
-            let projected: Vec<bool> = tokens.iter().map(|set| !set.is_empty()).collect();
-            let prev_arg_tokens = std::mem::replace(&mut self.current_arg_tokens, projected);
             let prev_arg_unconsumed =
                 std::mem::replace(&mut self.current_arg_unconsumed, tokens.clone());
             let result = b(self, accum);
-            self.current_arg_tokens = prev_arg_tokens;
             self.current_arg_unconsumed = prev_arg_unconsumed;
             self.current_span = prev_span;
             let mut result = result?;
@@ -11415,28 +11404,29 @@ impl Evaluator {
     // [v1.0 spec §8.6] 未消费 `ERR` 的三个丢弃点
     // ──────────────────────────────────────────────────────────────
 
-    /// [X-06 第二步 / v1.0 §8.6.3] **重建**标准库回调实参的未消费 `ERR` 集合。
+    /// [X-06 第三步 / v1.0 §8.6.3] 把**实参那一档的集合**收窄成**这个回调实参
+    /// 自己的那部分**。
     ///
-    /// 输入是成员回传的 `bool`(「这个实参有没有未消费的 `ERR`」)与**实参
-    /// 值本身**;输出是那个实参的未消费集合。
+    /// 输入是**实参那一档的集合**与**回调实参的值本身**;输出是那个实参自己的
+    /// 未消费集合。
     ///
     /// 规则:
     ///
-    /// * 实参值**本身**是一个 `ERR` ⇒ 集合 = `{该 ERR}`(它就是成员说的那个
-    ///   未消费的 `ERR`);
-    /// * 实参值是**容器** ⇒ 集合 = 该容器**携带**的 `ERR`(成员把数组实参的
-    ///   令牌转给「承载那个未消费 `ERR` 的那个元素」—— 元素可能是嵌在容器里
-    ///   的,见 `wlwl-std` 的 `carrier_index`);
-    /// * 实参值不是 `ERR`、也不携带 `ERR` ⇒ 集合为空。
+    /// * 实参那一档的集合**为空** ⇒ 输出为空(没有未消费状态可转);
+    /// * 实参值**本身**是一个 `ERR` ⇒ 输出 = `{该 ERR}`;
+    /// * 实参值是**容器** ⇒ 输出 = 该容器**携带**的 `ERR` **∩ 实参那一档的集合**
+    ///   (成员把数组实参的状态转给「承载那个未消费 `ERR` 的那个元素」—— 元素
+    ///   可能是嵌在容器里的,见 `wlwl-std` 的 `carrier_index`);
+    /// * 实参值不是 `ERR`、也不携带 `ERR` ⇒ 输出为空。
     ///
-    /// ⚠ **重建是近似的**:成员回传的 `bool` 说不清「是哪一个」⇒ 本函数
-    /// 只能按实参值**推**。推不出来时给空集合 ⇒ 那一跳**漏报**(假阴性),
-    /// 绝不**误报**(假阳性)—— 差异登记项只承诺假阴性。
+    /// ⚠ **收窄是必要的**:成员转交的是**实参那一档**的集合,而回调拿到的是
+    /// **元素** ⇒ 不收窄就会把整档都塞给每个元素 ⇒ 一个容器里的多个 `ERR`
+    /// 会**全部**落到每个回调上 ⇒ 同一个 `ERR` 被报多次(违 §8.6.5)。
     ///
-    /// ⚠ 这是**固有方法**而不是 `StdHost` 的 trait 方法:`StdHost` 定义在
-    /// **冻结**的 `wlwl-value` 里,不能加方法。
-    fn rebuild_callback_unconsumed(&self, value: &Value, token: bool) -> UnconsumedErrs {
-        if !token {
+    /// ⚠ 这是**固有方法**而不是 `StdHost` 的 trait 方法:`StdHost` 是 trait,
+    /// 不能加方法。
+    fn narrow_to_arg_value(&self, value: &Value, arg_set: &UnconsumedErrs) -> UnconsumedErrs {
+        if arg_set.is_empty() {
             return Vec::new();
         }
         match value {
@@ -11446,18 +11436,12 @@ impl Evaluator {
                 if carried.is_empty() {
                     return Vec::new();
                 }
-                // ⚠ 只保留「本次调用的实参集合里真的挂着」的 `ERR` ——
-                // 成员说的「有令牌」指的就是那些。
-                let known: Vec<Value> = self
-                    .current_arg_unconsumed
-                    .iter()
-                    .flat_map(|set| set.iter())
-                    .cloned()
-                    .collect();
-                if known.is_empty() {
-                    return carried;
-                }
-                carried.into_iter().filter(|e| known.contains(e)).collect()
+                // ⚠ 只保留「实参那一档里真的挂着」的 `ERR` —— 成员转交的就是那
+                // 一档 ⇒ 交集之外的**不属于**这个回调。
+                carried
+                    .into_iter()
+                    .filter(|e| arg_set.contains(e))
+                    .collect()
             }
         }
     }

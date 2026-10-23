@@ -37,11 +37,10 @@
 //! * 诊断只报**载荷** ⇒ 两个内容相同的 `ERR` 报出的消息逐字相同 ⇒ 这是**消息
 //!   形态**问题(§8.6.2:报的是「被处置的那个值」),不是身份问题。
 //!
-//! ⚠ **跨 `StdHost` 通道的那一段**仍是**近似**:该通道的签名是 `bool`
-//! ([`StdHost::arg_tokens`] / [`StdHost::call_with_tokens`])⇒ 集合过不去 ⇒ 成员
-//! 回传时只能**按实参值重建** ⇒ 逐元素归属收不精确(只漏报,不误报)。⇒ 收它要
-//! 改 trait 签名(连带所有手写 `NullHost`)—— 与「实参进成员时那份状态落在哪」
-//! 那个规范缺口是**同一刀**。
+//! ✅ **跨 `StdHost` 通道的那一段现在也走得通了**(2026-10-23):两条通道
+//! ([`StdHost::arg_tokens`] / [`StdHost::call_with_tokens`])的签名已从 `bool`
+//! 改成 `UnconsumedErrs` ⇒ 集合**本体**过得了通道 ⇒ 成员**直接拿到**「哪几个
+//! `ERR` 未被消费」,不再需要按实参值**重建**那个近似集合。
 
 #![allow(clippy::doc_overindented_list_items)]
 
@@ -2254,7 +2253,7 @@ pub trait StdHost {
         &mut self,
         f: &Value,
         args: Vec<Value>,
-        arg_tokens: Vec<bool>,
+        arg_tokens: Vec<UnconsumedErrs>,
         name: &str,
     ) -> Result<Outcome, WlwlError> {
         let _ = arg_tokens;
@@ -2267,7 +2266,7 @@ pub trait StdHost {
     /// 按 §8.6.3 把这份状态转给自己的回调(一致性册 §5.4 的 X-07)。
     ///
     /// ⚠ 默认实现返回**空**:没有令牌语义的手写宿主不受影响。
-    fn arg_tokens(&self) -> &[bool] {
+    fn arg_tokens(&self) -> &[UnconsumedErrs] {
         &[]
     }
     /// 以当前调用点 span 构造诊断。
