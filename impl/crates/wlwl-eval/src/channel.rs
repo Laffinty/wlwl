@@ -38,6 +38,23 @@ pub enum TryResult<T> {
     Closed,
 }
 
+/// [X-01] 关闭时**被释放**的停泊等待方(并发册 §17.2.3 / 附录 H.3.7)。
+///
+/// ⚠ **两组都要给** —— §17.2.3:「关闭**必须**释放该通道上全部挂起的等待方」:
+///
+/// * 停泊的**接收方**被唤醒后,其 `RECV` 按「关闭且读空」完成,返回
+///   `ERR(kind="ChannelClosed")`;
+/// * 停泊的**发送方**被唤醒后,其 `SEND` 以 **`E0054`** 失败(发送到已关闭通道)。
+///
+/// ⇒ 唤醒次序**未定义**(§17.7)⇒ 两组各按自己的队列顺序交回去即可。
+#[derive(Debug, Default)]
+pub struct ClosedWaiters {
+    /// 停泊的接收方(重跑后按「关闭且读空」完成)。
+    pub receivers: Vec<crate::runtime::TaskId>,
+    /// 停泊的发送方(重跑后其 `SEND` 以 `E0054` 失败)。
+    pub senders: Vec<crate::runtime::TaskId>,
+}
+
 /// One channel slot.
 ///
 /// Layout (plan §5.3):
@@ -206,24 +223,34 @@ impl Channel {
         ])))
     }
 
-    /// Mark the channel closed. Idempotent. Returns the list of
-    /// task ids that were parked on `receiver_waiters` so the caller
-    /// can re-enqueue them (they wake up, re-enter their segment,
-    /// see `ChannelClosed` ERR). Sender waiters are NOT woken by
-    /// close: per plan §5.3 arm "SEND | true", SEND-on-closed is
-    /// E0054 (immediate host error), so any task that was waiting to
-    /// SEND on a closed channel is now stuck and should be cancelled
-    /// (Phase F's TASK_CANCEL will handle this; for now, just leave
-    /// them — D-D adds the leak-detector path that fires on scope
-    /// exit anyway).
-    pub fn close(&mut self) -> Vec<crate::runtime::TaskId> {
+    /// Mark the channel closed. Idempotent. Returns the **parked waiters**
+    /// that close releases, so the caller can re-enqueue them.
+    ///
+    /// ⚠ **[X-01] 两组都释放** —— 并发册 §17.2.3:「关闭**必须**释放该通道上
+    /// 全部挂起的等待方」⇒ 停泊的**接收方**按「关闭且读空」完成(返回
+    /// `ERR(kind="ChannelClosed")`);停泊的**发送方**重跑后其 `SEND` 以
+    /// **`E0054`** 失败。
+    ///
+    /// ⇒ 此前**只**释放接收方 ⇒ 停泊的发送方永远不被唤醒 ⇒ 对它 `AWAIT` 得到
+    /// `E0053`(无对端唤醒)⇒ **不**是规范要的 `E0054`(一致性册 §5.4 的 X-01)。
+    ///
+    /// ⚠ **`sender_waiter_values` 必须与 `sender_waiters` 一起换出** —— 两者是
+    /// **平行数组**(一起 push、一起 pop)⇒ 只换出一个会让长度对不上 ⇒
+    /// `pop_sender_waiter` 会取走**别人**的值 ⇒ 值错配。
+    /// 停泊时存的那份值随发送方**重跑**作废(它会重新求值那个表达式)⇒ 直接丢弃。
+    pub fn close(&mut self) -> ClosedWaiters {
         if self.closed {
-            return Vec::new();
+            return ClosedWaiters::default();
         }
         self.closed = true;
-        let mut woken = Vec::new();
-        std::mem::swap(&mut woken, &mut self.receiver_waiters);
-        woken
+        let mut receivers = Vec::new();
+        std::mem::swap(&mut receivers, &mut self.receiver_waiters);
+        let mut senders = Vec::new();
+        std::mem::swap(&mut senders, &mut self.sender_waiters);
+        let mut parked_values = Vec::new();
+        std::mem::swap(&mut parked_values, &mut self.sender_waiter_values);
+        drop(parked_values);
+        ClosedWaiters { receivers, senders }
     }
 
     /// Wake one sender (FIFO) — returns its task id so the caller can
@@ -465,13 +492,46 @@ mod tests {
         let mut c = Channel::new(ChannelId(0), 1, 0);
         c.push_receiver_waiter(crate::runtime::TaskId(42));
         c.push_receiver_waiter(crate::runtime::TaskId(43));
-        let woken = c.close();
+        let closed = c.close();
         assert_eq!(
-            woken,
+            closed.receivers,
             vec![crate::runtime::TaskId(42), crate::runtime::TaskId(43)]
         );
+        assert!(closed.senders.is_empty());
         assert!(c.receiver_waiters.is_empty());
         assert!(c.closed);
+    }
+
+    /// [X-01] 关闭**必须**释放停泊的**发送方** ⇒ 它们的 `SEND` 重跑后以
+    /// `E0054` 失败(并发册 §17.2.3 / 附录 H.3.7)。
+    #[test]
+    fn close_returns_parked_senders_for_wake() {
+        let mut c = Channel::new(ChannelId(0), 1, 1);
+        c.push_sender_waiter(crate::runtime::TaskId(7), int(1));
+        c.push_sender_waiter(crate::runtime::TaskId(8), int(2));
+        let closed = c.close();
+        assert_eq!(
+            closed.senders,
+            vec![crate::runtime::TaskId(7), crate::runtime::TaskId(8)]
+        );
+        assert!(closed.receivers.is_empty());
+        assert!(c.sender_waiters.is_empty());
+    }
+
+    /// ⚠ `sender_waiters` 与 `sender_waiter_values` 是**平行数组** ⇒ 关闭时
+    /// 必须**一起**换出 ⇒ 否则长度对不上 ⇒ `pop_sender_waiter` 会取走**别人**的值。
+    #[test]
+    fn close_clears_the_parked_sender_values_in_lockstep() {
+        let mut c = Channel::new(ChannelId(0), 1, 1);
+        c.push_sender_waiter(crate::runtime::TaskId(7), int(1));
+        c.push_sender_waiter(crate::runtime::TaskId(8), int(2));
+        c.close();
+        assert!(c.sender_waiters.is_empty());
+        assert!(
+            c.sender_waiter_values.is_empty(),
+            "parked values must be cleared together with the waiters"
+        );
+        assert_eq!(c.sender_waiters.len(), c.sender_waiter_values.len());
     }
 
     #[test]
@@ -479,8 +539,9 @@ mod tests {
         let mut c = Channel::new(ChannelId(0), 1, 0);
         c.push_receiver_waiter(crate::runtime::TaskId(7));
         let first = c.close();
-        assert_eq!(first, vec![crate::runtime::TaskId(7)]);
+        assert_eq!(first.receivers, vec![crate::runtime::TaskId(7)]);
         let second = c.close();
-        assert!(second.is_empty());
+        assert!(second.receivers.is_empty());
+        assert!(second.senders.is_empty());
     }
 }

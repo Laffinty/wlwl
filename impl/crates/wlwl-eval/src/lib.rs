@@ -5364,17 +5364,20 @@ fn builtin_channel_close(ev: &mut Evaluator, args: Vec<Value>) -> WlwlResult<Out
     //   re-enters its segment, retries RECV, finds
     //   `closed && empty`, and synthesises
     //   `ERR(kind="ChannelClosed")` per spec §17.2.
-    // - Sender waiters are NOT woken by close: per plan §5.3 arm
-    //   "SEND | true", SEND-on-closed is E0054 (immediate host
-    //   error). A sender parked on a now-closed channel is woken
-    //   only by scope-exit force-cancel (D-D leak detector) or
-    //   TASK_CANCEL (F5+).
+    // - [X-01] Drains `sender_waiters` too: each parked sender wakes,
+    //   re-enters its segment, retries SEND, finds the channel
+    //   `closed`, and fails with **E0054** (并发册 §17.2.3:「关闭**必须**
+    //   释放该通道上全部挂起的等待方」+「挂起的**发送方**被唤醒后,其 `SEND`
+    //   以 `E0054` 失败」;附录 H.3.7 同款)。
+    //   ⇒ 此前只释放接收方 ⇒ 停泊的发送方永远不被唤醒 ⇒ 对它 `AWAIT` 得到
+    //   `E0053`(无对端唤醒)⇒ **不**是规范要的 `E0054`(一致性册 §5.4 的 X-01)。
     // Idempotent: a second close returns an empty drain list.
-    let woken = ev.scheduler.channels[slot].close();
-    for tid in woken {
-        // WasmFX-style wake + transition Suspended(ReceivingOn) →
-        // Pending. The recv path will retry and synthesise the
-        // ChannelClosed ERR on the next attempt.
+    let closed = ev.scheduler.channels[slot].close();
+    for tid in closed.receivers.into_iter().chain(closed.senders) {
+        // WasmFX-style wake + transition Suspended(ReceivingOn |
+        // SendingOn) → Pending. The recv path will retry and synthesise
+        // the ChannelClosed ERR on the next attempt; the send path will
+        // retry and hit E0054 (the channel is closed).
         ev.scheduler.wake_channel_op_waiter(tid);
     }
     Ok(Outcome::normal(Value::Null))
@@ -10134,16 +10137,16 @@ impl Evaluator {
         for ch_id in owned {
             // Force-close: drains receiver_waiters (the woken tasks
             // re-run, observe closed + (eventually) empty, and
-            // synthesise ChannelClosed ERR). Sender waiters are not
-            // woken — they'd just see E0054 on their next SEND
-            // attempt, which is correct per plan §5.3.
-            let woken = self
+            // synthesise ChannelClosed ERR) **and** sender_waiters
+            // ([X-01] 并发册 §17.2.3:关闭**必须**释放该通道上全部挂起的
+            // 等待方 ⇒ 停泊的发送方重跑后其 SEND 以 E0054 失败)。
+            let closed = self
                 .scheduler
                 .channels
                 .get_mut(ch_id.0)
                 .map(|c| c.close())
                 .unwrap_or_default();
-            for tid in woken {
+            for tid in closed.receivers.into_iter().chain(closed.senders) {
                 self.scheduler.enqueue(tid);
             }
         }
