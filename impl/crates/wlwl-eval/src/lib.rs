@@ -3498,6 +3498,15 @@ fn builtin_call_method(ev: &mut Evaluator, args: Vec<Value>) -> WlwlResult<Outco
         }
     };
     let rest: Vec<Value> = args[2..].to_vec();
+    // [X-18 / v1.0 spec §8.6.3] 方法的实参的未消费集合要转给**方法的形参
+    // 绑定** —— `CALL_METHOD(o, "m", [ERR("boom")])` 里那个数组持有未消费的
+    // `ERR` ⇒ 它进方法的形参 ⇒ 方法自己的作用域结束时按 §8.6.2 第 3 项报
+    // `E0103`。
+    //
+    // ⚠ 集合从 [`Evaluator::current_arg_unconsumed`] 取(内建函数的签名
+    // `fn(&mut Evaluator, Vec<Value>)` **没有**传集合的参数位)⇒ **跳过前两个
+    // 实参** —— 第 0 个是**接收者**、第 1 个是**方法名**,都不是方法的实参。
+    let arg_sets: Vec<UnconsumedErrs> = ev.current_arg_unconsumed.iter().skip(2).cloned().collect();
     let diag_span = ev.current_span.clone().unwrap_or_else(AstSpan::dummy);
     // [v0.9 Step 9a-4 / plan §4.3 / ADR-0019 §4.3] Receiver
     // dispatch — `CALL_METHOD` now handles three shapes:
@@ -3646,17 +3655,7 @@ fn builtin_call_method(ev: &mut Evaluator, args: Vec<Value>) -> WlwlResult<Outco
             return Err(ev.diag(code, msg, diag_span));
         }
     }
-    // ⚠ [X-16 的同族缺口] `CALL_METHOD` 的实参集合**同样**在内建边界上被丢掉
-    // ⇒ 传给 `Vec::new()`(与本轮改动前**逐字一致**)⇒ 待登记为新差异项后
-    // 再收(见处置册 §6 的 G-5)。
-    ev.call_value_with_receiver(
-        callee,
-        Some(receiver),
-        rest,
-        Vec::new(),
-        &diag_span,
-        &method,
-    )
+    ev.call_value_with_receiver(callee, Some(receiver), rest, arg_sets, &diag_span, &method)
 }
 
 /// `CLASS(name?, parent, members) -> CLASS`: spec §13 (plan §4.3)
@@ -3976,6 +3975,14 @@ fn builtin_new(ev: &mut Evaluator, args: Vec<Value>) -> WlwlResult<Outcome> {
                 }
             }
             let rest = args[1..].to_vec();
+            // [X-19 / v1.0 spec §8.6.3] 初始化器的实参的未消费集合要转给
+            // **初始化器的形参绑定** —— `NEW(C, [ERR("boom")])` 里那个数组持有
+            // 未消费的 `ERR` ⇒ 它进初始化器的形参 ⇒ 初始化器自己的作用域结束
+            // 时按 §8.6.2 第 3 项报 `E0103`。
+            //
+            // ⚠ **跳过第 0 个实参** —— 那是**类**本身,不是初始化器的实参。
+            let arg_sets: Vec<UnconsumedErrs> =
+                ev.current_arg_unconsumed.iter().skip(1).cloned().collect();
             let span_clone = diag_span.clone();
             // call_value_with_receiver inserts `receiver` as the
             // first arg when the first formal is named `self`,
@@ -3986,9 +3993,7 @@ fn builtin_new(ev: &mut Evaluator, args: Vec<Value>) -> WlwlResult<Outcome> {
                 init_val,
                 Some(instance.clone()),
                 rest,
-                // ⚠ [X-16 的同族缺口] 同 `CALL_METHOD`:实参集合在内建边界上
-                // 被丢掉 ⇒ 传 `Vec::new()`(与本轮改动前**逐字一致**)。
-                Vec::new(),
+                arg_sets,
                 &span_clone,
                 "NEW",
             )?;
