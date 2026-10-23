@@ -63,10 +63,11 @@ use wlwl_error::{
 // [v0.11 M2 / ADR-0022] 值层单源在 wlwl-value;这里 pub use 保持
 // `crate::Value` 等既有路径对子模块与外部消费者不变。
 pub use wlwl_value::{
-    find_unconsumed_index, new_cell, subst, type_name, union_unconsumed, value_type_name,
-    values_equal, Binding, Cell, ChannelHandle, ChannelId, ClassEntry, DictInner, DictKey, Env,
-    LinearThis, Outcome, Proto, ProtocolCursor, ProtocolError, RcHandle, ReadMode, Signal, Tag,
-    TaskHandle, TaskId, TestEntry, ThisToken, ThisTokenError, UnconsumedErrs, Value, YieldReason,
+    find_unconsumed_index, new_cell, subst, subtract_unconsumed_across, type_name,
+    union_unconsumed, value_type_name, values_equal, Binding, Cell, ChannelHandle, ChannelId,
+    ClassEntry, DictInner, DictKey, Env, LinearThis, Outcome, Proto, ProtocolCursor, ProtocolError,
+    RcHandle, ReadMode, Signal, Tag, TaskHandle, TaskId, TestEntry, ThisToken, ThisTokenError,
+    UnconsumedErrs, Value, YieldReason,
 };
 /// (`Var("THIS")` or `Call { name: "THIS" }`). Used to reject
 /// closures / SPAWN bodies that would carry the linear capability
@@ -1537,10 +1538,24 @@ fn invoke_std(
     let prev_arg_unconsumed = std::mem::replace(&mut ev.current_arg_unconsumed, arg_tokens);
     let host: &mut dyn wlwl_std::StdHost = ev;
     let result = std_fn(host, args);
+    // [X-20 / v1.0 spec §8.6.3] **结果承接** —— 成员**没转给回调**的那部分
+    // 未消费状态,归**该调用的结果**(甲案)⇒ 随结果继续,直到在下一个丢弃点
+    // (语句值丢弃 / 绑定被覆盖 / 作用域结束)被处置。
+    //
+    // ⚠ **这里取的是「成员手上剩下的」** —— `call_with_tokens` 里已把「转给
+    // 回调的那部分」**移走**了 ⇒ 两边**不重叠** ⇒ 同一个 `ERR` 只会被报一次。
+    let remaining: UnconsumedErrs = ev
+        .current_arg_unconsumed
+        .iter()
+        .flat_map(|set| set.iter())
+        .cloned()
+        .collect();
     ev.current_span = prev_span;
     ev.std_ctx.source_file = prev_file;
     ev.current_arg_unconsumed = prev_arg_unconsumed;
-    result
+    let mut result = result?;
+    result.unconsumed = union_unconsumed(&result.unconsumed, &remaining);
+    Ok(result)
 }
 
 // ──────────────────────────────────────────────────────────────────────
@@ -3159,7 +3174,22 @@ fn builtin_call(ev: &mut Evaluator, args: Vec<Value>) -> WlwlResult<Outcome> {
     // ⚠ 集合从 [`Evaluator::current_arg_unconsumed`] 取(内建函数的签名
     // `fn(&mut Evaluator, Vec<Value>)` **没有**传集合的参数位)⇒ **跳过第 0 个
     // 实参**—— 那是**被调者**自己,不是 `CALL` 的实参。
-    let arg_sets: Vec<UnconsumedErrs> = ev.current_arg_unconsumed.iter().skip(1).cloned().collect();
+    //
+    // [X-20 / v1.0 spec §8.6.3] **取走,不是复制** —— 这一份集合的**接收位置
+    // 是被调方的形参绑定**(§8.6.3 第一条:「接收位置**建立绑定**时,未消费状态
+    // 转给该绑定」)⇒ 它**归形参绑定** ⇒ `CALL` 自己的这一帧**不得再持有它**
+    // ⇒ 否则「结果承接」会把它**再挂回结果** ⇒ 被调方消费过了、结果还带着 ⇒
+    // 同一个 `ERR` 被报两次(违 §8.6.5)。
+    //
+    // ⚠ **与标准库成员的区别**:标准库成员的实参位**不建立绑定** ⇒ 那份状态
+    // 按 §8.6.3 第三条**转给该调用的结果**(甲案)⇒ `invoke_std` 那边**保留**。
+    // 这里是**建立绑定** ⇒ **不留**。两类去向本来就不同,不可混同。
+    let arg_sets: Vec<UnconsumedErrs> = ev
+        .current_arg_unconsumed
+        .iter_mut()
+        .skip(1)
+        .map(std::mem::take)
+        .collect();
     // [V-01] 计数点不在这里 —— 它收在**闭包真正被调用的落点**
     // (`call_value_with_receiver` 的 `Value::Closure` 分支)⇒ 记的是「闭包被
     // 调用了几次」,不是「`CALL` 算子被用了几次」。
@@ -3500,7 +3530,17 @@ fn builtin_call_method(ev: &mut Evaluator, args: Vec<Value>) -> WlwlResult<Outco
     // ⚠ 集合从 [`Evaluator::current_arg_unconsumed`] 取(内建函数的签名
     // `fn(&mut Evaluator, Vec<Value>)` **没有**传集合的参数位)⇒ **跳过前两个
     // 实参** —— 第 0 个是**接收者**、第 1 个是**方法名**,都不是方法的实参。
-    let arg_sets: Vec<UnconsumedErrs> = ev.current_arg_unconsumed.iter().skip(2).cloned().collect();
+    //
+    // [X-20 / v1.0 spec §8.6.3] **取走,不是复制** —— 这一份集合的**接收位置
+    // 是方法的形参绑定**(§8.6.3 第一条)⇒ 它**归形参绑定** ⇒ `CALL_METHOD`
+    // 自己的这一帧**不得再持有它** ⇒ 否则「结果承接」会把它再挂回结果 ⇒
+    // 方法消费过了、结果还带着 ⇒ 同一个 `ERR` 被报两次(违 §8.6.5)。
+    let arg_sets: Vec<UnconsumedErrs> = ev
+        .current_arg_unconsumed
+        .iter_mut()
+        .skip(2)
+        .map(std::mem::take)
+        .collect();
     let diag_span = ev.current_span.clone().unwrap_or_else(AstSpan::dummy);
     // [v0.9 Step 9a-4 / plan §4.3 / ADR-0019 §4.3] Receiver
     // dispatch — `CALL_METHOD` now handles three shapes:
@@ -3975,8 +4015,22 @@ fn builtin_new(ev: &mut Evaluator, args: Vec<Value>) -> WlwlResult<Outcome> {
             // 时按 §8.6.2 第 3 项报 `E0103`。
             //
             // ⚠ **跳过第 0 个实参** —— 那是**类**本身,不是初始化器的实参。
-            let arg_sets: Vec<UnconsumedErrs> =
-                ev.current_arg_unconsumed.iter().skip(1).cloned().collect();
+            //
+            // [X-20 / v1.0 spec §8.6.3] **取走,不是复制** —— 这一份集合的
+            // **接收位置是初始化器的形参绑定**(§8.6.3 第一条)⇒ 它**归形参绑定**
+            // ⇒ `NEW` 自己的这一帧**不得再持有它** ⇒ 否则「结果承接」会把它再挂
+            // 回**实例**上 ⇒ 初始化器消费过了、实例还带着 ⇒ 同一个 `ERR` 被报
+            // 两次(违 §8.6.5)。
+            //
+            // ⚠ **只在真调 init 时取**:类**没有** init 时,实参位**不建立绑定**
+            // ⇒ 按 §8.6.3 第三条,那份状态**转给该调用的结果**(即实例)⇒
+            // 此时**必须保留** ⇒ 取走动作放在这个 `if let` 里面。
+            let arg_sets: Vec<UnconsumedErrs> = ev
+                .current_arg_unconsumed
+                .iter_mut()
+                .skip(1)
+                .map(std::mem::take)
+                .collect();
             let span_clone = diag_span.clone();
             // call_value_with_receiver inserts `receiver` as the
             // first arg when the first formal is named `self`,
@@ -7129,15 +7183,14 @@ impl wlwl_std::StdHost for Evaluator {
     /// 绑定 —— 与 `eval_call` 的函数分派同构;span 取 invoke_std 存好的当前
     /// 调用点。
     ///
-    /// ⚠⚠ **[X-06 第二步] 这条通道仍是 `bool` 口径** —— `StdHost` 的签名
-    /// (`call_with_tokens(..., arg_tokens: Vec<bool>, ...)`)定义在
-    /// `wlwl-value` 里,本轮**冻结不动** ⇒ 成员只能告诉求值器「这个实参
-    /// **有没有**未消费的 `ERR`」,说不出**是哪几个**。
+    /// ⚠ **[X-06 第三步] 这条通道已是**集合**口径** —— `StdHost` 的签名
+    /// (`call_with_tokens(..., arg_tokens: Vec<UnconsumedErrs>, ...)`)已改成
+    /// 集合 ⇒ 成员直接给出**是哪几个** `ERR` ⇒ **不需要**重建。
     ///
-    /// ⇒ 求值器侧按**实参值**把集合**重建**回来(见
-    /// [`Evaluator::rebuild_callback_unconsumed`]):重建出来的集合是
-    /// **近似**,不是原件 —— 通道本身承载不了集合(登记为待办:要改
-    /// `wlwl-value` 的 `StdHost` trait)。
+    /// ⇒ 成员给的那份集合按**元素**收窄到**这个回调实参**自己那部分(见
+    /// `narrow_to_arg_value`)⇒ 收窄后的那部分**从「成员手上」移走**
+    /// (按**内容**做多重集差集,见 `current_arg_unconsumed` 的记账)⇒ 回调与
+    /// 成员的结果**各持各的、不重叠**(§8.6.5「至多报告一次」)。
     fn call_with_tokens(
         &mut self,
         f: &Value,
@@ -7163,6 +7216,25 @@ impl wlwl_std::StdHost for Evaluator {
                 self.narrow_to_arg_value(value, &set)
             })
             .collect();
+        // [X-20 / v1.0 spec §8.6.3] **分账** —— 成员把**一部分**未消费状态转给
+        // 回调时,那部分从「成员手上」**移走**(不是复制)⇒ 剩下的是「成员**没**
+        // 转出去的那部分」⇒ 它归**该调用的结果**(甲案:实参进成员 ⇒ 那份状态
+        // 转给结果)。
+        //
+        // ⚠ **移动语义是关键**:复制会让同一份集合同时落在回调与结果两处 ⇒
+        // 同一个 `ERR` 被报**两次**(违 §8.6.5「至多报告一次」)。
+        //
+        // ⚠ **按内容扣,不看槽号** —— 「成员手上」那份是**每个实参一槽**
+        // (`StdHost::arg_tokens()` 的形状),而 `rebuilt` 是**按回调实参分槽**的 ⇒
+        // 两者**槽号不对应**(`MAP` 把 arg0 的元素分发给多个回调实参)⇒ 按槽号扣
+        // 会扣错地方。⇒ 处置册 §6.1 的分账规则写的是「按**内容**做多重集差集」
+        // ⇒ 这里就按内容跨槽扣(扣一处即止 ⇒ 保持多重集口径)。
+        for forwarded in rebuilt.iter() {
+            if forwarded.is_empty() {
+                continue;
+            }
+            subtract_unconsumed_across(&mut self.current_arg_unconsumed, forwarded);
+        }
         match f {
             Value::Closure { params, body, env } => self.invoke_closure(
                 name,
@@ -7191,32 +7263,27 @@ impl wlwl_std::StdHost for Evaluator {
         }
     }
 
-    /// [X-06 第二步] **重建**标准库回调实参的未消费 `ERR` 集合。
+    /// [X-06 第三步 / X-20] **收窄**标准库回调实参的未消费 `ERR` 集合。
     ///
-    /// 输入是成员回传的 `bool`(「这个实参有没有未消费的 `ERR`」)与**实参
-    /// 值本身**;输出是那个实参的未消费集合。
+    /// 输入是成员回传的**集合本体**与**实参值本身**;输出是**这个实参自己**
+    /// 携带的那部分。
     ///
     /// 规则:
     ///
     /// * 实参值**本身**是一个 `ERR` ⇒ 集合 = `{该 ERR}`(它就是成员说的那个
     ///   未消费的 `ERR`);
-    /// * 实参值是**容器** ⇒ 集合 = 该容器**携带**的 `ERR`(成员把数组实参的
-    ///   令牌转给「承载那个未消费 `ERR` 的那个元素」—— 元素可能是嵌在容器里
-    ///   的,见 `wlwl-std` 的 `carrier_index`);
+    /// * 实参值是**容器** ⇒ 集合 = 该容器**携带**的 `ERR` **与成员给的那份的
+    ///   交集**(成员把数组实参的集合**按元素**分发给每个元素 —— 元素可能是嵌在
+    ///   容器里的,见 `wlwl-std` 的 `element_token`);
     /// * 实参值不是 `ERR`、也不携带 `ERR` ⇒ 集合为空。
     ///
-    /// ⚠ **重建是近似的**:成员回传的 `bool` 说不清「是哪一个」⇒ 本函数
-    /// 只能按实参值**推**。推不出来时给空集合 ⇒ 那一跳**漏报**(假阴性),
-    /// 绝不**误报**(假阳性)—— 差异登记项只承诺假阴性。
+    /// ⚠ **交集是「按内容」判的** —— 与 §8.6.5 的「值语义即新身份」一致。
     ///
-    /// (实现见 [`Evaluator::rebuild_callback_unconsumed`] —— 它是**固有
-    /// 方法**,不是 `StdHost` 的 trait 方法:trait 是**冻结**的,不能加方法。)
+    /// [X-07 / v1.0 spec §8.6.3] **本次调用**每个实参的未消费集合。
     ///
-    /// [X-07 / v1.0 spec §8.6.3] **本次调用**每个实参的未消费令牌。
-    ///
-    /// ⚠ **布尔口径**:`StdHost::arg_tokens()` 的签名是 `&[bool]`(定义在
-    /// 冻结的 `wlwl-value` 里)⇒ 成员只拿得到「有没有」,拿不到「是哪几个」。
-    /// 集合本体在 [`Evaluator::current_arg_unconsumed`]。
+    /// ⚠ **集合口径**:`StdHost::arg_tokens()` 的签名已是 `&[UnconsumedErrs]`
+    /// ⇒ 成员拿得到**是哪几个** `ERR`,不再只是「有没有」⇒ 集合**本体**就是
+    /// 求值器这一帧手上那份(`Evaluator::current_arg_unconsumed`)。
     fn arg_tokens(&self) -> &[UnconsumedErrs] {
         &self.current_arg_unconsumed
     }
@@ -9422,10 +9489,20 @@ impl Evaluator {
             let prev_arg_unconsumed =
                 std::mem::replace(&mut self.current_arg_unconsumed, tokens.clone());
             let result = b(self, accum);
+            // [X-20 / v1.0 spec §8.6.3] **结果承接** —— 同 `invoke_std`:成员
+            // (这里是**内建函数**)没转给回调的那部分未消费状态,归**该调用的
+            // 结果** ⇒ 随结果继续,直到在下一个丢弃点被处置。
+            let remaining: UnconsumedErrs = self
+                .current_arg_unconsumed
+                .iter()
+                .flat_map(|set| set.iter())
+                .cloned()
+                .collect();
             self.current_arg_unconsumed = prev_arg_unconsumed;
             self.current_span = prev_span;
             let mut result = result?;
             self.attach_result_token(&mut result, &err_args);
+            result.unconsumed = union_unconsumed(&result.unconsumed, &remaining);
             return Ok(result);
         }
         Err(self.undefined_name(name, span))

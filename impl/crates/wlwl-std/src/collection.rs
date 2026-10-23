@@ -333,65 +333,29 @@ fn arg_carried(host: &dyn StdHost, index: usize) -> UnconsumedErrs {
     host.arg_tokens().get(index).cloned().unwrap_or_default()
 }
 
-/// 数组实参里**承载**未消费 `ERR` 的那个元素的下标。
-///
-/// 通道是 `bool` 口径(见上)⇒ 成员没法逐元素地问「这个元素带哪些
-/// `ERR`」⇒ 只能按**候选唯一**判:
-///
-/// * 候选 = 值为 `ERR` 的元素(直接承载);
-/// * 没有 `ERR` 元素时,退到容器元素(`ERR` 嵌在容器里)。
-///
-/// ⚠ 候选**不唯一**时**不猜**:猜错会把一个**早已被消费**的 `ERR` 报出来
-/// (假阳性)。§8.6 那两条差异登记(X-06 / X-07)都只承诺**假阴性**,这条
-/// 纪律不能破。候选不唯一的场合(容器里同时装两个未消费 `ERR`)要等
-/// `StdHost` 的通道能承载集合才收得掉 —— 通道本身还是 `bool`。
-fn carrier_index(arr: &[Value]) -> Option<usize> {
-    let errs: Vec<usize> = arr
-        .iter()
-        .enumerate()
-        .filter(|(_, v)| matches!(v, Value::Err(_)))
-        .map(|(i, _)| i)
-        .collect();
-    if errs.len() == 1 {
-        return Some(errs[0]);
-    }
-    if !errs.is_empty() {
-        return None;
-    }
-    let containers: Vec<usize> = arr
-        .iter()
-        .enumerate()
-        .filter(|(_, v)| {
-            matches!(
-                v,
-                Value::Array(_) | Value::Cell(_) | Value::Dict(_) | Value::DictCell(_)
-            )
-        })
-        .map(|(i, _)| i)
-        .collect();
-    if containers.len() == 1 {
-        Some(containers[0])
-    } else {
-        None
-    }
-}
-
-/// 本次回调第 `index` 个元素该带哪一份集合。
+/// 本次回调的那个元素该带哪一份集合。
 ///
 /// * 数组实参**不带**未消费状态 ⇒ 谁都不带;
-/// * 数组带 ⇒ **只有承载者**那个元素带(见 [`carrier_index`])—— 带的是**实参
-///   那一档的整份集合**;求值器侧会把它**收窄**到这个元素自己那部分
-///   (见求值器的 `narrow_to_arg_value`)。
-fn element_token(
-    arr_carried: &UnconsumedErrs,
-    carrier: Option<usize>,
-    index: usize,
-) -> UnconsumedErrs {
-    if carrier == Some(index) {
-        arr_carried.clone()
-    } else {
-        Vec::new()
-    }
+/// * 数组带 ⇒ **每个**元素都带**实参那一档的整份集合**;求值器侧再把它
+///   **收窄**到这个元素自己那部分(见求值器的 `narrow_to_arg_value`)。
+///
+/// ⚠ **[X-20] 这里不再挑「唯一承载者」** —— 旧口径按「候选唯一」挑一个元素,
+/// 候选不唯一就**一个都不转**(纪律写在当时的 `carrier_index` 注释里:「候选
+/// 不唯一时不猜」⇒ 避免猜错把一个早已被消费的 `ERR` 报出来)。
+///
+/// ⚠ **那条纪律的前提已经不成立**:它成立的前提是「`StdHost` 的通道只能传
+/// `bool` ⇒ 成员没法逐元素地问『这个元素带哪几个 `ERR`』」。**通道现在承载
+/// 集合本体** ⇒ 逐元素的归属**可以**算了 ⇒ 求值器侧的收窄(`narrow_to_arg_value`)
+/// 做的正是「这个元素自己带哪几个」⇒ **每个元素各带各的**,不再需要挑。
+///
+/// ⇒ 不挑的后果(实测):数组里同时装**两个**未消费 `ERR` 时,旧口径**一个都
+/// 不转** ⇒ 那两个 `ERR` 从来没进过任何回调的形参绑定 ⇒ 回调**消费**或
+/// **显式丢弃**了那些元素之后,它们**仍然被报** ⇒ **假阳性**。
+///
+/// ⇒ 挑的后果:同上,但更隐蔽 —— 猜错承载者会把一个**早已被消费**的 `ERR`
+/// 报出来。⇒ 现在两条路都由「按内容归属」消掉。
+fn element_token(arr_carried: &UnconsumedErrs) -> UnconsumedErrs {
+    arr_carried.clone()
 }
 
 /// 回调的实参集合(§8.6.3:转给形参绑定)。
@@ -427,20 +391,13 @@ pub fn kernel_map(host: &mut dyn StdHost, args: Vec<Value>) -> WlwlResult<Outcom
     }
     // [X-07 / §8.6.3] 数组实参的未消费状态 ⇒ 转给承载它的那个元素。
     let carried = arg_carried(host, 0);
-    let carrier = carrier_index(arr);
     let mut out: Vec<Value> = Vec::with_capacity(arr.len());
     let mut err: Option<(Value, UnconsumedErrs)> = None;
     // [X-06 / §8.6.3] 结果容器持有的未消费集合 = 各元素集合的**并集**
     // (容器装盛 ⇒ 转发给该容器)。
     let mut result_set: UnconsumedErrs = Vec::new();
-    for (i, v) in arr.iter().enumerate() {
-        let r = call_with_element_token(
-            host,
-            f,
-            v.clone(),
-            element_token(&carried, carrier, i),
-            "MAP",
-        )?;
+    for v in arr.iter() {
+        let r = call_with_element_token(host, f, v.clone(), element_token(&carried), "MAP")?;
         if r.signal != Signal::None {
             return Ok(propagate_signal(r.signal));
         }
@@ -479,19 +436,12 @@ pub fn kernel_filter(host: &mut dyn StdHost, args: Vec<Value>) -> WlwlResult<Out
     }
     // [X-07 / §8.6.3] 数组实参的未消费状态 ⇒ 转给承载它的那个元素。
     let carried = arg_carried(host, 0);
-    let carrier = carrier_index(arr);
     let mut out: Vec<Value> = Vec::new();
     let mut err: Option<(Value, UnconsumedErrs)> = None;
     // [X-06 / §8.6.3] 结果容器持有的未消费集合 = 各元素集合的**并集**。
     let mut result_set: UnconsumedErrs = Vec::new();
-    for (i, v) in arr.iter().enumerate() {
-        let r = call_with_element_token(
-            host,
-            f,
-            v.clone(),
-            element_token(&carried, carrier, i),
-            "FILTER",
-        )?;
+    for v in arr.iter() {
+        let r = call_with_element_token(host, f, v.clone(), element_token(&carried), "FILTER")?;
         if r.signal != Signal::None {
             return Ok(propagate_signal(r.signal));
         }
@@ -818,19 +768,12 @@ pub fn kernel_group_by(host: &mut dyn StdHost, args: Vec<Value>) -> WlwlResult<O
     let (arr, f) = dict_key_member_args(host, "GROUP_BY", &args)?;
     // [X-07 / §8.6.3] 数组实参的未消费状态 ⇒ 转给承载它的那个元素。
     let carried = arg_carried(host, 0);
-    let carrier = carrier_index(arr);
     let mut index: HashMap<String, usize> = HashMap::new();
     let mut groups: Vec<(String, Vec<Value>)> = Vec::new();
     // [X-06 / §8.6.3] 结果容器持有的未消费集合 = 各元素集合的**并集**。
     let mut result_set: UnconsumedErrs = Vec::new();
-    for (i, v) in arr.iter().enumerate() {
-        let r = call_with_element_token(
-            host,
-            f,
-            v.clone(),
-            element_token(&carried, carrier, i),
-            "GROUP_BY",
-        )?;
+    for v in arr.iter() {
+        let r = call_with_element_token(host, f, v.clone(), element_token(&carried), "GROUP_BY")?;
         if r.signal != Signal::None {
             return Ok(propagate_signal(r.signal));
         }
@@ -863,19 +806,12 @@ pub fn kernel_dedup_by(host: &mut dyn StdHost, args: Vec<Value>) -> WlwlResult<O
     let (arr, f) = dict_key_member_args(host, "DEDUP_BY", &args)?;
     // [X-07 / §8.6.3] 数组实参的未消费状态 ⇒ 转给承载它的那个元素。
     let carried = arg_carried(host, 0);
-    let carrier = carrier_index(arr);
     let mut seen: HashSet<String> = HashSet::new();
     let mut out: Vec<Value> = Vec::new();
     // [X-06 / §8.6.3] 结果容器持有的未消费集合 = 各元素集合的**并集**。
     let mut result_set: UnconsumedErrs = Vec::new();
-    for (i, v) in arr.iter().enumerate() {
-        let r = call_with_element_token(
-            host,
-            f,
-            v.clone(),
-            element_token(&carried, carrier, i),
-            "DEDUP_BY",
-        )?;
+    for v in arr.iter() {
+        let r = call_with_element_token(host, f, v.clone(), element_token(&carried), "DEDUP_BY")?;
         if r.signal != Signal::None {
             return Ok(propagate_signal(r.signal));
         }
@@ -898,20 +834,13 @@ pub fn kernel_key_by(host: &mut dyn StdHost, args: Vec<Value>) -> WlwlResult<Out
     let (arr, f) = dict_key_member_args(host, "KEY_BY", &args)?;
     // [X-07 / §8.6.3] 数组实参的未消费状态 ⇒ 转给承载它的那个元素。
     let carried = arg_carried(host, 0);
-    let carrier = carrier_index(arr);
     let mut index: HashMap<String, usize> = HashMap::new();
     let mut keys: Vec<String> = Vec::new();
     let mut vals: Vec<Value> = Vec::new();
     // [X-06 / §8.6.3] 结果容器持有的未消费集合 = 各元素集合的**并集**。
     let mut result_set: UnconsumedErrs = Vec::new();
-    for (i, v) in arr.iter().enumerate() {
-        let r = call_with_element_token(
-            host,
-            f,
-            v.clone(),
-            element_token(&carried, carrier, i),
-            "KEY_BY",
-        )?;
+    for v in arr.iter() {
+        let r = call_with_element_token(host, f, v.clone(), element_token(&carried), "KEY_BY")?;
         if r.signal != Signal::None {
             return Ok(propagate_signal(r.signal));
         }
