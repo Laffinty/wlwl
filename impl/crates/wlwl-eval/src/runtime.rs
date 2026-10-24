@@ -583,22 +583,20 @@ impl Scheduler {
         true
     }
 
-    /// [X-02b / S4] 作用域退出时的**硬清理** —— **豁免** `SHIELD` 的推迟。
+    /// [X-02b / S4 + X-24] 作用域退出时的**硬清理** —— **豁免** `SHIELD` 的推迟,
+    /// 覆盖**所有**仍非终态的子任务。
     ///
-    /// 规范并发册 §17.1:「子任务寿命**不超过**词法 `SCOPE`」⇒ 作用域退出时
-    /// 仍非终态的子任务必须收尾。而 `SHIELD` 的推迟会把取消**压住** ⇒ 若不
-    /// 硬清理,被屏蔽的子任务会活过 `SCOPE`。
+    /// 规范并发册 §17.1:「子任务寿命**不超过**词法 `SCOPE`」+「`SCOPE` 返回前
+    /// **必须**等待其子任务结束」⇒ 作用域退出时仍非终态的子任务必须收尾。
     ///
-    /// 范围(刻意收窄):只清理「**仍非终态**且(**仍在屏蔽块内** 或
-    /// **已被请求取消**)」的子任务 ——
-    /// * 「仍在屏蔽块内」⇒ 取消**被推迟**、还没释放(例如目标停在 `AWAIT`
-    ///   上 —— `AWAIT` 不展开屏蔽帧);
-    /// * 「已被请求取消」⇒ 取消已释放,但任务**停泊**着跑不动。
+    /// [X-24] 范围是**全部**非终态 —— 包括停在**通道**上、既没被取消也不在
+    /// 屏蔽块内的子任务(例如停在**外层作用域**的通道上、本作用域无法强关唤醒
+    /// 的)。⚠ 此前刻意收窄到「屏蔽块内 / 已被请求取消」两类 ⇒ 通道停泊那一支
+    /// 活过 `SCOPE` ⇒ 违 §17.1。
     ///
-    /// ⚠ **不动**那些「既没被取消、又不在屏蔽块内」的停泊子任务(例如停在
-    /// 通道上的)⇒ 维持今天的形态(由 `pop_scope` 的通道强关唤醒)⇒ 不扩大
-    /// 行为变更面。⚠「子任务寿命不超过词法 `SCOPE`」在**通道停泊**那一支
-    /// 今天仍不成立 ⇒ 属**既有**差异,另立登记(不混进 X-02b)。
+    /// ⚠ 本作用域**自己**的通道上的停泊方已由 `pop_scope` 先唤醒、重跑完
+    /// (§17.2.3 的 E0054 / ChannelClosed)后再进到这里 ⇒ 到这一步仍非终态的
+    /// 只会是「别的通道上停泊 / 仍被屏蔽」等**收不到唤醒**的形态。
     ///
     /// 返回被硬清理的任务数。
     pub fn force_cancel_scope_children(&mut self, scope_id: crate::runtime::ScopeId) -> usize {
@@ -613,7 +611,6 @@ impl Scheduler {
                     t.id == h.id
                         && t.generation == h.generation
                         && !matches!(t.state, TaskState::Done(_) | TaskState::Cancelled)
-                        && (t.shield_depth > 0 || t.cancel_requested)
                 }
                 None => false,
             };
@@ -1338,20 +1335,25 @@ mod tests {
         );
     }
 
-    /// [X-02b / S4] 反例:子任务**既没被取消、又不在屏蔽块内** ⇒ 硬清理
-    /// **不动**它(范围刻意收窄 ⇒ 不扩大行为变更面)。
+    /// [X-24] 子任务**停泊**在通道上、既没被取消也不在屏蔽块内 ⇒ 硬清理
+    /// **同样**终止它。
+    ///
+    /// ⚠ 本期望于 2026-10-24 **改过**(X-24 收敛)—— 此前范围刻意收窄
+    /// (只清「屏蔽块内 / 已被请求取消」)⇒ 这里断言「不动它」;而
+    /// §17.1「`SCOPE` 返回前**必须**等待其子任务结束」要求**所有**非终态
+    /// 子任务收尾 ⇒ 旧期望**不再代表规范** ⇒ 改为断言被终止。
     #[test]
-    fn force_cancel_scope_children_leaves_an_uncancelled_parked_child_alone() {
+    fn force_cancel_scope_children_terminates_a_plain_parked_child() {
         let (mut s, id, ch) = fresh_scheduler_with_channel();
         s.tasks[id.0].state = TaskState::suspended(YieldReason::ReceivingOn(ch));
         let forced = s.force_cancel_scope_children(ScopeId(0));
         assert_eq!(
-            forced, 0,
-            "an uncancelled parked child must NOT be force-cancelled"
+            forced, 1,
+            "an uncancelled parked child must also be force-cancelled (X-24)"
         );
         assert!(
-            matches!(s.tasks[id.0].state, TaskState::Suspended { .. }),
-            "the parked child must be left as-is"
+            matches!(s.tasks[id.0].state, TaskState::Cancelled),
+            "the parked child must be terminated, not left suspended"
         );
     }
 

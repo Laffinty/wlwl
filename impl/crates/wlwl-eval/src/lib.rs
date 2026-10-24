@@ -10274,6 +10274,10 @@ impl Evaluator {
             // synthesise ChannelClosed ERR) **and** sender_waiters
             // ([X-01] 并发册 §17.2.3:关闭**必须**释放该通道上全部挂起的
             // 等待方 ⇒ 停泊的发送方重跑后其 SEND 以 E0054 失败)。
+            //
+            // [X-24] 唤醒必须走 `wake_channel_op_waiter`(Suspended →
+            // Pending + 入队)。⚠ 此前只 `enqueue` ⇒ 任务仍 Suspended ⇒
+            // `begin_run` 拒绝运行 ⇒ 停泊方**从未真正重跑**。
             let closed = self
                 .scheduler
                 .channels
@@ -10281,16 +10285,17 @@ impl Evaluator {
                 .map(|c| c.close())
                 .unwrap_or_default();
             for tid in closed.receivers.into_iter().chain(closed.senders) {
-                self.scheduler.enqueue(tid);
+                self.scheduler.wake_channel_op_waiter(tid);
             }
         }
-        // [X-02b / S4] 作用域退出的**硬清理** —— **豁免** `SHIELD` 的推迟。
-        //
-        // 并发册 §17.1「子任务寿命**不超过**词法 `SCOPE`」⇒ 仍非终态、
-        // 且(仍在屏蔽块内 或 已被请求取消)的子任务在这里收尾 ⇒ 不会因为
-        // 「取消被推迟」而活过作用域。
-        // ⚠ 范围刻意收窄:「既没被取消、又不在屏蔽块内」的停泊子任务**不动**
-        // (维持今天的形态)⇒ 不扩大行为变更面。
+        // [X-24 / 甲案] 排干一次:让被唤醒的停泊方**在 SCOPE 返回之前**重跑完
+        // —— 发送方的 `SEND` 以 E0054 失败、接收方的 `RECV` 返回
+        // `ERR(kind="ChannelClosed")`(并发册 §17.2.3 的可观察行为)。
+        self.scheduler_run_until_idle(span)?;
+        // [X-02b / S4 + X-24] 作用域退出的**硬清理** —— **豁免** `SHIELD`
+        // 的推迟,且覆盖**所有**仍非终态的子任务(含停在**外层作用域**通道上、
+        // 本作用域无法强关唤醒的)⇒ 并发册 §17.1「`SCOPE` 返回前**必须**等待
+        // 其子任务结束」。
         self.scheduler.force_cancel_scope_children(id);
         if let Some(sc) = self.scheduler.scopes.get_mut(id.0) {
             let _ = sc;
