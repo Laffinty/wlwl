@@ -48,7 +48,7 @@ use std::cell::{Ref, RefCell};
 use std::collections::{HashMap, HashSet};
 use std::rc::Rc;
 
-use wlwl_ast::{Expr, FunParam, Literal};
+use wlwl_ast::{Expr, FunParam, Literal, Span};
 use wlwl_error::{ErrorCode, Location, WlwlDiagnostic, WlwlError};
 
 // ──────────────────────────────────────────────────────────────────────
@@ -1321,6 +1321,11 @@ pub struct Binding {
     /// ⚠ **身份局限**:元素是**值** ⇒ 两个内容相同但来源不同的 `ERR` 无法
     /// 区分(见模块文档的「已知局限」)。
     pub unconsumed: UnconsumedErrs,
+    /// [审计 F1] 该绑定**建立处**的源位置(`LET` 的值表达式 / 形参对应的调用点)。
+    ///
+    /// 作用域结束的 `E0103` 报在这里 —— 比「整个作用域块的 span」精确:
+    /// 后者总是落在**首句**上,当令牌来自后面的 `LET` 时会指到无关语句。
+    pub origin_span: Option<Span>,
 }
 
 /// A heap-allocated cell. Cloning the `Rc` is cheap and is what
@@ -1336,6 +1341,7 @@ pub fn new_cell(value: Value) -> Cell {
         value,
         mutable: false,
         unconsumed: Vec::new(),
+        origin_span: None,
     }))
 }
 
@@ -1527,6 +1533,7 @@ impl Env {
         name: impl Into<String>,
         value: Value,
         unconsumed: UnconsumedErrs,
+        origin_span: Option<Span>,
     ) {
         if let Some(scope) = self.scopes.last_mut() {
             scope.insert(
@@ -1535,6 +1542,7 @@ impl Env {
                     value,
                     mutable: false,
                     unconsumed,
+                    origin_span,
                 })),
             );
         }
@@ -1549,6 +1557,7 @@ impl Env {
         name: impl Into<String>,
         value: Value,
         unconsumed: UnconsumedErrs,
+        origin_span: Option<Span>,
     ) {
         if let Some(scope) = self.scopes.last_mut() {
             scope.insert(
@@ -1557,6 +1566,7 @@ impl Env {
                     value,
                     mutable: true,
                     unconsumed,
+                    origin_span,
                 })),
             );
         }
@@ -1729,6 +1739,7 @@ impl Env {
                     value,
                     mutable: true,
                     unconsumed: Vec::new(),
+                    origin_span: None,
                 })),
             );
         }
@@ -3143,7 +3154,7 @@ mod unconsumed_err_set_tests {
     /// 建一个只含 `name` 一个绑定、持有给定集合的作用域。
     fn env_with(name: &str, value: Value, set: UnconsumedErrs) -> Env {
         let mut env = Env::new();
-        env.set_local_with_token(name, value, set);
+        env.set_local_with_token(name, value, set, None);
         env
     }
 
@@ -3347,7 +3358,7 @@ mod unconsumed_err_set_tests {
         let mut env = Env::new();
 
         let merged = union_unconsumed(std::slice::from_ref(&e1), std::slice::from_ref(&e2));
-        env.set_local_with_token("a", e1.clone(), merged);
+        env.set_local_with_token("a", e1.clone(), merged, None);
 
         assert_eq!(env.cell_token("a"), Some(vec![e1.clone(), e2.clone()]));
     }
@@ -3359,7 +3370,7 @@ mod unconsumed_err_set_tests {
         let e1 = err("e1");
         let e2 = err("e2");
         let mut env = Env::new();
-        env.set_local_with_token("a", e1.clone(), vec![e1.clone(), e2.clone()]);
+        env.set_local_with_token("a", e1.clone(), vec![e1.clone(), e2.clone()], None);
 
         let pending = env.scope_unconsumed();
 

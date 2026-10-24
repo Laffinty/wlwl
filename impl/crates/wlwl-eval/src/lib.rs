@@ -8521,12 +8521,22 @@ impl Evaluator {
                 // 遮蔽(内层作用域建新单元格)**不**构成丢弃点。
                 self.check_rebind_in_current_scope(name.as_str(), span)?;
                 // [v1.0 spec §8.6.3] 接收位置建立绑定 ⇒ 未消费状态转给该绑定。
+                // [审计 F1] origin = 值表达式的位置(令牌来源),作用域结束的
+                // E0103 钉在这里而不是整个块的 span。
                 if *mut_ {
-                    self.env
-                        .set_local_mut_with_token(name.clone(), v.value.clone(), v.unconsumed);
+                    self.env.set_local_mut_with_token(
+                        name.clone(),
+                        v.value.clone(),
+                        v.unconsumed,
+                        Some(value.span().clone()),
+                    );
                 } else {
-                    self.env
-                        .set_local_with_token(name.clone(), v.value.clone(), v.unconsumed);
+                    self.env.set_local_with_token(
+                        name.clone(),
+                        v.value.clone(),
+                        v.unconsumed,
+                        Some(value.span().clone()),
+                    );
                 }
                 Ok(Outcome::normal(Value::Null))
             }
@@ -10880,8 +10890,12 @@ impl Evaluator {
         };
         for (i, p) in params.iter().enumerate() {
             if p.is_rest {
-                self.env
-                    .set_local_with_token(p.name.clone(), Value::Array(rest_vals), rest_token);
+                self.env.set_local_with_token(
+                    p.name.clone(),
+                    Value::Array(rest_vals),
+                    rest_token,
+                    Some(span.clone()),
+                );
                 break; // rest is the trailing param by grammar
             }
             if i < arg_values.len() {
@@ -10890,8 +10904,12 @@ impl Evaluator {
                 // ⚠ [X-06 第二步] 转的是**整个集合**(不是一个布尔):一个实参
                 // 可以**同时**带着多个未消费的 `ERR` ⇒ 形参绑定**全部**接管。
                 let set = arg_tokens.get(i).cloned().unwrap_or_default();
-                self.env
-                    .set_local_with_token(p.name.clone(), arg_values[i].clone(), set);
+                self.env.set_local_with_token(
+                    p.name.clone(),
+                    arg_values[i].clone(),
+                    set,
+                    Some(span.clone()),
+                );
             } else {
                 let Some(default_expr) = p.default_expr.as_ref() else {
                     return Err(self.diag(
@@ -10906,8 +10924,12 @@ impl Evaluator {
                     ));
                 };
                 let o = self.eval_expr(default_expr)?;
-                self.env
-                    .set_local_with_token(p.name.clone(), o.value, o.unconsumed);
+                self.env.set_local_with_token(
+                    p.name.clone(),
+                    o.value,
+                    o.unconsumed,
+                    Some(default_expr.span().clone()),
+                );
             }
         }
         // [v0.4 spec Sec. 14.2] push call frame, eval body,
@@ -11199,7 +11221,7 @@ impl Evaluator {
         pattern: &Pattern,
         value: &Value,
         unconsumed: UnconsumedErrs,
-        _span: &Span,
+        span: &Span,
     ) -> WlwlResult<()> {
         match pattern {
             Pattern::Ident(name, _) => {
@@ -11207,8 +11229,12 @@ impl Evaluator {
                 //
                 // ⚠ [X-06 第二步] 转的是**整个集合**:一个绑定可以**同时**持有
                 // 多个未消费的 `ERR`。
-                self.env
-                    .set_local_with_token(name.clone(), value.clone(), unconsumed);
+                self.env.set_local_with_token(
+                    name.clone(),
+                    value.clone(),
+                    unconsumed,
+                    Some(span.clone()),
+                );
                 Ok(())
             }
             // [v1.0 spec §8.6.4] 通配符**不**建立任何绑定 ⇒ 显式丢弃 ⇒
@@ -11525,8 +11551,12 @@ impl Evaluator {
                 for ((name, val), set) in bindings.iter().zip(bound_sets.iter()) {
                     // [v1.0 spec §8.6.3] 待匹配值的未消费状态转给**拿到那个
                     // `ERR` 值**的绑定(标识符模式拿到的是整个待匹配值)。
-                    self.env
-                        .set_local_with_token(name.clone(), val.clone(), set.clone());
+                    self.env.set_local_with_token(
+                        name.clone(),
+                        val.clone(),
+                        set.clone(),
+                        Some(span.clone()),
+                    );
                 }
                 let result = self.eval_expr(&clause.body);
                 // [v1.0 spec §8.6.2 第 3 项] `MATCH` 分支体作用域结束仍未
@@ -11812,11 +11842,14 @@ impl Evaluator {
             if set.is_empty() {
                 continue;
             }
-            let Some(value) = me.binding_value_at(scope_index, &name) else {
+            let Some((value, origin)) = me.binding_value_at(scope_index, &name) else {
                 continue;
             };
+            // [审计 F1] 优先钉到**绑定建立处**(值表达式 / 形参的调用点);
+            // 退化时才用调用方给的兜底 span。
+            let report_span = origin.as_ref().unwrap_or(span);
             for _ in 0..set.len() {
-                let owned = Self::span_copy(span);
+                let owned = Self::span_copy(report_span);
                 let e = me.e0103(&value, owned);
                 diags.push(e.diagnostic().clone());
             }
@@ -11831,12 +11864,15 @@ impl Evaluator {
     ///
     /// ⚠ 必须按**作用域下标**取(不能按名字全局找):全局作用域的绑定可能
     /// 被内层作用域**同名遮蔽** ⇒ 按名字找会拿到内层那个(错的值)。
-    fn binding_value_at(&self, scope_index: usize, name: &str) -> Option<Value> {
+    fn binding_value_at(&self, scope_index: usize, name: &str) -> Option<(Value, Option<Span>)> {
         self.env
             .scopes
             .get(scope_index)
             .and_then(|scope| scope.get(name))
-            .map(|cell| cell.borrow().value.clone())
+            .map(|cell| {
+                let b = cell.borrow();
+                (b.value.clone(), b.origin_span.clone())
+            })
     }
 
     /// [v1.0 spec §8.6.2 第 2 项] **绑定被覆盖** —— 持有未消费 `ERR` 的绑定

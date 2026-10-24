@@ -688,7 +688,10 @@ impl<'a> Lexer<'a> {
             Err(ScanFail::Interp) => {
                 return Err(self.err(
                     ErrorCode::E0002,
-                    "unterminated string interpolation (missing `}`)",
+                    "unterminated string interpolation (missing `}`); \
+                     hint: `${...}` body is **expression** context — write string \
+                     literals with plain `\"` delimiters (do **not** write `\\\"`, \
+                     which is the outer string's escape and confuses the scan)",
                     self.line,
                     self.col,
                 ));
@@ -696,7 +699,10 @@ impl<'a> Lexer<'a> {
             Err(ScanFail::NestedInterp) => {
                 return Err(self.err(
                     ErrorCode::E0002,
-                    "unterminated nested string interpolation (missing `}`)",
+                    "unterminated nested string interpolation (missing `}`); \
+                     hint: inside `${...}` use plain `\"` for nested string args \
+                     (e.g. `AT_K(m, \"k\", \"?\")`), **not** `\\\"` — escaped quotes \
+                     belong to the outer string and break brace pairing",
                     self.line,
                     self.col,
                 ));
@@ -704,7 +710,9 @@ impl<'a> Lexer<'a> {
             Err(ScanFail::String) => {
                 return Err(self.err(
                     ErrorCode::E0002,
-                    "unterminated string literal inside `${...}` interpolation",
+                    "unterminated string literal inside `${...}` interpolation; \
+                     hint: nested string args use plain `\"` delimiters; `\\\"` is \
+                     the outer string's escape and will not close the inner literal",
                     self.line,
                     self.col,
                 ));
