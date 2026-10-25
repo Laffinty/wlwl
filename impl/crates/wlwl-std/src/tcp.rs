@@ -40,7 +40,7 @@ use std::collections::{HashMap, VecDeque};
 use std::io::{Read, Write};
 use std::net::{Shutdown, SocketAddr, TcpListener, TcpStream, ToSocketAddrs};
 use std::sync::atomic::{AtomicBool, AtomicI64, Ordering};
-use std::sync::{Arc, Condvar, Mutex};
+use std::sync::{Arc, Condvar, LazyLock, Mutex};
 use std::time::Duration;
 
 use wlwl_error::ErrorCode;
@@ -341,6 +341,61 @@ fn spawn_acceptor(state: Arc<ListenerState>, listener: TcpListener) {
     });
 }
 
+/// [2026-10-25 / 审计 N2] 「**这个任务**刚才 accept 到的那个连接」。
+///
+/// ⚠ **为什么需要它**：宿主挂起后恢复时，挂起点被**再次求值**（并发册 §17.0
+///   第 2 条：「等待条件既已满足，它**必须**立即完成；实现**不得**让它
+///   再次挂起」）。而 `TCP_ACCEPT` 的等待条件是「**队列里有连接**」——
+///   连接一旦被 accept 走，条件**就不再成立** ⇒ 再次求值会**再挂一次**
+///   ⇒ 违反「不得再挂」⇒ 任务原地活锁。
+///   实测（修复前）：accept 烧光自己的超时预算（5 s）⇒ 返回 `NULL` ⇒
+///   调用方拿 `NULL` 去 `TCP_RECV` ⇒ `E0030`；而第一次 accept 到的那个
+///   连接**被覆盖、再也无法关闭**（泄漏）。
+/// ⇒ 记下它：再次求值时**返回同一个连接**，不重新 pop。
+///
+/// ⚠ 键是**任务**（`StdHost::current_task_key`），值是 `(listener, conn)`。
+///   连接被 `TCP_CLOSE` 时清掉 ⇒ 不会随连接数无界增长。
+static ACCEPT_MEMO: LazyLock<Mutex<HashMap<i64, (i64, i64)>>> =
+    LazyLock::new(|| Mutex::new(HashMap::new()));
+
+fn memo_get(key: i64) -> Option<(i64, i64)> {
+    ACCEPT_MEMO
+        .lock()
+        .unwrap_or_else(|e| e.into_inner())
+        .get(&key)
+        .copied()
+}
+
+fn memo_set(key: i64, listener: i64, conn: i64) {
+    ACCEPT_MEMO
+        .lock()
+        .unwrap_or_else(|e| e.into_inner())
+        .insert(key, (listener, conn));
+}
+
+/// 清掉与某个 listener 相关的备忘（**挂起前**调用：一次新的等待 ⇒ 旧的作废）。
+fn memo_clear_for_listener(key: i64, listener: i64) {
+    let mut m = ACCEPT_MEMO.lock().unwrap_or_else(|e| e.into_inner());
+    if let Some((l, _)) = m.get(&key) {
+        if *l == listener {
+            m.remove(&key);
+        }
+    }
+}
+
+/// 清掉与某个连接相关的备忘（**连接关闭时**调用）。
+fn memo_clear_for_conn(conn: i64) {
+    let mut m = ACCEPT_MEMO.lock().unwrap_or_else(|e| e.into_inner());
+    let stale: Vec<i64> = m
+        .iter()
+        .filter(|(_, (_, c))| *c == conn)
+        .map(|(k, _)| *k)
+        .collect();
+    for k in stale {
+        m.remove(&k);
+    }
+}
+
 // ── 成员实现 ────────────────────────────────────────────────────────────────
 
 /// `TCP_LISTEN(host, port) -> INTEGER`
@@ -426,6 +481,24 @@ pub fn tcp_accept(host: &mut dyn StdHost, args: Vec<Value>) -> wlwl_error::WlwlR
     let timeout_ms = int_arg(host, "TCP_ACCEPT", &args[1])?;
     let timeout = timeout_arg(host, "TCP_ACCEPT", timeout_ms)?;
 
+    // ── [v0.12.0 / Q1] 等待一律是**宿主挂起** ──────────────────────────
+    //
+    // 系统册 §21.6.4（Q1 裁决后）：「等待期间**挂起当前任务**……**别的任务照常
+    // 运行**」⇒ 并发册 §17.0 的第四类挂起点「宿主挂起（原生成员等待 socket）」
+    // ⇒ **不阻塞整个运行时**（交付包原实现是「`timeout_ms > 0` ⇒ 阻塞冻结整个
+    // `SCOPE`」—— 那是 Q1 裁决**之前**的旧口径，已作废）。
+    //
+    // ⚠ [2026-10-25 / 审计 N2] 本次是不是「**挂起点的再次求值**」？
+    //   （并发册 §17.0 第 2 条：恢复时挂起点被再次求值，**不得再挂一次**。）
+    let resume = host.resume_hint();
+    let task_key = host.current_task_key();
+
+    // ⚠ **重跑入口**：宿主挂起 = **不切段**格 ⇒ 恢复时**段首重放**（§17.0）
+    //   ⇒ 这段代码会**从头再跑一遍**。
+    //
+    // ⚠ [2026-10-25 / 审计 N1] 「已超时」的检查**必须**排在「`pending` 里有没有
+    //   连接」**后面**：否则连接在截止时间**之前**就到了，却因截止时间先到而
+    //   被**丢弃**（返回 `NULL` ⇒ 调用方以为「没人连」）。
     let state = {
         let mut guard = SOCKETS.lock().unwrap_or_else(|e| e.into_inner());
         let Some(map) = guard.as_mut() else {
@@ -451,34 +524,49 @@ pub fn tcp_accept(host: &mut dyn StdHost, args: Vec<Value>) -> wlwl_error::WlwlR
         }
     };
 
-    // ── [v0.12.0 / Q1] 等待一律是**宿主挂起** ──────────────────────────
-    //
-    // 系统册 §21.6.4（Q1 裁决后）：「等待期间**挂起当前任务**……**别的任务照常
-    // 运行**」⇒ 并发册 §17.0 的第四类挂起点「宿主挂起（原生成员等待 socket）」
-    // ⇒ **不阻塞整个运行时**（交付包原实现是「`timeout_ms > 0` ⇒ 阻塞冻结整个
-    // `SCOPE`」—— 那是 Q1 裁决**之前**的旧口径，已作废）。
-    //
-    // ⚠ **重跑入口**：宿主挂起 = **不切段**格 ⇒ 恢复时**段首重放**（§17.0）
-    //   ⇒ 这段代码会**从头再跑一遍**。
-    //
-    // ⚠ [2026-10-25 / 审计 N1] 「已超时」的检查**必须**排在「`pending` 里有没有
-    //   连接」**后面**：否则连接在截止时间**之前**就到了，却因截止时间先到而
-    //   被**丢弃**（返回 `NULL` ⇒ 调用方以为「没人连」）。
-    //
-    // ① 条件已满足？⇒ **直接交付**（不挂起，也不装截止时间）。
+    // ① **恢复重放**：本任务刚才 accept 到的那个连接还在（同一 listener）⇒
+    //    **返回同一个连接**，不重新 pop（否则连接会被覆盖、再也无法关闭）。
+    if resume.is_some() {
+        if let Some(key) = task_key {
+            if let Some((memo_listener, memo_conn)) = memo_get(key) {
+                if memo_listener == lid {
+                    // ⚠ 我**就是**挂起点（socket 相同）⇒ 本次求值完成 ⇒ 清掉提示。
+                    if resume == Some(lid) {
+                        host.clear_resume_hint();
+                    }
+                    return Ok(Outcome::normal(Value::Integer(memo_conn)));
+                }
+            }
+        }
+    }
+
+    // ② 条件已满足？⇒ **直接交付**（不挂起，也不装截止时间）。
     let stream = {
         let mut p = state.pending.lock().unwrap_or_else(|e| e.into_inner());
         p.pop_front()
     };
     let Some(stream) = stream else {
-        // ② 真的没有连接 ⇒ 这时才问「是不是等超时了」。
+        // ③ 真的没有连接 ⇒ 这时才问「是不是等超时了」。
         if host.take_timed_out() {
             return Ok(Outcome::normal(Value::Null));
         }
-        // ③ 条件不满足 ⇒ 装上「那一次等待」的截止时间 ⇒ **挂起**。
+        // ⚠ [2026-10-25 / 审计 N2] 恢复重放时**不得再挂一次**（§17.0 第 2 条）
+        //   —— 而这里既没有连接、也没有备忘 ⇒ 那是病态形态 ⇒ **不挂**，
+        //   返回「没人连」的正常值，让调用方自己处置（挂下去就是原地活锁）。
+        if resume == Some(lid) {
+            return Ok(Outcome::normal(Value::Null));
+        }
+        // ④ 条件不满足 ⇒ 装上「那一次等待」的截止时间 ⇒ **挂起**。
         //
         // ⚠ 监听没有「连接读超时」⇒ 这里只有**调用点**这一个预算。
         //   `timeout_ms == 0` = **无截止时间**（挂起直到条件满足）。
+        //
+        // ⚠ [2026-10-25 / 审计 N2] 挂起 ⇒ **清掉**本任务在本 listener 上的
+        //   备忘（一次新的等待 ⇒ 上一次的连接不再有效 ⇒ 否则 accept 循环会
+        //   永远拿到同一个连接）。
+        if let Some(key) = task_key {
+            memo_clear_for_listener(key, lid);
+        }
         arm_wait_deadline(host, timeout, None)?;
         return Ok(Outcome::with_signal(
             Value::Null,
@@ -517,6 +605,15 @@ pub fn tcp_accept(host: &mut dyn StdHost, args: Vec<Value>) -> wlwl_error::WlwlR
     with_sockets(|map| {
         map.insert(cid, Entry::Conn(conn));
     });
+    // ⚠ [2026-10-25 / 审计 N2] 记下「这个任务 accept 到的这个连接」⇒
+    //   恢复重放时**返回同一个连接**（不重新 pop ⇒ 连接不被覆盖、仍可关闭）。
+    if let Some(key) = task_key {
+        memo_set(key, lid, cid);
+    }
+    // ⚠ 我**就是**挂起点（socket 相同）⇒ 本次求值完成 ⇒ 清掉恢复提示。
+    if resume == Some(lid) {
+        host.clear_resume_hint();
+    }
     Ok(Outcome::normal(Value::Integer(cid)))
 }
 
@@ -823,6 +920,9 @@ pub fn tcp_close(host: &mut dyn StdHost, args: Vec<Value>) -> wlwl_error::WlwlRe
             let _ = s.stream.shutdown(Shutdown::Both);
         }
     }
+    // ⚠ [2026-10-25 / 审计 N2] 连接没了 ⇒ 它的「accept 备忘」也作废
+    //   （否则备忘表随连接数无界增长）。
+    memo_clear_for_conn(cid);
     Ok(Outcome::normal(Value::Null))
 }
 

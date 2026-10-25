@@ -7353,6 +7353,26 @@ impl wlwl_std::StdHost for Evaluator {
         self.scheduler.take_timed_out(task_id)
     }
 
+    // ── [2026-10-25 / 审计 N2] 恢复提示 ────────────────────────────────
+    //
+    // 宿主挂起后恢复时，挂起点被**再次求值**（并发册 §17.0 第 2 条）⇒ 成员
+    // 必须知道「我这次是被重放的」⇒ 于是**不能再挂一次**。
+
+    fn resume_hint(&self) -> Option<i64> {
+        let task_id = self.current_task?;
+        self.scheduler.resume_hint(task_id)
+    }
+
+    fn clear_resume_hint(&mut self) {
+        if let Some(task_id) = self.current_task {
+            self.scheduler.clear_resume_hint(task_id);
+        }
+    }
+
+    fn current_task_key(&self) -> Option<i64> {
+        self.current_task.map(|t| t.0 as i64)
+    }
+
     fn take_sleep_elapsed(&mut self) -> bool {
         let Some(task_id) = self.current_task else {
             return false;

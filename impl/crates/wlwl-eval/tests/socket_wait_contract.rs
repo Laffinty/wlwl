@@ -18,7 +18,11 @@
 
 mod common;
 
+use std::io::Write;
+use std::net::TcpStream;
 use std::path::Path;
+use std::thread;
+use std::time::Duration;
 
 /// 取出 `src` 里 `fn <name>` 的**函数体**（按大括号配平）。
 fn fn_body(src: &str, name: &str) -> String {
@@ -53,6 +57,44 @@ fn tcp_src() -> &'static str {
     include_str!("../../wlwl-std/src/tcp.rs")
 }
 
+/// 取一个空闲端口（先绑再放 ⇒ 端口多半可用）。
+fn free_port() -> u16 {
+    let l = std::net::TcpListener::bind("127.0.0.1:0").expect("bind an ephemeral port");
+    let port = l.local_addr().expect("local addr").port();
+    drop(l);
+    port
+}
+
+/// 连不上就隔 20 ms 再连，最多 100 次（≈2 s）—— Windows 上监听刚起来时
+/// 连不上是常事。
+fn connect_with_retry(port: u16) -> Option<TcpStream> {
+    for _ in 0..100 {
+        if let Ok(s) = TcpStream::connect(("127.0.0.1", port)) {
+            return Some(s);
+        }
+        thread::sleep(Duration::from_millis(20));
+    }
+    None
+}
+
+/// 求值一段 WLWL，返回它的显示值（诊断 ⇒ `!CODE message`）。
+fn actual(src: &str) -> String {
+    let ast =
+        wlwl_parser::parse(src, "t.wll").unwrap_or_else(|e| panic!("case must parse: {src}\n{e}"));
+    let mut ev = wlwl_eval::Evaluator::new();
+    match ev.eval(&ast) {
+        Ok(v) => v.display(),
+        Err(e) => {
+            let code = e.diagnostic().code.as_str();
+            if e.diagnostic().message.is_empty() {
+                format!("!{code}")
+            } else {
+                format!("!{code} {}", e.diagnostic().message)
+            }
+        }
+    }
+}
+
 // ── N1：缓冲先于超时 ──────────────────────────────────────────────────────
 
 /// [N1] `TCP_RECV` 必须**先看缓冲里有没有货**，再问「是不是等超时了」。
@@ -62,7 +104,7 @@ fn tcp_src() -> &'static str {
 #[test]
 fn recv_looks_at_the_buffer_before_the_timeout_flag() {
     let src = tcp_src();
-    let body = fn_body(&src, "tcp_recv");
+    let body = fn_body(src, "tcp_recv");
     let buf_at = body
         .find("state.buf.lock()")
         .unwrap_or_else(|| panic!("tcp_recv no longer reads the connection buffer"));
@@ -81,7 +123,7 @@ fn recv_looks_at_the_buffer_before_the_timeout_flag() {
 #[test]
 fn accept_looks_at_the_pending_queue_before_the_timeout_flag() {
     let src = tcp_src();
-    let body = fn_body(&src, "tcp_accept");
+    let body = fn_body(src, "tcp_accept");
     let pending_at = body
         .find("state.pending.lock()")
         .unwrap_or_else(|| panic!("tcp_accept no longer reads the pending queue"));
@@ -105,7 +147,7 @@ fn accept_looks_at_the_pending_queue_before_the_timeout_flag() {
 #[test]
 fn the_readiness_wait_is_event_driven_not_a_fixed_poll() {
     let eval = eval_src();
-    let body = fn_body(&eval, "pump_socket_readiness");
+    let body = fn_body(eval, "pump_socket_readiness");
     assert!(
         body.contains("await_ready"),
         "pump_socket_readiness must wait on the readiness condvar (`await_ready`) — \
@@ -129,14 +171,90 @@ fn the_readiness_wait_is_event_driven_not_a_fixed_poll() {
     );
 }
 
+// ── N2：重放中的 `TCP_ACCEPT` 不得再次挂起 ─────────────────────────────────
+
+/// [N2] **重放中的 `TCP_ACCEPT` 不得再次挂起**（并发册 §17.0 第 2 条）。
+///
+/// ⚠ 修复前的实测：任务体**不切段**（没有 `YIELD`）时，恢复 ⇒ **整段重跑**
+///   ⇒ `TCP_ACCEPT` 被**再次执行** ⇒ 它上一次的等待条件（「队列里有连接」）
+///   **已经不成立**（连接已被取走）⇒ 它**又挂了一次** ⇒ 违反「不得再挂」
+///   ⇒ 任务原地活锁：accept 烧光自己的 5000 ms 预算 ⇒ 返回 `NULL` ⇒ 调用方
+///   拿 `NULL` 去 `TCP_RECV` ⇒ **`E0030`**；而第一次 accept 到的那个连接
+///   **被覆盖、再也无法关闭**。
+/// ⇒ 修复后：重放时 accept **返回同一个连接** ⇒ 读照常拿到数据。
+#[test]
+fn a_replayed_accept_does_not_suspend_again_and_lose_the_connection() {
+    let port = free_port();
+    let holder = thread::spawn(move || {
+        if let Some(mut s) = connect_with_retry(port) {
+            let _ = s.write_all(b"hello");
+            thread::sleep(Duration::from_millis(3000));
+        }
+    });
+    // ⚠ **不切段**的任务体（没有 `YIELD`）—— 那正是「整段重跑」那条路径。
+    let got = actual(&format!(
+        r#"IMPORT("wlwl:std.net", ["TCP_LISTEN", "TCP_ACCEPT", "TCP_RECV"]);
+           LET(l, TCP_LISTEN("127.0.0.1", {port}));
+           SCOPE(FUN(() ,
+               LET(t, SPAWN(FUN(() ,
+                   LET(conn, TCP_ACCEPT(l, 5000));
+                   LET(chunk, TCP_RECV(conn, 100, 5000));
+                   LEN(AT_K(chunk, "bytes", []))
+               )));
+               AWAIT(t)
+           ))"#
+    ));
+    let _ = holder.join();
+    assert_eq!(
+        got, "5",
+        "the read must return the 5 bytes that arrived — before the fix the \
+         replayed accept suspended again, burned its whole timeout and handed \
+         back NULL, which surfaced as `E0030 TCP_RECV: expected integer, got \
+         null`; got {got:?}"
+    );
+}
+
+/// [N2] **accept 循环必须给出不同的连接** —— 「记住上次那个连接」不能变成
+/// 「永远返回同一个连接」。
+#[test]
+fn the_accept_loop_hands_out_a_different_connection_each_round() {
+    let port = free_port();
+    let holder = thread::spawn(move || {
+        for payload in [b"one".as_slice(), b"two".as_slice()] {
+            if let Some(mut s) = connect_with_retry(port) {
+                let _ = s.write_all(payload);
+                thread::sleep(Duration::from_millis(200));
+            }
+        }
+        thread::sleep(Duration::from_millis(2000));
+    });
+    let got = actual(&format!(
+        r#"IMPORT("wlwl:std.net", ["TCP_LISTEN", "TCP_ACCEPT"]);
+           LET(l, TCP_LISTEN("127.0.0.1", {port}));
+           SCOPE(FUN(() ,
+               LET(t, SPAWN(FUN(() ,
+                   LET(c1, TCP_ACCEPT(l, 5000));
+                   YIELD();
+                   LET(c2, TCP_ACCEPT(l, 5000));
+                   ==(c1, c2)
+               )));
+               AWAIT(t)
+           ))"#
+    ));
+    let _ = holder.join();
+    assert_eq!(
+        got, "FALSE",
+        "two accepts must hand out two different connections — the memo of \
+         \"the connection this task accepted\" must not turn the accept loop \
+         into a one-connection loop; got {got:?}"
+    );
+}
+
 // ── 守卫自身：源文件必须在（路径写错 ⇒ 守卫假绿）───────────────────────────
 
 #[test]
 fn the_guarded_sources_are_the_real_ones() {
-    for rel in [
-        "crates/wlwl-std/src/tcp.rs",
-        "crates/wlwl-eval/src/lib.rs",
-    ] {
+    for rel in ["crates/wlwl-std/src/tcp.rs", "crates/wlwl-eval/src/lib.rs"] {
         let p = Path::new(env!("CARGO_MANIFEST_DIR"))
             .join("..")
             .join("..")

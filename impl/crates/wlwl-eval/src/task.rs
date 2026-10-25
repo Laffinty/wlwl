@@ -175,6 +175,14 @@ pub struct Task {
     ///   未落地）⇒ 挂起点必须是所在段的**第一条语句**，否则重跑会重复副作用。
     pub timed_out: bool,
 
+    /// [2026-10-25 / 审计 N2] 本任务当前这次恢复是不是「**挂起点的再次求值**」，
+    /// 以及挂起点是**哪个 socket**（`None` = 不是重放）。
+    ///
+    /// ⚠ 它在**从 socket 挂起中唤醒**时置起，在**再次挂起**时清掉。
+    ///   成员用它判断「我这次是被重放的」⇒ 于是**不能再挂一次**
+    ///   （并发册 §17.0 第 2 条：「实现**不得**让它再次挂起」）。
+    pub resume_hint: Option<i64>,
+
     /// [项目扩展 / G-08] 本任务当前那次**睡眠**何时结束（绝对单调钟毫秒）。
     ///
     /// ⚠ 它解决的是**「整段重跑 ⇒ 再睡一次 ⇒ 无限循环」**那个坑：
@@ -244,6 +252,7 @@ impl Task {
             shield_pending_reason: None,
             deadline_ms: None,
             timed_out: false,
+            resume_hint: None,
             sleep_until_ms: None,
             sleep_runs: Vec::new(),
             pending_sleep_run: None,

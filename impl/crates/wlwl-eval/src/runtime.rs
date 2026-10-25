@@ -945,6 +945,9 @@ impl Scheduler {
     pub fn park_for_socket(&mut self, task_id: TaskId, socket_id: i64) {
         if let Some(t) = self.tasks.get_mut(task_id.0) {
             t.state = TaskState::suspended(YieldReason::SocketReady(socket_id));
+            // ⚠ [2026-10-25 / 审计 N2] 又挂一次 ⇒ 上一次的「恢复提示」作废
+            //   （新的一次等待还没有被重放求值过）。
+            t.resume_hint = None;
         }
         self.run_queue.retain(|id| *id != task_id);
         self.socket_waiters
@@ -988,6 +991,10 @@ impl Scheduler {
                 // ⚠ 不清 ⇒ 那个截止时间会**继续挂着** ⇒ 之后某个无关的等待会被它
                 //   打断（症状与「莫名超时」无法区分）。
                 t.deadline_ms = None;
+                // ⚠ [2026-10-25 / 审计 N2] 这次恢复是「**挂起点的再次求值**」⇒
+                //   记下挂起点是哪个 socket ⇒ 成员据此**不得再挂一次**
+                //   （并发册 §17.0 第 2 条）。
+                t.resume_hint = Some(socket_id);
             }
             self.enqueue(task_id);
             woke = true;
@@ -1012,6 +1019,19 @@ impl Scheduler {
     /// 当前挂在 socket 上的**等待者总数**（调度循环据此决定「要不要等就绪」）。
     pub fn socket_waiter_count(&self) -> usize {
         self.socket_waiters.values().map(|v| v.len()).sum()
+    }
+
+    /// [2026-10-25 / 审计 N2] 本任务当前这次恢复是不是「挂起点的再次求值」，
+    /// 以及挂起点是哪个 socket。
+    pub fn resume_hint(&self, task_id: TaskId) -> Option<i64> {
+        self.tasks.get(task_id.0).and_then(|t| t.resume_hint)
+    }
+
+    /// [2026-10-25 / 审计 N2] 清掉本任务的恢复提示（挂起点的成员完成时调用）。
+    pub fn clear_resume_hint(&mut self, task_id: TaskId) {
+        if let Some(t) = self.tasks.get_mut(task_id.0) {
+            t.resume_hint = None;
+        }
     }
 
     // ── [G-08] 定时睡眠（挂起到某个绝对时刻）──────────────────────────

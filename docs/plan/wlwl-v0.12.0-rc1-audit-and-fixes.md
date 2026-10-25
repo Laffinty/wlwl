@@ -238,16 +238,18 @@ SECOND
 
 1. **运行期**：`Scheduler` 记 `resume_hint: Option<i64>`（任务从哪个 socket 被唤醒）。
    `wake_socket_waiter` 置位；任务再次挂起或终止时清位。
-2. **宿主接口**：`StdHost` 加两个**带默认实现**的方法（`wlwl-value`）：
-   `fn resume_hint(&self) -> Option<i64>` 与 `fn clear_resume_hint(&mut self)`。
+2. **宿主接口**：`StdHost` 加三个**带默认实现**的方法（`wlwl-value`）：
+   `fn resume_hint(&self) -> Option<i64>`、`fn clear_resume_hint(&mut self)`、
+   `fn current_task_key(&self) -> Option<i64>`（按任务记账要用）。
    默认实现返回 `None` / 空操作 ⇒ **不破坏既有实现者**。
-3. **成员**（`wlwl-std/src/tcp.rs`）：`TCP_ACCEPT` 维护每任务备忘 `accept_memo: HashMap<TaskId, (listener, conn)>`：
+3. **成员**（`wlwl-std/src/tcp.rs`）：`TCP_ACCEPT` 维护每任务备忘 `accept_memo: HashMap<task, (listener, conn)>`：
    - 挂起 ⇒ **清掉**本任务在本 listener 上的备忘；
    - 弹出连接 ⇒ **记下**备忘；
    - 恢复后被重放时（`resume_hint` 有值）：
      - 若 `resume_hint == 本 listener`（我就是挂起点）⇒ **不再挂起**；
      - 若备忘里有连接 ⇒ **返回同一个连接**（不重新 pop）；
      - 否则照常 pop。
+   - `TCP_CLOSE(conn)` ⇒ 清掉与该连接相关的备忘（**备忘表不随连接数无界长**）。
 
 **为何这样能同时满足 accept 循环与 handler 两种形态**（关键是「accept 挂起 ⇒ 清备忘」）：
 - accept 循环：第 2 次 accept 挂起 ⇒ 清备忘 ⇒ 恢复后 pop 到新连接 ✓（不会把旧连接重复交给用户）。
@@ -271,10 +273,15 @@ SECOND
 - 监听 socket 更糟：acceptor 线程**只在接到新连接时**推一次 ⇒ 这一次通知被吃掉后，
   下一次 accept 只能等**下一个**连接 ⇒ 表现为「偶发卡住一个连接」。
 
-**修法**（即报告建议的 pending 标志，但要做对）：
+**修法**（pending 标志 + **条件变量**）：
 - `Scheduler` 增加 `pending_ready: HashSet<i64>`；
 - `wake_socket_waiter` 找不到等待者时 ⇒ 把 socket id 放进 `pending_ready`（**不丢**）；
-- `park_for_socket` 时若 `pending_ready` 命中该 socket ⇒ **不挂起**（条件已满足，直接返回）。
+- `park_for_socket` 时若 `pending_ready` 命中该 socket ⇒ **立刻**唤醒那个任务
+  （等待立即结束，不白等一个轮询周期）。
+- ⚠ **另外**：解释器侧等就绪事件原本是「**睡 50 ms 再看一眼**」⇒ 一次「就绪」
+  最多白等 50 ms（第三方报告实测：客户端 33 ms 发数据、服务端 51 ms 才拿到）。
+  ⇒ 给就绪队列加**条件变量**，I/O 线程一推进就 `notify_all` ⇒ 延迟 ≈ 0。
+  （实测：同一条用例 51 ms ⇒ **0 ms**。）
 
 **风险**：低。**验收**：契约用例 —— 事件先到、等待者后到 ⇒ 等待**立即**返回，不得等满超时。
 
@@ -299,11 +306,25 @@ SECOND
 
 ## §4 修复批次与验收
 
-| 批次 | 内容 | 风险 | 验收 |
-|---|---|---|---|
-| **B1** | N1（缓冲先于超时）、N3（pending 就绪）、N4（多等待者） | 低 | `cargo test --workspace` 全绿 + 三条新契约用例 |
-| **B2** | N2（accept 不再重放中挂起） | 中 | 同上 + 两条正例（accept 循环 / handler 形态）+ 一条负例（连接不重复交付） |
-| **B3** | skill 更新（§5） | 低 | `wlwl check` 全部示例通过 + 门禁脚本绿 |
+| 批次 | 内容 | 风险 | 状态 | 验收 |
+|---|---|---|---|---|
+| **B1** | N1（缓冲先于超时）、N3（pending 就绪 + 条件变量）、N4（多等待者） | 低 | ✅ **已落地** | `socket_wait_contract.rs` 4 条守卫 + `runtime.rs` 单测 3 条；`tcp_contract` 23/23；全量绿 |
+| **B2** | N2（accept 不再重放中挂起） | 中 | ✅ **已落地** | `socket_wait_contract.rs` 2 条行为用例（重放不再挂起 / accept 循环仍给出不同连接）；第三方那份 HTTP 服务器在新构建上 **6/6 路由 200/404**、`/utf8` = 45 字节 |
+| **B3** | skill 更新 | 低 | ✅ **已落地** | `wlwl-skill/examples/socket_server.wll` 实跑通过（超时路径与应答路径都验过） |
+
+### B1 / B2 的落点
+
+| 缺陷 | 落点 | 改了什么 |
+|---|---|---|
+| N1 | `impl/crates/wlwl-std/src/tcp.rs` | `tcp_recv` / `tcp_accept`：「缓冲/`pending` 里有没有货」**先于**「有没有超时」 |
+| N3 | `impl/crates/wlwl-std/src/tcp.rs` + `impl/crates/wlwl-eval/src/{lib,runtime}.rs` | 就绪队列加**条件变量**（解释器不再「睡 50 ms 再看一眼」）；无等待者时事件记进 `pending_ready`，下一次 park 立刻消费 |
+| N4 | `impl/crates/wlwl-eval/src/runtime.rs` | `socket_waiters` 改一 socket **多等待者**；取消/超时只摘自己 |
+| N2 | `impl/crates/wlwl-eval/src/{lib,runtime,task}.rs` + `impl/crates/wlwl-value/src/lib.rs` + `impl/crates/wlwl-std/src/tcp.rs` | 运行期记「恢复提示」（挂起点是哪个 socket）⇒ 宿主接口加 `resume_hint` / `clear_resume_hint` / `current_task_key`（**都带默认实现**）⇒ `TCP_ACCEPT` 记住「本任务 accept 到的连接」，重放时**返回同一个**、不再二次挂起 |
+
+**⚠ N2 改变了可观察行为**：修复前「不切段」的任务体（accept + recv 写在同一个任务体、
+没有 `YIELD`）在客户端连上后会**白等整个 accept 超时预算**再报 `E0030`；修复后它
+**正常拿到数据**（实测 5345 ms + `E0030` ⇒ 230 ms + 5 字节）。
+⇒ 这**不是**语义变更，是并发册 §17.0 第 2 条（「实现**不得**让它再次挂起」）的落地。
 
 **门禁命令**（本地复现 CI 的确切口径）：
 ```powershell
