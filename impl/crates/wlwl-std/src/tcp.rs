@@ -36,7 +36,7 @@
 //!   （`no_http_semantics_in_the_transport_layer`）。
 //! - 不做 TLS / 代理 / 连接池 / 重试 / 流式响应体。
 
-use std::collections::{HashMap, VecDeque};
+use std::collections::{HashMap, HashSet, VecDeque};
 use std::io::{Read, Write};
 use std::net::{Shutdown, SocketAddr, TcpListener, TcpStream, ToSocketAddrs};
 use std::sync::atomic::{AtomicBool, AtomicI64, Ordering};
@@ -89,6 +89,20 @@ struct ListenerState {
     filled: Condvar,
     closed: AtomicBool,
     local: SocketAddr,
+    /// [2026-10-25 / 审计 N2] 「**这个任务**在这个监听上 accept 到的连接」。
+    ///
+    /// ⚠ **为什么它住在监听里、而不是进程级的全局表**：键是**任务序号**，
+    ///   而任务序号只在**一个求值器内**唯一 ⇒ 同一进程里跑**两个求值器**
+    ///   （测试套件、嵌入 wlwl 的宿主程序）⇒ 键会撞车 ⇒ 一个求值器的 accept
+    ///   拿到**另一个**求值器的连接句柄。
+    ///   ⇒ 放在**监听的状态**里 ⇒ 每个 socket 独一份 ⇒ 跨求值器天然不撞
+    ///   （socket id 是进程级唯一的）。
+    ///
+    /// ⚠ 语义：宿主挂起后恢复时挂起点被**再次求值**（并发册 §17.0 第 2 条）
+    ///   —— 而 accept 的等待条件「队列里有连接」在第一次 accept 走之后
+    ///   **不再成立** ⇒ 再次求值会**再挂一次** ⇒ 违反「不得再挂」⇒ 活锁。
+    ///   ⇒ 记下它：再次求值时**返回同一个连接**，不重新 pop。
+    memo: Mutex<HashMap<i64, i64>>,
 }
 
 enum Entry {
@@ -98,53 +112,67 @@ enum Entry {
 
 static SOCKETS: Mutex<Option<HashMap<i64, Entry>>> = Mutex::new(None);
 static NEXT_ID: AtomicI64 = AtomicI64::new(1);
-/// **就绪队列**：socket id（socket 可能是连接，也可能是监听）。
-static READY: Mutex<Vec<i64>> = Mutex::new(Vec::new());
+/// **就绪集合**：已就绪的 socket id（socket 可能是连接，也可能是监听）。
+///
+/// ⚠ [2026-10-25 / 审计 N2] 这是**电平**（level）而不是**边沿**（edge）：
+///   「这个 socket 现在有货 / 有连接」是**持续成立**的状态，直到条件被消费。
+///   此前它是「一次性队列」⇒ 解释器侧**排干**它 ⇒ **同一进程里跑两个求值器**
+///   （测试套件、嵌入 wlwl 的宿主程序）时，一个求值器会把**另一个**的
+///   就绪事件**排干并丢掉** ⇒ 那个求值器的任务永远等不到唤醒
+///   （实测：CI 上 accept 白等满 5 s 预算）。
+///   ⇒ 现在：**排干改为「只取自己要的」**（`peek_ready` + `retire_ready`）
+///   ⇒ 不是自己的事件**原样留给主人**。
+static READY: LazyLock<Mutex<HashSet<i64>>> = LazyLock::new(|| Mutex::new(HashSet::new()));
 
-/// 就绪队列的「有东西了」信号。
+/// 就绪集合的「有东西了」信号。
 ///
 /// ⚠ [2026-10-25 / 审计 N3] 此前解释器侧只能**轮询**（`sleep(50ms)` 后再看一眼）
 ///   ⇒ 一次「就绪」最多要**白等 50 ms** 才能被看见（本仓实测：客户端在
 ///   33 ms 发数据，服务端 51 ms 才拿到 —— 那 18 ms 的差就是这个轮询粒度）。
-///   ⇒ 改成「**条件变量**」：I/O 线程推进就绪队列时 `notify_all`，
+///   ⇒ 改成「**条件变量**」：I/O 线程推进就绪集合时 `notify_all`，
 ///   解释器侧**立刻**被唤醒 ⇒ 等待延迟从「≤50 ms」降到「≈0」。
 static READY_CV: Condvar = Condvar::new();
 
-/// 把 socket id 推进就绪队列（由 I/O 线程调用）。
+/// 把 socket id 标记为就绪（由 I/O 线程调用）。
 fn push_ready(id: i64) {
     let mut q = READY.lock().unwrap_or_else(|e| e.into_inner());
-    if !q.contains(&id) {
-        q.push(id);
-    }
+    q.insert(id);
     drop(q);
-    // ⚠ 必须**在放锁之后**通知：否则被唤醒的线程可能抢在 push 之前拿到锁，
-    //   看到空队列又睡回去（丢通知）。
+    // ⚠ 必须**在放锁之后**通知：否则被唤醒的线程可能抢在 insert 之前拿到锁，
+    //   看到空集合又睡回去（丢通知）。
     READY_CV.notify_all();
 }
 
-/// 取走当前所有就绪的 socket id（由**解释器线程**调用）。
+/// **看一眼**当前就绪的 socket id（**不消费**）。
 ///
-/// ⚠ 这是 `wlwl-eval` 唤醒挂起任务的唯一入口 —— 宿主 I/O 线程**不能**直接碰
-///   调度器（解释器的值模型是 `Rc`，不是 `Send`），所以就绪事件必须经由
-///   解释器线程的轮询转交。
-pub fn take_ready() -> Vec<i64> {
-    let mut q = READY.lock().unwrap_or_else(|e| e.into_inner());
-    std::mem::take(&mut *q)
+/// ⚠ 解释器侧只**取走自己要的那几个**（`retire_ready`）⇒ 别人的就绪事件
+///   **原样留着**。
+pub fn peek_ready() -> Vec<i64> {
+    READY
+        .lock()
+        .unwrap_or_else(|e| e.into_inner())
+        .iter()
+        .copied()
+        .collect()
 }
 
-/// 阻塞到「就绪队列非空」或超时。返回是否等到了就绪事件。
+/// 消费掉一个就绪事件（条件已被消费 ⇒ 不再是「就绪」）。
+pub fn retire_ready(id: i64) {
+    READY.lock().unwrap_or_else(|e| e.into_inner()).remove(&id);
+}
+
+/// 阻塞到「有人推进了就绪集合」或超时。
 ///
 /// ⚠ [2026-10-25 / 审计 N3] 解释器侧的等待点用它**代替**「睡 50 ms 再看一眼」：
-///   I/O 线程一推进就绪队列就 `notify_all` ⇒ 等待延迟 ≈ 0。
-pub fn await_ready(timeout: std::time::Duration) -> bool {
+///   I/O 线程一推进就绪集合就 `notify_all` ⇒ 等待延迟 ≈ 0。
+///
+/// ⚠ **不看集合本身空不空** —— 它是**电平**，可能一直非空（别人的事件也在里面）
+///   ⇒ 用它当「有更新了」的信号会变成忙等。
+pub fn await_ready(timeout: std::time::Duration) {
     let q = READY.lock().unwrap_or_else(|e| e.into_inner());
-    if !q.is_empty() {
-        return true;
-    }
-    let (q, res) = READY_CV
+    let _ = READY_CV
         .wait_timeout(q, timeout)
         .unwrap_or_else(|e| e.into_inner());
-    !q.is_empty() || res.timed_out()
 }
 
 fn with_sockets<R>(f: impl FnOnce(&mut HashMap<i64, Entry>) -> R) -> R {
@@ -353,46 +381,63 @@ fn spawn_acceptor(state: Arc<ListenerState>, listener: TcpListener) {
 ///   连接**被覆盖、再也无法关闭**（泄漏）。
 /// ⇒ 记下它：再次求值时**返回同一个连接**，不重新 pop。
 ///
-/// ⚠ 键是**任务**（`StdHost::current_task_key`），值是 `(listener, conn)`。
-///   连接被 `TCP_CLOSE` 时清掉 ⇒ 不会随连接数无界增长。
-static ACCEPT_MEMO: LazyLock<Mutex<HashMap<i64, (i64, i64)>>> =
-    LazyLock::new(|| Mutex::new(HashMap::new()));
-
-fn memo_get(key: i64) -> Option<(i64, i64)> {
-    ACCEPT_MEMO
+/// ⚠ **它住在监听的状态里**（`ListenerState::memo`），**不是**进程级全局表 ——
+///   键是任务序号，只在一个求值器内唯一；全局表会让同一进程里的两个求值器
+///   撞车（实测：CI 上两个并行用例互换了连接句柄）。
+///
+/// ⚠ 连接被 `TCP_CLOSE` 时清掉 ⇒ 不会随连接数无界增长。
+fn memo_get(state: &Arc<ListenerState>, key: i64) -> Option<i64> {
+    state
+        .memo
         .lock()
         .unwrap_or_else(|e| e.into_inner())
         .get(&key)
         .copied()
 }
 
-fn memo_set(key: i64, listener: i64, conn: i64) {
-    ACCEPT_MEMO
+fn memo_set(state: &Arc<ListenerState>, key: i64, conn: i64) {
+    state
+        .memo
         .lock()
         .unwrap_or_else(|e| e.into_inner())
-        .insert(key, (listener, conn));
+        .insert(key, conn);
 }
 
 /// 清掉与某个 listener 相关的备忘（**挂起前**调用：一次新的等待 ⇒ 旧的作废）。
-fn memo_clear_for_listener(key: i64, listener: i64) {
-    let mut m = ACCEPT_MEMO.lock().unwrap_or_else(|e| e.into_inner());
-    if let Some((l, _)) = m.get(&key) {
-        if *l == listener {
-            m.remove(&key);
-        }
-    }
+fn memo_clear_for_listener(state: &Arc<ListenerState>, key: i64) {
+    state
+        .memo
+        .lock()
+        .unwrap_or_else(|e| e.into_inner())
+        .remove(&key);
+}
+
+/// 这个连接句柄**还在**吗？（被 `TCP_CLOSE` 关掉了 ⇒ 备忘作废）
+fn conn_alive(cid: i64) -> bool {
+    let guard = SOCKETS.lock().unwrap_or_else(|e| e.into_inner());
+    matches!(
+        guard.as_ref().and_then(|m| m.get(&cid)),
+        Some(Entry::Conn(_))
+    )
 }
 
 /// 清掉与某个连接相关的备忘（**连接关闭时**调用）。
+///
+/// ⚠ 监听们**不知道**彼此 ⇒ 扫一遍（监听通常只有一两个）。
 fn memo_clear_for_conn(conn: i64) {
-    let mut m = ACCEPT_MEMO.lock().unwrap_or_else(|e| e.into_inner());
-    let stale: Vec<i64> = m
-        .iter()
-        .filter(|(_, (_, c))| *c == conn)
-        .map(|(k, _)| *k)
-        .collect();
-    for k in stale {
-        m.remove(&k);
+    let mut guard = SOCKETS.lock().unwrap_or_else(|e| e.into_inner());
+    let Some(map) = guard.as_mut() else { return };
+    for entry in map.values() {
+        let Entry::Listener(l) = entry else { continue };
+        let mut m = l.memo.lock().unwrap_or_else(|e| e.into_inner());
+        let stale: Vec<i64> = m
+            .iter()
+            .filter(|(_, c)| **c == conn)
+            .map(|(k, _)| *k)
+            .collect();
+        for k in stale {
+            m.remove(&k);
+        }
     }
 }
 
@@ -459,6 +504,7 @@ pub fn tcp_listen(host: &mut dyn StdHost, args: Vec<Value>) -> wlwl_error::WlwlR
         filled: Condvar::new(),
         closed: AtomicBool::new(false),
         local,
+        memo: Mutex::new(HashMap::new()),
     });
     spawn_acceptor(state.clone(), listener);
     with_sockets(|map| {
@@ -524,12 +570,15 @@ pub fn tcp_accept(host: &mut dyn StdHost, args: Vec<Value>) -> wlwl_error::WlwlR
         }
     };
 
-    // ① **恢复重放**：本任务刚才 accept 到的那个连接还在（同一 listener）⇒
-    //    **返回同一个连接**，不重新 pop（否则连接会被覆盖、再也无法关闭）。
+    // ① **恢复重放**：本任务刚才 accept 到的那个连接还在 ⇒ **返回同一个连接**，
+    //    不重新 pop（否则连接会被覆盖、再也无法关闭）。
+    //
+    // ⚠ 备忘住在**这个监听**的状态里 ⇒ 键（任务序号）只需在一个求值器内唯一。
     if resume.is_some() {
         if let Some(key) = task_key {
-            if let Some((memo_listener, memo_conn)) = memo_get(key) {
-                if memo_listener == lid {
+            if let Some(memo_conn) = memo_get(&state, key) {
+                // ⚠ 那个连接**还在**吗？（被关掉了 ⇒ 备忘作废）
+                if conn_alive(memo_conn) {
                     // ⚠ 我**就是**挂起点（socket 相同）⇒ 本次求值完成 ⇒ 清掉提示。
                     if resume == Some(lid) {
                         host.clear_resume_hint();
@@ -565,7 +614,7 @@ pub fn tcp_accept(host: &mut dyn StdHost, args: Vec<Value>) -> wlwl_error::WlwlR
         //   备忘（一次新的等待 ⇒ 上一次的连接不再有效 ⇒ 否则 accept 循环会
         //   永远拿到同一个连接）。
         if let Some(key) = task_key {
-            memo_clear_for_listener(key, lid);
+            memo_clear_for_listener(&state, key);
         }
         arm_wait_deadline(host, timeout, None)?;
         return Ok(Outcome::with_signal(
@@ -608,7 +657,20 @@ pub fn tcp_accept(host: &mut dyn StdHost, args: Vec<Value>) -> wlwl_error::WlwlR
     // ⚠ [2026-10-25 / 审计 N2] 记下「这个任务 accept 到的这个连接」⇒
     //   恢复重放时**返回同一个连接**（不重新 pop ⇒ 连接不被覆盖、仍可关闭）。
     if let Some(key) = task_key {
-        memo_set(key, lid, cid);
+        memo_set(&state, key, cid);
+    }
+    // ⚠ 条件被**消费**了（连接被取走）⇒ 就绪标记作废。
+    // ⚠ **但队列里还有连接时不能作废** —— 否则下一次 accept 会挂上去，而
+    //   「接收线程」只在接受**新**连接时才推事件 ⇒ 那个连接就永远等不到唤醒。
+    {
+        let still_pending = !state
+            .pending
+            .lock()
+            .unwrap_or_else(|e| e.into_inner())
+            .is_empty();
+        if !still_pending {
+            retire_ready(lid);
+        }
     }
     // ⚠ 我**就是**挂起点（socket 相同）⇒ 本次求值完成 ⇒ 清掉恢复提示。
     if resume == Some(lid) {
@@ -682,13 +744,20 @@ pub fn tcp_recv(host: &mut dyn StdHost, args: Vec<Value>) -> wlwl_error::WlwlRes
             let n = q.len().min(max);
             let bytes: Vec<u8> = q.drain(..n).collect();
             let eof = state.eof.load(Ordering::SeqCst);
+            let empty_now = q.is_empty();
             drop(q);
             // 数据到手 ⇒ 那个「已超时」标志**作废**（否则下一次等待会立刻超时）。
             let _ = host.take_timed_out();
+            // ⚠ [2026-10-25 / 审计 N2] 条件被**消费**了 ⇒ 就绪标记作废
+            //   （否则下一次等待会被这个陈旧标记**立刻唤醒** ⇒ 空转）。
+            if empty_now {
+                retire_ready(cid);
+            }
             return Ok(Outcome::normal(recv_value(&bytes, eof)));
         }
         if state.eof.load(Ordering::SeqCst) {
             let _ = host.take_timed_out();
+            retire_ready(cid);
             return Ok(Outcome::normal(recv_value(&[], true)));
         }
     }
@@ -912,13 +981,17 @@ pub fn tcp_close(host: &mut dyn StdHost, args: Vec<Value>) -> wlwl_error::WlwlRe
         return Err(arity(host, "TCP_CLOSE", args.len(), 1));
     }
     let cid = int_arg(host, "TCP_CLOSE", &args[0])?;
-    let mut guard = SOCKETS.lock().unwrap_or_else(|e| e.into_inner());
-    if let Some(map) = guard.as_mut() {
-        if let Some(Entry::Conn(s)) = map.remove(&cid) {
-            s.closed.store(true, Ordering::SeqCst);
-            s.filled.notify_all();
-            let _ = s.stream.shutdown(Shutdown::Both);
+    {
+        let mut guard = SOCKETS.lock().unwrap_or_else(|e| e.into_inner());
+        if let Some(map) = guard.as_mut() {
+            if let Some(Entry::Conn(s)) = map.remove(&cid) {
+                s.closed.store(true, Ordering::SeqCst);
+                s.filled.notify_all();
+                let _ = s.stream.shutdown(Shutdown::Both);
+            }
         }
+        // ⚠ **必须先放掉 `SOCKETS` 锁**再清备忘 —— 备忘清理自己也要拿这把锁
+        //   （`std::sync::Mutex` **不可重入** ⇒ 拿着它再拿一次 = 自死锁）。
     }
     // ⚠ [2026-10-25 / 审计 N2] 连接没了 ⇒ 它的「accept 备忘」也作废
     //   （否则备忘表随连接数无界增长）。

@@ -321,6 +321,25 @@ SECOND
 | N4 | `impl/crates/wlwl-eval/src/runtime.rs` | `socket_waiters` 改一 socket **多等待者**；取消/超时只摘自己 |
 | N2 | `impl/crates/wlwl-eval/src/{lib,runtime,task}.rs` + `impl/crates/wlwl-value/src/lib.rs` + `impl/crates/wlwl-std/src/tcp.rs` | 运行期记「恢复提示」（挂起点是哪个 socket）⇒ 宿主接口加 `resume_hint` / `clear_resume_hint` / `current_task_key`（**都带默认实现**）⇒ `TCP_ACCEPT` 记住「本任务 accept 到的连接」，重放时**返回同一个**、不再二次挂起 |
 
+### ⚠ N2 落地时被抓出来的第二个缺陷（CI 上暴露）
+
+**就绪集合是进程级的「一次性队列」⇒ 解释器侧排干它 ⇒ 两个求值器互相吃对方的事件。**
+
+- **症状**：`TCP_ACCEPT` 白等满自己的 5000 ms 预算才超时（Linux/macOS CI 同时抓到；
+  Ubuntu 是 flaky、macOS 两趟都红）。
+- **机制**：`wlwl_std::tcp` 的就绪集合是**进程级**的，而调度器是**每个求值器**的
+  ⇒ A 求值器的 pump 把 B 求值器的就绪事件**排干并丢掉** ⇒ B 的任务永远等不到唤醒。
+  ⇒ **这不是本轮引入的**（排干语义本来就在），是**新增的并发用例把它照出来了**。
+- **修法**：就绪集合改成**电平**（`peek_ready` + `retire_ready`）——
+  解释器侧**只取走自己有等待者的**那些事件，别人的**原样留给主人**；
+  条件被消费时（读走了字节 / 取走了连接，且**队列已空**）标记作废。
+  ⇒ 顺带把「事件先到、等待者后到」的窗口也关上了（不必再靠 `pending_ready` 兜）。
+
+**⇒ 同类问题的一并收口**：`TCP_ACCEPT` 的「accept 备忘」原先也放在**进程级全局表**里
+（键 = 任务序号 ⇒ 只在一个求值器内唯一）⇒ 两个求值器会**互换连接句柄**。
+⇒ 现已搬进**监听的状态**（`ListenerState::memo`）⇒ 每个 socket 独一份 ⇒ 天然不撞。
+
+
 **⚠ N2 改变了可观察行为**：修复前「不切段」的任务体（accept + recv 写在同一个任务体、
 没有 `YIELD`）在客户端连上后会**白等整个 accept 超时预算**再报 `E0030`；修复后它
 **正常拿到数据**（实测 5345 ms + `E0030` ⇒ 230 ms + 5 字节）。

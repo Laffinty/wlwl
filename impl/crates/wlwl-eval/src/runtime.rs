@@ -1021,6 +1021,15 @@ impl Scheduler {
         self.socket_waiters.values().map(|v| v.len()).sum()
     }
 
+    /// 这个 socket 上**当前有没有**等待者？
+    ///
+    /// ⚠ [2026-10-25 / 审计 N2] 解释器侧据此**只取走自己的**就绪事件 ——
+    ///   别人的原样留着（就绪集合是进程级的 ⇒ 同一进程里跑两个求值器时，
+    ///   一个求值器不能把另一个的事件吃掉）。
+    pub fn has_socket_waiter(&self, socket_id: i64) -> bool {
+        self.socket_waiters.contains_key(&socket_id)
+    }
+
     /// [2026-10-25 / 审计 N2] 本任务当前这次恢复是不是「挂起点的再次求值」，
     /// 以及挂起点是哪个 socket。
     pub fn resume_hint(&self, task_id: TaskId) -> Option<i64> {

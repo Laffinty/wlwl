@@ -10579,7 +10579,15 @@ impl Evaluator {
             return false;
         }
         let mut woke = false;
-        for sid in wlwl_std::tcp::take_ready() {
+        // ⚠ [2026-10-25 / 审计 N2] **只取走「自己有等待者」的**那些就绪事件 ——
+        //   别人的**原样留着**（此前这里是一次性排干 ⇒ 同一进程里跑两个求值器
+        //   时，一个求值器会把**另一个**的就绪事件吃掉 ⇒ 那个任务永远等不到
+        //   唤醒 ⇒ 实测 accept 白等满整个超时预算）。
+        for sid in wlwl_std::tcp::peek_ready() {
+            if !self.scheduler.has_socket_waiter(sid) {
+                continue;
+            }
+            wlwl_std::tcp::retire_ready(sid);
             if self.scheduler.wake_socket_waiter(sid) {
                 woke = true;
             }
@@ -10591,7 +10599,11 @@ impl Evaluator {
             //   ⇒ 改成**条件变量**：I/O 线程一推进就绪队列就唤醒解释器
             //   ⇒ 等待延迟从「≤50 ms」降到「≈0」。
             wlwl_std::tcp::await_ready(std::time::Duration::from_millis(wait_ms));
-            for sid in wlwl_std::tcp::take_ready() {
+            for sid in wlwl_std::tcp::peek_ready() {
+                if !self.scheduler.has_socket_waiter(sid) {
+                    continue;
+                }
+                wlwl_std::tcp::retire_ready(sid);
                 if self.scheduler.wake_socket_waiter(sid) {
                     woke = true;
                 }
