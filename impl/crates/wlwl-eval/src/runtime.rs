@@ -1012,8 +1012,17 @@ impl Scheduler {
             }
             // ⚠ 清定时器，但**置**「睡够了」标志 —— 后者由**睡眠成员**消费
             //   （它要认出「我是被唤醒后重跑的」⇒ 否则会再睡一次 ⇒ 无限循环）。
+            //
+            // ⚠ [v0.12.0 / Q8] 标的是**那一条**（按调用点记的那次睡眠）——
+            //   别的调用点来问时**领不走**它（领错 ⇒ 那个调用点就不睡了）。
+            // ⚠ 内层用 `run_idx`（**不**叫 `idx`）—— 否则它会**遮蔽**外层的任务下标。
+            if let Some(run_idx) = self.tasks[idx].pending_sleep_run {
+                if let Some(run) = self.tasks[idx].sleep_runs.get_mut(run_idx) {
+                    run.elapsed = true;
+                }
+                self.tasks[idx].pending_sleep_run = None;
+            }
             self.tasks[idx].sleep_until_ms = None;
-            self.tasks[idx].sleep_elapsed = true;
             self.tasks[idx].state = TaskState::Pending;
             let id = self.tasks[idx].id;
             self.enqueue(id);

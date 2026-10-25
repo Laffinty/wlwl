@@ -12,8 +12,12 @@
 //!    （ADR-0017 Step 3 未落地）⇒ 任务被唤醒后**整段重跑** ⇒ 睡眠成员**再被调一次**。
 //!    上游自己的夹具 `M6_std_time_sleep` 记着这条：挂起路线下 **8 秒 79 次不终止**。
 //!    ⇒ 本成员靠宿主接缝 `take_sleep_elapsed()` 认出「我是被唤醒后重跑的」⇒ 直接返回。
-//! 2. **一个任务体里至多一次睡眠** —— 两次睡眠 ⇒ 第一次睡完重跑 ⇒ 第二次**又**睡
-//!    ⇒ 无限循环 ⇒ **诊断**（`E0030`），不挂死。
+//! 2. **「已经睡过」必须按**调用点**记** —— ⚠ [v0.12.0 / Q8]
+//!    段重跑落回**同一处** ⇒ 同一处 ⇒ 同一个身份 ⇒ 成员认得出「我这次睡过了」。
+//!    ⇒ **一个任务体里可以睡多次**（各调用点各睡一次），**循环里每轮也都真的睡**。
+//!    ⇒ 交付包原形态（「一个任务体至多一次睡眠 ⇒ 第二次报 `E0030`」）已删：
+//!    那条失败口径**不在规范里**（标准库·系统册 §15.1 的失败列只有元数 / 类型 / 负值）
+//!    ⇒ 凭空多出来的诊断。
 //! 3. **重跑会重放副作用** —— 睡眠**之前**的语句会再执行一遍（与 socket / 通道等待
 //!    同款约束：「挂起点必须是所在段的第一条语句」）。
 //!
@@ -104,16 +108,56 @@ LET(r, SCOPE(FUN(() ,
 }
 
 #[test]
-fn a_second_sleep_in_one_body_is_a_diagnostic_not_a_hang() {
-    // ⚠ 这条**必须**是「响亮地失败」而不是挂死 —— 上游实测过挂死形态
-    //   （8 秒 79 次 `tick` 仍不终止）。
-    let out = actual(
-        r#"IMPORT("wlwl:std.time", ["SLEEP_ASYNC"]);
-SCOPE(FUN(() , AWAIT(SPAWN(FUN(() , (SLEEP_ASYNC(20); SLEEP_ASYNC(20); 0))))))"#,
+fn two_sleeps_in_one_body_both_sleep_and_neither_is_a_diagnostic() {
+    // ⚠ [v0.12.0 / Q8] **一个任务体里可以睡多次** —— 交付包的形态是「至多一次」，
+    //   第二次直接报 `E0030`；可**那条失败口径不在规范里**
+    //   （标准库·系统册 §15.1 的 `SLEEP_ASYNC` 失败列只有元数 / 类型 / 负值）
+    //   ⇒ 凭空多出来的诊断 ⇒ 已删。
+    //
+    // ⇒ 记账的粒度改成**调用点**（源码位置）：段重跑落回**同一处** ⇒ 同一处 ⇒
+    //   「我这次已经睡过了」认得出来 ⇒ 不会睡第二次 ⇒ 也不会无限循环。
+    //
+    // 判据：两个**不同**调用点 ⇒ **各睡一次** ⇒ 总耗时 ≈ 2 × 20 ms，
+    //   且**不**报任何诊断。
+    let src = r#"IMPORT("wlwl:std.time", ["SLEEP_ASYNC"]);
+SCOPE(FUN(() , AWAIT(SPAWN(FUN(() , (SLEEP_ASYNC(20); SLEEP_ASYNC(20); 0))))))"#;
+    let start = std::time::Instant::now();
+    let out = actual(src);
+    let elapsed = start.elapsed().as_millis() as i64;
+    assert_eq!(
+        out, "0",
+        "two sleeps in one body must both run and must not be a diagnostic, got {out}"
     );
     assert!(
-        out.starts_with("!E0030"),
-        "a second sleep in one body must be a diagnostic, got {out}"
+        elapsed >= 30,
+        "both sleeps must actually have waited (≈40ms), took {elapsed}ms"
+    );
+}
+
+#[test]
+fn a_sleep_in_a_loop_sleeps_every_iteration() {
+    // ⚠ [v0.12.0 / Q8] **循环里的睡眠每轮都要真的睡** ——
+    //   「按调用点记账」不能把**第二轮**也当成「已经睡过」（那会让循环飞快跑完）。
+    // ⇒ 判据：3 轮 × 30 ms ⇒ 总耗时 ≳ 90 ms。
+    //
+    // ⚠ 用平铺语句而不是 `WHILE`：`WHILE` 里放 `YIELD` 是已知缺口 G-03
+    //   （循环只跑一轮且无任何诊断）⇒ 这里用 `YIELD()` 把每轮隔成独立的段。
+    let src = r#"IMPORT("wlwl:std.time", ["SLEEP_ASYNC"]);
+SCOPE(FUN(() , AWAIT(SPAWN(FUN(() ,
+    SLEEP_ASYNC(30);
+    YIELD();
+    SLEEP_ASYNC(30);
+    YIELD();
+    SLEEP_ASYNC(30);
+    0
+)))))"#;
+    let start = std::time::Instant::now();
+    let out = actual(src);
+    let elapsed = start.elapsed().as_millis() as i64;
+    assert_eq!(out, "0", "the loop body must finish, got {out}");
+    assert!(
+        elapsed >= 80,
+        "every iteration must actually sleep (3 × 30ms), took {elapsed}ms"
     );
 }
 

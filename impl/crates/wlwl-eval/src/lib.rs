@@ -7357,33 +7357,51 @@ impl wlwl_std::StdHost for Evaluator {
         let Some(task_id) = self.current_task else {
             return false;
         };
+        // ⚠ [v0.12.0 / Q8] **按调用点**领：只领**我自己这个调用点**的「睡够了」标记
+        //   ⇒ 同一段里有多个睡眠调用点时，**领错不了**（领错 ⇒ 那个调用点就不睡了）。
+        let site = self.sleep_site_key();
         let Some(t) = self.scheduler.tasks.get_mut(task_id.0) else {
             return false;
         };
-        std::mem::take(&mut t.sleep_elapsed)
+        let Some(idx) = t
+            .sleep_runs
+            .iter()
+            .rposition(|r| r.elapsed && r.site == site)
+        else {
+            return false;
+        };
+        // 领走 = 这一条作废（移出 ⇒ 不会重复领）。
+        t.sleep_runs.remove(idx);
+        if let Some(p) = t.pending_sleep_run {
+            if p == idx {
+                t.pending_sleep_run = None;
+            } else if p > idx {
+                t.pending_sleep_run = Some(p - 1);
+            }
+        }
+        true
     }
 
     fn begin_task_sleep(&mut self) -> Result<(), WlwlError> {
         let Some(task_id) = self.current_task else {
             return Ok(());
         };
+        // ⚠ [v0.12.0 / Q8] **按调用点**记一次（**不是**「这个任务只能睡一次」）。
+        //
+        //   段模型是「整段重跑」⇒ 同一个调用点会被**再求值一次**⇒ 成员靠
+        //   `take_sleep_elapsed()` 认出「我这次已经睡过了」⇒ 直接返回，不再睡。
+        //   ⇒ 一个任务体里**多个**睡眠调用点**各自**睡一次 ⇒
+        //   **不需要**「一个任务体至多一次睡眠」那条**规范外**的 `E0030`
+        //   （它不在标准库·系统册 §15.1 的成员表失败列里 ⇒ 凭空多出来的诊断）。
+        let site = self.sleep_site_key();
         let Some(t) = self.scheduler.tasks.get_mut(task_id.0) else {
             return Ok(());
         };
-        if t.sleep_started >= 1 {
-            // ⚠ 响亮地失败，而不是挂死（见 `Task::sleep_started` 的说明）。
-            return Err(self.diag(
-                ErrorCode::E0030,
-                "SLEEP_ASYNC: a task body may contain at most one sleep — the segment \
-                 model re-runs the body from the top, so a second sleep would sleep \
-                 again forever (put the sleep at the end of the body)"
-                    .to_string(),
-                self.current_span
-                    .clone()
-                    .unwrap_or_else(wlwl_ast::Span::dummy),
-            ));
-        }
-        t.sleep_started += 1;
+        t.sleep_runs.push(crate::task::SleepRun {
+            site,
+            elapsed: false,
+        });
+        t.pending_sleep_run = Some(t.sleep_runs.len() - 1);
         Ok(())
     }
 
@@ -7980,6 +7998,19 @@ impl Default for Evaluator {
 }
 
 impl Evaluator {
+    /// [v0.12.0 / Q8] 当前睡眠的**调用点**标识（文件 + 行 + 列）。
+    ///
+    /// ⚠ 用**源码位置**当身份：段重跑落回**同一处** ⇒ 同一处 ⇒ 同一个身份
+    ///   ⇒ 成员能认出「我这次已经睡过了」（不睡第二次 ⇒ 不无限循环）。
+    /// ⚠ 位置缺了 ⇒ 退化成「没有身份」⇒ 所有调用点共用一个身份 ⇒
+    ///   保守起见**不**特殊处理（宁可多睡一次，也不睡错别人）。
+    fn sleep_site_key(&self) -> (String, u32, u32) {
+        match &self.current_span {
+            Some(s) => (s.file.clone(), s.line_start, s.col_start),
+            None => (String::new(), 0, 0),
+        }
+    }
+
     pub fn new() -> Self {
         Self {
             env: Env::new(),
