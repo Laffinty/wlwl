@@ -174,7 +174,7 @@ fn recv_timeout_returns_empty_bytes_and_no_eof() {
     // ⚠ 「连上了但没数据」与「没连上」是两种形状：前者是正常值，后者是 NULL。
     let port = free_port();
     let holder = thread::spawn(move || {
-        if let Ok(s) = TcpStream::connect(("127.0.0.1", port)) {
+        if let Some(s) = connect_with_retry(port) {
             // 握住连接不发数据，等主线程那边读完就退出。
             thread::sleep(Duration::from_millis(1500));
             drop(s);
@@ -223,25 +223,47 @@ fn free_port() -> u16 {
     port
 }
 
+/// 连上服务端 —— **必须带重试**。
+///
+/// ⚠⚠ **为什么必须重试(2026-10-25 CI 实测)**:本文件的形状是
+///   「**先** `free_port()` 抢一个端口 ⇒ **后** WLWL 侧 `TCP_LISTEN` 绑定它」,
+///   而客户端线程是**并行**跑的 ⇒ 客户端的 `connect()` 很可能**早于**监听建立
+///   ⇒ 拿到 ECONNREFUSED。
+///   ⇒ 客户端**只连一次**就放弃 ⇒ 服务端 `TCP_ACCEPT(l, 5000)` 只能等满超时
+///   ⇒ 返回 **NULL**(本批新规约:超时的**正常值**,不是 ERR)⇒ 紧接着那句
+///   `TCP_RECV(NULL, …)` 就成了 `E0030 expected integer, got null`
+///   ⇒ 失败信息指向「参数类型不对」,而真因是「客户端没连上」——**指错方向**。
+///   ⚠ **CI 上 ubuntu / macos 稳定复现**(客户端先跑),Windows 上不出现
+///   (服务端先跑)⇒ **本机 Windows 跑绿不能当作这关过了**。
+///   ⇒ 统一改成「连不上就隔 20 ms 再连,最多 100 次(≈2 s)」
+///   (与同文件里本来就带重试的 `tcp_round_trip_serves_an_http_request` 同款)。
+fn connect_with_retry(port: u16) -> Option<TcpStream> {
+    for _ in 0..100 {
+        if let Ok(s) = TcpStream::connect(("127.0.0.1", port)) {
+            return Some(s);
+        }
+        thread::sleep(Duration::from_millis(20));
+    }
+    None
+}
+
 #[test]
 fn tcp_round_trip_serves_an_http_request() {
     let _gate = socket_gate();
     let port = free_port();
 
     // 客户端线程：连上去，发一条 HTTP 请求，读响应。
+    // ⚠ 连接走 `connect_with_retry`（见它的注释：客户端与 `TCP_LISTEN` 有先后竞态）。
     let client = thread::spawn(move || {
-        for _ in 0..100 {
-            if let Ok(mut s) = TcpStream::connect(("127.0.0.1", port)) {
-                s.write_all(b"GET /probe HTTP/1.1\r\nHost: x\r\n\r\n")
-                    .expect("write request");
-                // ⚠ [v0.12.0] 读**也要有超时** ⇒ 服务端出错时本线程**快速失败**
-                //   而不是无限期挂着（否则一次失败会把整个测试挂到 CI 超时）。
-                let _ = s.set_read_timeout(Some(Duration::from_millis(5000)));
-                let mut buf = String::new();
-                s.read_to_string(&mut buf).expect("read response");
-                return buf;
-            }
-            thread::sleep(Duration::from_millis(20));
+        if let Some(mut s) = connect_with_retry(port) {
+            s.write_all(b"GET /probe HTTP/1.1\r\nHost: x\r\n\r\n")
+                .expect("write request");
+            // ⚠ [v0.12.0] 读**也要有超时** ⇒ 服务端出错时本线程**快速失败**
+            //   而不是无限期挂着（否则一次失败会把整个测试挂到 CI 超时）。
+            let _ = s.set_read_timeout(Some(Duration::from_millis(5000)));
+            let mut buf = String::new();
+            s.read_to_string(&mut buf).expect("read response");
+            return buf;
         }
         String::new()
     });
@@ -305,7 +327,7 @@ fn other_tasks_keep_running_while_a_socket_wait_is_pending() {
     // 外部客户端：连上去，**等 300 ms 再发数据**（⇒ 父任务的读会先挂起，
     // 子任务才有时间在「等待期间」跑起来）。
     let holder = thread::spawn(move || {
-        if let Ok(mut s) = TcpStream::connect(("127.0.0.1", port)) {
+        if let Some(mut s) = connect_with_retry(port) {
             thread::sleep(Duration::from_millis(300));
             let _ = s.write_all(b"hello");
             thread::sleep(Duration::from_millis(3000));
@@ -350,7 +372,7 @@ fn max_bytes_of_zero_reads_zero_bytes_and_consumes_nothing() {
     // ⇒ 若实现把 0 抬成 1，第二次只会拿到 **4** 字节 ⇒ 这条会红。
     let port = free_port();
     let holder = thread::spawn(move || {
-        if let Ok(mut s) = TcpStream::connect(("127.0.0.1", port)) {
+        if let Some(mut s) = connect_with_retry(port) {
             let _ = s.write_all(b"hello");
             thread::sleep(Duration::from_millis(3000));
         }
@@ -392,7 +414,7 @@ fn tcp_set_timeout_observably_bounds_a_read() {
     // ⇒ 用**时间窗口**区分（100 ms vs 5000 ms 差 50 倍 ⇒ 窗口取 3000 ms 很安全）。
     let port = free_port();
     let holder = thread::spawn(move || {
-        if let Ok(s) = TcpStream::connect(("127.0.0.1", port)) {
+        if let Some(s) = connect_with_retry(port) {
             // 握住连接**不发数据** ⇒ 读只能靠超时结束。
             thread::sleep(Duration::from_millis(3000));
             drop(s);

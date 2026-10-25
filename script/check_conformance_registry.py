@@ -86,6 +86,16 @@ IMPL = ROOT / "impl"
 MAP_PATH = Path(__file__).resolve().parent / "conformance_registry_map.json"
 
 ROW_RE = re.compile(r"^\|\s*(X-\d{2,})\s*\|")
+# ⚠⚠ **ANSI 转义序列必须先剥掉**(2026-10-25 CI 实测踩到):
+#   cargo 的状态行长这样 —— `ESC[1m ESC[92m ␣␣␣␣␣Running ESC[0m ␣tests\foo.rs (…)`
+#   ⇒ **"Running" 与 "tests" 之间是转义序列、不是空白** ⇒
+#   `Running\s+tests[\\/]` 配不上 ⇒ 契约表一个都认不出来 ⇒
+#   门禁报「契约表一个都没跑起来（cargo test 无输出）」并 exit 2。
+#   ⚠ **只在 CI 的 windows runner 上出现**(cargo 在那里给状态行上了色);
+#   本机 Windows 跑**同一道**门禁是绿的 ⇒ 同一份代码两边判据不同 ⇒
+#   极难自查 ⇒ 结论:**别用「本机绿」代替「CI 绿」**。
+#   ⇒ 双保险:① 解析前剥 ANSI;② 跑 cargo 时逼它不上色(见 run_cargo 里的 env)。
+ANSI_RE = re.compile(r"\x1b\[[0-9;]*[A-Za-z]")
 RUNNING_RE = re.compile(r"Running\s+tests[\\/]\s*([A-Za-z0-9_]+)\.rs")
 RESULT_RE = re.compile(r"^test result:\s+(ok|FAILED)\.\s+(\d+)\s+passed;\s+(\d+)\s+failed;")
 
@@ -186,12 +196,19 @@ def run_cargo(package, tests, impl_dir, extra=None):
         # 写在 **stderr**，而测试框架的结果写在 **stdout** ⇒ 分开收就**配不上**
         # （结果先于「Running」行出现 ⇒ 判定全部落空）。合并成一条流后，
         # 两者按写入时序交错 ⇒ 「Running X」之后的第一个「test result」就是 X 的。
+        # ⚠ **env 逼 cargo 不上色**（2026-10-25 CI 实测）—— cargo 在 CI 的
+        #   windows runner 上会给状态行加 ANSI 颜色码 ⇒ 「Running」与「tests」
+        #   之间夹着 `ESC[0m` ⇒ 正则配不上 ⇒ 门禁误判「一个都没跑起来」。
+        #   ⇒ 这里先关掉颜色,再由 ANSI_RE 兜底（万一这层被环境变量绕过去）。
+        env = dict(os.environ)
+        env["CARGO_TERM_COLOR"] = "never"
         p = subprocess.run(cmd, cwd=str(impl_dir), stdout=subprocess.PIPE,
                            stderr=subprocess.STDOUT, text=True, errors="replace",
-                           encoding="utf-8")
+                           encoding="utf-8", env=env)
     except FileNotFoundError:
         fail("找不到 cargo —— 这道门禁需要 Rust 工具链")
-    out = p.stdout or ""
+    # ⚠ 剥掉 ANSI 转义序列（见 ANSI_RE 的注释）⇒ 判定不受配色影响。
+    out = ANSI_RE.sub("", p.stdout or "")
     results = {}
     cur = None
     for line in out.splitlines():
