@@ -1018,3 +1018,31 @@ D-16 的前半句「段首重放」与后半句「与切段一致」**自相矛�
 ⇒ 9 个 target failed，其中 `wlwl-error --lib` 的 5 条是「找不到规范仓」的**位置 artifact**
 （设 `WLWL_SPEC_PATH` 后 65 passed / 0 failed）⇒ **真实失败面 = 8 个 target**；
 接线表缺 X-25 ⇒ 门禁 exit 2；`wlwl-error --lib` 在规范仓就位后绿。
+
+---
+
+## 8.1 本轮收口（2026-10-25）
+
+**四个批次全部落地**（A / B / C / D）⇒ 实现侧 v0.12.0 的**代码面**已完成。
+
+| 项 | 读数 |
+|---|---|
+| 全量测试 | `cargo test --workspace` ⇒ **2991 passed / 0 failed** |
+| clippy | `--locked --workspace --all-targets -- -D warnings` ⇒ **0** |
+| fmt | `cargo fmt --all -- --check` ⇒ **0 diff** |
+| §5.4 双向门禁 | `python script/check_conformance_registry.py` ⇒ **exit 0**，**25 行全部一致**（X-25 绿 6/6；X-14 红 = 缺口仍在） |
+| 附录 A 守卫 | `stdlib_appendix_a_sync` ⇒ **6/6 绿**（含新增的台账自检） |
+| 传输层契约 | `tcp_contract` ⇒ **23/23 绿**（含 Q1 的「等待期间别的任务照跑」判别用例） |
+| 睡眠契约 | `sleep_async_contract` ⇒ **7/7 绿**（含 Q8 的「两次睡眠都睡」「循环里每轮都睡」） |
+| 规则侧自检 | `check_spec.py` ⇒ **错误 0**；`negctl.py` ⇒ **14/14 命中** |
+
+**规则侧两处裁决已落文**：Q6（D-16 措辞勘误，例外 3）、Q7（气泡内 `SLEEP_ASYNC` 等同
+`SLEEP`，例外 2 ⇒ 登记 **D-19**）；Q8 在实现侧落地 ⇒ **规范外的那条 `E0030` 已消失**。
+
+**仍未收敛的差异**（随发布说明列出）：**X-14** —— 别名在**写序列内部**每轮重建 ⇒
+每轮写产出新值 ⇒ 总工作量二次（实测 n=16 ⇒ 拷贝 120 / n=64 ⇒ 拷贝 2016）。
+**语义正确，缺口只在成本**；收敛需要惰性 CoW / 结构共享（另一个决策），业主已定不排期。
+
+**发布动作仍由业主发起**：本轮**未打 tag、未 push**（实现侧 3 个 commit、
+规则侧 3 个 commit 都在本地）。`impl/Cargo.toml` 的版本号已落 `0.12.0`（11 处），
+`release.yml` 的 `version-check` 会校验它与 tag 一致 ⇒ **打 tag 时用 `v0.12.0`**。
