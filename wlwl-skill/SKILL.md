@@ -627,14 +627,48 @@ behind it (the numbers come from this repo's own audit,
    arrive.
 6. **Do not `SET` an immutable binding inside a task body.** `E0024` fails the
    task, and a failed handler takes the whole connection down with it.
-7. **`SCOPE` does not wait for grandchild tasks.** On scope exit, tasks that
-   are not yet terminal are **force-cancelled** (§17.3 rule 6) — a client sees
-   a reset, and the response body never leaves. A server that must finish its
-   handlers has to **count completions itself** (a shared counter) and only let
-   the acceptor exit when the count matches.
-8. **`AWAIT` on an already-finished handle is `E0053`** ("expired handle",
-   §17.1). There is no "wait for N children" primitive — use a completion
-   counter plus a timeout-paced tick.
+7. **`SCOPE` waits first, then force-cancels what is left.** On scope exit the
+   runtime **drains** the scheduler (so a descendant parked on a socket is
+   **waited for** — §17.1 "must wait for its child tasks to end") and only
+   *then* force-cancels whatever is still non-terminal (§17.3 rule 6).
+   ⇒ A grandchild parked on a socket normally **finishes** ⇒ the client gets the
+   **complete response**, not a reset. But a descendant that never reaches a
+   terminal state is still cancelled ⇒ **do not rely on `SCOPE` to finish your
+   handlers**: count completions yourself (a shared counter) and only let the
+   acceptor exit when the count matches.
+8. **`AWAIT` on an already-finished handle returns that child's terminal
+   value** — it does **not** raise `E0053`. `E0053` appears only when the
+   argument is **not a handle**, or the handle is **stale** (the task slot was
+   recycled — generation mismatch). §17.1's "expired handle" means *stale*,
+   not *finished*. There is no "wait for N children" primitive — use a
+   completion counter plus a timeout-paced tick.
+
+### Five writing traps (measured — two of them fail *silently*)
+
+These came out of building a static-file HTTP server in pure WLWL. They are
+**not** in the language spec's member tables; they are the shape of the
+runtime.
+
+1. **`||` and `&&` are strictly binary.** `||(a, b, c)` →
+   `E0022: function '||' expects 2 argument(s), got 3`. Nest instead:
+   `||(a, ||(b, c))`.
+2. ⚠ **`IF`'s *third* argument cannot hold a multi-statement group.**
+   `IF(c, x, (LET(a,1); LET(b,2); a))` → `E0013: expected ';' after
+   expression`. The **same shape in the *second* argument works fine.**
+   ⇒ Put the multi-statement work in a `LET`/closure and pass that.
+3. ⚠ **`PATH_NORMALIZE` keeps `\`; `PATH_JOIN` emits `/`.** An environment
+   value like `C:\a\b` normalises to `C:\a\b`, while `PATH_JOIN` produces
+   `C:/a/b` ⇒ **prefix comparison against it always fails** ⇒ every path
+   looks out-of-root (⇒ blanket `403`). Normalise the root through
+   `PATH_JOIN(root, "")` before comparing prefixes.
+4. ⚠ **`READ_FILE` keeps a UTF-8 BOM.** The body you send then starts with
+   `EF BB BF` ⇒ `Content-Length` and what the browser sees disagree. Strip it
+   (compare `UTF8_ENCODE(SUB(b, 0, 1))` against `[239,187,191]`).
+5. ⚠ **`std.fs` IO failures are `ERR` *values*** (§8.6). An unconsumed `ERR`
+   is reported at scope exit as `E0103: unhandled ERR was discarded` ⇒ **the
+   whole request dies silently** (the client only sees a reset). Always
+   branch on `IS_ERR` / `ERR_PAYLOAD` — or `LET(_, expr)` — at the point of
+   the call.
 
 **Timeout shapes are normal values, never errors:**
 

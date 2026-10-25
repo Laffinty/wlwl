@@ -2021,6 +2021,19 @@ impl Outcome {
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 pub struct TaskId(pub usize);
 
+/// [2026-10-25 / 审计 N5] 「恢复提示」里表示「挂起点**不是** socket 等待」的值。
+///
+/// ⚠ **为什么需要它**：宿主挂起恢复时，挂起点被**再次求值**（并发册 §17.0 第 2 条）。
+///   恢复提示要回答两件事：
+///   ① 「我这次是不是被重放了？」⇒ `Option` 非空即是；
+///   ② 「我是不是**挂起点**？」⇒ `提示值 == 我操作的 socket`。
+///   而**超时**与**定时器**的唤醒，挂起点**可能不是 socket** ⇒ 提示值没有 socket 可填
+///   ⇒ 用这个哨兵值表达「是重放，但不是 socket 挂起点」。
+///
+/// ⚠ socket id 从 **1** 开始（`wlwl_std::tcp::NEXT_ID`）⇒ `0` 不会是任何 socket 的 id
+///   ⇒ 判断「我是不是挂起点」时永远不会被 0 误命中。
+pub const RESUME_NON_SOCKET: i64 = 0;
+
 /// Generation-tracked task handle returned to user code by `SPAWN`.
 ///
 /// Detecting `use-after-cancel` / `use-after-recycle`: a slot can be

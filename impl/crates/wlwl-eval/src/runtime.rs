@@ -6,7 +6,7 @@
 //! conversion) can build on it without forward-declaration gymnastics.
 //!
 //! See plan §5.1, §5.1.1, §5.2, ADR-0014, ADR-0016 for the full design.
-pub use wlwl_value::{RcHandle, Tag, TaskHandle, TaskId, YieldReason};
+pub use wlwl_value::{RcHandle, Tag, TaskHandle, TaskId, YieldReason, RESUME_NON_SOCKET};
 
 use std::collections::VecDeque;
 use std::rc::Rc;
@@ -921,6 +921,9 @@ impl Scheduler {
         }
         if let Some(t) = self.tasks.get_mut(task_id.0) {
             t.state = TaskState::Pending;
+            // ⚠ [2026-10-25 / 审计 N5] 通道等待的唤醒**也是**「挂起点的再次求值」
+            //   ⇒ 同样置恢复提示（挂起点不是 socket ⇒ `RESUME_NON_SOCKET`）。
+            t.resume_hint = Some(RESUME_NON_SOCKET);
         }
         self.enqueue(task_id);
         true
@@ -1102,6 +1105,10 @@ impl Scheduler {
             }
             self.tasks[idx].sleep_until_ms = None;
             self.tasks[idx].state = TaskState::Pending;
+            // ⚠ [2026-10-25 / 审计 N5] 定时器唤醒**也是**「挂起点的再次求值」
+            //   ⇒ 同样要置恢复提示（挂起点**不是** socket ⇒ 用 `RESUME_NON_SOCKET`）
+            //   ⇒ 否则同段里更早的 `TCP_ACCEPT` 会在重放时弹出空队列 ⇒ `NULL` ⇒ `E0030`。
+            self.tasks[idx].resume_hint = Some(RESUME_NON_SOCKET);
             let id = self.tasks[idx].id;
             self.enqueue(id);
             woken.push(id);
@@ -1244,6 +1251,18 @@ impl Scheduler {
             self.tasks[idx].timed_out = true;
             self.tasks[idx].deadline_ms = None;
             self.tasks[idx].state = TaskState::Pending;
+            // ⚠ [2026-10-25 / 审计 N5] **超时唤醒也是「挂起点的再次求值」**
+            //   ⇒ 必须置恢复提示，否则重放时 `TCP_ACCEPT` 不会去查它的备忘
+            //   ⇒ 弹出空队列 ⇒ 返回 NULL ⇒ `TCP_RECV(NULL)` ⇒ `E0030`
+            //   （实测：客户端晚于读截止发数据 ⇒ 任务直接死掉、连接句柄丢失、
+            //     客户端收到 reset —— 而规范要求的超时形态
+            //     `{bytes: [], text: "", eof: FALSE}` 在该形态下**不可达**）。
+            // ⇒ 挂起点是**哪个 socket**，就填哪个。
+            if let YieldReason::SocketReady(sid) = reason {
+                self.tasks[idx].resume_hint = Some(sid);
+            } else {
+                self.tasks[idx].resume_hint = Some(RESUME_NON_SOCKET);
+            }
             let id = self.tasks[idx].id;
             self.enqueue(id);
             fired.push(id);

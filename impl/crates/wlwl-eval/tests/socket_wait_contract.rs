@@ -250,6 +250,50 @@ fn the_accept_loop_hands_out_a_different_connection_each_round() {
     );
 }
 
+// ── N5：超时路径上的恢复提示 ───────────────────────────────────────────────
+
+/// [N5] **超时唤醒也必须算「挂起点的再次求值」** —— 否则重放时 `TCP_ACCEPT`
+/// 不会去查它的备忘 ⇒ 弹出空队列 ⇒ 返回 `NULL` ⇒ `TCP_RECV(NULL)` ⇒ **`E0030`**
+/// ⇒ 任务死掉、连接句柄丢失、客户端收到 reset。
+///
+/// ⚠ 复现形态：**非切段**任务体（accept + recv 写在同一段）＋ 客户端**晚于**读
+///   截止发数据 ⇒ `TCP_RECV` 超时 ⇒ 段首重放（**超时唤醒不设 socket 唤醒提示**）
+///   ⇒ accept 被再次求值 ⇒ 空队列 ⇒ `NULL` ⇒ `E0030`。
+/// ⇒ 修复后：accept 返回**同一个**连接 ⇒ 读拿到**超时的正常形态**
+///   （`{bytes: [], text: "", eof: FALSE}`）⇒ 任务**活着**。
+#[test]
+fn a_timed_out_recv_does_not_kill_the_task() {
+    let port = free_port();
+    let holder = thread::spawn(move || {
+        if let Some(mut s) = connect_with_retry(port) {
+            // 晚于读截止（50 ms）才发数据 ⇒ 服务端那次读**超时**。
+            thread::sleep(Duration::from_millis(300));
+            let _ = s.write_all(b"hello");
+            thread::sleep(Duration::from_millis(2000));
+        }
+    });
+    let got = actual(&format!(
+        r#"IMPORT("wlwl:std.net", ["TCP_LISTEN", "TCP_ACCEPT", "TCP_RECV"]);
+           LET(l, TCP_LISTEN("127.0.0.1", {port}));
+           SCOPE(FUN(() ,
+               LET(t, SPAWN(FUN(() ,
+                   LET(conn, TCP_ACCEPT(l, 5000));
+                   LET(chunk, TCP_RECV(conn, 100, 50));
+                   LEN(AT_K(chunk, "bytes", []))
+               )));
+               AWAIT(t)
+           ))"#
+    ));
+    let _ = holder.join();
+    assert_eq!(
+        got, "0",
+        "a read that times out must yield the documented timeout shape (0 bytes, \
+         eof = FALSE) and leave the task alive — before the fix the replayed \
+         accept returned NULL and the task died with `E0030 TCP_RECV: expected \
+         integer, got null`; got {got:?}"
+    );
+}
+
 // ── 守卫自身：源文件必须在（路径写错 ⇒ 守卫假绿）───────────────────────────
 
 #[test]
