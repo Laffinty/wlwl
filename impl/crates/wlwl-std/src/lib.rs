@@ -86,7 +86,7 @@ pub mod regex;
 pub mod result;
 pub mod sanitize;
 pub mod stats;
-/// [项目扩展] 传输层实现（`TCP_*` 成员）。**不**自成一个命名空间 ——
+/// \[项目扩展\] 传输层实现（`TCP_*` 成员）。**不**自成一个命名空间 ——
 /// 公开面挂在 `wlwl:std.net` 上（见 `net::SPEC`），所以
 /// `namespace_paths()` 不变 ⇒ 附录 A 的差异只有「`std.net` 多出 9 个成员」一行。
 ///

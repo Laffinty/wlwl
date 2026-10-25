@@ -75,7 +75,7 @@ pub enum TokenKind {
     /// Plain string literal (v0.3 §4.2). Used when the literal
     /// contains no `${...}` interpolation — the common case.
     StringLit(String),
-    /// [项目扩展] 字节串字面量 `b"..."` —— **原始字节**，不做 UTF-8 校验。
+    /// \[项目扩展\] 字节串字面量 `b"..."` —— **原始字节**，不做 UTF-8 校验。
     ///
     /// ⚠ 为什么要它：语言里**没有 BYTES 类型**（`wlwl schema` 的类型表只有
     ///   INTEGER/FLOAT/STRING/BOOLEAN/NULL/ARRAY/DICT/OPTION/RESULT/FUN/TASK/

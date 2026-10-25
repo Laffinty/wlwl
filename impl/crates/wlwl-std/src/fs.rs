@@ -16,7 +16,7 @@
 //!
 //! ⚠ **原因文本仍按 `ErrorKind` 分流**（信息不能跟着口径一起丢）：
 //!   读侧「file not found / permission denied / cannot read」，
-//!   写侧「cannot write (...): parent directory does not exist / permission denied / <os error>」
+//!   写侧「cannot write (...): parent directory does not exist / permission denied / `<os error>`」
 //!   ⇒ 父目录不存在在 OS 层同样是 `NotFound` ⇒ 共用一句会说成「文件不存在」，
 //!   而调用方要分得开「读不到」与「写不进」。
 //!
@@ -1405,13 +1405,28 @@ mod tests {
     /// 教训:平台原生程序名不能让 probe / 单测在另一个平台上编译失败)。
     ///
     /// ⚠⚠ **失败是间歇性的** ⇒ 2026-10-25 实测:本用例在**单跑**时 15/15 绿,
-    ///   在**满载并行**的全量跑里会以约一半的比率红,报错是
+    ///   在**满载并行**的全量跑里偶发红,报错是
     ///   「mklink /J failed: The system cannot find the path specified」。
     ///   ⇒ 目标目录**确实存在**(用例刚 `create_dir_all` 过)、链接的父目录也存在
     ///   ⇒ 这是 `mklink` 这个**遗留 cmd 工具**在负载下的间歇性失败
     ///   (junction 的重解析点创建要过文件系统与驱动层,不是原子操作)。
-    ///   ⇒ **重试**:失败就隔一小会儿再来一次(最多 5 次)。真失败(例如权限不足)
-    ///   5 次都会失败 ⇒ 照样**响亮地**panic,并把**每一次**的输出都带上 ⇒
+    ///   ⇒ 实测量级:2026-10-25 复刻同一调用序列的压力探针,**并发 4 路 × 250 次
+    ///     共 1000 次全部成功**(负载下也 0 失败)⇒ 这是**极窄**的瞬态窗口,
+    ///     不是「mklink 在负载下不可用」。
+    ///
+    /// ⚠⚠ **重试不是唯一手段** —— 2026-10-25 复核:光是「失败就重试 5 次」在
+    ///   一次全量跑里**仍然红过** ⇒ 重试次数**不是**这件事的全部。
+    ///   ⇒ 现在是**四件事一起做**,每件都堵一个具体的失败成因:
+    ///   ① **重试前先把目标重建出来**(`create_dir_all`):「找不到指定的路径」
+    ///      最常见的一条就是**目标没了**(临时目录被清理/被并发用例删掉)——
+    ///      目标没了就该重建,而不是把同一个坏命令再发 5 遍。
+    ///   ② **清掉残留的坏链接**再重试:上一次失败可能留下一个占位的目录 ⇒
+    ///      下一次 `mklink` 会直接因「已存在」失败 ⇒ 不清就是**确定性**失败。
+    ///   ③ **成功也要验**:junction 建出来了但没解析到目标(极少数)⇒ 算失败,
+    ///      清掉重试 ⇒ 别让一个坏链接混进后面的断言里(那样失败会指向错的地方)。
+    ///   ④ **子进程的 CWD 钉在 link 的父目录上**(它一定存在)⇒ 排除
+    ///      「进程起不来是因为当前目录无效」那一类失败。
+    ///   ⇒ 仍失败 ⇒ **响亮地**panic,并把**每一次**的输出都带上 ⇒
     ///   「重试掩盖了真问题」这件事不会发生。
     #[cfg(windows)]
     fn alias_dir(target: &std::path::Path, link: &std::path::Path) {
@@ -1429,32 +1444,79 @@ mod tests {
             link.display(),
             target.display()
         );
+        // ⚠ link 的父目录一定存在(用例刚 `create_dir_all` 过)⇒ 拿它当子进程的
+        //   CWD ⇒ 不用去猜「当前目录到底合不合法」。
+        let cwd = link
+            .parent()
+            .map(|p| p.to_path_buf())
+            .unwrap_or_else(std::env::temp_dir);
         let mut transcripts: Vec<String> = Vec::new();
-        for attempt in 1..=5u32 {
+        for attempt in 1..=10u32 {
+            // ① 目标没了就重建(幂等)—— 「找不到指定的路径」的头号成因。
+            if !target.exists() {
+                let _ = std::fs::create_dir_all(target);
+                transcripts.push(format!(
+                    "attempt {attempt}: the target was missing and has been recreated: {target:?}"
+                ));
+            }
             let out = std::process::Command::new("cmd")
                 .raw_arg(&cmd)
+                .current_dir(&cwd)
                 .output()
                 .expect("cmd /C mklink /J runs");
             let transcript = format!(
                 "attempt {attempt}: status={:?} stdout={} stderr={}",
                 out.status,
-                String::from_utf8_lossy(&out.stdout),
-                String::from_utf8_lossy(&out.stderr)
+                String::from_utf8_lossy(&out.stdout).trim(),
+                String::from_utf8_lossy(&out.stderr).trim()
             );
             if out.status.success() {
-                return;
+                // ③ 「回执成功」不等于「链接能用」⇒ 验一下再认。
+                if alias_resolves_to(target, link) {
+                    return;
+                }
+                transcripts.push(format!(
+                    "{transcript} (the junction was created but it does not resolve to the target)"
+                ));
+                remove_alias(link);
+            } else {
+                transcripts.push(transcript);
+                // ⚠ 已经建出来了(上一次其实成功、只是回执丢了)⇒ 不用再试。
+                if link.exists() && alias_resolves_to(target, link) {
+                    return;
+                }
+                // ② 清掉残留的坏链接 ⇒ 否则下一次必定「已存在」而失败。
+                remove_alias(link);
             }
-            transcripts.push(transcript);
-            // ⚠ 已经建出来了(上一次其实成功、只是回执丢了)⇒ 不用再试。
-            if link.exists() {
-                return;
-            }
-            std::thread::sleep(std::time::Duration::from_millis(20 * attempt as u64));
+            std::thread::sleep(std::time::Duration::from_millis(50 * attempt as u64));
         }
         panic!(
-            "mklink /J failed after 5 attempts:\n{}",
+            "mklink /J failed after 10 attempts:\n{}",
             transcripts.join("\n")
         );
+    }
+
+    /// 这个别名**真的**解析到目标吗?—— **Windows 支**。
+    ///
+    /// ⚠ 三条都要过:能 `canonicalize`(解析到目标)、`canonicalize` 之后**相等**
+    ///   (不是「解析到了别处」)、`is_dir`(它是个目录别名而不是文件)。
+    #[cfg(windows)]
+    fn alias_resolves_to(target: &std::path::Path, link: &std::path::Path) -> bool {
+        match (std::fs::canonicalize(target), std::fs::canonicalize(link)) {
+            (Ok(t), Ok(l)) => t == l && link.is_dir(),
+            _ => false,
+        }
+    }
+
+    /// 删掉一个别名 —— **只删「链接本身」,不碰目标的内容**。
+    ///
+    /// ⚠⚠ **必须用 `remove_dir`,不能用 `remove_dir_all`**:`remove_dir_all`
+    ///   顺着 junction 走 ⇒ 会把**目标目录里的东西**一起删掉(Windows 上
+    ///   junction 是 reparse point,不是 symlink ⇒ 那个「不跟随」的保证没有)。
+    ///   ⇒ `remove_dir`(RemoveDirectoryW)删的**就是**那个 reparse point。
+    #[cfg(windows)]
+    fn remove_alias(link: &std::path::Path) {
+        let _ = std::fs::remove_dir(link);
     }
 
     /// 「这个路径是不是链接」—— **跨平台**。
