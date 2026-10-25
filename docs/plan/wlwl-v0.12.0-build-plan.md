@@ -105,7 +105,7 @@
 | `fs_contract` | `fs_contract.rs:877` | `env_member_set_matches_the_spec_table`（`std.env` 4 ⇒ 5） |
 | `net_contract` | `net_contract.rs:449` | `wlwl:std.net exports 5 members` · left **14** / right 5 |
 | `result_contract` | `result_contract.rs:577` | 规范侧抽出 **6** vs R1 `EXPORT` **7**（缺 `TAKE_ERR`） |
-| `stdlib_appendix_a_sync` | `:297` / `:319` / `:370` | 抄件忠实度、实现 vs 抄件、反向自检 **三条** |
+| `stdlib_appendix_a_sync` | 守卫 A / 守卫 B / 反向自检 / **台账自检** | 抄件忠实度、实现 vs **期望面（附录 A ∪ §5.5 台账）**、反向自检、台账自检 **六条** |
 | `str_math_contract` | `:1081` | 规范侧 §6 抽出 **7** vs `EXPORT` **8**（缺 `CAT`） |
 | `text_contract` | `:486` | `wlwl:std.text exports 7 members` · left **8** / right 7 |
 | `time_contract` | `:520` | `wlwl:std.time exports 6 members` · left **7** / right 6 |
@@ -270,7 +270,7 @@ G-20（3 处接受形态）· G-23（切段路径**新写**）· G-24（双报 +
   ```
   ⇒ 期望：`the_copy_is_a_faithful_transcript_of_the_frozen_snapshot` **绿**
   （另两条此时仍红 —— 它们要等 W-02…W-08 落地，属正常）。
-- **反向守卫**：`stdlib_appendix_a_sync.rs:297`（守卫 A 本身）+ `:370`（反向自检）
+- **反向守卫**：`stdlib_appendix_a_sync.rs` 的**守卫 A 本身**（抄件 vs 钉住提交的快照，逐字节）+ **反向自检**（改坏抄件必须被报出）+ **台账自检**（台账为空 ⇒ 期望面 == 抄件；假台账进得了期望面）
   ⇒ 抄件走样必须当场红，**不得**靠「重抄一次」蒙过去。
 - **非目标**：**不改**规范仓；**不手工编辑**抄件的任何一行（抄件只由脚本产出）。
 - **依赖**：无。**阻塞**：W-02…W-08 的成员面验收。
@@ -762,7 +762,7 @@ cd impl && cargo clippy --locked --workspace --all-targets -- -D warnings
 cd impl && python ../script/check_conformance_registry.py "$WLWL_SPEC_V1_DIR"   # 期望:0 红
 
 # ③ 附录 A 同步守卫（守卫 A + 守卫 B + 反向自检）
-cd impl && cargo test -p wlwl-eval --test stdlib_appendix_a_sync                # 期望:3/3 绿
+cd impl && cargo test -p wlwl-eval --test stdlib_appendix_a_sync                # 期望:6/6 绿
 
 # ④ 源码随包
 python script/package_source.py --out staging/wlwl-src.tar.gz --hash-out staging/SOURCE_HASH
@@ -788,7 +788,7 @@ python script/package_source.py --verify wlwl-src --hash-file staging/SOURCE_HAS
 
 | 门禁 | 现状 | 目标 |
 |---|---|---|
-| `stdlib_appendix_a_sync`（3 条） | 红（抄件忠实度 ✅ 已绿；实现 vs 抄件 + 反向自检仍红） | **绿** |
+| `stdlib_appendix_a_sync`（**6 条**） | 红（抄件忠实度 ✅ 已绿；实现 vs 期望面 + 反向自检 + **台账自检**仍红） | **绿** |
 | `encode_contract` 成员面 | 红（13 vs 16） | 绿 |
 | `net_contract` 成员面 | 红（5 vs 14） | 绿 |
 | `fs_contract` 的 `std.env` 成员面 | 红（4 vs 5） | 绿 |
@@ -1003,14 +1003,15 @@ D-16 的前半句「段首重放」与后半句「与切段一致」**自相矛�
 | B | H.4.3 取消清宿主等待登记 | **已完成** | `cancel_suspended_task` 原先**不清** `socket_waiters` / `sleep_until_ms` ⇒ 被取消的等待者会让调度循环**空等**；已补（通道侧等待名单**不动**，那是 `channel.rs::close` 的职责） |
 | C | W-14 §5.4 门禁 | 待开工 | 补 X-25（现已**已实现** ⇒ 接线值可定）+ 修脚本 3 处 |
 | C | W-15 CI 规范钉前移 | **已完成** | `ci.yml` 的 `ref`：`5478cea…` ⇒ `ea57671…`（v1.0.2） |
-| C | W-16 源码随包 | 待开工 | 补 `Cargo.lock` + `python` |
-| C | W-17 `wlwl namespace` | 待开工 | 加使用边界声明 |
-| C | W-18 `wlwl run <dir>` | 待开工 | 补缺 `entry` 诊断 |
-| C | W-19 `[namespaces]` 基准 | 待开工 | 可并行 |
-| C | W-20 句柄守卫 | 待开工 | 修哨兵假绿 + 覆盖监听端口 |
-| D | W-21 版本号 11 处 | 待开工 | |
-| D | W-22 CHANGELOG | 待开工 | 重复段 + 逐项列差异 |
-| D | W-23 文档迁移 | 待开工 | |
+| C | W-16 源码随包 | 进行中 | `package_source.py` + release.yml 接线；**补 `Cargo.lock`**（否则「重建同一编译器」的措辞不成立）+ `python3` ⇒ `python` + `actions/setup-python`（矩阵含 windows-latest） |
+| C | W-17 `wlwl namespace` | **已完成** | 使用边界声明三处落点：命令 doc + **JSON 输出带 `"surface": "implementation"`**（让消费工具自己判）+ `--help` 文案 ⇒ 明写「不得用它生成/改写附录 A」（注册镜像册 §0.7 规则 1）、「不得把规范外扩展说成规范已支持」（一致性册 §5.5 规则 5） |
+| C | W-18 `wlwl run <dir>` | **已完成**（**原方案的一条要求已不成立**） | `wlwl run <dir>` 已落地（目录 ⇒ `wlwl.toml` 的 `[package].entry` ⇒ 相对清单目录）；⚠ 方案里「清单缺 `entry` 只报通用解析错」**这条不成立** —— `wlwl-toml` 的清单解析器**已有**专门的 `MissingEntry` 变体（文案：「[package] entry is missing or empty」）⇒ 无需补 |
+| C | W-19 `[namespaces]` 基准 | **已完成**（**核实即可**） | 路径基准已是 `project_root`（= 清单所在目录），与 `wlwl-toml` 的文档口径**一致** ⇒ 无需改 |
+| C | W-20 句柄守卫 | 进行中 | 修哨兵假绿 + 覆盖监听端口（新成员带来的可覆盖项） |
+| — | **Q5 loopback 基座** | **已完成** | `impl/examples/loopback-server/`（`wlwl.toml` + `main.wll`）随仓发布；**纯 WLWL** 的最小 HTTP 服务（监听 → 接受 → 读 → 回 → 关）；⚠ 示例里把「等待必须在任务里 / 一次等待占一段 / 等待是段首第一条」这三条**写在注释里**（照抄的人不会踩坑）；**实测跑通**（客户端拿到 `200 OK` + `hello-wlwl!`）＋ 新增 CI 冒烟测试 `impl/crates/wlwl-cli/tests/loopback_example.rs`（起子进程 → 读它打印的端口 → 连 → 发 → 读 → 断言 → 等它**自己退出**） |
+| D | W-21 版本号 11 处 | **已完成** | `impl/Cargo.toml` 的 workspace + 10 条 path 依赖**共 11 处** ⇒ `0.12.0`（实测：改前 11 处 `0.11.4`，改后 0 处） |
+| D | W-22 CHANGELOG | **已完成** | 顶部新增 **`## [0.12.0]` 正式段**：17 个成员**逐个列出** + 四处语义变更（含 D-14/D-15/D-16/D-18/D-19 的**迁移写法**）+ 工具链新增项 + **「仍未收敛的差异」表**（X-14，含收敛路线）；⚠ 历史段 `## [v0.12.0]` 已改标为 `## [v0.12.0(未发布的历史痕迹)]` 并指向正式段 ⇒ 仓内**再无两段同名正式段** |
+| D | W-23 文档迁移 | **已完成** | `docs/wlwl-spec-reference.md` 重建（随规范两次变更各重建一次）；`wlwl-skill/reference.md`（`std.fs` 的 `ERR` 值口径）+ `wlwl-skill/SKILL.md`（**17 个新成员逐个补进各命名空间条目** ＋ `std.fs`/`std.env`/`std.net`/`std.time` 的行为变化 ＋ `std.fs` 的 `ERR` 值迁移写法）；`impl/examples/showcase.wll` 的 `E0061`/`E0062` 历史注记补上 v0.12.0 的一层；`wlwl-error/src/lib.rs` 的 `E0061`/`E0062` 注册表注释（**码不删、触发条件退役**）；`wlwl-cli/src/main.rs` + `spec_r2_conformance.rs` 的**规范引用订正**（v1.0.2 把那两个码移进「本规范不定义其触发条件」的表 ⇒ **CLI 自用已无规范背书**，引用必须这么写） |
 
 **已核实的读数汇总（2026-10-25）**：
 交付包补丁 `git apply --check` exit 0；参考实现编译通过；`cargo test --workspace --no-fail-fast`

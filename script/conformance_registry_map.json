@@ -1,0 +1,165 @@
+{
+  "_comment": [
+    "§5.4 差异登记 ↔ 契约表的**接线表**。",
+    "每一行 §5.4 的差异都必须在这里登记一条 —— 没登记 ⇒ 门禁判红（防止新增差异不核对）。",
+    "",
+    "expect 的三个取值:",
+    "  satisfied  —— 契约表**断言规范要求** ⇒ 契约全绿 ⇒ 该行应当是「已实现」。",
+    "  gap        —— 契约表里的**目标测试**（#[ignore]，用 --ignored 跑）断言的是「要求应当成立」",
+    "                ⇒ 目标测试**红** ⇒ 缺口仍在 ⇒ 该行应当是「未实现」；目标测试转绿 ⇒ 缺口已闭合，该行必须翻。",
+    "  no-contract —— 文档类差异（规范成文），没有可挂的机器判据 ⇒ 必须写 reason。",
+    "                ⚠ 状态为「未实现」的行**不允许** no-contract（真缺口必须可核对）。",
+    "",
+    "登记的「状态」列有**三态**（一致性册 §5.1）：「已实现」/「未实现」/「部分」。",
+    "⚠ 门禁把「部分」**按「未实现」处理** —— 「行为存在但不完全一致」仍需可核对",
+    "   ⇒ 「部分」行**不允许** no-contract（必须挂契约表或目标测试）；契约全绿时判「登记过期」。",
+    "",
+    "本表是**人工维护**的：新增 §5.4 行 ⇒ 这里必须同时加一条，否则门禁红。"
+  ],
+  "spec_file": "docs/spec/wlwl-v1.0-conformance.md",
+  "rows": {
+    "X-01": {
+      "package": "wlwl-eval",
+      "tests": ["x01_channel_close_contract"],
+      "expect": "satisfied",
+      "note": "通道关闭唤醒停泊的发送方；被唤醒者得 E0054（6 例）"
+    },
+    "X-02": {
+      "package": "wlwl-eval",
+      "tests": ["x02a_shield_per_task_contract", "x02b_arrival_time_contract"],
+      "expect": "satisfied",
+      "note": "SHIELD 按**到达目标**判定推迟取消（9 + 3 例）"
+    },
+    "X-03": {
+      "package": "wlwl-eval",
+      "tests": ["e0103_contract"],
+      "expect": "satisfied",
+      "note": "被丢弃的未消费 ERR 报 E0103"
+    },
+    "X-04": {
+      "package": "wlwl-eval",
+      "tests": ["dict_cost_contract"],
+      "expect": "satisfied",
+      "note": "字典键查找 O(1) 期望（用例 dict_lookup_cost_is_independent_of_the_dict_size）"
+    },
+    "X-05": {
+      "package": "wlwl-cli",
+      "tests": ["io_input_parity"],
+      "expect": "satisfied",
+      "note": "std.io::INPUT 与全局内建 INPUT 同名同语义（逐字节对拍）"
+    },
+    "X-06": {
+      "package": "wlwl-eval",
+      "tests": ["x06_unconsumed_set_contract"],
+      "expect": "satisfied",
+      "note": "一个绑定可持有多个未消费 ERR；逐个报告（21 例）"
+    },
+    "X-07": {
+      "package": "wlwl-eval",
+      "tests": ["x07_arg_token_contract"],
+      "expect": "satisfied",
+      "note": "标准库回调的实参令牌通道（5 个迭代型成员，12 例）"
+    },
+    "X-08": {
+      "expect": "no-contract",
+      "reason": "文档类：全局内建 INPUT 在 EOF 的行为「成文」即可（标准库册 §1.2）；EOF 行为本身由 X-09 的契约覆盖"
+    },
+    "X-09": {
+      "package": "wlwl-cli",
+      "tests": ["io_input_parity"],
+      "expect": "satisfied",
+      "note": "INPUT 在 EOF 返回 \"\"；带 IMPORT 与不带两条路径逐字相同"
+    },
+    "X-10": {
+      "expect": "no-contract",
+      "reason": "文档类：标准库册 §9.2 的「传输侧与响应层的归类」表把 401/403→E0080 等钉死"
+    },
+    "X-11": {
+      "expect": "no-contract",
+      "reason": "三处映射在 real-ai feature 之内 ⇒ 默认构建与 CI 跑不到 ⇒ 只能由编译检查作证（§5.4 该行已如此记载）"
+    },
+    "X-12": {
+      "package": "wlwl-eval",
+      "tests": ["dict_cost_contract"],
+      "expect": "satisfied",
+      "note": "写路径的序列级摊还（累加器形态 / 别名形态）"
+    },
+    "X-13": {
+      "package": "wlwl-eval",
+      "tests": ["dict_accumulator_recognition", "accumulator_recognition"],
+      "expect": "satisfied",
+      "note": "不可变绑定的 SET 必须报 E0024（两个累加器形态各一条守卫）"
+    },
+    "X-14": {
+      "package": "wlwl-eval",
+      "tests": ["x14_alias_in_loop_cost_contract"],
+      "expect": "gap",
+      "probe": "x14_the_write_sequence_must_reach_the_sequence_level_bound",
+      "note": "别名**在写序列内部每轮重建** ⇒ 每轮写必须产出新值 ⇒ 总拷贝二次。目标测试 #[ignore]（红 ⇒ 缺口仍在）"
+    },
+    "X-15": {
+      "package": "wlwl-value",
+      "tests": ["x15_dict_equality_cost"],
+      "expect": "satisfied",
+      "note": "字典深度相等必须 O(n) 最坏（键比较次数 = 2n）"
+    },
+    "X-16": {
+      "package": "wlwl-eval",
+      "tests": ["x16_builtin_call_token_contract"],
+      "expect": "satisfied",
+      "note": "内建 CALL 的实参令牌通道（9 例）"
+    },
+    "X-17": {
+      "package": "wlwl-eval",
+      "tests": ["x06_unconsumed_set_contract"],
+      "expect": "satisfied",
+      "note": "容器 / 字典持有的未消费 ERR 在语句值丢弃点报 E0103（用例 x06_a_container_holding_an_unconsumed_err_is_reported_at_the_statement_discard_point）"
+    },
+    "X-18": {
+      "package": "wlwl-eval",
+      "tests": ["x18_call_method_token_contract"],
+      "expect": "satisfied",
+      "note": "内建 CALL_METHOD 的实参令牌通道（7 例）"
+    },
+    "X-19": {
+      "package": "wlwl-eval",
+      "tests": ["x19_new_token_contract"],
+      "expect": "satisfied",
+      "note": "内建 NEW(C, …) 的实参令牌通道（6 例）"
+    },
+    "X-20": {
+      "package": "wlwl-eval",
+      "tests": ["x20_member_boundary_contract"],
+      "expect": "satisfied",
+      "note": "标准库成员边界的未消费状态（10 例，每例断言诊断**条数**）"
+    },
+    "X-21": {
+      "package": "wlwl-eval",
+      "tests": ["x21_rest_param_token_contract"],
+      "expect": "satisfied",
+      "note": "富余实参（*args）的令牌通道（11 例）"
+    },
+    "X-22": {
+      "package": "wlwl-eval",
+      "tests": ["g02_try_ok_err_contract"],
+      "expect": "satisfied",
+      "note": "取走型消费者剥壳交还的**新生** ERR 随结果继续（13 例）"
+    },
+    "X-23": {
+      "expect": "no-contract",
+      "reason": "消解行（文档历史）：SHIELD 的作用域退出豁免已写进并发册 §17.3 第 6 条；仓内未见逐条机器判据（SHIELD 的其余语义由 X-02 的两表覆盖）"
+    },
+    "X-24": {
+      "package": "wlwl-eval",
+      "tests": ["x24_scope_exit_child_lifetime_contract"],
+      "expect": "satisfied",
+      "note": "停泊在通道上的子任务也必须在作用域退出前收尾（4 例）"
+    },
+    "X-25": {
+      "package": "wlwl-eval",
+      "tests": ["str_accum_contract"],
+      "expect": "satisfied",
+      "note": "字符串累加器 cell（CellStr）⇒ 循环内 SET(acc, +(acc, t)) 的总拷贝 = n 字节（Θ(n)）—— 语言核心册 §18.4 的**推荐上界**已达标（6 例）"
+    }
+  }
+}

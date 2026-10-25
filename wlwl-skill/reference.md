@@ -1100,9 +1100,12 @@ big payloads in files and move them with the byte-stream members
 (`std.compress`), not through a language-value array.
 "Directory does not exist" and "already exists" are **expected runtime
 results**, so the caller gets a branchable `ERR` instead of a diagnostic that
-terminates the run. (Only the three **frozen** v0.3 members — `READ_FILE` /
-`WRITE_FILE` / `EXISTS` — still use the native `E0060`–`E0062` diagnostics,
-and their semantics have not changed since v0.3.)
+terminates the run. (⚠ **as of v0.12.0** the three **frozen** v0.3 members —
+`READ_FILE` / `WRITE_FILE` / `EXISTS` — follow this rule too: their IO failures
+are `ERR([kind:"FsError", op, reason])` **values**, not the native `E0060`–`E0062`
+diagnostics. The two codes are **not deleted** — `std.fs` simply no longer
+produces them, so a program that branched on them has to branch on the `ERR`
+value instead. `EXISTS` still has no failure path at all.)
 
 ⚠ **`MOVE`'s cross-device fallback is not a plain copy.** It expands symlinks
 under the same discipline as `WALK_DIR(follow = TRUE)` and keeps a `visited`

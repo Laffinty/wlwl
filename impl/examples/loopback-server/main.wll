@@ -1,0 +1,75 @@
+//! [v0.12.0 / G-09] **loopback 服务器基座** —— 用**纯 WLWL** 写的最小 HTTP 服务。
+//!
+//! ## 它是什么
+//!
+//! 一个**可直接跑**的服务端骨架：监听 → 接受一个连接 → 读一次请求 → 回一个响应 → 关连接。
+//! 它的价值是**可复制**：想写自己的服务，就从这里复制一份改。
+//!
+//! ## 怎么跑
+//!
+//! ```sh
+//! wlwl run impl/examples/loopback-server
+//! ```
+//!
+//! 它会打印自己监听的端口（`port = 0` ⇒ 由宿主分配临时端口），
+//! 然后等**一个**连接、答**一次**、退出 ⇒ **不会挂住终端**。
+//!
+//! ## ⚠ 三条**必须**照抄的写法（否则会踩到运行时的坑）
+//!
+//! 1. **等待必须在任务里** —— 顶层求值里挂起 ⇒ `E0014`（挂起是任务的特权）。
+//!    ⇒ 监听在顶层（不等待），**接受 / 读**放进 `SPAWN` 出来的任务。
+//! 2. **一次等待占一段** —— 宿主挂起是「不切段」格 ⇒ 恢复时**段首重放**
+//!    （并发册 §17.0）⇒ 同一段里有两次等待 ⇒ 第二次等待重放时会重跑第一次 ⇒ 活锁。
+//!    ⇒ 用 `YIELD()` 把每次等待隔成独立的一段。
+//! 3. **等待必须是所在段的第一条语句** —— 段首重放会**重放**挂起点之前的语句
+//!    （副作用重复）⇒ 把等待放在段首，前面要做的事放**上一段**。
+//!
+//! ## 段结构
+//!
+//! ```text
+//! 段 0:  LET(conn, TCP_ACCEPT(l, 5000));   ← 段首 = 第一次等待
+//! 段 1:  LET(chunk, TCP_RECV(conn, ...));  ← 段首 = 第二次等待
+//! 段 2:  回响应、关连接
+//! ```
+
+IMPORT("wlwl:std.io", ["PRINT"]);
+IMPORT("wlwl:std.net", [
+  "TCP_LISTEN",
+  "TCP_ACCEPT",
+  "TCP_RECV",
+  "TCP_SEND",
+  "TCP_CLOSE",
+  "TCP_LOCAL_ADDR"
+]);
+
+// 监听在**顶层** —— 监听本身不等待，所以不需要任务。
+LET(listener, TCP_LISTEN("127.0.0.1", 0));
+LET(port, AT_K(TCP_LOCAL_ADDR(listener), "port", 0));
+PRINT("loopback-server listening on 127.0.0.1:", port);
+
+SCOPE(FUN(() ,
+  LET(server, SPAWN(FUN(() ,
+    // ── 段 0：段首就是**第一次等待**（接受连接）──────────────────
+    LET(conn, TCP_ACCEPT(listener, 5000));
+
+    // ── 段 1：段首就是**第二次等待**（读请求）────────────────────
+    YIELD();
+    LET(chunk, TCP_RECV(conn, 4096, 5000));
+
+    // ── 段 2：回响应、关连接（不等待）─────────────────────────
+    YIELD();
+    LET(request, AT_K(chunk, "text", ""));
+    LET(body, "hello-wlwl!");
+    LET(response, +(
+      "HTTP/1.1 200 OK\r\nContent-Length: 10\r\nConnection: close\r\n\r\n",
+      body
+    ));
+    TCP_SEND(conn, response);
+    TCP_CLOSE(conn);
+    request
+  )));
+
+  LET(served, AWAIT(server));
+  PRINT("served request:");
+  PRINT(served)
+));

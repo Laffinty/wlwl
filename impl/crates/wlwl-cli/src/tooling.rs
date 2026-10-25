@@ -38,6 +38,21 @@ const SCHEMA_VERSION: &str = "1.0.0";
 /// 与 `interface` / `schema` 一样：**只读**、输出 JSON、带 `*_schema_version`。
 /// 成员名单**直接取自实现**（`wlwl_std::namespace_paths()` + `resolve()`）——
 /// 与附录 A 镜像同源（`wlwl_eval::stdlib_mirror` 也走这一条），不另建一套推导。
+///
+/// ## ⚠ 使用边界（**规范侧的要求，不是偏好**）
+///
+/// 这份输出是**实现的成员面**，**不是**规范的公共面。两条纪律（规范仓
+/// 注册镜像册 §0.7 规则 1 与一致性册 §5.5 规则 5）：
+///
+/// 1. **不得**用它生成或改写规范的**附录 A**（冻结快照）——
+///    §0.7 规则 1 明写「表体**不得**由实现清单自动生成，**不得**为追平实现的
+///    当次改动而改写」。⇒ 本命令**只读**，它**没有**任何写回路径。
+/// 2. **不得**把规范外扩展（一致性册 §5.5 的「实现侧扩展台账」里的成员）
+///    说成「规范已支持」，也**不得**把它们列进「公共面」。
+///    ⇒ 台账成员**不是**规范公共面的一部分（§5.5 规则 1）。
+///
+/// ⇒ 输出里带 `"surface": "implementation"` 字段，让**消费这个 JSON 的工具**
+///   自己就能判断它拿到的不是公共面清单。
 pub fn namespace_command(path: Option<&str>) -> ExitCode {
     let mut out: Vec<Value> = Vec::new();
     for p in wlwl_std::namespace_paths() {
@@ -72,6 +87,10 @@ pub fn namespace_command(path: Option<&str>) -> ExitCode {
     }
     let doc = json!({
         "interface_schema_version": SCHEMA_VERSION,
+        // ⚠ [W-17] **这是实现的成员面，不是规范的公共面** ——
+        //   消费方据此判断「不得拿它去生成/改写附录 A」（注册镜像册 §0.7 规则 1），
+        //   也据此不得把规范外扩展说成「规范已支持」（一致性册 §5.5 规则 5）。
+        "surface": "implementation",
         "namespaces": out,
     });
     match serde_json::to_string_pretty(&doc) {

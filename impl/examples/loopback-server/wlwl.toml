@@ -1,0 +1,7 @@
+[package]
+name = "loopback-server"
+version = "0.1.0"
+entry = "main.wll"
+
+[features]
+strict_types = false

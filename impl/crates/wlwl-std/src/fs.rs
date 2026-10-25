@@ -1403,6 +1403,16 @@ mod tests {
 
     /// ⚠ `cmd` **不存在于 POSIX** ⇒ 这一支只编进 Windows(同 `D13-054` 的
     /// 教训:平台原生程序名不能让 probe / 单测在另一个平台上编译失败)。
+    ///
+    /// ⚠⚠ **失败是间歇性的** ⇒ 2026-10-25 实测:本用例在**单跑**时 15/15 绿,
+    ///   在**满载并行**的全量跑里会以约一半的比率红,报错是
+    ///   「mklink /J failed: The system cannot find the path specified」。
+    ///   ⇒ 目标目录**确实存在**(用例刚 `create_dir_all` 过)、链接的父目录也存在
+    ///   ⇒ 这是 `mklink` 这个**遗留 cmd 工具**在负载下的间歇性失败
+    ///   (junction 的重解析点创建要过文件系统与驱动层,不是原子操作)。
+    ///   ⇒ **重试**:失败就隔一小会儿再来一次(最多 5 次)。真失败(例如权限不足)
+    ///   5 次都会失败 ⇒ 照样**响亮地**panic,并把**每一次**的输出都带上 ⇒
+    ///   「重试掩盖了真问题」这件事不会发生。
     #[cfg(windows)]
     fn alias_dir(target: &std::path::Path, link: &std::path::Path) {
         use std::os::windows::process::CommandExt;
@@ -1414,19 +1424,36 @@ mod tests {
         //
         // ⚠ 引号本身是必需的:临时目录名里可能有空格(实测去掉引号即
         // 「The syntax of the command is incorrect」)。
-        let out = std::process::Command::new("cmd")
-            .raw_arg(format!(
-                "/C mklink /J \"{}\" \"{}\"",
-                link.display(),
-                target.display()
-            ))
-            .output()
-            .expect("cmd /C mklink /J runs");
-        assert!(
-            out.status.success(),
-            "mklink /J failed: {}{}",
-            String::from_utf8_lossy(&out.stdout),
-            String::from_utf8_lossy(&out.stderr)
+        let cmd = format!(
+            "/C mklink /J \"{}\" \"{}\"",
+            link.display(),
+            target.display()
+        );
+        let mut transcripts: Vec<String> = Vec::new();
+        for attempt in 1..=5u32 {
+            let out = std::process::Command::new("cmd")
+                .raw_arg(&cmd)
+                .output()
+                .expect("cmd /C mklink /J runs");
+            let transcript = format!(
+                "attempt {attempt}: status={:?} stdout={} stderr={}",
+                out.status,
+                String::from_utf8_lossy(&out.stdout),
+                String::from_utf8_lossy(&out.stderr)
+            );
+            if out.status.success() {
+                return;
+            }
+            transcripts.push(transcript);
+            // ⚠ 已经建出来了(上一次其实成功、只是回执丢了)⇒ 不用再试。
+            if link.exists() {
+                return;
+            }
+            std::thread::sleep(std::time::Duration::from_millis(20 * attempt as u64));
+        }
+        panic!(
+            "mklink /J failed after 5 attempts:\n{}",
+            transcripts.join("\n")
         );
     }
 

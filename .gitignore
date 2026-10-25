@@ -137,3 +137,7 @@ impl/ci-logs/
 # ⚠ 用通配符:每轮 CI 都可能解包到 `.ci-log-analysis-<run>` 这种带序号的目录 ⇒
 #   写死一个名字的话,下一轮又会漏进 `git add -A`(已经漏过两次)。
 .ci-log-analysis*/
+
+# [v0.12.0] 示例工程的 `wlwl.lock` —— 与 `wlwl-skill/examples/wlwl.lock` 同款:
+# 跑一次示例就会生成(空依赖 ⇒ 空文件),入库只会带进无意义的产物。
+impl/examples/*/wlwl.lock

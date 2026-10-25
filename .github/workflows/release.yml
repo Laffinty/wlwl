@@ -211,6 +211,33 @@ jobs:
           cp -r "$GITHUB_WORKSPACE/impl/crates/wlwl-std/wl/std/." staging/stdlib/
           cp -r "$GITHUB_WORKSPACE/wlwl-skill" staging/wlwl-skill/
 
+      # [G-06] **把源码树打进发布包** —— 此前发布包只有二进制 + R1 stdlib 副本
+      # + 例子 + 文档 ⇒ **没有编译器源码** ⇒ 离线状态下「读源码 / 改这个语言 /
+      # 核对某个行为到底怎么实现的」都不可行 ⇒ 用户只能自己去 GitHub 拉 tag
+      # 源码（实测 `github.com` 直连超时，得走 `codeload`）。
+      #
+      # ⇒ 这里随包发一份 `wlwl-src.tar.gz`（**排除构建产物**）＋ 一份
+      #   `SOURCE_HASH`（可复算的树哈希）⇒ 「只有发布包的机器」也能离线取到源码。
+      # ⚠ 哈希**可复算**：解开 tarball 后 `python script/package_source.py
+      #   --verify <src-dir> --hash-file SOURCE_HASH` 就能核对。
+      #
+      # ⚠ [v0.12.0] **python 必须显式装**：本 job 的矩阵含 `windows-latest`
+      #   ⇒ runner 镜像里**不保证**有 `python3` 这个别名（Windows 上只有 `python`）
+      #   ⇒ 这里用 `actions/setup-python` 固定一个解释器，再统一用 `python` 调用。
+      - name: Set up Python (G-06)
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.x'
+
+      - name: Package the source tree (G-06)
+        shell: bash
+        run: |
+          set -euo pipefail
+          python script/package_source.py \
+            --root "$GITHUB_WORKSPACE" \
+            --out staging/wlwl-src.tar.gz \
+            --hash-out staging/SOURCE_HASH
+
       - name: Create tar.xz (linux/macos)
         if: matrix.archive == 'tar.xz'
         shell: bash
