@@ -316,7 +316,17 @@ pub struct Scheduler {
     /// ⚠ 这是「可挂起的 I/O 等待」的落点：原生成员（`wlwl-std`）**不能**碰调度器
     ///   （解释器的值模型是 `Rc`，不是 `Send`）⇒ 宿主 I/O 线程只能把「就绪」推进
     ///   就绪队列，由**解释器线程**取走并在这里唤醒任务。
-    pub socket_waiters: std::collections::HashMap<i64, TaskId>,
+    pub socket_waiters: std::collections::HashMap<i64, Vec<TaskId>>,
+    /// [2026-10-25 / 审计 N3] **已到达、但当时没有等待者**的就绪事件。
+    ///
+    /// ⚠ 起因：宿主 I/O 线程推进就绪队列的时刻，与解释器侧「把任务挂到
+    ///   那个 socket 上」的时刻之间有一个窗口 ⇒ 事件可能**先到**。
+    ///   此前那次 `take_ready()` 会把它**排干丢掉** ⇒ 下一次 park 只能等
+    ///   **下一次**推送（对监听 socket 而言 = 「下一个连接」）⇒ 表现为
+    ///   「偶发卡住一个连接」。
+    /// ⇒ 现在**不丢**：没有等待者时记在这里；`park_for_socket` 时若命中，
+    ///   **立刻**唤醒那个任务（等待立即结束，不白等一个轮询周期）。
+    pub pending_ready: std::collections::HashSet<i64>,
     /// [G-24] 正被某个 `AWAIT` 驱动的任务（`run_until_done` 的目标）。
     ///
     /// ⚠ 用来区分两种失败：**有人在等**（⇒ `AWAIT` 会把它重新抛出来，失败是
@@ -342,6 +352,7 @@ impl Scheduler {
             channels: Vec::new(),
             next_channel_generation: 0,
             socket_waiters: std::collections::HashMap::new(),
+            pending_ready: std::collections::HashSet::new(),
             awaiting_targets: std::collections::HashSet::new(),
         };
         s.scopes.push(Scope::new(ScopeId(0), None));
@@ -925,44 +936,82 @@ impl Scheduler {
     //   I/O 线程经就绪队列唤醒（`wlwl_std::tcp::take_ready`）。
 
     /// 把任务挂到某个 socket 上（等 I/O 就绪），并从运行队列里摘掉它。
+    ///
+    /// ⚠ [2026-10-25 / 审计 N4] 一个 socket **可以**有多个等待者：两个任务读
+    ///   同一条连接是合法的（谁先读到算谁的，另一个被唤醒后发现没货 ⇒ 再等）。
+    ///   此前这里用的是 `HashMap<i64, TaskId>`（**一 socket 一个等待者**），
+    ///   第二个任务挂上来会**静默顶掉**第一个 ⇒ 第一个任务永远等不到唤醒，
+    ///   只能耗到自己的截止时间（而它的等待者登记已经被删 ⇒ 连超时都判不准）。
     pub fn park_for_socket(&mut self, task_id: TaskId, socket_id: i64) {
         if let Some(t) = self.tasks.get_mut(task_id.0) {
             t.state = TaskState::suspended(YieldReason::SocketReady(socket_id));
         }
         self.run_queue.retain(|id| *id != task_id);
-        self.socket_waiters.insert(socket_id, task_id);
+        self.socket_waiters
+            .entry(socket_id)
+            .or_default()
+            .push(task_id);
+        // ⚠ [2026-10-25 / 审计 N3] 就绪事件可能**先于**这次 park 到达
+        //   （原生成员返回 Signal 与真正挂上之间有一个窗口）⇒ 那个事件当时
+        //   没有等待者、被记进了 `pending_ready` ⇒ 这里**立刻**消费它，
+        //   免得白等一个轮询周期（≤50 ms）。
+        if self.pending_ready.remove(&socket_id) {
+            self.wake_socket_waiter(socket_id);
+        }
     }
 
-    /// socket 就绪 ⇒ 唤醒挂在它上面的任务。返回是否真的唤醒了。
+    /// socket 就绪 ⇒ 唤醒挂在它上面的**所有**任务。返回是否真的唤醒了。
+    ///
+    /// ⚠ [2026-10-25 / 审计 N3] 找不到等待者时**不丢**事件：记进
+    ///   `pending_ready`，等真正的等待者挂上来时立刻消费。
     pub fn wake_socket_waiter(&mut self, socket_id: i64) -> bool {
-        let Some(task_id) = self.socket_waiters.remove(&socket_id) else {
+        let Some(waiters) = self.socket_waiters.remove(&socket_id) else {
+            self.pending_ready.insert(socket_id);
             return false;
         };
-        let still_parked = matches!(
-            self.tasks.get(task_id.0).map(|t| &t.state),
-            Some(TaskState::Suspended {
-                reason: YieldReason::SocketReady(_),
-                ..
-            })
-        );
-        if !still_parked {
-            return false;
+        let mut woke = false;
+        for task_id in waiters {
+            let still_parked = matches!(
+                self.tasks.get(task_id.0).map(|t| &t.state),
+                Some(TaskState::Suspended {
+                    reason: YieldReason::SocketReady(_),
+                    ..
+                })
+            );
+            if !still_parked {
+                continue;
+            }
+            if let Some(t) = self.tasks.get_mut(task_id.0) {
+                t.state = TaskState::Pending;
+                // [v0.12.0 / Q1] **这次等待结束了** ⇒ 它的截止时间**一并清掉**
+                // （那是「那一次等待」的预算，socket 已就绪 ⇒ 用不上了）。
+                // ⚠ 不清 ⇒ 那个截止时间会**继续挂着** ⇒ 之后某个无关的等待会被它
+                //   打断（症状与「莫名超时」无法区分）。
+                t.deadline_ms = None;
+            }
+            self.enqueue(task_id);
+            woke = true;
         }
-        if let Some(t) = self.tasks.get_mut(task_id.0) {
-            t.state = TaskState::Pending;
-            // [v0.12.0 / Q1] **这次等待结束了** ⇒ 它的截止时间**一并清掉**
-            // （那是「那一次等待」的预算，socket 已就绪 ⇒ 用不上了）。
-            // ⚠ 不清 ⇒ 那个截止时间会**继续挂着** ⇒ 之后某个无关的等待会被它
-            //   打断（症状与「莫名超时」无法区分）。
-            t.deadline_ms = None;
-        }
-        self.enqueue(task_id);
-        true
+        woke
     }
 
-    /// 当前挂在 socket 上的等待者数量（调度循环据此决定「要不要等就绪」）。
+    /// 把某个任务从某个 socket 的等待者名单里摘掉（**只摘它自己**）。
+    ///
+    /// ⚠ [2026-10-25 / 审计 N4] 一 socket 多等待者 ⇒ 取消/超时只能摘**自己**，
+    ///   不能把同 socket 上的其他人一起摘掉（那会让别人永远等不到唤醒）。
+    pub fn remove_socket_waiter(&mut self, socket_id: i64, task_id: TaskId) {
+        let Some(mut waiters) = self.socket_waiters.remove(&socket_id) else {
+            return;
+        };
+        waiters.retain(|id| *id != task_id);
+        if !waiters.is_empty() {
+            self.socket_waiters.insert(socket_id, waiters);
+        }
+    }
+
+    /// 当前挂在 socket 上的**等待者总数**（调度循环据此决定「要不要等就绪」）。
     pub fn socket_waiter_count(&self) -> usize {
-        self.socket_waiters.len()
+        self.socket_waiters.values().map(|v| v.len()).sum()
     }
 
     // ── [G-08] 定时睡眠（挂起到某个绝对时刻）──────────────────────────
@@ -1150,7 +1199,9 @@ impl Scheduler {
                 YieldReason::ReceivingOn(ch) => (Direction::Recv, Some(ch)),
                 YieldReason::SendingOn(ch) => (Direction::Send, Some(ch)),
                 YieldReason::SocketReady(sid) => {
-                    self.socket_waiters.remove(&sid);
+                    // ⚠ [2026-10-25 / 审计 N4] 只摘**这个**任务的登记 ——
+                    //   同 socket 上可能还有别的等待者（它们还得被唤醒）。
+                    self.remove_socket_waiter(sid, self.tasks[idx].id);
                     (Direction::Recv, None)
                 }
                 _ => continue,
@@ -1234,7 +1285,8 @@ impl Scheduler {
         //   `socket_waiter_count() > 0` ⇒ 调度循环会**空等**就绪事件
         //   （那个任务永远不会来唤醒它）；睡眠者也会一直占着 `sleep_until_ms`。
         if let Some(sid) = socket_wait {
-            self.socket_waiters.remove(&sid);
+            // ⚠ [2026-10-25 / 审计 N4] 只摘**这个**任务（同 socket 上别人还在等）。
+            self.remove_socket_waiter(sid, task_id);
         }
         if let Some(t) = self.tasks.get_mut(task_id.0) {
             t.state = TaskState::Cancelled;
@@ -2207,6 +2259,105 @@ mod tests {
             spec.contains("不由运行期产生"),
             "the spec must state that the reserved OOP tags are not produced \
              by the runtime (decision D-4)"
+        );
+    }
+
+    // ── [2026-10-25 / 审计 N3 + N4] socket 等待者表 ──────────────────────
+
+    /// 造一个 `Pending` 任务放进调度器（测试用）。
+    fn push_test_task(s: &mut Scheduler, tid: usize) -> TaskId {
+        use crate::runtime::ScopeId;
+        use crate::task::Task as TaskImpl;
+        use crate::Env;
+        use crate::Value;
+        let gen = s.bump_generation();
+        let id = TaskId(tid);
+        s.tasks.push(TaskImpl::new_pending(
+            id,
+            gen,
+            Value::Null,
+            Env::new(),
+            ScopeId(0),
+        ));
+        id
+    }
+
+    /// [N3] 就绪事件在「没有等待者」时**不能丢** —— 记进 `pending_ready`，
+    /// 等真正的等待者挂上来时**立刻**唤醒它（否则就得再等一次推送 ——
+    /// 对监听 socket 而言那意味着「等下一个连接」）。
+    #[test]
+    fn a_ready_event_that_arrives_before_the_waiter_is_not_lost() {
+        let mut s = Scheduler::new();
+        // 事件先到：那时**没有**等待者。
+        assert!(
+            !s.wake_socket_waiter(7),
+            "waking a socket with no waiter must report that nobody woke"
+        );
+        assert!(
+            s.pending_ready.contains(&7),
+            "the ready event must be kept, not dropped"
+        );
+        // 等待者后到 ⇒ 应当**立刻**被唤醒（不必再等一个轮询周期）。
+        let id = push_test_task(&mut s, 0);
+        s.park_for_socket(id, 7);
+        assert!(
+            !matches!(s.tasks[0].state, TaskState::Suspended { .. }),
+            "the waiter must not stay parked: the ready event was already there"
+        );
+        assert!(
+            !s.pending_ready.contains(&7),
+            "the pending ready event must be consumed"
+        );
+    }
+
+    /// [N4] 一个 socket **可以**有多个等待者；唤醒时**全部**被唤醒。
+    /// 此前是一 socket 一个等待者 ⇒ 第二个任务挂上来会**静默顶掉**第一个
+    /// ⇒ 第一个任务永远等不到唤醒，只能耗到自己的截止时间。
+    #[test]
+    fn two_tasks_may_wait_on_the_same_socket_and_both_are_woken() {
+        let mut s = Scheduler::new();
+        let a = push_test_task(&mut s, 0);
+        let b = push_test_task(&mut s, 1);
+        s.park_for_socket(a, 9);
+        s.park_for_socket(b, 9);
+        assert_eq!(
+            s.socket_waiter_count(),
+            2,
+            "both waiters must be registered — the second one must not displace the first"
+        );
+        assert!(
+            s.wake_socket_waiter(9),
+            "the socket is ready ⇒ somebody must wake"
+        );
+        for tid in 0..2 {
+            assert!(
+                matches!(s.tasks[tid].state, TaskState::Pending),
+                "task {tid} must be woken by the ready event"
+            );
+        }
+    }
+
+    /// [N4] 取消/超时只能摘掉**自己**的等待登记 —— 同 socket 上的别人还得被唤醒。
+    #[test]
+    fn removing_one_waiter_keeps_the_others_registered() {
+        let mut s = Scheduler::new();
+        let a = push_test_task(&mut s, 0);
+        let b = push_test_task(&mut s, 1);
+        s.park_for_socket(a, 11);
+        s.park_for_socket(b, 11);
+        s.remove_socket_waiter(11, a);
+        assert_eq!(
+            s.socket_waiter_count(),
+            1,
+            "only the cancelled task's registration may be removed"
+        );
+        assert!(
+            s.wake_socket_waiter(11),
+            "the remaining waiter must still be woken"
+        );
+        assert!(
+            matches!(s.tasks[1].state, TaskState::Pending),
+            "the surviving waiter must be woken"
         );
     }
 }

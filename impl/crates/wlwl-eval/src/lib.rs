@@ -10565,7 +10565,12 @@ impl Evaluator {
             }
         }
         if !woke && wait_ms > 0 {
-            std::thread::sleep(std::time::Duration::from_millis(wait_ms));
+            // ⚠ [2026-10-25 / 审计 N3] 此前是「**睡** 50 ms 再看一眼」⇒
+            //   一次「就绪」最多要白等 50 ms 才被看见（本仓实测：客户端
+            //   33 ms 发数据，服务端 51 ms 才拿到 —— 差的正是这 18 ms）。
+            //   ⇒ 改成**条件变量**：I/O 线程一推进就绪队列就唤醒解释器
+            //   ⇒ 等待延迟从「≤50 ms」降到「≈0」。
+            wlwl_std::tcp::await_ready(std::time::Duration::from_millis(wait_ms));
             for sid in wlwl_std::tcp::take_ready() {
                 if self.scheduler.wake_socket_waiter(sid) {
                     woke = true;

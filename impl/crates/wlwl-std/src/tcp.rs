@@ -101,12 +101,25 @@ static NEXT_ID: AtomicI64 = AtomicI64::new(1);
 /// **就绪队列**：socket id（socket 可能是连接，也可能是监听）。
 static READY: Mutex<Vec<i64>> = Mutex::new(Vec::new());
 
+/// 就绪队列的「有东西了」信号。
+///
+/// ⚠ [2026-10-25 / 审计 N3] 此前解释器侧只能**轮询**（`sleep(50ms)` 后再看一眼）
+///   ⇒ 一次「就绪」最多要**白等 50 ms** 才能被看见（本仓实测：客户端在
+///   33 ms 发数据，服务端 51 ms 才拿到 —— 那 18 ms 的差就是这个轮询粒度）。
+///   ⇒ 改成「**条件变量**」：I/O 线程推进就绪队列时 `notify_all`，
+///   解释器侧**立刻**被唤醒 ⇒ 等待延迟从「≤50 ms」降到「≈0」。
+static READY_CV: Condvar = Condvar::new();
+
 /// 把 socket id 推进就绪队列（由 I/O 线程调用）。
 fn push_ready(id: i64) {
     let mut q = READY.lock().unwrap_or_else(|e| e.into_inner());
     if !q.contains(&id) {
         q.push(id);
     }
+    drop(q);
+    // ⚠ 必须**在放锁之后**通知：否则被唤醒的线程可能抢在 push 之前拿到锁，
+    //   看到空队列又睡回去（丢通知）。
+    READY_CV.notify_all();
 }
 
 /// 取走当前所有就绪的 socket id（由**解释器线程**调用）。
@@ -117,6 +130,21 @@ fn push_ready(id: i64) {
 pub fn take_ready() -> Vec<i64> {
     let mut q = READY.lock().unwrap_or_else(|e| e.into_inner());
     std::mem::take(&mut *q)
+}
+
+/// 阻塞到「就绪队列非空」或超时。返回是否等到了就绪事件。
+///
+/// ⚠ [2026-10-25 / 审计 N3] 解释器侧的等待点用它**代替**「睡 50 ms 再看一眼」：
+///   I/O 线程一推进就绪队列就 `notify_all` ⇒ 等待延迟 ≈ 0。
+pub fn await_ready(timeout: std::time::Duration) -> bool {
+    let q = READY.lock().unwrap_or_else(|e| e.into_inner());
+    if !q.is_empty() {
+        return true;
+    }
+    let (q, res) = READY_CV
+        .wait_timeout(q, timeout)
+        .unwrap_or_else(|e| e.into_inner());
+    !q.is_empty() || res.timed_out()
 }
 
 fn with_sockets<R>(f: impl FnOnce(&mut HashMap<i64, Entry>) -> R) -> R {
@@ -431,18 +459,23 @@ pub fn tcp_accept(host: &mut dyn StdHost, args: Vec<Value>) -> wlwl_error::WlwlR
     // `SCOPE`」—— 那是 Q1 裁决**之前**的旧口径，已作废）。
     //
     // ⚠ **重跑入口**：宿主挂起 = **不切段**格 ⇒ 恢复时**段首重放**（§17.0）
-    //   ⇒ 这段代码会**从头再跑一遍** ⇒ 先问「截止时间到了没有」。
-    if host.take_timed_out() {
-        return Ok(Outcome::normal(Value::Null));
-    }
-
+    //   ⇒ 这段代码会**从头再跑一遍**。
+    //
+    // ⚠ [2026-10-25 / 审计 N1] 「已超时」的检查**必须**排在「`pending` 里有没有
+    //   连接」**后面**：否则连接在截止时间**之前**就到了，却因截止时间先到而
+    //   被**丢弃**（返回 `NULL` ⇒ 调用方以为「没人连」）。
+    //
     // ① 条件已满足？⇒ **直接交付**（不挂起，也不装截止时间）。
     let stream = {
         let mut p = state.pending.lock().unwrap_or_else(|e| e.into_inner());
         p.pop_front()
     };
     let Some(stream) = stream else {
-        // ② 条件不满足 ⇒ 装上「那一次等待」的截止时间 ⇒ **挂起**。
+        // ② 真的没有连接 ⇒ 这时才问「是不是等超时了」。
+        if host.take_timed_out() {
+            return Ok(Outcome::normal(Value::Null));
+        }
+        // ③ 条件不满足 ⇒ 装上「那一次等待」的截止时间 ⇒ **挂起**。
         //
         // ⚠ 监听没有「连接读超时」⇒ 这里只有**调用点**这一个预算。
         //   `timeout_ms == 0` = **无截止时间**（挂起直到条件满足）。
@@ -514,13 +547,12 @@ pub fn tcp_recv(host: &mut dyn StdHost, args: Vec<Value>) -> wlwl_error::WlwlRes
     let max = max_bytes as usize;
 
     // [v0.12.0 / Q1] **重跑入口**：宿主挂起 = **不切段**格 ⇒ 恢复时**段首重放**
-    //   （并发册 §17.0）⇒ 这段代码会**从头再跑一遍** ⇒ 先问「截止时间到了没有」。
-    // ⚠ 超时 ⇒ **「暂时没有」形状**（空字节 + `eof = FALSE`）—— **不是** `ERR`，
-    //   也**不是** EOF（§21.6.2：「超时**不得**被当成 EOF」）。
-    if host.take_timed_out() {
-        return Ok(Outcome::normal(recv_value(&[], false)));
-    }
-
+    //   （并发册 §17.0）⇒ 这段代码会**从头再跑一遍**。
+    //
+    // ⚠ [2026-10-25 / 审计 N1] 「已超时」的检查**必须**排在「缓冲里有没有货」
+    //   **后面**：此前顺序相反 ⇒ 数据在截止时间**之前**就到了缓冲区，却因为
+    //   截止时间先到而被**丢弃**（返回「空字节 + `eof = FALSE`」⇒ 已经到达的
+    //   数据没了）。超时形状表示的是「**这一次没等到**」；货已经在了就不该是它。
     let state = {
         let mut guard = SOCKETS.lock().unwrap_or_else(|e| e.into_inner());
         let Some(map) = guard.as_mut() else {
@@ -554,11 +586,22 @@ pub fn tcp_recv(host: &mut dyn StdHost, args: Vec<Value>) -> wlwl_error::WlwlRes
             let bytes: Vec<u8> = q.drain(..n).collect();
             let eof = state.eof.load(Ordering::SeqCst);
             drop(q);
+            // 数据到手 ⇒ 那个「已超时」标志**作废**（否则下一次等待会立刻超时）。
+            let _ = host.take_timed_out();
             return Ok(Outcome::normal(recv_value(&bytes, eof)));
         }
         if state.eof.load(Ordering::SeqCst) {
+            let _ = host.take_timed_out();
             return Ok(Outcome::normal(recv_value(&[], true)));
         }
+    }
+
+    // ② 缓冲里确实没有 ⇒ 这时才问「是不是等超时了」。
+    //
+    // ⚠ 超时 ⇒ **「暂时没有」形状**（空字节 + `eof = FALSE`）—— **不是** `ERR`，
+    //   也**不是** EOF（§21.6.2：「超时**不得**被当成 EOF」）。
+    if host.take_timed_out() {
+        return Ok(Outcome::normal(recv_value(&[], false)));
     }
 
     // ② 条件不满足 ⇒ 装上「那一次等待」的截止时间 ⇒ **挂起**。
