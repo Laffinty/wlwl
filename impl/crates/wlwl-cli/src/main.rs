@@ -159,6 +159,14 @@ Examples:
         /// Path to the .wll file
         file: PathBuf,
     },
+    /// [项目扩展 / G-07] Print a namespace's member list as JSON
+    ///
+    /// `wlwl interface` 只能对**文件**求公共面 ⇒ 想知道某个命名空间有哪些成员，
+    /// 只能读文档或反推二进制字符串表。本子命令把绑定表**直接**列出来。
+    Namespace {
+        /// Namespace path (e.g. `wlwl:std.net`); omit to list every namespace
+        path: Option<String>,
+    },
     /// Print the type system and static-contract codes as JSON
     Schema,
 }
@@ -361,6 +369,18 @@ impl Cmd {
     }
 }
 
+/// [项目扩展 / G-15] 工程目录的入口文件 = `<dir>/wlwl.toml` 的 `[package].entry`。
+///
+/// 路径相对**清单所在目录**（= `dir`）—— 与 `wlwl.toml` 文档一致。
+fn project_entry(dir: &std::path::Path) -> Result<std::path::PathBuf, String> {
+    let manifest_path = dir.join("wlwl.toml");
+    let text = std::fs::read_to_string(&manifest_path)
+        .map_err(|e| format!("cannot read '{}': {}", manifest_path.display(), e))?;
+    let manifest = wlwl_toml::manifest::parse(&text)
+        .map_err(|e| format!("cannot parse '{}': {}", manifest_path.display(), e))?;
+    Ok(dir.join(&manifest.package.entry))
+}
+
 fn dispatch(cmd: Cmd) -> ExitCode {
     match cmd {
         Cmd::Run {
@@ -389,6 +409,24 @@ fn dispatch(cmd: Cmd) -> ExitCode {
                     None
                 }
             });
+            // [项目扩展 / G-15] `wlwl run <dir>` ⇒ 按该目录 `wlwl.toml` 的
+            // `[package].entry` 启动。
+            //
+            // 缺口：`[package].entry` 在 v0.11.4 **没有任何消费方**（求值器与 CLI
+            // 都不读它）—— 随包示例 wlwl.toml 的注释在讲「`entry` 只影响
+            // `wlwl build` / `wlwl run <dir>`」，但**这两个入口都不存在**
+            // ⇒ 「半死的配置项」比没有更糟（使用者会以为写了就生效）。
+            let file = if file.is_dir() {
+                match project_entry(&file) {
+                    Ok(p) => p,
+                    Err(msg) => {
+                        eprintln!("error: {msg}");
+                        return ExitCode::from(1);
+                    }
+                }
+            } else {
+                file
+            };
             run_file(&file, format, true, std_src)
         }
         Cmd::Check { file, format } => run_file(&file, format, false, None),
@@ -398,6 +436,7 @@ fn dispatch(cmd: Cmd) -> ExitCode {
         Cmd::SigGen { file, force } => sig_gen_file(&file, force),
         Cmd::Lsp => lsp::Server::run(),
         Cmd::Interface { file } => tooling::interface_file(&file),
+        Cmd::Namespace { path } => tooling::namespace_command(path.as_deref()),
         Cmd::Schema => tooling::schema_command(),
     }
 }

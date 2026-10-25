@@ -814,6 +814,10 @@ const EXPECTED: &[&str] = &[
     "HEX_DECODE",
     "URL_ENCODE",
     "URL_DECODE",
+    // [v0.12.0 / D-13] 字节层三员（规范 §11.2 成员表）。
+    "UTF8_ENCODE",
+    "UTF8_DECODE",
+    "BYTE_LEN",
     "SHA256",
     "HMAC_SHA256",
     "PBKDF2_ITER",
@@ -852,7 +856,7 @@ fn encode_member_set_matches_the_spec_table() {
 
     assert_eq!(
         spec.len(),
-        13,
+        16,
         "§11 table extractor found {} member(s): {spec:?} — the table's shape changed \
          and the extractor needs updating",
         spec.len()
@@ -874,7 +878,11 @@ fn encode_member_set_matches_the_spec_table() {
             "implementation does not export `{n}`: {impls:?}"
         );
     }
-    assert_eq!(impls.len(), 13, "wlwl:std.encode exports 13 members");
+    assert_eq!(
+        impls.len(),
+        16,
+        "wlwl:std.encode exports 16 members (13 + UTF8_ENCODE/UTF8_DECODE/BYTE_LEN)"
+    );
 }
 
 fn spec_path() -> PathBuf {

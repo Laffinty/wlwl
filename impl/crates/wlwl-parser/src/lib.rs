@@ -895,6 +895,9 @@ impl Parser {
             TokenKind::Integer(_)
             | TokenKind::Float(_)
             | TokenKind::StringLit(_)
+            // [项目扩展] 字节串字面量 `b"..."` ⇒ 在 `parse_literal` 里脱糖成
+            // `ARRAY[INTEGER]`（无新类型、无新 AST 节点）。
+            | TokenKind::BytesLit(_)
             | TokenKind::StrStart
             | TokenKind::True
             | TokenKind::False
@@ -1299,6 +1302,21 @@ impl Parser {
             TokenKind::Integer(n) => n.to_string(),
             TokenKind::Float(f) => f.to_string(),
             TokenKind::StringLit(s) => format!("\"{}\"", s),
+            // [项目扩展] 字节串字面量：只用于类型注解的原文串里，
+            // 打印成可读形式即可（`b"AB"`）。
+            TokenKind::BytesLit(b) => {
+                let printable: String = b
+                    .iter()
+                    .map(|x| {
+                        if x.is_ascii_graphic() && *x != b'"' && *x != b'\\' {
+                            *x as char
+                        } else {
+                            '?'
+                        }
+                    })
+                    .collect();
+                format!("b\"{printable}\"")
+            }
             TokenKind::True => "TRUE".into(),
             TokenKind::False => "FALSE".into(),
             TokenKind::Null => "NULL".into(),
@@ -2343,6 +2361,27 @@ impl Parser {
             TokenKind::Null => Literal::Null,
             TokenKind::LBracket => {
                 return self.parse_array_or_dict(line, col);
+            }
+            // [项目扩展] 字节串字面量 `b"..."` ⇒ **脱糖**成 `ARRAY[INTEGER]`。
+            //
+            // ⚠ 为什么脱糖而不是新增 AST 节点：语言里**没有 BYTES 类型**
+            //   （`wlwl schema` 的类型表里没有）⇒ 字节的唯一表示就是
+            //   `ARRAY[INTEGER]`（与 `std.fs::READ_BYTES` / `WRITE_BYTES` 同形）。
+            //   脱糖 ⇒ **不新增类型、不新增 AST 节点、不动求值器**；
+            //   代价是 `wlwl fmt` 会把 `b"Hi"` 打印成 `[72, 105]`（值等价）。
+            TokenKind::BytesLit(bytes) => {
+                let span = Span {
+                    file: self.file.clone(),
+                    line_start: line,
+                    col_start: col,
+                    line_end: t.span.2,
+                    col_end: t.span.3,
+                };
+                let items = bytes
+                    .into_iter()
+                    .map(|b| Expr::Literal(Literal::Integer(i64::from(b)), span.clone()))
+                    .collect();
+                return Ok(Expr::Array { items, span });
             }
             // v0.6 §1.8: interpolated string. Bracketed by
             // `StrStart ... StrEnd`; segments are either `StrText`

@@ -39,7 +39,8 @@
 use crate::unicode::{canon, grapheme, width};
 use crate::{ModuleSpec, StdFn};
 use wlwl_error::ErrorCode;
-use wlwl_value::{StdHost, Value};
+use wlwl_error::WlwlResult;
+use wlwl_value::{Outcome, StdHost, Value};
 
 pub static SPEC: ModuleSpec = ModuleSpec {
     path: "wlwl:std.text",
@@ -51,6 +52,10 @@ pub static SPEC: ModuleSpec = ModuleSpec {
         ("NFC_QC", nfc_qc as StdFn),
         ("GRAPHEME_COUNT", grapheme_count as StdFn),
         ("WIDTH", width as StdFn),
+        // [G-20 引入 / 规范 v1.0 §12.4 成文] **宽松**的「文本 → 整数」。
+        // **不新增类型**（见下方 `to_int` 的契约）：它与全局内建 `INT` 是
+        // **故意不同**的两件事 —— §12.4 的对比表钉死了那个差异。
+        ("TO_INT", to_int as StdFn),
     ],
 };
 
@@ -230,6 +235,140 @@ pub fn width(
     let s = str_arg(host, "WIDTH", &args)?;
     let n = width::width_str(s);
     Ok(wlwl_value::Outcome::normal(Value::Integer(n as i64)))
+}
+
+/// [G-20 引入 / 规范 v1.0 §12.4 成文] `TO_INT(s) -> INTEGER` —— **宽松**的「文本 → 整数」。
+///
+/// §12.4 的宽松口径（**故意**与全局内建 `INT` 不同 —— 二者**不是**同一件事的
+/// 两种写法，见 §12.4 的对比表）：
+///
+/// | 形态 | 口径 |
+/// |---|---|
+/// | 空白裁剪 | 裁掉**首尾**空白；裁剪**只**作用于首尾 ⇒ 串**内部**的空白使解析失败 |
+/// | 十六进制文本 | 接受 `0x` / `0X` 前缀的十六进制整数，十六进制数字大小写不敏感 |
+/// | 小数截断 | 含**一个**小数点的文本**向零截断**（小数部分被丢掉，不报「不是整数」） |
+/// | 前导符号 | `+` / `-` **至多一个**，且符号之后**必须紧跟**数字 |
+/// | 范围 | 结果必须落在 `INTEGER` 的有符号 64 位区间内（**含** `i64::MIN`）⇒ 越界 ⇒ 解析失败 |
+///
+/// ⚠ 失败**不是**诊断：返回 `ERR([kind:"ParseError", input, reason])` **值**
+///   （载荷是**字典**，三个字段：`kind` / `input` / `reason`；`input` 是**裁剪前**
+///   的原始实参）⇒ 程序**不**中止；调用方按语言核心册 §8.3 的 `IS_ERR` /
+///   `ERR_PAYLOAD` / `UNWRAP_OR` 分支处理该 `ERR`。
+///
+/// ⚠ **不新增类型**，只补一个成员；`INT` 本身**不动**（它是 v0.9 的冻结契约）。
+pub fn to_int(host: &mut dyn StdHost, args: Vec<Value>) -> WlwlResult<Outcome> {
+    const NAME: &str = "TO_INT";
+    if args.len() != 1 {
+        return Err(arity(host, NAME, args.len(), 1));
+    }
+    let Value::String(s) = &args[0] else {
+        return Err(host.diag(
+            ErrorCode::E0030,
+            format!(
+                "{NAME}: expected string, got {}",
+                crate::value_kind(&args[0])
+            ),
+        ));
+    };
+    match parse_lenient_int(s) {
+        Ok(v) => Ok(Outcome::normal(Value::Integer(v))),
+        // ⚠ `input` 传的是**原始**实参（裁剪前）—— §12.4 的载荷口径。
+        Err(reason) => Ok(Outcome::normal(parse_error_value(s, reason))),
+    }
+}
+
+/// `i64::MIN` 的**幅度**（= `i64::MAX + 1`）—— 唯一允许幅度超出 `i64::MAX`
+/// 的那一个值，且**只对负号**成立（正号下它是越界）。
+const I64_MIN_MAGNITUDE: u64 = 9_223_372_036_854_775_808;
+
+/// §12.4 的**宽松**解析。`Ok(v)` = 解析结果；`Err(reason)` = 失败原因文本
+/// （措辞**不由**规范冻结 —— §12.4「失败口径（内容级）」）。
+///
+/// 接受的形态：**十进制**（至多一个小数点）/ **`0x`·`0X` 十六进制文本**；
+/// 前置**至多一个** `+` / `-`，且符号之后**必须紧跟**数字。
+fn parse_lenient_int(raw: &str) -> Result<i64, String> {
+    // ① 裁剪首尾空白。裁剪**只**作用于首尾 ⇒ 串**内部**的空白不匹配任何
+    //    形态 ⇒ 解析失败（`TO_INT("1 2")`）。
+    let t = raw.trim();
+    if t.is_empty() {
+        return Err("empty string after trimming whitespace".to_string());
+    }
+    // ② 前导符号**至多一个**；符号之后**必须紧跟**数字 ⇒ `TO_INT("- 42")`
+    //    失败（符号与数字之间的空白**不算**裁剪 —— 裁剪只作用于**首尾**）。
+    let (negative, rest, signed) = match t.strip_prefix('-') {
+        Some(r) => (true, r, true),
+        None => match t.strip_prefix('+') {
+            Some(r) => (false, r, true),
+            None => (false, t, false),
+        },
+    };
+    if signed && !rest.chars().next().is_some_and(|c| c.is_ascii_digit()) {
+        return Err("sign must be immediately followed by a digit".to_string());
+    }
+    // ③ 形态：**十六进制文本** 或 **十进制**（至多一个小数点）。
+    let magnitude: u64 = match rest.strip_prefix("0x").or_else(|| rest.strip_prefix("0X")) {
+        Some(hex) => {
+            if hex.is_empty() {
+                return Err("hexadecimal literal has no digits".to_string());
+            }
+            if !hex.chars().all(|c| c.is_ascii_hexdigit()) {
+                return Err("invalid character in the hexadecimal digits".to_string());
+            }
+            u64::from_str_radix(hex, 16)
+                .map_err(|_| "number out of range for INTEGER".to_string())?
+        }
+        None => {
+            // 小数点**至多一个**：第二个 `.` 落在小数部分里 ⇒ 小数部分不是
+            // 全数字 ⇒ 失败（`TO_INT("1.2.3")`）。
+            let (int_part, frac_part) = match rest.split_once('.') {
+                Some((i, f)) => (i, Some(f)),
+                None => (rest, None),
+            };
+            if int_part.is_empty() {
+                return Err("no integer digits before the decimal point".to_string());
+            }
+            if !int_part.chars().all(|c| c.is_ascii_digit()) {
+                return Err("invalid character in the integer part".to_string());
+            }
+            if let Some(frac) = frac_part {
+                // 小数部分**被丢掉**（向零截断）⇒ 它**必须**全是数字 ⇒
+                // `TO_INT("3.9abc")` 失败。
+                if !frac.chars().all(|c| c.is_ascii_digit()) {
+                    return Err("invalid character in the fractional part".to_string());
+                }
+            }
+            int_part
+                .parse::<u64>()
+                .map_err(|_| "number out of range for INTEGER".to_string())?
+        }
+    };
+    // ④ 幅度 → 带符号的值。`i64::MIN` 的幅度是 `i64::MAX + 1` ⇒ 只对
+    //    **负号**成立（`TO_INT("-9223372036854775808")` = `i64::MIN`）；
+    //    正号下它是**越界**（`TO_INT("9223372036854775808")` 失败）。
+    if magnitude > I64_MIN_MAGNITUDE {
+        return Err("number out of range for INTEGER".to_string());
+    }
+    if magnitude == I64_MIN_MAGNITUDE {
+        return if negative {
+            Ok(i64::MIN)
+        } else {
+            Err("number out of range for INTEGER".to_string())
+        };
+    }
+    let v = magnitude as i64;
+    Ok(if negative { -v } else { v })
+}
+
+/// `ERR([kind:"ParseError", input, reason])` —— 与全局内建 `INT` 同族形状。
+fn parse_error_value(input: &str, reason: impl Into<String>) -> Value {
+    Value::Err(Box::new(Value::dict(vec![
+        (
+            Value::String("kind".into()),
+            Value::String("ParseError".into()),
+        ),
+        (Value::String("input".into()), Value::String(input.into())),
+        (Value::String("reason".into()), Value::String(reason.into())),
+    ])))
 }
 
 #[cfg(test)]

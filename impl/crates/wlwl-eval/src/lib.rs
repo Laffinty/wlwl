@@ -828,7 +828,16 @@ impl ModuleLoader {
                 if let Some(rel) = wlwl_toml::manifest::resolve_namespace(manifest, ns, name) {
                     // The manifest entry is a directory; the module
                     // file is `<dir>/<name>.wll`.
-                    let dep_dir = self.base_dir.join(&rel);
+                    //
+                    // ⚠ [项目扩展 / G-16] 基准是 **project_root**（= 清单所在目录），
+                    //   **不是** `base_dir`（= 入口文件所在目录）。
+                    //   文档（wlwl-toml 的 manifest 注释）写的就是「相对清单目录」，
+                    //   而旧实现 join 到 `base_dir` ⇒ 清单在工程根、入口在 `src/`
+                    //   时，`"./src/http"` 会被拼成 `<root>/src/src/http` ⇒ `E0040`，
+                    //   而且**错误信息里那条拼接路径直接暴露了基准**（可诊断，但误导）。
+                    //   下面的**包含性检查**本来就以 project_root 为界 ⇒ 基准统一
+                    //   到 project_root 之后，两处口径一致。
+                    let dep_dir = self.project.project_root.join(&rel);
                     let file_path = dep_dir.join(format!("{}.wll", name));
                     // Phase C7: normalize away `..` components before the
                     // containment check — a raw prefix test would let
@@ -1523,7 +1532,10 @@ fn invoke_std(
     let prev_span = ev.current_span.take();
     ev.current_span = Some(span.clone());
     let prev_file = ev.std_ctx.source_file.clone();
-    ev.std_ctx.source_file = ev.file.clone().unwrap_or_else(|| "<runtime>".into());
+    ev.std_ctx.source_file = ev
+        .file
+        .clone()
+        .unwrap_or_else(|| wlwl_value::NO_SOURCE_FILE.into());
     // [X-07 / v1.0 spec §8.6.3] 本次调用的**实参令牌**交给标准库成员:
     // 成员据此知道「我的实参带着未消费的 `ERR`」⇒ 能按 §8.6.3 把这份状态
     // 转给自己的回调(一致性册 §5.4 的 X-07)。
@@ -4599,6 +4611,21 @@ fn builtin_spawn(ev: &mut Evaluator, args: Vec<Value>) -> WlwlResult<Outcome> {
     // signature changed from `Result<Segments, YieldSplitError>` to
     // plain `Segments` because the `Err` variant is unreachable in
     // v0.9 (clippy::result_unit_err).
+    // ⚠ **这里刻意不做「循环体内的 YIELD」诊断**（本轮试过，**已回退**）。
+    //
+    // 现象：任务体按顶层语句静态切段 ⇒ YIELD 落在循环体里时，外层那条顶层语句
+    // （`WHILE` 本身）会被**整体放弃** ⇒ 循环**只跑一轮**、不产生任何诊断。
+    //
+    // ⚠⚠ **回退理由（不是「怕麻烦」）**：上游有**冻结夹具**把当前语义**钉死**了 ——
+    //   `crates/wlwl-cli/tests/probe.rs` 的 `D6_yield_truncates_while_body`
+    //   （断言「YIELD 会截断 WHILE 体」）、`P_r10_015_yield_consumed_collapses_expression`
+    //   （断言「被消费的 YIELD 塌缩外层表达式」）、以及 `I6_cancel_reason`
+    //   （**合法用法**：`SPAWN(FUN(() , WHILE(TRUE, YIELD())))` —— 一个靠循环体里的
+    //   YIELD 反复让出的任务）。
+    //   ⇒ 把这个形状变成诊断 = **破坏冻结期望**（仓内纪律：冻结期望不许放宽，
+    //     与新语义冲突时**报告**，由集成者裁决）。
+    //   ⇒ 正确的修法在**运行时**（ADR-0017 Step 3：真状态机恢复），不在检查器。
+    //   登记与建议见 docs/gaps/gap-registry.md 的 G-03。
     let segments = crate::yield_split::split_body_for_yield(&body);
     let mut task = Task::new_pending(
         task_id,
@@ -4726,7 +4753,14 @@ fn builtin_await(ev: &mut Evaluator, args: Vec<Value>) -> WlwlResult<Outcome> {
         // AWAIT call site.
         Awaited::Ok(v) | Awaited::ErrValue(v) => Ok(Outcome::normal(v)),
         // Host diagnostic is re-raised (P7-C2-002).
-        Awaited::Failed(e) => Err(e),
+        Awaited::Failed(e) => {
+            // [v0.12.0 / D-16] 这个失败**被 `AWAIT` 认领了** ⇒ 它在**调用点**
+            // 重新抛出 ⇒ **不是**孤儿 ⇒ 从待裁决名单里**摘掉**
+            // （并发册 §17.9:两条路径**互斥**,被 `AWAIT` 的失败**不重复报告**）。
+            ev.pending_orphan_failures
+                .retain(|(tid, _, _)| *tid != handle.id.0);
+            Err(e)
+        }
         Awaited::Cancelled => {
             // Plan §5.4.1: AWAIT of a cancelled task receives
             // ERR(Cancelled). Phase F wires real cancellation; the
@@ -5648,6 +5682,10 @@ fn builtin_channel_send(ev: &mut Evaluator, args: Vec<Value>) -> WlwlResult<Outc
         ));
     }
     let value = args[1].clone();
+    // [G-13] 截止时间到点 ⇒ 返回**超时值**（**不再挂一次**：挂了就永远醒不来）。
+    if took_timeout(ev) {
+        return Ok(Outcome::normal(timeout_err_value()));
+    }
     let (handle, slot) = resolve_channel_handle(ev, &args[0], &diag_span, "CHANNEL_SEND")?;
     let ch_id = handle.id;
     // [v0.9 Step 4] Try pair-first: if a receiver is parked on a
@@ -5757,6 +5795,39 @@ fn channel_rendezvous_stall_message(
     )
 }
 
+/// [项目扩展 / G-13] 截止时间到点时的**超时值**。
+///
+/// 形状：`ERR([kind: "Timeout"])` —— 与 `ERR(kind="ChannelClosed")` 同族：
+/// 运行期失败是**值**（可分支、可传递），**不是**诊断。
+///
+/// ⚠ 它**必须**被消费（`IS_ERR` 只观察、不解除「未消费」状态 ⇒ 作用域结束报
+///   `E0103`）—— 这与其它 `ERR` 值同规矩（见台账 G-23）。
+///
+/// ⚠ 形状里**不带**预算毫秒：预算由**设截止时间的那一方**知道（它自己传的
+///   `ms`）⇒ 值里再抄一遍只会多一个可能对不上的字段。
+fn timeout_err_value() -> Value {
+    Value::Err(Box::new(Value::dict(vec![(
+        Value::String("kind".to_string()),
+        Value::String("Timeout".to_string()),
+    )])))
+}
+
+/// [项目扩展 / G-13] 这个任务是不是**刚刚超时**了（截止时间到点）？
+///
+/// 读的是**重跑**时的标志：截止时间到点时调度器唤醒任务并置起标志 ⇒
+/// 等待操作（`CHANNEL_RECV` / `CHANNEL_SEND`）在重跑时问它，命中就返回
+/// **超时值**而不是再挂一次。
+///
+/// ⚠ 标志是**每任务**的（不是每次等待的）⇒ **挂起点必须是所在段的第一条语句**
+///   （否则重跑时先碰到别的等待操作，标志会被它吃掉）。这与「整段重跑」模型
+///   的既有约束同源（ADR-0017 Step 3 真状态机恢复未落地）。
+fn took_timeout(ev: &mut Evaluator) -> bool {
+    let Some(task_id) = ev.current_task else {
+        return false;
+    };
+    ev.scheduler.take_timed_out(task_id)
+}
+
 fn builtin_channel_recv(ev: &mut Evaluator, args: Vec<Value>) -> WlwlResult<Outcome> {
     use crate::channel::TryResult;
     use crate::runtime::{Direction, YieldReason};
@@ -5771,6 +5842,10 @@ fn builtin_channel_recv(ev: &mut Evaluator, args: Vec<Value>) -> WlwlResult<Outc
             ),
             diag_span,
         ));
+    }
+    // [G-13] 截止时间到点 ⇒ 返回**超时值**（**不再挂一次**：挂了就永远醒不来）。
+    if took_timeout(ev) {
+        return Ok(Outcome::normal(timeout_err_value()));
     }
     let (handle, slot) = resolve_channel_handle(ev, &args[0], &diag_span, "CHANNEL_RECV")?;
     let ch_id = handle.id;
@@ -6241,6 +6316,16 @@ const ERR_CONSUMER_REGISTRY: &[&str] = &[
     "ERR_PAYLOAD",
     "WRAP",
     "TYPE",
+    // [项目扩展 / G-23] `TAKE_ERR` —— `wlwl:std.result` 的**一步式「检查并消费」**。
+    //
+    // ⚠ **stdlib-only 成员**（与 `EXPECT_ERR` 同款）：它不是全局内建，
+    //   是 `wlwl:std.result` 导出的成员 ⇒ 不在 `BUILTIN_REGISTRY` 里
+    //   ⇒ 本表按名字放行它（§8.3 的表是冻结的，见台账 G-23 的「规范改动点」）。
+    //
+    // ⚠ 放行的意义：§8.2 的墙是「实参为 `ERR` ⇒ 不求函数体」，判据是
+    //   **被调用者的名字** ⇒ 不在表里的话，`TAKE_ERR(<ERR>)` 会被短路，
+    //   载荷永远到不了它。
+    "TAKE_ERR",
     // Phase B7 (spec §15.9 row 5): EXPECT_ERR is the
     // "expect-this-expression-to-fail" primitive. Without ERR-consumer
     // status, the very thing it's designed to inspect — an ERR value —
@@ -6297,6 +6382,9 @@ const ERR_TAKEAWAY_CONSUMERS: &[&str] = &[
     "UNWRAP",
     "WRAP",
     "EXPECT_ERR",
+    // [项目扩展 / G-23] `TAKE_ERR` —— 取走型：实参位是 `ERR` 的合法入口，
+    // 且**取走**那份未消费状态（§8.6.1）。
+    "TAKE_ERR",
 ];
 
 /// [v1.0 spec §8.6.1] **观察型消费者** —— 只看不带走,未消费状态**留在被读取
@@ -6574,6 +6662,20 @@ fn builtin_add(_ev: &mut Evaluator, args: Vec<Value>) -> WlwlResult<Outcome> {
     }
     let a = &args[0];
     let b = &args[1];
+    // [G-17] 字符串累加器的**就地追加**：左操作数是 `CellStr` ⇒ 原地追加
+    // （只拷 `part` 的字节）后返回**同一个** cell（`share()`，不是 `clone()`
+    // —— 后者每轮拷整条字符串，优化归零且比现在更慢）。
+    //
+    // ⚠ 计数口径与 `concat_strings` 同款 ⇒ 循环 n 次只拷 O(n) 字节
+    //   （未优化时是 O(n²)）—— 这就是可测的线性证据。
+    if let Value::CellStr(c) = a {
+        if let Value::String(s2) = b {
+            c.push_str(s2);
+            wlwl_value::add_string_bytes_copied(s2.len() as u64);
+            return Ok(Outcome::normal(Value::CellStr(c.share())));
+        }
+        // ⚠ 右操作数不是字符串 ⇒ 落到下面的类型错分支（与普通字符串 `+` 同款）。
+    }
     // String concatenation takes priority (per spec appendix examples).
     if let (Value::String(s1), Value::String(s2)) = (a, b) {
         // [V-01] 计数点:字符串拼接原语 —— 拷贝 n + m 个**字节**
@@ -7058,6 +7160,9 @@ fn value_to_json_value(v: &Value) -> Option<serde_json::Value> {
         Value::Integer(i) => serde_json::Value::Number(serde_json::Number::from(*i)),
         Value::Float(f) => serde_json::Number::from_f64(*f).map(serde_json::Value::Number)?,
         Value::String(s) => serde_json::Value::String(s.clone()),
+        // ⚠ [G-17] 累加器 cell 必须**序列化成与 `String` 同形** ——
+        // `CellStr` 是**运行期实现细节**,不能出现在任何序列化产物里。
+        Value::CellStr(c) => serde_json::Value::String(c.as_str()),
         Value::Array(items) => {
             let mut arr = Vec::with_capacity(items.len());
             for item in items {
@@ -7201,6 +7306,85 @@ pub mod stdlib_mirror;
 impl wlwl_std::StdHost for Evaluator {
     fn ctx(&mut self) -> &mut wlwl_std::StdCtx {
         &mut self.std_ctx
+    }
+
+    // ── [G-13] 截止时间接缝 ──────────────────────────────────────────
+    //
+    // 见 `wlwl_value::StdHost` 的文档：截止时间住在**调度器**里，标准库成员
+    // 通过这三条接缝与它打交道。
+
+    fn push_task_deadline(&mut self, at_ms: i64) -> Result<Option<i64>, WlwlError> {
+        let Some(task_id) = self.current_task else {
+            // ⚠ **没有当前任务 ⇒ 没有截止时间**，而不是诊断。
+            //   理由：**挂起必须有任务**（通道等待要 `current_task`，socket 挂起
+            //   要任务槽位；顶层求值里 `YIELD` 直接 `E0014`）⇒ 没有任务时 body
+            //   **不可能挂起** ⇒ 超时本就无从触发 ⇒ 报错只会挡住「顶层跑个
+            //   同步函数」这种完全正常的用法。
+            return Ok(None);
+        };
+        let prev = self.scheduler.task_deadline(task_id);
+        self.scheduler.set_task_deadline(task_id, at_ms);
+        Ok(prev)
+    }
+
+    fn pop_task_deadline(&mut self, prev: Option<i64>) {
+        let Some(task_id) = self.current_task else {
+            return;
+        };
+        match prev {
+            Some(at) => {
+                self.scheduler.set_task_deadline(task_id, at);
+            }
+            None => {
+                self.scheduler.clear_task_deadline(task_id);
+            }
+        }
+    }
+
+    fn task_deadline_ms(&self) -> Option<i64> {
+        let task_id = self.current_task?;
+        self.scheduler.task_deadline(task_id)
+    }
+
+    fn take_timed_out(&mut self) -> bool {
+        let Some(task_id) = self.current_task else {
+            return false;
+        };
+        self.scheduler.take_timed_out(task_id)
+    }
+
+    fn take_sleep_elapsed(&mut self) -> bool {
+        let Some(task_id) = self.current_task else {
+            return false;
+        };
+        let Some(t) = self.scheduler.tasks.get_mut(task_id.0) else {
+            return false;
+        };
+        std::mem::take(&mut t.sleep_elapsed)
+    }
+
+    fn begin_task_sleep(&mut self) -> Result<(), WlwlError> {
+        let Some(task_id) = self.current_task else {
+            return Ok(());
+        };
+        let Some(t) = self.scheduler.tasks.get_mut(task_id.0) else {
+            return Ok(());
+        };
+        if t.sleep_started >= 1 {
+            // ⚠ 响亮地失败，而不是挂死（见 `Task::sleep_started` 的说明）。
+            return Err(self.diag(
+                ErrorCode::E0030,
+                "SLEEP_ASYNC: a task body may contain at most one sleep — the segment \
+                 model re-runs the body from the top, so a second sleep would sleep \
+                 again forever (put the sleep at the end of the body)"
+                    .to_string(),
+                self.current_span
+                    .clone()
+                    .unwrap_or_else(wlwl_ast::Span::dummy),
+            ));
+        }
+        t.sleep_started += 1;
+        Ok(())
     }
 
     // ── 时钟接缝(addendum-01 B 片)─────────────────────────────────────
@@ -7652,6 +7836,21 @@ pub struct Evaluator {
     /// tree-walking evaluator runs as if it were the single implicit
     /// task). Plan §3 Phase B + §5.1.
     pub current_task: Option<crate::runtime::TaskId>,
+    /// [v0.12.0 / D-16] **待裁决的孤儿失败**（任务失败 ⇒ 先挂在这里，程序收尾时才报）。
+    ///
+    /// ⚠ **为什么不能当场报**：并发册 §17.9 要求「有人在等」与「没人管」两条路径
+    ///   **互斥**（被 `AWAIT` 的失败**不重复报告**）。而「有没有人等」在**失败
+    ///   发生的那一刻**是**判不准**的 —— `AWAIT` 不把调用者停在
+    ///   `AwaitingChild` 上（它内联驱动调度循环）⇒ 那时的「有人在等」信号只剩
+    ///   「当前这个 `AWAIT` 正在驱动的那个目标」⇒ 一个**稍后**才被 `AWAIT` 的
+    ///   失败会被**误判**成孤儿 ⇒ **同一个失败被报两次**（stderr 一行 ＋
+    ///   调用点诊断）。
+    ///
+    /// ⇒ **判定延后**：失败先挂在这里；`AWAIT` 认领它时**摘掉**；
+    ///   程序收尾时把**剩下的**（= 全程没人 `AWAIT` 的）报出去。
+    ///
+    /// 条目 = `(任务槽位下标, 诊断码, 诊断消息)`。
+    pub pending_orphan_failures: Vec<(usize, String, String)>,
     /// [v0.7 Phase C2] Depth of active SCOPE nesting. `0` at the
     /// top level means SPAWN is not allowed (D17 / E0058). Each
     /// successful SCOPE entry increments; exit decrements. The
@@ -7797,6 +7996,7 @@ impl Evaluator {
             format_cache: HashMap::new(),
             strict_types: false,
             current_task: None,
+            pending_orphan_failures: Vec::new(),
             scope_depth: 0,
             shield_depth: 0,
             shield_pending_cancel: false,
@@ -7907,6 +8107,7 @@ impl Evaluator {
             format_cache: HashMap::new(),
             strict_types: false,
             current_task: None,
+            pending_orphan_failures: Vec::new(),
             scope_depth: 0,
             shield_depth: 0,
             shield_pending_cancel: false,
@@ -8092,9 +8293,28 @@ impl Evaluator {
 
     // ── Top-level entry points ─────────────────────────────────────
 
+    /// [v0.12.0 / D-16] **程序收尾** ⇒ 把**全程没人 `AWAIT`** 的任务失败报出去。
+    ///
+    /// ⚠ 报告走 **stderr**，**不**改退出码、**不**中断程序（并发册 §17.9）。
+    /// ⚠ 报完清空名单 ⇒ 重复调用不会重复报。
+    pub fn report_orphan_failures(&mut self) {
+        for (tid, code, message) in std::mem::take(&mut self.pending_orphan_failures) {
+            eprintln!("[wlwl] unhandled task failure (task #{tid}): {code} {message}");
+        }
+    }
+
     /// Evaluate a program (the result of `parse`). Used for both
     /// entry-point files and modules.
+    ///
+    /// [v0.12.0 / D-16] 收尾时**报出没人管的任务失败** ⇒ 孤儿失败不再无声无息。
     pub fn eval(&mut self, expr: &Expr) -> WlwlResult<Value> {
+        let r = self.eval_inner(expr);
+        // ⚠ 无论成功还是失败都要报 —— 失败的那条**正是**要报的东西。
+        self.report_orphan_failures();
+        r
+    }
+
+    fn eval_inner(&mut self, expr: &Expr) -> WlwlResult<Value> {
         // Phase C3/C4/C6 (spec v0.4 §13.8/§13.9): project-config gate
         // — language_version mismatch (E0044), MVS dependency
         // conflicts (E0045) and wlwl.lock inconsistency (E0042) all
@@ -9082,24 +9302,39 @@ impl Evaluator {
         // ⚠ **循环结束后转回 `Array`**:可观察面本来就一致(S1 的契约),转回去是
         // 为了不让 `Cell` 逃出这个循环的词法范围 —— 它只是优化期间的临时表示。
         let mut already_cell = false;
+        // [G-17] 字符串累加器：**同一个识别**（`SET(acc, +(acc, …))`）——
+        // 绑定的值是**字符串**时包成 `CellStr` ⇒ `+` 走**就地追加**（只拷追加的那段）。
+        let mut str_wrapped = false;
         if let Some(name) = &acc_name {
             let peek = self.env.get(name).map(|r| r.clone());
             already_cell = matches!(peek, Some(Value::Cell(_)));
             if !already_cell {
-                if let Some(Value::Array(v)) = peek {
-                    // ⚠ [D13-099] 用 `replace_binding_value` 而不是 `set_local_mut`。
-                    //
-                    // `set_local_mut` 在**最内层作用域插入一个新绑定**(且新绑定是
-                    // **可变**的)⇒ 会**遮蔽**外层的同名绑定并**改掉它的可变性**
-                    // (规范 §3.1:可变性建绑定时定、**永不变**)⇒ 后果是**可观察的
-                    // 语义破坏**:`LET(acc, [])`(不可变)+ 累加器形状的循环,原本
-                    // **必须**报 `E0024`,优化后**不报**了。
-                    //
-                    // ⇒ 累加器形态的「临时表示」只能**就地改写已有绑定的值**,
-                    // 保持可性不变(`Env::replace_binding_value`,与 `ADR-0035` D4
-                    // 的字典版同款)。
-                    self.env
-                        .replace_binding_value(name, Value::Cell(wlwl_value::CellVec::new(v)));
+                match peek {
+                    Some(Value::Array(v)) => {
+                        // ⚠ [D13-099] 用 `replace_binding_value` 而不是 `set_local_mut`。
+                        //
+                        // `set_local_mut` 在**最内层作用域插入一个新绑定**(且新绑定是
+                        // **可变**的)⇒ 会**遮蔽**外层的同名绑定并**改掉它的可变性**
+                        // (规范 §3.1:可变性建绑定时定、**永不变**)⇒ 后果是**可观察的
+                        // 语义破坏**:`LET(acc, [])`(不可变)+ 累加器形状的循环,原本
+                        // **必须**报 `E0024`,优化后**不报**了。
+                        //
+                        // ⇒ 累加器形态的「临时表示」只能**就地改写已有绑定的值**,
+                        // 保持可性不变(`Env::replace_binding_value`,与 `ADR-0035` D4
+                        // 的字典版同款)。
+                        self.env
+                            .replace_binding_value(name, Value::Cell(wlwl_value::CellVec::new(v)));
+                    }
+                    // ⚠ [G-17] 字符串累加器：同样的「就地改写已有绑定的值」
+                    //   （可变性不变 ⇒ 不可变绑定 + 累加器形状的循环**仍然**报 `E0024`）。
+                    Some(Value::String(s)) => {
+                        self.env.replace_binding_value(
+                            name,
+                            Value::CellStr(wlwl_value::CellStr::new(s)),
+                        );
+                        str_wrapped = true;
+                    }
+                    _ => {}
                 }
             }
         }
@@ -9167,6 +9402,19 @@ impl Evaluator {
                     // 遮蔽外层绑定或改它的可性(见上面包装处的同款说明)。
                     self.env.replace_binding_value(name, Value::Array(items));
                 }
+            }
+        }
+        // [G-17] 换回**普通字符串**：cell 只是优化期间的**临时表示**，不该逃出
+        // 这个循环的词法范围（与数组 / 字典同款不变量）。
+        //
+        // ⚠ 换回的是**同一份文本**（一次克隆，O(n)）—— 这一步是 O(n)，但**只发生
+        //   一次** ⇒ 循环内的总工作量仍是 O(n)（未优化时是 O(n²)）。
+        if str_wrapped {
+            let name = acc_name.as_ref().expect("wrapped implies named");
+            let after = self.env.get(name).map(|r| r.clone());
+            if let Some(Value::CellStr(cell)) = after {
+                let text = cell.as_str();
+                self.env.replace_binding_value(name, Value::String(text));
             }
         }
         // [ADR-0035 D4] 换回**普通字典**:可观察面本来就一致,但 cell 只是优化
@@ -9433,6 +9681,9 @@ impl Evaluator {
         match self.env.get(n) {
             Some(r) => match &*r {
                 Value::Cell(c) => Some(Value::Cell(c.share())),
+                // ⚠ [G-17] 字符串累加器同款：给的是**同一个** cell ⇒ 追加是**原地改**
+                //   （只拷追加的那一段），而不是每轮重拷整条字符串。
+                Value::CellStr(c) => Some(Value::CellStr(c.share())),
                 _ => None,
             },
             None => None,
@@ -9889,7 +10140,31 @@ impl Evaluator {
         let outcome = match outcome_res {
             Ok(o) => o,
             Err(e) => {
-                self.scheduler.complete(id, TaskResult::Failed(Box::new(e)));
+                // [G-24 / v0.12.0 改写] **没人管的任务失败 ⇒ 必须被报告。**
+                //
+                // 失败只存在任务自己的 `TaskResult::Failed` 里 ⇒ 只有 `AWAIT`
+                // 它的人才会看到；fire-and-forget 的任务（**服务器里「每连接一个
+                // 任务」正是这种**）失败会**完全静默**：没有诊断、没有 stderr、
+                // 没有退出码 —— 症状与「网络卡了」无法区分。
+                //
+                // ⚠ **判定延后到程序收尾**（并发册 §17.9 要求两条路径**互斥**）：
+                //   「有没有人等」在**失败发生的那一刻**判**不准** ——
+                //   `AWAIT` 不把调用者停在 `AwaitingChild` 上（它内联驱动调度
+                //   循环）⇒ 那时的「有人在等」信号只剩「当前这个 `AWAIT` 正在
+                //   驱动的那个目标」⇒ 一个**稍后**才被 `AWAIT` 的失败会被**误判**
+                //   成孤儿 ⇒ **同一个失败被报两次**（stderr 一行 ＋ 调用点诊断）。
+                //   ⇒ 失败先**挂起**（`pending_orphan_failures`）；`AWAIT` 认领它
+                //   时**摘掉**；程序收尾时把**剩下的**（= 全程没人 `AWAIT` 的）报出去。
+                //
+                // ⚠ 报告走 **stderr**，**不**改退出码、**不**中断程序 ——
+                //   服务器必须继续服务别的连接。
+                self.scheduler
+                    .complete(id, TaskResult::Failed(Box::new(e.clone())));
+                self.pending_orphan_failures.push((
+                    id.0,
+                    e.diagnostic().code.as_str().to_string(),
+                    e.diagnostic().message.clone(),
+                ));
                 return Ok(());
             }
         };
@@ -9934,6 +10209,38 @@ impl Evaluator {
                 // Task is parked; scheduler_run_until_done / loop
                 // continues until peer pair or close wakes it.
             }
+            // [项目扩展 / G-02] Real suspension on **socket readiness**.
+            //
+            // The native member returned `Signal::Yield(SocketReady(id))`
+            // because there was no data yet ⇒ park the task on that socket.
+            // It is woken by `Scheduler::wake_socket_waiter` when the host
+            // I/O thread reports readiness (the readiness queue is drained
+            // by `pump_socket_readiness`).
+            //
+            // ⚠ 与通道等待同族，差别只在**唤醒方**：通道由对端任务唤醒，
+            //   socket 由宿主 I/O 线程唤醒。
+            o if matches!(o.signal, Signal::Yield(YieldReason::SocketReady(_))) => {
+                let socket_id = match o.signal {
+                    Signal::Yield(YieldReason::SocketReady(s)) => s,
+                    _ => unreachable!(),
+                };
+                self.scheduler.park_for_socket(id, socket_id);
+            }
+            // [项目扩展 / G-08] Real suspension on a **timer**（定时睡眠）。
+            //
+            // The std member returned `Signal::Yield(SleepUntil(at))` ⇒ park the
+            // task until that absolute monotonic millisecond. It is woken by
+            // `Scheduler::wake_due_sleepers` when the time comes.
+            //
+            // ⚠ 与 socket / 通道等待同族，差别只在唤醒方：**调度器的定时器**
+            //   （不依赖任何外部事件 ⇒ 这是它与 I/O 等待的根本区别）。
+            o if matches!(o.signal, Signal::Yield(YieldReason::SleepUntil(_))) => {
+                let at = match o.signal {
+                    Signal::Yield(YieldReason::SleepUntil(at)) => at,
+                    _ => unreachable!(),
+                };
+                self.scheduler.park_for_timer(id, at);
+            }
             o if matches!(o.signal, Signal::Yield(YieldReason::Explicit)) => {
                 // Mid-body yield: task is not done while more segments
                 // remain. Transition back to Pending (NOT Suspended —
@@ -9958,6 +10265,13 @@ impl Evaluator {
                     task.current_segment += 1;
                     self.scheduler.enqueue(id);
                 } else {
+                    // [v0.12.0 / D-15] **末段的尾随 `YIELD`** ⇒ 作用域在这里结束
+                    // （`run_task_segments` 那条检查覆盖的是「末段**不**挂起」的
+                    // 情形；这一支是末段**挂起**的情形）⇒ 同样是 §8.6.2 第 3 项的
+                    // 丢弃点 ⇒ 查一次。
+                    // ⚠ 任务的环境此刻在 `task.running_env` 里（`run_task_segments`
+                    //   已把它从 `self.env` 里换出去了）⇒ 装回来查，查完换回去。
+                    self.check_task_scope_end(id, span)?;
                     let result = match o.value {
                         Value::Err(payload) => TaskResult::Err(Value::Err(payload)),
                         v => TaskResult::Ok(v),
@@ -10034,6 +10348,16 @@ impl Evaluator {
         captured_env: &Env,
         span: &Span,
     ) -> WlwlResult<Outcome> {
+        // [v0.12.0 / D-15] 「这是不是最后一段」—— 作用域结束点的判据。
+        //
+        // [v0.12.0 / D-15] 切段任务体的作用域在**最后一段跑完**时才结束
+        // ⇒ 那是 §8.6.2 第 3 项的丢弃点。
+        // ⚠ 每段都查是**错的**：作用域在段之间**持续存在**（`running_env`
+        //   带着上一段的 LET 继续跑）⇒ 首段就查会误报。
+        let is_last_segment = {
+            let task = &self.scheduler.tasks[id.0];
+            task.current_segment + 1 >= task.segments.len()
+        };
         // Step 1: save caller's env.
         let saved_caller_scopes = self.env.take_scopes();
 
@@ -10107,6 +10431,25 @@ impl Evaluator {
             }
         };
 
+        // [v0.12.0 / D-15] **切段任务体的作用域结束点** ——
+        // 语言核心册 §8.6.2 第 3 项（作用域结束时仍有绑定持有未消费 `ERR`
+        // ⇒ 丢弃点 ⇒ 报 `E0103`）对**全部作用域形状一视同仁**：
+        // **切段不构成豁免**（它只改恢复粒度）。
+        //
+        // ⚠ `eval_block(..., top_level = true)` **不**做这个检查
+        //   （那条只在 `!top_level` 时做）⇒ 切段任务体这条路径**原本漏报**。
+        //
+        // ⚠ **时点**：只在**最后一段跑完、作用域真正结束**时查 ——
+        //   作用域在段之间持续存在（`running_env` 带着上一段的 LET 继续跑）
+        //   ⇒ 每段都查会误报。
+        //
+        // ⚠ **先查再还原环境**：还原之后作用域就没了，查不到。
+        let scope_check = if is_last_segment && !matches!(outcome.signal, Signal::Yield(_)) {
+            self.check_scope_end(span)
+        } else {
+            Ok(())
+        };
+
         // Step 5: take the running env state back out of self.env.
         let running_after = std::mem::replace(&mut self.env.scopes, saved_caller_scopes);
 
@@ -10121,6 +10464,8 @@ impl Evaluator {
         let task = &mut self.scheduler.tasks[id.0];
         task.running_env = Some(running_after);
 
+        scope_check?;
+
         // The span is currently unused here but is kept on the
         // signature so future diagnostic enrichment (e.g. tracking
         // which segment yielded where) has a hook.
@@ -10130,11 +10475,73 @@ impl Evaluator {
 
     /// Drain the run queue (plan §5.1.1 `run_until_idle`).
     fn scheduler_run_until_idle(&mut self, span: &Span) -> WlwlResult<()> {
-        while let Some(id) = self.scheduler.take_next() {
-            self.run_one_task(id, span)?;
+        loop {
+            while let Some(id) = self.scheduler.take_next() {
+                self.run_one_task(id, span)?;
+            }
+            // [v0.12.0] ⓪ **先**处理两类「到点」——它们与「等什么」无关:
+            //   * **截止时间**到期 ⇒ 等待**失败** ⇒ 置 `timed_out`;
+            //   * **睡眠**到期 ⇒ 等待**正常结束** ⇒ 任务继续跑。
+            //
+            // ⚠ 这一段**必须**在「等 socket 就绪」那一支**之前** ——
+            //   否则挂在 socket 上的任务永远等不到自己的截止时间到点
+            //   （此前只有 `AWAIT` 驱动的那条循环处理「到点」
+            //   ⇒「截止时间可打断挂起」只在**有 AWAIT** 时成立 —— 那是缺陷）。
+            let now = wlwl_value::real_mono_ms();
+            let expired = self.scheduler.expire_deadlines(now);
+            let woke = self.scheduler.wake_due_sleepers(now);
+            if !expired.is_empty() || !woke.is_empty() {
+                continue;
+            }
+            // [项目扩展 / G-02] 有任务挂在 socket 上 ⇒ 等 I/O 就绪
+            // （这是「等 I/O」的语义，**不是**死锁）⇒ 别在这里退出。
+            if self.scheduler.socket_waiter_count() > 0 {
+                if self.pump_socket_readiness(50) {
+                    continue;
+                }
+                // 还没有就绪事件 ⇒ 短暂等一下（读线程可能正在路上）。
+                if self.pump_socket_readiness(50) {
+                    continue;
+                }
+                // 仍然没有 ⇒ 这一轮真的没有可运行的任务了。
+                // ⚠ 但 socket 等待是**无限期**的（服务端的 accept 循环就在等下一个
+                //   连接）—— 这里退出就会把挂起的任务丢下。
+                //   ⇒ 继续等（就绪事件一到就醒）。
+                self.pump_socket_readiness(50);
+                continue;
+            }
+            break;
         }
         self.scheduler.dispatch_cancellations();
         Ok(())
+    }
+
+    /// [项目扩展 / G-02] 取走宿主的 socket 就绪事件并唤醒对应的任务。
+    ///
+    /// ⚠ 这是**宿主 I/O 线程 → 解释器**的唯一通道：I/O 线程只把 socket id
+    ///   推进就绪队列（`wlwl_std::tcp::take_ready`），**不能**直接碰调度器
+    ///   （解释器的值模型是 `Rc`，不是 `Send`）。
+    ///
+    /// 返回是否真的唤醒了任务。
+    fn pump_socket_readiness(&mut self, wait_ms: u64) -> bool {
+        if self.scheduler.socket_waiter_count() == 0 {
+            return false;
+        }
+        let mut woke = false;
+        for sid in wlwl_std::tcp::take_ready() {
+            if self.scheduler.wake_socket_waiter(sid) {
+                woke = true;
+            }
+        }
+        if !woke && wait_ms > 0 {
+            std::thread::sleep(std::time::Duration::from_millis(wait_ms));
+            for sid in wlwl_std::tcp::take_ready() {
+                if self.scheduler.wake_socket_waiter(sid) {
+                    woke = true;
+                }
+            }
+        }
+        woke
     }
 
     /// Drive the scheduler until `id` reaches a terminal state.
@@ -10151,7 +10558,23 @@ impl Evaluator {
     /// - Suspended → E0053 with "no peer to wake" diagnostic
     ///   (deadlock pattern; Step 5 L1 detector will catch it earlier).
     /// - Pending / Running with no progress → E0053.
+    ///
+    /// [G-24] 驱动调度器直到 `id` 到达终态（`AWAIT` 的实现）。
+    ///
+    /// 这一层是**包装**：它在驱动期间把目标登记进 `awaiting_targets`，
+    /// 好让「任务失败」的报告能区分「有人在等它」与「没人管它」。
     fn scheduler_run_until_done(
+        &mut self,
+        id: crate::runtime::TaskId,
+        span: &Span,
+    ) -> WlwlResult<()> {
+        self.scheduler.awaiting_targets.insert(id);
+        let r = self.scheduler_run_until_done_inner(id, span);
+        self.scheduler.awaiting_targets.remove(&id);
+        r
+    }
+
+    fn scheduler_run_until_done_inner(
         &mut self,
         id: crate::runtime::TaskId,
         span: &Span,
@@ -10166,11 +10589,56 @@ impl Evaluator {
         if self.scheduler.is_terminal(id) {
             return Ok(());
         }
-        while let Some(tid) = self.scheduler.take_next() {
-            self.run_one_task(tid, span)?;
-            if self.scheduler.is_terminal(id) {
-                return Ok(());
+        loop {
+            while let Some(tid) = self.scheduler.take_next() {
+                self.run_one_task(tid, span)?;
+                if self.scheduler.is_terminal(id) {
+                    return Ok(());
+                }
             }
+            // ⓪ **先**处理两类「到点」——它们与「等什么」无关：
+            //   * 截止时间到期（G-13）⇒ 等待**失败** ⇒ 置 `timed_out`；
+            //   * 睡眠到期（G-08）⇒ 等待**正常结束** ⇒ 任务继续跑。
+            // ⚠ 顺序要紧：若把它们放在「目标挂在 socket 上」那一支**之后**，
+            //   目标在等 I/O 时，睡眠者就永远醒不过来（⇒ 死等）。
+            let now = wlwl_value::real_mono_ms();
+            let expired = self.scheduler.expire_deadlines(now);
+            let woke = self.scheduler.wake_due_sleepers(now);
+            if !expired.is_empty() || !woke.is_empty() {
+                continue;
+            }
+            // [项目扩展 / G-02] 目标挂在 socket 上 ⇒ **等 I/O 就绪**，不是死锁。
+            // （服务端的 accept 任务就挂在这里：它要一直等下一个连接。）
+            // ⇒ 继续等，别落到下面的 E0053 / E0065 死锁检测。
+            if self.scheduler.task_parked_on_socket(id) {
+                self.pump_socket_readiness(50);
+                continue;
+            }
+            // [G-13] 有任务带**截止时间** ⇒ **不是死锁** ⇒ 等到点。
+            //
+            // 挂着的任务到点后被唤醒 ⇒ 它重跑 ⇒ 它的等待以**超时值**结束
+            // （`ERR(kind:"Timeout")`）⇒ 任务继续跑。
+            //
+            // ⚠ 等待期间**别的任务照常跑**：每轮循环都先排干运行队列，
+            //   睡的那 ≤50ms 只是「没有可跑的东西时」的让步。
+            if let Some(dl) = self.scheduler.earliest_deadline() {
+                let now = wlwl_value::real_mono_ms();
+                if dl > now {
+                    let wait = (dl - now).clamp(1, 50) as u64;
+                    std::thread::sleep(std::time::Duration::from_millis(wait));
+                }
+                continue;
+            }
+            // [G-08] 有任务在**睡眠** ⇒ **不是死锁** ⇒ 等到点（定时器唤醒它）。
+            if let Some(at) = self.scheduler.earliest_sleep_deadline() {
+                let now = wlwl_value::real_mono_ms();
+                if at > now {
+                    let wait = (at - now).clamp(1, 50) as u64;
+                    std::thread::sleep(std::time::Duration::from_millis(wait));
+                }
+                continue;
+            }
+            break;
         }
         // Queue empty. If target is Suspended, run the v0.9 Step 5
         // deadlock L1 detector: count same-scope parked
@@ -11821,6 +12289,29 @@ impl Evaluator {
     fn check_global_scope_end(&mut self, span: &Span) -> WlwlResult<()> {
         let pending = self.env.scope_unconsumed_at(0);
         Self::report_pending_unconsumed(self, 0, pending, span)
+    }
+
+    /// [v0.12.0 / D-15] **切段任务体**的作用域结束检查。
+    ///
+    /// ⚠ 语言核心册 §8.6.2 第 3 项对**全部作用域形状一视同仁**:
+    ///   **切段不构成豁免**(它只改恢复粒度)⇒ 顶层 / 普通闭包 / **切段任务体**
+    ///   三者的行为必须一致。
+    ///
+    /// ⚠ **为什么需要单独一个函数**:切段任务体的环境在 `run_task_segments`
+    ///   结束时被换回调用方的环境(它住在 `task.running_env` 里)⇒
+    ///   要查就得**装回来查、查完换回去**。
+    ///
+    /// ⚠ 查完把环境换回去:诊断错误会中止程序,栈与控制流必须同生共死
+    ///   (与 `eval_block` 的同款纪律)。
+    fn check_task_scope_end(&mut self, id: crate::runtime::TaskId, span: &Span) -> WlwlResult<()> {
+        let Some(task_env) = self.scheduler.tasks[id.0].running_env.take() else {
+            // 任务的环境已经被丢弃(它已到终态)⇒ 没有可查的作用域。
+            return Ok(());
+        };
+        let saved = std::mem::replace(&mut self.env.scopes, task_env);
+        let r = self.check_scope_end(span);
+        self.env.scopes = std::mem::replace(&mut self.env.scopes, saved);
+        r
     }
 
     /// [X-06 第二步] 把「作用域里待处置的未消费集合」变成**逐个**的 `E0103`。
@@ -16810,12 +17301,28 @@ mod tests {
             // else). Handled in `eval_if`, not via the generic
             // short-circuit block.
             "IF",
+            // [项目扩展 / G-23] `TAKE_ERR` —— `wlwl:std.result` 的**一步式
+            // 「检查并消费」**。
+            //
+            // ⚠⚠ **这一条动的是 §8.3 的表，而该节明写「本表不新增条目」**
+            //   ⇒ 它**必须**走**规范修订**（上游采纳时要把 §8.3 改掉）。
+            //   这不是「顺手加一条」：加它之前，`TAKE_ERR(<ERR>)` 会被 §8.2
+            //   短路掉，载荷永远到不了成员 ⇒ 那一步式成员根本做不出来。
+            //
+            // ⚠ 同 `EXPECT_ERR`：它是 **stdlib-only** 的消费者（不在
+            //   `BUILTIN_REGISTRY` 里）⇒ 见 `b11_err_consumer_registry_consistent`
+            //   的 `STDLIB_ONLY` 豁免表。
+            "TAKE_ERR",
         ]
         .iter()
         .copied()
         .collect();
         assert_eq!(actual, expected, "§12.7 registry drifted from spec (v0.6)");
-        assert_eq!(actual.len(), 14, "v0.6 §8.3 registry has 14 entries");
+        assert_eq!(
+            actual.len(),
+            15,
+            "the ERR-consumer registry has 15 entries (14 spec + TAKE_ERR, see G-23)"
+        );
     }
 
     #[test]
@@ -17484,15 +17991,35 @@ mod tests {
         assert_eq!(v, Value::String("round-trip-body".into()));
     }
 
+    /// [G-19] 读不到**不再是原生诊断**，而是**可分支的 `ERR` 值**。
+    ///
+    /// ⚠ 诊断会**终止运行** ⇒ 一次读文件失败会杀掉整个进程
+    ///   （「每连接一个任务」的服务器里，一个坏请求就能让服务消失）。
+    /// ⚠ 改口径的**代价（breaking）**：语言规范 §11.2「`E0061` | 文件 | 文件不存在」
+    ///   与 stdlib §2.0 的对应条款都**不再适用** ⇒ 上游采纳需改规范。
     #[test]
-    fn std_fs_read_missing_file_is_e0061() {
+    fn std_fs_read_missing_file_is_an_err_value() {
         let dir = unique_test_dir("fs_miss");
         let src = r#"
             IMPORT("wlwl:std.fs", ["READ_FILE"]);
-            READ_FILE("Z:/__wlwl_definitely_missing_/abc_xyz_123");
+            LET(r, READ_FILE("Z:/__wlwl_definitely_missing_/abc_xyz_123"));
+            ERR_PAYLOAD(r);
         "#;
-        let err = run_in(&dir, src).unwrap_err();
-        assert_eq!(err.diagnostic().code, ErrorCode::E0061);
+        // ⚠ **必须 `ERR_PAYLOAD` 消费掉**：失败现在是 `ERR` 值；若让它当程序的
+        //   **最后一个表达式**，按 §8.6 它会**逃逸到顶层**并报 `E0102`
+        //   ⇒ 看到的是 E0102 而不是载荷本身。
+        let v = run_in(&dir, src).unwrap();
+        let Value::Dict(d) = &v else {
+            panic!("the ERR payload must be a dict, got {v:?}");
+        };
+        let kind = d
+            .get(&Value::String("kind".into()))
+            .and_then(|v| match v {
+                Value::String(s) => Some(s.clone()),
+                _ => None,
+            })
+            .unwrap_or_default();
+        assert_eq!(kind, "FsError", "the payload must name the family");
     }
 
     #[test]
@@ -22886,7 +23413,7 @@ TYPE(v);
         //
         // 「不是全局内建」与「不是 ERR 消费者」是两回事 —— 这正是本条断言
         // 第一次要显式区分它们的原因。
-        const STDLIB_ONLY: &[&str] = &["EXPECT_ERR"];
+        const STDLIB_ONLY: &[&str] = &["EXPECT_ERR", "TAKE_ERR"];
         // [v0.10.1 / R10-064] `STDLIB_ONLY` 里的名字在 ERR_CONSUMER_REGISTRY
         // 而不在注册表，所以 `from_const` 会比 `from_registry` 多出它们 ——
         // 这正是「全局条目已移除、stdlib 导出仍是消费者」的正确形状。

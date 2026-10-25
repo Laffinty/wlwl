@@ -872,11 +872,15 @@ fn env_member_set_matches_the_spec_table() {
         .iter()
         .map(|(n, _)| (*n).to_string())
         .collect();
-    assert_eq!(spec.len(), 4, "§18 table found {spec:?}");
+    assert_eq!(spec.len(), 5, "§18 table found {spec:?}");
     for n in &impls {
         assert!(spec.contains(n), "§18 table missed `{n}`: {spec:?}");
     }
-    assert_eq!(impls.len(), 4, "wlwl:std.env exports 4 members");
+    assert_eq!(
+        impls.len(),
+        5,
+        "wlwl:std.env exports 5 members (4 + SCRIPT_PATH)"
+    );
 }
 
 fn spec_path() -> PathBuf {
@@ -943,6 +947,10 @@ fn the_separator_decision_is_written_down() {
 const RW: &str = r#"IMPORT("wlwl:std.fs", ["READ_FILE", "WRITE_FILE"]); "#;
 
 /// 把 `run_with_dir` 的 `!CODE message` 形状拆成 (码, 消息)。
+///
+/// ⚠ [G-19] 读写两个成员的 IO 失败**不再是诊断** ⇒ 这条只对**仍是诊断**的
+///   失败形状（arity / type / 未改口径的成员）有用。
+#[allow(dead_code)]
 fn split_diag(out: &str) -> (String, String) {
     let rest = out.strip_prefix('!').unwrap_or(out);
     match rest.split_once(' ') {
@@ -951,65 +959,85 @@ fn split_diag(out: &str) -> (String, String) {
     }
 }
 
-/// ⚠🔴 **[F-03] 写失败必须是 `E0062`,不能是 `E0061`。**
+/// [G-19] 跑一个「会失败的 IO 调用」并把 **`ERR` 载荷取出来**。
 ///
-/// 写向**不存在的父目录**是最常见的一种写失败(写侧规范明写「父目录必须
-/// 已存在」),它必须报 `E0062`。
+/// ⚠ **为什么要 `ERR_PAYLOAD` 消费掉**：失败现在是 **`ERR` 值**；若让它当程序的
+///   **最后一个表达式**，按 §8.6 它会**逃逸到顶层**并报 `E0102`
+///   （「unhandled ERR escaped to top level」）⇒ 看到的是 E0102 而不是载荷本身。
+///   消费掉之后，程序的返回值就是载荷的字段 ⇒ 断言可以直接看字符串。
 ///
-/// ⚠ **必须用绝对路径**(stdlib §2.3:相对路径按进程 CWD 解析)⇒ 文件不会
-/// 落进工作树。
+/// 返回形如 `[kind: FsError, reason: ...]` 的 display。
+fn io_failure_payload(src: &str, dir: &std::path::Path) -> String {
+    let prog = format!(
+        r#"{RW}LET(r, {src}); LET(p, ERR_PAYLOAD(r)); ["kind": AT_K(p, "kind", "?"), "reason": AT_K(p, "reason", "?")]"#
+    );
+    run_with_dir(&prog, dir)
+}
+
+/// ⚠🔴 **[G-19] 写失败现在是 `ERR` **值**（不是诊断）**。
+///
+/// 写向**不存在的父目录**是最常见的一种写失败（写侧规范明写「父目录必须
+/// 已存在」），它必须**可分支**（`IS_ERR`）而不是**终止进程**。
+///
+/// ⚠ **改口径的理由**：诊断会终止运行 ⇒ 在「每连接一个任务」的服务器里，
+///   一次写失败就会让**整个服务**消失。
+/// ⚠ **改口径的代价（breaking）**：stdlib §2.0 明写「写失败 → `E0062`（原生诊断）」，
+///   现在那个码**不再产生** ⇒ 上游采纳时必须改规范。
+/// ⚠ **必须用绝对路径**（stdlib §2.3：相对路径按进程 CWD 解析）⇒ 文件不会落进工作树。
 #[test]
-fn write_file_into_a_missing_parent_directory_is_e0062_not_e0061() {
+fn write_file_into_a_missing_parent_directory_is_an_fs_error_value() {
     let dir = io_scratch();
     let target = abs(&dir, "no_such_dir_zzz/x.txt");
-    let out = run_with_dir(&format!("{RW}WRITE_FILE(\"{target}\", \"hello\")"), &dir);
-    let (code, msg) = split_diag(&out);
-    assert_eq!(
-        code, "E0062",
-        "a write failure must be E0062 (stdlib §2.0), got {out}"
+    let out = io_failure_payload(&format!("WRITE_FILE(\"{target}\", \"hello\")"), &dir);
+    assert!(
+        !out.starts_with('!'),
+        "a write failure must NOT be a diagnostic (it would kill the process), got {out}"
     );
     assert!(
-        msg.contains("parent directory"),
-        "the message must name the missing parent directory, got {msg}"
+        out.contains("FsError"),
+        "the failure must carry the FsError family, got {out}"
     );
     assert!(
-        !msg.contains("file not found"),
-        "the read-side wording must not leak into the write side, got {msg}"
+        out.contains("parent directory"),
+        "the reason must name the missing parent directory, got {out}"
+    );
+    assert!(
+        !out.contains("file not found"),
+        "the read-side wording must not leak into the write side, got {out}"
     );
     let _ = std::fs::remove_dir_all(&dir);
 }
 
-/// ⚠ **读侧一字未动**:`READ_FILE` 读不到 ⇒ 仍是 `E0061`(语言规范 §11.2
-/// 「`E0061` | 文件 | 文件不存在」)。
+/// ⚠ **[G-19] 读不到现在是 `ERR` **值**（不是 `E0061` 诊断）**。
 ///
-/// 这条是 F-03 的**反向守卫**:防止修写侧时把读侧一起改坏(比如把
-/// `NotFound` 统一改成 `E0062` —— 那会把「读不到」也变成「写不进」)。
+/// 这条是 F-03 的**反向守卫**的续集：读写两侧的**原因文本**仍要**分得开**
+/// —— 读侧说「file not found」，写侧说「parent directory does not exist」。
 #[test]
-fn read_file_of_a_missing_file_is_still_e0061() {
+fn read_file_of_a_missing_file_is_an_fs_error_value() {
     let dir = io_scratch();
     let target = abs(&dir, "no_such_file_zzz.txt");
-    let out = run_with_dir(&format!("{RW}READ_FILE(\"{target}\")"), &dir);
-    let (code, msg) = split_diag(&out);
-    assert_eq!(
-        code, "E0061",
-        "a missing file on the read side must stay E0061, got {out}"
+    let out = io_failure_payload(&format!("READ_FILE(\"{target}\")"), &dir);
+    assert!(
+        !out.starts_with('!'),
+        "a missing file must NOT be a diagnostic (it would kill the process), got {out}"
     );
     assert!(
-        msg.contains("file not found"),
-        "the read-side message must stay as it was, got {msg}"
+        out.contains("FsError"),
+        "the failure must carry the FsError family, got {out}"
+    );
+    assert!(
+        out.contains("file not found"),
+        "the read-side message must stay as it was, got {out}"
     );
     let _ = std::fs::remove_dir_all(&dir);
 }
 
-/// ⚠ **只读目标** ⇒ 写失败 ⇒ `E0062`(stdlib §2.0)。
+/// ⚠ **[G-19] 只读目标 ⇒ 写失败 ⇒ `ERR` 值**（原因文本要能区分权限不足）。
 ///
-/// 这条守的是「写侧**一律** `E0062`」的另一半:不只是「父目录不存在」
-/// 这一种失败 —— 权限不足同样落在 `E0062`,且消息要能区分。
-///
-/// ⚠ **以 root 跑时**(部分容器 CI)只读位对 root 无效 ⇒ 先探一次可写性,
-/// 探得过就跳过这条,而不是让测试在那种环境里假红。
+/// ⚠ **以 root 跑时**（部分容器 CI）只读位对 root 无效 ⇒ 先探一次可写性，
+/// 探得过就跳过这条，而不是让测试在那种环境里假红。
 #[test]
-fn write_file_to_a_read_only_target_is_e0062() {
+fn write_file_to_a_read_only_target_is_an_fs_error_value() {
     let dir = io_scratch();
     let target = dir.join("ro.txt");
     std::fs::write(&target, b"x").unwrap();
@@ -1026,18 +1054,21 @@ fn write_file_to_a_read_only_target_is_e0062() {
         let _ = std::fs::remove_dir_all(&dir);
         return;
     }
-    let out = run_with_dir(
-        &format!("{RW}WRITE_FILE(\"{}\", \"hello\")", abs(&dir, "ro.txt")),
+    let out = io_failure_payload(
+        &format!("WRITE_FILE(\"{}\", \"hello\")", abs(&dir, "ro.txt")),
         &dir,
     );
-    let (code, msg) = split_diag(&out);
-    assert_eq!(
-        code, "E0062",
-        "writing to a read-only target must be E0062, got {out}"
+    assert!(
+        !out.starts_with('!'),
+        "a write failure must NOT be a diagnostic, got {out}"
     );
     assert!(
-        msg.contains("permission denied"),
-        "the message must distinguish a permission failure, got {msg}"
+        out.contains("FsError"),
+        "the failure must carry the FsError family, got {out}"
+    );
+    assert!(
+        out.contains("permission denied"),
+        "the reason must distinguish a permission failure, got {out}"
     );
     // 只读位会让 Windows 上的删除失败 ⇒ 清掉再清目录。
     //

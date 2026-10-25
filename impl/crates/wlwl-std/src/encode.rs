@@ -57,6 +57,19 @@ pub static SPEC: ModuleSpec = ModuleSpec {
         ("RANDOM_BYTES", random_bytes as StdFn),
         ("RANDOM_HEX", random_hex as StdFn),
         ("TIMING_SAFE_EQ", timing_safe_eq as StdFn),
+        // ── 字节层（项目扩展：补「字符串 ↔ 字节」这一层）──────────────────
+        //
+        // ⚠ 这 3 个成员**不在** v1.0 冻结快照里 ⇒ 附录 A 的 Guard B 会多红一行
+        // （`std.encode` 多出 3 个成员）。见 docs/gaps/gap-registry.md 的 G-04。
+        //
+        // **为什么需要它们**：`STRING` 是 Unicode（码点序列），而 HTTP 的
+        // `Content-Length` 计的是**字节**。语言里 `LEN(s)` 给的是**码点数**，
+        // 于是「响应体长度」在非 ASCII 时算错 ⇒ 客户端会按错误长度截断。
+        // 没有 BYTES 类型（`wlwl schema` 实测），字节只能用 `ARRAY[INTEGER]`
+        // 表达 —— 与 `std.fs::READ_BYTES` / `WRITE_BYTES` 同一个约定。
+        ("UTF8_ENCODE", utf8_encode as StdFn),
+        ("UTF8_DECODE", utf8_decode as StdFn),
+        ("BYTE_LEN", byte_len as StdFn),
     ],
 };
 
@@ -129,6 +142,76 @@ fn str_arg<'a>(
         Value::String(s) => Ok(s.as_str()),
         other => Err(type_err(host, name, "string", other)),
     }
+}
+
+// ── 字节层：字符串 ↔ UTF-8 字节（项目扩展）────────────────────────────────
+//
+// `STRING` 是 Unicode 码点序列；`LEN(s)` 给**码点数**。但 HTTP 的
+// `Content-Length`、TCP 的写入长度、静态文件的真实大小都是**字节数**。
+// 二者只在纯 ASCII 时相等 —— 中文/emoji 会差出一倍以上。
+//
+// ⚠ **没有 BYTES 类型**（`wlwl schema` 实测的类型表里只有 INTEGER/FLOAT/
+//   STRING/BOOLEAN/NULL/ARRAY/DICT/OPTION/RESULT/FUN/TASK/CHANNEL/CLASS/
+//   INSTANCE）⇒ 字节只能落成 `ARRAY[INTEGER]`，与 `std.fs::READ_BYTES` /
+//   `WRITE_BYTES` / `std.encode::RANDOM_BYTES` 同形。
+
+/// `UTF8_ENCODE(s) -> ARRAY[INTEGER]` —— 字符串 → UTF-8 字节。
+pub fn utf8_encode(host: &mut dyn StdHost, args: Vec<Value>) -> wlwl_error::WlwlResult<Outcome> {
+    if args.len() != 1 {
+        return Err(arity(host, "UTF8_ENCODE", args.len(), 1));
+    }
+    let Value::String(s) = &args[0] else {
+        return Err(type_err(host, "UTF8_ENCODE", "string", &args[0]));
+    };
+    Ok(Outcome::normal(Value::Array(
+        s.as_bytes()
+            .iter()
+            .map(|b| Value::Integer(i64::from(*b)))
+            .collect::<Vec<Value>>(),
+    )))
+}
+
+/// `UTF8_DECODE(bytes) -> STRING` —— UTF-8 字节 → 字符串。
+/// 非法 UTF-8 ⇒ `ERR([kind:"DecodeError", ...])`（**不**做有损替换 —— 与
+/// `BASE64_DECODE` 同一族语义）。
+pub fn utf8_decode(host: &mut dyn StdHost, args: Vec<Value>) -> wlwl_error::WlwlResult<Outcome> {
+    if args.len() != 1 {
+        return Err(arity(host, "UTF8_DECODE", args.len(), 1));
+    }
+    let Value::Array(items) = &args[0] else {
+        return Err(type_err(host, "UTF8_DECODE", "array of integers", &args[0]));
+    };
+    let mut bytes = Vec::with_capacity(items.len());
+    for it in items {
+        let Value::Integer(b) = it else {
+            return Err(type_err(host, "UTF8_DECODE", "array of integers", it));
+        };
+        if !(0..=255).contains(b) {
+            return Err(host.diag(
+                ErrorCode::E0030,
+                format!("UTF8_DECODE: byte out of range: {b}"),
+            ));
+        }
+        bytes.push(*b as u8);
+    }
+    let decoded = match bytes_to_value("UTF8_DECODE", bytes) {
+        Ok(v) => v,
+        Err(e) => e,
+    };
+    Ok(Outcome::normal(decoded))
+}
+
+/// `BYTE_LEN(s) -> INTEGER` —— UTF-8 **字节数**（不是码点数）。
+///
+/// 这是「HTTP `Content-Length` 必须按字节算」缺的那一环。
+pub fn byte_len(host: &mut dyn StdHost, args: Vec<Value>) -> wlwl_error::WlwlResult<Outcome> {
+    if args.len() != 1 {
+        return Err(arity(host, "BYTE_LEN", args.len(), 1));
+    }
+    let Value::String(s) = &args[0] else {
+        return Err(type_err(host, "BYTE_LEN", "string", &args[0]));
+    };
+    Ok(Outcome::normal(Value::Integer(s.len() as i64)))
 }
 
 // ── base64 (RFC 4648 §4) ───────────────────────────────────────────────

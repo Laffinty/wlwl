@@ -24,6 +24,10 @@ wlwl-toml = { workspace = true }
 # v0.10 Step 2 (ADR-0020 A3): the compile-time static pass, gated by
 # [features] gradual_typing in wlwl.toml.
 wlwl-types = { workspace = true }
+# [项目扩展 / G-07] `wlwl namespace` 要把**命名空间绑定表**直接列出来 ⇒ 需要
+# `wlwl_std::namespace_paths()` / `resolve()` / `lang_exports()`。
+# ⚠ 二进制里本来就有它（`wlwl-eval` 依赖它）⇒ **不引入任何新的第三方依赖**。
+wlwl-std = { workspace = true }
 clap = { workspace = true }
 serde = { workspace = true }
 serde_json = { workspace = true }

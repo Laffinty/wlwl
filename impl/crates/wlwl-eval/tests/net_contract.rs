@@ -402,6 +402,16 @@ const EXPECTED: &[&str] = &[
     "HTTP_GET",
     "HTTP_POST",
     "HTTP_REQUEST",
+    // [v0.12.0 / D-13] 传输层九员（规范 §21.1 成员表的「传输层族」那组）。
+    "TCP_LISTEN",
+    "TCP_ACCEPT",
+    "TCP_RECV",
+    "TCP_SEND",
+    "TCP_PEER",
+    "TCP_LOCAL_ADDR",
+    "TCP_SET_TIMEOUT",
+    "TCP_CLOSE",
+    "TCP_CLOSE_LISTENER",
 ];
 
 /// 规范 §21 的成员表 ↔ `wlwl:std.net` 导出的成员。
@@ -425,7 +435,7 @@ fn net_member_set_matches_the_spec_table() {
         .collect();
     assert_eq!(
         spec.len(),
-        5,
+        14,
         "\u{00a7}21 table extractor found {} member(s): {spec:?}",
         spec.len()
     );
@@ -446,7 +456,11 @@ fn net_member_set_matches_the_spec_table() {
             "implementation does not export `{n}`: {impls:?}"
         );
     }
-    assert_eq!(impls.len(), 5, "wlwl:std.net exports 5 members");
+    assert_eq!(
+        impls.len(),
+        14,
+        "wlwl:std.net exports 14 members (5 + 9 个 TCP_*)"
+    );
 }
 
 // ── HTTP 夹具服务器(W-04)────────────────────────────────────────

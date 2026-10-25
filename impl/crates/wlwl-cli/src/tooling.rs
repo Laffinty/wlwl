@@ -23,6 +23,69 @@ use crate::OutputFormat;
 /// 自己的解析器还能不能用。
 const SCHEMA_VERSION: &str = "1.0.0";
 
+/// [项目扩展 / G-07] `wlwl namespace [path]` —— **命名空间**的成员清单。
+///
+/// ## 它补的缺口
+///
+/// `wlwl interface` 只能对**文件**求公共面，`wlwl schema` 给的是类型系统与诊断码
+/// ⇒ 想知道「`wlwl:std.net` 到底有哪些成员」，使用者只能**读文档**或者
+/// **反推二进制字符串表**（字符串表里成员名是连续拼接的裸串：
+/// `"URL_JOINURL_PARSE"`、`"HTTP_GETHTTP_POST"` —— 本项目就是这么发现的）。
+/// 这类「靠猜」的 API 发现成本，正是标准库迟迟长不起来的隐形原因。
+///
+/// ## 形态
+///
+/// 与 `interface` / `schema` 一样：**只读**、输出 JSON、带 `*_schema_version`。
+/// 成员名单**直接取自实现**（`wlwl_std::namespace_paths()` + `resolve()`）——
+/// 与附录 A 镜像同源（`wlwl_eval::stdlib_mirror` 也走这一条），不另建一套推导。
+pub fn namespace_command(path: Option<&str>) -> ExitCode {
+    let mut out: Vec<Value> = Vec::new();
+    for p in wlwl_std::namespace_paths() {
+        if let Some(want) = path {
+            if p != want {
+                continue;
+            }
+        }
+        let members: Vec<String> = match wlwl_std::resolve(p) {
+            Some(wlwl_std::StdBackend::Native(spec)) => spec
+                .functions
+                .iter()
+                .map(|(n, _)| (*n).to_string())
+                .collect(),
+            Some(wlwl_std::StdBackend::Lang(src)) => wlwl_std::lang_exports(src.source),
+            None => Vec::new(),
+        };
+        out.push(json!({
+            "path": p,
+            "member_count": members.len(),
+            "members": members,
+        }));
+    }
+    if let Some(want) = path {
+        if out.is_empty() {
+            eprintln!("error: unknown namespace: {want}");
+            eprintln!(
+                "hint: run `wlwl namespace` with no argument to list every resolvable namespace"
+            );
+            return ExitCode::from(1);
+        }
+    }
+    let doc = json!({
+        "interface_schema_version": SCHEMA_VERSION,
+        "namespaces": out,
+    });
+    match serde_json::to_string_pretty(&doc) {
+        Ok(s) => {
+            println!("{s}");
+            ExitCode::SUCCESS
+        }
+        Err(e) => {
+            eprintln!("internal: namespace serialize failed: {e}");
+            ExitCode::from(2)
+        }
+    }
+}
+
 /// `wlwl interface <file>` —— 模块的公开面。
 pub fn interface_file(file: &std::path::Path) -> ExitCode {
     let source = match std::fs::read_to_string(file) {

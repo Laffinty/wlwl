@@ -94,6 +94,28 @@ LET(NULL_OR, FUN((v, d), IF(==(TYPE(v), "NULL"), d, v)));
 LET(RESULT_ALL, _RESULT_ALL);
 LET(RESULT_ANY, _RESULT_ANY);
 
+// ── TAKE_ERR(x) -> payload | NULL ──────────────────────────────────────
+// [项目扩展 / G-23] **一步式「检查并消费」**。
+//
+// `x` 是 `ERR` ⇒ 返回它的**载荷**并**消费**掉那份未消费状态;`x` 不是 `ERR`
+// ⇒ 返回 `NULL`。
+//
+// ⚠ **它必须走内核**(`_TAKE_ERR`),不能写成 `FUN`:§8.2 的墙是「实参为 `ERR`
+//   ⇒ 不求函数体」,判据是**被调用者的名字**在不在 §8.3 的消费者注册表里
+//   ⇒ R1 门面(闭包)**拿不到**那个 `ERR`。
+//   ⚠ 而「拿不到」正是本模块头部那段「`OR_ELSE` / `ERR_MAP` 做不到」的原因 ——
+//   那三个成员的 `ERR` 分支要**做事**(取载荷 / 调 fallback / 换载荷),
+//   而 §8.2 保证体不执行 ⇒ **任何实现层都做不到**。
+//   ⇒ `TAKE_ERR` 能做到,是因为它**自己**就是注册表里的**取走型消费者**
+//   (仿 `EXPECT_ERR`):实参的 `ERR` 合法地进了它,于是它能交还载荷。
+//
+// ⚠ 语言册 §8.2 的推论已经写死了合规写法:「先以注册表消费者提取信息或兜底,
+//   再把**提取结果**(普通值)传给其他函数」⇒ 本成员就是那个「提取信息」的一步式版本。
+LET(TAKE_ERR, _TAKE_ERR);
+
 // EXPORT 顺序跟随标准库规范 §22 表格的行序;附录 A 镜像跟随本顺序。成员
 // **集合**由 `wlwl-eval/tests/result_contract.rs` 对 §22 表格做外部对照。
-EXPORT(["RESULT_MAP", "AND_THEN", "FLATTEN", "NULL_OR", "RESULT_ALL", "RESULT_ANY"]);
+//
+// [项目扩展 / G-21 / G-23] `TAKE_ERR` 追加在末尾(它是**规范外新增**的成员,
+// §22 表里没有它 ⇒ 附录 A 同步测试会红 —— 那是 G-05 说的「公共面超出冻结快照」)。
+EXPORT(["RESULT_MAP", "AND_THEN", "FLATTEN", "NULL_OR", "RESULT_ALL", "RESULT_ANY", "TAKE_ERR"]);

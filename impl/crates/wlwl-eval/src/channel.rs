@@ -9,6 +9,7 @@ pub use wlwl_value::{ChannelHandle, ChannelId};
 
 use std::collections::VecDeque;
 
+use crate::runtime::Direction;
 use crate::Value;
 
 /// Identifies a channel slot within a single [`crate::runtime::Scheduler`].
@@ -307,6 +308,37 @@ impl Channel {
     /// and RECV must yield).
     pub fn push_receiver_waiter(&mut self, task: crate::runtime::TaskId) {
         self.receiver_waiters.push(task);
+    }
+
+    /// [项目扩展 / G-13] 把某个任务从等待者名单里**摘掉**（**不**唤醒它）。
+    ///
+    /// 用途：截止时间到点时，调度器要把挂着的任务**摘出来**再唤醒它 ——
+    /// 否则它仍留在通道的等待者名单里，等对端来配对时会被**再唤醒一次**
+    /// （那时它已经超时返回了 ⇒ **幽灵唤醒**：一次超时等值两次）。
+    ///
+    /// 返回是否真的摘掉了（任务可能已被对端配对走 ⇒ `false`）。
+    pub fn remove_waiter(&mut self, task: crate::runtime::TaskId, dir: Direction) -> bool {
+        match dir {
+            Direction::Send => {
+                let Some(i) = self.sender_waiters.iter().position(|t| *t == task) else {
+                    return false;
+                };
+                self.sender_waiters.remove(i);
+                // ⚠ `sender_waiter_values` 与 `sender_waiters` 是**平行数组**
+                // ⇒ 必须**同一个下标**一起摘，否则值错配（见 `close` 的注释）。
+                if i < self.sender_waiter_values.len() {
+                    self.sender_waiter_values.remove(i);
+                }
+                true
+            }
+            Direction::Recv => {
+                let Some(i) = self.receiver_waiters.iter().position(|t| *t == task) else {
+                    return false;
+                };
+                self.receiver_waiters.remove(i);
+                true
+            }
+        }
     }
 
     /// True iff at least one receiver is parked waiting for a value.

@@ -366,6 +366,142 @@ const CASES: &[Case] = &[
         src: r#"IMPORT("wlwl:std.text", ["WIDTH"]); WIDTH("a", "b")"#,
         expect: "!E0022 WIDTH: function expects 1 argument(s), got 2",
     },
+    // ── TO_INT(规范 v1.0 §12.4 的**宽松**口径)────────────────────────
+    //
+    // ⚠ **与全局内建 `INT` 故意不同**(§12.4 的对比表):`INT` 严格(一律不裁
+    //   空白 / 只收十进制 / 小数形态拒);`TO_INT` 宽松(裁首尾空白 / 另收
+    //   `0x`·`0X` 十六进制文本 / 小数向零截断)⇒ **不要**把它们「统一」。
+    // ⚠ 失败是 **`ERR` 值**(不是诊断)⇒ 程序**最后一条**若是那个 `ERR` 值,
+    //   它会**逃逸** ⇒ E0102 ⇒ 失败用例必须先 `LET` 绑住,再用 `IS_ERR` /
+    //   `ERR_PAYLOAD` / `AT_K` 观察(那条 `ERR_PAYLOAD` 是**取走型**消费者
+    //   ⇒ 顺带把未消费状态取走 ⇒ 作用域结束不报 E0103)。
+    // 正例:§12.4「接受的形态」三条放宽 + 符号 + 范围两端。
+    Case {
+        name: "to_int_plain_decimal",
+        src: r#"IMPORT("wlwl:std.text", ["TO_INT"]); TO_INT("42")"#,
+        expect: "42",
+    },
+    Case {
+        name: "to_int_trims_the_ends_only",
+        src: r#"IMPORT("wlwl:std.text", ["TO_INT"]); TO_INT("  7  ")"#,
+        expect: "7",
+    },
+    Case {
+        name: "to_int_truncates_decimal_toward_zero",
+        src: r#"IMPORT("wlwl:std.text", ["TO_INT"]); TO_INT("3.9")"#,
+        expect: "3",
+    },
+    Case {
+        name: "to_int_truncates_negative_decimal_toward_zero",
+        src: r#"IMPORT("wlwl:std.text", ["TO_INT"]); TO_INT("-3.9")"#,
+        expect: "-3",
+    },
+    Case {
+        name: "to_int_accepts_hex_text",
+        src: r#"IMPORT("wlwl:std.text", ["TO_INT"]); TO_INT("0x1F")"#,
+        expect: "31",
+    },
+    Case {
+        name: "to_int_accepts_hex_text_case_insensitively",
+        src: r#"IMPORT("wlwl:std.text", ["TO_INT"]); TO_INT("0X1f")"#,
+        expect: "31",
+    },
+    Case {
+        name: "to_int_accepts_one_leading_sign",
+        src: r#"IMPORT("wlwl:std.text", ["TO_INT"]); [TO_INT("-5"), TO_INT("+5")]"#,
+        expect: "[-5, 5]",
+    },
+    // §12.4:结果必须落在 `INTEGER` 的有符号 64 位区间内 ⇒ `i64::MIN`
+    // **必须**解析成功(它的幅度是 `i64::MAX + 1` ⇒ 只能靠「先取幅度再带
+    // 符号」这条路;按幅度直接 `parse::<i64>()` 会失败)。
+    Case {
+        name: "to_int_parses_i64_min",
+        src: r#"IMPORT("wlwl:std.text", ["TO_INT"]); TO_INT("-9223372036854775808")"#,
+        expect: "-9223372036854775808",
+    },
+    Case {
+        name: "to_int_parses_i64_max",
+        src: r#"IMPORT("wlwl:std.text", ["TO_INT"]); TO_INT("9223372036854775807")"#,
+        expect: "9223372036854775807",
+    },
+    // ── 失败形态:一律 `ERR([kind:"ParseError", input, reason])` **值** ──
+    Case {
+        name: "to_int_rejects_empty_string",
+        src: r#"IMPORT("wlwl:std.text", ["TO_INT"]); LET(r, TO_INT("")); IF(IS_ERR(r), (LET(p, ERR_PAYLOAD(r)); AT_K(p, "kind", "?")), "NOT-ERR")"#,
+        expect: "ParseError",
+    },
+    Case {
+        name: "to_int_rejects_whitespace_only_string",
+        src: r#"IMPORT("wlwl:std.text", ["TO_INT"]); LET(r, TO_INT("   ")); IF(IS_ERR(r), (LET(p, ERR_PAYLOAD(r)); AT_K(p, "kind", "?")), "NOT-ERR")"#,
+        expect: "ParseError",
+    },
+    Case {
+        name: "to_int_rejects_sign_only_string",
+        src: r#"IMPORT("wlwl:std.text", ["TO_INT"]); LET(r, TO_INT("-")); IF(IS_ERR(r), (LET(p, ERR_PAYLOAD(r)); AT_K(p, "kind", "?")), "NOT-ERR")"#,
+        expect: "ParseError",
+    },
+    Case {
+        name: "to_int_rejects_non_numeric_text",
+        src: r#"IMPORT("wlwl:std.text", ["TO_INT"]); LET(r, TO_INT("abc")); IF(IS_ERR(r), (LET(p, ERR_PAYLOAD(r)); AT_K(p, "kind", "?")), "NOT-ERR")"#,
+        expect: "ParseError",
+    },
+    // ⚠ §12.4:「符号之后**必须紧跟**数字」⇒ 符号与数字之间的空白**不**
+    //   是「可裁剪的首尾空白」(裁剪只作用于首尾)⇒ `TO_INT("- 42")` 失败。
+    Case {
+        name: "to_int_rejects_sign_followed_by_space",
+        src: r#"IMPORT("wlwl:std.text", ["TO_INT"]); LET(r, TO_INT("- 42")); IF(IS_ERR(r), (LET(p, ERR_PAYLOAD(r)); AT_K(p, "kind", "?")), "NOT-ERR")"#,
+        expect: "ParseError",
+    },
+    // ⚠ §12.4:「含非数字字符的串 ⇒ 解析失败」⇒ 小数**尾巴**上的非数字字符
+    //   不能被静默丢掉。
+    Case {
+        name: "to_int_rejects_non_digit_tail",
+        src: r#"IMPORT("wlwl:std.text", ["TO_INT"]); LET(r, TO_INT("3.9abc")); IF(IS_ERR(r), (LET(p, ERR_PAYLOAD(r)); AT_K(p, "kind", "?")), "NOT-ERR")"#,
+        expect: "ParseError",
+    },
+    Case {
+        name: "to_int_rejects_second_decimal_point",
+        src: r#"IMPORT("wlwl:std.text", ["TO_INT"]); LET(r, TO_INT("1.2.3")); IF(IS_ERR(r), (LET(p, ERR_PAYLOAD(r)); AT_K(p, "kind", "?")), "NOT-ERR")"#,
+        expect: "ParseError",
+    },
+    // ⚠ §12.4:「裁剪**只**作用于首尾,串内部的空白使解析失败」。
+    Case {
+        name: "to_int_rejects_internal_whitespace",
+        src: r#"IMPORT("wlwl:std.text", ["TO_INT"]); LET(r, TO_INT("1 2")); IF(IS_ERR(r), (LET(p, ERR_PAYLOAD(r)); AT_K(p, "kind", "?")), "NOT-ERR")"#,
+        expect: "ParseError",
+    },
+    // ⚠ §12.4:越界 ⇒ 解析失败(`i64::MAX + 1` 是**正号**下的越界)。
+    Case {
+        name: "to_int_rejects_value_above_i64_max",
+        src: r#"IMPORT("wlwl:std.text", ["TO_INT"]); LET(r, TO_INT("9223372036854775808")); IF(IS_ERR(r), (LET(p, ERR_PAYLOAD(r)); AT_K(p, "kind", "?")), "NOT-ERR")"#,
+        expect: "ParseError",
+    },
+    // ⚠ 下面三条是**规范沉默处**的裁决(§12.4 只说「另接受 0x/0X 十六进制
+    //   文本」⇒ 接受的形态 = 十进制 + 十六进制,别的都不接受):
+    //   * 下划线分隔符(`1_000`)不是任何一种形态 ⇒ 失败;
+    //   * 二进制前缀(`0b101`)只认 `0x` / `0X` ⇒ 失败;
+    //   * 前导小数点(`.5`)没有整数部分可截断 ⇒ 失败。
+    Case {
+        name: "to_int_rejects_underscore_separators",
+        src: r#"IMPORT("wlwl:std.text", ["TO_INT"]); LET(r, TO_INT("1_000")); IF(IS_ERR(r), (LET(p, ERR_PAYLOAD(r)); AT_K(p, "kind", "?")), "NOT-ERR")"#,
+        expect: "ParseError",
+    },
+    Case {
+        name: "to_int_rejects_binary_prefix",
+        src: r#"IMPORT("wlwl:std.text", ["TO_INT"]); LET(r, TO_INT("0b101")); IF(IS_ERR(r), (LET(p, ERR_PAYLOAD(r)); AT_K(p, "kind", "?")), "NOT-ERR")"#,
+        expect: "ParseError",
+    },
+    Case {
+        name: "to_int_rejects_leading_decimal_point",
+        src: r#"IMPORT("wlwl:std.text", ["TO_INT"]); LET(r, TO_INT(".5")); IF(IS_ERR(r), (LET(p, ERR_PAYLOAD(r)); AT_K(p, "kind", "?")), "NOT-ERR")"#,
+        expect: "ParseError",
+    },
+    // ── 载荷:`input` 是**原始**实参(裁剪前)—— §12.4 的载荷口径 ──────
+    Case {
+        name: "to_int_payload_input_is_the_untrimmed_original",
+        src: r#"IMPORT("wlwl:std.text", ["TO_INT"]); LET(r, TO_INT("  x  ")); IF(IS_ERR(r), (LET(p, ERR_PAYLOAD(r)); AT_K(p, "input", "?")), "NOT-ERR")"#,
+        expect: "  x  ",
+    },
 ];
 
 fn scratch_dir() -> PathBuf {
@@ -460,7 +596,7 @@ fn text_member_set_matches_the_spec_table() {
 
     assert_eq!(
         spec.len(),
-        7,
+        8,
         "§12 table extractor found {} member(s): {spec:?} — the table's shape changed \
          and the extractor needs updating",
         spec.len()
@@ -473,6 +609,10 @@ fn text_member_set_matches_the_spec_table() {
         "NFC_QC",
         "GRAPHEME_COUNT",
         "WIDTH",
+        // [规范 v1.0.2 新增成员] `TO_INT` 是 §12 的**规范性**成员(§12.4),
+        // 不是项目扩展 —— 少了这一条,「表里加了成员却没实现」这类漂移不会被
+        // 这道闸拦住。
+        "TO_INT",
     ] {
         assert!(
             spec.iter().any(|m| m == n),
@@ -483,7 +623,7 @@ fn text_member_set_matches_the_spec_table() {
             "implementation does not export `{n}`: {impls:?}"
         );
     }
-    assert_eq!(impls.len(), 7, "wlwl:std.text exports 7 members");
+    assert_eq!(impls.len(), 8, "wlwl:std.text exports 8 members");
 }
 
 fn spec_path() -> PathBuf {

@@ -484,7 +484,7 @@ fn time_member_set_matches_the_spec_table() {
 
     assert_eq!(
         spec.len(),
-        6,
+        7,
         "§15 table extractor found {} member(s): {spec:?} — the table's shape changed \
          and the extractor needs updating",
         spec.len()
@@ -496,6 +496,8 @@ fn time_member_set_matches_the_spec_table() {
         "TEST_BUBBLE",
         "ADVANCE",
         "TIMEOUT",
+        // [v0.12.0 / D-13] 可挂起睡眠。
+        "SLEEP_ASYNC",
     ] {
         assert!(
             spec.iter().any(|m| m == n),
@@ -508,8 +510,8 @@ fn time_member_set_matches_the_spec_table() {
     }
     assert_eq!(
         impls.len(),
-        6,
-        "wlwl:std.time exports 6 members (A1 + A2 + B slices)"
+        7,
+        "wlwl:std.time exports 7 members (A1 + A2 + B slices + SLEEP_ASYNC)"
     );
 }
 

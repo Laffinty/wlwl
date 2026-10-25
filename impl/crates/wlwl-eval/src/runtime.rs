@@ -311,6 +311,17 @@ pub struct Scheduler {
     /// values for channel handles. Bumped by `CHANNEL_NEW` on
     /// allocation and again on scope-exit force-close (D-D).
     pub next_channel_generation: u64,
+    /// [项目扩展 / G-02] 挂在 socket 上的等待者：**socket id → 任务**。
+    ///
+    /// ⚠ 这是「可挂起的 I/O 等待」的落点：原生成员（`wlwl-std`）**不能**碰调度器
+    ///   （解释器的值模型是 `Rc`，不是 `Send`）⇒ 宿主 I/O 线程只能把「就绪」推进
+    ///   就绪队列，由**解释器线程**取走并在这里唤醒任务。
+    pub socket_waiters: std::collections::HashMap<i64, TaskId>,
+    /// [G-24] 正被某个 `AWAIT` 驱动的任务（`run_until_done` 的目标）。
+    ///
+    /// ⚠ 用来区分两种失败：**有人在等**（⇒ `AWAIT` 会把它重新抛出来，失败是
+    ///   「被认领」的）与**没人管**（fire-and-forget ⇒ 失败会无声无息地消失）。
+    pub awaiting_targets: std::collections::HashSet<TaskId>,
 }
 
 impl Default for Scheduler {
@@ -330,6 +341,8 @@ impl Scheduler {
             current_scope: None,
             channels: Vec::new(),
             next_channel_generation: 0,
+            socket_waiters: std::collections::HashMap::new(),
+            awaiting_targets: std::collections::HashSet::new(),
         };
         s.scopes.push(Scope::new(ScopeId(0), None));
         s.current_scope = Some(ScopeId(0));
@@ -902,6 +915,278 @@ impl Scheduler {
         true
     }
 
+    // ── [项目扩展 / G-02] socket 就绪等待 ───────────────────────────────
+    //
+    // 「可挂起的 I/O 等待」：原生成员发现「现在没有数据」时返回
+    // `Signal::Yield(YieldReason::SocketReady(id))`；求值器把任务挂到
+    // `socket_waiters[id]`，并在 socket 就绪时唤醒它。
+    //
+    // ⚠ 与通道等待的差别只在**唤醒方**：通道由对端任务唤醒，socket 由宿主
+    //   I/O 线程经就绪队列唤醒（`wlwl_std::tcp::take_ready`）。
+
+    /// 把任务挂到某个 socket 上（等 I/O 就绪），并从运行队列里摘掉它。
+    pub fn park_for_socket(&mut self, task_id: TaskId, socket_id: i64) {
+        if let Some(t) = self.tasks.get_mut(task_id.0) {
+            t.state = TaskState::suspended(YieldReason::SocketReady(socket_id));
+        }
+        self.run_queue.retain(|id| *id != task_id);
+        self.socket_waiters.insert(socket_id, task_id);
+    }
+
+    /// socket 就绪 ⇒ 唤醒挂在它上面的任务。返回是否真的唤醒了。
+    pub fn wake_socket_waiter(&mut self, socket_id: i64) -> bool {
+        let Some(task_id) = self.socket_waiters.remove(&socket_id) else {
+            return false;
+        };
+        let still_parked = matches!(
+            self.tasks.get(task_id.0).map(|t| &t.state),
+            Some(TaskState::Suspended {
+                reason: YieldReason::SocketReady(_),
+                ..
+            })
+        );
+        if !still_parked {
+            return false;
+        }
+        if let Some(t) = self.tasks.get_mut(task_id.0) {
+            t.state = TaskState::Pending;
+            // [v0.12.0 / Q1] **这次等待结束了** ⇒ 它的截止时间**一并清掉**
+            // （那是「那一次等待」的预算，socket 已就绪 ⇒ 用不上了）。
+            // ⚠ 不清 ⇒ 那个截止时间会**继续挂着** ⇒ 之后某个无关的等待会被它
+            //   打断（症状与「莫名超时」无法区分）。
+            t.deadline_ms = None;
+        }
+        self.enqueue(task_id);
+        true
+    }
+
+    /// 当前挂在 socket 上的等待者数量（调度循环据此决定「要不要等就绪」）。
+    pub fn socket_waiter_count(&self) -> usize {
+        self.socket_waiters.len()
+    }
+
+    // ── [G-08] 定时睡眠（挂起到某个绝对时刻）──────────────────────────
+    //
+    // 与 `deadline_ms`（G-13 的「最多等多久」）是**两件事**：
+    //   * deadline 到点 ⇒ 等待**失败** ⇒ 置 `timed_out`；
+    //   * 睡眠到点 ⇒ 等待**正常结束** ⇒ 任务继续跑。
+    //
+    // ⇒ 两套字段、两套唤醒，**不混**。
+
+    /// 把任务挂起到绝对时刻 `at_ms`（单调钟毫秒）。
+    ///
+    /// 任务状态转 `Suspended(SleepUntil)` 并从运行队列摘掉；到点后由
+    /// [`Scheduler::wake_due_sleepers`] 唤醒。
+    pub fn park_for_timer(&mut self, task_id: TaskId, at_ms: i64) {
+        if let Some(t) = self.tasks.get_mut(task_id.0) {
+            t.state = TaskState::suspended(YieldReason::SleepUntil(at_ms));
+            t.sleep_until_ms = Some(at_ms);
+        }
+        self.run_queue.retain(|id| *id != task_id);
+    }
+
+    /// 把**到期**的睡眠任务唤醒（转 `Pending` + 入队）。返回被唤醒的任务 id。
+    ///
+    /// ⚠ 与 [`Scheduler::expire_deadlines`] 分开：那里的到期是「**超时**」
+    ///   （等待失败 ⇒ 置 `timed_out`）；这里到期是「**睡够了**」（正常结束）。
+    pub fn wake_due_sleepers(&mut self, now_ms: i64) -> Vec<TaskId> {
+        let mut woken = Vec::new();
+        for idx in 0..self.tasks.len() {
+            let Some(at) = self.tasks[idx].sleep_until_ms else {
+                continue;
+            };
+            if at > now_ms {
+                continue;
+            }
+            // 只有**仍挂着**的任务才该被唤醒（已被别的理由唤醒的 ⇒ 它已经跑过了）。
+            let still_parked = matches!(
+                self.tasks[idx].state,
+                TaskState::Suspended {
+                    reason: YieldReason::SleepUntil(_),
+                    ..
+                }
+            );
+            if !still_parked {
+                self.tasks[idx].sleep_until_ms = None;
+                continue;
+            }
+            // ⚠ 清定时器，但**置**「睡够了」标志 —— 后者由**睡眠成员**消费
+            //   （它要认出「我是被唤醒后重跑的」⇒ 否则会再睡一次 ⇒ 无限循环）。
+            self.tasks[idx].sleep_until_ms = None;
+            self.tasks[idx].sleep_elapsed = true;
+            self.tasks[idx].state = TaskState::Pending;
+            let id = self.tasks[idx].id;
+            self.enqueue(id);
+            woken.push(id);
+        }
+        woken
+    }
+
+    /// 所有睡眠任务里**最早**的那个到点时刻（调度循环据此决定「要等多久」）。
+    pub fn earliest_sleep_deadline(&self) -> Option<i64> {
+        self.tasks.iter().filter_map(|t| t.sleep_until_ms).min()
+    }
+    /// 某个任务是否正挂在 socket 上（等 I/O 就绪）。
+    pub fn task_parked_on_socket(&self, task_id: TaskId) -> bool {
+        matches!(
+            self.tasks.get(task_id.0).map(|t| &t.state),
+            Some(TaskState::Suspended {
+                reason: YieldReason::SocketReady(_),
+                ..
+            })
+        )
+    }
+
+    // ── [G-13] 截止时间（deadline）────────────────────────────────────
+    //
+    // 「最多等多久」这件事**必须**住在**调度器**里：等待是**可挂起**的
+    // （任务被摘出运行队列），而「到点没有等到」这件事只有调度器能观察到
+    // ——它是唯一一个既知道「谁挂着」又能让它「重新变成可运行」的地方。
+    //
+    // ⚠ 口径：**绝对**截止时间（真实单调钟毫秒）⇒ 语义是「这个任务最多还能
+    //   活多久」，不是「每次等待各 ms」。这正是服务端要的：连接最多处理 5 秒 /
+    //   优雅关闭的最后期限。
+    //
+    // ⚠ 计时用**真实单调钟**（`wlwl_value::real_mono_ms`），**不是**虚拟钟气泡
+    //   里的那个钟 —— 气泡的虚拟钟只在 `SLEEP` 时前进，拿它计时 ⇒ 「气泡内的
+    //   截止时间永远不到」。
+
+    /// 给任务设**绝对**截止时间（真实单调钟毫秒）。返回是否设上了。
+    pub fn set_task_deadline(&mut self, task_id: TaskId, abs_ms: i64) -> bool {
+        let Some(t) = self.tasks.get_mut(task_id.0) else {
+            return false;
+        };
+        t.deadline_ms = Some(abs_ms);
+        true
+    }
+
+    /// 读任务的截止时间。
+    pub fn task_deadline(&self, task_id: TaskId) -> Option<i64> {
+        self.tasks.get(task_id.0).and_then(|t| t.deadline_ms)
+    }
+
+    /// 清掉任务的截止时间（「恢复成没有截止时间」）。
+    pub fn clear_task_deadline(&mut self, task_id: TaskId) {
+        if let Some(t) = self.tasks.get_mut(task_id.0) {
+            t.deadline_ms = None;
+        }
+    }
+
+    /// 读并**清掉**「已超时」标志。
+    ///
+    /// 谁读它：**等待操作**（`CHANNEL_RECV` / `CHANNEL_SEND`）在**重跑**时先读它
+    /// ⇒ 命中就返回**超时值**，而不是再挂一次（否则会挂成**永远**）。
+    pub fn take_timed_out(&mut self, task_id: TaskId) -> bool {
+        let Some(t) = self.tasks.get_mut(task_id.0) else {
+            return false;
+        };
+        std::mem::take(&mut t.timed_out)
+    }
+
+    /// 所有任务里**最早**的截止时间（调度循环据此决定「要等多久」）。
+    ///
+    /// ⚠ 只算**真正在等**的任务 —— 且只算**会被截止时间打断**的那三类等待
+    ///   （通道收 / 通道发 / socket 读）。理由：
+    ///   ① 一个**已经跑完**的任务身上不该还挂着截止时间（否则调度循环会为它
+    ///      白等到点，白白拖慢别人）；
+    ///   ② `AWAIT` 等子任务那种等待**不**认这个截止时间（超时后重跑会重新
+    ///      `AWAIT`，语义上不是「这次等待超时了」）⇒ 不该被它打断。
+    pub fn earliest_deadline(&self) -> Option<i64> {
+        self.tasks
+            .iter()
+            .filter(|t| matches!(t.state, TaskState::Suspended { .. }))
+            .filter_map(|t| match t.state {
+                TaskState::Suspended {
+                    reason:
+                        YieldReason::ReceivingOn(_)
+                        | YieldReason::SendingOn(_)
+                        | YieldReason::SocketReady(_),
+                    ..
+                } => t.deadline_ms,
+                _ => None,
+            })
+            .min()
+    }
+
+    /// 把**已到期**的任务唤醒，并置上「已超时」标志。返回被唤醒的任务 id。
+    ///
+    /// ⚠ 只有**仍挂着**（`Suspended`）的任务会超时 —— 已被对端唤醒的任务
+    ///   早就拿到值了，不能再被超时抢走。
+    ///
+    /// ⚠ 只打断**会被截止时间打断**的那三类等待（通道收 / 通道发 / socket 读）
+    ///   —— 见 [`Scheduler::earliest_deadline`] 的理由。
+    ///
+    /// ⚠ 唤醒前**必须把它从等待者名单里摘掉**（通道 / socket）——
+    ///   否则对端来配对时会**再唤醒一次**（幽灵唤醒：一次超时等值两次）。
+    pub fn expire_deadlines(&mut self, now_ms: i64) -> Vec<TaskId> {
+        let mut fired = Vec::new();
+        for idx in 0..self.tasks.len() {
+            let Some(dl) = self.tasks[idx].deadline_ms else {
+                continue;
+            };
+            if dl > now_ms {
+                continue;
+            }
+            // 已经被对端唤醒（不是 Suspended）⇒ 它已经拿到值了 ⇒ 只清截止时间。
+            let reason = match &self.tasks[idx].state {
+                TaskState::Suspended { reason, .. } => Some(*reason),
+                _ => None,
+            };
+            let Some(reason) = reason else {
+                self.tasks[idx].deadline_ms = None;
+                continue;
+            };
+            // 只打断「会被截止时间打断」的那三类等待。
+            let (dir, ch) = match reason {
+                YieldReason::ReceivingOn(ch) => (Direction::Recv, Some(ch)),
+                YieldReason::SendingOn(ch) => (Direction::Send, Some(ch)),
+                YieldReason::SocketReady(sid) => {
+                    self.socket_waiters.remove(&sid);
+                    (Direction::Recv, None)
+                }
+                _ => continue,
+            };
+            // 摘掉等待者（通道 / socket）—— 否则会有幽灵唤醒。
+            if let Some(ch) = ch {
+                if let Some(c) = self.channels.get_mut(ch.0) {
+                    c.remove_waiter(self.tasks[idx].id, dir);
+                }
+            }
+            self.tasks[idx].timed_out = true;
+            self.tasks[idx].deadline_ms = None;
+            self.tasks[idx].state = TaskState::Pending;
+            let id = self.tasks[idx].id;
+            self.enqueue(id);
+            fired.push(id);
+        }
+        fired
+    }
+
+    // ── [G-24] 「有没有人管这个任务」──────────────────────────────────
+    //
+    // 一个任务失败时，失败只存在它自己的 `TaskResult::Failed` 里 ⇒
+    // **只有 `AWAIT` 它的人才会看到**；没人 `AWAIT` ⇒ 失败**完全静默**
+    // （没有诊断、没有 stderr、没有退出码）。对「每连接一个任务」的服务器来说，
+    // 这意味着**一个 handler 崩了，服务器照常运行、只是不响应那个连接**。
+
+    /// 有没有任务正停在 `AwaitingChild(this)` 上（有人在等它）。
+    pub fn has_dependents(&self, task_id: TaskId) -> bool {
+        self.tasks.iter().any(|t| {
+            matches!(
+                &t.state,
+                TaskState::Suspended {
+                    reason: YieldReason::AwaitingChild(c),
+                    ..
+                } if c.0 == task_id.0
+            )
+        })
+    }
+
+    /// 这个任务是不是正被某个 `AWAIT` 驱动着（`run_until_done` 的目标）。
+    pub fn is_being_awaited(&self, task_id: TaskId) -> bool {
+        self.awaiting_targets.contains(&task_id)
+    }
+
     /// [v0.9 Step 3] Cancel a task that is parked on a channel op
     /// (or any other Suspended state). Transitions
     /// `Suspended(*) → Cancelled` and returns `true`. Wakes any
@@ -918,15 +1203,38 @@ impl Scheduler {
     ///   this is the F5+ completion step).
     /// - scope-exit force-cancel (D-D leak detector).
     pub fn cancel_suspended_task(&mut self, task_id: TaskId) -> bool {
-        let was_suspended = match self.tasks.get(task_id.0) {
-            Some(t) => matches!(t.state, TaskState::Suspended { .. }),
+        // [v0.12.0 / H.4.3] 先取出**宿主等待登记**（socket id / 睡眠时刻），
+        // 再改状态 —— `self.tasks` 与 `self.socket_waiters` 不能同时可变借用。
+        let (socket_wait, timer_wait) = match self.tasks.get(task_id.0) {
+            Some(t) => match &t.state {
+                TaskState::Suspended {
+                    reason: YieldReason::SocketReady(sid),
+                    ..
+                } => (Some(*sid), None),
+                TaskState::Suspended {
+                    reason: YieldReason::SleepUntil(at),
+                    ..
+                } => (None, Some(*at)),
+                TaskState::Suspended { .. } => (None, None),
+                _ => return false,
+            },
             None => return false,
         };
-        if !was_suspended {
-            return false;
+        // ⚠ 并发册附录 H.4.3:取消 ⇒ **清空宿主等待登记**。
+        //   不清 ⇒ 被取消的 socket 等待者仍留在 `socket_waiters` 里 ⇒
+        //   `socket_waiter_count() > 0` ⇒ 调度循环会**空等**就绪事件
+        //   （那个任务永远不会来唤醒它）；睡眠者也会一直占着 `sleep_until_ms`。
+        if let Some(sid) = socket_wait {
+            self.socket_waiters.remove(&sid);
         }
         if let Some(t) = self.tasks.get_mut(task_id.0) {
             t.state = TaskState::Cancelled;
+            // 截止时间一并清掉:被取消的任务不该再被「到点」逻辑碰到。
+            t.deadline_ms = None;
+            t.timed_out = false;
+            if timer_wait.is_some() {
+                t.sleep_until_ms = None;
+            }
         }
         self.run_queue.retain(|id| *id != task_id);
         self.wake_dependents(task_id);

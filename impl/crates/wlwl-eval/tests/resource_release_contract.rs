@@ -53,44 +53,13 @@ use std::thread::JoinHandle;
 
 use wlwl_eval::Evaluator;
 
-/// 串行闸:三条用例共用(理由见文件头的「串行闸」一节)。
+/// 串行闸与句柄计数**已抽到共享夹具**（[项目扩展 / G-11]）——
+/// `common::handle_guard`（平台计数 ＋ 进程内共享的串行闸 ＋ 声明式断言）。
 ///
-/// ⚠ `Mutex::new` 是 `const` ⇒ 可以做 `static`;`lock()` 的 `Err`(中毒)被
-/// **吞掉** —— 中毒只说明**上一条**用例炸了,不该让本条也炸成"因为上一条炸了"。
-static SERIAL: std::sync::Mutex<()> = std::sync::Mutex::new(());
-
-/// 当前进程打开的句柄数。
-///
-/// ⚠ 失败时返回 `usize::MAX`(哨兵)⇒ 任何断言都会**变红**而不是静默通过 ——
-/// 「测不出来」不等于「没问题」。
-fn open_handle_count() -> usize {
-    #[cfg(windows)]
-    {
-        #[link(name = "kernel32")]
-        extern "system" {
-            fn GetProcessHandleCount(process: *mut core::ffi::c_void, count: *mut u32) -> i32;
-            fn GetCurrentProcess() -> *mut core::ffi::c_void;
-        }
-        let mut count: u32 = 0;
-        // SAFETY: 两个函数都是 kernel32 的 Win32 API,签名与调用约定正确;
-        // `count` 指向一个合法的 u32。
-        let ok = unsafe { GetProcessHandleCount(GetCurrentProcess(), &mut count) };
-        if ok == 0 {
-            return usize::MAX;
-        }
-        count as usize
-    }
-    #[cfg(unix)]
-    {
-        // Linux 有 /proc/self/fd;macOS 是 /dev/fd。⇒ 两个都试,先到先算。
-        for dir in ["/proc/self/fd", "/dev/fd"] {
-            if let Ok(rd) = std::fs::read_dir(dir) {
-                return rd.count();
-            }
-        }
-        usize::MAX
-    }
-}
+/// ⚠ 抽出去的理由：这两段原先**内联**在本文件里 ⇒ 新增一种原生资源族时
+///   **只能把这一段抄一遍**（本项目加 TCP socket 族时就是这么干的）。
+///   ⇒ 现在新资源族只要 `use common::handle_guard;` 就行。
+use common::handle_guard::{open_handle_count, serial_gate};
 
 /// 本进程当前的**子进程**状态(POSIX 才有意义)。
 #[cfg(unix)]
@@ -193,7 +162,7 @@ fn handle_delta(op: impl Fn()) -> i64 {
 /// 文件类成员:一次往返之后,打开的句柄必须回到基线。
 #[test]
 fn file_members_leave_no_handle_behind() {
-    let _guard = SERIAL.lock().unwrap_or_else(|e| e.into_inner());
+    let _guard = serial_gate();
     let dir = scratch_dir();
     let path = dir.join("release-contract.txt");
     let p = path.to_string_lossy().replace('\\', "/");
@@ -219,7 +188,7 @@ fn file_members_leave_no_handle_behind() {
 /// ⇒ 这是 §19.4「实现**不得**因为某个失败路径而泄漏资源」的直接可测形式。
 #[test]
 fn a_failing_file_read_leaves_no_handle_behind() {
-    let _guard = SERIAL.lock().unwrap_or_else(|e| e.into_inner());
+    let _guard = serial_gate();
     let dir = scratch_dir();
     let missing = dir
         .join("no-such-file.txt")
@@ -261,7 +230,7 @@ fn a_failing_file_read_leaves_no_handle_behind() {
 /// 只有 `PROCESS_RUN` / `PROCESS_ID` 两员(标准库册 §19)。
 #[test]
 fn a_spawned_child_is_reaped() {
-    let _guard = SERIAL.lock().unwrap_or_else(|e| e.into_inner());
+    let _guard = serial_gate();
     // 跨平台:`echo` 在 Windows 上不是可执行文件 ⇒ 用 `cmd /C`。
     let argv = if cfg!(windows) {
         r#"["cmd", "/C", "echo release-contract"]"#
@@ -415,7 +384,7 @@ fn one_shot_server(response: &'static [u8]) -> (u16, JoinHandle<std::io::Result<
 /// 成功路径:`HTTP_GET` 返回前**必须**关掉它打开的 TCP 连接(标准库册 §21.5)。
 #[test]
 fn an_http_call_leaves_no_socket_open() {
-    let _guard = SERIAL.lock().unwrap_or_else(|e| e.into_inner());
+    let _guard = serial_gate();
     let (port, server) = one_shot_server(b"HTTP/1.1 200 OK\r\nContent-Length: 2\r\n\r\nhi");
     let src = format!(
         r#"
@@ -445,7 +414,7 @@ fn an_http_call_leaves_no_socket_open() {
 /// 失败路径:协议越界 ⇒ `ERR` 值 ⇒ 连接**同样**必须关掉(标准库册 §21.5)。
 #[test]
 fn a_failing_http_call_leaves_no_socket_open() {
-    let _guard = SERIAL.lock().unwrap_or_else(|e| e.into_inner());
+    let _guard = serial_gate();
     // 不是 HTTP 响应 ⇒ 客户端必然报协议错。
     let (port, server) = one_shot_server(b"NOT-HTTP\r\n\r\n");
     let src = format!(

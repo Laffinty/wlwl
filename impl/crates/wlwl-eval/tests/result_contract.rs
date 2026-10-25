@@ -39,7 +39,7 @@ const UNFROZEN: &str = "~UNFROZEN";
 
 /// §22.1 与 §22.5 的成员表合起来恰六行。改这个数必须同时改那两张表与
 /// `result.wll` 的 `EXPORT`。
-const MEMBER_COUNT: usize = 6;
+const MEMBER_COUNT: usize = 7;
 
 struct Case {
     name: &'static str,

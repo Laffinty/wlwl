@@ -149,6 +149,99 @@ impl std::fmt::Display for CellVec {
     }
 }
 
+/// [项目扩展 / G-17] 字符串累加器的共享可变单元 —— `CellVec` 的**字符串版**。
+///
+/// **为什么要有它**：`Value::String(String)` 是**不可变**的 ⇒ `s = s + part`
+/// 每轮都要把整条字符串**拷一遍** ⇒ 循环 n 次 ⇒ **O(n²)**。
+/// 数组有 `CellVec`、字典有 `CellDict`（各自把追加变成**原地改**）⇒
+/// **字符串缺同款** ⇒ 补上。
+///
+/// ⚠ **码点数要缓存**：`LEN(s)` 数的是**码点**不是字节（§10.3）⇒ 每次调用重算
+///   就是 O(n) ⇒ 追加时**顺手**把码点数累加进去 ⇒ `LEN` 保持 O(1)。
+///
+/// ⚠ **不变量**（与 `CellVec` / `CellDict` 同款）：可观察面（渲染 / `TYPE` /
+///   `==` / 诊断措辞）必须与 `Value::String` **逐字相同** —— 它是**运行期实现细节**。
+#[derive(Debug)]
+pub struct CellStr(std::rc::Rc<std::cell::RefCell<CellStrInner>>);
+
+/// `CellStr` 的载荷：文本 + **缓存的码点数**。
+#[derive(Debug)]
+pub struct CellStrInner {
+    text: String,
+    chars: usize,
+}
+
+impl CellStr {
+    /// 新建一个独立 cell。
+    pub fn new(text: String) -> Self {
+        let chars = text.chars().count();
+        CellStr(std::rc::Rc::new(std::cell::RefCell::new(CellStrInner {
+            text,
+            chars,
+        })))
+    }
+
+    /// **共享同一个 cell**（只克隆 `Rc`，不拷文本）—— 与 [`CellVec::share`] 同款。
+    ///
+    /// ⚠ 内建返回时**必须**用 `share()` 而不是 `clone()`：后者每轮拷整条字符串，
+    ///   优化归零（与 `CellVec` 的注释同款理由）。
+    pub fn share(&self) -> Self {
+        CellStr(self.0.clone())
+    }
+
+    /// 是否与 `other` **就是同一个** cell（同一 `Rc`）。
+    pub fn ptr_eq(&self, other: &Self) -> bool {
+        std::rc::Rc::ptr_eq(&self.0, &other.0)
+    }
+
+    /// 只读借用。**调用方不得在持有它时去 `borrow_mut` 同一个 cell。**
+    pub fn borrow(&self) -> std::cell::Ref<'_, CellStrInner> {
+        self.0.borrow()
+    }
+
+    /// 可变借用（仅就地追加的内建分支用）。
+    pub fn borrow_mut(&self) -> std::cell::RefMut<'_, CellStrInner> {
+        self.0.borrow_mut()
+    }
+
+    /// 文本内容（克隆一份）。
+    pub fn as_str(&self) -> String {
+        self.0.borrow().text.clone()
+    }
+
+    /// 码点数（`LEN` 的口径）。
+    pub fn chars(&self) -> usize {
+        self.0.borrow().chars
+    }
+
+    /// **就地**追加一段文本 ⇒ 只拷 `part` 的字节（O(|part|)），不动已有内容。
+    ///
+    /// ⚠ 调用方负责**计数**（`string_bytes_copied`）—— 与 `concat_strings` 同款口径。
+    pub fn push_str(&self, part: &str) {
+        let mut inner = self.0.borrow_mut();
+        inner.chars += part.chars().count();
+        inner.text.push_str(part);
+    }
+}
+
+/// 深拷贝 —— 与 `Value::String` 的克隆语义一致，**不**共享 cell。
+impl Clone for CellStr {
+    fn clone(&self) -> Self {
+        let inner = self.0.borrow();
+        CellStr(std::rc::Rc::new(std::cell::RefCell::new(CellStrInner {
+            text: inner.text.clone(),
+            chars: inner.chars,
+        })))
+    }
+}
+
+/// 打印成**文本本身**（与 `Value::String` 逐字相同）—— 调试输出也是可观察面。
+impl std::fmt::Display for CellStr {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        write!(f, "{}", self.0.borrow().text)
+    }
+}
+
 /// [ADR-0035 D4] 字典累加器的共享可变单元 —— **`ADR-0032` 的 `CellVec` 的字典版**。
 ///
 /// **为什么要有它**:`Value::Dict(Rc<DictInner>)` 的写路径走 **copy-on-write**
@@ -259,6 +352,13 @@ pub enum Value {
     /// 只有被识别成「循环局部字典累加器」的字典才会用它(PLAN S2);
     /// 其余一律是 `Dict`,那 175 处用法一字未动。
     DictCell(CellDict),
+    /// [项目扩展 / G-17] 字符串累加器的共享可变字符串。**可观察面必须与
+    /// `String` 一致**（`TYPE` 给 `"string"`、`==` 按内容比较、渲染与诊断措辞
+    /// 逐字相同）。
+    ///
+    /// ⚠ **只有被识别成「循环局部字符串累加器」的绑定才会用它**；其余一律是
+    ///   `String` ⇒ 那 175 处用法一字未动。
+    CellStr(CellStr),
     /// §8.2 function literal with captured environment (clone-based closure).
     Closure {
         params: Vec<FunParam>,
@@ -623,6 +723,15 @@ pub fn concat_strings(a: &str, b: &str) -> String {
     out.push_str(b);
     add_value_work(|w| w.string_bytes_copied += (a.len() + b.len()) as u64);
     out
+}
+
+/// [项目扩展 / G-17] 记一次「字符串**就地**追加拷了多少字节」—— 计数点。
+///
+/// ⚠ 与 [`concat_strings`] **同款口径**（记拷贝的字节数）⇒ 累加器形态下
+///   循环 n 次只拷 O(n) 字节 ⇒ 同一个计数器就能把「优化前 O(n²) / 优化后 O(n)」
+///   这条差异**量出来**。
+pub fn add_string_bytes_copied(n: u64) {
+    add_value_work(|w| w.string_bytes_copied += n);
 }
 
 /// [V-01] 把字符串拆成**码点数组** —— 计数点(记**展开的字符个数**)。
@@ -1010,6 +1119,8 @@ impl Value {
                 }
             }
             Value::String(s) => s.clone(),
+            // ⚠ [G-17] `CellStr` 与 `String` **必须渲染完全一样** —— 渲染是可观察面。
+            Value::CellStr(c) => c.to_string(),
             Value::Boolean(b) => if *b { "TRUE" } else { "FALSE" }.to_string(),
             Value::Null => "NULL".to_string(),
             Value::Array(items) => {
@@ -1130,6 +1241,12 @@ impl PartialEq for Value {
             (Value::Integer(a), Value::Integer(b)) => a == b,
             (Value::Float(a), Value::Float(b)) => a == b,
             (Value::String(a), Value::String(b)) => a == b,
+            // ⚠ [G-17] `CellStr` 的相等性：与 `String` **逐字同口径**（按内容比）。
+            //   ⚠ **先 `ptr_eq` 短路** —— 同一 cell 时直接 true，**不去 borrow**
+            //   （否则「同一 cell 上借出比对」会撞 `RefCell` 的运行期借用检查）。
+            (Value::CellStr(a), Value::CellStr(b)) => a.ptr_eq(b) || a.as_str() == b.as_str(),
+            (Value::String(a), Value::CellStr(b)) => a.as_str() == b.as_str(),
+            (Value::CellStr(a), Value::String(b)) => a.as_str() == b.as_str(),
             (Value::Boolean(a), Value::Boolean(b)) => a == b,
             (Value::Null, Value::Null) => true,
             (Value::Array(a), Value::Array(b)) => a == b,
@@ -1931,6 +2048,26 @@ pub enum YieldReason {
     /// `CHANNEL_SEND(ch)` and `buf` is full. The task is parked on
     /// `ch`'s sender wait list until a receiver drains a slot.
     SendingOn(RcHandle),
+    /// [项目扩展 / G-02] `TCP_RECV` / `TCP_ACCEPT` 暂时拿不到数据：任务挂起在
+    /// 这个 socket id 上，直到该 socket 就绪。
+    ///
+    /// ⚠ **这是 `ReceivingOn` / `SendingOn` 的同族**：通道的等待是「等对端」，
+    ///   socket 的等待是「等 I/O 就绪」—— 两者都是**可挂起**的等待。
+    ///   差别只在**谁**来唤醒：通道由对端任务唤醒，socket 由**宿主侧的 I/O 线程**
+    ///   通过就绪队列唤醒（见 `wlwl_std::tcp::take_ready`）。
+    ///
+    /// ⚠ 载荷是**不透明的 socket id**（`i64`）—— 本 crate 不能依赖 std 的类型
+    ///   （依赖方向是 `eval → wlwl-value ← std`）。
+    SocketReady(i64),
+    /// [项目扩展 / G-08] `perform SleepUntil` —— 把当前任务**挂起**到某个
+    /// 绝对单调钟毫秒。
+    ///
+    /// ⚠ 与 `SocketReady` 同族（都是**可挂起**的等待），差别只在唤醒方：
+    ///   socket 由**宿主 I/O 线程**唤醒；睡眠由**调度器的定时器**唤醒。
+    ///
+    /// ⚠ 载荷是**绝对**毫秒（`wlwl_value::real_mono_ms` 域）—— 不用「还剩多久」
+    ///   这种相对量：任务可能被别的理由唤醒过一轮，相对量会被重新算一遍。
+    SleepUntil(i64),
 }
 
 impl YieldReason {
@@ -1955,6 +2092,11 @@ impl YieldReason {
         match self {
             YieldReason::Explicit | YieldReason::AwaitingChild(_) => Tag::Yield,
             YieldReason::ReceivingOn(_) | YieldReason::SendingOn(_) => Tag::ChannelOp,
+            // [项目扩展 / G-02] socket 就绪等待：与通道同族的「可挂起等待」，
+            // 但由宿主 I/O 线程唤醒。
+            YieldReason::SocketReady(_) => Tag::SocketReady,
+            // [项目扩展 / G-08] 定时睡眠：由调度器的定时器唤醒。
+            YieldReason::SleepUntil(_) => Tag::SleepUntil,
         }
     }
 }
@@ -1995,6 +2137,16 @@ pub enum Tag {
     /// today as `E0050` / `E0051` diagnostics rather than a handled
     /// effect.
     ProtocolViolation,
+    /// [项目扩展 / G-02] `perform SocketReady` —— 等待 socket 就绪。
+    ///
+    /// ⚠ 与 `ChannelOp` 同族：都是**可挂起**的等待；区别是唤醒方不同
+    ///   （通道 = 对端任务；socket = 宿主 I/O 线程的就绪队列）。
+    SocketReady,
+    /// [项目扩展 / G-08] `perform SleepUntil` —— 定时挂起当前任务。
+    ///
+    /// ⚠ 与 `SocketReady` 同族（都是**可挂起**的等待）；唤醒方不同
+    ///   （socket = 宿主 I/O 线程；睡眠 = 调度器的定时器）。
+    SleepUntil,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
@@ -2113,6 +2265,9 @@ pub fn type_name(v: &Value) -> &'static str {
         // ⚠ [ADR-0035 D4] 变体名**不外泄**:用户看 `TYPE` 只能看到 `dict`,
         // 分不清内部表示(与 `Cell` → `"array"` 同理)。
         Value::DictCell(_) => "dict",
+        // ⚠ [G-17] 变体名**不外泄**：用户看 `TYPE` 只能看到 `string`（与 `Cell` →
+        // `"array"`、`DictCell` → `"dict"` 同理）。
+        Value::CellStr(_) => "string",
         Value::Closure { .. } => "function",
         Value::NativeFn { .. } => "native-function",
         Value::Ok(_) => "ok",
@@ -2149,6 +2304,10 @@ pub fn value_type_name(v: &Value) -> &'static str {
         // 用户可见的类型名,把 `DICTCELL` 之类的新名字列出来等于让内部表示
         // 泄到可观察面(与 `Cell` → `"ARRAY"` 同理)。
         Value::DictCell(_) => "DICT",
+        // ⚠ [G-17] 累加器 cell。**必须与 `String` 同名** —— 这个函数是
+        // 用户可见的类型名，把 `CELLSTR` 之类的新名字列出来等于让内部表示
+        // 泄到可观察面（与 `Cell` → `"ARRAY"` 同理）。
+        Value::CellStr(_) => "STRING",
         Value::Closure { .. } | Value::NativeFn { .. } => "FUNCTION",
         Value::Ok(_) | Value::Err(_) => "RESULT",
         // [v0.7 Phase C2] distinct user-visible type for SPAWN
@@ -2288,6 +2447,14 @@ pub fn values_equal(a: &Value, b: &Value) -> bool {
         (Value::Integer(x), Value::Float(y)) => (*x as f64) == *y,
         (Value::Float(x), Value::Integer(y)) => *x == (*y as f64),
         (Value::String(x), Value::String(y)) => x == y,
+        // ⚠ [G-17] `CellStr` 的相等性：与 `String` **逐字同口径**（按内容比）。
+        //   ⚠ **先 `ptr_eq` 短路** —— 同一 cell 时直接 true，**不去 borrow**
+        //   （与 `Cell` / `DictCell` 的同款理由：借出比对会撞 `RefCell` 的借用检查）。
+        (Value::CellStr(x), Value::CellStr(y)) => x.ptr_eq(y) || x.as_str() == y.as_str(),
+        // ⚠ 交叉比较：一个累加器可能在中途才被识别成 cell ⇒
+        //   `"ab" == cell("ab")` 必须与 `"ab" == "ab"` 逐字同结果。
+        (Value::String(x), Value::CellStr(y)) => x.as_str() == y.as_str(),
+        (Value::CellStr(x), Value::String(y)) => x.as_str() == y.as_str(),
         (Value::Boolean(x), Value::Boolean(y)) => x == y,
         (Value::Null, Value::Null) => true,
         (Value::Array(x), Value::Array(y)) => array_entries_equal(x, y),
@@ -2446,6 +2613,74 @@ pub trait StdHost {
     /// 以当前调用点 span 构造诊断。
     fn diag(&mut self, code: ErrorCode, message: String) -> WlwlError;
 
+    // ── [G-13] 截止时间（deadline）接缝 ──────────────────────────────
+    //
+    // 「最多等多久」这件事**必须**住在**调度器**里：等待是**可挂起**的
+    // （任务被摘出运行队列），而「到点还没等到」只有调度器能观察到 ——
+    // 它是唯一一个既知道「谁挂着」又能让它「重新变成可运行」的地方。
+    //
+    // ⇒ 标准库成员**改不了**任务的截止时间（它们看不见调度器）⇒
+    // 需要这三条**宿主接缝**。
+    //
+    // ⚠ 默认实现全是**空操作 / 无截止时间**：手写宿主（各模块测试里的
+    //   `NullHost`、基准里的对照宿主）一个字都不用改 —— 与
+    //   `in_clock_bubble` / `clock_wall_ms` 那组接缝同款。
+
+    /// [G-13] 压入当前任务的**截止时间**（`at_ms`，**真实单调钟**域），返回**旧值**
+    /// （`None` = 之前没有截止时间）。
+    ///
+    /// ⚠ 形状照 [`StdHost::push_clock_deadline`] —— 嵌套时靠「压入 / 弹出」恢复。
+    ///
+    /// ⚠ 语义是「这个任务最多还能活多久」，**不是**「每次等待各 ms」。
+    fn push_task_deadline(&mut self, at_ms: i64) -> Result<Option<i64>, WlwlError> {
+        let _ = at_ms;
+        Ok(None)
+    }
+
+    /// [G-13] 恢复先前压入的截止时间（`prev` = [`StdHost::push_task_deadline`]
+    /// 的返回值；`None` = 恢复成「没有截止时间」）。
+    fn pop_task_deadline(&mut self, prev: Option<i64>) {
+        let _ = prev;
+    }
+
+    /// [G-13] 当前任务的截止时间（**绝对**单调钟毫秒；`None` = 没有截止时间）。
+    fn task_deadline_ms(&self) -> Option<i64> {
+        None
+    }
+
+    /// [G-13] 当前任务的截止时间**已到**？⇒ 读并**清掉**标志（只生效一次）。
+    ///
+    /// 等待操作在**重跑**时先问它：命中 ⇒ 返回**超时值**，而不是再挂一次
+    /// （否则会挂成**永远**）。
+    fn take_timed_out(&mut self) -> bool {
+        false
+    }
+
+    /// [G-08] 当前任务那次**睡眠**是否**已经结束**？⇒ 读并**清掉**标志。
+    ///
+    /// ⚠ 它解决的是**「整段重跑 ⇒ 再睡一次 ⇒ 无限循环」**那个坑：任务被定时器
+    ///   唤醒后调度器**整段重跑** ⇒ 睡眠成员**再被调一次** ⇒ 若不记住「这次睡眠
+    ///   已经睡过了」，它会再挂一次、再被唤醒、再睡一次 ⇒ **永不停机**
+    ///   （**上游自己的夹具 `M6_std_time_sleep` 实测过**：挂起路线下 8 秒 79 次
+    ///   不终止）。
+    ///   ⇒ 睡眠成员重跑时先问它 ⇒ **已睡够**就直接返回，不再挂。
+    ///
+    /// ⚠ 默认实现是 `false`（没在睡）⇒ 手写宿主一个字都不用改。
+    fn take_sleep_elapsed(&mut self) -> bool {
+        false
+    }
+
+    /// [G-08] 「开一次睡」—— 记一次账，并检查**这个任务体是不是已经有一次睡眠**。
+    ///
+    /// ⚠ 已有 ⇒ **诊断**（`Err`）：段模型是「**整段重跑**」⇒ 一个任务体里两次
+    ///   睡眠 ⇒ 第二次睡完重跑 ⇒ 又睡 ⇒ **无限循环**（上游实测 8 秒 79 次不终止）
+    ///   ⇒ 宁可**响亮地失败**，也不要挂死。
+    ///
+    /// ⚠ 默认实现是**空操作**（不记账、不报错）⇒ 手写宿主一个字都不用改。
+    fn begin_task_sleep(&mut self) -> Result<(), WlwlError> {
+        Ok(())
+    }
+
     // ── 时钟接缝(v0.11.3 M6 / addendum-01 B 片)────────────────────────
     //
     // 形态来自 `ADR-0024` §6.3-2 **候选甲**:`StdHost` **加方法**。
@@ -2546,6 +2781,14 @@ pub struct TestEntry {
     pub body: Value,
 }
 
+/// 「**没有源文件**」的哨兵名 —— `StdCtx.source_file` 在宿主没拿到入口文件时
+/// 取这个值(嵌入式求值 / REPL / 库里直接 `Evaluator::eval`)。
+///
+/// ⚠ 它是**诊断定位**用的占位名,**不是路径**。任何把它当路径返回给 WLWL 代码的
+/// 成员都会把内部约定泄漏到公开成员面 ⇒ 标准库侧要把它翻译成 `NULL`
+/// (见 `wlwl-std::env::script_path`)。
+pub const NO_SOURCE_FILE: &str = "<runtime>";
+
 /// std 原生函数的每调用级上下文(自 wlwl-std 迁入,ADR-0022)。
 #[derive(Debug, Clone)]
 pub struct StdCtx {
@@ -2563,6 +2806,8 @@ pub struct StdCtx {
     /// in the ledger as D11-022. Until then this field is a write-only sink.
     pub warnings: Vec<(ErrorCode, String)>,
     /// 入口源文件名(诊断定位用),由 eval 在调用前写入。
+    ///
+    /// ⚠ 没有入口文件时取 [`NO_SOURCE_FILE`] —— 它**不是路径**。
     pub source_file: String,
     /// `std.test` 注册表:TEST 推入,RUN_TESTS 排空调用。
     pub tests: Vec<TestEntry>,
@@ -2574,7 +2819,7 @@ impl Default for StdCtx {
             argv: Vec::new(),
             env: HashMap::new(),
             warnings: Vec::new(),
-            source_file: "<runtime>".into(),
+            source_file: NO_SOURCE_FILE.into(),
             tests: Vec::new(),
         }
     }
@@ -2586,7 +2831,7 @@ impl StdCtx {
             argv: std::env::args().collect(),
             env: std::env::vars().collect(),
             warnings: Vec::new(),
-            source_file: "<runtime>".into(),
+            source_file: NO_SOURCE_FILE.into(),
             tests: Vec::new(),
         }
     }

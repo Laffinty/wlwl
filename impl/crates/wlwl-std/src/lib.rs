@@ -86,6 +86,14 @@ pub mod regex;
 pub mod result;
 pub mod sanitize;
 pub mod stats;
+/// [项目扩展] 传输层实现（`TCP_*` 成员）。**不**自成一个命名空间 ——
+/// 公开面挂在 `wlwl:std.net` 上（见 `net::SPEC`），所以
+/// `namespace_paths()` 不变 ⇒ 附录 A 的差异只有「`std.net` 多出 9 个成员」一行。
+///
+/// ⚠ `pub`（不是 `pub(crate)`）：`wlwl-eval` 的调度循环要调用
+///   `tcp::take_ready()` 取就绪事件（宿主 I/O 线程不能直接碰调度器 ——
+///   解释器的值模型是 `Rc`，不是 `Send`）。
+pub mod tcp;
 pub mod test_native;
 pub mod text;
 pub mod time;
@@ -340,6 +348,14 @@ pub static LANG_SOURCES: &[StdSource] = &[
         kernels: &[
             ("_RESULT_ALL", result::kernel_result_all as StdFn),
             ("_RESULT_ANY", result::kernel_result_any as StdFn),
+            // [项目扩展 / G-23] `TAKE_ERR` —— **一步式「检查并消费」**。
+            //
+            // ⚠ **必须在内核**：§8.2 的墙是「实参为 `ERR` ⇒ 不求函数体」，
+            //   判据是**被调用者的名字**在不在消费者注册表里 ⇒ R1 门面（闭包）
+            //   **拿不到**那个 `ERR` ⇒ 门面版本永远拿不到载荷。
+            //   与 `EXPECT_ERR` 同款形状（见 `wl/std/result.wll` 与
+            //   `wl/std/test.wll` 的文件头）。
+            ("_TAKE_ERR", result::kernel_take_err as StdFn),
         ],
     },
 ];
@@ -904,6 +920,17 @@ mod tests {
             // `wl/std/math.wll` 的 `EXPORT` 决定,本文件只提供内核实现。
             // ⚠ **不含 `MEAN`** —— `SUM` 加 `/` 已覆盖(`ADR-0031` D2)。
             "stats.rs",
+            // [项目扩展 / G-01] 传输层内核（`TCP_LISTEN` / `TCP_ACCEPT` / `TCP_RECV` /
+            // `TCP_SEND` / `TCP_PEER` / `TCP_LOCAL_ADDR` / `TCP_SET_TIMEOUT` /
+            // `TCP_CLOSE` / `TCP_CLOSE_LISTENER`）。同 `collection.rs` / `stats.rs`:
+            // **成员名册由 `wlwl:std.net` 的 `SPEC` 决定**（见 `net.rs`），本文件只提供
+            // 内核实现 ⇒ 不持 `SPEC`。
+            //
+            // ⚠ 为什么挂 `wlwl:std.net` 而不是新开一个命名空间：那会让附录 A 的
+            //   差异从「`std.net` 多 9 个成员」变成「多一整个命名空间」—— 后者要动
+            //   `namespace_paths()` / `NATIVE_SPECS` / `NAMESPACE_META` 三处，
+            //   且让「公共面多了一个命名空间」这件事更难解释。
+            "tcp.rs",
         ];
         let mut files: Vec<String> = std::fs::read_dir("src")
             .expect("unit tests run with the package root as cwd")

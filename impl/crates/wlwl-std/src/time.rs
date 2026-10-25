@@ -49,6 +49,8 @@ pub static SPEC: ModuleSpec = ModuleSpec {
         ("NOW", now as StdFn),
         ("MONOTONIC", monotonic as StdFn),
         ("SLEEP", sleep as StdFn),
+        // [项目扩展 / G-08] **可挂起**的睡眠（`SLEEP` 是阻塞原语，见 `sleep` 的文档）。
+        ("SLEEP_ASYNC", sleep_async as StdFn),
         ("TEST_BUBBLE", test_bubble as StdFn),
         ("ADVANCE", advance as StdFn),
         ("TIMEOUT", timeout as StdFn),
@@ -207,6 +209,75 @@ pub fn sleep(host: &mut dyn StdHost, args: Vec<Value>) -> wlwl_error::WlwlResult
     Ok(Outcome::normal(Value::Null))
 }
 
+/// `SLEEP_ASYNC(ms) -> NULL` —— **可挂起**的睡眠。
+///
+/// 把**当前任务**挂起 `ms` 毫秒，期间**别的任务照常跑**；到点后任务被唤醒、继续往下走。
+///
+/// ⚠ **与 `SLEEP` 的区别**：`SLEEP` 是**阻塞原语**（上游 2026-10-06 裁决「方案 E」：
+///   `SLEEP` 期间**不调度任何其他任务**）⇒ 整个运行时停摆；
+///   `SLEEP_ASYNC` 只挂起**当前任务**⇒ 别的任务照跑。
+///
+/// ## 「整段重跑 ⇒ 再睡一次 ⇒ 无限循环」那个坑（**已解**）
+///
+/// 上游 `SLEEP` 的文档与夹具 `M6_std_time_sleep` 都记着：挂起路线下，任务被唤醒后
+/// **整段重跑**（ADR-0017 Step 3 真状态机恢复**未落地**）⇒ 会**再次执行同一个
+/// `SLEEP`** ⇒ **无限循环**（上游实测：8 秒 79 次 `tick` 仍不终止）。
+///
+/// ⇒ 本成员靠**宿主接缝 `take_sleep_elapsed()`** 认出「我是被唤醒后重跑的」：
+///   定时器到点 ⇒ 调度器置「睡够了」⇒ 重跑时本成员读到它 ⇒ **直接返回，不再挂**。
+///
+/// ## 边界
+///
+/// - `ms < 0` → `E0030`（同 `SLEEP`）；`ms = 0` 合法（挂起一次、立刻被唤醒）。
+/// - **气泡内**：虚拟钟只在 `SLEEP` 时前进 ⇒ 本成员在气泡内**不能**挂起
+///   （挂起就没有任何代码去推进虚拟钟 ⇒ 死等）⇒ 气泡内**等同 `SLEEP`**。
+/// - ⚠ **挂起点必须是所在段的第一条语句**（整段重跑 ⇒ 睡眠**之前**的语句会重跑）——
+///   与 socket 等待、通道等待同款约束。
+/// - ⚠ 单位是毫秒（亚毫秒不支持，同 `SLEEP`）。
+pub fn sleep_async(host: &mut dyn StdHost, args: Vec<Value>) -> wlwl_error::WlwlResult<Outcome> {
+    const NAME: &str = "SLEEP_ASYNC";
+    if args.len() != 1 {
+        return Err(arity(host, NAME, args.len(), 1));
+    }
+    let Value::Integer(ms) = &args[0] else {
+        return Err(type_err(host, NAME, &args[0]));
+    };
+    if *ms < 0 {
+        return Err(host.diag(
+            ErrorCode::E0030,
+            format!("{NAME}: expected a non-negative duration in ms, got {ms}"),
+        ));
+    }
+    // ── 气泡内：**不能**挂起 ⇒ 等同 `SLEEP`（拨快虚拟钟并立即返回）──
+    //
+    // 理由：虚拟钟只在 `SLEEP` 时前进 ⇒ 挂起就没有任何代码去推进它 ⇒ 死等。
+    if host.in_clock_bubble() {
+        let expired = host.advance_clock(*ms)?;
+        if expired {
+            return Ok(Outcome::with_signal(
+                timeout_err(),
+                wlwl_value::Signal::Return(timeout_err()),
+            ));
+        }
+        return Ok(Outcome::normal(Value::Null));
+    }
+    // ⚠ **重跑入口**：定时器到点 ⇒ 调度器置了「睡够了」⇒ 直接返回（**不再挂**）。
+    //    没有这一步 ⇒ 整段重跑 ⇒ 再睡一次 ⇒ 无限循环（上游实测 8 秒 79 次不终止）。
+    if host.take_sleep_elapsed() {
+        return Ok(Outcome::normal(Value::Null));
+    }
+    // ⚠ **守卫**：这个任务体已经有一次睡眠了 ⇒ **诊断**（响亮地失败）。
+    //    段模型是「整段重跑」⇒ 第二次睡眠会「睡完 ⇒ 重跑 ⇒ 又睡」⇒ **无限循环**
+    //    （上游实测 8 秒 79 次不终止）⇒ 宁可报错也不要挂死。
+    host.begin_task_sleep()?;
+    // 第一次进来 ⇒ 挂起到 `now + ms`。求值器接到这个信号后把任务挂到定时器上。
+    let at = wlwl_value::real_mono_ms().saturating_add(*ms);
+    Ok(Outcome::with_signal(
+        Value::Null,
+        wlwl_value::Signal::Yield(wlwl_value::YieldReason::SleepUntil(at)),
+    ))
+}
+
 /// `TIMEOUT` 的失败载荷:`ERR([kind: "Timeout"])`。
 ///
 /// ⚠️ 与 `addendum-01` §3.7 口径 2 定的形态一致(`ERR` **值**而不是原生诊断):
@@ -265,6 +336,11 @@ pub fn timeout(host: &mut dyn StdHost, args: Vec<Value>) -> wlwl_error::WlwlResu
     }
     // 气泡外在这里就报错(诊断文本在 `push_clock_deadline` 的默认实现里 ——
     // 「为什么气泡外做不到」那段解释跟着宿主走,免得两处各写一遍)。
+    //
+    // ⚠ [v0.12.0 / Q3] **气泡外的真实钟截止时间本轮不做** —— 那会改既有成员
+    //   (`TIMEOUT`)的可观察语义(现行规范 §15.1 仍写「气泡外 `E0030」`),
+    //   而总纲 §0.9 的变更登记里**没有**这一行 ⇒ 属一致性册 §3.4 禁区外的
+    //   「行为超前于规范文本」。⇒ 规范侧先落裁决,再做实现。
     let depth = host.push_clock_deadline(host.clock_mono_ms().saturating_add(*d))?;
     let result = host.call(&args[1], Vec::new(), NAME);
     let tripped = host.pop_clock_deadline(depth);

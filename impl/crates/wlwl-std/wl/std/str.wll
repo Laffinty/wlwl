@@ -168,4 +168,22 @@ LET(QUOTE, FUN((s), (
 // v0.11.2 M2 追加的 `INDEX_OF` / `CONTAINS_SUB` 接在末尾,不插在 `COUNT`
 // 旁边 —— 插进去会让契约测试里那份「点名清单」与 §5/§7 的行序约定都要跟着
 // 挪,而顺序本身不承载语义(只承载「与规范表同序」这一条)。
-EXPORT(["JOIN", "SPLIT_LINES", "CHAR_AT", "COUNT", "QUOTE", "INDEX_OF", "CONTAINS_SUB"]);
+// [项目扩展 / G-21] `CAT(...)` —— **变长拼接**。
+//
+// ⚠ 为什么需要：语言里的 `+` 是**二元**的（`+(a, b, c)` ⇒ E0022）⇒ 拼 N 段要嵌套 N-1 次。
+//   而本模块**早就有一个**变长拼接助手（`_CAT`，模块内私有）——
+//   ⚠ **标准库自己就在绕这个缺口** ⇒ 这条缺口的实证就在标准库源码里。
+//
+//   契约：`CAT()` ⇒ `""`；`CAT("a")` ⇒ `"a"`；`CAT("a", 1, TRUE)` ⇒ 逐段用 `STR` 渲染后拼接
+//   （与 `JOIN` 的渲染口径一致）。
+//
+// ⚠ **为什么不能直接导出 `_CAT`**：模块内那个 `_CAT` 是**只拼字符串**的
+//   （`+(s, p)` 遇非字符串直接 `E0030: +: cannot add string and integer`），
+//   而 `CAT` 的契约是「逐段 `STR` 渲染」⇒ 必须自己写一个。
+LET(CAT, FUN((*parts), (
+    LET MUT(out, "");
+    FOR(p, parts, (SET(out, +(out, STR(p)))));
+    out
+)));
+
+EXPORT(["JOIN", "SPLIT_LINES", "CHAR_AT", "COUNT", "QUOTE", "INDEX_OF", "CONTAINS_SUB", "CAT"]);

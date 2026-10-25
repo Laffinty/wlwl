@@ -1,26 +1,28 @@
 //! `wlwl:std.fs` — 文本读写 + **路径 / 目录 / 字节**(v0.3 §15.3 · v0.11.3 M6 扩)。
 //!
-//! Error code mapping (matches spec §14.4) for the **three original** members:
-//!   - E0061 — file not found(**读侧**:`READ_FILE` 读不到)
-//!   - E0062 — **写侧失败**(`WRITE_FILE` 写不进:父目录不存在 / 权限不足 /
-//!     其他写失败);`READ_FILE` 撞上权限不足时也是它
-//!   - E0060 — other I/O error (retryable)
+//! ## 失败口径（[G-19] 之后：**全命名空间统一**）
 //!
-//! ⚠️ [F-03] **读侧与写侧是两个入口**(`read_io_error` / `write_io_error`),
-//! 不是同一个映射:父目录不存在在 OS 层同样落进 `ErrorKind::NotFound`
-//! ⇒ 共用一个映射会把「写不进」报成「文件不存在」(`E0061`)。stdlib §2.0
-//! 明写「写失败 → `E0062`」,故**写侧一律 `E0062`**。
+//! - **元数 / 类型错** ⇒ 原生诊断 `E0022` / `E0030`（**程序员错误**，不可预期）。
+//! - **IO / 状态失败**（文件不存在、写不进、目录已存在…）⇒ **`ERR` 值**
+//!   （`kind = "FsError"` + `op` + `reason`）⇒ 调用方 `IS_ERR` 分支处理，
+//!   **程序不终止**。
 //!
-//! [v0.11.3 M6 / addendum-06] 新增的 15 个成员走**另一种失败口径**:数据 / 状态
-//! 失败是 **`ERR` 值**(`kind = "FsError"` + `op` + `reason`),而**元数 / 类型错**
-//! 仍是原生 `E0022` / `E0030`。理由与旧的 E0060–E0062 分开:那三个码是 v0.3
-//! 的**原生诊断**口径(终止运行),而「目录不存在」「已存在」这类是**可预期的
-//! 运行期结果** —— 调用方多半要 `IS_ERR` 分支处理它(与 `AWAIT` 被取消返回
-//! `Err { kind: "Cancelled" }` 同款)。⇒ 两套口径**并存**,不互相取代。
+//! ⚠ **这是 breaking 变更**：v0.3 以来 `READ_FILE` / `WRITE_FILE` 的 IO 失败是
+//!   **原生诊断**（`E0061` 文件不存在 / `E0062` 写失败 / `E0060` 其它）⇒ **终止运行**。
+//!   ⇒ 在「每连接一个任务」的服务器里，**一次读文件失败会杀掉整个进程**
+//!   （症状与「网络卡了」无法区分）。现在改成 `ERR` 值。
+//!   ⇒ 上游采纳时必须同步改：语言规范 §11.2（`E0061` 那行）与 stdlib §2.0
+//!   （「写失败 → `E0062`」那句）。差异登记见 docs/gaps/gap-registry.md 的 G-19。
+//!
+//! ⚠ **原因文本仍按 `ErrorKind` 分流**（信息不能跟着口径一起丢）：
+//!   读侧「file not found / permission denied / cannot read」，
+//!   写侧「cannot write (...): parent directory does not exist / permission denied / <os error>」
+//!   ⇒ 父目录不存在在 OS 层同样是 `NotFound` ⇒ 共用一句会说成「文件不存在」，
+//!   而调用方要分得开「读不到」与「写不进」。
 //!
 //! [v0.11.3 M6] ⚠️ 本文件里**两种内部风格并存**,是**有意的**:
-//! 旧的三个成员走 `crate::compat`(serde_json 边界层,v0.11 M2 的历史产物),
-//! 新成员走直通的 `wlwl_value::Value`(与 `time.rs` / `rand.rs` 同款)。
+//! `EXISTS` 走 `crate::compat`(serde_json 边界层,v0.11 M2 的历史产物),
+//! 其余成员走直通的 `wlwl_value::Value`(与 `time.rs` / `rand.rs` 同款)。
 //! 路径 / 目录 / 字节是**性能敏感面**(一次 `LIST_DIR` 可能上千个条目、一次
 //! `READ_BYTES` 可能上万个整数),不该为它们多绕一层 serde_json。
 
@@ -31,35 +33,6 @@ use wlwl_error::ErrorCode;
 use wlwl_error::WlwlError;
 use wlwl_value::{Outcome, StdHost, Value};
 
-pub(super) fn std_read_file_inner(
-    _ctx: &mut StdCtx,
-    args: Vec<StdValue>,
-) -> Result<StdValue, StdError> {
-    let path = expect_string("READ_FILE", &args, 0, 1)?;
-    match std::fs::read_to_string(path) {
-        Ok(content) => Ok(StdValue::String(content)),
-        Err(e) => Err(read_io_error("READ_FILE", e, path)),
-    }
-}
-
-pub(super) fn std_write_file_inner(
-    _ctx: &mut StdCtx,
-    args: Vec<StdValue>,
-) -> Result<StdValue, StdError> {
-    if args.len() != 2 {
-        return Err(arity_error("WRITE_FILE", args.len(), 2));
-    }
-    let path = expect_string("WRITE_FILE", &args, 0, 2)?;
-    let content = match &args[1] {
-        StdValue::String(s) => s.clone(),
-        other => return Err(type_error("WRITE_FILE", "string", other)),
-    };
-    match std::fs::write(path, &content) {
-        Ok(()) => Ok(StdValue::Null),
-        Err(e) => Err(write_io_error("WRITE_FILE", e, path)),
-    }
-}
-
 pub(super) fn std_exists_inner(
     _ctx: &mut StdCtx,
     args: Vec<StdValue>,
@@ -68,47 +41,29 @@ pub(super) fn std_exists_inner(
     Ok(StdValue::Bool(std::fs::metadata(path).is_ok()))
 }
 
-/// Map a `std::io::Error` from **`READ_FILE`** to the v0.3 §14.4 IO error
-/// codes. `E0060` is the catch-all; `E0061` for NotFound; `E0062` for
-/// PermissionDenied.
+/// [G-19] 读失败的原因文本 —— **保留 v0.3 诊断里那些能分流的细节**。
 ///
-/// ⚠️ **读侧口径一字未动**(F-03 只拆映射,不改读侧语义):「文件不存在 →
-/// `E0061`」是 v0.3 冻结契约(语言规范 §11.2)。
-fn read_io_error(fn_name: &str, e: std::io::Error, path: &str) -> StdError {
-    let (code, label) = match e.kind() {
-        ErrorKind::NotFound => (ErrorCode::E0061, "file not found"),
-        ErrorKind::PermissionDenied => (ErrorCode::E0062, "permission denied"),
-        _ => (ErrorCode::E0060, "I/O error"),
-    };
-    StdError {
-        code,
-        message: format!("{}: {} ({}): {}", fn_name, label, path, e),
+/// ⚠ 改口径后（诊断 → `ERR` 值）**信息不能跟着丢**：调用方要能分出
+/// 「文件不存在」「权限不足」「路径是目录」这几种 —— 它们对应不同的处理
+/// （404 / 403 / 500）。⇒ 文本按 `ErrorKind` 分流，不用一句「IO 错误」糊过去。
+fn read_failure_reason(path: &str, e: &std::io::Error) -> String {
+    match e.kind() {
+        ErrorKind::NotFound => format!("file not found ({path}): {e}"),
+        ErrorKind::PermissionDenied => format!("permission denied ({path}): {e}"),
+        _ => format!("cannot read ({path}): {e}"),
     }
 }
 
-/// Map a `std::io::Error` from **`WRITE_FILE`** to the v0.3 §14.4 IO error
-/// codes —— **写失败一律 `E0062`**(stdlib §2.0:「`WRITE_FILE` … 写失败 →
-/// `E0062`」)。
+/// [G-19] 写失败的原因文本。
 ///
-/// ⚠️ **为什么写侧不复用读侧的映射**(F-03 的根因):父目录不存在在 OS 层
-/// 同样是 `ErrorKind::NotFound` ⇒ 共用映射会把「写不进」报成「文件不存在」
-/// (`E0061`),调用方按码分流时**分不出「读不到」与「写不进」**。故两侧各
-/// 一个入口:读侧 `E0061` = 文件不存在,写侧 `E0062` = 写失败。
-///
-/// 消息按 kind 分三种(语义必须分得开):
-/// - `parent directory does not exist` —— 父目录不存在(写侧最常见的一种);
-/// - `permission denied` —— 权限不足;
-/// - `<os error>` —— 其余写失败(路径是目录、只读卷、磁盘满 …),把 OS 原话
-///   带出来,别把它压成一句「写失败」。
-fn write_io_error(fn_name: &str, e: std::io::Error, path: &str) -> StdError {
-    let reason = match e.kind() {
-        ErrorKind::NotFound => "parent directory does not exist".to_string(),
-        ErrorKind::PermissionDenied => "permission denied".to_string(),
-        _ => e.to_string(),
-    };
-    StdError {
-        code: ErrorCode::E0062,
-        message: format!("{fn_name}: cannot write ({path}): {reason}"),
+/// ⚠ **写侧不复用读侧的措辞**（F-03 的原意保留）：父目录不存在在 OS 层同样是
+/// `NotFound` ⇒ 共用一句会说成「文件不存在」，而调用方要分得开「读不到」与
+/// 「写不进」⇒ 写侧一律 `cannot write (...)` 开头。
+fn write_failure_reason(path: &str, e: &std::io::Error) -> String {
+    match e.kind() {
+        ErrorKind::NotFound => format!("cannot write ({path}): parent directory does not exist"),
+        ErrorKind::PermissionDenied => format!("cannot write ({path}): permission denied"),
+        _ => format!("cannot write ({path}): {e}"),
     }
 }
 
@@ -138,14 +93,70 @@ pub static SPEC: ModuleSpec = ModuleSpec {
     ],
 };
 
-/// [v0.11 M2 / ADR-0022] 直通边界包装:Value→内部表示→Value。
+/// [G-19] `READ_FILE(path) -> STRING`
+///
+/// ⚠ **失败口径变了（breaking）**：v0.3 以来「读不到」是**原生诊断**
+///   （`E0061` 文件不存在 / `E0062` 权限不足 / `E0060` 其它）⇒ **终止运行**。
+///   ⇒ 在「每连接一个任务」的服务器里，**一次读文件失败会杀掉整个进程**。
+///   现在改成 **`ERR([kind:"FsError", op, reason])` 值**（与本文件其余 15 个成员一致）
+///   ⇒ 调用方 `IS_ERR` 分支处理，**程序不终止**。
+///   差异登记：docs/gaps/gap-registry.md 的 G-19。
+///
+/// ⚠ **元数 / 类型错仍是原生诊断**（`E0022` / `E0030`）—— 那是**程序员错误**，
+///   与「文件不在」这种可预期的运行期结果不同类。
 pub fn std_read_file(host: &mut dyn StdHost, args: Vec<Value>) -> Result<Outcome, WlwlError> {
-    crate::wrap(host, std_read_file_inner, args)
+    if args.len() != 1 {
+        return Err(fs_arity(host, "READ_FILE", args.len(), 1));
+    }
+    let Value::String(path) = &args[0] else {
+        return Err(host.diag(
+            ErrorCode::E0030,
+            format!(
+                "READ_FILE: expected string, got {}",
+                crate::value_kind(&args[0])
+            ),
+        ));
+    };
+    match std::fs::read_to_string(path) {
+        Ok(content) => Ok(Outcome::normal(Value::String(content))),
+        Err(e) => Ok(Outcome::normal(fs_err(
+            "READ_FILE",
+            read_failure_reason(path, &e),
+        ))),
+    }
 }
 
-/// [v0.11 M2 / ADR-0022] 直通边界包装:Value→内部表示→Value。
+/// [G-19] `WRITE_FILE(path, content) -> NULL` —— 失败口径同 `READ_FILE`
+/// （`ERR` 值，不是诊断）。
 pub fn std_write_file(host: &mut dyn StdHost, args: Vec<Value>) -> Result<Outcome, WlwlError> {
-    crate::wrap(host, std_write_file_inner, args)
+    if args.len() != 2 {
+        return Err(fs_arity(host, "WRITE_FILE", args.len(), 2));
+    }
+    let Value::String(path) = &args[0] else {
+        return Err(host.diag(
+            ErrorCode::E0030,
+            format!(
+                "WRITE_FILE: expected string, got {}",
+                crate::value_kind(&args[0])
+            ),
+        ));
+    };
+    let Value::String(content) = &args[1] else {
+        return Err(host.diag(
+            ErrorCode::E0030,
+            format!(
+                "WRITE_FILE: expected string, got {}",
+                crate::value_kind(&args[1])
+            ),
+        ));
+    };
+    match std::fs::write(path, content) {
+        Ok(()) => Ok(Outcome::normal(Value::Null)),
+        Err(e) => Ok(Outcome::normal(fs_err(
+            "WRITE_FILE",
+            write_failure_reason(path, &e),
+        ))),
+    }
 }
 
 /// [v0.11 M2 / ADR-0022] 直通边界包装:Value→内部表示→Value。
@@ -1040,21 +1051,21 @@ mod tests {
 
     #[test]
     fn write_then_read_roundtrip() {
-        let mut ctx = StdCtx::default();
+        let mut host = NullHost;
         let path = tmpfile(".txt");
         let p_str = path.to_string_lossy().into_owned();
 
-        std_write_file_inner(
-            &mut ctx,
+        std_write_file(
+            &mut host,
             vec![
-                StdValue::String(p_str.clone()),
-                StdValue::String("hello\nworld".into()),
+                Value::String(p_str.clone()),
+                Value::String("hello\nworld".into()),
             ],
         )
         .unwrap();
 
-        let v = std_read_file_inner(&mut ctx, vec![StdValue::String(p_str.clone())]).unwrap();
-        assert_eq!(v, StdValue::String("hello\nworld".into()));
+        let v = std_read_file(&mut host, vec![Value::String(p_str.clone())]).unwrap();
+        assert_eq!(v.value, Value::String("hello\nworld".into()));
 
         let _ = std::fs::remove_file(&path);
     }
@@ -1126,17 +1137,44 @@ mod tests {
         assert_eq!(MAX_WRITE_BYTES, 64 * 1024 * 1024);
     }
 
+    /// [G-19] 读不到**不再是原生诊断**，而是**可分支的 `ERR` 值**。
+    ///
+    /// ⚠ 改口径的**理由**：诊断会**终止运行** ⇒ 一次读文件失败会杀掉整个进程
+    ///   （「每连接一个任务」的服务器里，一个坏请求就能让服务消失）。
+    /// ⚠ 改口径的**代价（breaking）**：v0.3 冻结契约写的是「文件不存在 → `E0061`」，
+    ///   现在那个码**不再产生** ⇒ 上游采纳时必须改规范 §11.2 与 stdlib §2.0。
     #[test]
-    fn read_nonexistent_is_e0061() {
-        let mut ctx = StdCtx::default();
-        let err = std_read_file_inner(
-            &mut ctx,
-            vec![StdValue::String(
+    fn read_nonexistent_is_an_err_value_not_a_diagnostic() {
+        let mut host = NullHost;
+        let out = std_read_file(
+            &mut host,
+            vec![Value::String(
                 "Z:/this/path/should/definitely/not/exist/abc_xyz_123".into(),
             )],
         )
-        .unwrap_err();
-        assert_eq!(err.code, ErrorCode::E0061);
+        .unwrap();
+        let Value::Err(payload) = &out.value else {
+            panic!("a missing file must be an ERR value, got {:?}", out.value);
+        };
+        let Value::Dict(d) = payload.as_ref() else {
+            panic!("the ERR payload must be a dict, got {payload:?}");
+        };
+        let field = |k: &str| -> Option<String> {
+            d.get(&Value::String(k.into())).and_then(|v| match v {
+                Value::String(s) => Some(s.clone()),
+                _ => None,
+            })
+        };
+        assert_eq!(
+            field("kind").as_deref(),
+            Some("FsError"),
+            "the payload must name the family"
+        );
+        let reason = field("reason").unwrap_or_default();
+        assert!(
+            reason.contains("file not found"),
+            "the reason must stay distinguishable: {reason:?}"
+        );
     }
 
     #[test]
@@ -1156,9 +1194,9 @@ mod tests {
 
     #[test]
     fn arity_mismatch_is_e0022() {
-        let mut ctx = StdCtx::default();
-        let err = std_read_file_inner(&mut ctx, vec![]).unwrap_err();
-        assert_eq!(err.code, ErrorCode::E0022);
+        let mut host = NullHost;
+        let err = std_read_file(&mut host, vec![]).unwrap_err();
+        assert_eq!(err.diagnostic().code, ErrorCode::E0022);
     }
 
     #[test]

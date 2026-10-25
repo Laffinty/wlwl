@@ -6,6 +6,10 @@
 //! 时间的**源**在操作系统里(本语言就是时间源),而环境的**源**是启动时由宿主
 //! 交给程序的 —— 它已经是「传进来的值」。
 //!
+//! ⚠ **一处显式例外**：[`SCRIPT_PATH`] 要把相对路径变成绝对路径,必须读一次
+//! 进程 CWD ⇒ 它是本模块**唯一**读操作系统 API 的成员。其余四个成员
+//! (`ENV_GET` / `ENV_SET` / `ENV_KEYS` / `ARGS`)仍然纯读 `StdCtx`。
+//!
 //! ## 确定性(ADR-0026 G5 / 业主 2026-10-08 裁决)
 //!
 //! `ENV_KEYS()` **排序后返回**:`std::env::vars()` 的迭代序**逐次可能不同**,
@@ -39,6 +43,7 @@
 use crate::{ModuleSpec, StdFn};
 use wlwl_error::ErrorCode;
 use wlwl_error::WlwlError;
+use wlwl_error::WlwlResult;
 use wlwl_value::{Outcome, StdHost, Value};
 
 pub static SPEC: ModuleSpec = ModuleSpec {
@@ -48,6 +53,11 @@ pub static SPEC: ModuleSpec = ModuleSpec {
         ("ENV_SET", env_set as StdFn),
         ("ENV_KEYS", env_keys as StdFn),
         ("ARGS", args as StdFn),
+        // [项目扩展 / G-22] 「当前脚本路径」。`ARGS()[0]` 是**解释器**自己的
+        // 路径（实测 `…/target/release/wlwl.exe`），拿不到被运行的脚本路径。
+        // 宿主的 `StdCtx.source_file` 里**已经有**入口文件名（诊断定位用），
+        // 只是没暴露给 WLWL 代码 ⇒ 这里把它暴露出去。
+        ("SCRIPT_PATH", script_path as StdFn),
     ],
 };
 
@@ -138,6 +148,60 @@ pub fn args(host: &mut dyn StdHost, args: Vec<Value>) -> Result<Outcome, WlwlErr
         .map(|s| Value::String(s.clone()))
         .collect();
     ok(Value::Array(v))
+}
+
+/// [项目扩展 / G-22] `SCRIPT_PATH() -> STRING | NULL` —— **入口脚本**的路径。
+///
+/// ⚠ 为什么需要：`ARGS()[0]` 是**解释器**自己的路径（实测 `…/target/release/wlwl.exe`）
+///   ⇒ 自包含应用定位不到自己的资源目录（静态文件、配置、模板）。
+/// ⚠ 数据来源：宿主的 `StdCtx.source_file`（诊断定位用的「入口源文件名」）
+///   —— 它**本来就存在**，只是没暴露给 WLWL 代码。
+///
+/// **契约（四条）**
+/// 1. 返回**入口脚本**的路径 —— 不是解释器路径（那是 `ARGS()[0]`），也不是
+///    「当前正在执行的模块」（导入的模块不换这个值：它是**入口**，整轮运行不变）。
+/// 2. 返回**绝对路径**。宿主给的是「命令行原样」的那份（可能是相对路径），
+///    而相对路径的基准是进程 CWD —— 应用改一次 CWD 就会失效。
+///    ⇒ 绝对化在本成员里做（见 [`absolutize`]）。
+/// 3. **没有入口脚本 ⇒ `NULL`**（嵌入式求值 / REPL / 库里直接 eval）。
+///    ⚠ 宿主那时的哨兵是 `wlwl_value::NO_SOURCE_FILE`（`<runtime>`）——
+///    那是**诊断定位**用的占位名，**不是路径** ⇒ 直接返回它就是把内部约定
+///    泄漏到公开成员面（应用会拿它去拼路径）。⇒ 这里翻译成 `NULL`。
+/// 4. **不是**解释器路径。
+///
+/// ⚠ **本成员是 `std.env` 里唯一一个读操作系统 API 的成员**（`current_dir`，
+///   只为第 2 条的绝对化）。本文件头部「纯读宿主一个字段」那条立场对
+///   `ENV_GET` / `ENV_SET` / `ENV_KEYS` / `ARGS` 成立，对本成员是**显式例外**：
+///   没有 CWD 就无法把相对路径变成绝对路径，而「相对路径的基准」这件事
+///   **必须**由本成员说清楚（台账 G-22 的验收判据第 2 条）。
+pub fn script_path(host: &mut dyn StdHost, args: Vec<Value>) -> WlwlResult<Outcome> {
+    const NAME: &str = "SCRIPT_PATH";
+    if !args.is_empty() {
+        return Err(arity(host, NAME, args.len(), 0));
+    }
+    let p = host.ctx().source_file.clone();
+    if p == wlwl_value::NO_SOURCE_FILE {
+        // 没有入口脚本 ⇒ 没有「当前脚本路径」⇒ `NULL`（「暂时没有」是正常值）。
+        return ok(Value::Null);
+    }
+    ok(Value::String(absolutize(&p)))
+}
+
+/// 把「命令行原样」的路径变成**绝对路径**。
+///
+/// ⚠ 相对路径以**进程 CWD**为基准补全 —— 因为宿主给的就是按 CWD 解释的那份路径。
+/// ⚠ **不**做 `canonicalize`：那会解析符号链接（返回的就不再是「用户写的那个
+///   路径」）且要求路径存在（不存在时行为突变）。这里只做「拼 CWD」这一件事。
+/// ⚠ CWD 读不到时（极少见：目录被删）⇒ **原样返回**，不制造假路径。
+fn absolutize(p: &str) -> String {
+    let path = std::path::Path::new(p);
+    if path.is_absolute() {
+        return p.to_string();
+    }
+    match std::env::current_dir() {
+        Ok(cwd) => cwd.join(path).to_string_lossy().to_string(),
+        Err(_) => p.to_string(),
+    }
 }
 
 #[cfg(test)]
@@ -273,6 +337,45 @@ mod tests {
                 .diagnostic()
                 .code,
             ErrorCode::E0030
+        );
+    }
+
+    // ── SCRIPT_PATH ────────────────────────────────────────────────────────
+
+    #[test]
+    fn script_path_is_null_when_the_host_has_no_entry_file() {
+        let mut h = host_with_env(&[]);
+        // 缺省哨兵就是 `NO_SOURCE_FILE` ⇒ 成员必须翻译成 `NULL`。
+        assert_eq!(h.0.source_file, wlwl_value::NO_SOURCE_FILE);
+        let Value::Null = script_path(&mut h, vec![]).unwrap().value else {
+            panic!("no entry script must be NULL, not the `<runtime>` sentinel")
+        };
+    }
+
+    #[test]
+    fn script_path_absolutizes_a_relative_entry_path() {
+        let mut h = host_with_env(&[]);
+        h.0.source_file = "pkg/main.wll".into();
+        let Value::String(v) = script_path(&mut h, vec![]).unwrap().value else {
+            panic!()
+        };
+        let cwd = std::env::current_dir().expect("cwd must be readable");
+        assert_eq!(
+            v,
+            cwd.join("pkg/main.wll").to_string_lossy().to_string(),
+            "a relative entry path must be resolved against the process CWD"
+        );
+    }
+
+    #[test]
+    fn script_path_rejects_arguments() {
+        let mut h = host_with_env(&[]);
+        assert_eq!(
+            script_path(&mut h, vec![Value::Integer(1)])
+                .unwrap_err()
+                .diagnostic()
+                .code,
+            ErrorCode::E0022
         );
     }
 }

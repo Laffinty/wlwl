@@ -45,6 +45,10 @@
 //! `[0-9A-Fa-f:.]`,或以 `v`/`V` 开头(IPvFuture)。不解析成二进制地址。
 //! 这是**已知限制**,不是遗漏。
 
+use crate::tcp::{
+    tcp_accept, tcp_close, tcp_close_listener, tcp_listen, tcp_local_addr, tcp_peer, tcp_recv,
+    tcp_send, tcp_set_timeout,
+};
 use crate::{ModuleSpec, StdFn};
 use wlwl_error::ErrorCode;
 use wlwl_value::{StdHost, Value};
@@ -57,6 +61,24 @@ pub static SPEC: ModuleSpec = ModuleSpec {
         ("HTTP_GET", http_get as StdFn),
         ("HTTP_POST", http_post as StdFn),
         ("HTTP_REQUEST", http_request as StdFn),
+        // ── 传输层（TCP）──────────────────────────────────────────────────
+        //
+        // ⚠ **这 8 个成员不在 v1.0 冻结快照（附录 A）里** ⇒ `stdlib_appendix_a_sync`
+        // 的 Guard B 会**恰好红 1 行**（`std.net` 多出这 8 个成员）。
+        // 那条红灯是**预期**的，是「规范缺传输层能力」的指纹 —— 不得为了让它变绿
+        // 而删成员或改快照。见 docs/gaps/gap-registry.md 的 G-01 / G-05。
+        //
+        // ⚠ **它们只做字节搬运**：本文件里没有 HTTP 语义（请求行/状态码/头名
+        // 一律不认识）—— HTTP 解析与响应构造留在 WLWL 侧。实现见 `tcp.rs`。
+        ("TCP_LISTEN", tcp_listen as StdFn),
+        ("TCP_ACCEPT", tcp_accept as StdFn),
+        ("TCP_RECV", tcp_recv as StdFn),
+        ("TCP_SEND", tcp_send as StdFn),
+        ("TCP_PEER", tcp_peer as StdFn),
+        ("TCP_LOCAL_ADDR", tcp_local_addr as StdFn),
+        ("TCP_SET_TIMEOUT", tcp_set_timeout as StdFn),
+        ("TCP_CLOSE", tcp_close as StdFn),
+        ("TCP_CLOSE_LISTENER", tcp_close_listener as StdFn),
     ],
 };
 

@@ -1093,7 +1093,7 @@ fn str_member_set_matches_the_spec_table() {
     let spec = members_of(&section(6, 7));
     let impls = r1_exports("wlwl:std.str");
     assert_member_set("std.str §6", &spec, &impls);
-    assert_eq!(impls.len(), 7, "§6 declares 7 members");
+    assert_eq!(impls.len(), 8, "§6 declares 8 members (7 + CAT)");
     for n in [
         "JOIN",
         "SPLIT_LINES",

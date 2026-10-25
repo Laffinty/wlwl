@@ -75,6 +75,19 @@ pub enum TokenKind {
     /// Plain string literal (v0.3 §4.2). Used when the literal
     /// contains no `${...}` interpolation — the common case.
     StringLit(String),
+    /// [项目扩展] 字节串字面量 `b"..."` —— **原始字节**，不做 UTF-8 校验。
+    ///
+    /// ⚠ 为什么要它：语言里**没有 BYTES 类型**（`wlwl schema` 的类型表只有
+    ///   INTEGER/FLOAT/STRING/BOOLEAN/NULL/ARRAY/DICT/OPTION/RESULT/FUN/TASK/
+    ///   CHANNEL/CLASS/INSTANCE）⇒ 二进制只能落成 `ARRAY[INTEGER]`。但
+    ///   `ARRAY[INTEGER]` 字面量写起来是 `[104, 105]` —— 不可读、不可 diff、
+    ///   也不能表达 `\x00` 这类字节。
+    /// ⇒ 解析器把 `b"..."` **脱糖**成 `ARRAY[INTEGER]`（见 parser 的
+    ///   `parse_literal`）—— **不引入新类型、不引入新 AST 节点**。
+    ///
+    /// 与普通字符串的差别：① 不做 UTF-8 校验；② **不支持插值**
+    ///   （`${...}` 在字节串里是错误 —— 字节串是常量）；③ 多一个 `\xNN` 转义。
+    BytesLit(Vec<u8>),
     // v0.6 §1.8: interpolated string literal. The lexer emits a
     // sequence of three token kinds bracketing zero or more
     // expression tokens (lexed recursively):
@@ -313,6 +326,45 @@ impl<'a> Lexer<'a> {
         let line = self.line;
         let col = self.col;
         let start = self.pos;
+        // [项目扩展] 十六进制字面量 `0x1F`。
+        //
+        // ⚠ 为什么需要：字节值只能写成 `ARRAY[INTEGER]`，而十进制字节值
+        //   （`b"\x1f"` 的等价物是 `[31]`）不直观；`0xFF` 是字节语境的自然写法。
+        //   整数语义与十进制完全一致（同一个 `Literal::Integer`），**不新增类型**。
+        if self.peek() == Some(b'0') && matches!(self.peek_at(1), Some(b'x') | Some(b'X')) {
+            self.bump(); // '0'
+            self.bump(); // 'x' | 'X'
+            let hex_start = self.pos;
+            while let Some(b) = self.peek() {
+                if (b as char).is_ascii_hexdigit() {
+                    self.bump();
+                } else {
+                    break;
+                }
+            }
+            if self.pos == hex_start {
+                return Err(self.err(
+                    ErrorCode::E0001,
+                    "invalid hexadecimal literal: no digits after 0x",
+                    line,
+                    col,
+                ));
+            }
+            let digits = std::str::from_utf8(&self.src[hex_start..self.pos]).unwrap_or_default();
+            let v = i64::from_str_radix(digits, 16).map_err(|_| {
+                self.err(
+                    ErrorCode::E0001,
+                    format!("invalid hexadecimal literal '0x{digits}'"),
+                    line,
+                    col,
+                )
+            })?;
+            let end_col = self.col;
+            return Ok(Token {
+                kind: TokenKind::Integer(v),
+                span: (line, col, line, end_col),
+            });
+        }
         while let Some(b) = self.peek() {
             if b.is_ascii_digit() {
                 self.bump();
@@ -404,6 +456,109 @@ impl<'a> Lexer<'a> {
             (TokenKind::Integer(v), (line, col, line, end_col))
         };
         Ok(Token { kind, span })
+    }
+
+    /// Read a **byte string** literal `b"..."` (项目扩展).
+    ///
+    /// 与 [`Self::read_string`] 的差别：
+    /// - **不做 UTF-8 校验** —— 字节串就是字节序列（`b"\xff"` 合法）。
+    /// - **没有插值** —— `${` 在字节串里是**错误**（字节串是常量）。
+    /// - 多一个 `\xNN` 转义（两位十六进制 ⇒ 一个字节）。
+    ///
+    /// 产出一个 `BytesLit` token；解析器再把它脱糖成 `ARRAY[INTEGER]`。
+    fn read_bytes(&mut self) -> WlwlResult<Vec<Token>> {
+        let line = self.line;
+        let col = self.col;
+        self.bump(); // opening '"'
+        let mut bytes: Vec<u8> = Vec::new();
+        loop {
+            match self.peek() {
+                Some(b'"') => {
+                    self.bump();
+                    let span = (line, col, self.line, self.col);
+                    return Ok(vec![Token {
+                        kind: TokenKind::BytesLit(bytes),
+                        span,
+                    }]);
+                }
+                Some(b'\\') => {
+                    self.bump();
+                    match self.bump() {
+                        Some(b'n') => bytes.push(b'\n'),
+                        Some(b't') => bytes.push(b'\t'),
+                        Some(b'r') => bytes.push(b'\r'),
+                        Some(b'\\') => bytes.push(b'\\'),
+                        Some(b'"') => bytes.push(b'"'),
+                        Some(b'/') => bytes.push(b'/'),
+                        Some(b'b') => bytes.push(0x08),
+                        Some(b'f') => bytes.push(0x0c),
+                        Some(b'0') => bytes.push(b'\0'),
+                        Some(b'$') => bytes.push(b'$'),
+                        // `\xNN` —— 两位十六进制 ⇒ 一个字节（字节串专用）。
+                        Some(b'x') => {
+                            let hi = self.bump();
+                            let lo = self.bump();
+                            let (Some(hi), Some(lo)) = (hi, lo) else {
+                                return Err(self.err(
+                                    ErrorCode::E0002,
+                                    "unterminated byte escape (\\x at EOF)",
+                                    line,
+                                    col,
+                                ));
+                            };
+                            let Some(h) = (hi as char).to_digit(16) else {
+                                return Err(self.err(
+                                    ErrorCode::E0001,
+                                    format!("invalid hex digit in \\x escape: {}", hi as char),
+                                    line,
+                                    col,
+                                ));
+                            };
+                            let Some(l) = (lo as char).to_digit(16) else {
+                                return Err(self.err(
+                                    ErrorCode::E0001,
+                                    format!("invalid hex digit in \\x escape: {}", lo as char),
+                                    line,
+                                    col,
+                                ));
+                            };
+                            bytes.push(((h << 4) | l) as u8);
+                        }
+                        Some(c) => {
+                            return Err(self.err(
+                                ErrorCode::E0001,
+                                format!("invalid escape '\\{}'", c as char),
+                                line,
+                                col,
+                            ));
+                        }
+                        None => {
+                            return Err(self.err(
+                                ErrorCode::E0002,
+                                "unterminated byte string (escape at EOF)",
+                                line,
+                                col,
+                            ));
+                        }
+                    }
+                }
+                Some(b'$') if self.peek_at(1) == Some(b'{') => {
+                    return Err(self.err(
+                        ErrorCode::E0001,
+                        "byte string literals do not support ${...} interpolation",
+                        line,
+                        col,
+                    ));
+                }
+                Some(b'\n') | None => {
+                    return Err(self.err(ErrorCode::E0002, "unterminated byte string", line, col));
+                }
+                Some(b) => {
+                    bytes.push(b);
+                    self.bump();
+                }
+            }
+        }
     }
 
     fn read_ident_or_keyword(&mut self) -> WlwlResult<Token> {
@@ -851,6 +1006,13 @@ impl<'a> Lexer<'a> {
                         kind: TokenKind::Dot,
                         span: (line, col, line, self.col),
                     });
+                }
+                // [项目扩展] 字节串字面量 `b"..."`。
+                // ⚠ `b` 与 `"` **必须紧邻**（中间有空白 ⇒ 仍是标识符 `b` 后面跟一个字符串），
+                //    与 Rust 的 `b"..."` 同一约定。
+                b'b' if self.peek_at(1) == Some(b'"') => {
+                    self.bump(); // 'b'
+                    tokens.extend(self.read_bytes()?);
                 }
                 b'"' => tokens.extend(self.read_string()?),
                 b'/' if self.peek_at(1) == Some(b'/') => {
