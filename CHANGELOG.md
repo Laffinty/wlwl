@@ -1,3 +1,25 @@
+## [v0.12.0-rc2] — 2026-10-25(预览版)
+
+**v0.12.0 的第二个预览版。** 内容 = 下方 `[0.12.0]` 段 **+ 本轮的四条传输层等待
+修复**（重放中的 `TCP_ACCEPT` 不再再次挂起 · 就绪等待改事件驱动 · 一个 socket 可有
+多个等待者 · `TCP_RECV`/`TCP_ACCEPT` 先看货再问超时）**+ `wlwl-skill` 补上 v0.12.0**
+（17 个新公共面成员的登记、`reference.md` §28 增量备忘、`SKILL.md` 的「Network
+programming」八条纪律、`examples/socket_server.wll`）。
+
+⚠ **RC 与正式版是同一份代码** —— 基版本 `v0.12.0` ＝ `impl/Cargo.toml` 的
+`[workspace.package] version`（`version-check` job 按「基版本」比，对，
+`v0.12.0-rc2` 与 `v0.12.0_rc1` 同一口径）⇒ 二进制报的是 `wlwl 0.12.0`，
+而 tag 是 `v0.12.0-rc2` ⇒ 这是**预览版**，GitHub 上标为 **pre-release**，
+不会被工具链当成 production ready 抓走。
+
+⚠ **本轮不发正式版 tag** —— 正式版的 tag 由业主发起。
+
+本轮读数：全量 `cargo test --workspace` **0 failed**；`cargo fmt --check`
+**0 diff**；`clippy -D warnings` **0**；第三方那份 HTTP 服务器在新构建上
+**6/6 路由 200/404**、`/utf8` = 45 字节。
+
+⇒ 逐条判据（每条带证伪命令）见 `docs/plan/wlwl-v0.12.0-rc1-audit-and-fixes.md`。
+
 ## [v0.12.0_rc1] — 2026-10-25(预览版)
 
 **本段记录的是 `v0.12.0_rc1` 那个快照** —— RC 与正式版**在 RC 发布时**是**同一份代码**
