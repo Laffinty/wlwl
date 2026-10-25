@@ -3,6 +3,50 @@
 Skill-bundle changes (spec lives at `../docs/wlwl-spec-reference.md`
 and is authoritative).
 
+## [v0.12.0] — 编译器 v0.12.0:传输层 / 字节层 / 宿主挂起 / `TAKE_ERR` / `INT` 规则
+
+⚠ **规范面不动** —— 规范仍是 **v1.0**（本仓抄件 = 已发布的 `wlwl-spec-v1`
+**v1.0.2**,tag `v1.0.2` ⇒ 提交 `294dc07`);本版动的是**编译器**的公共面与语义。
+
+### Added
+
+- **`SKILL.md` 的「Network programming」整节**(v0.12.0 传输层专用):**八条
+  非显然的规则**,每条都带**实测故障形态** —— 等待必须在任务里 / 等待必须是所在段
+  的第一条语句且一段只放一次等待 / 跨挂起要活的状态绑在被重放段之外 /
+  监听 socket 建在任务外 / **`SLEEP` 是阻塞原语** / 别 `SET` 不可变绑定 /
+  **`SCOPE` 不等孙任务** / `AWAIT` 已结束句柄是 `E0053`。
+  ⇒ 这节是本次更新的**核心**:没有它,AI agent 写出的服务端会踩中段首重放与
+  阻塞 `SLEEP` 两个坑,而这两个坑的**症状**都不指向真因。
+- **`reference.md` §28「v0.12.0 增量备忘」** —— 17 个新公共面成员的总表
+  (§28.1)、五处语义变更 (§28.2)、传输层三条最易误诊的规则 (§28.3)、
+  任务失败的报告义务 (§28.4)、本版实测读数 (§28.5)。
+- **`reference.md` §9.14.1「传输层 `TCP_*`」** —— 9 个成员的签名表 + 超时形状
+  + 「宿主挂起 vs 阻塞」的对照。
+- **`reference.md` §9.2 / §9.3 / §9.1 / §9.11 / §9.12 / §9.15 补表行** ——
+  `TO_INT` / `CAT` / `UTF8_ENCODE` `UTF8_DECODE` `BYTE_LEN` / `SLEEP_ASYNC` /
+  `SCRIPT_PATH` / `TAKE_ERR`。
+- **`examples/socket_server.wll`** —— 纯 WLWL 的最小 TCP 服务:演示「监听在任务外 /
+  等待在段首 / 副作用在段外 / 字节数用 `BYTE_LEN`」的正确形状。
+
+### Changed
+
+- **`SKILL.md` 的 frontmatter `description`**:触发面从 v1.0 基线扩到
+  **v0.12.0**(列出 17 个新成员与五处语义变更)⇒ AI agent 现在能被
+  「写一个 WLWL 网络服务」这类请求**命中本 skill**。
+- **`SKILL.md` 标题与「When to load」**:标明「spec v1.0 · compiler v0.12.0」,
+  并在「Use when」里加一条**写服务端/客户端**的入口。
+- **`reference.md` 头部 / 目录 / §2 版本表**:补 v0.12.0 行(214 → 231 成员)。
+
+### Fixed
+
+- ⚠ **`std.text::TO_INT` 之前根本没有登记**(§9.2 与 `SKILL.md` 的指针都缺)——
+  而它与全局 `INT` 的分工是本版的规范要点(D-17):`TO_INT` **宽松**(裁剪 /
+  十六进制 / 小数向零截断),`INT` **严格**(不裁剪 / 只十进制 / 小数形态拒 /
+  失败是 `ERR` 值)。两处都补上了。
+- ⚠ **「`PRINT` 在管道重定向时全缓冲」是错的** —— 实测 `PRINT` 是**行缓冲**
+  (`println!` ⇒ Rust `LineWriter`),重定向到文件时进程存活期间即可见。
+  本 skill 里**不**再暗示它是全缓冲。
+
 ## [Unreleased] — 规范基线切到 v1.0(合并册换代)
 
 目标规范从 `wlwl-spec-v0.11` 切到 **v1.0**:权威处是独立仓

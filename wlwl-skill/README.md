@@ -100,7 +100,7 @@ separate [`wlwl-spec-v1`](https://github.com/Laffinty/wlwl-spec-v1) repository
   **⚠ `ai` / `agent` left `wlwl:std.*`** — they are official packages now,
   imported as `"ai:ask"` / `"agent:task"`, and `wlwl:std.ai` no longer
   resolves (`E0040`). Full memo in `reference.md` §27.
-- **v1.0** is the current baseline. The spec moved to its own repository (11
+- **v1.0** is the current **spec** baseline. The spec moved to its own repository (11
   volumes); the merged copy kept in this repo is the secondary carrier the
   machine guards and agents read. **The `§N` numbering does not move** ⇒ every
   section reference in this bundle still resolves. **Member surface unchanged**:
@@ -109,6 +109,27 @@ separate [`wlwl-spec-v1`](https://github.com/Laffinty/wlwl-spec-v1) repository
   (`E0103`)** unless a consumer takes it or it is explicitly discarded with
   `LET(_, expr)`; plus the new complexity / memory chapters (§18–§19) and the
   conformance volume.
+- **v0.12.0** is the current **compiler** baseline (the spec side is still
+  v1.0 / v1.0.2). It expands the **public surface by 17 members**
+  (214 → 231) and changes **five semantics**:
+  - **`std.net` gains the 9-member transport family** (`TCP_LISTEN` `TCP_ACCEPT`
+    `TCP_RECV` `TCP_SEND` `TCP_PEER` `TCP_LOCAL_ADDR` `TCP_SET_TIMEOUT`
+    `TCP_CLOSE` `TCP_CLOSE_LISTENER`) ⇒ **a server can now be written in WLWL
+    itself**. A socket wait is a **host suspension**: it parks **only the
+    calling task**, other tasks keep running.
+  - `std.encode` gains the byte layer (`UTF8_ENCODE` `UTF8_DECODE` `BYTE_LEN`);
+    `std.text` gains `TO_INT`; `std.str` gains `CAT`; `std.env` gains
+    `SCRIPT_PATH`; `std.result` gains `TAKE_ERR`; `std.time` gains
+    `SLEEP_ASYNC`.
+  - ⚠ **transport waits** change from "freeze the `SCOPE`" to "park this task";
+    **`std.fs` IO failures** become `ERR` values instead of terminating
+    diagnostics; **`SLEEP_ASYNC` inside a `TEST_BUBBLE`** behaves like `SLEEP`;
+    **`INT`** gets strict parsing rules (`TO_INT` is the lenient one).
+  - ⚠ **Writing a server? read `SKILL.md`'s "Network programming" section
+    first** — the concurrency model imposes eight non-obvious rules there, and
+    the two most common symptoms (side effects replayed, "the peer never gets
+    the bytes") both point away from their real cause. Full memo in
+    `reference.md` §28.
 
 Superseded specs (v0.6–v0.11) are archived in condensed form in
 `../docs/history/20260902-09.md` / `../docs/history/20260915-22.md`
@@ -138,6 +159,7 @@ Compiler version is independent of the spec version (see root
 | `examples/import_stdlib.wll` | `wlwl:std.*` imports |
 | `examples/sub_migration.wll` | `SUB` length semantics (§10.5) + the two end-index migration traps, gated with `PANIC` so a regression exits 1 |
 | `examples/concurrency.wll` | §17 SCOPE / SPAWN / AWAIT / YIELD + channel fan-in |
+| `examples/socket_server.wll` | **v0.12.0 transport family** — the canonical server shape: listener outside every task, the wait as the first statement of its segment, one wait per segment, timeout as a normal value, `BYTE_LEN` for `Content-Length`. **Read this before writing a WLWL server** |
 | `examples/concurrency_cancel.wll` | SHIELD / cancel with reason / `ChannelClosed` kind |
 | `examples/oop.wll` | §13–§15 CLASS / NEW / methods / protocol / linear THIS |
 | `examples/static_contracts.wll` | v0.10 §5.2 type annotations, container types, `T: Comparable` |

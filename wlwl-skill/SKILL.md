@@ -1,22 +1,29 @@
 ---
 name: writing-wlwl
-description: "Writes WLWL .wll source files (spec v1.0 — merged reference at ../docs/wlwl-spec-reference.md, authoritative source the separate wlwl-spec-v1 repo). Covers v0.6 core (truthy overhaul, &&/|| short-circuit, IF ERR-routing, ! canonical, AT_K rename, string subscript, LET MUT, overflow->E0035, ${} interpolation), v0.7 §17 concurrency, v0.8 clarifications, v0.9 (true-suspension concurrency + OOP §13-§16 with session-type protocols and linear THIS), and v0.10 static contracts (all DEFAULT-OFF, runtime semantics unchanged; carried over unchanged into v0.11 and v1.0): type annotations FUN((a: INTEGER) : INTEGER, ...) plus container types ARRAY[T]/DICT[K,V]/OPTION[T]/RESULT[T,E] and bounded type variables `T: Comparable`; [features] gradual_typing = off|warn|error; module signature sidecars `foo.wll.sig` and `SEALED([...])`; MATCH exhaustiveness. New codes E0110-E0116 / W0110-W0117, all compile-time only. v1.0 error model: an unconsumed ERR is reported (E0103) unless a consumer takes it or it is explicitly discarded with LET(_, expr). Use when the user asks for WLWL code, a .wll file, or anything targeting the wlwl-spec-v1 baseline (or v0.6/v0.7/v0.8/v0.9/v0.10/v0.11 core). Do NOT use for v0.5 or earlier (POP-not-AT_K, no LET MUT), the Rust implementation, or the formatter."
+description: "Writes WLWL .wll source files (spec v1.0 — merged reference at ../docs/wlwl-spec-reference.md, authoritative source the separate wlwl-spec-v1 repo; compiler v0.12.0). Covers v0.6 core (truthy overhaul, &&/|| short-circuit, IF ERR-routing, ! canonical, AT_K rename, string subscript, LET MUT, overflow->E0035, ${} interpolation), v0.7 §17 concurrency, v0.8 clarifications, v0.9 (true-suspension concurrency + OOP §13-§16 with session-type protocols and linear THIS), v0.10 static contracts (all DEFAULT-OFF, runtime semantics unchanged; carried over unchanged into v0.11 and v1.0): type annotations FUN((a: INTEGER) : INTEGER, ...) plus container types ARRAY[T]/DICT[K,V]/OPTION[T]/RESULT[T,E] and bounded type variables `T: Comparable`; [features] gradual_typing = off|warn|error; module signature sidecars `foo.wll.sig` and `SEALED([...])`; MATCH exhaustiveness. New codes E0110-E0116 / W0110-W0117, all compile-time only. v1.0 error model: an unconsumed ERR is reported (E0103) unless a consumer takes it or it is explicitly discarded with LET(_, expr). v0.12.0 (compiler): 17 new stdlib members — std.net transport family (TCP_LISTEN/TCP_ACCEPT/TCP_RECV/TCP_SEND/TCP_PEER/TCP_LOCAL_ADDR/TCP_SET_TIMEOUT/TCP_CLOSE/TCP_CLOSE_LISTENER), std.encode byte layer (UTF8_ENCODE/UTF8_DECODE/BYTE_LEN), std.text TO_INT, std.str CAT, std.env SCRIPT_PATH, std.result TAKE_ERR, std.time SLEEP_ASYNC; plus host-suspension waits (a socket wait parks ONLY the calling task), std.fs IO failures as ERR values, strict INT rules, and the orphan-task-failure report. Use when the user asks for WLWL code, a .wll file, or anything targeting the wlwl-spec-v1 baseline (or v0.6/v0.7/v0.8/v0.9/v0.10/v0.11/v0.12 core). Do NOT use for v0.5 or earlier (POP-not-AT_K, no LET MUT), the Rust implementation, or the formatter."
 ---
 
-# Writing WLWL (spec v1.0)
+# Writing WLWL (spec v1.0 · compiler v0.12.0)
 
 The **spec** and the **compiler** are versioned separately: this bundle targets
 the **v1.0 specification** (authoritative source — the separate
 [`wlwl-spec-v1`](https://github.com/Laffinty/wlwl-spec-v1) repository; the
 merged copy kept in this repo is `../docs/wlwl-spec-reference.md`), while the
-compiler it runs on is the `wlwl` release in `impl/`.
+compiler it runs on is the `wlwl` release in `impl/` — currently **v0.12.0**.
+
+⚠ **v0.12.0 is a public-surface expansion, not a language change.** It adds
+**17 stdlib members** (notably the `std.net` **transport family** — a server can
+now be written in WLWL itself) and **five semantic changes** listed in
+`reference.md` §28. The language surface (operators, builtins, statements) is
+**unchanged** since v0.6.
 
 ## When to load / NOT to use
 
 **Use when:**
-- The user asks for a `.wll` source file, a WLWL program, or a v0.6 / v0.7 / v0.8 / v0.9 / v0.10 / v0.11 / v1.0 idiom.
+- The user asks for a `.wll` source file, a WLWL program, or a v0.6 / v0.7 / v0.8 / v0.9 / v0.10 / v0.11 / v0.12 / v1.0 idiom.
 - A task targets the v1.0 baseline (the current merged spec reference file `../docs/wlwl-spec-reference.md`) or any superseded spec (v0.6–v0.11, archived in condensed form under `../docs/history/`; the v0.11 spec set itself is archived verbatim in `../docs/history/20261022-spec-archive.md`).
 - Reviewing or debugging v0.6–v1.0 source (concurrency, OOP, session protocols, static contracts included).
+- **Writing a network server or client in WLWL** (v0.12.0's transport family) — read the *Network programming* section below first; the concurrency model imposes four non-obvious rules there.
 
 **Don't use when:**
 - The source targets WLWL v0.5 or earlier (different truthy rules, `POP`-not-`AT_K`, no `LET MUT`).
@@ -581,6 +588,71 @@ SCOPE(FUN(() ,
 那个模型,§0.1「运行期语义与 v0.9 逐条一致」就不成立了。
 
 
+## Network programming — v0.12.0 transport family
+
+`std.net` gained 9 transport members in v0.12.0: `TCP_LISTEN` `TCP_ACCEPT`
+`TCP_RECV` `TCP_SEND` `TCP_PEER` `TCP_LOCAL_ADDR` `TCP_SET_TIMEOUT`
+`TCP_CLOSE` `TCP_CLOSE_LISTENER` (signatures in `reference.md` §9.14 / §28).
+A socket wait is a **host suspension** (§17.0): it parks **only the calling
+task** — other tasks keep running.
+
+**These eight rules are not stylistic.** Each one has a measured failure mode
+behind it (the numbers come from this repo's own audit,
+`../docs/plan/wlwl-v0.12.0-rc1-audit-and-fixes.md`):
+
+1. **The wait must be inside a task.** Suspending at top level → `E0014`.
+2. **The wait must be the FIRST statement of its segment, and there must be
+   exactly one wait per segment.** Host suspension is a *non-segmenting*
+   suspend point (§17.0): the resume **replays the segment from its head**, so
+   the statements before the wait **run again**. One wait per segment ⇒ the
+   replay re-runs only that wait.
+3. **State that must survive a suspend lives OUTSIDE the replayed segment** —
+   a top-level `LET MUT` captured by the closure. A binding created inside the
+   replayed segment is **re-initialised** on replay (§17.0 rule 3): its *value*
+   is reset even though the *binding* stays visible.
+4. **Create the listening socket OUTSIDE any task.** Inside a task body, every
+   segment replay opens **another** listener — measured: 5 replays left 5
+   simultaneously `LISTENING` sockets, and the handle was overwritten so they
+   could not even be closed.
+5. ⚠ **`SLEEP` is a blocking primitive — it stops the whole runtime**, socket
+   readiness included. A concurrent `SLEEP(3000)` delays every socket wait in
+   the program by 3 s. **Use `SLEEP_ASYNC` in concurrent code.**
+   ⚠ **This is the classic misdiagnosis**: "the bytes only reach the peer when
+   the process exits" looks exactly like a missing flush, but `TCP_SEND` writes
+   straight to the socket (there is no user-space buffer to flush). Move the
+   `SLEEP` *after* the send and the same program delivers in ~50 ms instead of
+   ~3000 ms. **Do not add a flush / `TCP_NODELAY` workaround — there is none
+   to add.** `TCP_CLOSE` is *not* required for delivery either; it is still
+   correct to close (the peer sees EOF), but it is not what makes the bytes
+   arrive.
+6. **Do not `SET` an immutable binding inside a task body.** `E0024` fails the
+   task, and a failed handler takes the whole connection down with it.
+7. **`SCOPE` does not wait for grandchild tasks.** On scope exit, tasks that
+   are not yet terminal are **force-cancelled** (§17.3 rule 6) — a client sees
+   a reset, and the response body never leaves. A server that must finish its
+   handlers has to **count completions itself** (a shared counter) and only let
+   the acceptor exit when the count matches.
+8. **`AWAIT` on an already-finished handle is `E0053`** ("expired handle",
+   §17.1). There is no "wait for N children" primitive — use a completion
+   counter plus a timeout-paced tick.
+
+**Timeout shapes are normal values, never errors:**
+
+| Call | Timeout result |
+|---|---|
+| `TCP_ACCEPT(listener, ms)` | `NULL` (not `ERR`) |
+| `TCP_RECV(conn, n, ms)` | `{"bytes": [], "text": "", "eof": FALSE}` — **never** EOF |
+
+`timeout_ms == 0` means **no deadline** (suspend until the condition holds).
+`TCP_SET_TIMEOUT(conn, ms)` sets the connection's **read timeout** (`0` =
+infinite); the call-site budget and the connection budget race, **whichever
+comes first wins**.
+
+**Byte counts vs code points.** `LEN(s)` counts **code points**; `BYTE_LEN(s)`
+counts **UTF-8 bytes**. A `Content-Length` header needs the **byte** count —
+they differ for any non-ASCII text. Binary payloads travel as
+`ARRAY[INTEGER]` (`0..=255`), never as `STRING`.
+
 ## Imports — spec §9.2
 
 Three forms:
@@ -660,7 +732,7 @@ deltas are in §25 / §26 / §27):
 - **`wlwl:std.text` extends** (stdlib §12, **v0.11.3**): `NFC` / `NFD` / `NFC_QC` / `GRAPHEME_COUNT` / `WIDTH` — see `reference.md` §25. ⚠ **坐标系有两个**：`LEN` 给码点数、`GRAPHEME_COUNT` 给**字符簇数**——`"👨‍👩‍👧"` 的 `LEN` 是 **5**而 `GRAPHEME_COUNT` 是 **1**,拿 `LEN` 当簇数用会每部分对错一行。 **没有规范化就比不比错**:`é` 与 `"e" + U+0301` 渲染完全一致而 `==` 给 FALSE。 若需等价比较:`==(NFC(a), NFC(b))`(先归一再比)。 `NFC_QC` 是**单方向**的:`TRUE` = 必定已是 NFC,`FALSE` = **只表示「不保证」**——它不是「不是 NFC」。 `WIDTH` 是**簇感知**的:`"👨‍👩‍👧"` 得 **2** 而不是 8(逐码点求和);三条口径 = `A`类(Ambiguous)**1** · 默认 emoji 呈现的 `N`**2** · `Mn`/`Me`/`Cf`(`Mc` 不算)**0**。 ⚠ 正确性证据不在契约表里:字符簇靠 `bin/grapheme-check`(官方全量 853 行),宽度靠 `bin/width-check`(EAW 全表 1 114 112 码点逐条比对)。
 - **`wlwl:std.fs`** (§10.8): `WRITE_FILE`, `READ_FILE`, `EXISTS`.
 - **`wlwl:std.str`** (stdlib §6, **v0.11 new**; **v0.12.0 adds `CAT`**): `JOIN`, `SPLIT_LINES`, `CHAR_AT`, `COUNT`, `QUOTE`, `CAT` — see `reference.md` §25. ⚠ **v0.12.0 adds `CAT(parts...)`** — **variadic** concatenation (the language's `+` is **binary**, so joining N parts otherwise needs N−1 nested calls); each part is rendered with `STR` first, and `CAT()` with no parts gives `""`. `INDEX_OF`, `CONTAINS_SUB` added v0.11.2 (`INDEX_OF` is the only way to get a substring **position** — global `INDEX` is array-only). All three reject an **empty** `sub` with `E0030`.
-- **`wlwl:std.text`** (stdlib §12, **v0.11.2 new**): `TO_UPPER`, `TO_LOWER` — full-Unicode simple case mapping, **no Unicode data files** (Rust's `char` tables). The global `UPPER` / `LOWER` are **ASCII-only and stay that way**: `UPPER("straße")` = `STRAßE`. Use `TO_UPPER` when non-ASCII must move. Length can change (`ß` → `SS`); Greek `Σ` lowercases to `ς` word-finally and `σ` medially.
+- **`wlwl:std.text`** (stdlib §12, **v0.11.2 new**; **v0.12.0 adds `TO_INT`**): `TO_UPPER`, `TO_LOWER`, `TO_INT` — full-Unicode simple case mapping, **no Unicode data files** (Rust's `char` tables). The global `UPPER` / `LOWER` are **ASCII-only and stay that way**: `UPPER("straße")` = `STRAßE`. Use `TO_UPPER` when non-ASCII must move. Length can change (`ß` → `SS`); Greek `Σ` lowercases to `ς` word-finally and `σ` medially. ⚠ **v0.12.0 adds `TO_INT(s)` — the *lenient* text→integer parse** (trims surrounding whitespace / accepts hex / truncates a fraction toward zero); a parse failure is an `ERR([kind:"ParseError", ...])` **value**. ⚠ **It is deliberately NOT the same as the global `INT`**: `INT` is the **strict** internal conversion — it does **not** trim, accepts **decimal only**, rejects a string with a fractional part, and reports a parse failure as an `ERR` value too. Pick `TO_INT` for input parsing, `INT` for internal conversion.
 - **`wlwl:std.math`** (stdlib §7, **v0.11 new**): `ABS`, `MIN`, `MAX`, `FLOOR`, `CEIL`, `ROUND`, `SQRT`, `POW`, `CLAMP`, `PI`, `E` — see `reference.md` §25. **v0.11.2 adds** 21: `LN` `LOG2` `LOG10` `EXP` `TRUNC` `SIN` `COS` `TAN` `ASIN` `ACOS` `ATAN` `ATAN2` `SINH` `COSH` `TANH` `POW_MOD` (R2 float kernels) plus `SIGN` `DIV_CEIL` `GCD` `LCM` `IS_SQRT` (R1 facade). **v0.11.3 adds 29 more — 61 in total**: the `DECIMAL` family (`DECIMAL` `DECIMAL_ADD` `DECIMAL_SUB` `DECIMAL_MUL` `DECIMAL_DIV` `DECIMAL_CMP` `DECIMAL_TO_STRING` `DECIMAL_ROUND`), the `FRACTION` family (`FRACTION` `FRACTION_ADD` `FRACTION_SUB` `FRACTION_MUL` `FRACTION_DIV` `FRACTION_CMP` `FRACTION_TO_STRING` `FRACTION_TO_DECIMAL`), approximate comparison (`APPROX_EQ` `IS_NAN` `IS_INF` `SIGNIFICANT_DIGITS`) and descriptive statistics (`MEDIAN` `MODE` `VARIANCE_S` `VARIANCE_P` `STDDEV_S` `STDDEV_P` `PERCENTILE` `CORRELATION` `LINEAR_FIT`) — see `reference.md` §9.5 (groups A–E). Gotchas: `TRUNC` is **not** `INT` (beyond 2^53 `INT` aborts the run with `E0035`); `LN(0)` is `-inf`, not an error; `DIV_CEIL` takes **integers only**; `GCD`/`LCM` return absolute values; `POW_MOD` uses the Euclidean remainder so `POW_MOD(-7, 3, 5)` is `2`, not `-1`; ⚠ **`DECIMAL` / `FRACTION` values are `DICT`s and their field names are a public contract** (`{"sign", "digits", "scale"}` / `{"num", "den"}`) — a field rename is breaking; ⚠ **`scale` is mandatory** on `DECIMAL_DIV` and `FRACTION_TO_DECIMAL`, and **`mode` is mandatory** on `DECIMAL_ROUND` — a default would silently pick a rounding rule on your behalf; ⚠ **fractions are `i64`, not arbitrary precision** — an overflow is reported as `ERR([kind: "OverflowError"])`, never as the run-terminating `E0035`; ⚠ **`APPROX_EQ` takes 4 arguments and neither tolerance has a default**; ⚠ **the statistics family returns `NULL` for "empty" *and* for "undefined"** (sample variance of `[x]` is `NULL`, population variance is `0.0`) and **`NaN` never enters a statistic**; ⚠ **no family has a `MEAN` member** — `SUM` plus `/` covers it.
 - **`wlwl:std.test`** (§10.10): `TEST`, `ASSERT`, `ASSERT_EQ`, `ASSERT_NEQ`, `EXPECT_ERR` (**1 argument**), `RUN_TESTS` — all import-gated, none is a global. ⚠ **`ASSERT` changed in v0.11** — see `reference.md` §25.
 - ⚠ **`ai` / `agent` — OFFICIAL PACKAGES, not `wlwl:std.*`** (stdlib §9 / §10, **v0.11.3 M8**, `ADR-0034`): import `"ai:ask"` (`ASK`, `EMBED`, `COMPLETE`, `ASK_STREAM`, `ASK_ALL`) and `"agent:task"` (`TASK`, `MODEL`, `TOOL`, `CALL_TOOL`, `CONTEXT`). **`wlwl:std.ai` / `wlwl:std.agent` no longer resolve** — the old paths are the only thing that changed; member names, signatures and semantics are untouched. ⚠ **`wlwl:ai` does not work** — `wlwl:` is std's reserved prefix, so it falls through to the bare-module-name branch and dies with `E0040` looking for a file. ⚠ **There is no namespace-qualified call syntax** — `ai:ask.ASK(…)`, `ai.ASK(…)` and the old `wlwl:std.ai.ASK(…)` all fail to parse (`E0011 expected ')' got Colon`); members are reachable **only** as bare names after `IMPORT`, or under a renamed alias (`IMPORT("agent:task", ["TASK": "AGENT_TASK"])`) if `TASK` collides with the type name in your reading. ⚠ They still compile inside `wlwl-std` under the `real-ai` feature — that feature gates the **HTTP transport** (mock ↔ real), **not** the members, which are visible in default builds.

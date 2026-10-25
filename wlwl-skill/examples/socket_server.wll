@@ -1,0 +1,91 @@
+// examples/socket_server.wll — v0.12.0 transport family, the canonical server shape
+//
+// Expected stdout (no client connects):
+//   LISTENING <port>
+//   RESULT timeout
+//   PASS:socket_server
+//
+// With a client that sends "GET / HTTP/1.1\r\n\r\n" the second line becomes
+//   RESULT echoed
+// and the client receives:
+//
+//   HTTP/1.1 200 OK
+//   Content-Length: 23
+//
+//   echo:GET / HTTP/1.1
+//
+// ⚠ **This file is the reference for "how do I write a WLWL server".** Every
+//   shape below is load-bearing; the reason is in the comment.
+//
+// ── Rule 1: the listening socket is created OUTSIDE any task ──────────────
+//    A task body that opens a listener opens **another** one on every
+//    segment replay (并发册 §17.0: the resume replays the segment head).
+//    Measured: 5 replays left 5 simultaneously LISTENING sockets, and the
+//    handle was overwritten ⇒ they could not even be closed.
+//
+// ── Rule 2: the wait is the FIRST statement of its segment, one wait per
+//    segment ─────────────────────────────────────────────────────────────
+//    A host suspension (waiting on a socket) is a *non-segmenting* suspend
+//    point: the resume replays the segment from its head ⇒ the statements
+//    before the wait run **again**. The `YIELD()` below is what splits the
+//    body into two segments, so the `accept` (segment 0) is not re-run when
+//    the `recv` (segment 1) wakes up.
+//
+// ── Rule 3: state that must survive a suspend lives OUTSIDE the replayed
+//    segment ─────────────────────────────────────────────────────────────
+//    A binding created inside the replayed segment is re-initialised on
+//    replay (§17.0 rule 3). `conn` survives because it is bound in segment 0
+//    and segment 1 only *reads* it.
+//
+// ── Rule 4: a timeout is a NORMAL value, never an error ─────────────────
+//    `TCP_ACCEPT` timing out ⇒ NULL. `TCP_RECV` timing out ⇒
+//    {"bytes": [], "text": "", "eof": FALSE} — and **never** EOF.
+//
+// ── Rule 5: `SLEEP` is a BLOCKING primitive ──────────────────────────────
+//    It stops the whole runtime, socket readiness included ⇒ every socket
+//    wait in the program is delayed by its full duration. Use `SLEEP_ASYNC`
+//    in concurrent code.
+//
+// ⚠ There is **no `TCP_CONNECT`** member: the transport family can listen
+//   and serve, but it cannot open an outbound connection (use `HTTP_*` for
+//   that — those *block* the whole `SCOPE`). So this example has no
+//   built-in client: it waits for an external one and reports the timeout
+//   path when nobody comes.
+
+IMPORT("wlwl:std.io", ["PRINT"]);
+IMPORT("wlwl:std.net", [
+  "TCP_LISTEN", "TCP_ACCEPT", "TCP_RECV", "TCP_SEND",
+  "TCP_CLOSE", "TCP_CLOSE_LISTENER", "TCP_LOCAL_ADDR"
+]);
+IMPORT("wlwl:std.encode", ["BYTE_LEN"]);
+
+// Rule 1: outside every task.
+LET(listener, TCP_LISTEN("127.0.0.1", 0));
+LET(port, AT_K(TCP_LOCAL_ADDR(listener), "port", 0));
+PRINT(FORMAT("LISTENING {0}", port));
+
+LET(result, SCOPE(FUN(() , (
+  LET(acceptor, SPAWN(FUN(() , (
+    // ── segment 0: the wait, and only the wait ─────────────────────────
+    LET(conn, TCP_ACCEPT(listener, 1000));
+    YIELD();
+
+    // ── segment 1: no side effects that must not be replayed ────────────
+    IF(==(TYPE(conn), "NULL"),
+      "timeout",
+      (LET(chunk, TCP_RECV(conn, 4096, 1000));
+       LET(body, FORMAT("echo:{0}", AT_K(chunk, "text", "")));
+       // `Content-Length` must be the BYTE count, not the codepoint count.
+       LET(head, FORMAT("HTTP/1.1 200 OK\r\nContent-Length: {0}\r\n\r\n", BYTE_LEN(body)));
+       TCP_SEND(conn, +(head, body));
+       TCP_CLOSE(conn);
+       "echoed"))
+  ))));
+  AWAIT(acceptor)
+))));
+
+TCP_CLOSE_LISTENER(listener);
+PRINT(FORMAT("RESULT {0}", result));
+IF(||(==(result, "timeout"), ==(result, "echoed")),
+   PRINT("PASS:socket_server"),
+   PRINT("FAIL:socket_server"))
