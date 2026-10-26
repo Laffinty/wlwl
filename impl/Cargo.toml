@@ -105,7 +105,15 @@ getrandom = { version = "0.3", default-features = false }
 #     三条线不引入新的 C 依赖。
 #
 # 版本按「钉住、不裸取最新版」的纪律显式给,与 `getrandom` / `argon2` 同款。
-zstd = { version = "0.13", default-features = false }
+#
+# [v0.12.0 / CI 修复] `0.13` ⇒ `0.14`:`0.13.3` 触发两条新 advisory ——
+# RUSTSEC-2026-0391(复用 context 时上一个 stream 的数据泄进下一个)与
+# RUSTSEC-2026-0398(`Seekable::decompress` 把 Vec 长度写越界)。两条的修复版
+# 都在 `zstd >= 0.14.3` / `zstd-safe >= 8.2.0` ⇒ **升版本**而不是豁免
+# (`deny.toml` 的 `ignore` 只留给「无可升修复版」的情形,见该文件里的 rustls 四条)。
+# 本仓对 zstd 的**API 面只有两处**(`zstd::bulk::compress` 与
+# `zstd::stream::read::Decoder::new`)⇒ 升级面极小。
+zstd = { version = "0.14", default-features = false }
 flate2 = { version = "1", default-features = false, features = ["rust_backend"] }
 
 # 閺堫剙浼愭担婊呪敄闂傛潙鍞撮柈?crate
