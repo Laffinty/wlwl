@@ -32,6 +32,50 @@ and is authoritative).
 - `reference.md` **§28.6** —— 二期复测带回来的订正表（A4 / A5 / N5 / A3 四条）+
   一条通用教训：「凡是能实测的结论，不要只靠读规范定案」。
 
+### Fixed（v0.12.0 发版审计 F-11…F-22 —— 技能包口径订正批次 R-7）
+
+⚠ 本段是**发版审计**（`../docs/plan/wlwl-v0.12.0-release-audit-20261026.md`）
+里**技能包修订批次（R-7）** 的落地 —— 全部是**口径订正**：不改示例源码、
+不改语言面、不改任何成员契约。
+
+- **`SKILL.md` 并发「硬规则」第 6 条**原写「**共享可变状态 = `LET MUT`**」⇒
+  **与并发册 §17.0.1 正面冲突**（该条明令**不得**跨任务共享可变 cell，正确形态
+  是 **actor + 通道**）。现改为「**绝不跨任务共享可变状态**」，并注明违反它
+  **不被任何诊断拦截**（调度器只在段边界检查点）。
+- **`X-06` / `X-07` 不再是「已知缺口」** —— 一致性册 §5.4 的两行状态均为
+  「**已实现**」⇒ 技能包改写为「**已收敛：一条 `ERR` 都不会丢**」。
+- **`std.fs` 段落的尾部**原写「三个冻结的 v0.3 成员仍用旧的原生 IO 诊断码」——
+  **与同句前半、规范、实测三处冲突** ⇒ 删除；四个成员**全是** `ERR` 值。
+- **消费者注册表补 `TAKE_ERR`**（§8.3 的第 **14** 条）⇒ 删掉「§8.3 不新增
+  条目」这类过时说法（`SKILL.md` §8.3 / §8.6 与 `reference.md` §8.3 / §8.6 /
+  §9.15）。
+- **`reference.md` §28.3 第 3 条**按 §28.6 的 A4 订正行改写：`SCOPE` 是
+  **先等后取消** ⇒ 客户端拿到**完整响应**，**不是 RST**。
+- **成员面 `214` → `231`**、附录 A 由「generated」改称「**frozen snapshot**」
+  （规范 §0.7 规则 1：该表**不得**随实现漂移）、差异登记 `X-01…X-15` →
+  `X-01…X-25`（`SKILL.md` References / `reference.md` §2 版本表 / `README.md`）。
+- **语义变更清单统一为 7 条（D-14…D-20）** —— 原先 `SKILL.md` 说「five」、
+  `reference.md` §28.2 只列 5 条（**漏 D-16 / D-17**）、frontmatter 又是第四套。
+- **`reference.md` §9.1 导语**原写「All eight members」⇒ 改为 **16 个成员**，
+  并说明字节层三员（`UTF8_ENCODE` / `UTF8_DECODE` / `BYTE_LEN`）走
+  `ARRAY[INTEGER]`（实测 `UTF8_ENCODE("héllo")` ⇒ `[104,195,169,108,108,111]`，
+  `BYTE_LEN` ⇒ 6 而 `LEN` ⇒ 5）。
+- **`examples/concurrency_cancel.wll` 的「Expected stdout」**原声明 4 行 ⇒ 改为
+  **实际 3 行**（`kind` 只被比较、从未被 `PRINT`）—— **只改注释**。
+
+### Added（技能包修订批次 R-7）
+
+- **`SKILL.md` 新增一节「Task failures — the reporting obligation (§17.9)」** ——
+  孤儿任务失败 ⇒ stderr **恰好一行**
+  `[wlwl] unhandled task failure (task #N): …`、程序**继续**、**退出码 0**；
+  被 `AWAIT` 认领 ⇒ 在**调用点**抛出、**不重复报告**（实质说明原在
+  `reference.md` §28.4，本段把它提上来）。
+- **`SKILL.md`「Top antipatterns」新增第 28 行**（孤儿任务失败那一行**不是噪声**）。
+- **`impl/crates/wlwl-cli/tests/skill_package_guard.rs`** —— 技能包口径守卫：
+  `214 members` / `X-01…X-15` / 旧的 fs 原生诊断码 / `Shared state = ` 四条过期
+  口径在 `SKILL.md` / `reference.md` / `README.md` 里**零命中**，且 `SKILL.md`
+  正文必须**能**搜到「孤儿 / orphan / unhandled task failure」。
+
 ## [v0.12.0] — 编译器 v0.12.0:传输层 / 字节层 / 宿主挂起 / `TAKE_ERR` / `INT` 规则
 
 ⚠ **规范面不动** —— 规范仍是 **v1.0**（本仓抄件 = 已发布的 `wlwl-spec-v1`

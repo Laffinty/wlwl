@@ -15,8 +15,8 @@
 > history.
 >
 > ⚠ **The compiler this bundle targets is `wlwl` v0.12.0** — its public-surface
-> expansion (17 new members) and five semantic changes are in **§28**. The
-> **language** surface has not moved since v0.6.
+> expansion (17 new members) and **seven semantic changes (D-14…D-20)** are in
+> **§28**. The **language** surface has not moved since v0.6.
 
 ## Contents
 
@@ -85,8 +85,8 @@ because the array is non-empty), `TASK` / `CHANNEL` handles, and
 | **v0.11** | **Two new `wlwl:std.*` namespaces and one breaking `ASSERT` change**, on a renumbered spec (the formatter moved to §A.3): `wlwl:std.str` (`JOIN` `SPLIT_LINES` `CHAR_AT` `COUNT` `QUOTE`) and `wlwl:std.math` (`ABS` `MIN` `MAX` `FLOOR` `CEIL` `ROUND` `SQRT` `POW` `CLAMP` `PI` `E`); ⚠ **`ASSERT` now rejects all eight falsy values** (`ASSERT(0)` used to pass). Full tables in §25 |
 | **v0.11.2** | **Standard library only — the language surface is frozen at v0.11** and `../docs/appendix_G.md` is unchanged. **41 new members**: `wlwl:std.encode` (6 encoders), `wlwl:std.text` (`TO_UPPER` `TO_LOWER`), `wlwl:std.str` (`INDEX_OF` `CONTAINS_SUB`), `wlwl:std.collection` (10), `wlwl:std.math` (21 transcendental / integer-math). Plus the `SUB` end-index migration formula fix. Full memo in §26 |
 | **v0.11.3** | **Standard library only — 115 new members plus one visible-surface change.** New namespaces `std.time` `std.regex` `std.rand` `std.env` `std.process` `std.compress` `std.net` `std.result` `std.sanitize`; `std.fs` grew from 3 to 18; `std.encode` gained the digest / KDF / CSPRNG family; `std.text` gained the Unicode family; `std.math` grew to 61; `std.json` gained a lexical layer and a path family. ⚠ **`ai` / `agent` left `wlwl:std.*`** — they are official packages now, imported as `"ai:ask"` / `"agent:task"`, and `wlwl:std.ai` no longer resolves (`E0040`). Full memo in §27 |
-| **v1.0** | **The spec moved to its own repository** (`wlwl-spec-v1`, 11 volumes); this repo keeps a merged copy at `../docs/wlwl-spec-reference.md`. **The `§N` numbering does not move** — every reference in this bundle still resolves. **Member surface unchanged**: 21 namespaces / 214 members, zero added and zero removed ⇒ no new members to learn. What is new for writers: **§8.6 unconsumed `ERR` is reported (`E0103`)** — see §8 below; the **complexity / memory chapters** (§18–§19) and the **conformance volume** (its §5 registers the spec-vs-implementation differences X-01…X-15). The old stdlib **§14** (演进方向) was removed — its "revival conditions" moved into the individual chapters and "rejected" into the overview volume; ⚠ language §14 is a different section (session-type protocols) |
-| **v0.12.0** | **Standard library expansion — 17 new public members (214 → 231), the language surface unchanged.** `std.net` gains the **9-member transport family** (`TCP_LISTEN` `TCP_ACCEPT` `TCP_RECV` `TCP_SEND` `TCP_PEER` `TCP_LOCAL_ADDR` `TCP_SET_TIMEOUT` `TCP_CLOSE` `TCP_CLOSE_LISTENER`) ⇒ **a server can now be written in WLWL itself**; `std.encode` gains the byte layer (`UTF8_ENCODE` `UTF8_DECODE` `BYTE_LEN`); `std.text` gains `TO_INT`; `std.str` gains `CAT`; `std.env` gains `SCRIPT_PATH`; `std.result` gains `TAKE_ERR`; `std.time` gains `SLEEP_ASYNC`. ⚠ **Five semantic changes**: transport waits become a **host suspension** (park **only** the calling task — D-18); `std.fs` IO failures become **`ERR` values** instead of terminating diagnostics (D-14); `TAKE_ERR` plus the `E0103` rule on segmented task bodies (D-15); `SLEEP_ASYNC` inside a `TEST_BUBBLE` behaves exactly like `SLEEP` (D-19); the alias-in-a-write-sequence shape is **excluded** from the amortised-cost promise (D-20, spec-side only — no implementation change). Full memo in **§28** |
+| **v1.0** | **The spec moved to its own repository** (`wlwl-spec-v1`, 11 volumes); this repo keeps a merged copy at `../docs/wlwl-spec-reference.md`. **The `§N` numbering does not move** — every reference in this bundle still resolves. **Member surface**: 21 namespaces / **231** members in the **v0.12.0 compiler** baseline this bundle targets (the v1.0 spec snapshot itself has **214** — v1.0 added and removed nothing ⇒ the 17 that came with the compiler are in the v0.12.0 row below). What is new for writers: **§8.6 unconsumed `ERR` is reported (`E0103`)** — see §8 below; the **complexity / memory chapters** (§18–§19) and the **conformance volume** (its §5 registers the spec-vs-implementation differences X-01…X-25). The old stdlib **§14** (演进方向) was removed — its "revival conditions" moved into the individual chapters and "rejected" into the overview volume; ⚠ language §14 is a different section (session-type protocols) |
+| **v0.12.0** | **Standard library expansion — 17 new public members (214 → 231), the language surface unchanged.** `std.net` gains the **9-member transport family** (`TCP_LISTEN` `TCP_ACCEPT` `TCP_RECV` `TCP_SEND` `TCP_PEER` `TCP_LOCAL_ADDR` `TCP_SET_TIMEOUT` `TCP_CLOSE` `TCP_CLOSE_LISTENER`) ⇒ **a server can now be written in WLWL itself**; `std.encode` gains the byte layer (`UTF8_ENCODE` `UTF8_DECODE` `BYTE_LEN`); `std.text` gains `TO_INT`; `std.str` gains `CAT`; `std.env` gains `SCRIPT_PATH`; `std.result` gains `TAKE_ERR`; `std.time` gains `SLEEP_ASYNC`. ⚠ **Seven semantic changes** (**D-14…D-20**): transport waits become a **host suspension** (park **only** the calling task — D-18); `std.fs` IO failures become **`ERR` values** instead of terminating diagnostics (D-14); `TAKE_ERR` plus the `E0103` rule on segmented task bodies (D-15); **host suspension + the task-failure report obligation** (D-16 — an orphaned task's failure is reported on stderr, the program continues, exit code 0); **strict `INT` parsing rules** (D-17 — `std.text::TO_INT` stays the lenient one); `SLEEP_ASYNC` inside a `TEST_BUBBLE` behaves exactly like `SLEEP` (D-19); the alias-in-a-write-sequence shape is **excluded** from the amortised-cost promise (D-20, spec-side only — no implementation change). Full memo in **§28** |
 
 ## §3. AST shapes (§A.2)
 
@@ -199,7 +199,9 @@ applies to **all** concurrency and OOP builtins (they are not consumers).
 
 `IS_OK`, `IS_ERR`, `UNWRAP_OR`, `OR_DIE` (deprecated), `TRY`, `UNWRAP`,
 `ERR_PAYLOAD`, `WRAP`, `TYPE`, `==`/`!=`, `IF` condition, `&&`/`||`
-left, `BOOL`. v0.9 adds no new consumers.
+left, `BOOL` — **13 global entries** — plus **`TAKE_ERR`**, the
+`wlwl:std.result` member (import it, then call it as a bare name) ⇒ **14**.
+v0.9 adds no new consumers; **v0.12.0 adds exactly one: `TAKE_ERR`**.
 
 `EXPECT_ERR` is **not** in this list, and (as of v0.10.1) the **global** entry has
 been **removed** from the registry for being unreachable. What remains is the
@@ -229,7 +231,7 @@ diagnostics.
 Three ways to dispose of one:
 
 1. **a consumer takes it** — `ERR_PAYLOAD` / `UNWRAP_OR` / `OR_DIE` / `TRY` /
-   `UNWRAP` / `WRAP` / `EXPECT_ERR`;
+   `UNWRAP` / `WRAP` / `EXPECT_ERR` / `TAKE_ERR`;
 2. **explicit discard** — `LET(_, expr)`, the only explicit discard form in the
    language;
 3. it becomes the program's value at the top level (that is `E0102`).
@@ -240,10 +242,12 @@ at an `ERR` but leave it unconsumed — after looking, take it or discard it
 explicitly. The drop points are exactly three: a discarded statement value, a
 binding being overwritten (re-bind / `SET`), and the end of a scope.
 
-⚠ Two gaps are registered in the spec's conformance volume (X-06 / X-07): a
-binding holds only **one** unconsumed token (two unconsumed `ERR`s in one
-container ⇒ one is lost), and a standard-library callback's argument channel
-carries no token (an unconsumed `ERR` inside a callback is not reported).
+✅ **The two former gaps are closed** — the conformance volume's **X-06 / X-07**
+rows are now **implemented**: a binding holds **every** unconsumed token (two
+unconsumed `ERR`s in one container ⇒ **two** `E0103` reports, in order) and a
+standard-library callback's argument channel **does** carry a token (an
+unconsumed `ERR` inside a callback **is** reported). ⇒ **converged: not one
+`ERR` is silently lost.**
 
 ## §9. Standard library catalogue (§10)
 
@@ -653,9 +657,19 @@ each time.
 
 ### §9.1 `wlwl:std.encode` (stdlib §11, v0.11.3)
 
-All eight members take/return `STRING` and work on its **UTF-8 bytes**.
+**Sixteen members**, in two layers. The **13 text-layer** members take and return
+`STRING` and work on its **UTF-8 bytes**; the **3 byte-layer** members added in
+v0.12.0 (`UTF8_ENCODE` / `UTF8_DECODE` / `BYTE_LEN`) cross the boundary and
+travel as **`ARRAY[INTEGER]`** (`0..=255`) — `UTF8_ENCODE(s)` → an array,
+`UTF8_DECODE(bytes)` → a `STRING`, `BYTE_LEN(s)` → an integer.
+> *Measured on wlwl 0.12.0 (2026-10-26):* `UTF8_ENCODE("héllo")` =
+> `[104, 195, 169, 108, 108, 111]`; `BYTE_LEN("héllo")` = **6** while
+> `LEN("héllo")` = **5**.
 `STRING` is not a byte buffer: a round trip preserves text, not arbitrary
 binary — to carry binary, encode on this side and decode on the other.
+(The table below lists **11** of the 16; the other five — `PBKDF2_ITER`
+`ARGON2ID` `RANDOM_BYTES` `RANDOM_HEX` `TIMING_SAFE_EQ` — are in the two
+subsections further down.)
 
 | Member | Notes |
 |---|---|
@@ -748,8 +762,9 @@ explicit, with no defaults:
   and replayed it would fail the contract case that compares them.
 - Use `std.rand` (not `RANDOM_*`) when you want a **reproducible** sequence, and
   seed it from `RANDOM_HEX`.
-- Entropy-source failure surfaces as `E0060` (IO error), distinct from `E0030`
-  (you passed a bad argument) and from a `DecodeError` value (bad data).
+- Entropy-source failure surfaces as the **native IO-error diagnostic** (the code
+  is in the spec's §11.2 error table), distinct from `E0030` (you passed a bad
+  argument) and from a `DecodeError` value (bad data).
 ### §9.7 `wlwl:std.json` — the deep face: lexical layer, paths, schema (stdlib §3, v0.11.3)
 
 Eleven members. The two you already knew — `PARSE`, `STRINGIFY` — are **frozen**:
@@ -1032,8 +1047,10 @@ TAKE_ERR(42);                  // NULL — not an ERR, nothing to take
   than shadowing). `AND_THEN` / `FLATTEN` / `NULL_OR` collide with nothing.
 - ⚠ **These three cannot see an `ERR`.** Per §8.2 a call whose **argument** is an
   `ERR` never evaluates the callee's body — the `ERR` *becomes the result*. The
-  registry check is keyed on the **callee's name**, and §8.3 says the registry
-  takes no new entries. So `RESULT_MAP(ERR(e), f)` returns `ERR(e)` **because the
+  registry check is keyed on the **callee's name**, and §8.3's registry lists
+  **`TAKE_ERR` only** from this namespace — `RESULT_MAP` / `AND_THEN` /
+  `FLATTEN` / `NULL_OR` / `RESULT_ALL` / `RESULT_ANY` are **not** in it. So
+  `RESULT_MAP(ERR(e), f)` returns `ERR(e)` **because the
   body never ran**, not because the member inspected it. Don't read a passing
   counter as evidence that the `ERR` branch ran.
 - ⚠ **That same wall applies to collection elements.** Handing an `ERR` element to
@@ -1189,8 +1206,9 @@ big payloads in files and move them with the byte-stream members
 results**, so the caller gets a branchable `ERR` instead of a diagnostic that
 terminates the run. (⚠ **as of v0.12.0** the three **frozen** v0.3 members —
 `READ_FILE` / `WRITE_FILE` / `EXISTS` — follow this rule too: their IO failures
-are `ERR([kind:"FsError", op, reason])` **values**, not the native `E0060`–`E0062`
-diagnostics. The two codes are **not deleted** — `std.fs` simply no longer
+are `ERR([kind:"FsError", op, reason])` **values**, not native diagnostics (the
+fs IO codes `E0061` / `E0062` are **retired** since v1.0.2). Those codes are
+**not deleted** — `std.fs` simply no longer
 produces them, so a program that branched on them has to branch on the `ERR`
 value instead. `EXISTS` still has no failure path at all.)
 
@@ -2187,7 +2205,7 @@ per-chapter 设计依据 the four batches split as **58 (v0.11 and earlier) /
 | `wlwl:std.result` | `TAKE_ERR` | §9.15 |
 | `wlwl:std.time` | `SLEEP_ASYNC` | §9.11 |
 
-⇒ the full v0.12.0 memo (the five semantic changes included) is **§28**.
+⇒ the full v0.12.0 memo (the seven semantic changes included) is **§28**.
 
 `wlwl:std.collection` gained **no new members** in this batch, but **13 of its
 27 members moved from R1 to R2** (M5) — `MAP` `FILTER` `CHUNK` `WINDOW`
@@ -2307,7 +2325,7 @@ one-line shape of each family:
 > 对应规范侧 `wlwl-spec-v1` **v1.0.2**（本仓抄件 `../docs/wlwl-spec-reference.md`）。
 > 编译器：**wlwl v0.12.0**。
 > ⚠ **语言面没有动** —— 运算符、内建、语句自 v0.6 起未变；本版动的是
-> **公共面（+17 员）** 与 **五处语义**。
+> **公共面（+17 员）** 与 **七处语义**（**D-14…D-20**）。
 
 ### §28.1 公共面扩充 17 员（D-13）
 
@@ -2322,9 +2340,9 @@ one-line shape of each family:
 | `wlwl:std.time` | `SLEEP_ASYNC` | **可挂起**的睡眠。§28.2 的陷阱 |
 
 ⇒ 命名空间仍是 **21** 个（`std.*` 19 + 官方包 `ai` / `agent` 2）；
-标准库成员面 **214 → 231**。
+标准库成员面 **v1.0 的 214 → v0.12.0 的 231**。
 
-### §28.2 五处语义变更
+### §28.2 七处语义变更（D-14…D-20）
 
 1. **传输层的等待由「阻塞冻结 `SCOPE`」改为「宿主挂起」**（**D-18** · breaking）。
    等待期间**只挂起当前任务**，**别的任务照常跑**；`timeout_ms` 是**那一次
@@ -2339,11 +2357,22 @@ one-line shape of each family:
    并补齐语言核心册 §8.6.2 第 3 项在**切段任务体路径**上的判定 ——
    顶层 / 普通闭包 / **切段**任务体三者行为**一致**（切段**不构成豁免**，
    它只改恢复粒度）。
-4. **气泡内 `SLEEP_ASYNC` 等同 `SLEEP`**（**D-19** · breaking）——
+4. **并发册 §17 增「宿主挂起」挂起点与「任务失败的报告义务」**（**D-16**）：
+   宿主挂起恢复时**从段首重放**（与**不切段**一致）；**无人 `AWAIT` 的任务
+   失败必须被报告** —— stderr **一行**
+   （`[wlwl] unhandled task failure (task #N): …`），程序**继续**、
+   **退出码 0**；被 `AWAIT` 的失败仍在**调用点**抛出且**不重复报告**。
+   ⇒ 实质说明见 §28.4（`SKILL.md` 里也有一节）。
+5. **语言核心册 §10 补 `INT` 的空白与解析规则**（**D-17** · 补充）：
+   空白**一律不裁剪**、**只接受十进制**、字符串小数形态**拒**、解析失败是
+   `ERR` **值**（非诊断）；`std.text::TO_INT` 仍是**宽松**那一个（裁剪 /
+   十六进制 / 小数截断）—— 两者**故意不同**。
+   ⇒ **迁移写法**：`INT` 内部严格转换、`TO_INT` 外部输入解析。
+6. **气泡内 `SLEEP_ASYNC` 等同 `SLEEP`**（**D-19** · breaking）——
    气泡的虚拟钟**只在 `SLEEP` 时前进** ⇒ 气泡内挂起者**永醒不来**。
    ⇒ **迁移写法**：原先指望「气泡内 `SLEEP_ASYNC` 会挂起 / 会让别人插进来」
    的程序**要改**。
-5. **「别名在写序列内部每轮重建」不再有摊还承诺**（**D-20** · 规范侧 breaking，
+7. **「别名在写序列内部每轮重建」不再有摊还承诺**（**D-20** · 规范侧 breaking，
    **实现侧无行为改动**）⇒ 别把它**放在写序列内部**建立 ——
    把它**提到写序列之外**建立一次 ⇒ 只在首次写拷贝一次、之后原地写。
 
@@ -2363,8 +2392,11 @@ one-line shape of each family:
   重跑 ⇒ 挂起点**之前**的语句**再执行一遍** ⇒
   **等待必须是所在段的第一条语句，且一段只放一次等待**；
   **有副作用的初始化放在任务之外**（否则实测泄漏 5 个 LISTENING socket）。
-- ⚠ **`SCOPE` 不等孙任务**（并发册 §17.3 第 6 条）：作用域退出时**仍非终态**
-  的子任务被**强制取消** ⇒ 客户端只看到 RST ⇒ 服务端要**自己数完成数**。
+- ⚠ **`SCOPE` 先等、后取消**（并发册 §17.1 主条款 + §17.3 第 6 条）：作用域退出时
+  运行期**先排干**调度器（把挂着的子任务**等完**）⇒ 停在 socket 上的孙任务
+  **正常结束** ⇒ 客户端拿到**完整响应**，**不是 RST**；**之后**才**强制取消**
+  仍非终态的那部分。⇒ 服务端仍要**自己数完成数**（别依赖 `SCOPE` 替你收尾）。
+  ⇒ 订正记录见 §28.6 的 A4 行（这条曾被写成「客户端只看到 RST」，**错的**）。
 
 ### §28.4 任务失败的报告义务（D-16）
 
@@ -2375,6 +2407,9 @@ one-line shape of each family:
 ⚠ 判定**延后**到程序收尾（失败发生的那一刻判不准「有没有人等」）
 ⇒ **「失败报告出现得晚」不是「没有报告」** —— 实时诊断链路要按进程退出或
 显式 flush 来做。
+
+⇒ **同一节的正文版在 `SKILL.md` 的「Task failures — the reporting obligation
+(§17.9)」** —— 只读 `SKILL.md` 的 agent 也拿得到这条（那是本节被提上来的原因）。
 
 ### §28.5 本版的实测读数
 

@@ -103,15 +103,18 @@ separate [`wlwl-spec-v1`](https://github.com/Laffinty/wlwl-spec-v1) repository
 - **v1.0** is the current **spec** baseline. The spec moved to its own repository (11
   volumes); the merged copy kept in this repo is the secondary carrier the
   machine guards and agents read. **The `§N` numbering does not move** ⇒ every
-  section reference in this bundle still resolves. **Member surface unchanged**:
-  21 namespaces / 214 members, zero added and zero removed ⇒ no new members to
-  learn. What writers need to know: **§8.6 — an unconsumed `ERR` is reported
+  section reference in this bundle still resolves. **Member surface**: 21
+  namespaces / **231** members in the **v0.12.0 compiler** baseline this bundle
+  targets (the v1.0 spec snapshot itself has **214** — v1.0 added and removed
+  nothing ⇒ the 17 that came with the compiler are in the v0.12.0 bullet below).
+  What writers need to know: **§8.6 — an unconsumed `ERR` is reported
   (`E0103`)** unless a consumer takes it or it is explicitly discarded with
   `LET(_, expr)`; plus the new complexity / memory chapters (§18–§19) and the
-  conformance volume.
+  conformance volume (its §5 registers the spec-vs-implementation differences
+  **X-01…X-25**).
 - **v0.12.0** is the current **compiler** baseline (the spec side is still
   v1.0 / v1.0.2). It expands the **public surface by 17 members**
-  (214 → 231) and changes **five semantics**:
+  (v1.0's 214 → 231) and changes **seven semantics** (**D-14…D-20**):
   - **`std.net` gains the 9-member transport family** (`TCP_LISTEN` `TCP_ACCEPT`
     `TCP_RECV` `TCP_SEND` `TCP_PEER` `TCP_LOCAL_ADDR` `TCP_SET_TIMEOUT`
     `TCP_CLOSE` `TCP_CLOSE_LISTENER`) ⇒ **a server can now be written in WLWL
@@ -121,10 +124,17 @@ separate [`wlwl-spec-v1`](https://github.com/Laffinty/wlwl-spec-v1) repository
     `std.text` gains `TO_INT`; `std.str` gains `CAT`; `std.env` gains
     `SCRIPT_PATH`; `std.result` gains `TAKE_ERR`; `std.time` gains
     `SLEEP_ASYNC`.
-  - ⚠ **transport waits** change from "freeze the `SCOPE`" to "park this task";
-    **`std.fs` IO failures** become `ERR` values instead of terminating
-    diagnostics; **`SLEEP_ASYNC` inside a `TEST_BUBBLE`** behaves like `SLEEP`;
-    **`INT`** gets strict parsing rules (`TO_INT` is the lenient one).
+  - ⚠ **the seven semantic changes**: transport waits change from "freeze the
+    `SCOPE`" to "park this task" (**D-18**); **`std.fs` IO failures** become
+    `ERR` values instead of terminating diagnostics (**D-14**); **`TAKE_ERR`**
+    adds a one-step "check and consume", and the `E0103` rule now covers
+    segmented task bodies too (**D-15**); **host suspension** plus the
+    **task-failure report obligation** — an orphaned task's failure is reported
+    on stderr, the program continues, exit code 0 (**D-16**); **`INT`** gets
+    strict parsing rules (`TO_INT` is the lenient one, **D-17**);
+    **`SLEEP_ASYNC` inside a `TEST_BUBBLE`** behaves like `SLEEP` (**D-19**);
+    the alias-in-a-write-sequence shape is excluded from the amortised-cost
+    promise (**D-20**, spec-side only — no implementation change).
   - ⚠ **Writing a server? read `SKILL.md`'s "Network programming" section
     first** — the concurrency model imposes eight non-obvious rules there, and
     the two most common symptoms (side effects replayed, "the peer never gets
@@ -146,8 +156,8 @@ Compiler version is independent of the spec version (see root
 
 | File | Use |
 |---|---|
-| `SKILL.md` | Writing flow, static contracts (§2.6/§5.2/§9.1/§9.6), concurrency hard rules, antipatterns (24 rows: v0.6–v0.9) |
-| `reference.md` | Operators, type/`TYPE` names, error codes (incl. `E0064` / `W0001` / `E0010`–`E0025`), §8.3 consumers (13 global), OOP (§14–§16), concurrency matrix (§21), v0.9 增量备忘 (§23), v0.10 增量备忘 (§24), **v0.11 增量备忘 (§25 — `std.str` / `std.math` / `ASSERT` breaking)**, **v0.11.2 增量备忘 (§26)**, **v0.11.3 增量备忘 (§27 — incl. the `ai` / `agent` demotion)** |
+| `SKILL.md` | Writing flow, static contracts (§2.6/§5.2/§9.1/§9.6), concurrency hard rules + the task-failure reporting duty (§17.9), antipatterns (28 rows) |
+| `reference.md` | Operators, type/`TYPE` names, error codes (incl. `E0064` / `W0001` / `E0010`–`E0025`), §8.3 consumers (13 global + `std.result::TAKE_ERR`), OOP (§14–§16), concurrency matrix (§21), v0.9 增量备忘 (§23), v0.10 增量备忘 (§24), **v0.11 增量备忘 (§25 — `std.str` / `std.math` / `ASSERT` breaking)**, **v0.11.2 增量备忘 (§26)**, **v0.11.3 增量备忘 (§27 — incl. the `ai` / `agent` demotion)**, **v0.12.0 增量备忘 (§28 — 17 员 + 七处语义 D-14…D-20)** |
 | `interp.wll` | String-interpolation gold example |
 | `examples/wlwl.toml` | Manifest for the examples. `[package]` is mandatory and `gradual_typing = "error"` turns the static gate on for every file under `examples/` — that is what makes `static_contracts.wll` demonstrate anything |
 | `examples/wlwl.lock` | The dependency lockfile belonging to that manifest. It exists so `wlwl build` / `wlwl run <dir>` on `examples/` resolve deterministically. Nothing in this bundle imports a third-party module, so it is currently trivial; you do not need to edit it by hand |

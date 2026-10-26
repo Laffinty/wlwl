@@ -3,8 +3,10 @@
 // Expected stdout:
 //   [TRUE, TRUE]
 //   PASS:concurrency_cancel
-//   ChannelClosed
 //   PASS:channel_closed_kind
+//
+// (the `kind` value is only *compared* — `==(kind, "ChannelClosed")` — it is
+//  never PRINTed, so no "ChannelClosed" line appears on stdout)
 //
 // Rules locked here:
 //  * SHIELD defers cancel until the outermost SHIELD exits
