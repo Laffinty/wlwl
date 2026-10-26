@@ -1877,6 +1877,25 @@ impl Parser {
 
     fn parse_import(&mut self) -> WlwlResult<Expr> {
         let (line, col, _, _) = self.span_here();
+        // [F-09 / v0.12.0 R-5] `ModuleDecl` 只出现在**模块顶层**(规范附录 A.2)
+        // ⇒ 嵌套位置上的 `IMPORT` 是**非法**的。判据与诊断码与 `parse_export`
+        // **同款**(同一个 `module_top` 闸门、同一个 `E0010`、同一句「只在模块
+        // 顶层」的措辞)⇒ `IMPORT` / `EXPORT` / `SEALED` 三者的位置口径**一致**。
+        //
+        // 修之前这里**不看位置**:嵌套的 `IMPORT` 被当成一条普通表达式接受,
+        // 求值时**真的执行**(导入 + 绑定)⇒ 与 `EXPORT` 的「静默无效」相比是
+        // 另一种不一致(同一个 `ModuleDecl` 家族,三种行为)。
+        //
+        // ⚠ 这条闸门曾被仓内一处**依赖**挡住:`wlwl-types` 的
+        //   `imports_nested_in_blocks_are_still_checked` 用例断言「嵌套 IMPORT
+        //   能解析」⇒ 那条用例的载体是**非法程序**,已随本闸门改写(见该文件)。
+        if !self.module_top {
+            return Err(self.err_at(
+                EC::E0010,
+                "'IMPORT' is only allowed at module top level",
+                (line, col, line, col),
+            ));
+        }
         self.expect_specific(EC::E0010, "'IMPORT'")?;
         self.expect_specific(EC::E0011, "'('")?;
         // path: must be a string literal

@@ -1204,21 +1204,39 @@ EXPORT either : OPTION[INTEGER]
         );
     }
 
+    /// [v0.12.0 / R-5] 嵌套的 `IMPORT` 现在是**解析错** ⇒ 这条用例的载体
+    /// （一个把 `IMPORT` 放在 `IF` 分支里的程序）已经是**非法程序**。
+    ///
+    /// 之前这条用例守的是「签名检查器**不会漏看**块里的 `IMPORT`」—— 那时
+    /// 嵌套 `IMPORT` **能解析**（模块顶层闸门只管了 `EXPORT`），于是块内遍历
+    /// 是真的会被用到的路径。
+    ///
+    /// 现在 `IMPORT` / `EXPORT` / `SEALED` 三者口径**一致**：都**只在模块顶层**
+    /// 合法（规范附录 A.2：「`ModuleDecl` 只出现在模块顶层，不作为
+    /// `Expression`」）⇒ 源文件里**不可能**再出现嵌套的 `IMPORT` ⇒ 块内遍历
+    /// 变成「从源文件不可达」的防御性代码（`import_nodes` 是通用 AST 遍历，
+    /// 保留它不花钱，但**不再**有源文件级的用例可守）。
+    ///
+    /// ⇒ 本用例改为守**新现实**：嵌套 `IMPORT` 在**解析期**就被拒（`E0010`，
+    /// 与 `EXPORT` 同款），位置指向那条 `IMPORT`。
     #[test]
-    fn imports_nested_in_blocks_are_still_checked() {
-        let ast = parse(
+    fn a_nested_import_is_rejected_at_parse_time() {
+        let err = parse(
             "IF(<(1, 1), IMPORT(\"math\", [\"internals\"]), PRINT(1));",
             "main.wll",
         )
-        .expect("parses");
-        let mut modules = BTreeMap::new();
-        modules.insert(
-            "math".to_string(),
-            imported(Some("EXPORT add : INTEGER"), &[]),
+        .expect_err("a nested IMPORT must not parse");
+        assert_eq!(
+            err.diagnostic().code.as_str(),
+            "E0010",
+            "a nested IMPORT must be E0010 (same code as a nested EXPORT): {}",
+            err.diagnostic().message
         );
-        let diags = check_imports(&ast, &modules);
-        assert_eq!(diags.len(), 1);
-        assert_eq!(diags[0].kind.codes().unwrap().0.as_str(), "E0113");
+        assert!(
+            err.diagnostic().message.contains("module top level"),
+            "the message must say where IMPORT is allowed: {}",
+            err.diagnostic().message
+        );
     }
 
     // ---- 生成侧(sig-gen 的地基) ----

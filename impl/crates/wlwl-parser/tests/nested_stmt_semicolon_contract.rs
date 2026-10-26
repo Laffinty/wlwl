@@ -132,3 +132,43 @@ fn top_level_export_still_parses_as_a_declaration() {
     };
     assert!(found, "顶层 EXPORT 仍应产出一条 `Expr::Export` 声明");
 }
+
+/// 嵌套的 `IMPORT` 同样必须**报错**。
+///
+/// ⚠ 修之前它**被接受并真的执行**(导入 + 绑定)⇒ 与 `EXPORT` 的「静默无效」
+///   是同一个 `ModuleDecl` 家族的**第三种**行为 ⇒ 现在三者口径**一致**:
+///   `IMPORT` / `EXPORT` / `SEALED` 都**只在模块顶层**合法。
+///
+/// ⇒ 这条用例同时是「把 `parse_import` 的闸门去掉 ⇒ 必红」的反向守卫。
+#[test]
+fn nested_import_is_a_diagnostic_not_a_silent_execution() {
+    let e = parse(
+        "IF(<(1, 1), IMPORT(\"math\", [\"add\"]), PRINT(1));\n",
+        "t.wll",
+    )
+    .unwrap_err();
+    let d = e.diagnostic();
+    assert_eq!(
+        d.code,
+        ErrorCode::E0010,
+        "嵌套 IMPORT 必须与嵌套 EXPORT 同码(E0010),实际: {}",
+        d.message
+    );
+    assert_eq!(d.location.line, 1, "诊断应指向嵌套 IMPORT 那一行");
+    assert!(
+        d.message.contains("module top level"),
+        "消息应说明它只能写在模块顶层,实际: {}",
+        d.message
+    );
+}
+
+/// 顶层 `IMPORT` 的行为**不许**变(仍然正常导入)。
+#[test]
+fn top_level_import_still_parses_as_a_declaration() {
+    let ast = parse("IMPORT(\"math\", [\"add\"]);\n", "t.wll").expect("顶层 IMPORT 必须照旧通过");
+    let found = match &ast {
+        Expr::Block { exprs, .. } => exprs.iter().any(|e| matches!(e, Expr::Import { .. })),
+        other => matches!(other, Expr::Import { .. }),
+    };
+    assert!(found, "顶层 IMPORT 仍应产出一条 `Expr::Import` 声明");
+}
