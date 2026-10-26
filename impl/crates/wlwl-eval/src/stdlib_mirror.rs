@@ -197,8 +197,13 @@ const NAMESPACE_META: &[NsMeta] = &[
     NsMeta {
         path: "wlwl:std.str",
         // [v0.11.2 M2] `INDEX_OF` / `CONTAINS_SUB` 追加。与 `std.collection`
-        // 同款口径:层与成员面不变。
-        layer: "R1",
+        // 同款口径:层与成员面不变(那句只对 M2 当次成立)。
+        // [v0.12.0 / F-01 + S-1 甲案] `CAT` 归 **R2 原生内核** ⇒ 本模块成
+        // **混合**层(R1 七员 + R2 `CAT`)。
+        // ⚠ 这一列是**元数据**(登记「层」这个事实),**不是**成员实现:内核本体
+        //   的落点在 `wlwl-std`(`kernels.rs` 的 R2 注册表 + `wl/std/str.wll`),
+        //   **不在**本文件 ⇒ 本文件改这一格只让「快照说的」与「实现做的」对得上。
+        layer: "混合(R1 `JOIN`/`SPLIT_LINES`/`CHAR_AT`/`COUNT`/`QUOTE`/`INDEX_OF`/`CONTAINS_SUB` + R2 `CAT`)",
         v1_book: "核心",
         stubs: NO_STUBS,
     },
@@ -265,10 +270,12 @@ const NAMESPACE_META: &[NsMeta] = &[
     // [v0.11.3 M7 / addendum-11 **W-04**] `RESULT_ALL` / `RESULT_ANY` 归 R2:
     // 两者都要把 n 个载荷收成新数组,而 R1 累加链实测每翻一倍约 ×3
     // (n=4000 时 765 ms)。`NULL_OR` 只二选一、不建数组,留 R1。
-    // ⇒ 本模块是**混合**模块(4 R1 + 2 R2)。
+    // [v0.12.0 / D-13] `TAKE_ERR` 是 **R2 原生内核**(见 `wlwl-std` 的
+    // `src/result.rs` 的 `kernel_take_err`)⇒ 同样是 R2。
+    // ⇒ 本模块是**混合**模块(4 R1 + 3 R2)。
     NsMeta {
         path: "wlwl:std.result",
-        layer: "混合(R1 `RESULT_MAP`/`AND_THEN`/`FLATTEN`/`NULL_OR` + R2 `RESULT_ALL`/`RESULT_ANY`)",
+        layer: "混合(R1 `RESULT_MAP`/`AND_THEN`/`FLATTEN`/`NULL_OR` + R2 `RESULT_ALL`/`RESULT_ANY`/`TAKE_ERR`)",
         v1_book: "核心",
         stubs: NO_STUBS,
     },

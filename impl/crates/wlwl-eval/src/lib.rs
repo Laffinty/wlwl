@@ -4106,6 +4106,20 @@ fn builtin_this(ev: &mut Evaluator, args: Vec<Value>) -> WlwlResult<Outcome> {
     if !args.is_empty() {
         return Err(arity_error("THIS", args.len(), 0));
     }
+    this_reference(ev, diag_span)
+}
+
+/// 对象册 §15.1:`THIS()` 与**零参引用 `THIS`** 求值**同款** —— 都是「当前活跃的
+/// `INSTANCE` 接收者」;当前**没有**活跃接收者(方法体之外)⇒ `E0032`。
+///
+/// [v0.12.0 / R-4 · 审计 F-07] 裸 `THIS`(解析成 `Expr::Var("THIS")`)此前按
+/// **普通变量**查找 ⇒ 报 `E0020: undefined name THIS` —— 对象册 §15.1 明写
+/// 两种写法都合法,而实现只支持一种;更糟的是那条错误信息还带一个
+/// 「did you mean one of: HAS, TRIM?」的提示 ⇒ 把用户引向「**名字拼错**」,
+/// 而他真正要改的是**写法**。
+///
+/// ⚠ 语义与 `builtin_this` **完全同款**(含线性 `this_token` 的消费规则)。
+fn this_reference(ev: &mut Evaluator, diag_span: wlwl_ast::Span) -> WlwlResult<Outcome> {
     // Read the active method receiver. `current_method_instance`
     // is set by `call_value_with_receiver` before invoking a
     // closure; nested calls save + restore it, so the
@@ -4751,7 +4765,15 @@ fn builtin_await(ev: &mut Evaluator, args: Vec<Value>) -> WlwlResult<Outcome> {
         // User-level values (including ERR) are returned as values
         // (plan §5.4); §8.2 transparent propagation runs at the
         // AWAIT call site.
-        Awaited::Ok(v) | Awaited::ErrValue(v) => Ok(Outcome::normal(v)),
+        Awaited::Ok(v) => Ok(Outcome::normal(v)),
+        Awaited::ErrValue(v) => {
+            // [v0.12.0 / R-6] 这个 `ERR` 值**被 `AWAIT` 认领了** ⇒ 它在**调用点**
+            // 按 §12.6 透明传播(调用点自己撞 `E0103`)⇒ **不是**孤儿 ⇒ 从待报
+            // 名单里**摘掉**(并发册 §17.9:两条路径**互斥**,不许报两次)。
+            ev.pending_orphan_err_values
+                .retain(|(tid, _)| *tid != handle.id.0);
+            Ok(Outcome::normal(v))
+        }
         // Host diagnostic is re-raised (P7-C2-002).
         Awaited::Failed(e) => {
             // [v0.12.0 / D-16] 这个失败**被 `AWAIT` 认领了** ⇒ 它在**调用点**
@@ -6262,8 +6284,36 @@ fn resolve_builtin(name: &str) -> Option<BuiltinFn> {
         "UNWRAP" => Some(builtin_unwrap),
         "ERR_PAYLOAD" => Some(builtin_err_payload),
         "WRAP" => Some(builtin_wrap),
+        // [v0.12.0 / R-4 · 审计 F-06] `IS_OK` / `IS_ERR` **不再是关键字**
+        // (规范 §1.4 的关键字表只有 15 个,它们是附录 G 的**全局内建**)
+        // ⇒ 解析器不再把它们降级成 `Expr::IsOk` / `Expr::IsErr` ⇒ 它们现在
+        // 走**通用调用路径**,由这里**按名字**解析。
+        //
+        // ⚠ 读模式**逐字不变**:`ERR_OBSERVE_CONSUMERS` 里本来就有这两个名字
+        //   (§8.6.1 的**观察型**消费者:只看、不带走)⇒ 实参位仍走 `Observe`
+        //   ⇒ 源绑定的未消费状态**保留**、在途值**不带**集合 —— 与此前
+        //   `Expr::IsOk` / `Expr::IsErr` 分支里的 `eval_in_mode(Observe)`
+        //   **完全同款**。
+        "IS_OK" => Some(builtin_is_ok),
+        "IS_ERR" => Some(builtin_is_err),
         _ => None,
     }
+}
+
+/// `IS_OK(x)` —— §8.6.1 的**观察型**消费者:只看,不带走。
+///
+/// [v0.12.0 / R-4] 由 `Expr::IsOk` 降级形态迁到这里(语义逐字不变)。
+fn builtin_is_ok(_ev: &mut Evaluator, args: Vec<Value>) -> WlwlResult<Outcome> {
+    let v = expect_arity("IS_OK", &args, 1)?;
+    Ok(Outcome::normal(Value::Boolean(matches!(v, Value::Ok(_)))))
+}
+
+/// `IS_ERR(x)` —— §8.6.1 的**观察型**消费者:只看,不带走。
+///
+/// [v0.12.0 / R-4] 由 `Expr::IsErr` 降级形态迁到这里(语义逐字不变)。
+fn builtin_is_err(_ev: &mut Evaluator, args: Vec<Value>) -> WlwlResult<Outcome> {
+    let v = expect_arity("IS_ERR", &args, 1)?;
+    Ok(Outcome::normal(Value::Boolean(matches!(v, Value::Err(_)))))
 }
 
 /// §12.7 ERR consumer registry (v0.4 spec).
@@ -6405,6 +6455,19 @@ const ERR_OBSERVE_CONSUMERS: &[&str] = &["IS_ERR", "IS_OK", "BOOL", "TYPE"];
 /// (若把它们也判成取走,`UNWRAP_OR(ERR(..), d)` 里 `d` 持有的未消费 `ERR`
 /// 会被无声销毁 —— 那正是 `E0103` 要根治的静默丢失)。
 fn consumer_read_mode(name: &str, arg_index: usize) -> Option<ReadMode> {
+    // [v0.12.0 / R-4] `OR_DIE` **不**另设特例 —— 它走 `ERR_TAKEAWAY_CONSUMERS`
+    // 的默认口径(第 0 个实参 `Consume`、其余 `Transfer`),与它的规范别名
+    // `UNWRAP_OR` **逐字同款**。
+    //
+    // ⚠ 为什么**不能**用 `ConsumeCarry`(它此前在 `Expr::OrDie` 分支里用的
+    //   是那个):`ConsumeCarry` 的语义是「在途值**携带**那一个 `ERR`」⇒ 消费者
+    //   必须把它**转给自己的结果**(结果就是那一个 `ERR`)。
+    //   而**调用路径**的结果处置是另一套:返回值若本身是 `ERR` ⇒ 按 §8.6.5 它是
+    //   **新生的**那个 ⇒ `attach_result_token` 会给它算**一份**集合,再叠上
+    //   「在途值携带的那一份」⇒ **同一件事被算两次** ⇒ `OR_DIE(OK(ERR(x)), d)`
+    //   会报**两条** `E0103`(§8.6.5 / G-02 要求**恰好一条**)。
+    //   ⇒ 走 `Consume`(在途值**不带**集合)后:源绑定的令牌被取走、结果作为
+    //   「新生的那个 `ERR`」带**一份**集合 ⇒ **恰好一条** ✓ 与 `UNWRAP_OR` 同款。
     if ERR_TAKEAWAY_CONSUMERS.contains(&name) {
         return Some(if arg_index == 0 {
             ReadMode::Consume
@@ -6967,12 +7030,32 @@ fn builtin_not(_ev: &mut Evaluator, args: Vec<Value>) -> WlwlResult<Outcome> {
 /// `builtin_unwrap_or_compat` below — it calls this fn after emitting
 /// `W0051`. Note: the W0051 emit point for the lexer-keyword path
 /// (`Expr::OrDie`) lives in `eval_expr`'s `Expr::OrDie` arm, NOT here.
-fn builtin_unwrap_or(_ev: &mut Evaluator, args: Vec<Value>) -> WlwlResult<Outcome> {
+fn builtin_unwrap_or(ev: &mut Evaluator, args: Vec<Value>) -> WlwlResult<Outcome> {
     if args.len() != 2 {
         return Err(arity_error("UNWRAP_OR", args.len(), 2));
     }
     match &args[0] {
-        Value::Ok(v) => Ok(Outcome::normal((**v).clone())),
+        Value::Ok(v) => {
+            // [v0.12.0 / R-4] **剥掉 `OK` 外壳** ⇒ 内层那个 `ERR` 按 §8.6.5
+            // 是**新生的** ⇒ 它自己未消费 ⇒ 那份集合由**结果**承担 ⇒ 丢弃点
+            // 报**恰好一条** `E0103`(一致性册 G-02 的契约)。
+            //
+            // ⚠ **必须把实参位(第 0 档)的在途集合取走**:剥壳时,实参位那份
+            //   「在途值携带的集合」**正是**内层那个 `ERR` 的集合 ⇒ 若留着,
+            //   它会以「在途携带的那一份」的身份叠到结果上,而结果本身又因
+            //   「是个 `ERR`」被算成**新生的那一个** ⇒ **同一件事被算两次**
+            //   ⇒ `UNWRAP_OR(OK(ERR(x)), d)` 会报**两条** `E0103`。
+            //   ⚠ 这是**调用路径**的固有形状(与实参是字面量还是绑定无关);
+            //   `OR_DIE` 降级到本路径后与 `UNWRAP_OR` **同款** ⇒ 一起修。
+            //
+            // ⚠ 只取第 **0** 档(实参位):第 1 档是**默认值**的集合 —— 默认值
+            //   在本分支**没有被用到**,但它**已经被求值**(调用路径 eager)⇒ 它
+            //   自己的 `ERR` 仍应按 §8.6.3 随结果转出(那是**另一件事**)。
+            if let Some(slot) = ev.current_arg_unconsumed.first_mut() {
+                slot.clear();
+            }
+            Ok(Outcome::normal((**v).clone()))
+        }
         Value::Err(_) => Ok(Outcome::normal(args[1].clone())),
         other => Err(type_error(
             "UNWRAP_OR",
@@ -7713,6 +7796,23 @@ impl ClockBubble {
     }
 }
 
+/// [v0.12.0 / R-3·F-03] 一次**挂起**(suspend)的发生地。
+///
+/// 挂起信号(`Signal::Yield`)本身**不带**位置 —— 它只有 `YieldReason`。
+/// 于是顶层把它翻成 `E0014` 时,只能落到**语句**的 span ⇒ 用户看到的是
+/// 「模块第一条语句」那种位置,跟真正出问题的调用点毫无关系。
+///
+/// 这里在**挂起真正发生的那一层**(标准库成员 / 内建)把「成员名 + 调用点」
+/// 记下来,顶层再取用 —— 与 `last_yield_span` 同款的旁路,只是它记的不是
+/// `YIELD()`。
+#[derive(Debug, Clone)]
+pub struct SuspendSite {
+    /// 触发挂起的成员名(如 `TCP_ACCEPT` / `TCP_RECV` / `SLEEP_ASYNC`)。
+    pub member: String,
+    /// 该成员的**调用点** span。
+    pub span: Span,
+}
+
 pub struct Evaluator {
     env: Env,
     /// [v0.11.3 M7 / `ADR-0032` D3] 累加器识别的 **hit / miss** 计数。
@@ -7845,6 +7945,20 @@ pub struct Evaluator {
     /// `YIELD();` 会被报成第 1 行 —— 用户无从定位。取不到时降级回
     /// 语句 span,而不是伪造一个 `0:0`。
     pub last_yield_span: Option<Span>,
+    /// [v0.12.0 / R-3·F-03] 最近一次**挂起**(suspend)的调用点。
+    ///
+    /// 与 [`last_yield_span`](Evaluator::last_yield_span) 同族,但记的不是
+    /// `YIELD()` 而是**宿主挂起点成员**(`TCP_ACCEPT` / `TCP_RECV` /
+    /// `SLEEP_ASYNC` …)与通道等待。
+    ///
+    /// 为什么需要:这些成员在**任务体外**被调用时,挂起信号会一路逃到顶层,
+    /// 顶层把它翻成 `E0014`。旧文案把这一族统统说成「`YIELD` used outside
+    /// a step context」(用户写的是 `TCP_ACCEPT`,报的是 `YIELD`),位置又落到
+    /// **模块第一条语句** —— 用户按提示跳过去完全找不到问题。
+    ///
+    /// 记法与 `last_yield_span` 同款:在**真正发生挂起的那一层**存一份
+    /// 「成员名 + 调用点」,顶层再取用。
+    pub last_suspend_site: Option<SuspendSite>,
     /// [v0.4 Phase B5] Memoized FORMAT template parses (plan §5.5:
     /// "相同 template 复用解析结果"). Keyed by template text; the
     /// parsed segment list is shared via `Rc` so cache hits are a
@@ -7889,6 +8003,23 @@ pub struct Evaluator {
     ///
     /// 条目 = `(任务槽位下标, 诊断码, 诊断消息)`。
     pub pending_orphan_failures: Vec<(usize, String, String)>,
+    /// [v0.12.0 / R-6 · S-2] 没人 `AWAIT` 且**以 `ERR` 值收尾**的任务
+    /// （任务号, 载荷文本）—— 待程序收尾时统一报出。
+    ///
+    /// ⚠ 与 [`pending_orphan_failures`](Evaluator::pending_orphan_failures)
+    ///   同族、**互斥**:被 `AWAIT` 认领的那一份会被**摘掉**(并发册 §17.9:
+    ///   两条路径**互斥**)。
+    ///
+    /// ## 为什么它以前会**完全消失**
+    ///
+    /// 语言核心册 §8.6.2 的丢弃点**恰好三处**:① 语句值丢弃;② 绑定被覆盖;
+    /// ③ **作用域结束时仍有绑定**持有未消费 `ERR`。
+    /// ⇒ 「**任务终值**」既不是绑定、也不是语句值 ⇒ **三处都不覆盖它**。
+    ///
+    /// ⇒ 一个以 `ERR` 收尾的孤儿任务**不留任何痕迹**:没有 stderr、没有
+    /// 诊断、退出码 0 ⇒ 症状与「网络卡了」**无法区分** —— 这正是并发册
+    /// §17.9 明写「无人 `AWAIT` 的失败**不得**完全静默」要防的那件事。
+    pub pending_orphan_err_values: Vec<(usize, String)>,
     /// [v0.7 Phase C2] Depth of active SCOPE nesting. `0` at the
     /// top level means SPAWN is not allowed (D17 / E0058). Each
     /// successful SCOPE entry increments; exit decrements. The
@@ -8044,10 +8175,12 @@ impl Evaluator {
             top_level_bound: HashSet::new(),
             current_span: None,
             last_yield_span: None,
+            last_suspend_site: None,
             format_cache: HashMap::new(),
             strict_types: false,
             current_task: None,
             pending_orphan_failures: Vec::new(),
+            pending_orphan_err_values: Vec::new(),
             scope_depth: 0,
             shield_depth: 0,
             shield_pending_cancel: false,
@@ -8155,10 +8288,12 @@ impl Evaluator {
             top_level_bound: HashSet::new(),
             current_span: None,
             last_yield_span: None,
+            last_suspend_site: None,
             format_cache: HashMap::new(),
             strict_types: false,
             current_task: None,
             pending_orphan_failures: Vec::new(),
+            pending_orphan_err_values: Vec::new(),
             scope_depth: 0,
             shield_depth: 0,
             shield_pending_cancel: false,
@@ -8344,6 +8479,23 @@ impl Evaluator {
 
     // ── Top-level entry points ─────────────────────────────────────
 
+    /// [v0.12.0 / R-6] 任务以 **`ERR` 值**收尾 ⇒ 登记为「待报的孤儿 `ERR` 值」。
+    ///
+    /// ⚠ **判定延后到程序收尾**(与 `pending_orphan_failures` 同款):「有没有
+    ///   人等」在**任务结束的那一刻**判**不准** —— `AWAIT` 可以**稍后**才来
+    ///   认领它 ⇒ 那时就报出去 ⇒ **同一个 `ERR` 被报两次**。
+    fn note_orphan_err_value(
+        &mut self,
+        id: crate::runtime::TaskId,
+        result: &crate::runtime::TaskResult,
+    ) {
+        use crate::runtime::TaskResult;
+        if let TaskResult::Err(Value::Err(payload)) = result {
+            self.pending_orphan_err_values
+                .push((id.0, payload.display()));
+        }
+    }
+
     /// [v0.12.0 / D-16] **程序收尾** ⇒ 把**全程没人 `AWAIT`** 的任务失败报出去。
     ///
     /// ⚠ 报告走 **stderr**，**不**改退出码、**不**中断程序（并发册 §17.9）。
@@ -8351,6 +8503,17 @@ impl Evaluator {
     pub fn report_orphan_failures(&mut self) {
         for (tid, code, message) in std::mem::take(&mut self.pending_orphan_failures) {
             eprintln!("[wlwl] unhandled task failure (task #{tid}): {code} {message}");
+        }
+        // [v0.12.0 / R-6] 孤儿任务以 **`ERR` 值**收尾 ⇒ 同样报一行。
+        //
+        // ⚠ **形态与上面那行同款**(同一个 `E0103` 码、同一个消息口径)——
+        //   两类事件是同一族(一个 `ERR` 没人处理),运维只要 grep 一条串。
+        // ⚠ **不**改退出码、**不**中断程序(并发册 §17.9):服务器必须继续服务。
+        for (tid, payload) in std::mem::take(&mut self.pending_orphan_err_values) {
+            eprintln!(
+                "[wlwl] unhandled task failure (task #{tid}): \
+                 E0103 unhandled ERR was discarded: {payload}"
+            );
         }
     }
 
@@ -8425,13 +8588,16 @@ impl Evaluator {
             // machine entry point `step_once` translates the same
             // signal into `StepResult::Yield`, so legitimate yield
             // consumers do not see this diagnostic.
-            Signal::Yield(_) => Err(self.diag(
-                ErrorCode::E0014,
-                "YIELD used outside a step context (yield is only valid inside a Scheduler::step loop, not at a top-level eval call)".to_string(),
-                // [D12-002 / v0.11.2 W-04] Prefer the YIELD call site over the
-                // enclosing statement. Falls back rather than fabricating.
-                self.last_yield_span.clone().unwrap_or_else(|| expr.span().clone()),
-            )),
+            Signal::Yield(reason) => {
+                // [v0.12.0 / R-3·F-03] 区分「`YIELD` 在任务体外」与「宿主挂起
+                // 点成员在任务体外」:后者指名**成员**并指向**调用点**。
+                let (message, site) = self.yield_outside_task(
+                    &reason,
+                    expr.span(),
+                    "YIELD used outside a step context (yield is only valid inside a Scheduler::step loop, not at a top-level eval call)",
+                );
+                Err(self.diag(ErrorCode::E0014, message, site))
+            }
         }
     }
 
@@ -8712,13 +8878,16 @@ impl Evaluator {
             // programmer error, since modules are loaded via
             // `eval_module` (run-to-completion), not via the
             // scheduler step loop.
-            Signal::Yield(_) => Err(self.diag(
-                ErrorCode::E0014,
-                "YIELD used outside a step context (yield is only valid inside a Scheduler::step loop, not at a top-level module load)".to_string(),
-                // [D12-002 / v0.11.2 W-04] Same call-site preference as the
-                // `eval` arm above.
-                self.last_yield_span.clone().unwrap_or_else(|| expr.span().clone()),
-            )),
+            Signal::Yield(reason) => {
+                // [v0.12.0 / R-3·F-03] 同 `eval` 那条:宿主挂起点成员在模块
+                // 顶层被调用时,指名**成员**并指向**调用点**。
+                let (message, site) = self.yield_outside_task(
+                    &reason,
+                    expr.span(),
+                    "YIELD used outside a step context (yield is only valid inside a Scheduler::step loop, not at a top-level module load)",
+                );
+                Err(self.diag(ErrorCode::E0014, message, site))
+            }
         }
     }
 
@@ -8753,6 +8922,15 @@ impl Evaluator {
             }
             Expr::Literal(lit, _) => Ok(Outcome::normal(Value::from(lit.clone()))),
             Expr::Var(name, span) => {
+                // [v0.12.0 / R-4 · 审计 F-07] **裸 `THIS`**(对象册 §15.1 的
+                // 「零参引用」形态)不是普通变量引用 ⇒ 它求值为**当前活跃的接收者**,
+                // 没有接收者时是 `E0032`(不是 `E0020`)。
+                //
+                // ⚠ 放在**变量查找之前**:名字 `THIS` 在环境里**没有**绑定 ⇒ 走
+                //   普通查找路径必然是 `E0020`,而那正是审计指出的错误语义。
+                if name == "THIS" {
+                    return this_reference(self, span.clone());
+                }
                 // [v1.0 spec §8.6.3] 读绑定 ⇒ 按**当前读模式**转移未消费状态。
                 //   * `Consume`(取走型消费者的实参)⇒ 源绑定里**它拿到的那个**
                 //     `ERR` 视为已消费(§8.6.3),在途值**不带**集合;
@@ -9163,6 +9341,12 @@ impl Evaluator {
         let mut last = Outcome::normal(Value::Null);
         for (i, e) in exprs.iter().enumerate() {
             let is_last = i + 1 == exprs.len();
+            // [v0.12.0 / R-3·F-03] 每条**顶层**语句开始前清掉上一条留下的
+            // 挂起记录 ⇒ 顶层报错时拿到的是**本条**语句的挂起点,而不是
+            // 更早某条语句里成功挂起过的那个。
+            if top_level {
+                self.last_suspend_site = None;
+            }
             last = self.eval_expr(e)?;
             // Control-flow signal short-circuits the block.
             if last.signal != Signal::None {
@@ -9908,6 +10092,9 @@ impl Evaluator {
             }
             if let Value::NativeFn { invoke, .. } = v {
                 let mut result = invoke_std(self, invoke, accum, tokens, span)?;
+                // [v0.12.0 / R-3·F-03] 记住这次挂起发生在**哪个成员**的
+                // **哪个调用点** ⇒ 顶层翻成 `E0014` 时能指名成员、指向调用点。
+                self.note_suspend_site(name, span, &result);
                 self.attach_result_token(&mut result, &err_args);
                 return Ok(result);
             }
@@ -9949,12 +10136,139 @@ impl Evaluator {
                 .collect();
             self.current_arg_unconsumed = prev_arg_unconsumed;
             self.current_span = prev_span;
-            let mut result = result?;
+            // [v0.12.0 / R-3] 内建自己构造的诊断带的是 `<runtime>:0:0`
+            // **占位位置**(见 `arity_error` / `type_error` / `builtin_error`:
+            // 它们的签名只有 `(evaluator, args)`,拿不到 AST span)⇒ 在这里
+            // 换成**本次调用的调用点**。
+            let mut result = match result {
+                Ok(r) => r,
+                Err(e) => return Err(self.locate_builtin_diag(e, span)),
+            };
+            self.note_suspend_site(name, span, &result);
             self.attach_result_token(&mut result, &err_args);
             result.unconsumed = union_unconsumed(&result.unconsumed, &remaining);
             return Ok(result);
         }
         Err(self.undefined_name(name, span))
+    }
+
+    /// [v0.12.0 / R-3·F-03] 记住「这次挂起发生在哪个成员的哪个调用点」。
+    ///
+    /// ⚠ **只在内建 / 标准库成员这一层记**:用户闭包里的挂起是**里面**那个
+    ///   成员记的(闭包这一层不记)⇒ 记下来的永远是**最内层**的挂起点。
+    ///
+    /// ⚠ **只记非显式挂起**(`YIELD()`):显式挂起走 `last_yield_span` 那条
+    ///   路(见 `builtin_yield`),两套旁路互不干扰。
+    fn note_suspend_site(&mut self, member: &str, span: &Span, outcome: &Outcome) {
+        if let Signal::Yield(reason) = &outcome.signal {
+            if matches!(reason, YieldReason::Explicit) {
+                return;
+            }
+            self.last_suspend_site = Some(SuspendSite {
+                member: member.to_string(),
+                span: span.clone(),
+            });
+        }
+    }
+
+    /// [v0.12.0 / R-3] 把内建诊断的**占位位置**换成**调用点**。
+    ///
+    /// 内建(`arity_error` / `type_error` / `builtin_error`)构造诊断时拿不到
+    /// AST span —— 它们的签名只有 `(evaluator, args)` ⇒ 一律用
+    /// `Location::point("<runtime>", 0, 0)` 占位。
+    ///
+    /// 分派点(`dispatch_call`)**有**调用点 span ⇒ 在这里把占位位置换掉:
+    /// 核心内建的实参校验错误(`LEN(1)` / `INDEX_GET([1], 5)` / `+(1, "a")` …)
+    /// 从此带真实位置与源行摘录(语言核心册 §11.1 要求诊断带「位置(文件、
+    /// 行列)与源行摘录」;此前这一族**全部**落在 `<runtime>:0:0` ⇒ 不可定位)。
+    ///
+    /// ⚠ **只换占位位置**:已经有真实位置的诊断(内建自己按 `current_span`
+    ///   构造的,例如 `UNWRAP` 的 `E0100`)原样保留。
+    fn locate_builtin_diag(&self, err: WlwlError, span: &Span) -> WlwlError {
+        match err {
+            WlwlError::Diagnostic(mut d) => {
+                self.locate_one_builtin_diag(&mut d, span);
+                WlwlError::Diagnostic(d)
+            }
+            WlwlError::Diagnostics(mut ds) => {
+                for d in ds.iter_mut() {
+                    self.locate_one_builtin_diag(d, span);
+                }
+                WlwlError::Diagnostics(ds)
+            }
+        }
+    }
+
+    /// [v0.12.0 / R-3] 占位位置 → 调用点(单条诊断)。
+    fn locate_one_builtin_diag(&self, d: &mut WlwlDiagnostic, span: &Span) {
+        // `<runtime>:0:0` = 内建诊断的**占位位置**(`arity_error` /
+        // `type_error` / `builtin_error` 一律用它)。
+        if d.location.file != "<runtime>" || d.location.line != 0 || d.location.col != 0 {
+            return;
+        }
+        d.location = Location {
+            file: span.file.clone(),
+            line: span.line_start,
+            col: span.col_start,
+            line_end: span.line_end,
+            col_end: span.col_end,
+        };
+        if d.source_line.is_none() {
+            if let Some(src) = &self.source {
+                if let Some(line_text) = extract_line(src, span.line_start) {
+                    d.source_line = Some(line_text);
+                }
+            }
+        }
+    }
+
+    /// [v0.12.0 / R-3·F-03] 顶层撞上 `Signal::Yield` 时的**文案与位置**。
+    ///
+    /// * `YIELD()`(显式挂起)⇒ 沿用既有文案与 `last_yield_span`(D12-002)。
+    /// * **宿主挂起点成员**(`TCP_ACCEPT` / `TCP_RECV` / `SLEEP_ASYNC` …)与
+    ///   通道等待 ⇒ 文案**指名成员**、位置指向**调用点**。
+    ///
+    /// ⚠ 旧文案把这一族统统说成「`YIELD` used outside a step context」并把
+    ///   位置落到**模块第一条语句** —— 用户写的是 `TCP_ACCEPT`,报的是
+    ///   `YIELD`,位置还指到不相干的行(并发册 §17.0 的挂起点表只对 `YIELD`
+    ///   规定了「任务体外 ⇒ `E0014`」,宿主挂起点成员这一族当时未登记)。
+    fn yield_outside_task(
+        &self,
+        reason: &YieldReason,
+        fallback: &Span,
+        explicit_message: &str,
+    ) -> (String, Span) {
+        if matches!(reason, YieldReason::Explicit) {
+            return (
+                explicit_message.to_string(),
+                self.last_yield_span
+                    .clone()
+                    .unwrap_or_else(|| fallback.clone()),
+            );
+        }
+        match &self.last_suspend_site {
+            Some(site) => (
+                // ⚠ **成员名前不加反引号**:仓内「成员名: 说明」的诊断约定
+                //   (如 `ADVANCE: not inside a clock bubble`)既是可读性惯例,
+                //   也是**规范仓检查器**解析「这条诊断属于哪个成员」的依据
+                //   (它按 `!EXXXX MEMBER` 的形状取成员名)⇒ 加反引号会让
+                //   「成员 → 失败口径」的失败面对拍**认不出**这条诊断。
+                format!(
+                    "{}: used outside a task body — this operation suspends the current task, \
+                     so it is only valid inside a task body (e.g. within SCOPE(...) / SPAWN(...))",
+                    site.member
+                ),
+                site.span.clone(),
+            ),
+            None => (
+                "a suspending operation was used outside a task body \
+                 (it is only valid inside a task body, e.g. within `SCOPE(...)` / `SPAWN(...)`)"
+                    .to_string(),
+                self.last_yield_span
+                    .clone()
+                    .unwrap_or_else(|| fallback.clone()),
+            ),
+        }
     }
 
     /// [v1.0 spec §8.6.3] 给一次调用的结果定「未消费 `ERR` 集合」。
@@ -10327,6 +10641,10 @@ impl Evaluator {
                         Value::Err(payload) => TaskResult::Err(Value::Err(payload)),
                         v => TaskResult::Ok(v),
                     };
+                    // [v0.12.0 / R-6] 任务以 `ERR` 值收尾 ⇒ 若**没人 `AWAIT`**,
+                    // 这份 `ERR` 就**没人处理过**(§8.6.2 的三处丢弃点**都不覆盖**
+                    // 「任务终值」)⇒ 登记为待报,程序收尾时统一报一行。
+                    self.note_orphan_err_value(id, &result);
                     self.scheduler.complete(id, result);
                 }
             }
@@ -10358,6 +10676,10 @@ impl Evaluator {
                         Value::Err(payload) => TaskResult::Err(Value::Err(payload)),
                         v => TaskResult::Ok(v),
                     };
+                    // [v0.12.0 / R-6] 任务以 `ERR` 值收尾 ⇒ 若**没人 `AWAIT`**,
+                    // 这份 `ERR` 就**没人处理过**(§8.6.2 的三处丢弃点**都不覆盖**
+                    // 「任务终值」)⇒ 登记为待报,程序收尾时统一报一行。
+                    self.note_orphan_err_value(id, &result);
                     self.scheduler.complete(id, result);
                 }
             }
@@ -20461,22 +20783,26 @@ TYPE(v);
     }
 
     #[test]
-    fn b3_or_die_arity_too_few_is_parse_time_error() {
-        // OR_DIE is a lexer keyword, parser enforces 2-arg shape
-        // strictly (parse_or_die at line ~1072). Missing comma is
-        // E0012, not runtime E0022. We do NOT emit W0051 here
-        // because eval never runs — compare with the DEL short
-        // circuit in B2 (different mechanism: lexical parse-time vs
-        // runtime ERR short-circuit).
+    fn b3_or_die_arity_too_few_is_a_runtime_error() {
+        // [v0.12.0 / R-4] `OR_DIE` **不再是关键字**(规范 §1.4 的关键字表只有
+        // 15 个)⇒ 解析器不再有它的两参专门分支 ⇒ **元数错改由运行期报**
+        // (`E0022`),不再是解析期的 `E0012`(缺逗号)。
+        //
+        // ⚠ 这与**其它**全局内建**同款**(它们一律是运行期 `E0022`)⇒ 别名与
+        //   本体(`UNWRAP_OR`)终于同款。
+        //
+        // ⚠ W0051 **仍然**发:它是**弃用警告**,与元数无关(弃用警告由内建在
+        //   被调用时发,不是解析期发)⇒ 本例里内建确实被调用了 ⇒ 警告在场。
         let err = run("OR_DIE(OK(1));").unwrap_err();
-        assert_eq!(err.diagnostic().code, ErrorCode::E0012);
+        assert_eq!(err.diagnostic().code, ErrorCode::E0022);
     }
 
     #[test]
-    fn b3_or_die_arity_too_many_is_parse_time_error() {
-        // Symmetric: too many args → E0011 expected ')'.
+    fn b3_or_die_arity_too_many_is_a_runtime_error() {
+        // [v0.12.0 / R-4] 同上:多一个实参 ⇒ 运行期 `E0022`(此前是解析期
+        // `E0011`「expected ')'」)。
         let err = run("OR_DIE(OK(1), 0, 0);").unwrap_err();
-        assert_eq!(err.diagnostic().code, ErrorCode::E0011);
+        assert_eq!(err.diagnostic().code, ErrorCode::E0022);
     }
 
     #[test]

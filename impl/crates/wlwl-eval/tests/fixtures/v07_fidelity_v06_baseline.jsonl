@@ -1,8 +1,8 @@
 {"fixture":"closure_cell.wll","exit_code":0,"stdout":"1 2 3\n","stderr":""}
 {"fixture":"core_subsets.wll","exit_code":0,"stdout":"hello, world\nsum = 5\n","stderr":""}
 {"fixture":"destruct.wll","exit_code":0,"stdout":"10 20 30\n","stderr":""}
-{"fixture":"error_schema.wll","exit_code":1,"stdout":"","stderr":"error[E1003]: /: division by zero\n  --> <runtime>:0:0\n\n"}
-{"fixture":"err_propagation.wll","exit_code":1,"stdout":"","stderr":"error[E1003]: /: division by zero\n  --> <runtime>:0:0\n\n"}
+{"fixture":"error_schema.wll","exit_code":1,"stdout":"","stderr":"error[E1003]: /: division by zero\n  --> <PROJECT_ROOT>/conformance/error_schema.wll:6:22\n  |\n  6 | LET(div, FUN((n, d), /(n, d)));\n\n"}
+{"fixture":"err_propagation.wll","exit_code":1,"stdout":"","stderr":"error[E1003]: /: division by zero\n  --> <PROJECT_ROOT>/conformance/err_propagation.wll:5:22\n  |\n  5 | LET(div, FUN((n, d), /(n, d)));      // section 9.5 division\n\n"}
 {"fixture":"format_template.wll","exit_code":0,"stdout":"Hello, world!\n","stderr":""}
 {"fixture":"index_bounds.wll","exit_code":0,"stdout":"10\n[10, 99, 30]\n","stderr":""}
 {"fixture":"match_patterns.wll","exit_code":0,"stdout":"0\n2\n-1\n","stderr":""}

@@ -650,9 +650,8 @@ impl Parser {
             "'ERR'" => TokenKind::Err,
             "'PANIC'" => TokenKind::Panic,
             "'TRY'" => TokenKind::Try,
-            "'IS_OK'" => TokenKind::IsOk,
-            "'IS_ERR'" => TokenKind::IsErr,
-            "'OR_DIE'" => TokenKind::OrDie,
+            // [v0.12.0 / R-4] `IS_OK` / `IS_ERR` / `OR_DIE` **不是**关键字
+            // ⇒ 词法层按普通标识符处理 ⇒ 这里**没有**它们的条目。
             "'IMPORT'" => TokenKind::Import,
             "'EXPORT'" => TokenKind::Export,
             "'MATCH'" => TokenKind::Match,
@@ -718,7 +717,34 @@ impl Parser {
                             (line, col, line, col),
                         ));
                     }
-                    break;
+                    // [F-08 / v0.12.0 R-5] 嵌套块里省略必需的 `;` **同样**报
+                    // `E0013`(规范 §1.10:「处于『语句位置』的表达式**必须**以
+                    // `;` 结束……省略必需的 `;` 产生 `E0013`」),与模块顶层
+                    // 一致。修之前这里只 `break`,由调用方的
+                    // `expect_specific(EC::E0011, "')'")` 报成 `E0011`
+                    // (「expected ')'」)⇒ 同一个错误(漏写 `;`)在顶层与嵌套
+                    // 块里给出**不同诊断码**,按码分流的工具在嵌套块里拿不到
+                    // `E0013`。
+                    //
+                    // ⚠ **不能**靠「期待 `)` 失败」倒推:那会把**所有** `E0011`
+                    // (缺 `)`、多逗号、括号不配对……)都改成 `E0013`,等于把
+                    // 另一个语法错误类别搞坏。判据只认**块终结符**:嵌套块的
+                    // 终结符是 `)`(`IF` 的 then 分支还可以是 `,`);下一个 token
+                    // 既不是 `;` 也不是终结符 ⇒ 省略了必需的 `;`。
+                    //
+                    // EOF 仍然交给调用方报 `E0011`(「expected ')', got end of
+                    // file」):括号序列里**最后一个**表达式的 `;` 本来就可以
+                    // 省略(§1.10),那时缺的是 `)` 而不是 `;`。
+                    if self.at_eof() || matches!(self.peek(), TokenKind::RParen | TokenKind::Comma)
+                    {
+                        break;
+                    }
+                    let (line, col, _, _) = self.span_here();
+                    return Err(self.err_at(
+                        EC::E0013,
+                        "expected ';' after expression",
+                        (line, col, line, col),
+                    ));
                 }
             }
         }
@@ -879,13 +905,19 @@ impl Parser {
                 self.parse_err_ctor("'PANIC'", |v, s| Expr::Panic { value: v, span: s })
             }
             TokenKind::Try => self.parse_err_ctor("'TRY'", |v, s| Expr::Try { value: v, span: s }),
-            TokenKind::IsOk => {
-                self.parse_err_ctor("'IS_OK'", |v, s| Expr::IsOk { value: v, span: s })
-            }
-            TokenKind::IsErr => {
-                self.parse_err_ctor("'IS_ERR'", |v, s| Expr::IsErr { value: v, span: s })
-            }
-            TokenKind::OrDie => self.parse_or_die(),
+            // [v0.12.0 / R-4 · 审计 F-06] `IS_OK` / `IS_ERR` / `OR_DIE`
+            // **不再是关键字**(规范 §1.4 的关键字表只有 15 个,它们不在其中;
+            // 它们是附录 G 的**全局内建**)⇒ 词法层按普通标识符处理 ⇒
+            // 这里**没有**它们的专门分支 ⇒ `IS_OK(x)` 走**通用调用路径**
+            // (`Expr::Call { name: "IS_OK" }`),由**求值器在调用位置**按名字解析。
+            //
+            // ⇒ 连带效果:§3.5 的「遮蔽内建名」规则对它们**终于生效**
+            //   (`LET(IS_OK, 1)` ⇒ `E0025`,开 `allow_builtin_shadow` ⇒ `W0030`)
+            //   —— 此前它们在**词法层**就是关键字 ⇒ 报的是**语法错 `E0010`**,
+            //   按码分流的工具(IDE / CI 门禁 / agent 自愈规则)会走错分支。
+            //
+            // ⚠ AST 侧的 `Expr::IsOk` / `Expr::IsErr` / `Expr::OrDie` **保留**
+            //   (公开 API + AST 稳定性指纹),只是**解析器不再产出**它们。
             // v0.4 §7.6 pattern matching (macro-function, lexer-level keyword).
             TokenKind::Match => self.parse_match(),
             // §13 modules (single-directory subset; cross-dir/namespace is Phase 4)
@@ -1335,9 +1367,8 @@ impl Parser {
             TokenKind::Err => "ERR".into(),
             TokenKind::Panic => "PANIC".into(),
             TokenKind::Try => "TRY".into(),
-            TokenKind::IsOk => "IS_OK".into(),
-            TokenKind::IsErr => "IS_ERR".into(),
-            TokenKind::OrDie => "OR_DIE".into(),
+            // [v0.12.0 / R-4] `IS_OK` / `IS_ERR` / `OR_DIE` 的 token 变体已删除
+            // (它们不是关键字)⇒ 这里**没有**它们的条目。
             TokenKind::Import => "IMPORT".into(),
             TokenKind::Export => "EXPORT".into(),
             TokenKind::Match => "MATCH".into(),
@@ -1680,8 +1711,11 @@ impl Parser {
     //
     // All §12 single-arg constructors share the same shape:
     //   `KW '(' expr ')'`
-    // so we factor it out. (`OR_DIE` is two-arg and handled inline in
-    // the keyword dispatch.)
+    // so we factor it out.
+    //
+    // [v0.12.0 / R-4] `OR_DIE` **不再是关键字** ⇒ 它走通用调用路径 ⇒ 这里
+    // **没有**它的两参构造分支(此前是 `parse_or_die`)。它的求值语义在
+    // `wlwl-eval` 的 `builtin_unwrap_or_compat`(与 `UNWRAP_OR` 同款 + `W0051`)。
 
     fn parse_err_ctor<F>(&mut self, kw: &str, ctor: F) -> WlwlResult<Expr>
     where
@@ -1701,29 +1735,6 @@ impl Parser {
             col_end,
         };
         Ok(ctor(Box::new(value), span))
-    }
-
-    /// `OR_DIE(value, default)` — the only two-arg §12 constructor.
-    fn parse_or_die(&mut self) -> WlwlResult<Expr> {
-        let (line, col, _, _) = self.span_here();
-        self.expect_specific(EC::E0010, "'OR_DIE'")?;
-        self.expect_specific(EC::E0011, "'('")?;
-        let value = self.parse_expr()?;
-        self.expect_specific(EC::E0012, "','")?;
-        let default = self.parse_expr()?;
-        self.expect_specific(EC::E0011, "')'")?;
-        let (_, _, line_end, col_end) = self.span_here();
-        Ok(Expr::OrDie {
-            value: Box::new(value),
-            default: Box::new(default),
-            span: Span {
-                file: self.file.clone(),
-                line_start: line,
-                col_start: col,
-                line_end,
-                col_end,
-            },
-        })
     }
 
     // ---- v0.4 Sec. 7.6: MATCH(pattern matching) -------------------------
@@ -1916,6 +1927,36 @@ impl Parser {
 
     fn parse_export(&mut self) -> WlwlResult<Expr> {
         let (line, col, _, _) = self.span_here();
+        // [F-09 / v0.12.0 R-5] `ModuleDecl` 只出现在**模块顶层**
+        // (规范附录 A.2:「`ModuleDecl`(§9.1 / §9.2)只出现在模块顶层,不作为
+        // `Expression`」)⇒ 嵌套位置上的 `EXPORT` 是**非法**的。
+        //
+        // 修之前这里**不看位置**:`LET(x, (EXPORT(["b"])))` 被当成一条普通
+        // 表达式接受,求值时 `eval_export` 只查绑定、导出面由模块加载收尾时
+        // 另算 ⇒ **零诊断、退出码 0、模块对外什么都没导出**,消费方
+        // `IMPORT` 时才炸 `E0023`(错误信息还指向**消费方**)。这是典型的
+        // 「失败不可见」陷阱(§8「失败可见」)。
+        //
+        // 判据复用 `SEALED` 已有的模块顶层闸门(`self.module_top`,置位见
+        // `parse_block`):程序入口的 `parse_block(false)` 置真,任何嵌套块
+        // (`IF` 分支、函数体、`(...)` 括号序列)置假。
+        //
+        // 诊断码取 `E0010`(`expected expression`):这条错误是**解析期**判定的
+        // (⇒ 退出码 3 = 解析失败,规范 §11.4),而 `ModuleDecl` 按附录 A.2
+        // **不作为 `Expression`** ⇒ 此处期望的是表达式、拿到的却是一条模块
+        // 声明。
+        //
+        // ⚠ `E0012` 的含义是「期望 `,`」(建议语是「missing `,` between
+        // arguments」),与本情形无关;`E0014` 是**求值期**的位置错
+        // (`RETURN`/`BREAK`/`CONTINUE` 放错地方),退出码 1,而这里是**源文件
+        // 本身不合法**。
+        if !self.module_top {
+            return Err(self.err_at(
+                EC::E0010,
+                "'EXPORT' is only allowed at module top level",
+                (line, col, line, col),
+            ));
+        }
         self.expect_specific(EC::E0010, "'EXPORT'")?;
         self.expect_specific(EC::E0011, "'('")?;
         let names = self.parse_import_name_list("'EXPORT'")?;
@@ -3037,30 +3078,40 @@ mod tests {
             parse("TRY(OK(1));", "t.wll").unwrap(),
             Expr::Try { .. }
         ));
-        assert!(matches!(
-            parse("IS_OK(OK(1));", "t.wll").unwrap(),
-            Expr::IsOk { .. }
-        ));
-        assert!(matches!(
-            parse("IS_ERR(ERR(1));", "t.wll").unwrap(),
-            Expr::IsErr { .. }
-        ));
-        let e = parse("OR_DIE(ERR(1), 0);", "t.wll").unwrap();
-        match e {
-            Expr::OrDie { value, default, .. } => {
-                assert!(matches!(*value, Expr::Err { .. }));
-                assert!(matches!(*default, Expr::Literal(Literal::Integer(0), _)));
+        // [v0.12.0 / R-4] `IS_OK` / `IS_ERR` / `OR_DIE` **不再是关键字** ⇒
+        // 它们走**通用调用路径**(`Expr::Call`),由求值器按名字解析。
+        // ⇒ AST 形状从「特殊形态」变成「普通调用」,**语义面不变**。
+        for (src, name) in [
+            ("IS_OK(OK(1));", "IS_OK"),
+            ("IS_ERR(ERR(1));", "IS_ERR"),
+            ("OR_DIE(ERR(1), 0);", "OR_DIE"),
+        ] {
+            let e = parse(src, "t.wll").unwrap();
+            match e {
+                Expr::Call { name: n, args, .. } => {
+                    assert_eq!(n, name, "{src} must parse as a call to {name}");
+                    assert!(!args.is_empty(), "{src} must carry its arguments");
+                }
+                other => panic!("expected a call to {name}, got {other:?}"),
             }
-            _ => panic!("expected OR_DIE"),
         }
     }
 
     #[test]
-    fn parse_or_die_via_call() {
-        // OR_DIE is not a lexer keyword in Phase 1, so this will parse as a Call.
-        // (We only added the keywords IF/WHILE/... in the lexer, OR_DIE was
-        // never a keyword.) Verify the keyword IS present in the lexer.
-        // (Skip the actual call parse — the Phase 1 lexer doesn't have it.)
+    fn parse_is_ok_family_are_usable_as_plain_identifiers() {
+        // [v0.12.0 / R-4] 它们**不是**关键字 ⇒ 可以作绑定名 / 形参名
+        // (遮蔽内建名的处置由**运行期**按 §3.5 决定,不是解析期拒绝)。
+        for src in [
+            "LET(IS_OK, 1);",
+            "LET(IS_ERR, 1);",
+            "LET(OR_DIE, 1);",
+            "FUN((IS_OK), 1);",
+        ] {
+            assert!(
+                parse(src, "t.wll").is_ok(),
+                "{src} must parse — these names are not keywords"
+            );
+        }
     }
 
     #[test]
@@ -3658,9 +3709,9 @@ mod tests {
             (TokenKind::Err, "ERR"),
             (TokenKind::Panic, "PANIC"),
             (TokenKind::Try, "TRY"),
-            (TokenKind::IsOk, "IS_OK"),
-            (TokenKind::IsErr, "IS_ERR"),
-            (TokenKind::OrDie, "OR_DIE"),
+            // [v0.12.0 / R-4] `IS_OK` / `IS_ERR` / `OR_DIE` **不是**关键字
+            // (规范 §1.4 的关键字表只有 15 个)⇒ 词法层按普通标识符处理 ⇒
+            // 关键字表里**没有**它们。
             (TokenKind::Import, "IMPORT"),
             (TokenKind::Export, "EXPORT"),
             (TokenKind::LParen, "("),

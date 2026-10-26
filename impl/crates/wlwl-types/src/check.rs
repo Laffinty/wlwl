@@ -656,6 +656,30 @@ impl<'a> Checker<'a> {
             };
         }
 
+        // [v0.12.0 / R-4] `IS_OK` / `IS_ERR` / `OR_DIE` **不再是关键字**
+        // (规范 §1.4 的关键字表只有 15 个)⇒ 解析器不再把它们降级成
+        // `Expr::IsOk` / `Expr::IsErr` / `Expr::OrDie` ⇒ 它们现在走**通用
+        // `Expr::Call` 路径** ⇒ 必须在这里特判,否则它们的返回类型永远是
+        // `Dynamic`(`IS_OK` 的 `RESULT` 注解糖语义就丢了)。
+        //
+        // ⚠ `OR_DIE` 是 `UNWRAP_OR` 的**弃用别名** ⇒ 与 `UNWRAP_OR` 同款。
+        match name {
+            "IS_OK" | "IS_ERR" => {
+                for a in args {
+                    self.check_expr(a, None);
+                }
+                return Ty::Boolean;
+            }
+            "OR_DIE" => {
+                let arg_tys: Vec<Ty> = args.iter().map(|a| self.check_expr(a, None)).collect();
+                return match arg_tys.len() {
+                    2 => unwrap_side(&arg_tys[0], Side::Ok),
+                    _ => Ty::Dynamic,
+                };
+            }
+            _ => {}
+        }
+
         // 签名解析:**局部作用域优先**,其次内建签名表(A6′),最后 Dynamic。
         //
         // 遮蔽优先是必须的:spec §3.5 的 `allow_builtin_shadow` 允许用户

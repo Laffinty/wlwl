@@ -149,6 +149,13 @@ fn fenced_blocks(spec: &str) -> Vec<String> {
 const LEXICAL_TERMINALS: &[&str] = &[
     "identifier",
     "int_lit",
+    // [v0.12.0 / S-4] `hex_lit` 是 §1.6 的**词法记号**(十六进制字面量);
+    // `bytes_lit` 是 §1.8 的**词法记号**(字节串字面量)。两者与 `int_lit` /
+    // `float_lit` / `string_lit` 同款 —— **定义在词法那几节**,不在附录 A 的
+    // 产生式块里 ⇒ 必须登记在这里,否则悬空检查会把 `Literal -> hex_lit`
+    // 报成「引用了未定义的非终结符」。
+    "hex_lit",
+    "bytes_lit",
     "float_lit",
     "string_lit",
     "char_lit",

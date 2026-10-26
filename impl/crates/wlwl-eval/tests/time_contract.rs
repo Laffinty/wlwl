@@ -389,8 +389,7 @@ const CASES: &[Case] = &[
         src: concat!(
             r#"IMPORT("wlwl:std.time", ["SLEEP"]); "#,
             r"SCOPE(FUN(() , AWAIT(SPAWN(FUN(() , SLEEP(10); 42)))))"
-        ),
-        // ⚠️ **反向守卫:方案 E 的核心决定**。`SLEEP` 是**阻塞原语**,不挂起任务
+        ),        // ⚠️ **反向守卫:方案 E 的核心决定**。`SLEEP` 是**阻塞原语**,不挂起任务
         // —— 所以任务体里的 `SLEEP` 之后必须**继续往下执行**并交出 42。
         //
         // 原本的设计是「任务内挂起、到点唤醒」,而 wlwl 只有 `YIELD()` 能中途续跑
@@ -402,6 +401,23 @@ const CASES: &[Case] = &[
         // 「挂起路线被重新引入」的特征读数。不要为了让它「快一点失败」而给
         // `SLEEP` 加时限或让它在任务内报错:那会把方案 E 又变回方案 D。
         expect: "42",
+    },
+    // ── [v0.12.0 / R-2 + S-7] 宿主挂起点成员在**任务体外**调用 ──────────
+    //
+    // `SLEEP_ASYNC` 是宿主挂起点成员(并发册 §17.0)⇒ 在模块顶层调用时它要挂起
+    // 当前任务,而顶层**没有任务体可挂** ⇒ `E0014`。
+    //
+    // ⚠ 规范侧的错误口径已登记在**系统册 §15.1** 的失败列;本条把它**钉**在
+    // 实现侧 —— 规范仓的「失败口径对拍」正是靠这种断言位确认「规范写了的那条
+    // 口径,实现真的钉住了」。
+    Case {
+        name: "sleep_async_outside_a_task_body_is_e0014",
+        // ⚠ `src` 写成**单行**原始字符串(不是 `concat!`):规范仓的「失败口径
+        // 对拍」靠**同一行**的 `src:` / `expect:` 配对来取这条用例的
+        // 「命名空间 + 被调成员」⇒ 多行 `concat!` 形态它读不到 ⇒ 这条
+        // 断言位会被判成「没钉住」。
+        src: r#"IMPORT("wlwl:std.time", ["SLEEP_ASYNC"]); SLEEP_ASYNC(50)"#,
+        expect: "!E0014 SLEEP_ASYNC: used outside a task body — this operation suspends the current task, so it is only valid inside a task body (e.g. within SCOPE(...) / SPAWN(...))",
     },
 ];
 

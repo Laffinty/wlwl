@@ -175,3 +175,122 @@ PRINT("unreachable");
          (that would report the same failure twice); stderr={stderr}"
     );
 }
+
+// ── [v0.12.0 / R-6 · S-2] 孤儿任务的 **`ERR` 终值** ──────────────────────
+//
+// ## 这条钉的是什么
+//
+// 语言核心册 §8.6.2 的丢弃点**恰好三处**:① 语句值丢弃;② 绑定被覆盖;
+// ③ **作用域结束时仍有绑定**持有未消费 `ERR`。
+// ⇒ 「**任务终值**」既不是绑定、也不是语句值 ⇒ **三处都不覆盖它**。
+//
+// ⇒ 一个以 `ERR` 值收尾的孤儿任务以前**不留任何痕迹**:没有 stderr、没有
+// 诊断、退出码 0 ⇒ 症状与「网络卡了」**无法区分** —— 这正是并发册 §17.9
+// 明写「无人 `AWAIT` 的失败**不得**完全静默」要防的那件事。
+//
+// ⇒ 修法（**实现侧补报**，S-2 已裁决）：任务以 `ERR` 值收尾 ⇒ 登记为待报;
+// 程序收尾时按 §17.9 的**报告行形态**报一行;被 `AWAIT` 认领的那一份
+// **摘掉** ⇒ 两条路径**互斥**、**不报两次**。
+
+#[test]
+fn an_unawaited_task_ending_with_an_err_value_is_reported_and_the_program_keeps_running() {
+    let dir = scratch_dir("orphan-err-value");
+    let src = r#"
+IMPORT("wlwl:std.io", ["PRINT"]);
+SCOPE(FUN(() , (
+    LET(t, SPAWN(FUN(() , ERR("orphan-terminal-err"))));
+    0
+)));
+PRINT("program-finished");
+"#;
+    let p = write_source(&dir, "orphan_err_value.wll", src);
+    let out = run_cli(&["run", p.to_str().unwrap()]);
+    let stdout = String::from_utf8_lossy(&out.stdout).to_string();
+    let stderr = String::from_utf8_lossy(&out.stderr).to_string();
+
+    assert!(
+        out.status.success(),
+        "an orphan ERR value must NOT abort the program; status={:?} stderr={stderr}",
+        out.status
+    );
+    assert!(
+        stdout.contains("program-finished"),
+        "the program must run to completion; stdout={stdout}"
+    );
+    assert!(
+        stderr.contains("unhandled task failure"),
+        "the orphan ERR value must be reported; stderr={stderr}"
+    );
+    assert!(
+        stderr.contains("orphan-terminal-err"),
+        "the report must carry the payload; stderr={stderr}"
+    );
+    // 与「绑定持有 `ERR`」那族**同款**形态 ⇒ 运维只要 grep 一条串。
+    assert!(
+        stderr.contains("E0103"),
+        "the report must name the code; stderr={stderr}"
+    );
+}
+
+#[test]
+fn an_awaited_task_ending_with_an_err_value_is_raised_at_the_await_site_and_not_reported_twice() {
+    let dir = scratch_dir("awaited-err-value");
+    let src = r#"
+IMPORT("wlwl:std.io", ["PRINT"]);
+SCOPE(FUN(() , (
+    LET(t, SPAWN(FUN(() , ERR("awaited-terminal-err"))));
+    LET(v, AWAIT(t));
+    0
+)));
+PRINT("unreachable");
+"#;
+    let p = write_source(&dir, "awaited_err_value.wll", src);
+    let out = run_cli(&["run", p.to_str().unwrap()]);
+    let stderr = String::from_utf8_lossy(&out.stderr).to_string();
+
+    assert!(
+        !out.status.success(),
+        "an awaited ERR value must still fail the program at the AWAIT site; stderr={stderr}"
+    );
+    assert!(
+        stderr.contains("awaited-terminal-err"),
+        "the AWAIT site must surface the payload; stderr={stderr}"
+    );
+    assert!(
+        !stderr.contains("unhandled task failure"),
+        "the ERR value IS claimed by the AWAIT — it must not be reported as an orphan \
+         (that would report the same ERR twice); stderr={stderr}"
+    );
+}
+
+/// 反向守卫:**绑定**持有 `ERR` 的孤儿任务**只报一行** —— 它的终值不是 `ERR`
+/// (终值是 `0`)⇒ 两个机制**不得**同时报同一件事。
+#[test]
+fn an_orphan_task_holding_an_err_in_a_binding_is_reported_exactly_once() {
+    let dir = scratch_dir("orphan-bound-err");
+    let src = r#"
+IMPORT("wlwl:std.io", ["PRINT"]);
+SCOPE(FUN(() , (
+    LET(t, SPAWN(FUN(() , (
+        LET(x, ERR("orphan-bound-err"));
+        0
+    ))));
+    0
+)));
+PRINT("program-finished");
+"#;
+    let p = write_source(&dir, "orphan_bound_err.wll", src);
+    let out = run_cli(&["run", p.to_str().unwrap()]);
+    let stderr = String::from_utf8_lossy(&out.stderr).to_string();
+
+    let hits = stderr.matches("orphan-bound-err").count();
+    assert_eq!(
+        hits, 1,
+        "the orphan ERR must be reported exactly once; stderr={stderr}"
+    );
+    assert!(
+        out.status.success(),
+        "an orphan failure must NOT abort the program; status={:?} stderr={stderr}",
+        out.status
+    );
+}

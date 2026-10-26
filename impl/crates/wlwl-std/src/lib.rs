@@ -234,6 +234,11 @@ pub static LANG_SOURCES: &[StdSource] = &[
             ("_KIND", kernels::kernel_kind as StdFn),
             ("_DIAG_E0022", kernels::kernel_diag_e0022 as StdFn),
             ("_DIAG_E0030", kernels::kernel_diag_e0030 as StdFn),
+            // [v0.12.0 / S-1 甲案] `CAT` 归 **R2 原生内核** ⇒ 附录 A 的
+            // 「层」列说它 R2,实现就得是 R2(否则快照陈述了一件假事)。
+            // 形态与 `std.result` 的 `RESULT_ALL` / `TAKE_ERR` 同款:
+            // **kernel 注入 + 门面直接改名导出**(门面是别名,不是包装闭包)。
+            ("_CAT", kernels::kernel_cat as StdFn),
         ],
     },
     StdSource {

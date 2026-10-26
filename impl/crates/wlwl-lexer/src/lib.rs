@@ -56,9 +56,9 @@ pub enum TokenKind {
     Err,
     Panic,
     Try,
-    IsOk,
-    IsErr,
-    OrDie,
+    // [v0.12.0 / R-4] `IS_OK` / `IS_ERR` / `OR_DIE` 的 token 变体**已删除** ——
+    // 它们**不是**关键字(规范 §1.4 的关键字表只有 15 个),而是附录 G 的
+    // **全局内建** ⇒ 词法层按普通标识符处理(见下面的关键字表)。
     // §13 module keywords (Phase 2)
     Import,
     Export,
@@ -292,16 +292,43 @@ impl<'a> Lexer<'a> {
         }
         d = match code {
             ErrorCode::E0001 => d.with_suggestion(Suggestion::Note {
+                // [v0.12.0 / 审计 F-14] 这段文本事实上是「词法面说明书」,
+                // 与实现脱节说明它长期未随实现更新 ⇒ 逐条按**实现真实行为**订正:
+                // ① 转义集合补上 `\$`(v0.6 §1.8 就有,旧文案漏了);
+                //    并把 `\u{8}` / `\u{c}` 改写成实现真正**接受**的拼写
+                //    `\b` / `\f`,把 `/` 改写成 `\/` —— 旧文案给的是**结果
+                //    字节**,不是可照抄的**转义拼写**,照抄会得到「非法转义」。
+                // ② 数字补上指数形式(`1e2` / `1.5e-2`)与十六进制(`0x1F`)
+                //    —— 两者都是实现支持的**项目扩展**。
+                // ③ 标识符:ASCII 部分是 `a-z A-Z 0-9 _`(首位不能是数字);
+                //    非 ASCII 部分如实写「**当前一律被接受**(未做 Unicode
+                //    类别筛选)」—— 既不能继续只说 ASCII 集(会漏掉中文等
+                //    合法标识符),也不能承诺「仅 Unicode 字母类别」(那是
+                //    **尚未实施**的收窄,见 F-15)。⚠ 本次**只改文案**,
+                //    不改词法行为。
                 description: concat!(
-                    "valid identifier characters: a-z, A-Z, 0-9, _ ; ",
-                    "valid string escapes: `\" \\ / \u{8} \u{c} \n \r \t \0` ; ",
-                    "(numbers must be ASCII digits, optionally with one '.')"
+                    "valid identifier characters: a-z, A-Z, 0-9, _ ",
+                    "(an identifier must not start with a digit); ",
+                    "any non-ASCII code point is currently accepted too ",
+                    "(no Unicode category check is applied) ; ",
+                    "valid string escapes: `\\\" \\\\ \\/ \\n \\r \\t \\b \\f \\0 \\$` ",
+                    "(byte strings `b\"...\"` additionally accept `\\xNN`) ; ",
+                    "(numbers: ASCII digits, optionally with a fraction and/or an ",
+                    "exponent, e.g. 1, 1.5, 1e2, 1.5e-2; ",
+                    "or a hexadecimal literal, e.g. 0x1F)"
                 )
                 .into(),
             }),
             ErrorCode::E0002 => d.with_suggestion(Suggestion::Note {
-                description: "add a closing `\"` before end of line, or split into \
-                     two adjacent strings (WLWL concatenates them at parse time)"
+                // [v0.12.0 / 审计 F-14] 旧文案承诺了**不存在的**语言特性:
+                // 「拆成两个相邻字符串,解析期拼接」—— WLWL **没有**相邻串
+                // 拼接(附录 A.2 的 `Primary` 无串接分支)⇒ 那条路走不通:
+                // `PRINT("a" "b");` ⇒ `error[E0011]: expected ')', got
+                // StringLit("b")`。⇒ 删掉那半句,保留「补一个闭合引号」,
+                // 并如实写明「本语言不做两个字符串字面量的拼接」。
+                description: "add a closing `\"` before end of line \
+                     (WLWL does not concatenate two string literals: \
+                     `\"a\" \"b\"` is a syntax error)"
                     .into(),
             }),
             ErrorCode::E0003 => d.with_suggestion(Suggestion::Note {
@@ -630,9 +657,17 @@ impl<'a> Lexer<'a> {
             "ERR" => TokenKind::Err,
             "PANIC" => TokenKind::Panic,
             "TRY" => TokenKind::Try,
-            "IS_OK" => TokenKind::IsOk,
-            "IS_ERR" => TokenKind::IsErr,
-            "OR_DIE" => TokenKind::OrDie,
+            // [v0.12.0 / R-4 · 审计 F-06] `IS_OK` / `IS_ERR` / `OR_DIE`
+            // **不再**是关键字 —— 规范 §1.4 的关键字表只有 15 个,它们不在其中
+            // (它们是附录 G 的**全局内建**)⇒ 词法层按**普通标识符**处理,
+            // 于是 §3.5 的「遮蔽内建名」规则(默认 `E0025`、开
+            // `[features] allow_builtin_shadow` 时 `W0030`)对它们**终于生效**
+            // —— 此前它们在**词法层**就是关键字 ⇒ `LET(IS_OK, 1)` 报的是**语法错**
+            // `E0010`,按码分流的工具(IDE / CI 门禁 / agent 自愈规则)会走错分支。
+            //
+            // ⚠ 语义**不变**:它们仍然按**名字**在运行期解析(见
+            //   `wlwl-eval` 的 `ERR_CONSUMER_REGISTRY` 与 `resolve_builtin`),
+            //   只是「解析」从**解析期**挪到了**调用期**。
             "IMPORT" => TokenKind::Import,
             "EXPORT" => TokenKind::Export,
             // v0.4 Sec. 7.6 macro-function (lexer-level keyword).

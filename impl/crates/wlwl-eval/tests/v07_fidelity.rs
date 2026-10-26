@@ -17,6 +17,22 @@
 //!   2. explain the drift in the commit message
 //!   3. link to the deviation entry that authorises the change
 //!
+//! ## [v0.12.0 / R-3] 已授权漂移:核心内建诊断的**位置**
+//!
+//! 本黄金文件在 v0.12.0 被**有意**重录一次,漂移点是**诊断位置**:
+//! `error_schema.wll` / `err_propagation.wll` 的 `E1003`(除零)此前落在
+//! `<runtime>:0:0`(内建诊断的**占位位置** —— `arity_error` /
+//! `type_error` / `builtin_error` 拿不到 AST span),现在落在**调用点**
+//! (`error_schema.wll:6:22` / `err_propagation.wll:5:22`)并带**源行摘录**。
+//!
+//! 授权依据:语言核心册 §11.1 要求诊断带「位置(文件、行列)与源行摘录」;
+//! 审计 F-04 实测该族 **17/17** 命中占位位置 ⇒ 修法在分派点把占位位置
+//! 换成调用点(见 `wlwl-eval` 的 `locate_builtin_diag`)。
+//!
+//! ⚠ **行为面没变**:退出码、stdout、诊断**码**、诊断**消息**逐字不变;
+//!   变的只有「位置」与「多出来的源行摘录」⇒ 语义面**未**漂移。
+//!   配套契约见 `builtin_diag_span_contract.rs`(R-3 的反向守卫)。
+//!
 //! This test does NOT depend on `wlwl-cli`'s integration harness
 //! (which already runs its own subset of these fixtures). It runs
 //! the full 10-fixture set from the wlwl-eval crate's test context

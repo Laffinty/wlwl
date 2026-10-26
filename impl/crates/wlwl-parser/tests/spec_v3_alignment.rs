@@ -734,27 +734,41 @@ fn try_is_ok_is_err() {
         &exprs[0],
         Expr::Let { value, .. } if matches!(value.as_ref(), Expr::Try { .. })
     ));
-    assert!(matches!(
-        &exprs[1],
-        Expr::Let { value, .. } if matches!(value.as_ref(), Expr::IsOk { .. })
-    ));
-    assert!(matches!(
-        &exprs[2],
-        Expr::Let { value, .. } if matches!(value.as_ref(), Expr::IsErr { .. })
-    ));
+    // [v0.12.0 / R-4] `IS_OK` / `IS_ERR` **不再是关键字**(规范 §1.4 的关键字表
+    // 只有 15 个)⇒ 解析器不再把它们降级成 `Expr::IsOk` / `Expr::IsErr` ⇒
+    // 它们走**通用调用路径**(`Expr::Call`),由求值器按名字解析。
+    // ⚠ 语义面不变 —— 变的只是 AST 形状。
+    for (idx, name) in [(1usize, "IS_OK"), (2, "IS_ERR")] {
+        match &exprs[idx] {
+            Expr::Let { value, .. } => match value.as_ref() {
+                Expr::Call { name: n, args, .. } => {
+                    assert_eq!(n, name, "exprs[{idx}] must call {name}");
+                    assert_eq!(args.len(), 1, "{name} takes exactly one argument");
+                }
+                other => panic!("expected a call to {name}, got {:?}", other),
+            },
+            other => panic!("expected a LET, got {:?}", other),
+        }
+    }
 }
 
 #[test]
 fn or_die_is_two_arg() {
-    // §12.2: OR_DIE(expr, default). `expr` is the inner OR_DIE node;
-    // its value is the OK constructor applied to its argument, so
-    // we expect an `Expr::Ok` whose value is the literal 1.
+    // §12.2: OR_DIE(expr, default).
+    // [v0.12.0 / R-4] `OR_DIE` **不再是关键字** ⇒ 走**通用调用路径**
+    // (`Expr::Call` { name: "OR_DIE", args: [expr, default] })⇒ 它与它的规范
+    // 别名 `UNWRAP_OR` **完全同款**(求值期由 `builtin_unwrap_or_compat` 处置,
+    // 并额外发一条 `W0051` 弃用警告)。
     let r = parse("LET(r, OR_DIE(OK(1), 0));", "t.wll").unwrap();
-    let od = match &only_let(&r).as_ref() {
-        Expr::OrDie { value, default, .. } => (value, default),
-        _ => panic!(),
+    let (value, default) = match only_let(&r).as_ref() {
+        Expr::Call { name, args, .. } => {
+            assert_eq!(name, "OR_DIE");
+            assert_eq!(args.len(), 2, "OR_DIE takes two arguments");
+            (&args[0], &args[1])
+        }
+        other => panic!("expected a call to OR_DIE, got {:?}", other),
     };
-    let inner = match od.0.as_ref() {
+    let inner = match value {
         Expr::Ok { value, .. } => value,
         other => panic!("expected Ok inside OR_DIE, got {:?}", other),
     };
@@ -762,10 +776,7 @@ fn or_die_is_two_arg() {
         inner.as_ref(),
         Expr::Literal(Literal::Integer(1), _)
     ));
-    assert!(matches!(
-        od.1.as_ref(),
-        Expr::Literal(Literal::Integer(0), _)
-    ));
+    assert!(matches!(default, Expr::Literal(Literal::Integer(0), _)));
 }
 
 #[test]

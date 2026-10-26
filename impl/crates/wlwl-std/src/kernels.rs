@@ -433,7 +433,48 @@ pub fn kernel_pow_mod(host: &mut dyn StdHost, args: Vec<Value>) -> WlwlResult<Ou
 }
 
 // ─────────────────────────────────────────────────────────────────────
-// 4. 注入表
+// 4. _CAT(parts...)  ——  std.str 变长拼接
+// ─────────────────────────────────────────────────────────────────────
+
+/// `CAT(parts...)` —— **变长拼接**(stdlib 规范 §6;附录 A `std.str` 的
+/// `CAT` 归 **R2**)。
+///
+/// 契约(§6):
+/// - 逐段用 `STR` 口径渲染后拼接;
+/// - 零段 ⇒ `""`;一段 ⇒ 那一段;多段 ⇒ 依次拼接。
+///
+/// ⚠ **渲染口径与全局内建 `STR(x)` 逐字同源**:`builtin_str` 直接调
+///   `Value::display()`(`wlwl-eval`),本内核也调它 ⇒ 两处不可能漂移。
+///
+/// ## 为什么它必须是 **R2 内核**(不是 R1 闭包)
+///
+/// 1. **变长**:语言里 `+` 是**二元**的(`+(a, b, c)` ⇒ `E0022`)⇒ R1 要拼
+///    N 段得嵌套 N-1 次;内核的签名天然就是 `(host, args: Vec<Value>)`
+///    ⇒ 实参个数任意。
+/// 2. **规模曲线**:R1 的 `SET(out, +(out, STR(p)))` 每段都**复制整个字符串**
+///    ⇒ O(n²);内核一次 `String` 缓冲 ⇒ O(n)。这与 `std.collection` 归层
+///    那十个成员、`RESULT_ALL` / `RESULT_ANY` 归层是**同一条理由**
+///    (wlwl 字符串 / 数组不可变,累加链是超线性的)。
+///
+/// ## 「`ERR` 实参不被渲染」这条规则写在哪
+///
+/// ⚠ **不在本函数里** —— 它写在**语言层**(§12.6 的透明传播):
+///   `CAT` **不在** §8.3 的消费者注册表里 ⇒ 实参里有 `ERR` 时,调用边界
+///   **短路**,函数体根本不被求值 ⇒ 结果就是那个 `ERR` 本身,不会被渲染成
+///   文本。这条规则对「R1 闭包」与「R2 内核」**同款**,所以换层不换语义。
+///
+///   (本函数因此**永远看不到** `ERR` 实参;若真看到,`Value::display()` 会
+///   把它渲染成 `ERR(...)` —— 那是不可达路径。)
+pub fn kernel_cat(_host: &mut dyn StdHost, args: Vec<Value>) -> WlwlResult<Outcome> {
+    let mut out = String::new();
+    for v in &args {
+        out.push_str(&v.display());
+    }
+    Ok(Outcome::normal(Value::String(out)))
+}
+
+// ─────────────────────────────────────────────────────────────────────
+// 5. 注入表
 // ─────────────────────────────────────────────────────────────────────
 
 /// 全部注入 kernel。**`StdSource::kernels` 并不引用本表** —— 每个模块在
@@ -471,6 +512,8 @@ pub static KERNELS: &[(&str, StdFn)] = &[
     ("_COSH", kernel_cosh as StdFn),
     ("_TANH", kernel_tanh as StdFn),
     ("_POW_MOD", kernel_pow_mod as StdFn),
+    // [v0.12.0 / S-1 甲案] `std.str::CAT` 归 R2(变长拼接 + O(n) 缓冲)。
+    ("_CAT", kernel_cat as StdFn),
 ];
 
 #[cfg(test)]

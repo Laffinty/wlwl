@@ -6,12 +6,23 @@
 //! 这条路径;本仓只持有一份**抄件**(`docs/wlwl-spec-reference.md` 附录 A
 //! 标记区),它由规范仓的快照**逐字抄来**。
 //!
-//! 本文件守两个问题(两条守卫互不替代):
+//! 本文件守三个问题(三条守卫互不替代):
 //! - **守卫 A(抄件忠实度)**:抄件 == 规范仓注册镜像册的附录 A,**逐字节**;
 //! - **守卫 B(实现与期望面一致)**:实现的成员集合 == **附录 A ∪ 台账**的成员
 //!   集合,逐命名空间比**集合**(不比顺序、不比 `[stub]` 标记、不比「层」「册」
 //!   两列 —— §0.7 规则 3 说的是「集合相等」,规则 2 说的是差异走一致性册
-//!   §5.4 的**差异登记**、由实现侧收敛,**不**由快照跟随实现漂移)。
+//!   §5.4 的**差异登记**、由实现侧收敛,**不**由快照跟随实现漂移);
+//! - **守卫 C(逐字对拍)**[v0.12.0 / F-01]:抄件附录 A 的**全文** == 实现派生的
+//!   表体 ⇒ **「层」列**与**成员顺序**也进对拍范围。
+//!
+//! ⚠ 守卫 B 与守卫 C **互不替代**:守卫 B 判「成员集合」(§0.7 规则 3 的口径),
+//!   守卫 C 判「全文逐字」⇒ 后者比前者**严**(它把「层」「册」两列与成员**顺序**
+//!   都算进去)。F-01 长期潜伏的根因正在这里:守卫 B 只比集合 ⇒ 「层」列漏登记
+//!   (如 `std.result` 的 `TAKE_ERR`)与「成员顺序」漂移(如 `std.time` 的
+//!   `SLEEP_ASYNC`)都**照绿**⇒ 逐字对拍工具 `check-appendix-a` 判红而 CI 不跑。
+//! - 守卫 C 的比较对象是**抄件**;因守卫 A 已钉死「抄件 == 冻结快照(逐字节)」,
+//!   它与「对着快照逐字比」**等价**,但**多走一道抄件**⇒ 抄件走样与实现漂移
+//!   两种失败**不会互相掩盖**。
 //!
 //! ## 期望面 = **附录 A ∪ 台账**(一致性册 §5.5 规则 4)
 //!
@@ -342,15 +353,19 @@ fn expected_member_sets(
     out
 }
 
-/// 抄件 vs 快照的差异(归一化行尾后逐行比)。**相同 ⇒ `None`**。
-fn fidelity_diff(copy: &str, snapshot: &str) -> Option<Vec<String>> {
-    let a = normalized(copy);
-    let b = normalized(snapshot);
+/// 两份表体的**逐行**差异(归一化行尾后)。**相同 ⇒ `None`**。
+///
+/// `left_label` / `right_label` 是两边的称呼(**带冒号**)⇒ 标签**等宽左对齐**,
+/// 人眼扫读时两边能上下对齐。
+fn body_diff(left: &str, right: &str, left_label: &str, right_label: &str) -> Option<Vec<String>> {
+    let a = normalized(left);
+    let b = normalized(right);
     if a == b {
         return None;
     }
     let al: Vec<&str> = a.lines().collect();
     let bl: Vec<&str> = b.lines().collect();
+    let width = left_label.len().max(right_label.len());
     let mut out: Vec<String> = Vec::new();
     for i in 0..al.len().max(bl.len()) {
         let x = al.get(i).copied();
@@ -359,20 +374,30 @@ fn fidelity_diff(copy: &str, snapshot: &str) -> Option<Vec<String>> {
             continue;
         }
         out.push(format!(
-            "line {}:\n    copy:     {}\n    snapshot: {}",
+            "line {}:\n    {:<width$} {}\n    {:<width$} {}",
             i + 1,
+            left_label,
             x.unwrap_or("<missing>"),
-            y.unwrap_or("<missing>")
+            right_label,
+            y.unwrap_or("<missing>"),
+            width = width
         ));
     }
     if out.is_empty() {
         out.push(format!(
-            "the two bodies differ (copy {} bytes vs snapshot {} bytes) but no line differs",
+            "the two bodies differ ({} {} bytes vs {} {} bytes) but no line differs",
+            left_label,
             a.len(),
+            right_label,
             b.len()
         ));
     }
     Some(out)
+}
+
+/// 抄件 vs 快照的差异(归一化行尾后逐行比)。**相同 ⇒ `None`**。
+fn fidelity_diff(copy: &str, snapshot: &str) -> Option<Vec<String>> {
+    body_diff(copy, snapshot, "copy:", "snapshot:")
 }
 
 /// 期望面(附录 A ∪ 台账)vs 实现的成员集合差异。**相同 ⇒ `None`**。
@@ -445,6 +470,61 @@ fn without_first_data_row(body: &str) -> String {
     }
     assert!(dropped, "the probe found no data row to drop");
     out.join("\n")
+}
+
+/// 改坏表体里**第一行数据行**的某一格(负向自检专用的改坏手段)。
+///
+/// `column`:从 0 起的列号(0 = 命名空间 / 1 = 成员 / 2 = 层 / 3 = v1.0 册);
+/// `new_cell`:新单元格的**全文**(不含两侧空格)。
+///
+/// ⚠ 与 [`without_first_data_row`] 同款纪律:**一定**改到东西** —— 找不到数据行、
+///   列号越界、或新旧单元格文本相同时 ⇒ panic。负向自检最怕的就是「因为没改到
+///   东西」而空转:读数是红的,其实什么也没验。
+fn with_first_data_row_cell(body: &str, column: usize, new_cell: &str) -> String {
+    let mut out: Vec<String> = Vec::new();
+    let mut changed = false;
+    for line in body.lines() {
+        let t = line.trim();
+        let is_data_row = t.starts_with("| `") && t.trim_matches('|').split('|').count() == 4;
+        if !is_data_row || changed {
+            out.push(line.to_string());
+            continue;
+        }
+        let mut cells: Vec<String> = t
+            .trim_matches('|')
+            .split('|')
+            .map(|c| c.trim().to_string())
+            .collect();
+        assert!(
+            column < cells.len(),
+            "the probe asked for column {column} but the row has {} cell(s)",
+            cells.len()
+        );
+        assert_ne!(
+            cells[column], new_cell,
+            "the probe must actually change the cell — otherwise the negative self-check \
+             checks nothing"
+        );
+        cells[column] = new_cell.to_string();
+        out.push(format!("| {} |", cells.join(" | ")));
+        changed = true;
+    }
+    assert!(changed, "the probe found no data row to change");
+    out.join("\n")
+}
+
+/// 表体里**第一行数据行**的「成员」格原文(负向自检用)。
+fn first_data_row_members_cell(body: &str) -> String {
+    for line in body.lines() {
+        let t = line.trim();
+        let is_data_row = t.starts_with("| `") && t.trim_matches('|').split('|').count() == 4;
+        if !is_data_row {
+            continue;
+        }
+        let cells: Vec<&str> = t.trim_matches('|').split('|').collect();
+        return cells[1].trim().to_string();
+    }
+    panic!("the probe found no data row");
 }
 
 /// 读合并册(抄件)。
@@ -558,6 +638,84 @@ fn the_member_set_check_actually_rejects_a_difference() {
     assert!(
         member_set_diff(&expected_member_sets(&copy, &no_ledger), &impl_sets).is_none(),
         "the member-set comparison must ACCEPT an identical copy (otherwise it rejects everything)"
+    );
+}
+
+/// 守卫 C(**逐字对拍**):抄件附录 A 的**全文** == 实现派生的表体。
+///
+/// ⚠ 为什么这条不能省:守卫 B 只比**成员集合** ⇒ 「**层**」列漏登记与「**成员
+///   顺序**」漂移都**照绿**。F-01(`check-appendix-a` 判红三行)就是这么潜伏的:
+///   三处差异里两处是**元数据 / 顺序**,一处是**层归属**的待裁决,没有一处能被
+///   守卫 B 抓住 ⇒ 仓内唯一的逐字对拍工具长期红着,而 CI 也不跑它。
+/// ⚠ 本守卫比的是**全文**(逐字),不只比「成员」列 ⇒ 「层」「册」两列与顺序
+///   全在范围内。
+/// ⚠ 失败时**不要**放宽断言、也**不要**改快照:冻结快照是真相(§0.7 规则 1),
+///   差异按一致性册 §5.4 走登记、由**实现侧**收敛。
+#[test]
+fn the_appendix_a_copy_matches_the_implementation_derived_body_verbatim() {
+    let copy = read_copy();
+    let derived = wlwl_eval::stdlib_mirror::generate_appendix_a_md();
+    if let Some(diff) = body_diff(&copy, &derived, "copy:", "impl:") {
+        panic!(
+            "the appendix A copy in the merged spec differs VERBATIM from the \
+             implementation-derived body:\n{}\n\
+             The frozen snapshot is the truth (§0.7 rule 1): converge the implementation \
+             side (layer column / member order / member set) — do NOT let the snapshot \
+             follow the implementation.",
+            diff.join("\n")
+        );
+    }
+}
+
+/// 守卫 C 的**负向自检**:逐字对拍能抓住「**层**」列与「**成员顺序**」的差异
+/// (不是恒真断言)。
+///
+/// ⚠ 为什么值得守:一条「全文相等」的断言最常见的失效形态是**只比了成员集合**
+///   (那就退回守卫 B 了)或**提取器取空了**(空 == 空恒成立)。这里拿两份**人为改坏**
+///   的表体去撞:① 把「层」列改坏;② 把「成员」列的**顺序**改坏(成员集合不变)
+///   ⇒ 两者都必须被**报出**差异;再拿一份**没改坏的** ⇒ 必须**不**报(否则这条守卫
+///   就是「一律报」,等于没守)。
+#[test]
+fn the_verbatim_appendix_a_check_actually_rejects_a_layer_or_order_difference() {
+    let copy = read_copy();
+    let derived = wlwl_eval::stdlib_mirror::generate_appendix_a_md();
+
+    // ① 「层」列改坏(F-01 的 `std.result` 漏 `TAKE_ERR` 就是这一类差异)。
+    let broken_layer = with_first_data_row_cell(&copy, 2, "R0");
+    assert_ne!(
+        normalized(&broken_layer),
+        normalized(&copy),
+        "the probe must actually change the body — otherwise this self-check checks nothing"
+    );
+    assert!(
+        body_diff(&broken_layer, &derived, "copy:", "impl:").is_some(),
+        "the verbatim comparison must REJECT a body whose layer column differs"
+    );
+
+    // ② 「成员」列**顺序**改坏(成员集合不变 —— 这正是守卫 B 抓不住的那一类)。
+    let members = first_data_row_members_cell(&copy);
+    let mut tokens: Vec<&str> = members.split_whitespace().collect();
+    assert!(
+        tokens.len() >= 2,
+        "the probe needs a data row with at least two members — got {members:?}"
+    );
+    tokens.reverse();
+    let broken_order = with_first_data_row_cell(&copy, 1, &tokens.join(" "));
+    assert_ne!(
+        normalized(&broken_order),
+        normalized(&copy),
+        "the probe must actually change the body — otherwise this self-check checks nothing"
+    );
+    assert!(
+        body_diff(&broken_order, &derived, "copy:", "impl:").is_some(),
+        "the verbatim comparison must REJECT a body whose member ORDER differs \
+         (same member set — the case the member-set guard cannot see)"
+    );
+
+    // ③ 没改坏的 ⇒ **不**报(否则这条守卫就是「一律报」,等于没守)。
+    assert!(
+        body_diff(&copy, &derived, "copy:", "impl:").is_none(),
+        "the verbatim comparison must ACCEPT an identical copy (otherwise it rejects everything)"
     );
 }
 

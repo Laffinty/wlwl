@@ -297,6 +297,23 @@ const CASES: &[Case] = &[
         src: r#"IMPORT("wlwl:std.net", ["URL_JOIN"]); URL_JOIN(5, "b")"#,
         expect: "!E0030 URL_JOIN: expected string, got integer",
     },
+    // ── [v0.12.0 / R-2 + S-7] 宿主挂起点成员在**任务体外**调用 ──────────
+    //
+    // `TCP_ACCEPT` 是宿主挂起点成员(并发册 §17.0)⇒ 在模块顶层调用时它要挂起
+    // 当前任务,而顶层**没有任务体可挂** ⇒ `E0014`。
+    //
+    // ⚠ 规范侧的错误口径已登记在**系统册 §21.5** 的失败列(「调用点不在任务体内
+    // ⇒ E0014」);本条把它**钉**在实现侧 —— 规范仓的「失败口径对拍」正是靠
+    // 这种断言位确认「规范写了的那条口径,实现真的钉住了」。
+    Case {
+        name: "tcp_accept_outside_a_task_body_is_e0014",
+        // ⚠ `src` 写成**单行**原始字符串(不是 `concat!`):规范仓的「失败口径
+        // 对拍」靠**同一行**的 `src:` / `expect:` 配对来取这条用例的
+        // 「命名空间 + 被调成员」⇒ 多行 `concat!` 形态它读不到 ⇒ 这条
+        // 断言位会被判成「没钉住」。
+        src: r#"IMPORT("wlwl:std.net", ["TCP_LISTEN", "TCP_ACCEPT"]); LET(l, TCP_LISTEN("127.0.0.1", 0)); TCP_ACCEPT(l, 50)"#,
+        expect: "!E0014 TCP_ACCEPT: used outside a task body — this operation suspends the current task, so it is only valid inside a task body (e.g. within SCOPE(...) / SPAWN(...))",
+    },
 ];
 
 fn scratch_dir() -> PathBuf {

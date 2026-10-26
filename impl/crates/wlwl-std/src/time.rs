@@ -49,11 +49,15 @@ pub static SPEC: ModuleSpec = ModuleSpec {
         ("NOW", now as StdFn),
         ("MONOTONIC", monotonic as StdFn),
         ("SLEEP", sleep as StdFn),
-        // [项目扩展 / G-08] **可挂起**的睡眠（`SLEEP` 是阻塞原语，见 `sleep` 的文档）。
-        ("SLEEP_ASYNC", sleep_async as StdFn),
         ("TEST_BUBBLE", test_bubble as StdFn),
         ("ADVANCE", advance as StdFn),
         ("TIMEOUT", timeout as StdFn),
+        // [项目扩展 / G-08] **可挂起**的睡眠（`SLEEP` 是阻塞原语，见 `sleep` 的文档）。
+        // [v0.12.0 / F-01] 绑定表位置 = 附录 A 冻结快照的**成员顺序** ⇒ 本成员排
+        // **最后**（快照：NOW / MONOTONIC / SLEEP / TEST_BUBBLE / ADVANCE / TIMEOUT /
+        // SLEEP_ASYNC）。⚠ 顺序是**逐字对拍**的一部分（`check-appendix-a` 按行比），
+        // 成员集合不变、语义不变。
+        ("SLEEP_ASYNC", sleep_async as StdFn),
     ],
 };
 

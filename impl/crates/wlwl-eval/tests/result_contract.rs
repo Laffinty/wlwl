@@ -400,7 +400,15 @@ fn the_propagation_block_precedes_user_fn_dispatch() {
             .join("lib.rs"),
     )
     .expect("wlwl-eval lib.rs is readable");
-    let body = &src[src.find("fn dispatch_call").expect("dispatch_call exists")..][..4000];
+    let start = src.find("fn dispatch_call").expect("dispatch_call exists");
+    // ⚠ 字节偏移**可能落在多字节字符中间**(本仓的注释是中文)⇒ 直接
+    //   `[..4000]` 会在字符边界上 panic(而与被测逻辑无关)。
+    //   ⇒ 取到**字符边界**为止:窗口仍是前 4000 字节,断言强度不变。
+    let mut end = (start + 4000).min(src.len());
+    while end > start && !src.is_char_boundary(end) {
+        end -= 1;
+    }
+    let body = &src[start..end];
     let guard = body
         .find("if !whitelisted")
         .expect("dispatch_call still short-circuits on a pending ERR");

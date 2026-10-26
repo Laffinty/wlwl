@@ -111,6 +111,43 @@ LET(c, CAT("a", 1, TRUE));
     );
 }
 
+/// [v0.12.0 / S-1 甲案] `CAT` 归 **R2 原生内核**后的行为锁。
+///
+/// 「实参为 `ERR` ⇒ **不渲染**、结果就是那个 `ERR`」这条规则写在**语言层**
+/// (§12.6 透明传播:`CAT` 不在 §8.3 消费者注册表里 ⇒ 调用边界短路,函数体
+/// 根本不被求值)⇒ **换层不换语义**。
+///
+/// ⚠ 这条以前**没有**测试钉住(只有审计的实测读数)⇒ 换层时它最容易被
+///   悄悄改掉 ⇒ 这里把它钉成契约。
+#[test]
+fn cat_propagates_an_err_argument_instead_of_rendering_it() {
+    let src = r#"
+IMPORT("wlwl:std.str", ["CAT"]);
+LET(f, CAT("a", ERR("boom")));
+[IS_ERR(f), ERR_PAYLOAD(f)]
+"#;
+    assert_eq!(
+        run(src),
+        "[TRUE, boom]",
+        "CAT must propagate an ERR argument, never render it (stdlib §6 / §12.6)"
+    );
+}
+
+/// 同款契约的**嵌套**形态:`ERR` 装在数组里 ⇒ 它不是实参本身 ⇒ 不短路 ⇒
+/// 数组被**渲染**成文本(`ERR(...)`),而那份 `ERR` 的未消费状态留在数组里。
+#[test]
+fn cat_renders_a_container_holding_an_err() {
+    let src = r#"
+IMPORT("wlwl:std.str", ["CAT"]);
+CAT([ERR("nested")])
+"#;
+    assert_eq!(
+        run(src),
+        "[ERR(nested)]",
+        "CAT must render a container with STR semantics, ERR element included"
+    );
+}
+
 // ── G-22：SCRIPT_PATH ──────────────────────────────────────────────────────
 
 const SCRIPT_PATH_SRC: &str = r#"

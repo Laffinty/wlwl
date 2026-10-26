@@ -449,7 +449,14 @@ pub const BUILTIN_REGISTRY: &[BuiltinSpec] = &[
         err_consumer: ErrConsumerStatus::Yes,
         macro_fn: true,
         version: Version::V02,
-        dispatch: DispatchStatus::LexerMacro,
+        // [v0.12.0 / R-4] `LexerMacro` → `ResolvedBuiltin`:它**不再是关键字**
+        // (规范 §1.4 的关键字表只有 15 个)⇒ 解析器不再把它降级成 `Expr::IsOk`
+        // ⇒ 它走**通用调用路径**,由 `resolve_builtin` 按名字解析。
+        //
+        // ⇒ 连带效果:遮蔽内建名(§3.5)对它**生效** —— 默认 `E0025`
+        //   (「cannot shadow built-in 'IS_OK'」),开
+        //   `[features] allow_builtin_shadow` 时 `W0030`。
+        dispatch: DispatchStatus::ResolvedBuiltin,
         section: "§8.3",
     },
     BuiltinSpec {
@@ -460,7 +467,8 @@ pub const BUILTIN_REGISTRY: &[BuiltinSpec] = &[
         err_consumer: ErrConsumerStatus::Yes,
         macro_fn: true,
         version: Version::V02,
-        dispatch: DispatchStatus::LexerMacro,
+        // [v0.12.0 / R-4] 同 `IS_OK`。
+        dispatch: DispatchStatus::ResolvedBuiltin,
         section: "§8.3",
     },
     BuiltinSpec {
