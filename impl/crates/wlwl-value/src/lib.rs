@@ -2579,6 +2579,170 @@ pub fn values_equal(a: &Value, b: &Value) -> bool {
 }
 
 // ──────────────────────────────────────────────────────────────────────
+// [W-21] 运行期扩展注册表(宿主侧的原生动态库扩展)
+// ──────────────────────────────────────────────────────────────────────
+//
+// ⚠ **为什么注册表住在 `wlwl-value`**:`ModuleSpec` 的成员表是
+// `&'static [(&'static str, StdFn)]` ⇒ **装不进动态符号**(动态库的符号
+// 地址是运行期才知道的)⇒ 运行期的扩展成员必须有一张 **Own 的**
+// (`HashMap`)表。这张表住在 `wlwl-value`,是因为它说的是「值」—— 而值模型
+// 只有这一处。
+//
+// ⚠ **依赖方向不变**:`wlwl-ext`(加载器)→ `wlwl-value`;`wlwl-eval` 只认
+// 这张表,不知道 FFI 的存在 ⇒ 语言面没有、也不需要「加载」这个概念。
+
+/// `arity_max` 的哨兵:**变参**(不限上界)。
+pub const EXT_ARITY_UNBOUNDED: u32 = u32::MAX;
+
+/// 运行期扩展成员的调用闭包:实参(值) → 结果(值)。
+///
+/// ⚠ 闭包持有动态库句柄 ⇒ 只要成员还能被调用,库就不会被卸载。
+pub type ExtMemberCall = Rc<dyn Fn(Vec<Value>) -> Result<Outcome, WlwlError>>;
+
+/// 一个运行期扩展成员。
+#[derive(Clone)]
+pub struct ExtMember {
+    /// 成员名(**不含**命名空间),如 `"hello"`。
+    pub name: String,
+    /// 限定名(`"<ns>:<name>"`),如 `"tls:hello"` —— **运行期派发键**。
+    pub qualified: String,
+    /// 最少实参个数。宿主侧**先**按它校验 ⇒ 元数错报既有 `E0022`。
+    pub arity_min: u32,
+    /// 最多实参个数;[`EXT_ARITY_UNBOUNDED`] = 变参。
+    pub arity_max: u32,
+    /// 调用闭包。
+    pub call: ExtMemberCall,
+}
+
+impl ExtMember {
+    /// 实参个数是否落在 `[arity_min, arity_max]` 内。
+    ///
+    /// ⚠ **宿主先校验、不合规就不调扩展** ⇒ 扩展拿不到「错的元数」。
+    pub fn arity_ok(&self, argc: usize) -> bool {
+        argc >= self.arity_min as usize
+            && (self.arity_max == EXT_ARITY_UNBOUNDED || argc <= self.arity_max as usize)
+    }
+}
+
+impl std::fmt::Debug for ExtMember {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("ExtMember")
+            .field("name", &self.name)
+            .field("qualified", &self.qualified)
+            .field("arity_min", &self.arity_min)
+            .field("arity_max", &self.arity_max)
+            .finish()
+    }
+}
+
+/// 一个运行期扩展命名空间。
+pub struct ExtNamespace {
+    /// 命名空间路径(如 `"tls"`)。**不得**是 `wlwl:std.*`。
+    pub path: String,
+    /// 成员表(成员名 → 成员)。
+    pub members: HashMap<String, ExtMember>,
+}
+
+impl std::fmt::Debug for ExtNamespace {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        let mut names: Vec<&str> = self.members.keys().map(|s| s.as_str()).collect();
+        names.sort();
+        f.debug_struct("ExtNamespace")
+            .field("path", &self.path)
+            .field("members", &names)
+            .finish()
+    }
+}
+
+/// 运行期扩展注册表:命名空间路径 → 命名空间。
+///
+/// ⚠ **这是命名空间解析链的第 4 层**(`wlwl-eval`):`wlwl:std.*` → 官方包
+/// → `wlwl.toml` 声明的包 → **运行期扩展**。
+#[derive(Default)]
+pub struct ExtRegistry {
+    namespaces: HashMap<String, ExtNamespace>,
+}
+
+impl ExtRegistry {
+    /// 空注册表。
+    pub fn new() -> Self {
+        Self::default()
+    }
+
+    /// 登记一个命名空间;**重名 ⇒ 失败**(返回冲突的路径)。
+    ///
+    /// ⚠ 信任门控 T5:扩展**不得覆盖**任何既有命名空间 ⇒ 重名在这里被拒。
+    pub fn insert_namespace(&mut self, ns: ExtNamespace) -> Result<(), String> {
+        if self.namespaces.contains_key(&ns.path) {
+            return Err(ns.path);
+        }
+        self.namespaces.insert(ns.path.clone(), ns);
+        Ok(())
+    }
+
+    /// 按路径取命名空间。
+    pub fn namespace(&self, path: &str) -> Option<&ExtNamespace> {
+        self.namespaces.get(path)
+    }
+
+    /// 按「命名空间 + 成员名」取成员。
+    pub fn member(&self, namespace: &str, name: &str) -> Option<&ExtMember> {
+        self.namespaces.get(namespace)?.members.get(name)
+    }
+
+    /// 按**限定名**(`"<ns>:<name>"`)取成员 —— 运行期派发走这条。
+    pub fn lookup_member(&self, qualified: &str) -> Option<ExtMember> {
+        let (ns, name) = qualified.split_once(':')?;
+        self.member(ns, name).cloned()
+    }
+
+    /// 已登记的命名空间路径。
+    pub fn namespace_paths(&self) -> Vec<&str> {
+        self.namespaces.keys().map(|s| s.as_str()).collect()
+    }
+
+    /// 命名空间个数。
+    pub fn len(&self) -> usize {
+        self.namespaces.len()
+    }
+
+    /// 是否一个命名空间都没有。
+    pub fn is_empty(&self) -> bool {
+        self.namespaces.is_empty()
+    }
+}
+
+impl std::fmt::Debug for ExtRegistry {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        let mut paths: Vec<&str> = self.namespaces.keys().map(|s| s.as_str()).collect();
+        paths.sort();
+        f.debug_struct("ExtRegistry")
+            .field("namespaces", &paths)
+            .finish()
+    }
+}
+
+/// [W-21] 扩展成员在 `Value::NativeFn` 里的**占位** `invoke`。
+///
+/// ⚠ 派发**不经过它**:求值器先按限定名问宿主
+/// ([`StdHost::ext_member`])⇒ 命中就走扩展通道(带元数校验)。
+/// ⇒ 这个函数只在「派发漏掉」时被调用 ⇒ 它报的是**内部错误**
+/// (`E0020`),不是语言语义。
+pub fn ext_member_trampoline(
+    _host: &mut dyn StdHost,
+    _args: Vec<Value>,
+) -> Result<Outcome, WlwlError> {
+    Err(WlwlDiagnostic::new(
+        ErrorCode::E0020,
+        "extension member was invoked outside the extension dispatch path \
+         (internal error)"
+            .to_string(),
+        Location::point("<extension>", 0, 0),
+    )
+    .into())
+}
+
+// ──────────────────────────────────────────────────────────────────────
 // std 调用契约(标准库底座 v0.11 / ADR-0022)
 // ──────────────────────────────────────────────────────────────────────
 
@@ -2622,6 +2786,19 @@ pub trait StdHost {
     /// ⚠ 默认实现返回**空**:没有令牌语义的手写宿主不受影响。
     fn arg_tokens(&self) -> &[UnconsumedErrs] {
         &[]
+    }
+    /// [W-21] **运行期扩展成员**的查找接缝。
+    ///
+    /// 宿主(求值器)在派发 `Value::NativeFn` 之前先问这一句:
+    /// 「这个限定名(`"<ns>:<name>"`)是运行期扩展成员吗?」
+    /// 是 ⇒ 走扩展通道(先按 `arity_min`/`arity_max` 校验元数 ⇒ 不合规报
+    /// 既有 `E0022`);不是 ⇒ 走既有的原生函数路径。
+    ///
+    /// ⚠ 默认实现返回 `None` —— **没有扩展的宿主一个字都不用改**,
+    /// 行为与从前逐字一致。
+    fn ext_member(&mut self, qualified: &str) -> Option<ExtMember> {
+        let _ = qualified;
+        None
     }
     /// 以当前调用点 span 构造诊断。
     fn diag(&mut self, code: ErrorCode, message: String) -> WlwlError;

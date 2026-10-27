@@ -16,6 +16,11 @@ serde_json = { workspace = true }
 
 [dev-dependencies]
 wlwl-parser = { workspace = true }
+# [W-21] 宿主侧的原生动态库扩展加载器:契约测试要**真的**加载一个扩展
+# (不是手搓一张注册表)⇒ 加载器作为 dev-dependency 进来。
+# ⚠ 运行期依赖方向不变:`wlwl-eval` **不**依赖 `wlwl-ext`(语言面只认
+# `wlwl_value::ExtRegistry` 这张表)。
+wlwl-ext = { workspace = true }
 serde_json = { workspace = true }
 serde = { workspace = true }
 criterion = { workspace = true }

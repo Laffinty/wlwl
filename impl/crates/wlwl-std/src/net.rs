@@ -44,14 +44,81 @@
 //! 并把它委派给 RFC 3513。本实现只做**保守**检查:`[...]` 内非空且只含
 //! `[0-9A-Fa-f:.]`,或以 `v`/`V` 开头(IPvFuture)。不解析成二进制地址。
 //! 这是**已知限制**,不是遗漏。
+//!
+//! ## `TCP_SERVE`:原生帧内的接受循环(W-12 / B-3 候选 a)
+//!
+//! `TCP_SERVE(listener, timeout_ms, opts, handler) -> INTEGER` 在**一个原生成员
+//! 内部**推进整个接受循环:
+//!
+//! ```text
+//! accept → 读满一次请求 → 调 handler(request) → 写回响应 → 下一条连接
+//! ```
+//!
+//! 它替代「**静态展开的 accept 链**」(连接数写死在源码里的那种):那种写法每
+//! 加一条连接就要改一次源码,且「等下一条」这件事在语言层没有位置。
+//!
+//! ### 契约(规范性)
+//!
+//! 1. **单条连接异常 ⇒ 记一笔、继续下一条** —— 对端断开 / 读失败 / handler
+//!    抛错 / 响应形状不对,**都只终止那一条连接**,**绝不**终止整个循环。
+//!    失败以 `ERR([kind:"SocketError", op:"TCP_SERVE", reason])` 的**形状**记录
+//!    (落点:宿主的**告警槽**,软告警 ⇒ 不改变程序语义)。
+//! 2. **accept 超时 ⇒ 退出循环**,返回**已成功服务的连接数**(不是错误)。调用方
+//!    可以用较长的 `timeout_ms`,或自己套一层外层循环重入。
+//! 3. **handler 内不得调用宿主挂起点成员**(`TCP_RECV` / `TCP_ACCEPT` /
+//!    `SLEEP_ASYNC`)—— handler 跑在**原生帧**里、**不是任务体** ⇒ 没有调度器
+//!    可挂。⚠ **本轮不主动报错**(「任务体内判定调用点」那条检查是另一项工作,
+//!    尚未落地)⇒ 真的挂起了,落成「这一条连接作废」。
+//!
+//! ### 形状
+//!
+//! - **请求**(handler 的实参)= `DICT`:
+//!   `{"method": STRING, "path": STRING, "version": STRING, "headers": DICT, "body": STRING}`
+//!   —— `headers` 的**键一律小写**;`path` 是**请求目标原样**(可能带查询串);
+//!   `body` 是**有损 UTF-8**。
+//! - **响应**(handler 的返回值)= `DICT`:
+//!   `{"status": INTEGER, "headers": DICT, "body": STRING | ARRAY[INTEGER]}`
+//!   —— **三个键缺一即失败**(那一条连接作废,循环继续)。
+//! - **失败** = `ERR([kind:"SocketError", op:"TCP_SERVE", reason])` **值**;
+//!   **元数 / 类型错** = `E0022` / `E0030` 诊断。
+//!
+//! ### ⚠ 已知代价(不是缺陷,是「原生帧内推进」这条候选的形状)
+//!
+//! 原生帧里的等待是**阻塞调用线程** ⇒ `TCP_SERVE` 期间**别的任务跑不了**
+//! (与 `HTTP_*` / `SLEEP` 同类)。这与 `TCP_ACCEPT` / `TCP_RECV` 的
+//! 「**宿主挂起** ⇒ 别的任务照常运行」**不同** —— 那是「静态 accept 链」那条路的
+//! 优点,也是本候选 (a) 的代价。
+//!
+//! ### `opts`(可选,`DICT` 或 `NULL`)
+//!
+//! | 键 | 缺省 | 含义 |
+//! |---|---|---|
+//! | `max_header_bytes` | 64 KiB | 一次请求的**头块**上限 |
+//! | `max_body_bytes` | 8 MiB | 一次请求的**体**上限 |
+//! | `read_timeout_ms` | `0`(无上限) | 读**一次**请求的预算(与 `TCP_RECV` 的连接读超时**缺省**同口径) |
+//!
+//! ⚠ **未知选项名 ⇒ `E0030`**（不静默忽略：拼错的上界会变成「没有上界」）。
+//! ⚠ `opts` 必须是 `DICT` 或 `NULL` —— WLWL 的 `[]` 是**空数组**，不是空字典。
+//!
+//! ### ⚠ 与 `TCP_ACCEPT` 抢**同一条**连接队列
+//!
+//! `TCP_SERVE` 与 `TCP_ACCEPT` 从**同一个**待取队列里取连接 ⇒ 同一个监听上
+//! **混用**两者 ⇒ 谁先到谁拿到那条连接。⇒ 一个监听要么交给 `TCP_SERVE`（整条
+//! 循环），要么交给 `TCP_ACCEPT`（自己写链），**不要**两边都用。
+//!
+//! ### 监听的生命周期
+//!
+//! `TCP_SERVE` **不关**监听器（超时退出后监听**仍然有效**）⇒ 调用方自己
+//! `TCP_CLOSE_LISTENER`（**幂等**）。
 
 use crate::tcp::{
-    tcp_accept, tcp_close, tcp_close_listener, tcp_listen, tcp_local_addr, tcp_peer, tcp_recv,
-    tcp_send, tcp_set_timeout,
+    accept_blocking, close_conn_raw, recv_blocking, tcp_accept, tcp_close, tcp_close_listener,
+    tcp_listen, tcp_local_addr, tcp_peer, tcp_recv, tcp_send, tcp_set_timeout, write_all_bytes,
+    AcceptOutcome, ReadOutcome,
 };
 use crate::{ModuleSpec, StdFn};
 use wlwl_error::ErrorCode;
-use wlwl_value::{StdHost, Value};
+use wlwl_value::{Outcome, Signal, StdHost, Value};
 
 pub static SPEC: ModuleSpec = ModuleSpec {
     path: "wlwl:std.net",
@@ -63,8 +130,8 @@ pub static SPEC: ModuleSpec = ModuleSpec {
         ("HTTP_REQUEST", http_request as StdFn),
         // ── 传输层（TCP）──────────────────────────────────────────────────
         //
-        // ⚠ **这 8 个成员不在 v1.0 冻结快照（附录 A）里** ⇒ `stdlib_appendix_a_sync`
-        // 的 Guard B 会**恰好红 1 行**（`std.net` 多出这 8 个成员）。
+        // ⚠ **这 9 个成员不在 v1.0 冻结快照（附录 A）里** ⇒ `stdlib_appendix_a_sync`
+        // 的 Guard B 会**恰好红 1 行**（`std.net` 多出这 9 个成员）。
         // 那条红灯是**预期**的，是「规范缺传输层能力」的指纹 —— 不得为了让它变绿
         // 而删成员或改快照。见 docs/gaps/gap-registry.md 的 G-01 / G-05。
         //
@@ -79,6 +146,13 @@ pub static SPEC: ModuleSpec = ModuleSpec {
         ("TCP_SET_TIMEOUT", tcp_set_timeout as StdFn),
         ("TCP_CLOSE", tcp_close as StdFn),
         ("TCP_CLOSE_LISTENER", tcp_close_listener as StdFn),
+        // ── 原生帧内的接受循环（W-12 / B-3 候选 a）─────────────────────
+        //
+        // ⚠ **它比上面 9 个成员更「上层」**：那 9 个只搬字节；`TCP_SERVE`
+        //   在**原生帧内**推进 accept 循环 ⇒ 它**认识请求/响应的形状**
+        //   （方法/路径/头/体）⇒ 那属于**协议语义** ⇒ 住在 `net.rs`，
+        //   不住在 `tcp.rs`（后者有机械守卫 `no_http_semantics_in_the_transport_layer`）。
+        ("TCP_SERVE", tcp_serve as StdFn),
     ],
 };
 
@@ -751,7 +825,7 @@ pub fn url_join(
 
 use std::io::{Read, Write};
 use std::net::{TcpStream, ToSocketAddrs};
-use std::time::Duration;
+use std::time::{Duration, Instant};
 
 /// 把请求实参收成 `(headers, timeout_ms)`。`args` 是**已经去掉必需部分**的尾部。
 fn opt_headers_timeout(
@@ -1318,6 +1392,662 @@ pub fn http_request(
         headers,
         timeout,
     )))
+}
+
+// ── TCP_SERVE:原生帧内的接受循环(W-12 / B-3 候选 a)────────────────────
+//
+// ## 它是什么
+//
+// `TCP_SERVE(listener, timeout_ms, opts, handler) -> INTEGER` 在**一个原生成员
+// 内部**推进整个接受循环：
+//
+// ```text
+// accept → 读满一次请求 → 调 handler(request) → 写回响应 → 下一条连接
+// ```
+//
+// ⇒ **替代**「静态展开的 accept 链」（`TCP_ACCEPT` 写死在源码里、连接数写死）。
+//
+// ## 三条必须写下来的语义
+//
+// 1. **单条连接异常 ⇒ 记一笔、继续下一条**（对端断开 / 读失败 / handler 抛错
+//    / 响应形状不对）—— **绝不**终止整个循环。
+// 2. **accept 超时 ⇒ 退出循环**，返回**已成功服务的连接数**。调用方可用较长的
+//    `timeout_ms`，或自己套一层外层循环重入。
+// 3. **handler 内不得调用宿主挂起点成员**（`TCP_RECV` / `TCP_ACCEPT` /
+//    `SLEEP_ASYNC`）—— handler 跑在**原生帧**里、**不是任务体** ⇒ 没有调度器
+//    可挂。⚠ **本轮不主动报错**（「任务体内判定调用点」那条检查是另一项工作，
+//    尚未落地）⇒ 真的挂起了，落成「这一条连接作废」。
+//
+// ## ⚠ 它**阻塞整个运行时**
+//
+// 原生帧里的等待是**阻塞调用线程**（不是 `TCP_ACCEPT` / `TCP_RECV` 的
+// 「宿主挂起」⇒ 别的任务照常运行）⇒ `TCP_SERVE` 期间**别的任务跑不了**。
+// 这是「原生帧内推进循环」这条候选 (a) 的**已知代价**，与 `HTTP_*` / `SLEEP`
+// 同类（它们也冻结整个 `SCOPE`）。
+//
+// ## 形状
+//
+// - 请求（给 handler 的实参）= `DICT`：
+//   `{"method": STRING, "path": STRING, "version": STRING, "headers": DICT, "body": STRING}`
+//   —— `headers` 的**键一律小写**（查表不用猜大小写）；`body` 是**有损 UTF-8**
+//   （二进制体不可靠 ⇒ 要字节请走别的路）。
+// - 响应（handler 的返回值）= `DICT`：
+//   `{"status": INTEGER, "headers": DICT, "body": STRING | ARRAY[INTEGER]}`
+//   —— **三个键缺一即失败**（见下面第 1 条）。
+// - 失败 = `ERR([kind:"SocketError", op:"TCP_SERVE", reason])` **值**（不是诊断）。
+//
+// ## 为什么住在 `net.rs` 而不是 `tcp.rs`
+//
+// `tcp.rs` 有机械守卫 `no_http_semantics_in_the_transport_layer`（**不许**出现
+// HTTP / GET / POST / Content-Length / status 这些字样）⇒ 那 9 个传输层成员
+// 只搬字节。`TCP_SERVE` **认识请求与响应的形状** ⇒ 它属于协议语义 ⇒ 住这里。
+
+/// `TCP_SERVE` 的可选项（缺省值见 [`serve_opts`]）。
+struct ServeOpts {
+    /// 一次请求的**头块**上限（字节）。
+    max_header_bytes: usize,
+    /// 一次请求的**体**上限（字节）。
+    max_body_bytes: usize,
+    /// 读**一次**请求的预算（毫秒）；`0` = **无上限**。
+    read_timeout_ms: u64,
+}
+
+/// `TCP_SERVE` 的运行期失败 ⇒ `ERR([kind:"SocketError", op:"TCP_SERVE", reason])`。
+///
+/// ⚠ **形状与 `tcp.rs` 的 `socket_error` 同款**（`kind` / `op` / `reason`）——
+///   但 `op` 恒为 `"TCP_SERVE"`。
+/// ⚠ **元数 / 类型错不走这里** ⇒ 那些是 `E0022` / `E0030` 诊断。
+fn serve_error(reason: impl Into<String>) -> Value {
+    Value::Err(Box::new(Value::dict(vec![
+        (
+            Value::String("kind".into()),
+            Value::String("SocketError".into()),
+        ),
+        (
+            Value::String("op".into()),
+            Value::String("TCP_SERVE".into()),
+        ),
+        (Value::String("reason".into()), Value::String(reason.into())),
+    ])))
+}
+
+/// 整数实参（类型错 ⇒ `E0030`）。
+fn int_arg(host: &mut dyn StdHost, name: &str, v: &Value) -> Result<i64, wlwl_error::WlwlError> {
+    let Value::Integer(n) = v else {
+        return Err(host.diag(
+            ErrorCode::E0030,
+            format!("{name}: expected integer, got {}", crate::value_kind(v)),
+        ));
+    };
+    Ok(*n)
+}
+
+/// 类型错 ⇒ `E0030`（带**期望**措辞）。
+fn serve_type_err(
+    host: &mut dyn StdHost,
+    name: &str,
+    want: &str,
+    got: &Value,
+) -> wlwl_error::WlwlError {
+    host.diag(
+        ErrorCode::E0030,
+        format!("{name}: expected {want}, got {}", crate::value_kind(got)),
+    )
+}
+
+/// 解析 `TCP_SERVE` 的可选项。
+///
+/// ⚠ **缺省值**：
+/// - `max_header_bytes` ⇒ [`MAX_HEADER_BYTES`]（64 KiB，与 HTTP 客户端同一顶）；
+/// - `max_body_bytes` ⇒ [`MAX_BODY_BYTES`]（8 MiB，同上）；
+/// - `read_timeout_ms` ⇒ `0` = **无上限**（与 `TCP_RECV` 的连接读超时
+///   **缺省**同口径：只有**显式** `TCP_SET_TIMEOUT` 才给读设上界）。
+///
+/// ⚠ **未知选项名 ⇒ `E0030`**（不静默忽略：拼错的上界会变成「没有上界」）。
+fn serve_opts(host: &mut dyn StdHost, v: &Value) -> wlwl_error::WlwlResult<ServeOpts> {
+    let mut opts = ServeOpts {
+        max_header_bytes: MAX_HEADER_BYTES,
+        max_body_bytes: MAX_BODY_BYTES,
+        read_timeout_ms: 0,
+    };
+    // ⚠ `opts` 认**两种**字典表示（普通 `DICT` 与字典累加器）—— 否则累加器
+    //   会被判成「类型不对」，而它的类型名也是 `"dict"` ⇒ 报错会指向错处。
+    let Some(entries) = dict_entries_of(v) else {
+        if matches!(v, Value::Null) {
+            return Ok(opts);
+        }
+        return Err(serve_type_err(
+            host,
+            "TCP_SERVE",
+            "a DICT of options or NULL",
+            v,
+        ));
+    };
+    for (k, val) in entries.iter() {
+        let Value::String(k) = k else {
+            return Err(serve_type_err(host, "TCP_SERVE", "a STRING option name", k));
+        };
+        match k.as_str() {
+            "max_header_bytes" => {
+                let n = int_arg(host, "TCP_SERVE", val)?;
+                if n <= 0 {
+                    return Err(host.diag(
+                        ErrorCode::E0030,
+                        format!("TCP_SERVE: max_header_bytes must be positive, got {n}"),
+                    ));
+                }
+                opts.max_header_bytes = n as usize;
+            }
+            "max_body_bytes" => {
+                let n = int_arg(host, "TCP_SERVE", val)?;
+                if n < 0 {
+                    return Err(host.diag(
+                        ErrorCode::E0030,
+                        format!("TCP_SERVE: max_body_bytes must not be negative, got {n}"),
+                    ));
+                }
+                opts.max_body_bytes = n as usize;
+            }
+            "read_timeout_ms" => {
+                let n = int_arg(host, "TCP_SERVE", val)?;
+                if n < 0 {
+                    return Err(host.diag(
+                        ErrorCode::E0030,
+                        format!("TCP_SERVE: read_timeout_ms must not be negative, got {n}"),
+                    ));
+                }
+                opts.read_timeout_ms = n as u64;
+            }
+            other => {
+                return Err(host.diag(
+                    ErrorCode::E0030,
+                    format!(
+                        "TCP_SERVE: unknown option {other:?} (expected one of \
+                         `max_header_bytes`, `max_body_bytes`, `read_timeout_ms`)"
+                    ),
+                ))
+            }
+        }
+    }
+    Ok(opts)
+}
+
+/// `TCP_SERVE(listener, timeout_ms, opts, handler) -> INTEGER`
+///
+/// 返回**成功服务**的连接数（写回了响应、连接正常收尾的那几条）。
+///
+/// ⚠ **单条连接失败不计入返回值**，但会被**记一笔**（见 [`record_serve_failure`]）。
+/// ⚠ **accept 超时 ⇒ 退出循环**并返回计数（不是错误）。
+/// ⚠ **监听句柄不对 ⇒ 返回 `ERR([kind:"SocketError", op:"TCP_SERVE", reason])`**
+///   （这是**调用点**的错误，不是某一条连接的失败）。
+/// ⚠ **元数 / 类型错 ⇒ `E0022` / `E0030`**（诊断，不是 `ERR` 值）。
+pub fn tcp_serve(host: &mut dyn StdHost, args: Vec<Value>) -> wlwl_error::WlwlResult<Outcome> {
+    if args.len() != 4 {
+        return Err(arity(host, "TCP_SERVE", args.len(), 4));
+    }
+    let lid = int_arg(host, "TCP_SERVE", &args[0])?;
+    let timeout_ms = int_arg(host, "TCP_SERVE", &args[1])?;
+    if timeout_ms < 0 {
+        return Err(host.diag(
+            ErrorCode::E0030,
+            format!("TCP_SERVE: expected a non-negative timeout in ms, got {timeout_ms}"),
+        ));
+    }
+    let opts = serve_opts(host, &args[2])?;
+    // ⚠ handler 必须**可调用** ⇒ 类型错 ⇒ `E0030`（不是运行期失败）。
+    match &args[3] {
+        Value::Closure { .. } | Value::NativeFn { .. } => {}
+        other => {
+            return Err(serve_type_err(
+                host,
+                "TCP_SERVE",
+                "a function handler",
+                other,
+            ));
+        }
+    }
+    let handler = args[3].clone();
+
+    // ⚠ `timeout_ms == 0` = **无截止时间**（与 `TCP_ACCEPT` 同口径：那是
+    //   「那一次等待的截止时间」，`0` = 无截止时间）。
+    let budget = if timeout_ms == 0 {
+        None
+    } else {
+        Some(Duration::from_millis(timeout_ms as u64))
+    };
+
+    let mut served = 0i64;
+    loop {
+        match accept_blocking(lid, budget) {
+            Ok(AcceptOutcome::Conn(cid)) => match serve_one(host, &handler, cid, &opts) {
+                Ok(()) => served += 1,
+                // ⚠ **记一笔、继续下一条** —— 绝不终止整个循环。
+                Err(reason) => record_serve_failure(host, &reason),
+            },
+            // ⚠ **超时即退出循环**（返回已服务连接数）；监听被关掉也一样收工。
+            Ok(AcceptOutcome::TimedOut) | Ok(AcceptOutcome::Closed) => break,
+            // ⚠ 句柄不对 ⇒ **调用点**的错误 ⇒ 直接回 `ERR` 值。
+            Err(why) => return Ok(Outcome::normal(serve_error(why))),
+        }
+    }
+    Ok(Outcome::normal(Value::Integer(served)))
+}
+
+/// 服务**一条**连接：读一次请求 → 调 handler → 写回响应。
+///
+/// ⚠ **无论成败都关掉这条连接**（⇒ 不泄漏句柄）。
+/// ⚠ 失败 ⇒ 尽力回一个 `500` —— 但**只在响应还没开始写**的时候回（写了一半
+///   再追一个 `500` ⇒ 客户端会看到「半截响应 + 500」两截东西）。
+fn serve_one(
+    host: &mut dyn StdHost,
+    handler: &Value,
+    cid: i64,
+    opts: &ServeOpts,
+) -> Result<(), String> {
+    // ① 读 + ② 调 handler + ③ 校验响应形状 —— 失败时**一个字节都还没写**。
+    let (response, version) = match prepare_response(host, handler, cid, opts) {
+        Ok(r) => r,
+        Err(reason) => {
+            let _ = write_failure_response(cid, &reason);
+            close_conn_raw(cid);
+            return Err(reason);
+        }
+    };
+    // ④ 写回响应（**已经开始写** ⇒ 失败只能作废这一条，不能再追一个 `500`）。
+    let wire = render_response(&response, &version);
+    let written = write_all_bytes(cid, &wire).map(|_| ());
+    close_conn_raw(cid);
+    written
+}
+
+/// 一条连接的**前半段**：读一次请求 → 调 handler → 校验响应形状。
+///
+/// 返回 `(响应, 请求的版本号)` —— 版本号用来回响应行。
+fn prepare_response(
+    host: &mut dyn StdHost,
+    handler: &Value,
+    cid: i64,
+    opts: &ServeOpts,
+) -> Result<(ServeResponse, String), String> {
+    // ① 读满一次请求。
+    let request = read_request(cid, opts)?;
+    // ② 调 handler（**原生帧内** ⇒ 同步调用）。
+    let outcome = host
+        .call(handler, vec![request.value], "TCP_SERVE handler")
+        .map_err(|e| format!("the handler failed: {}", e.diagnostic().message))?;
+    // ⚠ **挂起信号**：handler 跑在原生帧里 ⇒ 没有调度器可挂 ⇒ 「不得再挂」
+    //   只能落成「这一条连接作废」。
+    if outcome.signal != Signal::None {
+        return Err(
+            "the handler suspended — a handler must not call a host-suspending member \
+             (TCP_RECV / TCP_ACCEPT / SLEEP_ASYNC): the handler runs in a native frame, \
+             not in a task body"
+                .into(),
+        );
+    }
+    // ③ 校验响应形状（缺键 / 类型不对 ⇒ 这一条作废）。
+    let response = parse_response(&outcome.value)?;
+    Ok((response, request.version))
+}
+
+/// 一次请求（读出来的形状 + 回响应时要用的版本号）。
+struct ServeRequest {
+    /// 给 handler 的实参（请求 `DICT`）。
+    value: Value,
+    /// 请求行里的版本（回响应时原样用）。
+    version: String,
+}
+
+/// 读满**一次**请求：头块（到空行为止）+ 体（按 `Content-Length`）。
+fn read_request(cid: i64, opts: &ServeOpts) -> Result<ServeRequest, String> {
+    // ⚠ **一次请求一份预算**（不是每次读一份）—— 与 HTTP 客户端的「总闸」同款。
+    let deadline = if opts.read_timeout_ms == 0 {
+        None
+    } else {
+        Some(Instant::now() + Duration::from_millis(opts.read_timeout_ms))
+    };
+    let mut raw: Vec<u8> = Vec::with_capacity(8 * 1024);
+    // ① 头块：读到空行（`\r\n\r\n`）为止。
+    let head_end = loop {
+        if let Some(i) = find_head_end(&raw) {
+            break i;
+        }
+        if raw.len() > opts.max_header_bytes {
+            return Err(format!(
+                "the request header block exceeds the {} byte cap",
+                opts.max_header_bytes
+            ));
+        }
+        read_chunk(cid, deadline, &mut raw)?;
+    };
+    let head = std::str::from_utf8(&raw[..head_end])
+        .map_err(|e| format!("the request header is not valid UTF-8: {e}"))?;
+
+    // ② 请求行。
+    let mut lines = head.split("\r\n");
+    let request_line = lines.next().unwrap_or("");
+    let mut parts = request_line.split(' ');
+    let method = parts.next().unwrap_or("").to_string();
+    let path = parts.next().unwrap_or("").to_string();
+    let version = parts.next().unwrap_or("").to_string();
+    if method.is_empty() || path.is_empty() || version.is_empty() || parts.next().is_some() {
+        return Err(format!("malformed request line {request_line:?}"));
+    }
+    if !method.bytes().all(is_tchar) {
+        return Err(format!(
+            "the request method {method:?} is not a valid token"
+        ));
+    }
+    if version != "HTTP/1.1" && version != "HTTP/1.0" {
+        return Err(format!("unsupported request version {version:?}"));
+    }
+
+    // ③ 头字段。
+    let mut headers: Vec<(String, String)> = Vec::new();
+    let mut content_length: Option<u64> = None;
+    for line in lines {
+        if line.is_empty() {
+            continue;
+        }
+        // obs-fold（行首空白）是**已知的拆分/走私向量** ⇒ 拒绝，不合并。
+        if line.starts_with(' ') || line.starts_with('\t') {
+            return Err(format!("obs-fold in the request header: {line:?}"));
+        }
+        let Some((k, v)) = line.split_once(':') else {
+            return Err(format!("malformed request header line {line:?}"));
+        };
+        let v = v.trim();
+        if v.contains('\r') || v.contains('\n') {
+            return Err(format!("the request header {k:?} value contains CR or LF"));
+        }
+        let lk = k.to_ascii_lowercase();
+        match lk.as_str() {
+            "content-length" => {
+                // 同一个头出现两次 —— 即便值相同也拒（走私信号）。
+                if content_length.is_some() {
+                    return Err("duplicate Content-Length header".into());
+                }
+                let Ok(n) = v.parse::<u64>() else {
+                    return Err(format!("Content-Length {v:?} is not a number"));
+                };
+                content_length = Some(n);
+            }
+            // ⚠ chunked 是走私向量 ⇒ 拒绝，不解码（与 HTTP 客户端同口径）。
+            "transfer-encoding" => {
+                return Err(
+                    "Transfer-Encoding is not supported — chunked is a smuggling vector, \
+                     refused rather than decoded"
+                        .into(),
+                )
+            }
+            _ => {}
+        }
+        headers.push((lk, v.to_string()));
+    }
+
+    // ④ 体：按 `Content-Length` 读满。
+    let want = content_length.unwrap_or(0);
+    if want > opts.max_body_bytes as u64 {
+        return Err(format!(
+            "the request body of {want} bytes exceeds the {} byte cap",
+            opts.max_body_bytes
+        ));
+    }
+    let mut body = raw[head_end + 4..].to_vec();
+    while (body.len() as u64) < want {
+        read_chunk(cid, deadline, &mut body)?;
+    }
+    // ⚠ 多出来的字节属于**下一次**请求 ⇒ 丢掉（本成员一条连接只服务一次）。
+    body.truncate(want as usize);
+
+    // ⑤ 组装给 handler 的请求 `DICT`。
+    let header_dict = Value::dict(
+        headers
+            .iter()
+            .map(|(k, v)| (Value::String(k.clone()), Value::String(v.clone())))
+            .collect(),
+    );
+    let value = Value::dict(vec![
+        (Value::String("method".into()), Value::String(method)),
+        (Value::String("path".into()), Value::String(path)),
+        (
+            Value::String("version".into()),
+            Value::String(version.clone()),
+        ),
+        (Value::String("headers".into()), header_dict),
+        (
+            Value::String("body".into()),
+            Value::String(String::from_utf8_lossy(&body).to_string()),
+        ),
+    ]);
+    Ok(ServeRequest { value, version })
+}
+
+/// 读一块并追加到 `out`。
+fn read_chunk(cid: i64, deadline: Option<Instant>, out: &mut Vec<u8>) -> Result<(), String> {
+    // ⚠ 预算**只出不进** ⇒ 每次读都拿「剩下的那一份」。
+    let timeout = deadline.map(|dl| {
+        let now = Instant::now();
+        if now >= dl {
+            Duration::ZERO
+        } else {
+            dl - now
+        }
+    });
+    match recv_blocking(cid, 64 * 1024, timeout) {
+        Ok(ReadOutcome::Bytes(b)) => {
+            out.extend_from_slice(&b);
+            Ok(())
+        }
+        // ⚠ 对端关闭 ⇒ 这一条连接作废（**不是**超时）。
+        Ok(ReadOutcome::Eof) => {
+            Err("the peer closed the connection before the request was complete".into())
+        }
+        // ⚠ 超时**不是** EOF（与 `TCP_RECV` 同口径）⇒ 这一条连接作废。
+        Ok(ReadOutcome::TimedOut) => Err("timed out waiting for the request".into()),
+        Err(e) => Err(e),
+    }
+}
+
+/// handler 的响应字典（校验过的形状）。
+struct ServeResponse {
+    status: i64,
+    headers: Vec<(String, String)>,
+    body: Vec<u8>,
+}
+
+/// 校验 handler 的返回值 ⇒ 响应。
+///
+/// ⚠ **缺 `status` / `headers` / `body` 任一 ⇒ 失败**（这一条连接作废）。
+fn parse_response(value: &Value) -> Result<ServeResponse, String> {
+    if let Value::Err(payload) = value {
+        return Err(format!(
+            "the handler returned an ERR value: {}",
+            payload.display()
+        ));
+    }
+    let entries = dict_entries_of(value).ok_or_else(|| {
+        format!(
+            "the handler returned {} instead of a response DICT",
+            crate::value_kind(value)
+        )
+    })?;
+    let status_v = entry_get(&entries, "status").ok_or("the handler's response has no `status`")?;
+    let headers_v =
+        entry_get(&entries, "headers").ok_or("the handler's response has no `headers`")?;
+    let body_v = entry_get(&entries, "body").ok_or("the handler's response has no `body`")?;
+    let Value::Integer(status) = status_v else {
+        return Err(format!(
+            "the handler's response `status` must be an integer, got {}",
+            crate::value_kind(status_v)
+        ));
+    };
+    let headers = parse_response_headers(headers_v)?;
+    let body = match body_v {
+        Value::String(s) => s.as_bytes().to_vec(),
+        Value::Array(items) => {
+            let mut out = Vec::with_capacity(items.len());
+            for it in items {
+                let Value::Integer(b) = it else {
+                    return Err(format!(
+                        "the handler's response `body` array must hold integers, got {}",
+                        crate::value_kind(it)
+                    ));
+                };
+                if !(0..=255).contains(b) {
+                    return Err(format!(
+                        "the handler's response `body` byte is out of range: {b}"
+                    ));
+                }
+                out.push(*b as u8);
+            }
+            out
+        }
+        other => {
+            return Err(format!(
+                "the handler's response `body` must be a STRING or ARRAY[INTEGER], got {}",
+                crate::value_kind(other)
+            ))
+        }
+    };
+    Ok(ServeResponse {
+        status: *status,
+        headers,
+        body,
+    })
+}
+
+/// 校验响应里的 `headers`（`DICT`；值是 `STRING` 或 `INTEGER`）。
+fn parse_response_headers(v: &Value) -> Result<Vec<(String, String)>, String> {
+    let entries = dict_entries_of(v).ok_or_else(|| {
+        format!(
+            "the handler's response `headers` must be a DICT, got {}",
+            crate::value_kind(v)
+        )
+    })?;
+    let mut out = Vec::with_capacity(entries.len());
+    for (k, val) in entries {
+        let Value::String(name) = k else {
+            return Err(format!(
+                "the handler's response header name must be a STRING, got {}",
+                crate::value_kind(&k)
+            ));
+        };
+        // ⚠ 头名必须是 token、值里不许有裸 CR/LF —— 否则就是头注入。
+        if name.is_empty() || !name.bytes().all(is_tchar) {
+            return Err(format!(
+                "the handler's response header name {name:?} is not a valid token"
+            ));
+        }
+        let text = match val {
+            Value::String(s) => s.clone(),
+            Value::Integer(n) => n.to_string(),
+            other => {
+                return Err(format!(
+                    "the handler's response header {name:?} must be a STRING or INTEGER, got {}",
+                    crate::value_kind(&other)
+                ))
+            }
+        };
+        if text.contains('\r') || text.contains('\n') {
+            return Err(format!(
+                "the handler's response header {name:?} value contains CR or LF"
+            ));
+        }
+        out.push((name.clone(), text));
+    }
+    Ok(out)
+}
+
+/// 响应 ⇒ 线上的字节。
+fn render_response(resp: &ServeResponse, version: &str) -> Vec<u8> {
+    let mut out = Vec::with_capacity(256 + resp.body.len());
+    let line = match reason_phrase(resp.status) {
+        Some(reason) => format!("{version} {} {reason}\r\n", resp.status),
+        None => format!("{version} {}\r\n", resp.status),
+    };
+    out.extend_from_slice(line.as_bytes());
+    // ⚠ `Content-Length` 缺失 ⇒ 补一个（否则对端**无法**给响应定界）。
+    if !resp
+        .headers
+        .iter()
+        .any(|(k, _)| k.eq_ignore_ascii_case("content-length"))
+    {
+        out.extend_from_slice(format!("Content-Length: {}\r\n", resp.body.len()).as_bytes());
+    }
+    for (k, v) in &resp.headers {
+        out.extend_from_slice(format!("{k}: {v}\r\n").as_bytes());
+    }
+    out.extend_from_slice(b"\r\n");
+    out.extend_from_slice(&resp.body);
+    out
+}
+
+/// 常见状态码的理由短语（**不是**权威表 —— 只是让响应行像样）。
+fn reason_phrase(status: i64) -> Option<&'static str> {
+    Some(match status {
+        200 => "OK",
+        201 => "Created",
+        202 => "Accepted",
+        204 => "No Content",
+        301 => "Moved Permanently",
+        302 => "Found",
+        304 => "Not Modified",
+        400 => "Bad Request",
+        401 => "Unauthorized",
+        403 => "Forbidden",
+        404 => "Not Found",
+        405 => "Method Not Allowed",
+        408 => "Request Timeout",
+        413 => "Payload Too Large",
+        500 => "Internal Server Error",
+        501 => "Not Implemented",
+        502 => "Bad Gateway",
+        503 => "Service Unavailable",
+        _ => return None,
+    })
+}
+
+/// 尽力把失败回给对端（`500`）—— 对端已经走了就写不进去（忽略那个失败）。
+fn write_failure_response(cid: i64, reason: &str) -> Result<(), String> {
+    let body = reason.as_bytes();
+    let mut wire = Vec::with_capacity(128 + body.len());
+    wire.extend_from_slice(b"HTTP/1.1 500 Internal Server Error\r\n");
+    wire.extend_from_slice(format!("Content-Length: {}\r\n", body.len()).as_bytes());
+    wire.extend_from_slice(b"Connection: close\r\n\r\n");
+    wire.extend_from_slice(body);
+    write_all_bytes(cid, &wire).map(|_| ())
+}
+
+/// 记一笔失败 ⇒ **继续下一条**（不得终止整个循环）。
+///
+/// ⚠ 失败以 `ERR([kind:"SocketError", op:"TCP_SERVE", reason])` 的**形状**记录；
+///   宿主侧能落到的位置是**告警槽**（软告警 ⇒ 不改变程序语义）。
+/// ⚠ **没有新增诊断码** —— 用既有的 `E0063`（网络错误）标这一笔。
+fn record_serve_failure(host: &mut dyn StdHost, reason: &str) {
+    let err = serve_error(reason);
+    let payload = match &err {
+        Value::Err(inner) => inner.display(),
+        _ => reason.to_string(),
+    };
+    host.ctx().warn(ErrorCode::E0063, payload);
+}
+
+/// 取字典的**插入序条目**（`DICT` 与字典累加器两种表示都认）。
+fn dict_entries_of(v: &Value) -> Option<Vec<(Value, Value)>> {
+    match v {
+        Value::Dict(inner) => Some(inner.entries().to_vec()),
+        Value::DictCell(cell) => Some(cell.inner_rc().entries().to_vec()),
+        _ => None,
+    }
+}
+
+/// 按键取条目（**首个**同名键 —— 与字典的 `lookup` 口径一致）。
+fn entry_get<'a>(entries: &'a [(Value, Value)], key: &str) -> Option<&'a Value> {
+    entries
+        .iter()
+        .find(|(k, _)| matches!(k, Value::String(s) if s.as_str() == key))
+        .map(|(_, v)| v)
 }
 
 #[cfg(test)]

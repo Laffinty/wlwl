@@ -1,0 +1,93 @@
+// ─────────────────────────────────────────────────────────────────────────────
+// p12-acceptor-pool-wakeall.wll —— 「多 acceptor 的惊群」探针
+//
+// 它证明什么（对应需求清单附录 A / §B-2）：
+//   **3 个 acceptor 抢 1 个连接** ⇒ 惊群**坐实**：一个连接到达会**唤醒全部**
+//   等待者 ⇒ 只有 **1 个**拿到连接，其余 **2 个**拿到 **`NULL`**（与超时同形）。
+//   ⚠ 并且把**落选者的真实死法**钉死：**不是**「静默 NULL」，而是调用方拿
+//   `NULL` 去 `TCP_RECV` ⇒ **`E0030: TCP_RECV: expected integer, got null`**
+//   ⇒ 任务失败 ⇒ `SCOPE` 提前退出。
+//
+// ⚠⚠ **与清单描述的差异**：
+//   清单 §B-2 说落选者「拿到 NULL（语义等同超时）并**直接死掉**」——方向对，
+//   但**机制不同**：不是「静默 NULL」，而是 `TCP_RECV(NULL)` ⇒ `E0030`。
+//   本探针按**实测**断言。
+//
+// 期望读数（**exit 1** —— 探针刻意让落选者真的去 `TCP_RECV(NULL)`）：
+//   [p12] accept-timeout-ms= 8000
+//   [p12] client-reason= read head      ← 客户端**连上了**（不是 connect refused）
+//   [p12] winners= 1
+//   [p12] losers= 2
+//   [p12] loser-elapsed= <≈150>        ← 落选者是**被连接到达唤醒**的
+//   [p12] losers-woke-immediately= TRUE ← 不是等满 8000 ms 超时
+//   …随后 stderr 报：error[E0030]: TCP_RECV: expected integer, got null
+//
+// ⚠ 为什么「落选者立刻拿到 NULL」是惊群的指纹：
+//   `TCP_ACCEPT` 的等待超时是 **8000 ms**；若落选者是**超时**才醒，elapsed
+//   会 ≈ 8000；实测 ≈ **150 ms**（= 客户端的等待预算）⇒ 它们是被**连接到达**
+//   **唤醒**的 ⇒ 「唤醒全部等待者」坐实。
+//
+// ⚠ 客户端看不到响应：`HTTP_*` 是**阻塞原语**（ADR-0028 D1）⇒ 断言落在服务端一侧。
+// ─────────────────────────────────────────────────────────────────────────────
+
+// ⚠ 本文件与 `impl/tests/probe/cases/P121_probe_p12_acceptor_pool/main.wll`
+//   **逐字相同**（同一份程序的两处副本）⇒ 改动请同步两处。
+// ─────────────────────────────────────────────────────────────────────────────
+
+IMPORT("wlwl:std.io", ["PRINT"]);
+IMPORT("wlwl:std.str", ["CAT"]);
+IMPORT("wlwl:std.result", ["TAKE_ERR"]);
+IMPORT("wlwl:std.time", ["MONOTONIC"]);
+IMPORT("wlwl:std.net", [
+  "TCP_LISTEN", "TCP_ACCEPT", "TCP_RECV", "TCP_SEND", "TCP_CLOSE",
+  "TCP_LOCAL_ADDR", "HTTP_GET"
+]);
+
+LET(http_client, FUN((port, path), (
+  LET(r, HTTP_GET(CAT("http://127.0.0.1:", STR(port), path), 150));
+  LET(payload, TAKE_ERR(r));
+  IF(==(TYPE(payload), "NULL"), "CLIENT-GOT-RESPONSE", payload)
+)));
+
+LET(l, TCP_LISTEN("127.0.0.1", 0));
+LET(port, AT_K(TCP_LOCAL_ADDR(l), "port", 0));
+
+LET MUT(winners, 0);
+LET MUT(losers, 0);
+LET MUT(loser_conn, NULL);
+LET MUT(loser_elapsed, -1);
+LET(t0, MONOTONIC());
+
+// 一个 acceptor：accept 单独占一段（等待必须是所在段的第一条语句）。
+LET(acceptor, FUN(() , (
+  LET(conn, TCP_ACCEPT(l, 8000));
+  YIELD();
+  LET(elapsed, -(MONOTONIC(), t0));
+  IF(==(conn, NULL),
+    (SET(losers, +(losers, 1)); SET(loser_conn, conn); SET(loser_elapsed, elapsed); "loser"),
+    (SET(winners, +(winners, 1)); "winner"))
+)));
+
+SCOPE(FUN(() ,
+  // ⚠ 顺序要紧：**先** spawn 3 个 acceptor（它们会挂在 accept 上），**再** spawn
+  //   客户端任务 ⇒ 客户端连上时三个 acceptor **已经挂起** ⇒ 连接到达唤醒**全部**。
+  LET(t1, SPAWN(acceptor));
+  LET(t2, SPAWN(acceptor));
+  LET(t3, SPAWN(acceptor));
+  LET(tc, SPAWN(FUN(() , http_client(port, "/p12"))));
+  PRINT("[p12] accept-timeout-ms= 8000");
+  PRINT("[p12] client-reason=", SUB(AT_K(AWAIT(tc), "reason", ""), 0, 9));
+  AWAIT(t1);
+  AWAIT(t2);
+  AWAIT(t3);
+  PRINT("[p12] winners=", winners);
+  PRINT("[p12] losers=", losers);
+  PRINT("[p12] loser-elapsed=", loser_elapsed);
+  PRINT("[p12] losers-woke-immediately=", <(loser_elapsed, 2000))
+));
+
+// ⚠ 落选者的**真实死法**：拿到 NULL 的调用方去 `TCP_RECV` ⇒ E0030。
+PRINT("[p12] now calling TCP_RECV on the loser's NULL handle");
+TCP_RECV(loser_conn, 4096, 100);
+
+PRINT("[p12] DONE");

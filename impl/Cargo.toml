@@ -12,6 +12,7 @@ members = [
     "crates/wlwl-formatter",
     "crates/wlwl-cli",
     "crates/wlwl-types",
+    "crates/wlwl-ext",
 ]
 
 [workspace.package]
@@ -141,6 +142,8 @@ wlwl-parser = { version = "0.12.0", path = "crates/wlwl-parser" }
 wlwl-error = { version = "0.12.0", path = "crates/wlwl-error" }
 wlwl-eval = { version = "0.12.0", path = "crates/wlwl-eval" }
 wlwl-formatter = { version = "0.12.0", path = "crates/wlwl-formatter" }
+# [W-21] 宿主侧的原生动态库扩展加载器(宿主侧加载 + 信任门控;语言面不依赖它)。
+wlwl-ext = { version = "0.12.0", path = "crates/wlwl-ext" }
 # v0.10 Step 1 (ADR-0020 A1): static type layer. Leaf crate -- depends on
 # wlwl-ast only, and is deliberately NOT a dependency of wlwl-eval.
 wlwl-types = { version = "0.12.0", path = "crates/wlwl-types" }

@@ -116,7 +116,7 @@ use std::time::{Duration, Instant};
 // 「非末条语句的 `ERR` 被静默丢弃」断言的载体;v1.0 §8.5 / §8.6.2 删掉了那条
 // 限制(总纲 D-05)⇒ 它的 `expect.json` 改成断言 `E0103`(理由写在该目录的
 // `_why` 里),`main.wll` 一字未改。
-const EXPECTED_CASE_COUNT: usize = 181;
+const EXPECTED_CASE_COUNT: usize = 192;
 
 /// 单个 case 的上限,与 `probe.py` 的 `timeout=60` 同义。
 const CASE_TIMEOUT: Duration = Duration::from_secs(60);

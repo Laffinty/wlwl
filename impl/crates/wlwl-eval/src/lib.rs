@@ -727,6 +727,18 @@ enum ResolvedSource {
     Std(wlwl_std::StdBackend),
     /// A `.wll` file plus the module name used for cache keys and messages.
     File { path: PathBuf, name: String },
+    /// [W-21] **运行期扩展**的命名空间(宿主加载的原生动态库声明的)。
+    ///
+    /// ⚠ 解析链的**第 4 层**(最后一层):`wlwl:std.*` → 官方包 →
+    /// `wlwl.toml` 声明的包 → **运行期扩展** ⇒ 扩展**盖不住**任何
+    /// 既有命名空间。
+    ///
+    /// `member` 为 `None` = 导入整个命名空间(按成员名挑);
+    /// 为 `Some(m)` = 只导入 `ns` 里的成员 `m`(走 `ns:name` 形态)。
+    Ext {
+        namespace: String,
+        member: Option<String>,
+    },
 }
 
 /// Project-level metadata carried by every `ModuleLoader` instance.
@@ -755,6 +767,14 @@ struct ProjectContext {
     /// once at entry-point construction (`--std-src` / `WLWL_STD_SRC`);
     /// must not change the export surface.
     std_src: Option<PathBuf>,
+    /// [W-21] 运行期扩展注册表(宿主加载的原生扩展声明的命名空间)。
+    ///
+    /// ⚠ **第 4 层命名空间解析链**:解析链是
+    /// `wlwl:std.*` → 官方包 → `wlwl.toml` 声明的包 → **运行期扩展**
+    /// ⇒ 扩展**永远**排在最后 ⇒ 它**盖不住**任何既有命名空间。
+    ///
+    /// ⚠ `None` = 没有加载任何扩展(绝大多数运行)⇒ 解析链与从前逐字一致。
+    ext_registry: Option<Rc<wlwl_value::ExtRegistry>>,
 }
 
 #[derive(Debug, Clone)]
@@ -781,6 +801,7 @@ impl ModuleLoader {
                 manifest,
                 loading: Rc::new(RefCell::new(Vec::new())),
                 std_src: None,
+                ext_registry: None,
             },
         }
     }
@@ -798,6 +819,11 @@ impl ModuleLoader {
         match self.resolve_source(path)? {
             ResolvedSource::Std(backend) => self.load_std(backend, path),
             ResolvedSource::File { path, name } => self.load_file_module(&path, &name),
+            ResolvedSource::Ext { namespace, member } => {
+                let result = self.load_ext_namespace(&namespace, member.as_deref())?;
+                self.cache.insert(path.to_string(), result.clone());
+                Ok(result)
+            }
         }
     }
 
@@ -855,6 +881,24 @@ impl ModuleLoader {
                         path: file_path,
                         name: name.to_string(),
                     });
+                }
+            }
+            // [W-21] **第 4 层**:运行期扩展。
+            //
+            // ⚠ 扩展排在清单**之后** ⇒ 扩展**盖不住**清单里的命名空间
+            // (信任门控 T5 在加载侧也拒了重名 —— 两道门)。
+            //
+            // ⚠ 命名空间在、但**没有这个成员** ⇒ 「模块找不到」(既有
+            // `E0040`)⇒ 不用新增诊断码。
+            if let Some(reg) = &self.project.ext_registry {
+                if reg.namespace(ns).is_some() {
+                    if reg.member(ns, name).is_some() {
+                        return Ok(ResolvedSource::Ext {
+                            namespace: ns.to_string(),
+                            member: Some(name.to_string()),
+                        });
+                    }
+                    return Err(self.diag_ext_member_not_found(path, ns, name));
                 }
             }
             // Namespace format recognised but unregistered.
@@ -926,6 +970,20 @@ impl ModuleLoader {
             }
         }
 
+        // [W-21] **第 4 层**:运行期扩展的命名空间(整包导入)。
+        //
+        // ⚠ 排在**文件模块之后** ⇒ 扩展既盖不住 std,也盖不住项目里的
+        // `.wll` 模块 ⇒ 「扩展不得覆盖任何既有命名空间」这条在解析侧
+        // 也成立(不只是在加载侧拒)。
+        if let Some(reg) = &self.project.ext_registry {
+            if reg.namespace(path).is_some() {
+                return Ok(ResolvedSource::Ext {
+                    namespace: path.to_string(),
+                    member: None,
+                });
+            }
+        }
+
         Err(self.diag_module_not_found(path, &in_module))
     }
 
@@ -979,6 +1037,55 @@ impl ModuleLoader {
             sealed: false,
         };
         self.cache.insert(path.to_string(), result.clone());
+        Ok(result)
+    }
+
+    /// [W-21] 载入一个**运行期扩展**的命名空间。
+    ///
+    /// 扩展成员在语言面是 `Value::NativeFn` ⇒ 但它的 `invoke` 只是个
+    /// **占位**(`wlwl_value::ext_member_trampoline`):真正的派发发生在
+    /// [`invoke_std`] 里 —— 那儿先按**限定名**(`"<ns>:<name>"`)问宿主
+    /// 「这是不是一个扩展成员?」⇒ 是 ⇒ 走扩展通道(先校验元数)。
+    ///
+    /// ⚠ 成员名(IMPORT 名单里写的那个)是**短名**;限定名只出现在
+    /// 诊断与派发键里 ⇒ 用户看到的仍是 `IMPORT("tls", ["hello"])`。
+    fn load_ext_namespace(
+        &mut self,
+        namespace: &str,
+        member: Option<&str>,
+    ) -> WlwlResult<LoadedModule> {
+        let reg = self
+            .project
+            .ext_registry
+            .clone()
+            .ok_or_else(|| self.diag_module_not_found(namespace, Path::new(namespace)))?;
+        let ns = reg
+            .namespace(namespace)
+            .ok_or_else(|| self.diag_module_not_found(namespace, Path::new(namespace)))?;
+        let mut env = Env::new();
+        let mut exports = HashSet::new();
+        for (name, m) in ns.members.iter() {
+            // `ns:name` 形态 ⇒ 只装那一个成员;整包形态 ⇒ 全装。
+            if let Some(want) = member {
+                if name != want {
+                    continue;
+                }
+            }
+            env.set_local(
+                name.clone(),
+                Value::NativeFn {
+                    name: m.qualified.clone(),
+                    invoke: wlwl_value::ext_member_trampoline,
+                },
+            );
+            exports.insert(name.clone());
+        }
+        let result = LoadedModule {
+            env,
+            exports,
+            // 扩展命名空间**不**有 `SEALED` 概念(它不是源文件模块)。
+            sealed: false,
+        };
         Ok(result)
     }
 
@@ -1190,6 +1297,28 @@ impl ModuleLoader {
         .into()
     }
 
+    /// [W-21] 运行期扩展的命名空间**在**,但**没有这个成员** ⇒ 「模块找不到」。
+    ///
+    /// ⚠ 用**既有**的 `E0040`(不新增诊断码)。
+    fn diag_ext_member_not_found(&self, path: &str, ns: &str, name: &str) -> WlwlError {
+        WlwlDiagnostic::new(
+            ErrorCode::E0040,
+            format!(
+                "module '{}' not found (namespace '{}' has no member '{}')",
+                path, ns, name
+            ),
+            Location::point("<module>", 0, 0),
+        )
+        .with_suggestion(Suggestion::Note {
+            description: format!(
+                "the native extension namespace '{}' does not provide '{}'; \
+                 check the extension's declared members",
+                ns, name
+            ),
+        })
+        .into()
+    }
+
     fn diag_outside_root(&self, path: &str) -> WlwlError {
         // spec §13.5 钉死的措辞:"module 'foo' not found outside
         // project root";括注保留实际 root 方便定位。
@@ -1283,6 +1412,8 @@ pub fn resolve_module_file(spec: &str, base_dir: &Path) -> WlwlResult<Option<Pat
     match loader.resolve_source(spec)? {
         ResolvedSource::Std(_) => Ok(None),
         ResolvedSource::File { path, .. } => Ok(Some(path)),
+        // [W-21] 运行期扩展没有磁盘源 ⇒ 没有旁挂签名文件(与 std 同款)。
+        ResolvedSource::Ext { .. } => Ok(None),
     }
 }
 
@@ -1521,6 +1652,7 @@ fn collect_sealed(program: &Expr) -> Option<HashSet<String>> {
 /// `Location::point(ev.file, 0, 0)` behavior.
 fn invoke_std(
     ev: &mut Evaluator,
+    member: Option<&str>,
     std_fn: wlwl_std::StdFn,
     args: Vec<Value>,
     arg_tokens: Vec<UnconsumedErrs>,
@@ -1548,8 +1680,46 @@ fn invoke_std(
     // 「有没有」⇒ ⇒ **集合语义跨得过这条通道了**(一致性册 §5.4 的 X-06
     // 「跨通道逐元素归属」与 X-20 的前置条件)。
     let prev_arg_unconsumed = std::mem::replace(&mut ev.current_arg_unconsumed, arg_tokens);
-    let host: &mut dyn wlwl_std::StdHost = ev;
-    let result = std_fn(host, args);
+    // [W-21] **运行期扩展成员**:按**限定名**(`"<ns>:<name>"`)问宿主
+    // 「这是不是一个扩展成员?」
+    //
+    // ⚠ 命中 ⇒ 走扩展通道(先按 `arity_min`/`arity_max` 校验元数 ⇒
+    // 不合规报**既有** `E0022`);没命中 ⇒ 走既有的原生函数路径
+    // (一个字都不变 ⇒ 没有扩展的运行**行为与从前逐字一致**)。
+    let ext_member = {
+        let host: &mut dyn wlwl_std::StdHost = ev;
+        match member {
+            Some(name) => host.ext_member(name),
+            None => None,
+        }
+    };
+    let result = match ext_member {
+        Some(m) => {
+            if !m.arity_ok(args.len()) {
+                Err(wlwl_std::StdHost::diag(
+                    ev,
+                    ErrorCode::E0022,
+                    format!(
+                        "extension member '{}' expects {}{} argument(s), got {}",
+                        m.qualified,
+                        m.arity_min,
+                        if m.arity_max == wlwl_value::EXT_ARITY_UNBOUNDED {
+                            " or more".to_string()
+                        } else {
+                            format!("..{}", m.arity_max)
+                        },
+                        args.len()
+                    ),
+                ))
+            } else {
+                (m.call)(args)
+            }
+        }
+        None => {
+            let host: &mut dyn wlwl_std::StdHost = ev;
+            std_fn(host, args)
+        }
+    };
     // [X-20 / v1.0 spec §8.6.3] **结果承接** —— 成员**没转给回调**的那部分
     // 未消费状态,归**该调用的结果**(甲案)⇒ 随结果继续,直到在下一个丢弃点
     // (语句值丢弃 / 绑定被覆盖 / 作用域结束)被处置。
@@ -7660,7 +7830,17 @@ impl wlwl_std::StdHost for Evaluator {
                 rebuilt,
                 &span,
             ),
-            Value::NativeFn { invoke, .. } => invoke_std(self, *invoke, args, Vec::new(), &span),
+            Value::NativeFn {
+                name: fn_name,
+                invoke,
+            } => invoke_std(
+                self,
+                Some(fn_name.as_str()),
+                *invoke,
+                args,
+                Vec::new(),
+                &span,
+            ),
             other => Err(WlwlDiagnostic::new(
                 ErrorCode::E0020,
                 format!(
@@ -7701,6 +7881,21 @@ impl wlwl_std::StdHost for Evaluator {
     /// 求值器这一帧手上那份(`Evaluator::current_arg_unconsumed`)。
     fn arg_tokens(&self) -> &[UnconsumedErrs] {
         &self.current_arg_unconsumed
+    }
+
+    /// [W-21] **运行期扩展成员**的查找接缝。
+    ///
+    /// ⚠ 派发时(`invoke_std`)按**限定名**(`"<ns>:<name>"`)问这一句:
+    /// 命中 ⇒ 走扩展通道;没命中 ⇒ 走既有的原生函数路径。
+    ///
+    /// ⚠ 没有扩展时(`ext_registry == None`)⇒ 恒 `None` ⇒ 行为与从前
+    /// 逐字一致。
+    fn ext_member(&mut self, qualified: &str) -> Option<wlwl_value::ExtMember> {
+        // ⚠ **热路径**:没有加载扩展时(`None`)这里立刻返回 ⇒ 零成本;
+        // 加载了扩展才付两次哈希查找。⚠ 用 `as_ref()` 而不是 `clone()`
+        // —— 克隆 `Rc` 会**每次**原生调用都动一次引用计数。
+        let registry = self.ext_registry.as_ref()?;
+        registry.lookup_member(qualified)
     }
 
     fn diag(&mut self, code: ErrorCode, message: String) -> WlwlError {
@@ -7910,6 +8105,14 @@ pub struct Evaluator {
     /// the loading-set without conflicting with `&mut self` on the
     /// evaluator.
     loader: Rc<RefCell<ModuleLoader>>,
+    /// [W-21] 运行期扩展注册表(宿主加载的原生扩展声明的命名空间)。
+    ///
+    /// ⚠ 与 `loader` 里那份是**同一个** `Rc`(一个负责装载、一个负责派发);
+    /// 放在求值器上 ⇒ 派发时**不碰 `RefCell`**(派发发生在成员调用期间,
+    /// 那时 loader 可能正被借着)。
+    ///
+    /// ⚠ `None` = 没有加载任何扩展 ⇒ 派发路径与从前逐字一致。
+    ext_registry: Option<Rc<wlwl_value::ExtRegistry>>,
     /// Per-evaluator context for `wlwl_std` calls (argv, env). Set to
     /// `wlwl_std::StdCtx::from_process()` in `new`; tests can override
     /// via the `std_ctx` field directly.
@@ -8168,6 +8371,7 @@ impl Evaluator {
             source: None,
             file: None,
             loader: Rc::new(RefCell::new(ModuleLoader::new(PathBuf::from(".")))),
+            ext_registry: None,
             std_ctx: wlwl_std::StdCtx::from_process(),
             clock_bubble: None,
             call_stack: Vec::new(),
@@ -8270,8 +8474,25 @@ impl Evaluator {
         // Rebuild the loader with the new base_dir, preserving any
         // std-source override set via `with_std_src`.
         let std_src = self.loader.borrow().project.std_src.clone();
+        // [W-21] 运行期扩展注册表也得带过去(换 base_dir = 重建 loader
+        // ⇒ 不带的话扩展命名空间会在这一步**消失**)。
+        let ext_registry = self.loader.borrow().project.ext_registry.clone();
         self.loader = Rc::new(RefCell::new(ModuleLoader::new(dir)));
         self.loader.borrow_mut().project.std_src = std_src;
+        self.loader.borrow_mut().project.ext_registry = ext_registry;
+        self
+    }
+
+    /// [W-21] 挂上宿主加载好的**运行期扩展注册表**。
+    ///
+    /// ⚠ **语言面没有「加载」这个概念** —— 这张表只能由**宿主**在启动时
+    /// 注入(CLI 的 `--ext` / `WLWL_EXT_PATH`)。脚本自己没法挂它。
+    ///
+    /// ⚠ 同一个 `Rc` 挂在两处:loader 那份负责**解析**(第 4 层),
+    /// 求值器这份负责**派发**。
+    pub fn with_ext_registry(mut self, registry: Rc<wlwl_value::ExtRegistry>) -> Self {
+        self.loader.borrow_mut().project.ext_registry = Some(registry.clone());
+        self.ext_registry = Some(registry);
         self
     }
 
@@ -8281,6 +8502,7 @@ impl Evaluator {
             source: None,
             file: None,
             loader: Rc::new(RefCell::new(loader)),
+            ext_registry: None,
             std_ctx: wlwl_std::StdCtx::default(),
             clock_bubble: None,
             call_stack: Vec::new(),
@@ -8469,7 +8691,10 @@ impl Evaluator {
                 self.current_method_instance = prev_method;
                 result
             }
-            Value::NativeFn { invoke, .. } => invoke_std(self, invoke, args, arg_sets, span),
+            Value::NativeFn {
+                name: fn_name,
+                invoke,
+            } => invoke_std(self, Some(fn_name.as_str()), invoke, args, arg_sets, span),
             other => Err(type_error(
                 name,
                 format!("member is not callable ({} value)", type_name(&other)),
@@ -10090,8 +10315,13 @@ impl Evaluator {
             if let Value::Closure { params, body, env } = v {
                 return self.invoke_closure(name, params, body, env, accum, tokens, span);
             }
-            if let Value::NativeFn { invoke, .. } = v {
-                let mut result = invoke_std(self, invoke, accum, tokens, span)?;
+            if let Value::NativeFn {
+                name: fn_name,
+                invoke,
+            } = v
+            {
+                let mut result =
+                    invoke_std(self, Some(fn_name.as_str()), invoke, accum, tokens, span)?;
                 // [v0.12.0 / R-3·F-03] 记住这次挂起发生在**哪个成员**的
                 // **哪个调用点** ⇒ 顶层翻成 `E0014` 时能指名成员、指向调用点。
                 self.note_suspend_site(name, span, &result);

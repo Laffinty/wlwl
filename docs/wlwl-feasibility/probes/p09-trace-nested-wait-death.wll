@@ -1,0 +1,77 @@
+// ─────────────────────────────────────────────────────────────────────────────
+// p09-trace-nested-wait-death.wll —— 「嵌套闭包里的挂起点」探针
+//
+// 它证明什么（对应需求清单 §B-1）：
+//   把宿主挂起点（`TCP_RECV`）写进**辅助闭包**、再由**任务体**调用它 ——
+//   当前实现里到底发生了什么。
+//
+// ⚠⚠ **与清单描述有差异（本探针按实测断言，不按清单断言）**：
+//   清单 §B-1 说「任务静默终止、`AWAIT` 拿到 `NULL`、stderr 全空」。
+//   **实测复现不出来**：当前实现里嵌套闭包的挂起点**不静默终止** ——
+//     * 任务**正常跑完**，`AWAIT` 拿到 **42**（不是 `NULL`），**exit 0**；
+//     * stderr **有**内容（本探针下为空，因为没有诊断）；
+//     * 真正可观察的症状是**段首重放 ⇒ 副作用重复**
+//       （挂起点之前的 PRINT 跑了两遍，见下）。
+//   ⇒ 清单「静默终止」这个描述与实测**不符**；本探针把**实测**钉死。
+//   （这与 `docs/plan/wlwl-v0.12.1-build-plan.md` §2.3 的 **R-24** 一致。）
+//
+// 期望读数（exit 0）：
+//   [p09] before-accept              （第 1 次）
+//   [p09] after-accept-is-null= FALSE
+//   [p09] helper-entered
+//   [p09] before-accept              （第 2 次 —— 段首重放 ⇒ 副作用重复）
+//   [p09] after-accept-is-null= FALSE
+//   [p09] helper-entered
+//   [p09] after-helper-is-null= FALSE
+//   [p09] client= CLIENT-NO-RESPONSE
+//   [p09] z = 42                     ← 任务**正常结束**，终值是 42（不是 NULL）
+//
+// ⚠ 客户端看不到响应：`HTTP_*` 是阻塞原语，执行期间整个 SCOPE 冻结
+//   （ADR-0028 D1）⇒ 客户端必然超时；断言落在服务端一侧。
+// ─────────────────────────────────────────────────────────────────────────────
+
+// ⚠ 本文件与 `impl/tests/probe/cases/P121_probe_p09_nested_wait_death/main.wll`
+//   **逐字相同**（同一份程序的两处副本）⇒ 改动请同步两处。
+// ─────────────────────────────────────────────────────────────────────────────
+
+IMPORT("wlwl:std.io", ["PRINT"]);
+IMPORT("wlwl:std.str", ["CAT"]);
+IMPORT("wlwl:std.result", ["TAKE_ERR"]);
+IMPORT("wlwl:std.net", [
+  "TCP_LISTEN", "TCP_ACCEPT", "TCP_RECV", "TCP_SEND", "TCP_CLOSE",
+  "TCP_LOCAL_ADDR", "HTTP_GET"
+]);
+
+LET(http_client, FUN((port, path), (
+  LET(r, HTTP_GET(CAT("http://127.0.0.1:", STR(port), path), 150));
+  IF(==(TYPE(TAKE_ERR(r)), "NULL"), "CLIENT-GOT-RESPONSE", "CLIENT-NO-RESPONSE")
+)));
+
+LET(l, TCP_LISTEN("127.0.0.1", 0));
+LET(port, AT_K(TCP_LOCAL_ADDR(l), "port", 0));
+
+// ⚠ **辅助闭包**：宿主挂起点 `TCP_RECV` 在**闭包体内**，由任务体调用。
+LET(helper, FUN((c), (
+  PRINT("[p09] helper-entered");
+  TCP_RECV(c, 4096, 2000)
+)));
+
+LET(task_body, FUN(() , (
+  PRINT("[p09] before-accept");
+  LET(conn, TCP_ACCEPT(l, 3000));
+  PRINT("[p09] after-accept-is-null=", ==(conn, NULL));
+  LET(r, helper(conn));
+  PRINT("[p09] after-helper-is-null=", ==(r, NULL));
+  TAKE_ERR(TCP_SEND(conn, "HTTP/1.1 200 OK\r\nContent-Length: 2\r\n\r\nOK"));
+  TCP_CLOSE(conn);
+  42
+)));
+
+SCOPE(FUN(() ,
+  LET(t, SPAWN(task_body));
+  LET(tc, SPAWN(FUN(() , http_client(port, "/p09"))));
+  PRINT("[p09] client=", AWAIT(tc));
+  PRINT("[p09] z = ", AWAIT(t))
+));
+
+PRINT("[p09] DONE");

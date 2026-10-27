@@ -78,6 +78,7 @@ pub mod fs;
 pub mod io;
 pub mod json;
 pub mod kernels;
+pub mod log;
 pub mod math_ext;
 pub mod net;
 pub mod process;
@@ -452,6 +453,8 @@ pub fn resolve(path: &str) -> Option<StdBackend> {
         // (`URL_PARSE` / `URL_JOIN`);`HTTP_*` 属 W-03,形态由 `ADR-0028`
         // (Accepted, D1 **带条件冻结**) 定死。
         "wlwl:std.net" => &net::SPEC,
+        // [v0.12.1 / W-26] `std.log` 结构化日志 + 运行时指标（需求清单 F-1 / F-2）。
+        "wlwl:std.log" => &log::SPEC,
         // [v0.11.3 M8 / addendum-14 / ADR-0034 D2] 两个**官方包**的成员路径。
         //
         // ⚠ 为什么它们仍由这张表解析、而不是由 `wlwl.toml` 的 `[namespaces]`:
@@ -564,6 +567,7 @@ pub static NATIVE_SPECS: &[&ModuleSpec] = &[
     // 两个纯函数 + `HTTP_GET` / `HTTP_POST` / `HTTP_REQUEST`(形态由
     // `ADR-0028` 定死,D1 **带条件冻结**)。
     &net::SPEC,
+    &log::SPEC,
 ];
 
 /// 全部可 [`resolve`] 的命名空间路径(R1 门面 + R2 原生),**实现真相**。

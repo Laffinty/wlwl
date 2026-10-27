@@ -1,0 +1,15 @@
+{
+  "exit": 0,
+  "contains": [
+    "[p07] handler-head",
+    "[p07] inner-entered",
+    "[p07] after-accept-is-null= FALSE",
+    "[p07] after-inner-is-null= FALSE",
+    "[p07] z =  42",
+    "[p07] DONE"
+  ],
+  "not_contains": [
+    "error[E"
+  ],
+  "_why": "[W-02] 需求清单附录 A 的「`p02` / `p07` 反例：把 handler 放进嵌套闭包的两种失败写法」之**写法 ②**：handler 闭包内部**再定义并调用**一个内层闭包 ⇒ **两层嵌套**；宿主挂起点（`TCP_RECV`）落在**内层**闭包里。⚠ **与清单描述有差异**：清单把这种写法列为「失败写法」并说结果是「任务静默终止、`AWAIT` 拿到 NULL」；**实测复现不出来** —— 当前实现里它**跑通了**：任务正常结束、终值是 **42**（不是 NULL）、exit 0、stderr 空；可观察的副作用是**段首重放**（`handler-head` 跑了两遍、`inner-entered` 也跑了两遍 ⇒ 副作用重复）。⇒ 本用例按**实测**断言（与计划 §2.3 的 **R-24** 一致）。"
+}

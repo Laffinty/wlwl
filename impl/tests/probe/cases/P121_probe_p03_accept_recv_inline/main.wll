@@ -1,0 +1,74 @@
+// ─────────────────────────────────────────────────────────────────────────────
+// p03-accept-recv-inline.wll —— 「段首重放」探针
+//
+// 它证明什么（对应需求清单 §B-1 的前半段 / 并发册 §17.0 第 2 条）：
+//   宿主挂起点（`TCP_ACCEPT` / `TCP_RECV`）是**不切段**的挂起点 ⇒ 恢复时
+//   **段首重放** ⇒ **挂起点之前**的语句会**再跑一遍** ⇒ 副作用重复。
+//
+// 期望读数（exit 0）：
+//   [p03] segment-head-run= 1
+//   [p03] segment-head-run= 2          ← 段首重放：挂起点之前的 PRINT 跑了两次
+//   [p03] request-line= GET /p03 HTTP/1.1
+//   [p03] client= CLIENT-NO-RESPONSE
+//   [p03] task= served
+//   [p03] head-runs= 2
+//
+// 与清单描述的差异：**无**（附录 A 对 p03 的描述「段首重放（挂起点之前的 PRINT
+//   跑了两次）」逐字对上）。
+//
+// ⚠ 为什么客户端看不到响应：`HTTP_*` 是**阻塞原语**，执行期间**整个 SCOPE 冻结**
+//   （ADR-0028 D1 / 系统册 §21.4）⇒ 客户端在等响应时，服务端任务**跑不了**。
+//   ⇒ 本探针的断言全部落在**服务端一侧**（请求确实到达了、handler 确实跑了）。
+//   客户端那一侧只能断言「没拿到响应」—— 这**本身就是** ADR-0028 D1 的证据。
+// ─────────────────────────────────────────────────────────────────────────────
+
+// ⚠ 本文件与 `impl/tests/probe/cases/P121_probe_p03_accept_recv_inline/main.wll`
+//   **逐字相同**（同一份程序的两处副本）⇒ 改动请同步两处。
+// ─────────────────────────────────────────────────────────────────────────────
+
+IMPORT("wlwl:std.io", ["PRINT"]);
+IMPORT("wlwl:std.str", ["CAT"]);
+IMPORT("wlwl:std.result", ["TAKE_ERR"]);
+IMPORT("wlwl:std.net", [
+  "TCP_LISTEN", "TCP_ACCEPT", "TCP_RECV", "TCP_SEND", "TCP_CLOSE",
+  "TCP_LOCAL_ADDR", "HTTP_GET"
+]);
+
+// 客户端：连上、发请求、然后**必然**超时（服务端在客户端阻塞期间跑不了）。
+LET(http_client, FUN((port, path), (
+  LET(r, HTTP_GET(CAT("http://127.0.0.1:", STR(port), path), 150));
+  IF(==(TYPE(TAKE_ERR(r)), "NULL"), "CLIENT-GOT-RESPONSE", "CLIENT-NO-RESPONSE")
+)));
+
+// ⚠ 计数器必须住在**重放段之外**（并发册 §17.0 第 3 条：段内的局部状态活不过
+//   一次挂起）⇒ 它建在**模块顶层**，任务体只 `SET` 它。
+LET MUT(head_runs, 0);
+
+LET(l, TCP_LISTEN("127.0.0.1", 0));
+LET(port, AT_K(TCP_LOCAL_ADDR(l), "port", 0));
+
+// 服务端任务：**段首** = 挂起点之前的 PRINT + accept。
+LET(server, FUN(() , (
+  SET(head_runs, +(head_runs, 1));
+  PRINT("[p03] segment-head-run=", head_runs);
+  LET(conn, TCP_ACCEPT(l, 3000));
+  YIELD();
+  LET(chunk, TCP_RECV(conn, 4096, 2000));
+  LET(lines, SPLIT(AT_K(chunk, "text", ""), "\r\n"));
+  PRINT("[p03] request-line=", INDEX_GET(lines, 0));
+  TAKE_ERR(TCP_SEND(conn, "HTTP/1.1 200 OK\r\nContent-Length: 2\r\n\r\nOK"));
+  TCP_CLOSE(conn);
+  "served"
+)));
+
+SCOPE(FUN(() ,
+  // ⚠ 顺序要紧：**先** spawn 服务端任务（它会挂在 accept 上），**再** spawn 客户端
+  //   任务 ⇒ 客户端连上时服务端**已经挂起** ⇒ 连接到达会把它唤醒 ⇒ 触发段首重放。
+  LET(t, SPAWN(server));
+  LET(tc, SPAWN(FUN(() , http_client(port, "/p03"))));
+  PRINT("[p03] client=", AWAIT(tc));
+  PRINT("[p03] task=", AWAIT(t));
+  PRINT("[p03] head-runs=", head_runs)
+));
+
+PRINT("[p03] DONE");

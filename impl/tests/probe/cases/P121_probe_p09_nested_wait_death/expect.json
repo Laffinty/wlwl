@@ -1,0 +1,15 @@
+{
+  "exit": 0,
+  "contains": [
+    "[p09] before-accept",
+    "[p09] after-accept-is-null= FALSE",
+    "[p09] helper-entered",
+    "[p09] after-helper-is-null= FALSE",
+    "[p09] z =  42",
+    "[p09] DONE"
+  ],
+  "not_contains": [
+    "error[E"
+  ],
+  "_why": "[W-02] 「嵌套闭包里的挂起点」探针（需求清单 §B-1 的主证据）。把宿主挂起点 `TCP_RECV` 写进**辅助闭包**、再由**任务体**调用它。⚠⚠ **与清单描述有差异**：清单 §B-1 说「任务静默终止、`AWAIT` 拿到 `NULL`、stderr 全空」；**实测复现不出来** —— 当前实现里嵌套闭包的挂起点**不静默终止**：任务**正常跑完**、`AWAIT` 拿到 **42**（不是 NULL）、**exit 0**；真正可观察的症状是**段首重放 ⇒ 副作用重复**（`before-accept` 跑了两遍）。⇒ 本用例按**实测**断言（与计划 §2.3 的 **R-24** 一致）。"
+}

@@ -1,0 +1,17 @@
+{
+ "exit": 0,
+ "contains": [
+  "object  =  [pattern: ^p121([0-9]+)q$, groups: 1]",
+  "groups  =  1",
+  "loop    =  1000",
+  "test    =  TRUE",
+  "search  =  [matched: p121abcq, start: 0, end: 8, groups: [p121abcq, abc]]",
+  "replace =  1:a 2:b",
+  "split   =  [a, b, c]",
+  "re_again=  [pattern: ^p121([0-9]+)q$, groups: 1]"
+ ],
+ "not_contains": [
+  "E00"
+ ],
+ "_why": "v0.12.1 W-23 / D-1(正则编译缓存)。规范 §16.5 的实现注(**非规范**)明写「模式对象已携带组数,实现**可以**缓存编译结果并以 O(1) 回答」⇒ 缓存是**规范允许**的实现自由度 ⇒ 本项零规范改动、零新成员。三条断言各钉一件事:① object / re_again 钉**模式对象的形状一字不变**(仍是 pattern + groups **两键**)—— 缓存的句柄**不许**变成第三个键(那会改 LEN / KEYS 这类可观察面,撞一致性册 :223;而规范侧只说「**可以**缓存」,不需要语言面新增任何东西);② loop 钉**同一个模式对象连用 1000 次,结果与第一次逐字相同**(命中缓存不改变语义)—— 期望值 1000 按定义算出(每轮匹配到 1 个),不是抄实现输出;③ test / search / replace / split 钉**不同模式各自独立、互不串味**,以及替换 / 切分的形状没变。⚠ 「编译了几次」这种**工作量计数在语言面不可见**(报它要新增成员 ⇒ 撞 D-1 的非目标)⇒ 那条断言住在 Rust 契约 wlwl-eval/tests/regex_cache_contract.rs(确定性计数,不是墙钟 —— 一致性册 §6.2 V-01)。⚠ not_contains: E00 钉正常路径无诊断漏出。"
+}

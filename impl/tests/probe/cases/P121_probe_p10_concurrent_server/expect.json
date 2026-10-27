@@ -1,0 +1,20 @@
+{
+  "exit": 0,
+  "contains": [
+    "[p10] resp-head= HTTP/1.1 200 OK",
+    "Content-Length: 13",
+    "X-Content-Type-Options: nosniff",
+    "X-Frame-Options: DENY",
+    "X-XSS-Protection: 1; mode=block",
+    "Referrer-Policy: strict-origin-when-cross-origin",
+    "Content-Security-Policy: default-src 'self'",
+    "[p10] body-len= 9  body-byte-len= 13",
+    "[p10] served-200-count= 8",
+    "[p10] served-request-count= 8",
+    "[p10] DONE"
+  ],
+  "not_contains": [
+    "error[E"
+  ],
+  "_why": "[W-02] 「纯 wlwl HTTP 服务」探针。8 个**真实 TCP 连接**全部被服务、状态码全 200、5 个安全响应头齐全、`Content-Length` 按**字节数**算（正文含中文 ⇒ `LEN`=9 而 `BYTE_LEN`=13 ⇒ 错用 `LEN` 就会发短）。⚠ 与清单描述的差异只有一处：清单的「8 并发全 200」是**客户端视角**，而 `HTTP_*` 是**阻塞原语**（执行期间整个 SCOPE 冻结，ADR-0028 D1）⇒ 客户端必然超时 ⇒ 本用例在**服务端一侧**断言。⚠ 8 个连接**不会**触发「惊群」：本用例让 8 个客户端**先**连上（连接进 accept 队列），**再**让 8 个 acceptor 任务起来 ⇒ 每个 acceptor 直接取走一条已就绪的连接、**不挂起** ⇒ 不触发「唤醒全部等待者」（那个由 `P121_probe_p12_acceptor_pool` 专门复现）。"
+}

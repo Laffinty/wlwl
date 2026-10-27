@@ -996,7 +996,56 @@ python script/check_spec.py                     # 附录 A ↔ 各册成员表 �
 
 ---
 
-## 11 给业主的摘要
+## 11 收尾交接（2026-10-27 第一波落地完毕）
+
+| 工作项 | 落地内容 | 验收读数 |
+|---|---|---|
+| **W-01** 基线自洽（我做） | 三条门禁基线 + 死链订正 | `check-appendix-a` OK · `stdlib_appendix_a_sync` 8/0 · `§5.4 状态列与契约表一致（25 行）` · probe 181 = 常量 |
+| **W-02** 探针固化 | `docs/wlwl-feasibility/probes/`（9 个探针 + README 对照表）+ 9 个 `P121_probe_*` 夹具 | 9/9 绿（debug + release 双二进制）· 反向守卫验过 |
+| **W-21** 扩展加载器 | 新 crate `impl/crates/wlwl-ext/`（`abi.rs` / `dynlib.rs` / `trust.rs` / `json.rs` / `registry.rs` / `include/wlwl_ext.h`）+ `wlwl-value` 的 `ExtRegistry` + eval 侧第 4 层解析 + CLI `--ext` / `--ext-sha256` | `wlwl-ext` 5/0 · `ext_loader_contract` 22/0 · 两条反向守卫都红过 |
+| **W-23** 正则编译缓存 | `regex.rs` 进程级编译缓存（条数 256 + 字节 4 MiB 双上界、LRU） | `regex_cache_contract` **14/0**（我复核）· 反向守卫把编译次数 1 → 1001 |
+| **W-24** 归一化 + 路径包含 | `text.rs`（`NFKC`/`CASE_FOLD`/`STRIP_INVISIBLE`）+ `fs.rs`（`PATH_CANONICAL`/`PATH_CONTAINS`）+ `unicode/waf.rs`（**生成物**，仓内**没有** NFKC 数据底座）+ `script/gen_unicode_waf_tables.py` | `path_contains_contract` **10/0**（我复核）· 反向守卫 8 条断言红 |
+| **W-26** `std.log` | `log.rs`（`LOG`/`LOG_SET_LEVEL`/`LOG_FILE`/`LOG_METRICS`/`METRIC_COUNTER`/`METRIC_INC`/`METRIC_TIMER`）+ 契约测试 | agent 21/0 · 两条反向守卫（原子自增 / 级别过滤）都红过 |
+| **W-27** 原子写 + 文件锁 + 元数据 | `fs.rs`（`WRITE_FILE_ATOMIC`/`LOCK_FILE`/`UNLOCK_FILE`/`FILE_MTIME`/`DIR_ENTRIES`）+ 契约测试 | `fs_atomic_lock_meta_contract` **20/0**（集成者修掉 agent 的一处自递归后） |
+| **W-12** `TCP_SERVE`（B-3 迭代器形态） | `net.rs` 新成员 + `tcp.rs` 下沉原生帧阻塞原语（只搬字节、不认协议） | `tcp_serve_contract` 16/0 · `tcp_contract` 23/0 · `socket_handle_guard` 11/0 · 反向守卫 2 条红 |
+
+### 11.1 本波已落地（7 个工作项 + W-01 基线）
+
+### 11.2 未做的登记（**规范侧**，下一轮按此顺序做）
+
+新成员共 **18 个**：`std.text` +3 · `std.fs` +7 · `std.net` +1 · `std.log`（新命名空间，7）。
+⚠ **这些成员在规范仓落表前，实现侧的三道对拍闸会红**（`check-appendix-a` / `stdlib_appendix_a_sync` 的成员集合 / `net_contract` 与 `fs_contract` 的成员表）⇒ **那是「规范侧未跟上」，不是实现缺陷**。
+
+| 步骤 | 在哪个仓 | 做什么 | 顺序 |
+|---|---|---|---|
+| ① | **规范仓** | 一致性册 `§5.5`「实现侧扩展台账」**加一行**（新成员的「预期差异」只能挂在那里；TCP 那 9 个成员当年就是这么挂的 ⇒ `read_ledger()` 直接从规范仓读） | 1 |
+| ② | **规范仓** | 注册镜像册**附录 A** 补表体行（`std.text` / `std.fs` / `std.net` 三行加成员 + `std.log` 新行） | 2 |
+| ③ | **规范仓** | 各册成员表补行（`std.text` §6 · `std.fs` §2 · `std.net` §21 · `std.log` 新节）+ 总纲 §0.9 登记行（引用 D-13 先例） | 3 |
+| ④ | **实现仓** | 抄回 `docs/wlwl-spec-reference.md`（附录 A + 各册成员表）+ 改 `net_contract.rs` / `fs_contract.rs` 的期望名单 | 4 |
+| ⑤ | **实现仓** | `.github/workflows/ci.yml:121` 的规范仓钉死提交**前移**到 ①–③ 的提交 ⇒ ⚠ **必须等规范仓先 push**，否则实现仓 CI 读到旧规范提交而红 | 5（最后） |
+
+### 11.3 下一批 agent 名单与切分
+
+| 批次 | 工作项 | 并行度 | 文件冲突提示 |
+|---|---|---|---|
+| 下一批 | **W-10**（B-1 词法检查：`eval/runtime.rs` + `eval/lib.rs` + `std/tcp.rs`）∪ **W-33**（诊断可读性 + 模块组织：`cli/diag_output.rs` + `error/lib.rs` + `eval/lib.rs`） | **2 并行** | ⚠ 两者抢 `wlwl-eval/src/lib.rs` ⇒ **只能二选一先做**，另一个等它合完 |
+| 紧随 | **W-22**（TLS 扩展 crate `impl/ext/wlwl-tls-ext/**`） | 1 | 依赖 **W-21** 的 ABI 头文件（已在树里）⇒ 可与上面并行 |
+| 随后 | **W-11**（B-2 唤醒一个：`std/tcp.rs` + `eval/runtime.rs`）· **W-13**（`std.sync`：`wlwl-std/src/sync.rs`）· **W-14**（B-5 异步出站：`std/net.rs` + `std/process.rs` + `wlwl-value`） | 2–3 | `tcp.rs` 与 W-11 撞；`net.rs` 与 W-14 撞 |
+
+### 11.4 待业主裁决（两项，都不阻塞下一批）
+
+1. **parser 的 `E0011` 误报**：多行嵌套块 + 块末是字符串字面量 + 块内有「实参是调用」的嵌套调用 ⇒ 误报（**同一份程序写成单行就正常**）。合法程序被误拒、且报错方向误导 ⇒ 我判断是**静默错误级**。9 个探针已避开该形态。**是否并入 v0.12.1？**
+2. **NFKC 数据表停在 Unicode 17.0**（`norm.rs` 在 18.0.0）：实测 unicode.org 超时（无网络）、仓内无 vendored UCD ⇒ 18.0 的新增拿不到，53 个码点有差异。**是否等 UCD 源数据？**（表头已写明版本与差集，`--ucd` 通路已实现并用合成 UCD 端到端验证过。）
+
+### 11.5 本波的三条工程教训（供下一轮照抄）
+
+1. **派工 briefing 必须自带规格与坐标**，不要只丢「见计划文档」——第一个 W-21 agent 把预算烧在通读计划 + 全仓勘察上，**零产出**；把 ABI 契约整段抄进 prompt 后才正常开工。
+2. **改 Rust 源文件用精确替换，别用正则式批量替换**——我一度用脚本把 `lib.rs` 注释里的字面 `` `n `` 替成真换行，**弄坏文件**（编译直接断），已回退重做。
+3. **`.ps1` 脚本里别写中文**——PowerShell 5.1 按 ANSI/GBK 读无 BOM 的脚本 ⇒ 中文字符串的引号被吃掉 ⇒ 脚本直接语法错；今天的脚本全部改成纯 ASCII。
+
+---
+
+## 12 给业主的摘要
 
 1. **57 条全部落地**：50 条变成 28 个实现侧工作项（W-01…W-35，按波次分 4 波、最多 9 个 agent 并行），5 条是口径答复（I 组），2 条按需求方**自己的建议**归应用层（E-6 Markdown / E-7 高亮 —— 清单原文就是「**建议明确不做**」）。**没有任何一条以「延后」结案**。
 2. **规则侧只动三类**：① 修语言册与并发册关于 `E0014` 的**正面矛盾**（并发册本来就写对了）；② 给新增成员 / 命名空间走登记（§3.2 修订版本通道，**引用 D-13 先例**）；③ 给 TLS 扩展一个合法落点（一致性册 §5.5 台账第一行）。**零处修改既有成员、零处新增诊断码、零处新增册** ⇒ **v1.0.4 成立**。

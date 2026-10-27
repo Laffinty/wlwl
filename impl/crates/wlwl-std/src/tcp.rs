@@ -41,7 +41,7 @@ use std::io::{Read, Write};
 use std::net::{Shutdown, SocketAddr, TcpListener, TcpStream, ToSocketAddrs};
 use std::sync::atomic::{AtomicBool, AtomicI64, Ordering};
 use std::sync::{Arc, Condvar, LazyLock, Mutex};
-use std::time::Duration;
+use std::time::{Duration, Instant};
 
 use wlwl_error::ErrorCode;
 use wlwl_value::{Outcome, Signal, StdHost, Value, YieldReason};
@@ -623,37 +623,10 @@ pub fn tcp_accept(host: &mut dyn StdHost, args: Vec<Value>) -> wlwl_error::WlwlR
         ));
     };
     // 建立连接状态 + 读线程。
-    let _ = stream.set_nonblocking(false);
-    let peer = stream
-        .peer_addr()
-        .unwrap_or_else(|_| SocketAddr::from(([0, 0, 0, 0], 0)));
-    let reader = match stream.try_clone() {
-        Ok(r) => r,
-        Err(e) => {
-            return Ok(Outcome::normal(socket_error(
-                "TCP_ACCEPT",
-                format!("cannot clone the accepted socket: {e}"),
-            )))
-        }
+    let cid = match register_conn(stream) {
+        Ok(cid) => cid,
+        Err(why) => return Ok(Outcome::normal(socket_error("TCP_ACCEPT", why))),
     };
-    let cid = NEXT_ID.fetch_add(1, Ordering::Relaxed);
-    let conn = Arc::new(ConnState {
-        id: cid,
-        stream,
-        buf: Mutex::new(VecDeque::new()),
-        filled: Condvar::new(),
-        eof: AtomicBool::new(false),
-        closed: AtomicBool::new(false),
-        // ⚠ [v0.12.0 / R3] 连接的**读超时**默认 = **无限**（`0`）
-        //   ⇒ 只有**显式** `TCP_SET_TIMEOUT` 才给读设上界。
-        //   （交付包原实现默认 30 s ⇒ 那是一条规范里**没有**的静默截断。）
-        read_timeout_ms: Mutex::new(0),
-        peer,
-    });
-    spawn_reader(conn.clone(), reader);
-    with_sockets(|map| {
-        map.insert(cid, Entry::Conn(conn));
-    });
     // ⚠ [2026-10-25 / 审计 N2] 记下「这个任务 accept 到的这个连接」⇒
     //   恢复重放时**返回同一个连接**（不重新 pop ⇒ 连接不被覆盖、仍可关闭）。
     if let Some(key) = task_key {
@@ -981,6 +954,15 @@ pub fn tcp_close(host: &mut dyn StdHost, args: Vec<Value>) -> wlwl_error::WlwlRe
         return Err(arity(host, "TCP_CLOSE", args.len(), 1));
     }
     let cid = int_arg(host, "TCP_CLOSE", &args[0])?;
+    close_conn_raw(cid);
+    Ok(Outcome::normal(Value::Null))
+}
+
+/// 关掉一条连接（**幂等**）—— `TCP_CLOSE` 与原生帧内的接受循环共用这一份。
+///
+/// ⚠ **必须先放掉 `SOCKETS` 锁**再清备忘 —— 备忘清理自己也要拿这把锁
+///   （`std::sync::Mutex` **不可重入** ⇒ 拿着它再拿一次 = 自死锁）。
+pub fn close_conn_raw(cid: i64) {
     {
         let mut guard = SOCKETS.lock().unwrap_or_else(|e| e.into_inner());
         if let Some(map) = guard.as_mut() {
@@ -990,13 +972,10 @@ pub fn tcp_close(host: &mut dyn StdHost, args: Vec<Value>) -> wlwl_error::WlwlRe
                 let _ = s.stream.shutdown(Shutdown::Both);
             }
         }
-        // ⚠ **必须先放掉 `SOCKETS` 锁**再清备忘 —— 备忘清理自己也要拿这把锁
-        //   （`std::sync::Mutex` **不可重入** ⇒ 拿着它再拿一次 = 自死锁）。
     }
     // ⚠ [2026-10-25 / 审计 N2] 连接没了 ⇒ 它的「accept 备忘」也作废
     //   （否则备忘表随连接数无界增长）。
     memo_clear_for_conn(cid);
-    Ok(Outcome::normal(Value::Null))
 }
 
 /// `TCP_CLOSE_LISTENER(listener) -> NULL` —— 关闭监听（**幂等**）。
@@ -1016,4 +995,249 @@ pub fn tcp_close_listener(
         }
     }
     Ok(Outcome::normal(Value::Null))
+}
+
+// ── 原生帧内的阻塞原语（供 `std.net` 的接受循环用）─────────────────────────
+//
+// ⚠ **这一族与 `TCP_ACCEPT` / `TCP_RECV` 是两条不同的路**：
+//
+// | 成员 | 等不到东西时 |
+// |---|---|
+// | `TCP_ACCEPT` / `TCP_RECV` | **挂起当前任务**（别的任务照常运行） |
+// | 这里这几个 | **阻塞调用线程**（原生帧内推进的循环用） |
+//
+// ⚠ **为什么需要它们**：一个「在原生帧内推进的接受循环」必须能
+//   「等一条连接」「读满一次请求」「写回响应」—— 而这三件事在原生帧里
+//   **没有调度器可挂**（挂起要回到调度器才有意义）⇒ 只能在这里就地等。
+//
+// ⚠ **只搬字节、只等条件**：这里**不认识任何协议**——请求/响应的形状由
+//   `std.net` 那一层管（`net.rs`）。机械守卫 `no_http_semantics_in_the_transport_layer`
+//   守着这条线。
+//
+// ⚠ **句柄纪律不变**：句柄是**不透明 `INTEGER`**；句柄表里**只放 socket 状态**，
+//   绝不存 wlwl 的值（那是 `Rc` 语义、不是 `Send`）。
+
+/// 原生帧内的一次「等一条连接」的结果。
+pub enum AcceptOutcome {
+    /// 接到了一条连接（句柄）。
+    Conn(i64),
+    /// 等待预算用尽 ⇒ **没有**连接（**不是**错误）。
+    TimedOut,
+    /// 监听已被关掉 ⇒ 循环该收了。
+    Closed,
+}
+
+/// 原生帧内的一次「读」的结果。
+pub enum ReadOutcome {
+    /// 读到了字节（可能还有更多）。
+    Bytes(Vec<u8>),
+    /// 对端关闭且缓冲已空。
+    Eof,
+    /// 等待预算用尽（**不是** EOF，也**不是**错误）。
+    TimedOut,
+}
+
+/// 把一条已接到的连接登记进句柄表（建读线程、起缓冲）。
+///
+/// ⚠ `TCP_ACCEPT` 与原生帧内的接受循环**共用这一份** ⇒ 两边的连接
+///   **形状逐字一致**（同一个读线程、同一个缓冲、同一个默认读超时）。
+fn register_conn(stream: TcpStream) -> Result<i64, String> {
+    let _ = stream.set_nonblocking(false);
+    let peer = stream
+        .peer_addr()
+        .unwrap_or_else(|_| SocketAddr::from(([0, 0, 0, 0], 0)));
+    let reader = stream
+        .try_clone()
+        .map_err(|e| format!("cannot clone the accepted socket: {e}"))?;
+    let cid = NEXT_ID.fetch_add(1, Ordering::Relaxed);
+    let conn = Arc::new(ConnState {
+        id: cid,
+        stream,
+        buf: Mutex::new(VecDeque::new()),
+        filled: Condvar::new(),
+        eof: AtomicBool::new(false),
+        closed: AtomicBool::new(false),
+        // ⚠ [v0.12.0 / R3] 连接的**读超时**默认 = **无限**（`0`）
+        //   ⇒ 只有**显式** `TCP_SET_TIMEOUT` 才给读设上界。
+        //   （交付包原实现默认 30 s ⇒ 那是一条规范里**没有**的静默截断。）
+        read_timeout_ms: Mutex::new(0),
+        peer,
+    });
+    spawn_reader(conn.clone(), reader);
+    with_sockets(|map| {
+        map.insert(cid, Entry::Conn(conn));
+    });
+    Ok(cid)
+}
+
+/// 原生帧内的**阻塞** accept —— 等一条连接，最多等 `timeout`。
+///
+/// ⚠ `timeout = None` ⇒ **无截止时间**（等到有连接为止）；`Some(d)` ⇒ 等不到
+///   就返回 [`AcceptOutcome::TimedOut`]（**不是**错误）。
+/// ⚠ **监听被关掉** ⇒ [`AcceptOutcome::Closed`]（循环该收了，不是错误）。
+/// ⚠ 句柄不对（不存在 / 不是监听）⇒ `Err`（**调用点**的错误）。
+pub fn accept_blocking(lid: i64, timeout: Option<Duration>) -> Result<AcceptOutcome, String> {
+    let state = {
+        let mut guard = SOCKETS.lock().unwrap_or_else(|e| e.into_inner());
+        let Some(map) = guard.as_mut() else {
+            return Err(format!("unknown listener handle: {lid}"));
+        };
+        match map.get(&lid) {
+            Some(Entry::Listener(s)) => s.clone(),
+            Some(Entry::Conn(_)) => return Err(format!("handle {lid} is not a listener")),
+            None => return Err(format!("unknown listener handle: {lid}")),
+        }
+    };
+
+    // 截止时间在**进循环之前**取（一次等待一份预算）。
+    let deadline = timeout.map(|d| Instant::now() + d);
+    let waited = {
+        let mut pending = state.pending.lock().unwrap_or_else(|e| e.into_inner());
+        loop {
+            // ⚠ **先看队列**⇒ 已经在 backlog 里的连接**立刻**交付，不白等。
+            if let Some(s) = pending.pop_front() {
+                break Wait::Got(s);
+            }
+            if state.closed.load(Ordering::SeqCst) {
+                break Wait::Closed;
+            }
+            match deadline {
+                None => {
+                    pending = state
+                        .filled
+                        .wait(pending)
+                        .unwrap_or_else(|e| e.into_inner());
+                }
+                Some(dl) => {
+                    let now = Instant::now();
+                    if now >= dl {
+                        break Wait::TimedOut;
+                    }
+                    let (p, _r) = state
+                        .filled
+                        .wait_timeout(pending, dl - now)
+                        .unwrap_or_else(|e| e.into_inner());
+                    pending = p;
+                }
+            }
+        }
+    };
+    let stream = match waited {
+        Wait::Got(s) => s,
+        Wait::Closed => return Ok(AcceptOutcome::Closed),
+        Wait::TimedOut => return Ok(AcceptOutcome::TimedOut),
+    };
+
+    let cid = register_conn(stream)?;
+    // ⚠ 条件被**消费**了 ⇒ 就绪标记作废。
+    // ⚠ **但队列里还有连接时不能作废** —— 否则下一次等待会挂上去，而
+    //   「接收线程」只在接受**新**连接时才推事件 ⇒ 那个连接就永远等不到唤醒。
+    {
+        let still_pending = !state
+            .pending
+            .lock()
+            .unwrap_or_else(|e| e.into_inner())
+            .is_empty();
+        if !still_pending {
+            retire_ready(lid);
+        }
+    }
+    Ok(AcceptOutcome::Conn(cid))
+}
+
+/// `accept_blocking` 内部的等待结果（**不进公共面**）。
+enum Wait {
+    Got(TcpStream),
+    Closed,
+    TimedOut,
+}
+
+/// 原生帧内的**阻塞**读 —— 最多取 `max_bytes` 个字节。
+///
+/// ⚠ `timeout = None` ⇒ **无截止时间**（等到有数据或对端关闭为止）。
+/// ⚠ **超时不是 EOF**（与 `TCP_RECV` 同口径）⇒ 走 [`ReadOutcome::TimedOut`]。
+/// ⚠ 句柄不对 ⇒ `Err`（**调用点**的错误）。
+pub fn recv_blocking(
+    cid: i64,
+    max_bytes: usize,
+    timeout: Option<Duration>,
+) -> Result<ReadOutcome, String> {
+    let state = {
+        let mut guard = SOCKETS.lock().unwrap_or_else(|e| e.into_inner());
+        let Some(map) = guard.as_mut() else {
+            return Err(format!("unknown connection handle: {cid}"));
+        };
+        match map.get(&cid) {
+            Some(Entry::Conn(s)) => s.clone(),
+            Some(Entry::Listener(_)) => {
+                return Err(format!("handle {cid} is a listener, not a connection"))
+            }
+            None => return Err(format!("unknown connection handle: {cid}")),
+        }
+    };
+
+    let deadline = timeout.map(|d| Instant::now() + d);
+    let outcome = {
+        let mut buf = state.buf.lock().unwrap_or_else(|e| e.into_inner());
+        loop {
+            if !buf.is_empty() {
+                // ⚠ `max_bytes == 0` 会**取走 0 字节又继续等** ⇒ 死等 ⇒ 抬到 1。
+                let n = buf.len().min(max_bytes.max(1));
+                let bytes: Vec<u8> = buf.drain(..n).collect();
+                let empty_now = buf.is_empty();
+                drop(buf);
+                // ⚠ 条件被**消费**了 ⇒ 就绪标记作废（否则下一次等待会被
+                //   这个陈旧标记**立刻唤醒** ⇒ 空转）。
+                if empty_now {
+                    retire_ready(cid);
+                }
+                break ReadOutcome::Bytes(bytes);
+            }
+            if state.eof.load(Ordering::SeqCst) || state.closed.load(Ordering::SeqCst) {
+                drop(buf);
+                retire_ready(cid);
+                break ReadOutcome::Eof;
+            }
+            match deadline {
+                None => {
+                    buf = state.filled.wait(buf).unwrap_or_else(|e| e.into_inner());
+                }
+                Some(dl) => {
+                    let now = Instant::now();
+                    if now >= dl {
+                        drop(buf);
+                        break ReadOutcome::TimedOut;
+                    }
+                    let (b, _r) = state
+                        .filled
+                        .wait_timeout(buf, dl - now)
+                        .unwrap_or_else(|e| e.into_inner());
+                    buf = b;
+                }
+            }
+        }
+    };
+    Ok(outcome)
+}
+
+/// 原生帧内的**阻塞**写 —— 把 `payload` 整个写出去。
+///
+/// ⚠ 写**没有**独立的上界（与 `TCP_SEND` 同口径：写超时不在成员面上）。
+/// ⚠ 句柄不对 ⇒ `Err`（**调用点**的错误）。
+pub fn write_all_bytes(cid: i64, payload: &[u8]) -> Result<usize, String> {
+    let state = {
+        let mut guard = SOCKETS.lock().unwrap_or_else(|e| e.into_inner());
+        let Some(map) = guard.as_mut() else {
+            return Err(format!("unknown connection handle: {cid}"));
+        };
+        match map.get(&cid) {
+            Some(Entry::Conn(s)) => s.clone(),
+            _ => return Err(format!("handle {cid} is not a connection")),
+        }
+    };
+    let mut stream = &state.stream;
+    stream
+        .write_all(payload)
+        .map_err(|e| format!("write failed: {e}"))?;
+    Ok(payload.len())
 }

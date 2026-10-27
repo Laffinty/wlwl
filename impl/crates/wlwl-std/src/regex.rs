@@ -58,6 +58,9 @@
 //! 路径,leftmost-first 的裁决键随之不再是良定义的。所以是**不能实现**,
 //! 不只是「以后再加」。
 
+use std::collections::{HashMap, VecDeque};
+use std::sync::{Arc, LazyLock, Mutex};
+
 use crate::{ModuleSpec, StdFn};
 use wlwl_error::ErrorCode;
 use wlwl_value::{Outcome, StdHost, Value};
@@ -912,6 +915,15 @@ pub fn compile(pattern: &str) -> Result<Program, String> {
 /// 另写一条「只在末尾接受」的分支。
 pub fn compile_full(pattern: &str) -> Result<Program, String> {
     let inner = compile(pattern)?;
+    Ok(full_from(&inner))
+}
+
+/// 由**已编译**的搜索版**派生**出整串版(不重新解析一遍)。
+///
+/// ⚠ 拆出来是为了让缓存**一次编译产出两种语义**(见 `compile_pair`):
+///   若整串版重新解析一遍,「一个模式串编译了几次」就会变成 2 ——
+///   那不是缓存没生效,是**计数口径**自己改了。
+fn full_from(inner: &Program) -> Program {
     let mut insts = vec![Inst::Assert(AnchorKind::Start { multiline: false })];
     // ⚠ **两条 `Save` 都要保留** —— 剥掉它们就没有捕获可言,而捕获正是
     // `RE_TEST` / `RE_SEARCH` 报 `start` / `end` 的依据。这里只丢末尾那条
@@ -919,11 +931,11 @@ pub fn compile_full(pattern: &str) -> Result<Program, String> {
     insts.extend_from_slice(&inner.insts[1..inner.insts.len() - 1]);
     insts.push(Inst::Assert(AnchorKind::End { multiline: false }));
     insts.push(Inst::Match);
-    Ok(Program {
+    Program {
         insts,
         groups: inner.groups,
-        source: inner.source,
-    })
+        source: inner.source.clone(),
+    }
 }
 
 // ── Pike VM ────────────────────────────────────────────────────────────
@@ -1638,6 +1650,275 @@ pub fn find_all(prog: &Program, text: &str) -> Vec<Captures> {
     vm.select_all()
 }
 
+// ── 编译缓存(W-23 · D-1)──────────────────────────────────────────────
+//
+// ## 为什么需要它
+//
+// `RE_*` 此前**每次调用都重新编译**模式(规范 §16.5 的实现注如实记着这一点):
+// 解析 → Thompson 构造 → NFA 指令数组。WAF 这类用法是「一个规则集 × 每个请求」
+// ⇒ 每个请求都把全部规则重编一遍,而「省掉重编译」的收益每次都拿得到。
+//
+// ## 为什么**可以**做(规范侧零改动)
+//
+// 规范 §16.5 的**实现注(非规范)**明写:「模式对象已携带组数,实现**可以**缓存
+// 编译结果并以 O(1) 回答」⇒ 缓存是**规范允许**的实现自由度 ⇒ 本项**零规范
+// 改动、零新成员**(D-1 的非目标)。
+//
+// ## 缓存里放什么、不放什么
+//
+// ⚠ **只放编译产物**(`Program`:指令数组 + 组数 + 模式源串)—— 它只含
+//   `Vec` / `usize` / `String` ⇒ `Send + Sync` ⇒ 可以放进进程级表。
+// ⚠ **绝不放 `Value`** —— `Value` 是 `Rc` 语义、**不是 `Send`**(见 `wlwl-value`),
+//   放一个进去整张表就变成 `!Send`,而 `static` 要求 `Sync`。
+//
+// ## 为什么是进程级、为什么要锁
+//
+// 同一进程里可以跑**两个求值器**(测试套件、嵌入 wlwl 的宿主程序)⇒ 缓存是
+// **共享**的 ⇒ 必须加锁。样板照 `std.net` 的 TCP 族(`tcp.rs` 的 `READY`):
+// `LazyLock<Mutex<…>>`。
+//
+// ## 句柄在哪
+//
+// ⚠ 句柄**就是模式串本身**(= 缓存的键),而 `RE()` 的返回值**一字不变**
+//   (仍是 `[pattern, groups]` 两键 —— 规范 §16.5 明写「含 pattern 与 groups
+//   两键」)。**不要**往那个字典里加第三个「句柄」键:那会改
+//   `LEN(RE(...))` / `KEYS(RE(...))` 这类**可观察面**(撞一致性册 `:223`),
+//   而规范侧对缓存的要求只是「**可以**缓存」—— 句柄不需要进语言面。
+
+/// 缓存里最多留多少个**不同**的模式串。
+///
+/// ⚠ **上界是硬要求**(D-1 的验收条目之一):WAF 这类长跑进程会把规则集里
+/// 的模式**全部**编一遍;不设上界,缓存就随规则数无上限增长。
+/// 取 256:一条规则集通常是几十到几百条模式,256 足够把「一个规则集」装下;
+/// 再多就走 LRU 淘汰(最久没用的先走)。
+const MAX_CACHE_ENTRIES: usize = 256;
+
+/// 编译计数表最多留多少个模式串的计数。
+///
+/// ⚠ 它是**读数**用的表(不是缓存)⇒ 上界与缓存**分开**算:淘汰的是**最老的**
+///   那条(先进先出)⇒ 被淘汰模式的计数读作 0(**下界**,不是精确值)。
+///   ⇒ 断言用的模式要**当场连打**:1000 次连打同一个模式,计数不会被淘汰。
+const MAX_TRACKED_PATTERNS: usize = 1024;
+
+/// 缓存里所有**模式串**的总字节上限。
+///
+/// ⚠ 条数上界(`MAX_CACHE_ENTRIES`)管的是「条目数」,**管不住「单条模式串有
+///   多长」** —— 一个 1 MB 的模式串 × 256 条 = 256 MB ⇒ 对长跑进程而言那
+///   仍然是「无上限增长」⇒ 另加一条**字节上界**:超了就继续淘汰(仍是 LRU);
+///   单条就超上界的模式**不进缓存**(照旧编译,只是不驻留)⇒
+///   「总量上限」两条(条数 / 字节)都封死。
+const MAX_CACHE_BYTES: usize = 4 * 1024 * 1024;
+
+/// 一个模式串的编译产物(两种匹配语义各一份)。
+#[derive(Debug)]
+struct CacheEntry {
+    /// 搜索语义:`RE_SEARCH` / `RE_FIND_ALL` / `RE_REPLACE` / `RE_SPLIT` /
+    /// `RE_GROUP_COUNT`。
+    search: Arc<Program>,
+    /// 整串语义:`RE_TEST`(两端锚定、忽略 `(?m)`;见 `compile_full`)。
+    full: Arc<Program>,
+    /// 最近一次使用的序号(LRU 淘汰用)。
+    stamp: u64,
+}
+
+/// 缓存 + 计数的状态(进程级唯一,见 [`CACHE`]）。
+#[derive(Debug, Default)]
+struct CacheState {
+    /// 模式串 ⇒ 编译产物。**上界** [`MAX_CACHE_ENTRIES`]。
+    entries: HashMap<String, CacheEntry>,
+    /// 模式串 ⇒ **至今被尝试编译过几次**。
+    ///
+    /// ⚠ 它记的是**实际发生的编译**(成功与失败都算),不是「缓存里有没有
+    ///   这一条」—— 「把命中缓存的短路去掉」那个变异会让同一个模式被编译
+    ///   N 次,而这条计数正是那个变异的**见证**(验收断言读的就是它)。
+    compiles: HashMap<String, u64>,
+    /// `compiles` 的插入顺序(先进先出 ⇒ 给计数表自己一个上界)。
+    compile_order: VecDeque<String>,
+    /// LRU 的单调时钟。
+    clock: u64,
+    /// 缓存里所有**模式串**的总字节数(上界 [`MAX_CACHE_BYTES`]）。
+    bytes: usize,
+    /// 累计命中次数(命中 ⇒ 没有重新编译)。
+    hits: u64,
+    /// 累计**真正编译**的次数。
+    compiles_total: u64,
+    /// 累计淘汰次数(超过上界时被淘汰的模式数)。
+    evictions: u64,
+    /// 累计**拒收**次数(单条模式串就超字节上界 ⇒ 不进缓存)。
+    rejected: u64,
+}
+
+/// **进程级**的正则编译缓存。
+///
+/// ⚠ 锁中毒时**照常继续**(`unwrap_or_else(|e| e.into_inner())`)—— 同 `tcp.rs`:
+///   缓存是**加速器**,不是正确性的前提;一把中毒的锁不该让整个解释器
+///   进程从此不可用。
+static CACHE: LazyLock<Mutex<CacheState>> = LazyLock::new(|| Mutex::new(CacheState::default()));
+
+/// 缓存的对外读数。**只给测试 / 基准读** —— 同 `wlwl_value::dict_work_counters`
+/// 的体例:不进诊断通道、**不新增语言面成员**(D-1 的非目标:零新成员)。
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+pub struct RegexCacheStats {
+    /// 当前缓存里的模式数(≤ `capacity`)。
+    pub entries: usize,
+    /// 缓存上界。
+    pub capacity: usize,
+    /// 累计命中次数(命中 ⇒ 没有重新编译)。
+    pub hits: u64,
+    /// 累计**真正编译**的次数。
+    pub compiles: u64,
+    /// 累计淘汰次数(超过上界时被淘汰的模式数)。
+    pub evictions: u64,
+    /// 累计**拒收**次数(单条模式串就超字节上界 ⇒ 编译了但不进缓存)。
+    pub rejected: u64,
+    /// 缓存里所有**模式串**的总字节数(上界见 `capacity_bytes`)。
+    pub bytes: usize,
+    /// 缓存的**字节**上界。
+    pub capacity_bytes: usize,
+}
+
+/// 读缓存的计数。**只给测试 / 基准读**。
+pub fn cache_stats() -> RegexCacheStats {
+    let st = CACHE.lock().unwrap_or_else(|e| e.into_inner());
+    RegexCacheStats {
+        entries: st.entries.len(),
+        capacity: MAX_CACHE_ENTRIES,
+        hits: st.hits,
+        compiles: st.compiles_total,
+        evictions: st.evictions,
+        rejected: st.rejected,
+        bytes: st.bytes,
+        capacity_bytes: MAX_CACHE_BYTES,
+    }
+}
+
+/// 某个模式串**至今被尝试编译过几次**。
+///
+/// ⚠ **成功的与失败的都算** —— 它量的是**工作量**(D-1 的验收判据是「确定性
+///   工作量计数」,不是墙钟)。失败**不进缓存** ⇒ 一个坏模式每被用一次就
+///   重编一次 ⇒ 计数逐次增长(那正是「失败不驻留」的可见形状)。
+///
+/// ⚠ 计数表**有上界**([`MAX_TRACKED_PATTERNS`]),满了之后淘汰**最老的**那条
+///   ⇒ 被淘汰模式的计数读作 **0**(**下界**,不是精确值)。
+///   ⇒ 断言用的模式要**当场连打**:1000 次连打同一个模式,计数不会被淘汰。
+pub fn pattern_compiles(pattern: &str) -> u64 {
+    let st = CACHE.lock().unwrap_or_else(|e| e.into_inner());
+    st.compiles.get(pattern).copied().unwrap_or(0)
+}
+
+/// 一个模式串的两种语义产物。
+#[derive(Debug)]
+struct CachedPrograms {
+    search: Arc<Program>,
+    full: Arc<Program>,
+}
+
+/// 取一个模式串的编译产物:命中缓存就返回,没命中就**编译一次**并登记。
+///
+/// ⚠ **编译在锁内做** —— 这是「同一模式串在同一进程内**至多编译一次**」的
+///   保证:两个线程同时要同一个模式时,第二个拿到的是第一个刚编好的那一份,
+///   不会各编一遍(计数因此恒为 1,而不是「并发下可能 2」)。
+///   代价:编译在进程内**串行**。编译是微秒级的(模式只有几十条指令),
+///   而规则集在启动时编一次 ⇒ 这点串行代价可以接受。
+///
+/// ⚠ **失败不进缓存**:模式语法错每次都重新编译、每次都报**同一条**诊断
+///   (带列号)⇒ 诊断文本逐字不变。(把失败也存下来就得额外保证「重放的错误
+///   文本与当初一字不差」—— 不值得:失败路径本就不热。)
+fn cached_programs(pattern: &str) -> Result<CachedPrograms, String> {
+    let mut guard = CACHE.lock().unwrap_or_else(|e| e.into_inner());
+    let st = &mut *guard;
+    st.clock += 1;
+    let clock = st.clock;
+    let hit = st.entries.get_mut(pattern).map(|entry| {
+        entry.stamp = clock;
+        (entry.search.clone(), entry.full.clone())
+    });
+    if let Some((search, full)) = hit {
+        st.hits += 1;
+        return Ok(CachedPrograms { search, full });
+    }
+    // miss ⇒ 真编译(计数就在这一行下面加)
+    let (search, full) = match compile_pair(pattern) {
+        Ok(pair) => pair,
+        Err(e) => {
+            // ⚠ **失败也是一次编译尝试** ⇒ 也计数:这个计数器量的是**工作量**,
+            //   不是「成功了几次」。(失败不进缓存 ⇒ 每次调用都重编 ⇒ 计数
+            //   逐次增长 —— 那正是「失败不驻留」的可见形状。)
+            record_compile(st, pattern);
+            return Err(e);
+        }
+    };
+    record_compile(st, pattern);
+    insert_entry(st, pattern, search.clone(), full.clone());
+    Ok(CachedPrograms { search, full })
+}
+
+/// 编译一个模式串 ⇒ 两种匹配语义各一份。
+///
+/// ⚠ **一次编译产出两份**:`RE_TEST` 用的整串版是搜索版的**派生**(两端包文本锚,
+///   见 `full_from`),不是重新解析一遍 ⇒ 「一个模式串编译了几次」的答案是 **1**,
+///   不是 2(否则「编译次数 = 1」这条验收会被自己拆穿)。
+fn compile_pair(pattern: &str) -> Result<(Arc<Program>, Arc<Program>), String> {
+    let search = compile(pattern)?;
+    let full = full_from(&search);
+    Ok((Arc::new(search), Arc::new(full)))
+}
+
+/// 记一次**真正的编译**(全局计数 + 每个模式串的计数)。
+fn record_compile(st: &mut CacheState, pattern: &str) {
+    st.compiles_total += 1;
+    match st.compiles.get_mut(pattern) {
+        Some(n) => *n += 1,
+        None => {
+            st.compiles.insert(pattern.to_string(), 1);
+            st.compile_order.push_back(pattern.to_string());
+            while st.compile_order.len() > MAX_TRACKED_PATTERNS {
+                if let Some(old) = st.compile_order.pop_front() {
+                    st.compiles.remove(&old);
+                }
+            }
+        }
+    }
+}
+
+/// 登记一个模式串的编译产物;缓存满了就**淘汰最久没用的那一条**(LRU)。
+///
+/// ⚠ **两条上界都要守**:条数(`MAX_CACHE_ENTRIES`)与字节(`MAX_CACHE_BYTES`)。
+///   单条模式串就超字节上界的 ⇒ **不进缓存**(`rejected`):编译照旧(语义不变),
+///   只是不驻留 ⇒ 缓存的字节数永远不超过上界。
+fn insert_entry(st: &mut CacheState, pattern: &str, search: Arc<Program>, full: Arc<Program>) {
+    let stamp = st.clock;
+    let need = pattern.len();
+    if need > MAX_CACHE_BYTES {
+        st.rejected += 1;
+        return;
+    }
+    while !st.entries.is_empty()
+        && (st.entries.len() >= MAX_CACHE_ENTRIES || st.bytes + need > MAX_CACHE_BYTES)
+    {
+        let Some(victim) = st
+            .entries
+            .iter()
+            .min_by_key(|(_, e)| e.stamp)
+            .map(|(k, _)| k.clone())
+        else {
+            break;
+        };
+        st.bytes -= victim.len();
+        st.entries.remove(&victim);
+        st.evictions += 1;
+    }
+    st.bytes += need;
+    st.entries.insert(
+        pattern.to_string(),
+        CacheEntry {
+            search,
+            full,
+            stamp,
+        },
+    );
+}
+
 // ── 成员层 ─────────────────────────────────────────────────────────────
 
 fn arity(host: &mut dyn StdHost, name: &str, got: usize, want: usize) -> wlwl_error::WlwlError {
@@ -1669,40 +1950,17 @@ fn expected_kind(label: &str) -> &'static str {
 }
 
 /// `pattern object` 实参:必须带 `pattern` 键(RE() 的返回值)。
-/// **不信任调用方**:我们仍然在**每次调用**重新编译,这样 `RE_*` 的行为不
-/// 取决于那个 `DICT` 是从哪来的。
-fn program_of(
+///
+/// ⚠ **仍然不信任调用方**:我们只取那个 `pattern` 键的**字符串**;编译产物是
+///   按**模式串**在进程级缓存里查的 ⇒ `RE_*` 的行为**不取决于**那个 `DICT`
+///   是从哪来的(自己 `RE()` 出来的,还是手工拼的同形字典)。
+///   ⚠ 缓存**没有**放松这个判断:手工拼的 `{"pattern": "a"}` 与 `RE("a")`
+///   命中的是**同一份**编译产物(键就是模式串)⇒ 行为逐字相同。
+fn pattern_of(
     host: &mut dyn StdHost,
     name: &str,
     v: &Value,
-) -> Result<Program, wlwl_error::WlwlError> {
-    let Value::Dict(entries) = v else {
-        return Err(type_err(host, name, "pattern object", v));
-    };
-    let pattern = entries
-        .iter()
-        .find(|(k, _)| matches!(k, Value::String(s) if s == "pattern"))
-        .and_then(|(_, v)| match v {
-            Value::String(s) => Some(s.as_str()),
-            _ => None,
-        })
-        .ok_or_else(|| {
-            host.diag(
-                ErrorCode::E0030,
-                format!("{name}: the pattern object has no `pattern` key (build it with RE())"),
-            )
-        })?;
-    let pattern = pattern.to_string();
-    let prog = compile(&pattern).map_err(|e| host.diag(ErrorCode::E0030, e))?;
-    // 整串匹配另编一版(两端包文本锚),见 `compile_full` 的说明。
-    Ok(prog)
-}
-
-fn program_full_of(
-    host: &mut dyn StdHost,
-    name: &str,
-    v: &Value,
-) -> Result<Program, wlwl_error::WlwlError> {
+) -> Result<String, wlwl_error::WlwlError> {
     let Value::Dict(entries) = v else {
         return Err(type_err(host, name, "pattern object", v));
     };
@@ -1719,7 +1977,31 @@ fn program_full_of(
                 format!("{name}: the pattern object has no `pattern` key (build it with RE())"),
             )
         })?;
-    compile_full(&pattern).map_err(|e| host.diag(ErrorCode::E0030, e))
+    Ok(pattern)
+}
+
+/// 搜索语义的编译产物(命中缓存 ⇒ 不重新编译)。
+fn program_of(
+    host: &mut dyn StdHost,
+    name: &str,
+    v: &Value,
+) -> Result<Arc<Program>, wlwl_error::WlwlError> {
+    let pattern = pattern_of(host, name, v)?;
+    cached_programs(&pattern)
+        .map(|c| c.search)
+        .map_err(|e| host.diag(ErrorCode::E0030, e))
+}
+
+/// 整串语义的编译产物(`RE_TEST` 用;两端包文本锚,见 `compile_full`)。
+fn program_full_of(
+    host: &mut dyn StdHost,
+    name: &str,
+    v: &Value,
+) -> Result<Arc<Program>, wlwl_error::WlwlError> {
+    let pattern = pattern_of(host, name, v)?;
+    cached_programs(&pattern)
+        .map(|c| c.full)
+        .map_err(|e| host.diag(ErrorCode::E0030, e))
 }
 
 fn str_arg<'a>(
@@ -1783,21 +2065,28 @@ fn match_dict(input: &[char], caps: &Captures, groups: usize) -> Value {
 /// **语法错 → 原生诊断 `E0030` 中止**(带列号)。不匹配**不是**错误:那是正常的
 /// 业务分支,所以 `RE_*` 返回成功值或 `NULL`,唯一的诊断是元数 / 类型 / 编译错
 /// —— 与 §11.1「程序员错误走原生诊断、数据违例才走 ERR 值」同一条线。
+///
+/// ⚠ [W-23 · D-1] 这里把编译产物**登记进进程级缓存** ⇒ 后续 `RE_SEARCH` /
+///   `RE_TEST` / … 对同一模式串**不再重新编译**。
+///   ⚠ 返回值**一字不变**:仍是 `[pattern, groups]` **两键**(规范 §16.5:
+///   「`RE` 的返回值是 `DICT`,含 `pattern` 与 `groups` 两键」)——
+///   缓存的句柄**不进语言面**(加第三个键会改 `LEN(RE(...))` / `KEYS(RE(...))`
+///   这类可观察面,撞一致性册 `:223`)。
 pub fn re(host: &mut dyn StdHost, args: Vec<Value>) -> wlwl_error::WlwlResult<Outcome> {
     const NAME: &str = "RE";
     if args.len() != 1 {
         return Err(arity(host, NAME, args.len(), 1));
     }
     let pattern = str_arg(host, NAME, "pattern", &args, 0)?;
-    let prog = compile(pattern).map_err(|e| host.diag(ErrorCode::E0030, e))?;
+    let progs = cached_programs(pattern).map_err(|e| host.diag(ErrorCode::E0030, e))?;
     Ok(Outcome::normal(Value::dict(vec![
         (
             Value::String("pattern".into()),
-            Value::String(prog.source().to_string()),
+            Value::String(progs.search.source().to_string()),
         ),
         (
             Value::String("groups".into()),
-            Value::Integer(prog.group_count() as i64),
+            Value::Integer(progs.search.group_count() as i64),
         ),
     ])))
 }
@@ -2006,6 +2295,11 @@ pub fn re_split(host: &mut dyn StdHost, args: Vec<Value>) -> wlwl_error::WlwlRes
 /// `RE_GROUP_COUNT(re) -> INTEGER`
 ///
 /// 捕获组个数(不含整体)。供调用方在解码侧索引,免得每个成员各返回一种形状。
+///
+/// ⚠ [W-23 · D-1] **复杂度没有被缓存升格**:查缓存要先**哈希整个模式串**
+///   ⇒ O(模式串长)⇒ 仍是 **O(p)**(p = 编译后指令数)。计划 §4 W-23 的非目标
+///   明写「**不**把 `RE_GROUP_COUNT` 的复杂度从 O(p) 升格为 O(1」(那是规范性
+///   改动 ⇒ 撞一致性册 `:223`)—— 这条口径靠「键就是模式串」天然成立。
 pub fn re_group_count(host: &mut dyn StdHost, args: Vec<Value>) -> wlwl_error::WlwlResult<Outcome> {
     const NAME: &str = "RE_GROUP_COUNT";
     if args.len() != 1 {
@@ -2497,5 +2791,64 @@ mod tests {
             "a{{ that is not a quantifier is a literal"
         );
         assert!(compile("a\\{2}").is_ok(), "an escaped brace is a literal");
+    }
+
+    // ── 编译缓存(W-23 · D-1)──────────────────────────────────────────
+    //
+    // ⚠ 这几条只钉**缓存自身**的不变量(「同一模式串只编一次」「命中缓存拿到
+    //   的是**同一份**产物」)。**对外行为**的守卫在 `wlwl-eval` 那边
+    //   (`tests/regex_cache_contract.rs`)—— 跨 crate 读不到本文件的
+    //   `#[cfg(test)]` 项,反过来那边也读不到这里的私有计数。
+    //
+    // ⚠ 模式串**全文件唯一**:缓存是**进程级**的,同一个模式串若被两个用例
+    //   同时编译,「只编一次」那条会被对方先编掉。
+
+    #[test]
+    fn the_cache_compiles_a_pattern_once_and_hands_out_the_same_artifact() {
+        const PAT: &str = "^unit-cache-probe[0-9]+q$";
+        assert_eq!(
+            pattern_compiles(PAT),
+            0,
+            "a pattern nobody compiled yet must start at 0 compiles"
+        );
+        let first = cached_programs(PAT).expect("compiles");
+        let second = cached_programs(PAT).expect("compiles");
+        assert_eq!(
+            pattern_compiles(PAT),
+            1,
+            "the pattern must have been compiled exactly once"
+        );
+        // ⚠ **同一份产物**(不是「又编了一遍但结果一样」):指针相等才是
+        //   「命中缓存」的证据 —— 只断言结果相同的话,「每次重编」也全绿。
+        assert!(
+            Arc::ptr_eq(&first.search, &second.search),
+            "the second lookup must hand out the very same compiled program"
+        );
+        assert!(
+            Arc::ptr_eq(&first.full, &second.full),
+            "the full-match variant must be cached too"
+        );
+        // 两种语义都还得能用(缓存不是「只缓存了其中一半」)。
+        assert!(find(&first.search, "unit-cache-probe7q", false).is_some());
+        assert!(find(&first.full, "unit-cache-probe7q", true).is_some());
+        assert_eq!(first.search.group_count(), 0);
+    }
+
+    #[test]
+    fn a_broken_pattern_is_not_cached_and_reports_the_same_diagnostic() {
+        // ⚠ 失败**不进缓存** ⇒ 每次都重新编译、每次都报**同一条**诊断
+        //   (带列号)⇒ 诊断文本逐字不变。
+        const BAD: &str = "unit-cache-broken(";
+        let e1 = cached_programs(BAD).expect_err("must fail");
+        let e2 = cached_programs(BAD).expect_err("must fail");
+        assert_eq!(e1, e2, "the diagnostic must be byte-identical");
+        assert!(e1.contains("column"), "{e1:?}");
+        // ⚠ 失败**也计入工作量** ⇒ 两次尝试 = 2 次编译(而不是「失败不计数」
+        //   那样读出 0 —— 那会把「真的编了两遍」说成「一遍都没编」)。
+        assert_eq!(
+            pattern_compiles(BAD),
+            2,
+            "each attempt on a broken pattern must be counted as one compilation"
+        );
     }
 }

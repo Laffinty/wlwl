@@ -28,4 +28,9 @@ pub mod eawidth;
 pub mod gcb;
 pub mod grapheme;
 pub mod norm;
+// [W-24 / v0.12.1] WAF 匹配前归一化用的三张数据表(兼容性分解 / 大小写折叠 /
+// 不可见格式字符)。**生成物**(`script/gen_unicode_waf_tables.py`),数据版本
+// Unicode 17.0(ICU 78.2)⇒ 与 [`norm`] 的 18.0.0 **不是同一版**(见该文件
+// 头部的差集说明)。
+pub mod waf;
 pub mod width;

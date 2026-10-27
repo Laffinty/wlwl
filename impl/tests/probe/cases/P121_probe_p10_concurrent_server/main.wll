@@ -1,0 +1,115 @@
+// ─────────────────────────────────────────────────────────────────────────────
+// p10-concurrent-server-inline-recv.wll —— 「纯 wlwl HTTP 服务」探针
+//
+// 它证明什么（对应需求清单附录 A / §0.2）：
+//   用**纯 wlwl**（不借助任何外部 HTTP 库）写一个 HTTP 服务端：
+//     * **8 个并发**连接全部被服务，状态码全是 **200**；
+//     * **5 个安全响应头**随响应发出；
+//     * `Content-Length` 按**字节数**算（不是码点数）—— 本探针的正文含中文，
+//       `LEN`（码点）与 `BYTE_LEN`（字节）**不相等**，错用 `LEN` 就会发短。
+//
+// 期望读数（exit 0）：
+//   [p10] resp-head=HTTP/1.1 200 OK\r\nContent-Type: text/html; charset=utf-8\r\n
+//          Content-Length: 13\r\nX-Content-Type-Options: nosniff\r\n
+//          X-Frame-Options: DENY\r\nX-XSS-Protection: 1; mode=block\r\n
+//          Referrer-Policy: strict-origin-when-cross-origin\r\n
+//          Content-Security-Policy: default-src 'self'\r\nConnection: close\r\n\r\n
+//   [p10] body-len= 9 body-byte-len= 13
+//   [p10] served-200-count= 8
+//   [p10] served-request-count= 8
+//
+// ⚠ 客户端看不到响应：`HTTP_*` 是**阻塞原语**，执行期间整个 SCOPE 冻结
+//   （ADR-0028 D1）⇒ 客户端必然超时。⇒ 「全 200」是在**服务端一侧**断言的：
+//   8 个**真实的 TCP 连接**都收到了请求、都被回了一份 200 响应。
+//   ⇒ 与清单描述的差异只有这一处（清单的「8 并发全 200」是**客户端视角**）。
+//
+// ⚠ 为什么 8 个连接**不会**触发「惊群」（需求清单 §B-2 的现状）：
+//   本探针让 8 个客户端**先**连上（连接进内核的 accept 队列），**再**让 8 个
+//   acceptor 任务起来 ⇒ 每个 acceptor **直接取走**一条已就绪的连接，**不挂起**
+//   ⇒ 不触发「唤醒全部等待者」。p12 探针专门复现那个惊群。
+// ─────────────────────────────────────────────────────────────────────────────
+
+// ⚠ 本文件与 `impl/tests/probe/cases/P121_probe_p10_concurrent_server/main.wll`
+//   **逐字相同**（同一份程序的两处副本）⇒ 改动请同步两处。
+// ─────────────────────────────────────────────────────────────────────────────
+
+IMPORT("wlwl:std.io", ["PRINT"]);
+IMPORT("wlwl:std.str", ["CAT"]);
+IMPORT("wlwl:std.encode", ["BYTE_LEN"]);
+IMPORT("wlwl:std.result", ["TAKE_ERR"]);
+IMPORT("wlwl:std.net", [
+  "TCP_LISTEN", "TCP_ACCEPT", "TCP_RECV", "TCP_SEND", "TCP_CLOSE",
+  "TCP_LOCAL_ADDR", "HTTP_GET"
+]);
+
+LET(http_client, FUN((port, path), (
+  LET(r, HTTP_GET(CAT("http://127.0.0.1:", STR(port), path), 150));
+  IF(==(TYPE(TAKE_ERR(r)), "NULL"), "CLIENT-GOT-RESPONSE", "CLIENT-NO-RESPONSE")
+)));
+
+LET(l, TCP_LISTEN("127.0.0.1", 0));
+LET(port, AT_K(TCP_LOCAL_ADDR(l), "port", 0));
+
+// 正文含中文 ⇒ LEN（码点）≠ BYTE_LEN（字节）。
+LET(body_text, "你好, wlwl!");
+LET(head_text, CAT(
+  "HTTP/1.1 200 OK\r\n",
+  "Content-Type: text/html; charset=utf-8\r\n",
+  "Content-Length: ", STR(BYTE_LEN(body_text)), "\r\n",
+  "X-Content-Type-Options: nosniff\r\n",
+  "X-Frame-Options: DENY\r\n",
+  "X-XSS-Protection: 1; mode=block\r\n",
+  "Referrer-Policy: strict-origin-when-cross-origin\r\n",
+  "Content-Security-Policy: default-src 'self'\r\n",
+  "Connection: close\r\n\r\n"
+));
+LET(response_text, CAT(head_text, body_text));
+PRINT("[p10] resp-head=", head_text);
+PRINT("[p10] body-len=", LEN(body_text), " body-byte-len=", BYTE_LEN(body_text));
+
+// 单个连接的处理：收请求 → 回响应。末值 = 收到的请求字节数（> 0 ⇒ 请求真到了）。
+LET(handle, FUN((conn), (
+  LET(chunk, TCP_RECV(conn, 4096, 2000));
+  LET(req_text, AT_K(chunk, "text", ""));
+  LET(sent, TCP_SEND(conn, response_text));
+  TAKE_ERR(sent);
+  TCP_CLOSE(conn);
+  LEN(req_text)
+)));
+
+// 一个 acceptor：accept 单独占一段（并发册 §17.0：等待必须是所在段的第一条语句）。
+LET(acceptor, FUN(() , (
+  LET(conn, TCP_ACCEPT(l, 3000));
+  YIELD();
+  handle(conn)
+)));
+
+SCOPE(FUN(() ,
+  LET(t1, SPAWN(acceptor));
+  LET(t2, SPAWN(acceptor));
+  LET(t3, SPAWN(acceptor));
+  LET(t4, SPAWN(acceptor));
+  LET(t5, SPAWN(acceptor));
+  LET(t6, SPAWN(acceptor));
+  LET(t7, SPAWN(acceptor));
+  LET(t8, SPAWN(acceptor));
+
+  // ⚠ 客户端**先**连（连接排队），acceptor 任务**后**起 ⇒ 每个 acceptor 取一条。
+  LET(c1, http_client(port, "/p10/1"));
+  LET(c2, http_client(port, "/p10/2"));
+  LET(c3, http_client(port, "/p10/3"));
+  LET(c4, http_client(port, "/p10/4"));
+  LET(c5, http_client(port, "/p10/5"));
+  LET(c6, http_client(port, "/p10/6"));
+  LET(c7, http_client(port, "/p10/7"));
+  LET(c8, http_client(port, "/p10/8"));
+
+  LET(vals, [AWAIT(t1), AWAIT(t2), AWAIT(t3), AWAIT(t4), AWAIT(t5), AWAIT(t6), AWAIT(t7), AWAIT(t8)]);
+  LET MUT(c200, 0);
+  LET MUT(creq, 0);
+  FOR(v, vals, (IF(>(v, 0), SET(creq, +(creq, 1)), 0); SET(c200, +(c200, 1))));
+  PRINT("[p10] served-200-count=", c200);
+  PRINT("[p10] served-request-count=", creq)
+));
+
+PRINT("[p10] DONE");

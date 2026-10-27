@@ -1,0 +1,19 @@
+// [W-24 / v0.12.1] 匹配前归一化 + 安全的路径包含判断(D-2 / D-4)。
+//
+// ⚠ 期望值来自 **Unicode 标准**与**路径语义**,不是实现输出:
+//   - 全角 `ｓｅｌｅｃｔ` 经 NFKC 折回 ASCII(兼容性分解);
+//   - `ß` 经 CASE_FOLD 折成 `ss`(全量折叠;小写映射给的是 `ß` 自己);
+//   - `PATH_CONTAINS` **逐段**比较 ⇒ 同前缀的兄弟目录**不是**子路径。
+//
+// ⚠ 第三行那个零宽空格(U+200B)是**故意**放进去的 —— 它肉眼看不见,
+//   所以那行的期望值只能是 `strip=select`(= 剥掉它之后的结果)。
+IMPORT("wlwl:std.text", ["NFKC", "CASE_FOLD", "STRIP_INVISIBLE"]);
+IMPORT("wlwl:std.fs", ["PATH_CONTAINS", "PATH_CANONICAL"]);
+
+PRINT("nfkc=", NFKC("ｓｅｌｅｃｔ"));
+PRINT("fold=", CASE_FOLD("straße"));
+PRINT("strip=", STRIP_INVISIBLE("sel​ect"));
+PRINT("canon=", PATH_CANONICAL("D:\\root\\a\\..\\b"));
+PRINT("sub=", STR(PATH_CONTAINS("D:/root", "D:/root/a/b")));
+PRINT("sibling=", STR(PATH_CONTAINS("D:/root", "D:/root-evil/x")));
+PRINT("escape=", STR(PATH_CONTAINS("D:/root", "D:/root/../root2/x")))

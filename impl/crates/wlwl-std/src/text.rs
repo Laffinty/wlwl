@@ -35,8 +35,21 @@
 //! `EastAsianWidth`)。分批做意味着生成器要写三遍、审三遍、跟 Unicode
 //! 版本对齐三遍。合成一块做,是**一次**决定而不是四次。见
 //! `docs/history/20261002.md` §1(v0.11.2 构建计划归档件)§5.2 的裁决更新。
+//!
+//! ## [W-24 / v0.12.1] 匹配前归一化三件套
+//!
+//! `NFKC` / `CASE_FOLD` / `STRIP_INVISIBLE` 是 WAF 的**匹配前归一化**:
+//! 兼容性字符(全角 / 连字 / 上标 / 数学字母)折回原样、大小写折平、
+//! 零宽与双向控制字符剥掉 —— 三步走完,「靠字符伪装出来的关键词」就
+//! 归一成了同一个串。
+//!
+//! ⚠ **仓内此前没有 NFKC 的数据底座**:`unicode/norm.rs` 的 `DECOMP` 表
+//! **只有规范分解**(`gen-ucd.rs` 读 `UnicodeData.txt` 时把以 `<` 开头的
+//! 分解字段整条跳过 —— 那正是兼容性分解)。三张新表在
+//! [`crate::unicode::waf`],数据版本 **Unicode 17.0**(ICU 78.2)。
+//!
 
-use crate::unicode::{canon, grapheme, width};
+use crate::unicode::{canon, grapheme, waf, width};
 use crate::{ModuleSpec, StdFn};
 use wlwl_error::ErrorCode;
 use wlwl_error::WlwlResult;
@@ -56,6 +69,13 @@ pub static SPEC: ModuleSpec = ModuleSpec {
         // **不新增类型**（见下方 `to_int` 的契约）：它与全局内建 `INT` 是
         // **故意不同**的两件事 —— §12.4 的对比表钉死了那个差异。
         ("TO_INT", to_int as StdFn),
+        // ── [W-24 / v0.12.1] 匹配前归一化三件套 ──────────────────────
+        // ⚠ **附录 A 抄件尚未同步** ⇒ `check-appendix-a` 与
+        // `stdlib_appendix_a_sync` 会红(表体多出这三行)—— 那是集成者
+        // 收口时要做的,不是本项的锅。
+        ("NFKC", nfkc as StdFn),
+        ("CASE_FOLD", case_fold as StdFn),
+        ("STRIP_INVISIBLE", strip_invisible as StdFn),
     ],
 };
 
@@ -371,8 +391,157 @@ fn parse_error_value(input: &str, reason: impl Into<String>) -> Value {
     ])))
 }
 
+// ── W-24 · 匹配前归一化(v0.12.1 / D-2)─────────────────────────────────────
+//
+// **为什么这三个成员在同一个文件里**:它们是 WAF 的「匹配前归一化」三件套 ——
+// 先把**兼容性字符**折回它本来的样子(`NFKC`),再把**大小写**折平
+// (`CASE_FOLD`),最后把**看不见的字符**剥掉(`STRIP_INVISIBLE`)。三步都走,
+// 「ｓｅｌｅｃｔ」「SELECT」「s\u{200B}elect」就都归一成同一个串了。
+//
+// ## ⚠ 本文件**不含**任何 Unicode 数据表
+//
+// 三张表在 [`crate::unicode::waf`]:兼容性分解(`COMPAT_DECOMP`)、大小写折叠
+// (`FOLD_SIMPLE` / `FOLD_FULL`)、不可见格式字符(`INVISIBLE_CF`)。
+// ⚠ 它们的**数据版本是 Unicode 17.0**(ICU 78.2),而仓内 `unicode/norm.rs`
+// 的是 **18.0.0** —— 差集是「Unicode 16.0 / 17.0 新增且带兼容性分解的
+// 码点」(实测 53 个,例 U+1CCD6 起)。见该文件头部。
+//
+// ## ⚠ **正确性证据不在本文件**
+//
+// 这三个成员是**查表 + 转发**,表是**数据**不是证据 —— 与 `NFC` / `NFD`
+// 同款:`NFC` / `NFD` 的正确性只由 `bin/norm-check` 对官方
+// `NormalizationTest.txt` 的全量自检说了算,本文件的单测只是**机制钉子**。
+//
+// ## ⚠ 失败口径(与本文件既有成员一致)
+//
+// **元数 / 类型错** ⇒ 原生诊断 `E0022` / `E0030`(程序员错误,不可预期)。
+// **运行期失败** ⇒ **没有**:这三个成员是纯「串 → 串」的映射,不访问文件
+// 系统、不做 I/O ⇒ 不存在可预期的运行期失败 ⇒ **不返回 `ERR` 值**。
+
+/// `NFKC(s) -> STRING` —— **兼容性分解 + 规范组合**(UAX #15 的 NFKC)。
+///
+/// 与 [`nfc`] 的差别只有一处,但那一处就是它存在的理由:`NFC` 只做**规范**
+/// 分解 / 组合,`NFKC` 额外做**兼容性**分解 ⇒ 那些「长得像 ASCII、其实不是」
+/// 的字符被折回 ASCII:
+///
+/// | 输入 | `NFC` | `NFKC` |
+/// |---|---|---|
+/// | `ｓ`(U+FF21 全角 s) | `ｓ`(不动) | `s` |
+/// | `ﬁ`(U+FB01 连字) | `ﬁ` | `fi` |
+/// | `²`(U+00B2 上标二) | `²` | `2` |
+/// | `𝐬`(U+1D42C 数学小写 s) | `𝐬` | `s` |
+/// | `①`(U+2460 带圈一) | `①` | `1` |
+///
+/// ⚠ **组合记号不动**(`Mn` / `Me`):它们带语义(重音),折掉会毁内容。
+/// ⚠ **格式字符不动**(`Cf`:零宽 / 双向控制):那是 [`strip_invisible`] 的活。
+/// ⚠ **可能变长也可能变短**(全角 → 半角变短,连字 → 两个字母变长)。
+/// ⚠ **幂等**:`NFKC(NFKC(x)) == NFKC(x)`。
+pub fn nfkc(host: &mut dyn StdHost, args: Vec<Value>) -> wlwl_error::WlwlResult<Outcome> {
+    let s = str_arg(host, "NFKC", &args)?;
+    // ① 兼容性分解:逐码点查表(`COMPAT_DECOMP` 里是**递归展开后**的分解)。
+    let mut cps: Vec<u32> = Vec::with_capacity(s.len());
+    for ch in s.chars() {
+        match compat_decomp(u32::from(ch)) {
+            Some(exp) => cps.extend_from_slice(exp),
+            None => cps.push(u32::from(ch)),
+        }
+    }
+    // ② 规范组合:走仓内自带的 UAX #15 内核(`unicode::canon`)。
+    // ⚠ 这里喂进去的**已经**是 NFKD 形态 ⇒ `canon::nfd` 那一步是恒等的,
+    // `canon::nfc` 做的正是「规范组合」⇒ 整体就是 NFKC。
+    let composed = canon::nfc(&cps);
+    Ok(Outcome::normal(Value::String(to_string(&composed))))
+}
+
+/// `CASE_FOLD(s) -> STRING` —— **Unicode 大小写折叠**(CaseFolding 的 C + F)。
+///
+/// 折叠是「**大小写不敏感的比较键**」:两个串折叠之后相等 ⇒ 它们只差大小写。
+/// 与 [`to_lower`] 的差别在**三处**,且都是折叠该做而小写映射不该做的事:
+///
+/// | 输入 | `TO_LOWER` | `CASE_FOLD` |
+/// |---|---|---|
+/// | `ß` | `ß` | `ss` |
+/// | `ẞ`(U+1E9E) | `ß` | `ss` |
+/// | `ſ`(U+017F 长 s) | `ſ` | `s` |
+/// | `ς`(U+03C2 尾 sigma) | `ς` | `σ` |
+/// | `ﬁ`(U+FB01) | `ﬁ` | `fi` |
+/// | `İ`(U+0130) | `i` + U+0307 | `i` + U+0307 |
+///
+/// ⚠ **尾 sigma 一律折成 `σ`**:`TO_LOWER` 按上下文给 `ς`(词尾)还是 `σ`
+///   (词中),折叠**没有上下文** —— 比较键不能随上下文变。
+/// ⚠ **可能变长**(`ß` → `ss`):折叠键的长度不等于原串长度。
+/// ⚠ **土耳其语的 `T` 状态映射不含**:`I` / `ı` 的土耳其语折叠是 locale
+///   相关的,默认折叠用 `I` → `i`、`ı` → `ı`。
+pub fn case_fold(host: &mut dyn StdHost, args: Vec<Value>) -> wlwl_error::WlwlResult<Outcome> {
+    let s = str_arg(host, "CASE_FOLD", &args)?;
+    let mut out = String::with_capacity(s.len());
+    for ch in s.chars() {
+        let cp = u32::from(ch);
+        if let Ok(i) = waf::FOLD_SIMPLE.binary_search_by_key(&cp, |&(c, _)| c) {
+            // 折叠目标是一个码点。
+            let target = waf::FOLD_SIMPLE[i].1;
+            match char::from_u32(target) {
+                Some(t) => out.push(t),
+                // ⚠ 不可达:表里的目标都来自合法的 Unicode 码点。
+                None => debug_assert!(false, "折叠目标不是合法码点 U+{target:04X}"),
+            }
+        } else if let Ok(i) = waf::FOLD_FULL.binary_search_by_key(&cp, |&(c, _)| c) {
+            // 折叠目标是多个码点(`ß` → `ss` 这类)。
+            for &target in waf::FOLD_FULL[i].1 {
+                match char::from_u32(target) {
+                    Some(t) => out.push(t),
+                    None => debug_assert!(false, "折叠目标不是合法码点 U+{target:04X}"),
+                }
+            }
+        } else {
+            // 表里没有 ⇒ 该码点**没有**折叠映射 ⇒ 小写映射就是折叠结果
+            // (Unicode 的默认折叠 = 小写映射;C/F 两态覆盖了全部例外)。
+            out.extend(ch.to_lowercase());
+        }
+    }
+    Ok(Outcome::normal(Value::String(out)))
+}
+
+/// `STRIP_INVISIBLE(s) -> STRING` —— 剥掉**不可见字符**(general category = `Cf`)。
+///
+/// 剥的是这一族:零宽空格(U+200B)/ 零宽不连字(U+200C)/ 零宽连接符(U+200D)/
+/// 字连接符(U+2060)/ BOM(U+FEFF)/ 软连字(U+00AD)/ **双向控制符**
+/// (U+202A–U+202E 的 LRE·RLE·PDF·LRO·RLO 与 U+2066–U+2069 的
+/// LRI·RLI·FSI·PDI)/ 方向标记(U+200E·U+200F)。
+///
+/// ⚠ **组合记号不动**(`Mn` / `Me`):它们带语义(重音),剥掉会把 `é` 变成
+///   `e`、把内容改掉。变体选择符(U+FE00–U+FE0F)也是 `Mn` ⇒ 不动。
+/// ⚠ **边界:ZWJ 与 emoji 标签序列会被剥掉** ⇒ 家族 emoji
+///   (`👨‍👩‍👧`,ZWJ 连接)会散成三个 emoji,emoji 标签序列(U+E0020–U+E007F)
+///   的**语义**也没了。要保留 emoji 语义就别用它 —— 它是给
+///   「关键词匹配」用的,不是给「显示」用的。
+pub fn strip_invisible(
+    host: &mut dyn StdHost,
+    args: Vec<Value>,
+) -> wlwl_error::WlwlResult<Outcome> {
+    let s = str_arg(host, "STRIP_INVISIBLE", &args)?;
+    let out: String = s
+        .chars()
+        .filter(|ch| !waf::INVISIBLE_CF.binary_search(&u32::from(*ch)).is_ok())
+        .collect();
+    Ok(Outcome::normal(Value::String(out)))
+}
+
+/// 兼容性分解查表:码点 → **递归展开后**的兼容性分解。
+///
+/// 表里**只**有「NFKD ≠ NFD」的码点 —— 没有兼容性分解的码点不在表里
+/// (它们的分解由 `unicode::canon` 的规范分解那一半负责)。
+fn compat_decomp(cp: u32) -> Option<&'static [u32]> {
+    waf::COMPAT_DECOMP
+        .binary_search_by_key(&cp, |&(c, _)| c)
+        .ok()
+        .map(|i| waf::COMPAT_DECOMP[i].1)
+}
+
 #[cfg(test)]
 mod tests {
+    use super::*;
+
     fn run(upper: bool, s: &str) -> String {
         if upper {
             s.to_uppercase()
@@ -420,5 +589,108 @@ mod tests {
         assert_eq!(run(false, "Hello"), "hello");
         assert_eq!(run(true, ""), "");
         assert_eq!(run(false, ""), "");
+    }
+
+    // ── [W-24] 归一化三成员的机制钉子 ────────────────────────────────────
+    //
+    // ⚠ **不是**正确性证据 —— 契约表在 `wlwl-eval` 的
+    // `path_contains_contract.rs`;这里钉的是**机制**(查表走对分支、
+    // 幂等、边界不被误伤)。
+
+    fn fold(s: &str) -> String {
+        // 直接跑成员层的算法(不经过宿主):失败口径由契约表钉。
+        let mut cps: Vec<u32> = Vec::new();
+        for ch in s.chars() {
+            let cp = u32::from(ch);
+            if let Ok(i) = waf::FOLD_SIMPLE.binary_search_by_key(&cp, |&(c, _)| c) {
+                cps.push(waf::FOLD_SIMPLE[i].1);
+            } else if let Ok(i) = waf::FOLD_FULL.binary_search_by_key(&cp, |&(c, _)| c) {
+                cps.extend_from_slice(waf::FOLD_FULL[i].1);
+            } else {
+                cps.extend(ch.to_lowercase().map(u32::from));
+            }
+        }
+        to_string(&cps)
+    }
+
+    /// 兼容性分解 + 规范组合(= UAX #15 的 NFKC)。
+    fn nfkc(s: &str) -> String {
+        let mut cps: Vec<u32> = Vec::new();
+        for ch in s.chars() {
+            match compat_decomp(u32::from(ch)) {
+                Some(exp) => cps.extend_from_slice(exp),
+                None => cps.push(u32::from(ch)),
+            }
+        }
+        to_string(&canon::nfc(&cps))
+    }
+
+    fn strip(s: &str) -> String {
+        s.chars()
+            .filter(|ch| !waf::INVISIBLE_CF.binary_search(&u32::from(*ch)).is_ok())
+            .collect()
+    }
+
+    /// 期望值取自 **Unicode 标准本身**(UAX #15 / CaseFolding /
+    /// DerivedGeneralCategory),不是从实现输出抄的。
+    #[test]
+    fn nfkc_folds_compatibility_characters() {
+        // 全角 ASCII
+        assert_eq!(
+            nfkc("\u{ff53}\u{ff45}\u{ff4c}\u{ff45}\u{ff43}\u{ff54}"),
+            "select"
+        );
+        // 连字 ﬁ
+        assert_eq!(nfkc("\u{fb01}"), "fi");
+        // 上标 ²
+        assert_eq!(nfkc("x\u{b2}"), "x2");
+        // 数学小写字母 𝐬
+        assert_eq!(nfkc("\u{1d42c}"), "s");
+        // 不换行空格
+        assert_eq!(nfkc("a\u{a0}b"), "a b");
+    }
+
+    #[test]
+    fn nfkc_composes_but_does_not_drop_combining_marks() {
+        // 分解形 ⇒ 组合形(标记**没**被丢)。
+        assert_eq!(nfkc("e\u{301}"), "\u{e9}");
+        // 单独的组合记号原样保留。
+        assert_eq!(nfkc("\u{301}"), "\u{301}");
+        // 零宽空格**不动**(那是 STRIP_INVISIBLE 的活)。
+        assert_eq!(nfkc("a\u{200b}b"), "a\u{200b}b");
+    }
+
+    #[test]
+    fn nfkc_is_idempotent() {
+        let s = "\u{ff53}\u{ff45}\u{ff4c}\u{ff45}\u{ff43}\u{ff54}\u{301}";
+        assert_eq!(nfkc(&nfkc(s)), nfkc(s));
+    }
+
+    #[test]
+    fn case_fold_uses_the_full_folding_not_the_lowercase_mapping() {
+        // ß → ss(全量折叠 F;小写映射是它自己)
+        assert_eq!(fold("\u{df}"), "ss");
+        // ẞ → ss
+        assert_eq!(fold("\u{1e9e}"), "ss");
+        // 长 s ſ → s(简单折叠 C)
+        assert_eq!(fold("\u{17f}"), "s");
+        // 尾 sigma ς → σ(**没有**上下文)
+        assert_eq!(fold("\u{3c2}"), "\u{3c3}");
+        assert_eq!(fold("\u{3a3}"), "\u{3c3}");
+        // 连字 ﬁ → fi
+        assert_eq!(fold("\u{fb01}"), "fi");
+        // 土耳其语的点上 I(默认折叠不含 T 态)
+        assert_eq!(fold("\u{130}"), "i\u{307}");
+    }
+
+    #[test]
+    fn strip_invisible_removes_format_characters_but_keeps_marks() {
+        assert_eq!(strip("sel\u{200b}ect"), "select");
+        assert_eq!(strip("a\u{200d}b"), "ab");
+        assert_eq!(strip("\u{feff}select"), "select");
+        // 双向控制符(Trojan Source 那族)
+        assert_eq!(strip("sel\u{202e}ect"), "select");
+        // ⚠ 组合记号**不动**(剥掉会把 `é` 变成 `e`、毁掉内容)。
+        assert_eq!(strip("e\u{301}"), "e\u{301}");
     }
 }

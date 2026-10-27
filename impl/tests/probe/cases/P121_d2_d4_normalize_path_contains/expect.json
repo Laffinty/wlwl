@@ -1,0 +1,17 @@
+{
+ "exit": 0,
+ "contains": [
+  "nfkc= select",
+  "fold= strasse",
+  "strip= select",
+  "canon= D:/root/b",
+  "sub= TRUE",
+  "sibling= FALSE",
+  "escape= FALSE"
+ ],
+ "not_contains": [
+  "root-evil",
+  "root2"
+ ],
+ "_why": "W-24 的验收判据:`PATH_CONTAINS` 是**逐段**比较而不是字符串前缀 ⇒ `D:/root-evil/x` 与 `D:/root/../root2/x` 都**不是** `D:/root` 的子路径。`not_contains` 那两条钉的是「归一之后输出里不该出现的原文」。"
+}

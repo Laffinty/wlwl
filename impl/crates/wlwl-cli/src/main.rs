@@ -64,6 +64,22 @@ enum Cmd {
         /// `WLWL_STD_SRC`。不得改变任何成员的名字与语义(锁测试守护)。
         #[arg(long, value_name = "DIR")]
         std_src: Option<PathBuf>,
+        /// [W-21] 加载一个**原生动态库扩展**(DLL / SO),把它声明的成员
+        /// 挂成可 `IMPORT` 的命名空间。
+        ///
+        /// ⚠⚠ **加载一个原生库 = 把整个进程的权限交给它**(读文件、连网络、
+        /// 改内存、起进程)—— 它**不是沙箱**。加载前必有一行醒目告警。
+        ///
+        /// ⚠ 路径必须**绝对**且存在。
+        /// ⚠ **语言面绝不提供任何 LOAD 成员** ⇒ 脚本自己触发不了加载;
+        ///   这条通道只有 CLI `--ext` 与环境变量 `WLWL_EXT_PATH` 两条
+        ///   **显式**入口(宿主**绝不**从项目目录 / `./ext/` 自动发现)。
+        #[arg(long, value_name = "PATH")]
+        ext: Option<PathBuf>,
+        /// [W-21] 期望的扩展 SHA-256(小写 hex,64 个字符)。给了就**必须**
+        /// 匹配,否则宿主拒绝加载(不加载 ⇒ 报 stderr 一行 + 非零退出码)。
+        #[arg(long, value_name = "HEX")]
+        ext_sha256: Option<String>,
     },
     /// Parse a .wll file without running it
     #[command(long_about = "\
@@ -392,6 +408,8 @@ fn dispatch(cmd: Cmd) -> ExitCode {
             file,
             format,
             std_src,
+            ext,
+            ext_sha256,
         } => {
             // 显式 flag 优先于 debug 环境变量(两者都缺省 = 纯嵌入加载)。
             //
@@ -432,7 +450,48 @@ fn dispatch(cmd: Cmd) -> ExitCode {
             } else {
                 file
             };
-            run_file(&file, format, true, std_src)
+            // [W-21] **扩展加载**:只有 `--ext` 与环境变量 `WLWL_EXT_PATH`
+            // 这两条**显式**通道(信任门控 T1)。宿主**绝不**从项目配置 /
+            // 项目目录 / `./ext/` 自动发现扩展(T2)—— 这里没有任何扫描。
+            //
+            // ⚠ 加载失败 = **宿主侧**失败 ⇒ stderr 一行 + 非零退出码
+            // (不新增诊断码;语言面的失败才走既有诊断码)。
+            let ext_path =
+                ext.or_else(|| std::env::var_os("WLWL_EXT_PATH").map(std::path::PathBuf::from));
+            let ext_registry = match ext_path {
+                Some(path) => {
+                    // T5:扩展**不得占用**项目清单里已存在的命名空间。
+                    // 基准是**程序文件所在的工程**(不是扩展文件所在目录)。
+                    let base_dir = file
+                        .parent()
+                        .filter(|p| !p.as_os_str().is_empty())
+                        .map(|p| p.to_path_buf())
+                        .unwrap_or_else(|| PathBuf::from("."));
+                    let req = wlwl_ext::ExtLoadRequest {
+                        path,
+                        expected_sha256: ext_sha256,
+                        reserved_namespaces: reserved_project_namespaces(&base_dir),
+                    };
+                    match wlwl_ext::load_extension(&req) {
+                        Ok(loaded) => Some(loaded.registry),
+                        Err(e) => {
+                            eprintln!("error: {}", e.message());
+                            return ExitCode::from(1);
+                        }
+                    }
+                }
+                None => {
+                    if ext_sha256.is_some() {
+                        eprintln!(
+                            "error: --ext-sha256 was given but no extension path was \
+                             provided (use --ext <path> or WLWL_EXT_PATH)"
+                        );
+                        return ExitCode::from(1);
+                    }
+                    None
+                }
+            };
+            run_file_with_ext(&file, format, true, std_src, ext_registry)
         }
         Cmd::Check { file, format } => run_file(&file, format, false, None),
         Cmd::Ast { file, format } => ast_file(&file, format),
@@ -491,12 +550,52 @@ fn io_error_code(e: &std::io::Error) -> ErrorCode {
     }
 }
 
+/// [W-21] 项目清单里**已存在**的命名空间名 —— 扩展**不得占用**它们
+/// (信任门控 T5:「不得覆盖任何既有命名空间」)。
+///
+/// ⚠ 读不出来(没有清单 / 读失败 / 解析失败)⇒ 返回**空**列表:
+/// 清单层的问题由清单自己的诊断通道报,这里**不**替它猜。
+fn reserved_project_namespaces(base_dir: &std::path::Path) -> Vec<String> {
+    let project_root = find_project_root(base_dir);
+    let toml_path = project_root.join("wlwl.toml");
+    let Ok(src) = fs::read_to_string(&toml_path) else {
+        return Vec::new();
+    };
+    let Ok(manifest) = wlwl_toml::manifest::parse(&src) else {
+        return Vec::new();
+    };
+    let mut names: Vec<String> = manifest.namespaces.keys().cloned().collect();
+    // `[dependencies]` 的键是 `"ns:name"` ⇒ 取前缀当命名空间名。
+    for key in manifest.dependencies.keys() {
+        if let Some((ns, _)) = key.split_once(':') {
+            names.push(ns.to_string());
+        }
+    }
+    names.sort();
+    names.dedup();
+    names
+}
+
 /// Top-level entry: parse, optionally execute, report errors.
 fn run_file(
     file: &PathBuf,
     format: OutputFormat,
     execute: bool,
     std_src: Option<std::path::PathBuf>,
+) -> ExitCode {
+    run_file_with_ext(file, format, execute, std_src, None)
+}
+
+/// [W-21] 同 [`run_file`],但可以带上宿主加载好的**运行期扩展注册表**。
+///
+/// ⚠ `check` 路径**不**带扩展:`check` 不解析名字 ⇒ 不需要扩展;
+/// 而且扩展只对 `run` 有意义(它是**宿主**的授权,不是语言面的能力)。
+fn run_file_with_ext(
+    file: &PathBuf,
+    format: OutputFormat,
+    execute: bool,
+    std_src: Option<std::path::PathBuf>,
+    ext_registry: Option<std::rc::Rc<wlwl_ext::ExtRegistry>>,
 ) -> ExitCode {
     let source = match fs::read_to_string(file) {
         Ok(s) => s,
@@ -563,6 +662,10 @@ fn run_file(
         // R1 标准库源码覆盖(开发期):仅影响 run(执行会加载模块);
         // check 不做名字解析,不需要。
         ev = ev.with_std_src(dir);
+    }
+    if let Some(registry) = ext_registry {
+        // [W-21] 挂上宿主加载好的运行期扩展(命名空间解析链的第 4 层)。
+        ev = ev.with_ext_registry(registry);
     }
     match ev.eval(&ast) {
         Ok(_v) => {

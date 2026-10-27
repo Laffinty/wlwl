@@ -1,0 +1,110 @@
+// ─────────────────────────────────────────────────────────────────────────────
+// p11-single-handler-waf-checks.wll —— 「单 handler 的 WAF 检查」探针
+//
+// 它证明什么（对应需求清单附录 A / §0.2）：
+//   **一个** handler 处理 4 条真实 HTTP 请求，按三条规则判定：
+//     * 路径穿越（`..`）⇒ **403**；
+//     * `<script` ⇒ **403**；
+//     * `union select` ⇒ **403**；
+//     * 其它 ⇒ **200**。
+//   ⚠ 并且证明：**必须先 URL 解码再匹配** —— 未解码的原始路径里没有
+//     `<script`（它被百分号编码成 `%3Cscript%3E`）⇒ 只匹配原始路径会
+//     **全部漏过**（静默漏防）。
+//
+// 期望读数（exit 0）：
+//   [p11] case= benign          raw-path= /ok                      decoded= /ok                    status= 200
+//   [p11] case= traversal       raw-path= /%2e%2e%2fetc/passwd     decoded= /../etc/passwd        status= 403
+//   [p11] case= xss             raw-path= /%3Cscript%3Ealert(1)    decoded= /<script>alert(1)    status= 403
+//   [p11] case= sqli            raw-path= /search?q=union%20select  decoded= /search?q=union select status= 403
+//   [p11] raw-hits-script= FALSE   ← 未解码时**匹配不到**
+//   [p11] decoded-hits-script= TRUE
+//   [p11] status-count-403= 3
+//   [p11] status-count-200= 1
+//
+// ⚠ 客户端看不到响应：`HTTP_*` 是**阻塞原语**（ADR-0028 D1）⇒ 断言落在服务端一侧。
+// ─────────────────────────────────────────────────────────────────────────────
+
+// ⚠ 本文件与 `impl/tests/probe/cases/P121_probe_p11_waf_checks/main.wll`
+//   **逐字相同**（同一份程序的两处副本）⇒ 改动请同步两处。
+// ─────────────────────────────────────────────────────────────────────────────
+
+IMPORT("wlwl:std.io", ["PRINT"]);
+IMPORT("wlwl:std.str", ["CAT", "CONTAINS_SUB"]);
+IMPORT("wlwl:std.encode", ["URL_DECODE"]);
+IMPORT("wlwl:std.result", ["TAKE_ERR"]);
+IMPORT("wlwl:std.net", [
+  "TCP_LISTEN", "TCP_ACCEPT", "TCP_RECV", "TCP_SEND", "TCP_CLOSE",
+  "TCP_LOCAL_ADDR", "HTTP_GET"
+]);
+
+LET(http_client, FUN((port, path), (
+  LET(r, HTTP_GET(CAT("http://127.0.0.1:", STR(port), path), 150));
+  IF(==(TYPE(TAKE_ERR(r)), "NULL"), "CLIENT-GOT-RESPONSE", "CLIENT-NO-RESPONSE")
+)));
+
+LET(l, TCP_LISTEN("127.0.0.1", 0));
+LET(port, AT_K(TCP_LOCAL_ADDR(l), "port", 0));
+
+// ⚠ WAF 判定：一个 handler，三条规则。**先 URL 解码，再匹配**。
+LET(waf_decide, FUN((raw_path), (
+  LET(decoded, URL_DECODE(raw_path));
+  LET(low, LOWER(decoded));
+  LET(hit_traversal, CONTAINS_SUB(low, ".."));
+  LET(hit_script, CONTAINS_SUB(low, "<script"));
+  LET(hit_sqli, CONTAINS_SUB(low, "union select"));
+  IF(||(hit_traversal, ||(hit_script, hit_sqli)), 403, 200)
+)));
+
+// 单个 handler：收请求 → 取路径 → 判定 → 回响应。
+LET(handle, FUN((conn), (
+  LET(chunk, TCP_RECV(conn, 4096, 2000));
+  LET(req_text, AT_K(chunk, "text", ""));
+  LET(lines, SPLIT(req_text, "\r\n"));
+  LET(request_line, INDEX_GET(lines, 0));
+  LET(parts, SPLIT(request_line, " "));
+  LET(raw_path, INDEX_GET(parts, 1));
+  LET(status, waf_decide(raw_path));
+  PRINT("[p11] raw-path=", raw_path);
+  PRINT("[p11] decoded-path=", URL_DECODE(raw_path));
+  PRINT("[p11] status=", status);
+  LET(head_text, CAT("HTTP/1.1 ", STR(status), " Forbidden\r\nContent-Length: 0\r\nConnection: close\r\n\r\n"));
+  LET(sent, TCP_SEND(conn, head_text));
+  TAKE_ERR(sent);
+  TCP_CLOSE(conn);
+  status
+)));
+
+// 一个 acceptor：accept 单独占一段。
+LET(acceptor, FUN(() , (
+  LET(conn, TCP_ACCEPT(l, 3000));
+  YIELD();
+  handle(conn)
+)));
+
+SCOPE(FUN(() ,
+  LET(t1, SPAWN(acceptor));
+  LET(t2, SPAWN(acceptor));
+  LET(t3, SPAWN(acceptor));
+  LET(t4, SPAWN(acceptor));
+
+  // ⚠ 客户端**先**连（连接排队），acceptor 任务**后**起。
+  LET(c1, http_client(port, "/ok"));
+  LET(c2, http_client(port, "/%2e%2e%2fetc%2fpasswd"));
+  LET(c3, http_client(port, "/%3Cscript%3Ealert(1)"));
+  LET(c4, http_client(port, "/search?q=union%20select"));
+
+  LET(vals, [AWAIT(t1), AWAIT(t2), AWAIT(t3), AWAIT(t4)]);
+  LET MUT(c403, 0);
+  LET MUT(c200, 0);
+  FOR(v, vals, (IF(==(v, 403), SET(c403, +(c403, 1)), 0); IF(==(v, 200), SET(c200, +(c200, 1)), 0)));
+  PRINT("[p11] status-count-403=", c403);
+  PRINT("[p11] status-count-200=", c200)
+));
+
+// ⚠ 「必须先 URL 解码再匹配」的**反例**证据：同一段路径，原始形态匹配不到
+//   `<script`，解码后才匹配得到 ⇒ 只匹配原始路径 = 静默漏防。
+LET(encoded_script, "/%3Cscript%3Ealert(1)");
+PRINT("[p11] raw-hits-script=", CONTAINS_SUB(LOWER(encoded_script), "<script"));
+PRINT("[p11] decoded-hits-script=", CONTAINS_SUB(LOWER(URL_DECODE(encoded_script)), "<script"));
+
+PRINT("[p11] DONE");

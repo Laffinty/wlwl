@@ -1,3 +1,57 @@
+## [v0.12.1 开工 · 第一波] — 2026-10-27(7 个工作项落地;多 agent 并行)
+
+**本段 = 第一波实现落地的记录(实现侧)。** 计划原文见
+`docs/plan/wlwl-v0.12.1-build-plan.md`;本波的组织方式与未完项见该文档
+**§11「收尾交接」**。
+
+### 落地清单(7 项 + W-01 基线)
+
+- **W-01 基线自洽**:三条门禁基线全绿(`check-appendix-a` OK /`stdlib_appendix_a_sync` 8/0 /
+  `§5.4 状态列与契约表一致(25 行)`),probe 夹具数 181 = 常量。
+- **W-02 探针固化**:`docs/wlwl-feasibility/probes/` 9 个探针 + README 对照表 +
+  9 个 `P121_probe_*` 夹具。⚠ **实测把需求清单的 4 处描述订正了**:B-1「静默终止」
+  复现不出来(可观察的是**段首重放**)、B-2 死法是 `TCP_RECV(NULL)` ⇒ `E0030`、
+  「9 个探针已开源」**不成立**、清单的「全 200」是客户端视角(单进程 wlwl 无法既服务
+  又当客户端 ⇒ 断言落在服务端一侧)。
+- **W-21 扩展加载器**:新 crate `impl/crates/wlwl-ext/`(ABI v1 + raw FFI 加载器 +
+  信任门控 T1–T6 + 运行期注册表)+ `wlwl-value` 的 `ExtRegistry` + eval 侧第 4 层解析 +
+  CLI `--ext` / `--ext-sha256`。⚠ **T7 结构上成立**:`wlwl namespace` 与附录 A 都取自
+  `wlwl_std::namespace_paths()` 这张**静态**表 ⇒ 运行期扩展**进不去**公共面。
+  ⚠ macOS **没有 `libdl`** ⇒ 走 `System` framework(不偏离则 macOS 构建直接断)。
+- **W-23 正则编译缓存**:进程级缓存(条数 256 + 字节 4 MiB 双上界、LRU);
+  同一模式 1000 次匹配 ⇒ **编译次数 = 1**。**零新成员、零规范改动**(文本册 §16 的
+  实现注本就允许缓存)。
+- **W-24 归一化 + 路径包含**:`std.text::NFKC`/`CASE_FOLD`/`STRIP_INVISIBLE` +
+  `std.fs::PATH_CANONICAL`/`PATH_CONTAINS`(逐段判定,不是字符串前缀)。
+  ⚠ **仓内本来没有 NFKC 的数据底座**(`gen-ucd.rs` 跳过了兼容性分解)⇒ 补了生成物
+  `unicode/waf.rs` + 生成器 `script/gen_unicode_waf_tables.py`;无网络时用离线权威
+  oracle(Node ICU / CPython)交叉校验生成。⚠ 表停在 **Unicode 17.0**(`norm.rs` 在
+  18.0.0)⇒ 53 个码点有差异,**待业主裁决是否等 UCD**。
+- **W-26 `std.log`**:结构化日志(级别过滤 / JSON 行 / stderr⇄文件)+ 运行时指标
+  (原子计数器 / 延迟直方图 / 快照),7 个成员。
+- **W-27 原子写 + 文件锁 + 元数据**:`WRITE_FILE_ATOMIC`/`LOCK_FILE`/`UNLOCK_FILE`/
+  `FILE_MTIME`/`DIR_ENTRIES`;Windows 侧原子替换走 `MoveFileExW`(⚠ `std::fs::rename`
+  在 Windows 上不能覆盖已存在的目标)。
+- **W-12 `TCP_SERVE`**(B-3 迭代器形态):accept 循环在**原生帧内**推进
+  (accept → 读满一次请求 → 调 handler → 写回 → 下一条);单条连接异常只废那一条。
+  ⚠ 已知代价:原生帧里的等待**阻塞整个运行时**(与 `HTTP_*`/`SLEEP` 同类)。
+
+### 门禁状态(收口时)
+
+- ✅ `cargo fmt --all -- --check` 0 diff · probe 套件 3/3(192 个用例)· `wlwl-std` 全绿。
+- ⚠ **红的是「规范侧未跟上」,不是实现缺陷**:新成员共 18 个(`std.text` +3 · `std.fs` +7 ·
+  `std.net` +1 · `std.log` 新命名空间 7)⇒ 附录 A 抄件 / `stdlib_appendix_a_sync` 的
+  成员集合 / `net_contract` 与 `fs_contract` 的成员表**在规范仓落表前必然红**。
+  正解顺序见计划 §11.2(规范仓 §5.5 台账行 → 附录 A → 各册成员表 → 抄回实现仓 →
+  **最后**才前移 `ci.yml:121` 的规范仓钉死提交)。
+
+### Changed(文档)
+
+- 计划新增 **§11「收尾交接」**:本波落地清单 + 规范侧待做五步 + 下一批 agent 切分 +
+  两个待业主裁决项 + 三条工程教训。
+
+---
+
 ## [v0.12.1 立项（重做）] — 2026-10-27(迁移需求清单 60 条**全量落地**;**计划阶段**,未动代码)
 
 **本段 = 对外需求清单的逐条裁决结果,不是实现落地。** 计划原文见

@@ -19,6 +19,9 @@ wlwl-lexer = { workspace = true }
 wlwl-parser = { workspace = true }
 wlwl-error = { workspace = true }
 wlwl-eval = { workspace = true }
+# [W-21] 宿主侧的原生动态库扩展加载器(`--ext` / `WLWL_EXT_PATH`)。
+# ⚠ 它只做**宿主侧**的事(加载 + 信任门控);语言面不依赖它。
+wlwl-ext = { workspace = true }
 wlwl-formatter = { workspace = true }
 wlwl-toml = { workspace = true }
 # v0.10 Step 2 (ADR-0020 A3): the compile-time static pass, gated by

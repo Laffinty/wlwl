@@ -1,0 +1,24 @@
+{
+  "exit": 0,
+  "contains": [
+    "[p11] raw-path= /ok",
+    "[p11] decoded-path= /ok",
+    "[p11] raw-path= /%2e%2e%2fetc%2fpasswd",
+    "[p11] decoded-path= /../etc/passwd",
+    "[p11] raw-path= /%3Cscript%3Ealert(1)",
+    "[p11] decoded-path= /<script>alert(1)",
+    "[p11] raw-path= /search?q=union%20select",
+    "[p11] decoded-path= /search?q=union select",
+    "[p11] status= 403",
+    "[p11] status= 200",
+    "[p11] raw-hits-script= FALSE",
+    "[p11] decoded-hits-script= TRUE",
+    "[p11] status-count-403= 3",
+    "[p11] status-count-200= 1",
+    "[p11] DONE"
+  ],
+  "not_contains": [
+    "error[E"
+  ],
+  "_why": "[W-02] 「单 handler 的 WAF 检查」探针。**一个** handler 处理 4 条真实 HTTP 请求：路径穿越 ⇒ 403、`<script` ⇒ 403、`union select` ⇒ 403、其它 ⇒ 200（`status-count-403=3` / `status-count-200=1`）。⚠ 末两行钉的是清单点名的关键点：**必须先 URL 解码再匹配** —— 未解码的原始路径里**没有** `<script`（它被百分号编码成 `%3Cscript%3E`）⇒ 只匹配原始路径会**全部漏过**（静默漏防）：`raw-hits-script= FALSE` vs `decoded-hits-script= TRUE`。⚠ 4 个请求的**处理顺序不确定**（4 个 acceptor 抢 4 条已就绪的连接）⇒ 断言只按「路径↔状态码」逐条钉，不依赖顺序。"
+}

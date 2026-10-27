@@ -1,0 +1,21 @@
+[package]
+name = "wlwl-ext"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+repository.workspace = true
+description = "WLWL host-side native dynamic library extension loader (W-21)"
+
+[dependencies]
+# wlwl-ast: byte-level SHA-256 (`wlwl_ast::sha256::sha256`) —— 与
+# `std.encode::SHA256` 同一个实现,避免第二份摘要代码漂移。
+wlwl-ast = { workspace = true }
+wlwl-error = { workspace = true }
+# wlwl-std: `namespace_paths()` —— 信任门控 T5 需要**真实的** std 命名空间
+# 清单(不能靠手写一份会漂移的副本)。
+wlwl-std = { workspace = true }
+wlwl-value = { workspace = true }
+serde_json = { workspace = true }
+
+[lints]
+workspace = true

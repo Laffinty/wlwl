@@ -1,0 +1,27 @@
+{
+  "exit": 0,
+  "contains": [
+    "[p01] https-is-err= TRUE",
+    "plaintext http: only",
+    "[p01] sha256-len= 64",
+    "[p01] sha256-abc= ba7816bf8f01cfea414140de5dae2223b00361a396177a9cb410ff61f20015ad",
+    "[p01] hmac-sha256-len= 64",
+    "[p01] hmac-sha256= f7bc83f430538424b13298e6aa6fb143ef4d59a14946175997479dbc2d1a3cd8",
+    "[p01] sanitize= <b>ok</b>",
+    "[p01] re-test-exact= TRUE",
+    "[p01] re-test-partial= FALSE",
+    "[p01] re-search-offset= 1",
+    "[p01] path-normalize= C:\\a\\b",
+    "[p01] path-join= C:/a/b",
+    "[p01] read-file-keeps-bom= TRUE",
+    "[p01] bom-len= 6",
+    "[p01] bom-byte-len= 8",
+    "[p01] cjk-len= 3",
+    "[p01] cjk-byte-len= 9",
+    "[p01] DONE"
+  ],
+  "not_contains": [
+    "error[E"
+  ],
+  "_why": "[W-02] 需求清单附录 A 的「能力矩阵」探针。覆盖七项：① TLS 缺失（`https:` 在任何网络 I/O 之前被拒，scheme 判定先于拨号 ⇒ 本用例**不联网**）；② 密码学原语可用（`SHA256` / `HMAC_SHA256`，期望值取自 **FIPS 180-4 / RFC 4231 的公开测试向量**，不是从实现输出抄）；③ `HTML_SANITIZE` 可用（`<script>` 整段删掉、`<b>` 保留）；④ `RE_TEST` 是**整串锚定**（`RE_TEST(RE(\"b\"), \"abc\")` ⇒ FALSE ⇒ 用它当「包含匹配」会永远漏）；⑤ `PATH_NORMALIZE` 只认 `/`、`PATH_JOIN` 把 `\\` 也当分隔符 ⇒ 二者不互逆（H-4 的根因）；⑥ `READ_FILE` **保留** BOM；⑦ `LEN`（码点）≠ `BYTE_LEN`（字节）。⚠ 夹具副作用：本用例会在**暂存目录**里写一个临时文件再删掉（`wlwl-p01-bom-probe.tmp`）——「READ_FILE 保留 BOM」必须真的读一个带 BOM 的文件。"
+}

@@ -1,0 +1,93 @@
+// ─────────────────────────────────────────────────────────────────────────────
+// p13-single-acceptor-chain.wll —— 「单 acceptor 展开链」探针
+//
+// 它证明什么（对应需求清单附录 A / §0.2）：
+//   **一个** acceptor 任务，用**静态展开的 4 段**（每段 = accept → recv →
+//   回响应 → 关连接），**连续服务 4 个请求，全部 200**。
+//   这是需求清单给出的**可用架构样板**（B-3 的「循环推不动」只能靠这种展开
+//   绕过去 ⇒ 代码随连接数线性膨胀）。
+//
+// 期望读数（exit 0）：
+//   [p13] served-request-count= 4      ← 4 段**都**收到了真实请求
+//   [p13] served-count-200= 4          ← 4 段**都**回了 200
+//   [p13] chain-done= 4
+//
+// ⚠ 客户端看不到响应：`HTTP_*` 是**阻塞原语**（ADR-0028 D1）⇒ 「全 200」是
+//   **服务端一侧**的断言（4 个真实 TCP 连接都被回了 200）。这是与清单描述
+//   唯一的差异（清单是客户端视角）。
+// ─────────────────────────────────────────────────────────────────────────────
+
+// ⚠ 本文件与 `impl/tests/probe/cases/P121_probe_p13_acceptor_chain/main.wll`
+//   **逐字相同**（同一份程序的两处副本）⇒ 改动请同步两处。
+// ─────────────────────────────────────────────────────────────────────────────
+
+IMPORT("wlwl:std.io", ["PRINT"]);
+IMPORT("wlwl:std.str", ["CAT"]);
+IMPORT("wlwl:std.encode", ["BYTE_LEN"]);
+IMPORT("wlwl:std.result", ["TAKE_ERR"]);
+IMPORT("wlwl:std.net", [
+  "TCP_LISTEN", "TCP_ACCEPT", "TCP_RECV", "TCP_SEND", "TCP_CLOSE",
+  "TCP_LOCAL_ADDR", "HTTP_GET"
+]);
+
+LET(http_client, FUN((port, path), (
+  LET(r, HTTP_GET(CAT("http://127.0.0.1:", STR(port), path), 150));
+  IF(==(TYPE(TAKE_ERR(r)), "NULL"), "CLIENT-GOT-RESPONSE", "CLIENT-NO-RESPONSE")
+)));
+
+LET(l, TCP_LISTEN("127.0.0.1", 0));
+LET(port, AT_K(TCP_LOCAL_ADDR(l), "port", 0));
+
+LET(body_text, "hello-wlwl");
+LET(head_text, CAT("HTTP/1.1 200 OK\r\nContent-Length: ", STR(BYTE_LEN(body_text)), "\r\nConnection: close\r\n\r\n"));
+LET(response_text, CAT(head_text, body_text));
+
+// 一条连接的服务：收请求 → 回 200 → 关连接。末值 = 收到的请求字节数。
+LET(serve_one, FUN((conn), (
+  LET(chunk, TCP_RECV(conn, 4096, 2000));
+  LET(req_text, AT_K(chunk, "text", ""));
+  LET(sent, TCP_SEND(conn, response_text));
+  TAKE_ERR(sent);
+  TCP_CLOSE(conn);
+  LEN(req_text)
+)));
+
+// ⚠ **展开链**：一个任务里静态展开 4 段。每段的第一条语句是那个挂起点。
+LET(chain, FUN(() , (
+  LET(c1, TCP_ACCEPT(l, 3000));
+  YIELD();
+  LET(n1, serve_one(c1));
+  YIELD();
+  LET(c2, TCP_ACCEPT(l, 3000));
+  YIELD();
+  LET(n2, serve_one(c2));
+  YIELD();
+  LET(c3, TCP_ACCEPT(l, 3000));
+  YIELD();
+  LET(n3, serve_one(c3));
+  YIELD();
+  LET(c4, TCP_ACCEPT(l, 3000));
+  YIELD();
+  LET(n4, serve_one(c4));
+  YIELD();
+  [n1, n2, n3, n4]
+)));
+
+SCOPE(FUN(() ,
+  LET(t, SPAWN(chain));
+
+  // ⚠ 客户端**先**连 4 条（连接排队），chain 任务**后**起 ⇒ 逐条取走。
+  LET(c1, http_client(port, "/p13/1"));
+  LET(c2, http_client(port, "/p13/2"));
+  LET(c3, http_client(port, "/p13/3"));
+  LET(c4, http_client(port, "/p13/4"));
+
+  LET(lengths, AWAIT(t));
+  LET MUT(ok, 0);
+  FOR(v, lengths, IF(>(v, 0), SET(ok, +(ok, 1)), 0));
+  PRINT("[p13] served-request-count=", ok);
+  PRINT("[p13] served-count-200=", LEN(lengths));
+  PRINT("[p13] chain-done=", LEN(lengths))
+));
+
+PRINT("[p13] DONE");

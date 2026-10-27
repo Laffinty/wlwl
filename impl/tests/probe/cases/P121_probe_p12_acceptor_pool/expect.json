@@ -1,0 +1,16 @@
+{
+  "exit": 1,
+  "contains": [
+    "[p12] accept-timeout-ms= 8000",
+    "[p12] client-reason= read head",
+    "[p12] winners= 1",
+    "[p12] losers= 2",
+    "[p12] losers-woke-immediately= TRUE",
+    "E0030",
+    "TCP_RECV: expected integer, got null"
+  ],
+  "not_contains": [
+    "[p12] DONE"
+  ],
+  "_why": "[W-02] 「多 acceptor 的惊群」探针（需求清单 §B-2 的主证据）。3 个 acceptor 抢 **1** 个连接 ⇒ **唤醒全部**坐实：只有 1 个拿到连接、其余 2 个拿到 `NULL`。⚠ `losers-woke-immediately= TRUE` 是惊群的**指纹**：accept 的等待超时是 **8000 ms**，而落选者在 **≈150 ms**（= 客户端的等待预算）就拿到了 NULL ⇒ 它们是被**连接到达唤醒**的，不是等超时。`client-reason= read head` 证明客户端**真的连上了**（是读超时，不是 connect refused）。⚠⚠ **与清单描述的差异**：清单说落选者「拿到 NULL 并**直接死掉**」——方向对，但**机制不同**：不是「静默 NULL」，而是调用方拿 `NULL` 去 `TCP_RECV` ⇒ **`E0030: TCP_RECV: expected integer, got null`** ⇒ 任务失败 ⇒ `SCOPE` 提前退出。本用例**刻意**让落选者真的去 `TCP_RECV(NULL)` ⇒ 因此 **exit 1** 是**期望值**，不是失败。"
+}

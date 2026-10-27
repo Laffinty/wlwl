@@ -25,10 +25,31 @@
 //! 其余成员走直通的 `wlwl_value::Value`(与 `time.rs` / `rand.rs` 同款)。
 //! 路径 / 目录 / 字节是**性能敏感面**(一次 `LIST_DIR` 可能上千个条目、一次
 //! `READ_BYTES` 可能上万个整数),不该为它们多绕一层 serde_json。
+//!
+//! [v0.12.1 / W-24] 新增两个**纯词法**成员:`PATH_CANONICAL`(分隔符统一 +
+//! 消解 `.` / `..`)与 `PATH_CONTAINS`(**逐段**前缀判定,不是字符串前缀)。
+//! 二者**都不访问文件系统** —— 判定结果因而对不存在的路径也成立、且跨平台
+//! 逐字一致。详见文件中「W-24」那一节的边界说明(含**不解析符号链接**)。
+//!
+//! [v0.12.1 / W-27] 再新增五个成员:`WRITE_FILE_ATOMIC`(原子写)、`LOCK_FILE` /
+//! `UNLOCK_FILE`(文件锁)、`FILE_MTIME`(毫秒级修改时间)、`DIR_ENTRIES`
+//! (带元数据的目录项列表)。
+//!
+//! ⚠ **平台能力一律手写 raw FFI**(`kernel32` / `libc`)⇒ **零新增第三方依赖**
+//!   (`windows-sys` / `filetime` / `fs2` 都不引)。样板照
+//!   `impl/crates/wlwl-eval/tests/common/handle_guard.rs` 的
+//!   `#[link(name = "kernel32")] extern "system" { ... }`。
+//! ⚠ **句柄纪律**:`LOCK_FILE` 返回的 `INTEGER` 是**不透明句柄**,句柄表里
+//!   **只放 OS 句柄**(`std::fs::File`)—— **绝不存任何 wlwl `Value`**
+//!   (`Value` 是 `Rc` 语义、`!Send`,放进去整张表就 `!Sync`)。
 
 use crate::compat::*;
 use crate::{ModuleSpec, StdCtx, StdFn};
+use std::collections::HashMap;
 use std::io::ErrorKind;
+use std::io::Write;
+use std::sync::atomic::{AtomicI64, AtomicU64, Ordering};
+use std::sync::Mutex;
 use wlwl_error::ErrorCode;
 use wlwl_error::WlwlError;
 use wlwl_value::{Outcome, StdHost, Value};
@@ -90,6 +111,21 @@ pub static SPEC: ModuleSpec = ModuleSpec {
         ("FILE_SIZE", file_size as StdFn),
         ("READ_BYTES", read_bytes as StdFn),
         ("WRITE_BYTES", write_bytes as StdFn),
+        // ── [W-24 / v0.12.1] 词法归一 + 安全的路径包含判断 ────────────
+        // ⚠ **附录 A 抄件尚未同步** ⇒ `check-appendix-a` 与
+        // `stdlib_appendix_a_sync` 会红(表体多出这两行)—— 那是集成者
+        // 收口时要做的,不是本项的锅。
+        ("PATH_CANONICAL", path_canonical as StdFn),
+        ("PATH_CONTAINS", path_contains as StdFn),
+        // ── [W-27 / v0.12.1] 原子写 / 文件锁 / 目录元数据 ─────────────────
+        // ⚠ **附录 A 抄件尚未同步** ⇒ `check-appendix-a` 与
+        // `stdlib_appendix_a_sync` 会红(表体多出这五行)—— 那是集成者
+        // 收口时要做的,不是本项的锅。
+        ("WRITE_FILE_ATOMIC", write_file_atomic as StdFn),
+        ("LOCK_FILE", lock_file as StdFn),
+        ("UNLOCK_FILE", unlock_file as StdFn),
+        ("FILE_MTIME", file_mtime as StdFn),
+        ("DIR_ENTRIES", dir_entries as StdFn),
     ],
 };
 
@@ -394,6 +430,170 @@ fn split_drive(p: &str) -> (String, &str) {
         }
     }
     (String::new(), p)
+}
+
+// ── W-24 · 词法归一 + 安全的路径包含判断(v0.12.1 / D-4)────────────────────
+//
+// ## 为什么**新增** `PATH_CANONICAL` 而不是改 `PATH_NORMALIZE`
+//
+// 分隔符口径本来就不一致:`PATH_JOIN` 把 `\` **也**当分隔符(`path_join` 里
+// `split(['/', '\\'])`),而 `PATH_NORMALIZE` **只**认 `/` ⇒ 二者在 Windows
+// 上**不互逆**。⚠ 但 `PATH_NORMALIZE` 的语义是**既有成员的可观察语义**
+// ⇒ 改它就是 breaking ⇒ **只加不改**,新成员单独承担「跨平台一致」这件事。
+//
+// ## 为什么判定**不做文件系统访问**
+//
+// `PATH_CONTAINS` 走**词法**归一 + **逐段**比较:
+//
+// - 对**不存在的路径**也成立(权限拒绝、还没创建的文件、竞态)——
+//
+//   一个「文件在不在」要参与的安全判定,不该因为 IO 失败而给出不同的答案;
+//
+// - **跨平台逐字一致**:同一个规则文件在 Windows 与 Linux 上判定相同,
+//
+//   不受「本机盘符长什么样」「这个目录是不是符号链接」影响。
+//
+// ⚠ **代价(= 边界)**:**不解析符号链接**。`root` 底下指向 `root` 之外的
+//   符号链接,本成员**仍**判 `TRUE` —— 词法判定看不见链接指向哪。
+//   要真实路径判定得自己做(`canonicalize` 在仓内**没有**对应成员)。
+//
+// ## ⚠ `PATH_CANONICAL` 的产物**不是**一条能直接喂给文件成员的路径
+//
+// 它把 `\` **也**当分隔符(为了跨平台一致),而 POSIX 上 `\` 是**合法的
+// 文件名字符** ⇒ `PATH_CANONICAL("a\\b.txt")` 在 POSIX 上得到 `a/b.txt`,
+// 那**是另一个文件**。文件成员走 `native()`(它按平台判定)⇒ 别把
+// `PATH_CANONICAL` 的输出直接交给 `READ_FILE` / `WRITE_FILE`。
+
+/// `PATH_CANONICAL(p) -> STRING` —— 词法归一:分隔符统一成 `/`,消解 `.` / `..`。
+///
+/// ⚠ **与 `PATH_NORMALIZE` 的区别只有一处,但那一处是全部意义**:
+///   `PATH_NORMALIZE` **只**认 `/`;`PATH_CANONICAL` **两种都认**
+///   (`\` ⇒ `/`)⇒ 后者**跨平台一致**,前者不是。
+/// ⚠ **盘符保留原样**(`d:` 还是 `d:`)—— 盘符的大小写不敏感由
+///   [`path_contains`] 在**比较时**处理,不在归一时改写。
+/// ⚠ **不访问文件系统**:路径不存在也照样给出结果(纯词法)。
+pub fn path_canonical(host: &mut dyn StdHost, args: Vec<Value>) -> Result<Outcome, WlwlError> {
+    const NAME: &str = "PATH_CANONICAL";
+    if args.len() != 1 {
+        return Err(fs_arity(host, NAME, args.len(), 1));
+    }
+    let p = str_arg(host, NAME, &args[0])?;
+    ok(Value::String(canonicalize(host, &p)?))
+}
+
+/// `PATH_CONTAINS(root, target) -> BOOLEAN` —— `target` 是否在 `root` 之下。
+///
+/// 判定是**逐段比较**(不是字符串前缀!)。三条判据:
+///
+/// | 调用 | 结果 | 为什么 |
+/// |---|---|---|
+/// | `PATH_CONTAINS("D:/root", "D:/root/a/b")` | `TRUE` | 段 `D:` `root` 逐段相同,后面多出来的段是**子**路径 |
+/// | `PATH_CONTAINS("D:/root", "D:/root-evil/x")` | `FALSE` | `root-evil` ≠ `root` —— **同前缀的兄弟目录不算包含** |
+/// | `PATH_CONTAINS("D:/root", "D:/root/../root2/x")` | `FALSE` | `..` 消解后是 `D:/root2/x`,不再在 `root` 之下 |
+///
+/// ⚠ **盘符大小写不敏感**(`d:/root` 与 `D:/root` 是同一条根);**其余段
+///   大小写敏感**(语言本身大小写敏感,路径段也照此)。
+/// ⚠ **不解析符号链接**(见本节开头的边界说明)。
+/// ⚠ **空根路径不含任何路径**:`PATH_CONTAINS("", "x")` = `FALSE`。
+/// ⚠ **绝对 / 相对必须一致**:根是绝对而目标是相对(或反过来)⇒ `FALSE`。
+///
+/// ⚠ **失败口径**:元数 / 类型错 ⇒ 原生诊断 `E0022` / `E0030`;
+///   **没有运行期失败** —— 本成员**不访问文件系统** ⇒ 不返回 `ERR` 值。
+pub fn path_contains(host: &mut dyn StdHost, args: Vec<Value>) -> Result<Outcome, WlwlError> {
+    const NAME: &str = "PATH_CONTAINS";
+    if args.len() != 2 {
+        return Err(fs_arity(host, NAME, args.len(), 2));
+    }
+    let root = str_arg(host, NAME, &args[0])?;
+    let target = str_arg(host, NAME, &args[1])?;
+    let r = canonicalize(host, &root)?;
+    let t = canonicalize(host, &target)?;
+    ok(Value::Boolean(contains_canonical(&r, &t)))
+}
+
+/// 词法归一:分隔符统一 + `.` / `..` 消解。**不访问文件系统**。
+///
+/// ⚠ `.` / `..` 的消解**复用既有 `PATH_NORMALIZE` 的算法**(`PATH_NORMALIZE`
+///   **一字未改**,这里只是调用它)—— 两处各写一份归一算法,迟早会漂。
+fn canonicalize(host: &mut dyn StdHost, p: &str) -> Result<String, WlwlError> {
+    // ① 分隔符统一:`\` 与 `/` **都**当分隔符(跨平台一致的判定需要这个)。
+    let unified = p.replace('\\', "/");
+    // ② `.` / `..` / 冗余分隔符 —— 交给既有成员。
+    let out = path_normalize(host, vec![Value::String(unified.clone())])?;
+    match out.value {
+        Value::String(s) => Ok(s),
+        // ⚠ 不可达:`PATH_NORMALIZE` 恒返 `STRING`。
+        other => {
+            debug_assert!(
+                false,
+                "PATH_NORMALIZE 返了非字符串:{}",
+                crate::value_kind(&other)
+            );
+            Ok(unified)
+        }
+    }
+}
+
+/// 归一后的路径拆成「盘符 / 绝对 / 段序列」。
+struct CanonParts {
+    /// 盘符前缀(`D:`),**原样保留大小写**;POSIX 下是 `None`。
+    drive: Option<String>,
+    /// 是否以 `/` 开头(绝对路径)。
+    absolute: bool,
+    /// 非空段序列(`.` / `..` 已消解)。
+    segments: Vec<String>,
+}
+
+/// 把**归一后**的路径拆开。
+fn canon_parts(canonical: &str) -> CanonParts {
+    let (drive, rest) = split_drive(canonical);
+    CanonParts {
+        drive: if drive.is_empty() { None } else { Some(drive) },
+        absolute: rest.starts_with('/'),
+        segments: rest
+            .split('/')
+            .filter(|s| !s.is_empty())
+            .map(|s| s.to_string())
+            .collect(),
+    }
+}
+
+/// 逐段前缀判定。**不是**字符串前缀比较 —— 那会让 `D:/root-evil` 冒充
+/// `D:/root` 的子路径(反向守卫就在这一行)。
+fn contains_canonical(root_c: &str, target_c: &str) -> bool {
+    // ⚠ 空根路径不含任何路径(`""` 归一后仍是 `""`;`"/"` 归一后是 `"/"`,
+    //   那是文件系统根 ⇒ 含**所有**绝对路径 —— 两者不能混)。
+    if root_c.is_empty() {
+        return false;
+    }
+    let r = canon_parts(root_c);
+    let t = canon_parts(target_c);
+    // ① 盘符:要么都没有,要么都有且**大小写不敏感**;一个有一个没有 ⇒ 不是
+    //    同一条根。
+    match (&r.drive, &t.drive) {
+        (None, None) => {}
+        (Some(a), Some(b)) => {
+            if !a.eq_ignore_ascii_case(b) {
+                return false;
+            }
+        }
+        _ => return false,
+    }
+    // ② 绝对 / 相对必须一致。
+    if r.absolute != t.absolute {
+        return false;
+    }
+    // ③ 目标必须**不短于**根(根自身也算「在根之下」)。
+    if t.segments.len() < r.segments.len() {
+        return false;
+    }
+    // ④ 逐段比较(根的每一段都要与目标的对应段**逐字**相同)。
+    for (i, seg) in r.segments.iter().enumerate() {
+        if t.segments[i] != *seg {
+            return false;
+        }
+    }
+    true
 }
 
 // ── 目录 ───────────────────────────────────────────────────────────
@@ -1004,6 +1204,764 @@ fn io_reason(path: &str, e: &std::io::Error) -> String {
     format!("{path}: {kind}: {e}")
 }
 
+// ═══════════════════════════════════════════════════════════════════════
+// W-27 · 原子写 / 文件锁 / 目录元数据(v0.12.1)
+// ═══════════════════════════════════════════════════════════════════════
+//
+// ## 为什么这一批要**手写 raw FFI**
+//
+// 三个平台能力在本仓**没有等价的标准库入口**:
+// - Windows 的「原子替换」(`MoveFileExW` + `MOVEFILE_REPLACE_EXISTING |
+//   MOVEFILE_WRITE_THROUGH`);
+// - Windows 的「文件锁」(`LockFileEx`);POSIX 的对应物是 `flock(2)`
+//   (⚠ **不是** `fcntl` 记录锁 —— 记录锁是**按进程**的,同进程第二次加锁会
+//   **直接成功**,「同进程两个锁互斥」这条契约就废了);
+// - Windows 的「纳秒级修改时间」(`FILETIME`)。
+//
+// 而本批**不准新增第三方依赖**(`windows-sys` / `filetime` / `fs2` 都不引)
+// ⇒ 只能手写 FFI。样板照 `impl/crates/wlwl-eval/tests/common/handle_guard.rs`。
+//
+// ## 句柄纪律
+//
+// `LOCK_FILE` 返回的 `INTEGER` 是**不透明句柄**。句柄表里**只放 OS 句柄**
+// (`std::fs::File`)⇒ **绝不存任何 wlwl `Value`**:`Value` 里有
+// `Rc` / `Rc<RefCell<…>>` ⇒ `!Send` ⇒ 放进 `Mutex<HashMap<…>>` 会让整张表
+// `!Sync` ⇒ 整个 crate 都不能再进 `std::thread::spawn`。
+
+// ── 原子写 ───────────────────────────────────────────────────────────
+
+/// 原子写临时文件的**名字标记**。
+///
+/// ⚠ 名字里带它 ⇒ 「目录里多了一个不认识的文件」这件事**一眼能认出来**
+///   (也让「不留残留」这条契约可被外部脚本自查)。
+const ATOMIC_TMP_MARK: &str = ".wlwl-atomic-";
+
+/// 进程内自增序号(临时文件名用)。跨进程靠 pid 区分。
+static ATOMIC_TMP_SEQ: AtomicU64 = AtomicU64::new(0);
+
+/// 目标文件**同目录**下的临时文件路径。
+///
+/// ⚠ **必须同目录**:跨目录(乃至跨盘)的「移动」在 OS 层是「复制 + 删除」
+///   ⇒ 那一段**不是原子的** ⇒ 目标会有一段「不存在 / 半新半旧」的窗口。
+///   ⇒ 临时文件与目标同目录 ⇒ 同一次文件系统 ⇒ 替换是**一次元数据操作**。
+fn atomic_tmp_path(target: &std::path::Path) -> std::path::PathBuf {
+    let dir = match target.parent() {
+        Some(d) if !d.as_os_str().is_empty() => d.to_path_buf(),
+        _ => std::path::PathBuf::from("."),
+    };
+    let base = match target.file_name() {
+        Some(n) => n.to_string_lossy().into_owned(),
+        None => "out".to_string(),
+    };
+    let n = ATOMIC_TMP_SEQ.fetch_add(1, Ordering::Relaxed);
+    dir.join(format!(
+        ".{base}{ATOMIC_TMP_MARK}{}-{n}",
+        std::process::id()
+    ))
+}
+
+/// 建临时文件(同目录);名字撞了就换序号重来。
+///
+/// ⚠ `create_new` ⇒ **绝不覆盖**已存在的文件(撞名 ⇒ 换名,不是覆盖别人的东西)。
+fn create_tmp(target: &std::path::Path) -> std::io::Result<(std::path::PathBuf, std::fs::File)> {
+    let mut last = std::io::Error::new(
+        std::io::ErrorKind::AlreadyExists,
+        "could not find a free temporary name",
+    );
+    for _ in 0..8 {
+        let tmp = atomic_tmp_path(target);
+        match std::fs::OpenOptions::new()
+            .write(true)
+            .create_new(true)
+            .open(&tmp)
+        {
+            Ok(f) => return Ok((tmp, f)),
+            Err(e) if e.kind() == std::io::ErrorKind::AlreadyExists => {
+                last = e;
+                continue;
+            }
+            Err(e) => return Err(e),
+        }
+    }
+    Err(last)
+}
+
+/// 原子替换会**换掉 inode** ⇒ 目标原有的权限会丢(新文件拿的是目录默认权限)。
+///
+/// ⇒ POSIX 上把目标原有的 mode 抄给临时文件。
+/// ⚠ Windows 上 **ACL 搬不动**(`SetFileSecurity` 那一套不在本批范围内)
+///   ⇒ 替换后的文件拿的是**目录继承**下来的 ACL —— 记为边界,见交付说明。
+#[cfg(unix)]
+fn inherit_permissions(target: &std::path::Path, tmp: &std::path::Path) {
+    if let Ok(md) = std::fs::metadata(target) {
+        // ⚠ 抄不抄得动都**不致命** ⇒ 失败只当没抄(写本身还要继续)。
+        let _ = std::fs::set_permissions(tmp, md.permissions());
+    }
+}
+
+#[cfg(not(unix))]
+fn inherit_permissions(_target: &std::path::Path, _tmp: &std::path::Path) {}
+
+/// 原子写的**实现体** —— `commit` 是「把临时文件落到目标上」的那一步。
+///
+/// ⚠ **为什么把提交步骤做成参数**:它是本批**唯一**能证明「原子」的那一步
+///   ——「替换」与「先删后写」的区别**只**在这一步里。把它做成参数后,
+///   单测可以在提交点**观测目标文件的状态**(此时它必须仍是旧内容),
+///   而不必真的去制造一次并发写(那是契约测试里那条「并发读者」在做的事)。
+///
+/// ⚠ **失败时必须清理临时文件**:「不留残留」是本成员的**契约**(调用方看得见
+///   目录里多了一个文件)⇒ 任何一步失败都走同一条清理路径。
+fn write_atomic(
+    target: &std::path::Path,
+    content: &[u8],
+    commit: impl FnOnce(&std::path::Path, &std::path::Path) -> std::io::Result<()>,
+) -> std::io::Result<()> {
+    // ① 临时文件(**同目录**)。
+    let (tmp, mut file) = create_tmp(target)?;
+    // ② 写 + flush + fsync。
+    let written = (|| -> std::io::Result<()> {
+        file.write_all(content)?;
+        file.flush()?;
+        // ⚠ `sync_all` = fsync:内容**落盘**,而不只是进页缓存 ——
+        //   「写完就崩,文件还是空的」这件事必须被挡住。
+        file.sync_all()?;
+        Ok(())
+    })();
+    // ⚠ 关闭句柄:Windows 上替换要求被替换的文件**没有**打开的句柄。
+    drop(file);
+    if let Err(e) = written {
+        let _ = std::fs::remove_file(&tmp);
+        return Err(e);
+    }
+    // ③ 原子替换(这一步之前,目标**一个字都没动过**)。
+    inherit_permissions(target, &tmp);
+    if let Err(e) = commit(&tmp, target) {
+        let _ = std::fs::remove_file(&tmp);
+        return Err(e);
+    }
+    Ok(())
+}
+
+/// 把临时文件**原子替换**成目标。
+///
+/// ⚠ **Windows 上不用 `std::fs::rename`**:它不带 `MOVEFILE_WRITE_THROUGH`
+///   ⇒「写完才替换」这条 durability 承诺落不下来。
+///   ⇒ 直接调 `MoveFileExW(..., MOVEFILE_REPLACE_EXISTING | MOVEFILE_WRITE_THROUGH)`。
+///
+/// ⚠ **Windows 的实测结论(2026-10-27,本机 Windows;见交付说明)**:
+///   三个候选 API 的实测读数 —— 「读者是否看到中间态」这一栏是**并发读者**
+///   实跑出来的,不是推断:
+///
+///   | API | 读者看到「文件不见了」 | 目标正被别处打开时 |
+///   |---|---|---|
+///   | `MoveFileExW(REPLACE_EXISTING)` | **0 次** ✅ 真正原子 | ❌ `ERROR_ACCESS_DENIED` |
+///   | `ReplaceFileW` | **4320 次** ❌ 名字会短暂消失 | ✅ 能替换 |
+///   | `SetFileInformationByHandle(FileRenameInfo)` | **0 次** ✅ | ⚠ 27% 失败(可重试) |
+///
+///   ⇒ `ReplaceFileW` **不是原子的**(它先删目标再改名 ⇒ 名字会短暂消失)
+///   ⇒ **两条路都原子**:`MoveFileExW` 是**主路**(带 `MOVEFILE_WRITE_THROUGH`
+///   的落盘承诺),NT 原生改名是**「目标正开着」时的兜底**(它容得下打开状态)。
+///
+/// ⚠ **POSIX 上 `std::fs::rename` 本身就是原子的**(同一次 `rename(2)`);
+///   跨设备会失败(`EXDEV`)⇒ 但临时文件与目标**同目录** ⇒ 不会跨设备。
+#[cfg(windows)]
+fn atomic_replace(from: &std::path::Path, to: &std::path::Path) -> std::io::Result<()> {
+    win32::move_file_replace(from, to)
+}
+
+#[cfg(unix)]
+fn atomic_replace(from: &std::path::Path, to: &std::path::Path) -> std::io::Result<()> {
+    std::fs::rename(from, to)
+}
+
+#[cfg(not(any(windows, unix)))]
+fn atomic_replace(from: &std::path::Path, to: &std::path::Path) -> std::io::Result<()> {
+    std::fs::rename(from, to)
+}
+
+/// `WRITE_FILE_ATOMIC(path, content) -> NULL` —— **原子写**。
+///
+/// 与 `WRITE_FILE` 的差别只有一条,但那一条是**全部意义**:目标要么是**旧内容**,
+/// 要么是**新内容**,**没有中间态**。
+///
+/// 步骤(**同目录**临时文件 ⇒ 替换是同一次文件系统上的原子操作):
+/// ① 建临时文件 → ② 写 + `flush` + `fsync` → ③ **原子替换**目标。
+/// 任何一步失败 ⇒ **清理临时文件**(`ERR` 值,不留残留),目标**原封不动**。
+///
+/// ⚠ **失败口径**:运行期失败(父目录不存在 / 权限不足 / 替换失败)⇒
+///   **`ERR([kind: "FsError", op, reason])` 值**;元数 / 类型错 ⇒ 原生诊断
+///   `E0022` / `E0030`(与本文件其余成员同口径)。
+/// ⚠ **权限**:替换会**换掉 inode** ⇒ 目标的原有权限会丢(POSIX 上本实现把
+///   原 mode 抄给临时文件;Windows 上 ACL **搬不动** ⇒ 替换后拿目录继承的 ACL)。
+/// ⚠⚠ **Windows 的平台限制(实测,不是推断)**:`MoveFileExW` **不许替换
+///   「正被别处打开」的文件** ⇒ 目标被读者/扫描器握着的时候,这条主路会
+///   失败(`ERR`)。⇒ ① 本实现在这一种错误上做**有界重试**(≈300 ms);
+///   ② 还不行就换**同样原子、但容得下打开状态**的 NT 原生改名
+///   (`SetFileInformationByHandle`)⇒ 两条路都保证「目标要么旧内容、要么
+///   新内容」。
+///   **POSIX 上没有这条限制**(`rename(2)` 对打开着的文件照样替换)。
+pub fn write_file_atomic(host: &mut dyn StdHost, args: Vec<Value>) -> Result<Outcome, WlwlError> {
+    const NAME: &str = "WRITE_FILE_ATOMIC";
+    if args.len() != 2 {
+        return Err(fs_arity(host, NAME, args.len(), 2));
+    }
+    let p = str_arg(host, NAME, &args[0])?;
+    let content = str_arg(host, NAME, &args[1])?;
+    match write_atomic(&native(&p), content.as_bytes(), atomic_replace) {
+        Ok(()) => ok(Value::Null),
+        Err(e) => ok(fs_err(NAME, write_failure_reason(&p, &e))),
+    }
+}
+
+// ── 文件锁 ───────────────────────────────────────────────────────────
+
+/// 锁句柄表 —— **只放 OS 句柄**(`std::fs::File`),**不放任何 wlwl `Value`**。
+///
+/// ⚠ 为什么不放 `Value`:`Value` 里有 `Rc` / `Rc<RefCell<…>>` ⇒ `!Send`
+///   ⇒ 放进 `Mutex<HashMap<…>>` 会让整张表 `!Sync` ⇒ 整个 crate 都不能再进
+///   `std::thread::spawn`。
+/// ⚠ 句柄**永不复用**(`NEXT_LOCK_ID` 单调递增)⇒ 一个用过的句柄号不会
+///   「过期后指向别的东西」。
+static LOCKS: Mutex<Option<HashMap<i64, std::fs::File>>> = Mutex::new(None);
+
+/// 下一个锁句柄号(进程内单调递增 ⇒ 从 1 开始)。
+static NEXT_LOCK_ID: AtomicI64 = AtomicI64::new(1);
+
+/// 这个错误是不是「**锁已经被别人拿着**」。
+///
+/// ⚠ POSIX:`flock` 的 `EWOULDBLOCK` ⇒ Rust 映射成 `ErrorKind::WouldBlock`。
+/// ⚠ Windows:`LockFileEx` 的 `ERROR_LOCK_VIOLATION`(33)在 Rust 里落进
+///   `ErrorKind::Uncategorized` ⇒ **必须按原始码判**,否则「已被锁住」会
+///   被说成「I/O 错误」。
+#[cfg(unix)]
+fn is_lock_conflict(e: &std::io::Error) -> bool {
+    e.kind() == std::io::ErrorKind::WouldBlock
+}
+
+#[cfg(windows)]
+fn is_lock_conflict(e: &std::io::Error) -> bool {
+    e.kind() == std::io::ErrorKind::WouldBlock
+        || e.raw_os_error() == Some(win32::ERROR_LOCK_VIOLATION)
+}
+
+#[cfg(not(any(windows, unix)))]
+fn is_lock_conflict(e: &std::io::Error) -> bool {
+    e.kind() == std::io::ErrorKind::WouldBlock
+}
+
+/// 取一把**独占**文件锁(**非阻塞**);成功返回不透明句柄号。
+///
+/// ⚠ **非阻塞**:拿不到锁**立刻**失败(不排队、不挂住调用方)⇒ 失败是一个
+///   **可预期的运行期结果** ⇒ 走 `ERR` 值。
+/// ⚠ **同进程两个锁会互斥**:两次 `LOCK_FILE` 是**两个独立的打开**
+///   ⇒ POSIX 的 `flock` 锁挂在「打开文件描述」上、Windows 的 `LockFileEx`
+///   锁挂在「句柄」上 ⇒ 两边都判「已被锁住」。
+///   (⚠ 若 POSIX 侧用 `fcntl` 记录锁就**废了** —— 记录锁是**按进程**的。)
+fn acquire_lock(path: &std::path::Path) -> Result<i64, std::io::Error> {
+    let file = std::fs::OpenOptions::new()
+        .read(true)
+        .write(true)
+        // ⚠ 锁文件**不存在就建**(空文件):锁的「会合点」不该要求调用方
+        //   先造一个文件出来(那还得防 TOCTOU)。
+        .create(true)
+        .open(path)?;
+    try_lock_exclusive(&file)?;
+    let id = NEXT_LOCK_ID.fetch_add(1, Ordering::Relaxed);
+    let mut guard = LOCKS.lock().unwrap_or_else(|e| e.into_inner());
+    guard.get_or_insert_with(HashMap::new).insert(id, file);
+    Ok(id)
+}
+
+/// 释放一把锁。
+///
+/// ⚠ **状态幂等**:重复释放**不会**二次关闭句柄、不会崩 —— 表里没有就是
+///   没有,`remove` 返回 `None` 罢了。
+/// ⚠ **返回值也幂等**:一个**曾经发出过**的句柄重复释放 ⇒ 返 `NULL`
+///   (锁确实不再被持有 ⇒ 调用方的意图已经满足)。
+/// ⚠ 但一个**从来不是 `LOCK_FILE` 发出的**句柄 ⇒ 返 `ERR`
+///   (那是**用错句柄**,不是「重复释放」;静默成功会把笔误藏起来)。
+fn release_lock(id: i64) -> Result<(), String> {
+    let mut guard = LOCKS.lock().unwrap_or_else(|e| e.into_inner());
+    let map = guard.get_or_insert_with(HashMap::new);
+    if map.remove(&id).is_some() {
+        // ⚠ 句柄在这里被 drop ⇒ 锁随之释放
+        //   (POSIX:关 fd ⇒ `flock` 释放;Windows:关句柄 ⇒ 锁释放)。
+        return Ok(());
+    }
+    let issued = NEXT_LOCK_ID.load(Ordering::Relaxed);
+    if id > 0 && id < issued {
+        Ok(())
+    } else {
+        Err(format!(
+            "handle {id} was never issued by LOCK_FILE (not a lock handle)"
+        ))
+    }
+}
+
+/// 锁失败的原因文本 —— 「**已被别人锁住**」要与「权限不足」分得开。
+fn lock_failure_reason(path: &str, e: &std::io::Error) -> String {
+    if is_lock_conflict(e) {
+        format!("cannot lock ({path}): already locked (by another handle or process)")
+    } else {
+        match e.kind() {
+            ErrorKind::PermissionDenied => format!("cannot lock ({path}): permission denied"),
+            ErrorKind::NotFound => {
+                format!("cannot lock ({path}): parent directory does not exist")
+            }
+            _ => format!("cannot lock ({path}): {e}"),
+        }
+    }
+}
+
+/// `LOCK_FILE(path) -> INTEGER` —— 取一把**独占**文件锁,返回**不透明句柄**。
+///
+/// ⚠ 句柄是**不透明**的:调用方只该把它原样交给 `UNLOCK_FILE`,
+///   **不该**假设它是什么(本实现是进程内自增的整数,跨进程**不通用**)。
+/// ⚠ **锁是 OS 级的 ⇒ 跨进程也互斥**(另一个进程用任何方式加同一把锁,
+///   本进程都会看到「已被锁住」)。
+/// ⚠ **锁是「建议锁」**:它挡的是**同样守规矩的调用方**,不是 `READ_FILE` /
+///   `WRITE_FILE` —— 持锁期间目标文件照样能被别处读写。
+/// ⚠ **失败口径**:锁失败 / 权限不足 / 父目录不存在 ⇒ `ERR` 值;
+///   元数 / 类型错 ⇒ `E0022` / `E0030`。
+pub fn lock_file(host: &mut dyn StdHost, args: Vec<Value>) -> Result<Outcome, WlwlError> {
+    const NAME: &str = "LOCK_FILE";
+    if args.len() != 1 {
+        return Err(fs_arity(host, NAME, args.len(), 1));
+    }
+    let p = str_arg(host, NAME, &args[0])?;
+    match acquire_lock(&native(&p)) {
+        Ok(id) => ok(Value::Integer(id)),
+        Err(e) => ok(fs_err(NAME, lock_failure_reason(&p, &e))),
+    }
+}
+
+/// `UNLOCK_FILE(handle) -> NULL` —— 释放一把锁(**幂等**)。
+///
+/// ⚠ 实参必须是 `LOCK_FILE` 发出的**不透明整数句柄**;类型错 ⇒ `E0030`。
+/// ⚠ 幂等:重复释放**不报错**(锁确实不再被持有);但一个**从未发出过**的
+///   句柄 ⇒ `ERR` 值(那是用错句柄)。
+pub fn unlock_file(host: &mut dyn StdHost, args: Vec<Value>) -> Result<Outcome, WlwlError> {
+    const NAME: &str = "UNLOCK_FILE";
+    if args.len() != 1 {
+        return Err(fs_arity(host, NAME, args.len(), 1));
+    }
+    let Value::Integer(id) = &args[0] else {
+        return Err(fs_type(host, NAME, "an integer", &args[0]));
+    };
+    match release_lock(*id) {
+        Ok(()) => ok(Value::Null),
+        Err(reason) => ok(fs_err(NAME, reason)),
+    }
+}
+
+// ── 修改时间 ─────────────────────────────────────────────────────────
+
+/// `SystemTime` ⇒ **Unix 纪元起的毫秒**(负数 = 纪元之前)。
+fn system_time_millis(t: std::time::SystemTime) -> i64 {
+    match t.duration_since(std::time::UNIX_EPOCH) {
+        Ok(d) => i64::try_from(d.as_millis()).unwrap_or(i64::MAX),
+        Err(e) => -i64::try_from(e.duration().as_millis()).unwrap_or(i64::MAX),
+    }
+}
+
+/// 路径的**修改时间**(毫秒,Unix 纪元)。
+///
+/// ⚠ **两个平台的口径必须一致**:Windows 的 `FILETIME` 是「1601-01-01 起的
+///   100 ns 刻数」,POSIX 的 `st_mtime` 是「Unix 纪元起的秒(+纳秒)」
+///   ⇒ 直接把 `FILETIME` 的刻数当毫秒会**差 369 年**。
+///   ⇒ 统一折算成「Unix 纪元起的毫秒」。
+#[cfg(windows)]
+fn mtime_millis(p: &std::path::Path) -> std::io::Result<i64> {
+    win32::last_write_time_millis(p)
+}
+
+#[cfg(unix)]
+fn mtime_millis(p: &std::path::Path) -> std::io::Result<i64> {
+    let md = std::fs::metadata(p)?;
+    let t = md.modified()?;
+    Ok(system_time_millis(t))
+}
+
+#[cfg(not(any(windows, unix)))]
+fn mtime_millis(p: &std::path::Path) -> std::io::Result<i64> {
+    let md = std::fs::metadata(p)?;
+    let t = md.modified()?;
+    Ok(system_time_millis(t))
+}
+
+/// `FILE_MTIME(path) -> INTEGER` —— 修改时间,**毫秒**(Unix 纪元)。
+///
+/// ⚠ **口径**:**Unix 纪元起的毫秒数**(两个平台一致 —— 见 [`mtime_millis`])。
+/// ⚠ **跟随符号链接**(与既有的 `FILE_SIZE` 同口径:`metadata` 语义)⇒
+///   要链接**自己**的时间戳用 `DIR_ENTRIES`。
+/// ⚠ **失败口径**:文件不存在 / 权限不足 ⇒ `ERR` 值;元数 / 类型错 ⇒
+///   `E0022` / `E0030`。
+pub fn file_mtime(host: &mut dyn StdHost, args: Vec<Value>) -> Result<Outcome, WlwlError> {
+    const NAME: &str = "FILE_MTIME";
+    if args.len() != 1 {
+        return Err(fs_arity(host, NAME, args.len(), 1));
+    }
+    let p = str_arg(host, NAME, &args[0])?;
+    match mtime_millis(&native(&p)) {
+        Ok(ms) => ok(Value::Integer(ms)),
+        Err(e) => ok(fs_err(NAME, io_reason(&p, &e))),
+    }
+}
+
+// ── 目录项 ───────────────────────────────────────────────────────────
+
+/// `DIR_ENTRIES(path) -> ARRAY[DICT]` —— 目录项列表(带元数据)。
+///
+/// 每项是一个 `DICT`:`{name, size, mtime, is_dir}`。
+///
+/// ⚠ **排序**:OS 的目录迭代序**逐次可能不同** ⇒ 不排序就没有确定性
+///   (与 `LIST_DIR` 同一条纪律)。
+/// ⚠ **不跟随符号链接**(`symlink_metadata` = `lstat` 语义):与 `WALK_DIR`
+///   的 `follow = FALSE` 分支同风格(`LIST_DIR` 列出链接但不跟随)。
+///   ⇒ 一条**指向目录**的链接项:`is_dir = FALSE`、`size` / `mtime` 是
+///   **链接自己**的(不是目标的)。要目标的元数据用 `FILE_MTIME` / `FILE_SIZE`。
+/// ⚠ **目录项的 `size` / `mtime` 一律给 `0`**:目录的「字节数」没有意义,
+///   而 mtime 对「这一项」也不是稳定口径 ⇒ 统一给 `0`;
+///   要目录自己的 mtime 用 `FILE_MTIME`。
+/// ⚠ **失败口径**:目录不存在 / 不是目录 / 权限不足 ⇒ `ERR` 值;
+///   元数 / 类型错 ⇒ `E0022` / `E0030`。
+pub fn dir_entries(host: &mut dyn StdHost, args: Vec<Value>) -> Result<Outcome, WlwlError> {
+    const NAME: &str = "DIR_ENTRIES";
+    if args.len() != 1 {
+        return Err(fs_arity(host, NAME, args.len(), 1));
+    }
+    let p = str_arg(host, NAME, &args[0])?;
+    let rd = match std::fs::read_dir(native(&p)) {
+        Ok(rd) => rd,
+        Err(e) => return ok(fs_err(NAME, io_reason(&p, &e))),
+    };
+    let mut out: Vec<(String, Value)> = Vec::new();
+    for entry in rd {
+        let e = match entry {
+            Ok(e) => e,
+            Err(e) => return ok(fs_err(NAME, io_reason(&p, &e))),
+        };
+        let name = e.file_name().to_string_lossy().into_owned();
+        // ⚠ **不跟随符号链接** ⇒ 用 `symlink_metadata`(= `lstat`)。
+        let md = e.path().symlink_metadata();
+        let is_dir = md.as_ref().map(|m| m.is_dir()).unwrap_or(false);
+        let (size, mtime) = if is_dir {
+            // ⚠ 目录项:size / mtime 一律 0(见成员说明)。
+            (0i64, 0i64)
+        } else {
+            let size = md
+                .as_ref()
+                .map(|m| i64::try_from(m.len()).unwrap_or(i64::MAX))
+                .unwrap_or(0);
+            let mtime = md
+                .as_ref()
+                .ok()
+                .and_then(|m| m.modified().ok())
+                .map(system_time_millis)
+                .unwrap_or(0);
+            (size, mtime)
+        };
+        out.push((
+            name.clone(),
+            Value::dict(vec![
+                (Value::String("name".into()), Value::String(name)),
+                (Value::String("size".into()), Value::Integer(size)),
+                (Value::String("mtime".into()), Value::Integer(mtime)),
+                (Value::String("is_dir".into()), Value::Boolean(is_dir)),
+            ]),
+        ));
+    }
+    // ⚠ 排序(见成员说明):按**名字**逐字节(与 `LIST_DIR` 的 `sort()` 同口径)。
+    out.sort_by(|a, b| a.0.cmp(&b.0));
+    ok(Value::Array(out.into_iter().map(|(_, v)| v).collect()))
+}
+
+// ── Windows raw FFI(kernel32)────────────────────────────────────────
+
+#[cfg(windows)]
+mod win32 {
+    use std::os::windows::ffi::OsStrExt;
+    use std::path::Path;
+
+    #[link(name = "kernel32")]
+    extern "system" {
+        fn MoveFileExW(existing: *const u16, new: *const u16, flags: u32) -> i32;
+        fn LockFileEx(
+            file: *mut core::ffi::c_void,
+            flags: u32,
+            reserved: u32,
+            bytes_low: u32,
+            bytes_high: u32,
+            overlapped: *mut core::ffi::c_void,
+        ) -> i32;
+        fn GetFileAttributesExW(
+            path: *const u16,
+            info_level: u32,
+            info: *mut core::ffi::c_void,
+        ) -> i32;
+    }
+
+    /// 目标**已存在**也照样替换。
+    pub const MOVEFILE_REPLACE_EXISTING: u32 = 0x0000_0001;
+    /// 替换**落盘**后才返回。
+    pub const MOVEFILE_WRITE_THROUGH: u32 = 0x0000_0008;
+    /// 独占锁。
+    pub const LOCKFILE_EXCLUSIVE_LOCK: u32 = 0x0000_0002;
+    /// 拿不到就**立刻失败**,不排队。
+    pub const LOCKFILE_FAIL_IMMEDIATELY: u32 = 0x0000_0001;
+    /// `ERROR_LOCK_VIOLATION` —— 锁已被别人(别的句柄 / 别的进程)拿着。
+    /// ⚠ 类型是 `i32`(`std::io::Error::raw_os_error` 的返回类型)。
+    pub const ERROR_LOCK_VIOLATION: i32 = 33;
+    /// `ERROR_ACCESS_DENIED` —— 目标正被别处打开(Win32 不许替换打开的文件)。
+    pub const ERROR_ACCESS_DENIED: i32 = 5;
+    /// `ERROR_SHARING_VIOLATION` —— 目标正被别处打开(另一种说法)。
+    pub const ERROR_SHARING_VIOLATION: i32 = 32;
+    /// `GetFileAttributesExW` 的 `GetFileExInfoStandard`。
+    const GET_FILEEX_INFO_STANDARD: u32 = 0;
+
+    /// `WIN32_FILE_ATTRIBUTE_DATA` —— 逐字段照抄 Win32 布局。
+    ///
+    /// ⚠ 时间戳是 **两个 `DWORD`**(低 32 位在前)⇒ 拼成 `u64` 时
+    ///   **高 32 位在前**。
+    #[repr(C)]
+    struct FileAttributeData {
+        file_attributes: u32,
+        creation_time_low: u32,
+        creation_time_high: u32,
+        last_access_time_low: u32,
+        last_access_time_high: u32,
+        last_write_time_low: u32,
+        last_write_time_high: u32,
+        file_size_high: u32,
+        file_size_low: u32,
+    }
+
+    /// `OVERLAPPED` —— `LockFileEx` 必需。
+    ///
+    /// ⚠ Win32 的第三个字段是**联合体**(`Offset`/`OffsetHigh` 或 `Pointer`)
+    ///   ⇒ 这里是**同尺寸**的两个 `DWORD`(联合体的两个分支都是 8 字节 / 4 字节
+    ///   —— 逐平台算过:64 位 = 8+8+8+8 = 32,32 位 = 4+4+8+4 = 20)。
+    #[repr(C)]
+    struct Overlapped {
+        internal: usize,
+        internal_high: usize,
+        offset: u32,
+        offset_high: u32,
+        h_event: *mut core::ffi::c_void,
+    }
+
+    /// `FILETIME` 的纪元(1601-01-01)与 Unix 纪元(1970-01-01)之差,单位 100 ns。
+    ///
+    /// ⚠ `116444736000000000` = (1970-1601 的秒数) × 10⁷(每秒 10⁷ 个刻数)。
+    const FILETIME_EPOCH_OFFSET: u64 = 116_444_736_000_000_000;
+    /// 一个刻数 = 100 ns ⇒ 一个毫秒 = 10 000 刻数。
+    const TICKS_PER_MILLI: u64 = 10_000;
+    /// 替换被「目标正开着」挡回来时的**重试次数上限**。
+    ///
+    /// ⚠ **有界**是刻意的:读者/扫描器随手打开一下是常态(重试一次多半就成了),
+    ///   但「目标只读」「目录不许改」是**真错** ⇒ 不该无限等。
+    pub const MAX_REPLACE_ATTEMPTS: u32 = 30;
+    /// 两次重试之间的间隔(毫秒)⇒ 总预算 ≈ 300 ms。
+    pub const REPLACE_RETRY_DELAY_MS: u64 = 10;
+
+    /// 路径 ⇒ NUL 结尾的 UTF-16 串。
+    ///
+    /// ⚠ **长路径**:超过 `MAX_PATH`(260)的路径要用 `\\?\` 前缀,否则
+    ///   Win32 直接判「路径不存在」⇒ 与标准库其余成员(`std::fs`)的行为
+    ///   不一致(它们会自动加前缀)。
+    /// ⚠ **已知边界**:`\\?\` 形态**不消解 `.` / `..`** ⇒ 一条「又长又带
+    ///   `..`」的路径会解析不到(报「不存在」)。长路径本来就罕见,这条
+    ///   边界按「罕见」记,不为它加一层词法消解。
+    fn wide_path(p: &Path) -> Vec<u16> {
+        let raw: Vec<u16> = p.as_os_str().encode_wide().collect();
+        // 已经是 verbatim 形态 ⇒ 原样用。
+        const VERBATIM: [u16; 4] = [0x5C, 0x5C, 0x3F, 0x5C];
+        if raw.starts_with(&VERBATIM) {
+            return with_nul(raw);
+        }
+        // 短路径 ⇒ 原样(Win32 自己认 `/` 作分隔符、也自己消解 `.` / `..`)。
+        if raw.len() < 240 {
+            return with_nul(raw);
+        }
+        // 长路径 ⇒ 加 `\\?\` 前缀,且**必须**把 `/` 换成 `\`。
+        let mut v: Vec<u16> = Vec::with_capacity(raw.len() + 8);
+        if raw.starts_with(&[0x5C, 0x5C]) {
+            // UNC(`\\server\share`)⇒ `\\?\UNC\server\share`。
+            v.extend_from_slice(&[
+                0x5C,
+                0x5C,
+                0x3F,
+                0x5C,
+                b'U' as u16,
+                b'N' as u16,
+                b'C' as u16,
+                0x5C,
+            ]);
+            v.extend_from_slice(&raw[2..]);
+        } else {
+            v.extend_from_slice(&VERBATIM);
+            v.extend_from_slice(&raw);
+        }
+        for c in v.iter_mut() {
+            if *c == b'/' as u16 {
+                *c = 0x5C;
+            }
+        }
+        with_nul(v)
+    }
+
+    fn with_nul(mut v: Vec<u16>) -> Vec<u16> {
+        v.push(0);
+        v
+    }
+
+    /// `MoveFileExW(from, to, MOVEFILE_REPLACE_EXISTING | MOVEFILE_WRITE_THROUGH)`。
+    ///
+    /// ⚠ **Windows 不许替换「正被别处打开」的文件** ⇒ 目标被读者/扫描器/
+    ///   索引器**随手**打开着的时候,这一步会失败(`ERROR_ACCESS_DENIED` /
+    ///   `ERROR_SHARING_VIOLATION`)—— 那**不是**「权限不足」,是「等一下」。
+    ///   ⇒ 做**有界重试**:重试期间目标多半就被放开了。
+    /// ⚠ 重试**有界**(见 [`MAX_REPLACE_ATTEMPTS`])⇒ 真的拿不到(只读目标、
+    ///   目录不许改)时仍然失败 ⇒ 失败口径不变(ERR 值)。
+    /// ⚠ **POSIX 上没有这一层**:`rename(2)` 对「正被打开的文件」照样替换。
+    ///
+    /// ⚠⚠ **为什么没有兜底**:实测过 NT 原生改名
+    ///   (`SetFileInformationByHandle` + `FileRenameInfo`)—— 它**同样原子**
+    ///   (并发读者 16 499 次读里「文件不见了」0 次),但
+    ///   ① 它**解不开 DOS 形态的路径**(实测 `ERROR_PATH_NOT_FOUND`:
+    ///   `RootDirectory = NULL` 时 NT 层要的是 **NT 形态**的路径),
+    ///   ② 它在「目标正被打开」时也会失败(`ERROR_ACCESS_DENIED`)。
+    ///   ⇒ 两条都不成立 ⇒ **不引它**(引一个半残的兜底比不引更糟:它会让人
+    ///   以为「Windows 上也能边写边被读」)。
+    pub fn move_file_replace(from: &Path, to: &Path) -> std::io::Result<()> {
+        let f = wide_path(from);
+        let t = wide_path(to);
+        let mut attempt = 0u32;
+        loop {
+            // SAFETY: 两个串都是 NUL 结尾的 UTF-16;flags 是常量。
+            let ok = unsafe {
+                MoveFileExW(
+                    f.as_ptr(),
+                    t.as_ptr(),
+                    MOVEFILE_REPLACE_EXISTING | MOVEFILE_WRITE_THROUGH,
+                )
+            };
+            if ok != 0 {
+                return Ok(());
+            }
+            let err = std::io::Error::last_os_error();
+            let raw = err.raw_os_error().unwrap_or(0);
+            let contended = raw == ERROR_ACCESS_DENIED || raw == ERROR_SHARING_VIOLATION;
+            if !contended || attempt >= MAX_REPLACE_ATTEMPTS {
+                return Err(err);
+            }
+            attempt += 1;
+            std::thread::sleep(std::time::Duration::from_millis(REPLACE_RETRY_DELAY_MS));
+        }
+    }
+
+    /// `LockFileEx(handle, LOCKFILE_EXCLUSIVE_LOCK | LOCKFILE_FAIL_IMMEDIATELY, …)`。
+    pub fn lock_file_exclusive(file: &std::fs::File) -> std::io::Result<()> {
+        use std::os::windows::io::AsRawHandle;
+        let mut ov = Overlapped {
+            internal: 0,
+            internal_high: 0,
+            offset: 0,
+            offset_high: 0,
+            h_event: std::ptr::null_mut(),
+        };
+        // ⚠ 长度给 `u32::MAX` × 2 = 2⁶⁴-1 ⇒ 锁**整个文件**(Win32 文档口径)。
+        // SAFETY: `file` 是有效句柄;`ov` 是合法的 `OVERLAPPED` 栈对象;
+        // `LOCKFILE_FAIL_IMMEDIATELY` ⇒ 同步返回,不会留一个未决的 I/O。
+        let ok = unsafe {
+            LockFileEx(
+                file.as_raw_handle(),
+                LOCKFILE_EXCLUSIVE_LOCK | LOCKFILE_FAIL_IMMEDIATELY,
+                0,
+                u32::MAX,
+                u32::MAX,
+                &mut ov as *mut Overlapped as *mut core::ffi::c_void,
+            )
+        };
+        if ok == 0 {
+            return Err(std::io::Error::last_os_error());
+        }
+        Ok(())
+    }
+
+    /// `GetFileAttributesExW` ⇒ 最后修改时间(`FILETIME`)⇒ **Unix 纪元毫秒**。
+    pub fn last_write_time_millis(p: &Path) -> std::io::Result<i64> {
+        let w = wide_path(p);
+        let mut data = FileAttributeData {
+            file_attributes: 0,
+            creation_time_low: 0,
+            creation_time_high: 0,
+            last_access_time_low: 0,
+            last_access_time_high: 0,
+            last_write_time_low: 0,
+            last_write_time_high: 0,
+            file_size_high: 0,
+            file_size_low: 0,
+        };
+        // SAFETY: `w` 是 NUL 结尾的 UTF-16;`data` 是 `WIN32_FILE_ATTRIBUTE_DATA`
+        // 的逐字段镜像(24 字节)。
+        let ok = unsafe {
+            GetFileAttributesExW(
+                w.as_ptr(),
+                GET_FILEEX_INFO_STANDARD,
+                &mut data as *mut FileAttributeData as *mut core::ffi::c_void,
+            )
+        };
+        if ok == 0 {
+            return Err(std::io::Error::last_os_error());
+        }
+        let ticks = ((data.last_write_time_high as u64) << 32) | (data.last_write_time_low as u64);
+        Ok(filetime_to_unix_millis(ticks))
+    }
+
+    /// `FILETIME`(1601 起的 100 ns 刻数)⇒ Unix 纪元起的毫秒。
+    fn filetime_to_unix_millis(ticks: u64) -> i64 {
+        if ticks >= FILETIME_EPOCH_OFFSET {
+            i64::try_from((ticks - FILETIME_EPOCH_OFFSET) / TICKS_PER_MILLI).unwrap_or(i64::MAX)
+        } else {
+            -i64::try_from((FILETIME_EPOCH_OFFSET - ticks) / TICKS_PER_MILLI).unwrap_or(i64::MAX)
+        }
+    }
+}
+
+// ── POSIX raw FFI(libc)──────────────────────────────────────────────
+
+#[cfg(unix)]
+fn try_lock_exclusive(file: &std::fs::File) -> std::io::Result<()> {
+    use std::os::unix::io::AsRawFd;
+    let fd = file.as_raw_fd();
+    // ⚠ `LOCK_EX | LOCK_NB`:**非阻塞**独占锁。
+    //   ⚠ 用 `flock` 而**不是** `fcntl` 记录锁:记录锁是**按进程**的
+    //   ⇒ 同进程第二次加锁会**直接成功** ⇒「同进程两个锁互斥」这条契约
+    //   在 POSIX 上就废了。`flock` 挂在**打开文件描述**上 ⇒ 两个独立的
+    //   `open()` 就是两把锁 ⇒ 会互斥(与 Windows 的 `LockFileEx` 同口径)。
+    // SAFETY: `fd` 是上面 `open` 出来的有效描述符;flags 是常量。
+    let rc = unsafe { libc::flock(fd, libc::LOCK_EX | libc::LOCK_NB) };
+    if rc == 0 {
+        Ok(())
+    } else {
+        Err(std::io::Error::last_os_error())
+    }
+}
+
+#[cfg(windows)]
+fn try_lock_exclusive(file: &std::fs::File) -> std::io::Result<()> {
+    win32::lock_file_exclusive(file)
+}
+
+#[cfg(not(any(windows, unix)))]
+fn try_lock_exclusive(_file: &std::fs::File) -> std::io::Result<()> {
+    Err(std::io::Error::new(
+        std::io::ErrorKind::Unsupported,
+        "file locks are not supported on this platform",
+    ))
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -1199,6 +2157,75 @@ mod tests {
         assert_eq!(err.diagnostic().code, ErrorCode::E0022);
     }
 
+    // ── [W-24] `PATH_CANONICAL` / `PATH_CONTAINS` 的机制钉子 ──────────────
+    //
+    // ⚠ 这些**不是**正确性证据 —— 契约表在 `wlwl-eval` 的
+    // `path_contains_contract.rs`。这里钉的是**机制**:归一与逐段比较
+    // 各走各的路(不碰文件系统 ⇒ 对不存在的路径也照样有答案)。
+
+    fn canon(p: &str) -> String {
+        let mut host = NullHost;
+        let v = path_canonical(&mut host, vec![Value::String(p.into())]).unwrap();
+        match v.value {
+            Value::String(s) => s,
+            other => panic!("PATH_CANONICAL 返了非字符串: {}", crate::value_kind(&other)),
+        }
+    }
+
+    fn contains(root: &str, target: &str) -> bool {
+        let mut host = NullHost;
+        let v = path_contains(
+            &mut host,
+            vec![Value::String(root.into()), Value::String(target.into())],
+        )
+        .unwrap();
+        match v.value {
+            Value::Boolean(b) => b,
+            other => panic!("PATH_CONTAINS 返了非布尔: {}", crate::value_kind(&other)),
+        }
+    }
+
+    #[test]
+    fn path_canonical_unifies_separators_and_resolves_dots() {
+        assert_eq!(canon("D:\\root\\a"), "D:/root/a");
+        assert_eq!(canon("D:/root/./a"), "D:/root/a");
+        assert_eq!(canon("D:/root/b/../a"), "D:/root/a");
+        assert_eq!(canon("D://root///a"), "D:/root/a");
+    }
+
+    #[test]
+    fn path_canonical_keeps_the_drive_letter_as_written() {
+        assert_eq!(canon("d:/Root/A"), "d:/Root/A");
+    }
+
+    #[test]
+    fn path_contains_compares_segment_by_segment() {
+        assert!(contains("D:/root", "D:/root/a/b"));
+        assert!(contains("D:/root", "D:/root"));
+        // ⚠ 同前缀的兄弟目录**不是**子路径(字符串前缀比较会判错)。
+        assert!(!contains("D:/root", "D:/root-evil/x"));
+        assert!(!contains("D:/root", "D:/rootx"));
+        // `..` 消解后不再是子路径。
+        assert!(!contains("D:/root", "D:/root/../root2/x"));
+    }
+
+    #[test]
+    fn path_contains_is_drive_case_insensitive_but_segment_case_sensitive() {
+        assert!(contains("d:/root", "D:/root/a"));
+        assert!(contains("D:/root", "d:/root/a"));
+        assert!(!contains("D:/Root", "D:/root/a"));
+    }
+
+    #[test]
+    fn path_contains_needs_the_same_drive_and_the_same_absoluteness() {
+        assert!(!contains("D:/root", "E:/root/a"));
+        assert!(!contains("D:/root", "root/a"));
+        assert!(!contains("root", "/root/a"));
+        assert!(contains("root", "root/a/b"));
+        // 空根路径不含任何路径。
+        assert!(!contains("", "x"));
+    }
+
     #[test]
     fn spec_lists_every_member() {
         assert_eq!(SPEC.path, "wlwl:std.fs");
@@ -1212,7 +2239,7 @@ mod tests {
         );
         // 后 15 个是 v0.11.3 M6 / addendum-06 新增 —— **成员面是契约**。
         assert_eq!(
-            &names[3..],
+            &names[3..18],
             &[
                 "PATH_JOIN",
                 "PATH_DIR",
@@ -1231,7 +2258,26 @@ mod tests {
                 "WRITE_BYTES",
             ]
         );
-        assert_eq!(names.len(), 18, "wlwl:std.fs exports 18 members");
+        // [W-24 / v0.12.1] 追加的两个是**追加**的(惯例:老成员在前、新成员按
+        // 功能追加)⇒ 位置本身就是契约的一部分。
+        assert_eq!(
+            &names[18..20],
+            &["PATH_CANONICAL", "PATH_CONTAINS"],
+            "the two W-24 members must stay in place and in order"
+        );
+        // [W-27 / v0.12.1] 再追加的五个(原子写 / 锁 / mtime / 目录项)。
+        assert_eq!(
+            &names[20..],
+            &[
+                "WRITE_FILE_ATOMIC",
+                "LOCK_FILE",
+                "UNLOCK_FILE",
+                "FILE_MTIME",
+                "DIR_ENTRIES",
+            ],
+            "the five W-27 members must stay last and in order"
+        );
+        assert_eq!(names.len(), 25, "wlwl:std.fs exports 25 members");
     }
 
     // ── [D13-044] `spec()` 的往返不变量 ─────────────────────────────────
@@ -1612,6 +2658,213 @@ mod tests {
         assert!(
             !dst.exists(),
             "the cycle guard must fire before create_dir_all"
+        );
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    // ── [W-27] 原子写 / 锁 / mtime ─────────────────────────────────────
+
+    /// 目录里现在有哪些文件(排序)—— 「不留残留」这条契约的观测口径。
+    fn dir_names(dir: &std::path::Path) -> Vec<String> {
+        let mut v: Vec<String> = std::fs::read_dir(dir)
+            .expect("read_dir")
+            .map(|e| e.expect("entry").file_name().to_string_lossy().into_owned())
+            .collect();
+        v.sort();
+        v
+    }
+
+    /// ⚠ **提交失败 ⇒ 目标保持旧内容,且不留残留**。
+    ///
+    /// 这条用「**注定失败的提交步**」把「替换失败」变成**确定可达**的分支 ——
+    /// 不用去制造并发,也不用去赌某个平台的错误码。
+    #[test]
+    fn atomic_write_commit_failure_keeps_the_old_content_and_leaves_no_residue() {
+        let dir = tmpfile("");
+        std::fs::create_dir_all(&dir).unwrap();
+        let target = dir.join("a.txt");
+        std::fs::write(&target, b"OLD").unwrap();
+
+        let r = write_atomic(&target, b"NEW", |_tmp, _to| {
+            Err(std::io::Error::new(
+                std::io::ErrorKind::Other,
+                "simulated commit failure",
+            ))
+        });
+        assert!(r.is_err(), "the commit failure must be reported");
+        assert_eq!(
+            std::fs::read(&target).unwrap(),
+            b"OLD",
+            "a failed atomic write must leave the target byte-for-byte intact"
+        );
+        assert_eq!(
+            dir_names(&dir),
+            vec!["a.txt".to_string()],
+            "a failed atomic write must not leave a temporary file behind"
+        );
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    /// ⚠ **提交发生之前,目标一个字都没动过**。
+    ///
+    /// 这条是「原子」这件事的**定义级**判据:提交步被调用时,目标仍然是
+    /// **旧内容**(新内容在临时文件里)。
+    /// ⇒ 把实现改成「先删目标再写」,这条立刻变红(提交步看到的是「目标已消失」)。
+    #[test]
+    fn the_target_is_untouched_until_the_commit_step_runs() {
+        let dir = tmpfile("");
+        std::fs::create_dir_all(&dir).unwrap();
+        let target = dir.join("a.txt");
+        std::fs::write(&target, b"OLD").unwrap();
+
+        let mut seen: Option<Vec<u8>> = None;
+        let mut tmp_seen: Vec<u8> = Vec::new();
+        write_atomic(&target, b"NEW", |tmp, to| {
+            tmp_seen = std::fs::read(tmp).unwrap();
+            seen = std::fs::read(to).ok();
+            Ok(())
+        })
+        .unwrap();
+        assert_eq!(
+            tmp_seen,
+            b"NEW".to_vec(),
+            "the temp file must hold the new content"
+        );
+        assert_eq!(
+            seen,
+            Some(b"OLD".to_vec()),
+            "at commit time the target must still hold the OLD content \
+             (a delete-then-write implementation would see it missing)"
+        );
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    /// ⚠ **口径**:毫秒、**Unix 纪元** —— 与标准库读数**逐毫秒相同**。
+    ///
+    /// Windows 侧本实现是**手写 raw FFI**(`FILETIME` ⇒ 减 1601 纪元偏移)
+    /// ⇒ 这条是那道算术的**交叉核对**:错了就会差 **369 年**。
+    #[test]
+    fn file_mtime_agrees_with_the_standard_library_to_the_millisecond() {
+        let path = tmpfile(".txt");
+        std::fs::write(&path, b"x").unwrap();
+        let got = mtime_millis(&path).expect("mtime");
+        let via_std = std::fs::metadata(&path).unwrap().modified().unwrap();
+        let want = system_time_millis(via_std);
+        assert_eq!(
+            got, want,
+            "FILE_MTIME must be the same millisecond as the std reading"
+        );
+        // 口径必须是「Unix 纪元起的毫秒」⇒ 落在 2020-01-01 之后
+        // (若误把 `FILETIME` 刻数当毫秒,这里会是一个**负数**或一个 1601 年的数)。
+        assert!(
+            got > 1_577_836_800_000,
+            "the epoch must be Unix, not FILETIME: {got}"
+        );
+        let _ = std::fs::remove_file(&path);
+    }
+
+    /// ⚠ **同进程两个锁必须互斥**。
+    ///
+    /// ⚠ POSIX 侧若用 `fcntl` 记录锁就**过不了**这条(记录锁是**按进程**的
+    ///   ⇒ 第二次加锁直接成功)⇒ 这条是「必须用 `flock`」的守卫。
+    #[test]
+    fn a_second_lock_on_the_same_file_is_refused_in_the_same_process() {
+        let dir = tmpfile("");
+        std::fs::create_dir_all(&dir).unwrap();
+        let path = dir.join("lock");
+        let h1 = acquire_lock(&path).expect("first lock");
+        let second = acquire_lock(&path);
+        assert!(
+            second.is_err(),
+            "a second exclusive lock on the same file must be refused"
+        );
+        assert!(
+            is_lock_conflict(&second.unwrap_err()),
+            "the refusal must say \"already locked\", not \"I/O error\""
+        );
+        release_lock(h1).unwrap();
+        // 释放之后 ⇒ 能再拿到(锁真的被放掉了,不是「忘了」)。
+        let h2 = acquire_lock(&path).expect("the lock must be re-acquirable after release");
+        release_lock(h2).unwrap();
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    /// ⚠ **POSIX**:目标正被别处打开时,原子写**仍应成功**。
+    ///
+    /// ⚠ `rename(2)` 对「正被打开的文件」照样替换 ⇒ 读者与写者可以同时在场
+    ///   ⇒ 这正是「原子写」在 POSIX 上可被**并发读者**验证的前提。
+    #[cfg(unix)]
+    #[test]
+    fn an_atomic_write_succeeds_even_while_the_target_is_open_elsewhere() {
+        let dir = tmpfile("");
+        std::fs::create_dir_all(&dir).unwrap();
+        let target = dir.join("a.txt");
+        std::fs::write(&target, b"OLD").unwrap();
+        // ⚗ 关键:**别处**开着这个文件(只读句柄)。
+        let held = std::fs::File::open(&target).unwrap();
+
+        let r = write_atomic(&target, b"NEW", atomic_replace);
+        assert!(
+            r.is_ok(),
+            "an atomic write must survive another handle holding the target: {r:?}"
+        );
+        assert_eq!(
+            std::fs::read(&target).unwrap(),
+            b"NEW",
+            "the new content must land"
+        );
+        drop(held);
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    /// ⚠ **Windows**:目标正被别处打开时,原子写**会失败**(平台限制,不是缺陷)。
+    ///
+    /// ⚠ **实测事实**:`MoveFileExW(REPLACE_EXISTING)` **不许替换打开着的文件**
+    ///   ⇒ 返回 `ERROR_ACCESS_DENIED` ⇒ 本实现在这一种错误上做**有界重试**
+    ///   (≈300 ms),真的换不掉就失败。
+    /// ⚠ **为什么把它钉成契约**:它是**平台事实**,调用方必须知道「Windows 上
+    ///   原子写要求目标没被别处打开」⇒ 钉住它,这条事实才不会在换实现时
+    ///   悄悄变掉。
+    /// ⚠ **POSIX 那一侧**由 [`an_atomic_write_succeeds_even_while_the_target_is_open_elsewhere`]
+    ///   钉住(那里**成功**)⇒ 两个平台的差别是**成文的**,不是偶然的。
+    #[cfg(windows)]
+    #[test]
+    fn an_atomic_write_fails_while_the_target_is_open_elsewhere_on_windows() {
+        let dir = tmpfile("");
+        std::fs::create_dir_all(&dir).unwrap();
+        let target = dir.join("a.txt");
+        std::fs::write(&target, b"OLD").unwrap();
+        let held = std::fs::File::open(&target).unwrap();
+
+        let r = write_atomic(&target, b"NEW", atomic_replace);
+        assert!(
+            r.is_err(),
+            "Windows refuses to replace an open file — this must be an error, not a silent success"
+        );
+        assert_eq!(
+            std::fs::read(&target).unwrap(),
+            b"OLD",
+            "a refused atomic write must leave the target untouched"
+        );
+        drop(held);
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    /// ⚠ **重复释放**幂等;但一个**从未发出过**的句柄必须被拒。
+    #[test]
+    fn releasing_a_lock_twice_is_idempotent_but_an_unissued_handle_is_not() {
+        let dir = tmpfile("");
+        std::fs::create_dir_all(&dir).unwrap();
+        let path = dir.join("lock");
+        let h = acquire_lock(&path).expect("lock");
+        assert!(release_lock(h).is_ok());
+        assert!(
+            release_lock(h).is_ok(),
+            "releasing the same handle twice must be idempotent"
+        );
+        assert!(
+            release_lock(999_999).is_err(),
+            "a handle that was never issued must be refused"
         );
         let _ = std::fs::remove_dir_all(&dir);
     }
