@@ -632,7 +632,7 @@ task** — other tasks keep running.
 
 **These eight rules are not stylistic.** Each one has a measured failure mode
 behind it (the numbers come from this repo's own audit,
-`../docs/plan/wlwl-v0.12.0-rc1-audit-and-fixes.md`):
+`../docs/history/wlwl-v0.12.0-rc1-audit-and-fixes.md`):
 
 1. **The wait must be inside a task.** Suspending at top level → `E0014`.
 2. **The wait must be the FIRST statement of its segment, and there must be
