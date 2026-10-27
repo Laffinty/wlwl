@@ -706,6 +706,32 @@ resolve(path) 的最终顺序：
 
 ⚠ **W4 的跨仓顺序**（一致性册 `:154` 闸门 1）：§0.9 登记行的「实现状态」列必须是「已实现」才能打 tag ⇒ **实现侧 W-35 先落地 → 再推规范仓 v1.0.4**。规范仓的**条款级改动**（SP-1/SP-2/SP-3/SP-5）可以与实现侧并行起草。
 
+### 5.2b ⚠ W1 的**真并行度**（按文件冲突实测后修正，2026-10-27）
+
+上表的「8 并行」是**按工作项**数的；按 §5.1 的「按文件切」纪律落成**真并行**时，同一波里**文件会撞车**。实测冲突矩阵（`同一文件 ⇒ 不可并行`）：
+
+| 文件 | 争用者 |
+|---|---|
+| `wlwl-eval/src/lib.rs` | W-10 · W-21 · W-33 |
+| `wlwl-eval/src/runtime.rs` | W-10 · W-11 · W-14 · W-15 · W-30 |
+| `wlwl-std/src/tcp.rs` | W-10 · W-11 · W-12 |
+| `wlwl-std/src/net.rs` | W-12 · W-14 · W-17 · W-19 · W-20 |
+| `wlwl-std/src/fs.rs` | W-24 · W-27 · W-19 · W-25 |
+| `wlwl-std/src/regex.rs` | W-23 · W-29 |
+| `wlwl-cli/src/main.rs` | W-21 · W-30 · W-32 |
+| `wlwl-value/src/lib.rs` | W-21 · W-14 |
+| `wlwl-std/src/lib.rs`（集成者专属） | W-12 · W-13 · W-15 · W-16 · W-26 |
+
+⇒ **W1 拆成两批**：
+
+| 批次 | 工作项 | 真并行度 | 文件 |
+|---|---|---|---|
+| **W1a**（先跑） | W-01（串行前置）· **W-02** · **W-21** · **W-23** · **W-24** | **4 并行**（W-01 单独先做） | 探针目录 / 新 crate `wlwl-ext` + `wlwl-value` + `wlwl-eval/lib.rs` + `wlwl-cli/main.rs` / `wlwl-std/regex.rs` / `wlwl-std/text.rs` + `fs.rs` |
+| **W1b**（W1a 合完后） | **W-10** ∪ **W-12** ∪ **W-27** ∪ **W-33** | **3 并行**（W-10 与 W-33 抢 `wlwl-eval/lib.rs` ⇒ 二选一先做） | `runtime.rs`+`eval/lib.rs`+`tcp.rs` / `net.rs`+`tcp.rs` / `fs.rs` / `diag_output.rs`+`error/lib.rs`+`eval/lib.rs` |
+
+⚠ **W-26（`std.log`）在 W1a 之后单独跑**：它是**新命名空间** ⇒ 登记要动 `wlwl-std/src/lib.rs`（集成者专属）⇒ 只能由集成者统一登记 ⇒ agent 只实现 `wlwl-std/src/log.rs` + 契约测试 + 登记清单。
+⚠ **W-22（TLS 扩展 crate）在 W1a 之后**：它依赖 **W-21** 的 ABI 头文件 ⇒ 底座必须先合。
+
 ### 5.3 派工模板（每个 agent 收到的 briefing 必须含这七项）
 
 ```
