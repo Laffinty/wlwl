@@ -271,6 +271,23 @@ const NAMESPACE_META: &[NsMeta] = &[
         v1_book: "系统",
         stubs: NO_STUBS,
     },
+    // [v0.12.1 / W-13] `std.sync` 原子共享容器（需求清单 B-4 的候选 (a)）。
+    // ⚠ 本命名空间**尚未进公共面**（附录 A 要等规范仓 v1.0.4 落表）⇒
+    // 成员集合对拍靠一致性册 §5.5「实现侧扩展台账」那一行兜住。
+    NsMeta {
+        path: "wlwl:std.sync",
+        layer: "R2",
+        v1_book: "系统",
+        stubs: NO_STUBS,
+    },
+    // [v0.12.1 / W-16] `std.http` HTTP 请求解析 + 响应构造（C-1 / C-2）。
+    // ⚠ 同上：**尚未进公共面** ⇒ 靠 §5.5 台账兜住。
+    NsMeta {
+        path: "wlwl:std.http",
+        layer: "R1",
+        v1_book: "系统",
+        stubs: NO_STUBS,
+    },
     // [v0.11.3 M7 / addendum-11 W-02] `RESULT` 组合子。
     // ⚠ 三条成员的 `ERR` 分支**不在成员体内执行** —— 语言规范 §8.2 规定实参为
     // `ERR` 时调用不求函数体(§8.3 注册表明文「不新增条目」),而「原样返还」恰好

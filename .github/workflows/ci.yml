@@ -621,6 +621,19 @@ jobs:
         working-directory: impl
         run: cargo check --locked -p wlwl-std --features real-ai
 
+      # [v0.12.1 / W-22] TLS 扩展 crate（`wlwl-tls` cdylib）。
+      #
+      # ⚠ 它**不在主 workspace 里**（`impl/ext/wlwl-tls-ext/` 自带 Cargo.lock）⇒
+      #   上面每一道 workspace 门禁都碰不到它 ⇒ 这里显式构建 + 跑它的测试。
+      # ⚠ 它是**另一个产物**：自持 rustls / ring / webpki-roots（版本与主仓
+      #   Cargo.lock 逐项相同，但**独立解版本**）⇒ 发行时随包分发，主仓依赖面不变。
+      # ⚠ 无网络时靠本地 cargo 缓存；缓存缺失 ⇒ 这道门禁**响亮失败**（不静默跳过）。
+      - name: TLS extension (wlwl-tls cdylib)
+        working-directory: impl/ext/wlwl-tls-ext
+        run: |
+          cargo test --locked
+          cargo build --locked --release
+
       # [v0.2 Phase G8] perf regression smoke. The full benchmark suite
       # is exercised against `benches/baseline.txt` (Phase F1) on a
       # longer schedule (weekly supply-chain.yml runs in parallel);

@@ -1,0 +1,494 @@
+// wlwl:std.http —— HTTP 请求解析 + 响应构造（**R1 纯逻辑层**，ADR-0021 的
+// 分层规则）：本模块是**纯 wlwl 源码**模块，成员面**只有两个**，没有任何
+// 原生绑定；唯一的跨命名空间依赖是
+//   · `wlwl:std.encode::BYTE_LEN`（**字节数**，不是码点数）
+//   · `wlwl:std.str::CAT` / `wlwl:std.str::INDEX_OF`
+//
+// ## 成员面
+//
+// · `PARSE_REQUEST(raw: STRING) -> DICT`
+//   = `{"method": STRING, "path": STRING, "version": STRING, "headers": DICT, "body": STRING}`
+// · `BUILD_RESPONSE(status: INTEGER, headers: DICT | NULL, body: STRING, method: STRING = "GET") -> DICT`
+//   = `{"status": INTEGER, "headers": DICT, "content_length": INTEGER, "head": STRING, "body": STRING}`
+//
+// ## 失败口径（两档，**不新增诊断码**）
+//
+// · **元数 / 类型错** ⇒ 既有诊断 `E0022` / `E0030`（原生诊断，终止运行）。
+// · **运行期可预期的协议错**（报文畸形 / 走私手法）⇒ `ERR` **值**
+//   `ERR([kind:"HttpError", op:"PARSE_REQUEST"|"BUILD_RESPONSE", reason])`
+//   —— 与 `wlwl:std.net` 的 `HttpError`（`net.rs` 的 `http_error`）**同形**。
+//   ⚠ 它是**值**不是诊断：调用方要么消费它（`IS_ERR` / `ERR_PAYLOAD`），
+//   要么显式丢弃（`LET(_, r)`）⇒ 否则作用域结束按 §8.6 报 `E0103`。
+//
+// ## 请求体的 framing：**三条规则**（RFC 9112 §6.3）
+//
+// 1. 有 `transfer-encoding` ⇒ **一律拒绝**。
+// 2. 有 `content-length` ⇒ 取**恰好那么多字节**；非法 / 自相矛盾 / 不足 /
+//    切在多字节字符中间 ⇒ **一律拒绝**。
+// 3. **两者都没有 ⇒ 体长为 0**（正文是**空串**）。
+//
+// ⚠ **规则 3 的依据**（RFC 9112 §6.3）：「A request message that does not
+//   contain `Transfer-Encoding` or `Content-Length` has a body length of
+//   **zero**」。
+// ⚠⚠ **别把响应侧的规则套到请求侧**：「体长由连接关闭决定」是**响应**的
+//   framing（RFC 9112 §6.4 的响应定界），**请求**没有这一条 ⇒ 本模块
+//   **不**看 `Connection` 头：`close` / `keep-alive` / `x-close` 一律
+//   **不影响**请求体的长度。
+//
+// ## 为什么服务端**拒绝 chunked 请求体**（ADR-0028 D3，防走私）
+//
+// `Transfer-Encoding` 意味着「体长由 TE 决定」⇒ 同一个请求可以被**两套**
+// 定界规则同时解读（前段按 `Content-Length`、后段按 chunked）⇒ 经典的
+// **请求走私**（request smuggling）向量。⇒ 本模块**不实现** chunked 解码，
+// **一律拒绝**：宁可让一条畸形请求失败，也不让两条请求共用一条连接。
+// ⚠ 这条对**任何** TE 生效（不只 `chunked`）—— `gzip` / `deflate` 之类
+//   同样意味着「体长由 TE 决定」。
+// ⚠ 「`Content-Length` 与 `Transfer-Encoding` 同时出现」落在**规则 1**上
+//   （TE 优先 ⇒ 拒）⇒ 不给「先看 CL 再看 TE」留后门。
+//
+// ## 头名一律小写（RFC 9110 §5.1）
+//
+// HTTP 头名**大小写不敏感** ⇒ 解析结果里**只**保留小写形，调用方查表不用
+// 猜大小写。发响应时同理（调用方给的 `Content-Type` 被发成 `content-type`）。
+//
+// ## 同名多值**全部保留**（RFC 9110 §5.3）
+//
+// 同名头出现多次 ⇒ 值是 `ARRAY[STRING]`（按出现序）；只出现一次 ⇒ 值是
+// `STRING`。⇒ 「有没有这个头」与「这个头有几个值」都能从**值的类型**读出来。
+//
+// ## ⚠ `EXPORT` 必须写在一行里
+//
+// `wlwl-std::lang_exports` 是**逐行**扫的（一行一条声明）⇒ 拆成多行，附录 A
+// 的镜像生成器会扫出**零个**成员。
+//
+// ## ⚠ 本模块的写法约定（两条语言侧的坑）
+//
+// 1. `(` … `)` 是**块**（一串用 `;` 分隔的语句），**不是**分组括号 ⇒
+//    块里的语句用 `;` 分隔（用 `,` 解析不过）；单表达式的分支**不要**再套
+//    一层括号（套了就是块 ⇒ 里面的 `,` 会被当成非法分隔）。
+// 2. 运算符是**调用形态**（`+(a, b)`），**没有**中缀写法；`+` **不做**隐式
+//    强转 ⇒ 拼字符串用 `CAT(...)` 或 `STR(...)`。
+
+IMPORT("wlwl:std.encode", ["BYTE_LEN"]);
+IMPORT("wlwl:std.str", ["CAT", "INDEX_OF"]);
+
+// ── 助手（不导出）────────────────────────────────────────────────────────
+
+// 类型闸：类型不对 ⇒ `E0030`（**既有**诊断码，不新增）。
+//
+// ⚠ 诊断消息里带**成员名** ⇒ 调用方知道是哪个成员的哪个实参类型错了。
+// ⚠ `_KIND` 是注入进来的 R2 内核（诊断用的**措辞**：小写种类名）；`TYPE` 给的
+//   是**大写**的类型名（§2.5）—— 两者不是一回事，这里要的是前者。
+LET(_NEED, FUN((name, what, ty, v),
+    IF(==(TYPE(v), ty),
+       v,
+       _DIAG_E0030(CAT(name, ": expected ", what, ", got ", _KIND(v))))));
+
+LET(_NEED_STR, FUN((name, v), _NEED(name, "string", "STRING", v)));
+LET(_NEED_INT, FUN((name, v), _NEED(name, "integer", "INTEGER", v)));
+LET(_NEED_DICT, FUN((name, v), _NEED(name, "dict", "DICT", v)));
+
+// 运行期可预期的失败 ⇒ `ERR` **值**（不是诊断）。
+//
+// ⚠ 形状与 `wlwl:std.net` 的 `HttpError`（`net.rs::http_error`）**同形**：
+// `ERR([kind:"HttpError", op, reason])`。
+// ⚠ ⚠ **不要把它绑到局部变量上**：`LET` 会把「未消费的 ERR 状态」转给那个
+//   绑定 ⇒ 作用域结束报 `E0103`。它只能**直接作为返回值**流出去。
+LET(_HTTP_ERR, FUN((op, reason),
+    ERR(["kind": "HttpError", "op": op, "reason": reason])));
+
+// RFC 9110 §5.6.2 的 `tchar`（头字段名与方法名只能用这些字符）。
+//
+// ```text
+// tchar = "!" / "#" / "$" / "%" / "&" / "'" / "*" / "+" / "-" / "." /
+//         "^" / "_" / "`" / "|" / "~" / DIGIT / ALPHA
+// ```
+//
+// 判据用**码点**（`CODEPOINTS`）而不是逐字符比较 ⇒ 一眼能看出「哪些码是
+// 允许的」，且不受 `LOWER` / `UPPER` 的 Unicode 口径影响。
+//
+// ⚠ 标点那部分用「查表」而不是一长串 `||`：`||` 是**二元的**（不是变长的）
+//   ⇒ 15 个字符写成 `||(a, b, c, …)` 解析不过 ⇒ 嵌套下去反而难读。
+//   ⇒ 标点收进一张**字符串表**，用 `INDEX_OF` 判成员。
+LET(_TCHAR_PUNCT, "!#$%&'*+-.^_`|~");
+
+LET(_IS_TCHAR, FUN((cp),
+    IF(||(||(&&(>=(cp, 48), <=(cp, 57)), &&(>=(cp, 65), <=(cp, 90))), &&(>=(cp, 97), <=(cp, 122))),
+       TRUE,
+       >(INDEX_OF(_TCHAR_PUNCT, FROM_CODEPOINTS([cp])), -1))));
+
+// 整串是不是一个 `token`（**非空** + 全部是 `tchar`）。
+//
+// ⚠ **空串不是 token** ⇒ 头名 / 方法名不许是空的。
+LET(_IS_TOKEN, FUN((s),
+    (LET(cps, CODEPOINTS(s));
+     IF(==(LEN(cps), 0),
+        FALSE,
+        (LET MUT(i, 0);
+         LET MUT(ok, TRUE);
+         WHILE(<(i, LEN(cps)),
+             IF(ok,
+                IF(_IS_TCHAR(AT(cps, i, 0)),
+                   SET(i, +(i, 1)),
+                   (SET(ok, FALSE); SET(i, LEN(cps)))),
+                NULL));
+         ok)))));
+
+// 十进制无符号整数 → INTEGER；**非法** ⇒ -1。
+//
+// ⚠ **不用 `INT`**：`INT` 失败时返回的是 `ERR` **值** ⇒ §8.2 的透明传播会
+//   让它在表达式里没法当数字用（`==(INT("x"), -1)` 会直接传播 ERR）。
+//   这里自己解析，失败就是一个普通的 -1。
+// ⚠ **位数上限 18**：再长必然溢出 i64（`E0035` 会终止整个运行，而这里要的
+//   是「这个 `Content-Length` 是非法的」⇒ 一条请求被拒，而不是进程死掉）。
+LET(_PARSE_DEC, FUN((s),
+    (LET(cps, CODEPOINTS(s));
+     IF(||(==(LEN(cps), 0), >(LEN(cps), 18)),
+        -1,
+        (LET MUT(acc, 0);
+         LET MUT(i, 0);
+         LET MUT(bad, FALSE);
+         WHILE(<(i, LEN(cps)),
+             IF(||(<(AT(cps, i, 0), 48), >(AT(cps, i, 0), 57)),
+                (SET(bad, TRUE); SET(i, LEN(cps))),
+                (SET(acc, +( *(acc, 10), -(AT(cps, i, 0), 48) ));
+                 SET(i, +(i, 1)))));
+         IF(bad, -1, acc))))));
+
+// 一个码点占几个字节（ASCII 1 / 两字节 2 / 三字节 3 / 四字节 4）。
+LET(_CHAR_BYTES, FUN((cp), BYTE_LEN(FROM_CODEPOINTS([cp]))));
+
+// 取 `region` 的**前 n 字节** ⇒ 答案用**码点数**给出（`SUB` 按码点切）。
+//
+// 返回：
+// · ≥ 0 ⇒ 该切多少个码点（n 恰好落在字符边界上）
+// · -1  ⇒ `region` 比 n 字节**短**（正文不足）
+// · -2  ⇒ n 落在**多字节字符中间**（不是合法的正文边界）
+//
+// ⚠ 为什么不能直接 `SUB(region, 0, n)`：`SUB` 的长度是**码点**不是字节 ⇒
+//   非 ASCII 的正文会被切错（"héllo" 是 5 个码点 / 6 字节，而
+//   `Content-Length: 5` 要的是 5 **字节**）。
+//
+// ⚠ 判据是「累加到 n 就停」：累加后**正好**是 n ⇒ 合法边界；累加后**超过**
+//   n ⇒ n 落在多字节字符中间（-2）。
+LET(_CUT_BYTES, FUN((region, n),
+    (IF(<(BYTE_LEN(region), n),
+        -1,
+        (LET(cps, CODEPOINTS(region));
+         LET MUT(acc, 0);
+         LET MUT(cnt, 0);
+         LET MUT(i, 0);
+         WHILE(&&(<(i, LEN(cps)), <(acc, n)),
+             (SET(acc, +(acc, _CHAR_BYTES(AT(cps, i, 0))));
+              SET(cnt, +(cnt, 1));
+              SET(i, +(i, 1))));
+         IF(==(acc, n), cnt, -2))))));
+
+// `content-length` 的**一个**取值 ⇒ 字节数；-1 = 非法。
+LET(_CL_ONE, FUN((v),
+    IF(==(TYPE(v), "STRING"),
+       _PARSE_DEC(TRIM(v)),
+       -1)));
+
+// `content-length` 的值 ⇒ 字节数；-1 = 非法 / 自相矛盾。
+//
+// ⚠ **同名多值且值不同 ⇒ 非法**：`Content-Length: 5` 与 `Content-Length: 6`
+//   并存是经典的走私手法（两条路径各取一个）⇒ 一律拒绝。
+// ⚠ **同名多值且值相同** ⇒ 视为一条（RFC 9112 §6.3.1 允许「合并成一条」
+//   再定界）。
+LET(_CL_INT, FUN((cl),
+    (LET(vals, IF(==(TYPE(cl), "ARRAY"), cl, [cl]));
+     LET MUT(n, -1);
+     LET MUT(bad, FALSE);
+     FOR(v, vals,
+         (LET(k, _CL_ONE(v));
+          IF(==(k, -1),
+             SET(bad, TRUE),
+             IF(==(n, -1),
+                SET(n, k),
+                SET(bad, !=(n, k))))));
+     IF(bad, -1, n))));
+
+// 记一个头 ⇒ **同名多值全部保留**（RFC 9110 §5.3）。
+// 第一次是 `STRING`；第二次起升级成 `ARRAY[STRING]`（按出现序）。
+LET(_PUT_HEADER, FUN((out, name, value),
+    (LET(cur, AT(out, name, NULL));
+     IF(==(TYPE(cur), "NULL"),
+        INDEX_SET(out, name, value),
+        IF(==(TYPE(cur), "ARRAY"),
+           INDEX_SET(out, name, PUSH(cur, value)),
+           INDEX_SET(out, name, [cur, value]))))));
+
+// 头块 ⇒ 行数组（**去掉行尾的 `\r`**）。
+LET(_HEAD_LINES, FUN((head),
+    (LET MUT(out, []);
+     FOR(l, SPLIT(head, "\n"),
+         SET(out, PUSH(out, IF(ENDS_WITH(l, "\r"), SUB(l, 0, -(LEN(l), 1)), l))));
+     out)));
+
+// 把 `parts` 从 `from` 起的那几段用 `sep` 接回去。
+LET(_JOIN_FROM, FUN((parts, from, sep),
+    (LET MUT(out, "");
+     LET MUT(first, TRUE);
+     FOR(p, SLICE(parts, from, LEN(parts)),
+         (IF(first,
+            (SET(out, p); SET(first, FALSE)),
+            SET(out, +(out, +(sep, p))))));
+     out)));
+
+// 报文 ⇒ 头块 + 正文区。
+//
+// ⚠ **只认两种分隔**：`CRLFCRLF`（合规）与 `LFLF`（现实里常见的非合规写法）。
+//   别的分隔约定**不猜** —— 那正是走私的入口。
+// ⚠ 先试 `CRLFCRLF`，再退回 `LFLF`（**不是**「哪个先出现用哪个」）。
+LET(_SPLIT_HEAD, FUN((text),
+    (LET(parts, SPLIT(text, "\r\n\r\n"));
+     IF(==(LEN(parts), 1),
+        (LET(parts2, SPLIT(text, "\n\n"));
+         IF(==(LEN(parts2), 1),
+            ["ok": FALSE, "reason": "no header block terminator (CRLFCRLF or LFLF) found"],
+            ["ok": TRUE, "head": AT(parts2, 0, ""), "region": _JOIN_FROM(parts2, 1, "\n\n")])),
+        ["ok": TRUE, "head": AT(parts, 0, ""), "region": _JOIN_FROM(parts, 1, "\r\n\r\n")]))));
+
+// 请求行 ⇒ method / path / version（RFC 9112 §3）。
+//
+// ⚠ 请求行**恰好三段**、以**单个 SP** 分隔：多一个空格就多一段 ⇒ 拒。
+//   「多个空格」在不同实现里会被折叠或不被折叠 ⇒ 那正是分歧的来源。
+// ⚠ 版本只认 `HTTP/1.1` 与 `HTTP/1.0`（与 `std.net` 的服务端同一口径：
+//   其它版本得回 `505`，不是一个 HTTP/1.x 的报文）。
+LET(_PARSE_REQ_LINE, FUN((line),
+    (LET(parts, SPLIT(line, " "));
+     IF(!=(LEN(parts), 3),
+        ["ok": FALSE, "reason": "malformed request line"],
+        IF(||(NOT(_IS_TOKEN(AT(parts, 0, ""))), ==(AT(parts, 1, ""), "")),
+           ["ok": FALSE, "reason": "malformed request line"],
+           IF(&&(!=(AT(parts, 2, ""), "HTTP/1.1"), !=(AT(parts, 2, ""), "HTTP/1.0")),
+              ["ok": FALSE, "reason": "unsupported HTTP version"],
+              ["ok": TRUE,
+               "method": AT(parts, 0, ""),
+               "path": AT(parts, 1, ""),
+               "version": AT(parts, 2, "")]))))));
+
+// 一行头 ⇒ 头名 + 头值（头名**小写**，值**去首尾空白**）。
+//
+// ⚠ 两个分支的**形状一致**（都有 `ok` / `name` / `value` 三个键）——
+//   静态检查的 W0013 会盯「分支的字面量形状不一致」。
+LET(_HEADER_PARTS, FUN((line),
+    (LET(idx, INDEX_OF(line, ":"));
+     IF(==(idx, -1),
+        ["ok": FALSE, "name": "", "value": ""],
+        ["ok": TRUE,
+         "name": LOWER(SUB(line, 0, idx)),
+         "value": TRIM(SUB(line, +(idx, 1), LEN(line)))]))));
+
+// 一行头 ⇒ `{"ok": TRUE, "name":…, "value":…}` 或 `{"ok": FALSE, "reason":…}`。
+//
+// · **obs-fold**（行首是 SP / HTAB）⇒ **拒绝**（RFC 9112 §5.2：服务端可以
+//   拒，也可以把 obs-fold 折成空格 —— 两种实现会看到**不同的头** ⇒ 拒）。
+// · 没有 `:` ⇒ **拒绝**；头名不是 `token` ⇒ **拒绝**；值里含 CR ⇒ **拒绝**。
+LET(_PARSE_ONE_HEADER, FUN((line),
+    (IF(||(STARTS_WITH(line, " "), STARTS_WITH(line, "\t")),
+       ["ok": FALSE, "reason": "obs-fold in the request header"],
+       (LET(parts, _HEADER_PARTS(line));
+        IF(==(AT(parts, "ok", FALSE), FALSE),
+           ["ok": FALSE, "reason": "malformed header line (no colon)"],
+           IF(NOT(_IS_TOKEN(AT(parts, "name", ""))),
+              ["ok": FALSE, "reason": "invalid header field name"],
+              IF(>(INDEX_OF(AT(parts, "value", ""), "\r"), -1),
+                 ["ok": FALSE, "reason": "the header field value contains CR"],
+                 ["ok": TRUE,
+                  "name": AT(parts, "name", ""),
+                  "value": AT(parts, "value", "")]))))))));
+
+// 头行数组 ⇒ 头字典。
+LET(_PARSE_HEADERS, FUN((lines),
+    (LET MUT(out, DICT());
+     LET MUT(reason, "");
+     FOR(line, lines,
+         (IF(==(reason, ""),
+            (LET(one, _PARSE_ONE_HEADER(line));
+             IF(==(AT(one, "ok", FALSE), FALSE),
+                SET(reason, AT(one, "reason", "malformed header line")),
+                SET(out, _PUT_HEADER(out, AT(one, "name", ""), AT(one, "value", ""))))),
+            NULL)));
+     IF(==(reason, ""),
+        ["ok": TRUE, "headers": out],
+        ["ok": FALSE, "reason": reason]))));
+
+// 按 framing 规则取请求体。
+//
+// 返回 DICT：成功 `["ok": TRUE, "body": …]`；失败 `["ok": FALSE, "reason": …]`。
+//
+// 规则（**只有三条**，按顺序）：
+// 1. 有 `transfer-encoding` ⇒ **拒绝**（ADR-0028 D3；`chunked` 是其中最常见
+//    的那种，但任何 TE 都意味着「体长由 TE 决定」⇒ 本成员不认）。
+// 2. 有 `content-length` ⇒ 取**恰好那么多字节**；不够 ⇒ 拒绝；边界切在
+//    多字节字符中间 ⇒ 拒绝。
+// 3. 两者都没有 ⇒ **体长为 0**（RFC 9112 §6.3）⇒ 正文是**空串**。
+//    ⚠ 「体长由连接关闭决定」是**响应**的 framing，**请求**没有这条 ⇒
+//      本模块**不**看 `Connection: close`（余下的字节不是正文，忽略）。
+LET(_FRAME_BODY, FUN((region, headers),
+    (LET(te, AT(headers, "transfer-encoding", NULL));
+     IF(!=(TYPE(te), "NULL"),
+        ["ok": FALSE, "reason": "transfer-encoding is refused (ADR-0028 D3: the server refuses a chunked request body)"],
+        (LET(cl, AT(headers, "content-length", NULL));
+         IF(==(TYPE(cl), "NULL"),
+            ["ok": TRUE, "body": ""],
+            (LET(n, _CL_INT(cl));
+             IF(==(n, -1),
+                ["ok": FALSE, "reason": "invalid or conflicting content-length"],
+                (LET(cut, _CUT_BYTES(region, n));
+                 IF(==(cut, -1),
+                    ["ok": FALSE, "reason": "the request body is shorter than content-length"],
+                    IF(==(cut, -2),
+                       ["ok": FALSE, "reason": "content-length does not fall on a character boundary"],
+                       ["ok": TRUE, "body": SUB(region, 0, cut)])))))))))));
+
+// 头值是数组 ⇒ 逐项转成字符串（类型不对 ⇒ `E0030`）。
+LET(_STR_ARRAY, FUN((v),
+    (LET MUT(out, []);
+     FOR(x, v, SET(out, PUSH(out, _NEED_STR("BUILD_RESPONSE", x))));
+     out)));
+
+// 状态码 → 理由短语（**不是**权威表，只是让响应行像样）。
+//
+// ⚠ 与 `wlwl:std.net` 的 `reason_phrase`（`net.rs`）**同一份口径** —— 两层
+//   的响应行不该一个带理由短语、一个不带。
+// ⚠ 表里没有的状态码 ⇒ 响应行**不带**理由短语（`HTTP/1.1 599`）。
+LET(_REASONS, ["200": "OK",
+               "201": "Created",
+               "202": "Accepted",
+               "204": "No Content",
+               "301": "Moved Permanently",
+               "302": "Found",
+               "304": "Not Modified",
+               "400": "Bad Request",
+               "401": "Unauthorized",
+               "403": "Forbidden",
+               "404": "Not Found",
+               "405": "Method Not Allowed",
+               "408": "Request Timeout",
+               "413": "Payload Too Large",
+               "500": "Internal Server Error",
+               "501": "Not Implemented",
+               "502": "Bad Gateway",
+               "503": "Service Unavailable"]);
+
+// 头块 + 正文区 ⇒ 解析结果（或失败原因）。
+LET(_PARSE_MESSAGE, FUN((head, region),
+    (LET(lines, _HEAD_LINES(head));
+     LET(req, _PARSE_REQ_LINE(AT(lines, 0, "")));
+     IF(==(AT(req, "ok", FALSE), FALSE),
+        ["ok": FALSE, "reason": AT(req, "reason", "malformed request line")],
+        (LET(hdrs, _PARSE_HEADERS(SLICE(lines, 1, LEN(lines))));
+         IF(==(AT(hdrs, "ok", FALSE), FALSE),
+            ["ok": FALSE, "reason": AT(hdrs, "reason", "malformed header line")],
+            (LET(framed, _FRAME_BODY(region, AT(hdrs, "headers", DICT())));
+             IF(==(AT(framed, "ok", FALSE), FALSE),
+                ["ok": FALSE, "reason": AT(framed, "reason", "malformed request body")],
+                ["ok": TRUE,
+                 "method": AT(req, "method", ""),
+                 "path": AT(req, "path", ""),
+                 "version": AT(req, "version", ""),
+                 "headers": AT(hdrs, "headers", DICT()),
+                 "body": AT(framed, "body", "")]))))))));
+
+// ── PARSE_REQUEST(raw) -> DICT ─────────────────────────────────────────
+
+// 解析一条 HTTP 请求。
+//
+// `raw` = 请求的**原始文本**（STRING）。返回
+// `{"method": STRING, "path": STRING, "version": STRING, "headers": DICT, "body": STRING}`。
+//
+// · `headers` 的键**一律小写**；同名多值 ⇒ 值是 `ARRAY[STRING]`。
+// · `body` = 按 framing 规则取的正文（UTF-8 文本）—— 规则见文件头的
+//   「请求体的 framing」与 `_FRAME_BODY`。
+// · 失败 ⇒ `ERR([kind:"HttpError", op:"PARSE_REQUEST", reason])` **值**
+//   （不是诊断）—— 调用方要么消费它，要么显式丢弃（`LET(_, r)`）。
+//
+// ⚠ **头块与正文的分界**：先找 `CRLFCRLF`，再退回 `LFLF`（现实里常见的
+//   非合规写法）。**只认这两种** —— 别的分隔约定不猜。
+LET(PARSE_REQUEST, FUN((raw),
+    (LET(text, _NEED_STR("PARSE_REQUEST", raw));
+     LET(split, _SPLIT_HEAD(text));
+     IF(==(AT(split, "ok", FALSE), FALSE),
+        _HTTP_ERR("PARSE_REQUEST", AT(split, "reason", "malformed request")),
+        (LET(msg, _PARSE_MESSAGE(AT(split, "head", ""), AT(split, "region", "")));
+         IF(==(AT(msg, "ok", FALSE), FALSE),
+            _HTTP_ERR("PARSE_REQUEST", AT(msg, "reason", "malformed request")),
+            ["method": AT(msg, "method", ""),
+             "path": AT(msg, "path", ""),
+             "version": AT(msg, "version", ""),
+             "headers": AT(msg, "headers", DICT()),
+             "body": AT(msg, "body", "")]))))));
+
+// ── BUILD_RESPONSE(status, headers, body, method?) -> DICT ─────────────
+
+// 构造一条 HTTP 响应。
+//
+// `status` = 状态码（INTEGER）；`headers` = 头字典（键是字符串，值是 `STRING`
+// 或 `ARRAY[STRING]`；`NULL` = 没有头）；`body` = 正文（STRING）；
+// `method` = **可选**，默认 `"GET"` —— 传 `"HEAD"` 时走 **HEAD 语义**。
+//
+// 返回
+// `{"status": INTEGER, "headers": DICT, "content_length": INTEGER, "head": STRING, "body": STRING}`
+// —— `head` 是**序列化好的头块**（状态行 + 头行 + 空的结束行），`body` 是正文；
+// 两者拼起来就是可以发出去的东西。
+//
+// ## 结构性保证：长度只认**字节数**
+// `content_length` 与 `headers["content-length"]` **一律**由 `BYTE_LEN(body)`
+// 算出 —— **不用** `LEN`（那是码点数）⇒ 多字节正文的 `Content-Length`
+// 结构上就不可能算错。
+//
+// ⚠ 调用方自己给的 `content-length` 会被这个计算值**覆盖**（本成员的结构性
+//   保证优先；要自己算就别用这个成员）。
+//
+// ## HEAD 语义
+// `method` 是 `"HEAD"`（大小写不敏感）⇒ **只发头不发体**：返回的 `body` 是
+// 空串，但 `content_length` 仍是 `GET` 会有的那个长度（RFC 9110 §9.3.2：
+// HEAD 响应的 `Content-Length` 与对应的 GET 相同）。
+//
+// ## 头名一律小写（与请求侧同一口径）
+// 调用方给的 `Content-Type` 会被发成 `content-type` —— HTTP 头名大小写不敏感。
+// 值是数组 ⇒ **展开成多行**（每个元素一行）。
+LET(BUILD_RESPONSE, FUN((status, headers, body, method = "GET"),
+    (LET(st, _NEED_INT("BUILD_RESPONSE", status));
+     LET(txt, _NEED_STR("BUILD_RESPONSE", body));
+     LET(m, _NEED_STR("BUILD_RESPONSE", method));
+     LET MUT(hs, DICT());
+     IF(!=(TYPE(headers), "NULL"),
+        (LET(src, _NEED_DICT("BUILD_RESPONSE", headers));
+         FOR(k, KEYS(src),
+             (LET(name, LOWER(_NEED_STR("BUILD_RESPONSE", k)));
+              LET(v, AT(src, k, NULL));
+              IF(==(TYPE(v), "STRING"),
+                 SET(hs, INDEX_SET(hs, name, v)),
+                 IF(==(TYPE(v), "ARRAY"),
+                    SET(hs, INDEX_SET(hs, name, _STR_ARRAY(v))),
+                    _DIAG_E0030("BUILD_RESPONSE: a header value must be a string or an array of strings")))))),
+        NULL);
+     LET(n, BYTE_LEN(txt));
+     SET(hs, INDEX_SET(hs, "content-length", STR(n)));
+     LET MUT(head, "HTTP/1.1 ");
+     SET(head, +(head, STR(st)));
+     LET(reason, AT(_REASONS, STR(st), ""));
+     IF(NOT(==(reason, "")),
+        SET(head, +(head, +(" ", reason))),
+        NULL);
+     FOR(k, KEYS(hs),
+         (LET(v, AT(hs, k, NULL));
+          IF(==(TYPE(v), "ARRAY"),
+             FOR(x, v, SET(head, +(head, CAT("\r\n", k, ": ", x)))),
+             SET(head, +(head, CAT("\r\n", k, ": ", v))))));
+     SET(head, +(head, "\r\n\r\n"));
+     ["status": st,
+      "headers": hs,
+      "content_length": n,
+      "head": head,
+      "body": IF(==(UPPER(m), "HEAD"), "", txt)])));
+
+// EXPORT 顺序 = 需求清单 C-1 / C-2 的行序（先解析、后构造）。
+//
+// ⚠ `EXPORT` **必须**写在一行里：`wlwl-std::lang_exports` 是**逐行**扫的
+//   (一行一条声明)⇒ 拆成多行,附录 A 的镜像生成器会扫出**零个**成员。
+EXPORT(["PARSE_REQUEST", "BUILD_RESPONSE"]);

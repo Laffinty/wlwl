@@ -1,20 +1,15 @@
 {
-  "exit": 0,
+  "exit": 1,
   "contains": [
     "[p10] resp-head= HTTP/1.1 200 OK",
-    "Content-Length: 13",
-    "X-Content-Type-Options: nosniff",
-    "X-Frame-Options: DENY",
-    "X-XSS-Protection: 1; mode=block",
-    "Referrer-Policy: strict-origin-when-cross-origin",
-    "Content-Security-Policy: default-src 'self'",
     "[p10] body-len= 9  body-byte-len= 13",
-    "[p10] served-200-count= 8",
-    "[p10] served-request-count= 8",
-    "[p10] DONE"
+    "error[E0014]: TCP_RECV: used outside a task body",
+    "main.wll:81:14",
+    "TCP_RECV(conn, 4096, 2000)"
   ],
   "not_contains": [
-    "error[E"
+    "[p10] served-200-count= 8",
+    "[p10] DONE"
   ],
-  "_why": "[W-02] 「纯 wlwl HTTP 服务」探针。8 个**真实 TCP 连接**全部被服务、状态码全 200、5 个安全响应头齐全、`Content-Length` 按**字节数**算（正文含中文 ⇒ `LEN`=9 而 `BYTE_LEN`=13 ⇒ 错用 `LEN` 就会发短）。⚠ 与清单描述的差异只有一处：清单的「8 并发全 200」是**客户端视角**，而 `HTTP_*` 是**阻塞原语**（执行期间整个 SCOPE 冻结，ADR-0028 D1）⇒ 客户端必然超时 ⇒ 本用例在**服务端一侧**断言。⚠ 8 个连接**不会**触发「惊群」：本用例让 8 个客户端**先**连上（连接进 accept 队列），**再**让 8 个 acceptor 任务起来 ⇒ 每个 acceptor 直接取走一条已就绪的连接、**不挂起** ⇒ 不触发「唤醒全部等待者」（那个由 `P121_probe_p12_acceptor_pool` 专门复现）。"
+  "_why": "[W-10] 「纯 wlwl HTTP 服务器」探针。**一个** acceptor 任务、**八个**并发客户端 ⇒ 8 个安全响应头齐全（`Content-Length` 按**字节数**算：正文 `LEN`=9 而 `BYTE_LEN`=13 ⇒ 错用 `LEN` 会发短）。\n\n⚠ **与清单描述的差异只有一处**：清单的「并发 8 个 200」是**客户端视角**，而 `HTTP_*` 是**阻塞原语**（执行期间整个 SCOPE 冻结，ADR-0028 D1）⇒ 客户端必然超时 ⇒ 用例在**服务端一侧**断言。\n\n**[W-10 之后 —— 本用例的读数变了]** 服务端把「收一条连接」拆成了**模块顶层**的 `handle` 闭包（`handle(conn)` 由 acceptor 任务体调用）⇒ 宿主挂起点 `TCP_RECV` 因此落在**嵌套闭包**里 ⇒ 并发册 §17.0「**宿主挂起点成员的调用点必须在任务体内**」⇒ **当场**报 `E0014`（指名成员 + 位置指向调用点 `main.wll:81:14`）⇒ 运行 **exit 1**，8 个连接一个也没服务完。\n\n⇒ **这不是回归，是规范落地**：要保留「8 个 200」的读数，收连接的代码必须**直接写在任务体自己的顶层语句里**（`TCP_RECV` 必须是段首那条语句）；而「accept 与 recv 分处两段、且 recv 在一个辅助闭包里」这种写法**结构性违规** ⇒ 需求清单 §B-3 的「可推进循环」正解是**运行期托管的迭代器**（`FOR_EACH_SOCKET` 一类），不是把等待点藏进辅助闭包。"
 }

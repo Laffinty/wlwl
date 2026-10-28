@@ -11,7 +11,19 @@
 //     `<script`（它被百分号编码成 `%3Cscript%3E`）⇒ 只匹配原始路径会
 //     **全部漏过**（静默漏防）。
 //
-// 期望读数（exit 0）：
+// ⚠⚠ **[W-10 之后] 本探针的读数变了** —— handler 是**模块顶层**的闭包、
+//   acceptor 任务体调用它 ⇒ 宿主挂起点 `TCP_RECV` 落在**嵌套闭包**里 ⇒
+//   并发册 §17.0「**宿主挂起点成员的调用点必须在任务体内**」⇒ **当场**报
+//   `E0014`（指名成员 + 位置指向调用点 `main.wll:<行>:<列>`）⇒ 运行 **exit 1**
+//   ⇒ 4 条请求一条也没进 handler。
+//   ⇒ **这不是回归，是规范落地**：要保留下面那条读数，收连接必须**直接写在
+//     任务体自己的顶层语句里**。
+//
+// 期望读数（**exit 1**）：
+//   stderr: error[E0014]: TCP_RECV: used outside a task body — …
+//           --> main.wll:<行>:<列>（那一行就是 `TCP_RECV` 本身）
+//   ⇒ 下面那组「403×3 / 200×1」的读数**不再出现**（任务失败 ⇒ 运行终止）。
+//
 //   [p11] case= benign          raw-path= /ok                      decoded= /ok                    status= 200
 //   [p11] case= traversal       raw-path= /%2e%2e%2fetc/passwd     decoded= /../etc/passwd        status= 403
 //   [p11] case= xss             raw-path= /%3Cscript%3Ealert(1)    decoded= /<script>alert(1)    status= 403

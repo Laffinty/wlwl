@@ -4574,6 +4574,9 @@ fn builtin_scope(ev: &mut Evaluator, args: Vec<Value>) -> WlwlResult<Outcome> {
     ev.scope_depth = ev.scope_depth.saturating_add(1);
     let scope_id = ev.push_scope();
     use crate::runtime::{TaskResult, TaskState};
+    // [W-10] `SCOPE` 的体是**闭包** ⇒ 它在调用者的帧**之下** ⇒ 进一层
+    // (⇒ 任务体里的 `SCOPE` 体里的挂起点成员 = 「不在任务体里」)。
+    let prev_depth = ev.enter_nested_closure_frame();
     let result = ev.invoke_closure(
         "SCOPE",
         params,
@@ -4583,6 +4586,7 @@ fn builtin_scope(ev: &mut Evaluator, args: Vec<Value>) -> WlwlResult<Outcome> {
         Vec::new(),
         &diag_span,
     );
+    ev.exit_nested_closure_frame(prev_depth);
     // [v0.7 Phase E3] SCOPE boundary: when any sibling task in this
     // scope terminated with `Done(Err(_))` / `Failed(_)`, cancel the
     // remaining non-terminal siblings (plan §5.4.1 row "scope fn
@@ -5497,6 +5501,8 @@ fn builtin_shield(ev: &mut Evaluator, args: Vec<Value>) -> WlwlResult<Outcome> {
     // [X-02a] 深度记在**本任务**上(`Task::shield_depth`),归属任务
     // 在这里捕获 ⇒ 退出时减的是同一个任务。
     let owner = ev.shield_enter();
+    // [W-10] `SHIELD` 的体是**闭包** ⇒ 它在调用者的帧**之下** ⇒ 进一层。
+    let prev_depth = ev.enter_nested_closure_frame();
     let result = ev.invoke_closure(
         "SHIELD",
         params,
@@ -5506,6 +5512,7 @@ fn builtin_shield(ev: &mut Evaluator, args: Vec<Value>) -> WlwlResult<Outcome> {
         Vec::new(),
         &diag_span,
     );
+    ev.exit_nested_closure_frame(prev_depth);
     // Decrement after invoke. If this was the outermost SHIELD
     // and a pending cancel was recorded, translate it to a
     // cancel_requested on the owning task so subsequent code
@@ -8191,6 +8198,24 @@ pub struct Evaluator {
     /// tree-walking evaluator runs as if it were the single implicit
     /// task). Plan §3 Phase B + §5.1.
     pub current_task: Option<crate::runtime::TaskId>,
+    /// [W-10 / 并发册 §17.0] **任务体帧**的嵌套深度。
+    ///
+    /// 规范要求：**宿主挂起点成员**(`std.net` 的 `TCP_*` 族与
+    /// `std.time::SLEEP_ASYNC`)的**调用点必须在任务体内** ⇒ 在任务体之外
+    /// (模块顶层,或任何不在任务体里的位置 —— 包括任务体里定义的嵌套闭包)
+    /// 被调用时,实现**必须**产生诊断 `E0014`(指名成员 + 指向调用点)。
+    ///
+    /// * `Some(k)` —— 当前在**某个任务体帧**内;`k` = 相对该任务体帧深了几层
+    ///   **WLWL 闭包**。`k == 0` ⇒ 就在任务体自己的顶层语句里(合法);
+    ///   `k >= 1` ⇒ 已经**嵌套进**了更深的闭包 ⇒ **不在任务体里**(不合法)。
+    /// * `None` —— 当前**不在**任何任务体帧内(模块顶层 / 普通闭包 / 原生帧)。
+    ///   模块顶层那条**不由**本字段判 —— 它由既有的「挂起信号逃到顶层」通路
+    ///   处理(文案与位置是同一套合成逻辑,行为不变)。
+    ///
+    /// ⚠ **原生帧是边界**:标准库成员回调 WLWL 闭包时(`StdHost::call`)
+    ///   **不**加深 ⇒ `TCP_SERVE` 的 handler 仍由 `std.net` 自己那条
+    ///   「handler 挂起了」诊断负责(不与本检查抢同一处)。
+    pub task_body_depth: Option<u32>,
     /// [v0.12.0 / D-16] **待裁决的孤儿失败**（任务失败 ⇒ 先挂在这里，程序收尾时才报）。
     ///
     /// ⚠ **为什么不能当场报**：并发册 §17.9 要求「有人在等」与「没人管」两条路径
@@ -8383,6 +8408,7 @@ impl Evaluator {
             format_cache: HashMap::new(),
             strict_types: false,
             current_task: None,
+            task_body_depth: None,
             pending_orphan_failures: Vec::new(),
             pending_orphan_err_values: Vec::new(),
             scope_depth: 0,
@@ -8514,6 +8540,7 @@ impl Evaluator {
             format_cache: HashMap::new(),
             strict_types: false,
             current_task: None,
+            task_body_depth: None,
             pending_orphan_failures: Vec::new(),
             pending_orphan_err_values: Vec::new(),
             scope_depth: 0,
@@ -8668,7 +8695,12 @@ impl Evaluator {
                     _ => None,
                 };
                 let prev_linear = self.linear_this.take();
+                // [W-10] 进入**嵌套闭包帧** ⇒ 相对任务体帧深一层。
+                // ⚠ **先还原深度、再做下面的 linear-THIS 检查** —— 那条检查有
+                //   一条 `return Err(..)` 早退路径 ⇒ 深度必须已经还原干净。
+                let prev_depth = self.enter_nested_closure_frame();
                 let result = self.invoke_closure(name, params, body, env, args, arg_sets, span);
+                self.exit_nested_closure_frame(prev_depth);
                 if let Ok(outcome) = &result {
                     if self.is_linear_this(&outcome.value) {
                         let escape_err = self.diag(
@@ -8694,7 +8726,16 @@ impl Evaluator {
             Value::NativeFn {
                 name: fn_name,
                 invoke,
-            } => invoke_std(self, Some(fn_name.as_str()), invoke, args, arg_sets, span),
+            } => {
+                let result =
+                    invoke_std(self, Some(fn_name.as_str()), invoke, args, arg_sets, span)?;
+                // [W-10] 同 `dispatch_call`:宿主挂起点成员在**任务体之外**被调用
+                // ⇒ `E0014`(并发册 §17.0)。
+                if let Some(err) = self.host_suspend_outside_task(&fn_name, span) {
+                    return Err(err);
+                }
+                Ok(result)
+            }
             other => Err(type_error(
                 name,
                 format!("member is not callable ({} value)", type_name(&other)),
@@ -10313,7 +10354,11 @@ impl Evaluator {
         // the std yet).
         if let Some(v) = user_fn {
             if let Value::Closure { params, body, env } = v {
-                return self.invoke_closure(name, params, body, env, accum, tokens, span);
+                // [W-10] 进入**嵌套闭包帧** ⇒ 相对任务体帧深一层。
+                let prev_depth = self.enter_nested_closure_frame();
+                let result = self.invoke_closure(name, params, body, env, accum, tokens, span);
+                self.exit_nested_closure_frame(prev_depth);
+                return result;
             }
             if let Value::NativeFn {
                 name: fn_name,
@@ -10322,6 +10367,14 @@ impl Evaluator {
             {
                 let mut result =
                     invoke_std(self, Some(fn_name.as_str()), invoke, accum, tokens, span)?;
+                // [W-10 / 并发册 §17.0] **宿主挂起点成员在任务体之外被调用**
+                // ⇒ `E0014`(指名成员 + 指向调用点)。
+                //
+                // ⚠ **不等信号冒泡**:冒泡只会落到模块顶层(位置会跑丢、成员名会
+                //   丢)⇒ 在**派发点**就地判。
+                if let Some(err) = self.host_suspend_outside_task(&fn_name, span) {
+                    return Err(err);
+                }
                 // [v0.12.0 / R-3·F-03] 记住这次挂起发生在**哪个成员**的
                 // **哪个调用点** ⇒ 顶层翻成 `E0014` 时能指名成员、指向调用点。
                 self.note_suspend_site(name, span, &result);
@@ -10374,12 +10427,105 @@ impl Evaluator {
                 Ok(r) => r,
                 Err(e) => return Err(self.locate_builtin_diag(e, span)),
             };
+            // [v0.12.0 / R-3·F-03] 记住挂起点成员与调用点。
             self.note_suspend_site(name, span, &result);
             self.attach_result_token(&mut result, &err_args);
             result.unconsumed = union_unconsumed(&result.unconsumed, &remaining);
             return Ok(result);
         }
         Err(self.undefined_name(name, span))
+    }
+
+    /// [W-10 / 并发册 §17.0] 进入**嵌套闭包帧** ⇒ 相对任务体帧深一层。
+    ///
+    /// ⚠ **不在任何任务体帧内**时(`None`)**保持 `None`** —— 「相对某个任务体
+    ///   深了几层」在没有任务体时**无意义**(模块顶层那条由既有的顶层通路管)。
+    ///
+    /// ⚠ **原生帧不加深**:标准库成员回调 WLWL 闭包走的是
+    ///   [`Evaluator::call_with_tokens`] ⇒ 那条路**不**调本方法 ⇒ `TCP_SERVE`
+    ///   的 handler 仍归 `std.net` 自己那条诊断。
+    fn enter_nested_closure_frame(&mut self) -> Option<u32> {
+        let prev = self.task_body_depth;
+        if let Some(k) = self.task_body_depth.as_mut() {
+            *k += 1;
+        }
+        prev
+    }
+
+    /// [W-10 / 并发册 §17.0] 退出**嵌套闭包帧** ⇒ 还原进入前的深度。
+    fn exit_nested_closure_frame(&mut self, prev: Option<u32>) {
+        self.task_body_depth = prev;
+    }
+
+    /// [W-10 / 并发册 §17.0] 这个成员是不是**宿主挂起点成员**?
+    ///
+    /// 规范 §17.0 的挂起点表把「宿主挂起」定义为「原生成员**等待 socket / 定时器**」
+    /// ⇒ 名单 = **会等**的那几个成员。
+    ///
+    /// ⚠ **不能把 `std.net` 的整个 `TCP_*` 族算进来**:那一族里 `TCP_LISTEN` /
+    ///   `TCP_SEND` / `TCP_CLOSE` / `TCP_PEER` / `TCP_LOCAL_ADDR` /
+    ///   `TCP_SET_TIMEOUT` / `TCP_CLOSE_LISTENER` **不等** ⇒ 它们在模块顶层是
+    ///   **正常**写法(监听必须在顶层)⇒ 算进来会把正常程序判死。
+    ///
+    /// ⚠ **气泡内的 `SLEEP_ASYNC` 不算**(D-19:气泡内它「等同 `SLEEP`」⇒ 拨快
+    ///   虚拟钟并立即返回 ⇒ **不是**挂起点)。
+    ///
+    /// ⚠ **名单的理想归宿是 `wlwl-std`**(成员住在那里)—— 那一层有别的 agent
+    ///   在改 ⇒ 本项先落在求值器侧(规则本身是**并发册**的条款,由求值器执行)。
+    fn is_host_suspend_member(&self, member: &str) -> bool {
+        match member {
+            "TCP_ACCEPT" | "TCP_RECV" => true,
+            "SLEEP_ASYNC" => self.clock_bubble.is_none(),
+            _ => false,
+        }
+    }
+
+    /// [W-10 / 并发册 §17.0] 「宿主挂起点成员在任务体之外」的**文案与位置**。
+    ///
+    /// ⚠ 与 [`Evaluator::yield_outside_task`] 的「宿主挂起点成员」那一支**同一段
+    ///   文字**(同一套合成逻辑)⇒ 规范仓的「失败口径对拍」按 `!EXXXX MEMBER` 的
+    ///   形状取成员名时,两处产出认得出是同一族。
+    ///
+    /// ⚠ **成员名前不加反引号**:仓内「成员名: 说明」的诊断约定(如
+    ///   `ADVANCE: not inside a clock bubble`)既是可读性惯例,也是**规范仓检查器**
+    ///   解析「这条诊断属于哪个成员」的依据(它按 `!EXXXX MEMBER` 的形状取成员名)
+    ///   ⇒ 加反引号会让「成员 → 失败口径」的对拍**认不出**这条诊断。
+    fn suspend_site_message_and_span(member: &str, span: &Span) -> (String, Span) {
+        (
+            format!(
+                "{}: used outside a task body — this operation suspends the current task, \
+                 so it is only valid inside a task body (e.g. within SCOPE(...) / SPAWN(...))",
+                member
+            ),
+            span.clone(),
+        )
+    }
+
+    /// [W-10 / 并发册 §17.0] **宿主挂起点成员在任务体之外被调用** ⇒ `E0014`。
+    ///
+    /// 规范原文:「**宿主挂起点成员的调用点必须在任务体内。** 宿主挂起点成员在
+    /// **任务体外**(模块顶层,或任何不在任务体里的位置 —— 包括任务体里定义的
+    /// 嵌套闭包)被调用时,实现**必须**产生诊断 `E0014`」——
+    /// 且诊断**必须**① **指名该成员**;② 位置**指向调用点**。
+    ///
+    /// ⚠ 判据是「**相对任务体帧的嵌套深度**」:
+    ///   * `k == 0` ⇒ 就在任务体自己的顶层语句里 ⇒ **合法**(既有行为不变);
+    ///   * `k >= 1` ⇒ 已经**嵌套进**了更深的闭包 ⇒ **不在任务体里** ⇒ `E0014`;
+    ///   * `None`  ⇒ 不在任何任务体帧内(模块顶层)⇒ **不动**:那条由既有的
+    ///     「挂起信号逃到顶层」通路处理(文案与位置是同一套合成逻辑)。
+    ///
+    /// ⚠ **在成员跑完之后判**:成员的**自己的**失败口径(元数 / 类型 / 负值 …)
+    ///   优先 —— 与模块顶层那条既有路径同款(例如 `SLEEP_ASYNC(-1)` 在顶层是
+    ///   `E0030`,不是 `E0014`;见 `sleep_async_contract` 的既有断言)。
+    fn host_suspend_outside_task(&mut self, member: &str, span: &Span) -> Option<WlwlError> {
+        if !self.is_host_suspend_member(member) {
+            return None;
+        }
+        if !self.task_body_depth.is_some_and(|k| k >= 1) {
+            return None;
+        }
+        let (message, site) = Self::suspend_site_message_and_span(member, span);
+        Some(self.diag(ErrorCode::E0014, message, site))
     }
 
     /// [v0.12.0 / R-3·F-03] 记住「这次挂起发生在哪个成员的哪个调用点」。
@@ -10477,19 +10623,7 @@ impl Evaluator {
             );
         }
         match &self.last_suspend_site {
-            Some(site) => (
-                // ⚠ **成员名前不加反引号**:仓内「成员名: 说明」的诊断约定
-                //   (如 `ADVANCE: not inside a clock bubble`)既是可读性惯例,
-                //   也是**规范仓检查器**解析「这条诊断属于哪个成员」的依据
-                //   (它按 `!EXXXX MEMBER` 的形状取成员名)⇒ 加反引号会让
-                //   「成员 → 失败口径」的失败面对拍**认不出**这条诊断。
-                format!(
-                    "{}: used outside a task body — this operation suspends the current task, \
-                     so it is only valid inside a task body (e.g. within SCOPE(...) / SPAWN(...))",
-                    site.member
-                ),
-                site.span.clone(),
-            ),
+            Some(site) => Self::suspend_site_message_and_span(&site.member, &site.span),
             None => (
                 "a suspending operation was used outside a task body \
                  (it is only valid inside a task body, e.g. within `SCOPE(...)` / `SPAWN(...)`)"
@@ -10713,6 +10847,14 @@ impl Evaluator {
         let prev_task = self.current_task.take();
         self.current_task = Some(id);
 
+        // [W-10 / 并发册 §17.0] **任务体帧**:任务体自己的顶层语句 = 深度 0。
+        //
+        // ⚠ **子任务可以嵌套在父任务的任务体帧里跑**(`AWAIT` 内联驱动调度循环
+        //   ⇒ 被等的子任务在父任务的任务体帧**之内**执行)⇒ 这里**存旧值、跑完
+        //   还原**,不能写成常量。
+        let prev_task_body_depth = self.task_body_depth;
+        self.task_body_depth = Some(0);
+
         // Both paths return `WlwlResult<Outcome>`. Host diagnostics
         // (e.g. E0020 undefined name inside the child body) must
         // NOT abort the scheduler loop; they become
@@ -10729,6 +10871,8 @@ impl Evaluator {
         };
 
         self.current_task = prev_task;
+        // [W-10] 还原**外层**的任务体帧深度(子任务跑完 ⇒ 回到父任务的帧里)。
+        self.task_body_depth = prev_task_body_depth;
 
         // Normalise: outcome is the success case (might carry
         // Signal::Yield); Err becomes TaskResult::Failed.

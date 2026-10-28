@@ -1,0 +1,38 @@
+// [W-22] **宿主联调冒烟用例**（W-21 的加载器 × W-22 的 TLS 扩展）。
+//
+// ⚠ 这个文件**只**用于本地联调 —— 它**不是**规范的一部分，也**不是**
+// `impl/tests/probe/cases/` 里的那种 probe 用例。
+//
+// 它证明三件事：
+//   ① 宿主能加载本扩展（`wlwl --ext <…/wlwl_tls.dll> host_smoke.wll`）；
+//   ② `IMPORT("tls", [...])`（**命名空间形态**）能绑上成员；
+//   ③ `IMPORT("tls:ACCEPT", [...])`（**`ns:member` 形态**）也能绑上成员。
+//
+// ⚠ 下面那个绝对路径是**这台机器**上的路径（本地冒烟用例，不是可移植的）。
+//
+// 用法：
+//   cd impl
+//   cargo build --release --bin wlwl
+//   .\target\release\wlwl.exe run --ext D:\Project\wlwl\impl\ext\wlwl-tls-ext\target\release\wlwl_tls.dll `
+//       D:\Project\wlwl\impl\ext\wlwl-tls-ext\tests\host_smoke.wll
+
+// ① 命名空间形态。
+IMPORT("tls", ["LISTEN", "CERT_FINGERPRINT"]);
+// ② `ns:member` 形态。
+IMPORT("tls:ACCEPT", ["ACCEPT"]);
+// ③ 另一个命名空间。
+IMPORT("crypto", ["SHA384"]);
+
+// crypto 成员：调用成功，且值能过 JSON 边界（回一个 STRING）。
+PRINT("sha384_abc = ", SHA384("abc"));
+
+// tls 成员（命名空间形态）：真的跑起来了 —— 没给证书 ⇒ 失败 ⇒ **ERR 值**
+//（不是诊断）⇒ 用 `IS_ERR` 观察，别让 `ERR` 逃到顶层。
+PRINT("listen_is_err = ", IS_ERR(LISTEN("127.0.0.1", 0)));
+
+// tls 成员（`ns:member` 形态）：真的跑起来了 —— 句柄不存在 ⇒ **ERR 值**。
+PRINT("accept_is_err = ", IS_ERR(ACCEPT(999999, 10)));
+
+// tls 成员（**成功**路径）：证书的 SPKI SHA-256 指纹（64 个 hex 字符）。
+LET(fingerprint, CERT_FINGERPRINT("D:/Project/wlwl/impl/ext/wlwl-tls-ext/tests/fixtures/server.crt"));
+PRINT("fingerprint_len = ", LEN(fingerprint));

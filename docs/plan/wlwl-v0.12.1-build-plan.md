@@ -998,7 +998,7 @@ python script/check_spec.py                     # 附录 A ↔ 各册成员表 �
 
 ## 11 收尾交接（2026-10-27 第一波落地完毕）
 
-### 11.1 本波已落地（7 个工作项 + W-01 基线）
+### 11.1 两波已落地（13 个工作项）
 
 | 工作项 | 落地内容 | 验收读数 |
 |---|---|---|
@@ -1009,46 +1009,40 @@ python script/check_spec.py                     # 附录 A ↔ 各册成员表 �
 | **W-24** 归一化 + 路径包含 | `text.rs`（`NFKC`/`CASE_FOLD`/`STRIP_INVISIBLE`）+ `fs.rs`（`PATH_CANONICAL`/`PATH_CONTAINS`）+ `unicode/waf.rs`（**生成物**，仓内**没有** NFKC 数据底座）+ `script/gen_unicode_waf_tables.py` | `path_contains_contract` **10/0**（我复核）· 反向守卫 8 条断言红 |
 | **W-26** `std.log` | `log.rs`（`LOG`/`LOG_SET_LEVEL`/`LOG_FILE`/`LOG_METRICS`/`METRIC_COUNTER`/`METRIC_INC`/`METRIC_TIMER`）+ 契约测试 | agent 21/0 · 两条反向守卫（原子自增 / 级别过滤）都红过 |
 | **W-27** 原子写 + 文件锁 + 元数据 | `fs.rs`（`WRITE_FILE_ATOMIC`/`LOCK_FILE`/`UNLOCK_FILE`/`FILE_MTIME`/`DIR_ENTRIES`）+ 契约测试 | `fs_atomic_lock_meta_contract` **20/0**（集成者修掉 agent 的一处自递归后） |
+| **W-22** TLS 扩展 crate | `impl/ext/wlwl-tls-ext/**`（独立 crate + 自带 `Cargo.lock`；`tls` 10 员 + `crypto` 8 员；`abi.rs` 用 `#[path]` 引用宿主定义） | **32/0**（12 crypto + 17 tls + 3 ABI 布局）· 宿主联调通过（`--ext` 加载 + 两种 IMPORT 形态）· 三条反向守卫都红过 · **主仓依赖面零变化** |
+| **W-10** B-1 嵌套挂起点诊断 | `wlwl-eval/src/lib.rs`：`task_body_depth` + 四个闭包调用点的帧维护 + **调用时**判定（不是「真挂起才报」）+ 复用既有文案/位置合成 | `suspend_site_contract` **13/0** · 反向守卫「去掉判定 ⇒ 恰好那 6 条红、7 条合法用例仍绿」 · probe 套件 `pass=180 deviation=12 fail=0` |
+| **W-16** `std.http` 骨架 | `wl/std/http.wll`（494 行，22 个助手；R1 纯 wlwl）—— ⚠ **集成者误删后由修复 agent 重写** | `http_contract` **15/0** · 两条反向守卫（`BYTE_LEN`→`LEN` ⇒ 5≠6；framing 改回 ⇒ 3 条红） |
+| **W-13** `std.sync` 原子容器 | `wlwl-std/src/sync.rs`（467 行，8 员；句柄表**不存 `Value`**，用 `Send` 安全的镜像树） | `sync_contract` **21/0** · 反向守卫 `3998 ≠ 4000` |
+| **W-28** `QUERY_PARSE` + `FORMAT_NAMED` | `wl/std/str.wll` 加 `QUERY_PARSE`（复用 `URL_DECODE`）· `src/format.rs` 加 `FORMAT_NAMED`（**既有 `FORMAT` 消息逐字未变**） | `str_format_contract` **14/0** · `format_contract` **11/0** · 反向守卫 `1/{b}` |
 | **W-12** `TCP_SERVE`（B-3 迭代器形态） | `net.rs` 新成员 + `tcp.rs` 下沉原生帧阻塞原语（只搬字节、不认协议） | `tcp_serve_contract` 16/0 · `tcp_contract` 23/0 · `socket_handle_guard` 11/0 · 反向守卫 2 条红 |
 
-### 11.6 完成度面板（2026-10-27 23:56 快照）
+### 11.2 未做的登记（**规范侧**，下一轮按此顺序做）
 
-| 口径 | 数值 | 说明 |
-|---|---|---|
-| **工作项** | **8 / 28（28.6%）** | A 批 2/2 · B 批 1/6 · C 批 0/5 · D 批 3/5 · E 批 2/4 · F 批 0/4 · G 批 0/2 |
-| **需求条目** | **9 / 57 完全落地** | 另有 **3 条部分**（A-1 只差 TLS 库 W-22 · D-6 只差中间件 W-25 · H-4 只差文档口径 W-34）· **39 条未开工** · **6 条是口径答复**（E-6 E-7 I-1 I-2 I-4 I-5） |
-| **已落地工作项** | W-01 · W-02 · W-12 · W-21 · W-23 · W-24 · W-26 · W-27 | 全部带契约测试 + 反向守卫 |
-| **新增公共面成员** | **18 个** | `std.text` +3 · `std.fs` +7 · `std.net` +1 · `std.log`（新命名空间）7 —— ⚠ **全部待规范仓落表**（§11.2） |
-| **门禁** | 绿 5 / 红 4 | 绿：probe 3/3（192 用例）· `wlwl-std` 全绿 · `wlwl-eval` 除 `fs_contract` 外全绿 · conformance 6/6 · fmt 0 diff<br>红 4 道**全部是「规范侧未跟上」**（附录 A 抄件 4 行差异 + `stdlib_appendix_a_sync` 4 条成员集合对拍） |
-| **关键路径** | **W-21 已解锁 W-22** | TLS 扩展 crate 的 ABI 头文件已在树里 ⇒ W-22 可立即开工 |
-| **版本口径** | 实现 **v0.12.1** ↔ 规范 **v1.0.4** | 未动；零处修改既有成员、零处新增诊断码 |
-| **待业主裁决** | 2 件 | parser `E0011` 误报是否并入本轮 · NFKC 表停在 Unicode 17.0 是否等 UCD（§11.4） |
-
-
-
-新成员共 **18 个**：`std.text` +3 · `std.fs` +7 · `std.net` +1 · `std.log`（新命名空间，7）。
-⚠ **这些成员在规范仓落表前，实现侧的三道对拍闸会红**（`check-appendix-a` / `stdlib_appendix_a_sync` 的成员集合 / `net_contract` 与 `fs_contract` 的成员表）⇒ **那是「规范侧未跟上」，不是实现缺陷**。
+新成员累计 **30 个**（`std.text` +3 · `std.fs` +7 · `std.net` +1 · `std.format` +1 · `std.str` +1 · `std.log` 7 · `std.sync` 8 · `std.http` 2）。
+⚠ **这些成员在规范仓落表前，实现侧的三道对拍闸会红**（`check-appendix-a` / `stdlib_appendix_a_sync` 的成员集合 / `net_contract`·`fs_contract`·`str_math_contract`·`text_contract` 的成员表）⇒ **那是「规范侧未跟上」，不是实现缺陷**。
 
 | 步骤 | 在哪个仓 | 做什么 | 顺序 |
 |---|---|---|---|
-| ① | **规范仓** | 一致性册 `§5.5`「实现侧扩展台账」**加一行**（新成员的「预期差异」只能挂在那里；TCP 那 9 个成员当年就是这么挂的 ⇒ `read_ledger()` 直接从规范仓读） | 1 |
-| ② | **规范仓** | 注册镜像册**附录 A** 补表体行（`std.text` / `std.fs` / `std.net` 三行加成员 + `std.log` 新行） | 2 |
-| ③ | **规范仓** | 各册成员表补行（`std.text` §6 · `std.fs` §2 · `std.net` §21 · `std.log` 新节）+ 总纲 §0.9 登记行（引用 D-13 先例） | 3 |
-| ④ | **实现仓** | 抄回 `docs/wlwl-spec-reference.md`（附录 A + 各册成员表）+ 改 `net_contract.rs` / `fs_contract.rs` 的期望名单 | 4 |
+| ① | **规范仓** | 一致性册 `§5.5`「实现侧扩展台账」**加行**（新成员的「预期差异」只能挂那里；TCP 那 9 个成员当年就是这么挂的 ⇒ `read_ledger()` 直接从规范仓读） | 1 |
+| ② | **规范仓** | 注册镜像册**附录 A** 补表体行（`std.text` / `std.fs` / `std.net` / `std.format` / `std.str` 加成员 + `std.log` / `std.sync` / `std.http` 三行新命名空间） | 2 |
+| ③ | **规范仓** | 各册成员表补行（`std.text` §6 · `std.fs` §2 · `std.net` §21 · `std.format` §4 · `std.str` §6 · `std.log`/`std.sync`/`std.http` 新节）+ 总纲 §0.9 登记行（引用 D-13 先例）+ 并发册 §17.0.1 补「标准库原子容器不是语言级共享 cell」那句澄清 | 3 |
+| ④ | **实现仓** | 抄回 `docs/wlwl-spec-reference.md`（附录 A + 各册成员表）+ 改 `net_contract.rs` / `fs_contract.rs` / `str_math_contract.rs` / `text_contract.rs` 的期望名单 | 4 |
 | ⑤ | **实现仓** | `.github/workflows/ci.yml:121` 的规范仓钉死提交**前移**到 ①–③ 的提交 ⇒ ⚠ **必须等规范仓先 push**，否则实现仓 CI 读到旧规范提交而红 | 5（最后） |
 
-### 11.3 下一批 agent 名单与切分
+### 11.3 下一批 agent 名单与切分（第二波之后刷新）
 
 | 批次 | 工作项 | 并行度 | 文件冲突提示 |
 |---|---|---|---|
-| 下一批 | **W-10**（B-1 词法检查：`eval/runtime.rs` + `eval/lib.rs` + `std/tcp.rs`）∪ **W-33**（诊断可读性 + 模块组织：`cli/diag_output.rs` + `error/lib.rs` + `eval/lib.rs`） | **2 并行** | ⚠ 两者抢 `wlwl-eval/src/lib.rs` ⇒ **只能二选一先做**，另一个等它合完 |
-| 紧随 | **W-22**（TLS 扩展 crate `impl/ext/wlwl-tls-ext/**`） | 1 | 依赖 **W-21** 的 ABI 头文件（已在树里）⇒ 可与上面并行 |
-| 随后 | **W-11**（B-2 唤醒一个：`std/tcp.rs` + `eval/runtime.rs`）· **W-13**（`std.sync`：`wlwl-std/src/sync.rs`）· **W-14**（B-5 异步出站：`std/net.rs` + `std/process.rs` + `wlwl-value`） | 2–3 | `tcp.rs` 与 W-11 撞；`net.rs` 与 W-14 撞 |
+| 下一批 | **W-11**（B-2 唤醒一个：`std/tcp.rs` + `eval/runtime.rs`）· **W-14**（B-5 异步出站：`std/net.rs` + `std/process.rs` + `wlwl-value`）· **W-15**（B-6/B-7 终值+停机：`std/signal.rs` 新建 + `eval/runtime.rs`）· **W-29**（别名：`std/regex.rs` + `std/collection.rs` + `eval/registry.rs`）· **W-31**（`std.test` 增强：`wl/std/test.wll` + `std/test_native.rs`） | **4 并行**（W-11 与 W-15 抢 `eval/runtime.rs` ⇒ 二选一先做） | ⚠ `eval/runtime.rs`：W-11 · W-15 · W-30 撞 |
+| 随后 | **W-33**（诊断可读性 + 模块组织：`cli/diag_output.rs` + `error/lib.rs` + `eval/lib.rs`）· **W-30**（`wlwl tasks` + REPL：`eval/runtime.rs` + `cli/main.rs` + `cli/tooling.rs`）· **W-32**（静态检查两条规则：`cli/main.rs` + `wlwl-types/**`） | **3 并行**（W-33 与 W-30 抢 `eval/lib.rs`/`cli/main.rs` ⇒ 二选一先做） | |
+| 再随后 | **W-17 / W-18 / W-19 / W-20**（C-3…C-12 的 `std.http` 扩展）· **W-25**（D-3…D-7 中间件） | **2–3 并行** | ⚠ 四项都改 `wl/std/http.wll` ⇒ **必须串行**（一节一节做） |
 
-### 11.4 待业主裁决（两项，都不阻塞下一批）
+### 11.4 待业主裁决（四项，都不阻塞下一批）
 
 1. **parser 的 `E0011` 误报**：多行嵌套块 + 块末是字符串字面量 + 块内有「实参是调用」的嵌套调用 ⇒ 误报（**同一份程序写成单行就正常**）。合法程序被误拒、且报错方向误导 ⇒ 我判断是**静默错误级**。9 个探针已避开该形态。**是否并入 v0.12.1？**
 2. **NFKC 数据表停在 Unicode 17.0**（`norm.rs` 在 18.0.0）：实测 unicode.org 超时（无网络）、仓内无 vendored UCD ⇒ 18.0 的新增拿不到，53 个码点有差异。**是否等 UCD 源数据？**（表头已写明版本与差集，`--ucd` 通路已实现并用合成 UCD 端到端验证过。）
+3. **`tls::LOCAL_ADDR` 是否入台账**：W-22 给 `tls` 加了这第 10 个成员（`LISTEN(port=0)` 返回**句柄** ⇒ 临时端口无处可问 ⇒ 没有它「随机端口」这个能力是残的），与仓里既有的 `TCP_LOCAL_ADDR` 同名同形、纯加法。**我的倾向：保留**（登记成 10 个）。
+4. **`std.net` 与 `std.http` 对重复 `Content-Length` 的口径不一致**：前者**值相同也拒**，后者按 RFC 9112 §6.3.1 允许合并。改 `net.rs` = **改既有成员的可观察语义**（撞一致性册 `:223`）⇒ **没动**，留给规范侧裁决（我建议对齐成「值不同才拒」）。
 
 ### 11.5 本波的三条工程教训（供下一轮照抄）
 
@@ -1057,6 +1051,29 @@ python script/check_spec.py                     # 附录 A ↔ 各册成员表 �
 3. **`.ps1` 脚本里别写中文**——PowerShell 5.1 按 ANSI/GBK 读无 BOM 的脚本 ⇒ 中文字符串的引号被吃掉 ⇒ 脚本直接语法错；今天的脚本全部改成纯 ASCII。
 
 ---
+
+### 11.6 完成度面板（2026-10-28 09:00 快照 · 第二波落地后）
+
+| 口径 | 数值 | 说明 |
+|---|---|---|
+| **工作项** | **13 / 28（46.4%）** | 第一波 8 项（W-01 W-02 W-12 W-21 W-23 W-24 W-26 W-27）+ 第二波 5 项（W-22 W-10 W-16 W-13 W-28） |
+| **需求条目** | **19 / 57 完全落地** | 🔧 部分 **2 条**（D-6 差 W-25 中间件侧 · H-4 差 W-34 文档口径）· ⬜ 未开工 **29 条** · 📖 口径答复 **6 条**（E-6 E-7 I-1 I-2 I-4 I-5） |
+| **新增公共面成员** | **30 个**（全部待规范仓落表） | `std.text` +3 · `std.fs` +7 · `std.net` +1 · `std.format` +1 · `std.str` +1 · `std.log` 7 · `std.sync` 8 · `std.http` 2 —— 后三个是**新命名空间**，走一致性册 §5.5 台账 |
+| **门禁** | 见 §11.7 | 第二波集成后的实测分类 |
+| **关键路径** | **W-21 + W-22 已就位** | TLS 扩展端到端可跑（宿主 `--ext` 加载 → `tls`/`crypto` 命名空间可 IMPORT） |
+| **版本口径** | 实现 **v0.12.1** ↔ 规范 **v1.0.4** | 未动；零处修改既有成员、零处新增诊断码 |
+| **待业主裁决** | **4 件** | ① `tls::LOCAL_ADDR` 是否入台账（10 员 vs 9 员）② `std.net` 与 `std.http` 对重复 `Content-Length` 口径不一致（改 `net.rs` = 改既有语义，撞 `:223`）③ **W-10 的连带后果**：需求清单的「可用架构样板」形状现在结构性违规（见 §11.7）④ parser `E0011` 误报 + NFKC 表停在 Unicode 17.0（§11.4） |
+
+### 11.7 第二波的门禁分类与**一个必须让业主知道的连带后果**
+
+**门禁**（第二波集成后实测）：绿 —— `cargo fmt --all -- --check` 0 diff · `wlwl-std` 全绿 · probe 套件 `pass=180 deviation=12 fail=0`（192 用例）· `suspend_site_contract` 13/0 · `sync_contract` 21/0 · `http_contract` 15/0 · `str_format_contract` 14/0 · `format_contract` 11/0 · `ext_loader_contract` 22/0 · `wlwl-ext` 32/0 · conformance 6/6。
+红 —— 全部落在**「规范侧未跟上」**这一类（附录 A 抄件 4 行差异 + `stdlib_appendix_a_sync` 成员集合 + 各 `*_contract` 的成员表），修法见 §11.2 五步。
+
+⚠⚠ **连带后果（W-10 带来的，必须让业主知道）**：
+新判据把「宿主挂起点成员的调用点必须在任务体内」**真正执行**了 ⇒ **需求清单里那个「可用架构样板」现在结构性违规**：
+需求清单附录 A 的 `p13`（单 acceptor + 每条连接一个 `serve_one` 辅助闭包 + 静态展开链）**在 `TCP_RECV` 处被判 `E0014`** ⇒ 需求方 §0.2 说的「已经实测跑通的那个纯 wlwl HTTP 服务」的**代码形状**现在不再合规 ⇒ `p10` / `p11` / `p13` 三个探针的读数从「8 并发全 200 / 403×3 / 4 请求全 200」变成了「`E0014`」。
+⇒ **合规的形状是 `TCP_SERVE`**（W-12 落的那个）：accept/recv 都在**原生帧**里，handler 闭包跑在原生帧内 ⇒ 不受本判据约束 ⇒ 需求方**迁移到 `TCP_SERVE` 即可**，功能面不受影响。
+⇒ **待裁决**：是（a）下一轮把这 3 个探针改写成 `TCP_SERVE` 形状以**恢复正面证据**（并顺带成为需求方的迁移指引），还是（b）保留现状（探针只钉「违规被拒」，正面证据另立专项）。**我的倾向是 (a)**：钉住「正确写法长什么样」比钉住「错误写法被拒」更有用。
 
 ## 12 给业主的摘要
 

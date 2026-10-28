@@ -87,6 +87,7 @@ pub mod regex;
 pub mod result;
 pub mod sanitize;
 pub mod stats;
+pub mod sync;
 /// \[项目扩展\] 传输层实现（`TCP_*` 成员）。**不**自成一个命名空间 ——
 /// 公开面挂在 `wlwl:std.net` 上（见 `net::SPEC`），所以
 /// `namespace_paths()` 不变 ⇒ 附录 A 的差异只有「`std.net` 多出 9 个成员」一行。
@@ -364,6 +365,22 @@ pub static LANG_SOURCES: &[StdSource] = &[
             ("_TAKE_ERR", result::kernel_take_err as StdFn),
         ],
     },
+    // [v0.12.1 / W-16] `std.http` —— HTTP 请求解析 + 响应构造（需求清单 C-1 / C-2）。
+    //
+    // ⚠ **纯逻辑 ⇒ R1**（`ADR-0021` 分层）：请求行/头块/体切分全是字符串与字节
+    //   的处理，不触系统调用 ⇒ 用纯 wlwl 写；原生层只借两个**共享**内核。
+    //
+    // ⚠ `EXPORT` 必须写在**一行**里 —— `lang_exports` 是**逐行**扫的
+    //   （拆成多行 ⇒ 附录 A 镜像生成器会扫出**零个成员**）。
+    StdSource {
+        path: "wlwl:std.http",
+        source: include_str!("../wl/std/http.wll"),
+        // 元数错由解释器自己报 ⇒ 不需要 `_DIAG_E0022`。
+        kernels: &[
+            ("_KIND", kernels::kernel_kind as StdFn),
+            ("_DIAG_E0030", kernels::kernel_diag_e0030 as StdFn),
+        ],
+    },
 ];
 
 /// From an R1 source file, extract the exported names: the string literals
@@ -455,6 +472,8 @@ pub fn resolve(path: &str) -> Option<StdBackend> {
         "wlwl:std.net" => &net::SPEC,
         // [v0.12.1 / W-26] `std.log` 结构化日志 + 运行时指标（需求清单 F-1 / F-2）。
         "wlwl:std.log" => &log::SPEC,
+        // [v0.12.1 / W-13] `std.sync` 原子共享容器（需求清单 B-4 的候选 (a)）。
+        "wlwl:std.sync" => &sync::SPEC,
         // [v0.11.3 M8 / addendum-14 / ADR-0034 D2] 两个**官方包**的成员路径。
         //
         // ⚠ 为什么它们仍由这张表解析、而不是由 `wlwl.toml` 的 `[namespaces]`:
@@ -568,6 +587,8 @@ pub static NATIVE_SPECS: &[&ModuleSpec] = &[
     // `ADR-0028` 定死,D1 **带条件冻结**)。
     &net::SPEC,
     &log::SPEC,
+    // [v0.12.1 / W-13] `std.sync` 原子共享容器（八个成员）—— 需求清单 B-4 的候选 (a)。
+    &sync::SPEC,
 ];
 
 /// 全部可 [`resolve`] 的命名空间路径(R1 门面 + R2 原生),**实现真相**。
@@ -713,7 +734,7 @@ mod tests {
         let s = resolve("wlwl:std.format").expect("format resolves");
         assert_eq!(s.path(), "wlwl:std.format");
         let names: Vec<&str> = s.functions().iter().map(|(n, _)| *n).collect();
-        assert_eq!(names, vec!["FORMAT"]);
+        assert_eq!(names, vec!["FORMAT", "FORMAT_NAMED"]);
     }
     #[test]
     fn resolve_collection() {

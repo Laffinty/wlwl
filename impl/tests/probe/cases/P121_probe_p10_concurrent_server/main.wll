@@ -8,15 +8,24 @@
 //     * `Content-Length` 按**字节数**算（不是码点数）—— 本探针的正文含中文，
 //       `LEN`（码点）与 `BYTE_LEN`（字节）**不相等**，错用 `LEN` 就会发短。
 //
-// 期望读数（exit 0）：
+// ⚠⚠ **[W-10 之后] 本探针的读数变了** —— 收一条连接的代码（`handle` 闭包）
+//   是**模块顶层**的闭包、acceptor 任务体调用它 ⇒ 宿主挂起点 `TCP_RECV` 落在
+//   **嵌套闭包**里 ⇒ 并发册 §17.0「**宿主挂起点成员的调用点必须在任务体内**」
+//   ⇒ **当场**报 `E0014`（指名成员 + 位置指向调用点 `main.wll:<行>:<列>`）
+//   ⇒ 运行 **exit 1**，8 个连接一个也没服务完。
+//   ⇒ **这不是回归，是规范落地**：要保留「8 并发全 200」的读数，收连接必须
+//     **直接写在任务体自己的顶层语句里**（`TCP_RECV` 必须是段首那条语句）。
+//
+// 期望读数（**exit 1**）：
 //   [p10] resp-head=HTTP/1.1 200 OK\r\nContent-Type: text/html; charset=utf-8\r\n
 //          Content-Length: 13\r\nX-Content-Type-Options: nosniff\r\n
 //          X-Frame-Options: DENY\r\nX-XSS-Protection: 1; mode=block\r\n
 //          Referrer-Policy: strict-origin-when-cross-origin\r\n
 //          Content-Security-Policy: default-src 'self'\r\nConnection: close\r\n\r\n
 //   [p10] body-len= 9 body-byte-len= 13
-//   [p10] served-200-count= 8
-//   [p10] served-request-count= 8
+//   stderr: error[E0014]: TCP_RECV: used outside a task body — …
+//           --> main.wll:<行>:<列>（那一行就是 `TCP_RECV` 本身）
+//   ⇒ 「served-200-count= 8」**不再出现**（任务失败 ⇒ 运行终止）。
 //
 // ⚠ 客户端看不到响应：`HTTP_*` 是**阻塞原语**，执行期间整个 SCOPE 冻结
 //   （ADR-0028 D1）⇒ 客户端必然超时。⇒ 「全 200」是在**服务端一侧**断言的：

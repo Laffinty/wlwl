@@ -6,9 +6,34 @@
 // —— §6 明文要求。`SPLIT` / `SUB` / `ENDS_WITH` / `LEN` 是全局内建,在这里
 // 只是被**调用**,不是被导出。
 //
+// ## 三个「**不要新增同义成员**」的口径
+//
+// ⚠ **数字转字符串用全局内建 `STR(x)`**(语言规范 §10.3;实现侧是
+//   `wlwl-eval/src/registry.rs` 的全局内建表)。`std.text` **没有**
+//   `TO_STRING` 这个成员 ⇒ **不要**新增一个同义成员:一个语义一个名字
+//   (与 `std.result` 的 `ADR-0029` §4b「不复刻」同款裁决)。
+// ⚠ **`+` 是二元的、且不做隐式强转**:`"a" + 1` ⇒ `E0030: +: cannot add
+//   string and integer`。⇒ 拼多段要么用本模块的 `CAT(...)`(变长、逐段 `STR`
+//   渲染),要么逐段 `STR(...)` 之后再 `+`。
+// ⚠ **`SPLIT(s, sep)` 是全局内建**(语言规范 §10.5)⇒ 本模块**不导出**它。
+//   `SPLIT_LINES` 是**另一件事**(按 `\n` 切行、去行尾 `\r`、丢末尾空行),
+//   不是「通用切分」的别名 —— 别拿它当 `SPLIT` 用。
+//
 // 诊断走 M3-0 的注入 kernel(`_KIND` / `_DIAG_E0030`);元数错由解释器自己
 // 报(固定元数的成员拿到的是 `function expects 1..1 argument(s)` 这条无名前缀
 // 的 E0022 —— 见 std/collection.wll 头部同款说明)。
+
+// 唯一的跨命名空间依赖:`wlwl:std.encode` 的 `URL_DECODE`(R2 原生,已登记)。
+//
+// ⚠ **为什么依赖它而不是自己写解码器**:百分号解码(`%XX`)是一段有明确
+//   边界规则的字节处理(非法转义、截断转义、解出来不是合法 UTF-8),仓里
+//   已经有**一份**实现 ⇒ 自己再写一份就是两份口径迟早漂移。
+// ⚠ **它不折 `+`**:那是 RFC 3986 与 `application/x-www-form-urlencoded`
+//   的分歧(§11.3-2 明文),`+` → 空格由本模块在调用**之前**做(见
+//   `_QUERY_DECODE` 的注释)。
+//
+// ⚠ **它不在 `EXPORT` 名单里** ⇒ 不进附录 A、不在 `IMPORT` 面上。
+IMPORT("wlwl:std.encode", ["URL_DECODE"]);
 
 // ── 助手(不导出)────────────────────────────────────────────────────
 
@@ -174,6 +199,9 @@ LET(QUOTE, FUN((s), (
 // v0.11.2 M2 追加的 `INDEX_OF` / `CONTAINS_SUB` 接在末尾,不插在 `COUNT`
 // 旁边 —— 插进去会让契约测试里那份「点名清单」与 §5/§7 的行序约定都要跟着
 // 挪,而顺序本身不承载语义(只承载「与规范表同序」这一条)。
+// [W-28] `QUERY_PARSE(...)` —— **URL query 解析**。同样**追加在末尾**
+// (规范 §6 的成员表里没有它 ⇒ 它是规范外新增的成员;处置与 `CAT` 同款:
+// 接在末尾,不插进 §6 表的行序中间)。
 // [项目扩展 / G-21] `CAT(...)` —— **变长拼接**。
 //
 // ⚠ 为什么需要：语言里的 `+` 是**二元**的（`+(a, b, c)` ⇒ E0022）⇒ 拼 N 段要嵌套 N-1 次。
@@ -200,4 +228,104 @@ LET(QUOTE, FUN((s), (
 //   短路,函数体不被求值)⇒ 换层**不换语义**。
 LET(CAT, _CAT);
 
-EXPORT(["JOIN", "SPLIT_LINES", "CHAR_AT", "COUNT", "QUOTE", "INDEX_OF", "CONTAINS_SUB", "CAT"]);
+// ── QUERY_PARSE 的私有助手(不导出)─────────────────────────────────────
+
+// 把 `parts` 从 `from` 起的那几段用 `sep` 接回去。
+//
+// ⚠ 为什么不能直接用 `SPLIT` 的结果:`SPLIT` 只能按分隔符**全**切,而 query 的
+//   **值里可以合法地含 `=`**(例如 `a=b=c` ⇒ 键是 `a`、值是 `b=c`)⇒ 切完要把
+//   后半段接回去,否则值只剩 `b`。
+LET(_JOIN_FROM, FUN((parts, from, sep),
+    (LET MUT(out, "");
+     LET MUT(first, TRUE);
+     FOR(p, SLICE(parts, from, LEN(parts)),
+         (IF(first, (SET(out, p); SET(first, FALSE)),
+                 SET(out, +(out, +(sep, p))))));
+     out)));
+
+// 运行期可预期失败的统一形状(与 `std.http` 的 `HttpError` 同款):
+// `ERR([kind, op, reason])`。
+//
+// ⚠ 它**返回**那个 `ERR` 值(不是把它丢掉)⇒ 未消费状态随返回值**转移**给
+//   调用方 ⇒ 调用方必须消费或显式丢弃(`LET(_, r)`),否则作用域结束时报
+//   `E0103`。
+LET(_QUERY_ERR, FUN((reason), ERR(["kind": "QueryError", "op": "QUERY_PARSE", "reason": reason])));
+
+// 解码一个键/值:`+` → 空格,再 `%XX` 百分号解码。
+//
+// 返回 `STRING`;非法百分号转义 ⇒ `ERR([kind:"QueryError", …])` **值**。
+//
+// ⚠ **顺序不能反**:先 `+` → 空格,再 `%XX` 解码。反过来的话 `%2B`
+//   (编码后的**字面** `+`)会被错折成空格 —— 那是把「数据里的加号」和
+//   「编码里的加号」混成了一件事。
+// ⚠ `URL_DECODE` 走 RFC 3986(§11.3-2):它**不**折 `+` ⇒ 那一步只能由本
+//   模块做。
+LET(_QUERY_DECODE, FUN((s),
+    (LET(dec, URL_DECODE(REPLACE(s, "+", " ")));
+     IF(IS_ERR(dec),
+        (LET(p, ERR_PAYLOAD(dec));
+         _QUERY_ERR(AT(p, "reason", "invalid percent-escape"))),
+        dec))));
+
+// 把 `k` / `v` 记进 `out`,返回**新**的字典。
+//
+// 同名键 ⇒ 值升级成 `ARRAY[STRING]`(按出现序):第一次是 `STRING`,
+// 第二次起是 `["第一次", "第二次"]`。这与 `std.http::PARSE_REQUEST` 的
+// 「同名多值」同款(那边是头名,这里是 query 键)。
+LET(_QUERY_PUT, FUN((out, k, v),
+    (LET(cur, AT(out, k, NULL));
+     IF(==(TYPE(cur), "NULL"),
+        INDEX_SET(out, k, v),
+        (IF(==(TYPE(cur), "ARRAY"),
+           INDEX_SET(out, k, PUSH(cur, v)),
+           INDEX_SET(out, k, [cur, v])))))));
+
+// 处理**一个**键值对(`seg`):成功 ⇒ 新字典;失败 ⇒ `ERR` 值。
+//
+// ⚠ 它把「一个键值对」这件事**整个**封在一层里 ⇒ `QUERY_PARSE` 的循环体
+//   只剩「调它 + 判 `ERR`」两件事 —— 少一层嵌套,少一处括号要数。
+LET(_QUERY_ONE, FUN((out, seg),
+    (LET(kv, SPLIT(seg, "="));
+     LET(k, _QUERY_DECODE(AT(kv, 0, "")));
+     IF(IS_ERR(k),
+        k,
+        (LET(v, _QUERY_DECODE(_JOIN_FROM(kv, 1, "=")));
+         IF(IS_ERR(v),
+            v,
+            _QUERY_PUT(out, k, v)))))));
+
+// ── QUERY_PARSE(query) -> DICT ──────────────────────────────────────────
+//
+// 解析 URL 的 query 串 ⇒ 键值对字典。
+//
+// · 分隔符:`&` 分隔**键值对**,`=` 分隔**键与值**(值里可以再含 `=`,**只切
+//   第一个** —— `a=b=c` ⇒ 键 `a`、值 `b=c`)。
+// · **重复键全部保留**:出现一次 ⇒ 值是 `STRING`;出现多次 ⇒ 值是
+//   `ARRAY[STRING]`(按出现序)。
+// · `+` ⇒ **空格**(`application/x-www-form-urlencoded` 的表单约定)。
+// · `%XX` ⇒ 百分号解码(走 `std.encode::URL_DECODE`)。
+// · **空串** ⇒ **空 `DICT`**。
+// · **无 `=` 的键** ⇒ 值取**空串**。
+// · 空段(`a=1&&b=2` 中间那个、`a=1&` 末尾那个)**跳过**。
+// · 失败:非法百分号转义 ⇒ `ERR([kind:"QueryError", …])` **值**(不是诊断)。
+//
+// ⚠ **元数 / 类型错** ⇒ 既有 `E0022` / `E0030`;**不新增诊断码**。
+// ⚠ **不吞 `ERR`**:解码失败时本成员**返回**那个 `ERR` 值(未消费状态随
+//   返回值转移给调用方)⇒ 调用方要么消费,要么显式丢弃(`LET(_, r)`)。
+LET(QUERY_PARSE, FUN((q),
+    (LET(str, _NEED_STR("QUERY_PARSE", q));
+     LET MUT(out, DICT());
+     LET MUT(err, NULL);
+     LET(parts, SPLIT(str, "&"));
+     LET MUT(i, 0);
+     WHILE(<(i, LEN(parts)),
+         (LET(seg, AT(parts, i, ""));
+          IF(==(seg, ""),
+             SET(i, +(i, 1)),
+             (LET(res, _QUERY_ONE(out, seg));
+              IF(IS_ERR(res),
+                 (SET(err, res); SET(i, LEN(parts))),
+                 (SET(out, res); SET(i, +(i, 1))))))));
+     IF(IS_ERR(err), err, out))));
+
+EXPORT(["JOIN", "SPLIT_LINES", "CHAR_AT", "COUNT", "QUOTE", "INDEX_OF", "CONTAINS_SUB", "CAT", "QUERY_PARSE"]);

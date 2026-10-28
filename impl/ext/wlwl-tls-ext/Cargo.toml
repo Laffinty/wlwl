@@ -1,0 +1,51 @@
+[package]
+name = "wlwl-tls-ext"
+version = "0.1.0"
+edition = "2021"
+rust-version = "1.85"
+license = "GPL-2.0-only"
+publish = false
+description = "WLWL 的 TLS / crypto 原生扩展（动态库，扩展 ABI v1）"
+
+# ⚠⚠ **本 crate 不在 wlwl 主 workspace 里** —— 这是本轮的核心承诺：
+# 编译器主仓的依赖面**一个字都不变**（主仓 `Cargo.lock` 不会因为本 crate 多一行）。
+#
+# 机制：下面这个**空 `[workspace]` 表**把自己声明成独立的 workspace 根 ⇒
+# cargo 不再向上找 `impl/Cargo.toml` ⇒ 本 crate 自己解版本、自己出
+# `Cargo.lock`（那份 lock **入库**）。
+#
+# ⚠ **不要**把本 crate 加进 `impl/Cargo.toml` 的 `members` —— 那样主仓就会
+# 接管它的依赖解析，主仓的依赖面就变了（本轮的承诺就破了）。
+[workspace]
+
+[lib]
+# `cdylib` = 宿主 `dlopen` 的那个动态库；`rlib` = 让本 crate 自己的
+# 集成测试能**直接**调成员实现（测试走的是真 ABI 入口，见 tests/host.rs）。
+name = "wlwl_tls"
+crate-type = ["cdylib", "rlib"]
+
+[dependencies]
+# ⚠ 版本号照抄主仓 `Cargo.lock` 里**已经在树里**的那几个（rustls 0.23.46 /
+# ring 0.17.14 / webpki-roots 1.0.11 / serde_json 1.0.154）⇒ 不引入任何
+# 主仓没有的第三方依赖面。
+#
+# `default-features = false` 是**必须**的：rustls 0.23 的默认 feature 带
+# `aws_lc_rs`（会拖进 aws-lc-sys —— 一个要编译 C 代码的依赖）。本 crate
+# 只用 `ring`（主仓已经有）。
+rustls = { version = "0.23.46", default-features = false, features = [
+    "ring",
+    "std",
+    "tls12",
+    "logging",
+] }
+ring = "0.17.14"
+webpki-roots = "1.0.11"
+serde_json = "1.0.154"
+
+# 测试要**按 ABI 契约**驱动扩展 ⇒ 需要 JSON（与主仓同一个 serde_json 版本）。
+[dev-dependencies]
+serde_json = "1.0.154"
+
+[profile.release]
+lto = "thin"
+codegen-units = 1
