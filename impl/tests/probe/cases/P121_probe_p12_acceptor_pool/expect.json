@@ -1,16 +1,17 @@
 {
   "exit": 1,
   "contains": [
-    "[p12] accept-timeout-ms= 8000",
-    "[p12] client-reason= read head",
-    "[p12] winners= 1",
-    "[p12] losers= 2",
-    "[p12] losers-woke-immediately= TRUE",
+    "[p12] accept-timeout-ms= 2000",
+    "[p12] client1-reason= read head",
+    "[p12] client2-reason= read head",
+    "[p12] winners= 2",
+    "[p12] losers= 1",
+    "[p12] losers-woke-immediately= FALSE",
     "E0030",
     "TCP_RECV: expected integer, got null"
   ],
   "not_contains": [
     "[p12] DONE"
   ],
-  "_why": "[W-02] 「多 acceptor 的惊群」探针（需求清单 §B-2 的主证据）。3 个 acceptor 抢 **1** 个连接 ⇒ **唤醒全部**坐实：只有 1 个拿到连接、其余 2 个拿到 `NULL`。⚠ `losers-woke-immediately= TRUE` 是惊群的**指纹**：accept 的等待超时是 **8000 ms**，而落选者在 **≈150 ms**（= 客户端的等待预算）就拿到了 NULL ⇒ 它们是被**连接到达唤醒**的，不是等超时。`client-reason= read head` 证明客户端**真的连上了**（是读超时，不是 connect refused）。⚠⚠ **与清单描述的差异**：清单说落选者「拿到 NULL 并**直接死掉**」——方向对，但**机制不同**：不是「静默 NULL」，而是调用方拿 `NULL` 去 `TCP_RECV` ⇒ **`E0030: TCP_RECV: expected integer, got null`** ⇒ 任务失败 ⇒ `SCOPE` 提前退出。本用例**刻意**让落选者真的去 `TCP_RECV(NULL)` ⇒ 因此 **exit 1** 是**期望值**，不是失败。"
+  "_why": "[第三波 / W-11] 本用例在 W-11 修掉惊群**之后已翻转** —— 它现在钉的是「**惊群已修**」，不是「惊群存在」。\n\n**它证明什么**：3 个 acceptor 等同一个监听句柄、**2 条**连接先后到达 ⇒ 第一个就绪事件只唤醒**一个**（FIFO 队首）⇒ 它拿到第一条连接；**其余等待者不被唤醒**（**不**拿到与超时同形的 `NULL`）⇒ 它们**继续等** ⇒ 第二条连接到达时被其中一个接住 ⇒ **`winners= 2`**（两个 acceptor 各拿到一条）⇒ 这正是需求清单 §B-2 要的「**落选者保持存活并能继续接受后续连接**」。剩下的那一个**等满自己的 2000 ms 超时**才拿到 `NULL`（是**超时**，不是**竞争失败**）⇒ `loser-elapsed ≈ 2000`、`losers-woke-immediately= FALSE`。\n\n**两条读数各自钉住什么**：`winners= 2` 是需求 B-2 的**正面**证据；`losers-woke-immediately= FALSE` 是**惊群的指纹**（修复前落选者在 ≈150 ms = 客户端等待预算处就被唤醒 ⇒ TRUE）。⚠ **任何一条变回去 ⇒ 本用例必红** ⇒ 惊群复发（改回唤醒全部）时 `winners` 变 1、指纹变 TRUE。\n\n**为什么末尾还是 exit 1**：探针**刻意**让落选者真的去 `TCP_RECV(NULL)` ⇒ **`E0030: TCP_RECV: expected integer, got null`** ⇒ 任务失败 ⇒ exit 1。⚠ 这条尾巴钉的**不是**惊群，而是**规范空白 SP-2**：「**超时**产生的 `NULL`」与「**竞争失败**产生的 `NULL`」**同形**，调用方分不出来 —— W-11 修的是「不再产生竞争失败」，**没有**消除「两种 NULL 同形」这件事（那要规范侧定）。\n\n⚠ **文件名里的 `wakeall` 是历史名**（与 `p13-single-acceptor-chain.wll` 同款）：旧的「唤醒全部」形状已废，含义以探针头部注释为准。"
 }

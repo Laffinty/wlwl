@@ -2081,6 +2081,17 @@ pub enum YieldReason {
     /// ⚠ 载荷是**绝对**毫秒（`wlwl_value::real_mono_ms` 域）—— 不用「还剩多久」
     ///   这种相对量：任务可能被别的理由唤醒过一轮，相对量会被重新算一遍。
     SleepUntil(i64),
+    /// [项目扩展 / B-5] `perform AsyncReady` —— **异步出站操作**（`HTTP_REQUEST_ASYNC`
+    /// / `PROCESS_RUN_ASYNC`）完成。
+    ///
+    /// ⚠ 与 `SocketReady` / `SleepUntil` 同族（都是**可挂起**的等待），差别只在
+    ///   **谁**来唤醒：socket 由宿主 I/O 线程唤醒、睡眠由调度器的定时器唤醒，
+    ///   而这一族由**标准库自己的工作线程**唤醒（就绪集合见
+    ///   `wlwl_std::net::async_op`）。
+    ///
+    /// ⚠ 载荷是**不透明的异步操作 id**（`i64`）—— 与 `SocketReady` 同款：
+    ///   本 crate 不能依赖 std 的类型（依赖方向是 `eval → wlwl-value ← std`）。
+    AsyncReady(i64),
 }
 
 impl YieldReason {
@@ -2110,6 +2121,8 @@ impl YieldReason {
             YieldReason::SocketReady(_) => Tag::SocketReady,
             // [项目扩展 / G-08] 定时睡眠：由调度器的定时器唤醒。
             YieldReason::SleepUntil(_) => Tag::SleepUntil,
+            // [项目扩展 / B-5] 异步出站操作就绪：由标准库自己的工作线程唤醒。
+            YieldReason::AsyncReady(_) => Tag::AsyncReady,
         }
     }
 }
@@ -2160,6 +2173,12 @@ pub enum Tag {
     /// ⚠ 与 `SocketReady` 同族（都是**可挂起**的等待）；唤醒方不同
     ///   （socket = 宿主 I/O 线程；睡眠 = 调度器的定时器）。
     SleepUntil,
+    /// [项目扩展 / B-5] `perform AsyncReady` —— 等待**异步出站操作**完成。
+    ///
+    /// ⚠ 与 `SocketReady` / `SleepUntil` 同族（都是**可挂起**的等待）；唤醒方不同
+    ///   （socket = 宿主 I/O 线程；睡眠 = 调度器的定时器；这一族 = 标准库自己的
+    ///   工作线程）。
+    AsyncReady,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
@@ -2875,6 +2894,20 @@ pub trait StdHost {
     /// 任务外为 `None`。
     fn current_task_key(&self) -> Option<i64> {
         None
+    }
+
+    /// [B-5] 宿主**是否支持**「异步操作就绪」这一族挂起点
+    /// （[`YieldReason::AsyncReady`]）。
+    ///
+    /// ⚠ **默认 `false`** ⇒ 手写宿主（各模块测试里的 `NullHost`、基准里的对照
+    ///   宿主）一个字都不用改；标准库成员自动退回**定时器轮询**那条路
+    ///   （见 `wlwl_std::net::async_op`）。
+    ///
+    /// ⚠ 求值器侧要**支持**这一族时，必须把本方法改成 `true` **并且同时**接好
+    ///   「挂起 → 就绪 → 唤醒」那段接线 —— **只改一边**会让任务**永远醒不过来**
+    ///   （挂上了，再没人叫醒它）。
+    fn supports_async_ready_park(&self) -> bool {
+        false
     }
 
     /// [G-08] 当前任务那次**睡眠**是否**已经结束**？⇒ 读并**清掉**标志。

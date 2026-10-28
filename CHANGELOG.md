@@ -1,3 +1,27 @@
+## [v0.12.1 开工 · 第四波] — 2026-10-28(2 个 PHASE 落地;多 agent 并行)
+
+**本段 = 第四波的 2 个 PHASE**（计划 §13.4「随后批」的前两项 —— **W-11 / W-14**，文件面零重叠 ⇒ 真并行 2）。计划原文见 `docs/plan/wlwl-v0.12.1-build-plan.md`;本波的地位与交接见该文档 **§13「接替执行手册」**。
+
+### 落地清单（2 项）
+
+- **W-11 B-2 惊群修根因：唤醒一个而不是唤醒全部**：`wlwl-eval/src/runtime.rs` 的 `wake_socket_waiter` 改成**只唤醒 FIFO 队首一个**，其余等待者**留在名单里**继续等下一次就绪事件;`park_for_socket` 加**去重**（同一任务在同一 socket 上至多登记一次 ⇒ 否则「唤醒一个」会变成「同一任务被唤醒两次」）;`wlwl-std/src/tcp.rs` 侧**把就绪电平重新推高**（⚠ 解释器侧取走就绪事件时已经 `retire_ready` 把电平抹掉了 ⇒ 不推高的话队列里剩下的连接永远等不到它的等待者）。新增 `impl/crates/wlwl-eval/tests/b2_accept_wakeup_contract.rs`（4 条）+ 新并发夹具 `impl/tests/concurrency/tcp_accept_single_wakeup.wll`。验收 **4/0**;并发套件 **19/0**;`socket_wait_contract` 16/0 · `tcp_contract` 23/0 · `suspend_site_contract` 13/0 全绿。
+  ⚠ **既有语义一条未改**：`TCP_ACCEPT` 的超时仍是 `NULL`;**「同一个 socket 可以有多个等待者」**（审计 N4：两个任务读同一条连接是合法的）**不变** —— 变的是**唤醒几个**，不是**允许挂几个**。
+  ✅ **规范侧零改动**（计划 §1.4 的 **SP-2 因此作废**：竞争不再产生 `NULL` ⇒ 规范文本没覆盖的那处不再发生）。
+- **W-14 B-5 非阻塞出站：新增 `HTTP_REQUEST_ASYNC` / `PROCESS_RUN_ASYNC`**：`wlwl-value` 加 `YieldReason::AsyncReady(i64)` + `Tag::AsyncReady`;`wlwl-std/src/net.rs` 与 `process.rs` 各加一个 async 成员（**阻塞的 `HTTP_*` / `PROCESS_RUN` 一个字节未改**）;求值器侧加**独立的** `async_waiters` 表（不碰 `socket_waiters`）⇒ `park_for_async` / `wake_async_waiter` / 就绪泵 / `expire_deadlines` 与 `cancel_suspended_task` 的 `AsyncReady` 分支。验收 **12/0**。
+  ⚠ **两个成员**都走一致性册 §3.2 修订版本通道登记（引用 D-13 先例）⇒ **规范仓落表前，附录 A 对拍会红**（见下）。
+
+### ⚠ 一个必须翻转的探针（`p12`）
+
+`p12-acceptor-pool-wakeall.wll` 原本是「**钉住惊群存在**」的（B-2 的主证据，断言 `losers-woke-immediately= TRUE`）。W-11 修掉惊群后 ⇒ **该断言翻转**（`winners` 从 1 变 2、`loser-elapsed` 从 ≈150 ms 变 ≈2000 ms ⇒ 落选者**等满自己的超时**而不是被连接唤醒）⇒ 探针**已改写为「钉住惊群已修 + 落选者能继续接受后续连接」的正面证据**（3 个 acceptor + **2 条**连接 ⇒ **两个 acceptor 各拿到一条** ⇒ `winners= 2`）。两条读数各自钉住：B-2 的**正面**证据 + 惊群的**指纹** ⇒ **任何一条变回去都必红**。⚠ 文件名里的 `wakeall` 是**历史名**（同 `p13` 的 `chain`）;探针耗时从 8.5 s 降到 2.1 s。
+⚠ 末尾那条 `TCP_RECV(NULL)` ⇒ `E0030` ⇒ **exit 1 仍是期望值** —— 它钉的**不是**惊群，而是**规范空白 SP-2**（「超时产生的 NULL」与「竞争失败产生的 NULL」同形，调用方分不出来）。
+
+### 集成者动作（本波）
+
+- 本波**新增 2 个公共面成员**（`HTTP_REQUEST_ASYNC` / `PROCESS_RUN_ASYNC`）⇒ **登记清单**里的 ①`wlwl-std/src/lib.rs`（**无需改**：新成员随模块 `SPEC` 自动登记）· ②`stdlib_mirror.rs`（**无需改**）· ③各 `*_contract.rs` 的期望名单 · ④`docs/wlwl-spec-reference.md` 的附录 A 抄件 —— **③④ 本轮不做**，因为它们**必须与规范侧落表成对**（§11.2 的顺序：规范仓 ①②③ → 实现仓 ④）;③ 现在改反而会把红消息从「§19 table missed `PROCESS_RUN_ASYNC`」（**诚实**）换成「§19 table found …」（**误导**）。
+- 红项：**7 处**（6 个 cargo test 目标 + `check-appendix-a`），**全部是「规范侧未跟上」这一类** —— 第三波是 6 处，本波 **+1**（`process_contract` 因新增成员转红）;⚠ 另有 `process_contract` 的**两条超时用例是负载敏感的既有 flake**（同一份代码两次跑出 1 红 / 2 红）⇒ **不是回归**。
+
+---
+
 ## [v0.12.1 开工 · 第三波] — 2026-10-28(3 个 PHASE 落地;多 agent 并行)
 
 **本段 = 第三波的 3 个 PHASE**（计划 §13.4「优先批」三项 —— 业主 2026-10-28 12:36 裁决 **D2 / D3 / D4a** 的落地）。计划原文见 `docs/plan/wlwl-v0.12.1-build-plan.md`;本波的地位与交接见该文档 **§13「接替执行手册」**。

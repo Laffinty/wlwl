@@ -1,0 +1,63 @@
+// concurrency/tcp_accept_single_wakeup.wll - 需求清单 B-2（TCP_ACCEPT 惊群）
+//
+// [2026-10-28] 同一个监听句柄上**多个 acceptor** 等待时，一次就绪事件
+// **只唤醒一个**（FIFO 队首）⇒ 其余等待者**留在名单里**继续等**下一次**
+// 就绪事件 ⇒ 落选者**不拿到 NULL**、**不报错**、**保持存活**，并能**继续
+// 接受后续连接**。
+//
+// ⚠ 修复前（唤醒**全部**）：一次就绪事件只够**一个**连接 ⇒ 落选者被唤醒
+//   却没货 ⇒ `TCP_ACCEPT` 返回 `NULL`（与超时**同形**）⇒ 调用方拿 `NULL`
+//   去 `TCP_RECV` ⇒ `E0030` ⇒ 任务死 ⇒ `SCOPE` 提前退出 ⇒ 监听句柄随进程
+//   消失 ⇒ 客户端 RST。**这就是惊群。**
+//
+// ⚠ **监听端口是「可替换的令牌」**：`TCP_LISTEN("127.0.0.1", 0)` 里的 `0`
+//   = 让操作系统挑一个**临时端口** ⇒ **独立运行**（并发套件跑它、**没有**
+//   客户端）**不会撞端口**。
+//   `crates/wlwl-eval/tests/b2_accept_wakeup_contract.rs` 把这一行**替换**
+//   成一个**空闲端口**，并从**外部**发起**两个**连接 ⇒ 惊群场景被真正跑起来。
+//
+// ⚠ **为什么 WLWL 程序自己发不出这个连接**：`wlwl:std.net` 的传输层成员
+//   只有 TCP_LISTEN / TCP_ACCEPT / TCP_RECV / TCP_SEND / TCP_PEER /
+//   TCP_LOCAL_ADDR / TCP_SET_TIMEOUT / TCP_CLOSE / TCP_CLOSE_LISTENER
+//   （+ TCP_SERVE）—— **没有客户端侧的 `TCP_CONNECT`** ⇒ 纯 WLWL 程序
+//   **无法自己发起连接** ⇒ 惊群场景**必须**由外部客户端驱动。
+//
+// ⚠ **判据为什么是「两个 acceptor 各拿到一条连接」**：落选者拿到的 `NULL`
+//   与**超时**的 `NULL` **同形** ⇒ 程序**分不出来** ⇒ 判据不能是「落选者
+//   拿到的是不是 NULL」，而是它的**可观察后果**：落选者**继续等**下一次
+//   连接 ⇒ 于是**两个** acceptor **各拿到一条**。
+//
+// 期望 stdout（**有客户端**时 —— 两个 acceptor 各拿到一条连接）：
+//   1
+//   1
+// 期望 stdout（**没有客户端**时 —— 例如并发套件独立跑它）：
+//   0
+//   0
+
+IMPORT("wlwl:std.net", ["TCP_LISTEN", "TCP_ACCEPT", "TCP_CLOSE_LISTENER"]);
+
+LET(l, TCP_LISTEN("127.0.0.1", 0));
+
+LET(r, SCOPE(FUN(() ,
+    // 两个 acceptor 等**同一个**监听句柄。
+    // ⚠ 第一个 SPAWN 的先挂起 ⇒ 它是等待名单的**队首** ⇒ 第一个就绪事件
+    //   唤醒它 ⇒ 第二个 acceptor **留在名单里**等**下一次**就绪事件。
+    // ⚠ 每次等待**独占一段**、且是**该段的第一条语句** ⇒ 恢复时只重放
+    //   那一次等待（并发册 §17.0）。
+    LET(a, SPAWN(FUN(() ,
+        LET(conn, TCP_ACCEPT(l, 1500));
+        YIELD();
+        IF(==(TYPE(conn), "NULL"), 0, 1)
+    )));
+    LET(b, SPAWN(FUN(() ,
+        LET(conn, TCP_ACCEPT(l, 1500));
+        YIELD();
+        IF(==(TYPE(conn), "NULL"), 0, 1)
+    )));
+    [AWAIT(a), AWAIT(b)]
+)));
+
+PRINT(AT(r, 0, 0));
+PRINT(AT(r, 1, 0));
+TCP_CLOSE_LISTENER(l);
+r

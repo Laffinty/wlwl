@@ -7633,6 +7633,18 @@ impl wlwl_std::StdHost for Evaluator {
         self.current_task.map(|t| t.0 as i64)
     }
 
+    /// [B-5] 求值器**支持**「异步操作就绪」这一族挂起点 ⇒ 标准库成员会把任务
+    /// 挂在 [`YieldReason::AsyncReady`] 上，而不是退回定时器轮询。
+    ///
+    /// ⚠ **这句必须与接线同时到位**（`park_for_async` / `wake_async_waiter`
+    ///   / `pump_async_readiness`）—— 只开这一句而没接线 ⇒ 任务挂上去**没人醒**
+    ///   ⇒ **挂死**。
+    /// ⚠ 接线到位后，等待延迟从「轮询间隔」（≤200 ms）降到「≈0」（工作线程
+    ///   推进就绪集合 ⇒ 条件变量立刻唤醒解释器）。
+    fn supports_async_ready_park(&self) -> bool {
+        true
+    }
+
     fn take_sleep_elapsed(&mut self) -> bool {
         let Some(task_id) = self.current_task else {
             return false;
@@ -10476,6 +10488,10 @@ impl Evaluator {
         match member {
             "TCP_ACCEPT" | "TCP_RECV" => true,
             "SLEEP_ASYNC" => self.clock_bubble.is_none(),
+            // [B-5] 两个**异步出站**成员也是宿主挂起点成员：它们把任务**挂起**
+            //   （在标准库的工作线程上跑）⇒ 在任务体之外被调用时必须报 `E0014`
+            //   （并发册 §17.0；任务体**自己的顶层语句**仍合法）。
+            "HTTP_REQUEST_ASYNC" | "PROCESS_RUN_ASYNC" => true,
             _ => false,
         }
     }
@@ -10965,6 +10981,24 @@ impl Evaluator {
                 };
                 self.scheduler.park_for_socket(id, socket_id);
             }
+            // [项目扩展 / B-5] Real suspension on an **async outbound operation**.
+            //
+            // The native member (`HTTP_REQUEST_ASYNC` / `PROCESS_RUN_ASYNC`)
+            // returned `Signal::Yield(AsyncReady(op_id))` because the request
+            // is still running on a **worker thread** ⇒ park the task on that
+            // operation. It is woken by `Scheduler::wake_async_waiter` when the
+            // worker finishes (the readiness queue is drained by
+            // `pump_async_readiness`).
+            //
+            // ⚠ 与 socket 等待同族，差别只在**唤醒方**：socket 由宿主 I/O 线程
+            //   唤醒，这一族由**标准库自己的工作线程**唤醒。
+            o if matches!(o.signal, Signal::Yield(YieldReason::AsyncReady(_))) => {
+                let op_id = match o.signal {
+                    Signal::Yield(YieldReason::AsyncReady(op)) => op,
+                    _ => unreachable!(),
+                };
+                self.scheduler.park_for_async(id, op_id);
+            }
             // [项目扩展 / G-08] Real suspension on a **timer**（定时睡眠）。
             //
             // The std member returned `Signal::Yield(SleepUntil(at))` ⇒ park the
@@ -11257,6 +11291,22 @@ impl Evaluator {
                 self.pump_socket_readiness(50);
                 continue;
             }
+            // [项目扩展 / B-5] 有任务挂在**异步出站操作**上 ⇒ 等它完成
+            // （这是「等出站结果」的语义，**不是**死锁）⇒ 别在这里退出。
+            if self.scheduler.async_waiter_count() > 0 {
+                if self.pump_async_readiness(50) {
+                    continue;
+                }
+                // 还没有就绪事件 ⇒ 短暂等一下（工作线程可能正在路上）。
+                if self.pump_async_readiness(50) {
+                    continue;
+                }
+                // 仍然没有 ⇒ 这一轮真的没有可运行的任务了。
+                // ⚠ 但异步出站等待是**无限期**的 ⇒ 这里退出就会把挂起的任务丢下。
+                //   ⇒ 继续等（就绪事件一到就醒）。
+                self.pump_async_readiness(50);
+                continue;
+            }
             break;
         }
         self.scheduler.dispatch_cancellations();
@@ -11301,6 +11351,52 @@ impl Evaluator {
                 }
                 wlwl_std::tcp::retire_ready(sid);
                 if self.scheduler.wake_socket_waiter(sid) {
+                    woke = true;
+                }
+            }
+        }
+        woke
+    }
+
+    /// [项目扩展 / B-5] 取走宿主的**异步出站就绪事件**并唤醒对应的任务。
+    ///
+    /// ⚠ 这是**宿主工作线程 → 解释器**的通道（与 `pump_socket_readiness`
+    ///   **同款**，只是就绪集合换成了 `wlwl_std::net::async_op`）：工作线程
+    ///   只把「操作 id」推进就绪集合，**不能**直接碰调度器（解释器的值模型
+    ///   是 `Rc`，不是 `Send`）。
+    ///
+    /// ⚠ **只取走「自己有等待者」的**那些就绪事件 —— 别人的**原样留着**
+    ///   （就绪集合是进程级的 ⇒ 同一进程里跑两个求值器时，一个求值器不能
+    ///   把另一个的事件吃掉）。
+    /// ⚠ 就绪集合是**电平**（level）：「这个操作**已经**完成」持续成立 ⇒
+    ///   操作在 park **之前**完成时，它**仍然**在集合里 ⇒ 这里照样能唤醒
+    ///   ⇒ **不丢事件**。
+    ///
+    /// 返回是否真的唤醒了任务。
+    fn pump_async_readiness(&mut self, wait_ms: u64) -> bool {
+        if self.scheduler.async_waiter_count() == 0 {
+            return false;
+        }
+        let mut woke = false;
+        for op_id in wlwl_std::net::async_op::peek_ready() {
+            if !self.scheduler.has_async_waiter(op_id) {
+                continue;
+            }
+            wlwl_std::net::async_op::retire_ready(op_id);
+            if self.scheduler.wake_async_waiter(op_id) {
+                woke = true;
+            }
+        }
+        if !woke && wait_ms > 0 {
+            // ⚠ 与 socket 那条**同款**：等**条件变量**（不是「睡 50 ms 再看一眼」）
+            //   ⇒ 工作线程一推进就绪集合就唤醒解释器 ⇒ 等待延迟 ≈ 0。
+            wlwl_std::net::async_op::await_ready(std::time::Duration::from_millis(wait_ms));
+            for op_id in wlwl_std::net::async_op::peek_ready() {
+                if !self.scheduler.has_async_waiter(op_id) {
+                    continue;
+                }
+                wlwl_std::net::async_op::retire_ready(op_id);
+                if self.scheduler.wake_async_waiter(op_id) {
                     woke = true;
                 }
             }
@@ -11376,6 +11472,15 @@ impl Evaluator {
             // ⇒ 继续等，别落到下面的 E0053 / E0065 死锁检测。
             if self.scheduler.task_parked_on_socket(id) {
                 self.pump_socket_readiness(50);
+                continue;
+            }
+            // [项目扩展 / B-5] 目标挂在**异步出站操作**上 ⇒ 等它完成，不是死锁。
+            //
+            // ⚠ 与 socket 那条**同款**（同族的「宿主挂起」等待）：挂起期间
+            //   **别的任务照常跑**（队列每轮都先排干）⇒ 出站 I/O 不冻结整个
+            //   `SCOPE`。
+            if self.scheduler.task_parked_on_async(id) {
+                self.pump_async_readiness(50);
                 continue;
             }
             // [G-13] 有任务带**截止时间** ⇒ **不是死锁** ⇒ 等到点。

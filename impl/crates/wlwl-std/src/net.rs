@@ -128,6 +128,12 @@ pub static SPEC: ModuleSpec = ModuleSpec {
         ("HTTP_GET", http_get as StdFn),
         ("HTTP_POST", http_post as StdFn),
         ("HTTP_REQUEST", http_request as StdFn),
+        // [B-5] **异步**出站：请求跑在**工作线程**上，等待期间**当前任务被
+        // 挂起** ⇒ 别的任务（别的 handler）照常跑 ⇒ 出站 I/O **不冻结整个
+        // `SCOPE`**。⚠ `HTTP_GET` / `HTTP_POST` / `HTTP_REQUEST` **仍然阻塞**
+        //   （既有成员的语义一个字都不改 —— 一致性册「不得修改任一既有成员的
+        //   签名或可观察语义」）。
+        ("HTTP_REQUEST_ASYNC", http_request_async as StdFn),
         // ── 传输层（TCP）──────────────────────────────────────────────────
         //
         // ⚠ **这 9 个成员不在 v1.0 冻结快照（附录 A）里** ⇒ `stdlib_appendix_a_sync`
@@ -247,6 +253,67 @@ fn http_error(op: &str, reason: impl Into<String>) -> Value {
         (Value::String("op".into()), Value::String(op.into())),
         (Value::String("reason".into()), Value::String(reason.into())),
     ])))
+}
+
+/// 一次 HTTP 请求的**产物** —— **纯数据**（`Send`）。
+///
+/// ⚠ **为什么不是 `Value`**：`Value` 的字典载荷是 `Rc<DictInner>`
+///   （`wlwl-value/src/lib.rs` 的 `Value::Dict`）⇒ **`Value` 不是 `Send`**
+///   ⇒ [B-5] 的异步变体**不能**把结果从**工作线程**搬回**求值线程**
+///   ⇒ 线程之间只搬**纯数据**，`Value` 在求值线程上现搭
+///   （见 [`http_response_value`]）。
+#[derive(Debug, Clone)]
+pub(crate) struct HttpResponse {
+    pub status: i64,
+    pub headers: Vec<(String, String)>,
+    pub body: Vec<u8>,
+}
+
+/// 把 [`HttpResponse`] 搭成**成员返回值**（`DICT {status, headers, body}`）。
+///
+/// ⚠ body 的形状**随内容走**（D13-043 / N-036）：合法 UTF-8 ⇒ `STRING`，
+///   否则 ⇒ `ARRAY[INTEGER]`（本语言唯一无损字节载体）。
+fn http_response_value(r: HttpResponse) -> Value {
+    // 🔴 [D13-043(N-036):非 UTF-8 的 body **不再整条 ERR**]——
+    //
+    // 缺陷形态:`String::from_utf8(body_bytes)` 失败 ⇒ 整条请求 `ERR`。于是
+    // 「取一个 PNG / 一个 wasm」这种最普通的用法**完全不可用** —— 这是**可用性**
+    // 缺陷,不是安全缺陷(顶多丢一次请求,不会越权、不会越界)。
+    //
+    // 依据:规范 §2.3 / §11.6 把 `ARRAY[INTEGER]` 定为本语言**唯一无损字节载体**
+    // (`STRING` 是 UTF-8,装不了任意字节),而 `std.fs::READ_BYTES` 正是逐字节
+    // 无损返回。`HTTP_*` 的 body 是同一个东西,没理由比 `READ_BYTES` 更严。
+    //
+    // ⚠ **这是规范改动**:规范 §21 的成员表只写了 `{status, headers, body}`,
+    //   **从未规定 `body` 的类型** —— 所以实现侧无冲突,但规范必须补一条
+    //   「`STRING` 或 `ARRAY[INTEGER]`」才不算自说自话(见交付说明)。
+    // ⚠ 形状**随内容走**:合法 UTF-8 ⇒ `STRING`(既有契约一个不改),否则 ⇒
+    //   `ARRAY[INTEGER]`。不允许「无脑一律返回数组」—— 那会把每一个文本响应
+    //   的调用方全部改成手动重组。
+    let body = match String::from_utf8(r.body) {
+        Ok(b) => Value::String(b),
+        // `FromUtf8Error::into_bytes` 把**原始字节**原样取回 —— 不重扫一遍,
+        // 也就不可能在这一步引入有损替换(§11.3-3「不做有损替换」)。
+        Err(e) => Value::Array(
+            e.into_bytes()
+                .into_iter()
+                .map(|b| Value::Integer(i64::from(b)))
+                .collect(),
+        ),
+    };
+    Value::dict(vec![
+        (Value::String("status".into()), Value::Integer(r.status)),
+        (
+            Value::String("headers".into()),
+            Value::dict(
+                r.headers
+                    .into_iter()
+                    .map(|(k, v)| (Value::String(k), Value::String(v)))
+                    .collect(),
+            ),
+        ),
+        (Value::String("body".into()), body),
+    ])
 }
 
 /// RFC 9110 §5.6.2 的 `tchar` —— 头字段名与方法名只能用这些字符。
@@ -887,15 +954,25 @@ fn method_token(host: &mut dyn StdHost, name: &str, m: &str) -> wlwl_error::Wlwl
     Ok(())
 }
 
-/// HTTP 的全部实现。返回 `Value` —— 成功是 `DICT`,失败是 `ERR(...)` 值。
-fn request(
+/// HTTP 的**核心**：连、写、读。返回**纯数据** —— 成功是 [`HttpResponse`]，
+/// 失败是**失败原因**（`String`）。
+///
+/// ⚠ **为什么核心层不返回 `Value`**：见 [`HttpResponse`] 的注释
+///   （`Value` 含 `Rc` ⇒ 不是 `Send` ⇒ 工作线程搬不动它）。
+fn request_raw(
     name: &str,
     method: &str,
     url: &str,
     body: Option<&str>,
     headers: Vec<(String, String)>,
     timeout_ms: u64,
-) -> Value {
+) -> Result<HttpResponse, String> {
+    // ⚠ **局部遮蔽**：这一层的 `http_error` 返回**失败原因**（`Err(reason)`），
+    //   不是 `ERR(...)` **值** —— 值要留到**求值线程**上才搭（`Value` 不是
+    //   `Send`）⇒ 下面那三十来处 `return http_error(name, …)` **一个字都不用改**。
+    fn http_error(_op: &str, reason: impl Into<String>) -> Result<HttpResponse, String> {
+        Err(reason.into())
+    }
     // ── 1. URL ──
     let p = match parse(name, url) {
         Ok(p) => p,
@@ -1254,47 +1331,31 @@ fn request(
         body_bytes.truncate(w);
     }
 
-    // ── D13-043(N-036):非 UTF-8 的 body **不再整条 ERR** ──
+    // ── D13-043(N-036):body 的**形状**规则见 [`http_response_value`] ──
     //
-    // 缺陷形态:`String::from_utf8(body_bytes)` 失败 ⇒ 整条请求 `ERR`。于是
-    // 「取一个 PNG / 一个 wasm」这种最普通的用法**完全不可用** —— 这是**可用性**
-    // 缺陷,不是安全缺陷(顶多丢一次请求,不会越权、不会越界)。
-    //
-    // 依据:规范 §2.3 / §11.6 把 `ARRAY[INTEGER]` 定为本语言**唯一无损字节载体**
-    // (`STRING` 是 UTF-8,装不了任意字节),而 `std.fs::READ_BYTES` 正是逐字节
-    // 无损返回。`HTTP_*` 的 body 是同一个东西,没理由比 `READ_BYTES` 更严。
-    //
-    // ⚠ **这是规范改动**:规范 §21 的成员表只写了 `{status, headers, body}`,
-    //    **从未规定 `body` 的类型** —— 所以实现侧无冲突,但规范必须补一条
-    //    「`STRING` 或 `ARRAY[INTEGER]`」才不算自说自话(见交付说明)。
-    // ⚠ 形状**随内容走**:合法 UTF-8 ⇒ `STRING`(既有契约一个不改),否则 ⇒
-    //    `ARRAY[INTEGER]`。不允许「无脑一律返回数组」—— 那会把每一个文本响应
-    //    的调用方全部改成手动重组。
-    let body = match String::from_utf8(body_bytes) {
-        Ok(b) => Value::String(b),
-        // `FromUtf8Error::into_bytes` 把**原始字节**原样取回 —— 不重扫一遍,
-        // 也就不可能在这一步引入有损替换(§11.3-3「不做有损替换」)。
-        Err(e) => Value::Array(
-            e.into_bytes()
-                .into_iter()
-                .map(|b| Value::Integer(i64::from(b)))
-                .collect(),
-        ),
-    };
+    // ⚠ 这一层只搬**字节**，**不**做 UTF-8 判定（那是求值线程上的事 ——
+    //   `Value` 不是 `Send`，工作线程搭不出 `Value`）。
+    Ok(HttpResponse {
+        status,
+        headers: out_headers,
+        body: body_bytes,
+    })
+}
 
-    Value::dict(vec![
-        (Value::String("status".into()), Value::Integer(status)),
-        (
-            Value::String("headers".into()),
-            Value::dict(
-                out_headers
-                    .into_iter()
-                    .map(|(k, v)| (Value::String(k), Value::String(v)))
-                    .collect(),
-            ),
-        ),
-        (Value::String("body".into()), body),
-    ])
+/// HTTP 的**全部实现**（成员层）。返回 `Value` —— 成功是 `DICT`,失败是
+/// `ERR(...)` 值。
+fn request(
+    name: &str,
+    method: &str,
+    url: &str,
+    body: Option<&str>,
+    headers: Vec<(String, String)>,
+    timeout_ms: u64,
+) -> Value {
+    match request_raw(name, method, url, body, headers, timeout_ms) {
+        Ok(r) => http_response_value(r),
+        Err(reason) => http_error(name, reason),
+    }
 }
 
 /// D13-040(N-033):一次**从总闸里扣**的读。
@@ -1392,6 +1453,395 @@ pub fn http_request(
         headers,
         timeout,
     )))
+}
+
+// ── B-5:异步出站操作(工作线程 + 就绪集合 + 幂等备忘)────────────────────
+//
+// ## 它是什么
+//
+// `HTTP_REQUEST_ASYNC` / `PROCESS_RUN_ASYNC` 两个成员**共用**这一层：
+// **把一次出站操作放到工作线程上跑**，**挂起当前任务**（不是阻塞整个运行时）
+// ⇒ 别的任务（别的 handler）在这段时间里**照常跑**。
+//
+// ## 三条必须写下来的语义
+//
+// 1. **不冻结整个 `SCOPE`**：等待期间**别的任务照常运行** ⇒ 出站 I/O 不再把
+//    整个运行时停摆（那是 `HTTP_REQUEST` / `PROCESS_RUN` 的既有代价，本轮
+//    **一个字都不改**）。
+// 2. **段首重放 ⇒ 必须幂等**（并发册 §17.0）：宿主挂起 = **不切段**格 ⇒ 恢复时
+//    **从挂起点那句话起整段重跑一遍** ⇒ 若不记住「这个任务已经发起过什么」，
+//    **同一个请求会被发起两次** ⇒ 幂等备忘（[`async_op::run`] 里的 `MEMO`）
+//    是**硬要求**，不是优化。
+// 3. **产物必须是 `Send` 的纯数据**：`Value` 的字典载荷是 `Rc<DictInner>`
+//    ⇒ `Value` 不是 `Send` ⇒ 工作线程**搬不动**它 ⇒ 线程之间只搬纯数据，
+//    `Value` 在**求值线程**上现搭（[`async_op::payload_to_value`]）。
+//
+// ## 两条唤醒路径
+//
+// - **事件驱动**（宿主支持 [`YieldReason::AsyncReady`] 时）：任务挂在
+//   `AsyncReady(操作 id)` 上 ⇒ 工作线程完成 ⇒ 推进**就绪集合** ⇒ 宿主把它
+//   唤醒 ⇒ 等待延迟 ≈ 0。接线需求见交付的「登记清单」。
+// - **定时器轮询**（宿主**还没**接上那一族时的回退）：任务挂在
+//   `SleepUntil(绝对时刻)` 上 ⇒ 定时器到点把它叫醒 ⇒ 成员再看一眼产物。
+//   ⇒ 延迟 ≤ 轮询间隔（起步 5 ms、翻倍、封顶 200 ms）。
+//
+// ⚠ 两条路径**只影响延迟**，**不影响语义**（幂等、结果形状、失败口径都一样）。
+
+/// 一次异步出站操作的**产物** —— **纯数据**（`Send`）。
+#[derive(Debug, Clone)]
+pub(crate) enum Payload {
+    /// 一次 HTTP 请求（`op` = 成员名 ⇒ 失败值的 `op` 字段）。
+    Http {
+        op: &'static str,
+        r: Result<HttpResponse, String>,
+    },
+    /// 一次子进程运行（`op` = 成员名 ⇒ 失败值的 `op` 字段）。
+    Proc {
+        op: &'static str,
+        r: Result<crate::process::ProcessOutcome, String>,
+    },
+    /// 工作线程**panic**了（兜底用 —— 见 `async_op::issue` 的注）。
+    Failed { op: &'static str, reason: String },
+}
+
+/// 异步出站成员的**共用台账**：工作线程、就绪集合、幂等备忘。
+///
+/// ⚖ **`pub` 的理由**：求值器侧（`wlwl-eval`）的「异步就绪泵」要读/消费这里的
+///   就绪集合（`peek_ready` / `retire_ready` / `await_ready`）—— 它**不能**碰
+///   调度器（解释器的值模型是 `Rc`，不是 `Send`）⇒ 那是**宿主 I/O 线程 →
+///   解释器**的通道，与 `wlwl_std::tcp` 的就绪队列**同款**。
+///   ⚠ 本模块里**带私有类型的**那些项（`run` / `Payload` / …）一律是
+///   `pub(crate)` ⇒ 不构成对外的私有类型泄漏。
+pub mod async_op {
+    use super::{http_error, http_response_value, Payload};
+    use std::collections::{HashMap, HashSet};
+    use std::sync::atomic::{AtomicI64, Ordering};
+    use std::sync::{Arc, Condvar, LazyLock, Mutex};
+    use std::time::Duration;
+    use wlwl_value::{Outcome, Signal, StdHost, Value, YieldReason};
+
+    /// 轮询回退的**起始**间隔（毫秒）。
+    const POLL_START_MS: i64 = 5;
+    /// 轮询回退的**上限**间隔（毫秒）。
+    const POLL_MAX_MS: i64 = 200;
+
+    /// 一次异步操作的**状态**。
+    struct OpState {
+        /// 完成后的产物（`None` = 还在跑）。
+        result: Option<Payload>,
+        /// 产物**已经交给程序**了。
+        delivered: bool,
+        /// 本任务在这个操作上**挂起过** ⇒ 交付时清恢复提示。
+        parked: bool,
+        /// 下一次轮询的间隔（回退路径的退避）。
+        poll_ms: i64,
+    }
+
+    /// 一次异步操作。
+    struct Op {
+        id: i64,
+        state: Mutex<OpState>,
+    }
+
+    /// **幂等备忘**的键：`(任务键, 实参指纹)`。
+    type MemoKey = (Option<i64>, String);
+
+    /// **幂等备忘**：`(任务键, 签名)` → 本次操作。
+    ///
+    /// ⚠ **键是「任务键 + 实参指纹」**：任务键（`host.current_task_key()`）把
+    ///   **两个任务**的同一次调用分开；实参指纹把**同一个任务**里的**两次不同
+    ///   调用**分开。
+    /// ⚠ **跨求值器的已知边界**（与 `TCP_ACCEPT` 的备忘同族）：任务键只在
+    ///   **一个求值器内**唯一 ⇒ 同一进程里跑**两个求值器**、且**实参完全
+    ///   相同**时，两边的操作会共用同一格 ⇒ 第二个求值器会拿到第一个的产物。
+    ///   ⇒ 实参指纹把这条边界**收窄**到「实参逐字相同」这一种情形。
+    static MEMO: LazyLock<Mutex<HashMap<MemoKey, Arc<Op>>>> =
+        LazyLock::new(|| Mutex::new(HashMap::new()));
+
+    /// **就绪集合**：已完成、尚未被观察的操作 id。
+    ///
+    /// ⚠ 这是**电平**（level）而不是**边沿**（edge）：「这个操作**已经**完成」
+    ///   是**持续成立**的状态，直到它被消费。与 `tcp::READY` 同款。
+    static READY: LazyLock<Mutex<HashSet<i64>>> = LazyLock::new(|| Mutex::new(HashSet::new()));
+
+    /// 就绪集合的「有东西了」信号（条件变量 ⇒ 等待延迟 ≈ 0）。
+    static READY_CV: Condvar = Condvar::new();
+
+    /// 操作 id 的发号器。
+    ///
+    /// ⚠ **起点刻意很高**（`1 << 32`）—— 与 **socket id** 空间错开。
+    ///   为什么：`resume_hint` 是**一个** `Option<i64>` 槽 ⇒ socket 等待与异步
+    ///   等待**共用**它 ⇒ 若两个空间的 id 撞上，成员就分不清「这个提示是
+    ///   socket 的还是异步操作的」⇒ 异步操作 id 从一个**很高的**起点发号。
+    static NEXT_ID: AtomicI64 = AtomicI64::new(1 << 32);
+
+    /// 把操作 id 标记为就绪（由**工作线程**调用）。
+    fn push_ready(id: i64) {
+        let mut q = READY.lock().unwrap_or_else(|e| e.into_inner());
+        q.insert(id);
+        drop(q);
+        // ⚠ 必须**在放锁之后**通知（与 `tcp::push_ready` 同款）：否则被唤醒的
+        //   线程可能抢在 insert 之前拿到锁、看到空集合又睡回去 ⇒ **丢通知**。
+        READY_CV.notify_all();
+    }
+
+    /// **看一眼**当前就绪的操作 id（**不消费**）。
+    ///
+    /// ⚠ **宿主侧的泵**（求值器接线）用这三个函数把「工作线程完成」翻译成
+    ///   「唤醒任务」⇒ 与 `wlwl_std::tcp` 的就绪队列**同款**通道。
+    pub fn peek_ready() -> Vec<i64> {
+        READY
+            .lock()
+            .unwrap_or_else(|e| e.into_inner())
+            .iter()
+            .copied()
+            .collect()
+    }
+
+    /// 消费掉一个就绪事件（条件已被消费 ⇒ 不再是「就绪」）。
+    pub fn retire_ready(id: i64) {
+        READY.lock().unwrap_or_else(|e| e.into_inner()).remove(&id);
+    }
+
+    /// 阻塞到「有人推进了就绪集合」或超时。
+    ///
+    /// ⚠ **不看集合本身空不空** —— 它是**电平**，可能一直非空 ⇒ 用它当
+    ///   「有更新了」的信号会变成忙等（与 `tcp::await_ready` 同款）。
+    pub fn await_ready(timeout: Duration) {
+        let q = READY.lock().unwrap_or_else(|e| e.into_inner());
+        let _ = READY_CV
+            .wait_timeout(q, timeout)
+            .unwrap_or_else(|e| e.into_inner());
+    }
+
+    /// 把产物搭成**成员返回值**（在**求值线程**上跑 ⇒ 这里才碰 `Rc`）。
+    fn payload_to_value(p: &Payload) -> Value {
+        match p {
+            Payload::Http { op, r } => match r {
+                Ok(resp) => http_response_value(resp.clone()),
+                Err(reason) => http_error(op, reason.clone()),
+            },
+            Payload::Proc { op, r } => match r {
+                Ok(out) => crate::process::process_outcome_value(out.clone()),
+                Err(reason) => crate::process::proc_err(op, reason.clone()),
+            },
+            Payload::Failed { op, reason } => Value::Err(Box::new(Value::dict(vec![
+                (
+                    Value::String("kind".into()),
+                    Value::String("AsyncError".into()),
+                ),
+                (Value::String("op".into()), Value::String((*op).into())),
+                (
+                    Value::String("reason".into()),
+                    Value::String(reason.clone()),
+                ),
+            ]))),
+        }
+    }
+
+    /// 起一个异步操作：**工作线程**跑 `work`，完成后把产物放进槽、
+    /// 推进就绪集合。
+    fn issue(
+        key: MemoKey,
+        op_name: &'static str,
+        work: impl FnOnce() -> Payload + Send + 'static,
+    ) -> Arc<Op> {
+        let id = NEXT_ID.fetch_add(1, Ordering::Relaxed);
+        let op = Arc::new(Op {
+            id,
+            state: Mutex::new(OpState {
+                result: None,
+                delivered: false,
+                parked: false,
+                poll_ms: POLL_START_MS,
+            }),
+        });
+        {
+            let mut memo = MEMO.lock().unwrap_or_else(|e| e.into_inner());
+            memo.insert(key, op.clone());
+        }
+        let worker = op.clone();
+        std::thread::spawn(move || {
+            // ⚠ **工作线程不许把 panic 带进台账**：panic ⇒ 产物永远不到 ⇒ 任务会
+            //   **一直轮询下去**（挂死）⇒ 兜住它，当成一次失败。
+            let payload = match std::panic::catch_unwind(std::panic::AssertUnwindSafe(work)) {
+                Ok(p) => p,
+                Err(boxed) => {
+                    let reason = match boxed.downcast_ref::<&str>() {
+                        Some(s) => (*s).to_string(),
+                        None => match boxed.downcast_ref::<String>() {
+                            Some(s) => s.clone(),
+                            None => "the worker thread panicked".to_string(),
+                        },
+                    };
+                    Payload::Failed {
+                        op: op_name,
+                        reason,
+                    }
+                }
+            };
+            {
+                let mut st = worker.state.lock().unwrap_or_else(|e| e.into_inner());
+                st.result = Some(payload);
+            }
+            // ⚠ 完成 ⇒ 推进就绪集合（事件驱动那条路的**唤醒源**）。
+            push_ready(id);
+        });
+        op
+    }
+
+    /// 把当前任务**挂起**在这次异步操作上。
+    fn park(host: &mut dyn StdHost, op: &Op) -> Outcome {
+        // ① 宿主支持「异步就绪」这一族 ⇒ 挂在新变体上（完成时由宿主唤醒）。
+        if host.supports_async_ready_park() {
+            return Outcome::with_signal(
+                Value::Null,
+                Signal::Yield(YieldReason::AsyncReady(op.id)),
+            );
+        }
+        // ② 回退：**定时器轮询**（宿主还没接上那一族时的形态）。
+        //
+        // ⚠ **退避**：间隔从 5 ms 起步、每次翻倍、封顶 200 ms ⇒
+        //   - 快请求**立刻**交付（第一次轮询就在 5 ms 之后）；
+        //   - 慢请求**少**几次重放（段首重放 ⇒ 每次重放都重跑这一段 ⇒
+        //     重放**不是**免费的）。
+        let wait = {
+            let mut st = op.state.lock().unwrap_or_else(|e| e.into_inner());
+            let w = st.poll_ms;
+            st.poll_ms = (st.poll_ms * 2).min(POLL_MAX_MS);
+            w
+        };
+        let at = wlwl_value::real_mono_ms().saturating_add(wait);
+        Outcome::with_signal(Value::Null, Signal::Yield(YieldReason::SleepUntil(at)))
+    }
+
+    /// 异步出站成员的**共用流程**。
+    ///
+    /// ⚠ **幂等是硬要求**（并发册 §17.0）：宿主挂起后恢复时，挂起点被**再次
+    ///   求值** ⇒ 从挂起点那句话起**整段重跑一遍** ⇒ 若不记住「这个任务已经
+    ///   发起过什么」，**同一个请求会被发起两次**。
+    ///
+    /// - `signature` = 实参的指纹（**同一次调用重跑时逐字相同**）；
+    /// - `work` = 真正干活的那段（**只在发起那一次跑**）。
+    pub(crate) fn run(
+        host: &mut dyn StdHost,
+        op_name: &'static str,
+        signature: String,
+        work: impl FnOnce() -> Payload + Send + 'static,
+    ) -> wlwl_error::WlwlResult<Outcome> {
+        let task_key = host.current_task_key();
+        let resume = host.resume_hint();
+        let key = (task_key, signature);
+
+        // ① 备忘：这个任务在这个签名上**已经发起过**什么？
+        let existing = {
+            let memo = MEMO.lock().unwrap_or_else(|e| e.into_inner());
+            memo.get(&key).cloned()
+        };
+        if let Some(op) = existing {
+            let mut st = op.state.lock().unwrap_or_else(|e| e.into_inner());
+            if st.delivered {
+                // ①a 上一次的结果**已经交付**给程序了。
+                //    - 本次是**重放**（恢复提示在）⇒ 把同一个结果**再交一次**
+                //      （**绝不重发**）；
+                //    - 否则 ⇒ 这是**新的一次调用** ⇒ 落到 ③（另起一个操作）。
+                if resume.is_some() {
+                    if let Some(p) = st.result.clone() {
+                        drop(st);
+                        retire_ready(op.id);
+                        return Ok(Outcome::normal(payload_to_value(&p)));
+                    }
+                }
+            } else {
+                // ② 还没交付 ⇒ 我**就是**那一次调用（**绝不重复发起**）。
+                if let Some(p) = st.result.clone() {
+                    st.delivered = true;
+                    let was_parked = st.parked;
+                    drop(st);
+                    if was_parked {
+                        // 我**就是**挂起点 ⇒ 本次求值完成 ⇒ 清掉恢复提示
+                        //（不清 ⇒ 后面的挂起点成员看不到提示 ⇒ 活锁）。
+                        host.clear_resume_hint();
+                    }
+                    retire_ready(op.id);
+                    return Ok(Outcome::normal(payload_to_value(&p)));
+                }
+                // 还在跑 ⇒ 挂起（**绝不重复发起**）。
+                st.parked = true;
+                drop(st);
+                return Ok(park(host, &op));
+            }
+        }
+
+        // ③ 新的一次调用 ⇒ 起工作线程。
+        let op = issue(key, op_name, work);
+        {
+            let mut st = op.state.lock().unwrap_or_else(|e| e.into_inner());
+            if let Some(p) = st.result.clone() {
+                // 极快的操作**已经**完成 ⇒ 直接交付（不必白挂一次）。
+                st.delivered = true;
+                drop(st);
+                retire_ready(op.id);
+                return Ok(Outcome::normal(payload_to_value(&p)));
+            }
+            st.parked = true;
+        }
+        Ok(park(host, &op))
+    }
+}
+
+/// `HTTP_REQUEST_ASYNC(method, url, body?, headers?, timeout_ms?) -> DICT`
+///
+/// **异步**版的 [`http_request`]：请求在**工作线程**上跑，等待期间**当前任务
+/// 被挂起**（不是阻塞整个运行时）⇒ **别的任务照常运行**。
+///
+/// - 返回值与 `HTTP_REQUEST` **同形**：`DICT {status, headers, body}`；
+///   运行期失败 ⇒ `ERR([kind:"HttpError", op, reason])`**值**（不是诊断）。
+/// - 实参形状与 `HTTP_REQUEST` **逐字同形**（`body` 可选、其后是可选的
+///   `headers` 字典 / `timeout_ms` 整数，顺序不限）。
+/// - ⚠ **元数 / 类型错 ⇒ `E0022` / `E0030`**（既有码；本轮**不新增诊断码**）。
+///
+/// ## 与 `HTTP_REQUEST` 的差别（**唯一**的一条）
+///
+/// `HTTP_REQUEST` **阻塞调用线程** ⇒ 整个 `SCOPE` 停摆；本成员**挂起当前任务**
+/// ⇒ 别的 handler 照常服务。**既有成员的语义一个字都不改**（一致性册：
+/// 「不得修改任一既有成员的签名或可观察语义」）。
+pub fn http_request_async(
+    host: &mut dyn StdHost,
+    args: Vec<Value>,
+) -> wlwl_error::WlwlResult<Outcome> {
+    const NAME: &str = "HTTP_REQUEST_ASYNC";
+    if args.len() < 2 || args.len() > 5 {
+        return Err(arity(host, NAME, args.len(), 2));
+    }
+    let Value::String(method) = &args[0] else {
+        return Err(type_err(host, NAME, &args[0]));
+    };
+    let Value::String(url) = &args[1] else {
+        return Err(type_err(host, NAME, &args[1]));
+    };
+    method_token(host, NAME, method)?;
+    let mut body: Option<&str> = None;
+    let mut i = 2;
+    if let Some(Value::String(b)) = args.get(2) {
+        body = Some(b);
+        i = 3;
+    }
+    let (headers, timeout) = opt_headers_timeout(host, NAME, &args[i..])?;
+    // 幂等用的**实参指纹**（同一次调用重跑时逐字相同）。
+    let signature = format!(
+        "{NAME}|{method}|{url}|{}|{headers:?}|{timeout}",
+        body.unwrap_or("")
+    );
+    // 工作线程要**拥有**实参 ⇒ 这里**复制**一份（`Value` 那边没有 `Clone`
+    // 负担：这些都是 `String`）。
+    let m = method.to_string();
+    let u = url.to_string();
+    let b = body.map(str::to_string);
+    async_op::run(host, NAME, signature, move || Payload::Http {
+        op: NAME,
+        r: request_raw(NAME, &m, &u, b.as_deref(), headers, timeout),
+    })
 }
 
 // ── TCP_SERVE:原生帧内的接受循环(W-12 / B-3 候选 a)────────────────────

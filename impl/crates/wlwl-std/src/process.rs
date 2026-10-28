@@ -37,6 +37,10 @@ pub static SPEC: ModuleSpec = ModuleSpec {
     path: "wlwl:std.process",
     functions: &[
         ("PROCESS_RUN", process_run as StdFn),
+        // [B-5] **异步**版：子进程跑在**工作线程**上，等待期间**当前任务被
+        // 挂起** ⇒ 别的任务照常跑 ⇒ 出站 I/O **不冻结整个 `SCOPE`**。
+        // ⚠ `PROCESS_RUN` **仍然阻塞**（既有成员的语义一个字都不改）。
+        ("PROCESS_RUN_ASYNC", process_run_async as StdFn),
         ("PROCESS_ID", process_id as StdFn),
     ],
 };
@@ -303,7 +307,11 @@ fn ok(v: Value) -> Result<Outcome, WlwlError> {
     Ok(Outcome::normal(v))
 }
 
-fn proc_err(op: &str, reason: impl Into<String>) -> Value {
+/// 进程失败 → `ERR([kind:"ProcessError", op, reason])`**值**。
+///
+/// ⚠ `pub(crate)`：[B-5] 的异步变体在**另一个模块**里把这层形状复用过去
+///   （`wlwl_std::net::async_op` 的产物 → 值）。
+pub(crate) fn proc_err(op: &str, reason: impl Into<String>) -> Value {
     Value::Err(Box::new(Value::dict(vec![
         (
             Value::String("kind".into()),
@@ -312,6 +320,44 @@ fn proc_err(op: &str, reason: impl Into<String>) -> Value {
         (Value::String("op".into()), Value::String(op.into())),
         (Value::String("reason".into()), Value::String(reason.into())),
     ])))
+}
+
+/// 一次子进程运行的**产物** —— **纯数据**（`Send`）。
+///
+/// ⚠ **为什么不是 `Value`**：`Value` 的字典载荷是 `Rc<DictInner>` ⇒
+///   **`Value` 不是 `Send`** ⇒ [B-5] 的异步变体**不能**把结果从**工作线程**
+///   搬回**求值线程** ⇒ 线程之间只搬**纯数据**，`Value` 在求值线程上现搭
+///   （见 [`process_outcome_value`]）。
+#[derive(Debug, Clone)]
+pub(crate) struct ProcessOutcome {
+    pub code: i64,
+    pub stdout: Vec<u8>,
+    pub stderr: Vec<u8>,
+}
+
+/// 把 [`ProcessOutcome`] 搭成**成员返回值**（`DICT {code, stdout, stderr}`）。
+pub(crate) fn process_outcome_value(o: ProcessOutcome) -> Value {
+    Value::dict(vec![
+        (Value::String("code".into()), Value::Integer(o.code)),
+        (
+            Value::String("stdout".into()),
+            // 🔴 [D13-064 · N-037 项一]这一行**是有损替换**,而成员文档与规范
+            // §19 **从未写过** ⇒ 调用方会以为 stdout 是**原始字节**。
+            // ⚠ 它与全局「不做有损替换」条款(§2.3 / §11.3-3)**冲突**:非 UTF-8
+            // 字节在这里被换成 `U+FFFD`,**不可逆**。
+            //
+            // ⚠ **为什么不改成 `ARRAY[INTEGER]` 并集**(像 `HTTP_*` 的 body 那样,
+            //   见 `D13-043`):成员表把 `stdout` / `stderr` 定为 `STRING`,
+            //   改类型是**破坏性变更**,且不在本批范围。⇒ 本批**如实成文**,
+            //   变更路径登记待独立立项。
+            // ⚠ **要拿字节就用文件**:`WRITE_BYTES` + `READ_BYTES` 是无损的那条路。
+            Value::String(String::from_utf8_lossy(&o.stdout).into_owned()),
+        ),
+        (
+            Value::String("stderr".into()),
+            Value::String(String::from_utf8_lossy(&o.stderr).into_owned()),
+        ),
+    ])
 }
 
 /// `PROCESS_RUN(argv, opts?) -> DICT`
@@ -326,24 +372,46 @@ fn proc_err(op: &str, reason: impl Into<String>) -> Value {
 /// - `env` `DICT` **追加**到继承来的环境(同名键覆盖)—— 不是「替换整份环境」。
 pub fn process_run(host: &mut dyn StdHost, args: Vec<Value>) -> Result<Outcome, WlwlError> {
     const NAME: &str = "PROCESS_RUN";
-    if args.is_empty() || args.len() > 2 {
-        return Err(arity(host, NAME, args.len(), 1));
+    let a = parse_proc_args(host, NAME, &args)?;
+    match run_process(&a.argv, a.timeout_ms, a.cwd.as_deref(), &a.extra_env) {
+        Ok(o) => ok(process_outcome_value(o)),
+        Err(reason) => ok(proc_err(NAME, reason)),
     }
-    // ⚠️ 只收数组。**没有**字符串形态 —— 那是命令注入的入口(见文件头)。
+}
+
+/// `PROCESS_RUN` / `PROCESS_RUN_ASYNC` **共用**的实参解析结果。
+struct ProcArgs {
+    argv: Vec<String>,
+    timeout_ms: Option<i64>,
+    cwd: Option<String>,
+    extra_env: Vec<(String, String)>,
+}
+
+/// 解析 `argv` 与 `opts` —— **两个成员共用** ⇒ 口径逐字一致。
+///
+/// ⚠️ 只收数组。**没有**字符串形态 —— 那是命令注入的入口(见文件头)。
+fn parse_proc_args(
+    host: &mut dyn StdHost,
+    name: &str,
+    args: &[Value],
+) -> Result<ProcArgs, WlwlError> {
+    if args.is_empty() || args.len() > 2 {
+        return Err(arity(host, name, args.len(), 1));
+    }
     let Value::Array(items) = &args[0] else {
-        return Err(type_err(host, NAME, "an argv array of strings", &args[0]));
+        return Err(type_err(host, name, "an argv array of strings", &args[0]));
     };
     let mut argv: Vec<String> = Vec::with_capacity(items.len());
     for it in items {
         match it {
             Value::String(s) => argv.push(s.clone()),
-            other => return Err(type_err(host, NAME, "an argv array of strings", other)),
+            other => return Err(type_err(host, name, "an argv array of strings", other)),
         }
     }
     if argv.is_empty() {
         return Err(host.diag(
             ErrorCode::E0030,
-            format!("{NAME}: argv must have at least one element (the program)"),
+            format!("{name}: argv must have at least one element (the program)"),
         ));
     }
 
@@ -355,7 +423,7 @@ pub fn process_run(host: &mut dyn StdHost, args: Vec<Value>) -> Result<Outcome, 
         Some(Value::Dict(entries)) => {
             for (k, v) in entries.iter() {
                 let (Value::String(key), _) = (k, v) else {
-                    return Err(type_err(host, NAME, "an opts dict with string keys", k));
+                    return Err(type_err(host, name, "an opts dict with string keys", k));
                 };
                 match key.as_str() {
                     "timeout" => match v {
@@ -363,7 +431,7 @@ pub fn process_run(host: &mut dyn StdHost, args: Vec<Value>) -> Result<Outcome, 
                         other => {
                             return Err(type_err(
                                 host,
-                                NAME,
+                                name,
                                 "opts.timeout to be a non-negative integer",
                                 other,
                             ))
@@ -372,7 +440,7 @@ pub fn process_run(host: &mut dyn StdHost, args: Vec<Value>) -> Result<Outcome, 
                     "cwd" => match v {
                         Value::String(s) => cwd = Some(s.clone()),
                         other => {
-                            return Err(type_err(host, NAME, "opts.cwd to be a string", other))
+                            return Err(type_err(host, name, "opts.cwd to be a string", other))
                         }
                     },
                     "env" => match v {
@@ -385,7 +453,7 @@ pub fn process_run(host: &mut dyn StdHost, args: Vec<Value>) -> Result<Outcome, 
                                     _ => {
                                         return Err(type_err(
                                             host,
-                                            NAME,
+                                            name,
                                             "opts.env to be a dict of strings",
                                             ek,
                                         ))
@@ -393,28 +461,78 @@ pub fn process_run(host: &mut dyn StdHost, args: Vec<Value>) -> Result<Outcome, 
                                 }
                             }
                         }
-                        other => return Err(type_err(host, NAME, "opts.env to be a dict", other)),
+                        other => return Err(type_err(host, name, "opts.env to be a dict", other)),
                     },
                     other => {
                         return Err(host.diag(
                             ErrorCode::E0030,
-                            format!("{NAME}: unknown opts key `{other}` (timeout / cwd / env)"),
+                            format!("{name}: unknown opts key `{other}` (timeout / cwd / env)"),
                         ))
                     }
                 }
             }
         }
-        Some(other) => return Err(type_err(host, NAME, "an opts dictionary", other)),
+        Some(other) => return Err(type_err(host, name, "an opts dictionary", other)),
     }
+    Ok(ProcArgs {
+        argv,
+        timeout_ms,
+        cwd,
+        extra_env,
+    })
+}
 
+/// `PROCESS_RUN_ASYNC(argv, opts?) -> DICT`
+///
+/// **异步**版的 [`process_run`]：子进程在**工作线程**上跑，等待期间**当前任务
+/// 被挂起**（不是阻塞整个运行时）⇒ **别的任务照常运行**。
+///
+/// - 返回值与 `PROCESS_RUN` **同形**：`DICT {code, stdout, stderr}`；
+///   运行期失败 ⇒ `ERR([kind:"ProcessError", op, reason])`**值**（不是诊断）。
+/// - `opts` 与 `PROCESS_RUN` **逐字同形**（`timeout` / `cwd` / `env`；
+///   **未知键 ⇒ `E0030`**，不静默忽略 —— 拼错的上界会变成「没有上界」）。
+/// - ⚠️ **只收数组形态的 `argv`**（同 `PROCESS_RUN`）：字符串形态是命令注入
+///   的入口，本成员**没有**那种形态。
+///
+/// ## 与 `PROCESS_RUN` 的差别（**唯一**的一条）
+///
+/// `PROCESS_RUN` **阻塞调用线程** ⇒ 整个 `SCOPE` 停摆；本成员**挂起当前任务**
+/// ⇒ 别的任务照常跑。**既有成员的语义一个字都不改**。
+pub fn process_run_async(host: &mut dyn StdHost, args: Vec<Value>) -> Result<Outcome, WlwlError> {
+    const NAME: &str = "PROCESS_RUN_ASYNC";
+    let a = parse_proc_args(host, NAME, &args)?;
+    // 幂等用的**实参指纹**（同一次调用重跑时逐字相同）。
+    let signature = format!(
+        "{NAME}|{:?}|{:?}|{:?}|{:?}",
+        a.argv, a.timeout_ms, a.cwd, a.extra_env
+    );
+    crate::net::async_op::run(host, NAME, signature, move || crate::net::Payload::Proc {
+        op: NAME,
+        r: run_process(&a.argv, a.timeout_ms, a.cwd.as_deref(), &a.extra_env),
+    })
+}
+
+/// 子进程运行的**核心**（**不碰宿主**）：起进程、抽干两个管道、等它结束。
+///
+/// ⚠ 返回**纯数据** / **失败原因**（`String`）—— **不是** `Value`：
+///   `Value` 的字典载荷是 `Rc<DictInner>` ⇒ **`Value` 不是 `Send`**
+///   ⇒ [B-5] 的异步变体**不能**把结果从**工作线程**搬回**求值线程**
+///   ⇒ 线程之间只搬纯数据，`Value` 在求值线程上现搭
+///   （见 [`process_outcome_value`]）。
+fn run_process(
+    argv: &[String],
+    timeout_ms: Option<i64>,
+    cwd: Option<&str>,
+    extra_env: &[(String, String)],
+) -> Result<ProcessOutcome, String> {
     // 🔴 [N-037 项三 / D13-068] 起子进程时**顺手记下自己建的进程组**。
     // ⚠ 记的是 `None` 的那一次 = 「没拿到组信息」⇒ `kill_tree` 只杀直接子进程。
     // ⚠ 正常路径**不**按组杀:一个程序合法地起后台进程然后自己退出,那是它的
     //   语义,不是泄漏(泄漏的定义是「我们超时杀了它」之后还留着)。
     let (mut child, owned_group) =
-        match spawn_owned_group(&argv, cwd.as_deref().map(std::path::Path::new), &extra_env) {
+        match spawn_owned_group(argv, cwd.map(std::path::Path::new), extra_env) {
             Ok(pair) => pair,
-            Err(e) => return ok(proc_err(NAME, format!("spawn {}: {e}", argv[0]))),
+            Err(e) => return Err(format!("spawn {}: {e}", argv[0])),
         };
     // 抽干两个管道,否则子进程写满缓冲就死锁(「先读后等」是错的)。
     let mut out_pipe = child.stdout.take();
@@ -462,7 +580,7 @@ pub fn process_run(host: &mut dyn StdHost, args: Vec<Value>) -> Result<Outcome, 
                 let _ = child.wait();
                 let _ = drain(out_handle);
                 let _ = drain(err_handle);
-                return ok(proc_err(NAME, format!("wait {}: {e}", argv[0])));
+                return Err(format!("wait {}: {e}", argv[0]));
             }
         }
         if let Some(dl) = deadline {
@@ -487,36 +605,14 @@ pub fn process_run(host: &mut dyn StdHost, args: Vec<Value>) -> Result<Outcome, 
     let stderr = drain(err_handle);
     if timed_out {
         let secs = timeout_ms.unwrap_or(0) as f64 / 1000.0;
-        return ok(proc_err(
-            NAME,
-            format!("timed out after {secs}s: {}", argv.join(" ")),
-        ));
+        return Err(format!("timed out after {secs}s: {}", argv.join(" ")));
     }
     let code = status.and_then(|s| s.code()).unwrap_or(-1);
-    ok(Value::dict(vec![
-        (
-            Value::String("code".into()),
-            Value::Integer(i64::from(code)),
-        ),
-        (
-            Value::String("stdout".into()),
-            // 🔴 [D13-064 · N-037 项一]这一行**是有损替换**,而成员文档与规范
-            // §19 **从未写过** ⇒ 调用方会以为 stdout 是**原始字节**。
-            // ⚠ 它与全局「不做有损替换」条款(§2.3 / §11.3-3)**冲突**:非 UTF-8
-            // 字节在这里被换成 `U+FFFD`,**不可逆**。
-            //
-            // ⚠ **为什么不改成 `ARRAY[INTEGER]` 并集**(像 `HTTP_*` 的 body 那样,
-            //   见 `D13-043`):成员表把 `stdout` / `stderr` 定为 `STRING`,
-            //   改类型是**破坏性变更**,且不在本批范围。⇒ 本批**如实成文**,
-            //   变更路径登记待独立立项。
-            // ⚠ **要拿字节就用文件**:`WRITE_BYTES` + `READ_BYTES` 是无损的那条路。
-            Value::String(String::from_utf8_lossy(&stdout).into_owned()),
-        ),
-        (
-            Value::String("stderr".into()),
-            Value::String(String::from_utf8_lossy(&stderr).into_owned()),
-        ),
-    ]))
+    Ok(ProcessOutcome {
+        code: i64::from(code),
+        stdout,
+        stderr,
+    })
 }
 
 /// `PROCESS_ID() -> INTEGER` —— 本进程 id。

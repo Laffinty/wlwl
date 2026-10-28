@@ -1010,9 +1010,9 @@ python script/check_spec.py                     # 附录 A ↔ 各册成员表 �
 
 ---
 
-## 11 收尾交接（三波落地完毕：16 个工作项）
+## 11 收尾交接（四波落地完毕：18 个工作项）
 
-### 11.1 三波已落地（16 个工作项）
+### 11.1 四波已落地（18 个工作项）
 
 | 工作项 | 落地内容 | 验收读数 |
 |---|---|---|
@@ -1032,6 +1032,8 @@ python script/check_spec.py                     # 附录 A ↔ 各册成员表 �
 | **W-36** `std.http` 重复 `Content-Length` 收紧（D2 · 第三波） | `wl/std/http.wll` 的 `_CL_INT` 改为「同名多值一律拒（含值相同）」+ 返回形由整数哨兵改 DICT（**内部助手，未导出** ⇒ 成员面不变）;`http_contract.rs` 新增 3 条 | `http_contract` **15/0**（断言 37 → 40）· 反向守卫「改回『值相同也接受』⇒ 新用例必红」· `std.net` **零改动** |
 | **W-35** `p10`/`p11`/`p13` 改写成 `TCP_SERVE` 形状（D3 · 第三波） | 三个探针 + 三份夹具副本（**成对逐字相同**，SHA256 已核）;头部注释重写为**给需求方的迁移指引** | probe 套件 **3/3（192 用例）全绿** · 正面读数恢复（8 并发全 200 / 403×3 + 200×1 / 4 条全 200）· 反向守卫「handler 改回旧形状 ⇒ case 红」 |
 | **W-37** 解析器 `E0011`「误报」—— **证伪完成**（D4a · 第三波） | ⚠ **解析器源码零改动**;新增 `impl/crates/wlwl-parser/tests/e0011_false_positive_contract.rs` **7 条**契约 | `wlwl-parser` **208/0** 全绿 · **79 个合法形态 0 误拒** · 反向守卫「少一个 `)` ⇒ 仍报 `E0011`」 |
+| **W-11** B-2 惊群修根因（**唤醒一个** · 第四波） | `runtime.rs`：`wake_socket_waiter` 只唤醒 **FIFO 队首一个** + 其余留在名单里;`park_for_socket` 去重;`tcp.rs`：就绪电平**重新推高**（否则剩下的连接永远等不到唤醒）;新契约 `b2_accept_wakeup_contract.rs` + 新并发夹具 `tcp_accept_single_wakeup.wll` | `b2_accept_wakeup_contract` **4/0** · 并发 **19/0** · `socket_wait_contract` 16/0 · `tcp_contract` 23/0 · `suspend_site_contract` 13/0 · ⚠ **规范侧零改动**（**SP-2 因此作废**） |
+| **W-14** B-5 非阻塞出站（**第四波**） | 新成员 `HTTP_REQUEST_ASYNC` / `PROCESS_RUN_ASYNC`（`net.rs` + `process.rs`）;`wlwl-value` 加 `YieldReason::AsyncReady` + `Tag::AsyncReady`;求值器侧加**独立的** `async_waiters` 表 + 就绪泵（**不碰** `socket_waiters`） | `b5_async_outbound_contract` **12/0** · 事件驱动：快 handler **2 ms** / 慢请求 **10002 ms** / 慢请求只发 **1 次** · 反向守卫（去幂等 ⇒ 计数 **2**）· ⚠ **新增 2 个公共面成员** ⇒ 待规范侧登记 |
 
 ### 11.2 未做的登记（**规范侧**，下一轮按此顺序做）
 
@@ -1111,17 +1113,17 @@ python script/check_spec.py                     # 附录 A ↔ 各册成员表 �
 | **版本口径** | 实现 **v0.12.1** ↔ 规范 **v1.0.4** | 未动；零处修改既有成员、零处新增诊断码 |
 | **待业主裁决** | **0 件** | ✅ 四项**全部已裁决**（2026-10-28 12:36，见 §11.4）：D1 `tls::LOCAL_ADDR` **留**（台账 10 员）· D2 `std.http` 的重复 `Content-Length` **向 `std.net` 收紧**（W-36）· D3 三个探针**改写成 `TCP_SERVE` 形状**（W-35）· D4a 解析器 `E0011` 误报**本轮修**（W-37）· D4b NFKC 表**保持 17.0**，等 UCD 源数据 |
 
-### 11.6b 完成度面板（2026-10-28 下午快照 · 第三波落地后）
+### 11.6b 完成度面板（2026-10-28 晚间快照 · **第四波**落地后）
 
 | 口径 | 数值 | 说明 |
 |---|---|---|
-| **工作项** | **16 / 28（57.1%）** | 第一波 8 项（W-01 W-02 W-12 W-21 W-23 W-24 W-26 W-27）+ 第二波 5 项（W-22 W-10 W-16 W-13 W-28）+ **第三波 3 项（W-36 W-35 W-37）** |
-| **需求条目** | **19 / 57 完全落地**（与第二波同） | 第三波落地的是**业主裁决项**（D2 / D3 / D4a），**不新增**需求编号 ⇒ 需求侧计数不变。🔧 部分 **2 条**（D-6 差 W-25 中间件侧 · H-4 差 W-34 文档口径）· ⬜ 未开工 **29 条** · 📖 口径答复 **6 条**（E-6 E-7 I-1 I-2 I-4 I-5） |
-| **业主裁决项** | **3 / 4 已执行**（D2 D3 D4a） | D2 → W-36 ✅ · D3 → W-35 ✅ · D4a → W-37 ✅（**证伪结案**，见 §11.4b）;D1（`tls::LOCAL_ADDR` 留）**随规范侧 §5.5 台账执行**;D4b（NFKC 17.0）**不排期** |
-| **新增公共面成员** | **30 个**（仍全部待规范仓落表） | 第三波**未新增**任何成员 / 命名空间 / 诊断码 ⇒ 三张静态表与 `NAMESPACE_META` **零改动** ⇒ **无需登记** |
-| **门禁** | 见 §13.2（第三波集成后实测） | 绿 —— `cargo fmt --all -- --check` 0 diff · probe **3/3（192 用例）** · conformance **6/6** · conformance_static **9/9** · `http_contract` **15/0** · `wlwl-parser` **208/0**（含新增 7 条）;红 —— 全部落在「规范侧未跟上」这一类 |
-| **关键路径** | **W-21 + W-22 已就位**；**W-35 把需求方的正面证据恢复了** | TLS 扩展端到端可跑;`p10`/`p11`/`p13` 的读数从「`E0014`」回到「8 并发全 200 / 403×3 / 4 条全 200」（服务端侧断言） |
-| **版本口径** | 实现 **v0.12.1** ↔ 规范 **v1.0.4** | 未动；零处修改既有成员、零处新增诊断码（W-36 只改**新**模块 `std.http` 的内部口径） |
+| **工作项** | **18 / 28（64.3%）** | 第一波 8 项 + 第二波 5 项 + 第三波 3 项（W-36 W-35 W-37）+ **第四波 2 项（W-11 W-14）** |
+| **需求条目** | **21 / 57 完全落地**（+2） | 第四波落地 **B-2**（W-11 惊群根因修完 ⇒ **完全落地**）与 **B-5**（W-14 非阻塞出站 ⇒ **完全落地**）。🔧 部分 **2 条**（D-6 差 W-25 中间件侧 · H-4 差 W-34 文档口径）· ⬜ 未开工 **27 条** · 📖 口径答复 **6 条**（E-6 E-7 I-1 I-2 I-4 I-5） |
+| **业主裁决项** | **3 / 4 已执行**（D2 D3 D4a） | D2 → W-36 ✅ · D3 → W-35 ✅ · D4a → W-37 ✅（**证伪结案**，见 §11.4b）；D1（`tls::LOCAL_ADDR` 留）**随规范侧 §5.5 台账执行**；D4b（NFKC 17.0）**不排期** |
+| **新增公共面成员** | **32 个**（仍全部待规范仓落表） | 第三波 30 个（`std.text` +3 · `std.fs` +7 · `std.net` +1 · `std.format` +1 · `std.str` +1 · `std.log` 7 · `std.sync` 8 · `std.http` 2）**+ 第四波 2 个**（`std.net::HTTP_REQUEST_ASYNC` · `std.process::PROCESS_RUN_ASYNC`） |
+| **门禁** | 见 §13.2（第四波集成后实测） | 绿 —— `cargo fmt --all -- --check` 0 diff · probe **3/3（192 用例）** · conformance **6/6** · conformance_static **9/9** · `http_contract` **15/0** · `wlwl-parser` **208/0** · `wlwl-std` **378/0** · `b2_accept_wakeup_contract` **4/0** · `b5_async_outbound_contract` **12/0** · 并发 **19/0** · `socket_wait_contract` 16/0 · `tcp_contract` 23/0 · `suspend_site_contract` 13/0；红 —— **7 处，全部是「规范侧未跟上」**（第三波 6 处 ⇒ 本波 **+1**，`process_contract` 因新增成员转红） |
+| **关键路径** | **W-21 + W-22 已就位**；**W-11 把 B-2 的根因修掉了** | TLS 扩展端到端可跑；惊群**不再发生** ⇒ 落选者**不再**拿到与超时同形的 `NULL` ⇒ 规范侧 **SP-2 作废、零改动** |
+| **版本口径** | 实现 **v0.12.1** ↔ 规范 **v1.0.4** | 未动；零处修改既有成员、零处新增诊断码（W-14 只**新增**成员；W-11 只改唤醒策略） |
 | **待业主裁决** | **0 件**（本波无新增待决） | ⚠ **新登记一个待裁决缺口 W-38**（`TCP_SERVE` 的 handler 里调挂起点成员 ⇒ 连接静默作废）—— **不是阻塞项**，可下一轮处理 |
 
 ### 11.7 第二波的门禁分类与**一个必须让业主知道的连带后果**
@@ -1166,17 +1168,19 @@ python script/check_spec.py                     # 附录 A ↔ 各册成员表 �
 | 已落地清单 | §11.1（**16 行**，每行带验收读数） |
 | 业主裁决 | §10（Q1–Q4）+ §11.4（D1–D4b，**全部已定**）—— **D2 / D3 / D4a 已执行**（第三波）;D1 随规范侧 §5.5 台账执行;D4b 不排期 |
 
-### 13.2 门禁现状（**第三波**集成后实测）
+### 13.2 门禁现状（**第四波**集成后实测）
 
-**绿**：`cargo fmt --all -- --check` **0 diff** · probe 套件 **3/3**（**192 用例**）· conformance **6/6** · conformance_static **9/9** · `http_contract` **15/0** · `wlwl-parser` **208/0**（含第三波新增的 7 条 `e0011_false_positive_contract`）· `wlwl-std` 全绿 · `wlwl-eval` 除「成员表对拍」外全绿（最大目标 **914/0**）· 第三波新增契约全绿。
+**绿**：`cargo fmt --all -- --check` **0 diff** · probe 套件 **3/3**（**192 用例**）· conformance **6/6** · conformance_static **9/9** · `http_contract` **15/0** · `wlwl-parser` **208/0** · `wlwl-std` **378/0** · 第四波新增契约全绿（`b2_accept_wakeup_contract` **4/0** · `b5_async_outbound_contract` **12/0**）· 并发套件 **19/0**（含第四波新夹具）· 回归守护全绿（`socket_wait_contract` 16/0 · `tcp_contract` 23/0 · `suspend_site_contract` 13/0）。
 
-**红（6 个目标，全部是「规范侧未跟上」，不是实现缺陷）**：`check-appendix-a`（抄件 vs 实现派生表体）· `stdlib_appendix_a_sync`（**4 failed**：成员集合 vs 附录A ∪ 台账）· `fs_contract` / `net_contract` / `str_math_contract` / `text_contract` 的**成员表**（各 1 failed）。
-⇒ 根因：**新增 30 个公共面成员**（`std.text` +3 · `std.fs` +7 · `std.net` +1 · `std.format` +1 · `std.str` +1 · `std.log` 7 · `std.sync` 8 · `std.http` 2）+ 扩展命名空间 `tls` 10 员 / `crypto` 8 员（**不进附录 A**，只进 §5.5 台账）⇒ 修法见 **§11.2 五步**。
-⇒ ⚠ **第三波实测确认**：这 6 个红项**全部是既有的**（第一波 / 第二波留下的）—— 第三波**未新增任何公共面成员** ⇒ **对红项数量零影响**。
+**红（7 处，全部是「规范侧未跟上」，不是实现缺陷）**：`check-appendix-a`（抄件 vs 实现派生表体）· `stdlib_appendix_a_sync`（**4 failed**）· `fs_contract` / `net_contract` / `process_contract` / `str_math_contract` / `text_contract` 的**成员表**（各 1 failed）。
+⇒ 根因：**新增 32 个公共面成员**（第三波 30 个 + 第四波 2 个）+ 扩展命名空间 `tls` 10 员 / `crypto` 8 员（**不进附录 A**，只进 §5.5 台账）⇒ 修法见 **§11.2 五步**。
+⇒ ⚠ **第四波实测确认**：红项 **+1**（`process_contract`）—— **原因正是本波新增的 `PROCESS_RUN_ASYNC`**，红消息是 `§19 table missed 'PROCESS_RUN_ASYNC'` ⇒ **正是「规范侧未跟上」的诚实信号**。
 
-⚠ **第 6 个红项（既有问题，非第三波引入 · 本轮一度误判为「自旋」）**：`sanitize_contract::sanitize_is_idempotent_on_mutations` **单跑 381.33 s 通过**（`1 passed`，**不是死锁**——它在**算**）⇒ 全量跑时因耗时被**人工终止**才计入失败。
-⇒ **与第三波无关**的硬证据：`wlwl-parser/src` / `wlwl-eval/src` / `wlwl-std/src` / `wlwl-std/wl/std/sanitize.wll` / `wlwl-value` **本波全部零改动** ⇒ 它跑的是与 HEAD **完全相同**的代码。
-⇒ 形态：它对 `SANITIZE_CASES` × 变异组合逐个**新起求值器**跑 `sanitize_of` / `sanitize_twice_of` ⇒ **debug 构建 + 机器负载下约 6.4 分钟**。⇒ **它会过，只是慢** ⇒ 下一轮要么给它设预算/拆用例，要么确认 CI 环境下可接受（**注意 CI 跑的是 release**）。⚠ 本轮**真红项只有 5 个目标**（上面那 5 个），第 6 个是我终止造成的 —— 记录在此，免得下一个人把「6 targets failed」当成既成事实。
+⚠ **登记项 ③（改各 `*_contract.rs` 的期望名单）本轮刻意没做**，理由：它与 ④（抄回 `docs/wlwl-spec-reference.md`）**必须成对**，而 ④ 的内容来自规范仓 ⇒ 前置是 §11.2 的 ①②③（规范侧落表）。⇒ **现在改 ③ 反而更差**：红消息会从「`§19 table missed 'PROCESS_RUN_ASYNC'`」（**诚实**：规范表里没有）变成「`§19 table found …`」（**误导**：像在说抄件坏了）。⇒ **③ 随规范侧批次一起做。**
+
+⚠ **`process_contract` 的两条超时用例是负载敏感的既有 flake**：`a_timeout_yields_an_err_value` / `a_timeout_with_a_living_grandchild_returns_promptly` —— **同一份代码连跑两次分别得到 2 红 / 1 红**（第二次只有成员表那条红）⇒ 单独跑 0.87 s 绿 ⇒ **不是本波引入的回归**。
+
+⚠ **`p12` 探针已翻转**（第四波）：它原本断言 `losers-woke-immediately= TRUE`（**钉住惊群存在**）⇒ W-11 修掉惊群后该断言**必须翻转** ⇒ 探针已改写为「**钉住惊群已修 + 落选者能继续接受后续连接**」（3 个 acceptor + 2 条连接 ⇒ **`winners= 2`**）⇒ 两条读数各自钉住「B-2 的正面证据」与「惊群的指纹」⇒ **任何一条变回去都必红**。
 
 ### 13.3 接替者的第一分钟（照做，别重新调查）
 
@@ -1208,14 +1212,16 @@ cd D:\Project\wlwl; git log --oneline -4; git status --short                  # 
 |---|---|---|---|
 | **W-38** | `TCP_SERVE` 的 handler 里调宿主挂起点成员 ⇒ 该连接**静默作废**（无诊断） | `impl/crates/wlwl-std/src/net.rs`（`TCP_SERVE` 的 handler 调用处）+ 契约测试 | **实测**：handler 被调用 **1** 次（`handler-calls= 1`），但 `TCP_SERVE` 返回 **0**、程序 **exit 0**、**stderr 一个字都没有** ⇒ 那条连接既没被服务、也没有任何诊断（只落进宿主告警槽的软告警，**不打印**）。⇒ 属「**静默失败级**」：照旧形状写 handler 的开发者只会看到「少服务了一条连接」。⚠ 修法要动「**原生帧内算不算任务体**」这条语义判据 ⇒ **需单独裁决**（诊断？拒绝？文档化？），**本波不动** |
 
-#### 随后批（4 并行）
+#### 随后批（4 并行）—— ⚠ **第四波已做前两项（W-11 / W-14），余下两项待做**
 
-| 工作项 | 目标 | 独占文件 | 规格要点 |
-|---|---|---|---|
-| **W-11** | B-2 修根因：**唤醒一个**而不是唤醒全部 | `impl/crates/wlwl-std/src/tcp.rs` + `impl/crates/wlwl-eval/src/runtime.rs` | 惊群的结构性原因：一个 listener 只有一个 socket id ⇒ 所有 acceptor 共享一把等待者 `Vec`（`runtime.rs:319`）⇒ `wake_socket_waiter`（`runtime.rs:973-1006`）**唤醒全部**。改成 **FIFO 唤醒一个** ⇒ 落选者**不再拿到 `NULL`**（需求要的「保持存活并能继续接受」直接达成）⇒ 规范侧大概率**零改动**（SP-2 降为条件项）。⚠ 落选者的真实死法是调用方 `TCP_RECV(NULL)` ⇒ `E0030`（不是「静默 NULL」） |
-| **W-14** | B-5 非阻塞出站 | `impl/crates/wlwl-std/src/{net.rs,process.rs}` + `impl/crates/wlwl-value/src/lib.rs` | 新成员 `HTTP_REQUEST_ASYNC` / `PROCESS_RUN_ASYNC`（**新增**，不改既有 `HTTP_*`/`PROCESS_RUN` 的阻塞语义）；复用 `TCP_*` 已有的「工作线程 + 就绪集合 + resume-hint 幂等」模式 ⇒ **重入时不得重复发起** |
-| **W-15** | B-6 修兜底臂 + B-7 优雅停机 | `impl/crates/wlwl-eval/src/{runtime.rs,lib.rs}` + `impl/crates/wlwl-std/src/signal.rs`（新建） | ① 兜底臂 `lib.rs:10651-10684` 把「非四种 park 信号」的 outcome 结成 `TaskResult::Ok(o.value)` ⇒ **丢失的挂起信号会伪装成正常 NULL**（R-25）⇒ 改成「任务失败 + 按 §17.9 上报」；② `std.signal::ON_SIGNAL` / `STOP`（Unix `libc::signal`；Windows 手写 `extern "system" { SetConsoleCtrlHandler }`；**零新增依赖**） |
-| **W-29** | H-5 / H-6 别名 | `impl/crates/wlwl-std/src/{regex.rs,collection.rs}` + `impl/crates/wlwl-eval/src/registry.rs` | `RE_MATCHES_FULL`（别名 `RE_TEST`，**不改 `RE_TEST` 语义**）· `ARRAY_GET`（别名 `INDEX_GET`）· 全局内建改动 ⇒ 附录 G 需 `cargo run --bin gen-appendix-g -- ../docs/appendix_G.md` 重生成 |
+| 工作项 | 目标 | 独占文件 | 规格要点 | 状态 |
+|---|---|---|---|---|
+| **W-11** | B-2 修根因：**唤醒一个**而不是唤醒全部 | `impl/crates/wlwl-std/src/tcp.rs` + `impl/crates/wlwl-eval/src/runtime.rs` | 惊群的结构性原因：一个 listener 只有一个 socket id ⇒ 所有 acceptor 共享一把等待者 `Vec`（`runtime.rs:319`）⇒ `wake_socket_waiter`（`runtime.rs:973-1006`）**唤醒全部**。改成 **FIFO 唤醒一个** ⇒ 落选者**不再拿到 `NULL`**（需求要的「保持存活并能继续接受」直接达成）⇒ 规范侧大概率**零改动**（SP-2 降为条件项）。⚠ 落选者的真实死法是调用方 `TCP_RECV(NULL)` ⇒ `E0030`（不是「静默 NULL」） | ✅ **第四波已落地**（4/0；规范侧**零改动**） |
+| **W-14** | B-5 非阻塞出站 | `impl/crates/wlwl-std/src/{net.rs,process.rs}` + `impl/crates/wlwl-value/src/lib.rs` | 新成员 `HTTP_REQUEST_ASYNC` / `PROCESS_RUN_ASYNC`（**新增**，不改既有 `HTTP_*`/`PROCESS_RUN` 的阻塞语义）；复用 `TCP_*` 已有的「工作线程 + 就绪集合 + resume-hint 幂等」模式 ⇒ **重入时不得重复发起** | ✅ **第四波已落地**（12/0；**新增 2 个公共面成员** ⇒ 待规范侧登记） |
+| **W-15** | B-6 修兜底臂 + B-7 优雅停机 | `impl/crates/wlwl-eval/src/{runtime.rs,lib.rs}` + `impl/crates/wlwl-std/src/signal.rs`（新建） | ① 兜底臂 `lib.rs:10651-10684` 把「非四种 park 信号」的 outcome 结成 `TaskResult::Ok(o.value)` ⇒ **丢失的挂起信号会伪装成正常 NULL**（R-25）⇒ 改成「任务失败 + 按 §17.9 上报」；② `std.signal::ON_SIGNAL` / `STOP`（Unix `libc::signal`；Windows 手写 `extern "system" { SetConsoleCtrlHandler }`；**零新增依赖**） | ⬜ 待做（**建议与 W-38 同批**：两者都动 `runtime.rs` / `lib.rs` 的同一套语义 ⇒ 一次裁决） |
+| **W-29** | H-5 / H-6 别名 | `impl/crates/wlwl-std/src/{regex.rs,collection.rs}` + `impl/crates/wlwl-eval/src/registry.rs` | `RE_MATCHES_FULL`（别名 `RE_TEST`，**不改 `RE_TEST` 语义**）· `ARRAY_GET`（别名 `INDEX_GET`）· 全局内建改动 ⇒ 附录 G 需 `cargo run --bin gen-appendix-g -- ../docs/appendix_G.md` 重生成 | ⬜ 待做 |
+
+⚠ **第四波的文件冲突处置（下一批照抄）**：`runtime.rs` 被 W-11 与 W-14 **都要动**（W-11 改唤醒策略、W-14 要接新的 `AsyncReady` 通道）⇒ 派工时判给 W-11 独占，W-14 改为输出**接线登记清单**（8 个站点）⇒ W-11 完成后**用 `task_append` 让 W-14 带着自己的配方补完接线**（它有全部上下文，比集成者照抄可靠）。⇒ 两条通道**故意不同**：socket 是「一次事件只够一个消费者」⇒ 唤醒**一个**；异步操作的产物**存在槽里、谁都能取** ⇒ 唤醒**全部**不会产生「落选者拿到空值」。
 
 #### 再随后（`std.http` 的四节扩展 —— **必须串行**，都改 `wl/std/http.wll`）
 
@@ -1260,5 +1266,5 @@ cd D:\Project\wlwl; git log --oneline -4; git status --short                  # 
 
 ### 13.7 一句话状态
 
-> **16 / 28 个工作项、19 / 57 条需求已落地并复核**（第三波 3 个 PHASE：W-36 / W-35 / W-37 —— **W-37 是证伪结案**，见 §11.4b）；规则侧**只差规范仓落表**（§11.2 五步，**必须等业主先 push 规范仓**）；实现侧下一批是 **W-11 / W-14 / W-15 / W-29 / W-31**（4 并行，`eval/runtime.rs` 那一处二选一先做），随后 **W-33 / W-30 / W-32**（3 并行）⇒ 再随后 **`std.http` 四节串行**（W-17 → W-18 → W-19 → W-20）⇒ 收口 **W-34 / W-35′** + 规范仓 v1.0.4。
-> ⚠ 本轮带出两个**待裁决/待查**项（**不阻塞**）：**W-38**（`TCP_SERVE` 的 handler 里调挂起点成员 ⇒ 连接静默作废）与 `sanitize_contract::sanitize_is_idempotent_on_mutations` 极慢（**既有问题**，非本轮引入）。
+> **18 / 28 个工作项、21 / 57 条需求已落地并复核**（第四波 2 个 PHASE：**W-11**（B-2 惊群**根因**修完 ⇒ 规范侧**零改动**）+ **W-14**（B-5 非阻塞出站 ⇒ **新增 2 个公共面成员**）；第三波 3 项：W-36 / W-35 / W-37 —— **W-37 是证伪结案**，见 §11.4b）；规则侧**只差规范仓落表**（§11.2 五步，**必须等业主先 push 规范仓**）—— **本波新增的 2 个成员已把待落表总数推到 32 个**；实现侧下一批是 **W-15 + W-29**（2 并行；**建议把 W-38 并进 W-15** —— 两者都动 `runtime.rs` / `lib.rs` 的同一套语义），随后 **W-33 / W-30 / W-32**（3 并行）⇒ 再随后 **`std.http` 四节串行**（W-17 → W-18 → W-19 → W-20）⇒ 收口 **W-34 / W-35′** + 规范仓 v1.0.4。
+> ⚠ 本轮带出两个**待裁决/待查**项（**不阻塞**）：**W-38**（`TCP_SERVE` 的 handler 里调挂起点成员 ⇒ 连接静默作废）与 `sanitize_contract::sanitize_is_idempotent_on_mutations` **慢但会过**（单跑 381 s ⇒ **既有问题**，非本轮引入）。

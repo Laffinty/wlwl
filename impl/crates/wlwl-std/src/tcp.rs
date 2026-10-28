@@ -641,7 +641,17 @@ pub fn tcp_accept(host: &mut dyn StdHost, args: Vec<Value>) -> wlwl_error::WlwlR
             .lock()
             .unwrap_or_else(|e| e.into_inner())
             .is_empty();
-        if !still_pending {
+        if still_pending {
+            // ⚠ [2026-10-28 / 需求清单 B-2] **电平必须保持高**（就绪集合是
+            //   「**电平**」语义：条件成立期间一直为高，直到条件被消费）。
+            //   此前这里只做「**不**作废」—— 而解释器侧取走就绪事件时**已经
+            //   作废**了（`pump_socket_readiness` 先 `retire_ready` 再唤醒）
+            //   ⇒ 电平被抹掉 ⇒ 唤醒改成「**只唤醒一个**」之后，队列里剩下的
+            //   那个连接**永远等不到**它的等待者被唤醒（⇒ 那个等待者只能耗到
+            //   自己的截止时间 ⇒ 拿到 `NULL`）。
+            //   ⇒ 现在**显式**把电平重新推高 ⇒ 下一个等待者照样能被唤醒。
+            push_ready(lid);
+        } else {
             retire_ready(lid);
         }
     }
@@ -725,6 +735,13 @@ pub fn tcp_recv(host: &mut dyn StdHost, args: Vec<Value>) -> wlwl_error::WlwlRes
             //   （否则下一次等待会被这个陈旧标记**立刻唤醒** ⇒ 空转）。
             if empty_now {
                 retire_ready(cid);
+            } else {
+                // ⚠ [2026-10-28 / 需求清单 B-2] 缓冲里**还有货** ⇒ **电平保持高**
+                //   （就绪集合是「电平」语义）—— 此前这里只做「**不**作废」，而
+                //   解释器侧取走就绪事件时**已经作废**了 ⇒ 电平被抹掉 ⇒ 唤醒
+                //   改成「**只唤醒一个**」之后，同一条连接上的**下一个读者**
+                //   （审计 N4：同一条连接可以有多个读者）永远等不到唤醒。
+                push_ready(cid);
             }
             return Ok(Outcome::normal(recv_value(&bytes, eof)));
         }

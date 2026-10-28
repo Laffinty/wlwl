@@ -89,6 +89,18 @@ const WLT_FILES: &[&str] = &[
     // 补上配对逻辑之后,顺序才真的与结果无关,这两条一起把这件事钉死。
     "unbuffered_producer_first.wll",
     "unbuffered_consumer_first.wll",
+    // [2026-10-28 / 需求清单 B-2] `TCP_ACCEPT` 的**惊群**:同一个监听句柄上
+    // **多个 acceptor** ⇒ 一次就绪事件**只唤醒一个** ⇒ 落选者**留在名单里**
+    // 继续等下一次就绪事件 ⇒ 落选者**不拿到 NULL**、**不报错**、**保持存活**,
+    // 并能**继续接受后续连接**。
+    //
+    // ⚠ 这份夹具**独立**跑(并发套件不给它客户端)⇒ 断言的是「两个 acceptor
+    //   等**同一个**监听句柄、**都干净地超时**、谁也没死」。
+    // ⚠ **惊群本体**（有客户端 ⇒ 落选者被唤醒却没货 ⇒ 拿到 `NULL` ⇒ 喂给
+    //   `TCP_RECV` ⇒ `E0030`）由 `crates/wlwl-eval/tests/
+    //   b2_accept_wakeup_contract.rs` 驱动**同一份**夹具（它把监听端口替换成
+    //   一个空闲端口、并从外部发起两个连接）。
+    "tcp_accept_single_wakeup.wll",
     // 活锁护栏:`unbuffered_repeat_rendezvous_is_reported.wll` **预期失败**
     // (exit 1 + E0064),所以它由下面那条专门的测试驱动,不放进
     // `all_concurrency_fixtures_run_clean` 这类「必须跑通」的循环。
@@ -561,5 +573,39 @@ SCOPE(FUN(() ,
         "a blocking channel suspension must resume at the CURRENT segment head \
          (the segment head replays exactly once)\n\
          got:      {stdout:?}\n  expected: {expected:?}"
+    );
+}
+
+// ────────────────────────────────────────────────────────────────────────
+// [2026-10-28 / 需求清单 B-2] `TCP_ACCEPT` 的**惊群** —— 同一个监听句柄上
+// **多个 acceptor**。
+//
+// ⚠ **这条独立跑它 ⇒ 并发套件不给它客户端** ⇒ 判据是「两个 acceptor 等**同一个**
+//   监听句柄、**都干净地超时**（各拿一个 `NULL`）、谁也没死、谁也没报错」。
+// ⚠ **惊群本体**（**有**客户端 ⇒ 落选者被唤醒却没货 ⇒ `TCP_ACCEPT` 返回
+//   `NULL` ⇒ 调用方拿 `NULL` 去 `TCP_RECV` ⇒ `E0030` ⇒ 任务死 ⇒ `SCOPE` 提前
+//   退出 ⇒ 监听句柄随进程消失 ⇒ 客户端 RST）由
+//   `crates/wlwl-eval/tests/b2_accept_wakeup_contract.rs` 驱动**同一份**夹具：
+//   它把夹具里的监听端口**替换**成一个空闲端口、并从**外部**发起两个连接。
+//   ⇒ 两处共用**一份**场景 ⇒ 不会出现「夹具与用例各写一套、慢慢漂移」。
+// ────────────────────────────────────────────────────────────────────────
+
+/// 同一个监听句柄上**两个 acceptor**：**没有**客户端时两个都**干净地超时**。
+///
+/// ⚠ 期望 stdout 是 `0` / `0`（各拿一个 `NULL` = 超时的**正常值**，不是错误）。
+/// ⚠ 这条守的是「**多等待者不许互相顶掉**」（审计 N4：一个 socket **可以**有
+///   多个等待者）⇒ 少了任何一份登记，第二个 acceptor 就会**永远等不到**。
+#[test]
+fn two_acceptors_on_one_listener_both_survive_the_timeout() {
+    let path = fixture("tcp_accept_single_wakeup.wll");
+    let out = run_wlwl(&path);
+    let code = out.status.code().unwrap_or(-1);
+    let stdout = String::from_utf8_lossy(&out.stdout).into_owned();
+    let stderr = String::from_utf8_lossy(&out.stderr).into_owned();
+    assert_eq!(code, 0, "expected exit 0, got {code}:\n  stderr={stderr}");
+    let expected = "0\n0\n";
+    assert_eq!(
+        stdout, expected,
+        "stdout mismatch:\n  got:      {stdout:?}\n  expected: {expected:?}"
     );
 }
