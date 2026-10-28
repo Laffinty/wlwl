@@ -1174,9 +1174,9 @@ python script/check_spec.py                     # 附录 A ↔ 各册成员表 �
 ⇒ 根因：**新增 30 个公共面成员**（`std.text` +3 · `std.fs` +7 · `std.net` +1 · `std.format` +1 · `std.str` +1 · `std.log` 7 · `std.sync` 8 · `std.http` 2）+ 扩展命名空间 `tls` 10 员 / `crypto` 8 员（**不进附录 A**，只进 §5.5 台账）⇒ 修法见 **§11.2 五步**。
 ⇒ ⚠ **第三波实测确认**：这 6 个红项**全部是既有的**（第一波 / 第二波留下的）—— 第三波**未新增任何公共面成员** ⇒ **对红项数量零影响**。
 
-⚠ **第 7 个红项（既有问题，非第三波引入）**：`sanitize_contract::sanitize_is_idempotent_on_mutations` **单跑 90 秒未结束**（42 s CPU ⇒ 在算、不是死锁）⇒ 全量跑时被**人工终止**（该目标因此计入「6 targets failed」之外的第 6 项）。
+⚠ **第 6 个红项（既有问题，非第三波引入 · 本轮一度误判为「自旋」）**：`sanitize_contract::sanitize_is_idempotent_on_mutations` **单跑 381.33 s 通过**（`1 passed`，**不是死锁**——它在**算**）⇒ 全量跑时因耗时被**人工终止**才计入失败。
 ⇒ **与第三波无关**的硬证据：`wlwl-parser/src` / `wlwl-eval/src` / `wlwl-std/src` / `wlwl-std/wl/std/sanitize.wll` / `wlwl-value` **本波全部零改动** ⇒ 它跑的是与 HEAD **完全相同**的代码。
-⇒ 形态：它对 `SANITIZE_CASES` × 变异组合逐个**新起求值器**跑 `sanitize_of` / `sanitize_twice_of` ⇒ debug 构建 + 机器负载下极慢。**是否最终会通过，本轮未判定**（被终止）⇒ 已登记为待办（见 §13.4 收口批）。
+⇒ 形态：它对 `SANITIZE_CASES` × 变异组合逐个**新起求值器**跑 `sanitize_of` / `sanitize_twice_of` ⇒ **debug 构建 + 机器负载下约 6.4 分钟**。⇒ **它会过，只是慢** ⇒ 下一轮要么给它设预算/拆用例，要么确认 CI 环境下可接受（**注意 CI 跑的是 release**）。⚠ 本轮**真红项只有 5 个目标**（上面那 5 个），第 6 个是我终止造成的 —— 记录在此，免得下一个人把「6 targets failed」当成既成事实。
 
 ### 13.3 接替者的第一分钟（照做，别重新调查）
 
@@ -1231,7 +1231,7 @@ cd D:\Project\wlwl; git log --oneline -4; git status --short                  # 
 | # | 事 | 证据 | 归属 |
 |---|---|---|---|
 | ① | **W-38**：`TCP_SERVE` 的 handler 里调宿主挂起点成员 ⇒ 该连接**静默作废** | 实测：handler 调用 1 次 · `TCP_SERVE` 返回 0 · exit 0 · stderr 全空 | `std/net.rs` + `tcp_serve_contract.rs`；**需先裁决**（诊断？拒绝？文档化？） |
-| ② | **`sanitize_contract::sanitize_is_idempotent_on_mutations` 极慢**（单跑 90 s 未结束，42 s CPU） | 该目标跑的代码与 HEAD **完全相同**（第三波对 `wlwl-parser/src` · `wlwl-eval/src` · `wlwl-std/src` · `sanitize.wll` · `wlwl-value` **零改动**）⇒ **既有问题，非第三波引入** | `impl/crates/wlwl-eval/tests/sanitize_contract.rs:1616`;形态 = 对 `SANITIZE_CASES` × 变异组合逐个**新起求值器**跑两遍 ⇒ debug + 机器负载下极慢。**是否最终会通过未判定**（本轮被终止）⇒ 下一轮要么给它设预算/拆分，要么确认它在 CI 的 release/低负载下能过 |
+| ② | **`sanitize_contract::sanitize_is_idempotent_on_mutations` 极慢**（单跑 **381.33 s 通过**） | 该目标跑的代码与 HEAD **完全相同**（第三波对 `wlwl-parser/src` · `wlwl-eval/src` · `wlwl-std/src` · `sanitize.wll` · `wlwl-value` **零改动**）⇒ **既有问题，非第三波引入** | `impl/crates/wlwl-eval/tests/sanitize_contract.rs:1616`;形态 = 对 `SANITIZE_CASES` × 变异组合逐个**新起求值器**跑两遍 ⇒ debug + 机器负载下约 **6.4 分钟**。⚠ **它会过、只是慢**（本轮实测 `1 passed`）⇒ 下一轮给它设预算 / 拆用例即可，**不是缺陷** |
 
 ### 13.5 集成者的固定动作（每波结束都做这几件，顺序不变）
 
