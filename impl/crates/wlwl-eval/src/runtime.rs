@@ -333,6 +333,131 @@ pub fn classify_task_completion(outcome: &Outcome, more_segments: bool) -> TaskC
     TaskCompletion::Complete(outcome.value.clone())
 }
 
+// ───────────────────────────────────────────────────────────────────
+// [W-30 / F-3] 任务快照 —— 运行期检视的**只读**数据形状。
+//
+// ⚠ **为什么快照住在这一层**：检视要回答三个问题 ——「任务挂在哪个挂起点」
+//   「已运行时长」「任务树」—— 这三个读数**全都**只存在于调度器里
+//   （`Task::state` / `Task::started_at_ms` / `Scope` 树）⇒ 快照必须从
+//   **同一个**结构取，不能另建一套推导（否则两套数字会对不上）。
+//
+// ⚠ **为什么是纯数据**：`String` / `i64` / `bool` / `Vec` —— 没有 `Rc`、
+//   没有求值器句柄 ⇒ 快照**可以**跨线程交给只读端点 ⇒ 端点线程**拿不到**
+//   解释器 ⇒ 它**没有执行能力**（这是「只读」的结构性保证，不只是约定）。
+// ───────────────────────────────────────────────────────────────────
+
+/// 一个任务的**挂起点**（`TaskState::Suspended { reason }` 的可读投影）。
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct SuspendPoint {
+    /// 挂起点的**种类**：`"yield"` / `"awaiting_child"` / `"channel_recv"` /
+    /// `"channel_send"` / `"socket_ready"` / `"sleep_until"` / `"async_ready"`。
+    pub kind: &'static str,
+    /// 挂起点的**细节**（通道 id / socket id / 睡到几点 / 等的是哪个任务）。
+    /// 没有细节可报时是 `None`。
+    pub detail: Option<String>,
+}
+
+/// 把挂起理由投影成**可读**的挂起点。
+///
+/// ⚠ **穷举** `YieldReason` 的每个变体 —— 新增变体而忘了加这一臂 ⇒
+///   编译不过（这正是我们要的：挂起点种类漏了一种，检视视图就会说谎）。
+fn suspend_point_of(reason: &YieldReason) -> SuspendPoint {
+    match reason {
+        YieldReason::Explicit => SuspendPoint {
+            kind: "yield",
+            detail: None,
+        },
+        YieldReason::AwaitingChild(child) => SuspendPoint {
+            kind: "awaiting_child",
+            detail: Some(format!("task={}", child.0)),
+        },
+        YieldReason::ReceivingOn(ch) => SuspendPoint {
+            kind: "channel_recv",
+            detail: Some(format!("channel={}", ch.0)),
+        },
+        YieldReason::SendingOn(ch) => SuspendPoint {
+            kind: "channel_send",
+            detail: Some(format!("channel={}", ch.0)),
+        },
+        YieldReason::SocketReady(socket_id) => SuspendPoint {
+            kind: "socket_ready",
+            detail: Some(format!("socket={socket_id}")),
+        },
+        YieldReason::SleepUntil(at_ms) => SuspendPoint {
+            kind: "sleep_until",
+            detail: Some(format!("at_ms={at_ms}")),
+        },
+        YieldReason::AsyncReady(op_id) => SuspendPoint {
+            kind: "async_ready",
+            detail: Some(format!("op={op_id}")),
+        },
+    }
+}
+
+/// 一个任务的快照条目。
+#[derive(Debug, Clone)]
+pub struct TaskSnapshotEntry {
+    /// 任务槽下标（= `TaskId.0`）。
+    pub id: usize,
+    /// 世代号（与 `Task::generation` 同值）—— 句柄是否过期的判据。
+    pub generation: u64,
+    /// 生命周期状态：`"pending"` / `"running"` / `"suspended"` / `"done"` /
+    /// `"cancelled"`。
+    pub state: &'static str,
+    /// **挂在哪个挂起点** —— 只有 `suspended` 才有值。
+    pub suspend_point: Option<SuspendPoint>,
+    /// 父作用域 id（任务的父子关系住在**作用域**上，见 `Task::parent_scope`）。
+    pub parent_scope: usize,
+    /// 任务开始存在的时刻（绝对单调毫秒）。
+    pub started_at_ms: i64,
+    /// **已运行时长**（毫秒）= 快照时刻 − `started_at_ms`。
+    pub elapsed_ms: i64,
+    /// 绝对截止时间（毫秒）—— 没有截止时间是 `None`。
+    pub deadline_ms: Option<i64>,
+    /// 有没有人在等它（`AWAIT` 驱动中 ⇒ 在 `awaiting_targets` 里）。
+    pub awaited: bool,
+    /// 有没有挂着取消请求。
+    pub cancel_requested: bool,
+}
+
+/// 一个作用域的快照条目 —— **任务树的节点**。
+///
+/// ⚠ 仓里**没有**「谁 spawn 了谁」的记录（`Task` 只有 `parent_scope`）⇒
+///   任务树 = **作用域树** + 每个作用域上挂着的任务 ⇒ 不另建一套父子表。
+#[derive(Debug, Clone)]
+pub struct ScopeSnapshotEntry {
+    pub id: usize,
+    /// 父作用域 id（根作用域是 `None`）。
+    pub parent: Option<usize>,
+    /// 直接挂在该作用域上的任务 id（**直属**，不含子树）。
+    pub task_ids: Vec<usize>,
+    pub cancelled: bool,
+}
+
+/// 调度器的**只读**快照。
+#[derive(Debug, Clone)]
+pub struct TaskSnapshot {
+    /// 快照时刻（绝对单调毫秒，与 `deadline_ms` / `SleepUntil` 同域）。
+    pub now_ms: i64,
+    pub tasks: Vec<TaskSnapshotEntry>,
+    pub scopes: Vec<ScopeSnapshotEntry>,
+}
+
+impl TaskSnapshot {
+    /// 空快照 —— 「还没有任何任务」。
+    ///
+    /// [W-30 / F-3] 端点刚起来、调度器还没发生过任何一次状态迁移时，
+    /// 检视槽里就是 `None` ⇒ 端点用这个空快照作答（而不是报错：端点能答，
+    /// 只是此刻没有任务）。
+    pub fn empty() -> Self {
+        TaskSnapshot {
+            now_ms: wlwl_value::real_mono_ms(),
+            tasks: Vec::new(),
+            scopes: Vec::new(),
+        }
+    }
+}
+
 /// The scheduler itself (plan §5.1 + §5.1.1 loop pseudo-code).
 ///
 /// B5b wires the run-queue bookkeeping. Task *execution* stays on
@@ -390,6 +515,14 @@ pub struct Scheduler {
     /// ⚠ 用来区分两种失败：**有人在等**（⇒ `AWAIT` 会把它重新抛出来，失败是
     ///   「被认领」的）与**没人管**（fire-and-forget ⇒ 失败会无声无息地消失）。
     pub awaiting_targets: std::collections::HashSet<TaskId>,
+    /// [W-30 / F-3] **运行期检视槽**（可选）。
+    ///
+    /// 非 `None` 时，每次任务状态迁移都会把一份**纯数据**快照推进这个槽，
+    /// 供只读的检视端点读取（见 `publish_inspect_snapshot`）。
+    ///
+    /// ⚠ 默认 `None` ⇒ **零开销**：普通程序完全不受影响（不会有人去克隆快照）。
+    /// ⚠ 槽里只有**纯数据** ⇒ 端点线程**拿不到**求值器 ⇒ 它**没有执行能力**。
+    pub inspect_slot: Option<std::sync::Arc<std::sync::Mutex<Option<TaskSnapshot>>>>,
 }
 
 impl Default for Scheduler {
@@ -413,10 +546,87 @@ impl Scheduler {
             async_waiters: std::collections::HashMap::new(),
             pending_ready: std::collections::HashSet::new(),
             awaiting_targets: std::collections::HashSet::new(),
+            // ⚠ [W-30 / F-3] 默认**不装**检视槽 ⇒ 普通程序零开销。
+            inspect_slot: None,
         };
         s.scopes.push(Scope::new(ScopeId(0), None));
         s.current_scope = Some(ScopeId(0));
         s
+    }
+
+    // ── [W-30 / F-3] 运行期检视（只读）─────────────────────────────────
+
+    /// 取一份**只读**的任务快照。
+    ///
+    /// ⚠ 这份快照是**纯数据**（`String` / `i64` / `bool` / `Vec`）⇒ 它可以
+    ///   跨线程交给一个**拿不到求值器**的只读端点 ⇒ 端点**没有执行能力**
+    ///   （结构上的保证，不是约定）。
+    ///
+    /// ⚠ 「已运行时长」= `now_ms − started_at_ms`，两个量**同一个时钟域**
+    ///   （绝对单调毫秒）⇒ 差值有意义。墙钟会被系统时间调整打断 ⇒ 不用。
+    pub fn task_snapshot(&self) -> TaskSnapshot {
+        let now_ms = wlwl_value::real_mono_ms();
+        let tasks: Vec<TaskSnapshotEntry> = self
+            .tasks
+            .iter()
+            .enumerate()
+            .map(|(idx, t)| {
+                let (state, suspend_point) = match &t.state {
+                    TaskState::Pending => ("pending", None),
+                    TaskState::Running => ("running", None),
+                    TaskState::Suspended { reason, .. } => {
+                        ("suspended", Some(suspend_point_of(reason)))
+                    }
+                    TaskState::Done(_) => ("done", None),
+                    TaskState::Cancelled => ("cancelled", None),
+                };
+                TaskSnapshotEntry {
+                    id: idx,
+                    generation: t.generation,
+                    state,
+                    suspend_point,
+                    parent_scope: t.parent_scope.0,
+                    started_at_ms: t.started_at_ms,
+                    elapsed_ms: now_ms.saturating_sub(t.started_at_ms),
+                    deadline_ms: t.deadline_ms,
+                    awaited: self.awaiting_targets.contains(&TaskId(idx)),
+                    cancel_requested: t.cancel_requested,
+                }
+            })
+            .collect();
+        let scopes: Vec<ScopeSnapshotEntry> = self
+            .scopes
+            .iter()
+            .enumerate()
+            .map(|(idx, sc)| ScopeSnapshotEntry {
+                id: idx,
+                parent: sc.parent.map(|p| p.0),
+                task_ids: sc.tasks.iter().map(|h| h.id.0).collect(),
+                cancelled: sc.cancelled,
+            })
+            .collect();
+        TaskSnapshot {
+            now_ms,
+            tasks,
+            scopes,
+        }
+    }
+
+    /// 把当前任务表推进检视槽（若装了槽）。
+    ///
+    /// ⚠ **拿不到锁也继续跑**：检视是**旁路**能力 ⇒ 绝不能因为它把解释器带崩
+    ///   （锁中毒就取内层值，不 panic）。
+    /// ⚠ 装了槽才有开销 ⇒ 普通程序（没装槽）**零成本**。
+    pub fn publish_inspect_snapshot(&self) {
+        let Some(slot) = self.inspect_slot.as_ref() else {
+            return;
+        };
+        let snapshot = self.task_snapshot();
+        let mut guard = match slot.lock() {
+            Ok(g) => g,
+            Err(poisoned) => poisoned.into_inner(),
+        };
+        *guard = Some(snapshot);
     }
 
     /// [v0.7 Phase C2] Allocate the next `TaskId` without pushing a
@@ -492,6 +702,8 @@ impl Scheduler {
         if let Some(t) = self.tasks.get_mut(id.0) {
             t.state = TaskState::Running;
         }
+        // [W-30 / F-3] 任务转「运行中」⇒ 推进一份只读快照（检视槽没装时是空操作）。
+        self.publish_inspect_snapshot();
         Some((body, env))
     }
 
@@ -501,6 +713,8 @@ impl Scheduler {
             t.state = TaskState::Done(Box::new(result));
         }
         self.wake_dependents(id);
+        // [W-30 / F-3] 任务终态 ⇒ 推进只读快照。
+        self.publish_inspect_snapshot();
     }
 
     /// [B5b phase] Step one task. Execution lives on `Evaluator`; this
@@ -558,6 +772,8 @@ impl Scheduler {
             }
             self.enqueue(id);
         }
+        // [W-30 / F-3] 挂起点解除 ⇒ 推进只读快照。
+        self.publish_inspect_snapshot();
     }
 
     /// [B5b phase] True when any registered task is still non-terminal.
@@ -950,6 +1166,8 @@ impl Scheduler {
         // consistent.
         task.state = TaskState::suspended(reason);
         self.run_queue.retain(|id| *id != task_id);
+        // [W-30 / F-3] 挂起点变了（这里是通道收 / 通道发）⇒ 推进只读快照。
+        self.publish_inspect_snapshot();
         Some(waiter)
     }
 
@@ -1016,6 +1234,8 @@ impl Scheduler {
             t.resume_hint = Some(RESUME_NON_SOCKET);
         }
         self.enqueue(task_id);
+        // [W-30 / F-3] 挂起点解除 ⇒ 推进只读快照。
+        self.publish_inspect_snapshot();
         true
     }
 
@@ -1061,6 +1281,8 @@ impl Scheduler {
         if self.pending_ready.remove(&socket_id) {
             self.wake_socket_waiter(socket_id);
         }
+        // [W-30 / F-3] 挂起点 = socket 就绪 ⇒ 推进只读快照。
+        self.publish_inspect_snapshot();
     }
 
     /// socket 就绪 ⇒ 唤醒挂在它上面的**一个**任务（**FIFO**：队首那个）。
@@ -1131,6 +1353,8 @@ impl Scheduler {
             t.resume_hint = Some(socket_id);
         }
         self.enqueue(task_id);
+        // [W-30 / F-3] 挂起点解除 ⇒ 推进只读快照。
+        self.publish_inspect_snapshot();
         true
     }
 
@@ -1198,6 +1422,8 @@ impl Scheduler {
         //   异步操作的就绪集合是**电平**（level）——「这个操作**已经**完成」是
         //   持续成立的状态，直到它被消费 ⇒ 操作在 park **之前**完成时，它**仍然**
         //   在就绪集合里 ⇒ 求值器下一次泵它时照样能唤醒这个任务 ⇒ **不丢事件**。
+        // [W-30 / F-3] 挂起点 = 异步操作就绪 ⇒ 推进只读快照。
+        self.publish_inspect_snapshot();
     }
 
     /// [B-5] 异步出站操作完成 ⇒ 唤醒挂在它上面的**全部**任务。
@@ -1235,6 +1461,8 @@ impl Scheduler {
             self.enqueue(task_id);
             woke = true;
         }
+        // [W-30 / F-3] 挂起点解除 ⇒ 推进只读快照。
+        self.publish_inspect_snapshot();
         woke
     }
 
@@ -1309,6 +1537,8 @@ impl Scheduler {
             t.sleep_until_ms = Some(at_ms);
         }
         self.run_queue.retain(|id| *id != task_id);
+        // [W-30 / F-3] 挂起点 = 睡到几点 ⇒ 推进只读快照。
+        self.publish_inspect_snapshot();
     }
 
     /// 把**到期**的睡眠任务唤醒（转 `Pending` + 入队）。返回被唤醒的任务 id。
@@ -1609,6 +1839,8 @@ impl Scheduler {
         }
         self.run_queue.retain(|id| *id != task_id);
         self.wake_dependents(task_id);
+        // [W-30 / F-3] 挂起点 = 终态（取消）⇒ 推进只读快照。
+        self.publish_inspect_snapshot();
         true
     }
 
@@ -1970,6 +2202,81 @@ mod tests {
             generation: gen,
         });
         (s, id, crate::channel::ChannelId(0))
+    }
+
+    // ────────────────────────────────────────────────────────────
+    // [W-30 / F-3] 运行期检视（只读快照 + 检视槽）的锁测试。
+    // ────────────────────────────────────────────────────────────
+
+    /// [W-30 / F-3] 任务挂起 ⇒ 快照里必须看得出「**挂在哪个挂起点**」。
+    ///
+    /// ⚠ 这是 F-3 三个读数里**只有运行期才看得到**的那一个:程序跑完之后,
+    ///   作用域退出会把没结束的任务**硬取消**(并发册 §17.1:子任务寿命不超过
+    ///   词法 `SCOPE`)⇒「suspended」只能在**运行中**被看到 ⇒ 这条用例守着
+    ///   **发布**这条路(检视槽 → 快照)。
+    #[test]
+    fn the_inspect_slot_reports_the_suspend_point() {
+        let slot = std::sync::Arc::new(std::sync::Mutex::new(None));
+        let (mut s, task_id, ch_id) = fresh_scheduler_with_channel();
+        s.inspect_slot = Some(std::sync::Arc::clone(&slot));
+        s.enqueue(task_id);
+        s.park_for_channel_op(task_id, ch_id, Direction::Send, Some(Value::Integer(7)))
+            .expect("park succeeds");
+        let snapshot = slot
+            .lock()
+            .unwrap_or_else(|e| e.into_inner())
+            .clone()
+            .expect("the slot was published");
+        assert_eq!(snapshot.tasks.len(), 1);
+        assert_eq!(snapshot.tasks[0].state, "suspended");
+        let sp = snapshot.tasks[0]
+            .suspend_point
+            .as_ref()
+            .expect("a suspended task must carry its suspend point");
+        assert_eq!(sp.kind, "channel_send");
+        assert_eq!(sp.detail.as_deref(), Some("channel=0"));
+        // 「已运行时长」= 快照时刻 − 启动时刻(同一个单调钟域)⇒ 不会为负。
+        assert!(snapshot.tasks[0].elapsed_ms >= 0);
+        assert!(snapshot.now_ms >= snapshot.tasks[0].started_at_ms);
+    }
+
+    /// [W-30 / F-3] 任务树 = **作用域树** + 挂在每个作用域上的任务
+    /// (仓里没有「谁 spawn 了谁」的记录 ⇒ 不另建一套父子表)。
+    #[test]
+    fn the_snapshot_reports_the_task_tree() {
+        let (s, task_id, _ch) = fresh_scheduler_with_channel();
+        let snapshot = s.task_snapshot();
+        assert_eq!(snapshot.scopes.len(), 1);
+        assert_eq!(snapshot.scopes[0].id, 0);
+        assert_eq!(snapshot.scopes[0].parent, None);
+        assert_eq!(snapshot.scopes[0].task_ids, vec![task_id.0]);
+        assert_eq!(snapshot.tasks.len(), 1);
+        assert_eq!(snapshot.tasks[0].id, task_id.0);
+        assert_eq!(snapshot.tasks[0].parent_scope, 0);
+        assert_eq!(snapshot.tasks[0].state, "pending");
+        assert!(snapshot.tasks[0].suspend_point.is_none());
+    }
+
+    /// [W-30 / F-3] `started_at_ms` 由**唯一**的构造器(`Task::new_pending`)填
+    /// ⇒ 漏填**写不出来** ⇒ 「已运行时长」永远有一个真起点。
+    #[test]
+    fn every_task_carries_a_start_time() {
+        let (s, _task_id, _ch) = fresh_scheduler_with_channel();
+        let snapshot = s.task_snapshot();
+        assert!(
+            snapshot.tasks[0].started_at_ms >= 0,
+            "started_at_ms must be filled at construction time"
+        );
+    }
+
+    /// [W-30 / F-3] 没装检视槽 ⇒ 发布是**空操作**(普通程序零开销)。
+    #[test]
+    fn publishing_without_a_slot_is_a_no_op() {
+        let (mut s, task_id, ch_id) = fresh_scheduler_with_channel();
+        // 不装槽 ⇒ 不 panic、不分配、也不改变任何状态。
+        s.park_for_channel_op(task_id, ch_id, Direction::Send, Some(Value::Integer(7)))
+            .expect("park succeeds");
+        assert!(s.inspect_slot.is_none());
     }
 
     // ────────────────────────────────────────────────────────────

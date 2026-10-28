@@ -1,0 +1,14 @@
+{
+ "exit": 3,
+ "contains": [
+  "error[E0013]",
+  "  2 | PRINT(2)",
+  "2 | ^",
+  "= hint: add `;` to terminate the preceding statement"
+ ],
+ "not_contains": [
+  "multi-statement",
+  "第三实参"
+ ],
+ "_why": "W-33(F-4 诊断可读性 + G-4 模块组织)的落地锁。`PRINT(1)` 后面漏了 `;` ⇒ 解析层报 E0013(顶层漏 `;` 一直是 E0013,见 wlwl-parser/tests/nested_stmt_semicolon_contract.rs)。断言三件事:① **源码行**被打印出来(`  2 | PRINT(2)`)—— F-4 的第一半;② **列号高亮**(`2 | ^`,指针落在第 1 列 = 出错的那一列)—— F-4 的第二半,也是**反向守卫**:把高亮关掉这条必红;③ **提示语**被提到人形态(`= hint: add `;` to terminate the preceding statement`)—— 该建议此前只写在 suggestion_code 里、**只在 JSON 形态可见**,终端里的用户看不到。`not_contains` 两条是**反向**守卫:H-1(`IF` 第三实参的多语句组)已经修好(现状:`IF` 第三实参**支持**多语句组,漏写 `;` 统一报 E0013)⇒ 任何「IF 的第三实参不支持多语句组」式的提示都是**照抄需求清单**的过期描述,不许出现。⚠ 同一份夹具对 `wlwl check` 与 `wlwl run` **都**适用(两条命令走同一个渲染入口),实测两条的输出逐字相同。"
+}

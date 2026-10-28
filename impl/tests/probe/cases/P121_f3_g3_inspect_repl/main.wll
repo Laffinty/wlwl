@@ -1,0 +1,47 @@
+// [W-30 / F-3 + G-3] Task inspection (F-3) + minimal REPL (G-3).
+//
+// This file is the fixture for:
+//   wlwl repl --file main.wll --serve 127.0.0.1:0 --eval :tasks
+//
+// One invocation covers all three readings at once:
+//   (1) the REPL evaluates the program and prints its value;
+//   (2) the read-only inspection endpoint starts on an EPHEMERAL loopback
+//       port and proves itself with a loopback self-test;
+//   (3) the `:tasks` meta-command prints the task snapshot as JSON.
+//
+// What the snapshot has to show:
+//   * one task that finished            -> "state": "done"
+//   * one task that was parked and then
+//     force-cancelled at scope exit     -> "state": "cancelled"
+//   * the task tree (scope tree with the tasks hanging on it)
+//   * how long each task has been running -> "elapsed_ms"
+//
+// Why the parked task ends up "cancelled" and not "suspended":
+//   * SPAWN is only legal inside a SCOPE (E0058, plan §10 D17) => every task
+//     belongs to a scope.
+//   * SCOPE exit hard-cancels every non-terminal child (concurrency book
+//     §17.1: a child must not outlive its scope) => a task can NEVER be
+//     observed as "suspended" AFTER the program ended.
+//   * "suspended" (WHERE it is parked) is therefore a LIVE reading: it is
+//     observable while the program is still running, through the endpoint.
+//     The live path is guarded by the unit test in wlwl-eval (runtime.rs:
+//     `the_inspect_slot_reports_the_suspend_point`) and by the manual
+//     live check; this fixture pins the AFTER-the-run view.
+//
+// The channel is created OUTSIDE the SCOPE on purpose: a channel owned by
+// the scope would be closed at scope exit, which would wake the parked task
+// and make it finish with an ERR value (an orphan error report). Owned by
+// the root scope, it stays open => the parked task is cancelled, not woken.
+
+LET(ch, CHANNEL_NEW(0));
+
+SCOPE(FUN(() ,
+  // One task that finishes (the tree shows a terminal task next to the
+  // cancelled one).
+  LET(t_done, SPAWN(FUN(() , "done")));
+  // One task that parks on the empty channel => the scope exit cancels it.
+  LET(t_parked, SPAWN(FUN(() , CHANNEL_RECV(ch))));
+  0
+));
+
+"p121-f3-g3-inspect-repl"

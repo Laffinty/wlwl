@@ -789,6 +789,22 @@ struct ModuleLoader {
     project: ProjectContext,
 }
 
+/// 一条 `IMPORT` / `MODULE_REF` 的**发生点** —— 位置 + 所在文件的源码文本。
+///
+/// [W-33 / G-4] 循环导入(`E0041`)的诊断要指在**闭合环的那条 `IMPORT`**
+/// 上。此前那条诊断的位置是 `<module>:0:0` ⇒ 读者既不知道是**哪个文件**、
+/// 也不知道是**哪一行** —— 定位成本全落在用户身上。
+///
+/// ⚠ `source` 是**发出这条 `IMPORT` 的那个文件**的源码文本(不是被加载
+/// 模块的)⇒ 用来把那一行原文取出来(诊断的 `source_line`)。
+#[derive(Clone, Copy)]
+struct ImportSite<'a> {
+    /// `IMPORT` 表达式自己的 span(文件 + 行 + 列)。
+    span: &'a wlwl_ast::Span,
+    /// 发出这条 `IMPORT` 的文件的源码文本。
+    source: &'a str,
+}
+
 impl ModuleLoader {
     fn new(base_dir: PathBuf) -> Self {
         let project_root = find_project_root(&base_dir);
@@ -812,13 +828,17 @@ impl ModuleLoader {
     /// language-layer) or parse + evaluate a `.wll` file. Results are
     /// cached under the spec string, so a second `IMPORT` of the same
     /// spec reuses the same env.
-    fn load(&mut self, path: &str) -> WlwlResult<LoadedModule> {
+    ///
+    /// ⚠ [W-33 / G-4] `site` = **发出这条 `IMPORT` 的位置**。它只在
+    /// 「加载失败」时被用来把诊断指到**真正的出错点**(循环导入 ⇒ 指到
+    /// 闭合环的那条 `IMPORT`);加载成功时**不用**它 ⇒ 不影响任何语义。
+    fn load(&mut self, path: &str, site: Option<ImportSite<'_>>) -> WlwlResult<LoadedModule> {
         if let Some(cached) = self.cache.get(path) {
             return Ok(cached.clone());
         }
         match self.resolve_source(path)? {
-            ResolvedSource::Std(backend) => self.load_std(backend, path),
-            ResolvedSource::File { path, name } => self.load_file_module(&path, &name),
+            ResolvedSource::Std(backend) => self.load_std(backend, path, site),
+            ResolvedSource::File { path, name } => self.load_file_module(&path, &name, site),
             ResolvedSource::Ext { namespace, member } => {
                 let result = self.load_ext_namespace(&namespace, member.as_deref())?;
                 self.cache.insert(path.to_string(), result.clone());
@@ -990,10 +1010,15 @@ impl ModuleLoader {
     /// Load a std module by its backend. Dispatches to the native
     /// binding-table path (R2) or the embedded-source path (R1).
     /// Results are cached under the full namespace path either way.
-    fn load_std(&mut self, backend: wlwl_std::StdBackend, path: &str) -> WlwlResult<LoadedModule> {
+    fn load_std(
+        &mut self,
+        backend: wlwl_std::StdBackend,
+        path: &str,
+        site: Option<ImportSite<'_>>,
+    ) -> WlwlResult<LoadedModule> {
         match backend {
             wlwl_std::StdBackend::Native(spec) => self.load_std_native(spec, path),
-            wlwl_std::StdBackend::Lang(src) => self.load_std_lang(src, path),
+            wlwl_std::StdBackend::Lang(src) => self.load_std_lang(src, path, site),
         }
     }
 
@@ -1112,6 +1137,7 @@ impl ModuleLoader {
         &mut self,
         src: &'static wlwl_std::StdSource,
         path: &str,
+        site: Option<ImportSite<'_>>,
     ) -> WlwlResult<LoadedModule> {
         // Override file name: the last dot-segment of the namespace path
         // ("wlwl:std.str" -> "str.wll").
@@ -1119,7 +1145,7 @@ impl ModuleLoader {
         // Cycle guard shaped like load_file_module: an R1 std source may
         // IMPORT other modules (including sibling std namespaces).
         if self.project.loading.borrow().iter().any(|m| m == path) {
-            return Err(self.diag_circular(path));
+            return Err(self.diag_circular(path, site));
         }
         self.project.loading.borrow_mut().push(path.to_string());
         // Dev override: same export surface, source taken from disk.
@@ -1151,7 +1177,18 @@ impl ModuleLoader {
             cache: HashMap::new(),
             project: self.project.clone(),
         };
-        let mut sub = Evaluator::new_with_loader(sub_loader);
+        // [W-33 / F-4·G-4] 把**本模块的源码**交给子求值器。
+        //
+        // ⚠ 此前子求值器的 `source` 是 `None` ⇒ 两处受损:
+        // ① 模块内部的运行期诊断**没有 `source_line`**(人形态里只有
+        //    `--> file:line:col`,看不到那一行原文,也谈不上列号高亮);
+        // ② 模块内部的 `IMPORT` **没有发生点**⇒ 循环导入(`E0041`)只能
+        //    报 `<module>:0:0`,指不出是哪个文件的哪一行。
+        //
+        // ⚠ `source` 在求值器里**只**用于给诊断补 `source_line`
+        // (见 `Evaluator::diag`)⇒ 补上它不改变任何语义。
+        let mut sub =
+            Evaluator::new_with_loader(sub_loader).with_source(source.to_string(), display.clone());
         // [v0.11 M3-0 / ADR-0021 §层间规则] Bind the module's R2 kernels
         // into the sub-evaluator *before* its body runs, so a mixed
         // module's facade can call them. Only `EXPORT`ed names are
@@ -1201,6 +1238,7 @@ impl ModuleLoader {
         &mut self,
         file_path: &Path,
         module_name: &str,
+        site: Option<ImportSite<'_>>,
     ) -> WlwlResult<LoadedModule> {
         if self
             .project
@@ -1209,7 +1247,7 @@ impl ModuleLoader {
             .iter()
             .any(|m| m == module_name)
         {
-            return Err(self.diag_circular(module_name));
+            return Err(self.diag_circular(module_name, site));
         }
         self.project
             .loading
@@ -1242,7 +1280,12 @@ impl ModuleLoader {
             cache: HashMap::new(),
             project: self.project.clone(),
         };
-        let mut sub = Evaluator::new_with_loader(sub_loader);
+        // [W-33 / F-4·G-4] 把**本模块的源码**交给子求值器 —— 同
+        // `load_std_lang` 那条注释:① 模块内部的运行期诊断补上
+        // `source_line`;② 模块内部的 `IMPORT` 有发生点 ⇒ 循环导入
+        // (`E0041`)指得到具体文件与行号。
+        let mut sub = Evaluator::new_with_loader(sub_loader)
+            .with_source(source.clone(), file_path.display().to_string());
         if let Err(e) = sub.eval_module(&ast) {
             self.project.loading.borrow_mut().pop();
             return Err(e);
@@ -1375,19 +1418,50 @@ impl ModuleLoader {
         .into()
     }
 
-    fn diag_circular(&self, module_name: &str) -> WlwlError {
+    /// **循环导入**(`E0041`)的诊断。
+    ///
+    /// [W-33 / G-4] 三处补强,都只动**文案与位置**,**不改 `E0041` 的含义**
+    /// (它仍然是「`IMPORT` 成环」这一条条件):
+    ///
+    /// 1. **文案说清规则** —— 此前只有「`circular IMPORT detected: a -> b -> a`」,
+    ///    读者得自己推「为什么这算环」。现在明写「该模块**正在加载中**,
+    ///    不能被再加载一次」。
+    /// 2. **位置指在闭合环的那条 `IMPORT` 上** —— 此前是 `<module>:0:0`,
+    ///    对读者零信息量。
+    /// 3. **带上那一行源码**(`source_line`)⇒ 人形态里能直接看见出问题
+    ///    的那行,并由打印侧补列号高亮。
+    fn diag_circular(&self, module_name: &str, site: Option<ImportSite<'_>>) -> WlwlError {
         let cycle = {
             let stack = self.project.loading.borrow();
             let mut path: Vec<String> = stack.clone();
             path.push(module_name.to_string());
             path.join(" -> ")
         };
-        WlwlDiagnostic::new(
+        let mut d = WlwlDiagnostic::new(
             ErrorCode::E0041,
-            format!("circular IMPORT detected: {}", cycle),
+            format!(
+                "circular IMPORT detected: {} (module '{}' is already being loaded; \
+                 a module cannot be loaded again while it is still loading)",
+                cycle, module_name
+            ),
             Location::point("<module>", 0, 0),
-        )
-    .with_suggestion(Suggestion::Note { description: "break the cycle by extracting the shared declarations into a third module that both can import".into() })
+        );
+        if let Some(s) = site {
+            d.location = Location::range(
+                s.span.file.clone(),
+                s.span.line_start,
+                s.span.col_start,
+                s.span.line_end,
+                s.span.col_end,
+            );
+            if let Some(line) = extract_line(s.source, s.span.line_start) {
+                d = d.with_source_line(line);
+            }
+        }
+        d.with_suggestion(Suggestion::Note {
+            description:
+                "break the cycle by extracting the shared declarations into a third module that both can import".into(),
+        })
         .into()
     }
 }
@@ -4386,7 +4460,17 @@ fn builtin_module_ref(ev: &mut Evaluator, args: Vec<Value>) -> WlwlResult<Outcom
     };
     let loaded = {
         let mut loader = ev.loader.borrow_mut();
-        loader.load(&path)?
+        // [W-33 / G-4] 同 `IMPORT`:失败时(循环导入 `E0041`)把诊断指在
+        // **这次 `MODULE_REF` 调用**上。
+        let span = ev.current_span.clone();
+        let site = match (span.as_ref(), ev.source.as_deref()) {
+            (Some(s), Some(src)) => Some(ImportSite {
+                span: s,
+                source: src,
+            }),
+            _ => None,
+        };
+        loader.load(&path, site)?
     };
     // 排序保证 DICT 键序确定(HashSet 迭代序不稳定)。
     let mut names: Vec<&String> = loaded.exports.iter().collect();
@@ -9685,7 +9769,7 @@ impl Evaluator {
                 // 的穷尽性检查用(见 wlwl_ast::Expr::Match 的文档)。
                 default_synthetic: _,
             } => self.eval_match(value, clauses, default, span),
-            Expr::Import { path, names, .. } => self.eval_import(path, names),
+            Expr::Import { path, names, span } => self.eval_import(path, names, span),
             Expr::Export { names, .. } => self.eval_export(names, expr.span()),
             // [v0.10 Step 6 / plan §4.2 C2] SEALED is a declaration, not
             // an expression: nothing is evaluated, no value is produced.
@@ -12565,7 +12649,17 @@ impl Evaluator {
 
     // ── Module evaluation ──────────────────────────────────────────
 
-    fn eval_import(&mut self, path: &str, names: &[ImportName]) -> WlwlResult<Outcome> {
+    /// Evaluate an `IMPORT` declaration.
+    ///
+    /// ⚠ [W-33 / G-4] `span` = **这条 `IMPORT` 自己**的位置。它只被用来
+    /// 把「加载失败」的诊断(循环导入 `E0041`)指到**真正的出错点** ——
+    /// 加载成功时**不用**它 ⇒ 不影响任何语义。
+    fn eval_import(
+        &mut self,
+        path: &str,
+        names: &[ImportName],
+        span: &wlwl_ast::Span,
+    ) -> WlwlResult<Outcome> {
         // Phase 2: `path` is a simple bare module name (no ./, ../, or
         // `wlwl:` — the parser already rejected those).
         let module_name = path.to_string();
@@ -12575,7 +12669,13 @@ impl Evaluator {
         // eval_import.
         let module = {
             let mut loader = self.loader.borrow_mut();
-            loader.load(&module_name)?
+            // [W-33 / G-4] 循环导入的诊断要指在**这条 `IMPORT`** 上 ⇒
+            // 把「位置 + 本文件源码」一起交给加载器(只用于失败时的定位)。
+            let site = self
+                .source
+                .as_deref()
+                .map(|source| ImportSite { span, source });
+            loader.load(&module_name, site)?
         };
         // Bind each requested name in the current scope, with rename.
         for imp in names {
@@ -18971,6 +19071,58 @@ mod tests {
         "#;
         let err = run_in(&dir, src).unwrap_err();
         assert_eq!(err.diagnostic().code, ErrorCode::E0041);
+    }
+
+    /// [W-33 / G-4] 循环导入(`E0041`)的诊断必须**说清**三件事:
+    ///
+    /// ① **规则**:消息里点明「该模块**正在加载中**,不能被再加载一次」 ——
+    ///    此前只有「`circular IMPORT detected: a -> b -> a`」,读者得自己
+    ///    推「为什么这算环」。
+    /// ② **位置**:指在**闭合环的那条 `IMPORT`** 上 —— 此前是
+    ///    `<module>:0:0`(看不出是哪个文件、哪一行)。
+    /// ③ **源码行**(`source_line`)⇒ 打印侧(`wlwl-cli`)能补**列号高亮**。
+    ///
+    /// ⚠ 这是「关掉列号高亮 ⇒ 用例必红」那条守卫的**另一半**:高亮本身在
+    /// `wlwl-cli` 的单元测试里,这里守的是「诊断**带得出**位置与源码」。
+    #[test]
+    fn module_circular_import_points_at_the_import_that_closes_the_cycle() {
+        let dir = unique_test_dir("cycle_site");
+        // a.wll imports b.wll, b.wll imports a.wll ⇒ 环是 a -> b -> a,
+        // **闭合**它的是 `b.wll` 里那条 `IMPORT("a", ...)`。
+        std::fs::write(
+            dir.join("a.wll"),
+            "IMPORT(\"b\", [\"y\"]);\nEXPORT([\"x\"]);\nLET(x, 1);\n",
+        )
+        .unwrap();
+        std::fs::write(
+            dir.join("b.wll"),
+            "IMPORT(\"a\", [\"x\"]);\nEXPORT([\"y\"]);\nLET(y, 2);\n",
+        )
+        .unwrap();
+        let err = run_in(&dir, "IMPORT(\"a\", [\"x\"]);\n").unwrap_err();
+        let d = err.diagnostic();
+        assert_eq!(d.code, ErrorCode::E0041);
+        // ① 消息说清规则。
+        assert!(
+            d.message.contains("already being loaded"),
+            "消息应说明该模块正在加载中,实际: {}",
+            d.message
+        );
+        assert!(
+            d.message.contains("a -> b -> a"),
+            "消息应列出完整环路,实际: {}",
+            d.message
+        );
+        // ② 位置指在 `b.wll` 的第 1 行第 1 列(那条闭合环的 `IMPORT`)。
+        assert!(
+            d.location.file.ends_with("b.wll"),
+            "位置应指向 b.wll,实际: {:?}",
+            d.location
+        );
+        assert_eq!(d.location.line, 1);
+        assert_eq!(d.location.col, 1);
+        // ③ 那一行源码带得出来 ⇒ 打印侧能补列号高亮。
+        assert_eq!(d.source_line.as_deref(), Some("IMPORT(\"a\", [\"x\"]);"));
     }
 
     // ── Phase 4 batch 1: std library IMPORT integration ────────────

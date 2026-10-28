@@ -1,0 +1,21 @@
+{
+  "exit": 0,
+  "contains": [
+    "[endpoint-selftest] tasks-json= OK",
+    "[endpoint-selftest] readonly-reject= OK",
+    "=> p121-f3-g3-inspect-repl",
+    "\"tasks_schema_version\": \"1.0.0\"",
+    "\"readonly\": true",
+    "\"state\": \"done\"",
+    "\"state\": \"cancelled\"",
+    "\"suspend_point\": null",
+    "\"elapsed_ms\":",
+    "\"task_tree\":",
+    "\"task_count\": 2"
+  ],
+  "not_contains": [
+    "error[E",
+    "\"state\": \"pending\""
+  ],
+  "_why": "[W-30 / F-3 + G-3] The task-inspection + minimal-REPL fixture. The command is `wlwl repl --file main.wll --serve 127.0.0.1:0 --eval :tasks`, i.e. one invocation that covers all three readings at once: (1) the REPL evaluates the program and prints its value (`=> p121-f3-g3-inspect-repl`); (2) the read-only inspection endpoint starts on an EPHEMERAL loopback port (port 0 -> no CI port clash) and proves itself with a loopback self-test (`tasks-json= OK` = the answer is parseable JSON, `readonly-reject= OK` = a write request is refused); (3) the `:tasks` meta-command prints the task snapshot as JSON. The snapshot assertions are the F-3 readings: the finished task is `done`, the task that had parked on an empty channel is `cancelled` (SCOPE exit hard-cancels every non-terminal child, concurrency book §17.1 -- so a task can never be observed as `suspended` AFTER the program ended; the `suspended` reading with its suspend point is a LIVE reading, guarded by the unit test in wlwl-eval `runtime.rs` and by the manual live check), plus `elapsed_ms` (how long it has been running) and `task_tree` (the scope tree with the tasks hanging on it). `not_contains \"state\": \"pending\"` is the reverse guard: the fixture must not merely show tasks that were never scheduled - the scheduler only drains the run queue at AWAIT / SCOPE exit, so both children really ran. `not_contains error[E` = the program must run clean (no diagnostics)."
+}

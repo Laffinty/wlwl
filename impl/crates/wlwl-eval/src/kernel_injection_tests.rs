@@ -47,7 +47,9 @@ mod tests {
         let loader = ModuleLoader::new(std::env::temp_dir());
         let mut loader = loader;
         loader
-            .load_std_lang(src, "wlwl:std.math")
+            // `None` = 没有「发出这条 IMPORT 的位置」—— 本用例直接问
+            // loader 要模块,不经过 `IMPORT` 那一层 ⇒ 没有发生点可用。
+            .load_std_lang(src, "wlwl:std.math", None)
             .expect("std.math loads")
     }
 

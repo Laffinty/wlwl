@@ -13,8 +13,10 @@
 
 use std::collections::{BTreeSet, HashMap};
 use std::fs;
+use std::io::{BufRead, IsTerminal};
 use std::path::PathBuf;
 use std::process::ExitCode;
+use std::sync::{Arc, Mutex};
 
 use clap::{Parser, ValueEnum};
 use wlwl_ast::Expr;
@@ -190,6 +192,44 @@ Examples:
     },
     /// Print the type system and static-contract codes as JSON
     Schema,
+    /// [W-30 / F-3] Print the runtime task view as JSON
+    ///
+    /// 两种口径:
+    /// - `--file <PATH>`:把程序跑一遍,打印**跑完那一刻**的任务快照
+    ///   (任务树 / 挂在哪个挂起点 / 已运行时长)。
+    /// - `--addr <ADDR>`:向一个在跑的**只读**检视端点取快照
+    ///   (端点用 `wlwl repl --serve` 起)。
+    ///
+    /// ⚠ 这是**实现侧**的运行期视图,**不是**规范的公共面 —— 与
+    ///   `wlwl namespace` 的 `"surface": "implementation"` 同一口径。
+    /// ⚠ 端点**只绑回环**、**只读**、**没有执行能力**(理由见
+    ///   `tooling.rs` 里那段安全边界注释)。
+    Tasks {
+        /// Path to the .wll file: run it once, then print the task snapshot
+        #[arg(long, value_name = "PATH")]
+        file: Option<PathBuf>,
+        /// Fetch the snapshot from this endpoint (host:port)
+        #[arg(long, value_name = "ADDR")]
+        addr: Option<String>,
+    },
+    /// [W-30 / G-3] 最小 REPL —— 一次求值一个表达式,打印结果
+    ///
+    /// `:tasks` 元命令打印当前会话的任务视图;`--serve` 为这个会话起一个
+    /// **只读**检视端点(只绑 `127.0.0.1`)。
+    ///
+    /// ⚠ **不是调试器**:没有断点 / 单步 / 变量改写(那是调试器,不是 REPL)。
+    Repl {
+        /// Path to the .wll file: load it into the session first
+        #[arg(long, value_name = "PATH")]
+        file: Option<PathBuf>,
+        /// Evaluate this expression (repeatable); without it, read from stdin
+        #[arg(long, value_name = "EXPR")]
+        eval: Vec<String>,
+        /// Start a **read-only** inspection endpoint for this session
+        /// (loopback only: `127.0.0.1:PORT`)
+        #[arg(long, value_name = "ADDR")]
+        serve: Option<String>,
+    },
 }
 
 /// `wlwl sig` output shape.
@@ -502,12 +542,284 @@ fn dispatch(cmd: Cmd) -> ExitCode {
         Cmd::Interface { file } => tooling::interface_file(&file),
         Cmd::Namespace { path } => tooling::namespace_command(path.as_deref()),
         Cmd::Schema => tooling::schema_command(),
+        Cmd::Tasks { file, addr } => tasks_command(file.as_ref(), addr.as_deref()),
+        Cmd::Repl { file, eval, serve } => repl_command(file.as_ref(), &eval, serve.as_deref()),
     }
 }
 
 mod diag_output;
 mod lsp;
 mod tooling;
+
+// ───────────────────────────────────────────────────────────────────
+// [W-30 / F-3 + G-3] 任务检视（只读）与最小 REPL。
+//
+// 两条需求落在**同一个会话**上：
+//   * F-3（任务检视）—— 「任务挂在哪个挂起点 / 已运行时长 / 任务树」。
+//     读数**全部**取自调度器（`wlwl_eval::runtime::Scheduler`）⇒ 检视视图
+//     与调度器**同一份事实**，不会两套数字对不上。
+//   * G-3（最小 REPL）—— 至少一个**能跑表达式**的 REPL。
+//
+// ⚠ **口径**（这一段必须写清楚,不然它会变成隐形坑）：
+//   * REPL **共用一个 `Evaluator`** ⇒ 顶层 `LET` 绑定**跨次保留**。
+//   * ⚠ 但**每次求值只算一个表达式**（`--eval` 一条 / stdin 一行）。
+//   * ⚠ **不是调试器**：没有断点 / 单步 / 变量改写。改一个绑定就是**再求值
+//     一次** `LET` / `SET` —— 没有「改运行时状态」的旁路（与只读检视同一纪律）。
+// ───────────────────────────────────────────────────────────────────
+
+/// `wlwl tasks` —— 任务检视（只读）。
+///
+/// ⚠ 两种口径互斥：`--file`（自己跑一遍）与 `--addr`（问一个在跑的端点）。
+fn tasks_command(file: Option<&PathBuf>, addr: Option<&str>) -> ExitCode {
+    match (file, addr) {
+        (Some(_), Some(_)) => {
+            eprintln!("error: --file and --addr are mutually exclusive");
+            ExitCode::from(1)
+        }
+        (None, None) => {
+            eprintln!(
+                "error: `wlwl tasks` needs --file <PATH> (run once, then inspect) \
+                 or --addr <ADDR> (query a running endpoint)"
+            );
+            eprintln!(
+                "hint: start a read-only endpoint with \
+                 `wlwl repl --serve 127.0.0.1:9731`"
+            );
+            ExitCode::from(1)
+        }
+        (None, Some(a)) => tooling::tasks_query_command(a),
+        (Some(f), None) => tasks_of_file(f),
+    }
+}
+
+/// `wlwl tasks --file <PATH>` —— 跑一遍程序,打印**跑完那一刻**的任务快照。
+fn tasks_of_file(file: &PathBuf) -> ExitCode {
+    let mut session = ReplSession::new();
+    if let Err(code) = session.load_and_run(file, false) {
+        return code;
+    }
+    tooling::print_tasks(&session.snapshot())
+}
+
+/// `wlwl repl` —— 最小 REPL（可带一个只读检视端点）。
+fn repl_command(file: Option<&PathBuf>, evals: &[String], serve: Option<&str>) -> ExitCode {
+    let mut session = ReplSession::new();
+
+    // ⚠ 端点**先起**:程序运行**期间**端点就已经能答 ——
+    //   检视槽在**每次**任务状态迁移时推进 ⇒ 端点看到的是**运行中**的任务树,
+    //   不是「跑完之后」的残影。
+    let _endpoint = match serve {
+        Some(addr) => match tooling::start_inspect_endpoint(addr, Arc::clone(&session.slot)) {
+            Ok(ep) => {
+                println!(
+                    "[endpoint] listening on {} (loopback only, read-only)",
+                    ep.addr
+                );
+                // ⚠ **环回自检**:起服务 ⇒ 查 tasks ⇒ JSON 可解析;再发一个
+                //   **写**请求 ⇒ 必须被回绝。自检不过 ⇒ 端点**不起来**
+                //   （宁可不提供,也不要提供一个行为不对的端口）。
+                let (tasks_ok, rejected_ok) = tooling::inspect_endpoint_selftest(ep.addr);
+                println!(
+                    "[endpoint-selftest] tasks-json= {}",
+                    if tasks_ok { "OK" } else { "FAILED" }
+                );
+                println!(
+                    "[endpoint-selftest] readonly-reject= {}",
+                    if rejected_ok { "OK" } else { "FAILED" }
+                );
+                if !tasks_ok || !rejected_ok {
+                    eprintln!(
+                        "error: the inspection endpoint failed its loopback self-test; \
+                         refusing to serve"
+                    );
+                    return ExitCode::from(1);
+                }
+                Some(ep)
+            }
+            Err(e) => {
+                // ⚠ 端口占用 ⇒ **立刻**给出可诊断的一行（不静默重试到超时 ——
+                //   那样 CI 上只会看到「卡住」，看不到「为什么」）。
+                eprintln!("error: {e}");
+                return ExitCode::from(1);
+            }
+        },
+        None => None,
+    };
+
+    if let Some(f) = file {
+        if let Err(code) = session.load_and_run(f, true) {
+            return code;
+        }
+    }
+
+    for expr in evals {
+        if session.run_line(expr) {
+            // ⚠ `:quit` ⇒ 剩下的 `--eval` 不再跑(与交互循环同一语义)。
+            break;
+        }
+    }
+
+    // ⚠ 没有 `--eval` ⇒ 进交互循环（stdin 到 EOF 为止）。
+    //   ⚠ probe 夹具的 stdin 是空的 ⇒ 立刻 EOF ⇒ 立刻退出（不会挂住 CI）。
+    if evals.is_empty() {
+        session.interactive();
+    }
+    ExitCode::SUCCESS
+}
+
+/// REPL 会话 —— 一次求值一个表达式。
+struct ReplSession {
+    /// 求值器放在 `Option` 里:每行要更新 source 文本,而 `with_source`
+    /// **拿走 `self`** —— `Evaluator` 没有 `Default` ⇒ 不能 `mem::replace`。
+    ev: Option<wlwl_eval::Evaluator>,
+    /// 检视槽:端点线程读它（**纯数据** ⇒ 端点没有执行能力）。
+    slot: Arc<Mutex<Option<wlwl_eval::runtime::TaskSnapshot>>>,
+}
+
+impl ReplSession {
+    /// 新会话 —— 装上检视槽（⇒ 每次任务状态迁移都会推进一份只读快照）。
+    fn new() -> Self {
+        let slot: Arc<Mutex<Option<wlwl_eval::runtime::TaskSnapshot>>> = Arc::new(Mutex::new(None));
+        let base_dir = std::env::current_dir().unwrap_or_else(|_| PathBuf::from("."));
+        let mut ev = wlwl_eval::Evaluator::new().with_base_dir(base_dir);
+        ev.scheduler.inspect_slot = Some(Arc::clone(&slot));
+        ReplSession { ev: Some(ev), slot }
+    }
+
+    /// 当前任务快照（**只读**）。
+    fn snapshot(&self) -> wlwl_eval::runtime::TaskSnapshot {
+        self.ev
+            .as_ref()
+            .map(|ev| ev.scheduler.task_snapshot())
+            .unwrap_or_else(wlwl_eval::runtime::TaskSnapshot::empty)
+    }
+
+    /// 求值一段文本（**一次**求值 ⇒ 一个表达式）。
+    fn eval_text(&mut self, text: &str, name: &str) -> Result<wlwl_eval::Value, WlwlError> {
+        let ast = wlwl_parser::parse(text, name)?;
+        // ⚠ `Evaluator` 没有 `Default` ⇒ 只能「取出来 → 搬动 → 放回去」。
+        let Some(ev) = self.ev.take() else {
+            // 取不到 = 会话已经被拆散了（内部错误,不该发生）。
+            return Err(WlwlDiagnostic::new(
+                ErrorCode::E0100,
+                "internal error: the REPL session lost its evaluator".to_string(),
+                Location::point(name.to_string(), 0, 0),
+            )
+            .into());
+        };
+        let mut ev = ev.with_source(text.to_string(), name.to_string());
+        let result = ev.eval(&ast);
+        self.ev = Some(ev);
+        result
+    }
+
+    /// 把一个程序文件作为会话的第一段跑掉。
+    fn load_and_run(&mut self, file: &PathBuf, print_result: bool) -> Result<(), ExitCode> {
+        let source = match fs::read_to_string(file) {
+            Ok(s) => s,
+            Err(e) => {
+                let d = WlwlDiagnostic::new(
+                    io_error_code(&e),
+                    format!("cannot read file ''{}'': {}", file.display(), e),
+                    Location::point(file.to_string_lossy().to_string(), 0, 0),
+                );
+                return Err(report_diag(d, OutputFormat::Human));
+            }
+        };
+        let name = file.to_string_lossy().to_string();
+        match self.eval_text(&source, &name) {
+            Ok(v) => {
+                if print_result {
+                    println!("=> {}", v.display());
+                }
+                Ok(())
+            }
+            Err(e) => Err(report_error(e, OutputFormat::Human)),
+        }
+    }
+
+    /// 求值一行（`--eval` 给的一条 / stdin 给的一行）并打印结果。
+    ///
+    /// 返回 `true` = 会话应当结束（`:quit`）。
+    fn run_line(&mut self, line: &str) -> bool {
+        let trimmed = line.trim();
+        if trimmed.is_empty() {
+            return false;
+        }
+        if trimmed.starts_with(':') {
+            return self.meta(trimmed);
+        }
+        match self.eval_text(trimmed, "<repl>") {
+            Ok(v) => println!("=> {}", v.display()),
+            Err(e) => {
+                // ⚠ 错误**不**终止会话:REPL 的常态就是「打错一行再来」。
+                eprint!(
+                    "{}",
+                    diag_output::render_error_text(&e, OutputFormat::Human)
+                );
+            }
+        }
+        false
+    }
+
+    /// REPL 元命令 —— 以 `:` 开头。
+    ///
+    /// ⚠ 为什么不走语言解析器:元命令要和用户自己的名字**不打架** ——
+    ///   `:` 前缀在语言里根本不存在 ⇒ 不可能撞名。
+    ///
+    /// 返回 `true` = 会话应当结束。
+    fn meta(&mut self, line: &str) -> bool {
+        match line {
+            ":help" | ":h" => {
+                println!(":tasks   print the session's task view (JSON)");
+                println!(":help    this text");
+                println!(":quit    leave the REPL");
+                false
+            }
+            ":tasks" => {
+                tooling::print_tasks(&self.snapshot());
+                false
+            }
+            ":quit" | ":q" => true,
+            other => {
+                eprintln!("error: unknown REPL command '{other}' (try :help)");
+                false
+            }
+        }
+    }
+
+    /// 交互循环 —— 读到 stdin EOF 为止。
+    fn interactive(&mut self) {
+        use std::io::Write;
+        let stdin = std::io::stdin();
+        // ⚠ 只有**真终端**才打提示符:管道里打提示符会污染输出。
+        let is_tty = stdin.is_terminal();
+        let mut input = stdin.lock();
+        let mut out = std::io::stdout();
+        loop {
+            if is_tty {
+                print!("wlwl> ");
+                let _ = out.flush();
+            }
+            let mut line = String::new();
+            match input.read_line(&mut line) {
+                Ok(0) => break,
+                Ok(_) => {}
+                Err(e) => {
+                    eprintln!("error: cannot read stdin: {e}");
+                    break;
+                }
+            }
+            let trimmed = line.trim().to_string();
+            if trimmed.is_empty() {
+                continue;
+            }
+            if self.run_line(&trimmed) {
+                break;
+            }
+        }
+    }
+}
 
 /// [R2-010] 一次「读/写文件」失败的**码**。
 ///
