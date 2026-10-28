@@ -8,7 +8,9 @@
 | **上一版** | `198e1ec` 的 `wlwl-v0.12.1-build-plan.md`（已删）—— 本文件**取代**它，三处方向变更见 §1.2 |
 | **业主指令（2026-10-27）** | ① **全量实现**需求清单，不擅自延后；② **TLS 不进标准库**，改用 **Rust 原生 DLL/SO 动态库**交付；③ 规则侧**非必要勿改动**；④ 构建阶段**多 AGENT 作业**；⑤ **版本锁死 v0.12.1 / v1.0.4，不许漂到 v1.1.0** |
 | **业主裁决（2026-10-27）** | §10 四项**全部已定**（点选确认）：Q1 动态库扩展 · Q2 并发三项走需求清单候选形态 · Q3 新成员落 `std.*` · Q4 G-2 规则 ② **进 v1.0.4**（故改成**不需要新诊断码**的形态）⇒ **本轮无待决项** |
+| **业主裁决（2026-10-28）** | §11.4 四项**全部已定**（点选确认）：D1 `tls::LOCAL_ADDR` **留**（台账 10 员）· D2 `std.http` 重复 `Content-Length` **向 `std.net` 收紧**（W-36）· D3 三个探针**改写成 `TCP_SERVE` 形状**（W-35）· D4a 解析器 `E0011` 误报**本轮修**（W-37）· D4b NFKC 表**保持 17.0**、等 UCD 数据 ⇒ **零待决项** |
 | **本轮裁决口径** | 规则侧只做「① 修规范自相矛盾 ② 为新成员/新命名空间走登记 ③ 给扩展一个合法落点」三类，**不动任何既有成员的签名与可观察语义** |
+| **▶ 接替者从这里开始** | **§13「接替执行手册」** —— 仓库现状 / 门禁分类 / **下一批该开哪几个 agent（含可直接抄的规格要点与坐标）** / 集成者的固定动作 / 环境事实与 10 个坑。读完 §13 + §11 + §2 即可开工，**不需要重新勘察** |
 
 ---
 
@@ -996,7 +998,7 @@ python script/check_spec.py                     # 附录 A ↔ 各册成员表 �
 
 ---
 
-## 11 收尾交接（2026-10-27 第一波落地完毕）
+## 11 收尾交接（两波落地完毕：13 个工作项）
 
 ### 11.1 两波已落地（13 个工作项）
 
@@ -1097,3 +1099,98 @@ python script/check_spec.py                     # 附录 A ↔ 各册成员表 �
 5. **四项已全部拍板**（§10，2026-10-27 点选确认）：**Q1** TLS 走动态库扩展（与您的指令一致）· **Q2** 并发三项按需求清单候选形态、不引入 Step 3 · **Q3** 新成员落 `std.*`（动附录 A）· **Q4** G-2 规则 ② **进 v1.0.4** —— 为此把它改成**不需要新诊断码**的形态（无 E/W 码的「规范符合性提示」+ 运行期拦截兜底）⇒ **规则侧零改动、零新码、版本纹丝不动**。
 6. **第二波后又裁决四项**（§11.4，2026-10-28 12:36 点选确认，**全部采纳推荐项**）：**D1** `tls::LOCAL_ADDR` **留**（台账按 10 员）· **D2** `std.http` 的重复 `Content-Length` **向 `std.net` 收紧**（只改新模块 ⇒ 零版本风险，W-36）· **D3** `p10`/`p11`/`p13` **改写成 `TCP_SERVE` 形状**以恢复正面证据（W-35）· **D4a** 解析器 `E0011` 误报**本轮修**（W-37）· **D4b** NFKC 表**保持 17.0**、等 UCD 源数据再重生成（**不排期**）。
 7. **两波共落地 13 / 28 个工作项、19 / 57 条需求完全落地**（§11.6 面板）；未开工 29 条、口径答复 6 条。**版本口径始终是实现 v0.12.1 ↔ 规范 v1.0.4**；**规范仓一行未动** —— 30 个新成员 + `tls`/`crypto` 两个扩展命名空间要进公共面，得按 §11.2 的五步走（且**必须等规范仓先 push**）。
+
+---
+
+## 13 接替执行手册（2026-10-28 13:05 收尾版）
+
+> **这份手册的目的**：下一次开工的人（或 agent）**只读本文件 + §11 + §2**，就能直接派出下一批 agent 并完成集成，**不需要重新勘察**。
+> ⚠ 本文件里的**规格要点与坐标都已核实过**（2026-10-28 上午实测），可直接抄进 briefing。
+
+### 13.1 现在在哪（仓库与版本现状）
+
+| 项 | 现状 |
+|---|---|
+| 仓库 / 分支 | `D:\Project\wlwl`（实现侧） / `main`；规范仓 `D:\Project\wlwl-spec-v1`（**本轮一行未动**） |
+| HEAD | `20fa75f` docs(plan): 记录业主四项裁决 —— 只修订文档，未执行 |
+| 提交序列 | `20fa75f` 裁决记录 → `86b3c4a` **第二波 5 个 PHASE** → `df90382` 完成度面板 → `b0649cc` **第一波 7 个工作项** → `87a473b` §5.2b 真并行度 |
+| 工作树 | **干净**（`git status` 空） |
+| 版本口径 | 实现 **v0.12.1** ↔ 规范 **v1.0.4**（业主两次确认锁死；**零处修改既有成员、零处新增诊断码**） |
+| 完成度 | **工作项 13 / 28** · **需求 19 / 57 完全落地**（部分 3 · 未开工 29 · 口径答复 6）⇒ 面板见 §11.6 |
+| 已落地清单 | §11.1（13 行，每行带验收读数） |
+| 业主裁决 | §10（Q1–Q4）+ §11.4（D1–D4b，**全部已定、全部未执行**） |
+
+### 13.2 门禁现状（第二轮集成后实测）
+
+**绿**：`cargo fmt --all -- --check` 0 diff · probe 套件 **3/3**（**192 用例**）· conformance **6/6** · `wlwl-std` 全绿 · `wlwl-eval` 全量除「成员表对拍」外全绿 · 本轮新增契约全绿（`suspend_site_contract` 13/0 · `sync_contract` 21/0 · `http_contract` 15/0 · `str_format_contract` 14/0 · `format_contract` 11/0 · `ext_loader_contract` 22/0 · `wlwl-ext` 32/0）。
+
+**红（全部是「规范侧未跟上」，不是实现缺陷）**：`check-appendix-a`（抄件 vs 实现派生表体）· `stdlib_appendix_a_sync`（成员集合 vs 附录A ∪ 台账）· `fs_contract` / `net_contract` / `str_math_contract` / `text_contract` 的**成员表**。
+⇒ 根因：**新增 30 个公共面成员**（`std.text` +3 · `std.fs` +7 · `std.net` +1 · `std.format` +1 · `std.str` +1 · `std.log` 7 · `std.sync` 8 · `std.http` 2）+ 扩展命名空间 `tls` 10 员 / `crypto` 8 员（**不进附录 A**，只进 §5.5 台账）⇒ 修法见 **§11.2 五步**。
+
+### 13.3 接替者的第一分钟（照做，别重新调查）
+
+```powershell
+cd D:\Project\wlwl\impl
+cargo run --locked --bin check-appendix-a -- ../docs/wlwl-spec-reference.md   # 预期 MISMATCH（规范侧未跟上）
+cargo test --locked -p wlwl-eval --test stdlib_appendix_a_sync                # 预期 4 failed（同上）
+cargo test --locked -p wlwl-cli --test probe                                 # 预期 3 passed
+cd D:\Project\wlwl; git log --oneline -4; git status --short                  # 预期干净
+```
+⇒ 读本文件 **§13**（接替手册）→ **§11**（交接与下一批切分）→ **§2**（事实坐标）。
+
+### 13.4 下一轮该开的 agent（**按优先级；规格要点可直接抄进 briefing**）
+
+#### 优先批（3 并行，文件面零重叠）—— 业主裁决直接产生的三项
+
+| 工作项 | 目标 | 独占文件 | 规格要点（已核实） |
+|---|---|---|---|
+| **W-37** | 修解析器 `E0011` 误报（D4a） | `impl/crates/wlwl-parser/**` + 诊断面 | 最小复现：`LET(f, FUN((conn), (FOO(conn, CAT(head, body)); "200")));` **多行** ⇒ `E0011: expected ')', got Semicolon`；**同一份写成单行就正常**。形态：多行嵌套块 + 块末是字符串字面量 + 块内有「实参是调用」的嵌套调用。**静默错误级**（报错方向误导）⇒ 优先级最高 |
+| **W-36** | `std.http` 的重复 `Content-Length` **收紧**（D2） | `impl/crates/wlwl-std/wl/std/http.wll` + `impl/crates/wlwl-eval/tests/http_contract.rs` | 与 `std.net` 对齐：**同名多值 ⇒ 一律拒**（含值相同）；**只改新模块** ⇒ 零版本风险。⚠ **不要**动 `std/net.rs`（改既有成员语义撞 `:223`）。⚠ R1 模块的 `EXPORT` 必须**单行**（`lang_exports` 逐行扫） |
+| **W-35** | `p10`/`p11`/`p13` 改写成 `TCP_SERVE` 形状（D3） | `docs/wlwl-feasibility/probes/p1{0,1,3}-*.wll` + `impl/tests/probe/cases/P121_probe_p1{0,1,3}_*/` | 目标读数恢复为「8 并发全 200 / 403×3 / 4 请求全 200」；**`TCP_SERVE` 的 handler 不得调用宿主挂起点**（它跑在原生帧内 ⇒ 不受 W-10 判据约束）。⚠ 两份副本（探针本体 + 夹具）必须**逐字相同**（用 SHA256 核对） |
+
+**合并顺序**：W-36 先合（W-35 的新探针要跑 `http_contract`）⇒ 再合 W-35 ⇒ W-37 独立，随时可合。
+
+#### 随后批（4 并行）
+
+| 工作项 | 目标 | 独占文件 | 规格要点 |
+|---|---|---|---|
+| **W-11** | B-2 修根因：**唤醒一个**而不是唤醒全部 | `impl/crates/wlwl-std/src/tcp.rs` + `impl/crates/wlwl-eval/src/runtime.rs` | 惊群的结构性原因：一个 listener 只有一个 socket id ⇒ 所有 acceptor 共享一把等待者 `Vec`（`runtime.rs:319`）⇒ `wake_socket_waiter`（`runtime.rs:973-1006`）**唤醒全部**。改成 **FIFO 唤醒一个** ⇒ 落选者**不再拿到 `NULL`**（需求要的「保持存活并能继续接受」直接达成）⇒ 规范侧大概率**零改动**（SP-2 降为条件项）。⚠ 落选者的真实死法是调用方 `TCP_RECV(NULL)` ⇒ `E0030`（不是「静默 NULL」） |
+| **W-14** | B-5 非阻塞出站 | `impl/crates/wlwl-std/src/{net.rs,process.rs}` + `impl/crates/wlwl-value/src/lib.rs` | 新成员 `HTTP_REQUEST_ASYNC` / `PROCESS_RUN_ASYNC`（**新增**，不改既有 `HTTP_*`/`PROCESS_RUN` 的阻塞语义）；复用 `TCP_*` 已有的「工作线程 + 就绪集合 + resume-hint 幂等」模式 ⇒ **重入时不得重复发起** |
+| **W-15** | B-6 修兜底臂 + B-7 优雅停机 | `impl/crates/wlwl-eval/src/{runtime.rs,lib.rs}` + `impl/crates/wlwl-std/src/signal.rs`（新建） | ① 兜底臂 `lib.rs:10651-10684` 把「非四种 park 信号」的 outcome 结成 `TaskResult::Ok(o.value)` ⇒ **丢失的挂起信号会伪装成正常 NULL**（R-25）⇒ 改成「任务失败 + 按 §17.9 上报」；② `std.signal::ON_SIGNAL` / `STOP`（Unix `libc::signal`；Windows 手写 `extern "system" { SetConsoleCtrlHandler }`；**零新增依赖**） |
+| **W-29** | H-5 / H-6 别名 | `impl/crates/wlwl-std/src/{regex.rs,collection.rs}` + `impl/crates/wlwl-eval/src/registry.rs` | `RE_MATCHES_FULL`（别名 `RE_TEST`，**不改 `RE_TEST` 语义**）· `ARRAY_GET`（别名 `INDEX_GET`）· 全局内建改动 ⇒ 附录 G 需 `cargo run --bin gen-appendix-g -- ../docs/appendix_G.md` 重生成 |
+
+#### 再随后（`std.http` 的四节扩展 —— **必须串行**，都改 `wl/std/http.wll`）
+
+**W-17**（C-3/C-8/C-9：Keep-Alive + 请求预算 + 头/体上限）→ **W-18**（C-4/C-5/C-6：路由 + Cookie + 表单/multipart）→ **W-19**（C-7/C-10/C-12：静态文件 + 压缩 + 条件请求）→ **W-20**（C-11/A-2：chunked 客户端解码 + HTTPS 出站，走 `tls::CONNECT`）· **W-25**（D-3…D-7：限流 / 规则热更新 / 审计 / 真实 IP）。
+⇒ **W-16 已把 `http.wll` 的骨架与 22 个助手立起来**（494 行）⇒ 扩展这四节时**沿用现有助手**，别重写。
+
+#### 收口批
+
+**W-34**（文档 / 技能包：含 D1–D4b 的对外口径 + **`TCP_SERVE` 迁移指引**）· **W-35'**（登记 + 附录 A 抄件 + 全量门禁）· 规范仓 v1.0.4 批次（§11.2 五步）。
+
+### 13.5 集成者的固定动作（每波结束都做这几件，顺序不变）
+
+1. 收 agent 的**「登记清单」** ⇒ 统一改：`impl/crates/wlwl-std/src/lib.rs`（`pub mod X;` + `resolve()` 分派 + `NATIVE_SPECS` + `LANG_SOURCES`）· `impl/crates/wlwl-eval/src/stdlib_mirror.rs`（`NAMESPACE_META`）· 各 `*_contract.rs` 里的**期望名单**。
+2. `cargo fmt --all` ⇒ `cargo fmt --all -- --check` 必须 0 diff。
+3. 跑门禁 ⇒ **把红分类**：①「规范侧未跟上」（改抄件 / 规范仓）②「真缺陷」（当场修）。
+4. `git add -A` + `git commit`（**不 push**；push 由业主发起）。
+5. 更新本文件 §13.1（HEAD/提交序列/门禁/完成度）⇒ **下一个接替者只读 §13 就能知道进度**。
+
+### 13.6 环境事实（接替者别再踩一遍）
+
+| # | 事实 | 影响 |
+|---|---|---|
+| 1 | **本机无网络**（实测 unicode.org 超时） | 不能新增需要下载的依赖；仓内 cargo 缓存已有 `rustls 0.23.46` / `ring 0.17.14` / `webpki-roots` / `serde_json` ⇒ TLS 扩展可离线构建 |
+| 2 | **无 `openssl` CLI**，但 **Python `cryptography` 50.0.2 可用** | 测试自签证书用 Python 生成（`impl/ext/wlwl-tls-ext/tests/gen_fixture_cert.py`），不要去找 openssl |
+| 3 | `impl/Cargo.lock` **不入库**；**TLS 扩展的 `Cargo.lock` 入库**（它自带 crate-local `.gitignore` 只忽略 `target/`） | 扩展的版本可复现；主仓依赖面不变 |
+| 4 | **agent 并发上限 4** | 一次最多 4 个；本轮的「真并行度」按**文件不重叠**算（§5.2b） |
+| 5 | 所有 agent 共享 `impl/target` ⇒ cargo 会 `Blocking waiting for file lock` | **正常**，耐心等；**不要**改 `CARGO_TARGET_DIR`（会重复编译 5 份） |
+| 6 | ⚠ **改 agent 产出的未跟踪文件前先备份** | 我用脚本回溯删除 `http.wll` 的死代码，删过了头（删掉文档头 + 10 个助手）；该文件**未跟踪** ⇒ `git checkout` 救不回 ⇒ 只能重写。**先 `git add -N <file>` 或复制到 scratch** |
+| 7 | **`.ps1` 脚本里别写中文** | PowerShell 5.1 按 ANSI/GBK 读无 BOM 脚本 ⇒ 中文引号被吃掉 ⇒ 语法错。脚本一律纯 ASCII |
+| 8 | **wlwl 语言的三个坑** | `( … )` 是**块**不是分组括号（块内用 `;` 分隔）；`\|\|` / `&&` 是**二元**的（3 个条件要嵌套）；`+` **不做**隐式强转；`LEN` 是**码点**、`BYTE_LEN` 是**字节**、`SUB` 按**码点**切 |
+| 9 | **R1 模块的 `EXPORT` 必须单行** | `lang_exports` 逐行扫 ⇒ 拆多行会让附录 A 镜像扫出**零个成员** |
+| 10 | **扩展命名空间不进附录 A / 不进公共面清单** | 公共面取自 `wlwl_std::namespace_paths()` 这张**静态**表 ⇒ 运行期扩展结构上进不去 ⇒ 只进一致性册 §5.5 台账 |
+
+### 13.7 一句话状态
+
+> **13 / 28 个工作项、19 / 57 条需求已落地并复核**；规则侧**只差规范仓落表**（§11.2 五步，**必须等业主先 push 规范仓**）；实现侧下一批是 **W-37 / W-36 / W-35**（业主裁决直接产生的三项，3 并行），随后 **W-11 / W-14 / W-15 / W-29 / W-31**。
