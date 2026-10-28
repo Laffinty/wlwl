@@ -11,29 +11,65 @@
 //     `<script`（它被百分号编码成 `%3Cscript%3E`）⇒ 只匹配原始路径会
 //     **全部漏过**（静默漏防）。
 //
-// ⚠⚠ **[W-10 之后] 本探针的读数变了** —— handler 是**模块顶层**的闭包、
-//   acceptor 任务体调用它 ⇒ 宿主挂起点 `TCP_RECV` 落在**嵌套闭包**里 ⇒
-//   并发册 §17.0「**宿主挂起点成员的调用点必须在任务体内**」⇒ **当场**报
-//   `E0014`（指名成员 + 位置指向调用点 `main.wll:<行>:<列>`）⇒ 运行 **exit 1**
-//   ⇒ 4 条请求一条也没进 handler。
-//   ⇒ **这不是回归，是规范落地**：要保留下面那条读数，收连接必须**直接写在
-//     任务体自己的顶层语句里**。
+// ✅ **[W-35 / 业主 2026-10-28 裁决 D3] 本探针已迁移到 `TCP_SERVE` 形状**
+//   —— 下面这一段是**给需求方的迁移指引**。
 //
-// 期望读数（**exit 1**）：
-//   stderr: error[E0014]: TCP_RECV: used outside a task body — …
-//           --> main.wll:<行>:<列>（那一行就是 `TCP_RECV` 本身）
-//   ⇒ 下面那组「403×3 / 200×1」的读数**不再出现**（任务失败 ⇒ 运行终止）。
+// ⚠ **为什么必须迁移**（W-10 落地的那条词法判据）：
+//   并发册 §17.0「**宿主挂起点成员的调用点必须在任务体内**」⇒ `TCP_RECV` /
+//   `TCP_ACCEPT` 只能出现在**任务体自己的顶层语句**里。旧形状把 handler 写成
+//   **模块顶层**的闭包、再由 acceptor 任务体调用它 ⇒ 宿主挂起点 `TCP_RECV`
+//   落在**嵌套闭包**里 ⇒ **当场**报 `E0014`（指名成员 + 位置指向调用点
+//   `main.wll:<行>:<列>`）⇒ 运行 **exit 1** ⇒ 4 条请求一条也没进 handler。
 //
-//   [p11] case= benign          raw-path= /ok                      decoded= /ok                    status= 200
-//   [p11] case= traversal       raw-path= /%2e%2e%2fetc/passwd     decoded= /../etc/passwd        status= 403
-//   [p11] case= xss             raw-path= /%3Cscript%3Ealert(1)    decoded= /<script>alert(1)    status= 403
-//   [p11] case= sqli            raw-path= /search?q=union%20select  decoded= /search?q=union select status= 403
-//   [p11] raw-hits-script= FALSE   ← 未解码时**匹配不到**
-//   [p11] decoded-hits-script= TRUE
+// ✅ **`TCP_SERVE` 为什么合规**（这是迁移的**关键**）：
+//   `TCP_SERVE(listener, timeout_ms, opts, handler)` 把
+//   「accept → 读满一次请求 → 调 handler → 写回响应 → 下一条连接」
+//   整个循环放在**一个原生成员内部**推进。
+//   ⇒ §17.0 那条判据约束的是**宿主挂起点成员**（`TCP_RECV` / `TCP_ACCEPT` /
+//     `SLEEP_ASYNC` —— 它们要**挂起**当前任务 ⇒ 必须有任务体可挂）。
+//   ⇒ `TCP_SERVE` **不挂起**、它**阻塞**调用线程 ⇒ **不落进**那条判据。
+//   ⇒ 合规形状 = **一个 `TCP_SERVE` + 一个 handler 闭包**；handler **只**返回
+//     响应 DICT（`{"status", "headers", "body"}`），**不碰任何挂起点成员**。
+//
+// ✅ **handler 的形状变了**（需求方注意）：
+//   * 旧形状：handler 收**连接**（`conn`）、自己拼响应字符串、自己 `TCP_SEND`。
+//   * 新形状：handler 收**请求 DICT**
+//     （`{"method": STRING, "path": STRING, "version": STRING,
+//       "headers": DICT, "body": STRING}`）⇒ **返回响应 DICT**
+//     （`{"status": INTEGER, "headers": DICT, "body": STRING}`；
+//     **三个键缺一即该连接作废**，循环继续）。
+//   * `path` 是**请求目标原样**（可能带查询串）⇒ WAF 判定**必须先 URL 解码**。
+//   * `headers` 的**键一律小写**（查表不用猜大小写）。
+//   * `TCP_SERVE` **不关**监听器 ⇒ 调用方自己 `TCP_CLOSE_LISTENER`（幂等）。
+//
+// ⚠ **代价（需求方须知）**：`TCP_SERVE` **阻塞整个运行时** ⇒ 与 `HTTP_*` 同类
+//   ⇒ **同进程内的客户端拿不到响应**（客户端必然超时）。
+//   ⇒ 断言落在**服务端一侧** —— 这与本探针**原有**口径一致。
+//
+// 期望读数（**exit 0**）：
+//   [p11] raw-path= /ok                      ← 请求目标**原样**
+//   [p11] decoded-path= /ok                  ← 解码后
+//   [p11] status= 200
+//   [p11] raw-path= /%2e%2e%2fetc%2fpasswd
+//   [p11] decoded-path= /../etc/passwd
+//   [p11] status= 403
+//   [p11] raw-path= /%3Cscript%3Ealert(1)
+//   [p11] decoded-path= /<script>alert(1)
+//   [p11] status= 403
+//   [p11] raw-path= /search?q=union%20select
+//   [p11] decoded-path= /search?q=union select
+//   [p11] status= 403
 //   [p11] status-count-403= 3
 //   [p11] status-count-200= 1
+//   [p11] served-count= 4          ← `TCP_SERVE` 的返回值（成功服务的连接数）
+//   [p11] client-no-response-count= 4  ← 客户端全部超时（见上面的「代价」）
+//   [p11] raw-hits-script= FALSE   ← 未解码时**匹配不到**
+//   [p11] decoded-hits-script= TRUE
+//   [p11] DONE
 //
-// ⚠ 客户端看不到响应：`HTTP_*` 是**阻塞原语**（ADR-0028 D1）⇒ 断言落在服务端一侧。
+// ⚠ 上面那组 `raw-path=` / `decoded-path=` / `status=` 三行**每条请求各出现
+//   一次**（4 条请求 ⇒ 12 行）⇒ 它们是「这条请求真的到了服务端、而且判定
+//   是按解码后的路径做的」的**逐条证据**。
 // ─────────────────────────────────────────────────────────────────────────────
 
 // ⚠ 本文件与 `impl/tests/probe/cases/P121_probe_p11_waf_checks/main.wll`
@@ -45,8 +81,7 @@ IMPORT("wlwl:std.str", ["CAT", "CONTAINS_SUB"]);
 IMPORT("wlwl:std.encode", ["URL_DECODE"]);
 IMPORT("wlwl:std.result", ["TAKE_ERR"]);
 IMPORT("wlwl:std.net", [
-  "TCP_LISTEN", "TCP_ACCEPT", "TCP_RECV", "TCP_SEND", "TCP_CLOSE",
-  "TCP_LOCAL_ADDR", "HTTP_GET"
+  "TCP_LISTEN", "TCP_SERVE", "TCP_LOCAL_ADDR", "TCP_CLOSE_LISTENER", "HTTP_GET"
 ]);
 
 LET(http_client, FUN((port, path), (
@@ -57,7 +92,9 @@ LET(http_client, FUN((port, path), (
 LET(l, TCP_LISTEN("127.0.0.1", 0));
 LET(port, AT_K(TCP_LOCAL_ADDR(l), "port", 0));
 
-// ⚠ WAF 判定：一个 handler，三条规则。**先 URL 解码，再匹配**。
+// ⚠ WAF 判定：**先 URL 解码，再匹配**。
+//   `path` 是**请求目标原样** ⇒ 未解码时 `<script` 是 `%3Cscript%3E`、
+//   `union select` 是 `union%20select` ⇒ 只匹配原始路径 = **全部漏过**。
 LET(waf_decide, FUN((raw_path), (
   LET(decoded, URL_DECODE(raw_path));
   LET(low, LOWER(decoded));
@@ -67,50 +104,53 @@ LET(waf_decide, FUN((raw_path), (
   IF(||(hit_traversal, ||(hit_script, hit_sqli)), 403, 200)
 )));
 
-// 单个 handler：收请求 → 取路径 → 判定 → 回响应。
-LET(handle, FUN((conn), (
-  LET(chunk, TCP_RECV(conn, 4096, 2000));
-  LET(req_text, AT_K(chunk, "text", ""));
-  LET(lines, SPLIT(req_text, "\r\n"));
-  LET(request_line, INDEX_GET(lines, 0));
-  LET(parts, SPLIT(request_line, " "));
-  LET(raw_path, INDEX_GET(parts, 1));
-  LET(status, waf_decide(raw_path));
-  PRINT("[p11] raw-path=", raw_path);
-  PRINT("[p11] decoded-path=", URL_DECODE(raw_path));
-  PRINT("[p11] status=", status);
-  LET(head_text, CAT("HTTP/1.1 ", STR(status), " Forbidden\r\nContent-Length: 0\r\nConnection: close\r\n\r\n"));
-  LET(sent, TCP_SEND(conn, head_text));
-  TAKE_ERR(sent);
-  TCP_CLOSE(conn);
-  status
-)));
+LET MUT(handler_calls, 0);
+LET MUT(c403, 0);
+LET MUT(c200, 0);
 
-// 一个 acceptor：accept 单独占一段。
-LET(acceptor, FUN(() , (
-  LET(conn, TCP_ACCEPT(l, 3000));
-  YIELD();
-  handle(conn)
+// ⚠ handler：拿**请求 DICT** → 取**原始**路径 → 判定 → 返回**响应 DICT**。
+//   它**不碰任何挂起点成员**（`TCP_RECV` / `TCP_ACCEPT` / `SLEEP_ASYNC`）——
+//   handler 跑在**原生帧**里，那里挂不了（真挂了 ⇒ 那一条连接作废）。
+LET(server, FUN(() , (
+  TCP_SERVE(l, 800, NULL, FUN((req), (
+    SET(handler_calls, +(handler_calls, 1));
+    LET(raw_path, AT_K(req, "path", ""));
+    LET(status, waf_decide(raw_path));
+    PRINT("[p11] raw-path=", raw_path);
+    PRINT("[p11] decoded-path=", URL_DECODE(raw_path));
+    PRINT("[p11] status=", status);
+    IF(==(status, 403), SET(c403, +(c403, 1)), 0);
+    IF(==(status, 200), SET(c200, +(c200, 1)), 0);
+    LET(body_text, IF(==(status, 403), "Forbidden", "OK"));
+    ["status": status,
+     "headers": ["Content-Type": "text/plain; charset=utf-8", "Connection": "close"],
+     "body": body_text]
+  )))
 )));
 
 SCOPE(FUN(() ,
-  LET(t1, SPAWN(acceptor));
-  LET(t2, SPAWN(acceptor));
-  LET(t3, SPAWN(acceptor));
-  LET(t4, SPAWN(acceptor));
+  // ⚠ 服务端任务**先**挂上；客户端**后**连（连接排队）⇒ 服务端照样逐条服务。
+  LET(t, SPAWN(server));
 
-  // ⚠ 客户端**先**连（连接排队），acceptor 任务**后**起。
   LET(c1, http_client(port, "/ok"));
   LET(c2, http_client(port, "/%2e%2e%2fetc%2fpasswd"));
   LET(c3, http_client(port, "/%3Cscript%3Ealert(1)"));
   LET(c4, http_client(port, "/search?q=union%20select"));
 
-  LET(vals, [AWAIT(t1), AWAIT(t2), AWAIT(t3), AWAIT(t4)]);
-  LET MUT(c403, 0);
-  LET MUT(c200, 0);
-  FOR(v, vals, (IF(==(v, 403), SET(c403, +(c403, 1)), 0); IF(==(v, 200), SET(c200, +(c200, 1)), 0)));
+  // ⚠ 主任务在这里挂起 ⇒ 服务端任务开始跑（`TCP_SERVE` 逐条服务那 4 条连接）。
+  LET(served, AWAIT(t));
   PRINT("[p11] status-count-403=", c403);
-  PRINT("[p11] status-count-200=", c200)
+  PRINT("[p11] status-count-200=", c200);
+  PRINT("[p11] served-count=", served);
+
+  // ⚠ 客户端必然看不到响应（`TCP_SERVE` 阻塞整个运行时）⇒ 4 个全是超时。
+  LET MUT(no_resp, 0);
+  FOR(c, [c1, c2, c3, c4], (
+    IF(==(c, "CLIENT-NO-RESPONSE"), SET(no_resp, +(no_resp, 1)), 0)
+  ));
+  PRINT("[p11] client-no-response-count=", no_resp);
+
+  TCP_CLOSE_LISTENER(l)
 ));
 
 // ⚠ 「必须先 URL 解码再匹配」的**反例**证据：同一段路径，原始形态匹配不到

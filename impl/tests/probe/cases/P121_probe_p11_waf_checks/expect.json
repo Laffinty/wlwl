@@ -1,13 +1,29 @@
 {
-  "exit": 1,
+  "exit": 0,
   "contains": [
-    "error[E0014]: TCP_RECV: used outside a task body",
-    "main.wll:72:14",
-    "TCP_RECV(conn, 4096, 2000)"
-  ],
-  "not_contains": [
+    "[p11] raw-path= /ok",
+    "[p11] decoded-path= /ok",
+    "[p11] status= 200",
+    "[p11] raw-path= /%2e%2e%2fetc%2fpasswd",
+    "[p11] decoded-path= /../etc/passwd",
+    "[p11] raw-path= /%3Cscript%3Ealert(1)",
+    "[p11] decoded-path= /<script>alert(1)",
+    "[p11] raw-path= /search?q=union%20select",
+    "[p11] decoded-path= /search?q=union select",
+    "[p11] status= 403",
     "[p11] status-count-403= 3",
+    "[p11] status-count-200= 1",
+    "[p11] served-count= 4",
+    "[p11] client-no-response-count= 4",
+    "[p11] raw-hits-script= FALSE",
+    "[p11] decoded-hits-script= TRUE",
     "[p11] DONE"
   ],
-  "_why": "[W-10] 「单 handler 的 WAF 检查」探针。**一个** handler 处理 4 条真实 HTTP 请求：路径穿越、`<script`、`union select` 三条越权 ⇒ 403。\n\n⚠ 钉的两条关键知识点是**清单点名的那条**：路径穿越、`<script`、`union select` 三条越权 ⇒ 403；其余 ⇒ 200。⇒ **必须先 URL 解码再匹配** ⇒ *没解码*的原始路径 *没有* ** `<script`（它被百分号编码成 `%3Cscript%3E`）⇒ 只匹配原始路径：**全部绕过**（静默形态）⇒ `raw-hits-script= FALSE` vs `decoded-hits-script= TRUE`。\n\n**[W-10 之后 —— 本用例的读数变了]** handler 是**模块顶层**的闭包（acceptor 任务体调用它）⇒ 宿主挂起点 `TCP_RECV` 落在**嵌套闭包**里 ⇒ 并发册 §17.0「**宿主挂起点成员的调用点必须在任务体内**」⇒ **当场**报 `E0014`（指名成员 + 位置指向调用点 `main.wll:72:14`）⇒ 运行 **exit 1** ⇒ 4 条请求一条也没进 handler。\n\n⇒ **这不是回归，是规范落地**：要保留本用例原来那条「403×3 / 200×1」的读数，收连接的代码必须**直接写在任务体自己的顶层语句里**。"
+  "not_contains": [
+    "error[E0014]",
+    "[p11] status-count-403= 0",
+    "[p11] status-count-200= 0",
+    "[p11] served-count= 0"
+  ],
+  "_why": "[W-35 / 业主 2026-10-28 裁决 D3] 「单 handler 的 WAF 检查」探针 —— **一个** handler 处理 4 条真实 HTTP 请求：路径穿越、`<script`、`union select` 三条越权 ⇒ 403；其余 ⇒ 200 ⇒ **403×3 / 200×1**。\n\n⚠ 钉的那条关键知识点是**清单点名的那条**：**必须先 URL 解码再匹配** ⇒ *没解码*的原始路径 *没有* ** `<script`（它被百分号编码成 `%3Cscript%3E`）⇒ 只匹配原始路径：**全部绕过**（静默形态）⇒ `raw-hits-script= FALSE` vs `decoded-hits-script= TRUE`。本探针把「原始形态 / 解码后形态」**逐条**打出来（`raw-path=` / `decoded-path=`），让「先解码」这件事**可核对**。\n\n**[形状已迁移到 `TCP_SERVE`]** W-10 落地了并发册 §17.0「**宿主挂起点成员的调用点必须在任务体内**」⇒ 旧形状（模块顶层的 handler 闭包 + acceptor 任务体调用它）里的 `TCP_RECV` 落在**嵌套闭包**里 ⇒ **当场**报 `E0014` ⇒ 运行 exit 1 ⇒ 4 条请求一条也没进 handler。⇒ 迁移到 `TCP_SERVE(listener, timeout_ms, opts, handler)`：它把整个接受循环放在**一个原生成员内部**推进 ⇒ 它**不挂起**（只**阻塞**）⇒ **不落进** §17.0 那条判据。\n\n⚠ **handler 的形状变了**（需求方注意）：旧形状收**连接**（`conn`）、自己拼响应字符串、自己 `TCP_SEND`；新形状收**请求 DICT**（`method` / `path` / `version` / `headers` / `body`，其中 `path` 是**请求目标原样**、可能带查询串，`headers` 的键一律小写），**返回响应 DICT**（`status` / `headers` / `body` 三个键缺一即该连接作废、循环继续），且**不碰任何挂起点成员**（handler 跑在原生帧里，那里挂不了）。\n\n⚠ **与清单描述的差异只有一处**：清单是**客户端视角**，而 `HTTP_*` 与 `TCP_SERVE` 都是**阻塞原语**（执行期间整个运行时冻结，ADR-0028 D1）⇒ 同进程内的客户端必然超时 ⇒ 用例在**服务端一侧**断言（`client-no-response-count= 4` 把这个偏差钉成机器可验的读数）。"
 }

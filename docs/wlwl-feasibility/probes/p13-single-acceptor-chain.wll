@@ -1,35 +1,63 @@
 // ─────────────────────────────────────────────────────────────────────────────
-// p13-single-acceptor-chain.wll —— 「单 acceptor 展开链」探针
+// p13-single-acceptor-chain.wll —— 「单接受循环」探针
 //
 // 它证明什么（对应需求清单附录 A / §0.2）：
-//   **一个** acceptor 任务，用**静态展开的 4 段**（每段 = accept → recv →
-//   回响应 → 关连接），**连续服务 4 个请求，全部 200**。
-//   这是需求清单给出的**可用架构样板**（B-3 的「循环推不动」只能靠这种展开
-//   绕过去 ⇒ 代码随连接数线性膨胀）。
+//   **一个**接受循环（**一个** `TCP_SERVE` + **一个** handler）**连续服务 4 条
+//   连接，全部 200**。
+//   这正是需求清单 §B-3 要的「**可推进的 accept 循环**」正解 —— 旧的「静态展开
+//   的 4 段 accept 链」（连接数写死在源码里）已经**不再需要**，也不**再成立**。
 //
-// ⚠⚠ **[W-10 之后] 本探针的读数变了 —— 这一条是本项最要紧的发现**：
-//   「每条连接一个 `serve_one` 辅助闭包」这个形状**结构性违规**：宿主挂起点
-//   `TCP_RECV` 落在**嵌套闭包**里 ⇒ 并发册 §17.0「**宿主挂起点成员的调用点
-//   必须在任务体内**」⇒ **当场**报 `E0014`（指名成员 + 位置指向调用点
-//   `main.wll:<行>:<列>`）⇒ 运行 **exit 1**，4 条连接一条也没服务完。
-//   ⇒ **需求清单 §B-3 说「当前只能用静态展开的 accept 链绕过去」，而 §17.0 的
-//     这条规则让那个绕法也不成立**（accept 与 recv 必须分处两段 ⇒ recv 若是
-//     段首那条语句，它就必须**直接写在任务体里**）⇒ 「可推进的 accept 循环」的
-//     正解只剩**运行期托管的迭代器**（`FOR_EACH_SOCKET` 一类），不是把等待点
-//     藏进辅助闭包。**这一条需要业主裁决。**
+// ✅ **[W-35 / 业主 2026-10-28 裁决 D3] 本探针已迁移到 `TCP_SERVE` 形状**
+//   —— 下面这一段是**给需求方的迁移指引**。
 //
-// 期望读数（**exit 1**）：
-//   stderr: error[E0014]: TCP_RECV: used outside a task body — …
-//           --> main.wll:<行>:<列>（那一行就是 `TCP_RECV` 本身）
-//   ⇒ 下面那组读数**不再出现**（任务失败 ⇒ 运行终止）。
+// ⚠ **旧形状为什么彻底不成立**（W-10 落地后的发现，本项最要紧的一条）：
+//   并发册 §17.0「**宿主挂起点成员的调用点必须在任务体内**」⇒ `TCP_RECV` /
+//   `TCP_ACCEPT` 只能出现在**任务体自己的顶层语句**里。
+//   ⇒ 旧形状「每条连接一个 `serve_one` 辅助闭包」**结构性违规**：宿主挂起点
+//     `TCP_RECV` 落在**嵌套闭包**里 ⇒ **当场**报 `E0014`（指名成员 + 位置
+//     指向调用点 `main.wll:<行>:<列>`）⇒ 运行 **exit 1**，4 条连接一条也没
+//     服务完。
+//   ⇒ 需求清单 §B-3 当时说「当前只能用静态展开的 accept 链绕过去」，而 §17.0
+//     的这条规则让**那个绕法也不成立**（accept 与 recv 必须分处两段 ⇒ recv
+//     若是段首那条语句，它就必须**直接写在任务体里**）。
 //
-//   [p13] served-request-count= 4      ← 4 段**都**收到了真实请求
-//   [p13] served-count-200= 4          ← 4 段**都**回了 200
-//   [p13] chain-done= 4
+// ✅ **裁决 D3 落地的正解 = `TCP_SERVE`**（运行期托管的迭代器）：
+//   `TCP_SERVE(listener, timeout_ms, opts, handler)` 把
+//   「accept → 读满一次请求 → 调 handler → 写回响应 → 下一条连接」
+//   整个循环放在**一个原生成员内部**推进。
+//   ⇒ §17.0 那条判据约束的是**宿主挂起点成员**（`TCP_RECV` / `TCP_ACCEPT` /
+//     `SLEEP_ASYNC` —— 它们要**挂起**当前任务 ⇒ 必须有任务体可挂）。
+//   ⇒ `TCP_SERVE` **不挂起**、它**阻塞**调用线程 ⇒ **不落进**那条判据。
+//   ⇒ 「等下一条连接」这件事**不再需要**语言层的位置 ⇒ 代码**不再随连接数
+//     线性膨胀** ⇒ 这就是 §B-3 要的「可推进的接受循环」。
 //
-// ⚠ 客户端看不到响应：`HTTP_*` 是**阻塞原语**（ADR-0028 D1）⇒ 「全 200」是
-//   **服务端一侧**的断言（4 个真实 TCP 连接都被回了 200）。这是与清单描述
-//   唯一的差异（清单是客户端视角）。
+// ✅ **handler 的形状**（需求方注意）：
+//   * handler 收**请求 DICT**
+//     （`{"method": STRING, "path": STRING, "version": STRING,
+//       "headers": DICT, "body": STRING}`）⇒ **返回响应 DICT**
+//     （`{"status": INTEGER, "headers": DICT, "body": STRING}`；
+//     **三个键缺一即该连接作废**，循环继续）。
+//   * handler **只**返回 DICT，**不碰任何挂起点成员**（handler 跑在**原生帧**
+//     里，那里挂不了；真挂了 ⇒ 那一条连接作废）。
+//   * `TCP_SERVE` **不关**监听器 ⇒ 调用方自己 `TCP_CLOSE_LISTENER`（幂等）。
+//   * accept 超时 ⇒ **退出循环并返回计数**（不是错误）；单条连接失败 ⇒ 只记
+//     一笔、**继续下一条**。
+//
+// ⚠ **代价（需求方须知）**：`TCP_SERVE` **阻塞整个运行时** ⇒ 与 `HTTP_*` 同类
+//   ⇒ **同进程内的客户端拿不到响应**（客户端必然超时）。
+//   ⇒ 「连续 4 个请求全 200」是**服务端一侧**的断言 —— 这与本探针**原有**
+//     口径一致（4 个真实 TCP 连接都被回了 200）。
+//
+// 期望读数（**exit 0**）：
+//   [p13] served-request-count= 4   ← handler 实际被调了几次（真实到达的请求数）
+//   [p13] served-count-200= 4       ← 回了 200 的连接数
+//   [p13] chain-done= 4             ← 接受循环推进了几次（`TCP_SERVE` 的返回值）
+//   [p13] client-no-response-count= 4  ← 客户端全部超时（见上面的「代价」）
+//   [p13] DONE
+//
+// ⚠ 文件名里的 `chain` 是**历史名**（旧的「静态展开的 accept 链」形状已废）；
+//   `chain-done` 这个输出标签是**需求清单在认的**，所以**保留** —— 它的含义
+//   从今往后是「接受循环推进了几次」。
 // ─────────────────────────────────────────────────────────────────────────────
 
 // ⚠ 本文件与 `impl/tests/probe/cases/P121_probe_p13_acceptor_chain/main.wll`
@@ -41,8 +69,7 @@ IMPORT("wlwl:std.str", ["CAT"]);
 IMPORT("wlwl:std.encode", ["BYTE_LEN"]);
 IMPORT("wlwl:std.result", ["TAKE_ERR"]);
 IMPORT("wlwl:std.net", [
-  "TCP_LISTEN", "TCP_ACCEPT", "TCP_RECV", "TCP_SEND", "TCP_CLOSE",
-  "TCP_LOCAL_ADDR", "HTTP_GET"
+  "TCP_LISTEN", "TCP_SERVE", "TCP_LOCAL_ADDR", "TCP_CLOSE_LISTENER", "HTTP_GET"
 ]);
 
 LET(http_client, FUN((port, path), (
@@ -54,55 +81,48 @@ LET(l, TCP_LISTEN("127.0.0.1", 0));
 LET(port, AT_K(TCP_LOCAL_ADDR(l), "port", 0));
 
 LET(body_text, "hello-wlwl");
-LET(head_text, CAT("HTTP/1.1 200 OK\r\nContent-Length: ", STR(BYTE_LEN(body_text)), "\r\nConnection: close\r\n\r\n"));
-LET(response_text, CAT(head_text, body_text));
+LET(resp_headers, [
+  "Content-Type": "text/plain; charset=utf-8",
+  "Content-Length": STR(BYTE_LEN(body_text)),
+  "Connection": "close"
+]);
 
-// 一条连接的服务：收请求 → 回 200 → 关连接。末值 = 收到的请求字节数。
-LET(serve_one, FUN((conn), (
-  LET(chunk, TCP_RECV(conn, 4096, 2000));
-  LET(req_text, AT_K(chunk, "text", ""));
-  LET(sent, TCP_SEND(conn, response_text));
-  TAKE_ERR(sent);
-  TCP_CLOSE(conn);
-  LEN(req_text)
-)));
+LET MUT(handler_calls, 0);
+LET MUT(c200, 0);
 
-// ⚠ **展开链**：一个任务里静态展开 4 段。每段的第一条语句是那个挂起点。
-LET(chain, FUN(() , (
-  LET(c1, TCP_ACCEPT(l, 3000));
-  YIELD();
-  LET(n1, serve_one(c1));
-  YIELD();
-  LET(c2, TCP_ACCEPT(l, 3000));
-  YIELD();
-  LET(n2, serve_one(c2));
-  YIELD();
-  LET(c3, TCP_ACCEPT(l, 3000));
-  YIELD();
-  LET(n3, serve_one(c3));
-  YIELD();
-  LET(c4, TCP_ACCEPT(l, 3000));
-  YIELD();
-  LET(n4, serve_one(c4));
-  YIELD();
-  [n1, n2, n3, n4]
+// ⚠ handler：**只**返回响应 DICT，**不碰任何挂起点成员**。
+LET(server, FUN(() , (
+  TCP_SERVE(l, 800, NULL, FUN((req), (
+    SET(handler_calls, +(handler_calls, 1));
+    SET(c200, +(c200, 1));
+    ["status": 200, "headers": resp_headers, "body": body_text]
+  )))
 )));
 
 SCOPE(FUN(() ,
-  LET(t, SPAWN(chain));
+  // ⚠ 服务端任务**先**挂上；客户端**后**连（连接排队）⇒ 服务端照样逐条服务。
+  LET(t, SPAWN(server));
 
-  // ⚠ 客户端**先**连 4 条（连接排队），chain 任务**后**起 ⇒ 逐条取走。
   LET(c1, http_client(port, "/p13/1"));
   LET(c2, http_client(port, "/p13/2"));
   LET(c3, http_client(port, "/p13/3"));
   LET(c4, http_client(port, "/p13/4"));
 
-  LET(lengths, AWAIT(t));
-  LET MUT(ok, 0);
-  FOR(v, lengths, IF(>(v, 0), SET(ok, +(ok, 1)), 0));
-  PRINT("[p13] served-request-count=", ok);
-  PRINT("[p13] served-count-200=", LEN(lengths));
-  PRINT("[p13] chain-done=", LEN(lengths))
+  // ⚠ 主任务在这里挂起 ⇒ 服务端任务开始跑（`TCP_SERVE` 连续服务那 4 条连接；
+  //   4 条都服务完后它再等到 accept 超时（800ms）才收工并返回计数）。
+  LET(served, AWAIT(t));
+  PRINT("[p13] served-request-count=", handler_calls);
+  PRINT("[p13] served-count-200=", c200);
+  PRINT("[p13] chain-done=", served);
+
+  // ⚠ 客户端必然看不到响应（`TCP_SERVE` 阻塞整个运行时）⇒ 4 个全是超时。
+  LET MUT(no_resp, 0);
+  FOR(c, [c1, c2, c3, c4], (
+    IF(==(c, "CLIENT-NO-RESPONSE"), SET(no_resp, +(no_resp, 1)), 0)
+  ));
+  PRINT("[p13] client-no-response-count=", no_resp);
+
+  TCP_CLOSE_LISTENER(l)
 ));
 
 PRINT("[p13] DONE");

@@ -1,15 +1,24 @@
 {
-  "exit": 1,
+  "exit": 0,
   "contains": [
     "[p10] resp-head= HTTP/1.1 200 OK",
+    "Content-Length: 13",
+    "X-Content-Type-Options: nosniff",
+    "X-Frame-Options: DENY",
+    "X-XSS-Protection: 1; mode=block",
+    "Referrer-Policy: strict-origin-when-cross-origin",
+    "Content-Security-Policy: default-src 'self'",
     "[p10] body-len= 9  body-byte-len= 13",
-    "error[E0014]: TCP_RECV: used outside a task body",
-    "main.wll:81:14",
-    "TCP_RECV(conn, 4096, 2000)"
-  ],
-  "not_contains": [
     "[p10] served-200-count= 8",
+    "[p10] served-request-count= 8",
+    "[p10] client-no-response-count= 8",
     "[p10] DONE"
   ],
-  "_why": "[W-10] 「纯 wlwl HTTP 服务器」探针。**一个** acceptor 任务、**八个**并发客户端 ⇒ 8 个安全响应头齐全（`Content-Length` 按**字节数**算：正文 `LEN`=9 而 `BYTE_LEN`=13 ⇒ 错用 `LEN` 会发短）。\n\n⚠ **与清单描述的差异只有一处**：清单的「并发 8 个 200」是**客户端视角**，而 `HTTP_*` 是**阻塞原语**（执行期间整个 SCOPE 冻结，ADR-0028 D1）⇒ 客户端必然超时 ⇒ 用例在**服务端一侧**断言。\n\n**[W-10 之后 —— 本用例的读数变了]** 服务端把「收一条连接」拆成了**模块顶层**的 `handle` 闭包（`handle(conn)` 由 acceptor 任务体调用）⇒ 宿主挂起点 `TCP_RECV` 因此落在**嵌套闭包**里 ⇒ 并发册 §17.0「**宿主挂起点成员的调用点必须在任务体内**」⇒ **当场**报 `E0014`（指名成员 + 位置指向调用点 `main.wll:81:14`）⇒ 运行 **exit 1**，8 个连接一个也没服务完。\n\n⇒ **这不是回归，是规范落地**：要保留「8 个 200」的读数，收连接的代码必须**直接写在任务体自己的顶层语句里**（`TCP_RECV` 必须是段首那条语句）；而「accept 与 recv 分处两段、且 recv 在一个辅助闭包里」这种写法**结构性违规** ⇒ 需求清单 §B-3 的「可推进循环」正解是**运行期托管的迭代器**（`FOR_EACH_SOCKET` 一类），不是把等待点藏进辅助闭包。"
+  "not_contains": [
+    "error[E0014]",
+    "[p10] served-200-count= 0",
+    "[p10] served-request-count= 0",
+    "[p10] client-no-response-count= 0"
+  ],
+  "_why": "[W-35 / 业主 2026-10-28 裁决 D3] 「纯 wlwl HTTP 服务器」探针 —— **一个** `TCP_SERVE` 接受循环 + **八个**并发客户端 ⇒ 8 个安全响应头齐全（`Content-Length` 按**字节数**算：正文 `LEN`=9 而 `BYTE_LEN`=13 ⇒ 错用 `LEN` 会发短 4 个字节）。\n\n**[形状已迁移到 `TCP_SERVE`]** W-10 落地了并发册 §17.0「**宿主挂起点成员的调用点必须在任务体内**」⇒ 旧形状（模块顶层 `handle` 闭包 + acceptor 任务体调用它）里的 `TCP_RECV` 落在**嵌套闭包**里 ⇒ **当场**报 `E0014` ⇒ 运行 exit 1 ⇒ 8 个连接一个也没服务完。⇒ 迁移到 `TCP_SERVE(listener, timeout_ms, opts, handler)`：它把「accept → 读一次请求 → 调 handler → 写回响应 → 下一条」整个循环放在**一个原生成员内部**推进 ⇒ 它**不挂起**（只**阻塞**）⇒ **不落进** §17.0 那条判据。handler 现在收**请求 DICT**、返回**响应 DICT**（`status` / `headers` / `body` 三个键缺一即该连接作废），且**不碰任何挂起点成员**。\n\n⚠ **与清单描述的差异只有一处**：清单的「并发 8 个 200」是**客户端视角**，而 `HTTP_*` 与 `TCP_SERVE` 都是**阻塞原语**（执行期间整个运行时冻结，ADR-0028 D1）⇒ 同进程内的客户端必然超时 ⇒ 用例在**服务端一侧**断言（`client-no-response-count= 8` 把这个偏差钉成机器可验的读数）。\n\n⚠ `resp-head` 那一条是**从真正发上线的那份 headers 字典逐字渲染出来的**（`KEYS` 保插入序 ⇒ 渲染顺序 = 线上顺序）⇒ 它与线上字节**同源**，不会漂移。"
 }

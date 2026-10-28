@@ -56,6 +56,9 @@
 // 同名头出现多次 ⇒ 值是 `ARRAY[STRING]`（按出现序）；只出现一次 ⇒ 值是
 // `STRING`。⇒ 「有没有这个头」与「这个头有几个值」都能从**值的类型**读出来。
 //
+// ⚠ **例外**：`content-length` 的同名多值 ⇒ **一律拒绝**（即便值相同）——
+//   不是「合并成一条」，见 `_CL_INT`。
+//
 // ## ⚠ `EXPORT` 必须写在一行里
 //
 // `wlwl-std::lang_exports` 是**逐行**扫的（一行一条声明）⇒ 拆成多行，附录 A
@@ -190,24 +193,26 @@ LET(_CL_ONE, FUN((v),
        _PARSE_DEC(TRIM(v)),
        -1)));
 
-// `content-length` 的值 ⇒ 字节数；-1 = 非法 / 自相矛盾。
+// `content-length` 的值 ⇒ 字节数。
 //
-// ⚠ **同名多值且值不同 ⇒ 非法**：`Content-Length: 5` 与 `Content-Length: 6`
-//   并存是经典的走私手法（两条路径各取一个）⇒ 一律拒绝。
-// ⚠ **同名多值且值相同** ⇒ 视为一条（RFC 9112 §6.3.1 允许「合并成一条」
-//   再定界）。
+// 返回 `{"ok": TRUE, "n": <字节数>}` 或 `{"ok": FALSE, "reason": <文本>}`。
+//
+// ⚠ **同名多值 ⇒ 一律拒绝**（**即便值相同**）：`Content-Length: 5` 与
+//   `Content-Length: 5` 并存**同样**是走私信号 —— 「同一个头出现两次」本身
+//   就是信号，不同实现取第一个或最后一个会**分叉** ⇒ **不比较值**，见到第二个
+//   就拒。
+// ⚠ 与 `wlwl:std.net` **同一口径**（`net.rs` 的 HTTP 客户端与服务端都是
+//   「同一个头出现两次 —— 即便值相同也拒（走私信号）」）⇒ 两层对同一条报文
+//   的判断必须**一致**，否则同一个代理/服务端会给出两个答案。
+// ⚠ **不新增诊断码**：失败仍走 `ERR` **值**（`HttpError`），见文件头。
 LET(_CL_INT, FUN((cl),
     (LET(vals, IF(==(TYPE(cl), "ARRAY"), cl, [cl]));
-     LET MUT(n, -1);
-     LET MUT(bad, FALSE);
-     FOR(v, vals,
-         (LET(k, _CL_ONE(v));
-          IF(==(k, -1),
-             SET(bad, TRUE),
-             IF(==(n, -1),
-                SET(n, k),
-                SET(bad, !=(n, k))))));
-     IF(bad, -1, n))));
+     IF(>(LEN(vals), 1),
+        ["ok": FALSE, "reason": "duplicate Content-Length header"],
+        (LET(k, _CL_ONE(AT(vals, 0, "")));
+         IF(==(k, -1),
+            ["ok": FALSE, "reason": "invalid content-length value"],
+            ["ok": TRUE, "n": k]))))));
 
 // 记一个头 ⇒ **同名多值全部保留**（RFC 9110 §5.3）。
 // 第一次是 `STRING`；第二次起升级成 `ARRAY[STRING]`（按出现序）。
@@ -322,8 +327,8 @@ LET(_PARSE_HEADERS, FUN((lines),
 // 规则（**只有三条**，按顺序）：
 // 1. 有 `transfer-encoding` ⇒ **拒绝**（ADR-0028 D3；`chunked` 是其中最常见
 //    的那种，但任何 TE 都意味着「体长由 TE 决定」⇒ 本成员不认）。
-// 2. 有 `content-length` ⇒ 取**恰好那么多字节**；不够 ⇒ 拒绝；边界切在
-//    多字节字符中间 ⇒ 拒绝。
+// 2. 有 `content-length` ⇒ 取**恰好那么多字节**；**同名多值**（即便值相同）
+//    ⇒ 拒绝；值非法 ⇒ 拒绝；不够 ⇒ 拒绝；边界切在多字节字符中间 ⇒ 拒绝。
 // 3. 两者都没有 ⇒ **体长为 0**（RFC 9112 §6.3）⇒ 正文是**空串**。
 //    ⚠ 「体长由连接关闭决定」是**响应**的 framing，**请求**没有这条 ⇒
 //      本模块**不**看 `Connection: close`（余下的字节不是正文，忽略）。
@@ -334,10 +339,11 @@ LET(_FRAME_BODY, FUN((region, headers),
         (LET(cl, AT(headers, "content-length", NULL));
          IF(==(TYPE(cl), "NULL"),
             ["ok": TRUE, "body": ""],
-            (LET(n, _CL_INT(cl));
-             IF(==(n, -1),
-                ["ok": FALSE, "reason": "invalid or conflicting content-length"],
-                (LET(cut, _CUT_BYTES(region, n));
+            (LET(cli, _CL_INT(cl));
+             IF(==(AT(cli, "ok", FALSE), FALSE),
+                ["ok": FALSE, "reason": AT(cli, "reason", "invalid content-length")],
+                (LET(n, AT(cli, "n", 0));
+                 LET(cut, _CUT_BYTES(region, n));
                  IF(==(cut, -1),
                     ["ok": FALSE, "reason": "the request body is shorter than content-length"],
                     IF(==(cut, -2),

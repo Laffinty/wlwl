@@ -192,6 +192,27 @@ const CASES: &[Case] = &[
         src: r#"LET(r, PARSE_REQUEST("POST / HTTP/1.1\r\nContent-Length: 5\r\nContent-Length: 6\r\n\r\nhello")); LET(_, r); IF(IS_ERR(r), ERR_PAYLOAD(r)["kind"], "NOT_ERR")"#,
         expect: "HttpError",
     },
+    // ── 同名多值:一律拒(即便值相同)—— 与 `std.net` 同一口径 ──
+    Case {
+        name: "two_identical_content_lengths_are_rejected",
+        // ⚠ 「同一个头出现两次」本身就是走私信号,不同实现取第一个或最后
+        //   一个会分叉 ⇒ 即便值相同也拒(与 `wlwl:std.net` 同一口径)。
+        //   ⚠ 收紧前这条是**绿的**(值相同 ⇒ 视为一条)⇒ 它是本次收紧的核心用例。
+        src: r#"LET(r, PARSE_REQUEST("POST / HTTP/1.1\r\nContent-Length: 5\r\nContent-Length: 5\r\n\r\nhello")); LET(_, r); IF(IS_ERR(r), ERR_PAYLOAD(r)["kind"], "NOT_ERR")"#,
+        expect: "HttpError",
+    },
+    Case {
+        name: "a_duplicate_content_length_reports_the_duplicate_reason",
+        // 失败文案与 `std.net` 的 "duplicate Content-Length header" 对齐。
+        src: r#"LET(r, PARSE_REQUEST("POST / HTTP/1.1\r\nContent-Length: 5\r\nContent-Length: 5\r\n\r\nhello")); LET(_, r); IF(IS_ERR(r), ERR_PAYLOAD(r)["reason"], "NOT_ERR")"#,
+        expect: "duplicate Content-Length header",
+    },
+    Case {
+        name: "a_single_content_length_is_still_accepted",
+        // ⚠ 反向守卫:别把**正常的单值**也拒了(收紧只针对「同名多值」)。
+        src: r#"LET(r, PARSE_REQUEST("POST / HTTP/1.1\r\nContent-Length: 5\r\n\r\nhello!")); r["body"]"#,
+        expect: "hello",
+    },
     // ── 畸形请求 ──
     Case {
         name: "a_request_without_a_header_block_terminator_is_rejected",
