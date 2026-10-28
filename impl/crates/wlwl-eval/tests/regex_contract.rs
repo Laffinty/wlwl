@@ -600,7 +600,15 @@ fn regex_member_set_matches_the_spec_table() {
             "implementation does not export `{n}`: {impls:?}"
         );
     }
-    assert_eq!(impls.len(), 7, "wlwl:std.regex exports 7 members");
+    // [W-29 / v0.12.1 · 需求 H-5] 实现侧多了一个**别名**成员 `RE_MATCHES_FULL`
+    // (`RE_TEST` 的别名)⇒ 实现侧 8 个;规范 §16 的表仍是 7 个 —— 差的这一条
+    // 走**规范侧 §3.2 修订版本通道**(登记在 W-29 的登记清单里),**不是**这里
+    // 能自行改的(抄件是规范冻结快照的逐字副本,§0.7 规则 1 明禁追平实现)。
+    assert_eq!(
+        impls.len(),
+        8,
+        "wlwl:std.regex exports 8 members (7 spec members + the `RE_MATCHES_FULL` alias)"
+    );
 }
 
 fn spec_path() -> PathBuf {

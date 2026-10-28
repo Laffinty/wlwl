@@ -2202,7 +2202,15 @@ fn resolve_array_index(fn_name: &str, arr: &[Value], raw: &Value) -> WlwlResult<
         return Err(builtin_error(
             ErrorCode::E0036,
             fn_name,
-            format!("array index {} out of bounds for length {}", i, arr.len()),
+            // [W-29 / v0.12.1 · 需求 H-6] 消息里点明**基号**:越界最常见的
+            // 成因是拿 1-based 的 `INDEX(arr, x)` 返回值当 0-based 下标用。
+            // ⚠ 只改**消息文本**,诊断码(E0036)与失败形态一律不动。
+            format!(
+                "array index {} out of bounds for length {} \
+                 (index is 0-based; `INDEX(arr, x)` returns a 1-based position)",
+                i,
+                arr.len()
+            ),
         ));
     }
     Ok(normalised as usize)
@@ -2275,6 +2283,11 @@ fn dict_key_type_message(key: &Value) -> String {
 }
 
 /// v0.6 §4.5 — `INDEX_GET(coll, idx_or_key)`.
+///
+/// [W-29 / v0.12.1 · 需求 H-6] `ARRAY_GET` 是本函数的**别名** —— 分派表里
+/// 两者指向**同一个函数指针**(`"ARRAY_GET" => Some(builtin_index_get)`)
+/// ⇒ 0-based / `E0031` / `E0036` / `E0037` 这一整套语义**逐字复用**,
+/// **不重实现**(重写一遍必然漂移)。`INDEX_GET` 本体一字未改。
 ///
 /// - ARRAY + INTEGER → element (negative indexes supported; OOB → E0036)
 /// - DICT  + any      → value (missing → E0037)
@@ -2636,7 +2649,14 @@ fn builtin_at_k(_ev: &mut Evaluator, args: Vec<Value>) -> WlwlResult<Outcome> {
         (other, _) => {
             return Err(type_error(
                 "AT_K",
-                format!("expected DICT as first arg, got {}", type_name(other)),
+                // [W-29 / v0.12.1 · 需求 H-6] 消息里点出**正确 API**:
+                // `AT_K` 只吃 DICT ⇒ 拿它取数组元素的人多半是把它当
+                // 「安全下标」用了。⚠ 只改**消息文本**,诊断码(E0030)不动。
+                format!(
+                    "expected DICT as first arg, got {}; \
+                     for ARRAY elements use ARRAY_GET (the 0-based alias of INDEX_GET)",
+                    type_name(other)
+                ),
             ));
         }
     };
@@ -6354,6 +6374,10 @@ fn resolve_builtin(name: &str) -> Option<BuiltinFn> {
         // transparent propagation, matching the pre-A6 behaviour for
         // the previous code path.
         "INDEX_GET" => Some(builtin_index_get),
+        // [W-29 / v0.12.1 · 需求 H-6] `ARRAY_GET` = `INDEX_GET` 的**别名**
+        // (名字里点明「数组」,免得把 1-based 的 `INDEX` 与 0-based 的
+        // `INDEX_GET` 混着用)。**同一个函数指针** ⇒ 语义逐字同源。
+        "ARRAY_GET" => Some(builtin_index_get),
         "INDEX_SET" => Some(builtin_index_set),
         "AT" => Some(builtin_at),
         "REMOVE_KEY" => Some(builtin_remove_key),
@@ -7839,7 +7863,29 @@ impl wlwl_std::StdHost for Evaluator {
             }
             subtract_unconsumed_across(&mut self.current_arg_unconsumed, forwarded);
         }
-        match f {
+        // [W-38] **原生帧不是任务体** —— 标准库成员回调 WLWL 代码时,
+        // 回调体所在的位置**没有调度器可挂** ⇒ 挂起信号在原生帧里**无处可去**
+        // ⇒ 并发册 §17.0「宿主挂起点成员的调用点必须在任务体内」按字面读法
+        // **本来就该报错**。
+        //
+        // ⇒ ① 任务体帧深度**加深一层**（与嵌套闭包帧同款）⇒ W-10 的**既有**
+        //   判据（`host_suspend_outside_task`）会当场报 `E0014`,指名成员 +
+        //   指向调用点；
+        //   ② **清掉当前任务**（原生帧里没有可挂起的任务槽 ⇒ 挂起点成员在这里
+        //   **装不上**截止时间、也**挂不了**）。
+        //
+        // ⚠ **存旧值、跑完还原**（不能写成常量）—— 与 `run_one_task` 里
+        //   「子任务可以嵌套在父任务的任务体帧里跑」同款纪律。
+        let prev_task_body_depth = self.task_body_depth;
+        let prev_current_task = self.current_task;
+        let prev_native_frame_depth = self.native_frame_depth;
+        self.task_body_depth = Some(prev_task_body_depth.map_or(1, |k| k + 1));
+        self.current_task = None;
+        self.native_frame_depth = prev_native_frame_depth + 1;
+        // ⚠ 本帧的误用诊断**先清空**（上一帧的那条不许串台）。
+        self.native_frame_suspend_diag = None;
+
+        let result = match f {
             Value::Closure { params, body, env } => self.invoke_closure(
                 name,
                 params.clone(),
@@ -7874,7 +7920,26 @@ impl wlwl_std::StdHost for Evaluator {
                 ),
             )
             .into()),
+        };
+
+        self.native_frame_depth = prev_native_frame_depth;
+        self.task_body_depth = prev_task_body_depth;
+        self.current_task = prev_current_task;
+
+        // [W-38] 原生帧里的**挂起点误用** ⇒ 那条 `E0014` 会被原生成员**吞掉**
+        // （`std.net` 的 `TCP_SERVE` 把它降成一条**软告警**,而软告警**不打印**
+        // ⇒ 连接**静默作废**）⇒ 在这里（原生帧边界 = 最后一次能看见它的地方）
+        // **报出去**。
+        //
+        // ⚠ **吸收**掉那个错误（改成 `NULL` 的正常结果）:原生帧**没有**「把诊断
+        //   抛到顶层」的通道 ⇒ 由原生成员自己的失败处理收尾（作废这一条连接、
+        //   记一笔、继续下一条）—— `TCP_SERVE` 的既有可观察语义**不变**。
+        if let Some(diag) = self.native_frame_suspend_diag.take() {
+            self.native_frame_diagnostics.push(diag.clone());
+            eprintln!("{}", diag.render_human());
+            return Ok(Outcome::normal(Value::Null));
         }
+        result
     }
 
     /// [X-06 第三步 / X-20] **收窄**标准库回调实参的未消费 `ERR` 集合。
@@ -8228,6 +8293,25 @@ pub struct Evaluator {
     ///   **不**加深 ⇒ `TCP_SERVE` 的 handler 仍由 `std.net` 自己那条
     ///   「handler 挂起了」诊断负责(不与本检查抢同一处)。
     pub task_body_depth: Option<u32>,
+    /// [W-38] **原生帧深度** —— 标准库成员回调 WLWL 代码时 +1。
+    ///
+    /// ⚠ 原生帧**不是任务体**：回调体所在的位置**没有调度器可挂**
+    ///   （挂起信号在原生帧里**无处可去**）⇒ 并发册 §17.0
+    ///   「宿主挂起点成员的调用点必须在任务体内」按字面读法**本来就该报错**
+    ///   ⇒ 原生帧把任务体帧深度**加深一层**（与嵌套闭包帧同款），
+    ///   并**清掉当前任务**（原生帧里没有可挂起的任务槽）。
+    native_frame_depth: u32,
+    /// [W-38] 当前原生帧里产生的**挂起点误用诊断**（`E0014`）。
+    ///
+    /// ⚠ 原生成员会把它**吞掉**（`std.net` 的 `TCP_SERVE` 把它降成一条
+    ///   **软告警**，而软告警**不打印**）⇒ 求值器在**原生帧边界**把它报出去
+    ///   （见 [`Evaluator::call_with_tokens`]）。
+    native_frame_suspend_diag: Option<WlwlDiagnostic>,
+    /// [W-38] 已报出的**原生帧误用诊断**台账。
+    ///
+    /// ⚠ **公开**：契约测试直接断言它（stderr 在进程内**抓不到** ——
+    ///   `eprintln!` 的输出被测试框架吞了）。
+    pub native_frame_diagnostics: Vec<WlwlDiagnostic>,
     /// [v0.12.0 / D-16] **待裁决的孤儿失败**（任务失败 ⇒ 先挂在这里，程序收尾时才报）。
     ///
     /// ⚠ **为什么不能当场报**：并发册 §17.9 要求「有人在等」与「没人管」两条路径
@@ -8421,6 +8505,9 @@ impl Evaluator {
             strict_types: false,
             current_task: None,
             task_body_depth: None,
+            native_frame_depth: 0,
+            native_frame_suspend_diag: None,
+            native_frame_diagnostics: Vec::new(),
             pending_orphan_failures: Vec::new(),
             pending_orphan_err_values: Vec::new(),
             scope_depth: 0,
@@ -8553,6 +8640,9 @@ impl Evaluator {
             strict_types: false,
             current_task: None,
             task_body_depth: None,
+            native_frame_depth: 0,
+            native_frame_suspend_diag: None,
+            native_frame_diagnostics: Vec::new(),
             pending_orphan_failures: Vec::new(),
             pending_orphan_err_values: Vec::new(),
             scope_depth: 0,
@@ -10541,7 +10631,17 @@ impl Evaluator {
             return None;
         }
         let (message, site) = Self::suspend_site_message_and_span(member, span);
-        Some(self.diag(ErrorCode::E0014, message, site))
+        let err = self.diag(ErrorCode::E0014, message, site);
+        // [W-38] **原生帧**里产生的这条诊断 ⇒ 原生成员会把它**吞掉**
+        // （`std.net` 的 `TCP_SERVE` 降成一条软告警 ⇒ **不打印** ⇒ 连接
+        // 静默作废）⇒ 留一份, 由**原生帧边界**（`call_with_tokens`）报出去。
+        //
+        // ⚠ 只在**原生帧**里留 —— 普通闭包里的这条 `E0014` 会**正常**冒到
+        //   调用点（那才是它该去的地方）。
+        if self.native_frame_depth > 0 {
+            self.native_frame_suspend_diag = Some(err.diagnostic().clone());
+        }
+        Some(err)
     }
 
     /// [v0.12.0 / R-3·F-03] 记住「这次挂起发生在哪个成员的哪个调用点」。
@@ -10788,6 +10888,52 @@ impl Evaluator {
     // so C5 TASK_CURRENT / TASK_IS_CANCELLED can see it.
     // ────────────────────────────────────────────────────────────
 
+    /// [B-7] **安全点** —— 服务待处理的 OS 信号（跑用户的 handler）。
+    ///
+    /// ⚠ OS 事件先落成**待处理位**（`wlwl-std` 的 `signal` 模块）⇒ 由**主线程**
+    ///   在这里取走 ⇒ handler 跑在主线程上（解释器不是 `Send` ⇒ 只能这样）。
+    ///
+    /// ⚠ handler 自己失败 ⇒ **报出来**，但**不**中断停机序列（信号处理器失败
+    ///   不该把进程带崩）。
+    fn service_pending_signals(&mut self) {
+        for (kind, err) in wlwl_std::signal::service_pending(self) {
+            eprintln!(
+                "[wlwl] the {} handler failed: {}",
+                kind.platform_name(),
+                err.diagnostic().message
+            );
+        }
+    }
+
+    /// [B-7] **停机序列** —— 「停止 accept → 等在途请求（可配上限时）→ 落盘 →
+    /// 退出」。
+    ///
+    /// ⚠ `STOP()` **只请求**（`wlwl-std` 的 `signal` 模块置标志）⇒ 收尾由**宿主**
+    ///   在**安全点**（`run_one_task` 的入口）执行。
+    ///
+    /// * **停止 accept** —— `wlwl_std::signal::stop_requested()` 是那个接缝
+    ///   （原生接受循环在**下一次 accept 之前**查它 ⇒ 查到了就不再接新连接）。
+    /// * **等在途请求** —— **正在跑**的任务让它跑完；排队里的任务**照跑**
+    ///   （它们也是在途请求）⇒ **超过上限**（`WLWL_STOP_TIMEOUT_MS`，缺省 5 s）
+    ///   才强制收尾（排队里的活**取消** —— 不再接）。
+    /// * **落盘** —— 把标准输出 / 标准错误刷出去。
+    /// * **退出** —— 程序**自然结束**（求值器返回 ⇒ CLI 以 0 退出）。
+    ///   ⚠ **不**调 `process::exit` ⇒ 在途的 `AWAIT` 仍能拿到结果。
+    fn graceful_stop_tick(&mut self) {
+        if !wlwl_std::signal::stop_requested() {
+            return;
+        }
+        if wlwl_std::signal::stop_deadline_exceeded() {
+            // ⚠ 超过上限 ⇒ **别再等**了：排队里的活取消（`cancel_requested`
+            //   ⇒ 任务在下一个检查点看到它 ⇒ `AWAIT` 拿到 `ERR(Cancelled)`）。
+            self.scheduler.request_cancel_pending();
+        }
+        if !self.scheduler.has_inflight_tasks() {
+            // 没有在途请求了 ⇒ 「落盘」⇒ 程序随后自然结束。
+            wlwl_std::signal::flush_for_shutdown();
+        }
+    }
+
     /// Run one enqueued task to completion (B5b).
     ///
     /// Sets `current_task`, invokes the stored closure body, and
@@ -10805,6 +10951,12 @@ impl Evaluator {
     /// `invoke_closure` path runs to preserve v0.6 fidelity.
     fn run_one_task(&mut self, id: crate::runtime::TaskId, span: &Span) -> WlwlResult<()> {
         use crate::runtime::{TaskResult, TaskState, YieldReason};
+        // [B-7] **安全点** —— 服务待处理的 OS 信号 + 推进优雅停机序列。
+        //
+        // ⚠ 放在**取消检查之前**：优雅停机「超过上限 ⇒ 排队里的活不再接」
+        //   走的就是 `cancel_requested` ⇒ 取消检查必须**看得见**它。
+        self.service_pending_signals();
+        self.graceful_stop_tick();
         // [v0.7 Phase E-B] Cancellation checkpoint #1 — entry.
         // If TASK_CANCEL(h) (or TASK_CANCEL_PARENT, or SCOPE sibling
         // cancellation) has set the flag since the last run, skip
@@ -11057,6 +11209,27 @@ impl Evaluator {
                 }
             }
             o => {
+                // [B-6] **兜底臂不得把「丢失的挂起信号」当成「正常完成」。**
+                //
+                // 走到这里的 outcome 若带 `Signal::Yield(_)` ⇒ 它的挂起理由
+                // **没有**被上面那五个 park 分支接住（`ReceivingOn`/`SendingOn`
+                // / `SocketReady` / `AsyncReady` / `SleepUntil` / `Explicit`）
+                // ⇒ 挂起信号**丢了**。
+                //
+                // ⚠ **为什么这是活的隐患**：原生成员挂起时带的恰是
+                //   `Value::Null`（`wlwl-std/src/tcp.rs` 的 `TCP_RECV` 等）⇒
+                //   旧行为会把「信号丢了」**伪装**成「任务正常返回 NULL」⇒
+                //   任务**静默**变成「成功完成、值是 NULL」。
+                //   ⇒ 第四波加 `AsyncReady` 时正是这个形状：**新加一个
+                //   `YieldReason` 变体而忘了加 match 分支** ⇒ 它会**静默**变成
+                //   「任务完成、值为 NULL」。
+                //
+                // ⚠ **判据按「是不是 Yield」写**（**不**按具体变体枚举）⇒
+                //   将来新增变体也会被**抓住**（这才是这条修复的价值）。
+                //
+                // ⚠ `AwaitingChild` 由 `AWAIT` **内联**驱动（`runtime.rs` 的
+                //   `wake_dependents`）⇒ 正常路径**到不了**这里；但它**也是**
+                //   `Yield` ⇒ 判据**包含**它。
                 // Segment completed without yielding. If there are
                 // more segments ahead, the scheduler should run them
                 // — static segmentation can put a "conditional yield"
@@ -11070,25 +11243,54 @@ impl Evaluator {
                 // and fall through to "mark Done" below.)
                 let total_segments = self.scheduler.tasks[id.0].segments.len();
                 let cur = self.scheduler.tasks[id.0].current_segment;
-                if cur + 1 < total_segments {
-                    let task = &mut self.scheduler.tasks[id.0];
-                    task.current_segment += 1;
-                    // running_env was saved by run_task_segments and
-                    // stays valid for the next segment.
-                    // Park as Pending and re-enqueue so the
-                    // scheduler loop picks up the next segment.
-                    task.state = crate::runtime::TaskState::Pending;
-                    self.scheduler.enqueue(id);
-                } else {
-                    let result = match o.value {
-                        Value::Err(payload) => TaskResult::Err(Value::Err(payload)),
-                        v => TaskResult::Ok(v),
-                    };
-                    // [v0.12.0 / R-6] 任务以 `ERR` 值收尾 ⇒ 若**没人 `AWAIT`**,
-                    // 这份 `ERR` 就**没人处理过**(§8.6.2 的三处丢弃点**都不覆盖**
-                    // 「任务终值」)⇒ 登记为待报,程序收尾时统一报一行。
-                    self.note_orphan_err_value(id, &result);
-                    self.scheduler.complete(id, result);
+                // [B-6] 判据与处置**抽成独立函数**（`runtime::classify_task_completion`）
+                // ⇒ 契约测试能**直接**钉它（端到端跑不出这个形状）。
+                match crate::runtime::classify_task_completion(&o, cur + 1 < total_segments) {
+                    // [B-6] **丢失的挂起信号** ⇒ 任务**失败**，**绝不** `Ok(NULL)`。
+                    crate::runtime::TaskCompletion::LostSuspend => {
+                        let err = self.diag(
+                            ErrorCode::E0014,
+                            "the task suspended, but the suspend signal was not accepted by any \
+                             park branch — the signal was lost, so the task failed instead of \
+                             completing with a value",
+                            span.clone(),
+                        );
+                        self.scheduler
+                            .complete(id, TaskResult::Failed(Box::new(err.clone())));
+                        // ⚠ **复用 `pending_orphan_failures` 的「挂起—认领—收尾」
+                        //   三段式** ⇒ 被 `AWAIT` 认领时**摘掉** ⇒ 两条路径
+                        //   **互斥**（并发册 §17.9）⇒ **不**在失败点当场
+                        //   `eprintln!`（否则同一个失败被报两次）。
+                        self.pending_orphan_failures.push((
+                            id.0,
+                            err.diagnostic().code.as_str().to_string(),
+                            err.diagnostic().message.clone(),
+                        ));
+                        return Ok(());
+                    }
+                    // 还有后续 segment ⇒ 重排队（不是终态）。
+                    crate::runtime::TaskCompletion::MoreSegments => {
+                        let task = &mut self.scheduler.tasks[id.0];
+                        task.current_segment += 1;
+                        // running_env was saved by run_task_segments and
+                        // stays valid for the next segment.
+                        // Park as Pending and re-enqueue so the
+                        // scheduler loop picks up the next segment.
+                        task.state = crate::runtime::TaskState::Pending;
+                        self.scheduler.enqueue(id);
+                    }
+                    // 正常完成（终值就是它）。
+                    crate::runtime::TaskCompletion::Complete(v) => {
+                        let result = match v {
+                            Value::Err(payload) => TaskResult::Err(Value::Err(payload)),
+                            v => TaskResult::Ok(v),
+                        };
+                        // [v0.12.0 / R-6] 任务以 `ERR` 值收尾 ⇒ 若**没人 `AWAIT`**,
+                        // 这份 `ERR` 就**没人处理过**(§8.6.2 的三处丢弃点**都不覆盖**
+                        // 「任务终值」)⇒ 登记为待报,程序收尾时统一报一行。
+                        self.note_orphan_err_value(id, &result);
+                        self.scheduler.complete(id, result);
+                    }
                 }
             }
         }
@@ -24421,9 +24623,10 @@ TYPE(v);
     fn b11_registry_count_matches_spec_table() {
         // spec 附录 G 表格 89 行 + v0.6 `&&`/`||`/`AT_K` → 93;
         // v0.7 §17 appends 17 concurrent builtins → 110.
+        // [W-29 / v0.12.1 · 需求 H-6] `ARRAY_GET`(`INDEX_GET` 的别名)⇒ 106 → 107。
         assert_eq!(
             crate::registry::BUILTIN_REGISTRY.len(),
-            106,
+            107,
             "BUILTIN_REGISTRY size changed (now {}); if spec 附录 G bumped, update this lock",
             crate::registry::BUILTIN_REGISTRY.len(),
         );

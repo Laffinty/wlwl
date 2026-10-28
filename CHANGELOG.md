@@ -1,3 +1,33 @@
+## [v0.12.1 开工 · 第五波] — 2026-10-28(2 个 PHASE 落地;多 agent 并行)
+
+**本段 = 第五波的 2 个 PHASE**（计划 §13.4「随后批」里本轮做的两项 —— **W-15 / W-29**，文件面零重叠 ⇒ 真并行 2）。计划原文见 `docs/plan/wlwl-v0.12.1-build-plan.md`;本波的地位与交接见该文档 **§13「接替执行手册」**。
+
+### 落地清单（2 项）
+
+- **W-15 B-6 修兜底臂 + B-7 优雅停机（+ W-38 诊断化）**：
+  - **B-6**：`wlwl-eval/src/lib.rs` 的 `run_one_task` **兜底臂**改成按「**是不是 `Signal::Yield(_)`**」判（**不按具体变体枚举** ⇒ 将来新增 `YieldReason` 变体也会被抓住），判据与处置抽成 `runtime::classify_task_completion` ⇒ **丢失的挂起信号不再伪装成「正常返回 NULL」**。⚠ 计划的原始描述（「非四种 park 信号」）**已过期** —— 现在有**五**种 park 信号分支（第四波新增 `AsyncReady`），这正是本项要防的那类隐患。
+  - **B-7**：**新命名空间 `std.signal`**（`impl/crates/wlwl-std/src/signal.rs`，408 行）—— `ON_SIGNAL(sig, handler)` + `STOP()`;Unix 用 `libc::signal`（`libc` 已是直接依赖 ⇒ **零新增依赖**）、Windows 手写 `extern "system" { SetConsoleCtrlHandler }`;⚠ **信号处理器里只碰原子量**（`Value` 是 `Rc` 不是 `Send`）⇒ OS 事件先落成待处理位，由**主线程**在安全点取走跑用户 handler;停机序列 = **停止 accept → 等在途请求（可配上限时）→ 落盘 → 退出**。
+  - **W-38**：`TCP_SERVE` 的 handler 里调宿主挂起点成员 ⇒ 原先是**静默作废**（无诊断、stderr 全空、exit 0、不计入返回计数）⇒ 现在**原生帧回调进 WLWL 代码时清掉「在任务体内」的标志** ⇒ 走 W-10 的**既有**判据 ⇒ 报**既有 `E0014`**（指名成员 + 指向调用点）;`TCP_SERVE` 的既有可观察语义**未变**（误用的连接仍不算被服务、失败仍只记一笔继续下一条）。
+  - 验收 `b6_task_result_contract` **7/0** · `b7_graceful_stop_contract` **10/0** · `w38_native_frame_suspend_contract` **11/0**。
+- **W-29 H-5 / H-6 别名**：
+  - `std.regex::RE_MATCHES_FULL` = `RE_TEST` 的别名（**整串锚定**语义逐字复用 ⇒ WAF 规则不会再因名字误解而静默漏防）;`RE_TEST` 本体**一字未改**。
+  - 全局内建 `ARRAY_GET` = `INDEX_GET` 的别名（**同一个函数指针** ⇒ 0-based / `E0031` / `E0036` / `E0037` 整套语义**不重实现**、不漂移）。
+  - **错误信息里提示正确 API**（H-6 的另一半）：`AT_K` 的 `E0030` 文案加「取数组元素请用 `ARRAY_GET`」;`INDEX_GET` 的 `E0036` 文案加「下标是 0-based，`INDEX(arr, x)` 返回 1-based 位置」⇒ **只改消息文本，诊断码一律不动、不新增码**。
+  - 验收 `h5_h6_alias_contract` **18/0**;`wlwl-eval --lib` **915/0**（含 registry 的双向锁测试）;附录 G 已**重生成**（`docs/appendix_G.md`）。
+
+### ⚠ 本波的两处「集成者修正」（agent 交付的洞，已修并记录）
+
+- **`w38_native_frame_suspend_contract` 曾挂死**：agent 用 `SERVER.replace("PORT", &port)` ⇒ 把 **`IMPORT` 里的 "PORT"** 也替换了 ⇒ 服务端程序第一行就 `E0020: undefined name 'IM<port>'` ⇒ **端口从未被 listen** ⇒ 客户端永远连不上 ⇒ 测试**挂死**（不是断言失败）。⇒ 改用 `__PORT__` 这种源码里不会出现的占位符 ⇒ 现在 **11/0、5 秒**。
+- **W-15 的两个 probe 夹具（`P121_b6_task_result` / `P121_b7_graceful_stop`）未做** ⇒ 本波**未新增** probe case 目录 ⇒ `EXPECTED_CASE_COUNT` 保持 192;同等语义已由两个**契约测试**覆盖（7/0 + 10/0）⇒ 已登记为待办（下一批补）。
+
+### 集成者动作（本波）
+
+- **新增 4 个公共面成员**（`std.regex::RE_MATCHES_FULL` · 全局内建 `ARRAY_GET` · `std.signal::ON_SIGNAL` · `std.signal::STOP`）+ **1 个新命名空间**（`std.signal`）⇒ **待规范侧落表总数 32 → 36**。
+- **附录 G 已重生成**（`docs/appendix_G.md`）;⚠ 它锁的是**规范抄件** ⇒ `spec_appendix_g_sync` 仍红（新增的 `ARRAY_GET` 不在抄件里）⇒ **「规范侧未跟上」**。
+- ⚠ **两个 agent 都动了 `wlwl-eval/src/lib.rs`** ⇒ 派工时做了**严格分区**（W-15：run_one_task 区 + 原生帧区；W-29：builtin 区 + 分派表）⇒ 集成后已**逐 hunk 核验无越界**。
+
+---
+
 ## [v0.12.1 开工 · 第四波] — 2026-10-28(2 个 PHASE 落地;多 agent 并行)
 
 **本段 = 第四波的 2 个 PHASE**（计划 §13.4「随后批」的前两项 —— **W-11 / W-14**，文件面零重叠 ⇒ 真并行 2）。计划原文见 `docs/plan/wlwl-v0.12.1-build-plan.md`;本波的地位与交接见该文档 **§13「接替执行手册」**。

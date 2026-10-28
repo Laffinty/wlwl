@@ -280,6 +280,15 @@ const NAMESPACE_META: &[NsMeta] = &[
         v1_book: "系统",
         stubs: NO_STUBS,
     },
+    // [v0.12.1 / W-15] `std.signal` OS 信号 + 优雅停机（需求清单 B-7）。
+    // ⚠ 本命名空间**尚未进公共面**（附录 A 要等规范仓 v1.0.4 落表）⇒
+    // 成员集合对拍靠一致性册 §5.5「实现侧扩展台账」那一行兜住。
+    NsMeta {
+        path: "wlwl:std.signal",
+        layer: "R2",
+        v1_book: "系统",
+        stubs: NO_STUBS,
+    },
     // [v0.12.1 / W-16] `std.http` HTTP 请求解析 + 响应构造（C-1 / C-2）。
     // ⚠ 同上：**尚未进公共面** ⇒ 靠 §5.5 台账兜住。
     NsMeta {

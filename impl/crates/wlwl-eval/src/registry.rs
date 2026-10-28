@@ -26,7 +26,8 @@
 //! 4. `b11_macro_fn_attribute_matches_dispatch` — `macro_fn = true` 必须
 //!    对应 `LexerMacro` 或被 `ResolvedBuiltin` 显式接受 (只有 `NOT` /
 //!    `UNWRAP_OR` / `OR_DIE` 这三个特例 —— spec 标 macro,但实现走 builtin)
-//! 5. `b11_registry_count_matches_spec_table` — 总条目数 ≥ 88 (spec 附录 G)
+//! 5. `b11_registry_count_matches_spec_table` — 总条目数 **== 107**(加条目时
+//!    **必须**同步改 `lib.rs` 里那条锁;此处原写「≥ 88」,与实际断言不符)
 //!
 //! ## [v0.10.1 / R10-064] 签名分叉:注册表也曾经是漂移的一方
 //!
@@ -1014,10 +1015,28 @@ pub const BUILTIN_REGISTRY: &[BuiltinSpec] = &[
         dispatch: DispatchStatus::ResolvedBuiltin,
         section: "§10.4",
     },
-    // ── 下标 (3) ───────────────────────────────────────────────
+    // ── 下标 (4) ───────────────────────────────────────────────
     BuiltinSpec {
         name: "INDEX_GET",
         signature: "INDEX_GET(coll, k) -> v / E0031, E0036, E0037",
+        sig: None,
+        group: BuiltinGroup::Subscript,
+        err_consumer: ErrConsumerStatus::No,
+        macro_fn: false,
+        version: Version::V04,
+        dispatch: DispatchStatus::ResolvedBuiltin,
+        section: "§4.5",
+    },
+    // [W-29 / v0.12.1 · 需求 H-6] `ARRAY_GET` = `INDEX_GET` 的**别名**。
+    //
+    // ⚠ **同形条目**:`sig` / `err_consumer` / `macro_fn` / `dispatch` /
+    //   `section` / `version` 逐条照 `INDEX_GET` 抄,**只换名字** ⇒ 别名与
+    //   规范名的元数据一致(分派表里两者指向同一个函数指针)。
+    // ⚠ `version` 记的是**规范引入版本**:本成员是 `INDEX_GET`(v0.4 引入)的
+    //   **别名**,规范侧待 §3.2 修订通道落定 ⇒ 随 `INDEX_GET` 记 v0.4。
+    BuiltinSpec {
+        name: "ARRAY_GET",
+        signature: "ARRAY_GET(coll, k) -> v / E0031, E0036, E0037",
         sig: None,
         group: BuiltinGroup::Subscript,
         err_consumer: ErrConsumerStatus::No,
@@ -1831,7 +1850,9 @@ mod tests {
             .collect();
         // [v0.10.1 / R10-064] 50 → 48:`MODULE` / `EXPECT_ERR` 此前就没有
         // 结构化签名(与 `AND` / `OR` 那两条不同),移除后未结构化面少了 2 条。
-        assert_eq!(without.len(), 48);
+        // [v0.12.1 / W-29] 48 → 49:`ARRAY_GET`(`INDEX_GET` 的别名)与
+        // `INDEX_GET` 同形 ⇒ **没有**结构化签名(`sig: None`)⇒ 落这一面。
+        assert_eq!(without.len(), 49);
     }
 
     #[test]
@@ -2059,10 +2080,11 @@ mod tests {
         );
         assert_eq!(
             BUILTIN_REGISTRY.len(),
-            106,
-            "expected 106 entries: 93 (v0.6) + 17 concurrent (v0.7 §17) \
+            107,
+            "expected 107 entries: 93 (v0.6) + 17 concurrent (v0.7 §17) \
              - 4 removed in v0.10.1 (AND / OR / MODULE / EXPECT_ERR: \
-             registered but unreachable, see tests/lexer_macro_coverage.rs)"
+             registered but unreachable, see tests/lexer_macro_coverage.rs) \
+             + 1 added in v0.12.1 (W-29: `ARRAY_GET`, the `INDEX_GET` alias)"
         );
     }
 

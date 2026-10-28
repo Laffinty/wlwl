@@ -70,6 +70,14 @@ pub static SPEC: ModuleSpec = ModuleSpec {
     functions: &[
         ("RE", re as StdFn),
         ("RE_TEST", re_test as StdFn),
+        // [W-29 / v0.12.1 · 需求 H-5] `RE_MATCHES_FULL` = `RE_TEST` 的**别名**。
+        //
+        // ⚠ **只加别名,不改 `RE_TEST` 的语义**(一致性册 `:224` 禁删禁弃用):
+        //   `RE_TEST` 是**整串锚定**(两端锚定、忽略 `(?m)`)⇒ 名字容易被读成
+        //   「包含匹配」⇒ WAF 规则用它会**永远不命中**(静默漏防)。
+        //   ⇒ `RE_MATCHES_FULL` 把「整串锚定」这件事写进名字里,**语义逐字同源**
+        //   (同一个函数体,见下方 `re_matches_full`)。
+        ("RE_MATCHES_FULL", re_matches_full as StdFn),
         ("RE_SEARCH", re_search as StdFn),
         ("RE_FIND_ALL", re_find_all as StdFn),
         ("RE_REPLACE", re_replace as StdFn),
@@ -2104,6 +2112,24 @@ pub fn re_test(host: &mut dyn StdHost, args: Vec<Value>) -> wlwl_error::WlwlResu
     let text = str_arg(host, NAME, "subject", &args, 1)?;
     let hit = find(&prog, text, true).is_some();
     Ok(Outcome::normal(Value::Boolean(hit)))
+}
+
+/// `RE_MATCHES_FULL(re, s) -> BOOLEAN` —— **整串锚定**(`RE_TEST` 的别名)
+///
+/// **整串锚定**:两端锚定、忽略 `(?m)` —— 与 `RE_TEST` **逐字同语义**
+/// (整串的语义是「整个输入被消费完」,`(?m)` 的 `$` 还会在内部换行处成立)。
+///
+/// [W-29 / v0.12.1 · 需求 H-5] 这是**别名**,**不是**新语义:
+/// - `RE_TEST` 一字未改(不改名、不弃用、不改语义 —— 一致性册 `:224` 禁删禁弃用);
+/// - 本函数**直接委托** `re_test` ⇒ 匹配语义**逐字同源**,不存在「两套实现
+///   慢慢漂移」的可能;
+/// - 诊断消息沿用**规范名** `RE_TEST`(与 `POP`→`AT_K` / `DEL`→`REMOVE_KEY`
+///   同款:别名不另起一套消息)⇒ 两个名字的**可观察行为逐字相同**。
+pub fn re_matches_full(
+    host: &mut dyn StdHost,
+    args: Vec<Value>,
+) -> wlwl_error::WlwlResult<Outcome> {
+    re_test(host, args)
 }
 
 /// `RE_SEARCH(re, s) -> DICT | NULL`

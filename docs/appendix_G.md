@@ -6,7 +6,7 @@
 
 > 对照规范:`docs/wlwl-spec-reference.md` 语言规范 · 附录 G (规范性)。
 
-总条目数:**106** | 已实现:**86** | LexerMacro:**20** | Deferred:**0**
+总条目数:**107** | 已实现:**89** | LexerMacro:**18** | Deferred:**0**
 
 
 | 名称 | 签名 | ERR 消费者 (§8.3) | 宏函数 (§1.4) | 引入 | 状态 | 实现位置 |
@@ -24,8 +24,8 @@
 | `BOOL` | `BOOL(x) -> BOOLEAN` | ✔ | ❌ | v0.2 | ✓ builtin | `resolve_builtin` (§2.2) |
 | `CALL` | `CALL(fn, args...) -> v` | ❌ | ❌ | v0.2 | ✓ builtin | `resolve_builtin` (§8.3) |
 <!-- RESULT 处理 (11 条) -->
-| `IS_OK` | `IS_OK(x) -> BOOLEAN` | ✔ | ✔ | v0.2 | ✓ macro | parser -> `Expr::*` (§8.3) |
-| `IS_ERR` | `IS_ERR(x) -> BOOLEAN` | ✔ | ✔ | v0.2 | ✓ macro | parser -> `Expr::*` (§8.3) |
+| `IS_OK` | `IS_OK(x) -> BOOLEAN` | ✔ | ✔ | v0.2 | ✓ builtin | `resolve_builtin` (§8.3) |
+| `IS_ERR` | `IS_ERR(x) -> BOOLEAN` | ✔ | ✔ | v0.2 | ✓ builtin | `resolve_builtin` (§8.3) |
 | `OR_DIE` | `OR_DIE(x, default) -> v` | ✔ | ✔ | v0.2 | ✓ compat (W0051) | `resolve_builtin` (compat, §8.3) |
 | `UNWRAP_OR` | `UNWRAP_OR(x, default) -> v` | ✔ | ✔ | v0.4 | ✓ builtin | `resolve_builtin` (§8.3) |
 | `UNWRAP` | `UNWRAP(x) -> v / E0100 (不可捕获)` | ✔ | ❌ | v0.4 | ✓ builtin | `resolve_builtin` (§8.3) |
@@ -77,8 +77,9 @@
 | `VALUES` | `VALUES(dict) -> ARRAY` | ❌ | ❌ | v0.2 | ✓ builtin | `resolve_builtin` (§10.4) |
 | `HAS` | `HAS(dict, k) -> BOOLEAN` | ❌ | ❌ | v0.2 | ✓ builtin | `resolve_builtin` (§10.4) |
 | `MERGE` | `MERGE(a, b) -> DICT` | ❌ | ❌ | v0.2 | ✓ builtin | `resolve_builtin` (§10.4) |
-<!-- 下标 (3 条) -->
+<!-- 下标 (4 条) -->
 | `INDEX_GET` | `INDEX_GET(coll, k) -> v / E0031, E0036, E0037` | ❌ | ❌ | v0.4 | ✓ builtin | `resolve_builtin` (§4.5) |
+| `ARRAY_GET` | `ARRAY_GET(coll, k) -> v / E0031, E0036, E0037` | ❌ | ❌ | v0.4 | ✓ builtin | `resolve_builtin` (§4.5) |
 | `INDEX_SET` | `INDEX_SET(coll, k, v) -> ARRAY / DICT` | ❌ | ❌ | v0.4 | ✓ builtin | `resolve_builtin` (§4.5) |
 | `AT` | `AT(coll, k, default) -> v` | ❌ | ❌ | v0.4 | ✓ builtin | `resolve_builtin` (§4.5) |
 <!-- STRING 操作 (15 条) -->

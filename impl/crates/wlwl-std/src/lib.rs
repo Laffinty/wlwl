@@ -29,6 +29,9 @@
 //!   - `wlwl:std.net` — `URL_PARSE` / `URL_JOIN`(v0.11.3 M6 / addendum-05
 //!     W-02,RFC 3986 通用语法)。`HTTP_*` 属 W-03,形态由 `ADR-0028` 定死:
 //!     **明文 HTTP only、零新增依赖、`HTTP_*` 是阻塞原语**(D1 带条件冻结)。
+//!   - `wlwl:std.signal` — `ON_SIGNAL` / `STOP`(v0.12.1 W-15,需求清单 B-7):
+//!     **OS 信号**登记 + **优雅停机请求**（停机序列 =
+//!     **停止 accept → 等在途请求 → 落盘 → 退出**）。见 [`signal`]。
 //!   - `wlwl:std.result` — `RESULT_MAP` / `AND_THEN` / `FLATTEN` / `NULL_OR`
 //!     (v0.11.3 M7 / addendum-11 W-02 + W-04,R1 门面)+ `RESULT_ALL` /
 //!     `RESULT_ANY`(W-04 归 R2)⇒ 本模块是**混合**模块,见 [`result`]。
@@ -86,6 +89,7 @@ pub mod rand;
 pub mod regex;
 pub mod result;
 pub mod sanitize;
+pub mod signal;
 pub mod stats;
 pub mod sync;
 /// \[项目扩展\] 传输层实现（`TCP_*` 成员）。**不**自成一个命名空间 ——
@@ -474,6 +478,8 @@ pub fn resolve(path: &str) -> Option<StdBackend> {
         "wlwl:std.log" => &log::SPEC,
         // [v0.12.1 / W-13] `std.sync` 原子共享容器（需求清单 B-4 的候选 (a)）。
         "wlwl:std.sync" => &sync::SPEC,
+        // [v0.12.1 / W-15] `std.signal` OS 信号 + 优雅停机（需求清单 B-7）。
+        "wlwl:std.signal" => &signal::SPEC,
         // [v0.11.3 M8 / addendum-14 / ADR-0034 D2] 两个**官方包**的成员路径。
         //
         // ⚠ 为什么它们仍由这张表解析、而不是由 `wlwl.toml` 的 `[namespaces]`:
@@ -589,6 +595,9 @@ pub static NATIVE_SPECS: &[&ModuleSpec] = &[
     &log::SPEC,
     // [v0.12.1 / W-13] `std.sync` 原子共享容器（八个成员）—— 需求清单 B-4 的候选 (a)。
     &sync::SPEC,
+    // [v0.12.1 / W-15] `std.signal` OS 信号 + 优雅停机（两个成员）——
+    // 需求清单 B-7：`ON_SIGNAL` / `STOP`。
+    &signal::SPEC,
 ];
 
 /// 全部可 [`resolve`] 的命名空间路径(R1 门面 + R2 原生),**实现真相**。

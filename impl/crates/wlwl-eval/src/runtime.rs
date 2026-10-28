@@ -6,12 +6,12 @@
 //! conversion) can build on it without forward-declaration gymnastics.
 //!
 //! See plan §5.1, §5.1.1, §5.2, ADR-0014, ADR-0016 for the full design.
-pub use wlwl_value::{RcHandle, Tag, TaskHandle, TaskId, YieldReason, RESUME_NON_SOCKET};
-
 use std::collections::VecDeque;
 use std::rc::Rc;
+pub use wlwl_value::{RcHandle, Tag, TaskHandle, TaskId, YieldReason, RESUME_NON_SOCKET};
 
 use wlwl_error::WlwlError;
+use wlwl_value::{Outcome, Signal};
 
 use crate::{Expr, Value};
 
@@ -289,6 +289,50 @@ pub type TaskEntry = crate::task::Task;
 /// rationale as [`TaskEntry`].
 pub type Scope = crate::task::Scope;
 
+/// [B-6] **兜底臂的判据** —— 「**丢失的挂起信号**」。
+///
+/// ⇒ 任务体收尾时，outcome 带的是**任何** `Signal::Yield(_)` ⇒ 它的挂起理由
+///   **没有**被任何 park 分支接住 ⇒ 挂起信号**丢了**。
+///   ⇒ 任务**必须失败**，**绝不**悄悄 `Ok(NULL)`。
+///
+/// ⚠ **按「是不是 Yield」判，不按具体变体枚举** ⇒ 将来新增 `YieldReason`
+///   变体（忘了加 park 分支 ⇒ 它会**静默**变成「任务完成、值为 NULL」）
+///   也会被**抓住** —— 这正是这条判据的价值。
+///
+/// ⚠ `AwaitingChild` 由 `AWAIT` **内联**驱动（`wake_dependents`）⇒ 正常路径
+///   **到不了**兜底臂；但它**也是** `Yield` ⇒ 判据**包含**它。
+pub fn is_lost_suspend(signal: &Signal) -> bool {
+    matches!(signal, Signal::Yield(_))
+}
+
+/// [B-6] 兜底臂对「任务体收尾时这个 outcome」的**处置**。
+#[derive(Debug, Clone, PartialEq)]
+pub enum TaskCompletion {
+    /// 还有后续 segment ⇒ **重排队**继续跑（不是终态）。
+    MoreSegments,
+    /// 正常完成（终值就是它）。
+    Complete(Value),
+    /// **丢失的挂起信号** ⇒ 任务**失败**（**绝不** `Ok(NULL)`）。
+    LostSuspend,
+}
+
+/// [B-6] 兜底臂的**判据** —— 任务体收尾时，这个 outcome 该怎么处置。
+///
+/// ⚠ `more_segments` = 「还有后续 segment 要跑」⇒ 那种情况**不是**终态。
+///
+/// ⇒ 这条判据是**兜底臂**唯一的入口 ⇒ 契约测试直接钉它（端到端跑不出这个
+///   形状：当前**能**产生的 `YieldReason` 变体都有对应的 park 分支 ⇒ 兜底臂
+///   只在「将来新增了变体却忘了加分支」时才会被走到）。
+pub fn classify_task_completion(outcome: &Outcome, more_segments: bool) -> TaskCompletion {
+    if is_lost_suspend(&outcome.signal) {
+        return TaskCompletion::LostSuspend;
+    }
+    if more_segments {
+        return TaskCompletion::MoreSegments;
+    }
+    TaskCompletion::Complete(outcome.value.clone())
+}
+
 /// The scheduler itself (plan §5.1 + §5.1.1 loop pseudo-code).
 ///
 /// B5b wires the run-queue bookkeeping. Task *execution* stays on
@@ -521,6 +565,37 @@ impl Scheduler {
         self.tasks
             .iter()
             .any(|t| !matches!(t.state, TaskState::Done(_) | TaskState::Cancelled))
+    }
+
+    /// [B-7] 有没有**在途**（正在跑 / 挂在等待上）的任务？
+    ///
+    /// ⚠ 「在途」= **正在跑**或**挂在**某个等待上 —— 排队（`Pending`）的
+    ///   **不算**（那是「还没接的活」，不是「在途请求」）。
+    ///
+    /// ⇒ 优雅停机的「等在途请求」那一步用的就是它。
+    pub fn has_inflight_tasks(&self) -> bool {
+        self.tasks
+            .iter()
+            .any(|t| matches!(t.state, TaskState::Running | TaskState::Suspended { .. }))
+    }
+
+    /// [B-7] 请求取消**所有排队中**（`Pending`）的任务 ⇒ 返回被请求的个数。
+    ///
+    /// ⚠ 只置 `cancel_requested`（**不**直接改状态）—— 与既有的取消通路同款
+    ///   ⇒ 任务在**下一个检查点**（`run_one_task` 的入口）看到它 ⇒ 取消语义
+    ///   与 `TASK_CANCEL` 一致（`AWAIT` 拿到 `ERR(Cancelled)`）。
+    ///
+    /// ⚠ **不**碰已经在跑 / 已经挂着的任务 —— 那些是「在途请求」，要等它们
+    ///   自己收尾（优雅停机的「等在途请求」那一步）。
+    pub fn request_cancel_pending(&mut self) -> usize {
+        let mut n = 0usize;
+        for t in self.tasks.iter_mut() {
+            if matches!(t.state, TaskState::Pending) && !t.cancel_requested {
+                t.cancel_requested = true;
+                n += 1;
+            }
+        }
+        n
     }
 
     /// [v0.7 Phase E-B] Advisory cancellation for one task. Returns
