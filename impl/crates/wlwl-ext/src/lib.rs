@@ -119,7 +119,8 @@ pub fn load_extension(req: &ExtLoadRequest) -> Result<LoadedExtension, ExtLoadEr
     let v1_ptr = symbol as *mut abi::WlwlExtV1;
     let (abi_version, struct_size) = unsafe {
         let head = v1_ptr as *const u32;
-        ((*head).clone(), (*head.add(1)).clone())
+        // `u32` 是 `Copy` ⇒ 直接复制取值（`.clone()` 在这里是多余的）。
+        (*head, *head.add(1))
     };
     if abi_version != abi::ABI_VERSION {
         return Err(ExtLoadError::AbiVersionMismatch {

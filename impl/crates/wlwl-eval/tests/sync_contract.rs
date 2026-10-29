@@ -240,7 +240,6 @@ fn the_counter_increment_is_exact_under_concurrency() {
     let start = std::sync::Arc::new(std::sync::Barrier::new(THREADS));
     let mut joins = Vec::new();
     for _ in 0..THREADS {
-        let handle = handle;
         let start = std::sync::Arc::clone(&start);
         joins.push(std::thread::spawn(move || {
             let mut h = host();
@@ -277,7 +276,6 @@ fn the_counter_add_is_exact_under_concurrency() {
     let start = std::sync::Arc::new(std::sync::Barrier::new(THREADS));
     let mut joins = Vec::new();
     for _ in 0..THREADS {
-        let handle = handle;
         let start = std::sync::Arc::clone(&start);
         joins.push(std::thread::spawn(move || {
             let mut h = host();
@@ -408,7 +406,6 @@ fn concurrent_single_key_writes_keep_every_key() {
     let start = std::sync::Arc::new(std::sync::Barrier::new(THREADS));
     let mut joins = Vec::new();
     for t in 0..THREADS {
-        let handle = handle;
         let start = std::sync::Arc::clone(&start);
         joins.push(std::thread::spawn(move || {
             let mut h = host();
@@ -462,7 +459,6 @@ fn concurrent_writes_to_one_key_are_not_torn() {
     let start = std::sync::Arc::new(std::sync::Barrier::new(THREADS));
     let mut joins = Vec::new();
     for t in 0..THREADS {
-        let handle = handle;
         let start = std::sync::Arc::clone(&start);
         joins.push(std::thread::spawn(move || {
             let mut h = host();

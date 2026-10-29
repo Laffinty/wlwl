@@ -35,6 +35,13 @@ const ALLOC_HEADER: usize = 16;
 ///
 /// ⚠ 头部里存的是「总长」而不是「载荷长」—— `free` 只拿到指针 ⇒ 长度
 /// 必须由分配侧记下来。
+///
+/// # Safety
+/// `size` 是要分配的**载荷**字节数（不含分配器自己加的头部）。
+/// 返回的非空指针只保证**载荷区**（`size` 字节）可读可写，其前 16 字节是
+/// 分配器私有的头部，扩展**不得**触碰。
+/// 交回来的指针必须**只**经 [`host_free`] 释放一次；`size == 0` 时返回空
+/// 指针（空指针交给 `host_free` 是安全的 —— 它直接返回，不做任何事）。
 pub unsafe extern "system" fn host_alloc(size: u32) -> *mut c_void {
     if size == 0 {
         return std::ptr::null_mut();

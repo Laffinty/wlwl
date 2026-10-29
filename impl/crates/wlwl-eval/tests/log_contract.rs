@@ -489,7 +489,6 @@ fn the_counter_increment_is_exact_under_concurrency() {
     let start = std::sync::Arc::new(std::sync::Barrier::new(THREADS));
     let mut joins = Vec::new();
     for _ in 0..THREADS {
-        let handle = handle;
         let start = std::sync::Arc::clone(&start);
         joins.push(std::thread::spawn(move || {
             let mut h = host();

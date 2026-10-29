@@ -1464,6 +1464,10 @@ fn acquire_lock(path: &std::path::Path) -> Result<i64, std::io::Error> {
         // ⚠ 锁文件**不存在就建**(空文件):锁的「会合点」不该要求调用方
         //   先造一个文件出来(那还得防 TOCTOU)。
         .create(true)
+        // ⚠ `create` **不隐含截断语义** —— 显式声明 `.truncate(false)`,
+        //   与既有行为逐字一致(锁文件只当会合点,内容无意义),同时让
+        //   「新建 / 不覆盖既有内容」这件事对读代码的人不再是未定义行为。
+        .truncate(false)
         .open(path)?;
     try_lock_exclusive(&file)?;
     let id = NEXT_LOCK_ID.fetch_add(1, Ordering::Relaxed);
@@ -2686,10 +2690,7 @@ mod tests {
         std::fs::write(&target, b"OLD").unwrap();
 
         let r = write_atomic(&target, b"NEW", |_tmp, _to| {
-            Err(std::io::Error::new(
-                std::io::ErrorKind::Other,
-                "simulated commit failure",
-            ))
+            Err(std::io::Error::other("simulated commit failure"))
         });
         assert!(r.is_err(), "the commit failure must be reported");
         assert_eq!(

@@ -1208,11 +1208,10 @@ impl<'a> ConcurrencyAnalyzer<'a> {
                 self.collect_defs(iter, false);
                 self.collect_defs(body, false);
             }
-            Expr::Return { value, .. } => {
-                if let Some(v) = value {
-                    self.collect_defs(v, false);
-                }
+            Expr::Return { value: Some(v), .. } => {
+                self.collect_defs(v, false);
             }
+            Expr::Return { value: None, .. } => {}
             Expr::Ok { value, .. }
             | Expr::Err { value, .. }
             | Expr::Panic { value, .. }
@@ -1322,11 +1321,10 @@ impl<'a> ConcurrencyAnalyzer<'a> {
                 self.walk(iter, ctx);
                 self.walk(body, ctx);
             }
-            Expr::Return { value, .. } => {
-                if let Some(v) = value {
-                    self.walk(v, ctx);
-                }
+            Expr::Return { value: Some(v), .. } => {
+                self.walk(v, ctx);
             }
+            Expr::Return { value: None, .. } => {}
             Expr::Ok { value, .. }
             | Expr::Err { value, .. }
             | Expr::Panic { value, .. }
