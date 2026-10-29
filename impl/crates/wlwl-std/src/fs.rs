@@ -1595,7 +1595,7 @@ fn mtime_millis(p: &std::path::Path) -> std::io::Result<i64> {
 
 /// `FILE_MTIME(path) -> INTEGER` —— 修改时间,**毫秒**(Unix 纪元)。
 ///
-/// ⚠ **口径**:**Unix 纪元起的毫秒数**(两个平台一致 —— 见 [`mtime_millis`])。
+/// ⚠ **口径**:**Unix 纪元起的毫秒数**(两个平台一致 —— 见 `mtime_millis`)。
 /// ⚠ **跟随符号链接**(与既有的 `FILE_SIZE` 同口径:`metadata` 语义)⇒
 ///   要链接**自己**的时间戳用 `DIR_ENTRIES`。
 /// ⚠ **失败口径**:文件不存在 / 权限不足 ⇒ `ERR` 值;元数 / 类型错 ⇒

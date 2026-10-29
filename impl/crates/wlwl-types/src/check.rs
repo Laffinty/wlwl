@@ -994,7 +994,7 @@ pub struct ConcurrencyFindings {
 ///
 /// ⚠ `SLEEP_ASYNC` 的**气泡豁免是运行期的**(气泡内它等同 `SLEEP` ⇒
 ///   立刻返回 ⇒ 不是挂起点)—— 静态层靠 `WalkCtx::in_bubble` 跟着豁免
-///   (见 [`ConcurrencyAnalyzer::is_outside_task`])。
+///   (见 `ConcurrencyAnalyzer::is_outside_task`)。
 pub const HOST_SUSPEND_MEMBERS: [&str; 5] = [
     "TCP_ACCEPT",
     "TCP_RECV",

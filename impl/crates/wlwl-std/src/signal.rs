@@ -177,8 +177,22 @@ extern "C" fn os_signal_handler(sig: libc::c_int) {
 #[cfg(unix)]
 fn install_os_handler(kind: SignalKind) -> Result<(), String> {
     let (sig, handler) = match kind {
-        SignalKind::Interrupt => (libc::SIGINT, os_signal_handler as libc::sighandler_t),
-        SignalKind::Terminate => (libc::SIGTERM, os_signal_handler as libc::sighandler_t),
+        // ⚠ `libc::sighandler_t` 在 **所有 unix 平台**都是 `size_t`
+        //   (libc 仓 `src/unix/mod.rs`:`pub type sighandler_t = size_t;`)
+        //   ⇒ 必须把函数地址**转成整数**交给 `libc::signal`。
+        // ⚠⚠ 但「函数项**直接**转整数」会触发 clippy 的
+        //   `function_casts_as_integer`(默认 warn)⇒ **本机 Windows 看不见**
+        //   (整段在 `#[cfg(unix)]` 里)⇒ 只能等 CI 的 ubuntu / macOS 才炸出来。
+        // ⇒ 这里**先转成指针再转整数**:地址逐字相同(行为不变),
+        //   但「这是代码地址」这件事在类型上说得通。
+        SignalKind::Interrupt => (
+            libc::SIGINT,
+            os_signal_handler as *const () as libc::sighandler_t,
+        ),
+        SignalKind::Terminate => (
+            libc::SIGTERM,
+            os_signal_handler as *const () as libc::sighandler_t,
+        ),
     };
     // SAFETY: `handler` 是本文件里那个 `extern "C" fn(c_int)` —— 与
     // `libc::signal` 要求的 `sighandler_t` 同形；`sig` 是上面两个常量之一。

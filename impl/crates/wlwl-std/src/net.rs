@@ -2026,7 +2026,7 @@ fn serve_opts(host: &mut dyn StdHost, v: &Value) -> wlwl_error::WlwlResult<Serve
 ///
 /// 返回**成功服务**的连接数（写回了响应、连接正常收尾的那几条）。
 ///
-/// ⚠ **单条连接失败不计入返回值**，但会被**记一笔**（见 [`record_serve_failure`]）。
+/// ⚠ **单条连接失败不计入返回值**，但会被**记一笔**（见 `record_serve_failure`）。
 /// ⚠ **accept 超时 ⇒ 退出循环**并返回计数（不是错误）。
 /// ⚠ **监听句柄不对 ⇒ 返回 `ERR([kind:"SocketError", op:"TCP_SERVE", reason])`**
 ///   （这是**调用点**的错误，不是某一条连接的失败）。

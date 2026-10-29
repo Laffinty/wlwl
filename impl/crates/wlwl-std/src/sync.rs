@@ -18,12 +18,12 @@
 //! ⚨ **句柄表里绝不存任何 wlwl `Value`** —— `Value` 是 `Rc` 语义（`!Send`），
 //!   放进去整张表就 `!Sync` ⇒ 编译器会直接拒绝。表里只有两样东西：
 //!   - 原子计数器（`Arc<AtomicI64>`）；
-//!   - 共享字典（`Arc<SharedDict>`），其内容是**镜像类型** [`SyncValue`] ——
+//!   - 共享字典（`Arc<SharedDict>`），其内容是**镜像类型** `SyncValue` ——
 //!     一棵 `Send` 安全的纯数据树（见下）。
 //!
 //! ## 共享字典的值是**镜像**，不是 `Value`
 //!
-//! `SHARED_DICT_SET` 存进去的是 [`SyncValue`]（`Send` 安全的纯数据镜像），
+//! `SHARED_DICT_SET` 存进去的是 `SyncValue`（`Send` 安全的纯数据镜像），
 //! **不是** wlwl 的 `Value` ⇒ 取回时由镜像**重建**一个 `Value`。
 //!
 //! - **可共享**：字符串 / 整数 / 浮点 / 布尔 / `NULL` / 数组 / 字典 / `OK` / `ERR`
