@@ -1166,8 +1166,8 @@ python script/check_spec.py                     # 附录 A ↔ 各册成员表 �
 | 项 | 现状 |
 |---|---|
 | 仓库 / 分支 | `D:\Project\wlwl`（实现侧） / **`main`**（远端 `origin/main` 已同步 —— ⚠ **只有 `main` 在 `ci.yml` 的 push 触发列表里** ⇒ 推 `wip0121` **不会**跑任何 CI 门禁）;`origin/wip0121` 与 `origin/main` **同指**;规范仓 `D:\Project\wlwl-spec-v1`（**本轮一行未动**） |
-| HEAD | `5d709ff` fix(impl): v0.12.1 第八波二轮 —— 修 run #324 的 cargo doc 红 + unix 侧 clippy 红（零语义改动） |
-| 提交序列 | `5d709ff` **第八波二轮**（doc 红 + unix clippy 红）→ `84fbe56` 第八波面板 → `2c3c29b` **第八波·门禁补跑**（13 处 clippy）→ `64d9bbb` **第七波 2 个 PHASE** → `40b5af6` **第六波 2 个 PHASE** → `1987aa0` 第五波面板 → `832839e` **第五波 2 个 PHASE** → `a8a431a` 第四波面板 → `969b220` **第四波 2 个 PHASE** → `78a826f` sanitize 定性更正 → `7f05d80` 第三波面板 → `0d5f410` **第三波 3 个 PHASE** → `d3f7b6c` §13 接替执行手册 → `20fa75f` 裁决记录 → `86b3c4a` **第二波 5 个 PHASE** → `df90382` 完成度面板 → `b0649cc` **第一波 7 个工作项** → `87a473b` §5.2b 真并行度 |
+| HEAD | `d9549a7` docs(plan): 第八波二轮集成后实测 —— §13.1 / §13.2 / §13.5 / §13.6 / §13.7 + CHANGELOG（**CI run #325 已在 `d9549a7` 上跑过**） |
+| 提交序列 | `d9549a7` 第八波二轮面板 → `5d709ff` **第八波二轮**（doc 红 + unix clippy 红）→ `84fbe56` 第八波面板 → `2c3c29b` **第八波·门禁补跑**（13 处 clippy）→ `64d9bbb` **第七波 2 个 PHASE** → `40b5af6` **第六波 2 个 PHASE** → `1987aa0` 第五波面板 → `832839e` **第五波 2 个 PHASE** → `a8a431a` 第四波面板 → `969b220` **第四波 2 个 PHASE** → `78a826f` sanitize 定性更正 → `7f05d80` 第三波面板 → `0d5f410` **第三波 3 个 PHASE** → `d3f7b6c` §13 接替执行手册 → `20fa75f` 裁决记录 → `86b3c4a` **第二波 5 个 PHASE** → `df90382` 完成度面板 → `b0649cc` **第一波 7 个工作项** → `87a473b` §5.2b 真并行度 |
 | 工作树 | **干净**（`git status` 空） |
 | 版本口径 | 实现 **v0.12.1** ↔ 规范 **v1.0.4**（业主两次确认锁死；**零处修改既有成员、零处新增诊断码**） |
 | 完成度 | **工作项 24 / 32** · **需求 28 / 57 完全落地**（部分 4 · 未开工 19 · 口径答复 6）⇒ 面板见 **§11.6b** |
@@ -1214,6 +1214,21 @@ python script/check_spec.py                     # 附录 A ↔ 各册成员表 �
 ⇒ ⚠⚠ **本机做不了 linux-target clippy**：`x86_64-unknown-linux-gnu` target **已装**，但 `zstd`（`wlwl-std` 的依赖）带 `zstd-sys` ⇒ 需要 `x86_64-linux-gnu-gcc`（**本机无**，**本机无网络装不了**）⇒ **unix 侧的唯一权威判据是 CI** ⇒ 只能走「**本地推理 + 探针取证 + CI 迭代**」三段式。
 ⇒ ⚠ **排除清单（这 19 个提交里所有含 `#[cfg(unix)]` 的改动，逐个审过）**：`signal.rs`（**命中，已修**）· `fs_atomic_lock_meta_contract.rs`（第一波新增 · unix 段 = 一个并发读者测试 ⇒ **探针实测 `let _ = attempt;` 不触发任何 lint** ⇒ 排除）· `ext_loader_contract.rs`（unix 段 = 一个 cfg 块 ⇒ 排除）· `wlwl-ext/src/dynlib.rs`（unix 段 = `dlopen`/`dlsym`/`dlclose` 三个 wrapper ⇒ 排除）· `wlwl-std/src/fs.rs` 的 5 段（`inherit_permissions` · `atomic_replace` · `is_lock_conflict` · `mtime_millis` · `try_lock_exclusive` ⇒ 排除）· `wlwl-std/src/process.rs`（unix 段**内部无新代码**，只改了一处**平台无关**的调用点 ⇒ 排除）· `wlwl-std/src/net.rs` · `tcp.rs` · `log.rs` · `sync.rs` · `regex.rs` · `format.rs` · `text.rs` · `unicode.rs`（**均无 `#[cfg(unix)]`** ⇒ 平台无关，已被 Windows clippy 覆盖）⇒ **命中面只剩 `signal.rs` 一处**。
 ⇒ ⚠ **unix-only 的 intra-doc 链接也查过**：`own_pgrp` · `kill_group` · `target_group` · `os_signal_handler` · `install_os_handler` · `spawn_owned_group` 在文档里**全是纯代码字面量**（无方括号）⇒ **不是链接** ⇒ unix 上不会新报 `private-intra-doc-links`。
+
+#### ⚠ CI 实况（run #325 —— clippy / doc 全绿后的**第三道**分叉：真红 + 一条 macOS 独有欠账）
+
+**读数**（run #325 = `40801893213`，head_sha `d9549a7`，`main` ⇒ conclusion = **failure**）：三平台 **fmt / clippy / doc / cargo-deny / conformance 全绿** ⇒ 第八波两轮的修复**在三平台全部生效**（13 处 clippy + 6 处 `private-intra-doc-links` + unix `signal.rs` 的 `function_casts_as_integer`）⇒ 上面那张「三平台分叉」表**已清空**。三平台全红在 **step 15 `cargo test --locked --all-targets`**，且 **pass 1 与 pass 2 都红 ⇒ REAL FAILURE（非 flaky）**；step 18–23（§5.4 门禁 / 附录 A 对拍 / real-ai / TLS / bench）**全部 skipped**。
+
+**失败用例名**（取自**匿名可读**的 workflow annotation —— `GET /repos/Laffinty/wlwl/check-runs/<id>/annotations` **无需 token**；这是 `ci.yml` 里 `emit_failed_names_annotation()` 那条通道）：
+
+| 平台 | 失败用例 | 定性 |
+|---|---|---|
+| **windows / ubuntu** | `fs_member_set_matches_the_spec_table` | **已知欠账**（规范侧 `std.fs` 成员表未跟上 ⇒ §11.2 步骤 ①–③）⇒ 不在本轮范围 |
+| **macOS** | `a_reader_never_sees_a_half_written_target` | ⚠ **新欠账，本轮首次登记** ⇒ 见 §13.4 登记 ⑨ |
+
+⇒ ⚠ **run #325 是这批提交第一次真的跑到 `cargo test --all-targets`**（前七波的 19 个提交全推在 `wip0121`，该分支**不在 `ci.yml` 的 push 触发列表**里 ⇒ clippy / doc / test 一次都没跑过）⇒ 上表的红**不是回归，是首次暴露**。
+
+⇒ ⚠⚠ **归因仍差最后一环**：CI 的 `failed_names()`（`ci.yml:372-374`）**只抓用例名**（`grep -E '^test .* \.\.\. FAILED'`）⇒ 失败**原因**仍只在「登录后才可见」的 workflow 日志 / artifact 里（匿名 `GET /actions/jobs/<id>/logs` = **403**，artifact = **401**）⇒ **macOS 那条为什么红，目前只能靠推理，不能靠读数**。⇒ 第九波 W-39 的第 ① 步就是**把 panic 原因也塞进那条匿名可读的 annotation** ⇒ 下一次 CI 迭代就能一次 API 调用读到确切原因，不必再「靠猜」。
 
 ### 13.3 接替者的第一分钟（照做，别重新调查）
 
@@ -1271,24 +1286,26 @@ cd D:\Project\wlwl; git log --oneline -4; git status --short                  # 
 | # | 项 | 状态 | 原因与去向 |
 |---|---|---|---|
 | ① | **G-3「调试器」** | **部分** | W-30 只做了计划给的**最小口径**（「至少一个能跑表达式的 REPL」）⇒ **断点 / 单步 / 变量改写**没做 ⇒ 非目标已明写「不做完整调试器」⇒ 若要做 ⇒ 需另立专项 |
-| ② | **G-4「模块组织」的三项** | **部分**（第七波补做了一项） | W-33 做了「循环导入的清晰诊断」;**第七波补做了「模块私有成员」⇒ 证伪结案**：实测 6 个场景（有无 `.wll.sig` / 有无 `SEALED` / 消费方越界导入）证明**私有成员（既不 `EXPORT`、也不在签名里声明的根作用域绑定）本来就允许且零诊断** ⇒ `check_exports` 的两个方向都只拿 `EXPORT` 名单与声明面对照 ⇒ 私有成员**两边都不在** ⇒ 不触发 ⇒ **不需要 `private` 修饰符、不需要模块级 `CONST`、不需要新诊断码** ⇒ 交付改为「把这条语义写进模块文档（此前全仓无任何地方写下来）+ 2 条回归守卫」（`sig.rs` +90 行，**语义零改动**）;**仍未做**：**`.wll.sig` 工作流简化**（在 `cli/tooling.rs` + `cli/main.rs` ⇒ 与 W-32 同文件面 ⇒ **下一批**）· **模块级常量与初始化代码**（**新语言特性** ⇒ 要动 `wlwl-parser` / `wlwl-ast` **+ 规范侧条款** ⇒ 单独立项） |
+| ② | **G-4「模块组织」的三项** | **部分**（第七波补做了一项） | W-33 做了「循环导入的清晰诊断」;**第七波补做了「模块私有成员」⇒ 证伪结案**：实测 6 个场景（有无 `.wll.sig` / 有无 `SEALED` / 消费方越界导入）证明**私有成员（既不 `EXPORT`、也不在签名里声明的根作用域绑定）本来就允许且零诊断** ⇒ `check_exports` 的两个方向都只拿 `EXPORT` 名单与声明面对照 ⇒ 私有成员**两边都不在** ⇒ 不触发 ⇒ **不需要 `private` 修饰符、不需要模块级 `CONST`、不需要新诊断码** ⇒ 交付改为「把这条语义写进模块文档（此前全仓无任何地方写下来）+ 2 条回归守卫」（`sig.rs` +90 行，**语义零改动**）;**仍未做**：**`.wll.sig` 工作流简化**（在 `cli/tooling.rs` + `cli/main.rs` ⇒ 与 W-32 同文件面 ⇒ **第九波在做**）· **模块级常量与初始化代码**（**新语言特性** ⇒ 要动 `wlwl-parser` / `wlwl-ast` **+ 规范侧条款** ⇒ 单独立项） |
 | ③ | **「运行期安全点」钩子** | **未做** | W-30 指出：要让**不依赖端点**也能在运行期看到挂起点 ⇒ 需要在 `wlwl-eval` 的求值循环里加一个安全点钩子 ⇒ 该文件本轮归 W-33 ⇒ 未做 ⇒ 登记为待办 |
 | ④ | **「跑完打印快照就能看到挂起点」** | ⚠ **原计划前提不成立** | 实测 **`SPAWN` 必须在 `SCOPE` 内**（`E0058`）⇒ 作用域退出会**硬取消**未结束的子任务 ⇒ 程序跑完后**不可能**观察到 `suspended` ⇒ 该读数本质是**运行期活读数** ⇒ 已改为「端点活快照 + 11 个状态迁移点发布」⇒ **计划措辞需按此订正** |
 | ⑤ | **W-32 的两条「静态 vs 动态」已知差异** | **登记**（不修） | ① **模块顶层漏报**：静态层按 `host_suspend_outside_task` 的判据（`None` ⇒ 不动）⇒ 顶层形状静态层不报，但**运行期在顶层同样会报 `E0014`**（走「挂起信号逃到顶层」通路，文案逐字相同）⇒ 若要「顶层也静态拦」⇒ 是把判据扩到 `None` 的一行改动，**会改掉既有 `check` 的退出码语义** ⇒ **不夹带进 W-32**，单独立项;② **「成员跑完之后才判」的先后在静态层不存在** ⇒ 同一处静态可能报 `E0014` 而运行期报 `E0030`（如 `SLEEP_ASYNC(-1)` 在嵌套闭包里）⇒ 登记 |
 | ⑦ | **`process_contract` 两条 timeout 用例的并行干扰** | **登记**（不修） | 两条用例各自 `taskkill /T /F` 杀整棵进程树 ⇒ **同进程并行时互相误杀** ⇒ 断言 `elapsed < 3 s` 被撞 ⇒ **各自单跑绿 / 串行跑绿 / 并行跑红** ⇒ **不是回归** ⇒ 起因指向第四波 W-14 新增的 `PROCESS_RUN_ASYNC` 进程组管理 ⇒ 修法方向：让超时杀树**只作用于自己起的那个进程组**（隔离），或把这两条用例标为需串行 ⇒ 登记为待办 |
 | ⑥ | **`SCOPE` 体是不是合法落点** | **登记** | `E0014` 的**文案**说「(e.g. within SCOPE(...) / SPAWN(...))」，但**判据**上 `SCOPE` 的体在任务体内时深度为 1 ⇒ **报 `E0014`** ⇒ **文案与判据不一致** ⇒ 文案归运行期文件 ⇒ 登记为独立项 |
 | ⑧ | **本地门禁清单漏了 clippy** | **已修**（第八波） | 前七波的 19 个提交**全推在 `wip0121`**（该分支**不在 `ci.yml` 的 push 触发列表**）⇒ clippy **一次没跑过** ⇒ run #323 在 windows / ubuntu / macos **三平台全红**在 clippy 步骤 ⇒ **13 处 lint**（第一波 6 · 第二波 5 · 第七波 2）⇒ 已全部**零语义改动**修完（清单与坐标见 §13.2「CI 实况」）⇒ **根因已消除**：§13.5 加第 2b 步 · §13.6 加第 13 行 · §13.3 第一分钟加 clippy ⇒ 往后每波本地都跑 clippy |
+| ⑨ | ⚠ **macOS 独有的真失败：`a_reader_never_sees_a_half_written_target`** | **第九波处理（W-39 · 单独一项）** | **首次登记**（2026-10-29 下午）：run #325 的 macOS job 在 `cargo test --locked --all-targets` 上 **pass 1 与 pass 2 都红 ⇒ 非 flaky**;同一用例在 ubuntu **绿** ⇒ **macOS 特有**。⚠ **不是回归** —— run #325 是这批提交**第一次**真的跑到 `cargo test --all-targets`（前七波全推在 `wip0121` ⇒ 一次没跑过）⇒ 是**首次暴露**。**根因未确诊**：CI 的 annotation 只给**用例名**、不给 panic 原因（匿名读不到日志 / artifact）⇒ 目前**只能推理**（候选：POSIX `EINTR` —— macOS/BSD 的 `open()`/`rename()` 可被信号中断而 Linux 的 `open()` 不可，而 Rust std **不重试** `open()`/`rename()` ⇒ 读者线程的 `std::fs::read` 可能拿到 `Interrupted system call` ⇒ 被测试当成「中间态」⇒ 假红）。⇒ W-39 的三步：① **把 panic 原因也塞进匿名可读的 annotation**（CI 日志匿名 403 / artifact 401 ⇒ 现在归因只能靠猜）② 按 EINTR 假设修**实现侧**（`fs.rs` unix 段的 `open`/`rename` 遇 `ErrorKind::Interrupted` 有界重试 ⇒ 这是**真缺陷**：原子写会因信号偶发失败）+ **测试侧**（reader 只放行 `Interrupted` 这一种 ⇒ `NotFound` 仍算中间态 ⇒ 退化实现照样被抓住）③ 反向守卫（unix 段改成「先删后写」⇒ 用例必须红） |
 
 #### 收口批
 
 **W-34**（文档 / 技能包：含 D1–D4b 的对外口径 + **`TCP_SERVE` 迁移指引**）· **W-35′**（登记 + 附录 A 抄件 + 全量门禁）· 规范仓 v1.0.4 批次（§11.2 五步）。
 
-⚠ **收口批另有两项待办**（第三波实测带出，**不阻塞**）：
+⚠ **收口批另有三项待办**（第三波实测带出，**不阻塞**）：
 
 | # | 事 | 证据 | 归属 |
 |---|---|---|---|
-| ① | **W-38**：`TCP_SERVE` 的 handler 里调宿主挂起点成员 ⇒ 该连接**静默作废** | 实测：handler 调用 1 次 · `TCP_SERVE` 返回 0 · exit 0 · stderr 全空 | `std/net.rs` + `tcp_serve_contract.rs`；**需先裁决**（诊断？拒绝？文档化？） |
+| ① | ⚠⚠ **原表的 ①「W-38 需先裁决」已作废** —— W-38 **第五波就落地了**（由 W-15 一并做掉）⇒ 现在报**既有 `E0014`**（指名成员 + 指向调用点），不再是「静默作废」 | §11.1 的 W-38 行 · `w38_native_frame_suspend_contract` **11/0** · §13.7 第五波 | **已结案**，不再需要裁决（本表此前的登记是**过期**的） |
 | ② | **`sanitize_contract::sanitize_is_idempotent_on_mutations` 极慢**（单跑 **381.33 s 通过**） | 该目标跑的代码与 HEAD **完全相同**（第三波对 `wlwl-parser/src` · `wlwl-eval/src` · `wlwl-std/src` · `sanitize.wll` · `wlwl-value` **零改动**）⇒ **既有问题，非第三波引入** | `impl/crates/wlwl-eval/tests/sanitize_contract.rs:1616`;形态 = 对 `SANITIZE_CASES` × 变异组合逐个**新起求值器**跑两遍 ⇒ debug + 机器负载下约 **6.4 分钟**。⚠ **它会过、只是慢**（本轮实测 `1 passed`）⇒ 下一轮给它设预算 / 拆用例即可，**不是缺陷**。⚠ **第八波实测补一条**：`str_math_contract` **整文件 152.68 s**（`math_matches_section_7` · `decimal_rounding_matches_python_decimal_modes` · `str_matches_section_6` 三条各 > 60 s）⇒ 同样是**本机负载**所致（游戏进程占 CPU）⇒ **不是缺陷**，但 CI 上**别给它设太紧的超时** |
+| ③ | ⚠ **macOS 独有的真失败**：`fs_atomic_lock_meta_contract::a_reader_never_sees_a_half_written_target` | run #325：macOS **pass 1 与 pass 2 都红 ⇒ 非 flaky**;同一用例在 ubuntu **绿** ⇒ macOS 特有;完整读数见 §13.2「run #325」 | `impl/crates/wlwl-std/src/fs.rs`（unix 段）+ 该测试文件 + `ci.yml` 的 annotation 通道 ⇒ **第九波 W-39（单独一项）** |
 
 ### 13.5 集成者的固定动作（每波结束都做这几件，顺序不变）
 
@@ -1322,5 +1339,6 @@ cd D:\Project\wlwl; git log --oneline -4; git status --short                  # 
 ### 13.7 一句话状态
 
 > **24 / 32 个工作项、28 / 57 条需求已落地并复核**（第八波：**门禁补跑两轮** —— 第一轮：CI run #323 的 **13 处 clippy lint** 全修（**零语义改动**;第一波 6 · 第二波 5 · 第七波 2）⇒ clippy **补进本地门禁清单**（§13.5 第 2b 步）;第二轮：run #324 暴露的**三平台分叉** ⇒ Windows 的 `cargo doc` 红（**6 处 `rustdoc::private-intra-doc-links`** ⇒ 链接改纯代码字面量）+ ubuntu / macOS 的 clippy 仍红（**`#[cfg(unix)]` 的代码本机根本不编译** ⇒ 红点在 `signal.rs` 的 `function_casts_as_integer` ⇒ 先转指针再转整数，**行为不变**）⇒ 并把 `cargo doc` **补进本地门禁清单**（§13.5 第 2c 步）+ §13.6 第 14 行登记「unix 侧本机不可验」的三段式做法 ⇒ **「本地全绿」不再可能是假绿**;第七波：**W-32** —— `wlwl check` 两条静态规则；规则①复用既有 `E0014`、规则②是**无码**提示 `shared-mutable-binding`，**LSP ≡ CLI 同一份收集函数**;**G-4① 证伪结案** —— 「模块私有成员」**语义本就满足**，只补了模块文档 + 2 条回归守卫，**语义零改动**;第六波：W-33（F-4 诊断可读性 + G-4 循环导入诊断）· W-30（F-3 任务检视 + G-3 最小 REPL）；第五波：W-15（B-6 兜底臂真缺陷 + B-7 `std.signal` + W-38 诊断化）· W-29（H-5/H-6 别名）；第四波：W-11（B-2 惊群根因）· W-14（B-5 非阻塞出站）；第三波：W-36 / W-35 / W-37 —— **W-37 是证伪结案**，见 §11.4b）；规则侧**只差规范仓落表**（§11.2 五步，**必须等业主先 push 规范仓**）—— 待落表总数仍是 **36 个成员 + 1 个新命名空间（`std.signal`）+ 附录 G 一行**;实现侧下一批是 **G-4②「`.wll.sig` 工作流简化」**（动 `cli/tooling.rs` + `cli/main.rs` ⇒ 正好独占这两个文件面 ⇒ 单 agent 即可）⇒ 之后 **`std.http` 四节串行**（W-17 → W-18 → W-19 → W-20）⇒ 再后 **W-31 / W-25** ⇒ 收口 **W-34 / W-35′** + 规范仓 v1.0.4。
-> ⚠ **本波登记 3 项**（**不阻塞**，见 §13.4）：W-32 的两条「静态 vs 动态」已知差异（顶层漏报 · 「成员跑完才判」的先后不存在）· `SCOPE` 体的**文案-判据不一致**（文案说 SCOPE 合法，判据说它报 E0014）· **「顶层也静态拦」的口径决定**（建议单独立项，勿夹带）。
+> **第九波（2026-10-29 下午，在飞）**：**run #325 把「三平台分叉」清空了** —— fmt / clippy / doc / cargo-deny / conformance **三平台全绿** ⇒ 三平台全红在 step 15 `cargo test --locked --all-targets`，且 **pass 1 与 pass 2 都红 ⇒ 真失败非 flaky**。失败用例名（取自**匿名可读**的 workflow annotation `GET /repos/Laffinty/wlwl/check-runs/<id>/annotations`）：**windows / ubuntu = `fs_member_set_matches_the_spec_table`**（**已知欠账** = 规范侧 `std.fs` 成员表未跟上）· **macOS = `a_reader_never_sees_a_half_written_target`**（**新欠账，本轮首次登记** ⇒ §13.4 登记 ⑨）。⚠ **run #325 是这批提交第一次真的跑到 `cargo test --all-targets`**（前七波全推在 `wip0121` ⇒ clippy/doc/test 一次没跑过）⇒ **不是回归，是首次暴露**;第九波按「**欠账单独一项 + 3 个 PHASE 并行**」开：**W-39**（macOS 那条，单独）· **G-4②**（`.wll.sig` 工作流简化）· **W-17**（`std.http` Keep-Alive + 请求预算 + 大小限制）· **W-31**（`std.test` 增强）⇒ 四者文件面**零重叠**;之后 **`std.http` 四节串行**（W-18 → W-19 → W-20）⇒ 再后 **W-25** ⇒ 收口 **W-34 / W-35′** + 规范仓 v1.0.4。
+> ⚠ **本波登记 4 项**（**不阻塞**，见 §13.4）：W-32 的两条「静态 vs 动态」已知差异（顶层漏报 · 「成员跑完才判」的先后不存在）· `SCOPE` 体的**文案-判据不一致**（文案说 SCOPE 合法，判据说它报 E0014）· **「顶层也静态拦」的口径决定**（建议单独立项，勿夹带）· ⚠ **⑨ macOS 独有的真失败** `a_reader_never_sees_a_half_written_target`（run #325 新暴露；**根因未确诊** ⇒ 候选是 POSIX `EINTR`；第九波 W-39 处理）。
 > ⚠ 另有一条**已记在案的取舍**：`wlwl check` 拦静态 `E0014`（exit 1），`wlwl run` **不报不拦** —— 因为既有探针 `p07`/`p09` 钉死了「跑一半 + 运行期报**逐字相同**的那条 E0014 + exit 1」⇒ 静态层若在 `run` 里拦，那两条必红。
