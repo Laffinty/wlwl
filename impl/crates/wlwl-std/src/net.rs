@@ -118,7 +118,7 @@ use crate::tcp::{
 };
 use crate::{ModuleSpec, StdFn};
 use wlwl_error::ErrorCode;
-use wlwl_value::{Outcome, Signal, StdHost, Value};
+use wlwl_value::{ExtMember, Outcome, Signal, StdHost, Value};
 
 pub static SPEC: ModuleSpec = ModuleSpec {
     path: "wlwl:std.net",
@@ -3260,6 +3260,1211 @@ pub(crate) fn tcp_serve_stream(
         }
     }
     Ok(Outcome::normal(Value::Integer(served)))
+}
+
+// ═══════════════════════════════════════════════════════════════════════════════
+// [W-20 / C-11 / A-2] `std.http::GET` / `POST` / `REQUEST` —— 客户端出站
+// ═══════════════════════════════════════════════════════════════════════════════
+//
+// ## 这一段是什么
+//
+// `std.net::HTTP_GET` / `HTTP_POST` / `HTTP_REQUEST` **一个字都没改**（既有成员
+// 的可观察语义不可动，见一致性册）。这一段是**三个新成员**，落在 `std.http`：
+//
+// | 公共成员 | 实参 | 返回 |
+// |---|---|---|
+// | `GET` | `(url, opts?)` | `DICT {status, headers, body}` |
+// | `POST` | `(url, body, opts?)` | 同上 |
+// | `REQUEST` | `(method, url, body?, opts?)` | 同上 |
+//
+// ## 相对 `std.net` 既有成员的**两条**能力差异
+//
+// 1. **客户端能解 chunked**（需求 C-11）—— `Transfer-Encoding: chunked` 的
+//    响应**解码之后**交给调用方。
+//    ⚠ **只改客户端**：服务端仍然**拒收** chunked 请求体（那不归本项，且
+//    `ADR-0028` D3 的反走私那一刀不许动）。
+// 2. **能走 `https://`**（需求 A-2）—— 经 `tls` 命名空间的**运行期扩展**
+//    （`tls:CONNECT` / `tls:SEND` / `tls:RECV` / `tls:CLOSE`）。
+//    ⚠ `std.net::HTTP_GET` **仍**只支持 `http:`（规范 §21 的「`https://` ⇒ ERR」
+//    那一刀不许动）⇒ `https://` 的能力**只在 `std.http` 的这三个新成员上**。
+//
+// ## ⚠ 为什么内核住在 `net.rs` 而不是 `http.wll`
+//
+// `std.http` 是 **R1 模块**（`ADR-0021` 的分层：R1 门面 + R2 内核）⇒ 它的成员
+// 由 `http.wll` 的 `EXPORT` 声明，实现放 R2 ⇒ 登记在 `lib.rs` 的
+// `wlwl:std.http` → `kernels:` 里（`("_HTTP_GET", net::http_client_get)` …）。
+// ⇒ **R1 侧不需要新的 `IMPORT`**（门面是 `LET(GET, _HTTP_GET);` —— 与既有的
+// `LET(SERVE_STREAM, _SERVE_STREAM);` 同款）。
+//
+// ## 失败口径（两档，**不新增诊断码**）
+//
+// · **元数 / 类型错** ⇒ 既有 `E0022` / `E0030`（终止运行）。
+// · **运行期失败** ⇒ `ERR` **值**：
+//   · HTTP 层 ⇒ `ERR([kind:"HttpError", op:"GET", reason])`（`op` = **公共成员名**
+//     —— 诊断要指名用户真的调过的那个名字，见 `SERVE_STREAM` 的同款约定）。
+//   · TLS 层 ⇒ `ERR([kind:"TlsError", reason])`（**两个键**，没有 `op`）。
+//
+// ## `opts`（可选，`DICT` 或 `NULL`）
+//
+// | 键 | 缺省 | 含义 |
+// |---|---|---|
+// | `headers` | 空 | 请求头（名字**一律小写** ⇒ 重复判定大小写无关）；值可以是 `STRING` 或 `ARRAY[STRING]`（同名多值） |
+// | `timeout_ms` | 30 000 | 整条请求的**总**预算（毫秒）；`0` = 预算为零（**立刻**失败，与 `std.net` 同口径） |
+// | `tls` | `NULL` | `tls::CONNECT` 的 `opts` —— **逐字转交**（不解释、不改写） |
+// | `method` | 无 | 对请求方法的**断言**（与本成员的方法不符 ⇒ 运行期 `ERR`） |
+//
+// ⚠ **未知选项名 ⇒ `E0030`**（不静默忽略：拼错的项会变成「没设」）。
+
+/// `opts` 的键（拼错 ⇒ `E0030`）。
+const CLIENT_OPT_NAMES: &str = "`headers`, `timeout_ms`, `tls`, `method`";
+
+/// `std.http` 新成员的**选项**。
+struct ClientOpts {
+    /// 请求头（名字**一律小写** ⇒ 重复判定大小写无关）。
+    headers: Vec<(String, Vec<String>)>,
+    /// 整条请求的**总**预算（毫秒）。
+    timeout_ms: u64,
+    /// `tls::CONNECT` 的 `opts` —— **逐字转交**（不解释、不改写）。
+    tls: Option<Value>,
+    /// 对请求方法的**断言**（`opts["method"]`）。
+    method: Option<String>,
+}
+
+/// 客户端的**运行期**失败（两档）。
+enum ClientFailure {
+    /// HTTP 层 ⇒ `ERR([kind:"HttpError", op, reason])`。
+    Http(String),
+    /// TLS 层 ⇒ `ERR([kind:"TlsError", reason])`。
+    Tls { kind: String, reason: String },
+}
+
+/// 客户端响应 —— 与 [`HttpResponse`] 的**唯一**差别是**多值头**。
+struct ClientResponse {
+    status: i64,
+    headers: Vec<(String, Vec<String>)>,
+    body: Vec<u8>,
+}
+
+/// 元数错（**区间**）⇒ 既有 `E0022`。
+///
+/// ⚠ 措辞与求值器对闭包说的那句同款（`function expects {min}..{max} argument(s)`）。
+fn arity_range(
+    host: &mut dyn StdHost,
+    name: &str,
+    got: usize,
+    min: usize,
+    max: usize,
+) -> wlwl_error::WlwlError {
+    host.diag(
+        ErrorCode::E0022,
+        format!("{name}: function expects {min}..{max} argument(s), got {got}"),
+    )
+}
+
+/// 解析 `opts`（形状 / 类型错 ⇒ `E0030`；**内容**错在别处判）。
+fn client_opts(
+    host: &mut dyn StdHost,
+    name: &str,
+    v: &Value,
+) -> wlwl_error::WlwlResult<ClientOpts> {
+    let mut out = ClientOpts {
+        headers: Vec::new(),
+        timeout_ms: DEFAULT_TIMEOUT_MS,
+        tls: None,
+        method: None,
+    };
+    let entries = match v {
+        Value::Null => return Ok(out),
+        other => match dict_entries_of(other) {
+            Some(e) => e,
+            None => {
+                return Err(host.diag(
+                    ErrorCode::E0030,
+                    format!(
+                        "{name}: opts must be a dict or null, got {}",
+                        crate::value_kind(v)
+                    ),
+                ))
+            }
+        },
+    };
+    for (k, val) in &entries {
+        let Value::String(key) = k else {
+            return Err(host.diag(
+                ErrorCode::E0030,
+                format!("{name}: an option name must be a string"),
+            ));
+        };
+        match key.as_str() {
+            "headers" => {
+                let hs = match dict_entries_of(val) {
+                    Some(e) => e,
+                    None => {
+                        return Err(host.diag(
+                            ErrorCode::E0030,
+                            format!("{name}: the `headers` option must be a dict"),
+                        ))
+                    }
+                };
+                for (hk, hv) in &hs {
+                    let Value::String(hname) = hk else {
+                        return Err(host.diag(
+                            ErrorCode::E0030,
+                            format!("{name}: a header name must be a string"),
+                        ));
+                    };
+                    let hb = hname.as_bytes();
+                    // 头字段名是 token（RFC 9110 §5.1）。
+                    if hb.is_empty() || !hb.iter().copied().all(is_tchar) {
+                        return Err(host.diag(
+                            ErrorCode::E0030,
+                            format!("{name}: header name {hname:?} is not a valid token"),
+                        ));
+                    }
+                    let mut values: Vec<String> = Vec::new();
+                    match hv {
+                        Value::String(s) => values.push(s.clone()),
+                        Value::Array(items) => {
+                            for it in items {
+                                let Value::String(s) = it else {
+                                    return Err(host.diag(
+                                        ErrorCode::E0030,
+                                        format!(
+                                            "{name}: the value of header {hname:?} must be a string \
+                                             or an array of strings"
+                                        ),
+                                    ));
+                                };
+                                values.push(s.clone());
+                            }
+                        }
+                        other => {
+                            return Err(host.diag(
+                                ErrorCode::E0030,
+                                format!(
+                                    "{name}: the value of header {hname:?} must be a string or an \
+                                     array of strings, got {}",
+                                    crate::value_kind(other)
+                                ),
+                            ))
+                        }
+                    }
+                    for s in &values {
+                        // 值里不许有裸 CR/LF —— 那就是头注入。
+                        if s.contains('\r') || s.contains('\n') {
+                            return Err(host.diag(
+                                ErrorCode::E0030,
+                                format!("{name}: header {hname:?} value contains CR or LF"),
+                            ));
+                        }
+                    }
+                    out.headers.push((hname.to_ascii_lowercase(), values));
+                }
+            }
+            "timeout_ms" => {
+                let Value::Integer(ms) = val else {
+                    return Err(host.diag(
+                        ErrorCode::E0030,
+                        format!(
+                            "{name}: the `timeout_ms` option must be an integer, got {}",
+                            crate::value_kind(val)
+                        ),
+                    ));
+                };
+                if *ms < 0 {
+                    return Err(host.diag(
+                        ErrorCode::E0030,
+                        format!("{name}: the `timeout_ms` option must be >= 0, got {ms}"),
+                    ));
+                }
+                out.timeout_ms = *ms as u64;
+            }
+            "tls" => {
+                if !matches!(val, Value::Dict(_) | Value::DictCell(_) | Value::Null) {
+                    return Err(host.diag(
+                        ErrorCode::E0030,
+                        format!(
+                            "{name}: the `tls` option must be a dict or null, got {}",
+                            crate::value_kind(val)
+                        ),
+                    ));
+                }
+                out.tls = Some(val.clone());
+            }
+            "method" => {
+                let Value::String(m) = val else {
+                    return Err(host.diag(
+                        ErrorCode::E0030,
+                        format!(
+                            "{name}: the `method` option must be a string, got {}",
+                            crate::value_kind(val)
+                        ),
+                    ));
+                };
+                out.method = Some(m.clone());
+            }
+            other => {
+                return Err(host.diag(
+                    ErrorCode::E0030,
+                    format!("{name}: unknown option {other:?} (known options: {CLIENT_OPT_NAMES})"),
+                ))
+            }
+        }
+    }
+    Ok(out)
+}
+
+/// 请求的**体**（`STRING` 或 `ARRAY[INTEGER]`）⇒ 字节。
+///
+/// ⚠ `ARRAY[INTEGER]` 是本语言**唯一**的无损字节载体 ⇒ 二进制体走它。
+fn client_body(host: &mut dyn StdHost, name: &str, v: &Value) -> wlwl_error::WlwlResult<Vec<u8>> {
+    match v {
+        Value::String(s) => Ok(s.as_bytes().to_vec()),
+        Value::Array(items) => {
+            let mut out = Vec::with_capacity(items.len());
+            for it in items {
+                let Value::Integer(b) = it else {
+                    return Err(host.diag(
+                        ErrorCode::E0030,
+                        format!("{name}: a body byte must be an integer"),
+                    ));
+                };
+                if !(0..=255).contains(b) {
+                    return Err(host.diag(
+                        ErrorCode::E0030,
+                        format!("{name}: the body byte {b} is outside 0..=255"),
+                    ));
+                }
+                out.push(*b as u8);
+            }
+            Ok(out)
+        }
+        other => Err(host.diag(
+            ErrorCode::E0030,
+            format!(
+                "{name}: the body must be a string or an array of bytes, got {}",
+                crate::value_kind(other)
+            ),
+        )),
+    }
+}
+
+/// 把一次客户端请求的**线格式**拼出来（`Err` = 运行期失败 ⇒ `ERR` 值）。
+fn build_request(
+    method: &str,
+    target: &str,
+    host_hdr: &str,
+    body: Option<&[u8]>,
+    opts: &ClientOpts,
+) -> Result<Vec<u8>, String> {
+    // ── 重复 `Content-Length` ⇒ 拒（**含值相同**）──
+    //
+    // 「同一个头出现两次」本身就是走私信号：不同实现取第一个或最后一个会分叉。
+    let mut cl_count = 0usize;
+    for (k, vs) in &opts.headers {
+        if k == "content-length" {
+            cl_count += vs.len();
+        }
+        // 请求侧**不发** `Transfer-Encoding`：chunked 的请求体是走私向量。
+        if k == "transfer-encoding" {
+            return Err(
+                "Transfer-Encoding is not supported in a request — refused rather than sent \
+                 (a chunked request body is a smuggling vector)"
+                    .to_string(),
+            );
+        }
+    }
+    if cl_count > 1 {
+        return Err("duplicate Content-Length header".to_string());
+    }
+
+    let mut req: Vec<u8> = format!("{method} {target} HTTP/1.1\r\n").into_bytes();
+    let mut has_host = false;
+    let mut has_connection = false;
+    let mut declared_len: Option<u64> = None;
+    for (k, vs) in &opts.headers {
+        match k.as_str() {
+            "host" => has_host = true,
+            "connection" => has_connection = true,
+            "content-length" => {
+                // 上面已经拒了多值 ⇒ 这里**至多**一个值。
+                let v = vs.first().map(String::as_str).unwrap_or("");
+                match v.parse::<u64>() {
+                    Ok(n) => declared_len = Some(n),
+                    Err(_) => return Err(format!("Content-Length {v:?} is not a number")),
+                }
+            }
+            _ => {}
+        }
+        for v in vs {
+            req.extend_from_slice(format!("{k}: {v}\r\n").as_bytes());
+        }
+    }
+    if !has_host {
+        req.extend_from_slice(format!("Host: {host_hdr}\r\n").as_bytes());
+    }
+    // 体 ⇒ `Content-Length`（除非调用方自己给了 —— 那必须与体长一致）。
+    if let Some(b) = body {
+        match declared_len {
+            Some(n) if n != b.len() as u64 => {
+                return Err(format!(
+                    "the Content-Length header ({n}) does not match the body length ({})",
+                    b.len()
+                ))
+            }
+            Some(_) => {}
+            None => req.extend_from_slice(format!("Content-Length: {}\r\n", b.len()).as_bytes()),
+        }
+    } else if declared_len.is_some() {
+        return Err("a Content-Length header was given but there is no body".to_string());
+    }
+    if !has_connection {
+        // 明确关闭连接：这样「无 `Content-Length`」的响应可以用 EOF 定界。
+        req.extend_from_slice(b"Connection: close\r\n");
+    }
+    req.extend_from_slice(b"\r\n");
+    if let Some(b) = body {
+        req.extend_from_slice(b);
+    }
+    Ok(req)
+}
+
+/// chunked 体的**增量**解码器（RFC 9112 §7.1）。
+///
+/// ⚠ **为什么必须是增量的**：块边界与 TCP 段边界**无关** —— 一个块可以横跨
+///   几次读，一次读也可以带回好几块。⇒ 解码器是**状态机**，不是「一次读完再切」。
+/// ⚠ 支持 **chunk extensions**（`5;name=value\r\n`）与 **trailer 段**。
+enum ChunkState {
+    /// 读块大小行。
+    Size,
+    /// 读块数据。
+    Data,
+    /// 读块数据后的 CRLF。
+    DataCrlf,
+    /// 读 trailer 段（空行 ⇒ 结束）。
+    Trailer,
+    /// 结束。
+    Done,
+}
+
+struct ChunkedDecoder {
+    state: ChunkState,
+    /// 当前块还剩多少字节。
+    left: usize,
+    /// 已解码的体。
+    out: Vec<u8>,
+    /// trailer 段的头（名字小写）。
+    trailers: Vec<(String, Vec<String>)>,
+    /// 还没消费的输入。
+    pending: Vec<u8>,
+}
+
+impl ChunkedDecoder {
+    fn new() -> Self {
+        Self {
+            state: ChunkState::Size,
+            left: 0,
+            out: Vec::new(),
+            trailers: Vec::new(),
+            pending: Vec::new(),
+        }
+    }
+
+    /// 结束块（`0\r\n` + trailer 段）已经读完？
+    fn is_done(&self) -> bool {
+        matches!(self.state, ChunkState::Done)
+    }
+
+    /// 喂进一段字节（**多少都行** —— 跨块、跨段都无妨）。
+    fn push(&mut self, bytes: &[u8]) -> Result<(), String> {
+        self.pending.extend_from_slice(bytes);
+        loop {
+            match self.state {
+                ChunkState::Size => {
+                    let Some(i) = find_crlf(&self.pending) else {
+                        if self.pending.len() > MAX_HEADER_BYTES {
+                            return Err(format!(
+                                "the chunk size line exceeds {MAX_HEADER_BYTES} bytes"
+                            ));
+                        }
+                        break;
+                    };
+                    let line = String::from_utf8_lossy(&self.pending[..i]).to_string();
+                    self.pending.drain(..i + 2);
+                    // `chunk-size = 1*HEXDIG`，后面可跟 chunk extensions（`;…`）。
+                    let size_text = line.split(';').next().unwrap_or("").trim();
+                    if size_text.is_empty() || !size_text.bytes().all(|c| c.is_ascii_hexdigit()) {
+                        return Err(format!("malformed chunk size {line:?}"));
+                    }
+                    let Ok(n) = usize::from_str_radix(size_text, 16) else {
+                        return Err(format!("malformed chunk size {line:?}"));
+                    };
+                    if n == 0 {
+                        self.state = ChunkState::Trailer;
+                    } else {
+                        self.left = n;
+                        self.state = ChunkState::Data;
+                    }
+                }
+                ChunkState::Data => {
+                    let take = self.left.min(self.pending.len());
+                    self.out.extend_from_slice(&self.pending[..take]);
+                    self.pending.drain(..take);
+                    self.left -= take;
+                    if self.out.len() > MAX_BODY_BYTES {
+                        return Err(format!("response body exceeds {MAX_BODY_BYTES} bytes"));
+                    }
+                    if self.left == 0 {
+                        self.state = ChunkState::DataCrlf;
+                    } else {
+                        break;
+                    }
+                }
+                ChunkState::DataCrlf => {
+                    if self.pending.len() < 2 {
+                        break;
+                    }
+                    if &self.pending[..2] != b"\r\n" {
+                        return Err("malformed chunk: the data is not followed by CRLF".to_string());
+                    }
+                    self.pending.drain(..2);
+                    self.state = ChunkState::Size;
+                }
+                ChunkState::Trailer => {
+                    let Some(i) = find_crlf(&self.pending) else {
+                        break;
+                    };
+                    let line = String::from_utf8_lossy(&self.pending[..i]).to_string();
+                    self.pending.drain(..i + 2);
+                    if line.is_empty() {
+                        self.state = ChunkState::Done;
+                        break;
+                    }
+                    let Some((k, v)) = line.split_once(':') else {
+                        return Err(format!("malformed trailer line {line:?}"));
+                    };
+                    let name = k.trim().to_ascii_lowercase();
+                    if name.is_empty() {
+                        return Err(format!("malformed trailer line {line:?}"));
+                    }
+                    let value = v.trim().to_string();
+                    match self.trailers.iter_mut().find(|(tk, _)| *tk == name) {
+                        Some((_, vs)) => vs.push(value),
+                        None => self.trailers.push((name, vec![value])),
+                    }
+                }
+                ChunkState::Done => break,
+            }
+        }
+        Ok(())
+    }
+}
+
+/// 找 `CRLF`（返回它在缓冲区里的位置）。
+fn find_crlf(buf: &[u8]) -> Option<usize> {
+    buf.windows(2).position(|w| w == b"\r\n")
+}
+
+/// 追加一个响应头（**同名多值**保留成数组）。
+fn push_header(headers: &mut Vec<(String, Vec<String>)>, name: String, value: String) {
+    match headers.iter_mut().find(|(k, _)| *k == name) {
+        Some((_, vs)) => vs.push(value),
+        None => headers.push((name, vec![value])),
+    }
+}
+
+/// TLS 连接（`tls` 命名空间的四个成员）。
+struct TlsConn {
+    handle: i64,
+    send: ExtMember,
+    recv: ExtMember,
+    close: ExtMember,
+}
+
+/// 客户端的**传输层**（明文 TCP 或 TLS）。
+enum ClientConn {
+    Plain(TcpStream),
+    Tls(Box<TlsConn>),
+}
+
+impl ClientConn {
+    fn write_all(&mut self, bytes: &[u8], deadline: &Deadline) -> Result<(), ClientFailure> {
+        match self {
+            ClientConn::Plain(sock) => {
+                let Some(left) = deadline.left() else {
+                    return Err(ClientFailure::Http(deadline.exhausted_reason("write")));
+                };
+                let _ = sock.set_write_timeout(Some(left));
+                sock.write_all(bytes)
+                    .map_err(|e| ClientFailure::Http(format!("write: {e}")))
+            }
+            ClientConn::Tls(t) => {
+                // ⚠ 字节走 `ARRAY[INTEGER]`（无损载体）—— 不用 `STRING`（那是 UTF-8）。
+                let payload = Value::Array(
+                    bytes
+                        .iter()
+                        .map(|b| Value::Integer(i64::from(*b)))
+                        .collect(),
+                );
+                let out = call_tls(&t.send, vec![Value::Integer(t.handle), payload])?;
+                match out {
+                    Value::Integer(_) => Ok(()),
+                    other => Err(ClientFailure::Tls {
+                        kind: "TlsError".to_string(),
+                        reason: format!(
+                            "the TLS provider returned {} instead of a byte count",
+                            crate::value_kind(&other)
+                        ),
+                    }),
+                }
+            }
+        }
+    }
+
+    fn read(&mut self, buf: &mut [u8], deadline: &Deadline) -> Result<usize, ClientFailure> {
+        match self {
+            ClientConn::Plain(sock) => read_once(sock, buf, deadline)
+                .map_err(|e| ClientFailure::Http(format!("read: {e}"))),
+            ClientConn::Tls(t) => tls_read(t, buf, deadline),
+        }
+    }
+
+    fn close(&mut self) {
+        if let ClientConn::Tls(t) = self {
+            // 关闭失败**不报**：请求已经拿到结果了。
+            let _ = (t.close.call)(vec![Value::Integer(t.handle)]);
+        }
+    }
+}
+
+/// 调一次 `tls` 命名空间的成员。
+///
+/// ⚠ 扩展的失败走 `ERR` **值**（`{kind, op, reason}`）⇒ 这里把 `reason`
+///   **逐字**取出来（不改写措辞：证书过期就是 `certificate expired`）。
+/// ⚠ 扩展自己报**原生诊断**（信封坏了）⇒ 那不是请求的运行期失败 ⇒ 原样上抛。
+fn call_tls(member: &ExtMember, args: Vec<Value>) -> Result<Value, ClientFailure> {
+    match (member.call)(args) {
+        Ok(out) => match out.value {
+            Value::Err(payload) => Err(tls_failure(&payload)),
+            v => Ok(v),
+        },
+        Err(e) => Err(ClientFailure::Tls {
+            kind: "TlsError".to_string(),
+            reason: e.diagnostic().message.to_string(),
+        }),
+    }
+}
+
+/// 扩展的 `ERR` 载荷 ⇒ TLS 失败（`reason` **逐字**，一个字都不改）。
+fn tls_failure(payload: &Value) -> ClientFailure {
+    let entries = dict_entries_of(payload).unwrap_or_default();
+    // 宿主把扩展的 `{"err": {...}}` **拆开** ⇒ 载荷**就是** `{kind, op, reason}`；
+    // 但也兼容**没拆**的形状（载荷里再套一层 `err`）。
+    let entries = match entry_get(&entries, "err").and_then(dict_entries_of) {
+        Some(inner) => inner,
+        None => entries,
+    };
+    let kind = match entry_get(&entries, "kind") {
+        Some(Value::String(s)) if !s.is_empty() => s.clone(),
+        _ => "TlsError".to_string(),
+    };
+    let reason = match entry_get(&entries, "reason") {
+        Some(Value::String(s)) => s.clone(),
+        _ => "the TLS provider reported a failure without a reason".to_string(),
+    };
+    ClientFailure::Tls { kind, reason }
+}
+
+/// 从 TLS 连接读一段（`RECV` 的空返回 = **超时**，不是 EOF）。
+fn tls_read(t: &mut TlsConn, buf: &mut [u8], deadline: &Deadline) -> Result<usize, ClientFailure> {
+    let mut spins: u32 = 0;
+    loop {
+        let Some(left) = deadline.left() else {
+            return Err(ClientFailure::Http(deadline.exhausted_reason("read")));
+        };
+        let timeout_ms = i64::try_from(left.as_millis()).unwrap_or(i64::MAX);
+        let out = call_tls(
+            &t.recv,
+            vec![
+                Value::Integer(t.handle),
+                Value::Integer(i64::try_from(buf.len()).unwrap_or(i64::MAX)),
+                Value::Integer(timeout_ms),
+            ],
+        )?;
+        let entries = dict_entries_of(&out).unwrap_or_default();
+        let eof = matches!(entry_get(&entries, "eof"), Some(Value::Boolean(true)));
+        let bytes: Vec<u8> = match entry_get(&entries, "bytes") {
+            Some(Value::Array(items)) => items
+                .iter()
+                .filter_map(|v| match v {
+                    Value::Integer(b) if (0..=255).contains(b) => Some(*b as u8),
+                    _ => None,
+                })
+                .collect(),
+            _ => Vec::new(),
+        };
+        if !bytes.is_empty() {
+            let n = bytes.len().min(buf.len());
+            buf[..n].copy_from_slice(&bytes[..n]);
+            return Ok(n);
+        }
+        if eof {
+            return Ok(0);
+        }
+        // 空且**不是** EOF ⇒ `RECV` 超时了（`{bytes:[], text:"", eof:false}`）。
+        // ⚠ 防忙等：每 16 轮歇 1 ms（总闸仍然是唯一的终止条件）。
+        spins = spins.wrapping_add(1);
+        if spins.is_multiple_of(16) {
+            std::thread::sleep(Duration::from_millis(1));
+        }
+    }
+}
+
+/// 明文 TCP 连接（带总闸）。
+fn connect_plain(
+    dial_host: &str,
+    port: u16,
+    deadline: &Deadline,
+) -> Result<TcpStream, ClientFailure> {
+    let addrs: Vec<_> = match (dial_host, port).to_socket_addrs() {
+        Ok(it) => it.collect(),
+        Err(e) => {
+            return Err(ClientFailure::Http(format!(
+                "resolve {dial_host}:{port}: {e}"
+            )))
+        }
+    };
+    if addrs.is_empty() {
+        return Err(ClientFailure::Http(format!(
+            "{dial_host}:{port} resolved to no address"
+        )));
+    }
+    let mut last = String::new();
+    for a in &addrs {
+        let Some(left) = deadline.left() else {
+            return Err(ClientFailure::Http(deadline.exhausted_reason("connect")));
+        };
+        match TcpStream::connect_timeout(a, left) {
+            Ok(s) => return Ok(s),
+            Err(e) => last = e.to_string(),
+        }
+    }
+    Err(ClientFailure::Http(format!(
+        "connect {dial_host}:{port}: {last}"
+    )))
+}
+
+/// TLS 连接（`tls::CONNECT`）。
+///
+/// ⚠ **扩展没加载** ⇒ `ERR([kind:"TlsError", reason:"no TLS provider loaded"])`
+///   —— `kind` 与 `reason` **逐字**照抄，不改一个字。
+fn connect_tls(
+    host: &mut dyn StdHost,
+    dial_host: &str,
+    port: u16,
+    opts: &ClientOpts,
+) -> Result<ClientConn, ClientFailure> {
+    let Some(connect) = host.ext_member("tls:CONNECT") else {
+        return Err(ClientFailure::Tls {
+            kind: "TlsError".to_string(),
+            reason: "no TLS provider loaded".to_string(),
+        });
+    };
+    let Some(send) = host.ext_member("tls:SEND") else {
+        return Err(ClientFailure::Tls {
+            kind: "TlsError".to_string(),
+            reason: "the TLS provider does not expose the `tls:SEND` member".to_string(),
+        });
+    };
+    let Some(recv) = host.ext_member("tls:RECV") else {
+        return Err(ClientFailure::Tls {
+            kind: "TlsError".to_string(),
+            reason: "the TLS provider does not expose the `tls:RECV` member".to_string(),
+        });
+    };
+    let Some(close) = host.ext_member("tls:CLOSE") else {
+        return Err(ClientFailure::Tls {
+            kind: "TlsError".to_string(),
+            reason: "the TLS provider does not expose the `tls:CLOSE` member".to_string(),
+        });
+    };
+    // ⚠ `opts["tls"]` **逐字转交**（扩展自己认它的键：ca / pin / client_cert / …）。
+    let tls_opts = opts.tls.clone().unwrap_or(Value::Null);
+    let out = call_tls(
+        &connect,
+        vec![
+            Value::String(dial_host.to_string()),
+            Value::Integer(i64::from(port)),
+            tls_opts,
+        ],
+    )?;
+    let Value::Integer(handle) = out else {
+        return Err(ClientFailure::Tls {
+            kind: "TlsError".to_string(),
+            reason: format!(
+                "the TLS provider returned {} instead of a connection handle",
+                crate::value_kind(&out)
+            ),
+        });
+    };
+    Ok(ClientConn::Tls(Box::new(TlsConn {
+        handle,
+        send,
+        recv,
+        close,
+    })))
+}
+
+/// 读一个响应（头 + 体）。
+fn read_response(
+    conn: &mut ClientConn,
+    method: &str,
+    deadline: &Deadline,
+) -> Result<ClientResponse, ClientFailure> {
+    let mut raw: Vec<u8> = Vec::with_capacity(8 * 1024);
+    let mut buf = [0u8; 4096];
+    // 已经**消费掉**的字节数（只可能是若干个被跳过的 `1xx` 响应头）。
+    let mut consumed = 0usize;
+    let mut informational_skipped = 0usize;
+    let (head_end, http10, status) = loop {
+        let head_end = loop {
+            match find_head_end(&raw[consumed..]) {
+                Some(i) => break consumed + i,
+                None => {
+                    if raw.len() - consumed > MAX_HEADER_BYTES {
+                        return Err(ClientFailure::Http(format!(
+                            "response header block exceeds {MAX_HEADER_BYTES} bytes"
+                        )));
+                    }
+                    match conn.read(&mut buf, deadline)? {
+                        0 => {
+                            return Err(ClientFailure::Http(format!(
+                                "connection closed with {} byte(s) of header, no complete head",
+                                raw.len() - consumed
+                            )))
+                        }
+                        n => raw.extend_from_slice(&buf[..n]),
+                    }
+                }
+            }
+        };
+        let head = std::str::from_utf8(&raw[consumed..head_end])
+            .map_err(|e| ClientFailure::Http(format!("response header is not valid UTF-8: {e}")))?;
+        let status_line = head.split("\r\n").next().unwrap_or("");
+        let mut sp = status_line.splitn(3, ' ');
+        let version = sp.next().unwrap_or("");
+        let status_txt = sp.next().unwrap_or("");
+        if version != "HTTP/1.1" && version != "HTTP/1.0" {
+            return Err(ClientFailure::Http(format!(
+                "unexpected status line {status_line:?}"
+            )));
+        }
+        let Ok(status) = status_txt.parse::<i64>() else {
+            return Err(ClientFailure::Http(format!(
+                "status code {status_txt:?} is not an integer"
+            )));
+        };
+        if (100..200).contains(&status) {
+            // `1xx` = 中间响应 ⇒ **丢掉这一整块**，接着读下一个响应（RFC 9112 §15.2）。
+            informational_skipped += 1;
+            if informational_skipped > MAX_INFORMATIONAL_RESPONSES {
+                return Err(ClientFailure::Http(format!(
+                    "more than {MAX_INFORMATIONAL_RESPONSES} informational (1xx) responses — \
+                     refusing to keep reading"
+                )));
+            }
+            consumed = head_end + 4;
+            continue;
+        }
+        break (head_end, version == "HTTP/1.0", status);
+    };
+
+    // ── 头 ──
+    let head = std::str::from_utf8(&raw[consumed..head_end])
+        .map_err(|e| ClientFailure::Http(format!("response header is not valid UTF-8: {e}")))?;
+    let mut lines = head.split("\r\n");
+    let _status_line = lines.next().unwrap_or("");
+
+    // ⚠ **按状态码定界**（RFC 9112 §6.3 第 1 条）：`HEAD` / `204` / `304` 的响应
+    //   **恒无体** —— 哪怕头里写了 `Content-Length`。
+    let bodyless = status == 204 || status == 304 || method.eq_ignore_ascii_case("HEAD");
+
+    let mut headers: Vec<(String, Vec<String>)> = Vec::new();
+    let mut content_length: Option<u64> = None;
+    let mut content_length_count = 0usize;
+    let mut transfer_encoding: Vec<String> = Vec::new();
+    let mut connection_close = false;
+    for line in lines {
+        if line.is_empty() {
+            continue;
+        }
+        // obs-fold（行首空白）是**已知的响应拆分/走私向量** ⇒ 拒绝，不合并。
+        if line.starts_with(' ') || line.starts_with('\t') {
+            return Err(ClientFailure::Http(format!(
+                "obs-fold in response header: {line:?}"
+            )));
+        }
+        let Some((k, v)) = line.split_once(':') else {
+            return Err(ClientFailure::Http(format!(
+                "malformed header line {line:?}"
+            )));
+        };
+        let v = v.trim();
+        if v.contains('\r') || v.contains('\n') {
+            return Err(ClientFailure::Http(format!(
+                "header {k:?} value contains CR or LF"
+            )));
+        }
+        let lk = k.to_ascii_lowercase();
+        match lk.as_str() {
+            "content-length" => {
+                // 多个 `Content-Length` —— 即便值相同也拒（走私信号）。
+                content_length_count += 1;
+                if content_length_count > 1 {
+                    return Err(ClientFailure::Http(
+                        "duplicate Content-Length header".to_string(),
+                    ));
+                }
+                if !bodyless {
+                    let Ok(n) = v.parse::<u64>() else {
+                        return Err(ClientFailure::Http(format!(
+                            "Content-Length {v:?} is not a number"
+                        )));
+                    };
+                    content_length = Some(n);
+                }
+            }
+            "transfer-encoding" => transfer_encoding.push(v.to_string()),
+            "connection" if v.to_ascii_lowercase().contains("close") => connection_close = true,
+            _ => {}
+        }
+        push_header(&mut headers, lk, v.to_string());
+    }
+
+    // ── 体 ──
+    let mut body_bytes: Vec<u8> = raw[head_end + 4..].to_vec();
+    let mut trailers: Vec<(String, Vec<String>)> = Vec::new();
+    if bodyless {
+        // ⚠ 紧跟着响应头的那些字节**不属于**本次 body（那可能是下一个响应）。
+        body_bytes.clear();
+    } else if !transfer_encoding.is_empty() {
+        // ⚠ `TE` 与 `CL` **并存** ⇒ 拒（两种定界都成立 ⇒ 走私面）。
+        if content_length_count > 0 {
+            return Err(ClientFailure::Http(
+                "the response has both Transfer-Encoding and Content-Length — refusing to \
+                 guess which one delimits the body (a smuggling vector)"
+                    .to_string(),
+            ));
+        }
+        let te = transfer_encoding.join(", ");
+        if !te.trim().eq_ignore_ascii_case("chunked") {
+            return Err(ClientFailure::Http(format!(
+                "Transfer-Encoding {te:?} is not supported — only `chunked` is decoded"
+            )));
+        }
+        // ── chunked ⇒ 解码（**增量**：块边界与 TCP 段边界无关）──
+        let mut dec = ChunkedDecoder::new();
+        dec.push(&body_bytes).map_err(ClientFailure::Http)?;
+        while !dec.is_done() {
+            let n = conn.read(&mut buf, deadline)?;
+            if n == 0 {
+                return Err(ClientFailure::Http(
+                    "the connection closed before the chunked body was complete".to_string(),
+                ));
+            }
+            dec.push(&buf[..n]).map_err(ClientFailure::Http)?;
+        }
+        body_bytes = dec.out;
+        trailers = dec.trailers;
+    } else if let Some(n) = content_length {
+        if n > MAX_BODY_BYTES as u64 {
+            return Err(ClientFailure::Http(format!(
+                "Content-Length {n} exceeds the {MAX_BODY_BYTES} byte cap"
+            )));
+        }
+        let want = n as usize;
+        while body_bytes.len() < want {
+            let got = conn.read(&mut buf, deadline)?;
+            if got == 0 {
+                break;
+            }
+            body_bytes.extend_from_slice(&buf[..got]);
+        }
+        if body_bytes.len() != want {
+            return Err(ClientFailure::Http(format!(
+                "body truncated: got {} of {want} byte(s)",
+                body_bytes.len()
+            )));
+        }
+        body_bytes.truncate(want);
+    } else if connection_close || http10 {
+        // 无长度 ⇒ 读到 EOF（HTTP/1.0 默认 close 定界）。
+        loop {
+            let got = conn.read(&mut buf, deadline)?;
+            if got == 0 {
+                break;
+            }
+            body_bytes.extend_from_slice(&buf[..got]);
+            if body_bytes.len() > MAX_BODY_BYTES {
+                return Err(ClientFailure::Http(format!(
+                    "response body exceeds {MAX_BODY_BYTES} bytes"
+                )));
+            }
+        }
+    } else {
+        return Err(ClientFailure::Http(
+            "response has neither Content-Length nor Connection: close — refusing to guess the \
+             body length"
+                .to_string(),
+        ));
+    }
+
+    // trailer 段的头**并进**头表（与多数客户端同款：调用方只看到一张头表）。
+    for (k, vs) in trailers {
+        for v in vs {
+            push_header(&mut headers, k.clone(), v);
+        }
+    }
+
+    Ok(ClientResponse {
+        status,
+        headers,
+        body: body_bytes,
+    })
+}
+
+/// 一次客户端请求（连、写、读）。
+fn client_request(
+    host: &mut dyn StdHost,
+    name: &str,
+    method: &str,
+    url: &str,
+    body: Option<&[u8]>,
+    opts: &ClientOpts,
+) -> Result<ClientResponse, ClientFailure> {
+    // ── 0. 方法断言 ──
+    if let Some(m) = &opts.method {
+        if m != method {
+            return Err(ClientFailure::Http(format!(
+                "the `method` option {m:?} does not match this member's method {method:?}"
+            )));
+        }
+    }
+    // ── 1. URL ──
+    let p = parse(name, url).map_err(|why| ClientFailure::Http(format!("invalid URL: {why}")))?;
+    let Some(scheme) = p.scheme.as_deref() else {
+        return Err(ClientFailure::Http(
+            "URL has no scheme; `http:` or `https:` is required".to_string(),
+        ));
+    };
+    let default_port: u16 = match scheme {
+        "http" => 80,
+        "https" => 443,
+        other => {
+            return Err(ClientFailure::Http(format!(
+                "scheme {other:?} is not supported — only `http:` and `https:` are"
+            )))
+        }
+    };
+    let Some(hostname) = p.host.clone() else {
+        return Err(ClientFailure::Http("URL has no host".to_string()));
+    };
+    let port = p.port.unwrap_or(default_port);
+    // `URL_PARSE` 保留 IPv6 的方括号，拨号要的是裸地址。
+    let dial_host = hostname
+        .trim_start_matches('[')
+        .trim_end_matches(']')
+        .to_string();
+    // path 为空时请求行必须是 `/`。
+    let target = if p.path.is_empty() {
+        match &p.query {
+            None => "/".to_string(),
+            Some(q) => format!("/?{q}"),
+        }
+    } else {
+        match &p.query {
+            None => p.path.clone(),
+            Some(q) => format!("{}?{q}", p.path),
+        }
+    };
+    let host_hdr = if port == default_port {
+        hostname.clone()
+    } else {
+        format!("{hostname}:{port}")
+    };
+
+    // ── 2. 请求的**线格式**（**先**拼好：内容错就别去碰网络）──
+    let req = build_request(method, &target, &host_hdr, body, opts).map_err(ClientFailure::Http)?;
+
+    // ── 3. 连接（总闸从**这里**开始计）──
+    let deadline = Deadline::new(Duration::from_millis(opts.timeout_ms));
+    let mut conn = match scheme {
+        "http" => ClientConn::Plain(connect_plain(&dial_host, port, &deadline)?),
+        _ => connect_tls(host, &dial_host, port, opts)?,
+    };
+    // ── 4. 写请求 ──
+    conn.write_all(&req, &deadline)?;
+    // ── 5. 读响应 ──
+    let resp = read_response(&mut conn, method, &deadline)?;
+    // ── 6. 收尾 ──
+    conn.close();
+    Ok(resp)
+}
+
+/// 把客户端响应搭成**成员返回值**（`DICT {status, headers, body}`）。
+///
+/// ⚠ `headers` 的值**随多值走**：一个值 ⇒ `STRING`，多个值 ⇒ `ARRAY[STRING]`。
+/// ⚠ `body` 的形状**随内容走**：合法 UTF-8 ⇒ `STRING`，否则 ⇒ `ARRAY[INTEGER]`
+///   （与 `std.net` 的既有口径同款）。
+fn client_response_value(r: ClientResponse) -> Value {
+    let body = match String::from_utf8(r.body) {
+        Ok(b) => Value::String(b),
+        Err(e) => Value::Array(
+            e.into_bytes()
+                .into_iter()
+                .map(|b| Value::Integer(i64::from(b)))
+                .collect(),
+        ),
+    };
+    let headers = Value::dict(
+        r.headers
+            .into_iter()
+            .map(|(k, vs)| {
+                let v = match vs.as_slice() {
+                    [only] => Value::String(only.clone()),
+                    many => Value::Array(many.iter().cloned().map(Value::String).collect()),
+                };
+                (Value::String(k), v)
+            })
+            .collect(),
+    );
+    Value::dict(vec![
+        (Value::String("status".into()), Value::Integer(r.status)),
+        (Value::String("headers".into()), headers),
+        (Value::String("body".into()), body),
+    ])
+}
+
+/// TLS 失败 ⇒ `ERR([kind, reason])`（**两个键**，没有 `op`）。
+fn tls_error_value(kind: &str, reason: &str) -> Value {
+    Value::Err(Box::new(Value::dict(vec![
+        (Value::String("kind".into()), Value::String(kind.into())),
+        (Value::String("reason".into()), Value::String(reason.into())),
+    ])))
+}
+
+/// 跑一次客户端请求 ⇒ 成员返回值（成功是 `DICT`，失败是 `ERR` **值**）。
+fn run_client(
+    host: &mut dyn StdHost,
+    name: &str,
+    method: &str,
+    url: &str,
+    body: Option<&[u8]>,
+    opts: &ClientOpts,
+) -> Value {
+    match client_request(host, name, method, url, body, opts) {
+        Ok(r) => client_response_value(r),
+        Err(ClientFailure::Http(reason)) => http_error(name, reason),
+        Err(ClientFailure::Tls { kind, reason }) => tls_error_value(&kind, &reason),
+    }
+}
+
+/// `std.http::GET(url, opts?) -> DICT`。
+pub fn http_client_get(
+    host: &mut dyn StdHost,
+    args: Vec<Value>,
+) -> wlwl_error::WlwlResult<Outcome> {
+    if args.is_empty() || args.len() > 2 {
+        return Err(arity_range(host, "GET", args.len(), 1, 2));
+    }
+    let Value::String(url) = &args[0] else {
+        return Err(type_err(host, "GET", &args[0]));
+    };
+    let null = Value::Null;
+    let opts = client_opts(host, "GET", args.get(1).unwrap_or(&null))?;
+    Ok(Outcome::normal(run_client(
+        host, "GET", "GET", url, None, &opts,
+    )))
+}
+
+/// `std.http::POST(url, body, opts?) -> DICT`。
+pub fn http_client_post(
+    host: &mut dyn StdHost,
+    args: Vec<Value>,
+) -> wlwl_error::WlwlResult<Outcome> {
+    if args.len() < 2 || args.len() > 3 {
+        return Err(arity_range(host, "POST", args.len(), 2, 3));
+    }
+    let Value::String(url) = &args[0] else {
+        return Err(type_err(host, "POST", &args[0]));
+    };
+    let body = client_body(host, "POST", &args[1])?;
+    let null = Value::Null;
+    let opts = client_opts(host, "POST", args.get(2).unwrap_or(&null))?;
+    Ok(Outcome::normal(run_client(
+        host,
+        "POST",
+        "POST",
+        url,
+        Some(&body),
+        &opts,
+    )))
+}
+
+/// `std.http::REQUEST(method, url, body?, opts?) -> DICT`。
+///
+/// ⚠ 实参 3 到底是「体」还是「选项」？—— **按类型分**：体是 `STRING` /
+///   `ARRAY[INTEGER]`，选项是 `DICT` / `NULL`。
+pub fn http_client_request(
+    host: &mut dyn StdHost,
+    args: Vec<Value>,
+) -> wlwl_error::WlwlResult<Outcome> {
+    if args.len() < 2 || args.len() > 4 {
+        return Err(arity_range(host, "REQUEST", args.len(), 2, 4));
+    }
+    let Value::String(method) = &args[0] else {
+        return Err(type_err(host, "REQUEST", &args[0]));
+    };
+    let Value::String(url) = &args[1] else {
+        return Err(type_err(host, "REQUEST", &args[1]));
+    };
+    method_token(host, "REQUEST", method)?;
+    let null = Value::Null;
+    let (body, opts_val): (Option<&Value>, &Value) = match args.get(2) {
+        None => (None, &null),
+        Some(Value::String(_)) | Some(Value::Array(_)) => {
+            (Some(&args[2]), args.get(3).unwrap_or(&null))
+        }
+        Some(Value::Dict(_)) | Some(Value::DictCell(_)) | Some(Value::Null) => {
+            if args.len() > 3 {
+                return Err(host.diag(
+                    ErrorCode::E0030,
+                    "REQUEST: the opts must be the last argument".to_string(),
+                ));
+            }
+            (None, &args[2])
+        }
+        Some(other) => {
+            let why = format!(
+                "REQUEST: argument 3 must be a body (string), a dict of options or null, got {}",
+                crate::value_kind(other)
+            );
+            return Err(host.diag(ErrorCode::E0030, why));
+        }
+    };
+    let body = match body {
+        Some(v) => Some(client_body(host, "REQUEST", v)?),
+        None => None,
+    };
+    let opts = client_opts(host, "REQUEST", opts_val)?;
+    Ok(Outcome::normal(run_client(
+        host,
+        "REQUEST",
+        method,
+        url,
+        body.as_deref(),
+        &opts,
+    )))
 }
 
 #[cfg(test)]

@@ -35,6 +35,11 @@
 //! `UNLOCK_FILE`(文件锁)、`FILE_MTIME`(毫秒级修改时间)、`DIR_ENTRIES`
 //! (带元数据的目录项列表)。
 //!
+//! [v0.12.1 / W-19] 再新增一个成员:`FILE_META`(**一次** `stat` 的快照:
+//! `exists` / `is_dir` / `size` / `mtime` / `mtime_http`)—— 静态文件服务
+//! (`std.http::STATIC_FILE`)要的是**一个快照**,不是三个成员各 stat 一次
+//! 凑出来的**互相矛盾**的读数。
+//!
 //! ⚠ **平台能力一律手写 raw FFI**(`kernel32` / `libc`)⇒ **零新增第三方依赖**
 //!   (`windows-sys` / `filetime` / `fs2` 都不引)。样板照
 //!   `impl/crates/wlwl-eval/tests/common/handle_guard.rs` 的
@@ -126,6 +131,11 @@ pub static SPEC: ModuleSpec = ModuleSpec {
         ("UNLOCK_FILE", unlock_file as StdFn),
         ("FILE_MTIME", file_mtime as StdFn),
         ("DIR_ENTRIES", dir_entries as StdFn),
+        // ── [W-19 / v0.12.1] 静态文件服务的元数据读数 ─────────────────────
+        // ⚠ **附录 A 抄件尚未同步** ⇒ `check-appendix-a` 与
+        // `stdlib_appendix_a_sync` 会红(表体多出这一行)—— 那是集成者
+        // 收口时要做的,不是本项的锅。
+        ("FILE_META", file_meta as StdFn),
     ],
 };
 
@@ -1738,6 +1748,133 @@ pub fn dir_entries(host: &mut dyn StdHost, args: Vec<Value>) -> Result<Outcome, 
     ok(Value::Array(out.into_iter().map(|(_, v)| v).collect()))
 }
 
+// ═══════════════════════════════════════════════════════════════════════
+// W-19 · 静态文件服务的元数据读数(v0.12.1)
+// ═══════════════════════════════════════════════════════════════════════
+//
+// ## 为什么是「**一次** stat」而不是三个已有成员凑
+//
+// `EXISTS` + `FILE_SIZE` + `FILE_MTIME` 是**三次独立的 `stat`** ⇒ 文件在三次
+// 之间被改写时,调用方拿到的是**互相矛盾**的三个读数(大小对不上 mtime)
+// ⇒ 由它们算出来的 `ETag` 与 `Content-Length` 会**同时**描述两个不同的
+// 文件版本 ⇒ 客户端拿到的 `ETag` 与实际内容**对不上**,条件请求(304)就会
+// 在**内容已经变了**的时候还回 304。
+//
+// ⇒ 静态文件服务要的是**一个快照**。这一个成员就是那个快照。
+//
+// ## 与「路径穿越防护」的关系（**别在这里做**）
+//
+// 路径穿越的判定**不在**本成员:它**必须**走 `PATH_CONTAINS`
+// （**逐段**前缀判定,跨平台逐字一致）—— 那条是 `W-24` 落的既有成员。
+// 本成员只回答「这个路径**是什么**」,不回答「这个路径**能不能给**」。
+
+/// `FILE_META(path) -> DICT` —— **一次** `stat` 的快照。
+///
+/// 返回
+/// `{"exists": BOOLEAN, "is_dir": BOOLEAN, "size": INTEGER, "mtime": INTEGER, "mtime_http": STRING}`。
+///
+/// - `mtime` = **Unix 纪元起的毫秒**(与 `FILE_MTIME` 同口径、同单位)。
+/// - `mtime_http` = `mtime` 的 **IMF-fixdate** 渲染(RFC 9110 §5.6.7,
+///   UTC,形如 `Sun, 06 Nov 1994 08:49:37 GMT`)—— HTTP 侧的 `Last-Modified`
+///   **不需要**在语言层再写一遍公历换算。
+///
+/// ⚠ **路径不存在不是失败**:返回 `exists = FALSE`(其余字段为零)——
+///   「这个文件不在」是**可预期的运行期结果**,调用方据此回 404。
+///   真正的 IO 失败(权限不足等)⇒ `ERR` 值(见文件头的失败口径两档)。
+/// ⚠ **跟随符号链接**(与 `FILE_SIZE` / `FILE_MTIME` 同口径:`metadata` 语义)
+///   ⇒ 链接**自己**的元数据用 `DIR_ENTRIES`。
+/// ⚠ **失败口径**:元数 / 类型错 ⇒ 既有 `E0022` / `E0030`(终止运行);
+///   运行期 IO 失败 ⇒ `ERR` 值(`kind = "FsError"`)。
+pub fn file_meta(host: &mut dyn StdHost, args: Vec<Value>) -> Result<Outcome, WlwlError> {
+    const NAME: &str = "FILE_META";
+    if args.len() != 1 {
+        return Err(fs_arity(host, NAME, args.len(), 1));
+    }
+    let p = str_arg(host, NAME, &args[0])?;
+    match std::fs::metadata(native(&p)) {
+        Ok(md) => {
+            // ⚠ 与 `FILE_MTIME` 同源(`Metadata::modified()` ⇒ Unix 纪元毫秒);
+            //   拿不到时间戳(极少见)⇒ 0,而不是编一个。
+            let mtime = md.modified().map(system_time_millis).unwrap_or(0);
+            ok(Value::dict(vec![
+                (Value::String("exists".into()), Value::Boolean(true)),
+                (Value::String("is_dir".into()), Value::Boolean(md.is_dir())),
+                (
+                    Value::String("size".into()),
+                    Value::Integer(i64::try_from(md.len()).unwrap_or(i64::MAX)),
+                ),
+                (Value::String("mtime".into()), Value::Integer(mtime)),
+                (
+                    Value::String("mtime_http".into()),
+                    Value::String(http_date_millis(mtime)),
+                ),
+            ]))
+        }
+        // ⚠ **不存在 ≠ 失败**:它是「404」这个**可预期的运行期结果**的原料。
+        Err(e) if e.kind() == ErrorKind::NotFound => ok(Value::dict(vec![
+            (Value::String("exists".into()), Value::Boolean(false)),
+            (Value::String("is_dir".into()), Value::Boolean(false)),
+            (Value::String("size".into()), Value::Integer(0)),
+            (Value::String("mtime".into()), Value::Integer(0)),
+            (
+                Value::String("mtime_http".into()),
+                Value::String(String::new()),
+            ),
+        ])),
+        Err(e) => ok(fs_err(NAME, io_reason(&p, &e))),
+    }
+}
+
+/// Unix 毫秒 ⇒ **IMF-fixdate**(RFC 9110 §5.6.7):`Sun, 06 Nov 1994 08:49:37 GMT`。
+///
+/// ⚠ **为什么放在这里**:`Last-Modified` 是 HTTP 头,但它的**值**就是文件的
+///   `mtime` ⇒ 「同一个值的另一种表示」属于**拥有那个值的成员**的地盘。
+///   放到语言层就要在 R1 里写一遍**公历换算**(Howard Hinnant 的
+///   `civil_from_days`)—— 那是几十行、极易写错、且**必然与别处漂移**的代码。
+/// ⚠ **UTC,不做本地时区**(`GMT`)—— HTTP 的一秒精度日期一律是 GMT。
+/// ⚠ **纪元之前**(`ms < 0`)⇒ 夹到纪元:HTTP 日期没有「纪元之前」的写法,
+///   夹住比产出一个非法日期好。
+fn http_date_millis(ms: i64) -> String {
+    const DAY_MS: i64 = 86_400_000;
+    const MONTHS: [&str; 12] = [
+        "Jan", "Feb", "Mar", "Apr", "May", "Jun", "Jul", "Aug", "Sep", "Oct", "Nov", "Dec",
+    ];
+    const WDAYS: [&str; 7] = ["Sun", "Mon", "Tue", "Wed", "Thu", "Fri", "Sat"];
+    let ms = ms.max(0);
+    let days = ms.div_euclid(DAY_MS);
+    let rem = ms.rem_euclid(DAY_MS);
+    let (hh, mm, ss) = (
+        rem / 3_600_000,
+        (rem % 3_600_000) / 60_000,
+        (rem % 60_000) / 1_000,
+    );
+    // civil_from_days(Howard Hinnant)—— 1970-01-01 起的天数 ⇒ (年, 月, 日)。
+    let z = days + 719_468;
+    let era = z.div_euclid(146_097);
+    let doe = z - era * 146_097;
+    let yoe = (doe - doe / 1_460 + doe / 36_524 - doe / 146_096) / 365;
+    let mut y = yoe + era * 400;
+    let doy = doe - (365 * yoe + yoe / 4 - yoe / 100);
+    let mp = (5 * doy + 2) / 153;
+    let d = doy - (153 * mp + 2) / 5 + 1;
+    let m = if mp < 10 { mp + 3 } else { mp - 9 };
+    if m <= 2 {
+        y += 1;
+    }
+    // ⚠ 1970-01-01 是**周四** ⇒ 星期索引 4(周日 = 0)。
+    let wd = (days + 4).rem_euclid(7) as usize;
+    format!(
+        "{}, {:02} {} {:04} {:02}:{:02}:{:02} GMT",
+        WDAYS[wd],
+        d,
+        MONTHS[(m - 1) as usize],
+        y,
+        hh,
+        mm,
+        ss
+    )
+}
+
 // ── Windows raw FFI(kernel32)────────────────────────────────────────
 
 #[cfg(windows)]
@@ -2329,7 +2466,7 @@ mod tests {
         );
         // [W-27 / v0.12.1] 再追加的五个(原子写 / 锁 / mtime / 目录项)。
         assert_eq!(
-            &names[20..],
+            &names[20..25],
             &[
                 "WRITE_FILE_ATOMIC",
                 "LOCK_FILE",
@@ -2337,9 +2474,15 @@ mod tests {
                 "FILE_MTIME",
                 "DIR_ENTRIES",
             ],
-            "the five W-27 members must stay last and in order"
+            "the five W-27 members must stay in place and in order"
         );
-        assert_eq!(names.len(), 25, "wlwl:std.fs exports 25 members");
+        // [W-19 / v0.12.1] 追加的一个(静态文件服务的元数据快照)。
+        assert_eq!(
+            &names[25..],
+            &["FILE_META"],
+            "the W-19 member must stay last"
+        );
+        assert_eq!(names.len(), 26, "wlwl:std.fs exports 26 members");
     }
 
     // ── [D13-044] `spec()` 的往返不变量 ─────────────────────────────────
@@ -2820,6 +2963,118 @@ mod tests {
             "the epoch must be Unix, not FILETIME: {got}"
         );
         let _ = std::fs::remove_file(&path);
+    }
+
+    // ── [W-19] `FILE_META` 的机制钉子 ─────────────────────────────────────
+
+    /// `FILE_META` ⇒ 取字典里的某个键（测试用的小助手）。
+    fn meta_of(path: &std::path::Path) -> Vec<(String, wlwl_value::Value)> {
+        let mut host = NullHost;
+        let v = file_meta(
+            &mut host,
+            vec![Value::String(path.to_string_lossy().into())],
+        )
+        .expect("FILE_META must not be a diagnostic");
+        match v.value {
+            Value::Dict(inner) => inner
+                .iter()
+                .map(|(k, v)| (k.display(), v.clone()))
+                .collect(),
+            other => panic!("FILE_META 返了非字典: {}", crate::value_kind(&other)),
+        }
+    }
+
+    fn meta_get(path: &std::path::Path, key: &str) -> wlwl_value::Value {
+        meta_of(path)
+            .into_iter()
+            .find(|(k, _)| k == key)
+            .unwrap_or_else(|| panic!("FILE_META 的结果里没有 `{key}`"))
+            .1
+    }
+
+    #[test]
+    fn file_meta_reports_a_missing_path_as_not_existing() {
+        let path = tmpfile(".txt");
+        let _ = std::fs::remove_file(&path);
+        assert_eq!(
+            meta_get(&path, "exists"),
+            Value::Boolean(false),
+            "a missing path must be reported as `exists = FALSE`, not as a failure"
+        );
+        assert_eq!(meta_get(&path, "size"), Value::Integer(0));
+        assert_eq!(meta_get(&path, "is_dir"), Value::Boolean(false));
+    }
+
+    /// ⚠ **快照的一致性**:同一个 `FILE_META` 读数里的 `size` / `mtime`
+    /// 必须与既有成员 `FILE_SIZE` / `FILE_MTIME` **逐字相同** ——
+    /// 否则 `ETag`(mtime + size)与 `Content-Length`(size)会来自两套口径。
+    #[test]
+    fn file_meta_agrees_with_file_size_and_file_mtime() {
+        let path = tmpfile(".txt");
+        std::fs::write(&path, b"0123456789").unwrap();
+        let mut host = NullHost;
+        let size = file_size(
+            &mut host,
+            vec![Value::String(path.to_string_lossy().into())],
+        )
+        .unwrap()
+        .value;
+        let mtime = file_mtime(
+            &mut host,
+            vec![Value::String(path.to_string_lossy().into())],
+        )
+        .unwrap()
+        .value;
+        assert_eq!(meta_get(&path, "size"), size, "size must match FILE_SIZE");
+        assert_eq!(
+            meta_get(&path, "mtime"),
+            mtime,
+            "mtime must match FILE_MTIME"
+        );
+        let _ = std::fs::remove_file(&path);
+    }
+
+    #[test]
+    fn file_meta_tells_a_directory_from_a_file() {
+        let dir = tmpfile("");
+        std::fs::create_dir_all(&dir).unwrap();
+        assert_eq!(meta_get(&dir, "is_dir"), Value::Boolean(true));
+        assert_eq!(meta_get(&dir, "exists"), Value::Boolean(true));
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    /// ⚠ **IMF-fixdate 的逐字形状**(RFC 9110 §5.6.7)。
+    ///
+    /// ⚠ 这几个日期是**手算的已知值** —— 不是「跑出来看着对」:
+    /// - `784111777` = 1994-11-06T08:49:37Z(RFC 9110 §5.6.7 的那个例子)
+    /// - `0` = 1970-01-01T00:00:00Z(⇒ 星期四)
+    #[test]
+    fn http_date_millis_renders_imf_fixdate() {
+        assert_eq!(
+            http_date_millis(784_111_777_000),
+            "Sun, 06 Nov 1994 08:49:37 GMT"
+        );
+        assert_eq!(
+            http_date_millis(0),
+            "Thu, 01 Jan 1970 00:00:00 GMT",
+            "1970-01-01 was a Thursday"
+        );
+        assert_eq!(
+            http_date_millis(1_000),
+            "Thu, 01 Jan 1970 00:00:01 GMT",
+            "sub-second precision must be truncated, not rounded"
+        );
+        // 闰日(2024-02-29 是**周四**)。
+        assert_eq!(
+            http_date_millis(1_709_164_800_000),
+            "Thu, 29 Feb 2024 00:00:00 GMT"
+        );
+        // ⚠ 纪元之前 ⇒ 夹到纪元(不产出一个非法日期)。
+        assert_eq!(
+            http_date_millis(-1),
+            "Thu, 01 Jan 1970 00:00:00 GMT",
+            "a pre-epoch mtime must be clamped, not rendered as a bogus date"
+        );
     }
 
     /// ⚠ **同进程两个锁必须互斥**。

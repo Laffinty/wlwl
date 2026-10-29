@@ -1,3 +1,60 @@
+## [v0.12.1 开工 · 第十波] — 2026-10-29（`std.http` 四节之三：路由 / 静态文件 / 客户端;公共面 +11 成员）
+
+**本段 = 第十波**：`std.http` 的剩余三节（W-18 / W-19 / W-20）。计划与坐标见 `docs/plan/wlwl-v0.12.1-build-plan.md` §4（工作项）/ §11.1（落地清单）。
+
+### 事件
+
+- **CI run #326**（head_sha `84390a0`）⇒ 三平台 **fmt / clippy / doc / cargo-deny / conformance 全绿**；唯一出现的失败用例是 `fs_member_set_matches_the_spec_table`（`§2 table missed PATH_CANONICAL` ⇒ **规范侧成员表未跟上**，不是实现缺陷）。
+- **✅ 第九波 W-39 结案**：macOS 上 `test a_reader_never_sees_a_half_written_target ... ok`（**pass 1 与 pass 2 都 ok**；此前 run #325 是两轮都红）⇒ **EINTR 修复生效**。
+- **✅ 新注解机制实测有效**：workflow annotation 现在带 panic 原因全文 ⇒ 归因**不再需要**捞日志（workflow 日志匿名 403 / artifact 401）。
+- ⚠⚠ **新发现（登记 ⑫）**：`cargo test --locked --all-targets` **不带 `--no-fail-fast`** ⇒ **第一个失败目标之后的目标不再执行** ⇒ 实测有四个用例名在 CI 日志里**一次都没出现**（本地跑它们是红的）⇒ **那几笔规范侧欠账在 CI 里从来没被执行过**。⚠ 这是 `ci.yml:319-323` 里**刻意**写下的决定 ⇒ 本轮不动 ⇒ **待业主裁决**。
+
+### 落地清单（3 项 · 三个 agent 并行 · `http.wll` 的写入串行接线）
+
+| 工作项 | 内容 | 验收读数 |
+|---|---|---|
+| **W-18** | `std.http` 新增 **6 个**成员：`ROUTE` · `MATCH_ROUTE`（命中 / **405** / **404**）· `PARSE_COOKIES` · `SET_COOKIE` · `PARSE_FORM` · `PARSE_MULTIPART`（**文件 part 落盘**） | `http_w18_contract` **15/0** · 反向守卫（multipart 边界改前缀匹配 ⇒ 恰好 2 条红） |
+| **W-19** | `std.fs` 新增 **`FILE_META`**（**一次 `stat` 的快照**）⇒ 理由：`EXISTS`+`FILE_SIZE`+`FILE_MTIME` 是**三次独立 stat** ⇒ 文件被改写时三读数互相矛盾；`std.http` 新增 **`STATIC_FILE`**（穿越防护**一律走 `PATH_CONTAINS`**） | `http_w19_contract` **11/0**（**28 条**行为用例）· `wlwl-std` **385/0**（连跑三次）· 反向守卫（防护改字符串前缀 ⇒ **穿越成功** ⇒ 必红） |
+| **W-20** | `net.rs` 新增三个**私有 R2 内核** `http_client_get` / `http_client_post` / `http_client_request`（**+1206 行**，既有成员**一个字节未动** ⇒ `std.net` 公共面零变化）：增量 **chunked 解码状态机**（块边界 ≠ TCP 段边界 · 支持 chunk extensions 与 trailer）· 响应定界（TE+CL 并存⇒ERR · 重复 CL⇒ERR 含值相同）· 请求侧（重复 CL⇒ERR · `Transfer-Encoding`⇒ERR ⇒ **内容错先于联网**）· TLS 走 `tls:CONNECT/SEND/RECV/CLOSE` | `http_w20_contract` **16/0**（含「证书错误逐字透传」）· 反向守卫（抽掉 chunked 解码 ⇒ 恰好 4 条红） |
+
+### 集成者做的四件事
+
+1. **串行接线 `http.wll`**：三个 agent 都往同一个文件加东西 ⇒ 按 **W-18 → W-19 → W-20** 的顺序接；W-19/W-20 的段落先落在**仓库外**的段文件里并附接线说明，接线由 agent 自己完成（带着上下文更可靠）。
+2. **登记内核**（`wlwl-std/src/lib.rs` 的 `wlwl:std.http` → `kernels`）：`_SERVE_STREAM`（第九波）· `_HTTP_GET` / `_HTTP_POST` / `_HTTP_REQUEST`（第十波）⇒ **公共面只长在 `std.http` 上，`std.net` 一个字节没动**。
+3. **改 `http_contract.rs` 的冻结成员面**：3 → **13**（`the_member_set_is_exactly_thirteen_members`）⇒ 这条测试同时钉住「`EXPORT` 必须写在一行」。
+4. **修两处 clippy**（`http_w18_contract.rs`）：`&PathBuf` ⇒ `&Path`（`clippy::ptr_arg`）与 `read_to_string(expected.as_path())`。
+
+### ⚠⚠ Linux 侧当场抓出**两个跨平台 bug**（Windows 上全绿 ⇒ 本机门禁看不见）
+
+集成者把 **unix 侧变成本地可验**（WSL2 + rustc 1.99.0 + 无 root gcc）⇒ 在 Linux 上跑，**两条红**：
+
+| 症状 | 根因 | 修法 |
+|---|---|---|
+| `PARSE_MULTIPART` 的文件 part 落盘报 `parent directory does not exist` | ⚠ **`std.fs::PATH_JOIN` 会把 POSIX 的前导 `/` 吃掉**（实测 `PATH_JOIN("/tmp/x","f")` ⇒ `"tmp/x/f"` ⇒ **相对路径**）⇒ Linux 上落进进程 CWD；Windows 上 `C:\` 不受影响 ⇒ **同一输入两个平台两个结果** | 落盘路径**自己拼**（`CAT(dir, "/", 名)`）⇒ 根得以保留;W-18 另加断言「落盘路径必须是绝对路径且在临时目录之下」⇒ 复发当场红 |
+| `STATIC_FILE` 的「绝对形请求路径」用例：Windows 得 404、Linux 得 **403** | 同一根因：`PATH_JOIN(root, rel)` 在 Linux 上掉了根 ⇒ `target0` 变相对 ⇒ `PATH_CONTAINS(root, target0)` 必然判假 ⇒ 403 | 同样**自己拼**（`CAT(root, "/", rel)`，并把 `index.html` 那处也改掉）⇒ **URL 路径永远相对 root** ⇒ 两平台同结果 |
+
+⇒ ⚠ **`std.fs::PATH_JOIN` 自身没动** —— 它是**既有成员**，改它的可观察行为撞规范 `:223` ⇒ 已**单独登记**（§13.4 ⑯）⇒ **需规范侧裁决**：若规范上 `PATH_JOIN` 的语义是「拼接两段路径」，则吃掉根是**实现缺陷** ⇒ 修它属「修缺陷」而非「扩语义」。
+
+### 三条降级/边界（已显式登记，§13.4 ⑬⑭⑮）
+
+- **⑬ multipart 的文件 part 落盘是「有损 UTF-8 文本」** —— 本语言正文就是 `STRING` ⇒ 二进制 part 无法原样落盘 ⇒ 单独立项。
+- **⑭ `STATIC_FILE` 的符号链接逃逸**（**安全相关**）：`PATH_CONTAINS` 是**词法**判定 ⇒ 根内指向根外的符号链接仍判合法 ⇒ 要堵住得改既有成员（撞规范 `:223`）⇒ 单独立项。
+- **⑮ `STATIC_FILE` 读不出大于 1 MiB 的文件**（`READ_BYTES` 的既有上限）⇒ 单独立项。
+
+### 门禁（第十波集成后实测）
+
+`cargo fmt --all -- --check` **0 diff** · `cargo clippy --locked --workspace --all-targets -- -D warnings` **0 error** · `cargo doc --workspace --no-deps`（`-D warnings`）**0 error** · `wlwl-std` **385/0** · `http_contract` **25/0** · `http_w18_contract` **15/0** · `http_w19_contract` **11/0** · `http_w20_contract` **16/0** · probe **3/3** · conformance **6/0** · **Linux 侧**（WSL2）：`fs_atomic_lock_meta_contract` **21/0**（含那条 `#[cfg(unix)]` 用例 ok）· `http_contract` **25/0** · clippy 全 workspace **0 error**。
+
+**红项仍是那两处已知欠账**（`stdlib_appendix_a_sync` 4 failed · `fs_contract` 28/1）⇒ 全部是「规范侧未跟上」，**零新增**。
+
+### 公共面变化（待规范仓落表：**44 → 55 个成员**）
+
+- `std.http` **+10**：`ROUTE` · `MATCH_ROUTE` · `PARSE_COOKIES` · `SET_COOKIE` · `PARSE_FORM` · `PARSE_MULTIPART` · `STATIC_FILE` · `GET` · `POST` · `REQUEST`
+- `std.fs` **+1**：`FILE_META`
+- ⚠ 既有成员**零改动** · **零新增诊断码** · 版本口径仍是 实现 **v0.12.1** ↔ 规范 **v1.0.4**
+
+---
+
 ## [v0.12.1 开工 · 第九波] — 2026-10-29（3 个 PHASE + 1 项欠账单独处理;公共面 +8 个成员）
 
 **本段 = 第九波**：**接管后的第一波**（4 个 agent 并行，文件面零重叠）。计划与坐标见 `docs/plan/wlwl-v0.12.1-build-plan.md` §4（工作项）/ §11.1（落地清单）/ §13（接替手册）。

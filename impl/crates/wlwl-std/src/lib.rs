@@ -401,6 +401,13 @@ pub static LANG_SOURCES: &[StdSource] = &[
             //   `std.http::SERVE_STREAM` 一个 ⇒ 规范侧只需登记那一个
             //   （§6.2 的新成员表里 `std.net` **没有**这一条）。
             ("_SERVE_STREAM", net::tcp_serve_stream as StdFn),
+            // [W-20 / C-11 / A-2] 客户端出站的三个**私有 R2 内核**
+            // （`GET` / `POST` / `REQUEST`）：**客户端**能解 chunked 响应、
+            // `https://` 走 `tls:CONNECT`。⇒ 公共面只 +3 个 `std.http` 成员，
+            // `std.net` **不增**（`net::SPEC` 一个字节未动）。
+            ("_HTTP_GET", net::http_client_get as StdFn),
+            ("_HTTP_POST", net::http_client_post as StdFn),
+            ("_HTTP_REQUEST", net::http_client_request as StdFn),
         ],
     },
 ];

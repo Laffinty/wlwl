@@ -331,12 +331,12 @@ fn run_table(cases: &[Case]) {
 
 // ── 成员面 ────────────────────────────────────────────────────────────────
 
-/// 成员面**冻结**:三个成员、名字一字不差。
+/// 成员面**冻结**:十三个成员、名字一字不差。
 ///
 /// ⚠ 这条同时钉住「`EXPORT` 必须写在一行」:`lang_exports` 是**逐行**扫的
 ///   (一行一条声明)⇒ 拆成多行它会扫出**零个**成员。
 #[test]
-fn the_member_set_is_exactly_three_members() {
+fn the_member_set_is_exactly_thirteen_members() {
     let src = wlwl_std::LANG_SOURCES
         .iter()
         .find(|s| s.path == "wlwl:std.http")
@@ -347,6 +347,16 @@ fn the_member_set_is_exactly_three_members() {
             "PARSE_REQUEST".to_string(),
             "BUILD_RESPONSE".to_string(),
             "SERVE_STREAM".to_string(),
+            "ROUTE".to_string(),
+            "MATCH_ROUTE".to_string(),
+            "PARSE_COOKIES".to_string(),
+            "SET_COOKIE".to_string(),
+            "PARSE_FORM".to_string(),
+            "PARSE_MULTIPART".to_string(),
+            "STATIC_FILE".to_string(),
+            "GET".to_string(),
+            "POST".to_string(),
+            "REQUEST".to_string(),
         ],
         "the export surface of wlwl:std.http changed"
     );

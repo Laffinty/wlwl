@@ -1,13 +1,25 @@
-// wlwl:std.http —— HTTP 请求解析 + 响应构造（**R1 纯逻辑层**，ADR-0021 的
-// 分层规则）：本模块是**纯 wlwl 源码**模块，成员面**只有三个**，没有**自己的**
-// 原生绑定；跨命名空间依赖是
+// wlwl:std.http —— HTTP 请求解析 + 响应构造 + **路由 / Cookie / 表单**
+// （**R1 纯逻辑层**，ADR-0021 的分层规则）：本模块是**纯 wlwl 源码**模块，
+// 成员面**只有九个**，没有**自己的**原生绑定；跨命名空间依赖是
 //   · `wlwl:std.encode::BYTE_LEN`（**字节数**，不是码点数）
-//   · `wlwl:std.str::CAT` / `wlwl:std.str::INDEX_OF`
+//   · `wlwl:std.str::CAT` / `wlwl:std.str::INDEX_OF` / `wlwl:std.str::QUERY_PARSE`
+//     （`QUERY_PARSE` 是 `application/x-www-form-urlencoded` 的文法**同款**
+//     —— `&` 分对、`=` 只切第一个、`+` ⇒ 空格、`%XX` 百分号解码）
+//   · `wlwl:std.fs::WRITE_FILE` / `MKDIRS`（`PARSE_MULTIPART` 的**文件 part 落盘**）
+//     / `PATH_CONTAINS` / `PATH_EXT` / `FILE_META` / `READ_BYTES`（`STATIC_FILE`）
+//     ⇒ ⚠⚠ **本模块不用 `std.fs::PATH_JOIN`**：它按 `/`、`\` 切段并**跳过空段**
+//     ⇒ **POSIX 的前导 `/` 会被吃掉**（`PATH_JOIN("/tmp/x", "f")` ⇒ `"tmp/x/f"`
+//     ⇒ **相对路径**）⇒ 拼绝对路径会**静默变成相对路径** ⇒ 同一个输入在
+//     Linux 与 Windows 上两个结果 ⇒ 下面 `STATIC_FILE` 与 `_MP_WRITE_FILE`
+//     两处**自己拼路径**（`CAT(root, "/", rel)`）⇒ `PATH_JOIN` 自身的根丢失
+//     是 `std.fs` 的**既有成员**缺陷 ⇒ 已单独上报，**不在本波动它**（撞 `:223`）。
+//   · `wlwl:std.env::ENV_GET`
+//     —— **只有** `PARSE_MULTIPART` 取「临时目录」缺省值会用到
 //
 // ⚠ `SERVE_STREAM` 的 R2 内核（`_SERVE_STREAM`）是**注入**进来的（`lib.rs` 的
 //   `wlwl:std.http` → `kernels`）⇒ **本模块不 import `std.net`** ⇒ `std.http`
-//   **不依赖** `std.net` 的公共面 ⇒ 规范侧只需登记 `std.http::SERVE_STREAM`
-//   **一个**成员（§6.2 的新成员表里 `std.net` **没有**这一条）。
+//   **不依赖** `std.net` 的公共面 ⇒ 规范侧登记的是 `std.http` 自己的**九个**
+//   成员（本批新增六个；§6.2 的新成员表里 `std.net` **没有** `SERVE_STREAM`）。
 //
 // ## 成员面
 //
@@ -20,6 +32,43 @@
 //   ⚠ 它是**私有 R2 内核** `_SERVE_STREAM` 的**改名导出**（不包一层 `FUN`
 //     ⇒ 语义与诊断**逐字**是内核那一份）⇒ 见下面那条的文档。
 //
+// ── [W-18 · C-4 / C-5 / C-6] 新增的六个成员 ──────────────────────────────
+//
+// · `ROUTE(table: DICT) -> ARRAY` —— **编译**一张路由表。
+// · `MATCH_ROUTE(routes: ARRAY, request: DICT) -> DICT` —— 用它匹配一条请求。
+// · `PARSE_COOKIES(header: STRING) -> DICT` —— 解析 `Cookie` 头。
+// · `SET_COOKIE(name: STRING, value: STRING, opts: DICT | NULL = NULL) -> STRING`
+//   —— 生成一条 `Set-Cookie` 头的值。
+// · `PARSE_FORM(body: STRING) -> DICT` —— 解析 `x-www-form-urlencoded` 正文。
+// · `PARSE_MULTIPART(body: STRING, content_type: STRING, opts: DICT | NULL = NULL) -> DICT`
+//   —— 解析 `multipart/form-data` 正文（**文件 part 落盘**）。
+//
+// ## 形状（**调用方与实现之间的契约**）
+//
+// ⚠ 下面的键名**逐字**是契约 —— 调用方按它们取值，实现改了就破坏契约。
+//
+// · **请求字典**（`PARSE_REQUEST` 的结果，也是 `MATCH_ROUTE` 的第二个实参）
+//   = `{"method": STRING, "path": STRING, "version": STRING, "headers": DICT, "body": STRING}`
+//   —— `headers` 的键**一律小写**；同名多值 ⇒ 值是 `ARRAY[STRING]`。
+// · **路由表**（`ROUTE` 的实参）= `DICT`：**模式 ⇒ 方法**
+//   —— 模式是路径（`"/article/{slug}.html"`），方法是 `STRING`（`"GET"`）
+//     或 `ARRAY[STRING]`（`["GET", "POST"]`）。
+//   —— `ROUTE` 的返回值是**编译后的路由表**（`ARRAY`，**内部形状不透明**）；
+//     `MATCH_ROUTE` **只**认这个编译结果（给它原始 `DICT` ⇒ `ERR`）。
+// · **路由命中结果**（`MATCH_ROUTE` 的返回值）
+//   = `{"matched": BOOLEAN, "params": DICT, "status": INTEGER, "allow": STRING}`
+//   —— 命中 ⇒ `matched = TRUE`、`status = 200`、`params` 是抽出来的参数；
+//     路径命中但**方法不符** ⇒ `matched = FALSE`、`status = 405`、
+//     `allow` 是允许的方法（逗号分隔，**给 `Allow:` 头用**）；
+//     路径**没**命中 ⇒ `matched = FALSE`、`status = 404`、`allow = ""`。
+// · **表单解析结果**（`PARSE_FORM` / `PARSE_MULTIPART`）
+//   = `{"fields": DICT, "files": ARRAY[DICT]}`
+//   —— `fields` 是「字段名 ⇒ 值」；**同名**字段出现多次 ⇒ 值升级成
+//     `ARRAY[STRING]`（按出现序）—— 与本模块「同名多值」的既有口径同款。
+//   —— `files` 的每一项 = `{"name": STRING, "filename": STRING, "path": STRING,
+//     "content_type": STRING, "size": INTEGER}`；`path` 是**落盘后的路径**
+//     （**交给调用方**去读 / 改名 / 删）。
+//
 // ## 失败口径（两档，**不新增诊断码**）
 //
 // · **元数 / 类型错** ⇒ 既有诊断 `E0022` / `E0030`（原生诊断，终止运行）。
@@ -27,7 +76,25 @@
 //   `ERR([kind:"HttpError", op:"PARSE_REQUEST"|"BUILD_RESPONSE", reason])`
 //   —— 与 `wlwl:std.net` 的 `HttpError`（`net.rs` 的 `http_error`）**同形**。
 //   ⚠ 它是**值**不是诊断：调用方要么消费它（`IS_ERR` / `ERR_PAYLOAD`），
-//   要么显式丢弃（`LET(_, r)`）⇒ 否则作用域结束按 §8.6 报 `E0103`。
+//     要么显式丢弃（`LET(_, r)`）⇒ 否则作用域结束按 §8.6 报 `E0103`。
+//
+// ⚠ **新增的六个成员沿用同一口径**：`op` 分别是 `"ROUTE"` / `"MATCH_ROUTE"` /
+//   `"PARSE_COOKIES"` / `"SET_COOKIE"` / `"PARSE_FORM"` / `"PARSE_MULTIPART"`
+//   ⇒ 载荷形状仍是 `{"kind": "HttpError", "op": …, "reason": …}`。
+//   ⚠ `PARSE_FORM` 复用 `std.str::QUERY_PARSE` 的解码器 ⇒ 它的失败**转译**成
+//     `HttpError`（`kind` **不是** `QueryError`）⇒ 本模块对外**一个**种类名。
+//
+// ## ⚠ 新增成员与 **handler**（原生帧）的关系
+//
+// `SERVE_STREAM` 的 handler 跑在**原生帧**里 ⇒ 那儿**挂不了** ⇒ handler 里
+// **不得**调**宿主挂起点成员**（`TCP_RECV` / `TCP_ACCEPT` / `SLEEP_ASYNC` /
+// `HTTP_REQUEST_ASYNC` / `PROCESS_RUN_ASYNC`）⇒ 那样会报**既有 `E0014`**
+// （W-38；**不新增诊断码**）⇒ 那一条连接作废。
+//
+// ⚠ **本批新增的六个成员都**不是**挂起点成员** ⇒ 它们**可以**在 handler 里调
+//   （它们是纯计算 / 一次阻塞的文件写）⇒ **不会**触发 `E0014`。
+//   ⚠ 但 `PARSE_MULTIPART` 会**写磁盘**（**阻塞**）⇒ 在 handler 里用它会**阻塞
+//     事件循环** ⇒ 要么把大文件挪到别处处理，要么接受这个阻塞。
 //
 // ## 请求体的 framing：**三条规则**（RFC 9112 §6.3）
 //
@@ -76,13 +143,19 @@
 // ## ⚠ 本模块的写法约定（两条语言侧的坑）
 //
 // 1. `(` … `)` 是**块**（一串用 `;` 分隔的语句），**不是**分组括号 ⇒
-//    块里的语句用 `;` 分隔（用 `,` 解析不过）；单表达式的分支**不要**再套
-//    一层括号（套了就是块 ⇒ 里面的 `,` 会被当成非法分隔）。
+//    块里的语句用 `;` 分隔（用 `, ` 解析不过）；单表达式的分支**不要**再套
+//    一层括号（套了就是块 ⇒ 里面的 `, ` 会被当成非法分隔）。
 // 2. 运算符是**调用形态**（`+(a, b)`），**没有**中缀写法；`+` **不做**隐式
 //    强转 ⇒ 拼字符串用 `CAT(...)` 或 `STR(...)`。
 
-IMPORT("wlwl:std.encode", ["BYTE_LEN"]);
-IMPORT("wlwl:std.str", ["CAT", "INDEX_OF"]);
+IMPORT("wlwl:std.encode", ["BYTE_LEN", "URL_DECODE"]);
+IMPORT("wlwl:std.str", ["CAT", "INDEX_OF", "QUERY_PARSE"]);
+
+// ⚠ [W-18] 这两个依赖**只**服务 `PARSE_MULTIPART` 的**文件 part 落盘**
+//   （写文件 + 建目录 + 拼路径）与「临时目录」缺省值（`TMPDIR` → `TEMP` → `TMP`）。
+IMPORT("wlwl:std.fs", ["WRITE_FILE", "MKDIRS", "PATH_CONTAINS", "PATH_EXT", "FILE_META", "READ_BYTES"]);
+IMPORT("wlwl:std.env", ["ENV_GET"]);
+IMPORT("wlwl:std.compress", ["GZIP_COMPRESS", "ZSTD_COMPRESS"]);
 
 // ── 助手（不导出）────────────────────────────────────────────────────────
 
@@ -564,8 +637,1159 @@ LET(BUILD_RESPONSE, FUN((status, headers, body, method = "GET"),
 //   那个成员）⇒ 内核的 `NAME` 常量就是 `SERVE_STREAM`，**不是**内核名。
 LET(SERVE_STREAM, _SERVE_STREAM);
 
-// EXPORT 顺序 = 需求清单 C-1 / C-2 / C-3 的行序（先解析、后构造、再连接管理）。
+// ── [W-20 / C-11 / A-2] 客户端出站：GET / POST / REQUEST ─────────────────────
+//
+// ⚠ 三个都是**私有 R2 内核**（`_HTTP_GET` / `_HTTP_POST` / `_HTTP_REQUEST`，
+//   登记在 `lib.rs` 的 `wlwl:std.http` → `kernels` 里）⇒ **改名导出**，不包
+//   一层 `FUN` ⇒ 语义与诊断逐字是内核那一份。
+//
+// · `GET(url, opts?) -> DICT` —— 取回响应；**客户端**能解 chunked（服务端仍拒）。
+// · `POST(url, body, opts?) -> DICT` —— 同上，带体。
+// · `REQUEST(method, url, body?, opts?) -> DICT` —— 通用形态。
+//
+// ⚠ `opts` 的键：`headers` / `timeout_ms` / `tls` / `method`；**未知键 ⇒ `E0030`**。
+// ⚠ `https://` ⇒ 走 `tls:CONNECT`；扩展未加载 ⇒
+//   `ERR([kind:"TlsError", reason:"no TLS provider loaded"])`；证书错误**逐字**透传。
+// ⚠ `std.net::HTTP_GET` **未改**（规范 `:750` 要求 `https://` ⇒ `ERR` ⇒ 撞 `:223`）。
+LET(GET, _HTTP_GET);
+LET(POST, _HTTP_POST);
+LET(REQUEST, _HTTP_REQUEST);
+
+// ── [W-19] `std.http::STATIC_FILE` —— 静态文件服务(C-7 / C-10 / C-12)─────────
+
+// 【成员语义】
+//
+// `STATIC_FILE(root: STRING, path: STRING, opts: DICT | NULL) -> DICT`
+//
+// · `root` = 文档根目录。
+// · `path` = **请求目标**（可以带查询串 ⇒ 本成员自己剥掉）。
+// · `opts` = 可选策略字典：
+//   · `"headers"` = **请求头**（`DICT`，键**小写** —— 与 `PARSE_REQUEST` 同一形状）。
+//     `Range` / `Accept-Encoding` / `If-None-Match` / `If-Modified-Since` 都从这里读。
+//   · `"compress"` = `BOOLEAN`，缺省 `FALSE` —— **压缩是显式开启的策略**
+//     （压缩会改变响应字节，且对已经压缩过的载荷是负收益 ⇒ 不替调用方决定）。
+//   · `"cache_control"` = `STRING`，缺省 `"no-cache"`。
+//   · `"index"` = `STRING`，缺省 `"index.html"`（目录 ⇒ 这个文件）。
+//   · `"method"` = `STRING`，缺省 `"GET"`（`"HEAD"` ⇒ 只发头不发体）。
+//
+// 返回（**正好**是 `SERVE_STREAM` 的 handler 契约：`status` / `headers` / `body`）：
+//
+//   `{"status": INTEGER, "headers": DICT, "body": ARRAY[INTEGER]}`
+//
+// · `headers` 的键**一律小写**（与 `PARSE_REQUEST` / `BUILD_RESPONSE` 同一口径）。
+// · `body` 是**字节数组** ⇒ 二进制文件**不会**被有损 UTF-8 化。
+//
+// 【失败口径（两档，不新增诊断码）】
+//
+// · **元数 / 类型错** ⇒ 既有 `E0022` / `E0030`（终止运行）。
+// · **运行期 IO 失败**（stat / read / compress 失败）⇒ `ERR` **值**
+//   （`ERR([kind:"HttpError", op:"STATIC_FILE", reason])`）。
+// · 「文件不在」「路径越界」「区间不满足」**不是失败** ⇒ 那是 **404 / 403 / 416**。
+//
+// 【状态码】
+//
+// · `200` —— 完整正文。· `206` —— **单区间**。· `304` —— 条件请求命中。
+// · `400` —— 请求路径里的百分号转义是坏的。· `403` —— **路径穿越**。
+// · `404` —— 文件不在。· `405` —— 方法不是 `GET` / `HEAD`。· `416` —— 区间不可满足。
+//
+// 【⚠ 路径穿越防护：一律走 `std.fs::PATH_CONTAINS`】
+//
+// `PATH_CONTAINS` 是**逐段**前缀判定（不是字符串前缀）⇒ `D:/root-evil` 冒充不了
+// `D:/root` 的子路径；且它**不访问文件系统** ⇒ 判定对不存在的路径也成立、
+// 跨平台逐字一致。
+//
+// ⚠⚠ **不要**在本模块里自己写字符串前缀比较：`PATH_NORMALIZE` 保留 `\`、
+// `PATH_JOIN` 产出 `/` ⇒ 前缀比对在 Windows 上**必然失败** ⇒ 全站 403。
+//
+// ⚠ **边界**：`PATH_CONTAINS` 是**词法**判定 ⇒ **不解析符号链接**
+// （`root` 底下指向 `root` 之外的符号链接，本成员**仍**判合法）。
+// 那条边界是 `W-24` 写死的，本成员**沿用**，不自己造第二套。
+//
+// ═══════════════════════════════════════════════════════════════════════
+
+
+// ── 扩展名 ⇒ `Content-Type` ───────────────────────────────────────────────
+//
+// ⚠ 猜不出来 ⇒ `application/octet-stream`（**不猜**别的）。
+// ⚠ `text/*` 与 `application/json` 带 `; charset=utf-8` —— 本仓的文本一律 UTF-8。
+LET(_STATIC_MIME, ["html": "text/html; charset=utf-8",
+                   "htm": "text/html; charset=utf-8",
+                   "css": "text/css; charset=utf-8",
+                   "js": "text/javascript; charset=utf-8",
+                   "mjs": "text/javascript; charset=utf-8",
+                   "json": "application/json",
+                   "map": "application/json",
+                   "txt": "text/plain; charset=utf-8",
+                   "md": "text/markdown; charset=utf-8",
+                   "csv": "text/csv; charset=utf-8",
+                   "xml": "application/xml",
+                   "svg": "image/svg+xml",
+                   "png": "image/png",
+                   "jpg": "image/jpeg",
+                   "jpeg": "image/jpeg",
+                   "gif": "image/gif",
+                   "webp": "image/webp",
+                   "avif": "image/avif",
+                   "bmp": "image/bmp",
+                   "ico": "image/x-icon",
+                   "pdf": "application/pdf",
+                   "zip": "application/zip",
+                   "gz": "application/gzip",
+                   "wasm": "application/wasm",
+                   "woff": "font/woff",
+                   "woff2": "font/woff2",
+                   "ttf": "font/ttf",
+                   "otf": "font/otf",
+                   "mp3": "audio/mpeg",
+                   "mp4": "video/mp4",
+                   "webm": "video/webm",
+                   "wav": "audio/wav",
+                   "ogg": "audio/ogg"]);
+
+
+// ── 响应字典 ──────────────────────────────────────────────────────────────
+//
+// ⚠ **正好三个键** —— 与 `SERVE_STREAM` 的 handler 契约逐字一致
+//   （`status` / `headers` / `body`，缺一即失败）。
+LET(_STATIC_RESP, FUN((status, headers, body),
+    ["status": status, "headers": headers, "body": body]));
+
+
+// ── `FILE_META` ⇒ 一个普通字典（**不**把 `ERR` 绑到局部变量上）────────────
+//
+// ⚠ `ERR` 一旦被 `LET` 绑定，作用域结束就报 `E0103`（§8.6.1）⇒ 失败在这里
+//   **就地**折成 `{"ok": FALSE, "reason": …}`，调用方拿到的永远是普通字典。
+LET(_STATIC_META, FUN((target),
+    (LET(m, FILE_META(target));
+     IF(IS_ERR(m),
+        (LET(_, m); ["ok": FALSE, "reason": "cannot stat the target file"]),
+        ["ok": TRUE, "meta": m]))));
+
+
+// ── `q` 值（`"0.5"` / `"1"` / `"0"`）⇒ **千分比**整数 ──────────────────────
+//
+// ⚠ 非法 ⇒ -1（调用方**不选**这个编码 —— 权重算不出来就不声称它可接受）。
+// ⚠ 用千分比是为了让 `q` 能**比大小**而不引入浮点。
+LET(_PARSE_Q, FUN((s),
+    (LET(t, TRIM(s));
+     IF(==(t, ""),
+        -1,
+        (LET(dot, INDEX_OF(t, "."));
+         IF(==(dot, -1),
+            (LET(w, _PARSE_DEC(t));
+             IF(<(w, 0), -1, *(w, 1000))),
+            (LET(w, _PARSE_DEC(SUB(t, 0, dot)));
+             LET(f, SUB(t, +(dot, 1), -(LEN(t), +(dot, 1))));
+             IF(||(<(w, 0), <(f, 0)),
+                -1,
+                IF(>(LEN(f), 3),
+                   -1,
+                   +( *(w, 1000),
+                      _PARSE_DEC(+(REPEAT("0", -(3, LEN(f))), f)) ))))))))));
+
+
+// ── `Accept-Encoding` ⇒ 选一个编码（`""` = 不压缩）─────────────────────────
+//
+// ⚠ 只认 `gzip` / `zstd`（`std.compress` 的**压缩**侧有这两个）；`x-gzip` 是
+//   gzip 的历史别名 ⇒ 归到 gzip。
+// ⚠ `q=0` ⇒ **明确不接受**（RFC 9110 §12.5.3）⇒ 不选。
+// ⚠ 同 `q` ⇒ **按客户端书写的先后**（RFC 9110 §12.5.3 没规定同 q 的排序 ⇒
+//   沿用客户端顺序最不意外）。
+LET(_PICK_ENCODING, FUN((hdr),
+    (LET MUT(best, "");
+     LET MUT(best_q, 0);
+     IF(==(TYPE(hdr), "NULL"),
+        NULL,
+        (FOR(item, SPLIT(hdr, ","),
+            (LET(parts, SPLIT(item, ";"));
+             LET(tok, LOWER(TRIM(AT(parts, 0, ""))));
+             LET(q, 1000);
+             FOR(p, SLICE(parts, 1, LEN(parts)),
+                 (LET(kv, SPLIT(p, "="));
+                  IF(==(LOWER(TRIM(AT(kv, 0, ""))), "q"),
+                     SET(q, _PARSE_Q(AT(kv, 1, ""))),
+                     NULL)));
+             IF(!(||(||(==(tok, "gzip"), ==(tok, "zstd")), ==(tok, "x-gzip"))),
+                NULL,
+                (IF(>(q, best_q),
+                   (SET(best_q, q); SET(best, IF(==(tok, "zstd"), "zstd", "gzip"))),
+                   NULL))))));
+     IF(>(best_q, 0), best, "")))));
+
+
+// ── 弱 ETag ⇒ 剥掉 `W/` 前缀（RFC 9110 §13.1.2 的**弱比较**）───────────────
+LET(_STATIC_WEAK, FUN((s),
+    IF(STARTS_WITH(s, "W/"), SUB(s, 2, -(LEN(s), 2)), s)));
+
+
+// ── `If-None-Match` ⇒ 命中吗？─────────────────────────────────────────────
+//
+// ⚠ 用**弱比较** ⇒ 两边的 `W/` 前缀都剥掉再比。
+// ⚠ `If-None-Match: *` ⇒ 任意现存表示都算命中。
+LET(_MATCH_INM, FUN((inm, etag),
+    (LET MUT(hit, FALSE);
+     IF(==(TYPE(inm), "NULL"),
+        FALSE,
+        (LET(v, TRIM(inm));
+         IF(==(v, "*"),
+            TRUE,
+            (FOR(item, SPLIT(v, ","),
+                (LET(c, TRIM(item));
+                 IF(==(_STATIC_WEAK(c), _STATIC_WEAK(etag)),
+                    SET(hit, TRUE),
+                    NULL)));
+             hit))));
+     hit)));
+
+
+// ── `If-Modified-Since` ⇒ 命中吗？──────────────────────────────────────────
+//
+// ⚠ 只认 **IMF-fixdate**（与本成员自己发的 `Last-Modified` 同一形状）⇒ 别的
+//   形状（RFC 850 / asctime）**比不了** ⇒ 不当作命中 ⇒ 走 200。
+//   ⚠ **判据**：长度与 `Last-Modified` 相同（IMF-fixdate 恒 29 字符）**且**
+//   第 4、5 个字符是 `", "`（RFC 850 是 `"Sunday, 06-Nov-94 …"` ⇒ 那两格是
+//   `"ay,"`）⇒ 两条判据合起来把 RFC 850 挡在外面。
+//   ⚠ 挡不住的话**宁可选 200**：把「变了」当成「没变」会把**旧内容**发出去。
+// ⚠ 日期比较用**字典序**：同一形状的 IMF-fixdate，字典序 == 时间序。
+LET(_MATCH_IMS, FUN((ims, lm),
+    (IF(==(TYPE(ims), "NULL"),
+       FALSE,
+       (LET(v, TRIM(ims));
+        (IF(==(lm, ""),
+           FALSE,
+           (IF(!=(LEN(v), LEN(lm)),
+              FALSE,
+              (IF(!=(SUB(v, 3, 2), ", "),
+                 FALSE,
+                 >=(v, lm))))))))))));
+
+
+// ── `Range` 的**单区间** ⇒ 起止（都含）────────────────────────────────────
+//
+// ⚠ 返回 `["kind": "none" | "range" | "unsatisfiable", …]`。
+// ⚠ **后缀区间**（`bytes=-500`）⇒ 最后 500 字节。
+// ⚠ **语法错** ⇒ `none`（**忽略**，不是 416）—— 客户端的语法错不该被当成
+//   「资源不存在」。
+LET(_RANGE_ONE, FUN((lo, hi, size),
+    (LET(s0, _PARSE_DEC(lo));
+     LET(e0, _PARSE_DEC(hi));
+     IF(==(lo, ""),
+        (IF(<(e0, 0),
+           RETURN(["kind": "none"]),
+           NULL);
+         IF(<=(e0, 0),
+            RETURN(["kind": "unsatisfiable"]),
+            NULL);
+         IF(>(e0, size),
+            RETURN(["kind": "unsatisfiable"]),
+            NULL);
+         RETURN(["kind": "range", "start": -(size, e0), "end": -(size, 1)])),
+        (IF(<(s0, 0),
+           RETURN(["kind": "none"]),
+           NULL);
+         IF(>=(s0, size),
+            RETURN(["kind": "unsatisfiable"]),
+            NULL);
+         IF(==(hi, ""),
+            RETURN(["kind": "range", "start": s0, "end": -(size, 1)]),
+            NULL);
+         IF(<(e0, 0),
+            RETURN(["kind": "none"]),
+            NULL);
+         IF(<(e0, s0),
+            RETURN(["kind": "unsatisfiable"]),
+            NULL);
+         IF(<(e0, -(size, 1)),
+            RETURN(["kind": "range", "start": s0, "end": e0]),
+            RETURN(["kind": "range", "start": s0, "end": -(size, 1)])))))));
+
+// ── `Range: bytes=…` ⇒ 单区间 ─────────────────────────────────────────────
+//
+// ⚠ **只支持单区间**：多区间（`bytes=0-1,5-6`）⇒ **忽略整个 `Range`**
+//   （RFC 9110 §14.2 允许服务端忽略；本成员不做多区间拼接）。
+LET(_PARSE_RANGE, FUN((hdr, size),
+    (LET MUT(out, ["kind": "none"]);
+     IF(==(TYPE(hdr), "NULL"),
+        NULL,
+        (LET(v, TRIM(hdr));
+         IF(NOT(STARTS_WITH(LOWER(v), "bytes=")),
+            NULL,
+            (LET(parts, SPLIT(SUB(v, 6, -(LEN(v), 6)), ","));
+             IF(!=(LEN(parts), 1),
+                NULL,
+                (LET(ab, SPLIT(AT(parts, 0, ""), "-"));
+                 IF(!=(LEN(ab), 2),
+                    NULL,
+                    (SET(out, _RANGE_ONE(TRIM(AT(ab, 0, "")), TRIM(AT(ab, 1, "")), size));
+                     NULL))))))));
+     out)));
+
+
+// ── STATIC_FILE(root, path, opts) -> DICT ──────────────────────────────────
+LET(STATIC_FILE, FUN((root, path, opts),
+    (LET(r, _NEED_STR("STATIC_FILE", root));
+     LET(p, _NEED_STR("STATIC_FILE", path));
+     LET(o, IF(==(TYPE(opts), "NULL"), DICT(), _NEED_DICT("STATIC_FILE", opts)));
+     LET(h0, AT(o, "headers", DICT()));
+     LET(h, IF(==(TYPE(h0), "NULL"), DICT(), _NEED_DICT("STATIC_FILE", h0)));
+     LET(method, UPPER(_NEED_STR("STATIC_FILE", AT(o, "method", "GET"))));
+     LET(compress, AT(o, "compress", FALSE));
+     LET(cc, AT(o, "cache_control", "no-cache"));
+     LET(index_name, AT(o, "index", "index.html"));
+     LET MUT(status, 200);
+     LET MUT(body, []);
+     LET MUT(extra, DICT());
+
+     // ① 只服务 GET / HEAD（其余 ⇒ 405）
+     IF(!(||(==(method, "GET"), ==(method, "HEAD"))),
+        RETURN(_STATIC_RESP(405, ["allow": "GET, HEAD", "content-length": "0"], [])),
+        NULL);
+
+     // ② 剥查询串 ⇒ 百分号解码（**解码在穿越判定之前** ⇒ `%2e%2e%2f` 也被挡住）
+     LET(qi, INDEX_OF(p, "?"));
+     LET(raw, IF(==(qi, -1), p, SUB(p, 0, qi)));
+     LET(dec, URL_DECODE(raw));
+     IF(IS_ERR(dec),
+        (LET(_, dec); RETURN(_STATIC_RESP(400, ["content-length": "0"], []))),
+        NULL);
+
+     // ③ 相对路径（去掉前导 `/`）⇒ 目标路径
+     //
+     // ⚠⚠ **这里自己拼，不用 `std.fs::PATH_JOIN`** —— `PATH_JOIN` 会把
+     //   **POSIX 的根 `/` 丢掉**（实测：`PATH_JOIN("/tmp/x", "f")` ⇒ `"tmp/x/f"`
+     //   ⇒ **相对路径**）⇒ Linux 上 `target0` 会变成相对路径 ⇒
+     //   `PATH_CONTAINS(root, target0)` 必然判假 ⇒ **同一个请求在 Linux 上
+     //   得 403、在 Windows 上得 404**（平台语义不一致）。
+     //   ⇒ 静态文件的 URL 路径**永远相对 root** ⇒ 用 `CAT(root, "/", rel)`
+     //   自己拼 ⇒ 两个平台同结果（`/etc/passwd` ⇒ `root/etc/passwd` ⇒ 404）。
+     //   （`PATH_JOIN` 自身的根丢失是 `std.fs` 的**既有成员**缺陷 ⇒ 已单独
+     //   上报，**不在本波动它** —— 改既有成员的可观察行为撞规范 `:223`。）
+     LET(rel, IF(STARTS_WITH(dec, "/"), SUB(dec, 1, -(LEN(dec), 1)), dec));
+     LET(target0, CAT(r, "/", rel));
+
+     // ④ ⚠⚠ 路径穿越防护 —— **一律走 `PATH_CONTAINS`**（逐段判定，跨平台一致）。
+     //    ⚠ **不要**在这里写字符串前缀比较：`D:/root-evil` 会冒充 `D:/root`
+     //    的子路径；而且 `PATH_NORMALIZE` 保留 `\`、`PATH_JOIN` 产出 `/`
+     //    ⇒ 前缀比对在 Windows 上**必然失败** ⇒ 全站 403。
+     IF(NOT(PATH_CONTAINS(r, target0)),
+        RETURN(_STATIC_RESP(403, ["content-length": "0"], [])),
+        NULL);
+
+     // ⑤ 元数据（**一次** stat 的快照：`std.fs::FILE_META`）
+     LET(m0, _STATIC_META(target0));
+     IF(==(AT(m0, "ok", FALSE), FALSE),
+        RETURN(_HTTP_ERR("STATIC_FILE", AT(m0, "reason", "cannot stat the target file"))),
+        NULL);
+     LET(meta0, AT(m0, "meta", DICT()));
+     LET(is_dir, ==(AT(meta0, "is_dir", FALSE), TRUE));
+     LET(target, IF(is_dir, CAT(target0, "/", index_name), target0));
+     LET(meta, IF(is_dir,
+                   (LET(m1, _STATIC_META(target));
+                    IF(==(AT(m1, "ok", FALSE), FALSE),
+                       DICT(),
+                       AT(m1, "meta", DICT()))),
+                   meta0));
+
+     // ⑥ 不存在 ⇒ 404（目录里没有 `index.html` 也是 404）
+     IF(NOT(AT(meta, "exists", FALSE)),
+        RETURN(_STATIC_RESP(404, ["content-length": "0"], [])),
+        NULL);
+
+     // ⑦ `ETag` = `mtime` + `size`（**弱** ETag：`W/"…"`）
+     //    ⚠ 弱 ETag 是因为 `mtime + size` **不是**内容摘要 ⇒ 强 ETag 会
+     //    声称「逐字节相同」而实际不保证。
+     //    ⚠ `Last-Modified` 用 `FILE_META` 给的 IMF-fixdate（UTC）。
+     LET(size, AT(meta, "size", 0));
+     LET(mtime, AT(meta, "mtime", 0));
+     LET(etag, CAT("W/\"", STR(mtime), "-", STR(size), "\""));
+     LET(lm, AT(meta, "mtime_http", ""));
+
+     // ⑧ 条件请求命中 ⇒ 304（**无正文、无 `Content-Length`**）
+     //    ⚠ RFC 9110 §15.4.5：304 的 `Content-Length` 只在「与 200 的载荷长度
+     //    相同」时才允许发 ⇒ 干脆不发。
+     IF(||(_MATCH_INM(AT(h, "if-none-match", NULL), etag),
+           _MATCH_IMS(AT(h, "if-modified-since", NULL), lm)),
+        (LET MUT(h304, DICT());
+         SET(h304, INDEX_SET(h304, "etag", etag));
+         SET(h304, INDEX_SET(h304, "last-modified", lm));
+         SET(h304, INDEX_SET(h304, "cache-control", cc));
+         IF(compress,
+            SET(h304, INDEX_SET(h304, "vary", "accept-encoding")),
+            NULL);
+         RETURN(_STATIC_RESP(304, h304, []))),
+        NULL);
+
+     // ⑨ `Range`（**单区间**）⇒ 206 / 416
+     //    ⚠ 两条**平铺**的 `IF`（不是嵌套的 `if/else`）—— R1 的 `(` 是**块**，
+     //    嵌套的 `if/else` 会把括号配平变成一件极容易出错的事。
+     LET(rng, _PARSE_RANGE(AT(h, "range", NULL), size));
+     IF(==(AT(rng, "kind", "none"), "unsatisfiable"),
+        (SET(status, 416);
+         SET(extra, ["content-range": CAT("bytes */", STR(size))])),
+        NULL);
+     IF(==(AT(rng, "kind", "none"), "range"),
+        (SET(status, 206);
+         SET(extra, ["content-range": CAT("bytes ", STR(AT(rng, "start", 0)), "-", STR(AT(rng, "end", 0)), "/", STR(size))])),
+        NULL);
+
+     // ⑩ 读正文（`READ_BYTES` ⇒ **字节数组**，二进制不会被有损 UTF-8 化）
+     LET(b, IF(==(status, 416), [], READ_BYTES(target)));
+     IF(IS_ERR(b),
+        (LET(_, b); RETURN(_HTTP_ERR("STATIC_FILE", "cannot read the target file"))),
+        NULL);
+     SET(body, b);
+     IF(==(status, 206),
+        (SET(body, SLICE(b, AT(rng, "start", 0), +(AT(rng, "end", 0), 1)))),
+        NULL);
+
+     // ⑪ 压缩协商（`Accept-Encoding` ⇒ `Content-Encoding`）
+     //     ⚠ `compress` 缺省是 `FALSE` ⇒ **默认不压缩**。
+     LET(enc, IF(compress, _PICK_ENCODING(AT(h, "accept-encoding", NULL)), ""));
+     IF(==(enc, ""),
+        NULL,
+        (LET(c, IF(==(enc, "gzip"), GZIP_COMPRESS(body), ZSTD_COMPRESS(body)));
+         IF(IS_ERR(c),
+            (LET(_, c); RETURN(_HTTP_ERR("STATIC_FILE", "cannot compress the target file"))),
+            (SET(body, c)))));
+
+     // ⑫ 响应头
+     LET MUT(hs, DICT());
+     SET(hs, INDEX_SET(hs, "content-type", AT(_STATIC_MIME, LOWER(PATH_EXT(target)), "application/octet-stream")));
+     SET(hs, INDEX_SET(hs, "content-length", STR(LEN(body))));
+     SET(hs, INDEX_SET(hs, "etag", etag));
+     SET(hs, INDEX_SET(hs, "last-modified", lm));
+     SET(hs, INDEX_SET(hs, "cache-control", cc));
+     IF(==(status, 416),
+        NULL,
+        SET(hs, INDEX_SET(hs, "accept-ranges", "bytes")));
+     IF(==(enc, ""),
+        NULL,
+        SET(hs, INDEX_SET(hs, "content-encoding", enc)));
+     IF(compress,
+        SET(hs, INDEX_SET(hs, "vary", "accept-encoding")),
+        NULL);
+     FOR(k, KEYS(extra), SET(hs, INDEX_SET(hs, k, AT(extra, k, ""))));
+
+     // ⑬ `HEAD` ⇒ 只发头不发体（`Content-Length` 仍是 `GET` 会有的那个）
+     ["status": status,
+      "headers": hs,
+      "body": IF(==(method, "HEAD"), [], body)])));
+
+
+// ── C-5 · Cookie ────────────────────────────────────────────────────────────
+// 去掉两端的双引号（`"abc"` ⇒ `abc`）。
+//
+// ⚠ **只有两端都有**引号才剥 ⇒ `"a"b"` 原样保留（那不是合法的引号包裹）。
+LET(_UNQUOTE,
+    FUN((s),
+        (LET(t, TRIM(s));
+          IF(&&(>(LEN(t), 1), &&(STARTS_WITH(t, "\""), ENDS_WITH(t, "\""))), SUB(t, 1, -(LEN(t), 2)), t))
+    )
+);
+// 头值里取一个参数：`form-data; name="x"; filename="y.txt"` ⇒ `name` ⇒ `x`。
+//
+// ⚠ 按 `;` 切段 ⇒ **只认整段**（段首是 `key=`）⇒ `filename=` **不会**被
+//   `name=` 误认（子串匹配最典型的坑）。
+// ⚠ 没这个参数 ⇒ 返回 `NULL`（**不是**空串 —— 「没有」和「是空串」是两件事）。
+LET(_PARAM_VALUE,
+    FUN((value, key),
+        (LET MUT(found, NULL);
+          FOR(seg, SPLIT(value, ";"),
+              (IF(==(TYPE(found), "NULL"),
+                    (LET(part, TRIM(seg));
+                      IF(
+                          STARTS_WITH(part, CAT(key, "=")),
+                          SET(found, _UNQUOTE(SUB(part, +(LEN(key), 1), LEN(part)))),
+                          NULL
+                      )), NULL
+                ))
+          );
+          found)
+    )
+);
+// cookie-value 的合法字符集（RFC 6265 §4.1.1 的 `cookie-octet`）。
+//
+// `%x21 / %x23-2B / %x2D-3A / %x3C-5B / %x5D-7E`
+// ⇒ 排除：空格(0x20)、`"`(0x22)、`,`(0x2C)、`;`(0x3B)、`\`(0x5C)、>= 0x7F。
+//
+// ⚠ 这条闸是**响应拆分**的防线：`Set-Cookie` 的值里出现 `;` / CR / LF
+//   就能把**另一个头**塞进响应 ⇒ **一律拒**（不替调用方猜怎么编码）。
+LET(_IS_COOKIE_VALUE,
+    FUN((s),
+        (LET(cps, CODEPOINTS(s));
+          LET MUT(ok, TRUE);
+          LET MUT(i, 0);
+          WHILE(<(i, LEN(cps)),
+              (LET(cp, AT(cps, i, 0));
+                IF(
+                    ||(<(cp, 33), >(cp, 126)),
+                    SET(ok, FALSE),
+                    IF(||(||(==(cp, 34), ==(cp, 44)), ||(==(cp, 59), ==(cp, 92))), SET(ok, FALSE), NULL)
+                );
+                SET(i, +(i, 1)))
+          );
+          ok)
+    )
+);
+// ── PARSE_COOKIES(header) -> DICT ──────────────────────────────────────────
+//
+// 解析 `Cookie` 头的值 ⇒ 「cookie 名 ⇒ cookie 值」。
+//
+// · 分隔符是 `;`（不是 `,`）—— RFC 6265 §4.1.1。
+// · 值两端的**双引号**剥掉（RFC 6265 §4.1.1 允许 `DQUOTE` 包裹）。
+// · **没有 `=` 的段跳过**（不拒 —— 客户端塞垃圾不该把整条请求打死）。
+// · **同名 cookie：后者覆盖前者**（RFC 6265 §5.3：「取**最后**那个」）。
+// · 空串 ⇒ **空 `DICT`**（没有 `Cookie` 头就是没有 cookie，不是错）。
+//
+// ⚠ 值**不做**百分号解码（RFC 6265 没有这条；百分号编码是**事实上的**约定，
+//   不是**规范里的**）⇒ 要解码的调用方自己解。
+LET(PARSE_COOKIES,
+    FUN((header),
+        (LET(text, _NEED_STR("PARSE_COOKIES", header));
+          LET MUT(out, DICT());
+          FOR(seg,SPLIT(text, ";"),
+              (LET(part, TRIM(seg));
+                IF(==(part, ""),NULL,
+                    (LET(eq, INDEX_OF(part, "="));
+                      IF(==(eq, -1),NULL,
+                          (LET(name, TRIM(SUB(part, 0, eq)));
+                            IF(
+                                ==(name, ""),
+                                NULL,
+                                SET(out, INDEX_SET(out, name, _UNQUOTE(SUB(part, +(eq, 1), LEN(part)))))
+                            ))
+                      ))
+                ))
+          );
+          out)
+    )
+);
+// `SET_COOKIE` 认识的选项名。
+LET(_SET_COOKIE_KEYS, ["http_only", "secure", "same_site", "max_age", "path", "domain"]);
+// `SameSite` 的规范写法（大小写不敏感地认，输出**规范写法**）。
+//
+// ⚠ 不认识的取值 ⇒ 返回**空串**（调用方据此判「非法」）。
+LET(_SAME_SITE_CANON,
+    FUN((v),
+        (LET(u, UPPER(v));
+          IF(==(u, "STRICT"), "Strict", IF(==(u, "LAX"), "Lax", IF(==(u, "NONE"), "None", ""))))
+    )
+);
+// 某个选项的值类型对不对。
+LET(_OPT_TYPE_OK,
+    FUN((k, v),
+        (IF(==(k, "http_only"),==(TYPE(v), "BOOLEAN"),
+              IF(==(k, "secure"),==(TYPE(v), "BOOLEAN"),
+                  IF(==(k, "same_site"),==(TYPE(v), "STRING"),
+                      IF(==(k, "max_age"),==(TYPE(v), "INTEGER"),
+                          IF(
+                              ==(k, "path"),
+                              ==(TYPE(v), "STRING"),
+                              IF(==(k, "domain"), ==(TYPE(v), "STRING"), FALSE)
+                          )
+                      )
+                  )
+              )
+          ))
+    )
+);
+// 校验 `opts`：键名认识吗？值类型对吗？`SameSite` 的取值合法吗？
+//
+// ⚠ **未知键 ⇒ 拒**（不静默忽略：拼错的属性名会变成「那个属性没设」）。
+// ⚠ 返回 `ERR` 值或 `NULL` —— **不**在这里造诊断。
+LET(_CHECK_COOKIE_OPTS,
+    FUN((o),
+        (LET MUT(err, NULL);
+          FOR(k,KEYS(o),
+              (IF(NOT(CONTAINS(_SET_COOKIE_KEYS, k)),(SET(err, _HTTP_ERR("SET_COOKIE", CAT("unknown option: ", k))); NULL),
+                    IF(NOT(_OPT_TYPE_OK(k, AT(o, k, NULL))),
+                        (SET(err, _HTTP_ERR("SET_COOKIE", CAT("the option `", k, "` has a wrong type")));
+                          NULL),
+                        IF(==(k, "same_site"),
+                            IF(==(_SAME_SITE_CANON(AT(o, "same_site", "")), ""),
+                                (SET(err,
+                                      _HTTP_ERR(
+                                          "SET_COOKIE",
+                                          "the option `same_site` must be Strict, Lax or None"
+                                      )
+                                  );
+                                  NULL),NULL
+                            ),NULL
+                        )
+                    )
+                ))
+          );
+          err)
+    )
+);
+// 把属性按**固定顺序**接在 cookie 串后面。
+//
+// ⚠ 顺序：`Path` → `Domain` → `Max-Age` → `SameSite` → `Secure` → `HttpOnly`
+//   —— 固定 ⇒ 输出**逐字可对拍**。
+LET(_COOKIE_ATTRS,
+    FUN((o, base),
+        (LET MUT(s, base);
+          IF(HAS(o, "path"), SET(s, CAT(s, "; Path=", AT(o, "path", ""))), NULL);
+          IF(HAS(o, "domain"), SET(s, CAT(s, "; Domain=", AT(o, "domain", ""))), NULL);
+          IF(HAS(o, "max_age"), SET(s, CAT(s, "; Max-Age=", STR(AT(o, "max_age", 0)))), NULL);
+          IF(
+              HAS(o, "same_site"),
+              SET(s, CAT(s, "; SameSite=", _SAME_SITE_CANON(AT(o, "same_site", "")))),
+              NULL
+          );
+          IF(HAS(o, "secure"), IF(AT(o, "secure", FALSE), SET(s, CAT(s, "; Secure")), NULL), NULL);
+          IF(HAS(o, "http_only"), IF(AT(o, "http_only", FALSE), SET(s, CAT(s, "; HttpOnly")), NULL), NULL);
+          s)
+    )
+);
+// ── SET_COOKIE(name, value, opts?) -> STRING ───────────────────────────────
+//
+// 生成一条 `Set-Cookie` 头的**值**（不含头名）。
+//
+// · `name` 必须是 `token`（RFC 6265 §4.1.1）—— 不是 ⇒ `ERR`。
+// · `value` 必须在 `cookie-octet` 集里（见 `_IS_COOKIE_VALUE`）—— 不是 ⇒ `ERR`
+//   （含空格 / `;` / `,` / 控制字符的值**必须**由调用方先编码）。
+// · `opts`（可选 `DICT`）的键：
+//   | 键 | 类型 | 产出 |
+//   |---|---|---|
+//   | `path` | STRING | `; Path=…` |
+//   | `domain` | STRING | `; Domain=…` |
+//   | `max_age` | INTEGER | `; Max-Age=…` |
+//   | `same_site` | STRING | `; SameSite=Strict\|Lax\|None` |
+//   | `secure` | BOOLEAN | `; Secure` |
+//   | `http_only` | BOOLEAN | `; HttpOnly` |
+//   —— **未知键 / 类型错 / `SameSite` 取值不合法 ⇒ `ERR`**（不静默忽略）。
+LET(SET_COOKIE,
+    FUN((name, value, opts = NULL),
+        (LET(n, _NEED_STR("SET_COOKIE", name));
+          LET(v, _NEED_STR("SET_COOKIE", value));
+          IF(NOT(_IS_TOKEN(n)),_HTTP_ERR("SET_COOKIE", "the cookie name is not a token"),
+              IF(NOT(_IS_COOKIE_VALUE(v)),_HTTP_ERR("SET_COOKIE", "the cookie value contains an illegal character"),
+                  (LET MUT(o, DICT());
+                    IF(!=(TYPE(opts), "NULL"), SET(o, _NEED_DICT("SET_COOKIE", opts)), NULL);
+                    LET(chk, _CHECK_COOKIE_OPTS(o));
+                    IF(IS_ERR(chk), chk, _COOKIE_ATTRS(o, CAT(n, "=", v))))
+              )
+          ))
+    )
+);
+
+// ── C-6 · 表单（x-www-form-urlencoded）────────────────────────────────────
+// ── PARSE_FORM(body) -> DICT ───────────────────────────────────────────────
+//
+// 解析 `application/x-www-form-urlencoded` 正文 ⇒ 「字段名 ⇒ 值」。
+//
+// · 分隔符 `&`；`=` **只切第一个**（值里可以再含 `=`）。
+// · `+` ⇒ **空格**；`%XX` ⇒ 百分号解码（`std.str::QUERY_PARSE` 的**同一套**
+//   解码器 ⇒ 两处口径**逐字一致**）。
+// · **同名**字段出现多次 ⇒ 值升级成 `ARRAY[STRING]`（按出现序）。
+// · 空正文 ⇒ **空 `DICT`**。
+// · 非法百分号转义 ⇒ `ERR`（`kind` 是 `HttpError`，**不是** `QueryError`
+//   —— 本模块对外**一个**种类名）。
+LET(PARSE_FORM,
+    FUN((body),
+        (LET(text, _NEED_STR("PARSE_FORM", body));
+          LET(res, QUERY_PARSE(text));
+          IF(
+              IS_ERR(res),
+              (LET(p, ERR_PAYLOAD(res)); _HTTP_ERR("PARSE_FORM", AT(p, "reason", "invalid form body"))),
+              res
+          ))
+    )
+);
+
+// ── C-4 · 路由 ──────────────────────────────────────────────────────────────
+// **一段**路径 ⇒ 段描述（编译结果）。
+//
+// ⚠ 形状**统一**（五个键都有）⇒ 静态检查盯的「分支字面量形状一致」不报。
+// · 字面段：`{"kind": "literal", "text": …, "name": "", "prefix": "", "suffix": ""}`
+// · 参数段：`{"kind": "param", "text": "", "name": …, "prefix": …, "suffix": …}`
+//
+// ⚠ **一段里只允许一个参数**（`{slug}.html` 这种「参数 + 前后缀」可以，
+//   `{a}{b}` 不行）⇒ 判定唯一且无歧义（不必回溯）。
+LET(_COMPILE_SEG,
+    FUN((seg),
+        (LET(open, INDEX_OF(seg, "{"));
+          IF(==(open, -1),["kind": "literal", "text": seg, "name": "", "prefix": "", "suffix": ""],
+              (LET(close, INDEX_OF(seg, "}"));
+                IF(NOT(>(close, open)),_HTTP_ERR("ROUTE", CAT("the route pattern `", seg, "` has an unclosed `{`")),
+                    (LET(name, SUB(seg, +(open, 1), -(close, +(open, 1))));
+                      IF(==(name, ""),_HTTP_ERR("ROUTE", CAT("the route pattern `", seg, "` has an empty parameter name")),
+                          IF(>(INDEX_OF(name, "{"), -1),
+                              _HTTP_ERR("ROUTE",
+                                  CAT(
+                                      "the route pattern `",
+                                      seg,
+                                      "` has more than one parameter in one segment"
+                                  )
+                              ),
+                              (LET(prefix, SUB(seg, 0, open));
+                                LET(suffix, SUB(seg, +(close, 1), LEN(seg)));
+                                IF(>(INDEX_OF(suffix, "{"), -1),
+                                    _HTTP_ERR("ROUTE",
+                                        CAT(
+                                            "the route pattern `",
+                                            seg,
+                                            "` has more than one parameter in one segment"
+                                        )
+                                    ),["kind": "param", "text": "", "name": name, "prefix": prefix, "suffix": suffix]
+                                ))
+                          )
+                      ))
+                ))
+          ))
+    )
+);
+// 一个路径模式 ⇒ 段描述数组。
+LET(_COMPILE_SEGS,
+    FUN((pattern),
+        (LET MUT(out, []);
+          LET MUT(err, NULL);
+          FOR(seg,SPLIT(pattern, "/"),
+              (IF(
+                    ==(TYPE(err), "NULL"),
+                    (LET(c, _COMPILE_SEG(seg)); IF(IS_ERR(c), (SET(err, c); NULL), SET(out, PUSH(out, c)))),
+                    NULL
+                ))
+          );
+          IF(IS_ERR(err), err, out))
+    )
+);
+// 路由表里的一条 ⇒ 方法数组；类型不对 ⇒ `ERR`。
+LET(_ROUTE_METHODS,
+    FUN((v),
+        (IF(==(TYPE(v), "STRING"),[v],
+              IF(==(TYPE(v), "ARRAY"),
+                  (LET MUT(bad, FALSE);
+                    FOR(m, v, IF(NOT(==(TYPE(m), "STRING")), SET(bad, TRUE), NULL));
+                    IF(bad, _HTTP_ERR("ROUTE", "a route method must be a string"), v)),_HTTP_ERR("ROUTE", "a route table value must be a string or an array of strings")
+              )
+          ))
+    )
+);
+// ── ROUTE(table) -> ARRAY ───────────────────────────────────────────────────
+//
+// **编译**一张路由表（模式 ⇒ 方法）。
+//
+// · 模式必须以 `/` 开头；`{` / `}` 不配对、参数名空、一段里两个参数 ⇒ `ERR`。
+// · 方法是 `STRING`（`"GET"`）或 `ARRAY[STRING]`（`["GET", "POST"]`）。
+// · **方法名逐字比较**（HTTP 方法**大小写敏感**，RFC 9110 §9.1）⇒ 表里写
+//   `"get"` 就只匹配 `"get"`。
+//
+// ⚠ 返回值是**编译结果**（`ARRAY`，内部形状**不透明**）⇒ `MATCH_ROUTE` 只认它。
+LET(ROUTE,
+    FUN((table),
+        (LET(t, _NEED_DICT("ROUTE", table));
+          LET MUT(out, []);
+          LET MUT(err, NULL);
+          FOR(pattern,KEYS(t),
+              (IF(==(TYPE(err), "NULL"),
+                    (IF(NOT(STARTS_WITH(pattern, "/")),
+                          (SET(err,
+                                _HTTP_ERR(
+                                    "ROUTE",
+                                    CAT("the route pattern `", pattern, "` must start with `/`")
+                                )
+                            );
+                            NULL),
+                          (LET(ms, _ROUTE_METHODS(AT(t, pattern, NULL)));
+                            IF(IS_ERR(ms),(SET(err, ms); NULL),
+                                (LET(segs, _COMPILE_SEGS(pattern));
+                                  IF(IS_ERR(segs),(SET(err, segs); NULL),
+                                      SET(
+                                          out,
+                                          PUSH(out, ["pattern": pattern, "segments": segs, "methods": ms])
+                                      )
+                                  ))
+                            ))
+                      )),NULL
+                ))
+          );
+          IF(IS_ERR(err), err, out))
+    )
+);
+// 一个段描述 + 一个路径段 ⇒ 匹配结果。
+//
+// `{"ok": BOOLEAN, "value": STRING}` —— `value` 是抽出来的参数值
+// （字面段 ⇒ `""`）。
+LET(_MATCH_SEG,
+    FUN((spec, seg),
+        (IF(==(AT(spec, "kind", ""), "literal"),IF(==(seg, AT(spec, "text", "")), ["ok": TRUE, "value": ""], ["ok": FALSE, "value": ""]),
+              (LET(prefix, AT(spec, "prefix", ""));
+                LET(suffix, AT(spec, "suffix", ""));
+                IF(NOT(&&(STARTS_WITH(seg, prefix), ENDS_WITH(seg, suffix))),["ok": FALSE, "value": ""],
+                    IF(
+                        >(LEN(seg), +(LEN(prefix), LEN(suffix))),
+                        ["ok": TRUE, "value": SUB(seg, LEN(prefix), -(LEN(seg), +(LEN(prefix), LEN(suffix))))],
+                        ["ok": FALSE, "value": ""]
+                    )
+                ))
+          ))
+    )
+);
+// 一条路由 + 一组路径段 ⇒ `{"ok": BOOLEAN, "params": DICT}`。
+//
+// ⚠ **段数不等 ⇒ 直接不匹配**（`/a/` 与 `/a` **不是**一条路）。
+LET(_MATCH_ENTRY,
+    FUN((entry, segs),
+        (LET(es, AT(entry, "segments", []));
+          IF(!=(LEN(es), LEN(segs)),["ok": FALSE, "params": DICT()],
+              (LET MUT(ps, DICT());
+                LET MUT(ok, TRUE);
+                LET MUT(i, 0);
+                WHILE(<(i, LEN(segs)),
+                    (LET(spec, AT(es, i, DICT()));
+                      LET(m, _MATCH_SEG(spec, AT(segs, i, "")));
+                      IF(==(AT(m, "ok", FALSE), FALSE),(SET(ok, FALSE); SET(i, LEN(segs))),
+                          (LET(nm, AT(spec, "name", ""));
+                            IF(==(nm, ""), NULL, SET(ps, INDEX_SET(ps, nm, AT(m, "value", ""))));
+                            SET(i, +(i, 1)))
+                      ))
+                );
+                ["ok": ok, "params": ps])
+          ))
+    )
+);
+// ── MATCH_ROUTE(routes, request) -> DICT ────────────────────────────────────
+//
+// 用**编译好的**路由表匹配一条请求。
+//
+// · `request` = `PARSE_REQUEST` 的结果（`{"method", "path", …}`）。
+// · **查询串不参与匹配**：`/a?x=1` 按 `/a` 匹配（`?` 之后整段切掉）。
+// · 路径按 `/` 切段，**段数必须相等** ⇒ `/a/` 与 `/a` **不是**一条路。
+// · 参数段：`{slug}.html` ⇒ 段必须**以 `.html` 结尾**，前面的**非空**部分
+//   就是参数值（**原样**，不百分号解码）。
+// · 命中 ⇒ `{"matched": TRUE, "params": …, "status": 200, "allow": ""}`；
+//   路径命中但方法不符 ⇒ `status = 405` 且 `allow` 列出允许的方法；
+//   路径没命中 ⇒ `status = 404`。
+//
+// ⚠ **多条**路径命中时：**第一条**方法也对的那条赢（表的顺序**有意义**）。
+LET(MATCH_ROUTE,
+    FUN((routes, request),
+        (IF(!=(TYPE(routes), "ARRAY"),_HTTP_ERR("MATCH_ROUTE", "the route table must be built by ROUTE"),
+              (LET(req, _NEED_DICT("MATCH_ROUTE", request));
+                LET(method, _NEED_STR("MATCH_ROUTE", AT(req, "method", "")));
+                LET(raw, _NEED_STR("MATCH_ROUTE", AT(req, "path", "")));
+                LET(q, INDEX_OF(raw, "?"));
+                LET(path, IF(==(q, -1), raw, SUB(raw, 0, q)));
+                LET(segs, SPLIT(path, "/"));
+                LET MUT(matched, FALSE);
+                LET MUT(params, DICT());
+                LET MUT(allow, []);
+                FOR(entry,routes,
+                    (LET(m, _MATCH_ENTRY(entry, segs));
+                      IF(==(AT(m, "ok", FALSE), FALSE),NULL,
+                          IF(CONTAINS(AT(entry, "methods", []), method),IF(matched, NULL, (SET(matched, TRUE); SET(params, AT(m, "params", DICT())))),
+                              FOR(
+                                  m2,
+                                  AT(entry, "methods", []),
+                                  IF(CONTAINS(allow, m2), NULL, SET(allow, PUSH(allow, m2)))
+                              )
+                          )
+                      ))
+                );
+                IF(matched,["matched": TRUE, "params": params, "status": 200, "allow": ""],
+                    IF(
+                        >(LEN(allow), 0),
+                        ["matched": FALSE, "params": DICT(), "status": 405, "allow": _JOIN_FROM(allow, 0, ", ")],
+                        ["matched": FALSE, "params": DICT(), "status": 404, "allow": ""]
+                    )
+                ))
+          ))
+    )
+);
+
+// ── C-6 · multipart ─────────────────────────────────────────────────────────
+// multipart 扫描的**初始状态**。
+//
+// `{"state": INTEGER, "hdrs": ARRAY, "clines": ARRAY, "parts": ARRAY}`
+// —— `state`：`0` 前导区 / `1` 头块 / `2` 内容 / `3` 收尾。
+["state": 0, "hdrs": [], "clines": [], "parts": []];
+// 当前部件收进 `parts`，头 / 内容缓冲清空 ⇒ 新状态。
+LET(_MP_PUSH_PART,
+    FUN((state),
+        (LET(parts,
+              PUSH(
+                  AT(state, "parts", []),
+                  ["headers": AT(state, "hdrs", []), "content": _JOIN_FROM(AT(state, "clines", []), 0, "\r\n")]
+              )
+          );
+          LET(st2, INDEX_SET(state, "parts", parts));
+          LET(st3, INDEX_SET(st2, "hdrs", []));
+          INDEX_SET(st3, "clines", []))
+    )
+);
+// 状态推进：读**一行** ⇒ 新状态（或 `ERR`）。
+//
+// ## ⚠⚠ 边界匹配是「**整行相等**」，不是「前缀匹配」
+//
+// RFC 2046 §5.1.1：分隔行必须**整行**等于 `--boundary`（收尾的是
+// `--boundary--`）⇒ 正文里出现「**以 `--boundary` 开头但不相等**」的行
+// （`--boundaryX`）是**内容**，不是分隔行。
+// ⇒ **前缀匹配会把内容吃掉**（经典的 boundary 注入面）⇒ 本实现**不做**。
+//
+// ⚠ 头块里**没有空行**（`Content-Disposition` 与内容之间的那个空行）
+//   ⇒ `ERR`（部件的结构坏了）。
+LET(_MP_STEP,
+    FUN((state, line, delim),
+        (LET(st, AT(state, "state", 0));
+          LET(is_end, ==(line, CAT(delim, "--")));
+          IF(==(st, 0),
+              IF(
+                  ==(line, delim),
+                  INDEX_SET(state, "state", 1),
+                  IF(is_end, INDEX_SET(state, "state", 3), state)
+              ),
+              IF(==(st, 1),
+                  IF(==(line, ""),INDEX_SET(state, "state", 2),
+                      IF(==(line, delim),
+                          _HTTP_ERR(
+                              "PARSE_MULTIPART",
+                              "a multipart part has no blank line before its content"
+                          ),
+                          IF(is_end,
+                              _HTTP_ERR(
+                                  "PARSE_MULTIPART",
+                                  "a multipart part has no blank line before its content"
+                              ),INDEX_SET(state, "hdrs", PUSH(AT(state, "hdrs", []), line))
+                          )
+                      )
+                  ),
+                  IF(==(line, delim),INDEX_SET(_MP_PUSH_PART(state), "state", 1),
+                      IF(
+                          is_end,
+                          INDEX_SET(_MP_PUSH_PART(state), "state", 3),
+                          INDEX_SET(state, "clines", PUSH(AT(state, "clines", []), line))
+                      )
+                  )
+              )
+          ))
+    )
+);
+// multipart 正文 ⇒ 部件数组。
+//
+// 每个部件 = `{"headers": ARRAY[STRING], "content": STRING}`。
+//
+// ⚠ 行分隔只认 **CRLF**（multipart 的规范分隔）⇒ 只用 LF 写的正文会被拒
+//   （「没有边界」⇒ `ERR`），**不猜**别的分隔约定。
+// ⚠ 前导区（第一个分隔行之前的内容）**允许**（RFC 2046 §5.1.1）⇒ 忽略。
+// ⚠ **没有收尾分隔行 ⇒ `ERR`**（截断的正文不该被当成完整的）。
+LET(_MP_SCAN,
+    FUN((body, delim),
+        (LET(lines, SPLIT(body, "\r\n"));
+          LET MUT(state, ["state": 0, "hdrs": [], "clines": [], "parts": []]);
+          LET MUT(err, NULL);
+          LET MUT(i, 0);
+          WHILE(&&(<(i, LEN(lines)), ==(TYPE(err), "NULL")),
+              (LET(line, AT(lines, i, ""));
+                SET(i, +(i, 1));
+                LET(res, _MP_STEP(state, line, delim));
+                IF(IS_ERR(res), (SET(err, res); NULL), SET(state, res)))
+          );
+          IF(IS_ERR(err),err,
+              IF(
+                  ==(AT(state, "state", 0), 3),
+                  AT(state, "parts", []),
+                  _HTTP_ERR("PARSE_MULTIPART", "the multipart body is not terminated by the closing boundary")
+              )
+          ))
+    )
+);
+// 一个部件的头 ⇒ `{"name", "filename", "has_filename", "content_type"}`。
+//
+// ⚠ `Content-Disposition` 的参数按 `;` 切段取 ⇒ `filename=` **不会**被
+//   `name=` 误认。
+// ⚠ `Content-Type` **没有**就是空串（不是错 —— 文件 part 允许不带它）。
+LET(_MP_PART_HEAD,
+    FUN((hdrs),
+        (LET MUT(name, "");
+          LET MUT(filename, "");
+          LET MUT(has_filename, FALSE);
+          LET MUT(ctype, "");
+          FOR(h,hdrs,
+              (LET(idx, INDEX_OF(h, ":"));
+                IF(==(idx, -1),NULL,
+                    (LET(k, LOWER(TRIM(SUB(h, 0, idx))));
+                      LET(v, TRIM(SUB(h, +(idx, 1), LEN(h))));
+                      IF(==(k, "content-disposition"),
+                          (LET(n, _PARAM_VALUE(v, "name"));
+                            LET(f, _PARAM_VALUE(v, "filename"));
+                            IF(==(TYPE(n), "NULL"), NULL, SET(name, n));
+                            IF(==(TYPE(f), "NULL"), NULL, (SET(filename, f); SET(has_filename, TRUE)))),IF(==(k, "content-type"), SET(ctype, v), NULL)
+                      ))
+                ))
+          );
+          ["name": name, "filename": filename, "has_filename": has_filename, "content_type": ctype])
+    )
+);
+// 文件名里可以**原样**留下的字符：字母 / 数字 / `.` / `-` / `_`。
+LET(_SAFE_CHAR,
+    FUN((c),
+        (IF(
+              ||(||(&&(>=(c, 48), <=(c, 57)), &&(>=(c, 65), <=(c, 90))), &&(>=(c, 97), <=(c, 122))),
+              TRUE,
+              ||(||(==(c, 46), ==(c, 45)), ==(c, 95))
+          ))
+    )
+);
+// 客户端给的文件名 ⇒ 安全的落盘文件名。
+//
+// ⚠ **路径分隔符 / `..` 一律换掉**（`../../etc/passwd` ⇒ `.._.._etc_passwd`）
+//   —— 落盘名**由服务端决定**，不采信客户端给的路径。
+LET(_SAFE_NAME,
+    FUN((filename),
+        (LET MUT(out, "");
+          FOR(c, CODEPOINTS(filename), SET(out, +(out, IF(_SAFE_CHAR(c), FROM_CODEPOINTS([c]), "_"))));
+          IF(||(==(out, ""), ||(==(out, "."), ==(out, ".."))), "upload", out))
+    )
+);
+// 环境里的临时目录：`TMPDIR` → `TEMP` → `TMP`；都没有 ⇒ 空串。
+//
+// ⚠ **不回落**到当前目录（往工作目录里乱写文件比失败更糟）。
+LET(_TEMP_DIR,
+    FUN((),
+        (LET(a, ENV_GET("TMPDIR"));
+          IF(!=(TYPE(a), "NULL"),a,
+              (LET(b, ENV_GET("TEMP"));
+                IF(!=(TYPE(b), "NULL"), b, (LET(c, ENV_GET("TMP")); IF(!=(TYPE(c), "NULL"), c, ""))))
+          ))
+    )
+);
+// `PARSE_MULTIPART` 认识的选项名。
+LET(_MP_OPT_KEYS, ["dir"]);
+// 校验 `opts`：只有 `dir`（字符串）⇒ 别的一律 `ERR`。
+LET(_CHECK_MP_OPTS,
+    FUN((o),
+        (LET MUT(err, NULL);
+          FOR(k,KEYS(o),
+              (IF(NOT(CONTAINS(_MP_OPT_KEYS, k)),(SET(err, _HTTP_ERR("PARSE_MULTIPART", CAT("unknown option: ", k))); NULL),
+                    IF(!=(TYPE(AT(o, k, NULL)), "STRING"),
+                        (SET(err, _HTTP_ERR("PARSE_MULTIPART", CAT("the option `", k, "` must be a string")));
+                          NULL),NULL
+                    )
+                ))
+          );
+          err)
+    )
+);
+// 一个文件 part ⇒ 落盘；返回那条文件记录或 `ERR`。
+//
+// ⚠ 落盘名 = `<序号>_<安全文件名>`（序号是 part 的次序）⇒ 两个同名文件
+//   **不会**互相覆盖。
+// ⚠ **目录由本成员负责建出来**（`MKDIRS` 幂等 ⇒ 已存在**不是**错）⇒ 调用方
+//   只需给「落在哪」，不必先知道要建哪几层。
+// ⚠⚠ **落盘路径自己拼，不用 `std.fs::PATH_JOIN`** —— `PATH_JOIN` 会把
+//   **POSIX 的根 `/` 丢掉**（`PATH_JOIN("/tmp/x", "f")` ⇒ `"tmp/x/f"` ⇒
+//   **相对路径** ⇒ 落进进程 CWD ⇒ 「parent directory does not exist」）。
+//   ⇒ 这里用 `CAT(d, "/", 名)`（分隔符固定 `/`，与 `PATH_JOIN` 的口径一致），
+//   **根 `/` 得以保留** ⇒ 调用方给的**绝对路径**仍是绝对路径。
+//   （`PATH_JOIN` 自身的根丢失是 `std.fs` 的独立缺陷 ⇒ 已单独上报。）
+LET(_MP_WRITE_FILE,
+    FUN((dir, head, content, idx),
+        (LET MUT(d, dir);
+          IF(==(d, ""), SET(d, _TEMP_DIR()), NULL);
+          IF(==(d, ""),
+              _HTTP_ERR(
+                  "PARSE_MULTIPART",
+                  "no directory for the file parts and no temporary directory in the environment"
+              ),
+              (LET(_, MKDIRS(d));
+                LET(path, CAT(d, "/", CAT(STR(idx), "_", _SAFE_NAME(AT(head, "filename", "")))));
+                LET(w, WRITE_FILE(path, content));
+                IF(IS_ERR(w),
+                    (LET(p, ERR_PAYLOAD(w));
+                      _HTTP_ERR("PARSE_MULTIPART", AT(p, "reason", "cannot write the file part"))),["name": AT(head, "name", ""), "filename": AT(head, "filename", ""), "path": path, "content_type": AT(head, "content_type", ""), "size": BYTE_LEN(content)]
+                ))
+          ))
+    )
+);
+// 字段字典：同名 ⇒ 值升级成 `ARRAY[STRING]`（与本模块「同名多值」同款）。
+LET(_MP_PUT_FIELD,
+    FUN((fields, name, content),
+        (LET(old, AT(fields, name, NULL));
+          IF(==(TYPE(old), "NULL"),INDEX_SET(fields, name, content),
+              IF(
+                  ==(TYPE(old), "ARRAY"),
+                  INDEX_SET(fields, name, PUSH(old, content)),
+                  INDEX_SET(fields, name, [old, content])
+              )
+          ))
+    )
+);
+// 一个 part ⇒ 新状态（或 `ERR`）。
+//
+// · **带 `filename` 的 part 是文件** ⇒ 内容落盘，路径交给调用方。
+// · 不带的是普通字段 ⇒ 进 `fields`。
+// · **没有 `name` 的 part ⇒ `ERR`**（RFC 7578 §4.2：字段必须有名字）。
+LET(_MP_APPLY,
+    FUN((state, part, idx, dir),
+        (LET(h, _MP_PART_HEAD(AT(part, "headers", [])));
+          LET(name, AT(h, "name", ""));
+          LET(content, AT(part, "content", ""));
+          IF(==(name, ""),_HTTP_ERR("PARSE_MULTIPART", "a multipart part has no name"),
+              IF(AT(h, "has_filename", FALSE),
+                  (LET(w, _MP_WRITE_FILE(dir, h, content, idx));
+                    IF(IS_ERR(w), w, INDEX_SET(state, "files", PUSH(AT(state, "files", []), w)))),INDEX_SET(state, "fields", _MP_PUT_FIELD(AT(state, "fields", DICT()), name, content))
+              )
+          ))
+    )
+);
+// ── PARSE_MULTIPART(body, content_type, opts?) -> DICT ─────────────────────
+//
+// 解析 `multipart/form-data` 正文 ⇒ `{"fields": DICT, "files": ARRAY[DICT]}`。
+//
+// · `content_type` 是**整个** `Content-Type` 头的值
+//   （`"multipart/form-data; boundary=…"”）⇒ **边界从它里面取**。
+// · **缺 `boundary` 参数 ⇒ `ERR`**（RFC 2046 §5.1.1：没有边界就无法定界）。
+// · 媒体类型**不是** `multipart/form-data` ⇒ `ERR`。
+// · `opts`（可选 `DICT`）只有 `dir`（字符串）：文件 part 落盘的目录；
+//   缺省 ⇒ 环境里的临时目录（`TMPDIR` → `TEMP` → `TMP`）；都没有 ⇒ `ERR`。
+//
+// ⚠ **落盘的是「有损 UTF-8 的文本」**：请求正文在本语言里**就是** `STRING`
+//   （与 `PARSE_REQUEST` 的 `body` 同款）⇒ **二进制文件 part 不能原样落盘**
+//   （非法 UTF-8 的字节在**进**本语言之前就已经丢了）。
+//   ⇒ 要传二进制，得走**字节**通路（不在本成员范围内）。
+LET(PARSE_MULTIPART,
+    FUN((body, content_type, opts = NULL),
+        (LET(text, _NEED_STR("PARSE_MULTIPART", body));
+          LET(ct, _NEED_STR("PARSE_MULTIPART", content_type));
+          LET MUT(o, DICT());
+          IF(!=(TYPE(opts), "NULL"), SET(o, _NEED_DICT("PARSE_MULTIPART", opts)), NULL);
+          LET(chk, _CHECK_MP_OPTS(o));
+          IF(IS_ERR(chk),chk,
+              (LET(media, LOWER(TRIM(AT(SPLIT(ct, ";"), 0, ""))));
+                IF(!=(media, "multipart/form-data"),_HTTP_ERR("PARSE_MULTIPART", "the content type is not multipart/form-data"),
+                    (LET(boundary, _PARAM_VALUE(ct, "boundary"));
+                      IF(==(TYPE(boundary), "NULL"),_HTTP_ERR("PARSE_MULTIPART", "the multipart content type has no boundary parameter"),
+                          IF(==(boundary, ""),_HTTP_ERR("PARSE_MULTIPART", "the multipart boundary is empty"),
+                              (LET(scan, _MP_SCAN(text, CAT("--", boundary)));
+                                IF(IS_ERR(scan),scan,
+                                    (LET MUT(state, ["fields": DICT(), "files": []]);
+                                      LET MUT(err, NULL);
+                                      LET MUT(idx, 0);
+                                      FOR(part,scan,
+                                          (LET(cur, idx);
+                                            SET(idx, +(idx, 1));
+                                            LET(res, _MP_APPLY(state, part, cur, AT(o, "dir", "")));
+                                            IF(IS_ERR(res), (SET(err, res); NULL), SET(state, res)))
+                                      );
+                                      IF(
+                                          IS_ERR(err),
+                                          err,
+                                          ["fields": AT(state, "fields", DICT()), "files": AT(state, "files", [])]
+                                      ))
+                                ))
+                          )
+                      ))
+                ))
+          ))
+    )
+);
+
+// EXPORT 顺序 = 需求清单 C-1 / C-2 / C-3 的行序（先解析、后构造、再连接管理），
+// 后面接 C-4 / C-5 / C-6 的行序（路由 ⇒ Cookie ⇒ 表单）。
 //
 // ⚠ `EXPORT` **必须**写在一行里：`wlwl-std::lang_exports` 是**逐行**扫的
 //   (一行一条声明)⇒ 拆成多行,附录 A 的镜像生成器会扫出**零个**成员。
-EXPORT(["PARSE_REQUEST", "BUILD_RESPONSE", "SERVE_STREAM"]);
+// ═══════════════════════════════════════════════════════════════════════
+EXPORT(["PARSE_REQUEST", "BUILD_RESPONSE", "SERVE_STREAM", "ROUTE", "MATCH_ROUTE", "PARSE_COOKIES", "SET_COOKIE", "PARSE_FORM", "PARSE_MULTIPART", "STATIC_FILE", "GET", "POST", "REQUEST"]);
