@@ -1166,8 +1166,8 @@ python script/check_spec.py                     # 附录 A ↔ 各册成员表 �
 | 项 | 现状 |
 |---|---|
 | 仓库 / 分支 | `D:\Project\wlwl`（实现侧） / **`main`**（远端 `origin/main` 已同步 —— ⚠ **只有 `main` 在 `ci.yml` 的 push 触发列表里** ⇒ 推 `wip0121` **不会**跑任何 CI 门禁）;`origin/wip0121` 与 `origin/main` **同指**;规范仓 `D:\Project\wlwl-spec-v1`（**本轮一行未动**） |
-| HEAD | `2c3c29b` fix(impl): v0.12.1 第八波 —— 修 CI run #323 的 13 处 clippy lint（零语义改动） |
-| 提交序列 | `2c3c29b` **第八波·门禁补跑**（13 处 clippy）→ `64d9bbb` **第七波 2 个 PHASE** → `40b5af6` **第六波 2 个 PHASE** → `1987aa0` 第五波面板 → `832839e` **第五波 2 个 PHASE** → `a8a431a` 第四波面板 → `969b220` **第四波 2 个 PHASE** → `78a826f` sanitize 定性更正 → `7f05d80` 第三波面板 → `0d5f410` **第三波 3 个 PHASE** → `d3f7b6c` §13 接替执行手册 → `20fa75f` 裁决记录 → `86b3c4a` **第二波 5 个 PHASE** → `df90382` 完成度面板 → `b0649cc` **第一波 7 个工作项** → `87a473b` §5.2b 真并行度 |
+| HEAD | `5d709ff` fix(impl): v0.12.1 第八波二轮 —— 修 run #324 的 cargo doc 红 + unix 侧 clippy 红（零语义改动） |
+| 提交序列 | `5d709ff` **第八波二轮**（doc 红 + unix clippy 红）→ `84fbe56` 第八波面板 → `2c3c29b` **第八波·门禁补跑**（13 处 clippy）→ `64d9bbb` **第七波 2 个 PHASE** → `40b5af6` **第六波 2 个 PHASE** → `1987aa0` 第五波面板 → `832839e` **第五波 2 个 PHASE** → `a8a431a` 第四波面板 → `969b220` **第四波 2 个 PHASE** → `78a826f` sanitize 定性更正 → `7f05d80` 第三波面板 → `0d5f410` **第三波 3 个 PHASE** → `d3f7b6c` §13 接替执行手册 → `20fa75f` 裁决记录 → `86b3c4a` **第二波 5 个 PHASE** → `df90382` 完成度面板 → `b0649cc` **第一波 7 个工作项** → `87a473b` §5.2b 真并行度 |
 | 工作树 | **干净**（`git status` 空） |
 | 版本口径 | 实现 **v0.12.1** ↔ 规范 **v1.0.4**（业主两次确认锁死；**零处修改既有成员、零处新增诊断码**） |
 | 完成度 | **工作项 24 / 32** · **需求 28 / 57 完全落地**（部分 4 · 未开工 19 · 口径答复 6）⇒ 面板见 **§11.6b** |
@@ -1197,6 +1197,23 @@ python script/check_spec.py                     # 附录 A ↔ 各册成员表 �
 | **修法** | **全部零语义改动**:`collapsible_match` → 拆成 `Some(v)` / `None` 两条 arm（`None` 那条是空体 ⇒ 与原 `if let` 不匹配时的行为逐字相同）· `suspicious_open_options` → 显式 `.truncate(false)`（**与原默认行为逐字一致**，锁文件内容本就无意义）· `io_other_error` → `Error::other`（MSRV 1.85 ≥ 1.74 ✔）· `missing_safety_doc` → 补 `# Safety` 段（**只加文档**）· `clone_on_copy` → 去掉 `u32` 的 `.clone()` · `redundant_redefinition` → 删 `let handle = handle;`（`i64` 是 `Copy` ⇒ `move` 闭包自动捕获）· `doc_lazy_continuation` → 列表项续行缩进 2 → 4 |
 
 ⇒ **教训（已写进 §13.5 第 2b 步与 §13.6 第 13 行）**：**本地门禁清单必须与 `ci.yml` 的步骤逐条对齐** —— 每加一个 CI 步骤，本地清单同步加一条；否则「本地全绿」是**假绿**。
+
+#### ⚠ CI 实况（run #324 —— clippy 修完后的**第二道**平台分叉）
+
+| job | `cargo clippy`（step 10） | `cargo doc`（step 11） |
+|---|---|---|
+| **windows** | ✅ **success**（第八波第一轮的 13 处修完 ⇒ **本机可验的那部分已转绿**） | ❌ **failure** |
+| **ubuntu** | ❌ **failure** | skipped |
+| **macos** | ❌ **failure** | skipped |
+
+⇒ **windows 的 doc 红**：`cargo doc --workspace --no-deps` + `RUSTDOCFLAGS=-D warnings` ⇒ **6 处 `rustdoc::private-intra-doc-links`**（public 文档用 intra-doc link 指向 private 项）⇒ 修法 = **链接改成纯代码字面量**（去方括号）⇒ **零语义改动**。
+⇒ **ubuntu / macOS 的 clippy 仍红**：⚠ **根因比第一轮更深一层** —— **`#[cfg(unix)]` 的代码在 Windows 的门禁里根本不存在** ⇒ **本机 clippy 永远看不见它**。仓里早就有这条警告（`wlwl-std/src/process.rs:66`：「**Windows 的 clippy 永远看不见它** —— 只能等 CI 的 ubuntu / macOS 才炸出来」）⇒ 这是**同形的第二次**（上一次是 2026-10-19 的 `clippy::useless_conversion`）。
+⇒ **命中**：`wlwl-std/src/signal.rs`（**第五波 `832839e` 新增的整个文件**）的 unix 段 —— `os_signal_handler as libc::sighandler_t`。⚠ `libc` 仓 `src/unix/mod.rs:21` 是 `pub type sighandler_t = size_t;` ⇒ **函数项直接转整数** ⇒ 触发 clippy 的 **`function_casts_as_integer`**（默认 warn）⇒ **只在 unix 编译** ⇒ ubuntu / macOS **双双**红、Windows 绿。
+⇒ **取证方式（本机可复现，不靠猜）**：① 读 cargo registry 的 `libc-0.2.191/src/unix/mod.rs` 确认 `sighandler_t = size_t`;② 用 **`clippy-driver` 单文件探针**复现该 lint（`clippy-driver --edition 2021 -W clippy::all probe.rs`）⇒ 报 `function_casts_as_integer`;③ 同一探针**顺手验证了修法**（`as *const () as usize` **编译通过且零警告**）。
+⇒ **修法**：**先转指针再转整数**（地址逐字相同 ⇒ **行为不变**）⇒ `os_signal_handler as *const () as libc::sighandler_t`。
+⇒ ⚠⚠ **本机做不了 linux-target clippy**：`x86_64-unknown-linux-gnu` target **已装**，但 `zstd`（`wlwl-std` 的依赖）带 `zstd-sys` ⇒ 需要 `x86_64-linux-gnu-gcc`（**本机无**，**本机无网络装不了**）⇒ **unix 侧的唯一权威判据是 CI** ⇒ 只能走「**本地推理 + 探针取证 + CI 迭代**」三段式。
+⇒ ⚠ **排除清单（这 19 个提交里所有含 `#[cfg(unix)]` 的改动，逐个审过）**：`signal.rs`（**命中，已修**）· `fs_atomic_lock_meta_contract.rs`（第一波新增 · unix 段 = 一个并发读者测试 ⇒ **探针实测 `let _ = attempt;` 不触发任何 lint** ⇒ 排除）· `ext_loader_contract.rs`（unix 段 = 一个 cfg 块 ⇒ 排除）· `wlwl-ext/src/dynlib.rs`（unix 段 = `dlopen`/`dlsym`/`dlclose` 三个 wrapper ⇒ 排除）· `wlwl-std/src/fs.rs` 的 5 段（`inherit_permissions` · `atomic_replace` · `is_lock_conflict` · `mtime_millis` · `try_lock_exclusive` ⇒ 排除）· `wlwl-std/src/process.rs`（unix 段**内部无新代码**，只改了一处**平台无关**的调用点 ⇒ 排除）· `wlwl-std/src/net.rs` · `tcp.rs` · `log.rs` · `sync.rs` · `regex.rs` · `format.rs` · `text.rs` · `unicode.rs`（**均无 `#[cfg(unix)]`** ⇒ 平台无关，已被 Windows clippy 覆盖）⇒ **命中面只剩 `signal.rs` 一处**。
+⇒ ⚠ **unix-only 的 intra-doc 链接也查过**：`own_pgrp` · `kill_group` · `target_group` · `os_signal_handler` · `install_os_handler` · `spawn_owned_group` 在文档里**全是纯代码字面量**（无方括号）⇒ **不是链接** ⇒ unix 上不会新报 `private-intra-doc-links`。
 
 ### 13.3 接替者的第一分钟（照做，别重新调查）
 
@@ -1277,7 +1294,8 @@ cd D:\Project\wlwl; git log --oneline -4; git status --short                  # 
 
 1. 收 agent 的**「登记清单」** ⇒ 统一改：`impl/crates/wlwl-std/src/lib.rs`（`pub mod X;` + `resolve()` 分派 + `NATIVE_SPECS` + `LANG_SOURCES`）· `impl/crates/wlwl-eval/src/stdlib_mirror.rs`（`NAMESPACE_META`）· 各 `*_contract.rs` 里的**期望名单**。
 2. `cargo fmt --all` ⇒ `cargo fmt --all -- --check` 必须 0 diff。
-2b. `cargo clippy --locked --workspace --all-targets -- -D warnings` 必须 **0 error** —— ⚠ **命令要与 `ci.yml` 的 clippy 步骤逐字一致**（**第八波加**;前七波漏了它 ⇒ run #323 在 windows / ubuntu / macos **三平台全红**,根因就是这一条）。
+2b. `cargo clippy --locked --workspace --all-targets -- -D warnings` 必须 **0 error** —— ⚠ **命令要与 `ci.yml` 的 clippy 步骤逐字一致**（**第八波加**;前七波漏了它 ⇒ run #323 在 windows / ubuntu / macos **三平台全红**,根因就是这一条）。⚠⚠ **但这只覆盖当前平台** —— `#[cfg(unix)]` 的代码在本机**根本不编译** ⇒ unix 侧**本机不可验**（run #324 实测：Windows 绿了、ubuntu / macOS 仍红）⇒ 详见 **§13.6 第 14 行**的三段式做法。
+2c. `RUSTDOCFLAGS='-D warnings'; cargo doc --workspace --no-deps` 必须 **0 error**（**第八波二轮加** —— run #324 在 Windows 上红在这一步：`rustdoc::private-intra-doc-links`）。
 3. 跑门禁 ⇒ **把红分类**：①「规范侧未跟上」（改抄件 / 规范仓）②「真缺陷」（当场修）③ **CI 独有、本地清单没跑到的**（⇒ 立刻把它补进本地清单，别让「本地全绿」变成假绿）。
 4. `git add -A` + `git commit`（默认**不 push**;push 由业主发起 —— 业主明确说「请PUSH」时才推）。
 5. 更新本文件 §13.1（HEAD/提交序列/门禁/完成度）⇒ **下一个接替者只读 §13 就能知道进度**。
@@ -1298,10 +1316,11 @@ cd D:\Project\wlwl; git log --oneline -4; git status --short                  # 
 | 10 | **扩展命名空间不进附录 A / 不进公共面清单** | 公共面取自 `wlwl_std::namespace_paths()` 这张**静态**表 ⇒ 运行期扩展结构上进不去 ⇒ 只进一致性册 §5.5 台账 |
 | 11 | ⚠ **过期二进制会给出与源码缺陷完全同形的读数** | 第三波开工时 `target/release/wlwl.exe` 构建于 07:49，而 `wl/std/str.wll` 于 08:05 被 W-28 改过 ⇒ **旧二进制读新模块源码** ⇒ 报 `E0013` 且位置指向 `wlwl:std.str:281:45` ⇒ **合法程序被误拒**（差点被当成解析器缺陷）⇒ **任何解析器 / 诊断面结论，先确认二进制新鲜度**（`cargo build --release --locked --bin wlwl`）;探针与契约测试走 `CARGO_BIN_EXE_wlwl` ⇒ **自带新鲜度**，不受影响 |
 | 12 | `TCP_SERVE` 的 handler **跑在原生帧内** ⇒ 那里**挂不了** | handler 里调宿主挂起点成员 ⇒ 该连接**静默作废**（无诊断、stderr 全空、exit 0、不计入返回计数）⇒ 已登记 **W-38**;⇒ 写 handler 时**只返回 DICT**，别碰 `TCP_*` / `SLEEP_ASYNC` |
-| 13 | ⚠ **本地门禁清单 ≠ CI 步骤清单 ⇒「本地全绿」可能是假绿** | 前七波的 19 个提交**全推在 `wip0121` 分支**（该分支**不在 `ci.yml` 的 push 触发列表**）⇒ clippy / doc / deny / test / conformance **一次都没跑过** ⇒ run #323 首次 CI 就红在 clippy（**13 处 lint**，已零语义改动修完）⇒ **规矩**：`ci.yml` 每加一个步骤，本地清单**同步**加一条;**至少** `cargo clippy --locked --workspace --all-targets -- -D warnings` 必须进清单（本地 clippy = **1.99.0** = CI 钉死的 toolchain ⇒ **本地结论即 CI 结论**，可放心本地判定） |
+| 13 | ⚠ **本地门禁清单 ≠ CI 步骤清单 ⇒「本地全绿」可能是假绿** | 前七波的 19 个提交**全推在 `wip0121` 分支**（该分支**不在 `ci.yml` 的 push 触发列表**）⇒ clippy / doc / deny / test / conformance **一次都没跑过** ⇒ run #323 首次 CI 就红在 clippy（**13 处 lint**，已零语义改动修完）⇒ **规矩**：`ci.yml` 每加一个步骤，本地清单**同步**加一条;**至少** `cargo clippy --locked --workspace --all-targets -- -D warnings` 必须进清单（本地 clippy = **1.99.0** = CI 钉死的 toolchain ⇒ **同一平台上**本地结论即 CI 结论 —— ⚠ 但**仅限当前平台**，unix 侧见第 14 行） |
+| 14 | ⚠⚠ **`#[cfg(unix)]` 的代码在本机门禁里**根本不存在** ⇒ 本机 clippy 永远看不见它** | Windows 的门禁**不编译** unix 段 ⇒ 只改 unix 段 ⇒ 本机 **clippy / fmt / 测试**全绿 **也不代表** unix 干净（run #324 实测：ubuntu / macOS 的 clippy 仍红，红点就在 `signal.rs` 的 unix 段）。⚠ **本机也做不了 linux-target clippy**：`x86_64-unknown-linux-gnu` **已装**，但 `zstd`（`wlwl-std` 的依赖）带 `zstd-sys` ⇒ 需要 `x86_64-linux-gnu-gcc`（**本机无**，**无网络装不了**）⇒ **unix 侧唯一权威判据是 CI**。⇒ **做法**：① `git diff <CI 绿的基线>..HEAD` 圈定「这批提交动过的 `#[cfg(unix)]` 段」（**别审没动过的** —— 基线绿 ⇒ 没动过就干净）;② 用 **`clippy-driver` 单文件探针**（`clippy-driver --edition 2021 -W clippy::all probe.rs`）**在本机复现该 lint 并顺手验证修法**;③ 读 cargo registry 里依赖的**类型定义**（如 `libc` 的 `sighandler_t = size_t`）⇒ 三段式取代「靠猜」;④ 改完推 CI 迭代 |
 
 ### 13.7 一句话状态
 
-> **24 / 32 个工作项、28 / 57 条需求已落地并复核**（第八波：**门禁补跑** —— CI run #323 的 **13 处 clippy lint** 全部修完（**零语义改动**;第一波 6 · 第二波 5 · 第七波 2）⇒ 并把 `cargo clippy --locked --workspace --all-targets -- -D warnings` **补进本地门禁清单**（§13.5 第 2b 步）⇒ **「本地全绿」不再是假绿**;第七波：**W-32** —— `wlwl check` 两条静态规则；规则①复用既有 `E0014`、规则②是**无码**提示 `shared-mutable-binding`，**LSP ≡ CLI 同一份收集函数**;**G-4① 证伪结案** —— 「模块私有成员」**语义本就满足**，只补了模块文档 + 2 条回归守卫，**语义零改动**;第六波：W-33（F-4 诊断可读性 + G-4 循环导入诊断）· W-30（F-3 任务检视 + G-3 最小 REPL）；第五波：W-15（B-6 兜底臂真缺陷 + B-7 `std.signal` + W-38 诊断化）· W-29（H-5/H-6 别名）；第四波：W-11（B-2 惊群根因）· W-14（B-5 非阻塞出站）；第三波：W-36 / W-35 / W-37 —— **W-37 是证伪结案**，见 §11.4b）；规则侧**只差规范仓落表**（§11.2 五步，**必须等业主先 push 规范仓**）—— 待落表总数仍是 **36 个成员 + 1 个新命名空间（`std.signal`）+ 附录 G 一行**;实现侧下一批是 **G-4②「`.wll.sig` 工作流简化」**（动 `cli/tooling.rs` + `cli/main.rs` ⇒ 正好独占这两个文件面 ⇒ 单 agent 即可）⇒ 之后 **`std.http` 四节串行**（W-17 → W-18 → W-19 → W-20）⇒ 再后 **W-31 / W-25** ⇒ 收口 **W-34 / W-35′** + 规范仓 v1.0.4。
+> **24 / 32 个工作项、28 / 57 条需求已落地并复核**（第八波：**门禁补跑两轮** —— 第一轮：CI run #323 的 **13 处 clippy lint** 全修（**零语义改动**;第一波 6 · 第二波 5 · 第七波 2）⇒ clippy **补进本地门禁清单**（§13.5 第 2b 步）;第二轮：run #324 暴露的**三平台分叉** ⇒ Windows 的 `cargo doc` 红（**6 处 `rustdoc::private-intra-doc-links`** ⇒ 链接改纯代码字面量）+ ubuntu / macOS 的 clippy 仍红（**`#[cfg(unix)]` 的代码本机根本不编译** ⇒ 红点在 `signal.rs` 的 `function_casts_as_integer` ⇒ 先转指针再转整数，**行为不变**）⇒ 并把 `cargo doc` **补进本地门禁清单**（§13.5 第 2c 步）+ §13.6 第 14 行登记「unix 侧本机不可验」的三段式做法 ⇒ **「本地全绿」不再可能是假绿**;第七波：**W-32** —— `wlwl check` 两条静态规则；规则①复用既有 `E0014`、规则②是**无码**提示 `shared-mutable-binding`，**LSP ≡ CLI 同一份收集函数**;**G-4① 证伪结案** —— 「模块私有成员」**语义本就满足**，只补了模块文档 + 2 条回归守卫，**语义零改动**;第六波：W-33（F-4 诊断可读性 + G-4 循环导入诊断）· W-30（F-3 任务检视 + G-3 最小 REPL）；第五波：W-15（B-6 兜底臂真缺陷 + B-7 `std.signal` + W-38 诊断化）· W-29（H-5/H-6 别名）；第四波：W-11（B-2 惊群根因）· W-14（B-5 非阻塞出站）；第三波：W-36 / W-35 / W-37 —— **W-37 是证伪结案**，见 §11.4b）；规则侧**只差规范仓落表**（§11.2 五步，**必须等业主先 push 规范仓**）—— 待落表总数仍是 **36 个成员 + 1 个新命名空间（`std.signal`）+ 附录 G 一行**;实现侧下一批是 **G-4②「`.wll.sig` 工作流简化」**（动 `cli/tooling.rs` + `cli/main.rs` ⇒ 正好独占这两个文件面 ⇒ 单 agent 即可）⇒ 之后 **`std.http` 四节串行**（W-17 → W-18 → W-19 → W-20）⇒ 再后 **W-31 / W-25** ⇒ 收口 **W-34 / W-35′** + 规范仓 v1.0.4。
 > ⚠ **本波登记 3 项**（**不阻塞**，见 §13.4）：W-32 的两条「静态 vs 动态」已知差异（顶层漏报 · 「成员跑完才判」的先后不存在）· `SCOPE` 体的**文案-判据不一致**（文案说 SCOPE 合法，判据说它报 E0014）· **「顶层也静态拦」的口径决定**（建议单独立项，勿夹带）。
 > ⚠ 另有一条**已记在案的取舍**：`wlwl check` 拦静态 `E0014`（exit 1），`wlwl run` **不报不拦** —— 因为既有探针 `p07`/`p09` 钉死了「跑一半 + 运行期报**逐字相同**的那条 E0014 + exit 1」⇒ 静态层若在 `run` 里拦，那两条必红。

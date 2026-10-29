@@ -32,6 +32,28 @@
 
 ---
 
+### 第二轮：run #324 暴露的**三平台分叉**（同一波的第二笔提交）
+
+- **run #324**（head_sha `84fbe56`，`main`）⇒ **failure**，但**三个 job 的红点不一致**：
+
+  | job | `cargo clippy`（step 10） | `cargo doc`（step 11） |
+  |---|---|---|
+  | **windows** | ✅ **success**（第一轮 13 处修完 ⇒ 本机可验的那部分已转绿） | ❌ **failure** |
+  | **ubuntu** | ❌ **failure** | skipped |
+  | **macos** | ❌ **failure** | skipped |
+
+- **windows 的 doc 红** ⇒ **6 处 `rustdoc::private-intra-doc-links`**（public 文档用 intra-doc link 指向 private 项）: `wlwl-types/src/check.rs`（`ConcurrencyAnalyzer::is_outside_task`）· `wlwl-std/src/fs.rs`（`mtime_millis`）· `wlwl-std/src/net.rs`（`record_serve_failure`）· `wlwl-std/src/regex.rs`（`MAX_TRACKED_PATTERNS`）· `wlwl-std/src/sync.rs`（`SyncValue` ×2）⇒ **修法 = intra-doc link 改成纯代码字面量**（去方括号）⇒ **零语义改动**、可观察行为不变。
+- **ubuntu / macOS 的 clippy 仍红** ⇒ ⚠ **根因比第一轮更深一层**：**`#[cfg(unix)]` 的代码在 Windows 的门禁里根本不编译** ⇒ 本机 clippy **永远看不见它**（仓里早就有这条警告：`wlwl-std/src/process.rs:66`）。这是**同形的第二次**（上一次是 2026-10-19 的 `clippy::useless_conversion`）。
+  - **命中**：`wlwl-std/src/signal.rs`（**第五波新增的整个文件**）的 unix 段 —— `os_signal_handler as libc::sighandler_t`。`libc` 仓 `src/unix/mod.rs:21` 是 `pub type sighandler_t = size_t;` ⇒ **函数项直接转整数** ⇒ 触发 clippy 的 **`function_casts_as_integer`**（默认 warn）⇒ **只在 unix 编译** ⇒ ubuntu / macOS 双双红、Windows 绿。
+  - **修法**：**先转指针再转整数**（地址逐字相同 ⇒ **行为不变**）⇒ `os_signal_handler as *const () as libc::sighandler_t`。
+  - **取证不靠猜**（三段式，本机可复现）：① 读 cargo registry 的 `libc-0.2.191/src/unix/mod.rs` 确认 `sighandler_t = size_t`;② 用 **`clippy-driver` 单文件探针**在本机复现该 lint（`clippy-driver --edition 2021 -W clippy::all probe.rs`）并**顺手验证修法**;③ `git diff <CI 绿的基线>..HEAD` 圈定「这批提交动过的 `#[cfg(unix)]` 段」，逐个审 ⇒ **命中面只剩 `signal.rs` 一处**。
+- ⚠ **本机做不了 linux-target clippy**：`x86_64-unknown-linux-gnu` **已装**，但 `zstd`（`wlwl-std` 的依赖）带 `zstd-sys` ⇒ 需要 `x86_64-linux-gnu-gcc`（**本机无**、**无网络装不了**）⇒ **unix 侧的唯一权威判据是 CI**。
+- **集成者动作**：§13.2 加「run #324 三平台分叉」小节（读数 + 取证方式 + 排除清单）· §13.5 加第 **2c** 步（`cargo doc` 门禁）并给第 2b 步补「unix 侧本机不可验」的限制 · §13.6 加第 **14** 行（`#[cfg(unix)]` 的代码本机看不见 + 三段式做法），并**订正**第 13 行「本地结论即 CI 结论」这句 —— 它**只对当前平台成立**。
+- 本波**未改任何公共面成员** ⇒ 待规范侧落表总数仍是 **36 个成员 + 1 个新命名空间（`std.signal`）+ 附录 G 一行**。
+- 本波**未动规范仓**（一行都没动）· **未发 tag** · 实现侧版本口径仍是 **v0.12.1**。
+
+---
+
 ## [v0.12.1 开工 · 第七波] — 2026-10-29(1 个 PHASE + 1 项补做;多 agent 并行)
 
 **本段 = 第七波**：**W-32**（`wlwl check` 两条静态规则 · G-2）+ **G-4①**（模块私有成员 · 实为**证伪结案**），两个 agent 文件面零重叠。计划原文见 `docs/plan/wlwl-v0.12.1-build-plan.md`;本波的地位与交接见该文档 **§13「接替执行手册」**。
