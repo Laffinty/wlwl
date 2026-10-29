@@ -1166,12 +1166,12 @@ python script/check_spec.py                     # 附录 A ↔ 各册成员表 �
 | 项 | 现状 |
 |---|---|
 | 仓库 / 分支 | `D:\Project\wlwl`（实现侧） / **`wip0121`**（远端 `origin/wip0121` 已同步）;规范仓 `D:\Project\wlwl-spec-v1`（**本轮一行未动**） |
-| HEAD | `40b5af6` feat(impl): v0.12.1 第六波 —— 2 个 PHASE（诊断可读性 + 循环导入定位 / 任务检视 + 最小 REPL） |
+| HEAD | `64d9bbb` feat(impl): v0.12.1 第七波 —— W-32（wlwl check 两条静态规则）+ G-4① 证伪结案 |
 | 提交序列 | `40b5af6` **第六波 2 个 PHASE** → `1987aa0` 第五波面板 → `832839e` **第五波 2 个 PHASE** → `a8a431a` 第四波面板 → `969b220` **第四波 2 个 PHASE** → `78a826f` sanitize 定性更正 → `7f05d80` 第三波面板 → `0d5f410` **第三波 3 个 PHASE** → `d3f7b6c` §13 接替执行手册 → `20fa75f` 裁决记录 → `86b3c4a` **第二波 5 个 PHASE** → `df90382` 完成度面板 → `b0649cc` **第一波 7 个工作项** → `87a473b` §5.2b 真并行度 |
 | 工作树 | **干净**（`git status` 空） |
 | 版本口径 | 实现 **v0.12.1** ↔ 规范 **v1.0.4**（业主两次确认锁死；**零处修改既有成员、零处新增诊断码**） |
-| 完成度 | **工作项 23 / 32** · **需求 27 / 57 完全落地**（部分 4 · 未开工 20 · 口径答复 6）⇒ 面板见 **§11.6b** |
-| 已落地清单 | §11.1（**22 行**，每行带验收读数） |
+| 完成度 | **工作项 24 / 32** · **需求 28 / 57 完全落地**（部分 4 · 未开工 19 · 口径答复 6）⇒ 面板见 **§11.6b** |
+| 已落地清单 | §11.1（**24 行**，每行带验收读数） |
 | 业主裁决 | §10（Q1–Q4）+ §11.4（D1–D4b，**全部已定**）—— **D2 / D3 / D4a 已执行**（第三波）;D1 随规范侧 §5.5 台账执行;D4b 不排期 |
 
 ### 13.2 门禁现状（**第七波**集成后实测）
@@ -1192,8 +1192,10 @@ python script/check_spec.py                     # 附录 A ↔ 各册成员表 �
 cd D:\Project\wlwl\impl
 cargo run --locked --bin check-appendix-a -- ../docs/wlwl-spec-reference.md   # 预期 MISMATCH（规范侧未跟上）
 cargo test --locked -p wlwl-eval --test stdlib_appendix_a_sync                # 预期 4 failed（同上）
-cargo test --locked -p wlwl-cli --test probe                                 # 预期 3 passed（192 用例）
+cargo test --locked -p wlwl-cli --test probe                                 # 预期 3 passed（195 用例）
 cargo test --locked -p wlwl-parser                                           # 预期 208 passed（含 e0011 契约 7 条）
+cargo test --locked -p wlwl-types                                           # 预期 144 passed（含 W-32 契约 14 条）
+cargo test --locked -p wlwl-cli --test lsp_smoke                         # 预期 2 passed（LSP ≡ CLI 同一份）
 cd D:\Project\wlwl; git log --oneline -4; git status --short                  # 预期干净
 ```
 ⇒ 读本文件 **§13**（接替手册）→ **§11**（交接与下一批切分）→ **§2**（事实坐标）。
