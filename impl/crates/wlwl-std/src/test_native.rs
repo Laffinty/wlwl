@@ -27,6 +27,25 @@
 //! 附录 A 镜像与 `wlwl-eval/tests/test_contract.rs`(对标准库规范 §8 表格
 //! 的外部对照)负责锁。**本文件只提供内核实现,不提供名册。**
 //!
+//! ## [G-1] v0.12.2 新增的四个内核
+//!
+//! 需求清单 G-1 要的 7 个新成员里,有 4 个**纯 wlwl 表达不了**,故在本文件实现:
+//!
+//! - `EXPECT_ERR_CODE` —— 要**捕获原生诊断码**(如 `E1003` 除零)。诊断是
+//!   **宿主级错误**(Rust `Err`),不是 `ERR` **值** ⇒ 门面(`FUN`)根本拿不到它,
+//!   它会一路逃逸成进程级失败(实测:仓里的 `H4_expect_err_cannot_catch_native`
+//!   探针就是这个缺口)。只有内核能把 `call_callable` 的 `Err` 接住。
+//! - `SKIP` —— 跳过标记的**形状**必须与 `RUN_TESTS` 的识别口径同源 ⇒ 两边同住
+//!   本文件(门面只改名透传)。
+//! - `TEST_CASES` —— 注册 **N 条**测试,每条带**自己的实参**。实参要跟着测试体
+//!   一起进注册表,而 `TestEntry.body` 只有一个 `Value` 位 ⇒ 体与实参**打包成
+//!   一个二元数组**存(见 `split_entry_body`)。
+//! - `TEMP_DIR` —— 必须返回**绝对路径**:`std.fs` 成员的相对路径按**进程 CWD**
+//!   解析 ⇒ 相对路径会把文件写进仓库里(`fs_atomic_lock_meta_contract.rs` 踩过
+//!   的既有教训)。
+//!
+//! 另 3 个(`ASSERT_MSG` / `ASSERT_TRUE` / `RUN_TESTS_ASYNC`)是**纯 R1**,在门面。
+//!
 //! ## ERR 约定
 //!
 //! 断言失败是**值**不是诊断:`ASSERT_*` 返回 `ERR(载荷)`,由 `RUN_TESTS`
@@ -43,6 +62,7 @@
 
 use wlwl_value::{union_unconsumed, Outcome, Signal, StdHost, TestEntry, UnconsumedErrs, Value};
 
+use std::sync::atomic::{AtomicU64, Ordering};
 use std::time::Instant;
 
 use wlwl_error::{ErrorCode, WlwlError, WlwlResult};
@@ -131,7 +151,11 @@ pub fn kernel_run_tests(host: &mut dyn StdHost, args: Vec<Value>) -> WlwlResult<
         // 此前信号在 `call_callable` 里被丢弃,挂起点传回的 `NULL` 被
         // 当作「非 ERR ⇒ 通过」,于是体里 `YIELD()` 之后的断言一次都没跑
         // 却记成 `passed = TRUE`(实测:`ASSERT(FALSE)` 的用例判通过)。
-        let called = crate::call_callable(host, "RUN_TESTS", &entry.body, vec![]);
+        let called = {
+            // [G-1] `TEST_CASES` 注册的体是「体 + 实参」的二元数组 ⇒ 这里拆开。
+            let (callable, call_args) = split_entry_body(&entry.body);
+            crate::call_callable(host, "RUN_TESTS", &callable, call_args)
+        };
         if let Ok(o) = &called {
             if o.signal != Signal::None {
                 // 挂起优先于记账:原样把信号带回,值无意义(调度器在
@@ -205,35 +229,72 @@ pub fn kernel_run_tests(host: &mut dyn StdHost, args: Vec<Value>) -> WlwlResult<
                 Value::dict(d)
             }
             Ok(other) => {
-                // Non-ERR outcome. Could be OK(TRUE) (from a passed
-                // assertion), NULL, or a bare value. All count as
-                // "passed" per §8's permissive contract.
-                let mut d = vec![
-                    (
-                        Value::String("name".into()),
-                        Value::String(entry.name.clone()),
-                    ),
-                    (Value::String("passed".into()), Value::Boolean(true)),
-                    (
-                        Value::String("duration_ms".into()),
-                        Value::Integer(duration_ms),
-                    ),
-                ];
-                if !matches!(other, Value::Null) {
-                    d.push((Value::String("return_value".into()), other));
+                // [G-1] **跳过**:测试体返回了 `SKIP(reason)` 的标记值。
+                //
+                // ⚠ 跳过记录比通过 / 失败记录**多出** `skipped`(与 `reason`)两个键;
+                //   通过 / 失败两种记录的键集与取值**逐字未变**。
+                // ⚠ `passed` 取 `FALSE`:跳过的测试**没有跑断言** ⇒ 它不是「通过」。
+                //   ⇒ CI 必须**先看 `skipped`** 再看 `passed`(见门面文件头)。
+                if let Some(reason) = skip_reason_of(&other) {
+                    let mut d = vec![
+                        (
+                            Value::String("name".into()),
+                            Value::String(entry.name.clone()),
+                        ),
+                        (Value::String("passed".into()), Value::Boolean(false)),
+                        (
+                            Value::String("duration_ms".into()),
+                            Value::Integer(duration_ms),
+                        ),
+                        (Value::String("skipped".into()), Value::Boolean(true)),
+                    ];
+                    if !matches!(reason, Value::Null) {
+                        d.push((Value::String("reason".into()), reason));
+                    }
+                    // Order-stable for assertion predictability.
+                    d.sort_by(|a, b| {
+                        let ka = match &a.0 {
+                            Value::String(s) => s.as_str(),
+                            _ => "",
+                        };
+                        let kb = match &b.0 {
+                            Value::String(s) => s.as_str(),
+                            _ => "",
+                        };
+                        ka.cmp(kb)
+                    });
+                    Value::dict(d)
+                } else {
+                    // Non-ERR outcome. Could be OK(TRUE) (from a passed
+                    // assertion), NULL, or a bare value. All count as
+                    // "passed" per §8's permissive contract.
+                    let mut d = vec![
+                        (
+                            Value::String("name".into()),
+                            Value::String(entry.name.clone()),
+                        ),
+                        (Value::String("passed".into()), Value::Boolean(true)),
+                        (
+                            Value::String("duration_ms".into()),
+                            Value::Integer(duration_ms),
+                        ),
+                    ];
+                    if !matches!(other, Value::Null) {
+                        d.push((Value::String("return_value".into()), other));
+                    }
+                    d.sort_by(|a, b| {
+                        let ka = match &a.0 {
+                            Value::String(s) => s.as_str(),
+                            _ => "",
+                        };
+                        let kb = match &b.0 {
+                            Value::String(s) => s.as_str(),
+                            _ => "",
+                        };
+                        ka.cmp(kb)
+                    });
+                    Value::dict(d)
                 }
-                d.sort_by(|a, b| {
-                    let ka = match &a.0 {
-                        Value::String(s) => s.as_str(),
-                        _ => "",
-                    };
-                    let kb = match &b.0 {
-                        Value::String(s) => s.as_str(),
-                        _ => "",
-                    };
-                    ka.cmp(kb)
-                });
-                Value::dict(d)
             }
             Err(()) => {
                 let mut d = vec![
@@ -271,8 +332,291 @@ pub fn kernel_run_tests(host: &mut dyn StdHost, args: Vec<Value>) -> WlwlResult<
 }
 
 // ─────────────────────────────────────────────────────────────────────
+// [G-1] 新增内核(需求清单 G-1)
+// ─────────────────────────────────────────────────────────────────────
+
+/// `EXPECT_ERR_CODE(fn, code)` —— 调用 `fn`,**捕获原生诊断码**。
+///
+/// 规范 §8 的 `EXPECT_ERR` 只能吃 `ERR` **值**;**原生诊断**(如 `E1003` 除零、
+/// `E0030` 类型错)是**宿主级错误**(Rust `Err`),不是值 ⇒ 它会一路逃逸成
+/// 进程级失败(仓里的 `H4_expect_err_cannot_catch_native` 探针钉的就是这个缺口)。
+/// 本内核把 `call_callable` 的 `Err` **接住** ⇒ 原生码**不逃逸**。
+///
+/// 口径:
+/// - `fn` 抛出**期望的**诊断码 ⇒ `OK([code, message])`;
+/// - `fn` 抛出**别的**诊断码 ⇒ `ERR([code: E0049, kind, expected, actual, message])`;
+/// - `fn` **没抛**诊断 ⇒ `ERR([code: E0049, kind, expected])`。
+///
+/// ⚠ 失败口径**复用既有码 `E0049`**(`EXPECT_ERR` 族那一支)⇒ **不新增诊断码**
+///   (规范 N-3);`kind` 把它与 `EXPECT_ERR` 的失败区分开。
+/// ⚠ `fn` 的返回值**不参与判定** —— 判据只有「有没有原生诊断」与「它的码」。
+pub fn kernel_expect_err_code(host: &mut dyn StdHost, args: Vec<Value>) -> WlwlResult<Outcome> {
+    if let Some(e) = short_circuit_err(&args) {
+        return Ok(Outcome::normal(e));
+    }
+    if args.len() != 2 {
+        return Err(arity(host, "EXPECT_ERR_CODE", args.len(), 2));
+    }
+    let code = match &args[1] {
+        Value::String(s) => s.clone(),
+        other => return Err(type_err(host, "EXPECT_ERR_CODE", "string", other)),
+    };
+    if !matches!(args[0], Value::Closure { .. } | Value::NativeFn { .. }) {
+        return Err(type_err(host, "EXPECT_ERR_CODE", "function", &args[0]));
+    }
+    let called = crate::call_callable(host, "EXPECT_ERR_CODE", &args[0], vec![]);
+    match called {
+        Ok(outcome) => {
+            // [D11-019] 挂起**不是**「没抛诊断」⇒ 原样穿透,交回调度器。
+            if outcome.signal != Signal::None {
+                return Ok(Outcome {
+                    value: Value::Null,
+                    signal: outcome.signal.clone(),
+                    unconsumed: Vec::new(),
+                });
+            }
+            // 没有原生诊断 ⇒ 与期望不符。
+            //
+            // ⚠ §8.6.3:测试体带回来的**未消费集合**(例如体里留下了一个没人
+            //   消费的 `ERR` 值)⇒ **转发**给本成员的接收位置 ⇒ 不能在这里
+            //   悄悄吞掉(吞掉 = 把「没人消费的 ERR」变成静默)。
+            Ok(Outcome::with_unconsumed(
+                make_err(
+                    host,
+                    ErrorCode::E0049,
+                    format!("EXPECT_ERR_CODE failed: no diagnostic was raised (expected {code})"),
+                    expect_err_code_failed(&code, None, None),
+                ),
+                outcome.unconsumed,
+            ))
+        }
+        Err(e) => {
+            let diag = e.diagnostic();
+            let actual = diag.code.as_str().to_string();
+            let message = diag.message.clone();
+            if actual == code {
+                Ok(Outcome::normal(Value::Ok(Box::new(
+                    expect_err_code_caught(&code, &message),
+                ))))
+            } else {
+                Ok(Outcome::normal(make_err(
+                    host,
+                    ErrorCode::E0049,
+                    format!("EXPECT_ERR_CODE failed: expected {code}, got {actual} ({message})"),
+                    expect_err_code_failed(&code, Some(&actual), Some(&message)),
+                )))
+            }
+        }
+    }
+}
+
+/// `SKIP(reason)` —— 跳过当前测试。
+///
+/// 返回一个**跳过标记**(字典 `kind = "test_skipped"`);`RUN_TESTS` 认出它就把
+/// 那条测试记成**跳过**(`skipped = TRUE`)。⚠ 标记的形状只在本文件里定义
+/// (构造与识别同源)⇒ 门面只改名透传。
+///
+/// ⚠ `reason` 是**可选**的(0 个实参 ⇒ `NULL`);给了就必须是**字符串**
+///   (CI 要能直接读它)。
+pub fn kernel_skip(host: &mut dyn StdHost, args: Vec<Value>) -> WlwlResult<Outcome> {
+    if let Some(e) = short_circuit_err(&args) {
+        return Ok(Outcome::normal(e));
+    }
+    if args.len() > 1 {
+        return Err(arity(host, "SKIP", args.len(), 1));
+    }
+    let reason = match args.first() {
+        None => Value::Null,
+        Some(Value::String(s)) => Value::String(s.clone()),
+        Some(other) => return Err(type_err(host, "SKIP", "string", other)),
+    };
+    Ok(Outcome::normal(skip_marker(reason)))
+}
+
+/// `TEST_CASES(name, cases, body)` —— **参数化**注册。
+///
+/// `cases` 是**数组的数组**:每个内层数组是**一条用例的实参列表**。每个用例
+/// 注册成一条独立的测试,名字是 `<name>[<下标>]` ⇒ 与 `TEST` 的注册语义兼容
+/// (同一条注册表、同一种记录形状、同一个 `RUN_TESTS` 排空流程)。
+///
+/// ⚠ 体与实参**打包**进 `TestEntry.body`(一个二元数组)—— `TestEntry` 只有一个
+///   `Value` 位,而实参要跟着体一起进注册表 ⇒ 见 `split_entry_body`。
+/// ⚠ 实参的个数与体的形参个数**不**在这里校验:体是闭包时形参数可读,但体也
+///   可能是 native fn(数不可读)⇒ 统一交给调用时的元数诊断(E0022)。
+pub fn kernel_test_cases(host: &mut dyn StdHost, args: Vec<Value>) -> WlwlResult<Outcome> {
+    if let Some(e) = short_circuit_err(&args) {
+        return Ok(Outcome::normal(e));
+    }
+    if args.len() != 3 {
+        return Err(arity(host, "TEST_CASES", args.len(), 3));
+    }
+    let name = match &args[0] {
+        Value::String(s) => s.clone(),
+        other => return Err(type_err(host, "TEST_CASES", "string", other)),
+    };
+    let cases = match &args[1] {
+        Value::Array(v) => v.clone(),
+        other => return Err(type_err(host, "TEST_CASES", "array", other)),
+    };
+    if !matches!(args[2], Value::Closure { .. } | Value::NativeFn { .. }) {
+        return Err(type_err(host, "TEST_CASES", "function", &args[2]));
+    }
+    for (i, case) in cases.iter().enumerate() {
+        let elements = match case {
+            Value::Array(v) => v.clone(),
+            other => {
+                return Err(host.diag(
+                    ErrorCode::E0030,
+                    format!(
+                        "TEST_CASES: case {i} must be an array, got {}",
+                        crate::value_kind(other)
+                    ),
+                ))
+            }
+        };
+        host.ctx().tests.push(TestEntry {
+            name: format!("{name}[{i}]"),
+            body: Value::Array(vec![args[2].clone(), Value::Array(elements)]),
+        });
+    }
+    Ok(Outcome::normal(Value::Null))
+}
+
+/// `TEMP_DIR()` —— 造一个**绝对路径**的临时目录并返回它。
+///
+/// ⚠⚠ **必须返回绝对路径**:`std.fs` 成员的相对路径按**进程 CWD** 解析 ⇒ 相对
+///   路径会把测试文件写进仓库里(`fs_atomic_lock_meta_contract.rs` 踩过的既有
+///   教训)。⇒ 本成员**只**返回绝对路径,没有相对路径这一档。
+/// ⚠ 目录**不会**被自动删除(标准库没有 teardown 钩子)⇒ 调用方负责清理。
+pub fn kernel_temp_dir(host: &mut dyn StdHost, args: Vec<Value>) -> WlwlResult<Outcome> {
+    if let Some(e) = short_circuit_err(&args) {
+        return Ok(Outcome::normal(e));
+    }
+    if !args.is_empty() {
+        return Err(arity(host, "TEMP_DIR", args.len(), 0));
+    }
+    match make_temp_dir() {
+        Ok(path) => Ok(Outcome::normal(Value::String(path))),
+        Err(msg) => Err(host.diag(ErrorCode::E0060, format!("TEMP_DIR: {msg}"))),
+    }
+}
+
+// ─────────────────────────────────────────────────────────────────────
 // Shared helpers
 // ─────────────────────────────────────────────────────────────────────
+
+/// 跳过标记的 `kind` 值(构造与识别**同源**)。
+const SKIP_KIND: &str = "test_skipped";
+
+/// 跳过标记字典。
+fn skip_marker(reason: Value) -> Value {
+    Value::dict(vec![
+        (
+            Value::String("kind".into()),
+            Value::String(SKIP_KIND.to_string()),
+        ),
+        (Value::String("reason".into()), reason),
+    ])
+}
+
+/// 值是不是跳过标记?是 ⇒ 返回它的 `reason`(可能是 `NULL`)。
+fn skip_reason_of(v: &Value) -> Option<Value> {
+    let Value::Dict(d) = v else {
+        return None;
+    };
+    match d.get(&Value::String("kind".into())) {
+        Some(Value::String(s)) if s == SKIP_KIND => {}
+        _ => return None,
+    }
+    Some(
+        d.get(&Value::String("reason".into()))
+            .cloned()
+            .unwrap_or(Value::Null),
+    )
+}
+
+/// `TEST_CASES` 注册的体 =「体 + 实参」的二元数组 ⇒ 拆开。
+///
+/// 普通测试(`TEST` 注册的)体是闭包 / native fn ⇒ 实参为空。
+fn split_entry_body(body: &Value) -> (Value, Vec<Value>) {
+    if let Value::Array(items) = body {
+        if items.len() == 2 {
+            if let Value::Array(args) = &items[1] {
+                if matches!(items[0], Value::Closure { .. } | Value::NativeFn { .. }) {
+                    return (items[0].clone(), args.clone());
+                }
+            }
+        }
+    }
+    (body.clone(), Vec::new())
+}
+
+/// `EXPECT_ERR_CODE` 捕获到**期望的**诊断码时的载荷。
+fn expect_err_code_caught(code: &str, message: &str) -> Value {
+    Value::dict(vec![
+        (
+            Value::String("code".into()),
+            Value::String(code.to_string()),
+        ),
+        (
+            Value::String("message".into()),
+            Value::String(message.to_string()),
+        ),
+    ])
+}
+
+/// `EXPECT_ERR_CODE` **没**捕获到期望诊断码时的载荷(走 `ERR` 值)。
+fn expect_err_code_failed(expected: &str, actual: Option<&str>, message: Option<&str>) -> Value {
+    let mut entries = vec![
+        (
+            Value::String("code".into()),
+            Value::String("E0049".to_string()),
+        ),
+        (
+            Value::String("kind".into()),
+            Value::String("test_expect_err_code_failed".to_string()),
+        ),
+        (
+            Value::String("expected".into()),
+            Value::String(expected.to_string()),
+        ),
+    ];
+    if let Some(a) = actual {
+        entries.push((Value::String("actual".into()), Value::String(a.to_string())));
+    }
+    if let Some(m) = message {
+        entries.push((
+            Value::String("message".into()),
+            Value::String(m.to_string()),
+        ));
+    }
+    Value::dict(entries)
+}
+
+/// 造一个**绝对路径**的临时目录(已创建好,可直接往里写文件)。
+fn make_temp_dir() -> Result<String, String> {
+    let base = std::env::temp_dir();
+    // `temp_dir()` 在极端配置下可能是**相对**的 ⇒ 兜到 CWD 之下。
+    let base = if base.is_absolute() {
+        base
+    } else {
+        std::env::current_dir()
+            .map_err(|e| format!("cannot resolve the current directory: {e}"))?
+            .join(base)
+    };
+    // 唯一名:进程 id(跨进程)+ 原子计数(同进程并发)+ 纳秒(跨运行残留)。
+    // ⚠ 不靠时钟**单独**保证唯一(时钟粒度比想象里粗 —— 见 `wlwl-eval` 的
+    //   `tests/common/mod.rs` 那段实测)。
+    static SEQ: AtomicU64 = AtomicU64::new(0);
+    let seq = SEQ.fetch_add(1, Ordering::Relaxed);
+    let nanos = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map(|d| d.as_nanos())
+        .unwrap_or(0);
+    let dir = base.join(format!("wlwl-test-{}-{seq}-{nanos}", std::process::id()));
+    std::fs::create_dir_all(&dir).map_err(|e| format!("cannot create {}: {e}", dir.display()))?;
+    Ok(dir.to_string_lossy().into_owned())
+}
 
 fn arity(host: &mut dyn StdHost, fn_name: &str, got: usize, want: usize) -> WlwlError {
     host.diag(

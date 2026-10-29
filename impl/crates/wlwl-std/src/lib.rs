@@ -335,6 +335,18 @@ pub static LANG_SOURCES: &[StdSource] = &[
             ("_TEST", test_native::kernel_test as StdFn),
             ("_EXPECT_ERR", test_native::kernel_expect_err as StdFn),
             ("_RUN_TESTS", test_native::kernel_run_tests as StdFn),
+            // [G-1 / v0.12.1] 需求清单 G-1 的四个新内核。
+            // ⚠ 这四个**必须**是内核而不是门面(`EXPECT_ERR_CODE` 要接住**原生
+            //   诊断**(ERR 透明调用会把它短路掉)、`SKIP` / `TEST_CASES` 的形状
+            //   要与内核的识别口径同源、`TEMP_DIR` 要碰文件系统)⇒ 理由见
+            //   `wl/std/test.wll` 文件头。
+            (
+                "_EXPECT_ERR_CODE",
+                test_native::kernel_expect_err_code as StdFn,
+            ),
+            ("_SKIP", test_native::kernel_skip as StdFn),
+            ("_TEST_CASES", test_native::kernel_test_cases as StdFn),
+            ("_TEMP_DIR", test_native::kernel_temp_dir as StdFn),
         ],
     },
     StdSource {
@@ -383,6 +395,12 @@ pub static LANG_SOURCES: &[StdSource] = &[
         kernels: &[
             ("_KIND", kernels::kernel_kind as StdFn),
             ("_DIAG_E0030", kernels::kernel_diag_e0030 as StdFn),
+            // [W-17 / C-3 / C-8 / C-9] `SERVE_STREAM` 的**私有 R2 内核**
+            // （Keep-Alive 循环 + 分级请求预算 + 头/体上限 431/413）。
+            // ⚠ 它**不是** `std.net` 的公共面成员 —— 公共名只有
+            //   `std.http::SERVE_STREAM` 一个 ⇒ 规范侧只需登记那一个
+            //   （§6.2 的新成员表里 `std.net` **没有**这一条）。
+            ("_SERVE_STREAM", net::tcp_serve_stream as StdFn),
         ],
     },
 ];
@@ -774,7 +792,7 @@ mod tests {
             panic!("std.test must be R1 (facade) now, got a native backend")
         };
         let names = lang_exports(src.source);
-        assert_eq!(names.len(), 6, "std.test member set: {names:?}");
+        assert_eq!(names.len(), 13, "std.test member set: {names:?}");
     }
     #[test]
     fn resolve_unknown_returns_none() {

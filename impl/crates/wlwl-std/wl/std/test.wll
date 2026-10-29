@@ -43,6 +43,59 @@
 // 改动前查过全仓 208 个 .wll 与 26 处内嵌源码:`ASSERT([])` / `ASSERT("")`
 // 一个都没有,`ASSERT(0)` 只出现在契约表里(那行本就是用来探测这次变更的),
 // 故可观察面除该行外不变;仍按 v0.x 政策在 CHANGELOG 明标 breaking。
+//
+// ## [G-1] v0.12.2 新增的 7 个成员(需求清单 G-1)
+//
+// 既有 6 个成员的**语义 / 消息文本 / 退出行为一字未改** ⇒ 全部新能力走
+// **新增成员**。下面是「读代码时最容易踩」的三处差异:
+//
+// ### 1. `ASSERT` 与 `ASSERT_TRUE` 的真值口径**不同**
+//
+// `ASSERT(cond)` 用语言规范 §2.3 的**八假值**(FALSE / NULL / 0 / 0.0 / "" /
+// 空数组 / 空字典 / NaN)⇒ `ASSERT(0)` **失败**、`ASSERT("")` **失败**。
+// `ASSERT_TRUE(value)` 用**宽松口径**:**只有 `FALSE` 与 `NULL` 为假**,其余
+// 一切(`0` / `0.0` / `""` / 空数组 / 空字典 / NaN / 任意非空串 …)为真 ⇒
+// `ASSERT_TRUE(0)` **通过**、`ASSERT_TRUE("")` **通过**、`ASSERT_TRUE([])`
+// **通过**;`ASSERT_TRUE(FALSE)` **失败**、`ASSERT_TRUE(NULL)` **失败**。
+//
+// ⇒ 两个成员**判的不是同一件事**:`ASSERT` 问「是不是假值」(§2.3 的八个),
+// `ASSERT_TRUE` 问「是不是 `FALSE` / `NULL`」。
+// ⚠ 需求清单里「`ASSERT(0)` / `ASSERT("")` / `ASSERT([])` 会被判失败」那句
+//   说的是 §2.3 口径**已经**在位这件事 —— §2.3 口径**一字不改**,所以另立
+//   `ASSERT_TRUE`,而不是去改 `ASSERT`。
+// ⚠ `ASSERT_TRUE` 的假值判据**照 `_PUT_IF_PRESENT` 的同款口径**写
+//   (`||(==(TYPE(v), "NULL"), ==(v, FALSE))`);`NULL` 一律走 `TYPE(v)` 判。
+//
+// ### 2. `EXPECT_ERR` 与 `EXPECT_ERR_CODE` 捕的不是同一种东西
+//
+// `EXPECT_ERR(x)` 吃 `ERR` **值**(§8:是 `ERR` ⇒ `OK(载荷)`);它**捕不到**
+// **原生诊断**(`E1003` 除零这类宿主级错误)—— 那不是值,是一路逃逸的宿主
+// 错误(仓里 `H4_expect_err_cannot_catch_native` 探针钉的就是这个缺口)。
+// `EXPECT_ERR_CODE(fn, code)` 调 `fn` 并**接住原生诊断**、比对它的码:
+// 命中 ⇒ `OK([code, message])`;不命中 ⇒ `ERR([code: E0049, kind:
+// test_expect_err_code_failed, expected, actual, message])`。
+// ⇒ **原生码不逃逸**成进程级失败。
+// ⚠ 与 §8 的 `EXPECT_ERR` 同款:要接住的是宿主级错误 ⇒ **直接透传内核**
+//   (见上面「EXPECT_ERR 为什么不能写成带函数体的门面」那节)。
+//
+// ### 3. `SKIP` 的用法,以及「跳过」在结果里的形状
+//
+// `SKIP(reason)` 返回一个**跳过标记**;测试体**返回**它 ⇒ 那条测试记成**跳过**:
+//
+//     TEST("net", FUN((), SKIP("no network")))
+//
+// 跳过记录**多出** `skipped`(TRUE)与 `reason` 两个键;**通过 / 失败两种
+// 记录的键集与取值逐字未变**。
+// ⚠ `passed` 对跳过取 **FALSE**(跳过的测试**没跑断言**,它不是「通过」)
+//   ⇒ **CI 必须先看 `skipped` 再看 `passed`**(只看 `passed` 会把跳过当成
+//   失败)。这就是「跳过与失败机器可区分」的那道闸:`skipped` 键**存在** ⇒ 跳过。
+//
+// ### 4. 哪些成员**直接透传内核**
+//
+// `EXPECT_ERR_CODE` / `SKIP` / `TEST_CASES` / `TEMP_DIR` 四个都**改名透传**,
+//不包一层 `FUN`:前两个的理由见上;后两个的理由是「形状必须与内核的识别
+// 口径同源 / 要碰文件系统」—— 包一层只会多一次实参求值与一次 ERR 短路风险,
+//换不到任何东西。`RUN_TESTS_ASYNC` 则是**纯 R1**(见它的定义处)。
 
 // ── 助手(不导出)────────────────────────────────────────────────────
 
@@ -126,6 +179,69 @@ LET(RUN_TESTS, FUN((*args),
     (_NEED_ARITY("RUN_TESTS", args, 0, 0);
      _RUN_TESTS())));
 
+// ── [G-1] ASSERT_MSG(cond, message) ──────────────────────────────────
+// 载荷与 `ASSERT` **同形**(`code: E0046` / `kind: test_assertion_failed`)
+// **加** `msg` 键 ⇒ **不新增诊断码**。差别只在「消息是**必需**的」:
+// `ASSERT` 的消息可选(NULL ⇒ 载荷里**不带** `msg` 键),`ASSERT_MSG` 的消息
+// 缺失就是**元数错**,给了就必须是**字符串**(CI 要能直接读它)。
+LET(ASSERT_MSG, FUN((*args),
+    (_NEED_ARITY("ASSERT_MSG", args, 2, 2);
+     LET(cond, AT(args, 0, NULL));
+     LET(msg, _NEED_STR("ASSERT_MSG", AT(args, 1, NULL)));
+     IF(BOOL(cond),
+        OK(TRUE),
+        (LET MUT(p, ["code": "E0046", "kind": "test_assertion_failed"]);
+         SET(p, _PUT_IF_PRESENT(p, "cond", cond));
+         SET(p, _PUT_MSG(p, msg));
+         ERR(p))))));
+
+// ── [G-1] ASSERT_TRUE(value) ─────────────────────────────────────────
+// ⚠ 真值口径与 `ASSERT` **不同** —— 见文件头第 1 节。
+// 判据(照 `_PUT_IF_PRESENT` 的**同款**口径):**只有 `FALSE` 与 `NULL` 为假**,
+//其余一切(`0` / `0.0` / `""` / 空数组 / 空字典 / NaN / 任意非空串 …)为真。
+// ⇒ `ASSERT_TRUE(0)` 通过、`ASSERT_TRUE("")` 通过、`ASSERT_TRUE([])` 通过;
+//   `ASSERT_TRUE(FALSE)` 失败、`ASSERT_TRUE(NULL)` 失败。
+// ⚠ `NULL` 一律走 `TYPE(v)` 判(本文件既有代码的写法),**不**用 `==(v, NULL)`。
+// 载荷与 `ASSERT` 同形(同一族断言的失败形状只有一套)⇒ **不新增诊断码**。
+LET(ASSERT_TRUE, FUN((*args),
+    (_NEED_ARITY("ASSERT_TRUE", args, 1, 1);
+     LET(v, AT(args, 0, NULL));
+     IF(NOT(||(==(TYPE(v), "NULL"), ==(v, FALSE))),
+        OK(TRUE),
+        (LET MUT(p, ["code": "E0046", "kind": "test_assertion_failed"]);
+         SET(p, _PUT_IF_PRESENT(p, "cond", v));
+         ERR(p))))));
+
+// ── [G-1] EXPECT_ERR_CODE(fn, code) ──────────────────────────────────
+// 见文件头第 2 节:要接住的是**原生诊断**(宿主级错误)⇒ **直接透传内核**。
+LET(EXPECT_ERR_CODE, _EXPECT_ERR_CODE);
+
+// ── [G-1] SKIP(reason) ────────────────────────────────────────────────
+// 见文件头第 3 节:跳过标记由内核造、由内核认 ⇒ **直接透传内核**。
+LET(SKIP, _SKIP);
+
+// ── [G-1] TEST_CASES(name, cases, body) ──────────────────────────────
+// 参数化:`cases` 是**数组的数组**,每个内层数组是一条用例的实参;每个用例
+// 注册成一条独立测试,名字 `<name>[<下标>]` ⇒ 与 `TEST` 的注册语义兼容。
+// 注册在 R2 内核(要往注册表里推 N 条)⇒ **直接透传内核**。
+LET(TEST_CASES, _TEST_CASES);
+
+// ── [G-1] TEMP_DIR() ──────────────────────────────────────────────────
+// 造一个**绝对路径**的临时目录并返回它(⚠ 相对路径会把测试文件写进仓库里
+// —— `std.fs` 的相对路径按**进程 CWD** 解析)。目录**不会**被自动删除。
+// 造目录在 R2 内核 ⇒ **直接透传内核**。
+LET(TEMP_DIR, _TEMP_DIR);
+
+// ── [G-1] RUN_TESTS_ASYNC() ──────────────────────────────────────────
+// **异步**跑一轮:整轮放进**任务作用域**里跑 ⇒ 测试体可以 `SPAWN` + `AWAIT`
+// 等异步任务;外层 `AWAIT` 等整轮跑完 ⇒ 返回与 `RUN_TESTS` **同形**的记录
+// 数组(跳过 / 失败的判别口径逐字相同)。
+// ⚠ 测试体里**直接** `YIELD()` 不行:挂起信号无处可接(内核不消费挂起)⇒
+//   整轮失败。要等异步任务就用 `SPAWN` + `AWAIT`。
+LET(RUN_TESTS_ASYNC, FUN((*args),
+    (_NEED_ARITY("RUN_TESTS_ASYNC", args, 0, 0);
+     SCOPE(FUN((), AWAIT(SPAWN(FUN((), _RUN_TESTS()))))))));
+
 // EXPORT 顺序跟随标准库规范 §8 表格的行序;附录 A 镜像跟随本顺序。成员
 // **集合**由 `wlwl-eval/tests/test_contract.rs` 对 §8 表格做外部对照。
-EXPORT(["TEST", "ASSERT", "ASSERT_EQ", "ASSERT_NEQ", "EXPECT_ERR", "RUN_TESTS"]);
+EXPORT(["TEST", "ASSERT", "ASSERT_EQ", "ASSERT_NEQ", "EXPECT_ERR", "RUN_TESTS", "ASSERT_MSG", "ASSERT_TRUE", "EXPECT_ERR_CODE", "SKIP", "TEST_CASES", "TEMP_DIR", "RUN_TESTS_ASYNC"]);

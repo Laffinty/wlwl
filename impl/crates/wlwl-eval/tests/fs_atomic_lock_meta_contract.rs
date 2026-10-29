@@ -256,6 +256,12 @@ fn a_failed_atomic_write_is_an_err_value_and_leaves_nothing_behind() {
 ///      (提交点观测)与「提交失败 ⇒ 目标保持旧内容 + 无残留」两条单测;
 ///   ② 本文件里「成功路径不留残留」那条 —— 退化实现会把临时文件留在目录里
 ///      ⇒ **它必红**(两个平台都红)。
+///
+/// ⚠⚠ **「不算中间态」的例外只有两种**(读者把错误一律记成中间态):
+///   ① Windows 的 sharing violation(替换进行中,读者被短暂挡一下);
+///   ② **`EINTR`**(被信号打断 ⇒ 那次读**根本没发生**)。
+///   ⚠ **别的错误一律算中间态** —— 特别是 `NotFound`(文件不见了):
+///     那正是「先删目标再写」的退化实现露出来的中间态 ⇒ 放行它 = 拆掉这道闸。
 #[cfg(unix)]
 #[test]
 fn a_reader_never_sees_a_half_written_target() {
@@ -303,9 +309,27 @@ fn a_reader_never_sees_a_half_written_target() {
                             reads.fetch_add(1, Ordering::Relaxed);
                             continue;
                         }
-                        bad.lock()
-                            .unwrap()
-                            .push(format!("the reader could not read the target: {e}"));
+                        // ⚠⚠ **`EINTR` 不是中间态**(唯一新增的例外)。
+                        //   POSIX 规定:被信号中断的系统调用返回 `EINTR`,
+                        //   **调用方必须重试**。macOS / BSD 的 `open()` **可以**
+                        //   被信号打断(Linux 的**不可以** ⇒ ubuntu 不会红)⇒
+                        //   读者那次 `std::fs::read` 的**开文件**那一步被信号打断
+                        //   ⇒ **读压根没发生**(既没读到旧内容、也没读到新内容、
+                        //   更没有半个内容)⇒ 那**不是**中间态 ⇒ 下一轮重读。
+                        //   ⚠⚠ **只放行 `Interrupted` 这一种**:
+                        //     `NotFound`(文件不见了 = 退化实现「先删再写」露出来
+                        //     的中间态)与其它错误**仍必须**算中间态 ⇒ 退化实现
+                        //     照样被抓住。
+                        //   ⚠ 这次读**不算**一次有效读(它什么都没读到)⇒
+                        //     不计入 `reads`(`reads >= 10` 那条断言要的是
+                        //     「读者确实读到了东西」)。
+                        //   ⚠ **不 `continue`**:让它落到循环末尾的 1 ms sleep ⇒
+                        //     信号持续不断时**不会忙转**(也不会把写者饿死)。
+                        if e.kind() != std::io::ErrorKind::Interrupted {
+                            bad.lock()
+                                .unwrap()
+                                .push(format!("the reader could not read the target: {e}"));
+                        }
                     }
                 }
                 // ⚠ **每读一次歇一下**:Windows 上目标被读者握着时替换会失败

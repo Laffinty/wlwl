@@ -289,11 +289,16 @@ const NAMESPACE_META: &[NsMeta] = &[
         v1_book: "系统",
         stubs: NO_STUBS,
     },
-    // [v0.12.1 / W-16] `std.http` HTTP 请求解析 + 响应构造（C-1 / C-2）。
+    // [v0.12.1 / W-16 + W-17] `std.http` HTTP 请求解析 + 响应构造 + 连接管理
+    // （C-1 / C-2 / C-3 / C-8 / C-9）。
     // ⚠ 同上：**尚未进公共面** ⇒ 靠 §5.5 台账兜住。
+    // ⚠⚠ **层是「混合」不是「R1」**（第九波订正）：W-17 给它加了 `SERVE_STREAM`
+    //   ⇒ 它的 R2 内核（`_SERVE_STREAM`，Keep-Alive 循环 + 分级请求预算 +
+    //   头/体上限）住在 `wlwl-std/src/net.rs` ⇒ 模块**不再是纯 R1** ⇒ 附录 A
+    //   派生体的「层」列必须写「混合」⇒ **错写会让抄件与实现侧对不上**。
     NsMeta {
         path: "wlwl:std.http",
-        layer: "R1",
+        layer: "混合(R1 `PARSE_REQUEST`/`BUILD_RESPONSE` + R2 `SERVE_STREAM`)",
         v1_book: "系统",
         stubs: NO_STUBS,
     },

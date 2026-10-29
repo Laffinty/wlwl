@@ -373,6 +373,61 @@ jobs:
             grep -E '^test .* \.\.\. FAILED' "$1" 2>/dev/null | tr -d '\r' | sort -u
           }
 
+          # ⚠⚠ **失败原因也必须落进「匿名可读」的位置** —— 只抓用例名**不够**。
+          #   名字只说「哪条红了」,不说「为什么红」⇒ 归因还得去捞日志,而日志
+          #   **匿名不可读**(`GET /actions/jobs/<id>/logs` = 403、artifact = 401)
+          #   ⇒ 光有名字,拿到的是「要查什么」,**不是**「查到了什么」。
+          #   ⇒ 从 cargo 的失败段落里把 **panic 文本**抓出来:
+          #     ---- <name> stdout ----
+          #     thread '...' panicked at <file>:<line>:<col>:
+          #     <断言文本 …>
+          #     note: run with `RUST_BACKTRACE=1` …        ← 噪声,不要
+          #   ⇒ 每个失败用例一行:`<name> :: <panic 行> | <断言文本行> …`
+          #   ⚠ **只抓 panic 文本**:失败段落里还有 stdout 噪声、失败清单、统计行
+          #     ⇒ 全抓会把噪声灌进注解。
+          failed_reasons() {
+            # ⚠ `tr -d '\r'` **放在 awk 之前**:Windows runner 上 cargo 的输出是
+            #   CRLF ⇒ 行尾那个 `\r` 会让 awk 的 `/ stdout ----$/` **匹配不上**
+            #   (Windows runner 走的就是 Git Bash ⇒ 三个平台只有它带 `\r`)。
+            cat "$1" 2>/dev/null | tr -d '\r' | awk '
+              function flush() {
+                if (found) { print name " :: " buf }
+                found = 0
+                buf = ""
+              }
+              # 失败段落的头:---- <name> stdout ----
+              /^---- .* stdout ----/ {
+                flush()
+                inblock = 1
+                found = 0
+                buf = ""
+                name = $0
+                sub(/^---- /, "", name)
+                sub(/ stdout ----$/, "", name)
+                next
+              }
+              # 下一个段落的头 ⇒ 上一个段落到此为止
+              inblock && /^---- / { flush(); inblock = 0; next }
+              inblock {
+                # panic 行**之前**的内容(stdout 噪声)一律不要
+                if (!found) {
+                  if ($0 ~ /panicked at/) { found = 1; buf = $0 }
+                  next
+                }
+                # 「note: run with RUST_BACKTRACE=1」是噪声 ⇒ 到此为止
+                if ($0 ~ /^note: /) { flush(); inblock = 0; next }
+                # 空行 ⇒ 断言文本结束(panic 消息本身不带空行)
+                if ($0 == "") { flush(); inblock = 0; next }
+                line = $0
+                # ⚠ 单行封顶:panic 消息可能**很长**(例如把整个文件内容打出来)
+                #   ⇒ 不封顶的话一行就能吃掉整条注解的预算。
+                if (length(line) > 400) { line = substr(line, 1, 400) " ...(line truncated)" }
+                buf = buf " | " line
+              }
+              END { flush() }
+            '
+          }
+
           # ⚠⚠ **失败用例名必须落进「匿名可读」的位置** —— 这是实测出来的机制缺口。
           #   失败名原先只写进 step summary 与 artifact,而这两处**都要登录**:
           #   匿名 `GET /actions/artifacts/<id>/zip` = 401、`GET /actions/jobs/<id>/logs`
@@ -389,6 +444,7 @@ jobs:
           emit_failed_names_annotation() {
             local title="$1"
             local names="$2"
+            local reasons="${3:-}"
             local flat
             # ⚠ `local` 逐个声明、不合并:右侧引用了前一个变量时,同一行会在
             #   赋值**之前**展开(与 D13-073 那个坑同款)。
@@ -398,6 +454,19 @@ jobs:
             flat="$(printf '%s' "$names" | tr -d '\r' | sed ':a;N;$!ba;s/\n/; /g')"
             if [ -z "$flat" ]; then
               flat="(no '... FAILED' line captured)"
+            fi
+            # ⚠ **原因并进同一条注解**(不另开一条):归因时**一次**匿名 API 调用
+            #   就该够 —— 名字与原因分两条注解 ⇒ 调用方还得自己拼。
+            if [ -n "$reasons" ]; then
+              # ⚠ 注解是**公开**的,而 Windows runner 的 bash locale **不是 UTF-8**
+              #   (见上面那段「运行时提示一律用英文」的注释)⇒ 非 ASCII 字节进去
+              #   就变乱码 ⇒ 这里只留 ASCII 字节;**完整原文**仍在 step summary
+              #   与 artifact 里(那两处没有 locale 问题)。
+              local rflat
+              rflat="$(printf '%s' "$reasons" | LC_ALL=C tr -cd '\11\12\40-\176' | sed ':a;N;$!ba;s/\n/; /g')"
+              if [ -n "$rflat" ]; then
+                flat="$flat -- reasons: $rflat"
+              fi
             fi
             if [ "${#flat}" -gt 6000 ]; then
               flat="${flat:0:6000} ... (truncated; full list in the step summary and the log artifact)"
@@ -415,11 +484,14 @@ jobs:
           retry_rc="$(cat "$LOG_DIR/retry.rc")"
           first_names="$(failed_names "$LOG_DIR/cargo-test-first.log")"
           retry_names="$(failed_names "$LOG_DIR/cargo-test-retry.log")"
+          # ⚠ 失败**原因**同样进公开注解(匿名可读)—— 见 failed_reasons() 的说明。
+          first_reasons="$(failed_reasons "$LOG_DIR/cargo-test-first.log")"
+          retry_reasons="$(failed_reasons "$LOG_DIR/cargo-test-retry.log")"
           # ⚠ 失败名进**公开注解**(匿名可读)—— 见上面 emit_failed_names_annotation
           #   的说明。两条都发:pass 1 的名单是「当时红了的那些」,pass 2 的是
           #   「复跑时仍然红的那些」⇒ 两者的**差**就是 flaky 的候选集合。
-          emit_failed_names_annotation "FAILED tests - pass 1" "$first_names"
-          emit_failed_names_annotation "FAILED tests - pass 2" "$retry_names"
+          emit_failed_names_annotation "FAILED tests - pass 1" "$first_names" "$first_reasons"
+          emit_failed_names_annotation "FAILED tests - pass 2" "$retry_names" "$retry_reasons"
 
           {
             echo "### cargo test result (${{ matrix.os }})"
@@ -441,6 +513,18 @@ jobs:
             echo "#### FAILED tests - pass 2"
             echo '```'
             echo "${retry_names:-(none)}"
+            echo '```'
+            echo
+            # ⚠ 失败**原因**也进摘要(原文,未做 ASCII 过滤):这一步写文件
+            #   **没有 locale 问题** ⇒ 中文断言消息在这里是**完整**的。
+            echo "#### Failure reasons - pass 1"
+            echo '```'
+            echo "${first_reasons:-(none captured)}"
+            echo '```'
+            echo
+            echo "#### Failure reasons - pass 2"
+            echo '```'
+            echo "${retry_reasons:-(none captured)}"
             echo '```'
             echo
             echo "Full unfiltered logs: artifact \`cargo-test-logs-${{ matrix.os }}\`."

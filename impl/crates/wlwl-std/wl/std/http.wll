@@ -1,8 +1,13 @@
 // wlwl:std.http —— HTTP 请求解析 + 响应构造（**R1 纯逻辑层**，ADR-0021 的
-// 分层规则）：本模块是**纯 wlwl 源码**模块，成员面**只有两个**，没有任何
-// 原生绑定；唯一的跨命名空间依赖是
+// 分层规则）：本模块是**纯 wlwl 源码**模块，成员面**只有三个**，没有**自己的**
+// 原生绑定；跨命名空间依赖是
 //   · `wlwl:std.encode::BYTE_LEN`（**字节数**，不是码点数）
 //   · `wlwl:std.str::CAT` / `wlwl:std.str::INDEX_OF`
+//
+// ⚠ `SERVE_STREAM` 的 R2 内核（`_SERVE_STREAM`）是**注入**进来的（`lib.rs` 的
+//   `wlwl:std.http` → `kernels`）⇒ **本模块不 import `std.net`** ⇒ `std.http`
+//   **不依赖** `std.net` 的公共面 ⇒ 规范侧只需登记 `std.http::SERVE_STREAM`
+//   **一个**成员（§6.2 的新成员表里 `std.net` **没有**这一条）。
 //
 // ## 成员面
 //
@@ -10,6 +15,10 @@
 //   = `{"method": STRING, "path": STRING, "version": STRING, "headers": DICT, "body": STRING}`
 // · `BUILD_RESPONSE(status: INTEGER, headers: DICT | NULL, body: STRING, method: STRING = "GET") -> DICT`
 //   = `{"status": INTEGER, "headers": DICT, "content_length": INTEGER, "head": STRING, "body": STRING}`
+// · `SERVE_STREAM(conn: INTEGER, opts: DICT | NULL, handler: FUNCTION) -> INTEGER`
+//   = 在**一条**连接上**循环**处理请求（Keep-Alive）；返回**服务过的请求数**。
+//   ⚠ 它是**私有 R2 内核** `_SERVE_STREAM` 的**改名导出**（不包一层 `FUN`
+//     ⇒ 语义与诊断**逐字**是内核那一份）⇒ 见下面那条的文档。
 //
 // ## 失败口径（两档，**不新增诊断码**）
 //
@@ -493,8 +502,70 @@ LET(BUILD_RESPONSE, FUN((status, headers, body, method = "GET"),
       "head": head,
       "body": IF(==(UPPER(m), "HEAD"), "", txt)])));
 
-// EXPORT 顺序 = 需求清单 C-1 / C-2 的行序（先解析、后构造）。
+// ── SERVE_STREAM(conn, opts, handler) -> INTEGER ─────────────────────────────
+//
+// 在**一条**连接上**循环**处理请求，直到：**对端关闭** / **空闲超时** / 客户端发了
+// `Connection: close` / handler 自己选择关。返回**服务过的请求数**（不是连接数）。
+//
+// ## ⚠⚠ handler 的契约（写 handler 的人**必须**知道）
+//
+// handler 跑在**原生帧**里（宿主回调进 WLWL 代码）⇒ 那儿**挂不了**（没有调度器
+// 槽位）⇒ handler 里**不得**调**宿主挂起点成员**（`TCP_RECV` / `TCP_ACCEPT` /
+// `SLEEP_ASYNC`）⇒ 那样会报**既有 `E0014`**（W-38 已把它诊断化；**不新增诊断码**）
+// ⇒ 那一条连接作废。
+// ⇒ handler 只做**纯计算**：读请求字典、返回响应字典。
+//
+// ## 请求字典 / 响应字典
+//
+// · **请求**（handler 的实参）= `DICT`
+//   `{"method": STRING, "path": STRING, "version": STRING, "headers": DICT, "body": STRING}`
+//   —— `headers` 的**键一律小写**；`path` 是**请求目标原样**（可能带查询串）；
+//   `body` 是**有损 UTF-8**。
+// · **响应**（handler 的返回值）= `DICT`
+//   `{"status": INTEGER, "headers": DICT, "body": STRING | ARRAY[INTEGER]}`
+//   —— **三个键缺一即失败**（那一条连接作废）。
+//   ⚠ **可选**的第四个键 `"keep_alive": BOOLEAN` ⇒ `FALSE` 时「读完这条就关」
+//     （handler 自己选择**不再读下一条**）。
+//
+// ## 循环什么时候结束
+//
+// · **对端关闭**（EOF）⇒ 收尾。
+// · **空闲超时**（`idle_timeout_ms`）⇒ **服务端主动关**（**静默**：客户端正闲着，
+//   多一条 unsolicited 的 408 只会把它弄糊涂 ⇒ 不回）。
+// · 客户端发了 `Connection: close` ⇒ 响应写完就关。
+// · 请求的版本是 **HTTP/1.0** ⇒ 响应写完就关（HTTP/1.0 **没有**默认的持久连接）。
+// · handler 的响应里 `"keep_alive": FALSE` ⇒ 响应写完就关。
+//
+// ## `opts`（可选，`DICT` 或 `NULL`）
+//
+// | 键 | 缺省 | 含义 |
+// |---|---|---|
+// | `max_header_bytes` | 64 KiB | 一次请求的**头块**上限 ⇒ 超限回 **431** |
+// | `max_body_bytes` | 8 MiB | 一次请求的**体**上限 ⇒ 超限回 **413** |
+// | `idle_timeout_ms` | `0`（无上限） | **连接空闲超时**：两条请求**之间**等下一条的首字节 |
+// | `first_byte_ms` | `0`（无上限） | **首字节**预算 |
+// | `headers_ms` | `0`（无上限） | **头完成**预算（从首字节起算） |
+// | `body_ms` | `0`（无上限） | **体读取**预算（从头块结束起算） |
+// | `response_ms` | `0`（无上限） | **响应写出**预算（从**请求读完**到响应写完，含 handler 的执行） |
+// | `total_ms` | `0`（无上限） | **整条请求**的总预算（从开始等首字节起算） |
+//
+// ⚠ **上限是在读取过程中就判的**（不是「读完再判」）：头块每读一块就查一次 ⇒
+//   超限的头块**不会**被读进内存；`Content-Length` 超上限 ⇒ **一个字节都不读**
+//   （直接回 413）。
+// ⚠ **未知选项名 ⇒ `E0030`**（不静默忽略：拼错的上界会变成「没有上界」）。
+//
+// ## 失败口径
+//
+// · **元数 / 类型错** ⇒ 既有诊断 `E0022` / `E0030`（终止运行）。
+// · **运行期失败**（句柄不对 / 读失败 / handler 抛错）⇒ `ERR` **值**
+//   `ERR([kind:"SocketError", op:"SERVE_STREAM", reason])`。
+//
+// ⚠ 诊断**指名公共成员 `SERVE_STREAM`**（规范 §0.3：诊断要指名用户真调过的
+//   那个成员）⇒ 内核的 `NAME` 常量就是 `SERVE_STREAM`，**不是**内核名。
+LET(SERVE_STREAM, _SERVE_STREAM);
+
+// EXPORT 顺序 = 需求清单 C-1 / C-2 / C-3 的行序（先解析、后构造、再连接管理）。
 //
 // ⚠ `EXPORT` **必须**写在一行里：`wlwl-std::lang_exports` 是**逐行**扫的
 //   (一行一条声明)⇒ 拆成多行,附录 A 的镜像生成器会扫出**零个**成员。
-EXPORT(["PARSE_REQUEST", "BUILD_RESPONSE"]);
+EXPORT(["PARSE_REQUEST", "BUILD_RESPONSE", "SERVE_STREAM"]);

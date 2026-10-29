@@ -27,8 +27,8 @@ mod tests {
         let names = wlwl_std::lang_exports(src.source);
         assert_eq!(
             names.len(),
-            6,
-            "stdlib spec §8 declares 6 members: {names:?}"
+            13,
+            "stdlib spec §8 declares 6 members + 7 from G-1 (pending 规范侧 登记): {names:?}"
         );
     }
 
@@ -50,10 +50,15 @@ mod tests {
             wlwl_std::test_native::kernel_test,
             wlwl_std::test_native::kernel_expect_err,
             wlwl_std::test_native::kernel_run_tests,
+            // [G-1 / v0.12.1] 需求清单 G-1 的四个新内核。
+            wlwl_std::test_native::kernel_expect_err_code,
+            wlwl_std::test_native::kernel_skip,
+            wlwl_std::test_native::kernel_test_cases,
+            wlwl_std::test_native::kernel_temp_dir,
         ];
         assert_eq!(
             implemented.len(),
-            3,
+            7,
             "test_native.rs gained or lost a kernel — update the facade's kernel \
              list in wlwl-std/src/lib.rs and this list together"
         );
@@ -72,8 +77,12 @@ mod tests {
         assert!(
             declared.contains(&"_TEST")
                 && declared.contains(&"_EXPECT_ERR")
-                && declared.contains(&"_RUN_TESTS"),
-            "the facade needs exactly these three kernels: {declared:?}"
+                && declared.contains(&"_RUN_TESTS")
+                && declared.contains(&"_EXPECT_ERR_CODE")
+                && declared.contains(&"_SKIP")
+                && declared.contains(&"_TEST_CASES")
+                && declared.contains(&"_TEMP_DIR"),
+            "the facade needs exactly these seven kernels: {declared:?}"
         );
     }
 

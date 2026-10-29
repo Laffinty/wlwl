@@ -159,6 +159,28 @@ pub static SPEC: ModuleSpec = ModuleSpec {
         //   （方法/路径/头/体）⇒ 那属于**协议语义** ⇒ 住在 `net.rs`，
         //   不住在 `tcp.rs`（后者有机械守卫 `no_http_semantics_in_the_transport_layer`）。
         ("TCP_SERVE", tcp_serve as StdFn),
+        // ── 原生帧内的 **Keep-Alive** 循环（W-17 / C-3 / C-8 / C-9）──────────
+        //
+        // ⚠ **与 `TCP_SERVE` 的分工**（两者**不**互相替代）：
+        //   · `TCP_SERVE(listener, …)` = **监听** → 收一条连接 → 服务**一条**请求 → 关；
+        //   · `SERVE_STREAM(conn, …)` = **已接到的连接** → 循环服务**多条**请求 → 关。
+        // ⇒ 后者**不 accept**、**不关**监听器；它只管**一条**连接。
+        //
+        // ⚠ **handler 的契约与 `TCP_SERVE` 逐字相同**：handler 跑在**原生帧**里
+        //   ⇒ handler 里调宿主挂起点成员（`TCP_RECV` / `TCP_ACCEPT` /
+        //   `SLEEP_ASYNC`）⇒ **既有 `E0014`**（W-38 诊断化）。
+        //
+        // ⚠⚠ **它**不是** `std.net` 的公共面成员** —— 它是 `std.http::SERVE_STREAM`
+        //   的**私有内核**（`ADR-0021` 的分层：R1 门面 + R2 内核）⇒ 登记在
+        //   `lib.rs` 的 **`wlwl:std.http`** 那一段的 `kernels` 里，形如
+        //   `("_SERVE_STREAM", net::tcp_serve_stream)`。
+        //   ⇒ **为什么不做成 `std.net` 的公共成员**：
+        //   ① 需求清单 C-3 的落点是 **`std.http`**（§6.2 的新成员表里
+        //      `std.net` **没有**这一条）⇒ 做成公共成员会**多欠一份规范侧登记**
+        //      （成员表 + 附录 A 两处）；
+        //   ② 诊断**要指名用户真的调过的那个成员**（规范 §0.3 治理四件套）⇒
+        //      公共名是 `std.http::SERVE_STREAM`，诊断里就必须是 `SERVE_STREAM`
+        //      ⇒ 若内核叫 `TCP_SERVE_STREAM`，诊断会指名一个**用户没调过**的名字。
     ],
 };
 
@@ -2498,6 +2520,746 @@ fn entry_get<'a>(entries: &'a [(Value, Value)], key: &str) -> Option<&'a Value> 
         .iter()
         .find(|(k, _)| matches!(k, Value::String(s) if s.as_str() == key))
         .map(|(_, v)| v)
+}
+
+// ── TCP_SERVE_STREAM：一条连接上的 Keep-Alive 循环（W-17 / C-3 / C-8 / C-9）──
+//
+// ## 为什么整个循环必须在一个**原生成员**内部推进
+//
+// handler 必须跑在**原生帧**里（⇒ handler 里调宿主挂起点成员 ⇒ 既有 `E0014`，
+// 见 W-38）⇒ 原生帧里**没有调度器可挂** ⇒ 「读下一条请求」这件事在**语言层
+// 没有位置**（`TCP_RECV` 是宿主挂起点成员，只能出现在任务体里）⇒ 循环只能
+// 在原生成员内部推进 —— 与 `TCP_SERVE` **同款形状**。
+//
+// ## 四个分级预算（C-8）与两个上限（C-9）
+//
+// | 段 | 选项 | 计量起点 | 超了怎么办 |
+// |---|---|---|---|
+// | 首字节 | `first_byte_ms` | 开始等这条请求 | **408** + 关连接 |
+// | 头完成 | `headers_ms` | **首字节**到手 | **408** + 关连接 |
+// | 体读取 | `body_ms` | **头块**结束 | **408** + 关连接 |
+// | 响应写出 | `response_ms` | **请求读完** | 放弃这次响应 + 关连接 |
+// | 整条请求 | `total_ms` | 开始等这条请求 | 剩下的段**都不再等** |
+//
+// | 上限 | 选项 | 超了怎么办 |
+// |---|---|---|
+// | 头块 | `max_header_bytes` | **431** + 关连接 |
+// | 请求体 | `max_body_bytes` | **413** + 关连接 |
+//
+// ⚠ **上限是在读取过程中就判的**，不是「读完再判」：
+//   · 头块：每读一块就查一次 ⇒ **永远不会**把超限的头块读进内存；
+//   · 体：`Content-Length` 超上限 ⇒ **一个字节都不读**（直接 413）。
+//
+// ⚠ **首字节预算与空闲超时是一对**：`first_byte_ms` 管「这条请求的首字节」，
+//   `idle_timeout_ms` 管「**两条请求之间**」的空闲窗口 ⇒ 等首字节时**两者
+//   取先到者**。区别只在**后果**：已经服务过请求 ⇒ 这是**空闲** ⇒ **静默**
+//   关连接（不 unsolicited 回 408 —— 客户端正闲着，多一条 unsolicited 响应
+//   只会把它弄糊涂）；还没服务过 ⇒ 回 **408** 再关。
+//
+// ## ⚠ 已知缺口（不是缺陷，是传输层现状）
+//
+// `tcp.rs` 的 `write_all_bytes` **没有**超时（它不在本项的改动面内）⇒ 卡在
+// **一块之内**的写**不可打断** ⇒ `response_ms` 是「**块与块之间**」兑现的。
+
+/// `TCP_SERVE_STREAM` 的选项（缺省见 [`StreamOpts::default`]）。
+#[derive(Debug, Clone, Copy)]
+struct StreamOpts {
+    /// 头块上限（字节）—— 超限 ⇒ **431**。
+    max_header_bytes: usize,
+    /// 请求体上限（字节）—— 超限 ⇒ **413**。
+    max_body_bytes: usize,
+    /// **连接空闲超时**（毫秒）：两条请求**之间**等下一条请求首字节的上限；`0` = 无上限。
+    idle_timeout_ms: u64,
+    /// **首字节**预算（毫秒）：等一条请求首字节的上限；`0` = 无上限。
+    first_byte_ms: u64,
+    /// **头完成**预算（毫秒）：从首字节到头块结束；`0` = 无上限。
+    headers_ms: u64,
+    /// **体读取**预算（毫秒）：从头块结束到体读完；`0` = 无上限。
+    body_ms: u64,
+    /// **响应写出**预算（毫秒）：从开始写到写完；`0` = 无上限。
+    response_ms: u64,
+    /// **整条请求**的总预算（毫秒）：从开始等首字节到响应写完；`0` = 无上限。
+    total_ms: u64,
+}
+
+impl Default for StreamOpts {
+    /// ⚠ **上限有缺省、预算没有**：上限缺了就是「无界地读进内存」（那是**服务端
+    ///   能触发的**资源耗尽）⇒ 缺省取 `TCP_SERVE` 的同一顶；而预算是**调用方
+    ///   的承诺**，缺省 `0` = 不额外设限（与 `TCP_SERVE` 的 `read_timeout_ms`
+    ///   **同口径**：只有**显式**写出来才有限）。
+    fn default() -> Self {
+        Self {
+            max_header_bytes: MAX_HEADER_BYTES,
+            max_body_bytes: MAX_BODY_BYTES,
+            idle_timeout_ms: 0,
+            first_byte_ms: 0,
+            headers_ms: 0,
+            body_ms: 0,
+            response_ms: 0,
+            total_ms: 0,
+        }
+    }
+}
+
+/// `TCP_SERVE_STREAM` 的选项名（诊断文案用）。
+const STREAM_OPT_NAMES: &str = "`max_header_bytes`, `max_body_bytes`, `idle_timeout_ms`, \
+     `first_byte_ms`, `headers_ms`, `body_ms`, `response_ms`, `total_ms`";
+
+/// 解析 `TCP_SERVE_STREAM` 的可选项。
+///
+/// ⚠ **未知选项名 ⇒ `E0030`**（不静默忽略：拼错的上界会变成「没有上界」）。
+/// ⚠ **负数 ⇒ `E0030`**（负的时长没有可表达的语义，不猜）。
+fn stream_opts(host: &mut dyn StdHost, v: &Value) -> wlwl_error::WlwlResult<StreamOpts> {
+    const NAME: &str = "SERVE_STREAM";
+    let mut opts = StreamOpts::default();
+    // ⚠ `opts` 认**两种**字典表示（普通 `DICT` 与字典累加器）—— 与 `TCP_SERVE` 同款。
+    let Some(entries) = dict_entries_of(v) else {
+        if matches!(v, Value::Null) {
+            return Ok(opts);
+        }
+        return Err(serve_type_err(host, NAME, "a DICT of options or NULL", v));
+    };
+    for (k, val) in entries.iter() {
+        let Value::String(k) = k else {
+            return Err(serve_type_err(host, NAME, "a STRING option name", k));
+        };
+        // ⚠ 时长类：负数 ⇒ `E0030`；`0` = 无上限。
+        let ms = |host: &mut dyn StdHost, key: &str| -> wlwl_error::WlwlResult<u64> {
+            let n = int_arg(host, NAME, val)?;
+            if n < 0 {
+                return Err(host.diag(
+                    ErrorCode::E0030,
+                    format!("{NAME}: {key} must not be negative, got {n}"),
+                ));
+            }
+            Ok(n as u64)
+        };
+        match k.as_str() {
+            "max_header_bytes" => {
+                let n = int_arg(host, NAME, val)?;
+                if n <= 0 {
+                    return Err(host.diag(
+                        ErrorCode::E0030,
+                        format!("{NAME}: max_header_bytes must be positive, got {n}"),
+                    ));
+                }
+                opts.max_header_bytes = n as usize;
+            }
+            "max_body_bytes" => {
+                let n = int_arg(host, NAME, val)?;
+                if n < 0 {
+                    return Err(host.diag(
+                        ErrorCode::E0030,
+                        format!("{NAME}: max_body_bytes must not be negative, got {n}"),
+                    ));
+                }
+                opts.max_body_bytes = n as usize;
+            }
+            "idle_timeout_ms" => opts.idle_timeout_ms = ms(host, "idle_timeout_ms")?,
+            "first_byte_ms" => opts.first_byte_ms = ms(host, "first_byte_ms")?,
+            "headers_ms" => opts.headers_ms = ms(host, "headers_ms")?,
+            "body_ms" => opts.body_ms = ms(host, "body_ms")?,
+            "response_ms" => opts.response_ms = ms(host, "response_ms")?,
+            "total_ms" => opts.total_ms = ms(host, "total_ms")?,
+            other => {
+                return Err(host.diag(
+                    ErrorCode::E0030,
+                    format!(
+                        "{NAME}: unknown option {other:?} (expected one of {STREAM_OPT_NAMES})"
+                    ),
+                ))
+            }
+        }
+    }
+    Ok(opts)
+}
+
+/// 一个绝对截止时间（`ms == 0` ⇒ **无上限**）。
+fn deadline_of(ms: u64, from: Instant) -> Option<Instant> {
+    if ms == 0 {
+        None
+    } else {
+        Some(from + Duration::from_millis(ms))
+    }
+}
+
+/// 两个截止时间取**先到者**（`None` = 无上限）。
+fn earlier(a: Option<Instant>, b: Option<Instant>) -> Option<Instant> {
+    match (a, b) {
+        (Some(x), Some(y)) => Some(x.min(y)),
+        (x, y) => x.or(y),
+    }
+}
+
+/// 截止时间 ⇒ 还能等多久（`None` = 无限等；`Some(ZERO)` = 已经到期）。
+fn remaining(deadline: Option<Instant>) -> Option<Duration> {
+    deadline.map(|dl| {
+        let now = Instant::now();
+        if now >= dl {
+            Duration::ZERO
+        } else {
+            dl - now
+        }
+    })
+}
+
+/// 等一批字节的结果。
+enum Wait {
+    /// 拿到了字节（缓冲区里可能还多出**下一条**请求的字节 —— 流水线）。
+    Got,
+    /// 对端关闭且缓冲已空。
+    Eof,
+    /// 预算用尽（**不是** EOF）。
+    TimedOut,
+    /// 读失败（连接坏了）。
+    Failed(String),
+}
+
+/// 等一批字节并追加到 `buf`。
+///
+/// ⚠ `buf` 里已经有字节 ⇒ **立刻返回**（那些字节可能是上一条请求的尾巴）。
+fn wait_for_bytes(cid: i64, buf: &mut Vec<u8>, deadline: Option<Instant>) -> Wait {
+    if !buf.is_empty() {
+        return Wait::Got;
+    }
+    match recv_blocking(cid, 64 * 1024, remaining(deadline)) {
+        Ok(ReadOutcome::Bytes(b)) => {
+            buf.extend_from_slice(&b);
+            Wait::Got
+        }
+        Ok(ReadOutcome::Eof) => Wait::Eof,
+        Ok(ReadOutcome::TimedOut) => Wait::TimedOut,
+        Err(e) => Wait::Failed(e),
+    }
+}
+
+/// 读头块时的失败。
+enum HeadErr {
+    /// 超上限 ⇒ **431**。
+    TooLarge(String),
+    /// 预算用尽 ⇒ **408**。
+    TimedOut,
+    /// 连接坏了 / 报文不完整。
+    Failed(String),
+}
+
+/// 读满头块（到 `\r\n\r\n` 为止）⇒ 头块**长度**（不含那个分隔符）。
+///
+/// ⚠ **上限在读取过程中就判** ⇒ 超限的头块**不会**被读进内存。
+fn read_head_block(
+    cid: i64,
+    buf: &mut Vec<u8>,
+    max_bytes: usize,
+    deadline: Option<Instant>,
+) -> Result<usize, HeadErr> {
+    loop {
+        if let Some(i) = find_head_end(buf) {
+            // ⚠ 头块**已完整** ⇒ 这时才能算它的真实长度（含分隔符的 4 字节）。
+            if i + 4 > max_bytes {
+                return Err(HeadErr::TooLarge(format!(
+                    "the request header block of {} bytes exceeds the {} byte cap",
+                    i + 4,
+                    max_bytes
+                )));
+            }
+            return Ok(i);
+        }
+        // ⚠ 头块还没结束 ⇒ 它的长度**至少**是 `buf.len()` ⇒ 超过上限就是超限。
+        if buf.len() > max_bytes {
+            return Err(HeadErr::TooLarge(format!(
+                "the request header block exceeds the {} byte cap",
+                max_bytes
+            )));
+        }
+        match recv_blocking(cid, 64 * 1024, remaining(deadline)) {
+            Ok(ReadOutcome::Bytes(b)) => buf.extend_from_slice(&b),
+            Ok(ReadOutcome::Eof) => {
+                return Err(HeadErr::Failed(
+                    "the peer closed the connection before the request was complete".into(),
+                ))
+            }
+            Ok(ReadOutcome::TimedOut) => return Err(HeadErr::TimedOut),
+            Err(e) => return Err(HeadErr::Failed(e)),
+        }
+    }
+}
+
+/// 头块 ⇒ 请求行 + 头字段 + `Content-Length`。
+struct HeadInfo {
+    method: String,
+    path: String,
+    version: String,
+    headers: Vec<(String, String)>,
+    content_length: Option<u64>,
+    /// 请求里说了 `Connection: close`（可与别的 token 并列）。
+    wants_close: bool,
+}
+
+/// 头块 ⇒ 请求行 + 头字段。
+///
+/// ⚠ **判据与 `TCP_SERVE` 的读路径逐字相同**（同一个头出现两次 ⇒ 拒；`TE` ⇒ 拒；
+///   obs-fold ⇒ 拒；头名不是 token ⇒ 拒；值里含 CR/LF ⇒ 拒）。
+///   ⚠ 本函数是**新写的一份**，不是对既有读路径的改写 —— 既有成员**一字未动**
+///   ⇒ 两份判据必须**人工保持一致**（改一处就要改另一处）。
+fn parse_request_head(head: &str) -> Result<HeadInfo, String> {
+    let mut lines = head.split("\r\n");
+    let request_line = lines.next().unwrap_or("");
+    let mut parts = request_line.split(' ');
+    let method = parts.next().unwrap_or("").to_string();
+    let path = parts.next().unwrap_or("").to_string();
+    let version = parts.next().unwrap_or("").to_string();
+    if method.is_empty() || path.is_empty() || version.is_empty() || parts.next().is_some() {
+        return Err(format!("malformed request line {request_line:?}"));
+    }
+    if !method.bytes().all(is_tchar) {
+        return Err(format!(
+            "the request method {method:?} is not a valid token"
+        ));
+    }
+    if version != "HTTP/1.1" && version != "HTTP/1.0" {
+        return Err(format!("unsupported request version {version:?}"));
+    }
+    let mut headers: Vec<(String, String)> = Vec::new();
+    let mut content_length: Option<u64> = None;
+    let mut wants_close = false;
+    for line in lines {
+        if line.is_empty() {
+            continue;
+        }
+        // obs-fold（行首空白）是**已知的拆分/走私向量** ⇒ 拒绝，不合并。
+        if line.starts_with(' ') || line.starts_with('\t') {
+            return Err(format!("obs-fold in the request header: {line:?}"));
+        }
+        let Some((k, v)) = line.split_once(':') else {
+            return Err(format!("malformed request header line {line:?}"));
+        };
+        let v = v.trim();
+        if v.contains('\r') || v.contains('\n') {
+            return Err(format!("the request header {k:?} value contains CR or LF"));
+        }
+        let lk = k.to_ascii_lowercase();
+        match lk.as_str() {
+            "content-length" => {
+                // 同一个头出现两次 —— 即便值相同也拒（走私信号）。
+                if content_length.is_some() {
+                    return Err("duplicate Content-Length header".into());
+                }
+                let Ok(n) = v.parse::<u64>() else {
+                    return Err(format!("Content-Length {v:?} is not a number"));
+                };
+                content_length = Some(n);
+            }
+            // ⚠ chunked 是走私向量 ⇒ 拒绝，不解码（与 HTTP 客户端同口径）。
+            "transfer-encoding" => {
+                return Err(
+                    "Transfer-Encoding is not supported — chunked is a smuggling vector, \
+                     refused rather than decoded"
+                        .into(),
+                )
+            }
+            // ⚠ `Connection` 是一张**逗号分隔的 token 表** ⇒ 逐项看。
+            "connection" if v.split(',').any(|t| t.trim().eq_ignore_ascii_case("close")) => {
+                wants_close = true;
+            }
+            _ => {}
+        }
+        headers.push((lk, v.to_string()));
+    }
+    Ok(HeadInfo {
+        method,
+        path,
+        version,
+        headers,
+        content_length,
+        wants_close,
+    })
+}
+
+/// 读体时的失败。
+enum BodyErr {
+    /// 超上限 ⇒ **413**。
+    TooLarge(String),
+    /// 预算用尽 ⇒ **408**。
+    TimedOut,
+    /// 连接坏了 / 正文不完整。
+    Failed(String),
+}
+
+/// 按 `Content-Length` 读满请求体 ⇒ 正文（并把**下一条**请求的余留字节留在 `buf`）。
+///
+/// ⚠ **上限在读取之前就判**：`Content-Length` 超上限 ⇒ **一个字节都不读**。
+fn read_body(
+    cid: i64,
+    buf: &mut Vec<u8>,
+    body_start: usize,
+    want: u64,
+    max_bytes: usize,
+    deadline: Option<Instant>,
+) -> Result<Vec<u8>, BodyErr> {
+    if want > max_bytes as u64 {
+        return Err(BodyErr::TooLarge(format!(
+            "the request body of {want} bytes exceeds the {} byte cap",
+            max_bytes
+        )));
+    }
+    while ((buf.len() - body_start) as u64) < want {
+        // ⚠ 读取过程中也守着上限（声明与实到不一致时的兜底）。
+        if buf.len() - body_start > max_bytes {
+            return Err(BodyErr::TooLarge(format!(
+                "the request body exceeds the {} byte cap",
+                max_bytes
+            )));
+        }
+        match recv_blocking(cid, 64 * 1024, remaining(deadline)) {
+            Ok(ReadOutcome::Bytes(b)) => buf.extend_from_slice(&b),
+            Ok(ReadOutcome::Eof) => {
+                return Err(BodyErr::Failed(
+                    "the peer closed the connection before the request was complete".into(),
+                ))
+            }
+            Ok(ReadOutcome::TimedOut) => return Err(BodyErr::TimedOut),
+            Err(e) => return Err(BodyErr::Failed(e)),
+        }
+    }
+    let end = body_start + want as usize;
+    let body = buf[body_start..end].to_vec();
+    // ⚠ **余下的字节属于下一条请求**（流水线）⇒ 留在缓冲里，不丢。
+    buf.drain(..end);
+    Ok(body)
+}
+
+/// handler 的响应里可选的 `keep_alive` 键（`BOOLEAN`）⇒ 「读完这条就关」。
+///
+/// ⚠ **可选**：没有这个键 ⇒ 沿用默认（HTTP/1.1 ⇒ 继续读下一条）。
+fn keep_alive_flag(v: &Value) -> Option<bool> {
+    let entries = dict_entries_of(v)?;
+    match entry_get(&entries, "keep_alive")? {
+        Value::Boolean(b) => Some(*b),
+        _ => None,
+    }
+}
+
+/// 分块写出（**每块之间**查预算）。
+///
+/// ⚠ **已知缺口**：传输层的 `write_all_bytes` **没有**超时（`tcp.rs` 不在本项的
+///   改动面内）⇒ 卡在**一块之内**的写**不可打断** ⇒ 预算是「块与块之间」兑现的。
+fn write_with_budget(cid: i64, wire: &[u8], deadline: Option<Instant>) -> Result<(), String> {
+    const CHUNK: usize = 64 * 1024;
+    let mut off = 0usize;
+    while off < wire.len() {
+        if let Some(dl) = deadline {
+            if Instant::now() >= dl {
+                return Err(format!(
+                    "the response write exceeded its time budget — only {off} of {} bytes \
+                     were written",
+                    wire.len()
+                ));
+            }
+        }
+        let end = (off + CHUNK).min(wire.len());
+        write_all_bytes(cid, &wire[off..end])?;
+        off = end;
+    }
+    Ok(())
+}
+
+/// 状态码 → 理由短语（**只覆盖本成员自己发的那些码**）。
+///
+/// ⚠ **刻意不碰 `reason_phrase`**（那是既有成员 `TCP_SERVE` 用的）⇒ 既有成员
+///   一字未改；本表是**新写的一份**，只管 400 / 408 / 413 / 431 / 500。
+fn stream_reason_phrase(status: i64) -> Option<&'static str> {
+    Some(match status {
+        400 => "Bad Request",
+        408 => "Request Timeout",
+        413 => "Payload Too Large",
+        431 => "Request Header Fields Too Large",
+        500 => "Internal Server Error",
+        _ => return None,
+    })
+}
+
+/// 回一个**只有状态行**的错误响应（400 / 408 / 413 / 431）。
+///
+/// ⚠ 必定带 `Connection: close` ⇒ 这些响应之后连接就该关。
+fn write_status_response(cid: i64, status: i64, reason: &str) -> Result<(), String> {
+    let body = reason.as_bytes();
+    let mut wire = Vec::with_capacity(128 + body.len());
+    let line = match stream_reason_phrase(status) {
+        Some(phrase) => format!("HTTP/1.1 {status} {phrase}\r\n"),
+        None => format!("HTTP/1.1 {status}\r\n"),
+    };
+    wire.extend_from_slice(line.as_bytes());
+    wire.extend_from_slice(format!("Content-Length: {}\r\n", body.len()).as_bytes());
+    wire.extend_from_slice(b"Connection: close\r\n\r\n");
+    wire.extend_from_slice(body);
+    write_all_bytes(cid, &wire).map(|_| ())
+}
+
+/// `TCP_SERVE_STREAM` 的运行期失败 ⇒ `ERR([kind:"SocketError", op, reason])`。
+fn stream_error(reason: impl Into<String>) -> Value {
+    Value::Err(Box::new(Value::dict(vec![
+        (
+            Value::String("kind".into()),
+            Value::String("SocketError".into()),
+        ),
+        (
+            Value::String("op".into()),
+            Value::String("SERVE_STREAM".into()),
+        ),
+        (Value::String("reason".into()), Value::String(reason.into())),
+    ])))
+}
+
+/// 记一笔失败 ⇒ **关掉这条连接、结束循环**（本成员只管一条连接 ⇒ 没有「下一条」）。
+fn record_stream_failure(host: &mut dyn StdHost, reason: &str) {
+    let err = stream_error(reason);
+    let payload = match &err {
+        Value::Err(inner) => inner.display(),
+        _ => reason.to_string(),
+    };
+    host.ctx().warn(ErrorCode::E0063, payload);
+}
+
+/// `TCP_SERVE_STREAM(conn, opts, handler) -> INTEGER`
+///
+/// 在**一条**连接上**循环**处理请求，直到：对端关闭 / 空闲超时 / 客户端发了
+/// `Connection: close` / handler 选择关。
+///
+/// 返回**成功服务**的**请求**数（不是连接数 —— 一条连接上可以服务多条请求）。
+///
+/// ⚠ **元数 / 类型错 ⇒ `E0022` / `E0030`**（诊断）；**运行期失败 ⇒ `ERR` 值**。
+/// ⚠ **本成员不 accept、不关监听器** —— 它只管给定的**一条**连接。
+/// ⚠ **handler 跑在原生帧里** ⇒ 与 `TCP_SERVE` **同一契约**（handler 里调宿主
+///   挂起点成员 ⇒ 既有 `E0014`）。
+pub(crate) fn tcp_serve_stream(
+    host: &mut dyn StdHost,
+    args: Vec<Value>,
+) -> wlwl_error::WlwlResult<Outcome> {
+    const NAME: &str = "SERVE_STREAM";
+    if args.len() != 3 {
+        return Err(arity(host, NAME, args.len(), 3));
+    }
+    let cid = int_arg(host, NAME, &args[0])?;
+    let opts = stream_opts(host, &args[1])?;
+    // ⚠ handler 必须**可调用** ⇒ 类型错 ⇒ `E0030`（不是运行期失败）。
+    match &args[2] {
+        Value::Closure { .. } | Value::NativeFn { .. } => {}
+        other => {
+            return Err(serve_type_err(host, NAME, "a function handler", other));
+        }
+    }
+    let handler = args[2].clone();
+
+    // ⚠ **跨请求保留**的缓冲：上一条请求的余留字节（流水线）留给下一条。
+    let mut buf: Vec<u8> = Vec::new();
+    let mut served: i64 = 0;
+    loop {
+        let req_start = Instant::now();
+        let total_deadline = deadline_of(opts.total_ms, req_start);
+
+        // ① 等这条请求的**首字节**（空闲窗口与首字节预算**取先到者**）。
+        let first_deadline = earlier(
+            deadline_of(opts.first_byte_ms, req_start),
+            deadline_of(opts.idle_timeout_ms, req_start),
+        );
+        match wait_for_bytes(cid, &mut buf, first_deadline) {
+            Wait::Got => {}
+            // ⚠ 对端关闭 ⇒ 这条连接收工（**不是**失败）。
+            Wait::Eof => {
+                close_conn_raw(cid);
+                break;
+            }
+            Wait::TimedOut => {
+                if served > 0 {
+                    // ⚠ **空闲**超时 ⇒ **静默**关连接（不 unsolicited 回 408）。
+                } else {
+                    let _ = write_status_response(
+                        cid,
+                        408,
+                        "the server did not receive a complete request within the time it \
+                         was prepared to wait",
+                    );
+                }
+                close_conn_raw(cid);
+                break;
+            }
+            Wait::Failed(why) => {
+                record_stream_failure(host, &why);
+                close_conn_raw(cid);
+                break;
+            }
+        }
+        let t_first = Instant::now();
+
+        // ② 头块（预算：**从首字节**起算）。
+        let headers_deadline = earlier(deadline_of(opts.headers_ms, t_first), total_deadline);
+        let head_end = match read_head_block(cid, &mut buf, opts.max_header_bytes, headers_deadline)
+        {
+            Ok(i) => i,
+            Err(HeadErr::TooLarge(why)) => {
+                let _ = write_status_response(cid, 431, &why);
+                close_conn_raw(cid);
+                break;
+            }
+            Err(HeadErr::TimedOut) => {
+                let _ = write_status_response(
+                    cid,
+                    408,
+                    "the request header block did not arrive within the configured budget",
+                );
+                close_conn_raw(cid);
+                break;
+            }
+            Err(HeadErr::Failed(why)) => {
+                record_stream_failure(host, &why);
+                close_conn_raw(cid);
+                break;
+            }
+        };
+        let head = match std::str::from_utf8(&buf[..head_end]) {
+            Ok(s) => s,
+            Err(e) => {
+                let why = format!("the request header is not valid UTF-8: {e}");
+                let _ = write_status_response(cid, 400, &why);
+                close_conn_raw(cid);
+                break;
+            }
+        };
+
+        // ③ 请求行 + 头字段。
+        let info = match parse_request_head(head) {
+            Ok(i) => i,
+            Err(why) => {
+                let _ = write_status_response(cid, 400, &why);
+                close_conn_raw(cid);
+                break;
+            }
+        };
+        let t_head = Instant::now();
+
+        // ④ 请求体（预算：**从头块结束**起算）。
+        let body_deadline = earlier(deadline_of(opts.body_ms, t_head), total_deadline);
+        let want = info.content_length.unwrap_or(0);
+        let body = match read_body(
+            cid,
+            &mut buf,
+            head_end + 4,
+            want,
+            opts.max_body_bytes,
+            body_deadline,
+        ) {
+            Ok(b) => b,
+            Err(BodyErr::TooLarge(why)) => {
+                let _ = write_status_response(cid, 413, &why);
+                close_conn_raw(cid);
+                break;
+            }
+            Err(BodyErr::TimedOut) => {
+                let _ = write_status_response(
+                    cid,
+                    408,
+                    "the request body did not arrive within the configured budget",
+                );
+                close_conn_raw(cid);
+                break;
+            }
+            Err(BodyErr::Failed(why)) => {
+                record_stream_failure(host, &why);
+                close_conn_raw(cid);
+                break;
+            }
+        };
+
+        // ⑤ 调 handler（**原生帧内** ⇒ 与 `TCP_SERVE` 同一契约）。
+        // ⚠ **响应阶段**的预算从**请求读完**起算（**含 handler 的执行时间**）⇒
+        //   预算用尽 ⇒ **放弃这次响应**并关连接（客户端读到 EOF，不是半截响应）。
+        let respond_deadline = earlier(
+            deadline_of(opts.response_ms, Instant::now()),
+            total_deadline,
+        );
+        let header_dict = Value::dict(
+            info.headers
+                .iter()
+                .map(|(k, v)| (Value::String(k.clone()), Value::String(v.clone())))
+                .collect(),
+        );
+        let request = Value::dict(vec![
+            (
+                Value::String("method".into()),
+                Value::String(info.method.clone()),
+            ),
+            (
+                Value::String("path".into()),
+                Value::String(info.path.clone()),
+            ),
+            (
+                Value::String("version".into()),
+                Value::String(info.version.clone()),
+            ),
+            (Value::String("headers".into()), header_dict),
+            (
+                Value::String("body".into()),
+                Value::String(String::from_utf8_lossy(&body).to_string()),
+            ),
+        ]);
+        let outcome = match host.call(&handler, vec![request], "SERVE_STREAM handler") {
+            Ok(o) => o,
+            Err(e) => {
+                let why = format!("the handler failed: {}", e.diagnostic().message);
+                let _ = write_failure_response(cid, &why);
+                close_conn_raw(cid);
+                break;
+            }
+        };
+        // ⚠ **挂起信号**：handler 跑在原生帧里 ⇒ 没有调度器可挂 ⇒ 「不得再挂」
+        //   只能落成「这一条连接作废」（W-38 同款）。
+        if outcome.signal != Signal::None {
+            let _ = write_failure_response(
+                cid,
+                "the handler suspended — a handler must not call a host-suspending member \
+                 (TCP_RECV / TCP_ACCEPT / SLEEP_ASYNC): the handler runs in a native frame, \
+                 not in a task body",
+            );
+            close_conn_raw(cid);
+            break;
+        }
+        // ⑥ 响应形状（缺键 / 类型不对 ⇒ 这一条作废）。
+        let response = match parse_response(&outcome.value) {
+            Ok(r) => r,
+            Err(why) => {
+                let _ = write_failure_response(cid, &why);
+                close_conn_raw(cid);
+                break;
+            }
+        };
+        // ⚠ handler 可以选择「读完这条就关」（`keep_alive: FALSE`）。
+        let handler_closes = keep_alive_flag(&outcome.value) == Some(false);
+
+        // ⑦ 写出响应（预算：**响应阶段** = 从请求读完到写完；总预算也管着它）。
+        if let Some(dl) = respond_deadline {
+            if Instant::now() >= dl {
+                let why = "the response phase exceeded its time budget — the response was \
+                           not written and the connection was closed";
+                record_stream_failure(host, why);
+                close_conn_raw(cid);
+                break;
+            }
+        }
+        let wire = render_response(&response, &info.version);
+        if let Err(why) = write_with_budget(cid, &wire, respond_deadline) {
+            record_stream_failure(host, &why);
+            close_conn_raw(cid);
+            break;
+        }
+        served += 1;
+
+        // ⑧ 收尾：客户端说 close / HTTP/1.0 / handler 选择关 ⇒ 关；否则**读下一条**。
+        if handler_closes || info.wants_close || info.version == "HTTP/1.0" {
+            close_conn_raw(cid);
+            break;
+        }
+    }
+    Ok(Outcome::normal(Value::Integer(served)))
 }
 
 #[cfg(test)]

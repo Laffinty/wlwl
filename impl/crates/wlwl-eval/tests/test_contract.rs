@@ -310,11 +310,240 @@ const CASES: &[Case] = &[
         src: r#"IMPORT("wlwl:std.test", ["TEST", "RUN_TESTS"]); TEST("a", FUN((), TRUE)); RUN_TESTS(); LEN(RUN_TESTS())"#,
         expect: "0",
     },
+    // ── [G-1] ASSERT_MSG(cond, message) ──
+    //
+    // 载荷与 `ASSERT` **同形**(`code: E0046` / `kind: test_assertion_failed`)
+    // **加** `msg` 键 ⇒ **不新增诊断码**(规范 N-3)。
+    Case {
+        name: "assert_msg_passing_is_ok",
+        src: r#"IMPORT("wlwl:std.test", ["ASSERT_MSG"]); ASSERT_MSG(TRUE, "m")"#,
+        expect: "OK(TRUE)",
+    },
+    Case {
+        name: "assert_msg_failure_payload_carries_the_message",
+        src: r#"IMPORT("wlwl:std.test", ["ASSERT_MSG"]); LET(r, ASSERT_MSG(FALSE, "boom")); ERR_PAYLOAD(r)"#,
+        expect: "[code: E0046, kind: test_assertion_failed, msg: boom]",
+    },
+    Case {
+        name: "assert_msg_failure_keeps_the_cond_key",
+        src: r#"IMPORT("wlwl:std.test", ["ASSERT_MSG"]); LET(r, ASSERT_MSG(0, "boom")); ERR_PAYLOAD(r)"#,
+        expect: "[code: E0046, kind: test_assertion_failed, cond: 0, msg: boom]",
+    },
+    // 消息是**必需**的:缺一个就是元数错(措辞照抄 R2 的 `arity()` 口径)。
+    Case {
+        name: "assert_msg_requires_a_message",
+        src: r#"IMPORT("wlwl:std.test", ["ASSERT_MSG"]); ASSERT_MSG(TRUE)"#,
+        expect: "!E0022 ASSERT_MSG: function expects 2 argument(s), got 1",
+    },
+    Case {
+        name: "assert_msg_arity_zero",
+        src: r#"IMPORT("wlwl:std.test", ["ASSERT_MSG"]); ASSERT_MSG()"#,
+        expect: "!E0022 ASSERT_MSG: function expects 2 argument(s), got 0",
+    },
+    // 消息必须是**字符串**(CI 要能直接读它)。
+    Case {
+        name: "assert_msg_message_must_be_a_string",
+        src: r#"IMPORT("wlwl:std.test", ["ASSERT_MSG"]); ASSERT_MSG(TRUE, 5)"#,
+        expect: "!E0030 ASSERT_MSG: expected string, got integer",
+    },
+    // ── [G-1] ASSERT_TRUE(value) ──
+    //
+    // ⚠ 与 `ASSERT` 的真值口径**不同**:ASSERT 用 §2.3 的八假值(0 / "" / []
+    // 都是假值 ⇒ **失败**);ASSERT_TRUE 用**宽松口径** —— **只有 `FALSE` 与
+    // `NULL` 为假**,其余一切为真 ⇒ 0 / "" / [] 都**通过**。
+    // 这一组是这个差异的探测器(需求清单 §4 W-31 点名要解决的那三件事)。
+    Case {
+        name: "assert_true_accepts_true",
+        src: r#"IMPORT("wlwl:std.test", ["ASSERT_TRUE"]); ASSERT_TRUE(TRUE)"#,
+        expect: "OK(TRUE)",
+    },
+    // 宽松口径:`0` / `0.0` / `""` / 空数组 / 空字典 / NaN 都是**真**。
+    Case {
+        name: "assert_true_accepts_zero",
+        src: r#"IMPORT("wlwl:std.test", ["ASSERT_TRUE"]); ASSERT_TRUE(0)"#,
+        expect: "OK(TRUE)",
+    },
+    Case {
+        name: "assert_true_accepts_an_empty_string",
+        src: r#"IMPORT("wlwl:std.test", ["ASSERT_TRUE"]); ASSERT_TRUE("")"#,
+        expect: "OK(TRUE)",
+    },
+    Case {
+        name: "assert_true_accepts_an_empty_array",
+        src: r#"IMPORT("wlwl:std.test", ["ASSERT_TRUE"]); ASSERT_TRUE([])"#,
+        expect: "OK(TRUE)",
+    },
+    // 只有 `FALSE` 与 `NULL` 为假。
+    Case {
+        name: "assert_true_rejects_false",
+        src: r#"IMPORT("wlwl:std.test", ["ASSERT_TRUE"]); LET(r, ASSERT_TRUE(FALSE)); ERR_PAYLOAD(r)"#,
+        expect: "[code: E0046, kind: test_assertion_failed]",
+    },
+    Case {
+        name: "assert_true_rejects_null",
+        src: r#"IMPORT("wlwl:std.test", ["ASSERT_TRUE"]); LET(r, ASSERT_TRUE(NULL)); ERR_PAYLOAD(r)"#,
+        expect: "[code: E0046, kind: test_assertion_failed]",
+    },
+    // ⚠ **反向**:同一个实参,`ASSERT` 判失败而 `ASSERT_TRUE` 判通过 ——
+    //   这条钉住「§2.3 口径没被顺手改掉」(计划 §4 W-31 的硬约束之一)。
+    Case {
+        name: "assert_zero_is_still_falsy_under_section_2_3",
+        src: r#"IMPORT("wlwl:std.test", ["ASSERT"]); LET(r, ASSERT(0)); ERR_PAYLOAD(r)"#,
+        expect: "[code: E0046, kind: test_assertion_failed, cond: 0]",
+    },
+    Case {
+        name: "assert_true_arity_zero",
+        src: r#"IMPORT("wlwl:std.test", ["ASSERT_TRUE"]); ASSERT_TRUE()"#,
+        expect: "!E0022 ASSERT_TRUE: function expects 1 argument(s), got 0",
+    },
+    // ── [G-1] EXPECT_ERR_CODE(fn, code) ──
+    //
+    // 捕获**原生诊断码**(宿主级错误)。⚠ 与 `EXPECT_ERR` 捕的不是同一种东西:
+    // `EXPECT_ERR` 只吃 `ERR` **值**;原生诊断(`E1003` 除零)是宿主级错误,
+    // 捕不到它就会一路逃逸成进程级失败(仓里 `H4_expect_err_cannot_catch_native`
+    // 探针钉的就是这个缺口)。
+    Case {
+        name: "expect_err_code_catches_the_native_code",
+        src: r#"IMPORT("wlwl:std.test", ["EXPECT_ERR_CODE"]); INDEX_GET(UNWRAP(EXPECT_ERR_CODE(FUN((), /(1, 0)), "E1003")), "code")"#,
+        expect: "E1003",
+    },
+    // ⚠ **原生码不逃逸**:命中时结果是 `OK(...)` 值,不是一个逃出去的诊断。
+    //   若诊断逃逸,这一行会变成 `!E1003 /: division by zero` ⇒ 变红。
+    Case {
+        name: "expect_err_code_native_code_does_not_escape",
+        src: r#"IMPORT("wlwl:std.test", ["EXPECT_ERR_CODE"]); IS_OK(EXPECT_ERR_CODE(FUN((), /(1, 0)), "E1003"))"#,
+        expect: "TRUE",
+    },
+    // 没抛诊断 ⇒ 不匹配(失败走**既有**码 E0049 ⇒ 不新增诊断码)。
+    Case {
+        name: "expect_err_code_without_a_diagnostic_fails",
+        src: r#"IMPORT("wlwl:std.test", ["EXPECT_ERR_CODE"]); LET(r, EXPECT_ERR_CODE(FUN((), TRUE), "E1003")); ERR_PAYLOAD(r)"#,
+        expect: "[code: E0049, kind: test_expect_err_code_failed, expected: E1003]",
+    },
+    // 抛了**别的**码 ⇒ 载荷带 `actual`(实际拿到的码)。
+    Case {
+        name: "expect_err_code_reports_the_actual_code",
+        src: r#"IMPORT("wlwl:std.test", ["EXPECT_ERR_CODE"]); INDEX_GET(ERR_PAYLOAD(EXPECT_ERR_CODE(FUN((), /(1, 0)), "E0030")), "actual")"#,
+        expect: "E1003",
+    },
+    Case {
+        name: "expect_err_code_arity_one",
+        src: r#"IMPORT("wlwl:std.test", ["EXPECT_ERR_CODE"]); EXPECT_ERR_CODE(FUN((), TRUE))"#,
+        expect: "!E0022 EXPECT_ERR_CODE: function expects 2 argument(s), got 1",
+    },
+    Case {
+        name: "expect_err_code_code_must_be_a_string",
+        src: r#"IMPORT("wlwl:std.test", ["EXPECT_ERR_CODE"]); EXPECT_ERR_CODE(FUN((), TRUE), 5)"#,
+        expect: "!E0030 EXPECT_ERR_CODE: expected string, got integer",
+    },
+    Case {
+        name: "expect_err_code_body_must_be_callable",
+        src: r#"IMPORT("wlwl:std.test", ["EXPECT_ERR_CODE"]); EXPECT_ERR_CODE(5, "E1003")"#,
+        expect: "!E0030 EXPECT_ERR_CODE: expected function, got integer",
+    },
+    // ── [G-1] SKIP(reason) ──
+    //
+    // 跳过必须**机器可区分**:跳过记录多出 `skipped` / `reason` 两个键。
+    Case {
+        name: "skip_marks_the_record_as_skipped",
+        src: r#"IMPORT("wlwl:std.test", ["TEST", "SKIP", "RUN_TESTS"]); TEST("s", FUN((), SKIP("no net"))); LET(rs, RUN_TESTS()); rs[0]["skipped"]"#,
+        expect: "TRUE",
+    },
+    // ⚠ 跳过**不是**通过:`passed` 取 FALSE ⇒ CI 必须先看 `skipped`。
+    Case {
+        name: "skip_is_not_recorded_as_passed",
+        src: r#"IMPORT("wlwl:std.test", ["TEST", "SKIP", "RUN_TESTS"]); TEST("s", FUN((), SKIP("no net"))); LET(rs, RUN_TESTS()); rs[0]["passed"]"#,
+        expect: "FALSE",
+    },
+    Case {
+        name: "skip_records_the_reason",
+        src: r#"IMPORT("wlwl:std.test", ["TEST", "SKIP", "RUN_TESTS"]); TEST("s", FUN((), SKIP("no net"))); LET(rs, RUN_TESTS()); rs[0]["reason"]"#,
+        expect: "no net",
+    },
+    // ⚠ **其它记录的键集逐字未变**(通过记录**没有** `skipped` 键)—— 这条
+    //   钉住「新增能力只落在新增记录上,不改既有记录的形状」。
+    Case {
+        name: "passing_records_have_no_skipped_key",
+        src: r#"IMPORT("wlwl:std.test", ["TEST", "RUN_TESTS"]); TEST("a", FUN((), TRUE)); LET(rs, RUN_TESTS()); HAS(rs[0], "skipped")"#,
+        expect: "FALSE",
+    },
+    Case {
+        name: "failing_records_have_no_skipped_key",
+        src: r#"IMPORT("wlwl:std.test", ["TEST", "ASSERT", "RUN_TESTS"]); TEST("a", FUN((), ASSERT(FALSE))); LET(rs, RUN_TESTS()); HAS(rs[0], "skipped")"#,
+        expect: "FALSE",
+    },
+    Case {
+        name: "skip_reason_must_be_a_string",
+        src: r#"IMPORT("wlwl:std.test", ["SKIP"]); SKIP(5)"#,
+        expect: "!E0030 SKIP: expected string, got integer",
+    },
+    // ── [G-1] TEST_CASES(name, cases, body) ──
+    Case {
+        name: "test_cases_registers_one_test_per_case",
+        src: r#"IMPORT("wlwl:std.test", ["TEST_CASES", "ASSERT_EQ", "RUN_TESTS"]); TEST_CASES("add", [[1, 1], [2, 3]], FUN((a, b), ASSERT_EQ(a, b))); LET(rs, RUN_TESTS()); LEN(rs)"#,
+        expect: "2",
+    },
+    Case {
+        name: "test_cases_names_carry_the_case_index",
+        src: r#"IMPORT("wlwl:std.test", ["TEST_CASES", "ASSERT_EQ", "RUN_TESTS"]); TEST_CASES("add", [[1, 1], [2, 3]], FUN((a, b), ASSERT_EQ(a, b))); LET(rs, RUN_TESTS()); rs[0]["name"]"#,
+        expect: "add[0]",
+    },
+    Case {
+        name: "test_cases_passes_when_the_arguments_match",
+        src: r#"IMPORT("wlwl:std.test", ["TEST_CASES", "ASSERT_EQ", "RUN_TESTS"]); TEST_CASES("add", [[1, 1], [2, 3]], FUN((a, b), ASSERT_EQ(a, b))); LET(rs, RUN_TESTS()); rs[0]["passed"]"#,
+        expect: "TRUE",
+    },
+    Case {
+        name: "test_cases_records_the_failing_case",
+        src: r#"IMPORT("wlwl:std.test", ["TEST_CASES", "ASSERT_EQ", "RUN_TESTS"]); TEST_CASES("add", [[1, 1], [2, 3]], FUN((a, b), ASSERT_EQ(a, b))); LET(rs, RUN_TESTS()); rs[1]["passed"]"#,
+        expect: "FALSE",
+    },
+    Case {
+        name: "test_cases_failure_carries_the_error_payload",
+        src: r#"IMPORT("wlwl:std.test", ["TEST_CASES", "ASSERT_EQ", "RUN_TESTS"]); TEST_CASES("add", [[1, 1], [2, 3]], FUN((a, b), ASSERT_EQ(a, b))); LET(rs, RUN_TESTS()); rs[1]["error"]["code"]"#,
+        expect: "E0047",
+    },
+    Case {
+        name: "test_cases_arity",
+        src: r#"IMPORT("wlwl:std.test", ["TEST_CASES"]); TEST_CASES("add")"#,
+        expect: "!E0022 TEST_CASES: function expects 3 argument(s), got 1",
+    },
+    // ── [G-1] RUN_TESTS_ASYNC() ──
+    //
+    // 异步跑一轮:测试体里 `SPAWN` + `AWAIT` 等一个异步任务 ⇒ 外层必须**等到**
+    // 它 ⇒ 记录里有它的终值。
+    Case {
+        name: "run_tests_async_waits_for_the_spawned_task",
+        src: r#"IMPORT("wlwl:std.test", ["TEST", "RUN_TESTS_ASYNC"]); TEST("a", FUN((), (LET(h, SPAWN(FUN((), 42))); AWAIT(h)))); LET(rs, RUN_TESTS_ASYNC()); rs[0]["return_value"]"#,
+        expect: "42",
+    },
+    Case {
+        name: "run_tests_async_records_the_pass",
+        src: r#"IMPORT("wlwl:std.test", ["TEST", "RUN_TESTS_ASYNC"]); TEST("a", FUN((), (LET(h, SPAWN(FUN((), 42))); AWAIT(h)))); LET(rs, RUN_TESTS_ASYNC()); rs[0]["passed"]"#,
+        expect: "TRUE",
+    },
+    // 异步模式下的跳过与同步模式**同形**(同一套识别口径)。
+    Case {
+        name: "run_tests_async_marks_skips_the_same_way",
+        src: r#"IMPORT("wlwl:std.test", ["TEST", "SKIP", "RUN_TESTS_ASYNC"]); TEST("s", FUN((), SKIP("no net"))); LET(rs, RUN_TESTS_ASYNC()); rs[0]["skipped"]"#,
+        expect: "TRUE",
+    },
+    Case {
+        name: "run_tests_async_arity",
+        src: r#"IMPORT("wlwl:std.test", ["RUN_TESTS_ASYNC"]); RUN_TESTS_ASYNC(1)"#,
+        expect: "!E0022 RUN_TESTS_ASYNC: function expects 0 argument(s), got 1",
+    },
     // ── 成员面(§8 全表)──
     Case {
         name: "all_section8_members_import",
         src: r#"IMPORT("wlwl:std.test", ["TEST", "ASSERT", "ASSERT_EQ", "ASSERT_NEQ", "EXPECT_ERR", "RUN_TESTS"]); LEN([TEST, ASSERT, ASSERT_EQ, ASSERT_NEQ, EXPECT_ERR, RUN_TESTS])"#,
         expect: "6",
+    },
+    // [G-1] 既有 6 个成员**一个没动**,新增 7 个 ⇒ 导出面 13 个。
+    Case {
+        name: "all_g1_members_import",
+        src: r#"IMPORT("wlwl:std.test", ["TEST", "ASSERT", "ASSERT_EQ", "ASSERT_NEQ", "EXPECT_ERR", "RUN_TESTS", "ASSERT_MSG", "ASSERT_TRUE", "EXPECT_ERR_CODE", "SKIP", "TEST_CASES", "TEMP_DIR", "RUN_TESTS_ASYNC"]); LEN([TEST, ASSERT, ASSERT_EQ, ASSERT_NEQ, EXPECT_ERR, RUN_TESTS, ASSERT_MSG, ASSERT_TRUE, EXPECT_ERR_CODE, SKIP, TEST_CASES, TEMP_DIR, RUN_TESTS_ASYNC])"#,
+        expect: "13",
     },
     Case {
         name: "test_is_not_a_global_builtin",
@@ -477,6 +706,85 @@ fn the_contract_table_is_not_empty() {
     assert_eq!(before, names.len(), "duplicate case name");
 }
 
+/// ── [G-1] `TEMP_DIR()` 必须返回**绝对路径** ───────────────────────────
+///
+/// ⚠⚠ **为什么这条不能靠表格那一行 display 钉住**:`TEMP_DIR()` 的返回值
+/// **每次都不同**(唯一名)⇒ 表格只能比「它长什么样」,比不了「它是不是绝对
+/// 路径」。而「是不是绝对路径」恰恰是这条要求的**全部** —— `std.fs` 成员的
+/// 相对路径按**进程 CWD** 解析 ⇒ 相对路径会把测试文件写进仓库里
+/// (`fs_atomic_lock_meta_contract.rs` 踩过的既有教训)。
+///
+/// ⇒ 判据放在 Rust 侧:`Path::is_absolute()` + 「不在当前工作目录底下」。
+#[test]
+fn temp_dir_returns_an_absolute_path_outside_the_working_directory() {
+    let src = r#"IMPORT("wlwl:std.test", ["TEMP_DIR"]); TEMP_DIR()"#;
+    let got = actual(&Case {
+        name: "unused",
+        src,
+        expect: UNFROZEN,
+    });
+    assert!(
+        !got.starts_with('!'),
+        "TEMP_DIR() must not raise a diagnostic: {got}"
+    );
+    let path = PathBuf::from(&got);
+    assert!(
+        path.is_absolute(),
+        "TEMP_DIR() must return an ABSOLUTE path (std.fs resolves relative paths \
+         against the process CWD ⇒ a relative path writes test files into the repo): {got}"
+    );
+    // 不许落在当前工作目录底下(那正是「写进仓库」的那一档)。
+    if let Ok(cwd) = std::env::current_dir() {
+        assert!(
+            !path.starts_with(&cwd),
+            "TEMP_DIR() must not hand out a path inside the working directory \
+             (cwd = {}): {got}",
+            cwd.display()
+        );
+    }
+}
+
+/// ── [G-1] `ASSERT_TRUE` 与 `ASSERT` 的真值口径**不同** ────────────────
+///
+/// `ASSERT` 用规范 §2.3 的**八假值**(FALSE / NULL / 0 / 0.0 / "" / 空数组 /
+/// 空字典 / NaN)⇒ `ASSERT(0)` **失败**。
+/// `ASSERT_TRUE` 用**宽松口径**(**只有 `FALSE` 与 `NULL` 为假**)⇒
+/// `ASSERT_TRUE(0)` **通过**、`ASSERT_TRUE(FALSE)` **失败**。
+///
+/// ⇒ 两个成员**必须能区分开**:同一份实参,一个判失败、一个判通过。
+/// ⚠ 这条**不是**表格的一行:表格只能比一个值,而这里要钉的是**两个成员的
+///   口径差**(两个不同的源程序)。
+#[test]
+fn assert_true_uses_a_looser_truthiness_than_assert() {
+    let assert_zero = actual(&Case {
+        name: "unused",
+        src: r#"IMPORT("wlwl:std.test", ["ASSERT"]); LET(r, ASSERT(0)); ERR_PAYLOAD(r)"#,
+        expect: UNFROZEN,
+    });
+    assert_eq!(
+        assert_zero, "[code: E0046, kind: test_assertion_failed, cond: 0]",
+        "ASSERT keeps the §2.3 truthiness口径: 0 is one of the eight falsy values ⇒ it fails"
+    );
+    let assert_true_zero = actual(&Case {
+        name: "unused",
+        src: r#"IMPORT("wlwl:std.test", ["ASSERT_TRUE"]); ASSERT_TRUE(0)"#,
+        expect: UNFROZEN,
+    });
+    assert_eq!(
+        assert_true_zero, "OK(TRUE)",
+        "ASSERT_TRUE uses the loose口径 (only FALSE / NULL are falsy) ⇒ 0 must pass"
+    );
+    let assert_true_false = actual(&Case {
+        name: "unused",
+        src: r#"IMPORT("wlwl:std.test", ["ASSERT_TRUE"]); LET(r, ASSERT_TRUE(FALSE)); ERR_PAYLOAD(r)"#,
+        expect: UNFROZEN,
+    });
+    assert_eq!(
+        assert_true_false, "[code: E0046, kind: test_assertion_failed]",
+        "ASSERT_TRUE must still reject FALSE"
+    );
+}
+
 // ── 与标准库规范 §8 表格的外部对照 ─────────────────────────────────
 
 fn spec_text() -> String {
@@ -539,19 +847,53 @@ fn exports_of(path: &str) -> Vec<String> {
     }
 }
 
+/// [G-1 / v0.12.2] 需求清单 G-1 新增的 7 个成员。
+///
+/// ⚠ **临时登记**:规范 §8 表格与附录 A 抄件**尚未**收录这些成员(规范仓的
+///   注册镜像册是**冻结快照**,改它要走规范修订流程 —— 一致性册 §5.5 的
+///   「实现侧扩展台账」是给**规范未认可**的扩展的合法落点)。
+///   ⇒ 本测试先把它们登记成「实现侧扩展面」,让 §8 对拍**继续有效**
+///   (而不是因为少 7 个成员就整条红掉)。
+/// ⚠ 规范侧收录(附录 A 正式修订**或**台账登记)之后:把本常量**清空**即可 ——
+///   那时 §8 表格 == 导出面,这条对拍回到「逐字相等」。
+const G1_EXTENSIONS: &[&str] = &[
+    "ASSERT_MSG",
+    "ASSERT_TRUE",
+    "EXPECT_ERR_CODE",
+    "SKIP",
+    "TEST_CASES",
+    "TEMP_DIR",
+    "RUN_TESTS_ASYNC",
+];
+
 #[test]
 fn member_set_matches_the_spec_section_8_table() {
     let spec = section_8_members();
     let impls = exports_of("wlwl:std.test");
-    let mut a = spec.clone();
+    let mut expected: Vec<String> = spec.clone();
+    for m in G1_EXTENSIONS {
+        assert!(
+            !spec.iter().any(|s| s == m),
+            "G1_EXTENSIONS 的 `{m}` 已经在 §8 表格里了 ⇒ 它该从本常量里删掉"
+        );
+        expected.push((*m).to_string());
+    }
+    let mut a = expected.clone();
     let mut b = impls.clone();
     a.sort();
     b.sort();
     assert_eq!(
         a, b,
-        "§8 table and the export list disagree.\n  spec: {spec:?}\n  impl: {impls:?}"
+        "§8 table (+ the G-1 extension list) and the export list disagree.\n  spec: {spec:?}\n  impl: {impls:?}"
     );
-    assert_eq!(impls.len(), 6, "§8 declares 6 members");
+    assert_eq!(
+        impls.len(),
+        spec.len() + G1_EXTENSIONS.len(),
+        "§8 declares {} member(s) and G-1 adds {} ⇒ the export list must hold {}",
+        spec.len(),
+        G1_EXTENSIONS.len(),
+        spec.len() + G1_EXTENSIONS.len()
+    );
 }
 
 /// 反向守卫:上面那条以「§8 解析结果」为输入,§8 表格形状一变就可能解析出

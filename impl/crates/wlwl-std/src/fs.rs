@@ -1270,11 +1270,7 @@ fn create_tmp(target: &std::path::Path) -> std::io::Result<(std::path::PathBuf, 
     );
     for _ in 0..8 {
         let tmp = atomic_tmp_path(target);
-        match std::fs::OpenOptions::new()
-            .write(true)
-            .create_new(true)
-            .open(&tmp)
-        {
+        match open_new(&tmp) {
             Ok(f) => return Ok((tmp, f)),
             Err(e) if e.kind() == std::io::ErrorKind::AlreadyExists => {
                 last = e;
@@ -1284,6 +1280,61 @@ fn create_tmp(target: &std::path::Path) -> std::io::Result<(std::path::PathBuf, 
         }
     }
     Err(last)
+}
+
+/// 被信号打断的系统调用(`EINTR`)⇒ **有界重试**的上限。
+///
+/// ⚠ 为什么要有上限:`EINTR` 只说明「这一次**没做成**」,不说明「做不成」
+///   ⇒ 重试是对的;但信号可能**持续不断** ⇒ 必须有界,不能无限转。
+const INTR_RETRY_MAX: usize = 3;
+
+/// 跑一次可能被打断的系统调用;遇 `EINTR` ⇒ **有界重试**。
+///
+/// ⚠ **POSIX 的硬性要求**:被信号中断的系统调用返回 `EINTR`,
+///   **调用方必须重试** —— 这一条**不是**「可选的健壮性」。
+///
+/// ⚠ **为什么只有 macOS / BSD 会踩到**:
+///   - Linux 的 `open()` **不可**被信号打断(内核自动重启它)⇒ 永不返回 `EINTR`;
+///   - Linux 的 `rename()` 同样**不可**被打断;
+///   - 而 macOS / BSD 的 `open()` 与 `rename()` **可以**被信号打断并返回 `EINTR`。
+///
+/// ⇒ 同一份代码在 macOS 上**偶发**失败、在 Linux 上不会。
+///
+/// ⚠ **Rust 的 std 不重试**:`File::open` / `fs::rename` 直接把 errno 变成
+///   `io::Error`(`EINTR` ⇒ `ErrorKind::Interrupted`)⇒ **重试的责任在调用方**。
+fn retry_on_interrupt<T>(mut op: impl FnMut() -> std::io::Result<T>) -> std::io::Result<T> {
+    let mut last = std::io::Error::new(ErrorKind::Interrupted, "the call was interrupted");
+    for _ in 0..INTR_RETRY_MAX {
+        match op() {
+            Ok(v) => return Ok(v),
+            Err(e) if e.kind() == ErrorKind::Interrupted => last = e,
+            Err(e) => return Err(e),
+        }
+    }
+    Err(last)
+}
+
+/// `create_new` 建文件(绝不覆盖已存在的);遇 `EINTR` ⇒ **有界重试**。
+///
+/// ⚠ **中断之后那个名字可能已经被建出来了**(POSIX 允许 `open` 在建好文件之后
+///   才报 `EINTR`)⇒ 重试前先把它删掉,否则目录里会留下一个**孤儿**临时文件
+///   —— 而「不留残留」是本成员的**契约**(调用方看得见目录里多了一个文件)。
+fn open_new(tmp: &std::path::Path) -> std::io::Result<std::fs::File> {
+    retry_on_interrupt(|| {
+        match std::fs::OpenOptions::new()
+            .write(true)
+            .create_new(true)
+            .open(tmp)
+        {
+            Ok(f) => Ok(f),
+            Err(e) if e.kind() == ErrorKind::Interrupted => {
+                // ⚠ 中断可能已经建出了文件 ⇒ 删掉再重试(否则留孤儿)。
+                let _ = std::fs::remove_file(tmp);
+                Err(e)
+            }
+            Err(e) => Err(e),
+        }
+    })
 }
 
 /// 原子替换会**换掉 inode** ⇒ 目标原有的权限会丢(新文件拿的是目录默认权限)。
@@ -1371,7 +1422,14 @@ fn atomic_replace(from: &std::path::Path, to: &std::path::Path) -> std::io::Resu
 
 #[cfg(unix)]
 fn atomic_replace(from: &std::path::Path, to: &std::path::Path) -> std::io::Result<()> {
-    std::fs::rename(from, to)
+    // ⚠ **POSIX:被信号打断的系统调用返回 `EINTR` ⇒ 调用方必须重试。**
+    //   macOS / BSD 的 `rename(2)` **可以**被信号打断并返回 `EINTR`;
+    //   Linux 的 `rename(2)` **不可以**(内核不返回 `EINTR`)⇒ 同一份代码在
+    //   macOS 上**偶发**失败、在 Linux 上不会。
+    //   ⚠ Rust 的 `fs::rename` **不重试**(直接 `cvt` errno)⇒ 重试在这里做。
+    //   ⚠ **重试不破坏原子性**:`rename(2)` 要么做了要么没做 ⇒ 目标要么旧内容、
+    //     要么新内容,**没有中间态** —— 这正是本成员的全部意义。
+    retry_on_interrupt(|| std::fs::rename(from, to))
 }
 
 #[cfg(not(any(windows, unix)))]

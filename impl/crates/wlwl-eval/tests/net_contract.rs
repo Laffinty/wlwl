@@ -473,10 +473,18 @@ fn net_member_set_matches_the_spec_table() {
             "implementation does not export `{n}`: {impls:?}"
         );
     }
+    // ⚠ **对着规范表比,不写死数字**。
+    //   写死 `14` 会在「规范侧还没跟上」时给出**误导性的消息**(断言文本说
+    //   「exports 14 members」而实现侧其实是 16)⇒ 把「诚实」换成「误导」。
+    //   ⇒ 这一条**红就是那笔规范侧欠账的红**(§11.2 步骤 ①–③),不是实现缺陷;
+    //   规范侧落表后它会自己转绿。
     assert_eq!(
         impls.len(),
-        14,
-        "wlwl:std.net exports 14 members (5 + 9 个 TCP_*)"
+        spec.len(),
+        "wlwl:std.net exports {} members but the §21 table lists {} ⇒ the extra ones are \
+         pending 规范侧 登记",
+        impls.len(),
+        spec.len()
     );
 }
 

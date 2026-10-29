@@ -2427,22 +2427,206 @@ fn derive_signature(file: &std::path::Path) -> Result<wlwl_types::ModuleSig, Wlw
     Ok(wlwl_types::sig_from_module(&ast, &checked.declared))
 }
 
+// ── [G-4] `.wll.sig` 契约的漂移面 ─────────────────────────────
+
+/// 旁路签名文件(`.wll.sig`)的现状。
+///
+/// **三态**:不在 / 读不出来 / 读出来了。
+///
+/// ⚠ 「读不出来」是**第三态**,不能并进「不在」:
+/// 「没有签名文件」是**合法**的(v0.9 行为,没有它一切照旧),
+/// 「有、但坏了」是**故障** —— 两者混为一谈就会把故障说成「一切照旧」。
+enum SidecarSig {
+    /// 磁盘上没有 `.wll.sig`。
+    Absent,
+    /// 读出来了 —— 这就是**声明面**。
+    Declared(wlwl_types::ModuleSig),
+}
+
+/// 读旁路签名文件。
+///
+/// ⚠ **读不出来就冒泡**,不降级成「一个状态值 + 退出码 0」:
+///   旁路签名文件读不出来 / 解析不出来是**契约问题**,而既有裁决
+///   (审计 R2-013)白纸黑字写着「**同一种故障不该因为走哪条路而拿到不同的
+///   退出码**」—— `wlwl check` 读同一份坏文件给的是 `E0010` + 退出码 **3**
+///   ⇒ `wlwl sig` 也必须给 3,否则**同一个坏文件在两条路上拿到两个退出码**。
+///   ⚠ 这条与「`.wll.sig` 是可选旁路文件、没有它一切照旧」**不冲突**:
+///   「没有」是 `Absent`(退出码 0),「有但坏」才是本条。
+fn load_sidecar_sig(module: &std::path::Path) -> Result<SidecarSig, WlwlError> {
+    match load_module_sig(module)? {
+        None => Ok(SidecarSig::Absent),
+        Some(sig) => Ok(SidecarSig::Declared(sig)),
+    }
+}
+
+/// 声明面与实现面之间的**漂移**状态。
+///
+/// ⚠ 键名就是 JSON 里的值(`serde` 的 `snake_case`):人形态与 JSON 形态
+/// 说的是**同一件事**,不许一个说「一致」另一个说「相同」。
+#[derive(Debug, Clone, Copy, PartialEq, Eq, serde::Serialize)]
+#[serde(rename_all = "snake_case")]
+enum SigDriftStatus {
+    /// 声明面与实现面一致。
+    InSync,
+    /// 不一致:声明多了 / 声明少了 / 类型冲突。
+    OutOfSync,
+    /// 磁盘上没有 `.wll.sig` —— **可选旁路文件**,没有它一切照旧。
+    Absent,
+}
+
+/// 一条**类型冲突**:两边都有这个成员,但类型对不上。
+#[derive(Debug, Clone, serde::Serialize)]
+struct SigTypeConflict {
+    /// 导出名
+    name: String,
+    /// 签名文件里**声明**的类型
+    declared: String,
+    /// 从实现**推导**出的类型
+    derived: String,
+}
+
+/// 声明面(磁盘上的 `.wll.sig`)与实现面(当前推导出的签名)之间的**漂移**。
+///
+/// 这个结构**同时**是 JSON 形态:`wlwl sig --format=json` 的 `drift` 字段
+/// 就是它(字段名逐字相同),人形态的提示行也逐个点名这三个字段名。
+#[derive(Debug, Clone, serde::Serialize)]
+struct SigDrift {
+    /// 漂移状态
+    status: SigDriftStatus,
+    /// **声明里多出来**的成员(声明有、实现没有)。
+    extra_in_declared: Vec<String>,
+    /// **声明里缺的**成员(实现有、声明没有)。
+    missing_in_declared: Vec<String>,
+    /// 两边都有、但类型对不上的成员。
+    type_conflicts: Vec<SigTypeConflict>,
+}
+
+/// 比较声明面与实现面,得出漂移。
+///
+/// ⚠ **类型冲突用契约层同一条规则**(`Ty::satisfies_annotation`,也就是
+/// `E0115` 背后那条:实现必须能替代声明)⇒ `wlwl sig` 的结论与
+/// `wlwl check` 的契约结论**同源**,不会一个说冲突一个说不冲突。
+/// `DYNAMIC` = 不表态 ⇒ 永远不算冲突。
+///
+/// ⚠ 名字差异两个方向都报:**声明里多出来的**(`extra_in_declared`)与
+/// **声明里缺的**(`missing_in_declared`)—— 前者是 `E0114` 那一侧,
+/// 后者是 `E0113` 那一侧。
+fn sig_drift(derived: &wlwl_types::ModuleSig, sidecar: &SidecarSig) -> SigDrift {
+    let empty = || SigDrift {
+        status: SigDriftStatus::Absent,
+        extra_in_declared: Vec::new(),
+        missing_in_declared: Vec::new(),
+        type_conflicts: Vec::new(),
+    };
+    let declared = match sidecar {
+        SidecarSig::Absent => return empty(),
+        SidecarSig::Declared(sig) => sig,
+    };
+
+    let mut extra_in_declared = Vec::new();
+    let mut missing_in_declared = Vec::new();
+    let mut type_conflicts = Vec::new();
+    for (name, entry) in &declared.entries {
+        let Some(impl_entry) = derived.entries.get(name) else {
+            extra_in_declared.push(name.clone());
+            continue;
+        };
+        if !impl_entry.ty.satisfies_annotation(&entry.ty) {
+            type_conflicts.push(SigTypeConflict {
+                name: name.clone(),
+                declared: entry.ty.to_string(),
+                derived: impl_entry.ty.to_string(),
+            });
+        }
+    }
+    for name in derived.entries.keys() {
+        if !declared.entries.contains_key(name) {
+            missing_in_declared.push(name.clone());
+        }
+    }
+    let status = if extra_in_declared.is_empty()
+        && missing_in_declared.is_empty()
+        && type_conflicts.is_empty()
+    {
+        SigDriftStatus::InSync
+    } else {
+        SigDriftStatus::OutOfSync
+    };
+    SigDrift {
+        status,
+        extra_in_declared,
+        missing_in_declared,
+        type_conflicts,
+    }
+}
+
+/// 漂移的**人形态** —— 几行 `= hint:`。
+///
+/// ⚠ 走 **stderr**:stdout 保持「只有签名文本」⇒ `wlwl sig x.wll > x.sig`
+/// 产出的仍然是**一份能用的签名文件**(提示混进去就把它写坏了)。
+///
+/// ⚠ 没有漂移时**一行都不出**:`.wll.sig` 是可选旁路文件,
+/// 「没有它」不是新闻。
+fn sig_drift_human(file: &std::path::Path, drift: &SigDrift) -> Vec<String> {
+    let mut out = Vec::new();
+    match drift.status {
+        SigDriftStatus::InSync | SigDriftStatus::Absent => return out,
+        SigDriftStatus::OutOfSync => out.push(format!(
+            "  = hint: signature drift out_of_sync: '{}' (declared) vs '{}' (derived)",
+            sig_path_for(file).display(),
+            file.display()
+        )),
+    }
+    for name in &drift.extra_in_declared {
+        out.push(format!("  = hint: extra_in_declared: {}", name));
+    }
+    for name in &drift.missing_in_declared {
+        out.push(format!("  = hint: missing_in_declared: {}", name));
+    }
+    for c in &drift.type_conflicts {
+        out.push(format!(
+            "  = hint: type_conflicts: {} (declared {}, derived {})",
+            c.name, c.declared, c.derived
+        ));
+    }
+    out.push(format!(
+        "  = hint: run `wlwl sig-gen {} --force` to regenerate the signature file",
+        file.display()
+    ));
+    out
+}
+
 /// `wlwl sig <file>` —— 把签名打到 stdout,一个字节都不写盘。
 ///
 /// 与 `wlwl ast --json` 同一形态的只读子命令:想落盘用 `sig-gen`。
+///
+/// [G-4] 除了签名本身,还报**漂移**:磁盘上的 `.wll.sig`(声明面)与
+/// 当前推导出的签名(实现面)差在哪。
 fn sig_file(file: &std::path::Path, format: SigFormat) -> ExitCode {
     let sig = match derive_signature(file) {
         Ok(s) => s,
         // 诊断渲染固定走 human:本子命令的 `--format` 只管签名本身。
         Err(e) => return report_error(e, OutputFormat::Human),
     };
+    let sidecar = match load_sidecar_sig(file) {
+        Ok(s) => s,
+        // ⚠ 与 `wlwl check` **同码同形**:旁路签名文件读不出来 / 解析不出来
+        //   ⇒ 既有诊断 + 退出码 3(审计 R2-013:同一种故障不该因为走哪条路
+        //   而拿到不同的退出码)⇒ 这里**不**降级成「状态值 + 退出码 0」。
+        Err(e) => return report_error(e, OutputFormat::Human),
+    };
+    let drift = sig_drift(&sig, &sidecar);
     match format {
         SigFormat::Text => {
             print!("{}", sig);
+            // 漂移提示走 stderr:stdout 只留签名文本(见 `sig_drift_human`)。
+            for line in sig_drift_human(file, &drift) {
+                eprintln!("{}", line);
+            }
             ExitCode::SUCCESS
         }
         SigFormat::Json => {
-            let out = SigOutput::new(file, &sig);
+            let out = SigOutput::new(file, &sig, &drift);
             match serde_json::to_string_pretty(&out) {
                 Ok(s) => {
                     println!("{}", s);
@@ -2467,8 +2651,93 @@ fn sig_file(file: &std::path::Path, format: SigFormat) -> ExitCode {
 /// 2. **零导出就不写文件**。「不导出任何名字」的诚实契约就是**没有**
 ///    签名文件(与 v0.9 行为同解),留一个 0 字节文件只会污染仓库。
 /// 3. 写进去的内容必须能被 `check` 读回来 —— 生成侧的这条不变量由
-///    `wlwl-types` 的 `sig_gen_roundtrip_parse_check` 守住。
+///    `wlwl-types` 的 `sig_gen_roundtrip_parse_check` 守着;
+///    [G-4] **命令级**再补一道:写盘后**立刻回读**,读不回来 / 与推导
+///    签名不一致 ⇒ 报错 + 非零退出(那条单测守的是**模型层**,管不到
+///    「命令真的写了什么」)。
 fn sig_gen_file(file: &std::path::Path, force: bool) -> ExitCode {
+    sig_gen_with(file, force, &FsSigStore)
+}
+
+/// `sig-gen` 落盘用的**存储** —— 只为**可测**。
+///
+/// 默认实现是真实文件系统;测试注入一个「写下去的内容被破坏」的落盘器,
+/// 用来证明**回读自检真的在命令路径上**(反向守卫:把自检从命令路径上
+/// 摘掉,那两条用例必红)。
+///
+/// ⚠ 这层缝**只包住「写」与「回读」两步**,推导 / 渲染 / 比对全在缝外
+/// —— 注入只能改**落下去的字节**,改不了要比对的两边是什么。
+trait SigStore {
+    /// 落盘。
+    fn write(&self, target: &std::path::Path, text: &str) -> std::io::Result<()>;
+    /// 回读刚落盘的内容。
+    fn read(&self, target: &std::path::Path) -> std::io::Result<String>;
+}
+
+/// 真实文件系统。
+struct FsSigStore;
+
+impl SigStore for FsSigStore {
+    fn write(&self, target: &std::path::Path, text: &str) -> std::io::Result<()> {
+        fs::write(target, text)
+    }
+    fn read(&self, target: &std::path::Path) -> std::io::Result<String> {
+        fs::read_to_string(target)
+    }
+}
+
+/// 回读自检的结论。
+enum SigVerify {
+    /// 回读的内容与推导签名**逐字相同**。
+    Ok,
+    /// 回读时**读不出来**(文件类故障)。
+    Io(std::io::Error),
+    /// 回读时**解析不出来**(「读不出来的文本」)。
+    Parse(WlwlError),
+    /// 解析出来了,但内容与推导签名**不一致**。
+    Mismatch {
+        /// 回读到的内容(重新渲染后)。
+        written: String,
+        /// 推导出的签名(重新渲染后)。
+        derived: String,
+    },
+}
+
+/// 把刚写下去的文件**读回来**,解析,与推导签名**逐字比对**。
+///
+/// ⚠ **为什么比 `to_string()` 而不是 `ModuleSig` 的 `PartialEq`**:
+/// `SigEntry` 的 `PartialEq` 把**行号**也算进去,而推导侧的 `line` 恒为
+/// `0`(`sig_from_module` 不给「签名文件里的行」编造行号)、解析侧是文件里
+/// 的真实行号 ⇒ 两者**恒不相等**,拿它比会把「一致」判成「不一致」。
+/// 文本比对才是这条不变量的正确口径:两边的**渲染**出自同一个
+/// `ModuleSig` 的 `Display`。
+fn verify_written_signature(
+    target: &std::path::Path,
+    derived: &wlwl_types::ModuleSig,
+    store: &dyn SigStore,
+) -> SigVerify {
+    let text = match store.read(target) {
+        Ok(t) => t,
+        Err(e) => return SigVerify::Io(e),
+    };
+    let parsed = match wlwl_types::parse_module_sig(&text, &target.to_string_lossy()) {
+        Ok(p) => p,
+        Err(e) => return SigVerify::Parse(e),
+    };
+    let written = parsed.to_string();
+    let expected = derived.to_string();
+    if written == expected {
+        SigVerify::Ok
+    } else {
+        SigVerify::Mismatch {
+            written,
+            derived: expected,
+        }
+    }
+}
+
+/// `sig-gen` 的真身 —— 落盘器可注入(只为可测,见 [`SigStore`]）。
+fn sig_gen_with(file: &std::path::Path, force: bool, store: &dyn SigStore) -> ExitCode {
     let sig = match derive_signature(file) {
         Ok(s) => s,
         Err(e) => return report_error(e, OutputFormat::Human),
@@ -2489,8 +2758,13 @@ fn sig_gen_file(file: &std::path::Path, force: bool) -> ExitCode {
         return ExitCode::SUCCESS;
     }
     let text = sig.to_string();
-    match fs::write(&target, &text) {
-        Ok(()) => {
+    if let Err(e) = store.write(&target, &text) {
+        eprintln!("cannot write '{}': {}", target.display(), e);
+        return ExitCode::from(1);
+    }
+    // [G-4] 回读自检:刚写下去的东西必须**读得回来**、且**与推导签名一致**。
+    match verify_written_signature(&target, &sig, store) {
+        SigVerify::Ok => {
             println!(
                 "wrote {} ({} exports, {} bytes)",
                 target.display(),
@@ -2499,8 +2773,26 @@ fn sig_gen_file(file: &std::path::Path, force: bool) -> ExitCode {
             );
             ExitCode::SUCCESS
         }
-        Err(e) => {
-            eprintln!("cannot write '{}': {}", target.display(), e);
+        SigVerify::Io(e) => {
+            eprintln!("cannot read back '{}': {}", target.display(), e);
+            ExitCode::from(1)
+        }
+        SigVerify::Parse(e) => {
+            // 解析不出来 = 「读不出来的文本」⇒ 与 `check` 同一口径
+            // (`E0010` 族,退出码 `3`)。⚠ 不新增诊断码(N-3)。
+            eprintln!(
+                "error: the signature file just written to '{}' does not parse",
+                target.display()
+            );
+            report_error(e, OutputFormat::Human)
+        }
+        SigVerify::Mismatch { written, derived } => {
+            eprintln!(
+                "error: the content written to '{}' does not match the derived signature",
+                target.display()
+            );
+            eprintln!("  written: {}", written.replace('\n', " | "));
+            eprintln!("  derived: {}", derived.replace('\n', " | "));
             ExitCode::from(1)
         }
     }
@@ -2529,6 +2821,13 @@ struct SigOutput {
     /// 承诺在两个子命令里键名不同**,E.4 要求的「与 E.2 同构」被破坏 ——
     /// 照规范写的工具读 `sig` 的输出会找不到字段。
     exports: Vec<SigEntryOutput>,
+    /// [G-4] 声明面(磁盘上的 `.wll.sig`)与实现面(当前推导出的签名)之间
+    /// 的**漂移**。
+    ///
+    /// ⚠ 这是**新增字段**(旧消费者读不到它 ⇒ 不破);按附录 E.4
+    /// 「字段增删时递增版本号」的口径,`sig_schema_version` 随之
+    /// `1.0.0` → `1.1.0`。
+    drift: SigDrift,
 }
 
 /// 一条签名声明的 JSON 形态。函数用 `params` + `returns`,值用 `type`,
@@ -2547,7 +2846,7 @@ struct SigEntryOutput {
 }
 
 impl SigOutput {
-    fn new(file: &std::path::Path, sig: &wlwl_types::ModuleSig) -> Self {
+    fn new(file: &std::path::Path, sig: &wlwl_types::ModuleSig, drift: &SigDrift) -> Self {
         let exports = sig
             .entries
             .values()
@@ -2569,11 +2868,15 @@ impl SigOutput {
             })
             .collect();
         SigOutput {
-            sig_schema_version: "1.0.0",
+            // ⚠ [G-4] `1.0.0` → `1.1.0`:新增了 `drift` 字段,而附录 E.4
+            // 明写「字段增删时递增版本号」⇒ 加字段必须升版本号,否则
+            // 照规范写的工具看不出这份契约变了。
+            sig_schema_version: "1.1.0",
             module: file.to_string_lossy().to_string(),
             signature_file: sig_path_for(file).to_string_lossy().to_string(),
             text: sig.to_string(),
             exports,
+            drift: drift.clone(),
         }
     }
 }
@@ -3910,8 +4213,10 @@ EXPORT([\"add\", \"PI\"]);
         let p = write_module("c3_json", "math.wll", SIG_MODULE);
         assert_eq!(sig_file(&p, SigFormat::Json), ExitCode::SUCCESS);
         let sig = derive_signature(&p).expect("signature derives");
-        let json = serde_json::to_value(SigOutput::new(&p, &sig)).expect("serializes");
-        assert_eq!(json["sig_schema_version"], "1.0.0");
+        // 这个夹具目录里没有 `.wll.sig` ⇒ 漂移面是 `absent`。
+        let drift = sig_drift(&sig, &SidecarSig::Absent);
+        let json = serde_json::to_value(SigOutput::new(&p, &sig, &drift)).expect("serializes");
+        assert_eq!(json["sig_schema_version"], "1.1.0");
         assert_eq!(json["module"], p.to_string_lossy().as_ref());
         assert_eq!(
             json["signature_file"],
@@ -3937,6 +4242,221 @@ EXPORT([\"add\", \"PI\"]);
             json.get("entries").is_none(),
             "旧键名 `entries` 必须不再出现: {json}"
         );
+    }
+
+    // -- [G-4] `.wll.sig` 契约的漂移面 + `sig-gen` 的回读自检 ------------
+
+    /// 落盘器:写下去的内容**语法就坏了** —— 模拟「写盘被截断 / 编码坏了」。
+    struct BrokenSigStore;
+
+    impl SigStore for BrokenSigStore {
+        fn write(&self, target: &std::path::Path, _text: &str) -> std::io::Result<()> {
+            fs::write(target, "this is not a signature line\n")
+        }
+        fn read(&self, target: &std::path::Path) -> std::io::Result<String> {
+            fs::read_to_string(target)
+        }
+    }
+
+    /// 落盘器:写下去的内容**语法合法、但不是推导签名** —— 模拟「写下去
+    /// 的东西被换过 / 被并发改过」。
+    struct DriftedSigStore;
+
+    impl SigStore for DriftedSigStore {
+        fn write(&self, target: &std::path::Path, _text: &str) -> std::io::Result<()> {
+            fs::write(target, "EXPORT somebody_else : INTEGER\n")
+        }
+        fn read(&self, target: &std::path::Path) -> std::io::Result<String> {
+            fs::read_to_string(target)
+        }
+    }
+
+    /// [G-4 ①] 生成物回读后与推导签名**一致** ⇒ 成功。
+    #[test]
+    fn g4_sig_gen_self_check_passes_when_the_written_file_round_trips() {
+        let p = write_module("g4_roundtrip", "math.wll", SIG_MODULE);
+        assert_eq!(sig_gen_file(&p, false), ExitCode::SUCCESS);
+        let sig = sig_path_for(&p);
+        assert!(sig.is_file(), "sig-gen must write {}", sig.display());
+        // 落盘内容 = 推导出的签名文本(逐字相同)。
+        let derived = derive_signature(&p).expect("signature derives");
+        assert_eq!(fs::read_to_string(&sig).unwrap(), derived.to_string());
+    }
+
+    /// [G-4 ①] 回读时**解析不出来** ⇒ 失败 + 非零退出。
+    ///
+    /// ⚠ 口径:「读不出来的文本」是**既有**码(`E0010` 族)+ 退出码 `3`,
+    /// 与 `check` 读同一份坏签名文件时**同一个结论**(不新增码,N-3)。
+    #[test]
+    fn g4_sig_gen_self_check_fails_when_the_written_file_does_not_parse() {
+        let p = write_module("g4_broken_write", "math.wll", SIG_MODULE);
+        let code = sig_gen_with(&p, false, &BrokenSigStore);
+        assert_ne!(
+            code,
+            ExitCode::SUCCESS,
+            "写坏了的签名文件必须失败,不能悄悄留下"
+        );
+        assert_eq!(code, ExitCode::from(3), "读不出来的文本 = 退出码 3");
+    }
+
+    /// [G-4 ①] 回读的内容与推导签名**不一致** ⇒ 失败 + 非零退出。
+    #[test]
+    fn g4_sig_gen_self_check_fails_when_the_written_file_differs() {
+        let p = write_module("g4_drifted_write", "math.wll", SIG_MODULE);
+        let code = sig_gen_with(&p, false, &DriftedSigStore);
+        assert_ne!(
+            code,
+            ExitCode::SUCCESS,
+            "与推导签名不一致的签名文件必须失败"
+        );
+    }
+
+    /// [G-4 ②] 声明里**多一个**成员 ⇒ `out_of_sync`,且列出多出来的那个。
+    #[test]
+    fn g4_sig_json_reports_out_of_sync_when_the_declared_signature_has_an_extra_member() {
+        let p = write_module("g4_extra", "math.wll", SIG_MODULE);
+        // 声明面比实现面多一个 `ghost`。
+        fs::write(
+            sig_path_for(&p),
+            "EXPORT PI : INTEGER\nEXPORT add (INTEGER, INTEGER) : INTEGER\nEXPORT ghost : INTEGER\n",
+        )
+        .unwrap();
+        let sig = derive_signature(&p).expect("signature derives");
+        let drift = sig_drift(&sig, &load_sidecar_sig(&p).expect("sidecar readable"));
+        let json = serde_json::to_value(SigOutput::new(&p, &sig, &drift)).expect("serializes");
+        assert_eq!(json["drift"]["status"], "out_of_sync");
+        let extra = json["drift"]["extra_in_declared"]
+            .as_array()
+            .expect("array");
+        assert_eq!(extra.len(), 1, "{json}");
+        assert_eq!(extra[0], "ghost");
+        // 「声明里多出来的」**不算**「声明里缺的」—— 两个方向分开报。
+        assert!(json["drift"]["missing_in_declared"]
+            .as_array()
+            .expect("array")
+            .is_empty());
+    }
+
+    /// [G-4 ②] 声明里**少一个**成员 ⇒ `out_of_sync`,且列出缺的那个。
+    #[test]
+    fn g4_sig_json_reports_out_of_sync_when_the_declared_signature_is_missing_a_member() {
+        let p = write_module("g4_missing", "math.wll", SIG_MODULE);
+        // 声明面只有 `PI`,实现面还有 `add` ⇒ 声明里缺 `add`。
+        fs::write(sig_path_for(&p), "EXPORT PI : INTEGER\n").unwrap();
+        let sig = derive_signature(&p).expect("signature derives");
+        let drift = sig_drift(&sig, &load_sidecar_sig(&p).expect("sidecar readable"));
+        let json = serde_json::to_value(SigOutput::new(&p, &sig, &drift)).expect("serializes");
+        assert_eq!(json["drift"]["status"], "out_of_sync");
+        let missing = json["drift"]["missing_in_declared"]
+            .as_array()
+            .expect("array");
+        assert_eq!(missing.len(), 1, "{json}");
+        assert_eq!(missing[0], "add");
+        assert!(json["drift"]["extra_in_declared"]
+            .as_array()
+            .expect("array")
+            .is_empty());
+    }
+
+    /// [G-4 ②] 磁盘上没有 `.wll.sig` ⇒ `absent`,且**退出码仍是 0**。
+    ///
+    /// ⚠ `.wll.sig` 是**可选旁路文件**:没有它时一切照旧,不是错误。
+    #[test]
+    fn g4_sig_json_reports_absent_when_there_is_no_signature_file() {
+        let p = write_module("g4_absent", "math.wll", SIG_MODULE);
+        assert!(!sig_path_for(&p).exists());
+        assert_eq!(sig_file(&p, SigFormat::Json), ExitCode::SUCCESS);
+        let sig = derive_signature(&p).expect("signature derives");
+        let drift = sig_drift(&sig, &load_sidecar_sig(&p).expect("sidecar readable"));
+        assert_eq!(drift.status, SigDriftStatus::Absent);
+        let json = serde_json::to_value(SigOutput::new(&p, &sig, &drift)).expect("serializes");
+        assert_eq!(json["drift"]["status"], "absent");
+        assert!(json["drift"]["extra_in_declared"]
+            .as_array()
+            .expect("array")
+            .is_empty());
+        assert!(json["drift"]["missing_in_declared"]
+            .as_array()
+            .expect("array")
+            .is_empty());
+        assert!(json["drift"]["type_conflicts"]
+            .as_array()
+            .expect("array")
+            .is_empty());
+    }
+
+    /// [G-4 ②] 签名文件与实现**一致** ⇒ `in_sync`。
+    #[test]
+    fn g4_sig_json_reports_in_sync_when_the_signature_file_matches() {
+        let p = write_module("g4_in_sync", "math.wll", SIG_MODULE);
+        assert_eq!(sig_gen_file(&p, false), ExitCode::SUCCESS);
+        let sig = derive_signature(&p).expect("signature derives");
+        let drift = sig_drift(&sig, &load_sidecar_sig(&p).expect("sidecar readable"));
+        assert_eq!(drift.status, SigDriftStatus::InSync);
+        let json = serde_json::to_value(SigOutput::new(&p, &sig, &drift)).expect("serializes");
+        assert_eq!(json["drift"]["status"], "in_sync");
+    }
+
+    /// [G-4 ②] 类型冲突也要报出来(类型信息**拿得到**,不许只报名字)。
+    #[test]
+    fn g4_sig_json_reports_type_conflicts() {
+        let p = write_module("g4_type_conflict", "math.wll", SIG_MODULE);
+        // 声明说 `PI` 是 STRING,实现推出来是 INTEGER ⇒ 类型冲突。
+        fs::write(
+            sig_path_for(&p),
+            "EXPORT PI : STRING\nEXPORT add (INTEGER, INTEGER) : INTEGER\n",
+        )
+        .unwrap();
+        let sig = derive_signature(&p).expect("signature derives");
+        let drift = sig_drift(&sig, &load_sidecar_sig(&p).expect("sidecar readable"));
+        assert_eq!(drift.status, SigDriftStatus::OutOfSync);
+        let json = serde_json::to_value(SigOutput::new(&p, &sig, &drift)).expect("serializes");
+        let conflicts = json["drift"]["type_conflicts"].as_array().expect("array");
+        assert_eq!(conflicts.len(), 1, "{json}");
+        assert_eq!(conflicts[0]["name"], "PI");
+        assert_eq!(conflicts[0]["declared"], "STRING");
+        assert_eq!(conflicts[0]["derived"], "INTEGER");
+    }
+
+    /// [G-4 ③] 人形态与 JSON 形态说的是**同一件事**:提示行逐个点名 JSON
+    /// 那三个字段名;没有漂移时**一行都不出**(不制造噪声)。
+    #[test]
+    fn g4_sig_text_names_the_same_drift_fields_as_the_json_form() {
+        let p = write_module("g4_human", "math.wll", SIG_MODULE);
+        // 一致 ⇒ 一行提示都不出。
+        assert_eq!(sig_gen_file(&p, false), ExitCode::SUCCESS);
+        let sig = derive_signature(&p).expect("signature derives");
+        let in_sync = sig_drift(&sig, &load_sidecar_sig(&p).expect("sidecar readable"));
+        assert!(sig_drift_human(&p, &in_sync).is_empty());
+
+        // 不一致 ⇒ 提示行逐个点名 JSON 那三个字段名。
+        fs::write(sig_path_for(&p), "EXPORT PI : STRING\n").unwrap();
+        let drift = sig_drift(&sig, &load_sidecar_sig(&p).expect("sidecar readable"));
+        let lines = sig_drift_human(&p, &drift);
+        let text = lines.join("\n");
+        assert!(text.contains("out_of_sync"), "{text}");
+        assert!(text.contains("missing_in_declared"), "{text}");
+        assert!(text.contains("type_conflicts"), "{text}");
+        // 提示行用仓里既有的 `= hint:` 写法(不造新标记)。
+        assert!(lines.iter().all(|l| l.starts_with("  = hint: ")), "{text}");
+    }
+
+    /// [G-4 ④] 旁路签名文件**存在但坏掉** ⇒ `wlwl sig` 与 `wlwl check`
+    /// **同码同形**（既有诊断 + 退出码 **3**）。
+    ///
+    /// ⚠ 审计 **R2-013** 白纸黑字：「「读不出来的文本」出现在**旁路签名文件**里
+    ///   同样是 `3` …… **同一种故障不该因为走哪条路而拿到不同的退出码**」。
+    ///   ⇒ 本命令**不**把「坏旁路」降级成「状态值 + 退出码 0」。
+    /// ⚠ 与「**没有** `.wll.sig`」是**两回事**：那是可选旁路文件 ⇒ `absent`
+    ///   + 退出码 **0**（由 `g4_sig_json_reports_absent_...` 那条守住）。
+    #[test]
+    fn g4_sig_reports_the_same_exit_code_as_check_when_the_sidecar_is_corrupt() {
+        let p = write_module("g4_corrupt", "math.wll", SIG_MODULE);
+        // 语法坏掉的签名文件 ⇒ 既有码 `E0010`（**不新增诊断码**）。
+        fs::write(sig_path_for(&p), "EXPORT add (INTEGER, INTEGER : INTEGER\n").unwrap();
+        // 退出码 3 = 「源文件没能解析出来」（spec §11.5 的退出码契约）。
+        assert_eq!(sig_file(&p, SigFormat::Text), ExitCode::from(3));
+        assert_eq!(sig_file(&p, SigFormat::Json), ExitCode::from(3));
     }
 
     // -- v0.10 Step 8 (P1-1): MATCH 穷尽性 / 可达性 --------------------

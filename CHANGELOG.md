@@ -1,3 +1,53 @@
+## [v0.12.1 开工 · 第九波] — 2026-10-29（3 个 PHASE + 1 项欠账单独处理;公共面 +8 个成员）
+
+**本段 = 第九波**：**接管后的第一波**（4 个 agent 并行，文件面零重叠）。计划与坐标见 `docs/plan/wlwl-v0.12.1-build-plan.md` §4（工作项）/ §11.1（落地清单）/ §13（接替手册）。
+
+### 事件
+
+- **CI run #325**（head_sha `d9549a7`，`main`）⇒ 三平台 **fmt / clippy / doc / cargo-deny / conformance 全绿**（第八波两轮的修复全部生效 ⇒ 旧的那张「三平台分叉」表已清空）⇒ 三平台全红在 **step 15 `cargo test --locked --all-targets`**，且 **pass 1 与 pass 2 都红 ⇒ REAL FAILURE（非 flaky）**。
+- 失败用例名（取自**匿名可读**的 workflow annotation —— `GET /repos/Laffinty/wlwl/check-runs/<id>/annotations` **无需 token**）：**windows / ubuntu = `fs_member_set_matches_the_spec_table`**（**已知欠账** = 规范侧 `std.fs` 成员表未跟上）· **macOS = `a_reader_never_sees_a_half_written_target`**（**新欠账，本轮首次登记 ⇒ W-39**）。
+- ⚠ run #325 是这批提交**第一次**真的跑到 `cargo test --all-targets`（前七波的提交全推在 `wip0121`，该分支**不在 `ci.yml` 的 push 触发列表**里）⇒ **不是回归，是首次暴露**。
+
+### 落地清单（4 项）
+
+| 工作项 | 内容 | 验收读数 |
+|---|---|---|
+| **W-17** | `std.http::SERVE_STREAM` —— Keep-Alive 循环 + 分级请求预算 {首字节/头/体/响应/总} + 头块上限 64 KiB ⇒ **431** + 体上限 8 MiB ⇒ **413**（**在读取过程中就判**，不读完再判） | `http_contract` **25/0**（新增 **10 例**：一条连接连发 3 个请求 · 空闲超时服务端主动关 · 431 · 413 · 四档预算各触发 408 · handler 自选收尾）· **两条反向守卫都真红过**（上限改无限 ⇒ 431/413 用例红;Keep-Alive 改「处理一条就关」⇒ 3 连发用例红）· `net.rs` **纯追加 751 行 / 零删除** |
+| **W-31** | `std.test` 新增 **7 个**成员：`ASSERT_MSG`（带必需消息）· `ASSERT_TRUE`（宽松口径真值断言）· `EXPECT_ERR_CODE`（捕获**原生**诊断码 ⇒ 原生码不逃逸）· `SKIP` · `TEST_CASES` · `TEMP_DIR`（**绝对路径**）· `RUN_TESTS_ASYNC` | `test_contract` **18/0**（表格 52 → **95 条**）· `wlwl-std` **381/0** · 反向守卫（`EXPECT_ERR_CODE` 改回捕不到原生码 ⇒ **恰好那 3 条红**、其余 92 条仍绿） |
+| **G-4②** | `.wll.sig` 契约的工作流简化：`sig-gen` 写盘后**立刻回读自检** + `sig --format json` 的 `drift` 漂移面（`status` / `extra_in_declared` / `missing_in_declared` / `type_conflicts`）+ 人形态 `= hint:` 漂移行 | `wlwl-cli` **147/0**（新增 **9** 例）· 反向守卫（摘掉回读自检 ⇒ **恰好那 2 条红**）· `sig_schema_version` **1.0.0 → 1.1.0**（附录 E.4 明写「字段增删时递增版本号」） |
+| **W-39** | macOS 独有的原子写守卫真失败：① `ci.yml` 的 workflow annotation 现在**带 panic 原因**（原先只带用例名）② `fs.rs` 的 `EINTR` **有界重试**（`retry_on_interrupt` + `open_new`〔中断后先删可能已建出的孤儿文件〕+ unix 的 `atomic_replace`）③ 该测试的 reader **只**放行 `ErrorKind::Interrupted`（`NotFound` 与其它错误**仍算中间态** ⇒ 退化实现照样被抓住） | ⚠ **macOS 侧根因未实测**（候选 = POSIX `EINTR`）⇒ **下一次 CI 会由新注解读出确切原因** · ✅ **Linux 侧已实测**（WSL2 Ubuntu）：`fs_atomic_lock_meta_contract` **21/0**（含那条 `#[cfg(unix)]` 用例 **ok**）· 反向守卫在副本里把 unix `atomic_replace` 改成「先删后写」⇒ **必红** ⇒ 复原后逐字节相同 |
+
+### 集成者做的三处口径订正（agent 交付 ⇒ 集成者改）
+
+1. **`ASSERT_TRUE` 的真值口径**（W-31）：agent 原做成「值**恰好**是布尔 `TRUE`」⇒ 计划 §4 W-31 点名的「`ASSERT(0)` / `ASSERT("")` / `ASSERT([])` **不该判失败**」**一件都没解决** ⇒ 回派改成**宽松口径**（只有 `FALSE` / `NULL` 为假）⇒ `ASSERT` 的 §2.3 八假值口径**未动**（`ASSERT(0)` 仍失败，已加契约钉住）。
+2. **坏旁路签名文件的退出码**（G-4②）：agent 原做成「状态值 + 退出码 0」⇒ 回到审计 **R2-013** 的裁决（「**同一种故障不该因为走哪条路而拿到不同的退出码**」）⇒ `wlwl sig` 与 `wlwl check` 现在**同码同形**（`E0010` + 退出码 **3**）。
+3. **`SERVE_STREAM` 的形态**（W-17）：agent 原做成 `std.net::TCP_SERVE_STREAM` 的**公共成员**（⇒ 公共面 +2、诊断指名一个**用户没调过**的名字）⇒ 改成 `std.http::SERVE_STREAM` 的**私有 R2 内核**（`_SERVE_STREAM`，登记在 `lib.rs` 的 `wlwl:std.http` 段）⇒ 公共面**只 +1**（`std.net` 不增）且**诊断指名用户真调过的成员** ⇒ 与 §6.2 的新成员表逐字对齐。
+
+### 集成者另修的两处「红消息在撒谎」
+
+- `net_contract` / `text_contract` 的成员数断言**写死了字面量**（`14` / `8`）⇒ 规范侧还没跟上时**断言文本说「exports 14 members」而实现侧其实是 16 / 11** ⇒ 把「诚实」换成「误导」⇒ 改成**对着规范表比** ⇒ 两条**仍然红**（那正是那笔欠账该有的红），但消息现在说的是真话。
+- `stdlib_mirror.rs`：`std.http` 的「层」列写的是 `R1` ⇒ W-17 给了它 R2 内核 ⇒ 模块已是**混合** ⇒ 附录 A 派生体改成「混合(R1 `PARSE_REQUEST`/`BUILD_RESPONSE` + R2 `SERVE_STREAM`)」。
+
+### 公共面变化（待规范仓落表：**36 → 44 个成员**）
+
+- `std.test` **+7**：`ASSERT_MSG` · `ASSERT_TRUE` · `EXPECT_ERR_CODE` · `SKIP` · `TEST_CASES` · `TEMP_DIR` · `RUN_TESTS_ASYNC`
+- `std.http` **+1**：`SERVE_STREAM`
+- ⚠ **附录 E.4 要补一行**：`wlwl sig --format json` 的 `drift` 字段 + `sig_schema_version` 记 **1.1.0**（G-4②）
+- ⚠ 既有成员**零改动** · **零新增诊断码** · 版本口径仍是 实现 **v0.12.1** ↔ 规范 **v1.0.4**
+
+### 门禁（第九波集成后实测）
+
+`cargo fmt --all -- --check` **0 diff** · `cargo clippy --locked --workspace --all-targets -- -D warnings` **0 error** · `cargo doc --workspace --no-deps`（`-D warnings`）**0 error**（修了 **2 处** `rustdoc::private-intra-doc-links`，与第八波**同款修法**：链接改纯代码字面量）· `wlwl-std` **381/0** · `http_contract` **25/0** · `test_contract` **18/0** · `wlwl-cli` **147/0** · probe **3/3** · conformance **6/0** · **Linux 侧**（WSL2）：`fs_atomic_lock_meta_contract` **21/0**（含那条 `#[cfg(unix)]` 用例 **ok**）· `http_contract` **25/0** · **clippy 全 workspace 0 error** ⇒ **unix 段第一次在本地被 lint、也被跑**。
+
+**红项仍是那 8 处**（`check-appendix-a` exit 1 · `stdlib_appendix_a_sync` 4 failed · `spec_appendix_g_sync` 2 failed · `fs_contract` 28/1 · `net_contract` 14/1 · `str_math_contract` 53/1 · `text_contract` 12/1 · `process_contract` 1~3 failed）⇒ **零新增**，全部是「规范侧未跟上」（§11.2 五步）。
+
+### 附带产出：unix 侧本地可验了
+
+- 本机 WSL2 Ubuntu 装了 **rustc 1.99.0**（**与 CI 钉死的 toolchain 同版本**）+ 一份**无 root** 的 C 工具链（`apt-get download` + `dpkg -x` 解到 `~/ccsys`，**不碰 sudo**）⇒ **`#[cfg(unix)]` 的代码能本地编译、能本地跑测试、能本地 lint** ⇒ 计划 §13.6 第 14 行的「unix 侧本机不可验」**补上了一半**（macOS 独有行为仍只能靠 CI）。
+- CI 的 workflow annotation 现在**带 panic 原因** ⇒ 下一次 CI 迭代就能**一次匿名 API 调用**读到 macOS 那条的**确切原因**，不必再靠推理。
+
+---
+
 ## [v0.12.1 开工 · 第八波] — 2026-10-29(门禁补跑 —— 修 CI run #323 的 clippy 红;零语义改动)
 
 **本段 = 第八波**：不是新工作项，而是**把 CI 跑红的 13 处 clippy lint 修掉**（**零语义改动**）**并把 clippy 补进本地门禁清单**。事件与坐标见 `docs/plan/wlwl-v0.12.1-build-plan.md` **§13.2「CI 实况」**。
