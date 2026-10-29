@@ -147,15 +147,113 @@
 //    一层括号（套了就是块 ⇒ 里面的 `, ` 会被当成非法分隔）。
 // 2. 运算符是**调用形态**（`+(a, b)`），**没有**中缀写法；`+` **不做**隐式
 //    强转 ⇒ 拼字符串用 `CAT(...)` 或 `STR(...)`。
+//
+// ── [W-25 · D-3 / D-5 / D-6 / D-7] 中间件原语（限流 / 规则集热加载 / 真实 IP / 审计）──
+//
+// 本批新增**三个导出成员**（§6.2 冻结名单之外**只**加这三个）与一个
+// **不导出**的审计助手。失败口径沿用两档（`E0022` / `E0030` + `ERR` 值），
+// **零新增诊断码**；`ERR` 载荷仍是 `{"kind": "HttpError", op, reason}` 一族。
+//
+// · `RATE_LIMITER(name: STRING, limit: INTEGER, window_sec: INTEGER, opts: DICT | NULL) -> DICT`
+//   = `{"allowed": BOOLEAN, "remaining": INTEGER, "reset": INTEGER, "limit": INTEGER, "mode": STRING}`
+//   —— **判一次**限流。`opts` 的键：
+//   | 键 | 类型 | 缺省 | 含义 |
+//   |---|---|---|---|
+//   | `mode` | STRING | `"sliding"` | `"sliding"` \| `"token_bucket"` |
+//   | `refill` | INTEGER | `limit` | **仅** `token_bucket`：每秒补给的令牌数（≥ 0） |
+//   | `state` | INTEGER | 进程内注册表 | `std.sync::SHARED_DICT` 句柄（跨求值器共享接缝，见下） |
+//   | `audit` | BOOLEAN | `TRUE` | 产出一条审计行 |
+//   | `client_ip` / `path` / `request_id` | STRING | `""` | 审计归属字段 |
+//   —— **未知键 / 类型错 / 取值不合法 ⇒ `ERR`**（不静默忽略）。
+//   · **滑动窗口**（`sliding`）：按**秒分桶**的 `std.sync` 原子计数器，窗口和 =
+//     最近 `window_sec` 秒的桶之和；`allowed ⇔ 本次计上后窗口和 ≤ limit`，
+//     超限**回滚**（拒绝的请求不占名额）。同一 `name` 顺序调 `limit+1` 次
+//     ⇒ 第 `limit+1` 次 `allowed = FALSE`、`remaining = 0`。
+//   · **令牌桶**（`token_bucket`）：容量 `limit` 个令牌（毫精度内部记账），
+//     每秒补 `refill` 个（`refill = 0` ⇒ 永不补给）；每次判定扣 1 个，
+//     不够扣 ⇒ `allowed = FALSE`（**不欠账**）。桶初始**满**。
+//   · `reset` = Unix 毫秒：下一次可能腾出名额的时刻（滑动 = 窗口内最老
+//     计数的到期时刻；令牌桶 = 下一枚令牌就绪时刻，`refill = 0` ⇒ 恒 `0`）。
+//   · `remaining` = 还能通过几次（≥ 0）。
+//   ⚠ **并发口径**：计数走 `std.sync::COUNTER_INC`（原子）⇒ 计数**不丢**；
+//     「先看和再计」的判定在**同一秒内**并发是精确的（同一桶串行化），
+//     跨秒边界的瞬时竞态理论上可多放行至多并发宽度个请求 —— 不在本轮钉死。
+//   ⚠ 令牌桶的**补给记账**（`last_refill` 时间戳）是读-改-写 ⇒ 极端并发下
+//     可能重复补给一次；**判定与扣减**仍是原子精确的。
+//
+// · `RULESET_LOAD(path: STRING, opts: DICT | NULL) -> DICT`
+//   = `{"rules": ARRAY[STRING], "mtime": INTEGER, "version": INTEGER, "path": STRING}`
+//   —— 规则集从文件加载 + **mtime 变更后热更新**。
+//   · **规则文件格式**：每行一条规则（STRING）；空行与 `#` 开头的行跳过；
+//     行尾 `\r` 剥掉（CRLF 兼容）。
+//   · **热切换语义（钉死）**：`mtime` 变化 ⇒ 重新读文件、构造**全新**数组、
+//     用一次 `SHARED_DICT_SET` **原子换引用**（分配新 `version`）⇒
+//     **在途请求持有的旧数组继续可用、内容不变**（数组是值语义快照）；
+//     `mtime` 未变 ⇒ **复用**现数组（`version` 不动，审计 `result="cached"`）。
+//   · `version` = **装载序号**（每缓存条目一个 `COUNTER`，`COUNTER_INC` 分号，
+//     1 起）：顺序装载下逐次递增、缓存命中不变；**并发热切换**下每个重读
+//     拿到唯一号，但缓存留存的是**最后写入者**的号（代的稳定标识看 `mtime`）。
+//   · `opts` 的键：`audit` / `client_ip` / `path` / `request_id` / `state`
+//     （同 RATE_LIMITER 表）。
+//   · 文件不存在 / 读失败 ⇒ `ERR` 值（`op:"RULESET_LOAD"`）。
+//
+// · `CLIENT_IP(headers_or_request: DICT, remote_addr: STRING, trusted_proxies: ARRAY) -> STRING`
+//   —— 求真实客户端 IP。**无 opts**（三参形）；每次调用产出一条审计行。
+//   · `headers_or_request` = 头字典（键小写）**或**完整请求字典
+//     （有 `"headers"` 子字典时取它）；`remote_addr` = **裸 IP 字面量**
+//     （不含端口 —— 带端口请调用方先剥）；`trusted_proxies` = `ARRAY[STRING]`
+//     裸 IP 列表。**比较是精确字符串比较**（两侧 `LOWER` + `TRIM` 后逐字比；
+//     不做 DNS / CIDR / 子网展开）。
+//   · **语义（钉死）**：只有 `remote_addr` **命中** `trusted_proxies` 才采信
+//     `X-Forwarded-For`（多个头先按出现序拼接再按 `,` 切跳）⇒ 取
+//     **从右往左第一个不在可信列表里的跳**；全可信 ⇒ 取**最左**跳；
+//     没有 XFF / 空 ⇒ 回 `remote_addr`。`remote_addr` **不**可信 ⇒
+//     **无视 XFF**、回 `remote_addr`（攻击者自带的 XFF **绝不**当真实 IP）。
+//   · 审计 `result` 口径：`"xff_used"` \| `"xff_all_trusted"` \| `"ignored_xff"` \| `"no_xff"`。
+//
+// · `_AUDIT(event, client_ip, path, result, request_id) -> NULL`（**不导出**）
+//   —— 把 `{time, event, client_ip, path, result, request_id}` 装进
+//   `std.log::LOG` 的 `fields` ⇒ 落盘 / 落流的那一行**是合法 JSON**
+//   （`{"ts":…,"level":"INFO","msg":"http.audit","fields":{六字段}}`）。
+//   `time` = `NOW()`（**Unix 纪元毫秒**，INTEGER）。三个新成员每次调用
+//   产出一条审计行（`opts.audit = FALSE` 可关；`CLIENT_IP` 恒产出）。
+//
+// ## ⚠ 状态按 name 复用：注册表（`std.sync` 容器的按名层）
+//
+// `std.sync` 的 `COUNTER(initial)` / `SHARED_DICT()` **每次调用新建容器**
+// （容器**没有名字**，没有按名查回的入口）⇒ 「同 name 复用同一计数 / 桶」
+// 由**本模块**补一层注册表（注册表 = 一张 `SHARED_DICT`，name ⇒ 计数器
+// 句柄 / 缓存条目）：
+//
+// · **缺省**（不传 `opts.state`）：注册表句柄记在 **`StdCtx.env`**
+//   （`ENV_GET` / `ENV_SET`，键 `WLWL_STD_HTTP_STATE`）⇒ **同一个程序**
+//   内（同一求值器 / 同一 StdCtx）同 name 复用同一份状态；每次调用自带
+//   状态的局部变量方案**不**满足「同名复用」，这里必须落 std.sync 容器。
+// · **`opts.state`**（INTEGER）：显式给一张 `SHARED_DICT` 作注册表 ⇒
+//   **跨求值器 / 跨线程**（同进程）也按 name 复用 —— 计数本体仍是
+//   `COUNTER` + `COUNTER_INC`（原子）。句柄种类不对 ⇒ 后续调用以
+//   `ERR` **值**失败（`std.sync` 的句柄故障口径）。
+//
+// ⚠ `StdCtx.env` 是**求值器级**快照（不是 OS 环境）⇒ 进程内**两个程序**
+//   各有一份缺省注册表 —— 要跨程序共享就传 `opts.state`。
+// ⚠ 滑动窗口的秒桶按 `name × 秒` 懒创建，**不回收**（长跑进程随时间线性
+//   增长句柄）—— 本轮如实登记，不在 `std.sync` 加回收面（那是别人的文件）。
 
 IMPORT("wlwl:std.encode", ["BYTE_LEN", "URL_DECODE"]);
 IMPORT("wlwl:std.str", ["CAT", "INDEX_OF", "QUERY_PARSE"]);
 
 // ⚠ [W-18] 这两个依赖**只**服务 `PARSE_MULTIPART` 的**文件 part 落盘**
 //   （写文件 + 建目录 + 拼路径）与「临时目录」缺省值（`TMPDIR` → `TEMP` → `TMP`）。
-IMPORT("wlwl:std.fs", ["WRITE_FILE", "MKDIRS", "PATH_CONTAINS", "PATH_EXT", "FILE_META", "READ_BYTES"]);
-IMPORT("wlwl:std.env", ["ENV_GET"]);
+// ⚠ [W-25] `std.fs` 另加 `READ_FILE`（`RULESET_LOAD` 读规则文件）；`std.env`
+//   另加 `ENV_SET`（进程内状态注册表的句柄登记，见上面「状态按 name 复用」）。
+IMPORT("wlwl:std.fs", ["WRITE_FILE", "MKDIRS", "PATH_CONTAINS", "PATH_EXT", "FILE_META", "READ_BYTES", "READ_FILE"]);
+IMPORT("wlwl:std.env", ["ENV_GET", "ENV_SET"]);
 IMPORT("wlwl:std.compress", ["GZIP_COMPRESS", "ZSTD_COMPRESS"]);
+// [W-25 · D-3 / D-5] 中间件的状态原语（原子计数 / 单键原子写）与
+// [D-6] 审计落行（`LOG` 一行一个 JSON 对象）、[D-3] 时间口径（`NOW` = Unix 毫秒）。
+IMPORT("wlwl:std.sync", ["COUNTER", "COUNTER_INC", "COUNTER_ADD", "COUNTER_GET", "SHARED_DICT", "SHARED_DICT_SET", "SHARED_DICT_GET"]);
+IMPORT("wlwl:std.log", ["LOG"]);
+IMPORT("wlwl:std.time", ["NOW"]);
 
 // ── 助手（不导出）────────────────────────────────────────────────────────
 
@@ -1786,10 +1884,323 @@ LET(PARSE_MULTIPART,
     )
 );
 
+// ═══════════ [W-25 · D-3 / D-5 / D-6 / D-7] 中间件原语 ═══════════
+
+// ── 审计 JSON 行助手（不导出，D-6）──────────────────────────────────────
+//
+// `_AUDIT(event, client_ip, path, result, request_id) -> NULL`
+//
+// 把六字段（时间 / 事件 / 客户端 IP / 路径 / 结果 / 请求 ID）装进
+// `std.log::LOG` 的 `fields` ⇒ 落盘 / 落流的那一行**是合法 JSON**：
+// `{"ts":…,"level":"INFO","msg":"http.audit","fields":{"time":…,"event":…,
+// "client_ip":…,"path":…,"result":…,"request_id":…}}`。
+// ⚠ `time` = `NOW()` = **Unix 纪元毫秒**（INTEGER）—— 口径钉死。
+LET(_AUDIT, FUN((event, client_ip, path, result, request_id),
+    LOG("INFO", "http.audit", ["time": NOW(), "event": event, "client_ip": client_ip, "path": path, "result": result, "request_id": request_id])));
+
+// ── 状态注册表（`std.sync` 容器的按名复用层，D-3 / D-5）──────────────────
+//
+// `std.sync` 的 `COUNTER(initial)` / `SHARED_DICT()` **每次调用新建容器**
+// （容器没有名字）⇒ 「同 name 复用同一计数 / 桶」由这里补一层注册表：
+// 注册表 = 一张 `SHARED_DICT`。缺省从 `StdCtx.env`（键 `_STATE_ENV`）拿
+// 句柄（**同程序内**持久）；`opts.state` 显式给句柄 ⇒ **跨求值器 / 跨线程**
+// 共享。见文件头「状态按 name 复用」。
+LET(_STATE_ENV, "WLWL_STD_HTTP_STATE");
+
+LET(_STATE_REG, FUN((o),
+    (LET(s, AT(o, "state", NULL));
+     IF(==(TYPE(s), "INTEGER"),
+        s,
+        (LET(b, ENV_GET(_STATE_ENV));
+         LET(h, IF(==(TYPE(b), "NULL"), -1, _PARSE_DEC(b)));
+         IF(>=(h, 0),
+            h,
+            (LET(nh, SHARED_DICT());
+             LET(_, ENV_SET(_STATE_ENV, STR(nh)));
+             LET(b2, ENV_GET(_STATE_ENV));
+             LET(h2, IF(==(TYPE(b2), "NULL"), -1, _PARSE_DEC(b2)));
+             IF(>=(h2, 0), h2, nh))))))));
+
+// 注册表里的计数器句柄（懒创建 + 读回收敛）。
+LET(_STATE_COUNTER, FUN((reg, key, initial),
+    (LET(h, SHARED_DICT_GET(reg, key));
+     IF(==(TYPE(h), "INTEGER"),
+        h,
+        (LET(nh, COUNTER(initial));
+         LET(_, SHARED_DICT_SET(reg, key, nh));
+         LET(h2, SHARED_DICT_GET(reg, key));
+         IF(==(TYPE(h2), "INTEGER"), h2, nh))))));
+
+// 计一次数（**原子** `COUNTER_INC`）⇒ `{"h": 用到的句柄, "n": 新值}`。
+//
+// ⚠ 创建竞态的补偿：并发首用同一 key 可能各建一个计数器 ⇒ 读回收敛到
+//   赢家句柄后，把自己那一次计数**挪**上去（一减一加）⇒ 总数不丢。
+LET(_STATE_CLAIM, FUN((reg, key, initial),
+    (LET(h, _STATE_COUNTER(reg, key, initial));
+     LET(n, COUNTER_INC(h, 1));
+     LET(w, SHARED_DICT_GET(reg, key));
+     IF(==(TYPE(w), "INTEGER"),
+        IF(==(w, h),
+           ["h": h, "n": n],
+           (LET(_, COUNTER_INC(h, -1));
+            LET(n2, COUNTER_INC(w, 1));
+            ["h": w, "n": n2])),
+        ["h": h, "n": n]))));
+
+// ── 中间件 opts 校验（RATE_LIMITER / RULESET_LOAD 共用）─────────────────
+LET(_RL_OPT_KEYS, ["mode", "refill", "state", "client_ip", "path", "request_id", "audit"]);
+LET(_RS_OPT_KEYS, ["state", "client_ip", "path", "request_id", "audit"]);
+
+LET(_MW_OPT_TYPE_OK, FUN((k, v),
+    (IF(||(==(k, "mode"), ==(k, "client_ip")),
+        ==(TYPE(v), "STRING"),
+        IF(||(==(k, "path"), ==(k, "request_id")),
+           ==(TYPE(v), "STRING"),
+           IF(==(k, "audit"),
+              ==(TYPE(v), "BOOLEAN"),
+              IF(||(==(k, "refill"), ==(k, "state")),
+                 ==(TYPE(v), "INTEGER"),
+                 FALSE)))))));
+
+// 校验 `opts`：键名认识吗？值类型对吗？**未知键 / 类型错 ⇒ `ERR`**（不静默忽略）。
+LET(_CHECK_MW_OPTS, FUN((op, o, allowed),
+    (LET MUT(err, NULL);
+     FOR(k, KEYS(o),
+         (IF(==(TYPE(err), "NULL"),
+              (IF(NOT(CONTAINS(allowed, k)),
+                   (SET(err, _HTTP_ERR(op, CAT("unknown option: ", k))); NULL),
+                   IF(NOT(_MW_OPT_TYPE_OK(k, AT(o, k, NULL))),
+                      (SET(err, _HTTP_ERR(op, CAT("the option `", k, "` has a wrong type"))); NULL),
+                      NULL))),
+              NULL)));
+     err)));
+
+// ── D-3 · RATE_LIMITER ──────────────────────────────────────────────────
+//
+// 审计 + 结果字典（形状见文件头）。
+LET(_RL_RESULT, FUN((o, allowed, remaining, reset, lim, mode),
+    (IF(AT(o, "audit", TRUE),
+        _AUDIT("rate_limit", AT(o, "client_ip", ""), AT(o, "path", ""),
+               IF(allowed, "allowed", "denied"), AT(o, "request_id", "")),
+        NULL);
+     ["allowed": allowed, "remaining": remaining, "reset": reset, "limit": lim, "mode": mode])));
+
+// 滑动窗口的窗口和：最近 `window_sec` 个**秒桶**的计数之和。
+// ⚠ 只**读**现成的桶（没有桶 = 0）⇒ 不在求和路径上创建句柄。
+LET(_RL_WINDOW_SUM, FUN((reg, name, sec, window_sec),
+    (LET MUT(total, 0);
+     LET MUT(k, -(sec, -(window_sec, 1)));
+     WHILE(<=(k, sec),
+         (LET(h, SHARED_DICT_GET(reg, CAT("rl:", name, ":", STR(k))));
+          IF(==(TYPE(h), "INTEGER"),
+             SET(total, +(total, COUNTER_GET(h))),
+             NULL);
+          SET(k, +(k, 1))));
+     total)));
+
+// 窗口内**最老**的有计数的秒；没有 ⇒ -1。
+LET(_RL_OLDEST, FUN((reg, name, sec, window_sec),
+    (LET MUT(oldest, -1);
+     LET MUT(k, -(sec, -(window_sec, 1)));
+     WHILE(<=(k, sec),
+         (LET(h, SHARED_DICT_GET(reg, CAT("rl:", name, ":", STR(k))));
+          IF(&&(==(TYPE(h), "INTEGER"), >(COUNTER_GET(h), 0)),
+             IF(==(oldest, -1), SET(oldest, k), NULL),
+             NULL);
+          SET(k, +(k, 1))));
+     oldest)));
+
+// sliding 模式：先**原子计数**（`COUNTER_INC`），再看窗口和 ⇒
+// 超限**回滚**（拒绝的请求不占名额）。
+LET(_RL_SLIDE, FUN((n, lim, win, o),
+    (LET(reg, _STATE_REG(o));
+     LET(sec, /(NOW(), 1000));
+     LET(cl, _STATE_CLAIM(reg, CAT("rl:", n, ":", STR(sec)), 0));
+     LET(sum, _RL_WINDOW_SUM(reg, n, sec, win));
+     LET(allowed, <=(sum, lim));
+     IF(allowed, NULL, (LET(_, COUNTER_INC(AT(cl, "h", 0), -1)); NULL));
+     LET(cnt, IF(allowed, sum, -(sum, 1)));
+     LET(rem, IF(>(cnt, lim), 0, -(lim, cnt)));
+     LET(old, _RL_OLDEST(reg, n, sec, win));
+     LET(rst, IF(==(old, -1), NOW(), *(+(old, win), 1000)));
+     _RL_RESULT(o, allowed, rem, rst, lim, "sliding"))));
+
+// token_bucket 模式：容量 `lim` 个令牌（**毫精度**内部记账），每秒补
+// `refill` 个（`refill = 0` ⇒ 永不补给）；每次判定扣 1 个，不够扣 ⇒ 拒
+// （**不欠账**：回滚那次扣减）。桶初始**满**。
+// ⚠ 补给记账（`last_refill` 时间戳）是读-改-写 ⇒ 极端并发可能重复补给
+//   一次；**判定与扣减**（`COUNTER_INC(h, -1000)`）是原子精确的。
+LET(_RL_TOKENS, FUN((n, lim, refill, o),
+    (LET(reg, _STATE_REG(o));
+     LET(h, _STATE_COUNTER(reg, CAT("tb:", n), *(lim, 1000)));
+     LET(now, NOW());
+     LET(tsk, CAT("tb:", n, ":ts"));
+     LET(rawts, SHARED_DICT_GET(reg, tsk));
+     LET(ts, IF(==(TYPE(rawts), "INTEGER"), rawts, now));
+     IF(==(TYPE(rawts), "INTEGER"), NULL, (LET(_, SHARED_DICT_SET(reg, tsk, now)); NULL));
+     LET(el, IF(<(now, ts), 0, -(now, ts)));
+     LET(add, *(el, refill));
+     IF(>(add, 0),
+        (LET(_, SHARED_DICT_SET(reg, tsk, now));
+         LET(_, COUNTER_ADD(h, add));
+         LET(cur, COUNTER_GET(h));
+         LET(cap, *(lim, 1000));
+         IF(>(cur, cap), (LET(_, COUNTER_INC(h, -(cur, cap))); NULL), NULL)),
+        NULL);
+     LET(nn, COUNTER_INC(h, -1000));
+     LET(allowed, >=(nn, 0));
+     LET(rest, IF(allowed, nn, (LET(_, COUNTER_INC(h, 1000)); COUNTER_GET(h))));
+     LET(rest_safe, IF(<(rest, 0), 0, rest));
+     LET(rem, /(rest_safe, 1000));
+     LET(need, IF(>=(rest_safe, 1000), 0, -(1000, rest_safe)));
+     LET(rst, IF(>(refill, 0), +(now, /(+(need, -(refill, 1)), refill)), 0));
+     _RL_RESULT(o, allowed, rem, rst, lim, "token_bucket"))));
+
+LET(_RL_DECIDE, FUN((n, lim, win, mode, o),
+    IF(==(mode, "sliding"),
+       _RL_SLIDE(n, lim, win, o),
+       _RL_TOKENS(n, lim, AT(o, "refill", lim), o))));
+
+// ── RATE_LIMITER(name, limit, window_sec, opts?) -> DICT ─────────────────
+LET(RATE_LIMITER, FUN((name, limit, window_sec, opts = NULL),
+    (LET(n, _NEED_STR("RATE_LIMITER", name));
+     LET(lim, _NEED_INT("RATE_LIMITER", limit));
+     LET(win, _NEED_INT("RATE_LIMITER", window_sec));
+     LET MUT(o, DICT());
+     IF(!=(TYPE(opts), "NULL"), SET(o, _NEED_DICT("RATE_LIMITER", opts)), NULL);
+     LET(chk, _CHECK_MW_OPTS("RATE_LIMITER", o, _RL_OPT_KEYS));
+     IF(IS_ERR(chk), RETURN(chk), NULL);
+     IF(<(lim, 1), RETURN(_HTTP_ERR("RATE_LIMITER", "the limit must be >= 1")), NULL);
+     IF(<(win, 1), RETURN(_HTTP_ERR("RATE_LIMITER", "the window must be >= 1 second")), NULL);
+     LET(mode, LOWER(AT(o, "mode", "sliding")));
+     IF(&&(!=(mode, "sliding"), !=(mode, "token_bucket")),
+        RETURN(_HTTP_ERR("RATE_LIMITER", "the option `mode` must be sliding or token_bucket")),
+        NULL);
+     IF(&&(HAS(o, "refill"), ==(mode, "sliding")),
+        RETURN(_HTTP_ERR("RATE_LIMITER", "the option `refill` requires mode=token_bucket")),
+        NULL);
+     IF(&&(HAS(o, "refill"), <(AT(o, "refill", 0), 0)),
+        RETURN(_HTTP_ERR("RATE_LIMITER", "the option `refill` must be >= 0")),
+        NULL);
+     _RL_DECIDE(n, lim, win, mode, o))));
+
+// ── D-5 · RULESET_LOAD ──────────────────────────────────────────────────
+//
+// 规则文件 ⇒ 规则数组：每行一条；空行与 `#` 开头的行跳过；行尾 `\r` 剥掉。
+LET(_RS_LINES, FUN((content),
+    (LET MUT(out, []);
+     FOR(line, SPLIT(content, "\n"),
+         (LET(t, TRIM(IF(ENDS_WITH(line, "\r"), SUB(line, 0, -(LEN(line), 1)), line)));
+          IF(||(==(t, ""), STARTS_WITH(t, "#")), NULL, SET(out, PUSH(out, t)))));
+     out)));
+
+// ── RULESET_LOAD(path, opts?) -> DICT ────────────────────────────────────
+//
+// **热切换**：`mtime` 变化 ⇒ 重读文件、构造**全新**数组、一次
+// `SHARED_DICT_SET` **原子换引用**（`version` 递增）⇒ 在途持有的旧数组
+// 内容不变；`mtime` 未变 ⇒ 复用现数组（`version` 不动）。
+LET(RULESET_LOAD, FUN((path, opts = NULL),
+    (LET(p, _NEED_STR("RULESET_LOAD", path));
+     LET MUT(o, DICT());
+     IF(!=(TYPE(opts), "NULL"), SET(o, _NEED_DICT("RULESET_LOAD", opts)), NULL);
+     LET(chk, _CHECK_MW_OPTS("RULESET_LOAD", o, _RS_OPT_KEYS));
+     IF(IS_ERR(chk), RETURN(chk), NULL);
+     LET(reg, _STATE_REG(o));
+     LET(key, CAT("rs:", p));
+     LET(meta, FILE_META(p));
+     IF(IS_ERR(meta),
+        (LET(_, meta); RETURN(_HTTP_ERR("RULESET_LOAD", "cannot stat the ruleset file"))),
+        NULL);
+     IF(NOT(AT(meta, "exists", FALSE)),
+        RETURN(_HTTP_ERR("RULESET_LOAD", "the ruleset file does not exist")),
+        NULL);
+     LET(mtime, AT(meta, "mtime", 0));
+     LET(cur, SHARED_DICT_GET(reg, key));
+     IF(&&(==(TYPE(cur), "DICT"), ==(AT(cur, "mtime", -1), mtime)),
+        (IF(AT(o, "audit", TRUE),
+            _AUDIT("ruleset_load", AT(o, "client_ip", ""), AT(o, "path", ""), "cached", AT(o, "request_id", "")),
+            NULL);
+         RETURN(["rules": AT(cur, "rules", []), "mtime": mtime, "version": AT(cur, "version", 0), "path": p])),
+        NULL);
+     LET(raw, READ_FILE(p));
+     IF(IS_ERR(raw),
+        (LET(_, raw); RETURN(_HTTP_ERR("RULESET_LOAD", "cannot read the ruleset file"))),
+        NULL);
+     LET(rules, _RS_LINES(raw));
+     LET(vh, _STATE_COUNTER(reg, CAT("rsv:", p), 0));
+     LET(ver, COUNTER_INC(vh, 1));
+     LET(_, SHARED_DICT_SET(reg, key, ["rules": rules, "mtime": mtime, "version": ver]));
+     IF(AT(o, "audit", TRUE),
+        _AUDIT("ruleset_load", AT(o, "client_ip", ""), AT(o, "path", ""),
+               IF(==(TYPE(cur), "DICT"), "reloaded", "loaded"), AT(o, "request_id", "")),
+        NULL);
+     ["rules": rules, "mtime": mtime, "version": ver, "path": p])));
+
+// ── D-7 · CLIENT_IP ─────────────────────────────────────────────────────
+//
+// 可信列表（已 LOWER + TRIM）里有 `ip`（同样 LOWER + TRIM）吗？
+LET(_CIP_TRUSTED, FUN((pl, ip),
+    (LET MUT(hit, FALSE);
+     LET(u, LOWER(TRIM(ip)));
+     FOR(p, pl, IF(==(p, u), SET(hit, TRUE), NULL));
+     hit)));
+
+// `X-Forwarded-For` 的值（STRING 或 ARRAY[STRING]）⇒ 平铺的跳数组
+// （按出现序拼接后按 `,` 切；空跳丢弃；**去首尾空白**）。
+LET(_CIP_HOPS, FUN((xv),
+    (LET MUT(hops, []);
+     LET(parts, IF(==(TYPE(xv), "ARRAY"), xv, [xv]));
+     FOR(item, parts,
+         (LET(s, _NEED_STR("CLIENT_IP", item));
+          FOR(h, SPLIT(s, ","),
+              (LET(t, TRIM(h));
+               IF(==(t, ""), NULL, SET(hops, PUSH(hops, t)))))));
+     hops)));
+
+// ── CLIENT_IP(headers_or_request, remote_addr, trusted_proxies) -> STRING ─
+//
+// **只有** `remote_addr` 命中可信列表才采信 XFF（从右往左第一个非可信跳；
+// 全可信 ⇒ 最左跳）；否则**无视 XFF** 回 `remote_addr`。
+LET(CLIENT_IP, FUN((headers_or_request, remote_addr, trusted_proxies),
+    (LET(req, _NEED_DICT("CLIENT_IP", headers_or_request));
+     LET(remote, _NEED_STR("CLIENT_IP", remote_addr));
+     LET(proxies, _NEED("CLIENT_IP", "an array of strings", "ARRAY", trusted_proxies));
+     LET MUT(pl, []);
+     LET MUT(bad, FALSE);
+     FOR(p, proxies,
+         IF(==(TYPE(p), "STRING"),
+            SET(pl, PUSH(pl, LOWER(TRIM(p)))),
+            SET(bad, TRUE)));
+     IF(bad,
+        RETURN(_DIAG_E0030("CLIENT_IP: expected an array of strings for trusted_proxies")),
+        NULL);
+     LET(hdrs, IF(==(TYPE(AT(req, "headers", NULL)), "DICT"), AT(req, "headers", DICT()), req));
+     LET(xv, AT(hdrs, "x-forwarded-for", NULL));
+     LET(hops, IF(==(TYPE(xv), "NULL"), [], _CIP_HOPS(xv)));
+     LET MUT(res, remote);
+     LET MUT(kind, "no_xff");
+     IF(NOT(_CIP_TRUSTED(pl, remote)),
+        SET(kind, IF(>(LEN(hops), 0), "ignored_xff", "no_xff")),
+        IF(==(LEN(hops), 0),
+           NULL,
+           (LET MUT(idx, -(LEN(hops), 1));
+            LET MUT(found, "");
+            WHILE(>=(idx, 0),
+                (IF(==(found, ""),
+                    (LET(hop, AT(hops, idx, ""));
+                     IF(NOT(_CIP_TRUSTED(pl, hop)), SET(found, hop), NULL)),
+                    NULL);
+                 SET(idx, -(idx, 1))));
+            IF(==(found, ""),
+               (SET(res, AT(hops, 0, "")); SET(kind, "xff_all_trusted")),
+               (SET(res, found); SET(kind, "xff_used"))))));
+     _AUDIT("client_ip", res, "", kind, "");
+     res)));
+
 // EXPORT 顺序 = 需求清单 C-1 / C-2 / C-3 的行序（先解析、后构造、再连接管理），
 // 后面接 C-4 / C-5 / C-6 的行序（路由 ⇒ Cookie ⇒ 表单）。
 //
 // ⚠ `EXPORT` **必须**写在一行里：`wlwl-std::lang_exports` 是**逐行**扫的
 //   (一行一条声明)⇒ 拆成多行,附录 A 的镜像生成器会扫出**零个**成员。
 // ═══════════════════════════════════════════════════════════════════════
-EXPORT(["PARSE_REQUEST", "BUILD_RESPONSE", "SERVE_STREAM", "ROUTE", "MATCH_ROUTE", "PARSE_COOKIES", "SET_COOKIE", "PARSE_FORM", "PARSE_MULTIPART", "STATIC_FILE", "GET", "POST", "REQUEST"]);
+EXPORT(["PARSE_REQUEST", "BUILD_RESPONSE", "SERVE_STREAM", "ROUTE", "MATCH_ROUTE", "PARSE_COOKIES", "SET_COOKIE", "PARSE_FORM", "PARSE_MULTIPART", "STATIC_FILE", "GET", "POST", "REQUEST", "RATE_LIMITER", "RULESET_LOAD", "CLIENT_IP"]);

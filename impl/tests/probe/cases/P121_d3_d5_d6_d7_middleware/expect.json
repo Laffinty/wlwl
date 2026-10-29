@@ -1,0 +1,27 @@
+{
+  "exit": 0,
+  "contains": [
+    "rl_allowed=60",
+    "rl_61st=FALSE",
+    "rl_remaining=0",
+    "rl_mode=sliding",
+    "rules_held=rule-a,rule-b",
+    "rules_new=rule-x",
+    "rules_ver=1,2",
+    "audit_json=TRUE",
+    "audit_time=TRUE",
+    "audit_event=rate_limit",
+    "audit_ip=203.0.113.7",
+    "audit_path=/admin",
+    "audit_result=allowed",
+    "audit_req=req-42",
+    "ip_trusted=203.0.113.7",
+    "ip_untrusted=198.51.100.9"
+  ],
+  "not_contains": [
+    "rl_61st=TRUE",
+    "ip_untrusted=203.0.113.7",
+    "audit_json=FALSE"
+  ],
+  "_why": "W-25 三条验收读数：① 60 次/60 秒滑动窗口下第 61 次被拒（rl_allowed=60 且 rl_61st=FALSE、rl_remaining=0）；② 规则热切换不影响在途（rules_held 仍是旧数组 rule-a,rule-b、rules_new 是新一代、rules_ver=1,2 原子换引用 + 序号递增）；③ 审计行是合法 JSON（std.json::PARSE 成功 ⇒ audit_json=TRUE）且六字段齐（时间>0 / 事件 / 客户端 IP / 路径 / 结果 / 请求 ID）。not_contains 里两条是反向钉：rl_61st 不许是 TRUE；不可信远端（198.51.100.9）无视攻击者自带的 XFF —— ip_untrusted 绝不能回显 203.0.113.7。"
+}

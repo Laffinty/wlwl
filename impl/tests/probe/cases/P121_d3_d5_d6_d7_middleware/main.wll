@@ -1,0 +1,71 @@
+// [W-25 / v0.12.1] 中间件原语验收（D-3 / D-5 / D-6 / D-7）。
+//
+// 三条验收读数：
+//   ① 60 次 / 60 秒滑动窗口 ⇒ 第 61 次被拒（allowed=FALSE、remaining=0）；
+//   ② 规则集热切换**不影响在途请求** —— 先持有 r1 的规则数组，mtime 变更
+//      热加载后 r1 内容一字不变（原子换引用）、r2 是新一代、version 递增；
+//   ③ 审计行是**合法 JSON**（std.json::PARSE 无错）且六字段齐：
+//      时间（Unix 毫秒）/ 事件 / 客户端 IP / 路径 / 结果 / 请求 ID。
+// 另钉 CLIENT_IP 两口径：可信代理采信 XFF；**不可信远端无视 XFF**
+//（攻击者自带的 XFF 不得当真实 IP —— ip_untrusted 必须是 remote 本身）。
+//
+// ⚠ IO 路径自己拼：SCRIPT_PATH 是绝对路径 ⇒ 同目录拼出的文件也是绝对
+//   路径，落在 probe 暂存区（跑完自动清理），不碰工作树。
+// ⚠ mtime 热切换要求文件系统 mtime 粒度 < 1.1 秒（NTFS / ext4 满足）：
+//   两次写之间忙等到 NOW() 前进 1100ms 以上。
+IMPORT("wlwl:std.http", ["RATE_LIMITER", "RULESET_LOAD", "CLIENT_IP"]);
+IMPORT("wlwl:std.fs", ["WRITE_FILE", "READ_FILE"]);
+IMPORT("wlwl:std.log", ["LOG_FILE"]);
+IMPORT("wlwl:std.json", ["PARSE"]);
+IMPORT("wlwl:std.time", ["NOW"]);
+IMPORT("wlwl:std.str", ["CAT", "JOIN"]);
+IMPORT("wlwl:std.env", ["SCRIPT_PATH"]);
+
+// ── ① 滑动窗口 60 / 60 秒：第 61 次被拒（D-3）────────────────────────────
+LET MUT(a, 0);
+LET MUT(i, 0);
+LET MUT(last, ["allowed": TRUE, "remaining": -1]);
+WHILE(<(i, 61),
+    (LET(r, RATE_LIMITER("probe-rl", 60, 60, ["audit": FALSE]));
+     IF(AT(r, "allowed", FALSE), SET(a, +(a, 1)), NULL);
+     SET(last, r);
+     SET(i, +(i, 1))));
+PRINT(CAT("rl_allowed=", STR(a)));
+PRINT(CAT("rl_61st=", STR(AT(last, "allowed", TRUE))));
+PRINT(CAT("rl_remaining=", STR(AT(last, "remaining", -1))));
+PRINT(CAT("rl_mode=", AT(last, "mode", "")));
+
+// ── ② 规则集热切换：在途旧数组不受影响（D-5）────────────────────────────
+LET(rp, CAT(SCRIPT_PATH(), ".rules.txt"));
+LET(_, WRITE_FILE(rp, "rule-a\nrule-b\n"));
+LET(r1, RULESET_LOAD(rp, ["audit": FALSE]));
+LET(t0, NOW());
+WHILE(<(NOW(), +(t0, 1100)), NULL);
+LET(_, WRITE_FILE(rp, "rule-x\n"));
+LET(r2, RULESET_LOAD(rp, ["audit": FALSE]));
+PRINT(CAT("rules_held=", JOIN(AT(r1, "rules", []), ",")));
+PRINT(CAT("rules_new=", JOIN(AT(r2, "rules", []), ",")));
+PRINT(CAT("rules_ver=", STR(AT(r1, "version", 0)), ",", STR(AT(r2, "version", 0))));
+
+// ── ③ 审计行：合法 JSON + 六字段（D-6）──────────────────────────────────
+LET(ap, CAT(SCRIPT_PATH(), ".audit.log"));
+LET(_, LOG_FILE(ap));
+LET(_, RATE_LIMITER("probe-audit", 5, 60, ["client_ip": "203.0.113.7", "path": "/admin", "request_id": "req-42"]));
+LET(txt, READ_FILE(ap));
+LET(line, TRIM(AT(SPLIT(txt, "\n"), 0, "")));
+LET(obj, PARSE(line));
+LET(_, obj);
+IF(IS_ERR(obj),
+   PRINT("audit_json=FALSE"),
+   (LET(f, AT(obj, "fields", DICT()));
+    PRINT(CAT("audit_json=", STR(==(TYPE(obj), "DICT"))));
+    PRINT(CAT("audit_time=", STR(>(AT(f, "time", 0), 0))));
+    PRINT(CAT("audit_event=", AT(f, "event", "")));
+    PRINT(CAT("audit_ip=", AT(f, "client_ip", "")));
+    PRINT(CAT("audit_path=", AT(f, "path", "")));
+    PRINT(CAT("audit_result=", AT(f, "result", "")));
+    PRINT(CAT("audit_req=", AT(f, "request_id", "")))));
+
+// ── ④ CLIENT_IP：可信采信 XFF / 不可信无视 XFF（D-7）────────────────────
+PRINT(CAT("ip_trusted=", CLIENT_IP(["x-forwarded-for": "203.0.113.7, 10.0.0.1"], "10.0.0.1", ["10.0.0.1"])));
+PRINT(CAT("ip_untrusted=", CLIENT_IP(["x-forwarded-for": "203.0.113.7"], "198.51.100.9", ["10.0.0.1"])));

@@ -119,7 +119,8 @@ use std::time::{Duration, Instant};
 // [v0.12.1 · 第六波] 192 → 194：W-30 的 `P121_f3_g3_inspect_repl`（任务检视 + 最小 REPL）
 // + W-33 的 `P121_f4_g4_diag_module`（诊断可读性 + 模块组织）各 +1。
 // [v0.12.1 · 第七波] 194 → 195：W-32 的 `P121_g2_static_rules`（`wlwl check` 两条静态规则）+1。
-const EXPECTED_CASE_COUNT: usize = 195;
+// [v0.12.1 · 第十一波] 195 → 196：W-25 的 `P121_d3_d5_d6_d7_middleware`（限流 / 规则热更新 / 审计 / 真实 IP）+1。
+const EXPECTED_CASE_COUNT: usize = 196;
 
 /// 单个 case 的上限,与 `probe.py` 的 `timeout=60` 同义。
 const CASE_TIMEOUT: Duration = Duration::from_secs(60);
