@@ -1,0 +1,47 @@
+// ─────────────────────────────────────────────────────────────────────────────
+// P121_g2_static_rules —— [W-32 / G-2] `wlwl check` 静态检查**新增两条规则**。
+//
+// 它证明什么（需求清单 G-2）：
+//   `wlwl check` 能**静态**发现两类错误 —— 两类都是**静默失败**，静态检查
+//   是成本最低的拦截手段：
+//
+//   ① **宿主挂起点成员出现在任务体之外（含嵌套闭包内）**
+//      —— 复用**既有**码 `E0014`（并发册 §17.0：「宿主挂起点成员的调用点
+//      必须在任务体内」）。本用例把 `TCP_RECV` 写进**辅助闭包**、再由任务体
+//      调用它 ⇒ 那个调用点相对任务体帧**深一层** ⇒ **不在任务体内**。
+//
+//   ② **跨任务共享可变绑定**（并发册 §17.0.1：「任务之间**不得**通过**共享的
+//      可变 cell** 来传递数据」）
+//      —— 走**无 E/W 码**的「规范符合性提示」，稳定名称
+//      `shared-mutable-binding` ⇒ 不进附录 A、不改退出码表。
+//
+// 期望读数（`wlwl check main.wll`，**exit 1**）：
+//   stderr: error[E0014]: TCP_RECV: used outside a task body — …
+//           --> main.wll:<行>:<列>
+//   stderr: warning[shared-mutable-binding]: module-level mutable binding
+//           `shared_counter` is read/written by 2 tasks — …
+//
+// ⚠ **exit 1 是规则 ① 给的**（它复用 `E0014` ⇒ 硬诊断 ⇒ 挡退出码）；
+//   规则 ② 的提示**不改变退出码**（与警告同款）。
+// ─────────────────────────────────────────────────────────────────────────────
+
+IMPORT("wlwl:std.net", ["TCP_LISTEN", "TCP_RECV"]);
+
+// ⚠ 规则 ② 的标的：**模块顶层**的可变绑定，被**两个任务**读写
+//   ⇒ 这就是并发册 §17.0.1 说的「共享的可变 cell」。
+LET MUT(shared_counter, 0);
+
+LET(listener, TCP_LISTEN("127.0.0.1", 0));
+
+// ⚠ 规则 ① 的标的：宿主挂起点成员 `TCP_RECV` 在**辅助闭包**体内 ——
+//   任务体调它 ⇒ 调用点相对任务体帧**深一层** ⇒ 不在任务体内。
+LET(handler, FUN((conn), (
+  LET(chunk, TCP_RECV(conn, 4096, 1000));
+  chunk
+)));
+
+SCOPE(FUN(() ,
+  LET(t1, SPAWN(FUN(() , SET(shared_counter, +(shared_counter, 1)))));
+  LET(t2, SPAWN(FUN(() , SET(shared_counter, +(shared_counter, 1)))));
+  LET(t3, SPAWN(FUN(() , handler(listener))))
+));

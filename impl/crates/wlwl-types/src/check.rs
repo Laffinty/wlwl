@@ -23,7 +23,7 @@
 //! **不修改** `wlwl-eval` 的任何代码,`E0033` 的触发路径与语义完全不变
 //! (ADR-0020 S3)。
 
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 
 use wlwl_ast::{Expr, FunParam, Literal, Pattern, Span, StrPart};
 
@@ -938,6 +938,734 @@ fn expr_span(e: &Expr) -> Span {
 /// 值表达式的 span(用于 `LET([a,b], v)` 注解失配的定位)。
 fn actual_span(e: &Expr) -> Span {
     expr_span(e)
+}
+
+// ══ [W-32 / G-2] 静态并发契约检查(两条规则)═════════════════════════
+//
+// 需求清单 G-2:「`wlwl check` 能静态发现本次实测到的两类错误:
+//  1. 宿主挂起点成员出现在**任务体之外**(含嵌套闭包内);
+//  2. 跨任务共享可变绑定(§17.0.1 违规)」。
+//
+// 两条规则的**判定**都在本文件(静态分析层);**呈现**在 `wlwl-cli` 的
+// 单一收集函数 `collect_static_diagnostics` 里(`wlwl check` 与 LSP
+// 共用同一份 ⇒ 编辑器里的划线不会比命令行少)。
+//
+// ⚠ **规则侧零改动**:规则 ① 复用**既有**码 `E0014`;规则 ② 走
+//   「**规范符合性提示**」形态(**不带 E/W 码**,带稳定名称
+//   `shared-mutable-binding`)⇒ 不新增诊断码、不进附录 A、不改退出码表。
+
+/// [W-32 / G-2 规则 ②] 一条**规范符合性提示** —— **不带 E/W 码**。
+///
+/// 业主 2026-10-27 裁决(计划书 §10 Q4):G-2 规则 ② **进 v1.0.4**,
+/// 但 1.0.x **没有新诊断码的通道**(一致性册 §129)⇒ 它只能走
+/// 「规范符合性提示」形态:**稳定名称** + 一行消息 + 一个位置。
+///
+/// ⚠ **这不是诊断码** ⇒ 不得写进任何码表 / 附录 A / 总纲 §0.9。
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct StaticNotice {
+    /// **稳定名称**(机器可读):`shared-mutable-binding`。
+    ///
+    /// ⚠ 它**不是** E/W 码 ⇒ 不得被任何「码表完整性」检查当成码。
+    pub name: &'static str,
+    /// 人类可读的一行消息(渲染必须确定)。
+    pub message: String,
+    /// 位置。
+    pub span: Span,
+}
+
+/// [W-32 / G-2] 两条静态并发规则的产物。
+#[derive(Debug, Clone, Default)]
+pub struct ConcurrencyFindings {
+    /// 规则 ①:复用 `E0014` 的诊断(按 (行, 列) 排)。
+    pub diags: Vec<TypeDiag>,
+    /// 规则 ②:**无 E/W 码**的规范符合性提示(按 (行, 列) 排)。
+    pub notices: Vec<StaticNotice>,
+}
+
+/// [W-32 / G-2 规则 ①] **宿主挂起点成员**名单。
+///
+/// ⚠ **逐字取自运行期**(`wlwl-eval` 的 `Evaluator::is_host_suspend_member`)
+///   —— 两边**必须一致**:多算一个会把正常程序判死,少算一个会放过违规程序。
+///
+/// ⚠ **不能把 `std.net` 的整个 `TCP_*` 族算进来**:`TCP_LISTEN` /
+///   `TCP_SEND` / `TCP_CLOSE` / `TCP_PEER` / `TCP_LOCAL_ADDR` /
+///   `TCP_SET_TIMEOUT` / `TCP_CLOSE_LISTENER` **不等** ⇒ 它们在模块顶层是
+///   **正常**写法(监听必须在顶层)⇒ 算进来会把正常程序判死。
+///
+/// ⚠ `SLEEP_ASYNC` 的**气泡豁免是运行期的**(气泡内它等同 `SLEEP` ⇒
+///   立刻返回 ⇒ 不是挂起点)—— 静态层靠 `WalkCtx::in_bubble` 跟着豁免
+///   (见 [`ConcurrencyAnalyzer::is_outside_task`])。
+pub const HOST_SUSPEND_MEMBERS: [&str; 5] = [
+    "TCP_ACCEPT",
+    "TCP_RECV",
+    "SLEEP_ASYNC",
+    "HTTP_REQUEST_ASYNC",
+    "PROCESS_RUN_ASYNC",
+];
+
+/// [W-32 / G-2 规则 ②] 规则 ② 的**稳定名称**。
+///
+/// ⚠ **不是诊断码** —— 它不进码表、不进附录 A、不进总纲 §0.9;
+///   它的作用是让机器(编辑器 / CI)能**按名字**认出这条提示。
+pub const SHARED_MUTABLE_BINDING: &str = "shared-mutable-binding";
+
+/// [W-32 / G-2] 两条静态并发规则的**唯一**入口。
+///
+/// 与类型检查(`check_program_with_options`)**分开**是有意的:这两条是
+/// **并发册 §17.0 / §17.0.1** 的契约检查,不受 `gradual_typing` /
+/// `match_exhaustiveness` 两个开关门控(那两个开关管的是「类型推断」
+/// 这条链路;并发契约与类型无关)。
+///
+/// ⚠ 代价:调用方必须**无条件**调用它 ——「两个开关都关 ⇒ 整条静态链路
+///   都不跑」那条零开销承诺,指的是**不建内建签名表、不跑类型检查**;
+///   本函数只做一次 AST 走查(与 `wlwl_parser::lint` 同量级)。
+pub fn check_concurrency_contract(expr: &Expr) -> ConcurrencyFindings {
+    let mut a = ConcurrencyAnalyzer::new();
+    a.run(expr);
+    a.finish()
+}
+
+/// 走查上下文:「相对任务体帧的嵌套深度」等运行期事实的**静态镜像**。
+///
+/// ⚠ 这一组字段**逐条对应** `wlwl-eval` 的 `Evaluator::task_body_depth`
+///   与 `Evaluator::clock_bubble` —— 静态层与运行期的一致性全靠这里。
+#[derive(Clone)]
+struct WalkCtx {
+    /// 相对**任务体帧**的嵌套深度。
+    ///
+    /// * `None` —— 不在任何任务体帧内(模块顶层那一层)。运行期那里
+    ///   `task_body_depth` 也是 `None` ⇒ `host_suspend_outside_task`
+    ///   **不动**(那条由既有的「挂起信号逃到顶层」通路处理)。
+    /// * `Some(0)` —— 任务体**自己的顶层语句** ⇒ **合法**。
+    /// * `Some(k)`(`k >= 1`) —— 已经**嵌套进更深的闭包** ⇒
+    ///   **不在任务体内** ⇒ `E0014`。
+    depth: Option<u32>,
+    /// 当前是否在**时钟气泡**内。
+    ///
+    /// ⚠ 气泡内的 `SLEEP_ASYNC` **不是**挂起点成员(运行期豁免)⇒
+    ///   静态层必须跟着豁免,否则会把**合法**程序判死。
+    in_bubble: bool,
+    /// 正在展开的**命名函数**栈(防递归展开)。
+    fn_stack: Vec<String>,
+}
+
+impl WalkCtx {
+    /// 进入一个**普通闭包**体:相对当前深度**深一层**。
+    ///
+    /// ⚠ `None` **粘住**(`map` 而不是 `map_or`):运行期的
+    ///   `enter_nested_closure_frame` 只在 `Some(k)` 时 `k += 1`,
+    ///   `None` 保持 `None` ⇒ 模块顶层那一层再怎么嵌闭包都还是
+    ///   「不在任何任务体帧内」。
+    fn closure_child(&self) -> WalkCtx {
+        WalkCtx {
+            depth: self.depth.map(|k| k + 1),
+            in_bubble: self.in_bubble,
+            fn_stack: self.fn_stack.clone(),
+        }
+    }
+}
+
+/// 一个**任务实例**的走查状态(规则 ② 用)。
+struct TaskFrame {
+    /// 这个任务体引用到的**模块顶层 `LET MUT`** 名字。
+    refs: std::collections::BTreeSet<String>,
+    /// 这个任务体**内部**绑定的名字(遮蔽 ⇒ 不计入)。
+    locals: HashSet<String>,
+}
+
+/// [W-32 / G-2] 两条规则的走查器。
+struct ConcurrencyAnalyzer<'a> {
+    /// 模块**顶层**的 `LET MUT` 绑定:名字 → 声明处。
+    ///
+    /// ⚠ 判据只看**模块顶层**这一类 cell(规则 ② 的口径,见函数文档)。
+    module_muts: std::collections::BTreeMap<String, Span>,
+    /// `IMPORT` 带来的「本地名 → 标准库成员名」(只收 `wlwl:std*` 的导入)。
+    ///
+    /// ⚠ 用户模块(`IMPORT("./math", …)`)里的同名成员**不是**宿主挂起点
+    ///   成员(运行期只有 `Value::NativeFn` 才进那条判据)⇒ 不收。
+    std_imports: HashMap<String, String>,
+    /// **用户自己**绑定的名字(遮蔽 ⇒ 该调用不是标准库成员)。
+    user_bindings: HashSet<String>,
+    /// 命名函数 → 它的 `FUN` 表达式。
+    fn_defs: HashMap<String, &'a Expr>,
+    /// 规则 ① 的诊断(走查顺序;末尾去重 + 排序)。
+    diags: Vec<TypeDiag>,
+    /// 规则 ②:每个模块顶层 `LET MUT` 被**哪些任务实例**引用。
+    cell_tasks: std::collections::BTreeMap<String, std::collections::BTreeSet<(u32, u32)>>,
+    /// 当前**任务体**的栈(最内层在最后)。
+    tasks: Vec<TaskFrame>,
+}
+
+impl<'a> ConcurrencyAnalyzer<'a> {
+    fn new() -> Self {
+        ConcurrencyAnalyzer {
+            module_muts: std::collections::BTreeMap::new(),
+            std_imports: HashMap::new(),
+            user_bindings: HashSet::new(),
+            fn_defs: HashMap::new(),
+            diags: Vec::new(),
+            cell_tasks: std::collections::BTreeMap::new(),
+            tasks: Vec::new(),
+        }
+    }
+
+    /// 走查整棵树。
+    fn run(&mut self, root: &'a Expr) {
+        // ① 预扫:定义(函数 / 导入 / 顶层 `LET MUT` / 用户绑定名)。
+        self.collect_defs(root, true);
+        // ② 走查。
+        let ctx = WalkCtx {
+            depth: None,
+            in_bubble: false,
+            fn_stack: Vec::new(),
+        };
+        self.walk(root, &ctx);
+    }
+
+    // ── 预扫 ────────────────────────────────────────────────────────
+
+    /// 收集定义。`module_level` = 当前位置是不是**模块顶层**。
+    fn collect_defs(&mut self, e: &'a Expr, module_level: bool) {
+        match e {
+            Expr::Block { exprs, .. } => {
+                for x in exprs {
+                    self.collect_defs(x, module_level);
+                }
+            }
+            Expr::Let {
+                name,
+                mut_,
+                value,
+                span,
+                ..
+            } => {
+                if module_level {
+                    self.module_binding(name, *mut_, span.clone());
+                }
+                self.user_bindings.insert(name.clone());
+                if let Expr::Fun { .. } = &**value {
+                    self.fn_defs.insert(name.clone(), value);
+                }
+                self.collect_defs(value, false);
+            }
+            Expr::LetPattern { pattern, value, .. } => {
+                for n in pattern_names(pattern) {
+                    self.user_bindings.insert(n);
+                }
+                self.collect_defs(value, false);
+            }
+            Expr::Fun {
+                name, params, body, ..
+            } => {
+                if let Some(fname) = name {
+                    self.fn_defs.insert(fname.clone(), e);
+                }
+                for p in params {
+                    self.user_bindings.insert(p.name.clone());
+                }
+                self.collect_defs(body, false);
+            }
+            Expr::Call { args, .. } => {
+                for a in args {
+                    self.collect_defs(a, false);
+                }
+            }
+            Expr::Import { path, names, .. } => {
+                // ⚠ 只有 `wlwl:std*` 的导入会带进宿主挂起点成员。
+                if path.starts_with("wlwl:std") {
+                    if names.is_empty() {
+                        // 整模块导入 ⇒ 名单里的成员全部按「本地名 = 成员名」收下。
+                        for m in HOST_SUSPEND_MEMBERS {
+                            self.std_imports.insert(m.to_string(), m.to_string());
+                        }
+                    }
+                    for n in names {
+                        self.std_imports
+                            .insert(n.local_name().to_string(), n.name.clone());
+                    }
+                }
+            }
+            Expr::If {
+                cond,
+                then_branch,
+                else_branch,
+                ..
+            } => {
+                self.collect_defs(cond, false);
+                self.collect_defs(then_branch, false);
+                if let Some(b) = else_branch {
+                    self.collect_defs(b, false);
+                }
+            }
+            Expr::While { cond, body, .. } => {
+                self.collect_defs(cond, false);
+                self.collect_defs(body, false);
+            }
+            Expr::For {
+                var, iter, body, ..
+            } => {
+                self.user_bindings.insert(var.clone());
+                self.collect_defs(iter, false);
+                self.collect_defs(body, false);
+            }
+            Expr::Return { value, .. } => {
+                if let Some(v) = value {
+                    self.collect_defs(v, false);
+                }
+            }
+            Expr::Ok { value, .. }
+            | Expr::Err { value, .. }
+            | Expr::Panic { value, .. }
+            | Expr::Try { value, .. }
+            | Expr::IsOk { value, .. }
+            | Expr::IsErr { value, .. } => self.collect_defs(value, false),
+            Expr::OrDie { value, default, .. } => {
+                self.collect_defs(value, false);
+                self.collect_defs(default, false);
+            }
+            Expr::Array { items, .. } => {
+                for x in items {
+                    self.collect_defs(x, false);
+                }
+            }
+            Expr::Dict { entries, .. } => {
+                for (k, v) in entries {
+                    self.collect_defs(k, false);
+                    self.collect_defs(v, false);
+                }
+            }
+            Expr::Match {
+                value,
+                clauses,
+                default,
+                ..
+            } => {
+                self.collect_defs(value, false);
+                for c in clauses {
+                    self.collect_defs(&c.body, false);
+                }
+                self.collect_defs(default, false);
+            }
+            _ => {}
+        }
+    }
+
+    /// 模块顶层的一个绑定 ⇒ 记下它是不是**可变**的。
+    ///
+    /// ⚠ **同名取最后一次**:模块顶层的重绑定语义与 §3.2 一致(与
+    ///   `TypeEnv::bind` 的覆盖行为一致)⇒ 先 `LET MUT(x)` 后 `LET(x)`
+    ///   之后,`x` 就**不再**是模块顶层的可变绑定了。
+    fn module_binding(&mut self, name: &str, is_mut: bool, span: Span) {
+        if is_mut {
+            self.module_muts.insert(name.to_string(), span);
+        } else {
+            self.module_muts.remove(name);
+        }
+    }
+
+    // ── 走查 ────────────────────────────────────────────────────────
+
+    fn walk(&mut self, e: &'a Expr, ctx: &WalkCtx) {
+        match e {
+            Expr::Block { exprs, .. } => {
+                for x in exprs {
+                    self.walk(x, ctx);
+                }
+            }
+            Expr::Let { name, value, .. } => {
+                self.bind_local(name);
+                self.walk(value, ctx);
+            }
+            Expr::LetPattern { pattern, value, .. } => {
+                for n in pattern_names(pattern) {
+                    self.bind_local(&n);
+                }
+                self.walk(value, ctx);
+            }
+            Expr::Fun { .. } => {
+                // ⚠ **函数体不在定义处走查** —— 它只在**被调用**的地方走查
+                //   (`SPAWN` / `SCOPE` / `TEST_BUBBLE` / `TIMEOUT` 的实参,
+                //   或按名字调用一个用户函数)。
+                //
+                //   为什么:闭包体**什么时候跑**取决于谁调它。在定义处走查
+                //   会把「运行期根本不执行的那段代码」也报出去 ⇒ **误报**;
+                //   最要命的是 `TEST_BUBBLE` 的气泡豁免会被绕过去(定义处
+                //   不在气泡里,调用处才在)⇒ 合法程序被判死。
+                //
+                //   代价:闭包**作为实参**传给别的调用(例如 `MAP(xs, FUN(…))`)
+                //   时不分析 ⇒ **漏报**(记在「已知差异」清单里)。
+            }
+            Expr::Call {
+                name, args, span, ..
+            } => self.walk_call(name, args, span, ctx),
+            Expr::Var(name, _) => self.note_reference(name),
+            Expr::If {
+                cond,
+                then_branch,
+                else_branch,
+                ..
+            } => {
+                self.walk(cond, ctx);
+                self.walk(then_branch, ctx);
+                if let Some(b) = else_branch {
+                    self.walk(b, ctx);
+                }
+            }
+            Expr::While { cond, body, .. } => {
+                self.walk(cond, ctx);
+                self.walk(body, ctx);
+            }
+            Expr::For {
+                var, iter, body, ..
+            } => {
+                self.bind_local(var);
+                self.walk(iter, ctx);
+                self.walk(body, ctx);
+            }
+            Expr::Return { value, .. } => {
+                if let Some(v) = value {
+                    self.walk(v, ctx);
+                }
+            }
+            Expr::Ok { value, .. }
+            | Expr::Err { value, .. }
+            | Expr::Panic { value, .. }
+            | Expr::Try { value, .. }
+            | Expr::IsOk { value, .. }
+            | Expr::IsErr { value, .. } => self.walk(value, ctx),
+            Expr::OrDie { value, default, .. } => {
+                self.walk(value, ctx);
+                self.walk(default, ctx);
+            }
+            Expr::Array { items, .. } => {
+                for x in items {
+                    self.walk(x, ctx);
+                }
+            }
+            Expr::Dict { entries, .. } => {
+                for (k, v) in entries {
+                    self.walk(k, ctx);
+                    self.walk(v, ctx);
+                }
+            }
+            Expr::Match {
+                value,
+                clauses,
+                default,
+                ..
+            } => {
+                self.walk(value, ctx);
+                for c in clauses {
+                    self.walk(&c.body, ctx);
+                }
+                self.walk(default, ctx);
+            }
+            _ => {}
+        }
+    }
+
+    fn walk_call(&mut self, name: &str, args: &'a [Expr], span: &Span, ctx: &WalkCtx) {
+        // ── 规则 ①:这个调用点是不是「宿主挂起点成员在任务体之外」? ──
+        if let Some(member) = self.host_suspend_member(name) {
+            if self.is_outside_task(ctx, member) {
+                self.diags.push(TypeDiag::new(
+                    TypeDiagKind::HostSuspendOutsideTask {
+                        member: member.to_string(),
+                    },
+                    span.clone(),
+                ));
+            }
+        }
+        // ── 实参 ──
+        match name {
+            // `SPAWN(fn)` ⇒ `fn` 是**任务体** ⇒ 深度 `Some(0)`。
+            "SPAWN" => {
+                for (i, a) in args.iter().enumerate() {
+                    if i == 0 {
+                        self.walk_task_body(a, span, ctx);
+                    } else {
+                        self.walk(a, ctx);
+                    }
+                }
+            }
+            // `SCOPE(fn)` ⇒ `fn` 是**作用域体**(运行期:`builtin_scope`
+            // 先 `enter_nested_closure_frame` 再调它)⇒ 深度 = 当前 +1。
+            "SCOPE" => {
+                for (i, a) in args.iter().enumerate() {
+                    if i == 0 {
+                        self.walk_scope_body(a, ctx);
+                    } else {
+                        self.walk(a, ctx);
+                    }
+                }
+            }
+            // `TEST_BUBBLE(body)` ⇒ 气泡**只在这一层** ⇒ `SLEEP_ASYNC`
+            // 在里面**不是**挂起点成员。
+            "TEST_BUBBLE" => {
+                for (i, a) in args.iter().enumerate() {
+                    if i == 0 {
+                        self.walk_bubble_body(a, ctx);
+                    } else {
+                        self.walk(a, ctx);
+                    }
+                }
+            }
+            // `TIMEOUT(ms, body)` ⇒ `body` 是**原生回调**。
+            "TIMEOUT" => {
+                for (i, a) in args.iter().enumerate() {
+                    if i == 1 {
+                        self.walk_native_callback(a, ctx);
+                    } else {
+                        self.walk(a, ctx);
+                    }
+                }
+            }
+            _ => {
+                for a in args {
+                    self.walk(a, ctx);
+                }
+            }
+        }
+        // ── 调**用户自定义**的函数 ⇒ 它的体在**调用点**的深度 +1 ──
+        //
+        // ⚠ 运行期:每次闭包调用都 `enter_nested_closure_frame` ⇒ 被调的
+        //   闭包体永远比调用点深一层 ⇒ 任务体里调一个辅助函数,那个函数
+        //   体就是「深一层」⇒ 里面的挂起点成员**不在任务体内**。
+        if !matches!(name, "SPAWN" | "SCOPE" | "TEST_BUBBLE" | "TIMEOUT") {
+            if let Some(f) = self.fn_defs.get(name).copied() {
+                self.expand_fn(name, f, ctx);
+            }
+        }
+    }
+
+    /// `SPAWN(fn)` 的**任务体**:深度 `Some(0)`(= 运行期 `run_one_task`)。
+    fn walk_task_body(&mut self, a: &'a Expr, spawn_span: &Span, ctx: &WalkCtx) {
+        let Some(fun) = self.resolve_fun(a) else {
+            // 认不出那个「函数」(比如实参是个表达式)⇒ 不当任务体看
+            // (保守:宁可漏报,不可误报)。
+            self.walk(a, ctx);
+            return;
+        };
+        let id = (spawn_span.line_start, spawn_span.col_start);
+        self.tasks.push(TaskFrame {
+            refs: std::collections::BTreeSet::new(),
+            locals: HashSet::new(),
+        });
+        let inner = WalkCtx {
+            depth: Some(0),
+            in_bubble: ctx.in_bubble,
+            fn_stack: ctx.fn_stack.clone(),
+        };
+        self.walk_fun_body(fun, &inner);
+        let frame = self.tasks.pop().expect("task frame pushed above");
+        for name in frame.refs {
+            self.cell_tasks.entry(name).or_default().insert(id);
+        }
+    }
+
+    /// `SCOPE(fn)` 的**作用域体**:深度 = 当前 +1(`None` 粘住)。
+    fn walk_scope_body(&mut self, a: &'a Expr, ctx: &WalkCtx) {
+        let Some(fun) = self.resolve_fun(a) else {
+            self.walk(a, ctx);
+            return;
+        };
+        let inner = ctx.closure_child();
+        self.walk_fun_body(fun, &inner);
+    }
+
+    /// `TEST_BUBBLE(body)` 的**气泡体**:原生回调 ⇒ 深度
+    /// `Some(当前 +1)`(`None` ⇒ `Some(1)`,与运行期
+    /// `call_with_tokens` 一致),且**气泡内**。
+    fn walk_bubble_body(&mut self, a: &'a Expr, ctx: &WalkCtx) {
+        let Some(fun) = self.resolve_fun(a) else {
+            self.walk(a, ctx);
+            return;
+        };
+        let inner = WalkCtx {
+            depth: Some(ctx.depth.map_or(1, |k| k + 1)),
+            in_bubble: true,
+            fn_stack: ctx.fn_stack.clone(),
+        };
+        self.walk_fun_body(fun, &inner);
+    }
+
+    /// **原生回调**(`TIMEOUT` 的 body 等):深度 `Some(当前 +1)`。
+    fn walk_native_callback(&mut self, a: &'a Expr, ctx: &WalkCtx) {
+        let Some(fun) = self.resolve_fun(a) else {
+            self.walk(a, ctx);
+            return;
+        };
+        let inner = WalkCtx {
+            depth: Some(ctx.depth.map_or(1, |k| k + 1)),
+            in_bubble: ctx.in_bubble,
+            fn_stack: ctx.fn_stack.clone(),
+        };
+        self.walk_fun_body(fun, &inner);
+    }
+
+    /// 展开一个**命名函数**的体:深度 = 调用点 +1(`None` 粘住)。
+    fn expand_fn(&mut self, name: &str, fun: &'a Expr, ctx: &WalkCtx) {
+        // 递归 ⇒ 不再展开(否则无限递归)。
+        if ctx.fn_stack.iter().any(|n| n == name) {
+            return;
+        }
+        let mut stack = ctx.fn_stack.clone();
+        stack.push(name.to_string());
+        let inner = WalkCtx {
+            depth: ctx.depth.map(|k| k + 1),
+            in_bubble: ctx.in_bubble,
+            fn_stack: stack,
+        };
+        self.walk_fun_body(fun, &inner);
+    }
+
+    /// 走一个 `FUN` 表达式的**体**(深度**就是**给定的那个 —— 调用方
+    /// 已经算好了)。
+    fn walk_fun_body(&mut self, fun: &'a Expr, ctx: &WalkCtx) {
+        let Expr::Fun { params, body, .. } = fun else {
+            return;
+        };
+        for p in params {
+            self.bind_local(&p.name);
+        }
+        self.walk(body, ctx);
+    }
+
+    /// 「那个实参是不是一个函数?」—— 字面量闭包,或**命名**函数。
+    fn resolve_fun(&self, a: &'a Expr) -> Option<&'a Expr> {
+        match a {
+            Expr::Fun { .. } => Some(a),
+            Expr::Var(n, _) => self.fn_defs.get(n).copied(),
+            _ => None,
+        }
+    }
+
+    // ── 判据 ────────────────────────────────────────────────────────
+
+    /// 这个调用是不是**宿主挂起点成员**?返回它的**成员名**。
+    ///
+    /// ⚠ 用户自己绑定了同名 ⇒ 它是用户闭包,不是标准库成员 ⇒ 不是。
+    fn host_suspend_member(&self, name: &str) -> Option<&'static str> {
+        if self.user_bindings.contains(name) {
+            return None;
+        }
+        let member = self
+            .std_imports
+            .get(name)
+            .map(|s| s.as_str())
+            .unwrap_or(name);
+        HOST_SUSPEND_MEMBERS.iter().copied().find(|m| *m == member)
+    }
+
+    /// 这个调用点是不是「宿主挂起点成员在任务体之外」?
+    ///
+    /// ⚠ **判据逐条对齐运行期**(`Evaluator::host_suspend_outside_task`):
+    ///   * `Some(k >= 1)` ⇒ 已嵌套进更深的闭包 ⇒ **不在任务体内** ⇒ 报;
+    ///   * `Some(0)`      ⇒ 任务体自己的顶层语句 ⇒ **合法**;
+    ///   * `None`         ⇒ 不在任何任务体帧内(模块顶层)⇒ **不动**
+    ///     (那条由既有的「挂起信号逃到顶层」通路处理)。
+    ///
+    /// ⚠ **气泡豁免**:气泡内的 `SLEEP_ASYNC` **不是**挂起点成员
+    ///   (运行期:`is_host_suspend_member` 判 `clock_bubble.is_none()`)
+    ///   ⇒ 静态层跟着豁免,否则会把**合法**程序判死。
+    fn is_outside_task(&self, ctx: &WalkCtx, member: &str) -> bool {
+        if member == "SLEEP_ASYNC" && ctx.in_bubble {
+            return false;
+        }
+        matches!(ctx.depth, Some(k) if k >= 1)
+    }
+
+    /// 一次**名字引用**:它是不是碰了一个「模块顶层的可变绑定」?
+    fn note_reference(&mut self, name: &str) {
+        if !self.module_muts.contains_key(name) {
+            return;
+        }
+        let Some(frame) = self.tasks.last_mut() else {
+            return;
+        };
+        // 任务体**自己**绑了同名 ⇒ 那是另一个绑定,不算共享。
+        if frame.locals.contains(name) {
+            return;
+        }
+        frame.refs.insert(name.to_string());
+    }
+
+    /// 一次**绑定**:它是不是遮住了当前任务体里的同名引用?
+    fn bind_local(&mut self, name: &str) {
+        for frame in self.tasks.iter_mut() {
+            frame.locals.insert(name.to_string());
+        }
+    }
+
+    // ── 收尾 ────────────────────────────────────────────────────────
+
+    fn finish(self) -> ConcurrencyFindings {
+        // 规则 ①:同一处调用可能被走查多遍(函数定义处 + 调用处)⇒
+        // 按 (行, 列, 成员名) 去重,再按 (行, 列) 排序。
+        let mut seen: HashSet<(u32, u32, String)> = HashSet::new();
+        let mut diags: Vec<TypeDiag> = Vec::new();
+        for d in self.diags.into_iter() {
+            let TypeDiagKind::HostSuspendOutsideTask { member } = &d.kind else {
+                continue;
+            };
+            let key = (d.span.line_start, d.span.col_start, member.clone());
+            if seen.insert(key) {
+                diags.push(d);
+            }
+        }
+        diags.sort_by_key(|d| (d.span.line_start, d.span.col_start));
+
+        // 规则 ②:被**两个及以上任务实例**引用的模块顶层可变绑定。
+        let mut notices: Vec<StaticNotice> = Vec::new();
+        for (name, span) in &self.module_muts {
+            let Some(tasks) = self.cell_tasks.get(name) else {
+                continue;
+            };
+            if tasks.len() < 2 {
+                continue;
+            }
+            notices.push(StaticNotice {
+                name: SHARED_MUTABLE_BINDING,
+                message: format!(
+                    "module-level mutable binding `{name}` is read/written by {} tasks — \
+                     tasks must not exchange data through a shared mutable cell \
+                     (give each task its own state and pass messages over CHANNEL_* instead)",
+                    tasks.len()
+                ),
+                span: span.clone(),
+            });
+        }
+        notices.sort_by_key(|n| (n.span.line_start, n.span.col_start));
+
+        ConcurrencyFindings { diags, notices }
+    }
+}
+
+/// 模式(pattern)里绑定的名字。
+fn pattern_names(p: &Pattern) -> Vec<String> {
+    fn go(p: &Pattern, out: &mut Vec<String>) {
+        match p {
+            Pattern::Ident(n, _) => out.push(n.clone()),
+            Pattern::Wildcard(_) | Pattern::Literal(_, _) => {}
+            Pattern::Array(items, rest, _) => {
+                for i in items {
+                    go(i, out);
+                }
+                if let Some(r) = rest {
+                    go(r, out);
+                }
+            }
+            Pattern::Dict(entries, _) => {
+                for (_, sp) in entries {
+                    go(sp, out);
+                }
+            }
+            Pattern::Constructor { inner, .. } => go(inner, out),
+        }
+    }
+    let mut out = Vec::new();
+    go(p, &mut out);
+    out
 }
 
 #[cfg(test)]
@@ -1919,5 +2647,233 @@ max(1, "b");
             Vec::<String>::new(),
             "STRING satisfies Comparable"
         );
+    }
+}
+
+/// [W-32 / G-2] 两条静态并发规则的单元测试。
+///
+/// ⚠ 这里同时是**反向守卫**:每条「不报」的用例都在钉「不误报」——
+/// 静态层的第一纪律是「不误报优先」(见本文件模块文档)。
+#[cfg(test)]
+mod concurrency_tests {
+    use super::*;
+    use wlwl_error::{ErrorCode, Severity};
+    use wlwl_parser::parse;
+
+    fn findings(src: &str) -> ConcurrencyFindings {
+        let ast = parse(src, "t.wll").expect("fixture must parse");
+        check_concurrency_contract(&ast)
+    }
+
+    /// 规则 ① 报出来的成员名(按诊断顺序)。
+    fn members(f: &ConcurrencyFindings) -> Vec<String> {
+        f.diags
+            .iter()
+            .filter_map(|d| match &d.kind {
+                TypeDiagKind::HostSuspendOutsideTask { member } => Some(member.clone()),
+                _ => None,
+            })
+            .collect()
+    }
+
+    fn notice_names(f: &ConcurrencyFindings) -> Vec<&'static str> {
+        f.notices.iter().map(|n| n.name).collect()
+    }
+
+    // ── 规则 ① ──────────────────────────────────────────────────────
+
+    /// 嵌套闭包里的宿主挂起点成员 ⇒ 一条 `E0014`。
+    #[test]
+    fn rule1_flags_a_suspend_member_in_a_nested_closure() {
+        let f = findings(concat!(
+            "IMPORT(\"wlwl:std.net\", [\"TCP_RECV\"]);\n",
+            "SCOPE(FUN(() ,\n",
+            "  SPAWN(FUN(() ,\n",
+            "    LET(inner, FUN((c), (TCP_RECV(c, 100, 1000))));\n",
+            "    inner(0)\n",
+            "  ))\n",
+            "));",
+        ));
+        assert_eq!(members(&f), vec!["TCP_RECV".to_string()]);
+        // ⚠ 码必须是**既有**的 `E0014` —— 不新增诊断码。
+        let d = f.diags[0]
+            .to_diagnostic(Severity::Error)
+            .expect("E0014 is emitted");
+        assert_eq!(d.code, ErrorCode::E0014);
+        assert!(
+            d.message.contains("TCP_RECV") && d.message.contains("used outside a task body"),
+            "the message must name the member: {}",
+            d.message
+        );
+    }
+
+    /// 任务体**自己的顶层语句** ⇒ 合法。
+    #[test]
+    fn rule1_accepts_a_suspend_member_in_the_task_body_itself() {
+        let f = findings(concat!(
+            "IMPORT(\"wlwl:std.net\", [\"TCP_RECV\"]);\n",
+            "SCOPE(FUN(() , SPAWN(FUN(() , TCP_RECV(0, 100, 1000)))));",
+        ));
+        assert!(f.diags.is_empty(), "{:?}", members(&f));
+    }
+
+    /// 模块顶层 ⇒ **不动**(运行期由「挂起信号逃到顶层」那条既有通路处理)。
+    #[test]
+    fn rule1_stays_quiet_at_the_module_top_level() {
+        let f = findings(concat!(
+            "IMPORT(\"wlwl:std.net\", [\"TCP_RECV\"]);\n",
+            "TCP_RECV(0, 100, 1000);",
+        ));
+        assert!(f.diags.is_empty(), "{:?}", members(&f));
+    }
+
+    /// 任务体里调一个**辅助函数** ⇒ 那个函数体是「深一层」⇒ 报。
+    #[test]
+    fn rule1_flags_a_suspend_member_in_a_helper_called_from_a_task() {
+        let f = findings(concat!(
+            "IMPORT(\"wlwl:std.net\", [\"TCP_RECV\"]);\n",
+            "LET(helper, FUN((c), (TCP_RECV(c, 100, 1000))));\n",
+            "SCOPE(FUN(() , SPAWN(FUN(() , helper(0)))));",
+        ));
+        assert_eq!(members(&f), vec!["TCP_RECV".to_string()]);
+    }
+
+    /// **不等**的 `TCP_*` 成员(监听必须在顶层)⇒ 不报。
+    #[test]
+    fn rule1_ignores_the_non_suspending_tcp_family() {
+        let f = findings(concat!(
+            "IMPORT(\"wlwl:std.net\", [\"TCP_LISTEN\", \"TCP_SEND\", \"TCP_CLOSE\"]);\n",
+            "SCOPE(FUN(() , SPAWN(FUN(() ,\n",
+            "  LET(f, FUN(() , (TCP_LISTEN(\"127.0.0.1\", 0); TCP_SEND(0, \"x\"); TCP_CLOSE(0))));\n",
+            "  f()\n",
+            "))));",
+        ));
+        assert!(f.diags.is_empty(), "{:?}", members(&f));
+    }
+
+    /// 用户自己绑定了同名 ⇒ 那不是标准库成员 ⇒ 不报。
+    #[test]
+    fn rule1_ignores_a_user_defined_binding_with_the_same_name() {
+        let f = findings(concat!(
+            "LET(TCP_RECV, FUN((c), (c)));\n",
+            "SCOPE(FUN(() , SPAWN(FUN(() ,\n",
+            "  LET(f, FUN(() , (TCP_RECV(0, 100, 1000))));\n",
+            "  f()\n",
+            "))));",
+        ));
+        assert!(f.diags.is_empty(), "{:?}", members(&f));
+    }
+
+    /// **气泡内**的 `SLEEP_ASYNC` **不是**挂起点成员 ⇒ 不报。
+    #[test]
+    fn rule1_honours_the_clock_bubble_exemption() {
+        let f = findings(concat!(
+            "IMPORT(\"wlwl:std.time\", [\"TEST_BUBBLE\", \"SLEEP_ASYNC\"]);\n",
+            "SCOPE(FUN(() , SPAWN(FUN(() ,\n",
+            "  LET(f, FUN(() , (SLEEP_ASYNC(1))));\n",
+            "  TEST_BUBBLE(f)\n",
+            "))));",
+        ));
+        assert!(f.diags.is_empty(), "{:?}", members(&f));
+    }
+
+    /// 气泡**外**的 `SLEEP_ASYNC` 仍然是挂起点成员 ⇒ 报。
+    #[test]
+    fn rule1_reports_sleep_async_outside_a_bubble() {
+        let f = findings(concat!(
+            "IMPORT(\"wlwl:std.time\", [\"SLEEP_ASYNC\"]);\n",
+            "SCOPE(FUN(() , SPAWN(FUN(() ,\n",
+            "  LET(f, FUN(() , (SLEEP_ASYNC(1))));\n",
+            "  f()\n",
+            "))));",
+        ));
+        assert_eq!(members(&f), vec!["SLEEP_ASYNC".to_string()]);
+    }
+
+    // ── 规则 ② ──────────────────────────────────────────────────────
+
+    /// 两个任务共用一个模块顶层的可变绑定 ⇒ 提示。
+    #[test]
+    fn rule2_flags_a_cell_shared_by_two_tasks() {
+        let f = findings(concat!(
+            "LET MUT(counter, 0);\n",
+            "SCOPE(FUN(() ,\n",
+            "  LET(t1, SPAWN(FUN(() , SET(counter, +(counter, 1)))));\n",
+            "  LET(t2, SPAWN(FUN(() , SET(counter, +(counter, 1)))))\n",
+            "));",
+        ));
+        assert_eq!(notice_names(&f), vec![SHARED_MUTABLE_BINDING]);
+        assert!(
+            f.notices[0].message.contains("counter"),
+            "the message must name the cell: {}",
+            f.notices[0].message
+        );
+    }
+
+    /// 只有**一个**任务碰它 ⇒ 不是「跨任务共享」⇒ 不提示。
+    #[test]
+    fn rule2_stays_quiet_when_only_one_task_touches_the_cell() {
+        let f = findings(concat!(
+            "LET MUT(counter, 0);\n",
+            "SCOPE(FUN(() ,\n",
+            "  LET(t1, SPAWN(FUN(() , SET(counter, +(counter, 1)))))\n",
+            "));",
+        ));
+        assert!(f.notices.is_empty());
+    }
+
+    /// 同一个闭包被 spawn 两次 ⇒ **两个任务** ⇒ 提示。
+    #[test]
+    fn rule2_counts_two_spawns_of_the_same_closure_as_two_tasks() {
+        let f = findings(concat!(
+            "LET MUT(counter, 0);\n",
+            "LET(worker, FUN(() , SET(counter, +(counter, 1))));\n",
+            "SCOPE(FUN(() ,\n",
+            "  LET(t1, SPAWN(worker));\n",
+            "  LET(t2, SPAWN(worker))\n",
+            "));",
+        ));
+        assert_eq!(notice_names(&f), vec![SHARED_MUTABLE_BINDING]);
+    }
+
+    /// 任务**自己**声明的可变绑定 ⇒ 不是模块顶层的 cell ⇒ 不提示。
+    #[test]
+    fn rule2_ignores_cells_that_are_not_module_level() {
+        let f = findings(concat!(
+            "SCOPE(FUN(() ,\n",
+            "  LET MUT(a, 0);\n",
+            "  LET MUT(b, 0);\n",
+            "  LET(t1, SPAWN(FUN(() , SET(a, 1))));\n",
+            "  LET(t2, SPAWN(FUN(() , SET(b, 1))))\n",
+            "));",
+        ));
+        assert!(f.notices.is_empty());
+    }
+
+    /// 任务体**自己**绑了同名 ⇒ 遮蔽 ⇒ 不算共享。
+    #[test]
+    fn rule2_ignores_a_cell_shadowed_inside_the_task() {
+        let f = findings(concat!(
+            "LET MUT(counter, 0);\n",
+            "SCOPE(FUN(() ,\n",
+            "  LET(t1, SPAWN(FUN(() , LET MUT(counter, 0); SET(counter, 1))));\n",
+            "  LET(t2, SPAWN(FUN(() , LET MUT(counter, 0); SET(counter, 1))))\n",
+            "));",
+        ));
+        assert!(f.notices.is_empty());
+    }
+
+    // ── 干净程序 ────────────────────────────────────────────────────
+
+    /// 干净程序 ⇒ 两条规则都静默(守住「不误报优先」)。
+    #[test]
+    fn a_clean_concurrent_program_produces_no_findings() {
+        let f = findings(concat!(
+            "IMPORT(\"wlwl:std.net\", [\"TCP_LISTEN\", \"TCP_RECV\"]);\n",
+            "LET(l, TCP_LISTEN(\"127.0.0.1\", 0));\n",
+            "SCOPE(FUN(() , SPAWN(FUN(() , TCP_RECV(l, 100, 1000)))));",
+        ));
+        assert!(f.diags.is_empty(), "{:?}", members(&f));
+        assert!(f.notices.is_empty());
     }
 }

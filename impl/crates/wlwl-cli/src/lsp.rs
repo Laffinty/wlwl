@@ -4,8 +4,8 @@
 //!
 //! 不引 LSP 框架(不碰 `Cargo.toml` / `Cargo.lock`,不拉新依赖),直接把
 //! 已有能力包一层 LSP 线协议:[`wlwl_parser`] 出 AST 与语法诊断,
-//! [`crate::collect_static_diagnostics`] 出静态契约诊断(与 `wlwl check`
-//! **同一份口径**),[`wlwl_eval`] 的注册表出补全与签名。
+//! [`crate::collect_static_diagnostics`] 出静态契约诊断**与规范符合性提示**
+//! (与 `wlwl check` **同一份口径**),[`wlwl_eval`] 的注册表出补全与签名。
 //!
 //! 能力只做计划书 §5.3 点名的三项(diagnostics / definition / hover),
 //! 外加「补全由注册表驱动」那半句 —— 决策点 D-6 的 A 档。B 档(rename /
@@ -166,6 +166,9 @@ impl Server {
 
         // 静态诊断与 `wlwl check` 走同一个函数(见模块文档)。
         let mut diags: Vec<WlwlDiagnostic> = Vec::new();
+        // ⚠ [W-32 / G-2 规则 ②] **规范符合性提示**(无 E/W 码)也走那**同一份**
+        //   收集函数 ⇒ 编辑器里的划线**不会比命令行少**(语言册 `:1681` N-3b)。
+        let mut notices: Vec<wlwl_types::StaticNotice> = Vec::new();
         let (ast, declared) = match wlwl_parser::parse_with_warnings(&text, &path.to_string_lossy())
         {
             Ok((ast, warns)) => {
@@ -180,7 +183,10 @@ impl Server {
                 for w in wlwl_parser::lint(&ast) {
                     diags.push(warning_to_diagnostic(&w, &path.to_string_lossy()));
                 }
-                diags.extend(crate::collect_static_diagnostics(&ast, &path, &base_dir));
+                // ⚠ **只调一次** —— 调两次就是两份口径 ⇒ 「编辑器不报、CI 报」。
+                let collected = crate::collect_static_diagnostics(&ast, &path, &base_dir);
+                diags.extend(collected.diags);
+                notices.extend(collected.notices);
                 let declared = wlwl_types::check_program_detailed(&ast, &HashMap::new())
                     .declared
                     .into_iter()
@@ -210,7 +216,7 @@ impl Server {
             "textDocument/publishDiagnostics",
             json!({
                 "uri": uri,
-                "diagnostics": diags.iter().map(to_lsp_diagnostic).collect::<Vec<_>>()
+                "diagnostics": published_lsp_diagnostics(&diags, &notices)
             }),
         )
     }
@@ -712,6 +718,49 @@ fn to_lsp_diagnostic(d: &WlwlDiagnostic) -> Value {
     })
 }
 
+/// [W-32 / G-2 规则 ②] 一条**规范符合性提示** → LSP 诊断。
+///
+/// ⚠ 业主 2026-10-27 裁决(计划书 §10 Q4):LSP 侧映射为
+///   **`severity: Warning`** —— 提示**不改变退出码**,与警告同款。
+///
+/// ⚠ `code` 放的是**稳定名称**(`shared-mutable-binding`),**不是** E/W 码
+///   ⇒ 它不进任何码表 / 附录 A / 总纲 §0.9。
+fn to_lsp_notice(n: &wlwl_types::StaticNotice) -> Value {
+    let line = n.span.line_start.saturating_sub(1);
+    let col = n.span.col_start.saturating_sub(1);
+    let line_end = n.span.line_end.saturating_sub(1).max(line);
+    let col_end = n.span.col_end.saturating_sub(1).max(col);
+    json!({
+        "range": {
+            "start": { "line": line, "character": col },
+            "end": { "line": line_end, "character": col_end }
+        },
+        "severity": 2,
+        "code": n.name,
+        "source": "wlwl",
+        "message": &n.message
+    })
+}
+
+/// 诊断**与**提示合成一份 LSP 诊断数组(按位置排,顺序确定)。
+///
+/// ⚠ **合成一处**:两条路都从同一个收集函数来 ⇒ 编辑器与命令行看到的
+///   是**同一份**内容(语言册 `:1681` N-3b:「编辑器里的划线**不会比命令行少**」)。
+fn published_lsp_diagnostics(
+    diags: &[WlwlDiagnostic],
+    notices: &[wlwl_types::StaticNotice],
+) -> Vec<Value> {
+    let mut items: Vec<(u32, u32, Value)> = Vec::new();
+    for d in diags {
+        items.push((d.location.line, d.location.col, to_lsp_diagnostic(d)));
+    }
+    for n in notices {
+        items.push((n.span.line_start, n.span.col_start, to_lsp_notice(n)));
+    }
+    items.sort_by_key(|(line, col, _)| (*line, *col));
+    items.into_iter().map(|(_, _, v)| v).collect()
+}
+
 // ── URL ↔ 路径 ────────────────────────────────────────────────
 
 /// `file:///C:/x/y.wll` → `C:\x\y.wll`。非 `file:` 的 URI 原样当路径用
@@ -875,7 +924,7 @@ mod tests {
             .unwrap();
             let diags = crate::collect_static_diagnostics(&ast, &path, &dir);
             assert_eq!(
-                diags.is_empty(),
+                diags.diags.is_empty(),
                 expect_empty,
                 "gradual_typing = {gradual} should {}diagnostics",
                 if expect_empty {
@@ -938,6 +987,109 @@ mod tests {
         let labels: Vec<&str> = items.iter().filter_map(|i| i["label"].as_str()).collect();
         assert!(labels.contains(&"PRINT"));
         assert!(labels.contains(&"local_thing"));
+    }
+
+    /// [W-32 / G-2] **「编辑器不报、CI 报」的分裂守卫**。
+    ///
+    /// ⚠ 语言册 `:1681`(N-3b):「`lsp` 的 `diagnostics` 与 `wlwl check`
+    ///   **共用同一个收集函数** …… 编辑器里的划线**不会比命令行少**」。
+    ///
+    /// 这条测试把「同一个收集函数」这件事**变成可执行的断言**:LSP 推出来的
+    /// 诊断数组,与 [`crate::collect_static_diagnostics`] 的产物**逐条相同**
+    /// (码 / 严重级 / 消息 / 条数)。谁把收集逻辑拆成两份(CLI 一份、LSP 一份),
+    /// 这里立刻红。
+    #[test]
+    fn w32_the_lsp_publishes_exactly_what_the_shared_collector_produced() {
+        use wlwl_error::ErrorCode;
+        let src = concat!(
+            "IMPORT(\"wlwl:std.net\", [\"TCP_RECV\"]);\n",
+            "LET MUT(shared_counter, 0);\n",
+            "LET(handler, FUN((conn), (TCP_RECV(conn, 4096, 1000))));\n",
+            "SCOPE(FUN(() ,\n",
+            "  LET(t1, SPAWN(FUN(() , SET(shared_counter, 1))));\n",
+            "  LET(t2, SPAWN(FUN(() , SET(shared_counter, 1))));\n",
+            "  LET(t3, SPAWN(FUN(() , handler(0))))\n",
+            "));\n",
+        );
+        let mut s = Server::new();
+        let frame = open(&mut s, src);
+        let published = frame["params"]["diagnostics"].as_array().unwrap().clone();
+
+        // 同一份源码 → **同一个收集函数**的产物。
+        let path = uri_to_path(&doc_uri_str());
+        let ast = wlwl_parser::parse(src, "main.wll").unwrap();
+        let collected =
+            crate::collect_static_diagnostics(&ast, &path, path.parent().unwrap_or(Path::new(".")));
+
+        // 规则 ①:一条 `E0014`(严重级 1 = error)—— **既有**码,不是新码。
+        let e0014: Vec<&Value> = published.iter().filter(|d| d["code"] == "E0014").collect();
+        assert_eq!(
+            e0014.len(),
+            1,
+            "the LSP must publish the static E0014: {published:?}"
+        );
+        assert_eq!(e0014[0]["severity"], 1);
+        assert_eq!(
+            collected
+                .diags
+                .iter()
+                .filter(|d| d.code == ErrorCode::E0014)
+                .count(),
+            1
+        );
+
+        // 规则 ②:一条 `shared-mutable-binding` 提示(严重级 2 = warning),
+        // **无 E/W 码**。
+        let notices: Vec<&Value> = published
+            .iter()
+            .filter(|d| d["code"] == "shared-mutable-binding")
+            .collect();
+        assert_eq!(
+            notices.len(),
+            1,
+            "the LSP must publish the notice: {published:?}"
+        );
+        assert_eq!(notices[0]["severity"], 2);
+        assert_eq!(collected.notices.len(), 1);
+        assert_eq!(collected.notices[0].name, "shared-mutable-binding");
+
+        // ⚠ **一条都不许少**:LSP 推出来的数组里,收集函数产出的每一条
+        //   诊断与每一条提示都必须在场(语言册 `:1681`:「编辑器里的划线
+        //   **不会比命令行少**」)。谁把收集逻辑拆成两份(CLI 一份、LSP 一份),
+        //   这里立刻红。
+        //
+        // ⚠ 数组里**还可能有**别的东西(parser 的语法警告 / `lint` 的
+        //   `W0010`-`W0012`)⇒ 只能钉「不少」+「不重」,不能钉「总数相等」。
+        for d in &collected.diags {
+            assert!(
+                published
+                    .iter()
+                    .any(|p| p["code"] == d.code.as_str() && p["message"] == d.message),
+                "the LSP must carry {d:?}"
+            );
+        }
+        for n in &collected.notices {
+            assert!(
+                published
+                    .iter()
+                    .any(|p| p["code"] == n.name && p["message"] == n.message),
+                "the LSP must carry {n:?}"
+            );
+        }
+        // 不许**重**:同一条诊断在编辑器里划两遍也是错。
+        assert_eq!(
+            published
+                .iter()
+                .filter(|p| p["code"] == "E0014" || p["code"] == "shared-mutable-binding")
+                .count(),
+            collected
+                .diags
+                .iter()
+                .filter(|d| d.code == ErrorCode::E0014)
+                .count()
+                + collected.notices.len(),
+            "the LSP must publish each static item exactly once"
+        );
     }
 
     #[test]

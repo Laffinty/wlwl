@@ -54,6 +54,22 @@
 //! **只比公开面。** 契约只看根作用域绑定 + `EXPORT`,函数体里的局部
 //! 变量、`MATCH` 子句绑定一律不参与。
 //!
+//! # 模块私有成员
+//!
+//! 一个**既不 `EXPORT`、也不在签名里声明**的根作用域绑定就是模块的
+//! **私有成员**。契约检查对它**完全不可见** —— 两个方向(多出 / 缺失)
+//! 都只拿 `EXPORT` 名单与声明面对照,私有成员两边都不在 ⇒ **零诊断**。
+//!
+//! 这不是「碰巧没报」,而是**定义**:私有性就是「不在 `EXPORT` 里」这件
+//! 事本身。于是「把某个名字变私有」**不需要任何语言构造** —— `.wll.sig`
+//! 的导出面收紧到 `EXPORT` 的子集,剩下的名字自然就是私有的。
+//!
+//! 私有成员**不是**「导出但没声明」(那是 `E0113` 的那一侧):它压根没
+//! 导出,所以模块自查不会报它,也就不会进 [`ModuleCheck::undeclared`]。
+//! 消费方导入它时:被导入模块**有签名** ⇒ 消费方那一侧报 `E0113`(位置
+//! 指在 `IMPORT` 的那个名字上);被导入模块**没有签名** ⇒ 静态无从判起
+//! (「无签名 = v0.9 行为」),由运行期的 `E0023` 兜住。
+//!
 //! # 诊断码
 //!
 //! | 条件 | `error` 档 | `warn` 档 |
@@ -1035,6 +1051,80 @@ EXPORT either : OPTION[INTEGER]
             Some("EXPORT a : INTEGER")
         )
         .is_empty());
+    }
+
+    // ---- 模块私有成员(G-4) ----
+
+    /// [G-4 · 模块私有成员] 一个**既不 `EXPORT`、也不在签名里声明**的
+    /// 绑定就是模块的**私有成员**。契约检查对它**完全不可见**:两个方向
+    /// (多出 / 缺失)都只拿 `EXPORT` 名单与声明面对照,私有成员两边都
+    /// 不在 ⇒ **零诊断**。
+    ///
+    /// 这不是「碰巧没报」,而是**定义**:私有性就是「不在 `EXPORT` 里」
+    /// 这件事本身。于是「把某个名字变私有」**不需要任何语言构造** ——
+    /// `.wll.sig` 的导出面收紧到 `EXPORT` 的子集,剩下的名字自然就是
+    /// 私有的。
+    #[test]
+    fn a_private_member_is_invisible_to_the_contract_check() {
+        // ① 有签名:私有成员既不进「多出」也不进「缺失」两个方向。
+        let with_private = contract_diags(
+            "LET(a: INTEGER, 1); LET(secret, 2); EXPORT([\"a\"]);",
+            Some("EXPORT a : INTEGER"),
+        );
+        assert!(
+            with_private.is_empty(),
+            "a private member must not be judged against the contract: {with_private:?}"
+        );
+        // ② 同一个模块**去掉**私有成员,诊断集合必须逐条相同 ——
+        //    私有成员的**存在**不改变任何判定。(反向守卫:私有成员一旦被
+        //    纳入契约比对,这两句立刻分叉。)
+        let without_private = contract_diags(
+            "LET(a: INTEGER, 1); EXPORT([\"a\"]);",
+            Some("EXPORT a : INTEGER"),
+        );
+        assert_eq!(with_private, without_private);
+        // ③ 无签名:v0.9 行为,零诊断。
+        assert!(
+            contract_diags("LET(a: INTEGER, 1); LET(secret, 2); EXPORT([\"a\"]);", None).is_empty()
+        );
+        // ④ 密封面也一样:私有成员不在 `SEALED` 里、也不在 `EXPORT` 里
+        //    ⇒ 两个方向都不触发。
+        assert!(contract_diags(
+            "SEALED([\"a\"]); LET(a: INTEGER, 1); LET(secret, 2); EXPORT([\"a\"]);",
+            Some("EXPORT a : INTEGER"),
+        )
+        .is_empty());
+    }
+
+    /// 私有成员**不是**「导出但没声明」(`E0113` 的那一侧):它压根没导出,
+    /// 所以模块自查不会报它,也就不会进 `already_reported`。消费方导入它
+    /// 时**必须**报 `E0113`(位置指在 `IMPORT` 的那个名字上),而不是被
+    /// 「模块已经说过」的去重逻辑吞掉。
+    ///
+    /// ⚠ 位置断言用 `IMPORT("./math", ["add", "secret"]);` 这份源码:列号
+    /// 26 = `"secret"` 那个**引号**(`ImportName` 的 span 含引号)。
+    /// CLI 读数同源(`--> main.wll:1:26`),两边对不上就是 span 漂了。
+    #[test]
+    fn importing_a_private_member_is_e0113_at_the_import_site() {
+        let ast = parse("IMPORT(\"./math\", [\"add\", \"secret\"]);", "main.wll").expect("parses");
+        let mut modules = BTreeMap::new();
+        // 模块自查**没有**报过 `secret`(它压根没被导出)⇒ `already_reported` 空。
+        modules.insert(
+            "./math".to_string(),
+            imported(Some("EXPORT add : INTEGER"), &[]),
+        );
+        let diags = check_imports(&ast, &modules);
+        assert_eq!(diags.len(), 1);
+        assert_eq!(diags[0].kind.codes().unwrap().0.as_str(), "E0113");
+        assert!(
+            diags[0].message().contains("`secret`"),
+            "the diagnostic must name the private member: {}",
+            diags[0].message()
+        );
+        // 位置指向 `IMPORT` 里的那个名字,不是模块的顶层块。
+        assert_eq!(diags[0].span.file, "main.wll");
+        assert_eq!(diags[0].span.line_start, 1);
+        assert_eq!(diags[0].span.col_start, 26);
     }
 
     // ---- E0115 的方向与不误报边界 ----

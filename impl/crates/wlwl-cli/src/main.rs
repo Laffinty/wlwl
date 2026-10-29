@@ -937,7 +937,10 @@ fn run_file_with_ext(
     // and `run` share this single entry point so the two subcommands can
     // never drift apart. Returns Some(exit code) when the caller must
     // abort.
-    if let Some(code) = static_check_gate(&ast, file, &base_dir, format) {
+    //
+    // ⚠ [W-32 / G-2] `execute` 只影响**规则 ① 那条静态 `E0014`** 的呈现:
+    //   `check` 照报并拦退出码;`run` 不报(运行期由求值器报同一条)。
+    if let Some(code) = static_check_gate(&ast, file, &base_dir, format, execute) {
         return code;
     }
 
@@ -1720,17 +1723,53 @@ fn static_check_gate(
     file: &std::path::Path,
     base_dir: &std::path::Path,
     format: OutputFormat,
+    execute: bool,
 ) -> Option<ExitCode> {
     let rendered = collect_static_diagnostics(ast, file, base_dir);
-    if rendered.is_empty() {
+    if rendered.diags.is_empty() && rendered.notices.is_empty() {
         return None;
     }
+    // ⚠ [W-32 / G-2 规则 ①] `wlwl run` **不报**静态那条 `E0014`。
+    //
+    // 理由:运行期由求值器报**同一条** `E0014`(同一段文案、同一个位置
+    // —— 静态层逐字抄了运行期那段)⇒ 静态层再报一遍就是把同一条诊断
+    // 说两遍;而**拦**它更糟:那等于程序根本没跑 ⇒ `wlwl run` 的可观察
+    // 行为变了(既有 probe `P121_probe_p07_nested_closure` /
+    // `_p09_nested_wait_death` 钉的就是「跑了一半 + 运行期报 E0014」)。
+    //
+    // ⇒ `wlwl check`(execute = false)照报并**拦退出码**;`wlwl run`
+    //   (execute = true)不报也不拦 ⇒ 两条命令的分工不变。
+    //
+    // ⚠ **按码过滤**是安全的:静态层里 `E0014` **只有**规则 ① 这一个
+    //   产地(类型检查那族是 `E0110`-`E0117` / `W0110`-`W0117`)。
+    let diags: Vec<&WlwlDiagnostic> = if execute {
+        rendered
+            .diags
+            .iter()
+            .filter(|d| d.code != ErrorCode::E0014)
+            .collect()
+    } else {
+        rendered.diags.iter().collect()
+    };
     // 阻塞与否看**实际渲染出来的诊断**:只有硬诊断挡退出码。这条比
     // 「看档位」更准 —— `error` 档下也可能一条硬错都没有(比如只报了恒
     // 警告的 `W0117`),那就不该拦。
-    let blocking = rendered.iter().any(|d| d.severity == Severity::Error);
-    for d in &rendered {
-        eprintln!("{}", diag_output::render_diag_text(d, format));
+    let blocking = diags.iter().any(|d| d.severity == Severity::Error);
+    // ⚠ [W-32 / G-2] 诊断与提示**按位置合流**再打印 ⇒ 一份输出里的
+    // 顺序仍然是「先出现的位置在前」(逐字节可复现)。
+    let mut items: Vec<(u32, u32, Elem)> = Vec::new();
+    for d in &diags {
+        items.push((d.location.line, d.location.col, Elem::Diag(d)));
+    }
+    for n in &rendered.notices {
+        items.push((n.span.line_start, n.span.col_start, Elem::Notice(n)));
+    }
+    items.sort_by_key(|(line, col, _)| (*line, *col));
+    for (_, _, item) in &items {
+        match item {
+            Elem::Diag(d) => eprintln!("{}", diag_output::render_diag_text(d, format)),
+            Elem::Notice(n) => eprintln!("{}", render_notice(n, format)),
+        }
     }
     if blocking {
         // [v0.10.1] 走同一条退出码契约。静态层也会产出 parser 的码 ——
@@ -1742,7 +1781,7 @@ fn static_check_gate(
         // 诊断。`rendered` 是按 (行, 列) 排的,清单类警告(`W0001`,位置
         // `0:0`)会排在签名文件的解析失败(`E0010`)前面 —— 取 `first()`
         // 就会按那条警告算成 `1`,而规范 §11.4 要求「读不出来的文本」是 `3`。
-        let first_blocking = rendered
+        let first_blocking = diags
             .iter()
             .find(|d| d.severity == Severity::Error)
             .expect("blocking implies at least one hard diagnostic");
@@ -1750,6 +1789,78 @@ fn static_check_gate(
     } else {
         None
     }
+}
+
+/// 打印侧的一项:一条**诊断**,或一条**提示**。
+///
+/// ⚠ 分成两路是因为**形状真的不同**:诊断有 E/W 码(`WlwlDiagnostic` 的
+///   `code` 是必填的 `ErrorCode`),提示**没有**码 ⇒ 提示不能塞进诊断
+///   形状里(塞进去就得给它编一个码 ⇒ 违反「不新增诊断码」)。
+enum Elem<'a> {
+    Diag(&'a WlwlDiagnostic),
+    Notice(&'a wlwl_types::StaticNotice),
+}
+
+/// 一条**规范符合性提示**的渲染(无 E/W 码 ⇒ 自己渲染三种形态)。
+///
+/// ⚠ **不进诊断形状**:它没有码 ⇒ 不能用 `WlwlDiagnostic` 渲染。
+///
+/// ⚠ **稳定名称**(`shared-mutable-binding`)是人形态与 JSON 形态里
+///   唯一的机器可读把手 ⇒ 编辑器 / CI 靠它认出这条提示。
+fn render_notice(n: &wlwl_types::StaticNotice, format: OutputFormat) -> String {
+    let loc = Location::range(
+        n.span.file.clone(),
+        n.span.line_start,
+        n.span.col_start,
+        n.span.line_end,
+        n.span.col_end,
+    );
+    match format {
+        OutputFormat::Human => format!(
+            "warning[{}]: {}\n  --> {}:{}:{}\n",
+            n.name, n.message, loc.file, loc.line, loc.col
+        ),
+        OutputFormat::Json => serde_json::to_string_pretty(&serde_json::json!({
+            "severity": "warning",
+            "name": n.name,
+            "message": n.message,
+            "location": {
+                "file": loc.file,
+                "line": loc.line,
+                "col_start": loc.col,
+                "line_end": loc.line_end,
+                "col_end": loc.col_end,
+            }
+        }))
+        .unwrap_or_else(|_| "{}".into()),
+        OutputFormat::Jsonl => serde_json::to_string(&serde_json::json!({
+            "severity": "warning",
+            "name": n.name,
+            "message": n.message,
+            "location": {
+                "file": loc.file,
+                "line": loc.line,
+                "col_start": loc.col,
+                "line_end": loc.line_end,
+                "col_end": loc.col_end,
+            }
+        }))
+        .unwrap_or_else(|_| "{}".into()),
+    }
+}
+
+/// `wlwl check` 与 LSP **共用**的静态诊断产物。
+///
+/// ⚠ **单一收集函数**(语言册 `:1681` N-3b):「`lsp` 的 `diagnostics` 与
+///   `wlwl check` **共用同一个收集函数** …… 编辑器里的划线**不会比命令行少**」
+///   ⇒ 诊断**与**提示都必须在这一处一次算完 —— 两端各算一遍就是
+///   「编辑器不报、CI 报」的分裂(那正是本项的**核心守卫**要挡的东西)。
+#[derive(Debug, Clone, Default)]
+pub(crate) struct StaticDiagnostics {
+    /// 有 E/W 码的诊断(类型 / 契约 / [W-32] 规则 ①)—— 按 (行, 列) 排。
+    pub diags: Vec<WlwlDiagnostic>,
+    /// **无 E/W 码**的规范符合性提示([W-32] 规则 ②)—— 按 (行, 列) 排。
+    pub notices: Vec<wlwl_types::StaticNotice>,
 }
 
 /// 收集一个文件的全部静态契约诊断(**已按两个开关分档渲染**)。
@@ -1763,20 +1874,20 @@ pub(crate) fn collect_static_diagnostics(
     ast: &Expr,
     file: &std::path::Path,
     base_dir: &std::path::Path,
-) -> Vec<WlwlDiagnostic> {
+) -> StaticDiagnostics {
     let features = load_features(base_dir);
     let setting = features.gradual.clone();
     // [v0.10 Step 8] 第二个子系统:MATCH 穷尽性 / 可达性。缺省跟随
     // `gradual_typing`(计划书 §5.1),所以只写 `gradual_typing` 一个键
     // 就够用;要单独关掉 MATCH 时再写 `match_exhaustiveness`。
     let match_setting = features.match_setting.clone();
-    let mut out: Vec<WlwlDiagnostic> = Vec::new();
+    let mut out = StaticDiagnostics::default();
 
     // [v0.10.1 / R10-010] 清单存在但不是一份合法 manifest —— 必须响亮。
     // 这一条**先于**下面的 early return:两个开关都关时清单照样该被检查,
     // 否则「`off` 档静默」会把清单层的笔误重新藏起来。
     if let Some(reason) = &features.unusable_manifest {
-        out.push(
+        out.diags.push(
             WlwlDiagnostic::new(
                 ErrorCode::W0001,
                 reason.clone(),
@@ -1795,7 +1906,7 @@ pub(crate) fn collect_static_diagnostics(
     // 与上面三条同处一个 early-return 之前:两个开关都关时清单照样该被体检,
     // 否则「`off` 档静默」会把笔误重新藏起来。
     for msg in &features.feature_problems {
-        out.push(
+        out.diags.push(
             WlwlDiagnostic::new(
                 ErrorCode::W0001,
                 msg.clone(),
@@ -1808,7 +1919,7 @@ pub(crate) fn collect_static_diagnostics(
     // 开关写错必须**可见**(不静默吞笔误):非法值回落后的回执本身就是
     // 一条警告,和静态诊断一起交付。
     if let Some(raw) = setting.invalid_value() {
-        out.push(
+        out.diags.push(
             WlwlDiagnostic::new(
                 ErrorCode::W0001,
                 format!(
@@ -1821,7 +1932,7 @@ pub(crate) fn collect_static_diagnostics(
         );
     }
     if let Some(raw) = match_setting.invalid_value() {
-        out.push(
+        out.diags.push(
             WlwlDiagnostic::new(
                 ErrorCode::W0001,
                 format!(
@@ -1849,11 +1960,37 @@ pub(crate) fn collect_static_diagnostics(
     // 这一层只读签名文件、不碰类型检查,所以「零开销」承诺的实质
     // (不建内建签名表、不跑类型检查)没有被破坏。
     let (sig_diags, broken_sigs) = sig_syntax_diagnostics(ast, file);
-    out.extend(sig_diags);
+    out.diags.extend(sig_diags);
+
+    // [W-32 / G-2] **两条静态并发规则** —— 也在 early return **之前**。
+    //
+    // ⚠ **不受 `gradual_typing` / `match_exhaustiveness` 门控**:那两个
+    //   开关管的是「类型推断」那条链路;并发册 §17.0 / §17.0.1 的契约
+    //   与类型无关 ⇒ 关掉类型检查不该把并发契约检查也关掉。
+    //
+    // ⚠ **零开销承诺的实质没有被破坏**:这一层只做一次 AST 走查(与
+    //   `wlwl_parser::lint` 同量级)—— 仍然**不建内建签名表、不跑类型
+    //   检查**。代价是**读一次源文件**(为了给诊断补源码行)。
+    let source = std::fs::read_to_string(file).ok();
+    let concurrency = wlwl_types::check_concurrency_contract(ast);
+    for d in &concurrency.diags {
+        // 规则 ①:复用**既有**的 `E0014` ⇒ 严重级恒为 Error(它就是硬错)。
+        if let Some(mut diag) = d.to_diagnostic(Severity::Error) {
+            if let Some(src) = source.as_deref() {
+                if let Some(line_text) = wlwl_error::extract_line(src, d.span.line_start) {
+                    diag = diag.with_source_line(line_text);
+                }
+            }
+            out.diags.push(diag);
+        }
+    }
+    // 规则 ②:**无 E/W 码**的规范符合性提示 ⇒ 单独一路(不进诊断形状)。
+    out.notices.extend(concurrency.notices);
 
     // 两个开关都关 → 整条静态链路都不跑。这是「零开销」的落点,而且两个
     // 开关是**独立**的:只关 MATCH 不影响类型检查。
     if !setting.is_enabled() && !match_setting.is_enabled() {
+        out.diags.sort_by_key(|d| (d.location.line, d.location.col));
         return out;
     }
 
@@ -1914,7 +2051,6 @@ pub(crate) fn collect_static_diagnostics(
     // 在这里统一补,而不是去改 `to_diagnostic`:`wlwl-types` 不持有源文本
     // (它只吃 AST),把文本塞进去要么改签名、要么依赖 CLI。CLI 是唯一同时
     // 持有 AST 与源文本的那一层,补在这里最自然。
-    let source = std::fs::read_to_string(file).ok();
     for d in &checked.diags {
         let (enabled, level) = match d.kind.subsystem() {
             wlwl_types::Subsystem::Types => (setting.is_enabled(), severity),
@@ -1929,7 +2065,7 @@ pub(crate) fn collect_static_diagnostics(
                     diag = diag.with_source_line(line_text);
                 }
             }
-            out.push(diag);
+            out.diags.push(diag);
         }
     }
 
@@ -1944,7 +2080,7 @@ pub(crate) fn collect_static_diagnostics(
     // [Step 6] 契约扫描里也要用同一份绑定表算依赖模块的类型,所以
     // 传的是刚刚那份「已经算好的」结果,不再重算一遍。
     if setting.is_enabled() {
-        out.extend(scan_module_contracts(
+        out.diags.extend(scan_module_contracts(
             file,
             ast,
             &checked.declared,
@@ -1956,7 +2092,7 @@ pub(crate) fn collect_static_diagnostics(
     // Deterministic order: source order. The checker already discovers
     // in walk order, so a stable sort by (line, col) is enough to make
     // multi-diagnostic output byte-stable across runs.
-    out.sort_by_key(|d| (d.location.line, d.location.col));
+    out.diags.sort_by_key(|d| (d.location.line, d.location.col));
     out
 }
 
@@ -2893,7 +3029,7 @@ mod tests {
         let src = fs::read_to_string(p).unwrap();
         let ast = wlwl_parser::parse(&src, &p.to_string_lossy()).expect("fixture must parse");
         let base_dir = p.parent().unwrap();
-        collect_static_diagnostics(&ast, p, base_dir)
+        collect_static_diagnostics(&ast, p, base_dir).diags
     }
 
     /// 同上,只取诊断码序列(按渲染顺序)。
@@ -2940,6 +3076,7 @@ mod tests {
         let ast = wlwl_parser::parse(&src, &p.to_string_lossy()).expect("fixture must parse");
         let diags = collect_static_diagnostics(&ast, &p, p.parent().unwrap());
         let e0110 = diags
+            .diags
             .iter()
             .find(|d| d.code.as_str() == "E0110")
             .expect("the fixture must produce E0110");
@@ -2965,9 +3102,13 @@ mod tests {
         let ast = wlwl_parser::parse(&src, &p.to_string_lossy()).expect("fixture must parse");
         let diags = collect_static_diagnostics(&ast, &p, p.parent().unwrap());
         assert!(
-            diags.is_empty(),
+            diags.diags.is_empty(),
             "no diagnostic should be produced, got {:?}",
-            diags.iter().map(|d| d.code.as_str()).collect::<Vec<_>>()
+            diags
+                .diags
+                .iter()
+                .map(|d| d.code.as_str())
+                .collect::<Vec<_>>()
         );
     }
 
@@ -3521,7 +3662,7 @@ mod tests {
         .unwrap();
         let diags = collect_static_diagnostics(&ast, &root.join("main.wll"), &root);
         assert!(
-            diags.iter().any(|d| d.code == ErrorCode::E0010),
+            diags.diags.iter().any(|d| d.code == ErrorCode::E0010),
             "门控关着也必须报 E0010,拿到的是: {diags:?}"
         );
         // 硬错 ⇒ 退出码 3(规范 §11.4)。

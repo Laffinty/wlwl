@@ -38,8 +38,9 @@ pub mod sig;
 pub mod ty;
 
 pub use check::{
-    check_program, check_program_detailed, check_program_with_builtins, check_program_with_options,
-    CheckOptions, CheckOutput, DeclaredBinding,
+    check_concurrency_contract, check_program, check_program_detailed, check_program_with_builtins,
+    check_program_with_options, CheckOptions, CheckOutput, ConcurrencyFindings, DeclaredBinding,
+    StaticNotice, HOST_SUSPEND_MEMBERS, SHARED_MUTABLE_BINDING,
 };
 pub use diag::{ArmSite, ContractCarrier, Subsystem, TypeDiag, TypeDiagKind};
 pub use env::TypeEnv;

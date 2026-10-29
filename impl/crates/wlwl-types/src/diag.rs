@@ -138,6 +138,19 @@ pub enum TypeDiagKind {
         /// 为什么跑不到(稳定文案,供快照测试)
         reason: String,
     },
+    /// [W-32 / G-2 规则 ①] **宿主挂起点成员出现在任务体之外**(含嵌套闭包内)。
+    ///
+    /// 复用**既有**码 `E0014`(并发册 §17.0 的那条)—— **不新增诊断码**
+    /// (1.0.x 没有通道;见计划书 §2 的三条硬约束之一)。
+    ///
+    /// ⚠ **文案与运行期逐字相同**:运行期那条由
+    ///   `wlwl-eval` 的 `Evaluator::suspend_site_message_and_span` 合成;
+    ///   两边写同一段文字 ⇒ 规范仓的「失败口径对拍」(按 `!EXXXX MEMBER`
+    ///   的形状取成员名)对静态诊断与运行期诊断**认得出是同一族**。
+    HostSuspendOutsideTask {
+        /// 被调用的成员名(如 `TCP_RECV`)
+        member: String,
+    },
 }
 
 /// MATCH 的一个臂。不可达诊断要能指回**具体哪一个**臂。
@@ -234,6 +247,23 @@ impl TypeDiagKind {
         }
     }
 
+    /// 该条件**只有一个码**(不存在 warn / error 两档之分)时的码号。
+    ///
+    /// [W-32 / G-2 规则 ①] 「宿主挂起点成员在任务体之外」复用运行期的
+    /// `E0014` ⇒ **没有 `W0014` 这个码**(注册表里根本没有,见
+    /// `wlwl-error` 的码表注释)⇒ 不能走 [`TypeDiagKind::codes`] 的
+    /// 「(error 档, warn 档)码对」那一路。
+    ///
+    /// ⚠ 这条与 [`TypeDiagKind::always_warning_code`] 是**两条不同的
+    ///   出口**:前者是「恒警告」(码仍是 W 段),本者是「只有 E 段一个码」
+    ///   (码仍是 E 段)。两者互斥。
+    pub fn fixed_code(&self) -> Option<ErrorCode> {
+        match self {
+            TypeDiagKind::HostSuspendOutsideTask { .. } => Some(ErrorCode::E0014),
+            _ => None,
+        }
+    }
+
     /// 这条诊断归哪个静态子系统(见 [`Subsystem`])。
     pub fn subsystem(&self) -> Subsystem {
         match self {
@@ -267,6 +297,9 @@ impl TypeDiagKind {
             // 不可达子句是**恒警告**,不参与升/降配对 ——
             // 见 [`TypeDiagKind::always_warning_code`]。
             TypeDiagKind::UnreachableArm { .. } => None,
+            // [W-32 / G-2 规则 ①] 只有一个码(`E0014`)⇒ 走
+            // [`TypeDiagKind::fixed_code`] 那一路,不走「码对」这一路。
+            TypeDiagKind::HostSuspendOutsideTask { .. } => None,
             TypeDiagKind::UndefinedName { .. } | TypeDiagKind::UnresolvedTypeName { .. } => None,
         }
     }
@@ -292,6 +325,13 @@ impl TypeDiag {
         if let Some(code) = self.kind.always_warning_code() {
             let mut d = WlwlDiagnostic::new(code, self.message(), self.location());
             d.severity = Severity::Warning;
+            return Some(d);
+        }
+        // [W-32 / G-2 规则 ①] **只有一个码**的种类 ⇒ 档位只改严重级,
+        // 不改码号(`E0014` 没有 `W0014` 配对)。
+        if let Some(code) = self.kind.fixed_code() {
+            let mut d = WlwlDiagnostic::new(code, self.message(), self.location());
+            d.severity = severity;
             return Some(d);
         }
         let (error_code, warning_code) = self.kind.codes()?;
@@ -406,6 +446,17 @@ impl TypeDiag {
             TypeDiagKind::UnreachableArm { what, reason } => {
                 format!("unreachable {what}: {reason}")
             }
+            // [W-32 / G-2 规则 ①] ⚠ **逐字取运行期那一段**(见
+            // `wlwl-eval` 的 `Evaluator::suspend_site_message_and_span`)
+            // ⇒ 静态诊断与运行期诊断**逐字相同** ⇒ 规范仓的「失败口径
+            // 对拍」对两者一视同仁。
+            //
+            // ⚠ **成员名前不加反引号**:规范仓的检查器按 `!EXXXX MEMBER`
+            //   的形状取成员名 ⇒ 加反引号会让对拍认不出这条诊断。
+            TypeDiagKind::HostSuspendOutsideTask { member } => format!(
+                "{member}: used outside a task body — this operation suspends the current task, \
+                 so it is only valid inside a task body (e.g. within SCOPE(...) / SPAWN(...))"
+            ),
         }
     }
 }
