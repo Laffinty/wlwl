@@ -1,3 +1,41 @@
+## [v0.12.1 开工 · 第十一波] — 2026-10-29（W-25 中间件原语：限流 / 规则热加载 / 审计 / 真实 IP;公共面 +3 成员）
+
+**本段 = 第十一波**：**W-25**（D-3 / D-5 / D-6 / D-7）+ CI run #328 结论落档。计划与坐标见 `docs/plan/wlwl-v0.12.1-build-plan.md` §4（工作项）/ §11.1（落地清单）/ §13（接替手册）。
+
+### 事件
+
+- **CI run #328**（check_suite `110809776912`，head_sha `89e1f30`）⇒ 三平台 fmt/clippy/doc/deny/conformance **全绿**;step 15 唯一失败 = `fs_member_set_matches_the_spec_table`（`§2 table missed 'PATH_CANONICAL'` ⇒ **规范侧 `std.fs` 成员表未跟上**，不是缺陷）;**`a_reader_never_sees_a_half_written_target` macOS/ubuntu 各两轮 ok** ⇒ **EINTR 假设成立**，登记 ⑨ **复核结案**（run #326 + #328 连续两跑）;「注解带 panic 原因」通道实测有效 ⇒ 归因不必捞日志。
+- ⚠ **CI fail-fast 盲区仍在**（登记 ⑫）⇒ 其余规范侧欠账只在本地全量跑可见。
+
+### 落地清单（1 项）
+
+| 工作项 | 内容 | 验收读数 |
+|---|---|---|
+| **W-25** | `std.http` 新增 **3 个**成员：`RATE_LIMITER`（滑动窗口 + 令牌桶，计数走 `std.sync::COUNTER_INC` 原子）· `RULESET_LOAD`（mtime 变更热更新，**一次 `SHARED_DICT_SET` 原子换引用** ⇒ 在途旧数组不受影响）· `CLIENT_IP`（仅可信代理采信 XFF，取最右非可信跳;**不可信远端无视 XFF**）;D-6 审计经**不导出** `_AUDIT` 走 `std.log` 六字段 JSON 行（时间/事件/客户端 IP/路径/结果/请求 ID）⇒ 零新增导出成员 | `middleware_contract` **25/0** · probe 新增 `P121_d3_d5_d6_d7_middleware`（三条验收读数全钉）· **两条反向守卫真红过**（计数改非原子 ⇒ 丢 280 次更新 `980278≠979998`;热切换改原地改旧数组 ⇒ 并发读者见撕裂条目）⇒ 复原 SHA256 逐字节一致 |
+
+### 集成者做的三件事
+
+1. **共享表登记**：`EXPECTED_CASE_COUNT` 195 → **196**;`http_contract` 冻结成员面 13 → **16**（断言改名 `the_member_set_is_exactly_sixteen_members` —— 名字跟着数量走，不许撒谎）。
+2. **口径核对**：三条新成员的语义逐条对照计划 W-25 规格（滑窗 60/60s 第 61 次拒 · 原子切换 · 可信代理）✓;既有 13 个成员一字未改 ✓;零新增诊断码 ✓;`fs.rs` 零改动（mtime 用既有 `FILE_META`）✓。
+3. ⚠ **一处 briefing 事实订正（已文档化）**：`std.sync` 的 `COUNTER(initial)` / `SHARED_DICT()` **每次调用新建容器、无按名查回**（与 §11.1 W-13 行的「按名」印象不符）⇒ http.wll 内补按 name 注册表层（缺省挂 `StdCtx.env`，跨求值器经 `opts.state` 显式传句柄）。
+
+### 门禁（第十一波集成后实测）
+
+Windows：`cargo fmt --all -- --check` **0 diff** · `cargo clippy --locked --workspace --all-targets -- -D warnings` **0 error** · `cargo doc --workspace --no-deps`（`-D warnings`）**0 error** · `wlwl-std` **385/0** · `http_contract` **25/0** · `middleware_contract` **25/0** · probe **3/3（196 用例）** · conformance **6/0**。
+**Linux 侧**（WSL2）：clippy 全 workspace **0 error** · `fs_atomic_lock_meta_contract` **21/0** · `http_contract` **25/0** · probe **3/3** · ⚠ `middleware_contract` **首跑 24/1 偶发**（用例名未抓到 ⇒ **登记 ⑰**，教训同 ⑪）⇒ 其后 9 连跑含 CPU 加压全绿 ⇒ 定性负载相关 flake。
+**红项仍是那两处已知欠账**（`stdlib_appendix_a_sync` 4 failed · `fs_contract` 28/1）⇒ 全部是「规范侧未跟上」，**零新增**。
+
+### 公共面变化（待规范仓落表：**55 → 58 个成员**）
+
+- `std.http` **+3**：`RATE_LIMITER` · `RULESET_LOAD` · `CLIENT_IP`
+- ⚠ 既有成员**零改动** · **零新增诊断码** · 版本口径仍是 实现 **v0.12.1** ↔ 规范 **v1.0.4**
+
+### 下一步
+
+实现侧只剩**收口批**：**W-34**（文档 / 技能包）· **W-35′**（登记 + 附录 A 抄件 + 全量门禁）+ 规范仓 **v1.0.4 五步**（业主那边，§11.2）。
+
+---
+
 ## [v0.12.1 开工 · 第十波] — 2026-10-29（`std.http` 四节之三：路由 / 静态文件 / 客户端;公共面 +11 成员）
 
 **本段 = 第十波**：`std.http` 的剩余三节（W-18 / W-19 / W-20）。计划与坐标见 `docs/plan/wlwl-v0.12.1-build-plan.md` §4（工作项）/ §11.1（落地清单）。
