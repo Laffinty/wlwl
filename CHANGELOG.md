@@ -1,3 +1,37 @@
+## [v0.12.1 开工 · 第八波] — 2026-10-29(门禁补跑 —— 修 CI run #323 的 clippy 红;零语义改动)
+
+**本段 = 第八波**：不是新工作项，而是**把 CI 跑红的 13 处 clippy lint 修掉**（**零语义改动**）**并把 clippy 补进本地门禁清单**。事件与坐标见 `docs/plan/wlwl-v0.12.1-build-plan.md` **§13.2「CI 实况」**。
+
+### 事件
+
+- **CI run #323**（head_sha `9a2dbda`，`main`）⇒ **failure**：三个 job（**windows / ubuntu / macos**）**红点完全一致** = `cargo clippy -D warnings` ⇒ step 11–23（`cargo doc` · `cargo-deny` · `cargo test` · **附录 A 对拍** · TLS · bench）**全部 skipped** ⇒ ⚠ **那 8 处「规范侧未跟上」的红，CI 这一次一次都没跑到** ⇒ 「CI 红」这次**不是**规范侧欠账，是**新回归**。
+- 对照 run **#322**（head_sha `9bd0f46`）= **success** ⇒ 红是 `9bd0f46..9a2dbda` 这 **19 个提交**引入的 ⇒ **不是上游旧账**。
+- **根因是流程缺口，不是代码缺陷**：前七波的 19 个提交**全推在 `wip0121` 分支**，而该分支**不在 `ci.yml` 的 push 触发列表**里 ⇒ clippy / doc / deny / test / conformance **一次都没跑过** ⇒ **本地门禁清单与 CI 步骤不对齐**（本地清单只有 fmt + 各 crate 测试，**漏了 clippy**）⇒「本地全绿」是**假绿**。
+
+### 修法（13 处 · **全部零语义改动**）
+
+| # | 位置 | lint | 修法 |
+|---|---|---|---|
+| 1–2 | `wlwl-types/src/check.rs`（`collect_defs` / `walk`） | `collapsible_match` | `Expr::Return { value, .. }` + `if let Some(v)` ⇒ 拆成 `value: Some(v)` / `value: None` 两条 arm（`None` 那条是空体 ⇒ 与原 `if let` 不匹配时的行为**逐字相同**） |
+| 3 | `wlwl-std/src/fs.rs`（`acquire_lock`） | `suspicious_open_options` | `.create(true)` 之后**显式** `.truncate(false)` —— 与原默认行为**逐字一致**（锁文件只当会合点，内容无意义） |
+| 4 | `wlwl-std/src/fs.rs`（原子写失败用例） | `io_other_error` | `Error::new(ErrorKind::Other, ..)` ⇒ `Error::other(..)`（MSRV 1.85 ≥ 1.74 ✔） |
+| 5 | `wlwl-ext/src/registry.rs`（`host_alloc`） | `missing_safety_doc` | 补 `# Safety` 段（**只加文档**，与相邻 `host_free` / `host_report` 风格对齐） |
+| 6–7 | `wlwl-ext/src/lib.rs`（读 ABI 头） | `clone_on_copy` | `u32` 是 `Copy` ⇒ 去掉 `.clone()` |
+| 8 | `wlwl-eval/tests/log_contract.rs` | `redundant_redefinition` | 删 `let handle = handle;`（`i64` 是 `Copy` ⇒ `move` 闭包自动捕获） |
+| 9–12 | `wlwl-eval/tests/sync_contract.rs` | `redundant_redefinition` | 同上（4 处） |
+| 13 | `wlwl-eval/tests/http_contract.rs` | `doc_lazy_continuation` | 文档列表项续行缩进 2 → 4 |
+
+- 引入提交（`git blame` 实测）：**第一波 `b0649cc` 6 处** · **第二波 `86b3c4a` 5 处** · **第七波 `64d9bbb` 2 处** ⇒ 全部是这 19 个提交带进来的新债。
+
+### 集成者动作
+
+- **本地门禁清单补齐**（根因消除）：§13.5 加第 **2b** 步（clippy，命令与 `ci.yml` 的步骤**逐字一致**）· §13.6 加第 **13** 行（门禁清单必须与 CI 步骤对齐）· §13.3「第一分钟」加 clippy 一行。
+- **验收**：`cargo fmt --all -- --check` **0 diff** · `cargo clippy --locked --workspace --all-targets -- -D warnings` **0 error**（本地 clippy = **1.99.0** = CI 钉死的 toolchain ⇒ **本地结论即 CI 结论**）· `wlwl-types` **144/0** · `wlwl-error` 65/0 · `wlwl-ext` 5/0 · `wlwl-eval --lib` **920/0** · probe **3/3（195 用例）** · `conformance` 6/0 · `lsp_smoke` 2/0 · `spec_r2_conformance` 11/0 · **改过的文件必须重跑**：`ext_loader_contract` **22/0** · `http_contract` **15/0** · `log_contract` **21/0** · `sync_contract` **21/0**;**红项仍是那 8 处**（`check-appendix-a` exit 1 · `stdlib_appendix_a_sync` 4 failed · `spec_appendix_g_sync` 2 failed · `fs_contract` 28/1 · `net_contract` 14/1 · `str_math_contract` 53/1 · `text_contract` 12/1 · `process_contract` 1~3 failed）⇒ **零新增**。
+- 本波**未改任何公共面成员** ⇒ 待规范侧落表总数仍是 **36 个成员 + 1 个新命名空间（`std.signal`）+ 附录 G 一行**。
+- 本波**未动规范仓**（一行都没动）· **未发 tag** · 实现侧版本口径仍是 **v0.12.1**。
+
+---
+
 ## [v0.12.1 开工 · 第七波] — 2026-10-29(1 个 PHASE + 1 项补做;多 agent 并行)
 
 **本段 = 第七波**：**W-32**（`wlwl check` 两条静态规则 · G-2）+ **G-4①**（模块私有成员 · 实为**证伪结案**），两个 agent 文件面零重叠。计划原文见 `docs/plan/wlwl-v0.12.1-build-plan.md`;本波的地位与交接见该文档 **§13「接替执行手册」**。

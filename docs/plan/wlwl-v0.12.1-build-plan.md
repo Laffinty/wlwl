@@ -1165,20 +1165,20 @@ python script/check_spec.py                     # 附录 A ↔ 各册成员表 �
 
 | 项 | 现状 |
 |---|---|
-| 仓库 / 分支 | `D:\Project\wlwl`（实现侧） / **`wip0121`**（远端 `origin/wip0121` 已同步）;规范仓 `D:\Project\wlwl-spec-v1`（**本轮一行未动**） |
-| HEAD | `64d9bbb` feat(impl): v0.12.1 第七波 —— W-32（wlwl check 两条静态规则）+ G-4① 证伪结案 |
-| 提交序列 | `40b5af6` **第六波 2 个 PHASE** → `1987aa0` 第五波面板 → `832839e` **第五波 2 个 PHASE** → `a8a431a` 第四波面板 → `969b220` **第四波 2 个 PHASE** → `78a826f` sanitize 定性更正 → `7f05d80` 第三波面板 → `0d5f410` **第三波 3 个 PHASE** → `d3f7b6c` §13 接替执行手册 → `20fa75f` 裁决记录 → `86b3c4a` **第二波 5 个 PHASE** → `df90382` 完成度面板 → `b0649cc` **第一波 7 个工作项** → `87a473b` §5.2b 真并行度 |
+| 仓库 / 分支 | `D:\Project\wlwl`（实现侧） / **`main`**（远端 `origin/main` 已同步 —— ⚠ **只有 `main` 在 `ci.yml` 的 push 触发列表里** ⇒ 推 `wip0121` **不会**跑任何 CI 门禁）;`origin/wip0121` 与 `origin/main` **同指**;规范仓 `D:\Project\wlwl-spec-v1`（**本轮一行未动**） |
+| HEAD | `2c3c29b` fix(impl): v0.12.1 第八波 —— 修 CI run #323 的 13 处 clippy lint（零语义改动） |
+| 提交序列 | `2c3c29b` **第八波·门禁补跑**（13 处 clippy）→ `64d9bbb` **第七波 2 个 PHASE** → `40b5af6` **第六波 2 个 PHASE** → `1987aa0` 第五波面板 → `832839e` **第五波 2 个 PHASE** → `a8a431a` 第四波面板 → `969b220` **第四波 2 个 PHASE** → `78a826f` sanitize 定性更正 → `7f05d80` 第三波面板 → `0d5f410` **第三波 3 个 PHASE** → `d3f7b6c` §13 接替执行手册 → `20fa75f` 裁决记录 → `86b3c4a` **第二波 5 个 PHASE** → `df90382` 完成度面板 → `b0649cc` **第一波 7 个工作项** → `87a473b` §5.2b 真并行度 |
 | 工作树 | **干净**（`git status` 空） |
 | 版本口径 | 实现 **v0.12.1** ↔ 规范 **v1.0.4**（业主两次确认锁死；**零处修改既有成员、零处新增诊断码**） |
 | 完成度 | **工作项 24 / 32** · **需求 28 / 57 完全落地**（部分 4 · 未开工 19 · 口径答复 6）⇒ 面板见 **§11.6b** |
 | 已落地清单 | §11.1（**24 行**，每行带验收读数） |
 | 业主裁决 | §10（Q1–Q4）+ §11.4（D1–D4b，**全部已定**）—— **D2 / D3 / D4a 已执行**（第三波）;D1 随规范侧 §5.5 台账执行;D4b 不排期 |
 
-### 13.2 门禁现状（**第七波**集成后实测）
+### 13.2 门禁现状（**第八波·门禁补跑**后实测）
 
-**绿**：`cargo fmt --all -- --check` **0 diff** · probe 套件 **3/3**（**195 用例**，常量 194 → **195**）· `wlwl-cli` **全 crate 绿**（138 / 23 / 19 / 6 / 9 / 3 / 2 / 9 / 5 / 2 / 2 / 1 / 2 / 4 / 6 …）· `wlwl-types` **144/0**（含 W-32 的 14 条新契约）· `wlwl-error` 65/0 · `wlwl-eval --lib` **920/0**（含 W-30 的 4 条 runtime 守卫）· `lsp_smoke` 2/0 · `spec_r2_conformance` 11/0 · 第五波契约仍绿（`b6` 7/0 · `b7` 10/0 · `w38` 11/0 · `h5_h6` 18/0）· 回归守护全绿（`b2` 4/0 · `b5` 12/0 · `socket_wait` 16/0 · `tcp` 23/0 · `suspend_site` 13/0）。
+**绿**：`cargo fmt --all -- --check` **0 diff** · **`cargo clippy --locked --workspace --all-targets -- -D warnings` 0 error**（⚠ **这一项是第八波才补上的** —— 前七波**从未在本地跑过 clippy** ⇒ 根因见下方「CI 实况」）· probe 套件 **3/3**（**195 用例**，常量 194 → **195**）· `wlwl-cli` **全 crate 绿**（138 / 23 / 19 / 6 / 9 / 3 / 2 / 9 / 5 / 2 / 2 / 1 / 2 / 4 / 6 …）· `wlwl-types` **144/0**（含 W-32 的 14 条新契约）· `wlwl-error` 65/0 · **`wlwl-ext` 5/0** · `wlwl-eval --lib` **920/0**（含 W-30 的 4 条 runtime 守卫）· `lsp_smoke` 2/0 · `spec_r2_conformance` 11/0 · `conformance` 6/0 · **本波新跑**（改过的文件必须重跑）：`ext_loader_contract` **22/0**（改了 `wlwl-ext` 的两处）· `http_contract` **15/0** · `log_contract` **21/0** · `sync_contract` **21/0**（后三者都改了）· 第五波契约仍绿（`b6` 7/0 · `b7` 10/0 · `w38` 11/0 · `h5_h6` 18/0）· 回归守护全绿（`b2` 4/0 · `b5` 12/0 · `socket_wait` 16/0 · `tcp` 23/0 · `suspend_site` 13/0）。
 
-**红（8 处，与第六波完全相同 ⇒ 本波零新增，全部是「规范侧未跟上」）**：`check-appendix-a`（抄件 vs 实现派生表体）· `stdlib_appendix_a_sync`（**4 failed**）· `spec_appendix_g_sync`（**2 failed** —— 附录 G 的抄件缺 `ARRAY_GET` 一行）· `fs_contract` / `net_contract` / `str_math_contract` / `text_contract` 的**成员表**（各 1 failed）· `process_contract`（**1~3 failed** —— 其一为**既有的成员表红**（规范侧未跟上），另两条 `a_timeout_yields_an_err_value` / `a_timeout_with_a_living_grandchild_returns_promptly` 是**并行干扰型 flake** ⇒ **不是回归**：**各自单跑绿**（0.89 s / 0.86 s）· **同文件串行跑绿**（`--test-threads=1` ⇒ 只剩成员表那条红）· **并行跑则红** ⇒ 两个用例各自 `taskkill /T /F` 杀整棵进程树 ⇒ 并行时互相误杀 ⇒ 起因指向第四波 W-14 新增的 `PROCESS_RUN_ASYNC` 进程组管理 ⇒ 已登记为待办）。
+**红（8 处，与第七波完全相同 ⇒ 本波零新增，全部是「规范侧未跟上」）**：本波**逐项实测**读数 —— `check-appendix-a`（**exit 1**）· `stdlib_appendix_a_sync`（**4 failed**）· `spec_appendix_g_sync`（**1 passed / 2 failed** —— 附录 G 的抄件缺 `ARRAY_GET` 一行，**106 行 vs 107 个登记项**）· `fs_contract`（**28 passed / 1 failed** —— 成员表）· `net_contract`（**14 passed / 1 failed** —— 成员表，`wlwl:std.net exports 14 members (5 + 9 个 TCP_*)`）· `str_math_contract`（**53 passed / 1 failed** —— 成员表，`std.str §6: the spec table and the R1 EXPORT list disagree`，整文件 **152.68 s**）· `text_contract`（**12 passed / 1 failed** —— 成员表，`wlwl:std.text exports 8 members`）· `process_contract`（**1~3 failed** —— 其一为**既有的成员表红**（规范侧未跟上），另两条 `a_timeout_yields_an_err_value` / `a_timeout_with_a_living_grandchild_returns_promptly` 是**并行干扰型 flake** ⇒ **不是回归**：**各自单跑绿**（0.89 s / 0.86 s）· **同文件串行跑绿**（`--test-threads=1` ⇒ 只剩成员表那条红）· **并行跑则红** ⇒ 两个用例各自 `taskkill /T /F` 杀整棵进程树 ⇒ 并行时互相误杀 ⇒ 起因指向第四波 W-14 新增的 `PROCESS_RUN_ASYNC` 进程组管理 ⇒ 已登记为待办;⚠ **本波未重测**（沿用既有定性））。
 ⇒ 根因：**36 个公共面成员 + 1 个新命名空间（`std.signal`）+ 附录 G 一行** 待规范仓落表 ⇒ 修法见 **§11.2 五步**（**必须规范仓先落表，再抄回抄件**）。
 
 ⚠ **本波新增的诊断文案差异（规范侧语言册措辞登记）**：**只有 `E0041` 一条** —— 消息补了「模块加载中不能再被加载」的说明（**含义未变**，条件仍是「IMPORT 成环」;`a -> b -> a` 段**逐字保留**）;**位置**从 `<module>:0:0` 改成**闭合环那条 `IMPORT`** 的 `file:line:col` 并新增 `source_line` ⇒ 这三个字段值会变。
@@ -1186,10 +1186,23 @@ python script/check_spec.py                     # 附录 A ↔ 各册成员表 �
 
 ⚠ **登记项 ③ 仍然不做**（理由同前四波）：它与 ④（抄回 `docs/wlwl-spec-reference.md`）**必须成对**，而 ④ 的内容来自规范仓 ⇒ 现在改 ③ 反而会把红消息从「诚实」换成「误导」。
 
+#### ⚠ CI 实况（run #323 —— 这 19 个提交**第一次**触发 CI）
+
+| 项 | 读数 |
+|---|---|
+| **run #323** | `40794436619`，head_sha `9a2dbda`，`main` ⇒ **conclusion = failure**;三个 job（**windows / ubuntu / macos**）**全红**，且**红点完全一致** = `cargo clippy -D warnings`（step 10）⇒ step 11–23（`cargo doc` · `cargo-deny` · `cargo test` · **附录 A 对拍** · TLS · bench）**全部 skipped** ⇒ ⚠ **那 8 处「规范侧未跟上」的红，CI 这一次一次都没跑到**（所以**别**把「CI 红」当成「规范侧欠账」—— 这次是两回事） |
+| **run #322** | head_sha `9bd0f46` ⇒ **success** ⇒ 这次的红是 `9bd0f46..9a2dbda` 这 **19 个提交**引入的 ⇒ **不是上游旧账** |
+| **根因** | ⚠ 前七波的 19 个提交**全部推在 `wip0121` 分支**，而该分支**不在 `ci.yml` 的 push 触发列表**里 ⇒ clippy / doc / deny / test / conformance **一次都没跑过** ⇒ **本地门禁清单与 CI 步骤不对齐**（本地清单只有 fmt + 各 crate 测试，**漏了 clippy**）⇒ 这是**流程缺口**，不是代码缺陷 |
+| **命中** | **13 处 lint**（本地 clippy = **1.99.0**，与 CI 钉死的 toolchain **同版本** ⇒ 本地复现即 CI 结论）:第一波 `b0649cc` **6 处**（`wlwl-std/src/fs.rs` ×2 · `wlwl-ext/src/registry.rs` ×1 · `wlwl-ext/src/lib.rs` ×2（**同一行**的两个 `.clone()`）· `wlwl-eval/tests/log_contract.rs` ×1）· 第二波 `86b3c4a` **5 处**（`wlwl-eval/tests/sync_contract.rs` ×4 · `http_contract.rs` ×1）· 第七波 `64d9bbb` **2 处**（`wlwl-types/src/check.rs` ×2） |
+| **修法** | **全部零语义改动**:`collapsible_match` → 拆成 `Some(v)` / `None` 两条 arm（`None` 那条是空体 ⇒ 与原 `if let` 不匹配时的行为逐字相同）· `suspicious_open_options` → 显式 `.truncate(false)`（**与原默认行为逐字一致**，锁文件内容本就无意义）· `io_other_error` → `Error::other`（MSRV 1.85 ≥ 1.74 ✔）· `missing_safety_doc` → 补 `# Safety` 段（**只加文档**）· `clone_on_copy` → 去掉 `u32` 的 `.clone()` · `redundant_redefinition` → 删 `let handle = handle;`（`i64` 是 `Copy` ⇒ `move` 闭包自动捕获）· `doc_lazy_continuation` → 列表项续行缩进 2 → 4 |
+
+⇒ **教训（已写进 §13.5 第 2b 步与 §13.6 第 13 行）**：**本地门禁清单必须与 `ci.yml` 的步骤逐条对齐** —— 每加一个 CI 步骤，本地清单同步加一条；否则「本地全绿」是**假绿**。
+
 ### 13.3 接替者的第一分钟（照做，别重新调查）
 
 ```powershell
 cd D:\Project\wlwl\impl
+cargo clippy --locked --workspace --all-targets -- -D warnings                  # 预期 0 error（⚠ 与 CI 逐字一致 —— 第八波补上，前七波漏了这一项）
 cargo run --locked --bin check-appendix-a -- ../docs/wlwl-spec-reference.md   # 预期 MISMATCH（规范侧未跟上）
 cargo test --locked -p wlwl-eval --test stdlib_appendix_a_sync                # 预期 4 failed（同上）
 cargo test --locked -p wlwl-cli --test probe                                 # 预期 3 passed（195 用例）
@@ -1247,6 +1260,7 @@ cd D:\Project\wlwl; git log --oneline -4; git status --short                  # 
 | ⑤ | **W-32 的两条「静态 vs 动态」已知差异** | **登记**（不修） | ① **模块顶层漏报**：静态层按 `host_suspend_outside_task` 的判据（`None` ⇒ 不动）⇒ 顶层形状静态层不报，但**运行期在顶层同样会报 `E0014`**（走「挂起信号逃到顶层」通路，文案逐字相同）⇒ 若要「顶层也静态拦」⇒ 是把判据扩到 `None` 的一行改动，**会改掉既有 `check` 的退出码语义** ⇒ **不夹带进 W-32**，单独立项;② **「成员跑完之后才判」的先后在静态层不存在** ⇒ 同一处静态可能报 `E0014` 而运行期报 `E0030`（如 `SLEEP_ASYNC(-1)` 在嵌套闭包里）⇒ 登记 |
 | ⑦ | **`process_contract` 两条 timeout 用例的并行干扰** | **登记**（不修） | 两条用例各自 `taskkill /T /F` 杀整棵进程树 ⇒ **同进程并行时互相误杀** ⇒ 断言 `elapsed < 3 s` 被撞 ⇒ **各自单跑绿 / 串行跑绿 / 并行跑红** ⇒ **不是回归** ⇒ 起因指向第四波 W-14 新增的 `PROCESS_RUN_ASYNC` 进程组管理 ⇒ 修法方向：让超时杀树**只作用于自己起的那个进程组**（隔离），或把这两条用例标为需串行 ⇒ 登记为待办 |
 | ⑥ | **`SCOPE` 体是不是合法落点** | **登记** | `E0014` 的**文案**说「(e.g. within SCOPE(...) / SPAWN(...))」，但**判据**上 `SCOPE` 的体在任务体内时深度为 1 ⇒ **报 `E0014`** ⇒ **文案与判据不一致** ⇒ 文案归运行期文件 ⇒ 登记为独立项 |
+| ⑧ | **本地门禁清单漏了 clippy** | **已修**（第八波） | 前七波的 19 个提交**全推在 `wip0121`**（该分支**不在 `ci.yml` 的 push 触发列表**）⇒ clippy **一次没跑过** ⇒ run #323 在 windows / ubuntu / macos **三平台全红**在 clippy 步骤 ⇒ **13 处 lint**（第一波 6 · 第二波 5 · 第七波 2）⇒ 已全部**零语义改动**修完（清单与坐标见 §13.2「CI 实况」）⇒ **根因已消除**：§13.5 加第 2b 步 · §13.6 加第 13 行 · §13.3 第一分钟加 clippy ⇒ 往后每波本地都跑 clippy |
 
 #### 收口批
 
@@ -1257,14 +1271,15 @@ cd D:\Project\wlwl; git log --oneline -4; git status --short                  # 
 | # | 事 | 证据 | 归属 |
 |---|---|---|---|
 | ① | **W-38**：`TCP_SERVE` 的 handler 里调宿主挂起点成员 ⇒ 该连接**静默作废** | 实测：handler 调用 1 次 · `TCP_SERVE` 返回 0 · exit 0 · stderr 全空 | `std/net.rs` + `tcp_serve_contract.rs`；**需先裁决**（诊断？拒绝？文档化？） |
-| ② | **`sanitize_contract::sanitize_is_idempotent_on_mutations` 极慢**（单跑 **381.33 s 通过**） | 该目标跑的代码与 HEAD **完全相同**（第三波对 `wlwl-parser/src` · `wlwl-eval/src` · `wlwl-std/src` · `sanitize.wll` · `wlwl-value` **零改动**）⇒ **既有问题，非第三波引入** | `impl/crates/wlwl-eval/tests/sanitize_contract.rs:1616`;形态 = 对 `SANITIZE_CASES` × 变异组合逐个**新起求值器**跑两遍 ⇒ debug + 机器负载下约 **6.4 分钟**。⚠ **它会过、只是慢**（本轮实测 `1 passed`）⇒ 下一轮给它设预算 / 拆用例即可，**不是缺陷** |
+| ② | **`sanitize_contract::sanitize_is_idempotent_on_mutations` 极慢**（单跑 **381.33 s 通过**） | 该目标跑的代码与 HEAD **完全相同**（第三波对 `wlwl-parser/src` · `wlwl-eval/src` · `wlwl-std/src` · `sanitize.wll` · `wlwl-value` **零改动**）⇒ **既有问题，非第三波引入** | `impl/crates/wlwl-eval/tests/sanitize_contract.rs:1616`;形态 = 对 `SANITIZE_CASES` × 变异组合逐个**新起求值器**跑两遍 ⇒ debug + 机器负载下约 **6.4 分钟**。⚠ **它会过、只是慢**（本轮实测 `1 passed`）⇒ 下一轮给它设预算 / 拆用例即可，**不是缺陷**。⚠ **第八波实测补一条**：`str_math_contract` **整文件 152.68 s**（`math_matches_section_7` · `decimal_rounding_matches_python_decimal_modes` · `str_matches_section_6` 三条各 > 60 s）⇒ 同样是**本机负载**所致（游戏进程占 CPU）⇒ **不是缺陷**，但 CI 上**别给它设太紧的超时** |
 
 ### 13.5 集成者的固定动作（每波结束都做这几件，顺序不变）
 
 1. 收 agent 的**「登记清单」** ⇒ 统一改：`impl/crates/wlwl-std/src/lib.rs`（`pub mod X;` + `resolve()` 分派 + `NATIVE_SPECS` + `LANG_SOURCES`）· `impl/crates/wlwl-eval/src/stdlib_mirror.rs`（`NAMESPACE_META`）· 各 `*_contract.rs` 里的**期望名单**。
 2. `cargo fmt --all` ⇒ `cargo fmt --all -- --check` 必须 0 diff。
-3. 跑门禁 ⇒ **把红分类**：①「规范侧未跟上」（改抄件 / 规范仓）②「真缺陷」（当场修）。
-4. `git add -A` + `git commit`（**不 push**；push 由业主发起）。
+2b. `cargo clippy --locked --workspace --all-targets -- -D warnings` 必须 **0 error** —— ⚠ **命令要与 `ci.yml` 的 clippy 步骤逐字一致**（**第八波加**;前七波漏了它 ⇒ run #323 在 windows / ubuntu / macos **三平台全红**,根因就是这一条）。
+3. 跑门禁 ⇒ **把红分类**：①「规范侧未跟上」（改抄件 / 规范仓）②「真缺陷」（当场修）③ **CI 独有、本地清单没跑到的**（⇒ 立刻把它补进本地清单，别让「本地全绿」变成假绿）。
+4. `git add -A` + `git commit`（默认**不 push**;push 由业主发起 —— 业主明确说「请PUSH」时才推）。
 5. 更新本文件 §13.1（HEAD/提交序列/门禁/完成度）⇒ **下一个接替者只读 §13 就能知道进度**。
 
 ### 13.6 环境事实（接替者别再踩一遍）
@@ -1283,9 +1298,10 @@ cd D:\Project\wlwl; git log --oneline -4; git status --short                  # 
 | 10 | **扩展命名空间不进附录 A / 不进公共面清单** | 公共面取自 `wlwl_std::namespace_paths()` 这张**静态**表 ⇒ 运行期扩展结构上进不去 ⇒ 只进一致性册 §5.5 台账 |
 | 11 | ⚠ **过期二进制会给出与源码缺陷完全同形的读数** | 第三波开工时 `target/release/wlwl.exe` 构建于 07:49，而 `wl/std/str.wll` 于 08:05 被 W-28 改过 ⇒ **旧二进制读新模块源码** ⇒ 报 `E0013` 且位置指向 `wlwl:std.str:281:45` ⇒ **合法程序被误拒**（差点被当成解析器缺陷）⇒ **任何解析器 / 诊断面结论，先确认二进制新鲜度**（`cargo build --release --locked --bin wlwl`）;探针与契约测试走 `CARGO_BIN_EXE_wlwl` ⇒ **自带新鲜度**，不受影响 |
 | 12 | `TCP_SERVE` 的 handler **跑在原生帧内** ⇒ 那里**挂不了** | handler 里调宿主挂起点成员 ⇒ 该连接**静默作废**（无诊断、stderr 全空、exit 0、不计入返回计数）⇒ 已登记 **W-38**;⇒ 写 handler 时**只返回 DICT**，别碰 `TCP_*` / `SLEEP_ASYNC` |
+| 13 | ⚠ **本地门禁清单 ≠ CI 步骤清单 ⇒「本地全绿」可能是假绿** | 前七波的 19 个提交**全推在 `wip0121` 分支**（该分支**不在 `ci.yml` 的 push 触发列表**）⇒ clippy / doc / deny / test / conformance **一次都没跑过** ⇒ run #323 首次 CI 就红在 clippy（**13 处 lint**，已零语义改动修完）⇒ **规矩**：`ci.yml` 每加一个步骤，本地清单**同步**加一条;**至少** `cargo clippy --locked --workspace --all-targets -- -D warnings` 必须进清单（本地 clippy = **1.99.0** = CI 钉死的 toolchain ⇒ **本地结论即 CI 结论**，可放心本地判定） |
 
 ### 13.7 一句话状态
 
-> **24 / 32 个工作项、28 / 57 条需求已落地并复核**（第七波：**W-32** —— `wlwl check` 两条静态规则；规则①复用既有 `E0014`、规则②是**无码**提示 `shared-mutable-binding`，**LSP ≡ CLI 同一份收集函数**;**G-4① 证伪结案** —— 「模块私有成员」**语义本就满足**，只补了模块文档 + 2 条回归守卫，**语义零改动**;第六波：W-33（F-4 诊断可读性 + G-4 循环导入诊断）· W-30（F-3 任务检视 + G-3 最小 REPL）；第五波：W-15（B-6 兜底臂真缺陷 + B-7 `std.signal` + W-38 诊断化）· W-29（H-5/H-6 别名）；第四波：W-11（B-2 惊群根因）· W-14（B-5 非阻塞出站）；第三波：W-36 / W-35 / W-37 —— **W-37 是证伪结案**，见 §11.4b）；规则侧**只差规范仓落表**（§11.2 五步，**必须等业主先 push 规范仓**）—— 待落表总数仍是 **36 个成员 + 1 个新命名空间（`std.signal`）+ 附录 G 一行**;实现侧下一批是 **G-4②「`.wll.sig` 工作流简化」**（动 `cli/tooling.rs` + `cli/main.rs` ⇒ 正好独占这两个文件面 ⇒ 单 agent 即可）⇒ 之后 **`std.http` 四节串行**（W-17 → W-18 → W-19 → W-20）⇒ 再后 **W-31 / W-25** ⇒ 收口 **W-34 / W-35′** + 规范仓 v1.0.4。
+> **24 / 32 个工作项、28 / 57 条需求已落地并复核**（第八波：**门禁补跑** —— CI run #323 的 **13 处 clippy lint** 全部修完（**零语义改动**;第一波 6 · 第二波 5 · 第七波 2）⇒ 并把 `cargo clippy --locked --workspace --all-targets -- -D warnings` **补进本地门禁清单**（§13.5 第 2b 步）⇒ **「本地全绿」不再是假绿**;第七波：**W-32** —— `wlwl check` 两条静态规则；规则①复用既有 `E0014`、规则②是**无码**提示 `shared-mutable-binding`，**LSP ≡ CLI 同一份收集函数**;**G-4① 证伪结案** —— 「模块私有成员」**语义本就满足**，只补了模块文档 + 2 条回归守卫，**语义零改动**;第六波：W-33（F-4 诊断可读性 + G-4 循环导入诊断）· W-30（F-3 任务检视 + G-3 最小 REPL）；第五波：W-15（B-6 兜底臂真缺陷 + B-7 `std.signal` + W-38 诊断化）· W-29（H-5/H-6 别名）；第四波：W-11（B-2 惊群根因）· W-14（B-5 非阻塞出站）；第三波：W-36 / W-35 / W-37 —— **W-37 是证伪结案**，见 §11.4b）；规则侧**只差规范仓落表**（§11.2 五步，**必须等业主先 push 规范仓**）—— 待落表总数仍是 **36 个成员 + 1 个新命名空间（`std.signal`）+ 附录 G 一行**;实现侧下一批是 **G-4②「`.wll.sig` 工作流简化」**（动 `cli/tooling.rs` + `cli/main.rs` ⇒ 正好独占这两个文件面 ⇒ 单 agent 即可）⇒ 之后 **`std.http` 四节串行**（W-17 → W-18 → W-19 → W-20）⇒ 再后 **W-31 / W-25** ⇒ 收口 **W-34 / W-35′** + 规范仓 v1.0.4。
 > ⚠ **本波登记 3 项**（**不阻塞**，见 §13.4）：W-32 的两条「静态 vs 动态」已知差异（顶层漏报 · 「成员跑完才判」的先后不存在）· `SCOPE` 体的**文案-判据不一致**（文案说 SCOPE 合法，判据说它报 E0014）· **「顶层也静态拦」的口径决定**（建议单独立项，勿夹带）。
 > ⚠ 另有一条**已记在案的取舍**：`wlwl check` 拦静态 `E0014`（exit 1），`wlwl run` **不报不拦** —— 因为既有探针 `p07`/`p09` 钉死了「跑一半 + 运行期报**逐字相同**的那条 E0014 + exit 1」⇒ 静态层若在 `run` 里拦，那两条必红。
