@@ -1170,7 +1170,7 @@ python script/check_spec.py                     # 附录 A ↔ 各册成员表 �
 
 | 项 | 现状 |
 |---|---|
-| 仓库 / 分支 | `D:\Project\wlwl`（实现侧） / **`main`**（远端 `origin/main` 已同步 —— ⚠ **只有 `main` 在 `ci.yml` 的 push 触发列表里** ⇒ 推 `wip0121` **不会**跑任何 CI 门禁）;`origin/wip0121` 与 `origin/main` **同指**;规范仓 `D:\Project\wlwl-spec-v1`（**本轮一行未动**） |
+| 仓库 / 分支 | `D:\Project\wlwl`（实现侧） / **工作分支 `wip0112`**（⚠ **2026-10-29 业主定**：未经明确要求，**只准在 `wip0112` 上干活**）;远端 `origin/main` 与 `origin/wip0121` 同指 `84390a0`（⚠ **只有 `main` 在 `ci.yml` 的 push 触发列表里** ⇒ 推 `wip0112` **不会**跑任何 CI 门禁）;⚠ **分支纪律（业主当面定）**：**未经明确要求不做任何分支操作**（push / 建分支 / 切分支 / 合并 / reset / 改 tag）——**建议里写「推 main」也只是建议**;规范仓 `D:\Project\wlwl-spec-v1`（**本轮一行未动**） |
 | HEAD | `ae6538e` feat(impl): v0.12.1 第九波 —— 3 个 PHASE + macOS 欠账单独处理（公共面 +8 成员） |
 | 提交序列 | `ae6538e` **第九波 4 项**（W-17 · W-31 · G-4② · W-39 + 集成者的登记清单转正）→ `33ed403` 第九波开波前登记（run #325 实况 + macOS 欠账）→ `d9549a7` 第八波二轮面板 → `5d709ff` **第八波二轮**（doc 红 + unix clippy 红）→ `84fbe56` 第八波面板 → `2c3c29b` **第八波·门禁补跑**（13 处 clippy）→ `64d9bbb` **第七波 2 个 PHASE** → `40b5af6` **第六波 2 个 PHASE** → `1987aa0` 第五波面板 → `832839e` **第五波 2 个 PHASE** → `a8a431a` 第四波面板 → `969b220` **第四波 2 个 PHASE** → `78a826f` sanitize 定性更正 → `7f05d80` 第三波面板 → `0d5f410` **第三波 3 个 PHASE** → `d3f7b6c` §13 接替执行手册 → `20fa75f` 裁决记录 → `86b3c4a` **第二波 5 个 PHASE** → `df90382` 完成度面板 → `b0649cc` **第一波 7 个工作项** → `87a473b` §5.2b 真并行度 |
 | 工作树 | **干净**（`git status` 空） |
@@ -1237,6 +1237,20 @@ python script/check_spec.py                     # 附录 A ↔ 各册成员表 �
 
 ⇒ ⚠⚠ **归因仍差最后一环**：CI 的 `failed_names()`（`ci.yml:372-374`）**只抓用例名**（`grep -E '^test .* \.\.\. FAILED'`）⇒ 失败**原因**仍只在「登录后才可见」的 workflow 日志 / artifact 里（匿名 `GET /actions/jobs/<id>/logs` = **403**，artifact = **401**）⇒ **macOS 那条为什么红，目前只能靠推理，不能靠读数**。⇒ 第九波 W-39 的第 ① 步就是**把 panic 原因也塞进那条匿名可读的 annotation** ⇒ 下一次 CI 迭代就能一次 API 调用读到确切原因，不必再「靠猜」。
 
+#### ✅ CI 实况（run #326 —— 第九波落地后的那一跑：**macOS 的那条绿了**）
+
+**读数**（run #326 = `40829336445`，head_sha `84390a0`，`main`）：三平台 **fmt / clippy / doc / cargo-deny / conformance 全绿**（第九波那 2 处 `private-intra-doc-links` 也修完了）⇒ 失败只发生在 step 15 `cargo test --locked --all-targets`。
+
+**日志中唯一出现的失败用例**（三平台一致）：`fs_member_set_matches_the_spec_table` ⇒ 消息 = `§2 table missed PATH_CANONICAL` ⇒ **规范侧 `std.fs` 成员表未跟上**（§11.2 步骤 ①–③）⇒ **不是实现缺陷**。
+
+**✅ 第九波 W-39 结案**：macOS 上 `test a_reader_never_sees_a_half_written_target ... ok`（**pass 1 与 pass 2 都 ok**）⇒ 此前 run #325 在 macOS 上是**两轮都红** ⇒ **EINTR 修复生效**（§13.4 登记 ⑨ 结案）。
+
+**✅ 新注解机制实测有效**：注解现在带 panic 原因全文 ⇒ 实测样例（ubuntu）：
+`::warning title=FAILED tests - pass 1::test fs_member_set_matches_the_spec_table ... FAILED -- reasons: fs_member_set_matches_the_spec_table :: thread '...' panicked at crates/wlwl-eval/tests/fs_contract.rs:839:9: | §2 table missed 'PATH_CANONICAL': [...]`
+⇒ **归因不再需要「捞日志」**（workflow 日志匿名 403 / artifact 401）。
+
+⚠⚠ **但 CI 仍然只报「第一个」失败目标** ⇒ 见 **§13.4 登记 ⑫**（`cargo test` 不带 `--no-fail-fast` ⇒ 第一个失败目标之后的目标**不再执行** ⇒ 另外几笔规范侧欠账在 CI 里**一次都没被执行**）。
+
 ### 13.3 接替者的第一分钟（照做，别重新调查）
 
 ```powershell
@@ -1300,9 +1314,10 @@ cd D:\Project\wlwl; git log --oneline -4; git status --short                  # 
 | ⑦ | **`process_contract` 两条 timeout 用例的并行干扰** | **登记**（不修） | 两条用例各自 `taskkill /T /F` 杀整棵进程树 ⇒ **同进程并行时互相误杀** ⇒ 断言 `elapsed < 3 s` 被撞 ⇒ **各自单跑绿 / 串行跑绿 / 并行跑红** ⇒ **不是回归** ⇒ 起因指向第四波 W-14 新增的 `PROCESS_RUN_ASYNC` 进程组管理 ⇒ 修法方向：让超时杀树**只作用于自己起的那个进程组**（隔离），或把这两条用例标为需串行 ⇒ 登记为待办 |
 | ⑥ | **`SCOPE` 体是不是合法落点** | **登记** | `E0014` 的**文案**说「(e.g. within SCOPE(...) / SPAWN(...))」，但**判据**上 `SCOPE` 的体在任务体内时深度为 1 ⇒ **报 `E0014`** ⇒ **文案与判据不一致** ⇒ 文案归运行期文件 ⇒ 登记为独立项 |
 | ⑧ | **本地门禁清单漏了 clippy** | **已修**（第八波） | 前七波的 19 个提交**全推在 `wip0121`**（该分支**不在 `ci.yml` 的 push 触发列表**）⇒ clippy **一次没跑过** ⇒ run #323 在 windows / ubuntu / macos **三平台全红**在 clippy 步骤 ⇒ **13 处 lint**（第一波 6 · 第二波 5 · 第七波 2）⇒ 已全部**零语义改动**修完（清单与坐标见 §13.2「CI 实况」）⇒ **根因已消除**：§13.5 加第 2b 步 · §13.6 加第 13 行 · §13.3 第一分钟加 clippy ⇒ 往后每波本地都跑 clippy |
-| ⑨ | ⚠ **macOS 独有的真失败：`a_reader_never_sees_a_half_written_target`** | **已修**（第九波 · W-39）· ⚠ **macOS 根因待 CI 确认** | **首次登记**（2026-10-29 下午）：run #325 的 macOS job 在 `cargo test --locked --all-targets` 上 **pass 1 与 pass 2 都红 ⇒ 非 flaky**;同一用例在 ubuntu **绿** ⇒ **macOS 特有**。⚠ **不是回归** —— run #325 是这批提交**第一次**真的跑到 `cargo test --all-targets`（前七波全推在 `wip0121` ⇒ 一次没跑过）⇒ 是**首次暴露**。**第九波已做三件**：① **把 panic 原因也塞进匿名可读的 annotation**（CI 日志匿名 403 / artifact 401 ⇒ 之前归因只能靠猜）② 按 **EINTR** 假设修**实现侧**（`fs.rs` unix 段的 `open`/`rename` 遇 `ErrorKind::Interrupted` 有界重试 ⇒ 这是**真缺陷**：原子写会因信号偶发失败）+ **测试侧**（reader 只放行 `Interrupted` 这一种 ⇒ `NotFound` 仍算中间态 ⇒ 退化实现照样被抓住）③ **Linux 侧已实测**（WSL2：`fs_atomic_lock_meta_contract` **21/0**，含那条用例 **ok**）+ 反向守卫在副本里把 unix `atomic_replace` 改成「先删后写」⇒ **必红** ⇒ 复原后逐字节相同。⚠ **仍未确诊 macOS 的确切原因** ⇒ **下一次 CI 迭代由新注解读出** ⇒ 若原因**不是** `Interrupted`（例如是 `NotFound`），则 EINTR 假设被证伪 ⇒ 改追那条线，**不要**继续加 EINTR 重试 |
+| ⑨ | ⚠ **macOS 独有的真失败：`a_reader_never_sees_a_half_written_target`** | ✅ **已修且已结案**（第九波 · W-39；run #326 实测：macOS **两轮都 ok**） | **首次登记**（2026-10-29 下午）：run #325 的 macOS job 在 `cargo test --locked --all-targets` 上 **pass 1 与 pass 2 都红 ⇒ 非 flaky**;同一用例在 ubuntu **绿** ⇒ **macOS 特有**。⚠ **不是回归** —— run #325 是这批提交**第一次**真的跑到 `cargo test --all-targets`（前七波全推在 `wip0121` ⇒ 一次没跑过）⇒ 是**首次暴露**。**第九波做了三件**：① **把 panic 原因也塞进匿名可读的 annotation**（CI 日志匿名 403 / artifact 401 ⇒ 之前归因只能靠猜）② 按 **EINTR** 假设修**实现侧**（`fs.rs` unix 段的 `open`/`rename` 遇 `ErrorKind::Interrupted` 有界重试 ⇒ 这是**真缺陷**：原子写会因信号偶发失败）+ **测试侧**（reader 只放行 `Interrupted` 这一种 ⇒ `NotFound` 仍算中间态 ⇒ 退化实现照样被抓住）③ **Linux 侧已实测**（WSL2：`fs_atomic_lock_meta_contract` **21/0**，含那条用例 **ok**）+ 反向守卫在副本里把 unix `atomic_replace` 改成「先删后写」⇒ **必红** ⇒ 复原后逐字节相同。⇒ ✅ **run #326 实测：macOS 上 `test a_reader_never_sees_a_half_written_target ... ok`（pass 1 与 pass 2 都 ok）⇒ EINTR 修复生效，该项结案** |
 | ⑩ | ⚠ **W-17 的请求头解析判据在 `net.rs` 里被复制了一份**（`parse_request_head` 与既有 `read_request` 各一份） | 因为 `TCP_SERVE` 的既有实现**一个字都不能改** ⇒ W-17 只能另写一份 ⇒ **两份判据必须人工保持一致**（已在代码注释里写明）。⚠ **未修**（本轮不动既有成员的实现 ⇒ 那是「零语义改动重构」，风险高于收益）⇒ 后续若有人改 `read_request` 的判据，**这里要同步** ⇒ 登记为待办，建议单独一次零语义重构把两者合并成一个私有助手 | `impl/crates/wlwl-std/src/net.rs`（`parse_request_head` 与 `read_request`）|
 | ⑪ | ⚠ **`tcp_serve_contract` 的一次偶发失败**（与其他 3 个套件同批跑时红 1 条；**单独连跑 3 次均 16/16 全绿**） | W-17 交付时记录：**未能记下用例名**（它的输出过滤把那行名字丢了）⇒ **定性为机器负载导致的偶发**，非本次引入。⚠ **登记为待办**：下一次 CI 若再出现，**先把用例名抓下来**（第九波起 CI 的 annotation 已带 panic 原因 ⇒ 匿名可读）⇒ 届时可准确定性 | `impl/crates/wlwl-eval/tests/tcp_serve_contract.rs` |
+| ⑫ | ⚠⚠ **CI 只报「第一个」失败目标 —— 其余欠账在 CI 里从未被报过** | CI 的 test 命令是 `cargo test --locked --all-targets`（`ci.yml:363`）**不带 `--no-fail-fast`** ⇒ **第一个失败的目标之后，所有 target 都不再执行** ⇒ 每次 CI 的注解里**只会出现一个**失败用例名 ⇒ run #325/#326 实测证实：`net_member_set_matches_the_spec_table` / `text_member_set_matches_the_spec_table` / `the_implementation_member_sets_match_the_frozen_snapshot` / `spec_appendix_g_has_one_row_per_registry_entry` 这四个用例名**在 CI 日志里一次都没出现**（本地跑它们**是红的**）⇒ **那几笔规范侧欠账在 CI 里根本没被执行过**。⚠ **这是 `ci.yml` 里刻意写下的决定**（`ci.yml:319-323`：「刻意**没有**加 `--no-fail-fast` —— 它确实能一次收全所有失败名，但那是在改动既有测试语义 …… 超出『不改覆盖范围』的授权范围」）⇒ **本轮不动**（那是策略裁决，业主的事）⇒ **登记为待裁决项**：加 `--no-fail-fast` 就能一次看到全部欠账，代价是「失败后不再执行的 target 现在会执行」（覆盖范围变化） | `.github/workflows/ci.yml:319-323` 与 `:363` |
 
 #### 收口批
 
