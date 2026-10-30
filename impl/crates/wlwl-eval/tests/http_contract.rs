@@ -489,11 +489,35 @@ fn content_length_of(head: &str) -> usize {
 /// 读一条响应（头块 + 按 `Content-Length` 的体）⇒ 原文。
 ///
 /// ⚠ 头块还没读完就 EOF ⇒ 返回**已经读到的**那些字节（够断言用）。
+/// 「对端已经不在了」的读错误 —— **不是**超时，也不是本机故障。
+///
+/// ⚠ **为什么要有这个**（2026-10-30 收口夜 · macOS run #330 实测）：
+///   `the_handler_can_choose_to_stop_the_stream` 里客户端**故意**在服务端
+///   关闭**之后**又写一条请求（要证明「服务端不再服务第二条」）⇒ 服务端那个
+///   socket 的**收队列里有未读数据** ⇒ TCP 栈回 **RST**（而不是 FIN）⇒
+///   客户端的下一次 `read` 拿到 `ECONNRESET`。
+///   ⚠ 这是 **TCP 的规定行为**（RFC 9110 §9.6：客户端**不得**复用已被服务端
+///   关闭的连接）⇒ **不是实现的缺陷** ⇒ 客户端必须把「连接被重置」与
+///   「读到 0 字节」**同义**看待：**两者都表示「这条连接上不会再有响应」**。
+///   ⚠ 本机（Windows）实测**同样能复现**（`WSAECONNRESET` 10054）⇒ 差别只在
+///   **时序**：macOS 上「客户端的写」更容易赶上「服务端的关」⇒ 那边必红、
+///   这边常绿 ⇒ **同一个缺陷两副面孔** ⇒ 判据必须**两种结局都接受**。
+fn is_peer_gone(e: &std::io::Error) -> bool {
+    matches!(
+        e.kind(),
+        std::io::ErrorKind::ConnectionReset | std::io::ErrorKind::ConnectionAborted
+    )
+}
 fn read_response(s: &mut TcpStream) -> String {
     let mut buf: Vec<u8> = Vec::new();
     let mut tmp = [0u8; 8192];
     let head_end = loop {
-        let n = s.read(&mut tmp).expect("read the response head");
+        // ⚠ 「对端已走」（RST）与「读到 0 字节」同义（见 `is_peer_gone`）。
+        let n = match s.read(&mut tmp) {
+            Ok(n) => n,
+            Err(e) if is_peer_gone(&e) => return String::from_utf8_lossy(&buf).into_owned(),
+            Err(e) => panic!("read the response head: {e:?}"),
+        };
         if n == 0 {
             return String::from_utf8_lossy(&buf).into_owned();
         }
@@ -506,7 +530,11 @@ fn read_response(s: &mut TcpStream) -> String {
     let want = content_length_of(&head);
     let mut body = buf[head_end + 4..].to_vec();
     while body.len() < want {
-        let n = s.read(&mut tmp).expect("read the response body");
+        let n = match s.read(&mut tmp) {
+            Ok(n) => n,
+            Err(e) if is_peer_gone(&e) => break,
+            Err(e) => panic!("read the response body: {e:?}"),
+        };
         if n == 0 {
             break;
         }
@@ -599,7 +627,12 @@ fn the_server_closes_the_connection_after_the_idle_timeout() {
         let first = read_response(&mut s);
         // ⚠ 服务端空闲 ⇒ **它自己**关连接 ⇒ 这里读到 EOF（0 字节）。
         let mut rest = Vec::new();
-        let n = s.read_to_end(&mut rest).expect("read to end");
+        // ⚠ 同 `read_response`：对端已走（RST）⇒ 与「读到 0 字节」同义。
+        let n = match s.read_to_end(&mut rest) {
+            Ok(n) => n,
+            Err(e) if is_peer_gone(&e) => 0,
+            Err(e) => panic!("read to end: {e:?}"),
+        };
         Ok((first, n))
     });
     let served = serve_stream(port, r#"["idle_timeout_ms": 300]"#, ECHO_HANDLER);
@@ -632,7 +665,12 @@ fn a_connection_close_request_ends_the_stream_immediately() {
             .expect("write");
         let first = read_response(&mut s);
         let mut rest = Vec::new();
-        let n = s.read_to_end(&mut rest).expect("read to end");
+        // ⚠ 同 `read_response`：对端已走（RST）⇒ 与「读到 0 字节」同义。
+        let n = match s.read_to_end(&mut rest) {
+            Ok(n) => n,
+            Err(e) if is_peer_gone(&e) => 0,
+            Err(e) => panic!("read to end: {e:?}"),
+        };
         Ok((first, n))
     });
     let served = serve_stream(port, r#"["idle_timeout_ms": 8000]"#, ECHO_HANDLER);
