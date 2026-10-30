@@ -1,0 +1,49 @@
+// examples/if_else_multistmt.wll — H-1: an IF arm holds a multi-statement group
+//
+// Expected stdout:
+//   then-branch: 1
+//   else-sum: 3
+//   else-side: seen
+//   else-late: final
+//   PASS:if_else_multistmt
+//
+// ── What this pins ────────────────────────────────────────────────────────
+// Both arms of `IF(cond, then, else)` may be a `(stmt; stmt; …)` **group**,
+// and the group's value is its **last** statement. This file exercises the
+// *third* argument (the else arm) specifically: an earlier revision of this
+// bundle claimed that arm raised `E0013: expected ';' after expression` and
+// taught readers to route the work through a `LET`/closure instead. That
+// reading is retired — `skill_examples.rs` carries
+// `h1_if_else_third_arg_holds_a_multi_statement_group`, which runs this file
+// and asserts the output below, so the shape cannot silently regress.
+//
+// ── The rules in one place ────────────────────────────────────────────────
+// · The group is `(a; b; …; z)`; its value is `z`.
+// · Side effects inside the group run **once**, in order, before the value.
+// · Both arms may be groups; a bare expression is just a one-statement group.
+
+IMPORT("wlwl:std.io", ["PRINT"]);
+
+// ① The then arm as a bare expression, the else arm as a group (the shape in
+//    question). `c` is truthy ⇒ we see the then arm's value.
+LET(c, TRUE);
+PRINT(FORMAT("then-branch: {0}", IF(c, 1, (LET(a, 1); LET(b, 2); +(a, b)))));
+
+// ② The same call with `c` falsy ⇒ the group runs and its LAST statement
+//    (`+(a, b)`) is the value: 1 + 2 = 3.
+LET(c2, FALSE);
+PRINT(FORMAT("else-sum: {0}", IF(c2, 1, (LET(a, 1); LET(b, 2); +(a, b)))));
+
+// ③ A side effect inside the group runs exactly once, and a `SET` to an
+//    outer `LET MUT` survives the group.
+LET MUT(seen, "unseen");
+LET(c3, FALSE);
+PRINT(FORMAT("else-side: {0}", IF(c3, "unused", (SET(seen, "seen"); seen))));
+
+// ④ Three statements; only the last one becomes the value.
+LET(c4, FALSE);
+PRINT(FORMAT("else-late: {0}", IF(c4, "unused", (LET(x, "a"); LET(y, "b"); "final"))));
+
+IF(==(seen, "seen"),
+   PRINT("PASS:if_else_multistmt"),
+   PRINT("FAIL:if_else_multistmt"))

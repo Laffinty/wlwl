@@ -569,25 +569,91 @@ fn the_copy_is_a_faithful_transcript_of_the_frozen_snapshot() {
 ///   失败**不会互相掩盖**。
 /// ⚠ §5.5 规则 5:台账条目**不得**被表述为「规范已支持」,**不得**被工具
 ///   列进「公共面」⇒ 这里算的只是**期望面**,不是公共面清单。
+/// **静态面期望集** = (附录 A ∪ 台账)剔除「台账独有的运行期扩展命名空间」,
+/// 顺带返回被剔除的名单(供断言消息用)。
+///
+/// §5.5 的台账可以登记**运行期扩展命名空间**(如 `tls` / `crypto`)—— 它们由
+/// 宿主 `--ext` 显式加载,**不在**静态公共面(`namespace_paths()`)内,也不在
+/// 附录 A 内(台账规则 1/2:台账不属公共面)⇒ 不参与集合相等判定。⚠ **只**
+/// 放行「台账独有、附录 A 与静态面都不存在」的命名空间 —— 静态面内的成员
+/// 集合(含两个方向)**仍严格判相等**;附录 A 里出现而实现里没有的命名空间
+/// **仍报错**。
+fn static_face_expected(
+    copy: &str,
+    ledger: &BTreeMap<String, BTreeSet<String>>,
+    impl_sets: &BTreeMap<String, BTreeSet<String>>,
+) -> (BTreeMap<String, BTreeSet<String>>, BTreeSet<String>) {
+    let mut expected = expected_member_sets(copy, ledger);
+    let copy_ns: BTreeSet<String> = member_sets(copy).into_keys().collect();
+    let impl_ns: BTreeSet<String> = impl_sets.keys().cloned().collect();
+    let runtime_ext: BTreeSet<String> = ledger
+        .keys()
+        .filter(|ns| !copy_ns.contains(*ns) && !impl_ns.contains(*ns))
+        .cloned()
+        .collect();
+    for ns in &runtime_ext {
+        expected.remove(ns);
+    }
+    (expected, runtime_ext)
+}
+
 #[test]
 fn the_implementation_member_sets_match_the_frozen_snapshot() {
     let copy = read_copy();
     let ledger = read_ledger();
-    let expected = expected_member_sets(&copy, &ledger);
     let impl_sets: BTreeMap<String, BTreeSet<String>> =
         wlwl_eval::stdlib_mirror::implementation_member_sets()
             .into_iter()
             .collect();
+    let (expected, runtime_ext) = static_face_expected(&copy, &ledger, &impl_sets);
     if let Some(diff) = member_set_diff(&expected, &impl_sets) {
         panic!(
             "the implementation's member sets differ from the expected set \
              (Appendix A ∪ the §5.5 extension ledger):\n{}\n\
              The snapshot is the truth (§0.7 rule 2): register the difference in the \
              v1.0 conformance booklet §5.4 and converge the implementation side — \
-             do NOT let the snapshot follow the implementation.",
-            diff.join("\n")
+             do NOT let the snapshot follow the implementation.\n\
+             (tolerated as runtime-extension namespaces from the §5.5 ledger: {:?})",
+            diff.join("\n"),
+            runtime_ext
         );
     }
+}
+
+/// 守卫 B 的**容忍面自检**:台账独有的**运行期扩展**命名空间(静态面不存在,
+/// 如 `tls` / `crypto`)**不**参与集合相等判定 —— 但附录 A 里出现而实现里
+/// 没有的命名空间**必须**报错。两条一起钉,免得容忍退化成「什么都不判」。
+#[test]
+fn the_member_set_check_tolerates_ledger_only_extension_namespaces() {
+    let copy = read_copy();
+    let impl_sets: BTreeMap<String, BTreeSet<String>> =
+        wlwl_eval::stdlib_mirror::implementation_member_sets()
+            .into_iter()
+            .collect();
+    // ① 台账独有(`fake.ext`,两边都没有)⇒ 放行。
+    let mut ledger: BTreeMap<String, BTreeSet<String>> = BTreeMap::new();
+    ledger.insert(
+        "fake.ext".to_string(),
+        ["SOME_MEMBER".to_string()].into_iter().collect(),
+    );
+    let (expected, runtime_ext) = static_face_expected(&copy, &ledger, &impl_sets);
+    assert_eq!(
+        runtime_ext,
+        ["fake.ext".to_string()].into_iter().collect::<BTreeSet<String>>(),
+        "the fixture must be classified as a runtime extension (otherwise this self-check checks nothing)"
+    );
+    assert!(
+        member_set_diff(&expected, &impl_sets).is_none(),
+        "a ledger-only runtime-extension namespace must NOT fail the static-face set equality"
+    );
+    // ② 附录 A 里多一个实现没有的命名空间 ⇒ 必须报错(容忍不许吞掉它)。
+    let mut copy_plus = copy.clone();
+    copy_plus.push_str("\n| `std.ghost` | `GHOST_MEMBER` | R2 | 系统 |");
+    let (expected2, _) = static_face_expected(&copy_plus, &ledger, &impl_sets);
+    assert!(
+        member_set_diff(&expected2, &impl_sets).is_some(),
+        "an Appendix-A namespace missing from the implementation MUST still be rejected"
+    );
 }
 
 /// 守卫 A 的**负向自检**:比对逻辑能抓住差异(不是恒真断言)。

@@ -409,7 +409,7 @@ fn spec_path() -> PathBuf {
         .join("wlwl-spec-reference.md")
 }
 
-/// 规范 §21 的成员表里的五个成员。
+/// 规范 §21 的成员表里的十六个成员。
 ///
 /// 名单与成员表**必须同数**(见测试里的同数断言):只有同数,下面的「逐项包含」
 /// 检查才推得出「集合相等」—— 少一项时,少掉的那项就没人守了。
@@ -419,6 +419,8 @@ const EXPECTED: &[&str] = &[
     "HTTP_GET",
     "HTTP_POST",
     "HTTP_REQUEST",
+    // [v0.12.1 / W-14] 非阻塞出站(宿主挂起点 + 幂等重放)。
+    "HTTP_REQUEST_ASYNC",
     // [v0.12.0 / D-13] 传输层九员（规范 §21.1 成员表的「传输层族」那组）。
     "TCP_LISTEN",
     "TCP_ACCEPT",
@@ -429,12 +431,14 @@ const EXPECTED: &[&str] = &[
     "TCP_SET_TIMEOUT",
     "TCP_CLOSE",
     "TCP_CLOSE_LISTENER",
+    // [v0.12.1 / W-12] `TCP_SERVE` —— 原生帧 accept 循环迭代器形态。
+    "TCP_SERVE",
 ];
 
 /// 规范 §21 的成员表 ↔ `wlwl:std.net` 导出的成员。
 ///
-/// 规范 §21 的成员表 ↔ 实现侧(五个成员全部落地)。
-/// W-03 落地时这个数与名单**一起**改,别只改一边。
+/// 规范 §21 的成员表 ↔ 实现侧(十六个成员全部落地,v1.0.4 落表后)。
+/// 加成员时这个数与名单**一起**改,别只改一边。
 #[test]
 fn net_member_set_matches_the_spec_table() {
     let text = std::fs::read_to_string(spec_path()).expect("stdlib spec readable");
@@ -452,7 +456,7 @@ fn net_member_set_matches_the_spec_table() {
         .collect();
     assert_eq!(
         spec.len(),
-        14,
+        16,
         "\u{00a7}21 table extractor found {} member(s): {spec:?}",
         spec.len()
     );
@@ -481,8 +485,7 @@ fn net_member_set_matches_the_spec_table() {
     assert_eq!(
         impls.len(),
         spec.len(),
-        "wlwl:std.net exports {} members but the §21 table lists {} ⇒ the extra ones are \
-         pending 规范侧 登记",
+        "wlwl:std.net exports {} members but the §21 table lists {} ⇒ 名单与表不同数",
         impls.len(),
         spec.len()
     );

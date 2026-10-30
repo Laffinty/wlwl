@@ -831,14 +831,14 @@ fn fs_member_set_matches_the_spec_table() {
 
     assert_eq!(
         spec.len(),
-        18,
+        26,
         "§2 table extractor found {} member(s): {spec:?} — the table's shape changed",
         spec.len()
     );
     for n in &impls {
         assert!(spec.contains(n), "§2 table missed `{n}`: {spec:?}");
     }
-    assert_eq!(impls.len(), 18, "wlwl:std.fs exports 18 members");
+    assert_eq!(impls.len(), 26, "wlwl:std.fs exports 26 members");
 }
 
 /// `std.env` 的成员表同样双向锁。

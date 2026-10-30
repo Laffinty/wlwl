@@ -596,7 +596,7 @@ fn text_member_set_matches_the_spec_table() {
 
     assert_eq!(
         spec.len(),
-        8,
+        11,
         "§12 table extractor found {} member(s): {spec:?} — the table's shape changed \
          and the extractor needs updating",
         spec.len()
@@ -613,6 +613,10 @@ fn text_member_set_matches_the_spec_table() {
         // 不是项目扩展 —— 少了这一条,「表里加了成员却没实现」这类漂移不会被
         // 这道闸拦住。
         "TO_INT",
+        // [v0.12.1 / W-24] 匹配前归一化三员(D-2)。
+        "NFKC",
+        "CASE_FOLD",
+        "STRIP_INVISIBLE",
     ] {
         assert!(
             spec.iter().any(|m| m == n),

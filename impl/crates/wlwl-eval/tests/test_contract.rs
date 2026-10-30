@@ -847,24 +847,13 @@ fn exports_of(path: &str) -> Vec<String> {
     }
 }
 
-/// [G-1 / v0.12.2] 需求清单 G-1 新增的 7 个成员。
+/// [G-1 / v0.12.2] 需求清单 G-1 新增的 7 个成员 —— **已清空**。
 ///
-/// ⚠ **临时登记**:规范 §8 表格与附录 A 抄件**尚未**收录这些成员(规范仓的
-///   注册镜像册是**冻结快照**,改它要走规范修订流程 —— 一致性册 §5.5 的
-///   「实现侧扩展台账」是给**规范未认可**的扩展的合法落点)。
-///   ⇒ 本测试先把它们登记成「实现侧扩展面」,让 §8 对拍**继续有效**
-///   (而不是因为少 7 个成员就整条红掉)。
-/// ⚠ 规范侧收录(附录 A 正式修订**或**台账登记)之后:把本常量**清空**即可 ——
-///   那时 §8 表格 == 导出面,这条对拍回到「逐字相等」。
-const G1_EXTENSIONS: &[&str] = &[
-    "ASSERT_MSG",
-    "ASSERT_TRUE",
-    "EXPECT_ERR_CODE",
-    "SKIP",
-    "TEST_CASES",
-    "TEMP_DIR",
-    "RUN_TESTS_ASYNC",
-];
+/// ⚠ 这 7 个成员(`ASSERT_MSG` / `ASSERT_TRUE` / `EXPECT_ERR_CODE` / `SKIP` /
+///   `TEST_CASES` / `TEMP_DIR` / `RUN_TESTS_ASYNC`)已随 **v1.0.4** 收进规范
+///   §8 成员表与附录 A(D-21 登记行)⇒ 临时扩展面归零,§8 对拍回到「逐字相等」。
+/// ⚠ 再有「实现先行」的成员时,把名字加回本常量;规范侧收录后再清空。
+const G1_EXTENSIONS: &[&str] = &[];
 
 #[test]
 fn member_set_matches_the_spec_section_8_table() {
@@ -897,13 +886,13 @@ fn member_set_matches_the_spec_section_8_table() {
 }
 
 /// 反向守卫:上面那条以「§8 解析结果」为输入,§8 表格形状一变就可能解析出
-/// 空集。这条把「至少解析出 6 个且逐个点名」钉住。
+/// 空集。这条把「正好解析出 13 个且逐个点名」钉住。
 #[test]
 fn the_spec_table_extractor_actually_finds_the_members() {
     let spec = section_8_members();
     assert_eq!(
         spec.len(),
-        6,
+        13,
         "§8 extractor found {} member(s): {spec:?}",
         spec.len()
     );
@@ -914,6 +903,14 @@ fn the_spec_table_extractor_actually_finds_the_members() {
         "ASSERT_NEQ",
         "EXPECT_ERR",
         "RUN_TESTS",
+        // [v0.12.1 / G-1 + W-31] 七员已随 v1.0.4 收进 §8 表(D-21)。
+        "ASSERT_MSG",
+        "ASSERT_TRUE",
+        "EXPECT_ERR_CODE",
+        "SKIP",
+        "TEST_CASES",
+        "TEMP_DIR",
+        "RUN_TESTS_ASYNC",
     ] {
         assert!(spec.iter().any(|m| m == n), "§8 extractor missed `{n}`");
     }

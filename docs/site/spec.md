@@ -96,13 +96,43 @@ verbatim in
 ## Compiler vs spec version
 
 The compiler release **does not have to match** the spec version.
-The current compiler release (**v0.12.0**) targets the **v1.0** spec; the
+The current compiler release (**v0.12.1**) targets the **v1.0.4** spec; the
 differences that are still open are registered in the conformance volume
 (§5) and listed in the release notes. CI tracks
 `wlwl --version` (compiler) and spec anchors via
 `impl/crates/wlwl-cli/tests/conformance.rs` plus the spec-consistency
 lock tests in `crates/wlwl-error` (error-code table) and
 `crates/wlwl-eval` (appendix G anchors).
+
+### Appendix A is a frozen snapshot — two counts, not one
+
+The standard library's **appendix A** (in the registry volume of
+[`docs/wlwl-spec-reference.md`](../wlwl-spec-reference.md)) is the normative
+member registry, and it is a **frozen snapshot**: per the spec's own registry
+rules it is **not** regenerated from the implementation and must **not** be
+rewritten to chase a compiler change.
+
+That means two different counts are always in play:
+
+- **The implementation surface** — everything the compiler exposes, printed by
+  `wlwl namespace` (the output is labelled `"surface": "implementation"`). On
+  the current build that is **288 members across 25 namespaces** (23
+  `wlwl:std.*` plus the `ai` / `agent` packages).
+- **Appendix A's registry** — the spec's public-surface list. Members that
+  exist in the compiler but are not yet in appendix A are a **conformance gap**
+  recorded through the spec's revision process, **not** extra members.
+
+Use `wlwl namespace` when you are writing code; use appendix A when you are
+reasoning about conformance. Mixing the two is the classic way to write a
+stale claim into documentation.
+
+### Extensions are outside both lists
+
+A native dynamic library loaded with `wlwl run --ext /abs/path/lib.so` mounts
+its own namespaces (`tls`, `crypto`) at runtime. Those members appear in
+**neither** count: they are not standard-library members and do not enter
+appendix A — they live in the conformance volume's implementation-extension
+register. Loading such a library hands the whole process's permissions to it.
 
 ## Conformance test suite
 

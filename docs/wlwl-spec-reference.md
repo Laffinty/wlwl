@@ -197,12 +197,14 @@ WLWL 生态里的文档不止规范。下列层级是**全局**的,任何项目�
 | D-18 | **`std.net` 传输层的等待由「阻塞冻结 `SCOPE`」改为「宿主挂起」** —— 系统册 §21.6.4 原写「等待期间不调度任何其他任务,整个 `SCOPE` 冻结」,与并发册 §17.0 的挂起点表(第四类「宿主挂起(原生成员等待 socket / 定时器)」= **真挂起**,等待期间其它任务可运行)**正面冲突**。⚠ 落在一致性册 §3.4 的**例外 2(规范缺陷修复)**之下 —— 两处条款自相矛盾,修复方向是**消除两套语义**(采一般规则:并发册 §17.0 是规范性的一般规则,系统册那句是章级复述),**不引入新的自由度**。**受影响条款**:标准库·系统册 §21.6.4(标题 + 三条)与 §21.5 的 `TCP_SET_TIMEOUT` 行(补「两个预算先到者为准」)。**迁移写法**:原先指望「等待期间别的任务不跑」的代码**要改** —— 现在等待只挂起**当前任务**,别的任务照跑(⇒ 同一个 `SCOPE` 里并发发多个连接**从错的写法变成对的写法**)。`timeout_ms == 0` 的含义同步写死为「**无截止时间**」(挂起直到条件满足);⚠ 它挂起的**只是该任务**,不是挂住整个程序 —— 原先「忘写超时就永久挂住整个程序」那条理由**在宿主挂起模型下不成立** | **breaking**(一致性册 §3.4 例外 2) | 标准库·系统册 §21.6.4 / §21.5 | 已实现(2026-10-25:v0.12.0 落地;传输层等待一律宿主挂起,22 条测试绿) |
 | D-19 | **气泡内的 `std.time::SLEEP_ASYNC` 由「挂起点」改为「等同 `SLEEP`」** —— 标准库·系统册 §15.6 原写「`SLEEP_ASYNC` 在气泡内是**挂起点**,醒来与否按并发册 §17 的规定办理」,但同节的「气泡的虚拟钟**只在 `SLEEP` 时前进**」⇒ 按字面实现,气泡内挂起的 `SLEEP_ASYNC` **永远醒不来**(并发册 §17.0 的「恢复后**不得**再次挂起(否则任务原地活锁)」正好命中)⇒ **两处条款自相矛盾**。⚠ 落在一致性册 §3.4 的**例外 2(规范缺陷修复)**之下 —— 修复方向是**消除两套语义**(取唯一能交付的那一种),**不引入新的自由度**。**受影响条款**:标准库·系统册 §15.6 + §15.1 的 `SLEEP_ASYNC` 成员行 + §15.5 末段;并发册 §17.0 的「与阻塞的区别」段 + §17.7 的「宿主挂起」行。**迁移写法**:原先指望「气泡内 `SLEEP_ASYNC` 会挂起 / 会让别的任务插进来」的程序**要改** —— 气泡内它**立即返回**(拨快虚拟钟)**且不**让别的任务插进来;**气泡外**的形态**不变**(可挂起 ⇒ 别的任务照跑) | **breaking**(一致性册 §3.4 例外 2) | 标准库·系统册 §15.1 / §15.5 / §15.6;并发册 §17 | 已实现(2026-10-25:v0.12.0 落地;气泡内 SLEEP_ASYNC 等同 SLEEP —— 实现本已如此,契约用例已补) |
 | D-20 | **语言核心册 §18.3.1 第 2 条的覆盖面收窄**:「别名在**写序列内部**每轮重建」的形态(每轮给别名一份快照 ⇒ 每次写产出新值 ⇒ 总量二次)由**§19.1 的值语义**决定,是**内在推论**而非可由实现消除的代价 ⇒ 原先把它纳入摊还承诺,等于与 §19.1 **自相矛盾**。⚠ 本版把该形态**明确排除**在摊还承诺之外。⚠ 落在一致性册 §3.4 的**例外 2(规范缺陷修复)**之下 —— 修复方向是**消除两套语义**(把承诺范围写清),**不引入新的自由度**。**受影响条款**:语言核心册 §18.3.1 第 2 条 + 其末段;一致性册 §5.4 的 X-14 行。**迁移写法**:原先指望「在写序列内部每轮重建别名 ⇒ 仍摊还」的写法**要改** —— 把别名**提到写序列之外**建立一次(§18.3.1 的 X-12 形态)⇒ 只在首次写拷贝一次、之后原地写 ⇒ 序列级摊还成立;或改用累加器形态。⚠ **跨仓同步**:实现仓 `script/conformance_registry_map.json` 的 **X-14** 条目**必须**从 `expect: gap` 改为 `expect: no-contract`(带 `reason`)⇒ 否则门禁会把「已消解」判成「实现回退」 | **breaking**(一致性册 §3.4 例外 2) | 语言核心册 §18.3.1 | 已实现(2026-10-25:v1.0.2 文本落地;§5.4 的 X-14 转「已消解」;实现侧本就不排期该项) |
+| D-21 | **公共面扩充 58 个成员(v1.0.4)**:`std.fs` +8(`PATH_CANONICAL` `PATH_CONTAINS` `WRITE_FILE_ATOMIC` `LOCK_FILE` `UNLOCK_FILE` `FILE_MTIME` `DIR_ENTRIES` `FILE_META`)、`std.text` +3(`NFKC` `CASE_FOLD` `STRIP_INVISIBLE`)、`std.format` +1(`FORMAT_NAMED`)、`std.str` +1(`QUERY_PARSE`)、`std.regex` +1(`RE_MATCHES_FULL`)、`std.test` +7(`ASSERT_MSG` `ASSERT_TRUE` `EXPECT_ERR_CODE` `SKIP` `TEST_CASES` `TEMP_DIR` `RUN_TESTS_ASYNC`)、`std.net` +2(`HTTP_REQUEST_ASYNC` `TCP_SERVE`)、`std.process` +1(`PROCESS_RUN_ASYNC`)、**四个新命名空间**:`std.log` 7 员 · `std.sync` 8 员 · `std.signal` 2 员 · `std.http` 16 员(逐名见注册镜像册附录 A 与各册成员表)、**全局内建** +1(`ARRAY_GET` —— `INDEX_GET` 的别名,附录 G)。**非破坏性** —— 一致性册 §3.4 的三类破坏性变更**均不适用**(既有合规程序仍合规)。⚠ **以修订版本号承载**(一致性册 §3.2:本表有登记行 + 发布说明显式列出)。⚠ `tls` / `crypto` 两个**运行期扩展**命名空间**不**进公共面 —— 走一致性册 §5.5 台账(业主 D1 裁决:`tls::LOCAL_ADDR` 保留,台账按 10 员写) | 补充 | 标准库各册成员表 + 标准库·注册镜像册附录 A + 语言核心册附录 G + 一致性册 §5.5 台账 | 已实现(2026-10-29:实现仓 v0.12.1 落地 58 员;附录 A / 附录 G 逐字对拍绿;成员面与实现逐字核对) |
+| D-22 | **`E0014` 的触发条件补全**(与并发册 §17.0 对齐):语言核心册 §11.2 原写「`E0014` 在并发下**只**用于一个位置:`YIELD` 出现在任务体之外」,**漏掉**「**宿主挂起点成员**在任务体**外的任何位置**(含嵌套闭包内)被调用 ⇒ `E0014`」这一触发面(并发册 §17.0 已写对)⇒ 本版把语言册两处(§11.2 码表行 + 并发小节)与并发册对齐,并注明诊断**必须**指名该成员、位置**指向调用点**。⚠ 一致性册 §3.4 **例外 2(规范缺陷修复)**:两处自相矛盾,修复 = 消除两套语义,**不引入新的自由度**。**迁移写法**:无 —— 正确程序不受影响;在任务体外调宿主挂起点成员的程序**本就**在参考实现上得 `E0014` | **breaking**(例外 2,订正错误事实) | 语言核心册 §11.2 | 已实现(2026-10-29:实现侧 v0.12.1 已合规;`suspend_site_contract` 13/0 · `w38_native_frame_suspend_contract` 11/0) |
 
 **「实现状态」列的三态**:「已实现」= 该项要求的**成果已产出** —— 对**成文类**项(补充类:成文的机制 / 章节 / 快照),指该章节 / 快照已在册中;对**行为类**项(breaking 类:语义变更),指参考实现的可观察行为与条款一致、且有测试或实测证据;「未实现」= 规范已定,成果待产出;「部分」= 成果存在但与条款不完全一致。v1.0 发布前,「未实现」与「部分」**必须**清零 —— 一致性册 §3.5 把它写成了发布前置条件。
 
 **本表不替代另外两张表**:某一 D 项标为「已实现」,只表示**该项要求的成果**已产出;规范条款在参考实现上是否**成立**,仍由一致性册 §6.2 的待验证清单(证据)与 §5.4 的差异登记(已登记的分歧)承担 —— **发布闸门 §3.5 的第 2 条管的是后者**。例:D-03 标「已实现」指的是语言核心册 §19 已成文,而「实现无泄漏」这条保证的**证据**在一致性册 §6.2 的 V-02(当前**未验证**)⇒ D-03 清零**不**代表语言核心册 §19 的实现义务已被验证。
 
-**D-13…D-19 是 v1.0.2 本轮的登记行**(七行)。⚠ **2026-10-25 订正**:本段原写「五行的『实现状态』一律取『未实现』」—— 那是**实现侧 v0.12.0 落地之前**的登记状态;实现侧落地后,七行已按实测读数**全部翻「已实现」** ⇒ 一致性册 §3.5 第 1 条(§0.9 的「实现状态」列**不得**出现「未实现」或「部分」)已清零。**D-20** 是本版为消解 **X-14** 而追加的一行(§3.4 例外 2)。
+**D-13…D-19 是 v1.0.2 本轮的登记行**(七行)。⚠ **2026-10-25 订正**:本段原写「五行的『实现状态』一律取『未实现』」—— 那是**实现侧 v0.12.0 落地之前**的登记状态;实现侧落地后,七行已按实测读数**全部翻「已实现」** ⇒ 一致性册 §3.5 第 1 条(§0.9 的「实现状态」列**不得**出现「未实现」或「部分」)已清零。**D-20** 是本版为消解 **X-14** 而追加的一行(§3.4 例外 2)。**D-21 / D-22 是 v1.0.4 的登记行**:D-21 = 公共面扩充 58 个成员(修订版本通道,与 D-13 同一机制);D-22 = `E0014` 触发条件补全(§3.4 例外 2)。v1.0.4 另有三处**不构成语义变更**的同步:并发册 §17.0.1 的措辞澄清(「锁」限定为语言级;共享可变 cell 约束不涵盖 `std.sync` 原子共享容器)、一致性册 §5.5 台账首批条目(`tls` / `crypto`)、语言核心册附录 E.4 的 `drift` 字段(`sig_schema_version` 1.1.0)。
 
 **实现注(非规范)** —— 本轮七行的登记状态:**已实现**(2026-10-25)。⚠ 本注原写「参考实现 v0.11.4 上这 17 个公共面成员还不存在(实测 `IMPORT` 报 `E0023`)……也都尚未落地」—— 那是**实现侧 v0.12.0 落地之前**的状态;实现侧 **v0.12.0** 落地后,17 个成员、`std.fs` 的 `ERR` 值失败口径、`TAKE_ERR` 与切段判定、宿主挂起与任务失败的报告义务、`INT` 的空白与解析规则均已落地并有契约表钉住 ⇒ 依一致性册 §5.1 的三态,七行依实测读数改写为「已实现」。
 
@@ -1371,7 +1373,7 @@ IMPORT("wlwl:std.collection", ["MAP", "FILTER", "REDUCE", "SORT"]);
 |------|------|----------|--------|
 | `E0001` / `E0002` / `E0003` | 词法错误 | 非法字符 / 未终止字符串 / 未终止块注释 | 错误 |
 | `E0010`–`E0013` | 语法错误 | 期望表达式、`)`、`,`、`;` | 错误 |
-| `E0014` | 控制流位置错 | `RETURN` / `BREAK` / `CONTINUE` 出现在函数或循环体之外;或 `YIELD` 出现在调度驱动的上下文(任务体)之外(并发册 §17.1) | 错误 |
+| `E0014` | 控制流位置错 | `RETURN` / `BREAK` / `CONTINUE` 出现在函数或循环体之外;或 `YIELD` 出现在调度驱动的上下文(任务体)之外;或**宿主挂起点成员**在任务体**外**被调用(模块顶层,或任何不在任务体里的位置,**含嵌套闭包内**)(并发册 §17.0)。诊断**必须**指名该成员、位置**指向调用点** | 错误 |
 | `E0020` | 名字错误 | 未定义名字;调用非函数 | 错误 |
 | `E0021` | 导入错误 | 同作用域重复导入 | 错误 |
 | `E0022` | 元数错误 | 函数元数不符 | 错误 |
@@ -1456,7 +1458,7 @@ IF(IS_ERR(r),
 - 通道关闭后的读取结果由 `ERR(kind="ChannelClosed")` 载荷承担(§8.1 / 并发册 §17.2);需要硬诊断时由 `native_channel_close` 特性改用 `E0054`。
 - 跨任务的不可变单元格写入触发 `E0024`,与单任务路径统一(§3.4)。
 
-`E0014` 在并发下**只**用于一个位置:`YIELD` 出现在调度驱动的上下文(任务体)之外。`YIELD` **可以**出现在任务体内的任何表达式位置(并发册 §17.1)。
+`E0014` 在并发下用于**两类**位置:① `YIELD` 出现在调度驱动的上下文(任务体)之外 —— `YIELD` **可以**出现在任务体内的任何表达式位置(并发册 §17.1);② **宿主挂起点成员**(`std.net` 的 `TCP_*` 族与 `std.time::SLEEP_ASYNC` 等)在任务体**外的任何位置**被调用(**含嵌套闭包内**) —— 诊断**必须**指名该成员、位置**指向调用点**,**不得**报成「`YIELD` 出现在任务体外」(并发册 §17.0)。
 
 **`E0032` / `E0050` / `E0051` 的校验顺序**:`CALL_METHOD` 入口按下列顺序校验,命中即报,不级联:
 
@@ -1995,17 +1997,17 @@ SCOPE(FUN(() ,
 
 ### 17.0.1 「共享可变状态」是**本语言的反模式**(规范性)
 
-**规范约束**:任务之间**不得**通过**共享的可变 cell**(即 `LET MUT` 绑定的、被 `SCOPE` 内多个任务读写的 cell)来传递数据。正确形态是 **actor**:每个任务独占状态、只经**通道**(`CHANNEL_*`)传消息,正确性由**语言**保证,**不**依赖用户划临界区。
+**规范约束**:任务之间**不得**通过**共享的可变 cell**(即 `LET MUT` 绑定的、被 `SCOPE` 内多个任务读写的 cell)来传递数据。正确形态是 **actor**:每个任务独占状态、只经**通道**(`CHANNEL_*`)传消息,正确性由**语言**保证,**不**依赖用户划临界区。⚠ 本条**不**涵盖标准库提供的**原子共享容器**(`std.sync` 的 `COUNTER` / `SHARED_DICT` 族,标准库·系统册 §24)—— 那不是语言级 cell,是标准库的原子原语。
 
 违反本条的**不**构成符合本规范的程序(一致性册 §1.1)。
 
 **说明**:这条是规范约束而不是一条风格建议,两个理由都是模型的性质,不是风格。
 
-其一,**粒度对不上**。调度点只在**段首**(或阶段边界),而**临界区由用户代码划定**;两个边界格式不同,无法对齐。已落地的结果是:阻塞型通道操作**不切段**(§17.0),任务被唤醒后从**段首重跑**;因此一个锁的**锁前用户代码会再执行一遍** —— 这**不是**「加个护栏」能解决的(护栏能拦住活锁,拦不住**已发生的副作用重放**)。在当前架构下,「锁」不是一个可实现的成员,而是一个**与调度边界不能对齐的概念**。
+其一,**粒度对不上**。调度点只在**段首**(或阶段边界),而**临界区由用户代码划定**;两个边界格式不同,无法对齐。已落地的结果是:阻塞型通道操作**不切段**(§17.0),任务被唤醒后从**段首重跑**;因此一个锁的**锁前用户代码会再执行一遍** —— 这**不是**「加个护栏」能解决的(护栏能拦住活锁,拦不住**已发生的副作用重放**)。在当前架构下,「锁」不是一个可实现的**语言级**成员,而是一个**与调度边界不能对齐的概念**。
 
 其二,**可复现性**(语言的第一位卖点)。单线程协作式下,临界区边界与调度点不对齐 ⇒ **同一个程序两次运行的交错可能不同**。actor 形态下的交错**由通道语义决定**,**不**由临界区划分的粗粒度决定。
 
-**说明**:本条与「段内恢复」是否落地**无关** —— 上面的粒度结论是**协作式模型的固有性质**。因此 `MUTEX` / `CONDITION` / `ONCE` / `SEMAPHORE` / `WAIT_GROUP` 这类用户级同步原语**不**属于本语言面;它们属标准库范畴,见标准库册。
+**说明**:本条与「段内恢复」是否落地**无关** —— 上面的粒度结论是**协作式模型的固有性质**。因此 `MUTEX` / `CONDITION` / `ONCE` / `SEMAPHORE` / `WAIT_GROUP` 这类用户级同步原语**不**属于本语言面;它们属标准库范畴 —— 标准库 `std.sync` 以**原子共享容器**形态提供计数器与单键原子写(`COUNTER` 族 / `SHARED_DICT` 族,标准库·系统册 §24),那是**标准库的原子原语**,**不是**语言级锁。
 
 **说明**:本册所说的「共享可变状态」在语言核心册 §19.2 有精确对应 —— 单元格**按引用**共享,「别名 + 可变」是本语言**唯一**的共享可变状态。它**不**提供任何同步保证(对象册 §16.3)。
 
@@ -2727,10 +2729,11 @@ sig_name    = identifier .
 
 | 字段 | 含义 |
 |---|---|
-| `sig_schema_version` | 这份 JSON 契约的版本;字段增删时递增版本号 |
+| `sig_schema_version` | 这份 JSON 契约的版本;字段增删时递增版本号。**当前 `1.1.0`**(v1.1.0 增加 `drift` 字段) |
 | `module` | 被检查的 `.wll` 路径 |
 | `text` | 与 `sig` 文本模式、与落盘内容**逐字相同**的签名文本 |
 | `exports[]` | 与 E.2 同构(见 E.2 的字段说明) |
+| `drift` | 签名漂移面(v1.1.0 新增):`status`(`"ok"` = 无漂移)/ `extra_in_declared` / `missing_in_declared` / `type_conflicts` |
 
 ### E.5 `wlwl lsp`(非规范)
 
@@ -2756,7 +2759,7 @@ sig_name    = identifier .
 
 「可调用」列的判据:**可调用** = 写成 `NAME(...)` 即可调用的内建或构造;**声明式** = 只能在模块顶层作为声明出现,括号形式必然 `E0020`。
 
-总条目数:**106** | 函数类内建:**86** | 词法宏构造:**20** | 保留未实现:**0**
+总条目数:**107** | 函数类内建:**87** | 词法宏构造:**20** | 保留未实现:**0**
 
 | 名称 | 签名 | 可调用 | ERR 消费者 (§8.3) | 宏构造 (§1.4) | 状态 | 语义位置 |
 |------|------|------|--------------------|---------------|------|----------|
@@ -2825,8 +2828,9 @@ sig_name    = identifier .
 | `VALUES` | `VALUES(dict) -> ARRAY` | ✔ | ❌ | ❌ | 已定义 | §10.4 |
 | `HAS` | `HAS(dict, k) -> BOOLEAN` | ✔ | ❌ | ❌ | 已定义 | §10.4 |
 | `MERGE` | `MERGE(a, b) -> DICT` | ✔ | ❌ | ❌ | 已定义 | §10.4 |
-<!-- 下标 (3 条) -->
+<!-- 下标 (4 条) -->
 | `INDEX_GET` | `INDEX_GET(coll, k) -> v / E0031, E0036, E0037` | ✔ | ❌ | ❌ | 已定义 | §4.5 |
+| `ARRAY_GET` | `ARRAY_GET(coll, k) -> v / E0031, E0036, E0037` | ✔ | ❌ | ❌ | 已定义 | §4.5 |
 | `INDEX_SET` | `INDEX_SET(coll, k, v) -> ARRAY / DICT` | ✔ | ❌ | ❌ | 已定义 | §4.5 |
 | `AT` | `AT(coll, k, default) -> v` | ✔ | ❌ | ❌ | 已定义 | §4.5 |
 <!-- STRING 操作 (15 条) -->
@@ -3651,9 +3655,10 @@ PRINT(LEN(acc))
 
 | 命名空间 | 成员 | 登记理由 | 效力声明 | 随哪个实现仓发布 | 收敛路线 |
 |---|---|---|---|---|---|
-| (本版无条目) | — | — | — | — | — |
+| `tls` | `LISTEN` `ACCEPT` `CONNECT` `SEND` `RECV` `CLOSE` `PEER` `LOCAL_ADDR` `CERT_FINGERPRINT` `CERT_INFO` | TLS **不进标准库**(零新增依赖的信任模型不可让渡)⇒ 以宿主 `--ext` 显式加载的原生扩展交付,成员挂 `tls` 命名空间(运行期扩展,不进静态公共面) | **不属公共面**(§4.1 的清单**不含**本节);效力低于附录 A;加载 = 交出全部权限(扩展信任模型七条硬规则) | `Laffinty/wlwl` v0.12.1 的 `impl/ext/wlwl-tls-ext`(`wlwl-tls` 动态库,ABI v1,发行包带哈希钉扎) | 拟进公共面的版本**未定**;进公共面需先解决「标准库零新增依赖」与「信任模型」两条硬约束,届时走 §3.2 修订版本通道的正式登记(D-13 先例) |
+| `crypto` | `SHA384` `SHA512` `HMAC_SHA512` `HKDF` `AES_256_GCM` `ED25519_VERIFY` `ECDSA_P256_VERIFY` `RSA_PSS_VERIFY` | 加密原语补全(需求 A-4);安全册 N-21 明确标准库**不做**对称/非对称加密 ⇒ 自持在 TLS 扩展内 | 同上(**不属公共面**,效力低于附录 A) | 同上(`wlwl-tls-ext` 的 `crypto` 命名空间) | 同上(拟进公共面的版本未定) |
 
-**说明**:本版台账**为空** —— 本轮新增的 17 个公共面成员走的是标准库·注册镜像册 附录 A 的正式修订(规范修订流程),**不**走台账 ⇒ 本节只立机制,第一个台账条目留给后续版本。
+**说明**:本版(v1.0.4)的 **58 个公共面新成员**走的是标准库·注册镜像册附录 A 的**正式修订**(总纲 §0.9 的 D-21 登记行,与 v1.0.2 的 D-13 同一通道)⇒ **不**走台账。台账的**第一批条目**是 `tls` / `crypto` 两个**运行期扩展命名空间** —— 它们由宿主显式加载,不在静态公共面(`wlwl_std::namespace_paths()`)内,故既**不**进附录 A、也**不**参与「附录 A ∪ 台账」的静态面集合相等判定(实现侧门禁对「台账独有、静态面不存在」的命名空间按**运行期扩展**放行;静态面内的成员集合仍**严格**判相等)。
 
 ---
 
@@ -3908,7 +3913,7 @@ python script/negctl.py --impl <参考实现的 wlwl 可执行文件>
 
 本册**唯一**的跨册差异登记是:`ERR` 的产生与消费规则。语言核心册 §8.6 规定"未消费的 `ERR` **不得**被丢弃",本册各章的「失败」列**只**描述成员自身在失败时**返回什么**,**不**复述 §8.6 —— `ERR` 值的丢弃与报告一律由 §8.6 承担。
 
-> 上游基线:Laffinty/wlwl 提交 99041ef(2026-10-24,已发布 tag v0.11.4;含 v1.0 语义落地(E0103 批次、字典哈希索引、别名形态收敛)与 V-02 / V-04 / V-05 取证守卫,以及一致性册 §5.4 的 13 条收敛)。
+> 上游基线:Laffinty/wlwl 提交 1766032(2026-10-26,未发 tag;v0.12.0 发版前整改批:附录 A 逐字对拍门禁 / 核心内建诊断位置 / 宿主挂起点任务体外失败模式 / 孤儿任务 ERR 终值报告 / IS_OK 族降级为标识符).
 
 ## 标准库规范 · 0 导言与总则（官方包册）
 
@@ -3996,7 +4001,7 @@ python script/negctl.py --impl <参考实现的 wlwl 可执行文件>
 
 本册**唯一**的跨册差异登记是:`ERR` 的产生与消费规则。语言核心册 §8.6 规定"未消费的 `ERR` **不得**被丢弃",本册各章的「失败」列**只**描述成员自身在失败时**返回什么**,**不**复述 §8.6 —— `ERR` 值的丢弃与报告一律由 §8.6 承担。
 
-> 上游基线:Laffinty/wlwl 提交 99041ef(2026-10-24,已发布 tag v0.11.4;含 v1.0 语义落地(E0103 批次、字典哈希索引、别名形态收敛)与 V-02 / V-04 / V-05 取证守卫,以及一致性册 §5.4 的 13 条收敛)。
+> 上游基线:Laffinty/wlwl 提交 1766032(2026-10-26,未发 tag;v0.12.0 发版前整改批:附录 A 逐字对拍门禁 / 核心内建诊断位置 / 宿主挂起点任务体外失败模式 / 孤儿任务 ERR 终值报告 / IS_OK 族降级为标识符).
 
 ## 标准库规范 · 0 导言与总则（安全册）
 
@@ -4084,13 +4089,13 @@ python script/negctl.py --impl <参考实现的 wlwl 可执行文件>
 
 本册**唯一**的跨册差异登记是:`ERR` 的产生与消费规则。语言核心册 §8.6 规定"未消费的 `ERR` **不得**被丢弃",本册各章的「失败」列**只**描述成员自身在失败时**返回什么**,**不**复述 §8.6 —— `ERR` 值的丢弃与报告一律由 §8.6 承担。
 
-> 上游基线:Laffinty/wlwl 提交 99041ef(2026-10-24,已发布 tag v0.11.4;含 v1.0 语义落地(E0103 批次、字典哈希索引、别名形态收敛)与 V-02 / V-04 / V-05 取证守卫,以及一致性册 §5.4 的 13 条收敛)。
+> 上游基线:Laffinty/wlwl 提交 1766032(2026-10-26,未发 tag;v0.12.0 发版前整改批:附录 A 逐字对拍门禁 / 核心内建诊断位置 / 宿主挂起点任务体外失败模式 / 孤儿任务 ERR 终值报告 / IS_OK 族降级为标识符).
 
 ## 标准库规范 · 0 导言与总则（系统册）
 
 ### 0.1 本册的构成
 
-本册定义 WLWL 标准库的**系统与外部世界**部分:`std.io`(§1)、`std.fs`(§2)、`std.time`(§15,墙钟与单调钟)、`std.rand`(§17,显式播种的随机数)、`std.env`(§18,进程环境与命令行参数)、`std.process`(§19,不经 shell 跑子进程)、`std.compress`(§20,Zstandard 与 DEFLATE 家族)、`std.net`(§21,网络)。每章对应一个命名空间,每章含成员表(签名 / 语义 / 失败 / 复杂度 / 层)、共享失败口径、值形状与边界、示例与该章特有条款;附录 A 是**规范性**的成员注册镜像,由标准库·注册镜像册(本文件「标准库规范 · 附录 A」)承载。
+本册定义 WLWL 标准库的**系统与外部世界**部分:`std.io`(§1)、`std.fs`(§2)、`std.time`(§15,墙钟与单调钟)、`std.rand`(§17,显式播种的随机数)、`std.env`(§18,进程环境与命令行参数)、`std.process`(§19,不经 shell 跑子进程)、`std.compress`(§20,Zstandard 与 DEFLATE 家族)、`std.net`(§21,网络)、`std.log`(§23,结构化日志与运行时指标)、`std.sync`(§24,原子共享容器)、`std.signal`(§25,信号与优雅停机)、`std.http`(§26,HTTP 解析、服务端与中间件原语)。每章对应一个命名空间,每章含成员表(签名 / 语义 / 失败 / 复杂度 / 层)、共享失败口径、值形状与边界、示例与该章特有条款;附录 A 是**规范性**的成员注册镜像,由标准库·注册镜像册(本文件「标准库规范 · 附录 A」)承载。
 
 **成员数以附录 A 镜像为准**:本册各章的成员表与附录 A **逐项对拍**,两者**必须**集合相等。
 
@@ -4172,7 +4177,7 @@ python script/negctl.py --impl <参考实现的 wlwl 可执行文件>
 
 本册**唯一**的跨册差异登记是:`ERR` 的产生与消费规则。语言核心册 §8.6 规定"未消费的 `ERR` **不得**被丢弃",本册各章的「失败」列**只**描述成员自身在失败时**返回什么**,**不**复述 §8.6 —— `ERR` 值的丢弃与报告一律由 §8.6 承担。
 
-> 上游基线:Laffinty/wlwl 提交 99041ef(2026-10-24,已发布 tag v0.11.4;含 v1.0 语义落地(E0103 批次、字典哈希索引、别名形态收敛)与 V-02 / V-04 / V-05 取证守卫,以及一致性册 §5.4 的 13 条收敛)。
+> 上游基线:Laffinty/wlwl 提交 1766032(2026-10-26,未发 tag;v0.12.0 发版前整改批:附录 A 逐字对拍门禁 / 核心内建诊断位置 / 宿主挂起点任务体外失败模式 / 孤儿任务 ERR 终值报告 / IS_OK 族降级为标识符).
 
 ## 标准库规范 · 0 导言与总则（文本册）
 
@@ -4260,7 +4265,7 @@ python script/negctl.py --impl <参考实现的 wlwl 可执行文件>
 
 本册**唯一**的跨册差异登记是:`ERR` 的产生与消费规则。语言核心册 §8.6 规定"未消费的 `ERR` **不得**被丢弃",本册各章的「失败」列**只**描述成员自身在失败时**返回什么**,**不**复述 §8.6 —— `ERR` 值的丢弃与报告一律由 §8.6 承担。
 
-> 上游基线:Laffinty/wlwl 提交 99041ef(2026-10-24,已发布 tag v0.11.4;含 v1.0 语义落地(E0103 批次、字典哈希索引、别名形态收敛)与 V-02 / V-04 / V-05 取证守卫,以及一致性册 §5.4 的 13 条收敛)。
+> 上游基线:Laffinty/wlwl 提交 1766032(2026-10-26,未发 tag;v0.12.0 发版前整改批:附录 A 逐字对拍门禁 / 核心内建诊断位置 / 宿主挂起点任务体外失败模式 / 孤儿任务 ERR 终值报告 / IS_OK 族降级为标识符).
 
 ## 标准库规范 · 1 `std.io` —— 基础 I/O
 
@@ -4345,6 +4350,8 @@ PRINT_ERR("to stderr");    // to stderr(输出在标准错误流上)
 | `PATH_BASE(p) -> STRING` | 最后一段。**不剥扩展名**(`a.tar.gz` → `a.tar.gz`) | 同上 | `O(m)` | R2 |
 | `PATH_EXT(p) -> STRING` | 扩展名,**不含前导点**;无扩展名 → `""`;**点文件没有扩展名**(`.gitignore` → `""`) | 同上 | `O(m)` | R2 |
 | `PATH_NORMALIZE(p) -> STRING` | 消 `.` / `..` / 冗余分隔符。**纯词法,绝不碰符号链接** | 同上 | `O(m)` | R2 |
+| `PATH_CANONICAL(p) -> STRING` | 词法归一:`\` 与 `/` **都**当分隔符统一成 `/`,消解 `.` / `..`(`PATH_NORMALIZE` 的算法,但后者**只**认 `/`)⇒ **跨平台逐字一致**;盘符保留原样;**不访问文件系统**、不解析符号链接 | 元数 / 类型错 → `E0022` / `E0030` | `O(m)` | R2 |
+| `PATH_CONTAINS(root, target) -> BOOLEAN` | `target` 是否在 `root` 之下:先 `PATH_CANONICAL` 再**逐段**判定(不是字符串前缀,兄弟目录如 `root-evil` 不算);盘符大小写不敏感、其余段大小写敏感;空根不含任何路径;绝对 / 相对不一致 ⇒ `FALSE`;**不解析符号链接** | 元数 / 类型错 → `E0022` / `E0030`(**没有**运行期失败) | `O(m)` | R2 |
 
 **目录与字节族**:
 
@@ -4360,6 +4367,17 @@ PRINT_ERR("to stderr");    // to stderr(输出在标准错误流上)
 | `FILE_SIZE(p) -> INTEGER` | 字节数 | 同上 | — | R2 |
 | `READ_BYTES(p) -> ARRAY[INTEGER]` | 二进制读,元素 `0..=255`。⚠ 单次超过 `MAX_READ_BYTES` = **1 MiB** ⇒ `ERR`,**不是截断、不是 OOM** | 同上 | — | R2 |
 | `WRITE_BYTES(p, data) -> NULL` | 二进制写;`data` 是 `ARRAY[INTEGER]`,**逐元素校验** `0..=255`。⚠ 单次超过 `MAX_WRITE_BYTES` = **64 MiB** ⇒ `ERR`,**不是截断、不是 OOM**;⚠ **超限时目标文件必须原封不动** | 同上 | — | R2 |
+| `WRITE_FILE_ATOMIC(path, content) -> NULL` | **原子写**:同目录临时文件 → 写 + `fsync` → 原子替换;目标要么旧内容要么新内容,**没有中间态**;任一步失败清理临时文件,**目标原封不动** | 写失败 → `ERR([kind: "FsError", op, reason])` | — | R2 |
+
+**元数据与文件锁族**:
+
+| 签名 | 语义 | 失败 | 复杂度 | 层 |
+|---|---|---|---|---|
+| `LOCK_FILE(path) -> INTEGER` | 取一把**独占**文件锁(**非阻塞**:拿不到立刻失败),返回**不透明句柄**(进程内有效);OS 级锁,跨进程互斥;是**建议锁**,不挡 `READ_FILE` / `WRITE_FILE` | 锁被占 / 权限不足 / 父目录不存在 → `ERR([kind: "FsError", op, reason])` | — | R2 |
+| `UNLOCK_FILE(handle) -> NULL` | 释放一把锁;**幂等**:曾发出的句柄重复释放返 `NULL` | 从未发出过的句柄 → `ERR([kind: "FsError", op, reason])` | `O(1)` | R2 |
+| `FILE_MTIME(path) -> INTEGER` | 修改时间,**Unix 纪元起的毫秒**;**跟随符号链接**(链接自己的时间戳走 `DIR_ENTRIES`) | 不存在 / 权限不足 → `ERR([kind: "FsError", op, reason])` | — | R2 |
+| `DIR_ENTRIES(path) -> ARRAY[DICT]` | 目录项列表,每项 `{name, size, mtime, is_dir}`,按名排序;**不跟随符号链接**(`lstat` 语义);目录项的 `size` / `mtime` 恒 `0` | 不存在 / 非目录 / 权限不足 → `ERR([kind: "FsError", op, reason])` | — | R2 |
+| `FILE_META(path) -> DICT` | **一次** `stat` 的快照 `{exists, is_dir, size, mtime, mtime_http}`(`mtime` 毫秒,`mtime_http` 是 IMF-fixdate 渲染);**路径不是失败** ⇒ `exists = FALSE`、其余为零;跟随符号链接 | 权限不足等真 IO 失败 → `ERR([kind: "FsError", op, reason])` | — | R2 |
 
 **本章的共享失败口径**:本章**只有一套 IO 失败口径** —— 一律 **`ERR` 值**;元数 / 类型错一律 `E0022` / `E0030` 原生诊断。完整规定见 §2.3。
 
@@ -4558,6 +4576,7 @@ PRINT(JSON_CHUNK_ITEMS(PARSE("[1,2,3,4,5]"), 2));  // [[1, 2], [3, 4], [5]]
 | 签名 | 语义 | 失败 | 复杂度 | 层 |
 |---|---|---|---|---|
 | `FORMAT(template, args...) -> STRING` | `{N}` 以第 `N` 个实参的 `STR` 渲染替换;`{name}` 以首个实参为字典按键取值;两类占位符可混用。未匹配的 `{...}` 原样保留 | 模板畸形(孤立的 `{`)→ `E0039` | `O(n + m)` | R2 |
+| `FORMAT_NAMED(template, args...) -> STRING` | **具名占位**:`{name}` 在**全部** `DICT` 实参里按出现序查找(首个命中者胜出;`FORMAT` 只认首个 `DICT`),`{N}` 同 `FORMAT` 的位置语义;占位符可带格式说明 `{name:spec}`(`[[fill]align][width]`,按码点填充,缺省左对齐);未匹配的占位符(含格式说明)原样保留,缺键**不**报错;既有 `FORMAT` 一字不动 | 模板畸形 / 空占位符 / 空名字 → `E0039`;元数 / 类型错 → `E0022` / `E0030` | `O(n + m)` | R2 |
 
 ### 4.1 `RESULT` 的渲染:两条路径**刻意不同**
 
@@ -4693,6 +4712,7 @@ PRINT(GROUP_BY([1, 2, 3], FUN((x), %(x, 2))));  // [1: [1, 3], 0: [2]]
 | `INDEX_OF(s, sub, from?) -> INTEGER` | `sub` 首次出现的**码点**下标(0 起),无则 `-1`;`from` 把起点推到后面(负值钳到 0),默认 0 | 实参非 `STRING` → `E0030`;`sub` 为空串 → `E0030` | `O(n·m)` 最坏 | R1 |
 | `CONTAINS_SUB(s, sub) -> BOOLEAN` | `sub` 是否出现 | 实参非 `STRING` → `E0030`;`sub` 为空串 → `E0030` | `O(n·m)` 最坏 | R1 |
 | `CAT(parts...) -> STRING` | **变长**拼接:按给定次序把若干段拼成一个字符串。非字符串段按 `STR` 渲染(语言核心册 §2.5、§10.3)后再拼 | — | `O(m)` | R2 |
+| `QUERY_PARSE(q) -> DICT` | 解析 URL query 串:`&` 分对、`=` 只切第一个(`a=b=c` ⇒ 键 `a` 值 `b=c`);`+` ⇒ 空格、`%XX` 百分号解码(先 `+` 后 `%XX`,顺序固定);重复键 ⇒ 值升级 `ARRAY[STRING]`(按出现序);空串 ⇒ 空字典;无 `=` 的键 ⇒ 值 `""`;空段跳过 | 非法百分号转义 → `ERR([kind: "QueryError", op, reason])`(**值**);元数 / 类型错 → `E0022` / `E0030` | `O(n)` | R1 |
 
 **`CAT` 的全部意义是「变长」。** 语言的 `+` 是**二元**的 ⇒ 拼 `N` 段**必须**嵌套 `N − 1` 次 ⇒ 段数不定时调用方写不出固定元数的调用。`CAT` 收**任意个数**的段(实参**可以**零个、一个或多个),按给定次序依次拼接,段间**不**插任何分隔符。
 
@@ -4939,6 +4959,13 @@ R1 门面 + R2 原生内核(注册与计时)。
 | `ASSERT_EQ(a, b)` / `ASSERT_NEQ(a, b)` | 相等 / 不等断言;成功 → `OK(TRUE)` | `ASSERT_EQ` 不成立 → `ERR(E0047)`;`ASSERT_NEQ` 成立 → `ERR(E0048)` | `O(n)` | R1 门面 + R2 内核 |
 | `EXPECT_ERR(x)` | `x` 为 `ERR` → `OK(载荷)`;否则 `ERR(E0049)` | — | `O(1)` | R1 门面 + R2 内核 |
 | `RUN_TESTS() -> ARRAY` | 调用所有已注册体,返回记录数组;每条记录是字典,至少含 `name`(STRING)、`passed`(BOOLEAN)、`duration_ms`(INTEGER),并按结果附 `return_value` 或 `error` | — | — | R1 门面 + R2 内核 |
+| `ASSERT_MSG(cond, message)` | 与 `ASSERT` 同一真值口径(八个假值),但 `message` **必需**且**必须**是 `STRING`;为真 → `OK(TRUE)`,否则 `ERR(E0046)`(载荷含 `msg`) | `message` 非 `STRING` → `E0030`;元数错 → `E0022` | `O(1)` | R1 门面 + R2 内核 |
+| `ASSERT_TRUE(value)` | **宽松口径**断言:只有 `FALSE` / `NULL` 为假(`0` / `""` / 空数组等**都**为真);为真 → `OK(TRUE)`,否则 `ERR(E0046)` | 元数错 → `E0022` | `O(1)` | R1 门面 + R2 内核 |
+| `EXPECT_ERR_CODE(fn, code)` | 调用 `fn`(零参)**捕获原生诊断**并比对码:命中 → `OK([code, message])`;没抛诊断 / 码不符 → `ERR(E0049)`(`kind` 区分情形);`fn` 的返回值不参与判定 | 实参类型错 → `E0030`;元数错 → `E0022` | `O(1)` | R1 门面 + R2 内核 |
+| `SKIP(reason?)` | 返回**跳过标记**(`[kind: "test_skipped", reason]`);测试体**返回**它 ⇒ 该测试记 `skipped = TRUE`(`passed` 取 `FALSE`,CI 先看 `skipped`);`reason` 可选,给了**必须**是 `STRING` | `reason` 非 `STRING` → `E0030`;元数 > 1 → `E0022` | `O(1)` | R1 门面 + R2 内核 |
+| `TEST_CASES(name, cases, body)` | **参数化**注册:`cases` 是数组的数组,每个内层数组是一条用例的实参;每条注册为独立测试,名 `<name>[<下标>]` | `name` 非 `STRING` / `cases` 非 `ARRAY` / `body` 非函数 / 用例项非数组 → `E0030`;元数错 → `E0022` | `O(k)`(k = 用例数) | R1 门面 + R2 内核 |
+| `TEMP_DIR() -> STRING` | 造一个临时目录并返回**绝对路径**(相对路径会把测试文件写进工作树);**不**自动清理,调用方负责 | 造不出来 → `E0060` | — | R1 门面 + R2 内核 |
+| `RUN_TESTS_ASYNC() -> ARRAY` | **异步**跑一轮:整轮进任务作用域(测试体可 `SPAWN` + `AWAIT`),返回与 `RUN_TESTS` **同形**的记录数组(跳过 / 失败判别口径逐字相同) | 元数错 → `E0022` | — | R1 门面 + R2 内核 |
 
 **约定**:测试体**应当**以 `ASSERT` 族断言收尾并以 `TRUE` 结束;体求值期间逃逸的 `ERR` 使该项 `passed = FALSE`。
 
@@ -5499,6 +5526,9 @@ PRINT(TIMING_SAFE_EQ(stored, ARGON2ID("wrong horse battery staple", salt, 2, 194
 | `GRAPHEME_COUNT(s) -> INTEGER` | 字素簇数(UAX #29 扩展字素簇);**空串是 `0`** | — | O(n) 最坏 | R2 |
 | `WIDTH(s) -> INTEGER` | 终端显示宽度(列数),**簇折叠**(口径见 §12.3) | — | O(n) 最坏 | R2 |
 | `TO_INT(s) -> INTEGER` | **宽松**的文本 → 整数解析(**空白裁剪** / **十六进制文本** / **小数截断**,口径见 §12.4) | `ERR([kind: "ParseError", input, reason])`(**值**,**不是**诊断) | O(n) 最坏 | R2 |
+| `NFKC(s) -> STRING` | **兼容性分解 + 规范组合**(UAX #15 NFKC):全角折半角、连字展开、上标折回基线;组合记号(`Mn`/`Me`)与格式字符不动;长度可变可短;**幂等** | — | O(n) 最坏 | R2 |
+| `CASE_FOLD(s) -> STRING` | **Unicode 大小写折叠**(CaseFolding C + F),产出大小写不敏感的比较键(`ß` → `ss`、尾 `ς` 折成 `σ`、长 `ſ` → `s`);可能变长;不含土耳其语状态映射 | — | O(n) 最坏 | R2 |
+| `STRIP_INVISIBLE(s) -> STRING` | 剥掉**不可见字符**(category `Cf`:零宽 / BOM / 软连字 / **双向控制符** / 方向标记);组合记号与变体选择符不动;⚠ ZWJ 被剥,家族 emoji 会散开(为关键词匹配而设,不是给显示用) | — | O(n) 最坏 | R2 |
 
 **共享失败口径**:本章的失败分两类,**不得**混为一谈。
 
@@ -5941,6 +5971,7 @@ PRINT(IS_ERR(TEST_BUBBLE(FUN((), TIMEOUT(10, FUN((), SLEEP(100)))))));  // TRUE
 | `RE_REPLACE(re, s, repl) -> STRING` | 替换全部非重叠匹配;`repl` 里 `$0` 是整体、`$1`… 是数字捕获组 | 实参类型错 → `E0030`(带名);元数错 → `E0022`;`${…}` 命名组 → `E0030` | O(n·(p+m)) 最坏 | R2 |
 | `RE_SPLIT(re, s) -> ARRAY of STRING` | 按匹配切分(匹配本身不保留);**空匹配不做切分点** | 实参类型错 → `E0030`(带名);元数错 → `E0022` | O(n·p) 最坏 | R2 |
 | `RE_GROUP_COUNT(re) -> INTEGER` | 捕获组个数(不含整体) | 实参类型错 → `E0030`(带名);元数错 → `E0022` | O(p) | R2 |
+| `RE_MATCHES_FULL(re, s) -> BOOLEAN` | `RE_TEST` 的**别名**,整串锚定语义**逐字复用**(两端锚定、忽略 `(?m)`);两个名字的可观察行为逐字相同 | 实参类型错 → `E0030`(带名);元数错 → `E0022`;**永不因内容失败** | O(n·p) 最坏 | R2 |
 
 **复杂度口径**:本表 `n` 是主串的码点数、`m` 是替换串的码点数、`p` 是编译后指令数(语言核心册 §18.1 的 `n` / `m` 记法在此扩展)。匹配成员的上界写作 O(n·p):**模式固定时即对输入线性**,这正是本章的立身之本;模式规模随调用方变化时,乘积项 `p` **不**可省。
 
@@ -6157,6 +6188,7 @@ PRINT(>=(LEN(ARGS()), 1));             // TRUE(含 argv[0])
 |---|---|---|---|---|
 | `PROCESS_RUN(argv, opts?) -> DICT` | 返 `[code: INTEGER, stdout: STRING, stderr: STRING]`。🔴 **`stdout` / `stderr` 是 `from_utf8_lossy` 的结果 —— 非 UTF-8 字节被换成 `U+FFFD`,不可逆**。⚠ 这与本册的「不做有损替换」**冲突**:成员表把这两个键定为 `STRING`,改成 `ARRAY[INTEGER]` 并集属**破坏性变更**。**要拿无损字节就走文件**:`WRITE_BYTES` + `READ_BYTES`。**不经 shell** | 元数 / 类型错 → `E0022` / `E0030`;起不来 / 超时 → `ERR([kind: "ProcessError", op, reason])` | — | R2 |
 | `PROCESS_ID() -> INTEGER` | 本进程 id | 元数 ≠ 0 → `E0022` | `O(1)` | R2 |
+| `PROCESS_RUN_ASYNC(argv, opts?) -> DICT` | **异步**版 `PROCESS_RUN`:子进程在工作线程上跑,**挂起当前任务**(别的任务照常运行);返回值 `{code, stdout, stderr}` 与 `opts` 形状与 `PROCESS_RUN` 逐字同形(`argv` 同样**只**收 `ARRAY[STRING]`);**宿主挂起点** ⇒ 调用点**必须**在任务体内,恢复时**幂等重放**;既有 `PROCESS_RUN` 的阻塞语义**一字不改** | 同 `PROCESS_RUN`;调用点不在任务体内 → `E0014` | — | R2 |
 
 **本章的共享失败口径**:元数 / 类型错是**程序员错误**,走原生诊断;「子进程起不来」与「超时」是**运行期可预期的结果**,返 `ERR([kind: "ProcessError", op, reason])`。⚠ **非零退出码不是失败** —— 它就是 `code` 字段里的一个整数,成员**正常返回**。
 
@@ -6277,7 +6309,7 @@ PRINT(DEFLATE_RAW_DECOMPRESS(DEFLATE_RAW_COMPRESS(data)));  // [104, 101, 108, 1
 
 **只支持明文 `http:`**,**不做 TLS** —— 调用方自备隧道 / 反代。**零新增第三方依赖**:分组件走 RFC 3986 通用语法,解析与引用求解全部手写。
 
-本章有**两半**:§21.1–§21.4 的五个成员是**三个 HTTP 客户端**与**两个 URL 纯函数**;**传输层**(§21.6,`TCP_*` 族)是**服务端**那一半 —— 它**只搬字节**,不认识任何协议(§21.6)。⚠ 传输层同样**只做明文连接**,**不做 TLS**。
+本章有**两半**:§21.1–§21.4 的六个成员是**四个 HTTP 客户端**(含异步形态 `HTTP_REQUEST_ASYNC`)与**两个 URL 纯函数**;**传输层**(§21.6,`TCP_*` 族)是**服务端**那一半 —— 它**只搬字节**,不认识任何协议(§21.6)。⚠ 传输层同样**只做明文连接**,**不做 TLS**。
 
 ### 21.1 成员表
 
@@ -6290,6 +6322,7 @@ PRINT(DEFLATE_RAW_DECOMPRESS(DEFLATE_RAW_COMPRESS(data)));  // [104, 101, 108, 1
 | `HTTP_GET(url, headers?, timeout?) -> DICT` | `{status, headers, body}`。**明文 `http:` only**。🔴 **`body` 的形状随内容走**:合法 UTF-8 ⇒ `STRING`;否则 ⇒ `ARRAY[INTEGER]`(元素 `0..=255`,逐字节无损,继承 §2.2 的字节裁决)。⚠ 8 MiB 的非 UTF-8 体会展开成约 840 万元素(与 `READ_BYTES` 同族放大)。**大载荷的正解仍是让它待在文件里**。🔴 **响应的 body 按状态码定界**(§21.4)—— `204` / `304` / `HEAD` 的 body **恒空**且**忽略 `Content-Length`**;`1xx` 被**跳过**、继续读下一个响应 | 网络失败 → `ERR([kind: "HttpError", op, reason])` | — | R2 |
 | `HTTP_POST(url, body, headers?, timeout?) -> DICT` | 同上(含「body 按状态码定界」那一条) | 同上 | — | R2 |
 | `HTTP_REQUEST(method, url, body?, headers?, timeout?) -> DICT` | 其余动词的通用形态;`method` 为 `HEAD` 时响应 **body 恒空**且**忽略 `Content-Length`**(§21.4) | 同上 | — | R2 |
+| `HTTP_REQUEST_ASYNC(method, url, body?, headers?, timeout_ms?) -> DICT` | **异步**版 `HTTP_REQUEST`:请求在工作线程上跑,**挂起当前任务**(别的任务照常运行);返回值与实参形状与 `HTTP_REQUEST` 逐字同形;**宿主挂起点** ⇒ 调用点**必须**在任务体内,恢复时**幂等重放**(**不**改 `HTTP_REQUEST` 的阻塞语义) | 同上;调用点不在任务体内 → `E0014` | — | R2 |
 
 **传输层族**(契约见 §21.6):
 
@@ -6304,6 +6337,7 @@ PRINT(DEFLATE_RAW_DECOMPRESS(DEFLATE_RAW_COMPRESS(data)));  // [104, 101, 108, 1
 | `TCP_SET_TIMEOUT(conn, ms) -> NULL` | 设该连接的**读超时**(`ms` 毫秒);`0` = 无限 | 句柄不存在 / 不是连接句柄 → `ERR([kind: "SocketError", op, reason])`;元数 / 类型错 / 负值 → `E0022` / `E0030` | — | R2 |
 | `TCP_CLOSE(conn) -> NULL` | 关闭连接。**幂等**:重复关闭 / 关闭不存在的句柄**都**返回 `NULL`,**不**产生诊断(§21.6) | 元数 / 类型错 → `E0022` / `E0030` | — | R2 |
 | `TCP_CLOSE_LISTENER(listener) -> NULL` | 关闭监听。**幂等**(同上) | 元数 / 类型错 → `E0022` / `E0030` | — | R2 |
+| `TCP_SERVE(listener, timeout_ms, opts, handler) -> INTEGER` | **迭代器形态的 accept 循环**在一个原生帧内推进:accept → 读满一次请求 → 调 `handler(request)` → 写回 → 下一条;返回**已成功服务的连接数**(accept 超时退出是正常结果);单条连接异常只废该连接、循环继续,失败以 `ERR([kind: "SocketError", op, reason])` 的形状记入告警槽。⚠ **handler 里不得调宿主挂起点成员**(handler 在原生帧内、无处挂起)—— 误用报**既有 `E0014`**(指名该成员、位置指向调用点),该连接不计入返回计数;`TCP_SERVE` **不关**监听器 | 句柄不对 / 类型错 → `ERR([kind: "SocketError", op, reason])` / `E0022` / `E0030` | — | R2 |
 
 **本章的共享失败口径**:URL 侧的失败是**程序员错误**(不满足 `URI-reference` 的 ABNF)→ 原生诊断 `E0030`;网络侧的失败(不通、超时、协议越界)是**运行期可预期的业务分支** → `ERR([kind: "HttpError", op, reason])`。**网络不通**做成原生诊断会让整个运行**终止**,调用方连重试都做不到。⚠ 传输层族是**同款口径**:`ERR([kind: "SocketError", op, reason])` **值** + `E0022` / `E0030` 诊断;⚠ 但「**暂时没有**」是**正常值**(超时 ⇒ `NULL` / 空字节),**不是** `ERR`(§21.6)。
 
@@ -6395,7 +6429,7 @@ RFC 3986 §5.4.2 的 `http:g` 一行给了**两个**结果:strict 解析器得 `
 
 ### 21.6 传输层(`TCP_*` 族)
 
-传输层是本章的**服务端**那一半:§21.1–§21.4 的五个成员是**三个 HTTP 客户端**与**两个 URL 纯函数**,**没有任何成员能建立或接受连接** ⇒ 「用 WLWL 写一个网络服务器」在语言层面无路可走。本节规定服务端的**最小族**:监听 / 接受 / 收 / 发 / 对端地址 / 超时 / 关闭。
+传输层是本章的**服务端**那一半:§21.1–§21.4 的六个成员是**四个 HTTP 客户端**与**两个 URL 纯函数**,**没有任何成员能建立或接受连接** ⇒ 「用 WLWL 写一个网络服务器」在语言层面无路可走。本节规定服务端的**最小族**:监听 / 接受 / 收 / 发 / 对端地址 / 超时 / 关闭。
 
 #### 21.6.1 句柄与字节的形状
 
@@ -6605,6 +6639,75 @@ PRINT(RESULT_ANY([ERR("e"), OK(2)]));           // OK(2)
 
 `TAKE_ERR` 随 v1.0.2 追加(一步式「检查并消费」),语义**逐字**取自语言核心册 §8.3 与 §8.6.1 —— 本册**不**另发明措辞;层归 R2(注册镜像册附录 A)。
 
+## 标准库规范 · 23 `std.log` —— 结构化日志与运行时指标
+
+结构化日志(**一行一个 JSON 对象**,不是自由文本)与进程级指标(计数器 / 延迟直方图 / 快照)。日志**不得**改变程序语义:低于级别阈值时不输出、返回 `NULL`,同一段脚本在 `INFO` 与 `TRACE` 下行为**必须**一致。输出目标缺省是 stderr,`LOG_FILE` 切到文件(**追加写**)。运行期可预期的失败是 `ERR([kind: "LogError", op, reason])` **值**;元数 / 类型错是 `E0022` / `E0030` 诊断。
+
+### 23.1 成员表
+
+| 签名 | 语义 | 失败 | 复杂度 | 层 |
+|---|---|---|---|---|
+| `LOG(level, message, fields?) -> NULL` | 写一行 JSON 对象(键序 `ts` → `level` → `msg` → `fields`,`ts` 是 Unix 纪元毫秒;`fields` 缺省 `{}`、键按字典序);低于阈值不输出,返回**恒** `NULL` | 级别名不认识 / 写失败 → `ERR([kind: "LogError", op, reason])` | — | R2 |
+| `LOG_SET_LEVEL(level) -> NULL` | 设进程级级别阈值(`TRACE` < `DEBUG` < `INFO` < `WARN` < `ERROR`,大小写不敏感);**空串复位**到缺省(`WLWL_LOG_LEVEL` → `INFO`) | 级别名不认识 → `ERR([kind: "LogError", op, reason])`,**当前阈值不变** | `O(1)` | R2 |
+| `LOG_FILE(path) -> NULL` | 把运行日志的输出目标切到文件,追加写(不存在则创建) | 打不开 → `ERR([kind: "LogError", op, reason])`,**目标不变** | — | R2 |
+| `LOG_METRICS() -> DICT` | 指标快照 `{counters, histograms}`;两段的键**都按字典序**,直方图桶是累积的 | 元数错 → `E0022` | `O(m)`(m = 指标数) | R2 |
+| `METRIC_COUNTER(name) -> INTEGER` | 注册同名计数器并返回**不透明句柄**;**幂等**:同名再调拿回同一个句柄,不清零 | 空名 / 元数 / 类型错 → `ERR([kind: "LogError", op, reason])` / `E0022` / `E0030` | `O(1)` | R2 |
+| `METRIC_INC(handle, delta) -> INTEGER` | **原子**自增计数器(N 个线程各 +1 ⇒ 恰好 N),返回**新值**;`delta` 可负 | 句柄不存在 → `ERR([kind: "LogError", op, reason])` | `O(1)` | R2 |
+| `METRIC_TIMER(handle, ms) -> INTEGER` | 记一次**延迟观测**(毫秒),返回累计观测数 | 负延迟 / 句柄不存在 → `ERR([kind: "LogError", op, reason])` | `O(1)` | R2 |
+
+## 标准库规范 · 24 `std.sync` —— 原子共享容器
+
+⚠ **这些是标准库的原子共享容器,不是语言级共享 cell**(并发册 §17.0.1 已澄清)—— 它们**不**提供跨语言级锁语义,也**不**取代语言的并发模型;本轮**只**做「不需要挂起」的原子容器(`MUTEX` / `CONDITION` 族**不在**本章)。句柄是**不透明 `INTEGER`**(从 1 起单调递增、**永不复用**;`0` 永远不是合法句柄)。运行期可预期的失败是 `ERR([kind: "SyncError", op, reason])` **值**;元数 / 类型错是 `E0022` / `E0030` 诊断。
+
+### 24.1 成员表
+
+| 签名 | 语义 | 失败 | 复杂度 | 层 |
+|---|---|---|---|---|
+| `COUNTER(initial) -> INTEGER` | **每次调用新建**一个原子计数器(不按名复用),返回不透明句柄 | 元数 / 类型错 → `E0022` / `E0030` | `O(1)` | R2 |
+| `COUNTER_INC(handle, delta) -> INTEGER` | **原子**地把 `delta` 加到计数上(可负),返回**新值**;溢出按 `i64` 回绕 | 句柄不存在 / 种类不对 → `ERR([kind: "SyncError", op, reason])` | `O(1)` | R2 |
+| `COUNTER_ADD(handle, delta) -> INTEGER` | **原子**加 `delta`(**必须 ≥ 0**,单调计数那一族),返回**新值** | `delta` 为负 / 句柄故障 → `ERR([kind: "SyncError", op, reason])` | `O(1)` | R2 |
+| `COUNTER_GET(handle) -> INTEGER` | 原子读**当前值**(快照,读到即可能过时;读-改-写请用 `COUNTER_INC` / `COUNTER_ADD`) | 句柄故障 → `ERR([kind: "SyncError", op, reason])` | `O(1)` | R2 |
+| `SHARED_DICT() -> INTEGER` | **每次调用新建**一个原子共享字典,返回不透明句柄 | 元数错 → `E0022` | `O(1)` | R2 |
+| `SHARED_DICT_SET(handle, key, value) -> NULL` | **单键原子写**(并发写者看不到半个值),写入的是**快照镜像**(不是活引用) | 值不可共享(闭包 / 原生函数 / 句柄 / 类)/ 句柄故障 → `ERR([kind: "SyncError", op, reason])` | `O(1)` | R2 |
+| `SHARED_DICT_GET(handle, key) -> VALUE` | 读一个键;**键不存在 ⇒ `NULL`**(与「值就是 `NULL`」不可区分) | 句柄故障 → `ERR([kind: "SyncError", op, reason])`;键非字符串 / 整数 → `E0030` | `O(1)` | R2 |
+| `SHARED_DICT_SNAPSHOT(handle) -> DICT` | **整体**读出一个普通字典;键序按字典序(逐次一致,可对拍) | 句柄故障 → `ERR([kind: "SyncError", op, reason])` | `O(n)` | R2 |
+
+## 标准库规范 · 25 `std.signal` —— 信号与优雅停机
+
+登记信号处理器(一个 WLWL 闭包)与**请求**优雅停机。⚠ `STOP()` **只置标志**:它**不**退出进程、**不**取消在途任务、**不**改退出码;真正的收尾序列(停收新活 → 等在途 → 落盘 → 退出)由**宿主**在安全点执行。运行期可预期的失败是 `ERR([kind: "SignalError", op, reason])` **值**;元数 / 类型错是 `E0022` / `E0030` 诊断。
+
+### 25.1 成员表
+
+| 签名 | 语义 | 失败 | 复杂度 | 层 |
+|---|---|---|---|---|
+| `ON_SIGNAL(sig, handler) -> NULL` | 登记信号处理器;**同一种信号登记多次 ⇒ 后一次覆盖前一次**。`sig` 只认 `SIGINT` / `CTRL_C_EVENT` / `SIGTERM` / `CTRL_CLOSE_EVENT`(大小写不敏感) | 未知信号名 / handler 非函数 → `E0030`;装不上 OS 处理器 → `ERR([kind: "SignalError", op, reason])` | `O(1)` | R2 |
+| `STOP() -> NULL` | **请求**优雅停机(置进程级标志,标志被宿主读取);**不**退出进程、**不**取消在途任务 | 元数错 → `E0022` | `O(1)` | R2 |
+
+## 标准库规范 · 26 `std.http` —— HTTP 解析、服务端与中间件原语
+
+请求解析 / 响应构造 / 一条连接上的 Keep-Alive 服务循环(`SERVE_STREAM`)/ 路由、Cookie、表单、静态文件,以及客户端出站(`GET` / `POST` / `REQUEST`)与三个中间件原语(限流 / 规则集热加载 / 真实 IP)。⚠ **`GET` / `POST` / `REQUEST` 走 `tls::CONNECT` 出站 HTTPS**(可协商 chunked 响应;未加载 TLS 扩展 ⇒ `ERR`)。⚠ **`SERVE_STREAM` 的 handler 里不得调宿主挂起点成员**(`TCP_RECV` / `TCP_ACCEPT` / `SLEEP_ASYNC` / `HTTP_REQUEST_ASYNC` / `PROCESS_RUN_ASYNC`)—— handler 跑在原生帧里、无处挂起,误用报**既有 `E0014`**(指名该成员、位置指向调用点,那一条连接作废)。失败口径两档:元数 / 类型错 ⇒ `E0022` / `E0030`;运行期可预期的协议错 ⇒ `ERR([kind: "HttpError", op, reason])` **值**(`SERVE_STREAM` 的传输层失败是 `ERR([kind: "SocketError", op, reason])`);`https://` 出站的 TLS 失败是 `ERR([kind: "TlsError", reason])`。
+
+### 26.1 成员表
+
+| 签名 | 语义 | 失败 | 复杂度 | 层 |
+|---|---|---|---|---|
+| `PARSE_REQUEST(raw) -> DICT` | 请求字典 `{method, path, version, headers, body}`;头名一律小写,同名多值 ⇒ `ARRAY[STRING]`;`Transfer-Encoding` 一律拒;无长度无分块 ⇒ 体长 0 | 报文畸形 / 走私手法 → `ERR([kind: "HttpError", op, reason])` | `O(n)` | R1 |
+| `BUILD_RESPONSE(status, headers, body, method?) -> DICT` | 响应字典 `{status, headers, content_length, head, body}`;`method = "HEAD"` 时 body 恒空 | 头值非法 → `ERR` / `E0030` | `O(n)` | R1 |
+| `SERVE_STREAM(conn, opts, handler) -> INTEGER` | 在**一条**连接上循环处理请求(Keep-Alive),返回**服务过的请求数**;handler 收请求字典、回 `{status, headers, body}`(可选 `keep_alive`);单条连接异常只废该连接。⚠ handler 里**不得**调宿主挂起点成员(误用报**既有 `E0014`**,指名该成员、位置指向调用点,那一条连接作废 —— 同 §21.1 `TCP_SERVE` 的条款,归属**语义**) | 句柄不对 / 读失败 / handler 抛错 → `ERR([kind: "SocketError", op, reason])` | — | R1 门面 + R2 内核 |
+| `ROUTE(table) -> ARRAY` | **编译**路由表(模式 ⇒ 方法);返回内部形状不透明的数组,`MATCH_ROUTE` 只认它;模式**必须**以 `/` 开头 | 模式 / 方法非法 → `ERR([kind: "HttpError", op, reason])` | `O(r)`(r = 路由数) | R1 |
+| `MATCH_ROUTE(routes, request) -> DICT` | `{matched, params, status, allow}`:命中 ⇒ `status = 200`;路径命中方法不符 ⇒ `status = 405` + `allow`;未命中 ⇒ `status = 404` | `routes` 非编译结果 → `ERR([kind: "HttpError", op, reason])` | `O(r)` | R1 |
+| `PARSE_COOKIES(header) -> DICT` | 解析 `Cookie` 头 ⇒ 键值字典 | 头畸形 → `ERR([kind: "HttpError", op, reason])` | `O(n)` | R1 |
+| `SET_COOKIE(name, value, opts?) -> STRING` | 生成 `Set-Cookie` 头的值;`opts` 认 `http_only` / `secure` / `same_site` / `max_age` / `path` / `domain` | 名 / 值非法 / 未知选项 → `ERR([kind: "HttpError", op, reason])` | `O(n)` | R1 |
+| `PARSE_FORM(body) -> DICT` | 解析 `x-www-form-urlencoded` ⇒ `{fields, files}` 形状中的 `fields`(同名多值升级 `ARRAY[STRING]`) | 非法百分号转义 → `ERR([kind: "HttpError", op, reason])` | `O(n)` | R1 |
+| `PARSE_MULTIPART(body, content_type, opts?) -> DICT` | 解析 `multipart/form-data` ⇒ `{fields, files}`;**文件 part 落盘**(`path` 交调用方处置) | 分段畸形 / 落盘失败 → `ERR([kind: "HttpError", op, reason])` | `O(n)` | R1 |
+| `STATIC_FILE(root, path, opts) -> DICT` | 静态文件服务:路径穿越判定走 `PATH_CONTAINS`,元数据走 `FILE_META` 一次快照,支持条件请求与压缩协商;返回 handler 契约形 `{status, headers, body}` | 越界 / 不可读 → `ERR([kind: "HttpError", op, reason])` | — | R1 |
+| `GET(url, opts?) -> DICT` | 客户端 GET,`{status, headers, body}`;`https://` 走 `tls::CONNECT` | 网络失败 → `ERR([kind: "HttpError", op, reason])`;无 TLS 提供者 → `ERR([kind: "TlsError", reason])` | — | R1 门面 + R2 内核 |
+| `POST(url, body, opts?) -> DICT` | 同上,带请求体 | 同上 | — | R1 门面 + R2 内核 |
+| `REQUEST(method, url, body?, opts?) -> DICT` | 通用动词形态;实参 3 按类型分「体(`STRING` / 字节数组)」与「选项(`DICT` / `NULL`)」 | 同上 | — | R1 门面 + R2 内核 |
+| `RATE_LIMITER(name, limit, window_sec, opts?) -> DICT` | 判一次限流,返回 `{allowed, remaining, reset, limit, mode}`;缺省滑动窗口(秒分桶),`opts.mode = "token_bucket"` 用令牌桶;计数走 `std.sync` 原子原语(计数**不丢**) | 未知选项 / 取值不合法 → `ERR([kind: "HttpError", op, reason])` | `O(1)` | R1 |
+| `RULESET_LOAD(path, opts?) -> DICT` | 规则集加载 + 热更新,返回 `{rules, mtime, version, path}`(每行一条规则,空行 / `#` 行跳过);**mtime 变更 ⇒ 一次 `SHARED_DICT_SET` 原子换引用**(在途旧数组内容不变),mtime 未变 ⇒ 复用现数组 | 文件不存在 / 读失败 → `ERR([kind: "HttpError", op, reason])` | — | R1 |
+| `CLIENT_IP(headers_or_request, remote_addr, trusted_proxies) -> STRING` | 求真实客户端 IP:仅 `remote_addr` 命中 `trusted_proxies` 才采信 `X-Forwarded-For`,取**最右**非可信跳;全可信取最左跳;**不可信远端无视 XFF**、回 `remote_addr`;无 XFF 同样回 `remote_addr` | 元数 / 类型错 → `E0022` / `E0030` | `O(h)`(h = 跳数) | R1 |
+
 ## 标准库规范 · 附录 A 成员注册镜像
 
 **附录 A 是规范性的。** 表体登记 v1.0 标准库的成员面:一行一个命名空间,「成员」列是该命名空间在本版的**全部**成员。
@@ -6619,25 +6722,29 @@ PRINT(RESULT_ANY([ERR("e"), OK(2)]));           // OK(2)
 | 命名空间 | 成员 | 层 | v1.0 册 |
 |---|---|---|---|
 | `std.io` | `PRINT` `INPUT` `PRINT_ERR` | R2 | 系统 |
-| `std.fs` | `READ_FILE` `WRITE_FILE` `EXISTS` `PATH_JOIN` `PATH_DIR` `PATH_BASE` `PATH_EXT` `PATH_NORMALIZE` `LIST_DIR` `WALK_DIR` `MKDIR` `MKDIRS` `REMOVE` `COPY` `MOVE` `FILE_SIZE` `READ_BYTES` `WRITE_BYTES` | R2 | 系统 |
+| `std.fs` | `READ_FILE` `WRITE_FILE` `EXISTS` `PATH_JOIN` `PATH_DIR` `PATH_BASE` `PATH_EXT` `PATH_NORMALIZE` `LIST_DIR` `WALK_DIR` `MKDIR` `MKDIRS` `REMOVE` `COPY` `MOVE` `FILE_SIZE` `READ_BYTES` `WRITE_BYTES` `PATH_CANONICAL` `PATH_CONTAINS` `WRITE_FILE_ATOMIC` `LOCK_FILE` `UNLOCK_FILE` `FILE_MTIME` `DIR_ENTRIES` `FILE_META` | R2 | 系统 |
 | `std.json` | `PARSE` `STRINGIFY` `JSON_TOKENIZE` `JSON_LOCATE` `JSON_VALIDATE` `JSON_GET` `JSON_SET` `JSON_DELETE` `JSON_MERGE` `JSON_CHUNK_ITEMS` `JSON_CHECK` | R2 | 核心 |
-| `std.format` | `FORMAT` | R2 | 核心 |
+| `std.format` | `FORMAT` `FORMAT_NAMED` | R2 | 核心 |
 | `std.encode` | `BASE64_ENCODE` `BASE64_DECODE` `HEX_ENCODE` `HEX_DECODE` `URL_ENCODE` `URL_DECODE` `SHA256` `HMAC_SHA256` `PBKDF2_ITER` `ARGON2ID` `RANDOM_BYTES` `RANDOM_HEX` `TIMING_SAFE_EQ` `UTF8_ENCODE` `UTF8_DECODE` `BYTE_LEN` | R2 | 安全 |
 | `std.time` | `NOW` `MONOTONIC` `SLEEP` `TEST_BUBBLE` `ADVANCE` `TIMEOUT` `SLEEP_ASYNC` | R2 | 系统 |
-| `std.regex` | `RE` `RE_TEST` `RE_SEARCH` `RE_FIND_ALL` `RE_REPLACE` `RE_SPLIT` `RE_GROUP_COUNT` | R2 | 文本 |
+| `std.regex` | `RE` `RE_TEST` `RE_MATCHES_FULL` `RE_SEARCH` `RE_FIND_ALL` `RE_REPLACE` `RE_SPLIT` `RE_GROUP_COUNT` | R2 | 文本 |
 | `std.rand` | `SEED` `UNIFORM` `INT_RANGE` `CODEPOINT` | R2 | 系统 |
 | `std.env` | `ENV_GET` `ENV_SET` `ENV_KEYS` `ARGS` `SCRIPT_PATH` | R2 | 系统 |
-| `std.process` | `PROCESS_RUN` `PROCESS_ID` | R2 | 系统 |
-| `std.text` | `TO_UPPER` `TO_LOWER` `NFC` `NFD` `NFC_QC` `GRAPHEME_COUNT` `WIDTH` `TO_INT` | R2 | 文本 |
+| `std.process` | `PROCESS_RUN` `PROCESS_RUN_ASYNC` `PROCESS_ID` | R2 | 系统 |
+| `std.text` | `TO_UPPER` `TO_LOWER` `NFC` `NFD` `NFC_QC` `GRAPHEME_COUNT` `WIDTH` `TO_INT` `NFKC` `CASE_FOLD` `STRIP_INVISIBLE` | R2 | 文本 |
 | `std.sanitize` | `HTML_ESCAPE` `HTML_UNESCAPE` `HTML_SANITIZE` `HTML_SANITIZE_SCRIPT` `CSS_ESCAPE_IDENT` `CSS_ESCAPE_STRING` `HTML_SANITIZE_CSS` `HTML_SANITIZE_URL` | R2 | 文本 |
 | `std.collection` | `MAP` `FILTER` `REDUCE` `SORT` `SORT_BY` `ZIP` `RANGE` `ANY` `ALL` `FIND` `ENUMERATE` `TAKE` `DROP` `FLAT` `UNIQ` `GROUP_BY` `JOIN` `CHUNK` `WINDOW` `DEDUP_BY` `MIN_BY` `MAX_BY` `SUM` `PRODUCT` `FOLD_RIGHT` `POSITION` `KEY_BY` | 混合(R1 门面 + R2 `RANGE`/`MAP`/`FILTER`/`CHUNK`/`WINDOW`/`ENUMERATE`/`ZIP`/`UNIQ`/`FLAT`/`JOIN`/`GROUP_BY`/`DEDUP_BY`/`KEY_BY`) | 核心 |
-| `std.str` | `JOIN` `SPLIT_LINES` `CHAR_AT` `COUNT` `QUOTE` `INDEX_OF` `CONTAINS_SUB` `CAT` | 混合(R1 `JOIN`/`SPLIT_LINES`/`CHAR_AT`/`COUNT`/`QUOTE`/`INDEX_OF`/`CONTAINS_SUB` + R2 `CAT`) | 核心 |
+| `std.str` | `JOIN` `SPLIT_LINES` `CHAR_AT` `COUNT` `QUOTE` `INDEX_OF` `CONTAINS_SUB` `CAT` `QUERY_PARSE` | 混合(R1 `JOIN`/`SPLIT_LINES`/`CHAR_AT`/`COUNT`/`QUOTE`/`INDEX_OF`/`CONTAINS_SUB` + R2 `CAT`) | 核心 |
 | `std.math` | `ABS` `MIN` `MAX` `FLOOR` `CEIL` `ROUND` `SQRT` `POW` `CLAMP` `PI` `E` `LN` `LOG2` `LOG10` `EXP` `TRUNC` `SIN` `COS` `TAN` `ASIN` `ACOS` `ATAN` `ATAN2` `SINH` `COSH` `TANH` `SIGN` `DIV_CEIL` `GCD` `LCM` `IS_SQRT` `POW_MOD` `DECIMAL` `DECIMAL_ADD` `DECIMAL_SUB` `DECIMAL_MUL` `DECIMAL_DIV` `DECIMAL_CMP` `DECIMAL_TO_STRING` `DECIMAL_ROUND` `FRACTION` `FRACTION_ADD` `FRACTION_SUB` `FRACTION_MUL` `FRACTION_DIV` `FRACTION_CMP` `FRACTION_TO_STRING` `FRACTION_TO_DECIMAL` `APPROX_EQ` `IS_NAN` `IS_INF` `SIGNIFICANT_DIGITS` `MEDIAN` `MODE` `VARIANCE_S` `VARIANCE_P` `STDDEV_S` `STDDEV_P` `PERCENTILE` `CORRELATION` `LINEAR_FIT` | 混合 | 核心 |
-| `std.test` | `TEST` `ASSERT` `ASSERT_EQ` `ASSERT_NEQ` `EXPECT_ERR` `RUN_TESTS` | 混合 | 核心 |
+| `std.test` | `TEST` `ASSERT` `ASSERT_EQ` `ASSERT_NEQ` `EXPECT_ERR` `RUN_TESTS` `ASSERT_MSG` `ASSERT_TRUE` `EXPECT_ERR_CODE` `SKIP` `TEST_CASES` `TEMP_DIR` `RUN_TESTS_ASYNC` | 混合 | 核心 |
 | `ai` | `ASK` `EMBED` `COMPLETE` `ASK_STREAM` `ASK_ALL` | R2 | 官方包 |
 | `agent` | `TASK` `TOOL` `CALL_TOOL` `[stub]` `MODEL` `CONTEXT` | R2 | 官方包 |
 | `std.compress` | `ZSTD_COMPRESS` `ZSTD_DECOMPRESS` `ZLIB_COMPRESS` `ZLIB_DECOMPRESS` `GZIP_COMPRESS` `GZIP_DECOMPRESS` `DEFLATE_RAW_COMPRESS` `DEFLATE_RAW_DECOMPRESS` | R2 | 系统 |
-| `std.net` | `URL_PARSE` `URL_JOIN` `HTTP_GET` `HTTP_POST` `HTTP_REQUEST` `TCP_LISTEN` `TCP_ACCEPT` `TCP_RECV` `TCP_SEND` `TCP_PEER` `TCP_LOCAL_ADDR` `TCP_SET_TIMEOUT` `TCP_CLOSE` `TCP_CLOSE_LISTENER` | R2 | 系统 |
+| `std.net` | `URL_PARSE` `URL_JOIN` `HTTP_GET` `HTTP_POST` `HTTP_REQUEST` `HTTP_REQUEST_ASYNC` `TCP_LISTEN` `TCP_ACCEPT` `TCP_RECV` `TCP_SEND` `TCP_PEER` `TCP_LOCAL_ADDR` `TCP_SET_TIMEOUT` `TCP_CLOSE` `TCP_CLOSE_LISTENER` `TCP_SERVE` | R2 | 系统 |
+| `std.log` | `LOG` `LOG_SET_LEVEL` `LOG_FILE` `LOG_METRICS` `METRIC_COUNTER` `METRIC_INC` `METRIC_TIMER` | R2 | 系统 |
+| `std.sync` | `COUNTER` `COUNTER_INC` `COUNTER_ADD` `COUNTER_GET` `SHARED_DICT` `SHARED_DICT_SET` `SHARED_DICT_GET` `SHARED_DICT_SNAPSHOT` | R2 | 系统 |
+| `std.signal` | `ON_SIGNAL` `STOP` | R2 | 系统 |
+| `std.http` | `PARSE_REQUEST` `BUILD_RESPONSE` `SERVE_STREAM` `ROUTE` `MATCH_ROUTE` `PARSE_COOKIES` `SET_COOKIE` `PARSE_FORM` `PARSE_MULTIPART` `STATIC_FILE` `GET` `POST` `REQUEST` `RATE_LIMITER` `RULESET_LOAD` `CLIENT_IP` | 混合(R1 `PARSE_REQUEST`/`BUILD_RESPONSE` + R2 `SERVE_STREAM`) | 系统 |
 | `std.result` | `RESULT_MAP` `AND_THEN` `FLATTEN` `NULL_OR` `RESULT_ALL` `RESULT_ANY` `TAKE_ERR` | 混合(R1 `RESULT_MAP`/`AND_THEN`/`FLATTEN`/`NULL_OR` + R2 `RESULT_ALL`/`RESULT_ANY`/`TAKE_ERR`) | 核心 |
 <!-- appendix-a:end -->
 

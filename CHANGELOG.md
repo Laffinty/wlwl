@@ -1,3 +1,59 @@
+## [v0.12.1 收口] — 2026-10-30（文档 / 技能包 · 规范仓 v1.0.4 落表 · 附录 A 抄回 · 全量门禁 · 三条实测缺陷修复 + 一条基线重生成）
+
+**本段 = 收口批**：**W-34**（文档 / 技能包）+ **W-35′**（登记 + 附录 A 抄件 + 全量门禁）+ 规范仓 **v1.0.4**（D-21 公共面 58 项 + D-22 `E0014` 触发条件补全）。计划与坐标见 `docs/plan/wlwl-v0.12.1-build-plan.md` §4 / §11.1 / §11.2 五步 / §13。
+
+### 事件
+
+- ✅ **规范仓 v1.0.4 已落表**（`d6d90c3`，**本地已提交、尚未 push**）：附录 A 收了 **58 个登记项**（57 个命名空间成员 + 全局内建 `ARRAY_GET`）· 各册成员表补行（`std.text` / `std.fs` / `std.net` / `std.format` / `std.str` / `std.test` / `std.regex` 加成员 + `std.log` / `std.sync` / `std.signal` / `std.http` **四个新命名空间**）· 总纲 §0.9 新增登记行 **D-21** · 一致性册 §5.5 台账**第一行**（`tls` 10 员 / `crypto` 8 员）· 语言册 `E0014` 触发条件补全（**D-22**，对齐并发册 §17.0）。
+- ⚠ **CI 的规范仓钉死提交前移**：`ci.yml` 由 `408e1f0` → **`d6d90c3`** ⇒ ⚠ **该提交必须先 push 规范仓**，否则实现仓 CI 检不出这个 ref ⇒ **顺序：规范仓先推、实现仓后推**。
+- ⚠⚠ **收口夜抓出三条实测缺陷 + 一条过期基线**（详见下面「修掉的三条」与「④ 基线重生成」）—— 其中一条**潜伏了一周**才暴露。
+
+### 修掉的三条（收口夜全量门禁抓出）
+
+| # | 缺陷 | 症状 | 根因 | 修法 |
+|---|---|---|---|---|
+| **A** | **`middleware_contract` 的并发用例期望值依赖墙钟** | 用例 `concurrent_counting_is_exact_under_threads` 期望 `979998`、实得 `980510`（**少 512 次**）⇒ 机器一慢就红 | 滑窗 `remaining` 是「最近 60 秒的窗口和」⇒ 20002 次调用跑了 **61.5 s** ⇒ 最早的 ~1.5 s 的调用**滑出窗口** ⇒ 违反 §8.3 第 8 条「用确定性计数，不用墙钟」⇒ **期望值本身就是错的** | 改用**令牌桶**（`refill = 0` ⇒ 全部计数进同一个计数器 ⇒ 总量与墙钟无关）⇒ 期望值不变;**另加**一条滑窗并发用例（只断言与墙钟无关的事实）⇒ 该用例**只剩一种**变红理由 |
+| **B** | ⚠⚠ **`STATIC_FILE` 的 `If-Modified-Since` 比较是错的** | 用例 `an_if_modified_since_older_than_the_file_gives_200` 期望 **200**、实得 **304** ⇒ **客户端会拿到错误 304 ⇒ 缓存住旧内容** | 旧实现拿**整串**比**字典序**，而 IMF-fixdate 的字段顺序**不是时间序**（**星期名在最前** · **日在月年之前**）⇒ ① 星期名支配结果（`"Thu" >= "Fri"` ⇒ 1970 年也被判成「没变」）;② `"01 Jan 2038"` 字典序 **小于** `"30 Oct 2026"` | `_MATCH_IMS` 改成**逐字段解析**成 `YYYYMMDDHHMMSS` **整数键**再比大小（定宽十进制 ⇒ 数值比较 == 时间比较）⇒ 数字解析复用既有 `_PARSE_DEC`（**不用 `INT`** —— 它失败返回 `ERR` 值 ⇒ 透明传播）⇒ 认不出的月份 / 非数字字段 ⇒ **不可比 ⇒ 走 200** |
+| **C** | ⚠ **`process_contract` 两条 timeout 用例的「耗时」断言在 Windows 上不可靠** | 并行跑 **5 次里 3 次红**（耗时 3.59 s / 4.13 s，上界 2.5 s / 3 s）；单跑绿 | Windows 的杀树走 `taskkill /T /F` —— 它是一个**子进程 spawn** ⇒ **耗时随负载在 1–3.5 s 间随机波动** ⇒ 任何**绝对**上界都会被撞穿;**相对**判据也不行（两次测量**各自**被抬 1–2.6 s）⇒ ⚠ **根子在本文件头早就写着**：「「耗时有界」**只有 POSIX 咬得到**」⇒ 是**代码没对齐文件头** | 两条用例的**耗时断言改成 `#[cfg(unix)]`**（Windows 侧只钉 `ERR` 值这个**结果形态**）+ 给两条加一把**互斥门**（`timeout_gate`）⇒ Windows 侧那半由 `wlwl-std` 的 `drain_is_bounded_even_when_the_reader_never_finishes` 守住;**POSIX 上「耗时有界」仍然钉着** ⇒ **负向验证**（WSL 上退回「不按组杀 + 无界 drain」的历史缺陷形态 ⇒ 用例挂住 > 4 min）⇒ 复原后 `process.rs` **SHA256 逐字节一致** |
+
+⚠ **B 的潜伏期**：W-19 落地那天（2026-10-29）是**周四** ⇒ 星期名相等 ⇒ 字典序恰好落到日期段 ⇒ 用例是绿的 ⇒ **缺陷到 2026-10-30（周五）才暴露**。⇒ **教训：别只看「用例绿不绿」，要看它「在什么条件下绿」。**
+⚠ **C 不是本轮引入的**：它是第四波登记 ⑦ 的那条 flake（**登记为待办**）⇒ 收口批的**全量门禁**把它撞了出来 ⇒ 本轮**按实测**改了根因（不是按原来的猜测「两条互相误杀」—— 那部分只解释了一半）。
+⚠ **三条反向守卫都真红过**（A：Rust 层 `fetch_add` → 先读后写 ⇒ `979999 ≠ 979998`;中间件层原子自增 → 非原子读-改-写 ⇒ `982049 ≠ 979998`（丢 2051 次）;B：换回旧比较 ⇒ `Wed, 01 Jan 1970 …` ⇒ 304 ≠ 200 ⇒ **且与当天是星期几无关**;C：WSL 上退回历史缺陷形态 ⇒ 用例挂住 > 4 min）⇒ 复原后 `sync.rs` / `http.wll` / `process.rs` **SHA256 逐字节一致**。
+
+### 落地清单（2 项 + 规范仓 1 项）
+
+| 工作项 | 内容 | 验收读数 |
+|---|---|---|
+| **W-34** | 文档 / 技能包同步：**H-1 回归守护**（`IF` 第三实参**支持**多语句组 ⇒ 新增示例 `wlwl-skill/examples/if_else_multistmt.wll` + 守卫 `skill_examples.rs::h1_if_else_third_arg_holds_a_multi_statement_group`）· **H-2 / H-3 口径订正**（`STR` / `SPLIT` 是**全局内建**，不是 `std.str` 成员;`+` **不做任何隐式强转**）· 成员面旧读数（231 / 21 命名空间）全部作废 ⇒ 当前 **288 / 25**（`wlwl namespace` 实测）· 本轮新成员（`std.http` 16 员 / `std.sync` 8 / `std.log` 7 / `std.signal` 2）全部写进 `SKILL.md` / `reference.md` / `docs/site/*` | `skill_package_guard` 的 `FORBIDDEN` 表从 3 条扩到 **18 条**（每条都带**为什么**）· `skill_examples` 的 `EXPECTED_TOPICS` 加一条 ⇒ **漏写就红** |
+| **W-35′** | 附录 A 抄件 + 各册成员表**抄回**实现仓 + 期望名单同步 + 规范仓钉死提交前移 + **失败口径对拍**（V-05 钉子表，新增 `impl/crates/wlwl-eval/tests/failure_surface_pins_contract.rs`）+ 版本号 0.12.0 → **0.12.1** | `check-appendix-a` **exit 0** · `stdlib_appendix_a_sync` **绿** · `net_contract`（14 → **16**）· `fs_contract` / `str_math_contract` / `text_contract` 成员表**全绿** · `check_conformance_registry.py` **exit 0** · 抄件重建**幂等**（跑一次 SHA256 不变） |
+| **规范仓 v1.0.4** | D-21 公共面 58 项 + D-22 `E0014` 触发条件补全 | `python script/check_spec.py` **exit 0**（错误 0 · 失败口径对拍**缺口 0**）· 17 册 / 519 已定义章节 |
+
+### 集成者做的四件事
+
+1. **锁文件策略登记**（§8.1 要求的收口项）：`impl/Cargo.lock` 与 `impl/ext/wlwl-tls-ext/Cargo.lock` **都不入库**（`.gitignore`）⇒ 依赖集读数**不可复现** ⇒ **发行说明钉死版本**：`rustls 0.23.46` · `ring 0.17.14` · `rustls-webpki 0.103.16` · `webpki-roots 1.0.11`（发行包**随包走**锁文件 ⇒ 重建出来的是同一个依赖集）。
+2. **失败口径对拍钉子表**（新文件 `impl/crates/wlwl-eval/tests/failure_surface_pins_contract.rs`）：规范册成员表「失败」列声明的每个诊断码，实现侧**必须有断言位**钉住 ⇒ `check_spec.py` 的「失败口径对拍」**缺口 0**（扫 `src:` / `expect:` 行算已钉面）⇒ 且这些钉子**全部真的跑**（只给扫描器看、不跑的「钉子」是假绿）。
+3. **三条实测缺陷的定性 + 修复**（上面那张表）—— ⚠ 三条都不是「上一波没做完」，是**上一波的实现 / 用例里一直存在的错**，被收口批的**全量门禁**抓出来。
+4. **④ 基线重生成**（`v07_fidelity` 的黄金基线过期 ⇒ 被 **fail-fast 盲区**（登记 ⑫）藏着 ⇒ **从来没被报过**）：漂移**逐字可归因** —— **3 个** fixture，全部是 §13.2 早就登记过的「**人形态新增两行**」（`^^^^` 高亮行 ×2 + `= hint:` 行 ×1）⇒ **无意外漂移** ⇒ 那次改动**是有意的** ⇒ 基线本就该重生成 ⇒ **走仓里规定的路径**（`cargo test -p wlwl-eval --test v07_fidelity -- --ignored` 的 `v07_fidelity_bless_golden`）⇒ **不是手改快照** ⇒ 重生成后两条对拍**绿**。
+
+### 门禁（收口实测）
+
+**Windows（13 道全绿）**：`cargo fmt --all -- --check` **0 diff** · `cargo clippy --locked --workspace --all-targets -- -D warnings` **0 error** · `cargo doc --workspace --no-deps`（`-D warnings`）**0 error** · `cargo test --locked --all-targets --no-fail-fast` **0 failed** · probe **3/3** · `conformance` **绿** · `cargo deny --locked --all-features check` **exit 0** · `cargo check --locked -p wlwl-std --features real-ai` **exit 0** · `cargo test --locked -p wlwl-tls-ext` **绿** · `check-appendix-a` **exit 0** · `stdlib_appendix_a_sync` **绿** · `check_conformance_registry.py` **exit 0** · 规范仓 `check_spec.py` **exit 0**（错误 0 · 失败口径对拍**缺口 0**）。
+**Linux（WSL2）**：clippy 全 workspace **0 error** · `http_w19_contract` **11/0** · `middleware_contract` **26/0** · `fs_atomic_lock_meta_contract` **21/0** · `http_contract` **25/0** · probe **3/3**。
+
+⚠ **本地门禁这一轮特意加了 `--no-fail-fast`**（CI 命令没有 ⇒ 登记 ⑫ 的盲区仍在）⇒ 把「所有 target 一次跑完」在本地做实了 —— 正是这样才把**被盲区藏住的** `v07_fidelity` 基线过期（登记 ⑲）挖出来。
+
+### 公共面变化（**已落规范仓 v1.0.4**）
+
+- 公共面读数 **288 members / 25 namespaces**（`wlwl namespace` 实测）⇒ 58 个登记项（57 个命名空间成员 + 全局内建 `ARRAY_GET`）已进附录 A 与各册成员表。
+- ⚠ 既有成员**零改动** · **零新增诊断码** · 版本口径仍是 实现 **v0.12.1** ↔ 规范 **v1.0.4**。
+
+### 下一步
+
+- ⚠ **push 顺序**：**规范仓 `d6d90c3` 先推** ⇒ 再推实现仓 `main`（实现仓 CI 会 checkout 规范仓那个 ref ⇒ 顺序反了 CI 直接红）。
+- ⚠ **发版前的最后一件**（§0.4 第 4 件）：**TLS 扩展产物**（Windows `.dll` / Linux `.so` / macOS `.dylib` + ABI 版本 + 哈希）随发行包发布。
+
+---
+
 ## [v0.12.1 开工 · 第十一波] — 2026-10-29（W-25 中间件原语：限流 / 规则热加载 / 审计 / 真实 IP;公共面 +3 成员）
 
 **本段 = 第十一波**：**W-25**（D-3 / D-5 / D-6 / D-7）+ CI run #328 结论落档。计划与坐标见 `docs/plan/wlwl-v0.12.1-build-plan.md` §4（工作项）/ §11.1（落地清单）/ §13（接替手册）。

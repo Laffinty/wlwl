@@ -2,7 +2,7 @@
 
 Claude Skills-format bundle for authoring **WLWL v1.0** `.wll` sources
 (spec v1.0 — authoritative source: the separate `wlwl-spec-v1` repository;
-merged copy: `../docs/wlwl-spec-reference.md`; compiler 0.12.0).
+merged copy: `../docs/wlwl-spec-reference.md`; compiler 0.12.1).
 
 ```
 wlwl-skill/
@@ -103,18 +103,23 @@ separate [`wlwl-spec-v1`](https://github.com/Laffinty/wlwl-spec-v1) repository
 - **v1.0** is the current **spec** baseline. The spec moved to its own repository (11
   volumes); the merged copy kept in this repo is the secondary carrier the
   machine guards and agents read. **The `§N` numbering does not move** ⇒ every
-  section reference in this bundle still resolves. **Member surface**: 21
-  namespaces / **231** members in the **v0.12.0 compiler** baseline this bundle
-  targets (the v1.0 spec snapshot itself has **214** — v1.0 added and removed
-  nothing ⇒ the 17 that came with the compiler are in the v0.12.0 bullet below).
+  section reference in this bundle still resolves. **Member surface**: the
+  **implementation** surface this bundle targets is **288 members across 25
+  namespaces** as printed by `wlwl namespace` (`23` × `wlwl:std.*` plus the
+  `ai` / `agent` packages). ⚠ The spec's appendix A is a **frozen snapshot**
+  and is a *different* list — per spec §0.7 rule 1 it does **not** drift with
+  the compiler, so a member that exists in the compiler but not in appendix A
+  is a **conformance gap**, not an extra member. Read the table itself for its
+  contents rather than a count quoted here.
   What writers need to know: **§8.6 — an unconsumed `ERR` is reported
   (`E0103`)** unless a consumer takes it or it is explicitly discarded with
   `LET(_, expr)`; plus the new complexity / memory chapters (§18–§19) and the
   conformance volume (its §5 registers the spec-vs-implementation differences
   **X-01…X-25**).
 - **v0.12.0** is the current **compiler** baseline (the spec side is still
-  v1.0 / v1.0.2). It expands the **public surface by 17 members**
-  (v1.0's 214 → 231) and changes **seven semantics** (**D-14…D-20**):
+  v1.0 / v1.0.2). It expands the **public surface by 17 members** (the batch
+  delta is recorded in `CHANGELOG.md`, the historical record) and changes
+  **seven semantics** (**D-14…D-20**):
   - **`std.net` gains the 9-member transport family** (`TCP_LISTEN` `TCP_ACCEPT`
     `TCP_RECV` `TCP_SEND` `TCP_PEER` `TCP_LOCAL_ADDR` `TCP_SET_TIMEOUT`
     `TCP_CLOSE` `TCP_CLOSE_LISTENER`) ⇒ **a server can now be written in WLWL

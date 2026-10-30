@@ -3,6 +3,62 @@
 Skill-bundle changes (spec lives at `../docs/wlwl-spec-reference.md`
 and is authoritative).
 
+## [Unreleased] — W-34 文档与技能包同步（H-1 / H-2 / H-3 口径订正 + 本轮新成员 + TLS 扩展）
+
+⚠ **本段全部是口径订正与补充说明**：不改语言面、不改任何成员契约。
+三处**旧口径已废**（下面照抄旧句只是留档 —— 本文件是历史记录，
+`skill_package_guard` 刻意不扫它，正文三份则由那条守卫盯着）。
+
+### Fixed
+
+- ⚠ **H-1**：「Five writing traps」第 2 条原写「**`IF` 的第 3 个实参不能放
+  多语句组**（`E0013`）」—— **错的，已支持**。实测
+  `IF(FALSE, 1, (LET(a,1); LET(b,2); +(a,b)))` → `3`：第三实参就是多语句组，
+  取**最后一句**的值，第二实参同理。⇒ 新增回归守护
+  `skill_examples.rs::h1_if_else_third_arg_holds_a_multi_statement_group` +
+  示例 `examples/if_else_multistmt.wll`（跑真实程序、断言逐行输出）。
+- ⚠ **H-2**：原写「**没有数字→字符串**」—— **错的**。**全局内建 `STR(x)`**
+  （附录 G §10.3）早就有，无需 `IMPORT`；实测 `STR(42)` → `"42"`。
+- ⚠ **H-3**：原写「**没有通用 `SPLIT`**」—— **错的**。**全局内建
+  `SPLIT(s, sep)`**（附录 G §10.5）早就有；实测 `SPLIT("a,b,c", ",")` →
+  `[a, b, c]`。`std.str` 只导出 `SPLIT_LINES`（按 `\n` 切）。
+- ⚠ **`+` 不做任何隐式强转**（补写清楚）：`+(1, "a")` 与 `+("a", 1)` 都是
+  `E0030: +: cannot add integer and string`，提示原文含
+  「v0.3 has no implicit numeric coercion」。数字 → 文本走 `STR`，变长拼接走
+  `std.str::CAT`。⇒ 这句错误说法（「`+` 会把数字转成字符串」）已进
+  `skill_package_guard` 的 `FORBIDDEN`，写回正文必红。
+- **成员面读数**：正文里那句「231 members across 21 namespaces」/「214 →
+  231」当**现状**写是**过期的**。当前实现成员面是 `wlwl namespace` 实测的
+  **288 members / 25 namespaces**（`wlwl:std.*` 23 + 官方包 `ai` / `agent` 2）。
+  ⚠ 附录 A 是 v1.0 **冻结快照**（§0.7 规则 1，不随实现漂移）⇒ 两个口径
+  **不是一回事**，正文已分开写。旧读数 `214` / `231` / `21 namespaces` 一族
+  已进 `FORBIDDEN`。
+
+### Added
+
+- **`TCP_SERVE` 契约 + 迁移指引**（`SKILL.md` / `reference.md` §29.2–§29.3）：
+  handler 跑在**原生帧**里 ⇒ **不得**调宿主挂起点成员（`TCP_RECV` /
+  `TCP_ACCEPT` / `SLEEP_ASYNC`）⇒ 误用报**既有 `E0014`**（指名成员 + 指向
+  调用点），而 `TCP_SERVE` 的可观察语义不变（那条连接不计数、失败只记一笔、
+  循环继续、对端收 `500`）。并给出「静态展开 accept 链 → `TCP_SERVE`」的
+  迁移对照表与 before/after 代码。
+- **阻塞 vs 挂起的出站口径**：`HTTP_GET`/`HTTP_POST`/`HTTP_REQUEST` **仍阻塞**；
+  非阻塞走 **`HTTP_REQUEST_ASYNC`**（同实参、同 `{status, headers, body}` 返回，
+  只挂起当前任务）。
+- **TLS 口径**：TLS **不在标准库**（`std.net` 明文 `http:` only），以原生动态库
+  扩展经宿主显式加载（`--ext` / `WLWL_EXT_PATH`），**加载 = 交出全部进程权限**
+  （非沙箱）；信任模型**七条硬规则** T1–T7 成文；扩展成员不进附录 A / 公共面。
+- **`std.http` 中间件原语**（限流 / 规则热加载 / 审计 / 真实 IP）：
+  `RATE_LIMITER` / `RULESET_LOAD` / `CLIENT_IP` 的签名、返回形状、
+  `opts` 表、热切换语义、审计 JSON 行形状与按 name 复用的状态注册表。
+- **新命名空间说明面**：`std.sync`（原子计数 / 共享字典）、`std.log`
+  （结构化日志 / 指标）、`std.signal`（优雅停机）。
+- **已知边界如实成文**：`std.fs::PATH_JOIN` 在 POSIX 上吃前导 `/`；
+  multipart 文件 part 有损 UTF-8；`STATIC_FILE` 的符号链接逃逸边界 +
+  `READ_BYTES` 1 MiB 上限；限流滑窗跨秒瞬时竞态 / 令牌桶极端并发重复补给。
+- `reference.md` **§29** —— 本批的增量备忘（含上面各条的完整契约表）。
+- `examples/if_else_multistmt.wll` —— H-1 的可跑示例（含期望输出）。
+
 ## [Unreleased] — 二期复测带回来的订正（v0.12.0-rc2 的实测打脸本 skill 两条纪律）
 
 ⚠ **本段是被第三方二期实测（`REPORT2.md`）推翻了前一段里的两条纪律** —— 不是新增功能，

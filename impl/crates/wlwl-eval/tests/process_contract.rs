@@ -28,7 +28,23 @@
 //! 进程还在不在跑」的用例,证据只有 CI 的 ubuntu / macOS。Windows 上守得住的
 //! 是 `wlwl-std` 里的 `a_group_is_only_killed_when_this_run_created_it`。
 //!
-//! ## ⚠️ 阻塞代价必须在这里也写一遍
+//! ## ⚠️ **Windows 侧不钉「耗时」**（2026-10-30 收口夜）
+//!
+//! 上面两条 timeout 用例的「**耗时有界**」断言**只在 POSIX 上钉**。
+//! **理由（实测，不是推测）**：Windows 的杀树走 `taskkill /T /F` —— 它是一个
+//! **子进程 spawn** ⇒ 它的耗时**随机器负载在 1–3.5 s 之间随机波动**（实测：
+//! 空载 0.9 s；同文件并行 + 其它用例起进程时，测到 1.4 s / 2.5 s / 3.4 s / 4.0 s）
+//! ⇒ 任何**绝对**耗时上界都会被它撞穿（实测 **5 次里 3 次红**）;而**相对**判据
+//! （两次测量之差）同样不可靠 —— 实测**两次测量各自**被抬 1–2.6 s ⇒ 差值也会超限。
+//! ⇒ Windows 侧只能钉**结果形态**（`ERR` 值）。
+//!
+//! ⚠ **这与本文件头的既有结论一致**：「「耗时有界」**只有 POSIX 咬得到**」
+//! ⇒ 现在是**代码对齐文件头**（原先两条在 Windows 上也钉耗时 ⇒ 与文件头矛盾）。
+//! ⚠ **Windows 的这半由 `wlwl-std` 的单测守住**：
+//! `drain_is_bounded_even_when_the_reader_never_finishes`（直接钉 `drain` 的有界性，
+//! 与「杀不杀得掉进程树」无关）· `a_timeout_kills_the_child_instead_of_hanging`。
+//! ⇒ **POSIX 上「耗时有界」仍然钉着**（`killpg` 是一次系统调用 ⇒ 不引入上面的波动）。
+//!//! ## ⚠️ 阻塞代价必须在这里也写一遍
 //!
 //! 运行时是**单线程协作式** ⇒ `PROCESS_RUN` 等子进程期间**不调度任何其他
 //! 任务**。与 `std.time::SLEEP` 的阻塞代价**同源**。契约能钉住「返回值是
@@ -38,7 +54,21 @@
 mod common;
 
 use std::path::PathBuf;
+use std::sync::{Mutex, MutexGuard};
 use wlwl_eval::Evaluator;
+
+/// **两条 timeout 用例互斥**（计划登记 ⑦ 的修法方向之一：「标为需串行」）。
+///
+/// ⚠ **实测**（2026-10-30 收口夜）：这两条**并行**跑时 **5 次里 3 次红**
+///   （两条的耗时上界都被撞：3.59 s / 4.13 s，而上界是 2.5 s / 3 s）;
+///   **单跑绿**（1.46 s）⇒ 是**并行干扰**，不是回归。
+///   ⚠ 本仓其它「会真的起进程 / 会真的等」的用例也是这么串的
+///   （见 `middleware_contract.rs` / `sync_contract.rs` 的 `gate()`）。
+static TIMEOUT_GATE: Mutex<()> = Mutex::new(());
+
+fn timeout_gate() -> MutexGuard<'static, ()> {
+    TIMEOUT_GATE.lock().unwrap_or_else(|e| e.into_inner())
+}
 
 struct Case {
     name: &'static str,
@@ -292,6 +322,7 @@ AT_K(PROCESS_RUN(["sh", "-c", "exit 3"]), "code", 0)"#
 /// 读线程等 29 s 的缺陷。
 #[test]
 fn a_timeout_yields_an_err_value() {
+    let _g = timeout_gate();
     let argv = if cfg!(windows) {
         r#"["cmd", "/C", "ping -n 6 127.0.0.1 > NUL"]"#
     } else {
@@ -305,10 +336,14 @@ IS_ERR(PROCESS_RUN({argv}, ["timeout": 300]))"#
     let out = actual(&src);
     let elapsed = started.elapsed();
     assert_eq!(out, "TRUE", "a timeout must be an ERR value — got {out}");
+    // ⚠ **「耗时有界」这条只在 POSIX 上钉**（理由见文件头「Windows 侧不钉耗时」）。
+    #[cfg(unix)]
     assert!(
         elapsed < std::time::Duration::from_secs(3),
         "a 300 ms timeout took {elapsed:?} — the child tree was not killed"
     );
+    #[cfg(not(unix))]
+    let _ = elapsed;
 }
 
 /// ⚠🔴 **[N-011 / D13-061] 超时 + **活着的孙进程** ⇒ 耗时有界。**
@@ -336,7 +371,7 @@ IS_ERR(PROCESS_RUN({argv}, ["timeout": 300]))"#
 /// `taskkill`**。
 #[test]
 fn a_timeout_with_a_living_grandchild_returns_promptly() {
-    // 孙进程活 ~30 s;旧的「无界 join」会把它整个等完 ⇒ 上界断言有足够分辨率。
+    let _g = timeout_gate();
     let argv = if cfg!(windows) {
         // `cmd` 是子进程、`ping` 是孙进程;`> NUL` 让它别把管道写爆。
         r#"["cmd", "/C", "ping -n 31 127.0.0.1 > NUL"]"#
@@ -354,13 +389,15 @@ IS_ERR(PROCESS_RUN({argv}, ["timeout": 300]))"#
     let out = actual(&src);
     let elapsed = started.elapsed();
     assert_eq!(out, "TRUE", "a timeout must be an ERR value — got {out}");
-    // 上界 = timeout(300 ms) + 两次 drain 的 JOIN_GRACE(各 500 ms)+ 余量。
-    // ⚠ 2.5 s 的余量要够放下**两次**串行 drain,又要比孙进程的 30 s 小一个量级。
+    // ⚠ **「耗时有界」这条只在 POSIX 上钉**（理由见文件头「Windows 侧不钉耗时」）。
+    #[cfg(unix)]
     assert!(
         elapsed < std::time::Duration::from_millis(2500),
         "a 300 ms timeout took {elapsed:?} — a surviving grandchild still holds the \
          pipe write end, so the drain was unbounded"
     );
+    #[cfg(not(unix))]
+    let _ = elapsed;
 }
 
 /// 🔴 **[N-037 项三 / D13-068] 超时之后**不得留下活着的孙进程**。
@@ -477,11 +514,11 @@ fn process_member_set_matches_the_spec_table() {
         .iter()
         .map(|(n, _)| (*n).to_string())
         .collect();
-    assert_eq!(spec.len(), 2, "§19 table found {spec:?}");
+    assert_eq!(spec.len(), 3, "§19 table found {spec:?}");
     for n in &impls {
         assert!(spec.contains(n), "§19 table missed `{n}`: {spec:?}");
     }
-    assert_eq!(impls.len(), 2, "wlwl:std.process exports 2 members");
+    assert_eq!(impls.len(), 3, "wlwl:std.process exports 3 members");
 }
 
 /// ⚠️ 阻塞代价是**语言级事实**,不是实现细节 ⇒ 必须在规范里成文。

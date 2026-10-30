@@ -1,15 +1,15 @@
 ---
 name: writing-wlwl
-description: "Writes WLWL .wll source files (spec v1.0 — merged reference at ../docs/wlwl-spec-reference.md, authoritative source the separate wlwl-spec-v1 repo; compiler v0.12.0). Covers v0.6 core (truthy overhaul, &&/|| short-circuit, IF ERR-routing, ! canonical, AT_K rename, string subscript, LET MUT, overflow->E0035, ${} interpolation), v0.7 §17 concurrency, v0.8 clarifications, v0.9 (true-suspension concurrency + OOP §13-§16 with session-type protocols and linear THIS), v0.10 static contracts (all DEFAULT-OFF, runtime semantics unchanged; carried over unchanged into v0.11 and v1.0): type annotations FUN((a: INTEGER) : INTEGER, ...) plus container types ARRAY[T]/DICT[K,V]/OPTION[T]/RESULT[T,E] and bounded type variables `T: Comparable`; [features] gradual_typing = off|warn|error; module signature sidecars `foo.wll.sig` and `SEALED([...])`; MATCH exhaustiveness. New codes E0110-E0116 / W0110-W0117, all compile-time only. v1.0 error model: an unconsumed ERR is reported (E0103) unless a consumer takes it or it is explicitly discarded with LET(_, expr). v0.12.0 (compiler): 17 new stdlib members — std.net transport family (TCP_LISTEN/TCP_ACCEPT/TCP_RECV/TCP_SEND/TCP_PEER/TCP_LOCAL_ADDR/TCP_SET_TIMEOUT/TCP_CLOSE/TCP_CLOSE_LISTENER), std.encode byte layer (UTF8_ENCODE/UTF8_DECODE/BYTE_LEN), std.text TO_INT, std.str CAT, std.env SCRIPT_PATH, std.result TAKE_ERR, std.time SLEEP_ASYNC; plus host-suspension waits (a socket wait parks ONLY the calling task), std.fs IO failures as ERR values, strict INT rules, and the orphan-task-failure report. Use when the user asks for WLWL code, a .wll file, or anything targeting the wlwl-spec-v1 baseline (or v0.6/v0.7/v0.8/v0.9/v0.10/v0.11/v0.12 core). Do NOT use for v0.5 or earlier (POP-not-AT_K, no LET MUT), the Rust implementation, or the formatter."
+description: "Writes WLWL .wll source files (spec v1.0 — merged reference at ../docs/wlwl-spec-reference.md, authoritative source the separate wlwl-spec-v1 repo; compiler v0.12.1). Covers v0.6 core (truthy overhaul, &&/|| short-circuit, IF ERR-routing, ! canonical, AT_K rename, string subscript, LET MUT, overflow->E0035, ${} interpolation), v0.7 §17 concurrency, v0.8 clarifications, v0.9 (true-suspension concurrency + OOP §13-§16 with session-type protocols and linear THIS), v0.10 static contracts (all DEFAULT-OFF, runtime semantics unchanged; carried over unchanged into v0.11 and v1.0): type annotations FUN((a: INTEGER) : INTEGER, ...) plus container types ARRAY[T]/DICT[K,V]/OPTION[T]/RESULT[T,E] and bounded type variables `T: Comparable`; [features] gradual_typing = off|warn|error; module signature sidecars `foo.wll.sig` and `SEALED([...])`; MATCH exhaustiveness. New codes E0110-E0116 / W0110-W0117, all compile-time only. v1.0 error model: an unconsumed ERR is reported (E0103) unless a consumer takes it or it is explicitly discarded with LET(_, expr). v0.12.0 (compiler): 17 new stdlib members — std.net transport family (TCP_LISTEN/TCP_ACCEPT/TCP_RECV/TCP_SEND/TCP_PEER/TCP_LOCAL_ADDR/TCP_SET_TIMEOUT/TCP_CLOSE/TCP_CLOSE_LISTENER), std.encode byte layer (UTF8_ENCODE/UTF8_DECODE/BYTE_LEN), std.text TO_INT, std.str CAT, std.env SCRIPT_PATH, std.result TAKE_ERR, std.time SLEEP_ASYNC; plus host-suspension waits (a socket wait parks ONLY the calling task), std.fs IO failures as ERR values, strict INT rules, and the orphan-task-failure report. Use when the user asks for WLWL code, a .wll file, or anything targeting the wlwl-spec-v1 baseline (or v0.6/v0.7/v0.8/v0.9/v0.10/v0.11/v0.12 core). Do NOT use for v0.5 or earlier (POP-not-AT_K, no LET MUT), the Rust implementation, or the formatter."
 ---
 
-# Writing WLWL (spec v1.0 · compiler v0.12.0)
+# Writing WLWL (spec v1.0.4 · compiler v0.12.1)
 
 The **spec** and the **compiler** are versioned separately: this bundle targets
 the **v1.0 specification** (authoritative source — the separate
 [`wlwl-spec-v1`](https://github.com/Laffinty/wlwl-spec-v1) repository; the
 merged copy kept in this repo is `../docs/wlwl-spec-reference.md`), while the
-compiler it runs on is the `wlwl` release in `impl/` — currently **v0.12.0**.
+compiler it runs on is the `wlwl` release in `impl/` — currently **v0.12.1**.
 
 ⚠ **v0.12.0 is a public-surface expansion, not a language change.** It adds
 **17 stdlib members** (notably the `std.net` **transport family** — a server can
@@ -100,6 +100,10 @@ renumbered the spec and changed
 **Comparison**: `<(a, b)`, `>(a, b)`, `<=(a, b)`, `>=(a, b)`.
 
 **Arithmetic**: `+(a, b)`, `-(a, b)`, `*(a, b)`, `/(a, b)`, `%(a, b)`. `+` is also string concat and array concat. Integer overflow → native `E0035`; divide-by-zero → native `E1003` (note: **not** `E0009`; these are native codes per §11.2 — NOT ERR, cannot be caught by `EXPECT_ERR` / `UNWRAP_OR` / `TRY`; see anti-pattern #17).
+
+⚠ **`+` does *no* implicit coercion** — it is strictly same-kind. `+(1, "a")` and `+("a", 1)` are both `E0030: +: cannot add integer and string` (the hint reads *"v0.3 has no implicit numeric coercion"*). To render a number as text use the **global builtin** `STR(x)` (`STR(42)` → `"42"`); to join N parts use `wlwl:std.str::CAT(parts...)` (variadic) or nest `+`. String concat is `+` on **two strings**: `+("a", "b")`.
+
+**Number ⇄ text and splitting are global builtins — not `std.str` members.** `STR(x) -> STRING` (appendix_G §10.3) and `SPLIT(s, sep) -> ARRAY` (appendix_G §10.5) resolve as bare names with **no `IMPORT`**: `SPLIT("a,b,c", ",")` → `[a, b, c]`. `wlwl:std.str` does **not** export a general `SPLIT` — it exports `SPLIT_LINES` (split on `\n` only). `INT(x)` / `FLOAT(x)` / `BOOL(x)` are the other global converters (strict parsing; the *lenient* text→integer parser is `wlwl:std.text::TO_INT`).
 
 **Boolean**: `&&(a, b)` / `||(a, b)` short-circuit; right side not evaluated when left decides. `NOT(x)` and `!(x)` are equivalent. `NOT(ERR(...))` propagates ERR (§4.3); safe coercion idiom: `NOT(BOOL(ERR(...)))` (BOOL is a §8.3 consumer).
 
@@ -630,6 +634,11 @@ SCOPE(FUN(() ,
 A socket wait is a **host suspension** (§17.0): it parks **only the calling
 task** — other tasks keep running.
 
+The current build adds two more `std.net` members on top of that family:
+**`TCP_SERVE`** (the accept loop in a native frame — see "The `TCP_SERVE`
+contract" below) and **`HTTP_REQUEST_ASYNC`** (non-blocking outbound HTTP —
+see "Blocking vs suspending outbound calls").
+
 **These eight rules are not stylistic.** Each one has a measured failure mode
 behind it (the numbers come from this repo's own audit,
 `../docs/history/wlwl-v0.12.0-rc1-audit-and-fixes.md`):
@@ -686,10 +695,16 @@ runtime.
 1. **`||` and `&&` are strictly binary.** `||(a, b, c)` →
    `E0022: function '||' expects 2 argument(s), got 3`. Nest instead:
    `||(a, ||(b, c))`.
-2. ⚠ **`IF`'s *third* argument cannot hold a multi-statement group.**
-   `IF(c, x, (LET(a,1); LET(b,2); a))` → `E0013: expected ';' after
-   expression`. The **same shape in the *second* argument works fine.**
-   ⇒ Put the multi-statement work in a `LET`/closure and pass that.
+2. ✅ **`IF`'s *third* argument **does** hold a multi-statement group.**
+   `IF(c, x, (LET(a,1); LET(b,2); +(a,b)))` evaluates to the value of the
+   **last** statement of the group when `c` is falsy — measured on the
+   v0.12.1 build: `IF(FALSE, 1, (LET(a,1); LET(b,2); +(a,b)))` → `3`.
+   The **same shape in the *second* argument** works too. ⇒ Both arms may be
+   a `(stmt; stmt; …)` group; the group's value is its last statement.
+   ⚠ This was reported as an `E0013` limitation in an earlier revision of
+   this bundle. That reading is **retired** — `skill_examples.rs` carries a
+   regression guard (`h1_if_else_third_arg_holds_a_multi_statement_group`)
+   that pins the shape.
 3. ⚠ **`PATH_NORMALIZE` keeps `\`; `PATH_JOIN` emits `/`.** An environment
    value like `C:\a\b` normalises to `C:\a\b`, while `PATH_JOIN` produces
    `C:/a/b` ⇒ **prefix comparison against it always fails** ⇒ every path
@@ -720,6 +735,255 @@ comes first wins**.
 counts **UTF-8 bytes**. A `Content-Length` header needs the **byte** count —
 they differ for any non-ASCII text. Binary payloads travel as
 `ARRAY[INTEGER]` (`0..=255`), never as `STRING`.
+
+### The `TCP_SERVE` contract
+
+`TCP_SERVE(listener, timeout_ms, opts, handler) -> INTEGER` runs the whole
+accept loop **inside one native member**:
+
+```text
+accept → read one request → handler(request) → write the response → next
+```
+
+It returns the number of **successfully served** connections. `timeout_ms` is
+the accept budget: when no connection arrives within it the loop **exits and
+returns the count** (that is not an error). `TCP_SERVE` does **not** close the
+listener — call `TCP_CLOSE_LISTENER` yourself (it is idempotent).
+
+- **Request** (the handler's argument) is a `DICT`:
+  `{"method": STRING, "path": STRING, "version": STRING, "headers": DICT, "body": STRING}`.
+  `headers` keys are **lower-cased**; `path` is the request target verbatim
+  (query string included); `body` is **lossy UTF-8**.
+- **Response** (the handler's return value) is a `DICT`:
+  `{"status": INTEGER, "headers": DICT, "body": STRING | ARRAY[INTEGER]}`.
+  **All three keys are required** — a missing key voids that one connection and
+  the loop continues.
+- **One bad connection never kills the loop.** Peer disconnect / read failure /
+  a failing handler / a malformed response all terminate **only that
+  connection**. Failures are recorded as an `ERR([kind:"SocketError",
+  op:"TCP_SERVE", reason])`-shaped entry in the host's warning slot (a soft
+  warning — it does not change program semantics).
+- **`opts`** (`DICT` or `NULL`; note `[]` is an empty *array*, not a dict):
+  `max_header_bytes` (default 64 KiB), `max_body_bytes` (default 8 MiB),
+  `read_timeout_ms` (default `0` = no cap). An unknown option name is
+  **`E0030`**, never silently ignored.
+
+⚠ **The handler runs inside a native frame — it is NOT a task body.**
+⇒ **The handler must not call a host-suspending member** (`TCP_RECV`,
+`TCP_ACCEPT`, `SLEEP_ASYNC`, …). There is no scheduler slot to park in. Misuse
+is reported as the **existing `E0014`** (no new diagnostic code) which **names
+the member** and points its location **at the call site**, reusing the
+"used outside a task body" wording. `TCP_SERVE`'s observable semantics are
+unchanged by the misuse: that connection does **not** count as served, the
+failure is recorded once, the loop continues, and the client on that
+connection gets a `500`.
+⇒ **In the handler: just return a `DICT`.** Do no I/O. `TCP_SERVE_STREAM`
+(exported from `wlwl:std.http` as `SERVE_STREAM`) has the **same** handler
+contract.
+
+⚠ **`TCP_SERVE` blocks the calling thread.** Its waits happen inside the
+native frame, so while it runs **no other task is scheduled** — unlike
+`TCP_ACCEPT` / `TCP_RECV`, which are host suspensions that let other tasks
+run. This is the cost of "the accept loop advances in a native frame".
+
+⚠ **`TCP_SERVE` and `TCP_ACCEPT` share one accept queue.** Mixing both on the
+same listener means whichever reaches the queue first takes that connection.
+Give a listener to exactly one of them.
+
+### `TCP_SERVE` migration guide (from the old HTTP-handler shape)
+
+The pre-`TCP_SERVE` server shape was a **statically expanded accept chain**:
+one acceptor task, a per-connection `serve_one` helper closure, and
+`TCP_ACCEPT` / `TCP_RECV` written inline. **That shape is no longer
+compliant**: `TCP_RECV` outside a task body is reported as `E0014` at the call
+site. Move to `TCP_SERVE` — the functional surface is unaffected.
+
+| Old shape | New shape |
+|---|---|
+| `LET(conn, TCP_ACCEPT(l, ms)); YIELD(); LET(chunk, TCP_RECV(conn, n, ms)); …` inside a spawned task | one `TCP_SERVE(l, timeout_ms, opts, handler)` call; accept + read happen in the native frame |
+| a `serve_one(conn)` closure that reads, then writes | a `handler(request)` closure that takes the parsed request `DICT` and **returns** the response `DICT` |
+| hand-rolled request parsing + `Content-Length` | `TCP_SERVE` parses the request for you; you only build the response |
+| per-connection bookkeeping for "did it finish" | `TCP_SERVE` returns the served count; a bad connection is voided and counted out |
+| state updated from inside the handler | keep it in a top-level `LET MUT` (or `wlwl:std.sync`) and mutate there — the handler is not a task |
+
+Minimal before → after:
+
+```wlwl
+// ── old (now reports E0014 at TCP_RECV) ────────────────────────────
+LET(acceptor, SPAWN(FUN(() , (
+  LET(conn, TCP_ACCEPT(listener, 1000));
+  YIELD();
+  LET(chunk, TCP_RECV(conn, 4096, 1000));   // ← E0014: used outside a task body
+  TCP_SEND(conn, build_response(AT_K(chunk, "text", "")));
+  TCP_CLOSE(conn)))));
+
+// ── new (compliant) ───────────────────────────────────────────────
+LET(served, TCP_SERVE(listener, 1000, NULL, FUN((req),
+  (LET(body, FORMAT("echo:{0}", AT_K(req, "body", "")));
+   ["status": 200,
+    "headers": ["content-type": "text/plain"],
+    "body": body]))));
+```
+
+Both arms of an `IF` inside the handler may be multi-statement groups
+(`(stmt; stmt)`); that is supported and pinned by a regression guard.
+
+### Blocking vs suspending outbound calls
+
+`wlwl:std.net`'s **`HTTP_GET` / `HTTP_POST` / `HTTP_REQUEST` are blocking
+primitives** — like `SLEEP` and `PROCESS_RUN`, no task is scheduled while they
+run. Two concurrent requests **serialise**: the wall time is the sum of the
+timeouts. **That semantics is unchanged.**
+
+⇒ For non-blocking outbound HTTP use **`HTTP_REQUEST_ASYNC(method, url, body?,
+headers?, timeout_ms?) -> DICT`**. It runs the request on a worker thread and
+**suspends only the calling task**, so other tasks keep running. The return
+value is **the same `DICT {status, headers, body}`** as `HTTP_REQUEST`, and the
+arguments are literally the same shape; the **only** difference is blocking vs
+suspending. Runtime failures are `ERR([kind:"HttpError", op, reason])`
+**values**, and arity / type errors are the existing `E0022` / `E0030`.
+`PROCESS_RUN_ASYNC` is the same idea for subprocesses.
+
+⚠ Because a host suspension **replays the segment** on resume (§17.0), the
+async members keep an idempotency memo so a replay does not fire the same
+request twice. Still keep **one wait per segment** and put surviving state in a
+top-level `LET MUT`.
+
+### TLS is not in the standard library
+
+`wlwl:std.net` is **plaintext `http:` only**. There is no TLS there, and there
+is no "simple wrapper": `HTTP_GET("https://…")` returns
+`ERR([kind:"HttpError", … reason: scheme "https" is not supported])`. The
+spec's system volume lists TLS first among the things `std.net` explicitly
+does **not** do.
+
+TLS arrives instead as a **native dynamic library extension** loaded
+explicitly by the host:
+
+```bash
+wlwl run --ext /abs/path/wlwl-tls.dll --ext-sha256 <64-hex> my_server.wll
+# or: WLWL_EXT_PATH=/abs/path/wlwl-tls.dll
+```
+
+Loading it mounts the extension's namespaces (`tls`, `crypto`) as importable
+namespaces. **The extension is not part of the standard library**: those
+members do **not** enter appendix A and are **not** public-surface members —
+they live in the conformance volume's implementation-extension register.
+
+⚠⚠ **Loading a native library hands the whole process's permissions to it**
+(read files, open sockets, mutate memory, spawn processes). **It is not a
+sandbox.** The host prints a prominent warning before loading. The trust model
+is seven non-negotiable rules:
+
+| # | Rule |
+|---|---|
+| T1 | Loading is **host-initiated only**: CLI `--ext <path>` or env `WLWL_EXT_PATH`. The language surface offers **no** `LOAD` member — a script can never trigger a load. |
+| T2 | The host **never** auto-discovers extensions from `wlwl.toml`, the program's directory, or `./ext/`. |
+| T3 | The path must be **absolute**, exist, and be a regular file. |
+| T4 | Optional hash pinning: `--ext-sha256 <hex>` — if given, it must match or the host refuses to load. |
+| T5 | An extension may **not** claim a `std.*` namespace or shadow an existing one — the host rejects it. |
+| T6 | **Loading = handing over every process permission.** The host warns; the extension's docs must say so. Never claim sandboxing. |
+| T7 | Extension members appear only as **runtime-registered** names: not in appendix A, not in the public-surface list, only in the extension register. |
+
+Because T1 holds, a `.wll` program cannot load TLS on its own — **the operator**
+decides. Write `https://` code assuming a `tls` namespace was mounted, and let
+the load fail loudly at the host when it was not.
+
+### `wlwl:std.http` middleware primitives
+
+`wlwl:std.http` is an R1 facade over `std.net`. On top of the request/response,
+routing, cookie, form and static-file members it exports **three middleware
+primitives** plus an (unexported) audit helper. Failures use the same two tiers
+as the rest of the namespace — `E0022` / `E0030` for arity/type, `ERR` values
+(`{"kind": "HttpError", op, reason}`) for runtime — with **zero new diagnostic
+codes**.
+
+**`RATE_LIMITER(name, limit, window_sec, opts?) -> DICT`** — one rate-limit
+decision. Returns `{"allowed": BOOLEAN, "remaining": INTEGER, "reset":
+INTEGER, "limit": INTEGER, "mode": STRING}`. `opts` keys: `mode`
+(`"sliding"` | `"token_bucket"`, default `"sliding"`), `refill` (token bucket
+only, per-second refill ≥ 0, default `limit`), `state` (a `std.sync::SHARED_DICT`
+handle as the cross-evaluator registry), `audit` (default `TRUE`), and
+`client_ip` / `path` / `request_id` (audit attribution, default `""`).
+**An unknown key, a type error, or an out-of-range value is an `ERR` — never
+silently ignored.**
+- **sliding**: per-second buckets of `std.sync` atomic counters; the window sum
+  is the last `window_sec` buckets. `allowed ⇔ (sum after counting) ≤ limit`,
+  and an over-limit request is **rolled back** (it does not take a slot).
+- **token_bucket**: capacity `limit`, refills `refill`/sec (`0` = never),
+  deducts 1 per decision; insufficient tokens ⇒ `allowed = FALSE` with **no
+  debt**. Starts full. `reset` is a Unix-millisecond timestamp.
+⚠ **Concurrency boundary (measured, honestly):** the counters are atomic so
+  counts are never lost, and same-second decisions are exact; a transient race
+  **across a second boundary** may over-admit by up to the concurrency width.
+  The token bucket's refill bookkeeping is read-modify-write, so under extreme
+  concurrency one refill may be applied twice — the decision and deduction stay
+  atomic.
+
+**`RULESET_LOAD(path, opts?) -> DICT`** — load a rule set from a file and hot
+reload it. Returns `{"rules": ARRAY[STRING], "mtime": INTEGER, "version":
+INTEGER, "path": STRING}`. Format: one rule per line; blank lines and `#`
+comments are skipped; a trailing `\r` is stripped (CRLF-friendly).
+**Hot-swap semantics (pinned):** when `mtime` changes, re-read the file, build a
+**fresh** array, and swap the reference with one atomic `SHARED_DICT_SET` (a new
+`version`) ⇒ **in-flight requests holding the old array keep it, unchanged**
+(arrays are value-semantics snapshots). When `mtime` is unchanged the array is
+reused (`version` untouched, audit `result="cached"`). `version` is a per-cache
+entry load ordinal (`COUNTER`, from 1). A missing file or a read failure is an
+`ERR` value (`op:"RULESET_LOAD"`).
+
+**`CLIENT_IP(headers_or_request, remote_addr, trusted_proxies) -> STRING`** —
+resolve the real client IP. Three-positional-argument form, **no opts**; every
+call emits an audit row. `headers_or_request` is a header dict (lower-cased
+keys) or a full request dict (its `"headers"` sub-dict is used); `remote_addr`
+is a **bare IP literal** (strip the port first); `trusted_proxies` is an
+`ARRAY[STRING]` of bare IPs. Comparison is **exact string comparison** (both
+sides `LOWER` + `TRIM`, then byte-equal) — **no DNS, no CIDR, no subnet
+expansion**.
+**Semantics (pinned):** `X-Forwarded-For` is honoured **only** when
+`remote_addr` is in `trusted_proxies` (several headers are concatenated in
+appearance order, then split on `,`) ⇒ take the **rightmost hop not in the
+trusted list**; if every hop is trusted take the **leftmost** hop; no XFF or an
+empty one ⇒ `remote_addr`. When `remote_addr` is **not** trusted, XFF is
+**ignored** and `remote_addr` is returned — an attacker-supplied `X-Forwarded-For`
+is **never** treated as the real IP. Audit `result` is one of
+`"xff_used"` | `"xff_all_trusted"` | `"ignored_xff"` | `"no_xff"`.
+
+**Audit.** Each of the three emits one audit row per call (`opts.audit = FALSE`
+turns it off for the first two; `CLIENT_IP` always emits). The row is written
+through `wlwl:std.log::LOG` so the line on disk/stream is **valid JSON**:
+`{"ts":…,"level":"INFO","msg":"http.audit","fields":{"time","event","client_ip","path","result","request_id"}}`,
+with `time = NOW()` in Unix epoch milliseconds.
+
+**State is reused per `name`.** `std.sync`'s `COUNTER` / `SHARED_DICT` create a
+fresh, *nameless* container per call, so "same `name` reuses the same counter /
+bucket" is layered here as a registry (one `SHARED_DICT`, `name` ⇒ handle).
+By default the registry handle lives in `StdCtx.env` (key
+`WLWL_STD_HTTP_STATE`) ⇒ same `name` reuses the same state **within one
+program**; pass `opts.state` to share across evaluators/threads in one process.
+⚠ `StdCtx.env` is an evaluator-level snapshot, **not** the OS environment — two
+programs in one process each get their own default registry. ⚠ Sliding-window
+second buckets are created lazily per `name × second` and **never reclaimed**,
+so a long-running process grows handles linearly. This is registered as a known
+boundary, not hidden.
+
+### Known boundaries (stated, not smoothed over)
+
+- **`std.fs::PATH_JOIN` eats a leading `/` on POSIX.** Measured:
+  `PATH_JOIN("/tmp/x", "f")` → `"tmp/x/f"` — the absolute root is lost. It is a
+  defect in an existing `std.fs` member (reported separately). `wlwl:std.http`
+  works around it by building paths with `CAT(root, "/", rel)`; **do not** use
+  `PATH_JOIN` to extend an absolute root.
+- **multipart file parts are written as lossy UTF-8 text.** A WLWL request body
+  is a `STRING`, so a binary upload cannot survive the round trip byte-exact.
+  For binary payloads use `ARRAY[INTEGER]` (`0..=255`) end to end.
+- **`STATIC_FILE`'s containment check is lexical.** `PATH_CONTAINS` does **not**
+  resolve symlinks: a symlink under `root` that points outside `root` is still
+  judged in-root. Serving untrusted trees needs a real sandbox, which this is
+  not. `READ_BYTES` also has a **1 MiB** policy cap (and `WRITE_BYTES` 64 MiB) —
+  a file larger than 1 MiB can be written but not read back in one call.
+- **Rate limiting:** the cross-second transient race and the token-bucket
+  duplicate-refill window are documented above under `RATE_LIMITER`.
 
 ## Imports — spec §9.2
 
@@ -791,7 +1055,7 @@ deltas are in §25 / §26 / §27):
 - **`wlwl:std.json`** (§3, **v0.11.3 extended**): `STRINGIFY`, `PARSE` 以及九个新成员 `JSON_TOKENIZE` / `JSON_LOCATE` / `JSON_VALIDATE` / `JSON_GET` / `JSON_SET` / `JSON_DELETE` / `JSON_MERGE` / `JSON_CHUNK_ITEMS` / `JSON_CHECK` —— see `reference.md` §9.7。⚠ **新成员报错返 `ERR` 值,`PARSE`/`STRINGIFY` 仍报 `E0070`/`E0071` 诊断** —— 同一命名空间里**两套失败口径**都是规格。⚠ **`PARSE` 失败不带位置**——需要指出问题在哪一字节就用 `JSON_VALIDATE`，它给 `offset` / `line` / `column`。⚠ **偏移是码点不是字节**(全语言唯一的字符串切分原语 `SUB` 按码点)。⚠ **`JSON_CHECK` 拿 `STRING` 而不是已解析的值**，且**未知 schema 关键字报 `E0030` 而不静默忽略**。⚠ **`PARSE` 不保文档序**(键被排序,规范另有一说，登记为 **D13-017**)——不要依赖它的键顺序。
 - **`wlwl:std.encode`** (stdlib §11, **v0.11.2 new**; **v0.12.0 adds the byte layer**): `BASE64_ENCODE`, `BASE64_DECODE`, `HEX_ENCODE`, `HEX_DECODE`, `URL_ENCODE`, `URL_DECODE`, `UTF8_ENCODE`, `UTF8_DECODE`, `BYTE_LEN` — see `reference.md` §9.1. ⚠ **v0.12.0 adds the byte layer**: `UTF8_ENCODE(s)` → `ARRAY[INTEGER]` (0..=255), `UTF8_DECODE(bytes)` → `STRING` (**no lossy replacement** ⇒ invalid bytes give `ERR([kind:"DecodeError", ...])`), `BYTE_LEN(s)` → the **UTF-8 byte count** (`LEN` gives **codepoints** — they differ for any non-ASCII text, which is exactly what a `Content-Length` needs). Encoding never fails; **decode failures are `ERR` values** with `kind = "DecodeError"`, not native diagnostics. Arity/type mistakes are `E0022`/`E0030`. `URL_DECODE` keeps `+` literal (RFC 3986, not form encoding); `BASE64_DECODE` accepts **both** alphabets and ignores CR/LF. **v0.11.3 adds** `SHA256` and `HMAC_SHA256` (key first, arity 2) — a digest, **not** a cipher and **not** a password hash; `MD5` / `SHA-1` are not provided. **Also in v0.11.3** (M6/W-03): `PBKDF2_ITER(password, salt, iter, len, algo)` and `ARGON2ID(password, salt, t_cost, m_cost, p_cost, len)` — the **password** hashes, where `SHA256` / `HMAC_SHA256` must never be used (they are fast: billions per second on a GPU). Both take all parameters **explicitly, no defaults**, and reject out-of-range values with `E0030` (lower bounds = OWASP 2025 minimums: PBKDF2 `iter` ≥ 600 000, Argon2id `m_cost` ≥ 19 456 KiB / `t_cost` ≥ 2 / `p_cost` ≥ 1). `salt` is a **hex text** string, so a salt comes from `RANDOM_HEX`, never from raw bytes. `algo` accepts only `"sha256"` (SHA-512 is not provided). Argon2id allocates ~19 MiB per call at the floor — do not call it in a hot loop. **Also v0.11.3** (M6/W-04): `RANDOM_BYTES(n)` (an **array** of integers 0–255 — the only lossless byte carrier in this language), `RANDOM_HEX(n)` (2 `n` lowercase hex chars; **this is how you make a salt or a token**), and `TIMING_SAFE_EQ(a, b)` (constant-time compare; **never fails** — unequal lengths are `FALSE`, not an error). That closes the password story: unpredictable material + slow hash + non-leaking comparison. Use `std.rand` instead of `RANDOM_*` only when you want a **reproducible** sequence, and seed it from `RANDOM_HEX`.
 - **`wlwl:std.compress`** (stdlib §20, **v0.11.3 new**): `ZSTD_COMPRESS`/`ZSTD_DECOMPRESS`, `ZLIB_COMPRESS`/`ZLIB_DECOMPRESS`, `GZIP_COMPRESS`/`GZIP_DECOMPRESS`, `DEFLATE_RAW_COMPRESS`/`DEFLATE_RAW_DECOMPRESS` — see `reference.md` §9.13. Zstandard (RFC 8878) plus the whole DEFLATE family (RFC 1950/1951/1952). Payload is an **`ARRAY[INTEGER]`** (`0..=255`), same shape as `READ_BYTES` — compressed input is by definition not UTF-8, so `STRING` cannot carry it. ⚠ **Compression is not encryption**: it gives zero confidentiality, and anyone with the input can decompress it. ⚠ **`level` out of range is `E0030` and is never silently clamped** — clamping would make "I passed 9" and "I passed 999" indistinguishable. ⚠ **The 64 MiB decompression cap is a spec clause**: past it you get an `ERR`, not an OOM — but that also means **larger single payloads have no path** in this batch (no streaming API yet). ⚠ `DEFLATE_RAW_*` has **no checksum**, so corruption is undetectable there; use zlib (Adler-32) or gzip (CRC32) when you need integrity. ⚠ **Do not assert compression ratios**: how small the output is depends on the compressor implementation (the same 104-byte input came out at 66 bytes from Python's zlib and **115 bytes** from `miniz_oxide`) — what is contractual is round-tripping, determinism, and decoding *another* implementation's output.
-- **`wlwl:std.net`** (stdlib §21, **v0.11.3 new**; **v0.12.0 adds the transport family**): `URL_PARSE`, `URL_JOIN`, `HTTP_GET`, `HTTP_POST`, `HTTP_REQUEST` — see `reference.md` §9.14. ⚠ **v0.12.0 adds 9 transport members** — `TCP_LISTEN` / `TCP_ACCEPT` / `TCP_RECV` / `TCP_SEND` / `TCP_PEER` / `TCP_LOCAL_ADDR` / `TCP_SET_TIMEOUT` / `TCP_CLOSE` / `TCP_CLOSE_LISTENER` — so a server can now be written in WLWL itself. ⚠ **the transport family is a *host suspension*, not a blocking call**: a wait parks **only the calling task** and **other tasks keep running** (so several connections in one `SCOPE` are fine) — unlike `HTTP_*` / `SLEEP` / `PROCESS_RUN`, which **freeze the whole `SCOPE`**. ⚠ `TCP_ACCEPT` timing out returns **`NULL`** and `TCP_RECV` timing out returns **`{bytes: [], text: "", eof: FALSE}`** — those are **normal values**, not `ERR`; a timeout is **never** EOF. ⚠ `TCP_SET_TIMEOUT(conn, ms)` sets the connection's **read timeout** (`0` = infinite) and the call-site `timeout_ms` bounds that one wait — **whichever comes first wins**. ⚠ **the wait must be the first statement of its segment** and **one wait per segment** (the segment model replays from the head) — see `impl/examples/loopback-server/` for a worked skeleton. The first network surface: two **pure functions** (RFC 3986 generic syntax) plus three **plaintext HTTP/1.1** members. The first network surface: two **pure functions** (RFC 3986 generic syntax) plus three **plaintext HTTP/1.1** members. ⚠ **Plaintext `http:` only — no TLS**: `https://` returns `ERR`, there is no "simplified wrapper"; bring your own tunnel or reverse proxy. ⚠ **`HTTP_*` is a blocking primitive**: no other task is scheduled while it runs and the whole `SCOPE` freezes — same cost as `SLEEP` / `PROCESS_RUN`. **Never `SPAWN` several HTTP calls in one `SCOPE` expecting concurrency**; they serialise, and that is a *wrong* program, not a slow one. ⚠ **Redirects are NOT followed** (3xx comes back as-is, `Location` included) — following can carry a request to a host you did not intend (SSRF). ⚠ **Timeout defaults to 30 000 ms and is not optional in practice**: the block is bounded by the **wall clock**, so forgetting it hangs the whole program. ⚠ **Unsupported framing is `ERR`, never "parsed as best we can"**: `Transfer-Encoding: chunked` is **refused, not decoded** (it is a request-smuggling vector), as are duplicate `Content-Length`, obs-fold headers, and a bare CR/LF in a header value; the 64 KiB header and 8 MiB body caps return `ERR`, **not** an OOM. ⚠ **Failures are `ERR([kind:"HttpError", op, reason])` values, not diagnostics** — an unreachable host is an expected business branch (retry, degrade, log); a native diagnostic would **terminate the run** and leave the caller unable to retry. Arity/type/method-token/header-injection mistakes are still `E0022`/`E0030`. ⚠ **`URL_PARSE` returns seven keys** — `userinfo` is deliberately **not** discarded: RFC 3986 §7.6 shows a URL where the human-readable host (`cnn.example.com`) is not the real one (`10.0.0.1`), and swallowing that segment hides a known attack surface. ⚠ **`URL_JOIN` is strict-mode**: RFC §5.4.2's `http:g` has two answers and we take the one RFC lists first; **WHATWG URL gives the other**, so do not carry expectations across specs. Correctness evidence for `URL_*` is the **42 verbatim RFC 3986 §5.4 vectors**, extracted by script from the RFC text — not copied by hand, not copied from this implementation.
+- **`wlwl:std.net`** (stdlib §21, **v0.11.3 new**; **v0.12.0 adds the transport family**): `URL_PARSE`, `URL_JOIN`, `HTTP_GET`, `HTTP_POST`, `HTTP_REQUEST` — see `reference.md` §9.14. ⚠ **v0.12.0 adds 9 transport members** — `TCP_LISTEN` / `TCP_ACCEPT` / `TCP_RECV` / `TCP_SEND` / `TCP_PEER` / `TCP_LOCAL_ADDR` / `TCP_SET_TIMEOUT` / `TCP_CLOSE` / `TCP_CLOSE_LISTENER` — so a server can now be written in WLWL itself. ⚠ **the transport family is a *host suspension*, not a blocking call**: a wait parks **only the calling task** and **other tasks keep running** (so several connections in one `SCOPE` are fine) — unlike `HTTP_*` / `SLEEP` / `PROCESS_RUN`, which **freeze the whole `SCOPE`**. ⚠ `TCP_ACCEPT` timing out returns **`NULL`** and `TCP_RECV` timing out returns **`{bytes: [], text: "", eof: FALSE}`** — those are **normal values**, not `ERR`; a timeout is **never** EOF. ⚠ `TCP_SET_TIMEOUT(conn, ms)` sets the connection's **read timeout** (`0` = infinite) and the call-site `timeout_ms` bounds that one wait — **whichever comes first wins**. ⚠ **the wait must be the first statement of its segment** and **one wait per segment** (the segment model replays from the head) — see `impl/examples/loopback-server/` for a worked skeleton. The first network surface: two **pure functions** (RFC 3986 generic syntax) plus three **plaintext HTTP/1.1** members. The first network surface: two **pure functions** (RFC 3986 generic syntax) plus three **plaintext HTTP/1.1** members. ⚠ **Plaintext `http:` only — no TLS**: `https://` returns `ERR`, there is no "simplified wrapper"; bring your own tunnel or reverse proxy. ⚠ **`HTTP_*` is a blocking primitive**: no other task is scheduled while it runs and the whole `SCOPE` freezes — same cost as `SLEEP` / `PROCESS_RUN`. **Never `SPAWN` several HTTP calls in one `SCOPE` expecting concurrency**; they serialise, and that is a *wrong* program, not a slow one. ⚠ **Redirects are NOT followed** (3xx comes back as-is, `Location` included) — following can carry a request to a host you did not intend (SSRF). ⚠ **Timeout defaults to 30 000 ms and is not optional in practice**: the block is bounded by the **wall clock**, so forgetting it hangs the whole program. ⚠ **Unsupported framing is `ERR`, never "parsed as best we can"**: `Transfer-Encoding: chunked` is **refused, not decoded** (it is a request-smuggling vector), as are duplicate `Content-Length`, obs-fold headers, and a bare CR/LF in a header value; the 64 KiB header and 8 MiB body caps return `ERR`, **not** an OOM. ⚠ **Failures are `ERR([kind:"HttpError", op, reason])` values, not diagnostics** — an unreachable host is an expected business branch (retry, degrade, log); a native diagnostic would **terminate the run** and leave the caller unable to retry. Arity/type/method-token/header-injection mistakes are still `E0022`/`E0030`. ⚠ **`URL_PARSE` returns seven keys** — `userinfo` is deliberately **not** discarded: RFC 3986 §7.6 shows a URL where the human-readable host (`cnn.example.com`) is not the real one (`10.0.0.1`), and swallowing that segment hides a known attack surface. ⚠ **`URL_JOIN` is strict-mode**: RFC §5.4.2's `http:g` has two answers and we take the one RFC lists first; **WHATWG URL gives the other**, so do not carry expectations across specs. Correctness evidence for `URL_*` is the **42 verbatim RFC 3986 §5.4 vectors**, extracted by script from the RFC text — not copied by hand, not copied from this implementation. ⚠ **Two more `std.net` members in the current build**: **`HTTP_REQUEST_ASYNC(method, url, body?, headers?, timeout_ms?) -> DICT`** — non-blocking outbound HTTP; the request runs on a worker thread and only the **calling task** is suspended, so other tasks keep running. Its return value and arguments are **identical to `HTTP_REQUEST`** (`{status, headers, body}`; failures are `ERR([kind:"HttpError", op, reason])` values); the **only** difference is blocking vs suspending. And **`TCP_SERVE(listener, timeout_ms, opts, handler) -> INTEGER`** — the accept loop in a native frame; see "The `TCP_SERVE` contract" above for the handler rules (in particular: **the handler must not call a host-suspending member**, or the existing `E0014` names it and points at the call site).
 - **`wlwl:std.result`** (stdlib §22, **v0.11.3 new**; **v0.12.0 adds `TAKE_ERR`**): `RESULT_MAP`, `AND_THEN`, `FLATTEN`, `NULL_OR`, `RESULT_ALL`, `RESULT_ANY`, `TAKE_ERR` — see `reference.md` §9.15. `OK` / `ERR` combinators: chain steps that may fail without hand-writing `ERR_PAYLOAD` + a branch at every step. ⚠ **`RESULT_MAP` is not `MAP`** — `std.collection` has owned `MAP` since v0.10 and importing both in one scope is a hard `E0021`, not a shadow. ⚠ **These members cannot see an `ERR`**: per §8.2 a call whose *argument* is an `ERR` never evaluates the callee's body, and the registry check is keyed on the **callee's name** — `RESULT_MAP` / `AND_THEN` / `FLATTEN` / `NULL_OR` / `RESULT_ALL` / `RESULT_ANY` are **not** §8.3 registry entries (only `TAKE_ERR` is) ⇒ so `RESULT_MAP(ERR(e), f)` returns `ERR(e)` *because the body never ran*, which is also why a counter that "doesn't move" is **not** evidence the `ERR` branch executed. ⚠ **The same wall applies to collection elements** — `ANY(rs, FUN((x), IS_ERR(x)))` and `MAP(rs, FUN((x), x))` both die with `E0102`, which is why `RESULT_ALL` / `RESULT_ANY` take **no predicate argument**. ⚠ **`OR_ELSE` / `ERR_MAP` / `ERR_OR_ELSE` do not exist** and cannot: their `ERR` branches must *do* work and the body never runs. Branch in the owning scope instead — `LET(p, ERR_PAYLOAD(r)); LET(y, IF(IS_ERR(r), fb(p), r));` — which is what §8.2's corollary prescribes, and is also why the `AT_K(ERR_PAYLOAD(BASE64_DECODE(s)), "kind", "?")` shape in §9.1 stays as it is. ⚠ **`AND_THEN` returns `f(x)` verbatim** (a bare value from `f` yields a bare result, not `OK(...)`), same contract as Rust's `and_then`; ⚠ **`RESULT_MAP` nests** when `f` returns `ERR` (that is what `FLATTEN` is for); ⚠ **`NULL_OR` is not `UNWRAP_OR` and there is no `IS_NULL`** — `""` / `[]` / `0` / `FALSE` all pass through untouched, an `ERR` argument **propagates** rather than taking the default, and the only discriminator is `==(TYPE(v), "NULL")`. Empty-array shapes differ: `RESULT_ALL([])` is `OK([])`, `RESULT_ANY([])` is `OK(NULL)`.
 - **`wlwl:std.fs` / `std.env` / `std.process`** (stdlib §2 / §18 / §19, **v0.11.3 new**; **v0.12.0 changes `std.fs` failure semantics and adds `std.env::SCRIPT_PATH`**): `std.fs` grew from **3** frozen members to **18** — the frozen `READ_FILE` `WRITE_FILE` `EXISTS` (v0.3, contract frozen) plus `PATH_JOIN` `PATH_DIR` `PATH_BASE` `PATH_EXT` `PATH_NORMALIZE` `LIST_DIR` `WALK_DIR` `MKDIR` `MKDIRS` `REMOVE` `COPY` `MOVE` `FILE_SIZE` `READ_BYTES` `WRITE_BYTES`; `std.env` (`ENV_GET` `ENV_SET` `ENV_KEYS` `ARGS`) and `std.process` (`PROCESS_RUN` `PROCESS_ID`) are new namespaces — see `reference.md` §9.12. ⚠ **`std.fs` paths use `/` as the spec separator on every platform** (`PATH_JOIN` never emits `\`); Windows additionally *accepts* `\` on input, and POSIX does **not** translate it (there `\` is a legal filename character). `PATH_DIR` of a bare name is `""` (not `"."`) so `PATH_JOIN(PATH_DIR(x), PATH_BASE(x))` round-trips; `PATH_EXT` has **no leading dot** and a **dotfile has no extension**; `PATH_NORMALIZE` is purely lexical and never resolves symlinks. `LIST_DIR`/`WALK_DIR` results are **sorted** (determinism is this language's first selling point), and `WALK_DIR` does **not** descend into symlinked directories unless you pass `follow = TRUE` — a symlink cycle would otherwise recurse forever. `MKDIR` reports `ERR` on an existing path (silence would hide a race); `MKDIRS` is `mkdir -p` and idempotent. ⚠ **Binary IO is `ARRAY[INTEGER]`** (same as `std.encode::RANDOM_BYTES`) because `STRING` is UTF-8 and would lossily substitute `U+FFFD`; it is for **small** payloads — large binary belongs **on disk**, not round-tripped through language values. ⚠ **v0.12.0 changes the failure semantics of `std.fs`**: the IO failures of the frozen `READ_FILE` / `WRITE_FILE` are now **`ERR([kind:"FsError", op, reason])` values**, not native diagnostics (the fs IO codes `E0061` / `E0062` are **retired** since v1.0.2) ⇒ a failed read/write no longer **terminates the run**; branch on `IS_ERR` / `ERR_PAYLOAD` instead. ⚠ those codes are **not deleted** from the error-code table — `std.fs` simply no longer produces them. ⚠ **v0.12.0 adds `std.env::SCRIPT_PATH()`** (the entry script's path; `NULL` when it cannot be determined) — `ARGS()[0]` is the **interpreter's** path, so an app cannot locate its own resources without it. ⚠ **Relative paths resolve against the process CWD**, not the program's import base dir. **`std.env`**: `ENV_KEYS()` is **sorted** (the OS iteration order varies between runs) and `ENV_GET` of an unset variable returns `NULL`, not `""`. **`std.process`**: `argv` must be an `ARRAY[STRING]` — the string form is rejected because concatenating and letting the OS re-parse **is command injection**; and ⚠ it is **blocking**, so in a single-threaded cooperative runtime nothing else is scheduled while a child runs (same cost as `std.time::SLEEP`). `PROCESS_ID() -> INTEGER` takes **no arguments** (a non-zero arity is `E0022`); there is deliberately **no `PROCESS_EXIT_CODE`** — that would be hidden mutable state across calls, and the exit code is already the `code` field of `PROCESS_RUN`'s result. **`std.fs` mutation**: `REMOVE(p, recursive?)` refuses a non-empty directory unless `recursive = TRUE`; `COPY(src, dst)` copies **files only** (there is no recursive-copy member); `MOVE(src, dst)` falls back to copy + delete across devices, and that fallback **returns an `ERR` on a symlink cycle rather than skipping it**; `FILE_SIZE(p)` is in bytes. All four fail with an **`ERR` value** (`[kind: "FsError", op: <member name>, reason: …]`), not a diagnostic — **all four** are `ERR` values, and **no** `std.fs` member raises a native IO diagnostic any more.
 - **`wlwl:std.time`** (stdlib §15, **v0.11.3 new**; **v0.12.0 adds `SLEEP_ASYNC`**): `NOW`, `MONOTONIC`, `SLEEP`, `TEST_BUBBLE`, `ADVANCE`, `TIMEOUT`, `SLEEP_ASYNC` — see `reference.md` §9.11. ⚠ **v0.12.0 adds `SLEEP_ASYNC(ms)`** — a **suspending** sleep: it parks **only the calling task**, so other tasks keep running (that is the difference from the blocking `SLEEP`); a task body may sleep **more than once**, and a sleep in a loop sleeps **every** iteration. ⚠ **inside a `TEST_BUBBLE` it behaves exactly like `SLEEP`** (advances the virtual clock and returns) — the bubble's clock only moves at a `SLEEP`, so a suspending sleep there would never wake up. Clocks and sleep, with an opt-in fake-clock bubble for tests. `NOW() -> INTEGER` is Unix **milliseconds** (wall clock — NTP can move it backwards, so **never** use it to measure elapsed time); `MONOTONIC() -> INTEGER` is process-relative and monotonic but its **absolute value is meaningless — only differences are valid**. Milliseconds, not seconds, throughout: seconds would add ±1 s of quantisation error straight into "expire this cache after 5 seconds". ⚠ **`SLEEP` is a blocking primitive**: it stops the calling thread for `ms` and **no other task is scheduled meanwhile** — including when called inside a task, and including while a blocking HTTP call is in flight. `TEST_BUBBLE(body)` runs `body` against a **virtual clock** that starts at 0, so `SLEEP(3600000)` finishes instantly and the same program produces a **byte-identical** time series on every run. ⚠ The virtual wall clock's origin is a **fixed constant** (2023-11-14), so `NOW()` inside a bubble is **not** the real time — use the outside-bubble `NOW()` for that. ⚠ **Bubbles do not nest** (`E0030`), and a bubble gives you *deterministic time*, **not** Go-`synctest` interleaving: the clock jumps at the `SLEEP` call site, so a task sleeping an hour does not let another task observe an intermediate moment. `TIMEOUT(d, body)` gives back `ERR([kind: "Timeout"])` when the virtual clock passes `d` — it is **bubble-only** (outside, there is nowhere in a single-threaded runtime to check a deadline).
@@ -800,11 +1064,15 @@ deltas are in §25 / §26 / §27):
 - **`wlwl:std.sanitize`** (stdlib §13, **v0.11.3 new**): `HTML_ESCAPE`, `HTML_UNESCAPE`, `HTML_SANITIZE`, plus **`HTML_SANITIZE_SCRIPT`** / `CSS_ESCAPE_IDENT` / `CSS_ESCAPE_STRING` / `HTML_SANITIZE_CSS` / `HTML_SANITIZE_URL` — see `reference.md` §9.6. ⚠ **Pick by output context; none of them are interchangeable**: URL → `URL_ENCODE`, markup → `HTML_ESCAPE`, rich HTML → `HTML_SANITIZE`, CSS identifier → `CSS_ESCAPE_IDENT`, CSS string → `CSS_ESCAPE_STRING`, dynamic CSS → `HTML_SANITIZE_CSS` (**allowlist first** — escaping never stops `expression(`), URL going into `href` → `HTML_SANITIZE_URL`, inline `<script>` state → `HTML_SANITIZE_SCRIPT`. `HTML_SANITIZE` is an **output-point** tool (OWASP: input-side cleaning is a last resort), it **removes** off-whitelist tags but keeps their text, takes `script` / `style` / `iframe` **with their contents**, and is **idempotent but not round-trip**. `HTML_ESCAPE` escapes exactly five chars (`&` `<` `>` `"` `'`) and double-escaping is a real bug — the theorem only runs `UNESCAPE ∘ ESCAPE`. `HTML_UNESCAPE` is the **full** WHATWG table. Never fails on content: only `E0022` / `E0030`. ⚠ **`STRINGIFY` alone is not output encoding** — it emits `<` `>` `&` U+2028 U+2029 verbatim, so `</script>` in the data closes the element early; use `HTML_SANITIZE_SCRIPT`, which takes the **value** and cannot be applied partially. ⚠ **`URL_ENCODE` does not judge the scheme** — `javascript:` encodes perfectly and still runs; use `HTML_SANITIZE_URL`.
 - **`wlwl:std.text` extends** (stdlib §12, **v0.11.3**): `NFC` / `NFD` / `NFC_QC` / `GRAPHEME_COUNT` / `WIDTH` — see `reference.md` §25. ⚠ **坐标系有两个**：`LEN` 给码点数、`GRAPHEME_COUNT` 给**字符簇数**——`"👨‍👩‍👧"` 的 `LEN` 是 **5**而 `GRAPHEME_COUNT` 是 **1**,拿 `LEN` 当簇数用会每部分对错一行。 **没有规范化就比不比错**:`é` 与 `"e" + U+0301` 渲染完全一致而 `==` 给 FALSE。 若需等价比较:`==(NFC(a), NFC(b))`(先归一再比)。 `NFC_QC` 是**单方向**的:`TRUE` = 必定已是 NFC,`FALSE` = **只表示「不保证」**——它不是「不是 NFC」。 `WIDTH` 是**簇感知**的:`"👨‍👩‍👧"` 得 **2** 而不是 8(逐码点求和);三条口径 = `A`类(Ambiguous)**1** · 默认 emoji 呈现的 `N`**2** · `Mn`/`Me`/`Cf`(`Mc` 不算)**0**。 ⚠ 正确性证据不在契约表里:字符簇靠 `bin/grapheme-check`(官方全量 853 行),宽度靠 `bin/width-check`(EAW 全表 1 114 112 码点逐条比对)。
 - **`wlwl:std.fs`** (§10.8): `WRITE_FILE`, `READ_FILE`, `EXISTS`.
-- **`wlwl:std.str`** (stdlib §6, **v0.11 new**; **v0.12.0 adds `CAT`**): `JOIN`, `SPLIT_LINES`, `CHAR_AT`, `COUNT`, `QUOTE`, `CAT` — see `reference.md` §25. ⚠ **v0.12.0 adds `CAT(parts...)`** — **variadic** concatenation (the language's `+` is **binary**, so joining N parts otherwise needs N−1 nested calls); each part is rendered with `STR` first, and `CAT()` with no parts gives `""`. `INDEX_OF`, `CONTAINS_SUB` added v0.11.2 (`INDEX_OF` is the only way to get a substring **position** — global `INDEX` is array-only). All three reject an **empty** `sub` with `E0030`.
+- **`wlwl:std.str`** (stdlib §6, **v0.11 new**; **v0.12.0 adds `CAT`**): `JOIN`, `SPLIT_LINES`, `CHAR_AT`, `COUNT`, `QUOTE`, `CAT` — see `reference.md` §25. ⚠ **v0.12.0 adds `CAT(parts...)`** — **variadic** concatenation (the language's `+` is **binary**, so joining N parts otherwise needs N−1 nested calls); each part is rendered with `STR` first, and `CAT()` with no parts gives `""`. `INDEX_OF`, `CONTAINS_SUB` added v0.11.2 (`INDEX_OF` is the only way to get a substring **position** — global `INDEX` is array-only). All three reject an **empty** `sub` with `E0030`. ⚠ **This namespace does *not* export a general `SPLIT`** — generic splitting is the **global builtin** `SPLIT(s, sep) -> ARRAY` (appendix_G §10.5, no `IMPORT` needed); `SPLIT_LINES` here splits on `\n` only. Number → text is likewise the global builtin `STR(x)`.
 - **`wlwl:std.text`** (stdlib §12, **v0.11.2 new**; **v0.12.0 adds `TO_INT`**): `TO_UPPER`, `TO_LOWER`, `TO_INT` — full-Unicode simple case mapping, **no Unicode data files** (Rust's `char` tables). The global `UPPER` / `LOWER` are **ASCII-only and stay that way**: `UPPER("straße")` = `STRAßE`. Use `TO_UPPER` when non-ASCII must move. Length can change (`ß` → `SS`); Greek `Σ` lowercases to `ς` word-finally and `σ` medially. ⚠ **v0.12.0 adds `TO_INT(s)` — the *lenient* text→integer parse** (trims surrounding whitespace / accepts hex / truncates a fraction toward zero); a parse failure is an `ERR([kind:"ParseError", ...])` **value**. ⚠ **It is deliberately NOT the same as the global `INT`**: `INT` is the **strict** internal conversion — it does **not** trim, accepts **decimal only**, rejects a string with a fractional part, and reports a parse failure as an `ERR` value too. Pick `TO_INT` for input parsing, `INT` for internal conversion.
 - **`wlwl:std.math`** (stdlib §7, **v0.11 new**): `ABS`, `MIN`, `MAX`, `FLOOR`, `CEIL`, `ROUND`, `SQRT`, `POW`, `CLAMP`, `PI`, `E` — see `reference.md` §25. **v0.11.2 adds** 21: `LN` `LOG2` `LOG10` `EXP` `TRUNC` `SIN` `COS` `TAN` `ASIN` `ACOS` `ATAN` `ATAN2` `SINH` `COSH` `TANH` `POW_MOD` (R2 float kernels) plus `SIGN` `DIV_CEIL` `GCD` `LCM` `IS_SQRT` (R1 facade). **v0.11.3 adds 29 more — 61 in total**: the `DECIMAL` family (`DECIMAL` `DECIMAL_ADD` `DECIMAL_SUB` `DECIMAL_MUL` `DECIMAL_DIV` `DECIMAL_CMP` `DECIMAL_TO_STRING` `DECIMAL_ROUND`), the `FRACTION` family (`FRACTION` `FRACTION_ADD` `FRACTION_SUB` `FRACTION_MUL` `FRACTION_DIV` `FRACTION_CMP` `FRACTION_TO_STRING` `FRACTION_TO_DECIMAL`), approximate comparison (`APPROX_EQ` `IS_NAN` `IS_INF` `SIGNIFICANT_DIGITS`) and descriptive statistics (`MEDIAN` `MODE` `VARIANCE_S` `VARIANCE_P` `STDDEV_S` `STDDEV_P` `PERCENTILE` `CORRELATION` `LINEAR_FIT`) — see `reference.md` §9.5 (groups A–E). Gotchas: `TRUNC` is **not** `INT` (beyond 2^53 `INT` aborts the run with `E0035`); `LN(0)` is `-inf`, not an error; `DIV_CEIL` takes **integers only**; `GCD`/`LCM` return absolute values; `POW_MOD` uses the Euclidean remainder so `POW_MOD(-7, 3, 5)` is `2`, not `-1`; ⚠ **`DECIMAL` / `FRACTION` values are `DICT`s and their field names are a public contract** (`{"sign", "digits", "scale"}` / `{"num", "den"}`) — a field rename is breaking; ⚠ **`scale` is mandatory** on `DECIMAL_DIV` and `FRACTION_TO_DECIMAL`, and **`mode` is mandatory** on `DECIMAL_ROUND` — a default would silently pick a rounding rule on your behalf; ⚠ **fractions are `i64`, not arbitrary precision** — an overflow is reported as `ERR([kind: "OverflowError"])`, never as the run-terminating `E0035`; ⚠ **`APPROX_EQ` takes 4 arguments and neither tolerance has a default**; ⚠ **the statistics family returns `NULL` for "empty" *and* for "undefined"** (sample variance of `[x]` is `NULL`, population variance is `0.0`) and **`NaN` never enters a statistic**; ⚠ **no family has a `MEAN` member** — `SUM` plus `/` covers it.
 - **`wlwl:std.test`** (§10.10): `TEST`, `ASSERT`, `ASSERT_EQ`, `ASSERT_NEQ`, `EXPECT_ERR` (**1 argument**), `RUN_TESTS` — all import-gated, none is a global. ⚠ **`ASSERT` changed in v0.11** — see `reference.md` §25.
 - ⚠ **`ai` / `agent` — OFFICIAL PACKAGES, not `wlwl:std.*`** (stdlib §9 / §10, **v0.11.3 M8**, `ADR-0034`): import `"ai:ask"` (`ASK`, `EMBED`, `COMPLETE`, `ASK_STREAM`, `ASK_ALL`) and `"agent:task"` (`TASK`, `MODEL`, `TOOL`, `CALL_TOOL`, `CONTEXT`). **`wlwl:std.ai` / `wlwl:std.agent` no longer resolve** — the old paths are the only thing that changed; member names, signatures and semantics are untouched. ⚠ **`wlwl:ai` does not work** — `wlwl:` is std's reserved prefix, so it falls through to the bare-module-name branch and dies with `E0040` looking for a file. ⚠ **There is no namespace-qualified call syntax** — `ai:ask.ASK(…)`, `ai.ASK(…)` and the old `wlwl:std.ai.ASK(…)` all fail to parse (`E0011 expected ')' got Colon`); members are reachable **only** as bare names after `IMPORT`, or under a renamed alias (`IMPORT("agent:task", ["TASK": "AGENT_TASK"])`) if `TASK` collides with the type name in your reading. ⚠ They still compile inside `wlwl-std` under the `real-ai` feature — that feature gates the **HTTP transport** (mock ↔ real), **not** the members, which are visible in default builds.
+- **`wlwl:std.http`** (R1 facade over `std.net`; the request/response, routing, cookie, form, multipart and static-file members plus the three middleware primitives): `PARSE_REQUEST`, `BUILD_RESPONSE`, `SERVE_STREAM`, `ROUTE`, `MATCH_ROUTE`, `PARSE_COOKIES`, `SET_COOKIE`, `PARSE_FORM`, `PARSE_MULTIPART`, `STATIC_FILE`, `GET`, `POST`, `REQUEST`, `RATE_LIMITER`, `RULESET_LOAD`, `CLIENT_IP`. ⚠ **`GET` / `POST` / `REQUEST` here are the client members** and inherit `std.net`'s blocking semantics; `SERVE_STREAM(conn, opts, handler)` is the Keep-Alive loop and its handler has the **same native-frame contract** as `TCP_SERVE`. The three middleware primitives (`RATE_LIMITER` / `RULESET_LOAD` / `CLIENT_IP`) are documented in "The `wlwl:std.http` middleware primitives" above, including the audit row shape and the known concurrency boundaries. ⚠ **Boundaries, stated not smoothed**: `STATIC_FILE`'s containment check is **lexical** (it does not resolve symlinks) and `READ_BYTES` caps at **1 MiB**; a multipart file part is written as **lossy UTF-8** text because a request body is a `STRING`.
+- **`wlwl:std.sync`** — atomic shared containers: `COUNTER`, `COUNTER_INC`, `COUNTER_ADD`, `COUNTER_GET`, `SHARED_DICT`, `SHARED_DICT_SET`, `SHARED_DICT_GET`, `SHARED_DICT_SNAPSHOT`. ⚠ **`COUNTER(initial)` / `SHARED_DICT()` create a fresh, *nameless* container on every call** — there is no lookup-by-name, so "same name reuses the same counter" is layered by callers (`wlwl:std.http` keeps such a registry). ⚠ The counters are **atomic** (`COUNTER_INC` never loses an update), which is what `RATE_LIMITER` builds on.
+- **`wlwl:std.log`** — structured logging and metrics: `LOG`, `LOG_SET_LEVEL`, `LOG_FILE`, `LOG_METRICS`, `METRIC_COUNTER`, `METRIC_INC`, `METRIC_TIMER`. ⚠ `LOG` writes **one JSON object per line**, which is why `std.http`'s audit rows go through it.
+- **`wlwl:std.signal`** — graceful shutdown: `ON_SIGNAL`, `STOP`.
 
 ## Build & runtime config — spec §9.1, §9.4
 
@@ -847,8 +1115,8 @@ deltas are in §25 / §26 / §27):
 | 22 | `CALL_METHOD` out of protocol order | `E0051` (step) / `E0050` (after `end`) | Follow the session protocol; use `["choice", ...]` for alternatives |
 | 23 | `TASK_CANCEL(h, "reason")` with a non-DICT reason | `E0066` | Pass a dict: `TASK_CANCEL(h, ["why": "stop"])` |
 | 24 | Deadlock: 2+ tasks parked on channel ops with no peer | `E0065` (strict) / `W0065` + `E0053` | Add a peer, close the channel, or set `strict_deadlock_detect = false` |
-| 25 | `SCOPE(FUN(() → SPAWN(... HTTP_GET ...), SPAWN(... HTTP_GET ...)))` expecting concurrency | Requests **serialise**; total wall time is the sum of the timeouts | `std.net`'s `HTTP_*` is a **blocking primitive** (like `SLEEP` / `PROCESS_RUN`) — no task is scheduled while it runs. Call them **in sequence**, or move the fetching out of the program |
-| 26 | `HTTP_GET("https://…")` | `ERR([kind:"HttpError", … reason: scheme "https" is not supported])` | `wlwl:std.net` is **plaintext `http:` only** — no TLS, no wrapper. Use a tunnel / reverse proxy, or fetch outside the program |
+| 25 | `SCOPE(FUN(() → SPAWN(... HTTP_GET ...), SPAWN(... HTTP_GET ...)))` expecting concurrency | Requests **serialise**; total wall time is the sum of the timeouts | `std.net`'s `HTTP_*` is a **blocking primitive** (like `SLEEP` / `PROCESS_RUN`) — no task is scheduled while it runs. Call them **in sequence**, use **`HTTP_REQUEST_ASYNC`** for non-blocking outbound (it suspends only the calling task and returns the same `{status, headers, body}` DICT), or move the fetching out of the program |
+| 26 | `HTTP_GET("https://…")` | `ERR([kind:"HttpError", … reason: scheme "https" is not supported])` | `wlwl:std.net` is **plaintext `http:` only** — TLS is **not in the standard library**. It arrives as a **native dynamic library extension** loaded explicitly by the host (`wlwl run --ext /abs/path/lib.so`, or `WLWL_EXT_PATH`) — and **loading = handing the whole process's permissions to it**, never a sandbox. Use a tunnel / reverse proxy, load the TLS extension deliberately, or fetch outside the program |
 | 27 | Passing a header value containing CR/LF to `HTTP_GET` | `E0030` | That is **header injection** and is rejected on purpose. Percent-encode or strip the value first |
 | 28 | A spawned task fails and **nobody** `AWAIT`s it | one stderr line `[wlwl] unhandled task failure (task #N): …`; the program **continues**, exit code **0** | That line **is** the report (§17.9) — do not treat it as noise. `AWAIT` the task when you want the failure at the call site |
 
@@ -898,7 +1166,7 @@ file is a real (if cosmetic) deviation.
 ## References
 
 - **Authoritative spec**: the **v1.0** edition in the separate [`wlwl-spec-v1`](https://github.com/Laffinty/wlwl-spec-v1) repository; the merged copy in `../docs/wlwl-spec-reference.md` is what this repo's guards and agents read — defer to it on any disagreement (§13–§16 = OOP + session types + linear THIS; §17 = concurrency; §2.6/§5.2/§9.1/§9.6 = static contracts). Where §5.2.1's "三条实测事实" disagrees with the compiler (the angle-bracket / arrow forms, and the constraint-on-a-concrete-type code), **the compiler wins** — this bundle records the measured values.
-- **Standard library spec**: `../docs/wlwl-spec-reference.md` — the member contracts (signature, semantics, failure behaviour) for every `wlwl:std.*` namespace and for the `ai` / `agent` packages. Its **Appendix A** is the **frozen snapshot** member registry — **231 members across 21 namespaces** — and that table, not prose, is the membership list. ⚠ Per spec **§0.7 rule 1** that table **must not drift** with the implementation: a member that exists in the compiler but not in Appendix A is a **conformance gap**, not an extra member.
+- **Standard library spec**: `../docs/wlwl-spec-reference.md` — the member contracts (signature, semantics, failure behaviour) for every `wlwl:std.*` namespace and for the `ai` / `agent` packages. Its **Appendix A** is the **frozen snapshot** member registry, and that table, not prose, is the membership list. ⚠ Per spec **§0.7 rule 1** that table **must not drift** with the implementation: a member that exists in the compiler but not in Appendix A is a **conformance gap**, not an extra member. ⚠ **Two counts, do not mix them.** The **implementation surface** — what you can actually call today — is what `wlwl namespace` prints: **288 members across 25 namespaces** (`23` × `wlwl:std.*` plus the `ai` / `agent` packages), measured on this build with `cargo run --locked --bin wlwl -- namespace` (it labels itself `"surface": "implementation"`). Appendix A's frozen registry is a **different** thing and is still being extended for the current batch; read that table itself for its contents rather than a number quoted here.
 - **Superseded specs (archived)**: v0.6–v0.10, condensed in `../docs/history/20260902-09.md` / `../docs/history/20260915-22.md` (full text via git history) — v0.11 is a *renumbering* of the spec (the formatter moved to §A.3) **plus real content**: two new stdlib namespaces and one breaking `ASSERT` change, both in `reference.md` §25. **v0.11.2 and v0.11.3 add standard-library members only** — the language surface stays frozen at v0.11 and `../docs/appendix_G.md` is unchanged; the per-batch deltas are in `reference.md` §26 / §27. v0.10 added static contracts on top of v0.9's runtime; v0.9 added true-suspension concurrency + OOP §13–§16; the older archives' §0–§17 remain valid as history. **v1.0 keeps that numbering** (`§N` references above still resolve) and adds the unconsumed-`ERR` rule (§8.6), the complexity / memory chapters (§18–§19) and the conformance volume.
 - **Validity window for "measured" claims**: anything in this bundle stated as *measured* / *实测* / *verified* carries the compiler version it was checked against (e.g. "Measured on wlwl 0.11.0 (2026-10-01)"). Those are observations of one release, not spec guarantees — when the version is not named, assume it predates v0.11 and re-run it. `wlwl run` on your own file is always the final word.
 - **A code block that has not been run is a hypothesis (v0.11.2)**: two rules follow from the rule above, both learned the hard way. (1) A snippet using a namespace member must carry its own `IMPORT` line — a name is a global builtin **only** if it appears in `../docs/appendix_G.md`; `STRINGIFY` belongs to `wlwl:std.json` and `SORT` to `wlwl:std.collection`, so a snippet that names them bare dies with `E0020` and looks like a compiler bug. (2) Never write a diagnostic's message from memory — run it and copy the string. Excerpts in this bundle have shipped with both defects.

@@ -249,21 +249,76 @@ fn rate_limiter_failure_surface() {
     assert_eq!(got, "RATE_LIMITER");
 }
 
-/// **并发下计数必须精确**（`COUNTER_INC` 原子）：4 线程 × 5000 次 + 前后
+/// **并发下计数必须精确**（`COUNTER_INC` 原子）：8 线程 × 2500 次 + 前后
 /// 各一次读 ⇒ 总入账恰好 20002。反向守卫：非原子计数 ⇒ 本用例**必须红**。
+///
+/// ⚠ **为什么用令牌桶（`refill = 0`）而不是滑动窗口**：
+///   滑动窗口的 `remaining` 是「最近 `window` 秒的**窗口和**」⇒ 期望值
+///   **依赖墙钟**。这 20002 次调用本身要跑 **~60 s**（本机实测 61.5 s）
+///   ⇒ 机器一慢，最早的那些调用就**滑出窗口** ⇒ 期望值失真（本机实测
+///   `980510 ≠ 979998`，少 512 次 —— 正是 ~1.5 s 的那批调用）。
+///   ⚠ 那**不是丢更新**，是**窗口过期** ⇒ 违反 §8.3 第 8 条「用确定性计数、
+///   不用墙钟」（一致性册 §6.2 V-01）⇒ 这就是登记 ⑰ 那次偶发红的真身。
+///   令牌桶（`refill = 0`）把全部计数放进**同一个**计数器 ⇒ 总量与墙钟无关。
+///   ⇒ 修完之后，本用例**只有一种**变红的理由：计数真的丢了（原先有两种：
+///   丢更新 **或** 窗口过期 ⇒ 它当不了守卫）。
 #[test]
 fn concurrent_counting_is_exact_under_threads() {
     let _g = gate();
     let name = format!("tconc{}", std::process::id());
     // 跨线程共享的注册表（进程级句柄）⇒ 4 个求值器同 name 复用同一计数。
     let h = shared_registry();
-    // 先单线程跑一次：完成注册表里该 name 的秒桶创建（避开并发首呼的创建竞态）。
+    // 先单线程跑一次：完成注册表里该 name 的桶创建（避开并发首呼的创建竞态）。
     let warm = format!(
         r#"IMPORT("wlwl:std.http", ["RATE_LIMITER"]);
-LET(r, RATE_LIMITER("{name}", 1000000, 60, ["state": {h}, "audit": FALSE]));
+LET(r, RATE_LIMITER("{name}", 1000000, 60, ["mode": "token_bucket", "refill": 0, "state": {h}, "audit": FALSE]));
 STR(AT(r, "remaining", 0))"#
     );
     assert_eq!(run(&warm), "999999", "the warmup call claims one slot");
+    let mut joins = vec![];
+    for _ in 0..8 {
+        let name = name.clone();
+        joins.push(std::thread::spawn(move || {
+            let src = format!(
+                r#"IMPORT("wlwl:std.http", ["RATE_LIMITER"]);
+LET MUT(i, 0);
+LET MUT(ok, 0);
+WHILE(<(i, 2500),
+    (LET(r, RATE_LIMITER("{name}", 1000000, 60, ["mode": "token_bucket", "refill": 0, "state": {h}, "audit": FALSE]));
+     IF(AT(r, "allowed", FALSE), SET(ok, +(ok, 1)), NULL);
+     SET(i, +(i, 1))));
+STR(ok)"#
+            );
+            run(&src)
+        }));
+    }
+    for j in joins {
+        assert_eq!(
+            j.join().expect("thread"),
+            "2500",
+            "every call is admitted (limit is huge)"
+        );
+    }
+    // 1 次预热 + 20000 次并发 + 1 次读回 = 20002 次入账 ⇒ remaining 精确。
+    let read = format!(
+        r#"IMPORT("wlwl:std.http", ["RATE_LIMITER"]);
+LET(r, RATE_LIMITER("{name}", 1000000, 60, ["mode": "token_bucket", "refill": 0, "state": {h}, "audit": FALSE]));
+STR(AT(r, "remaining", 0))"#
+    );
+    assert_eq!(run(&read), "979998", "no lost updates under concurrency");
+}
+
+/// 滑动窗口模式下的并发覆盖 —— **只断言与墙钟无关的事实**：限量大时每次
+/// 调用都必须被放行（不许误拒）；并发首呼的**跨秒建桶竞态**也不许把调用
+/// 变成 `ERR` 或误拒。
+///
+/// ⚠ 这里**不**断言「总入账恰好 N」—— 滑窗的 `remaining` 是**窗口和**
+/// ⇒ 那个期望值依赖墙钟（见上一条用例的注释）⇒ 精确性只在令牌桶那条里钉。
+#[test]
+fn concurrent_sliding_window_never_denies_while_the_limit_is_huge() {
+    let _g = gate();
+    let name = format!("tcondsl{}", std::process::id());
+    let h = shared_registry();
     let mut joins = vec![];
     for _ in 0..4 {
         let name = name.clone();
@@ -272,7 +327,7 @@ STR(AT(r, "remaining", 0))"#
                 r#"IMPORT("wlwl:std.http", ["RATE_LIMITER"]);
 LET MUT(i, 0);
 LET MUT(ok, 0);
-WHILE(<(i, 5000),
+WHILE(<(i, 500),
     (LET(r, RATE_LIMITER("{name}", 1000000, 60, ["state": {h}, "audit": FALSE]));
      IF(AT(r, "allowed", FALSE), SET(ok, +(ok, 1)), NULL);
      SET(i, +(i, 1))));
@@ -284,17 +339,10 @@ STR(ok)"#
     for j in joins {
         assert_eq!(
             j.join().expect("thread"),
-            "5000",
-            "every call is admitted (limit is huge)"
+            "500",
+            "every sliding-window call is admitted (the limit is huge)"
         );
     }
-    // 1 次预热 + 20000 次并发 + 1 次读回 = 20002 次入账 ⇒ remaining 精确。
-    let read = format!(
-        r#"IMPORT("wlwl:std.http", ["RATE_LIMITER"]);
-LET(r, RATE_LIMITER("{name}", 1000000, 60, ["state": {h}, "audit": FALSE]));
-STR(AT(r, "remaining", 0))"#
-    );
-    assert_eq!(run(&read), "979998", "no lost updates under concurrency");
 }
 
 // ---------------------------------------------------------------------------

@@ -320,7 +320,7 @@ def main(argv):
     for rel, label in stdlib_books:
         secs = load_book(spec_dir, rel)
         prefaces += [(f"{h}（{label}）", b) for h, b in pick(secs, lambda h: h.startswith("0 "))]
-        chapters += pick(secs, lambda h: re.match(r"^([1-9]|1[0-9]|2[0-2])\s", h))
+        chapters += pick(secs, lambda h: re.match(r"^([1-9][0-9]*)\s", h))
     chapters.sort(key=lambda s: num_key(s[0]))
     appendix_a = pick(load_book(spec_dir, "stdlib/wlwl-v1.0-stdlib-registry.md"),
                       lambda h: h.startswith("附录 A"))

@@ -1093,7 +1093,7 @@ fn str_member_set_matches_the_spec_table() {
     let spec = members_of(&section(6, 7));
     let impls = r1_exports("wlwl:std.str");
     assert_member_set("std.str §6", &spec, &impls);
-    assert_eq!(impls.len(), 8, "§6 declares 8 members (7 + CAT)");
+    assert_eq!(impls.len(), 9, "§6 declares 9 members (8 + CAT)");
     for n in [
         "JOIN",
         "SPLIT_LINES",
@@ -1105,6 +1105,8 @@ fn str_member_set_matches_the_spec_table() {
         // 会是重复成员;真正的缺口只有**位置**与**布尔判定**。
         "INDEX_OF",
         "CONTAINS_SUB",
+        // [v0.12.1 / W-28] 查询串解析。
+        "QUERY_PARSE",
     ] {
         assert!(
             spec.iter().any(|m| m == n),

@@ -758,6 +758,34 @@ const CASES: &[Case] = &[
         src: r#"LET(b, STATIC_FILE("{root}", "/a.txt", ["headers": ["if-modified-since": "Thu, 01 Jan 1970 00:00:00 GMT"]])); STR(b["status"])"#,
         expect: "200",
     },
+    Case {
+        // ⚠ **这条是「星期名不参与比较」的守卫**（收口夜实测出的真缺陷）。
+        //
+        // IMF-fixdate 的头 5 格是 `"Xxx, "`（星期名）⇒ 旧实现拿**整串**比
+        // **字典序** ⇒ **星期名排在最前面、会支配整个结果**：实测「文件是
+        // `Fri, 30 Oct 2026 …`」时，`Thu` / `Mon` / `Wed` / `Sun, 01 Jan 1970 …`
+        // （**1970 年**！）**全部**被判成「没变」⇒ 客户端拿到 304（无正文）
+        // ⇒ **缓存住旧内容**。
+        //
+        // ⇒ 这里**故意用字典序最大的星期名 `Wed`**：无论文件 mtime 落在
+        // 星期几，`"Wed" >= 任何星期名` 恒成立 ⇒ 旧实现**恒返回 304**
+        // ⇒ 这条守卫**与运行当天是星期几无关**（否则它自己也会变成一条
+        // 「按星期漂移」的 flake）。
+        name: "an_if_modified_since_whose_weekday_sorts_higher_is_still_compared_by_date",
+        src: r#"LET(b, STATIC_FILE("{root}", "/a.txt", ["headers": ["if-modified-since": "Wed, 01 Jan 1970 00:00:00 GMT"]])); STR(b["status"])"#,
+        expect: "200",
+    },
+    Case {
+        // ⚠ **反向的那一半**：客户端的日期**比文件新** ⇒ 文件自那时起**没变过**
+        // ⇒ 条件请求命中 ⇒ **304**（RFC 9110 §13.1.3：「资源的最后修改时间
+        // **早于或等于**该日期 ⇒ 条件为假 ⇒ 304」）。
+        // ⚠ 旧实现（整串字典序）在**碰巧**的情况下给对 ⇒ 这条不单独当守卫
+        // （守卫是上一条）；它钉的是**语义方向**：不能因为「比文件旧 ⇒ 200」
+        // 就把「比文件新 ⇒ 304」也一起弄反。
+        name: "an_if_modified_since_newer_than_the_file_gives_304",
+        src: r#"LET(b, STATIC_FILE("{root}", "/a.txt", ["headers": ["if-modified-since": "Wed, 01 Jan 2038 00:00:00 GMT"]])); STR(b["status"])"#,
+        expect: "304",
+    },
     // ── Range / 206 ──────────────────────────────────────────────────────
     Case {
         name: "a_range_request_gives_206_with_the_slice",

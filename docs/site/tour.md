@@ -133,6 +133,30 @@ Run it:
 wlwl run examples/showcase.wll
 ```
 
+Names from `wlwl:std.*` need an `IMPORT`; the **global builtins** do not.
+
+### Conversions and splitting are global builtins
+
+```wlwl
+PRINT(STR(42));                 // "42"        — number → text
+PRINT(SPLIT("a,b,c", ","));     // [a, b, c]   — generic split
+```
+
+`STR(x)` and `SPLIT(s, sep)` resolve as bare names with **no `IMPORT`**.
+`wlwl:std.str` does **not** export a general `SPLIT` — it exports
+`SPLIT_LINES` (split on `\n` only).
+
+⚠ **`+` performs no implicit coercion.** `+(1, "a")` and `+("a", 1)` are
+both `E0030: +: cannot add integer and string`. Use `STR(x)` to render a
+number, and `wlwl:std.str::CAT(parts...)` to join a variable number of parts
+(the language's `+` is strictly binary).
+
+The newest namespaces are `wlwl:std.http` (HTTP parsing, routing, static
+files, and the `RATE_LIMITER` / `RULESET_LOAD` / `CLIENT_IP` middleware),
+`wlwl:std.sync` (atomic counters and shared dicts), `wlwl:std.log` (structured
+logging) and `wlwl:std.signal` (graceful shutdown). See the
+[Install page](install.md) and `wlwl namespace` for the full member list.
+
 ## 10. ERR consumer + `EXPECT_ERR` testing
 
 ```wlwl
@@ -193,6 +217,40 @@ wlwl run examples/bad.wll --format=json
 
 `wlwl ast foo.wll --format=json` dumps the AST with stable node
 IDs (SHA-256 over canonical-form source, ADR-0013).
+
+## 13. Servers, outbound HTTP, and TLS
+
+A TCP server in WLWL:
+
+```wlwl
+IMPORT("wlwl:std.net", ["TCP_LISTEN", "TCP_SERVE", "TCP_CLOSE_LISTENER"]);
+LET(l, TCP_LISTEN("127.0.0.1", 0));
+LET(served, TCP_SERVE(l, 1000, NULL, FUN((req),
+  ["status": 200, "headers": ["content-type": "text/plain"], "body": "hi"])));
+TCP_CLOSE_LISTENER(l);
+```
+
+`TCP_SERVE` runs the accept loop in a native frame and hands your `handler`
+a parsed request `DICT`; the handler **returns** a response `DICT`
+(`{status, headers, body}` — all three keys required).
+
+⚠ **The handler is not a task body.** Calling a host-suspending member there
+(`TCP_RECV`, `TCP_ACCEPT`, `SLEEP_ASYNC`, …) is reported as the existing
+`E0014`, naming the member and pointing at the call site. Just return a `DICT`.
+
+⚠ **Outbound HTTP blocks.** `HTTP_GET` / `HTTP_POST` / `HTTP_REQUEST` freeze
+the whole scope while they run. For concurrency use
+`HTTP_REQUEST_ASYNC(method, url, body?, headers?, timeout_ms?)` — same
+arguments, same `{status, headers, body}` result, but it suspends only the
+calling task.
+
+⚠ **TLS is not in the standard library.** `std.net` speaks plaintext `http:`
+only. TLS ships as a native dynamic library the host loads explicitly
+(`wlwl run --ext /abs/path/lib.so`, or `WLWL_EXT_PATH`) — and loading it hands
+the whole process's permissions to that library. It is not a sandbox.
+
+See [Examples](examples.md) and the `wlwl-skill/` reference for the full
+`TCP_SERVE` migration guide and the HTTP middleware primitives.
 
 ## Next steps
 

@@ -114,11 +114,21 @@ jobs:
       #   报缺口。
       # ⇒ 钉的必须是**状态翻转之后**的提交 —— 与上面三次前移同一条理由。
       # ⚠ 该提交须**已推送**才可检出 ⇒ push 由业主发起（见 CHANGELOG 的收尾说明）。
+      # [v0.12.1 收口 / 2026-10-29] 规范仓基线前移到 **v1.0.4 的落表提交**
+      # `d6d90c3`(规范仓 `Laffinty/wlwl-spec-v1`;短形式 `d6d90c3`)。
+      # ⚠ 前一版钉的是整改批提交 `408e1f0` —— 本轮前移的原因是**内容**:v1.0.4
+      #   把 58 个登记项(含 `std.log`/`std.sync`/`std.signal`/`std.http` 四个
+      #   新命名空间 + 全局内建 `ARRAY_GET`)收进附录 A 与各册成员表(D-21),
+      #   并补全 `E0014` 触发条件(D-22)⇒ 实现侧的成员面对拍 / 附录 A 逐字对拍 /
+      #   失败口径对拍(V-05)只有钉在这一版上才全绿;钉在旧提交上会按「实现
+      #   多出 58 个成员」判红。
+      # ⇒ 钉的必须是**状态翻转之后**的提交 —— 与上面四次前移同一条理由。
+      # ⚠ 该提交须**已推送**才可检出 ⇒ push 由业主发起。
       - name: Checkout 规范仓(钉死提交)
         uses: actions/checkout@v4
         with:
           repository: Laffinty/wlwl-spec-v1
-          ref: 408e1f03d77a25aa8eecbefacdde109af35f54e4
+          ref: d6d90c3335c0c702b00dad496cf0f317ae44dd5e
           path: wlwl-spec-v1
 
       - name: 指向 v1.0 规范

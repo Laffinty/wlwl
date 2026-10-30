@@ -944,22 +944,68 @@ LET(_MATCH_INM, FUN((inm, etag),
 //
 // ⚠ 只认 **IMF-fixdate**（与本成员自己发的 `Last-Modified` 同一形状）⇒ 别的
 //   形状（RFC 850 / asctime）**比不了** ⇒ 不当作命中 ⇒ 走 200。
-//   ⚠ **判据**：长度与 `Last-Modified` 相同（IMF-fixdate 恒 29 字符）**且**
-//   第 4、5 个字符是 `", "`（RFC 850 是 `"Sunday, 06-Nov-94 …"` ⇒ 那两格是
-//   `"ay,"`）⇒ 两条判据合起来把 RFC 850 挡在外面。
+//   ⚠ **怎么挡**：靠**字段本身**（RFC 850 的 `"Sunday, 06-Nov-94 08:49:37 GMT"`
+//   ⇒ 第 9–11 格是 `"06-"` ⇒ **认不出月份** ⇒ 不可比 ⇒ 走 200;asctime
+//   形状（`"Sun Nov  6 08:49:37 1994"`）整体错位 ⇒ 同样不可比）。
 //   ⚠ 挡不住的话**宁可选 200**：把「变了」当成「没变」会把**旧内容**发出去。
-// ⚠ 日期比较用**字典序**：同一形状的 IMF-fixdate，字典序 == 时间序。
+// ⚠⚠ **按「字段」比，不按整串字典序比** —— IMF-fixdate 的字段顺序
+//   **不是时间序**（`"Fri, 30 Oct 2026 00:04:35 GMT"`：**星期名在最前**、
+//   **日在月年之前**）⇒ 拿**整串**比字典序有**两种**错法：
+//   ① **星期名支配结果**：实测「文件是 `Fri, 30 Oct 2026 …`」时，
+//      `Thu` / `Mon` / `Wed` / `Sun, 01 Jan 1970 …`（**1970 年**！）**全部**
+//      被判成「没变」⇒ 客户端拿到 304（无正文）⇒ **缓存住旧内容**;
+//   ② **日在前**：`"01 Jan 2038"` 的字典序 **小于** `"30 Oct 2026"` ⇒
+//      「比文件新」的日期被当成「比文件旧」。
+// ⇒ 故**逐字段解析**成 `YYYYMMDDHHMMSS` 的**整数键**再比大小
+//   （`_STATIC_DATEKEY`：年 4 位 + 月 2 位 + 日 2 位 + 时分秒各 2 位 ⇒
+//   键是定宽十进制 ⇒ **数值比较 == 时间比较**）。⚠ 数字**不用 `INT`**：
+//   `INT` 失败返回 **`ERR` 值** ⇒ 透明传播会让它在表达式里没法当数字用
+//   （同本文件 `_PARSE_DEC` 的注释）⇒ 复用 `_PARSE_DEC`。
+//   ⚠ 边界：**不校验星期与日期是否自洽**（RFC 9110 §5.6.7 要求矛盾时忽略
+//   该时间戳）⇒ 本实现按**日期**比较 ⇒ 客户端发一个「日期对、星期写错」的
+//   `If-Modified-Since` 时，本实现与 RFC 有差 ⇒ 已登记为边界。
+//   ⚠ 边界：月份缩写不认识 / 字段非数字 ⇒ **不可比** ⇒ 不当命中 ⇒ 走 200。
+LET(_STATIC_MONTHNUM, FUN((abbr),
+    (LET MUT(m, "");
+     IF(==(abbr, "Jan"), SET(m, "01"), NULL);
+     IF(==(abbr, "Feb"), SET(m, "02"), NULL);
+     IF(==(abbr, "Mar"), SET(m, "03"), NULL);
+     IF(==(abbr, "Apr"), SET(m, "04"), NULL);
+     IF(==(abbr, "May"), SET(m, "05"), NULL);
+     IF(==(abbr, "Jun"), SET(m, "06"), NULL);
+     IF(==(abbr, "Jul"), SET(m, "07"), NULL);
+     IF(==(abbr, "Aug"), SET(m, "08"), NULL);
+     IF(==(abbr, "Sep"), SET(m, "09"), NULL);
+     IF(==(abbr, "Oct"), SET(m, "10"), NULL);
+     IF(==(abbr, "Nov"), SET(m, "11"), NULL);
+     IF(==(abbr, "Dec"), SET(m, "12"), NULL);
+     m)));
+
+LET(_STATIC_DATEKEY, FUN((s),
+    (LET MUT(key, -1);
+     LET(y, _PARSE_DEC(SUB(s, 12, 4)));
+     LET(mo, _PARSE_DEC(_STATIC_MONTHNUM(SUB(s, 8, 3))));
+     LET(d, _PARSE_DEC(SUB(s, 5, 2)));
+     LET(hh, _PARSE_DEC(SUB(s, 17, 2)));
+     LET(mi, _PARSE_DEC(SUB(s, 20, 2)));
+     LET(ss, _PARSE_DEC(SUB(s, 23, 2)));
+     IF(||(||(==(y, -1), ==(mo, -1)),
+          ||(||(==(d, -1), ==(hh, -1)),
+               ||(==(mi, -1), ==(ss, -1)))),
+        NULL,
+        SET(key, +(+(+(+(+( *(y, 10000000000), *(mo, 100000000)), *(d, 1000000)), *(hh, 10000)), *(mi, 100)), ss)));
+     key)));
+
 LET(_MATCH_IMS, FUN((ims, lm),
-    (IF(==(TYPE(ims), "NULL"),
-       FALSE,
-       (LET(v, TRIM(ims));
-        (IF(==(lm, ""),
-           FALSE,
-           (IF(!=(LEN(v), LEN(lm)),
-              FALSE,
-              (IF(!=(SUB(v, 3, 2), ", "),
-                 FALSE,
-                 >=(v, lm))))))))))));
+    (LET MUT(hit, FALSE);
+     LET MUT(v, "");
+     LET MUT(k1, -1);
+     LET MUT(k2, -1);
+     IF(==(TYPE(ims), "NULL"), NULL, SET(v, TRIM(ims)));
+     IF(==(v, ""), NULL, SET(k1, _STATIC_DATEKEY(v)));
+     IF(==(lm, ""), NULL, SET(k2, _STATIC_DATEKEY(lm)));
+     IF(&&(>(k1, 0), >(k2, 0)), SET(hit, >=(k1, k2)), NULL);
+     hit)));
 
 
 // ── `Range` 的**单区间** ⇒ 起止（都含）────────────────────────────────────

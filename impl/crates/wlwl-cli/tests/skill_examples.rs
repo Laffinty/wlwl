@@ -183,6 +183,7 @@ fn the_skill_examples_cover_the_documented_topics() {
         ("module signature sidecar", "module_signature"),
         ("MATCH exhaustiveness (E0116)", "match_exhaustiveness"),
         ("object identity", "object_identity"),
+        ("IF arms as multi-statement groups", "if_else_multistmt"),
     ];
 
     for (topic, needle) in EXPECTED_TOPICS {
@@ -215,5 +216,64 @@ fn the_skill_examples_manifest_declares_a_complete_package() {
         text.contains("[features]"),
         "examples/wlwl.toml has no [features] table, so static_contracts.wll is \
          not being checked at all"
+    );
+}
+
+/// **H-1 回归守护**：`IF(cond, then, else)` 的**第三实参**支持多语句组。
+///
+/// ## 这条守护为什么存在
+///
+/// H-1 是迁移需求清单里的一条，原话是「`IF` 第三实参不支持多语句组」。
+/// 实测**推翻**了它：`IF(c, x, (a; b; …))` 的第三实参就是多语句组，取
+/// **最后一句**的值。⇒ 需求侧的描述不再成立，**不改实现**，只补一条
+/// **回归守护**把这个形态钉住。
+///
+/// `SKILL.md` 的「Five writing traps」第 2 条曾照抄那句旧描述教人绕开它 ——
+/// 已订正。这条守护就是「别再把它改回去」的机器形式。
+///
+/// ## 判据
+///
+/// 跑**真实程序**（`examples/if_else_multistmt.wll`）并断言**逐行输出**：
+/// 那四行 `else-*` 的值只有在「第三实参的多语句组被求值、且取最后一句」
+/// 时才会出现。旧形态下这段源码是 `E0013`，退出码非 0 ⇒ 必红。
+///
+/// ⚠ **反向守卫**：把 `IF` 的第三实参改回「不支持多语句组」⇒ 本用例必红
+///   （要么 `E0013` 退出码非 0，要么输出对不上）。
+#[test]
+fn h1_if_else_third_arg_holds_a_multi_statement_group() {
+    let bin = wlwl_binary();
+    let (ok, out, timed_out) = run_example(&bin, "if_else_multistmt.wll");
+    assert!(
+        ok,
+        "examples/if_else_multistmt.wll must run clean — a non-zero exit means the \
+         `IF` else-arm multi-statement group is broken again (H-1): {}",
+        if timed_out {
+            format!("TIMEOUT after {}s", EXAMPLE_TIMEOUT.as_secs())
+        } else {
+            out.replace('\n', " | ")
+        }
+    );
+
+    // 逐行钉住输出。四行 `else-*` 是「第三实参的多语句组真的被求值了」的证据：
+    //   · `else-sum: 3`   —— 组里最后那句 `+(a, b)` 的值（1 + 2）
+    //   · `else-side: seen` —— 组里的 `SET` 副作用跑了**一次**，并可见于组外
+    //   · `else-late: final` —— 三句的组，只有最后一句成为值
+    const EXPECTED: &[&str] = &[
+        "then-branch: 1",
+        "else-sum: 3",
+        "else-side: seen",
+        "else-late: final",
+        "PASS:if_else_multistmt",
+    ];
+    let got: Vec<&str> = out
+        .lines()
+        .map(str::trim)
+        .filter(|l| !l.is_empty())
+        .collect();
+    assert_eq!(
+        got, EXPECTED,
+        "the `IF` else-arm multi-statement group must produce exactly this output; \
+         a change here means H-1 regressed (or the example drifted from its \
+         documented expected output)"
     );
 }

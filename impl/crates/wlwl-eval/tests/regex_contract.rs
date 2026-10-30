@@ -543,7 +543,7 @@ fn regex_contract() {
 }
 
 /// 规范 §16 的成员表 ↔ `SPEC.functions`。**反向守卫**:表格形状变了而
-/// 提取器抽不出成员时,`[] == []` 会绿 —— 所以正面锁住「正好 7 个」。
+/// 提取器抽不出成员时,`[] == []` 会绿 —— 所以正面锁住「正好 8 个」。
 #[test]
 fn regex_member_set_matches_the_spec_table() {
     let text = std::fs::read_to_string(spec_path()).expect("stdlib spec readable");
@@ -577,7 +577,7 @@ fn regex_member_set_matches_the_spec_table() {
 
     assert_eq!(
         spec.len(),
-        7,
+        8,
         "§16 table extractor found {} member(s): {spec:?} — the table's shape changed \
          and the extractor needs updating",
         spec.len()
@@ -585,6 +585,9 @@ fn regex_member_set_matches_the_spec_table() {
     for n in [
         "RE",
         "RE_TEST",
+        // [W-29 / v0.12.1 · 需求 H-5] `RE_MATCHES_FULL`(`RE_TEST` 的整串锚定别名)
+        // —— 已随 v1.0.4 收进 §16 表(D-21)。
+        "RE_MATCHES_FULL",
         "RE_SEARCH",
         "RE_FIND_ALL",
         "RE_REPLACE",
@@ -600,14 +603,11 @@ fn regex_member_set_matches_the_spec_table() {
             "implementation does not export `{n}`: {impls:?}"
         );
     }
-    // [W-29 / v0.12.1 · 需求 H-5] 实现侧多了一个**别名**成员 `RE_MATCHES_FULL`
-    // (`RE_TEST` 的别名)⇒ 实现侧 8 个;规范 §16 的表仍是 7 个 —— 差的这一条
-    // 走**规范侧 §3.2 修订版本通道**(登记在 W-29 的登记清单里),**不是**这里
-    // 能自行改的(抄件是规范冻结快照的逐字副本,§0.7 规则 1 明禁追平实现)。
+    // v1.0.4 起规范 §16 表已收录 `RE_MATCHES_FULL` ⇒ 两侧同为 8。
     assert_eq!(
         impls.len(),
         8,
-        "wlwl:std.regex exports 8 members (7 spec members + the `RE_MATCHES_FULL` alias)"
+        "wlwl:std.regex exports 8 members — the §16 table lists 8"
     );
 }
 

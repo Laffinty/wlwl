@@ -14,7 +14,7 @@
 > form in `docs/history/20260902-09.md` / `20260915-22.md`; full text via git
 > history.
 >
-> ⚠ **The compiler this bundle targets is `wlwl` v0.12.0** — its public-surface
+> ⚠ **The compiler this bundle targets is `wlwl` v0.12.1** — its public-surface
 > expansion (17 new members) and **seven semantic changes (D-14…D-20)** are in
 > **§28**. The **language** surface has not moved since v0.6.
 
@@ -48,6 +48,7 @@
 - [§26. v0.11.2 增量备忘 — 编码 / Unicode 大小写 / 字符串检索 / 集合 / 超越函数](#26-v0112-)
 - [§27. v0.11.3 增量备忘 — 哈希与 KDF / Unicode / 输出安全 / 时钟 / 正则 / 随机 / 进程 / 压缩 / 网络 / `RESULT` / 精确数 / JSON 深度 / `ai`·`agent` 降级](#27-v0113-)
 - [§28. v0.12.0 增量备忘 — 传输层 / 字节层 / 宿主挂起 / `TAKE_ERR` / `INT` 规则](#28-v0120-)
+- [§29. v0.12.1 增量备忘 — `TCP_SERVE` / `HTTP_REQUEST_ASYNC` / `std.http` 中间件 / TLS 扩展 / `STR`·`SPLIT` 订正](#29-v0121-)
 
 ---
 
@@ -85,8 +86,8 @@ because the array is non-empty), `TASK` / `CHANNEL` handles, and
 | **v0.11** | **Two new `wlwl:std.*` namespaces and one breaking `ASSERT` change**, on a renumbered spec (the formatter moved to §A.3): `wlwl:std.str` (`JOIN` `SPLIT_LINES` `CHAR_AT` `COUNT` `QUOTE`) and `wlwl:std.math` (`ABS` `MIN` `MAX` `FLOOR` `CEIL` `ROUND` `SQRT` `POW` `CLAMP` `PI` `E`); ⚠ **`ASSERT` now rejects all eight falsy values** (`ASSERT(0)` used to pass). Full tables in §25 |
 | **v0.11.2** | **Standard library only — the language surface is frozen at v0.11** and `../docs/appendix_G.md` is unchanged. **41 new members**: `wlwl:std.encode` (6 encoders), `wlwl:std.text` (`TO_UPPER` `TO_LOWER`), `wlwl:std.str` (`INDEX_OF` `CONTAINS_SUB`), `wlwl:std.collection` (10), `wlwl:std.math` (21 transcendental / integer-math). Plus the `SUB` end-index migration formula fix. Full memo in §26 |
 | **v0.11.3** | **Standard library only — 115 new members plus one visible-surface change.** New namespaces `std.time` `std.regex` `std.rand` `std.env` `std.process` `std.compress` `std.net` `std.result` `std.sanitize`; `std.fs` grew from 3 to 18; `std.encode` gained the digest / KDF / CSPRNG family; `std.text` gained the Unicode family; `std.math` grew to 61; `std.json` gained a lexical layer and a path family. ⚠ **`ai` / `agent` left `wlwl:std.*`** — they are official packages now, imported as `"ai:ask"` / `"agent:task"`, and `wlwl:std.ai` no longer resolves (`E0040`). Full memo in §27 |
-| **v1.0** | **The spec moved to its own repository** (`wlwl-spec-v1`, 11 volumes); this repo keeps a merged copy at `../docs/wlwl-spec-reference.md`. **The `§N` numbering does not move** — every reference in this bundle still resolves. **Member surface**: 21 namespaces / **231** members in the **v0.12.0 compiler** baseline this bundle targets (the v1.0 spec snapshot itself has **214** — v1.0 added and removed nothing ⇒ the 17 that came with the compiler are in the v0.12.0 row below). What is new for writers: **§8.6 unconsumed `ERR` is reported (`E0103`)** — see §8 below; the **complexity / memory chapters** (§18–§19) and the **conformance volume** (its §5 registers the spec-vs-implementation differences X-01…X-25). The old stdlib **§14** (演进方向) was removed — its "revival conditions" moved into the individual chapters and "rejected" into the overview volume; ⚠ language §14 is a different section (session-type protocols) |
-| **v0.12.0** | **Standard library expansion — 17 new public members (214 → 231), the language surface unchanged.** `std.net` gains the **9-member transport family** (`TCP_LISTEN` `TCP_ACCEPT` `TCP_RECV` `TCP_SEND` `TCP_PEER` `TCP_LOCAL_ADDR` `TCP_SET_TIMEOUT` `TCP_CLOSE` `TCP_CLOSE_LISTENER`) ⇒ **a server can now be written in WLWL itself**; `std.encode` gains the byte layer (`UTF8_ENCODE` `UTF8_DECODE` `BYTE_LEN`); `std.text` gains `TO_INT`; `std.str` gains `CAT`; `std.env` gains `SCRIPT_PATH`; `std.result` gains `TAKE_ERR`; `std.time` gains `SLEEP_ASYNC`. ⚠ **Seven semantic changes** (**D-14…D-20**): transport waits become a **host suspension** (park **only** the calling task — D-18); `std.fs` IO failures become **`ERR` values** instead of terminating diagnostics (D-14); `TAKE_ERR` plus the `E0103` rule on segmented task bodies (D-15); **host suspension + the task-failure report obligation** (D-16 — an orphaned task's failure is reported on stderr, the program continues, exit code 0); **strict `INT` parsing rules** (D-17 — `std.text::TO_INT` stays the lenient one); `SLEEP_ASYNC` inside a `TEST_BUBBLE` behaves exactly like `SLEEP` (D-19); the alias-in-a-write-sequence shape is **excluded** from the amortised-cost promise (D-20, spec-side only — no implementation change). Full memo in **§28** |
+| **v1.0** | **The spec moved to its own repository** (`wlwl-spec-v1`, 11 volumes); this repo keeps a merged copy at `../docs/wlwl-spec-reference.md`. **The `§N` numbering does not move** — every reference in this bundle still resolves. **Member surface**: the **implementation** surface this bundle targets is **288 members across 25 namespaces** as printed by `wlwl namespace` (`23` × `wlwl:std.*` + the `ai` / `agent` packages) — ⚠ that reading moves as the compiler grows; the spec's appendix A is a **frozen snapshot** and is a *different* list (read the table itself, not a quoted count). What is new for writers: **§8.6 unconsumed `ERR` is reported (`E0103`)** — see §8 below; the **complexity / memory chapters** (§18–§19) and the **conformance volume** (its §5 registers the spec-vs-implementation differences X-01…X-25). The old stdlib **§14** (演进方向) was removed — its "revival conditions" moved into the individual chapters and "rejected" into the overview volume; ⚠ language §14 is a different section (session-type protocols) |
+| **v0.12.0** | **Standard library expansion — 17 new public members, the language surface unchanged.** (The member-count delta of this batch is recorded in `CHANGELOG.md`, the historical record; for the **current** implementation surface read `wlwl namespace`.) `std.net` gains the **9-member transport family** (`TCP_LISTEN` `TCP_ACCEPT` `TCP_RECV` `TCP_SEND` `TCP_PEER` `TCP_LOCAL_ADDR` `TCP_SET_TIMEOUT` `TCP_CLOSE` `TCP_CLOSE_LISTENER`) ⇒ **a server can now be written in WLWL itself**; `std.encode` gains the byte layer (`UTF8_ENCODE` `UTF8_DECODE` `BYTE_LEN`); `std.text` gains `TO_INT`; `std.str` gains `CAT`; `std.env` gains `SCRIPT_PATH`; `std.result` gains `TAKE_ERR`; `std.time` gains `SLEEP_ASYNC`. ⚠ **Seven semantic changes** (**D-14…D-20**): transport waits become a **host suspension** (park **only** the calling task — D-18); `std.fs` IO failures become **`ERR` values** instead of terminating diagnostics (D-14); `TAKE_ERR` plus the `E0103` rule on segmented task bodies (D-15); **host suspension + the task-failure report obligation** (D-16 — an orphaned task's failure is reported on stderr, the program continues, exit code 0); **strict `INT` parsing rules** (D-17 — `std.text::TO_INT` stays the lenient one); `SLEEP_ASYNC` inside a `TEST_BUBBLE` behaves exactly like `SLEEP` (D-19); the alias-in-a-write-sequence shape is **excluded** from the amortised-cost promise (D-20, spec-side only — no implementation change). Full memo in **§28** |
 
 ## §3. AST shapes (§A.2)
 
@@ -2172,9 +2173,15 @@ v0.11.3 added **115 standard-library members** plus **one visible-surface
 change** (the `ai` / `agent` demotion, below). The language surface is
 unchanged.
 
-Appendix A registers **231 members** in total; by the stdlib spec's own
+The spec's appendix A is a **frozen snapshot** (registry of the standard
+library's member surface) — read that table for its contents rather than a
+count quoted here, because the compiler keeps growing past it and a member
+that exists in the compiler but not in appendix A is a **conformance gap**,
+not an extra member. By the stdlib spec's own
 per-chapter 设计依据 the four batches split as **58 (v0.11 and earlier) /
-41 (v0.11.2) / 115 (v0.11.3) / 17 (v0.12.0)**.
+41 (v0.11.2) / 115 (v0.11.3) / 17 (v0.12.0)**. ⚠ **Current implementation
+surface** (what you can actually call): **288 members across 25 namespaces**,
+measured with `wlwl namespace`.
 
 | Namespace | New members | Detail |
 |---|---|---|
@@ -2339,8 +2346,9 @@ one-line shape of each family:
 | `wlwl:std.result` | `TAKE_ERR` | 一步式「检查并消费」。见 §9.15 |
 | `wlwl:std.time` | `SLEEP_ASYNC` | **可挂起**的睡眠。§28.2 的陷阱 |
 
-⇒ 命名空间仍是 **21** 个（`std.*` 19 + 官方包 `ai` / `agent` 2）；
-标准库成员面 **v1.0 的 214 → v0.12.0 的 231**。
+⇒ 当时（v0.12.0）命名空间数与成员面读数见 `CHANGELOG.md`（历史记录）。
+⚠ **别把那批读数当成现状** —— 当前实现成员面是 `wlwl namespace` 实测的
+**288 members / 25 namespaces**，见 §29。
 
 ### §28.2 七处语义变更（D-14…D-20）
 
@@ -2432,5 +2440,196 @@ one-line shape of each family:
 ⚠ **这条订正的通用教训**：本仓审计里那两条结论是**只读规范文本**得出的（没有实测），
 而二期的实测证明**实现的行为比规范的字面读法更「宽」**。
 ⇒ **凡是能实测的结论，不要只靠读规范定案** —— 这是本仓审计方法本身要改的地方。
+
+---
+
+## §29. v0.12.1 增量备忘 — `TCP_SERVE` / `HTTP_REQUEST_ASYNC` / `std.http` 中间件 / TLS 扩展 / `STR`·`SPLIT` 订正
+
+> 编译器：当前构建（`wlwl --version` 报 `0.12.1`；v0.12.0 批次的收口已并入 v0.12.1）。
+> ⚠ **语言面仍然没有动** —— 运算符、内建、语句自 v0.6 起未变。本批动的是
+> **标准库成员面**，并订正了三处**教错的口径**（H-1 / H-2 / H-3）。
+> ⚠ **成员面读数**：`wlwl namespace` 实测 **288 members / 25 namespaces**
+> （`23` × `wlwl:std.*` + 官方包 `ai` / `agent`）。规范附录 A 是**冻结快照**，
+> 本批成员**尚待规范仓落表** ⇒ 那是**一致性缺口**，不是「额外成员」。
+
+### §29.1 三处口径订正（H-1 / H-2 / H-3）
+
+| 项 | 旧说法（**已废**，此处只作概述、不照抄原句） | 实测口径 |
+|---|---|---|
+| **H-1** | 旧稿称 `IF` 的第三实参不接受 `(a; b)` 形态 | **支持**。`IF(c, x, (a; b))` 第三实参是多语句组，取**最后一句**的值。实测 `IF(FALSE, 1, (LET(a,1); LET(b,2); +(a,b)))` → `3`。第二实参同理。⇒ 回归守护在 `wlwl-cli/tests/skill_examples.rs` |
+| **H-2** | 旧稿称缺少数字 → 文本的转换 | **全局内建 `STR(x) -> STRING`**（附录 G §10.3），无需 `IMPORT`。实测 `STR(42)` → `"42"` |
+| **H-3** | 旧稿称缺少通用的切分成员 | **全局内建 `SPLIT(s, sep) -> ARRAY`**（附录 G §10.5），无需 `IMPORT`。实测 `SPLIT("a,b,c", ",")` → `[a, b, c]`。`std.str` 只导出 `SPLIT_LINES`（按 `\n` 切） |
+
+⚠ **`+` 不做任何隐式强转**。实测 `+(1, "a")` 与 `+("a", 1)` 都是
+`E0030: +: cannot add integer and string`，提示原文含
+「v0.3 has no implicit numeric coercion」。数字 → 文本走 `STR`；
+变长拼接走 `std.str::CAT(parts...)`。
+
+### §29.2 `std.net` 新增两员
+
+| 成员 | 契约 |
+|---|---|
+| `HTTP_REQUEST_ASYNC(method, url, body?, headers?, timeout_ms?) -> DICT` | **非阻塞出站**。请求在工作线程上跑，**只挂起当前任务**（别的任务照常跑）。返回值与 `HTTP_REQUEST` **同形**（`{status, headers, body}`），实参形状**逐字同形**，运行期失败仍是 `ERR([kind:"HttpError", op, reason])` 值。**唯一差别 = 阻塞 vs 挂起**。元数/类型错 `E0022`/`E0030`。⚠ 段首重放 ⇒ 成员内部有幂等备忘，同一请求不会发两次 |
+| `TCP_SERVE(listener, timeout_ms, opts, handler) -> INTEGER` | **原生帧内的接受循环**：accept → 读一次请求 → `handler(request)` → 回响应 → 下一条。返回**成功服务的连接数**；accept 超时 ⇒ 退出循环返回计数（不是错误）。**不关**监听器（调用方自己 `TCP_CLOSE_LISTENER`，幂等） |
+
+**`TCP_SERVE` 的形状**
+
+- **请求**（handler 实参）= `DICT`：`{method, path, version, headers, body}`；`headers` 键**小写**；`path` 是请求目标原样（含查询串）；`body` 是**有损 UTF-8**。
+- **响应**（handler 返回值）= `DICT`：`{status: INTEGER, headers: DICT, body: STRING | ARRAY[INTEGER]}`。**三键缺一即那一条作废**，循环继续。
+- **单条连接异常 ⇒ 记一笔、继续下一条**：对端断开 / 读失败 / handler 抛错 / 响应形状不对，**都只终止那一条**。失败以 `ERR([kind:"SocketError", op:"TCP_SERVE", reason])` 的形状落进宿主**告警槽**（软告警，不改程序语义）。
+- **`opts`**（`DICT` 或 `NULL`；注意 `[]` 是空**数组**）：`max_header_bytes`（缺省 64 KiB）/ `max_body_bytes`（缺省 8 MiB）/ `read_timeout_ms`（缺省 `0` = 无上限）。**未知选项名 ⇒ `E0030`**（不静默忽略）。
+
+⚠⚠ **handler 跑在原生帧里，不是任务体** ⇒ **handler 内不得调用宿主挂起点成员**
+（`TCP_RECV` / `TCP_ACCEPT` / `SLEEP_ASYNC` …）。误用报**既有 `E0014`**
+（不新增诊断码）：**指名该成员**、位置**指向调用点**、沿用
+「used outside a task body」文案。`TCP_SERVE` 的可观察语义**不变**：
+误用那条连接**不算**被服务、失败只记一笔、循环继续、对端收到 `500`。
+⇒ **handler 里只返回 `DICT`**，别做 I/O。`TCP_SERVE_STREAM`（`std.http`
+的 `SERVE_STREAM`）的 handler **同一契约**。
+
+⚠ **`TCP_SERVE` 阻塞调用线程**：它的等待在原生帧内 ⇒ 期间**别的任务不跑**
+（与 `TCP_ACCEPT`/`TCP_RECV` 的**宿主挂起**不同）。这是「接受循环在原生帧内
+推进」这条候选的代价。⚠ **`TCP_SERVE` 与 `TCP_ACCEPT` 抢同一个待取队列**
+⇒ 同一个监听**只交给其中一个**。
+
+### §29.3 `TCP_SERVE` 迁移指引（从旧 HTTP handler 形状迁过来）
+
+旧形状 = **静态展开的 accept 链**：一个 acceptor 任务 + 每条连接一个
+`serve_one` 辅助闭包 + `TCP_ACCEPT`/`TCP_RECV` 写在任务体里。
+**该形状现已不合规** —— `TCP_RECV` 在任务体外报 `E0014`（指名成员 + 指向
+调用点）。迁到 `TCP_SERVE` 即可，**功能面不受影响**。
+
+| 旧形状 | 新形状 |
+|---|---|
+| `LET(conn, TCP_ACCEPT(l, ms)); YIELD(); LET(chunk, TCP_RECV(conn, n, ms)); …` | 一句 `TCP_SERVE(l, timeout_ms, opts, handler)`；accept + 读都在原生帧里 |
+| `serve_one(conn)` 闭包：先读再写 | `handler(request)` 闭包：收**已解析**的请求 `DICT`，**返回**响应 `DICT` |
+| 手写请求解析 + `Content-Length` | `TCP_SERVE` 已解析好请求，只管构造响应 |
+| 每条连接自己记「完了没」 | `TCP_SERVE` 返回服务计数；坏连接作废、不计数 |
+| handler 里改状态 | 状态放**顶层 `LET MUT`**（或 `std.sync`），在 handler 外改 |
+
+```wlwl
+// ── 旧（现在在 TCP_RECV 处报 E0014）────────────────────────────
+LET(acceptor, SPAWN(FUN(() , (
+  LET(conn, TCP_ACCEPT(listener, 1000));
+  YIELD();
+  LET(chunk, TCP_RECV(conn, 4096, 1000));   // ← E0014: used outside a task body
+  TCP_SEND(conn, build_response(AT_K(chunk, "text", "")));
+  TCP_CLOSE(conn)))));
+
+// ── 新（合规）──────────────────────────────────────────────────
+LET(served, TCP_SERVE(listener, 1000, NULL, FUN((req),
+  (LET(body, FORMAT("echo:{0}", AT_K(req, "body", "")));
+   ["status": 200,
+    "headers": ["content-type": "text/plain"],
+    "body": body]))));
+```
+
+⚠ handler 里 `IF` 的两个分支都可以是多语句组 `(a; b)`（H-1，见 §29.1）。
+
+### §29.4 `std.http` 中间件原语（限流 / 规则热加载 / 审计 / 真实 IP）
+
+失败口径沿用两档（`E0022` / `E0030` + `ERR` 值），**零新增诊断码**；
+`ERR` 载荷是 `{"kind": "HttpError", op, reason}` 一族。
+
+**`RATE_LIMITER(name, limit, window_sec, opts?) -> DICT`** = `{"allowed":
+BOOLEAN, "remaining": INTEGER, "reset": INTEGER, "limit": INTEGER, "mode":
+STRING}` —— **判一次**限流。`opts`：`mode`（`"sliding"` | `"token_bucket"`，
+缺省 `"sliding"`）、`refill`（仅令牌桶，每秒补给 ≥ 0，缺省 `limit`）、
+`state`（`std.sync::SHARED_DICT` 句柄作跨求值器注册表）、`audit`（缺省
+`TRUE`）、`client_ip` / `path` / `request_id`（审计归属，缺省 `""`）。
+**未知键 / 类型错 / 取值不合法 ⇒ `ERR`**（不静默忽略）。
+- **滑动窗口**：按**秒分桶**的 `std.sync` 原子计数器，窗口和 = 最近
+  `window_sec` 秒之和；`allowed ⇔ 本次计上后窗口和 ≤ limit`，超限**回滚**
+  （被拒的请求不占名额）。
+- **令牌桶**：容量 `limit`、每秒补 `refill`（`0` = 永不补给）、每次判定扣 1，
+  不够扣 ⇒ `allowed = FALSE`（**不欠账**）；桶初始**满**。
+- `reset` = Unix 毫秒：下一次可能腾出名额的时刻。`remaining` = 还能通过几次。
+⚠ **并发边界（实测，如实）**：计数走 `COUNTER_INC`（原子）⇒ 计数**不丢**，
+同一秒内判定精确；**跨秒边界的瞬时竞态**理论上可多放行至多并发宽度个请求。
+令牌桶的**补给记账**是读-改-写 ⇒ 极端并发下可能重复补给一次；**判定与扣减**
+仍是原子精确的。
+
+**`RULESET_LOAD(path, opts?) -> DICT`** = `{"rules": ARRAY[STRING], "mtime":
+INTEGER, "version": INTEGER, "path": STRING}`。每行一条规则；空行与 `#`
+开头跳过；行尾 `\r` 剥掉（CRLF 兼容）。
+**热切换语义（钉死）**：`mtime` 变 ⇒ 重读文件、构造**全新**数组、一次
+`SHARED_DICT_SET` **原子换引用**（分配新 `version`）⇒ **在途请求持有的旧数组
+继续可用、内容不变**（数组是值语义快照）；`mtime` 未变 ⇒ **复用**现数组
+（`version` 不动，审计 `result="cached"`）。`version` = **装载序号**
+（每缓存条目一个 `COUNTER`，1 起）。文件不存在 / 读失败 ⇒ `ERR` 值
+（`op:"RULESET_LOAD"`）。
+
+**`CLIENT_IP(headers_or_request, remote_addr, trusted_proxies) -> STRING`**
+—— 三参形、**无 opts**；每次调用产出一条审计行。`headers_or_request` =
+头字典（键小写）**或**完整请求字典（取其 `"headers"` 子字典）；
+`remote_addr` = **裸 IP 字面量**（不含端口，调用方先剥）；`trusted_proxies`
+= `ARRAY[STRING]` 裸 IP。**比较是精确字符串比较**（两侧 `LOWER` + `TRIM`
+后逐字比；不做 DNS / CIDR / 子网展开）。
+**语义（钉死）**：只有 `remote_addr` **命中** `trusted_proxies` 才采信
+`X-Forwarded-For`（多个头按出现序拼接再按 `,` 切跳）⇒ 取**从右往左第一个
+不在可信列表里的跳**；全可信 ⇒ 取**最左**跳；没有 XFF / 空 ⇒ 回
+`remote_addr`。`remote_addr` **不**可信 ⇒ **无视 XFF**、回 `remote_addr`
+（攻击者自带的 XFF **绝不**当真实 IP）。审计 `result`：`"xff_used"` |
+`"xff_all_trusted"` | `"ignored_xff"` | `"no_xff"`。
+
+**审计（不导出的 `_AUDIT`）**：把 `{time, event, client_ip, path, result,
+request_id}` 装进 `std.log::LOG` 的 `fields` ⇒ 落盘/落流那一行**是合法 JSON**
+（`{"ts":…,"level":"INFO","msg":"http.audit","fields":{六字段}}`）。`time` =
+`NOW()`（Unix 纪元毫秒）。三个新成员每次调用产出一条审计行（`opts.audit =
+FALSE` 可关；`CLIENT_IP` 恒产出）。
+
+⚠ **状态按 name 复用**：`std.sync` 的 `COUNTER` / `SHARED_DICT` **每次调用新建
+容器**（无名字、无按名查回）⇒ 「同 name 复用同一计数/桶」由 `std.http` 补一层
+注册表（一张 `SHARED_DICT`，name ⇒ 句柄）。缺省注册表句柄记在 `StdCtx.env`
+（键 `WLWL_STD_HTTP_STATE`）⇒ **同一程序内**同 name 复用；传 `opts.state`
+可跨求值器/线程。⚠ `StdCtx.env` 是**求值器级**快照（不是 OS 环境）⇒ 进程内
+两个程序各有各的缺省注册表。⚠ 滑动窗口的秒桶按 `name × 秒` 懒创建、**不回收**
+（长跑进程句柄线性增长）—— 如实登记。
+
+### §29.5 TLS 不在标准库（`--ext` 显式加载的原生扩展）
+
+`std.net` 是**明文 `http:` only**，`https://` 返回
+`ERR([kind:"HttpError", … reason: scheme "https" is not supported])`。
+TLS **不进标准库**，以**原生动态库扩展**（`wlwl-tls.dll` / `.so` / `.dylib`）
+交付，由**宿主显式授权加载**：
+
+```bash
+wlwl run --ext /abs/path/wlwl-tls.dll --ext-sha256 <64-hex> server.wll
+# 或 WLWL_EXT_PATH=/abs/path/wlwl-tls.dll
+```
+
+加载后其命名空间（`tls` / `crypto`）可 `IMPORT`。⚠ **扩展成员不进附录 A、
+不进公共面清单**，只进一致性册 §5.5 的**实现侧扩展台账**。
+
+⚠⚠ **加载一个原生库 = 把整个进程的权限交给它**（读文件、连网络、改内存、
+起进程）—— **它不是沙箱**。宿主在加载前打印一行醒目告警。**信任模型七条
+硬规则**（不可让渡）：
+
+| # | 规则 |
+|---|---|
+| **T1** | **加载只能由宿主发起**：CLI `--ext <path>` 或 `WLWL_EXT_PATH`。**语言面不提供任何 `LOAD` 成员** ⇒ 脚本自己触发不了加载 |
+| **T2** | **绝不从项目配置 / 项目目录自动发现**：`wlwl.toml`、程序同目录、`./ext/` 一律不扫 |
+| **T3** | **路径必须绝对**、存在、是普通文件 |
+| **T4** | **可选哈希钉扎**：`--ext-sha256 <hex>`；给了就必须匹配 |
+| **T5** | **扩展不得占用 `std.*`**，也不得覆盖既有命名空间 ⇒ 宿主拒绝 |
+| **T6** | **加载 = 交出全部进程权限**；宿主告警；**不得**宣称沙箱 |
+| **T7** | **扩展成员只以「运行期注册」出现**：不进附录 A、不进公共面清单、只进 §5.5 台账 |
+
+⇒ 因为 T1，`.wll` 程序**无法自行加载 TLS** —— 是**运维方**决定的。
+
+### §29.6 已知边界（如实，不粉饰）
+
+- **`std.fs::PATH_JOIN` 在 POSIX 上吃前导 `/`**：实测
+  `PATH_JOIN("/tmp/x", "f")` ⇒ `"tmp/x/f"`，绝对根丢了。这是既有
+  `std.fs` 成员的缺陷（已单独上报）；`std.http` 用 `CAT(root, "/", rel)`
+  自己拼路径绕开它 ⇒ **不要**用 `PATH_JOIN` 去延展绝对根。
+- **multipart 文件 part 落盘的是有损 UTF-8 文本**：本语言请求正文是
+  `STRING`，二进制上传无法逐字节往返。二进制一律走 `ARRAY[INTEGER]`
+  （`0..=255`）。
+- **`STATIC_FILE` 的包含性判定是词法的**：`PATH_CONTAINS` **不解析符号链接**
+  ⇒ `root` 底下指向 `root` 之外的符号链接仍判合法。另有 `READ_BYTES`
+  **1 MiB** 策略上限（`WRITE_BYTES` 是 64 MiB）⇒ **写得出 ≠ 读得回**。
+- **限流**：滑窗跨秒瞬时竞态 / 令牌桶极端并发重复补给 —— 见 §29.4
+  `RATE_LIMITER` 的并发边界。
 
 
