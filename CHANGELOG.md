@@ -1,4 +1,4 @@
-## [v0.12.1_rc1] — 2026-10-31（预览版 · tag 已发 · Release run #44 触发中）
+## [v0.12.1_rc1] — 2026-10-31（预览版 · tag 已发 · Release run #44 全绿 · Release 已建成）
 
 **本段记录的是 `v0.12.1_rc1` 那个快照** —— RC 与正式版**在 RC 发布时**是**同一份代码**
 （`impl/Cargo.toml` 的 `version = "0.12.1"` 不因 RC 而改）。
@@ -7,9 +7,10 @@
 `v0.12.1_rc1` ⇒ GitHub 上标记为 **pre-release**，不会被工具链当成 production ready
 抓走。正式版 `v0.12.1` 的 tag 尚未发。
 
-⚠ **版本守卫已实测过**：`.github/workflows/release.yml` 的 `version-check` job
-**结论 success**（run #44 里 3 个 step 全 success）。它比的是**基版本** ——
-`v0.12.1_rc1` ⇒ 基版本 `v0.12.1` ⇒ 与 `Cargo.toml` 的 `0.12.1` **逐字相等** ⇒ 过。
+⚠ **版本守卫已实测过**：`.github/workflows/release.yml` 的 `version guard (tag == Cargo
+version)` job **结论 success**（run #44 里 3 个实际步骤全 success：checkout → 比对 →
+收尾）。它比的是**基版本** —— `v0.12.1_rc1` ⇒ 基版本 `v0.12.1` ⇒ 与 `Cargo.toml`
+的 `0.12.1` **逐字相等** ⇒ 过。
 （下划线**不是合法 semver** ⇒ `Cargo.toml` 里写 `0.12.1_rc1` 会让**全仓每一条 cargo
 命令都崩** ⇒ RC 只能在 **tag 名**上带后缀。）
 
@@ -22,8 +23,29 @@
   （三平台 + smoke **4 个 job 全绿**）。
   ⚠ **发版纪律**：「先修到远端 CI 全绿，再打 tag」—— tag 一推就对外可见且撤不回，
   且 **CI 绿 ≠ release workflow 绿**（release 有自己的门禁，不重跑主 CI 的测试）。
-- ✅ **Release workflow 已触发**：**run #44**（`head_branch = v0.12.1_rc1`，
-  `head_sha = e1f65f8`）⇒ `version-check` **success**；5 个平台的 `build` 正在跑。
+- ✅ **Release workflow 已跑完 —— run #44 十个 job 全绿**：**run #44**
+  （`head_branch = v0.12.1_rc1`，`head_sha = e1f65f8`）**结论 = success**，
+  **10 个 job 逐个 `conclusion: success`** ——
+  `version guard (tag == Cargo version)` ✓ · `build (x86_64-unknown-linux-gnu)` ✓ ·
+  `build (x86_64-apple-darwin)` ✓ · `build (aarch64-apple-darwin)` ✓ ·
+  `build (x86_64-pc-windows-msvc)` ✓ · `build (aarch64-unknown-linux-gnu)` ✓ ·
+  `generate SBOM (CycloneDX)` ✓ · `spec conformance suite` ✓ ·
+  `cosign keyless sign binaries + SBOM` ✓ · `github release` ✓
+  ⇒ **没有红项**。（`spec conformance suite` 这一格是 release workflow **自己**的
+  门禁 `cargo test --locked --test conformance -p wlwl-cli`，**不是**主 CI。）
+- ✅ **Release 真的建成了**（不是「job 绿就当发布成功」）：`GET
+  /releases/tags/v0.12.1_rc1` ⇒ **id `429579021`**、`tag_name = v0.12.1_rc1`、
+  **`draft: false`**、**`prerelease: true`**、`published_at 2026-10-30T23:21:34Z`
+  ⇒ **5 个资产齐全**（4 个 `.tar.xz` + 1 个 `.zip`，每个平台一个）：
+  `wlwl-v0.12.1_rc1-aarch64-apple-darwin.tar.xz`（5360004 B）·
+  `wlwl-v0.12.1_rc1-aarch64-unknown-linux-gnu.tar.xz`（5450008 B）·
+  `wlwl-v0.12.1_rc1-x86_64-apple-darwin.tar.xz`（5650776 B）·
+  `wlwl-v0.12.1_rc1-x86_64-unknown-linux-gnu.tar.xz`（5715584 B）·
+  `wlwl-v0.12.1_rc1-x86_64-pc-windows-msvc.zip`（6612854 B），
+  **每个都带 `sha256:` 摘要**。
+  ⚠ **`prerelease: true` 是对的设计**（RC 按 tag 名里的 `_rc` 判 pre-release）
+  ⇒ 不会被工具链当成 production ready 抓走；**正式版 `v0.12.1` 的 tag 尚未发**。
+  ⚠ **资产里没有 TLS 动态库**（5 个包全是主二进制 + 源码树）⇒ 见下「两处已知未完」①。
 - ⚠ **规范侧本版**：`wlwl-spec-v1` 的 **v1.0.4 文本**已进本仓
   （`docs/wlwl-spec-reference.md` ＝ 从规范仓 v1.0.4 重建的合并册，**头部已对齐
   v1.0.4 / 25 个命名空间 / 288 个成员 / 30 处守卫**），但**规范侧 v1.0.4 的 tag 尚未发**
@@ -63,10 +85,15 @@
 `wlwl-tls` 的 `.dll` / `.so` / `.dylib` 装进包（计划 §0.4 第 4 件）。
 ⇒ **本 RC 的发布包里没有 TLS 动态库**；要用得自己按 `--ext` 加载自建的。
 ⇒ 正式版 `v0.12.1` 发之前应补上这一步。
+⚠ **这一条已由真实发布包核实**（不是只看 workflow 文本）：run #44 建成的 release
+**5 个资产逐一列出**（4 个 `.tar.xz` + 1 个 `.zip`）⇒ **没有任何一个是 TLS 动态库**
+⇒ 与 staging 步骤的读数一致。
 ② **`docs/site/` 下三处版本残留**（站点页）：`install.md` 的 4 个下载 URL 仍指向
 **v0.4.0** 的产物、`contributing.md` 仍写「`main` is v0.4.0-rc」⇒ 照着装会装到
 8 个次版本之前的旧包。⚠ 属**对外文档**的错版，与本 tag 的产物无关（发布包不含
 `docs/`），但**发正式版之前应当订正**。
+⚠ **可选项**：改指 **v0.12.0**（唯一真实存在的正式发布）还是 **v0.12.1_rc1**
+（pre-release，工具链可能不抓）⇒ **待业主裁决**，本轮**未擅自改**。
 
 完整变更清单见本文件「[v0.12.1 收口 · 文档同步 + 探针归档]」与「[v0.12.1 收口]」两段；
 构建方案与逐项读数见仓内 `docs/plan/wlwl-v0.12.1-build-plan.md`（随源码 tarball 走）。
