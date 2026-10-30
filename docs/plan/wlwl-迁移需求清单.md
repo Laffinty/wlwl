@@ -8,6 +8,29 @@
 | **当前基线** | 编译器 `wlwl` **v0.12.0**（`x86_64-pc-windows-msvc`）／规范 `wlwl-spec-v1` **v1.1.0.3** |
 | **证据来源** | 一次带实测的迁移可行性评估（9 个可运行探针，见文末附件）。**清单中每条「现状」都是实测结论，不是读文档得出的推测。** |
 
+> **⚠ 2026-10-30 订正（wlwl 侧回执）** —— 探针的**存放位置变了**，原文的两处路径
+> 已失效，其余正文不动（本文是 TinyPage 侧提出的原文，措辞不改）：
+>
+> - **原文**（§J-3 第 3 条 / 附录 A）称 9 个探针「已开源在目标仓库
+>   `docs/wlwl-feasibility/probes/`」⇒ **该目录已于 2026-10-30 归档**（内容
+>   与门禁夹具逐字节相同，留在仓内只会漂移）。**现状**：
+>   - **源码原文**（9 个 `.wll` + 对照表 README，单份 md）：
+>     [`docs/history/20261030-feasibility-probes-archive.md`](../history/20261030-feasibility-probes-archive.md)
+>   - **可跑的同款夹具**（9 份，逐字相同 + 同目录 `expect.json` 断言）：
+>     `impl/tests/probe/cases/P121_probe_*/main.wll`
+>     ⇒ 门禁 `cargo test --locked -p wlwl-cli --test probe`
+>   - ⇒ **「上手材料与回归基线」这条承诺仍然成立**，只是路径换成了上面两处。
+> - **附录 B 的复现命令**已改为指向 `impl/tests/probe/cases/`（那才是可跑的那份）。
+>
+> **⚠ 另有一条实测订正（归档时发现，原文未跟上）** —— 归档件里 README 对照表的
+> **p07 / p09 / p12 三行**写的是**第二波（`86b3c4a`）与第四波（`969b220`）之前**的
+> 行为，与现在的探针**实测相反**（详见归档件「⚠ 归档时发现的漂移」一节）：
+> **p07 / p09** 现在是 `exit 1` + `E0014`（挂起点落在**任务体之外**的闭包里 ⇒
+> 宿主挂起点成员在任务体外被调用），**不是**原文写的「终值 42 / exit 0」；
+> **p12** 的**惊群已修**（实测 `winners= 2`、`losers= 1`、落选者**等满自己的
+> 超时**），**不是**原文写的「1 胜 2 负 / 落选者被连接到达唤醒」。
+> ⇒ **以 `expect.json` 为准**；本文正文里的对应描述是**提出当时的实测**，保留原样。
+
 ---
 
 ## 0. 背景（请先读这一节）
@@ -415,14 +438,14 @@ TinyPage 是一个**静态站点生成器 + 数字花园 + HTTP 服务 + 管理�
 
 1. **回归用例迁移**：把现有 125 个 pytest 用例逐条转写成 wlwl 侧 `std.test` 用例，作为上游 `std.test` 增强的验收材料。
 2. **性能基线**：提供 Python 版 waitress 的 QPS / 延迟基线，作为 wlwl HTTP 服务的对比目标。
-3. **探针共享**：本清单附带的 9 个探针（`p01`–`p13`）已开源在目标仓库 `docs/wlwl-feasibility/probes/`，可直接作为新成员的上手材料与回归基线。
+3. **探针共享**：本清单附带的 9 个探针（`p01`–`p13`）已开源在目标仓库 —— 源码原文见 [`docs/history/20261030-feasibility-probes-archive.md`](../history/20261030-feasibility-probes-archive.md)，**可跑的同款夹具**（逐字节相同 + 断言）见 `impl/tests/probe/cases/P121_probe_*/main.wll`，可直接作为新成员的上手材料与回归基线。⚠ 路径订正见文首「2026-10-30 订正」。
 4. **上游 issue 复现**：任何 P0 项的复现步骤，我们会写成可一键重跑的脚本。
 
 ---
 
 ## 附录 A · 实测证据索引
 
-所有「现状」结论的出处（探针源码见 `docs/wlwl-feasibility/probes/`）：
+所有「现状」结论的出处（探针源码原文见 [`docs/history/20261030-feasibility-probes-archive.md`](../history/20261030-feasibility-probes-archive.md)；**可跑的那份**在 `impl/tests/probe/cases/P121_probe_*/main.wll`）：
 
 | 探针 | 证明的事 |
 |---|---|
@@ -438,11 +461,14 @@ TinyPage 是一个**静态站点生成器 + 数字花园 + HTTP 服务 + 管理�
 ## 附录 B · 复现命令
 
 ```powershell
+# ⚠ 2026-10-30：路径已改 —— `docs\wlwl-feasibility\probes\` 已归档（见文首订正）。
+# 下面跑的是**可跑的同款夹具**（与归档件里的源码逐字节相同）。
 $exe = 'D:\Project\wlwl_runtime\wlwl-v0.12.0\wlwl.exe'
-& $exe run docs\wlwl-feasibility\probes\p01-capability-matrix.wll   # TLS 缺失 / 密码学 / regex 语义
-& $exe run docs\wlwl-feasibility\probes\p09-trace-nested-wait-death.wll  # 静默死亡
-& $exe run docs\wlwl-feasibility\probes\p12-acceptor-pool-wakeall.wll   # acceptor 池语义
-& $exe run docs\wlwl-feasibility\probes\p13-single-acceptor-chain.wll   # 可用架构
+$c   = 'impl\tests\probe\cases'
+& $exe run "$c\P121_probe_p01_capability_matrix\main.wll"   # TLS 缺失 / 密码学 / regex 语义
+& $exe run "$c\P121_probe_p09_nested_wait_death\main.wll"   # 嵌套闭包里的挂起点 ⇒ E0014
+& $exe run "$c\P121_probe_p12_acceptor_pool\main.wll"       # acceptor 池语义（惊群已修 ⇒ 落选者等满超时）
+& $exe run "$c\P121_probe_p13_acceptor_chain\main.wll"      # 可用架构
 ```
 
 ## 附录 C · 一页速查

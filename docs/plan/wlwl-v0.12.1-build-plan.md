@@ -47,7 +47,7 @@
 2. 规范仓 `wlwl-spec-v1`：**v1.0.4** 落地（§6 的条款级改动 + 总纲 §0.9 登记行 + 各册成员表 + 附录 A + §5.5 台账第一行）；
 3. **实现仓的** `docs/wlwl-spec-reference.md` **重建**（`python script/build_spec_reference.py`）⇒ ⚠ **抄件只存在于实现仓**（规范仓**没有**这个文件 ⇒ 它是从规范仓**生成**的产物，规范仓才是源头）⇒ 收口夜实测：重建**幂等**（跑一次，文件 SHA256 不变）;
 4. **TLS 扩展产物**：`wlwl-tls` 动态库（Windows `.dll` / Linux `.so` / macOS `.dylib`）随发行包发布，并带 ABI 版本与哈希；
-5. 需求清单的 **9 个探针固化进仓**（`docs/wlwl-feasibility/probes/` + `impl/tests/probe/cases/`），使清单里每条「现状」都有可重跑的证据。
+5. 需求清单的 **9 个探针固化进仓**（⚠ **2026-10-30 归档**：`docs/wlwl-feasibility/probes/` 已并入单 md [`docs/history/20261030-feasibility-probes-archive.md`](../history/20261030-feasibility-probes-archive.md)；**可跑的那份**在 `impl/tests/probe/cases/`），使清单里每条「现状」都有可重跑的证据。
 
 ---
 
@@ -389,7 +389,7 @@ resolve(path) 的最终顺序：
 - **目标**：让需求清单里每条「现状」都有**仓内可重跑**的证据（记忆纪律：文档里的「可重跑命令」必须先核实夹具真实存在）。
 - **依赖**：无
 - **归属文件**：`docs/wlwl-feasibility/probes/**`（新建）、`impl/tests/probe/cases/P121_*`（新建）、`impl/crates/wlwl-cli/tests/probe.rs`（**只改 `EXPECTED_CASE_COUNT` 一行**）
-- **改动要点**：把 `p01` / `p03` / `p09` / `p10` / `p11` / `p12` / `p13` / `p02` / `p07` 九个探针按清单附录 A 的语义写成 `.wll` + `expect.json`；探针本体落在 `docs/wlwl-feasibility/probes/`，同款用例落在 `impl/tests/probe/cases/`。
+- **改动要点**：把 `p01` / `p03` / `p09` / `p10` / `p11` / `p12` / `p13` / `p02` / `p07` 九个探针按清单附录 A 的语义写成 `.wll` + `expect.json`；探针本体落在 `docs/wlwl-feasibility/probes/`，同款用例落在 `impl/tests/probe/cases/`。⚠ **2026-10-30 归档**：`docs/wlwl-feasibility/probes/` 整目录并入单 md [`docs/history/20261030-feasibility-probes-archive.md`](../history/20261030-feasibility-probes-archive.md) ⇒ **可跑的那份仍在** `impl/tests/probe/cases/`（门禁只读它）。
 - **验收**：`cargo test --locked -p wlwl-cli --test probe` ⇒ 绿；`EXPECTED_CASE_COUNT` 与目录数一致
 - **反向守卫**：把 `EXPECTED_CASE_COUNT` 改回 181 ⇒ 必红
 - **非目标**：不改探针的**语义**（只把「文档里的程序」变成「仓里的程序」）
@@ -1017,7 +1017,7 @@ python script/check_spec.py                     # 附录 A ↔ 各册成员表 �
 | 工作项 | 落地内容 | 验收读数 |
 |---|---|---|
 | **W-01** 基线自洽（我做） | 三条门禁基线 + 死链订正 | `check-appendix-a` OK · `stdlib_appendix_a_sync` 8/0 · `§5.4 状态列与契约表一致（25 行）` · probe 181 = 常量 |
-| **W-02** 探针固化 | `docs/wlwl-feasibility/probes/`（9 个探针 + README 对照表）+ 9 个 `P121_probe_*` 夹具 | 9/9 绿（debug + release 双二进制）· 反向守卫验过 |
+| **W-02** 探针固化 | ⚠ **2026-10-30 归档**：`docs/wlwl-feasibility/probes/`（9 个探针 + README 对照表）已并入单 md [`docs/history/20261030-feasibility-probes-archive.md`](../history/20261030-feasibility-probes-archive.md)（原文照录）⇒ **可跑的同款夹具**仍在 `impl/tests/probe/cases/P121_probe_*/`（门禁只读那一份） | 9/9 绿（debug + release 双二进制）· 反向守卫验过 |
 | **W-21** 扩展加载器 | 新 crate `impl/crates/wlwl-ext/`（`abi.rs` / `dynlib.rs` / `trust.rs` / `json.rs` / `registry.rs` / `include/wlwl_ext.h`）+ `wlwl-value` 的 `ExtRegistry` + eval 侧第 4 层解析 + CLI `--ext` / `--ext-sha256` | `wlwl-ext` 5/0 · `ext_loader_contract` 22/0 · 两条反向守卫都红过 |
 | **W-23** 正则编译缓存 | `regex.rs` 进程级编译缓存（条数 256 + 字节 4 MiB 双上界、LRU） | `regex_cache_contract` **14/0**（我复核）· 反向守卫把编译次数 1 → 1001 |
 | **W-24** 归一化 + 路径包含 | `text.rs`（`NFKC`/`CASE_FOLD`/`STRIP_INVISIBLE`）+ `fs.rs`（`PATH_CANONICAL`/`PATH_CONTAINS`）+ `unicode/waf.rs`（**生成物**，仓内**没有** NFKC 数据底座）+ `script/gen_unicode_waf_tables.py` | `path_contains_contract` **10/0**（我复核）· 反向守卫 8 条断言红 |
@@ -1178,7 +1178,7 @@ python script/check_spec.py                     # 附录 A ↔ 各册成员表 �
 | 仓库 / 分支 | `D:\Project\wlwl`（实现侧） / **只有 `main`**（⚠ **2026-10-29 晚业主指示**：`wip0112` / `wip0121` **已删除**，本地与远端都只剩 `main`，与 `origin/main` 同指）;⚠ **只有 `main` 在 `ci.yml` 的 push 触发列表里** ⇒ 推 `main` 会触发 CI;⚠ **分支纪律（业主当面定，两次）**：**未经明确要求不做任何分支操作**（push / 建分支 / 切分支 / 合并 / reset / 改 tag / 删分支）——**建议里写「推 main」也只是建议**;规范仓 `D:\Project\wlwl-spec-v1`（**v1.0.4 已落表** = `d6d90c3`，✅ **已 push** ⇒ 实现仓 CI 的规范仓钉死提交就指向它 ⇒ **push 顺序：规范仓先、实现仓后**（已按此序执行）） |
 | HEAD | `fe2befc` fix(impl): v0.12.1 收口 —— 修 macOS 独有的 `the_handler_can_choose_to_stop_the_stream`（run #330） |
 | 提交序列 | `fe2befc` **收口批的第四修**（macOS 独有的 `the_handler_can_choose_to_stop_the_stream` ⇒ 客户端容错「连接被重置」⇒ **实现侧零改动**）→ `74aac7f` **收口批的集成后实测**（计划文档快照）→ `6dea960` **收口批（W-34 + W-35′ + 三条实测缺陷修复 + 一条基线重生成）**→ `b9eb519` **第十一波 1 项**（W-25 + 集成者的共享表登记）→ `b1c3206` run #328 实况（EINTR 假设成立 · 登记 ⑨ 复核结案）→ `89e1f30` 订正远端分支状态 → `b0146bb` 第十波集成后实测 → `e4921ac` **第十波 3 项**（W-18 · W-19 · W-20 + 集成者的接线与两个跨平台 bug 修复）→ `cad5e91` 第九波集成后实测（run #326 + fail-fast 盲区 + WSL unix 可验）→ `ae6538e` **第九波 4 项**（W-17 · W-31 · G-4② · W-39 + 集成者的登记清单转正）→ `33ed403` 第九波开波前登记（run #325 实况 + macOS 欠账）→ `d9549a7` 第八波二轮面板 → `5d709ff` **第八波二轮**（doc 红 + unix clippy 红）→ `84fbe56` 第八波面板 → `2c3c29b` **第八波·门禁补跑**（13 处 clippy）→ `64d9bbb` **第七波 2 个 PHASE** → `40b5af6` **第六波 2 个 PHASE** → `1987aa0` 第五波面板 → `832839e` **第五波 2 个 PHASE** → `a8a431a` 第四波面板 → `969b220` **第四波 2 个 PHASE** → `78a826f` sanitize 定性更正 → `7f05d80` 第三波面板 → `0d5f410` **第三波 3 个 PHASE** → `d3f7b6c` §13 接替执行手册 → `20fa75f` 裁决记录 → `86b3c4a` **第二波 5 个 PHASE** → `df90382` 完成度面板 → `b0649cc` **第一波 7 个工作项** → `87a473b` §5.2b 真并行度 |
-| 工作树 | **干净**（`git status` 空）;✅ **本轮全部改动已提交并推送**（规范仓 `d6d90c3` + 实现仓 `6dea960` / `74aac7f` / `fe2befc` —— push 由业主明确指示后执行） |
+| 工作树 | ⚠ **2026-10-30 晚有未提交改动**（**本轮 = 文档同步 + 探针归档，零代码改动**）⇒ 改动落在 `README.md` · `CHANGELOG.md` · `docs/wlwl-spec-reference.md`（头部 3 行）· `script/build_spec_reference.py`（`HEADER` 同改）· `docs/plan/**` · `docs/history/20261030-feasibility-probes-archive.md`（新增）· `docs/wlwl-feasibility/**`（**已删**，归档为单 md）;⚠ **push 仍须业主明确指示**（分支纪律） |
 | 版本口径 | 实现 **v0.12.1** ↔ 规范 **v1.0.4**（业主两次确认锁死；**零处修改既有成员、零处新增诊断码**） |
 | 完成度 | **工作项 33 / 33**（收口批 2 项落地 ⇒ **全部结案**）· **需求 46 / 57 完全落地**（部分 1 · 未开工 4 · 口径答复 6）⇒ 面板见 **§11.6b** |
 | 已落地清单 | §11.1（**31 行**，每行带验收读数）;⚠ **收口批的读数在 §13.2 与 CHANGELOG 的「v0.12.1 收口」段** |
@@ -1209,6 +1209,11 @@ python script/check_spec.py                     # 附录 A ↔ 各册成员表 �
 **run #330（2026-10-30，head `74aac7f`）实测**：三平台里 **ubuntu ✓ / windows ✓ / macOS ✗** ⇒ macOS 的唯一红 = `http_contract::the_handler_can_choose_to_stop_the_stream`（**两轮都红** ⇒ 真失败）⇒ 根因与修法见 §13.4 登记 **⑳**（客户端容错「连接被重置」⇒ **实现侧零改动**）。
 ⚠ **这条之所以此前从没在 CI 里出现过** ⇒ `http_contract` 排在 `fs_contract` 之后，而后者一直红 ⇒ **fail-fast 盲区**（登记 ⑫）把它整条藏住了 ⇒ **规范侧落表把 fs 债还清之后它才露出来** ⇒ 本地门禁自此**一律带 `--no-fail-fast`**。
 **红（0 处）**：⚠ 下面那段「红（8 处）」是**第八波的历史读数**（当时全是「规范侧未跟上」）⇒ **收口批已全部转绿**（规范仓 v1.0.4 落表 + 抄件抄回 + 期望名单同步 = §11.2 五步走完）⇒ **本轮的门禁是全绿的**。
+
+**✅ run #331（2026-10-30，head `fe2befc`）实测 —— 三平台全绿 + 收口夜那条 macOS 红已修**：CI run **#331**（check_suite `111168057717`，head_sha `fe2befc`）**结论 = success**，**4 个 job 全绿**：`test (ubuntu-latest / rust pinned)` ✓ · `test (macos-latest / rust pinned)` ✓ · `test (windows-latest / rust pinned)` ✓ · `smoke run examples` ✓。
+⇒ **run #330 的 macOS 唯一红（`the_handler_can_choose_to_stop_the_stream`）已随 `fe2befc` 转绿**（客户端容错「连接被重置」⇒ **实现侧零改动**）⇒ **登记 ⑳ 结案**。
+⚠ 每个 job 的 **step 1–23 逐条 success**（fmt / clippy / doc / cargo-deny / conformance / **step 15 全量测试** / log artifact / §5.4 门禁 / **附录 A 逐字对拍** / real-ai / TLS extension / bench smoke）⇒ **首次在 CI 上看到全量门禁一次跑完且全绿**（此前 run #325–#330 都被 fail-fast 或规范侧欠账挡住）。
+⇒ **本仓 CI 的最后一条红债清零**；规范侧 **v1.0.4**（`d6d90c3`）**已 push** ⇒ 实现仓 CI 检的是那个 ref ⇒ **「规范仓先推、实现仓后推」的顺序已执行完毕**。
 
 #### 历史读数（第八波·门禁补跑）
 
@@ -1325,7 +1330,7 @@ cd D:\Project\wlwl; git log --oneline -4; git status --short                  # 
 |---|---|---|---|---|
 | **W-37** | 解析器 `E0011`「误报」（D4a） | `impl/crates/wlwl-parser/**` + 诊断面 | ⚠ **原记的「最小复现」不成立**（多行/单行**都**解析通过）；真实症状源 = **同一份程序少一个右括号** ⇒ 那是正确诊断。⇒ 改为「**证伪 + 钉回归**」 | ✅ **证伪结案**：解析器源码**零改动**;新增 7 条契约（合法形态必须通过 + 少一个括号仍报 `E0011`）⇒ `wlwl-parser` **208/0**。详见 **§11.4b** |
 | **W-36** | `std.http` 的重复 `Content-Length` **收紧**（D2） | `impl/crates/wlwl-std/wl/std/http.wll` + `impl/crates/wlwl-eval/tests/http_contract.rs` | 与 `std.net` 对齐：**同名多值 ⇒ 一律拒**（含值相同）；**只改新模块** ⇒ 零版本风险。⚠ **不要**动 `std/net.rs`（改既有成员语义撞 `:223`）。⚠ R1 模块的 `EXPORT` 必须**单行**（`lang_exports` 逐行扫） | ✅ `http_contract` **15/0**（断言 37 → 40）;反向守卫红过;`std.net` 零改动 |
-| **W-35** | `p10`/`p11`/`p13` 改写成 `TCP_SERVE` 形状（D3） | `docs/wlwl-feasibility/probes/p1{0,1,3}-*.wll` + `impl/tests/probe/cases/P121_probe_p1{0,1,3}_*/` | 目标读数恢复为「8 并发全 200 / 403×3 / 4 请求全 200」;**`TCP_SERVE` 的 handler 不得调用宿主挂起点**（它跑在原生帧内 ⇒ 不受 W-10 判据约束）。⚠ 两份副本（探针本体 + 夹具）必须**逐字相同**（用 SHA256 核对） | ✅ probe **3/3（192 用例）全绿**;三对副本 SHA256 一致;头部注释已重写为**迁移指引** |
+| **W-35** | `p10`/`p11`/`p13` 改写成 `TCP_SERVE` 形状（D3） | ⚠ **2026-10-30 归档**：原 `docs/wlwl-feasibility/probes/p1{0,1,3}-*.wll` ⇒ 现见 [`docs/history/20261030-feasibility-probes-archive.md`](../history/20261030-feasibility-probes-archive.md)；夹具仍在 `impl/tests/probe/cases/P121_probe_p1{0,1,3}_*/` | 目标读数恢复为「8 并发全 200 / 403×3 / 4 请求全 200」;**`TCP_SERVE` 的 handler 不得调用宿主挂起点**（它跑在原生帧内 ⇒ 不受 W-10 判据约束）。⚠ 两份副本（探针本体 + 夹具）必须**逐字相同**（用 SHA256 核对） | ✅ probe **3/3（192 用例）全绿**;三对副本 SHA256 一致;头部注释已重写为**迁移指引** |
 
 **合并顺序**：W-36 先合（W-35 的新探针要跑 `http_contract`）⇒ 再合 W-35 ⇒ W-37 独立，随时可合。· **第三波实测**：三者文件面确实零重叠 ⇒ **真并行 3**（无一处同文件争用）。
 
@@ -1433,3 +1438,5 @@ cd D:\Project\wlwl; git log --oneline -4; git status --short                  # 
 > ⚠⚠ **收口夜的全量门禁抓出三条缺陷并修掉**（三条**都不是**「上一波没做完」，是**上一波的实现 / 用例里一直存在的错**）：**A** `middleware_contract` 并发用例的期望值**依赖墙钟**（滑窗 60 s 窗口过期 ⇒ 少 512 次 ⇒ 违反 §8.3 第 8 条「用确定性计数，不用墙钟」）⇒ 改**令牌桶**口径（期望值不变）+ 新增滑窗并发覆盖;**B** ⚠⚠ **`STATIC_FILE` 的 `If-Modified-Since` 比较是错的**（整串字典序 ⇒ **星期名支配结果** + **日在月年之前** ⇒ 1970 年被判成「没变」⇒ **客户端拿到错误 304 ⇒ 缓存住旧内容**;且它**潜伏了一周**才暴露 —— W-19 落地那天是**周四**，星期名恰好相等）⇒ 改**逐字段解析**成 `YYYYMMDDHHMMSS` 整数键;**C** `process_contract` 两条 timeout 用例的**耗时断言在 Windows 上不可靠**（`taskkill /T /F` 是**子进程 spawn** ⇒ 耗时随负载在 1–3.5 s 间波动 ⇒ 并行 5 跑 3 红）⇒ 耗时断言改 `#[cfg(unix)]`（**与文件头既有结论对齐**）+ 加一把**互斥门** ⇒ **Windows 6 连跑 6/6 全绿**。⇒ 三条**反向守卫都真红过** ⇒ 复原后 `sync.rs` / `http.wll` / `process.rs` **SHA256 逐字节一致**。
 > ⚠ **本波登记 4 项**（**不阻塞**，见 §13.4）：W-32 的两条「静态 vs 动态」已知差异（顶层漏报 · 「成员跑完才判」的先后不存在）· `SCOPE` 体的**文案-判据不一致**（文案说 SCOPE 合法，判据说它报 E0014）· **「顶层也静态拦」的口径决定**（建议单独立项，勿夹带）· ⚠ **⑨ macOS 独有的真失败** `a_reader_never_sees_a_half_written_target`（run #325 新暴露；**根因未确诊** ⇒ 候选是 POSIX `EINTR`；第九波 W-39 处理）。
 > ⚠ 另有一条**已记在案的取舍**：`wlwl check` 拦静态 `E0014`（exit 1），`wlwl run` **不报不拦** —— 因为既有探针 `p07`/`p09` 钉死了「跑一半 + 运行期报**逐字相同**的那条 E0014 + exit 1」⇒ 静态层若在 `run` 里拦，那两条必红。
+
+> **文档同步 + 探针归档（2026-10-30 晚，零代码改动）**：**① CI run #331 结论补齐**（上一次提交留的待办）—— **三平台全绿 + smoke 也绿**（`ubuntu` / `macOS` / `windows` / `smoke` **4 个 job 全绿**，head `fe2befc`）⇒ 不能只写“待补”，这条现在有读数了。**② README 四处误述订正**（全部实测验证）：① **命名空间 / 成员面读数** · `19 std.* / 204 members` → **`23 std.* / 278 members`**（+ 官方包 `ai` 5 + `agent` 5 → 全层 **288 members / 25 namespaces**，`wlwl namespace` 实测）；② **“没有同步原语”** → 改为**“没有阻塞式同步原语（无 mutex / 无 condition variable），但 `std.sync` 提供**不需要挂起的原子计数器与共享字典**”**（不能写成“没有同步原语”）；③ **“未消费的错误只在是末式时才报”** → 是**错**：实测 `LET(a, ERR("x")); PRINT("after");` → **`E0103: unhandled ERR was discarded`**（中途丢弃也报）与 `E0102`（顶层逃逸）**两个码**；④ **“最新发布是 RC 预览版”** → 实测 GitHub Releases：**v0.12.0 是正式版**（`prerelease: false`，2026-10-26 发布）、工作树在 **v0.12.1**（未打 tag）。⑤ 工具链表**补三个真实子命令**：`wlwl namespace` / `wlwl repl` / `wlwl tasks`（`--help` 实测）。**③ 规范参考载体头部同步**：`docs/wlwl-spec-reference.md` 的头部（**来源基线 `v1.0.0` → `v1.0.4`**、**`21 个命名空间 / 214 个成员` → `25 / 288`**、**`23 处守卫` → `30 处**）与**生成器**`script/build_spec_reference.py` 的 `HEADER` **同步改**（否则下次重建会把头部覆回去）。⚠ **重建幂等**：重跑生成器→ **diff 仅 3 行**（头部）、**输出字节数不变**（603310 bytes）⇒合并版的**身体一字未动**。**④ `docs/wlwl-feasibility/probes/` 整目录归档为单 md**（一并改需求清单的承诺路径）：归档为 [`docs/history/20261030-feasibility-probes-archive.md`](../history/20261030-feasibility-probes-archive.md)（**原文照录，不精简合并**，体例同 `20261022-spec-archive.md`）。**归档理由（实测）**：9 个 `.wll` 与门禁夹具 `impl/tests/probe/cases/P121_probe_*/main.wll` **SHA256 逐字节相同（9/9**）、而门禁只读 `impl/tests/probe/cases/`（`cases_root()` 从 `CARGO_MANIFEST_DIR` 解析）⇒`docs/` 下那份副本**从不被任何测试或 CI 读取**。**⑤ 探针 README 的三处漂移**（新发现，已记入归档件并让清单加了订正）：README 对照表的 **p07 / p09 / p12** 三行写的是**第二波（`86b3c4a`）与第四波（`969b220`）之前的行为，与现在的探针**实测相反**：**p07 / p09** 现在是 **exit 1 + `E0014`**（挂起点落在**任务体之外**的闭包里 ⇒非原文的“终值 42 / exit 0”）；**p12** 的**惊群已修**（实测 `winners= 2` / `losers= 1` / `losers-woke-immediately= FALSE` / `loser-elapsed= 2042`）⇒非原文的“1 胜 2 负 / 落选者被连接到达唤醒”。⇒归档件里的 README 原文照录不改（体例如此），**但归档件里有一张“漂移表”标出以上实测真相**）。**⑥ 下一步**：本轮**零代码改动**（仅文档）。下一件事是**发版**（**v0.12.1 未打 tag**）⇒发布前还剩 TLS 扩展产物随包发布一件，见 §0.4 第 4 件）。

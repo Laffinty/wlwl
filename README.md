@@ -54,8 +54,9 @@ PRINT(UNWRAP_OR(r, -1));      // -1
 - **Errors are values.** A failing operation yields an `ERR(...)` value that
   travels up the call chain untouched; only the registered consumers —
   `IS_ERR`, `ERR_PAYLOAD`, `UNWRAP_OR`, `TRY`, `WRAP` — can handle it. An
-  error nobody handles surfaces at the top of the program as a stable
-  diagnostic code (`E0102`) and a non-zero exit code.
+  error nobody handles surfaces as a stable diagnostic code (`E0102` when it
+  escapes to the top level, `E0103` when it is discarded without being
+  consumed) and a non-zero exit code.
 - **Mutable state is explicit.** `LET` binds an immutable cell, `LET MUT`
   marks it mutable, `SET` rewrites it. Closures capture the cell rather than
   its value, so several closures share one piece of state — no globals, no
@@ -73,8 +74,9 @@ PRINT(UNWRAP_OR(r, -1));      // -1
 
 ## Standard library
 
-19 `std.*` namespaces with 204 members, plus two official packages — `ai`
-and `agent` — for AI inference and agent tool calls.
+23 `std.*` namespaces with 278 members, plus two official packages — `ai`
+and `agent` — for AI inference and agent tool calls. That is 288 members
+across 25 namespaces; `wlwl namespace` prints the live list.
 
 | Namespace | What it covers |
 |---|---|
@@ -82,7 +84,8 @@ and `agent` — for AI inference and agent tool calls.
 | `std.json` `std.format` `std.text` | JSON, template formatting, Unicode case handling and normalisation |
 | `std.collection` `std.str` `std.math` `std.result` | collections, string helpers, exact decimals and fractions, `RESULT` combinators |
 | `std.encode` `std.sanitize` `std.compress` | base64/hex/percent, SHA-256, HMAC, PBKDF2, Argon2id, output safety, zstd and the DEFLATE family |
-| `std.time` `std.regex` `std.rand` `std.net` `std.test` | wall and monotonic clocks, linear-time regex, explicitly seeded randomness, HTTP, the test harness |
+| `std.time` `std.regex` `std.rand` `std.net` `std.test` | wall and monotonic clocks, linear-time regex, explicitly seeded randomness, TCP and HTTP, the test harness |
+| `std.http` `std.sync` `std.log` `std.signal` | HTTP parsing, routing, static files and middleware; atomic counters and shared dictionaries; structured logs and metrics; signal handling and graceful shutdown |
 
 Each member's contract — including its failure modes — is specified in the
 standard-library specification and frozen by contract tests.
@@ -99,8 +102,11 @@ standard-library specification and frozen by contract tests.
 | `wlwl fmt <file>` | canonical formatter — `--check` to verify, `-w` to rewrite in place |
 | `wlwl sig` / `wlwl sig-gen` | print a module signature / generate a `.wll.sig` skeleton |
 | `wlwl interface <file>` | dump a module's public surface as JSON |
+| `wlwl namespace` | dump every namespace and its members, as JSON |
 | `wlwl schema` | dump the type system and static-contract codes as JSON |
 | `wlwl lsp` | language server on stdio: diagnostics, definition, hover, completion |
+| `wlwl repl` | a minimal REPL — evaluate one expression at a time |
+| `wlwl tasks` | dump the runtime task view, as JSON |
 
 Diagnostics carry stable four-digit codes and are available as
 machine-readable JSON or JSONL.
@@ -111,7 +117,7 @@ machine-readable JSON or JSONL.
 |---|---|
 | [Specification reference](docs/wlwl-spec-reference.md) | the merged specification — the language, the standard library, and the conformance rules — in one file |
 | [Language tour](docs/site/tour.md) | a guided introduction |
-| [Agent skill pack](wlwl-skill/) | an AI-agent skill package with 20 runnable `.wll` examples |
+| [Agent skill pack](wlwl-skill/) | an AI-agent skill package with 22 runnable `.wll` examples |
 | [Changelog](CHANGELOG.md) | release history |
 | [Contributing](CONTRIBUTING.md) | development workflow, quality gates, conventions |
 
@@ -145,12 +151,14 @@ WLWL is an experimental language. The language and the standard library are
 written down in full, but the implementation is young and some corners are
 deliberately unfinished.
 
-- There are no synchronisation primitives. The specification makes shared
-  mutable state an anti-pattern and puts the burden on channels instead —
-  locks cannot align with the scheduler's suspension points.
-- An unhandled error is only reported when it is the program's last
-  expression; earlier ones are dropped silently.
-- The most recent published release is a preview (RC) build.
+- There are no blocking synchronisation primitives — no mutex, no
+  condition variable. The specification makes shared mutable state an
+  anti-pattern and puts the burden on channels instead; locks cannot align
+  with the scheduler's suspension points. What `std.sync` does provide is
+  the part that does not need to suspend: atomic counters and shared
+  dictionaries.
+- The most recent published release is v0.12.0. The working tree is at
+  v0.12.1.
 
 ## License
 
