@@ -157,8 +157,9 @@ deliberately unfinished.
   with the scheduler's suspension points. What `std.sync` does provide is
   the part that does not need to suspend: atomic counters and shared
   dictionaries.
-- The most recent published release is v0.12.0. The working tree is at
-  v0.12.1.
+- **Current version: 0.12.1**, which is not tagged or released yet — the
+  latest published release is
+  [v0.12.0](https://github.com/Laffinty/wlwl/releases/tag/v0.12.0).
 
 ## License
 

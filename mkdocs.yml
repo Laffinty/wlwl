@@ -6,7 +6,7 @@
 site_name: WLWL
 site_description: >-
   WLWL — a small experimental programming language in which every
-  syntactic form is a function call. v0.4.0 docs.
+  syntactic form is a function call. v0.12.1 docs.
 site_author: Laffinty
 copyright: >-
   WLWL compiler is GPL-2.0-only. Your `.wll` programs are your own work
