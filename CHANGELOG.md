@@ -1,3 +1,78 @@
+## [v0.12.1_rc1] — 2026-10-31（预览版 · tag 已发 · Release run #44 触发中）
+
+**本段记录的是 `v0.12.1_rc1` 那个快照** —— RC 与正式版**在 RC 发布时**是**同一份代码**
+（`impl/Cargo.toml` 的 `version = "0.12.1"` 不因 RC 而改）。
+
+⚠ **这是 RC,不是正式版** —— 本快照的二进制报的是 `wlwl 0.12.1`，而发布 tag 是
+`v0.12.1_rc1` ⇒ GitHub 上标记为 **pre-release**，不会被工具链当成 production ready
+抓走。正式版 `v0.12.1` 的 tag 尚未发。
+
+⚠ **版本守卫已实测过**：`.github/workflows/release.yml` 的 `version-check` job
+**结论 success**（run #44 里 3 个 step 全 success）。它比的是**基版本** ——
+`v0.12.1_rc1` ⇒ 基版本 `v0.12.1` ⇒ 与 `Cargo.toml` 的 `0.12.1` **逐字相等** ⇒ 过。
+（下划线**不是合法 semver** ⇒ `Cargo.toml` 里写 `0.12.1_rc1` 会让**全仓每一条 cargo
+命令都崩** ⇒ RC 只能在 **tag 名**上带后缀。）
+
+### 事件
+
+- ✅ **tag 已发**：`v0.12.1_rc1`（**annotated tag**，对象 `6c5ae26c`）⇒ 剥壳指向
+  **`e1f65f8`**（＝ 本 tag 所在快照）⇒ 与 `origin/main` 同一提交。
+- ✅ **打 tag 前的主 CI 已绿**：**run #333**（head `e1f65f8`，= 本 tag 所在快照）
+  **结论 success**；另有 #332（`e3dacae`）**绿** · #331（`fe2befc`）**绿**
+  （三平台 + smoke **4 个 job 全绿**）。
+  ⚠ **发版纪律**：「先修到远端 CI 全绿，再打 tag」—— tag 一推就对外可见且撤不回，
+  且 **CI 绿 ≠ release workflow 绿**（release 有自己的门禁，不重跑主 CI 的测试）。
+- ✅ **Release workflow 已触发**：**run #44**（`head_branch = v0.12.1_rc1`，
+  `head_sha = e1f65f8`）⇒ `version-check` **success**；5 个平台的 `build` 正在跑。
+- ⚠ **规范侧本版**：`wlwl-spec-v1` 的 **v1.0.4 文本**已进本仓
+  （`docs/wlwl-spec-reference.md` ＝ 从规范仓 v1.0.4 重建的合并册，**头部已对齐
+  v1.0.4 / 25 个命名空间 / 288 个成员 / 30 处守卫**），但**规范侧 v1.0.4 的 tag 尚未发**
+  ⇒ 本仓里的规范文本是**候选文本**，不是已发布的规范版本。
+  ⚠ **发布包不含该册**（规范文本不随包分发）⇒ 取规范文本请到 `Laffinty/wlwl-spec-v1`。
+
+### 本批实测数字
+
+- 公共面 **288 members / 25 namespaces**（23 个 `std.*` = 278 成员 + 官方包
+  `ai` 5 + `agent` 5）—— `wlwl namespace` 实测
+- probe 用例 **196**（`EXPECTED_CASE_COUNT`）
+- `wlwl-std` **385/0** · `wlwl-eval --lib` **920/0** · `wlwl-cli` **30 个 target
+  全绿 0 failed**（含 `probe` 3/3）· 其余 9 个 crate 全绿 · `wlwl-tls-ext` **17/0**
+- `cargo fmt --check` **0 diff** · `cargo clippy -D warnings` **0 error** ·
+  `cargo doc -D warnings` **0 error**
+- 一致性册 §5.4 双向门禁 **25 行全部一致** · `check-appendix-a` **exit 0**
+  （合并册附录 A 与规范仓注册镜像册**逐字节相同**，4495 bytes）
+- 合并册重建**幂等**（重跑生成器 ⇒ diff 恒为头部那 3 行，603310 bytes 不变）
+
+### 本批新东西（相对 v0.12.0）
+
+- **公共面 231 → 288**（净增 **57** 个；规范侧 D-21 登记 58 项，含 1 个全局内建
+  `ARRAY_GET`，故实现面读数为 288）—— 新增命名空间 `std.http` 16 · `std.log` 7 ·
+  `std.sync` 8 · `std.signal` 2，加上既有命名空间的补齐
+- **一道新的机器门禁**：§5.4 状态列 ↔ 契约表的双向核对
+- **TLS 扩展**（`wlwl-tls` cdylib，宿主 `--ext` 显式授权加载）—— 语言面**不提供**
+  `LOAD` ⇒ 脚本不能触发代码加载
+- **中间件原语**：`RATE_LIMITER` / `RULESET_LOAD` / `CLIENT_IP` + `std.sync` 原子容器
+
+⚠ 其中 **D-18 是 breaking**：传输层的等待由「阻塞冻结 `SCOPE`」改为「宿主挂起」；
+`timeout_ms` ＝ 那一次等待的截止时间，`0` ＝ 无截止时间；`TCP_SET_TIMEOUT` 与
+调用点预算**先到者为准**。
+
+### ⚠ 本批已知的两处未完（**不是**本 tag 引入的，如实登记）
+
+① **TLS 扩展产物未随发行包发布** —— `release.yml` 的 staging 步骤**没有**把
+`wlwl-tls` 的 `.dll` / `.so` / `.dylib` 装进包（计划 §0.4 第 4 件）。
+⇒ **本 RC 的发布包里没有 TLS 动态库**；要用得自己按 `--ext` 加载自建的。
+⇒ 正式版 `v0.12.1` 发之前应补上这一步。
+② **`docs/site/` 下三处版本残留**（站点页）：`install.md` 的 4 个下载 URL 仍指向
+**v0.4.0** 的产物、`contributing.md` 仍写「`main` is v0.4.0-rc」⇒ 照着装会装到
+8 个次版本之前的旧包。⚠ 属**对外文档**的错版，与本 tag 的产物无关（发布包不含
+`docs/`），但**发正式版之前应当订正**。
+
+完整变更清单见本文件「[v0.12.1 收口 · 文档同步 + 探针归档]」与「[v0.12.1 收口]」两段；
+构建方案与逐项读数见仓内 `docs/plan/wlwl-v0.12.1-build-plan.md`（随源码 tarball 走）。
+
+---
+
 ## [v0.12.1 收口 · 文档同步 + 探针归档] — 2026-10-30（CI run #331 全绿 · README 四处误述订正 · 规范参考载体头部对齐 v1.0.4 · 9 个探针整目录归档为单 md）
 
 **本段 = 收口批之后的**文档同步 + 归档**（**零代码改动**）。计划与坐标见 `docs/plan/wlwl-v0.12.1-build-plan.md` §13.2 / §13.7。
@@ -87,8 +162,8 @@
 
 ### 下一步
 
-- ⚠ **本轮零代码改动** ⇒ **v0.12.1 仍未打 tag**（工作树 `0.12.1`，最新已发布是 **v0.12.0**）。
-- ⇒ **下一件事是发版**：发版前还剩**一件** —— **TLS 扩展产物**（Windows `.dll` / Linux `.so` / macOS `.dylib` + ABI 版本 + 哈希）随发行包发布，见计划 §0.4 第 4 件。
+- ⚠ **本轮零代码改动** ⇒ 本段写下时 **v0.12.1 仍未打 tag**（工作树 `0.12.1`，最新已发布是 **v0.12.0**）。⇒ ⚠ **后续已发 `v0.12.1_rc1`**（RC，非正式版）—— 见本文件顶部的 **[v0.12.1_rc1]** 段。
+- ⇒ **发版还剩一件**：**TLS 扩展产物**（Windows `.dll` / Linux `.so` / macOS `.dylib` + ABI 版本 + 哈希）随发行包发布，见计划 §0.4 第 4 件。⚠ **该件在 `v0.12.1_rc1` 的发布包里也没有**（`release.yml` 的 staging 步骤未含它）。
 
 ---
 
