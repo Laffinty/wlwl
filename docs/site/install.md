@@ -14,16 +14,23 @@ archive carries:
 - the example programs under `examples/`
 - the R1 standard-library sources under `stdlib/`
 - the agent skill pack under `wlwl-skill/`
-- the TLS extension under `wlwl-tls/` — the native dynamic library
-  (`wlwl_tls.dll` / `libwlwl_tls.dylib` / `libwlwl_tls.so`) plus
-  `ABI_VERSION` (the extension ABI it was built against) and
-  `SHA256SUMS` (verify with `sha256sum -c SHA256SUMS`). Load it
-  explicitly — the host never loads it on its own:
-  `wlwl run --ext wlwl-tls/libwlwl_tls.so your-program.wll`
 - `wlwl-src.tar.gz` plus `SOURCE_HASH` — the full compiler source tree,
   so an offline machine can read or modify the implementation
   (verify it with `python script/package_source.py --verify <src-dir>
   --hash-file SOURCE_HASH`)
+
+> ⚠ **The already-published `v0.12.1_rc1` archive does NOT contain the TLS
+> extension.** That packaging step was added **after** the tag was cut
+> (verify: `git show v0.12.1_rc1:.github/workflows/release.yml` — its
+> `Stage release files` step copies only the binary, `LICENSE`, `README.md`,
+> `CHANGELOG.md`, `examples/`, `stdlib/` and `wlwl-skill/`; there is no `tls`
+> step anywhere in that file). Any **later** release ships it as a
+> `wlwl-tls/` directory containing the native dynamic library
+> (`wlwl_tls.dll` / `libwlwl_tls.dylib` / `libwlwl_tls.so`) plus
+> `ABI_VERSION` (the extension ABI it was built against) and
+> `SHA256SUMS` (verify with `sha256sum -c SHA256SUMS`). The host **never**
+> loads it on its own — you pass it explicitly:
+> `wlwl run --ext wlwl-tls/libwlwl_tls.so your-program.wll`
 
 Download:
 
