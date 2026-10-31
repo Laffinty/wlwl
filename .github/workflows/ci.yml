@@ -576,6 +576,31 @@ jobs:
           include-hidden-files: true
           retention-days: 14
 
+      # ⚠⚠ [v0.12.1 / **CI 专用临时探针**] **Windows 句柄泄漏点名**。
+      #
+      # 背景：CI run #335 的 windows job 红在
+      # `resource_release_contract::a_failing_file_read_leaves_no_handle_behind`
+      # （`delta = 1`）⇒ 已定性为**真泄漏**（读数不回落，不是测量噪声），
+      # 但 ⚠ **本机复现不出**（本机 5 个变体各 6000 次 eval ⇒ 零命中）
+      # ⇒ 决定性的一步只能在 **CI 的 windows runner** 上做。
+      #
+      # 这一步：跑 `handle_dump_probe`（20000 次 eval，**每次 eval 后**读句柄数）；
+      # 一旦读数偏离基线且**落定后仍偏离** ⇒ 把**句柄逐个点名**（类型名 +
+      # 文件路径）⇒ 日志里直接看得见多出来的是什么、指向哪里。
+      #
+      # ⚠ **只在 windows 上跑**（那个泄漏只出现在 windows runner）。
+      # ⚠ **`if: always()`**：主测试步骤红时（正是要取证的时候）这一步也要跑。
+      # ⚠ **它不会让 CI 红**：探针自己**不判定失败**（命中也只是打印）⇒
+      #   真正的守卫仍然是 `resource_release_contract` 那条断言。
+      # ⚠ 拿到结论后**这一步与那个探针文件一起删**。
+      - name: Handle-leak naming probe (windows only, temporary)
+        if: always() && matrix.os == 'windows-latest'
+        shell: bash
+        working-directory: impl
+        env:
+          WLWL_HANDLE_DUMP: '1'
+        run: cargo test --locked -p wlwl-eval --test handle_dump_probe -- --nocapture
+
       # ⚠⚠ **[D13-073] 上传那步显示 success ≠ 真的有 artifact。**
       #
       # run 241 / 242 的实测:上传那步**显示 success**,而 artifact 列表是 **0**

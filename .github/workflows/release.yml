@@ -175,6 +175,23 @@ jobs:
           CARGO_TARGET_AARCH64_UNKNOWN_LINUX_GNU_LINKER: aarch64-linux-gnu-gcc
         run: cargo build --locked --release --bin wlwl --target ${{ matrix.target }}
 
+      # [v0.12.1 / 计划 §0 第 4 件] **TLS 扩展产物随发行包发布**。
+      #
+      # ⚠ 此前 staging **只**放编译器二进制 + R1 stdlib 副本 + 例子 + 源码 tarball
+      #   ⇒ **发布包里没有 TLS 动态库**（实测 run #44 建的 release：5 个资产里
+      #   没有任何一个是 TLS 动态库）⇒ 计划 §0 第 4 件未完成。
+      # ⚠ `wlwl-tls-ext` 是**独立 workspace**（`impl/ext/wlwl-tls-ext/` 自带
+      #   Cargo.lock）⇒ 主 workspace 的任何构建都**碰不到**它 ⇒ 这里显式构建。
+      #   （它自己的 Cargo.lock **入库** ⇒ `--locked` 可用，依赖集随源码冻结。）
+      # ⚠ **必须用同一个 `--target`** ⇒ 否则包里会混进别的架构的动态库。
+      # ⚠ aarch64 的交叉 linker 由上面那步的 `env` 给出 —— ⚠ 那步的 env **只**
+      #   作用于那一个 step ⇒ 这里**再声明一次**（否则交叉链接会找不到 cc）。
+      - name: Build the TLS extension (wlwl-tls cdylib)
+        working-directory: impl/ext/wlwl-tls-ext
+        env:
+          CARGO_TARGET_AARCH64_UNKNOWN_LINUX_GNU_LINKER: aarch64-linux-gnu-gcc
+        run: cargo build --locked --release --target ${{ matrix.target }}
+
       - name: Strip binary (linux/macos)
         if: matrix.archive == 'tar.xz'
         run: |
@@ -228,6 +245,47 @@ jobs:
         uses: actions/setup-python@v5
         with:
           python-version: '3.x'
+
+      # [v0.12.1 / 计划 §0 第 4 件] 把 **TLS 扩展动态库**装进 staging。
+      #
+      # ⚠ 放在 `Set up Python` **之后** ⇒ 哈希用 `python` 算：五个矩阵项都有
+      #   python，而 `sha256sum` 在 Windows 的 Git Bash 里不保证存在。
+      # ⚠ 动态库文件名各平台不同 ⇒ 按 target 分派；名字**保持 cargo 给的**
+      #   （`wlwl_tls.dll` / `libwlwl_tls.dylib` / `libwlwl_tls.so`）⇒ 宿主
+      #   `wlwl run --ext <path>` 拿到的就是能直接 `dlopen` 的那个文件。
+      # ⚠ **ABI 版本随包走**（宿主加载时**必须**校验它）⇒ 从**单一真相**
+      #   `impl/crates/wlwl-ext/src/abi.rs` 里读出来，不在 workflow 里写死
+      #   （写死 ⇒ 宿主升 ABI 时这里会悄悄过期）。
+      # ⚠ **产物缺失就响亮失败** —— 不静默发一个「没有 TLS 动态库」的包
+      #   （那正是 run #44 的状态）。
+      - name: Stage the TLS extension (ABI version + hash)
+        shell: bash
+        run: |
+          set -euo pipefail
+          case "${{ matrix.target }}" in
+            *-windows-*) lib="wlwl_tls.dll" ;;
+            *-apple-*)  lib="libwlwl_tls.dylib" ;;
+            *)          lib="libwlwl_tls.so" ;;
+          esac
+          src="impl/ext/wlwl-tls-ext/target/${{ matrix.target }}/release/$lib"
+          if [ ! -f "$src" ]; then
+            echo "::error::TLS extension artifact missing: $src"
+            exit 1
+          fi
+          # ABI 版本（单一真相 = 宿主侧的 abi.rs；扩展用 #[path] 引用同一份）
+          abi=$(sed -n 's/^pub const ABI_VERSION: u32 = \([0-9][0-9]*\);/\1/p' \
+                impl/crates/wlwl-ext/src/abi.rs)
+          if [ -z "$abi" ]; then
+            echo "::error::cannot read ABI_VERSION from impl/crates/wlwl-ext/src/abi.rs"
+            exit 1
+          fi
+          mkdir -p staging/wlwl-tls
+          cp "$src" "staging/wlwl-tls/$lib"
+          printf '%s\n' "$abi" > staging/wlwl-tls/ABI_VERSION
+          python -c "import hashlib,sys,os;p=sys.argv[1];print(hashlib.sha256(open(p,'rb').read()).hexdigest()+'  '+os.path.basename(p))" \
+            "$PWD/staging/wlwl-tls/$lib" > staging/wlwl-tls/SHA256SUMS
+          echo "staged TLS extension: $lib (abi_version=$abi)"
+          ls -l staging/wlwl-tls
 
       - name: Package the source tree (G-06)
         shell: bash

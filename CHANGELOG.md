@@ -1,3 +1,85 @@
+## [v0.12.1 收口 · 第二批] — 2026-10-31（CI run #334/#335 两条 flaky 已修 · TLS 扩展产物随包发布 · CI 专用句柄点名探针）
+
+⚠ **本段是 `v0.12.1_rc1` tag 之后**的工作 ⇒ 它**不在**那个 RC 包里（tag ＝ 快照）
+⇒ **下一个发布（正式版 `v0.12.1` 或更新的 RC）**才会有它。
+
+### 事件
+
+- ✅ **CI run #334 / #335 的两条 flaky 已定性并修掉**（一条真实现缺陷、一条 Linux-only
+  夹具缺陷；根因、修法与实测读数见下方两段）。
+- ✅ **TLS 扩展产物随发行包发布**（计划 §0 第 4 件）—— 此前 staging 只放编译器二进制
+  ⇒ **实测 run #44 的 5 个资产里没有任何一个是 TLS 动态库**；现已补上。
+- ⚠ **加了一条 CI 专用临时探针**，把 Windows 那条「句柄漂移」的**持有者点名**。
+
+### ① run #335 ubuntu：锁写并发竞争（真实现缺陷，已修）
+
+`wlwl_toml::lock::write` 的临时文件名**固定** ⇒ 并发写同一个 `wlwl.lock` 时它们写
+**同一个** `.tmp` ⇒ 先完成者把 `.tmp` rename 走 ⇒ 后完成者 `rename` 拿到 `ENOENT`
+⇒ 那行警告混进示例的 stdout+stderr ⇒ 断言红。**修法**：临时名唯一化
+`<name>.tmp.<pid>.<seq>`。**实测 8 线程 × 40 轮 ＝ 320 次并发写 ⇒ 320/320 成功、
+0 次 ENOENT**。
+
+⚠ **顺带订正两处「此前登记过、但实测不成立」的说法**：① 原先那条反向守卫是
+「跑 320 次并发写、断言零 ENOENT」—— ⚠ **实测守不住**（把临时名改回固定名，它在
+空闲机器上照样全绿 ⇒ 命中与否取决于线程调度）⇒ 已换成**确定性**守卫
+`each_concurrent_write_uses_its_own_temp_name`（并发写时每次用的临时路径必须
+两两不同 ⇒ 固定名必红，已实测验红/验绿；副作用是更快：0.44 s → 0.02 s）；
+② 原实现里「rename 前先删正式路径」**前提是错的**（Rust 的 `fs::rename` 用
+`MoveFileExW` ＋ `MOVEFILE_REPLACE_EXISTING` ⇒ **能覆盖**）⇒ 已去掉（那一步还会
+造出「lock 文件在删除与 rename 之间**不存在**」的窗口）。
+
+### ② run #334 ubuntu：chunked 夹具 `close()` 发 RST（Linux-only flaky，已修）
+
+夹具**不读**客户端请求 ⇒ 接收缓冲区留着未读数据 ⇒ **Linux close() 发 RST 而非 FIN**
+⇒ 客户端丢尾块 ⇒ 拿到 `ERR` 值。**只改夹具**（写响应前把请求读到头块结束）⇒
+**实现侧零改动**。**实测（WSL2 Ubuntu A/B）**：修前 500 轮 2 次 RST ⇒ 修后零 RST。
+
+### ③ TLS 扩展产物随包发布（计划 §0 第 4 件，已补）
+
+- `release.yml` 新增两步：**构建** TLS 扩展 cdylib（**同一个 `--target`** ⇒ 不混架构）
+  ＋ **装进 `staging/wlwl-tls/`**（动态库 ＋ `ABI_VERSION` ＋ `SHA256SUMS`）。
+  ⚠ ABI 版本从**单一真相** `impl/crates/wlwl-ext/src/abi.rs` 里**读出来**（不在
+  workflow 里写死 ⇒ 宿主升 ABI 时不会悄悄过期）；⚠ **产物缺失就响亮失败**（不静默
+  发一个「没有 TLS 动态库」的包 —— 那正是 run #44 的状态）。
+- `script/package_source.py` 的排除清单加 `impl/ext/wlwl-tls-ext/target` ——
+  ⚠ 否则 release.yml 先编扩展、再打源码包时，那几百 MB 的 rustls / ring 构建产物
+  会被打进 `wlwl-src.tar.gz`。
+- `docs/site/install.md` 的包内容清单补上 `wlwl-tls/`（含加载方式 `--ext`）。
+
+**实测**：本地编出 `wlwl_tls.dll`（**2078208 B**）⇒ staging 预演 ⇒ `ABI_VERSION = 1`
+＋ `SHA256SUMS`（`749f6ef4e6e56f8839978ef7b671abaf8e71e7e31c1c7ea66fe530f4c527b98d`）
+与 PowerShell `Get-FileHash` **独立核对一致**；打包脚本跑通 ⇒ **1236 个文件**、
+两次运行**树哈希一致**（`b5c0f204…`）、tarball 里 `ext/target` **0 条目**而扩展
+**源码 30 条**（含它自己的 `Cargo.lock`）。
+
+⚠ **本条尚未被真正的 release run 验过** —— `release.yml` 只在**打 tag** 时跑 ⇒
+五个平台的交叉链接（尤其 aarch64 的 linker 环境变量）**要等下一次发布**才有读数。
+
+### ④ CI 专用句柄点名探针（**临时**，拿到结论即删）
+
+Windows 那条 `resource_release_contract::a_failing_file_read_leaves_no_handle_behind`
+（`delta = 1`）已定性为**真泄漏**（读数不回落），但 ⚠ **本机复现不出**（本机 5 个
+变体各 6000 次 eval ⇒ 零命中）⇒ 决定性的一步只能在 **CI 的 windows runner** 上做。
+
+新增 `impl/crates/wlwl-eval/tests/handle_dump_probe.rs` ＋ `ci.yml` 里一个
+**只在 windows 跑**（`if: always()` ⇒ 主测试红时也要取证）的步骤：复刻那条用例的
+形状，**每次 eval 后**读句柄数，一旦偏离且**落定后仍偏离** ⇒ 把**句柄逐个点名**
+（类型名 ＋ 文件路径）⇒ 日志里直接看得见多出来的是什么、指向哪里。
+
+⚠ **为什么不用 `NtQuerySystemInformation`**：实测 `SystemExtendedHandleInformation`
+给的是**全系统**句柄表（本机 9 万多条）且**没有 PID 字段**；`SystemHandleInformation`
+实测三种 stride 都**匹配不到**本进程 PID ⇒ 都用不得 ⇒ 改走**用户态暴力扫描**：
+`DuplicateHandle` 试 `0..4096` 的句柄值（成功 ⇔ 有效）＋ `NtQueryObject` 取类型名
+＋ `GetFinalPathNameByHandleW` 取路径 ⇒ 与基线快照**做差**。
+
+**实测**（本机）：基线快照 **212 个**可识别句柄（类型分布 `File` 76 · `Event` 28 ·
+`WaitCompletionPacket` 24 · `IRTimer` 16 · `Key` 16 …，其中 **8 个带路径** ⇒ 路径
+读取可用）；20000 次 eval **未命中**（与「本机复现不出」一致）。
+⚠ 它**不会让 CI 红**（命中也只是打印）⇒ 真正的守卫仍是 `resource_release_contract`
+那条断言；⚠ **拿到结论后这一步与那个探针文件一起删**。
+
+---
+
 ## [v0.12.1_rc1] — 2026-10-31（预览版 · tag 已发 · Release run #44 全绿 · Release 已建成）
 
 **本段记录的是 `v0.12.1_rc1` 那个快照** —— RC 与正式版**在 RC 发布时**是**同一份代码**
@@ -84,7 +166,9 @@ version)` job **结论 success**（run #44 里 3 个实际步骤全 success：ch
 ① **TLS 扩展产物未随发行包发布** —— `release.yml` 的 staging 步骤**没有**把
 `wlwl-tls` 的 `.dll` / `.so` / `.dylib` 装进包（计划 §0.4 第 4 件）。
 ⇒ **本 RC 的发布包里没有 TLS 动态库**；要用得自己按 `--ext` 加载自建的。
-⇒ 正式版 `v0.12.1` 发之前应补上这一步。
+⇒ ⚠ **该件已在 `main` 上补齐**（见下方「TLS 扩展产物随包发布」段）⇒ **下一个
+发布（正式版 `v0.12.1` 或更新的 RC）的包里就有它了**；⚠ 但 **`v0.12.1_rc1`
+这个已发布的 RC 包本身仍然没有**（tag 打在那之前 ⇒ 不会追溯重建）。
 ⚠ **这一条已由真实发布包核实**（不是只看 workflow 文本）：run #44 建成的 release
 **5 个资产逐一列出**（4 个 `.tar.xz` + 1 个 `.zip`）⇒ **没有任何一个是 TLS 动态库**
 ⇒ 与 staging 步骤的读数一致。
@@ -249,7 +333,7 @@ version)` job **结论 success**（run #44 里 3 个实际步骤全 success：ch
 ### 下一步
 
 - ⚠ **本轮零代码改动** ⇒ 本段写下时 **v0.12.1 仍未打 tag**（工作树 `0.12.1`，最新已发布是 **v0.12.0**）。⇒ ⚠ **后续已发 `v0.12.1_rc1`**（RC，非正式版）—— 见本文件顶部的 **[v0.12.1_rc1]** 段。
-- ⇒ **发版还剩一件**：**TLS 扩展产物**（Windows `.dll` / Linux `.so` / macOS `.dylib` + ABI 版本 + 哈希）随发行包发布，见计划 §0.4 第 4 件。⚠ **该件在 `v0.12.1_rc1` 的发布包里也没有**（`release.yml` 的 staging 步骤未含它）。
+- ⇒ **发版还剩一件**：**TLS 扩展产物**（Windows `.dll` / Linux `.so` / macOS `.dylib` + ABI 版本 + 哈希）随发行包发布，见计划 §0.4 第 4 件。⚠ **该件在 `v0.12.1_rc1` 的发布包里也没有**（`release.yml` 的 staging 步骤未含它）—— ⚠ **已在 `main` 上补齐**（见下方「TLS 扩展产物随包发布」段）⇒ **下一个发布包**里就有它。
 
 ---
 

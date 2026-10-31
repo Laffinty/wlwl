@@ -28,9 +28,9 @@
 排除清单（**写进 `SOURCE_HASH` 的头里** ⇒ 不是暗箱，而且**核对模式从那里读回**
 ⇒ 打包与核对的文件集**逐字一致**）
 --------------------------------------------------------------------
-* 固定项：`.git` / `impl/target` / `target` / `__pycache__`（构建产物与版本库数据）、
-  `docs/wlwl-spec-reference.md`（合并规范册的**次级件**，上游已决定「**不随包分发**」
-  ⇒ 这里尊重同一决定）、`*.pyc`；
+* 固定项：`.git` / `impl/target` / `target` / `impl/ext/wlwl-tls-ext/target` /
+  `__pycache__`（构建产物与版本库数据）、`docs/wlwl-spec-reference.md`（合并规范册的
+  **次级件**，上游已决定「**不随包分发**」⇒ 这里尊重同一决定）、`*.pyc`；
 * **动态项**：输出文件与其**所在目录**（⚠ 不排掉的话，脚本会把它**正在写的
   tarball** 也打进包 ⇒ 哈希不可复算、且包会自我包含）。
 
@@ -65,6 +65,12 @@ BASE_EXCLUDE_PREFIXES = (
     ".git",
     "target",
     "impl/target",
+    # ⚠ [v0.12.1] TLS 扩展是**独立 workspace**（`impl/ext/wlwl-tls-ext/` 自带
+    # Cargo.lock）⇒ 它的构建产物落在 `impl/ext/wlwl-tls-ext/target/` ⇒ **必须
+    # 单独排掉**：否则 release.yml 先编 TLS 扩展、再打源码包时，那几百 MB 的
+    # rustls / ring 构建产物会被打进 `wlwl-src.tar.gz` ⇒ 包体暴涨且树哈希
+    # 随构建缓存漂移。⚠ 扩展**源码**（含它自己的 Cargo.lock）仍然随包走。
+    "impl/ext/wlwl-tls-ext/target",
     "__pycache__",
     "docs/wlwl-spec-reference.md",
 )
