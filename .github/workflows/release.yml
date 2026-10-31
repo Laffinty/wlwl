@@ -580,6 +580,16 @@ jobs:
           # pre-release;`v0.10.0` 这种裸版本号仍是正式版。写成单行是
           # 刻意的:发布 workflow 挂掉 = 这次没有 release,不值得为排版冒险。
           prerelease: ${{ contains(github.ref_name, '-rc') || contains(github.ref_name, '_rc') || contains(github.ref_name, '-alpha') || contains(github.ref_name, '-beta') || contains(github.ref_name, '-dev') }}
+          # ⚠ [T-09] **SBOM 必须是发布资产**，不能只当 workflow artifact：
+          #   审计的验收句是「**release 的 SBOM 资产**里含 rustls / ring /
+          #   webpki-roots」—— artifact 要登录才能下（`GET /actions/artifacts`
+          #   = 401）⇒ 只有挂成资产，消费者才**匿名可查**。
+          # ⚠ `dist/sbom/sbom.json` 来自 `sbom` job 的 artifact（名 `sbom`）：
+          #   `download-artifact` 把每个 artifact 解到**以它自己命名的子目录**下。
+          # ⚠ 说明写在这里（YAML 注释），**不能**写进 `files: |` 块内 ——
+          #   那个块是**逐行 glob**，`#` 开头的行会被当成字面模式；
+          #   配上 `fail_on_unmatched_files: true` 就有被判红的风险。
           files: |
             dist/**/*.tar.xz
             dist/**/*.zip
+            dist/sbom/sbom.json
