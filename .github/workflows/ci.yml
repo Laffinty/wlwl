@@ -599,7 +599,18 @@ jobs:
       #   （`DuplicateHandle` / `GetFinalPathNameByHandleW`）＋ 扫描跑在可放弃的
       #   线程里；② 这里再加**硬上限** ⇒ 无论以后谁再动它，**都不可能**再挂几小时。
       # ⚠ 拿到结论后**这一步与那个探针文件一起删**。
-      - name: Handle-leak naming probe (windows only, temporary)
+      #
+      # ⚠⚠ **它现在跑的是「变体矩阵」，不是「把句柄点名」** —— 前两版都把 runner
+      #   弄翻过，如实记在这里免得有人再走一遍：
+      #   * 版 1 用 `NtQueryObject` 取**类型名** ⇒ **挂死 2.4 小时**（该 API 在
+      #     「同步管道句柄 + 有挂起读操作」时永久挂死，线程杀不掉）。
+      #   * 版 2 只用 `DuplicateHandle` ＋ `GetFinalPathNameByHandleW` ⇒ 仍然
+      #     **`SCAN-TIMEOUT`（120 s 扫不完）** ⇒ 路径查询在 runner 的句柄上**同样
+      #     阻塞**（它内部查 `FileNameInformation`，与 `NtQueryObject` 同一类阻塞面）。
+      #   ⇒ **在 runner 上逐个句柄查询这条路走不通** ⇒ 版 3 只依赖
+      #     `GetProcessHandleCount` 这一个绝对安全的调用 ⇒ 拿不到「那个句柄是什么」，
+      #     但能拿到「**哪一段操作**让它多出来一个」—— 后者才直接指向代码。
+      - name: Handle-leak variant matrix (windows only, temporary)
         if: always() && matrix.os == 'windows-latest'
         shell: bash
         working-directory: impl

@@ -64,6 +64,43 @@ artifact = 401），而**注解是匿名可读的**（`check-runs/<id>/annotatio
 ⚠ 但**不能据此判「已彻底修好」**：这两条本来就是**概率性**缺陷，单轮绿只是**一个**
 读数（锁写那条的病根已由**确定性**守卫钉住；RST 那条由 WSL2 上 500 轮的 A/B 对照钉住）。
 
+### ④ 修补批的结果：**run #338（head `fbf3189`）4 个 job 全绿**
+
+`test (ubuntu-latest)` ✓ · `test (macos-latest)` ✓ · `test (windows-latest)` ✓ ·
+`smoke run examples` ✓ ⇒ ① 的 clippy 红消失（ubuntu / macOS 的
+`cargo clippy -D warnings` 都 **success**）；② 的挂死消失
+（探针步骤 **`04:39:19 → 04:43:30` ＝ 4 分 11 秒**，不再几小时）。
+
+### ⑤ ⚠⚠ **句柄泄漏的关键新证据：它在 runner 上不是「1/20000」，而是「第 0 次就命中」**
+
+探针注解（**匿名可读**，`check-runs/124442753863/annotations`）原文：
+
+```
+LEAK-HIT eval=0 count=87 baseline=86 settled=87 :: SCAN-TIMEOUT (guarded scan did not finish in 120s)
+```
+
+两条都极重要：
+
+1. **`eval=0` ⇒ 泄漏在 runner 上第 0 次 eval 就出现了**（`86 → 87`，且**落定后仍是 87**
+   ⇒ 不是噪声）。⇒ 本机 30000 次 eval 零命中、runner 上第 0 次就命中 ⇒
+   **这是一个「按环境切换」的缺陷，不是概率问题** ⇒ 之前把它当「1/600 的偶发」是本轮
+   该纠正的判断。
+2. **`SCAN-TIMEOUT` ⇒ 连「只用 `DuplicateHandle` + `GetFinalPathNameByHandleW`」的
+   扫描也扫不完（120 s）** ⇒ `GetFinalPathNameByHandleW` 在 runner 那类句柄上**同样
+   阻塞**（它内部查 `FileNameInformation`，与 `NtQueryObject` 同一类阻塞面）
+   ⇒ **在 runner 上「逐个句柄查询」这条路根本走不通**，不是换个 API 就能绕过的。
+
+⇒ **探针改成「变体矩阵」（版 3）**：只依赖 `GetProcessHandleCount` 这一个绝对安全的
+调用 ⇒ 拿不到「那个句柄是什么」，但能拿到「**哪一段操作**让它多出来一个」——
+而后者才直接指向代码。**六个变体**：`import_only` · `read_missing_print`（ERR 逃逸到
+顶层）· `read_missing_let`（ERR 被丢弃）· `read_existing`（成功路径）·
+`write_bad_dir`（另一条 IO 失败路径）· `reuse_evaluator`（复用同一个 `Evaluator`
+⇒ 分「构造/析构」与「每次 eval」）。每个变体自带**落定基线** ⇒ 互不污染。
+
+**本机实测（版 3）**：`1000 次 eval × 6 变体 ＝ 2.3 s`，六个 `d=0`，
+`dup_only=ok(212)` ⇒ 本机不触发（与既往一致），但枚举本身在本机可用
+（⇒ 阻塞只发生在 runner 的句柄构成上）。
+
 ---
 
 ## [v0.12.1 收口 · 第二批] — 2026-10-31（CI run #334/#335 两条 flaky 已修 · TLS 扩展产物随包发布 · CI 专用句柄点名探针）
