@@ -113,6 +113,47 @@ version)` job **结论 success**（run #44 里 3 个实际步骤全 success：ch
 ⇒ **对照项已清零**（`docs/site/` 下已无 v0.4.0 残留；`changelog.md` 里的 v0.4.0
 是**历史记录**，正确，不动）。
 
+### ⚠ CI run #334 的红项：**已定性并修掉**（flaky 的根因，不是回归）
+
+⚠ **run #334（head `15a150e`，纯文档改动）的 ubuntu job 红在 step 15 `cargo test`**—— ⚠ **CI 自己标了**：`FLAKY (cargo test)` ——「pass 1 FAILED, pass 2 PASSED → flaky, **NOT auto-cleared**」⇒ 本仓策略是「重跑仍判红」⇒ **整条 run 判 failure**。
+
+⇒ **上一轮登记过的「未能定性的 flake」这次有名字了**：`http_w20_contract::the_chunk_boundaries_do_not_have_to_match_the_tcp_segments`（panic 在 `http_w20_contract.rs:252` 的 `status_of` ⇒ 客户端拿到的是 **`ERR` 值**）。
+
+**根因（Linux 上实测坐实）**：夹具 `serve_pieces` **不读**客户端发来的请求 ⇒ socket 的**接收缓冲区里留着未读数据** ⇒ 夹具写完响应直接 `close()` ⇒ **Linux 在「接收缓冲区有未读数据」时 close() 发 `RST` 而不是 `FIN`** ⇒ 客户端正在读的那块数据被**丢弃** ⇒ 客户端报 `ECONNRESET`（⇒ `ERR` 值）。
+⚠ **Windows 上不发 RST** ⇒ **本地怎么跑都不红**（本机实测：单跑 **80 轮** + **12 路并发 × 60 轮**全绿）⇒ **只在 Linux CI 上暴露**。
+
+**实测证据（WSL2 Ubuntu，A/B 对照，纯 Python 复刻同一时序）**：修前（不读请求就 close）**500 轮 2 次 RST** · 修后（先读完请求再 close）**500 轮零 RST**。
+
+**修法**：**只改夹具**（写响应前把请求读到头块结束）⇒ `close()` 发 `FIN`。⚠ **实现侧零改动** —— chunked 解码器**没有缺陷**，它只是**正确地**把对端的 `ECONNRESET` 报成了 `ERR` 值。⚠ **同类形态已全仓排查**：只有 `serve_pieces` 这一处。
+
+### ⚠ CI run #335 的红项：**两条独立的 flaky，各有各的成因**（ubuntu ✗ · windows ✗ · macOS ✓）
+
+⚠ **run #335（head `b468bac`，纯文档改动）结论 = failure**：**ubuntu ✗ · windows ✗ · macOS ✓** ⇒ 两条**互相独立**的红项。⚠ **两条都不是文档改动引入的**（run #334 / #335 的提交都是纯文档）。
+
+**① ubuntu：`skill_examples::h1_if_else_third_arg_holds_a_multi_statement_group`（真实现缺陷，已修）**
+
+**症状**：期望 5 行输出，实际多一行 —— `warning: failed to write ./wlwl.lock: wlwl.lock I/O error: No such file or directory (os error 2)`。
+
+**根因**：`wlwl_toml::lock::write` 的**临时文件名是固定的** ⇒ **并发**写同一个 `wlwl.lock` 时它们写的是**同一个** `.tmp` ⇒ 先完成的那个把 `.tmp` rename 走了 ⇒ 后完成的那个 `fs::rename` 时 `.tmp` **已经不在** ⇒ `ENOENT`。⇒ 后果不止「一条警告」：`wlwl run` 的示例把 **stdout 与 stderr 拼在一起**比对 ⇒ 多出的那行警告让「逐行钉住输出」的断言**红**。
+
+**修法（实现侧）**：临时名唯一化 ⇒ `<name>.tmp.<pid>.<seq>`（**pid** ⇒ 跨进程不撞；**seq** ⇒ 同一进程内的并发写不撞）。
+
+⚠ **实测订正一：反向守卫换成了「确定性」的那一条**。先前写的守卫是「跑 320 次并发写、断言零 `ENOENT`」—— ⚠ **实测：把临时名改回固定名，这条守卫在空闲机器上照样全绿** ⇒ **命中与否完全取决于线程调度** ⇒ 那不是能守住回归的守卫（它「看着在管事、实际管不住」）。⇒ 改为 `each_concurrent_write_uses_its_own_temp_name`：**并发写时每次用的临时路径必须两两不同** ⇒ 临时名固定 ⇒ 8 个线程拿到**同一个**路径 ⇒ **必红**（已实测验红 / 验绿）。⚠ 副作用是这条守卫**更快**：整个 `wlwl-toml` 用例从 **0.44 s** 降到 **0.02 s**。
+
+⚠ **实测订正二：去掉了「rename 前先删正式路径」那一步**。先前的理由是「Windows 的 `rename` 不能覆盖已存在的文件」—— ⚠ **这个前提是错的**：Rust 的 `fs::rename` 用的是 `MoveFileExW` + `MOVEFILE_REPLACE_EXISTING` ⇒ **能覆盖**（探针读数：目标原内容 `A`、源内容 `B` ⇒ rename 成功后目标是 `B`）。⇒ 那一步不但多余，还会**造出一个窗口**：正式 lock 在「删除」与「rename」之间**不存在** ⇒ 并发读者可能读到「lock 文件不见了」。⇒ **已去掉**。⚠ 去掉后重测：**8 线程 × 40 轮 = 320 次并发写 ⇒ 320/320 成功、0 次 `ENOENT`、0 次其它错误**（299 ms）。
+
+**② windows：`resource_release_contract::a_failing_file_read_leaves_no_handle_behind`（真泄漏，持有者尚未点名）**
+
+**症状**：`delta = 1`（多了一个句柄）。⚠ **本机（Windows）复现不出**：单跑 60 轮全绿 ⇒ 只在 CI 的 windows-latest 上偶发。
+
+**已定性（探针分解）**：漂在 **`eval()` 内部**（`parse` / `new Evaluator` / `drop(ev)` / 什么都不做都不漂）；**纯 IO 读失败 0/600 · 只 `IMPORT` 0/600 · `IMPORT` + 读失败 1/600**；**不回落**（settled 读数仍高于 before）⇒ **不是测量噪声，是真泄漏**。⇒ 已排除 `scratch_dir()` / 纯 IO / 只 `IMPORT` ⇒ 锁定「`IMPORT` + 读失败」这个组合。
+
+⚠ **本轮新增的收敛**：被测的 `READ_FILE` 走 `std::fs::read_to_string` ⇒ **读失败时连句柄都不会建** ⇒ **泄漏点不在「读」本身** ⇒ 候选收敛到两条：**「ERR 值被丢弃」的错误路径**（`E0103`）与**导入/模块加载**。⇒ 已用**变体探针**切开：`V1` `IMPORT`+ERR 逃逸 · `V2` `IMPORT`+ERR 被 `LET` 丢弃 · `V3` 不碰文件的纯 `E0103` · `V4` 读成功 · `V5` 只 `IMPORT`（每个变体 **6000 次 eval**、**每次 eval 后立刻读句柄数**、偏离即等它落定复核）。⚠ **读数：5 个变体各 6000 次 eval ⇒ 零命中、零瞬时偏离**（句柄数恒为 72）⇒ **本机复现不出** ⇒ 该泄漏是 **CI windows runner 特有**（本机单跑 60 轮全绿、CI 上偶发 `delta = 1`）。
+
+⚠ **探针顺带查实的一条事实**（决定了下一步该怎么查）：ERR 的两条路径**分得很清** —— `PRINT(READ_FILE(missing))` ⇒ **`E0102`「unhandled ERR escaped to top level」**；而 `LET(e, READ_FILE(missing))` ⇒ **`E0103`「unhandled ERR was discarded」**（**ERR 在 `LET` 处就被判丢弃** ⇒ 后面的 `IS_ERR(e)` 根本没机会消费它）⇒ 「ERR 被消费」这条路在当前实现下**走不到** ⇒ 变体探针的 `V2` 实际测的仍是 `E0103` 路径。
+
+⚠ **本轮不改那条断言**（改了就没有守卫了）；⚠ **本轮也不动 `release.yml` 的 `FLAKY_EXIT_CODE`**（那是**策略裁决**，须业主明确指示）。⚠ **下一步的形状（待业主拍板）**：既然本机复现不出，**决定性的一步是「在 CI 上把泄漏的持有者点名」** —— 即加一条**只在 CI 跑**的临时探针：当 `delta != 0` 时用 `NtQuerySystemInformation(SystemExtendedHandleInformation)` **把本进程的句柄表连类型带路径 dump 出来** ⇒ CI 日志里直接写出那个多出来的句柄是什么（文件？事件？子进程？）、指向哪里。
+
 完整变更清单见本文件「[v0.12.1 收口 · 文档同步 + 探针归档]」与「[v0.12.1 收口]」两段；
 构建方案与逐项读数见仓内 `docs/plan/wlwl-v0.12.1-build-plan.md`（随源码 tarball 走）。
 

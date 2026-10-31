@@ -141,9 +141,6 @@ fn fake_tls_provider(connect_result: Value) -> Vec<(&'static str, ExtMember)> {
 // ── 本机夹具 ────────────────────────────────────────────────────────────────
 
 /// 起一个**本机** HTTP 夹具：把 `response` 原样写回去，然后关连接。
-///
-/// ⚠ 客户端会先写请求；本夹具**不读**它（请求很小 ⇒  socket 缓冲区吃得下 ⇒
-///   不会死锁）。
 fn serve_once(response: Vec<u8>) -> u16 {
     serve_pieces(vec![response])
 }
@@ -152,6 +149,30 @@ fn serve_once(response: Vec<u8>) -> u16 {
 ///
 /// ⚠ 这是「块边界与 TCP 段边界无关」那条用例的**关键**：分片点落在块大小行的
 ///   中间 ⇒ 解码器必须是**增量**的。
+///
+/// ## ⚠⚠ 夹具**必须先读完请求**再关连接（否则这条用例是 flaky 的）
+///
+/// **症状**：CI 上偶发红 —— `the_chunk_boundaries_do_not_have_to_match_the_tcp_segments`
+/// 挂在 `status_of`（本文件 `:252`），报「the response has no integer `status`: None」
+/// ⇒ 客户端拿到的是 **`ERR` 值**（没有 `status` 字段），不是响应字典。
+/// ⚠ **CI 自己会标**：注解写 `FLAKY (cargo test)` ——「pass 1 FAILED, pass 2 PASSED
+///   → flaky, **NOT auto-cleared**」⇒ 本仓的策略是「重跑仍判红」。
+///
+/// **根因（Linux 上实测坐实，WSL2 Ubuntu）**：夹具**不读**客户端发来的请求 ⇒
+/// socket 的接收缓冲区里**留着未读数据** ⇒ 夹具写完响应直接 `close()` ⇒
+/// **Linux 在「接收缓冲区有未读数据」时 close() 发的是 `RST` 而不是 `FIN`**
+/// ⇒ 客户端正在读的那块数据被**丢弃** ⇒ 客户端报 `ECONNRESET`（⇒ `ERR` 值）。
+/// ⚠ **Windows 上不发 RST**（本地 Windows 跑 80 轮独跑 + 60 轮并发高压
+///   **全绿**）⇒ **只在 Linux CI 上暴露**（ubuntu / macOS）。
+///
+/// **实测证据**（WSL2 Ubuntu，纯 Python 复刻同一时序）：
+/// - 夹具**不读**请求就 `close()` ⇒ 300 轮里 **1 次 RST**（其余 OK）
+/// - 夹具**先读**请求再 `close()` ⇒ **300 轮零 RST**
+///
+/// **修法**：写响应之前把请求**读到头块结束**（`\r\n\r\n`）⇒ 接收缓冲区空了
+/// ⇒ `close()` 发 `FIN`（正常关闭）⇒ 客户端稳定读到完整响应。
+/// ⚠ **只改夹具**（测试侧）—— **实现侧零改动**：被测的 chunked 解码器没有缺陷，
+///   它只是**正确地**把对端的 `ECONNRESET` 报成了 `ERR` 值。
 fn serve_pieces(pieces: Vec<Vec<u8>>) -> u16 {
     let listener = TcpListener::bind("127.0.0.1:0").expect("bind 127.0.0.1");
     let port = listener.local_addr().expect("local addr").port();
@@ -159,6 +180,25 @@ fn serve_pieces(pieces: Vec<Vec<u8>>) -> u16 {
         let Ok((mut sock, _)) = listener.accept() else {
             return;
         };
+        // ⚠⚠ **先把请求读完**（见本函数的文档注释）：不读 ⇒ close() 发 RST
+        // ⇒ 客户端偶发拿不到完整响应 ⇒ 这条用例在 Linux CI 上是 flaky 的。
+        // 只关心「头块结束」—— 请求体本夹具不解析（这些用例都不发请求体）。
+        {
+            let mut buf = [0u8; 4096];
+            let mut got: Vec<u8> = Vec::new();
+            loop {
+                match sock.read(&mut buf) {
+                    Ok(0) => break,
+                    Ok(n) => {
+                        got.extend_from_slice(&buf[..n]);
+                        if got.windows(4).position(|w| w == b"\r\n\r\n").is_some() {
+                            break;
+                        }
+                    }
+                    Err(_) => break,
+                }
+            }
+        }
         for piece in pieces {
             if sock.write_all(&piece).is_err() {
                 return;

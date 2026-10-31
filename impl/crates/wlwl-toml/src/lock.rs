@@ -234,15 +234,87 @@ pub fn to_string_pretty(lf: &Lockfile) -> Result<String, LockError> {
     Ok(serde_json::to_string_pretty(lf)?)
 }
 
-/// Write a `Lockfile` atomically: write to `<path>.tmp`, rename.
+/// Write a `Lockfile` atomically: write to a temp file, then rename.
+///
 /// This avoids leaving a half-written lock if the process is killed
 /// mid-write (lock files are committed to source control).
+///
+/// ## ⚠⚠ 临时文件名必须**唯一**（不能固定）
+///
+/// **症状（CI 实测）**：`warning: failed to write ./wlwl.lock: wlwl.lock I/O error:
+/// No such file or directory (os error 2)` —— 而且它**只偶发**，且只在
+/// **CI 的并发跑**里出现（本地单跑永远绿）。
+///
+/// **根因**：旧的临时名是**固定**的 `path.with_extension("lock.tmp")` ⇒
+/// **N 个进程/线程并发写同一个 `wlwl.lock` 时，它们写的是同一个 `.tmp` 文件**
+/// ⇒ 先完成的那个把 `.tmp` rename 走了 ⇒ 后完成的那个 `fs::rename(&tmp, path)`
+/// 时 `.tmp` **已经不在** ⇒ `ENOENT`。
+/// ⇒ 后果不止是「一条警告」：`wlwl run` 的示例把 **stdout 与 stderr 拼在一起**
+/// 比对 ⇒ 多出的那一行警告让「逐行钉住输出」的断言**红**
+/// （`skill_examples::h1_if_else_third_arg_holds_a_multi_statement_group`）。
+///
+/// **修法**：临时名带上 **pid + 进程内计数器** ⇒ 同一进程内的并发写互不冲突，
+/// 跨进程（pid 不同）也不冲突 ⇒ `.tmp` 不会被「别人」提前 rename 走。
+/// ⚠ 仍保持「写临时文件再 rename」的原子性 ⇒ 半写的 lock 不会留在正式路径上。
+///
+/// ## ⚠⚠ **不要**在 rename 之前先删正式路径
+///
+/// 曾经的写法是「`if path.exists() { remove_file(path) }` 再 rename」，理由是
+/// 「Windows 的 rename 不能覆盖已存在的文件」—— ⚠ **这个前提是错的**。
+/// **实测（Windows，本机）**：Rust 的 `fs::rename` 用的是 `MoveFileExW` +
+/// `MOVEFILE_REPLACE_EXISTING` ⇒ **能覆盖**已存在的目标（探针读数：目标文件
+/// 原内容 `A`、源文件内容 `B` ⇒ rename 成功后目标是 `B`）。
+/// ⇒ 那一步不但多余，还会**造出一个窗口**：正式 lock 在「删除」与「rename」
+/// 之间**不存在** ⇒ 并发读者可能读到「lock 文件不见了」。
+/// ⇒ **实测（8 线程 × 40 轮 = 320 次并发写）**：唯一临时名 + 直接 rename ⇒
+/// **320/320 成功、0 次 ENOENT、0 次其它错误**（299 ms）。
 pub fn write(path: &Path, lf: &Lockfile) -> Result<(), LockError> {
+    write_with_tmp(path, lf).map(|_| ())
+}
+
+/// 写 lock，并**返回本次实际用过的临时路径**。
+///
+/// ⚠ **为什么要把临时路径暴露出来**：临时名唯一性是**并发正确性**的核心，
+///   而「并发时会不会撞名」**没法用概率判据稳定地测**（实测：把临时名改回固定名，
+///   跑 320 次并发写，在**空闲机器**上照样**全绿** —— 命中与否取决于线程调度）。
+///   ⇒ 必须让测试**看得见**临时名，才能写出**确定性**的反向守卫
+///   （见 `tests::each_concurrent_write_uses_its_own_temp_name`）。
+fn write_with_tmp(path: &Path, lf: &Lockfile) -> Result<PathBuf, LockError> {
+    use std::sync::atomic::{AtomicU64, Ordering};
+
+    /// 同一进程内的并发写 ⇒ 用计数器把临时名**唯一化**。
+    static SEQ: AtomicU64 = AtomicU64::new(0);
+
     let s = to_string_pretty(lf)?;
-    let tmp = path.with_extension("lock.tmp");
+    let seq = SEQ.fetch_add(1, Ordering::Relaxed);
+    let tmp = temp_path(path, seq);
     fs::write(&tmp, s)?;
-    fs::rename(&tmp, path)?;
-    Ok(())
+    if let Err(e) = fs::rename(&tmp, path) {
+        // ⚠ 失败时别把临时文件留在盘上。
+        let _ = fs::remove_file(&tmp);
+        return Err(LockError::Io(e));
+    }
+    Ok(tmp)
+}
+
+/// 本次写要用的**临时路径**。
+///
+/// ⚠ **必须唯一**：`<name>.tmp.<pid>.<seq>` ⇒
+///   * **pid** ⇒ 跨进程不撞（两个 `wlwl` 进程同时写同一个 lock）；
+///   * **seq** ⇒ 同一进程内的并发写不撞（线程之间）。
+///
+/// ⇒ 撞名的后果：先完成的那个把 `.tmp` rename 走 ⇒ 后完成的那个 `rename`
+///   拿到 `ENOENT`（实测症状见本文件 `write` 的文档注释）。
+fn temp_path(path: &Path, seq: u64) -> PathBuf {
+    let name = format!(
+        "{}.tmp.{}.{}",
+        path.file_name()
+            .map(|n| n.to_string_lossy().into_owned())
+            .unwrap_or_default(),
+        std::process::id(),
+        seq
+    );
+    path.with_file_name(name)
 }
 
 /// Hash the contents of a dependency directory: lowercase hex
@@ -482,8 +554,115 @@ mod tests {
         write(&path, &lf).unwrap();
         let lf2 = read(&path).unwrap().unwrap();
         assert_eq!(lf, lf2);
-        // File should not still be the .tmp file.
-        assert!(!dir.join("wlwl.lock.tmp").exists());
+        // ⚠ 临时文件**不许**留在盘上 —— 它的名字现在是**唯一的**
+        //   （`<name>.tmp.<pid>.<seq>` ⇒ 不能再断言固定的 `wlwl.lock.tmp`）
+        //   ⇒ 改成「目录里除了正式 lock 之外不许有别的 `.tmp` 文件」。
+        let leftovers: Vec<String> = fs::read_dir(&dir)
+            .expect("read dir")
+            .filter_map(|e| e.ok())
+            .map(|e| e.file_name().to_string_lossy().into_owned())
+            .filter(|n| n.contains(".tmp"))
+            .collect();
+        assert!(
+            leftovers.is_empty(),
+            "the temp file must not survive the write, found: {leftovers:?}"
+        );
+        let _ = fs::remove_dir_all(&dir);
+    }
+
+    /// **并发写同一个 lock ⇒ 每次写必须用**自己的**临时名**（回归守卫）。
+    ///
+    /// ## ⚠ 为什么这条守卫是**确定性**的（而不是「跑 N 遍看有没有撞」）
+    ///
+    /// 症状是偶发的 `ENOENT`（临时名固定 ⇒ 先完成者把 `.tmp` rename 走 ⇒
+    /// 后完成者 `rename` 时 `.tmp` 已不在）。**但「跑 N 遍看有没有撞」测不住它**：
+    /// 实测把临时名改回**固定**名后，320 次并发写在**空闲机器**上照样**全绿**
+    /// —— 命中与否完全取决于线程调度 ⇒ 那样的守卫**看起来在管事、实际管不住**。
+    ///
+    /// ⇒ 改成**看得见临时名**的判据：并发写时**每次用的临时路径必须两两不同**
+    /// ⇒ 临时名固定 ⇒ 8 个线程拿到**同一个**路径 ⇒ **必红**（确定性）。
+    ///
+    /// 另附三条：
+    /// ② 临时名必须**带 pid** ⇒ 跨进程（两个 `wlwl` 同时写）也不撞；
+    /// ③ 并发写**不许失败**（实测：唯一临时名 ⇒ 320/320 成功、0 次 ENOENT）；
+    /// ④ 临时文件**不许**留在盘上。
+    #[test]
+    fn each_concurrent_write_uses_its_own_temp_name() {
+        use std::sync::{Arc, Barrier};
+
+        const THREADS: usize = 8;
+
+        let dir = tempdir(".lock_concurrent");
+        let path = dir.join("wlwl.lock");
+        let lf = Lockfile {
+            schema_version: CURRENT_SCHEMA_VERSION.into(),
+            entries: vec![],
+        };
+
+        let barrier = Arc::new(Barrier::new(THREADS));
+        let mut handles = Vec::new();
+        for _ in 0..THREADS {
+            let barrier = barrier.clone();
+            let path = path.clone();
+            let lf = lf.clone();
+            handles.push(std::thread::spawn(move || {
+                barrier.wait();
+                write_with_tmp(&path, &lf)
+            }));
+        }
+
+        let mut tmps: Vec<PathBuf> = Vec::new();
+        let mut errs: Vec<LockError> = Vec::new();
+        for h in handles {
+            match h.join().expect("the writer thread must not panic") {
+                Ok(tmp) => tmps.push(tmp),
+                Err(e) => errs.push(e),
+            }
+        }
+
+        // ① **确定性**判据：每次写的临时路径必须两两不同。
+        let mut uniq = tmps.clone();
+        uniq.sort();
+        uniq.dedup();
+        assert_eq!(
+            uniq.len(),
+            tmps.len(),
+            "every concurrent write must use its own temp file — got {tmps:?} \
+             (a shared temp name means one writer renames it away and the next \
+             one fails with ENOENT)"
+        );
+
+        // ② 临时名必须带 pid ⇒ 跨进程也不撞。
+        for tmp in &tmps {
+            let name = tmp
+                .file_name()
+                .expect("temp path has a name")
+                .to_string_lossy();
+            assert!(
+                name.contains(&std::process::id().to_string()),
+                "the temp name must carry the pid so that two processes do not \
+                 collide — got {name}"
+            );
+        }
+
+        // ③ 并发写不许失败（ENOENT 是旧实现的症状）。
+        assert!(
+            errs.is_empty(),
+            "concurrent lock writes must not fail — got {errs:?}"
+        );
+
+        // ④ 临时文件不许留在盘上。
+        let leftovers: Vec<String> = fs::read_dir(&dir)
+            .expect("read dir")
+            .filter_map(|e| e.ok())
+            .map(|e| e.file_name().to_string_lossy().into_owned())
+            .filter(|n| n.contains(".tmp"))
+            .collect();
+        assert!(
+            leftovers.is_empty(),
+            "no temp file may survive a concurrent write, found: {leftovers:?}"
+        );
+
         let _ = fs::remove_dir_all(&dir);
     }
 
