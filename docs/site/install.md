@@ -12,44 +12,53 @@ archive carries:
 - the `wlwl` (or `wlwl.exe`) binary
 - a `LICENSE`, `README.md` and `CHANGELOG.md`
 - the example programs under `examples/`
-- the R1 standard-library sources under `stdlib/`
 - the agent skill pack under `wlwl-skill/`
 - `wlwl-src.tar.gz` plus `SOURCE_HASH` — the full compiler source tree,
   so an offline machine can read or modify the implementation
   (verify it with `python script/package_source.py --verify <src-dir>
   --hash-file SOURCE_HASH`)
-- `wlwl-tls/` — the TLS extension (dynamic library + `ABI_VERSION` +
-  `SHA256SUMS`), **only in archives cut after `v0.12.1_rc1`**; see the
-  note below
+- `lib/` — the **library folder**: the R1 standard-library sources under
+  `lib/stdlib/`, plus the TLS extension as a **dynamic library file**
+  (`libwlwl_tls.so` / `libwlwl_tls.dylib` / `wlwl_tls.dll`) together with
+  its `ABI_VERSION` and `SHA256SUMS`, **only in archives cut after
+  `v0.12.1_rc1`**; see the note below
 
-> ⚠ **Check the tag before relying on `wlwl-tls/`** — the packaging step was
-> added *after* `v0.12.1_rc1`, and one tag in between never produced a release:
+> ⚠ **Check the tag before relying on the TLS library under `lib/`** — the
+> packaging step was added *after* `v0.12.1_rc1`, and one tag in between
+> never produced a release:
 >
-> | tag | release built? | contains `wlwl-tls/`? |
+> | tag | release built? | TLS library inside `lib/`? |
 > |---|---|---|
 > | `v0.12.1_rc1` | yes | **no** |
 > | `v0.12.1_rc2` | **no** — its `generate SBOM` job failed, so `github release` was skipped | (no release exists) |
-> | `v0.12.1_rc3` | yes | **yes** |
+> | `v0.12.1_rc3` | yes | **yes** — the current one, with `lib/stdlib/` next to the dynamic library |
+>
+> ⚠ **`v0.12.1_rc3` was rebuilt under the same name**: an earlier
+> `v0.12.1_rc3` (with the extension under `wlwl-tls/` instead of `lib/`)
+> was published and then **withdrawn** — its tag and release were both
+> deleted. The tag now points at the `lib/` layout, so the table above
+> describes what is live today.
 >
 > Verify it yourself instead of trusting this table:
 >
 > ```bash
 > # rc1 has no TLS step anywhere in its workflow file:
 > git show v0.12.1_rc1:.github/workflows/release.yml | grep -n tls   # no output
-> # rc3 actually ships the directory (archive has 65 entries -> 4 matching lines):
-> curl -sSL -o rc3.tar.xz \
+> # the current archive really ships the library next to the stdlib sources:
+> curl -sSL -o rc.tar.xz \
 >   https://github.com/Laffinty/wlwl/releases/download/v0.12.1_rc3/wlwl-v0.12.1_rc3-x86_64-unknown-linux-gnu.tar.xz
-> tar -tJf rc3.tar.xz | grep wlwl-tls/
+> tar -tJf rc.tar.xz | grep '/lib/'
 > ```
 >
 > When it is present, verify and use it like this:
 >
 > ```bash
-> cd wlwl-v0.12.1_rc3-x86_64-unknown-linux-gnu/wlwl-tls
+> cd wlwl-v0.12.1_rc3-x86_64-unknown-linux-gnu/lib
 > sha256sum -c SHA256SUMS          # libwlwl_tls.so: OK
 > cat ABI_VERSION                  # 1
+> ls stdlib/                       # the R1 sources live next to it
 > cd ../.. && wlwl run --ext \
->   wlwl-v0.12.1_rc3-x86_64-unknown-linux-gnu/wlwl-tls/libwlwl_tls.so \
+>   wlwl-v0.12.1_rc3-x86_64-unknown-linux-gnu/lib/libwlwl_tls.so \
 >   your-program.wll
 > ```
 >
@@ -66,7 +75,7 @@ export PATH="$PWD/wlwl-v0.12.1_rc3-x86_64-unknown-linux-gnu:$PATH"
 wlwl --version
 ```
 
-> `v0.12.1_rc3` is a **release candidate** — the binaries report
+> The `v0.12.1` RCs are **release candidates** — the binaries report
 > `wlwl 0.12.1`, but the GitHub release is marked *pre-release*, so
 > package managers will not pick it up automatically. `v0.12.0` is the
 > latest final release.

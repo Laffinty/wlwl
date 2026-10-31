@@ -221,11 +221,20 @@ jobs:
           # `docs/stdlib/` 两个文件夹;合并后的次级规范 `docs/wlwl-spec-reference.md`
           # 是**仓内专供 AI agent / 机器守卫**读的次级件,**不随包分发**。
           #
-          # ⚠ 下面 `staging/stdlib/` **保留**:那是 R1 语言层**源码**的参考
+          # ⚠ 下面 `staging/lib/stdlib/` **保留**:那是 R1 语言层**源码**的参考
           # 副本(`--std-src` 开发覆盖用),与文档无关 —— 文档是 `docs/`,
           # 源码是 `stdlib/`。删掉它会连带破坏 M1-4 的「产物含 R1 源码副本」。
-          mkdir -p staging/stdlib
-          cp -r "$GITHUB_WORKSPACE/impl/crates/wlwl-std/wl/std/." staging/stdlib/
+          #
+          # [v0.12.1 / 业主裁决 2026-11-01] **R1 源码副本与 TLS 动态库同居
+          # 一个 `lib/` 文件夹**。⇒ 发行包里**只有一个**「库目录」`lib/`,
+          #   其下是 `stdlib/`(语言层源码)与那个**动态库文件**本身。
+          #   ⚠ **理由**:`wlwl-tls/` 那种「一个动态库自带一个目录」的形态把
+          #   **库文件**和**库目录**混为一谈 —— 动态库该和 stdlib 一样归到
+          #   `lib/` 底下,消费者找库只需要看一个地方。
+          #   ⚠ **ABI_VERSION / SHA256SUMS 放 `lib/` 顶层**(与动态库同级):
+          #   它们描述的是**那一个动态库**,不是 `lib/` 整体 ⇒ 不进子目录。
+          mkdir -p staging/lib/stdlib
+          cp -r "$GITHUB_WORKSPACE/impl/crates/wlwl-std/wl/std/." staging/lib/stdlib/
           cp -r "$GITHUB_WORKSPACE/wlwl-skill" staging/wlwl-skill/
 
       # [G-06] **把源码树打进发布包** —— 此前发布包只有二进制 + R1 stdlib 副本
@@ -258,6 +267,15 @@ jobs:
       #   （写死 ⇒ 宿主升 ABI 时这里会悄悄过期）。
       # ⚠ **产物缺失就响亮失败** —— 不静默发一个「没有 TLS 动态库」的包
       #   （那正是 run #44 的状态）。
+      #
+      # [v0.12.1 / 业主裁决 2026-11-01] **动态库与 R1 源码副本同居 `lib/`**:
+      #   动态库文件**直接落在 `staging/lib/` 顶层**(不再独占 `wlwl-tls/`
+      #   子目录),`ABI_VERSION` / `SHA256SUMS` 与它**同级**。
+      #   ⇒ 发行包里只有一个库目录 `lib/`,其下 = `stdlib/`(R1 源码) +
+      #     动态库文件 + 它的两个元数据文件。
+      # ⚠ **`SHA256SUMS` 里记的是**文件**名(不是路径)** ⇒ 校验必须在
+      #   `lib/` 目录里执行(`cd lib && sha256sum -c SHA256SUMS`)⇒ 文档里
+      #   的校验命令必须跟着改成这个形状。
       - name: Stage the TLS extension (ABI version + hash)
         shell: bash
         run: |
@@ -279,13 +297,51 @@ jobs:
             echo "::error::cannot read ABI_VERSION from impl/crates/wlwl-ext/src/abi.rs"
             exit 1
           fi
-          mkdir -p staging/wlwl-tls
-          cp "$src" "staging/wlwl-tls/$lib"
-          printf '%s\n' "$abi" > staging/wlwl-tls/ABI_VERSION
-          python -c "import hashlib,sys,os;p=sys.argv[1];print(hashlib.sha256(open(p,'rb').read()).hexdigest()+'  '+os.path.basename(p))" \
-            "$PWD/staging/wlwl-tls/$lib" > staging/wlwl-tls/SHA256SUMS
+          mkdir -p staging/lib
+          cp "$src" "staging/lib/$lib"
+          printf '%s\n' "$abi" > staging/lib/ABI_VERSION
+          # ⚠⚠ **必须用 `sys.stdout.buffer.write`**,不能用 `print()`。
+          #   **实测(本机预演,2026-11-01)**:`print()` 在 **Windows** 上把
+          #   `\n` 翻译成 `\r\n` ⇒ 产出的 `SHA256SUMS` 是 **CRLF** ⇒
+          #   `sha256sum -c SHA256SUMS` 直接 **FAILED**:
+          #     `sha256sum: 'wlwl_tls.dll'$'\r': No such file or directory`
+          #   ⇒ 也就是说**此前 Windows 的 zip 里那份校验文件是废的**
+          #   (Linux/macOS 的 tar.xz 是 LF ⇒ 不受影响)。
+          #   ⇒ 走 `.buffer` 写**裸字节** ⇒ 五个平台的 `SHA256SUMS` 都是 LF。
+          python -c "import hashlib,sys,os;p=sys.argv[1];h=hashlib.sha256(open(p,'rb').read()).hexdigest();b=os.path.basename(p);sys.stdout.buffer.write((h+'  '+b+'\n').encode('utf-8'))" \
+            "$PWD/staging/lib/$lib" > staging/lib/SHA256SUMS
           echo "staged TLS extension: $lib (abi_version=$abi)"
-          ls -l staging/wlwl-tls
+          # ⚠ **布局自检(响亮失败)**:`lib/` 下必须**同时**有 R1 源码副本与
+          #   那个动态库 —— 这是本次布局改动的**唯一验收点**。
+          #   ⚠ 少一样就红:静默发一个「`lib/` 里只有 stdlib、没有动态库」的包
+          #   ⇒ 消费者按文档去找库会找不到(那正是 run #44 的失败形态)。
+          # ⚠ **为什么「动态库在不在」这条要看「复制后」**:上一步刚 `cp` 过它
+          #   ⇒ 「文件存不存在」在同一脚本里**恒真** ⇒ 那是一条**空转的守卫**
+          #   (实测:把复制后的文件删掉,这条检查照样通过)。
+          #   ⇒ 真正能抓东西的是**逐字节相等**:复制后的文件必须与源文件
+          #     **哈希相同** ⇒ 「cp 了但没 cp 全 / 拷成了别的东西」必红。
+          if [ ! -d staging/lib/stdlib ]; then
+            echo "::error::staging/lib/stdlib is missing — the R1 source copy did not land next to the TLS dynamic library"
+            exit 1
+          fi
+          if [ ! -f "staging/lib/$lib" ]; then
+            echo "::error::staging/lib/$lib is missing — the TLS dynamic library did not land next to the R1 source copy"
+            exit 1
+          fi
+          # ⚠ **复制完整性**:复制后的动态库必须与**源文件**逐字节相等
+          #   （哈希对拍）⇒ 抓「cp 没拷全 / 拷成了别的东西」。
+          python -c "import hashlib,sys;a=hashlib.sha256(open(sys.argv[1],'rb').read()).hexdigest();b=hashlib.sha256(open(sys.argv[2],'rb').read()).hexdigest();sys.stdout.write(('copy verified: %s == %s\n'%(a,b)) if a==b else '::error::copy mismatch: src=%s staged=%s\n'%(a,b));sys.exit(0 if a==b else 1)" \
+            "$src" "staging/lib/$lib"
+          # ⚠ **哈希文件自校验(响亮失败)**:`SHA256SUMS` 必须
+          #   ① **无 CR**(纯 LF) ② **哈希与实际文件逐字相等**。
+          #   ⚠ 不校验 ⇒ 就可能发出一份「跑 `sha256sum -c` 就红」的校验文件
+          #   (Windows 的 CRLF 就是这么溜进去的)。
+          # ⚠ **写成单行**:多行 heredoc 会被 YAML 块标量吃掉(缩进一旦跑到
+          #   块外,整份 YAML 直接解析失败)⇒ 这里用 `;` 串起来。
+          python -c "import hashlib,sys;raw=open(sys.argv[1],'rb').read();h,n=raw.decode('utf-8').split();got=hashlib.sha256(open(sys.argv[2],'rb').read()).hexdigest();cr=(b'\r' in raw);ok=((not cr) and got==h);sys.stdout.write(('SHA256SUMS verified: %s -> %s (LF-only)\n'%(n,got)) if ok else ('::error::SHA256SUMS invalid: crlf=%s hash_match=%s\n'%(cr,got==h)));sys.exit(0 if ok else 1)" \
+            staging/lib/SHA256SUMS "staging/lib/$lib"
+          ls -l staging/lib
+          ls -l staging/lib/stdlib
 
       - name: Package the source tree (G-06)
         shell: bash

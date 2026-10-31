@@ -324,13 +324,20 @@ Select-String -Path 'D:\Project\wlwl\impl\crates\wlwl-std\wl\std\http.wll' -Patt
 - **非目标**：不合并到 v1.1.0（版本口径业主已锁死 v1.0.4）。
 - **依赖**：业主点头（**分支/tag 操作必须逐次明确指示**）。
 
-#### T-02 · 发 `v0.12.1_rc2` 并验证 TLS staging
+#### T-02 · 发 RC 并验证 TLS staging
 
-> ✅ **已在 `v0.12.1_rc3` 闭环（2026-11-01）** —— `rc2` 的 release **没建成**（SBOM job 红，
-> 见 T-09 的落地记录），修完后发 `rc3`：**Release run #46 十个 job 全 success**，
-> `GET /releases/tags/v0.12.1_rc3` ⇒ `prerelease: true`、**6 个资产**；
-> 下载 `x86_64-linux` 包**解包直证** `wlwl-tls/{libwlwl_tls.so 2708728 B, ABI_VERSION=1,
-> SHA256SUMS}`，且 `SHA256SUMS` 与实际文件哈希**逐字一致**。
+> ⚠ **口径订正（2026-11-01）**：`v0.12.1_rc2` 的 release **没建成**（SBOM job 红，
+> 见 T-09 的落地记录）；接续的 `v0.12.1_rc3` **release 建成了**（run #46 十个 job
+> 全 success，`GET /releases/tags/v0.12.1_rc3` ⇒ `prerelease: true`、**6 个资产**）
+> —— 但**业主随后把该 tag 与该 release 一并删除**（撤回）⇒ **远端既无该
+> tag、也无该 release**（`git ls-remote --tags origin` 与
+> `GET /releases/tags/v0.12.1_rc3` ⇒ 404 双证）。
+> ⚠ **业主随后指示：沿用同一个 tag 名 `v0.12.1_rc3` 重新发布** ⇒ **同名不同物**
+> （现在的 rc3 指向 `lib/` 布局的新快照；被撤回的那一次记在 `CHANGELOG.md` 的
+> 「第一次 v0.12.1_rc3 · 已撤回」段）。
+> ⚠ **同时改了包内布局**（业主裁决）：R1 源码副本与 TLS **动态库文件**同居
+> 一个 `lib/` 文件夹 ⇒ 验收判据**不再**是「`wlwl-tls/` 目录存在」，而是
+> 「`lib/stdlib/` 与 `lib/<动态库>` **同时**在位」（见下）。
 
 - **为什么**：`release.yml` 的 TLS 打包**只在打 tag 时跑** ⇒ 五个平台的交叉链接（尤其 aarch64 的 linker 环境变量）**至今零实测**。而 rc1 的包**不含**本轮 4 条修复 + TLS 打包。
 - **验收**：
@@ -338,11 +345,15 @@ Select-String -Path 'D:\Project\wlwl\impl\crates\wlwl-std\wl\std\http.wll' -Patt
   # ① job 级结论（不是只看 run 级）
   (Invoke-RestMethod "https://api.github.com/repos/Laffinty/wlwl/actions/runs/<run_id>/jobs?per_page=100").jobs | Select name,conclusion
   # ② release 真建成 + 资产齐全（job 绿 ≠ release 存在）
-  Invoke-RestMethod "https://api.github.com/repos/Laffinty/wlwl/releases/tags/v0.12.1_rc2"
-  # ③ 包内确实有 TLS 目录（这是本轮唯一没被验过的东西）
-  #    下载任一资产 → 解包 → 期望看到 wlwl-tls/{libwlwl_tls.so|.dylib|wlwl_tls.dll} + ABI_VERSION + SHA256SUMS
+  Invoke-RestMethod "https://api.github.com/repos/Laffinty/wlwl/releases/tags/<tag>"
+  # ③ 包内布局直证（本次布局的**唯一验收点**）:
+  #    下载任一资产 → 解包 → 期望看到 lib/stdlib/*.wll 与 lib/<libwlwl_tls.so|.dylib|wlwl_tls.dll>
+  #    且 ABI_VERSION 与 SHA256SUMS 与动态库**同级**;`cd lib && sha256sum -c SHA256SUMS` 必须 **OK**
   ```
-- **反向守卫**：把 `Stage the TLS extension` 那一步的 `if [ ! -f "$src" ]` 判断去掉 ⇒ 产物缺失时静默发一个没有 TLS 的包 ⇒ **不许**（那正是 run #44 的状态）。
+- **反向守卫**：
+  - 把 `Stage the TLS extension` 那一步的 `if [ ! -f "$src" ]` 判断去掉 ⇒ 产物缺失时静默发一个没有 TLS 的包 ⇒ **不许**（那正是 run #44 的状态）。
+  - 把新加的**布局自检**（`staging/lib/stdlib` 与 `staging/lib/<动态库>` 必须同时在位）去掉 ⇒ 会静默发出「`lib/` 里只有 stdlib、没有动态库」的包 ⇒ **不许**。
+  - 把 `SHA256SUMS` 的生成改回 `print()` ⇒ **Windows 上会产出 CRLF** ⇒ `sha256sum -c` 直接 FAILED ⇒ **不许**（必须走 `sys.stdout.buffer.write` 写裸字节）。
 - **非目标**：**不打正式版**（正式版 `v0.12.1` 由业主另行指示）；不动 `FLAKY_EXIT_CODE` 策略。
 - **依赖**：T-01（规范 tag 先发）+ 主 CI 全绿 + **业主明确指示打 tag**。
 
@@ -629,7 +640,7 @@ git -C <path-to-wlwl-spec-v1> tag -l 'v1.0.4'    # 期望：现在为空
 
 - [ ] **T-03 / T-04 已裁决**，且裁决结果落进了「台账 + §6.2 表」两处（**不允许只改一处**）
 - [ ] **T-01 规范仓 v1.0.4 tag 已发**，tag 注释含 SP-1…SP-5 与全部新增成员
-- [ ] **T-02 `v0.12.1_rc2` 的 release 已建成**，且**包内 `wlwl-tls/` 目录存在**（含动态库 + `ABI_VERSION` + `SHA256SUMS`）
+- [ ] **T-02 的 RC release 已建成**，且**包内 `lib/stdlib/` 与 `lib/<动态库>` 同时在位**（动态库 + 同级的 `ABI_VERSION` + `SHA256SUMS`，且 `cd lib && sha256sum -c SHA256SUMS` 通过）—— ⚠ `v0.12.1_rc2`（release 没建成）**不算**这一项达成；⚠ `v0.12.1_rc3` 的**第一次**发布（`wlwl-tls/` 布局）**已被撤回**（tag 与 release 均删除）⇒ **不算**达成；达成的是**重建后**的那个 `v0.12.1_rc3`（`lib/` 布局）
 - [ ] 五平台 **job 级**结论全 success（不是只看 run 级）
 - [x] **T-05 符号链接逃逸已修**并有反向守卫（2026-10-31 完成：`path_symlink_contract` 15/0，去掉闸 ⇒ 必红）
 - [ ] **T-10 三处文档不一致已订正**，且面板与台账**逐项相等**

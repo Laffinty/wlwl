@@ -2590,13 +2590,18 @@ FALSE` 可关；`CLIENT_IP` 恒产出）。
 
 `std.net` 是**明文 `http:` only**，`https://` 返回
 `ERR([kind:"HttpError", … reason: scheme "https" is not supported])`。
-TLS **不进标准库**，以**原生动态库扩展**（`wlwl-tls.dll` / `.so` / `.dylib`）
-交付，由**宿主显式授权加载**：
+TLS **不进标准库**，以**原生动态库扩展**（`wlwl_tls.dll` / `libwlwl_tls.so` /
+`libwlwl_tls.dylib`）交付，由**宿主显式授权加载**：
 
 ```bash
-wlwl run --ext /abs/path/wlwl-tls.dll --ext-sha256 <64-hex> server.wll
-# 或 WLWL_EXT_PATH=/abs/path/wlwl-tls.dll
+wlwl run --ext /abs/path/wlwl_tls.dll --ext-sha256 <64-hex> server.wll
+# 或 WLWL_EXT_PATH=/abs/path/wlwl_tls.dll
 ```
+
+⚠ **发行包里的位置**：发行包带这个动态库 —— **Windows** 是
+`lib/wlwl_tls.dll`，**Linux** 是 `lib/libwlwl_tls.so`，**macOS** 是
+`lib/libwlwl_tls.dylib`（与 `lib/stdlib/` 同住一个 `lib/` 文件夹，旁边还有
+`ABI_VERSION` 与 `SHA256SUMS`）。⚠ 宿主**永不自动发现**扩展 ⇒ 必须显式给路径。
 
 加载后其命名空间（`tls` / `crypto`）可 `IMPORT`。⚠ **扩展成员不进附录 A、
 不进公共面清单**，只进一致性册 §5.5 的**实现侧扩展台账**。

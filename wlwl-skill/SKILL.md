@@ -861,9 +861,15 @@ TLS arrives instead as a **native dynamic library extension** loaded
 explicitly by the host:
 
 ```bash
-wlwl run --ext /abs/path/wlwl-tls.dll --ext-sha256 <64-hex> my_server.wll
-# or: WLWL_EXT_PATH=/abs/path/wlwl-tls.dll
+wlwl run --ext /abs/path/wlwl_tls.dll --ext-sha256 <64-hex> my_server.wll
+# or: WLWL_EXT_PATH=/abs/path/wlwl_tls.dll
 ```
+
+> ⚠ **发行包里的位置**：从 `v0.12.1` 的 RC 起，发行包带这个动态库 ——
+> **Windows** 是 `lib/wlwl_tls.dll`，**Linux** 是 `lib/libwlwl_tls.so`，
+> **macOS** 是 `lib/libwlwl_tls.dylib`（与 `lib/stdlib/` 同住一个 `lib/`
+> 文件夹，旁边还有 `ABI_VERSION` 与 `SHA256SUMS`）。⚠ 宿主**永不自动发现**
+> 扩展 ⇒ 必须把路径显式交给 `--ext` / `WLWL_EXT_PATH`。
 
 Loading it mounts the extension's namespaces (`tls`, `crypto`) as importable
 namespaces. **The extension is not part of the standard library**: those

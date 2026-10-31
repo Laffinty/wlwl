@@ -19,9 +19,9 @@ you.
 
 ## Branches & commits
 
-- `main` is v0.12.1 (the current pre-release is `v0.12.1_rc3`; `rc1` and
-  `rc2` are older snapshots — `rc2` produced no release at all); only
-  reviewed PRs land here.
+- `main` is v0.12.1 (the current pre-release is `v0.12.1_rc3`; `rc2` is
+  an older snapshot that produced no release at all); only reviewed PRs
+  land here.
 - Commit messages start with the shorthand, e.g.
   `docs: 记录 v0.12.1_rc3 tag 已发`, `fix(impl): ...`.
 

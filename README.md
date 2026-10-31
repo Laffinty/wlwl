@@ -162,13 +162,16 @@ deliberately unfinished.
   [v0.12.1_rc3](https://github.com/Laffinty/wlwl/releases/tag/v0.12.1_rc3) —
   a release candidate, so the GitHub release is marked *pre-release* and
   package managers will not pick it up automatically. Its archive **does**
-  ship the TLS extension under `wlwl-tls/`. The final `v0.12.1` has not been
-  released yet.
-  ⚠ Neither [v0.12.1_rc1](https://github.com/Laffinty/wlwl/releases/tag/v0.12.1_rc1)
-  (no TLS extension in the archive) nor
-  [v0.12.1_rc2](https://github.com/Laffinty/wlwl/releases/tag/v0.12.1_rc2)
-  (tagged, but no release was built — its SBOM job failed) matches the
-  current tree.
+  ship the TLS extension as a **dynamic library** under `lib/`, next to the
+  R1 standard-library sources in `lib/stdlib/`. The final `v0.12.1` has not
+  been released yet.
+  ⚠ The `v0.12.1_rc3` tag was **rebuilt under the same name**: an earlier
+  `v0.12.1_rc3` (extension under `wlwl-tls/`) was published and then
+  withdrawn — its tag and release were both deleted — and the name now
+  points at the `lib/` layout. Meanwhile
+  [v0.12.1_rc1](https://github.com/Laffinty/wlwl/releases/tag/v0.12.1_rc1)
+  ships **no** TLS extension at all — see
+  [Install](docs/site/install.md) for the per-tag table.
 
 ## License
 
