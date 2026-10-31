@@ -269,6 +269,11 @@ fn a_reader_never_sees_a_half_written_target() {
     const ROUNDS: usize = 40;
     /// 一次写允许重试的次数(Windows 上目标被读者握着时替换会失败)。
     const WRITE_ATTEMPTS: usize = 60;
+    /// ⚠ **空转保护(vacuity)的下限**:读者至少真正读到过这么多次,这条守卫才算数过。
+    const MIN_READS: usize = 10;
+    /// ⚠ **补写轮数的上限**:达不到 `MIN_READS` 时继续写,但**不许无限写**。
+    /// 取 `ROUNDS` 的 4 倍 ⇒ 正常情况下一次都不会用到(见下面的实测)。
+    const EXTRA_ROUNDS_CAP: usize = ROUNDS * 4;
 
     let payload_a = "A".repeat(SIZE);
     let payload_b = "B".repeat(SIZE);
@@ -344,16 +349,39 @@ fn a_reader_never_sees_a_half_written_target() {
     };
 
     let target_str = abs(&dir, "data.bin");
-    for i in 0..ROUNDS {
-        let payload = if i % 2 == 0 { &payload_a } else { &payload_b };
+    // ⚠⚠ **「写够久」不能靠 `ROUNDS` 这个固定轮数碰运气** —— 实测（macOS CI）：
+    //   `reads` 只到 **8 / 9**（门禁要 ≥ 10），两轮都红。原因很直白：读者的采样
+    //   次数取决于**写循环一共跑了多久**，而 macOS 上每次写都**一次就成**
+    //   （`rename` 原子、没有 Windows 那种 sharing violation 重试）⇒ 40 轮很快就
+    //   跑完 ⇒ 读者只采到 8 次。⇒ 这是**期望值依赖机器速度**的那类判据
+    //   （同一份代码在慢机器上绿、在快机器上红）。
+    //   ⇒ 改成**结构性**满足：写够 `ROUNDS` 只是起点，**再补写到读者真的读够
+    //     `MIN_READS` 次**（有上限）。这样①门禁的语义不变（读者必须真跑过）、
+    //   ②不靠机器快慢；③补写同样是「写与读并发」，不会削弱要观测的东西。
+    let mut written = 0usize;
+    let mut extra = 0usize;
+    let mut last = String::new();
+    while written < ROUNDS
+        || (reads.load(Ordering::Relaxed) < MIN_READS && extra < EXTRA_ROUNDS_CAP)
+    {
+        if written >= ROUNDS {
+            extra += 1;
+        }
+        // ⚠ `written.is_multiple_of(2)` 而不是 `written % 2 == 0` —— clippy
+        //   `manual_is_multiple_of` 会红（`-D warnings`），而这条用例是
+        //   `#[cfg(unix)]` ⇒ **Windows 本机的 clippy 看不到它**（实测踩过）。
+        let payload = if written.is_multiple_of(2) {
+            &payload_a
+        } else {
+            &payload_b
+        };
         // ⚠ **允许重试**:Windows 上 `MoveFileExW` **不许替换「正被别处打开」的
         //   文件**(实测)⇒ 读者握着目标时,这一次写会失败 ⇒ 那是**平台限制**,
         //   不是本成员的缺陷 ⇒ 这里重试到成功为止。
         //   ⚠ 退化实现(先删目标再写)**不会**失败 ⇒ 它照样一路写下去 ⇒
         //   读者照样会抓到中间态 ⇒ **这条守卫不会被重试稀释掉**。
-        let mut last = String::new();
         let mut ok = false;
-        for attempt in 0..WRITE_ATTEMPTS {
+        for _ in 0..WRITE_ATTEMPTS {
             last = run(
                 &format!("{IO}WRITE_FILE_ATOMIC(\"{target_str}\", \"{payload}\")"),
                 &dir,
@@ -363,9 +391,9 @@ fn a_reader_never_sees_a_half_written_target() {
                 break;
             }
             std::thread::sleep(std::time::Duration::from_millis(20));
-            let _ = attempt;
         }
-        assert!(ok, "round {i} must succeed in the end: {last}");
+        assert!(ok, "round {written} must succeed in the end: {last}");
+        written += 1;
     }
 
     stop.store(true, Ordering::Relaxed);
@@ -379,8 +407,8 @@ fn a_reader_never_sees_a_half_written_target() {
     );
     let reads = reads.load(Ordering::Relaxed);
     assert!(
-        reads >= 10,
-        "the reader must actually have run (only {reads} reads) — \
+        reads >= MIN_READS,
+        "the reader must actually have run (only {reads} reads, need >= {MIN_READS}) — \
          otherwise this guard proved nothing"
     );
     // ⚠ 收尾:读完之后内容必须是**某一个完整版本**。

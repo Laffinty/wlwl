@@ -1,3 +1,49 @@
+## [v0.12.1 收口 · 第二批 · 第三条红] — 2026-10-31（macOS `a_reader_never_sees_a_half_written_target`：判据的期望值依赖机器快慢）
+
+⚠ **run #340 的 macOS ✗** 与上两笔的改动**无关**（`git diff` 可证：那一笔只动了
+`ci.yml` / `CHANGELOG` / 计划文档 / `resource_release_contract.rs` / 删探针；
+`fs_atomic_lock_meta_contract.rs` 最近一次改动是更早的 `ae6538e`）。
+
+### 症状
+
+```
+FAILED  a_reader_never_sees_a_half_written_target
+  panicked at fs_atomic_lock_meta_contract.rs:381:
+  the reader must actually have run (only 9 reads) — otherwise this guard proved nothing
+```
+pass 1 是 **8 次读**、pass 2 是 **9 次读**，门禁要 **≥ 10** ⇒ 两轮都红 ⇒ 判 **REAL FAILURE**。
+
+### 根因：**期望值依赖机器快慢**（不是实现缺陷，也不是随机 flake）
+
+那条用例的形态是：写者跑**固定 40 轮** `WRITE_FILE_ATOMIC`，读者在另一个线程里
+每 1 ms 读一次、直到写者喊停 ⇒ 读者的**采样次数取决于写循环一共跑了多久**。
+⇒ macOS 上每次写**一次就成**（`rename` 原子、没有 Windows 那种 sharing violation
+重试）⇒ 40 轮很快就跑完 ⇒ 读者只采到 8–9 次 ⇒ 撞在阈值上。
+⚠ 同一份代码在**慢**机器上绿、在**快**机器上红 —— 这正是「测的是机器，不是实现」。
+
+### 修法：让 vacuity 条件**结构性**满足，而不是碰运气
+
+`MIN_READS = 10` 的语义不变（读者必须真跑过，否则这道闸等于没测），但**不再靠固定轮数**：
+
+- 写够 `ROUNDS` 只是**起点**；
+- 若此时 `reads < MIN_READS` ⇒ **继续补写**（写与读仍然并发，要观测的东西不变），
+  上限 `EXTRA_ROUNDS_CAP = ROUNDS × 4`；
+- 补到上限还不达标 ⇒ **仍然红**（vacuity 没被削弱）。
+
+### 实测（WSL2 Linux —— ⚠ 那条用例是 `#[cfg(unix)]`，**Windows 本机根本不编译它**）
+
+- **整个 target 21 passed / 0 failed**（0.26 s）；那条单独再跑 3 遍全绿（0.14–0.19 s）。
+- **逆向验证（证明门禁没被削弱）**：把 `MIN_READS` 临时抬到 `100_000` ⇒
+  补写循环**跑满上限**（读到 770 次）后断言**照样红**：
+  `the reader must actually have run (only 770 reads, need >= 100000)` ⇒
+  ① 补写循环真的在跑；② vacuity 断言仍然咬得住。验完**已恢复为 10**。
+- ⚠ **顺带抓到一条 Windows 侧永远看不到的 lint**：`written % 2 == 0` 触发 clippy
+  `manual_is_multiple_of` ⇒ 已改成 `written.is_multiple_of(2)`。
+  ⇒ **教训**：`#[cfg(unix)]` 的代码，**本机 Windows 的 clippy 看不到它**，
+  必须在 WSL2 上单独跑一遍 `clippy -D warnings`。
+
+---
+
 ## [v0.12.1 收口 · 第二批 · 结案] — 2026-10-31（Windows 句柄那条**不是泄漏**：是 OS 的 MUI 惰性映射；判据已改并加强）
 
 ⚠ **本段给「Windows 句柄漂移」这条**结案**。前几段把它记成「真泄漏、持有者未点名」
