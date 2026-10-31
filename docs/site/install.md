@@ -18,31 +18,55 @@ archive carries:
   so an offline machine can read or modify the implementation
   (verify it with `python script/package_source.py --verify <src-dir>
   --hash-file SOURCE_HASH`)
+- `wlwl-tls/` — the TLS extension (dynamic library + `ABI_VERSION` +
+  `SHA256SUMS`), **only in archives cut after `v0.12.1_rc1`**; see the
+  note below
 
-> ⚠ **The already-published `v0.12.1_rc1` archive does NOT contain the TLS
-> extension.** That packaging step was added **after** the tag was cut
-> (verify: `git show v0.12.1_rc1:.github/workflows/release.yml` — its
-> `Stage release files` step copies only the binary, `LICENSE`, `README.md`,
-> `CHANGELOG.md`, `examples/`, `stdlib/` and `wlwl-skill/`; there is no `tls`
-> step anywhere in that file). Any **later** release ships it as a
-> `wlwl-tls/` directory containing the native dynamic library
-> (`wlwl_tls.dll` / `libwlwl_tls.dylib` / `libwlwl_tls.so`) plus
-> `ABI_VERSION` (the extension ABI it was built against) and
-> `SHA256SUMS` (verify with `sha256sum -c SHA256SUMS`). The host **never**
-> loads it on its own — you pass it explicitly:
-> `wlwl run --ext wlwl-tls/libwlwl_tls.so your-program.wll`
+> ⚠ **Check the tag before relying on `wlwl-tls/`** — the packaging step was
+> added *after* `v0.12.1_rc1`, and one tag in between never produced a release:
+>
+> | tag | release built? | contains `wlwl-tls/`? |
+> |---|---|---|
+> | `v0.12.1_rc1` | yes | **no** |
+> | `v0.12.1_rc2` | **no** — its `generate SBOM` job failed, so `github release` was skipped | (no release exists) |
+> | `v0.12.1_rc3` | yes | **yes** |
+>
+> Verify it yourself instead of trusting this table:
+>
+> ```bash
+> # rc1 has no TLS step anywhere in its workflow file:
+> git show v0.12.1_rc1:.github/workflows/release.yml | grep -n tls   # no output
+> # rc3 actually ships the directory (archive has 65 entries -> 4 matching lines):
+> curl -sSL -o rc3.tar.xz \
+>   https://github.com/Laffinty/wlwl/releases/download/v0.12.1_rc3/wlwl-v0.12.1_rc3-x86_64-unknown-linux-gnu.tar.xz
+> tar -tJf rc3.tar.xz | grep wlwl-tls/
+> ```
+>
+> When it is present, verify and use it like this:
+>
+> ```bash
+> cd wlwl-v0.12.1_rc3-x86_64-unknown-linux-gnu/wlwl-tls
+> sha256sum -c SHA256SUMS          # libwlwl_tls.so: OK
+> cat ABI_VERSION                  # 1
+> cd ../.. && wlwl run --ext \
+>   wlwl-v0.12.1_rc3-x86_64-unknown-linux-gnu/wlwl-tls/libwlwl_tls.so \
+>   your-program.wll
+> ```
+>
+> The host **never** loads the extension on its own — you always pass it
+> explicitly with `--ext`.
 
 Download:
 
 ```bash
-# Linux
-curl -LO https://github.com/Laffinty/wlwl/releases/download/v0.12.1_rc1/wlwl-v0.12.1_rc1-x86_64-unknown-linux-gnu.tar.xz
-tar -xJf wlwl-v0.12.1_rc1-x86_64-unknown-linux-gnu.tar.xz
-export PATH="$PWD/wlwl-v0.12.1_rc1-x86_64-unknown-linux-gnu:$PATH"
+# Linux (swap the target triple for macOS: x86_64-apple-darwin / aarch64-apple-darwin)
+curl -LO https://github.com/Laffinty/wlwl/releases/download/v0.12.1_rc3/wlwl-v0.12.1_rc3-x86_64-unknown-linux-gnu.tar.xz
+tar -xJf wlwl-v0.12.1_rc3-x86_64-unknown-linux-gnu.tar.xz
+export PATH="$PWD/wlwl-v0.12.1_rc3-x86_64-unknown-linux-gnu:$PATH"
 wlwl --version
 ```
 
-> `v0.12.1_rc1` is a **release candidate** — the binaries report
+> `v0.12.1_rc3` is a **release candidate** — the binaries report
 > `wlwl 0.12.1`, but the GitHub release is marked *pre-release*, so
 > package managers will not pick it up automatically. `v0.12.0` is the
 > latest final release.
@@ -53,7 +77,7 @@ Verify the signature with [`cosign`](https://docs.sigstore.dev/cosign/system_con
 cosign verify-blob \
   --certificate-identity-regexp 'github.com/Laffinty/wlwl' \
   --certificate-oidc-issuer 'https://token.actions.githubusercontent.com' \
-  wlwl-v0.12.1_rc1-x86_64-unknown-linux-gnu.tar.xz
+  wlwl-v0.12.1_rc3-x86_64-unknown-linux-gnu.tar.xz
 ```
 
 > The `.bundle` and `.sig` files produced by the release workflow are

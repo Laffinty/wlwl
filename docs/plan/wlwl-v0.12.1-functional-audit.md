@@ -326,6 +326,12 @@ Select-String -Path 'D:\Project\wlwl\impl\crates\wlwl-std\wl\std\http.wll' -Patt
 
 #### T-02 · 发 `v0.12.1_rc2` 并验证 TLS staging
 
+> ✅ **已在 `v0.12.1_rc3` 闭环（2026-11-01）** —— `rc2` 的 release **没建成**（SBOM job 红，
+> 见 T-09 的落地记录），修完后发 `rc3`：**Release run #46 十个 job 全 success**，
+> `GET /releases/tags/v0.12.1_rc3` ⇒ `prerelease: true`、**6 个资产**；
+> 下载 `x86_64-linux` 包**解包直证** `wlwl-tls/{libwlwl_tls.so 2708728 B, ABI_VERSION=1,
+> SHA256SUMS}`，且 `SHA256SUMS` 与实际文件哈希**逐字一致**。
+
 - **为什么**：`release.yml` 的 TLS 打包**只在打 tag 时跑** ⇒ 五个平台的交叉链接（尤其 aarch64 的 linker 环境变量）**至今零实测**。而 rc1 的包**不含**本轮 4 条修复 + TLS 打包。
 - **验收**：
   ```powershell
@@ -510,6 +516,58 @@ TLS-ext packages` **rc=0**；喂未合并那份 ⇒ `does not declare TLS extens
 ⚠ **仍未闭环**：SBOM 修好要**下一次发布**才验证；而 `v0.12.1_rc2` 的 tag **已发布且不移动**
 ⇒ 必须发 `v0.12.1_rc3`。⚠ 附带好消息：run #45 里**五个平台的 `Build/Stage the TLS extension`
 全部 success**（含 aarch64 交叉）⇒ TLS 随包的机制本身已验证，坏的只是 SBOM 这一步。
+
+##### ✅ 已在 `v0.12.1_rc3` 闭环（2026-11-01）
+
+**Release run #46**（`41228045097`）= **completed / success，10/10 job 全 success**
+（含 `generate SBOM (CycloneDX)` · `cosign keyless sign binaries + SBOM` · `github release`）。
+`GET /releases/tags/v0.12.1_rc3` ⇒ `id 430104519` · `draft: false` · **`prerelease: true`** ·
+**6 个资产**：
+
+| 资产 | 字节 |
+|---|---|
+| `sbom.json` | 80405 |
+| `wlwl-v0.12.1_rc3-x86_64-unknown-linux-gnu.tar.xz` | 6736728 |
+| `wlwl-v0.12.1_rc3-aarch64-unknown-linux-gnu.tar.xz` | 6357956 |
+| `wlwl-v0.12.1_rc3-x86_64-apple-darwin.tar.xz` | 6619584 |
+| `wlwl-v0.12.1_rc3-aarch64-apple-darwin.tar.xz` | 6241844 |
+| `wlwl-v0.12.1_rc3-x86_64-pc-windows-msvc.zip` | 7750831 |
+
+**SBOM 内容直证**（下载台账里那份 80405 B，本机 `Get-FileHash` =
+`2dc0738234d644eaf79918a7b04ef35a90eb4097983d66c7273eca496a499ebb`，与 API 报的 digest 逐字一致）：
+
+| 读数 | 值 |
+|---|---|
+| `specVersion` / `metadata.component` | `1.5` / `wlwl@0.12.1` |
+| `components` | **229**（且 229 个 purl **互不重复**） |
+| `rustls` / `ring` / `webpki-roots` | `0.23.46` / `0.17.14` / `1.0.11` |
+| `wlwl:sbom:covered-workspaces` | `wlwl,wlwl-tls-ext` |
+| `wlwl:sbom:tls-ext-lock-sha256` | `90ad74388352853e…` |
+| `wlwl:sbom:tls-ext-packages` | 38 条 |
+| `wlwl-tls-ext` 是否混进组件表 | **否**（扩展本体不进 SBOM，符合预期） |
+
+⚠ **口径订正（原「本机 227」≠ 发布页 229，不是 bug）** —— 两个 `Cargo.lock` 的**入库状态不同**：
+
+- `impl/Cargo.lock` **被 `.gitignore:3` 忽略、不入库**
+  （复跑：`git check-ignore -v impl/Cargo.lock`；`git ls-files --error-unmatch impl/Cargo.lock` 报未跟踪）
+  ⇒ CI 现场靠 `cargo generate-lockfile` 现物化 ⇒ **主 workspace 的 SBOM 反映的是发布当天
+  crates.io 的解析结果，不是冻结依赖集**；本机那份是更早解析的 ⇒ 227。
+- `impl/ext/wlwl-tls-ext/Cargo.lock` **是入库的** ⇒ **只有扩展这一块真冻结**。
+
+**逐条差集**（发布页 229 vs 本机 227；复跑：本机 `gen_sbom.py --merge` 后按 purl 双向求差）：
+
+| 变化 | 明细 |
+|---|---|
+| 版本被换掉（10 个） | `ctutils 0.4.5→0.4.7` · `js-sys 0.3.106→0.3.107` · `rustix 1.1.5→1.1.6` · `utf8_iter 1.0.4→1.1.0` · `wasm-bindgen{,-futures,-macro,-macro-support,-shared} 0.2.129→0.2.130`（5 包） · `web-sys 0.3.106→0.3.107` |
+| 净新增（2 个） | `log@0.4.35`（与既有 `log@0.4.34` 并存） · `utf_types@1.0.0` |
+| 净效应 | **+12 −10 = +2** ⇒ 229 |
+
+⇒ 上文「只读 `Cargo.lock` ⇒ `--locked` 语义天然成立」这句话**只对 TLS 扩展 workspace 成立**；
+主 workspace 要真冻结，得把 `impl/Cargo.lock` 入库。
+
+⚠ **残留（本版不修，属发布工程改动，需业主裁决）**：主 workspace 的 SBOM（以及 build job）
+**都不基于入库的 lock** ⇒ 同一 tag 重跑两次理论上可解析出不同依赖集。建议把 `impl/Cargo.lock`
+入库并让 build / sbom 都走 `--locked`；这会改变 build job 行为与仓库体积，**未在本版动手**。
 
 #### T-10 · 文档三处不一致订正（§5.2）
 

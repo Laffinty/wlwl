@@ -159,14 +159,16 @@ deliberately unfinished.
   dictionaries.
 - **Current version: 0.12.1** (`impl/Cargo.toml`), published as the
   pre-release
-  [v0.12.1_rc2](https://github.com/Laffinty/wlwl/releases/tag/v0.12.1_rc2) —
+  [v0.12.1_rc3](https://github.com/Laffinty/wlwl/releases/tag/v0.12.1_rc3) —
   a release candidate, so the GitHub release is marked *pre-release* and
-  package managers will not pick it up automatically. The final `v0.12.1`
-  has not been released yet.
-  ⚠ The earlier [v0.12.1_rc1](https://github.com/Laffinty/wlwl/releases/tag/v0.12.1_rc1)
-  is **not** the current tree (fixes landed after that tag are not in it), and
-  **its archive contains no TLS extension** — that packaging step was added
-  after `rc1` was tagged.
+  package managers will not pick it up automatically. Its archive **does**
+  ship the TLS extension under `wlwl-tls/`. The final `v0.12.1` has not been
+  released yet.
+  ⚠ Neither [v0.12.1_rc1](https://github.com/Laffinty/wlwl/releases/tag/v0.12.1_rc1)
+  (no TLS extension in the archive) nor
+  [v0.12.1_rc2](https://github.com/Laffinty/wlwl/releases/tag/v0.12.1_rc2)
+  (tagged, but no release was built — its SBOM job failed) matches the
+  current tree.
 
 ## License
 

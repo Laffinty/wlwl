@@ -345,7 +345,9 @@ jobs:
       #      （日志实证：`main SBOM: ./crates/wlwl-toml/sbom.json`）⇒
       #      「workspace 级的那一份」**不存在**，靠 `find` 猜就猜错；
       #   ② 它的落盘位置在 0.5.x 里**不写死**（`--output-file` 已移除）。
-      # ⇒ 改成只读 lock（依赖集随源码冻结，`--locked` 的语义天然成立），
+      # ⇒ 改成只读 lock（⚠ 只有**扩展**那份是真冻结的：`impl/ext/wlwl-tls-ext/Cargo.lock`
+      #   入库；主 workspace 的 `impl/Cargo.lock` 被 .gitignore 忽略、下面现物化 ⇒
+      #   只保证「同一次运行内解析结果确定」，**不保证跨运行 / 跨 tag 冻结**），
       #   输出路径**由我们指定** ⇒ 确定性。
       - name: Set up Python (SBOM)
         uses: actions/setup-python@v5

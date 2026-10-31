@@ -1,3 +1,69 @@
+## [v0.12.1_rc3] — 2026-11-01（预览版 · **release 已建成** · `W-35′ ③ TLS 随包` 闭环）
+
+本段记 `v0.12.1_rc3` 那个快照。它是 `v0.12.1_rc2` 的**接续发版** —— rc2 的 tag 已发布且**不移动**，
+但它的 release **没建成**（`generate SBOM` job 红 ⇒ `cosign` 与 `github release` 双双 skipped，
+见下一段）。本 RC 的内容 = **rc2 的全部改动** + **SBOM 生成方式重写** + **SBOM 挂成发布资产**。
+
+| 类别 | 内容 |
+|---|---|
+| 修发布红 | `sbom` job 改由 `script/gen_sbom.py` **只读 `Cargo.lock`** 生成（不再用 `cargo-cyclonedx`：它在本仓按 crate 各写一份、落盘位置不可指定） |
+| 验收可查 | `sbom.json` 进 `release` 的 `files:` ⇒ 成为**发布资产**（原先只有 workflow artifact，取它要登录） |
+| 闭环 | **`W-35′ ③ TLS 随包`**：归档包**实测含** `wlwl-tls/`，且 `SHA256SUMS` 自洽 |
+
+**打 tag 前的远端读数**：**CI run #345（head `cc2776f`）4 个 job 全 success**
+（`ubuntu` / `macOS` / `windows` / `smoke`）⇒ 满足「先修到远端全绿，再打 tag」。
+
+**版本守卫**：`tag` 基版本 `v0.12.1` ↔ `impl/Cargo.toml` 的 `0.12.1` ⇒ 逐字相等。
+
+### ✅ 发布结果（实测）：**release 已建成**
+
+`Release` run **#46**（`41228045097`，head_branch `v0.12.1_rc3`）= **success，10/10 job 全 success**：
+`version guard` ✅ · 五平台 `build` ✅（各含 `Build` + `Stage the TLS extension`）· `spec conformance suite` ✅ ·
+**`generate SBOM (CycloneDX)` ✅** · **`cosign keyless sign binaries + SBOM` ✅** · **`github release` ✅**。
+
+`GET /releases/tags/v0.12.1_rc3` ⇒ `id` **`430104519`** · `draft: false` · **`prerelease: true`** ·
+`published_at 2026-10-31T18:15:56Z` · **6 个资产**：
+
+| 资产 | 字节 |
+|---|---|
+| `sbom.json` | **80405** |
+| `wlwl-v0.12.1_rc3-x86_64-unknown-linux-gnu.tar.xz` | 6736728 |
+| `wlwl-v0.12.1_rc3-aarch64-unknown-linux-gnu.tar.xz` | 6357956 |
+| `wlwl-v0.12.1_rc3-x86_64-apple-darwin.tar.xz` | 6619584 |
+| `wlwl-v0.12.1_rc3-aarch64-apple-darwin.tar.xz` | 6241844 |
+| `wlwl-v0.12.1_rc3-x86_64-pc-windows-msvc.zip` | 7750831 |
+
+**SBOM 内容直证**（把资产下载回本机解析，`Get-FileHash` =
+`2dc0738234d644eaf79918a7b04ef35a90eb4097983d66c7273eca496a499ebb`，与 API 报的 digest **逐字一致**）：
+`specVersion 1.5` · `metadata.component = wlwl@0.12.1` · **229 components**（229 个 purl 互不重复）·
+`rustls 0.23.46` · `ring 0.17.14` · `webpki-roots 1.0.11` ·
+`wlwl:sbom:covered-workspaces = wlwl,wlwl-tls-ext` · `tls-ext-packages` **38 条** ·
+`wlwl-tls-ext` **不在**组件表（扩展本体不进 SBOM）。
+
+**解包直证**（`x86_64-unknown-linux-gnu.tar.xz` 6736728 B 解包）：条目合计 **65**；
+`wlwl-tls/` 下三条 —— `libwlwl_tls.so` **2708728 B** · `ABI_VERSION` = **1** · `SHA256SUMS`；
+`SHA256SUMS` 里 `b9c78b55d7ceb187f6136bb09cd4226943d6eef13678a2def8243cdd4ac6ee6e` 与实际文件
+`Get-FileHash` **逐字一致**。
+
+### ⚠ 一条口径订正：SBOM 的依赖集**只有扩展那块是冻结的**
+
+「只读 `Cargo.lock` ⇒ `--locked` 语义天然成立」**只对 TLS 扩展成立**：
+
+- `impl/ext/wlwl-tls-ext/Cargo.lock` **入库** ⇒ 冻结；
+- `impl/Cargo.lock` **被 `.gitignore:3` 忽略、不入库**（`git check-ignore -v impl/Cargo.lock` 可证）
+  ⇒ CI 现场 `cargo generate-lockfile` 现物化 ⇒ **主 workspace 的 SBOM 反映发布当天 crates.io 的解析结果**。
+
+这正是本机预演 **227** 与发布页 **229** 的差：**+12 −10 = +2**（`ctutils` / `js-sys` / `rustix` /
+`utf8_iter` / `wasm-bindgen`×5 / `web-sys` 换了版本，另净增 `log@0.4.35` 与 `utf_types@1.0.0`）。
+
+⚠ **残留、本版不修**（属发布工程改动，需业主裁决）：连 build job 一起都**不基于入库 lock** ⇒
+同一 tag 重跑两次理论上可解析出不同依赖集。建议把 `impl/Cargo.lock` 入库并让 build / sbom 走 `--locked`。
+
+⚠ **仍然不是正式版**：`prerelease: true`；**正式 `v0.12.1` 的 tag 未发**。
+⚠ **规范侧仍是候选文本**：`wlwl-spec-v1` 的 **v1.0.4 tag 未发**（候选提交 `d6d90c3`）。
+
+---
+
 ## [v0.12.1_rc2] — 2026-11-01（预览版 · 首个**带 TLS 扩展**的归档包）
 
 ⚠ **本段记录 `v0.12.1_rc2` 那个快照**。它是 `v0.12.1_rc1` 之后**全部改动**的收口点：
@@ -49,8 +115,11 @@ production ready 抓走；**正式 `v0.12.1` 的 tag 尚未发**。
    `##[error]TLS extension SBOM not found`。
 
 **修法（不再依赖 cargo-cyclonedx 的落盘布局）**：新增 `script/gen_sbom.py`，
-**只读 `Cargo.lock`**（依赖集随源码冻结 ⇒ `--locked` 语义天然成立）⇒ 输出**一份确定的**
-CycloneDX 1.5 文档；`--merge` 做按 purl 去重合并，并做两条断言：
+**只读 `Cargo.lock`**（依赖集随源码冻结 ⇒ `--locked` 语义天然成立 —— ⚠ **此句只对扩展
+workspace 成立**：`impl/ext/wlwl-tls-ext/Cargo.lock` 入库，而 `impl/Cargo.lock` 被
+`.gitignore` 忽略、由 CI 现场 `cargo generate-lockfile` 物化 ⇒ 主 workspace 那份
+**不是冻结依赖集**，详见 `[v0.12.1_rc3]` 段）⇒ 输出**一份确定的** CycloneDX 1.5 文档；
+`--merge` 做按 purl 去重合并，并做两条断言：
 
 - **逐包对拍**：扩展 lock 的每个第三方包都必须在合并结果里；
 - ⚠ **看来源**（非空的那条）：合并**输入里必须真的有一份** `metadata.component.name == wlwl-tls-ext`
@@ -65,8 +134,8 @@ verify 步骤（**从 `release.yml` 直接抽出那段内联 python 真跑**）�
 喂未合并的那份 ⇒ `does not declare TLS extension coverage` **rc=1**。
 
 ⚠ **`v0.12.1_rc2` 这个 tag 已发布且不移动** ⇒ 修完须发 **`v0.12.1_rc3`** 才能把 release 建出来。
-⚠ 因此**「W-35′ ③ TLS 随包」仍未闭环**：机制已验证（五平台装包 success），
-但**产物尚未落进任何已建成的 release**。
+⚠ 因此**「W-35′ ③ TLS 随包」在本快照上仍未闭环**：机制已验证（五平台装包 success），
+但产物尚未落进任何已建成的 release —— **已在 `v0.12.1_rc3` 闭环**（见上一段）。
 
 ---
 
