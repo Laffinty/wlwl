@@ -22,6 +22,7 @@ mod common;
 
 use std::path::PathBuf;
 use wlwl_eval::Evaluator;
+use wlwl_std::fs::MAX_READ_BYTES;
 
 struct Case {
     name: &'static str,
@@ -714,17 +715,24 @@ fn walk_dir_on_a_missing_root_is_an_err_value_but_an_empty_root_is_not() {
 
 /// ⚠🔴 **[D13-047 / N-038] `READ_BYTES` 的大小护栏。**
 ///
-/// 文件在 **Rust 侧**写:用 `WRITE_BYTES` 造一个 1 MiB+ 的 `ARRAY[INTEGER]`
-/// 需要在解释器里物化上百万个值 —— 那正是这条护栏要防的形状,不能拿被测对象
+/// 文件在 **Rust 侧**写:用 `WRITE_BYTES` 造一个超过上限的 `ARRAY[INTEGER]`
+/// 需要在解释器里物化上千万个值 —— 那正是这条护栏要防的形状,不能拿被测对象
 /// 造测试数据。
 ///
 /// 判据是**语义**:超上限返 `ERR` **值**(不是诊断、不是截断),而且**文件本身
 /// 毫发无损**(`FILE_SIZE` 仍报真实大小)—— 拒绝读取不该有任何副作用。
+///
+/// ⚠ **上限值取自实现常量**(`wlwl_std::fs::MAX_READ_BYTES`)而不是写死数字
+/// ⇒ 上限一改,这条夹具自动跟着走 ⇒ 不会出现「实现改了、断言还钉着旧数字」
+/// 那种假绿。⚠ 旧版这里写死的是 **2 MiB**(旧上限 1 MiB 的两倍)——
+/// 上限提到 16 MiB 之后,2 MiB **已经合法**了,继续拿它当「超限夹具」会让这条
+/// 用例**测不到护栏**(它会读成功)⇒ 夹具改成「生产上限 + 1 字节」。
 #[test]
 fn read_bytes_refuses_a_file_over_the_cap_without_touching_it() {
     let dir = io_scratch();
     let big = abs(&dir, "big.bin");
-    std::fs::write(dir.join("big.bin"), vec![65u8; 2 * 1024 * 1024]).unwrap();
+    let size = MAX_READ_BYTES + 1;
+    std::fs::write(dir.join("big.bin"), vec![65u8; size as usize]).unwrap();
     assert_eq!(
         run_with_dir(&format!("{IO}IS_ERR(READ_BYTES(\"{big}\"))"), &dir),
         "TRUE",
@@ -735,8 +743,51 @@ fn read_bytes_refuses_a_file_over_the_cap_without_touching_it() {
     assert!(payload.contains("op: READ_BYTES"), "payload = {payload}");
     assert_eq!(
         run_with_dir(&format!("{IO}FILE_SIZE(\"{big}\")"), &dir),
-        (2 * 1024 * 1024).to_string(),
+        size.to_string(),
         "a refused read must not truncate, move or delete the file"
+    );
+    let _ = std::fs::remove_dir_all(&dir);
+}
+
+/// ⚠ **[v0.12.1 · 审计 ⑮] 上限之内（真实路径）的文件必须完整读出来。**
+///
+/// 判据是**语义 + 内容**,不是「没报错」:
+/// ① **不是 `ERR`**;② **长度正好**是文件字节数(不是截断、不是空数组);
+/// ③ **首字节与末字节**都对(不是乱序、不是全 0)。
+///
+/// ⚠⚠ **注意「上限之内」而不是「大于 1 MiB」**:审计 ⑮ 的缺口是
+/// 「`STATIC_FILE` 服务不了大于上限的文件」,但**上限本轮刻意不改**
+/// (见 `wlwl-std/src/fs.rs` 的 `MAX_READ_BYTES` 文档注释:内存放大实测 ~120×,
+/// 16 MiB ⇒ 一次读吃 1.8 GiB;且规范已把它裁决为「**已知边界,不作为待修
+/// 缺陷**」⇒ 真正的解法要动成员面 ⇒ 次版本立项)。
+/// ⇒ 这条**不**钉「大于 1 MiB 读得出来」—— 那是被**刻意撤回**的期望。
+///
+/// ⚠ 夹具取 **256 KiB**(上限的 1/4):物化 ~26 万个语言值(≈ 15 MiB)⇒
+/// 解释器侧可承受;「超过上限 ⇒ 拒」由同文件里另一条(生产上限 +1)覆盖。
+#[test]
+fn read_bytes_reads_a_file_well_under_the_cap() {
+    let dir = io_scratch();
+    let big = abs(&dir, "readable.bin");
+    // 256 KiB = 上限(1 MiB)的 1/4。
+    // ⚠ 夹具**不是**常量字节:第 i 个字节 = i % 251 ⇒ 首字节与末字节**不同**
+    // ⇒ 末字节被断言住,才能抓到「尾部被截断 / 顺序错乱」。
+    let size = 256 * 1024usize;
+    let data: Vec<u8> = (0..size).map(|i| (i % 251) as u8).collect();
+    let first = data[0];
+    let last = data[size - 1];
+    std::fs::write(dir.join("readable.bin"), &data).unwrap();
+    // ⚠ `AT` 对数组是 **0-based**(负数从末尾数)⇒ `AT(b, -1, -1)` 是末字节。
+    let src = format!(
+        "{IO}LET(b, READ_BYTES(\"{big}\")); \
+         IF(IS_ERR(b), \"ERR\", \
+            IF(=(LEN(b), {size}), \
+               IF(=(AT(b, 0, -1), {first}), \
+                  IF(=(AT(b, -1, -1), {last}), \"OK\", \"TAIL\"), \"HEAD\"), \"LEN\"))"
+    );
+    assert_eq!(
+        run_with_dir(&src, &dir),
+        "OK",
+        "a file under the cap must read back in full (not an ERR, not truncated)"
     );
     let _ = std::fs::remove_dir_all(&dir);
 }

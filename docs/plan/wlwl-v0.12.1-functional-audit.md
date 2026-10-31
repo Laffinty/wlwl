@@ -268,9 +268,9 @@ Select-String -Path 'D:\Project\wlwl\impl\crates\wlwl-std\wl\std\http.wll' -Patt
 | # | 内容 | 性质 | 复核命令 |
 |---|---|---|---|
 | **⑬** | `PARSE_MULTIPART` 的**文件 part 落盘是有损 UTF-8 文本** ⇒ **二进制 part 无法原样落盘** | 功能降级 | `cargo test --locked -p wlwl-eval --test http_w18_contract` |
-| **⑭** | `PATH_CONTAINS` 是**词法**判定 ⇒ **符号链接逃逸**：根内指向根外的链接仍判合法 | 🔴 **安全相关** | `cargo test --locked -p wlwl-eval --test path_contains_contract` |
-| **⑮** | `READ_BYTES` 有 **1 MiB 上限** ⇒ 大文件读不出 ⇒ `STATIC_FILE` 服务大文件受限 | 功能上限 | `cargo test --locked -p wlwl-eval --test fs_contract` |
-| **W-20** | **HTTPS 真实握手未实测**（扩展在 workspace 外 ⇒ 只覆盖「未加载」与「错误逐字透传」两条） | 验证缺口 | 见 §6 **T-08** |
+| **⑭** | `PATH_CONTAINS` 是**词法**判定 ⇒ **符号链接逃逸**：根内指向根外的链接仍判合法 | 🔴 **安全相关** | `cargo test --locked -p wlwl-eval --test path_symlink_contract` |
+| **⑮** | `READ_BYTES` 有 **1 MiB 上限** ⇒ 大文件读不出 ⇒ `STATIC_FILE` 服务大文件受限 | 功能上限（**本轮重新裁决：不改**，见 §6.3 T-06 的订正块） | `cargo test --locked -p wlwl-eval --test fs_contract` |
+| **W-20** | **HTTPS 真实握手** | ✅ **已实测（补上）** | `https_e2e_contract` **4/0**（真握手拿 **200**）· 见 §6.3 T-08 的落地记录 |
 | **W-25** | `std.sync` **无按名 API**（`COUNTER(initial)` / `SHARED_DICT()` 每次新建）⇒ `http.wll` 内自建"按 name 注册表" | 设计限制 | `grep -n 'SHARED_DICT(' impl/crates/wlwl-std/wl/std/http.wll` |
 | **新** | **SBOM 只覆盖主二进制** —— TLS 扩展是**独立 workspace**，不在 `cargo cyclonedx` 范围内（本轮做 TLS 打包时发现） | 供应链缺口 | `grep -n 'cyclonedx\|sbom' .github/workflows/release.yml` |
 | **规范侧** | 规范仓 `wlwl-spec-v1` 的 **v1.0.4 tag 尚未发** ⇒ 本仓规范文本是**候选文本**；58 个登记项尚未成为已发布规范 | 🔴 **发布阻塞** | `git -C <spec-v1> tag -l 'v1.0.4'`（期望：空） |
@@ -287,6 +287,11 @@ Select-String -Path 'D:\Project\wlwl\impl\crates\wlwl-std\wl\std\http.wll' -Patt
 
 #### T-03 · `TCP_CONNECT`：实现它，还是改台账口径？
 
+> ✅ **方向已定（2026-10-31 · 三方对拍之后）＝ 走 B「改口径」**（**文档订正**，**零代码改动**）。
+> **理由**：三方对拍（计划 §6.2 ↔ 规范 v1.0.4 候选文本 ↔ 实现 `wlwl namespace`）证明 **规范 ≡ 实现** —— 规范里**没有** `TCP_CONNECT`，实现里也**没有** ⇒ 缺的**不是实现**，是**计划侧那两处的账**。⇒ **规范侧不需要动**（v1.0.4 候选文本**已经是对的**）⇒ **不需要重新走规范侧登记流程** ⇒ **这一件不构成 rc2 的阻塞项**。
+> **已落的订正**：§7 台账 `I-3` 行改记 **📖**（口径：本版不交付）· §6.2 新成员表删掉 `TCP_CONNECT` · 证据与复跑命令见 **§9**。
+> ⚠ 下面的 A / B 两个方向**原文保留**（可追溯）—— **A 方向作废**（它会新造一个规范里**没有**的成员 ⇒ 必须走规范侧登记 ⇒ 与「规范已对」的实测结论冲突）。
+
 - **为什么**：台账说已交付、实测零实现、§11.2 说从未注册 —— **三处打脸**。而需求清单 **I-3「出站 TCP」**正是它。
 - **两个方向（需裁决）**：
   - **A（推荐）实现**：与 `TCP_LISTEN` 同形的出站连接（`TCP_CONNECT(host, port, timeout_ms) -> INTEGER`），复用 `tcp.rs` 既有 handle 表与 `socket_waiters`。**成本低**（一个成员 + 一条契约），且补齐 DB/Redis 出站的缺口。
@@ -296,6 +301,11 @@ Select-String -Path 'D:\Project\wlwl\impl\crates\wlwl-std\wl\std\http.wll' -Patt
 - **非目标**：不做 TLS over `TCP_CONNECT`（那是扩展的事）。
 
 #### T-04 · `SERVE` / `COMPRESS_RESPONSE`：实现，还是从计划表删除？
+
+> ✅ **方向已定（2026-10-31 · 三方对拍之后）＝ 走 A「从 §6.2 删除 + 记录偏差」**（**文档订正**，**零代码改动**）。
+> **已落的订正**：§6.2 的 `std.http` 行**删掉** `SERVE` 与 `COMPRESS_RESPONSE`（**18 → 16 员**），并在表下写明：「`SERVE` 的能力由 `TCP_SERVE` + `SERVE_STREAM` 覆盖；`COMPRESS_RESPONSE` 的压缩协商在 `STATIC_FILE` **内部**实现（`http.wll:1189-1194`）⇒ **零新增成员**」。
+> ⚠ **规范侧不需要动** —— 规范 v1.0.4 候选文本的 `std.http` **本来就是 16 员**（**从未登记**这两个成员）⇒ **不需要重新走规范侧登记流程** ⇒ **这一件不构成 rc2 的阻塞项**。
+> ⚠ 下面的 A / B 两个方向**原文保留**（可追溯）。
 
 - **为什么**：这两个名字在 §6.2 里，实现里没有（§5.1 D-2 / D-3）。**若不处理，规范侧落表会登记不存在的成员**（附录 A 对拍必红）。
 - **两个方向（需裁决）**：
@@ -334,29 +344,135 @@ Select-String -Path 'D:\Project\wlwl\impl\crates\wlwl-std\wl\std\http.wll' -Patt
 
 #### T-05 · 🔴 符号链接逃逸（`PATH_CONTAINS` 是词法判定）
 
+> ✅ **已完成（2026-10-31，本批实测）** —— 结论与证据见本条末尾「落地记录」。
+
 - **为什么**：`STATIC_FILE` 是**对外暴露文件系统**的入口；词法判定下"根内指向根外的符号链接"仍判合法 ⇒ **可读到根外文件**。这是 §5.3 ⑭，**计划登记了但没修**。
 - **验收**：新增契约用例 —— 在临时根下建 `link -> ../outside`，请求 `/link/secret` ⇒ 必须 **403/404**，不得返回内容。
   ```powershell
-  cargo test --locked -p wlwl-eval --test path_contains_contract
+  cargo test --locked -p wlwl-eval --test path_symlink_contract
   cargo test --locked -p wlwl-eval --test http_w19_contract
   ```
 - **反向守卫**：把修复去掉（退回词法判定）⇒ 新用例必红（读到 `outside/secret`）。
 - **非目标**：不改 `PATH_CONTAINS` 的**公开语义**（若是词法判定就继续是词法）⇒ 在 `STATIC_FILE` 侧另做 `canonicalize` 后的二次校验。
 - **依赖**：无（可独立做）。
 
+##### ✅ 落地记录（2026-10-31，实测）
+
+**⚠ 先纠正一条我写错的前提**：本条原文假设「`PATH_CANONICAL` 是真 canonicalize，可在 R1 里直接用来做二次校验」——
+**实测它是错的**：`std.fs::PATH_CANONICAL` 走 `fs.rs` 的 `canonicalize()`，只做「分隔符统一 + `PATH_NORMALIZE`
+消解 `.`/`..`」，**不访问文件系统**、**看不见符号链接** ⇒ 拿它做逃逸防护是**空操作**。
+
+**修法**：新增**私有 R2 内核** `_RESOLVE_UNDER(root, rel)`（`wlwl-std/src/fs.rs`，注册在
+`wlwl-std/src/lib.rs` 的 `wlwl:std.http` 的 `kernels` 里）—— Rust 侧 `std::fs::canonicalize` **真解析**符号链接：
+
+- `ok` = 解析后是否仍在 `root` 之下；`path` = **解析后的绝对路径**（`STATIC_FILE` 用它去 stat / 读 ⇒
+  「判的路径」与「读的路径」是同一条）；`exists` 区分 404 与 403。
+- **向上找最近的存在祖先**来判断「不存在」与「逃逸」：祖先在根内 ⇒ **404**；在根外 ⇒ **403**。
+  ⚠ 这一步是被既有契约逼出来的：首版「父目录解析失败就 403」把 `an_absolute_looking_request_path_stays_inside_the_root`
+  （`/etc/passwd` 期望 **404**）打红了。
+- **公共面零变化**（实测 `wlwl namespace` 仍 **25 命名空间 / 288 成员**，`std.http` 16、`std.net` 16）
+  ⇒ **规范侧零改动**（私有内核不进附录 A）。
+
+**为什么不是上一版 agent 的 R1 方案**（`DIR_ENTRIES` 的 lstat 视图 vs `FILE_META` 的 stat 视图对拍）：
+① 每段一次 `readdir`（一次请求 O(段数) 次列目录）；② 会把根内**合法**的符号链接也一起拒掉（语义过严）。
+⇒ R2 方案常数次 `canonicalize`、只挡真逃逸。
+
+**实测读数**：
+
+| 项 | 读数 |
+|---|---|
+| `path_symlink_contract` | **15 passed / 0 failed** |
+| `http_w19_contract`（回归） | **11 passed / 0 failed** |
+| **反向守卫**（去掉 `_RESOLVE_UNDER` 闸） | `a_symlinked_directory_out_of_the_root_does_not_serve_the_outside_{file,index}` **双双 FAILED**，报「STATIC_FILE 把**根外**那份文件的内容端出去了（status=200）」⇒ 恢复后 15/15 绿 |
+| 平台覆盖 | POSIX 符号链接**真跑**；Windows 上文件 symlink 需特权 ⇒ 该条 **skip**（打印说明，不假装覆盖），目录逃逸走 **junction** 兜底后**真跑** |
+| `rustfmt --check` / `clippy -D warnings` / `check-appendix-a` | 全绿 |
+
+
 #### T-06 · `READ_BYTES` 1 MiB 上限 ⇒ 大文件静态服务不可用
+
+> ⚠⚠ **本条的方向已在 2026-10-31 重新裁决（见下方「⚠ 订正」块）** —— 原文的
+> 「抬上限」方案**被撤回**，改为**保持上限 + 加两条守卫 + 另立次版本项**。
 
 - **为什么**：⑮。`STATIC_FILE` 走 `READ_BYTES` ⇒ 超过 1 MiB 的文件服务不了。对一个"能当静态站点服务"的语言来说这是硬伤。
 - **验收**：`STATIC_FILE` 服务 8 MiB 文件 ⇒ 200 + `Content-Length` 正确。
 - **反向守卫**：保留上限但**必须**返回明确 `ERR`（不许静默截断）。
 - **非目标**：不做流式 sendfile（那是 `ADR-0017 Step 3` 之后）。
 
+##### ⚠ 订正（2026-10-31，本批实测后）：**抬上限的方案撤回**，本轮**不改上限**
+
+**实测数据**（本机，`wlwl run` + `GetProcessMemoryInfo` 采样峰值工作集）：
+
+| 文件 | 墙钟 | **峰值工作集** | 放大倍数 |
+|---|---|---|---|
+| 1 MiB | 0.19 s | **119.7 MiB** | ~120× |
+| 4 MiB | 0.65 s | 455.9 MiB | ~114× |
+| 8 MiB | 1.35 s | 903.7 MiB | ~113× |
+| 16 MiB | 4.09 s | **1799.7 MiB** | ~112× |
+
+⇒ **时间**近线性（每翻倍约 2.1×）**不是**瓶颈；**内存放大 ~112×** 才是 ——
+`READ_BYTES` 的产物是**语言值数组**（1 字节 = 1 个 `Value`，实测 56 B）⇒
+抬到 16 MiB ⇒ **一次读吃 1.8 GiB** ⇒ 把「读一个小文件」的内存耗尽面**放大 15 倍**。
+
+⇒ 而**规范侧已经裁决过这件事**：系统册「写得出 ≠ 读得回」一节明写
+「**大载荷的正解是让它待在文件里**」「**记为已知边界，不作为待修缺陷**」
+「**流式写 / 分段读成员本册不做** —— 它们要动的是**成员面**」。
+⇒ 按 §6.3 的 **N-4**，「修改既有成员的可观察语义」在**修订版本**里**禁止**；
+真正的解法（流式 / 分段）**要新增公共面成员** ⇒ 属**次版本** ⇒ 与业主
+「版本锁死 v1.0.4」冲突 ⇒ **立为 v1.1.0 的独立立项**，不在 v0.12.1 里做。
+
+⇒ **本轮实际交付（三条，都是净收益且与档位无关）**：
+1. **上限保持 1 MiB**（规范一致 ⇒ 规范 ≡ 实现 的不变量不破）。
+2. **`read_bytes_with_cap` 可测接缝**（与既有 `write_bytes_with_cap` 同套路）。
+3. **两条守卫**：
+   - `the_read_cap_fits_the_language_value_budget`：把「上限 × `size_of::<Value>()`」
+     钉在 **≤ 64 MiB** ⇒ `Value` 一旦变大**那条就红** ⇒ 逼着重新裁决档位。
+   - `read_bytes_reads_up_to_the_cap_and_refuses_one_byte_more` 的**常量断言**
+     钉住「上限 = 规范的 1 MiB」⇒ **谁想抬上限而没改规范，那条必红**。
+4. **「大文件静态服务」** ⇒ 明确转入 **v1.1.0 独立立项**（需要流式 / 分段成员）。
+
+**复核命令**
+```powershell
+cd D:\Project\wlwl\impl
+cargo test --locked -p wlwl-eval --test fs_contract --no-fail-fast   # 30/0
+cargo test --locked -p wlwl-std --lib --no-fail-fast                # 388/0
+```
+
+
 #### T-08 · HTTPS 真实握手端到端实测
+
+> ✅ **已完成（2026-10-31，本机实测）** —— 读数见本条末尾。
 
 - **为什么**：W-20 只验了"扩展未加载"与"证书错误逐字透传"两条；**真实握手从未跑过**。
 - **验收**：起一个带自签证书的本地 TLS 服务（或对 `https://example.com` 视网络而定）⇒ `std.http::GET` 返回 200；证书不匹配 ⇒ `ERR` 且消息逐字含 `certificate`。
 - **反向守卫**：把 `--ext` 去掉 ⇒ 必须返回 `ERR([kind:"TlsError", reason:"no TLS provider loaded"])`（这条已有用例）。
 - **依赖**：扩展可加载（本机可行）。
+
+##### ✅ 落地记录（2026-10-31）
+
+**新增** `impl/crates/wlwl-cli/tests/https_e2e_contract.rs`（4 条）+ 证书夹具
+`impl/crates/wlwl-cli/tests/fixtures/`（CA / server / **错 CA** / 生成脚本 / README）。
+
+- 形态：**服务端与客户端各起一个进程**（服务端用扩展自己的 `tls::LISTEN` + `tls::ACCEPT`），
+  只连 `127.0.0.1`，**不联网**；证书 `ECDSA P-256`，`SAN` 含 `127.0.0.1`，
+  **有效期 2025-10-31 → 2126-10-07（100 年）**。
+- 读数（本机实跑）：**4 passed / 0 failed**（0.26 s）——
+  `the_https_request_completes_a_real_tls_handshake_and_gets_a_200` ·
+  `without_the_extension_the_https_request_reports_no_tls_provider` ·
+  `the_handshake_rejects_a_certificate_that_is_not_signed_by_the_trusted_ca` ·
+  `a_missing_extension_file_makes_the_host_refuse_to_start`。
+- **反向守卫（手工独立复现，不靠测试自证）**：
+  不加载扩展 ⇒ **逐字** `[kind: TlsError, reason: no TLS provider loaded]`；
+  `--ext` 指向不存在路径 ⇒ **更早一层**（宿主加载）报
+  `extension library not found: '...no-such-extension.dll'` 且 exit 1；
+  错误 CA ⇒ `invalid peer certificate: UnknownIssuer`。
+- **顺带修掉一处真偶发风险**：原实现「客户端退出后读一次服务端标记」⇒ 慢机上会红
+  （服务端 stdout 由另一线程收）⇒ 改成轮询等待。
+- ⚠ **已知限制（如实登记）**：
+  ① 只在 **Windows 本机**实跑，Linux / macOS 未实跑；
+  ② 测试内「扩展产物不存在就自己 build」的 **fallback 分支未被真正触发过**（本机产物一直在）；
+  ③ 🔴 **证书私钥（`*.key`）明文入库** —— 仅测试用途、只监听回环，但**可能触发 GitHub secret scanning**；
+     若推送被拦，需改为「测试时用 `fixtures/gen_e2e_cert.py` 现场生成」。
+
 
 #### T-09 · SBOM 覆盖 TLS 扩展
 
@@ -427,7 +543,7 @@ git -C <path-to-wlwl-spec-v1> tag -l 'v1.0.4'    # 期望：现在为空
 - [ ] **T-01 规范仓 v1.0.4 tag 已发**，tag 注释含 SP-1…SP-5 与全部新增成员
 - [ ] **T-02 `v0.12.1_rc2` 的 release 已建成**，且**包内 `wlwl-tls/` 目录存在**（含动态库 + `ABI_VERSION` + `SHA256SUMS`）
 - [ ] 五平台 **job 级**结论全 success（不是只看 run 级）
-- [ ] **T-05 符号链接逃逸已修**并有反向守卫（这一条是**安全项**，建议不允许延后）
+- [x] **T-05 符号链接逃逸已修**并有反向守卫（2026-10-31 完成：`path_symlink_contract` 15/0，去掉闸 ⇒ 必红）
 - [ ] **T-10 三处文档不一致已订正**，且面板与台账**逐项相等**
 - [ ] 主 CI 三平台全绿（`cargo fmt` / `clippy -D warnings` / `doc -D warnings` / 全量测试 / 附录 A 对拍 / §5.4 门禁）
 
@@ -443,3 +559,108 @@ git -C <path-to-wlwl-spec-v1> tag -l 'v1.0.4'    # 期望：现在为空
 | unix 侧契约 | WSL2：`fs_atomic_lock_meta_contract` **21/0** + 单独 3 遍绿 + 逆向验证必红 |
 | 计划原文 | `docs/plan/wlwl-v0.12.1-build-plan.md` §4 / §6.2 / §7 / §11.1 / §11.2 / §11.6b |
 | 变更史 | `CHANGELOG.md` 的 `[v0.12.1 收口 · 第二批]` 及其「修补」「结案」「第三条红」四段 |
+
+---
+
+## 9 订正（本轮三方对拍后的结论修正）
+
+> **性质**：本节**追加**在 §1–§8 与附录之后，**不改写**前面的原文（§0.4 第 1 条「只加不删」）⇒ 旧结论**可追溯**；凡与本节冲突，**以本节为准**（逐条取代关系见 §9.1 / §9.2）。
+> **触发**：2026-10-31 的**三方对拍** —— 计划 §6.2 ↔ 规范仓 v1.0.4 候选文本 ↔ 实现 `wlwl namespace`，**一次**跑完（脚本见 §9.3）。
+> **一句话结论**：**规范 v1.0.4 候选文本与实现逐成员一致**（规范 ≤ 实现**零缺失**；实现**没有**「规范未登记」的成员）⇒ §5.1 的三条差异**全部**从「实现缺 3 个成员」refined 为「**计划 §6.2 与台账 `I-3` 的账目错误**」⇒ **规范侧不需要动** ⇒ **T-03 / T-04 不构成 rc2 阻塞项**。
+
+### 9.1 §5.1 三条差异的结论 refined（取代关系）
+
+| 原条目 | 原结论（§5.1，**保留**） | **现结论（取代）** |
+|---|---|---|
+| **D-1** | `std.net::TCP_CONNECT` —— 台账标「本轮落地」，实际零实现 ⇒ **实现缺失** | **不是实现缺口**，是**计划 §6.2 新成员表 + §7 台账 `I-3` 的账目错误**。**规范 v1.0.4 候选文本与实现逐成员一致**：规范 `std.net` **16 员无** `TCP_CONNECT`，实现 `wlwl:std.net` **16 员也无** ⇒ 缺的只是计划那两处的账。**处置**：§6.2 删该成员 + 台账 `I-3` 改记 **📖**（本版不交付）⇒ **规范侧不需要动** ⇒ **不构成 rc2 阻塞项** |
+| **D-2** | `std.http::SERVE` —— 计划表列了，**未实现、未登记** ⇒ **实现缺失** | **不是实现缺口**，是**计划 §6.2 的账目错误**（这个成员**从来不存在**）。规范 `std.http` **16 员** / 实现 **16 员**，**逐成员一致**。**能力不缺**：`TCP_SERVE` + `SERVE_STREAM` 已覆盖。**处置**：§6.2 删该成员 ⇒ **规范侧不需要动** ⇒ **不构成 rc2 阻塞项** |
+| **D-3** | `std.http::COMPRESS_RESPONSE` —— 计划表列了，**未实现**；但**功能在**（**已实现（内部）**） | **不是实现缺口**，是**计划 §6.2 的账目错误**（成员**从来不存在**）。⚠ 原判「**已实现（内部）**」的结论**不变**（压缩协商在 `STATIC_FILE` 内部实现，`http.wll:1189-1194`）—— 只是**它从来不是公共面成员**。**处置**：§6.2 删该成员 ⇒ **规范侧不需要动** ⇒ **不构成 rc2 阻塞项** |
+
+⇒ **D-1 / D-2 / D-3 全部 refined**。⚠ **不变的部分**：§5.1 的**证据**（`wlwl namespace` 读数、grep 零命中、`http.wll:1189-1194` 的内部实现位置）**全部仍然成立** —— 被推翻的只是**归因**（不是「实现缺」，而是「计划账错」）。
+
+### 9.2 §5.2 三处文档不一致的处置（取代关系）
+
+| 原条目 | 现结论 |
+|---|---|
+| **I-1**（台账 `I-3` ↔ §11.2 两处打脸） | **已消解**：台账 `I-3` 行改记 **📖**（口径：本版不交付）· §6.2 删该成员 ⇒ 两处**口径一致** |
+| **I-2**（§11.6b 面板 ↔ §7 台账状态列） | **已消解**：§11.6b 面板按台账状态列**重算**为 **39 ✅ + 11 🔧 + 2 🔀 + 5 📖 = 57**（⬜ **0 条**）。⚠ 原面板写「46 完全落地 / 🔧 1 条 / ⬜ 4 条 / 📖 6 条」**全部对不上**；⚠ 且 `I-3` 原被记成 `✅+📖` ⇒ 改记 📖 后是 **✅ 39 / 📖 5**（**不是** 40 / 4）—— 面板以**台账状态列的实数**为准 |
+| **I-3**（§11.2「三道对拍闸会红」） | **已消解**：该警告**已过期** —— 附录 A 抄件**早已同步**（`docs/wlwl-spec-reference.md:6673` / `:6696` / `:6707`）⇒ `check-appendix-a` 与 §5.4 门禁在 **CI run #341 三平台全绿** ⇒ §11.2 已改写为**实测事实** |
+
+⚠ **另**：§5.2 末尾提到的「§6.2 把 `std.log` 记作 4 员、§11.2 记作 7 员」⇒ **已消解**：§6.2 的 `std.log` 行改为 **7 员**（补 `METRIC_COUNTER` / `METRIC_INC` / `METRIC_TIMER`）⇒ 两处一致。
+
+### 9.3 可复跑的三方对拍脚本（本轮入库）
+
+**`script/audit_member_threeway.py`** —— 一条命令把「计划 / 规范 / 实现」三边对拍完：
+
+```powershell
+cd D:\Project\wlwl
+python script\audit_member_threeway.py                    # 规范仓默认 D:\Project\wlwl-spec-v1
+python script\audit_member_threeway.py <规范仓目录>        # 规范仓路径可用 argv 覆盖
+```
+
+**实测输出（2026-10-31）** —— 关键行：
+
+```
+namespace               plan  spec  impl  verdict
+wlwl:std.http             18    16    16  plan-only: COMPRESS_RESPONSE,SERVE
+wlwl:std.log               4     7     7  spec-only(new ns): METRIC_COUNTER,METRIC_INC,METRIC_TIMER
+wlwl:std.net               3    16    16  plan-only: TCP_CONNECT; (spec has 14 historical member(s) ...)
+
+impl totals: namespaces = 25, members = 288
+spec totals: namespaces = 25, members = 288
+
+== spec <= impl ? (does the implementation cover every spec member) ==
+  missing in impl: NONE  ->  spec<=impl: no missing
+
+== impl <= spec ? (does the implementation expose unregistered members) ==
+  unregistered in impl: NONE  ->  impl<=spec: every member is registered
+
+== plan sec.6.2 (pre-fix snapshot) vs spec: members the plan over-claims ==
+  plan-only member: wlwl:std.http::COMPRESS_RESPONSE
+  plan-only member: wlwl:std.http::SERVE
+  plan-only member: wlwl:std.net::TCP_CONNECT
+  count: 3
+
+== live plan sec.6.2 vs spec vs impl ==
+  live plan sec.6.2 matches the spec and the implementation
+  wlwl:std.collection::ARRAY_GET: global built-in (registered in appendix G, not a namespace member) -> expected difference
+
+RESULT: spec<=impl no missing = True ; impl<=spec no unregistered = True
+        plan over-claims (pre-fix) = 3 member(s)
+```
+
+**脚本的四个性质**（都是本轮特意做的，缺一个就不该入库）：
+
+1. **不用临时目录** —— 实现侧**直接调** `wlwl namespace` 并解析 stdout 的 JSON（`.scratch` 的旧版本要 `%TEMP%` 中转文件）。
+2. **规范仓路径可配** —— `argv[0]` = 规范仓目录（默认 `D:\Project\wlwl-spec-v1`）；`argv[1]` = `wlwl.exe` 路径；`argv[2]` = 计划文档路径。⚠ **规范仓不在本机时**：改 `argv[0]` 即可，不会写死本地路径。
+3. **输出纯 ASCII** —— Windows 控制台是 **GBK**，中文会 `UnicodeEncodeError`；脚本自己声明 `# -*- coding: ascii -*-` ⇒ 源码里混入非 ASCII 字节会**直接语法错**（而不是运行时才炸）。
+4. **两侧各读一次** —— `PLAN_BEFORE` 是**订正前** §6.2 的**逐字快照**（故意保留 ⇒ 每次都把「计划多出的 3 个成员」打出来，**可追溯**）；**现表**由脚本**实时解析**计划文档的 §6.2 ⇒ 订正后读作「live plan sec.6.2 matches the spec and the implementation」。
+
+⚠ **命名空间名的两套写法**（脚本里已做映射，别自己再踩）：规范册写 `std.http` ⇒ 实现侧路径是 `wlwl:std.http`；官方包 `ai` / `agent` 在实现侧**没有** `wlwl:` 前缀。
+
+### 9.4 对 §6 工作清单的影响（T-03 / T-04）
+
+| 条目 | 方向 | 是否阻塞 rc2 |
+|---|---|---|
+| **T-03**（`TCP_CONNECT`） | **B 改口径（文档订正）** —— 台账 `I-3` 改记 📖 + §6.2 删该成员 | ❌ **不阻塞**（规范侧不需要动 ⇒ 不必重走规范侧登记流程） |
+| **T-04**（`SERVE` / `COMPRESS_RESPONSE`） | **A 删除 + 记录偏差** —— §6.2 删两个成员 + 写明能力归属 | ❌ **不阻塞**（同上） |
+| **T-01**（规范仓 `v1.0.4` tag） | **不变** | ⚠ **仍是发布前置**（**待业主指示**） |
+| **T-02**（发 `v0.12.1_rc2`） | **不变** | ⚠ **仍是发布动作**（**待业主指示**） |
+
+⚠ **本轮改的是「方向」，不是「是否需要业主点头」**：T-03 / T-04 的方向由**三方对拍的实测证据**定案（不是新增能力、不动代码、不动规范）；**T-01 / T-02 仍是业主的动作**，本轮**一个字没改**。
+
+### 9.5 对 §8 验收清单的影响
+
+- §8 第 1 条「T-03 / T-04 已裁决，且裁决结果落进了「台账 + §6.2 表」两处」⇒ **实质已满足**（两处都已落：§7 台账 `I-3` + §6.2 表）。⚠ 「已裁决」字面上指**业主裁决** —— 本轮是**依据实测证据**由集成方定案；若业主另有口径，以业主口径为准（届时**仍然不用动规范侧**，只要再改那两处文档）。
+- §8 其余各条（T-01 / T-02 / T-05 / T-10 / CI 全绿）**状态不变**。
+- ⚠ **T-10**（§5.2 三处不一致订正）⇒ 本轮**已完成**其中三处：§6.2 表（`std.http` / `std.log` / `std.net` 三行）· §11.2 的过期警告 · §11.6b 面板计数 ⇒ **面板与台账状态列已逐项相等**。
+
+### 9.6 本节新增的证据
+
+| 证据 | 位置 |
+|---|---|
+| 三方对拍脚本 | `script/audit_member_threeway.py`（本轮入库；纯 ASCII · 不用临时目录 · 规范仓路径可配） |
+| 规范侧成员表 | `D:\Project\wlwl-spec-v1\docs\stdlib\wlwl-v1.0-stdlib-registry.md` 附录 A（HEAD `d6d90c3` = v1.0.4 候选文本，**tag 未发**） |
+| 实现侧公共面 | `impl/target/debug/wlwl.exe namespace`（**25 命名空间 / 288 成员**） |
+| 规范侧总量 | 同上脚本读出 **25 命名空间 / 288 成员** ⇒ 与实现**逐成员一致** |
+| 计划侧订正 | `docs/plan/wlwl-v0.12.1-build-plan.md` §6.2（`std.http` 16 员 / `std.log` 7 员 / `std.net` 2 员）· §7 台账 `I-3` · §11.2 · §11.6b 面板 |

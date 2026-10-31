@@ -74,7 +74,7 @@
 | 裁决 | 条数 | 编号 |
 |---|---|---|
 | **✅ 实现侧落地**（工作项 W-01…W-35） | **50** | A-1 A-2 A-3 A-4 A-5 B-1 B-2 B-3 B-4 B-5 B-6 B-7 C-1…C-12 D-1…D-7 E-1 E-2 E-3 E-4 E-5 F-1 F-2 F-3 F-4 G-1 G-2 G-3 G-4 H-1 H-2 H-3 H-4 H-5 H-6 |
-| **📖 口径答复**（需求方明确只要排期口径） | **5** | I-1 I-2 I-4 I-5（+ I-3 兼落地 TCP_CONNECT） |
+| **📖 口径答复**（需求方明确只要排期口径） | **5** | I-1 I-2 I-3 I-4 I-5（⚠ **I-3 改记「本版不交付」** —— 原口径写「兼落地 `TCP_CONNECT`」，实为**计划侧笔误**（规范与实现**均无**该成员），已按三方对拍订正；见 §7 台账 `I-3` 行） |
 | **🔀 归应用层**（按需求方自己的建议） | **2** | E-6 E-7 |
 | **🔧 事实前提订正后并入上面** | （已计入 50） | B-1 B-2 B-6 H-1 H-2 H-3 H-4 H-5 H-6 E-4 D-1 |
 
@@ -455,7 +455,7 @@ resolve(path) 的最终顺序：
 - **目标**：一个 handler 在等 10 s 的慢速 HTTP 响应时，**其它 handler 仍能正常响应**。
 - **依赖**：W-10（挂起点幂等模式要与 `E0014` 判定共存）
 - **归属文件**：`impl/crates/wlwl-std/src/net.rs`、`impl/crates/wlwl-std/src/process.rs`、`impl/crates/wlwl-value/src/lib.rs`（`YieldReason` 新变体）、`impl/crates/wlwl-eval/src/runtime.rs`（挂起点 → 唤醒通道）
-- **改动要点**：① 新成员 `HTTP_REQUEST_ASYNC(method, url, body?, headers?, timeout_ms?) -> INTEGER`（返回**任务句柄**）；② 新成员 `PROCESS_RUN_ASYNC(argv, opts?) -> INTEGER`；③ 顺带落地 **I-3 的 `TCP_CONNECT`**（出站 TCP 句柄：`TCP_CONNECT(host, port, timeout_ms) -> INTEGER`，与 `TCP_LISTEN` 同形；HTTPS 与 DB/Redis 出站都靠它）；④ 阻塞工作搬到**工作线程**，成员在挂起点上 `Yield`，就绪后由调度器唤醒；⑤ **幂等**：重入时用 `resume_hint` / `current_task_key` 判定「这次是重放」⇒ **绝不重复发起请求**（照抄 `tcp.rs:539` / `:584` 的既有模式）。
+- **改动要点**：① 新成员 `HTTP_REQUEST_ASYNC(method, url, body?, headers?, timeout_ms?) -> INTEGER`（返回**任务句柄**）；② 新成员 `PROCESS_RUN_ASYNC(argv, opts?) -> INTEGER`；③ **原计划**顺带落地 **I-3 的 `TCP_CONNECT`**（出站 TCP 句柄：`TCP_CONNECT(host, port, timeout_ms) -> INTEGER`，与 `TCP_LISTEN` 同形）—— ⚠ **本轮未落地**：规范 v1.0.4 候选文本与实现**均无**该成员（**计划侧笔误**，见 §7 台账 `I-3` 行）⇒ **本工作项实际交付的是 ①② 两个异步成员**；④ 阻塞工作搬到**工作线程**，成员在挂起点上 `Yield`，就绪后由调度器唤醒；⑤ **幂等**：重入时用 `resume_hint` / `current_task_key` 判定「这次是重放」⇒ **绝不重复发起请求**（照抄 `tcp.rs:539` / `:584` 的既有模式）。
 - **验收**：新增 probe 用例 `P121_b5_async_outbound` ⇒ 一个 handler 等 10 s 慢响应，另一个 handler 在 1 s 内拿到 200
 - **反向守卫**：去掉幂等判定 ⇒ 用例必红（重复发起 ⇒ 计数翻倍）
 - **非目标**：**不改** `HTTP_*` / `PROCESS_RUN` 的阻塞语义（撞 `:223`）；**不实现**流式响应体
@@ -790,11 +790,11 @@ resolve(path) 的最终顺序：
 
 | 命名空间 | 新成员 | 册 |
 |---|---|---|
-| **`std.http`**（新） | `PARSE_REQUEST` `BUILD_RESPONSE` `SERVE_STREAM` `SERVE` `ROUTE` `MATCH_ROUTE` `PARSE_COOKIES` `SET_COOKIE` `PARSE_FORM` `PARSE_MULTIPART` `STATIC_FILE` `GET` `POST` `REQUEST` `COMPRESS_RESPONSE` `RATE_LIMITER` `RULESET_LOAD` `CLIENT_IP` | 系统册 |
-| **`std.log`**（新） | `LOG` `LOG_SET_LEVEL` `LOG_FILE` `LOG_METRICS` | 系统册 |
+| **`std.http`**（新） | `PARSE_REQUEST` `BUILD_RESPONSE` `SERVE_STREAM` `ROUTE` `MATCH_ROUTE` `PARSE_COOKIES` `SET_COOKIE` `PARSE_FORM` `PARSE_MULTIPART` `STATIC_FILE` `GET` `POST` `REQUEST` `RATE_LIMITER` `RULESET_LOAD` `CLIENT_IP` | 系统册 |
+| **`std.log`**（新） | `LOG` `LOG_SET_LEVEL` `LOG_FILE` `LOG_METRICS` `METRIC_COUNTER` `METRIC_INC` `METRIC_TIMER` | 系统册 |
 | **`std.sync`**（新） | `COUNTER` `COUNTER_INC` `COUNTER_ADD` `COUNTER_GET` `SHARED_DICT` `SHARED_DICT_SET` `SHARED_DICT_GET` `SHARED_DICT_SNAPSHOT` | 并发册 |
 | **`std.signal`**（新） | `ON_SIGNAL` `STOP` | 系统册 |
-| `std.net` | `TCP_SERVE` `HTTP_REQUEST_ASYNC` `TCP_CONNECT` | 系统册 |
+| `std.net` | `TCP_SERVE` `HTTP_REQUEST_ASYNC` | 系统册 |
 | `std.text` | `NFKC` `CASE_FOLD` `STRIP_INVISIBLE` | 文本册 |
 | `std.fs` | `PATH_CONTAINS` `PATH_CANONICAL` `WRITE_FILE_ATOMIC` `LOCK_FILE` `UNLOCK_FILE` `FILE_MTIME` `DIR_ENTRIES` `FILE_META` | 系统册 |
 | `std.str` | `QUERY_PARSE` | 文本册 |
@@ -802,6 +802,12 @@ resolve(path) 的最终顺序：
 | `std.test` | `ASSERT_MSG` `ASSERT_TRUE` `EXPECT_ERR_CODE` `SKIP` `TEST_CASES` `TEMP_DIR` `RUN_TESTS_ASYNC` | 核心册 |
 | `std.regex` | `RE_MATCHES_FULL` | 文本册 |
 | `std.collection` | `ARRAY_GET` | 核心册 |
+
+⚠ **本表的三处订正（2026-10-31 三方对拍后）** —— 差的是**计划侧自己的账**，与规范 / 实现无关（可复跑：`python script/audit_member_threeway.py`）：
+
+- **`std.http` 行（18 → 16）**：原表多列了 `SERVE` 与 `COMPRESS_RESPONSE` ⇒ **这两个成员从来不存在**（规范 v1.0.4 候选文本与实现都只有 **16 员**；`wl/std/http.wll` 的 `EXPORT([...])` 只有 16 个名字；全仓 grep `"SERVE"` / `COMPRESS_RESPONSE` **零命中**）⇒ **删除**。⚠ **能力不缺**：`SERVE` 的能力由 `TCP_SERVE` + `SERVE_STREAM` 覆盖；`COMPRESS_RESPONSE` 的压缩协商在 `STATIC_FILE` **内部**实现（`http.wll:1189-1194`）⇒ **零新增成员**，规范侧 `std.http` 亦为 **16 员**。
+- **`std.log` 行（4 → 7）**：原表**少列**了 `METRIC_COUNTER` / `METRIC_INC` / `METRIC_TIMER` ⇒ 改为 **7 员**（与 §11.2 的登记清单一致；规范与实现都是 7 员）。
+- **`std.net` 行（3 → 2）**：原表列了 `TCP_CONNECT` ⇒ **删除** —— **计划侧笔误**：规范 v1.0.4 候选文本与实现**均无此成员**（需求 **I-3** 的出站 TCP **本轮不交付**；§7 台账 `I-3` 行已按此订正）。⚠ `W-14` 交付的是 `HTTP_REQUEST_ASYNC` / `PROCESS_RUN_ASYNC`，**不含** `TCP_CONNECT`。
 
 ⚠ **附录 A 的改法**：**逐字**改规范仓注册镜像册附录 A 的对应行（成员**按规范表里的顺序**插入，不是追加到末尾）⇒ 再逐字抄到本仓 `docs/wlwl-spec-reference.md:6618-6642` ⇒ `check-appendix-a` 必须绿。
 ⚠ **总纲 §0.9 登记行**：按 D-13 体例写**一行**（覆盖上表全部新增），条件是 §0.9 有登记行 + 发布说明显式列出（N-1）。
@@ -891,7 +897,7 @@ resolve(path) 的最终顺序：
 | H-6 | 容器取值 API 统一 | 🔧 | W-29 | SP-4 | **不统一既有** ⇒ 新增 `ARRAY_GET` + 错误提示 |
 | I-1 | HTTP/2 | 📖 | — | — | **口径**：v1.0.x 不做。HTTP/1.1 的三个已知短板（chunked 服务端拒绝 / 无推送 / 无多路复用）由 `std.http` 的 Keep-Alive + 206 覆盖到需求方的场景；若需求方必须要 HTTP/2 ⇒ 独立立项（需要 `std.http` 的流式升级支持） |
 | I-2 | WebSocket | 📖 | — | — | **口径**：不做。需求方原 Python 版的实时预览**本来就因 P0-1 不可用**（清单 `:325`）⇒ 不构成迁移阻塞；要做的前提是「流式响应体」（`std.net` 明确不做，N-15）⇒ 属 `ADR-0017 Step 3` 之后 |
-| I-3 | `TCP_CONNECT` | ✅+📖 | W-14 | SP-4 | **本轮落地** `std.net::TCP_CONNECT`（出站必需：HTTPS 与 DB/Redis 都靠它）⇒ 口径：**v0.12.1 交付** |
+| I-3 | `TCP_CONNECT` | 📖 | W-14（**只交付** `HTTP_REQUEST_ASYNC` / `PROCESS_RUN_ASYNC`，**不含** `TCP_CONNECT`） | — | **口径：本版不交付**（按需求方自己的建议归入「本版不交付」—— 需求清单 `:429` 本身就写着「传输族能 listen/serve 但**不能主动连出**」）⇒ `std.net::TCP_CONNECT` **不存在**。⚠ **原表误记为「本轮落地」**（`✅+📖`）——那是**计划侧的账目错误**，不是实现缺口：**证据** ① 规范 v1.0.4 候选文本 `docs/stdlib/wlwl-v1.0-stdlib-registry.md` 的 `std.net` 行**无** `TCP_CONNECT`（16 员，含 `TCP_SERVE` / `HTTP_REQUEST_ASYNC`）② 实现 `wlwl namespace` 的 `wlwl:std.net` **16 员无它** ③ 全仓 grep `TCP_CONNECT` 只命中**两处注释**（`impl/tests/concurrency/tcp_accept_single_wakeup.wll:22` 与 `impl/crates/wlwl-eval/tests/b2_accept_wakeup_contract.rs:25`，两处都在明说「**没有**客户端侧的 `TCP_CONNECT`」）⇒ **规范 ≡ 实现**，缺的只是本行的账。⚠ **后果**：DB/Redis 出站**无原生路径**（HTTPS 出站走 `tls::CONNECT`，不受影响）；本轮**零新增成员** |
 | I-4 | brotli | 📖 | — | — | **口径**：不做。`std.compress` 现有 zstd / gzip / zlib / raw deflate；brotli 需要新增第三方依赖（破 `ADR-0022` 画像）⇒ 需求方用 `gzip` / `zstd` 协商即可 |
 | I-5 | HTTP/3 | 📖 | — | — | **口径**：不做。前提是 HTTP/2（I-1）+ UDP 传输族（`std.net` 只有 TCP）⇒ 属独立立项 |
 
@@ -1054,7 +1060,7 @@ python script/check_spec.py                     # 附录 A ↔ 各册成员表 �
 ### 11.2 未做的登记（**规范侧**，下一轮按此顺序做）
 
 新成员累计 **58 个登记项 = 57 个命名空间成员 + 1 个全局内建**（`wlwl namespace` 实测 **288 = 基线 231 + 57**;⚠ 两口径别混:`wlwl namespace` **不**计全局内建）：`std.text` +3 · `std.fs` **+8**（含第十波的 `FILE_META`）· `std.net` **+2**（`TCP_SERVE` `HTTP_REQUEST_ASYNC`）· `std.process` **+1**（`PROCESS_RUN_ASYNC`）· `std.format` +1 · `std.str` +1 · `std.log` 7 · `std.sync` 8 · `std.signal` 2 · `std.test` **+7** · `std.http` **+16**（`PARSE_REQUEST` / `BUILD_RESPONSE` / `SERVE_STREAM` / `ROUTE` / `MATCH_ROUTE` / `PARSE_COOKIES` / `SET_COOKIE` / `PARSE_FORM` / `PARSE_MULTIPART` / `STATIC_FILE` / `GET` / `POST` / `REQUEST` / **`RATE_LIMITER` / `RULESET_LOAD` / `CLIENT_IP`**）· `std.regex` +1 · **全局内建** +1（`ARRAY_GET`,附录 G,**不计命名空间面**）= 57 + 1 = **58**。⚠ 另加 **1 个新命名空间**（`std.signal`;含 `std.log`/`std.sync`/`std.http` 共 **4 个**新命名空间）+ **附录 G 一行**（`ARRAY_GET`）。⚠ **`TCP_CONNECT` 不在此列** —— §6.2 老名单写过它,但实现侧从未注册（`b2_accept_wakeup_contract.rs:25` 明写「没有客户端侧的 `TCP_CONNECT`」）⇒ **登记为计划侧笔误**,不进规范。
-⚠ **这些成员在规范仓落表前，实现侧的三道对拍闸会红**（`check-appendix-a` / `stdlib_appendix_a_sync` 的成员集合 / `net_contract`·`fs_contract`·`str_math_contract`·`text_contract` 的成员表）⇒ **那是「规范侧未跟上」，不是实现缺陷**。
+✅ **这条「会红」的警告已过期（2026-10-31 实测订正）** —— 抄件**早就同步了**：附录 A 抄件**已含**本轮新成员（`docs/wlwl-spec-reference.md:6673` = `SHARED_DICT_SNAPSHOT` · `:6696` = `SERVE_STREAM` · `:6707` = `RATE_LIMITER`）⇒ **`check-appendix-a` 与 §5.4 的三道对拍闸在 CI run #341 全绿**（三平台）。⇒ **当前不存在红闸**：**规范 v1.0.4 候选文本与实现逐成员一致**（规范 ≤ 实现**零缺失**；实现**没有**「规范未登记」的成员）—— 可复跑：`python script/audit_member_threeway.py`（规范仓路径可用 argv 覆盖）。⚠ 另注：§6.2 的新成员表原有**三处账目错误**（`SERVE` / `COMPRESS_RESPONSE` / `TCP_CONNECT` 三个**不存在**的成员 + `std.log` 少列 3 员）——已按三方对拍结果订正（见 §6.2 的订正说明与 §7 台账 `I-3` 行）。
 
 ⚠ **扩展命名空间不在这张表里**（`tls` 10 员 + `crypto` 8 员）⇒ 它们**不进附录 A、不进公共面清单**，只进**一致性册 §5.5 台账**（步骤 ①）—— 业主 2026-10-28 裁决 **D1：`tls::LOCAL_ADDR` 保留** ⇒ 台账按 **10** 个成员写。
 
@@ -1134,10 +1140,10 @@ python script/check_spec.py                     # 附录 A ↔ 各册成员表 �
 | 口径 | 数值 | 说明 |
 |---|---|---|
 | **工作项** | **33 / 33（100%）** | ⚠ **收口批 2 项已落地**（**W-34** 文档/技能包 · **W-35′** 登记+抄件+全量门禁）⇒ **本计划的工作项全部结案**; 第一波 8 + 第二波 5 + 第三波 3 + 第四波 2 + 第五波 2 + 第六波 2 + 第七波 1（**W-32**）+ 第八波 0（门禁补跑）+ **第九波 4（W-17 · W-31 · W-39 · G-4②）** + **第十波 3（W-18 · W-19 · W-20）** + **第十一波 1（W-25）**;⚠ 分母由 32 订正为 **33**（新增 **W-39**，第九波 macOS 欠账单独项）;⚠ **G-4② 不新增工作项** —— 它是 W-33（G-4）的最后一项（§13.4 降级登记 ②）⇒ 落地它只改**需求**计数，不改**工作项**分母 |
-| **需求条目** | **46 / 57 完全落地**（+1） | ⚠ **收口批补齐 H-4**（「差 W-34 文档口径」⇒ W-34 落地 ⇒ H-4 升为完全落地）⇒ 🔧 部分由 **2 条** 降为 **1 条**（只剩 **G-3** 的「调试器未做」）⇒ 46+1+4+6 = 57 ✓; 第十一波落地 **D-3 / D-5 / D-7**（W-25 的限流 + 规则热加载 + 真实 IP，原在未开工）与 **D-6**（审计中间件侧补齐 ⇒ 从「部分」升为「完全落地」）。第十波落地 **C-4 / C-5 / C-6**（W-18 的路由 + Cookie + 表单/multipart）· **C-7 / C-10 / C-12**（W-19 的静态文件 + 条件请求 + 压缩）· **C-11 / A-2**（W-20 的 chunked 客户端 + HTTPS 出站）。第九波落地 **C-3 / C-8 / C-9**（W-17 的 Keep-Alive + 请求预算 + 大小限制）· **G-1**（W-31 的 `std.test` 增强）· **G-4**（第九波补做 `.wll.sig` 工作流简化 ⇒ **从「部分」升为「完全落地」**）。🔧 部分 **2 条**（**G-3** 只做最小 REPL、调试器未做 · H-4 差 W-34 文档口径）· ⬜ 未开工 **4 条** · 📖 口径答复 **6 条**（E-6 E-7 I-1 I-2 I-4 I-5）⇒ 45+2+4+6 = 57 ✓ |
+| **需求条目** | **39 / 57 完全落地** | ✅ **39 条** + 🔧 **11 条** + 🔀 **2 条** + 📖 **5 条** + ⬜ **0 条** = **57** ✓（**2026-10-31 按 §7 台账的状态列逐行重数**）。🔧 部分 **11 条** = `A-2`（入口是 `std.http::GET`）· `B-2`（唤醒一个）· `B-6`（终值三态）· `D-1`（零新成员）· `E-4`（只补 `QUERY_PARSE`）· `H-1` · `H-2` · `H-3` · `H-4`（只补 `PATH_CANONICAL`）· `H-5`（只补 `RE_MATCHES_FULL`）· `H-6`（只补 `ARRAY_GET`）⇒ 全部是「**按需求方的口径改了做法**」，不是「没做」。🔀 归应用层 **2 条** = `E-6` · `E-7`。📖 口径答复 **5 条** = `I-1` · `I-2` · `I-3`（**本版不交付** `TCP_CONNECT`）· `I-4` · `I-5`。⬜ 未开工 **0 条**（台账每行都有状态列 ⇒ 本就没有 ⬜ 行）。⚠ **本行原口径已作废**：原文写「46 完全落地 / 🔧 1 条（只剩 G-3）/ ⬜ 4 条 / 📖 6 条」⇒ 与 §7 台账**逐项对不上**（且 `I-3` 原被误记为 `✅+📖`）⇒ 现以台账状态列的**实数**为准（`I-3` 改记 📖 ⇒ ✅ 39 / 📖 5） |
 | **业主裁决项** | **4 / 4 已执行**（D2 D3 D4a + **D1**） | ⚠ **D1 随规范侧 v1.0.4 落表一并执行**（`tls` 10 员进 §5.5 台账第一行）; D2 → W-36 ✅ · D3 → W-35 ✅ · D4a → W-37 ✅（**证伪结案**，见 §11.4b）；D1 随规范侧 §5.5 台账执行；D4b **不排期** |
 | **新增公共面成员** | **58 个**（✅ **已全部落规范仓 v1.0.4**，`d6d90c3`） | 第三波 30 + 第四波 2 + 第五波 4 = 36，**第九波 +8**（`std.test` **+7**：`ASSERT_MSG` / `ASSERT_TRUE` / `EXPECT_ERR_CODE` / `SKIP` / `TEST_CASES` / `TEMP_DIR` / `RUN_TESTS_ASYNC` · `std.http` **+1**：`SERVE_STREAM`）= 44，**第十波 +11**（`std.http` **+10**：`ROUTE` / `MATCH_ROUTE` / `PARSE_COOKIES` / `SET_COOKIE` / `PARSE_FORM` / `PARSE_MULTIPART` / `STATIC_FILE` / `GET` / `POST` / `REQUEST` · `std.fs` **+1**：`FILE_META`）= 55，**第十一波 +3**（`std.http`：`RATE_LIMITER` / `RULESET_LOAD` / `CLIENT_IP`）= **58**;⚠ 第八波**未新增**;⚠ **G-4② 不新增**（CLI 子命令不是公共面）;⚠ 另加 **1 个新命名空间**（`std.signal`）+ **附录 G 一行**（`ARRAY_GET`）;⚠ **附录 E.4 要补一行**：`wlwl sig --format json` 的 `drift` 字段 + `sig_schema_version` 记 **1.1.0**（第九波 G-4②） |
-| **门禁** | 见 §13.2（第十一波集成后实测） | 绿 —— fmt 0 diff · clippy 0 error · doc 0 error · `wlwl-std` **385/0** · `http_contract` **25/0** · `middleware_contract` **25/0** · probe **3/3（196 用例）** · conformance **6/0**;红 —— 仍是「规范侧未跟上」那一类（`stdlib_appendix_a_sync` 4 failed · `fs_contract` 28/1，详见 §13.2）;**run #328（第十波，head `89e1f30`）复核**：三平台 fmt/clippy/doc/deny/conformance 全绿，step 15 唯一红 = `fs_member_set_matches_the_spec_table`（规范侧欠账），`a_reader_never_sees_a_half_written_target` macOS/ubuntu 两轮 ok ⇒ **零新增红，⑨ 复核结案** |
+| **门禁** | 见 §13.2（第十一波集成后实测） | 绿 —— fmt 0 diff · clippy 0 error · doc 0 error · `wlwl-std` **385/0** · `http_contract` **25/0** · `middleware_contract` **25/0** · probe **3/3（196 用例）** · conformance **6/0**;红 —— 仍是「规范侧未跟上」那一类（`stdlib_appendix_a_sync` 4 failed · `fs_contract` 28/1，详见 §13.2）;**run #328（第十波，head `89e1f30`）复核**：三平台 fmt/clippy/doc/deny/conformance 全绿，step 15 唯一红 = `fs_member_set_matches_the_spec_table`（规范侧欠账），`a_reader_never_sees_a_half_written_target` macOS/ubuntu 两轮 ok ⇒ **零新增红，⑨ 复核结案**。⚠ **2026-10-31 更新**：那批「规范侧未跟上」的红**已随规范仓 v1.0.4 落表 + 附录 A 抄件同步而消失** —— **CI run #341 三平台全绿**（含 `check-appendix-a` 与 §5.4 的对拍闸）⇒ 上文的「红」是 **run #328 时点的旧读数**，见 §11.2 |
 | **关键路径** | **W-21 + W-22 已就位**；**W-11 修掉 B-2 根因**；**W-15 修掉 B-6 真缺陷**；**W-30 给出运行期活读数**；**W-32 补上静态预检** | TLS 扩展端到端可跑；惊群不再发生 ⇒ **SP-2 作废**;「丢失的挂起信号伪装成正常 NULL」已修;任务树/挂起点/时长**运行期可见**;⚠ **第七波补上静态这一环** —— 宿主挂起点成员写错位置**在 `check` 阶段就被拦**（复用既有 `E0014`） |
 | **版本口径** | 实现 **v0.12.1** ↔ 规范 **v1.0.4** | 未动；零处修改既有成员、零处新增诊断码（W-33 只改**消息文本**与位置;W-30 只加内部字段与 CLI 子命令;W-32 规则①**复用** `E0014`、规则②**无码**） |
 | **待业主裁决** | **0 件**（本波无新增待决） | ⚠ **本波登记 3 项**（见 §13.4）：W-32 的两条「静态 vs 动态」差异 · `SCOPE` 体的文案-判据不一致 · **「顶层也静态拦」的口径决定**（建议单独立项） |

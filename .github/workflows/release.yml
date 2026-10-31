@@ -331,6 +331,23 @@ jobs:
     # [v0.2 Phase G10] SBOM generation. CycloneDX JSON attached
     # alongside the binary archive. Anchored to the build job so we
     # only emit one SBOM per target (not one per matrix leg).
+    #
+    # [T-09 / v0.12.1] **SBOM 覆盖 TLS 扩展的依赖闭包。**
+    # `impl/ext/wlwl-tls-ext/` 是**独立 workspace**(自带空的 `[workspace]` 表
+    # ⇒ 自己解版本、自己出 `Cargo.lock`)⇒ 主 workspace 的 `cargo cyclonedx`
+    # **扫不到它**⇒ 此前发布的 SBOM 里没有 TLS 扩展自持的那套依赖
+    # (`rustls` / `ring` / `webpki-roots` …)⇒ 供应链清单漏了随发行包一起
+    # 发出去的那半边(审计 `docs/plan/wlwl-v0.12.1-functional-audit.md` §5.3)。
+    #
+    # ⇒ 本 job 现在做四件事：
+    #   ① 主 workspace 出一份 SBOM(原有行为不变);
+    #   ② **对扩展单独出一份**(`--target all` ⇒ 连平台专属的依赖也覆盖);
+    #   ③ 把 ② 的组件**合并进 ①**(同一个文件),并把「覆盖了扩展 lock 里的哪些包」
+    #      写进 `metadata.properties`(带扩展 lock 的 sha256)⇒ 可回溯、可守卫;
+    #   ④ **回读校验**:真的把落盘的 SBOM 读回来逐条核对(见下面的 verify 步)。
+    #
+    # ⚠ **TLS 扩展本体不是 SBOM 组件** —— 它是我们自己的产物;SBOM 要覆盖的是
+    #   它的**第三方依赖**(第三方 crates)。
     name: generate SBOM (CycloneDX)
     needs: build
     runs-on: ubuntu-latest
@@ -352,6 +369,14 @@ jobs:
         with:
           version: ^0.5
 
+      # [T-09] 合并 / 校验 SBOM 要读 JSON ⇒ 显式装一个解释器。
+      # 与 build job 的 `Set up Python (G-06)` 同一套 action —— **不是新工具链**,
+      # 只是把「用哪个 python」钉死,不依赖 runner 镜像里的默认 python。
+      - name: Set up Python (SBOM merge & verify)
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.x'
+
       - name: Materialize Cargo.lock (if missing)
         shell: bash
         working-directory: impl
@@ -361,8 +386,10 @@ jobs:
           fi
 
       - name: cargo cyclonedx (build release first to populate SBOM deps)
+        shell: bash
         working-directory: impl
         run: |
+          set -euo pipefail
           cargo build --locked --release --bin wlwl
           # cargo-cyclonedx 0.5.x removed --output-file; the default
           # output path is `target/<override-filename>.json`. So with
@@ -371,13 +398,279 @@ jobs:
             --format json \
             --override-filename sbom \
             --spec-version 1.5
-          echo "ASSET_SBOM=target/sbom.json" >> "$GITHUB_ENV"
+          # ⚠ [T-09] 落盘位置**不写死**:0.5.9 的实际输出路径在本仓**从未被验证过**
+          #   (下面的 upload 路径一直是错的 ⇒ 产物从来没进过 artifact ⇒ 没人看到
+          #   过这个文件到底落在哪)⇒ 这里**找出来**再归位到 `target/sbom.json`。
+          #   `-print -quit` 而不是 `| head -1`:后者在 `set -o pipefail` 下会因
+          #   SIGPIPE 让整条管道返回 141 ⇒ 把这一步搞红。
+          sbom_json=""
+          for cand in target/sbom.json sbom.json; do
+            if [ -f "$cand" ]; then sbom_json="$cand"; break; fi
+          done
+          if [ -z "$sbom_json" ]; then
+            sbom_json="$(find . -maxdepth 3 -name 'sbom*.json' -type f -print -quit)"
+          fi
+          if [ -z "$sbom_json" ]; then
+            echo "::error::cargo cyclonedx produced no SBOM for the main workspace"
+            exit 1
+          fi
+          mkdir -p target
+          if [ "$sbom_json" != "target/sbom.json" ]; then
+            cp "$sbom_json" target/sbom.json
+          fi
+          echo "main SBOM: $sbom_json -> target/sbom.json"
+          # ⚠ 上传的路径是**相对仓库根**的 ⇒ 之前写 `target/sbom.json`(少一层
+          #   `impl/`)⇒ upload-artifact 找不到文件,而它默认 `if-no-files-found:
+          #   warn` ⇒ **上传「成功」但产物根本没进 artifact**(见下面的 error 选项)。
+          echo "ASSET_SBOM=impl/target/sbom.json" >> "$GITHUB_ENV"
+
+      # [T-09] **TLS 扩展单独出一份 SBOM**(它是独立 workspace,主 workspace 那次
+      # `cargo cyclonedx` 扫不到它)。
+      - name: cargo cyclonedx (TLS extension workspace)
+        shell: bash
+        working-directory: impl/ext/wlwl-tls-ext
+        run: |
+          set -euo pipefail
+          # ⚠ 扩展的 `Cargo.lock` **是入库的** ⇒ 依赖集随源码冻结。
+          #   这里**绝不**跑 `cargo generate-lockfile`(那会造出一份不入库的 lock,
+          #   依赖集就跟发布物对不上了)⇒ lock 缺失就响亮失败。
+          test -f Cargo.lock || { echo "::error::impl/ext/wlwl-tls-ext/Cargo.lock is missing (it must be committed)"; exit 1; }
+          # ⚠ cargo-cyclonedx **没有** `--locked` 选项 ⇒ 用 cargo 自己的
+          #   `--locked` 先把「lock 与 Cargo.toml 一致」这条约束钉死:
+          #   lock 过期 ⇒ 这一步直接红(而不是悄悄重解一份新 lock)。
+          cargo metadata --locked --format-version 1 > /dev/null
+          cargo cyclonedx \
+            --format json \
+            --override-filename sbom-tls-ext \
+            --target all \
+            --spec-version 1.5
+          # 同上:落盘位置找出来,不写死。
+          tls_json=""
+          for cand in target/sbom-tls-ext.json sbom-tls-ext.json; do
+            if [ -f "$cand" ]; then tls_json="$cand"; break; fi
+          done
+          if [ -z "$tls_json" ]; then
+            tls_json="$(find . -maxdepth 3 -name 'sbom-tls-ext*.json' -type f -print -quit)"
+          fi
+          if [ -z "$tls_json" ]; then
+            echo "::error::cargo cyclonedx produced no SBOM for the TLS extension"
+            exit 1
+          fi
+          # ⚠ 记**绝对路径**:下一步的 CWD 是仓库根,相对路径会指到别处。
+          echo "TLS_SBOM=$GITHUB_WORKSPACE/$tls_json" >> "$GITHUB_ENV"
+
+      # [T-09] 把扩展的 SBOM **合并进**主 SBOM(同一个文件)。
+      - name: Merge the TLS extension SBOM into the main SBOM
+        shell: bash
+        env:
+          TLS_SBOM: ${{ env.TLS_SBOM }}
+        run: |
+          set -euo pipefail
+          python - <<'PY'
+          import hashlib, json, os, re, sys
+
+          MAIN = "impl/target/sbom.json"
+          LOCK = "impl/ext/wlwl-tls-ext/Cargo.lock"
+          EXT_NAME = "wlwl-tls-ext"
+
+          def die(msg):
+              sys.stderr.write("::error::%s\n" % msg)
+              sys.exit(1)
+
+          tls_path = os.environ.get("TLS_SBOM", "")
+          if not tls_path or not os.path.isfile(tls_path):
+              die("TLS extension SBOM not found (TLS_SBOM=%r)" % tls_path)
+          if not os.path.isfile(MAIN):
+              die("main SBOM not found: %s" % MAIN)
+          if not os.path.isfile(LOCK):
+              die("TLS extension Cargo.lock not found: %s" % LOCK)
+
+          with open(MAIN, encoding="utf-8") as f:
+              base = json.load(f)
+          with open(tls_path, encoding="utf-8") as f:
+              tls = json.load(f)
+
+          def ref_of(c):
+              return c.get("bom-ref") or c.get("purl") or "%s@%s" % (c.get("name"), c.get("version"))
+
+          def nv(c):
+              return "%s@%s" % (c.get("name"), c.get("version"))
+
+          base_root = ref_of(base["metadata"]["component"])
+          tls_root = ref_of(tls["metadata"]["component"])
+
+          # ① 组件:主 SBOM 的 + 扩展的(按 bom-ref 去重)。
+          #    ⚠ TLS 扩展**本体**(及其 target 子组件)是我们的产物 ⇒ 不进组件表。
+          comps = list(base.get("components", []))
+          known = set(ref_of(c) for c in comps)
+          added = []
+          for c in tls.get("components", []):
+              r = ref_of(c)
+              if r == tls_root or r.startswith(tls_root + "?"):
+                  continue
+              if r in known:
+                  continue
+              known.add(r)
+              comps.append(c)
+              added.append(nv(c))
+
+          # ② 依赖图:扩展的边挂到主 SBOM 的根节点上(发布物是一套)。
+          deps = {}
+          order = []
+          def add(r, ds):
+              if r not in deps:
+                  deps[r] = set()
+                  order.append(r)
+              deps[r].update(ds or [])
+          for d in base.get("dependencies", []):
+              add(d.get("ref"), d.get("dependsOn"))
+          for d in tls.get("dependencies", []):
+              r = d.get("ref")
+              add(base_root if r == tls_root else r, d.get("dependsOn"))
+          valid = set(known) | {base_root}
+          base["components"] = comps
+          base["dependencies"] = [
+              {"ref": r, "dependsOn": sorted(x for x in deps[r] if x in valid)}
+              for r in order if r in valid
+          ]
+
+          # ③ 覆盖标记(回溯 + 反向守卫用):扩展 lock 的 sha256 + 覆盖到的包清单。
+          lock_sha = hashlib.sha256(open(LOCK, "rb").read()).hexdigest()
+          lock_pkgs = set()
+          for blk in open(LOCK, encoding="utf-8").read().split("[[package]]")[1:]:
+              n = re.search(r'^name = "(.*)"', blk, re.M)
+              v = re.search(r'^version = "(.*)"', blk, re.M)
+              if n and v:
+                  lock_pkgs.add("%s@%s" % (n.group(1), v.group(1)))
+          lock_pkgs = set(p for p in lock_pkgs if not p.startswith(EXT_NAME + "@"))
+          have = set(nv(c) for c in comps)
+          covered = sorted(p for p in lock_pkgs if p in have)
+          missing = sorted(p for p in lock_pkgs if p not in have)
+
+          props = base.setdefault("metadata", {}).setdefault("properties", [])
+          def setprop(name, value):
+              for p in props:
+                  if p.get("name") == name:
+                      p["value"] = value
+                      return
+              props.append({"name": name, "value": value})
+
+          setprop("wlwl:sbom:covered-workspaces", "impl, impl/ext/wlwl-tls-ext")
+          setprop("wlwl:sbom:tls-ext-lock", "impl/ext/wlwl-tls-ext/Cargo.lock")
+          setprop("wlwl:sbom:tls-ext-lock-sha256", lock_sha)
+          setprop("wlwl:sbom:tls-ext-packages-covered", str(len(covered)))
+          setprop("wlwl:sbom:tls-ext-packages", ",".join(covered))
+
+          with open(MAIN, "w", encoding="utf-8") as f:
+              json.dump(base, f, indent=2, ensure_ascii=False)
+              f.write("\n")
+
+          print("components: %d (added from the TLS extension: %d)" % (len(comps), len(added)))
+          print("TLS extension lock: %d packages, covered: %d" % (len(lock_pkgs), len(covered)))
+          if added:
+              print("added: %s" % ", ".join(added))
+          if missing:
+              print("::warning::TLS extension lock packages not in the merged SBOM: %s" % ", ".join(missing))
+          PY
+
+      # [T-09] **回读校验** —— 不是「命令退出码 0 就算数」:把落盘的 SBOM 真的读回来
+      # 逐条核对。这就是审计 T-09 的反向守卫:**把扩展那两步从 job 里摘掉
+      # ⇒ 下面的标记检查必红**(主 SBOM 里本来就有 rustls/ring —— 走 reqwest
+      # ⇒ 光查「名字在不在」不够,必须查「这份 SBOM 声明覆盖了扩展的 lock」)。
+      - name: Verify the SBOM on disk (TLS extension closure covered)
+        shell: bash
+        run: |
+          set -euo pipefail
+          python - <<'PY'
+          import hashlib, json, os, re, sys
+
+          MAIN = "impl/target/sbom.json"
+          LOCK = "impl/ext/wlwl-tls-ext/Cargo.lock"
+          EXT_NAME = "wlwl-tls-ext"
+          REQUIRED = ("rustls", "ring", "webpki-roots")
+
+          def die(msg):
+              sys.stderr.write("::error::%s\n" % msg)
+              sys.exit(1)
+
+          if not os.path.isfile(MAIN):
+              die("SBOM not found on disk: %s" % MAIN)
+          if os.path.getsize(MAIN) == 0:
+              die("SBOM is empty: %s" % MAIN)
+          with open(MAIN, encoding="utf-8") as f:
+              bom = json.load(f)
+
+          if bom.get("bomFormat") != "CycloneDX":
+              die("not a CycloneDX document: %r" % bom.get("bomFormat"))
+          if str(bom.get("specVersion")) != "1.5":
+              die("unexpected specVersion: %r" % bom.get("specVersion"))
+
+          props = {}
+          for p in bom.get("metadata", {}).get("properties", []):
+              props[p.get("name")] = p.get("value")
+
+          # ① 覆盖声明:扩展那步被摘掉 ⇒ 没有这段标记 ⇒ 红。
+          if props.get("wlwl:sbom:covered-workspaces") != "impl, impl/ext/wlwl-tls-ext":
+              die("the SBOM does not declare TLS extension coverage "
+                  "(metadata.properties 'wlwl:sbom:covered-workspaces' missing)")
+
+          lock_sha = hashlib.sha256(open(LOCK, "rb").read()).hexdigest()
+          if props.get("wlwl:sbom:tls-ext-lock-sha256") != lock_sha:
+              die("the SBOM was not generated from the committed TLS extension Cargo.lock "
+                  "(lock sha256 %s, SBOM claims %r)" % (lock_sha, props.get("wlwl:sbom:tls-ext-lock-sha256")))
+
+          # ② 扩展 lock 里的包集合(= 扩展依赖闭包的真相来源)。
+          lock_pkgs = {}
+          for blk in open(LOCK, encoding="utf-8").read().split("[[package]]")[1:]:
+              n = re.search(r'^name = "(.*)"', blk, re.M)
+              v = re.search(r'^version = "(.*)"', blk, re.M)
+              if n and v:
+                  lock_pkgs[n.group(1)] = v.group(1)
+          lock_pkgs.pop(EXT_NAME, None)
+
+          # ③ SBOM 里的组件。
+          comps = {}
+          for c in bom.get("components", []):
+              comps.setdefault(c.get("name"), set()).add(c.get("version"))
+
+          for name in REQUIRED:
+              want = lock_pkgs.get(name)
+              if want is None:
+                  die("required crate %r is not in the TLS extension Cargo.lock" % name)
+              if want not in comps.get(name, set()):
+                  die("required crate %s@%s is MISSING from the SBOM" % (name, want))
+              print("ok: %s@%s is present in the SBOM" % (name, want))
+
+          if EXT_NAME in comps:
+              die("the TLS extension itself (%s) must not be an SBOM component" % EXT_NAME)
+
+          # ④ 标记里声称覆盖的扩展依赖,必须真的在组件表里。
+          claimed = [x for x in (props.get("wlwl:sbom:tls-ext-packages") or "").split(",") if x]
+          for item in claimed:
+              n, _, v = item.rpartition("@")
+              if v not in comps.get(n, set()):
+                  die("the SBOM claims to cover %s, but that component is missing" % item)
+
+          missing = sorted("%s@%s" % (n, v) for n, v in lock_pkgs.items()
+                           if v not in comps.get(n, set()))
+          print("TLS extension lock: %d packages; represented in the SBOM: %d"
+                % (len(lock_pkgs), len(lock_pkgs) - len(missing)))
+          if missing:
+              print("::warning::TLS extension packages not represented in the SBOM: %s"
+                  % ", ".join(missing))
+          print("SBOM verified on disk: %d components" % len(bom.get("components", [])))
+          PY
 
       - name: Upload SBOM artifact
         uses: actions/upload-artifact@v4
         with:
           name: sbom
           path: ${{ env.ASSET_SBOM }}
+          # ⚠ [T-09] 历史上出过「上传显示 success 但文件其实没落盘」——
+          #   upload-artifact v4 默认 `if-no-files-found: warn` ⇒ 路径写错只是
+          #   一句 warning,产物静默消失(下游 sign job 拿到的是空的 SBOM)。
+          #   这里显式 `error`:路径写错 = 这一步红,发布不会带着空的 SBOM 出去。
+          if-no-files-found: error
 
   sign:
     name: cosign keyless sign binaries + SBOM

@@ -1119,14 +1119,28 @@ LET(STATIC_FILE, FUN((root, path, opts),
         RETURN(_STATIC_RESP(403, ["content-length": "0"], [])),
         NULL);
 
+     // ④½ ⚠⚠ **符号链接逃逸闸**（`PATH_CONTAINS` 之后的**第二道**）。
+     //   ⚠ `PATH_CONTAINS` 是**词法**判定 ⇒ 根内一个**指向根外**的链接
+     //     （`root/link -> ../outside`）**仍判合法** ⇒ 会把**根外**的文件端出去。
+     //   ⚠ `PATH_CANONICAL` **帮不上忙**（它是纯词法归一，看不见符号链接）
+     //     ⇒ 这里走**私有 R2 内核** `_RESOLVE_UNDER`：**真解析**符号链接后
+     //     再判「在不在根下」（Rust 侧 `std::fs::canonicalize`）。
+     //   ⚠ **判的路径与读的路径必须是同一条** ⇒ 用内核返回的 `path`
+     //     （解析后的绝对路径）去 stat / 读，而不是 `target0`。
+     LET(res, _RESOLVE_UNDER(r, rel));
+     IF(==(AT(res, "ok", FALSE), FALSE),
+        RETURN(_STATIC_RESP(403, ["content-length": "0"], [])),
+        NULL);
+     LET(target0b, AT(res, "path", target0));
+
      // ⑤ 元数据（**一次** stat 的快照：`std.fs::FILE_META`）
-     LET(m0, _STATIC_META(target0));
+     LET(m0, _STATIC_META(target0b));
      IF(==(AT(m0, "ok", FALSE), FALSE),
         RETURN(_HTTP_ERR("STATIC_FILE", AT(m0, "reason", "cannot stat the target file"))),
         NULL);
      LET(meta0, AT(m0, "meta", DICT()));
      LET(is_dir, ==(AT(meta0, "is_dir", FALSE), TRUE));
-     LET(target, IF(is_dir, CAT(target0, "/", index_name), target0));
+     LET(target, IF(is_dir, CAT(target0b, "/", index_name), target0b));
      LET(meta, IF(is_dir,
                    (LET(m1, _STATIC_META(target));
                     IF(==(AT(m1, "ok", FALSE), FALSE),

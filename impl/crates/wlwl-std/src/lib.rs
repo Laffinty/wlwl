@@ -408,6 +408,12 @@ pub static LANG_SOURCES: &[StdSource] = &[
             ("_HTTP_GET", net::http_client_get as StdFn),
             ("_HTTP_POST", net::http_client_post as StdFn),
             ("_HTTP_REQUEST", net::http_client_request as StdFn),
+            // [T-05 / 审计 §5.3 ⑭] `STATIC_FILE` 的**符号链接逃逸闸** ——
+            // **真解析**符号链接后的包含判定（`PATH_CONTAINS` 是词法判定 ⇒
+            // 根内一个指向根外的链接仍判合法 ⇒ 会把根外文件端出去）。
+            // ⚠ 它是**私有内核** ⇒ **不进公共面** ⇒ 规范侧**零改动**
+            //   （加公共成员要动 v1.0.4 + 附录 A ⇒ 本轮不做）。
+            ("_RESOLVE_UNDER", fs::resolve_under as StdFn),
         ],
     },
 ];

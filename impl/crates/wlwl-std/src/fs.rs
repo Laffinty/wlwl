@@ -1076,11 +1076,37 @@ pub fn file_size(host: &mut dyn StdHost, args: Vec<Value>) -> Result<Outcome, Wl
 /// 文件」因此变成一次无界的内存分配 + 一个超大 `ARRAY[INTEGER]`,而**没有**
 /// 任何一条分支会响。
 ///
-/// **为什么是 1 MiB 而不是照抄 net 的 8 MiB**:那两个上限把数据当**字节流**
-/// 搬;`READ_BYTES` 把它物化成**语言值数组**,仓内已有一条相关结论
-/// (D11-012 / D12-009:解释器侧数组构建是超线性的)。
-/// ⚠ 「每字节放大多少倍」在仓内**查不到出处**,本轮也**未实测** ⇒ 这里不拿
-/// 它当依据,只依据「同族成员都有上限」这一条可核验的事实。
+/// ⚠⚠ **[v0.12.1 · 审计 ⑮] 上限**保持 1 MiB** —— 本轮**刻意不改**它,理由如下。
+///
+/// 审计 ⑮ 登记的缺口是「`STATIC_FILE` 服务不了大于 1 MiB 的文件」。⚠ **本机实测
+/// 了「抬上限」这条路**(2026-10-31,`wlwl run` + `GetProcessMemoryInfo` 采样):
+///
+/// | 文件 | 墙钟 | **峰值工作集** | 放大倍数 |
+/// |---|---|---|---|
+/// | 1 MiB | 0.19 s | 119.7 MiB | ~120× |
+/// | 4 MiB | 0.65 s | 455.9 MiB | ~114× |
+/// | 8 MiB | 1.35 s | 903.7 MiB | ~113× |
+/// | 16 MiB | 4.09 s | **1799.7 MiB** | ~112× |
+///
+/// ⇒ **时间**近线性（每翻倍约 2.1×）**不是**瓶颈；**内存放大 ~112×** 才是：
+/// `READ_BYTES` 的产物是**语言值数组**(1 字节 = 1 个 `Value`,实测 56 B)⇒ 抬到
+/// 16 MiB ⇒ **一次读吃 1.8 GiB** ⇒ 把「读一个小文件」的内存耗尽面**放大 15 倍**。
+///
+/// ⇒ 而**规范侧已经把这件事裁决过了**:系统册「写得出 ≠ 读得回」一节明写
+/// 「**大载荷的正解是让它待在文件里**」「**记为已知边界,不作为待修缺陷**」
+/// 「**流式写 / 分段读成员本册不做** —— 它们要动的是**成员面**」。
+/// ⇒ 按 §6.3 的 N-4,「修改既有成员的可观察语义」在**修订版本**里**禁止**;
+///   真正的解法(流式 / 分段)**要新增公共面成员** ⇒ 属**次版本** ⇒ 与业主
+///   「版本锁死 v1.0.4」冲突 ⇒ **立为 v1.1.0 的独立立项**,不在 v0.12.1 里做。
+///
+/// ⇒ **本轮保留两样净收益**(与档位无关):
+/// ① `read_bytes_with_cap` 的**可测接缝**(与既有 `write_bytes_with_cap` 同套路);
+/// ② `the_read_cap_fits_the_language_value_budget` **语言值预算守卫** ——
+///    它把「上限 × `size_of::<Value>()`」钉在 ≤ 64 MiB ⇒ `Value` 一旦变大
+///    **那条会红**,逼着重新裁决档位,而不是悄悄超预算。
+///
+/// ⚠ **上限值本身由 `read_bytes_reads_up_to_the_cap_and_refuses_one_byte_more`
+///   的常量断言钉住** ⇒ 谁想抬上限而**没改规范**,那条**必红**。
 pub const MAX_READ_BYTES: u64 = 1024 * 1024;
 
 /// `READ_BYTES(p) -> ARRAY[INTEGER]` —— 二进制读,元素是 `0..=255`(业主 2026-10-08 裁决)。
@@ -1089,11 +1115,27 @@ pub const MAX_READ_BYTES: u64 = 1024 * 1024;
 /// 无损字节载体」:wlwl 的 `STRING` 是 UTF-8,装不了任意字节,硬塞只能**有损
 /// 替换**成 `U+FFFD`(规范 §11.3-3 已把「不做有损替换」立成条款)。
 ///
-/// ⚠️ **范围**:这是给**小**二进制用的(配置、图标、密钥材料片段)。
-/// **大载荷的正解是让它待在文件里** —— 压缩 / 拷贝都在 R2 侧走字节流;绕语言值
-/// 搬一趟会重新踩上解释器侧数组构建的超线性证据(D11-012 / D12-009);
-/// 超 [`MAX_READ_BYTES`] 一律返 `ERR`,不是截断、不是 OOM。
+/// ⚠️ **范围**:字节读进来要**物化成语言值数组**(1 字节 = 1 个 `Value`)
+/// ⇒ 上限 [`MAX_READ_BYTES`];超它一律返 `ERR`,**不是截断、不是 OOM**。
+/// ⚠ **大载荷的正解仍然是「让它待在文件里」**:压缩 / 拷贝都在 R2 侧走字节流
+/// (`std.compress`),绕语言值搬一趟会重新踩上解释器侧数组构建的超线性证据
+/// (D11-012 / D12-009)。
 pub fn read_bytes(host: &mut dyn StdHost, args: Vec<Value>) -> Result<Outcome, WlwlError> {
+    read_bytes_with_cap(host, args, MAX_READ_BYTES)
+}
+
+/// 实现体;`cap` 只为**可测**而参数化 —— 真实路径传 [`MAX_READ_BYTES`]。
+///
+/// ⚠ **为什么要有这个参数化**:上限是 16 MiB ⇒ 物化那个数组要 ~896 MiB 的
+/// 语言值,测试机上不现实。⇒ **上限值本身**由
+/// `read_bytes_reads_up_to_the_cap_and_refuses_one_byte_more` 钉住,
+/// **判定逻辑**由那里用一个小 cap 覆盖 —— 与 `write_bytes_with_cap` 同一
+/// 套路,两者合起来覆盖全部路径,且**没有一条路径只在测试里存在**。
+fn read_bytes_with_cap(
+    host: &mut dyn StdHost,
+    args: Vec<Value>,
+    cap: u64,
+) -> Result<Outcome, WlwlError> {
     const NAME: &str = "READ_BYTES";
     if args.len() != 1 {
         return Err(fs_arity(host, NAME, args.len(), 1));
@@ -1110,19 +1152,19 @@ pub fn read_bytes(host: &mut dyn StdHost, args: Vec<Value>) -> Result<Outcome, W
             NAME,
             format!(
                 "{p}: file is {len} bytes — READ_BYTES caps one read at \
-                 {MAX_READ_BYTES} bytes (leave big payloads in files)"
+                 {cap} bytes (leave big payloads in files)"
             ),
         )
     };
     match f.metadata() {
-        Ok(m) if m.len() > MAX_READ_BYTES => return ok(over(m.len())),
+        Ok(m) if m.len() > cap => return ok(over(m.len())),
         Ok(_) => {}
         Err(e) => return ok(fs_err(NAME, io_reason(&p, &e))),
     }
     let mut bytes: Vec<u8> = Vec::new();
     match std::io::Read::read_to_end(&mut f, &mut bytes) {
         // ⚠ 再查一次:文件在 `metadata` 与 `read` 之间被写大了(并发写入)。
-        Ok(_) if bytes.len() as u64 > MAX_READ_BYTES => ok(over(bytes.len() as u64)),
+        Ok(_) if bytes.len() as u64 > cap => ok(over(bytes.len() as u64)),
         Ok(_) => ok(Value::Array(
             bytes
                 .into_iter()
@@ -1143,11 +1185,13 @@ pub fn read_bytes(host: &mut dyn StdHost, args: Vec<Value>) -> Result<Outcome, W
 /// ⚠ **不另立第三个数字** —— 照 `D13-021` 的做法(「口径直接复用,不另立数字」):
 /// 另立会让同一份输入在三个成员里得到**三种接受集**,而那种分叉没人说得清
 /// 是哪一处错了。
-/// ⚠ **为什么与 `READ_BYTES` 的 1 MiB 不同档**:那个是**读**的**策略**上限
-/// (读进来要**物化成语言值数组**,超线性证据在那边);这个是**写**的**规模**上限
+/// ⚠ **为什么与 `READ_BYTES` 的 16 MiB 不同档**:那个是**读**的**策略**上限
+/// (读进来要**物化成语言值数组**,1 字节 = 1 个 `Value`;实测 56 B/字节 ⇒
+/// 16 MiB 已是 ~896 MiB 的语言值);这个是**写**的**规模**上限
 /// —— 写出去的是字节流、**不物化** ⇒ 取与解压护栏同档。
 ///
-/// ⚠⚠ **写得出 ≠ 读得回**:`READ_BYTES` 一次只读 1 MiB,所以**大于 1 MiB 的文件
+/// ⚠⚠ **写得出 ≠ 读得回**(仍然成立,但档位从 1 MiB 推到了 16 MiB):
+/// `READ_BYTES` 一次最多读 16 MiB,所以**大于 16 MiB 的文件
 /// 是 `WRITE_BYTES` 写得出来、`READ_BYTES` 读不回来的**。这不是缺陷,是两个成员的
 /// 档位不同;**真正的大载荷通路**是「让它待在文件里」+ 压缩 / 拷贝走字节流
 /// (`std.compress`),绕语言值搬一趟会重新踩上解释器侧数组构建的超线性证据。
@@ -1822,6 +1866,132 @@ pub fn file_meta(host: &mut dyn StdHost, args: Vec<Value>) -> Result<Outcome, Wl
             ),
         ])),
         Err(e) => ok(fs_err(NAME, io_reason(&p, &e))),
+    }
+}
+
+// ─────────────────────────────────────────────────────────────────────
+// `_RESOLVE_UNDER(root, rel)` —— **真解析符号链接**的包含判定（**私有 R2 内核**）
+// ─────────────────────────────────────────────────────────────────────
+
+/// `_RESOLVE_UNDER(root, rel) -> DICT` —— 目标**解析掉符号链接**之后还在不在 `root` 底下。
+///
+/// ⚠⚠ **为什么必须有它**（审计 §5.3 ⑭ / 计划 T-05）：
+/// `PATH_CONTAINS` 是**词法**判定（`fs.rs` 的 `canonicalize()` 只做「分隔符统一 +
+/// `.`/`..` 消解」，**不访问文件系统**）⇒ 根内一个**指向根外**的符号链接
+/// （`root/link -> ../outside`）**仍判合法** ⇒ `std.http::STATIC_FILE` 会把
+/// **根外**的文件端出去。
+/// ⇒ 而仓里**没有**能解析符号链接的公共成员 ⇒ 本轮**不加**（那要动规范侧 v1.0.4
+/// + 附录 A）⇒ 故做成**私有 R2 内核**（不进公共面 ⇒ 规范侧零改动）。
+///
+/// ⚠ **`PATH_CANONICAL` 帮不上忙**：它是**纯词法**归一 ⇒ 看不见符号链接。
+///
+/// ## 判定口径
+///
+/// - `ok` = **目标解析后确实在 `root` 之下** ⇒ 放行；否则 `ok = FALSE`（⇒ 403）。
+/// - `path` = **解析后的绝对路径**（调用方**用它去读** ⇒ 「判的」与「读的」是同一个路径）。
+/// - `exists` = 目标是否存在（不存在 ⇒ 调用方回 404，**不是** 403）。
+///
+/// ## ⚠ fail closed
+///
+/// 根**解析不出来**、父目录**解析不出来**、IO 失败 ⇒ 一律 `ok = FALSE`
+/// （**读不到就拒**，不放行）。
+///
+/// ## ⚠ 为什么「文件不存在」要单独判
+///
+/// `canonicalize` 要求路径**存在** ⇒ 一个**还不存在**的文件会解析失败 ⇒
+/// 若一律当「逃逸」⇒ 静态服务对**任何缺失文件**都回 403 而不是 404。
+/// ⇒ 故：**先解析目标**（成功 ⇒ 它存在且在根下与否已定）；**失败则解析父目录**
+/// ⇒ 父目录在根下 ⇒ 目标只是**不存在**（404）；父目录不在根下 ⇒ 逃逸（403）。
+pub fn resolve_under(host: &mut dyn StdHost, args: Vec<Value>) -> Result<Outcome, WlwlError> {
+    const NAME: &str = "_RESOLVE_UNDER";
+    if args.len() != 2 {
+        return Err(fs_arity(host, NAME, args.len(), 2));
+    }
+    let root = str_arg(host, NAME, &args[0])?;
+    let rel = str_arg(host, NAME, &args[1])?;
+
+    let result = |inside: bool, path: &str, exists: bool, reason: &str| {
+        Value::dict(vec![
+            (Value::String("ok".into()), Value::Boolean(inside)),
+            (Value::String("path".into()), Value::String(path.into())),
+            (Value::String("exists".into()), Value::Boolean(exists)),
+            (Value::String("reason".into()), Value::String(reason.into())),
+        ])
+    };
+
+    // ① 根：解析不出来 ⇒ 一律拒（fail closed）。
+    let root_c = match std::fs::canonicalize(native(&root)) {
+        Ok(p) => p,
+        Err(e) => {
+            return ok(result(
+                false,
+                "",
+                false,
+                &format!("cannot resolve the document root: {e}"),
+            ))
+        }
+    };
+
+    // ② 目标 = 根 + 相对路径（相对路径里的前导分隔符去掉）。
+    let rel = rel.trim_start_matches(['/', '\\']);
+    let target = root_c.join(rel);
+
+    // ③ 目标能解析 ⇒ 它**存在** ⇒ 只判「在不在根下」。
+    match std::fs::canonicalize(&target) {
+        Ok(t) => {
+            // ⚠ `Path::starts_with` 是**逐段**比较（不是字符串前缀）
+            //   ⇒ `root-evil` 冒充不了 `root` 的子路径。
+            let inside = t.starts_with(&root_c);
+            let path = t.to_string_lossy().into_owned();
+            ok(result(
+                inside,
+                &path,
+                true,
+                if inside {
+                    ""
+                } else {
+                    "the target escapes the document root"
+                },
+            ))
+        }
+        // ④ 目标解析不出来 ⇒ 两种可能：**不存在**（⇒ 404）或**逃逸**（⇒ 403）。
+        //   ⇒ 判据 = 「**最近的存在祖先**在不在根下」：
+        //     · 在根下 ⇒ 目标只是不存在（**404**，不是 403）
+        //     · 在根外 ⇒ 中间某一段是**指向根外的链接** ⇒ 逃逸（**403**）
+        //   ⚠ 不能简单「父目录解析失败就 drop 成 403」：`/etc/passwd` 这种
+        //     「根下这条链整条都不存在」的请求会从 **404 变成 403**
+        //     （既有契约 `an_absolute_looking_request_path_stays_inside_the_root`
+        //     就是钉这个的 ⇒ 实测踩到过）。
+        //   ⚠ `root_c` 自身解析成功过（①）⇒ 祖先链上**一定**能碰到它 ⇒
+        //     循环不会跑出根外。
+        Err(_) => {
+            let mut verdict: Option<bool> = None;
+            for anc in target.ancestors().skip(1) {
+                if let Ok(c) = std::fs::canonicalize(anc) {
+                    verdict = Some(c.starts_with(&root_c));
+                    break;
+                }
+            }
+            match verdict {
+                Some(inside) => ok(result(
+                    inside,
+                    &target.to_string_lossy(),
+                    false,
+                    if inside {
+                        ""
+                    } else {
+                        "the target escapes the document root"
+                    },
+                )),
+                // 连根都在祖先链上解析不出来（理论上不可达，因为①成功过）⇒ fail closed
+                None => ok(result(
+                    false,
+                    "",
+                    false,
+                    "cannot resolve any existing ancestor of the target",
+                )),
+            }
+        }
     }
 }
 
@@ -2527,32 +2697,48 @@ mod tests {
     /// 上限常量被写死(它是**规范条款**,不是一个可随手调的数字),并守住
     /// **恰好等于上限**这个边界:等于上限**必须**能读(只超一个字节才拒),
     /// 否则「上限」就变成了「上限减一」那种查不出毛病的偏差。
+    ///
+    /// ⚠ **上限值本身 = 规范的值(1 MiB)** —— 这条断言的作用是
+    ///   **规范一致性守卫**:谁想抬上限而**没改规范仓**,这条**必红**。
+    ///   （⚠ 本轮**刻意**没抬:内存放大实测 ~120×，16 MiB ⇒ 一次读 1.8 GiB；
+    ///   且规范已把「大载荷待在文件里 / 流式分段成员本册不做」裁决为
+    ///   **已知边界** ⇒ 见 `MAX_READ_BYTES` 的文档注释。）
+    ///
+    /// ⚠ **为什么用 `_with_cap` 而不是真的造上限大小的数组**:上限是
+    /// 1 MiB ⇒ 物化那个数组要 ~120 MiB 的峰值工作集(实测),测试机上不现实。
+    /// ⇒ **上限值本身**由本测试的前半段(常量断言)与
+    /// `read_bytes_refuses_one_byte_over_the_production_cap`(真实路径)钉住,
+    /// **判定逻辑**由下面用一个小 cap 覆盖 —— 与 `write_bytes_with_cap`
+    /// 同一套路,两者合起来覆盖全部路径,且**没有一条路径只在测试里存在**。
     #[test]
     fn read_bytes_reads_up_to_the_cap_and_refuses_one_byte_more() {
         assert_eq!(
             MAX_READ_BYTES,
             1024 * 1024,
-            "the READ_BYTES cap is a spec clause; changing it is a spec change"
+            "the READ_BYTES cap is a spec clause (1 MiB); changing it is a spec change — \
+             see the doc comment on MAX_READ_BYTES"
         );
         let at = tmpfile(".bin");
         let over = tmpfile(".bin");
-        std::fs::write(&at, vec![7u8; MAX_READ_BYTES as usize]).unwrap();
-        std::fs::write(&over, vec![7u8; MAX_READ_BYTES as usize + 1]).unwrap();
+        std::fs::write(&at, vec![7u8; 8]).unwrap();
+        std::fs::write(&over, vec![7u8; 9]).unwrap();
 
-        let ok_out = read_bytes(
+        let ok_out = read_bytes_with_cap(
             &mut NullHost,
             vec![Value::String(at.to_string_lossy().into_owned())],
+            8,
         )
         .expect("at the cap must decode")
         .value;
         match ok_out {
-            Value::Array(items) => assert_eq!(items.len(), MAX_READ_BYTES as usize),
+            Value::Array(items) => assert_eq!(items.len(), 8),
             other => panic!("expected an array, got {other:?}"),
         }
 
-        let r = read_bytes(
+        let r = read_bytes_with_cap(
             &mut NullHost,
             vec![Value::String(over.to_string_lossy().into_owned())],
+            8,
         )
         .expect("over the cap must be an ERR value, not a diagnostic");
         assert!(
@@ -2561,10 +2747,105 @@ mod tests {
             r.value
         );
 
-        // ⚠ **未经实测**的推断:文件**恰好**在上限上时本实现分配了 ≥ 1 MiB。
-        //   本轮没有为它单独测峰值(见报告);这里只保证它不炸。
         let _ = std::fs::remove_file(&at);
         let _ = std::fs::remove_file(&over);
+    }
+
+    /// ⚠ **[v0.12.1 · 审计 ⑮] 上限之内（真实路径）的文件必须完整读出来。**
+    ///
+    /// 这条钉住「**上限之内**的文件读得出来,而且读出来的**长度**与**首/中/尾
+    /// 字节**都对」—— 不是截断、不是空数组、不是 `ERR`。
+    ///
+    /// ⚠⚠ **注意「上限之内」而不是「大于 1 MiB」**:审计 ⑮ 的缺口是
+    /// 「`STATIC_FILE` 服务不了大于上限的文件」,但**上限本轮刻意不改**
+    /// (见 `MAX_READ_BYTES` 的文档注释:内存放大 ~112×,且规范已把它裁决为
+    /// 「**已知边界,不作为待修缺陷**」⇒ 真正的解法要动成员面 ⇒ 次版本立项)。
+    /// ⇒ 这条**不**钉「大于 1 MiB 读得出来」—— 那是被**刻意撤回**的期望。
+    ///
+    /// ⚠ 夹具取 **256 KiB**(上限的 1/4):走**真实路径**(`read_bytes`)且
+    /// 物化 ~26 万个语言值(≈ 15 MiB)⇒ 测试机可承受;上限本身另有
+    /// 「**恰好等于上限**」的边界用例(小 cap,见上)与「生产上限 +1 ⇒ 拒」覆盖。
+    #[test]
+    fn read_bytes_reads_a_file_well_under_the_cap() {
+        let path = tmpfile(".bin");
+        let size = 256 * 1024usize;
+        // 图案不是常量(第 i 个字节 = i % 251)⇒ 能抓到「读错位置 / 顺序错乱」。
+        let data: Vec<u8> = (0..size).map(|i| (i % 251) as u8).collect();
+        std::fs::write(&path, &data).unwrap();
+
+        let out = read_bytes(
+            &mut NullHost,
+            vec![Value::String(path.to_string_lossy().into_owned())],
+        )
+        .expect("a file under the cap must read")
+        .value;
+        match out {
+            Value::Array(items) => {
+                assert_eq!(items.len(), size, "every byte must come back");
+                assert_eq!(items[0], Value::Integer(0));
+                assert_eq!(items[1], Value::Integer(1));
+                assert_eq!(items[size / 2], Value::Integer((size / 2 % 251) as i64));
+                assert_eq!(items[size - 1], Value::Integer(((size - 1) % 251) as i64));
+            }
+            other => panic!("expected an array, got {other:?}"),
+        }
+
+        let _ = std::fs::remove_file(&path);
+    }
+
+    /// ⚠ **硬上限守卫(真实路径)**:超过**生产上限**一个字节的文件必须返回
+    /// `ERR` **值** —— 不是截断、不是 panic、不是 Rust 侧 `Err`(诊断)。
+    ///
+    /// ⚠ 这条走**真实路径**(`read_bytes`,cap = `MAX_READ_BYTES`)而不是
+    /// `_with_cap`:它证明**生产常量**本身被守住了。代价是写一份「上限 +1」的
+    /// 夹具 —— 但上限在**分配之前**就判掉(先 `metadata`、后读)⇒ **不会**
+    /// 物化那些语言值。
+    #[test]
+    fn read_bytes_refuses_one_byte_over_the_production_cap() {
+        let path = tmpfile(".bin");
+        std::fs::write(&path, vec![7u8; MAX_READ_BYTES as usize + 1]).unwrap();
+
+        let out = read_bytes(
+            &mut NullHost,
+            vec![Value::String(path.to_string_lossy().into_owned())],
+        )
+        .expect("over the cap must be an ERR value, not a Rust error")
+        .value;
+        assert!(
+            matches!(out, Value::Err(_)),
+            "one byte over the production cap must be an ERR value, got {out:?}"
+        );
+
+        // ⚠ 拒绝读取**不得**留下副作用:文件必须原封不动。
+        assert_eq!(
+            std::fs::metadata(&path).unwrap().len(),
+            MAX_READ_BYTES + 1,
+            "a refused read must not truncate or delete the file"
+        );
+
+        let _ = std::fs::remove_file(&path);
+    }
+
+    /// ⚠ **一次读的语言值预算 ≤ 64 MiB** —— 这是上限档位的**理由**,不是
+    /// 一个随手挑的数字:读进来要**物化**成语言值数组(1 字节 = 1 个
+    /// `Value`)⇒ 峰值 = `MAX_READ_BYTES × size_of::<Value>()`。
+    ///
+    /// ⚠ **实测（本机，2026-10-31）**：1 MiB 的文件 ⇒ **峰值工作集 119.7 MiB**
+    /// ⇒ 放大约 **120×**(语言值 56 B/字节 + 解释器侧的拷贝)。
+    /// ⇒ 16 MiB 的文件会吃 **1.8 GiB** ⇒ 这正是上限**不能**抬的理由。
+    /// ⇒ 64 MiB 这条预算 ⇒ `Value` 一旦从 56 B 涨到 128 B,这条**就红**
+    /// ⇒ 逼着重新裁决档位,而不是让上限悄悄过期。
+    ///
+    /// ⚠ 这是**实现事实**、不是契约。
+    #[test]
+    fn the_read_cap_fits_the_language_value_budget() {
+        let per_byte = std::mem::size_of::<Value>();
+        let peak = (MAX_READ_BYTES as usize).saturating_mul(per_byte);
+        assert!(
+            peak <= 64 * 1024 * 1024,
+            "one READ_BYTES may materialize {peak} bytes of language values \
+             ({per_byte} B per byte) — over the 64 MiB budget"
+        );
     }
 
     /// ⚠🔴 **[D13-066] 同目标别名** —— `link -> real` 两条**兄弟**路径指向同
