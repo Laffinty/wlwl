@@ -1,7 +1,7 @@
 # Contributing
 
-Welcome to WLWL. Most of the codebase is small (≈30 KLOC of Rust
-across 9 crates) and the per-PR load is light. We welcome
+Welcome to WLWL. Most of the codebase is small (≈120 KLOC of Rust
+across 12 crates) and the per-PR load is light. We welcome
 contributions across language design, stdlib, tooling, and docs.
 
 ## Quick setup
@@ -12,16 +12,17 @@ cd wlwl/impl
 cargo test --locked --all-targets
 ```
 
-That runs the 1100+ unit + integration tests, the Insta snapshot
-suite, and the bench compilation.
+That runs the unit + integration tests, the Insta snapshot
+suite, and the bench compilation. The toolchain is pinned to 1.99.0
+in the repo-root `rust-toolchain.toml`, so `rustup` selects it for
+you.
 
 ## Branches & commits
 
-- `main` is v0.4.0-rc; only reviewed PRs land here.
-- Phase-tagged branches follow the Phase letter: `phase/D4`,
-  `phase/E1`. We retire them once merged.
-- Commit messages start with the phase / commit shorthand:
-  `G2 (Phase G): cargo-deny license + advisory gate`.
+- `main` is v0.12.1 (published as the pre-release `v0.12.1_rc1`);
+  only reviewed PRs land here.
+- Commit messages start with the shorthand, e.g.
+  `docs: 记录 v0.12.1_rc1 tag 已发`, `fix(impl): ...`.
 
 ## Local pre-PR checks
 
@@ -57,8 +58,8 @@ Three testing tiers:
 2. **Insta snapshots**: `crates/wlwl-error/src/snapshots/` pins
    the diagnostic JSON schema. To review changes locally:
    `cargo insta review`.
-3. **Example programs**: 10 files in `impl/examples/`. They are
-   the v0.4 spec demonstrative set — additions to the language
+3. **Example programs**: 11 files in `impl/examples/`. They are
+   the demonstrative set — additions to the language
    should come with an example.
 
 ### Snapshot testing
@@ -67,7 +68,7 @@ The snapshots live in `crates/wlwl-error/src/snapshots/`. Adding
 a new `ErrorCode` variant requires extending one of the
 `snap_*` tests AND the `all_error_codes_have_snapshots` meta-test
 (see Phase G7). The meta-test fails CI if the union drops below
-58 codes (the v0.4 baseline).
+59 codes.
 
 ## Fuzz
 
@@ -81,8 +82,8 @@ cargo +nightly fuzz run fuzz_target_lexer -- -max_total_time=300
 ```
 
 Fuzz does NOT run in CI (libFuzzer cycles take hours). Local devs
-run periodically. See [`docs/adr/` ADR absent] and `deviations.md`
-P4-G6-001.
+run periodically. See the ADRs under `docs/adr/` for the design
+decisions it guards.
 
 ## Benchmarks
 
@@ -91,9 +92,9 @@ cd impl/crates/wlwl-eval
 cargo bench --bench eval_hot_paths
 ```
 
-The 5 baseline measurements live in `benches/baseline.txt` and are
-the Phase F1 source of truth. CI runs the benchmarks in smoke
-mode only (P4-G8-001 — full 110% regression enforcement is v0.5).
+The baseline measurements live in `benches/baseline.txt` and are
+the source of truth for the perf-regression gate. CI runs the
+benchmarks in smoke mode only (no full regression enforcement).
 
 ## Adding a new error code
 

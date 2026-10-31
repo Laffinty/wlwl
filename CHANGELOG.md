@@ -79,7 +79,7 @@ version)` job **结论 success**（run #44 里 3 个实际步骤全 success：ch
 `timeout_ms` ＝ 那一次等待的截止时间，`0` ＝ 无截止时间；`TCP_SET_TIMEOUT` 与
 调用点预算**先到者为准**。
 
-### ⚠ 本批已知的两处未完（**不是**本 tag 引入的，如实登记）
+### ⚠ 本批的未完与订正（① **不是**本 tag 引入的，如实登记；② 本轮已修）
 
 ① **TLS 扩展产物未随发行包发布** —— `release.yml` 的 staging 步骤**没有**把
 `wlwl-tls` 的 `.dll` / `.so` / `.dylib` 装进包（计划 §0.4 第 4 件）。
@@ -88,12 +88,30 @@ version)` job **结论 success**（run #44 里 3 个实际步骤全 success：ch
 ⚠ **这一条已由真实发布包核实**（不是只看 workflow 文本）：run #44 建成的 release
 **5 个资产逐一列出**（4 个 `.tar.xz` + 1 个 `.zip`）⇒ **没有任何一个是 TLS 动态库**
 ⇒ 与 staging 步骤的读数一致。
-② **`docs/site/` 下三处版本残留**（站点页）：`install.md` 的 4 个下载 URL 仍指向
-**v0.4.0** 的产物、`contributing.md` 仍写「`main` is v0.4.0-rc」⇒ 照着装会装到
-8 个次版本之前的旧包。⚠ 属**对外文档**的错版，与本 tag 的产物无关（发布包不含
-`docs/`），但**发正式版之前应当订正**。
-⚠ **可选项**：改指 **v0.12.0**（唯一真实存在的正式发布）还是 **v0.12.1_rc1**
-（pre-release，工具链可能不抓）⇒ **待业主裁决**，本轮**未擅自改**。
+② **`docs/site/` 下三处版本残留** —— ✅ **已订正**（业主 2026-10-31 裁决：改指
+**v0.12.1_rc1**）：`install.md` 的 4 个下载 URL 与 `contributing.md` 的
+「`main` is …」一句**均已改指 `v0.12.1_rc1`**（**不是** v0.12.0 —— 业主选的是
+与当前工作树版本一致的那个）。⚠ **顺带订正了同批查出的另外 8 处失实**（全部
+实测验证，非推断）：
+- `install.md` 声称包里有「`sbom.json` + `<archive>.bundle`」⇒ **实测发布包里
+  都没有**（真实内容：`wlwl` · `LICENSE` · `README.md` · `CHANGELOG.md` ·
+  `examples/` · `stdlib/` · `wlwl-skill/` · `wlwl-src.tar.gz` · `SOURCE_HASH`，
+  共 61 个条目）⇒ 清单改为真实内容，并注明 `.bundle`/`.sig` **不是 release 资产**
+- `install.md`「Requires Rust ≥ 1.75」⇒ 实测 `rust-version = "1.85"`；且
+  「toolchain pinning is planned for v0.5」早已过时 ⇒ 工具链**已钉死 1.99.0**
+- `contributing.md`「≈30 KLOC across 9 crates」⇒ 实测 **≈117 KLOC（src 口径，
+  91 个 .rs）· 12 crates**
+- `contributing.md`「the 1100+ unit + integration tests」⇒ 数量已随版本漂移，
+  **改为不给具体数字**（避免再次过期）
+- `contributing.md`「10 files in `impl/examples/`」⇒ 实测 **11**
+- `contributing.md`「meta-test fails CI if the union drops below 58 codes」⇒
+  实测判据是 **`total >= 59`**
+- `contributing.md`「`[docs/adr/ ADR absent]` and `deviations.md`」⇒
+  `docs/adr/` 实有 **35 份 ADR**；`deviations.md` **不存在**
+- `contributing.md`「The 5 baseline measurements」⇒ `benches/baseline.txt`
+  实有 **1321 行**测量记录 ⇒ 改为「the baseline measurements」
+⇒ **对照项已清零**（`docs/site/` 下已无 v0.4.0 残留；`changelog.md` 里的 v0.4.0
+是**历史记录**，正确，不动）。
 
 完整变更清单见本文件「[v0.12.1 收口 · 文档同步 + 探针归档]」与「[v0.12.1 收口]」两段；
 构建方案与逐项读数见仓内 `docs/plan/wlwl-v0.12.1-build-plan.md`（随源码 tarball 走）。
