@@ -105,6 +105,32 @@ pass 1 是 **8 次读**、pass 2 是 **9 次读**，门禁要 **≥ 10** ⇒ 两
 ⚠ 另两行（规范仓 `v1.0.4` tag 未发 = 发布阻塞；`v0.12.1_rc1` 的包不含本轮 4 条修复 + TLS 打包）
 **状态不变**，仍待业主指示。
 
+### 四、远端坐标：**run #342（head `ae5b405`）4 个 job 全 success**
+
+⚠ **这一条是「收口判定时要引用的那个坐标」** —— 以后说「哪一轮 CI 是绿的」，指的就是它：
+
+| job | 结论 |
+|---|---|
+| `test (ubuntu-latest / rust pinned)` | ✅ |
+| `test (macos-latest / rust pinned)` | ✅ |
+| `test (windows-latest / rust pinned)` | ✅ |
+| `smoke run examples` | ✅ |
+
+**两个「首次在 CI 上跑」的目标都过了**：
+
+- **`path_symlink_contract`（15 条）** —— Linux / macOS 上**真的建符号链接并验证被挡住**
+  （本机 Windows 的「文件符号链接」那条是 skip，需特权）⇒ 三平台全绿。
+- **`https_e2e_contract`（4 条）** —— ⚠ 注意 CI 的步骤顺序：`cargo test`（step 15）
+  **早于**扩展构建（step 22 ⇒ `TLS extension (wlwl-tls cdylib)`）⇒ **CI 上它走的是
+  「测试内自建 cdylib」那条 fallback 分支** ⇒ 这条原本是「未实测路径」，现在被 CI 覆盖，
+  且真握手在三个平台都拿到 **200**。
+
+⚠ **一笔已知瑕疵（在提交信息里，不在文件内容里）**：`ae5b405` 的 message 有一处
+`0x0B`（VT）—— 我用 PowerShell 双引号 `-m "..."` 时写了反引号包裹的 `v0.12.1_rc1`，
+而 `` `v `` 在 PowerShell 里是**转义**（= VT）⇒ GitHub 上显示成 `\u000B0.12.1_rc1`。
+⚠ **已推送 ⇒ 只能改写历史才能修**，在 `main` 上不做 ⇒ **瑕疵留在历史里，不掩盖**。
+后续提交**一律 `git commit -F <文件>`**，并在提交前自检控制字符。
+
 ---
 
 ## [v0.12.1 收口 · 第二批 · 结案] — 2026-10-31（Windows 句柄那条**不是泄漏**：是 OS 的 MUI 惰性映射；判据已改并加强）
