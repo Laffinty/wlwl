@@ -20,6 +20,54 @@
 production ready 抓走；**正式 `v0.12.1` 的 tag 尚未发**。
 ⚠ **规范侧仍是候选文本**：`wlwl-spec-v1` 的 **v1.0.4 tag 未发**（当前是候选提交 `d6d90c3`）。
 
+### 🔴 发布结果（实测）：**release 未建成** —— `generate SBOM` job 红
+
+`Release` run **#45**（`41221613636`，head_branch `v0.12.1_rc2`）**结论 failure**。
+
+| job | 结论 |
+|---|---|
+| `version guard (tag == Cargo version)` | ✅ |
+| `build (x86_64-unknown-linux-gnu)` | ✅（含 `Build the TLS extension` + `Stage the TLS extension` **两步 success**） |
+| `build (aarch64-unknown-linux-gnu)` | ✅（同上，**aarch64 交叉也成**） |
+| `build (x86_64-apple-darwin)` · `build (aarch64-apple-darwin)` · `build (x86_64-pc-windows-msvc)` | ✅ |
+| `spec conformance suite` | ✅ |
+| **`generate SBOM (CycloneDX)`** | 🔴 **failure**（step 9「Merge …」） |
+| `cosign keyless sign binaries + SBOM` | ⏭ **skipped** |
+| `github release` | ⏭ **skipped** ⇒ **没有建成 release** |
+
+⚠ **好消息**：**五个平台的 TLS 构建与装包全部成功**（含 aarch64 交叉）⇒
+「TLS 随包发布」的机制本身是对的，坏的只是 SBOM 那一步。
+
+**两个根因（都在我写的 sbom 步骤里，`release.yml` 日志实证）**：
+
+1. **主 SBOM 取错文件** —— 日志第 457 行 `main SBOM: ./crates/wlwl-toml/sbom.json`：
+   `cargo-cyclonedx 0.5.9` 在本仓**按 crate 各写一份** `sbom.json`，**没有**
+   workspace 级单一文件；我那句 `find … -print -quit` 于是抓到了 `wlwl-toml` 单 crate 的那份。
+2. **TLS SBOM 的绝对路径拼错** —— 我把路径拼成 `$GITHUB_WORKSPACE/$tls_json`，
+   而那个相对路径是**相对 step 的 `working-directory`**（`impl/ext/wlwl-tls-ext/`）⇒
+   拼出来的路径指到了仓库根 ⇒ merge 找不到 ⇒
+   `##[error]TLS extension SBOM not found`。
+
+**修法（不再依赖 cargo-cyclonedx 的落盘布局）**：新增 `script/gen_sbom.py`，
+**只读 `Cargo.lock`**（依赖集随源码冻结 ⇒ `--locked` 语义天然成立）⇒ 输出**一份确定的**
+CycloneDX 1.5 文档；`--merge` 做按 purl 去重合并，并做两条断言：
+
+- **逐包对拍**：扩展 lock 的每个第三方包都必须在合并结果里；
+- ⚠ **看来源**（非空的那条）：合并**输入里必须真的有一份** `metadata.component.name == wlwl-tls-ext`
+  —— 因为**实测**发现扩展的 38 个包**全是主 workspace closure 的子集**（经 `reqwest` 的
+  `rustls-tls`）⇒ 只查 `rustls`/`ring`/`webpki-roots` 或只逐包对拍，**完全不合并也照样通过**（空断言）。
+
+**本机实测**（2026-11-01）：主 lock **239 → 227** 个第三方组件 · 扩展 lock **39 → 38** ·
+合并后 **227**（去重后不增，符合「子集」的事实）· `--require` 三个都命中 ·
+**反向守卫**：漏掉扩展那份输入 ⇒ `::error::the TLS extension SBOM was not among the merged inputs` **rc=1** ·
+verify 步骤（**从 `release.yml` 直接抽出那段内联 python 真跑**）⇒
+`SBOM verified: 227 components, 38 claimed TLS-ext packages` rc=0；
+喂未合并的那份 ⇒ `does not declare TLS extension coverage` **rc=1**。
+
+⚠ **`v0.12.1_rc2` 这个 tag 已发布且不移动** ⇒ 修完须发 **`v0.12.1_rc3`** 才能把 release 建出来。
+⚠ 因此**「W-35′ ③ TLS 随包」仍未闭环**：机制已验证（五平台装包 success），
+但**产物尚未落进任何已建成的 release**。
+
 ---
 
 ## [v0.12.1 收口 · 第二批 · 第三条红] — 2026-10-31（macOS `a_reader_never_sees_a_half_written_target`：判据的期望值依赖机器快慢）

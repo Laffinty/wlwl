@@ -481,6 +481,36 @@ cargo test --locked -p wlwl-std --lib --no-fail-fast                # 388/0
 - **反向守卫**：把扩展从 SBOM 生成里摘掉 ⇒ 校验脚本必红。
 - **非目标**：不引入新的 SBOM 工具链。
 
+##### ⚠ 落地记录（2026-11-01）：**第一次真跑就红了，已定性并改掉**
+
+**实测**（`Release` run **#45** = `v0.12.1_rc2`）：`generate SBOM (CycloneDX)` **failure** ⇒
+`cosign sign` 与 `github release` **双双 skipped** ⇒ **那个 release 没建成**。
+
+两个根因（都在我写的 sbom 步骤里）：
+
+1. **主 SBOM 取错文件** —— 日志 `main SBOM: ./crates/wlwl-toml/sbom.json`：
+   `cargo-cyclonedx 0.5.9` **按 crate 各写一份** `sbom.json`，**没有** workspace 级单一文件；
+   那句 `find … -print -quit` 抓到了 `wlwl-toml` 单 crate 的那份。
+2. **TLS 那份的绝对路径拼错** —— 相对路径是**相对 step 的 `working-directory`**，
+   而代码拼的是 `$GITHUB_WORKSPACE/$rel` ⇒ 指到仓库根 ⇒ `TLS extension SBOM not found`。
+
+**修法**：新增 `script/gen_sbom.py`，**只读 `Cargo.lock`** 生成 CycloneDX 1.5
+（不再依赖 cargo-cyclonedx 的落盘布局）；`--merge` 按 purl 去重合并 + 两条断言。
+
+⚠ **一条必须记住的发现**：扩展 lock 的 38 个包**全部**已在主 workspace 的 closure 里
+（经 `reqwest` 的 `rustls-tls`）⇒ **「要求 rustls/ring/webpki-roots 在组件表里」是空断言**
+（完全不合并也通过）。⇒ 真正非空的守卫是「**合并输入里必须有那份 `wlwl-tls-ext` 的 SBOM**」
+（看 `metadata.component.name`），实测：漏掉 ⇒ `::error::the TLS extension SBOM was not among
+the merged inputs` 且 **rc=1**。
+
+**本机读数**：主 lock 239→**227** 组件 · 扩展 39→**38** · 合并 **227**（去重不增，符合子集事实）·
+verify 步骤（从 `release.yml` **直接抽出来真跑**）⇒ `SBOM verified: 227 components, 38 claimed
+TLS-ext packages` **rc=0**；喂未合并那份 ⇒ `does not declare TLS extension coverage` **rc=1**。
+
+⚠ **仍未闭环**：SBOM 修好要**下一次发布**才验证；而 `v0.12.1_rc2` 的 tag **已发布且不移动**
+⇒ 必须发 `v0.12.1_rc3`。⚠ 附带好消息：run #45 里**五个平台的 `Build/Stage the TLS extension`
+全部 success**（含 aarch64 交叉）⇒ TLS 随包的机制本身已验证，坏的只是 SBOM 这一步。
+
 #### T-10 · 文档三处不一致订正（§5.2）
 
 - **为什么**：下游照面板/台账规划会拿到**互相矛盾的数字**。
