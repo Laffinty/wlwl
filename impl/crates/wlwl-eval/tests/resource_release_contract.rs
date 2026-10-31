@@ -146,13 +146,65 @@ fn run(src: &str) {
 
 /// **一次**操作的句柄快照差(操作后 − 操作前)。
 ///
-/// ⚠ 做法:**先热身一次**再取基线 —— 第一次调用可能懒初始化(打开配置、建临时
-/// 目录),那不是泄漏 ⇒ 把它排除在基线之外。
+/// ## ⚠⚠ 「热身一次」是**不够**的 —— 实测坐实的假红来源（windows CI）
+///
+/// 这条判据**只热身一次**,于是当「一次性惰性开销」发生在**第 2 次调用**而不是
+/// 第 1 次时,它就落进了被测窗口 ⇒ `delta = 1` ⇒ **假红**（CI 上偶发,本机常绿）。
+///
+/// **实测把它点名了**（本机扫句柄表、逐句柄查类型名 —— ⚠ **这一步只能在 Windows
+/// 本机做**：同一个 `NtQueryObject` 在 **CI runner 上会永久挂死**，因为 runner 有
+/// 大量「同步管道 + 挂起读」的句柄，而那个线程杀不掉 ⇒ 一次就把 CI 卡了 2.4 小时）：
+///
+/// ```text
+/// 零热身跑一次「读不存在的文件」⇒ 句柄 +4,四个全是 File,路径都是:
+///   …\Microsoft.LanguageExperiencePackzh-CN_…\Windows\System32\zh-CN\…\KernelBase.dll.mui
+/// 再跑一次 ⇒ 数量不变(212 → 212)
+/// ```
+///
+/// ⇒ 那是 **Windows 的本地化消息资源(MUI)**:第一次格式化 `std::io::Error` 时,
+/// `FormatMessageW` 把 `KernelBase.dll` 的**消息表**惰性映射进进程。
+/// ⇒ **这是操作系统的一次性缓存,不是我们的句柄泄漏**:
+///   只发生一次、是只读镜像映射、进程退出由 OS 回收。
+/// ⇒ 也解释了为什么 **Linux / macOS 从没出现过**(那边没有 MUI 这套)。
+///
+/// ## 判据怎么改才**不减弱**守卫
+///
+/// ① **热身到稳定**(最多 8 次,连续 2 次读数相同才收工)⇒ 把「第 1/2/3 次才出现的
+///   一次性开销」都排除在基线之外;
+/// ② 仍然要求**单次操作零增量**(原来那条断言一字不改);
+/// ③ **另加一条更强的**:连续多次操作后总数**不许增长** ⇒ 这是**确定性**判据,
+///   真正抓「每次调用都漏一个」——一次性的 OS 开销只会在第一次出现,压不过它。
 fn handle_delta(op: impl Fn()) -> i64 {
-    op(); // 热身:把懒初始化的一次性句柄排除在基线之外
+    // ① 热身到稳定：连续 2 次读数相同才算「一次性开销已经出完」。
+    let mut last = usize::MAX;
+    let mut stable = 0u32;
+    for _ in 0..8 {
+        op();
+        let now = open_handle_count();
+        if now == last {
+            stable += 1;
+            if stable >= 2 {
+                break;
+            }
+        } else {
+            stable = 0;
+            last = now;
+        }
+    }
+
     let before = open_handle_count();
     op();
-    let after = open_handle_count();
+    // 释放也可能是异步的 ⇒ 给一点时间让它落定（最多 300 ms）。
+    let mut after = open_handle_count();
+    let deadline = std::time::Instant::now() + std::time::Duration::from_millis(300);
+    loop {
+        std::thread::sleep(std::time::Duration::from_millis(10));
+        let now = open_handle_count();
+        if now == after || std::time::Instant::now() >= deadline {
+            break;
+        }
+        after = now;
+    }
     if before == usize::MAX || after == usize::MAX {
         return i64::MAX; // 数不出来 ⇒ 哨兵 ⇒ 断言会红
     }
@@ -217,6 +269,85 @@ fn a_failing_file_read_leaves_no_handle_behind() {
     assert_eq!(
         delta, 0,
         "a failing file read must not leave a handle behind (delta = {delta})"
+    );
+}
+
+/// **反复**失败读:句柄数**不许增长**(确定性判据)。
+///
+/// ## 为什么另立一条(而不是只靠上面那条的 `delta`)
+///
+/// `delta` 是「两次读数之差」⇒ 它对**一次性**的惰性开销天然敏感(见
+/// [`handle_delta`] 的文档:Windows 第一次格式化系统错误时会惰性映射
+/// `KernelBase.dll.mui` ⇒ 一次 +4,**不是泄漏**),而对「每 N 次漏一个」这类
+/// **低频增长**反而不够灵敏(跑一次看不出来)。
+///
+/// ⇒ 这条改成**确定性**的形态:**先热身到稳定,再连跑 `ROUNDS` 次,总数必须不变**。
+/// ⚠ 一次性开销在第一次就已经出完 ⇒ 压不过这条判据;
+/// ⚠ **每次调用都漏一个** ⇒ 连跑 `ROUNDS` 次必涨 ⇒ **必红**。
+///
+/// ⇒ 两条一起:一条守「单次不增」,一条守「多次不长」——**前者容易假红、后者容易装睡**,
+///   合起来才两头都盖住。
+#[test]
+fn repeated_failing_reads_do_not_grow_the_handle_count() {
+    const ROUNDS: usize = 20;
+
+    let _guard = serial_gate();
+    let dir = scratch_dir();
+    let missing = dir
+        .join("no-such-file.txt")
+        .to_string_lossy()
+        .replace('\\', "/");
+    let op = || {
+        let ast = wlwl_parser::parse(
+            &format!(
+                r#"
+                IMPORT("wlwl:std.fs", ["READ_FILE"]);
+                PRINT(READ_FILE("{missing}"));
+                "#
+            ),
+            "t.wll",
+        )
+        .expect("src must parse");
+        let mut ev = Evaluator::new().with_base_dir(scratch_dir());
+        let err = ev.eval(&ast).expect_err("reading a missing file must fail");
+        assert!(
+            err.diagnostic().message.contains("file not found"),
+            "the read-side message must stay as it was, got {}",
+            err.diagnostic().message
+        );
+    };
+
+    // 热身到稳定（把一次性惰性开销出完）。
+    let mut last = usize::MAX;
+    let mut stable = 0u32;
+    for _ in 0..8 {
+        op();
+        let now = open_handle_count();
+        if now == last {
+            stable += 1;
+            if stable >= 2 {
+                break;
+            }
+        } else {
+            stable = 0;
+            last = now;
+        }
+    }
+
+    let before = open_handle_count();
+    assert_ne!(
+        before,
+        usize::MAX,
+        "the handle counter must work on this platform"
+    );
+    for _ in 0..ROUNDS {
+        op();
+    }
+    let after = open_handle_count();
+    assert_eq!(
+        after, before,
+        "repeating the failing read {ROUNDS}x must not grow the handle count \
+         (before = {before}, after = {after}) — a per-call leak grows it every time"
     );
 }
 

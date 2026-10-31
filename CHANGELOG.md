@@ -1,3 +1,63 @@
+## [v0.12.1 收口 · 第二批 · 结案] — 2026-10-31（Windows 句柄那条**不是泄漏**：是 OS 的 MUI 惰性映射；判据已改并加强）
+
+⚠ **本段给「Windows 句柄漂移」这条**结案**。前几段把它记成「真泄漏、持有者未点名」
+是**当时的判断**，本节用实测把它推翻了 —— 如实订正，不改前文的记录。
+
+### 结论：多出来的句柄是 **Windows 的本地化消息资源（MUI）**，不是我们的泄漏
+
+**本机取证**（⚠ 只能在 Windows 本机做：同一个 `NtQueryObject` 在 CI runner 上会
+**永久挂死** —— runner 有大量「同步管道 + 挂起读」的句柄，线程杀不掉）：
+
+```
+零热身跑一次「读不存在的文件」⇒ 句柄 +4，四个全是 File：
+  …\Microsoft.LanguageExperiencePackzh-CN_26100.…\Windows\System32\zh-CN\…\KernelBase.dll.mui
+再跑一次 ⇒ 212 → 212（不再增长）
+```
+
+⇒ 第一次格式化 `std::io::Error` 时，`FormatMessageW` 把 `KernelBase.dll` 的**消息表**
+惰性映射进进程。⇒ 是**操作系统的一次性只读缓存**，进程退出由 OS 回收。
+⇒ 也解释了为什么 **Linux / macOS 从没出现过**（那边没有 MUI 这套）。
+
+### 关键读数（runner 上，匿名可读的注解）
+
+| 轮次 | 探针形态 | 读数 | 推出什么 |
+|---|---|---|---|
+| #338 | 1 次热身 + 逐次读数 | `LEAK-HIT eval=0 count=87 baseline=86 settled=87` ＋ `SCAN-TIMEOUT` | 那 +1 落在**被测窗口内** ⇒ 偶发红的机制 |
+| #339 | **2 次**热身 + 1000 次 eval × 6 变体 | **六个 `d=0`**，但**基线 85 → 86** | 那 +1 落在**热身**里 ⇒ **一次性** |
+| 本机 | **零热身** 逐次读数 | `read_missing_print: incs=1 first_at=0`（之后 20000 次零增长）；`import_only` / `read_existing` 各 `incs=0` | **一次且仅一次** ⇒ 不是每次调用泄漏 |
+
+⚠ **顺带纠正我自己之前的一条判断**：先前把 `SCAN-TIMEOUT` 归为「runner 的句柄构成
+特殊」。最后一版把两个 API 分开测（`dup_only=ok(248)` 而整体仍超时）⇒ **卡住的是
+`GetFinalPathNameByHandleW` 的路径查询**，`DuplicateHandle` 枚举本身没问题。
+
+### 修法：改**判据**，而且**加强**它
+
+`resource_release_contract.rs`：
+
+1. **`handle_delta` 的热身从「1 次」改成「热身到稳定」**（最多 8 次，连续 2 次读数
+   相同才算完）⇒ 把「第 1/2/3 次才出现的一次性开销」都排掉。
+   ⚠ **不是简单加几次**：那个事件发生在第 1 次还是第 2 次**随平台而异**
+   （本机第 0 次、runner 上第 2 次）⇒ 固定次数是碰运气。
+2. **原断言一字不改**（单次操作零增量）。
+3. **新增确定性守卫** `repeated_failing_reads_do_not_grow_the_handle_count`：
+   热身到稳定后**连跑 20 次**，句柄总数**必须不变**。
+   ⇒ 一次性 OS 开销压不过它；而「每次调用都漏一个」**必红** ⇒ **守卫比原来更强**。
+   ⚠ 两条合起来才两头盖住：`delta` 容易假红、只数增长容易装睡。
+
+### 清理
+
+- **探针文件与 `ci.yml` 的探针步骤已删除**（它自己的文档就写着「拿到结论即删」）。
+  `ci.yml` 原位留下**结案说明 + 三条教训**（`NtQueryObject` 挂死、
+  `GetFinalPathNameByHandleW` 也阻塞、一次性开销只能靠「热身到稳定 / 多次不增长」排掉）。
+
+### 实测
+
+- `resource_release_contract` **15 passed / 0 failed**（含两条守卫，26 s）。
+- `cargo fmt --all -- --check` **0 diff** · `clippy -D warnings` **0 error**。
+- `ci.yml` YAML 解析通过，步骤数回到 **22**（探针那一步已移除）。
+
+---
+
 ## [v0.12.1 收口 · 第二批 · 修补] — 2026-10-31（上一笔自己引入的两条 CI 红：非 Windows 侧 clippy 未使用变量 + 探针在 runner 上挂死 2.4 小时）
 
 ⚠ **本段是**我自己**在上一笔（`7b6321d`）里造成的两条 CI 红**，如实登记。

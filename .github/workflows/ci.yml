@@ -576,48 +576,29 @@ jobs:
           include-hidden-files: true
           retention-days: 14
 
-      # ⚠⚠ [v0.12.1 / **CI 专用临时探针**] **Windows 句柄泄漏点名**。
+      # ⚠⚠ [v0.12.1] **这里曾经有一个「句柄泄漏点名」的临时探针，已结案删除。**
       #
-      # 背景：CI run #335 的 windows job 红在
+      # 结论（本机取名 + runner 上逐次读数一起定的）：CI 上
       # `resource_release_contract::a_failing_file_read_leaves_no_handle_behind`
-      # （`delta = 1`）⇒ 已定性为**真泄漏**（读数不回落，不是测量噪声），
-      # 但 ⚠ **本机复现不出**（本机 5 个变体各 6000 次 eval ⇒ 零命中）
-      # ⇒ 决定性的一步只能在 **CI 的 windows runner** 上做。
+      # 的 `delta = 1` **不是泄漏**，是 **Windows 的本地化消息资源（MUI）**：
+      # 第一次格式化 `std::io::Error` 时 `FormatMessageW` 把 `KernelBase.dll` 的
+      # 消息表惰性映射进进程（本机实测 +4 个 `File` 句柄，路径是
+      # `...\zh-CN\<hash>\KernelBase.dll.mui`，再跑一次数量不再变）。
       #
-      # 这一步：跑 `handle_dump_probe`（20000 次 eval，**每次 eval 后**读句柄数）；
-      # 一旦读数偏离基线且**落定后仍偏离** ⇒ 把**句柄逐个点名**（类型名 +
-      # 文件路径）⇒ 日志里直接看得见多出来的是什么、指向哪里。
+      # ⇒ 修法落在**判据**上（`resource_release_contract.rs`）：热身从原来的
+      #   **1 次**改成「**热身到稳定**」（连续 2 次读数相同才算完），并另加一条
+      #   **确定性**守卫 `repeated_failing_reads_do_not_grow_the_handle_count`
+      #   （连跑 20 次，总数不许涨）⇒ 一次性 OS 开销压不过它，而「每次调用漏一个」
+      #   必红 ⇒ **守卫比原来更强**，不是被削弱。
       #
-      # ⚠ **只在 windows 上跑**（那个泄漏只出现在 windows runner）。
-      # ⚠ **`if: always()`**：主测试步骤红时（正是要取证的时候）这一步也要跑。
-      # ⚠ **它不会让 CI 红**：探针自己**不判定失败**（命中也只是打印 + 发注解）⇒
-      #   真正的守卫仍然是 `resource_release_contract` 那条断言。
-      # ⚠⚠ **`timeout-minutes` 是事故之后加的硬保险**：第一版探针用
-      #   `NtQueryObject` 查对象类型名 ⇒ 那个 API 在**同步管道句柄**上会**永久
-      #   挂死**且线程杀不掉 ⇒ **run #337 的 windows job 从 02:06 一直挂到 04:30
-      #   仍未结束**（烧掉两个多小时 runner）。⇒ ① 探针内部改成只用安全 API
-      #   （`DuplicateHandle` / `GetFinalPathNameByHandleW`）＋ 扫描跑在可放弃的
-      #   线程里；② 这里再加**硬上限** ⇒ 无论以后谁再动它，**都不可能**再挂几小时。
-      # ⚠ 拿到结论后**这一步与那个探针文件一起删**。
-      #
-      # ⚠⚠ **它现在跑的是「变体矩阵」，不是「把句柄点名」** —— 前两版都把 runner
-      #   弄翻过，如实记在这里免得有人再走一遍：
-      #   * 版 1 用 `NtQueryObject` 取**类型名** ⇒ **挂死 2.4 小时**（该 API 在
-      #     「同步管道句柄 + 有挂起读操作」时永久挂死，线程杀不掉）。
-      #   * 版 2 只用 `DuplicateHandle` ＋ `GetFinalPathNameByHandleW` ⇒ 仍然
-      #     **`SCAN-TIMEOUT`（120 s 扫不完）** ⇒ 路径查询在 runner 的句柄上**同样
-      #     阻塞**（它内部查 `FileNameInformation`，与 `NtQueryObject` 同一类阻塞面）。
-      #   ⇒ **在 runner 上逐个句柄查询这条路走不通** ⇒ 版 3 只依赖
-      #     `GetProcessHandleCount` 这一个绝对安全的调用 ⇒ 拿不到「那个句柄是什么」，
-      #     但能拿到「**哪一段操作**让它多出来一个」—— 后者才直接指向代码。
-      - name: Handle-leak variant matrix (windows only, temporary)
-        if: always() && matrix.os == 'windows-latest'
-        shell: bash
-        working-directory: impl
-        timeout-minutes: 10
-        env:
-          WLWL_HANDLE_DUMP: '1'
-        run: cargo test --locked -p wlwl-eval --test handle_dump_probe -- --nocapture
+      # ⚠ **教训（写在这里是为了下次不要再走一遍）**：
+      #   ① 在 Windows 上**逐句柄查类型名**（`NtQueryObject`）在 runner 上会
+      #     **永久挂死**（同步管道句柄）⇒ 那个探针一版就把 CI 卡了 2.4 小时；
+      #   ② 换 `DuplicateHandle` + `GetFinalPathNameByHandleW` 仍会**卡在路径查询**
+      #     （最后一版把两者分开了：`dup_only=ok(248)` 而整体仍超时）；
+      #   ③ **一次性的惰性开销**只能靠「热身到稳定」或「多次不增长」排掉，
+      #      **靠多加几次热身**是碰运气（那个事件在第 1 次还是第 2 次发生，随平台）。
+      # ⇒ 结论要**本机取证**（本机可以安全地查类型名），CI 只用来验结论。
 
       # ⚠⚠ **[D13-073] 上传那步显示 success ≠ 真的有 artifact。**
       #
