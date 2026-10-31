@@ -1,3 +1,27 @@
+## [v0.12.1_rc2] — 2026-11-01（预览版 · 首个**带 TLS 扩展**的归档包）
+
+⚠ **本段记录 `v0.12.1_rc2` 那个快照**。它是 `v0.12.1_rc1` 之后**全部改动**的收口点：
+
+| 类别 | 内容 |
+|---|---|
+| 修 flaky / 判据（4 条） | 锁写并发竞争（临时名唯一化）· chunked 夹具 RST（先读请求再 close）· Windows 句柄漂移（**不是泄漏**，是 OS 的 MUI 惰性映射 ⇒ 判据改成「热身到稳定 + 连跑 20 次不增长」）· macOS `a_reader_never_sees_a_half_written_target`（判据的期望值原依赖机器快慢 ⇒ 改成补写到读够 10 次） |
+| 安全 | **符号链接逃逸**（`STATIC_FILE`）：新增**私有 R2 内核** `_RESOLVE_UNDER`（Rust 侧 `std::fs::canonicalize` 真解析）⇒ 根内指向根外的链接不再能把根外文件端出去。**公共面零变化**（25 命名空间 / 288 成员），**规范侧零改动** |
+| 验证缺口 | **HTTPS 真实握手**首次端到端实测（`https_e2e_contract` 4/0，真握手拿 200） |
+| 供应链 | **SBOM 覆盖 TLS 扩展**（独立 workspace 单独出 SBOM 再合并 + 回读校验）；⚠ 顺带修掉一个既有 bug：原 `ASSET_SBOM` 路径少了 `impl/` ⇒ **SBOM 从未进过 artifact** |
+| 发布产物 | ⚠ **首次**把 `wlwl-tls` 动态库装进归档（`wlwl-tls/` + `ABI_VERSION` + `SHA256SUMS`）—— `rc1` 的包里**没有**它（那个 tag 的 `release.yml` 就没有这一步） |
+| 文档 | 计划 §6.2 / §7 台账 / §11.2 / §11.6b **账目订正**；README 版本口径改为 `0.12.1`；`docs/site/install.md` 不再声称 `rc1` 带 TLS |
+
+**版本守卫**：`tag` 基版本 `v0.12.1` ↔ `impl/Cargo.toml` 的 `0.12.1` ⇒ 逐字相等（RC 只在 tag 名上带后缀）。
+
+**打 tag 前的远端读数**：**CI run #342（head `ae5b405`）4 个 job 全 success**
+（`ubuntu` / `macOS` / `windows` / `smoke`）⇒ 满足「先修到远端全绿，再打 tag」。
+
+⚠ **本 RC 仍然不是正式版**：`prerelease: true` 由 tag 名里的 `_rc` 决定 ⇒ 不会被工具链当
+production ready 抓走；**正式 `v0.12.1` 的 tag 尚未发**。
+⚠ **规范侧仍是候选文本**：`wlwl-spec-v1` 的 **v1.0.4 tag 未发**（当前是候选提交 `d6d90c3`）。
+
+---
+
 ## [v0.12.1 收口 · 第二批 · 第三条红] — 2026-10-31（macOS `a_reader_never_sees_a_half_written_target`：判据的期望值依赖机器快慢）
 
 ⚠ **run #340 的 macOS ✗** 与上两笔的改动**无关**（`git diff` 可证：那一笔只动了

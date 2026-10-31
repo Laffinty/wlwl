@@ -157,15 +157,16 @@ deliberately unfinished.
   with the scheduler's suspension points. What `std.sync` does provide is
   the part that does not need to suspend: atomic counters and shared
   dictionaries.
-- **Workspace version: 0.12.1** (`impl/Cargo.toml`). What is *published* is the
+- **Current version: 0.12.1** (`impl/Cargo.toml`), published as the
   pre-release
-  [v0.12.1_rc1](https://github.com/Laffinty/wlwl/releases/tag/v0.12.1_rc1) —
-  a **snapshot taken at that tag**, **not** the current tree: fixes landed
-  after the tag are **not** in it, and ⚠ **its archive contains no TLS
-  extension** (that packaging step was added after the tag). The latest
-  *final* release is
-  [v0.12.0](https://github.com/Laffinty/wlwl/releases/tag/v0.12.0); the final
-  `v0.12.1` has not been released yet.
+  [v0.12.1_rc2](https://github.com/Laffinty/wlwl/releases/tag/v0.12.1_rc2) —
+  a release candidate, so the GitHub release is marked *pre-release* and
+  package managers will not pick it up automatically. The final `v0.12.1`
+  has not been released yet.
+  ⚠ The earlier [v0.12.1_rc1](https://github.com/Laffinty/wlwl/releases/tag/v0.12.1_rc1)
+  is **not** the current tree (fixes landed after that tag are not in it), and
+  **its archive contains no TLS extension** — that packaging step was added
+  after `rc1` was tagged.
 
 ## License
 
