@@ -590,13 +590,20 @@ jobs:
       #
       # ⚠ **只在 windows 上跑**（那个泄漏只出现在 windows runner）。
       # ⚠ **`if: always()`**：主测试步骤红时（正是要取证的时候）这一步也要跑。
-      # ⚠ **它不会让 CI 红**：探针自己**不判定失败**（命中也只是打印）⇒
+      # ⚠ **它不会让 CI 红**：探针自己**不判定失败**（命中也只是打印 + 发注解）⇒
       #   真正的守卫仍然是 `resource_release_contract` 那条断言。
+      # ⚠⚠ **`timeout-minutes` 是事故之后加的硬保险**：第一版探针用
+      #   `NtQueryObject` 查对象类型名 ⇒ 那个 API 在**同步管道句柄**上会**永久
+      #   挂死**且线程杀不掉 ⇒ **run #337 的 windows job 从 02:06 一直挂到 04:30
+      #   仍未结束**（烧掉两个多小时 runner）。⇒ ① 探针内部改成只用安全 API
+      #   （`DuplicateHandle` / `GetFinalPathNameByHandleW`）＋ 扫描跑在可放弃的
+      #   线程里；② 这里再加**硬上限** ⇒ 无论以后谁再动它，**都不可能**再挂几小时。
       # ⚠ 拿到结论后**这一步与那个探针文件一起删**。
       - name: Handle-leak naming probe (windows only, temporary)
         if: always() && matrix.os == 'windows-latest'
         shell: bash
         working-directory: impl
+        timeout-minutes: 10
         env:
           WLWL_HANDLE_DUMP: '1'
         run: cargo test --locked -p wlwl-eval --test handle_dump_probe -- --nocapture

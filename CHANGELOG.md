@@ -1,3 +1,71 @@
+## [v0.12.1 收口 · 第二批 · 修补] — 2026-10-31（上一笔自己引入的两条 CI 红：非 Windows 侧 clippy 未使用变量 + 探针在 runner 上挂死 2.4 小时）
+
+⚠ **本段是**我自己**在上一笔（`7b6321d`）里造成的两条 CI 红**，如实登记。
+⇒ 上一笔的**功能没有回退**（TLS staging、打包排除、锁写修复、夹具修复都还在），
+红的是**新加的探针文件**。
+
+### ① run #337 的 ubuntu ✗ / macOS ✗：`cargo clippy -D warnings` 红（非 Windows 侧未使用变量）
+
+`handle_dump_probe.rs` 里基线快照分两臂：
+
+```rust
+#[cfg(windows)]      let base_snapshot = scan_handles();
+#[cfg(not(windows))] let base_snapshot: Vec<...> = Vec::new();
+```
+
+⇒ 非 Windows 侧那个 `Vec::new()` **只被 `#[cfg(windows)]` 块用到** ⇒ 在 ubuntu /
+macOS 上它是**未使用变量** ⇒ `-D warnings` ⇒ **直接红**。
+⚠ **为什么本机没发现**：我在 **Windows** 上跑 `clippy` ⇒ 走的是 `#[cfg(windows)]` 那一臂
+⇒ 另一臂**根本不参与编译** ⇒ 本机全绿而 CI 红。⚠ **这正是「只在另一个平台编译的分支，
+本机 lint 永远看不到」** 这个形态。
+
+**修法**：`let _ = &base_snapshot;`（显式吞掉）＋ 注释写明原因。
+**验法（本机能做的那一半）**：把文件里的 `#[cfg(windows)]` / `#[cfg(not(windows))]`
+**互换**成一份临时的 `*_linux_sim.rs` ⇒ 用 `cargo clippy -D warnings` 编那一份
+⇒ **`unused variable` 消失**（只剩模拟本身造成的 `non_minimal_cfg` 噪音）⇒ 删掉临时件。
+
+### ② run #337 的 windows job：探针步骤**挂死 2.4 小时**（`NtQueryObject` 死锁）
+
+**症状**：`Handle-leak naming probe` 步骤**从 `02:06` 一直 `in_progress` 到 `04:30`
+仍未结束**（其余步骤都已完成）⇒ 白烧两个多小时 runner。
+
+**根因（公开资料坐实）**：第一版探针用 `NtQueryObject(ObjectTypeInformation)` 取
+**对象类型名**（`File` / `Event` / `Key` …）。⚠ 该 API 在**同步管道句柄 + 有挂起读操作**
+时**会永久挂死**，而且**那个线程杀不掉**（强杀可能蓝屏）；连「先判断它是不是管道」的
+替代尝试（`GetFileType` 等）**同样会死锁**。
+⇒ GitHub runner 上有大量这类管道句柄（runner 与它派的子进程通信）⇒
+⇒ **任何「逐个句柄查类型名」的写法在 CI 上都是定时炸弹**。
+⚠ **为什么本机没发现**：本机扫 212 个句柄、**7.7 s 全读出类型名**（那时它还「能用」）⇒
+本机的句柄构成里没有那种「同步管道 + 挂起读」的组合。
+
+**修法（两道保险）**：
+1. **探针不再调 `NtQueryObject`** ⇒ 只用两个安全 API：`DuplicateHandle`（判有效）与
+   `GetFinalPathNameByHandleW`（取路径）。⚠ **代价**：拿不到类型名 ⇒ 但「多出来的是
+   **文件**（带路径）还是**非文件内核对象**」这个二分对定位已经足够决定性。
+2. **扫描跑进可放弃的线程**（`thread::spawn` + `recv_timeout(120 s)`）⇒ 万一再踩到什么
+   会阻塞的 API，探针只是**拿不到证据**，不会挂死。
+3. **`ci.yml` 那一步加 `timeout-minutes: 10`** ⇒ **硬上限** ⇒ 无论以后谁再动它，
+   **都不可能**再烧几小时。
+
+**顺带的可用性改进（本轮加的）**：探针把结论**压成一行发 `::warning` 注解** ——
+因为 GitHub 的**作业日志需要登录**才能读（`GET /actions/jobs/<id>/logs` = 403、
+artifact = 401），而**注解是匿名可读的**（`check-runs/<id>/annotations` 无需 token）
+⇒ 一次 API 调用就能拿到「命中没有 / 多出来的句柄是什么」。
+
+**实测（本机，改后）**：探针 **8.1 s** 跑完、基线 **212 个**有效句柄（**8 个带路径**）、
+20000 次 eval **未命中**、注解正常输出
+（`NO-HIT evals=20000 baseline=72 transient=0 snapshot=212 with_path=8`）。
+
+### ③ 一条与该事故无关的好消息：上一笔的两条 flaky 修复**在 CI 上验住了**
+
+**run #336（head `372b790`）4 个 job 全绿** —— `test (ubuntu-latest)` ✓ ·
+`test (macos-latest)` ✓ · `test (windows-latest)` ✓ · `smoke run examples` ✓。
+⇒ ⚠ **ubuntu 那两条红（锁写并发竞争 / chunked 夹具 RST）在 run #336 上都没有再出现**。
+⚠ 但**不能据此判「已彻底修好」**：这两条本来就是**概率性**缺陷，单轮绿只是**一个**
+读数（锁写那条的病根已由**确定性**守卫钉住；RST 那条由 WSL2 上 500 轮的 A/B 对照钉住）。
+
+---
+
 ## [v0.12.1 收口 · 第二批] — 2026-10-31（CI run #334/#335 两条 flaky 已修 · TLS 扩展产物随包发布 · CI 专用句柄点名探针）
 
 ⚠ **本段是 `v0.12.1_rc1` tag 之后**的工作 ⇒ 它**不在**那个 RC 包里（tag ＝ 快照）

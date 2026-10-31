@@ -16,24 +16,45 @@
 //! 3. 一旦读数偏离基线 ⇒ **等它落定**（连续两次读数相同）：
 //!    * 落定后**仍偏离** ⇒ **真泄漏** ⇒ 立刻**把句柄点名**；
 //!    * 落定后回到基线 ⇒ 只是噪声 ⇒ 继续跑。
-//! 4. 「点名」的办法：扫 `0..4096` 的句柄值，**用 `DuplicateHandle` 试**哪个
-//!    是本进程的有效句柄（成功 ⇔ 有效）⇒ 再用 `NtQueryObject` 取**类型名**、
-//!    `GetFinalPathNameByHandleW` 取**文件路径** ⇒ 与基线快照**做差** ⇒
-//!    CI 日志里直接看得见「多出来的是什么（文件？线程？子进程？事件？）、指向哪里」。
+//! 4. 「点名」= 扫 `0..4096` 的句柄值，用 `DuplicateHandle` 试哪个是本进程的
+//!    **有效**句柄（成功 ⇔ 有效），再用 `GetFinalPathNameByHandleW` 取**文件路径**
+//!    ⇒ 与基线快照**做差** ⇒ 注解里直接看得见「多出来的那个是什么、指向哪里」。
 //!
-//! ## 为什么不用 `NtQuerySystemInformation(SystemExtendedHandleInformation)`
+//! ## ⚠⚠ **绝对不要**在这里调 `NtQueryObject`
 //!
-//! ⚠ 实测（Windows 11，本机）：那个类给的是**全系统**的句柄表（本机 9 万多条，
-//!   含别的进程的）⇒ **没有 PID 字段**没法按进程过滤 ⇒ 用不得。
-//! `SystemHandleInformation` 在现代 Windows 上同样对不上（实测三种 stride 都
-//!   匹配不到本进程 PID）⇒ 也用不得。
-//! ⇒ 改走**用户态暴力扫描**：只依赖 `DuplicateHandle` / `NtQueryObject` /
-//!   `GetFinalPathNameByHandleW` 三个公开 API ⇒ **无版本依赖、无需系统表**。
+//! **实测事故（本轮自己造成的）**：第一版探针用
+//! `NtQueryObject(ObjectTypeInformation)` 取**对象类型名**（`File` / `Event` /
+//! `Key` …）⇒ 本机跑得好好的（7.7 s，212 个句柄全读出类型）⇒ ⚠ **但它在
+//! CI 的 windows runner 上挂死了 2.4 小时**（步骤从 `02:06` 一直 `in_progress`
+//! 到 `04:30` 仍未结束）。
+//!
+//! **根因（公开资料坐实）**：`NtQueryObject` 在**同步管道句柄 + 有挂起读操作**时
+//! **会永久挂死**，而且**无法终止那个线程**（强杀可能蓝屏）；`GetFileType`
+//! 之类「判断它是不是管道」的替代尝试同样会死锁。
+//! ⇒ runner 上有大量这种管道句柄（runner 自己与它派的子进程通信）⇒
+//! **任何逐个句柄查类型名的写法在 CI 上都是定时炸弹**。
+//!
+//! ⇒ 本探针**只**用两个安全 API：`DuplicateHandle`（判有效）与
+//! `GetFinalPathNameByHandleW`（取路径，非文件句柄直接返回错误）。
+//! ⇒ 代价：**拿不到对象类型名**。但「多出来的是**文件**（带路径）还是
+//! **非文件内核对象**」这个二分对定位已经足够决定性。
+//!
+//! ## 两道超时保险（都是事故之后加的）
+//!
+//! * 扫描本身跑在**独立线程 + `recv_timeout`** 里 ⇒ 万一再踩到会阻塞的 API，
+//!   探针**不会挂死**（最多泄漏 1 个线程，进程结束即回收）。
+//! * `ci.yml` 里那一步带 `timeout-minutes` ⇒ 硬上限，**不可能再烧几小时 runner**。
+//!
+//! ## 结论进**注解**，不只 println
+//!
+//! GitHub 的**作业日志需要登录**才能读（`GET /actions/jobs/<id>/logs` = 403、
+//! artifact = 401）⇒ 只 print 的话证据留在「要登录才看得见」的地方。
+//! **注解是匿名可读的**（`GET /repos/<o>/<r>/check-runs/<id>/annotations`
+//! 无需 token）⇒ 把结论压成一行放进 `::warning` 注解。
 //!
 //! ## 成本
 //!
 //! 只在 `WLWL_HANDLE_DUMP=1` 时干活 ⇒ 正常 CI 跑它 ≈ **0 成本**（立刻返回）。
-//! 打开时每次 eval ≈ 0.4 ms ⇒ 20000 次 ≈ 8 s；扫描只在**命中时**才做（≈ 几 ms）。
 
 mod common;
 
@@ -68,6 +89,19 @@ fn settled(timeout_ms: u64) -> usize {
     }
 }
 
+/// 发一条 **workflow annotation**（`::warning title=…::…`），见文件头的「结论进注解」。
+///
+/// ⚠ 注解 message **不能含换行** ⇒ 多条压成一行；⚠ 一律 **ASCII**
+/// （Windows runner 的 locale 不是 UTF-8 ⇒ 非 ASCII 会变乱码）。
+fn annotation(title: &str, msg: &str) {
+    let ascii: String = msg
+        .chars()
+        .map(|c| if c.is_ascii() { c } else { '?' })
+        .collect();
+    let one_line: String = ascii.replace(['\r', '\n'], " ");
+    println!("::warning title={title}::{one_line}");
+}
+
 #[test]
 fn ci_only_handle_dump_probe() {
     if std::env::var("WLWL_HANDLE_DUMP").as_deref() != Ok("1") {
@@ -95,24 +129,23 @@ fn ci_only_handle_dump_probe() {
     println!("[handle-dump] baseline handle count = {baseline}");
 
     #[cfg(windows)]
-    let base_snapshot = scan_handles();
+    let base_snapshot = guarded_scan(120).unwrap_or_default();
     #[cfg(not(windows))]
-    let base_snapshot: Vec<(usize, String, String)> = Vec::new();
+    let base_snapshot: Vec<(usize, String)> = Vec::new();
+    // ⚠ 非 Windows 平台**没有句柄表可扫** ⇒ 这张快照在那边只被下面的
+    //   `#[cfg(windows)]` 块用到 ⇒ 在非 Windows 侧它是**未使用变量** ⇒
+    //   CI 带 `-D warnings` ⇒ 会**直接红**（实测：run #337 的 ubuntu / macOS
+    //   就红在这一条）⇒ 这里显式吞掉它。
+    let _ = &base_snapshot;
 
-    // ⚠ **无条件**把基线快照的概貌打出来 ⇒ ① 证明扫描那套 API 在真机上**能用**
-    //   （类型名 / 文件路径读得出来）；② CI 日志里能直接和后面的「新增句柄」对照。
     #[cfg(windows)]
     {
+        let with_path = base_snapshot.iter().filter(|e| !e.1.is_empty()).count();
         println!(
-            "[handle-dump] 基线快照：{} 个可识别句柄",
-            base_snapshot.len()
+            "[handle-dump] 基线快照：{} 个有效句柄，其中带路径的 {} 个",
+            base_snapshot.len(),
+            with_path
         );
-        let hist = histogram(&base_snapshot);
-        for (k, n) in hist.iter().take(12) {
-            println!("[handle-dump]   {k} x {n}");
-        }
-        let with_path = base_snapshot.iter().filter(|e| !e.2.is_empty()).count();
-        println!("[handle-dump]   其中带路径的：{with_path} 个（⇒ 路径读取可用）");
     }
 
     let t0 = Instant::now();
@@ -123,15 +156,24 @@ fn ci_only_handle_dump_probe() {
         if now != baseline {
             let after = settled(500);
             if after != baseline {
-                // ⇒ **真泄漏**：把句柄点名（CI 日志里直接看出持有者）。
+                // ⇒ **真泄漏**：把句柄点名。
                 println!(
                     "[handle-dump] ⚠ 真泄漏命中：第 {i} 次 eval 后读数 {now}（基线 {baseline}）\
                      ，落定后仍是 {after}"
                 );
                 #[cfg(windows)]
-                dump_diff(&base_snapshot);
+                let detail = match guarded_scan(120) {
+                    Some(now_snapshot) => describe_diff(&base_snapshot, &now_snapshot),
+                    None => "SCAN-TIMEOUT (guarded scan did not finish in 120s)".to_string(),
+                };
                 #[cfg(not(windows))]
-                println!("[handle-dump] （非 Windows 平台 ⇒ 无句柄可点名）");
+                let detail: String = "non-Windows: nothing to name".to_string();
+                annotation(
+                    "handle-leak (windows runner)",
+                    &format!(
+                        "LEAK-HIT eval={i} count={now} baseline={baseline} settled={after} :: {detail}"
+                    ),
+                );
                 let _ = std::fs::remove_dir_all(&dir);
                 return;
             }
@@ -141,24 +183,34 @@ fn ci_only_handle_dump_probe() {
 
     println!(
         "[handle-dump] 跑完 {EVALS} 次 eval：**未命中**（瞬时偏离 {transient} 次）\
-         ，elapsed={:?} ⇒ 这台机器上复现不出 ⇒ 看 CI runner 的那份日志",
+         ，elapsed={:?} ⇒ 这台机器上复现不出",
         t0.elapsed()
+    );
+    #[cfg(windows)]
+    let extra = format!(
+        "snapshot={} with_path={}",
+        base_snapshot.len(),
+        base_snapshot.iter().filter(|e| !e.1.is_empty()).count()
+    );
+    #[cfg(not(windows))]
+    let extra = "non-Windows".to_string();
+    annotation(
+        "handle-leak probe (no hit)",
+        &format!("NO-HIT evals={EVALS} baseline={baseline} transient={transient} {extra}"),
     );
     let _ = std::fs::remove_dir_all(&dir);
 }
 
-// ── Windows：句柄点名 ──────────────────────────────────────────────────────
+// ── Windows：安全的句柄点名 ────────────────────────────────────────────────
 
 #[cfg(windows)]
 mod win {
-    use std::ffi::c_void;
-
     pub type Handle = isize;
 
     #[link(name = "kernel32")]
     extern "system" {
         /// ⚠ 签名必须与 `common::handle_guard` 里那份**逐字一致**（同一个 Win32
-        ///   API 声明两遍、类型不同 ⇒ rustc 会报 "redeclared with a different
+        ///   API 声明两遍、类型不同 ⇒ rustc 报 "redeclared with a different
         ///   signature"）。
         pub fn GetCurrentProcess() -> *mut core::ffi::c_void;
         pub fn DuplicateHandle(
@@ -179,30 +231,18 @@ mod win {
         ) -> u32;
     }
 
-    #[link(name = "ntdll")]
-    extern "system" {
-        pub fn NtQueryObject(
-            handle: Handle,
-            class: u32,
-            info: *mut c_void,
-            len: u32,
-            ret_len: *mut u32,
-        ) -> i32;
-    }
-
-    pub const OBJECT_TYPE_INFORMATION: u32 = 2;
     pub const DUPLICATE_SAME_ACCESS: u32 = 0x2;
     /// 句柄值的扫描上限（Windows 的句柄值是很小的整数 ⇒ 4096 绰绰有余）。
     pub const MAX_HANDLE_VALUE: isize = 4096;
 }
 
 #[cfg(windows)]
-/// 扫出本进程所有**有效**的句柄值 ⇒ `[(句柄值, 类型名, 文件路径)]`。
+/// 扫出本进程所有**有效**的句柄值 ⇒ `[(句柄值, 文件路径或空串)]`。
 ///
-/// ⚠ 手法：`DuplicateHandle(GetCurrentProcess(), v, …)` 成功 ⇔ `v` 是本进程的有效句柄。
-/// ⚠ 结果是**真实句柄表的一个超集**（线程池的内部对象等也会被算进去）⇒
-///   所以只用它**做差**（基线 vs 事后），不用它当绝对计数。
-fn scan_handles() -> Vec<(usize, String, String)> {
+/// ⚠ **只用安全 API**（`DuplicateHandle` + `GetFinalPathNameByHandleW`）——
+///   ⚠ **绝不要**在这里加 `NtQueryObject`（见文件头的事故记录：它在 CI runner
+///   的同步管道句柄上永久挂死）。代价是拿不到类型名。
+fn scan_handles() -> Vec<(usize, String)> {
     use win::*;
 
     let mut out = Vec::new();
@@ -213,43 +253,12 @@ fn scan_handles() -> Vec<(usize, String, String)> {
             if DuplicateHandle(me, v, me, &mut dup, 0, 0, DUPLICATE_SAME_ACCESS) == 0 {
                 continue;
             }
-            let ty = type_name(dup);
             let path = final_path(dup);
             let _ = CloseHandle(dup);
-            out.push((v as usize, ty, path));
+            out.push((v as usize, path));
         }
     }
     out
-}
-
-#[cfg(windows)]
-/// 句柄的**类型名**（`NtQueryObject` ⇒ `ObjectTypeInformation` ⇒ UNICODE_STRING）。
-fn type_name(h: win::Handle) -> String {
-    use std::ffi::c_void;
-    use win::*;
-
-    unsafe {
-        let mut buf = [0u8; 1024];
-        let mut needed: u32 = 0;
-        let st = NtQueryObject(
-            h,
-            OBJECT_TYPE_INFORMATION,
-            buf.as_mut_ptr() as *mut c_void,
-            buf.len() as u32,
-            &mut needed,
-        );
-        if st != 0 {
-            return format!("<type? st={st}>");
-        }
-        // UNICODE_STRING { USHORT Length; USHORT MaximumLength; PWSTR Buffer; }
-        let len = u16::from_le_bytes([buf[0], buf[1]]) as usize;
-        let buffer_ptr = *(buf.as_ptr().add(8) as *const usize);
-        if len == 0 || buffer_ptr == 0 {
-            return "<type?>".to_string();
-        }
-        let slice = std::slice::from_raw_parts(buffer_ptr as *const u16, len / 2);
-        String::from_utf16_lossy(slice)
-    }
 }
 
 #[cfg(windows)]
@@ -268,49 +277,54 @@ fn final_path(h: win::Handle) -> String {
 }
 
 #[cfg(windows)]
-/// 类型分布（按数量降序）。
-fn histogram(snapshot: &[(usize, String, String)]) -> Vec<(String, usize)> {
-    let mut kinds: std::collections::HashMap<String, usize> = std::collections::HashMap::new();
-    for (_, ty, _) in snapshot {
-        *kinds.entry(ty.clone()).or_insert(0) += 1;
-    }
-    let mut v: Vec<(String, usize)> = kinds.into_iter().collect();
-    v.sort_by(|a, b| b.1.cmp(&a.1).then(a.0.cmp(&b.0)));
-    v
+/// **超时保护**的扫描：跑在独立线程里，最多等 `timeout_secs`。
+///
+/// ⚠ 为什么必须：`NtQueryObject` 那类 API 会**永久挂死**且线程杀不掉 ⇒
+///   把扫描关进「可放弃」的线程里 ⇒ 万一再踩到，探针只是**拿不到证据**，
+///   不会像第一版那样把 CI 步骤挂死几个小时。
+/// ⚠ 超时后那个线程仍在（Rust 杀不掉线程）⇒ 进程结束时随之回收。
+fn guarded_scan(timeout_secs: u64) -> Option<Vec<(usize, String)>> {
+    let (tx, rx) = std::sync::mpsc::channel();
+    std::thread::spawn(move || {
+        let _ = tx.send(scan_handles());
+    });
+    rx.recv_timeout(Duration::from_secs(timeout_secs)).ok()
 }
 
 #[cfg(windows)]
-/// 只打印**相对基线新增的**句柄 ⇒ CI 日志里直接看见「多出来的是什么」。
-fn dump_diff(base: &[(usize, String, String)]) {
-    let now = scan_handles();
+/// 与基线**做差** ⇒ 一段**单行**摘要（进注解）。
+fn describe_diff(base: &[(usize, String)], now: &[(usize, String)]) -> String {
     let base_handles: std::collections::HashSet<usize> = base.iter().map(|e| e.0).collect();
-    let added: Vec<_> = now
+    let added: Vec<&(usize, String)> = now
         .iter()
         .filter(|e| !base_handles.contains(&e.0))
         .collect();
-    let gone = base_handles.len() - (now.len() - added.len());
     println!(
-        "[handle-dump] 基线 {} 个可识别句柄 ⇒ 现在 {} 个 ⇒ **新增 {} 个**（少了 {gone} 个）",
+        "[handle-dump] 基线 {} 个有效句柄 ⇒ 现在 {} 个 ⇒ **新增 {} 个**",
         base.len(),
         now.len(),
         added.len()
     );
-    for (handle, ty, path) in &added {
-        println!(
-            "[handle-dump]   新增句柄 #{handle}  类型={ty}  路径={}",
-            if path.is_empty() { "<无路径>" } else { path }
-        );
-    }
     if added.is_empty() {
         println!(
             "[handle-dump]   ⚠ 没有「新增句柄」⇒ 多出来的可能是**已存在的句柄被复用**\
-             ⇒ 改看类型分布对比："
+             ⇒ 按句柄值比对不出来"
         );
-        let hb = histogram(base);
-        let hn = histogram(&now);
-        for (k, n) in hn.iter().take(12) {
-            let b = hb.iter().find(|e| e.0 == *k).map(|e| e.1).unwrap_or(0);
-            println!("[handle-dump]     {k}: 基线 {b} ⇒ 现在 {n}");
-        }
+        return format!(
+            "NO-ADDED-HANDLE baseline={} now={} (a reused handle value)",
+            base.len(),
+            now.len()
+        );
     }
+    let mut parts: Vec<String> = Vec::new();
+    for (handle, path) in &added {
+        let kind = if path.is_empty() {
+            "<non-file kernel object>"
+        } else {
+            path.as_str()
+        };
+        println!("[handle-dump]   新增句柄 #{handle}  {kind}");
+        parts.push(format!("#{handle} {kind}"));
+    }
+    format!("ADDED={} :: {}", added.len(), parts.join(" | "))
 }
