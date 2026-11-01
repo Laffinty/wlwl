@@ -31,13 +31,13 @@ archive carries:
 > |---|---|---|
 > | `v0.12.1_rc1` | yes | **no** |
 > | `v0.12.1_rc2` | **no** — its `generate SBOM` job failed, so `github release` was skipped | (no release exists) |
-> | `v0.12.1_rc3` | yes | **yes** — the current one, with `lib/stdlib/` next to the dynamic library |
+> | `v0.12.1_rc3` | yes, but **withdrawn** — the tag and the release were both deleted | (withdrawn) |
+> | `v0.12.1_rc4` | yes | **yes** — the current one, with `lib/stdlib/` next to the dynamic library |
 >
-> ⚠ **`v0.12.1_rc3` was rebuilt under the same name**: an earlier
-> `v0.12.1_rc3` (with the extension under `wlwl-tls/` instead of `lib/`)
-> was published and then **withdrawn** — its tag and release were both
-> deleted. The tag now points at the `lib/` layout, so the table above
-> describes what is live today.
+> ⚠ **`v0.12.1_rc3` was withdrawn**: it shipped once (with the extension
+> under `wlwl-tls/` instead of `lib/`) and was then deleted — both its tag
+> and its release. Because that tag had already been published, the next
+> release takes a **new number** rather than reusing `rc3`.
 >
 > Verify it yourself instead of trusting this table:
 >
@@ -46,19 +46,19 @@ archive carries:
 > git show v0.12.1_rc1:.github/workflows/release.yml | grep -n tls   # no output
 > # the current archive really ships the library next to the stdlib sources:
 > curl -sSL -o rc.tar.xz \
->   https://github.com/Laffinty/wlwl/releases/download/v0.12.1_rc3/wlwl-v0.12.1_rc3-x86_64-unknown-linux-gnu.tar.xz
+>   https://github.com/Laffinty/wlwl/releases/download/v0.12.1_rc4/wlwl-v0.12.1_rc4-x86_64-unknown-linux-gnu.tar.xz
 > tar -tJf rc.tar.xz | grep '/lib/'
 > ```
 >
 > When it is present, verify and use it like this:
 >
 > ```bash
-> cd wlwl-v0.12.1_rc3-x86_64-unknown-linux-gnu/lib
+> cd wlwl-v0.12.1_rc4-x86_64-unknown-linux-gnu/lib
 > sha256sum -c SHA256SUMS          # libwlwl_tls.so: OK
 > cat ABI_VERSION                  # 1
 > ls stdlib/                       # the R1 sources live next to it
 > cd ../.. && wlwl run --ext \
->   wlwl-v0.12.1_rc3-x86_64-unknown-linux-gnu/lib/libwlwl_tls.so \
+>   wlwl-v0.12.1_rc4-x86_64-unknown-linux-gnu/lib/libwlwl_tls.so \
 >   your-program.wll
 > ```
 >
@@ -69,9 +69,9 @@ Download:
 
 ```bash
 # Linux (swap the target triple for macOS: x86_64-apple-darwin / aarch64-apple-darwin)
-curl -LO https://github.com/Laffinty/wlwl/releases/download/v0.12.1_rc3/wlwl-v0.12.1_rc3-x86_64-unknown-linux-gnu.tar.xz
-tar -xJf wlwl-v0.12.1_rc3-x86_64-unknown-linux-gnu.tar.xz
-export PATH="$PWD/wlwl-v0.12.1_rc3-x86_64-unknown-linux-gnu:$PATH"
+curl -LO https://github.com/Laffinty/wlwl/releases/download/v0.12.1_rc4/wlwl-v0.12.1_rc4-x86_64-unknown-linux-gnu.tar.xz
+tar -xJf wlwl-v0.12.1_rc4-x86_64-unknown-linux-gnu.tar.xz
+export PATH="$PWD/wlwl-v0.12.1_rc4-x86_64-unknown-linux-gnu:$PATH"
 wlwl --version
 ```
 
@@ -86,7 +86,7 @@ Verify the signature with [`cosign`](https://docs.sigstore.dev/cosign/system_con
 cosign verify-blob \
   --certificate-identity-regexp 'github.com/Laffinty/wlwl' \
   --certificate-oidc-issuer 'https://token.actions.githubusercontent.com' \
-  wlwl-v0.12.1_rc3-x86_64-unknown-linux-gnu.tar.xz
+  wlwl-v0.12.1_rc4-x86_64-unknown-linux-gnu.tar.xz
 ```
 
 > The `.bundle` and `.sig` files produced by the release workflow are

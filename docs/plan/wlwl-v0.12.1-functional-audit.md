@@ -332,9 +332,10 @@ Select-String -Path 'D:\Project\wlwl\impl\crates\wlwl-std\wl\std\http.wll' -Patt
 > —— 但**业主随后把该 tag 与该 release 一并删除**（撤回）⇒ **远端既无该
 > tag、也无该 release**（`git ls-remote --tags origin` 与
 > `GET /releases/tags/v0.12.1_rc3` ⇒ 404 双证）。
-> ⚠ **业主随后指示：沿用同一个 tag 名 `v0.12.1_rc3` 重新发布** ⇒ **同名不同物**
-> （现在的 rc3 指向 `lib/` 布局的新快照；被撤回的那一次记在 `CHANGELOG.md` 的
-> 「第一次 v0.12.1_rc3 · 已撤回」段）。
+> ⚠ **业主随后指示：另起新号 `v0.12.1_rc4` 发布** ⇒ 因为那个 rc3 **曾经真正
+> 发布过**（release id `430104519`）⇒ 按「**已发布的 tag 不移动 ⇒ 后续修订新发
+> 版本号**」**不复用 rc3 编号** ⇒ 现在的 rc4 = `lib/` 布局的新快照；被撤回的那
+> 一次记在 `CHANGELOG.md` 的「第一次 v0.12.1_rc3 · 已撤回」段。
 > ⚠ **同时改了包内布局**（业主裁决）：R1 源码副本与 TLS **动态库文件**同居
 > 一个 `lib/` 文件夹 ⇒ 验收判据**不再**是「`wlwl-tls/` 目录存在」，而是
 > 「`lib/stdlib/` 与 `lib/<动态库>` **同时**在位」（见下）。
@@ -640,7 +641,7 @@ git -C <path-to-wlwl-spec-v1> tag -l 'v1.0.4'    # 期望：现在为空
 
 - [ ] **T-03 / T-04 已裁决**，且裁决结果落进了「台账 + §6.2 表」两处（**不允许只改一处**）
 - [ ] **T-01 规范仓 v1.0.4 tag 已发**，tag 注释含 SP-1…SP-5 与全部新增成员
-- [ ] **T-02 的 RC release 已建成**，且**包内 `lib/stdlib/` 与 `lib/<动态库>` 同时在位**（动态库 + 同级的 `ABI_VERSION` + `SHA256SUMS`，且 `cd lib && sha256sum -c SHA256SUMS` 通过）—— ⚠ `v0.12.1_rc2`（release 没建成）**不算**这一项达成；⚠ `v0.12.1_rc3` 的**第一次**发布（`wlwl-tls/` 布局）**已被撤回**（tag 与 release 均删除）⇒ **不算**达成；达成的是**重建后**的那个 `v0.12.1_rc3`（`lib/` 布局）
+- [ ] **T-02 的 RC release 已建成**，且**包内 `lib/stdlib/` 与 `lib/<动态库>` 同时在位**（动态库 + 同级的 `ABI_VERSION` + `SHA256SUMS`，且 `cd lib && sha256sum -c SHA256SUMS` 通过）—— ⚠ `v0.12.1_rc2`（release 没建成）**不算**这一项达成；⚠ `v0.12.1_rc3`（`wlwl-tls/` 布局）**已被撤回**（tag 与 release 均删除）⇒ **不算**达成；达成的是 **`v0.12.1_rc4`**（`lib/` 布局）
 - [ ] 五平台 **job 级**结论全 success（不是只看 run 级）
 - [x] **T-05 符号链接逃逸已修**并有反向守卫（2026-10-31 完成：`path_symlink_contract` 15/0，去掉闸 ⇒ 必红）
 - [ ] **T-10 三处文档不一致已订正**，且面板与台账**逐项相等**

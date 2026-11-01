@@ -159,16 +159,15 @@ deliberately unfinished.
   dictionaries.
 - **Current version: 0.12.1** (`impl/Cargo.toml`), published as the
   pre-release
-  [v0.12.1_rc3](https://github.com/Laffinty/wlwl/releases/tag/v0.12.1_rc3) —
+  [v0.12.1_rc4](https://github.com/Laffinty/wlwl/releases/tag/v0.12.1_rc4) —
   a release candidate, so the GitHub release is marked *pre-release* and
   package managers will not pick it up automatically. Its archive **does**
   ship the TLS extension as a **dynamic library** under `lib/`, next to the
   R1 standard-library sources in `lib/stdlib/`. The final `v0.12.1` has not
   been released yet.
-  ⚠ The `v0.12.1_rc3` tag was **rebuilt under the same name**: an earlier
-  `v0.12.1_rc3` (extension under `wlwl-tls/`) was published and then
-  withdrawn — its tag and release were both deleted — and the name now
-  points at the `lib/` layout. Meanwhile
+  ⚠ `v0.12.1_rc3` was **withdrawn** — it had been published and then had
+  both its tag and its release deleted — so this release uses the next
+  number, `rc4`. Meanwhile
   [v0.12.1_rc1](https://github.com/Laffinty/wlwl/releases/tag/v0.12.1_rc1)
   ships **no** TLS extension at all — see
   [Install](docs/site/install.md) for the per-tag table.
