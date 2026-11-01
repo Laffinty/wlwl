@@ -440,12 +440,30 @@ STR(LEN(AT(r, "rules", [])))"#
     );
     assert_eq!(run(&warm), "200");
     // 写者：交替写入两代规则并触发热切换（每次写前等 mtime 粒度）。
+    //
+    // ⚠⚠ [2026-11-01] 写者必须用 **`WRITE_FILE_ATOMIC`**，不能用 `WRITE_FILE`。
+    //
+    // **为什么**（实测，CI run #41251920950 的 macOS job 红在此用例）：
+    // `RULESET_LOAD` 的读路径是「先 `FILE_META` 取 mtime；mtime 变了就**自己
+    // `READ_FILE` 重新读盘**」（`http.wll` 的 `RULESET_LOAD`）。而 `WRITE_FILE`
+    // 是**非原子**写 ⇒ 文件存在「已截断 / 只写了一半」的中间态 ⇒ 读者若在那个
+    // 窗口里 stat 到新 mtime、紧接着读盘 ⇒ 读到**半份规则** ⇒ 判据里的 `j`
+    // 既不等于 `a_join` 也不等于 `b_join` ⇒ 被记成一次「torn」。
+    // ⚠ **那不是热切换不原子**：`SHARED_DICT_SET` 换引用**本来就是原子的**；
+    //   撕裂来自**读到了写了一半的文件**。
+    // ⚠ **本机独立探针复现**（不依赖本运行时）：模拟「截断 + 分块写」的读者，
+    //   523 次读里有 **158 次读到半份内容** ⇒ 机制成立。
+    // ⚠ **改用原子写之后**，盘上的文件**要么是完整的一代、要么是完整的一代**
+    //   ⇒ 读者只可能看到完整的一代 ⇒ `bad` 恒为 0 ⇒ 判据**不再依赖机器快慢**。
+    // ⚠ **反向守卫的效力不被削弱**：若实现改成「原地改旧数组」，读者仍会看到
+    //   **半份数组** ⇒ 照样红 ⇒ 这条用例依然能抓住它要抓的那个缺陷。
+    //   （原意图「并发读者见撕裂条目」保持不变。）
     let writer = std::thread::spawn({
         let p = p.clone();
         move || {
             let src = format!(
                 r#"IMPORT("wlwl:std.http", ["RULESET_LOAD"]);
-IMPORT("wlwl:std.fs", ["WRITE_FILE"]);
+IMPORT("wlwl:std.fs", ["WRITE_FILE_ATOMIC"]);
 IMPORT("wlwl:std.time", ["NOW"]);
 IMPORT("wlwl:std.str", ["CAT"]);
 LET(p, "{p}");
@@ -458,7 +476,7 @@ WHILE(<(k, 6),
      LET MUT(c, "");
      LET MUT(j, 1);
      WHILE(<(j, 201), (SET(c, CAT(c, prefix, STR(j), "\n")); SET(j, +(j, 1))));
-     LET(_, WRITE_FILE(p, c));
+     LET(_, WRITE_FILE_ATOMIC(p, c));
      LET(r, RULESET_LOAD(p, ["state": {h}, "audit": FALSE]));
      SET(ver, AT(r, "version", 0));
      SET(k, +(k, 1))));

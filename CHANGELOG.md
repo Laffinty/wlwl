@@ -19,6 +19,33 @@
 
 **版本守卫**：`tag` 基版本 `v0.12.1` ↔ `impl/Cargo.toml` 的 `0.12.1` ⇒ 逐字相等。
 
+### ⚠ 顺带修掉一条**既有 flaky**（macOS · CI run #41251920950）
+
+`middleware_contract::ruleset_hot_swap_never_exposes_a_torn_entry` 在 macOS 上
+**pass 1 红 / pass 2 绿** ⇒ 判 flaky ⇒ 但本仓 `FLAKY_EXIT_CODE=1` **不放行**
+⇒ 整条 run 判 failure ⇒ **打不了 tag**。
+
+**根因（不是热切换不原子）**：`RULESET_LOAD` 的读路径是「先 `FILE_META` 取
+mtime；mtime 变了就**自己 `READ_FILE` 重新读盘**」（`http.wll:2185`）⇒ 而该用例
+的**写者用的是非原子 `WRITE_FILE`** ⇒ 文件存在「已截断 / 只写了一半」的中间态
+⇒ 读者若在那个窗口里 stat 到新 mtime、紧接着读盘 ⇒ 读到**半份规则** ⇒ 被误记
+成一次「撕裂」。⚠ **热切换本身是原子的**（`SHARED_DICT_SET` 一次换引用），
+**没坏**；⚠ 本机**独立探针**复现（不依赖本运行时）：模拟「截断 + 分块写」的
+读者 ⇒ **523 次读里 158 次读到半份内容**。
+
+**修法（只改夹具，实现侧零改动）**：写者的 `WRITE_FILE` → **`WRITE_FILE_ATOMIC`**
+（`std.fs` W-27 已有，语义正是「目标要么旧内容、要么新内容，**没有中间态**」）
+⇒ 盘上文件**恒为完整的一代** ⇒ 读者只可能看到完整的一代 ⇒ 判据**不再依赖机器
+快慢**。⚠ `http.wll` / `fs.rs` **一个字未动** ⇒「原地改旧数组 ⇒ 读者见撕裂」
+那条**反向守卫的机制原封未动**。⚠ 不会引入新偶发：`FILE_META` 的 `mtime` 是
+**毫秒级**而写者两次写间隔 **300 ms** ⇒ 原子写不会造成「mtime 撞秒 ⇒ `version`
+不递增」。
+
+**实测**：Windows 连跑 **10/10 全绿**（26 passed）· **vacuity check**（把写者
+临时改成**混代**内容 ⇒ 用例**如期变红** `left: "387"` / `right: "0"` ⇒ 判据
+**非恒真**）⇒ 验完测试文件 **SHA256 逐字节还原**。⚠ **unix 侧本地无法验**
+（本机 WSL2 无 Rust 工具链）⇒ macOS 侧由 **CI 的 macOS runner** 验。
+
 **零运行时风险**：R1 源码副本是**参考件**（运行时走 `include_str!` 内嵌；`--std-src`
 覆盖轨要人显式给路径）⇒ 挪位置不改变任何加载行为；仓内**没有**任何「按可执行文件
 旁边找 stdlib」的路径逻辑（`grep -rn 'current_exe|exe_dir|join("stdlib")' impl/` ⇒ 0 命中）。
