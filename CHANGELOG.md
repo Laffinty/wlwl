@@ -21,6 +21,73 @@
 
 **版本守卫**：`tag` 基版本 `v0.12.1` ↔ `impl/Cargo.toml` 的 `0.12.1` ⇒ 逐字相等。
 
+### ✅ 发布结果（实测）：**release 已建成**
+
+`Release` run **#47**（run id `41259477289`，head_branch `v0.12.1_rc4`）=
+**success，10/10 job 全 success**：`version guard` ✅ · 五平台 `build` ✅
+（`x86_64-unknown-linux-gnu` / `aarch64-unknown-linux-gnu` /
+`x86_64-apple-darwin` / `aarch64-apple-darwin` / `x86_64-pc-windows-msvc`）·
+`spec conformance suite` ✅ · `generate SBOM (CycloneDX)` ✅ ·
+`cosign keyless sign binaries + SBOM` ✅ · `github release` ✅。
+
+`GET /releases/tags/v0.12.1_rc4` ⇒ `id` **`430288273`** · `draft: false` ·
+**`prerelease: true`** · `published_at 2026-11-01T01:09:41Z` · **6 个资产**：
+
+| 资产 | 字节 |
+|---|---|
+| `sbom.json` | **80405** |
+| `wlwl-v0.12.1_rc4-x86_64-unknown-linux-gnu.tar.xz` | 6754988 |
+| `wlwl-v0.12.1_rc4-aarch64-unknown-linux-gnu.tar.xz` | 6369700 |
+| `wlwl-v0.12.1_rc4-x86_64-apple-darwin.tar.xz` | 6637388 |
+| `wlwl-v0.12.1_rc4-aarch64-apple-darwin.tar.xz` | 6260148 |
+| `wlwl-v0.12.1_rc4-x86_64-pc-windows-msvc.zip` | 7767033 |
+
+**打 tag 前的远端读数**：CI run **#46**（head `b152fcd`）4 个 job 全 success
+（`ubuntu` / `macOS` / `windows` / `smoke`）⇒ 满足「先修到远端全绿，再打 tag」。
+
+#### ✅ 包内布局直证（**本次改动的验收点**）
+
+**x86_64-linux 归档**（下载后 `Get-FileHash` =
+`6fbb05b3dd49eb320ac243f4d9f10a11762b1a53aa97cd0a8349b1e990ab763e`，与 API 报的
+digest **逐字一致**）⇒ 解包（**65 个条目**）：
+
+```
+wlwl-v0.12.1_rc4-x86_64-unknown-linux-gnu/
+├── CHANGELOG.md · LICENSE · README.md · SOURCE_HASH
+├── examples/ · wlwl-skill/ · wlwl-src.tar.gz · wlwl
+└── lib/                        ← 唯一的库目录
+    ├── stdlib/                 ← R1 源码副本（6 个 .wll）
+    ├── libwlwl_tls.so          ← TLS 动态库文件本体（2708728 B）
+    ├── ABI_VERSION             ← 与动态库同级
+    └── SHA256SUMS              ← 与动态库同级
+```
+
+- `lib/stdlib/` ⇒ `collection.wll` / `http.wll` / `math.wll` / `result.wll` /
+  `str.wll` / `test.wll` **六个齐全**。
+- `ABI_VERSION` = **1**。
+- `SHA256SUMS` = `b9c78b55d7ceb187f6136bb09cd4226943d6eef13678a2def8243cdd4ac6ee6e  libwlwl_tls.so`
+  —— `cat -A` 确认行尾是 **`$`（LF）不是 `^M$`** ⇒ `cd lib && sha256sum -c SHA256SUMS`
+  ⇒ **`libwlwl_tls.so: OK`**（exit 0）;独立核对：实际文件哈希与记录**逐字一致**。
+- ⚠ **旧形态已消失**：`find -name 'wlwl-tls'` ⇒ **0 条**（不再有「一个动态库自带
+  一个目录」的形态）。
+
+**x86_64-windows zip**（`Get-FileHash` =
+`a96f6279e4fe12678bc5f474544a85f57f864a4c973f3493da36d94ea2a26b07`，与 digest
+**逐字一致**）⇒ 解包：`lib/` = `stdlib/` + **`wlwl_tls.dll`（2077696 B）** +
+`ABI_VERSION`（=1）+ `SHA256SUMS`。
+⚠⚠ **CRLF 缺陷已修掉的直证**：`SHA256SUMS` 的**原始字节末尾是 `0a`、全文无 `0d`**
+⇒ 纯 LF ⇒ `sha256sum -c` ⇒ **`wlwl_tls.dll: OK`**（exit 0）⇒ 独立核对哈希**逐字一致**
+（`b3bb2006…`）。⇒ **此前 rc3 那版 Windows zip 里那份 CRLF 校验文件（跑 `sha256sum -c`
+必 FAILED）已经不复存在**。
+
+**SBOM 直证**（`sbom.json` 80405 B，`Get-FileHash` =
+`d6f8d2654598e1d3be4b09adf7b9b1008401a5d589d3290f50a148ee7da1b60c`，与 digest
+**逐字一致**）⇒ `bomFormat = CycloneDX` · `specVersion = 1.5` ·
+`metadata.component = wlwl@0.12.1` · **229 components** ·
+`rustls` / `ring` / `webpki-roots` **均在** · `wlwl-tls-ext` **不在**组件表
+（扩展本体不进 SBOM）· `wlwl:sbom:covered-workspaces = wlwl,wlwl-tls-ext` ·
+`tls-ext-packages` **38 条**。
+
 ### ⚠ 顺带修掉一条**既有 flaky**（macOS · CI run #41251920950）
 
 `middleware_contract::ruleset_hot_swap_never_exposes_a_torn_entry` 在 macOS 上
