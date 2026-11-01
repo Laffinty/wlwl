@@ -101,6 +101,7 @@
 | 附录 A 逐字对拍 | `cargo run --bin check-appendix-a` ⇒ **OK**（副本重生成后仍一致） |
 | lint | `cargo clippy --all-targets --all-features -- -D warnings` **绿** · `cargo fmt --all -- --check` **绿** |
 | `wlwl-eval` **全 crate** | 89 个目标 ⇒ **88 个全绿（2082 条用例）**；第 89 个（`tcp_serve_contract`）因**仓库既有**的句柄守卫偶发红 —— 见下节「顺带修掉的既有偶发」 |
+| 其余 crate | `wlwl-cli` **全绿**（含 `probe` / `conformance` / `skill_examples` 三套 .wll 回归）· `wlwl-std` 388/0 · `wlwl-lexer` 89/0 · `wlwl-parser` 144/0 · `wlwl-value` 11/0 · `wlwl-ast` / `wlwl-types` / `wlwl-error` / `wlwl-toml` / `wlwl-formatter` 全绿 |
 
 ### 六、顺带修掉的**既有偶发**（与本批改动无关，但被本批的回归撞出来）
 
