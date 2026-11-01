@@ -9,6 +9,48 @@
 > 是破坏性的）⇒ 按一致性册 §3.2 的要求，**发布说明必须显式列出** ⇒ 见「七、迁移写法」。
 > ⚠ **不留兼容开关**（业主拍板）⇒ 语义**一次性**切换。
 
+### ✅ 发布结果（**实测**，2026-11-01）
+
+**两仓 push → 两仓 CI 全绿 → 打 tag → Release 全绿 → 发行包实测复核**，逐项读数如下。
+
+| 环节 | 读数 |
+|---|---|
+| 规范仓 push | `d6d90c3..b866ea9`（`main`） |
+| 实现仓 push | `b36fb88..ac6e841`（`main`） |
+| 规范仓 CI（spec-check **run #43**） | **completed / success** |
+| 实现仓 CI（**run #350**，head `ac6e841`） | **completed / success** |
+| **规范仓 tag** | **`v1.0.4`**（附注 tag，指向 `b866ea9`）—— 按规范仓「发布点序列」的既有体例（`v1.0.0`…`v1.0.3` 已发）⇒ 本批落在**未发的 `v1.0.4` 候选**上，**不另起版本号** |
+| **实现仓 tag** | **`v0.12.1`**（附注 tag，指向 `ac6e841`）—— **正式版**（无 `rc` 后缀 ⇒ `prerelease` 表达式为 false） |
+| Release **run #48** | **completed / success，10/10 job 全 success**：`version guard` ✅ · 五平台 `build` ✅（linux-gnu x64/arm64 · apple-darwin x64/arm64 · windows-msvc）· `generate SBOM` ✅ · `spec conformance suite` ✅ · `cosign keyless sign` ✅ · `github release` ✅ |
+| **版本守卫** | tag `v0.12.1` ↔ `impl/Cargo.toml` 的 `0.12.1` **逐字相等**（守卫 success） |
+| **release 实体**（`GET /releases/tags/v0.12.1`） | `id` **`430443148`** · `draft: false` · **`prerelease: false`（正式版）** · `published_at 2026-11-01T09:11:20Z` · **6 个资产** |
+
+**资产清单（6 个）**：`sbom.json`（80405 B）· `wlwl-v0.12.1-x86_64-unknown-linux-gnu.tar.xz`（6786284 B）·
+`wlwl-v0.12.1-aarch64-unknown-linux-gnu.tar.xz`（6400256 B）· `wlwl-v0.12.1-x86_64-apple-darwin.tar.xz`（6667064 B）·
+`wlwl-v0.12.1-aarch64-apple-darwin.tar.xz`（6288880 B）· `wlwl-v0.12.1-x86_64-pc-windows-msvc.zip`（7802213 B）。
+
+#### 发行包实测复核（**下载回来跑，不是只看 job 绿**）
+
+- **下载**：Windows zip 经 API 资产端点取回，**7802213 B** —— 与 release 报的字节数**逐字一致**；
+  `SHA256 = 7b8c9650276a3f662ef9d7ba6aa778382a7977e0269ff43dc1cc54420ff8e545`。
+- **二进制自报版本**：`wlwl --version` ⇒ **`wlwl 0.12.1`**（与 tag 基版本一致）。
+- **包布局**：顶层含 `wlwl.exe` / `lib/` / `wlwl-skill/` / `examples/` / `CHANGELOG.md` / `README.md` /
+  `LICENSE` / `SOURCE_HASH` / `wlwl-src.tar.gz`；`lib/` 下 = `stdlib/`（**6 个 R1 源文件**）+
+  `wlwl_tls.dll`（2077696 B）+ `ABI_VERSION`（`2`，2 字节）+ `SHA256SUMS`（79 B）；
+  ⚠ **无 `wlwl-tls/` 目录**（rc4 的「库文件归 `lib/`」布局保持）。
+- **`SHA256SUMS` 的 CRLF 缺陷仍保持修好**：原始字节 **CR = 0 / LF = 1**、**末字节 `0x0A`** ⇒ **纯 LF**；
+  文件内声明的哈希 `202379c2…3599b` 与实际 `wlwl_tls.dll` 的 SHA256 **逐字相等**（`match = True`）。
+- **五处行为修复在发行版二进制上逐条复验**（用审计方的探针跑）：
+  `LEN(["a": 1, "a": 2])` = **1**、`KEYS` = `[a]`、查值 = **2**（折叠生效）·
+  `SUB("abc", -9, 1)` = **`""`**（负越界取空）· `LINEAR_FIT([1,2,3],[1,1,1])` = **`NULL`** ·
+  `PATH_JOIN("/a","b")` = **`"/a/b"`**、`PATH_JOIN("/","b")` = **`"/b"`** ·
+  `b"a${b}c"` = **`[97, 36, 123, 98, 125, 99]`**（字节串 `${` 按字面）。
+- **审计套件跑发行版二进制**：`VALUE SUITES : pass=1812 fail=6 divergence=2` · `DIAG CASES : pass=61 fail=1`
+  —— 与本地验证构建**逐条一致**；那 6+1 条全是审计方**钉住旧行为**的断言
+  （`dict.dupkey.lookup.first` / `dict.dupkey.keys.dup` / `char_at.oob.neg` / `sub.neg_oob.clamped` /
+  `join.leading_slash.impl` / `join.leading_slash.only` / 诊断用例 `d_bytes_interp`），
+  残余 2 条 divergence 是审计方的两条误读（`module_ref.hidden.present.spec` / `form.shape.spec`）。
+
 ### 一、这批的来源与复核结论
 
 **输入**：一份**外部独立审计报告** —— 对 `wlwl.exe` **v0.12.1_rc4**（x86_64-pc-windows-msvc
