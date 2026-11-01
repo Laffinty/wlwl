@@ -157,6 +157,40 @@
       "tests": ["str_accum_contract"],
       "expect": "satisfied",
       "note": "字符串累加器 cell（CellStr）⇒ 循环内 SET(acc, +(acc, t)) 的总拷贝 = n 字节（Θ(n)）—— 语言核心册 §18.4 的**推荐上界**已达标（6 例）"
+    },
+    "X-26": {
+      "package": "wlwl-eval",
+      "tests": ["x26_dict_dupkey_contract"],
+      "expect": "satisfied",
+      "note": "字典字面量的重复键必须折叠（语言核心册 §2.1 的「插入序映射」⇒ 键唯一）⇒ 折叠规则对齐 INDEX_SET 路径：后值覆盖先值、位置保留首次（13 例）"
+    },
+    "X-27": {
+      "package": "wlwl-eval",
+      "tests": ["x27_sub_bounds_contract"],
+      "expect": "satisfied",
+      "note": "SUB / CHAR_AT 的越界口径正负对称（语言核心册 §10.5 + 核心册 §6）：负起点越界取空串，不钳到 0（17 例）"
+    },
+    "X-28": {
+      "package": "wlwl-eval",
+      "tests": ["x28_linear_fit_zero_var_contract", "str_math_contract"],
+      "expect": "satisfied",
+      "note": "LINEAR_FIT 任一方向方差为零 ⇒ NULL（核心册 §7.5 的两处明文）⇒ 与同族的 CORRELATION 同口径"
+    },
+    "X-29": {
+      "package": "wlwl-eval",
+      "tests": ["x29_path_join_root_contract"],
+      "expect": "satisfied",
+      "note": "PATH_JOIN 保留首部的根（系统册 §2 路径族：只写「合并重复分隔符、跳过空片段」，无「丢弃前导 /」条款）⇒ 只对首部判根，中间段前导 / 仍被吃掉（12 例）"
+    },
+    "X-30": {
+      "package": "wlwl-eval",
+      "tests": ["x30_bytes_interp_contract"],
+      "expect": "satisfied",
+      "note": "字节串里的 ${ 按字面字节处理（语言核心册 §1.8：「没有插值 —— ${ 在字节串里不是插值」）⇒ 不再在解析期报 E0001（7 例）"
+    },
+    "X-31": {
+      "expect": "no-contract",
+      "reason": "文档类：EXPECT_ERR 的返回形状由语言核心册 §8.3 写死为「OK(x)」（包整个 ERR 值）；实现侧行为逐字不变（test_contract.rs 的 expect_err_on_err_is_ok 钉着 OK(ERR(boom))）⇒ 无可挂的机器判据"
     }
   }
 }

@@ -1844,6 +1844,11 @@ fn correlation_and_linear_fit_match_python() {
 fn zero_variance_gives_null_not_zero() {
     st_f("CORRELATION([1, 2, 3], [5, 5, 5])", "NULL");
     st_f("LINEAR_FIT([2, 2, 2], [1, 2, 3])", "NULL");
+    // ⚠ [X-28] 规范 标准库·核心册 §7.5 的**两个方向**都要挡 ——
+    //   缺陷形态只累计了 x 方向的方差 ⇒ y 方向零方差时返回
+    //   `[slope: 0.0, intercept: 1.0]`(与规范明文冲突,且与同族的
+    //   `CORRELATION` 不一致)。
+    st_f("LINEAR_FIT([1, 2, 3], [5, 5, 5])", "NULL");
 }
 
 /// ⚠ **`NaN` / `±inf` 不渗进统计量** —— wlwl 没有浮点异常传播约定

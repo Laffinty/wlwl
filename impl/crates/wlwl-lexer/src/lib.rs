@@ -85,8 +85,9 @@ pub enum TokenKind {
     /// ⇒ 解析器把 `b"..."` **脱糖**成 `ARRAY[INTEGER]`（见 parser 的
     ///   `parse_literal`）—— **不引入新类型、不引入新 AST 节点**。
     ///
-    /// 与普通字符串的差别：① 不做 UTF-8 校验；② **不支持插值**
-    ///   （`${...}` 在字节串里是错误 —— 字节串是常量）；③ 多一个 `\xNN` 转义。
+    /// 与普通字符串的差别：① 不做 UTF-8 校验；② **没有插值**
+    ///   （`${...}` 在字节串里**不是**插值 ⇒ 按**字面字节**处理，**不**是
+    ///   错误 —— 字节串是常量）；③ 多一个 `\xNN` 转义。
     BytesLit(Vec<u8>),
     // v0.6 §1.8: interpolated string literal. The lexer emits a
     // sequence of three token kinds bracketing zero or more
@@ -489,7 +490,9 @@ impl<'a> Lexer<'a> {
     ///
     /// 与 [`Self::read_string`] 的差别：
     /// - **不做 UTF-8 校验** —— 字节串就是字节序列（`b"\xff"` 合法）。
-    /// - **没有插值** —— `${` 在字节串里是**错误**（字节串是常量）。
+    /// - **没有插值** —— `${` 在字节串里**不是**插值（字节串是常量）⇒
+    ///   它**按字面字节**处理（`b"a${b}c"` = `[97, 36, 123, 98, 125, 99]`），
+    ///   **不**是错误。
     /// - 多一个 `\xNN` 转义（两位十六进制 ⇒ 一个字节）。
     ///
     /// 产出一个 `BytesLit` token；解析器再把它脱糖成 `ARRAY[INTEGER]`。
@@ -569,18 +572,19 @@ impl<'a> Lexer<'a> {
                         }
                     }
                 }
-                Some(b'$') if self.peek_at(1) == Some(b'{') => {
-                    return Err(self.err(
-                        ErrorCode::E0001,
-                        "byte string literals do not support ${...} interpolation",
-                        line,
-                        col,
-                    ));
-                }
                 Some(b'\n') | None => {
                     return Err(self.err(ErrorCode::E0002, "unterminated byte string", line, col));
                 }
                 Some(b) => {
+                    // ⚠ [规范 §1.8] 字节串**没有插值** —— `${` 在字节串里
+                    //   **不是**插值(字节串是常量)⇒ 它的**字面**读法是
+                    //   「按字面字节处理」,文法 `bytes_element` 也允许 `$`
+                    //   与 `{` 作为普通字节。
+                    //   缺陷形态:这里把 `${` 当成**错误**(`E0001`)⇒
+                    //   `b"a${b}c"` 解析期就被拒(规范说的是「按字面处理」,
+                    //   实现给的是「不许出现」)⇒ 与规范明文冲突。
+                    //   ⇒ 删掉那条拒绝分支:`${` 落到这里的兜底分支,被当作
+                    //   两个**普通字节**(`$`、`{`)收下。
                     bytes.push(b);
                     self.bump();
                 }

@@ -366,8 +366,15 @@ pub fn correlation(host: &mut dyn StdHost, args: Vec<Value>) -> R<Outcome> {
 
 /// `LINEAR_FIT(xs, ys)` → `["slope": FLOAT, "intercept": FLOAT]`。
 ///
-/// ⚠ **`x` 方向方差为零 ⇒ `NULL`**(斜率无定义,不是 0)—— 与 `CORRELATION` 同款理由。
+/// ⚠ **任一方向方差为零 ⇒ `NULL`** —— 与 `CORRELATION` 同款理由。
 /// ⚠ 只做**最小二乘直线**,返回**系数**,不是拟合后的点集。
+///
+/// ⚠ [规范 标准库·核心册 §7.5] 成员表与「空与无定义」表**两处**都写
+///   「`CORRELATION` / `LINEAR_FIT` 任一方向方差为零 → `NULL`」
+///   (「相关系数 / 斜率无定义,**不是 0**」)⇒ 本成员**必须**两个方向都挡。
+///   缺陷形态:只累计了 `sxx`(x 方向)⇒ `LINEAR_FIT([1,2,3], [1,1,1])`
+///   (y 方向零方差)返回 `[slope: 0.0, intercept: 1.0]` ⇒ 与规范明文冲突,
+///   且与**同族**的 `CORRELATION`(同一份 y 零方差数据返回 `NULL`)**不一致**。
 pub fn linear_fit(host: &mut dyn StdHost, args: Vec<Value>) -> R<Outcome> {
     if args.len() != 2 {
         return Err(arity(host, "LINEAR_FIT", args.len(), 2));
@@ -380,13 +387,16 @@ pub fn linear_fit(host: &mut dyn StdHost, args: Vec<Value>) -> R<Outcome> {
     let nf = n as f64;
     let mx = xs.iter().sum::<f64>() / nf;
     let my = ys.iter().sum::<f64>() / nf;
-    let (mut sxy, mut sxx) = (0.0, 0.0);
+    let (mut sxy, mut sxx, mut syy) = (0.0, 0.0, 0.0);
     for (x, y) in xs.iter().zip(ys.iter()) {
-        sxy += (x - mx) * (y - my);
-        sxx += (x - mx) * (x - mx);
+        let (dx, dy) = (x - mx, y - my);
+        sxy += dx * dy;
+        sxx += dx * dx;
+        syy += dy * dy;
     }
-    if sxx == 0.0 {
-        return Ok(null()); // x 无方差 ⇒ 斜率无定义
+    // ⚠ 任一方向无方差 ⇒ 斜率无定义 ⇒ `NULL`(规范 §7.5)。
+    if sxx == 0.0 || syy == 0.0 {
+        return Ok(null());
     }
     let slope = sxy / sxx;
     Ok(Outcome::normal(Value::dict(vec![

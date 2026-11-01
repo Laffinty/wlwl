@@ -120,11 +120,23 @@ fn instance_keys_are_matched_by_identity_not_by_content() {
 }
 
 #[test]
-fn duplicate_keys_resolve_to_the_first_occurrence() {
-    // ⚠ 字典字面量可以写重复键。旧实现是**线性扫描取第一个匹配** ⇒
-    //   哈希索引必须保留**首次**出现的位置,否则这里会从 1 变成 2。
-    assert_eq!(out(r#"INDEX_GET(["a": 1, "a": 2], "a")"#), "1");
-    assert_eq!(out(r#"LEN(["a": 1, "a": 2])"#), "2");
+fn duplicate_keys_are_folded_by_the_dict_literal() {
+    // ⚠ [X-26] 规范 §2.1:`DICT` 是「从键到值的**插入序映射**」⇒ **映射没有
+    //   重复键** ⇒ 字典**字面量**里的重复键必须**折叠**。
+    //   缺陷形态:字面量把重复键全部保留(`LEN` = 2、查值取**首个**)⇒ 该值
+    //   **不是**其键的函数,而 `INDEX_SET` 路径**正确折叠** ⇒ 两条构造路径
+    //   口径不一致。
+    //   ⇒ 折叠规则对齐 `INDEX_SET` 路径:**后写的值覆盖先写的值**,**键的位置
+    //   保留首次出现的位置**。
+    assert_eq!(out(r#"INDEX_GET(["a": 1, "a": 2], "a")"#), "2");
+    assert_eq!(out(r#"LEN(["a": 1, "a": 2])"#), "1");
+    // ⚠ 键的位置保留**首次**出现的位置(不是末次)。
+    assert_eq!(out(r#"KEYS(["b": 1, "a": 2, "b": 3])"#), "[b, a]");
+    // ⚠ 两条构造路径**逐字同口径**。
+    assert_eq!(
+        out(r#"=(["a": 1, "a": 2], INDEX_SET(INDEX_SET(DICT(), "a", 1), "a", 2))"#),
+        "TRUE"
+    );
 }
 
 // ──────────────────────────────────────────────────────────────────────

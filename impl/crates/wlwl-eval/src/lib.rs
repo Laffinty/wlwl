@@ -2356,6 +2356,45 @@ fn dict_key_type_message(key: &Value) -> String {
     )
 }
 
+/// 折叠字典**字面量**里的重复键(规范 §2.1:`DICT` 是「从键到值的**插入序映射**」
+/// ⇒ 映射**没有**重复键)。
+///
+/// **规则**与 `INDEX_SET` 路径(`builtin_index_set`)**逐字一致**:
+/// **后写的值覆盖先写的值**、**键的位置保留首次出现的位置**。
+///
+/// ⚠ 缺陷形态:字面量把重复键**全部**留在条目序列里(`["a": 1, "a": 2]` ⇒
+///   `LEN` = 2、`KEYS` = `[a, a]`、查值取**首个**)⇒ 该值**不是**其键的函数,
+///   而 `INDEX_SET` 路径**正确折叠** ⇒ 两条构造路径口径不一致。
+///
+/// ⚠ **折叠点选在求值器这一侧**(不是 `wlwl-value` 的 `DictInner::new`):
+///   值层仍要支持「重复键的位置列表」——`wlwl-value/tests/x15_dict_equality_cost.rs`
+///   直接用 Rust API 造重复键来量**集合相等**的工作量,那与**语言层**的字面量
+///   语义是两件事 ⇒ 改值层会把它一起改掉(而它量的是别的东西)。
+///
+/// ⚠ 复杂度:**单遍 + 哈希** ⇒ 与字面量规模线性(§18.3.1 的字典键查找口径)。
+///   ⚠ 这里**不用**线性扫描找重复键 —— 那会让字面量构造退化成二次。
+#[allow(clippy::mutable_key_type)] // `DictKey` 含 `Rc<RefCell<..>>`(值层同款允许)
+fn fold_dict_literal(entries: Vec<(Value, Value)>) -> Vec<(Value, Value)> {
+    let mut folded: Vec<(Value, Value)> = Vec::with_capacity(entries.len());
+    let mut first_pos: HashMap<wlwl_value::DictKey, usize> = HashMap::with_capacity(entries.len());
+    for (k, v) in entries {
+        // ⚠ 键域在字面量的 `E0031` 闸口已收窄到 STRING / INTEGER / INSTANCE
+        //   ⇒ 这里 `from_value` 必为 `Some`;`None` 分支是兜底(**不**静默丢键 ——
+        //   域外键仍按原样进条目序列,由值层的线性回退路径处理)。
+        match wlwl_value::DictKey::from_value(&k) {
+            Some(dk) => match first_pos.get(&dk) {
+                Some(&i) => folded[i].1 = v,
+                None => {
+                    first_pos.insert(dk, folded.len());
+                    folded.push((k, v));
+                }
+            },
+            None => folded.push((k, v)),
+        }
+    }
+    folded
+}
+
 /// v0.6 §4.5 — `INDEX_GET(coll, idx_or_key)`.
 ///
 /// [W-29 / v0.12.1 · 需求 H-6] `ARRAY_GET` 是本函数的**别名** —— 分派表里
@@ -3071,10 +3110,27 @@ fn builtin_substr(_ev: &mut Evaluator, args: Vec<Value>) -> WlwlResult<Outcome> 
             ));
         }
     };
-    let norm_start = if start_raw < 0 {
-        (start_raw + len).max(0)
+    // ⚠ [规范 §10.5 + 标准库·核心册 §6] **越界按 `SUB` 口径取到空串,不报错**。
+    //   负 `start` 的口径是「自尾部计数」(`start = -1` ⇒ 末字符)⇒ 它的
+    //   **有效范围**是 `[-len, -1]`;超出该范围(`|start| > len`)是**越界**。
+    //   缺陷形态:负越界被 `.max(0)` **钳到 0** ⇒ `SUB("abc", -9, 1)` 返回
+    //   `"a"`(取首字符),而 `SUB("abc", 9, 1)` 返回 `""` ⇒ **正/负两侧口径
+    //   不对称** ⇒ `CHAR_AT`(= `SUB(s, i, 1)` 的薄包装)一并失准。
+    //   ⇒ 负侧越界改为**同样取空串**,两侧口径对齐。
+    //
+    // ⚠ 用 `Option` 表达「起点越界」而不是提前 `return`:第三个实参的**类型
+    //   校验**(`len` 必须是 INTEGER)必须**照旧**先跑完 —— 否则
+    //   `SUB("abc", -9, "x")` 会从 `E0030` 变成静默返回 `""`。
+    let norm_start: Option<i64> = if start_raw < 0 {
+        // ⚠ `saturating_add`:`start_raw` 可能是 `i64::MIN` ⇒ 裸 `+` 会溢出。
+        let from_tail = start_raw.saturating_add(len);
+        if from_tail < 0 {
+            None // 负侧越界 ⇒ 取空串(下面统一处理)
+        } else {
+            Some(from_tail)
+        }
     } else {
-        start_raw.min(len)
+        Some(start_raw.min(len))
     };
     let len_raw = if args.len() == 3 {
         match &args[2] {
@@ -3088,12 +3144,19 @@ fn builtin_substr(_ev: &mut Evaluator, args: Vec<Value>) -> WlwlResult<Outcome> 
         }
     } else {
         // 缺省:从 norm_start 取到末尾,即 len - norm_start
-        len - norm_start
+        // ⚠ 起点越界时 `norm_start` 是 `None` ⇒ 缺省长度取 0 ⇒ 结果为空串
+        //   (与「越界取空串」同结论)。
+        len - norm_start.unwrap_or(len)
     };
     // spec §10.5: len 须为非负;负 len clamp 到 0(空串)。不再支持
     // 旧的"负 len ＝ 从尾数计 end"语义(那是 end-index 的衍生,
     // 与 length 语义不兼容;迁移路径见 D8-010 deviation doc)。
     let norm_len = if len_raw < 0 { 0 } else { len_raw };
+    let norm_start = match norm_start {
+        Some(s) => s,
+        // ⚠ 负起点越界 ⇒ 空串(与正越界同口径)。
+        None => return Ok(Outcome::normal(Value::String(String::new()))),
+    };
     if norm_len == 0 || norm_start >= len {
         return Ok(Outcome::normal(Value::String(String::new())));
     }
@@ -9525,7 +9588,13 @@ impl Evaluator {
                     // 一个未消费的 `ERR` ⇒ 合成一个集合。
                     unconsumed = union_unconsumed(&unconsumed, &vo.unconsumed);
                 }
-                Ok(Outcome::with_unconsumed(Value::dict(vs), unconsumed))
+                // ⚠ [规范 §2.1] `DICT` 是「从键到值的**插入序映射**」⇒
+                //   映射**没有**重复键 ⇒ 字面量里的重复键必须**折叠**
+                //   (规则与折叠点见 `fold_dict_literal` 的说明)。
+                Ok(Outcome::with_unconsumed(
+                    Value::dict(fold_dict_literal(vs)),
+                    unconsumed,
+                ))
             }
             Expr::If {
                 cond,

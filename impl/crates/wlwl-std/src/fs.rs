@@ -312,14 +312,34 @@ fn strings(vs: Vec<String>) -> Value {
 /// 变参(≥1),全部实参必须是字符串;用 `/` 连接并**合并重复分隔符**。
 /// 空片段被跳过(`PATH_JOIN("a", "", "b") = "a/b"`)—— 让调用方能用
 /// `FILTER(MAP(...), 空则丢弃)` 的结果直接拼。
+///
+/// ⚠ [规范 标准库·系统册 §2] 路径族只写「用 `/` 连接,**合并重复分隔符**、
+///   **跳过空片段**」—— **没有**任何「丢弃前导 `/`」的条款。
+///   缺陷形态:前导 `/` 被「跳过空片段」这条逻辑**吃掉** ⇒
+///   `PATH_JOIN("/a", "b")` = `"a/b"`、`PATH_JOIN("/", "b")` = `"b"`
+///   ⇒ **拼绝对路径会静默变成相对路径**(同一输入在不同平台/不同基准目录下
+///   结果不同)。同族的 `PATH_NORMALIZE` / `PATH_CANONICAL` / `PATH_DIR`
+///   **都保留根** ⇒ 本成员是这族里唯一的例外。
+///   ⇒ 修法:**首部**的根被保留(见下)。
+///
+/// ⚠ **只对整条路径的首部判根**:中间段的前导 `/` 仍然被吃掉
+///   (`PATH_JOIN("a/", "/b")` = `"a/b"`)—— 那是「合并重复分隔符 / 跳过空片段」
+///   本身的语义,与根的问题**不是**一件事。
+/// ⚠ Windows 盘符路径(`C:/x`)首字符不是 `/` ⇒ 本成员**不做**盘符识别
+///   ⇒ 盘符路径的现状**逐字不变**(`PATH_JOIN("C:/x", "b")` = `"C:/x/b"`)。
 pub fn path_join(host: &mut dyn StdHost, args: Vec<Value>) -> Result<Outcome, WlwlError> {
     const NAME: &str = "PATH_JOIN";
     if args.is_empty() {
         return Err(fs_arity(host, NAME, 0, 1));
     }
     let mut out = String::new();
-    for a in &args {
+    // ⚠ 根标记:只有**第一个**实参能携带它(见上面「只对首部判根」)。
+    let mut absolute = false;
+    for (i, a) in args.iter().enumerate() {
         let p = str_arg(host, NAME, a)?;
+        if i == 0 {
+            absolute = p.starts_with('/');
+        }
         for seg in p.split(['/', '\\']) {
             if seg.is_empty() {
                 continue;
@@ -329,6 +349,11 @@ pub fn path_join(host: &mut dyn StdHost, args: Vec<Value>) -> Result<Outcome, Wl
             }
             out.push_str(seg);
         }
+    }
+    if absolute {
+        // ⚠ 根自身(`PATH_JOIN("/", "b")` ⇒ `"b"` ⇒ 结果 `"/b"`;
+        //   `PATH_JOIN("/")` ⇒ 结果 `"/"`)⇒ 根后**补一个**分隔符。
+        out.insert(0, '/');
     }
     ok(Value::String(out))
 }

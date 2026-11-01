@@ -8,11 +8,15 @@
 //   · `wlwl:std.fs::WRITE_FILE` / `MKDIRS`（`PARSE_MULTIPART` 的**文件 part 落盘**）
 //     / `PATH_CONTAINS` / `PATH_EXT` / `FILE_META` / `READ_BYTES`（`STATIC_FILE`）
 //     ⇒ ⚠⚠ **本模块不用 `std.fs::PATH_JOIN`**：它按 `/`、`\` 切段并**跳过空段**
-//     ⇒ **POSIX 的前导 `/` 会被吃掉**（`PATH_JOIN("/tmp/x", "f")` ⇒ `"tmp/x/f"`
-//     ⇒ **相对路径**）⇒ 拼绝对路径会**静默变成相对路径** ⇒ 同一个输入在
-//     Linux 与 Windows 上两个结果 ⇒ 下面 `STATIC_FILE` 与 `_MP_WRITE_FILE`
-//     两处**自己拼路径**（`CAT(root, "/", rel)`）⇒ `PATH_JOIN` 自身的根丢失
-//     是 `std.fs` 的**既有成员**缺陷 ⇒ 已单独上报，**不在本波动它**（撞 `:223`）。
+//     ⇒ **中间段**的前导 `/` 会被吃掉（`PATH_JOIN("a/", "/b")` ⇒ `"a/b"`）⇒
+//     拼路径时**根与分隔符**的落点得自己拿捏 ⇒ 下面 `STATIC_FILE` 与
+//     `_MP_WRITE_FILE` 两处**自己拼路径**（`CAT(root, "/", rel)`）。
+//     ⚠ **历史注记（已过期，保留作来龙去脉）**：`PATH_JOIN` 曾把 **POSIX 的前导
+//     `/` 也**吃掉（`PATH_JOIN("/tmp/x", "f")` ⇒ `"tmp/x/f"` ⇒ **相对路径**）
+//     ⇒ 那是 `std.fs` 的**既有成员**缺陷 ⇒ **已于 X-29 修复**（首部的根现在
+//     **保留**：`PATH_JOIN("/tmp/x", "f")` ⇒ `"/tmp/x/f"`）⇒ 本模块这两处
+//     **自己拼路径**的写法**保留不改**（不把「静态文件根」的正确性押在另一个
+//     成员的口径上）。
 //   · `wlwl:std.env::ENV_GET`
 //     —— **只有** `PARSE_MULTIPART` 取「临时目录」缺省值会用到
 //
@@ -62,12 +66,22 @@
 //     `allow` 是允许的方法（逗号分隔，**给 `Allow:` 头用**）；
 //     路径**没**命中 ⇒ `matched = FALSE`、`status = 404`、`allow = ""`。
 // · **表单解析结果**（`PARSE_FORM` / `PARSE_MULTIPART`）
-//   = `{"fields": DICT, "files": ARRAY[DICT]}`
-//   —— `fields` 是「字段名 ⇒ 值」；**同名**字段出现多次 ⇒ 值升级成
+//   —— ⚠ **两者形状不同**，别当成同一个契约：
+//   · `PARSE_FORM` 的返回值 = **`fields` 字典本身**
+//     （「字段名 ⇒ 值」）；**同名**字段出现多次 ⇒ 值升级成
 //     `ARRAY[STRING]`（按出现序）—— 与本模块「同名多值」的既有口径同款。
-//   —— `files` 的每一项 = `{"name": STRING, "filename": STRING, "path": STRING,
+//     ⚠ 它**不是** `{"fields": …, "files": …}` 包装 —— `x-www-form-urlencoded`
+//     正文里**没有**文件 part ⇒ 没有 `files` 可给 ⇒ 直接给字段字典。
+//     （与规范 标准库·系统册 §`std.http` 的 `PARSE_FORM` 行一致：
+//     「解析 `x-www-form-urlencoded` ⇒ `{fields, files}` 形状中的 `fields`」）
+//   · `PARSE_MULTIPART` 的返回值 = `{"fields": DICT, "files": ARRAY[DICT]}`
+//     —— `files` 的每一项 = `{"name": STRING, "filename": STRING, "path": STRING,
 //     "content_type": STRING, "size": INTEGER}`；`path` 是**落盘后的路径**
 //     （**交给调用方**去读 / 改名 / 删）。
+// ⚠ 旧版契约头把两者**写成同一个**（「表单解析结果（`PARSE_FORM` /
+//   `PARSE_MULTIPART`）= `{"fields": DICT, "files": ARRAY[DICT]}`」）——
+//   与 `PARSE_FORM` 的**实际行为**不符（它返回裸字段字典），也与规范不符。
+//   ⇒ 本次订正的是**文档**（行为侧本就与规范一致，不改行为）。
 //
 // ## 失败口径（两档，**不新增诊断码**）
 //
@@ -1100,14 +1114,13 @@ LET(STATIC_FILE, FUN((root, path, opts),
      // ③ 相对路径（去掉前导 `/`）⇒ 目标路径
      //
      // ⚠⚠ **这里自己拼，不用 `std.fs::PATH_JOIN`** —— `PATH_JOIN` 会把
-     //   **POSIX 的根 `/` 丢掉**（实测：`PATH_JOIN("/tmp/x", "f")` ⇒ `"tmp/x/f"`
-     //   ⇒ **相对路径**）⇒ Linux 上 `target0` 会变成相对路径 ⇒
-     //   `PATH_CONTAINS(root, target0)` 必然判假 ⇒ **同一个请求在 Linux 上
-     //   得 403、在 Windows 上得 404**（平台语义不一致）。
-     //   ⇒ 静态文件的 URL 路径**永远相对 root** ⇒ 用 `CAT(root, "/", rel)`
+     //   **中间段**的前导 `/` 吃掉（实测：`PATH_JOIN("a/", "/b")` ⇒ `"a/b"`）
+     //   ⇒ 静态文件的落点得**自己**拿捏分隔符 ⇒ 用 `CAT(root, "/", rel)`
      //   自己拼 ⇒ 两个平台同结果（`/etc/passwd` ⇒ `root/etc/passwd` ⇒ 404）。
-     //   （`PATH_JOIN` 自身的根丢失是 `std.fs` 的**既有成员**缺陷 ⇒ 已单独
-     //   上报，**不在本波动它** —— 改既有成员的可观察行为撞规范 `:223`。）
+     //   ⚠ **历史注记（已过期）**：`PATH_JOIN` 曾把 **POSIX 的根 `/` 也**吃掉
+     //   （`PATH_JOIN("/tmp/x", "f")` ⇒ `"tmp/x/f"`）⇒ **已于 X-29 修复**
+     //   （首部的根现在**保留**）⇒ 本模块这处**自己拼**的写法**保留不改**
+     //   （不把「静态文件根」的正确性押在另一个成员的口径上）。
      LET(rel, IF(STARTS_WITH(dec, "/"), SUB(dec, 1, -(LEN(dec), 1)), dec));
      LET(target0, CAT(r, "/", rel));
 
@@ -1836,12 +1849,12 @@ LET(_CHECK_MP_OPTS,
 //   **不会**互相覆盖。
 // ⚠ **目录由本成员负责建出来**（`MKDIRS` 幂等 ⇒ 已存在**不是**错）⇒ 调用方
 //   只需给「落在哪」，不必先知道要建哪几层。
-// ⚠⚠ **落盘路径自己拼，不用 `std.fs::PATH_JOIN`** —— `PATH_JOIN` 会把
-//   **POSIX 的根 `/` 丢掉**（`PATH_JOIN("/tmp/x", "f")` ⇒ `"tmp/x/f"` ⇒
-//   **相对路径** ⇒ 落进进程 CWD ⇒ 「parent directory does not exist」）。
+// ⚠⚠ **落盘路径自己拼，不用 `std.fs::PATH_JOIN`** —— 分隔符的落点自己拿捏
 //   ⇒ 这里用 `CAT(d, "/", 名)`（分隔符固定 `/`，与 `PATH_JOIN` 的口径一致），
 //   **根 `/` 得以保留** ⇒ 调用方给的**绝对路径**仍是绝对路径。
-//   （`PATH_JOIN` 自身的根丢失是 `std.fs` 的独立缺陷 ⇒ 已单独上报。）
+//   ⚠ **历史注记（已过期）**：`PATH_JOIN` 曾把 **POSIX 的根 `/` 也**丢掉
+//   （⇒ 落进进程 CWD ⇒「parent directory does not exist」）⇒ **已于 X-29
+//   修复**（首部的根现在**保留**）⇒ 本模块这处**自己拼**的写法**保留不改**。
 LET(_MP_WRITE_FILE,
     FUN((dir, head, content, idx),
         (LET MUT(d, dir);

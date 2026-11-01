@@ -538,8 +538,11 @@ member** — `SUM` plus `/` already covers it.
 > `CORRELATION([1,2,3], [1,1,1])` = `NULL`;
 > `LINEAR_FIT([1,2,3], [2,4,6])` = `[slope: 2.0, intercept: 0.0]`;
 > `MEDIAN([])` = `NULL`; `MODE([])` = `NULL`.
-> ⚠ The whole family returns **`FLOAT`** even for integer input
-> (`MODE([1, 1, 2, 3])` is `1.0`, not `1`).
+> ⚠ The family returns **`FLOAT`** even for integer input — **except `MODE`**:
+> `MODE` returns the element's **original value with its static type**
+> (`MODE([1, 1, 2, 3])` is `1`, an `INTEGER`; `MODE([1.0, 1.0, 2.0])` is `1.0`; a
+> **mixed** array promotes to `FLOAT` per §2.2). Same rule as `SUM` — the value
+> keeps the type it came in with.
 
 ### §9.4 `wlwl:std.collection` — the v0.11.2 ten (stdlib §5.1)
 
@@ -1140,14 +1143,20 @@ WALK_DIR(".", "**/*.md");          // `**` crosses directories, `*` does not
   program produces different output on different machines and the contract tables
   **cannot be frozen byte-for-byte** — and byte-frozen contracts are what this whole
   repository stands on.
+- ⚠ **A leading `/` survives.** `PATH_JOIN("/a", "b")` is `"/a/b"` and
+  `PATH_JOIN("/", "b")` is `"/b"` — the root of the **first** part is kept, so
+  joining an absolute path does not silently turn it into a relative one.
+  A `/` on a **later** part is still eaten (`PATH_JOIN("a/", "/b")` is `"a/b"` —
+  that is the "collapse repeated separators / skip empty segments" rule, not the
+  root rule). Windows drive prefixes are left alone (`PATH_JOIN("C:/x", "b")` is
+  `"C:/x/b"`).
 - Boundary cases that silently break a chain of path operations if you get them
   wrong: `PATH_DIR("a.txt")` is `""` (not `"."`) so
   `PATH_JOIN(PATH_DIR(x), PATH_BASE(x))` round-trips; `PATH_EXT("a.tar.gz")` is
   `"gz"`; `PATH_EXT(".gitignore")` is `""` (a dotfile has **no** extension, otherwise
   base + ext would not rebuild the name); `PATH_EXT` has **no leading dot**;
   `PATH_NORMALIZE` is **purely lexical** — it does not know whether `a` in `a/../b`
-  is a symlink, because a normaliser that called `canonicalize` would have IO side
-  effects and would change behaviour when the path does not exist.
+  is a symlink, because a normaliser that called `canonicalize` would have IO side  effects and would change behaviour when the path does not exist.
 - `LIST_DIR` / `WALK_DIR` results are **sorted** — the OS directory order varies
   between runs, and determinism is this language's first selling point.
   `WALK_DIR` **does not descend into symlinked directories** unless you pass
